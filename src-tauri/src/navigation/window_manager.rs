@@ -403,6 +403,103 @@ pub fn focus_window(hwnd: isize) -> Result<FocusOutcome, FocusError> {
     focus_window_impl(hwnd)
 }
 
+/// 单个窗口的关闭结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseWindowOutcome {
+    pub hwnd: isize,
+    pub title: String,
+    /// true = 投递后句柄已消失（或投递前就已失效）；false = 仍在
+    /// （典型原因：应用弹出「是否保存」对话框等待用户决定）。
+    pub closed: bool,
+}
+
+/// WM_CLOSE 是异步请求，应用可能弹确认框；只等这一段，之后仍存在的窗口
+/// 如实标 `closed=false`，不重试、不强杀（强杀属于进程管理，不是关窗口）。
+const CLOSE_VERIFY_TIMEOUT: Duration = Duration::from_millis(2000);
+/// WM_QUIT 后等待应用自行退出（保存/清理需要时间）；超时仍未退出的如实上报，
+/// 由调用方引导改用强制结束。
+const QUIT_VERIFY_TIMEOUT: Duration = Duration::from_millis(3000);
+
+/// 优雅关闭一组窗口：逐个投递 `WM_CLOSE`（等价用户点标题栏 ×），不抢焦点、
+/// 不动光标、不结束进程；随后有界轮询核实句柄是否消失。调用方必须在调用前
+/// 重新枚举窗口（HWND 易变），本函数对投递前已失效的句柄按「已关闭」处理。
+pub fn close_windows(windows: &[WindowInfo]) -> Vec<CloseWindowOutcome> {
+    close_windows_impl(windows)
+}
+
+/// 单个进程的结束结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillProcessOutcome {
+    pub pid: u32,
+    /// true = TerminateProcess 已受理；false = 打开句柄被拒（权限/保护进程）、
+    /// 竞争中已退出，或该 PID 是本进程（绝不自杀）。
+    pub killed: bool,
+}
+
+/// 按进程身份枚举 PID：自身或任意祖先进程的 exe 路径 == target（含多进程
+/// 宿主的子进程）。返回值升序去重；仅在用户已确认强制结束时使用。
+pub fn pids_for_identity(target_exe: &str) -> Vec<u32> {
+    if target_exe.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut pids: Vec<u32> = identity_pids(target_exe.trim()).into_iter().collect();
+    pids.sort_unstable();
+    pids
+}
+
+/// 强制结束一组进程：`OpenProcess(PROCESS_TERMINATE)` + `TerminateProcess`。
+/// 这是破坏性动作（不经过应用的退出/保存流程），调用方必须先取得用户确认；
+/// 失败的 PID 如实上报，不重试、不假装成功。
+pub fn kill_processes(pids: &[u32]) -> Vec<KillProcessOutcome> {
+    kill_processes_impl(pids)
+}
+
+/// 一次枚举内判定多个 exe 身份各自「是否存在属于它的可交互窗口」：
+/// 窗口 exe 直接命中，或窗口 PID 的祖先链上有 exe 命中（多进程宿主
+/// （微信/QQ/酷狗等）的窗口常由子进程持有）。
+/// 与 `windows_for_identity` / close / kill 同一套身份语义——运行态检测
+/// 若只做 exe 直配，会漏判子进程窗口，导致徽标与「关闭窗口」入口丢失。
+/// 返回值按入参原键返回；枚举与进程快照各只做一次，祖先 exe 查询带记忆化。
+pub fn identity_has_window(exe_keys: &[String]) -> std::collections::HashMap<String, bool> {
+    identity_has_window_impl(exe_keys)
+}
+
+/// 「请求退出」的结果：进程走自己的退出路径后是否真的结束。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuitProcessesReport {
+    /// 参与判定的目标进程数（剔除本进程）。
+    pub process_total: usize,
+    /// 有界等待内确认已退出的进程数。
+    pub process_exited: usize,
+    /// 成功投递 WM_QUIT 的线程数（无消息队列的线程投递失败，属正常）。
+    pub posted_threads: usize,
+}
+
+/// 属于给定 PID 集合的全部线程 ID（系统级线程快照一次，升序去重）。
+pub fn threads_of_pids(pids: &[u32]) -> Vec<u32> {
+    threads_of_pids_impl(pids)
+}
+
+/// 向一组线程投递 `WM_QUIT`（应用自己的消息循环收到后走退出路径），
+/// 返回成功投递数。跨进程投递合法；线程没有消息队列时投递失败，属正常。
+pub fn post_quit_threads(tids: &[u32]) -> usize {
+    post_quit_threads_impl(tids)
+}
+
+/// 有界等待一组进程退出，返回确认已退出的进程数。进程消失
+/// （OpenProcess 报无效参数）视为已退出；打不开句柄（权限）按未退出处理。
+pub fn wait_processes_exit(pids: &[u32], timeout: Duration) -> usize {
+    wait_processes_exit_impl(pids, timeout)
+}
+
+/// 请求一组进程自行退出：向其全部线程投递 `WM_QUIT`，随后有界等待核实。
+/// 这是「退出应用」语义——接近用户点托盘「退出」：应用走自己的保存/清理/
+/// 移除托盘图标路径。不配合（自定义消息循环、保存弹窗）的进程如实报未退出，
+/// 由调用方引导改用强制结束；绝不 TerminateProcess。本进程 PID 被剔除。
+pub fn request_processes_quit(pids: &[u32]) -> QuitProcessesReport {
+    request_processes_quit_impl(pids)
+}
+
 /// exe 路径查询（按 PID；查询失败返回 None，绝不猜测）。
 pub fn exe_path_of(pid: u32) -> Option<String> {
     exe_path_of_pid(pid)
@@ -782,6 +879,232 @@ mod imp {
             Ok(FocusOutcome::Unverified)
         }
     }
+
+    pub(super) fn close_windows_impl(windows: &[WindowInfo]) -> Vec<CloseWindowOutcome> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+        let mut posted: Vec<isize> = Vec::new();
+        for w in windows {
+            let h = w.hwnd as HWND;
+            unsafe {
+                // 动作前重新核对句柄（枚举到执行之间窗口可能已被用户关掉）
+                if IsWindow(h) == 0 {
+                    continue;
+                }
+                PostMessageW(h, WM_CLOSE, 0, 0);
+            }
+            posted.push(w.hwnd);
+        }
+        // 有界轮询核实：WM_CLOSE 异步，应用可能在弹保存确认；超时后仍在的
+        // 窗口如实标 closed=false，不重试不强杀。
+        let deadline = Instant::now() + CLOSE_VERIFY_TIMEOUT;
+        loop {
+            posted.retain(|&h| unsafe { IsWindow(h as HWND) != 0 });
+            if posted.is_empty() || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let still: HashSet<isize> = posted.into_iter().collect();
+        windows
+            .iter()
+            .map(|w| CloseWindowOutcome {
+                hwnd: w.hwnd,
+                title: w.title.clone(),
+                closed: !still.contains(&w.hwnd),
+            })
+            .collect()
+    }
+
+    pub(super) fn kill_processes_impl(pids: &[u32]) -> Vec<KillProcessOutcome> {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
+        let self_pid = std::process::id();
+        pids.iter()
+            .map(|&pid| {
+                // 绝不结束本进程：目标若恰好是 task_dock 自身，宁可失败也不自杀
+                let killed = if pid == self_pid || pid == 0 {
+                    false
+                } else {
+                    unsafe {
+                        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                        if handle.is_null() {
+                            false
+                        } else {
+                            let ok = TerminateProcess(handle, 1) != 0;
+                            CloseHandle(handle);
+                            ok
+                        }
+                    }
+                };
+                KillProcessOutcome { pid, killed }
+            })
+            .collect()
+    }
+
+    pub(super) fn identity_has_window_impl(
+        exe_keys: &[String],
+    ) -> std::collections::HashMap<String, bool> {
+        let mut out: std::collections::HashMap<String, bool> = exe_keys
+            .iter()
+            .map(|k| (k.trim().to_ascii_lowercase(), false))
+            .collect();
+        if out.is_empty() {
+            return out;
+        }
+        let windows = enumerate_now();
+        let parents = process_parent_map();
+        // 祖先 exe 查询带记忆化：多个窗口共享祖先链，避免重复 OpenProcess
+        let mut exe_cache: std::collections::HashMap<u32, Option<String>> =
+            std::collections::HashMap::new();
+        for w in &windows {
+            // 窗口自身 exe 直接命中（enumerate 已填 exe_path；查询失败时由链回退补判）
+            if let Some(exe) = &w.exe_path {
+                if let Some(hit) = out.get_mut(exe) {
+                    *hit = true;
+                }
+            }
+            // 沿父链找子进程宿主：任意祖先 exe 命中即视为该身份有窗口
+            let mut cur = w.pid;
+            let mut depth = 0;
+            while cur != 0 && depth < 12 {
+                let exe = exe_cache.entry(cur).or_insert_with(|| exe_path_of_pid(cur));
+                if let Some(p) = exe {
+                    if let Some(hit) = out.get_mut(&p.to_ascii_lowercase()) {
+                        *hit = true;
+                    }
+                }
+                match parents.get(&cur) {
+                    Some(&parent) => cur = parent,
+                    None => break,
+                }
+                depth += 1;
+            }
+        }
+        // 以入参原键返回，调用方无需关心内部归一化
+        exe_keys
+            .iter()
+            .map(|k| {
+                let v = out.get(&k.trim().to_ascii_lowercase()).copied().unwrap_or(false);
+                (k.clone(), v)
+            })
+            .collect()
+    }
+
+    pub(super) fn threads_of_pids_impl(pids: &[u32]) -> Vec<u32> {
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        };
+        let want: HashSet<u32> = pids.iter().copied().collect();
+        let mut out: Vec<u32> = Vec::new();
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snap as usize == usize::MAX {
+                return out;
+            }
+            let mut entry: THREADENTRY32 = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            if Thread32First(snap, &mut entry) != 0 {
+                loop {
+                    if want.contains(&entry.th32OwnerProcessID) {
+                        out.push(entry.th32ThreadID);
+                    }
+                    if Thread32Next(snap, &mut entry) == 0 {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snap);
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    pub(super) fn post_quit_threads_impl(tids: &[u32]) -> usize {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+        let mut posted = 0;
+        for &tid in tids {
+            unsafe {
+                if PostThreadMessageW(tid, WM_QUIT, 0, 0) != 0 {
+                    posted += 1;
+                }
+            }
+        }
+        posted
+    }
+
+    /// 进程是否已退出：Some(true)=已退出，Some(false)=仍在运行，None=无法判定（权限）。
+    fn process_exit_state(pid: u32) -> Option<bool> {
+        use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        const STILL_ACTIVE: u32 = 259;
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                // 进程已消失且句柄被系统回收后，OpenProcess 报无效参数
+                let err = windows_sys::Win32::Foundation::GetLastError();
+                return if err == ERROR_INVALID_PARAMETER as u32 {
+                    Some(true)
+                } else {
+                    None
+                };
+            }
+            let mut code: u32 = 0;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            if ok == 0 {
+                return None;
+            }
+            Some(code != STILL_ACTIVE)
+        }
+    }
+
+    pub(super) fn wait_processes_exit_impl(pids: &[u32], timeout: Duration) -> usize {
+        let mut pending: HashSet<u32> = pids.iter().copied().collect();
+        let self_pid = std::process::id();
+        pending.remove(&self_pid);
+        pending.remove(&0);
+        let deadline = Instant::now() + timeout;
+        loop {
+            pending.retain(|&pid| process_exit_state(pid) != Some(true));
+            if pending.is_empty() || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        pids.iter()
+            .filter(|&&pid| pid != self_pid && pid != 0)
+            .filter(|&&pid| process_exit_state(pid) == Some(true))
+            .count()
+    }
+
+    pub(super) fn request_processes_quit_impl(pids: &[u32]) -> QuitProcessesReport {
+        let self_pid = std::process::id();
+        let targets: Vec<u32> = pids
+            .iter()
+            .copied()
+            .filter(|&pid| pid != self_pid && pid != 0)
+            .collect();
+        let process_total = targets.len();
+        if process_total == 0 {
+            return QuitProcessesReport {
+                process_total: 0,
+                process_exited: 0,
+                posted_threads: 0,
+            };
+        }
+        let tids = threads_of_pids_impl(&targets);
+        let posted_threads = post_quit_threads_impl(&tids);
+        let process_exited = wait_processes_exit_impl(&targets, QUIT_VERIFY_TIMEOUT);
+        QuitProcessesReport {
+            process_total,
+            process_exited,
+            posted_threads,
+        }
+    }
 }
 
 // ── 非 Windows 桩 ───────────────────────────────────────────
@@ -807,9 +1130,42 @@ mod imp {
     pub(super) fn focus_window_impl(_hwnd: isize) -> Result<FocusOutcome, FocusError> {
         Err(FocusError::ForegroundDenied)
     }
+    pub(super) fn close_windows_impl(_windows: &[WindowInfo]) -> Vec<CloseWindowOutcome> {
+        Vec::new()
+    }
+    pub(super) fn kill_processes_impl(pids: &[u32]) -> Vec<KillProcessOutcome> {
+        pids.iter()
+            .map(|&pid| KillProcessOutcome { pid, killed: false })
+            .collect()
+    }
+    pub(super) fn identity_has_window_impl(
+        exe_keys: &[String],
+    ) -> std::collections::HashMap<String, bool> {
+        exe_keys.iter().map(|k| (k.clone(), false)).collect()
+    }
+    pub(super) fn threads_of_pids_impl(_pids: &[u32]) -> Vec<u32> {
+        Vec::new()
+    }
+    pub(super) fn post_quit_threads_impl(_tids: &[u32]) -> usize {
+        0
+    }
+    pub(super) fn wait_processes_exit_impl(_pids: &[u32], _timeout: Duration) -> usize {
+        0
+    }
+    pub(super) fn request_processes_quit_impl(pids: &[u32]) -> QuitProcessesReport {
+        QuitProcessesReport {
+            process_total: pids.len(),
+            process_exited: 0,
+            posted_threads: 0,
+        }
+    }
 }
 
-use imp::{descendant_pids, enumerate_now, exe_path_of_pid, focus_window_impl, identity_pids};
+use imp::{
+    close_windows_impl, descendant_pids, enumerate_now, exe_path_of_pid, focus_window_impl,
+    identity_has_window_impl, identity_pids, kill_processes_impl, post_quit_threads_impl,
+    request_processes_quit_impl, threads_of_pids_impl, wait_processes_exit_impl,
+};
 
 #[cfg(test)]
 mod tests {
@@ -847,6 +1203,272 @@ mod tests {
         // 0 永远不是有效窗口句柄
         let err = focus_window(0).unwrap_err();
         assert!(matches!(err, FocusError::WindowVanished));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn close_windows_treats_dead_handle_as_already_closed() {
+        // 随机句柄几乎必然无效：投递前核对直接按「已关闭」处理，不等待
+        let wins = vec![win_at(0x00DEAD00, 999_999, "不存在的窗口", None)];
+        let out = close_windows(&wins);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].closed, "失效句柄应视为已关闭而非仍在打开");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn close_windows_gracefully_closes_a_real_window() {
+        use std::sync::mpsc;
+        use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostThreadMessageW,
+            RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WM_QUIT, WNDCLASSW,
+        };
+
+        // 独立线程创建 message-only 窗口并跑消息泵：WM_CLOSE 由 DefWindowProc
+        // 处理为 DestroyWindow，主线程的轮询因此能看到句柄真实消失。
+        let (ready_tx, ready_rx) = mpsc::channel::<(isize, u32)>();
+        let worker = std::thread::spawn(move || {
+            unsafe {
+                let class_name: Vec<u16> = "taskdock_close_test\0".encode_utf16().collect();
+                let mut wc: WNDCLASSW = std::mem::zeroed();
+                wc.lpfnWndProc = Some(DefWindowProcW);
+                wc.hInstance = GetModuleHandleW(std::ptr::null());
+                wc.lpszClassName = class_name.as_ptr();
+                if RegisterClassW(&wc) == 0 {
+                    return;
+                }
+                let hwnd = CreateWindowExW(
+                    0,
+                    class_name.as_ptr(),
+                    std::ptr::null(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    HWND_MESSAGE,
+                    std::ptr::null_mut(),
+                    wc.hInstance,
+                    std::ptr::null(),
+                );
+                if hwnd.is_null() {
+                    return;
+                }
+                if ready_tx.send((hwnd as isize, GetCurrentThreadId())).is_err() {
+                    return;
+                }
+                let mut msg: MSG = std::mem::zeroed();
+                while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+        });
+        let Ok((hwnd, thread_id)) = ready_rx.recv_timeout(Duration::from_secs(5)) else {
+            eprintln!("跳过：测试窗口创建失败（无窗口站或类注册被拒）");
+            let _ = worker.join();
+            return;
+        };
+
+        let wins = vec![win_at(hwnd, std::process::id(), "taskdock 关闭测试窗口", None)];
+        let out = close_windows(&wins);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].closed, "WM_CLOSE 投递后消息泵应销毁窗口");
+
+        // 收尾：窗口已销毁，GetMessage 不会自行返回，投 WM_QUIT 结束消息泵
+        unsafe {
+            PostThreadMessageW(thread_id, WM_QUIT, 0 as WPARAM, 0 as LPARAM);
+        }
+        worker.join().ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pids_for_identity_includes_own_test_process() {
+        let exe = exe_path_of(std::process::id()).expect("测试进程应能解析自身 exe");
+        let pids = pids_for_identity(&exe);
+        assert!(
+            pids.contains(&std::process::id()),
+            "按 exe 身份应包含测试进程自身的 PID"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn kill_processes_terminates_spawned_child() {
+        // 启动一个只活 30s 的无害子进程（ping），强制结束后应确认退出
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("应能启动 ping 子进程");
+        let pid = child.id();
+        let out = kill_processes(&[pid]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].pid, pid);
+        assert!(out[0].killed, "存活子进程应能被 TerminateProcess 结束");
+        let status = child.wait().expect("应能等待子进程退出");
+        assert!(!status.success(), "被终止的子进程不应报成功退出");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn kill_processes_refuses_to_terminate_itself() {
+        let out = kill_processes(&[std::process::id()]);
+        assert_eq!(out.len(), 1);
+        assert!(!out[0].killed, "本进程 PID 必须拒绝终止（不自杀）");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn post_quit_threads_ends_message_loop_thread() {
+        use std::sync::mpsc;
+        use windows_sys::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW,
+            TranslateMessage, HWND_MESSAGE, MSG, WNDCLASSW,
+        };
+
+        // 本进程内起一个带消息泵的线程：WM_QUIT 到达后 GetMessage 返回 0，
+        // 循环退出——验证「投递 WM_QUIT → 应用自行退出路径」这一机制本身。
+        let (ready_tx, ready_rx) = mpsc::channel::<(isize, u32)>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || unsafe {
+            let class_name: Vec<u16> = "taskdock_quit_test\0".encode_utf16().collect();
+            let mut wc: WNDCLASSW = std::mem::zeroed();
+            wc.lpfnWndProc = Some(DefWindowProcW);
+            wc.hInstance = GetModuleHandleW(std::ptr::null());
+            wc.lpszClassName = class_name.as_ptr();
+            if RegisterClassW(&wc) == 0 {
+                return;
+            }
+            let hwnd = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                std::ptr::null(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                std::ptr::null_mut(),
+                wc.hInstance,
+                std::ptr::null(),
+            );
+            if hwnd.is_null() {
+                return;
+            }
+            if ready_tx.send((hwnd as isize, GetCurrentThreadId())).is_err() {
+                return;
+            }
+            let mut msg: MSG = std::mem::zeroed();
+            // GetMessage 返回 0（收到 WM_QUIT）即退出循环
+            while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            done_tx.send(()).ok();
+        });
+        let Ok((_hwnd, thread_id)) = ready_rx.recv_timeout(Duration::from_secs(5)) else {
+            eprintln!("跳过：测试窗口创建失败");
+            return;
+        };
+
+        assert_eq!(post_quit_threads(&[thread_id]), 1, "有消息队列的线程应能收到 WM_QUIT");
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(3)).is_ok(),
+            "消息泵收到 WM_QUIT 后应退出循环"
+        );
+        worker.join().ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn request_processes_quit_reports_honest_failure_for_console_child() {
+        // 控制台子进程（ping）没有消息队列：投递失败、不会退出——结果必须
+        // 如实反映，不得虚报已退出；随后强杀清理。
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("应能启动 ping 子进程");
+        let pid = child.id();
+        // threads_of_pids 应能扫到子进程的线程（无论有无消息队列）
+        assert!(
+            !threads_of_pids(&[pid]).is_empty(),
+            "系统线程快照应包含子进程的线程"
+        );
+        let report = request_processes_quit(&[pid]);
+        assert_eq!(report.process_total, 1);
+        assert_eq!(report.posted_threads, 0, "无消息队列的线程投递应失败");
+        assert_eq!(report.process_exited, 0, "控制台进程不应被 WM_QUIT 结束");
+        // 清理：强杀子进程，避免测试残留 30s
+        let _ = kill_processes(&[pid]);
+        let _ = child.wait();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn identity_has_window_sees_own_process_window() {
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DispatchMessageW, DestroyWindow, PeekMessageW,
+            RegisterClassW, TranslateMessage, MSG, WNDCLASSW,
+        };
+        // 离屏 1×1 可见窗口：可被 EnumWindows 枚举（有标题、非工具窗口），
+        // 又不会打扰桌面；属于本测试进程，用于验证「exe 身份 → 有窗口」。
+        unsafe {
+            let class_name: Vec<u16> = "taskdock_idw_test\0".encode_utf16().collect();
+            let mut wc: WNDCLASSW = std::mem::zeroed();
+            wc.lpfnWndProc = Some(DefWindowProcW);
+            wc.hInstance = GetModuleHandleW(std::ptr::null());
+            wc.lpszClassName = class_name.as_ptr();
+            if RegisterClassW(&wc) == 0 {
+                eprintln!("跳过：窗口类注册失败");
+                return;
+            }
+            let title: Vec<u16> = "taskdock 身份检测测试窗口\0".encode_utf16().collect();
+            let hwnd = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                0x1000_0000, // WS_VISIBLE
+                -32000,
+                -32000,
+                1,
+                1,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                wc.hInstance,
+                std::ptr::null(),
+            );
+            if hwnd.is_null() {
+                eprintln!("跳过：测试窗口创建失败");
+                return;
+            }
+
+            let exe = exe_path_of(std::process::id()).expect("测试进程应能解析自身 exe");
+            let absent = "c:\\not\\a\\real\\app.exe".to_string();
+            let keys = vec![exe.clone(), absent.clone()];
+            let out = identity_has_window(&keys);
+            assert!(out[&exe], "本进程持有的窗口应按 exe 身份命中");
+            assert!(!out[&absent], "不存在的身份不得误报有窗口");
+
+            DestroyWindow(hwnd);
+            let mut msg: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, 1) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
     }
 
     #[cfg(windows)]

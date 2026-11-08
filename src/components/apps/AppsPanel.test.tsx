@@ -6,15 +6,26 @@
 //! 后端命令全部 mock，store 用真实实例（共享状态语义）。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
 import AppsPanel from "./AppsPanel";
 import {
+  navCloseTargetWindows,
   navDeleteTarget,
+  navKillTargetProcesses,
   navListTargets,
   navNavigate,
+  navQuitTargetProcesses,
   navTargetRunningStates,
   navUpdateTarget,
   type NavTarget,
@@ -29,6 +40,9 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
     navUpdateTarget: vi.fn(async () => {}),
     navNavigate: vi.fn(),
     navDeleteTarget: vi.fn(async () => {}),
+    navCloseTargetWindows: vi.fn(async () => ({ requested: 0, closed: 0, stillOpen: [] })),
+    navKillTargetProcesses: vi.fn(async () => ({ matched: 0, killed: 0, failedPids: [] })),
+    navQuitTargetProcesses: vi.fn(async () => ({ processTotal: 0, processExited: 0, postedThreads: 0 })),
     navScanApps: vi.fn(async () => ({ apps: [], scanned_at: "", duration_ms: 0, counts: {} })),
     navAllTaskLinks: vi.fn(async () => []),
     navAppIcon: vi.fn(async () => null),
@@ -488,5 +502,196 @@ describe("AppsPanel 应用中心", () => {
     render(<AppsPanel />);
     expect(screen.getByRole("alert").textContent).toContain("应用清单加载失败：IPC 读取失败");
     expect(screen.queryByText(/还没有配置应用/)).toBeNull();
+  });
+
+  it("窗口已打开时卡片直接提供关闭按钮（高频直连），菜单不再重复该项", async () => {
+    seed([targetFix()]);
+    vi.mocked(navTargetRunningStates).mockResolvedValue({ "target-obs": "has_window" });
+    vi.mocked(navCloseTargetWindows).mockResolvedValue({
+      requested: 1,
+      closed: 1,
+      stillOpen: [],
+    });
+    render(<AppsPanel />);
+    // 徽标刷新拿到 has_window 后卡片操作区才出现关闭按钮
+    await waitFor(() =>
+      expect(screen.getByText("窗口已打开")).toBeTruthy(),
+    );
+
+    const closeBtn = screen.getByRole("button", { name: "关闭 Obsidian 的窗口" });
+    expect(closeBtn.closest(".apps-tile-actions")).toBeTruthy();
+    // 与启动主区域并列的独立按钮，不嵌套、不冒泡触发启动
+    expect(closeBtn.querySelector("button")).toBeNull();
+
+    fireEvent.click(closeBtn);
+    expect(navNavigate).not.toHaveBeenCalled();
+
+    await waitFor(() =>
+      expect(navCloseTargetWindows).toHaveBeenCalledWith("target-obs"),
+    );
+    await waitFor(() =>
+      expect(useUiStore.getState().toast?.message ?? "").toContain("已关闭「Obsidian」的 1 个窗口"),
+    );
+    expect(useUiStore.getState().toast?.kind).toBe("success");
+    // 关闭后刷新运行态快照，徽标随之更新
+    await waitFor(() => expect(navTargetRunningStates).toHaveBeenCalled());
+
+    // 菜单里不再有关闭窗口（已上卡片），但保留破坏性的结束进程入口
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Obsidian" }));
+    expect(await screen.findByRole("menuitem", { name: /编辑配置/ })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /关闭窗口/ })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: /结束进程/ })).toBeTruthy();
+  });
+
+  it("后台进程（process_only）没有窗口可关：卡片无关闭按钮，菜单提供结束进程", async () => {
+    seed([targetFix()]);
+    vi.mocked(navTargetRunningStates).mockResolvedValue({ "target-obs": "process_only" });
+    render(<AppsPanel />);
+    await waitFor(() => expect(screen.getByText("后台运行")).toBeTruthy());
+
+    expect(screen.queryByRole("button", { name: "关闭 Obsidian 的窗口" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Obsidian" }));
+    expect(await screen.findByRole("menuitem", { name: /编辑配置/ })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /关闭窗口/ })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: /结束进程/ })).toBeTruthy();
+    expect(navNavigate).not.toHaveBeenCalled();
+  });
+
+  it("应用仍在等待确认（stillOpen）时如实提示 warning，不虚报全部关闭", async () => {
+    seed([targetFix()]);
+    vi.mocked(navTargetRunningStates).mockResolvedValue({ "target-obs": "has_window" });
+    vi.mocked(navCloseTargetWindows).mockResolvedValue({
+      requested: 2,
+      closed: 1,
+      stillOpen: ["未保存 - 记事本"],
+    });
+    render(<AppsPanel />);
+    await waitFor(() => expect(screen.getByText("窗口已打开")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭 Obsidian 的窗口" }));
+
+    await waitFor(() =>
+      expect(useUiStore.getState().toast?.kind).toBe("warning"),
+    );
+    expect(useUiStore.getState().toast?.message ?? "").toContain("还有 1 个窗口未关闭");
+  });
+
+  it("结束进程是破坏性动作：菜单选择后需确认，取消不调用后端", async () => {
+    seed([targetFix()]);
+    vi.mocked(navTargetRunningStates).mockResolvedValue({ "target-obs": "has_window" });
+    render(<AppsPanel />);
+    await waitFor(() => expect(screen.getByText("窗口已打开")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Obsidian" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /结束进程/ }));
+
+    expect(navKillTargetProcesses).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("dialog", { name: /强制结束「Obsidian」的进程/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(navKillTargetProcesses).not.toHaveBeenCalled();
+  });
+
+  it("确认结束进程后调用后端并按结果提示，部分失败如实 warning", async () => {
+    seed([targetFix()]);
+    vi.mocked(navTargetRunningStates).mockResolvedValue({ "target-obs": "process_only" });
+    vi.mocked(navKillTargetProcesses).mockResolvedValue({
+      matched: 3,
+      killed: 2,
+      failedPids: [4321],
+    });
+    render(<AppsPanel />);
+    await waitFor(() => expect(screen.getByText("后台运行")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Obsidian" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /结束进程/ }));
+    const dialog = await screen.findByRole("dialog", { name: /强制结束「Obsidian」的进程/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: "结束进程" }));
+
+    await waitFor(() =>
+      expect(navKillTargetProcesses).toHaveBeenCalledWith("target-obs"),
+    );
+    await waitFor(() =>
+      expect(useUiStore.getState().toast?.kind).toBe("warning"),
+    );
+    expect(useUiStore.getState().toast?.message ?? "").toContain("1 个进程结束失败");
+    // 结束后刷新运行态快照
+    await waitFor(() => expect(navTargetRunningStates).toHaveBeenCalled());
+  });
+
+  it("菜单提供「退出应用」（WM_QUIT 优雅档，无需确认），未完全退出如实提示", async () => {
+    seed([targetFix()]);
+    vi.mocked(navTargetRunningStates).mockResolvedValue({ "target-obs": "process_only" });
+    vi.mocked(navQuitTargetProcesses).mockResolvedValue({
+      processTotal: 2,
+      processExited: 1,
+      postedThreads: 3,
+    });
+    render(<AppsPanel />);
+    await waitFor(() => expect(screen.getByText("后台运行")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "更多操作：Obsidian" }));
+    // 退出应用排在结束进程之前（优雅档优先），且不弹确认
+    const quitItem = await screen.findByRole("menuitem", { name: /退出应用/ });
+    expect(
+      screen.getByRole("menuitem", { name: /结束进程/ }).compareDocumentPosition(quitItem) &
+        Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
+    fireEvent.click(quitItem);
+
+    await waitFor(() =>
+      expect(navQuitTargetProcesses).toHaveBeenCalledWith("target-obs"),
+    );
+    await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("warning"));
+    expect(useUiStore.getState().toast?.message ?? "").toContain("未完全退出（1/2）");
+    expect(navKillTargetProcesses).not.toHaveBeenCalled();
+    // 退出后刷新运行态快照
+    await waitFor(() => expect(navTargetRunningStates).toHaveBeenCalled());
+  });
+
+  it("启动成功后安排两次有界补查：慢启动应用窗口晚于返回出现也能跟上状态", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = targetFix();
+      seed([t]);
+      vi.mocked(navNavigate).mockResolvedValueOnce({
+        success: true,
+        requested_action: "launch",
+        actual_action: "launch",
+        fallback_used: false,
+        target_id: t.id,
+        verification_level: "window-confirmed",
+      });
+      render(<AppsPanel />);
+      await act(async () => {
+        fireEvent.click(screen.getAllByRole("button", { name: "启动 Obsidian" })[0]);
+      });
+      // 启动流程内的首次运行态查询已完成
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const before = vi.mocked(navTargetRunningStates).mock.calls.length;
+      expect(before).toBeGreaterThanOrEqual(1);
+
+      // +2.5s 第一次补查
+      await act(async () => {
+        vi.advanceTimersByTime(2500);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const afterFirst = vi.mocked(navTargetRunningStates).mock.calls.length;
+      expect(afterFirst).toBeGreaterThan(before);
+
+      // 累计 +6s 第二次补查
+      await act(async () => {
+        vi.advanceTimersByTime(3500);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(vi.mocked(navTargetRunningStates).mock.calls.length).toBeGreaterThan(afterFirst);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

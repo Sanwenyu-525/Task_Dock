@@ -13,6 +13,43 @@ pub(crate) fn remove_file_if_unchanged(
     expected_modified_ns: u128,
     expected_identity: u128,
 ) -> std::io::Result<bool> {
+    remove_file_checked(
+        path,
+        expected_size,
+        expected_modified_ns,
+        expected_identity,
+        true,
+    )
+}
+
+/// 与 `remove_file_if_unchanged` 相同，但不锁定直接父目录。
+///
+/// 仅用于用户级临时目录：这些目录可能被其他进程以拒绝 DELETE 共享的方式打开
+/// （实测 `%TEMP%` 根会出现 Win32 错误 32），父目录锁会 fail-closed 把全部候选跳过。
+/// 仍通过打开的文件句柄复核文件身份、大小、修改时间与最终路径，只对已复核的同一对象
+/// 设置删除标记；未覆盖父目录在删除瞬间被重命名的命名空间竞态。
+pub(crate) fn remove_scanned_file(
+    path: &Path,
+    expected_size: u64,
+    expected_modified_ns: u128,
+    expected_identity: u128,
+) -> std::io::Result<bool> {
+    remove_file_checked(
+        path,
+        expected_size,
+        expected_modified_ns,
+        expected_identity,
+        false,
+    )
+}
+
+fn remove_file_checked(
+    path: &Path,
+    expected_size: u64,
+    expected_modified_ns: u128,
+    expected_identity: u128,
+    lock_parent: bool,
+) -> std::io::Result<bool> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -34,8 +71,13 @@ pub(crate) fn remove_file_if_unchanged(
         };
         // Lock only the validated app-managed category directory (for example `thumbs/` or the
         // TTS cache directory). Any missing, reparse, renamed, or unverifiable parent skips.
-        let Some(_directory_handle) = lock_category_directory(expected_parent) else {
-            return Ok(false);
+        let _directory_handle = if lock_parent {
+            match lock_category_directory(expected_parent) {
+                Some(handle) => Some(handle),
+                None => return Ok(false),
+            }
+        } else {
+            None
         };
         let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
         wide.push(0);
@@ -121,7 +163,13 @@ pub(crate) fn remove_file_if_unchanged(
     }
     #[cfg(not(windows))]
     {
-        let _ = (path, expected_size, expected_modified_ns, expected_identity);
+        let _ = (
+            path,
+            expected_size,
+            expected_modified_ns,
+            expected_identity,
+            lock_parent,
+        );
         Ok(false)
     }
 }
@@ -322,6 +370,33 @@ mod tests {
 
         assert!(!remove_file_if_unchanged(&path, size, modified_ns, identity).unwrap());
         assert!(path.exists(), "同路径替换不得按旧身份删除");
+        let _ = std::fs::remove_file(replacement);
+    }
+
+    #[test]
+    fn scanned_file_delete_without_parent_lock_still_verifies_identity() {
+        let tmp = TempCategory::new("unlocked-parent");
+        let path = tmp.file("candidate.bin");
+        std::fs::write(&path, b"junk").unwrap();
+        let (size, modified_ns, identity) = fingerprint(&path);
+
+        let replacement = path.with_extension("replacement");
+        std::fs::rename(&path, &replacement).unwrap();
+        std::fs::write(&path, b"junk").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::fs::metadata(&replacement).unwrap().modified().unwrap())
+            .unwrap();
+        assert!(!remove_scanned_file(&path, size, modified_ns, identity).unwrap());
+        assert!(path.exists(), "同路径替换不得按旧身份删除");
+
+        let fresh = tmp.file("fresh.bin");
+        std::fs::write(&fresh, b"old-temp").unwrap();
+        let (size, modified_ns, identity) = fingerprint(&fresh);
+        assert!(remove_scanned_file(&fresh, size, modified_ns, identity).unwrap());
+        assert!(!fresh.exists());
         let _ = std::fs::remove_file(replacement);
     }
 

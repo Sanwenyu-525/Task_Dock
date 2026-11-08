@@ -1,4 +1,4 @@
-//! 个性化类教程（2 篇，verified；navigation 篇自带 en-US）。
+//! 个性化类教程（3 篇，verified，均自带 en-US；widgets 篇 2026-11-08 新增）。
 
 import type { HelpArticle } from "../types";
 
@@ -38,12 +38,124 @@ export const PERSONALIZE_ARTICLES: readonly HelpArticle[] = [
           },
         ],
       },
+      "en-US": {
+        title: "Themes, materials and visual presets",
+        summary:
+          "Light/dark theme, window material and two visual presets are three orthogonal axes; any combination applies instantly.",
+        sections: [
+          { type: "heading", text: "Three orthogonal dimensions" },
+          {
+            type: "steps",
+            items: [
+              "Light / dark theme, with a follow-system option; switching never rebuilds the UI and typed input is never lost.",
+              "Window material: solid (opaque, best compatibility) or glass (translucent tint + native Mica/Acrylic); when the system cannot provide the native effect it degrades to solid honestly, and the UI follows.",
+              "Visual presets: Dream Gradient / Liquid Glass, defining selection states, cards and overall style; text readability is guaranteed in any combination.",
+            ],
+          },
+          { type: "heading", text: "Language" },
+          {
+            type: "paragraph",
+            text: "\"Settings → Appearance & theme → Language\" switches between Simplified Chinese / English / follow system, applies immediately and survives restarts; the language preference travels with backups. Some deep pages (like the inside of the agent onboarding wizard) are still being translated.",
+          },
+          {
+            type: "tip",
+            text: "When the system runs in high-contrast mode, status badges automatically gain a border so state never relies on color alone.",
+          },
+          {
+            type: "note",
+            text: "If the window still looks opaque with glass enabled, the system likely has transparency disabled or the GPU does not support it — Task Dock has degraded to solid as designed.",
+          },
+        ],
+      },
     },
     keywords: {
       "zh-CN": ["主题", "深色", "浅色", "材质", "玻璃", "预设", "语言", "英文", "高对比度"],
+      "en-US": ["theme", "dark", "light", "material", "glass", "preset", "language", "English", "high contrast"],
     },
     relatedFeatureIds: ["eco.i18n"],
     relatedRouteIds: ["settings"],
+  },
+  {
+    id: "help.personalize.widgets",
+    categoryId: "personalize",
+    status: "verified",
+    contentVersion: 1,
+    reviewedForVersion: "v0.11",
+    translations: {
+      "zh-CN": {
+        title: "桌面微件库：工作台与桌面小窗",
+        summary: "六类只读微件可加入工作台或独立显示到桌面：开关、尺寸、置顶与位置都可自定义。",
+        sections: [
+          { type: "heading", text: "可用微件" },
+          {
+            type: "paragraph",
+            text: "「微件」页提供六类微件：今日任务、下一条提醒、Agent 状态、快捷操作、专注倒计时、今日效率统计。数据只读复用各模块现有选择器，不新增后台轮询；隐藏或未挂载时不刷新。",
+          },
+          { type: "heading", text: "添加与管理" },
+          {
+            type: "steps",
+            items: [
+              "进入「微件」页，「添加微件」里只列出尚未添加的微件，点「添加到工作台」立即出现，不跳转页面。",
+              "每张微件卡可调整尺寸（窄 / 标准 / 宽）、上移 / 下移排序或停用；「恢复默认」一键还原布局。",
+              "把微件「添加到桌面」后，主窗内的工作台卡片保留，同时在桌面出现独立轻量窗口。",
+            ],
+          },
+          { type: "heading", text: "桌面窗口" },
+          {
+            type: "steps",
+            items: [
+              "桌面显示开关随时切换：只在桌面显示 / 只在工作台保留，两者互不影响。",
+              "桌面窗口可拖动摆放，位置与尺寸自动保存；「置顶」让微件始终保持在最前。",
+              "窗口位置异常时用「重置桌面位置」回到默认位置；关闭桌面窗口不影响工作台数据。",
+            ],
+          },
+          {
+            type: "note",
+            text: "微件的启用状态、顺序、尺寸与桌面窗口配置都会随备份迁移；效率类微件在数据变化时按需刷新，失败时显示「可能已过期」并提供重试，不做后台轮询。独立桌面窗口的多显示器 / DPI 行为尚未完成真机验收。",
+          },
+        ],
+      },
+      "en-US": {
+        title: "Desktop widget library: workspace cards and desktop windows",
+        summary:
+          "Six read-only widgets can join the workspace or live on the desktop as small windows; toggle, size, topmost and position are yours to set.",
+        sections: [
+          { type: "heading", text: "Available widgets" },
+          {
+            type: "paragraph",
+            text: "The \"Widgets\" page offers six widgets: Today's tasks, Next reminder, Agent status, Quick actions, Focus countdown and Today's efficiency. Data is read-only and reuses each module's existing selectors with no extra background polling; hidden or unmounted widgets never refresh.",
+          },
+          { type: "heading", text: "Add and manage" },
+          {
+            type: "steps",
+            items: [
+              "Open the \"Widgets\" page; \"Add widgets\" lists only widgets not yet added. \"Add to workspace\" puts one on the board immediately without navigating away.",
+              "Each widget card can change size (Narrow / Standard / Wide), move up / down or be disabled; \"Reset layout\" restores the default arrangement in one click.",
+              "\"Add to desktop\" keeps the workspace card and additionally shows the widget as a standalone lightweight window on the desktop.",
+            ],
+          },
+          { type: "heading", text: "Desktop windows" },
+          {
+            type: "steps",
+            items: [
+              "The desktop toggle switches any time: desktop-only or workspace-only, without affecting the other.",
+              "Drag desktop windows to arrange them; position and size are saved automatically. \"Topmost\" keeps a widget always in front.",
+              "If a window ends up somewhere odd, \"Reset desktop position\" moves it back to the default spot; closing a desktop window never affects workspace data.",
+            ],
+          },
+          {
+            type: "note",
+            text: "Widget enablement, order, size and desktop window configuration all travel with backups. Efficiency widgets refresh on data changes, show \"may be outdated\" with a retry on failure, and never poll in the background. Multi-monitor / DPI behavior of standalone desktop windows has not completed native acceptance yet.",
+          },
+        ],
+      },
+    },
+    keywords: {
+      "zh-CN": ["微件", "桌面", "工作台", "置顶", "尺寸", "今日效率", "专注倒计时"],
+      "en-US": ["widget", "desktop", "workspace", "topmost", "size", "efficiency", "focus countdown"],
+    },
+    relatedFeatureIds: ["eco.widgets"],
+    relatedRouteIds: ["widgets"],
   },
   {
     id: "help.personalize.navigation",

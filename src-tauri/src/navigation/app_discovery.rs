@@ -1331,14 +1331,10 @@ fn run_powershell_with_timeout(
 /// app_key 为 exe 路径（小写）或 AUMID（AUMID 只能判窗口标题）。
 pub fn running_states(app_keys: &[String]) -> HashMap<String, RunningState> {
     let mut out: HashMap<String, RunningState> = HashMap::new();
-    // 顶层窗口 → exe 身份（一次枚举）
-    let windows = super::window_manager::top_windows_force();
-    let mut window_exes: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for w in &windows {
-        if let Some(exe) = &w.exe_path {
-            window_exes.insert(exe.clone());
-        }
-    }
+    // 窗口身份判定：exe 直接命中或窗口 PID 祖先链命中（多进程宿主的子进程窗口），
+    // 与 close/kill 的 windows_for_identity 同一套口径——否则酷狗类应用窗口明明
+    // 开着，检测却报未运行，徽标与「关闭窗口」入口一起丢失。
+    let has_window = super::window_manager::identity_has_window(app_keys);
     // 进程快照（含后台/托盘进程）
     let procs = crate::agents::managed::process_snapshot_names();
     let mut proc_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1346,7 +1342,7 @@ pub fn running_states(app_keys: &[String]) -> HashMap<String, RunningState> {
         proc_stems.insert(name.to_ascii_lowercase());
     }
     for key in app_keys {
-        let state = if window_exes.contains(key) {
+        let state = if has_window.get(key).copied().unwrap_or(false) {
             RunningState::HasWindow
         } else if key.contains('!') {
             // UWP：无 exe 身份，窗口匹配按标题提示；这里无提示则按未运行处理（不猜）

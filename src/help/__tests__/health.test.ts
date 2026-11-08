@@ -38,8 +38,26 @@ describe("帮助健康度与变更影响识别", () => {
     const codes = new Set(warnings.map((issue) => issue.code));
 
     expect(blockers, blockers.map((issue) => issue.message).join("\n")).toEqual([]);
-    expect(codes.has("article-needs-review")).toBe(true);
-    expect(codes.has("translation-missing")).toBe(true);
+    // 2026-11-08 收口后的目标状态：en-US 正文全覆盖、可见功能全关联教程、
+    // 操作契约版本全部登记。剩余 warning 只允许两类：
+    // 1. operation-source-changed —— 并行会话在途文件变化（登记源文件 dirty）；
+    // 2. article-needs-review —— 仅 MCP 教程：其敏感契约源文件（db/mod.rs）有在途改动，
+    //    转 verified 会升级为阻断，故如实保持待复核（正文已按当前源码复核并更新）。
+    expect(codes.has("translation-missing")).toBe(false);
+    expect(codes.has("visible-feature-without-guide")).toBe(false);
+    expect(codes.has("operation-contract-version-mismatch")).toBe(false);
+    for (const warning of warnings) {
+      expect(
+        ["article-needs-review", "operation-source-changed"],
+        `不允许保留的提示类型：${warning.code} ${warning.message}`,
+      ).toContain(warning.code);
+    }
+    for (const warning of warnings.filter((item) => item.code === "article-needs-review")) {
+      expect(
+        warning.articleId,
+        "仅 MCP 教程因敏感契约门禁保持待复核",
+      ).toBe("help.agents.mcp-authorization");
+    }
     console.info(
       `[help:check] 文章 ${HELP_ARTICLES.length} 篇；提示 ${warnings.length} 项（待复核/缺翻译/可见功能缺帮助/源文件变化）。` +
         (changed.length ? ` 受监控源文件变化：${changed.join(", ")}` : ""),

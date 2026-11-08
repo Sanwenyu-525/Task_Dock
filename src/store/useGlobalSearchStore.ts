@@ -6,6 +6,10 @@
 //! - 跳转集中在本 store 的 `openResult`：每个分类一条确定路径；不支持伪装成功。
 //! - 「精确定位」经 `pendingLocate`（一次性意图 + token 自增）交给目标模块消费，
 //!   消费后必须 `consumeLocate()` 清除（先例：useUiStore.agentFocus/appConfig）。
+//! - 命令面板层（v0.16）：命令注册唯一事实源在 `lib/commandRegistry.ts`；本 store
+//!   只负责组装静态命令 + 动态实体（场景/工作流，弹窗打开时用既有列表命令水合）
+//!   与执行分发。命令匹配纯前端本地进行，不新增后端索引；键盘 ↑/↓/Enter 与数据
+//!   结果共用同一 flat 序（命令组在前）。
 
 import { create } from "zustand";
 
@@ -19,7 +23,19 @@ import {
   type GlobalSearchResult,
 } from "../lib/globalSearchBridge";
 import { navNavigate } from "../lib/navigation";
+import {
+  buildScenarioCommands,
+  buildStaticCommands,
+  buildWorkflowCommands,
+  visibleCommands,
+  type CommandDef,
+} from "../lib/commandRegistry";
+import { requestSettingsSectionReveal } from "../lib/settingsSections";
+import { errorMessage } from "../lib/errors";
+import { t as translate } from "../i18n";
 import { useUiStore } from "./useUiStore";
+import { useScenarioStore } from "./useScenarioStore";
+import { useWorkflowsStore } from "./useWorkflowsStore";
 
 /** 目标模块消费的一次性定位意图。token 自增支持重复定位同一对象。 */
 export interface GlobalSearchLocateIntent {
@@ -50,6 +66,11 @@ interface GlobalSearchState {
   pendingLocate: GlobalSearchLocateIntent | null;
   /** 交互提示（如应用启动失败原因），弹窗底部展示。 */
   notice: string | null;
+  /**
+   * 当前展示的命令列表（空查询 = 默认列表；有关键词 = 全量过滤后的前 N 条）。
+   * flat 键盘序中位于数据结果之前。
+   */
+  commands: CommandDef[];
 
   openSearch: () => void;
   closeSearch: () => void;
@@ -59,6 +80,13 @@ interface GlobalSearchState {
   retry: () => void;
   moveActive: (delta: number) => void;
   setActiveIndex: (i: number) => void;
+  /** 组装命令列表（读当前 query 与场景/工作流最新数据；纯本地，不发请求）。 */
+  refreshCommands: () => void;
+  /** 弹窗打开时水合动态实体列表（场景/工作流；既有列表命令，自带守卫），
+   * 完成后重建命令列表。失败静默降级为静态命令，不弹数据搜索的错误横幅。 */
+  hydrateCommands: () => void;
+  /** 执行命令（只允许打开/跳转/草稿/运行类动作，见 commandRegistry 白名单）。 */
+  executeCommand: (cmd: CommandDef) => void;
   /** 执行结果跳转（记录最近搜索 → 分类分发）。 */
   openResult: (item: GlobalSearchResult) => void;
   /** 目标模块消费定位意图后调用（清除意图）。 */
@@ -93,10 +121,12 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
   recent: loadRecentSearches(),
   pendingLocate: null,
   notice: null,
+  commands: [],
 
   openSearch: () => {
     clearDebounce();
     set({ open: true, notice: null, error: null });
+    get().hydrateCommands();
   },
 
   closeSearch: () => {
@@ -111,6 +141,8 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
 
   setQuery: (q) => {
     set({ query: q, error: null, notice: null });
+    // 命令匹配是纯本地过滤：即时生效，不等数据搜索的防抖窗口。
+    get().refreshCommands();
     clearDebounce();
     const trimmed = q.trim();
     if (!trimmed) {
@@ -150,14 +182,133 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
   },
 
   moveActive: (delta) => {
-    const { results, activeIndex } = get();
-    const total = results?.groups.reduce((n, g) => n + g.items.length, 0) ?? 0;
+    // flat 序 = 命令组在前 + 数据结果在后，与弹窗渲染顺序一致；
+    // 命令组只在「全部」分类下展示（与弹窗 showCommands 同一判定）。
+    const { commands, results, activeIndex, activeCategory } = get();
+    const cmdCount = activeCategory === "all" ? commands.length : 0;
+    const total =
+      cmdCount +
+      (results?.groups.reduce((n, g) => n + g.items.length, 0) ?? 0);
     if (total === 0) return;
     const next = (activeIndex + delta + total) % total;
     set({ activeIndex: next });
   },
 
   setActiveIndex: (i) => set({ activeIndex: i }),
+
+  refreshCommands: () => {
+    const { query } = get();
+    const scenarios = useScenarioStore.getState().summaries;
+    const workflows = useWorkflowsStore.getState().workflows;
+    const all = [
+      ...buildStaticCommands(),
+      ...buildScenarioCommands(scenarios),
+      ...buildWorkflowCommands(workflows),
+    ];
+    set({ commands: visibleCommands(all, query, translate) });
+  },
+
+  hydrateCommands: () => {
+    // 先用现有数据立即渲染静态命令，再用既有列表命令补动态实体。
+    get().refreshCommands();
+    const scenario = useScenarioStore.getState();
+    const workflows = useWorkflowsStore.getState();
+    const loads: Promise<unknown>[] = [];
+    // 两个 store 都自带代际/加载守卫；这里只防「已在加载中重复发起」。
+    if (!scenario.loaded && !scenario.loading) loads.push(scenario.load());
+    if (workflows.workflows === null && !workflows.workflowsLoading) {
+      loads.push(workflows.loadWorkflows());
+    }
+    if (loads.length === 0) return;
+    // 水合失败不阻断搜索：动态命令缺席即降级，静态命令始终可用。
+    void Promise.allSettled(loads).then(() => get().refreshCommands());
+  },
+
+  executeCommand: (cmd) => {
+    get().closeSearch();
+    const ui = useUiStore.getState();
+    switch (cmd.action.kind) {
+      case "open-tab":
+        ui.setTab(cmd.action.tab);
+        break;
+      case "quick-add":
+      case "reminder-draft":
+        // 草稿类动作：落到任务页并聚焦快速录入，不静默写任何数据。
+        ui.setTab("tasks");
+        ui.bumpQuickAdd();
+        break;
+      case "open-settings-section":
+        // 先切页再下发定位意图：设置页挂载后消费 sessionStorage 兜底并滚动展开。
+        ui.setTab("settings");
+        requestSettingsSectionReveal(cmd.action.sectionId);
+        break;
+      case "run-workflow": {
+        const { workflowId, name } = cmd.action;
+        // 先切到工作流页（面板挂载后订阅运行进度事件），再发起运行：
+        // 单槽活动运行的执行中/成功/失败反馈由工作流页如实展示。
+        ui.setTab("workflows");
+        useWorkflowsStore
+          .getState()
+          .runWorkflow(workflowId)
+          .then(() => {
+            useUiStore
+              .getState()
+              .showToast(translate("commandPalette.workflowStarted", { name }), {
+                kind: "success",
+              });
+          })
+          .catch((e) => {
+            useUiStore
+              .getState()
+              .showToast(
+                translate("commandPalette.workflowStartFailed", {
+                  name,
+                  error: errorMessage(e),
+                }),
+                { kind: "error" },
+              );
+          });
+        break;
+      }
+      case "open-scenario": {
+        const { scenarioId, name } = cmd.action;
+        // 全局单飞：已有进入在途时如实回显，不排队堆积。
+        if (useScenarioStore.getState().enteringId !== null) {
+          ui.showToast(translate("commandPalette.scenarioBusy"), { kind: "warning" });
+          break;
+        }
+        ui.setTab("workflows");
+        ui.showToast(
+          translate("commandPalette.scenarioEntering", { name }),
+          { kind: "info" },
+        );
+        useScenarioStore
+          .getState()
+          .enter(scenarioId)
+          .then((result) => {
+            if (!result) return; // 兜底：与上方单飞检查一致，不重复提示
+            const ok = result.items.filter((i) => i.status === "ok").length;
+            const bad = result.items.length - ok;
+            useUiStore.getState().showToast(
+              translate("commandPalette.scenarioDone", { name, ok, bad }),
+              { kind: bad > 0 ? "warning" : "success" },
+            );
+          })
+          .catch((e) => {
+            useUiStore
+              .getState()
+              .showToast(
+                translate("commandPalette.scenarioEnterFailed", {
+                  name,
+                  error: errorMessage(e),
+                }),
+                { kind: "error" },
+              );
+          });
+        break;
+      }
+    }
+  },
 
   openResult: (item) => {
     const { query } = get();

@@ -951,7 +951,7 @@ export default function TaskEditorView({ task, onClose }: TaskEditorViewProps) {
                       aria-label={l.is_default ? `默认目标：${l.target.display_name}` : `设 ${l.target.display_name} 为默认`}
                       onClick={() => onNavDefault(l.id)}
                     >
-                      <Star size={11} />
+                      <Star size={11} fill={l.is_default ? "currentColor" : "none"} />
                     </button>
                     <button
                       className="icon-btn sm"

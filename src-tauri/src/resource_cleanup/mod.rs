@@ -7,15 +7,22 @@
 //! 同模块还提供只读资源概览与进程诊断（`probes` / `diagnostics`）：按需采样、
 //! 不注册后台轮询、不结束任何进程、不读取命令行。
 
+mod analysis;
 mod diagnostics;
 mod memory;
 mod probes;
 mod storage;
+mod user_junk;
 mod volumes;
 
+pub use analysis::{DiskScanFile, DiskScanFolder, DiskScanReport};
 pub use diagnostics::{CpuSampler, ProcessDiagnostics, SelfProcessSnapshot};
 pub use memory::{MemoryCatalog, MemoryReleaseReport, MemoryReleaseSource, MemorySource};
 pub use storage::{StorageBreakdown, StorageEntry};
+pub use user_junk::{
+    JunkCategory, JunkCategoryPreview, JunkCategoryResult, JunkExecutionReport, JunkPreview,
+    UserJunkState,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -186,6 +193,8 @@ pub struct ResourceCleanupState {
     data_root: Option<PathBuf>,
     /// TTS 语音缓存目录（便携模式在数据根下，安装模式在 app_cache_dir 下）。
     tts_cache_root: Option<PathBuf>,
+    /// 用户级磁盘垃圾清理：独立的预览记录与作业闸，不共享应用缓存的删除范围。
+    user_junk: UserJunkState,
 }
 
 impl ResourceCleanupState {
@@ -216,6 +225,20 @@ impl ResourceCleanupState {
     /// 释放应用自身的可回收内存缓存（只清空缓存副本，不触碰磁盘缓存与运行中任务）。
     pub fn release_memory(&self, audio: &AudioService) -> MemoryReleaseReport {
         memory::release(audio)
+    }
+
+    /// 扫描用户级磁盘垃圾（回收站 / 临时文件 / 崩溃转储）。只读，不删除。
+    pub fn preview_user_junk(&self, categories: Vec<JunkCategory>) -> AppResult<JunkPreview> {
+        self.user_junk.preview(categories)
+    }
+
+    /// 执行用户级垃圾清理；只接受服务端预览 ID，预览一次性消费。
+    pub fn execute_user_junk(
+        &self,
+        preview_id: String,
+        categories: Vec<JunkCategory>,
+    ) -> AppResult<JunkExecutionReport> {
+        self.user_junk.execute(preview_id, categories)
     }
 }
 
@@ -1430,6 +1453,12 @@ fn result(
 /// 单卷探测在 `volumes` 内限时并在途去重；非 Windows 返回空列表。
 fn disk_snapshot(path: &Path) -> Vec<DiskSnapshot> {
     volumes::collect(path)
+}
+
+/// 只读空间分析：统计指定目录的直接子目录占用与最大文件。
+/// 只读元数据，不打开文件内容、不写入、不删除；上限与 `truncated` 语义见 `analysis`。
+pub fn analyze_disk(path: &str) -> AppResult<DiskScanReport> {
+    analysis::scan(Path::new(path))
 }
 
 #[cfg(test)]

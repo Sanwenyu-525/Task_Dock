@@ -15,6 +15,17 @@ const mocks = vi.hoisted(() => ({
   memoryRelease: vi.fn(),
   cleanupPreview: vi.fn(),
   cleanupExecute: vi.fn(),
+  junkPreview: vi.fn(async () => ({
+    previewId: "junk-1",
+    createdAt: "2026-11-08T00:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    minimumAgeHours: 168,
+    categories: [],
+    totalCandidates: 0,
+    totalEstimatedBytes: 0,
+  })),
+  junkExecute: vi.fn(),
+  diskAnalyze: vi.fn(),
   lifecycleStatus: vi.fn(async () => []),
 }));
 
@@ -23,10 +34,13 @@ vi.mock("../../lib/bridge", () => ({
   lifecycleStatus: mocks.lifecycleStatus,
   resourceProcessDiagnostics: mocks.processDiagnostics,
   resourceDiskUsage: mocks.diskUsage,
+  resourceDiskAnalyze: mocks.diskAnalyze,
   resourceMemoryCatalog: mocks.memoryCatalog,
   resourceMemoryRelease: mocks.memoryRelease,
   resourceCleanupPreview: mocks.cleanupPreview,
   resourceCleanupExecute: mocks.cleanupExecute,
+  resourceJunkPreview: mocks.junkPreview,
+  resourceJunkExecute: mocks.junkExecute,
 }));
 
 vi.mock("../../hooks/useLocale", () => ({
@@ -149,6 +163,22 @@ beforeEach(() => {
     ],
   });
   mocks.diskUsage.mockReset().mockResolvedValue(DISK_USAGE);
+  mocks.diskAnalyze.mockReset().mockResolvedValue({
+    path: "C:\\",
+    parent: null,
+    sampledAt: "2026-11-06T00:00:00.000Z",
+    totalBytes: 0,
+    totalFiles: 0,
+    totalDirs: 0,
+    rootFilesBytes: 0,
+    rootFiles: 0,
+    skippedLinks: 0,
+    skippedErrors: 0,
+    truncated: false,
+    elapsedMs: 1,
+    folders: [],
+    files: [],
+  });
   mocks.memoryCatalog.mockReset().mockResolvedValue({
     sampledAt: "2026-11-06T00:00:00.000Z",
     totalBytes: 1024,
@@ -1005,6 +1035,22 @@ describe("ResourceManagementPanel", () => {
       within(webviewCard).getByRole("button", { name: "common.retry" }),
     ).toBeTruthy();
     expect(within(cards[0] as HTMLElement).getByText("100.0 MB")).toBeTruthy();
+  });
+
+  it("空间分析进入磁盘页后不自动扫描，默认使用主盘根目录", async () => {
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    fireEvent.click(tab("resource.segment.disk"));
+    await waitFor(() => expect(mocks.diskUsage).toHaveBeenCalledTimes(1));
+
+    // 只读分析必须由用户显式触发，进入页面不产生扫描
+    expect(mocks.diskAnalyze).not.toHaveBeenCalled();
+    const diskPanel = document.getElementById("resource-panel-disk") as HTMLElement;
+    expect(within(diskPanel).getByText("C:\\")).toBeTruthy();
+    fireEvent.click(
+      within(diskPanel).getByRole("button", { name: "resource.analysis.scan" }),
+    );
+    await waitFor(() => expect(mocks.diskAnalyze).toHaveBeenCalledWith("C:\\"));
   });
 
   it("所有卷：磁盘页逐卷展示，概览卷条并列，读不到的卷显示暂不可用", async () => {

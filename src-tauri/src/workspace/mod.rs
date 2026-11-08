@@ -1,13 +1,17 @@
 //! 工作现场：把任务关联的应用/网址/文件/目录/Agent 会话存为快照，需要时按顺序恢复。
 //!
 //! 边界（对应需求「不采集隐私」）：
-//! - 只保存窗口类名/标题/进程 exe、用户显式登记的路径与网址；不读窗口内容、不截图；
-//! - 不持久化 HWND/PID（重启后无意义），恢复时按窗口身份重新匹配；
+//! - 只保存窗口类名/标题/进程 exe、屏幕矩形/显示器设备名/DPI 缩放、用户显式登记的
+//!   路径与网址；不读窗口内容、不截图；
+//! - 不持久化 HWND/PID（重启后无意义），恢复时按窗口身份重新匹配；几何只描述
+//!   屏幕矩形与显示器元数据，绝不落句柄（见 `geometry` 模块）；
 //! - 恢复动作全部走既有 `navigation` 路由器（重校验目标、如实返回验证级别）；
 //! - 每项独立反馈，单项失败不阻断；「已发出启动请求」绝不标成「窗口已恢复」；
 //! - 缺失文件 / 已卸载程序 / 已消失的 Agent 会话 → skipped 并给出原因。
 
 mod gate;
+
+pub mod geometry;
 
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,6 +69,9 @@ pub struct SnapshotItem {
     pub window_title_hint: String,
     pub window_class: String,
     pub window_title: String,
+    /// 捕获到的窗口几何（None = 旧快照/最小化窗口捕获/非 Windows，恢复时不摆位）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_geometry: Option<geometry::WindowGeometry>,
     pub restore_note: String,
     pub last_result: String,
     pub last_verification: String,
@@ -115,6 +122,9 @@ pub struct SnapshotItemInput {
     /// 从当前窗口列表捕获时使用（仅内存，不落库）
     #[serde(default)]
     pub window_hwnd: Option<isize>,
+    /// 前端不可注入：窗口几何只由后端按句柄实测（validate 时强制清空）
+    #[serde(default)]
+    pub window_geometry: Option<geometry::WindowGeometry>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -144,6 +154,9 @@ pub struct RestoreItemResult {
     pub verification_level: String,
     pub fallback_used: bool,
     pub reason: Option<String>,
+    /// 窗口几何恢复状态；None = 无几何数据（旧快照等），UI 不展示几何行
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<geometry::GeometryRestoreState>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -222,7 +235,7 @@ fn item_rows(conn: &rusqlite::Connection, snapshot_id: &str) -> AppResult<Vec<Sn
         "SELECT id, snapshot_id, display_order, item_kind, display_name, target_id, app_key,
             exe_path, launch_args, working_dir, app_user_model_id, url, path,
             agent_source_id, agent_session_id, window_title_hint, window_class, window_title,
-            restore_note, last_result, last_verification, last_restored_at
+            restore_note, last_result, last_verification, last_restored_at, window_geometry_json
          FROM workspace_snapshot_items WHERE snapshot_id = ?1 ORDER BY display_order, rowid",
     )?;
     let rows = stmt.query_map(params![snapshot_id], |r| {
@@ -249,6 +262,11 @@ fn item_rows(conn: &rusqlite::Connection, snapshot_id: &str) -> AppResult<Vec<Sn
             last_result: r.get(19)?,
             last_verification: r.get(20)?,
             last_restored_at: r.get(21)?,
+            window_geometry: r
+                .get::<_, String>(22)
+                .ok()
+                .as_deref()
+                .and_then(geometry::geometry_from_json),
         })
     })?;
     let mut out = Vec::new();
@@ -342,6 +360,8 @@ fn validate_capture_item(item: &SnapshotItemInput) -> AppResult<SnapshotItemInpu
         _ => unreachable!(),
     }
     it.window_hwnd = None;
+    // 几何同理只信任后端实测：前端声明的几何一律丢弃，由句柄捕获路径重读
+    it.window_geometry = None;
     Ok(it)
 }
 
@@ -374,6 +394,7 @@ fn capture_window_items(hwnds: &[isize]) -> Vec<SnapshotItemInput> {
             window_class: w.class_name.clone(),
             window_title: w.title.clone(),
             restore_note: "仅恢复窗口位置/前台，不恢复窗口内的文档内容".into(),
+            window_geometry: geometry::capture_window_geometry(w.hwnd, w.is_minimized),
             ..Default::default()
         });
     }
@@ -434,6 +455,10 @@ pub fn capture_from_task(
         } else {
             None
         };
+        // 几何同样来自后端实测：最小化窗口的矩形是桩坐标，capture 内部会拒绝
+        let window_geometry = window
+            .as_ref()
+            .and_then(|w| geometry::capture_window_geometry(w.hwnd, w.is_minimized));
         items.push(SnapshotItemInput {
             item_kind: t.target_type.clone(),
             display_name: t.display_name.clone(),
@@ -459,6 +484,7 @@ pub fn capture_from_task(
                 _ => String::new(),
             },
             window_hwnd: None,
+            window_geometry,
         });
     }
     let input = CaptureInput {
@@ -537,8 +563,9 @@ pub fn create_snapshot(db: &Db, input: &CaptureInput) -> AppResult<SnapshotDetai
                 "INSERT INTO workspace_snapshot_items
                    (id, snapshot_id, display_order, item_kind, display_name, target_id, app_key,
                     exe_path, launch_args, working_dir, app_user_model_id, url, path,
-                    agent_source_id, agent_session_id, window_title_hint, window_class, window_title, restore_note)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                    agent_source_id, agent_session_id, window_title_hint, window_class, window_title, restore_note,
+                    window_geometry_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                 params![
                     uuid::Uuid::new_v4().to_string(),
                     id,
@@ -558,6 +585,7 @@ pub fn create_snapshot(db: &Db, input: &CaptureInput) -> AppResult<SnapshotDetai
                     it.window_class.trim(),
                     it.window_title.trim(),
                     it.restore_note.trim(),
+                    geometry::geometry_json_text(it.window_geometry.as_ref()),
                 ],
             )?;
         }
@@ -706,6 +734,12 @@ pub fn request_cancel() {
     restore_gate().request_cancel(None);
 }
 
+/// 请求取消指定恢复操作：operation_id 不匹配当前槽（或槽已空）时返回 false，
+/// 绝不误伤此后接管的恢复。场景进入按本场景启动的恢复 op 精确转发取消时使用。
+pub fn request_cancel_operation(operation_id: &str) -> bool {
+    restore_gate().request_cancel(Some(operation_id))
+}
+
 fn from_nav(item: &SnapshotItem, r: &NavigationResult) -> RestoreItemResult {
     RestoreItemResult {
         item_id: item.id.clone(),
@@ -719,6 +753,7 @@ fn from_nav(item: &SnapshotItem, r: &NavigationResult) -> RestoreItemResult {
         verification_level: r.verification_level.clone(),
         fallback_used: r.fallback_used,
         reason: r.reason.clone(),
+        geometry: None,
     }
 }
 
@@ -732,6 +767,7 @@ fn skipped(item: &SnapshotItem, reason: impl Into<String>) -> RestoreItemResult 
         verification_level: VerificationLevel::None.as_str().into(),
         fallback_used: false,
         reason: Some(reason.into()),
+        geometry: None,
     }
 }
 
@@ -745,6 +781,7 @@ fn failed(item: &SnapshotItem, reason: impl Into<String>) -> RestoreItemResult {
         verification_level: VerificationLevel::None.as_str().into(),
         fallback_used: false,
         reason: Some(reason.into()),
+        geometry: None,
     }
 }
 
@@ -838,6 +875,7 @@ fn focus_existing_window(
             } else {
                 None
             },
+            geometry: None,
         },
         Ok(window_manager::FocusOutcome::Unverified) => RestoreItemResult {
             item_id: item.id.clone(),
@@ -848,8 +886,72 @@ fn focus_existing_window(
             verification_level: VerificationLevel::WindowVisible.as_str().into(),
             fallback_used: fallback,
             reason: Some("窗口已找到但未能确认置前（可能被系统焦点保护拒绝）".into()),
+            geometry: None,
         },
         Err(e) => failed(item, format!("唤醒窗口失败: {}", e.reason_cn())),
+    }
+}
+
+/// 在既有反馈上追加一句说明（保留「窗口复用/未确认置前」等原信息）。
+fn append_reason(r: &mut RestoreItemResult, note: &str) {
+    r.reason = Some(match r.reason.take() {
+        Some(prev) => format!("{prev}；{note}"),
+        None => note.to_string(),
+    });
+}
+
+/// 窗口已唤醒后应用捕获的几何：DPI 换算 + 多显示器收敛（纯函数决策，Win32 落地）。
+///
+/// 只在窗口确已找到（outcome == restored）时调用；任何几何失败只影响本项的
+/// `geometry` 状态与原因说明，不改变「窗口已恢复」这一事实，也不阻断其他项。
+/// 无几何数据（旧快照/捕获时最小化）时保持 None，反馈与升级前一致。
+fn apply_captured_geometry(
+    app: &AppHandle,
+    hwnd: isize,
+    item: &SnapshotItem,
+    r: &mut RestoreItemResult,
+) {
+    use geometry::{GeometryAdjust, GeometryRestoreState};
+    let Some(g) = item.window_geometry.as_ref() else {
+        return;
+    };
+    if geometry::window_is_maximized(hwnd) {
+        r.geometry = Some(GeometryRestoreState::Skipped);
+        append_reason(r, "窗口当前处于最大化，未调整几何");
+        return;
+    }
+    let monitors = geometry::monitor_layouts(app);
+    if monitors.is_empty() {
+        r.geometry = Some(GeometryRestoreState::Skipped);
+        append_reason(r, "无法枚举显示器信息，未调整窗口几何");
+        return;
+    }
+    match geometry::plan_restore(g, &monitors) {
+        Some((rect, adjust)) => {
+            if geometry::set_window_rect(hwnd, &rect) {
+                r.geometry = Some(match adjust {
+                    GeometryAdjust::Converged => GeometryRestoreState::Converged,
+                    GeometryAdjust::AsIs | GeometryAdjust::Rescaled => {
+                        GeometryRestoreState::Applied
+                    }
+                });
+                append_reason(
+                    r,
+                    match adjust {
+                        GeometryAdjust::AsIs => "已恢复窗口位置与尺寸",
+                        GeometryAdjust::Rescaled => "已按当前显示器 DPI 换算并恢复窗口位置与尺寸",
+                        GeometryAdjust::Converged => "显示器布局已变化，窗口已收敛到当前可见区域",
+                    },
+                );
+            } else {
+                r.geometry = Some(GeometryRestoreState::Failed);
+                append_reason(r, "系统拒绝了窗口位置调整，已保持当前位置");
+            }
+        }
+        None => {
+            r.geometry = Some(GeometryRestoreState::Skipped);
+            append_reason(r, "捕获的几何数据不完整，未调整窗口几何");
+        }
     }
 }
 
@@ -858,7 +960,12 @@ fn do_restore_item(db: &Db, app: &AppHandle, item: &SnapshotItem) -> RestoreItem
         "application" => {
             // 先尝试唤醒已有窗口，绝不重复启动
             if let Some((w, fallback)) = focus_matching_window(item) {
-                return focus_existing_window(item, &w, fallback);
+                let mut r = focus_existing_window(item, &w, fallback);
+                // 窗口确已找到才应用捕获的几何（失败/消失的窗口无从摆位）
+                if r.outcome == "restored" {
+                    apply_captured_geometry(app, w.hwnd, item, &mut r);
+                }
+                return r;
             }
             let exe_missing = !item.app_user_model_id.trim().is_empty()
                 && item.exe_path.trim().is_empty()
@@ -1042,6 +1149,7 @@ pub fn restore_snapshot(
                     verification_level: VerificationLevel::None.as_str().into(),
                     fallback_used: false,
                     reason: Some("用户取消，尚未执行".into()),
+                    geometry: None,
                 };
                 persist_item_result(db, snapshot_id, &r);
                 summary.items.push(r);
@@ -1567,6 +1675,7 @@ mod tests {
             window_title_hint: String::new(),
             window_class: "Notepad".into(),
             window_title: "无标题 - 记事本".into(),
+            window_geometry: None,
             restore_note: String::new(),
             last_result: String::new(),
             last_verification: String::new(),
@@ -1591,5 +1700,119 @@ mod tests {
         assert_eq!(r.outcome, "failed");
         assert_ne!(r.verification_level, "window-confirmed");
         assert!(r.reason.as_deref().unwrap_or("").contains("唤醒窗口失败"));
+    }
+
+    // ── 窗口几何（C5 收口）─────────────────────────────────────
+
+    fn sample_geometry() -> geometry::WindowGeometry {
+        geometry::WindowGeometry {
+            rect: geometry::GeometryRect {
+                x: -1820,
+                y: 200,
+                w: 800,
+                h: 600,
+            },
+            monitor: "\\\\.\\DISPLAY1".into(),
+            monitor_rect: geometry::GeometryRect {
+                x: -1920,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            scale: 1.25,
+        }
+    }
+
+    #[test]
+    fn frontend_declared_geometry_is_dropped() {
+        // 信任边界：几何只由后端按句柄实测，前端声明的几何必须被清空
+        let db = memdb();
+        let mut input = capture(None, vec![item("application", "记事本")]);
+        input.items[0].window_geometry = Some(sample_geometry());
+        let d = create_snapshot(&db, &input).unwrap();
+        assert!(
+            d.items[0].window_geometry.is_none(),
+            "前端注入的几何不得落库"
+        );
+    }
+
+    #[test]
+    fn window_geometry_round_trips_through_db() {
+        let db = memdb();
+        let input = capture(None, vec![item("url", "文档")]);
+        let d = create_snapshot(&db, &input).unwrap();
+        let item_id = d.items[0].id.clone();
+        let json = geometry::geometry_json_text(Some(&sample_geometry()));
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE workspace_snapshot_items SET window_geometry_json = ?1 WHERE id = ?2",
+                params![json, item_id],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let got = get_snapshot(&db, &d.summary.id).unwrap();
+        assert_eq!(
+            got.items[0].window_geometry.as_ref(),
+            Some(&sample_geometry())
+        );
+        // 损坏载荷 → None（如实降级，不 panic）
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE workspace_snapshot_items SET window_geometry_json = '{broken' WHERE id = ?1",
+                params![item_id],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let got = get_snapshot(&db, &d.summary.id).unwrap();
+        assert!(got.items[0].window_geometry.is_none());
+    }
+
+    #[test]
+    fn append_reason_keeps_previous_note() {
+        let mut r = RestoreItemResult {
+            item_id: "i".into(),
+            display_name: "n".into(),
+            item_kind: "application".into(),
+            outcome: "restored".into(),
+            action: None,
+            verification_level: "window-confirmed".into(),
+            fallback_used: false,
+            reason: Some("按进程/窗口类复用（标题已变化）".into()),
+            geometry: None,
+        };
+        append_reason(&mut r, "已恢复窗口位置与尺寸");
+        assert_eq!(
+            r.reason.as_deref(),
+            Some("按进程/窗口类复用（标题已变化）；已恢复窗口位置与尺寸")
+        );
+        r.reason = None;
+        append_reason(&mut r, "显示器布局已变化，窗口已收敛到当前可见区域");
+        assert_eq!(
+            r.reason.as_deref(),
+            Some("显示器布局已变化，窗口已收敛到当前可见区域")
+        );
+    }
+
+    #[test]
+    fn geometry_state_serializes_snake_case() {
+        let states = [
+            (geometry::GeometryRestoreState::Applied, "applied"),
+            (geometry::GeometryRestoreState::Converged, "converged"),
+            (geometry::GeometryRestoreState::Skipped, "skipped"),
+            (geometry::GeometryRestoreState::Failed, "failed"),
+        ];
+        for (state, text) in states {
+            let v = serde_json::to_value(RestoreItemResult {
+                geometry: Some(state),
+                ..skipped(&restore_test_item("C:\\Windows\\notepad.exe"), "x")
+            })
+            .unwrap();
+            assert_eq!(v["geometry"], text);
+        }
+        // 无几何数据时字段整体缺席（旧快照 UI 不展示几何行）
+        let v = serde_json::to_value(skipped(&restore_test_item("x.exe"), "x")).unwrap();
+        assert!(v.get("geometry").is_none());
     }
 }

@@ -1295,6 +1295,47 @@ export interface ResourceMemoryReleaseReport {
 
 export const resourceDiskUsage = () =>
   invoke<ResourceStorageBreakdown>("resource_disk_usage");
+
+/** 只读空间分析：指定目录的直接子目录占用与最大文件（不删除、不写盘）。 */
+export interface ResourceDiskScanFolder {
+  name: string;
+  path: string;
+  /** null = 达到上限未扫描；不是 0 B。 */
+  bytes: number | null;
+  files: number | null;
+}
+
+export interface ResourceDiskScanFile {
+  name: string;
+  path: string;
+  bytes: number;
+}
+
+export interface ResourceDiskScanReport {
+  /** 实际分析的目录（已规范化）。 */
+  path: string;
+  /** 上一级目录；盘符根为 null。 */
+  parent: string | null;
+  sampledAt: string;
+  totalBytes: number;
+  totalFiles: number;
+  totalDirs: number;
+  /** 扫描根下直接存放的文件（如 pagefile.sys）。 */
+  rootFilesBytes: number;
+  rootFiles: number;
+  /** 未跟随的符号链接 / reparse point。 */
+  skippedLinks: number;
+  /** 无法读取的目录或项。 */
+  skippedErrors: number;
+  /** 达到条目/时间/深度上限，结果为已扫描部分。 */
+  truncated: boolean;
+  elapsedMs: number;
+  folders: ResourceDiskScanFolder[];
+  files: ResourceDiskScanFile[];
+}
+
+export const resourceDiskAnalyze = (path: string) =>
+  invoke<ResourceDiskScanReport>("resource_disk_analyze", { path });
 export const resourceMemoryCatalog = () =>
   invoke<ResourceMemoryCatalog>("resource_memory_catalog");
 /** 释放应用自身可回收缓存；返回每项实际释放量（不做系统级内存优化）。 */
@@ -1306,6 +1347,73 @@ export const resourceCleanupExecute = (args: {
   previewId: string;
   categories: ResourceCleanupCategory[];
 }) => invoke<ResourceCleanupExecutionReport>("resource_cleanup_execute", args);
+
+/**
+ * 用户级磁盘垃圾清理：回收站 / 用户临时文件 / Windows 临时文件 / 崩溃转储。
+ * 与应用缓存清理相互独立；扫描根由后端从系统环境变量推导，前端不传路径。
+ */
+export type ResourceJunkCategory =
+  | "recycle_bin"
+  | "user_temp"
+  | "system_temp"
+  | "crash_dumps";
+
+export interface ResourceJunkCategoryPreview {
+  category: ResourceJunkCategory;
+  status: ResourceAvailability;
+  /** 文件类为候选文件数；回收站为 Shell 报告的项数。 */
+  candidates: number;
+  estimatedBytes: number;
+  /** 未满保留年龄、被保护的文件数（仅文件类）。 */
+  protectedFiles: number;
+  skippedFiles: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface ResourceJunkPreview {
+  previewId: string;
+  createdAt: string;
+  expiresAt: string;
+  /** 临时类候选的最短年龄（小时）。 */
+  minimumAgeHours: number;
+  categories: ResourceJunkCategoryPreview[];
+  totalCandidates: number;
+  totalEstimatedBytes: number;
+}
+
+export interface ResourceJunkCategoryResult {
+  category: ResourceJunkCategory;
+  status: ResourceCleanupStatus | "unavailable";
+  candidates: number;
+  estimatedBytes: number;
+  /** 实际释放量：文件类为成功删除文件大小之和；回收站为清空前后统计差。 */
+  freedBytes: number;
+  deletedFiles: number;
+  skippedFiles: number;
+  failedFiles: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface ResourceJunkExecutionReport {
+  jobId: string;
+  startedAt: string;
+  finishedAt: string;
+  status: ResourceCleanupStatus;
+  totalFreedBytes: number;
+  totalDeletedFiles: number;
+  categories: ResourceJunkCategoryResult[];
+}
+
+/** 只读扫描用户级垃圾；不删除、不写入。 */
+export const resourceJunkPreview = (categories: ResourceJunkCategory[]) =>
+  invoke<ResourceJunkPreview>("resource_junk_preview", { categories });
+/** 执行已预览的用户级垃圾清理；previewId 一次性消费。 */
+export const resourceJunkExecute = (args: {
+  previewId: string;
+  categories: ResourceJunkCategory[];
+}) => invoke<ResourceJunkExecutionReport>("resource_junk_execute", args);
 
 /** 后端音频事件：来自真实 Agent 通知记录 / 任务提醒，eventId 用于去重。 */
 export interface AudioEventItem {
@@ -1975,6 +2083,22 @@ export const actionsOpenSession = (sourceId: string, sessionId: string) =>
   invoke<import("./navigation").NavigationResult>("actions_open_session", { sourceId, sessionId });
 
 // ── 工作现场（v0.5）──
+/** 屏幕矩形（物理像素，虚拟屏幕坐标） */
+export interface GeometryRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 捕获的窗口几何：矩形 + 显示器设备名/DPI 元数据（不含 HWND，句柄绝不落库） */
+export interface WindowGeometry {
+  rect: GeometryRect;
+  monitor: string;
+  monitor_rect: GeometryRect;
+  scale: number;
+}
+
 export interface SnapshotSummary {
   id: string;
   task_id: string | null;
@@ -2008,6 +2132,8 @@ export interface SnapshotItem {
   window_title_hint: string;
   window_class: string;
   window_title: string;
+  /** 捕获到的窗口几何；缺省 = 无几何数据（旧快照/捕获时最小化），恢复时不摆位 */
+  window_geometry?: WindowGeometry;
   restore_note: string;
   last_result: string;
   last_verification: string;
@@ -2056,6 +2182,9 @@ export interface CaptureWindow {
   is_minimized: boolean;
 }
 
+/** 单条目窗口几何恢复状态；缺省 = 无几何数据，UI 不展示几何行 */
+export type GeometryRestoreState = "applied" | "converged" | "skipped" | "failed";
+
 export interface RestoreItemResult {
   item_id: string;
   display_name: string;
@@ -2065,6 +2194,8 @@ export interface RestoreItemResult {
   verification_level: string;
   fallback_used: boolean;
   reason: string | null;
+  /** 窗口几何恢复状态（随原因文案一起反馈） */
+  geometry?: GeometryRestoreState;
 }
 
 export interface RestoreSummary {
@@ -2876,6 +3007,12 @@ export interface ScenarioEnterItemResult {
 export interface ScenarioEnterResult {
   items: ScenarioEnterItemResult[];
   startedAt: string;
+  /** 计划项总数（含未执行的剩余项）；items 只包含已处理项。 */
+  total: number;
+  /** 因用户取消提前停止；已启动的应用/网页/目录/工作流/现场恢复不回滚。 */
+  cancelled: boolean;
+  /** 超过整体预算（120s）提前停止；已启动项不回滚。 */
+  timedOut: boolean;
 }
 
 export const scenarioList = () => invoke<ScenarioSummary[]>("scenario_list", {});
@@ -2886,6 +3023,9 @@ export const scenarioDelete = (id: string) => invoke<void>("scenario_delete", { 
 export const scenarioDuplicate = (id: string) =>
   invoke<{ id: string }>("scenario_duplicate", { id });
 export const scenarioEnter = (id: string) => invoke<ScenarioEnterResult>("scenario_enter", { id });
+/** 请求取消在途进入：幂等，未在途返回 false；取消只在项间生效。 */
+export const scenarioEnterCancel = (id: string) =>
+  invoke<boolean>("scenario_enter_cancel", { id });
 
 // ── 文件暂存架（v0.8）──
 

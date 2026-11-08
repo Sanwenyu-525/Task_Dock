@@ -232,6 +232,11 @@ docked-revealed → docked-hidden | docked-visible | free
   窗口首次吸附同一口径，偏好为胶囊时必回胶囊（偏好为完整面板时回完整面板，不变）。
   恢复期间候选确认延迟到恢复收尾，避免两路几何写入交错；详见
   `tmp/acceptance/capsule-redock/report.md`。
+  **2026-11-08 越出轴遮蔽修复**：恢复后的用户矩形底部越出工作区时（停靠位靠下 +
+  自由矩形较高），候选选边的 argmin 被越出轴负距离恒占、整体判 null——拖到左/右
+  齐平位也进不了候选（「拖离后仍可能无法再吸附」的第二个根因，前端与原生磁吸
+  同口径修复）。同轮：candidate 换边更新补程序性移动守卫，恢复期搬运不得翻转
+  已选定的候选边。回归 D11/D12 与真机隔离实例复核见同报告 2026-11-08 追加节。
 - **托盘/快捷键唤回**：`snap-recall` → 展开功能面板（窗口始终可见，无需"找回"）。
 - **工具面板标题也可拖动窗口**（2026-11-06）：面板标题背景与标题/说明文字都是
   拖拽热区（`PanelKit.PanelHead`），拖动的是同一个原生窗口，轨道与面板不会分离；
@@ -1236,6 +1241,15 @@ wry 在 WebView2 的 `WebMessageReceived` / `WebResourceRequested` 回调里内�
 - 底栏「完整规划」走 `openFullApp("roadmap")`；项目 / 功能 / 里程碑 CRUD、看板与历史
   仍在完整规划中心。不新增 IPC、不新增轮询，复用 `usePlanningStore` 与 `planning-changed`。
 
+**双数据来源（2026-11-08 补充）**：首版 Lite 只读用户项目，用户库里没有 `planning_*`
+项目时面板只剩「还没有规划项目」空态，内置路线图（`featureCatalog.ts`，31 项）看不到。
+现按完整规划中心的口径增加来源分段：
+- 顶部固定「我的项目 / 内置路线图」分段；内置路线图按五个分类分组、只读，行内展示
+  状态与优先级，展开显示目录详情与阻塞原因，不发 IPC；
+- 用户没有任何项目（且项目读取成功）时默认落到内置路线图，避免空态被误认为
+  「路线图未显示」；读取失败仍停留「我的项目」并给重试，不拿静态目录掩盖错误；
+- 有项目时保持「我的项目」为默认，来源切换只影响视图，不改变 store 的当前项目。
+
 **提示气泡修正**：
 - 折叠态第一个分类位于轨道中心之前，「朝中心」方向改为向下 / 向右（`railTipPlacement`
   新增 `first` 参数）；否则 3 字气泡会伸进肩部曲面被裁掉。
@@ -1243,6 +1257,7 @@ wry 在 WebView2 的 `WebMessageReceived` / `WebResourceRequested` 回调里内�
   展开态也使用，避免水平停靠时气泡越出面板左缘。
 - 水平停靠端头球额外内推 24px（`TIP_ORB_HORIZONTAL_EXTRA_CSS`），越过面板 24px 圆角切点。
 
-**回归**：`PlanningLite.test.tsx`（7 项）、`capsuleNavigationContract.test.tsx`（17 项）、
-`CapsuleRail.tooltip.test.tsx`（32 项）、几何单测、`useEdgeSnap.integration.test.tsx`（124 项）；
-前端全量 215 文件 / 3144 项；Rust `cargo test --lib` 1447 通过 / 8 ignored。
+**回归**：`PlanningLite.test.tsx`（9 项，含无项目默认内置路线图与来源切换）、
+`capsuleNavigationContract.test.tsx`（17 项）、
+`CapsuleRail.tooltip.test.tsx`（32 项）、几何单测、`useEdgeSnap.integration.test.tsx`（130 项）；
+前端全量 217 文件 / 3218 项；Rust `cargo test --lib` 1452 通过 / 8 ignored。

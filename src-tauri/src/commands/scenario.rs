@@ -14,10 +14,15 @@
 //! 进入顺序固定为：现场 → 应用 → 网址 → 目录 → 工作流。工作流放最后，因为它的步骤
 //! 常依赖前面已经打开的应用。现场恢复与工作流各自受全局单实例约束，冲突时如实返回
 //! failed 并保留已完成项——本功能绝不假装「全部成功」。
+//!
+//! 进入互斥（ScenarioEnterGate）：直接进入与工作流步骤共用一个进程内操作槽，
+//! 第二个进入立即返回可重试冲突（不排队、不取消、不驱逐在途进入）；用户可经
+//! `scenario_enter_cancel` 取消，取消与整体预算（120s）都只在项间生效——已启动的
+//! 应用/网页/目录/工作流/现场恢复不回滚、不关闭。
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use rusqlite::{params, OptionalExtension};
@@ -39,6 +44,217 @@ pub const MAX_URLS: usize = 16;
 pub const MAX_FOLDERS: usize = 8;
 const NAME_MAX_CHARS: usize = 40;
 const PATH_MAX_CHARS: usize = 500;
+
+/// 进入的整体预算：超预算后停止处理剩余项（与现场恢复等待上限一致，已启动项不回滚）。
+const ENTER_TOTAL_BUDGET: Duration = Duration::from_secs(120);
+/// 删除在途场景时等待其退出的上限；超时返回冲突且不删除。
+const DELETE_ENTER_WAIT: Duration = Duration::from_secs(2);
+
+// ── 进入互斥槽 ───────────────────────────────────────────────────────
+
+/// 「进入场景」的进程内互斥槽：同一时刻最多一个进入在执行（直接进入与工作流步骤共用）。
+///
+/// 约束：
+/// - 第二个进入立即返回冲突，不排队、不取消、不驱逐在途进入（启动类动作不可回滚）；
+/// - 取消只在项间生效：已启动的应用/网页/目录/工作流/现场恢复不回滚；
+/// - 槽释放交给 RAII guard，正常/取消/失败/panic 都会走到 finish；
+/// - 单元测试必须自建局部实例，禁止共享全局槽（并行测试互相干扰）。
+pub struct ScenarioEnterGate {
+    slot: Mutex<Option<EnterSlot>>,
+    released: Condvar,
+}
+
+struct EnterSlot {
+    scenario_id: String,
+    cancel: Arc<AtomicBool>,
+}
+
+/// 槽被占用时的冲突信息：带占用方场景 id，便于错误文案定位。
+#[derive(Debug, Clone)]
+pub struct EnterSlotBusy {
+    pub scenario_id: String,
+}
+
+/// 持槽 guard：drop 时按场景 id 释放；过期清理不会误清新槽。
+pub struct EnterSlotGuard<'a> {
+    gate: &'a ScenarioEnterGate,
+    scenario_id: String,
+    cancel: Arc<AtomicBool>,
+}
+
+impl EnterSlotGuard<'_> {
+    pub fn scenario_id(&self) -> &str {
+        &self.scenario_id
+    }
+
+    /// 本场景进入的取消位：置位后只在项间生效（见 `enter_inner`）。
+    pub fn cancel_flag(&self) -> &AtomicBool {
+        &self.cancel
+    }
+}
+
+impl std::fmt::Debug for EnterSlotGuard<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnterSlotGuard")
+            .field("scenario_id", &self.scenario_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for EnterSlotGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.finish(&self.scenario_id);
+    }
+}
+
+impl ScenarioEnterGate {
+    pub const fn new() -> Self {
+        Self {
+            slot: Mutex::new(None),
+            released: Condvar::new(),
+        }
+    }
+
+    /// 申请进入槽；已被占用时立即返回冲突，绝不等待、不取消、不驱逐在途进入。
+    pub fn begin(&self, scenario_id: &str) -> Result<EnterSlotGuard<'_>, EnterSlotBusy> {
+        let mut guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(slot) = guard.as_ref() {
+            return Err(EnterSlotBusy {
+                scenario_id: slot.scenario_id.clone(),
+            });
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        *guard = Some(EnterSlot {
+            scenario_id: scenario_id.to_string(),
+            cancel: cancel.clone(),
+        });
+        Ok(EnterSlotGuard {
+            gate: self,
+            scenario_id: scenario_id.to_string(),
+            cancel,
+        })
+    }
+
+    /// 只释放自己的槽；返回是否匹配（旧任务的迟到清理不得清掉新槽）。
+    fn finish(&self, scenario_id: &str) -> bool {
+        let mut guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        let matches = guard
+            .as_ref()
+            .map(|s| s.scenario_id == scenario_id)
+            .unwrap_or(false);
+        if matches {
+            *guard = None;
+            self.released.notify_all();
+        }
+        matches
+    }
+
+    /// 请求取消指定场景的在途进入；幂等，空闲或不匹配返回 false。
+    pub fn request_cancel(&self, scenario_id: &str) -> bool {
+        let guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(slot) if slot.scenario_id == scenario_id => {
+                slot.cancel.store(true, Ordering::Release);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 当前在途进入的场景 id（None = 空闲）。
+    pub fn status(&self) -> Option<String> {
+        let guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().map(|s| s.scenario_id.clone())
+    }
+
+    /// 有界等待槽释放（删除守卫用）；返回 true 表示此刻空闲。
+    pub fn wait_released(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        while guard.is_some() {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (g, _) = self
+                .released
+                .wait_timeout(guard, deadline - now)
+                .unwrap_or_else(|e| e.into_inner());
+            guard = g;
+        }
+        true
+    }
+}
+
+static ENTER_GATE: OnceLock<ScenarioEnterGate> = OnceLock::new();
+
+impl Default for ScenarioEnterGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn global_enter_gate() -> &'static ScenarioEnterGate {
+    ENTER_GATE.get_or_init(ScenarioEnterGate::new)
+}
+
+/// 一次「进入」的运行期控制：取消位 + 可选整体预算。
+/// 工作流路径沿用步骤自身的取消位且不带预算（其现场等待已有 120s 上限）。
+struct EnterRun<'a> {
+    cancel: &'a AtomicBool,
+    deadline: Option<Instant>,
+}
+
+/// 项间停止原因：取消优先于预算；只逐项检查，不打断正在执行的项。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnterStop {
+    None,
+    Cancelled,
+    TimedOut,
+}
+
+impl EnterRun<'_> {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
+
+    fn past_deadline(&self) -> bool {
+        self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+
+    fn stop_at_boundary(&self) -> EnterStop {
+        if self.cancelled() {
+            return EnterStop::Cancelled;
+        }
+        if self.past_deadline() {
+            return EnterStop::TimedOut;
+        }
+        EnterStop::None
+    }
+}
+
+/// 项间停止判定：置位停止原因并返回是否应停止。原因只在真实停止点记录，
+/// 迟到的取消/超时不会误标已完整处理的结果。
+fn boundary_stop(
+    run: Option<&EnterRun<'_>>,
+    stop_cancelled: &mut bool,
+    stop_timed_out: &mut bool,
+) -> bool {
+    match run {
+        Some(r) => match r.stop_at_boundary() {
+            EnterStop::Cancelled => {
+                *stop_cancelled = true;
+                true
+            }
+            EnterStop::TimedOut => {
+                *stop_timed_out = true;
+                true
+            }
+            EnterStop::None => false,
+        },
+        None => false,
+    }
+}
 
 // ── 模型（字段全部 camelCase，与 src/lib/bridge.ts 的 Scenario* 一一对应）──
 
@@ -110,6 +326,12 @@ pub struct ScenarioEnterItemResult {
 pub struct ScenarioEnterResult {
     pub items: Vec<ScenarioEnterItemResult>,
     pub started_at: String,
+    /// 计划项总数（含未执行的剩余项）；`items` 只包含已处理项。
+    pub total: usize,
+    /// 因用户取消而提前停止；已启动项不回滚。
+    pub cancelled: bool,
+    /// 超过整体预算而提前停止；已启动项不回滚。
+    pub timed_out: bool,
 }
 
 impl ScenarioEnterItemResult {
@@ -526,6 +748,24 @@ pub fn save(db: &Db, input: &ScenarioSaveInput) -> AppResult<String> {
 }
 
 pub fn delete(db: &Db, id: &str) -> AppResult<()> {
+    delete_with_gate(global_enter_gate(), db, id)
+}
+
+/// 删除守卫：目标场景正在进入时先请求取消，最多等 2s；仍未退出则冲突且不删除。
+/// 其他场景在途不影响本删除。等待后槽被同场景重新占用同样按冲突处理（可重试）。
+pub(crate) fn delete_with_gate(gate: &ScenarioEnterGate, db: &Db, id: &str) -> AppResult<()> {
+    delete_guarded(gate, db, id, DELETE_ENTER_WAIT)
+}
+
+fn delete_guarded(gate: &ScenarioEnterGate, db: &Db, id: &str, wait: Duration) -> AppResult<()> {
+    if gate.status().is_some_and(|busy| busy == id) {
+        gate.request_cancel(id);
+        if !gate.wait_released(wait) || gate.status().is_some_and(|busy| busy == id) {
+            return Err(AppError::Conflict(
+                "场景正在进入中，已请求取消但尚未退出；请稍后重试删除".into(),
+            ));
+        }
+    }
     db.with_transaction(|tx| {
         if tx.execute("DELETE FROM scenarios WHERE id = ?1", params![id])? == 0 {
             return Err(AppError::Validation(format!("场景不存在: {id}")));
@@ -732,11 +972,12 @@ fn enter_snapshot_and_wait(
     loop {
         let status = workspace::restore_status();
         if cancel.load(Ordering::Acquire) && !cancel_sent {
-            if status.running
-                && status.snapshot_id.as_deref() == Some(snapshot_id)
-                && (operation_id.is_none() || status.operation_id == operation_id)
-            {
-                workspace::request_cancel();
+            // 只对本场景启动的恢复转发取消：按 operation_id 定向，槽被其他恢复
+            // 接管（或已退出）时 gate 自身拒发，绝不误伤后续操作。
+            if status.running && status.snapshot_id.as_deref() == Some(snapshot_id) {
+                if let Some(op) = status.operation_id.as_deref() {
+                    workspace::request_cancel_operation(op);
+                }
             }
             cancel_sent = true;
         }
@@ -817,12 +1058,23 @@ fn finish_enter(db: &Db, id: &str, started_at: &str) -> AppResult<()> {
     })
 }
 
-/// 进入场景：逐项尽力执行，单项失败不阻断后续；无论结果都刷新 last_entered_at。
+/// 计划项总数 = 现场(0/1) + 应用 + 网址 + 目录 + 关联工作流(0/1)。
+/// 取消/超时未执行的项不计入 `items`，用该总数让用户看到「已处理 X / 共 Y」。
+fn enter_plan_total(detail: &ScenarioDetail) -> usize {
+    usize::from(detail.snapshot_id.is_some())
+        + detail.apps.len()
+        + detail.urls.len()
+        + detail.folders.len()
+        + usize::from(detail.summary.linked_workflow_id.is_some())
+}
+
+/// 进入场景：逐项尽力执行，单项失败不阻断后续；取消/超时只在项间生效（已启动项不回滚）。
+/// `run` 为 None 保留旧行为（无取消、无预算），仅供无句柄测试与兜底；两条真实入口都传 Some。
 fn enter_inner(
     db: &Arc<Db>,
     app: &AppHandle,
     id: &str,
-    cancel: Option<&AtomicBool>,
+    run: Option<&EnterRun<'_>>,
     allow_linked_workflow: bool,
 ) -> AppResult<ScenarioEnterResult> {
     let detail = get(db, id)?;
@@ -832,57 +1084,86 @@ fn enter_inner(
         detail.summary.linked_workflow_id.as_deref(),
     )?;
     let started_at = now_iso();
+    let total = enter_plan_total(&detail);
     let mut items = Vec::new();
-    let cancelled = || cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
+    let mut stop_cancelled = false;
+    let mut stop_timed_out = false;
 
     if let Some(sn) = &detail.snapshot_id {
-        items.push(if let Some(flag) = cancel {
-            enter_snapshot_and_wait(db, app, sn, flag)
-        } else {
-            enter_snapshot(db, app, sn)
-        });
+        if !boundary_stop(run, &mut stop_cancelled, &mut stop_timed_out) {
+            items.push(match run {
+                // 有取消位时等待现场恢复终态：取消要按 operation_id 转发给恢复，
+                // 结果也要等真实终态而不是「已受理」。
+                Some(r) => enter_snapshot_and_wait(db, app, sn, r.cancel),
+                None => enter_snapshot(db, app, sn),
+            });
+        }
     }
     for a in &detail.apps {
-        if cancelled() {
+        if boundary_stop(run, &mut stop_cancelled, &mut stop_timed_out) {
             break;
         }
         items.push(enter_app(db, app, a));
     }
     for u in &detail.urls {
-        if cancelled() {
+        if boundary_stop(run, &mut stop_cancelled, &mut stop_timed_out) {
             break;
         }
         items.push(enter_path_entry(db, app, "url", u));
     }
     for f in &detail.folders {
-        if cancelled() {
+        if boundary_stop(run, &mut stop_cancelled, &mut stop_timed_out) {
             break;
         }
         items.push(enter_path_entry(db, app, "folder", f));
     }
     if let Some(wf) = &detail.summary.linked_workflow_id {
-        items.push(if allow_linked_workflow {
-            enter_workflow(db, app, wf)
-        } else {
-            ScenarioEnterItemResult::skipped(
-                "workflow",
-                wf.clone(),
-                "当前工作流持有唯一运行槽，未递归启动场景关联工作流",
-            )
-        });
+        if !boundary_stop(run, &mut stop_cancelled, &mut stop_timed_out) {
+            items.push(if allow_linked_workflow {
+                enter_workflow(db, app, wf)
+            } else {
+                ScenarioEnterItemResult::skipped(
+                    "workflow",
+                    wf.clone(),
+                    "当前工作流持有唯一运行槽，未递归启动场景关联工作流",
+                )
+            });
+        }
     }
 
-    // 进入时间单独一次写：即使部分项失败也要留下「进过」这一事实，失败原因已在 items 里。
+    // 进入时间单独一次写：即使部分项失败/被取消也要留下「进过」这一事实，
+    // 失败与停止原因已在 items 和 cancelled/timed_out 里。
     finish_enter(db, id, &started_at)?;
 
-    Ok(ScenarioEnterResult { items, started_at })
+    Ok(ScenarioEnterResult {
+        items,
+        started_at,
+        total,
+        cancelled: stop_cancelled,
+        timed_out: stop_timed_out,
+    })
 }
 
+/// 直接进入：持有全局进入槽（第二个进入立即冲突，不排队不驱逐），
+/// 带用户可取消位与整体预算；guard RAII 保证正常/取消/失败/panic 都释放槽。
 pub fn enter(db: &Arc<Db>, app: &AppHandle, id: &str) -> AppResult<ScenarioEnterResult> {
-    enter_inner(db, app, id, None, true)
+    let guard = global_enter_gate().begin(id).map_err(|busy| {
+        AppError::Conflict(format!(
+            "场景「{}」正在进入中，请等待其完成或先取消",
+            busy.scenario_id
+        ))
+    })?;
+    let run = EnterRun {
+        cancel: guard.cancel_flag(),
+        deadline: Some(Instant::now() + ENTER_TOTAL_BUDGET),
+    };
+    let result = enter_inner(db, app, id, Some(&run), true);
+    drop(guard);
+    result
 }
 
-/// 工作流内调用场景服务：等待现场恢复终态、传递取消位，并禁止场景再次启动工作流。
+/// 工作流内调用场景服务：共用同一进入槽（冲突按步骤失败返回），等待现场恢复
+/// 终态、传递取消位，并禁止场景再次启动工作流。工作流步骤自带取消位，不再叠加预算。
 pub(crate) fn enter_for_workflow(
     db: &Arc<Db>,
     app: &AppHandle,
@@ -892,7 +1173,19 @@ pub(crate) fn enter_for_workflow(
     if cancel.load(Ordering::Acquire) {
         return Err(AppError::Conflict("进入场景已取消，未启动".into()));
     }
-    let result = enter_inner(db, app, id, Some(cancel), false)?;
+    let guard = global_enter_gate().begin(id).map_err(|busy| {
+        AppError::Conflict(format!(
+            "场景「{}」正在进入中，本工作流步骤未执行",
+            busy.scenario_id
+        ))
+    })?;
+    let run = EnterRun {
+        cancel,
+        deadline: None,
+    };
+    let result = enter_inner(db, app, id, Some(&run), false);
+    drop(guard);
+    let result = result?;
     if cancel.load(Ordering::Acquire) {
         let completed = result.items.len();
         return Err(AppError::Conflict(format!(
@@ -956,6 +1249,7 @@ pub fn scenario_duplicate(db: State<'_, Arc<Db>>, id: String) -> AppResult<serde
 }
 
 /// 进入场景可能启动多个程序并等待窗口校验（导航层单次最长 5s），必须走阻塞线程。
+/// 持有全局进入槽：并发进入返回可重试冲突；取消位与整体预算见 `enter`。
 #[tauri::command]
 pub async fn scenario_enter(
     db: State<'_, Arc<Db>>,
@@ -966,6 +1260,13 @@ pub async fn scenario_enter(
     tauri::async_runtime::spawn_blocking(move || enter(&db, &app, &id))
         .await
         .map_err(|e| AppError::Validation(format!("进入场景失败: {e}")))?
+}
+
+/// 请求取消在途进入：幂等，未在途或不匹配返回 false（不算错误）。
+/// 取消只在项间生效；已启动的应用/网页/目录/工作流/现场恢复不回滚。
+#[tauri::command]
+pub fn scenario_enter_cancel(id: String) -> AppResult<bool> {
+    Ok(global_enter_gate().request_cancel(&id))
 }
 
 #[cfg(test)]
@@ -1350,5 +1651,160 @@ mod tests {
         let id = save(&db, &input).unwrap();
         let icon = get(&db, &id).unwrap().summary.icon.unwrap();
         assert_eq!(icon.chars().count(), 4, "图标必须截断到 4 字符");
+    }
+
+    // ── 进入互斥槽 / 删除守卫 / 停止策略 ─────────────────────────────
+    // 一律使用局部 gate 实例：共享全局槽会让并行测试互相干扰。
+
+    fn detail_with(snapshot: bool, apps: usize, urls: usize, folders: usize, workflow: bool) -> ScenarioDetail {
+        ScenarioDetail {
+            summary: ScenarioSummary {
+                id: "s".into(),
+                name: "n".into(),
+                icon: None,
+                app_count: 0,
+                url_count: 0,
+                folder_count: 0,
+                linked_workflow_id: workflow.then(|| "wf".to_string()),
+                last_entered_at: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            apps: vec![ScenarioAppTarget::default(); apps],
+            urls: vec!["https://example.com".into(); urls],
+            folders: vec!["C:\\x".into(); folders],
+            snapshot_id: snapshot.then(|| "snap".to_string()),
+            shelf_item_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn plan_total_counts_every_planned_item() {
+        assert_eq!(enter_plan_total(&detail_with(true, 2, 1, 1, true)), 6);
+        assert_eq!(enter_plan_total(&detail_with(false, 0, 0, 0, false)), 0);
+        assert_eq!(enter_plan_total(&detail_with(false, 3, 2, 1, false)), 6);
+    }
+
+    #[test]
+    fn boundary_stop_records_reason_once_and_prioritizes_cancel() {
+        let mut c = false;
+        let mut t = false;
+        let flag = AtomicBool::new(true);
+        let cancelled = EnterRun {
+            cancel: &flag,
+            deadline: Some(Instant::now() - Duration::from_secs(1)),
+        };
+        assert!(boundary_stop(Some(&cancelled), &mut c, &mut t));
+        assert!(c && !t, "取消优先于预算");
+
+        let off = AtomicBool::new(false);
+        let future = EnterRun {
+            cancel: &off,
+            deadline: Some(Instant::now() + Duration::from_secs(60)),
+        };
+        assert!(!boundary_stop(Some(&future), &mut c, &mut t), "未超预算不得停止");
+        assert!(!boundary_stop(None, &mut c, &mut t), "无运行控制不得停止");
+        assert!(c && !t, "停止原因只在真实停止点置位");
+    }
+
+    #[test]
+    fn gate_second_begin_conflicts_without_cancelling_first() {
+        let gate = ScenarioEnterGate::new();
+        let g1 = gate.begin("scene-a").unwrap();
+        let err = gate.begin("scene-b").unwrap_err();
+        assert_eq!(err.scenario_id, "scene-a", "冲突信息要带占用方");
+        assert!(!g1.cancel_flag().load(Ordering::Acquire), "第二个进入不得取消第一个");
+        assert_eq!(gate.status().as_deref(), Some("scene-a"));
+
+        drop(g1);
+        assert_eq!(gate.status(), None, "guard drop 必须释放槽");
+        let g2 = gate.begin("scene-b").unwrap();
+        assert_eq!(g2.scenario_id(), "scene-b");
+    }
+
+    #[test]
+    fn gate_cancel_is_idempotent_and_targeted() {
+        let gate = ScenarioEnterGate::new();
+        assert!(!gate.request_cancel("scene-a"), "空闲时取消返回 false");
+        let g1 = gate.begin("scene-a").unwrap();
+        let _busy = gate.begin("scene-b").unwrap_err();
+        assert!(gate.request_cancel("scene-a"));
+        assert!(g1.cancel_flag().load(Ordering::Acquire));
+        assert!(!gate.request_cancel("scene-b"), "不同场景不得误伤");
+        assert!(gate.request_cancel("scene-a"), "重复取消幂等返回 true");
+    }
+
+    #[test]
+    fn gate_wait_released_times_out_while_busy_and_succeeds_when_free() {
+        let gate = ScenarioEnterGate::new();
+        let g1 = gate.begin("scene-a").unwrap();
+        assert!(
+            !gate.wait_released(Duration::from_millis(80)),
+            "占用期间等待超时必须失败"
+        );
+        drop(g1);
+        assert!(gate.wait_released(Duration::from_millis(80)), "空闲后等待立即成功");
+    }
+
+    #[test]
+    fn gate_wait_released_wakes_on_finish() {
+        let gate = Arc::new(ScenarioEnterGate::new());
+        let g1 = gate.begin("scene-a").unwrap();
+        let waiter_gate = gate.clone();
+        let waiter = std::thread::spawn(move || waiter_gate.wait_released(Duration::from_secs(2)));
+        std::thread::sleep(Duration::from_millis(100));
+        drop(g1);
+        assert!(waiter.join().unwrap(), "释放后等待者应被唤醒");
+    }
+
+    #[test]
+    fn gate_begin_after_panic_drop_is_free() {
+        let gate = ScenarioEnterGate::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = gate.begin("scene-a").unwrap();
+            panic!("模拟进入线程异常退出");
+        }));
+        assert!(result.is_err());
+        assert_eq!(gate.status(), None, "panic 后 guard drop 必须释放槽");
+        let _g = gate.begin("scene-a").unwrap();
+    }
+
+    #[test]
+    fn delete_inflight_scenario_requests_cancel_and_conflicts_until_exit() {
+        let db = memdb();
+        let gate = ScenarioEnterGate::new();
+        let id = save(&db, &base_input("在途场景")).unwrap();
+        let guard = gate.begin(&id).unwrap();
+
+        let e = delete_guarded(&gate, &db, &id, Duration::from_millis(80)).unwrap_err();
+        assert!(e.to_string().contains("正在进入"), "实际: {e}");
+        assert!(
+            guard.cancel_flag().load(Ordering::Acquire),
+            "删除必须先请求取消"
+        );
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM scenarios"), 1, "未退出前不得删除");
+
+        drop(guard);
+        delete_guarded(&gate, &db, &id, Duration::from_millis(80)).unwrap();
+        assert_eq!(count(&db, "SELECT COUNT(*) FROM scenarios"), 0);
+    }
+
+    #[test]
+    fn delete_other_scenario_unaffected_by_inflight_enter() {
+        let db = memdb();
+        let gate = ScenarioEnterGate::new();
+        let busy = save(&db, &base_input("在途")).unwrap();
+        let other = save(&db, &base_input("无关场景")).unwrap();
+        let guard = gate.begin(&busy).unwrap();
+
+        delete_guarded(&gate, &db, &other, Duration::from_millis(10)).unwrap();
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) FROM scenarios"),
+            1,
+            "其他场景在途不得阻断本删除"
+        );
+        assert!(get(&db, &other).is_err(), "被删的应是无关场景");
+        assert!(get(&db, &busy).is_ok(), "在途场景必须原样保留");
+        assert!(!guard.cancel_flag().load(Ordering::Acquire), "不得误取消别的场景");
     }
 }

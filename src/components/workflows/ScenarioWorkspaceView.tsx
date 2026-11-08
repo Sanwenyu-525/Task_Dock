@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Check, Copy, Loader2, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Copy, FolderOpen, Loader2, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   onWorkflowRunProgress,
   onWorkspaceRestoreProgress,
@@ -11,6 +12,7 @@ import {
   type ScenarioAppTarget,
   type ScenarioDetail,
   type ScenarioEnterItemResult,
+  type ScenarioEnterResult,
   type ScenarioSaveInput,
   type ScenarioSummary,
   type ShelfItem,
@@ -22,7 +24,7 @@ import { createSubscriptionScope } from "../../lib/subscriptions";
 import { errorMessage } from "../../lib/errors";
 import { useScenarioStore, scenarioItemProgressKey, type ScenarioAsyncStatus } from "../../store/useScenarioStore";
 import ContextHelpButton from "../help/ContextHelpButton";
-import { Combobox, ConfirmDialog, EmptyState, SearchField, Select } from "../ui";
+import { Combobox, ConfirmDialog, EmptyState, Popover, SearchField, Select } from "../ui";
 import "./scenario-workspace.css";
 
 interface ScenarioDraft {
@@ -31,7 +33,8 @@ interface ScenarioDraft {
   icon: string;
   apps: ScenarioAppTarget[];
   urlsText: string;
-  foldersText: string;
+  /** 文件夹条目：主入口是系统文件选择器（多选），手动输入只是补充。 */
+  folders: string[];
   snapshotId: string;
   linkedWorkflowId: string;
   shelfItemIds: string[];
@@ -42,7 +45,7 @@ const EMPTY_DRAFT: ScenarioDraft = {
   icon: "",
   apps: [],
   urlsText: "",
-  foldersText: "",
+  folders: [],
   snapshotId: "",
   linkedWorkflowId: "",
   shelfItemIds: [],
@@ -50,6 +53,13 @@ const EMPTY_DRAFT: ScenarioDraft = {
 const MANUAL_APP_TARGET = "__use_executable_path__";
 const NO_ASSOCIATION = "__no_association__";
 const SHELF_PAGE_SIZE = 100;
+
+/** 场景图标预设：覆盖工作 / 创作 / 生活 / 休息等常见场景语义，点选写入 icon 字段（后端仍按 4 字符截断兜底）。 */
+const SCENARIO_ICONS = [
+  "💼", "🖥️", "💻", "📊", "✍️", "📚", "🎨", "🎬", "🎮", "🎵",
+  "🧠", "🔬", "🛠️", "⚙️", "📅", "📝", "🌐", "☁️", "🧩", "🚀",
+  "🏠", "☕", "🌙", "🌅", "🏃", "🧘", "💤", "📦",
+] as const;
 
 function shelfKindLabel(kind: ShelfItem["kind"]): string {
   return kind === "folder" ? "文件夹" : "文件";
@@ -72,7 +82,7 @@ function draftFromDetail(detail: ScenarioDetail): ScenarioDraft {
     icon: detail.icon ?? "",
     apps: detail.apps.map((app) => ({ ...app })),
     urlsText: detail.urls.join("\n"),
-    foldersText: detail.folders.join("\n"),
+    folders: [...detail.folders],
     snapshotId: detail.snapshotId ?? "",
     linkedWorkflowId: detail.linkedWorkflowId ?? "",
     shelfItemIds: detail.shelfItemIds ?? [],
@@ -90,11 +100,17 @@ function saveInput(draft: ScenarioDraft): ScenarioSaveInput {
     icon: draft.icon || null,
     apps: draft.apps,
     urls: lines(draft.urlsText),
-    folders: lines(draft.foldersText),
+    folders: draft.folders,
     snapshotId: draft.snapshotId || null,
     linkedWorkflowId: draft.linkedWorkflowId || null,
     shelfItemIds: draft.shelfItemIds,
   };
+}
+
+/** 系统文件夹选择器返回值归一化：null（用户取消）/ 单个 / 多个。 */
+function normalizeDialogPaths(picked: string | string[] | null): string[] {
+  if (picked == null) return [];
+  return (Array.isArray(picked) ? picked : [picked]).map((p) => p.trim()).filter(Boolean);
 }
 
 function progressLabel(status: ScenarioAsyncStatus): string {
@@ -111,11 +127,17 @@ function progressLabel(status: ScenarioAsyncStatus): string {
 function itemPresentation(
   item: ScenarioEnterItemResult,
   progress: { status: ScenarioAsyncStatus; detail: string } | undefined,
+  enterCancelled = false,
 ): { status: ScenarioAsyncStatus; label: string; detail: string } {
   if (item.status === "skipped") {
     return { status: "partial", label: "已跳过", detail: item.detail ?? "该项未执行" };
   }
   if (item.status === "failed") {
+    // 本次进入被用户取消时，后端的取消项 detail 是受控契约文案（含「取消」），
+    // 按「已取消」呈现而不是失败；真实执行失败照旧显示失败。
+    if (enterCancelled && (item.detail ?? "").includes("取消")) {
+      return { status: "cancelled", label: "已取消", detail: item.detail ?? "" };
+    }
     return { status: "failed", label: "失败", detail: item.detail ?? "该项执行失败" };
   }
   if (item.kind === "snapshot" || item.kind === "workflow") {
@@ -128,13 +150,17 @@ function itemPresentation(
 function resultState(
   items: ScenarioEnterItemResult[],
   progressByItem: Record<string, { status: ScenarioAsyncStatus; detail: string }>,
+  result?: Pick<ScenarioEnterResult, "cancelled" | "timedOut">,
 ): { status: ScenarioAsyncStatus; label: string } {
+  if (result?.cancelled) return { status: "cancelled", label: "已取消" };
+  if (result?.timedOut) return { status: "failed", label: "已超时" };
   const presentations = items.map((item) =>
     itemPresentation(
       item,
       item.kind === "snapshot" || item.kind === "workflow"
         ? progressByItem[scenarioItemProgressKey(item.kind, item.label)]
         : undefined,
+      result?.cancelled === true,
     ),
   );
   if (presentations.some((item) => item.status === "running")) return { status: "running", label: "运行中" };
@@ -145,12 +171,20 @@ function resultState(
   return { status: "completed", label: "已完成" };
 }
 
+/** 取消/超时后的整体摘要：已处理数与计划总数，并明确「已启动项不回滚」。 */
+function stopSummary(result: ScenarioEnterResult): string | null {
+  if (!result.cancelled && !result.timedOut) return null;
+  const reason = result.cancelled ? "已取消" : "已超时";
+  return `${reason}：已处理 ${result.items.length}/${result.total} 项，剩余项未执行；已启动的应用、网页与现场恢复不会被关闭。`;
+}
+
 export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }) {
   const summaries = useScenarioStore((s) => s.summaries);
   const loading = useScenarioStore((s) => s.loading);
   const loaded = useScenarioStore((s) => s.loaded);
   const error = useScenarioStore((s) => s.error);
   const enteringId = useScenarioStore((s) => s.enteringId);
+  const cancellingId = useScenarioStore((s) => s.cancellingId);
   const results = useScenarioStore((s) => s.results);
   const progressByItem = useScenarioStore((s) => s.progressByItem);
   const load = useScenarioStore((s) => s.load);
@@ -160,6 +194,7 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
   const remove = useScenarioStore((s) => s.remove);
   const duplicate = useScenarioStore((s) => s.duplicate);
   const enter = useScenarioStore((s) => s.enter);
+  const cancelEnter = useScenarioStore((s) => s.cancelEnter);
   const applyRestoreProgress = useScenarioStore((s) => s.applyRestoreProgress);
   const applyWorkflowProgress = useScenarioStore((s) => s.applyWorkflowProgress);
 
@@ -183,6 +218,9 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
   const shelfRequestId = useRef(0);
   const [refError, setRefError] = useState<string | null>(null);
   const [viewError, setViewError] = useState<string | null>(null);
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const iconAnchorRef = useRef<HTMLButtonElement | null>(null);
+  const [folderManual, setFolderManual] = useState("");
 
   useEffect(() => {
     const scope = createSubscriptionScope();
@@ -362,6 +400,46 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
     });
   };
 
+  /** 系统文件夹选择器（多选）：选中的路径并入清单，去重保序；用户取消（null）静默返回。 */
+  const browseFolders = async () => {
+    setViewError(null);
+    let picked: string | string[] | null;
+    try {
+      picked = await openDialog({ directory: true, multiple: true, title: "选择文件夹" });
+    } catch (e) {
+      setViewError(`文件夹选择失败：${errorMessage(e)}`);
+      return;
+    }
+    const paths = normalizeDialogPaths(picked);
+    if (paths.length === 0) return;
+    setDraft((current) => {
+      if (!current) return current;
+      const seen = new Set(current.folders);
+      const merged = [...current.folders];
+      for (const path of paths) {
+        if (!seen.has(path)) {
+          seen.add(path);
+          merged.push(path);
+        }
+      }
+      return { ...current, folders: merged };
+    });
+  };
+
+  const addFolderManual = () => {
+    const path = folderManual.trim();
+    if (!path) return;
+    setDraft((current) => {
+      if (!current || current.folders.includes(path)) return current;
+      return { ...current, folders: [...current.folders, path] };
+    });
+    setFolderManual("");
+  };
+
+  const removeFolder = (path: string) => {
+    setDraft((current) => (current ? { ...current, folders: current.folders.filter((item) => item !== path) } : current));
+  };
+
   const saveDraft = async () => {
     if (!draft || saving) return;
     setSaving(true);
@@ -415,9 +493,31 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
                 onChange={(event) => setDraft({ ...draft, name: event.target.value })} autoFocus />
             </div>
             <div className="form-field">
-              <label className="form-label" htmlFor="scenario-icon">图标（可选）</label>
-              <input id="scenario-icon" className="input" maxLength={4} value={draft.icon}
-                onChange={(event) => setDraft({ ...draft, icon: event.target.value })} placeholder="如 ✍️" />
+              <span className="form-label" id="scenario-icon-label">图标（可选）</span>
+              <button type="button" ref={iconAnchorRef} className="input scenario-icon-trigger"
+                aria-label={draft.icon ? `场景图标 ${draft.icon}，点击更换` : "选择场景图标"}
+                aria-haspopup="dialog" aria-expanded={iconPickerOpen}
+                onClick={() => setIconPickerOpen((open) => !open)}>
+                {draft.icon ? <span className="scenario-icon-value" aria-hidden="true">{draft.icon}</span> : <span className="scenario-icon-placeholder">点击选择</span>}
+              </button>
+              <Popover open={iconPickerOpen} onOpenChange={setIconPickerOpen} anchorRef={iconAnchorRef}
+                layer="menu" placement="bottom-start" role="dialog" ariaLabel="选择场景图标">
+                <div className="scenario-icon-grid">
+                  {SCENARIO_ICONS.map((emoji) => (
+                    <button key={emoji} type="button" className={`scenario-icon-option${draft.icon === emoji ? " is-selected" : ""}`}
+                      aria-label={`图标 ${emoji}`} aria-pressed={draft.icon === emoji}
+                      onClick={() => { setDraft({ ...draft, icon: emoji }); setIconPickerOpen(false); }}>
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+                {draft.icon ? (
+                  <button type="button" className="btn sm scenario-icon-clear"
+                    onClick={() => { setDraft({ ...draft, icon: "" }); setIconPickerOpen(false); }}>
+                    清除图标
+                  </button>
+                ) : null}
+              </Popover>
             </div>
           </div>
 
@@ -471,10 +571,33 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
             <textarea id="scenario-urls" className="input scenario-textarea" rows={3} value={draft.urlsText}
               onChange={(event) => setDraft({ ...draft, urlsText: event.target.value })} />
           </div>
-          <div className="form-field">
-            <label className="form-label" htmlFor="scenario-folders">文件夹路径（每行一个）</label>
-            <textarea id="scenario-folders" className="input scenario-textarea" rows={3} value={draft.foldersText}
-              onChange={(event) => setDraft({ ...draft, foldersText: event.target.value })} />
+          <div className="scenario-section-head">
+            <h3>文件夹 <span className="scenario-shelf-count">{draft.folders.length}</span></h3>
+            <button type="button" className="btn sm" onClick={() => void browseFolders()}>
+              <FolderOpen size={13} aria-hidden="true" /> 浏览添加…
+            </button>
+          </div>
+          {draft.folders.length > 0 ? (
+            <ul className="scenario-folder-list" aria-label="已选择的文件夹">
+              {draft.folders.map((folder) => (
+                <li key={folder} className="scenario-folder-row">
+                  <span className="scenario-folder-path">{folder}</span>
+                  <button type="button" className="icon-btn sm" aria-label={`移除文件夹 ${folder}`}
+                    onClick={() => removeFolder(folder)}>
+                    <Trash2 size={13} aria-hidden="true" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="wf-hint-text">还没有文件夹。点击「浏览添加」从系统选择，或在下方手动输入路径。</p>
+          )}
+          <div className="form-field scenario-folder-manual">
+            <input id="scenario-folder-manual" className="input" value={folderManual}
+              aria-label="手动添加文件夹路径"
+              placeholder="手动输入文件夹路径，回车添加（可选）"
+              onChange={(event) => setFolderManual(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addFolderManual(); } }} />
           </div>
 
           <div className="scenario-shelf-section">
@@ -593,7 +716,9 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
       <div className="planning-cards scenario-cards">
         {filtered.map((scene) => {
           const result = results[scene.id];
-          const state = result ? resultState(result.items, progressByItem) : null;
+          const state = result ? resultState(result.items, progressByItem, result) : null;
+          const summary = result ? stopSummary(result) : null;
+          const entering = enteringId === scene.id;
           return (
             <article className="task-card planning-card scenario-card" key={scene.id}>
               <div className="scenario-card-head">
@@ -610,7 +735,7 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
                     const progress = item.kind === "snapshot" || item.kind === "workflow"
                       ? progressByItem[scenarioItemProgressKey(item.kind, item.label)]
                       : undefined;
-                    const shown = itemPresentation(item, progress);
+                    const shown = itemPresentation(item, progress, result.cancelled === true);
                     return (
                       <li className={`scenario-result tone-${shown.status}`} key={`${item.kind}-${index}`}>
                         <span className="scenario-result-name">{item.kind} · {item.label}</span>
@@ -621,19 +746,29 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
                   })}
                 </ol>
               ) : null}
-              {enteringId === scene.id ? <p className="wf-empty-steps" role="status"><Loader2 size={13} className="spin" aria-hidden="true" /> 正在进入场景…</p> : null}
+              {summary ? <p className="wf-hint-text scenario-stop-summary" role="status">{summary}</p> : null}
+              {entering ? <p className="wf-empty-steps" role="status"><Loader2 size={13} className="spin" aria-hidden="true" /> 正在进入场景…</p> : null}
               <div className="scenario-actions">
                 <button type="button" className="btn primary sm" disabled={enteringId !== null || actionId !== null}
                   onClick={() => void perform(scene.id, () => enter(scene.id))}>
-                  {enteringId === scene.id ? <Loader2 size={13} className="spin" aria-hidden="true" /> : <Play size={13} aria-hidden="true" />} 进入
+                  {entering ? <Loader2 size={13} className="spin" aria-hidden="true" /> : <Play size={13} aria-hidden="true" />} 进入
                 </button>
-                <button type="button" className="icon-btn sm" aria-label={`编辑 ${scene.name}`} disabled={actionId !== null} onClick={() => void beginEdit(scene.id)}>
+                {entering ? (
+                  <button type="button" className="btn sm" disabled={cancellingId !== null}
+                    aria-label={`取消进入 ${scene.name}`}
+                    onClick={() => void cancelEnter(scene.id)}>
+                    取消
+                  </button>
+                ) : null}
+                {/* 进入期间禁用全部卡片的编辑/复制/删除：避免改到正在进入的配置，
+                    也避免删除在途场景（后端删除守卫同样会拒绝）。 */}
+                <button type="button" className="icon-btn sm" aria-label={`编辑 ${scene.name}`} disabled={enteringId !== null || actionId !== null} onClick={() => void beginEdit(scene.id)}>
                   <Pencil size={13} aria-hidden="true" />
                 </button>
-                <button type="button" className="icon-btn sm" aria-label={`复制 ${scene.name}`} disabled={actionId !== null} onClick={() => void perform(scene.id, () => duplicate(scene.id))}>
+                <button type="button" className="icon-btn sm" aria-label={`复制 ${scene.name}`} disabled={enteringId !== null || actionId !== null} onClick={() => void perform(scene.id, () => duplicate(scene.id))}>
                   <Copy size={13} aria-hidden="true" />
                 </button>
-                <button type="button" className="icon-btn sm" aria-label={`删除 ${scene.name}`} disabled={actionId !== null} onClick={() => setDeleteTarget(scene)}>
+                <button type="button" className="icon-btn sm" aria-label={`删除 ${scene.name}`} disabled={enteringId !== null || actionId !== null} onClick={() => setDeleteTarget(scene)}>
                   <Trash2 size={13} aria-hidden="true" />
                 </button>
                 <span className="flex-spacer" />

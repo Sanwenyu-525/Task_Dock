@@ -1,0 +1,7 @@
+# 原生工程由 `npx expo prebuild` 从 app.json 生成，不入库
+node_modules/
+android/
+ios/
+.expo/
+dist/
+*.log

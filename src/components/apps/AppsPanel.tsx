@@ -14,16 +14,17 @@
 //! - 添加复用 `AppPicker standalone` 子页面；编辑复用共享 `TargetEditForm` 页内表单；
 //!   本页只做删除确认与刷新，不写第二套保存逻辑。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle, FolderOpen, LayoutGrid, Link2, Loader2, MoreHorizontal, Pencil, Plus, RefreshCw,
-  Star, Trash2, EyeOff, Eye, X,
+  AlertTriangle, FolderOpen, LayoutGrid, Link2, Loader2, MoreHorizontal, OctagonX, Pencil, Plus,
+  Power, RefreshCw, SquareX, Star, Trash2, EyeOff, Eye, X,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
 import { useNavigationStore, type RefreshOutcome } from "../../store/useNavigationStore";
 import { errorMessage, normalizeError } from "../../lib/errors";
 import {
-  navDeleteTarget, navNavigate, navTargetRunningStates, navUpdateTarget,
+  navCloseTargetWindows, navDeleteTarget, navKillTargetProcesses, navNavigate,
+  navQuitTargetProcesses, navTargetRunningStates, navUpdateTarget,
   resultMessage, stateBadge, TARGET_TYPE_LABELS,
   type NavTarget,
 } from "../../lib/navigation";
@@ -87,11 +88,29 @@ export default function AppsPanel() {
   >(null);
   const [pendingDelete, setPendingDelete] = useState<NavTarget | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  /** 强制结束进程是破坏性动作：先经确认弹窗（对齐删除的纪律），再调后端。 */
+  const [pendingKill, setPendingKill] = useState<NavTarget | null>(null);
+  const [killBusy, setKillBusy] = useState(false);
+  /** 请求退出（WM_QUIT）无破坏性，不需要确认；只防并发重复触发。 */
+  const [quitBusy, setQuitBusy] = useState(false);
   /** 后端删除成功但列表刷新失败时，本地先隐藏该项，避免旧缓存把已删除目标显示回来。 */
   const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set());
   const [launchingIds, setLaunchingIds] = useState<ReadonlySet<string>>(new Set());
+  /** 正在优雅关闭窗口的目标：防重入；与 launchingIds 同一套并发纪律。 */
+  const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(new Set());
   /** 哪张卡片的「更多」菜单正展开：让整卡保持 hover 态，菜单关闭后恢复 */
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  /** 启动后的运行态补查定时器：慢启动应用窗口晚于启动返回出现，靠补查
+      让徽标/关闭按钮跟上真实状态；定时器可取消、卸载即清，非常驻轮询。 */
+  const stateRecheckTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(
+    () => () => {
+      for (const t of stateRecheckTimers.current) clearTimeout(t);
+      stateRecheckTimers.current = [];
+    },
+    [],
+  );
 
   const apps = useMemo(
     () => targets.filter(
@@ -196,6 +215,27 @@ export default function AppsPanel() {
       return next;
     });
 
+  const markClosing = (id: string, on: boolean) =>
+    setClosingIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+  /** 启动成功后排两次有界补查（2.5s / 6s）：后端启动确认最多等 5s，慢启动
+      应用（酷狗等）的窗口常在这之后才出现，只查一次会把「窗口已打开」卡在
+      旧状态。单发定时器、次数有上限、卸载即清，不做常驻轮询。 */
+  function scheduleStateRecheck() {
+    for (const delay of [2500, 6000]) {
+      const timer = setTimeout(() => {
+        stateRecheckTimers.current = stateRecheckTimers.current.filter((x) => x !== timer);
+        void fetchRunningStates();
+      }, delay);
+      stateRecheckTimers.current.push(timer);
+    }
+  }
+
   /** 写入已成功、界面刷新失败时：保留成功事实 + 刷新失败说明 + 只读重试。 */
   function notifyRefresh(
     successMessage: string,
@@ -233,6 +273,8 @@ export default function AppsPanel() {
         // 启动已成功；刷新失败只影响列表展示，不能把启动结果说成失败。
         const outcome = await loadTargets(true);
         await fetchRunningStates();
+        // 窗口可能晚于启动返回出现：补查让徽标/关闭按钮跟上真实状态。
+        scheduleStateRecheck();
         if (outcome === "error") {
           showToast(tr("apps.launchRefreshFailed"), {
             kind: "warning",
@@ -246,6 +288,95 @@ export default function AppsPanel() {
       });
     } finally {
       markLaunching(t.id, false);
+    }
+  }
+
+  /** 优雅关闭该应用的全部顶层窗口：后端按 exe 身份现查现关（WM_CLOSE），
+      不结束进程；应用弹「是否保存」时窗口仍在，按结果如实提示。 */
+  async function closeWindows(t: NavTarget) {
+    if (closingIds.has(t.id)) return;
+    markClosing(t.id, true);
+    try {
+      const r = await navCloseTargetWindows(t.id);
+      if (r.requested === 0) {
+        showToast(tr("apps.windowCloseNone", { name: t.display_name }), { kind: "warning" });
+      } else if (r.stillOpen.length > 0) {
+        showToast(
+          tr("apps.windowClosePartial", { name: t.display_name, count: r.stillOpen.length }),
+          { kind: "warning" },
+        );
+      } else {
+        showToast(tr("apps.windowClosed", { name: t.display_name, count: r.closed }), {
+          kind: "success",
+        });
+      }
+      await fetchRunningStates();
+    } catch (e) {
+      showToast(tr("apps.windowCloseFailed", { name: t.display_name, error: errorMessage(e) }), {
+        kind: "error",
+      });
+    } finally {
+      markClosing(t.id, false);
+    }
+  }
+
+  /** 强制结束该应用的全部相关进程（TerminateProcess）：破坏性动作，
+      只在确认弹窗后执行；托盘驻留类应用（关窗不退进程）从这里彻底退出。 */
+  async function killProcess(t: NavTarget) {
+    if (killBusy) return;
+    setKillBusy(true);
+    try {
+      const r = await navKillTargetProcesses(t.id);
+      if (r.matched === 0) {
+        showToast(tr("apps.processKillNone", { name: t.display_name }), { kind: "warning" });
+      } else if (r.failedPids.length > 0) {
+        showToast(tr("apps.processKillPartial", { name: t.display_name, count: r.failedPids.length }), {
+          kind: "warning",
+        });
+      } else {
+        showToast(tr("apps.processKilled", { name: t.display_name, count: r.killed }), {
+          kind: "success",
+        });
+      }
+      await fetchRunningStates();
+    } catch (e) {
+      showToast(tr("apps.processKillFailed", { name: t.display_name, error: errorMessage(e) }), {
+        kind: "error",
+      });
+    } finally {
+      setKillBusy(false);
+    }
+  }
+
+  /** 请求应用自行退出（向其线程投递 WM_QUIT，等价托盘「退出」）：应用走
+      自己的保存/清理/移除托盘路径，无破坏性；不配合的（自定义消息循环）
+      如实报未完全退出，引导改用结束进程。 */
+  async function quitProcess(t: NavTarget) {
+    if (quitBusy) return;
+    setQuitBusy(true);
+    try {
+      const r = await navQuitTargetProcesses(t.id);
+      if (r.processTotal === 0) {
+        showToast(tr("apps.quitNone", { name: t.display_name }), { kind: "warning" });
+      } else if (r.processExited < r.processTotal) {
+        showToast(
+          tr("apps.quitPartial", {
+            name: t.display_name,
+            done: r.processExited,
+            total: r.processTotal,
+          }),
+          { kind: "warning" },
+        );
+      } else {
+        showToast(tr("apps.quitDone", { name: t.display_name }), { kind: "success" });
+      }
+      await fetchRunningStates();
+    } catch (e) {
+      showToast(tr("apps.quitFailed", { name: t.display_name, error: errorMessage(e) }), {
+        kind: "error",
+      });
+    } finally {
+      setQuitBusy(false);
     }
   }
 
@@ -359,6 +490,26 @@ export default function AppsPanel() {
         icon: <Pencil size={12} aria-hidden="true" />,
         onSelect: () => requestEdit(t),
       },
+      // 关闭窗口是高频动作，已上卡片操作区（见 renderTile），菜单不再重复。
+      // 退出应用 = WM_QUIT 优雅档（等价托盘退出）；结束进程 = 强杀（破坏性，
+      // 仅运行中提供且需确认弹窗）。
+      ...(RUNNING_STATES.has(runningStates[t.id] ?? "")
+        ? [
+            {
+              key: "quit-app",
+              label: "退出应用（自行保存并退出）",
+              icon: <Power size={12} aria-hidden="true" />,
+              onSelect: () => void quitProcess(t),
+            },
+            {
+              key: "kill-process",
+              label: "结束进程（强制，未保存数据将丢失）",
+              icon: <OctagonX size={12} aria-hidden="true" />,
+              danger: true,
+              onSelect: () => setPendingKill(t),
+            },
+          ]
+        : []),
       {
         key: "hide",
         label: t.hidden ? "取消隐藏" : "隐藏（不在胶囊与选择器显示）",
@@ -384,7 +535,30 @@ export default function AppsPanel() {
         aria-label={t.favorite ? `取消收藏 ${t.display_name}` : `收藏 ${t.display_name}`}
         onClick={() => void toggleFavorite(t)}
       >
-        <Star size={12} aria-hidden="true" />
+        <Star size={12} aria-hidden="true" fill={t.favorite ? "currentColor" : "none"} />
+      </button>
+    );
+  }
+
+  /** 卡片上的高频关闭入口：仅「窗口已打开」显示（与徽标同源），优雅关闭
+      WM_CLOSE 不需要确认——应用自身的保存弹窗就是防线；强制结束进程仍收在
+      ⋯ 菜单并要求确认（破坏性、低频）。 */
+  function renderCloseWindow(t: NavTarget) {
+    const closing = closingIds.has(t.id);
+    return (
+      <button
+        type="button"
+        className="icon-btn sm"
+        data-tip="关闭窗口"
+        aria-label={`关闭 ${t.display_name} 的窗口`}
+        disabled={closing}
+        onClick={() => void closeWindows(t)}
+      >
+        {closing ? (
+          <Loader2 size={12} className="spin" aria-hidden="true" />
+        ) : (
+          <SquareX size={12} aria-hidden="true" />
+        )}
       </button>
     );
   }
@@ -460,6 +634,7 @@ export default function AppsPanel() {
         </button>
         <div className="apps-tile-actions">
           {renderStar(t)}
+          {runningStates[t.id] === "has_window" && renderCloseWindow(t)}
           <DropdownMenu
             trigger={({ ref, expanded, onClick, onKeyDown }) => (
               <button
@@ -758,6 +933,22 @@ export default function AppsPanel() {
             showToast("目标已删除", { kind: "success" });
           }
           setDeleteBusy(false);
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!pendingKill}
+        title={`强制结束「${pendingKill?.display_name ?? ""}」的进程？`}
+        detail="将直接终止该应用及其子进程，不经过正常的退出流程；未保存的文档与数据会丢失。多数应用关闭窗口后仍在托盘驻留，只有确认不再需要它运行时才使用本操作。"
+        confirmLabel="结束进程"
+        danger
+        busy={killBusy}
+        onCancel={() => setPendingKill(null)}
+        onConfirm={async () => {
+          if (!pendingKill) return;
+          const target = pendingKill;
+          setPendingKill(null);
+          await killProcess(target);
         }}
       />
     </div>

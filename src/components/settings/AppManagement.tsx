@@ -496,7 +496,7 @@ export default function AppManagement({
                   }
                 }}
               >
-                <Star size={11} />
+                <Star size={11} fill={t.favorite ? "currentColor" : "none"} />
               </button>
               <button
                 className={`icon-btn sm ${t.hidden ? "default-on" : ""}`}

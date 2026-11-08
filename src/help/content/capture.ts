@@ -1,4 +1,7 @@
-//! 文件笔记与收集箱类教程（2 篇，verified）。
+//! 文件笔记与收集箱类教程（2 篇）。
+//! shelf：2026-11-08 按当前源码（ShelfWorkspace/ShelfDetail）复核——「从剪贴板添加」默认
+//! 以引用方式登记原文件（copyOnAdd 默认 false，可显式切换复制副本），原「会复制出独立副本」
+//! 表述已更正；转 verified 并登记 core.file-shelf 契约版本 2。
 
 import type { HelpArticle } from "../types";
 
@@ -43,9 +46,44 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
           },
         ],
       },
+      "en-US": {
+        title: "Inbox and quick notes",
+        summary:
+          "Capture first, decide later: turn inbox items into tasks or notes; notes auto-save and support pinning and search.",
+        sections: [
+          { type: "heading", text: "Inbox" },
+          {
+            type: "steps",
+            items: [
+              "Press Ctrl+5 or open \"Capture & Shelf\" and go to the quick-capture sub-page; the badge shows unprocessed items.",
+              "By default only unprocessed items are shown: copy, turn into a task, turn into a note, mark as processed or delete.",
+              "Ideas / snippets / links captured from the quick-capture window land here too.",
+            ],
+          },
+          { type: "heading", text: "Quick notes" },
+          {
+            type: "steps",
+            items: [
+              "Inside \"Capture & Shelf\", switch to the notes sub-page and click \"New\".",
+              "Notes save automatically while you type (debounced) — there is no save button.",
+              "Favorited notes are pinned to the top; the search box filters by title and body.",
+              "Built-in templates give you a quick start; \"Turn into note\" on an inbox item carries the content over.",
+            ],
+          },
+          {
+            type: "paragraph",
+            text: "Notes can be linked to tasks and workspaces so you can revisit them in a task's context; global search covers notes as well.",
+          },
+          {
+            type: "note",
+            text: "Quick notes are intentionally lightweight: no backlinks, no rich text. For structured content, create a task and link a workspace instead.",
+          },
+        ],
+      },
     },
     keywords: {
       "zh-CN": ["收集箱", "笔记", "转任务", "置顶", "模板", "自动保存", "未处理"],
+      "en-US": ["inbox", "note", "turn into task", "pin", "template", "auto save", "unprocessed"],
     },
     relatedFeatureIds: ["core.quick-notes", "core.quick-capture"],
     relatedRouteIds: ["inbox"],
@@ -53,9 +91,10 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
   {
     id: "help.capture.shelf",
     categoryId: "capture",
-    status: "needs_review",
-    contentVersion: 2,
+    status: "verified",
+    contentVersion: 3,
     reviewedForVersion: "v0.11",
+    reviewedOperationContractVersions: { "core.file-shelf": 2 },
     translations: {
       "zh-CN": {
         title: "文件暂存架：临时文件的收纳区",
@@ -67,7 +106,7 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
             items: [
               "Ctrl+6 或「收集与暂存 → 文件暂存」进入暂存架。",
               "四种添加方式：文件选择器（可多选与选文件夹）、直接拖入文件、粘贴链接、保存文本片段。",
-              "「从剪贴板添加」会复制出独立副本：之后清空剪贴板不影响暂存内容。",
+              "「从剪贴板添加」从最近的剪贴板条目中挑选：文件默认以「引用」方式登记原路径（不复制、不占磁盘），需要独立副本时用旁边的开关切换为复制到托管目录；文本与链接保存内容本身。之后清空剪贴板不影响已暂存内容。",
             ],
           },
           { type: "heading", text: "整理与查找" },
@@ -90,9 +129,44 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
           },
         ],
       },
+      "en-US": {
+        title: "File shelf: a home for temporary files",
+        summary:
+          "Drag files / screenshots / links into the shelf to manage them in one place, with grouping, bulk tidying and expiry cleanup.",
+        sections: [
+          { type: "heading", text: "Adding items" },
+          {
+            type: "steps",
+            items: [
+              "Press Ctrl+6 or open \"Capture & Shelf → File shelf\".",
+              "Four ways to add: the file picker (multi-select and folders), dragging files in, pasting a link, or saving a text snippet.",
+              "\"Add from clipboard\" picks from recent clipboard entries: files are registered by reference to their original path by default (nothing is copied, no disk used); flip the nearby switch to copy a managed duplicate instead. Text and links store the content itself. Clearing the clipboard afterwards never affects what is already shelved.",
+            ],
+          },
+          { type: "heading", text: "Organize and find" },
+          {
+            type: "paragraph",
+            text: "Search, type filters, group filters, favorites filter and pinned sorting are supported; multi-select enables bulk move-to-group, favorite or delete (favorited, pinned and scene-referenced items are protected). Images get thumbnails and a lightbox preview; text and HTML get a sanitized read-only preview.",
+          },
+          { type: "heading", text: "Taking out and cleanup" },
+          {
+            type: "steps",
+            items: [
+              "System-level drag-out to Explorer is not supported yet; use \"Copy path\", \"Copy file\" or \"Reveal in folder\" instead.",
+              "Expiry cleanup is off by default; when enabled it checks once per hour. The manual \"Clean expired now\" first previews candidates and asks for confirmation before deleting.",
+              "Favorited, pinned and scene-referenced items are skipped by default; cleanup only deletes Task Dock-managed duplicates and shelf records — never your original files.",
+            ],
+          },
+          {
+            type: "note",
+            text: "Shelf vs clipboard history: the clipboard passively records what you copy, the shelf is what you actively curate; the two never mix data. Shelf items can be linked to tasks, and deleting a task never deletes shelf resources.",
+          },
+        ],
+      },
     },
     keywords: {
       "zh-CN": ["暂存架", "文件", "拖入", "分组", "过期清理", "复制路径", "托管副本"],
+      "en-US": ["shelf", "file", "drag in", "group", "expiry cleanup", "copy path", "managed copy"],
     },
     relatedFeatureIds: ["core.file-shelf"],
     relatedRouteIds: ["inbox"],

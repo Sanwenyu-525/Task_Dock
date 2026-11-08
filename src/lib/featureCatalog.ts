@@ -147,7 +147,9 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     detail:
       "场景是可反复进入的预设组合（v38 已落地独立实体）：一组应用、网址、文件目录、关联工作现场 / 工作流与暂存架文件。" +
       "与「工作现场恢复」的区别：现场 = 某个任务此刻环境的快照；场景 = 预先定义、可一键进入的标准工作组合。" +
-      "场景只软引用 workspace_snapshots（不复制快照），自身不保存窗口几何；直接进入无取消能力、后端无并发互斥，" +
+      "场景只软引用 workspace_snapshots（不复制快照），窗口几何经关联现场快照间接获得（v40：快照条目已含窗口矩形/显示器/DPI，" +
+      "恢复时按显示器映射或收敛到工作区）；2026-11-08 已交付进入取消/整体超时/后端互斥（取消与超时只在项间生效，" +
+      "已启动项不回滚），剩余缺口为「退出场景」动作与场景专属设置，" +
       "因此登记为 partial（嵌套深度校验不属于缺口：三层允许、第四层拒绝，保存与运行前共用同一校验，已由 5 个回归用例锁定）。",
     status: "partial",
     priority: "P0",
@@ -156,16 +158,15 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "场景创建 / 编辑（整体覆盖清单）/ 删除 / 复制；删除只解除引用，不删现场、工作流、暂存条目或用户原文件",
       "场景内容：应用、网址、文件目录 + 关联工作现场 + 关联工作流 + 暂存架文件/文件夹软关联（shelf_items.scene_id）",
       "一键进入：现场恢复 → 应用 → 网址 → 目录 → 关联工作流，逐项 ok/skipped/failed 回执 + 进度事件",
+      "进入取消与整体超时（2026-11-08）：后端 ScenarioEnterGate 唯一操作槽，并发进入返回可重试冲突；scenario_enter_cancel 可取消，整体预算 120s；取消/超时只阻止未执行项，结果回执含 cancelled/timedOut/total；进入期间全卡片编辑/复制/删除禁用",
+      "删除守卫（2026-11-08）：删除在途场景先请求取消并最多等 2s，未退出返回冲突且不删除；其他场景删除不受影响",
       "保存时校验引用完整性（工作流 / 现场真实存在，暂存条目只能属于本场景）",
-      "与工作现场恢复互不混淆：独立表、独立命令，场景不复制快照、不保存窗口矩形与 DPI",
+      "与工作现场恢复互不混淆：独立表、独立命令，场景不复制快照（窗口几何经关联现场间接恢复）",
     ],
     missingFeatures: [
-      "直接进入的取消与超时：当前无法中止（最坏需等待现场恢复完成），也没有「退出场景」动作",
-      "后端并发互斥：直接进入只有前端单飞，绕过前端可并发进入同一或不同场景",
+      "「退出场景」动作：关闭/回收由本次进入启动的应用集合（当前取消只阻止未执行项，不回滚已启动项）",
       "场景专属设置与任务关联（当前内容仅应用 / 网址 / 目录 / 现场 / 工作流 / 暂存引用）",
-      "场景自身的窗口布局与几何（只能经关联现场间接恢复，现场本身不存窗口矩形 / DPI）",
-      "进入途中删除场景无显式中断：finish 写库 0 行不报错，回执可能落到已删除场景",
-      "真机验收：多显示器、DPI、前台争用、进入中删除（无 CDP / 原生证据）",
+      "真机验收：多显示器、DPI、前台争用；取消/互斥/删除守卫已过真机通道 C（2026-11-08，隔离实例 + CDP，见 tmp/acceptance/scenario-enter-control/）",
     ],
     dependencies: [
       "复用 workspace 快照与 nav 导航启动链路（软引用，不复制）",
@@ -212,7 +213,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     title: "工作现场恢复",
     description: "保存并恢复任务关联的工作环境：窗口、文件、网页与上下文。",
     detail:
-      "围绕任务保存完整工作现场并在需要时恢复。现有实现基于身份元数据（窗口类名 + 标题 + EXE，不落 HWND），恢复时优先唤醒已有窗口、绝不重复启动，逐项给出验证级别与结果。剩余缺口集中在窗口几何与浏览器多标签等细粒度恢复。",
+      "围绕任务保存完整工作现场并在需要时恢复。现有实现基于身份元数据（窗口类名 + 标题 + EXE，不落 HWND），恢复时优先唤醒已有窗口、绝不重复启动，逐项给出验证级别与结果。v40 起快照条目保存窗口矩形/显示器/DPI，恢复时应用几何（同名显示器相对映射、断连时收敛到工作区、60% 可见安全网，逐项反馈 applied/converged/skipped/failed）；剩余缺口集中在浏览器多标签等细粒度恢复。",
     status: "partial",
     priority: "P0",
     existingFeatures: [
@@ -221,12 +222,13 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "取消恢复：项间生效，剩余项如实记为 cancelled",
       "应用无法启动 / 路径失效时逐项失败标注（verification_level），不中断整体",
       "任务删除不销毁现场（降级为手动快照）；现场可与剪贴板素材互相关联",
+      "窗口几何捕获与恢复（v40）：保存时记录矩形/显示器/DPI，恢复时映射或收敛，逐项 applied/converged/skipped/failed",
     ],
     missingFeatures: [
-      "窗口位置与大小恢复（当前只恢复「哪个窗口」，不恢复几何）",
       "浏览器多标签页恢复（当前每个 URL 条目恢复为单个页面）",
       "可恢复的工作进度信息（如文档内位置、滚动状态）",
       "恢复前预览与逐项勾选确认",
+      "几何恢复真机验收：多显示器断连/换序/DPI 变化的真实 SetWindowPos 落地未验证（确定性换算单测已覆盖）",
     ],
     dependencies: ["统一导航 nav_navigate 链路", "窗口身份匹配（Win32 运行时身份）"],
     acceptanceCriteria: [
@@ -820,29 +822,28 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     title: "帮助与教程中心",
     description: "可随功能演进校验失效的内置教程：搜索、分类、功能关联与状态提示。",
     detail:
-      "已交付（v0.11）：src/help 教程注册中心（结构化 TS 正文，heading/paragraph/steps/tip/note/callout，零新依赖）" +
-      "+ 8 分类 20 篇教程（14 verified / 6 needs_review / 0 draft，2026-11-06 按内容源重新统计），正文自备 translations，" +
-      "en-US 缺失时明确显示「暂无英文版」徽标并回退中文，不伪称国际化完成；完整模式第 13 个 rail 入口（help，不占 Ctrl+数字）；" +
+      "已交付（v0.11，2026-11-08 第二轮收口）：src/help 教程注册中心（结构化 TS 正文，heading/paragraph/steps/tip/note/callout，零新依赖）" +
+      "+ 8 分类 25 篇教程（24 verified / 1 needs_review / 0 draft），全部 zh 正文、en-US 全覆盖" +
+      "（缺失时明确显示「暂无英文版」徽标并回退中文的回退 UI 由测试 fixture 保留验证），不伪称国际化完成；完整模式第 13 个 rail 入口（help，不占 Ctrl+数字）；" +
       "搜索（标题/关键词/正文）、分类浏览、最近浏览（上限 8）、文章头显示适用版本/最近更新/翻译状态；" +
       "相关功能跳转对 planned / blocked / hidden / 停用分别给出状态提示而非死链接；复制操作步骤；" +
       "npm run help:check 契约校验（19 用例 = registry-contract 13 + health 6，覆盖 featureId / routeId / 正文完整性 / " +
-      "en 结构平行 / 核心功能覆盖 / 内容版本 / 操作契约版本），引用失效即报错。" +
+      "en 结构平行 / 核心功能覆盖 / 内容版本 / 操作契约版本），引用失效即报错；0 blocker。" +
       "ContextHelpButton（? 弹出轻量说明）已接入 8 个业务页面共 9 处；帮助中心与设置页均可重新打开首次引导。" +
-      "测试 61 用例 + 预览截图 8 张（深浅主题 × 列表/文章/搜索/引导 × 320 窄窗）。",
+      "剩余 warning 仅「在途源文件变化触发的人工复核提示」（几何恢复合入后消解，mcp-authorization 届时转 verified）。",
     status: "partial",
     priority: "P1",
     existingFeatures: [
-      "8 分类 20 篇教程 + 搜索 / 分类 / 最近浏览（上限 8）",
-      "状态徽标：功能未实现 / 受阻 / 导航隐藏 / 停用 / 翻译缺失分别如实提示",
-      "help:check 契约校验阻断引用失效（featureId / routeId / 翻译 / 版本 / 操作契约）",
+      "8 分类 25 篇教程（24 verified / 1 needs_review）+ 搜索 / 分类 / 最近浏览（上限 8）",
+      "en-US 正文全覆盖；状态徽标：功能未实现 / 受阻 / 导航隐藏 / 停用 / 翻译缺失分别如实提示",
+      "help:check 契约校验阻断引用失效（featureId / routeId / 翻译 / 版本 / 操作契约），当前 0 blocker",
       "第 13 个 rail 入口 + 从教程跳转实际功能 + 返回来源页面",
       "ContextHelpButton 已接入 Agent / 剪贴板 / 规划中心 / 设置（MCP 与备份）/ 暂存架 / 任务 / 场景 / 工作流编辑器 9 处",
-      "帮助中心与设置页均提供「重新打开引导」入口",
+      "帮助中心与设置页均提供「重新打开引导」入口；新增通知聚合 / 帮助中心 / 引导 / 微件 / 命令面板教程",
     ],
     missingFeatures: [
-      "帮助中心与首次使用引导自身没有教程（help:check 已提示「可见功能尚未关联教程」）",
-      "教程正文语义漂移无自动检测：verified 教程曾长期声称「进入场景步骤会被拒绝」，与代码冲突；本次已更正正文，契约层仍只校验引用/版本，不校验语义",
-      "6 篇 needs_review 待复核；14 篇缺 en-US 翻译",
+      "教程正文语义漂移无自动检测：契约层只校验引用/版本，不校验语义（2026-11-08 已人工复核 7 篇并按代码更正，如暂存架「剪贴板添加默认复制」过时表述）",
+      "mcp-authorization 待几何改动合入后转 verified（sensitive 契约源 db/mod.rs 在途变化期间保持 needs_review）",
       "真实 WebView2 / 真机双主题与窄窗走查（现有证据为 A 自动化 + B 隔离预览）",
     ],
     dependencies: ["featureCatalog.ts（功能元数据事实源）", "navigationRegistry.ts（入口寻址）", "overlayStack 弹层栈"],
@@ -877,6 +878,33 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     acceptanceCriteria: ["首次启动出现且仅出现一次", "跳过后不再自动弹出", "不创建不可辨别的永久测试数据"],
     verification: "unverified",
     entryPoints: ["首次启动完整模式自动呈现", "帮助中心 → 重新打开引导", "设置 → 帮助与引导 → 重新打开引导"],
+  },
+  {
+    id: "ux.command-palette",
+    category: "workflow",
+    title: "全局命令面板",
+    description: "全局搜索弹窗内建命令层：键盘直达页面、新建与运行，命令与数据结果分组区分。",
+    detail:
+      "已交付（v0.11 第三轮）：不新建第二个弹窗、不建第二套索引——命令能力层挂在全局搜索弹窗" +
+      "（Ctrl+Shift+F）内，命令组仅在「全部」分类展示；静态命令派生自导航注册表与设置分组元数据" +
+      "（不复制第二份入口清单），动态实体（场景/工作流）弹窗打开时从既有 store 水合（加载失败静默降级为静态命令）；" +
+      "动作白名单只含打开/跳转/新建草稿/运行工作流/进入场景，删除、覆盖、批量、停用类永不进面板" +
+      "（EXECUTABLE_ACTION_KINDS 白名单 + 契约测试双重拦截）；运行工作流直接执行并复用工作流页单槽反馈，" +
+      "创建提醒为草稿类导航（不静默写默认时间）；纯前端连续子串匹配（与数据搜索同口径），上限 12 条。" +
+      "测试 59 用例（契约 19 + store 10 + 弹窗 8 等）；i18n 双语。剩余事项：独立快捷键未注册（共用 Ctrl+Shift+F）、" +
+      "跳转子页并高亮的外部定位意图未做、真机双主题/窄窗走查未执行。",
+    status: "implemented",
+    priority: "P1",
+    existingFeatures: [
+      "全局搜索弹窗命令组：打开页面 / 新建任务 / 创建提醒 / 打开设置分组 / 进入场景 / 运行工作流",
+      "静态命令派生自 NAV_ENTRIES 与 SETTINGS_SECTION_META；动态场景/工作流列表水合",
+      "动作白名单 + 契约测试拦截危险操作；命令与数据结果分组区分",
+    ],
+    missingFeatures: [],
+    dependencies: ["navigationRegistry（NAV_ENTRIES 唯一入口清单）", "settingsCategories", "useGlobalSearchStore", "overlayStack"],
+    acceptanceCriteria: ["命令与数据搜索结果明确区分", "危险操作不能通过模糊命令执行", "空查询有默认命令列表且键盘可完成全部操作"],
+    verification: "unverified",
+    entryPoints: ["全局搜索弹窗（Ctrl+Shift+F）→ 命令组"],
   },
 
   // ─── 长期生态 ───────────────────────────────────────────────────────

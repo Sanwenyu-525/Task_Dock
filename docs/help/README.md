@@ -33,11 +33,15 @@
 - `HelpArticleStatus`：`draft`（编写中）/ `verified`（与 reviewedForVersion 界面核对一致）/
   `needs_review`（操作语义可能过时或功能仍在开发）/ `unavailable`；
 - featureCatalog 的 `implemented / partial / planned / blocked` 是功能实现状态；
-- **静态校验确认不了的「操作语义是否过时」不伪装自动通过**，一律用 `needs_review` 表达
-  （2026-11-06 实测 6 篇：`help.agents.mcp-authorization`、`help.capture.shelf`、
-  `help.troubleshooting.agent-no-events`、`help.workflows.one-click`、`help.workflows.scenes`、
-  `help.workflows.planning-center`；此前记录的 2 篇为 v0.11 首轮统计，已被内容迭代覆盖）。
-  文章总量 20 篇：14 verified / 6 needs_review / 0 draft。
+- **静态校验确认不了的「操作语义是否过时」不伪装自动通过**。2026-11-08 收口复核：
+  原 6 篇 needs_review 已逐篇对照源码复核——`help.capture.shelf`（从剪贴板添加默认引用、
+  可切换复制副本）、`help.workflows.one-click`、`help.workflows.scenes`（快照已含窗口几何，
+  恢复尽力原位/收敛）、`help.workflows.planning-center`、`help.troubleshooting.agent-no-events`
+  与 `help.quickstart.command-palette`（命令组仅「全部」分类展示等口径补齐）转 verified；
+  `help.agents.mcp-authorization` 正文已按当前源码更新（MCP Inspector 端到端联调已通过），
+  但其敏感契约源文件（`src-tauri/src/db/mod.rs`）有并行在途改动，转 verified 会升级为阻断，
+  故如实保持 needs_review，待该改动合入后再转正。
+  文章总量 25 篇：24 verified / 1 needs_review / 0 draft。
 
 ### 2.3 结构化 section
 
@@ -118,10 +122,17 @@ MCP 教程当前描述设置中的管理 UI 和规划中心 18 个读写工具�
 `project_rw` 权限、项目授权、一次性 token、客户端配置片段与分页审计摘要；明确不支持任务/剪贴板工具。
 审计 UI 隐去 `detail`、`request_id` 和 `result_json`，但本地数据库仍保存成功写入结果用于幂等重放，且当前无保留期限或自动清理策略。`help:check` 只检查登记过的 MCP 身份、审计、bridge、命令、配置、
 协议、工具与数据库源文件，也登记工作流、场景及暂存架操作文件；变更检查只对这些明确登记的文件运行，并同时包含未跟踪的新源文件。若敏感文章仍为 `verified` 时其源文件变化，会得到阻断级健康问题。静态检查不等于
-真实 MCP 客户端、桌面运行状态或系统级交互已通过验收。教程仍标为 `needs_review`，直到真实客户端与 UI 流程完成人工复核。
+真实 MCP 客户端、桌面运行状态或系统级交互已通过验收。真实独立客户端（MCP Inspector）端到端联调已于
+2026-11-08 通过；教程保持 `needs_review` 的当前原因是：Claude Code / Codex CLI 等编码 Agent 的
+握手差异尚未实测，且敏感契约源文件仍有并行在途改动（此时转 verified 会被门禁阻断）。
 
 ## 7. 后续待办
 
-1. 全局搜索（Ctrl+Shift+F）接入帮助分类（当前帮助中心自带搜索，未占用全局搜索）；
-2. MCP、工作流、场景和暂存架教程完成人工界面复核后再评估是否转 verified；`agent-no-events` 篇需真机复核；
-3. en-US 教程正文按需补齐（缺失时有诚实徽标，不影响使用）；浅色/深色、玻璃预设和 320/400px 窄窗仍需 WebView2 验收。
+1. `help.agents.mcp-authorization`：正文已按 2026-11-08 源码复核（MCP Inspector 端到端联调通过）；
+   待敏感契约源文件（`src-tauri/src/db/mod.rs` 等并行在途改动）合入且工作树干净后转 verified，
+   并同步登记 `agent.mcp-server` 契约版本；
+2. 场景几何恢复会话落地后，若新增用户可见 UI（恢复选项、逐项几何结果展示），补
+   `help.workflows.scenes` 教程增量并复核 `core.scenario-workspace` 契约版本；
+3. 工作流 / 场景 / 暂存架三篇 verified 教程在 `src/lib/bridge.ts` 在途改动合入后按
+   help:check 提示复核一次（当前提示为在途文件变化的常规 warning）；
+4. 浅色/深色、玻璃预设和 320/400px 窄窗对帮助中心与引导仍需 WebView2 真机验收（通道 C/E）。

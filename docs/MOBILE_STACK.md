@@ -63,6 +63,12 @@ apps/mobile/                 # 新增（框架待定）
 - 传输：HTTPS（自签证书 + 配对时固定公钥指纹，SPKI pinning），或 TLS 隧道；**不做纯明文**。
 - 发现：mDNS 广播桌面端实例名 + 指纹摘要，手机端需用户确认指纹后建立信任。
 
+> **开发者模式不是运行时依赖**：ADB（USB/无线调试）只用于验收时安装与驱动 UI；产品的局域网
+> 传输是普通 App 的 TCP/TLS 连接，不需要开发者模式、root 或 USB（PoC 真机即直连桌面 LAN IP，
+> 未用 `adb reverse`）。反过来，「同一 Wi-Fi」也不充分：需无 AP 隔离（公共 Wi-Fi 常见
+> client isolation）、manifest 声明 `INTERNET`（Flutter release 的 main manifest 默认不含，
+> PoC 已手工补）、并处理 Android 9+ 默认禁明文（正式版走 TLS）。
+
 ### 3.2 基线（pull）
 
 ```

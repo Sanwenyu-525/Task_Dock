@@ -3,6 +3,8 @@
 //! - 常挂载组件：open=false 时仅保留快捷键监听，不渲染面板（输入不重挂弹窗）。
 //! - 弹层接入 overlayStack（"dialog" 层）：Escape 只关最上层；焦点陷阱归还焦点。
 //! - 键盘：↑/↓ 移动选中、Enter 打开、输入框 Ctrl+A/Ctrl+Backspace 走原生编辑语义。
+//! - 命令层（v0.16）：命令分组固定置于数据结果之前（仅「全部」分类下展示），
+//!   flat 选中序 = 命令组在前 + 数据结果在后；Enter 按序号分发到命令或数据结果。
 
 import { useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
@@ -18,6 +20,7 @@ import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useGlobalSearchShortcut } from "../../hooks/useGlobalSearchShortcut";
 import useImeComposition from "../../hooks/useImeComposition";
 import { GlobalSearchResults } from "./GlobalSearchResults";
+import { GlobalSearchCommands } from "./GlobalSearchCommands";
 
 export function GlobalSearchDialog() {
   const open = useGlobalSearchStore((s) => s.open);
@@ -29,6 +32,7 @@ export function GlobalSearchDialog() {
   const activeIndex = useGlobalSearchStore((s) => s.activeIndex);
   const recent = useGlobalSearchStore((s) => s.recent);
   const notice = useGlobalSearchStore((s) => s.notice);
+  const commands = useGlobalSearchStore((s) => s.commands);
 
   const closeSearch = useGlobalSearchStore((s) => s.closeSearch);
   const setQuery = useGlobalSearchStore((s) => s.setQuery);
@@ -37,6 +41,7 @@ export function GlobalSearchDialog() {
   const moveActive = useGlobalSearchStore((s) => s.moveActive);
   const setActiveIndex = useGlobalSearchStore((s) => s.setActiveIndex);
   const openResult = useGlobalSearchStore((s) => s.openResult);
+  const executeCommand = useGlobalSearchStore((s) => s.executeCommand);
   const clearRecent = useGlobalSearchStore((s) => s.clearRecent);
   const setNotice = useGlobalSearchStore((s) => s.setNotice);
 
@@ -53,6 +58,10 @@ export function GlobalSearchDialog() {
     () => results?.groups.flatMap((g) => g.items) ?? [],
     [results],
   );
+
+  // 命令组只在「全部」分类下展示（选择了数据分类 = 明确的数据检索意图）；
+  // 此时键盘 flat 序与 moveActive 一致：命令在前（0..n-1）、数据结果在后。
+  const showCommands = activeCategory === "all" && commands.length > 0;
 
   // 打开时聚焦输入框（焦点陷阱 initial 之外兜底）。
   useEffect(() => {
@@ -72,7 +81,12 @@ export function GlobalSearchDialog() {
       moveActive(-1);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const item = flatItems[activeIndex];
+      if (showCommands && activeIndex < commands.length) {
+        const cmd = commands[activeIndex];
+        if (cmd) executeCommand(cmd);
+        return;
+      }
+      const item = flatItems[activeIndex - (showCommands ? commands.length : 0)];
       if (item) openResult(item);
     }
     // Escape 由 overlayStack 捕获分发，这里不处理。
@@ -80,7 +94,7 @@ export function GlobalSearchDialog() {
 
   const showRecent = !query.trim() && recent.length > 0;
   const showEmpty =
-    !!query.trim() && !loading && !error && flatItems.length === 0;
+    !!query.trim() && !loading && !error && flatItems.length === 0 && !showCommands;
 
   return createPortal(
     <div className="ui-dialog-mask gs-mask" ref={rootRef} onKeyDown={onKeyDown}>
@@ -160,44 +174,58 @@ export function GlobalSearchDialog() {
                 重试
               </button>
             </div>
-          ) : showRecent ? (
-            <div className="gs-recent" aria-label="最近搜索">
-              <header className="gs-recent-head">
-                <Clock size={13} strokeWidth={2} aria-hidden="true" />
-                <span>最近搜索</span>
-                <button
-                  type="button"
-                  className="gs-recent-clear"
-                  aria-label="清除最近搜索"
-                  onClick={clearRecent}
-                >
-                  清除
-                </button>
-              </header>
-              {recent.map((r) => (
-                <button
-                  key={r}
-                  type="button"
-                  className="gs-recent-item"
-                  onClick={() => setQuery(r)}
-                >
-                  {r}
-                </button>
-              ))}
-            </div>
-          ) : showEmpty ? (
-            <div className="gs-state">没有匹配的结果</div>
-          ) : results && flatItems.length > 0 ? (
-            <GlobalSearchResults
-              groups={results.groups}
-              keyword={query}
-              activeIndex={activeIndex}
-              onSelect={openResult}
-              onHoverIndex={setActiveIndex}
-            />
-          ) : !query.trim() ? (
-            <div className="gs-state">输入关键词开始搜索</div>
-          ) : null}
+          ) : (
+            <>
+              {/* 命令分组：独立于八类数据结果，固定置于最前（可辨识视觉见 CSS）。 */}
+              {showCommands ? (
+                <GlobalSearchCommands
+                  commands={commands}
+                  activeIndex={activeIndex}
+                  onSelect={executeCommand}
+                  onHoverIndex={setActiveIndex}
+                />
+              ) : null}
+              {showRecent ? (
+                <div className="gs-recent" aria-label="最近搜索">
+                  <header className="gs-recent-head">
+                    <Clock size={13} strokeWidth={2} aria-hidden="true" />
+                    <span>最近搜索</span>
+                    <button
+                      type="button"
+                      className="gs-recent-clear"
+                      aria-label="清除最近搜索"
+                      onClick={clearRecent}
+                    >
+                      清除
+                    </button>
+                  </header>
+                  {recent.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      className="gs-recent-item"
+                      onClick={() => setQuery(r)}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {showEmpty ? <div className="gs-state">没有匹配的结果</div> : null}
+              {results && flatItems.length > 0 ? (
+                <GlobalSearchResults
+                  groups={results.groups}
+                  keyword={query}
+                  activeIndex={activeIndex}
+                  onSelect={openResult}
+                  onHoverIndex={setActiveIndex}
+                />
+              ) : null}
+              {!query.trim() && !showCommands && !showRecent ? (
+                <div className="gs-state">输入关键词开始搜索</div>
+              ) : null}
+            </>
+          )}
         </div>
 
         {notice ? (

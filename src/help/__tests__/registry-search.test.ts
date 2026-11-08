@@ -15,6 +15,7 @@ import {
   searchHelpArticles,
 } from "../registry";
 import { recentArticles, readRecentArticleIds, recordRecentArticle, clearRecentArticles } from "../recent";
+import type { HelpArticle } from "../types";
 
 describe("帮助注册中心查询", () => {
   it("按 ID 精确查询；未知 ID 返回 undefined", () => {
@@ -36,10 +37,22 @@ describe("帮助注册中心查询", () => {
     expect(helpContent(translated, "en-US").title).not.toBe(
       helpContent(translated, "zh-CN").title,
     );
-    const zhOnly = getHelpArticle("help.tasks.create-reminders")!;
+    // 2026-11-08 起全部文章都有 en-US 正文；回退路径用合成 fixture 锁定
+    // （UI 的「暂无英文版」徽标依赖该行为，注册中心不得静默伪造翻译）。
+    const zhOnly: HelpArticle = {
+      ...translated,
+      id: "help.quickstart.synthetic-zh-only",
+      translations: { "zh-CN": translated.translations["zh-CN"] },
+    };
     expect(hasNativeTranslation(zhOnly, "en-US")).toBe(false);
     // 回退：拿英文查询返回中文正文，UI 据此显示「暂无英文版」徽标
     expect(helpContent(zhOnly, "en-US").title).toBe(helpContent(zhOnly, "zh-CN").title);
+    for (const article of allHelpArticles()) {
+      expect(
+        hasNativeTranslation(article, "en-US"),
+        `${article.id} 应有 en-US 正文（health.test 会拦截缺失）`,
+      ).toBe(true);
+    }
   });
 });
 

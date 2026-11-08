@@ -237,6 +237,37 @@ export const navListTargets = (includeHidden = false) =>
 /** 已保存应用目标的实时运行状态（按需查询一次，不做轮询；非 application 目标不返回）。 */
 export const navTargetRunningStates = (ids: string[]) =>
   invoke<Record<string, string>>("nav_target_running_states", { ids });
+/** 优雅关闭窗口结果：closed = 已消失数；stillOpen 非空表示应用可能在等「是否保存」确认。 */
+export interface TargetWindowCloseReport {
+  requested: number;
+  closed: number;
+  stillOpen: string[];
+}
+/** 按目标身份优雅关闭其全部顶层窗口（WM_CLOSE，不结束进程、不抢焦点；窗口每次现查现关）。 */
+export const navCloseTargetWindows = (targetId: string) =>
+  invoke<TargetWindowCloseReport>("nav_close_target_windows", { targetId });
+/** 强制结束进程结果：matched = 匹配进程数（含子进程），failedPids = 结束失败（权限/竞争）。 */
+export interface TargetProcessKillReport {
+  matched: number;
+  killed: number;
+  failedPids: number[];
+}
+/** 按目标身份强制结束其全部相关进程（TerminateProcess，破坏性动作）。
+    前端必须先经确认弹窗取得用户同意才可调用；后端不做二次确认。 */
+export const navKillTargetProcesses = (targetId: string) =>
+  invoke<TargetProcessKillReport>("nav_kill_target_processes", { targetId });
+/** 请求退出结果：processTotal = 参与进程数，processExited = 有界等待内确认退出的数，
+    postedThreads = 成功投递 WM_QUIT 的线程数（无消息队列的线程投不到，属正常）。 */
+export interface TargetProcessQuitReport {
+  processTotal: number;
+  processExited: number;
+  postedThreads: number;
+}
+/** 请求目标身份的全部进程自行退出（向其线程投递 WM_QUIT，等价应用自己的「退出」
+    命令：保存配置、移除托盘图标后正常结束）。不是强杀；不配合的应用如实报未
+    完全退出，前端引导改用「结束进程」。 */
+export const navQuitTargetProcesses = (targetId: string) =>
+  invoke<TargetProcessQuitReport>("nav_quit_target_processes", { targetId });
 export const navSaveTarget = (input: TargetInput) =>
   invoke<NavTarget>("nav_save_target", { input });
 /** 由真实窗口保存「指定窗口快捷方式」：后端即时解析稳定身份，HWND 不落库、不聚焦当前窗口。 */

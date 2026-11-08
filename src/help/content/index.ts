@@ -11,6 +11,7 @@ import { CAPTURE_ARTICLES } from "./capture";
 import { WORKFLOWS_ARTICLES } from "./workflows";
 import { PERSONALIZE_ARTICLES } from "./personalize";
 import { TROUBLESHOOTING_ARTICLES } from "./troubleshooting";
+import { COMMANDS_ARTICLES } from "./commands";
 import type { HelpArticle } from "../types";
 
 export const HELP_ARTICLES: readonly HelpArticle[] = [
@@ -22,4 +23,5 @@ export const HELP_ARTICLES: readonly HelpArticle[] = [
   ...WORKFLOWS_ARTICLES,
   ...PERSONALIZE_ARTICLES,
   ...TROUBLESHOOTING_ARTICLES,
+  ...COMMANDS_ARTICLES,
 ];

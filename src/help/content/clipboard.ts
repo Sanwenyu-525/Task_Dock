@@ -1,4 +1,4 @@
-//! 剪贴板类教程（2 篇，verified）。
+//! 剪贴板类教程（2 篇，verified，均自带 en-US）。
 
 import type { HelpArticle } from "../types";
 
@@ -41,9 +41,42 @@ export const CLIPBOARD_ARTICLES: readonly HelpArticle[] = [
           },
         ],
       },
+      "en-US": {
+        title: "Clipboard history: find, pin and reuse",
+        summary:
+          "Anything you copy lands in the clipboard history automatically; inspect details by type, pin favorites and reuse directly.",
+        sections: [
+          { type: "heading", text: "How history is created" },
+          {
+            type: "paragraph",
+            text: "After you copy text, images, files or links anywhere in the system, the entry appears in the history list on the \"Clipboard\" page (Ctrl+4). Task Dock records it locally and never uploads it; logs and events never contain the copied content itself.",
+          },
+          { type: "heading", text: "Inspect and reuse" },
+          {
+            type: "steps",
+            items: [
+              "Click an entry to open its details: full text for text, a sanitized read-only preview for HTML (no scripts run, links not clickable), and file paths with open / reveal actions for files.",
+              "Inside the details you can favorite, pin, or link the entry to a task.",
+              "To use it again, copy it directly; or use \"Paste one by one\" to paste a screenshot group into a target window in order.",
+              "To send content to another window: click the arrow on the entry to open \"Copy or paste to…\" and pick a target window. The main body of a window row is copy & switch (copies the content and activates that window without sending keystrokes — press Ctrl+V yourself afterwards); the paste button at the row end switches to that window and sends one Ctrl+V, then tries to restore your previous clipboard, though whether the target app accepted it cannot be verified automatically.",
+              "\"Copy & switch\", \"Paste to target window\" and \"Paste one by one\" are three distinct operations: copy & switch only copies and activates the window; paste to target window sends the paste keystroke for a single entry; paste one by one walks through a whole group or a multi-selection in order. If copying succeeded but the window switch failed, the content is still on the clipboard and you can retry just the switch.",
+            ],
+          },
+          { type: "heading", text: "Search and cleanup" },
+          {
+            type: "paragraph",
+            text: "The search box at the top filters history by title and type; global search (Ctrl+Shift+F) also covers the clipboard category. Cleanup policy is configured in Settings; favorited and pinned entries are never auto-cleaned.",
+          },
+          {
+            type: "tip",
+            text: "The clipboard is a passive record; to collect content actively, \"Add to shelf\" creates an independent copy — deleting on either side never affects the other.",
+          },
+        ],
+      },
     },
     keywords: {
       "zh-CN": ["剪贴板", "历史", "收藏", "置顶", "HTML 预览", "逐项粘贴", "搜索", "复制并切换", "粘贴到目标窗口", "窗口切换"],
+      "en-US": ["clipboard", "history", "favorite", "pin", "HTML preview", "paste one by one", "search", "copy and switch", "paste to window", "window switch"],
     },
     relatedFeatureIds: ["ux.clipboard-viewers", "core.global-search"],
     relatedRouteIds: ["clipboard"],
@@ -83,9 +116,39 @@ export const CLIPBOARD_ARTICLES: readonly HelpArticle[] = [
           },
         ],
       },
+      "en-US": {
+        title: "Image viewer and paste one by one",
+        summary:
+          "View images in a lightbox (zoom / pan / save as) and paste screenshot groups into a target window step by step.",
+        sections: [
+          { type: "heading", text: "Image lightbox" },
+          {
+            type: "steps",
+            items: [
+              "Click an image entry to open its details and choose \"View full size\" to open the lightbox.",
+              "Scroll to zoom, drag to pan; double-click toggles between fit-to-window and original size.",
+              "Inside the lightbox you can \"Copy original\" or \"Save as\" directly; Escape closes only the lightbox layer.",
+            ],
+          },
+          { type: "heading", text: "Paste one by one" },
+          {
+            type: "steps",
+            items: [
+              "Choose \"Paste one by one\" on a screenshot group and switch to the target window.",
+              "Paste each item as prompted; the panel remembers the progress, so an interrupted run resumes from the last item.",
+              "A paste intent expires after 15 seconds, so it never pops up long after navigation was cancelled or the page crashed.",
+            ],
+          },
+          {
+            type: "note",
+            text: "Thumbnails are lazy-loaded: they load on scroll, so the list stays smooth even with many images.",
+          },
+        ],
+      },
     },
     keywords: {
       "zh-CN": ["图片", "灯箱", "缩放", "另存为", "逐项粘贴", "截图组"],
+      "en-US": ["image", "lightbox", "zoom", "save as", "paste one by one", "screenshot group"],
     },
     relatedFeatureIds: ["ux.image-fullscreen"],
     relatedRouteIds: ["clipboard"],

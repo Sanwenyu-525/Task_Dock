@@ -859,7 +859,10 @@ code {
 /* 跨 Tab 未保存确认条：粘在内容顶部，不额外制造模态遮罩。 */
 .tab-leave-guard {
   position: sticky;
-  top: 0;
+  /* top 取负值抵消 .tab-content 的 padding-top：top: 0 会钉在可视顶端下方
+     10px，滚上去的页面内容从确认条上方的缝里露出（WebView2 实测口径，同
+     .history-day-label / .clip-detail-head / .settings-categories 的修复）。 */
+  top: -10px;
   z-index: 3;
   display: flex;
   align-items: center;
@@ -2830,9 +2833,12 @@ code {
   display: grid;
   /* 分类网格吸顶：展开分组后仍能直接切分类，不必滚回顶部（验收 UI-10）。
      surface-overlay 近不透明，滚动内容不会从卡片缝隙透出；吸顶占位由
-     sticky 自身承担，不改变初始布局。 */
+     sticky 自身承担，不改变初始布局。
+     top 取负值抵消 .tab-content 的 padding-top：top: 0 会钉在可视顶端
+     下方 10px，滚上去的分组卡片从这条缝里露出（WebView2 实测口径，同
+     .history-day-label / .clip-detail-head 的既有修复）。 */
   position: sticky;
-  top: 0;
+  top: -10px;
   z-index: var(--z-sticky);
   background: var(--surface-overlay);
   padding: 4px 0;
@@ -3762,9 +3768,193 @@ html[data-theme="dark"] .resource-page {
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
   color: var(--text-tertiary);
-  font-size: 9px;
+  font-size: 9.5px;
   font-weight: 400;
   white-space: nowrap;
+}
+
+/* ── 只读空间分析 ─────────────────────────────────────────── */
+
+.resource-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-analysis-pathbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+}
+
+.resource-analysis-path {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-analysis-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.resource-analysis-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-analysis-summary {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.resource-analysis-subtitle {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.resource-analysis-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.resource-analysis-list > li {
+  border-bottom: 1px dashed var(--border-subtle);
+}
+
+.resource-analysis-list > li:last-child {
+  border-bottom: none;
+}
+
+.resource-analysis-folder,
+.resource-analysis-root-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  min-width: 0;
+  padding: 6px 4px;
+}
+
+.resource-analysis-folder {
+  width: 100%;
+  color: inherit;
+  text-align: left;
+  border-radius: var(--radius-control);
+}
+
+.resource-analysis-folder:hover {
+  background: var(--rail-hover-face);
+}
+
+.resource-analysis-folder:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.resource-analysis-folder:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.resource-analysis-folder.is-unscanned .resource-analysis-name,
+.resource-analysis-folder.is-unscanned .resource-analysis-size {
+  color: var(--text-tertiary);
+}
+
+.resource-analysis-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-analysis-size {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.resource-analysis-folder .resource-meter,
+.resource-analysis-root-row .resource-meter {
+  grid-column: 1 / -1;
+}
+
+.resource-analysis-meta {
+  grid-column: 1 / -1;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.resource-analysis-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+}
+
+.resource-analysis-file-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.resource-analysis-file-parent {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+
+.resource-icon-btn:hover {
+  background: var(--rail-hover-face);
+  color: var(--text-primary);
+}
+
+.resource-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .resource-metric-strip {
@@ -5738,8 +5928,10 @@ html[data-theme="dark"] .resource-page {
   cursor: pointer;
 }
 
-/* 按下反馈只出现在主区域的瞬时状态，不制造常驻半矩形高亮 */
-.apps-tile-main:active:not(:disabled) {
+/* 按下反馈整卡着色：主按钮按住时收藏/更多/删除入口所在区域同样覆盖，
+   不再出现只盖主区、右侧留白的半矩形高亮。:has 限定为启动主区的按压，
+   点收藏/更多/删除不触发整卡着色（各按钮有自己的瞬时反馈）。 */
+.apps-tile:has(.apps-tile-main:active:not(:disabled)) {
   background: var(--accent-soft);
 }
 
@@ -12039,6 +12231,29 @@ html[data-theme="dark"] .resource-page {
 }
 .cap-plan-prio { height: 17px; padding: 0 6px; font-size: 9.5px; }
 .cap-plan-detail { gap: 6px; }
+
+/* 内置路线图分组（只读目录）：组头是弱化小标题，不与功能卡片争层级 */
+.cap-plan-section { display: flex; flex-direction: column; gap: 4px; }
+.cap-plan-section + .cap-plan-section { margin-top: 5px; }
+.cap-plan-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 1px 4px 0;
+}
+.cap-plan-section-title {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--cap-text-3);
+  letter-spacing: 0.02em;
+}
+.cap-plan-section-count {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--cap-text-3);
+  font-variant-numeric: tabular-nums;
+}
 
 .cap-plan-steps { display: flex; flex-direction: column; gap: 1px; }
 .cap-plan-step {

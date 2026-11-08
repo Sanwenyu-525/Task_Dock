@@ -270,6 +270,33 @@
     padding: 0 1px;
   }
 
+  /* ── 命令分组（v0.16）：独立于数据结果的可辨识视觉 ──
+     组头用强调色 + 命令图标；条目图标用强调色底衬（数据条目是中性字母色块）。
+     仅使用语义 Token，不自造颜色。 */
+  .gs-commands {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .gs-cmd-head-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--accent);
+  }
+
+  .gs-cmd-icon {
+    background: var(--accent-soft-bg, var(--hover-bg));
+    color: var(--accent);
+  }
+
+  .gs-cmd:hover .gs-cmd-icon,
+  .gs-cmd.active .gs-cmd-icon {
+    background: var(--accent-soft-bg, var(--hover-bg));
+    color: var(--accent);
+  }
+
   /* 最近搜索 */
   .gs-recent {
     display: flex;

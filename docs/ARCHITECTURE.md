@@ -547,6 +547,17 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   仍是容器尺寸时仍走 300/600/900ms 重试梯子；`dockTo`（重启恢复/拖拽后再吸附）、
   `undockCore`、`restoreUserSize` 维持原加固行为不变。集成测试：A8（切换在
   <600ms 虚拟时间内完成）、A9（首次 applyMode 尺寸被吞仍经重试成功）。
+- 候选边判定的越出轴遮蔽修复（2026-11-08，capsule-redock 复核）：`detectCandidateEdge`
+  （前端）与 `magnetic.rs::nearest_edge`（原生拖拽磁吸，同口径）的「四边距离 argmin +
+  总出口守卫」存在结构缺陷——恢复矩形底部越出工作区时（停靠位靠下 + 用户自由矩形
+  较高，拖离恢复后常态），越出轴的负距离（< −EXIT）在 argmin 中恒占优、随后被总守卫
+  整体判 null，用户真正逼近的边（左/右）被遮蔽、永远进不了候选。修复：明显越出
+  （前端 `d < -SNAP_CANDIDATE_EXIT_DIST`、原生 `d < -ATTRACT_RANGE_CSS`）的轴在选边时
+  直接跳过，滞回带内（−EXIT..0）的轻微越出语义不变；`nearestDockEdge`（标题栏
+  「吸附为…」按钮入口）维持「明显越出 → null 不猜边」契约。同轮修复：candidate
+  相位的换边更新（拖过角落）补 `!programmaticMove` 守卫——解除恢复/工作区钳制的
+  程序性搬运不得翻转用户已选定的候选边。回归：edgeSnap.test.ts「越出轴不遮蔽可达边」、
+  集成 D11/D12、`magnetic::nearest_edge_ignores_far_poked_axis`。
 - 完整面板双击标题栏收缩为胶囊（2026-11-07）：`TitleBar` 拦截拖拽面上的
   `mousedown detail≥2`（仅 `docked-full` 相位）→ `formSwitch("capsule")` 并
   `stopPropagation`，替代 Tauri drag-region 脚本对双击的默认

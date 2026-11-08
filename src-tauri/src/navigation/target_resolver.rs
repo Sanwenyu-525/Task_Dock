@@ -518,6 +518,104 @@ pub fn running_states_by_id(
     Ok(out)
 }
 
+/// 按目标身份优雅关闭其全部顶层窗口（WM_CLOSE，等价用户点标题栏 ×，不结束进程）。
+///
+/// 返回 (候选窗口数, 已关闭数, 仍打开的窗口标题)；仍打开的典型原因是应用弹出
+/// 「是否保存」等待用户决定，属于应用自身行为，不算失败。窗口每次现查现关
+/// （HWND 易变，绝不复用调用方传入的句柄）；只支持 application 目标。
+pub fn close_windows_for_target(
+    db: &Db,
+    target_id: &str,
+) -> AppResult<(usize, usize, Vec<String>)> {
+    let t = get_target(db, target_id)?.ok_or_else(|| AppError::NotFound(format!(
+        "导航目标 {target_id} 不存在"
+    )))?;
+    if t.target_type != "application" {
+        return Err(AppError::Validation("仅支持关闭应用目标的窗口".into()));
+    }
+    if t.exe_path.trim().is_empty() {
+        // UWP 目标只有 AUMID 身份，没有可执行路径，无法按进程身份定位窗口
+        return Err(AppError::Validation(
+            "该目标没有 exe 身份，无法定位窗口".into(),
+        ));
+    }
+    let hint = if t.window_title_hint.trim().is_empty() {
+        None
+    } else {
+        Some(t.window_title_hint.as_str())
+    };
+    let windows = super::window_manager::windows_for_identity(t.exe_path.trim(), hint);
+    let requested = windows.len();
+    if requested == 0 {
+        return Ok((0, 0, Vec::new()));
+    }
+    let outcomes = super::window_manager::close_windows(&windows);
+    let still: Vec<String> = outcomes
+        .iter()
+        .filter(|o| !o.closed)
+        .map(|o| o.title.clone())
+        .collect();
+    let closed = requested - still.len();
+    Ok((requested, closed, still))
+}
+
+/// 按目标身份强制结束其全部相关进程（TerminateProcess，**破坏性动作**：
+/// 不走应用的退出/保存流程，未保存数据会丢失）。调用方必须先取得用户确认。
+/// 返回 (匹配进程数, 已结束数, 结束失败的 PID)。
+pub fn kill_target_processes(db: &Db, target_id: &str) -> AppResult<(usize, usize, Vec<u32>)> {
+    let t = get_target(db, target_id)?.ok_or_else(|| AppError::NotFound(format!(
+        "导航目标 {target_id} 不存在"
+    )))?;
+    if t.target_type != "application" {
+        return Err(AppError::Validation("仅支持结束应用目标的进程".into()));
+    }
+    if t.exe_path.trim().is_empty() {
+        return Err(AppError::Validation(
+            "该目标没有 exe 身份，无法定位进程".into(),
+        ));
+    }
+    let pids = super::window_manager::pids_for_identity(t.exe_path.trim());
+    let matched = pids.len();
+    if matched == 0 {
+        return Ok((0, 0, Vec::new()));
+    }
+    let outcomes = super::window_manager::kill_processes(&pids);
+    let failed: Vec<u32> = outcomes
+        .iter()
+        .filter(|o| !o.killed)
+        .map(|o| o.pid)
+        .collect();
+    Ok((matched, matched - failed.len(), failed))
+}
+
+/// 请求目标身份的全部进程自行退出（向其线程投递 WM_QUIT，等价应用自己的
+/// 「退出」命令——保存配置、移除托盘图标后正常结束）。**不是** TerminateProcess；
+/// 不配合的进程如实报未退出，由用户决定是否改用强制结束。
+/// 返回 (参与进程数, 已确认退出数, 成功投递线程数)。
+pub fn quit_target_processes(
+    db: &Db,
+    target_id: &str,
+) -> AppResult<(usize, usize, usize)> {
+    let t = get_target(db, target_id)?.ok_or_else(|| AppError::NotFound(format!(
+        "导航目标 {target_id} 不存在"
+    )))?;
+    if t.target_type != "application" {
+        return Err(AppError::Validation("仅支持退出应用目标的进程".into()));
+    }
+    if t.exe_path.trim().is_empty() {
+        return Err(AppError::Validation(
+            "该目标没有 exe 身份，无法定位进程".into(),
+        ));
+    }
+    let pids = super::window_manager::pids_for_identity(t.exe_path.trim());
+    let report = super::window_manager::request_processes_quit(&pids);
+    Ok((
+        report.process_total,
+        report.process_exited,
+        report.posted_threads,
+    ))
+}
+
 /// 目标元信息补丁（名称/图标/收藏/隐藏/标题提示）。
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TargetPatch {

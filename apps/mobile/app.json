@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "TaskDock",
+    "slug": "taskdock",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "taskdock",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "backgroundColor": "#F2F5F9",
+      "resizeMode": "contain"
+    },
+    "android": {
+      "package": "dev.taskdock.mobile",
+      "versionCode": 1,
+      "icon": "./assets/icon.png",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-foreground.png",
+        "backgroundImage": "./assets/adaptive-background.png"
+      }
+    },
+    "plugins": [
+      "expo-sqlite",
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "color": "#4C8DFF"
+        }
+      ]
+    ]
+  }
+}

@@ -1,4 +1,7 @@
-//! Agent 管理类教程（2 篇）。
+//! Agent 管理类教程（2 篇，均自带 en-US）。
+//! mcp-authorization：正文已按 2026-11-08 当前源码（McpAccessSection / mcp 模块）复核并更新；
+//! 真实独立客户端（MCP Inspector）端到端联调已通过，编码 Agent 客户端握手差异尚未实测，
+//! 且敏感契约源文件（src-tauri/src/db/mod.rs）有并行在途改动——按门禁规则保持 needs_review。
 
 import type { HelpArticle } from "../types";
 
@@ -43,9 +46,44 @@ export const AGENTS_ARTICLES: readonly HelpArticle[] = [
           },
         ],
       },
+      "en-US": {
+        title: "Onboard an agent: detection and hooks install",
+        summary:
+          "The Agents page detects local CLIs automatically and walks you through installing official hooks, with one-click verify or uninstall.",
+        sections: [
+          { type: "heading", text: "Detect and onboard" },
+          {
+            type: "steps",
+            items: [
+              "Open the \"Agents\" page: Task Dock automatically detects locally installed Claude Code / Cursor / Gemini CLI / ZCode / Codex.",
+              "Click \"Onboard\" on the matching card: Task Dock writes only the official hooks events into that tool's own user-level config (such as ~/.claude/settings.json or ~/.cursor/hooks.json). It backs up before writing and rolls back on failure.",
+              "After onboarding, click \"Verify\" for a link self-test; real events only appear after you start a NEW session in that tool (already-open sessions do not hot-load hooks).",
+              "When you stop using it, click \"Uninstall\": only the entries Task Dock wrote are removed; your existing hooks stay untouched.",
+            ],
+          },
+          { type: "heading", text: "Status and interventions" },
+          {
+            type: "paragraph",
+            text: "When a running agent needs your confirmation (waiting for authorization) or input, it is aggregated under \"Needs intervention\" on the Actions page; click an entry to jump to the session and handle it. After events end, status is reported as-is; values that cannot be obtained are shown as \"Unknown\", never invented.",
+          },
+          { type: "heading", text: "Statistics and history" },
+          {
+            type: "steps",
+            items: [
+              "The \"Statistics\" tab on the Agents page shows run time, waiting time and failure rate for the last 7 / 30 days by source and session; real and mock data stay separated.",
+              "The \"History\" page shows notifications and agent events on one timeline, filterable by source / type / time.",
+            ],
+          },
+          {
+            type: "note",
+            text: "Hook trust and permission confirmations are always handled by the CLI tool itself; Task Dock only reads events and never authorizes on your behalf.",
+          },
+        ],
+      },
     },
     keywords: {
       "zh-CN": ["Agent", "接入", "Hooks", "Claude Code", "Cursor", "Gemini", "ZCode", "Codex", "检测", "授权", "统计"],
+      "en-US": ["agent", "onboard", "hooks", "Claude Code", "Cursor", "Gemini", "ZCode", "Codex", "detect", "verify", "statistics"],
     },
     relatedFeatureIds: [
       "core.agent-action-center",
@@ -61,7 +99,7 @@ export const AGENTS_ARTICLES: readonly HelpArticle[] = [
     id: "help.agents.mcp-authorization",
     categoryId: "agents",
     status: "needs_review",
-    contentVersion: 3,
+    contentVersion: 4,
     reviewedForVersion: "v0.11",
     reviewedOperationContractVersions: { "agent.mcp-server": 2 },
     translations: {
@@ -71,7 +109,7 @@ export const AGENTS_ARTICLES: readonly HelpArticle[] = [
         sections: [
           {
             type: "callout",
-            text: "管理界面和服务端能力已接入。真实 MCP 客户端连接、桌面运行状态及完整系统交互尚未完成验收，因此本文继续标记为「待复核」。",
+            text: "管理界面、服务端能力，以及真实独立 MCP 客户端（MCP Inspector）的端到端联调均已通过。Claude Code / Codex CLI 等具体编码 Agent 的握手差异尚未实测；本文保持「待复核」直到这些客户端在真机验证完成。",
           },
           { type: "heading", text: "当前服务范围" },
           {
@@ -100,7 +138,7 @@ export const AGENTS_ARTICLES: readonly HelpArticle[] = [
               "在设置的 Agent 接入区域启用 MCP，并查看服务是否实际运行及监听端口；开关状态不代表服务已成功启动。",
               "在 MCP 管理区创建身份并选 scope。`project_rw` 还需授予具体项目；Token 明文只在创建或轮换时返回一次，数据库只保存其哈希。",
               "按客户端生成对应配置片段，复制到 Claude Code、Codex CLI、Cursor、Trae 或 generic 客户端。不要把 Token 放进截图、日志或共享文档。",
-              "连接后可在 MCP 操作历史查看分页审计摘要。界面不展示错误正文或重放载荷；本机数据库仍保留写工具的 `result_json` 以支持幂等重放，目前没有配置审计保留期限或自动清理。真实客户端连接尚未实测。",
+              "连接后可在 MCP 操作历史查看分页审计摘要。界面不展示错误正文或重放载荷；本机数据库仍保留写工具的 `result_json` 以支持幂等重放，目前没有配置审计保留期限或自动清理。真实独立客户端（MCP Inspector）已完成端到端联调：工具发现、只读拒绝未授权写入、scope 变更即时生效与授权写入均验证通过；编码 Agent 客户端的握手差异尚未实测。",
             ],
           },
           {
@@ -109,9 +147,55 @@ export const AGENTS_ARTICLES: readonly HelpArticle[] = [
           },
         ],
       },
+      "en-US": {
+        title: "MCP server: authorized read/write for planning data",
+        summary:
+          "Task Dock's MCP currently exposes 18 planning-center tools; identities, project grants and audit summaries are managed in Settings.",
+        sections: [
+          {
+            type: "callout",
+            text: "The management UI, the server-side capabilities and an end-to-end integration with a real standalone MCP client (MCP Inspector) have all passed. Handshake differences of concrete coding agents such as Claude Code / Codex CLI are not yet tested; this guide stays \"Needs review\" until those clients are verified on a real machine.",
+          },
+          { type: "heading", text: "Current service scope" },
+          {
+            type: "paragraph",
+            text: "MCP (Model Context Protocol) connects to Task Dock's local loopback bridge via the stdio subcommand `taskdock.exe --mcp-server`. The tools only read and write planning projects, features, steps, progress and agent-session links that you created; no task operations, no clipboard content reads, no edits to the built-in roadmap. The service switch `mcp_server_enabled` is off by default.",
+          },
+          { type: "heading", text: "Permission scopes" },
+          {
+            type: "steps",
+            items: [
+              "A newly created agent identity defaults to `disabled` and cannot call read/write tools; revoking an identity invalidates further requests immediately.",
+              "`readonly` is a user-chosen, whole-catalog read-only scope; it can never write.",
+              "`project_rw` can only read and modify explicitly granted projects; new projects you create are granted to that agent automatically.",
+              "Writes require `project_rw`. Updating projects, features and steps and submitting for acceptance use `expected_revision`; stale concurrent versions return a conflict. Appending progress logs and linking or unlinking agent sessions are append-only actions and need no revision.",
+            ],
+          },
+          { type: "heading", text: "Tools available today" },
+          {
+            type: "paragraph",
+            text: "Readable: list/read projects, features, steps, milestones, progress and agent-session links. Writable: create projects or features, update projects/features/steps, append progress logs, link/unlink agent sessions, submit a feature for acceptance. An agent cannot mark a feature completed; acceptance stays with you.",
+          },
+          { type: "heading", text: "Configuration and connection check" },
+          {
+            type: "steps",
+            items: [
+              "Enable MCP in the Agent access area of Settings and check whether the service is actually running and which port it listens on; the switch state does not prove the service started successfully.",
+              "Create an identity in the MCP management area and pick a scope. `project_rw` also needs per-project grants; the token is returned in plain text only once at creation or rotation — the database stores its hash only.",
+              "Generate the config snippet for your client and paste it into Claude Code, Codex CLI, Cursor, Trae or a generic client. Never put the token into screenshots, logs or shared documents.",
+              "After connecting, the MCP operation history shows a paginated audit summary. The UI hides error bodies and replay payloads; the local database still keeps `result_json` of write tools for idempotent replay, and there is currently no audit retention limit or auto-cleanup. An end-to-end integration with a real standalone client (MCP Inspector) has passed: tool discovery, read-only rejection of unauthorized writes, scope changes taking effect immediately and authorized writes were all verified; coding-agent handshake differences are not yet tested.",
+            ],
+          },
+          {
+            type: "note",
+            text: "Permission denied usually means the identity is still disabled, the scope does not allow the action, or a `project_rw` identity lacks the project grant. If the service is reported unavailable, first make sure Task Dock is running and MCP is enabled; MCP does not expose tasks, clipboard or arbitrary database tools.",
+          },
+        ],
+      },
     },
     keywords: {
       "zh-CN": ["MCP", "授权", "Model Context Protocol", "Agent 能力", "规划中心", "readonly", "project_rw", "项目授权", "配置", "Token", "审计"],
+      "en-US": ["MCP", "authorization", "Model Context Protocol", "agent capabilities", "planning center", "readonly", "project_rw", "project grant", "config", "token", "audit"],
     },
     relatedFeatureIds: ["agent.mcp-server"],
     relatedRouteIds: ["roadmap", "settings"],

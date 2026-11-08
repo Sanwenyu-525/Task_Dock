@@ -1,4 +1,4 @@
-//! 快速入门类教程（4 篇，均 verified 且自带 en-US 翻译）。
+//! 快速入门类教程（6 篇，均 verified 且自带 en-US 翻译；help-center / onboarding 2026-11-08 新增）。
 //!
 //! 内容口径与当前实现一致（详见各文 reviewedForVersion）；引用的入口名与快捷键
 //! 以 useUiStore.TAB_ORDER / navigationRegistry 为准。
@@ -332,5 +332,171 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
     },
     relatedFeatureIds: ["ux.custom-hotkeys", "core.global-search"],
     relatedRouteIds: ["settings", "tasks"],
+  },
+  {
+    id: "help.quickstart.help-center",
+    categoryId: "quickstart",
+    status: "verified",
+    contentVersion: 1,
+    reviewedForVersion: "v0.11",
+    translations: {
+      "zh-CN": {
+        title: "帮助与教程中心：找到你要的答案",
+        summary: "搜索、分类浏览与上下文帮助按钮三种入口；每篇教程带状态徽标，如实标注覆盖范围。",
+        sections: [
+          { type: "heading", text: "打开帮助中心" },
+          {
+            type: "steps",
+            items: [
+              "左侧导航点「帮助」；也可以从设置页「帮助与教程」或业务页面里的「?」按钮打开。",
+              "顶部搜索框按标题、关键词与正文匹配（中英文均可）；分类标签用于按主题浏览。",
+              "从业务页「?」弹层进入时会带上来源页，帮助中心提供「返回来源页面」。",
+            ],
+          },
+          { type: "heading", text: "读懂教程状态" },
+          {
+            type: "paragraph",
+            text: "每篇教程显示状态徽标：已核对（与当前版本界面核对一致）、待复核（操作语义可能随版本演进）、草稿、暂不可用。文章头还显示适用版本与英文翻译状态——缺少英文版时明确显示「该教程暂无英文版」并回退中文，不伪称翻译完成。",
+          },
+          { type: "heading", text: "实用功能" },
+          {
+            type: "steps",
+            items: [
+              "「复制操作步骤」把当前文章的步骤导出为纯文本，方便贴给协作者。",
+              "「相关功能」区域展示关联功能的当前实现状态，只有已实现功能可以点击跳转，待开发 / 受阻功能显示状态徽标而非死链接。",
+              "「重新打开新手引导」随时回看三步入门引导。",
+              "最近浏览记录保存在本机（上限 8 条），可一键清空。",
+            ],
+          },
+          {
+            type: "tip",
+            text: "教程内容随功能演进持续校对；`npm run help:check` 在每次开发中检查引用有效性与覆盖缺口，失效引用会直接报错。",
+          },
+        ],
+      },
+      "en-US": {
+        title: "Help center: find the answer you need",
+        summary:
+          "Three ways in — search, category browsing and the \"?\" context button; every guide carries a status badge that states its coverage honestly.",
+        sections: [
+          { type: "heading", text: "Opening the help center" },
+          {
+            type: "steps",
+            items: [
+              "Click \"Help\" in the left navigation; you can also enter from \"Settings → Help and tutorials\" or the \"?\" button inside a feature page.",
+              "The search box matches titles, keywords and body text (Chinese or English); category chips browse by topic.",
+              "Entering from a page's \"?\" popover carries the source page, and the help center offers \"Return to source page\".",
+            ],
+          },
+          { type: "heading", text: "Reading guide status" },
+          {
+            type: "paragraph",
+            text: "Each guide shows a status badge: Verified (checked against the current UI), Needs review (operations may shift as versions evolve), Draft and Unavailable. The header also shows the applicable version and translation state — when an English version is missing it says so plainly and falls back to Chinese instead of pretending the translation exists.",
+          },
+          { type: "heading", text: "Handy features" },
+          {
+            type: "steps",
+            items: [
+              "\"Copy steps\" exports the guide's steps as plain text to share with collaborators.",
+              "The \"Related features\" area shows each linked feature's real implementation status; only implemented features are clickable, while planned / blocked ones show a status badge instead of a dead link.",
+              "\"Reopen the getting-started tour\" replays the three-step introduction any time.",
+              "Recently viewed guides are stored locally (up to 8) and can be cleared in one click.",
+            ],
+          },
+          {
+            type: "tip",
+            text: "Guide content is continuously re-checked as features evolve; `npm run help:check` validates references and coverage during development and fails loudly on broken references.",
+          },
+        ],
+      },
+    },
+    keywords: {
+      "zh-CN": ["帮助", "教程", "搜索", "状态徽标", "复制步骤", "相关功能"],
+      "en-US": ["help", "guide", "tutorial", "search", "status badge", "copy steps", "related features"],
+    },
+    relatedFeatureIds: ["ux.help-center"],
+    relatedRouteIds: ["help", "settings"],
+  },
+  {
+    id: "help.quickstart.onboarding",
+    categoryId: "quickstart",
+    status: "verified",
+    contentVersion: 1,
+    reviewedForVersion: "v0.11",
+    translations: {
+      "zh-CN": {
+        title: "首次使用引导：三步入门",
+        summary: "首次启动自动出现的三步页内引导，可跳过可返回；升级不重播，随时可从帮助中心重开。",
+        sections: [
+          { type: "heading", text: "引导长什么样" },
+          {
+            type: "paragraph",
+            text: "引导是右下角的页内卡片（不是全屏弹窗），不抢占焦点，不创建任何业务数据——每一步的按钮只做页面跳转。仅完整模式显示；停靠或胶囊形态下不会出现。",
+          },
+          { type: "heading", text: "三步内容" },
+          {
+            type: "steps",
+            items: [
+              "第一步「认识 task_dock」：了解主界面结构。",
+              "第二步「完成第一个任务」：一键跳到任务页快速录入（「去创建任务」）。",
+              "第三步「按需启用功能」：打开设置选择要启用的模块（「打开设置」）。",
+            ],
+          },
+          { type: "heading", text: "跳过、返回与重开" },
+          {
+            type: "steps",
+            items: [
+              "「上一步 / 下一步」自由流转；「跳过引导」立即结束，之后不再自动弹出。",
+              "按 Escape 等价于跳过；一次按键只处理引导这一层，不会误关其他弹层。",
+              "想再看一遍：帮助中心或「设置 → 帮助与教程」的「重新打开新手引导」。",
+            ],
+          },
+          {
+            type: "note",
+            text: "引导升级后不会自动重播打扰老用户：新版本只会在帮助中心显示「有新内容」红点，由你决定是否重看。",
+          },
+        ],
+      },
+      "en-US": {
+        title: "Getting-started tour: three steps in",
+        summary:
+          "A three-step in-page tour appears on first launch; skip or move freely, upgrades never replay it, and you can reopen it from the help center.",
+        sections: [
+          { type: "heading", text: "What the tour looks like" },
+          {
+            type: "paragraph",
+            text: "The tour is an in-page card at the bottom-right (not a full-screen modal); it never steals focus and never creates business data — every step's button only navigates. It shows in full mode only and never appears while docked as a capsule.",
+          },
+          { type: "heading", text: "The three steps" },
+          {
+            type: "steps",
+            items: [
+              "Step 1, \"Meet Task Dock\": a quick look at the main layout.",
+              "Step 2, \"Create your first task\": one click to the Tasks page quick-add (\"Create a task\").",
+              "Step 3, \"Turn on what you need\": open Settings and pick the modules you want (\"Open settings\").",
+            ],
+          },
+          { type: "heading", text: "Skip, go back and reopen" },
+          {
+            type: "steps",
+            items: [
+              "\"Back / Next\" moves freely; \"Skip tour\" ends it immediately and it will not auto-appear again.",
+              "Escape is equivalent to skipping; one keypress handles only the tour layer, never closing other popovers by mistake.",
+              "To watch it again: \"Reopen the getting-started tour\" in the help center or in \"Settings → Help and tutorials\".",
+            ],
+          },
+          {
+            type: "note",
+            text: "After an upgrade the tour never auto-replays at existing users: a new version only lights up a \"new content\" dot in the help center, and replaying stays your call.",
+          },
+        ],
+      },
+    },
+    keywords: {
+      "zh-CN": ["引导", "新手", "首次启动", "跳过", "重新打开引导", "三步"],
+      "en-US": ["onboarding", "getting started", "first launch", "skip", "reopen tour", "three steps"],
+    },
+    relatedFeatureIds: ["ux.onboarding"],
+    relatedRouteIds: ["help", "settings"],
   },
 ];

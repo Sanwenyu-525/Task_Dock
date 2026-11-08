@@ -185,6 +185,7 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；能力与当前状态见 [REA
 | Web 交互、无障碍和界面规范检查 | `web-design-guidelines`；按其要求读取当前规则来源 |
 | 完整前端页面交付 | 一个主设计 Skill + React Skill + UI 审查 Skill；动态交互增加动效及状态过渡检查 |
 | 验收、性能审计、整改提示词 | 项目本地 Skill 优先：`taskdock-ui-acceptance`（视觉/原生窗口专项）、`taskdock-acceptance`（功能链路与回归）、`taskdock-performance-audit`（常驻资源）、`taskdock-remediation-prompt`（仅生成提示词） |
+| 浏览器操作、网页任务 | Task Dock 自身 UI 走查/验收走项目通道（第 7 节 B/C：`serve-preview` + Playwright、CDP 真机），不用 `ego-browser` 替代，也不因其 description 自称默认而优先选用；通用外部网页任务可用 `ego-browser`（宿主机真实执行、非沙箱，遵守第 6 节数据边界） |
 | 纯后端、数据库、API；仅文档修改 | 不强制前端 Skill，按内容选择 |
 
 - **项目规范优先于 Skill。** 视觉与交互先遵循 `docs/ui-themes/`（设计规格、交互规范、组件 API、

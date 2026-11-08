@@ -145,6 +145,7 @@ impl IngestSink for DropSink {
                 origin: EventOrigin::Real,
                 deduplicated: false,
                 late: false,
+                backfill: false,
                 notification: None,
             })
             .collect())

@@ -11,6 +11,12 @@
 //! 项目切换采用面板内二级视图（不是浮层菜单）：胶囊是 Win32 `SetWindowRgn`
 //! 裁剪窗口，弹出到面板外的下拉菜单会被裁掉；二级视图始终落在 340×440 的
 //! 可见矩形内，也沿用既有的 PanelKit 外壳与胶囊行样式。
+//!
+//! 数据来源有两种（与完整规划中心一致）：
+//! - 我的项目：用户自建 `planning_*` 数据，可勾选步骤；
+//! - 内置路线图：`lib/featureCatalog.ts` 静态目录（只读），不触达用户数据。
+//! 用户没有任何项目时默认落到内置路线图，否则面板只剩一个空态，用户会以为
+//! 「路线图没显示」；有项目时仍在顶部分段开关手动切换。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, FolderKanban, Map as MapIcon } from "lucide-react";
@@ -20,13 +26,27 @@ import {
   type PlanningProject,
   type PlanningStep,
 } from "../../lib/bridge";
+import {
+  CATEGORY_META,
+  FEATURE_CATALOG,
+  STATUS_META,
+  featuresByCategory,
+  type FeatureEntry,
+  type FeatureStatus,
+} from "../../lib/featureCatalog";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { PlanningFeatureStatusBadge, PlanningProgressBar } from "../roadmap/PlanningBits";
 import { openFullApp } from "./actions";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
 
 type View = "features" | "projects";
+type Source = "mine" | "builtin";
 type Filter = "all" | "todo" | "active" | "done";
+
+const SOURCES: readonly SegOption<Source>[] = [
+  { value: "mine", label: "我的项目" },
+  { value: "builtin", label: "内置路线图" },
+];
 
 const FILTERS: readonly SegOption<Filter>[] = [
   { value: "all", label: "全部" },
@@ -34,6 +54,18 @@ const FILTERS: readonly SegOption<Filter>[] = [
   { value: "active", label: "进行中" },
   { value: "done", label: "已完成" },
 ];
+
+/** 内置路线图是静态目录：分组与总数在模块级算一次，切换来源不重复遍历。 */
+const BUILTIN_GROUPS = featuresByCategory();
+const BUILTIN_IMPLEMENTED = FEATURE_CATALOG.filter((f) => f.status === "implemented").length;
+
+/** 内置路线图状态 → 既有胶囊药丸语义色（文案仍用目录的 STATUS_META）。 */
+const BUILTIN_STATUS_TONE: Record<FeatureStatus, string> = {
+  implemented: "tone-done",
+  partial: "tone-soon",
+  planned: "",
+  blocked: "tone-overdue",
+};
 
 /**
  * 展示分组（只影响筛选，不改变后端状态）：
@@ -85,6 +117,7 @@ export default function PlanningLite() {
   const updateStep = usePlanningStore((s) => s.updateStep);
 
   const [view, setView] = useState<View>("features");
+  const [source, setSource] = useState<Source>("mine");
   const [filter, setFilter] = useState<Filter>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busyStep, setBusyStep] = useState<string | null>(null);
@@ -124,6 +157,12 @@ export default function PlanningLite() {
         state.projects[0];
       // 项目列表已就绪：先放行项目空态/列表，功能加载由各视图自己的 loading 表达。
       setBootedState(true);
+      // 没有任何用户项目时直接展示内置路线图：否则面板只剩空态，
+      // 用户会误以为「路线图没显示」。读取失败不切换，错误态仍给重试。
+      if (!state.projectsError && state.projects.length === 0) {
+        setSource("builtin");
+        return;
+      }
       if (!target) return;
       if (state.loadedForProject !== target.id || state.featuresError) {
         await usePlanningStore.getState().selectProject(target.id);
@@ -255,6 +294,7 @@ export default function PlanningLite() {
 
   // ── 功能列表（一级视图）──────────────────────────────────────────
   const projectName = activeProject?.name ?? "未选择项目";
+  const showingBuiltin = source === "builtin";
   const emptyProjectList =
     bootedState && !projectsLoading && !projectsError && projects.length === 0;
   const noActiveProject =
@@ -267,22 +307,59 @@ export default function PlanningLite() {
     <>
       <PanelHead
         title="规划中心"
-        sub={!bootedState ? "读取中" : `${projectName} · ${statsText(activeProject)}`}
+        sub={
+          !bootedState
+            ? "读取中"
+            : showingBuiltin
+              ? `内置路线图 · ${FEATURE_CATALOG.length} 项 · 已实现 ${BUILTIN_IMPLEMENTED}`
+              : activeProject
+                ? `${projectName} · ${statsText(activeProject)}`
+                : projectName
+        }
         actions={
-          <button
-            type="button"
-            className="cap-iconbtn"
-            aria-label="切换规划项目"
-            onClick={() => setView("projects")}
-          >
-            <FolderKanban size={16} strokeWidth={2} aria-hidden="true" />
-          </button>
+          showingBuiltin ? undefined : (
+            <button
+              type="button"
+              className="cap-iconbtn"
+              aria-label="切换规划项目"
+              onClick={() => setView("projects")}
+            >
+              <FolderKanban size={16} strokeWidth={2} aria-hidden="true" />
+            </button>
+          )
         }
       />
 
-      <Segmented label="功能筛选" options={FILTERS} value={filter} onChange={setFilter} />
+      <Segmented label="规划数据来源" options={SOURCES} value={source} onChange={setSource} />
+      {!showingBuiltin && (
+        <Segmented label="功能筛选" options={FILTERS} value={filter} onChange={setFilter} />
+      )}
 
-      <div className="cap-list">
+      {showingBuiltin ? (
+        <div className="cap-list">
+          {BUILTIN_GROUPS.map(({ category, items }) => (
+            <section
+              key={category}
+              className="cap-plan-section"
+              aria-label={CATEGORY_META[category].label}
+            >
+              <div className="cap-plan-section-head">
+                <span className="cap-plan-section-title">{CATEGORY_META[category].label}</span>
+                <span className="cap-plan-section-count">{items.length}</span>
+              </div>
+              {items.map((f) => (
+                <BuiltinFeatureRow
+                  key={f.id}
+                  feature={f}
+                  open={expandedId === f.id}
+                  onToggle={() => setExpandedId((cur) => (cur === f.id ? null : f.id))}
+                />
+              ))}
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="cap-list">
         {bootedState && projectsError && projects.length === 0 && (
           <EmptyState
             icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
@@ -367,22 +444,36 @@ export default function PlanningLite() {
             />
           ))}
       </div>
+      )}
 
-      <div className="cap-foot">
-        <span className="cap-foot-note">
-          <MapIcon size={12} strokeWidth={1.8} aria-hidden="true" />
-          {notice ?? statsText(activeProject)}
-        </span>
-        {activeProject?.stats.has_features ? (
-          <span className="cap-progress" aria-hidden="true">
-            <i style={{ width: `${donePct}%` }} />
+      {showingBuiltin ? (
+        <div className="cap-foot">
+          <span className="cap-foot-note">
+            <MapIcon size={12} strokeWidth={1.8} aria-hidden="true" />
+            只读 · 来自功能目录
           </span>
-        ) : null}
-        <button type="button" className="cap-link" onClick={() => openFullApp("roadmap")}>
-          完整规划
-          <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
-        </button>
-      </div>
+          <button type="button" className="cap-link" onClick={() => openFullApp("roadmap")}>
+            完整规划
+            <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        </div>
+      ) : (
+        <div className="cap-foot">
+          <span className="cap-foot-note">
+            <MapIcon size={12} strokeWidth={1.8} aria-hidden="true" />
+            {notice ?? statsText(activeProject)}
+          </span>
+          {activeProject?.stats.has_features ? (
+            <span className="cap-progress" aria-hidden="true">
+              <i style={{ width: `${donePct}%` }} />
+            </span>
+          ) : null}
+          <button type="button" className="cap-link" onClick={() => openFullApp("roadmap")}>
+            完整规划
+            <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        </div>
+      )}
     </>
   );
 }
@@ -480,6 +571,75 @@ function FeatureRow({
             <p className="cap-detail-desc is-muted">尚未拆分步骤</p>
           )}
 
+          <div className="cap-detail-actions">
+            <button type="button" className="cap-mini" onClick={() => openFullApp("roadmap")}>
+              完整规划
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 内置路线图行（只读）：目录条目没有步骤与里程碑，数据全部来自
+ * `featureCatalog.ts`，因此不接 store、不发 IPC；展开只展示目录里的
+ * 详情与阻塞原因，编辑仍回完整规划中心。
+ */
+function BuiltinFeatureRow({
+  feature,
+  open,
+  onToggle,
+}: {
+  feature: FeatureEntry;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const tone = BUILTIN_STATUS_TONE[feature.status];
+  return (
+    <div className={`cap-plan-feature${open ? " is-open" : ""}`}>
+      <div className="cap-item cap-plan-feature-head">
+        <button
+          type="button"
+          className="cap-main cap-row-open"
+          aria-label={`${open ? "收起" : "查看"}「${feature.title}」详情`}
+          aria-expanded={open}
+          aria-controls={`plan-builtin-${feature.id}`}
+          onClick={onToggle}
+        >
+          <span className="cap-plan-line">
+            <span className="cap-item-title">{feature.title}</span>
+            <span className={`cap-pill cap-plan-prio${tone ? ` ${tone}` : ""}`}>
+              {STATUS_META[feature.status].label}
+            </span>
+          </span>
+          <span className="cap-plan-meta">
+            <span
+              className={`cap-pill cap-plan-prio${
+                feature.priority === "P0"
+                  ? " tone-overdue"
+                  : feature.priority === "P1"
+                    ? " tone-soon"
+                    : ""
+              }`}
+            >
+              {feature.priority}
+            </span>
+            <span className="cap-item-sub">{feature.description}</span>
+          </span>
+        </button>
+      </div>
+
+      {open && (
+        <div className="cap-task-detail cap-plan-detail" id={`plan-builtin-${feature.id}`}>
+          <p className="cap-detail-desc">{feature.detail}</p>
+          {feature.status === "blocked" && feature.blockedReason ? (
+            <div className="cap-detail-row">
+              <span className="cap-detail-label">阻塞</span>
+              <span className="cap-detail-value">{feature.blockedReason}</span>
+            </div>
+          ) : null}
           <div className="cap-detail-actions">
             <button type="button" className="cap-mini" onClick={() => openFullApp("roadmap")}>
               完整规划

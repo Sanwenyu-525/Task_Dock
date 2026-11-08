@@ -7,8 +7,10 @@
 //!
 //! 约束：
 //! - 不做轮询：列表只在面板打开与写操作后刷新，`load` 用代次丢弃过期快照；
-//! - 进入全局单飞：一次只允许进入一个场景。现场恢复与工作流各自还受后端全局单实例
-//!   约束，两个场景同时进入会互相抢占前台，因此这里直接拒绝而不是排队堆积；
+//! - 进入全局单飞：一次只允许进入一个场景。后端互斥槽是权威（并发进入返回可重试
+//!   冲突），前端单飞只是第一道防线；现场恢复与工作流各自还受后端全局单实例约束，
+//!   两个场景同时进入会互相抢占前台，因此这里直接拒绝而不是排队堆积；
+//! - 取消经 `cancelEnter` 转发后端：取消与超时只在项间生效，已启动项不回滚；
 //! - 清单是整体覆盖语义（后端 `scenario_save`），store 不做本地乐观改写：
 //!   写成功后用后端返回值落状态，失败保持原样并给出错误文案。
 
@@ -17,6 +19,7 @@ import {
   scenarioDelete,
   scenarioDuplicate,
   scenarioEnter,
+  scenarioEnterCancel,
   scenarioGet,
   scenarioList,
   scenarioSave,
@@ -38,6 +41,8 @@ interface ScenarioState {
   error: string | null;
   /** 正在进入的场景 id；null 表示当前没有在途的进入 */
   enteringId: string | null;
+  /** 正在请求取消进入的场景 id；null 表示没有在途的取消请求 */
+  cancellingId: string | null;
   /** 编辑器打开的场景详情（新建草稿由面板自己持有） */
   editing: ScenarioDetail | null;
   /** 每个场景最近一次进入结果（卸载后仍可查看） */
@@ -55,6 +60,8 @@ interface ScenarioState {
   duplicate: (id: string) => Promise<string>;
   /** 进入场景；已有在途进入时返回 null（不排队、不并发）。 */
   enter: (id: string) => Promise<ScenarioEnterResult | null>;
+  /** 请求取消在途进入：幂等；取消只在项间生效，已启动项不回滚。 */
+  cancelEnter: (id: string) => Promise<boolean>;
   clearResult: (id: string) => void;
   applyRestoreProgress: (event: WorkspaceRestoreProgress) => void;
   applyWorkflowProgress: (detail: WorkflowRunDetail) => void;
@@ -64,8 +71,33 @@ export type ScenarioAsyncStatus = "accepted" | "running" | "completed" | "partia
 
 export const scenarioItemProgressKey = (kind: "snapshot" | "workflow", id: string) => `${kind}:${id}`;
 
+/**
+ * 几何恢复逐项摘要：只统计带几何数据的条目，旧快照（无几何）不追加文案。
+ * 文案与后端逐项原因同口径：applied=原位恢复、converged=布局变化已收敛、
+ * skipped/failed=未调整（主动跳过或系统拒绝）。
+ */
+export function geometryProgressDetail(summary: RestoreSummary): string {
+  let applied = 0;
+  let converged = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const item of summary.items) {
+    if (item.geometry === "applied") applied += 1;
+    else if (item.geometry === "converged") converged += 1;
+    else if (item.geometry === "skipped") skipped += 1;
+    else if (item.geometry === "failed") failed += 1;
+  }
+  const parts: string[] = [];
+  if (applied > 0) parts.push(`${applied} 项已按原位恢复`);
+  if (converged > 0) parts.push(`${converged} 项因显示器布局变化已收敛到可见区域`);
+  if (failed > 0) parts.push(`${failed} 项未能调整位置`);
+  if (skipped > 0) parts.push(`${skipped} 项保持当前状态`);
+  return parts.length > 0 ? `；窗口几何：${parts.join("，")}` : "";
+}
+
 function restoreProgressState(summary: RestoreSummary): { status: ScenarioAsyncStatus; detail: string } {
-  const detail = `恢复 ${summary.restored}，跳过 ${summary.skipped}，失败 ${summary.failed}，取消 ${summary.cancelled}`;
+  const base = `恢复 ${summary.restored}，跳过 ${summary.skipped}，失败 ${summary.failed}，取消 ${summary.cancelled}`;
+  const detail = `${base}${geometryProgressDetail(summary)}`;
   if (summary.cancelled > 0) return { status: "cancelled", detail };
   if (summary.failed === 0 && summary.skipped === 0) return { status: "completed", detail };
   if (summary.restored > 0) return { status: "partial", detail };
@@ -127,6 +159,7 @@ export const useScenarioStore = create<ScenarioState>((set, get) => {
     loaded: false,
     error: null,
     enteringId: null,
+    cancellingId: null,
     editing: null,
     results: {},
     progressByItem: {},
@@ -231,6 +264,17 @@ export const useScenarioStore = create<ScenarioState>((set, get) => {
         }
         return { results, progressByItem };
       }),
+
+    cancelEnter: async (id) => {
+      // 只对在途进入发起取消；幂等转发后端，false（未在途）不算错误。
+      if (get().enteringId !== id) return false;
+      set({ cancellingId: id });
+      try {
+        return await scenarioEnterCancel(id);
+      } finally {
+        set({ cancellingId: null });
+      }
+    },
 
     applyRestoreProgress: (event) => {
       const state = get();

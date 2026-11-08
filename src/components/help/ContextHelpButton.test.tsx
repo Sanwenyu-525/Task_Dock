@@ -3,13 +3,30 @@
  */
 //! ContextHelpButton：? 图标按钮 + Popover（overlayStack menu 层）+ 跳完整教程。
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import ContextHelpButton from "./ContextHelpButton";
 import { useUiStore } from "../../store/useUiStore";
 import { resetOverlayStack, overlayStack } from "../../lib/overlayStack";
 import { setLocalePreference, __resetLocaleForTests } from "../../i18n";
+
+// 2026-11-08 起全部文章都带 en-US 正文；「暂无英文版」回退 UI 用合成 zh-only
+// 文章验证：开关打开时 registry 返回剥掉 en-US 的文章对象（其余行为保持真实）。
+const zhOnlyMode = { current: false };
+vi.mock("../../help/registry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../help/registry")>();
+  return {
+    ...actual,
+    getHelpArticle: (id: string) => {
+      const found = actual.getHelpArticle(id);
+      if (found && zhOnlyMode.current) {
+        return { ...found, translations: { "zh-CN": found.translations["zh-CN"] } };
+      }
+      return found;
+    },
+  };
+});
 
 function fireGlobalEscape() {
   // overlayStack 的 Escape 分发器装在 window capture 阶段（模块加载即安装）
@@ -25,6 +42,7 @@ afterEach(() => {
   cleanup();
   resetOverlayStack();
   __resetLocaleForTests();
+  zhOnlyMode.current = false;
 });
 
 describe("ContextHelpButton", () => {
@@ -78,11 +96,16 @@ describe("ContextHelpButton", () => {
   });
 
   it("en-US 下 zh-only 文章显示缺失徽标；状态徽标随语言切换", () => {
-    setLocalePreference("en-US");
-    render(<ContextHelpButton articleId="help.tasks.create-reminders" />);
-    const btn = screen.getByRole("button", { name: "Help: 创建任务与自然语言提醒" });
-    fireEvent.click(btn);
-    expect(screen.getByText("This guide is not available in English yet")).toBeTruthy();
-    expect(screen.getByText("Verified")).toBeTruthy();
+    zhOnlyMode.current = true;
+    try {
+      setLocalePreference("en-US");
+      render(<ContextHelpButton articleId="help.tasks.create-reminders" />);
+      const btn = screen.getByRole("button", { name: "Help: 创建任务与自然语言提醒" });
+      fireEvent.click(btn);
+      expect(screen.getByText("This guide is not available in English yet")).toBeTruthy();
+      expect(screen.getByText("Verified")).toBeTruthy();
+    } finally {
+      zhOnlyMode.current = false;
+    }
   });
 });

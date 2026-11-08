@@ -1346,6 +1346,18 @@ CREATE TABLE voice_bindings (
 );
 "#,
     ),
+    (
+        40,
+        r#"
+-- v40（工作现场窗口几何）：快照条目补齐窗口矩形/显示器/DPI，恢复时可还原几何。
+-- 红线（AGENTS.md §4.6）：HWND/PID 是运行时身份，绝不落库；本列只存屏幕矩形
+-- （物理像素）、显示器设备名与 DPI 缩放的 JSON，窗口身份仍由 exe/类名/标题
+-- 身份链承担。历史条目默认空串 = 无几何数据，恢复行为与升级前一致（只唤醒
+-- 不摆位）；损坏载荷按无几何处理，不影响恢复。
+ALTER TABLE workspace_snapshot_items
+  ADD COLUMN window_geometry_json TEXT NOT NULL DEFAULT '';
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -3103,6 +3115,68 @@ mod tests {
             Ok::<_, AppError>(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn v40_window_geometry_column_preserves_rows_and_defaults_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let idx39 = MIGRATIONS.iter().position(|(v, _)| *v == 39).unwrap();
+        apply_migrations(&conn, 0, &MIGRATIONS[..idx39 + 1]).unwrap();
+        // 升级前写入既有规划数据
+        conn.execute(
+            "INSERT INTO workspace_snapshots (id, name, note, source, item_count, created_at, updated_at)
+             VALUES ('s1', '现场', '', 'manual', 1, 't', 't')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO workspace_snapshot_items (id, snapshot_id, display_order, item_kind, display_name)
+             VALUES ('i1', 's1', 0, 'application', '应用')",
+            [],
+        )
+        .unwrap();
+        // v39 → v40：ALTER 只加列，旧行保留
+        apply_migrations(&conn, (idx39 + 1) as i64, &MIGRATIONS[idx39 + 1..]).unwrap();
+        let (raw, total): (String, i64) = conn
+            .query_row(
+                "SELECT window_geometry_json, (SELECT COUNT(*) FROM workspace_snapshot_items)
+                 FROM workspace_snapshot_items WHERE id = 'i1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(total, 1, "升级不得丢失既有条目");
+        assert_eq!(raw, "", "历史条目默认无几何数据");
+        // 新列可写入几何 JSON 并原样读回
+        let json = r#"{"rect":{"x":-1820,"y":200,"w":800,"h":600},"monitor":"\\\\.\\DISPLAY1","monitor_rect":{"x":-1920,"y":0,"w":1920,"h":1080},"scale":1.25}"#;
+        conn.execute(
+            "UPDATE workspace_snapshot_items SET window_geometry_json = ?1 WHERE id = 'i1'",
+            [json],
+        )
+        .unwrap();
+        let back: String = conn
+            .query_row(
+                "SELECT window_geometry_json FROM workspace_snapshot_items WHERE id = 'i1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(back, json);
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            MIGRATIONS[MIGRATIONS.len() - 1].0,
+            "迁移应推进到最新版本"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
     }
 
     #[test]

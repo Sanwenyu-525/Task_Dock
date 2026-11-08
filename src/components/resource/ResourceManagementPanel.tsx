@@ -24,10 +24,12 @@ import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
 import ResourceCleanupSection, { type CleanupEstimate } from "../settings/ResourceCleanupSection";
 import ProcessDiagnostics from "./ProcessDiagnostics";
+import DiskSpaceAnalyzer from "./DiskSpaceAnalyzer";
 import DiskStoragePanel from "./DiskStoragePanel";
 import MemorySegment from "./MemorySegment";
 import OverviewSegment from "./OverviewSegment";
 import RuntimeModulesSection from "./RuntimeModulesSection";
+import UserJunkSection from "./UserJunkSection";
 import { USAGE_ANOMALY_DETAIL, UsageBar, usageStatusKey } from "./charts";
 import { VOLUME_KIND_KEYS } from "./volumeLabels";
 
@@ -224,6 +226,16 @@ export default function ResourceManagementPanel() {
           {visited.has("disk") && (
             <div className="resource-disk">
               <DiskVolumes snapshot={snapshot.data} loading={snapshot.loading} />
+              {/* 主要动作在前：用户进入磁盘页通常是为了腾空间；
+                  空间分析是诊断工具，放在清理之后。 */}
+              <UserJunkSection onSnapshotInvalidated={refreshAfterCleanup} />
+              <DiskSpaceAnalyzer
+                defaultPath={
+                  snapshot.data?.disks[0]?.volume
+                    ? `${snapshot.data.disks[0].volume}\\`
+                    : null
+                }
+              />
               <ResourceCleanupSection
                 onPreviewChange={setCleanable}
                 onSnapshotInvalidated={refreshAfterCleanup}

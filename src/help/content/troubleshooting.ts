@@ -1,7 +1,8 @@
-//! 故障排查类教程（3 篇）。
-//! - feature-status：verified（自带 en-US）——教用户识别「功能未开发 / 受阻 / 入口被隐藏」的正确状态；
-//! - agent-no-events：needs_review——排查路径需真机复核后转 verified；
-//! - backup：verified。
+//! 故障排查类教程（4 篇，均 verified 且自带 en-US；notification-aggregation 2026-11-08 新增）。
+//! - feature-status：教用户识别「功能未开发 / 受阻 / 入口被隐藏」的正确状态；
+//! - agent-no-events：2026-11-08 按 AgentPanel/ActionCenterPanel/managed.rs 当前源码复核后转 verified；
+//! - backup：备份与恢复口径；
+//! - notification-aggregation：只写已交付能力（双额度限流/合并摘要/静音/历史持久化）。
 
 import type { HelpArticle } from "../types";
 
@@ -89,18 +90,14 @@ export const TROUBLESHOOTING_ARTICLES: readonly HelpArticle[] = [
   {
     id: "help.troubleshooting.agent-no-events",
     categoryId: "troubleshooting",
-    status: "needs_review",
-    contentVersion: 1,
+    status: "verified",
+    contentVersion: 2,
     reviewedForVersion: "v0.11",
     translations: {
       "zh-CN": {
         title: "Agent 已接入但看不到事件",
-        summary: "按「会话时机 → 链路自测 → 行动中心 → 历史」四步排查；本文待真机复核后转已核对。",
+        summary: "按「会话时机 → 链路自测 → 行动中心 → 历史」四步排查。",
         sections: [
-          {
-            type: "callout",
-            text: "本文状态为「待复核」：排查路径基于当前实现整理，个别界面细节需在真机会话中复核后更新。",
-          },
           { type: "heading", text: "第一步：会话时机" },
           {
             type: "paragraph",
@@ -134,9 +131,47 @@ export const TROUBLESHOOTING_ARTICLES: readonly HelpArticle[] = [
           },
         ],
       },
+      "en-US": {
+        title: "Agent onboarded but no events show up",
+        summary: "Troubleshoot in four steps: session timing → link self-test → action center → history.",
+        sections: [
+          { type: "heading", text: "Step 1: session timing" },
+          {
+            type: "paragraph",
+            text: "Hooks load when a session starts: after installing you must start a NEW agent session; already-open sessions do not hot-load hooks and therefore produce no events.",
+          },
+          { type: "heading", text: "Step 2: link self-test" },
+          {
+            type: "steps",
+            items: [
+              "Click \"Verify\" on the matching card on the Agents page; Task Dock runs a nonce-based database self-test.",
+              "If the self-test fails, follow the card's hints: is the CLI on PATH, and is the config file held by another tool?",
+            ],
+          },
+          { type: "heading", text: "Step 3: look in the right place" },
+          {
+            type: "steps",
+            items: [
+              "The Actions page, \"Needs intervention\": waiting for authorization / waiting for input / failures aggregate here.",
+              "The History page: the full event timeline — check whether events arrived but are hidden by a filter.",
+              "The agent panel's session list: confirm the session and source match; real and mock sources stay separated in statistics.",
+            ],
+          },
+          { type: "heading", text: "Step 4: status semantics" },
+          {
+            type: "paragraph",
+            text: "After events end, status is reported as-is; when details like exit codes cannot be obtained it shows \"Unknown\" instead of guessing. Gemini CLI's SessionEnd is best-effort; when it does not fire, a process-side fallback covers it.",
+          },
+          {
+            type: "note",
+            text: "Uninstalling and reinstalling hooks never clears past events; \"Show confirmed\" revisits intervention items you already confirmed.",
+          },
+        ],
+      },
     },
     keywords: {
       "zh-CN": ["Agent", "没有事件", "排查", "自测", "验证", "需介入", "未知", "SessionEnd"],
+      "en-US": ["agent", "no events", "troubleshooting", "self-test", "verify", "needs intervention", "unknown", "SessionEnd"],
     },
     relatedFeatureIds: ["core.agent-action-center", "agent.execution-timeline"],
     relatedRouteIds: ["agents", "actions", "history"],
@@ -176,11 +211,123 @@ export const TROUBLESHOOTING_ARTICLES: readonly HelpArticle[] = [
           },
         ],
       },
+      "en-US": {
+        title: "Backup and restore: where your data is protected",
+        summary:
+          "Daily automatic backups plus manual download; restores confirm before overwriting, and clipboard content or secrets never enter backup logs.",
+        sections: [
+          { type: "heading", text: "What a backup contains" },
+          {
+            type: "paragraph",
+            text: "A full backup covers tasks, clipboard index, the shelf (managed copies packaged in full), notes, workflows, focus statistics, navigation and language preferences and more; a quick backup covers core business tables only. Clipboard content and images never enter submittable logs, and credential-like data stays out of the backup manifest.",
+          },
+          { type: "heading", text: "Manual backup and restore" },
+          {
+            type: "steps",
+            items: [
+              "In \"Settings → Data & backup\" you can create a backup immediately and download it anywhere.",
+              "Before a restore, the UI lists the tables and versions that will be overwritten; nothing happens until you confirm.",
+              "Restoring an older backup that lacks a table treats it as empty instead of aborting; hotkey configs are re-validated item by item, with conflicting keys degraded or disabled and clearly warned — success is never faked.",
+            ],
+          },
+          {
+            type: "note",
+            text: "The backup manifest carries a version: an older Task Dock restoring a newer backup fails loudly at unknown structures instead of silently dropping data. Make a manual backup before upgrading.",
+          },
+          {
+            type: "tip",
+            text: "Daily automatic backup is on by default; the data directory can be redirected for isolated instances via the entry in \"Settings → Data & backup\" (TASK_DOCK_DATA_DIR), handy for multi-instance testing.",
+          },
+        ],
+      },
     },
     keywords: {
       "zh-CN": ["备份", "恢复", "数据", "manifest", "隔离实例", "清单", "快速备份"],
+      "en-US": ["backup", "restore", "data", "manifest", "isolated instance", "quick backup"],
     },
     relatedFeatureIds: [],
     relatedRouteIds: ["settings"],
+  },
+  {
+    id: "help.troubleshooting.notification-aggregation",
+    categoryId: "troubleshooting",
+    status: "verified",
+    contentVersion: 1,
+    reviewedForVersion: "v0.11",
+    translations: {
+      "zh-CN": {
+        title: "通知去哪了：合并、限流与静音",
+        summary: "通知没有逐条弹出不是丢失：关键通知有保底额度，普通通知合并为摘要，历史始终全量记录。",
+        sections: [
+          { type: "heading", text: "通知的分类与额度" },
+          {
+            type: "paragraph",
+            text: "通知分两类：等待授权 / 失败 / 断连是**关键通知**，拥有独立的保底弹窗额度，不会被普通通知挤占；执行中 / 完成 / 任务提醒是**可合并通知**，走自己的独立额度。两类额度都有上界，不会无限弹窗。",
+          },
+          { type: "heading", text: "为什么会看到摘要而不是逐条通知" },
+          {
+            type: "steps",
+            items: [
+              "同一批出现多条可合并通知（如连续完成任务）时，合并为一条摘要弹出。",
+              "被限流抑制的通知在限流窗口结束时汇总为一条「窗口尾摘要」，每个窗口最多一条摘要。",
+              "被合并或抑制的通知并没有丢：全部进入通知历史。",
+            ],
+          },
+          { type: "heading", text: "在哪里查看与调整" },
+          {
+            type: "steps",
+            items: [
+              "「历史」页（Ctrl+8）：通知与 Agent 事件统一时间轴；点击通知标记已读，可全部已读或清空（清空需二次确认，Agent 事件流水保留）。",
+              "「设置 → 通知」：任务提醒与 Agent 状态分类开关、全部静音（仍记录到收件箱）、限流窗口与独立弹窗上限。",
+              "「行动」页：需介入事项始终优先呈现，不会被合并或静音吞掉。",
+            ],
+          },
+          {
+            type: "note",
+            text: "全部静音只影响弹窗，不影响记录：静音期间的通知仍完整进入历史。关键通知（等待 / 失败 / 断连）即使在普通通知刷满额度后仍可及时弹出。",
+          },
+        ],
+      },
+      "en-US": {
+        title: "Where did my notifications go: merging, rate limits and mute",
+        summary:
+          "Notifications not popping one by one is not data loss: critical notifications keep a reserved quota, ordinary ones merge into summaries, and history always records everything.",
+        sections: [
+          { type: "heading", text: "Notification classes and quotas" },
+          {
+            type: "paragraph",
+            text: "Notifications come in two classes: waiting-for-authorization / failure / disconnect are critical notifications with their own reserved popup quota that ordinary notifications can never crowd out; running / completion / task reminders are mergeable notifications with their own separate quota. Both quotas are bounded — popups can never flood.",
+          },
+          { type: "heading", text: "Why you see a summary instead of separate popups" },
+          {
+            type: "steps",
+            items: [
+              "When several mergeable notifications appear in one batch (like tasks completing back to back), they merge into one summary popup.",
+              "Notifications suppressed by rate limiting are aggregated into one end-of-window summary when the window closes; at most one summary per window.",
+              "Merged or suppressed notifications are never lost: they all land in the notification history.",
+            ],
+          },
+          { type: "heading", text: "Where to look and tune" },
+          {
+            type: "steps",
+            items: [
+              "The \"History\" page (Ctrl+8): one timeline for notifications and agent events; click a notification to mark it read, mark all read, or clear (clearing asks twice, and agent event records are kept).",
+              "\"Settings → Notifications\": category switches for task reminders and agent status, mute everything (still recorded in the inbox), rate-limit window and max separate popups.",
+              "The \"Actions\" page: items needing intervention always surface first and are never swallowed by merging or muting.",
+            ],
+          },
+          {
+            type: "note",
+            text: "Mute everything only affects popups, not recording: notifications during a mute still reach history in full. Critical notifications (waiting / failure / disconnect) still pop up promptly even after the ordinary quota is exhausted.",
+          },
+        ],
+      },
+    },
+    keywords: {
+      "zh-CN": ["通知", "合并", "限流", "静音", "摘要", "历史", "已读"],
+      "en-US": ["notification", "merge", "rate limit", "mute", "summary", "history", "read"],
+    },
+    relatedFeatureIds: ["core.notification-aggregation"],
+    relatedRouteIds: ["history", "settings"],
   },
 ];

@@ -156,6 +156,33 @@ pub(super) fn collect(data_root: &Path) -> Vec<DiskSnapshot> {
     }
 }
 
+/// 本地固定/可移动盘的盘符列表（`["C:", "D:"]`）。光驱、网络盘、内存盘不参与。
+/// 供回收站等「按卷处理」的功能复用，避免重复定义 GetDriveTypeW 的类型常量。
+pub(super) fn local_drive_roots() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+
+        let mask = unsafe { GetLogicalDrives() };
+        drive_roots_from_mask(mask)
+            .into_iter()
+            .filter(|volume| {
+                let root = format!("{volume}\\");
+                let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+                matches!(
+                    unsafe { GetDriveTypeW(wide.as_ptr()) },
+                    DRIVE_FIXED | DRIVE_REMOVABLE
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
 /// 带超时的单卷探测。超时/在途时返回「未知」，界面显示「暂不可用」。
 fn probe_with_timeout(volume: &str) -> VolumeProbe {
     if !claim(volume) {

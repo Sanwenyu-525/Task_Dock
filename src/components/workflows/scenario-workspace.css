@@ -277,3 +277,97 @@
     width: 100%;
   }
 }
+
+/* ── 图标选择（预设 emoji 网格）与文件夹选择列表 ── */
+
+.scenario-icon-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  min-height: 32px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.scenario-icon-value {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.scenario-icon-placeholder {
+  color: var(--text-tertiary, var(--text-secondary));
+  font-size: 12px;
+}
+
+.scenario-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 34px);
+  gap: 4px;
+  padding: 8px;
+}
+
+.scenario-icon-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.scenario-icon-option:hover {
+  background: var(--surface-hover);
+}
+
+.scenario-icon-option.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.scenario-icon-clear {
+  margin: 0 8px 8px;
+}
+
+.scenario-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.scenario-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+}
+
+.scenario-folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scenario-folder-manual {
+  margin-top: 4px;
+}
+
+@media (max-width: 520px) {
+  .scenario-icon-grid {
+    grid-template-columns: repeat(6, 34px);
+  }
+}

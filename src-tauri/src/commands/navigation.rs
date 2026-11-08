@@ -159,6 +159,100 @@ pub async fn nav_target_running_states(
     .map_err(|e| AppError::Agent(format!("运行状态查询失败: {}", e)))?
 }
 
+/// 关闭窗口结果：requested = 候选窗口数，closed = 已消失数，
+/// stillOpen = 超时后仍在的窗口标题（典型原因：应用在等「是否保存」确认）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetWindowCloseReport {
+    pub requested: usize,
+    pub closed: usize,
+    pub still_open: Vec<String>,
+}
+
+/// 按目标身份优雅关闭其全部顶层窗口（WM_CLOSE，等价点标题栏 ×）。
+/// 不结束进程、不抢焦点；窗口每次现查现关，绝不复用前端传入的句柄。
+#[tauri::command]
+pub async fn nav_close_target_windows(
+    db: State<'_, Arc<Db>>,
+    target_id: String,
+) -> AppResult<TargetWindowCloseReport> {
+    let db = db.inner().clone();
+    let (requested, closed, still_open) =
+        tauri::async_runtime::spawn_blocking(move || {
+            navigation::target_resolver::close_windows_for_target(&db, &target_id)
+        })
+        .await
+        .map_err(|e| AppError::Agent(format!("关闭窗口任务失败: {}", e)))??;
+    Ok(TargetWindowCloseReport {
+        requested,
+        closed,
+        still_open,
+    })
+}
+
+/// 强制结束进程结果：matched = 匹配进程数（含多进程宿主的子进程），
+/// killed = 已结束数，failedPids = 打开句柄被拒或竞争中已退出的 PID。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetProcessKillReport {
+    pub matched: usize,
+    pub killed: usize,
+    pub failed_pids: Vec<u32>,
+}
+
+/// 按目标身份强制结束其全部相关进程（TerminateProcess，破坏性动作）。
+/// 前端必须先经确认弹窗取得用户同意才可调用；本命令不做二次确认。
+#[tauri::command]
+pub async fn nav_kill_target_processes(
+    db: State<'_, Arc<Db>>,
+    target_id: String,
+) -> AppResult<TargetProcessKillReport> {
+    let db = db.inner().clone();
+    let (matched, killed, failed_pids) =
+        tauri::async_runtime::spawn_blocking(move || {
+            navigation::target_resolver::kill_target_processes(&db, &target_id)
+        })
+        .await
+        .map_err(|e| AppError::Agent(format!("结束进程任务失败: {}", e)))??;
+    Ok(TargetProcessKillReport {
+        matched,
+        killed,
+        failed_pids,
+    })
+}
+
+/// 请求退出结果：processTotal = 参与进程数（不含本进程），processExited =
+/// 有界等待（3s）内确认已退出的进程数，postedThreads = 成功投递 WM_QUIT 的线程数。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetProcessQuitReport {
+    pub process_total: usize,
+    pub process_exited: usize,
+    pub posted_threads: usize,
+}
+
+/// 请求目标身份的全部进程自行退出（向其线程投递 WM_QUIT，等价应用自己的
+/// 「退出」命令：保存配置、移除托盘图标后正常结束）。不是强杀；不配合的
+/// 应用会如实报未完全退出，前端引导改用「结束进程」。
+#[tauri::command]
+pub async fn nav_quit_target_processes(
+    db: State<'_, Arc<Db>>,
+    target_id: String,
+) -> AppResult<TargetProcessQuitReport> {
+    let db = db.inner().clone();
+    let (process_total, process_exited, posted_threads) =
+        tauri::async_runtime::spawn_blocking(move || {
+            navigation::target_resolver::quit_target_processes(&db, &target_id)
+        })
+        .await
+        .map_err(|e| AppError::Agent(format!("退出应用任务失败: {}", e)))??;
+    Ok(TargetProcessQuitReport {
+        process_total,
+        process_exited,
+        posted_threads,
+    })
+}
+
 #[tauri::command]
 pub fn nav_save_target(
     db: State<'_, Arc<Db>>,

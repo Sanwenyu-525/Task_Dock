@@ -199,6 +199,44 @@ describe("PlanningLite", () => {
     expect(planningListFeatures).toHaveBeenCalledTimes(1);
   });
 
+  it("没有任何用户项目时默认展示内置路线图，而不是空态", async () => {
+    planningListProjects.mockResolvedValue([]);
+
+    render(<PlanningLite />);
+
+    await waitFor(() => expect(screen.getByText("全局快速捕获")).toBeTruthy());
+    expect(
+      screen.getByRole("tab", { name: "内置路线图" }).getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(screen.getByText(/内置路线图 · \d+ 项 · 已实现 \d+/)).toBeTruthy();
+    expect(screen.queryByText("还没有规划项目")).toBeNull();
+    expect(screen.queryByText("去完整规划中心创建")).toBeNull();
+    expect(planningListFeatures).not.toHaveBeenCalled();
+    expect(planningListMilestones).not.toHaveBeenCalled();
+
+    // 只读目录也能就地展开详情，不需要额外 IPC。
+    fireEvent.click(screen.getByRole("button", { name: "查看「全局快速捕获」详情" }));
+    expect(screen.getByRole("button", { name: "收起「全局快速捕获」详情" })).toBeTruthy();
+  });
+
+  it("来源开关：内置路线图与我的项目互不影响，切回恢复用户功能", async () => {
+    planningListProjects.mockResolvedValue([project()]);
+    planningListFeatures.mockResolvedValue([feature()]);
+    planningListMilestones.mockResolvedValue([]);
+
+    render(<PlanningLite />);
+    await waitFor(() => expect(screen.getByText("登录流程")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("tab", { name: "内置路线图" }));
+    expect(await screen.findByText("全局快速捕获")).toBeTruthy();
+    expect(screen.queryByText("登录流程")).toBeNull();
+    expect(screen.getByText("只读 · 来自功能目录")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "我的项目" }));
+    expect(await screen.findByText("登录流程")).toBeTruthy();
+    expect(screen.queryByText("全局快速捕获")).toBeNull();
+  });
+
   it("步骤勾选调用真实命令；成功后使用后端权威实体更新勾选态", async () => {
     const initial = feature();
     const updated = feature({

@@ -4,7 +4,7 @@
 //! 帮助中心面板：分类浏览 / 搜索 / 文章阅读 / 最近使用 / 相关功能跳转 /
 //! 翻译状态徽标 / 一次性意图消费 / 引导重开入口。
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -19,6 +19,27 @@ import {
 import { defaultNavigationLayout, NAV_LAYOUT_SETTING_KEY } from "../../lib/navVisibility";
 import { setLocalePreference, __resetLocaleForTests } from "../../i18n";
 
+// 2026-11-08 起全部文章都带 en-US 正文；「暂无英文版」回退 UI 用合成 zh-only
+// 文章验证：开关打开时 registry 返回剥掉 en-US 的文章对象（其余行为保持真实）。
+const zhOnlyMode = { current: false };
+vi.mock("../../help/registry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../help/registry")>();
+  const stripEn = <T extends { translations: { "zh-CN": unknown; "en-US"?: unknown } }>(
+    article: T,
+  ): T => ({ ...article, translations: { "zh-CN": article.translations["zh-CN"] } });
+  return {
+    ...actual,
+    articlesByCategory: (categoryId: string) =>
+      actual
+        .articlesByCategory(categoryId)
+        .map((article) => (zhOnlyMode.current ? stripEn(article) : article)),
+    getHelpArticle: (id: string) => {
+      const found = actual.getHelpArticle(id);
+      return found && zhOnlyMode.current ? stripEn(found) : found;
+    },
+  };
+});
+
 beforeEach(() => {
   localStorage.clear();
   clearRecentArticles();
@@ -31,6 +52,7 @@ afterEach(() => {
   __resetLocaleForTests();
   localStorage.clear();
   useSettingsStore.setState({ settings: null });
+  zhOnlyMode.current = false;
 });
 
 describe("帮助中心 · 分类浏览", () => {
@@ -159,13 +181,18 @@ describe("帮助中心 · 相关功能跳转", () => {
 
 describe("帮助中心 · 翻译状态与语言", () => {
   it("en-US 下无英文版的文章显示「暂无英文版」徽标并回退中文正文", () => {
-    setLocalePreference("en-US");
-    render(<HelpCenterPanel />);
-    // zh-only 文章在英文界面仍显示中文标题（回退）+ 徽标，不伪称国际化完成
-    fireEvent.click(screen.getByRole("button", { name: "Tasks & reminders" }));
-    fireEvent.click(screen.getByText("创建任务与自然语言提醒"));
-    expect(screen.getByText("This guide is not available in English yet")).toBeTruthy();
-    expect(screen.getByText("用自然语言创建")).toBeTruthy();
+    zhOnlyMode.current = true;
+    try {
+      setLocalePreference("en-US");
+      render(<HelpCenterPanel />);
+      // zh-only 文章在英文界面仍显示中文标题（回退）+ 徽标，不伪称国际化完成
+      fireEvent.click(screen.getByRole("button", { name: "Tasks & reminders" }));
+      fireEvent.click(screen.getByText("创建任务与自然语言提醒"));
+      expect(screen.getByText("This guide is not available in English yet")).toBeTruthy();
+      expect(screen.getByText("用自然语言创建")).toBeTruthy();
+    } finally {
+      zhOnlyMode.current = false;
+    }
   });
 
   it("en-US 下有英文版的文章正常显示英文正文且无缺失徽标", () => {
