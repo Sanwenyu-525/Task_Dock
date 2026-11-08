@@ -131,6 +131,26 @@ DWM 原生圆角半径固定为 8 DIP（`DWMWCP_ROUND` 不可配置，`ROUNDSMAL
 `exp-inactive-rect-grey200`（旧方案：四角白色）与 `exp-inactive-round20-grey200`
 （圆角区域：四角为背景色）；修复后构建的完整矩阵见同目录 `round2-*`。
 
+**2026-11-08 更正（停靠形态的系统窗口边框白边）**：上文把
+`DWMWA_BORDER_COLOR = NONE` 当作「去掉 DWM 描边」的手段；本机 23H2 真机证明该属性
+对主窗/胶囊窗是 **no-op**：`DwmSetWindowAttribute(34)` 返回 0，但
+`DwmGetWindowAttribute(34)` 仍返回 `E_INVALIDARG`，把边框色改成红色或
+`DWMWA_COLOR_NONE` 后桌面合成截图逐像素不变。
+
+用户截图中「沿翼片肩部收尾的锯齿白边」的根因是**深色系统主题下的 1px 系统窗口边框**：
+`AppsUseLightTheme=0` / `SystemUsesLightTheme=0` 时，Windows 11 沿**带边框窗口**的矩形
+边缘绘制近白（真机 255,255,255）边框。胶囊/极简标签的可见外形只由 WebView2 CSS 曲线
+定义，翼片贴边尖端是半透明的，系统边框会从尖端逐行透出；它**不在 WebView 内容里**
+（`PrintWindow` 取到的尖端是透明/暗色，无白边），CSS 尖端渐隐只能降低 WebView 内容
+alpha，无法遮住窗口边框，因此此前的渐隐修复不能消除它。
+
+修复：停靠形态（`rail` / `panel` / `tab`）在 `window_shape::apply` 时清除
+`WS_CAPTION | WS_THICKFRAME`；解除停靠（`off`）后按进入停靠前记录的边框位精确还原。
+`WS_MAXIMIZEBOX` 等由 `magnetic.rs` 独立管理的样式位不受影响。实测清样式前后
+`GetWindowRect` / `GetClientRect` 完全一致（125% 下 505×558），WebView 内容不位移；
+无边框窗口不再绘制系统白边。回归：Rust 单测
+`frame_style_helpers_only_touch_frame_bits`、`borderless_frame_toggles_real_window_style`。
+
 ### 3.2 尺寸与 DPI 变化
 
 `restore_window()` 里额外注册了一个窗口事件监听：

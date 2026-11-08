@@ -878,6 +878,11 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   修复：前端 `WindowResizeGrips` 在**区域内的最靠角像素**上接住缩放意图并调用
   `startResizeDragging(NorthWest/NorthEast/SouthWest/SouthEast)`（12 CSS px，跨端契约见下），
   停靠胶囊期不渲染；不给窗口加命中区域、不改几何/吸附/裁剪。
+  **2026-11-08 更正（停靠期系统白边）**：深色系统主题下 Windows 11 会沿带边框窗口绘制
+  1px 近白系统边框；胶囊翼片尖端半透明，边框会从尖端透出成「锯齿白边」。
+  `DWMWA_BORDER_COLOR = NONE` 在本机 23H2 上是 no-op（改色后真机像素不变），因此在
+  `window_shape::apply` 的停靠形态清除 `WS_CAPTION | WS_THICKFRAME`，解除停靠后精确还原；
+  窗口矩形与客户区尺寸不变，完整窗的原生缩放保留。
   同一处的后续真机反馈（松手后光标回退成普通箭头）根因在**光标层**：系统模态缩放循环退出后
   Windows 重设默认光标，指针静止时不再派发 `WM_SETCURSOR`，WebView2 的 CSS `cursor` 没有机会重新
   生效。修复：`window_cursor.rs` 在 `WM_EXITSIZEMOVE` 后延后一拍（`PostMessageW`）按

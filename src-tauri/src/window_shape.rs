@@ -21,6 +21,11 @@
 //!    并继续尝试 `DWMWA_BORDER_COLOR = NONE`（该属性在部分 23H2 机器上不可读/不可设，
 //!    因此不依赖它；圆角区域会把矩形边框的角落裁掉）；
 //! 3. CSS `border-radius` 只负责边缘抗锯齿，不再承担「遮盖直角」的职责。
+//! 4. 停靠形态（胶囊 / 极简标签）**清除窗口边框样式**：深色系统主题下 Windows 11
+//!    会沿带边框窗口绘制 1px 近白系统边框，翼片半透明尖端会把它透成锯齿白边；
+//!    `DWMWA_BORDER_COLOR = NONE` 在 23H2 上是 no-op（改色后真机截图不变），
+//!    因此停靠期直接去掉 `WS_CAPTION | WS_THICKFRAME`，解除停靠时精确还原
+//!    （见 `set_borderless_frame`；实测窗口矩形与客户区尺寸不变）。
 //!
 //! 胶囊模式（轨道 / 面板）仍按独立几何裁剪：窗口矩形只露轨道或「轨道 ∪ 面板」，
 //! 区域外的内容不绘制、也不接收鼠标；其几何与主窗独立。弹窗（右键菜单）继续用
@@ -251,6 +256,105 @@ fn capsule_for(hwnd: isize) -> Option<CapsuleParams> {
     }
 }
 
+// ── 停靠期窗口边框（系统白边，2026-11-08）──────────────────────
+//
+// 根因：Windows 11 会沿**带边框窗口**的矩形边缘绘制 1px 系统窗口边框；
+// 深色系统主题下这条边框是近白色（真机 255,255,255）。胶囊/极简标签的可见
+// 外形只由 WebView2 的 CSS 曲线定义，翼片贴边尖端是半透明的，系统边框会从
+// 尖端逐行透出，形成用户截图中「沿翼片弧形收尾的锯齿白边」。
+//
+// `DWMWA_BORDER_COLOR = NONE` 在本机 23H2 上是 no-op（`DwmSetWindowAttribute`
+// 返回 0，但 `DwmGetWindowAttribute` 仍 E_INVALIDARG，改红/改无颜色后截图不变）；
+// 而 CSS 的尖端渐隐只能降低 WebView 内容的 alpha，无法遮住窗口边框本身。
+//
+// 因此停靠形态直接清掉窗口边框样式：胶囊容器固定 404×446/446×504，位置与
+// 尺寸由前端事务控制，不需要原生缩放；实测清样式前后 `GetWindowRect` 与
+// `GetClientRect` 完全一致（505×558 @125%），WebView 内容不位移。
+// 恢复完整窗时只还原进入停靠前记录的边框位，不碰 `WS_MAXIMIZEBOX` 等由
+// `magnetic.rs` 独立管理的位。
+
+/// 停靠形态需要清除的边框位（`WS_CAPTION` 已包含 `WS_BORDER | WS_DLGFRAME`）。
+#[cfg(windows)]
+const FRAME_MASK: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WS_CAPTION
+    | windows_sys::Win32::UI::WindowsAndMessaging::WS_THICKFRAME;
+
+/// 每个窗口进入停靠形态前保存的边框位（按 hwnd），解除停靠时精确还原。
+static FRAME_BITS: LazyLock<Mutex<HashMap<isize, u32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(windows)]
+fn frame_bits(style: u32) -> u32 {
+    style & FRAME_MASK
+}
+
+#[cfg(windows)]
+fn borderless_style(style: u32) -> u32 {
+    style & !FRAME_MASK
+}
+
+/// 还原边框位：只改 `FRAME_MASK` 覆盖的位，其余样式（最大化/最小化/可见性）
+/// 保持当前值，避免覆盖停靠期由其它模块维护的样式状态。
+#[cfg(windows)]
+fn restored_style(style: u32, saved_bits: u32) -> u32 {
+    (style & !FRAME_MASK) | (saved_bits & FRAME_MASK)
+}
+
+/// 停靠形态去边框 / 完整窗还原边框。幂等：样式无变化时不触发 `SetWindowPos`。
+#[cfg(windows)]
+fn set_borderless_frame(hwnd: isize, borderless: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+
+    unsafe {
+        let style = GetWindowLongW(hwnd as _, GWL_STYLE) as u32;
+        let next = if borderless {
+            FRAME_BITS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(hwnd)
+                .or_insert_with(|| frame_bits(style));
+            borderless_style(style)
+        } else {
+            let saved = FRAME_BITS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&hwnd);
+            match saved {
+                Some(bits) => restored_style(style, bits),
+                // 从未进入停靠形态：不改样式（完整窗的原生边框保持原样）。
+                None => return,
+            }
+        };
+        if next == style {
+            return;
+        }
+        SetWindowLongW(hwnd as _, GWL_STYLE, next as i32);
+        // FRAMECHANGED：让系统按新样式重算非客户区；NOMOVE/NOSIZE/NOZORDER/
+        // NOACTIVATE 保证窗口几何、层级与激活态不变。
+        SetWindowPos(
+            hwnd as _,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        let after = GetWindowLongW(hwnd as _, GWL_STYLE) as u32;
+        if after != next {
+            tracing::warn!(
+                hwnd,
+                style = format_args!("{style:#010x}"),
+                next = format_args!("{next:#010x}"),
+                after = format_args!("{after:#010x}"),
+                "停靠期窗口边框样式切换失败"
+            );
+        }
+    }
+}
+
 /// 该窗口当前是否处于胶囊（停靠）区域模式。
 ///
 /// 停靠态窗口形状是轨道/面板而非整窗矩形，前端也不渲染四角缩放热区；
@@ -350,6 +454,12 @@ pub fn forget_window(hwnd: isize) {
         .remove(&hwnd);
     // 重入调度状态同样按 hwnd 绑定：销毁后不得残留未决补偿请求/进行中标记。
     gate().forget(hwnd);
+    // 停靠前的原始边框位按 hwnd 绑定：句柄复用后不得把旧窗口的边框位还原到新窗口。
+    #[cfg(windows)]
+    FRAME_BITS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&hwnd);
 }
 
 // ── 拖拽期间的延迟校准（窗口拖拽透明异常修复）─────────────────
@@ -805,8 +915,13 @@ fn apply_pass<R: Runtime>(
     // 窗口位置/尺寸在停靠期间保持不变，区域切换是唯一的视觉状态变化。
     if target == ShapeTarget::Main {
         if let Some(cap) = capsule_for(hwnd) {
+            // 停靠形态（胶囊/极简标签）去掉窗口边框：深色系统主题下 Windows 11
+            // 的 1px 白色系统边框会从翼片半透明尖端透出，见 `set_borderless_frame`。
+            set_borderless_frame(hwnd, true);
             return apply_capsule_pass(hwnd, w, h, scale, cap, dragging);
         }
+        // 完整窗（含停靠完整面板）恢复进入停靠前记录的边框位，保留原生缩放。
+        set_borderless_frame(hwnd, false);
         // 启动停靠恢复：区域先裁成 1×1 空白，等前端把几何 + 轨道区域一次做完。
         // 胶囊优先（见 `BLANK` 注释）：这里只在**还没有胶囊状态**时生效。
         if blank_for(hwnd) {
@@ -3001,6 +3116,155 @@ mod tests {
             );
             set_corner(1); // 复位为生产策略，避免影响后续用例
 
+            DestroyWindow(hwnd as HWND);
+        }
+    }
+
+    /// 停靠期边框样式：只清 `WS_CAPTION | WS_THICKFRAME`，不得动其它样式位；
+    /// 还原时必须精确回到进入停靠前的边框位。
+    #[cfg(windows)]
+    #[test]
+    fn frame_style_helpers_only_touch_frame_bits() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
+        };
+
+        let style =
+            WS_VISIBLE | WS_SYSMENU | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+        let bare = borderless_style(style);
+        assert_eq!(frame_bits(bare), 0, "停靠样式必须没有 CAPTION/THICKFRAME");
+        assert_ne!(bare & WS_VISIBLE, 0, "可见性必须保留");
+        assert_ne!(bare & WS_SYSMENU, 0, "系统菜单位不归边框逻辑管");
+        assert_ne!(bare & WS_MINIMIZEBOX, 0, "最小化位必须保留");
+        assert_ne!(
+            bare & WS_MAXIMIZEBOX,
+            0,
+            "最大化位由 magnetic/贴靠逻辑管理，不得被边框逻辑清除"
+        );
+        assert_eq!(
+            restored_style(bare, frame_bits(style)),
+            style,
+            "还原后必须与停靠前逐位一致"
+        );
+        // 进入停靠前就没有边框（无边框窗口）：还原也不得凭空加边框
+        assert_eq!(restored_style(bare, 0), bare);
+    }
+
+    /// 真实 Win32 窗口上的边框样式切换（OS 层证据）：
+    /// 停靠形态清掉 CAPTION/THICKFRAME 后回读必须为空，解除停靠后必须恢复；
+    /// 窗口矩形不得因样式切换而改变（胶囊几何契约）。不可见窗口，不影响桌面。
+    #[cfg(windows)]
+    #[test]
+    fn borderless_frame_toggles_real_window_style() {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongW, GetWindowRect,
+            RegisterClassW, SetWindowLongW, GWL_STYLE, WNDCLASSW, WS_CAPTION, WS_POPUP,
+            WS_THICKFRAME,
+        };
+
+        const CLASS_NAME: &[u16] = &[
+            b'T' as u16,
+            b'D' as u16,
+            b'_' as u16,
+            b'F' as u16,
+            b'R' as u16,
+            0,
+        ];
+        unsafe {
+            static REGISTERED: std::sync::Once = std::sync::Once::new();
+            REGISTERED.call_once(|| {
+                let wc = WNDCLASSW {
+                    style: 0,
+                    lpfnWndProc: Some(DefWindowProcW),
+                    cbClsExtra: 0,
+                    cbWndExtra: 0,
+                    hInstance: std::ptr::null_mut(),
+                    hIcon: std::ptr::null_mut(),
+                    hCursor: std::ptr::null_mut(),
+                    hbrBackground: std::ptr::null_mut(),
+                    lpszMenuName: std::ptr::null(),
+                    lpszClassName: CLASS_NAME.as_ptr(),
+                };
+                RegisterClassW(&wc);
+            });
+
+            let hwnd = CreateWindowExW(
+                0,
+                CLASS_NAME.as_ptr(),
+                std::ptr::null(),
+                WS_POPUP | WS_CAPTION | WS_THICKFRAME,
+                -2000,
+                -2000,
+                404,
+                446,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!hwnd.is_null(), "CreateWindowExW 失败");
+            let hwnd = hwnd as isize;
+
+            let original = GetWindowLongW(hwnd as _, GWL_STYLE) as u32;
+            assert_ne!(frame_bits(original), 0, "前置：窗口应带可缩放边框");
+            let rect_before = {
+                let mut r = windows_sys::Win32::Foundation::RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                assert_ne!(GetWindowRect(hwnd as _, &mut r), 0);
+                (r.left, r.top, r.right, r.bottom)
+            };
+
+            set_borderless_frame(hwnd, true);
+            let bare = GetWindowLongW(hwnd as _, GWL_STYLE) as u32;
+            assert_eq!(frame_bits(bare), 0, "停靠期必须没有系统边框（白边根因）");
+            // 幂等：重复进入停靠不得再次改动样式
+            set_borderless_frame(hwnd, true);
+            assert_eq!(GetWindowLongW(hwnd as _, GWL_STYLE) as u32, bare);
+
+            set_borderless_frame(hwnd, false);
+            let restored = GetWindowLongW(hwnd as _, GWL_STYLE) as u32;
+            assert_eq!(
+                frame_bits(restored),
+                frame_bits(original),
+                "解除停靠后必须恢复原始边框位"
+            );
+            // 只动边框位：其它样式位与原始值一致
+            assert_eq!(
+                restored & !FRAME_MASK,
+                original & !FRAME_MASK,
+                "边框切换不得改动其它样式位"
+            );
+
+            let rect_after = {
+                let mut r = windows_sys::Win32::Foundation::RECT {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                };
+                assert_ne!(GetWindowRect(hwnd as _, &mut r), 0);
+                (r.left, r.top, r.right, r.bottom)
+            };
+            assert_eq!(
+                rect_before, rect_after,
+                "边框切换不得改变窗口矩形（胶囊几何契约）"
+            );
+            assert!(
+                FRAME_BITS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&hwnd)
+                    .is_none(),
+                "解除停靠后不得残留保存的边框位"
+            );
+
+            // 兜底复位：测试中途失败也不把窗口留在无边框态
+            let _ = SetWindowLongW(hwnd as _, GWL_STYLE, original as i32);
             DestroyWindow(hwnd as HWND);
         }
     }
