@@ -6,7 +6,7 @@ import type { GroupTone } from "../components/TaskGroupHeader";
 
 const DAY_MS = 86_400_000;
 
-type SectionKey = "today" | "week" | "later" | "undated" | "done";
+export type SectionKey = "today" | "week" | "later" | "undated" | "done";
 
 export interface TaskSection {
   key: SectionKey;
@@ -80,11 +80,16 @@ export function buildTaskSections(tasks: Task[], now: number): TaskSection[] {
     .filter((section) => section.tasks.length > 0);
 }
 
-export function flattenSections(sections: TaskSection[]): TaskListRow[] {
+export function flattenSections(
+  sections: TaskSection[],
+  collapsed?: ReadonlySet<SectionKey>,
+): TaskListRow[] {
   const rows: TaskListRow[] = [];
   let ordinal = 0;
   for (const section of sections) {
     rows.push({ type: "section", section });
+    // 折叠只影响展示：分组头仍然保留，计数照常显示
+    if (collapsed?.has(section.key)) continue;
     for (const task of section.tasks) {
       // 只有前 9 个任务参与入场 stagger；再多的行在滚动时直接呈现，避免列表一直"飞"
       rows.push({ type: "task", task, entranceIndex: Math.min(ordinal, 9) });

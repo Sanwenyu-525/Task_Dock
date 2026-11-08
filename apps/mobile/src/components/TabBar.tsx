@@ -6,6 +6,7 @@ import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
+import { barShadow } from "../theme/shadows";
 import { font, radius, space } from "../theme/tokens";
 
 export type TabKey = "tasks" | "inbox" | "settings";
@@ -70,7 +71,7 @@ export function TabBar({
   onChange: (key: TabKey) => void;
   bottomInset: number;
 }) {
-  const { tokens } = useTheme();
+  const { tokens, scheme } = useTheme();
   const reduceMotion = useReduceMotion();
   const [trackWidth, setTrackWidth] = useState(0);
   const activeIndex = TABS.findIndex((tab) => tab.key === active);
@@ -103,87 +104,81 @@ export function TabBar({
   );
 
   return (
-    <View
-      style={[
-        styles.bar,
-        {
-          backgroundColor: tokens.bgAccent,
-          borderTopColor: tokens.cardBorder,
-          paddingBottom: Math.max(bottomInset, space.sm),
-        },
-      ]}
-    >
+    <View style={[styles.host, { paddingBottom: Math.max(bottomInset, space.sm) }]}>
       <View
-        accessibilityRole="tablist"
-        onLayout={(event) => setTrackWidth(event.nativeEvent.layout.width)}
-        style={styles.track}
+        style={[
+          styles.bar,
+          { backgroundColor: tokens.card, borderColor: tokens.cardBorder },
+          barShadow(scheme),
+        ]}
       >
-        {segment > 0 ? (
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.indicator,
-              { backgroundColor: tokens.accentSoft, borderColor: tokens.cardBorder },
-              indicatorStyle,
-            ]}
-          />
-        ) : null}
-        {TABS.map((tab) => {
-          const selected = tab.key === active;
-          const color = selected ? tokens.accent : tokens.muted;
-          return (
-            <Pressable
-              key={tab.key}
-              accessibilityRole="tab"
-              accessibilityLabel={tab.label}
-              accessibilityHint={selected ? undefined : `切换到${tab.label}`}
-              accessibilityState={{ selected }}
-              onPress={() => onChange(tab.key)}
-              style={({ pressed }) => [styles.item, { opacity: pressed ? 0.7 : 1 }]}
-            >
-              <TabIcon tab={tab.key} color={color} />
-              <Text
-                numberOfLines={1}
-                style={[
-                  styles.label,
-                  { color },
-                  selected ? styles.labelActive : null,
-                ]}
+        <View
+          accessibilityRole="tablist"
+          onLayout={(event) => setTrackWidth(event.nativeEvent.layout.width)}
+          style={styles.track}
+        >
+          {segment > 0 ? (
+            <Animated.View
+              pointerEvents="none"
+              style={[styles.indicator, { backgroundColor: tokens.accentSoft }, indicatorStyle]}
+            />
+          ) : null}
+          {TABS.map((tab) => {
+            const selected = tab.key === active;
+            const color = selected ? tokens.accent : tokens.muted;
+            return (
+              <Pressable
+                key={tab.key}
+                accessibilityRole="tab"
+                accessibilityLabel={tab.label}
+                accessibilityHint={selected ? undefined : `切换到${tab.label}`}
+                accessibilityState={{ selected }}
+                onPress={() => onChange(tab.key)}
+                style={({ pressed }) => [styles.item, { opacity: pressed ? 0.7 : 1 }]}
               >
-                {tab.label}
-              </Text>
-            </Pressable>
-          );
-        })}
+                <TabIcon tab={tab.key} color={color} />
+                <Text
+                  numberOfLines={1}
+                  style={[styles.label, { color }, selected ? styles.labelActive : null]}
+                >
+                  {tab.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  host: {
+    paddingHorizontal: space.md,
+    paddingTop: space.xs,
+  },
   bar: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: space.xs,
+    borderRadius: radius.card,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: space.xs,
   },
   track: {
     flexDirection: "row",
-    padding: space.xs,
-    borderRadius: radius.card,
+    borderRadius: radius.row,
   },
   indicator: {
     position: "absolute",
-    top: space.xs,
-    bottom: space.xs,
-    left: space.xs,
+    top: 0,
+    bottom: 0,
+    left: 0,
     borderRadius: radius.row,
-    borderWidth: StyleSheet.hairlineWidth,
   },
   item: {
     flex: 1,
-    minHeight: 52,
+    minHeight: 54,
     alignItems: "center",
     justifyContent: "center",
-    gap: 3,
+    gap: 4,
   },
   iconBox: {
     width: 18,

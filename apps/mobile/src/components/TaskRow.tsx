@@ -1,5 +1,5 @@
 // 任务行：完成态用「勾选弹入 + 标题删除线渐显 + 文字变弱」表达，不做瞬间切换；
-// 左右滑动都露出红色删除底，长按打开动作表。行内容与动画都留在本组件内，
+// 向左滑动露出右侧删除底，长按打开动作表。行内容与动画都留在本组件内，
 // 列表只负责给数据与回调，避免父级每次刷新都重建行组件。
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
@@ -9,7 +9,7 @@ import { formatDue } from "../domain/taskQuery";
 import type { Task } from "../domain/types";
 import { duration, easeOut, useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
-import { font, radius, space } from "../theme/tokens";
+import { font, space } from "../theme/tokens";
 
 import { SwipeRow, type SwipeRowApi } from "./SwipeRow";
 
@@ -186,6 +186,7 @@ function TaskRowBase({
         onAction={() => onDelete(task)}
         actionLabel="删除"
         actionAccessibilityLabel={`删除任务 ${task.title}`}
+        surface={done ? tokens.cardDone : undefined}
       >
         {(api) => (
           <Pressable
@@ -193,8 +194,8 @@ function TaskRowBase({
             accessibilityLabel={`任务：${task.title}${done ? "，已完成" : ""}`}
             accessibilityHint={
               done
-                ? "轻点恢复为待办，长按打开更多操作，左右滑动可删除"
-                : "轻点标记完成，长按打开更多操作，左右滑动可删除"
+                ? "轻点恢复为待办，长按打开更多操作，向左滑动可删除"
+                : "轻点标记完成，长按打开更多操作，向左滑动可删除"
             }
             accessibilityState={{ checked: done }}
             accessibilityActions={[{ name: "longpress", label: "打开任务操作" }]}
@@ -247,24 +248,47 @@ function TaskRowBase({
 
               <View style={styles.meta}>
                 {task.priority > 0 ? (
-                  <View style={[styles.badge, { backgroundColor: tokens.track }]}>
+                  <View
+                    style={[
+                      styles.badge,
+                      {
+                        backgroundColor:
+                          task.priority >= 3
+                            ? tokens.dangerSoft
+                            : task.priority === 2
+                              ? tokens.warnSoft
+                              : tokens.track,
+                      },
+                    ]}
+                  >
                     <View style={[styles.dot, { backgroundColor: priorityColor }]} />
-                    <Text style={[styles.badgeText, { color: tokens.muted }]}>
+                    <Text
+                      style={[
+                        styles.badgeText,
+                        { color: task.priority >= 2 ? priorityColor : tokens.muted },
+                      ]}
+                    >
                       {PRIORITY_LABEL[task.priority] ?? "低"}
                     </Text>
                   </View>
                 ) : null}
 
                 {due ? (
-                  <Text style={[styles.metaText, { color: overdue ? tokens.danger : tokens.muted }]}>
-                    {due}
-                  </Text>
+                  overdue ? (
+                    <View style={[styles.badge, { backgroundColor: tokens.dangerSoft }]}>
+                      <Text style={[styles.badgeText, { color: tokens.danger }]}>{due}</Text>
+                    </View>
+                  ) : (
+                    <Text style={[styles.metaText, { color: tokens.muted }]}>{due}</Text>
+                  )
                 ) : null}
 
                 {repeatLabel ? (
-                  <Text style={[styles.metaText, { color: tokens.muted }]}>
-                    重复 · {repeatLabel}
-                  </Text>
+                  <View style={[styles.badge, { backgroundColor: tokens.accentSoft }]}>
+                    <Text style={[styles.badgeText, { color: tokens.accent }]}>
+                      重复 · {repeatLabel}
+                    </Text>
+                  </View>
                 ) : null}
 
                 {/* 提醒时间与截止时间相同（旧版新建逻辑会这样写）时不重复展示 */}
@@ -274,12 +298,16 @@ function TaskRowBase({
                   </Text>
                 ) : null}
 
-                {task.tags.length > 0 ? (
-                  <Text
-                    numberOfLines={1}
-                    style={[styles.metaText, styles.tag, { color: tokens.muted }]}
-                  >
-                    #{task.tags[0]}
+                {task.tags.slice(0, 2).map((tag) => (
+                  <View key={tag} style={[styles.badge, { backgroundColor: tokens.track }]}>
+                    <Text numberOfLines={1} style={[styles.badgeText, { color: tokens.textSoft }]}>
+                      #{tag}
+                    </Text>
+                  </View>
+                ))}
+                {task.tags.length > 2 ? (
+                  <Text style={[styles.metaText, { color: tokens.muted }]}>
+                    +{task.tags.length - 2}
                   </Text>
                 ) : null}
               </View>
@@ -299,16 +327,16 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: space.md,
-    paddingHorizontal: space.md,
-    paddingVertical: space.md - 1,
+    paddingHorizontal: space.md + 2,
+    paddingVertical: space.md + 1,
   },
   checkWrap: {
     paddingTop: 1,
   },
   check: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     borderWidth: 1.5,
     alignItems: "center",
     justifyContent: "center",
@@ -329,8 +357,8 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: font.title,
-    fontWeight: "500",
-    lineHeight: 21,
+    fontWeight: "600",
+    lineHeight: 22,
     maxWidth: "100%",
   },
   strike: {
@@ -344,16 +372,16 @@ const styles = StyleSheet.create({
   meta: {
     flexDirection: "row",
     alignItems: "center",
-    gap: space.sm,
+    gap: 6,
     flexWrap: "wrap",
   },
   badge: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: radius.chip,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 7,
   },
   dot: {
     width: 5,
@@ -365,8 +393,5 @@ const styles = StyleSheet.create({
   },
   metaText: {
     fontSize: font.meta,
-  },
-  tag: {
-    flexShrink: 1,
   },
 });

@@ -5,6 +5,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { GlassCard } from "../components/GlassCard";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
+import { StatCard } from "../components/StatCard";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { listCaptures } from "../db/captures";
 import { countPendingOutbox, listTasks } from "../db/tasks";
@@ -37,9 +38,12 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   const { tokens } = useTheme();
   return (
     <GlassCard style={styles.section}>
-      <Text accessibilityRole="header" style={[styles.sectionTitle, { color: tokens.text }]}>
-        {title}
-      </Text>
+      <View style={styles.sectionHead}>
+        <View style={[styles.sectionBar, { backgroundColor: tokens.accent }]} />
+        <Text accessibilityRole="header" style={[styles.sectionTitle, { color: tokens.text }]}>
+          {title}
+        </Text>
+      </View>
       {children}
     </GlassCard>
   );
@@ -155,6 +159,16 @@ export function SettingsScreen() {
           <Text style={[styles.subtitle, { color: tokens.muted }]}>外观、提醒与本地数据</Text>
         </View>
 
+        <View style={styles.tiles}>
+          <StatCard label="任务" value={summary.tasks} tone="accent" />
+          <StatCard label="收集箱" value={summary.captures} tone="neutral" />
+          <StatCard
+            label="待同步"
+            value={summary.pendingOps}
+            tone={summary.pendingOps > 0 ? "warn" : "neutral"}
+          />
+        </View>
+
         <Section title="外观">
           <SegmentedControl
             options={MODES}
@@ -235,16 +249,14 @@ export function SettingsScreen() {
         </Section>
 
         <Section title="本地数据">
-          <InfoRow label="任务" value={String(summary.tasks)} />
-          <InfoRow label="收集箱" value={String(summary.captures)} />
-          <InfoRow label="待同步操作" value={String(summary.pendingOps)} />
           <Text style={[styles.hint, { color: tokens.muted }]}>
             当前为独立模式：所有写操作只落在本机，操作队列等待桌面端配对后消费。
           </Text>
         </Section>
 
         <Section title="关于">
-          <InfoRow label="版本" value="0.1.0" />
+          {/* 版本号与 app.json 的 version 保持同步；升级版本时两处一起改 */}
+          <InfoRow label="版本" value="0.1.2" />
           <InfoRow label="后端" value="本地 SQLite" />
           <InfoRow label="数据范围" value="只在本机" />
         </Section>
@@ -263,12 +275,27 @@ const styles = StyleSheet.create({
     paddingBottom: 44,
     gap: space.md,
   },
-  titleBlock: { gap: 2, marginBottom: space.xs },
-  title: { fontSize: font.display, fontWeight: "700", letterSpacing: -0.5 },
+  titleBlock: { gap: 1, marginBottom: space.xs },
+  title: { fontSize: font.display, fontWeight: "800", letterSpacing: -0.8 },
   subtitle: { fontSize: font.meta },
-  section: {
-    padding: space.md,
+  tiles: {
+    flexDirection: "row",
     gap: space.sm,
+    marginBottom: space.xs,
+  },
+  section: {
+    padding: space.md + 2,
+    gap: space.sm,
+  },
+  sectionHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+  },
+  sectionBar: {
+    width: 3,
+    height: 14,
+    borderRadius: 2,
   },
   sectionTitle: { fontSize: font.title, fontWeight: "700" },
   segment: {

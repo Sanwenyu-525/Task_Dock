@@ -46,6 +46,7 @@ export function SearchField({
         autoCapitalize="none"
         autoCorrect={false}
         returnKeyType="search"
+        underlineColorAndroid="transparent"
         style={[styles.input, { color: tokens.text }]}
       />
 

@@ -62,11 +62,11 @@ export function buildTask(input: NewTaskInput, now = Date.now()): Task {
     description: input.description?.trim() ?? "",
     status: "pending",
     priority: clampPriority(input.priority ?? 0),
-    category: null,
-    tags: [],
+    category: input.category ?? null,
+    tags: input.tags?.map((tag) => tag.trim()).filter((tag) => tag.length > 0) ?? [],
     dueAt: input.dueAt ?? null,
     remindAt: input.remindAt ?? null,
-    advanceMinutes: null,
+    advanceMinutes: input.advanceMinutes ?? null,
     recurrenceRule: input.recurrenceRule ?? null,
     createdAt: now,
     updatedAt: now,
@@ -142,16 +142,21 @@ export async function toggleTask(id: string): Promise<ToggleOutcome> {
     if (rule) {
       const nextDue = advanceOccurrence(rule, current.dueAt, now);
       if (nextDue != null) {
-        // 提醒偏移沿用原任务（due - remind），再套到新期次；原本没提醒就保持没有，
-        // 不凭空造一条提醒。引擎只排未来的提醒，偏移过大时这条会被自然跳过。
+        // 提醒偏移：优先用 advance_minutes（桌面端同义字段），没有时退回 due - remind。
+        // 原本没提醒就保持没有，不凭空造一条提醒。
         const offset =
-          current.dueAt != null && current.remindAt != null ? current.dueAt - current.remindAt : null;
+          current.advanceMinutes != null
+            ? current.advanceMinutes * 60_000
+            : current.dueAt != null && current.remindAt != null
+              ? current.dueAt - current.remindAt
+              : null;
         const nextRemind =
           current.remindAt == null ? null : offset != null ? nextDue - offset : nextDue;
 
         await db.withTransactionAsync(async () => {
+          // rev 自增：与桌面端一致，每次写入推进版本号，供后续同步判定冲突
           await db.runAsync(
-            `UPDATE tasks SET due_at = ?, remind_at = ?, updated_at = ? WHERE id = ?`,
+            `UPDATE tasks SET due_at = ?, remind_at = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
             [nextDue, nextRemind, now, id],
           );
           await db.runAsync(
@@ -169,7 +174,7 @@ export async function toggleTask(id: string): Promise<ToggleOutcome> {
         });
 
         return {
-          task: { ...current, dueAt: nextDue, remindAt: nextRemind, updatedAt: now },
+          task: { ...current, dueAt: nextDue, remindAt: nextRemind, updatedAt: now, rev: current.rev + 1 },
           advanced: { fromDueAt: current.dueAt, toDueAt: nextDue },
         };
       }
@@ -183,7 +188,7 @@ export async function toggleTask(id: string): Promise<ToggleOutcome> {
 
   await db.withTransactionAsync(async () => {
     await db.runAsync(
-      `UPDATE tasks SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE tasks SET status = ?, completed_at = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
       [nextStatus, completedAt, now, id],
     );
     await db.runAsync(
@@ -194,7 +199,7 @@ export async function toggleTask(id: string): Promise<ToggleOutcome> {
   });
 
   return {
-    task: { ...current, status: nextStatus, completedAt, updatedAt: now },
+    task: { ...current, status: nextStatus, completedAt, updatedAt: now, rev: current.rev + 1 },
     advanced: null,
   };
 }
@@ -207,11 +212,10 @@ export async function deleteTask(id: string): Promise<void> {
 
   const now = Date.now();
   await db.withTransactionAsync(async () => {
-    await db.runAsync(`UPDATE tasks SET deleted_at = ?, updated_at = ? WHERE id = ?`, [
-      now,
-      now,
-      id,
-    ]);
+    await db.runAsync(
+      `UPDATE tasks SET deleted_at = ?, updated_at = ?, rev = rev + 1 WHERE id = ?`,
+      [now, now, id],
+    );
     await db.runAsync(
       `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,

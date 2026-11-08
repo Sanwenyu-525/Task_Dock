@@ -150,6 +150,8 @@ export async function updateTask(id: string, patch: TaskPatch): Promise<Task | n
 
     assignments.push("updated_at = ?");
     values.push(now);
+    // rev 自增：版本号是同步的冲突判定依据，任何写操作都必须推进，否则远端永远看到旧版本
+    assignments.push("rev = rev + 1");
 
     await db.runAsync(`UPDATE tasks SET ${assignments.join(", ")} WHERE id = ?`, [...values, id]);
 

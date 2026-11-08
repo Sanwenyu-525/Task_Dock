@@ -21,7 +21,21 @@ import { BottomSheet } from "./BottomSheet";
 import { Chip } from "./Chip";
 
 type DueKey = "none" | "today" | "tomorrow" | "weekend" | "keep";
-type RemindKey = "none" | "10m" | "1h" | "tomorrow9" | "keep";
+/**
+ * 提醒分两组：
+ * - 有截止时间时用「提前 N 分钟」，落库同时写 advance_minutes（与桌面端同义）；
+ * - 没有截止时间时只能给绝对时刻（10 分钟后 / 1 小时后 / 明天 9:00）。
+ * 两组混在一行会让用户分不清「10 分钟后」和「提前 10 分钟」，所以按截止是否为空切换。
+ */
+type RemindKey =
+  | "none"
+  | "10m"
+  | "1h"
+  | "tomorrow9"
+  | "due10m"
+  | "due30m"
+  | "due1h"
+  | "keep";
 /** custom 规则会被归一化成 keep（保持原定），因此选中态只有预设与 keep */
 type RepeatKey = RecurrencePreset | "keep";
 
@@ -47,6 +61,13 @@ const BASE_REMIND: { key: RemindKey; label: string }[] = [
   { key: "10m", label: "10 分钟后" },
   { key: "1h", label: "1 小时后" },
   { key: "tomorrow9", label: "明天 9:00" },
+];
+
+const DUE_REMIND: { key: RemindKey; label: string }[] = [
+  { key: "none", label: "不提醒" },
+  { key: "due10m", label: "提前 10 分钟" },
+  { key: "due30m", label: "提前 30 分钟" },
+  { key: "due1h", label: "提前 1 小时" },
 ];
 
 const BASE_REPEAT: { key: RepeatKey; label: string }[] = [
@@ -94,19 +115,42 @@ function resolveDue(key: DueKey, task: Task | null, now: number): number | null 
   }
 }
 
-function resolveReminder(key: RemindKey, task: Task | null, now: number): number | null {
+interface ReminderDraft {
+  remindAt: number | null;
+  /** 与桌面端 advance_minutes 同义；绝对提醒（无截止时间时）为 null */
+  advanceMinutes: number | null;
+}
+
+function resolveReminder(
+  key: RemindKey,
+  task: Task | null,
+  now: number,
+  dueAt: number | null,
+): ReminderDraft {
+  // 相对提醒必须有截止时间做锚点，没有锚点就退化成「不提醒」，不凭空猜一个时刻
+  const relative = (minutes: number): ReminderDraft =>
+    dueAt == null
+      ? { remindAt: null, advanceMinutes: null }
+      : { remindAt: dueAt - minutes * 60_000, advanceMinutes: minutes };
+
   switch (key) {
+    case "due10m":
+      return relative(10);
+    case "due30m":
+      return relative(30);
+    case "due1h":
+      return relative(60);
     case "10m":
-      return now + 10 * 60_000;
+      return { remindAt: now + 10 * 60_000, advanceMinutes: null };
     case "1h":
-      return now + 60 * 60_000;
+      return { remindAt: now + 60 * 60_000, advanceMinutes: null };
     case "tomorrow9":
-      return tomorrowMorning(now);
+      return { remindAt: tomorrowMorning(now), advanceMinutes: null };
     case "keep":
-      return task?.remindAt ?? null;
+      return { remindAt: task?.remindAt ?? null, advanceMinutes: task?.advanceMinutes ?? null };
     case "none":
     default:
-      return null;
+      return { remindAt: null, advanceMinutes: null };
   }
 }
 
@@ -128,6 +172,16 @@ function dueKeyFor(task: Task): DueKey {
 function remindKeyFor(task: Task): RemindKey {
   if (task.remindAt == null) return "none";
   const now = Date.now();
+  // 先按 advance_minutes 判定「提前提醒」——它比绝对时刻更能说明用户意图
+  if (task.dueAt != null && task.advanceMinutes != null) {
+    const expected = task.dueAt - task.advanceMinutes * 60_000;
+    if (Math.abs(expected - task.remindAt) <= MATCH_TOLERANCE_MS) {
+      if (task.advanceMinutes === 10) return "due10m";
+      if (task.advanceMinutes === 30) return "due30m";
+      if (task.advanceMinutes === 60) return "due1h";
+      return "keep";
+    }
+  }
   const buckets: { key: RemindKey; value: number }[] = [
     { key: "10m", value: now + 10 * 60_000 },
     { key: "1h", value: now + 60 * 60_000 },
@@ -170,6 +224,7 @@ export function TaskEditorSheet({
   const [dueKey, setDueKey] = useState<DueKey>("none");
   const [remindKey, setRemindKey] = useState<RemindKey>("none");
   const [repeatKey, setRepeatKey] = useState<RepeatKey>("none");
+  const [tagsText, setTagsText] = useState("");
 
   // 每次打开都按当前任务重算初值；关闭期间不动，避免把用户未保存的输入冲掉
   useEffect(() => {
@@ -179,6 +234,7 @@ export function TaskEditorSheet({
       setPriority(task.priority);
       setDueKey(dueKeyFor(task));
       setRemindKey(remindKeyFor(task));
+      setTagsText(task.tags.join(" "));
       // 重复规则以截止时间为基准（没有截止则用当前），与新建时生成规则的基准一致；
       // 无法被预设精确表达时落到「保持原定」，让选中态与实际规则一致
       const preset = presetOf(parseRecurrence(task.recurrenceRule), task.dueAt ?? Date.now());
@@ -190,6 +246,7 @@ export function TaskEditorSheet({
     setDueKey("none");
     setRemindKey("none");
     setRepeatKey("none");
+    setTagsText("");
   }, [mode, task, visible]);
 
   // 「保持原定」是否出现取决于原任务能否被四个相对选项精确表达，而不是取决于当前选中项：
@@ -208,10 +265,28 @@ export function TaskEditorSheet({
     return [...BASE_DUE, { key: "keep" as DueKey, label: keepDueLabel(task, Date.now()) }];
   }, [hasKeepDue, task]);
 
+  // 有截止时间时提醒改用「提前 N 分钟」，落库写 advance_minutes（与桌面端同义）
+  const relativeMode =
+    dueKey === "today" ||
+    dueKey === "tomorrow" ||
+    dueKey === "weekend" ||
+    (dueKey === "keep" && task?.dueAt != null);
+
   const remindOptions = useMemo(() => {
-    if (!hasKeepRemind || !task) return BASE_REMIND;
-    return [...BASE_REMIND, { key: "keep" as RemindKey, label: keepRemindLabel(task, Date.now()) }];
-  }, [hasKeepRemind, task]);
+    const base = relativeMode ? DUE_REMIND : BASE_REMIND;
+    if (!hasKeepRemind || !task) return base;
+    return [...base, { key: "keep" as RemindKey, label: keepRemindLabel(task, Date.now()) }];
+  }, [hasKeepRemind, relativeMode, task]);
+
+  // 切换截止时间会改变提醒的语义组：跨组时把选中项归零，避免出现「选中了但不在列表里」
+  const chooseDue = (key: DueKey) => {
+    const nextRelative =
+      key === "today" || key === "tomorrow" || key === "weekend" || (key === "keep" && task?.dueAt != null);
+    setDueKey(key);
+    if (nextRelative !== relativeMode && remindKey !== "keep" && remindKey !== "none") {
+      setRemindKey("none");
+    }
+  };
 
   const repeatOptions = useMemo(() => {
     if (!hasKeepRepeat || !task) return BASE_REPEAT;
@@ -242,12 +317,21 @@ export function TaskEditorSheet({
           ? null
           : serializeRecurrence(buildRecurrencePreset(repeatKey, dueAt ?? at, at));
 
+    // 提醒必须在 dueAt 定稿之后解析：相对提醒要用最终截止时间做锚点
+    const reminder = resolveReminder(remindKey, editing, at, dueAt);
+
     onSubmit({
       title: text,
       priority,
       dueAt,
-      remindAt: resolveReminder(remindKey, editing, at),
+      remindAt: reminder.remindAt,
+      advanceMinutes: reminder.advanceMinutes,
       recurrenceRule,
+      // 标签用空格/逗号分隔，空串等价于清空
+      tags: tagsText
+        .split(/[,，\s]+/)
+        .map((tag) => tag.trim())
+        .filter((tag) => tag.length > 0),
       // 编辑时描述必须显式带上，否则三态更新之外的路径会把它清空
       description: editing ? editing.description : undefined,
     });
@@ -313,6 +397,7 @@ export function TaskEditorSheet({
           autoCorrect={false}
           returnKeyType="done"
           onSubmitEditing={submit}
+          underlineColorAndroid="transparent"
           style={[
             styles.input,
             {
@@ -336,6 +421,28 @@ export function TaskEditorSheet({
           ))}
         </View>
 
+        <Text style={[styles.section, { color: tokens.muted }]}>标签</Text>
+        <TextInput
+          accessibilityLabel="任务标签"
+          accessibilityHint="用空格或逗号分隔多个标签"
+          value={tagsText}
+          onChangeText={setTagsText}
+          placeholder="空格分隔，例如 工作 本周"
+          placeholderTextColor={tokens.muted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          underlineColorAndroid="transparent"
+          style={[
+            styles.input,
+            styles.tagInput,
+            {
+              color: tokens.text,
+              backgroundColor: tokens.bgAccent,
+              borderColor: tokens.cardBorder,
+            },
+          ]}
+        />
+
         <Text style={[styles.section, { color: tokens.muted }]}>截止时间</Text>
         <View style={styles.row}>
           {dueOptions.map((item) => (
@@ -344,7 +451,7 @@ export function TaskEditorSheet({
               label={item.label}
               active={dueKey === item.key}
               accessibilityLabel={`截止 ${item.label}`}
-              onPress={() => setDueKey(item.key)}
+              onPress={() => chooseDue(item.key)}
             />
           ))}
         </View>
@@ -413,6 +520,10 @@ const styles = StyleSheet.create({
     paddingVertical: space.md,
     fontSize: font.title,
     minHeight: 46,
+  },
+  tagInput: {
+    minHeight: 44,
+    paddingVertical: space.sm,
   },
   section: {
     fontSize: font.label,

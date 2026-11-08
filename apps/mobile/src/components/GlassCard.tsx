@@ -1,11 +1,10 @@
-// 一级卡片表面：半透明底 + hairline 边框 + 顶部内高光 + 极轻阴影。
-// 抽取成基元是为了让统计卡、收集箱卡片、设置分组共享同一套表面语义，
-// 避免各页各写一份 rgba 值导致深浅模式下「有的透、有的糊」。
+// 一级卡片表面：实色底 + hairline 边框 + 顶部内高光。
+// 这里刻意不使用 elevation：Android 上给半透明卡片加 elevation 时，阴影会从卡片内部
+// 透出来（浅色模式下表现为卡里嵌一个矩形白框），实色表面 + 边框已经足够分层。
 import type { ReactNode } from "react";
 import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
-import { cardShadow } from "../theme/shadows";
 import { radius } from "../theme/tokens";
 
 export function GlassCard({
@@ -20,7 +19,7 @@ export function GlassCard({
   solid?: boolean;
   accessibilityLabel?: string;
 }) {
-  const { tokens, scheme } = useTheme();
+  const { tokens } = useTheme();
 
   return (
     <View
@@ -32,7 +31,6 @@ export function GlassCard({
           backgroundColor: solid ? tokens.cardSolid : tokens.card,
           borderColor: tokens.cardBorder,
         },
-        cardShadow(scheme),
         style,
       ]}
     >
@@ -49,14 +47,14 @@ const styles = StyleSheet.create({
   card: {
     borderRadius: radius.card,
     borderWidth: StyleSheet.hairlineWidth,
-    // 内嵌面板（设置页的白底块）是直角的，不裁剪会把卡片圆角顶成方形
+    // 内嵌面板是直角的，不裁剪会把卡片圆角顶成方形
     overflow: "hidden",
   },
   highlight: {
     position: "absolute",
     top: 0,
-    left: 12,
-    right: 12,
+    left: 14,
+    right: 14,
     height: StyleSheet.hairlineWidth,
   },
 });

@@ -13,6 +13,18 @@ Task Dock 的手机端。本轮只实现**独立模式**：全部数据落在本
 
 框架选型依据与实测数据见 `tmp/acceptance/mobile-stack-selection/report.md`（RN 7.65 vs Flutter 6.80）。
 
+规范文档（正式口径，优先于本 README）：
+
+| 文档 | 内容 |
+|---|---|
+| [AGENTS.md](AGENTS.md) | 本目录开发红线与提交前自检 |
+| [docs/mobile/README.md](../../docs/mobile/README.md) | 规范索引与能力现状矩阵 |
+| [docs/mobile/01-architecture.md](../../docs/mobile/01-architecture.md) | 分层、启动序列、提醒子系统 |
+| [docs/mobile/02-data-model.md](../../docs/mobile/02-data-model.md) | 表结构、迁移、三态补丁、重复规则契约 |
+| [docs/mobile/03-ui-spec.md](../../docs/mobile/03-ui-spec.md) | Token、表面规则、组件约束 |
+| [docs/mobile/04-testing.md](../../docs/mobile/04-testing.md) | 验收层级、真机命令、用例矩阵 |
+| [docs/mobile/05-build.md](../../docs/mobile/05-build.md) | 构建环境、版本管理、故障表 |
+
 ## 目录
 
 ```
@@ -40,6 +52,11 @@ apps/mobile/
 - 写操作：业务表 + `outbox` 在**同一事务**内完成；收集箱「转为任务」是建任务 + 删条目单事务。
 - 编辑：`updateTask` 采用**三态补丁**——缺键=不改、`null`=清空、有值=写入。这是硬约定：
   少写 `null` 会导致用户清不掉截止时间，误传 `undefined` 会静默清空字段。
+- 版本号 `rev`：完成 / 推进期次 / 软删除 / 编辑都 `rev + 1`，outbox 同时记 `base_rev`，
+  作为后续同步的冲突判定基础。
+- 提前提醒：有截止时间时使用 `advance_minutes`（与桌面端同义），提醒时刻 = 截止 - N 分钟；
+  重复任务推进期次时按该字段重算提醒，没有该字段才退回 `due - remind` 偏移。
+- 标签：`tags` 存 JSON 数组，编辑器按空格/逗号分隔录入，列表显示前 2 个，搜索覆盖标签。
 - 收集箱幂等：`captures.client_id` 唯一索引，重复提交只落一条（与桌面端 `quick_capture_items.client_id` 同思路）。
 - 删除是软删除（`deleted_at`），为后续生成同步墓碑留出数据。
 - 重复：`recurrence_rule` 存 JSON，字段名与桌面端 `recurrence_rules` 对齐
@@ -58,6 +75,16 @@ apps/mobile/
 已知限制：**应用退到后台后，提醒在本机（vivo Funtouch / Android 16）上未被投递**；
 同一安装包在前台时正常。接收器与通知权限均已确认，判断为厂商后台策略，需要把应用加入
 「自启动 / 后台高耗电」白名单。详见验收报告 §10.7。
+
+## 视觉与表面
+
+- **卡片一律不用 `elevation`**：Android 会把阴影画在半透明卡片下方并透出来，浅色模式下表现为
+  卡片里嵌一块矩形白/灰框（真机实测）。分层只靠实色表面 + hairline 边框 + 顶边高光。
+- 表面 Token 全部不透明：浅色 `#FFFFFF`、深色 `#121A28`；`cardDone` 是完成行的淡绿表面。
+- 统计用**色块磁贴**（只有非零数值上色），分组头用色条 + 数量胶囊，TabBar 是浮动圆角栏。
+- 所有 `TextInput` 显式底色并设 `underlineColorAndroid="transparent"`，否则浅色主题下会出现
+  直角白块。
+- 滑删红底的外圈圆角必须与卡片一致，否则卡片圆角缺口处会透出红线。
 
 ## 开发
 

@@ -186,33 +186,39 @@ export function InboxScreen({
         <GlassCard
           style={[styles.inputCard, { borderColor: focused ? tokens.accent : tokens.cardBorder }]}
         >
-          <TextInput
-            ref={inputRef}
-            accessibilityLabel="收集箱输入"
-            accessibilityHint="输入内容后点记录按钮，收进收集箱"
-            value={text}
-            onChangeText={setText}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            placeholder="随手记一条：想法、链接、待确认的事…"
-            placeholderTextColor={tokens.muted}
-            multiline
-            textAlignVertical="top"
-            style={[styles.input, { color: tokens.text }]}
-          />
-          <View style={styles.inputFooter}>
-            <Text numberOfLines={1} style={[styles.inputHint, { color: tokens.muted }]}>
-              换行可继续写
-            </Text>
-            <PressableScale
-              onPress={() => void submit()}
-              disabled={!canSubmit}
-              accessibilityLabel="记录到收集箱"
-              scaleTo={0.94}
-              contentStyle={[styles.recordButton, { backgroundColor: tokens.accentFill }]}
-            >
-              <Text style={[styles.recordText, { color: tokens.onAccent }]}>记录</Text>
-            </PressableScale>
+          {/* 底色放在外层壳上：输入区、「换行可继续写」提示与记录按钮同属一块可写区域，
+              不再让提示和按钮落在无色背景上 */}
+          <View style={[styles.inputShell, { backgroundColor: tokens.bgAccent }]}>
+            <TextInput
+              ref={inputRef}
+              accessibilityLabel="收集箱输入"
+              accessibilityHint="输入内容后点记录按钮，收进收集箱"
+              value={text}
+              onChangeText={setText}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              placeholder="随手记一条：想法、链接、待确认的事…"
+              placeholderTextColor={tokens.muted}
+              multiline
+              textAlignVertical="top"
+              // EditText 的默认背景在浅色主题下是一块直角白底，必须显式去掉
+              underlineColorAndroid="transparent"
+              style={[styles.input, { color: tokens.text }]}
+            />
+            <View style={styles.inputFooter}>
+              <Text numberOfLines={1} style={[styles.inputHint, { color: tokens.muted }]}>
+                换行可继续写
+              </Text>
+              <PressableScale
+                onPress={() => void submit()}
+                disabled={!canSubmit}
+                accessibilityLabel="记录到收集箱"
+                scaleTo={0.94}
+                contentStyle={[styles.recordButton, { backgroundColor: tokens.accentFill }]}
+              >
+                <Text style={[styles.recordText, { color: tokens.onAccent }]}>记录</Text>
+              </PressableScale>
+            </View>
           </View>
         </GlassCard>
 
@@ -282,8 +288,9 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: font.display,
-    fontWeight: "700",
-    letterSpacing: -0.5,
+    fontWeight: "800",
+    letterSpacing: -0.8,
+    lineHeight: font.display + 8,
   },
   subtitle: {
     fontSize: font.meta,
@@ -298,18 +305,24 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   inputCard: {
+    padding: space.sm,
+  },
+  // 壳承载底色并同时包住输入区与底部操作行，是整个「可写区域」的视觉边界
+  inputShell: {
+    borderRadius: radius.control,
     paddingHorizontal: space.md,
     paddingTop: space.sm,
     paddingBottom: space.sm,
     gap: space.xs,
   },
   input: {
-    minHeight: 52,
+    minHeight: 48,
     maxHeight: 132,
-    paddingTop: space.xs,
-    paddingBottom: space.xs,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
     fontSize: font.title,
-    lineHeight: 21,
+    lineHeight: 22,
   },
   inputFooter: {
     flexDirection: "row",

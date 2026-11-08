@@ -9,7 +9,6 @@ import {
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
   type ListRenderItemInfo,
 } from "react-native";
 
@@ -35,7 +34,7 @@ import { useTheme } from "../theme/ThemeProvider";
 import { floatingShadow } from "../theme/shadows";
 import { font, radius, space } from "../theme/tokens";
 
-import { buildTaskSections, flattenSections, type TaskListRow } from "./taskGroups";
+import { buildTaskSections, flattenSections, type SectionKey, type TaskListRow } from "./taskGroups";
 
 const FILTERS: { key: TaskFilter; label: string }[] = [
   { key: "all", label: "全部" },
@@ -65,17 +64,38 @@ function actionSubtitle(task: Task, now: number): string {
   return rule ? `${due} · ${describeRecurrence(rule)}` : due;
 }
 
+/**
+ * 页头时钟：年月日 + 时分秒。
+ * 单独成组件是为了把秒级刷新限制在这一行内——放回 TasksScreen 会让整个列表每秒重渲染。
+ */
+function ClockLabel({ color }: { color: string }) {
+  const [tick, setTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const date = new Date(tick);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const label = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+
+  return <Text style={[styles.eyebrow, { color }]}>{label}</Text>;
+}
+
 export function TasksScreen({ version = 0 }: { version?: number }) {
   const { tokens, scheme } = useTheme();
   const reduceMotion = useReduceMotion();
-  const { width } = useWindowDimensions();
-  const narrow = width < 380;
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [query, setQuery] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  /** 折叠的分组：只影响展示，计数与分组头始终保留 */
+  const [collapsed, setCollapsed] = useState<ReadonlySet<SectionKey>>(() => new Set());
 
   const [editorState, setEditorState] = useState<{ mode: "create" } | { mode: "edit"; task: Task }>(
     { mode: "create" },
@@ -96,6 +116,20 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
     if (reduceMotion) return;
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
   }, [reduceMotion]);
+
+  const toggleSection = useCallback(
+    (key: SectionKey) => {
+      // 折叠是列表结构变化，用布局动画补上高度过渡；减少动态效果时直接切
+      animateLayout();
+      setCollapsed((previous) => {
+        const next = new Set(previous);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+    },
+    [animateLayout],
+  );
 
   const refresh = useCallback(
     async (animated = false) => {
@@ -130,7 +164,10 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
     [tasks, filter, now, query],
   );
   const counts = useMemo(() => countTasks(tasks, now), [tasks, now]);
-  const rows = useMemo(() => flattenSections(buildTaskSections(visible, now)), [visible, now]);
+  const rows = useMemo(
+    () => flattenSections(buildTaskSections(visible, now), collapsed),
+    [collapsed, visible, now],
+  );
 
   const handleToggle = useCallback(
     async (task: Task) => {
@@ -204,6 +241,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
           priority: input.priority ?? 0,
           dueAt: input.dueAt ?? null,
           remindAt: input.remindAt ?? null,
+          advanceMinutes: input.advanceMinutes ?? null,
+          tags: input.tags ?? null,
           // 三态：undefined=不改、null=清空、字符串=写入。编辑器总会显式给出该键。
           ...(input.recurrenceRule !== undefined
             ? { recurrenceRule: input.recurrenceRule }
@@ -287,6 +326,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
             count={item.section.tasks.length}
             hint={item.section.hint}
             tone={item.section.tone}
+            collapsed={collapsed.has(item.section.key)}
+            onPress={() => toggleSection(item.section.key)}
           />
         );
       }
@@ -301,7 +342,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
         />
       );
     },
-    [handleDelete, handleOpenActions, handleToggle, now],
+    [collapsed, handleDelete, handleOpenActions, handleToggle, now, toggleSection],
   );
 
   const keyExtractor = useCallback(
@@ -326,39 +367,42 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
 
   const listHeader = (
     <View style={styles.header}>
-      <View style={styles.titleBlock}>
-        <Text accessibilityRole="header" style={[styles.screenTitle, { color: tokens.text }]}>
-          任务
-        </Text>
-        <Text style={[styles.screenSubtitle, { color: tokens.muted }]}>
-          独立模式 · 数据只在本机
-        </Text>
+      <View style={styles.titleRow}>
+        <View style={styles.titleBlock}>
+          <ClockLabel color={tokens.muted} />
+          <Text accessibilityRole="header" style={[styles.screenTitle, { color: tokens.text }]}>
+            任务
+          </Text>
+        </View>
+        <View style={[styles.localBadge, { backgroundColor: tokens.track }]}>
+          <View style={[styles.localDot, { backgroundColor: tokens.ok }]} />
+          <Text style={[styles.localText, { color: tokens.textSoft }]}>本机模式</Text>
+        </View>
       </View>
 
+      {/* 四块统计压成一行：360dp 窄屏也不再两行，标签用两字缩写 + 完整无障碍文案 */}
       <View style={styles.stats}>
+        <StatCard compact label="待办" value={counts.pending} tone="accent" />
         <StatCard
-          label="待办"
-          value={counts.pending}
-          tone="accent"
-          style={narrow ? styles.statNarrow : undefined}
-        />
-        <StatCard
-          label="今天到期"
+          compact
+          label="今日"
           value={counts.dueToday}
           tone={statTone(counts.dueToday, "warn")}
-          style={narrow ? styles.statNarrow : undefined}
+          accessibilityLabel={`今天到期 ${counts.dueToday} 项`}
         />
         <StatCard
-          label="已过期"
+          compact
+          label="逾期"
           value={counts.overdue}
           tone={statTone(counts.overdue, "danger")}
-          style={narrow ? styles.statNarrow : undefined}
+          accessibilityLabel={`已过期 ${counts.overdue} 项`}
         />
         <StatCard
-          label="已完成"
+          compact
+          label="完成"
           value={counts.completed}
           tone={statTone(counts.completed, "ok")}
-          style={narrow ? styles.statNarrow : undefined}
+          accessibilityLabel={`已完成 ${counts.completed} 项`}
         />
       </View>
 
@@ -476,28 +520,53 @@ const styles = StyleSheet.create({
     gap: space.md,
     paddingBottom: space.xs,
   },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: space.sm,
+  },
   titleBlock: {
-    gap: 2,
+    flex: 1,
+    gap: 1,
+  },
+  eyebrow: {
+    fontSize: font.meta,
+    fontWeight: "600",
+    letterSpacing: 0.2,
+    // 秒级数字用等宽数字，跳动时整行不会左右抖
+    fontVariant: ["tabular-nums"],
   },
   screenTitle: {
     fontSize: font.display,
-    fontWeight: "700",
-    letterSpacing: -0.5,
+    fontWeight: "800",
+    letterSpacing: -0.8,
+    lineHeight: font.display + 8,
   },
-  screenSubtitle: {
-    fontSize: font.meta,
+  localBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: space.sm,
+    paddingHorizontal: space.sm + 2,
+    paddingVertical: 5,
+    borderRadius: radius.chip,
+  },
+  localDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  localText: {
+    fontSize: font.label,
+    fontWeight: "600",
   },
   searchHint: {
     fontSize: font.meta,
   },
   stats: {
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: space.sm,
-  },
-  // 320dp 窄屏改成两列：4 张卡并排时标签会被压到换行或截断
-  statNarrow: {
-    flexBasis: "48%",
   },
   filterScroll: {
     marginHorizontal: -space.lg,
@@ -510,7 +579,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: space.lg,
-    paddingBottom: 120,
+    paddingBottom: 96,
   },
   rowGap: {
     height: space.sm,
@@ -521,9 +590,9 @@ const styles = StyleSheet.create({
     bottom: space.lg,
   },
   fabInner: {
-    width: 56,
-    height: 56,
-    borderRadius: radius.chip,
+    width: 58,
+    height: 58,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -535,18 +604,18 @@ const styles = StyleSheet.create({
   },
   fabBar: {
     position: "absolute",
-    borderRadius: 1,
+    borderRadius: 1.2,
   },
   fabBarH: {
-    left: 2,
-    top: 11.1,
-    width: 20,
-    height: 1.8,
+    left: 1,
+    top: 10.9,
+    width: 22,
+    height: 2.2,
   },
   fabBarV: {
-    left: 11.1,
-    top: 2,
-    width: 1.8,
-    height: 20,
+    left: 10.9,
+    top: 1,
+    width: 2.2,
+    height: 22,
   },
 });

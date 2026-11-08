@@ -5,7 +5,6 @@ import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
-import { cardShadow } from "../theme/shadows";
 import { font, radius, space } from "../theme/tokens";
 
 export interface SegmentOption<T extends string> {
@@ -26,7 +25,7 @@ export function SegmentedControl<T extends string>({
   renderSegment?: (option: SegmentOption<T>, selected: boolean) => ReactNode;
   accessibilityLabel: string;
 }) {
-  const { tokens, scheme } = useTheme();
+  const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
   const [trackWidth, setTrackWidth] = useState(0);
   const index = Math.max(
@@ -77,7 +76,6 @@ export function SegmentedControl<T extends string>({
             {
               backgroundColor: tokens.cardSolid,
               borderColor: tokens.accentSoft,
-              ...cardShadow(scheme),
             },
             indicatorStyle,
           ]}

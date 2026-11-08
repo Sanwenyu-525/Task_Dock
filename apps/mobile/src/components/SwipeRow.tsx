@@ -1,10 +1,13 @@
-// 滑删容器：卡片向左或向右拖出，对应一侧露出红色删除底，松手按位移/速度吸附开合。
-// 双向都支持是为了兼顾「右滑删除」的直觉与常见的「左滑露出右侧操作」，同时避开
-// 安卓边缘返回手势区域——手势从卡片内部开始，不依赖屏幕边缘。
+// 滑删容器：卡片向左拖出，右侧露出红色删除底，松手按位移/速度吸附开合。
 //
-// 为什么红底放在卡片「下面」且卡片用不透明合成色：卡片本身是半透明的，红底若和
-// 卡片重叠会透出一层粉雾。用 cardSolid（等价于 card 叠在 bg 上的结果）既能完全遮住
-// 红底，视觉上又与半透明卡片一致。
+// 三个真机约束决定了实现方式：
+// 1. 只保留一个方向。双向滑删会让「露出的是哪一侧」变得不可预期，也让卡片两侧
+//    都要做圆角过渡；现在固定为「手指从右往左滑 → 删除按钮在右」。
+// 2. 红底不能常驻可见。卡片入场动画是淡入（TaskRow 的 opacity 0→1），红底如果一直
+//    挂在卡片下面，淡入过程中会透出来，看起来就是「切页时闪一下删除按钮」。
+//    所以红底的透明度跟随 translateX：闭合时 0，越滑越显。
+// 3. 打开后卡片右边要变直角。红底的内侧（左边）是直角，卡片右边若还是圆角，
+//    两块拼在一起会露出缺口；因此右边两个圆角随开合进度插值到 0。
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Animated, PanResponder, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -26,111 +29,139 @@ export function SwipeRow({
   onAction,
   actionLabel,
   actionAccessibilityLabel,
+  surface,
 }: {
   children: (api: SwipeRowApi) => ReactNode;
   onAction: () => void;
   actionLabel: string;
   actionAccessibilityLabel: string;
+  /** 卡片表面色：完成态等需要变色时由调用方传入（必须不透明，否则红底会透出来） */
+  surface?: string;
 }) {
   const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
   const translateX = useRef(new Animated.Value(0)).current;
-  const openSideRef = useRef<0 | -1 | 1>(0);
+  /** 0 = 闭合，1 = 完全打开；只用于右侧圆角插值（JS 驱动） */
+  const corner = useRef(new Animated.Value(0)).current;
+  const openRef = useRef(false);
   const startRef = useRef(0);
   // 只用于无障碍状态与红底可点击性，不参与位移计算
-  const [openSide, setOpenSide] = useState<0 | -1 | 1>(0);
+  const [open, setOpen] = useState(false);
+
+  /** 位移与圆角必须同步落值：二者由同一手势偏移推导，避免弹簧与插值各跑一套 */
+  const applyOffset = useCallback(
+    (value: number) => {
+      translateX.setValue(value);
+      corner.setValue(Math.min(1, Math.abs(value) / ACTION_WIDTH));
+    },
+    [corner, translateX],
+  );
 
   const animateTo = useCallback(
     (to: number) => {
-      const side: 0 | -1 | 1 = to < 0 ? -1 : to > 0 ? 1 : 0;
-      openSideRef.current = side;
-      setOpenSide(side);
+      const nextOpen = to < 0;
+      openRef.current = nextOpen;
+      setOpen(nextOpen);
       if (reduceMotion) {
-        translateX.setValue(to);
+        applyOffset(to);
         return;
       }
-      Animated.spring(translateX, {
-        toValue: to,
-        useNativeDriver: true,
-        damping: 26,
-        stiffness: 300,
-        mass: 0.85,
-      }).start();
+      Animated.parallel([
+        Animated.spring(translateX, {
+          toValue: to,
+          // 必须与 corner 同用 JS 驱动：圆角插值挂在同一个 Animated.View 上，
+          // 一旦 translateX 走 native，该节点会被标记为 native，
+          // 后续 JS 驱动的圆角动画会直接抛 "moved to native" 并崩溃（真机实测）。
+          useNativeDriver: false,
+          damping: 26,
+          stiffness: 300,
+          mass: 0.85,
+        }),
+        Animated.timing(corner, {
+          toValue: nextOpen ? 1 : 0,
+          duration: 180,
+          useNativeDriver: false,
+        }),
+      ]).start();
     },
-    [reduceMotion, translateX],
+    [applyOffset, corner, reduceMotion, translateX],
   );
 
   const responder = useMemo(
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => false,
-        // 只有明确的横向滑动才从子级（Pressable）手里接管，纵向滚动继续交给 FlatList
-        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
-          Math.abs(gesture.dx) > 10 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.6,
+        // 只有明确的横向滑动才从子级（Pressable）手里接管，纵向滚动继续交给 FlatList。
+        // 闭合时只接受向左（dx < 0）的手势，拒绝右滑，保证「只有一个方向能露出删除」。
+        onMoveShouldSetPanResponderCapture: (_event, gesture) => {
+          if (Math.abs(gesture.dx) <= 10 || Math.abs(gesture.dx) <= Math.abs(gesture.dy) * 1.6) {
+            return false;
+          }
+          return openRef.current || gesture.dx < 0;
+        },
         onPanResponderGrant: () => {
           translateX.stopAnimation((value) => {
             startRef.current = value;
+            corner.setValue(Math.min(1, Math.abs(value) / ACTION_WIDTH));
           });
         },
         onPanResponderMove: (_event, gesture) => {
-          const next = Math.max(
-            -ACTION_WIDTH,
-            Math.min(ACTION_WIDTH, startRef.current + gesture.dx),
-          );
-          translateX.setValue(next);
+          const next = Math.max(-ACTION_WIDTH, Math.min(0, startRef.current + gesture.dx));
+          applyOffset(next);
         },
         onPanResponderTerminationRequest: () => false,
         onPanResponderRelease: (_event, gesture) => {
           const offset = startRef.current + gesture.dx;
-          const startSide: -1 | 0 | 1 =
-            startRef.current === 0 ? 0 : startRef.current < 0 ? -1 : 1;
-
-          if (offset < -ACTION_WIDTH * OPEN_RATIO) {
+          // 甩动优先：向左甩（vx < 0）直接打开，向右甩直接关闭
+          if (gesture.vx < -0.5 || (gesture.vx <= 0.5 && offset < -ACTION_WIDTH * OPEN_RATIO)) {
             animateTo(-ACTION_WIDTH);
-            return;
-          }
-          if (offset > ACTION_WIDTH * OPEN_RATIO) {
-            animateTo(ACTION_WIDTH);
-            return;
-          }
-          if (Math.abs(gesture.vx) > 0.5) {
-            const direction: -1 | 1 = gesture.vx < 0 ? -1 : 1;
-            // 已打开时反向甩动只关闭，不允许一步翻到另一侧
-            const target = startSide !== 0 && direction !== startSide ? 0 : direction * ACTION_WIDTH;
-            animateTo(target);
             return;
           }
           animateTo(0);
         },
         onPanResponderTerminate: () => animateTo(0),
       }),
-    [animateTo, translateX],
+    [animateTo, applyOffset, corner, translateX],
   );
 
   const api = useMemo<SwipeRowApi>(
     () => ({
       close: () => animateTo(0),
-      isOpen: () => openSideRef.current !== 0,
+      isOpen: () => openRef.current,
     }),
     [animateTo],
   );
 
-  // panel: -1 = 左侧红底（右滑露出），1 = 右侧红底（左滑露出）
-  const actionZone = (panel: -1 | 1) => {
-    // 与位移方向相反：卡片左移露出右侧红底
-    const active = openSide === -panel;
-    return (
-      <View
+  // 红底只在滑开时可见：闭合状态 opacity 为 0，卡片淡入时不会再透出红色
+  const actionOpacity = useMemo(
+    () =>
+      translateX.interpolate({
+        inputRange: [-ACTION_WIDTH, 0],
+        outputRange: [1, 0],
+        extrapolate: "clamp",
+      }),
+    [translateX],
+  );
+
+  // 右侧两个圆角随开启进度收成直角：红底左侧是直角，卡片右侧必须接得上
+  const cornerRadius = useMemo(
+    () => corner.interpolate({ inputRange: [0, 1], outputRange: [radius.row, 0] }),
+    [corner],
+  );
+
+  return (
+    <View style={[styles.container, { backgroundColor: tokens.cardSolid }]}>
+      <Animated.View
         style={[
           styles.actionZone,
-          panel === -1 ? styles.actionLeft : styles.actionRight,
           {
             backgroundColor: tokens.dangerFill,
-            pointerEvents: active ? "auto" : "none",
+            opacity: actionOpacity,
+            pointerEvents: open ? "auto" : "none",
           },
         ]}
-        importantForAccessibility={active ? "auto" : "no-hide-descendants"}
-        accessibilityElementsHidden={!active}
+        importantForAccessibility={open ? "auto" : "no-hide-descendants"}
+        accessibilityElementsHidden={!open}
       >
         <Pressable
           accessibilityRole="button"
@@ -143,22 +174,18 @@ export function SwipeRow({
         >
           <Text style={[styles.actionText, { color: tokens.onDanger }]}>{actionLabel}</Text>
         </Pressable>
-      </View>
-    );
-  };
-
-  return (
-    <View style={styles.container}>
-      {/* 左右各一块红底，哪一侧滑开就只让那一侧可点、可读 */}
-      {actionZone(-1)}
-      {actionZone(1)}
+      </Animated.View>
 
       <Animated.View
         style={[
           styles.front,
           {
-            backgroundColor: tokens.cardSolid,
+            backgroundColor: surface ?? tokens.cardSolid,
             borderColor: tokens.cardBorder,
+            borderTopLeftRadius: radius.row,
+            borderBottomLeftRadius: radius.row,
+            borderTopRightRadius: cornerRadius,
+            borderBottomRightRadius: cornerRadius,
             transform: [{ translateX }],
           },
         ]}
@@ -178,7 +205,7 @@ export function SwipeRow({
 const styles = StyleSheet.create({
   container: {
     borderRadius: radius.row,
-    // 内容滑出时裁掉超出卡片的部分，红色底才只从两侧露出
+    // 内容滑出时裁掉超出卡片的部分，红色底才只从右侧露出
     overflow: "hidden",
   },
   // 红底必须比卡片内缩 1dp：卡片描边是半透明的（cardBorder alpha≈0.16），
@@ -187,13 +214,11 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 1,
     bottom: 1,
-    width: ACTION_WIDTH,
-  },
-  actionLeft: {
-    left: 1,
-  },
-  actionRight: {
     right: 1,
+    width: ACTION_WIDTH,
+    // 外侧（右）圆角与卡片一致；内侧（左）保持直角，与卡片开启后的直角相接
+    borderTopRightRadius: radius.row,
+    borderBottomRightRadius: radius.row,
   },
   actionPress: {
     flex: 1,
@@ -206,7 +231,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   front: {
-    borderRadius: radius.row,
     borderWidth: StyleSheet.hairlineWidth,
   },
   highlight: {

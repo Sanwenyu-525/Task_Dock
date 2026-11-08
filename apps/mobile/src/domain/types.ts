@@ -56,6 +56,10 @@ export interface NewTaskInput {
   priority?: Priority;
   dueAt?: number | null;
   remindAt?: number | null;
+  /** 提前提醒的分钟数（与桌面端 advance_minutes 同义）；有值时 remindAt = dueAt - N 分钟 */
+  advanceMinutes?: number | null;
   /** 重复规则 JSON；null/缺省表示不重复 */
   recurrenceRule?: string | null;
+  tags?: string[];
+  category?: string | null;
 }
