@@ -1,4 +1,4 @@
-//! 分类胶囊的左侧（或顶/底）轨道：Agent 总状态 + 四个分类入口 + 形态出口。
+//! 分类胶囊的左侧（或顶/底）轨道：Agent 总状态 + 五个分类入口 + 形态出口。
 //!
 //! 只渲染，不做决策：状态来自 `railStatus()`（真实 store 聚合），
 //! 相位来自 `useEdgeSnapStore`，当前分类来自 `useCapsuleStore`。
@@ -30,7 +30,7 @@ import { attachDragCursorSession } from "../../lib/dragCursorSession";
 import type { SnapEdge } from "../../lib/edgeSnap";
 import { t } from "../../i18n";
 
-/** 分类可读名：轨道四类 + Agent 端头球（面板 aria 也用它）。 */
+/** 分类可读名：轨道五类 + Agent 端头球（面板 aria 也用它）。 */
 // getter 保持既有「点访问」调用不变，读取时取当前语言。
 export const CATEGORY_LABELS: Record<CapsuleCategory, string> = {
   get tasks() {
@@ -47,6 +47,9 @@ export const CATEGORY_LABELS: Record<CapsuleCategory, string> = {
   },
   get apps() {
     return t("capsule.category.apps");
+  },
+  get roadmap() {
+    return t("capsule.category.roadmap");
   },
 };
 
@@ -97,7 +100,9 @@ const FLOATING_TIP: TipPlacement = "right";
 /**
  * 提示方向（纯函数，浮层只消费 `data-tip-placement`）：
  * - `docked`：展开态严格按停靠边朝屏幕内侧（上→下、下→上、左→右、右→左）；
- *   折叠态保持既有已确认行为，沿轨道朝中心（垂直停靠向上、水平停靠向左）。
+ *   折叠态保持既有已确认行为，沿轨道朝中心（垂直停靠向上、水平停靠向左）；
+ *   但第一个分类位于轨道中心之前，朝中心应改为向下/向右，否则 3 字气泡会
+ *   伸进肩部曲面被 `SetWindowRgn` 裁掉（5 分类后内容组不再自身居中）。
  * - `floating`：不套四边映射，固定图标右侧；此时 `edge` 必须为 null。
  */
 export function railTipPlacement(
@@ -105,12 +110,13 @@ export function railTipPlacement(
   edge: SnapEdge | null,
   expanded: boolean,
   lead = false,
+  first = false,
 ): TipPlacement {
   if (form !== "docked" || !edge) return FLOATING_TIP;
   if (expanded) return INWARD[edge];
   const vertical = edge === "left" || edge === "right";
-  if (vertical) return lead ? "bottom" : "top";
-  return lead ? "right" : "left";
+  if (vertical) return lead || first ? "bottom" : "top";
+  return lead || first ? "right" : "left";
 }
 
 /** 分类项图标按钮边长（与 `.cap-btn` 一致）。 */
@@ -120,6 +126,14 @@ const CAP_COLLAPSE_CSS = 26;
 /** 气泡起点越过「半个轨道厚度 + 轨道/面板间隙 + 区域 AA 内收」后，才能进入
  *  面板可见矩形；落进间隙的像素既不属于区域也不拦截鼠标，会被裁出一条缺边。 */
 const TIP_PANEL_INSET_CSS = RAIL_THICKNESS_CSS / 2 + CAPSULE_GAP_CSS + 2;
+/**
+ * 水平停靠（上/下）时 Agent 端头球的额外内推距离。
+ *
+ * 端头球贴着轨道左端：面板带 24px 圆角，气泡若只外扩 20px，左上/左下角会落在
+ * 面板圆角之外被 `SetWindowRgn` 裁掉。多推 24px 让气泡越过圆角切点；垂直停靠时
+ * 端头球远离面板上下角，仍使用统一外扩量。
+ */
+const TIP_ORB_HORIZONTAL_EXTRA_CSS = 24;
 
 /**
  * 展开态朝内气泡的外扩距离（CSS px）：锚点靠内侧边到面板可见边的距离。
@@ -130,7 +144,7 @@ export function capsuleTipInwardOffset(anchorSize: number): number {
   return TIP_PANEL_INSET_CSS - anchorSize / 2;
 }
 
-/** Agent 状态球与四个分类（36px）的外扩距离：20。 */
+/** Agent 状态球与五个分类（36px）的外扩距离：20。 */
 export const CAPSULE_TIP_INWARD_OFFSET = capsuleTipInwardOffset(CAP_ITEM_CSS);
 /** 收起按钮（26px）的外扩距离：25。 */
 export const CAPSULE_TIP_COLLAPSE_OFFSET = capsuleTipInwardOffset(CAP_COLLAPSE_CSS);
@@ -191,6 +205,12 @@ export default function CapsuleRail({
   const compactTipProps = expanded
     ? {}
     : { "data-tip-compact": "1", "data-tip-padding": "0" };
+  // Agent 状态球在水平停靠时靠近面板左缘：展开态也使用紧凑气泡，
+  // 否则气泡中心对齐图标后会越出面板可见矩形的左边界。
+  const orbTipProps = { "data-tip-compact": "1" };
+  const orbCompactProps = expanded
+    ? orbTipProps
+    : { ...orbTipProps, "data-tip-padding": "0" };
 
   // ── 入口显隐与排序（统一导航架构）──────────────────────────────────
   // 只过滤图标渲染：外轮廓、吸附与几何全部由 capsuleLayout / Win32 区域决定，
@@ -267,8 +287,12 @@ export default function CapsuleRail({
           data-tone={status.agentsLoaded ? status.agentTone : "unknown"}
           data-tip={CATEGORY_LABELS.agents}
           data-tip-placement={railTipPlacement("docked", edge, expanded, true)}
-          data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
-          {...compactTipProps}
+          data-tip-offset={
+            expanded
+              ? CAPSULE_TIP_INWARD_OFFSET + (vertical ? 0 : TIP_ORB_HORIZONTAL_EXTRA_CSS)
+              : undefined
+          }
+          {...orbCompactProps}
           aria-label={t("capsule.openAgents", { label: toneLabel })}
           aria-pressed={expanded && active === "agents"}
           onClick={() => onSelect("agents")}
@@ -285,7 +309,7 @@ export default function CapsuleRail({
       {/* 效果图里状态球与分类组之间没有分隔线：状态球靠尺寸/材质已足够分组，
           多一条线只会让轨道看起来像「被切开的工具栏」。 */}
       <div className="cap-nav">
-        {categoryEntries.map((entry) => {
+        {categoryEntries.map((entry, index) => {
           const c = entry.capsuleCategory as CapsuleCategory;
           const Icon = entry.icon;
           const isActive = active === c && expanded;
@@ -296,8 +320,14 @@ export default function CapsuleRail({
               key={entry.id}
               type="button"
               className={`cap-btn${isActive ? " is-active" : ""}`}
-              data-tip={CATEGORY_LABELS[c]}
-              data-tip-placement={railTipPlacement("docked", edge, expanded)}
+              /* 折叠态只剩 56px 翼片：4 字分类名（规划中心）的气泡会横向超出
+                 可见区域，折叠时改用 2 字紧凑文案；展开态仍显示完整名称。 */
+              data-tip={
+                expanded || c !== "roadmap"
+                  ? CATEGORY_LABELS[c]
+                  : t("capsule.category.roadmapShort")
+              }
+              data-tip-placement={railTipPlacement("docked", edge, expanded, false, index === 0)}
               data-tip-offset={expanded ? CAPSULE_TIP_INWARD_OFFSET : undefined}
               {...compactTipProps}
               aria-label={

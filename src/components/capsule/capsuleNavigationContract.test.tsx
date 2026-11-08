@@ -43,6 +43,7 @@ vi.mock("./InboxLite", () => ({ default: () => <div>inbox-lite</div> }));
 vi.mock("./AgentsLite", () => ({ default: () => <div>agents-lite</div> }));
 vi.mock("./ClipboardLite", () => ({ default: () => <div>clipboard-lite</div> }));
 vi.mock("./AppsLite", () => ({ default: () => <div>apps-lite</div> }));
+vi.mock("./PlanningLite", () => ({ default: () => <div>planning-lite</div> }));
 vi.mock("../focus/FocusCapsuleBadge", () => ({ default: () => null }));
 
 import CapsuleDock from "./CapsuleDock";
@@ -141,7 +142,7 @@ afterEach(() => {
 
 describe("C1 · 注册中心与胶囊入口集合一致", () => {
   it("胶囊面入口唯一，默认可见与默认顺序同源", () => {
-    expect(CAPSULE_IDS).toEqual(["agents", "tasks", "inbox", "clipboard", "apps"]);
+    expect(CAPSULE_IDS).toEqual(["agents", "tasks", "inbox", "clipboard", "apps", "roadmap"]);
     expect(defaultVisibleIds("capsule")).toEqual(CAPSULE_IDS);
     // 注册中心里没有任何「只在胶囊出现但没被 entriesForSurface 收录」的孤儿入口
     const declared = NAV_ENTRIES.filter((entry) => entry.surfaces.includes("capsule")).map(
@@ -159,6 +160,7 @@ describe("C1 · 注册中心与胶囊入口集合一致", () => {
     expect(navEntry("inbox")!.tabs).toEqual(["inbox"]);
     expect(navEntry("clipboard")!.tabs).toEqual(["clipboard"]);
     expect(navEntry("apps")!.tabs).toEqual(["apps"]);
+    expect(navEntry("roadmap")!.tabs).toEqual(["roadmap"]);
     expect(navEntry("agents")!.tabs).toEqual(["agents"]);
   });
 
@@ -182,9 +184,9 @@ describe("C1 · Agent 状态球是全局入口，不是分类页签", () => {
     const { container } = mount();
     expect(container.querySelector(".cap-orb")).toBeTruthy();
     expect(container.querySelector(".cap-nav .cap-orb")).toBeNull();
-    expect(container.querySelectorAll(".cap-nav .cap-btn").length).toBe(4);
+    expect(container.querySelectorAll(".cap-nav .cap-btn").length).toBe(5);
     // 分类里没有「Agent」按钮：Agent 只经状态球直达
-    expect(categoryTips(container)).toEqual(["任务", "收集箱", "剪贴板", "应用"]);
+    expect(categoryTips(container)).toEqual(["任务", "收集箱", "剪贴板", "应用", "规划中心"]);
     expect(categoryTips(container)).not.toContain(CATEGORY_LABELS.agents);
   });
 
@@ -320,7 +322,7 @@ describe("C1 · 排序与显隐持久化，两套配置互不影响", () => {
 
     const stored = useSettingsStore.getState().settings![NAV_LAYOUT_SETTING_KEY] as NavLayoutConfig;
     expect(stored.capsule).not.toContain("apps");
-    expect(stored.capsule).toEqual(["agents", "tasks", "inbox", "clipboard"]);
+    expect(stored.capsule).toEqual(["agents", "tasks", "inbox", "clipboard", "roadmap"]);
     // 完整面板一栏完全未被触碰
     expect(stored.left).toEqual(layout([...CAPSULE_IDS]).left);
     expect(stored.version).toBe(NAV_LAYOUT_VERSION);
@@ -335,7 +337,14 @@ describe("C1 · 排序与显隐持久化，两套配置互不影响", () => {
     await moveNavigationEntry("capsule", "inbox", -1);
 
     const stored = useSettingsStore.getState().settings![NAV_LAYOUT_SETTING_KEY] as NavLayoutConfig;
-    expect(stored.capsule).toEqual(["agents", "inbox", "tasks", "clipboard", "apps"]);
+    expect(stored.capsule).toEqual([
+      "agents",
+      "inbox",
+      "tasks",
+      "clipboard",
+      "apps",
+      "roadmap",
+    ]);
     expect(stored.left).toEqual(layout([...CAPSULE_IDS]).left);
 
     // 重新挂载（等价重启后从后端读回）：顺序仍是用户配置，而非默认顺序
@@ -347,7 +356,7 @@ describe("C1 · 排序与显隐持久化，两套配置互不影响", () => {
     });
     cleanup();
     const { container } = mount();
-    expect(categoryTips(container)).toEqual(["收集箱", "任务", "剪贴板", "应用"]);
+    expect(categoryTips(container)).toEqual(["收集箱", "任务", "剪贴板", "应用", "规划中心"]);
   });
 
   it("隐藏完整面板入口不影响胶囊入口集合", async () => {

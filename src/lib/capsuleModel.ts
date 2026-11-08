@@ -16,15 +16,21 @@ import type { MessageKey } from "../i18n";
 import { liveSummary, type LiveState } from "./agentTree";
 
 /**
- * 轨道分类按钮（四个）：任务 → 收集箱 → 剪贴板 → 应用。
+ * 轨道分类按钮（五个）：任务 → 收集箱 → 剪贴板 → 应用 → 规划中心。
  * Agent 不在轨道按钮里：它由顶部状态球直达（见 `CapsuleCategory`）。
  */
-export type RailCategory = "tasks" | "inbox" | "clipboard" | "apps";
+export type RailCategory = "tasks" | "inbox" | "clipboard" | "apps" | "roadmap";
 
-/** 胶囊可选的分类全集：轨道四类 + Agent（仅顶部状态球入口）。 */
+/** 胶囊可选的分类全集：轨道五类 + Agent（仅顶部状态球入口）。 */
 export type CapsuleCategory = RailCategory | "agents";
 
-export const RAIL_CATEGORIES: readonly RailCategory[] = ["tasks", "inbox", "clipboard", "apps"];
+export const RAIL_CATEGORIES: readonly RailCategory[] = [
+  "tasks",
+  "inbox",
+  "clipboard",
+  "apps",
+  "roadmap",
+];
 
 /** 轨道状态色调：中性 / 运行 / 等待 / 失败 / 失联。 */
 export type RailTone = "idle" | "running" | "waiting" | "failed" | "disconnected";

@@ -294,7 +294,8 @@ describe("胶囊 Agent 状态球排序边界", () => {
     const moved = moveEntryInList(ids, "inbox", -1, isFixed);
     // 普通分类顺序变为 收集箱 → 任务 → 剪贴板 → 应用；Agent 未被移动
     expect(moved).toEqual(["inbox", "agents", "tasks", "clipboard", "apps"]);
-    // 归一化后 Agent 收敛到端头，普通分类相对顺序保留
+    // 归一化后 Agent 收敛到端头，普通分类相对顺序保留（roadmap 已在 known 中且
+    // 不在列表里，表示用户已隐藏它，归一化不会按默认值补回）
     const { config } = normalizeNavigationLayout({
       version: NAV_LAYOUT_VERSION,
       capsule: moved,

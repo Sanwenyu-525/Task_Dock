@@ -7,7 +7,7 @@
 //! 气泡不会被绘制。因此这里锁定三件事：
 //! 1. 每个图标按钮都带 `data-tip`，文案取现成语义名（就是图标名）；
 //! 2. 停靠坞展开态 `data-tip-placement` 一律朝**屏幕内侧（面板侧）**，四个停靠边镜像
-//!    （左→right、右→left、上→bottom、下→top），四个分类与 Agent 状态球同规则；
+//!    （左→right、右→left、上→bottom、下→top），五个分类与 Agent 状态球同规则；
 //!    折叠态只剩 56px 翼片可画，退回沿轨道朝中心的方向（端头球向下/向右）；
 //!    完整悬浮栏（未贴边停靠/自由位置）不套四边映射，保持原有「图标右侧」语义；
 //! 3. 气泡矩形必须落在可见区域内：展开态落在**面板矩形**，折叠态落在**翼片多边形**；
@@ -77,14 +77,15 @@ function tipsOf(edge: SnapEdge, expanded: boolean, withForm = false) {
 }
 
 describe("胶囊轨道图标提示", () => {
-  it("每个图标按钮的提示文案就是图标名（Agent 状态球 + 四个分类）", () => {
-    // 轨道四类由并行改动调整为「任务 / 收集箱 / 剪贴板 / 应用」，Agent 只在状态球。
+  it("每个图标按钮的提示文案就是图标名（Agent 状态球 + 五个分类）", () => {
+    // 轨道五类：任务 / 收集箱 / 剪贴板 / 应用 / 规划中心，Agent 只在状态球。
     expect(tipsOf("right", true).map((t) => t.tip)).toEqual([
       "Agent",
       "任务",
       "收集箱",
       "剪贴板",
       "应用",
+      "规划中心",
     ]);
   });
 
@@ -96,21 +97,26 @@ describe("胶囊轨道图标提示", () => {
       "收集箱",
       "剪贴板",
       "应用",
+      "规划中心",
       "展开完整面板",
       "收起为极简标签",
     ]);
-    expect(tips.slice(5).map((t) => t.offset)).toEqual(["25", "25"]);
+    expect(tips.slice(6).map((t) => t.offset)).toEqual(["25", "25"]);
   });
 
-  it.each(EDGES)("edge=%s：展开态五个锚点一律朝屏幕内侧（面板侧）", (edge) => {
-    expect(tipsOf(edge, true).map((t) => t.placement)).toEqual(Array(5).fill(INWARD[edge]));
+  it.each(EDGES)("edge=%s：展开态六个锚点一律朝屏幕内侧（面板侧）", (edge) => {
+    expect(tipsOf(edge, true).map((t) => t.placement)).toEqual(Array(6).fill(INWARD[edge]));
   });
 
   it.each(EDGES)("edge=%s：展开态把气泡外扩到面板可见区内（按锚点边长换算）", (edge) => {
-    // DOM 顺序：Agent 状态球 → 任务 / 收集箱 / 剪贴板 / 应用（均为 36px）
-    const anchorSizes = [36, 36, 36, 36, 36];
+    // DOM 顺序：Agent 状态球 → 任务 / 收集箱 / 剪贴板 / 应用 / 规划中心（均为 36px）
+    const vertical = edge === "left" || edge === "right";
+    const anchorSizes = [36, 36, 36, 36, 36, 36];
     expect(tipsOf(edge, true).map((t) => t.offset)).toEqual(
-      anchorSizes.map((size) => String(capsuleTipInwardOffset(size)))
+      anchorSizes.map((size, i) =>
+        // 水平停靠时端头球多推 24px，越过面板 24px 圆角切点。
+        String(i === 0 && !vertical ? capsuleTipInwardOffset(size) + 24 : capsuleTipInwardOffset(size))
+      )
     );
     expect(CAPSULE_TIP_INWARD_OFFSET).toBe(20);
     // 形态出口按钮仍是 26px；常量保留给 form/tab，不再给底部收起箭头。
@@ -121,7 +127,10 @@ describe("胶囊轨道图标提示", () => {
   // 可见区域只剩翼片，内侧没有像素可画，因此这里锁定「沿轨道朝中心」的现状，
   // 不是把折叠态期望成朝内。
   it("折叠态锁定现状：沿轨道朝中心（不是朝内）", () => {
+    // 端头球与第一个分类都在轨道中心之前，朝中心 = 向下/向右；
+    // 其余分类在中心之后，朝中心 = 向上/向左。
     expect(tipsOf("right", false).map((t) => t.placement)).toEqual([
+      "bottom",
       "bottom",
       "top",
       "top",
@@ -130,6 +139,7 @@ describe("胶囊轨道图标提示", () => {
     ]);
     expect(tipsOf("left", false).map((t) => t.placement)).toEqual([
       "bottom",
+      "bottom",
       "top",
       "top",
       "top",
@@ -137,12 +147,14 @@ describe("胶囊轨道图标提示", () => {
     ]);
     expect(tipsOf("top", false).map((t) => t.placement)).toEqual([
       "right",
+      "right",
       "left",
       "left",
       "left",
       "left",
     ]);
     expect(tipsOf("bottom", false).map((t) => t.placement)).toEqual([
+      "right",
       "right",
       "left",
       "left",
@@ -186,7 +198,7 @@ describe("完整悬浮栏的提示方向（不套停靠四边映射）", () => {
 });
 
 describe("分类悬停指示块（白色翼片）", () => {
-  it("四个分类按钮各有一个指示块；Agent 端头球与收起按钮没有（避免容器/端头重复触发）", () => {
+  it("五个分类按钮各有一个指示块；Agent 端头球与收起按钮没有（避免容器/端头重复触发）", () => {
     const { container } = render(
       <CapsuleRail
         edge="right"
@@ -198,7 +210,7 @@ describe("分类悬停指示块（白色翼片）", () => {
       />
     );
     const tabs = container.querySelectorAll(".cap-edge-tab");
-    expect(tabs.length).toBe(4);
+    expect(tabs.length).toBe(5);
     container.querySelectorAll(".cap-btn").forEach((btn) => {
       expect(btn.querySelectorAll(".cap-edge-tab").length).toBe(1);
     });
@@ -213,28 +225,45 @@ describe("分类悬停指示块（白色翼片）", () => {
 // 绘制。下面用真实的几何函数（`wingShape` / `capsuleRegionsPhysical`）验证
 // 「按 CSS 布局算出的按钮位置 + 按 TooltipLayer/Popover 算出的气泡矩形」落在区域内。
 //
-// 布局数字来自 src/styles.css：.cap-v/.cap-h 外框 400×56；.cap-orb 36 + 下间距 10；
-// .cap-nav 168（4×36 + 3×8）；.cap-sep 1px + 上下各 6（共 13）；
-// 底部独立收起箭头已移除，内容组 = 36 + 10 + 168 + 13 = 227。
+// 布局数字来自 src/styles.css：.cap-v/.cap-h 外框 446×56；.cap-orb 36 + 下间距 10；
+// .cap-nav 212（5×36 + 4×8）；.cap-sep 1px + 上下各 6（共 13）；底部「完整面板/极简标签」
+// 各 26 + 上间距 4（共 60）。内容组 = 36 + 10 + 212 + 13 + 60 = 331。
 // 气泡尺寸来自 src/styles-ui.css 的 .ui-tooltip（padding 5/8、1px 描边、字号 11、
-// line-height 1.45）；最宽文案「剪贴板」按 3×11px 估。
-const RAIL_LEN = 400;
+// line-height 1.45）；最宽文案「规划中心」按 4×11px 估。
+const RAIL_LEN = 446;
 const CAP_ITEM = 36;
-const CONTENT = 36 + 10 + 168 + 13; // 227
-const LEAD = { start: (RAIL_LEN - CONTENT) / 2, size: CAP_ITEM }; // 86.5 → 122.5
-const CATEGORY = [0, 1, 2, 3].map((i) => ({ start: 132.5 + i * 44, size: CAP_ITEM }));
+const CONTENT = 36 + 10 + 212 + 13 + 30 + 30; // 331
+const LEAD = { start: (RAIL_LEN - CONTENT) / 2, size: CAP_ITEM }; // 57.5 → 93.5
+const CATEGORY = [0, 1, 2, 3, 4].map((i) => ({
+  start: LEAD.start + CAP_ITEM + 10 + i * 44,
+  size: CAP_ITEM,
+}));
 const SLOTS = [LEAD, ...CATEGORY];
-const BUBBLE = { w: 3 * 11 + 8 * 2 + 2, h: Math.ceil(11 * 1.45) + 5 * 2 + 2 }; // 51 × 28
+const TIP_H = Math.ceil(11 * 1.45) + 5 * 2 + 2; // 28（常规气泡高度）
+// 展开态各锚点文案宽度：Agent 端头球用紧凑气泡（44），分类按中文 11px/字
+// （含 padding 16 + border 2）估：任务 40 / 收集箱 51 / 剪贴板 51 / 应用 40 /
+// 规划中心 62。
+const SLOT_WIDTHS = [5 * 5.5 + 6 * 2 + 2, 2 * 11 + 18, 3 * 11 + 18, 3 * 11 + 18, 2 * 11 + 18, 4 * 11 + 18];
+// 折叠态全部使用紧凑气泡（10.5px 字号、padding 3/6）；规划中心折叠为「规划」。
+const SLOT_WIDTHS_FOLDED = [
+  5 * 5.5 + 6 * 2 + 2,
+  2 * 11 + 14,
+  3 * 11 + 14,
+  3 * 11 + 14,
+  2 * 11 + 14,
+  2 * 11 + 14,
+];
 const DEFAULT_OFFSET = 6;
 
 /** 折叠态气泡矩形：沿边方向按方向外扩，横跨方向以轨道中线居中（与 Popover 一致）。 */
 function collapsedBubble(
   axis: "vertical" | "horizontal",
   slot: { start: number; size: number },
-  placement: ReturnType<typeof railTipPlacement>
+  placement: ReturnType<typeof railTipPlacement>,
+  width: number,
 ) {
-  const along = axis === "vertical" ? BUBBLE.h : BUBBLE.w;
-  const cross = axis === "vertical" ? BUBBLE.w : BUBBLE.h;
+  const along = axis === "vertical" ? TIP_H : width;
+  const cross = axis === "vertical" ? width : TIP_H;
   const end = slot.start + slot.size;
   const span: [number, number] =
     placement === "bottom" || placement === "right"
@@ -263,15 +292,17 @@ function probePoints(rect: { xs: [number, number]; ys: [number, number] }, margi
 }
 
 describe("轨道提示气泡落在 Win32 可见区域内", () => {
-  it.each(EDGES)("edge=%s：折叠态 5 个图标的气泡都在翼片多边形内（含 2px 余量）", (edge) => {
+  it.each(EDGES)("edge=%s：折叠态 6 个图标的气泡都在翼片多边形内（含 2px 余量）", (edge) => {
     const axis = edge === "left" || edge === "right" ? "vertical" : "horizontal";
     const { box, outline } = wingShape(edge, 1, WING_AA_INSET);
     expect([box.w, box.h].sort((a, b) => a - b)).toEqual([RAIL_THICKNESS_CSS, RAIL_LEN]);
 
     const outside: string[] = [];
     SLOTS.forEach((slot, i) => {
-      const placement = railTipPlacement("docked", edge, false, i === 0);
-      const rect = collapsedBubble(axis, slot, placement);
+      // slot1 是第一个分类：它位于轨道中心之前，折叠态也要向下/向右，否则气泡
+      // 会伸进肩部曲面被裁掉（见 railTipPlacement 的 first 参数）。
+      const placement = railTipPlacement("docked", edge, false, i === 0, i === 1);
+      const rect = collapsedBubble(axis, slot, placement, SLOT_WIDTHS_FOLDED[i]);
       for (const p of probePoints(rect, 2)) {
         if (!pointInPolygon(p, outline)) outside.push(`slot${i}/${placement}@${p.x},${p.y}`);
       }
@@ -279,7 +310,7 @@ describe("轨道提示气泡落在 Win32 可见区域内", () => {
     expect(outside).toEqual([]);
   });
 
-  it.each(EDGES)("edge=%s：展开态 5 个图标的气泡都在面板可见矩形内", (edge) => {
+  it.each(EDGES)("edge=%s：展开态 6 个图标的气泡都在面板可见矩形内", (edge) => {
     const size = capsuleContainerSize(edge);
     const regions = capsuleRegionsPhysical(size.w, size.h, edge, true, 1);
     const panel = regions.panel;
@@ -300,22 +331,24 @@ describe("轨道提示气泡落在 Win32 可见区域内", () => {
       const alongCenter = alongStart + slot.size / 2;
       // 横跨坐标：从图标靠内侧的边再外扩该锚点自己的朝内距离
       // （36px 图标 20；都保证气泡起点落在面板可见矩形内）
-      const inward = capsuleTipInwardOffset(slot.size);
+      const inward =
+        capsuleTipInwardOffset(slot.size) + (i === 0 && !vertical ? 24 : 0);
       const near = center + slot.size / 2 + inward;
-      const far = near + (vertical ? BUBBLE.w : BUBBLE.h);
+      const width = SLOT_WIDTHS[i];
+      const far = near + (vertical ? width : TIP_H);
       let rect: { xs: [number, number]; ys: [number, number] };
       if (vertical) {
         const xs: [number, number] =
           edge === "left"
             ? [near, far]
-            : [center - slot.size / 2 - inward - BUBBLE.w, center - slot.size / 2 - inward];
-        rect = { xs, ys: [alongCenter - BUBBLE.h / 2, alongCenter + BUBBLE.h / 2] };
+            : [center - slot.size / 2 - inward - width, center - slot.size / 2 - inward];
+        rect = { xs, ys: [alongCenter - TIP_H / 2, alongCenter + TIP_H / 2] };
       } else {
         const ys: [number, number] =
           edge === "top"
             ? [near, far]
-            : [center - slot.size / 2 - inward - BUBBLE.h, center - slot.size / 2 - inward];
-        rect = { xs: [alongCenter - BUBBLE.w / 2, alongCenter + BUBBLE.w / 2], ys };
+            : [center - slot.size / 2 - inward - TIP_H, center - slot.size / 2 - inward];
+        rect = { xs: [alongCenter - width / 2, alongCenter + width / 2], ys };
       }
       for (const p of probePoints(rect, 0)) {
         if (!pointInRoundedRect(p.x, p.y, panel, regions.panelRadius, 0)) {
@@ -334,7 +367,7 @@ describe("轨道提示气泡落在 Win32 可见区域内", () => {
 // 垂直中心，偏差 ≤1px；offset 只调主方向距离；边缘收敛发生在居中之后。
 describe("提示条以图标中心对齐（computeTooltipPosition）", () => {
   const VIEWPORT = { width: 1280, height: 800 };
-  const TIP = { left: 0, top: 0, width: BUBBLE.w, height: BUBBLE.h };
+  const TIP = { left: 0, top: 0, width: SLOT_WIDTHS[3], height: TIP_H };
   const ICON_SIZE = CAP_ITEM;
   // 四边各取贴边的图标位置，避免都在视口中央时互相掩盖
   const DOCK_ANCHOR: Record<SnapEdge, { left: number; top: number }> = {

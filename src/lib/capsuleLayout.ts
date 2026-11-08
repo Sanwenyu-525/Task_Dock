@@ -8,7 +8,7 @@
 //!
 //! 尺寸与 `src-tauri/src/window_shape.rs` 的 `CAPSULE_*` 常量是跨端契约
 //! （两端各有单测锁定同一组数字）：厚 56、平直主体 224、单侧液态肩部 88
-//! （外框 400×56）、面板 340×440、间隙 8。外形本身由 `lib/capsuleShape.ts`
+//! （外框 446×56）、面板 340×440、间隙 8。外形本身由 `lib/capsuleShape.ts`
 //! 唯一定义，本文件只负责**摆放**（容器、贴边位置、区域矩形与轮廓）。
 //!
 //! 面板尺寸与间隙在 v0.7 方案 B（液态融合翼片）里按参考图重新标定：
@@ -33,8 +33,10 @@ import {
 export const RAIL_THICKNESS_CSS = WING_THICKNESS_CSS;
 /** 轨道平直主体长度（CSS px，沿边方向）：不含两侧液态肩部。 */
 export const RAIL_LENGTH_CSS = WING_LENGTH_CSS;
-/** 单侧液态肩部沿边跨度（CSS px）：轨道外框 = 主体长度 + 2×肩宽 = 400。 */
+/** 单侧液态肩部沿边跨度（CSS px）：轨道外框 = 主体长度 + 2×肩宽 = 446。 */
 export const RAIL_SHOULDER_CSS = WING_SHOULDER_CSS;
+/** 轨道外框沿边尺寸（CSS px，含两侧肩部）：容器沿边方向至少要放下它。 */
+export const RAIL_SPAN_CSS = RAIL_LENGTH_CSS + 2 * RAIL_SHOULDER_CSS; // 446
 /** 功能面板宽（CSS px）。 */
 export const PANEL_WIDTH_CSS = 340;
 /** 功能面板高（CSS px）。 */
@@ -50,8 +52,9 @@ export const PANEL_HEIGHT_CSS = 440;
  *
  * v0.7 间距收敛（12 → 8）：参考图的间隙约为面板宽的 2%~2.4%（340 × 0.024 ≈ 8），
  * 12 是早期标定的残留，视觉上面板会像一块独立浮卡。取 8 而非 7，是为了让
- * 容器宽 404 与水平容器高 504 都是偶数——面板在窗口内居中用 `(W - 面板宽) / 2`，
- * 前端 `Math.round` 与 Rust 整除因此得到同一个整数，不会出现跨端 1px 偏差。
+ * 垂直容器 404×446 与水平容器 446×504 都是偶数——面板在窗口内居中用
+ * `(W - 面板宽) / 2`，前端 `Math.round` 与 Rust 整除因此得到同一个整数，
+ * 不会出现跨端 1px 偏差。
  */
 export const CAPSULE_GAP_CSS = 8;
 /** 面板圆角（CSS px）；轨道为全圆角（厚度/2）。 */
@@ -107,14 +110,21 @@ export interface Size {
 export const isVerticalEdge = (edge: SnapEdge): boolean => edge === "left" || edge === "right";
 
 /**
- * 胶囊容器尺寸（CSS px）。垂直停靠：宽 = 轨道 + 间隙 + 面板，高 = 面板高；
- * 水平停靠：宽 = 容器宽（面板宽 340 与轨道长 400 都要放下，取 404 与竖直一致），
- * 高 = 轨道 + 间隙 + 面板（56 + 8 + 440 = 504）。
+ * 胶囊容器尺寸（CSS px）。厚度方向固定为「轨道 + 间隙 + 面板」；
+ * 沿边方向必须同时放下轨道外框与面板，取两者较大值：
+ * - 垂直停靠：宽 56+8+340 = 404，高 max(440, 446) = 446；
+ * - 水平停靠：宽 max(404, 446) = 446，高 56+8+440 = 504。
+ *
+ * 轨道从 400 扩到 446 是为了容纳第 5 个分类（规划中心）：内容组 331 居中后
+ * 端点落在 ±165.5，仍需处于「肩部厚度 ≥ 36px」的区间（新的平直主体 270）。
  */
 export function capsuleContainerSize(edge: SnapEdge): Size {
   return isVerticalEdge(edge)
-    ? { w: CAPSULE_CONTAINER_W_CSS, h: CAPSULE_CONTAINER_H_CSS }
-    : { w: CAPSULE_CONTAINER_W_CSS, h: RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_HEIGHT_CSS };
+    ? { w: CAPSULE_CONTAINER_W_CSS, h: Math.max(CAPSULE_CONTAINER_H_CSS, RAIL_SPAN_CSS) }
+    : {
+        w: Math.max(CAPSULE_CONTAINER_W_CSS, RAIL_SPAN_CSS),
+        h: RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_HEIGHT_CSS,
+      };
 }
 
 /** 物理像素换算（非法 scale 回退 1，最小 1px）。 */
@@ -198,8 +208,8 @@ export function isCapsuleContainerSize(rect: { w: number; h: number }, scale: nu
 //
 // 与 Rust `capsule_regions` 是同一套几何：窗口局部坐标、物理像素、同一组
 // 常量、同一套采样规则。Rust 侧负责真正裁剪（绘制 + 命中），这里负责
-// **命中判定**（自动收起判定不能按整窗矩形算——折叠态窗口有 400×420，
-// 但只有一块 56×400 的翼片可见）。
+// **命中判定**（自动收起判定不能按整窗矩形算——折叠态窗口有 404×446
+// （水平停靠 446×504），但只有一块 56×446 的翼片可见）。
 
 export interface PhysRect {
   x: number;

@@ -9980,7 +9980,7 @@ html[data-theme="dark"] .resource-page {
 }
 
 /* ══ 分类胶囊（v0.7 方案 B：液态融合翼片）══════════════════════════
-   结构：轨道（56×400，贴屏翼片）+ 间隙 8 + 功能面板（340×440）。
+   结构：轨道（56×446，贴屏翼片）+ 间隙 8 + 功能面板（340×440）。
    窗口在停靠期间不移动、不缩放，展开/收起只切 Win32 区域
    （见 src-tauri/src/window_shape.rs 的 capsule_regions）。
    因此这里的尺寸必须与 lib/capsuleLayout.ts 常量一致：改动要三端同步。
@@ -10205,11 +10205,12 @@ html[data-theme="dark"] .resource-page {
   isolation: isolate;
   color: var(--text-secondary);
 }
-/* 外框 = 平直主体 224 + 两侧肩部各 88 = 400；厚度 56。
-   内容组（36 + 8 + 168 = 212）居中后落在 ±106，仍在「肩部厚度 ≥ 36px」的
-   可点击范围内（±121），因此端头按钮不会被曲线切掉。 */
-.cap-v { flex-direction: column; width: 56px; height: 400px; }
-.cap-h { flex-direction: row; width: 400px; height: 56px; }
+/* 外框 = 平直主体 270 + 两侧肩部各 88 = 446；厚度 56。
+   内容组（36 + 10 + 212 + 13 + 30 + 30 = 331）居中后落在 ±165.5：
+   平直主体覆盖 ±135，端点再进入肩部 30.5px，该处厚度约 36.6px，仍满足
+   「肩部厚度 ≥ 36px」，因此五分类的端头按钮不会被曲线切掉。 */
+.cap-v { flex-direction: column; width: 56px; height: 446px; }
+.cap-h { flex-direction: row; width: 446px; height: 56px; }
 
 /* 拖拽光标语义（2026-11-05 · drag-cursor-feedback）：
    轨道根节点的 grab 由 `styles-ui.css` 的 `.ui-drag-surface` 提供；
@@ -12002,6 +12003,70 @@ html[data-theme="dark"] .resource-page {
   padding-top: 1px;
 }
 .cap-capture-detail .cap-detail-desc { max-height: 112px; }
+
+/* ── 规划中心面板 ─────────────────────────────────────────────
+   胶囊里的轻量视图：项目行 / 功能行复用 cap-item 玻璃卡，详情复用
+   cap-task-detail；这里只补按钮复位、元信息排版与步骤勾选行。 */
+.cap-plan-row {
+  width: 100%;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cap-plan-row:hover .cap-item-title { color: var(--accent); }
+.cap-plan-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-plan-project { align-items: center; gap: 8px; }
+.cap-plan-project .cap-main { gap: 4px; }
+.cap-plan-project .planning-meter { height: 5px; margin-top: 2px; }
+
+.cap-plan-feature { display: flex; flex-direction: column; gap: 4px; }
+.cap-plan-feature-head { align-items: flex-start; }
+.cap-plan-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.cap-plan-line .cap-item-title { flex: 1 1 auto; min-width: 0; }
+.cap-plan-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 7px;
+  min-width: 0;
+}
+.cap-plan-prio { height: 17px; padding: 0 6px; font-size: 9.5px; }
+.cap-plan-detail { gap: 6px; }
+
+.cap-plan-steps { display: flex; flex-direction: column; gap: 1px; }
+.cap-plan-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 2px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cap-plan-step:hover { background: var(--wing-hover); }
+.cap-plan-step:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.cap-plan-step:disabled { opacity: 0.6; cursor: default; }
+.cap-plan-step .cap-check { width: 15px; height: 15px; margin-top: 1px; }
+.cap-plan-step-text {
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--cap-text-2);
+  overflow-wrap: anywhere;
+}
+.cap-plan-step-text.is-done { color: var(--cap-text-3); text-decoration: line-through; }
 
 /* ── Agent 面板 ──────────────────────────────────────────── */
 .cap-agent-row { padding: 8px 10px; align-items: flex-start; }

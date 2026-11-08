@@ -688,6 +688,10 @@ IPC/轮询的前提下完成核心动作」。两者任一不成立即为快捷�
 - 在几何未变之前，新增入口应优先走「快捷跳转型」进完整工作区，或**替换**现有分类，
   不得挤压现有四个分类的命中区。
 
+> **更正（2026-11-07）**：第 5 个分类「规划中心」已按本文 §十八 扩展几何
+> （平直主体 224→270、外框 400→446），本段「只支持状态球 + 4 分类」的结论被取代；
+> 旧内容保留作为历史记录。
+
 **可见性边界结论**：
 
 - 状态球（`kind: "agent-status"`）是全局状态入口，不是第 5 个页签：它不进 `.cap-nav`，
@@ -883,6 +887,8 @@ drag-region bare 语义不会误触。
   关闭行动中心时隐藏）；收集箱「快速笔记」导航到完整收集箱的笔记子页（胶囊不新建笔记编辑器）。
 - **不新增胶囊分类**：轨道几何只支持「状态球 + 4 分类」，第 5 个分类会挤压命中区，且需要
   `styles.css` 与 `window_shape.rs` 三端同步改动；本次不扩大几何。
+  **更正（2026-11-07）**：该约束已在单独任务中解除——规划中心作为第 5 个分类进入胶囊，
+  轨道外框扩到 446，三端同步并按 §十八 验收。
 - 回归：`src/components/capsule/taskEditorNavigation.test.tsx`、`CapsuleDock.test.tsx`、
   `CapsulePanels.test.tsx`、`InboxDropPane.test.tsx`、`InboxLite.test.tsx`、
   `capsuleNavigationContract.test.tsx`。
@@ -1201,3 +1207,42 @@ wry 在 WebView2 的 `WebMessageReceived` / `WebResourceRequested` 回调里内�
 `commit_allowed()`（代次当前 + 目标仍在），并新增 6 项交错顺序单测。**契约**：
 这些命令不得改成 `async fn`（会转到 async runtime 线程池），否则必须引入提交序号
 或主线程封送。锁内不调用窗口 API、无全局锁、无后台线程/轮询。
+
+## 十八、第 5 个胶囊分类：规划中心与轨道几何扩展（2026-11-07）
+
+**决策**：在胶囊工具面板增加「规划中心」（稳定 ID `roadmap`，Ctrl+9 语义不变）。
+用户明确要求第 5 个分类 + Lite 面板，并接受原生几何扩展；本文 §12.9「只支持状态球 + 4 分类」
+与「不新增胶囊分类」的历史结论自此被取代（旧文本保留）。
+
+**几何（三端同步）**：
+- 平直主体 224 → 270，单侧肩部 88 不变，外框 400 → 446；容器沿边方向取
+  `max(面板高 440, 轨道 446)`：
+  - 垂直停靠 404×446（原 404×440）；
+  - 水平停靠 446×504（原 404×504）。
+- 同步点：`src/lib/capsuleShape.ts`（`WING_LENGTH_CSS`）、`src/lib/capsuleLayout.ts`
+  （`RAIL_SPAN_CSS` / `capsuleContainerSize`）、`src/styles.css`（`.cap-v` / `.cap-h`）、
+  `src-tauri/src/window_shape.rs`（区域几何与金标准点位）、
+  `src-tauri/src/commands/system.rs`（`CAPSULE_LENGTH_CSS = 270`）。
+- 内容组 = 状态球 36 + 间距 10 + 分类组 212（5×36 + 4×8）+ 分隔线 13 + 底部两个 30
+  = 331，居中落在 ±165.5；平直主体覆盖 ±135，端点进入肩部 30.5px 处厚度约 36.6px，
+  仍满足「肩部厚度 ≥36px」的命中区约束；125% / 150% DPI 下按比例保持（558 / 669 物理 px）。
+- 真实 Win32 窗口区域回读测试（`capsule_region_applies_and_verifies_on_real_win32_window`）
+  已按 446 更新并通过；原生窗口尺寸同步改为 446×504。
+
+**Lite 面板边界**：`PlanningLite` 只做高频轻操作：
+- 当前项目功能列表（状态徽标 / 优先级 / 里程碑 / 步骤进度）；
+- 步骤勾选（`planning_update_step`，失败保留原状并提示）；
+- 项目切换用面板内二级视图（弹出到面板外的下拉菜单会被 `SetWindowRgn` 裁掉）；
+- 底栏「完整规划」走 `openFullApp("roadmap")`；项目 / 功能 / 里程碑 CRUD、看板与历史
+  仍在完整规划中心。不新增 IPC、不新增轮询，复用 `usePlanningStore` 与 `planning-changed`。
+
+**提示气泡修正**：
+- 折叠态第一个分类位于轨道中心之前，「朝中心」方向改为向下 / 向右（`railTipPlacement`
+  新增 `first` 参数）；否则 3 字气泡会伸进肩部曲面被裁掉。
+- 新增 `.ui-tooltip.is-compact`（10.5px / padding 3×6）：折叠态全部使用，Agent 端头球
+  展开态也使用，避免水平停靠时气泡越出面板左缘。
+- 水平停靠端头球额外内推 24px（`TIP_ORB_HORIZONTAL_EXTRA_CSS`），越过面板 24px 圆角切点。
+
+**回归**：`PlanningLite.test.tsx`（7 项）、`capsuleNavigationContract.test.tsx`（17 项）、
+`CapsuleRail.tooltip.test.tsx`（32 项）、几何单测、`useEdgeSnap.integration.test.tsx`（124 项）；
+前端全量 215 文件 / 3144 项；Rust `cargo test --lib` 1447 通过 / 8 ignored。

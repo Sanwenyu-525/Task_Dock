@@ -663,6 +663,14 @@
   animation: ui-pop-in 0.1s var(--ease-out);
 }
 
+/* 胶囊轨道等窄表面：小一号字号与内边距，让气泡在 56px 翼片/面板边缘内放得下。
+   仅由 `data-tip-compact="1"` 的锚点触发，普通页面提示保持默认尺寸。 */
+.ui-tooltip.is-compact {
+  padding: 3px 6px;
+  font-size: 10.5px;
+  border-radius: 7px;
+}
+
 .ui-tooltip-anchor {
   display: inline-flex;
 }

@@ -182,11 +182,13 @@ pub fn apply_window_radius(app: AppHandle, radius: f64) -> AppResult<bool> {
 /// 的 `WING_*` 是跨端契约（两端单测锁定；修改必须同步）。
 ///
 /// 外框 = 平直主体 `LENGTH` + 两侧肩部 `CAPSULE_SHOULDER_CSS`（88）：
-/// 224 + 2×88 = 400，与 CSS `.cap-v / .cap-h` 的 400px 和 SVG viewBox 一致。
+/// 270 + 2×88 = 446，与 CSS `.cap-v / .cap-h` 的 446px 和 SVG viewBox 一致。
+/// 2026-11-07 由 224（外框 400）扩到 270（外框 446），为第 5 个胶囊分类
+///（规划中心）留出命中区；平直主体加长后，端点仍落在肩部厚度 ≥36px 的区间。
 /// 旧值 300 属于「外扩 26」时代的尺寸，会让 Rust 区域比 CSS 翼片高 38%（可见胶囊
 /// 之外留下一条透明但可点击的命中带）。
 pub const CAPSULE_THICKNESS_CSS: u32 = 56;
-pub const CAPSULE_LENGTH_CSS: u32 = 224;
+pub const CAPSULE_LENGTH_CSS: u32 = 270;
 
 /// 胶囊区域写入的单调序号。前端在每次状态切换时自增并随请求下发；
 /// IPC 命令可能并发执行，迟到的旧请求若先落到 `set_capsule` 会把区域改回旧形状。
@@ -1033,7 +1035,7 @@ mod tests {
     fn capsule_geometry_contract_matches_frontend() {
         // 跨端契约：与 src/lib/capsuleShape.ts / capsuleLayout.ts 同一组数字
         assert_eq!(CAPSULE_THICKNESS_CSS, 56);
-        assert_eq!(CAPSULE_LENGTH_CSS, 224);
+        assert_eq!(CAPSULE_LENGTH_CSS, 270);
         assert_eq!(crate::window_shape::CAPSULE_SHOULDER_CSS, 88);
         for (scale, expect_t) in [(1.0f64, 56i32), (1.25, 70), (1.5, 84), (2.0, 112)] {
             let cap = crate::window_shape::CapsuleParams {
@@ -1048,10 +1050,10 @@ mod tests {
             let set = crate::window_shape::capsule_regions(2000, 1200, scale, &cap).unwrap();
             assert_eq!(set.rail.width, expect_t, "scale={scale}");
             // 主体与肩部**各自**取整后再相加（与 wing_metrics 一致），
-            // 不能先加后乘：125% 下 round(110)=110、round(280)=280。
+            // 不能先加后乘：125% 下 round(337.5)=338、round(110)=110。
             assert_eq!(
                 set.rail.height,
-                (224.0f64 * scale).round() as i32 + 2 * (88.0f64 * scale).round() as i32,
+                (270.0f64 * scale).round() as i32 + 2 * (88.0f64 * scale).round() as i32,
                 "scale={scale}"
             );
             // 区域是多边形而非外框矩形：外框缺角必须在区域之外

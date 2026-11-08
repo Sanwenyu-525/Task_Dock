@@ -165,7 +165,7 @@ describe("导航自定义区块", () => {
     render(<NavigationVisibilitySection />);
     await user.click(screen.getByRole("button", { name: "停靠胶囊" }));
 
-    expect(screen.getByText(/常驻 0 \/ 5 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 0 \/ 6 项/)).toBeTruthy();
     expect(screen.getByText(/切换为完整面板/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "恢复停靠胶囊默认导航配置" })).toBeTruthy();
   });
@@ -275,12 +275,13 @@ describe("排序按钮可见性与边界", () => {
       "clipboard",
       "apps",
     ]);
-    // 设置列表立即更新：行顺序与持久化配置一致
+    // 设置列表立即更新：可见行顺序与持久化配置一致；roadmap 在旧配置里未出现，
+    // 归入「未显示」行但仍会渲染（按默认顺序排在已显示项之后）。
     await waitFor(() => {
       const labels = [
         ...document.querySelectorAll(".nav-visibility-row .nav-visibility-entry-label"),
       ].map((el) => el.textContent);
-      expect(labels).toEqual(["Agent", "收集箱", "任务", "剪贴板", "应用"]);
+      expect(labels).toEqual(["Agent", "收集箱", "任务", "剪贴板", "应用", "规划中心"]);
     });
   });
 

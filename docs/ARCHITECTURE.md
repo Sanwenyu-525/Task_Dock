@@ -156,10 +156,14 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   due 升序）；胶囊「日程」改用该排序，成员定义不变——逾期仍属日程，只调整顺序，
   避免逾期积压把今天与未来计划挤出 LIMIT 12。）
 - 胶囊分类栏小 Agent 入口由「收集箱」取代：`RAIL_CATEGORIES =
-  ["tasks","inbox","clipboard","apps"]`，顶部状态球仍打开 Agent 面板
+  ["tasks","inbox","clipboard","apps","roadmap"]`，顶部状态球仍打开 Agent 面板
   （`CapsuleCategory = RailCategory | "agents"`）；收集箱 Lite 复用
   `quick_capture_list("inbox",8,0)` + `quick_capture_state`，事件刷新共用
   App 层既有的单条 `quick-capture-created` 监听。
+  （2026-11-07 新增 `roadmap`「规划中心」Lite 面板：复用一个 `usePlanningStore`，
+  展示当前项目功能 / 步骤勾选，重型编辑仍进完整规划中心；为容纳第 5 个分类，
+  轨道外框 400→446，容器垂直 404×446 / 水平 446×504，三端同步见
+  `docs/ui-themes/13-capsule-redesign.md` §十八。）
 
 ### 3. Agent 接入层（agents/）
 - 统一接入管线（`pipeline.rs`）：HTTP / 文件投递 / Hook CLI / 插件桥接 / Mock 的事件

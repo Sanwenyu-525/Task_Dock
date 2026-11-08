@@ -11,9 +11,9 @@
 //! 在时间上无法严格对齐，"鼠标在吸附条与悬浮窗口之间来回跳动"由此而来。
 //!
 //! 新模型：**停靠期间窗口不移动、不缩放**。窗口贴边齐平、撑到胶囊容器尺寸
-//! （400×420 / 400×484），只有 Win32 区域在变：
-//! - 折叠：区域 = 轨道（56×300）；
-//! - 展开：区域 = 轨道 ∪ 面板（340×440，中间 12px 间隙不连通）。
+//! （404×446 / 446×504），只有 Win32 区域在变：
+//! - 折叠：区域 = 轨道（56×446）；
+//! - 展开：区域 = 轨道 ∪ 面板（340×440，中间 8px 间隙不连通）。
 //! 区域切换是原子操作，轨道在屏幕上的位置与尺寸全程不变，命中区因此稳定。
 //!
 //! 由此可以删掉一批旧机制（它们只在"窗口滑出屏幕"时才需要）：
@@ -702,7 +702,7 @@ export function useEdgeSnap(enabled: boolean) {
         try {
           if (snapMoveGuard.isPersistenceSuppressed()) return; // 回滚/隐藏期不写用户几何
           // 胶囊容器尺寸不是用户窗口几何：解除后 set_size 被拖拽循环吞掉时，
-          // 绝不能让 400×420 覆盖用户真实的 window_rect。
+          // 绝不能让 404×446 覆盖用户真实的 window_rect。
           if (isCapsuleContainerSize(r, window.devicePixelRatio || 1)) return;
           const monitors = await availableMonitors();
           if (!isRectMostlyVisible(r, monitors.map(toArea))) return;
@@ -1721,7 +1721,7 @@ export function useEdgeSnap(enabled: boolean) {
     /**
      * 解除吸附后恢复**用户自由窗口尺寸**（P2-2）。
      *
-     * 胶囊容器的 404×440 不是用户尺寸：`window_rect` 只在浮动态写入，停靠期
+     * 胶囊容器的 404×446 不是用户尺寸：`window_rect` 只在浮动态写入，停靠期
      * 容器尺寸被持久化层显式拒绝，因此该记录仍保留用户最后一次自由尺寸。
      * 缺失、非法或是容器尺寸时回退到模式预设尺寸（旧行为）。
      * 与 `restoreModeSize` 一样做回读 + 有界重试，防止拖拽循环吞掉 `setSize`
@@ -1882,7 +1882,7 @@ export function useEdgeSnap(enabled: boolean) {
       // 1) 明确指定 targetMode（打开完整页等）：沿用既有规则，按目标模式尺寸；
       // 2) 完整面板 → 自由：窗口本来就是用户尺寸，不做任何重置；
       // 3) 胶囊 → 自由：恢复 **用户最后一次自由尺寸**（window_rect），而不是
-      //    把 404×440 容器尺寸或模式预设当成用户尺寸。
+      //    把 404×446 容器尺寸或模式预设当成用户尺寸。
       const gen = ++restoreGen;
       restoreInFlight = true;
       restoreDone = (async () => {
@@ -2285,7 +2285,7 @@ export function useEdgeSnap(enabled: boolean) {
           const rect = await fetchRectOnly();
           if (disposed) return;
           // 命中判定用**可见区域**（折叠只有轨道、展开是轨道∪面板）：
-          // 窗口矩形在折叠态有 400×420，按整窗判定会让自动收起永远不触发。
+          // 窗口矩形在折叠态有 404×446，按整窗判定会让自动收起永远不触发。
           const regions = capsuleRegionsPhysical(
             rect.w,
             rect.h,
@@ -2888,7 +2888,7 @@ export function useEdgeSnap(enabled: boolean) {
  *
  * - 程序 setPosition（吸附引擎/模式切换等）触发的 onMoved 不写入 window_rect
  *   （snapMoveGuard 目标匹配 + TTL 过期兜底）；
- * - **停靠期间一律不写**：此时窗口被撑成胶囊容器（400×420），不是用户窗口几何；
+ * - **停靠期间一律不写**：此时窗口被撑成胶囊容器（404×446），不是用户窗口几何；
  * - 保存前用 isRectMostlyVisible 校验（多屏 / 负坐标 / 断连防护）。
  */
 export function useWindowPersistence() {

@@ -267,16 +267,19 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
   {
     id: "roadmap",
     kind: "page",
-    surfaces: ["left"],
+    // 完整面板与胶囊工具面板双入口：重型编辑仍在完整规划中心，胶囊只提供
+    // 当前项目的轻量视图（功能列表 / 步骤勾选 / 跳转完整页）。
+    surfaces: ["left", "capsule"],
     labelKey: "nav.roadmap",
     label: "规划中心",
     icon: MapIcon,
     tabs: ["roadmap"],
     group: "planning",
     shortcut: "Ctrl+9",
+    capsuleCategory: "roadmap",
     defaults: {
       left: { order: 10, visible: true },
-      capsule: { order: 0, visible: false },
+      capsule: { order: 6, visible: true },
     },
   },
   {

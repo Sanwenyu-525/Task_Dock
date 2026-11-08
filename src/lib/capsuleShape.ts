@@ -49,8 +49,8 @@ export interface Point {
 
 /** 翼片厚度（CSS px）：垂直停靠为宽，水平停靠为高。 */
 export const WING_THICKNESS_CSS = 56;
-/** 翼片平直主体长度（CSS px，沿边方向）：两侧肩部之间的平直段（外框 = 224 + 2×88 = 400）。 */
-export const WING_LENGTH_CSS = 224;
+/** 翼片平直主体长度（CSS px，沿边方向）：两侧肩部之间的平直段（外框 = 270 + 2×88 = 446）。 */
+export const WING_LENGTH_CSS = 270;
 /**
  * 单侧液态肩部的沿边跨度（CSS px）：厚度的 1.57 倍。
  *
@@ -99,7 +99,7 @@ export interface WingBox {
 
 export interface WingShape {
   metrics: WingMetrics;
-  /** 轨道外框尺寸（含两侧肩部）：垂直停靠为 56×(280+2×60)=56×400 */
+  /** 轨道外框尺寸（含两侧肩部）：垂直停靠为 56×(270+2×88)=56×446 */
   box: WingBox;
   /** 局部坐标轮廓（0..box.w / 0..box.h），已按 `inflate` 外扩 */
   outline: Point[];

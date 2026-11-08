@@ -121,8 +121,8 @@ describe("capsuleModel 信息聚合与异常优先级", () => {
 });
 
 describe("轨道分类与收集箱徽标（B4）", () => {
-  it("RAIL_CATEGORIES 顺序固定：任务 → 收集箱 → 剪贴板 → 应用（Agent 只在状态球）", () => {
-    expect(RAIL_CATEGORIES).toEqual(["tasks", "inbox", "clipboard", "apps"]);
+  it("RAIL_CATEGORIES 顺序固定：任务 → 收集箱 → 剪贴板 → 应用 → 规划中心（Agent 只在状态球）", () => {
+    expect(RAIL_CATEGORIES).toEqual(["tasks", "inbox", "clipboard", "apps", "roadmap"]);
   });
 
   it("railStatus：收集箱未处理数生成徽标，0 与未加载不显示", () => {

@@ -158,6 +158,8 @@ export const zhCN = {
   "capsule.category.agents": "Agent",
   "capsule.category.clipboard": "剪贴板",
   "capsule.category.apps": "应用",
+  "capsule.category.roadmap": "规划中心",
+  "capsule.category.roadmapShort": "规划",
   "capsule.railAria": "胶囊分类导航",
   "capsule.tone.idle": "Agent 空闲",
   "capsule.tone.running": "Agent 运行中",

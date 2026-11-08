@@ -143,6 +143,8 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.category.agents": "Agents",
   "capsule.category.clipboard": "Clipboard",
   "capsule.category.apps": "Apps",
+  "capsule.category.roadmap": "Planning",
+  "capsule.category.roadmapShort": "Plan",
   "capsule.railAria": "Capsule navigation",
   "capsule.tone.idle": "Agents idle",
   "capsule.tone.running": "Agents running",
