@@ -1495,16 +1495,23 @@
 }
 
 /* 无原生 blur（Win11 区域裁剪 / 显式 css 通道）时提高底色实度，
-   保证纯 CSS 下文字仍有对比，不使用大面积 backdrop-filter。 */
+   保证纯 CSS 下文字仍有对比，不使用大面积 backdrop-filter。
+
+   2026-11-08 修正：此前这套霜面沿用 native 通道的 0.940–0.952，低于
+   材质三态约定的「CSS 玻璃 97% 左右（.973–.982）」。真机截图里窗口后方的
+   浅色应用标题栏（最小化/最大化/关闭）会被合成到 95% 霜面上，最大化按钮的
+   方框字形仍可辨认——即 v0.7 记录过的「桌面文字穿过窗口」。CSS 通道没有原生
+   模糊可把背景糊掉，只能靠底色实度遮挡；现统一提到约定区间上限，桌面只留
+   「极轻色温」而不留可辨形状。 */
 :root[data-preset="frosted"][data-theme="light"][data-glass-render="css"] {
   --window-fill:
     radial-gradient(112% 84% at 12% -12%, rgba(255, 255, 255, 0.32), transparent 60%),
-    linear-gradient(152deg, rgba(239, 245, 252, 0.952) 0%, rgba(228, 238, 249, 0.944) 48%, rgba(220, 232, 245, 0.940) 100%);
+    linear-gradient(152deg, rgba(239, 245, 252, 0.982) 0%, rgba(228, 238, 249, 0.976) 48%, rgba(220, 232, 245, 0.974) 100%);
 }
 :root[data-preset="frosted"][data-theme="dark"][data-glass-render="css"] {
   --window-fill:
     radial-gradient(112% 84% at 10% -12%, rgba(96, 136, 208, 0.14), transparent 60%),
-    linear-gradient(152deg, rgba(33, 41, 63, 0.952) 0%, rgba(26, 33, 52, 0.946) 48%, rgba(21, 28, 45, 0.944) 100%);
+    linear-gradient(152deg, rgba(33, 41, 63, 0.982) 0%, rgba(26, 33, 52, 0.976) 48%, rgba(21, 28, 45, 0.974) 100%);
 }
 
 /* ── 5d.3 清透玻璃 · 浅色 ─────────────────────────────────── */
