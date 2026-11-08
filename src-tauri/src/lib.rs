@@ -1402,8 +1402,9 @@ pub(crate) fn clear_startup_blank<R: tauri::Runtime>(app: &AppHandle<R>) -> bool
 }
 
 /// 唤回窗口：显示 + 还原最小化 + 聚焦。
-/// skipTaskbar 窗口最小化后任务栏没有入口，所有唤回路径都必须带 unminimize，
-/// 否则最小化的窗口 show() 后仍停留在最小化状态。
+/// 主窗口虽已进任务栏（tauri.conf.json main `skipTaskbar=false`），但托盘/热键/
+/// 第二实例唤回仍必须带 unminimize：最小化状态下的窗口 show() 后仍停留在
+/// 最小化态，只有任务栏点击会自行还原。
 pub(crate) fn show_and_focus(win: &tauri::WebviewWindow) {
     let _ = win.show();
     let _ = win.unminimize();

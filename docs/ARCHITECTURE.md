@@ -1095,7 +1095,8 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 `src/store/useCaptureStore.ts`。
 
 **静态窗口**（`src-tauri/tauri.conf.json`，全部 `decorations=false`、`transparent=true`、
-`shadow=false`、`alwaysOnTop=true`、`skipTaskbar=true`、默认 `visible=false`；详细能力见
+`shadow=false`、`alwaysOnTop=true`、默认 `visible=false`；除 `main` 外 `skipTaskbar=true`
+——主窗进任务栏使「最小化」有恢复入口，「隐藏到托盘」只走托盘/热键（2026-11-08）；详细能力见
 `src-tauri/capabilities/`）：
 
 | 窗口 | 用途 | 尺寸（逻辑像素） | 关闭语义 |
