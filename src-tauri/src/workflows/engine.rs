@@ -565,19 +565,67 @@ pub(crate) fn run_engine(
                     .and_then(|v| v.as_str())
                     .unwrap_or("完成")
                     .to_string();
-                let _ = store::update_run_step(
-                    &db,
-                    &run_id,
-                    &step.id,
-                    &RunStepUpdate {
-                        status: Some("succeeded".into()),
-                        detail: Some(summary),
-                        result: Some(value.to_string()),
-                        started_at: None,
-                        finished_at: Some(now),
-                        operation_id: None,
-                    },
-                );
+                // 场景步骤回执自带 outcome（completed/partial/cancelled）：partial 按
+                // 失败落库但保留 result 供逐项展示；cancelled 终止后续步骤。其余值
+                // （无 outcome 字段）完全走原有成功分支，旧执行器不受影响。
+                let receipt_outcome = value.get("outcome").and_then(|v| v.as_str());
+                match receipt_outcome {
+                    Some("cancelled") => {
+                        let _ = store::update_run_step(
+                            &db,
+                            &run_id,
+                            &step.id,
+                            &RunStepUpdate {
+                                status: Some("cancelled".into()),
+                                detail: Some(summary.clone()),
+                                result: Some(value.to_string()),
+                                started_at: None,
+                                finished_at: Some(now),
+                                operation_id: None,
+                            },
+                        );
+                        let _ = store::cancel_pending_steps(&db, &run_id);
+                        outcome = Some(("cancelled", Some(summary)));
+                        emit_progress(&db, sink.as_ref(), &run_id);
+                        break 'outer;
+                    }
+                    Some("partial") => {
+                        let _ = store::update_run_step(
+                            &db,
+                            &run_id,
+                            &step.id,
+                            &RunStepUpdate {
+                                status: Some("failed".into()),
+                                detail: Some(summary.clone()),
+                                result: Some(value.to_string()),
+                                started_at: None,
+                                finished_at: Some(now),
+                                operation_id: None,
+                            },
+                        );
+                        if store::parse_on_error(&step.on_error) == super::OnError::Stop {
+                            let _ = store::cancel_pending_steps(&db, &run_id);
+                            outcome = Some(("failed", Some(summary)));
+                            emit_progress(&db, sink.as_ref(), &run_id);
+                            break 'outer;
+                        }
+                    }
+                    _ => {
+                        let _ = store::update_run_step(
+                            &db,
+                            &run_id,
+                            &step.id,
+                            &RunStepUpdate {
+                                status: Some("succeeded".into()),
+                                detail: Some(summary),
+                                result: Some(value.to_string()),
+                                started_at: None,
+                                finished_at: Some(now),
+                                operation_id: None,
+                            },
+                        );
+                    }
+                }
             }
             Ok(Err(reason)) => {
                 completed += 1;
@@ -724,26 +772,17 @@ impl StepExecutor for LiveExecutor {
                 }))
             }
             (StepType::EnterScene, ValidatedStep::EnterScene { scene_id }) => {
+                // 名称查询失败回退 id，不让展示名问题拖垮步骤；回执含逐项 label/状态/原因。
+                let scene_name = crate::commands::scenario::display_name(ctx.db, &scene_id);
                 let result = crate::commands::scenario::enter_for_workflow(
                     &self.db, &self.app, &scene_id, ctx.cancel,
                 )
                 .map_err(|e| e.to_string())?;
-                let items = result
-                    .items
-                    .iter()
-                    .enumerate()
-                    .map(|(index, item)| {
-                        json!({
-                            "index": index + 1,
-                            "kind": item.kind,
-                            "status": item.status,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                Ok(json!({
-                    "summary": format!("场景「{}」已完成 {} 项", scene_id, items.len()),
-                    "items": items,
-                }))
+                Ok(crate::commands::scenario::build_scene_step_receipt(
+                    &scene_id,
+                    &scene_name,
+                    &result,
+                ))
             }
             (StepType::RestoreWorkspace, ValidatedStep::RestoreWorkspace { snapshot_id }) => {
                 self.execute_restore(ctx, &snapshot_id)

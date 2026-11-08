@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Animated,
-  KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
@@ -45,7 +45,30 @@ export function BottomSheet({
   const reduceMotion = useReduceMotion();
   const insets = useWindowInsets();
   const [mounted, setMounted] = useState(visible);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const progress = useRef(new Animated.Value(visible ? 1 : 0)).current;
+
+  /**
+   * 键盘高度自己听：这个 Modal 窗口不吃 adjustResize，KeyboardAvoidingView 的
+   * height 行为在真机（Android 16）上实测无效——面板会被键盘整个盖住。
+   * 直接按键盘高度给容器加下内边距，位移是确定的，不依赖系统窗口行为。
+   */
+  useEffect(() => {
+    if (!keyboardAware) {
+      setKeyboardHeight(0);
+      return;
+    }
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSub = Keyboard.addListener(showEvent, (event) =>
+      setKeyboardHeight(event.endCoordinates.height),
+    );
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [keyboardAware]);
 
   useEffect(() => {
     if (visible) {
@@ -135,20 +158,12 @@ export function BottomSheet({
           onPress={onRequestClose}
           style={StyleSheet.absoluteFill}
         />
-        {keyboardAware ? (
-          <KeyboardAvoidingView
-            // Android 的 Modal 窗口不吃 adjustResize，用 height 行为按键盘高度收缩容器
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
-            style={styles.avoider}
-            pointerEvents="box-none"
-          >
-            {panel}
-          </KeyboardAvoidingView>
-        ) : (
-          <View style={styles.avoider} pointerEvents="box-none">
-            {panel}
-          </View>
-        )}
+        <View
+          style={[styles.avoider, { paddingBottom: keyboardAware ? keyboardHeight : 0 }]}
+          pointerEvents="box-none"
+        >
+          {panel}
+        </View>
       </View>
     </Modal>
   );

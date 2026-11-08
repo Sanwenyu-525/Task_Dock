@@ -25,23 +25,29 @@ export default function NotificationActions({
   const lightweight = isLightweightActionCard(card) && actions.length === 1;
   return (
     <div className={`ntf-actions${lightweight ? " lightweight" : ""}`}>
-      {actions.map((id) => (
-        <button
-          key={id}
-          type="button"
-          className={`ntf-cta${id === primaryId ? " strong" : ""}${lightweight ? " text" : ""}`}
-          disabled={busy !== null}
-          aria-busy={busy === id}
-          data-ntf-action={id}
-          onClick={() => onAction(id)}
-        >
-          {id === "expand"
-            ? expanded
-              ? "收起详情"
-              : "展开详情"
-            : actionLabel(card, id)}
-        </button>
-      ))}
+      {actions.map((id) => {
+        const label =
+          id === "expand" ? (expanded ? "收起详情" : "展开详情") : actionLabel(card, id);
+        // 联动动作在可访问名称里带上目标名（按钮上保持短文案，避免一排按钮溢出）。
+        const named =
+          (id === "open_scene" || id === "open_workspace") && card.linkLabel
+            ? `${label}：${card.linkLabel}`
+            : label;
+        return (
+          <button
+            key={id}
+            type="button"
+            className={`ntf-cta${id === primaryId ? " strong" : ""}${lightweight ? " text" : ""}`}
+            disabled={busy !== null}
+            aria-busy={busy === id}
+            aria-label={named}
+            data-ntf-action={id}
+            onClick={() => onAction(id)}
+          >
+            {label}
+          </button>
+        );
+      })}
     </div>
   );
 }

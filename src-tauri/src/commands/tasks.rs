@@ -2921,7 +2921,7 @@ mod tests {
         // 目标被删除后：解析层跳过（通知卡不出现失效动作）；get 也视为未关联
         let gate = crate::commands::scenario::ScenarioEnterGate::new();
         crate::commands::scenario::delete_with_gate(&gate, &db, "sc-1").unwrap();
-        let links = resolve_reminder_links(&db, &[t1.id.clone()]).unwrap();
+        let links = resolve_reminder_links(&db, std::slice::from_ref(&t1.id)).unwrap();
         assert!(links.is_empty(), "目标已删除的联动不得返回");
         assert!(reminder_link_get_inner(&db, &t1.id).unwrap().is_none());
 

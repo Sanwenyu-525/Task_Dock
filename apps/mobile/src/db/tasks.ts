@@ -2,6 +2,7 @@
 // 每次写业务表与写 outbox 在同一事务内完成，保证「要么都成功，要么都不发生」。
 import type { SQLiteDatabase } from "expo-sqlite";
 
+import { advanceOccurrence, parseRecurrence } from "../domain/recurrence";
 import type { NewTaskInput, Priority, Task, TaskStatus } from "../domain/types";
 import { newId } from "../lib/id";
 
@@ -66,7 +67,7 @@ export function buildTask(input: NewTaskInput, now = Date.now()): Task {
     dueAt: input.dueAt ?? null,
     remindAt: input.remindAt ?? null,
     advanceMinutes: null,
-    recurrenceRule: null,
+    recurrenceRule: input.recurrenceRule ?? null,
     createdAt: now,
     updatedAt: now,
     completedAt: null,
@@ -115,13 +116,68 @@ export async function createTask(input: NewTaskInput): Promise<Task> {
   return task;
 }
 
-/** 切换完成状态；完成时间只在「转为完成」时写入，恢复待办则清空 */
-export async function toggleTask(id: string): Promise<Task | null> {
+/** 切换完成状态的结果：普通完成/恢复 advanced 为 null；重复任务推进期次时给出前后时间 */
+export interface ToggleOutcome {
+  task: Task | null;
+  advanced: { fromDueAt: number | null; toDueAt: number } | null;
+}
+
+/**
+ * 切换完成状态。
+ *
+ * 重复任务与桌面端 `toggle_task` 保持同一语义：完成**本期**不是把任务标记成已完成，
+ * 而是把 due_at / remind_at 推进到下一次发生，任务继续待办（循环任务）。
+ * 否则用户每完成一次就会得到一条已完成任务，列表会越滚越长，且与桌面端表现不一致。
+ * 普通任务：完成时间只在「转为完成」时写入，恢复待办则清空。
+ */
+export async function toggleTask(id: string): Promise<ToggleOutcome> {
   const db = getDatabase();
   const current = await getTask(id);
-  if (!current) return null;
+  if (!current) return { task: null, advanced: null };
 
   const now = Date.now();
+
+  if (current.status === "pending") {
+    const rule = parseRecurrence(current.recurrenceRule);
+    if (rule) {
+      const nextDue = advanceOccurrence(rule, current.dueAt, now);
+      if (nextDue != null) {
+        // 提醒偏移沿用原任务（due - remind），再套到新期次；原本没提醒就保持没有，
+        // 不凭空造一条提醒。引擎只排未来的提醒，偏移过大时这条会被自然跳过。
+        const offset =
+          current.dueAt != null && current.remindAt != null ? current.dueAt - current.remindAt : null;
+        const nextRemind =
+          current.remindAt == null ? null : offset != null ? nextDue - offset : nextDue;
+
+        await db.withTransactionAsync(async () => {
+          await db.runAsync(
+            `UPDATE tasks SET due_at = ?, remind_at = ?, updated_at = ? WHERE id = ?`,
+            [nextDue, nextRemind, now, id],
+          );
+          await db.runAsync(
+            `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              newId("op"),
+              "task",
+              id,
+              current.rev,
+              JSON.stringify({ type: "advance", dueAt: nextDue, remindAt: nextRemind }),
+              now,
+            ],
+          );
+        });
+
+        return {
+          task: { ...current, dueAt: nextDue, remindAt: nextRemind, updatedAt: now },
+          advanced: { fromDueAt: current.dueAt, toDueAt: nextDue },
+        };
+      }
+      // 规则存在但无法产出下一次（字段组合异常）：退回普通完成，
+      // 至少让用户能关掉这条任务，而不是点完成毫无反应。
+    }
+  }
+
   const nextStatus: TaskStatus = current.status === "pending" ? "completed" : "pending";
   const completedAt = nextStatus === "completed" ? now : null;
 
@@ -137,7 +193,10 @@ export async function toggleTask(id: string): Promise<Task | null> {
     );
   });
 
-  return { ...current, status: nextStatus, completedAt, updatedAt: now };
+  return {
+    task: { ...current, status: nextStatus, completedAt, updatedAt: now },
+    advanced: null,
+  };
 }
 
 /** 软删除：只置 deleted_at，保留行以便后续生成同步墓碑 */

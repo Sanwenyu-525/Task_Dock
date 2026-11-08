@@ -7,7 +7,7 @@ export const TASKS_ARTICLES: readonly HelpArticle[] = [
     id: "help.tasks.create-reminders",
     categoryId: "tasks",
     status: "verified",
-    contentVersion: 1,
+    contentVersion: 2,
     reviewedForVersion: "v0.11",
     translations: {
       "zh-CN": {
@@ -37,6 +37,16 @@ export const TASKS_ARTICLES: readonly HelpArticle[] = [
           {
             type: "paragraph",
             text: "延后入口在任务卡、任务详情与任务通知三处（5/10/30 分钟、1 小时或自定义）。延后成功会弹出带「撤销」的提示；若延后后任务又被修改或触发，撤销会如实提示失效，不会覆盖新状态。",
+          },
+          { type: "heading", text: "提醒联动场景 / 现场" },
+          {
+            type: "steps",
+            items: [
+              "打开任务上下文抽屉（任务卡上的上下文入口），找到「提醒联动」区。",
+              "点「关联场景…」或「关联现场…」，从列表中选择一个目标；一个任务只关联一个，重复选择会覆盖。",
+              "该任务提醒触发时，通知卡会出现「进入场景」或「恢复现场」按钮——只在你点击时才执行，绝不会自动启动。",
+              "不需要时点「清除」；关联的场景或现场被删除后，通知不再显示对应按钮。",
+            ],
           },
           {
             type: "note",
@@ -72,6 +82,16 @@ export const TASKS_ARTICLES: readonly HelpArticle[] = [
           {
             type: "paragraph",
             text: "The snooze entry lives in three places: the task card, the task detail and the task notification (5/10/30 minutes, 1 hour or a custom time). A successful snooze shows a toast with \"Undo\"; if the task was edited or fired again after snoozing, undo honestly reports that it no longer applies instead of overwriting the newer state.",
+          },
+          { type: "heading", text: "Link reminders to a scene or workspace" },
+          {
+            type: "steps",
+            items: [
+              "Open the task context drawer from a task card and find the \"Reminder linkage\" section.",
+              "Click \"Link a scene…\" or \"Link a workspace…\" and pick one target; a task keeps at most one link and picking again replaces it.",
+              "When the task reminder fires, the notification card shows an \"Enter scene\" or \"Restore workspace\" button — it only runs when you click it, never automatically.",
+              "Click \"Clear\" when you no longer need it; if the linked scene or workspace is deleted, the button disappears from the notification.",
+            ],
           },
           {
             type: "note",

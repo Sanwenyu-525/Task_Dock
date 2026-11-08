@@ -14,10 +14,11 @@ import { StatusBar } from "expo-status-bar";
 
 import { TabBar, type TabKey } from "./src/components/TabBar";
 import { openDatabase } from "./src/db/database";
-import { getSetting } from "./src/db/kv";
+import { getSetting, setSetting } from "./src/db/kv";
 import { useWindowInsets } from "./src/lib/insets";
-import { rescheduleAllReminders } from "./src/notifications/reminderEngine";
-import { installNotificationHandler } from "./src/notifications/reminders";
+import { subscribeReminderActions } from "./src/notifications/actions";
+import { rebuildAllReminders, rescheduleAllReminders } from "./src/notifications/reminderEngine";
+import { ensureReminderCategory, installNotificationHandler } from "./src/notifications/reminders";
 import { InboxScreen } from "./src/screens/InboxScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
 import { TasksScreen } from "./src/screens/TasksScreen";
@@ -28,6 +29,12 @@ import { font, palette, space, type ThemeMode } from "./src/theme/tokens";
 function isThemeMode(value: string | null): value is ThemeMode {
   return value === "system" || value === "light" || value === "dark";
 }
+
+/**
+ * 通知动作的「能力版本」：动作按钮是在排期时写进通知的，老通知不会自动长出按钮。
+ * 版本不一致时整体重排一次（只发生在升级后的首次启动），之后每次启动只做幂等等价对账。
+ */
+const REMINDER_ACTIONS_VERSION = "1";
 
 /** 切换标签页时的轻微淡入：不位移、不缩放，避免打断正在阅读的列表 */
 function ScreenFade({ children }: { children: ReactNode }) {
@@ -64,6 +71,12 @@ function Shell() {
       if (state === "active") setVersion((v) => v + 1);
     });
     return () => sub.remove();
+  }, []);
+
+  // 通知上的「完成 / 10 分钟后」会直接改库：处理完让列表重查一次，
+  // 否则前台时点动作，界面还停在旧数据上。
+  useEffect(() => {
+    return subscribeReminderActions(() => setVersion((v) => v + 1));
   }, []);
 
   // 收集箱转任务后只刷新数据、不强制切页：用户通常要连续整理多条记录
@@ -150,8 +163,18 @@ export default function App() {
         installNotificationHandler();
         await openDatabase();
         // 启动时对账提醒：系统升级/换时区/被系统清理后，排期可能已经丢失。
+        // 顺序必须先注册动作按钮，再决定「整体重排」还是「幂等等价对账」。
         // 失败不阻塞启动（通知是增强能力，不是打开应用的前提）。
-        void rescheduleAllReminders().catch(() => undefined);
+        void (async () => {
+          await ensureReminderCategory().catch(() => undefined);
+          const actionsVersion = await getSetting("reminder_actions_version");
+          if (actionsVersion === REMINDER_ACTIONS_VERSION) {
+            await rescheduleAllReminders();
+            return;
+          }
+          await rebuildAllReminders();
+          await setSetting("reminder_actions_version", REMINDER_ACTIONS_VERSION);
+        })().catch(() => undefined);
         const stored = await getSetting("theme_mode");
         if (cancelled) return;
         setBoot({ phase: "ready", mode: isThemeMode(stored) ? stored : "system" });

@@ -4,6 +4,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
+import {
+  buildRecurrencePreset,
+  describeRecurrence,
+  parseRecurrence,
+  presetOf,
+  serializeRecurrence,
+  type RecurrencePreset,
+} from "../domain/recurrence";
 import { formatDue } from "../domain/taskQuery";
 import type { NewTaskInput, Priority, Task } from "../domain/types";
 import { useTheme } from "../theme/ThemeProvider";
@@ -14,6 +22,8 @@ import { Chip } from "./Chip";
 
 type DueKey = "none" | "today" | "tomorrow" | "weekend" | "keep";
 type RemindKey = "none" | "10m" | "1h" | "tomorrow9" | "keep";
+/** custom 规则会被归一化成 keep（保持原定），因此选中态只有预设与 keep */
+type RepeatKey = RecurrencePreset | "keep";
 
 /** 选项与真实时间戳允许的匹配误差：小于一分钟时仍认为「就是今天/明天」 */
 const MATCH_TOLERANCE_MS = 60_000;
@@ -37,6 +47,14 @@ const BASE_REMIND: { key: RemindKey; label: string }[] = [
   { key: "10m", label: "10 分钟后" },
   { key: "1h", label: "1 小时后" },
   { key: "tomorrow9", label: "明天 9:00" },
+];
+
+const BASE_REPEAT: { key: RepeatKey; label: string }[] = [
+  { key: "none", label: "不重复" },
+  { key: "daily", label: "每天" },
+  { key: "weekly", label: "每周" },
+  { key: "monthly", label: "每月" },
+  { key: "workday", label: "工作日" },
 ];
 
 /** 当天 23:59：截止只表达「哪一天之前」，不逼用户选具体时分 */
@@ -151,6 +169,7 @@ export function TaskEditorSheet({
   const [priority, setPriority] = useState<Priority>(0);
   const [dueKey, setDueKey] = useState<DueKey>("none");
   const [remindKey, setRemindKey] = useState<RemindKey>("none");
+  const [repeatKey, setRepeatKey] = useState<RepeatKey>("none");
 
   // 每次打开都按当前任务重算初值；关闭期间不动，避免把用户未保存的输入冲掉
   useEffect(() => {
@@ -160,18 +179,28 @@ export function TaskEditorSheet({
       setPriority(task.priority);
       setDueKey(dueKeyFor(task));
       setRemindKey(remindKeyFor(task));
+      // 重复规则以截止时间为基准（没有截止则用当前），与新建时生成规则的基准一致；
+      // 无法被预设精确表达时落到「保持原定」，让选中态与实际规则一致
+      const preset = presetOf(parseRecurrence(task.recurrenceRule), task.dueAt ?? Date.now());
+      setRepeatKey(preset === "custom" ? "keep" : preset);
       return;
     }
     setTitle("");
     setPriority(0);
     setDueKey("none");
     setRemindKey("none");
+    setRepeatKey("none");
   }, [mode, task, visible]);
 
   // 「保持原定」是否出现取决于原任务能否被四个相对选项精确表达，而不是取决于当前选中项：
   // 否则用户点一下「今天」后原值就再也选不回去了。
   const hasKeepDue = mode === "edit" && task != null && dueKeyFor(task) === "keep";
   const hasKeepRemind = mode === "edit" && task != null && remindKeyFor(task) === "keep";
+  // 原规则无法被预设精确表达时，必须留一个「保持原定」，否则用户只改标题就会丢掉重复
+  const hasKeepRepeat =
+    mode === "edit" &&
+    task != null &&
+    presetOf(parseRecurrence(task.recurrenceRule), task.dueAt ?? Date.now()) === "custom";
 
   const dueOptions = useMemo(() => {
     if (!hasKeepDue || !task) return BASE_DUE;
@@ -184,19 +213,43 @@ export function TaskEditorSheet({
     return [...BASE_REMIND, { key: "keep" as RemindKey, label: keepRemindLabel(task, Date.now()) }];
   }, [hasKeepRemind, task]);
 
+  const repeatOptions = useMemo(() => {
+    if (!hasKeepRepeat || !task) return BASE_REPEAT;
+    const rule = parseRecurrence(task.recurrenceRule);
+    return [
+      ...BASE_REPEAT,
+      { key: "keep" as RepeatKey, label: rule ? `保持 ${describeRecurrence(rule)}` : "保持原定" },
+    ];
+  }, [hasKeepRepeat, task]);
+
   const canSave = title.trim().length > 0;
 
   const submit = () => {
     const text = title.trim();
     if (!text) return;
     const at = Date.now();
+    const editing = mode === "edit" ? task : null;
+    let dueAt = resolveDue(dueKey, editing, at);
+    // 选了重复却没有截止时间：用今天兜底。否则规则没有基准，完成时只能以「现在」
+    // 为起点推算，用户看到的「每周」可能落在与预期不同的星期。
+    if (repeatKey !== "none" && repeatKey !== "keep" && dueAt == null) {
+      dueAt = endOfDay(at, 0);
+    }
+    const recurrenceRule =
+      repeatKey === "keep"
+        ? editing?.recurrenceRule ?? null
+        : repeatKey === "none"
+          ? null
+          : serializeRecurrence(buildRecurrencePreset(repeatKey, dueAt ?? at, at));
+
     onSubmit({
       title: text,
       priority,
-      dueAt: resolveDue(dueKey, task, at),
-      remindAt: resolveReminder(remindKey, task, at),
-      // 编辑走「新建 + 删除旧记录」，描述必须显式带上，否则会被清空
-      description: mode === "edit" && task ? task.description : undefined,
+      dueAt,
+      remindAt: resolveReminder(remindKey, editing, at),
+      recurrenceRule,
+      // 编辑时描述必须显式带上，否则三态更新之外的路径会把它清空
+      description: editing ? editing.description : undefined,
     });
     onClose();
   };
@@ -295,6 +348,22 @@ export function TaskEditorSheet({
             />
           ))}
         </View>
+
+        <Text style={[styles.section, { color: tokens.muted }]}>重复</Text>
+        <View style={styles.row}>
+          {repeatOptions.map((item) => (
+            <Chip
+              key={item.key}
+              label={item.label}
+              active={repeatKey === item.key}
+              accessibilityLabel={`重复 ${item.label}`}
+              onPress={() => setRepeatKey(item.key)}
+            />
+          ))}
+        </View>
+        <Text style={[styles.note, { color: tokens.muted }]}>
+          重复任务点完成时不会进入「已完成」，而是把截止时间推进到下一期（与桌面端一致）。
+        </Text>
 
         <Text style={[styles.section, { color: tokens.muted }]}>提醒</Text>
         <View style={styles.row}>

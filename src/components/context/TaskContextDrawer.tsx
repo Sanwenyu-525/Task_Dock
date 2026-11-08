@@ -29,12 +29,17 @@ import {
   clipboardUnlinkSnapshot,
   onWorkspaceChanged,
   onWorkspaceRestoreProgress,
+  scenarioList,
   taskContext,
+  taskReminderLinkClear,
+  taskReminderLinkGet,
+  taskReminderLinkSet,
   workspaceCaptureTask,
   workspaceCaptureWindows,
   workspaceCreate,
   workspaceDelete,
   workspaceGet,
+  workspaceList,
   workspaceRestore,
   workspaceRestoreCancel,
   workspaceRestoreStatus,
@@ -42,10 +47,12 @@ import {
   type CaptureWindow,
   type ClipboardSnapshotLink,
   type ContextAgent,
+  type ReminderLinkKind,
   type RestoreItemResult,
   type SnapshotDetail,
   type SnapshotSummary,
   type TaskContext,
+  type TaskReminderLink,
 } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
 import { useTasksStore } from "../../store/useTasksStore";
@@ -120,6 +127,15 @@ export default function TaskContextDrawer() {
     null,
   );
 
+  // 提醒联动（v41）：任务 ↔ 场景/工作现场。一次抽屉打开读一条；
+  // 候选列表只在用户展开选择时按需加载，不做常驻轮询。
+  const [link, setLink] = useState<TaskReminderLink | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkPicker, setLinkPicker] = useState<ReminderLinkKind | null>(null);
+  const [linkOptions, setLinkOptions] = useState<{ id: string; name: string }[]>([]);
+  const [linkOptionsLoading, setLinkOptionsLoading] = useState(false);
+  const [linkOptionsError, setLinkOptionsError] = useState<string | null>(null);
+
   // 捕获窗口是抽屉内的展开区，不再叠第二层模态
   const [captureOpen, setCaptureOpen] = useState(false);
   const [captureWindows, setCaptureWindows] = useState<CaptureWindow[]>([]);
@@ -152,7 +168,17 @@ export default function TaskContextDrawer() {
     setLiveResults([]);
     setProgress(null);
     setCaptureOpen(false);
+    setLink(null);
+    setLinkError(null);
+    setLinkPicker(null);
+    setLinkOptionsError(null);
     void refresh();
+    void taskReminderLinkGet(taskId)
+      .then((l) => setLink(l))
+      .catch((e) => {
+        // 读取失败不阻塞抽屉其余分区，联动区如实展示原因
+        setLinkError(errorMessage(e));
+      });
     if (workspaceEnabled) {
       workspaceRestoreStatus()
         .then((s) => {
@@ -428,8 +454,82 @@ export default function TaskContextDrawer() {
     }
   }
 
-  /** 删除确认的 3s 复位定时器：换目标/关闭时先清旧的，卸载时统一回收。 */
+  // ── 提醒联动：选择 / 清除 ─────────────────────────────────
+  const REMINDER_LINK_ACTION: Record<ReminderLinkKind, string> = {
+    scene: "进入场景",
+    workspace: "恢复现场",
+  };
+  const REMINDER_LINK_NOUN: Record<ReminderLinkKind, string> = {
+    scene: "场景",
+    workspace: "工作现场",
+  };
+
+  /** 展开候选列表（场景全量 / 现场只列本任务已保存的）。同类别再次点击收起；
+   *  上次加载失败时再次点击改为重试。 */
+  async function toggleLinkPicker(kind: ReminderLinkKind) {
+    if (linkPicker === kind && !linkOptionsError) {
+      setLinkPicker(null);
+      return;
+    }
+    setLinkPicker(kind);
+    setLinkOptionsLoading(true);
+    setLinkOptionsError(null);
+    setLinkOptions([]);
+    try {
+      const rows =
+        kind === "scene"
+          ? (await scenarioList()).map((s) => ({ id: s.id, name: s.name }))
+          : (await workspaceList(taskId)).map((s) => ({ id: s.id, name: s.name }));
+      setLinkOptions(rows);
+    } catch (e) {
+      setLinkOptionsError(errorMessage(e));
+    } finally {
+      setLinkOptionsLoading(false);
+    }
+  }
+
+  async function onSetLink(kind: ReminderLinkKind, targetId: string, name: string) {
+    if (!taskId) return;
+    setBusy(`link-${kind}`);
+    try {
+      const l = await taskReminderLinkSet(taskId, kind, targetId);
+      setLink(l);
+      setLinkPicker(null);
+      showToast(`提醒触发时通知将提供「${REMINDER_LINK_ACTION[kind]}」（${l.label || name}）`, {
+        kind: "success",
+      });
+    } catch (e) {
+      showToast(`关联${REMINDER_LINK_NOUN[kind]}失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onClearLink() {
+    if (!taskId) return;
+    setBusy("link-clear");
+    try {
+      await taskReminderLinkClear(taskId);
+      setLink(null);
+      showToast("已清除提醒联动", { kind: "success" });
+    } catch (e) {
+      showToast(`清除提醒联动失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 删除确认的 3s 复位定时器：换目标/关闭时先清旧的，卸载时统一回收。
+   *  必须挂在早退 return 之前：组件常驻挂载，关闭态渲染的 hooks 数若与
+   *  打开态不同，打开抽屉会触发 React #310（21f5887 引入的存量缺陷，
+   *  因其阻断提醒联动的抽屉入口在本任务修复）。 */
   const confirmResetTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (confirmResetTimerRef.current !== null) window.clearTimeout(confirmResetTimerRef.current);
+    },
+    [],
+  );
   function armConfirmReset(id: string) {
     if (confirmResetTimerRef.current !== null) window.clearTimeout(confirmResetTimerRef.current);
     confirmResetTimerRef.current = window.setTimeout(() => {
@@ -437,12 +537,6 @@ export default function TaskContextDrawer() {
       setConfirmDelete((cur) => (cur === id ? null : cur));
     }, 3000);
   }
-  useEffect(
-    () => () => {
-      if (confirmResetTimerRef.current !== null) window.clearTimeout(confirmResetTimerRef.current);
-    },
-    [],
-  );
 
   async function onDelete(s: SnapshotSummary) {
     if (confirmDelete !== s.id) {
@@ -833,6 +927,106 @@ export default function TaskContextDrawer() {
                       </div>
                     );
                   })}
+                </section>
+
+                {/* ── 提醒联动（v41）── */}
+                <section className="context-section">
+                  <div className="context-section-head">
+                    <span className="context-section-title">
+                      <Bell size={12} /> 提醒联动
+                    </span>
+                  </div>
+                  <div className="endpoint-hint">
+                    关联后，该任务的提醒通知会多一个「进入场景 / 恢复现场」按钮；只在点击时执行，绝不自动启动。一个任务只关联一个目标。
+                  </div>
+                  {linkError && (
+                    <div className="wizard-error" role="alert">
+                      <AlertTriangle size={12} /> 读取提醒联动失败：{linkError}
+                    </div>
+                  )}
+                  {!linkError && (
+                    <>
+                      {link ? (
+                        <div className="context-row">
+                          <span className="context-row-main">
+                            <span>{REMINDER_LINK_NOUN[link.targetKind]}</span>
+                            <em title={link.label}>{link.label}</em>
+                          </span>
+                          <span className="context-row-meta">提醒通知将提供该动作</span>
+                          <button
+                            className="btn sm"
+                            onClick={() => void onClearLink()}
+                            disabled={busy === "link-clear"}
+                            data-tip="清除后提醒通知不再显示该动作"
+                            aria-label="清除提醒联动"
+                          >
+                            清除
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="empty-hint">未关联。可为本任务选择一个场景或工作现场。</div>
+                      )}
+                      <div className="context-section-head">
+                        <button
+                          className="btn sm"
+                          onClick={() => void toggleLinkPicker("scene")}
+                          disabled={busy === "link-scene" || busy === "link-workspace"}
+                          aria-expanded={linkPicker === "scene"}
+                        >
+                          关联场景…
+                        </button>
+                        <button
+                          className="btn sm"
+                          onClick={() => void toggleLinkPicker("workspace")}
+                          disabled={busy === "link-scene" || busy === "link-workspace"}
+                          aria-expanded={linkPicker === "workspace"}
+                        >
+                          关联现场…
+                        </button>
+                      </div>
+                      {linkPicker && (
+                        <div className="capture-list">
+                          {linkOptionsLoading && (
+                            <div className="empty-hint" role="status">
+                              正在加载{REMINDER_LINK_NOUN[linkPicker]}列表…
+                            </div>
+                          )}
+                          {linkOptionsError && (
+                            <div className="wizard-error" role="alert">
+                              <AlertTriangle size={12} /> 加载失败：{linkOptionsError}
+                              <button
+                                className="btn sm"
+                                onClick={() => void toggleLinkPicker(linkPicker)}
+                              >
+                                重试
+                              </button>
+                            </div>
+                          )}
+                          {!linkOptionsLoading &&
+                            !linkOptionsError &&
+                            linkOptions.length === 0 && (
+                              <div className="empty-hint">
+                                {linkPicker === "scene"
+                                  ? "还没有场景。可先在工具面板创建一个场景。"
+                                  : "该任务还没有已保存的工作现场。先在上方「工作现场」保存一个。"}
+                              </div>
+                            )}
+                          {linkOptions.map((o) => (
+                            <button
+                              key={o.id}
+                              type="button"
+                              className="capture-row"
+                              onClick={() => void onSetLink(linkPicker, o.id, o.name)}
+                              disabled={busy === `link-${linkPicker}`}
+                              title={o.name}
+                            >
+                              <span className="capture-title">{o.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </section>
 
                 {/* ── Agent ── */}

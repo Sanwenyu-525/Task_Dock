@@ -91,6 +91,15 @@ running/paused ──应用异常退出──▶ interrupted（启动恢复标�
   前端面板挂载期间订阅（`createSubscriptionScope` 引用计数），隐藏时不轮询，
   重新挂载用 `workflow_active` 按需查询。事件缓冲由 Tauri 事件通道承担，无自建队列。
 - 工作流内进入场景复用 `scenario` 服务并传递取消位；关联现场恢复走现有恢复门禁，等待恢复槽退出后读取逐项持久化结果。失败、跳过、未知结果不会标成场景步骤成功。
+- **场景步骤回执契约（2026-11-08）**：`enter_for_workflow` 正常进入后一律返回
+  `Ok(ScenarioEnterResult)`（gate 冲突、场景不存在等仍为 `Err`），不再把部分失败/取消
+  压成一行错误文字；执行器用 `build_scene_step_receipt` 把步骤 `result` 写为含
+  `summary / scene_id / scene_name / total / processed / cancelled / timed_out / outcome /
+  items[]` 的 JSON（items 每项 `{index, kind, label, status, detail}`，只含展示名、状态与
+  原因，不落窗口标题/路径/HWND）。引擎按 `outcome` 判定步骤：`completed` → succeeded；
+  `partial` → failed（`result` 照常保留，随后按 `on_error` 停止/继续）；`cancelled` →
+  cancelled 并取消剩余步骤与运行；无 `outcome` 字段的回执完全走原成功分支（兼容旧
+  执行器与旧运行记录，前端解析容错见第 6 节）。
 
 ## 4. 幂等与异常恢复
 
@@ -122,6 +131,13 @@ running/paused ──应用异常退出──▶ interrupted（启动恢复标�
 - 工作现场恢复仍按 `workspace-restore-progress` 每项反馈并经单恢复槽执行；已发出的应用启动不能撤回。工作流内等待取消时会向当前恢复操作发取消请求并等待其退出；120 秒超时只停止等待，不强杀系统操作。恢复应用时先按窗口身份查找并唤醒已有窗口，找不到才尝试启动；启动请求与窗口确认使用不同验证级别。
 - 当前快照记录 exe、窗口类名和标题用于身份匹配，不保存窗口矩形、尺寸、显示器或 DPI，因此当前能力不包含窗口位置/大小恢复。多显示器与 DPI 几何恢复、窗口消失/重启后的实际结果仍未验证；本轮没有进行真机操作。
 - 现有工作现场详情展开显示条目和上次结果/验证级别，恢复期间按事件显示逐项结果；场景编辑器只选择快照，不复制另一套快照预览。
+- 场景步骤逐项回执展示（2026-11-08）：运行详情对 `enter_scene` 解析 `result` JSON 并在
+  步骤卡片内渲染嵌套清单（`src/components/workflows/receipt.ts` 纯解析：null/空串/非法
+  JSON/缺 items 返回 null 绝不 throw；旧结构 label 回退 `kind #index`、detail 为空、
+  outcome 由状态推导）。取消回执只含已处理项并注明「剩余 N 项未执行」，不伪造
+  skipped/failed；旧运行记录（result 为空或旧 JSON）退回现有 detail 文案。定义预览
+  `display.ts` 的 enter_scene 同步改为「场景 <id> /（待选择场景）」，删除过期的
+  「场景工作区未集成」占位文案。
 
 ## 7. 测试与验收状态
 

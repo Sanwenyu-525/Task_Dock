@@ -20,7 +20,10 @@ export interface Task {
   dueAt: number | null;
   remindAt: number | null;
   advanceMinutes: number | null;
-  /** 重复规则 JSON；本版只存储，不参与计算（由桌面端权威计算） */
+  /**
+   * 重复规则 JSON（字段见 domain/recurrence.ts）。独立模式下由手机自己推进期次；
+   * 联动模式接入后规则会随任务同步，桌面端仍是跨设备合并的权威。
+   */
   recurrenceRule: string | null;
   createdAt: number;
   updatedAt: number;
@@ -53,4 +56,6 @@ export interface NewTaskInput {
   priority?: Priority;
   dueAt?: number | null;
   remindAt?: number | null;
+  /** 重复规则 JSON；null/缺省表示不重复 */
+  recurrenceRule?: string | null;
 }

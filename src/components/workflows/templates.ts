@@ -2,7 +2,7 @@
 //!
 //! 模板里的应用 / 目录 / 网页目标必须由用户在编辑器中选择（target_id 留空），
 //! 不假设用户安装了任何特定软件；create_task 的标题可编辑。
-//! 「进入场景」依赖场景工作区模块（尚未集成），模板不包含该步骤。
+//! 「进入场景」依赖用户已创建的场景，模板不包含该步骤（可在编辑器中添加）。
 
 import type { WorkflowStepInput, WorkflowStepType, WorkflowOnError } from "../../lib/bridge";
 

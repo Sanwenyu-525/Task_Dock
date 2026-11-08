@@ -49,6 +49,8 @@ const styles = StyleSheet.create({
   card: {
     borderRadius: radius.card,
     borderWidth: StyleSheet.hairlineWidth,
+    // 内嵌面板（设置页的白底块）是直角的，不裁剪会把卡片圆角顶成方形
+    overflow: "hidden",
   },
   highlight: {
     position: "absolute",

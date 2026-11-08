@@ -227,6 +227,156 @@ describe("动作分发", () => {
     });
   });
 
+  it("提醒卡「稍后提醒」走真实 snooze_reminder，联动由重新触发时再次解析", async () => {
+    render(<NotificationWindow />);
+    emitShow([
+      cardData({
+        kind: "reminder",
+        title: "任务提醒",
+        refId: "task-1",
+        linkKind: "scene",
+        linkTargetId: "sc-9",
+        linkLabel: "深度工作",
+      }),
+    ]);
+    await waitFor(() => expect(screen.getByText("稍后提醒")).toBeTruthy());
+    fireEvent.click(screen.getByText("稍后提醒"));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("snooze_reminder", { taskId: "task-1", minutes: 10 });
+    });
+    await waitFor(() => {
+      expect(document.querySelector(".ntf-card"), "延后成功后关闭卡片").toBeNull();
+    });
+  });
+
+  it("等待卡「稍后提醒」回传载荷透传 link 字段（payload 往返不丢动作）", async () => {
+    render(<NotificationWindow />);
+    emitShow([
+      cardData({
+        kind: "agent_waiting",
+        title: "等待确认",
+        linkKind: "scene",
+        linkTargetId: "sc-9",
+        linkLabel: "深度工作",
+      }),
+    ]);
+    await waitFor(() => expect(screen.getByText("稍后提醒")).toBeTruthy());
+    fireEvent.click(screen.getByText("稍后提醒"));
+    await waitFor(() => {
+      const call = invokeMock.mock.calls.find(([cmd]) => cmd === "notification_snooze");
+      expect(call).toBeDefined();
+      const payload = (call![1] as { card: Record<string, unknown> }).card;
+      expect(payload).toMatchObject({
+        linkKind: "scene",
+        linkTargetId: "sc-9",
+        linkLabel: "深度工作",
+      });
+    });
+  });
+
+  it("提醒联动：进入场景只在点击后调用 scenario_enter，成功关闭卡片", async () => {
+    render(<NotificationWindow />);
+    emitShow([
+      cardData({
+        kind: "reminder",
+        title: "任务提醒",
+        refId: "task-1",
+        linkKind: "scene",
+        linkTargetId: "sc-9",
+        linkLabel: "深度工作",
+      }),
+    ]);
+    await waitFor(() => expect(screen.getByText("进入场景")).toBeTruthy());
+    expect(
+      screen.getByRole("button", { name: "进入场景：深度工作" }),
+      "可访问名称携带目标名",
+    ).toBeTruthy();
+    fireEvent.click(screen.getByText("进入场景"));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("scenario_enter", { id: "sc-9" });
+    });
+    await waitFor(() => {
+      expect(document.querySelector(".ntf-card"), "成功后关闭卡片").toBeNull();
+    });
+  });
+
+  it("提醒联动：恢复现场调用 workspace_restore", async () => {
+    render(<NotificationWindow />);
+    emitShow([
+      cardData({
+        kind: "reminder",
+        title: "任务提醒",
+        refId: "task-1",
+        linkKind: "workspace",
+        linkTargetId: "ws-3",
+      }),
+    ]);
+    await waitFor(() => expect(screen.getByText("恢复现场")).toBeTruthy());
+    fireEvent.click(screen.getByText("恢复现场"));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("workspace_restore", { id: "ws-3" });
+    });
+  });
+
+  it("提醒联动：进入场景失败保留卡片并给出明确反馈，不伪装成功", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_settings") return Promise.resolve({ theme: "dark", visual_preset: "" });
+      if (cmd === "scenario_enter") return Promise.reject(new Error("场景不存在: sc-9"));
+      return Promise.resolve(null);
+    });
+    render(<NotificationWindow />);
+    emitShow([
+      cardData({
+        kind: "reminder",
+        title: "任务提醒",
+        refId: "task-1",
+        linkKind: "scene",
+        linkTargetId: "sc-9",
+      }),
+    ]);
+    await waitFor(() => expect(screen.getByText("进入场景")).toBeTruthy());
+    fireEvent.click(screen.getByText("进入场景"));
+    await waitFor(() => {
+      const alert = screen.getByRole("alert");
+      expect(alert.textContent).toContain("进入场景失败");
+      expect(alert.textContent).toContain("场景不存在");
+    });
+    expect(document.querySelector(".ntf-card"), "失败后保留卡片").toBeTruthy();
+  });
+
+  it("提醒联动：已有恢复在进行中时如实反馈且不关闭", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_settings") return Promise.resolve({ theme: "dark", visual_preset: "" });
+      if (cmd === "workspace_restore") return Promise.resolve(false);
+      return Promise.resolve(null);
+    });
+    render(<NotificationWindow />);
+    emitShow([
+      cardData({
+        kind: "reminder",
+        title: "任务提醒",
+        refId: "task-1",
+        linkKind: "workspace",
+        linkTargetId: "ws-3",
+      }),
+    ]);
+    await waitFor(() => expect(screen.getByText("恢复现场")).toBeTruthy());
+    fireEvent.click(screen.getByText("恢复现场"));
+    await waitFor(() => {
+      const alert = screen.getByRole("alert");
+      expect(alert.textContent).toContain("已有现场恢复在进行中");
+    });
+    expect(document.querySelector(".ntf-card")).toBeTruthy();
+  });
+
+  it("未关联的提醒卡不出现联动按钮", async () => {
+    render(<NotificationWindow />);
+    emitShow([cardData({ kind: "reminder", title: "任务提醒", refId: "task-1" })]);
+    await waitFor(() => expect(screen.getByText("打开任务")).toBeTruthy());
+    expect(screen.queryByText("进入场景")).toBeNull();
+    expect(screen.queryByText("恢复现场")).toBeNull();
+  });
+
   it("跳转失败给卡内 role=alert 反馈，不静默失败且保留卡片", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "get_settings" || cmd === "fit_notification_window") {

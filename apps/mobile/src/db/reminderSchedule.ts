@@ -110,3 +110,9 @@ export async function deleteReminderSchedulesForTask(taskId: string): Promise<vo
   const db = getDatabase();
   await db.runAsync(`DELETE FROM reminder_schedule WHERE task_id = ?`, [taskId]);
 }
+
+/** 清空排期记录：只给「整体重建」用（例如通知动作按钮需要重新注册到旧通知上） */
+export async function deleteAllReminderSchedules(): Promise<void> {
+  const db = getDatabase();
+  await db.runAsync(`DELETE FROM reminder_schedule`);
+}

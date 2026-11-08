@@ -4,6 +4,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
+import { describeRecurrence, parseRecurrence } from "../domain/recurrence";
 import { formatDue } from "../domain/taskQuery";
 import type { Task } from "../domain/types";
 import { duration, easeOut, useReduceMotion } from "../theme/MotionProvider";
@@ -34,8 +35,15 @@ function TaskRowBase({
   const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
   const done = task.status === "completed";
-  const due = formatDue(task.dueAt, now);
+  const rawDue = formatDue(task.dueAt, now);
+  // formatDue 会自己加「已过期 · 」前缀，已完成的任务不该再提示过期，这里把它去掉
+  const due = done && rawDue ? rawDue.replace(/^已过期 · /, "") : rawDue;
   const overdue = !done && task.dueAt != null && task.dueAt < now;
+  // 重复规则解析失败时不显示徽标：宁可少一行说明，也不给用户看 "undefined"
+  const repeatLabel = useMemo(() => {
+    const rule = parseRecurrence(task.recurrenceRule);
+    return rule ? describeRecurrence(rule) : null;
+  }, [task.recurrenceRule]);
   const priorityColor =
     task.priority >= 3 ? tokens.danger : task.priority === 2 ? tokens.warn : tokens.muted;
 
@@ -146,14 +154,9 @@ function TaskRowBase({
     }),
     [progress],
   );
-  const titleColor = useMemo(
-    () =>
-      progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [tokens.text, tokens.muted],
-      }),
-    [progress, tokens.muted, tokens.text],
-  );
+  // 标题颜色按状态直接给静态值：颜色插值在真机（深色主题）上没能落到文字上，
+  // 已完成行的标题会退回默认黑、在深色卡片上几乎不可读；删除线仍用 opacity 淡入。
+  const titleColor = done ? tokens.muted : tokens.text;
 
   const handlePress = useCallback(
     (api: SwipeRowApi) => {
@@ -255,6 +258,12 @@ function TaskRowBase({
                 {due ? (
                   <Text style={[styles.metaText, { color: overdue ? tokens.danger : tokens.muted }]}>
                     {due}
+                  </Text>
+                ) : null}
+
+                {repeatLabel ? (
+                  <Text style={[styles.metaText, { color: tokens.muted }]}>
+                    重复 · {repeatLabel}
                   </Text>
                 ) : null}
 

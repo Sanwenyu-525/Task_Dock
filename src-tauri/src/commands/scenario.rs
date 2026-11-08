@@ -1167,16 +1167,143 @@ pub fn enter(db: &Arc<Db>, app: &AppHandle, id: &str) -> AppResult<ScenarioEnter
     result
 }
 
+/// 场景展示名：轻量查询（不解析清单 JSON）；查询失败回退 id，不让名称问题拖垮步骤回执。
+pub(crate) fn display_name(db: &Db, id: &str) -> String {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT name FROM scenarios WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(AppError::from)
+    })
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| id.to_string())
+}
+
+/// 由进入结果构造场景步骤回执（纯函数，可脱离 AppHandle 单测）。
+///
+/// 引擎把该值写入 `workflow_run_steps.result`，前端逐项展示；`outcome` 供引擎判定
+/// 步骤状态：completed → succeeded，partial → failed，cancelled → cancelled。
+/// items 只含展示名、状态与原因，不落窗口标题/路径/HWND。
+pub(crate) fn build_scene_step_receipt(
+    scene_id: &str,
+    scene_name: &str,
+    result: &ScenarioEnterResult,
+) -> serde_json::Value {
+    let failed = result
+        .items
+        .iter()
+        .filter(|item| item.status == "failed")
+        .count();
+    let skipped = result
+        .items
+        .iter()
+        .filter(|item| item.status == "skipped")
+        .count();
+    let processed = result.items.len();
+    let remaining = result.total.saturating_sub(processed);
+    // 取消优先于超时（与 boundary_stop 的口径一致）；工作流路径无预算，timed_out
+    // 只是防御分支——按部分失败处理而不是取消整个运行。
+    let outcome = if result.cancelled {
+        "cancelled"
+    } else if result.timed_out || failed > 0 || skipped > 0 {
+        "partial"
+    } else {
+        "completed"
+    };
+    let stop_summary = |prefix: &str| -> String {
+        let head = format!(
+            "场景「{name}」{prefix}已处理 {processed}/{total} 项",
+            name = scene_name,
+            total = result.total
+        );
+        if remaining > 0 {
+            format!("{head}，剩余 {remaining} 项未执行")
+        } else {
+            head
+        }
+    };
+    let summary = if result.cancelled {
+        stop_summary("已取消：")
+    } else if result.timed_out {
+        stop_summary("超时停止：")
+    } else if failed > 0 || skipped > 0 {
+        let mut parts = Vec::new();
+        if failed > 0 {
+            parts.push(format!("失败 {failed}"));
+        }
+        if skipped > 0 {
+            parts.push(format!("跳过 {skipped}"));
+        }
+        format!(
+            "场景「{name}」完成 {processed}/{total} 项（{parts}）",
+            name = scene_name,
+            total = result.total,
+            parts = parts.join("、")
+        )
+    } else {
+        format!(
+            "场景「{name}」完成 {total}/{total} 项",
+            name = scene_name,
+            total = result.total
+        )
+    };
+    let items: Vec<serde_json::Value> = result
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            serde_json::json!({
+                "index": index + 1,
+                "kind": item.kind,
+                "label": item.label,
+                "status": item.status,
+                "detail": item.detail,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "summary": summary,
+        "scene_id": scene_id,
+        "scene_name": scene_name,
+        "total": result.total,
+        "processed": processed,
+        "cancelled": result.cancelled,
+        "timed_out": result.timed_out,
+        "outcome": outcome,
+        "items": items,
+    })
+}
+
 /// 工作流内调用场景服务：共用同一进入槽（冲突按步骤失败返回），等待现场恢复
 /// 终态、传递取消位，并禁止场景再次启动工作流。工作流步骤自带取消位，不再叠加预算。
+///
+/// 返回语义（2026-11-08 调整）：gate 冲突、场景不存在等错误仍返回 `Err`（无可展示
+/// items）；正常进入后无论结果如何都返回 `Ok(ScenarioEnterResult)`——部分失败/跳过与
+/// 取消的逐项明细恰恰最有价值，由引擎按 `build_scene_step_receipt` 的 outcome 判定
+/// 步骤状态，不再把明细压成一行 Err 文字。
 pub(crate) fn enter_for_workflow(
     db: &Arc<Db>,
     app: &AppHandle,
     id: &str,
     cancel: &AtomicBool,
 ) -> AppResult<ScenarioEnterResult> {
+    // 先取详情：参数错误（场景不存在等）无可展示 items，仍按 Err 失败；
+    // 同时拿到计划总数，供「已取消、未执行」的回执如实展示剩余项。
+    let detail = get(db, id)?;
+    let total = enter_plan_total(&detail);
     if cancel.load(Ordering::Acquire) {
-        return Err(AppError::Conflict("进入场景已取消，未启动".into()));
+        // 启动前已取消：不进入、不占槽，返回空回执（0 项已处理），不伪造 skipped/failed。
+        return Ok(ScenarioEnterResult {
+            items: Vec::new(),
+            started_at: now_iso(),
+            total,
+            cancelled: true,
+            timed_out: false,
+        });
     }
     let guard = global_enter_gate().begin(id).map_err(|busy| {
         AppError::Conflict(format!(
@@ -1190,37 +1317,7 @@ pub(crate) fn enter_for_workflow(
     };
     let result = enter_inner(db, app, id, Some(&run), false);
     drop(guard);
-    let result = result?;
-    if cancel.load(Ordering::Acquire) {
-        let completed = result.items.len();
-        return Err(AppError::Conflict(format!(
-            "进入场景已取消；此前已处理 {completed} 项，结果请检查现场恢复进度"
-        )));
-    }
-    let failed = result
-        .items
-        .iter()
-        .filter(|item| item.status == "failed")
-        .count();
-    let skipped = result
-        .items
-        .iter()
-        .filter(|item| item.status == "skipped")
-        .count();
-    if failed > 0 || skipped > 0 {
-        let item_summary = result
-            .items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| format!("{}#{}={}", item.kind, index + 1, item.status))
-            .collect::<Vec<_>>()
-            .join("、");
-        return Err(AppError::Validation(format!(
-            "场景未全部完成：{} 项失败、{} 项跳过；{}",
-            failed, skipped, item_summary
-        )));
-    }
-    Ok(result)
+    result
 }
 
 // ── Tauri 命令 ───────────────────────────────────────────────────────
@@ -1811,5 +1908,121 @@ mod tests {
         assert!(get(&db, &other).is_err(), "被删的应是无关场景");
         assert!(get(&db, &busy).is_ok(), "在途场景必须原样保留");
         assert!(!guard.cancel_flag().load(Ordering::Acquire), "不得误取消别的场景");
+    }
+
+    // ── 场景步骤回执（工作流引擎逐项明细） ─────────────────────────
+
+    fn enter_result(
+        items: Vec<ScenarioEnterItemResult>,
+        total: usize,
+        cancelled: bool,
+        timed_out: bool,
+    ) -> ScenarioEnterResult {
+        ScenarioEnterResult {
+            items,
+            started_at: "2026-11-08T00:00:00Z".into(),
+            total,
+            cancelled,
+            timed_out,
+        }
+    }
+
+    #[test]
+    fn scene_receipt_completed_lists_every_item_with_label() {
+        let result = enter_result(
+            vec![
+                ScenarioEnterItemResult::ok("app", "记事本".into()),
+                ScenarioEnterItemResult::ok("url", "https://example.com".into()),
+            ],
+            2,
+            false,
+            false,
+        );
+        let receipt = build_scene_step_receipt("sid", "晨间工作区", &result);
+        assert_eq!(receipt["outcome"], "completed");
+        assert_eq!(receipt["scene_name"], "晨间工作区");
+        assert_eq!(receipt["summary"], "场景「晨间工作区」完成 2/2 项");
+        assert_eq!(receipt["total"], 2);
+        assert_eq!(receipt["processed"], 2);
+        assert_eq!(receipt["cancelled"], false);
+        let items = receipt["items"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["index"], 1);
+        assert_eq!(items[0]["kind"], "app");
+        assert_eq!(items[0]["label"], "记事本");
+        assert_eq!(items[0]["status"], "ok");
+        assert!(items[0]["detail"].is_null());
+    }
+
+    #[test]
+    fn scene_receipt_partial_keeps_labels_and_reasons() {
+        let result = enter_result(
+            vec![
+                ScenarioEnterItemResult::ok("app", "记事本".into()),
+                ScenarioEnterItemResult::failed("folder", "C:\\不存在".into(), "目录不存在"),
+                ScenarioEnterItemResult::skipped("app", "浏览器".into(), "缺少可执行路径"),
+            ],
+            3,
+            false,
+            false,
+        );
+        let receipt = build_scene_step_receipt("sid", "晨间工作区", &result);
+        assert_eq!(receipt["outcome"], "partial");
+        assert_eq!(
+            receipt["summary"],
+            "场景「晨间工作区」完成 3/3 项（失败 1、跳过 1）"
+        );
+        let items = receipt["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "部分失败也保留全部已处理项");
+        assert_eq!(items[1]["label"], "C:\\不存在");
+        assert_eq!(items[1]["detail"], "目录不存在");
+        assert_eq!(items[2]["status"], "skipped");
+        assert_eq!(items[2]["detail"], "缺少可执行路径");
+    }
+
+    #[test]
+    fn scene_receipt_cancelled_reports_remaining_without_faking_items() {
+        let result = enter_result(vec![ScenarioEnterItemResult::ok("app", "记事本".into())], 4, true, false);
+        let receipt = build_scene_step_receipt("sid", "晨间工作区", &result);
+        assert_eq!(receipt["outcome"], "cancelled");
+        assert_eq!(receipt["cancelled"], true);
+        assert_eq!(
+            receipt["summary"],
+            "场景「晨间工作区」已取消：已处理 1/4 项，剩余 3 项未执行"
+        );
+        assert_eq!(
+            receipt["items"].as_array().unwrap().len(),
+            1,
+            "未执行项不得伪造为 items"
+        );
+    }
+
+    #[test]
+    fn scene_receipt_timed_out_and_edge_cases() {
+        // 工作流路径无预算（deadline=None）；timed_out 只是防御分支，按 partial
+        // 处理而不是取消整个运行。
+        let timed_out = enter_result(vec![], 2, false, true);
+        let receipt = build_scene_step_receipt("sid", "n", &timed_out);
+        assert_eq!(receipt["outcome"], "partial");
+        assert_eq!(receipt["summary"], "场景「n」超时停止：已处理 0/2 项，剩余 2 项未执行");
+
+        // 取消发生在最后一项之后：无剩余项，不输出「剩余 0 项」。
+        let done = enter_result(vec![ScenarioEnterItemResult::ok("app", "a".into())], 1, true, false);
+        let receipt = build_scene_step_receipt("sid", "n", &done);
+        assert_eq!(receipt["summary"], "场景「n」已取消：已处理 1/1 项");
+
+        // 空场景全部完成。
+        let empty = enter_result(vec![], 0, false, false);
+        let receipt = build_scene_step_receipt("sid", "n", &empty);
+        assert_eq!(receipt["outcome"], "completed");
+        assert_eq!(receipt["summary"], "场景「n」完成 0/0 项");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_id_without_failing() {
+        let db = memdb();
+        let id = save(&db, &base_input("命名场景")).unwrap();
+        assert_eq!(display_name(&db, &id), "命名场景");
+        assert_eq!(display_name(&db, "no-such-id"), "no-such-id");
     }
 }

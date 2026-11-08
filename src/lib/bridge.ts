@@ -2287,6 +2287,30 @@ export interface ClipboardSnapshotLink {
   kind: string;
 }
 
+// ── 任务提醒联动（v41）：任务 ↔ 场景 / 工作现场 ──
+/** 联动目标类型：workspace=工作现场快照 / scene=场景工作区。 */
+export type ReminderLinkKind = "workspace" | "scene";
+
+/** 已解析的联动（后端只返回目标仍存在的条目；label 为目标当前名称）。 */
+export interface TaskReminderLink {
+  taskId: string;
+  targetKind: ReminderLinkKind;
+  targetId: string;
+  label: string;
+  updatedAt: string;
+}
+
+/** 一个任务最多一条联动；set 覆盖既有关联，目标已删除时拒绝。 */
+export const taskReminderLinkGet = (taskId: string) =>
+  invoke<TaskReminderLink | null>("task_reminder_link_get", { taskId });
+export const taskReminderLinkSet = (
+  taskId: string,
+  targetKind: ReminderLinkKind,
+  targetId: string,
+) => invoke<TaskReminderLink>("task_reminder_link_set", { taskId, kind: targetKind, targetId });
+export const taskReminderLinkClear = (taskId: string) =>
+  invoke<void>("task_reminder_link_clear", { taskId });
+
 // ── 全局快速捕获（v0.7）──
 /** 五种捕获类型：任务 / 想法 / 文字 / 待办 / 链接。 */
 export type CaptureKind = "task" | "idea" | "text" | "todo" | "link";

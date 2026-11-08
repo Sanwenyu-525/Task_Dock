@@ -30,9 +30,28 @@ Task Dock 把任务与提醒、应用启动与窗口切换、剪贴板历史、�
 
 ## 界面预览
 
-> 仓库目前没有与当前版本一致的正式截图，因此这里不嵌入历史图片。已有的视觉走查与验收截图保存在
-> [docs/screenshots](docs/screenshots/)，仅代表当时版本；设计参考稿（非证据）在
-> [docs/design-refs](docs/design-refs/)。
+以下截图来自真实运行的 Task Dock（WebView2 实例，隔离数据目录 + 演示数据），
+不是设计稿或浏览器 mock。截图目录与采集说明见
+[docs/screenshots/readme-20261108](docs/screenshots/readme-20261108/)。
+
+![任务页（浅色 · 柔光玻璃）](docs/screenshots/readme-20261108/01-tasks-light.png)
+
+| **任务页（暗色 · 梦幻渐变）** | **剪贴板（文字 / 链接 / 富文本 / 文件 / 图片分组）** |
+|---|---|
+| ![任务页暗色](docs/screenshots/readme-20261108/02-tasks-dark.png) | ![剪贴板](docs/screenshots/readme-20261108/03-clipboard.png) |
+| **Agent 监控（来源 → 实例 → 会话）** | **行动中心（失败 / 等待介入）** |
+| ![Agent 监控](docs/screenshots/readme-20261108/04-agents.png) | ![行动中心](docs/screenshots/readme-20261108/05-actions.png) |
+| **文件暂存架** | **收集箱（快速捕获）** |
+| ![文件暂存架](docs/screenshots/readme-20261108/06-shelf.png) | ![收集箱](docs/screenshots/readme-20261108/10-inbox.png) |
+| **工作流** | **规划中心** |
+| ![工作流](docs/screenshots/readme-20261108/07-workflows.png) | ![规划中心](docs/screenshots/readme-20261108/08-planning.png) |
+| **设置（外观与主题）** | **停靠胶囊（左侧轨道 + 任务面板）** |
+| ![设置](docs/screenshots/readme-20261108/09-settings.png) | ![停靠胶囊](docs/screenshots/readme-20261108/11-capsule.png) |
+
+> 截图中的任务、剪贴板、Agent 会话、项目与工作流均为演示数据，不含真实用户数据；
+> 窗口外背景为演示壁纸。
+> 更早版本的视觉走查与验收截图仍保留在 [docs/screenshots](docs/screenshots/) 的历史子目录，
+> 仅代表当时版本；设计参考稿（非证据）在 [docs/design-refs](docs/design-refs/)。
 
 ## 功能介绍
 

@@ -187,4 +187,84 @@ describe("WorkflowRunView", () => {
     expect(screen.getByRole("alert").textContent).toContain("步骤 2 创建任务失败");
     expect(screen.getByText("运行已结束；详情保留在「历史」中。")).toBeTruthy();
   });
+
+  it("场景步骤展示逐项回执（label/状态/原因），失败步骤也保留明细", () => {
+    const receipt = {
+      summary: "场景「晨间」完成 2/3 项（失败 1）",
+      scene_id: "sc1",
+      scene_name: "晨间",
+      total: 3,
+      processed: 2,
+      cancelled: false,
+      timed_out: false,
+      outcome: "partial",
+      items: [
+        { index: 1, kind: "app", label: "记事本", status: "ok", detail: null },
+        { index: 2, kind: "folder", label: "C:\\不存在", status: "failed", detail: "目录不存在" },
+      ],
+    };
+    const base = detail();
+    useWorkflowsStore.setState({
+      activeRun: null,
+      activeRunDetail: detail({
+        status: "failed",
+        finished_at: "2026-11-01T00:00:03Z",
+        steps: [
+          ...base.steps,
+          {
+            id: "rs3",
+            run_id: "r1",
+            step_id: "s3",
+            step_type: "enter_scene",
+            display_order: 2,
+            status: "failed",
+            detail: receipt.summary,
+            result: JSON.stringify(receipt),
+            started_at: "2026-11-01T00:00:02Z",
+            finished_at: "2026-11-01T00:00:03Z",
+            operation_id: "op3",
+          },
+        ],
+      }),
+    });
+    render(<WorkflowRunView workflow={workflow} runId="r1" onStarted={() => {}} onBack={() => {}} />);
+
+    const list = screen.getByRole("list", { name: "场景条目逐项结果" });
+    expect(list.textContent).toContain("记事本");
+    expect(list.textContent).toContain("C:\\不存在");
+    expect(list.textContent).toContain("目录不存在");
+    expect(list.textContent).toContain("成功");
+    expect(list.textContent).toContain("失败");
+    // 步骤行仍显示汇总文案
+    expect(screen.getAllByText(receipt.summary).length).toBeGreaterThan(0);
+  });
+
+  it("场景步骤旧记录（result 非法或无 items）退回 detail 文案，不崩溃", () => {
+    useWorkflowsStore.setState({
+      activeRun: null,
+      activeRunDetail: detail({
+        status: "completed",
+        finished_at: "2026-11-01T00:00:03Z",
+        steps: [
+          {
+            id: "rs3",
+            run_id: "r1",
+            step_id: "s3",
+            step_type: "enter_scene",
+            display_order: 2,
+            status: "succeeded",
+            detail: "场景「old」已完成 1 项",
+            result: "not-json",
+            started_at: "2026-11-01T00:00:02Z",
+            finished_at: "2026-11-01T00:00:03Z",
+            operation_id: "op3",
+          },
+        ],
+      }),
+    });
+    render(<WorkflowRunView workflow={workflow} runId="r1" onStarted={() => {}} onBack={() => {}} />);
+
+    expect(screen.getByText("场景「old」已完成 1 项")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "场景条目逐项结果" })).toBeNull();
+  });
 });

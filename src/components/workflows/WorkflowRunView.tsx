@@ -11,7 +11,12 @@ import {
   WORKFLOW_STEP_TYPE_LABELS,
   stepParamsSummary,
 } from "./display";
-import type { WorkflowDetail, WorkflowRunStepStatus } from "../../lib/bridge";
+import {
+  parseSceneReceipt,
+  sceneItemStatusLabel,
+  sceneItemStatusKind,
+} from "./receipt";
+import type { WorkflowDetail, WorkflowRunStep, WorkflowRunStepStatus } from "../../lib/bridge";
 import { useWorkflowsStore, errText } from "../../store/useWorkflowsStore";
 
 const STEP_STATUS_KIND: Record<WorkflowRunStepStatus, string> = {
@@ -22,6 +27,30 @@ const STEP_STATUS_KIND: Record<WorkflowRunStepStatus, string> = {
   failed: "danger",
   cancelled: "muted",
 };
+
+/** enter_scene 步骤的逐项回执清单；无 items（旧记录/未执行）返回 null 退回 detail 文案。 */
+function SceneReceiptList({ step }: { step: WorkflowRunStep }) {
+  const receipt = parseSceneReceipt(step.result);
+  if (!receipt || receipt.items.length === 0) return null;
+  return (
+    <ul className="wf-scene-items" aria-label="场景条目逐项结果">
+      {receipt.items.map((item) => {
+        const kind = sceneItemStatusKind(item.status);
+        return (
+          <li key={`${item.index}-${item.kind}`} className={`wf-scene-item kind-${kind}`}>
+            <span className="wf-scene-item-head">
+              <span className="wf-scene-item-label">{item.label}</span>
+              <span className={`wf-scene-item-status kind-${kind}`}>
+                {sceneItemStatusLabel(item.status)}
+              </span>
+            </span>
+            {item.detail ? <span className="wf-scene-item-detail">{item.detail}</span> : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 export default function WorkflowRunView({
   workflow,
@@ -172,6 +201,7 @@ export default function WorkflowRunView({
                     {WORKFLOW_STEP_STATUS_LABELS[rs.status]}
                   </span>
                 </div>
+                {rs.step_type === "enter_scene" ? <SceneReceiptList step={rs} /> : null}
               </li>
             ))}
           </ol>

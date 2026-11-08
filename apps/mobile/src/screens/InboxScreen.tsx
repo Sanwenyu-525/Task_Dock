@@ -1,6 +1,6 @@
 // 收集箱：固定顶部速记区 + 卡片列表。转任务/删除后先淡出再移除，
 // 列表不会因为数据刷新整块闪一下；转任务后停留在本页，方便连续整理。
-import { useCallback, useEffect, useRef, useState, type ComponentRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -16,6 +16,7 @@ import { CaptureCard } from "../components/CaptureCard";
 import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
+import { SearchField } from "../components/SearchField";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { addCapture, deleteCapture, listCaptures, promoteCapture } from "../db/captures";
 import type { Capture } from "../domain/types";
@@ -39,6 +40,7 @@ export function InboxScreen({
   const { tokens } = useTheme();
   const [captures, setCaptures] = useState<Capture[]>([]);
   const [text, setText] = useState("");
+  const [query, setQuery] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [loading, setLoading] = useState(true);
   const [focused, setFocused] = useState(false);
@@ -145,6 +147,13 @@ export function InboxScreen({
   );
 
   const canSubmit = text.trim().length > 0;
+  const trimmedQuery = query.trim();
+  const searching = trimmedQuery.length > 0;
+  const visible = useMemo(() => {
+    if (!searching) return captures;
+    const keyword = trimmedQuery.toLowerCase();
+    return captures.filter((capture) => capture.content.toLowerCase().includes(keyword));
+  }, [captures, searching, trimmedQuery]);
 
   return (
     <View style={styles.container}>
@@ -155,9 +164,11 @@ export function InboxScreen({
               收集箱
             </Text>
             <Text style={[styles.subtitle, { color: tokens.muted }]}>
-              {captures.length > 0
-                ? `${captures.length} 条待整理 · 转成任务后会自动离开这里`
-                : "先记下来，之后再整理成任务"}
+              {captures.length === 0
+                ? "先记下来，之后再整理成任务"
+                : searching
+                  ? `找到 ${visible.length} 条 · 共 ${captures.length} 条待整理`
+                  : `${captures.length} 条待整理 · 转成任务后会自动离开这里`}
             </Text>
           </View>
           <Pressable
@@ -204,13 +215,20 @@ export function InboxScreen({
             </PressableScale>
           </View>
         </GlassCard>
+
+        <SearchField
+          value={query}
+          onChangeText={setQuery}
+          placeholder="搜索收集箱内容"
+          accessibilityLabel="搜索收集箱"
+        />
       </View>
 
       {loading ? (
         <ActivityIndicator style={styles.loading} color={tokens.accent} />
       ) : (
         <FlatList
-          data={captures}
+          data={visible}
           keyExtractor={(item) => item.id}
           renderItem={renderCapture}
           contentContainerStyle={styles.listContent}
@@ -221,12 +239,21 @@ export function InboxScreen({
           windowSize={7}
           removeClippedSubviews
           ListEmptyComponent={
-            <EmptyState
-              title="收集箱是空的"
-              hint="想到什么先记下来，不必先想清楚归类和截止时间"
-              actionLabel="写第一条"
-              onAction={() => inputRef.current?.focus()}
-            />
+            searching ? (
+              <EmptyState
+                title="没有匹配的记录"
+                hint={`没有内容包含「${trimmedQuery}」的记录；搜索只在本机收集箱内匹配文字`}
+                actionLabel="清除搜索"
+                onAction={() => setQuery("")}
+              />
+            ) : (
+              <EmptyState
+                title="收集箱是空的"
+                hint="想到什么先记下来，不必先想清楚归类和截止时间"
+                actionLabel="写第一条"
+                onAction={() => inputRef.current?.focus()}
+              />
+            )
           }
         />
       )}

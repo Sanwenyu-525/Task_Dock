@@ -234,6 +234,45 @@ describe("动作配置的诚实性", () => {
     expect(actionsFor(queued({ kind: "digest", mergeKey: "digest" }))).toEqual(["center"]);
   });
 
+  it("提醒联动：携带 link 的提醒卡才出现 进入场景/恢复现场，其余提醒卡不变", () => {
+    // 未关联任务：行为与现状完全一致，不多按钮
+    expect(actionsFor(queued({ kind: "reminder", refId: "t1" }))).toEqual([
+      "view",
+      "snooze",
+      "done",
+    ]);
+    // 关联场景 → 进入场景
+    expect(
+      actionsFor(queued({ kind: "reminder", refId: "t1", linkKind: "scene", linkTargetId: "s1" })),
+    ).toEqual(["view", "open_scene", "snooze", "done"]);
+    // 关联现场 → 恢复现场
+    expect(
+      actionsFor(
+        queued({ kind: "reminder", refId: "t1", linkKind: "workspace", linkTargetId: "w1" }),
+      ),
+    ).toEqual(["view", "open_workspace", "snooze", "done"]);
+    // 联动字段残缺（缺目标 id）：不出按钮，不伪造入口
+    expect(
+      actionsFor(queued({ kind: "reminder", refId: "t1", linkKind: "scene" })),
+    ).toEqual(["view", "snooze", "done"]);
+    // 非 reminder 卡带 link 也不出现联动动作
+    expect(
+      actionsFor(queued({ kind: "agent_failed", linkKind: "scene", linkTargetId: "s1" })),
+    ).toEqual(["view"]);
+  });
+
+  it("联动按钮文案固定短句，aria 名称带目标名", () => {
+    const card = queued({
+      kind: "reminder",
+      refId: "t1",
+      linkKind: "scene",
+      linkTargetId: "s1",
+      linkLabel: "深度工作",
+    });
+    expect(actionLabel(card, "open_scene")).toBe("进入场景");
+    expect(actionLabel(card, "open_workspace")).toBe("恢复现场");
+  });
+
   it("缺少可靠会话信息时等待卡退化为打开 Agent 页面并如实改文案", () => {
     const waiting = queued({ kind: "agent_waiting" });
     delete waiting.sourceId;

@@ -43,6 +43,8 @@ struct FakeExecutor {
     fail_calls: Mutex<std::collections::HashSet<usize>>,
     fail_reason: Mutex<String>,
     panic_calls: Mutex<std::collections::HashSet<usize>>,
+    /// 第 n 次调用（1 起）返回自定义成功值（如带 outcome 的场景回执）。
+    value_calls: Mutex<std::collections::HashMap<usize, serde_json::Value>>,
     hooks: Mutex<std::collections::HashMap<String, Box<dyn Fn(&StepExecContext<'_>) + Send>>>,
 }
 
@@ -53,6 +55,7 @@ impl FakeExecutor {
             fail_calls: Mutex::new(std::collections::HashSet::new()),
             fail_reason: Mutex::new("模拟失败".to_string()),
             panic_calls: Mutex::new(std::collections::HashSet::new()),
+            value_calls: Mutex::new(std::collections::HashMap::new()),
             hooks: Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -72,6 +75,12 @@ impl FakeExecutor {
     /// 第 n 次调用（1 起）模拟 panic。
     fn panic_nth(mut self, n: usize) -> Self {
         self.panic_calls.lock().unwrap().insert(n);
+        self
+    }
+
+    /// 第 n 次调用（1 起）返回自定义成功值。
+    fn value_nth(self, n: usize, v: serde_json::Value) -> Self {
+        self.value_calls.lock().unwrap().insert(n, v);
         self
     }
 
@@ -106,6 +115,14 @@ impl StepExecutor for FakeExecutor {
             .contains(&call_no)
         {
             panic!("模拟执行器 panic");
+        }
+        if let Some(v) = self
+            .value_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&call_no)
+        {
+            return Ok(v.clone());
         }
         if self
             .fail_calls
@@ -605,4 +622,110 @@ fn run_control_wait_is_cancel_aware() {
     std::thread::sleep(Duration::from_millis(50));
     control.cancel();
     handle.join().unwrap();
+}
+
+// ── 场景回执 outcome 判定（enter_scene 逐项明细，2026-11-08） ─────────
+
+fn scene_receipt_value(outcome: &str) -> serde_json::Value {
+    serde_json::json!({
+        "summary": format!("场景「晨间」已部分完成（outcome={outcome}）"),
+        "scene_id": "sid",
+        "scene_name": "晨间",
+        "total": 3,
+        "processed": 2,
+        "cancelled": outcome == "cancelled",
+        "timed_out": false,
+        "outcome": outcome,
+        "items": [
+            {"index": 1, "kind": "app", "label": "记事本", "status": "ok", "detail": null},
+            {"index": 2, "kind": "folder", "label": "C:\\不存在", "status": "failed", "detail": "目录不存在"}
+        ],
+    })
+}
+
+fn run_with_first_value(outcome: &str, on_error: &str) -> (Arc<Db>, String, Vec<WorkflowStepRow>) {
+    let db = Arc::new(temp_db("scene-outcome"));
+    let (wf_id, mut steps) = setup(&db, "w", vec![task_step("a"), task_step("b")]);
+    steps[0].on_error = on_error.to_string();
+    let run = store::create_run(&db, &wf_id, "w", &steps).unwrap();
+    let executor = Box::new(
+        FakeExecutor::new().value_nth(1, scene_receipt_value(outcome)),
+    );
+    run_engine(
+        db.clone(),
+        Box::new(FakeSink::default()),
+        executor,
+        run.run_id.clone(),
+        wf_id.clone(),
+        steps.clone(),
+        Arc::new(RunControl::new()),
+    );
+    (db, run.run_id, steps)
+}
+
+#[test]
+fn scene_outcome_partial_fails_step_but_keeps_receipt() {
+    let (db, run_id, _) = run_with_first_value("partial", "stop");
+    let rs = run_steps(&db, &run_id);
+    assert_eq!(rs[0].status, "failed", "partial 回执按失败落库");
+    assert_eq!(rs[0].detail, "场景「晨间」已部分完成（outcome=partial）");
+    let result: serde_json::Value =
+        serde_json::from_str(rs[0].result.as_deref().unwrap()).unwrap();
+    assert_eq!(result["outcome"], "partial", "失败也必须保留逐项回执");
+    assert_eq!(result["items"].as_array().unwrap().len(), 2);
+    assert_eq!(rs[1].status, "cancelled", "stop 策略取消后续步骤");
+    assert_eq!(run_status(&db, &run_id), "failed");
+}
+
+#[test]
+fn scene_outcome_partial_with_continue_keeps_running() {
+    let (db, run_id, _) = run_with_first_value("partial", "continue");
+    let rs = run_steps(&db, &run_id);
+    assert_eq!(rs[0].status, "failed");
+    assert!(rs[0].result.is_some(), "continue 下回执同样保留");
+    assert_eq!(rs[1].status, "succeeded", "continue 策略继续执行后续步骤");
+    assert_eq!(run_status(&db, &run_id), "completed");
+}
+
+#[test]
+fn scene_outcome_cancelled_stops_run_and_keeps_receipt() {
+    let (db, run_id, _) = run_with_first_value("cancelled", "continue");
+    let rs = run_steps(&db, &run_id);
+    assert_eq!(rs[0].status, "cancelled");
+    assert_eq!(
+        rs[0].detail,
+        "场景「晨间」已部分完成（outcome=cancelled）"
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(rs[0].result.as_deref().unwrap()).unwrap();
+    assert_eq!(result["outcome"], "cancelled", "取消回执保留已处理项");
+    assert_eq!(rs[1].status, "cancelled");
+    assert_eq!(run_status(&db, &run_id), "cancelled");
+}
+
+#[test]
+fn scene_receipt_without_outcome_uses_legacy_success_branch() {
+    // 无 outcome 字段的回执（旧执行器/其他步骤类型）完全走原成功分支。
+    let db = Arc::new(temp_db("scene-legacy"));
+    let (wf_id, steps) = setup(&db, "w", vec![task_step("a")]);
+    let run = store::create_run(&db, &wf_id, "w", &steps).unwrap();
+    let executor = Box::new(
+        FakeExecutor::new().value_nth(
+            1,
+            serde_json::json!({"summary": "旧结构", "items": [{"index": 1, "kind": "app", "status": "ok"}]}),
+        ),
+    );
+    run_engine(
+        db.clone(),
+        Box::new(FakeSink::default()),
+        executor,
+        run.run_id.clone(),
+        wf_id,
+        steps,
+        Arc::new(RunControl::new()),
+    );
+    let rs = run_steps(&db, &run.run_id);
+    assert_eq!(rs[0].status, "succeeded");
+    assert_eq!(rs[0].detail, "旧结构");
+    assert_eq!(run_status(&db, &run.run_id), "completed");
 }

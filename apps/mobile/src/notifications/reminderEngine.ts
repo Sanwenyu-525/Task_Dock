@@ -6,13 +6,14 @@
 // 因此这里绝不按本地墙钟重算已有记录 —— 那会让用户在飞机上把提醒推迟/提前。
 import {
   countUpcomingReminderTasks,
+  deleteAllReminderSchedules,
   deleteReminderSchedule,
   deleteReminderSchedulesForTask,
   listReminderSchedules,
   listUpcomingReminderTasks,
   saveReminderSchedule,
 } from "../db/reminderSchedule";
-import { cancelReminder, reminderId, scheduleReminder } from "./reminders";
+import { cancelReminder, listScheduledNotificationIds, reminderId, scheduleReminder } from "./reminders";
 
 /** 与 docs/MOBILE_STACK.md §9 一致：本地通知最多排 64 条，超出按最远触发时间淘汰 */
 export const MAX_SCHEDULED_REMINDERS = 64;
@@ -53,6 +54,8 @@ async function runReschedule(): Promise<RescheduleResult> {
     listUpcomingReminderTasks(now, MAX_SCHEDULED_REMINDERS),
     listReminderSchedules(),
   ]);
+  // 系统现状：读取失败时退回「只信本地记录」，避免对账本身把提醒全清一遍
+  const systemIds = await listScheduledNotificationIds().catch(() => null);
 
   // 本次允许保留的键：taskId → occurrenceAt（同一任务只保留当前 remind_at 这一条）
   const desired = new Map<string, number>();
@@ -80,7 +83,11 @@ async function runReschedule(): Promise<RescheduleResult> {
   let skipped = Math.max(0, total - tasks.length);
 
   for (const task of tasks) {
-    if (scheduledKeys.has(scheduleKey(task.id, task.remindAt))) {
+    const key = scheduleKey(task.id, task.remindAt);
+    // 记录存在不代表系统里还在：重启、应用更新、被系统清理都会丢闹钟。
+    // 系统侧找不到这条通知时重新排一次，否则提醒会静默消失。
+    const stillScheduled = systemIds ? systemIds.has(reminderId(task.id)) : true;
+    if (scheduledKeys.has(key) && stillScheduled) {
       // 已在 reminder_schedule 中且未过期：幂等跳过，不重复调用系统通知
       skipped += 1;
       continue;
@@ -118,4 +125,27 @@ export async function clearTaskReminder(taskId: string): Promise<void> {
 
   await cancelReminder(taskId);
   await deleteReminderSchedulesForTask(taskId);
+}
+
+/**
+ * 整体重建：先取消所有已排期通知、清空记录，再重新排一遍。
+ *
+ * 为什么需要它：通知上的动作按钮属于「排期时」就固定下来的内容（categoryIdentifier），
+ * 老版本排下的通知即使升级了应用也不会长出按钮。只在通知能力版本变化时调用一次，
+ * 避免每次启动都把 64 条通知全部重排。
+ */
+export async function rebuildAllReminders(): Promise<RescheduleResult> {
+  const running = inFlight;
+  if (running) await running.catch(() => undefined);
+
+  const schedules = await listReminderSchedules();
+  const cancelled = new Set<string>();
+  for (const entry of schedules) {
+    if (cancelled.has(entry.taskId)) continue;
+    cancelled.add(entry.taskId);
+    await cancelReminder(entry.taskId);
+  }
+  await deleteAllReminderSchedules();
+
+  return rescheduleAllReminders();
 }

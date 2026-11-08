@@ -25,6 +25,8 @@ export const ACTION_LABELS: Record<ActionId, string> = {
   done: "完成任务",
   center: "通知中心",
   expand: "展开详情",
+  open_scene: "进入场景",
+  open_workspace: "恢复现场",
 };
 
 /** 同时独立展示的卡片上限（摘要卡不占新位，替换既有摘要时也不超限）。 */
@@ -315,7 +317,15 @@ function isAgentKind(kind: NotificationKind): boolean {
   );
 }
 
-/** 按钮文案必须准确：能定位说定位，只能开页面就说打开页面，提醒说打开任务。 */
+/** 提醒卡是否携带有效的任务联动（kind 与动作一一对应；未关联或字段不全则无动作）。 */
+export function reminderLinkAction(card: NotificationCardData): ActionId | null {
+  if (card.linkKind === "scene" && card.linkTargetId) return "open_scene";
+  if (card.linkKind === "workspace" && card.linkTargetId) return "open_workspace";
+  return null;
+}
+
+/** 按钮文案必须准确：能定位说定位，只能开页面就说打开页面，提醒说打开任务。
+ *  联动动作带目标名称（aria 用），按钮上仍用固定短文案避免一行四个按钮溢出。 */
 export function actionLabel(card: NotificationCardData, id: ActionId): string {
   const kind = normalizeKind(card.kind);
   if (id === "view") {
@@ -354,7 +364,9 @@ export function isLightweightActionCard(card: QueuedCard): boolean {
 
 /** 各状态动作配置；「重试/重新连接」无真实能力不提供（规格禁止伪造入口）。
  * 提醒卡：携带 refId（任务 id）才提供 稍后提醒/完成任务（真实后端操作）；
- * 合并摘要卡只保留「通知中心」外部入口，就地展开由底部详情入口承担，避免重复。 */
+ * 联动动作（进入场景/恢复现场）只在载荷携带有效 link 时出现——目标已删除的
+ * 卡片后端解析层已过滤，这里不再按名称推断；合并摘要卡只保留「通知中心」
+ * 外部入口，就地展开由底部详情入口承担，避免重复。 */
 export function actionsFor(card: QueuedCard): ActionId[] {
   switch (normalizeKind(card.kind)) {
     case "agent_running":
@@ -366,8 +378,13 @@ export function actionsFor(card: QueuedCard): ActionId[] {
       return agentLocatable(card) ? ["handle", "snooze"] : ["view", "snooze"];
     case "digest":
       return ["center"];
-    case "reminder":
-      return card.refId ? ["view", "snooze", "done"] : ["view"];
+    case "reminder": {
+      const actions: ActionId[] = ["view"];
+      const link = reminderLinkAction(card);
+      if (link) actions.push(link);
+      if (card.refId) actions.push("snooze", "done");
+      return actions;
+    }
     default:
       return ["view"];
   }

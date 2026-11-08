@@ -41,7 +41,7 @@ export const WORKFLOWS_ARTICLES: readonly HelpArticle[] = [
           },
           {
             type: "note",
-            text: "工作流只执行白名单内的动作，不支持任意脚本。「进入场景」会等待场景恢复结果；失败会显示步骤结果，取消会传递到当前场景流程。已启动的应用与已创建的任务不会因取消或失败而自动撤销。",
+            text: "工作流只执行白名单内的动作，不支持任意脚本。「进入场景」会等待场景恢复结果，运行详情中该步骤可展开查看场景内每个条目的结果与原因（部分失败、取消也会保留已处理项）。已启动的应用与已创建的任务不会因取消或失败而自动撤销。",
           },
         ],
       },
@@ -72,7 +72,7 @@ export const WORKFLOWS_ARTICLES: readonly HelpArticle[] = [
           },
           {
             type: "note",
-            text: "Workflows only execute allow-listed actions — no arbitrary scripts. \"Enter scenario\" waits for the scenario's restore result; failures show the step results, and cancellation propagates into the running scenario flow. Apps already started and tasks already created are not rolled back on cancel or failure.",
+            text: "Workflows only execute allow-listed actions — no arbitrary scripts. \"Enter scenario\" waits for the scenario's restore result; in the run details the step lists every scenario entry with its status and reason (partial failures and cancellations keep the processed items). Apps already started and tasks already created are not rolled back on cancel or failure.",
           },
         ],
       },

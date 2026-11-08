@@ -61,6 +61,20 @@ export function selectTasks(tasks: Task[], filter: TaskFilter, now: number): Tas
   return sortTasks(tasks.filter((t) => matchesFilter(t, filter, now)));
 }
 
+/**
+ * 关键词匹配：标题、描述、分类、标签任一命中即算（大小写不敏感）。
+ * 手机端数据量在本机，直接线性扫描即可，不需要 FTS 索引；空查询一律返回 true，
+ * 这样调用方可以无条件过滤，不必在列表里散落 `query ? ... : true` 的分支。
+ */
+export function matchesQuery(task: Task, query: string): boolean {
+  const keyword = query.trim().toLowerCase();
+  if (!keyword) return true;
+  const haystack = [task.title, task.description, task.category ?? "", ...task.tags]
+    .join("\n")
+    .toLowerCase();
+  return haystack.includes(keyword);
+}
+
 export function countTasks(tasks: Task[], now: number): TaskCounts {
   let pending = 0;
   let completed = 0;

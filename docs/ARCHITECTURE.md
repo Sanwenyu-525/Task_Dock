@@ -1297,6 +1297,7 @@ planning_feature_steps    （v0.7 开发步骤；done/completed_at；功能删�
 planning_activity         （v0.7 进度历史：note/status_change/step_done 三类；项目/功能删除级联）
 
 task_categories · notification_history (UNIQUE(kind, ref_id, occurrence)) · application_settings
+task_reminder_links        （v41 任务提醒联动：一任务一条；target_kind workspace|scene；删任务级联）
 ```
 
 时间一律以 UTC ISO8601 字符串存储，展示层转本地时区。
@@ -1424,6 +1425,35 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
 - `Task.next_remind_at` **不落库**：查询时由
   `MIN(task_reminders.remind_at) WHERE fired = 0` 子查询计算，避免把调度状态物化成第二份真值。
 - 备份/导出与数据导入同步读写 `by_setpos`；旧备份缺该列时按 null 处理，向前兼容。
+
+### 任务提醒联动迁移 v41（2026-11-08）
+
+- 迁移 v41 新增 `task_reminder_links`：`task_id`（PK，FK→tasks ON DELETE CASCADE）、
+  `target_kind`（CHECK `workspace|scene`）、`target_id`（目标 UUID；场景/现场为软引用，
+  不落窗口标题、路径、HWND/PID）、`created_at` / `updated_at`。**一个任务最多一条联动**
+  （通知卡不堆多个启动按钮）；重复 set 走 `ON CONFLICT(task_id) DO UPDATE` 覆盖。
+- 命令三个（`commands/tasks.rs`，参数 camelCase，`lib.rs` 注册）：
+  `task_reminder_link_get`（目标已删除返回 null，对上层等于未关联）、
+  `task_reminder_link_set`（校验任务存在、kind 白名单、目标存在，任一不满足拒绝写入）、
+  `task_reminder_link_clear`（幂等）。前端入口在任务上下文抽屉「提醒联动」区
+  （`scenario_list` 全量 / `workspace_list(taskId)` 按任务过滤候选）。
+- 通知载荷 additive：`NotifyItem` / `Popup` / `NotificationCardPayload` 新增
+  `link_kind` / `link_target_id` / `link_label`（serde camelCase + `skip_serializing_if`），
+  仅关联过且目标仍存在的提醒卡携带；合并摘要卡不带联动。稍后提醒往返
+  （`Popup` ↔ `NotificationCardPayload`）保留三字段，snooze 后重新展示动作仍在。
+- 调度器每 tick 按 `task_ids` **一次批量解析**（`resolve_reminder_links`，
+  label 用相关子查询取目标当前名称，`label IS NULL ⇔ 目标已删除 → 不附加`），
+  避免 N+1；沿用现有 1s tick 与通知管线，无新线程/无界队列。
+- **安全语义：提醒触发绝不自动执行联动**——「进入场景 / 恢复现场」只由用户在
+  通知卡显式点击触发（`scenario_enter` / `workspace_restore`），失败保留卡片并给
+  `role=alert` 反馈；`workspace_restore` 返回 false（恢复进行中）如实提示可重试。
+  与导航安全红线「任务提醒触发时不自动打开任何软件」一致。
+- 删除清理（双保险之一）：`scenario_delete` / `workspace_delete` /
+  `workspace_prune` 在同事务删除匹配联动；读取时再校验目标存在（双保险之二）；
+  删除任务经外键级联。备份：登记 `BACKUP_TABLES`（class=core、restore_order=410、
+  depends_on tasks/scenarios/workspace_snapshots）与 `EXTENDED_TABLES` +
+  快速备份 SQL 白名单（全量保存）；完整/快速备份均包含，恢复逐行还原，
+  旧备份缺该段按「缺表即跳过」。
 
 ## 四、安全设计
 

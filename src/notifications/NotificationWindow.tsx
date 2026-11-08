@@ -16,7 +16,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invokeCommand as invoke } from "../lib/errors";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, snoozeReminder, toggleTask } from "../lib/bridge";
+import {
+  getSettings,
+  scenarioEnter,
+  snoozeReminder,
+  toggleTask,
+  workspaceRestore,
+} from "../lib/bridge";
 import { createSubscriptionScope } from "../lib/subscriptions";
 import { resolveSecondaryPreset, resolveTheme, resolveVisualPreset } from "../lib/theme";
 import type {
@@ -26,7 +32,14 @@ import type {
   NotificationShowPayload,
   QueuedCard,
 } from "./notificationTypes";
-import { applyIncoming, revealTarget, withoutCard } from "./notificationUtils";
+import {
+  applyIncoming,
+  AUTO_DISMISS_MS,
+  EXPANDED_HOLD_MS,
+  normalizeKind,
+  revealTarget,
+  withoutCard,
+} from "./notificationUtils";
 import NotificationStack from "./NotificationStack";
 
 /** 后端 notification_window.rs 的 SHOW_EVENT（避免跨入口 import 后端常量）。 */
@@ -45,7 +58,8 @@ interface SettingsSnap {
   visualPreset: string;
 }
 
-/** 稍后提醒回传后端的载荷形态（与 NotificationCardPayload 对应）。 */
+/** 稍后提醒回传后端的载荷形态（与 NotificationCardPayload 对应）。
+ *  联动字段一并透传：snooze 到期重新展示时「进入场景/恢复现场」仍在。 */
 function snoozePayload(card: QueuedCard) {
   return {
     id: card.id,
@@ -57,6 +71,9 @@ function snoozePayload(card: QueuedCard) {
     sessionId: card.sessionId ?? null,
     refId: card.refId ?? null,
     detail: card.detail ?? null,
+    linkKind: card.linkKind ?? null,
+    linkTargetId: card.linkTargetId ?? null,
+    linkLabel: card.linkLabel ?? null,
   };
 }
 
@@ -453,6 +470,22 @@ export default function NotificationWindow() {
     [spawnTimer],
   );
 
+  /** 联动动作执行期间延长本卡自动消失期限：进入场景可能等待窗口校验
+   *  （最长 120s），不能让卡片在结果反馈前被自动消失吞掉。 */
+  const holdCard = useCallback((id: string) => {
+    setCards((q) =>
+      q.map((c) => (c.id === id ? { ...c, expiresAt: Date.now() + EXPANDED_HOLD_MS } : c)),
+    );
+  }, []);
+  /** 失败反馈后恢复本卡的正常自动消失（反馈展示 3s，随后按提醒时长离场）。 */
+  const releaseCard = useCallback((id: string) => {
+    setCards((q) =>
+      q.map((c) =>
+        c.id === id ? { ...c, expiresAt: Date.now() + AUTO_DISMISS_MS[normalizeKind(c.kind)] } : c,
+      ),
+    );
+  }, []);
+
   const onAction = useCallback(
     (card: QueuedCard, id: ActionId) => {
       if (id === "expand") {
@@ -527,6 +560,47 @@ export default function NotificationWindow() {
           });
         return;
       }
+      // 任务提醒联动（v41）：进入场景 / 恢复现场。只有用户显式点击才执行；
+      // 目标已删除时后端返回明确错误，保留卡片并如实反馈，不伪装成功。
+      if (id === "open_scene" || id === "open_workspace") {
+        const targetId = card.linkTargetId;
+        if (!targetId) {
+          setBusy(null);
+          showFeedback(card.id, "该通知未携带联动目标，无法执行");
+          return;
+        }
+        holdCard(card.id);
+        if (id === "open_scene") {
+          void scenarioEnter(targetId)
+            .then(() => {
+              done();
+              dismiss(card.id);
+            })
+            .catch((e) => {
+              done();
+              releaseCard(card.id);
+              showFeedback(card.id, `进入场景失败：${String(e)}`);
+            });
+        } else {
+          void workspaceRestore(targetId)
+            .then((started) => {
+              done();
+              // workspace_restore 返回 false = 已有恢复在进行（可重试，不算失败）
+              if (!started) {
+                releaseCard(card.id);
+                showFeedback(card.id, "已有现场恢复在进行中，请稍后再试");
+                return;
+              }
+              dismiss(card.id);
+            })
+            .catch((e) => {
+              done();
+              releaseCard(card.id);
+              showFeedback(card.id, `恢复现场失败：${String(e)}`);
+            });
+        }
+        return;
+      }
       if (id === "center") {
         void invoke<{ located?: boolean }>("notification_navigate", { target: "history" })
           .then(() => {
@@ -580,7 +654,7 @@ export default function NotificationWindow() {
       }
       setBusy(null);
     },
-    [dismiss, showFeedback, expandedId],
+    [dismiss, showFeedback, expandedId, holdCard, releaseCard],
   );
 
   // 本轮尚未释放的卡片先占位：等窗口与 WebView 视口都按新高度稳定后再绘制，

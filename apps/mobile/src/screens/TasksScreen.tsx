@@ -17,13 +17,15 @@ import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { Chip } from "../components/Chip";
 import { EmptyState } from "../components/EmptyState";
 import { PressableScale } from "../components/PressableScale";
+import { SearchField } from "../components/SearchField";
 import { StatCard, type StatTone } from "../components/StatCard";
 import { TaskEditorSheet } from "../components/TaskEditorSheet";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { TaskRow } from "../components/TaskRow";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { createTask, deleteTask, listTasks, toggleTask, updateTask } from "../db/tasks";
-import { countTasks, formatDue, selectTasks } from "../domain/taskQuery";
+import { countTasks, formatDue, matchesQuery, selectTasks } from "../domain/taskQuery";
+import { describeRecurrence, parseRecurrence } from "../domain/recurrence";
 import type { NewTaskInput, Task, TaskFilter } from "../domain/types";
 import { describeError } from "../lib/errors";
 import { rescheduleAllReminders } from "../notifications/reminderEngine";
@@ -56,6 +58,13 @@ function RowSeparator() {
   return <View style={styles.rowGap} />;
 }
 
+/** 动作表副标题：截止时间 + 重复规则，避免用户在动作表里看不出这是循环任务 */
+function actionSubtitle(task: Task, now: number): string {
+  const due = formatDue(task.dueAt, now) ?? "无截止时间";
+  const rule = parseRecurrence(task.recurrenceRule);
+  return rule ? `${due} · ${describeRecurrence(rule)}` : due;
+}
+
 export function TasksScreen({ version = 0 }: { version?: number }) {
   const { tokens, scheme } = useTheme();
   const reduceMotion = useReduceMotion();
@@ -65,6 +74,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<TaskFilter>("all");
+  const [query, setQuery] = useState("");
   const [now, setNow] = useState(() => Date.now());
 
   const [editorState, setEditorState] = useState<{ mode: "create" } | { mode: "edit"; task: Task }>(
@@ -115,18 +125,26 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
     return () => clearInterval(timer);
   }, []);
 
-  const visible = useMemo(() => selectTasks(tasks, filter, now), [tasks, filter, now]);
+  const visible = useMemo(
+    () => selectTasks(tasks.filter((task) => matchesQuery(task, query)), filter, now),
+    [tasks, filter, now, query],
+  );
   const counts = useMemo(() => countTasks(tasks, now), [tasks, now]);
   const rows = useMemo(() => flattenSections(buildTaskSections(visible, now)), [visible, now]);
 
   const handleToggle = useCallback(
     async (task: Task) => {
       try {
-        const updated = await toggleTask(task.id);
-        if (updated) {
-          if (updated.status === "completed") await cancelReminder(task.id);
-          else if (updated.remindAt != null && updated.remindAt > Date.now()) {
-            await scheduleReminder(task.id, updated.title, updated.remindAt);
+        const outcome = await toggleTask(task.id);
+        if (outcome.advanced) {
+          // 期次推进后提醒时间变了：重建排期（引擎按 (task_id, occurrence) 幂等）
+          await rescheduleAllReminders();
+          const next = formatDue(outcome.advanced.toDueAt, Date.now());
+          showToast(next ? `已完成本期，下次 ${next}` : "已完成本期", "success");
+        } else if (outcome.task) {
+          if (outcome.task.status === "completed") await cancelReminder(task.id);
+          else if (outcome.task.remindAt != null && outcome.task.remindAt > Date.now()) {
+            await scheduleReminder(task.id, outcome.task.title, outcome.task.remindAt);
           }
         }
       } catch (error) {
@@ -186,6 +204,10 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
           priority: input.priority ?? 0,
           dueAt: input.dueAt ?? null,
           remindAt: input.remindAt ?? null,
+          // 三态：undefined=不改、null=清空、字符串=写入。编辑器总会显式给出该键。
+          ...(input.recurrenceRule !== undefined
+            ? { recurrenceRule: input.recurrenceRule }
+            : {}),
         });
         if (!updated) {
           showToast("任务已不存在", "danger");
@@ -214,13 +236,20 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
 
   const sheetActions = useMemo<SheetAction[]>(() => {
     if (!actionTask) return [];
+    const rule = parseRecurrence(actionTask.recurrenceRule);
     return [
       {
         key: "toggle",
-        label: actionTask.status === "pending" ? "标记为完成" : "标记为未完成",
+        label:
+          actionTask.status === "pending"
+            ? rule
+              ? "完成本期"
+              : "标记为完成"
+            : "标记为未完成",
         tone: "primary",
+        hint: rule ? `${describeRecurrence(rule)}：只推进到下一期，不进入已完成` : undefined,
       },
-      { key: "edit", label: "编辑任务", hint: "标题、优先级、截止时间与提醒" },
+      { key: "edit", label: "编辑任务", hint: "标题、优先级、截止时间、重复与提醒" },
       { key: "delete", label: "删除任务", tone: "danger", hint: "删除后不再出现在任务列表" },
     ];
   }, [actionTask]);
@@ -285,8 +314,15 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
   const statTone = (value: number, tone: StatTone): StatTone => (value > 0 ? tone : "neutral");
 
   const editorTask = editorState.mode === "edit" ? editorState.task : null;
-  const emptyCopy = EMPTY_COPY[filter];
-  const showCreateAction = filter === "all" || filter === "pending";
+  const trimmedQuery = query.trim();
+  const searching = trimmedQuery.length > 0;
+  const emptyCopy = searching
+    ? {
+        title: "没有匹配的任务",
+        hint: `没有标题或备注包含「${trimmedQuery}」的任务；搜索同时匹配描述与标签`,
+      }
+    : EMPTY_COPY[filter];
+  const showCreateAction = !searching && (filter === "all" || filter === "pending");
 
   const listHeader = (
     <View style={styles.header}>
@@ -326,6 +362,19 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
         />
       </View>
 
+      <SearchField
+        value={query}
+        onChangeText={setQuery}
+        placeholder="搜索标题、描述或标签"
+        accessibilityLabel="搜索任务"
+      />
+
+      {searching ? (
+        <Text style={[styles.searchHint, { color: tokens.muted }]}>
+          找到 {visible.length} 项
+          {filter === "all" ? "" : `（当前筛选：${FILTERS.find((f) => f.key === filter)?.label}）`}
+        </Text>
+      ) : null}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -360,8 +409,14 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
             <EmptyState
               title={emptyCopy.title}
               hint={emptyCopy.hint}
-              actionLabel={showCreateAction ? "新建任务" : "查看全部任务"}
-              onAction={showCreateAction ? openCreate : () => setFilter("all")}
+              actionLabel={searching ? "清除搜索" : showCreateAction ? "新建任务" : "查看全部任务"}
+              onAction={
+                searching
+                  ? () => setQuery("")
+                  : showCreateAction
+                    ? openCreate
+                    : () => setFilter("all")
+              }
             />
           }
           contentContainerStyle={styles.listContent}
@@ -396,7 +451,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       <ActionSheet
         visible={actionOpen}
         title={actionTask?.title ?? ""}
-        subtitle={actionTask ? (formatDue(actionTask.dueAt, now) ?? "无截止时间") : undefined}
+        subtitle={actionTask ? actionSubtitle(actionTask, now) : undefined}
         actions={sheetActions}
         onAction={handleSheetAction}
         onRequestClose={() => setActionOpen(false)}
@@ -430,6 +485,9 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   screenSubtitle: {
+    fontSize: font.meta,
+  },
+  searchHint: {
     fontSize: font.meta,
   },
   stats: {

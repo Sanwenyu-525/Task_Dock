@@ -181,17 +181,19 @@ const styles = StyleSheet.create({
     // 内容滑出时裁掉超出卡片的部分，红色底才只从两侧露出
     overflow: "hidden",
   },
+  // 红底必须比卡片内缩 1dp：卡片描边是半透明的（cardBorder alpha≈0.16），
+  // 红底一旦垫在描边正下方就会沿上下边缘透出一条红线（真机实测）。
   actionZone: {
     position: "absolute",
-    top: 0,
-    bottom: 0,
+    top: 1,
+    bottom: 1,
     width: ACTION_WIDTH,
   },
   actionLeft: {
-    left: 0,
+    left: 1,
   },
   actionRight: {
-    right: 0,
+    right: 1,
   },
   actionPress: {
     flex: 1,

@@ -31,7 +31,8 @@ export function stepParamsSummary(
       return `快照 ${p.snapshot_id}`;
     }
     case "enter_scene":
-      return "（场景工作区未集成）";
+      // 运行视图未加载场景列表，直接展示 id；运行回执的 summary 带场景名。
+      return p.scene_id ? `场景 ${p.scene_id}` : "（待选择场景）";
   }
 }
 

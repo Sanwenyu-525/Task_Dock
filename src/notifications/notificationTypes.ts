@@ -41,6 +41,12 @@ export interface NotificationCardData {
   refId?: string | null;
   /** 事件原因/错误摘要（失败卡的错误原因、等待卡的等待原因） */
   detail?: string | null;
+  /** 任务提醒联动（v41）：仅关联过场景/现场且目标仍存在的提醒卡携带。
+   *  动作只在用户显式点击时执行；目标已删除的卡不携带（后端解析层已过滤）。 */
+  linkKind?: ReminderLinkKind | null;
+  linkTargetId?: string | null;
+  /** 联动目标当前名称（进入动作的确认信息用）。 */
+  linkLabel?: string | null;
 }
 
 /** 展示态卡片：合并键 + 自动消失期限（悬停/展开暂停时由栈重算）。 */
@@ -61,5 +67,17 @@ export interface DetailRow {
   warning?: boolean;
 }
 
-/** 动作标识：与 NotificationActions 的处理分支一一对应。 */
-export type ActionId = "view" | "handle" | "snooze" | "done" | "center" | "expand";
+/** 任务提醒联动的目标类型（与后端 task_reminder_links.target_kind 对应）。 */
+export type ReminderLinkKind = "workspace" | "scene";
+
+/** 动作标识：与 NotificationActions 的处理分支一一对应。
+ *  open_scene / open_workspace 是提醒联动动作，点击才执行，绝不自动启动。 */
+export type ActionId =
+  | "view"
+  | "handle"
+  | "snooze"
+  | "done"
+  | "center"
+  | "expand"
+  | "open_scene"
+  | "open_workspace";

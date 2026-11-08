@@ -742,6 +742,8 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "voice_packs"
         | "voice_assets"
         | "voice_pack_assets"
+        // 任务提醒联动（v41）：用户显式意图，行数小，快速备份也全量保存。
+        | "task_reminder_links"
         | "voice_bindings" => format!("SELECT * FROM {} ORDER BY rowid", table),
         // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
         "workflow_runs" => format!(
@@ -3215,6 +3217,48 @@ mod tests {
             )
             .unwrap();
             assert!(acts.items.len() >= 2, "{:?} 备份恢复后历史丢失", kind);
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    /// 提醒联动（v41）：完整与快速备份都必须包含 task_reminder_links，
+    /// 恢复到全新库后联动与目标名称可还原（label 在读取时重新解析）。
+    #[test]
+    fn task_reminder_links_roundtrip_in_full_and_quick_backup() {
+        let db = memdb();
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id,title,description,priority,status,category,tags,advance_minutes,created_at,updated_at)
+                 VALUES ('t1','联动任务','',2,'pending','','[]',0,?1,?1)",
+                rusqlite::params![now],
+            )?;
+            c.execute(
+                "INSERT INTO workspace_snapshots (id, name, note, source, item_count, created_at, updated_at)
+                 VALUES ('ws-1','任务现场','', 'manual', 0, ?1, ?1)",
+                rusqlite::params![now],
+            )?;
+            Ok::<_, crate::error::AppError>(())
+        })
+        .unwrap();
+        crate::commands::tasks::reminder_link_set_inner(&db, "t1", "workspace", "ws-1").unwrap();
+
+        for kind in [BackupKind::Full, BackupKind::Quick] {
+            let (_, read, dir) = write_then_read(&db, kind);
+            assert!(
+                !spilled_rows(&read, "task_reminder_links").is_empty(),
+                "{:?} 备份缺少 task_reminder_links",
+                kind
+            );
+            // 恢复到全新库：联动逐行还原且目标可解析
+            let dst = memdb();
+            import_read(&dst, &read).unwrap();
+            let link = crate::commands::tasks::reminder_link_get_inner(&dst, "t1")
+                .unwrap()
+                .expect("{:?} 备份恢复后提醒联动丢失");
+            assert_eq!(link.target_kind, "workspace");
+            assert_eq!(link.target_id, "ws-1");
+            assert_eq!(link.label, "任务现场");
             std::fs::remove_dir_all(dir).ok();
         }
     }

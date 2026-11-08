@@ -5,6 +5,33 @@ import { Platform } from "react-native";
 
 export const REMINDER_CHANNEL_ID = "task-reminders";
 
+/** 提醒通知上的动作按钮：动作 id 会原样回传给响应监听器 */
+export const REMINDER_CATEGORY_ID = "task-reminder-actions";
+export const REMINDER_ACTION_COMPLETE = "complete";
+export const REMINDER_ACTION_SNOOZE = "snooze";
+export const SNOOZE_MINUTES = 10;
+
+/**
+ * 注册动作按钮。进程内只做一次；失败时清掉缓存，下次排期还能重试。
+ * 必须在排期之前注册，否则系统不认识 categoryIdentifier，通知上没有按钮。
+ */
+let categoryReady: Promise<void> | null = null;
+
+export function ensureReminderCategory(): Promise<void> {
+  if (!categoryReady) {
+    categoryReady = Notifications.setNotificationCategoryAsync(REMINDER_CATEGORY_ID, [
+      { identifier: REMINDER_ACTION_COMPLETE, buttonTitle: "完成" },
+      { identifier: REMINDER_ACTION_SNOOZE, buttonTitle: `${SNOOZE_MINUTES} 分钟后` },
+    ])
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        categoryReady = null;
+        throw error;
+      });
+  }
+  return categoryReady;
+}
+
 /** 用任务 id 派生通知 id，重复排期自动覆盖，取消时无需额外映射表 */
 export const reminderId = (taskId: string): string => `remind-${taskId}`;
 
@@ -56,9 +83,19 @@ export async function scheduleReminder(
   const granted = await ensurePermission();
   if (!granted) return false;
 
+  // 动作按钮注册失败不影响「到点弹通知」，因此不让它拦住排期
+  await ensureReminderCategory().catch(() => undefined);
+
   await Notifications.scheduleNotificationAsync({
     identifier: reminderId(taskId),
-    content: { title: "TaskDock", body: title, sound: false },
+    content: {
+      title: "TaskDock",
+      body: title,
+      sound: false,
+      categoryIdentifier: REMINDER_CATEGORY_ID,
+      // 动作处理器靠 data.taskId 找到要操作的任务（不解析通知 id 字符串）
+      data: { kind: "task-reminder", taskId },
+    },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
       date: new Date(atMs),
@@ -74,6 +111,18 @@ export async function cancelReminder(taskId: string): Promise<void> {
   } catch {
     // 该任务本来没排期，取消失败无需上报
   }
+}
+
+/**
+ * 系统侧仍存在的已排期通知 id 集合。
+ *
+ * 用于对账：`reminder_schedule` 只是「我们排过」的记录，重启/应用更新/被系统
+ * 清理后系统可能已经丢掉这些闹钟。只信本地记录会让提醒永远不再触发，
+ * 所以每次对账都要拿系统现状核对一遍。
+ */
+export async function listScheduledNotificationIds(): Promise<Set<string>> {
+  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  return new Set(scheduled.map((item) => item.identifier));
 }
 
 /** 设置页的「发一条测试通知」，用于确认系统开关与通道是否真的生效 */
