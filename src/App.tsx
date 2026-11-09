@@ -21,6 +21,7 @@ import FullView from "./components/FullView";
 import DeferredView from "./components/DeferredView";
 import WorkspaceLauncher from "./components/navigation/WorkspaceLauncher";
 import { GlobalSearchDialog } from "./components/global-search/GlobalSearchDialog";
+import MobilePairingDialog from "./components/mobile/MobilePairingDialog";
 import OnboardingOverlay from "./components/onboarding/OnboardingOverlay";
 import ClipboardDrawer from "./components/clipboard/ClipboardDrawer";
 import TaskContextDrawer from "./components/context/TaskContextDrawer";
@@ -356,6 +357,8 @@ export default function App() {
         </div>
         <WorkspaceLauncher />
         <GlobalSearchDialog />
+        {/* 手机配对：标题栏快捷入口与设置分区共用的唯一弹层实例。 */}
+        <MobilePairingDialog />
         {/* 首次使用引导：页内卡片形态，仅完整模式且未完成时自我呈现（可跳过、
             可从帮助中心重新打开）；停靠/胶囊期随 dock-app inert 一并失效。 */}
         <OnboardingOverlay />

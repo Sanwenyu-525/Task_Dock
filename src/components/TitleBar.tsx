@@ -9,12 +9,13 @@ import { useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } fr
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Minus, PanelsTopLeft, Square, Sun, Moon, Monitor, X, ChevronDown, Palette, Clipboard,
-  Magnet, Columns2, PanelLeftClose, PinOff,
+  Magnet, Columns2, PanelLeftClose, PinOff, Smartphone,
 } from "lucide-react";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 import { useUiStore } from "../store/useUiStore";
 import { applyMode } from "../lib/bridge";
+import { openMobilePairing } from "../lib/mobilePairing";
 import { attachDragCursorSession } from "../lib/dragCursorSession";
 import { PRESET_LABELS, VISUAL_PRESETS, resolveVisualPreset } from "../lib/theme";
 import { resolveWindowMode } from "../lib/windowMode";
@@ -260,6 +261,18 @@ export default function TitleBar({ inert = false }: { inert?: boolean }) {
             />
           )}
         <span className="titlebar-divider" />
+        {/* 配对入口不只放在设置深处：任何页面一键直达同一个配对弹层。
+            极简模式保持「只有窗口操作」的克制形态，不渲染。 */}
+        {mode !== "minimal" && (
+          <button
+            className="icon-btn win-btn"
+            data-tip="配对新设备（手机）"
+            aria-label="配对新设备（手机）"
+            onClick={() => openMobilePairing()}
+          >
+            <Smartphone size={14} />
+          </button>
+        )}
         {/* 完整模式的剪贴板入口在左侧导航；紧凑/极简没有侧栏，这里保留临时入口 */}
         {mode !== "full" && (
           <button

@@ -19,6 +19,7 @@ import { useUiStore } from "../store/useUiStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useAgentsStore } from "../store/useAgentsStore";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
+import { closeMobilePairing, isMobilePairingOpen } from "../lib/mobilePairing";
 // 标题栏与品牌球的视觉契约直接从样式表读取，避免 jsdom 不计算伪元素样式。
 import themesCss from "../styles-themes.css?raw";
 
@@ -81,6 +82,42 @@ describe("TitleBar 剪贴板入口", () => {
 
     await user.click(screen.getByRole("button", { name: "打开智能剪贴板" }));
     expect(useUiStore.getState().clipboardOpen).toBe(false);
+  });
+});
+
+describe("TitleBar 手机配对快捷入口", () => {
+  beforeEach(() => {
+    useUiStore.setState({ tab: "tasks", clipboardOpen: false, clipboardLinkTask: null });
+    useAgentsStore.setState({ snapshot: null });
+    closeMobilePairing();
+    setMode("full");
+  });
+
+  afterEach(() => {
+    cleanup();
+    closeMobilePairing();
+  });
+
+  it("完整/紧凑模式点击直达配对弹层（不经过设置页）", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<TitleBar />);
+    const entry = screen.getByRole("button", { name: "配对新设备（手机）" });
+    // 提示走统一的 data-tip 契约，不用原生 title。
+    expect(entry.getAttribute("data-tip")).toBe("配对新设备（手机）");
+    await user.click(entry);
+    expect(isMobilePairingOpen()).toBe(true);
+    unmount();
+
+    setMode("compact");
+    render(<TitleBar />);
+    await user.click(screen.getByRole("button", { name: "配对新设备（手机）" }));
+    expect(isMobilePairingOpen()).toBe(true);
+  });
+
+  it("极简模式保持只有窗口操作，不渲染配对入口", () => {
+    setMode("minimal");
+    render(<TitleBar />);
+    expect(screen.queryByRole("button", { name: "配对新设备（手机）" })).toBeNull();
   });
 });
 
