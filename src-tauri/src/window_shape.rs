@@ -1355,10 +1355,13 @@ pub(crate) fn capsule_regions(
     let panel_w = ((CAPSULE_PANEL_WIDTH_CSS as f64) * scale).round() as i32;
     let panel_h = ((CAPSULE_PANEL_HEIGHT_CSS as f64) * scale).round() as i32;
     let gap = ((CAPSULE_GAP_CSS as f64) * scale).round().max(1.0) as i32;
-    // 与整窗口径一致：区域圆角比 CSS 小 2px，硬边落在透明像素上，
-    // 面板的可见圆角由 CSS 的抗锯齿弧线定义。
-    let panel_radius =
-        (((CAPSULE_PANEL_RADIUS_CSS as f64) * scale).floor() as i32 - REGION_AA_INSET).max(1);
+    // 面板区域半径必须与 CSS 完全一致：`support_rect_rgn` 已经按行取 CSS 圆角的
+    // 抗锯齿支撑像素（区域边落在 ~0 alpha 的最外像素上），不需要再内收。
+    // 2026-11-08 更正：此前按 `- REGION_AA_INSET` 取更小的半径；但**凸圆角**上
+    // 半径越小，区域在角部反而越靠外（125% 下 28 vs CSS 30，顶行 support x 小 2px），
+    // 于是区域成为 CSS 弧的超集，把面板圆角**外**的背景露成白色缺口
+    // （用户截图：面板右上角）。
+    let panel_radius = (((CAPSULE_PANEL_RADIUS_CSS as f64) * scale).round() as i32).max(1);
     if thickness <= 0 || length <= 0 {
         return None; // 退化防护：胶囊至少 1px
     }
@@ -2733,7 +2736,10 @@ mod tests {
         .unwrap();
         let p = s.panel.expect("展开态必须有面板区域");
         assert_eq!((p.x, p.y, p.width, p.height), (56 + 8, (446 - 440) / 2, 340, 440));
-        assert_eq!(p.radius, 22, "面板区域半径比 CSS 24px 内收 2px");
+        assert_eq!(
+            p.radius, 24,
+            "面板区域半径必须与 CSS 24px 一致（减小半径会让角部成为超集，露出圆角外背景）"
+        );
         // 联合包围盒 = 整块容器
         assert_eq!(s.bounds(), (0, 0, 404, 446));
         // 间隙中点必须落在区域之外（两块区域不连通）
@@ -2798,6 +2804,31 @@ mod tests {
             // 缺角探针在任何 DPI 下都必须落在翼片之外
             let (nx, ny) = s.notch_probe.unwrap();
             assert!(!poly_contains(&s.rail_polygon, nx, ny), "scale={scale}");
+        }
+    }
+
+    /// 面板区域半径必须等于 CSS 物理半径（含非整数 DPI 取整）。
+    /// 2026-11-08 回归：此前 `- REGION_AA_INSET` 让半径偏小，凸圆角上区域反而
+    /// 超出 CSS 弧，面板右上角露出圆角外的白色背景缺口。
+    #[test]
+    fn panel_region_radius_matches_css_radius_on_every_dpi() {
+        for scale in [1.0f64, 1.25, 1.5, 2.0] {
+            let s = capsule_regions(
+                2000,
+                2000,
+                scale,
+                &CapsuleParams {
+                    expanded: true,
+                    ..CAP
+                },
+            )
+            .unwrap();
+            let p = s.panel.expect("展开态必须有面板区域");
+            assert_eq!(
+                p.radius as f64,
+                (CAPSULE_PANEL_RADIUS_CSS as f64 * scale).round(),
+                "scale={scale} 面板区域半径必须等于 CSS 物理半径（不能内收）"
+            );
         }
     }
 
