@@ -105,11 +105,34 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at);
 `;
 
+// v4：手机同步 v1（仅任务）。server_rev 保存桌面端最后一次下发的版本号，
+// outbox 的 base_rev 改用它；sync_conflicts 保存 push 冲突，等用户在冲突页处理，
+// 绝不静默覆盖任何一端。
+export const MIGRATION_4 = `
+ALTER TABLE tasks ADD COLUMN server_rev INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+  op_id TEXT PRIMARY KEY NOT NULL,
+  entity TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  server_json TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_created ON sync_conflicts(created_at DESC);
+
+-- 旧 outbox 的 base_rev 记录的是本地 rev；升级时换成 server_rev（从未同步过 = 0），
+-- 否则 push 会把本地创建误判成版本冲突。
+UPDATE outbox SET base_rev = COALESCE((SELECT server_rev FROM tasks WHERE tasks.id = outbox.target_id), 0)
+ WHERE entity = 'task' AND state = 'pending';
+`;
+
 /** 解析顺序即执行顺序；末尾追加新迁移，不要插入或重排。 */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: MIGRATION_1 },
   { version: 2, sql: MIGRATION_2 },
   { version: 3, sql: MIGRATION_3 },
+  { version: 4, sql: MIGRATION_4 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

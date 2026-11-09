@@ -7,6 +7,7 @@
 
 import { create } from "zustand";
 import type { DockForm, RedockDockTarget, SnapEdge, SnapPhase } from "../lib/edgeSnap";
+import { PANEL_WIDTH_CSS } from "../lib/capsuleLayout";
 
 let feedbackSeq = 0;
 
@@ -26,6 +27,15 @@ export interface EdgeSnapUiState {
   regionUnsynced: boolean;
   /** 「已吸附 X 侧」反馈；seq 递增使同一 edge 的重复停靠也能重新触发 */
   feedback: { edge: SnapEdge; seq: number } | null;
+  /**
+   * 工具面板宽度（CSS px，280–480，默认 340）。
+   *
+   * 引擎是唯一事实源：拖拽期间逐帧写入，CapsuleDock 内的小订阅组件把它落到
+   * 面板的 `--cap-panel-w`（不经过 CapsuleDock 重渲染，避免拖宽时重渲染六个面板）。
+   */
+  panelWidth: number;
+  /** 引擎注入：调整面板宽度；`commit=true` 时持久化到设置。未启用为 null。 */
+  resizePanel: ((widthCss: number, commit: boolean) => void) | null;
   /** 引擎注入：展开功能面板（折叠态点击分类 / 托盘唤回）。未启用为 null。 */
   reveal: (() => void) | null;
   /** 引擎注入：收起功能面板（Esc / 收起按钮 / 再次点击当前分类）。 */
@@ -78,6 +88,8 @@ export interface EdgeSnapUiState {
   notifyDocked: (edge: SnapEdge) => void;
   setRegionUnsynced: (v: boolean) => void;
   clearFeedback: () => void;
+  setPanelWidth: (width: number) => void;
+  setResizePanel: (fn: ((widthCss: number, commit: boolean) => void) | null) => void;
   setReveal: (fn: (() => void) | null) => void;
   setCollapse: (fn: (() => void) | null) => void;
   setUndock: (fn: ((mode?: string) => Promise<boolean>) | null) => void;
@@ -102,6 +114,8 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
   dockedEdge: null,
   regionUnsynced: false,
   feedback: null,
+  panelWidth: PANEL_WIDTH_CSS,
+  resizePanel: null,
   reveal: null,
   collapse: null,
   undock: null,
@@ -118,6 +132,8 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
   notifyDocked: (edge) => set({ feedback: { edge, seq: ++feedbackSeq } }),
   setRegionUnsynced: (v) => set({ regionUnsynced: v }),
   clearFeedback: () => set({ feedback: null }),
+  setPanelWidth: (width) => set({ panelWidth: width }),
+  setResizePanel: (fn) => set({ resizePanel: fn }),
   setReveal: (fn) => set({ reveal: fn }),
   setCollapse: (fn) => set({ collapse: fn }),
   setUndock: (fn) => set({ undock: fn }),
@@ -141,6 +157,8 @@ export const useEdgeSnapStore = create<EdgeSnapUiState>((set) => ({
       dockedEdge: null,
       regionUnsynced: false,
       feedback: null,
+      panelWidth: PANEL_WIDTH_CSS,
+      resizePanel: null,
       reveal: null,
       collapse: null,
       undock: null,

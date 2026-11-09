@@ -11,6 +11,7 @@ import { PressableScale } from "../components/PressableScale";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { addCapture } from "../db/captures";
 import { describeError } from "../lib/errors";
+import { useWindowInsets } from "../lib/insets";
 import { useKeyboardHeight } from "../lib/keyboard";
 import type { Nav } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
@@ -27,6 +28,7 @@ export function ShareScreen({
   onDataChanged: () => void;
 }) {
   const { tokens } = useTheme();
+  const insets = useWindowInsets();
   /** 输入框在页面底部：edge-to-edge 下系统不收缩窗口，需要自己给键盘让位 */
   const keyboardHeight = useKeyboardHeight();
   const text = sharedText ?? "";
@@ -163,7 +165,13 @@ export function ShareScreen({
       </Text>
       </ScrollView>
 
-      <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.xl} />
+      {/* 保存按钮在页面底部：提示留在底部；键盘弹起时抬到键盘上沿 */}
+      <Toast
+        toast={toast}
+        onDismiss={dismissToast}
+        placement="bottom"
+        bottomOffset={keyboardHeight > 0 ? keyboardHeight + space.lg : space.lg + insets.bottom}
+      />
     </View>
   );
 }

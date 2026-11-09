@@ -67,6 +67,19 @@ function setSettings(enabled: boolean) {
   });
 }
 
+function offer(code: string) {
+  return {
+    code,
+    expires_in_secs: 120,
+    lan_ip: "192.168.1.20",
+    port: 47822,
+    server_name: "STUDIO-PC",
+    instance_id: "instance-1",
+    fingerprint: "1A2B3C4D",
+    qr_payload: `taskdock://pair?v=1&host=192.168.1.20&port=47822&code=${code}&name=STUDIO-PC&instance=instance-1&fp=1A2B3C4D`,
+  };
+}
+
 describe("MobilePairingDialog", () => {
   const update = vi.fn(async () => undefined);
 
@@ -103,6 +116,29 @@ describe("MobilePairingDialog", () => {
     expect(await screen.findByText("482913")).toBeTruthy();
     expect(screen.getByRole("img", { name: "配对新设备" })).toBeTruthy();
     expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("重新生成原地换码：二维码路径更新，不回到加载态", async () => {
+    setSettings(true);
+    statusMock.mockResolvedValue(status());
+    startMock.mockResolvedValueOnce(offer("111111")).mockResolvedValueOnce(offer("222222"));
+
+    render(<MobilePairingDialog />);
+    act(() => openMobilePairing());
+    await screen.findByText("111111");
+    const before = document.querySelector(".mobile-sync-qr svg path")?.getAttribute("d");
+    expect(before).toBeTruthy();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "重新生成" }));
+
+    expect(await screen.findByText("222222")).toBeTruthy();
+    const after = document.querySelector(".mobile-sync-qr svg path")?.getAttribute("d");
+    expect(after).toBeTruthy();
+    expect(after).not.toBe(before);
+    // 原地替换：不经过 loading 文案，也不额外调用取消接口。
+    expect(screen.queryByText("正在生成配对码…")).toBeNull();
+    expect(cancelMock).not.toHaveBeenCalled();
   });
 
   it("服务关闭时在弹层内一键开启，不必先去设置页", async () => {

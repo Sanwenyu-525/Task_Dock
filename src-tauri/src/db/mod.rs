@@ -1394,6 +1394,50 @@ CREATE TABLE mobile_devices (
 CREATE INDEX idx_mobile_devices_revoked ON mobile_devices(revoked_at);
 "#,
     ),
+    (
+        43,
+        r#"
+-- v43（手机同步 v1）：桌面端变更日志与 push 幂等表。
+-- 同步协议见 docs/MOBILE_STACK.md §3；移动端只拉取任务（notes/captures 后续追加）。
+-- 用触发器覆盖所有写路径（命令层、工作流、内部维护 SQL），避免逐条改业务命令：
+-- - INSERT/UPDATE：记录当前 updated_at，seq 即该记录的同步版本号；
+-- - DELETE：写墓碑（tasks 没有软删除列），手机端据此删本地副本。
+-- 表属于本机同步状态，不进备份（见 backup::is_local_transient_table）。
+CREATE TABLE sync_changes (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity TEXT NOT NULL,
+  id TEXT NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+  changed_at TEXT NOT NULL
+);
+CREATE INDEX idx_sync_changes_entity_id ON sync_changes(entity, id, seq);
+
+-- push 幂等：同一 op_id 重复提交只 ack，不重复落库（协议 §3.3）。
+CREATE TABLE sync_ops (
+  op_id TEXT PRIMARY KEY NOT NULL,
+  device_id TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+);
+CREATE INDEX idx_sync_ops_device ON sync_ops(device_id, applied_at);
+
+-- 基线：升级后手机首次拉取即可看到当前全部任务；seq 从 1 开始即初始版本号。
+INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  SELECT 'task', id, 0, updated_at FROM tasks ORDER BY updated_at ASC;
+
+CREATE TRIGGER trg_sync_tasks_insert AFTER INSERT ON tasks BEGIN
+  INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  VALUES ('task', NEW.id, 0, NEW.updated_at);
+END;
+CREATE TRIGGER trg_sync_tasks_update AFTER UPDATE ON tasks BEGIN
+  INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  VALUES ('task', NEW.id, 0, NEW.updated_at);
+END;
+CREATE TRIGGER trg_sync_tasks_delete AFTER DELETE ON tasks BEGIN
+  INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  VALUES ('task', OLD.id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -1996,6 +2040,10 @@ pub struct Settings {
     /// 边缘吸附展示形态：`capsule`（默认，老库缺键自动兼容）| `full`。
     #[serde(default = "default_snap_display_mode")]
     pub snap_display_mode: String,
+    /// 工具面板宽度（CSS px，280–480）：停靠期拖拽面板内侧边调整并持久化。
+    /// 前端拖拽即设置入口；旧库缺键按默认 340，不做迁移。
+    #[serde(default = "default_capsule_panel_width")]
+    pub capsule_panel_width: u32,
     #[serde(default)]
     pub autostart: bool,
     #[serde(default = "default_true")]
@@ -2287,6 +2335,10 @@ fn default_clear_foreground() -> String {
 }
 fn default_snap_display_mode() -> String {
     "capsule".into()
+}
+/// 工具面板默认宽度（与前端 `PANEL_WIDTH_CSS` / window_shape 常量一致）。
+fn default_capsule_panel_width() -> u32 {
+    340
 }
 fn default_true() -> bool {
     true

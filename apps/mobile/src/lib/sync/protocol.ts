@@ -38,6 +38,11 @@ export interface Op {
   id: string;
   base_rev: number;
   patch: SyncPatch;
+  /**
+   * v1 扩展：删除操作没有字段补丁，单独标记。服务端按墓碑处理，不与 patch 同时使用。
+   * 缺省 = 普通 upsert。
+   */
+  deleted?: boolean;
 }
 
 export type ConflictReason =

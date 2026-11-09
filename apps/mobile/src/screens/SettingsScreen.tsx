@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import appConfig from "../../app.json";
 import { Badge } from "../components/Badge";
 import { GlassCard } from "../components/GlassCard";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
@@ -10,8 +11,10 @@ import { SettingActionRow } from "../components/SettingActionRow";
 import { StatCard } from "../components/StatCard";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { listCaptures } from "../db/captures";
+import { listReminderSchedules } from "../db/reminderSchedule";
+import { SCHEMA_VERSION } from "../db/schema";
 import { loadConnection, type PairedConnection } from "../db/syncConnection";
-import { listTasks } from "../db/tasks";
+import { countPendingOutbox, listTasks } from "../db/tasks";
 import { describeError } from "../lib/errors";
 import type { Nav } from "../lib/nav";
 import {
@@ -47,6 +50,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
         <Text accessibilityRole="header" style={[styles.sectionTitle, { color: tokens.text }]}>
           {title}
         </Text>
+        {/* 节标题右侧拉一条 hairline 收尾：与任务分组头同一套「标题 + 细线」节奏 */}
+        <View style={[styles.sectionRule, { backgroundColor: tokens.separator }]} />
       </View>
       {children}
     </GlassCard>
@@ -101,6 +106,8 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
   const { tokens, mode, setMode } = useTheme();
   const reduceMotion = useReduceMotion();
   const [summary, setSummary] = useState({ tasks: 0, captures: 0, completed: 0 });
+  const [pendingOps, setPendingOps] = useState(0);
+  const [scheduledReminders, setScheduledReminders] = useState(0);
   const [syncConnection, setSyncConnection] = useState<PairedConnection | null>(null);
   const [permissionLabel, setPermissionLabel] = useState("读取中…");
   const [toast, setToast] = useState<ToastMessage | null>(null);
@@ -114,18 +121,25 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
 
   const refresh = useCallback(async () => {
     try {
-      const [tasks, captures, label, connection] = await Promise.all([
+      const [tasks, captures, label, connection, pending, schedules] = await Promise.all([
         listTasks(),
         listCaptures(),
         getPermissionLabel(),
         // 连接元数据读取失败不应把整页汇总拖失败：按未配对展示。
         loadConnection().catch(() => null),
+        // 摘要区不能因为一条统计失败就整页降级
+        countPendingOutbox().catch(() => 0),
+        listReminderSchedules().catch(() => []),
       ]);
       setSummary({
         tasks: tasks.length,
         captures: captures.length,
         completed: tasks.filter((task) => task.status === "completed").length,
       });
+      setPendingOps(pending);
+      setScheduledReminders(
+        schedules.filter((entry) => entry.occurrenceAt >= Date.now()).length,
+      );
       setPermissionLabel(label);
       setSyncConnection(connection);
     } catch (error) {
@@ -167,7 +181,11 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
           <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
             设置
           </Text>
-          <Text style={[styles.subtitle, { color: tokens.muted }]}>外观、提醒与本地数据</Text>
+          <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
+            {syncConnection
+              ? `已配对 ${syncConnection.serverName} · 任务可手动同步`
+              : "未连接桌面端 · 数据仅在本机"}
+          </Text>
         </View>
 
         <View style={styles.tiles}>
@@ -240,7 +258,8 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
             onPress={() => void testNotification()}
             style={({ pressed }) => [
               styles.ghostButton,
-              { borderColor: tokens.cardBorder, opacity: pressed ? 0.7 : 1 },
+              // 原型的次按钮是蓝色描边；cardBorder 在浅色下几乎看不见，弱化了可点性
+              { borderColor: tokens.accent, opacity: pressed ? 0.7 : 1 },
             ]}
           >
             <Text style={[styles.ghostText, { color: tokens.accent }]}>发送测试通知</Text>
@@ -299,20 +318,24 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
         </Section>
 
         <Section title="本地数据">
+          {/* 对齐原型：这一节给真实的本地数据读数，而不是一段泛化说明 */}
+          <InfoRow label="数据库" value={`SQLite v${SCHEMA_VERSION} · WAL`} />
+          <InfoRow label="已排期提醒" value={`${scheduledReminders} 条`} />
+          <InfoRow label="本地待发操作" value={`${pendingOps} 条`} />
           <Text style={[styles.hint, { color: tokens.muted }]}>
-            当前为独立模式：所有写操作只落在本机，操作队列等待桌面端配对后消费。
+            写操作先落本机并记入队列；任务同步会消费任务操作，收集箱/笔记仍留在本地。
           </Text>
         </Section>
 
         <Section title="关于">
-          {/* 版本号与 app.json 的 version 保持同步；升级版本时两处一起改 */}
-          <InfoRow label="版本" value="0.1.3" />
+          {/* 版本号直接读 app.json，避免每轮发版后忘记同步这里的文案 */}
+          <InfoRow label="版本" value={appConfig.expo.version} />
           <InfoRow label="后端" value="本地 SQLite" />
           <InfoRow label="数据范围" value="只在本机" />
         </Section>
       </ScrollView>
 
-      <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.lg} />
+      <Toast toast={toast} onDismiss={dismissToast} placement="top" />
     </View>
   );
 }
@@ -348,6 +371,11 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
   sectionTitle: { fontSize: font.title, fontWeight: "700" },
+  sectionRule: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    marginLeft: space.xs,
+  },
   segment: {
     alignItems: "center",
     gap: 5,

@@ -119,14 +119,20 @@ const snapshotWith = (...runs: AgentRun[]): AgentSnapshot => ({
 
 const reveal = vi.fn();
 const collapse = vi.fn();
+const resizePanel = vi.fn();
 
-function mountAt(phase: "docked-hidden" | "docked-revealed", edge = "left" as const) {
+function mountAt(
+  phase: "docked-hidden" | "docked-revealed",
+  edge: "left" | "right" | "top" | "bottom" = "left",
+) {
   useEdgeSnapStore.setState({
     phase,
     dockedEdge: edge,
     candidateEdge: null,
     reveal,
     collapse,
+    resizePanel,
+    panelWidth: 340,
   });
   return render(<CapsuleDock />);
 }
@@ -134,6 +140,7 @@ function mountAt(phase: "docked-hidden" | "docked-revealed", edge = "left" as co
 beforeEach(() => {
   reveal.mockReset();
   collapse.mockReset();
+  resizePanel.mockReset();
   // active 是模块级 store，会跨用例残留，必须复位到默认分类
   useCapsuleStore.setState({ active: "tasks" });
   useTasksStore.setState({ stats: null });
@@ -259,6 +266,59 @@ describe("CapsuleDock · 面板统一关闭入口", () => {
     expect(document.activeElement).toBe(document.body);
     // 关闭不改分类：下次展开仍是应用面板
     expect(useCapsuleStore.getState().active).toBe("apps");
+  });
+});
+
+describe("CapsuleDock · 面板宽度拖拽入口", () => {
+  it("展开态：面板写入 --cap-panel-w，并渲染可访问的宽度手柄", async () => {
+    const { container } = mountAt("docked-revealed");
+    const panel = container.querySelector(".capsule-panel") as HTMLElement;
+    expect(panel.style.getPropertyValue("--cap-panel-w")).toBe("340px");
+
+    const handle = await screen.findByRole("separator", { name: "调整工具面板宽度" });
+    expect(panel.contains(handle)).toBe(true);
+    expect(handle.getAttribute("aria-orientation")).toBe("vertical");
+    expect(handle.getAttribute("aria-valuemin")).toBe("280");
+    expect(handle.getAttribute("aria-valuemax")).toBe("480");
+    expect(handle.getAttribute("aria-valuenow")).toBe("340");
+    // 不是窗口拖拽热区：按手柄不会让标题进入 dragging
+    expect(handle.hasAttribute("data-tauri-drag-region")).toBe(false);
+  });
+
+  it("store 里的宽度变化即时落到面板变量（拖拽期间只重渲染订阅组件）", async () => {
+    const { container } = mountAt("docked-revealed");
+    const panel = container.querySelector(".capsule-panel") as HTMLElement;
+    act(() => useEdgeSnapStore.getState().setPanelWidth(438));
+    await waitFor(() =>
+      expect(panel.style.getPropertyValue("--cap-panel-w")).toBe("438px"),
+    );
+    expect(screen.getByRole("separator").getAttribute("aria-valuenow")).toBe("438");
+  });
+
+  it("折叠态/引擎未注入 resizePanel 时不渲染手柄，面板仍写入默认宽度", () => {
+    const folded = mountAt("docked-hidden");
+    expect(folded.container.querySelector(".cap-resize")).toBeNull();
+    folded.unmount();
+
+    // 不经过 mountAt：它会重新注入 resizePanel mock
+    useEdgeSnapStore.setState({
+      phase: "docked-revealed",
+      dockedEdge: "left",
+      resizePanel: null,
+      panelWidth: 340,
+    });
+    const { container } = render(<CapsuleDock />);
+    expect(container.querySelector(".cap-resize")).toBeNull();
+    const panel = container.querySelector(".capsule-panel") as HTMLElement;
+    expect(panel.style.getPropertyValue("--cap-panel-w")).toBe("340px");
+  });
+
+  it("四个停靠边都渲染手柄（上/下停靠的宽度对称展开由引擎映射）", async () => {
+    for (const edge of ["left", "right", "top", "bottom"] as const) {
+      const view = mountAt("docked-revealed", edge);
+      expect(await screen.findByRole("separator", { name: "调整工具面板宽度" })).toBeTruthy();
+      view.unmount();
+    }
   });
 });
 

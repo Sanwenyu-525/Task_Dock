@@ -22,6 +22,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "clear_foreground",
     "snap_enabled",
     "snap_display_mode",
+    // 工具面板宽度（CSS px，280–480）：停靠期拖拽调整，拖拽即设置入口
+    "capsule_panel_width",
     "autostart",
     "hotkey_enabled",
     "http_enabled",
@@ -165,6 +167,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "clear_foreground" => enum_of(v, key, &["auto", "dark", "light"]),
         // 边缘吸附展示形态：胶囊隐藏（默认）| 完整面板
         "snap_display_mode" => enum_of(v, key, &["capsule", "full"]),
+        // 工具面板宽度（CSS px）：与前端 PANEL_MIN/MAX_WIDTH_CSS、window_shape 同步
+        "capsule_panel_width" => int_in_range(v, key, 280, 480),
         "snap_enabled"
         | "autostart"
         | "hotkey_enabled"
@@ -755,6 +759,29 @@ mod tests {
             err.to_string().contains("未知设置键"),
             "未知键不得被静默忽略"
         );
+    }
+
+    /// 工具面板宽度：280–480 整数，缺键走 Settings 默认 340；越界/错误类型拒绝。
+    #[test]
+    fn capsule_panel_width_is_validated_and_allowlisted() {
+        assert!(ALLOWED_KEYS.contains(&"capsule_panel_width"));
+        for width in [280, 340, 480] {
+            assert!(
+                validate_setting("capsule_panel_width", &serde_json::json!(width)).is_ok(),
+                "{width} 必须合法"
+            );
+        }
+        for width in [0, 279, 481, 999] {
+            assert!(
+                validate_setting("capsule_panel_width", &serde_json::json!(width)).is_err(),
+                "{width} 必须越界拒绝"
+            );
+        }
+        assert!(
+            validate_setting("capsule_panel_width", &serde_json::json!("340")).is_err(),
+            "字符串必须拒绝"
+        );
+        assert_eq!(Settings::default().capsule_panel_width, 340);
     }
 
     #[test]

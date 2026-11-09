@@ -23,7 +23,8 @@
 | `created_at` / `updated_at` | INTEGER NOT NULL | epoch ms |
 | `completed_at` | INTEGER NULL | 转为完成时写入，恢复待办清空 |
 | `deleted_at` | INTEGER NULL | 软删除时间；非空即视为不存在 |
-| `rev` | INTEGER NOT NULL DEFAULT 0 | 同步版本号，每次写操作 +1 |
+| `rev` | INTEGER NOT NULL DEFAULT 0 | 本地写操作计数器，每次写 +1 |
+| `server_rev` | INTEGER NOT NULL DEFAULT 0 | v4：桌面端最后下发的版本号；push 的 `base_rev` 来源，0=从未同步 |
 
 索引：`(status, due_at)`、`updated_at`、`due_at`。
 
@@ -121,11 +122,14 @@ payload 形态（当前实现）：
 ## 4. `rev` 与 outbox
 
 - 每次业务写入（新建 / 编辑 / 完成 / 推进期次 / 软删除）在**同一事务**内：
-  改业务表（`rev + 1`）+ 写一条 outbox（`base_rev = 写入前的 rev`）。
-- `base_rev` 是将来冲突判定的基线：服务端记录 `rev` 与 `base_rev` 不一致即说明期间被别处改过。
-- 独立模式下 outbox 只累积不发送；界面「待同步」显示 `COUNT(*)`，不代表正在同步。
+  改业务表（`rev + 1`）+ 写一条 outbox。
+- **任务**（v4）的 `base_rev` 取写入前的 `server_rev`（服务端版本），不是本地 `rev`；
+  从未同步过为 0。`server_rev` 由 pull 应用时写入，push 成功后再 pull 回填。
+- capture / note 尚未接同步，仍沿用本地 `rev` 作为 `base_rev`；接入时必须改为 `server_rev`。
+- 独立模式下 outbox 只累积不发送；任务同步只消费 `entity='task'`，界面的「待发送任务」
+  只统计任务，设置页「本地待发操作」统计全部实体。
 - 已知不一致（P3，未修）：`captures` 的删除与转任务**没有** `rev + 1`，`base_rev` 固定用旧值。
-  `tasks` 已全部自增。接同步前必须统一，否则收集箱的冲突判定会失真。
+  `tasks`/`notes` 已全部自增。收集箱接同步前必须统一。
 
 ## 5. 幂等
 
@@ -182,9 +186,9 @@ payload 形态（当前实现）：
 ## 8. 删除与墓碑
 
 - 当前所有删除都是软删除（`deleted_at`），行保留，读取处一律过滤。
-- 独立模式不生成墓碑表（设计稿里的 `tombstones` 未建）；将来接同步时由 outbox 的
-  `delete` 操作 + `deleted_at` 生成。
-- 软删除同时 `rev + 1`（tasks），保证同步能看出「这行删过」。
+- 手机端不建墓碑表：本地删除写 outbox 的 `delete` 操作；桌面端 `tasks` 的 DELETE 触发器
+  写墓碑，手机 pull 收到 `deleted=true` 后只软删除本地副本，不反推重建。
+- 软删除同时 `rev + 1`（tasks），保证本地写路径可追踪。
 
 ## 9. 与 `docs/MOBILE_STACK.md` 设计稿的差异
 
@@ -192,11 +196,23 @@ payload 形态（当前实现）：
 
 | 设计稿 | 现状 | 原因 |
 |---|---|---|
-| `notes` 表 | v3 已建（本机 CRUD） | 2026-11-08 按原型落地；同步/合并仍以设计稿为准，`server_rev`/墓碑未建 |
-| `server_rev` / `dirty` 列 | 未建，用 `rev` + `outbox.base_rev` | 独立模式没有服务端版本；先保证写路径统一 |
-| `tombstones` 表 | 未建 | 没有同步消费者，墓碑无从推进 |
+| `notes` 表 | v3 已建（本机 CRUD） | 2026-11-08 按原型落地；note 同步尚未接入 |
+| `server_rev` / `dirty` 列 | **tasks 已建 server_rev（v4）**；captures/notes 未建 | 任务同步需要服务端版本；其余实体接同步时再补 |
+| `tombstones` 表 | 手机端未建；桌面端由 `sync_changes` 记录墓碑 | 手机只消费墓碑并软删除本地副本 |
 | `outbox.patch` 列 | 实际列名 `payload` | 与桌面端命名习惯统一 |
-| `tasks.dirty` | 无 | 同上，用 outbox 是否存在待发操作表达 |
+| `tasks.dirty` | 无 | 用 outbox 是否存在待发操作表达 |
+
+### 9.1 同步元数据（v4，2026-11-09）
+
+| 数据 | 位置 | 说明 |
+|---|---|---|
+| `tasks.server_rev` | `tasks` 列 | 桌面端最后下发的版本号；push 的 `base_rev` |
+| `sync_conflicts` | 手机 SQLite | `op_id`、`entity`、`target_id`、`reason`、`server_json`、`created_at`；冲突页读取 |
+| 同步游标 | `kv['sync.cursor.v1']` | 服务端 `seq`，pull 原样回传 |
+| 最近结果 | `kv['sync.last_result.v1']` | 时间、接收/发送/冲突数、错误摘要 |
+
+旧 outbox 在 v4 迁移时把 `base_rev` 从本地 `rev` 改写为 `server_rev`（从未同步为 0），避免
+历史积压操作首次同步时被误判冲突。
 
 ## 10. 配对凭据与连接元数据（2026-11-08）
 

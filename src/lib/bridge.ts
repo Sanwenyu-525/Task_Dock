@@ -327,6 +327,11 @@ export interface Settings {
    * 完整面板停靠不强制置顶；仅影响停靠后的展示，不改变窗口生命周期。
    */
   snap_display_mode: "capsule" | "full";
+  /**
+   * 工具面板宽度（CSS px，280–480）：停靠期拖拽面板内侧边调整并持久化。
+   * 旧库缺键时后端返回默认 340；前端读侧仍按胶囊契约收敛。
+   */
+  capsule_panel_width: number;
   autostart: boolean;
   hotkey_enabled: boolean;
   http_enabled: boolean;
@@ -1656,10 +1661,16 @@ export type CapsuleRegionMode = "off" | "rail" | "panel" | "tab";
  * 轨道（折叠态）或「轨道 ∪ 面板」（展开态），区域外不绘制、不命中鼠标。
  * **窗口位置与尺寸不变**——这是命中区稳定的前提。
  * `seq` 为前端单调序号：原生侧据此丢弃迟到的旧请求，保证最终区域由最新状态决定。
+ * `panelWidthCss` 是工具面板当前宽度（280–480）：拖拽改变宽度时窗口不动，
+ * 只按新宽度重写面板矩形；缺省时由后端按默认 340 处理。
  * 返回 false 表示应用失败或被乱序保护丢弃（前端按可见性兜底，不得假设胶囊形态生效）。
  */
-export const applyWindowCapsule = (mode: CapsuleRegionMode, edge: string, seq: number) =>
-  invoke<boolean>("apply_window_capsule", { mode, edge, seq });
+export const applyWindowCapsule = (
+  mode: CapsuleRegionMode,
+  edge: string,
+  seq: number,
+  panelWidthCss?: number,
+) => invoke<boolean>("apply_window_capsule", { mode, edge, seq, panelWidthCss });
 
 /**
  * 拖拽磁力参数（CSS px）：吸引范围 / 最大额外位移 / 脱离拖动距离。

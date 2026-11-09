@@ -29,6 +29,8 @@ export interface Task {
   updatedAt: number;
   completedAt: number | null;
   rev: number;
+  /** 桌面端最后下发的版本号；push 的 base_rev 来源。0 = 从未同步过。 */
+  serverRev: number;
 }
 
 export interface Capture {

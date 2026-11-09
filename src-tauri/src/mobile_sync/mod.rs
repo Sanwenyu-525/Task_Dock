@@ -28,6 +28,7 @@ use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
 
 pub mod server;
+pub mod sync;
 
 /// 协议版本：手机端据此拒绝不兼容的桌面端。
 pub const API_VERSION: u32 = 1;
@@ -745,7 +746,7 @@ fn generate_device_token() -> String {
     format!("{a}{b}")
 }
 
-fn hash_token(token: &str) -> String {
+pub(crate) fn hash_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     let mut out = String::with_capacity(64);
     for byte in digest {

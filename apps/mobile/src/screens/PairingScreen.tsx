@@ -9,6 +9,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Keyboard,
   Linking,
   Platform,
@@ -24,7 +26,7 @@ import { AppBar } from "../components/AppBar";
 import { Badge } from "../components/Badge";
 import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { Toast, TOAST_TOP_PUSH, type ToastMessage, type ToastTone } from "../components/Toast";
 import { loadConnection, saveConnection } from "../db/syncConnection";
 import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
@@ -40,6 +42,7 @@ import {
 import { pairWithDesktop, pairingErrorMessage } from "../lib/sync/pairClient";
 import { consumePendingPairing, subscribePendingPairing } from "../lib/sync/pendingPairing";
 import { useTheme } from "../theme/ThemeProvider";
+import { useReduceMotion } from "../theme/MotionProvider";
 import { font, radius, space } from "../theme/tokens";
 
 const STEPS = ["扫描", "确认指纹", "完成"];
@@ -59,6 +62,7 @@ interface SuccessState {
 export function PairingScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
+  const reduceMotion = useReduceMotion();
   const [permission, requestPermission] = useCameraPermissions();
   const [manual, setManual] = useState(false);
   const [target, setTarget] = useState<PairingTarget | null>(null);
@@ -70,8 +74,45 @@ export function PairingScreen({ nav }: { nav: Nav }) {
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
   const lastInvalidScan = useRef(0);
+  /** 0 = 取景框顶部，1 = 底部；在框内上下往返（位移走 native driver）。 */
+  const scanProgress = useRef(new Animated.Value(0.5)).current;
 
   const keyboardHeight = useKeyboardHeight(manual && !target && !success);
+
+  // 扫描线只在相机真正取景时往返；减少动态或未授权时停在正中（不消耗帧）。
+  useEffect(() => {
+    if (reduceMotion || !permission?.granted) {
+      scanProgress.stopAnimation();
+      scanProgress.setValue(0.5);
+      return;
+    }
+    scanProgress.setValue(0);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scanProgress, {
+          toValue: 1,
+          duration: 1600,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(scanProgress, {
+          toValue: 0,
+          duration: 1600,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+    };
+  }, [permission?.granted, reduceMotion, scanProgress]);
+
+  const scanTranslateY = scanProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-52, 52],
+  });
 
   const showToast = useCallback((text: string, tone: ToastTone = "info") => {
     toastSeq.current += 1;
@@ -467,7 +508,15 @@ export function PairingScreen({ nav }: { nav: Nav }) {
                       1.1:1（浅色）/ 1.3:1（深色），线稿几乎不可见。改用 accent 后对 ink
                       浅色 3.31:1、深色 8.27:1，满足非文字图形 3:1，也与四角括号同色。 */}
                   <View pointerEvents="none" style={[styles.reticle, { borderColor: tokens.accent }]}>
-                    <View style={[styles.scanLine, { backgroundColor: tokens.accent }]} />
+                    <Animated.View
+                      style={[
+                        styles.scanLine,
+                        {
+                          backgroundColor: tokens.accent,
+                          transform: [{ translateY: scanTranslateY }],
+                        },
+                      ]}
+                    />
                   </View>
                   {!permission?.granted ? (
                     <View style={styles.cameraPrompt} pointerEvents="box-none">
@@ -519,7 +568,7 @@ export function PairingScreen({ nav }: { nav: Nav }) {
         </Text>
       </ScrollView>
 
-      <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.xl} />
+      <Toast toast={toast} onDismiss={dismissToast} placement="top" topOffset={TOAST_TOP_PUSH} />
     </View>
   );
 }

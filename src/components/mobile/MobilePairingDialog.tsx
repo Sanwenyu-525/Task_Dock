@@ -71,6 +71,7 @@ export default function MobilePairingDialog() {
   const [paired, setPaired] = useState<MobileSyncPairedNotice | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [attempt, setAttempt] = useState(0);
   /** 本地倒计时截止时间（毫秒）：不依赖轮询回包，避免刚打开时把有效二维码误判为过期 */
   const [deadline, setDeadline] = useState<number | null>(null);
@@ -116,12 +117,40 @@ export default function MobilePairingDialog() {
     }
   }, [update]);
 
+  // 重新生成只替换服务端会话（start_pairing 原子覆盖旧会话），不先取消：
+  // 取消会让弹层回到 loading 再重建，出现一次可见的空白闪烁。这里原地换码，
+  // 旧二维码保持可见到新码返回，随后按新 code 重挂载并播放一次淡入。
   const regenerate = useCallback(() => {
-    epoch.current += 1;
-    void mobileSyncCancelPairing().finally(() => {
-      setAttempt((n) => n + 1);
-    });
+    if (pairBusy.current) return;
+    const myEpoch = epoch.current;
+    pairBusy.current = true;
+    setRegenerating(true);
+    setError(null);
+    void mobileSyncStartPairing()
+      .then((next) => {
+        if (epoch.current !== myEpoch) {
+          // 弹层已关闭/重来：作废刚落库的会话，避免留下 120s 空窗。
+          void mobileSyncCancelPairing().catch(() => undefined);
+          return;
+        }
+        setOffer(next);
+        setDeadline(Date.now() + next.expires_in_secs * 1000);
+        setClock(Date.now());
+        setPhase("ready");
+      })
+      .catch((reason) => {
+        if (epoch.current === myEpoch) {
+          setError(localizedErrorMessage(reason));
+          setPhase("error");
+        }
+      })
+      .finally(() => {
+        pairBusy.current = false;
+        setRegenerating(false);
+      });
   }, []);
+
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
   // 打开（或重试）后：探测服务 → 等待绑定 → 生成一次性配对码。
   useEffect(() => {
@@ -215,7 +244,8 @@ export default function MobilePairingDialog() {
       mobileSyncStatus()
         .then((next) => {
           if (cancelled) return;
-          if (next.paired_device) {
+          // 重新生成期间旧会话可能刚好配对成功：以新码为准，不把旧结果当成本次成功。
+          if (next.paired_device && !pairBusy.current) {
             setPaired(next.paired_device);
             setError(null);
             notifyMobileSyncChanged();
@@ -256,9 +286,16 @@ export default function MobilePairingDialog() {
         {t("settings.mobileSync.pairCancel")}
       </button>
       {phase === "ready" || phase === "error" ? (
-        <button className="btn" onClick={regenerate}>
+        <button
+          className="btn"
+          onClick={phase === "error" ? retry : regenerate}
+          disabled={regenerating}
+          aria-busy={regenerating}
+        >
           {phase === "ready"
-            ? t("settings.mobileSync.pairRegenerate")
+            ? regenerating
+              ? t("settings.mobileSync.pairRegenerating")
+              : t("settings.mobileSync.pairRegenerate")
             : t("settings.mobileSync.retry")}
         </button>
       ) : null}
@@ -324,7 +361,7 @@ export default function MobilePairingDialog() {
       ) : offer && qr ? (
         <div className="mobile-sync-pair">
           {remaining > 0 ? (
-            <div className="mobile-sync-qr">
+            <div key={offer.code} className="mobile-sync-qr">
               <svg
                 viewBox={`0 0 ${qr.size} ${qr.size}`}
                 width={176}
@@ -340,7 +377,7 @@ export default function MobilePairingDialog() {
           ) : null}
           <p className="mobile-sync-hint">{t("settings.mobileSync.pairScanHint")}</p>
           <span className="mobile-sync-hint">{t("settings.mobileSync.pairCodeLabel")}</span>
-          <div className="mobile-sync-code" aria-label={offer.code}>
+          <div className="mobile-sync-code" aria-label={offer.code} aria-live="polite">
             {offer.code}
           </div>
           <span

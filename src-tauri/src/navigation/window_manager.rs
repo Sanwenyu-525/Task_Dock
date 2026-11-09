@@ -937,7 +937,9 @@ mod imp {
     }
 
     pub(super) fn close_windows_impl(windows: &[WindowInfo]) -> Vec<CloseWindowOutcome> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            IsWindowVisible, PostMessageW, WM_CLOSE,
+        };
         let mut posted: Vec<isize> = Vec::new();
         for w in windows {
             let h = w.hwnd as HWND;
@@ -952,9 +954,16 @@ mod imp {
         }
         // 有界轮询核实：WM_CLOSE 异步，应用可能在弹保存确认；超时后仍在的
         // 窗口如实标 closed=false，不重试不强杀。
+        //
+        // 「关闭成功」有两类结果：句柄消失（普通窗口），或窗口从可见变为不可见
+        // （托盘驻留类应用把「关闭」实现为隐藏到托盘，句柄仍然存在）。后者在
+        // 用户视角窗口已经关闭；只按 IsWindow 判存活会把成功的关闭误报成
+        // 「还有窗口未关闭」，并把「运行中」快捷区一直留在「有窗口」状态。
         let deadline = Instant::now() + CLOSE_VERIFY_TIMEOUT;
         loop {
-            posted.retain(|&h| unsafe { IsWindow(h as HWND) != 0 });
+            posted.retain(|&h| unsafe {
+                IsWindow(h as HWND) != 0 && IsWindowVisible(h as HWND) != 0
+            });
             if posted.is_empty() || Instant::now() >= deadline {
                 break;
             }
@@ -1324,11 +1333,13 @@ mod tests {
         use windows_sys::Win32::System::Threading::GetCurrentThreadId;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostThreadMessageW,
-            RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WM_QUIT, WNDCLASSW,
+            RegisterClassW, ShowWindow, TranslateMessage, MSG, SW_SHOWNA, WM_QUIT, WNDCLASSW,
+            WS_POPUP,
         };
 
-        // 独立线程创建 message-only 窗口并跑消息泵：WM_CLOSE 由 DefWindowProc
-        // 处理为 DestroyWindow，主线程的轮询因此能看到句柄真实消失。
+        // 独立线程创建真实可见窗口（零尺寸弹窗，不会真的出现在屏幕上）并跑消息泵：
+        // WM_CLOSE 由 DefWindowProc 处理为 DestroyWindow，主线程的轮询因此能看到
+        // 句柄真实消失。窗口必须可见，才能覆盖「句柄消失 = 关闭成功」这条路径。
         let (ready_tx, ready_rx) = mpsc::channel::<(isize, u32)>();
         let worker = std::thread::spawn(move || {
             unsafe {
@@ -1344,12 +1355,12 @@ mod tests {
                     0,
                     class_name.as_ptr(),
                     std::ptr::null(),
+                    WS_POPUP,
                     0,
                     0,
                     0,
                     0,
-                    0,
-                    HWND_MESSAGE,
+                    std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     wc.hInstance,
                     std::ptr::null(),
@@ -1357,6 +1368,8 @@ mod tests {
                 if hwnd.is_null() {
                     return;
                 }
+                // SW_SHOWNA：置 WS_VISIBLE 但不激活；零尺寸，不会干扰桌面
+                ShowWindow(hwnd, SW_SHOWNA);
                 if ready_tx.send((hwnd as isize, GetCurrentThreadId())).is_err() {
                     return;
                 }
@@ -1379,6 +1392,97 @@ mod tests {
         assert!(out[0].closed, "WM_CLOSE 投递后消息泵应销毁窗口");
 
         // 收尾：窗口已销毁，GetMessage 不会自行返回，投 WM_QUIT 结束消息泵
+        unsafe {
+            PostThreadMessageW(thread_id, WM_QUIT, 0 as WPARAM, 0 as LPARAM);
+        }
+        worker.join().ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn close_windows_counts_tray_hide_as_closed() {
+        use std::sync::mpsc;
+        use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+            PostThreadMessageW, RegisterClassW, ShowWindow, TranslateMessage, MSG, SW_HIDE,
+            SW_SHOWNA, WM_CLOSE, WM_QUIT, WNDCLASSW, WS_POPUP,
+        };
+
+        // 托盘驻留应用的典型处理：收到 WM_CLOSE 不销毁窗口，只隐藏到托盘
+        // （句柄保留）。用户视角窗口已经关闭，不能因为 IsWindow 仍为真就
+        // 报「还有窗口未关闭」。
+        unsafe extern "system" fn hide_on_close(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            if msg == WM_CLOSE {
+                ShowWindow(hwnd, SW_HIDE);
+                return 0;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+
+        let (ready_tx, ready_rx) = mpsc::channel::<(isize, u32)>();
+        let worker = std::thread::spawn(move || {
+            unsafe {
+                let class_name: Vec<u16> = "taskdock_tray_test\0".encode_utf16().collect();
+                let mut wc: WNDCLASSW = std::mem::zeroed();
+                wc.lpfnWndProc = Some(hide_on_close);
+                wc.hInstance = GetModuleHandleW(std::ptr::null());
+                wc.lpszClassName = class_name.as_ptr();
+                if RegisterClassW(&wc) == 0 {
+                    return;
+                }
+                let hwnd = CreateWindowExW(
+                    0,
+                    class_name.as_ptr(),
+                    std::ptr::null(),
+                    WS_POPUP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    wc.hInstance,
+                    std::ptr::null(),
+                );
+                if hwnd.is_null() {
+                    return;
+                }
+                // 零尺寸 + 不激活：只为拿到 WS_VISIBLE，不干扰桌面
+                ShowWindow(hwnd, SW_SHOWNA);
+                if ready_tx.send((hwnd as isize, GetCurrentThreadId())).is_err() {
+                    return;
+                }
+                let mut msg: MSG = std::mem::zeroed();
+                while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                // 消息泵退出后清理仍存活的隐藏窗口
+                DestroyWindow(hwnd);
+            }
+        });
+        let Ok((hwnd, thread_id)) = ready_rx.recv_timeout(Duration::from_secs(5)) else {
+            eprintln!("跳过：测试窗口创建失败（无窗口站或类注册被拒）");
+            let _ = worker.join();
+            return;
+        };
+
+        let wins = vec![win_at(hwnd, std::process::id(), "taskdock 托盘测试窗口", None)];
+        let out = close_windows(&wins);
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].closed,
+            "窗口从可见变为隐藏（关闭到托盘）应计为已关闭"
+        );
+
         unsafe {
             PostThreadMessageW(thread_id, WM_QUIT, 0 as WPARAM, 0 as LPARAM);
         }

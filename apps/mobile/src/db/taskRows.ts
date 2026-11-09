@@ -19,11 +19,12 @@ export interface TaskDbRow {
   updated_at: number;
   completed_at: number | null;
   rev: number;
+  server_rev: number;
 }
 
 export const TASK_COLUMNS = `id, title, description, status, priority, category, tags,
   due_at, remind_at, advance_minutes, recurrence_rule,
-  created_at, updated_at, completed_at, rev`;
+  created_at, updated_at, completed_at, rev, server_rev`;
 
 export type BindValue = string | number | null;
 
@@ -61,6 +62,7 @@ export function mapTaskRow(row: TaskDbRow): Task {
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
     rev: row.rev,
+    serverRev: row.server_rev,
   };
 }
 

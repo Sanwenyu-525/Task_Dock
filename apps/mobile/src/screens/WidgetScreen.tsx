@@ -11,6 +11,7 @@ import { SegmentedControl, type SegmentOption } from "../components/SegmentedCon
 import { SettingSection } from "../components/SettingSection";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { getSetting, setSetting } from "../db/kv";
+import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
@@ -68,6 +69,7 @@ function parsePrefs(raw: string | null): WidgetPrefs {
 
 export function WidgetScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
+  const insets = useWindowInsets();
   const [prefs, setPrefs] = useState<WidgetPrefs>(DEFAULT_PREFS);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
@@ -195,7 +197,13 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
         </Text>
       </ScrollView>
 
-      <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.xl} />
+      {/* 唯一操作在页面底部主按钮：提示留在底部、抬到手势条上方 */}
+      <Toast
+        toast={toast}
+        onDismiss={dismissToast}
+        placement="bottom"
+        bottomOffset={space.lg + insets.bottom}
+      />
     </View>
   );
 }

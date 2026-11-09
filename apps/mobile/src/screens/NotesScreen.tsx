@@ -11,7 +11,6 @@ import {
   type ListRenderItemInfo,
 } from "react-native";
 
-import { Badge } from "../components/Badge";
 import { Chip } from "../components/Chip";
 import { EmptyState } from "../components/EmptyState";
 import { NoteCard } from "../components/NoteCard";
@@ -148,12 +147,9 @@ export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }
           <View style={styles.header}>
             <View style={styles.titleRow}>
               <View style={styles.titleBlock}>
-                <View style={styles.titleLine}>
-                  <Text accessibilityRole="header" style={[styles.screenTitle, { color: tokens.text }]}>
-                    笔记
-                  </Text>
-                  <Badge label="规划中" />
-                </View>
+                <Text accessibilityRole="header" style={[styles.screenTitle, { color: tokens.text }]}>
+                  笔记
+                </Text>
                 <Text style={[styles.subtitle, { color: tokens.muted }]}>
                   {searching
                     ? `找到 ${visible.length} 篇 · 共 ${notes.length} 篇`
@@ -221,7 +217,7 @@ export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }
         </View>
       </PressableScale>
 
-      <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.lg + 8} />
+      <Toast toast={toast} onDismiss={dismissToast} placement="top" />
     </View>
   );
 }
@@ -241,11 +237,6 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   titleBlock: { flex: 1, gap: 1 },
-  titleLine: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.sm,
-  },
   screenTitle: {
     fontSize: font.display,
     fontWeight: "800",

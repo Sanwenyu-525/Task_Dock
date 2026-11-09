@@ -31,10 +31,19 @@ function NoteCardBase({
       style={({ pressed }) => [{ opacity: pressed ? 0.75 : 1 }]}
     >
       <GlassCard style={styles.card}>
-        <View style={styles.titleRow}>
-          <Text numberOfLines={1} style={[styles.title, { color: tokens.text }]}>
-            {noteDisplayTitle(note.title, note.body)}
+        <Text numberOfLines={1} style={[styles.title, { color: tokens.text }]}>
+          {noteDisplayTitle(note.title, note.body)}
+        </Text>
+        {note.body.trim() ? (
+          <Text numberOfLines={2} style={[styles.excerpt, { color: tokens.muted }]}>
+            {excerpt(note.body, 96)}
           </Text>
+        ) : null}
+        <View style={styles.footer}>
+          <Text style={[styles.meta, { color: tokens.muted }]}>
+            revision {note.rev} · {formatRelative(note.updatedAt, now)}
+          </Text>
+          {/* 图钉放在 footer 右侧：标题行保持纯文本宽度，长标题不会被图标挤断 */}
           {note.pinned ? (
             <View style={styles.pin} accessibilityLabel="已置顶">
               {/* 置顶图钉：斜置的针头方块 + 针杆，同 1.5dp 笔触 */}
@@ -42,16 +51,6 @@ function NoteCardBase({
               <View style={[styles.pinStem, { backgroundColor: tokens.accent }]} />
             </View>
           ) : null}
-        </View>
-        {note.body.trim() ? (
-          <Text numberOfLines={2} style={[styles.excerpt, { color: tokens.muted }]}>
-            {excerpt(note.body, 96)}
-          </Text>
-        ) : null}
-        <View style={styles.footer}>
-          <Text style={[styles.meta, { color: tokens.faint }]}>
-            revision {note.rev} · {formatRelative(note.updatedAt, now)}
-          </Text>
         </View>
       </GlassCard>
     </Pressable>
@@ -65,21 +64,17 @@ const styles = StyleSheet.create({
     padding: space.md,
     gap: space.sm - 2,
   },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.sm,
-  },
   title: {
     flexShrink: 1,
     fontSize: font.title,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   pin: {
     width: 16,
     height: 16,
     alignItems: "center",
     justifyContent: "center",
+    marginLeft: "auto",
   },
   pinHead: {
     width: 7,
@@ -95,8 +90,8 @@ const styles = StyleSheet.create({
     marginTop: -1,
   },
   excerpt: {
-    fontSize: font.body,
-    lineHeight: 19,
+    fontSize: font.reading,
+    lineHeight: 21,
   },
   footer: {
     flexDirection: "row",

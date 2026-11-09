@@ -205,7 +205,7 @@ export function InboxScreen({
             />
             <View style={styles.inputFooter}>
               <Text numberOfLines={1} style={[styles.inputHint, { color: tokens.muted }]}>
-                换行可继续写
+                回车换行 · 点「记下」保存
               </Text>
               <PressableScale
                 onPress={() => void submit()}
@@ -262,7 +262,7 @@ export function InboxScreen({
         />
       )}
 
-      <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.lg} />
+      <Toast toast={toast} onDismiss={dismissToast} placement="top" />
     </View>
   );
 }

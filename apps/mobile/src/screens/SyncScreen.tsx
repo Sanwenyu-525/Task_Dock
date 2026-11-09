@@ -1,5 +1,5 @@
-// 同步中心：已配对连接展示真实状态，可测试连通性、解除本机配对。
-// 数据同步（任务/笔记的 pull/push）仍属下一轮：这里如实标注「规划中」，不伪造进度。
+// 同步中心：已配对连接展示真实状态，可测试连通性、立即同步与解除本机配对。
+// v1 只同步任务（pull + push，加密载荷）；收集箱/笔记与后台同步仍在下一轮。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -12,7 +12,20 @@ import { SettingActionRow } from "../components/SettingActionRow";
 import { SettingRow } from "../components/SettingRow";
 import { SettingSection } from "../components/SettingSection";
 import { ToggleSwitch } from "../components/ToggleSwitch";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import {
+  Toast,
+  TOAST_TOP_PUSH,
+  type ToastMessage,
+  type ToastPlacement,
+  type ToastTone,
+} from "../components/Toast";
+import {
+  countPendingTaskOutbox,
+  countSyncConflicts,
+  loadSyncResult,
+  resetSyncState,
+  type SyncLastResult,
+} from "../db/sync";
 import {
   clearConnection,
   loadConnection,
@@ -20,10 +33,10 @@ import {
   touchConnection,
   type PairedConnection,
 } from "../db/syncConnection";
-import { countPendingOutbox } from "../db/tasks";
 import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
+import { syncNow } from "../lib/sync/engine";
 import { PairingRequestError, pingDesktop, pairingErrorMessage } from "../lib/sync/pairClient";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
@@ -52,27 +65,37 @@ export function SyncScreen({ nav }: { nav: Nav }) {
   const [invalid, setInvalid] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [lastResult, setLastResult] = useState<SyncLastResult | null>(null);
+  const [conflictCount, setConflictCount] = useState(0);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
   const mounted = useRef(true);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
+  const showToast = useCallback(
+    (text: string, tone: ToastTone = "info", placement?: ToastPlacement) => {
+      toastSeq.current += 1;
+      setToast({ id: toastSeq.current, text, tone, placement });
+    },
+    [],
+  );
   const dismissToast = useCallback(() => setToast(null), []);
 
   const refresh = useCallback(async () => {
     try {
-      const [ops, meta, token] = await Promise.all([
-        countPendingOutbox(),
+      const [ops, meta, token, last, conflicts] = await Promise.all([
+        countPendingTaskOutbox(),
         loadConnection(),
         readToken(),
+        loadSyncResult(),
+        countSyncConflicts(),
       ]);
       if (!mounted.current) return;
       setPendingOps(ops);
       setConnection(meta);
       setHasToken(Boolean(token));
+      setLastResult(last);
+      setConflictCount(conflicts);
       setInvalid(false);
     } catch (error) {
       if (mounted.current) showToast(`读取同步状态失败：${describeError(error)}`, "danger");
@@ -91,36 +114,61 @@ export function SyncScreen({ nav }: { nav: Nav }) {
 
   const paired = Boolean(connection && hasToken) && !invalid;
 
-  const testConnection = useCallback(async () => {
-    if (!connection) return;
-    const token = await readToken();
-    if (!token) {
-      setHasToken(false);
-      showToast("本机令牌缺失或已损坏，请重新配对", "danger");
-      return;
-    }
-    setBusy(true);
-    try {
-      const result = await pingDesktop({
-        address: { host: connection.host, port: connection.port, baseUrl: connection.baseUrl },
-        token,
-      });
-      const now = new Date().toISOString();
-      await touchConnection(now);
-      if (!mounted.current) return;
-      setConnection({ ...connection, lastSeenAt: now });
-      setInvalid(false);
-      showToast(`连接正常：${result.serverName || connection.serverName}`, "success");
-    } catch (error) {
-      if (!mounted.current) return;
-      if (error instanceof PairingRequestError && error.code === "unauthorized") {
-        setInvalid(true);
+  const testConnection = useCallback(
+    async (placement: ToastPlacement = "top") => {
+      if (!connection) return;
+      const token = await readToken();
+      if (!token) {
+        setHasToken(false);
+        showToast("本机令牌缺失或已损坏，请重新配对", "danger", placement);
+        return;
       }
-      showToast(pairingErrorMessage(error), "danger");
+      setBusy(true);
+      try {
+        const result = await pingDesktop({
+          address: { host: connection.host, port: connection.port, baseUrl: connection.baseUrl },
+          token,
+        });
+        const now = new Date().toISOString();
+        await touchConnection(now);
+        if (!mounted.current) return;
+        setConnection({ ...connection, lastSeenAt: now });
+        setInvalid(false);
+        showToast(`连接正常：${result.serverName || connection.serverName}`, "success", placement);
+      } catch (error) {
+        if (!mounted.current) return;
+        if (error instanceof PairingRequestError && error.code === "unauthorized") {
+          setInvalid(true);
+        }
+        showToast(pairingErrorMessage(error), "danger", placement);
+      } finally {
+        if (mounted.current) setBusy(false);
+      }
+    },
+    [connection, showToast],
+  );
+
+  const runSync = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const outcome = await syncNow();
+      if (!mounted.current) return;
+      setLastResult(outcome);
+      showToast(
+        outcome.conflicts > 0
+          ? `同步完成：接收 ${outcome.applied}，发送 ${outcome.pushed}，${outcome.conflicts} 条冲突待处理`
+          : `同步完成：接收 ${outcome.applied}，发送 ${outcome.pushed}`,
+        outcome.conflicts > 0 ? "info" : "success",
+        "bottom",
+      );
+      await refresh();
+    } catch (error) {
+      if (mounted.current) showToast(`同步失败：${describeError(error)}`, "danger", "bottom");
     } finally {
-      if (mounted.current) setBusy(false);
+      if (mounted.current) setSyncing(false);
     }
-  }, [connection, showToast]);
+  }, [refresh, showToast, syncing]);
 
   const unpair = useCallback(() => {
     if (!connection) return;
@@ -135,15 +183,21 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           onPress: () => {
             setBusy(true);
             clearConnection()
-              .then(() => {
+              .then(async () => {
+                // 本机不再持有对端同步状态：游标/冲突清空，避免下次配对沿用旧游标。
+                await resetSyncState();
                 if (!mounted.current) return;
                 setConnection(null);
                 setHasToken(false);
                 setInvalid(false);
-                showToast("已解除本机配对", "success");
+                setLastResult(null);
+                setConflictCount(0);
+                showToast("已解除本机配对", "success", "bottom");
               })
               .catch((error) => {
-                if (mounted.current) showToast(`解除配对失败：${describeError(error)}`, "danger");
+                if (mounted.current) {
+                  showToast(`解除配对失败：${describeError(error)}`, "danger", "bottom");
+                }
               })
               .finally(() => {
                 if (mounted.current) setBusy(false);
@@ -153,11 +207,6 @@ export function SyncScreen({ nav }: { nav: Nav }) {
       ],
     );
   }, [connection, showToast]);
-
-  const plannedAction = useCallback(
-    () => showToast("数据同步将在下一轮接入：当前已完成配对与连接验证"),
-    [showToast],
-  );
 
   return (
     <View style={styles.container}>
@@ -224,19 +273,35 @@ export function SyncScreen({ nav }: { nav: Nav }) {
             helper="两台设备同时修改同一条数据时，会在这里逐条选择保留哪一版"
             chevron
             onPress={() => nav.push("conflict")}
+            trailing={
+              conflictCount > 0 ? (
+                <Badge label={`${conflictCount} 待处理`} tone="unimplemented" />
+              ) : undefined
+            }
           />
         </GlassCard>
 
         <View style={styles.tiles}>
           <View style={[styles.tile, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
-            <Text style={[styles.tileLabel, { color: tokens.muted }]}>待发送</Text>
+            <Text style={[styles.tileLabel, { color: tokens.muted }]}>待发送任务</Text>
             <Text style={[styles.tileValue, { color: tokens.accent }]}>{pendingOps}</Text>
           </View>
           <View style={[styles.tile, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
-            <Text style={[styles.tileLabel, { color: tokens.muted }]}>待接收</Text>
-            <Text style={[styles.tileValue, { color: tokens.faint }]}>—</Text>
+            <Text style={[styles.tileLabel, { color: tokens.muted }]}>上次接收</Text>
+            <Text style={[styles.tileValue, { color: tokens.textSoft }]}>
+              {lastResult ? lastResult.applied : "—"}
+            </Text>
           </View>
         </View>
+
+        {lastResult ? (
+          <Text style={[styles.lastResult, { color: tokens.muted }]}>
+            上次同步 {formatStamp(new Date(lastResult.at).toISOString())} · 接收{" "}
+            {lastResult.applied} · 发送 {lastResult.pushed}
+            {lastResult.conflicts > 0 ? ` · 冲突 ${lastResult.conflicts}` : ""}
+            {lastResult.error ? ` · 失败：${lastResult.error}` : ""}
+          </Text>
+        ) : null}
 
         <SettingSection title="已配对设备">
           {connection && hasToken ? (
@@ -262,7 +327,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           )}
         </SettingSection>
 
-        <SettingSection title="同步设置" trailing={<Badge label="规划中" />}>
+        <SettingSection title="同步设置" trailing={<Badge label="后台待接入" />}>
           <SettingActionRow
             label="仅 Wi-Fi 下同步"
             trailing={
@@ -286,23 +351,34 @@ export function SyncScreen({ nav }: { nav: Nav }) {
               />
             }
           />
-          <SettingRow label="同步冲突时" value="保留桌面端" valueTone="muted" />
-          <SettingRow label="同步范围" value="任务 · 收集箱 · 笔记" valueTone="muted" />
+          <SettingRow label="同步冲突时" value="不自动覆盖，写入冲突页" valueTone="muted" />
+          <SettingRow label="同步范围" value="任务（v1）；收集箱/笔记下一轮" valueTone="muted" />
         </SettingSection>
 
         {paired ? (
           <>
             <PressableScale
-              onPress={() => void testConnection()}
-              disabled={busy}
-              accessibilityLabel="测试连接"
-              accessibilityState={{ disabled: busy }}
+              onPress={() => void runSync()}
+              disabled={syncing}
+              accessibilityLabel="立即同步"
+              accessibilityState={{ disabled: syncing }}
               contentStyle={[
                 styles.primary,
-                { backgroundColor: busy ? tokens.track : tokens.accentFill },
+                { backgroundColor: syncing ? tokens.track : tokens.accentFill },
               ]}
             >
               <Text style={[styles.primaryText, { color: tokens.onAccent }]}>
+                {syncing ? "正在同步…" : "立即同步"}
+              </Text>
+            </PressableScale>
+            <PressableScale
+              onPress={() => void testConnection("bottom")}
+              disabled={busy}
+              accessibilityLabel="测试连接"
+              accessibilityState={{ disabled: busy }}
+              contentStyle={styles.secondary}
+            >
+              <Text style={[styles.secondaryText, { color: tokens.accent }]}>
                 {busy ? "正在测试连接…" : "测试连接"}
               </Text>
             </PressableScale>
@@ -333,21 +409,19 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           </>
         )}
 
-        <PressableScale
-          onPress={plannedAction}
-          accessibilityLabel="立即同步"
-          accessibilityHint="数据同步下一轮接入，当前仅完成配对与连接验证"
-          contentStyle={styles.secondary}
-        >
-          <Text style={[styles.secondaryText, { color: tokens.accent }]}>立即同步（下一轮接入）</Text>
-        </PressableScale>
-
         <Text style={[styles.footer, { color: tokens.faint }]}>
-          当前版本只建立配对与连接：不传输任务、笔记或剪贴板内容。
+          v1 只同步任务：pull 应用桌面端变更，push 发送本机修改；载荷已用配对令牌派生的密钥加密。
+          收集箱、笔记与后台同步仍在下一轮。
         </Text>
       </ScrollView>
 
-      <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.xl} />
+      <Toast
+        toast={toast}
+        onDismiss={dismissToast}
+        placement="top"
+        topOffset={TOAST_TOP_PUSH}
+        bottomOffset={space.lg + insets.bottom}
+      />
     </View>
   );
 }
@@ -436,6 +510,12 @@ const styles = StyleSheet.create({
   },
   busyText: {
     fontSize: font.label,
+  },
+  lastResult: {
+    fontSize: font.label,
+    lineHeight: 16,
+    textAlign: "center",
+    paddingHorizontal: space.sm,
   },
   footer: {
     fontSize: font.label,

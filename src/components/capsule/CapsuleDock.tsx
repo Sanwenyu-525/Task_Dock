@@ -12,10 +12,19 @@
 //! - 极简吸附态（`docked-tab`）只挂载 `EdgeTab`；形态过渡期间轨道与标签
 //!   同时存在，由 `styles.css` 的 `.is-to-tab` / `.is-from-tab` 做交叉过渡。
 
-import { useCallback, useEffect, useState, type ComponentType } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentType,
+  type RefObject,
+} from "react";
 import CapsuleRail, { CATEGORY_LABELS } from "./CapsuleRail";
 import CapsuleLeaveGuard from "./CapsuleLeaveGuard";
 import EdgeTab from "./EdgeTab";
+import PanelResizeHandle from "./PanelResizeHandle";
 import TasksLite from "./TasksLite";
 import AgentsLite from "./AgentsLite";
 import ClipboardLite from "./ClipboardLite";
@@ -33,6 +42,22 @@ import { useAgentsStore } from "../../store/useAgentsStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { registerOverlay } from "../../lib/overlayStack";
 import { useEdgeTabMenuActions } from "../../hooks/useEdgeTabMenuActions";
+
+/**
+ * 把引擎的面板宽度写到面板的 CSS 变量。
+ *
+ * 单独订阅 `panelWidth` 而不是让 CapsuleDock 订阅：拖拽时宽度逐帧变化，
+ * 只重渲染这个返回 null 的小组件，六类面板内容（任务/剪贴板/应用…）
+ * 不会跟着每帧重渲染。变量写在 DOM style 上、不受 React style prop 管控，
+ * 面板因数据更新重渲染时也不会把值弹回旧宽度。
+ */
+function PanelWidthStyle({ panelRef }: { panelRef: RefObject<HTMLElement | null> }) {
+  const width = useEdgeSnapStore((s) => s.panelWidth);
+  useLayoutEffect(() => {
+    panelRef.current?.style.setProperty("--cap-panel-w", `${width}px`);
+  }, [panelRef, width]);
+  return null;
+}
 
 /** 面板映射：轨道五类 + Agent（仅顶部状态球入口，仍打开 AgentsLite）。 */
 const PANELS: Record<CapsuleCategory, ComponentType> = {
@@ -68,6 +93,22 @@ export default function CapsuleDock() {
   // 未加载（false）传 null：徽标显示中性，不把未知伪装成 0
   const status = railStatus(stats, snapshot, Date.now(), inboxCountLoaded ? inboxCount : null);
   const [pulse, setPulse] = useState(0);
+  /** 面板根节点：PanelWidthStyle 把引擎宽度写到它的 CSS 变量上。 */
+  const panelRef = useRef<HTMLElement | null>(null);
+  /**
+   * 挂载即写入初始宽度：子组件的 layout effect 可能早于父级 host ref 的挂载
+   * （挂载首帧 `panelRef.current` 仍为 null），回调 ref 负责补上这一帧，避免
+   * 面板先按 CSS 默认 340 画一帧再跳到真实宽度。
+   */
+  const attachPanel = useCallback((node: HTMLElement | null) => {
+    panelRef.current = node;
+    if (node) {
+      node.style.setProperty(
+        "--cap-panel-w",
+        `${useEdgeSnapStore.getState().panelWidth}px`,
+      );
+    }
+  }, []);
 
   // 极简标签右键菜单的动作桥：菜单窗口只发命令，恢复/形态切换/解除仍走
   // 本组件挂载的这套吸附引擎（唯一状态机），不复制第二套窗口状态管理。
@@ -150,6 +191,7 @@ export default function CapsuleDock() {
       {Panel && activeCategory && (
         <section
           key={activeCategory}
+          ref={attachPanel}
           className={`capsule-panel panel-${edge}${panelExiting ? " is-closing" : ""}`}
           aria-label={`${CATEGORY_LABELS[activeCategory]}面板`}
           /* 仅供样式层做容器查询（应用网格列数按面板实际宽度收敛）：
@@ -159,6 +201,8 @@ export default function CapsuleDock() {
              键盘/读屏也不再进入一块已经不可交互、正在消失的面板。 */
           inert={panelExiting}
         >
+          {/* 面板宽度 → CSS 变量（拖拽时只重渲染这个空组件，不重渲染面板内容） */}
+          <PanelWidthStyle panelRef={panelRef} />
           {/* 专注状态徽标：无活动会话时返回 null，不占位、不新增轮询 */}
           <FocusCapsuleBadge className="capsule-focus-slot" />
           {/* 胶囊内的未保存草稿确认：全局确认条在 inert 的完整窗口里，面板内必须
@@ -169,6 +213,9 @@ export default function CapsuleDock() {
           <PanelCloseProvider onClose={closePanel}>
             <Panel />
           </PanelCloseProvider>
+          {/* 面板宽度拖拽手柄：只在展开态、且引擎已注入 resizePanel 时渲染
+              （面板收起/离场时不留下可聚焦的死控件）。 */}
+          {expanded && !panelExiting && <PanelResizeHandle edge={edge} />}
         </section>
       )}
       {(stableTab || transitioning) && (

@@ -22,8 +22,14 @@ import { StatCard, type StatTone } from "../components/StatCard";
 import { TaskEditorSheet } from "../components/TaskEditorSheet";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { TaskRow } from "../components/TaskRow";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import {
+  Toast,
+  type ToastMessage,
+  type ToastPlacement,
+  type ToastTone,
+} from "../components/Toast";
 import { getSetting } from "../db/kv";
+import { loadConnection } from "../db/syncConnection";
 import { createTask, deleteTask, listTasks, toggleTask, updateTask } from "../db/tasks";
 import { countTasks, formatDue, matchesQuery, selectTasks } from "../domain/taskQuery";
 import { describeRecurrence, parseRecurrence } from "../domain/recurrence";
@@ -94,6 +100,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+  const [paired, setPaired] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [query, setQuery] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -109,10 +116,13 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
+  const showToast = useCallback(
+    (text: string, tone: ToastTone = "info", placement?: ToastPlacement) => {
+      toastSeq.current += 1;
+      setToast({ id: toastSeq.current, text, tone, placement });
+    },
+    [],
+  );
   const dismissToast = useCallback(() => setToast(null), []);
 
   const animateLayout = useCallback(() => {
@@ -156,6 +166,19 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
     void refresh();
   }, [refresh, version]);
 
+  // 配对状态只影响页头标签：配对后显示「同步已连接」，解除后回到「本机模式」
+  useEffect(() => {
+    let active = true;
+    void loadConnection()
+      .then((connection) => {
+        if (active) setPaired(Boolean(connection));
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [version]);
+
   // 跨过零点 / 提醒到点后，「今天」「已过期」要跟着变，不能让列表停留在旧判定
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
@@ -173,14 +196,14 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
   );
 
   const handleToggle = useCallback(
-    async (task: Task) => {
+    async (task: Task, placement: ToastPlacement = "top") => {
       try {
         const outcome = await toggleTask(task.id);
         if (outcome.advanced) {
           // 期次推进后提醒时间变了：重建排期（引擎按 (task_id, occurrence) 幂等）
           await rescheduleAllReminders();
           const next = formatDue(outcome.advanced.toDueAt, Date.now());
-          showToast(next ? `已完成本期，下次 ${next}` : "已完成本期", "success");
+          showToast(next ? `已完成本期，下次 ${next}` : "已完成本期", "success", placement);
         } else if (outcome.task) {
           if (outcome.task.status === "completed") await cancelReminder(task.id);
           else if (outcome.task.remindAt != null && outcome.task.remindAt > Date.now()) {
@@ -189,7 +212,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
           }
         }
       } catch (error) {
-        showToast(`操作失败：${describeError(error)}`, "danger");
+        showToast(`操作失败：${describeError(error)}`, "danger", placement);
       }
       await refresh(true);
     },
@@ -197,13 +220,13 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
   );
 
   const handleDelete = useCallback(
-    async (task: Task) => {
+    async (task: Task, placement: ToastPlacement = "top") => {
       try {
         await deleteTask(task.id);
         await cancelReminder(task.id);
-        showToast("任务已删除");
+        showToast("任务已删除", "info", placement);
       } catch (error) {
-        showToast(`删除失败：${describeError(error)}`, "danger");
+        showToast(`删除失败：${describeError(error)}`, "danger", placement);
       }
       await refresh(true);
     },
@@ -223,12 +246,12 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
           const snooze = (await getSetting(SNOOZE_SETTING_KEY)) !== "0";
           const scheduled = await scheduleReminder(task.id, task.title, input.remindAt, snooze);
           if (!scheduled) {
-            showToast("提醒未排期：系统通知权限未开启，任务已保存", "warn");
+            showToast("提醒未排期：系统通知权限未开启，任务已保存", "warn", "bottom");
           }
         }
-        showToast("任务已添加", "success");
+        showToast("任务已添加", "success", "bottom");
       } catch (error) {
-        showToast(`保存失败：${describeError(error)}`, "danger");
+        showToast(`保存失败：${describeError(error)}`, "danger", "bottom");
       }
       await refresh(true);
     },
@@ -254,14 +277,14 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
             : {}),
         });
         if (!updated) {
-          showToast("任务已不存在", "danger");
+          showToast("任务已不存在", "danger", "bottom");
         } else {
           // 改了提醒时间要重建排期；引擎内部按 (task_id, occurrence) 幂等，不会重复弹。
           await rescheduleAllReminders();
-          showToast("任务已更新", "success");
+          showToast("任务已更新", "success", "bottom");
         }
       } catch (error) {
-        showToast(`更新失败：${describeError(error)}`, "danger");
+        showToast(`更新失败：${describeError(error)}`, "danger", "bottom");
       }
       await refresh(true);
     },
@@ -304,7 +327,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       setActionOpen(false);
       if (!task) return;
       if (key === "toggle") {
-        void handleToggle(task);
+        void handleToggle(task, "bottom");
         return;
       }
       if (key === "edit") {
@@ -312,7 +335,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
         setEditorOpen(true);
         return;
       }
-      if (key === "delete") void handleDelete(task);
+      if (key === "delete") void handleDelete(task, "bottom");
     },
     [actionTask, handleDelete, handleToggle],
   );
@@ -380,9 +403,12 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
             任务
           </Text>
         </View>
-        <View style={[styles.localBadge, { backgroundColor: tokens.track }]}>
-          <View style={[styles.localDot, { backgroundColor: tokens.ok }]} />
-          <Text style={[styles.localText, { color: tokens.textSoft }]}>本机模式</Text>
+        {/* 模式标签只表达数据归属：未配对是本机模式，已配对则是同步已连接。
+            不用绿点，避免被读成「在线」而掩盖实际同步结果。 */}
+        <View style={[styles.localBadge, { backgroundColor: tokens.accentSoft }]}>
+          <Text style={[styles.localText, { color: tokens.accent }]}>
+            {paired ? "同步已连接" : "本机模式"}
+          </Text>
         </View>
       </View>
 
@@ -438,7 +464,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       <SearchField
         value={query}
         onChangeText={setQuery}
-        placeholder="搜索标题、描述或标签"
+        placeholder="搜索任务、标签、分类"
         accessibilityLabel="搜索任务"
       />
 
@@ -502,7 +528,12 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
         </View>
       </PressableScale>
 
-      <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.lg + 68} />
+      <Toast
+        toast={toast}
+        onDismiss={dismissToast}
+        placement="top"
+        bottomOffset={space.lg + 68}
+      />
 
       <ActionSheet
         visible={actionOpen}
@@ -556,18 +587,10 @@ const styles = StyleSheet.create({
     lineHeight: font.display + 8,
   },
   localBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
     marginTop: space.sm,
     paddingHorizontal: space.sm + 2,
     paddingVertical: 5,
     borderRadius: radius.chip,
-  },
-  localDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
   },
   localText: {
     fontSize: font.label,

@@ -1021,7 +1021,11 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 
 - 几何唯一来源：`src/lib/capsuleLayout.ts`（前端布局与命中判定）与
   `src-tauri/src/window_shape.rs::capsule_regions`（区域裁剪），两端单测锁定同一组常量
-  （轨道 56×300、面板 336×420、间隙 8）。
+  （轨道 56×446、面板默认 340×440、间隙 8）。
+- 面板宽度可拖拽（2026-11-09）：设置键 `capsule_panel_width`（280–480，默认 340）由面板
+  内侧边拖拽调整并持久化；窗口在停靠时按**最大宽度**预留容器（垂直 544×446 / 水平
+  480×504），拖拽只改 Win32 区域与 CSS 变量，不触发原生 resize。旧库缺键按默认 340
+  兼容；六类面板统一按自身宽度做容器查询，应用网格 1–5 列自适应。
 - 区域：折叠 = 轨道圆角矩形；展开 = `CombineRgn(RGN_OR)` 合并两块圆角矩形，
   应用后 `GetWindowRgn` 回读验证（包围盒 + 中心点 + 间隙点）。胶囊仍由区域定义可见外形
   （区域外的容器部分不绘制、不接收鼠标）；区域半径比 CSS 圆角小 2 物理像素
@@ -1560,10 +1564,11 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
 
 ## 手机配对与局域网连接（v0.16，2026-11-08）
 
-- 分层：`src-tauri/src/mobile_sync/`（配对会话/令牌/设备表）→ `server.rs`（hyper，仅
-  `/v1/health`、`/v1/pair`、`/v1/ping`）→ `commands/mobile_sync.rs` → `src/lib/bridge.ts` →
-  设置页 `MobileSyncSection` + 全局 `MobilePairingDialog`。手机端为 `apps/mobile`
-  （协议纯函数 + expo-camera 扫码 + SecureStore 令牌）。
+- 分层：`src-tauri/src/mobile_sync/`（配对会话/令牌/设备表）→ `server.rs`（hyper，
+  `/v1/health`、`/v1/pair`、`/v1/ping`，以及同步的 `/v1/changes`、`/v1/ops`）→
+  `commands/mobile_sync.rs` → `src/lib/bridge.ts` → 设置页 `MobileSyncSection` +
+  全局 `MobilePairingDialog`。手机端为 `apps/mobile`（协议纯函数 + expo-camera 扫码 +
+  SecureStore 令牌）。
 - 配对入口：设置 → 手机与同步，以及标题栏「配对新设备（手机）」快捷按钮（完整/紧凑模式）。
   两处共用 App 根部唯一弹层实例（`src/lib/mobilePairing.ts` 管理开合）；服务未开启时弹层内
   可直接开启并生成配对码。
@@ -1571,8 +1576,26 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   主管任务才绑定 `0.0.0.0:<port>`，关闭、端口变更或应用退出时监听循环在 2s 内退出。
 - 配对：一次性 6 位码 + 120s TTL + 最多 5 次尝试；成功后签发 256 位令牌，SQLite
   `mobile_devices`（迁移 v42）只存 SHA-256 哈希；撤销写 `revoked_at`，令牌立即失效。
-- 数据边界：本轮只做配对与连通性探测，**不传输任务/笔记/剪贴板**；传输为局域网 HTTP
-  （用户确认的 v1 基线），威胁模型与 TLS 计划见 [docs/mobile/06-pairing.md](mobile/06-pairing.md)。
+- 数据边界：配对轮只做配对与连通性探测，不传业务数据；任务同步在 v1 单独实现（见下节），
+  传输为局域网 HTTP + 应用层加密，威胁模型与 TLS 计划见
+  [docs/mobile/06-pairing.md](mobile/06-pairing.md)、[docs/mobile/07-sync.md](mobile/07-sync.md)。
 - 兼容性：新增表 `mobile_devices` 已登记 `BACKUP_TABLES` 并按设备本地瞬时状态处理（备份只写
   空 section，不迁移令牌哈希）；新增设置键带默认值，旧库/旧备份无需迁移。
+
+## 手机任务同步（v1，2026-11-09）
+
+- 分层：`mobile_sync/sync.rs`（加密信封、任务映射、pull/push 数据层）→ `server.rs`
+  （`GET /v1/changes`、`POST /v1/ops`）→ SQLite v43 `sync_changes` / `sync_ops`；
+  手机端 `src/lib/sync/{crypto,client,engine}.ts` + `src/db/sync.ts` + schema v4。
+- 变更日志：触发器覆盖 `tasks` 的 INSERT/UPDATE/DELETE；`seq` 既是同步游标也是记录版本，
+  DELETE 写墓碑；升级时回填现有任务基线。`sync_changes` / `sync_ops` 属于本机瞬时状态，
+  备份只写空 section、恢复忽略。
+- 传输：局域网 HTTP + 载荷加密（XSalsa20-Poly1305）。密钥由 `SHA-256(令牌)` 再做
+  `SHA-512("taskdock-sync-v1:" + hash)[0..32]` 派生；信封 `{v,n,d}`，明文内嵌 AAD
+  （方法 + 路径），跨端点重放解密失败；Bearer 鉴权与撤销语义不变。
+- 语义：pull 应用服务端变更（本地有未发送 outbox 时跳过）；push 按记录合并 outbox，
+  `base_rev` 与最新 `seq` 不一致返回冲突、不覆盖；`op_id` 幂等；push 后再 pull 回填
+  `server_rev`。冲突在手机端逐条选择「采用桌面端 / 保留本机」。
+- 范围：v1 只同步 tasks；captures/notes 的 outbox 仍只存本机。后台/自动同步、字段级合并、
+  墓碑保留期清理未实现。详见 [docs/mobile/07-sync.md](mobile/07-sync.md)。
 

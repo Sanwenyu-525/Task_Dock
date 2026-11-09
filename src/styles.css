@@ -2775,6 +2775,25 @@ code {
   border-radius: 12px;
   line-height: 0;
   box-shadow: 0 1px 10px rgb(0 0 0 / 12%);
+  /* 重新生成后 key 变化会重挂载：用一次极短淡入提示「二维码已换新」。 */
+  animation: mobile-sync-qr-in 180ms ease-out;
+}
+
+@keyframes mobile-sync-qr-in {
+  from {
+    opacity: 0.55;
+    transform: scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-sync-qr {
+    animation: none;
+  }
 }
 
 .mobile-sync-hint {
@@ -10578,6 +10597,9 @@ html[data-theme="dark"] .resource-page {
 .capsule-dock.dock-v { flex-direction: row; }
 .capsule-dock.edge-right { flex-direction: row-reverse; }
 .capsule-dock.dock-h { flex-direction: column; }
+/* 垂直停靠：面板与轨道同轴，窗口宽度先扣掉轨道 56 + 间隙 8；水平停靠
+   面板与轨道上下排列，宽度可占满容器（480 = 面板最大宽度）。 */
+.capsule-dock.dock-v .capsule-panel { max-width: calc(100vw - 64px); }
 .capsule-dock.edge-bottom { flex-direction: column-reverse; }
 
 /* ── 轨道（液态融合翼片）──
@@ -11214,11 +11236,18 @@ html[data-theme="dark"] .resource-page {
 /* ── 功能面板外壳 ─────────────────────────────────────────────
    参考图的面板是一块**单层**玻璃卡：一个 24px 圆角、一圈 1px 白内描边、
    一条向下的柔和投影，内部不再叠第二层圆角背景。
-   内容区只靠间距与 14px 圆角的小卡片分层。 */
+   内容区只靠间距与 14px 圆角的小卡片分层。
+
+   宽度由引擎写入 `--cap-panel-w`（280–480，跟随拖拽手柄；默认 340），
+   `max-width` 只是窗口异常偏小时的兜底：正常情况下停靠期窗口已按最大容器
+   544×446 / 480×504 预留，面板不会触到这个上限。垂直停靠需要先扣掉同轴的
+   轨道 56 + 间隙 8（覆盖规则在文件下方 `.capsule-dock.dock-v` 处）；
+   水平停靠的面板与轨道上下排列，宽度可以占满容器。 */
 .capsule-panel {
   position: relative;
   flex: 0 0 auto;
-  width: 340px;
+  width: var(--cap-panel-w, 340px);
+  max-width: 100vw;
   height: 440px;
   display: flex;
   flex-direction: column;
@@ -11229,6 +11258,11 @@ html[data-theme="dark"] .resource-page {
   background-image: var(--wing-panel-face);
   box-shadow: var(--cap-panel-inner), var(--cap-panel-ring), var(--cap-panel-shadow);
   overflow: hidden;
+  /* 响应式布局的唯一参照：六个面板都按**自身宽度**（内容盒）响应，
+     与屏幕/窗口宽度解耦。`inline-size` 只包含水平轴，不改变竖直布局；
+     面板本身已是 position:relative，绝对定位子元素的包含块语义不变。 */
+  container-type: inline-size;
+  container-name: cap-panel;
   /* 展开方向：面板从翼片一侧朝屏幕内部轻移 6px 并淡入（不缩放，避免文字抖动） */
   --cap-from-x: 0px;
   --cap-from-y: 0px;
@@ -11238,15 +11272,64 @@ html[data-theme="dark"] .resource-page {
 .capsule-panel.panel-right { --cap-from-x: 6px; }
 .capsule-panel.panel-top { --cap-from-y: -6px; }
 .capsule-panel.panel-bottom { --cap-from-y: 6px; }
-/* 应用面板是网格列数的容器参照：查询面板自身宽度（不受列表滚动条影响）。
-   只对应用面板开启，其他面板的浮层/绝对定位不引入额外的包含块语义。 */
-.capsule-panel[data-panel="apps"] {
-  container-type: inline-size;
-  container-name: cap-panel;
-}
 @keyframes capsule-panel-in {
   from { opacity: 0; transform: translate(var(--cap-from-x), var(--cap-from-y)); }
   to { opacity: 1; transform: none; }
+}
+
+/* ── 面板宽度拖拽手柄（2026-11-09）───────────────────────────
+   10px 命中带压在面板 14px 内边距内，因此不会盖住滚动条（滚动条在列表padding
+   之后）或右上角关闭按钮（按钮右缘距面板边 14px）。视觉只是一条 3×26 的握把，
+   默认透明、hover/拖动/键盘聚焦时出现；不占布局、不改变面板尺寸。 */
+.cap-resize {
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  width: 10px;
+  z-index: var(--z-content);
+  cursor: ew-resize;
+  touch-action: none;
+  outline: none;
+}
+/* 左停靠：面板朝右展开，手柄在内侧（右）边；右停靠反之。
+   上/下停靠的面板水平居中，手柄固定放右边（宽度对称展开）。 */
+.capsule-panel.panel-left .cap-resize,
+.capsule-panel.panel-top .cap-resize,
+.capsule-panel.panel-bottom .cap-resize {
+  right: 0;
+}
+.capsule-panel.panel-right .cap-resize {
+  left: 0;
+}
+.cap-resize::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 26px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cap-text-1) 22%, transparent);
+  opacity: 0;
+  transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+.cap-resize:hover::after,
+.cap-resize:focus-visible::after,
+.cap-resize.is-active::after {
+  opacity: 1;
+}
+.cap-resize:focus-visible {
+  border-radius: 8px;
+  /* 与胶囊面板其它控件同口径：`--focus-ring` 在预设主题下会解析成渐变而失效，
+     这里直接用实色 outline，偏移向内避免被 panel 的 overflow 裁掉。 */
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cap-resize::after {
+    transition: none;
+  }
 }
 
 /* ── 面板通用组件 ─────────────────────────────────────────────
@@ -12867,26 +12950,24 @@ html[data-theme="dark"] .resource-page {
   gap: 6px;
   padding: 1px 1px 2px;
 }
-/* ── 窄面板列数收敛（2026-11-07）───────────────────────────────
+/* ── 应用网格按面板宽度收敛列数（2026-11-07，2026-11-09 随宽度拖拽扩展）
    列数由**面板自身宽度**决定，不按屏幕宽度推断：面板是容器查询的参照，
    宽度不受列表滚动条（4px）影响，因此列数不会因为内容变多、滚动条出现
-   而在 4/3 列之间抖动。容器查询的长度取面板**内容盒**宽度 = 面板宽 - 28
+   而在列数之间抖动。容器查询的长度取面板**内容盒**宽度 = 面板宽 - 28
    （面板左右内边距 14+14）。
-   真实宽度口径：原生胶囊窗口是 404×440 CSS px（`CAPSULE_CONTAINER_W_CSS`），
-   所以 `@media (max-width: 407px)` 的窄窗兜底**总是**生效，面板实际宽度是
-   404 - 68 = 336px（不是设计常量 340）——这是既有行为，本轮不改窗口契约。
-   336 面板 → 网格内容 302 → 4 列 × 71px：图标居中后距右边缘 18.5px，
-   18px 删除按钮仍留 0.5px 间隙，不重叠。因此 4 列的判定必须按 336 而不是 340。
+   2026-11-09 起面板宽度可在 280–480 拖拽（默认 340），原生窗口按最大容器
+   544×446 预留，因此不再有「404 窗口触发窄窗兜底 → 实际 336」的口径：
+   默认面板就是 340（内容盒 312 → 4 列 × 72px）。
    契约（网格内容宽 = 面板内容盒 - 6 = 面板宽 - 34，每列 ≥ 71px）：
-   - 面板 ≥ 336（内容盒 ≥ 308）：4 列；原生默认 336 → 71px/列；
-   - 面板 262..335：3 列（每列 ≥ 72px）；312 面板实测 88.7px/列；
-   - 面板 184..261：2 列；232 面板实测 96px/列；
+   - 面板 ≥ 420（内容盒 ≥ 392）：5 列（≥ 74px/列），宽度上限 480 时 85.6px/列；
+   - 面板 336..419（内容盒 308..391）：4 列（≥ 71px/列）；
+   - 面板 262..335：3 列（≥ 72px/列）；
+   - 面板 184..261：2 列；
    - 面板 < 184：1 列（整行一个磁贴），用于比设计尺寸更极端的窗口回退。
    依据：34px 图标在 W 宽磁贴里距右边缘 (W-34)/2，要完整放下 18px 删除按钮
-   需要 W ≥ 70；原生 4 列是 71px（0.5px 间隙），再窄一档面板 335 → 70.75px。
-   命中判定按 CSS 坐标精确切分，0.5px 间隙仍保证「点图标不会点到删除」。
-   窄窗下缩小按钮或图标都会牺牲可用性（按钮热区有 18px 下限、图标不允许为
-   避让而缩小），收列数才是不降低命中质量的做法。 */
+   需要 W ≥ 70；5 列在内容盒 392 时每列 (392-24)/5 = 73.6px，扣除命中切分后
+   仍有 2.6px 余量。窄窗下缩小按钮或图标都会牺牲可用性（按钮热区有 18px
+   下限、图标不允许为避让而缩小），收列数才是不降低命中质量的做法。 */
 @container cap-panel (max-width: 307px) {
   .cap-app-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
@@ -12895,6 +12976,11 @@ html[data-theme="dark"] .resource-page {
 }
 @container cap-panel (max-width: 155px) {
   .cap-app-grid { grid-template-columns: minmax(0, 1fr); }
+}
+/* 宽面板：5 列（面板 ≥ 420，内容盒 ≥ 392）。放在窄档之后，宽度足够时覆盖
+   默认 4 列；再宽一档 6 列会压到 18px 删除热区，因此上限就是 5 列。 */
+@container cap-panel (min-width: 392px) {
+  .cap-app-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 /* 每个应用是「启动按钮 + 并列删除按钮」的格子容器；
    删除按钮绝对定位，不参与图标/名称布局，也不改变格子尺寸。 */
@@ -12934,6 +13020,7 @@ html[data-theme="dark"] .resource-page {
 .cap-app {
   display: flex;
   flex-direction: column;
+  /* 图标 + 名称在格内水平居中（2026-11-09 曾改左对齐，真机观感不佳后回退）。 */
   align-items: center;
   /* 图标 + 名称作为一个整体在整格（= hover 背景范围）内垂直居中：
      名称固定占两行高度保证同一行图标顶部对齐，组内间距因此始终为 4px。
@@ -13068,7 +13155,9 @@ html[data-theme="dark"] .resource-page {
 }
 /* 运行中状态点：36px 图标片右下角 9px 实心点，绝对定位不占布局、不改格子
    尺寸。颜色用语义 Token（与完整面板徽标同源 success），分隔描边用面板底色，
-   深浅主题都由 Token 承担，不硬编码颜色。 */
+   深浅主题都由 Token 承担，不硬编码颜色。
+   语义 = 运行中（有窗口或仅有后台进程/托盘驻留），与「运行中」快捷区、
+   运行中置顶排序、完整面板徽标同一口径；不是「有窗口」专属标记。 */
 .cap-app-dot {
   position: absolute;
   right: -2px;
@@ -13078,6 +13167,22 @@ html[data-theme="dark"] .resource-page {
   border-radius: 50%;
   background: var(--status-success);
   box-shadow: 0 0 0 2px var(--cap-panel-base);
+}
+/* 收藏角标：与运行点同一套角标语言（绝对定位、不占布局、不改格子尺寸），
+   放在图标左上角，与右下角的运行状态点分开。语义色沿用完整面板的收藏星
+   （--accent），底色用面板底色做分隔环，深浅主题都不需要硬编码颜色。 */
+.cap-app-fav {
+  position: absolute;
+  left: -3px;
+  top: -3px;
+  width: 11px;
+  height: 11px;
+  padding: 1px;
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--cap-panel-base);
+  box-sizing: content-box;
+  pointer-events: none;
 }
 /* 运行中快捷区：chip 内主区（点击=聚焦）与动作按钮（关闭窗口/退出应用）并列。
    容器沿用 cap-recent-chip 的胶囊外观；主区用透明按钮承载截断省略，动作按钮
@@ -13182,7 +13287,9 @@ html[data-theme="dark"] .resource-page {
   height: 2.4em;
   font-size: 10.5px;
   line-height: 1.2;
-  text-align: center;
+  /* 名称左对齐（2026-11-09 用户明确：整块左对齐已回退，名称这一部分仍左对齐）。
+     图标保持居中，名称从格子左内边距起排、折行宽度不变，长名称的两行左缘一致。 */
+  text-align: left;
   overflow: hidden;
   white-space: normal;
   word-break: break-word;
@@ -13263,13 +13370,39 @@ html[data-theme="dark"] .resource-page {
   outline-offset: -2px;
 }
 
-/* 窄窗兜底：容器被系统压到小于胶囊容器时，面板退化为轨道内滚动，
-   不出现横向溢出（正常情况下引擎会把窗口撑到 408×440）。 */
-@media (max-width: 407px) {
-  .capsule-panel { width: calc(100vw - 68px); }
+/* ── 宽/窄面板密度（2026-11-09，随宽度拖拽）────────────────────
+   列表面板保持单列（不改阅读顺序），只按面板**内容盒**宽度调整间距与字号：
+   - 内容盒 ≥ 392（面板 ≥ 420）：卡片/列表多 1–2px 呼吸感，缩略图略大；
+   - 内容盒 ≤ 271（面板 ≤ 299）：标题、分段筛选与卡片间距收紧，保证 280
+     面板下不换行溢出；文本仍走既有单行省略/两行 clamp。
+   必须放在各基础规则之后：@container 不增加选择器优先级，靠源码顺序覆盖。 */
+@container cap-panel (min-width: 392px) {
+  .cap-list { gap: 7px; }
+  .cap-item { padding: 9px 12px; }
+  .cap-task-row { padding: 8px 12px 8px 11px; }
+  .cap-clip-row { padding: 8px 10px 8px 11px; }
+  .cap-clip-thumb { width: 52px; height: 42px; }
+  .cap-app-grid { gap: 7px; }
+}
+@container cap-panel (max-width: 271px) {
+  .cap-head { gap: 6px; }
+  .cap-title { font-size: 17px; }
+  .cap-sub { font-size: 11px; }
+  .cap-seg-btn { font-size: 10.5px; }
+  .cap-list { gap: 5px; }
+  .cap-item { padding: 7px 8px; gap: 7px; }
+  .cap-task-row { padding: 7px 8px 7px 7px; }
+  .cap-clip-row { padding: 7px 7px 7px 8px; }
+  .cap-task-tags .cap-tag { max-width: 76px; }
+  .cap-mini { padding: 0 7px; }
 }
 
-}
+/* 2026-11-09：面板宽度改由 `--cap-panel-w` 驱动（280–480，拖拽手柄写入），
+   不再使用 `@media (max-width: 407px)` 的 336px 视口兜底——停靠期窗口已按
+   最大容器 544×446 / 480×504 预留，面板宽度与视口宽度解耦；异常小窗口由
+   `.capsule-panel` 的 `max-width: calc(100vw - 64px)` 兜底，不横向溢出。 */
+
+} /* @layer base（2474 处重新开启，覆盖到胶囊面板段落结束） */
 
 /* ═══ 规划中（FeatureRoadmapPanel，v0.7）═══
    统一功能规划目录的展示层：只使用语义 Token，不做硬编码颜色；

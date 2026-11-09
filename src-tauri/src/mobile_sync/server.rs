@@ -1,11 +1,11 @@
-//! 手机接入 HTTP 监听（局域网 IPv4，仅配对与连通性探测）。
+//! 手机接入 HTTP 监听（局域网 IPv4：配对、探测与加密同步）。
 //!
 //! 与 `agents/http_ingest` 的相同点：hyper 1.x、头部读取超时、请求体上限、
 //! 连接/在途并发上限、退出信号驱动关闭。不同点：
 //! - 绑定 `0.0.0.0`（由设置开关控制），不绑定回环；
-//! - 路由只有 `/v1/health`、`/v1/pair`、`/v1/ping`；
-//! - 配对接口无鉴权（凭一次性码），ping 接口用 Bearer 设备令牌；
-//! - 不向手机暴露任何业务数据，也不接受任务/笔记写入。
+//! - 路由：`/v1/health`、`/v1/pair`、`/v1/ping`，以及同步的 `/v1/changes`、`/v1/ops`；
+//! - 配对接口无鉴权（凭一次性码），其余接口用 Bearer 设备令牌；
+//! - 同步载荷用设备令牌哈希派生的密钥做 XSalsa20-Poly1305 加密，业务数据不明文上线。
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -25,8 +25,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::db::Db;
+use crate::mobile_sync::sync::{
+    apply_push, decrypt_envelope, derive_key, encrypt_envelope, pull, PushRequest, AAD_PULL,
+    AAD_PUSH, MAX_PULL_LIMIT, MAX_PUSH_OPS, SYNC_MAX_BODY,
+};
 use crate::mobile_sync::{
-    authenticate_device, complete_pairing, MobileSyncState, PairFailure, PairRequest, API_VERSION,
+    authenticate_device, complete_pairing, hash_token, MobileDevice, MobileSyncState, PairFailure,
+    PairRequest, API_VERSION,
 };
 
 /// 配对/探测请求体上限：只接受很小的 JSON，杜绝大包占用内存。
@@ -74,28 +79,31 @@ fn api_error(status: StatusCode, code: &str, message: &str) -> Response<Full<Byt
     json_response(status, json!({ "error": code, "message": message }))
 }
 
-async fn read_body(req: Request<Incoming>) -> Result<Vec<u8>, Response<Full<Bytes>>> {
+async fn read_body(
+    req: Request<Incoming>,
+    max: usize,
+) -> Result<Vec<u8>, Response<Full<Bytes>>> {
     if let Some(len) = req
         .headers()
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok())
     {
-        if len > MAX_BODY as u64 {
+        if len > max as u64 {
             return Err(api_error(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "payload_too_large",
-                "请求体超过 4KB",
+                "请求体超过上限",
             ));
         }
     }
-    let limited = Limited::new(req.into_body(), MAX_BODY);
+    let limited = Limited::new(req.into_body(), max);
     match tokio::time::timeout(BODY_TIMEOUT, limited.collect()).await {
         Ok(Ok(collected)) => Ok(collected.to_bytes().to_vec()),
         Ok(Err(_)) => Err(api_error(
             StatusCode::PAYLOAD_TOO_LARGE,
             "payload_too_large",
-            "请求体超过 4KB 或无法读取",
+            "请求体超过上限或无法读取",
         )),
         Err(_) => Err(api_error(
             StatusCode::REQUEST_TIMEOUT,
@@ -133,7 +141,7 @@ async fn handle_pair(req: Request<Incoming>, ctx: Arc<ServerCtx>, peer: SocketAd
         Err(resp) => return resp,
     };
 
-    let body = match read_body(req).await {
+    let body = match read_body(req, MAX_BODY).await {
         Ok(body) => body,
         Err(resp) => return resp,
     };
@@ -250,6 +258,248 @@ async fn handle_ping(req: Request<Incoming>, ctx: Arc<ServerCtx>, peer: SocketAd
     }
 }
 
+/// Bearer 鉴权：成功时同时返回设备与令牌哈希（后者用于派生同步密钥）。
+///
+/// 令牌哈希只在本进程内用于 KDF，不回写响应、不写日志。
+async fn authenticate_request(
+    req: &Request<Incoming>,
+    ctx: &Arc<ServerCtx>,
+    peer: SocketAddr,
+) -> Result<(MobileDevice, String), Response<Full<Bytes>>> {
+    let Some(token) = bearer_token(req) else {
+        return Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "缺少设备令牌",
+        ));
+    };
+    let token_hash = hash_token(&token);
+    let db = ctx.db.clone();
+    let ip = Some(peer.ip().to_string());
+    let result =
+        tokio::task::spawn_blocking(move || authenticate_device(&db, &token, ip.as_deref())).await;
+    match result {
+        Ok(Ok(Some(device))) => Ok((device, token_hash)),
+        Ok(Ok(None)) => Err(api_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "设备令牌无效或已被撤销",
+        )),
+        Ok(Err(error)) => {
+            tracing::warn!("手机同步鉴权失败: {error}");
+            Err(api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "服务器处理失败，请重试",
+            ))
+        }
+        Err(join_error) => {
+            tracing::warn!("手机同步鉴权任务异常: {join_error}");
+            Err(api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "服务器处理失败，请重试",
+            ))
+        }
+    }
+}
+
+/// 解析 `since` / `limit`；非法值按默认值处理，不把解析细节回给客户端。
+fn parse_pull_query(query: Option<&str>) -> (i64, usize) {
+    let mut since = 0i64;
+    let mut limit = MAX_PULL_LIMIT;
+    if let Some(raw) = query {
+        for pair in raw.split('&') {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next().unwrap_or("");
+            let value = parts.next().unwrap_or("");
+            match key {
+                "since" => since = value.parse::<i64>().unwrap_or(0).max(0),
+                "limit" => {
+                    limit = value
+                        .parse::<usize>()
+                        .unwrap_or(MAX_PULL_LIMIT)
+                        .clamp(1, MAX_PULL_LIMIT)
+                }
+                _ => {}
+            }
+        }
+    }
+    (since, limit)
+}
+
+/// GET /v1/changes：响应为加密信封，游标在查询参数里（不含业务数据）。
+async fn handle_changes(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (_device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let (since, limit) = parse_pull_query(req.uri().query());
+    let db = ctx.db.clone();
+    let result = tokio::task::spawn_blocking(move || pull(&db, since, limit)).await;
+    let key = derive_key(&token_hash);
+
+    match result {
+        Ok(Ok(page)) => match serde_json::to_value(page) {
+            Ok(value) => match encrypt_envelope(&key, AAD_PULL, &value) {
+                Ok(envelope) => json_response(StatusCode::OK, envelope),
+                Err(error) => {
+                    tracing::warn!("手机同步响应加密失败: {error}");
+                    api_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal_error",
+                        "同步处理失败，请重试",
+                    )
+                }
+            },
+            Err(error) => {
+                tracing::warn!("手机同步响应序列化失败: {error}");
+                api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    "同步处理失败，请重试",
+                )
+            }
+        },
+        Ok(Err(error)) => {
+            tracing::warn!("手机同步拉取失败: {error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "同步处理失败，请重试",
+            )
+        }
+        Err(join_error) => {
+            tracing::warn!("手机同步拉取任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "同步处理失败，请重试",
+            )
+        }
+    }
+}
+
+/// POST /v1/ops：请求与响应都是加密信封；op_id 幂等，冲突不覆盖。
+async fn handle_ops(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let body = match read_body(req, SYNC_MAX_BODY).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let key = derive_key(&token_hash);
+    let envelope: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "请求必须是加密信封 JSON",
+            )
+        }
+    };
+    let data = match decrypt_envelope(&key, AAD_PUSH, &envelope) {
+        Ok(value) => value,
+        Err(reason) => {
+            // 不把解密失败细节回给客户端，只保留诊断日志（不含密文/密钥）。
+            tracing::warn!("手机同步载荷解密失败: {reason}");
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "同步载荷无效",
+            );
+        }
+    };
+    let request: PushRequest = match serde_json::from_value(data) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "同步载荷字段不完整",
+            )
+        }
+    };
+    if request.device_id != device.id {
+        return api_error(
+            StatusCode::FORBIDDEN,
+            "permission_denied",
+            "设备身份与令牌不匹配",
+        );
+    }
+    if request.ops.len() > MAX_PUSH_OPS {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "单批操作过多",
+        );
+    }
+
+    let db = ctx.db.clone();
+    let device_id = device.id.clone();
+    let ops = request.ops;
+    let result =
+        tokio::task::spawn_blocking(move || apply_push(&db, &device_id, &ops)).await;
+    match result {
+        Ok(Ok(response)) => match serde_json::to_value(response) {
+            Ok(value) => match encrypt_envelope(&key, AAD_PUSH, &value) {
+                Ok(envelope) => json_response(StatusCode::OK, envelope),
+                Err(error) => {
+                    tracing::warn!("手机同步响应加密失败: {error}");
+                    api_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal_error",
+                        "同步处理失败，请重试",
+                    )
+                }
+            },
+            Err(error) => {
+                tracing::warn!("手机同步响应序列化失败: {error}");
+                api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    "同步处理失败，请重试",
+                )
+            }
+        },
+        Ok(Err(error)) => {
+            tracing::warn!("手机同步写入失败: {error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "同步处理失败，请重试",
+            )
+        }
+        Err(join_error) => {
+            tracing::warn!("手机同步写入任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "同步处理失败，请重试",
+            )
+        }
+    }
+}
+
 async fn handle_health() -> Response<Full<Bytes>> {
     json_response(
         StatusCode::OK,
@@ -268,7 +518,9 @@ async fn route(
         ("GET", "/v1/health") => handle_health().await,
         ("POST", "/v1/pair") => handle_pair(req, ctx, peer).await,
         ("GET", "/v1/ping") => handle_ping(req, ctx, peer).await,
-        ("GET" | "POST", "/v1/health" | "/v1/pair" | "/v1/ping") => {
+        ("GET", "/v1/changes") => handle_changes(req, ctx, peer).await,
+        ("POST", "/v1/ops") => handle_ops(req, ctx, peer).await,
+        ("GET" | "POST", "/v1/health" | "/v1/pair" | "/v1/ping" | "/v1/changes" | "/v1/ops") => {
             let mut resp = api_error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "方法不允许");
             resp.headers_mut()
                 .insert(ALLOW, hyper::header::HeaderValue::from_static("GET, POST"));

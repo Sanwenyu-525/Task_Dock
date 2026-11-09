@@ -131,6 +131,8 @@ export const font = {
   display: 30,
   stat: 26,
   title: 16,
+  /** 阅读面（笔记正文/摘要）：比通用正文大一号，长文本可读性优先 */
+  reading: 15,
   body: 13,
   meta: 12,
   label: 11,

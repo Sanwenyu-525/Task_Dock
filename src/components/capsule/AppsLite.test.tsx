@@ -23,6 +23,7 @@ const navUpdateTarget = vi.fn();
 const navTargetRunningStates = vi.fn();
 const navCloseTargetWindows = vi.fn();
 const navQuitTargetProcesses = vi.fn();
+const navKillTargetProcesses = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   applyMode: async () => undefined,
@@ -57,6 +58,7 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
     navTargetRunningStates: (...a: unknown[]) => navTargetRunningStates(...a),
     navCloseTargetWindows: (...a: unknown[]) => navCloseTargetWindows(...a),
     navQuitTargetProcesses: (...a: unknown[]) => navQuitTargetProcesses(...a),
+    navKillTargetProcesses: (...a: unknown[]) => navKillTargetProcesses(...a),
     navAppIcon: async () => null,
   };
 });
@@ -64,6 +66,7 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
 import AppsLite from "./AppsLite";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
+import { clearAppGridOrder, writeAppGridOrder } from "../../lib/appGridOrder";
 
 function target(id: string, name: string) {
   return {
@@ -116,6 +119,8 @@ beforeEach(() => {
     processExited: 1,
     postedThreads: 2,
   });
+  navKillTargetProcesses.mockReset();
+  navKillTargetProcesses.mockResolvedValue({ matched: 1, killed: 1, failedPids: [] });
   useNavigationStore.setState({
     targets: [target("a", "Obsidian")],
     targetsLoaded: true,
@@ -126,6 +131,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  // 手动网格顺序是 localStorage 级状态：用例之间必须隔离
+  clearAppGridOrder();
 });
 
 describe("AppsLite 反馈计时器", () => {
@@ -366,6 +373,29 @@ describe("AppsLite 空状态区分（数据不丢失）", () => {
     expect(stylesCss).toMatch(/\.cap-app-slot:hover \.cap-app:disabled\s*\{[^}]*background:\s*transparent/);
     // 键盘焦点仍是独立的 2px outline，而不是靠 hover 底色
     expect(stylesCss).toMatch(/\.cap-app:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);
+  });
+
+  it("CSS：图标居中、名称左对齐，收藏角标与运行点分处左上/右下且都不占布局", () => {
+    // 图标保持格内水平居中（整块左对齐已按用户要求回退）
+    const tileBlock = stylesCss.match(/(?:^|\n)\.cap-app\s*\{([\s\S]*?)\}/);
+    expect(tileBlock).toBeTruthy();
+    expect(tileBlock![1]).toMatch(/align-items:\s*center/);
+    expect(tileBlock![1]).not.toMatch(/align-items:\s*flex-start/);
+    // 名称这一部分左对齐：折行时两行左缘一致，且不额外加水平内边距
+    const nameBlock = stylesCss.match(/\.cap-app-name\s*\{([\s\S]*?)\}/);
+    expect(nameBlock).toBeTruthy();
+    expect(nameBlock![1]).toMatch(/text-align:\s*left/);
+    expect(nameBlock![1]).not.toMatch(/text-align:\s*center/);
+    // 收藏角标在图标片左上角，语义色沿用完整面板的收藏星（--accent）
+    const favBlock = stylesCss.match(/\.cap-app-fav\s*\{([\s\S]*?)\}/);
+    expect(favBlock).toBeTruthy();
+    expect(favBlock![1]).toMatch(/position:\s*absolute/);
+    expect(favBlock![1]).toMatch(/left:\s*-3px/);
+    expect(favBlock![1]).toMatch(/top:\s*-3px/);
+    expect(favBlock![1]).toMatch(/color:\s*var\(--accent\)/);
+    // 运行点仍在右下角，两者不重叠
+    expect(stylesCss).toMatch(/\.cap-app-dot\s*\{[^}]*right:\s*-2px/);
+    expect(stylesCss).toMatch(/\.cap-app-dot\s*\{[^}]*bottom:\s*-2px/);
   });
 
   it("CSS：标题同行布局是局部变体，默认纵向结构保持不变", () => {
@@ -639,6 +669,29 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     await waitFor(() => expect(screen.getByText("已关闭「Obsidian」的 1 个窗口")).toBeTruthy());
   });
 
+  it("仅后台进程（托盘驻留）也显示运行状态点，不止有窗口的应用", async () => {
+    seed([target("a", "Clash Verge")]);
+    navTargetRunningStates.mockResolvedValue({ a: "process_only" });
+    render(<AppsLite />);
+    expect(await screen.findByTestId("running-list")).toBeTruthy();
+    // 绿点 = 运行中（有窗口或仅后台进程），与「运行中」快捷区同一口径
+    expect(document.querySelector(".cap-app-dot")).toBeTruthy();
+  });
+
+  it("关闭窗口后应用仍在后台运行：如实提示，不把托盘驻留说成完全关闭", async () => {
+    seed([target("a", "Clash Verge")]);
+    // 挂载时窗口在；关闭后（托盘驻留）只剩后台进程
+    navTargetRunningStates
+      .mockResolvedValueOnce({ a: "has_window" })
+      .mockResolvedValue({ a: "process_only" });
+    render(<AppsLite />);
+    expect(await screen.findByTestId("running-list")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "关闭 Clash Verge 的窗口" }));
+    await waitFor(() =>
+      expect(screen.getByText("已关闭「Clash Verge」的窗口（应用仍在后台运行）")).toBeTruthy(),
+    );
+  });
+
   it("退出应用走 WM_QUIT 优雅档，未完全退出如实提示", async () => {
     seed([target("a", "Obsidian")]);
     navTargetRunningStates.mockResolvedValue({ a: "process_only" });
@@ -653,8 +706,107 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     expect(screen.queryByRole("button", { name: "关闭 Obsidian 的窗口" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "退出 Obsidian" }));
     await waitFor(() => expect(navQuitTargetProcesses).toHaveBeenCalledWith("a"));
+    await waitFor(() => expect(screen.getByText(/未完全退出（1\/2）/)).toBeTruthy());
+    // 未完全退出：给出强制结束确认入口，但未经确认不得结束进程
+    expect(screen.getByRole("alertdialog", { name: "确认强制结束应用进程" })).toBeTruthy();
+    expect(navKillTargetProcesses).not.toHaveBeenCalled();
+  });
+
+  it("强制结束只在确认条确认后执行，并在结果里如实报数量", async () => {
+    seed([target("a", "Clash Verge")]);
+    navTargetRunningStates.mockResolvedValue({ a: "process_only" });
+    navQuitTargetProcesses.mockResolvedValue({
+      processTotal: 2,
+      processExited: 0,
+      postedThreads: 4,
+    });
+    navKillTargetProcesses.mockResolvedValue({ matched: 2, killed: 2, failedPids: [] });
+    render(<AppsLite />);
+    expect(await screen.findByTestId("running-list")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "退出 Clash Verge" }));
+    expect(await screen.findByRole("alertdialog", { name: "确认强制结束应用进程" })).toBeTruthy();
+    expect(navKillTargetProcesses).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "强制结束" }));
+    await waitFor(() => expect(navKillTargetProcesses).toHaveBeenCalledWith("a"));
     await waitFor(() =>
-      expect(screen.getByText(/未完全退出（1\/2），可到完整面板使用结束进程/)).toBeTruthy(),
+      expect(screen.getByText("已强制结束「Clash Verge」的 2 个进程")).toBeTruthy(),
+    );
+    expect(screen.queryByRole("alertdialog", { name: "确认强制结束应用进程" })).toBeNull();
+  });
+
+  it("取消强制结束只关确认条，不结束进程，也不丢失运行中状态", async () => {
+    seed([target("a", "Clash Verge")]);
+    navTargetRunningStates.mockResolvedValue({ a: "process_only" });
+    navQuitTargetProcesses.mockResolvedValue({
+      processTotal: 1,
+      processExited: 0,
+      postedThreads: 2,
+    });
+    render(<AppsLite />);
+    expect(await screen.findByTestId("running-list")).toBeTruthy();
+    const quitBtn = screen.getByRole("button", { name: "退出 Clash Verge" });
+    fireEvent.click(quitBtn);
+    expect(await screen.findByRole("alertdialog", { name: "确认强制结束应用进程" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("alertdialog", { name: "确认强制结束应用进程" })).toBeNull();
+    expect(navKillTargetProcesses).not.toHaveBeenCalled();
+    // 焦点还给触发退出的按钮
+    await waitFor(() => expect(document.activeElement).toBe(quitBtn));
+    expect(screen.getByTestId("running-list")).toBeTruthy();
+  });
+
+  it("收藏的应用在图标左上角渲染收藏角标，未收藏不渲染", async () => {
+    useNavigationStore.setState({
+      targets: [
+        { ...target("a", "Alpha"), favorite: true },
+        target("b", "Bravo"),
+      ] as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    render(<AppsLite />);
+    const alpha = await screen.findByRole("button", { name: "启动 Alpha" });
+    const bravo = screen.getByRole("button", { name: "启动 Bravo" });
+    expect(alpha.querySelector(".cap-app-fav")).toBeTruthy();
+    expect(bravo.querySelector(".cap-app-fav")).toBeNull();
+    // 角标与运行点分开：收藏但未运行时（快照为空）不出现状态点
+    expect(alpha.querySelector(".cap-app-dot")).toBeNull();
+  });
+
+  it("运行中应用固定排在网格最前，其余保持原顺序", async () => {
+    useNavigationStore.setState({
+      targets: [target("a", "Alpha"), target("b", "Bravo"), target("c", "Charlie")] as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    // 仅后台进程（托盘驻留）同样算运行中
+    navTargetRunningStates.mockResolvedValue({ c: "process_only" });
+    render(<AppsLite />);
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll(".cap-app-slot .cap-app")].map((el) =>
+          el.getAttribute("aria-label"),
+        ),
+      ).toEqual(["启动 Charlie", "启动 Alpha", "启动 Bravo"]),
+    );
+  });
+
+  it("手动排序后运行中仍置顶，组内沿用手动顺序", async () => {
+    writeAppGridOrder(["c", "b", "a"]);
+    useNavigationStore.setState({
+      targets: [target("a", "Alpha"), target("b", "Bravo"), target("c", "Charlie")] as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    navTargetRunningStates.mockResolvedValue({ b: "has_window" });
+    render(<AppsLite />);
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll(".cap-app-slot .cap-app")].map((el) =>
+          el.getAttribute("aria-label"),
+        ),
+      ).toEqual(["启动 Bravo", "启动 Charlie", "启动 Alpha"]),
     );
   });
 

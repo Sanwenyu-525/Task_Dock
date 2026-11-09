@@ -1,15 +1,16 @@
 # 手机端架构（Android 独立模式 + 局域网配对）
 
-> 适用范围：`apps/mobile` 当前实现。2026-11-08 起已接入**配对与连通性探测**；
-> 数据同步（任务/笔记 pull/push）仍未实现，相关描述不当作能力承诺。
+> 适用范围：`apps/mobile` 当前实现。配对与连通性探测自 2026-11-08 接入；
+> 任务同步（pull/push）自 2026-11-09 接入（见 [07-sync.md](07-sync.md)）。
+> 收集箱/笔记同步、后台同步与字段级合并仍未实现，相关描述不当作能力承诺。
 
 ## 1. 定位与边界
 
-手机端业务数据全落在本机 SQLite；唯一网络能力是**用户显式发起的局域网配对与心跳**：
+手机端业务数据全落在本机 SQLite；网络能力只包括**用户显式发起的局域网配对、心跳与任务同步**：
 
 - 桌面端保持默认关闭，只有用户开启「允许手机连接」后才监听局域网端口；
-- 手机端只在用户点「配对 / 测试连接」时发请求，不做后台轮询、不自动重试；
-- 本轮不传输任务、笔记或剪贴板内容，配对成功也不代表已同步。
+- 手机端只在用户点「配对 / 测试连接 / 立即同步」时发请求，不做后台轮询、不自动同步；
+- 配对本身不传输业务数据；任务同步是独立动作，配对成功也不代表已同步。
 
 不可突破的边界：
 
@@ -65,8 +66,10 @@ src/
     actions.ts          通知按钮响应、去重、收起通知
   lib/
     insets.ts           纯 JS 安全区（不依赖 safe-area-context，见 §7）
-    sync/protocol.ts    补丁载荷、冲突分类、响应解析（纯函数，数据同步下一轮使用）
-    sync/client.ts      同步客户端骨架（未接线；与配对客户端分开）
+    sync/protocol.ts    补丁载荷、冲突分类、响应解析（纯函数）
+    sync/client.ts      同步客户端（超时/退避/加密信封）
+    sync/crypto.ts      KDF 与 XSalsa20-Poly1305 信封
+    sync/engine.ts      pull → push → 再 pull 的单飞编排
     sync/pairing.ts     二维码 URI 解析、桌面地址归一化、配对码清洗（纯函数）
     sync/pairClient.ts  `/v1/pair` 与 `/v1/ping` 客户端（超时、稳定错误码）
     sync/pendingPairing.ts 深链配对载荷的内存队列 + 订阅
@@ -75,7 +78,8 @@ src/
     InboxScreen.tsx     收集箱、转任务
     SettingsScreen.tsx  主题、权限、本地数据、配对入口
     PairingScreen.tsx   应用内扫码/手动输码 → 确认 → 配对 → 保存令牌
-    SyncScreen.tsx      已配对连接、连通性测试、解除本机配对（数据同步下一轮）
+    SyncScreen.tsx      已配对连接、连通性测试、立即同步、解除本机配对
+    ConflictScreen.tsx  同步冲突逐条处理（采用桌面端 / 保留本机）
     taskGroups.ts       列表分组（纯展示切分）
   components/           见 03-ui-spec.md §4
   theme/                tokens / ThemeProvider / MotionProvider / shadows
@@ -190,20 +194,24 @@ plugins/withCleartextTraffic.js  prebuild 配置插件：允许局域网明文 H
   仓库路径过长会让该库 codegen 的对象名超过 260 字符而构建失败（见 05-build.md §6）。
   改动这里要同时验证顶部刘海、底部手势条与键盘弹起三种情况。
 
-## 8. 同步骨架（未接入）
+## 8. 同步（v1 任务已接入）
 
 - `src/lib/sync/protocol.ts` 是纯函数：`buildPatchPayload`（丢弃 `undefined`、保留 `null`）、
   `classifyConflict`、`parsePullResult` / `parsePushResult`。可单测，不触网。
-- `src/lib/sync/client.ts` 接受注入的 `FetchLike`，具备超时与重试参数，但**没有调用方**。
-- 独立模式下 `outbox` 只累积不消费；界面上「待同步」是 outbox 行数，不代表正在同步。
-
-接同步时必须先满足：设备配对与令牌存储、`base_rev` 冲突判定、墓碑推进、可取消且有上限的重试；
-在此之前不得把 `client.ts` 接到界面按钮上。
+- `src/lib/sync/client.ts` 接受注入的 `FetchLike`，具备 5s 超时与 1/2/4/8/16/32s 退避；
+  传入 `syncKey` 时请求/响应走 `{v,n,d}` 加密信封（[07-sync.md](07-sync.md) §2）。
+- `src/lib/sync/engine.ts` 是唯一调用方：拉取 → 按记录合并 outbox 推送 → 再拉取回填
+  `server_rev`；单飞，不并发；只在用户点「立即同步」时触发。
+- `src/db/sync.ts` 负责落库：pull 跳过本地未发送记录；push ack 清理本批 outbox；
+  冲突写入 `sync_conflicts`，由冲突页选择「采用桌面端 / 保留本机」。
+- 独立模式下 `outbox` 只累积不消费；目前只消费 `entity='task'`，收集箱/笔记仍留在本机。
+- 已满足接入前提：设备配对与令牌存储、`base_rev` 冲突判定、墓碑推进、可取消且有上限的重试。
 
 ### 8.1 配对与连接（2026-11-08 已实现）
 
 - **屏幕**：`PairingScreen` 状态机 `scan → confirm → pairing → success`；`SyncScreen` 展示
-  已配对连接、连通性测试与解除本机配对。两者都不读写业务表。
+  已配对连接、连通性测试、立即同步与解除本机配对。配对页不读写业务表；同步页通过
+  `sync/engine.ts` 读写任务表与 outbox（不属于配对职责）。
 - **纯函数**：`sync/pairing.ts` 严格解析 `taskdock://pair?v=1...`（host/port/code/v 校验），
   归一化手动地址（不接受 https/路径），清洗 6 位码；`sync/pairClient.ts` 带 5s/8s 超时与
   稳定错误码（`invalid_code` / `pairing_closed` / `too_many_attempts` / `unauthorized`）。
@@ -225,10 +233,11 @@ plugins/withCleartextTraffic.js  prebuild 配置插件：允许局域网明文 H
 
 ## 10. 明确未实现
 
-数据同步消费（任务/笔记 pull/push）、墓碑、后台同步、远程推送、主屏小组件（AppWidgetProvider）、
-系统分享接收（intent-filter）、iOS。配对与连通性探测已于 2026-11-08 实现；
+收集箱/笔记同步、字段级自动合并、后台同步、远程推送、主屏小组件（AppWidgetProvider）、
+系统分享接收（intent-filter）、iOS。任务同步已于 2026-11-09 实现；
 配对/同步/冲突/小组件/分享的**页面结构**自 2026-11-08 起保持「真实状态 + 规划徽标」，
-不给假数据。详见 [README.md](README.md) 的状态表与 [06-pairing.md](06-pairing.md)。
+不给假数据。详见 [README.md](README.md) 的状态表与 [06-pairing.md](06-pairing.md)、
+[07-sync.md](07-sync.md)。
 
 ## 变更记录
 

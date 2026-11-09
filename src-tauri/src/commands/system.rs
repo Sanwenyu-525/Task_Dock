@@ -206,11 +206,14 @@ static CAPSULE_APPLY_SEQ: AtomicU64 = AtomicU64::new(0);
 /// 这是「鼠标在吸附条与悬浮窗口之间来回跳动」的结构性修复：
 /// 命中区不再随窗口移动而移动。
 #[tauri::command]
+// 参数 `panel_width_css`：工具面板当前宽度（CSS px）。停靠期可拖拽；缺省/非法值
+// 按默认 340 收敛，前端以 camelCase `panelWidthCss` 传入。
 pub fn apply_window_capsule(
     app: AppHandle,
     mode: String,
     edge: String,
     seq: u64,
+    panel_width_css: Option<u32>,
 ) -> AppResult<bool> {
     // 乱序保护：已有更高序号的请求落地过，本次旧请求直接丢弃，不再改写区域与原生层。
     if CAPSULE_APPLY_SEQ.fetch_max(seq, Ordering::SeqCst) > seq {
@@ -244,6 +247,9 @@ pub fn apply_window_capsule(
                     edge: edge_id,
                     thickness_css: CAPSULE_THICKNESS_CSS,
                     length_css: CAPSULE_LENGTH_CSS,
+                    panel_w_css: crate::window_shape::clamp_capsule_panel_width(
+                        panel_width_css.unwrap_or(crate::window_shape::CAPSULE_PANEL_WIDTH_CSS),
+                    ),
                     expanded: mode == "panel",
                     tab: mode == "tab",
                 }),
@@ -1042,6 +1048,7 @@ mod tests {
                 edge: 0,
                 thickness_css: CAPSULE_THICKNESS_CSS,
                 length_css: CAPSULE_LENGTH_CSS,
+                panel_w_css: crate::window_shape::CAPSULE_PANEL_WIDTH_CSS,
                 expanded: false,
                 tab: false,
             };
@@ -1073,6 +1080,23 @@ mod tests {
             }
             assert!(!inside, "scale={scale} 缺角不得落在区域多边形内");
         }
+    }
+
+    /// 2026-11-09：面板宽度是跨端契约（280–480，默认 340）；命令缺省/越界值
+    /// 必须在 Rust 侧再收敛一次，不能信任前端传入。
+    #[test]
+    fn capsule_panel_width_contract_matches_frontend() {
+        use crate::window_shape::{
+            clamp_capsule_panel_width, CAPSULE_PANEL_MAX_WIDTH_CSS, CAPSULE_PANEL_MIN_WIDTH_CSS,
+            CAPSULE_PANEL_WIDTH_CSS,
+        };
+        assert_eq!(CAPSULE_PANEL_WIDTH_CSS, 340);
+        assert_eq!(CAPSULE_PANEL_MIN_WIDTH_CSS, 280);
+        assert_eq!(CAPSULE_PANEL_MAX_WIDTH_CSS, 480);
+        assert_eq!(clamp_capsule_panel_width(0), 340);
+        assert_eq!(clamp_capsule_panel_width(1), 280);
+        assert_eq!(clamp_capsule_panel_width(340), 340);
+        assert_eq!(clamp_capsule_panel_width(999), 480);
     }
 
     #[test]

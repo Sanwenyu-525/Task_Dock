@@ -182,6 +182,10 @@ export const zhCN = {
   "capsule.toCapsuleTip": "临时收缩为胶囊（仅本次停靠会话，不改变默认吸附方式）",
   "capsule.toTabTip": "收起为极简标签",
   "capsule.toTabAria": "收起为极简标签",
+  // 工具面板宽度拖拽手柄（280–480 CSS px）
+  "capsule.resizeAria": "调整工具面板宽度",
+  "capsule.resizeTip": "拖动调整面板宽度，双击恢复默认",
+  "capsule.resizeValue": "{width} 像素",
   "capsule.tabAria": "极简标签，点击展开工具面板，沿边拖动可移动，右键打开快捷菜单",
   // 极简标签悬停提示：状态文案与轨道状态球同源（railStatus.agentTone），
   // 未知/空闲不宣称具体状态，只提示可做的操作。
@@ -855,6 +859,7 @@ export const zhCN = {
   "settings.mobileSync.pairExpires": "剩余 {seconds} 秒",
   "settings.mobileSync.pairExpired": "配对码已过期，请重新生成",
   "settings.mobileSync.pairRegenerate": "重新生成",
+  "settings.mobileSync.pairRegenerating": "正在刷新…",
   "settings.mobileSync.pairCancel": "取消",
   "settings.mobileSync.pairSuccess": "配对成功",
   "settings.mobileSync.pairSuccessDetail": "「{name}」已授权。手机端会保存令牌，之后可在同步页测试连接。",

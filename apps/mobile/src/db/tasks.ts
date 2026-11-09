@@ -72,6 +72,7 @@ export function buildTask(input: NewTaskInput, now = Date.now()): Task {
     updatedAt: now,
     completedAt: null,
     rev: 0,
+    serverRev: 0,
   };
 }
 
@@ -82,7 +83,7 @@ export function buildTask(input: NewTaskInput, now = Date.now()): Task {
 export async function insertTaskInTx(db: SQLiteDatabase, task: Task, now: number): Promise<void> {
   await db.runAsync(
     `INSERT INTO tasks (${TASK_COLUMNS})
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       task.id,
       task.title,
@@ -99,6 +100,7 @@ export async function insertTaskInTx(db: SQLiteDatabase, task: Task, now: number
       task.updatedAt,
       task.completedAt,
       task.rev,
+      task.serverRev,
     ],
   );
   await db.runAsync(
@@ -166,7 +168,7 @@ export async function toggleTask(id: string): Promise<ToggleOutcome> {
               newId("op"),
               "task",
               id,
-              current.rev,
+              current.serverRev,
               JSON.stringify({ type: "advance", dueAt: nextDue, remindAt: nextRemind }),
               now,
             ],
@@ -194,7 +196,7 @@ export async function toggleTask(id: string): Promise<ToggleOutcome> {
     await db.runAsync(
       `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [newId("op"), "task", id, current.rev, JSON.stringify({ type: "status", status: nextStatus }), now],
+      [newId("op"), "task", id, current.serverRev, JSON.stringify({ type: "status", status: nextStatus }), now],
     );
   });
 
@@ -219,7 +221,7 @@ export async function deleteTask(id: string): Promise<void> {
     await db.runAsync(
       `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [newId("op"), "task", id, current.rev, JSON.stringify({ type: "delete" }), now],
+      [newId("op"), "task", id, current.serverRev, JSON.stringify({ type: "delete" }), now],
     );
   });
 }

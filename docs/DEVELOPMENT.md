@@ -141,7 +141,7 @@ task_dock/
 | `nav_list_windows()` | 当前可交互顶层窗口（窗口选择器） |
 | `nav_list_targets` / `nav_save_target` / `nav_update_target` / `nav_delete_target` | 目标 CRUD（保存时全量安全校验 + app_key 幂等去重） |
 | `nav_target_running_states(ids)` | 已保存应用目标的实时运行态（`has_window/process_only/not_running/unavailable`；按需查询，不轮询）。`has_window` 判定与 `windows_for_identity` 同一口径：exe 直接命中**或窗口 PID 祖先链命中**（多进程宿主的子进程窗口），检测与关闭/结束动作不会各说各话 |
-| `nav_close_target_windows(targetId)` | 按目标身份优雅关闭其全部顶层窗口（WM_CLOSE，不结束进程、不抢焦点；窗口每次现查现关）→ `{ requested, closed, stillOpen }`；`stillOpen` 非空表示应用可能在等「是否保存」确认。仅 application 目标；exe 身份按进程树匹配，UWP（AUMID）按包族名匹配可见窗口 |
+| `nav_close_target_windows(targetId)` | 按目标身份优雅关闭其全部顶层窗口（WM_CLOSE，不结束进程、不抢焦点；窗口每次现查现关）→ `{ requested, closed, stillOpen }`；`stillOpen` 非空表示窗口仍可见（可能等「是否保存」确认，或 WM_CLOSE 投递被权限拒绝）。**关闭成功 = 句柄消失或窗口转为不可见**：托盘驻留应用把「关闭」实现为隐藏到托盘（句柄保留），按用户视角计为已关闭，不再误报「未关闭」（2026-11-09）。仅 application 目标；exe 身份按进程树匹配，UWP（AUMID）按包族名匹配可见窗口 |
 | `nav_quit_target_processes(targetId)` | 请求目标身份的全部进程**自行退出**：向其全部线程投递 `WM_QUIT`（等价应用自己的「退出」命令——保存配置、移除托盘图标后正常结束；覆盖缩到托盘无可见窗口的场景），有界等待 3s 核实 → `{ processTotal, processExited, postedThreads }`；不配合的应用如实报未完全退出。非破坏性，无需确认。UWP 目标从可见窗口 PID 出发按进程树扩展 |
 | `nav_kill_target_processes(targetId)` | 按目标身份强制结束其全部相关进程（含子进程树；TerminateProcess，**破坏性**）→ `{ matched, killed, failedPids }`。**前端必须先经确认弹窗**（未保存数据会丢失）；后端拒绝终止自身进程，不做二次确认。托盘驻留应用彻底退出的兜底档，排在 `nav_quit_target_processes` 之后。UWP 目标从可见窗口 PID 出发按进程树扩展 |
 | `nav_link_task` / `nav_unlink_task` / `nav_update_task_link` / `nav_task_targets` / `nav_all_task_links` | 任务关联管理 |

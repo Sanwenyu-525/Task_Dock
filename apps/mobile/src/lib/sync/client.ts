@@ -6,6 +6,7 @@
 // - 不做任何落库/合并，收到 PullResult / PushResult 后由调用方决定如何应用。
 import { AppError, isAppError, toAppError } from "../errors";
 
+import { AAD_PULL, AAD_PUSH, decryptEnvelope, encryptEnvelope } from "./crypto";
 import { parsePullResult, parsePushResult, type Op, type PullResult, type PushResult } from "./protocol";
 
 /** 单次请求超时；与 docs/MOBILE_STACK.md §3.6 一致 */
@@ -40,6 +41,13 @@ export interface SyncClientOptions {
   token: string;
   /** 设备标识；缺省时由服务端从 token 推导 */
   deviceId?: string;
+  /**
+   * 同步密钥（deriveSyncKey 的结果）。提供时：
+   * - pull 响应按 AAD_PULL 解密；
+   * - push 请求/响应都走加密信封。
+   * 测试可省略，按明文协议验证传输与退避逻辑。
+   */
+  syncKey?: Uint8Array;
   fetchImpl?: FetchLike;
 }
 
@@ -202,8 +210,12 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
       MAX_PULL_LIMIT,
     );
     const url = `${baseUrl}/v1/changes?since=${encodeURIComponent(since)}&limit=${safeLimit}`;
+    const parse = (body: unknown) =>
+      parsePullResult(
+        options.syncKey ? decryptEnvelope(options.syncKey, AAD_PULL, body) : body,
+      );
 
-    return request(operation, url, { method: "GET", headers: headers() }, parsePullResult).finally(
+    return request(operation, url, { method: "GET", headers: headers() }, parse).finally(
       () => {
         active.delete(operation);
       },
@@ -216,7 +228,15 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
 
     const operation = createOperation();
     const url = `${baseUrl}/v1/ops`;
-    const body = JSON.stringify({ device_id: options.deviceId, ops });
+    const payload = { device_id: options.deviceId, ops };
+    const body = JSON.stringify(
+      options.syncKey ? encryptEnvelope(options.syncKey, AAD_PUSH, payload) : payload,
+    );
+    const parse = (response: unknown) =>
+      parsePushResult(
+        options.syncKey ? decryptEnvelope(options.syncKey, AAD_PUSH, response) : response,
+        ops,
+      );
 
     return request(
       operation,
@@ -226,7 +246,7 @@ export function createSyncClient(options: SyncClientOptions): SyncClient {
         headers: { ...headers(), "Content-Type": "application/json" },
         body,
       },
-      (response) => parsePushResult(response, ops),
+      parse,
     ).finally(() => {
       active.delete(operation);
     });

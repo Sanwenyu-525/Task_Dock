@@ -18,31 +18,34 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "settings", label: "设置" },
 ];
 
-/** 线重统一用 1.5，与 hairline 边框形成同一套笔触 */
-const STROKE = 1.5;
+/** 图标按原型 22dp（Material Symbols）绘制；线重约 1.8，与 22dp 视觉比例一致 */
+const STROKE = 1.8;
+
+/** 齿轮 8 个齿的角度；齿块按角度旋转并沿半径摆放 */
+const GEAR_TEETH = [0, 45, 90, 135, 180, 225, 270, 315];
 
 function TabIcon({ tab, color }: { tab: TabKey; color: string }) {
   if (tab === "tasks") {
+    // 勾选圆：始终描边，选中只换成 accent 色（原型的 check_circle，不是实心）
     return (
-      <View style={[styles.iconBox, styles.listIcon]}>
-        <View style={[styles.iconLine, { width: 15, backgroundColor: color }]} />
-        <View style={[styles.iconLine, { width: 15, backgroundColor: color }]} />
-        <View style={[styles.iconLine, { width: 9, backgroundColor: color }]} />
+      <View style={styles.iconBox}>
+        <View style={[styles.checkRing, { borderColor: color }]} />
+        <View style={[styles.checkTickShort, { backgroundColor: color }]} />
+        <View style={[styles.checkTickLong, { backgroundColor: color }]} />
       </View>
     );
   }
 
   if (tab === "inbox") {
+    // 收件箱：近正方形外框 + 底部托盘线与 U 形开口（Material Symbols inbox）
     return (
       <View style={styles.iconBox}>
-        {/* 两张叠放的卡片：一张后置低透明，读作「收集起来的东西」 */}
-        <View
-          style={[
-            styles.cardBack,
-            { borderColor: color, opacity: 0.45 },
-          ]}
-        />
-        <View style={[styles.cardFront, { borderColor: color }]} />
+        <View style={[styles.inboxBox, { borderColor: color }]} />
+        <View style={[styles.inboxTrayLeft, { backgroundColor: color }]} />
+        <View style={[styles.inboxTrayRight, { backgroundColor: color }]} />
+        <View style={[styles.inboxDipLeft, { backgroundColor: color }]} />
+        <View style={[styles.inboxDipBottom, { backgroundColor: color }]} />
+        <View style={[styles.inboxDipRight, { backgroundColor: color }]} />
       </View>
     );
   }
@@ -50,26 +53,36 @@ function TabIcon({ tab, color }: { tab: TabKey; color: string }) {
   if (tab === "notes") {
     return (
       <View style={styles.iconBox}>
-        {/* 一页纸：带折角的文档轮廓 + 两行文字线 */}
+        {/* 一页纸：带折角的文档轮廓 + 两行文字线（description） */}
         <View style={[styles.noteSheet, { borderColor: color }]} />
+        <View style={[styles.noteFold, { backgroundColor: color }]} />
         <View style={[styles.noteLine, styles.noteLineShort, { backgroundColor: color }]} />
         <View style={[styles.noteLine, styles.noteLineLong, { backgroundColor: color }]} />
       </View>
     );
   }
 
+  // 设置：齿轮（圆环 + 8 个齿）
   return (
-    <View style={[styles.iconBox, styles.sliders]}>
-      <View style={styles.sliderRow}>
-        <View style={[styles.sliderLine, { width: 4, backgroundColor: color }]} />
-        <View style={[styles.sliderKnob, { backgroundColor: color }]} />
-        <View style={[styles.sliderLine, styles.sliderLineGrow, { backgroundColor: color }]} />
-      </View>
-      <View style={styles.sliderRow}>
-        <View style={[styles.sliderLine, styles.sliderLineGrow, { backgroundColor: color }]} />
-        <View style={[styles.sliderKnob, { backgroundColor: color }]} />
-        <View style={[styles.sliderLine, { width: 4, backgroundColor: color }]} />
-      </View>
+    <View style={styles.iconBox}>
+      <View style={[styles.gearRing, { borderColor: color }]} />
+      {GEAR_TEETH.map((deg) => {
+        const rad = (deg * Math.PI) / 180;
+        return (
+          <View
+            key={deg}
+            style={[
+              styles.gearTooth,
+              {
+                backgroundColor: color,
+                left: 11 + 8.3 * Math.cos(rad) - 1.8,
+                top: 11 + 8.3 * Math.sin(rad) - 1.8,
+                transform: [{ rotate: `${deg}deg` }],
+              },
+            ]}
+          />
+        );
+      })}
     </View>
   );
 }
@@ -193,46 +206,104 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   iconBox: {
-    width: 18,
-    height: 18,
+    width: 22,
+    height: 22,
     alignItems: "center",
     justifyContent: "center",
   },
-  iconLine: {
+  checkRing: {
+    position: "absolute",
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: STROKE,
+  },
+  checkTickShort: {
+    position: "absolute",
+    width: 5.1,
     height: STROKE,
     borderRadius: 1,
-    marginVertical: 1.75,
+    left: 5.35,
+    top: 12.2,
+    transform: [{ rotate: "44deg" }],
   },
-  listIcon: {
-    alignItems: "flex-start",
-    paddingLeft: 1.5,
-  },
-  cardBack: {
+  checkTickLong: {
     position: "absolute",
-    left: 4.5,
+    width: 9.5,
+    height: STROKE,
+    borderRadius: 1,
+    left: 8.15,
+    top: 10.3,
+    transform: [{ rotate: "-45deg" }],
+  },
+  inboxBox: {
+    position: "absolute",
+    left: 1.5,
     top: 1.5,
-    width: 10,
-    height: 12,
-    borderRadius: 2.5,
+    width: 19,
+    height: 19,
+    borderRadius: 3,
     borderWidth: STROKE,
   },
-  cardFront: {
+  inboxTrayLeft: {
     position: "absolute",
-    left: 2.5,
-    top: 4.5,
-    width: 13,
-    height: 11,
-    borderRadius: 2.5,
-    borderWidth: STROKE,
+    left: 2.2,
+    top: 13.6,
+    width: 5.4,
+    height: STROKE,
+    borderRadius: 1,
+  },
+  inboxTrayRight: {
+    position: "absolute",
+    left: 14.4,
+    top: 13.6,
+    width: 5.4,
+    height: STROKE,
+    borderRadius: 1,
+  },
+  inboxDipLeft: {
+    position: "absolute",
+    left: 6.85,
+    top: 14.85,
+    width: 2.8,
+    height: STROKE,
+    borderRadius: 1,
+    transform: [{ rotate: "62deg" }],
+  },
+  inboxDipBottom: {
+    position: "absolute",
+    left: 8.7,
+    top: 16.5,
+    width: 4.6,
+    height: STROKE,
+    borderRadius: 1,
+  },
+  inboxDipRight: {
+    position: "absolute",
+    left: 12.35,
+    top: 14.85,
+    width: 2.8,
+    height: STROKE,
+    borderRadius: 1,
+    transform: [{ rotate: "-62deg" }],
   },
   noteSheet: {
     position: "absolute",
-    left: 3,
-    top: 1.5,
-    width: 12,
-    height: 15,
-    borderRadius: 2.5,
+    left: 3.75,
+    top: 2,
+    width: 14.5,
+    height: 18,
+    borderRadius: 3,
     borderWidth: STROKE,
+  },
+  noteFold: {
+    position: "absolute",
+    left: 11.7,
+    top: 3.8,
+    width: 7.6,
+    height: STROKE,
+    borderRadius: 1,
+    transform: [{ rotate: "45deg" }],
   },
   noteLine: {
     position: "absolute",
@@ -240,37 +311,29 @@ const styles = StyleSheet.create({
     borderRadius: 1,
   },
   noteLineShort: {
-    top: 6,
-    left: 6,
-    width: 6,
+    top: 7.3,
+    left: 6.2,
+    width: 7.3,
   },
   noteLineLong: {
-    top: 9.5,
-    left: 6,
-    width: 6,
+    top: 11.6,
+    left: 6.2,
+    width: 7.3,
   },
-  sliders: {
-    justifyContent: "center",
-    gap: 5,
+  gearRing: {
+    position: "absolute",
+    left: 4.25,
+    top: 4.25,
+    width: 13.5,
+    height: 13.5,
+    borderRadius: 6.75,
+    borderWidth: 1.9,
   },
-  sliderRow: {
-    width: 15,
-    height: 4.5,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 1.5,
-  },
-  sliderLine: {
-    height: STROKE,
+  gearTooth: {
+    position: "absolute",
+    width: 3.6,
+    height: 3.6,
     borderRadius: 1,
-  },
-  sliderLineGrow: {
-    flex: 1,
-  },
-  sliderKnob: {
-    width: 4.5,
-    height: 4.5,
-    borderRadius: 2.5,
   },
   label: {
     fontSize: font.label,

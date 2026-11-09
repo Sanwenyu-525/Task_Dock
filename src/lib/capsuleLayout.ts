@@ -7,8 +7,9 @@
 //! 2. 窗口应放在哪（贴边齐平 + 胶囊沿边居中）。
 //!
 //! 尺寸与 `src-tauri/src/window_shape.rs` 的 `CAPSULE_*` 常量是跨端契约
-//! （两端各有单测锁定同一组数字）：厚 56、平直主体 224、单侧液态肩部 88
-//! （外框 446×56）、面板 340×440、间隙 8。外形本身由 `lib/capsuleShape.ts`
+//! （两端各有单测锁定同一组数字）：厚 56、平直主体 270、单侧液态肩部 88
+//! （外框 446×56）、面板默认 340×440（2026-11-09 起宽度可在 280–480 拖拽，
+//! 窗口按最大 480 预留容器）、间隙 8。外形本身由 `lib/capsuleShape.ts`
 //! 唯一定义，本文件只负责**摆放**（容器、贴边位置、区域矩形与轮廓）。
 //!
 //! 面板尺寸与间隙在 v0.7 方案 B（液态融合翼片）里按参考图重新标定：
@@ -37,10 +38,36 @@ export const RAIL_LENGTH_CSS = WING_LENGTH_CSS;
 export const RAIL_SHOULDER_CSS = WING_SHOULDER_CSS;
 /** 轨道外框沿边尺寸（CSS px，含两侧肩部）：容器沿边方向至少要放下它。 */
 export const RAIL_SPAN_CSS = RAIL_LENGTH_CSS + 2 * RAIL_SHOULDER_CSS; // 446
-/** 功能面板宽（CSS px）。 */
+/** 功能面板默认宽（CSS px）：设置里没有记录时的设计基准。 */
 export const PANEL_WIDTH_CSS = 340;
-/** 功能面板高（CSS px）。 */
+/**
+ * 功能面板宽的下限（CSS px）。
+ *
+ * 280 面板 → 内容盒 252：应用网格仍为 3 列（每列 80px，≥ 18px 删除热区所需的
+ * 70px）；顶部标题、分段筛选与 30px 输入框都还能单行放下。
+ */
+export const PANEL_MIN_WIDTH_CSS = 280;
+/**
+ * 功能面板宽的上限（CSS px）。
+ *
+ * 480 面板 → 内容盒 452：应用网格 5 列（每列 85.6px）；再宽一档 6 列时每列
+ * 只有 70.3px，会重新压到删除热区，因此 480 是同时保住 5 列与命中质量的边界。
+ */
+export const PANEL_MAX_WIDTH_CSS = 480;
+/** 功能面板高（CSS px，不随宽度拖拽变化）。 */
 export const PANEL_HEIGHT_CSS = 440;
+
+/**
+ * 面板宽度收敛：取整后钳制到 [PANEL_MIN_WIDTH_CSS, PANEL_MAX_WIDTH_CSS]。
+ *
+ * 必须取整：原生区域按 `round(css × scale)` 换算物理像素，CSS 盒宽带小数时
+ * 两端会各取各的整（如 357.3 × 1.25 = 446.625 → 445 与 447 的差异），拖拽时
+ * 面板右缘会与裁剪区域错开 1px。非法值（NaN/Infinity）回落到默认宽度。
+ */
+export function clampPanelWidth(css: number): number {
+  if (!Number.isFinite(css)) return PANEL_WIDTH_CSS;
+  return Math.max(PANEL_MIN_WIDTH_CSS, Math.min(PANEL_MAX_WIDTH_CSS, Math.round(css)));
+}
 /**
  * 轨道与面板之间的视觉间隙（CSS px）；区域上两块矩形不连通。
  *
@@ -52,9 +79,8 @@ export const PANEL_HEIGHT_CSS = 440;
  *
  * v0.7 间距收敛（12 → 8）：参考图的间隙约为面板宽的 2%~2.4%（340 × 0.024 ≈ 8），
  * 12 是早期标定的残留，视觉上面板会像一块独立浮卡。取 8 而非 7，是为了让
- * 垂直容器 404×446 与水平容器 446×504 都是偶数——面板在窗口内居中用
- * `(W - 面板宽) / 2`，前端 `Math.round` 与 Rust 整除因此得到同一个整数，
- * 不会出现跨端 1px 偏差。
+ * 容器沿边尺寸与面板居中换算都是偶数——面板在窗口内居中用 `(W - 面板宽) / 2`，
+ * 前端 `Math.round` 与 Rust 整除因此得到同一个整数，不会出现跨端 1px 偏差。
  */
 export const CAPSULE_GAP_CSS = 8;
 /** 面板圆角（CSS px）；轨道为全圆角（厚度/2）。 */
@@ -98,8 +124,17 @@ export function clampTabCenter(
   return Math.max(origin + span / 2, Math.min(origin + extent - span / 2, center));
 }
 
-/** 胶囊容器：停靠时窗口至少要这么大，才能同时容纳轨道与面板。 */
-export const CAPSULE_CONTAINER_W_CSS = RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_WIDTH_CSS; // 404
+/**
+ * 胶囊容器：停靠时窗口至少要这么大，才能同时容纳轨道与面板。
+ *
+ * 2026-11-09 起按**面板最大宽度**预留，而不是默认宽度：面板宽度可在停靠期
+ * 拖拽（280–480），窗口若按当前宽度收缩，拖宽就得在拖拽中途 `setSize`，
+ * 破坏「停靠期窗口不移动、不缩放」的不变式（原生拖拽循环会吞尺寸、造成
+ * 区域与内容错位）。因此停靠时一次性撑到最大容器，之后只改 Win32 区域。
+ * 多出来的矩形被区域裁掉，不可见、不接收鼠标，默认宽度下的可见外形不变。
+ */
+export const CAPSULE_CONTAINER_W_CSS =
+  RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_MAX_WIDTH_CSS; // 544
 export const CAPSULE_CONTAINER_H_CSS = PANEL_HEIGHT_CSS; // 440
 
 export interface Size {
@@ -112,8 +147,8 @@ export const isVerticalEdge = (edge: SnapEdge): boolean => edge === "left" || ed
 /**
  * 胶囊容器尺寸（CSS px）。厚度方向固定为「轨道 + 间隙 + 面板」；
  * 沿边方向必须同时放下轨道外框与面板，取两者较大值：
- * - 垂直停靠：宽 56+8+340 = 404，高 max(440, 446) = 446；
- * - 水平停靠：宽 max(404, 446) = 446，高 56+8+440 = 504。
+ * - 垂直停靠：宽 56+8+480 = 544，高 max(440, 446) = 446；
+ * - 水平停靠：宽 max(446, 480) = 480，高 56+8+440 = 504。
  *
  * 轨道从 400 扩到 446 是为了容纳第 5 个分类（规划中心）：内容组 331 居中后
  * 端点落在 ±165.5，仍需处于「肩部厚度 ≥ 36px」的区间（新的平直主体 270）。
@@ -122,7 +157,7 @@ export function capsuleContainerSize(edge: SnapEdge): Size {
   return isVerticalEdge(edge)
     ? { w: CAPSULE_CONTAINER_W_CSS, h: Math.max(CAPSULE_CONTAINER_H_CSS, RAIL_SPAN_CSS) }
     : {
-        w: Math.max(CAPSULE_CONTAINER_W_CSS, RAIL_SPAN_CSS),
+        w: Math.max(RAIL_SPAN_CSS, PANEL_MAX_WIDTH_CSS),
         h: RAIL_THICKNESS_CSS + CAPSULE_GAP_CSS + PANEL_HEIGHT_CSS,
       };
 }
@@ -208,8 +243,8 @@ export function isCapsuleContainerSize(rect: { w: number; h: number }, scale: nu
 //
 // 与 Rust `capsule_regions` 是同一套几何：窗口局部坐标、物理像素、同一组
 // 常量、同一套采样规则。Rust 侧负责真正裁剪（绘制 + 命中），这里负责
-// **命中判定**（自动收起判定不能按整窗矩形算——折叠态窗口有 404×446
-// （水平停靠 446×504），但只有一块 56×446 的翼片可见）。
+// **命中判定**（自动收起判定不能按整窗矩形算——折叠态窗口有 544×446
+// （水平停靠 480×504），但只有一块 56×446 的翼片可见）。
 
 export interface PhysRect {
   x: number;
@@ -264,6 +299,9 @@ function railBoxRect(
  * 轨道轮廓 = `wingShape` 采样点平移到外框位置后钳制进窗口：
  * 贴边侧的外扩会越过窗口边界，钳制后与 Rust `CreatePolygonRgn` 被系统
  * 裁剪的结果一致，两端命中判定因此仍逐点相同。
+ *
+ * `panelWidthCss` 是停靠期可拖拽的面板宽度（默认 340）；窗口仍按最大容器
+ * 预留，越界判定沿用「窗口放不下就不认定面板可见」的失败语义。
  */
 export function capsuleRegionsPhysical(
   windowW: number,
@@ -271,6 +309,7 @@ export function capsuleRegionsPhysical(
   edge: SnapEdge,
   expanded: boolean,
   scale: number,
+  panelWidthCss: number = PANEL_WIDTH_CSS,
 ): CapsuleRegions {
   const shape = wingShape(edge, scale, WING_AA_INSET);
   const rail = railBoxRect(windowW, windowH, edge, shape.box);
@@ -282,7 +321,7 @@ export function capsuleRegionsPhysical(
   const panelRadius = Math.max(1, Math.floor(PANEL_RADIUS_CSS * scale) - WING_AA_INSET);
   if (!expanded) return { rail, railOutline, panel: null, panelRadius };
 
-  const pw = toPhysical(PANEL_WIDTH_CSS, scale);
+  const pw = toPhysical(clampPanelWidth(panelWidthCss), scale);
   const ph = toPhysical(PANEL_HEIGHT_CSS, scale);
   const gap = toPhysical(CAPSULE_GAP_CSS, scale);
   const vertical = isVerticalEdge(edge);

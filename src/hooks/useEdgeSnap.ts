@@ -98,11 +98,13 @@ import {
 import {
   CAPSULE_GAP_CSS,
   PANEL_EXIT_MS,
+  PANEL_WIDTH_CSS,
   TAB_TRANSITION_MS,
   alongCenterOf,
   capsuleContainerSize,
   capsuleRegionsPhysical,
   capsuleWindowRect,
+  clampPanelWidth,
   clampTabCenter,
   isCapsuleContainerSize,
   needsContainerResize,
@@ -143,6 +145,12 @@ const REGION_IPC_TIMEOUT_MS = 3000;
 /** 原生区域与 UI 失准后的有界恢复：最多 3 次，间隔指数退避（300/600/1200ms）。 */
 const REGION_RECOVERY_MAX_ATTEMPTS = 3;
 const REGION_RECOVERY_BASE_MS = 300;
+/**
+ * 拖拽面板宽度的区域重写节流（ms）。
+ * 区域重建包含 `GetWindowRgn` 回读与 DWM 合成，逐帧（16ms）调用会让合成器
+ * 反复重排；40ms（25fps）足以让可见边界跟手，CSS 宽度本身仍是逐帧跟随。
+ */
+const PANEL_WIDTH_APPLY_MS = 40;
 /** 解除失败后的自动重试间隔：拖离/跨边路径不得逐 tick 重发 off（IPC 风暴）。 */
 const UNDOCK_RETRY_MS = 500;
 /** 停靠失败后的候选重试间隔：setSize/setPosition/区域写入不得逐拍重发。 */
@@ -348,6 +356,19 @@ export function useEdgeSnap(enabled: boolean) {
     let disposed = false;
     let busy = false; // 评估/移动互斥（tick、onMoved、点击、undock）
     let queuedEval: (() => Promise<unknown>) | null = null; // busy 期间尾随补评估
+    /**
+     * 工具面板宽度（CSS px）。停靠期拖拽手柄逐帧写入；窗口已按最大容器预留，
+     * 宽度只影响 Win32 面板区域与 CSS `--cap-panel-w`，不触发 setSize。
+     * 设置写入后由 settings 订阅做二次收敛（同值不重复应用）。
+     */
+    let panelWidthCss = clampPanelWidth(
+      useSettingsStore.getState().settings?.capsule_panel_width ?? PANEL_WIDTH_CSS,
+    );
+    ui.setPanelWidth(panelWidthCss);
+    /** 拖宽后的面板区域重写：节流 + 串行，最终由 pointerup 的 commit 收尾。 */
+    let panelWidthTimer: number | null = null;
+    let panelWidthApplying = false;
+    let panelWidthDirty = false;
     let lastMoveAt = 0; // 最近 onMoved（含程序移动；拖拽活动信号）
     let lastMoveTarget: SnapPoint | null = null; // 最近一次成功程序移动目标（幂等）
     let domPointerAt = 0; // 最近 DOM 指针事件时刻（原生拖拽期间不产生 → 松手信号）
@@ -828,7 +849,7 @@ export function useEdgeSnap(enabled: boolean) {
       let timer: number | undefined;
       try {
         const result = await Promise.race([
-          applyWindowCapsule(mode, edge, seq),
+          applyWindowCapsule(mode, edge, seq, panelWidthCss),
           new Promise<boolean>((resolve) => {
             timer = window.setTimeout(() => resolve(false), REGION_IPC_TIMEOUT_MS);
           }),
@@ -904,6 +925,104 @@ export function useEdgeSnap(enabled: boolean) {
       if (phase === "docked-revealed") return "panel";
       if (isDockedPhase(phase)) return "rail";
       return "off";
+    }
+
+    // ── 工具面板宽度（拖拽手柄 → 区域 + 持久化）────────────────
+    //
+    // 窗口在停靠时已撑到最大容器，因此拖宽只需重写「轨道 ∪ 面板」的区域；
+    // 区域 IPC 走 40ms 节流 + 串行：拖拽期间逐帧改宽，但每次区域重建都会
+    // GetWindowRgn 回读 + DWM 合成，逐帧调用会让合成器反复重排。
+    // CSS 侧由 store 的 panelWidth 立即跟随（不经过 CapsuleDock 重渲染），
+    // 区域最多滞后一帧节流窗口，松手 commit 时立即补齐。
+
+    /** 立即应用一次当前宽度的面板区域（调用方保证串行）。 */
+    async function applyPanelWidthRegion(): Promise<void> {
+      if (disposed || machine.phase !== "docked-revealed") return;
+      panelWidthApplying = true;
+      try {
+        panelWidthDirty = false;
+        await setCapsuleRegion("panel");
+      } finally {
+        panelWidthApplying = false;
+        // 应用期间又有新宽度：按节流窗口再补一次，而不是在循环里无节制重发。
+        if (panelWidthDirty && !disposed && machine.phase === "docked-revealed") {
+          panelWidthDirty = false;
+          schedulePanelWidthRegion();
+        }
+      }
+    }
+
+    function schedulePanelWidthRegion(): void {
+      if (disposed || machine.phase !== "docked-revealed") return;
+      if (panelWidthApplying) {
+        panelWidthDirty = true;
+        return;
+      }
+      if (panelWidthTimer !== null) return;
+      panelWidthTimer = window.setTimeout(() => {
+        panelWidthTimer = null;
+        void applyPanelWidthRegion();
+      }, PANEL_WIDTH_APPLY_MS);
+    }
+
+    function persistPanelWidth(widthCss: number): void {
+      const current = useSettingsStore.getState().settings?.capsule_panel_width;
+      if (current === widthCss) return;
+      void useSettingsStore
+        .getState()
+        .update({ capsule_panel_width: widthCss })
+        .catch(() => {
+          useUiStore.getState().showToast("面板宽度未能保存，重启后将恢复上次宽度", {
+            kind: "error",
+            code: "capsule_panel_width",
+          });
+        });
+    }
+
+    /**
+     * 拖拽手柄的唯一入口：收敛宽度 → 更新 store（CSS 立即跟随）→ 节流重写区域；
+     * `commit=true`（松手 / 键盘 / 双击恢复默认）时立即补一次区域并持久化。
+     */
+    function resizePanel(widthCss: number, commit: boolean): void {
+      if (disposed) return;
+      const next = clampPanelWidth(widthCss);
+      if (next !== panelWidthCss) {
+        panelWidthCss = next;
+        ui.setPanelWidth(next);
+        schedulePanelWidthRegion();
+      }
+      if (!commit) return;
+      // 松手后不等节流计时器：先清掉待发，再立即应用最终宽度。
+      if (panelWidthTimer !== null) {
+        window.clearTimeout(panelWidthTimer);
+        panelWidthTimer = null;
+      }
+      if (machine.phase === "docked-revealed") {
+        if (panelWidthApplying) panelWidthDirty = true;
+        else void applyPanelWidthRegion();
+      }
+      persistPanelWidth(next);
+    }
+
+    /**
+     * 设置路径的宽度变更（旧备份/其他窗口写入）：只收敛当前会话宽度，
+     * 同值不重复写区域；不反向持久化（设置已是最新事实源）。
+     */
+    function syncPanelWidthFromSettings(): void {
+      const raw = useSettingsStore.getState().settings?.capsule_panel_width;
+      if (raw === undefined) return;
+      const next = clampPanelWidth(raw);
+      if (next === panelWidthCss) return;
+      panelWidthCss = next;
+      ui.setPanelWidth(next);
+      if (machine.phase === "docked-revealed") {
+        if (panelWidthTimer !== null) {
+          window.clearTimeout(panelWidthTimer);
+          panelWidthTimer = null;
+        }
+        if (panelWidthApplying) panelWidthDirty = true;
+        else void applyPanelWidthRegion();
+      }
     }
 
     /**
@@ -2292,6 +2411,7 @@ export function useEdgeSnap(enabled: boolean) {
             edge,
             machine.phase === "docked-revealed",
             m.scaleFactor,
+            panelWidthCss,
           );
           const local = cursor ? { x: cursor.x - rect.x, y: cursor.y - rect.y } : null;
           // 外扩容差 = 轨道与面板之间的间隙宽度：鼠标从轨道移到面板不会被判成离开
@@ -2768,6 +2888,8 @@ export function useEdgeSnap(enabled: boolean) {
     // 持久化 `snap_display_mode`；设置页与右键菜单仍走 `requestDockForm`（长期偏好）。
     // 两种入口复用同一套几何与相位事务，只是成功/失败后的偏好处理不同。
     ui.setFormSwitch((form) => requestSessionForm(form));
+    // 工具面板拖宽：手势是连续输入，不进入 busy 串行槽（只写宽度 + 节流区域）。
+    ui.setResizePanel(resizePanel);
     // 自由窗口的程序化再吸附（标题栏「吸附为 …」）：同一互斥槽，真实结果返回。
     ui.setRedock((target) => redockFree(target));
     // Edge Tab：与 reveal/collapse 相同，进入引擎串行队列，避免和 tick / 停靠事务竞争。
@@ -2794,6 +2916,10 @@ export function useEdgeSnap(enabled: boolean) {
 
     const unsubSettings = useSettingsStore.subscribe((state, prev) => {
       if (disposed) return;
+      // 面板宽度：旧备份/其他窗口写入后，当前会话按新值重写区域；同值幂等。
+      if (state.settings?.capsule_panel_width !== prev.settings?.capsule_panel_width) {
+        syncPanelWidthFromSettings();
+      }
       const nextForm = dockFormFromSetting(state.settings?.snap_display_mode);
       const prevForm = dockFormFromSetting(prev.settings?.snap_display_mode);
       if (nextForm !== prevForm) {
@@ -2835,10 +2961,15 @@ export function useEdgeSnap(enabled: boolean) {
       invalidateTabDrag();
       disposed = true;
       window.clearInterval(timer);
+      if (panelWidthTimer !== null) {
+        window.clearTimeout(panelWidthTimer);
+        panelWidthTimer = null;
+      }
       window.removeEventListener("pointermove", onDomPointer);
       window.removeEventListener("pointerdown", onDomPointerDown);
       scope.dispose();
       unsubSettings();
+      ui.setResizePanel(null);
       ui.setReveal(null);
       ui.setCollapse(null);
       ui.setUndock(null);

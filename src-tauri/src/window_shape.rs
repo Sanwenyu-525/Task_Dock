@@ -194,11 +194,30 @@ static REGIONS: LazyLock<Mutex<RegionCache>> = LazyLock::new(|| Mutex::new(Regio
 // 数字）：轨道（rail）竖排分类导航 + 右侧功能面板，折叠时窗口只露出轨道，
 // 展开时露出「轨道 ∪ 面板」的联合区域。窗口本身在停靠期间**不移动、不缩放**，
 // 因此不存在"鼠标跨越胶囊与面板时命中区跟着窗口跑"的抖动来源。
+//
+// 2026-11-09 起面板宽度可在停靠期拖拽（280–480 CSS px）。窗口按**最大宽度**
+// 预留容器（前端 `capsuleContainerSize`），拖拽只改区域与 CSS 变量，不触发
+// 原生 resize；`CapsuleParams.panel_w_css` 是当前宽度，参与区域缓存失效判定。
 
-/// 功能面板宽。
+/// 功能面板默认宽（设置里没有记录时的设计基准）。
 pub const CAPSULE_PANEL_WIDTH_CSS: u32 = 340;
-/// 功能面板高。
+/// 功能面板宽下限（与前端 `PANEL_MIN_WIDTH_CSS` 同步）。
+pub const CAPSULE_PANEL_MIN_WIDTH_CSS: u32 = 280;
+/// 功能面板宽上限（与前端 `PANEL_MAX_WIDTH_CSS` 同步）。
+pub const CAPSULE_PANEL_MAX_WIDTH_CSS: u32 = 480;
+/// 功能面板高（不随宽度拖拽变化）。
 pub const CAPSULE_PANEL_HEIGHT_CSS: u32 = 440;
+
+/// 面板宽度收敛：取整到 CSS 整数像素后钳制到 [MIN, MAX]。
+///
+/// 区域按 `round(css × scale)` 换算物理像素；CSS 若带小数，两端换算可能各取
+/// 各的整（1px 错位）。非法值（0）回落到默认宽度，由调用方再走一次 clamp。
+pub fn clamp_capsule_panel_width(css: u32) -> u32 {
+    if css == 0 {
+        return CAPSULE_PANEL_WIDTH_CSS;
+    }
+    css.clamp(CAPSULE_PANEL_MIN_WIDTH_CSS, CAPSULE_PANEL_MAX_WIDTH_CSS)
+}
 /// 轨道与面板之间的间隙（视觉分隔，区域上不连通）。
 pub const CAPSULE_GAP_CSS: u32 = 8;
 /// 面板圆角（轨道为全圆角 = 厚度/2）。
@@ -221,6 +240,8 @@ pub struct CapsuleParams {
     pub thickness_css: u32,
     /// 轨道长度（CSS px，沿边方向）
     pub length_css: u32,
+    /// 功能面板当前宽度（CSS px，280–480）；0 = 使用默认宽度 340
+    pub panel_w_css: u32,
     /// true = 展开态（轨道 ∪ 面板）；false = 折叠态（仅轨道）
     pub expanded: bool,
     /// true = Edge Tab（仅露出贴边的极简标签；优先于 expanded）
@@ -267,9 +288,10 @@ fn capsule_for(hwnd: isize) -> Option<CapsuleParams> {
 // 返回 0，但 `DwmGetWindowAttribute` 仍 E_INVALIDARG，改红/改无颜色后截图不变）；
 // 而 CSS 的尖端渐隐只能降低 WebView 内容的 alpha，无法遮住窗口边框本身。
 //
-// 因此停靠形态直接清掉窗口边框样式：胶囊容器固定 404×446/446×504，位置与
-// 尺寸由前端事务控制，不需要原生缩放；实测清样式前后 `GetWindowRect` 与
-// `GetClientRect` 完全一致（505×558 @125%），WebView 内容不位移。
+// 因此停靠形态直接清掉窗口边框样式：胶囊容器按面板最大宽度预留
+// （544×446 / 480×504），位置与尺寸由前端事务控制，停靠期只切区域；
+// 实测清样式前后 `GetWindowRect` 与 `GetClientRect` 完全一致
+// （505×558 @125%），WebView 内容不位移。
 // 恢复完整窗时只还原进入停靠前记录的边框位，不碰 `WS_MAXIMIZEBOX` 等由
 // `magnetic.rs` 独立管理的位。
 
@@ -1352,7 +1374,8 @@ pub(crate) fn capsule_regions(
         return capsule_tab_regions(window_w, window_h, scale, cap.edge);
     }
     let (thickness, length, shoulder) = wing_metrics(scale, cap.thickness_css, cap.length_css);
-    let panel_w = ((CAPSULE_PANEL_WIDTH_CSS as f64) * scale).round() as i32;
+    let panel_w_css = clamp_capsule_panel_width(cap.panel_w_css);
+    let panel_w = ((panel_w_css as f64) * scale).round() as i32;
     let panel_h = ((CAPSULE_PANEL_HEIGHT_CSS as f64) * scale).round() as i32;
     let gap = ((CAPSULE_GAP_CSS as f64) * scale).round().max(1.0) as i32;
     // 面板区域半径必须与 CSS 完全一致：`support_rect_rgn` 已经按行取 CSS 圆角的
@@ -1849,6 +1872,7 @@ mod tests {
                 edge: 0,
                 thickness_css: 56,
                 length_css: 270,
+                panel_w_css: CAPSULE_PANEL_WIDTH_CSS,
                 expanded: false,
                 tab: false,
             },
@@ -1883,6 +1907,14 @@ mod tests {
             CapsuleStamp {
                 params: CapsuleParams {
                     length_css: 240,
+                    ..base.params
+                },
+                ..base
+            },
+            CapsuleStamp {
+                // 面板宽度变化必须让区域重做（拖拽期间每次改宽都走这条）
+                params: CapsuleParams {
+                    panel_w_css: 400,
                     ..base.params
                 },
                 ..base
@@ -1932,6 +1964,7 @@ mod tests {
                 edge: 2,
                 thickness_css: 56,
                 length_css: 270,
+                panel_w_css: CAPSULE_PANEL_WIDTH_CSS,
                 expanded: false,
                 tab: false,
             },
@@ -2383,15 +2416,17 @@ mod tests {
         edge: 0,
         thickness_css: 56,
         length_css: 270,
+        panel_w_css: CAPSULE_PANEL_WIDTH_CSS,
         expanded: false,
         tab: false,
     };
-    /// 胶囊容器（前端在停靠时把窗口撑到该尺寸）：
-    /// 垂直停靠 404×446（高 = 轨道外框 446 > 面板 440）。
-    const CONTAINER_W: i32 = 404;
+    /// 胶囊容器（前端在停靠时把窗口撑到该尺寸；按面板最大宽度 480 预留）：
+    /// 垂直停靠 56+8+480 = 544 × 446（高 = 轨道外框 446 > 面板 440）。
+    const CONTAINER_W: i32 = 544;
     const CONTAINER_H: i32 = 446;
-    /// 水平停靠容器：宽 446（轨道外框 446 > 面板宽 340），高 56+8+440 = 504。
-    const CONTAINER_W_HORIZ: i32 = 446;
+    /// 水平停靠容器：宽 max(轨道外框 446, 面板最大宽 480) = 480，
+    /// 高 56+8+440 = 504。
+    const CONTAINER_W_HORIZ: i32 = 480;
     const CONTAINER_H_HORIZ: i32 = 504;
 
     /// CSS → 物理像素：与前端 `toPhysical`（`round(css×scale)`，最小 1）一致。
@@ -2496,6 +2531,10 @@ mod tests {
                         &CapsuleParams {
                             edge,
                             expanded: true,
+                            // 用最大宽度面板验证：容器按最大宽度预留时，
+                            // 只有真正放不下的窗口才会失败（默认 340 在 404
+                            // 宽的窗口里仍然放得下）。
+                            panel_w_css: CAPSULE_PANEL_MAX_WIDTH_CSS,
                             ..CAP
                         }
                     )
@@ -2514,9 +2553,16 @@ mod tests {
         assert_eq!(CAPSULE_SHOULDER_CSS, 88);
         assert_eq!(WING_SAMPLES, 18);
         assert_eq!(CAPSULE_PANEL_WIDTH_CSS, 340);
+        assert_eq!(CAPSULE_PANEL_MIN_WIDTH_CSS, 280);
+        assert_eq!(CAPSULE_PANEL_MAX_WIDTH_CSS, 480);
         assert_eq!(CAPSULE_PANEL_HEIGHT_CSS, 440);
         assert_eq!(CAPSULE_GAP_CSS, 8);
         assert_eq!(CAPSULE_PANEL_RADIUS_CSS, 24);
+        // 前端 capsuleContainerSize：垂直 56+8+480 = 544、水平 max(446,480) = 480
+        assert_eq!(
+            CAP.thickness_css + CAPSULE_GAP_CSS + CAPSULE_PANEL_MAX_WIDTH_CSS,
+            544
+        );
     }
 
     /// 射线法点内判定（与 `CreatePolygonRgn` 的填充语义一致，仅测试用）。
@@ -2604,7 +2650,7 @@ mod tests {
             &CapsuleParams { edge: 1, ..CAP },
         )
         .unwrap();
-        assert_eq!((s.rail.x, s.rail.y), (404 - 56, 0));
+        assert_eq!((s.rail.x, s.rail.y), (CONTAINER_W - 56, 0));
         // top → 贴窗口上缘的横向轨道 446×56（x 由容器宽度居中）
         let s = capsule_regions(
             CONTAINER_W_HORIZ,
@@ -2615,7 +2661,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            ((446 - 446) / 2, 0, 446, 56)
+            ((CONTAINER_W_HORIZ - 446) / 2, 0, 446, 56)
         );
         // bottom → 贴窗口下缘
         let s = capsule_regions(
@@ -2627,14 +2673,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            ((446 - 446) / 2, 504 - 56, 446, 56)
+            ((CONTAINER_W_HORIZ - 446) / 2, 504 - 56, 446, 56)
         );
     }
 
     #[test]
     fn wing_mirrors_across_four_edges() {
         // 四边同一套形状：外框沿边尺寸相同、贴边侧坐标一致，只是朝向不同。
-        for (edge, expect_flush) in [(0u8, (0, 0)), (1, (404 - 56, 0))] {
+        for (edge, expect_flush) in [(0u8, (0, 0)), (1, (CONTAINER_W - 56, 0))] {
             let s = capsule_regions(
                 CONTAINER_W,
                 CONTAINER_H,
@@ -2650,7 +2696,10 @@ mod tests {
                 "edge={edge} 缺角在外"
             );
         }
-        for (edge, expect_flush) in [(2u8, (0, 0)), (3, (0, 504 - 56))] {
+        for (edge, expect_flush) in [
+            (2u8, ((CONTAINER_W_HORIZ - 446) / 2, 0)),
+            (3, ((CONTAINER_W_HORIZ - 446) / 2, 504 - 56)),
+        ] {
             let s = capsule_regions(
                 CONTAINER_W_HORIZ,
                 CONTAINER_H_HORIZ,
@@ -2735,7 +2784,10 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.expect("展开态必须有面板区域");
-        assert_eq!((p.x, p.y, p.width, p.height), (56 + 8, (446 - 440) / 2, 340, 440));
+        assert_eq!(
+            (p.x, p.y, p.width, p.height),
+            (56 + 8, (446 - 440) / 2, CAPSULE_PANEL_WIDTH_CSS as i32, 440)
+        );
         assert_eq!(
             p.radius, 24,
             "面板区域半径必须与 CSS 24px 一致（减小半径会让角部成为超集，露出圆角外背景）"
@@ -2760,8 +2812,14 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.unwrap();
-        assert_eq!((p.x, p.width), (0, 340));
-        assert_eq!(s.rail.x, 404 - 56);
+        assert_eq!(
+            (p.x, p.width),
+            (
+                CONTAINER_W - 56 - 8 - CAPSULE_PANEL_WIDTH_CSS as i32,
+                CAPSULE_PANEL_WIDTH_CSS as i32
+            )
+        );
+        assert_eq!(s.rail.x, CONTAINER_W - 56);
 
         // top 展开：面板在轨道下方
         let s = capsule_regions(
@@ -2776,7 +2834,15 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.unwrap();
-        assert_eq!((p.x, p.y, p.width, p.height), (53, 56 + 8, 340, 440));
+        assert_eq!(
+            (p.x, p.y, p.width, p.height),
+            (
+                (CONTAINER_W_HORIZ - CAPSULE_PANEL_WIDTH_CSS as i32) / 2,
+                56 + 8,
+                CAPSULE_PANEL_WIDTH_CSS as i32,
+                440
+            )
+        );
 
         // bottom 展开：面板在轨道上方
         let s = capsule_regions(
@@ -2791,7 +2857,98 @@ mod tests {
         )
         .unwrap();
         let p = s.panel.unwrap();
-        assert_eq!((p.x, p.y), (53, 504 - 56 - 8 - 440));
+        assert_eq!(
+            (p.x, p.y),
+            (
+                (CONTAINER_W_HORIZ - CAPSULE_PANEL_WIDTH_CSS as i32) / 2,
+                504 - 56 - 8 - 440
+            )
+        );
+    }
+
+    /// 2026-11-09：面板宽度可在 280–480 拖拽。窗口按最大容器预留后，四边都必须
+    /// 按当前宽度生成面板；宽度不合法时收敛（0 → 默认 340），旧 404 窗口放不下
+    /// 480 面板时必须整体失败，绝不静默裁小。
+    #[test]
+    fn panel_width_is_resizable_within_limits() {
+        for width in [
+            CAPSULE_PANEL_MIN_WIDTH_CSS,
+            CAPSULE_PANEL_WIDTH_CSS,
+            CAPSULE_PANEL_MAX_WIDTH_CSS,
+        ] {
+            for edge in 0u8..4 {
+                let horizontal = edge >= 2;
+                let (w, h) = if horizontal {
+                    (CONTAINER_W_HORIZ, CONTAINER_H_HORIZ)
+                } else {
+                    (CONTAINER_W, CONTAINER_H)
+                };
+                let set = capsule_regions(
+                    w,
+                    h,
+                    1.0,
+                    &CapsuleParams {
+                        edge,
+                        panel_w_css: width,
+                        expanded: true,
+                        ..CAP
+                    },
+                )
+                .unwrap_or_else(|| panic!("edge={edge} width={width} 容器 {w}x{h} 展开必须成功"));
+                let p = set.panel.expect("展开态必须有面板区域");
+                assert_eq!(
+                    (p.width, p.height),
+                    (width as i32, CAPSULE_PANEL_HEIGHT_CSS as i32),
+                    "edge={edge} 面板尺寸必须等于当前宽度"
+                );
+                assert!(
+                    p.x >= 0 && p.y >= 0 && p.x + p.width <= w && p.y + p.height <= h,
+                    "edge={edge} width={width} 面板越界: ({}, {}, {}x{})",
+                    p.x,
+                    p.y,
+                    p.width,
+                    p.height
+                );
+                // 间隙中点仍必须在区域外（宽度变化不能把两块区域连起来）
+                let (gx, gy) = set.gap_probe.expect("展开态应有间隙探针");
+                assert!(!p.contains(gx, gy), "edge={edge} 间隙中点落入面板");
+                assert!(!poly_contains(&set.rail_polygon, gx, gy));
+            }
+        }
+
+        // 缺省（0）按默认宽度处理；越界宽度按上下限收敛
+        let set = capsule_regions(
+            CONTAINER_W,
+            CONTAINER_H,
+            1.0,
+            &CapsuleParams {
+                panel_w_css: 0,
+                expanded: true,
+                ..CAP
+            },
+        )
+        .unwrap();
+        assert_eq!(set.panel.unwrap().width, CAPSULE_PANEL_WIDTH_CSS as i32);
+        assert_eq!(clamp_capsule_panel_width(0), CAPSULE_PANEL_WIDTH_CSS);
+        assert_eq!(clamp_capsule_panel_width(1), CAPSULE_PANEL_MIN_WIDTH_CSS);
+        assert_eq!(clamp_capsule_panel_width(999), CAPSULE_PANEL_MAX_WIDTH_CSS);
+        assert_eq!(
+            clamp_capsule_panel_width(CAPSULE_PANEL_MIN_WIDTH_CSS),
+            CAPSULE_PANEL_MIN_WIDTH_CSS
+        );
+
+        // 旧容器（404 宽）放不下 480 面板：必须整体失败，而不是把面板裁小
+        assert!(capsule_regions(
+            404,
+            446,
+            1.0,
+            &CapsuleParams {
+                panel_w_css: CAPSULE_PANEL_MAX_WIDTH_CSS,
+                expanded: true,
+                ..CAP
+            },
+        )
+        .is_none());
     }
 
     #[test]
@@ -2933,7 +3090,9 @@ mod tests {
             let apply_region = |edge: u8, expanded: bool| -> CapsuleRegionSet {
                 use windows_sys::Win32::Foundation::POINT;
                 use windows_sys::Win32::Graphics::Gdi::{CreatePolygonRgn, WINDING};
-                // 容器：垂直 404×446 / 水平 446×504，四边都能放下轨道与面板
+                // 默认 340 面板的最小窗口：垂直 404×446 / 水平 446×504；
+                // 生产容器按最大宽度 480 预留（544×446 / 480×504），这里保留
+                // 最小窗口口径以同时覆盖「刚好放下」的边界。
                 let cap = CapsuleParams {
                     edge,
                     expanded,

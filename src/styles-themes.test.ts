@@ -1156,33 +1156,35 @@ describe("胶囊面板共享输入与添加入口", () => {
 
   // 2026-11-07：18px 是热区下限（继续缩小会牺牲可用性），窄窗改为收敛列数。
   // 34px 图标在 W 宽磁贴里距右边缘 (W-34)/2，要完整放下 18px 删除按钮需 W ≥ 70。
-  // 真实面板宽度：原生胶囊窗口 404 CSS px 触发窄窗兜底，面板 = 404-68 = 336
-  //（不是设计常量 340），4 列时每列 71px、图标与按钮仍留 0.5px 间隙；因此
-  // 4 列的判定按 336 而不是 340。换算：4 列需面板 ≥ 336（内容盒 ≥ 308），
-  // 3 列需 ≥ 262（≥72/列），2 列需 ≥ 184。容器查询取面板**内容盒**（面板宽 - 28）。
-  it("窄面板应用网格按容器宽度收敛列数（4→3→2→1），原生默认宽度不改变布局", () => {
-    // 容器参照是应用面板自身，而不是列表滚动盒：滚动条出现不会让列数抖动
+  // 2026-11-09：面板宽度可在 280–480 拖拽，窗口按最大容器 544×446 预留，
+  // 不再有「404 窗口触发 336 兜底」的口径；默认面板 340（内容盒 312）仍是 4 列，
+  // 4 列需内容盒 ≥ 308（≥71/列），5 列需 ≥ 392（≥73.6/列），3 列 ≥ 262，
+  // 2 列 ≥ 184。容器查询取面板**内容盒**（面板宽 - 28）。
+  it("应用网格按面板容器宽度收敛列数（5→4→3→2→1），宽度拖拽即时生效", () => {
+    // 容器参照是面板自身，而不是列表滚动盒：滚动条出现不会让列数抖动；
+    // 六个面板统一开启容器查询（宽度拖拽后所有面板一起响应）。
+    expect(appCss).toMatch(/\.capsule-panel\s*\{[^}]*container-type:\s*inline-size/);
+    expect(appCss).toMatch(/\.capsule-panel\s*\{[^}]*container-name:\s*cap-panel/);
+    // 宽度由引擎写入的 CSS 变量驱动，默认 340
     expect(appCss).toMatch(
-      /\.capsule-panel\[data-panel="apps"\]\s*\{[^}]*container-type:\s*inline-size/,
+      /\.capsule-panel\s*\{[^}]*width:\s*var\(--cap-panel-w,\s*340px\)/,
     );
-    expect(appCss).toMatch(
-      /\.capsule-panel\[data-panel="apps"\]\s*\{[^}]*container-name:\s*cap-panel/,
-    );
-    // 默认仍是 4 列；原生 336 面板（内容盒 308）不下发任何收敛规则
+    // 默认仍是 4 列；默认 340 面板（内容盒 312）不下发任何列数覆盖
     const grid = /(?:^|\n)\.cap-app-grid\s*\{([\s\S]*?)\}/.exec(appCss);
     expect(grid?.[1], "缺少 .cap-app-grid 基础规则").toBeTruthy();
     expect(grid![1]).toMatch(/grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/);
 
-    const block = (max: number) => {
+    const block = (kind: "max" | "min", px: number) => {
       const m = new RegExp(
-        `@container cap-panel \\(max-width: ${max}px\\)\\s*\\{([\\s\\S]*?)\\}\\s*\\}`,
+        `@container cap-panel \\(${kind}-width: ${px}px\\)\\s*\\{([\\s\\S]*?)\\}\\s*\\}`,
       ).exec(appCss);
-      expect(m?.[1], `缺少 ${max}px 的列数收敛规则`).toBeTruthy();
+      expect(m?.[1], `缺少 ${kind}-width ${px}px 的规则`).toBeTruthy();
       return m![1];
     };
-    expect(block(307)).toMatch(/grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
-    expect(block(233)).toMatch(/grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
-    expect(block(155)).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\)/);
+    expect(block("max", 307)).toMatch(/grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/);
+    expect(block("max", 233)).toMatch(/grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/);
+    expect(block("max", 155)).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\)/);
+    expect(block("min", 392)).toMatch(/grid-template-columns:\s*repeat\(5, minmax\(0, 1fr\)\)/);
   });
 
   it("添加入口有清晰键盘焦点且不叠第二层焦点框", () => {

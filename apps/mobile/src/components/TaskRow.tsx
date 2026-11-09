@@ -13,9 +13,20 @@ import { font, space } from "../theme/tokens";
 
 import { SwipeRow, type SwipeRowApi } from "./SwipeRow";
 
-const PRIORITY_LABEL: Record<number, string> = { 1: "低", 2: "中", 3: "高" };
+const PRIORITY_LABEL: Record<number, string> = { 1: "低优先级", 2: "中优先级", 3: "高优先级" };
 /** 入场 stagger 只给前 9 行，滚动时新挂载的行不再重复动画 */
 const STAGGER_LIMIT = 8;
+
+/** 截止时间前的小时钟：11px 表盘 + 时针/分针，和原型的时间胶囊同一语义 */
+function ClockGlyph({ color }: { color: string }) {
+  return (
+    <View style={styles.clock}>
+      <View style={[styles.clockFace, { borderColor: color }]} />
+      <View style={[styles.clockHandHour, { backgroundColor: color }]} />
+      <View style={[styles.clockHandMinute, { backgroundColor: color }]} />
+    </View>
+  );
+}
 
 function TaskRowBase({
   task,
@@ -261,25 +272,33 @@ function TaskRowBase({
                       },
                     ]}
                   >
-                    <View style={[styles.dot, { backgroundColor: priorityColor }]} />
                     <Text
                       style={[
                         styles.badgeText,
                         { color: task.priority >= 2 ? priorityColor : tokens.muted },
                       ]}
                     >
-                      {PRIORITY_LABEL[task.priority] ?? "低"}
+                      {PRIORITY_LABEL[task.priority] ?? "低优先级"}
                     </Text>
                   </View>
                 ) : null}
 
                 {due ? (
                   overdue ? (
-                    <View style={[styles.badge, { backgroundColor: tokens.dangerSoft }]}>
-                      <Text style={[styles.badgeText, { color: tokens.danger }]}>{due}</Text>
+                    // 逾期是「需要留意」而不是错误：用与分组头一致的琥珀色，
+                    // 红色留给优先级/删除这类真正危险或高优先的语义
+                    <View style={[styles.badge, { backgroundColor: tokens.warnSoft }]}>
+                      <Text style={[styles.badgeText, { color: tokens.warn }]}>{due}</Text>
                     </View>
-                  ) : (
+                  ) : done ? (
+                    // 已完成的行不再强调截止时间，淡化为普通说明文字
                     <Text style={[styles.metaText, { color: tokens.muted }]}>{due}</Text>
+                  ) : (
+                    // 未完成：截止时间做成蓝底时间胶囊（原型形态），比裸文本更易扫读
+                    <View style={[styles.badge, { backgroundColor: tokens.accentSoft }]}>
+                      <ClockGlyph color={tokens.accent} />
+                      <Text style={[styles.badgeText, { color: tokens.accent }]}>{due}</Text>
+                    </View>
                   )
                 ) : null}
 
@@ -383,13 +402,36 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 7,
   },
-  dot: {
-    width: 5,
-    height: 5,
-    borderRadius: 3,
-  },
   badgeText: {
     fontSize: font.label,
+  },
+  clock: {
+    width: 10,
+    height: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  clockFace: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 1.2,
+  },
+  clockHandHour: {
+    position: "absolute",
+    left: 4.4,
+    top: 2.2,
+    width: 1.2,
+    height: 3.2,
+    borderRadius: 0.6,
+  },
+  clockHandMinute: {
+    position: "absolute",
+    left: 5,
+    top: 4.4,
+    width: 3.2,
+    height: 1.2,
+    borderRadius: 0.6,
   },
   metaText: {
     fontSize: font.meta,

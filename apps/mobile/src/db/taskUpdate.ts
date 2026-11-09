@@ -168,7 +168,7 @@ export async function updateTask(id: string, patch: TaskPatch): Promise<Task | n
         newId("op"),
         "task",
         id,
-        currentRow.rev,
+        currentRow.server_rev,
         // buildPatchPayload 会丢弃 undefined、保留 null，确保「清空」不会在 JSON 里丢失
         JSON.stringify({ type: "update", patch: buildPatchPayload(applied) }),
         now,

@@ -108,13 +108,18 @@ node tmp/debug/mobile-app-skeleton/ui.mjs key 66           # Enter
 | 31 | 滑删后点「删除」真的删掉并提示 | B/C | PASS |
 | 32 | 桌面端开启/关闭手机接入：状态与监听同步，关闭后配对码失效 | C | PASS（CDP：关闭后 running=false，关闭态拒绝生成码） |
 | 33 | 桌面端配对弹层：二维码可扫、6 位码、倒计时、重新生成 | C | PASS（OpenCV 解码弹层截图成功） |
-| 34 | 手机端应用内扫码 → 确认指纹 → 配对成功（令牌进 SecureStore） | D | 部分：相机权限/CameraView 挂载 PASS；真实扫码 **ENVIRONMENT BLOCKED**（模拟器黑帧/无物理设备） |
+| 34 | 手机端应用内扫码 → 确认指纹 → 配对成功（令牌进 SecureStore） | D | PASS（2026-11-09 物理机 vivo V2323A/Android 16：扫码配对成功，配对行 `last_ip=192.168.5.7`；强停重启后仍为已配对；证据 `tmp/acceptance/mobile-pairing-physical/`） |
 | 35 | 手机端手动输入地址 + 6 位码配对 | D | PASS（x86_64 模拟器 Release APK） |
 | 36 | 错误配对码/过期/尝试超限：提示可操作且不授权 | A/C | PASS（curl 错码 401；单测覆盖过期/次数上限） |
 | 37 | 同步页「测试连接」成功并刷新桌面端最近连接时间 | C/D | PASS |
 | 38 | 桌面端撤销设备后，手机端测试连接返回 401 并提示重新配对 | C/D | PASS（显示「令牌已失效 / 需重新配对」） |
 | 39 | 手机端解除本机配对：令牌与元数据删除，桌面端列表仍保留待撤销 | D | PASS（模拟器：未配对空态 + toast；桌面端设备保留） |
-| 40 | Release APK 在局域网明文 HTTP 下可配对（未被 Android 拦截） | D | 部分：模拟器 NAT（10.0.2.2）+ Release APK PASS；真实 LAN/防火墙未验证 |
+| 40 | Release APK 在局域网明文 HTTP 下可配对（未被 Android 拦截） | D | PASS（2026-11-09 物理机 `192.168.5.7/24 wlan0` → 桌面 `192.168.5.6:47822`，Release APK 0.1.5；`/v1/ping` 200 并刷新 `last_seen_at`） |
+| 41 | 扫描页取景框内扫描线上下往返；系统「减少动态」时静止居中 | C | PASS（x86_64 模拟器，APK 0.1.5：0.45s 间隔帧线位 y≈946→1222 往返；`transition_animation_scale=0` 后两帧静止 y≈1083，恢复后继续移动；2026-11-09 物理机复测三帧 y=1277→1205→1355，1080×2400） |
+| 42 | 任务 pull：桌面任务（含已完成/标签/截止时间）同步到手机 | D | PASS（2026-11-09 物理机：接收 4 条，手机列表出现「开会 / 快速提醒 / 哈哈哈哈 / 你好」） |
+| 43 | 任务 push：手机本地任务创建/修改/删除推送到桌面 | D | PASS（发送 21 条；桌面任务 4→22、`sync_ops=21`、`last_seen_at` 刷新；重放只 ack 由协议测试覆盖） |
+| 44 | 冲突：两端改同一任务 → 手机出现待处理冲突 → 采用桌面端 | D | PASS（手机完成任务 + 桌面改名 → 同步显示「冲突 1」；冲突页两版并列，采用桌面端后标题/状态回到桌面版本、冲突清空） |
+| 45 | 同步载荷加密与跨语言互通 | A | PASS（Rust 解密 tweetnacl 向量；手机 crypto 模块 KDF/双向信封/AAD 拒绝；Node 加密客户端跑通 pull/push） |
 
 ## 5. 证据与像素复核
 
@@ -177,3 +182,31 @@ node tmp/debug/mobile-app-skeleton/ui.mjs key 66           # Enter
   启用读屏会写入 TalkBack 首次教程标记；验收后需还原 `enabled_accessibility_services`（用
   `settings delete`，写空串会报 Bad arguments）、`accessibility_enabled=0`、
   `touch_exploration_enabled=0`，并 `am force-stop com.google.android.marvin.talkback`。
+- 2026-11-09 任务页页头由「年月日 时分秒」改为 `今天 11月9日 周一` 后，**该页不再每秒刷新**，
+  `uiautomator dump` 恢复可用（本轮实测成功，144 节点）；「秒级时钟导致 dump 失败」的限制
+  只对仍带秒级刷新的页面成立。若 dump 仍失败，按原规则先删远端 `ui.xml` 再重试，并改用截图取证。
+- 2026-11-09 扫描页动效：矩阵新增 41（扫描线上下往返 + 减少动态静止）；模拟器按
+  `transition_animation_scale` 切换验证（不是 `animator_duration_scale`，RN 读的是前者）。
+  证据 `tmp/acceptance/mobile-scan-line/`，APK 0.1.5 / versionCode 9。
+- 2026-11-09 UI/UX 择优合并真机抽查：任务页「本机模式」蓝底标签、设置页节标题细线与
+  `SQLite v3 · WAL/待同步操作 48 条`、版本直接读 `app.json`（0.1.5）、笔记图钉移入 footer、
+  编辑页顶栏徽标对齐、小组件页徽标同行；浅色 217/218/219/220/221，深色 222/223，AppBar 225。
+  Tab 图标按原型重画（勾选圆/收件箱托盘/折角文档/齿轮）后单独构建并复验：226（任务选中）、
+  227（收集箱选中）、228（设置选中）。逾期行琥珀胶囊因当前无逾期数据未截图（已逾期 0），只完成
+  代码级改动。证据 `tmp/acceptance/mobile-app-skeleton/screenshots/`。
+- 2026-11-09 二次复查补齐：任务搜索占位、截止时间 accentSoft 胶囊 + 时钟、优先级完整文案、
+  笔记编辑器 15/23 与摘要 15/21（新增 `font.reading`）、收集箱提示、设置「已排期提醒」。
+  真机 229/230/231/232/233 通过；优先级完整文案因无带优先级任务未截图。
+- 2026-11-09 Tab 图标修正：对照 `docs/mobile/prototypes/final/tasks/code.html`，原型图标是
+  Material Symbols 的 `check_circle / inbox / description / settings`，inbox 为近方形托盘 +
+  底部 U 形开口（不是竖长 V 形），勾选圆始终描边（不是实心选中）。已按 22dp 重画并复验
+  234（任务）/235（收集箱）。末次 APK sha256
+  `b82a846f873bb117a8d894310590433e0daaaa602e55d91a3572b6182ff376e6`。
+- 2026-11-09 物理机扫码闭环：vivo V2323A / Android 16 上应用内扫码配对成功（`last_ip=192.168.5.7`），
+  连接测试后桌面端 `last_seen_at=2026-11-09T04:03:34Z`；App 强停重启后配对保持；扫描线三帧
+  `y=1277→1205→1355`。用例 34/40/41 由 ENVIRONMENT BLOCKED/部分改为 PASS；证据
+  `tmp/acceptance/mobile-pairing-physical/`。
+- 2026-11-09 任务同步：矩阵新增 42–45；物理机接收 4 / 发送 21、冲突 1 并由「采用桌面端」
+  解决；Rust `mobile_sync` 16 项、备份注册 1 项、`db::tests` 41 项全过；证据
+  `tmp/acceptance/mobile-sync/`。模拟器系统镜像损坏（QEMU 挂起）记 ENVIRONMENT BLOCKED，
+  本轮真机结果不依赖模拟器。

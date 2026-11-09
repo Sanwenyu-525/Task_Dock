@@ -11,7 +11,7 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingSection } from "../components/SettingSection";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { ToggleSwitch } from "../components/ToggleSwitch";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { Toast, TOAST_TOP_PUSH, type ToastMessage, type ToastTone } from "../components/Toast";
 import { getSetting, setSetting } from "../db/kv";
 import { describeError } from "../lib/errors";
 import type { Nav } from "../lib/nav";
@@ -221,7 +221,7 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
         </Text>
       </ScrollView>
 
-      <Toast toast={toast} onDismiss={dismissToast} bottomOffset={space.xl} />
+      <Toast toast={toast} onDismiss={dismissToast} placement="top" topOffset={TOAST_TOP_PUSH} />
     </View>
   );
 }

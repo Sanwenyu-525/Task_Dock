@@ -11,10 +11,11 @@
 //! - 启动失败如实提示后端返回的 `reason`，不显示「已启动」。
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Eye, LayoutGrid, Loader2, Plus, Power, Search, SquareX, X } from "lucide-react";
+import { Eye, LayoutGrid, Loader2, Plus, Power, Search, SquareX, Star, X } from "lucide-react";
 import {
-  navCloseTargetWindows, navDeleteTarget, navNavigate, navQuitTargetProcesses,
-  navTargetRunningStates, navUpdateTarget, avatarHue, resultMessage, type NavTarget,
+  navCloseTargetWindows, navDeleteTarget, navKillTargetProcesses, navNavigate,
+  navQuitTargetProcesses, navTargetRunningStates, navUpdateTarget, avatarHue, resultMessage,
+  type NavTarget,
 } from "../../lib/navigation";
 import { normalizeError } from "../../lib/errors";
 import { searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
@@ -25,6 +26,7 @@ import {
   moveAppGridId,
   readAppGridOrder,
   writeAppGridOrder,
+  type AppGridEntry,
 } from "../../lib/appGridOrder";
 import { onAppGridOrderApplied, schedulePreferencesMirror } from "../../lib/userPreferences";
 import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
@@ -71,8 +73,12 @@ export default function AppsLite() {
   /** 关闭窗口的在途目标：与 launchingIds 同一套防重入纪律。 */
   const [closingIds, setClosingIds] = useState<ReadonlySet<string>>(new Set());
   const closingRef = useRef<Set<string>>(new Set());
-  /** 请求退出（WM_QUIT）同一时刻只允许一个在途。 */
-  const [quitBusy, setQuitBusy] = useState(false);
+  /** 请求退出（WM_QUIT）同一时刻只允许一个在途；记录在途目标，只给该 chip 显示忙碌态。 */
+  const [quitId, setQuitId] = useState<string | null>(null);
+  const quitRef = useRef(false);
+  /** 退出应用不配合（WM_QUIT 被忽略）时的强制结束确认：破坏性动作必须先确认。 */
+  const [pendingKill, setPendingKill] = useState<NavTarget | null>(null);
+  const [killBusy, setKillBusy] = useState(false);
   /** 启动后的运行态补查定时器：卸载即清，非常驻轮询。 */
   const stateRecheckTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   /** 用户手动网格顺序（含加号伪 id）；null = 使用自然顺序。 */
@@ -98,6 +104,10 @@ export default function AppsLite() {
   const deleteTriggerRef = useRef<HTMLButtonElement | null>(null);
   const restoreFocusRef = useRef(false);
   const hadPendingRef = useRef(false);
+  const killCancelRef = useRef<HTMLButtonElement | null>(null);
+  const killTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const restoreKillFocusRef = useRef(false);
+  const hadKillRef = useRef(false);
   // 单条反馈只保留一个计时器：新反馈覆盖旧反馈时先取消旧计时器，
   // 自然结束后置空，避免连续启动/失败把已结束的 ID 一直累积。
   const noticeTimer = useRef<number | null>(null);
@@ -143,6 +153,20 @@ export default function AppsLite() {
       }
     }
   }, [pendingDelete]);
+
+  // 强制结束确认条同一套焦点规则：打开落在「取消」，取消后还给触发退出的按钮。
+  useEffect(() => {
+    if (pendingKill) {
+      hadKillRef.current = true;
+      killCancelRef.current?.focus();
+    } else if (hadKillRef.current) {
+      hadKillRef.current = false;
+      if (restoreKillFocusRef.current) {
+        restoreKillFocusRef.current = false;
+        killTriggerRef.current?.focus();
+      }
+    }
+  }, [pendingKill]);
 
   const flash = (msg: string) => {
     if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
@@ -217,7 +241,27 @@ export default function AppsLite() {
     () => buildAppGrid(ranked, savedOrder),
     [ranked, savedOrder],
   );
-  const fullOrder = useMemo(() => fullGrid.map((entry) => entry.id), [fullGrid]);
+  /**
+   * 运行中置顶（2026-11-09 用户反馈）：点击应用后它会因「最近使用」冒泡到最前，
+   * 运行中的应用反而会越用越靠后。这里把运行中的应用（有窗口或仅后台进程）
+   * 固定到网格最前，其余保持原顺序（自然顺序或用户手动顺序），加号仍在末尾。
+   * 只改展示顺序，不改后端数据与手动排序本身。
+   */
+  const displayGrid = useMemo(() => {
+    const isRunning = (t: NavTarget) =>
+      runningStates[t.id] === "has_window" || runningStates[t.id] === "process_only";
+    const apps = fullGrid.filter(
+      (entry): entry is Extract<AppGridEntry<NavTarget>, { type: "app" }> => entry.type === "app",
+    );
+    if (!apps.some((entry) => isRunning(entry.app))) return fullGrid;
+    const add = fullGrid.filter((entry) => entry.type === "add");
+    return [
+      ...apps.filter((entry) => isRunning(entry.app)),
+      ...apps.filter((entry) => !isRunning(entry.app)),
+      ...add,
+    ];
+  }, [fullGrid, runningStates]);
+  const fullOrder = useMemo(() => displayGrid.map((entry) => entry.id), [displayGrid]);
   /** 搜索命中的应用 id；null = 不过滤。 */
   const matchedIds = useMemo(
     () => (query.trim() ? new Set(filtered.apps.map((t) => t.id)) : null),
@@ -225,22 +269,26 @@ export default function AppsLite() {
   );
   // 加号跟随它前面仍匹配的应用：前面的项被过滤掉时自然前移，不固定跳到末尾。
   const gridEntries = useMemo(
-    () => filterAppGrid(fullGrid, matchedIds),
-    [fullGrid, matchedIds],
+    () => filterAppGrid(displayGrid, matchedIds),
+    [displayGrid, matchedIds],
   );
 
   /** 运行态快照查询：与完整应用中心同一命令、同一口径（后端按 exe 身份 +
-      祖先链判定），面板打开时查一次，启动/关闭/退出后刷新。 */
-  const fetchRunningStates = useCallback(async () => {
+      祖先链判定），面板打开时查一次，启动/关闭/退出后刷新。
+      返回本次快照：关闭/退出后的结果文案要用最新状态判断「是否仍在后台运行」。 */
+  const fetchRunningStates = useCallback(async (): Promise<Record<string, string>> => {
     const ids = visible.filter((t) => t.target_type === "application").map((t) => t.id);
     if (ids.length === 0) {
       setRunningStates({});
-      return;
+      return {};
     }
     try {
-      setRunningStates(await navTargetRunningStates(ids));
+      const states = await navTargetRunningStates(ids);
+      setRunningStates(states);
+      return states;
     } catch {
       // 小面板不弹错误：状态属于增强信息，失败时保持旧值（无点无快捷区）。
+      return {};
     }
   }, [visible]);
 
@@ -303,6 +351,9 @@ export default function AppsLite() {
         // 成功后刷新共享目标，让网格的「最近使用优先」排序反映真实后端计数。
         // 刷新失败只影响排序展示，不能把已成功的启动说成失败（错误由共享 store 记录）。
         void loadTargets(true);
+        // 启动请求返回时后端通常已确认窗口/进程：立即补查一次，绿点不必等到
+        // 2.5s 的慢启动补查才出现；窗口晚于返回出现的情况仍由定时补查兜住。
+        void fetchRunningStates();
         // 窗口可能晚于启动返回出现：补查让状态点与「运行中」区跟上真实状态。
         scheduleStateRecheck();
       }
@@ -365,6 +416,8 @@ export default function AppsLite() {
     if (deleteBusy || launchingRef.current.has(t.id)) return;
     deleteTriggerRef.current = trigger;
     restoreFocusRef.current = false;
+    // 删除与强制结束是两个破坏性确认，同一时刻只保留一个。
+    setPendingKill(null);
     setPendingDelete(t);
   };
 
@@ -426,20 +479,26 @@ export default function AppsLite() {
   };
 
   /** 优雅关闭该应用的全部顶层窗口（WM_CLOSE）：与完整面板卡片按钮同一命令；
-      应用弹「是否保存」时窗口仍在，按结果如实提示。 */
+      应用弹「是否保存」时窗口仍在，按结果如实提示。托盘类应用把关闭实现为
+      隐藏到托盘：后端按「句柄消失或转为不可见」判成功，这里补一句仍在后台运行，
+      避免用户以为关闭没生效。 */
   const closeWindow = async (t: NavTarget) => {
     if (closingRef.current.has(t.id)) return;
     markClosing(t.id, true);
+    // 先给即时反馈：后端核实窗口消失最长要等 2s，这段时间不能像什么都没发生。
+    flash(`正在关闭「${t.display_name}」的窗口…`);
     try {
       const r = await navCloseTargetWindows(t.id);
+      const states = await fetchRunningStates();
       if (r.requested === 0) {
         flash(`「${t.display_name}」当前没有打开的窗口`);
       } else if (r.stillOpen.length > 0) {
-        flash(`「${t.display_name}」还有 ${r.stillOpen.length} 个窗口未关闭（可能在等待确认）`);
+        flash(`「${t.display_name}」还有 ${r.stillOpen.length} 个窗口未关闭（可能等待确认或需要权限）`);
+      } else if (states[t.id] === "process_only") {
+        flash(`已关闭「${t.display_name}」的窗口（应用仍在后台运行）`);
       } else {
         flash(`已关闭「${t.display_name}」的 ${r.closed} 个窗口`);
       }
-      await fetchRunningStates();
     } catch (e) {
       const err = normalizeError(e, "nav_close_target_windows");
       flash(`关闭「${t.display_name}」的窗口失败：${err.reason || err.message || "未知错误"}`);
@@ -449,25 +508,66 @@ export default function AppsLite() {
   };
 
   /** 请求应用自行退出（向其线程投递 WM_QUIT，等价托盘「退出」）：应用走自己的
-      保存/清理/移除托盘路径；不配合的如实报未完全退出，引导到完整面板强杀。 */
-  const quitApp = async (t: NavTarget) => {
-    if (quitBusy) return;
-    setQuitBusy(true);
+      保存/清理/移除托盘路径。不配合的（部分托盘/Electron 应用忽略 WM_QUIT）
+      如实报未完全退出，并直接给出「强制结束」确认入口——否则小面板里没有
+      任何能把应用真正关掉的办法。 */
+  const quitApp = async (t: NavTarget, trigger?: HTMLButtonElement) => {
+    if (quitRef.current) return;
+    quitRef.current = true;
+    setQuitId(t.id);
+    flash(`正在退出「${t.display_name}」…`);
     try {
       const r = await navQuitTargetProcesses(t.id);
+      await fetchRunningStates();
       if (r.processTotal === 0) {
         flash(`「${t.display_name}」当前没有在运行的进程`);
       } else if (r.processExited < r.processTotal) {
-        flash(`「${t.display_name}」未完全退出（${r.processExited}/${r.processTotal}），可到完整面板使用结束进程`);
+        flash(`「${t.display_name}」未完全退出（${r.processExited}/${r.processTotal}）`);
+        // 应用不响应 WM_QUIT：提供破坏性但可控的收尾手段，必须经确认条。
+        killTriggerRef.current = trigger ?? null;
+        restoreKillFocusRef.current = false;
+        setPendingDelete(null);
+        setPendingKill(t);
       } else {
         flash(`已退出「${t.display_name}」`);
       }
-      await fetchRunningStates();
     } catch (e) {
       const err = normalizeError(e, "nav_quit_target_processes");
       flash(`退出「${t.display_name}」失败：${err.reason || err.message || "未知错误"}`);
     } finally {
-      setQuitBusy(false);
+      quitRef.current = false;
+      setQuitId(null);
+    }
+  };
+
+  const cancelKill = () => {
+    if (killBusy) return;
+    restoreKillFocusRef.current = true;
+    setPendingKill(null);
+  };
+
+  /** 强制结束进程（TerminateProcess）：破坏性动作，只在确认条确认后执行；
+      结果如实区分「已结束 / 无权限或已退出 / 没有可结束的进程」。 */
+  const confirmKill = async () => {
+    if (!pendingKill || killBusy) return;
+    const target = pendingKill;
+    setKillBusy(true);
+    try {
+      const r = await navKillTargetProcesses(target.id);
+      if (r.matched === 0) {
+        flash(`「${target.display_name}」当前没有可结束的进程`);
+      } else if (r.killed < r.matched) {
+        flash(`已结束「${target.display_name}」的 ${r.killed}/${r.matched} 个进程，其余无权限或已退出`);
+      } else {
+        flash(`已强制结束「${target.display_name}」的 ${r.killed} 个进程`);
+      }
+      await fetchRunningStates();
+    } catch (e) {
+      const err = normalizeError(e, "nav_kill_target_processes");
+      flash(`强制结束「${target.display_name}」失败：${err.reason || err.message || "未知错误"}`);
+    } finally {
+      setKillBusy(false);
+      setPendingKill(null);
     }
   };
 
@@ -601,6 +701,34 @@ export default function AppsLite() {
               disabled={deleteBusy || launchingIds.has(pendingDelete.id)}
             >
               删除
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingKill && (
+        <div className="cap-confirm" role="alertdialog" aria-label="确认强制结束应用进程">
+          <p className="cap-confirm-text">
+            强制结束「{pendingKill.display_name}」？
+            <span>将结束该应用的全部进程（含托盘/后台），不走应用自身的保存流程，未保存的数据会丢失。</span>
+          </p>
+          <div className="cap-confirm-actions">
+            <button
+              ref={killCancelRef}
+              type="button"
+              className="cap-mini"
+              onClick={cancelKill}
+              disabled={killBusy}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="cap-mini cap-confirm-danger"
+              onClick={() => void confirmKill()}
+              disabled={killBusy}
+            >
+              强制结束
             </button>
           </div>
         </div>
@@ -774,7 +902,22 @@ export default function AppsLite() {
                   >
                     <span className="cap-app-icon">
                       <AppIcon targetId={t.id} name={t.display_name} size={34} />
-                      {runningStates[t.id] === "has_window" && (
+                      {/* 收藏角标：与右下运行状态点同一套角标语言（绝对定位、不占布局），
+                          放在图标左上角，避免和运行中的绿色圆点混淆。 */}
+                      {t.favorite && (
+                        <Star
+                          size={11}
+                          strokeWidth={0}
+                          className="cap-app-fav"
+                          fill="currentColor"
+                          aria-hidden="true"
+                        />
+                      )}
+                      {/* 运行状态点与「运行中」快捷区、运行中置顶、完整面板徽标
+                          同一口径：有窗口或仅有后台进程（托盘驻留）都算运行中。
+                          只显示 has_window 会让托盘应用看起来「打开了却没有绿点」。 */}
+                      {(runningStates[t.id] === "has_window" ||
+                        runningStates[t.id] === "process_only") && (
                         <i className="cap-app-dot" aria-hidden="true" />
                       )}
                       {busy && (
@@ -804,8 +947,9 @@ export default function AppsLite() {
           </div>
         )}
 
-        {/* 运行中快捷区：关闭窗口（优雅）与退出应用（WM_QUIT）一键直达；
-            结束进程是破坏性动作，保留在完整面板的 ⋯ 菜单（确认弹窗后）。 */}
+        {/* 运行中快捷区：关闭窗口（优雅）、退出应用（WM_QUIT）一键直达；
+            退出不配合时在同一面板给出「强制结束」确认条（破坏性动作，必须确认），
+            不再要求跳到完整面板才能把应用真正关掉。 */}
         {targetsLoaded && !loadFailedFresh && runningApps.length > 0 && (
           <div className="cap-recent" data-testid="running-list">
             <span className="cap-recent-title">运行中（{runningApps.length}）</span>
@@ -833,7 +977,11 @@ export default function AppsLite() {
                         disabled={closingIds.has(t.id)}
                         onClick={() => void closeWindow(t)}
                       >
-                        <SquareX size={12} aria-hidden="true" />
+                        {closingIds.has(t.id) ? (
+                          <Loader2 size={12} className="spin" aria-hidden="true" />
+                        ) : (
+                          <SquareX size={12} aria-hidden="true" />
+                        )}
                       </button>
                     )}
                     <button
@@ -841,10 +989,14 @@ export default function AppsLite() {
                       className="cap-chip-btn"
                       data-tip="退出应用"
                       aria-label={`退出 ${t.display_name}`}
-                      disabled={quitBusy}
-                      onClick={() => void quitApp(t)}
+                      disabled={quitId !== null}
+                      onClick={(e) => void quitApp(t, e.currentTarget)}
                     >
-                      <Power size={12} aria-hidden="true" />
+                      {quitId === t.id ? (
+                        <Loader2 size={12} className="spin" aria-hidden="true" />
+                      ) : (
+                        <Power size={12} aria-hidden="true" />
+                      )}
                     </button>
                   </span>
                 );

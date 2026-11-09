@@ -16,8 +16,13 @@ import {
 
 import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { AppBar } from "../components/AppBar";
-import { Badge } from "../components/Badge";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import {
+  Toast,
+  TOAST_TOP_PUSH,
+  type ToastMessage,
+  type ToastPlacement,
+  type ToastTone,
+} from "../components/Toast";
 import { createNote, deleteNote, getNote, updateNote } from "../db/notes";
 import { countChars, insertSnippet, wrapSelection } from "../domain/noteText";
 import type { Note } from "../domain/types";
@@ -27,6 +32,9 @@ import { useKeyboardHeight } from "../lib/keyboard";
 import type { Nav } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
+
+/** 底部工具栏高度：paddingTop 4 + 按钮 44 + paddingBottom 8（安全区另加） */
+const TOOLBAR_HEIGHT = space.xs + 44 + space.sm;
 
 interface Selection {
   start: number;
@@ -61,10 +69,13 @@ export function NoteEditorScreen({
   /** 保存去重：返回/硬件返回/再按返回可能连发，同一次编辑只落一次库 */
   const savingRef = useRef(false);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
+  const showToast = useCallback(
+    (text: string, tone: ToastTone = "info", placement?: ToastPlacement) => {
+      toastSeq.current += 1;
+      setToast({ id: toastSeq.current, text, tone, placement });
+    },
+    [],
+  );
   const dismissToast = useCallback(() => setToast(null), []);
 
   useEffect(() => {
@@ -180,12 +191,12 @@ export function NoteEditorScreen({
     try {
       // RN 核心 Clipboard（deprecated 但仍可用）；失败时回退到分享面板
       Clipboard.setString(full);
-      showToast("已复制全文", "success");
+      showToast("已复制全文", "success", "bottom");
     } catch {
       try {
         await Share.share({ message: full });
       } catch {
-        showToast("复制失败", "danger");
+        showToast("复制失败", "danger", "bottom");
       }
     }
   }, [body, showToast, title]);
@@ -230,7 +241,7 @@ export function NoteEditorScreen({
       }
     } catch (error) {
       setFavorited(!next);
-      showToast(`收藏失败：${describeError(error)}`, "danger");
+      showToast(`收藏失败：${describeError(error)}`, "danger", "bottom");
     }
   }, [favorited, note, onDataChanged, showToast]);
 
@@ -275,7 +286,6 @@ export function NoteEditorScreen({
     <View style={[styles.container, { paddingBottom: keyboardHeight }]}>
       <AppBar
         title="编辑笔记"
-        badge={<Badge label="规划中" />}
         onBack={handleBack}
         right={
           <>
@@ -361,7 +371,14 @@ export function NoteEditorScreen({
       <Toast
         toast={toast}
         onDismiss={dismissToast}
-        bottomOffset={space.xl + 40 + keyboardHeight}
+        placement="top"
+        topOffset={TOAST_TOP_PUSH}
+        // 工具行触发的提示落在工具栏上方；键盘弹起时工具栏被容器顶到键盘上沿
+        bottomOffset={
+          keyboardHeight > 0
+            ? keyboardHeight + TOOLBAR_HEIGHT + space.sm
+            : TOOLBAR_HEIGHT + insets.bottom + space.sm
+        }
       />
 
       <ActionSheet
@@ -527,8 +544,8 @@ const styles = StyleSheet.create({
   },
   bodyInput: {
     flex: 1,
-    fontSize: font.body,
-    lineHeight: 21,
+    fontSize: font.reading,
+    lineHeight: 23,
     paddingTop: space.md,
     paddingBottom: space.md,
   },
