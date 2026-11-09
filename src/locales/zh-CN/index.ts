@@ -1540,6 +1540,13 @@ export const zhCN = {
   "resource.memory.releaseNote": "物理内存变化由操作系统与运行时管理，不保证立即下降相同容量。",
   "resource.process.memoryRelative": "相对最大内存 {percent}",
   "resource.process.relativeNote": "内存条长度相对当前列表中最大值，不是系统内存占比；CPU 为单次采样观测，不作为异常结论。",
+  "resource.trend.title": "短时趋势",
+  "resource.trend.scope": "每 {seconds} 秒采样 · 最多 {count} 点，离开即停止。",
+  "resource.trend.sampling": "正在采样，至少 2 个点后绘制趋势",
+  "resource.trend.range": "区间 {min} – {max}",
+  "resource.trend.failed": "最近一次自动采样失败，将在下一周期重试。",
+  "resource.aria.trend": "{title}短时趋势：{count} 个采样点，区间 {min} 到 {max}",
+  "resource.aria.trendSampling": "{title}短时趋势：正在采样，已有 {count} 个点",
 
 
   "settings.ttsCache.note": "只缓存固定短语（如「任务已完成」）；含来源名或任务标题的动态语音不落盘。超限时自动清理最久未用的缓存，不影响用户其他文件。",

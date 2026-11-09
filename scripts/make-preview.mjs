@@ -572,6 +572,8 @@ const shim = `
   ];
 
   let cbId = 0;
+  /** 走查用：每次读取推进 10 秒，让概览短时趋势在预览里也能形成折线。 */
+  let snapshotTick = 0;
   const listeners = {};
 
   async function invoke(cmd, args) {
@@ -580,7 +582,25 @@ const shim = `
       case "get_settings": return settings;
       case "update_settings": return { ...settings, ...(args?.patch || {}) };
       case "lifecycle_status": return lifecycleStatus;
-      case "resource_snapshot": return resourceSnapshot;
+      case "resource_snapshot": {
+        // 真实应用由后端按真实采样时间返回；预览夹具推进时间并轻微变化，
+        // 否则固定 sampledAt 会被趋势去重，永远只有「正在采样」占位。
+        snapshotTick += 1;
+        const firstDisk = resourceSnapshot.disks[0];
+        resourceSnapshot.sampledAt = iso(snapshotTick * 10);
+        resourceSnapshot.memory = {
+          ...resourceSnapshot.memory,
+          availableBytes: resourceSnapshot.memory.availableBytes - snapshotTick * 48 * 1024 * 1024,
+        };
+        resourceSnapshot.disks = [
+          {
+            ...firstDisk,
+            availableBytes: firstDisk.availableBytes - snapshotTick * 160 * 1024 * 1024,
+          },
+          ...resourceSnapshot.disks.slice(1),
+        ];
+        return resourceSnapshot;
+      }
       case "resource_process_diagnostics": return resourceProcesses;
       case "resource_disk_usage": return resourceDiskUsage;
       case "resource_memory_catalog": return resourceMemoryCatalog;

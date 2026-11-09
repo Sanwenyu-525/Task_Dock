@@ -1,22 +1,26 @@
 //! 资源管理 · 概览分区。
 //!
-//! 只消费面板已经取到的快照与清理预览结果，不自行发起 IPC：
+//! 只消费面板已经取到的快照、清理预览结果与趋势采样，不自行发起 IPC：
 //! 切换分区不会产生额外采样；「可清理量」在磁盘页扫描后同步过来，
 //! 未扫描时明确显示「尚未扫描」，不把 0 当作真实可清理量。
 //!
 //! 布局：顶部两个大环形（磁盘 / 系统内存，整机口径），下方紧凑指标条
-//! （应用缓存、可清理空间、应用内存、应用 CPU）。磁盘与内存使用同一套
-//! `lib/resourceMetrics` 公式与阈值；CPU 不做压力结论。
+//! （应用缓存、可清理空间、应用内存、应用 CPU），中间是磁盘/内存的
+//! 短时趋势（采样由 `hooks/useResourceTrend` 在概览可见时驱动）。
+//! 磁盘与内存使用同一套 `lib/resourceMetrics` 公式与阈值；CPU 不做压力结论。
 
 import { HardDrive } from "lucide-react";
 import type { ResourceSnapshot } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
 import { formatLocalStamp } from "../../lib/format";
 import { computeUsage, formatPercent } from "../../lib/resourceMetrics";
+import type { ResourceTrendPoint } from "../../hooks/useResourceTrend";
+import { TREND_CAPACITY, TREND_INTERVAL_MS } from "../../hooks/useResourceTrend";
 import type { CleanupEstimate } from "../settings/ResourceCleanupSection";
 import { useLocale } from "../../hooks/useLocale";
 import {
   MiniMeter,
+  TrendSparkline,
   USAGE_ANOMALY_DETAIL,
   UsageRing,
   usageStatusKey,
@@ -29,6 +33,8 @@ interface OverviewSegmentProps {
   error: string | null;
   /** 磁盘页的扫描估算状态：已过期/失败/未扫描都不能当成 0 B 显示。 */
   cleanable: CleanupEstimate;
+  /** 概览可见期间的有界采样点；`failed` 只表示最近一次采样失败。 */
+  trend: { points: ResourceTrendPoint[]; failed: boolean };
   /** 跳转到磁盘分区（扫描入口在那里）。 */
   onOpenDisk: () => void;
   onRefresh: () => void;
@@ -39,11 +45,21 @@ function sampledLabel(iso: string | null | undefined): string | null {
   return stamp ? `${stamp.date} ${stamp.time} ${stamp.zone}` : null;
 }
 
+/** 有效百分比的最小/最大值（null 不参与；不足两个点返回 null）。 */
+function percentRange(values: ReadonlyArray<number | null>): { min: number; max: number } | null {
+  const valid = values.filter(
+    (value): value is number => value !== null && Number.isFinite(value),
+  );
+  if (valid.length < 2) return null;
+  return { min: Math.min(...valid), max: Math.max(...valid) };
+}
+
 export default function OverviewSegment({
   snapshot,
   loading,
   error,
   cleanable,
+  trend,
   onOpenDisk,
   onRefresh,
 }: OverviewSegmentProps) {
@@ -130,6 +146,33 @@ export default function OverviewSegment({
             : t("resource.overview.cacheUnscanned");
 
   const sampled = sampledLabel(snapshot?.sampledAt);
+
+  /** 趋势：末端读数优先于环形（采样可能比随页面加载的快照更新）。 */
+  const lastTrend = trend.points[trend.points.length - 1] ?? null;
+  const diskTrendPercent = lastTrend?.diskPercent ?? diskUsage.usedPercent;
+  const memoryTrendPercent = lastTrend?.memoryPercent ?? memoryUsage.usedPercent;
+  const diskRange = percentRange(trend.points.map((point) => point.diskPercent));
+  const memoryRange = percentRange(trend.points.map((point) => point.memoryPercent));
+  const trendRangeText = (range: { min: number; max: number } | null) =>
+    range
+      ? t("resource.trend.range", {
+          min: formatPercent(range.min) ?? unavailable,
+          max: formatPercent(range.max) ?? unavailable,
+        })
+      : null;
+  const trendScopeText = t("resource.trend.scope", {
+    seconds: Math.round(TREND_INTERVAL_MS / 1000),
+    count: TREND_CAPACITY,
+  });
+  const trendAria = (title: string, range: { min: number; max: number } | null) =>
+    range
+      ? t("resource.aria.trend", {
+          title,
+          count: trend.points.length,
+          min: formatPercent(range.min) ?? unavailable,
+          max: formatPercent(range.max) ?? unavailable,
+        })
+      : t("resource.aria.trendSampling", { title, count: trend.points.length });
 
   return (
     <div className="resource-overview">
@@ -265,6 +308,41 @@ export default function OverviewSegment({
           })}
         </div>
       )}
+
+      {/* 短时趋势：概览可见时有界采样；只画真实读数，缺失点断线。 */}
+      <div className="resource-trend-section">
+        <div className="resource-cleanup-section-head">
+          <h3 className="resource-cleanup-heading">{t("resource.trend.title")}</h3>
+          <span className="resource-trend-scope">{trendScopeText}</span>
+        </div>
+        <div className="resource-trend">
+          <TrendSparkline
+            points={trend.points.map((point) => ({ at: point.at, percent: point.diskPercent }))}
+            level={diskUsage.level}
+            title={t("resource.overview.diskRingTitle")}
+            valueText={pending ? reading : (formatPercent(diskTrendPercent) ?? unavailable)}
+            statusText={t(usageStatusKey(diskUsage.level, diskUsage.anomaly))}
+            emptyText={t("resource.trend.sampling")}
+            rangeText={trendRangeText(diskRange)}
+            ariaLabel={trendAria(t("resource.overview.diskRingTitle"), diskRange)}
+          />
+          <TrendSparkline
+            points={trend.points.map((point) => ({ at: point.at, percent: point.memoryPercent }))}
+            level={memoryUsage.level}
+            title={t("resource.overview.memoryRingTitle")}
+            valueText={pending ? reading : (formatPercent(memoryTrendPercent) ?? unavailable)}
+            statusText={t(usageStatusKey(memoryUsage.level, memoryUsage.anomaly))}
+            emptyText={t("resource.trend.sampling")}
+            rangeText={trendRangeText(memoryRange)}
+            ariaLabel={trendAria(t("resource.overview.memoryRingTitle"), memoryRange)}
+          />
+        </div>
+        {trend.failed && (
+          <p className="setting-note resource-trend-failed" role="status">
+            {t("resource.trend.failed")}
+          </p>
+        )}
+      </div>
 
       <div className="resource-metric-strip">
         <div className="resource-metric">

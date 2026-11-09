@@ -262,6 +262,54 @@ describe("ResourceManagementPanel", () => {
     expect(screen.queryByText("0 B")).toBeNull();
   });
 
+  it("概览趋势：可见时每周期采样一次，切到别的分区立即停止", async () => {
+    // 只假造 interval：周期采样是唯一需要推进的计时器。
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const flush = async () => {
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      };
+      mocks.snapshot
+        .mockResolvedValueOnce(SNAPSHOT)
+        .mockResolvedValueOnce({ ...SNAPSHOT, sampledAt: "2026-11-06T00:00:10.000Z" });
+
+      render(<ResourceManagementPanel />);
+      await flush();
+
+      const overview = document.getElementById("resource-panel-overview") as HTMLElement;
+      expect(within(overview).getByText("resource.trend.title")).toBeTruthy();
+      // 只有一个起点：不画假折线，显示采样占位
+      expect(overview.querySelector("path.resource-trend-line")).toBeNull();
+      expect(
+        within(overview).getAllByText("resource.trend.sampling").length,
+      ).toBeGreaterThan(0);
+      expect(mocks.snapshot).toHaveBeenCalledTimes(1);
+
+      // 一个周期后：第二个真实采样点 → 趋势线出现
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mocks.snapshot).toHaveBeenCalledTimes(2);
+      expect(overview.querySelector("path.resource-trend-line")).toBeTruthy();
+
+      // 切到磁盘分区（概览失活）：再推进 3 个周期也不采样
+      fireEvent.click(tab("resource.segment.disk"));
+      await flush();
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+        await Promise.resolve();
+      });
+      expect(mocks.snapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("磁盘分区首次进入才统计占用，来回切换不重复请求", async () => {
     render(<ResourceManagementPanel />);
     await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));

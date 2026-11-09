@@ -4374,6 +4374,133 @@ html[data-theme="dark"] .resource-page {
 .resource-swatch.color-8,
 .resource-stacked-seg.color-8 { background: var(--chart-c8); }
 
+/* ── 短时趋势 ─────────────────────────────────────────────── */
+
+.resource-trend-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.resource-trend-scope {
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+/* 320 内容宽也能排两列：趋势卡本身信息少，竖排会把概览拉长近一倍。 */
+.resource-trend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-trend-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 7px 9px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+}
+
+.resource-trend-card.is-normal {
+  --chart-level: var(--status-success);
+}
+
+.resource-trend-card.is-attention {
+  --chart-level: var(--status-waiting);
+}
+
+.resource-trend-card.is-critical {
+  --chart-level: var(--status-error);
+}
+
+.resource-trend-card.is-unknown {
+  --chart-level: var(--chart-neutral);
+}
+
+.resource-trend-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.resource-trend-title {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.resource-trend-value {
+  margin-left: auto;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.resource-trend-status {
+  color: var(--chart-level, var(--chart-neutral));
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.resource-trend-svg {
+  display: block;
+  width: 100%;
+  height: 34px;
+  overflow: visible;
+}
+
+.resource-trend-line {
+  fill: none;
+  stroke: var(--chart-level, var(--chart-neutral));
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.resource-trend-empty {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.resource-trend-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+.resource-trend-failed {
+  margin: 0;
+}
+
+@media (max-width: 380px) {
+  /* 窄窗两列固定：区间各占一行；状态由上方大环表达，避免两卡换行不一致。 */
+  .resource-trend {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .resource-trend-status {
+    display: none;
+  }
+}
+
 @media (max-width: 560px) {
   /* 页头保持「标题 + 紧凑刷新按钮」同行；只有极窄时才由 flex-wrap 自然换行。 */
   .resource-page-head {
