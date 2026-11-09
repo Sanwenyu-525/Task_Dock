@@ -348,7 +348,7 @@ mod windows_impl {
                     ReleaseStgMedium(medium);
                 }
             };
-            // helper 会用 IStream 写入 Preferred DropEffect；必须先接住，
+            // helper 会用 IStream 写入 DragContext；必须先接住，
             // 否则 InitializeFromBitmap 会把这里的 E_NOTIMPL 冒泡成失败。
             if (medium.tymed & TYMED_ISTREAM.0 as u32) != 0 {
                 let bytes = unsafe { &*medium.u.pstm }
@@ -742,6 +742,26 @@ mod windows_tests {
         };
         let hr = unsafe { data.QueryGetData(&format) };
         assert!(hr.is_ok(), "QueryGetData(DragImageBits) hr={hr:?}");
+        // helper 还会用 IStream 写入 DragContext；验证 SetData 的流分支也能
+        // 回读（否则 InitializeFromBitmap 会整体失败）。
+        let ctx_name: Vec<u16> = "DragContext\0".encode_utf16().collect();
+        let ctx_atom = unsafe {
+            windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW(ctx_name.as_ptr()) as u16
+        };
+        let ctx_fmt = FORMATETC {
+            cfFormat: ctx_atom,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL.0 as u32,
+        };
+        let ctx_hr = unsafe { data.QueryGetData(&ctx_fmt) };
+        assert!(ctx_hr.is_ok(), "QueryGetData(DragContext) hr={ctx_hr:?}");
+        let mut ctx_medium = unsafe { data.GetData(&ctx_fmt) }.expect("GetData(DragContext)");
+        let ctx_size = unsafe { windows_sys::Win32::System::Memory::GlobalSize(ctx_medium.u.hGlobal.0) };
+        assert!(ctx_size > 0, "DragContext 应保留 helper 写入的流内容");
+        unsafe { ReleaseStgMedium(&mut ctx_medium) };
+
         let mut medium = unsafe { data.GetData(&format) }.expect("GetData(DragImageBits)");
         assert!(
             !unsafe { medium.u.hGlobal }.0.is_null(),

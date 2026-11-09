@@ -125,14 +125,20 @@
 
 ### 拖出（2026-11-09 已实现，真机待验收）
 
-- 通道：前端按住卡片超过 5px 位移后调用 `shelf_drag_out`，后端在**专用 STA
-  线程**执行 `OleInitialize` → 自实现 `IDataObject`（只暴露 `CF_HDROP`）→
-  `DoDragDrop` → `OleUninitialize`；不阻塞 IPC 线程，也不复用可能为 MTA 的线程池。
-  `QueryContinueDrag` 直接读 `GetAsyncKeyState(VK_LBUTTON)`，而不是 OLE 传入的
-  `grfKeyState`：后台 STA 线程的线程级按键状态不随全局鼠标更新，实测会让拖拽
-  永远认为左键仍按下、无法结束。
+- 通道：前端按住卡片超过 5px 位移后调用 `shelf_drag_out`，命令层用
+  `AppHandle::run_on_main_thread` 回到 Tauri 主线程（tao 已 `OleInitialize`），
+  再执行 `OleInitialize` → 自实现 `IDataObject` → `DoDragDrop` → `OleUninitialize`。
+  **不能在自建后台线程上跑**：OLE 拖拽循环依赖调用线程的输入队列接管鼠标捕获，
+  后台线程拿不到 `DragEnter`，表现为拖了没反应。进入拖拽前还会检查
+  `GetAsyncKeyState(VK_LBUTTON)`，左键已松开就跳过，避免合成/迟到调用把主线程
+  永久挂在拖拽循环里。
+  `QueryContinueDrag` 同样直接读全局左键状态，而不是 OLE 传入的 `grfKeyState`。
 - 数据对象由 Rust 直接构造 `DROPFILES` 全局内存；不使用 shell
   `SHCreateDataObject`（本机实测返回空格式集，无法保证目标应用拿到文件）。
+- 拖拽幽灵：数据对象接受 `IDragSourceHelper` 写入的 `DragImageBits`（HGLOBAL）与
+  `DragContext`（TYMED_ISTREAM），`EnumFormatEtc(DATADIR_SET)` 返回空集；
+  否则 helper 会因 `SetData` 的 `E_NOTIMPL` 整条失败，资源管理器不画跟随光标的
+  文件幽灵。幽灵图取第一个文件的 Shell 缩略图/图标（96px）。
 - 效果：引用模式允许 `DROPEFFECT_COPY | DROPEFFECT_MOVE`，遵循 Windows 默认
   （同卷移动、跨卷复制，Ctrl 强制复制）；托管副本一律只允许复制，避免把
   内部副本移出托管目录、弄坏暂存记录。
@@ -144,6 +150,9 @@
   资源管理器 Ctrl+V 即得文件本体）、**打开 / 所在文件夹**（explorer /select）。
 - 前端无 HTML5 `draggable`/`dragstart` 实现；拖拽后 350ms 内的 click 会被吞掉，
   避免误开详情。
+- 本轮真机拖拽因会话锁屏（前台为锁屏界面）未能执行，见
+  `tmp/acceptance/shelf-ui-drag/report.md` §7；幽灵数据通路由 Rust 单测
+  `drag_source_helper_attaches_drag_image` 覆盖。
 
 ## 7. 安全边界
 
@@ -489,13 +498,22 @@ status / reason? / recovery? / residual_source?`。状态取值与 `ShelfOpEntry
 - 前端 `src/hooks/useShelfDragOut.ts`：左键按下后位移超过 5px 才调用后端；忽略
   `[data-no-drag]`（勾选/更多菜单）；不使用 HTML5 dragstart、不 `setPointerCapture`；
   拖拽后 350ms 内吞掉一次 click，pointercancel/blur/卸载/30s 看门狗回收监听与在途闸。
-- 后端 `src-tauri/src/shelf/drag_out.rs`：专用 STA 线程 `OleInitialize` → 自实现
-  `IDataObject`（只暴露 `CF_HDROP`）→ `DoDragDrop` → `OleUninitialize`；进程级
+- 后端 `src-tauri/src/shelf/drag_out.rs`：命令层用 `AppHandle::run_on_main_thread`
+  回到 Tauri 主线程（tao 已 `OleInitialize`）执行 `OleInitialize` → 自实现
+  `IDataObject`（暴露 `CF_HDROP`，并接受 helper 的 `DragImageBits` /
+  `DragContext`）→ `DoDragDrop` → `OleUninitialize`；进程级
   `AtomicBool` 单飞，防止并发 `DRAGDROP_E_CONCURRENT_DRAG_ATTEMPTED`。
+  进入前检查全局左键状态，已松开则直接返回 `effect=none`，避免主线程被
+  无输入事件的拖拽循环挂死。
+- 拖拽幽灵：`IDragSourceHelper::InitializeFromBitmap` 取第一个文件的 Shell
+  缩略图/图标（96px）写入数据对象；`SetData` 同时接受 HGLOBAL 与 IStream，
+  `EnumFormatEtc(DATADIR_SET)` 返回空集（返回 `E_NOTIMPL` 会让 helper 整体失败）。
 - 允许效果：全部为引用模式时 `DROPEFFECT_COPY | DROPEFFECT_MOVE`；包含托管副本时
   只允许 `DROPEFFECT_COPY`。`effect=move` 后按返回的 `missing_ids` 刷新存在性并提示。
 - 限制：DoDragDrop 必须在左键仍按下时进入；WebView2 指针捕获冲突、UIPI 跨完整性
   级别拖放、目标应用不接受文件等仍需真机验证；真机未执行前不得宣称拖出已验收。
+  2026-11-09 会话锁屏导致原生鼠标拖拽未执行，幽灵数据通路由 Rust 单测
+  `drag_source_helper_attaches_drag_image` 覆盖。
 
 ### 12.6 UI 入口
 
