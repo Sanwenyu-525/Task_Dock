@@ -1374,6 +1374,26 @@ CREATE TABLE task_reminder_links (
 );
 "#,
     ),
+    (
+        42,
+        r#"
+-- v42（手机配对与局域网连接）：桌面端是配对授权中心，保存已授权设备。
+-- 安全边界：只存配对令牌的 SHA-256 哈希，明文令牌只在配对成功响应里返回一次；
+-- 设备名/平台/最近 IP 仅用于展示与诊断，不参与鉴权；撤销写 revoked_at 软删除，
+-- 保留记录便于审计，且同一记录不会被复活。不保存手机端任何业务数据。
+CREATE TABLE mobile_devices (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT,
+  last_ip TEXT,
+  revoked_at TEXT
+);
+CREATE INDEX idx_mobile_devices_revoked ON mobile_devices(revoked_at);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -1990,6 +2010,13 @@ pub struct Settings {
     /// 启用后 stdio MCP 子命令才能经 mcp-transport.json 连入。
     #[serde(default)]
     pub mcp_server_enabled: bool,
+    /// 手机接入（v0.16）：允许手机在同一局域网内配对与连接。默认关闭；
+    /// 只有显式开启时才监听局域网端口，关闭后立即停止监听并作废配对会话。
+    #[serde(default)]
+    pub mobile_sync_enabled: bool,
+    /// 手机接入监听端口（仅监听局域网 IPv4；默认 47822，需与 Agent 接入端口区分）。
+    #[serde(default = "default_mobile_sync_port")]
+    pub mobile_sync_port: u16,
     #[serde(default = "default_true")]
     pub mock_enabled: bool,
     #[serde(default = "default_true")]
@@ -2266,6 +2293,9 @@ fn default_true() -> bool {
 }
 fn default_http_port() -> u16 {
     47821
+}
+fn default_mobile_sync_port() -> u16 {
+    47822
 }
 fn default_grace() -> u32 {
     24

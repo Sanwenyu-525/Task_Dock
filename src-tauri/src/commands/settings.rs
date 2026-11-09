@@ -28,6 +28,9 @@ const ALLOWED_KEYS: &[&str] = &[
     "http_port",
     // Agent MCP Server（v37）：外部 MCP 客户端 loopback bridge 开关，默认关闭
     "mcp_server_enabled",
+    // 手机接入（v0.16）：局域网配对与连接；默认关闭
+    "mobile_sync_enabled",
+    "mobile_sync_port",
     "mock_enabled",
     "notify_reminder",
     "notify_agent",
@@ -167,6 +170,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "hotkey_enabled"
         | "http_enabled"
         | "mcp_server_enabled"
+        | "mobile_sync_enabled"
         | "mock_enabled"
         | "notify_reminder"
         | "notify_agent"
@@ -242,6 +246,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
             Ok(())
         }
         "http_port" => int_in_range(v, key, 1, 65535),
+        // 手机接入端口与 Agent 接入端口分开；绑定失败由状态命令如实回传。
+        "mobile_sync_port" => int_in_range(v, key, 1024, 65535),
         "overdue_grace_hours" => int_in_range(v, key, 0, 24 * 60),
         "stale_run_minutes" => int_in_range(v, key, 1, 24 * 60),
         "notify_burst_max" => int_in_range(v, key, 1, 20),

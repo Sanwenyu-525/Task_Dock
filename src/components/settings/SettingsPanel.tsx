@@ -6,7 +6,7 @@ import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Database, FlaskConical, Copy, Eye, EyeOff,
   RefreshCw, Navigation, Clipboard, Trash2, Gauge, Layers, Compass, AlertTriangle, HardDrive, LifeBuoy,
-  ScrollText,
+  ScrollText, Smartphone,
 } from "lucide-react";
 import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
 import { CollapsibleSection, Combobox } from "../ui";
@@ -53,6 +53,7 @@ import AudioSettings from "./AudioSettings";
 import DiagnosticsLogsSection from "./DiagnosticsLogsSection";
 import ReopenOnboardingButton from "../onboarding/ReopenOnboardingButton";
 import McpAccessSection from "./McpAccessSection";
+import MobileSyncSection from "./MobileSyncSection";
 import ContextHelpButton from "../help/ContextHelpButton";
 import AppManagement from "./AppManagement";
 import AppPicker from "../navigation/AppPicker";
@@ -721,9 +722,11 @@ export default function SettingsPanel() {
           className="settings-search"
           value={null}
           placeholder={t("settings.jump.placeholder")}
-          searchPlaceholder={t("settings.jump.searchPlaceholder")}
+          clearLabel={t("settings.jump.clear")}
           emptyText={t("settings.jump.empty")}
           options={searchOptions}
+          // 只做搜索：不给下拉箭头、不用全量列表冒充下拉；分类浏览交给上方分类导航。
+          browse={false}
           // 命中范围：分组标题 + 所属分类 + 注册表别名（中文连续子串 / 英文不区分大小写）。
           filter={(option, query) => {
             const meta = settingsSectionMeta(option.value as SettingsSectionId);
@@ -1469,6 +1472,17 @@ export default function SettingsPanel() {
           </div>
         </div>
         <McpAccessSection />
+      </Section>
+
+      <Section
+        sectionId="mobile-sync"
+        icon={Smartphone}
+        title={t("settings.section.mobileSync")}
+        description={t("settings.section.mobileSyncDesc")}
+        open={openSections["mobile-sync"]}
+        onToggle={() => toggleSection("mobile-sync")}
+      >
+        <MobileSyncSection />
       </Section>
           </>
         )}

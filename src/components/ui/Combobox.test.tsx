@@ -58,4 +58,33 @@ describe("Combobox", () => {
     fireEvent.change(input, { target: { value: "" } });
     expect(await screen.findByRole("option", { name: /任务二/ })).toBeTruthy();
   });
+
+  it("browse=false 是纯搜索：无下拉箭头、空查询不展开、清空即收起", async () => {
+    const { container } = render(
+      <Combobox
+        value={null}
+        options={OPTIONS}
+        onChange={vi.fn()}
+        ariaLabel="查找分组"
+        placeholder="搜索分组"
+        browse={false}
+      />,
+    );
+    const input = screen.getByRole("combobox", { name: "查找分组" });
+
+    expect(container.querySelector(".ui-combobox-caret")).toBeNull();
+    fireEvent.focus(input);
+    fireEvent.click(container.querySelector(".ui-combobox") as HTMLElement);
+    expect(input.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+
+    fireEvent.change(input, { target: { value: "任务二" } });
+    expect(await screen.findByRole("option", { name: /任务二/ })).toBeTruthy();
+    expect(screen.queryAllByRole("option")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "清除搜索" }));
+    await waitFor(() => expect(input.getAttribute("aria-expanded")).toBe("false"));
+    expect((input as HTMLInputElement).value).toBe("");
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+  });
 });

@@ -333,6 +333,10 @@ export interface Settings {
   http_port: number;
   http_token: string;
   mcp_server_enabled: boolean;
+  /** 手机接入（v0.16）：允许局域网配对与连接，默认关闭。 */
+  mobile_sync_enabled?: boolean;
+  /** 手机接入监听端口（默认 47822，需与 Agent 接入端口区分）。 */
+  mobile_sync_port?: number;
   mock_enabled: boolean;
   notify_reminder: boolean;
   notify_agent: boolean;
@@ -3889,3 +3893,72 @@ export interface ModuleRuntimeStatus {
 
 export const lifecycleStatus = () =>
   invoke<ModuleRuntimeStatus[]>("lifecycle_status");
+
+// ── 手机配对与局域网连接（v0.16）────────────────────────────────
+//
+// 桌面端是配对授权中心：二维码/6 位码只在用户点击「配对新设备」后生成，
+// 120 秒过期；令牌只在配对成功响应里返回一次（由手机端保存），桌面端只存哈希。
+// 这些类型与 Rust `mobile_sync` 的 snake_case 返回值一一对应。
+
+export interface MobileSyncPairingStatus {
+  code: string;
+  expires_in_secs: number;
+}
+
+export interface MobileSyncPairedNotice {
+  device_id: string;
+  name: string;
+  platform: string;
+  paired_at: string;
+}
+
+export interface MobileDevice {
+  id: string;
+  name: string;
+  platform: string;
+  created_at: string;
+  last_seen_at: string | null;
+  last_ip: string | null;
+  revoked_at: string | null;
+}
+
+export interface MobileSyncStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  lan_ip: string | null;
+  base_url: string | null;
+  server_name: string;
+  instance_id: string;
+  fingerprint: string;
+  error: string | null;
+  pairing: MobileSyncPairingStatus | null;
+  paired_device: MobileSyncPairedNotice | null;
+  devices: MobileDevice[];
+}
+
+export interface MobileSyncPairingOffer {
+  code: string;
+  expires_in_secs: number;
+  lan_ip: string;
+  port: number;
+  server_name: string;
+  instance_id: string;
+  fingerprint: string;
+  qr_payload: string;
+}
+
+export const mobileSyncStatus = () =>
+  invoke<MobileSyncStatus>("mobile_sync_status");
+
+export const mobileSyncStartPairing = () =>
+  invoke<MobileSyncPairingOffer>("mobile_sync_start_pairing");
+
+export const mobileSyncCancelPairing = () =>
+  invoke<void>("mobile_sync_cancel_pairing");
+
+export const mobileSyncListDevices = () =>
+  invoke<MobileDevice[]>("mobile_sync_list_devices");
+
+export const mobileSyncRevokeDevice = (deviceId: string) =>
+  invoke<boolean>("mobile_sync_revoke_device", { deviceId });

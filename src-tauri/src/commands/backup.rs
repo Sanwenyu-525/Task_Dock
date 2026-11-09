@@ -117,6 +117,10 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "voice_bindings",
     // 任务提醒联动（v41）：外键只指向 tasks，场景/现场是软引用目标。
     "task_reminder_links",
+    // 手机配对设备（v42）：设备授权记录。注意：该表虽在备份 registry 中登记，
+    // 但属于「设备本地信任状态」，实际写备份时按空 section 处理（见
+    // `is_local_transient_table`），不把令牌哈希迁移到其他机器。
+    "mobile_devices",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -446,6 +450,8 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["tasks", "scenarios", "workspace_snapshots"],
         true
     ),
+    // 手机配对设备（v42）：设备本地信任状态，备份只写空 section（不迁移令牌哈希）。
+    rule!("mobile_devices", "mobile", "all", 415, &[], true),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -459,7 +465,9 @@ pub fn is_extended_table(table: &str) -> bool {
 /// 设备本地瞬时状态：只服务本机未完成操作恢复，绝不进入跨设备备份，
 /// 恢复旧备份时也一律忽略，防止用他机绝对路径删除/改写本机文件。
 pub fn is_local_transient_table(table: &str) -> bool {
-    matches!(table, "shelf_file_ops")
+    // mobile_devices：令牌哈希是设备本地信任状态，随备份迁移到另一台机器会把
+    // 「已配对」关系一起带走；按本机瞬时状态处理，恢复旧备份时也不写回。
+    matches!(table, "shelf_file_ops" | "mobile_devices")
 }
 
 /// 备份来源目录：归档、剪贴板资产、暂存架托管文件、语音包资产与用户配置。

@@ -69,6 +69,8 @@ interface ComboboxProps<T extends string = string> {
   size?: "sm" | "md";
   filter?: (option: SelectOption<T>, query: string) => boolean; // 自定义过滤
   placeholder?: string;
+  browse?: boolean;                  // 默认 true；false = 纯搜索模式
+  clearLabel?: string;               // 纯搜索模式清空按钮的可访问名称
 }
 ```
 
@@ -76,6 +78,10 @@ interface ComboboxProps<T extends string = string> {
 
 - 输入框内可打字过滤；`↑↓` 移动高亮，`Enter` 选中，`Esc` 清空输入并收起。
 - `filter` 缺省为「label 与 query 不区分大小写包含」。
+- `browse={false}` 用于「只做搜索、不做下拉」的场景（如设置页「查找设置」）：
+  不渲染下拉箭头，聚焦或点击空输入不会展开全量列表，只有输入检索词才展示匹配项；
+  右侧显示清空按钮，提交、失焦、清空后重置检索词。分类浏览交给页面自身的导航，
+  避免同一个控件既是搜索框又是全量菜单。
 
 ## 3. DropdownMenu
 

@@ -26,6 +26,7 @@ export const SETTINGS_SECTION_IDS = [
   "diagnostics",
   "diagnostics-logs",
   "developer",
+  "mobile-sync",
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number];

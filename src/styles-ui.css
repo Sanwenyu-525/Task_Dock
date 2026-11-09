@@ -369,6 +369,17 @@
   opacity: 0.6;
 }
 
+/* 纯搜索模式（browse=false）的清空按钮：与 .ui-search 共用 icon-btn 尺寸，
+   始终占位（无检索词时只隐藏可见性），清空瞬间不改变输入宽度。 */
+.ui-combobox-clear {
+  flex: 0 0 auto;
+}
+
+.ui-combobox-clear.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* ── 嵌入式输入原语 ─────────────────────────────────────────── */
 /* 全局约定（唯一来源）：容器 + 内嵌 input 的组合控件里，
    容器（.ui-dp / .ui-combobox / .search-box / .quick-add-row /

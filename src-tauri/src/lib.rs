@@ -22,6 +22,7 @@ pub mod hotkeys;
 pub mod lifecycle;
 mod magnetic;
 pub mod mcp;
+pub mod mobile_sync;
 pub mod navigation;
 pub mod nlp;
 mod notes;
@@ -726,6 +727,14 @@ pub fn run() {
                 handle.manage(mcp_status);
             }
 
+            // 手机接入（v0.16，默认关闭）：设置开关驱动局域网配对监听；
+            // 关闭/端口变更/应用退出都会让监听循环在 2s 内退出，不留下悬挂任务。
+            {
+                let mobile_state = mobile_sync::MobileSyncState::new(&db);
+                handle.manage(mobile_state.clone());
+                mobile_sync::spawn_supervisor(db.clone(), mobile_state);
+            }
+
             // 异常重启恢复：重启前遗留的活跃轮次按失联规则归位
             if let Err(e) = hub.recover_after_restart() {
                 tracing::warn!("重启恢复失败: {}", e);
@@ -899,6 +908,12 @@ pub fn run() {
             // 设置
             commands::settings::get_settings,
             commands::settings::update_settings,
+            // 手机配对与局域网连接（v0.16；默认关闭，不暴露业务数据）
+            commands::mobile_sync::mobile_sync_status,
+            commands::mobile_sync::mobile_sync_start_pairing,
+            commands::mobile_sync::mobile_sync_cancel_pairing,
+            commands::mobile_sync::mobile_sync_list_devices,
+            commands::mobile_sync::mobile_sync_revoke_device,
             // 功能生命周期（只读批量快照；写入仍走 update_settings）
             commands::lifecycle::lifecycle_status,
             // 诊断日志（本地持久化 / 查询 / 摘要 / 导出 / 清理）

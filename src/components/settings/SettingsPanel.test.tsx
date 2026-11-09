@@ -35,6 +35,24 @@ vi.mock("../../lib/bridge", () => ({
   agentMcpRevoke: vi.fn(),
   agentMcpAuditList: vi.fn(async (offset: number, limit: number) => ({ items: [], total: 0, offset, limit })),
   agentMcpConfigSnippet: vi.fn(),
+  mobileSyncStatus: vi.fn(async () => ({
+    enabled: false,
+    running: false,
+    port: 47822,
+    lan_ip: null,
+    base_url: null,
+    server_name: "TEST-PC",
+    instance_id: "test-instance",
+    fingerprint: "1A2B3C4D",
+    error: null,
+    pairing: null,
+    paired_device: null,
+    devices: [],
+  })),
+  mobileSyncStartPairing: vi.fn(),
+  mobileSyncCancelPairing: vi.fn(async () => undefined),
+  mobileSyncListDevices: vi.fn(async () => []),
+  mobileSyncRevokeDevice: vi.fn(async () => true),
   planningListProjects: vi.fn(async () => []),
   resourceSnapshot: vi.fn(async () => ({
     sampledAt: "2026-11-06T00:00:00.000Z",
@@ -370,7 +388,8 @@ describe("设置页分组折叠", () => {
     render(<SettingsPanel />);
 
     const search = screen.getByRole("combobox", { name: "查找设置" });
-    fireEvent.click(search);
+    fireEvent.focus(search);
+    fireEvent.change(search, { target: { value: "资源管理" } });
     fireEvent.click(await screen.findByRole("option", { name: /资源管理/ }));
 
     await waitFor(() => expectExpanded(sectionHead("资源管理"), true));
@@ -670,5 +689,25 @@ describe("设置页查找设置", () => {
 
     expect(await screen.findByText("没有匹配的设置分组")).toBeTruthy();
     expect(screen.queryAllByRole("option")).toHaveLength(0);
+  });
+
+  it("只做搜索：点空输入不拿全量列表当下拉，输入后才出结果", async () => {
+    const { container } = render(<SettingsPanel />);
+    const input = screen.getByRole("combobox", { name: "查找设置" });
+
+    // 不再渲染下拉箭头，聚焦/点击空输入也不会展开 25 个分组
+    expect(container.querySelector(".ui-combobox-caret")).toBeNull();
+    fireEvent.focus(input);
+    fireEvent.click(input);
+    expect(input.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+
+    fireEvent.change(input, { target: { value: "日志" } });
+    expect(await screen.findByRole("option", { name: /诊断与日志/ })).toBeTruthy();
+
+    // 清空检索词后收起结果，回到初始搜索态
+    fireEvent.click(screen.getByRole("button", { name: "清除查找" }));
+    await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
+    expect((input as HTMLInputElement).value).toBe("");
   });
 });

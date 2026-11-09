@@ -1557,3 +1557,22 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   `src/lib/consistencyChecks.ts` 在设置首次加载后校验导航布局孤儿项（一次性，不轮询）。
 - 诊断日志**不进入 SQLite**，也不替代工作流回执、备份 manifest、文件投递恢复记录等业务
   审计数据；清理只删诊断目录内的 JSONL 与导出报告。
+
+## 手机配对与局域网连接（v0.16，2026-11-08）
+
+- 分层：`src-tauri/src/mobile_sync/`（配对会话/令牌/设备表）→ `server.rs`（hyper，仅
+  `/v1/health`、`/v1/pair`、`/v1/ping`）→ `commands/mobile_sync.rs` → `src/lib/bridge.ts` →
+  设置页 `MobileSyncSection` + 全局 `MobilePairingDialog`。手机端为 `apps/mobile`
+  （协议纯函数 + expo-camera 扫码 + SecureStore 令牌）。
+- 配对入口：设置 → 手机与同步，以及标题栏「配对新设备（手机）」快捷按钮（完整/紧凑模式）。
+  两处共用 App 根部唯一弹层实例（`src/lib/mobilePairing.ts` 管理开合）；服务未开启时弹层内
+  可直接开启并生成配对码。
+- 默认关闭：设置键 `mobile_sync_enabled=false` / `mobile_sync_port=47822`；只有显式开启后
+  主管任务才绑定 `0.0.0.0:<port>`，关闭、端口变更或应用退出时监听循环在 2s 内退出。
+- 配对：一次性 6 位码 + 120s TTL + 最多 5 次尝试；成功后签发 256 位令牌，SQLite
+  `mobile_devices`（迁移 v42）只存 SHA-256 哈希；撤销写 `revoked_at`，令牌立即失效。
+- 数据边界：本轮只做配对与连通性探测，**不传输任务/笔记/剪贴板**；传输为局域网 HTTP
+  （用户确认的 v1 基线），威胁模型与 TLS 计划见 [docs/mobile/06-pairing.md](mobile/06-pairing.md)。
+- 兼容性：新增表 `mobile_devices` 已登记 `BACKUP_TABLES` 并按设备本地瞬时状态处理（备份只写
+  空 section，不迁移令牌哈希）；新增设置键带默认值，旧库/旧备份无需迁移。
+

@@ -4,7 +4,7 @@
 //! 与 Select 共用同一套 Popover 定位与弹层栈，因此 Escape 语义一致。
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Check, ChevronDown, Search } from "lucide-react";
+import { Check, ChevronDown, Search, X } from "lucide-react";
 import Popover from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
 import type { SelectOption } from "./Select";
@@ -24,6 +24,12 @@ export interface ComboboxProps<T extends string = string> {
   filter?: (option: SelectOption<T>, query: string) => boolean;
   /** 未选中时的占位文案 */
   placeholder?: string;
+  /** 是否允许「空查询展开完整列表」（默认 true）。
+   *  false = 纯搜索模式：不显示下拉箭头，聚焦/点击空输入不展开全量列表，
+   *  只有输入检索词时才展示匹配项；提交、失焦或清空后重置检索词。 */
+  browse?: boolean;
+  /** 纯搜索模式清空按钮的可访问名称 */
+  clearLabel?: string;
 }
 
 export default function Combobox<T extends string = string>({
@@ -39,6 +45,8 @@ export default function Combobox<T extends string = string>({
   size = "md",
   filter,
   placeholder = "请选择",
+  browse = true,
+  clearLabel = "清除搜索",
 }: ComboboxProps<T>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -47,6 +55,9 @@ export default function Combobox<T extends string = string>({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const listId = useId();
+  // 纯搜索模式：没有「选中值」，检索词是临时动作而不是状态，
+  // 因此关闭时清空，避免输入框残留文字被误读成已筛选页面。
+  const searchOnly = browse === false;
 
   const selected = options.find((o) => o.value === value) ?? null;
 
@@ -72,11 +83,26 @@ export default function Combobox<T extends string = string>({
     setOpen(true);
   }
 
+  function closeMenu() {
+    setOpen(false);
+    if (searchOnly) {
+      setQuery("");
+      setActiveIndex(-1);
+    }
+  }
+
+  function clearQuery() {
+    setQuery("");
+    setActiveIndex(-1);
+    setOpen(false);
+    inputRef.current?.focus();
+  }
+
   function commit(index: number) {
     const opt = filtered[index];
     if (!opt || opt.disabled) return;
     onChange(opt.value);
-    setOpen(false);
+    closeMenu();
     inputRef.current?.focus();
   }
 
@@ -84,13 +110,20 @@ export default function Combobox<T extends string = string>({
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
-        if (!open) openMenu();
-        else setActiveIndex((i) => Math.min(filtered.length - 1, i + 1));
+        if (!open) {
+          // 纯搜索模式不在空列表上「浏览」：没有检索词就没有可展开的内容
+          if (!searchOnly) openMenu();
+          return;
+        }
+        setActiveIndex((i) => Math.min(filtered.length - 1, i + 1));
         return;
       case "ArrowUp":
         e.preventDefault();
-        if (!open) openMenu();
-        else setActiveIndex((i) => Math.max(0, i - 1));
+        if (!open) {
+          if (!searchOnly) openMenu();
+          return;
+        }
+        setActiveIndex((i) => Math.max(0, i - 1));
         return;
       case "Enter":
         if (open && activeIndex >= 0) {
@@ -111,7 +144,7 @@ export default function Combobox<T extends string = string>({
         }
         return;
       case "Tab":
-        if (open) setOpen(false);
+        if (open) closeMenu();
         return;
       default:
         return;
@@ -126,7 +159,8 @@ export default function Combobox<T extends string = string>({
         onClick={() => {
           if (disabled) return;
           inputRef.current?.focus();
-          if (!open) openMenu();
+          // 纯搜索模式：点空输入框只聚焦，不拿全量列表当「下拉」展开
+          if (!open && !searchOnly) openMenu();
         }}
       >
         {/* 放大镜常显：展开/收起时输入文字起始位置与右侧箭头位置都固定，
@@ -144,25 +178,52 @@ export default function Combobox<T extends string = string>({
           aria-label={ariaLabel}
           autoComplete="off"
           disabled={disabled}
-          placeholder={open ? searchPlaceholder : selected?.label ?? placeholder}
-          value={open ? query : (selected?.label ?? "")}
+          placeholder={searchOnly ? placeholder : open ? searchPlaceholder : (selected?.label ?? placeholder)}
+          value={open ? query : (searchOnly ? "" : selected?.label ?? "")}
           onChange={(e) => {
-            setQuery(e.target.value);
-            setOpen(true);
+            const next = e.target.value;
+            setQuery(next);
             setActiveIndex(0);
+            // 纯搜索模式：删空检索词就收起结果，回到初始搜索态
+            setOpen(searchOnly ? next.trim().length > 0 : true);
           }}
           onFocus={() => {
-            if (!open) openMenu();
+            if (!open && !searchOnly) openMenu();
           }}
-          onBlur={() => setOpen(false)}
+          onBlur={(e) => {
+            // 焦点在控件内部移动（如落到清空按钮）不算离开，不收起结果
+            if (anchorRef.current?.contains(e.relatedTarget as Node | null)) return;
+            closeMenu();
+          }}
           onKeyDown={onKeyDown}
         />
-        <ChevronDown size={13} className="ui-combobox-caret" aria-hidden="true" />
+        {searchOnly ? (
+          <button
+            type="button"
+            className={`ui-combobox-clear icon-btn sm${query ? "" : " is-hidden"}`}
+            aria-label={clearLabel}
+            aria-hidden={!query}
+            tabIndex={query ? 0 : -1}
+            data-tip={query ? clearLabel : undefined}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              e.stopPropagation();
+              clearQuery();
+            }}
+          >
+            <X size={11} aria-hidden="true" />
+          </button>
+        ) : (
+          <ChevronDown size={13} className="ui-combobox-caret" aria-hidden="true" />
+        )}
       </div>
 
       <Popover
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(next) => {
+          if (next) setOpen(true);
+          else closeMenu();
+        }}
         anchorRef={anchorRef}
         matchWidth
         className="ui-combobox-popover"
