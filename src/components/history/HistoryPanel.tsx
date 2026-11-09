@@ -339,7 +339,7 @@ export default function HistoryPanel() {
   }
 
   return (
-    <div className="history-panel">
+    <div className="history-panel page-fill">
       {/* 过滤工具栏：第一行 = 筛选（时间 → 来源 → 类型，窄窗口时靠后的先换行），
           第二行 = 统计 + 批量操作，两行职责分离互不挤压 */}
       <div className="filter-bar primary">
@@ -406,126 +406,128 @@ export default function HistoryPanel() {
         </div>
       )}
 
-      {/* 时间轴 */}
-      {!loaded && <div className="empty-hint">{tr("history.loading")}</div>}
-      {loaded && total === 0 && (
-        <EmptyState
-          icon={<Inbox size={22} />}
-          title={filtering ? tr("history.emptyFiltered") : tr("history.empty")}
-          hint={
-            filtering
-              ? `筛选范围内共 ${eventsTotal} 条 Agent 事件、${notificationsTotal} 条通知；可调整来源/时间/类型。`
-              : "任务提醒与 Agent 事件会在这里按日期归档"
-          }
-        />
-      )}
-      {groups.map((g) => (
-        <div key={g.label} className="history-day">
-          <div className="history-day-label">
-            <span className="history-day-label-mask" aria-hidden="true" />
-            <span className="history-day-label-text">{g.label}</span>
-          </div>
-          <div className="history-list">
-            {g.entries.map((e) => {
-              const open = detailKey === e.key;
-              return (
-                <div
-                  key={e.key}
-                  className={`history-item surface-card surface-card--interactive kind-${e.kind === "event" ? `event-${e.event?.state}` : e.source} ${e.unread ? "unread" : ""}`}
-                  onClick={() => onEntryClick(e.key, e.notification)}
-                  role="button"
-                  tabIndex={0}
-                  aria-expanded={open}
-                  onKeyDown={(ev) => {
-                    // role=button 的键盘契约：Enter 与 Space 都要能展开/收起
-                    if (ev.key === "Enter" || ev.key === " ") {
-                      ev.preventDefault();
-                      onEntryClick(e.key, e.notification);
-                    }
-                  }}
-                >
-                  <div className="history-head">
-                    {e.unread && <span className="history-unread-dot" aria-hidden="true" />}
-                    {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                    <span className={`history-kind ${e.kind === "event" ? `ev-${e.event?.state}` : `nk-${e.source}`}`}>
-                      {e.kind === "event" ? <AgentIcon size={10} /> : <Bell size={10} />}
-                      {e.kind === "event"
-                        ? `${e.source} · ${AGENT_STATE_LABELS[e.event?.state ?? ""] ?? e.event?.state}`
-                        : NOTIFICATION_KIND_LABELS[e.source] ?? e.source}
-                    </span>
-                    <span className="history-title">
-                      {e.kind === "notification" ? e.notification?.title : e.event?.message || e.event?.session_external_id}
-                    </span>
-                    {e.count > 1 && <span className="history-count" title={`${e.count} 条连续相同记录`}>×{e.count}</span>}
-                    <span className="history-time">{formatRelative(e.iso)}</span>
-                  </div>
-                  {e.kind === "notification" && e.notification?.body && !open && (
-                    <div className="history-body">{e.notification.body}</div>
-                  )}
-                  {open && (
-                    <div className="history-detail">
-                      {e.kind === "notification" ? (
-                        <>
-                          <div className="detail-row"><span>内容</span><code>{e.notification?.body || "（空）"}</code></div>
-                          <div className="detail-row"><span>类型</span><code>{e.notification?.kind}</code></div>
-                          {e.notification?.ref_type && (
-                            <div className="detail-row"><span>关联</span><code>{e.notification.ref_type} · {e.notification.ref_id}</code></div>
-                          )}
-                          <div className="detail-row"><span>时间</span><code>{e.notification?.created_at}</code></div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="detail-row"><span>会话</span><code>{e.event?.session_external_id}</code></div>
-                          {e.event?.run_external_id && (
-                            <div className="detail-row"><span>轮次</span><code>{e.event.run_external_id}</code></div>
-                          )}
-                          <div className="detail-row"><span>状态</span><code>{e.event?.state}</code></div>
-                          {e.event?.transport && (
-                            <div className="detail-row"><span>通道</span><code>{e.event.transport}{e.event.evidence_type ? ` · ${e.event.evidence_type}` : ""}</code></div>
-                          )}
-                          {e.event?.occurred_at && (
-                            <div className="detail-row"><span>发生时间</span><code>{e.event.occurred_at}</code></div>
-                          )}
-                          <div className="detail-row"><span>接收时间</span><code>{e.event?.received_at}</code></div>
-                          {e.collapsedKeys && e.collapsedKeys.length > 0 && (
-                            <div className="detail-row"><span>聚合</span><code>与相邻 {e.collapsedKeys.length} 条相同记录合并展示</code></div>
-                          )}
-                        </>
-                      )}
+      {/* 时间轴：筛选条与「有新记录」提示固定，只有时间轴列表滚动 */}
+      <div className="page-scroll history-timeline">
+        {!loaded && <div className="empty-hint">{tr("history.loading")}</div>}
+        {loaded && total === 0 && (
+          <EmptyState
+            icon={<Inbox size={22} />}
+            title={filtering ? tr("history.emptyFiltered") : tr("history.empty")}
+            hint={
+              filtering
+                ? `筛选范围内共 ${eventsTotal} 条 Agent 事件、${notificationsTotal} 条通知；可调整来源/时间/类型。`
+                : "任务提醒与 Agent 事件会在这里按日期归档"
+            }
+          />
+        )}
+        {groups.map((g) => (
+          <div key={g.label} className="history-day">
+            <div className="history-day-label">
+              <span className="history-day-label-mask" aria-hidden="true" />
+              <span className="history-day-label-text">{g.label}</span>
+            </div>
+            <div className="history-list">
+              {g.entries.map((e) => {
+                const open = detailKey === e.key;
+                return (
+                  <div
+                    key={e.key}
+                    className={`history-item surface-card surface-card--interactive kind-${e.kind === "event" ? `event-${e.event?.state}` : e.source} ${e.unread ? "unread" : ""}`}
+                    onClick={() => onEntryClick(e.key, e.notification)}
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={open}
+                    onKeyDown={(ev) => {
+                      // role=button 的键盘契约：Enter 与 Space 都要能展开/收起
+                      if (ev.key === "Enter" || ev.key === " ") {
+                        ev.preventDefault();
+                        onEntryClick(e.key, e.notification);
+                      }
+                    }}
+                  >
+                    <div className="history-head">
+                      {e.unread && <span className="history-unread-dot" aria-hidden="true" />}
+                      {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                      <span className={`history-kind ${e.kind === "event" ? `ev-${e.event?.state}` : `nk-${e.source}`}`}>
+                        {e.kind === "event" ? <AgentIcon size={10} /> : <Bell size={10} />}
+                        {e.kind === "event"
+                          ? `${e.source} · ${AGENT_STATE_LABELS[e.event?.state ?? ""] ?? e.event?.state}`
+                          : NOTIFICATION_KIND_LABELS[e.source] ?? e.source}
+                      </span>
+                      <span className="history-title">
+                        {e.kind === "notification" ? e.notification?.title : e.event?.message || e.event?.session_external_id}
+                      </span>
+                      {e.count > 1 && <span className="history-count" title={`${e.count} 条连续相同记录`}>×{e.count}</span>}
+                      <span className="history-time">{formatRelative(e.iso)}</span>
                     </div>
-                  )}
-                </div>
-              );
-            })}
+                    {e.kind === "notification" && e.notification?.body && !open && (
+                      <div className="history-body">{e.notification.body}</div>
+                    )}
+                    {open && (
+                      <div className="history-detail">
+                        {e.kind === "notification" ? (
+                          <>
+                            <div className="detail-row"><span>内容</span><code>{e.notification?.body || "（空）"}</code></div>
+                            <div className="detail-row"><span>类型</span><code>{e.notification?.kind}</code></div>
+                            {e.notification?.ref_type && (
+                              <div className="detail-row"><span>关联</span><code>{e.notification.ref_type} · {e.notification.ref_id}</code></div>
+                            )}
+                            <div className="detail-row"><span>时间</span><code>{e.notification?.created_at}</code></div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="detail-row"><span>会话</span><code>{e.event?.session_external_id}</code></div>
+                            {e.event?.run_external_id && (
+                              <div className="detail-row"><span>轮次</span><code>{e.event.run_external_id}</code></div>
+                            )}
+                            <div className="detail-row"><span>状态</span><code>{e.event?.state}</code></div>
+                            {e.event?.transport && (
+                              <div className="detail-row"><span>通道</span><code>{e.event.transport}{e.event.evidence_type ? ` · ${e.event.evidence_type}` : ""}</code></div>
+                            )}
+                            {e.event?.occurred_at && (
+                              <div className="detail-row"><span>发生时间</span><code>{e.event.occurred_at}</code></div>
+                            )}
+                            <div className="detail-row"><span>接收时间</span><code>{e.event?.received_at}</code></div>
+                            {e.collapsedKeys && e.collapsedKeys.length > 0 && (
+                              <div className="detail-row"><span>聚合</span><code>与相邻 {e.collapsedKeys.length} 条相同记录合并展示</code></div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
+        ))}
+        {loaded && (eventsHasMore || notificationsHasMore) && (
+          <div className="history-more">
+            {eventsHasMore && (
+              <button
+                className="btn sm"
+                onClick={() => void onLoadMore("events")}
+                disabled={loadingMore !== null}
+              >
+                {loadingMore === "events"
+                  ? "加载中…"
+                  : `加载更早的 Agent 事件（已加载 ${events.length}/${eventsTotal}）`}
+              </button>
+            )}
+            {notificationsHasMore && (
+              <button
+                className="btn sm"
+                onClick={() => void onLoadMore("notifications")}
+                disabled={loadingMore !== null}
+              >
+                {loadingMore === "notifications"
+                  ? "加载中…"
+                  : `加载更早的通知（已加载 ${notifications.length}/${notificationsTotal}）`}
+              </button>
+            )}
+          </div>
+        )}
         </div>
-      ))}
-      {loaded && (eventsHasMore || notificationsHasMore) && (
-        <div className="history-more">
-          {eventsHasMore && (
-            <button
-              className="btn sm"
-              onClick={() => void onLoadMore("events")}
-              disabled={loadingMore !== null}
-            >
-              {loadingMore === "events"
-                ? "加载中…"
-                : `加载更早的 Agent 事件（已加载 ${events.length}/${eventsTotal}）`}
-            </button>
-          )}
-          {notificationsHasMore && (
-            <button
-              className="btn sm"
-              onClick={() => void onLoadMore("notifications")}
-              disabled={loadingMore !== null}
-            >
-              {loadingMore === "notifications"
-                ? "加载中…"
-                : `加载更早的通知（已加载 ${notifications.length}/${notificationsTotal}）`}
-            </button>
-          )}
-        </div>
-      )}
 
       <ConfirmDialog
         open={confirmClear}

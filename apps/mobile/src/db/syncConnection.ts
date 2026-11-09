@@ -5,12 +5,14 @@
 // - 元数据只含桌面端地址、设备名、实例 ID、指纹与时间，不含配对码；
 // - 解除配对必须同时删除令牌与元数据；任一步失败都要让上层可见。
 
+import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 
 import { deleteSetting, getSetting, setSetting } from "./kv";
 
 const META_KEY = "sync.connection.v1";
 const TOKEN_KEY = "taskdock.sync.token.v1";
+const DEVICE_UID_KEY = "device.uid.v1";
 
 export interface PairedConnection {
   /** 桌面端地址，例如 http://192.168.1.10:47822（无尾斜杠） */
@@ -62,6 +64,19 @@ function parseMeta(raw: string | null): PairedConnection | null {
 
 export async function loadConnection(): Promise<PairedConnection | null> {
   return parseMeta(await getSetting(META_KEY));
+}
+
+/**
+ * 安装级设备标识：首次配对生成，重新配对沿用同一个值；解除配对不清除。
+ * 桌面端据此撤销同一台手机的旧授权，避免设备列表出现重复记录。
+ * 卸载应用或清除数据后会重新生成，旧授权仍需在桌面端手动撤销。
+ */
+export async function loadOrCreateDeviceUid(): Promise<string> {
+  const existing = (await getSetting(DEVICE_UID_KEY))?.trim();
+  if (existing && /^[0-9a-zA-Z_-]{8,64}$/.test(existing)) return existing;
+  const uid = Crypto.randomUUID();
+  await setSetting(DEVICE_UID_KEY, uid);
+  return uid;
 }
 
 export async function readToken(): Promise<string | null> {

@@ -16,7 +16,8 @@
 | [04-testing.md](04-testing.md) | 自动化、真机通道、用例矩阵、证据要求、已知阻塞 | `docs/TESTING.md`、`docs/ACCEPTANCE_ROUTING.md` |
 | [05-build.md](05-build.md) | Windows 构建 Android 的工具链、版本管理、产物校验、故障表 | `docs/DEVELOPMENT.md` |
 | [06-pairing.md](06-pairing.md) | 配对协议、二维码/深链、令牌存储、安全偏差与验收证据 | `docs/ARCHITECTURE.md` 手机配对章 |
-| [07-sync.md](07-sync.md) | 任务双向增量同步、载荷加密、冲突处理、真机验收 | `docs/ARCHITECTURE.md` 手机同步章 |
+| [07-sync.md](07-sync.md) | 任务 / 收集箱 / 笔记双向增量同步、载荷加密、冲突处理、真机验收 | `docs/ARCHITECTURE.md` 手机同步章 |
+| [08-file-transfer.md](08-file-transfer.md) | 文件互传 v1：双向分块加密、SAF 接收目录、桌面文件列表与验收 | `docs/ARCHITECTURE.md` 手机文件互传章 |
 | [prototypes/](prototypes/README.md) | Stitch 页面原型：v2 终版 11 屏 + 33 个导出变体（按页面归组，含画廊 `index.html`） | 设计稿/参考图 |
 | [../MOBILE_STACK.md](../MOBILE_STACK.md) | 选型与共享边界**设计稿**（含未实现能力的规划，不是现状） | 选型报告 |
 | [../../apps/mobile/AGENTS.md](../../apps/mobile/AGENTS.md) | 本目录的开发红线与提交前自检 | 根 `AGENTS.md` |
@@ -28,16 +29,20 @@
 ### 已实现并在真机验证
 
 - 配对与连接（2026-11-09 物理机）：应用内扫码配对、连接测试、强停重启后配对保持；
-  桌面端设备列表/撤销。**数据同步仍未实现**，详见 [06-pairing.md](06-pairing.md)。
+  桌面端设备列表/撤销。同步能力见 [07-sync.md](07-sync.md)。
 - 任务同步（2026-11-09 物理机）：手动 pull/push、载荷加密、冲突页；真机接收 4 条、
-  发送 21 条通过，详见 [07-sync.md](07-sync.md)。收集箱/笔记与后台同步仍未实现。
+  发送 21 条通过。
+- 收集箱 / 笔记同步（2026-11-09 物理机）：笔记整篇双向、收集箱仅 `inbox`（handled 为
+  墓碑）、真机 push/pull 与恢复通过；后台/自动同步仍未实现，详见 [07-sync.md](07-sync.md)。
+- 文件互传（2026-11-09 物理机）：双向分块加密、SAF 接收目录、打开预览与删除清理；
+  真机下载 640B 内容一致、上传 54B SHA-256 一致，详见 [08-file-transfer.md](08-file-transfer.md)。
 - 任务：新建 / 编辑 / 完成 / 软删除 / 优先级 / 分类 / 标签 / 截止时间 / 提前提醒
 - 重复任务：按日/周/月推进期次，完成只推进不落地为「已完成」
 - 列表：今天 / 本周 / 以后 / 无日期 / 已完成分组，逾期提示，搜索（标题、描述、分类、标签）
 - 收集箱：录入（`client_id` 幂等）、删除、一键转任务（单事务）、搜索
 - 设置：主题三态、通知权限状态与申请、测试通知、本地数据概览
 - 提醒：本地通知排期（上限 64）、启动对账、通知动作「完成 / 10 分钟后」、处理完收起通知
-- 数据：SQLite v2（WAL）、迁移事务化、`rev` 自增、`outbox` 同事务入队
+- 数据：SQLite v5（WAL）、迁移事务化、`rev` 自增、`outbox` 同事务入队
 
 ### 已实现（本轮 UI 落地，真机未走查）
 
@@ -87,3 +92,15 @@
   `/v1/changes`、`/v1/ops`，手机端 schema v4（`server_rev`、`sync_conflicts`），
   载荷 XSalsa20-Poly1305 加密；真机接收 4 / 发送 21 通过，冲突页真机复现并由「采用桌面端」
   解决；收集箱/笔记、后台同步、字段级合并仍为未实现。
+- 2026-11-09 收集箱/笔记同步：桌面 SQLite v44 触发器覆盖 `notes` / `quick_capture_items`，
+  手机 schema v5；笔记整篇同步、收集箱仅 `inbox`（handled/converted 为墓碑）、长笔记按体积
+  分批；真机 APK 0.1.6（versionCode 13）完成 push/pull、handled 墓碑与恢复。后台同步、
+  字段级合并与日志清理仍未实现。
+- 2026-11-09 文件互传 v1：新增 [08-file-transfer.md](08-file-transfer.md)；桌面 SQLite v45
+  `mobile_files`、`/v1/files` 分块端点、设置页文件列表；手机端 `expo-file-system` 58
+  （文件选择/SAF 目录/FileHandle/预览）与文件互传页。协议级 20/20；vivo V2323A 真机完成
+  640B 下载、54B 上传与删除清理，最终 APK 0.1.6/vc13 sha256 `6356f581…`。
+- 2026-11-09 文件互传 UI 真机走查：底部固定操作区、方向分组、字节进度与分方向空态在
+  vivo V2323A / vc18 复验；2.4MB 下载、640B 打开、20MB 上传（SHA-256 一致）与 100MB
+  取消通过；修复取消竞态与 SAF 半成品清理。最终 APK 0.1.6/vc18 sha256 `605cbc8a…`，
+  证据 `tmp/acceptance/file-transfer-ui/`。

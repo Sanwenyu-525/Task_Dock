@@ -26,7 +26,9 @@ import {
   openMobilePairing,
 } from "../../lib/mobilePairing";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { useUiStore } from "../../store/useUiStore";
 import {
+  applyMode,
   mobileSyncCancelPairing,
   mobileSyncStartPairing,
   mobileSyncStatus,
@@ -156,6 +158,37 @@ describe("MobilePairingDialog", () => {
       expect(update).toHaveBeenCalledWith({ mobile_sync_enabled: true }),
     );
     expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it("配对成功后可直接查看已配对设备（手机互传页）", async () => {
+    setSettings(true);
+    statusMock.mockResolvedValue(
+      status({
+        paired_device: {
+          device_id: "device-1",
+          name: "vivo V2323A",
+          platform: "android",
+          paired_at: "2026-11-09T12:00:00Z",
+        },
+      }),
+    );
+    startMock.mockResolvedValue(offer("482913"));
+
+    render(<MobilePairingDialog />);
+    act(() => openMobilePairing());
+
+    // 配对结果每 1s 轮询一次；成功态出现后提供直达设备列表的次要动作。
+    const viewDevices = await screen.findByRole(
+      "button",
+      { name: "查看已配对设备" },
+      { timeout: 3000 },
+    );
+    const user = userEvent.setup();
+    await user.click(viewDevices);
+
+    await waitFor(() => expect(applyMode).toHaveBeenCalledWith("full"));
+    expect(useUiStore.getState().tab).toBe("mobile");
+    expect(isMobilePairingOpen()).toBe(false);
   });
 
   it("关闭弹层取消会话并释放全局打开状态", async () => {

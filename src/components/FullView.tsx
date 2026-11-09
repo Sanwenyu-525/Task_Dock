@@ -63,6 +63,7 @@ import { requestSettingsSectionReveal } from "../lib/settingsSections";
 
 const AppsPanel = lazy(() => import("./apps/AppsPanel"));
 const WidgetsPanel = lazy(() => import("./widgets/WidgetsPanel"));
+const MobileTransferPanel = lazy(() => import("./mobile/MobileTransferPanel"));
 const WorkflowsPanel = lazy(() => import("./workflows/WorkflowsPanel"));
 const HistoryPanel = lazy(() => import("./history/HistoryPanel"));
 const PlanningCenterPanel = lazy(() => import("./roadmap/PlanningCenterPanel"));
@@ -407,6 +408,7 @@ export default function FullView() {
             {tab === "widgets" && <WidgetsPanel sources={WIDGET_SOURCES} />}
             {tab === "actions" && <ActionCenterPanel />}
             {tab === "clipboard" && <ClipboardPanel />}
+            {tab === "mobile" && <MobileTransferPanel />}
             {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}
             {(tab === "inbox" || tab === "shelf") && <CollectionPanel />}
             {tab === "workflows" && <WorkflowsPanel />}

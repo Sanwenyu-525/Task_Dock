@@ -139,7 +139,6 @@ describe("TasksPanel 筛选交互", () => {
     expect(screen.getByText("写代码")).toBeTruthy();
     expect(screen.getByText("旧任务")).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "搜索任务" }));
     const searchInput = await screen.findByPlaceholderText(/搜索标题/);
     await user.type(searchInput, "牛奶");
 
@@ -149,13 +148,25 @@ describe("TasksPanel 筛选交互", () => {
     expect(useTasksStore.getState().filter.search).toBe("牛奶");
   });
 
+  it("搜索框与筛选条位于列表滚动容器之外（页头固定）", async () => {
+    seedTasks();
+    render(<TasksPanel />);
+
+    const searchInput = await screen.findByPlaceholderText(/搜索标题/);
+    const list = document.querySelector(".task-list")!;
+    expect(list).toBeTruthy();
+    expect(list.contains(searchInput)).toBe(false);
+    expect(list.contains(document.querySelector(".filter-bar.primary"))).toBe(false);
+    expect(list.contains(document.querySelector(".filter-bar.secondary"))).toBe(false);
+    expect(list.contains(document.querySelector(".tasks-overview"))).toBe(false);
+  });
+
   it("清空搜索恢复全部；点击状态按钮过滤任务列表", async () => {
     const user = userEvent.setup();
     seedTasks();
     render(<TasksPanel />);
 
-    // 展开搜索并过滤
-    await user.click(screen.getByRole("button", { name: "搜索任务" }));
+    // 过滤
     await user.type(await screen.findByPlaceholderText(/搜索标题/), "牛奶");
     await waitFor(() => expect(screen.queryByText("写代码")).toBeNull());
 
@@ -228,20 +239,16 @@ describe("TasksPanel 筛选交互", () => {
   it("任务编辑态在主内容区切换：返回列表恢复筛选与滚动位置，不新开窗口", async () => {
     const user = userEvent.setup();
     seedTasks();
-    render(
-      <div style={{ overflowY: "auto" }} data-testid="scroller">
-        <TasksPanel />
-      </div>,
-    );
-    const scroller = screen.getByTestId("scroller");
+    render(<TasksPanel />);
 
     // 先进入一个筛选状态，作为"返回后必须保留"的前置条件
-    await user.click(screen.getByRole("button", { name: "搜索任务" }));
     await user.type(await screen.findByPlaceholderText(/搜索标题/), "牛奶");
     await waitFor(() => expect(screen.queryByText("写代码")).toBeNull());
 
-    scroller.scrollTop = 120;
-    fireEvent.scroll(scroller);
+    // 列表是独立滚动容器（页头与搜索框固定，不随列表滚动）
+    const list = document.querySelector<HTMLElement>(".task-list")!;
+    list.scrollTop = 120;
+    fireEvent.scroll(list);
 
     act(() => {
       useUiStore.setState({ editor: { open: true, task: ALL_TASKS[0] } });
@@ -258,7 +265,9 @@ describe("TasksPanel 筛选交互", () => {
     expect(screen.getByText("买牛奶")).toBeTruthy();
     expect(screen.queryByText("写代码")).toBeNull();
     expect(useTasksStore.getState().filter.search).toBe("牛奶");
-    await waitFor(() => expect(scroller.scrollTop).toBe(120));
+    await waitFor(() =>
+      expect(document.querySelector<HTMLElement>(".task-list")!.scrollTop).toBe(120),
+    );
   });
 });
 
@@ -442,21 +451,16 @@ describe("统计卡逾期入口", () => {
     // 前面的离场用例会把 listTasks 改成固定返回值；本用例按筛选语义重新接管
     vi.mocked(listTasks).mockImplementation(async (f: TaskFilter = {}) => filterTasks(f));
     seedTasks();
-    render(
-      <div style={{ overflowY: "auto" }} data-testid="scroller">
-        <TasksPanel />
-      </div>,
-    );
-    const scroller = screen.getByTestId("scroller");
+    render(<TasksPanel />);
 
     // 先构造非默认筛选条件，验证切视图时不被重置
-    await user.click(screen.getByRole("button", { name: "搜索任务" }));
     await user.type(await screen.findByPlaceholderText(/搜索标题/), "牛奶");
     await user.click(screen.getByRole("button", { name: "未完成" }));
     await waitFor(() => expect(useTasksStore.getState().filter.search).toBe("牛奶"));
 
-    scroller.scrollTop = 80;
-    fireEvent.scroll(scroller);
+    const list = document.querySelector<HTMLElement>(".task-list")!;
+    list.scrollTop = 80;
+    fireEvent.scroll(list);
 
     // 点击前记录筛选状态
     const before = useTasksStore.getState().filter;
@@ -486,9 +490,9 @@ describe("统计卡逾期入口", () => {
     }
     expect(rows.map((r) => r.dataset.taskId)).toEqual(["a"]);
 
-    // 点击后焦点留在逾期卡上，滚动位置未被改动
+    // 点击后焦点留在逾期卡上，列表滚动位置未被改动
     expect(document.activeElement).toBe(card);
-    expect(scroller.scrollTop).toBe(80);
+    expect(document.querySelector<HTMLElement>(".task-list")!.scrollTop).toBe(80);
   });
 
   it("逾期卡支持 Enter 与 Space 激活（Space 阻止页面滚动），行为与点击一致", async () => {

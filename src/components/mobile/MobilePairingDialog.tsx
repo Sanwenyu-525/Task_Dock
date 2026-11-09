@@ -8,6 +8,7 @@
 //! - 打开后先探测服务；未开启时提供「一键开启并继续」，不在设置页之间来回跳；
 //! - 服务启动有上限（12s），端口占用/未检测到局域网时给出可操作错误与设置入口；
 //! - 成功后每 1s 轮询一次配对状态（单飞）；关闭/成功即停止并取消会话；
+//! - 配对成功的次要动作「查看已配对设备」复用设置分区定位，不在弹层里复制设备列表；
 //! - 二维码始终黑模块白底，不随主题反色；过期后隐藏二维码，只保留重新生成；
 //! - 关闭时广播变更事件，让设置分区刷新状态与设备列表。
 
@@ -32,7 +33,6 @@ import {
   notifyMobileSyncChanged,
   useMobilePairingOpen,
 } from "../../lib/mobilePairing";
-import { requestSettingsSectionReveal } from "../../lib/settingsSections";
 import { Dialog } from "../ui/Dialog";
 
 /** 服务从「已开启设置」到真正绑定端口的等待上限（主管任务 1s 轮询 + 失败 5s 重试）。 */
@@ -98,8 +98,8 @@ export default function MobilePairingDialog() {
 
   const openSettings = useCallback(() => {
     close();
-    useUiStore.getState().setTab("settings");
-    requestSettingsSectionReveal("mobile-sync");
+    // 手机互传已从设置页提到左侧导航：配对完成后直接落到功能页，而不是设置分组。
+    useUiStore.getState().setTab("mobile");
     void applyMode("full");
   }, [close]);
 
@@ -277,9 +277,14 @@ export default function MobilePairingDialog() {
   const remaining = deadline ? Math.max(0, Math.ceil((deadline - clock) / 1000)) : 0;
 
   const footer = paired ? (
-    <button className="btn primary" onClick={close} data-autofocus>
-      {t("settings.mobileSync.pairDone")}
-    </button>
+    <>
+      <button className="btn" onClick={openSettings}>
+        {t("settings.mobileSync.viewDevices")}
+      </button>
+      <button className="btn primary" onClick={close} data-autofocus>
+        {t("settings.mobileSync.pairDone")}
+      </button>
+    </>
   ) : (
     <>
       <button className="btn" onClick={close}>

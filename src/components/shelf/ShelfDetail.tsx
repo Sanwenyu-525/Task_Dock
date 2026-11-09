@@ -355,6 +355,13 @@ export default function ShelfDetail({
         </div>
       )}
 
+      {(item.kind === "file" || item.kind === "image" || item.kind === "folder") &&
+        item.exists_state !== "missing" && (
+          <p className="shelf-detail-hint">
+            按住卡片可拖到资源管理器或其他窗口；复制/移动由目标应用按 Windows 默认规则处理。
+          </p>
+        )}
+
       {/* 任务关联 */}
       <section className="shelf-detail-links" aria-label="任务关联">
         <h4>关联任务</h4>

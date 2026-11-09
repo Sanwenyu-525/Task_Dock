@@ -27,7 +27,7 @@ import { Badge } from "../components/Badge";
 import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
 import { Toast, TOAST_TOP_PUSH, type ToastMessage, type ToastTone } from "../components/Toast";
-import { loadConnection, saveConnection } from "../db/syncConnection";
+import { loadConnection, loadOrCreateDeviceUid, saveConnection } from "../db/syncConnection";
 import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
 import { useKeyboardHeight } from "../lib/keyboard";
@@ -171,11 +171,13 @@ export function PairingScreen({ nav }: { nav: Nav }) {
     setBusy(true);
     setError(null);
     try {
+      const deviceUid = await loadOrCreateDeviceUid();
       const result = await pairWithDesktop({
         address: targetToAddress(candidate),
         code: candidate.code,
         deviceName: deviceLabel(),
         platform: Platform.OS,
+        deviceUid,
       });
       const addressInfo = targetToAddress(candidate);
       await saveConnection({

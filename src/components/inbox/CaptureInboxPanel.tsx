@@ -266,7 +266,7 @@ export default function CaptureInboxPanel() {
   const showEmpty = !showLoading && !error && items.length === 0;
 
   return (
-    <div className="inbox-panel">
+    <div className="inbox-panel page-fill">
       <div className="filter-bar primary">
         <div className="seg-group subtle" role="group" aria-label="收集箱筛选">
           <button
@@ -311,150 +311,152 @@ export default function CaptureInboxPanel() {
         </button>
       </div>
 
-      {error && (
-        <div className="inbox-error" role="alert">
-          <span className="inbox-error-text">加载失败：{error}</span>
-          <button type="button" className="btn sm" onClick={() => void load()}>
-            重试
-          </button>
-        </div>
-      )}
+      <div className="page-scroll inbox-body">
+        {error && (
+          <div className="inbox-error" role="alert">
+            <span className="inbox-error-text">加载失败：{error}</span>
+            <button type="button" className="btn sm" onClick={() => void load()}>
+              重试
+            </button>
+          </div>
+        )}
 
-      {showLoading && <div className="empty-hint">加载中…</div>}
+        {showLoading && <div className="empty-hint">加载中…</div>}
 
-      {showEmpty && (
-        <EmptyState
-          icon={<Inbox size={22} aria-hidden="true" />}
-          title={emptyCopy.title}
-          hint={emptyCopy.hint}
-        />
-      )}
+        {showEmpty && (
+          <EmptyState
+            icon={<Inbox size={22} aria-hidden="true" />}
+            title={emptyCopy.title}
+            hint={emptyCopy.hint}
+          />
+        )}
 
-      {items.length > 0 && (
-        <ul className="inbox-list" aria-busy={loading} aria-label="捕获记录">
-          {items.map((item) => {
-            const KindIcon = KIND_ICONS[item.kind];
-            const confirming = confirmDeleteId === item.id;
-            const busy = busyId === item.id;
-            const canProcess = item.status === "inbox";
-            return (
-              <li
-                key={item.id}
-                data-capture-id={item.id}
-                className={`inbox-item surface-card${item.status === "inbox" ? "" : " is-done"}${locateId === item.id ? " gs-locate-flash" : ""}`}
-                aria-label={itemLabel(item)}
-              >
-                <div className="inbox-head">
-                  <span className={`inbox-kind inbox-kind-${item.kind}`}>
-                    <KindIcon size={11} strokeWidth={1.9} aria-hidden="true" />
-                    {KIND_LABELS[item.kind]}
-                  </span>
-                  {filter === "all" && (
-                    <StatusBadge
-                      tone={item.status === "converted" ? "info" : item.status === "handled" ? "success" : "neutral"}
-                      size="md"
-                    >
-                      {STATUS_LABELS[item.status]}
-                    </StatusBadge>
-                  )}
-                  <span className="flex-spacer" />
-                  <span className="inbox-time" title={item.created_at}>
-                    {formatRelative(item.created_at)}
-                  </span>
-                </div>
-                <p className="inbox-content">{item.content}</p>
-                {item.kind === "link" && item.note && <p className="inbox-note">{item.note}</p>}
-                <div className="inbox-actions">
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`复制${KIND_LABELS[item.kind]}`}
-                    data-tip="复制内容"
-                    disabled={busy}
-                    onClick={() => void onCopy(item)}
-                  >
-                    <Copy size={12} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label="转为任务"
-                    data-tip="转为任务"
-                    disabled={busy || !canProcess}
-                    onClick={() => void onConvert(item)}
-                  >
-                    <ListPlus size={12} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label="转为笔记"
-                    data-tip="转为笔记（保留本条）"
-                    disabled={busy}
-                    onClick={() => void onConvertToNote(item)}
-                  >
-                    <StickyNote size={12} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label="标记已处理"
-                    data-tip="标记已处理"
-                    disabled={busy || !canProcess}
-                    onClick={() => void onMarkHandled(item)}
-                  >
-                    <Check size={12} aria-hidden="true" />
-                  </button>
-                  {(item.kind === "text" || item.kind === "idea" || item.kind === "link") && (
+        {items.length > 0 && (
+          <ul className="inbox-list" aria-busy={loading} aria-label="捕获记录">
+            {items.map((item) => {
+              const KindIcon = KIND_ICONS[item.kind];
+              const confirming = confirmDeleteId === item.id;
+              const busy = busyId === item.id;
+              const canProcess = item.status === "inbox";
+              return (
+                <li
+                  key={item.id}
+                  data-capture-id={item.id}
+                  className={`inbox-item surface-card${item.status === "inbox" ? "" : " is-done"}${locateId === item.id ? " gs-locate-flash" : ""}`}
+                  aria-label={itemLabel(item)}
+                >
+                  <div className="inbox-head">
+                    <span className={`inbox-kind inbox-kind-${item.kind}`}>
+                      <KindIcon size={11} strokeWidth={1.9} aria-hidden="true" />
+                      {KIND_LABELS[item.kind]}
+                    </span>
+                    {filter === "all" && (
+                      <StatusBadge
+                        tone={item.status === "converted" ? "info" : item.status === "handled" ? "success" : "neutral"}
+                        size="md"
+                      >
+                        {STATUS_LABELS[item.status]}
+                      </StatusBadge>
+                    )}
+                    <span className="flex-spacer" />
+                    <span className="inbox-time" title={item.created_at}>
+                      {formatRelative(item.created_at)}
+                    </span>
+                  </div>
+                  <p className="inbox-content">{item.content}</p>
+                  {item.kind === "link" && item.note && <p className="inbox-note">{item.note}</p>}
+                  <div className="inbox-actions">
                     <button
                       type="button"
                       className="icon-btn sm"
-                      aria-label={`添加到暂存架：${KIND_LABELS[item.kind]}`}
-                      data-tip="添加到暂存架（保留本条）"
+                      aria-label={`复制${KIND_LABELS[item.kind]}`}
+                      data-tip="复制内容"
                       disabled={busy}
-                      onClick={() => void onSendToShelf(item)}
+                      onClick={() => void onCopy(item)}
                     >
-                      <FolderPlus size={12} aria-hidden="true" />
+                      <Copy size={12} aria-hidden="true" />
                     </button>
-                  )}
-                  {confirming ? (
-                    <>
-                      <button
-                        type="button"
-                        className="btn sm danger"
-                        aria-label="确认删除"
-                        disabled={busy}
-                        onClick={() => void onDelete(item)}
-                      >
-                        确认删除
-                      </button>
-                      <button
-                        type="button"
-                        className="btn sm"
-                        aria-label="取消删除"
-                        onClick={() => setConfirmDeleteId(null)}
-                      >
-                        取消
-                      </button>
-                    </>
-                  ) : (
                     <button
                       type="button"
-                      className="icon-btn sm danger"
-                      aria-label="删除"
-                      data-tip="删除"
-                      disabled={busy}
-                      onClick={() => setConfirmDeleteId(item.id)}
+                      className="icon-btn sm"
+                      aria-label="转为任务"
+                      data-tip="转为任务"
+                      disabled={busy || !canProcess}
+                      onClick={() => void onConvert(item)}
                     >
-                      <Trash2 size={12} aria-hidden="true" />
+                      <ListPlus size={12} aria-hidden="true" />
                     </button>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label="转为笔记"
+                      data-tip="转为笔记（保留本条）"
+                      disabled={busy}
+                      onClick={() => void onConvertToNote(item)}
+                    >
+                      <StickyNote size={12} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label="标记已处理"
+                      data-tip="标记已处理"
+                      disabled={busy || !canProcess}
+                      onClick={() => void onMarkHandled(item)}
+                    >
+                      <Check size={12} aria-hidden="true" />
+                    </button>
+                    {(item.kind === "text" || item.kind === "idea" || item.kind === "link") && (
+                      <button
+                        type="button"
+                        className="icon-btn sm"
+                        aria-label={`添加到暂存架：${KIND_LABELS[item.kind]}`}
+                        data-tip="添加到暂存架（保留本条）"
+                        disabled={busy}
+                        onClick={() => void onSendToShelf(item)}
+                      >
+                        <FolderPlus size={12} aria-hidden="true" />
+                      </button>
+                    )}
+                    {confirming ? (
+                      <>
+                        <button
+                          type="button"
+                          className="btn sm danger"
+                          aria-label="确认删除"
+                          disabled={busy}
+                          onClick={() => void onDelete(item)}
+                        >
+                          确认删除
+                        </button>
+                        <button
+                          type="button"
+                          className="btn sm"
+                          aria-label="取消删除"
+                          onClick={() => setConfirmDeleteId(null)}
+                        >
+                          取消
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="icon-btn sm danger"
+                        aria-label="删除"
+                        data-tip="删除"
+                        disabled={busy}
+                        onClick={() => setConfirmDeleteId(item.id)}
+                      >
+                        <Trash2 size={12} aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

@@ -242,10 +242,12 @@ export default function AppsLite() {
     [ranked, savedOrder],
   );
   /**
-   * 运行中置顶（2026-11-09 用户反馈）：点击应用后它会因「最近使用」冒泡到最前，
-   * 运行中的应用反而会越用越靠后。这里把运行中的应用（有窗口或仅后台进程）
-   * 固定到网格最前，其余保持原顺序（自然顺序或用户手动顺序），加号仍在末尾。
-   * 只改展示顺序，不改后端数据与手动排序本身。
+   * 置顶规则（2026-11-09 用户反馈，按优先级）：
+   * 1）收藏应用**最前**：收藏是用户显式选择，不能被运行中分组挤到后面；
+   * 2）运行中的应用（有窗口或仅后台进程）其次：点击后不再因「最近使用」冒泡沉底；
+   * 3）其余保持原顺序（自然顺序或用户手动顺序），加号仍在末尾。
+   * 组内沿用当前顺序（手动排序时即手动顺序）；只改展示顺序，不改后端数据与
+   * 手动排序本身。
    */
   const displayGrid = useMemo(() => {
     const isRunning = (t: NavTarget) =>
@@ -253,13 +255,13 @@ export default function AppsLite() {
     const apps = fullGrid.filter(
       (entry): entry is Extract<AppGridEntry<NavTarget>, { type: "app" }> => entry.type === "app",
     );
-    if (!apps.some((entry) => isRunning(entry.app))) return fullGrid;
+    const favorites = apps.filter((entry) => entry.app.favorite);
+    const running = apps.filter((entry) => !entry.app.favorite && isRunning(entry.app));
+    const rest = apps.filter((entry) => !entry.app.favorite && !isRunning(entry.app));
+    // 没有收藏也没有运行中：保持完整网格原样（含手动顺序与加号位置）
+    if (favorites.length === 0 && running.length === 0) return fullGrid;
     const add = fullGrid.filter((entry) => entry.type === "add");
-    return [
-      ...apps.filter((entry) => isRunning(entry.app)),
-      ...apps.filter((entry) => !isRunning(entry.app)),
-      ...add,
-    ];
+    return [...favorites, ...running, ...rest, ...add];
   }, [fullGrid, runningStates]);
   const fullOrder = useMemo(() => displayGrid.map((entry) => entry.id), [displayGrid]);
   /** 搜索命中的应用 id；null = 不过滤。 */
@@ -861,11 +863,14 @@ export default function AppsLite() {
               }
               const t = entry.app;
               const busy = launchingIds.has(t.id);
+              const running = runningStates[t.id];
+              const hasWindow = running === "has_window";
+              const isRunning = hasWindow || running === "process_only";
               return (
                 <div
                   key={t.id}
                   data-grid-id={t.id}
-                  className={`cap-app-slot ${dragId === t.id ? "is-dragging" : ""} ${dropClass(t.id)}`}
+                  className={`cap-app-slot ${dragId === t.id ? "is-dragging" : ""} ${dropClass(t.id)} ${isRunning ? "has-actions" : ""}`}
                   onDragOver={(e) => onDragOver(e, t.id)}
                   onDragLeave={(e) => {
                     const related = e.relatedTarget;
@@ -931,7 +936,46 @@ export default function AppsLite() {
                     </span>
                     <span className="cap-app-name">{t.display_name}</span>
                   </button>
-                  {/* 删除是启动的并列兄弟按钮，绝不嵌套在启动按钮内。 */}
+                  {/* 运行中磁贴：名称区一条动作条（关闭窗口 / 退出应用），
+                      悬停/键盘聚焦时名称淡出、动作条淡入；与「运行中」区同一套
+                      命令与反馈，仅后台进程没有窗口可关。未运行磁贴不渲染动作条，
+                      名称与角落删除保持原样。 */}
+                  {isRunning && (
+                    <div className="cap-app-actions">
+                      {hasWindow && (
+                        <button
+                          type="button"
+                          className="cap-app-act"
+                          data-tip="关闭窗口"
+                          aria-label={`关闭 ${t.display_name} 的窗口`}
+                          disabled={busy || closingIds.has(t.id)}
+                          onClick={() => void closeWindow(t)}
+                        >
+                          {closingIds.has(t.id) ? (
+                            <Loader2 size={13} className="spin" aria-hidden="true" />
+                          ) : (
+                            <SquareX size={13} aria-hidden="true" />
+                          )}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="cap-app-act"
+                        data-tip="退出应用"
+                        aria-label={`退出 ${t.display_name}`}
+                        disabled={busy || quitId !== null}
+                        onClick={(e) => void quitApp(t, e.currentTarget)}
+                      >
+                        {quitId === t.id ? (
+                          <Loader2 size={13} className="spin" aria-hidden="true" />
+                        ) : (
+                          <Power size={13} aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
+                  )}
+                  {/* 删除是启动的并列兄弟按钮，绝不嵌套在启动按钮内。
+                      列表管理动作固定在磁贴右上角，与运行态动作条分开。 */}
                   <button
                     type="button"
                     className="cap-app-del"

@@ -102,6 +102,7 @@ const NAV_ENTRY_KEYWORDS: Record<string, readonly string[]> = {
   widgets: ["微件", "桌面", "widget"],
   actions: ["行动", "聚合", "action"],
   clipboard: ["剪贴板", "复制", "粘贴", "clipboard"],
+  mobile: ["手机", "互传", "文件", "传输", "配对", "mobile", "file", "transfer", "pair"],
   collection: ["收集", "暂存", "inbox", "shelf", "capture"],
   inbox: ["收集箱", "笔记", "inbox", "note"],
   workflows: ["工作流", "场景", "workflow", "automation"],

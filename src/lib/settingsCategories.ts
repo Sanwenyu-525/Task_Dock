@@ -187,12 +187,6 @@ export const SETTINGS_SECTION_META: readonly SettingsSectionMeta[] = [
     aliases: ["接入", "端口", "令牌", "mcp", "agent"],
   },
   {
-    id: "mobile-sync",
-    labelKey: "settings.section.mobileSync",
-    category: "integration",
-    aliases: ["手机", "配对", "二维码", "局域网", "同步", "mobile", "pair", "qr", "sync"],
-  },
-  {
     id: "diagnostics-logs",
     labelKey: "settings.section.diagnosticsLogs",
     category: "integration",

@@ -141,7 +141,7 @@ export default function ResourceManagementPanel() {
   }
 
   return (
-    <div className="resource-page">
+    <div className="resource-page page-fill">
       <header className="resource-page-head">
         <div className="resource-page-title">
           <h2>{t("resource.title")}</h2>
@@ -187,7 +187,7 @@ export default function ResourceManagementPanel() {
         ))}
       </div>
 
-      <div className="resource-page-body">
+      <div className="resource-page-body page-scroll">
         {/* 各分区首次访问后保持挂载：切换只切显示，不重复 IPC、不丢扫描结果。 */}
         <div
           role="tabpanel"

@@ -97,7 +97,6 @@ const OPEN = {
   diagnostics: false,
   "diagnostics-logs": false,
   developer: false,
-  "mobile-sync": false,
 } as const;
 
 beforeEach(() => {

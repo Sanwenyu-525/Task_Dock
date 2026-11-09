@@ -730,7 +730,7 @@ export default function AppsPanel() {
   }
 
   return (
-    <div className="apps-panel">
+    <div className="apps-panel page-fill">
       <header className="wf-head-row apps-head">
         <div>
           <h2 className="wf-title">{tr("apps.title")}</h2>
@@ -789,80 +789,82 @@ export default function AppsPanel() {
         </div>
       </div>
 
-      {editing && (
-        <TargetEditForm
-          key={editing.id}
-          target={editing}
-          onClose={closeEditor}
-          onSaved={async () => {
-            closeEditor();
-            await refreshAll(false);
-          }}
-          onDirtyChange={setEditorDirty}
-        />
-      )}
+      <div className="page-scroll apps-body">
+        {editing && (
+          <TargetEditForm
+            key={editing.id}
+            target={editing}
+            onClose={closeEditor}
+            onSaved={async () => {
+              closeEditor();
+              await refreshAll(false);
+            }}
+            onDirtyChange={setEditorDirty}
+          />
+        )}
 
-      {statesError && filter === "running" && (
-        <div className="wf-error-text" role="status">
-          {tr("apps.statesFailed", { error: statesError })}
-          <button type="button" className="link-btn" onClick={() => void fetchRunningStates()}>
-            {tr("common.retry")}
-          </button>
-        </div>
-      )}
-
-      {!targetsLoaded && !targetsError && (
-        <div className="wf-empty-steps">
-          <Loader2 size={13} className="spin" aria-hidden="true" /> {tr("apps.loading")}
-        </div>
-      )}
-
-      {targetsError && (
-        <div className="wf-error-block" role="alert">
-          <span><AlertTriangle size={13} aria-hidden="true" /> {tr("apps.loadFailed", { error: targetsError })}</span>
-          <button type="button" className="btn sm" onClick={() => void refreshAll(false)}>
-            {tr("common.retry")}
-          </button>
-        </div>
-      )}
-
-      {targetsError === null && targetsLoaded && noAppsAtAll && (
-        <EmptyState
-          framed
-          icon={<LayoutGrid size={22} aria-hidden="true" />}
-          hint={tr("apps.empty")}
-          action={
-            <button type="button" className="btn primary" onClick={requestAdd}>
-              <Plus size={13} aria-hidden="true" /> {tr("apps.add")}
+        {statesError && filter === "running" && (
+          <div className="wf-error-text" role="status">
+            {tr("apps.statesFailed", { error: statesError })}
+            <button type="button" className="link-btn" onClick={() => void fetchRunningStates()}>
+              {tr("common.retry")}
             </button>
-          }
-        />
-      )}
+          </div>
+        )}
 
-      {targetsLoaded && !noAppsAtAll && visibleApps.length === 0 && visibleExtras.length === 0 && (
-        <div className="wf-empty-steps">
-          {filter === "recent"
-            ? tr("apps.emptyRecent")
-            : filter === "running"
-              ? tr("apps.emptyRunning")
-              : filter === "favorite"
-                ? tr("apps.emptyFavorite")
-                : tr("apps.emptyQuery", { query: query.trim() })}
-        </div>
-      )}
+        {!targetsLoaded && !targetsError && (
+          <div className="wf-empty-steps">
+            <Loader2 size={13} className="spin" aria-hidden="true" /> {tr("apps.loading")}
+          </div>
+        )}
 
-      {targetsLoaded && !noAppsAtAll && (
-        <div className="apps-grid" aria-label={tr("apps.gridAria")}>
-          {visibleApps.map(renderTile)}
-        </div>
-      )}
+        {targetsError && (
+          <div className="wf-error-block" role="alert">
+            <span><AlertTriangle size={13} aria-hidden="true" /> {tr("apps.loadFailed", { error: targetsError })}</span>
+            <button type="button" className="btn sm" onClick={() => void refreshAll(false)}>
+              {tr("common.retry")}
+            </button>
+          </div>
+        )}
 
-      {visibleExtras.length > 0 && (
-        <section className="apps-extras" aria-label={tr("apps.extrasAria")}>
-          <h3 className="apps-section-title">{tr("apps.extrasTitle")}</h3>
-          <div className="apps-extra-list">{visibleExtras.map(renderExtraRow)}</div>
-        </section>
-      )}
+        {targetsError === null && targetsLoaded && noAppsAtAll && (
+          <EmptyState
+            framed
+            icon={<LayoutGrid size={22} aria-hidden="true" />}
+            hint={tr("apps.empty")}
+            action={
+              <button type="button" className="btn primary" onClick={requestAdd}>
+                <Plus size={13} aria-hidden="true" /> {tr("apps.add")}
+              </button>
+            }
+          />
+        )}
+
+        {targetsLoaded && !noAppsAtAll && visibleApps.length === 0 && visibleExtras.length === 0 && (
+          <div className="wf-empty-steps">
+            {filter === "recent"
+              ? tr("apps.emptyRecent")
+              : filter === "running"
+                ? tr("apps.emptyRunning")
+                : filter === "favorite"
+                  ? tr("apps.emptyFavorite")
+                  : tr("apps.emptyQuery", { query: query.trim() })}
+          </div>
+        )}
+
+        {targetsLoaded && !noAppsAtAll && (
+          <div className="apps-grid" aria-label={tr("apps.gridAria")}>
+            {visibleApps.map(renderTile)}
+          </div>
+        )}
+
+        {visibleExtras.length > 0 && (
+          <section className="apps-extras" aria-label={tr("apps.extrasAria")}>
+            <h3 className="apps-section-title">{tr("apps.extrasTitle")}</h3>
+            <div className="apps-extra-list">{visibleExtras.map(renderExtraRow)}</div>
+          </section>
+        )}
+      </div>
 
       <ConfirmDialog
         open={!!pendingLeave}

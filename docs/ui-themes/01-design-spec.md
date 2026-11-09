@@ -528,6 +528,8 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
   `--decor-opacity` 衰减。固定坐标系与占满视口的 `.dock-window` 一致，因此不会与周围出现色带或接缝。
 - `top: -10px` 抵消 `.tab-content` 的 `padding-top`：`top: 0` 会把标题钉在滚动区可视顶端下方 10px，
   滚上去的卡片从这条缝里露出来（与 `.clip-detail-head` 同一手法）。`top` 只在吸附时生效，不改正常流布局。
+  2026-11-09 起历史页改为页内独立滚动（`.history-timeline`），该容器自身没有 padding，日期标签
+  改为 `top: 0`；极矮窗口回退整页滚动时恢复 `-10px`（见第 15 节）。
 - 取舍：原生材质（Mica / 桌面透出）无法用 CSS 复刻，遮罩以 `--capsule-face` 实色承接，
   因此 frosted / clear 下比周围少一点桌面色偏；dream-gradient 与 frosted 两套主预设的深浅主题均无色带。
 - 不引入 `backdrop-filter`；`--surface-base` / `--surface-overlay` 分别是 `<image>` 与带 alpha 的
@@ -599,3 +601,30 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 - **桌面预设**：高度按内容密度收紧（today-tasks md 340×220、next-reminder 320×145、
   agent-status 340×190、quick-actions 340×126、focus-timer 300×128、efficiency 320×150）；
   预设只在新建 / 切换尺寸时生效，用户自定义尺寸优先，内容变化不触发自动 resize。
+
+---
+
+## 15. 页面滚动骨架：页头固定 + 列表独立滚动（2026-11-09）
+
+一级页面不再由 `.tab-content` 整页滚动。统一契约：
+
+- **页面根**加 `.page-fill`：`flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column`，
+  直接子项默认 `flex-shrink: 0`，页头 / 筛选条 / 搜索框保持常驻。
+- **列表或内容容器**加 `.page-scroll`：`flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  overscroll-behavior: contain`，只有它滚动。页面级滚动条仍按既有约定隐藏视觉、保留滚动能力。
+  滚动容器的直接子项强制 `flex-shrink: 0`：纵向 flex 滚动容器（设置页分类面板、任务列表）
+  默认会把子项压扁到正好装下，`scrollHeight` 永远等于 `clientHeight`，表现为列表不能滚动、
+  折叠分组只剩一条标题。滚动容器里的内容必须溢出而不是压缩（2026-11-09 回归修复）。
+- **内容区**：已迁移的 `tab-content-<tab>` 在 theme 层设 `overflow: hidden`，滚动交给页内列表；
+  未迁移页面仍保留 `.tab-content` 的整页滚动，可增量接入。
+- **子视图**：任务 / 工作流编辑态由页面根自身滚动（`.task-editor-page` / `.wf-editor-page`）；
+  统计、专注、Agent 统计 / 接入、帮助正文等整页子视图放在 `.page-scroll` 内。
+- **吸顶元素**：滚动容器变为 `.page-scroll` 后，sticky 的 `top` 不再需要抵消 `.tab-content`
+  的 10px padding（历史日期标签为 `0`）；仍以 `.tab-content` 为滚动容器的吸顶行保持 `-10px`。
+- **极矮窗口**：`@media (max-height: 380px)` 回退为 `.tab-content` 整页滚动、`.page-scroll`
+  解除 overflow，避免固定页头吃掉全部高度（窗口最小高度 96px）。
+- **窄窗 / DPI**：骨架只改滚动归属，不改既有 320 / 400 窄窗断点、圆角、Token 与视觉预设；
+  列表滚动条隐藏，滚轮 / 触控板 / 键盘聚焦仍可到达溢出内容。
+
+接入清单（2026-11-09）：任务、Agent、应用、微件、行动、剪贴板（既有 `.clip-body` 模式）、
+收集与暂存（收集箱 / 暂存架 / 笔记）、工作流、历史、规划中心、帮助、诊断中心、资源管理、设置。

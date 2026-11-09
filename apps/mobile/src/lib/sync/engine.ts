@@ -6,11 +6,12 @@
 // - 每次同步结束都写最近结果，UI 直接读 kv，不必自己拼状态。
 import {
   applyPullChanges,
-  buildPendingTaskOps,
+  buildPendingOps,
   loadSyncCursor,
   saveSyncCursor,
   saveSyncResult,
   settlePush,
+  type PendingOp,
   type SyncLastResult,
 } from "../../db/sync";
 import { loadConnection, readToken, touchConnection } from "../../db/syncConnection";
@@ -22,8 +23,45 @@ import { deriveSyncKey } from "./crypto";
 const PAGE_SIZE = 500;
 /** 单次同步最多翻 10 页，防止异常服务端让客户端死循环。 */
 const MAX_PAGES = 10;
+/** 单批 push 上限：条数与 UTF-8 体积都要控制，长笔记会显著放大请求体。 */
+const MAX_BATCH_OPS = 50;
+/** 服务端请求体上限 1MB，客户端留出信封与 JSON 结构的余量。 */
+const MAX_BATCH_BYTES = 700 * 1024;
 
 let inFlight: Promise<SyncLastResult> | null = null;
+
+/** `.length` 是 UTF-16 码元数，中文按 3 字节估算；代理对按 6 字节高估（安全方向）。 */
+function utf8Bytes(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : 3;
+  }
+  return bytes;
+}
+
+/** 按条数与体积切批；单条超过上限时独占一批，交给服务端 256KB 上限兜底。 */
+function chunkPending(pending: readonly PendingOp[]): PendingOp[][] {
+  const batches: PendingOp[][] = [];
+  let current: PendingOp[] = [];
+  let bytes = 0;
+
+  for (const item of pending) {
+    const size = utf8Bytes(JSON.stringify(item.op));
+    if (
+      current.length > 0 &&
+      (current.length >= MAX_BATCH_OPS || bytes + size > MAX_BATCH_BYTES)
+    ) {
+      batches.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(item);
+    bytes += size;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
 
 export function isSyncing(): boolean {
   return inFlight !== null;
@@ -77,15 +115,17 @@ async function execute(): Promise<SyncLastResult> {
 
   try {
     const pull = await pullAll(client);
-    const pending = await buildPendingTaskOps();
+    const pending = await buildPendingOps();
     let pushed = 0;
     let conflicts = 0;
 
     if (pending.length > 0) {
-      const result = await client.push(pending.map((item) => item.op));
-      pushed = result.ack.length;
-      conflicts = result.conflicts.length;
-      await settlePush(result, pending);
+      for (const batch of chunkPending(pending)) {
+        const result = await client.push(batch.map((item) => item.op));
+        pushed += result.ack.length;
+        conflicts += result.conflicts.length;
+        await settlePush(result, batch);
+      }
       // 服务端对每个 ack 的操作都会写变更日志；再拉一次把新 rev 落到本地，
       // 否则下一次本地编辑仍用旧 base_rev，会立刻自己和自己冲突。
       await pullAll(client);

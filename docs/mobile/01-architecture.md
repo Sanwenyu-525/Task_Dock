@@ -1,16 +1,16 @@
 # 手机端架构（Android 独立模式 + 局域网配对）
 
 > 适用范围：`apps/mobile` 当前实现。配对与连通性探测自 2026-11-08 接入；
-> 任务同步（pull/push）自 2026-11-09 接入（见 [07-sync.md](07-sync.md)）。
-> 收集箱/笔记同步、后台同步与字段级合并仍未实现，相关描述不当作能力承诺。
+> 任务、收集箱与笔记同步（pull/push）自 2026-11-09 接入（见 [07-sync.md](07-sync.md)）。
+> 后台同步、字段级合并与日志清理仍未实现，相关描述不当作能力承诺。
 
 ## 1. 定位与边界
 
-手机端业务数据全落在本机 SQLite；网络能力只包括**用户显式发起的局域网配对、心跳与任务同步**：
+手机端业务数据全落在本机 SQLite；网络能力只包括**用户显式发起的局域网配对、心跳与同步**：
 
 - 桌面端保持默认关闭，只有用户开启「允许手机连接」后才监听局域网端口；
 - 手机端只在用户点「配对 / 测试连接 / 立即同步」时发请求，不做后台轮询、不自动同步；
-- 配对本身不传输业务数据；任务同步是独立动作，配对成功也不代表已同步。
+- 配对本身不传输业务数据；同步是独立动作，配对成功也不代表已同步。
 
 不可突破的边界：
 
@@ -56,6 +56,8 @@ src/
     taskUpdate.ts       三态补丁（独立文件，对外仍从 tasks.ts 导出）
     taskRows.ts         行映射、列名、校验（两处共用）
     captures.ts         收集箱：幂等新增、删除、转任务
+    notes.ts            笔记 CRUD（三态补丁、outbox）
+    sync.ts             pull 应用、outbox 合并、push 结算与冲突存储
     reminderSchedule.ts 排期记录表读写
     kv.ts               设置键值（含连接元数据 `sync.connection.v1`）
     syncConnection.ts   令牌 → SecureStore；连接元数据 → kv；解除配对
@@ -204,7 +206,7 @@ plugins/withCleartextTraffic.js  prebuild 配置插件：允许局域网明文 H
   `server_rev`；单飞，不并发；只在用户点「立即同步」时触发。
 - `src/db/sync.ts` 负责落库：pull 跳过本地未发送记录；push ack 清理本批 outbox；
   冲突写入 `sync_conflicts`，由冲突页选择「采用桌面端 / 保留本机」。
-- 独立模式下 `outbox` 只累积不消费；目前只消费 `entity='task'`，收集箱/笔记仍留在本机。
+- 独立模式下 `outbox` 只累积不消费；接入同步后消费 `task` / `note` / `capture` 三种实体。
 - 已满足接入前提：设备配对与令牌存储、`base_rev` 冲突判定、墓碑推进、可取消且有上限的重试。
 
 ### 8.1 配对与连接（2026-11-08 已实现）
@@ -233,8 +235,8 @@ plugins/withCleartextTraffic.js  prebuild 配置插件：允许局域网明文 H
 
 ## 10. 明确未实现
 
-收集箱/笔记同步、字段级自动合并、后台同步、远程推送、主屏小组件（AppWidgetProvider）、
-系统分享接收（intent-filter）、iOS。任务同步已于 2026-11-09 实现；
+字段级自动合并、后台同步、远程推送、主屏小组件（AppWidgetProvider）、
+系统分享接收（intent-filter）、iOS。任务、收集箱、笔记同步已于 2026-11-09 实现；
 配对/同步/冲突/小组件/分享的**页面结构**自 2026-11-08 起保持「真实状态 + 规划徽标」，
 不给假数据。详见 [README.md](README.md) 的状态表与 [06-pairing.md](06-pairing.md)、
 [07-sync.md](07-sync.md)。

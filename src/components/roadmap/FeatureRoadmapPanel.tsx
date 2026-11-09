@@ -184,7 +184,7 @@ export default function FeatureRoadmapPanel() {
   const hasFilter = statusFilter !== "all" || priorityFilter !== "all" || search.trim() !== "";
 
   return (
-    <div className="roadmap-panel">
+    <div className="roadmap-panel page-fill">
       <div className="roadmap-head">
         <h3>规划中</h3>
         <p className="roadmap-head-desc">
@@ -234,35 +234,37 @@ export default function FeatureRoadmapPanel() {
         </div>
       </div>
 
-      {hasFilter && (
-        <p className="roadmap-filter-hint" role="status">
-          筛选结果 {visibleCount} / {FEATURE_CATALOG.length} 项
-        </p>
-      )}
+      <div className="page-scroll roadmap-body">
+        {hasFilter && (
+          <p className="roadmap-filter-hint" role="status">
+            筛选结果 {visibleCount} / {FEATURE_CATALOG.length} 项
+          </p>
+        )}
 
-      {groups.length === 0 ? (
-        <div className="roadmap-empty">没有匹配的功能项，试试调整筛选或清空搜索。</div>
-      ) : (
-        groups.map(({ category, items }: { category: FeatureCategory; items: FeatureEntry[] }) => (
-          <section key={category} className="roadmap-section" aria-label={CATEGORY_META[category].label}>
-            <div className="roadmap-section-head">
-              <h4>{CATEGORY_META[category].label}</h4>
-              <span className="roadmap-section-desc">{CATEGORY_META[category].description}</span>
-              <span className="roadmap-section-count">{items.length}</span>
-            </div>
-            <div className="roadmap-cards">
-              {items.map((f) => (
-                <FeatureCard
-                  key={f.id}
-                  feature={f}
-                  expanded={expandedId === f.id}
-                  onToggle={() => setExpandedId(expandedId === f.id ? null : f.id)}
-                />
-              ))}
-            </div>
-          </section>
-        ))
-      )}
+        {groups.length === 0 ? (
+          <div className="roadmap-empty">没有匹配的功能项，试试调整筛选或清空搜索。</div>
+        ) : (
+          groups.map(({ category, items }: { category: FeatureCategory; items: FeatureEntry[] }) => (
+            <section key={category} className="roadmap-section" aria-label={CATEGORY_META[category].label}>
+              <div className="roadmap-section-head">
+                <h4>{CATEGORY_META[category].label}</h4>
+                <span className="roadmap-section-desc">{CATEGORY_META[category].description}</span>
+                <span className="roadmap-section-count">{items.length}</span>
+              </div>
+              <div className="roadmap-cards">
+                {items.map((f) => (
+                  <FeatureCard
+                    key={f.id}
+                    feature={f}
+                    expanded={expandedId === f.id}
+                    onToggle={() => setExpandedId(expandedId === f.id ? null : f.id)}
+                  />
+                ))}
+              </div>
+            </section>
+          ))
+        )}
+      </div>
     </div>
   );
 }

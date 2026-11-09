@@ -66,10 +66,10 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
 
 | 位置 | 字段 | 角色 |
 |---|---|---|
-| `app.json` | `expo.version` | **唯一事实源**（`0.1.2`） |
-| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `5`） |
+| `app.json` | `expo.version` | **唯一事实源**（当前 `0.1.6`） |
+| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `18`） |
 | `android/app/build.gradle` | `versionName` / `versionCode` | 生成物，prebuild 写入；不要当作源 |
-| `src/screens/SettingsScreen.tsx` | 「关于 → 版本」文案 | 展示值，改版本号时同步 |
+| `src/screens/SettingsScreen.tsx` | 「关于 → 版本」 | 直接读 `app.json`，无需手改 |
 
 规则：
 
@@ -77,8 +77,9 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
   报 `INSTALL_FAILED_ABORTED`，弹窗写「已安装相同版本」——这不是签名或权限问题，
   提升 `versionCode` 后重装即可（0.1.0/1 → 0.1.1/2 → 0.1.2/5 已实测通过）。
   同一版本名下来回调试时，可以只加 `versionCode`、不改 `version`。
-- 改版本只改 `app.json` + 设置页文案；如果直接手改了 `android/` 里的值，下次 prebuild 会被覆盖，
-  不要依赖手改。
+- 改版本只改 `app.json`；如果直接手改了 `android/` 里的值，下次 prebuild 会被覆盖，
+  不要依赖手改。本轮为不改 prebuild 目录，同时改了 `app.json` 与
+  `android/app/build.gradle`（0.1.6 / 12），后续 prebuild 会以 `app.json` 为准。
 - 正式发布前确认 `android/` 是重新 prebuild 出来的，而不是带旧补丁的残留目录。
 
 ## 5. 产物与磁盘
@@ -139,6 +140,20 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
   （`sdk.dir` 指向含 NDK 27.1 的本机 SDK）；本机 release 构建命令不变（§3）。
 - 只出真机 ABI 时附加 `-PreactNativeArchitectures=arm64-v8a`，不要手改生成目录。
 
+## 文件互传（2026-11-09）
+
+- `expo-file-system` 已从 `expo` 的嵌套依赖提升为**直接依赖**（`~58.0.13`）。它是原生模块，
+  必须重新 `npx expo prebuild --platform android` 并重编 APK 才会进入安装包；
+  仅改 JS 不会生效。模块提供 `File.pickFileAsync`、SAF `Directory.pickDirectoryAsync`、
+  `FileHandle` 与 `File.preview`，不需要 `expo-document-picker` / `expo-sharing`。
+- 本机在无 npm 网络时按 lock 中同版本条目补齐了 `package-lock.json` 并把包复制到
+  `node_modules`；有网络的机器执行 `npm install` 会自行对齐，不要重复添加依赖。
+- 本机曾出现 `hermesc.exe` 带 Low 完整性标签、`-emit-binary` 写文件 `permission denied`
+  （连 1 行脚本都失败）：把普通目录下的中等完整性副本硬链接回
+  `node_modules/hermes-compiler/hermesc/win64-bin/hermesc.exe` 即可。这是 node_modules
+  的 ACL 状态，不是项目配置；不要为此改 Gradle/JS 代码。
+- 文件互传的协议与上限见 [08-file-transfer.md](08-file-transfer.md)。
+
 ## 变更记录
 
 - 2026-11-08 首版：记录 JDK 17、镜像 Gradle、长路径约束与版本号提升流程。
@@ -146,3 +161,15 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
   `gen-notification-icon.mjs` 生成流程；故障表增加「图标仍是系统默认」一行。
 - 2026-11-08 配对：补充 expo-camera 权限、明文 HTTP 配置插件与 prebuild 后重建
   `local.properties` 的约束。
+- 2026-11-09 同步 v1.1：版本提升到 0.1.6 / versionCode 13；本轮未重跑 prebuild，
+  `app.json` 与 `android/app/build.gradle` 同步手改，后续 prebuild 以 `app.json` 为准。
+  最终 APK sha256 `ad349b80…`。
+- 2026-11-09 文件互传：`expo-file-system` 提升为直接依赖；原生模块必须 prebuild + 重编
+  APK 才生效。记录无 npm 网络时 lock/node_modules 的补齐方式与不要重复引入的边界。
+  补记 `hermesc.exe` Low 完整性导致 `permission denied` 的环境处理；最终 APK
+  0.1.6/vc13 sha256 `6356f581…`（arm64-v8a，非 debuggable）。
+- 2026-11-09 文件互传 UI 真机走查：vc14 → vc18 连续覆盖安装（仅改 JS，未重跑 prebuild）。
+  vivo 的 `start_confirmation_activity=0` 仍可能被「安全守护」拦截，需要在安装器里
+  勾选「已了解应用的风险检测结果」再点「继续安装」；安装后把该全局设置恢复为 1。
+  最终 APK 0.1.6/vc18 sha256 `605cbc8a…`（arm64-v8a，非 debuggable）。本轮同时修复
+  取消竞态与 SAF 半成品清理，见 [08-file-transfer.md](08-file-transfer.md) §5。

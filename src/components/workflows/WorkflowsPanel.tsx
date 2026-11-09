@@ -207,7 +207,7 @@ export default function WorkflowsPanel() {
     : null;
 
   return (
-    <div ref={rootRef} className={`workflows-panel${page ? " wf-editor-page" : ""}`}>
+    <div ref={rootRef} className={`workflows-panel page-fill${page ? " wf-editor-page" : ""}`}>
       {page?.kind === "edit" ? (
         <WorkflowEditorView
           workflow={page.workflow}
@@ -266,185 +266,187 @@ export default function WorkflowsPanel() {
         </div>
       </header>
 
-      {activeRun ? (
-        <div className="wf-active-banner" role="status">
-          <Loader2 size={13} className="spin" aria-hidden="true" />
-          <span>
-            正在执行「{activeWorkflowName}」
-            {activeRun.paused ? "（已暂停）" : ""}
-            {activeRun.cancel_requested ? "（取消中）" : ""}
-            {activeRunDetail ? ` · ${activeRunDetail.completed_steps}/${activeRunDetail.total_steps} 步` : ""}
-          </span>
-          <span className="flex-spacer" />
-          <button type="button" className="btn sm" onClick={() => void openActiveRun()}>
-            查看进度
-          </button>
-        </div>
-      ) : null}
+      <div className="page-scroll wf-body">
+        {activeRun ? (
+          <div className="wf-active-banner" role="status">
+            <Loader2 size={13} className="spin" aria-hidden="true" />
+            <span>
+              正在执行「{activeWorkflowName}」
+              {activeRun.paused ? "（已暂停）" : ""}
+              {activeRun.cancel_requested ? "（取消中）" : ""}
+              {activeRunDetail ? ` · ${activeRunDetail.completed_steps}/${activeRunDetail.total_steps} 步` : ""}
+            </span>
+            <span className="flex-spacer" />
+            <button type="button" className="btn sm" onClick={() => void openActiveRun()}>
+              查看进度
+            </button>
+          </div>
+        ) : null}
 
-      {activeError ? (
-        // 状态查询失败 ≠ 已结束：保留旧进度并标记可能过期，给重试入口
-        <p className="wf-error-text" role="status">
-          运行状态同步失败，当前进度可能不是最新：{activeError}
-          <button type="button" className="btn sm" onClick={() => void refreshActive()}>
-            重试
-          </button>
-        </p>
-      ) : null}
+        {activeError ? (
+          // 状态查询失败 ≠ 已结束：保留旧进度并标记可能过期，给重试入口
+          <p className="wf-error-text" role="status">
+            运行状态同步失败，当前进度可能不是最新：{activeError}
+            <button type="button" className="btn sm" onClick={() => void refreshActive()}>
+              重试
+            </button>
+          </p>
+        ) : null}
 
-      {workflowsError ? (
-        <div className="wf-error-block" role="alert">
-          <p>{workflowsError}</p>
-          <button type="button" className="btn" onClick={() => void loadWorkflows()}>
-            重试
-          </button>
-        </div>
-      ) : null}
-      {actionError ? (
-        <p className="wf-error-text" role="alert">
-          {actionError}
-        </p>
-      ) : null}
+        {workflowsError ? (
+          <div className="wf-error-block" role="alert">
+            <p>{workflowsError}</p>
+            <button type="button" className="btn" onClick={() => void loadWorkflows()}>
+              重试
+            </button>
+          </div>
+        ) : null}
+        {actionError ? (
+          <p className="wf-error-text" role="alert">
+            {actionError}
+          </p>
+        ) : null}
 
-      {workflowsLoading && !workflows ? (
-        <p className="wf-empty-steps">
-          <Loader2 size={13} className="spin" aria-hidden="true" /> 加载中…
-        </p>
-      ) : null}
+        {workflowsLoading && !workflows ? (
+          <p className="wf-empty-steps">
+            <Loader2 size={13} className="spin" aria-hidden="true" /> 加载中…
+          </p>
+        ) : null}
 
-      {workflows && workflows.length === 0 ? (
-        <EmptyState
-          framed
-          icon={<Layers size={22} aria-hidden="true" />}
-          hint={
-            <>
-              <p>{tr("workflows.empty")}</p>
-              <p className="wf-hint-text">{tr("workflows.emptyHint")}</p>
-            </>
-          }
-        />
-      ) : null}
+        {workflows && workflows.length === 0 ? (
+          <EmptyState
+            framed
+            icon={<Layers size={22} aria-hidden="true" />}
+            hint={
+              <>
+                <p>{tr("workflows.empty")}</p>
+                <p className="wf-hint-text">{tr("workflows.emptyHint")}</p>
+              </>
+            }
+          />
+        ) : null}
 
-      {workflows && workflows.length > 0 ? (
-        <div className="planning-cards wf-cards">
-          {workflows.map((w, idx) => {
-            const last = lastRuns[w.id];
-            return (
-              <article key={w.id} className={`task-card planning-card wf-card ${w.enabled ? "" : "is-disabled"}`}>
-                <div className="wf-card-head">
-                  <div className="wf-card-title-wrap">
-                    <h3 className="planning-card-title">{w.name}</h3>
-                    <p className="wf-card-desc">{w.description || "（无描述）"}</p>
+        {workflows && workflows.length > 0 ? (
+          <div className="planning-cards wf-cards">
+            {workflows.map((w, idx) => {
+              const last = lastRuns[w.id];
+              return (
+                <article key={w.id} className={`task-card planning-card wf-card ${w.enabled ? "" : "is-disabled"}`}>
+                  <div className="wf-card-head">
+                    <div className="wf-card-title-wrap">
+                      <h3 className="planning-card-title">{w.name}</h3>
+                      <p className="wf-card-desc">{w.description || "（无描述）"}</p>
+                    </div>
+                    <label className="wf-card-enabled" aria-label={w.enabled ? "停用工作流" : "启用工作流"}>
+                      <input
+                        type="checkbox"
+                        checked={w.enabled}
+                        onChange={() =>
+                          void guard(w.id, () => updateWorkflow(w.id, { enabled: !w.enabled }))()
+                        }
+                      />
+                      <span aria-hidden="true">{w.enabled ? "已启用" : "已停用"}</span>
+                    </label>
                   </div>
-                  <label className="wf-card-enabled" aria-label={w.enabled ? "停用工作流" : "启用工作流"}>
-                    <input
-                      type="checkbox"
-                      checked={w.enabled}
-                      onChange={() =>
-                        void guard(w.id, () => updateWorkflow(w.id, { enabled: !w.enabled }))()
+                  <div className="wf-card-meta">
+                    <span data-tip="步骤总数">{w.step_count} 步</span>
+                    {last ? (
+                      <span className={`wf-run-state kind-${runStatusKind(last.status)}`}>
+                        上次：{WORKFLOW_RUN_STATUS_LABELS[last.status]} · {last.started_at_local}
+                      </span>
+                    ) : (
+                      <span>{tr("workflows.neverRun")}</span>
+                    )}
+                  </div>
+                  <div className="wf-card-actions">
+                    <button
+                      type="button"
+                      className="btn primary sm"
+                      disabled={!w.enabled || Boolean(activeRun)}
+                      onClick={() => void openRun(w)}
+                      data-tip={
+                        !w.enabled
+                          ? "工作流已停用"
+                          : activeRun
+                            ? "已有工作流正在执行"
+                            : "按顺序执行全部启用步骤"
                       }
-                    />
-                    <span aria-hidden="true">{w.enabled ? "已启用" : "已停用"}</span>
-                  </label>
-                </div>
-                <div className="wf-card-meta">
-                  <span data-tip="步骤总数">{w.step_count} 步</span>
-                  {last ? (
-                    <span className={`wf-run-state kind-${runStatusKind(last.status)}`}>
-                      上次：{WORKFLOW_RUN_STATUS_LABELS[last.status]} · {last.started_at_local}
+                    >
+                      <Play size={13} aria-hidden="true" /> 运行
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label={`编辑 ${w.name}`}
+                      data-tip="编辑名称与步骤"
+                      onClick={() => void openEditor(w, null)}
+                    >
+                      <Pencil size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label={`${w.name} 运行历史`}
+                      data-tip="运行历史"
+                      onClick={() => openHistory(w)}
+                    >
+                      <History size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label={`复制 ${w.name}`}
+                      data-tip="创建副本"
+                      onClick={() =>
+                        void guard(w.id, async () => {
+                          await duplicateWorkflow(w.id);
+                        })()
+                      }
+                    >
+                      <Copy size={14} aria-hidden="true" />
+                    </button>
+                    <span className="wf-card-spacer" />
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label={`上移 ${w.name}`}
+                      data-tip="上移"
+                      disabled={idx === 0}
+                      onClick={() => move(w, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label={`下移 ${w.name}`}
+                      data-tip="下移"
+                      disabled={idx === workflows.length - 1}
+                      onClick={() => move(w, 1)}
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn sm"
+                      aria-label={`删除 ${w.name}`}
+                      data-tip="删除工作流及其运行记录"
+                      onClick={() => setDeleteTarget(w)}
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                  {busyId === w.id ? (
+                    <span className="wf-card-busy" aria-hidden="true">
+                      <Loader2 size={12} className="spin" />
                     </span>
-                  ) : (
-                    <span>{tr("workflows.neverRun")}</span>
-                  )}
-                </div>
-                <div className="wf-card-actions">
-                  <button
-                    type="button"
-                    className="btn primary sm"
-                    disabled={!w.enabled || Boolean(activeRun)}
-                    onClick={() => void openRun(w)}
-                    data-tip={
-                      !w.enabled
-                        ? "工作流已停用"
-                        : activeRun
-                          ? "已有工作流正在执行"
-                          : "按顺序执行全部启用步骤"
-                    }
-                  >
-                    <Play size={13} aria-hidden="true" /> 运行
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`编辑 ${w.name}`}
-                    data-tip="编辑名称与步骤"
-                    onClick={() => void openEditor(w, null)}
-                  >
-                    <Pencil size={14} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`${w.name} 运行历史`}
-                    data-tip="运行历史"
-                    onClick={() => openHistory(w)}
-                  >
-                    <History size={14} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`复制 ${w.name}`}
-                    data-tip="创建副本"
-                    onClick={() =>
-                      void guard(w.id, async () => {
-                        await duplicateWorkflow(w.id);
-                      })()
-                    }
-                  >
-                    <Copy size={14} aria-hidden="true" />
-                  </button>
-                  <span className="wf-card-spacer" />
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`上移 ${w.name}`}
-                    data-tip="上移"
-                    disabled={idx === 0}
-                    onClick={() => move(w, -1)}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`下移 ${w.name}`}
-                    data-tip="下移"
-                    disabled={idx === workflows.length - 1}
-                    onClick={() => move(w, 1)}
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`删除 ${w.name}`}
-                    data-tip="删除工作流及其运行记录"
-                    onClick={() => setDeleteTarget(w)}
-                  >
-                    <Trash2 size={14} aria-hidden="true" />
-                  </button>
-                </div>
-                {busyId === w.id ? (
-                  <span className="wf-card-busy" aria-hidden="true">
-                    <Loader2 size={12} className="spin" />
-                  </span>
-                ) : null}
-              </article>
-            );
-          })}
-        </div>
-      ) : null}
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
 
         </>
       )}

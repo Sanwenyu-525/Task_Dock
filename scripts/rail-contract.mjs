@@ -6,14 +6,15 @@
 //! （页面内双子页签）；v0.9 新增「工作流」视觉入口；v0.10 新增「应用」视觉入口；
 //! v0.11 新增「帮助」视觉入口（settings 之前、不占 Ctrl+数字）；
 //! v0.14 新增「诊断中心」视觉入口（帮助之后、设置之前，默认隐藏，不占 Ctrl+数字）
-//! 与「资源管理」默认可见入口（设置之前、可隐藏/排序，不占 Ctrl+数字），
-//! 因此 **14 个声明视觉入口（12 个默认可见）≠ 10 个逻辑 Tab**：
+//! 与「资源管理」默认可见入口（设置之前、可隐藏/排序，不占 Ctrl+数字）；
+//! v0.17 新增「手机互传」视觉入口（剪贴板之后、收集与暂存之前，不占 Ctrl+数字），
+//! 因此 **15 个声明视觉入口（13 个默认可见）≠ 10 个逻辑 Tab**：
 //! - `RAIL_ENTRIES`：视觉入口（渲染顺序、data-tip、aria-label 的事实源）；
 //! - `LOGICAL_TABS`：逻辑 Tab 顺序（= useUiStore.TAB_ORDER，快捷键 Ctrl+1…9 与 Ctrl+0 的
 //!   事实源，Ctrl+5=快速收集 inbox、Ctrl+6=文件暂存 shelf、Ctrl+0=设置，
 //!   旧 setTab 调用不受视觉合并影响）；
 //! - `RAIL_ONLY_TABS`：仅视觉入口、不占快捷键的 Tab
-//!   （当前为 apps/widgets/help/diagnostics/resource）。
+//!   （当前为 apps/widgets/mobile/help/diagnostics/resource）。
 //! 契约测试 src/components/FullView.navigationContract.test.tsx 校验两者与真实渲染一致，
 //! 导航增删/改名/换序时契约测试失败，避免脚本侧清单与真实导航漂移。
 
@@ -34,6 +35,7 @@ export const LOGICAL_TABS = Object.freeze([
 export const RAIL_ONLY_TABS = Object.freeze([
   "apps",
   "widgets",
+  "mobile",
   "help",
   "diagnostics",
   "resource",
@@ -46,6 +48,8 @@ export const RAIL_ENTRIES = Object.freeze([
   { id: "widgets", label: "微件", shortcut: "" },
   { id: "actions", label: "行动", shortcut: "Ctrl+3" },
   { id: "clipboard", label: "剪贴板", shortcut: "Ctrl+4" },
+  // 手机互传：从设置页提出的操作入口，不占 Ctrl+数字。
+  { id: "mobile", label: "手机互传", shortcut: "" },
   {
     id: "collection",
     label: "收集与暂存",

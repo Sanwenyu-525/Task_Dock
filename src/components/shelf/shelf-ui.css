@@ -1,0 +1,280 @@
+/* 文件暂存架：单行工具条、筛选浮层、批量栏与拖出光标（2026-11-09）。
+   基础卡片/列表仍在 styles.css；这里只覆盖本次改版的结构，使用语义 Token。 */
+
+.shelf-workspace {
+  /* 工具条按面板自身宽度收敛，不按屏幕宽度推断。 */
+  container-type: inline-size;
+  container-name: shelf-panel;
+}
+
+.shelf-toolbar-wrap {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.shelf-workspace .shelf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 4px;
+  flex-wrap: nowrap;
+}
+
+.shelf-add-split {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.shelf-add-main {
+  gap: 4px;
+}
+
+.shelf-add-more {
+  flex: 0 0 auto;
+}
+
+/* 搜索框吃掉剩余宽度，窄窗下允许收缩到 0，不换行。 */
+.shelf-toolbar .shelf-search {
+  flex: 1 1 120px;
+  min-width: 0;
+  max-width: none;
+}
+
+.shelf-filter-btn {
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.shelf-filter-btn-label {
+  white-space: nowrap;
+}
+
+.shelf-filter-btn.is-open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.shelf-filter-badge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text-on);
+  font-size: 9.5px;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.shelf-overflow {
+  flex: 0 0 auto;
+}
+
+/* ── 激活筛选摘要：只在有筛选时占一行，横向滚动不撑破 ── */
+.shelf-active-filters {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 14px 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.shelf-active-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.shelf-active-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--control-face);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.shelf-active-filter:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.shelf-active-filter-clear {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 5px;
+  border: 0;
+  background: none;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.shelf-active-filter-clear:hover {
+  color: var(--text-primary);
+}
+
+/* ── 筛选浮层：类型/分组 chips + 收藏开关 + 清除 ── */
+.ui-popover.shelf-filter-pop {
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px 12px;
+}
+
+.shelf-filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shelf-filter-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.shelf-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.shelf-filter-groups {
+  max-height: 132px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.shelf-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--control-face);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.shelf-filter-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.shelf-filter-chip.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.shelf-filter-switch-row {
+  padding: 2px 0;
+}
+
+.shelf-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── 批量操作栏：单行内联卡，替代原来的两行按钮矩阵 ── */
+.shelf-workspace .shelf-selectbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin: 4px 14px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  box-shadow: var(--card-shadow);
+  flex-shrink: 0;
+}
+
+.shelf-workspace .shelf-selectbar-count {
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.shelf-workspace .shelf-selectbar .flex-spacer {
+  flex: 1 1 auto;
+}
+
+.shelf-workspace .shelf-selectbar .btn.sm {
+  height: 24px;
+  padding: 0 7px;
+}
+
+/* ── 拖出光标：卡片与胶囊最近暂存行都提示可按住拖出 ── */
+.shelf-item.is-draggable {
+  cursor: grab;
+}
+
+.shelf-item.is-draggable .shelf-thumb,
+.shelf-item.is-draggable .shelf-item-name {
+  cursor: grab;
+}
+
+.shelf-item.is-draggable:active,
+.shelf-item.is-draggable:active .shelf-thumb,
+.shelf-item.is-draggable:active .shelf-item-name,
+.cap-shelf-recent-item.is-draggable:active {
+  cursor: grabbing;
+}
+
+.cap-shelf-recent-item.is-draggable {
+  cursor: grab;
+}
+
+/* ── 窄容器：添加/筛选收成图标，搜索仍保留可输入宽度 ── */
+@container shelf-panel (max-width: 360px) {
+  .shelf-workspace .shelf-toolbar {
+    gap: 4px;
+    padding-inline: 10px;
+  }
+
+  .shelf-workspace .shelf-add-main {
+    padding-inline: 7px;
+  }
+
+  .shelf-workspace .shelf-add-label,
+  .shelf-workspace .shelf-filter-btn-label {
+    display: none;
+  }
+
+  .shelf-workspace .shelf-active-filters {
+    padding-inline: 10px;
+  }
+
+  .shelf-workspace .shelf-selectbar {
+    margin-inline: 10px;
+  }
+
+  /* 窄窗下优先保留「大小 + 时间」：来源、存储方式与时钟图标让位，
+     存储方式仍可在详情/悬停名称提示中看到。 */
+  .shelf-workspace .shelf-item-meta {
+    gap: 5px;
+  }
+
+  .shelf-workspace .shelf-item-src,
+  .shelf-workspace .shelf-item-meta-sep,
+  .shelf-workspace .shelf-item-meta .shelf-tag.mode,
+  .shelf-workspace .shelf-item-time svg {
+    display: none;
+  }
+}

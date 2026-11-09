@@ -178,7 +178,7 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
   }
 
   return (
-    <div className="widgets-page">
+    <div className="widgets-page page-fill">
       <header className="widgets-head">
         <div className="widgets-head-title">
           <Blocks size={18} aria-hidden="true" />
@@ -223,70 +223,72 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
         </div>
       </header>
 
-      {persistError && (
-        <div className="widgets-persist-error" role="alert">
-          <AlertTriangle size={13} aria-hidden="true" />
-          <div>
-            <strong>{t("widgets.persistError", { message: persistError })}</strong>
-            <span>{t("widgets.persistErrorHint")}</span>
+      <div className="page-scroll widgets-body">
+        {persistError && (
+          <div className="widgets-persist-error" role="alert">
+            <AlertTriangle size={13} aria-hidden="true" />
+            <div>
+              <strong>{t("widgets.persistError", { message: persistError })}</strong>
+              <span>{t("widgets.persistErrorHint")}</span>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {!isTauri() && (
-        <div className="widgets-desktop-unavailable" role="status">
-          <AlertTriangle size={13} aria-hidden="true" />
-          <span>{t("widgets.desktop.unavailable")}</span>
-        </div>
-      )}
+        {!isTauri() && (
+          <div className="widgets-desktop-unavailable" role="status">
+            <AlertTriangle size={13} aria-hidden="true" />
+            <span>{t("widgets.desktop.unavailable")}</span>
+          </div>
+        )}
 
-      {libraryOpen && (
-        <div id="widget-library-panel">
-          <WidgetLibrary
-            widgets={widgets}
-            sources={sources}
-            onAdd={onAdd}
-            onAddToDesktop={onAddToDesktop}
-          />
-        </div>
-      )}
-
-      {visible.length > 0 ? (
-        <div className="widgets-grid" aria-label={t("widgets.gridAria")}>
-          {visible.map((item, index) => (
-            <WidgetCard
-              key={item.widget_id}
-              item={item}
-              index={index}
-              total={visible.length}
+        {libraryOpen && (
+          <div id="widget-library-panel">
+            <WidgetLibrary
+              widgets={widgets}
               sources={sources}
-              dragging={draggingId === item.widget_id}
-              draggingId={draggingId}
-              desktopRuntime={desktopRuntime[item.widget_id]}
-              onMoveBy={moveBy}
-              onDisable={(id) => toggle(id, false)}
-              onDesktop={(id, visibleDesktop) => setDesktop(id, { visible: visibleDesktop })}
-              onTopmost={(id, topmost) => setDesktop(id, { topmost })}
-              onSize={onSize}
-              onConfig={onConfig}
-              onResetPosition={resetDesktopPosition}
-              onRetryDesktop={retryDesktop}
-              onDragStart={setDraggingId}
-              onDragEnd={() => setDraggingId(null)}
-              onDropOn={onDropOn}
+              onAdd={onAdd}
+              onAddToDesktop={onAddToDesktop}
             />
-          ))}
-        </div>
-      ) : (
-        <div className="widgets-empty">
-          <LayoutGrid size={26} aria-hidden="true" />
-          <strong>{t("widgets.emptyTitle")}</strong>
-          <span>{t("widgets.emptyDesc")}</span>
-          <button className="btn sm primary" onClick={() => setLibraryOpen(true)}>
-            <Plus size={13} aria-hidden="true" /> {t("widgets.addWidgets")}
-          </button>
-        </div>
-      )}
+          </div>
+        )}
+
+        {visible.length > 0 ? (
+          <div className="widgets-grid" aria-label={t("widgets.gridAria")}>
+            {visible.map((item, index) => (
+              <WidgetCard
+                key={item.widget_id}
+                item={item}
+                index={index}
+                total={visible.length}
+                sources={sources}
+                dragging={draggingId === item.widget_id}
+                draggingId={draggingId}
+                desktopRuntime={desktopRuntime[item.widget_id]}
+                onMoveBy={moveBy}
+                onDisable={(id) => toggle(id, false)}
+                onDesktop={(id, visibleDesktop) => setDesktop(id, { visible: visibleDesktop })}
+                onTopmost={(id, topmost) => setDesktop(id, { topmost })}
+                onSize={onSize}
+                onConfig={onConfig}
+                onResetPosition={resetDesktopPosition}
+                onRetryDesktop={retryDesktop}
+                onDragStart={setDraggingId}
+                onDragEnd={() => setDraggingId(null)}
+                onDropOn={onDropOn}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="widgets-empty">
+            <LayoutGrid size={26} aria-hidden="true" />
+            <strong>{t("widgets.emptyTitle")}</strong>
+            <span>{t("widgets.emptyDesc")}</span>
+            <button className="btn sm primary" onClick={() => setLibraryOpen(true)}>
+              <Plus size={13} aria-hidden="true" /> {t("widgets.addWidgets")}
+            </button>
+          </div>
+        )}
+      </div>
 
       <ConfirmDialog
         open={resetConfirmOpen}

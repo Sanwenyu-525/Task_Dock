@@ -40,11 +40,16 @@ use tauri::{Runtime, WebviewWindow};
 /// 当前圆角半径，存储为「逻辑像素 × 1000」的整数，避免浮点原子。
 static RADIUS_MILLI: AtomicU32 = AtomicU32::new(18_000);
 
-/// 胶囊/弹窗区域半径相对 CSS 物理半径的固定「抗锯齿内收」（物理像素）。
+/// 胶囊轨道区域相对 CSS 翼片轮廓的固定**外扩**（物理像素）。
 ///
-/// `SetWindowRgn` 是二值裁剪，没有抗锯齿；把区域半径收紧后，区域弧线落在 CSS
-/// 圆角之外的透明像素上，GDI 硬边不可见。主窗不使用这个固定值，而是用
-/// `main_region_rgn()` 的逐行像素支撑形状（见该函数文档）。
+/// `SetWindowRgn` 是二值裁剪，没有抗锯齿；翼片曲线由 SVG 绘制，区域沿法线外扩后
+/// 硬边落在 CSS 轮廓之外的透明像素上，GDI 硬边不可见。
+///
+/// **不能用它给圆角矩形（面板 / 极简标签）的半径做内收**：凸圆角上半径越小，
+/// 区域在角部反而越靠外（成为 CSS 弧的超集），会把圆角外的背景露成缺口
+/// （2026-11-08 面板右上角、2026-11-09 极简标签「外面多一层」是同一个根因）。
+/// 主窗不使用这个固定值，而是用 `main_region_rgn()` 的逐行像素支撑形状
+/// （见该函数文档）。
 const REGION_AA_INSET: i32 = 2;
 /// 同一 HWND 的重入应用请求：必须保留调用方原始的目标类型与逻辑半径，
 /// 补偿重算不得回落到主窗默认形态（右键菜单是 Popup/16px，不是 Main/18px）。
@@ -1230,9 +1235,15 @@ fn capsule_tab_regions(
         2 => ((window_w - rect_w) / 2, 0),
         _ => ((window_w - rect_w) / 2, window_h - rect_h),
     };
-    let radius = (((CAPSULE_TAB_RADIUS_CSS as f64) * scale).floor() as i32 - REGION_AA_INSET)
+    // 2026-11-09 更正：与面板同一口径（见 `capsule_regions` 面板半径注释）。
+    // 此前 `floor(8×DPI) - REGION_AA_INSET` 再按「四角圆角」钳到厚度一半，
+    // 1.25 缩放下标签区域半径只剩 6（CSS 10），凸圆角上区域反而**超出** CSS 弧：
+    // 标签圆角外会露出 3–4px 的窗口底/转场残影，表现为「极简态外面多一层」，
+    // 拖拽触发整窗重绘后才消失。标签只有靠屏内侧两角是圆角，半径上限是厚度本身
+    // （CSS 8px ≤ 厚度 10px），不能再取厚度一半。
+    let radius = (((CAPSULE_TAB_RADIUS_CSS as f64) * scale).round() as i32)
         .max(1)
-        .min(rect_w.min(rect_h) / 2);
+        .min(rect_w.min(rect_h));
     let local = tab_outline(edge, tab_w, tab_h, radius);
     let rail_polygon: Vec<(i32, i32)> = local
         .iter()
@@ -2767,6 +2778,48 @@ mod tests {
                 !poly_contains(&s.rail_polygon, nx, ny),
                 "edge={edge} 靠内两角应为圆角（缺角在区域外）"
             );
+        }
+    }
+
+    /// 标签区域半径必须等于 CSS 物理半径（含非整数 DPI 取整），且不能被
+    /// 「厚度一半」的钳制压小。2026-11-09 回归：1.25 缩放下区域半径被压到 6
+    /// （CSS 10），标签圆角外露出约 4px 的窗口底/转场残影（「外面多一层」）。
+    #[test]
+    fn tab_region_radius_matches_css_radius_on_every_dpi() {
+        for scale in [1.0f64, 1.25, 1.5, 2.0] {
+            let radius = (CAPSULE_TAB_RADIUS_CSS as f64 * scale).round() as i32;
+            let thickness = (CAPSULE_TAB_WIDTH_CSS as f64 * scale).round() as i32;
+            for (edge, w, h) in [
+                (0u8, CONTAINER_W, CONTAINER_H),
+                (1, CONTAINER_W, CONTAINER_H),
+                (2, CONTAINER_W_HORIZ, CONTAINER_H_HORIZ),
+                (3, CONTAINER_W_HORIZ, CONTAINER_H_HORIZ),
+            ] {
+                let s = capsule_regions(
+                    w,
+                    h,
+                    scale,
+                    &CapsuleParams {
+                        edge,
+                        tab: true,
+                        ..CAP
+                    },
+                )
+                .unwrap();
+                let (x0, y0) = (s.rail.x, s.rail.y);
+                // 内侧两角的圆角起点：距角的偏移必须等于 CSS 半径。
+                let corner = match edge {
+                    0 => (x0 + thickness, y0 + radius),
+                    1 => (x0, y0 + radius),
+                    2 => (x0 + radius, y0 + thickness),
+                    _ => (x0 + radius, y0),
+                };
+                assert!(
+                    s.rail_polygon.iter().any(|&(x, y)| (x, y) == corner),
+                    "scale={scale} edge={edge} 应有圆角起点 {corner:?}（实际点集 {:?}）",
+                    s.rail_polygon
+                );
+            }
         }
     }
 

@@ -3,6 +3,8 @@
 //! v0.6：卡片层级与空状态插画按视觉预设重绘（结构不变，两套皮肤共用）。
 //! v0.9：编辑任务改为页面内编辑态（列表 ↔ 编辑切换），退出后恢复列表滚动位置；
 //! 筛选状态本就在 `useTasksStore`，切换不丢失。
+//! 2026-11-09：页头（概览/快速添加/筛选/搜索）固定，只有任务列表独立滚动；
+//! 搜索框紧跟在日期筛选下面、状态/排序上面。
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import QuickAdd from "./QuickAdd";
@@ -16,7 +18,7 @@ import { useUiStore } from "../../store/useUiStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { locateElement } from "../global-search/locate";
 import { Select, SearchField } from "../ui";
-import { BarChart3, X, Search, ListChecks, AlertTriangle, Inbox, Sparkles, Timer } from "lucide-react";
+import { BarChart3, X, ListChecks, AlertTriangle, Inbox, Sparkles, Timer } from "lucide-react";
 import TaskAnalyticsPanel from "./analytics/TaskAnalyticsPanel";
 import FocusWorkspace from "../focus/FocusWorkspace";
 import { useLocale } from "../../hooks/useLocale";
@@ -24,23 +26,13 @@ import type { MessageKey } from "../../i18n";
 import ContextHelpButton from "../help/ContextHelpButton";
 import ModuleRunControl from "../lifecycle/ModuleRunControl";
 
-/** 内容区滚动容器（`.tab-content`）：编辑态切换时用它记录/恢复列表位置。 */
-function findScrollParent(el: HTMLElement | null): HTMLElement | null {
-  let node = el?.parentElement ?? null;
-  while (node) {
-    const overflowY = getComputedStyle(node).overflowY;
-    if (overflowY === "auto" || overflowY === "scroll") return node;
-    node = node.parentElement;
-  }
-  return null;
-}
-
 const VIEWS: readonly { id: "today" | "tomorrow" | "week" | "overdue" | "all"; labelKey: MessageKey }[] = [
+  // 2026-11-09：按用户要求「全部」放最前，其余日期视图依次后移。
+  { id: "all", labelKey: "tasks.view.all" },
   { id: "today", labelKey: "tasks.view.today" },
   { id: "tomorrow", labelKey: "tasks.view.tomorrow" },
   { id: "week", labelKey: "tasks.view.week" },
   { id: "overdue", labelKey: "tasks.view.overdue" },
-  { id: "all", labelKey: "tasks.view.all" },
 ] as const;
 
 const STATUSES: readonly { id: "pending" | "completed" | "all"; labelKey: MessageKey }[] = [
@@ -69,29 +61,17 @@ export default function TasksPanel() {
   const loadTaskLinks = useNavigationStore((s) => s.loadTaskLinks);
   const editor = useUiStore((s) => s.editor);
   const closeEditor = useUiStore((s) => s.closeEditor);
-  const [searchOpen, setSearchOpen] = useState(false);
   // 任务统计子视图（默认日范围，打开才请求；关闭后面板卸载即取消请求）。
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   // 专注与休息子视图：与列表/统计互斥，按需挂载（关闭即卸载，停止订阅与共享时钟引用）。
   const [focusOpen, setFocusOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const listScrollTop = useRef(0);
   const wasEditing = useRef(false);
 
-  // 列表可见时持续记录内容区滚动位置。
-  // 不能在进入编辑态后再读：列表 DOM 已被替换，scrollTop 会被浏览器夹取。
-  useEffect(() => {
-    if (editor.open) return;
-    const scroller = findScrollParent(rootRef.current);
-    if (!scroller) return;
-    const onScroll = () => {
-      listScrollTop.current = scroller.scrollTop;
-    };
-    scroller.addEventListener("scroll", onScroll, { passive: true });
-    return () => scroller.removeEventListener("scroll", onScroll);
-  }, [editor.open]);
-
   // 退出编辑态后恢复列表滚动位置（筛选状态由 store 保存，不需要额外恢复）。
+  // 列表滚动位置由列表容器自身的 onScroll 持续记录：进入编辑态后列表 DOM 已被
+  // 替换，不能再从 scrollTop 读取（会被浏览器夹取到 0）。
   useEffect(() => {
     if (editor.open) {
       wasEditing.current = true;
@@ -99,11 +79,11 @@ export default function TasksPanel() {
     }
     if (!wasEditing.current) return;
     wasEditing.current = false;
-    const scroller = findScrollParent(rootRef.current);
-    if (!scroller) return;
+    const list = listRef.current;
+    if (!list) return;
     const top = listScrollTop.current;
     const raf = requestAnimationFrame(() => {
-      scroller.scrollTop = top;
+      list.scrollTop = top;
     });
     return () => cancelAnimationFrame(raf);
   }, [editor.open]);
@@ -122,7 +102,6 @@ export default function TasksPanel() {
   }, [analyticsOpen, focusOpen]);
 
   const hasSearch = !!filter.search?.trim();
-  const searchVisible = searchOpen || hasSearch;
 
   /**
    * 离场补渲染：完成行的动画还没播完时，后台整表刷新可能先把这一行抽走。
@@ -165,14 +144,14 @@ export default function TasksPanel() {
   // 编辑态：主内容区切换（不新开窗口、不铺遮罩）。列表 DOM 卸载，筛选与滚动由上方逻辑恢复。
   if (editor.open) {
     return (
-      <div className="tasks-panel task-editor-page" ref={rootRef}>
+      <div className="tasks-panel task-editor-page page-fill">
         <TaskEditorView task={editor.task} onClose={closeEditor} />
       </div>
     );
   }
 
   return (
-    <div className="tasks-panel" ref={rootRef}>
+    <div className="tasks-panel page-fill">
       {/* 全局概览（跨筛选视图）：三张卡都可点击下钻到对应列表 */}
       <div className="tasks-overview">
         <div
@@ -272,23 +251,26 @@ export default function TasksPanel() {
         >
           {analyticsOpen ? <X size={13} /> : <BarChart3 size={13} />}
         </button>
-        <button
-          className={`icon-btn sm ${searchVisible ? "active" : ""}`}
-          data-tip={searchVisible ? t("tasks.search.collapse") : t("tasks.search.open")}
-          aria-label={searchVisible ? t("tasks.search.collapse") : t("tasks.search.open")}
-          onClick={() => {
-            if (searchOpen && !hasSearch) setSearchOpen(false);
-            else {
-              setSearchOpen(true);
-              requestAnimationFrame(() => document.querySelector<HTMLInputElement>(".search-box input")?.focus());
-            }
-          }}
-        >
-          {searchVisible ? <X size={13} /> : <Search size={13} />}
-        </button>
       </div>
 
-      {/* 次级工具栏：状态 + 排序 + 搜索输入（收起时不占高度） */}
+      {/* 搜索框：常驻在日期筛选下面、状态/排序上面（页头固定，不随列表滚动） */}
+      <SearchField
+        size="compact"
+        placeholder={t("tasks.searchPlaceholder")}
+        ariaLabel={t("tasks.searchAria")}
+        clearLabel={t("tasks.searchClear")}
+        value={filter.search ?? ""}
+        onChange={(v) => setFilter({ search: v })}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            // stopPropagation：别让 Escape 继续冒泡到窗口级「隐藏到托盘」的动作
+            e.stopPropagation();
+            setFilter({ search: "" });
+          }
+        }}
+      />
+
+      {/* 次级工具栏：状态 + 排序 */}
       <div className="filter-bar secondary">
         <div className="seg-group subtle" role="group" aria-label={t("tasks.statusAria")}>
           {STATUSES.map((s) => (
@@ -313,105 +295,95 @@ export default function TasksPanel() {
         />
       </div>
 
-      {searchVisible && (
-        <SearchField
-          size="compact"
-          autoFocus
-          placeholder={t("tasks.searchPlaceholder")}
-          ariaLabel={t("tasks.searchAria")}
-          clearLabel={t("tasks.searchClear")}
-          value={filter.search ?? ""}
-          onChange={(v) => setFilter({ search: v })}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              // stopPropagation：别让 Escape 继续冒泡到窗口级「隐藏到托盘」的动作
-              e.stopPropagation();
-              setFilter({ search: "" });
-              setSearchOpen(false);
-            }
-          }}
-        />
-      )}
-
       {analyticsOpen ? (
-        <TaskAnalyticsPanel />
+        <div className="page-scroll">
+          <TaskAnalyticsPanel />
+        </div>
       ) : focusOpen ? (
-        <FocusWorkspace />
+        <div className="page-scroll">
+          <FocusWorkspace />
+        </div>
       ) : (
-        <div className="task-list">
-        {linksError && (
-          // 关联读取失败 ≠ 没有关联：保留旧图标但明确标注可能过期，并提供重试
-          <div className="empty-hint error-text task-list-error" role="status">
-            {t("tasks.linksFailed", { error: linksError })}
-            <button className="btn sm" onClick={() => void loadTaskLinks()}>
-              {t("common.retry")}
-            </button>
-          </div>
-        )}
-        {error && displayedTasks.length > 0 && (
-          // 列表刷新失败：保留上次结果并明确标记「可能不是最新」，不伪装成已刷新
-          <div className="empty-hint error-text task-list-error" role="status">
-            {t("tasks.refreshFailed", { error })}
-            <button className="btn sm" onClick={() => void refresh()}>
-              {t("common.retry")}
-            </button>
-          </div>
-        )}
-        {loading && displayedTasks.length === 0 && !error && (
-          <div className="empty-state">
-            <div className="empty-icon"><ListChecks size={22} /></div>
-            <div className="empty-title">{t("tasks.loading")}</div>
-          </div>
-        )}
-        {!loading && error && displayedTasks.length === 0 && (
-          // 读取失败 ≠ 没有任务：给出真实错误与重试入口
-          <div className="empty-state" role="alert">
-            <div className="empty-icon"><AlertTriangle size={22} /></div>
-            <div className="empty-title">{t("tasks.loadFailed")}</div>
-            <div className="empty-hint error-text">{error}</div>
-            <button className="btn sm primary" onClick={() => void refresh()}>
-              {t("common.retry")}
-            </button>
-          </div>
-        )}
-        {!loading && !error && displayedTasks.length === 0 && (
-          <div className="empty-state">
-            {/* 轻量插画：纯 CSS 渐变气泡 + 一个 SVG 图标，无位图资源 */}
-            <div className="empty-art" aria-hidden="true">
-              <span className="empty-bubble b1" />
-              <span className="empty-bubble b2" />
-              <span className="empty-bubble b3" />
-              <span className="empty-bubble b4" />
-              <Sparkles size={12} className="empty-spark s1" />
-              <Sparkles size={9} className="empty-spark s2" />
-              <span className="empty-cloud" />
-              <span className="empty-orb">
-                <Inbox size={26} strokeWidth={1.7} />
-              </span>
+        <div
+          className="task-list page-scroll"
+          ref={listRef}
+          onScroll={(e) => {
+            listScrollTop.current = e.currentTarget.scrollTop;
+          }}
+        >
+          {linksError && (
+            // 关联读取失败 ≠ 没有关联：保留旧图标但明确标注可能过期，并提供重试
+            <div className="empty-hint error-text task-list-error" role="status">
+              {t("tasks.linksFailed", { error: linksError })}
+              <button className="btn sm" onClick={() => void loadTaskLinks()}>
+                {t("common.retry")}
+              </button>
             </div>
-            <div className="empty-title">
-              {hasSearch
-                ? t("tasks.empty.search")
-                : filter.view === "overdue"
-                  ? t("tasks.empty.overdue")
-                  : t("tasks.empty.default")}
+          )}
+          {error && displayedTasks.length > 0 && (
+            // 列表刷新失败：保留上次结果并明确标记「可能不是最新」，不伪装成已刷新
+            <div className="empty-hint error-text task-list-error" role="status">
+              {t("tasks.refreshFailed", { error })}
+              <button className="btn sm" onClick={() => void refresh()}>
+                {t("common.retry")}
+              </button>
             </div>
-            <div className="empty-hint">
-              {hasSearch ? t("tasks.empty.searchHint") : t("tasks.empty.defaultHint")}
+          )}
+          {loading && displayedTasks.length === 0 && !error && (
+            <div className="empty-state">
+              <div className="empty-icon"><ListChecks size={22} /></div>
+              <div className="empty-title">{t("tasks.loading")}</div>
             </div>
-          </div>
-        )}
-        {displayedTasks.map((task) => {
-          const hold = exitHolds.find((h) => h.task.id === task.id);
-          return (
-            <TaskItem
-              key={task.id}
-              task={task}
-              exiting={!!hold}
-              exitHeight={hold?.height}
-            />
-          );
-        })}
+          )}
+          {!loading && error && displayedTasks.length === 0 && (
+            // 读取失败 ≠ 没有任务：给出真实错误与重试入口
+            <div className="empty-state" role="alert">
+              <div className="empty-icon"><AlertTriangle size={22} /></div>
+              <div className="empty-title">{t("tasks.loadFailed")}</div>
+              <div className="empty-hint error-text">{error}</div>
+              <button className="btn sm primary" onClick={() => void refresh()}>
+                {t("common.retry")}
+              </button>
+            </div>
+          )}
+          {!loading && !error && displayedTasks.length === 0 && (
+            <div className="empty-state">
+              {/* 轻量插画：纯 CSS 渐变气泡 + 一个 SVG 图标，无位图资源 */}
+              <div className="empty-art" aria-hidden="true">
+                <span className="empty-bubble b1" />
+                <span className="empty-bubble b2" />
+                <span className="empty-bubble b3" />
+                <span className="empty-bubble b4" />
+                <Sparkles size={12} className="empty-spark s1" />
+                <Sparkles size={9} className="empty-spark s2" />
+                <span className="empty-cloud" />
+                <span className="empty-orb">
+                  <Inbox size={26} strokeWidth={1.7} />
+                </span>
+              </div>
+              <div className="empty-title">
+                {hasSearch
+                  ? t("tasks.empty.search")
+                  : filter.view === "overdue"
+                    ? t("tasks.empty.overdue")
+                    : t("tasks.empty.default")}
+              </div>
+              <div className="empty-hint">
+                {hasSearch ? t("tasks.empty.searchHint") : t("tasks.empty.defaultHint")}
+              </div>
+            </div>
+          )}
+          {displayedTasks.map((task) => {
+            const hold = exitHolds.find((h) => h.task.id === task.id);
+            return (
+              <TaskItem
+                key={task.id}
+                task={task}
+                exiting={!!hold}
+                exitHeight={hold?.height}
+              />
+            );
+          })}
         </div>
       )}
     </div>

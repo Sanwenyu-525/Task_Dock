@@ -7,7 +7,7 @@
 
 | 已实现 | 未实现（下一轮） |
 |---|---|
-| 桌面端生成二维码 + 6 位配对码（120s TTL） | 收集箱/笔记的增量同步、字段级自动合并（任务同步见 [07-sync.md](07-sync.md)） |
+| 桌面端生成二维码 + 6 位配对码（120s TTL） | 字段级自动合并（任务/收集箱/笔记同步见 [07-sync.md](07-sync.md)） |
 | 手机端应用内扫码（expo-camera）与手动输码 | 系统相机深链之外的发现（mDNS） |
 | 桌面端授权设备落库、列表、撤销 | TLS / SPKI 指纹固定（本轮为局域网 HTTP，见 §5） |
 | 手机端令牌进 SecureStore、连接元数据进 kv | 后台同步、远程推送、剪贴板传输 |
@@ -24,12 +24,13 @@
   3) 点「配对新设备」→ 生成一次性码 + 二维码
         QR = taskdock://pair?v=1&host=<LAN IPv4>&port=<port>&code=<6位>
              &name=<URL编码设备名>&instance=<实例ID>&fp=<8位十六进制展示指纹>
-  4) 弹层每 1s 轮询状态；配对成功显示设备名，关闭弹层即结束会话
+  4) 弹层每 1s 轮询状态；配对成功显示设备名，可「完成」关闭或「查看已配对设备」直接
+     定位到 设置 → 手机与同步
 
 手机端：设置 → 手机与同步 → 配对新设备
   1) 「扫描二维码」申请相机权限后取景；或「手动输入」填地址 + 6 位码
   2) 扫码成功 → 确认页（设备名 / 地址 / 配对码 / 展示指纹）→ 确认配对
-  3) POST /v1/pair {code, device_name, platform}
+  3) POST /v1/pair {code, device_name, platform, device_uid}
   4) 成功后令牌写 SecureStore，其余元数据写 kv；显示「配对成功」
   5) 同步页可「测试连接」→ GET /v1/ping；可「解除本机配对」
 ```
@@ -47,12 +48,18 @@
 
 ```json
 // 请求（上限 4KB）
-{ "code": "482913", "device_name": "Android 手机", "platform": "android" }
+{ "code": "482913", "device_name": "Android 手机", "platform": "android",
+  "device_uid": "0f8fad5b-d9cb-469f-a165-70867728950e" }
 
 // 200
 { "token": "<64 位十六进制>", "device_id": "<uuid>", "server_name": "DESKTOP-PC",
   "api_version": 1, "paired_at": "2026-11-08T14:30:00Z" }
 ```
+
+`device_uid` 是手机端持久化的安装级标识（8–64 位 ASCII 字母/数字/`-`/`_`，可选）。
+桌面端在配对成功、会话确认后撤销同一 uid 此前的有效记录，列表只保留最新一条，旧令牌
+立即失效；旧客户端不传该字段时保持原有「每次配对新增一条」的行为。撤销记录是软删除，
+保留审计历史。
 
 错误码（HTTP 状态）：
 
@@ -79,7 +86,7 @@
 
 ## 4. 本地数据
 
-### 桌面端（SQLite v42）
+### 桌面端（SQLite v42 / v46）
 
 ```sql
 CREATE TABLE mobile_devices (
@@ -90,14 +97,17 @@ CREATE TABLE mobile_devices (
   created_at TEXT NOT NULL,
   last_seen_at TEXT,
   last_ip TEXT,
-  revoked_at TEXT                    -- 软删除，立即失效
+  revoked_at TEXT,                   -- 软删除，立即失效
+  device_uid TEXT                    -- v46：手机端安装标识，NULL=旧客户端/旧记录
 );
 ```
 
-- 迁移只追加 v42，不改历史迁移；旧库升级后空表可用。
+- 迁移只追加 v42/v46，不改历史迁移；旧库升级后空表可用，旧记录 `device_uid` 为 NULL。
 - `mobile_devices` 已登记 `BACKUP_TABLES`，但按 `is_local_transient_table` 处理：备份只写
   空 section，不把令牌哈希迁移到其他机器；恢复旧备份也不会写回设备信任。
 - 设备名/平台只作展示；`last_ip` 只用于「最近连接」诊断，不参与鉴权；HWND/PID 不落库。
+- `device_uid` 是手机端生成的安装级随机标识，不是硬件序列号，也不参与鉴权；只在重新配对时
+  用于撤销同一安装的旧授权。
 
 ### 手机端
 
@@ -105,9 +115,11 @@ CREATE TABLE mobile_devices (
 |---|---|---|
 | 设备令牌 | `expo-secure-store`（Android Keystore） | `taskdock.sync.token.v1` |
 | 连接元数据 | SQLite `kv` | `sync.connection.v1` |
+| 安装级设备标识 | SQLite `kv` | `device.uid.v1` |
 
 元数据只含 `baseUrl/host/port/serverName/deviceId/platform/instanceId/fingerprint/pairedAt/
-lastSeenAt`，不含配对码。`clearConnection()` 同时删除令牌与元数据；任一步失败会向 UI 报错。
+lastSeenAt`，不含配对码；`device.uid.v1` 为随机 UUID，解除配对不清除。`clearConnection()`
+只删除令牌与连接元数据；任一步失败会向 UI 报错。
 
 ## 5. 安全边界与已知偏差
 
@@ -201,3 +213,13 @@ lastSeenAt`，不含配对码。`clearConnection()` 同时删除令牌与元数�
 - 2026-11-09 任务同步落地：配对令牌哈希同时作为同步载荷的 KDF 输入（域分离前缀），
   新增 `/v1/changes`、`/v1/ops` 与 v43 变更日志；配对协议与设备表未变。详见
   [07-sync.md](07-sync.md)。
+- 2026-11-09 收集箱/笔记同步：v44 变更日志覆盖 `notes` / `quick_capture_items`；
+  配对协议、令牌存储与设备表均未变，现有配对无需重新扫码。
+- 2026-11-09 配对成功态新增「查看已配对设备」：关闭弹层并定位到 设置 → 手机与同步，
+  不复制设备列表；设备行按 `last_seen_at` + 固定 2 分钟窗口显示「在线」，超窗回落
+  「最近连接」/「尚未连接」。同步仍是无状态请求，不引入可配置的连接/断开时长；
+  无新增设置键、协议或数据结构变化。
+- 2026-11-09 配对去重：手机端生成并持久化安装级 `device_uid`（kv `device.uid.v1`，
+  解除配对不清除），`/v1/pair` 可选携带；桌面端 v46 给 `mobile_devices` 增加
+  `device_uid`，同 uid 重新配对在会话确认后撤销旧授权，列表只保留最新一条。
+  旧客户端不传该字段时仍按原行为新增；历史记录该列为 NULL，不受影响。

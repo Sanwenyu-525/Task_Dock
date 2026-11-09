@@ -475,10 +475,11 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - 任务编辑交互（2026-11-04，模态清理第二批）：原 `TaskEditor.tsx`（`modal-mask` + Dialog）
   删除，改为 `src/components/tasks/TaskEditorView.tsx` 的**页面内编辑态**；`TasksPanel.tsx`
   在主内容区做列表 ↔ 编辑切换，与工作流/规划中心共用同一交互语言：
-  - 不新开窗口、不铺全局遮罩、无固定底栏；滚动沿用 `.tab-content` 单一容器（面板解除自身
-    `overflow`），操作区随内容流式排布。
-  - 返回列表恢复列表滚动位置（列表可见时记录 `scrollTop`，退出编辑后 `requestAnimationFrame`
-    回写）；筛选状态本就在 `useTasksStore.filter`，切换不丢失。
+  - 不新开窗口、不铺全局遮罩、无固定底栏；操作区随内容流式排布。2026-11-09 起列表页改为
+    页头固定 + 列表独立滚动（`.page-fill` / `.page-scroll`），编辑态改由 `.task-editor-page`
+    自身滚动（不再依赖 `.tab-content` 整页滚动）。
+  - 返回列表恢复列表滚动位置（列表可见时记录 `.task-list` 的 `scrollTop`，退出编辑后
+    `requestAnimationFrame` 回写）；筛选状态本就在 `useTasksStore.filter`，切换不丢失。
   - 有未保存修改时返回先出页内确认条（继续编辑 / 放弃修改）；保存失败保留表单内容并就地
     显示错误；同步防重入保证连点保存只提交一次；组件卸载后丢弃迟到响应，不再回调。
   - 打开入口统一经 `useUiStore.openEditor`（会切到任务页），微件等页面因此有编辑态宿主。
@@ -1104,13 +1105,13 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 `src/store/useCaptureStore.ts`。
 
 **静态窗口**（`src-tauri/tauri.conf.json`，全部 `decorations=false`、`transparent=true`、
-`shadow=false`、`alwaysOnTop=true`、默认 `visible=false`；除 `main` 外 `skipTaskbar=true`
-——主窗进任务栏使「最小化」有恢复入口，「隐藏到托盘」只走托盘/热键（2026-11-08）；详细能力见
-`src-tauri/capabilities/`）：
+`shadow=false`、`alwaysOnTop=true`、`skipTaskbar=true`、默认 `visible=false`；主窗只保留托盘/
+热键/第二实例唤回入口，不占任务栏（2026-11-09 按用户选择恢复，取代 2026-11-08 的进任务栏
+方案）；详细能力见 `src-tauri/capabilities/`）：
 
 | 窗口 | 用途 | 尺寸（逻辑像素） | 关闭语义 |
 |---|---|---|---|
-| `main` | 任务栏主窗（极简/紧凑/完整） | 400×560，可缩放 | 隐藏，可贴边吸附/胶囊区域 |
+| `main` | 托盘主窗（极简/紧凑/完整） | 400×560，可缩放 | 隐藏，可贴边吸附/胶囊区域 |
 | `context-menu` | 托盘/右键菜单 | 250×620，固定 | 失焦隐藏 |
 | `notification` | 桌面通知 | 400×400，固定 | 隐藏后复用 |
 | `capture` | 快速捕获（v0.7） | 640×360，固定、不占任务栏 | `prevent_close` + hide 复用同一 WebView |
@@ -1526,8 +1527,8 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   详细数据模型、状态机与接口边界见 [docs/workflows/README.md](workflows/README.md)。
 - 前端编辑交互（2026-11-04）：工作流「新建/编辑」由 `Dialog lg` 改为**页面内编辑态**
   （`src/components/workflows/WorkflowEditorView.tsx`，列表在 `WorkflowsPanel.tsx` 内切换）。
-  不新开窗口、不铺全局遮罩；滚动沿用 `.tab-content` 单一容器（编辑态解除列表面板自身
-  `overflow`），操作按钮随内容流式排布、不使用固定底栏。「添加步骤」复用
+  不新开窗口、不铺全局遮罩；操作按钮随内容流式排布、不使用固定底栏。2026-11-09 起列表页
+  页头固定、列表独立滚动；编辑态由 `.workflows-panel.wf-editor-page` 自身滚动。「添加步骤」复用
   `Select/Popover` 锚定菜单；未保存返回为页内确认条。执行链路、数据模型与命令不变。
 
 ## 资源管理与智能清理（2026-11-06）
@@ -1576,26 +1577,44 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
   主管任务才绑定 `0.0.0.0:<port>`，关闭、端口变更或应用退出时监听循环在 2s 内退出。
 - 配对：一次性 6 位码 + 120s TTL + 最多 5 次尝试；成功后签发 256 位令牌，SQLite
   `mobile_devices`（迁移 v42）只存 SHA-256 哈希；撤销写 `revoked_at`，令牌立即失效。
-- 数据边界：配对轮只做配对与连通性探测，不传业务数据；任务同步在 v1 单独实现（见下节），
+- 数据边界：配对轮只做配对与连通性探测，不传业务数据；同步在 v1/v1.1 单独实现（见下节），
   传输为局域网 HTTP + 应用层加密，威胁模型与 TLS 计划见
   [docs/mobile/06-pairing.md](mobile/06-pairing.md)、[docs/mobile/07-sync.md](mobile/07-sync.md)。
 - 兼容性：新增表 `mobile_devices` 已登记 `BACKUP_TABLES` 并按设备本地瞬时状态处理（备份只写
   空 section，不迁移令牌哈希）；新增设置键带默认值，旧库/旧备份无需迁移。
 
-## 手机任务同步（v1，2026-11-09）
+## 手机同步（v1.1，2026-11-09）
 
-- 分层：`mobile_sync/sync.rs`（加密信封、任务映射、pull/push 数据层）→ `server.rs`
-  （`GET /v1/changes`、`POST /v1/ops`）→ SQLite v43 `sync_changes` / `sync_ops`；
-  手机端 `src/lib/sync/{crypto,client,engine}.ts` + `src/db/sync.ts` + schema v4。
-- 变更日志：触发器覆盖 `tasks` 的 INSERT/UPDATE/DELETE；`seq` 既是同步游标也是记录版本，
-  DELETE 写墓碑；升级时回填现有任务基线。`sync_changes` / `sync_ops` 属于本机瞬时状态，
-  备份只写空 section、恢复忽略。
+- 分层：`mobile_sync/sync.rs`（加密信封、任务/笔记/收集箱映射、pull/push 数据层）→
+  `server.rs`（`GET /v1/changes`、`POST /v1/ops`）→ SQLite v43/v44 `sync_changes` / `sync_ops`；
+  手机端 `src/lib/sync/{crypto,client,engine}.ts` + `src/db/sync.ts` + schema v4/v5。
+- 变更日志：v43 触发器覆盖 `tasks`，v44 追加 `notes`（entity=`note`）与
+  `quick_capture_items`（entity=`capture`）的 INSERT/UPDATE/DELETE；`seq` 既是同步游标也是
+  记录版本，DELETE 写墓碑；升级时回填任务、笔记与 `inbox` 收集箱基线。
+  `sync_changes` / `sync_ops` 属于本机瞬时状态，备份只写空 section、恢复忽略。
 - 传输：局域网 HTTP + 载荷加密（XSalsa20-Poly1305）。密钥由 `SHA-256(令牌)` 再做
   `SHA-512("taskdock-sync-v1:" + hash)[0..32]` 派生；信封 `{v,n,d}`，明文内嵌 AAD
   （方法 + 路径），跨端点重放解密失败；Bearer 鉴权与撤销语义不变。
-- 语义：pull 应用服务端变更（本地有未发送 outbox 时跳过）；push 按记录合并 outbox，
-  `base_rev` 与最新 `seq` 不一致返回冲突、不覆盖；`op_id` 幂等；push 后再 pull 回填
-  `server_rev`。冲突在手机端逐条选择「采用桌面端 / 保留本机」。
-- 范围：v1 只同步 tasks；captures/notes 的 outbox 仍只存本机。后台/自动同步、字段级合并、
-  墓碑保留期清理未实现。详见 [docs/mobile/07-sync.md](mobile/07-sync.md)。
+- 语义：pull 应用服务端变更（本地有未发送 outbox 时跳过）；push 按「实体 + 记录」合并
+  outbox，`base_rev` 与最新 `seq` 不一致返回冲突、不覆盖；`op_id` 幂等；push 后再 pull
+  回填 `server_rev`。笔记正文映射为 `body`（桌面列名 `content`），收集箱 handled/converted
+  在 pull 时映射为墓碑；手机端按条数/UTF-8 体积分批 push。冲突逐条选择「采用桌面端 / 保留本机」。
+- 范围：任务、收集箱、笔记三种实体已同步。后台/自动同步、字段级合并、笔记的任务/工作现场
+  关联同步、墓碑保留期清理未实现。详见 [docs/mobile/07-sync.md](mobile/07-sync.md)。
+
+## 手机文件互传（v1，2026-11-09）
+
+- 分层：`mobile_sync/files.rs`（记录、分块落盘、SHA-256、路径安全）→ `server.rs`
+  （`GET/POST /v1/files`、`/v1/files/{id}/chunk/{index}`、`.../complete`、`.../delete`）→
+  `commands/mobile_sync.rs`（offer/list/delete/reveal/open inbox）→ `bridge.ts` →
+  设置页 `MobileSyncSection`；手机端 `src/lib/sync/{files,fileIo}.ts` + `FilesScreen`。
+- 存储：`data_dir/mobile_files/{outbox,inbox,tmp}`；SQLite v45 `mobile_files`
+  （本机瞬时状态，不进备份）。单文件 200MB、分块 192KB，完成时校验大小/分块数/SHA-256，
+  原子改名到 `inbox/`；删除只允许 `mobile_files` 根目录内普通文件。
+- 传输：与同步共用 Bearer 令牌与 XSalsa20-Poly1305 信封；分块 AAD 绑定文件 id 与序号，
+  换文件/换序号/跨端点重放都会解密失败。`stored_path` 不下发给手机。
+- 手机端使用 `expo-file-system` 58 的 `File.pickFileAsync`、SAF 目录授权、
+  `FileHandle` 分块读写与 `File.preview`，不新增原生依赖；接收目录 URI 存 kv。
+- 兼容性：新增表 `mobile_files` 已登记本机瞬时表；无新增设置键，旧库升级只追加迁移 v45。
+  详见 [docs/mobile/08-file-transfer.md](mobile/08-file-transfer.md)。
 

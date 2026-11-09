@@ -27,6 +27,7 @@ use uuid::Uuid;
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
 
+pub mod files;
 pub mod server;
 pub mod sync;
 
@@ -41,11 +42,16 @@ const INSTANCE_KEY: &str = "mobile_sync_instance_id";
 /// 设备名/平台字段的展示上限，防止异常客户端写入超长文本。
 const MAX_DEVICE_NAME_CHARS: usize = 64;
 const MAX_PLATFORM_CHARS: usize = 32;
+/// 安装级设备标识：UUID 为 36 位；下限避免过短值碰撞后误撤销其他设备。
+const MIN_DEVICE_UID_CHARS: usize = 8;
+const MAX_DEVICE_UID_CHARS: usize = 64;
 
 /// 共享状态：命令层与 HTTP 监听共用一个实例。
 #[derive(Clone)]
 pub struct MobileSyncState {
     inner: Arc<Mutex<Inner>>,
+    /// 文件互传根目录（data_dir/mobile_files）。不可变，不需要放进互斥锁。
+    files_root: std::path::PathBuf,
 }
 
 struct Inner {
@@ -129,6 +135,10 @@ pub struct PairRequest {
     pub device_name: String,
     #[serde(default)]
     pub platform: String,
+    /// 手机端安装级标识：同一安装重新配对时替换旧授权。
+    /// 旧客户端不传该字段时为空，保持原有「每次配对新增一条记录」的行为。
+    #[serde(default)]
+    pub device_uid: String,
 }
 
 /// 配对成功响应（只在此处返回一次明文令牌）。
@@ -155,7 +165,7 @@ pub enum PairFailure {
 impl MobileSyncState {
     /// 创建状态并确保实例 ID 持久化。实例 ID 只用于二维码里的设备身份展示，
     /// 不是密钥；写入失败时使用临时 ID，配对仍可工作（重启后指纹变化）。
-    pub fn new(db: &Db) -> Self {
+    pub fn new(db: &Db, files_root: std::path::PathBuf) -> Self {
         let instance_id = load_or_create_instance_id(db);
         let server_name = host_display_name();
         Self {
@@ -167,7 +177,13 @@ impl MobileSyncState {
                 server_name,
                 instance_id,
             })),
+            files_root,
         }
+    }
+
+    /// 文件互传根目录（只读）。
+    pub fn files_root(&self) -> &std::path::Path {
+        &self.files_root
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -469,6 +485,7 @@ pub fn complete_pairing(
     let code = request.code.trim().to_string();
     let name = sanitize_device_name(&request.device_name);
     let platform = sanitize_platform(&request.platform);
+    let device_uid = sanitize_device_uid(&request.device_uid);
 
     // 0. 关闭开关可能先于监听循环生效（最长 2s 窗口）：以设置为准 fail-closed，
     // 绝不在用户已关闭手机接入后继续签发令牌。
@@ -516,9 +533,21 @@ pub fn complete_pairing(
     let inserted = db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO mobile_devices
-               (id, name, platform, token_hash, created_at, last_seen_at, last_ip, revoked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, NULL)",
-            rusqlite::params![device_id, name, platform, token_hash, paired_at, last_ip],
+               (id, name, platform, token_hash, created_at, last_seen_at, last_ip, revoked_at, device_uid)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, NULL, ?7)",
+            rusqlite::params![
+                device_id,
+                name,
+                platform,
+                token_hash,
+                paired_at,
+                last_ip,
+                if device_uid.is_empty() {
+                    None
+                } else {
+                    Some(device_uid.as_str())
+                }
+            ],
         )?;
         Ok(())
     });
@@ -555,6 +584,23 @@ pub fn complete_pairing(
             Ok(())
         });
         return Err(PairFailure::Closed);
+    }
+
+    // 4. 同一安装重新配对：撤销该安装此前的有效授权，列表只保留最新一条。
+    //    放在会话回填之后执行——若会话已被取消/替换，上面只补偿删除本次新行，
+    //    不会误伤此前仍有效的旧授权。撤销失败不让配对失败：新令牌已签发，
+    //    下一轮同 uid 配对会继续收敛旧记录。
+    if !device_uid.is_empty() {
+        if let Err(e) = db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE mobile_devices SET revoked_at = ?1
+                 WHERE device_uid = ?2 AND id <> ?3 AND revoked_at IS NULL",
+                rusqlite::params![paired_at, device_uid, device_id],
+            )?;
+            Ok(())
+        }) {
+            tracing::warn!("手机重新配对撤销旧授权失败: {e}");
+        }
     }
 
     // last_ip 已在插入时记录配对来源；后续 ping 会刷新 last_seen_at。
@@ -732,6 +778,22 @@ fn sanitize_platform(raw: &str) -> String {
     }
 }
 
+/// 安装级设备标识：只接受 8–64 位 ASCII 字母/数字/`-`/`_`。
+/// 缺失、非法或过短一律返回空串，按旧客户端处理（不去重），避免误撤销其他设备。
+fn sanitize_device_uid(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() < MIN_DEVICE_UID_CHARS
+        || trimmed.len() > MAX_DEVICE_UID_CHARS
+        || !trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        String::new()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// 6 位十进制配对码。uuid v4 自带 122 位随机性，取模偏差可忽略；
 /// 这里的码只是「屏幕到手机的短时信道」，真正凭据是成功后的 256 位令牌。
 fn generate_pairing_code() -> String {
@@ -789,7 +851,10 @@ mod tests {
     fn test_state(db: &Db) -> MobileSyncState {
         db.set_setting("mobile_sync_enabled", serde_json::json!(true))
             .unwrap();
-        let state = MobileSyncState::new(db);
+        let state = MobileSyncState::new(
+            db,
+            std::env::temp_dir().join("taskdock-mobile-files-state-test"),
+        );
         state.set_running(47822);
         state
     }
@@ -870,6 +935,7 @@ mod tests {
                 code: offer.code.clone(),
                 device_name: "Pixel 9".into(),
                 platform: "android".into(),
+                device_uid: String::new(),
             },
             Some("192.168.1.20".into()),
         )
@@ -885,6 +951,7 @@ mod tests {
                 code: offer.code.clone(),
                 device_name: "Pixel 9".into(),
                 platform: "android".into(),
+                device_uid: String::new(),
             },
             None,
         );
@@ -919,6 +986,111 @@ mod tests {
     }
 
     #[test]
+    fn device_uid_requires_safe_8_to_64_chars() {
+        let uuid = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        assert_eq!(sanitize_device_uid(""), "");
+        assert_eq!(sanitize_device_uid("short"), "");
+        assert_eq!(sanitize_device_uid("bad uid with spaces"), "");
+        assert_eq!(sanitize_device_uid("bad/uid"), "");
+        assert_eq!(sanitize_device_uid(&format!("  {uuid}  ")), uuid);
+        assert_eq!(sanitize_device_uid(&"a".repeat(65)), "");
+    }
+
+    #[test]
+    fn pair_request_without_device_uid_deserializes_for_legacy_clients() {
+        let request: PairRequest = serde_json::from_str(
+            r#"{"code":"482913","device_name":"Android 手机","platform":"android"}"#,
+        )
+        .unwrap();
+        assert_eq!(request.code, "482913");
+        assert_eq!(sanitize_device_uid(&request.device_uid), "");
+    }
+
+    #[test]
+    fn repairing_same_device_uid_replaces_previous_authorization() {
+        let db = Db::open_in_memory().unwrap();
+        let state = test_state(&db);
+        let device_uid = "0f8fad5b-d9cb-469f-a165-70867728950e";
+
+        let first_offer = start_session(&state);
+        let first = complete_pairing(
+            &db,
+            &state,
+            PairRequest {
+                code: first_offer.code,
+                device_name: "Android 手机".into(),
+                platform: "android".into(),
+                device_uid: device_uid.into(),
+            },
+            Some("192.168.1.20".into()),
+        )
+        .unwrap();
+        assert_eq!(list_active_devices(&db).unwrap().len(), 1);
+
+        let second_offer = start_session(&state);
+        let second = complete_pairing(
+            &db,
+            &state,
+            PairRequest {
+                code: second_offer.code,
+                device_name: "Android 手机".into(),
+                platform: "android".into(),
+                device_uid: device_uid.into(),
+            },
+            Some("192.168.1.21".into()),
+        )
+        .unwrap();
+
+        let devices = list_active_devices(&db).unwrap();
+        assert_eq!(devices.len(), 1, "同一安装重新配对后只保留一条有效授权");
+        assert_eq!(devices[0].id, second.device_id);
+        // 旧令牌立即失效，新令牌可用。
+        assert!(authenticate_device(&db, &first.token, None)
+            .unwrap()
+            .is_none());
+        assert!(authenticate_device(&db, &second.token, None)
+            .unwrap()
+            .is_some());
+        // 旧记录是软删除，保留审计历史而不是物理删除。
+        let revoked: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM mobile_devices
+                     WHERE id = ?1 AND revoked_at IS NOT NULL AND device_uid = ?2",
+                    rusqlite::params![first.device_id, device_uid],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(revoked, 1);
+    }
+
+    #[test]
+    fn legacy_pairing_without_device_uid_keeps_adding_rows() {
+        let db = Db::open_in_memory().unwrap();
+        let state = test_state(&db);
+
+        for _ in 0..2 {
+            let offer = start_session(&state);
+            complete_pairing(
+                &db,
+                &state,
+                PairRequest {
+                    code: offer.code,
+                    device_name: "旧版手机".into(),
+                    platform: "android".into(),
+                    device_uid: String::new(),
+                },
+                None,
+            )
+            .unwrap();
+        }
+
+        // 旧客户端没有安装标识，无法安全判定是否为同一台设备，保持原行为。
+        assert_eq!(list_active_devices(&db).unwrap().len(), 2);
+    }
+
+    #[test]
     fn wrong_code_locks_session_after_max_attempts() {
         let db = Db::open_in_memory().unwrap();
         let state = test_state(&db);
@@ -932,6 +1104,7 @@ mod tests {
                     code: "000000".into(),
                     device_name: String::new(),
                     platform: String::new(),
+                    device_uid: String::new(),
                 },
                 None,
             );
@@ -944,6 +1117,7 @@ mod tests {
                 code: "000000".into(),
                 device_name: String::new(),
                 platform: String::new(),
+                device_uid: String::new(),
             },
             None,
         );
@@ -966,6 +1140,7 @@ mod tests {
                 code: offer.code,
                 device_name: "晚到的手机".into(),
                 platform: "android".into(),
+                device_uid: String::new(),
             },
             None,
         );
@@ -990,6 +1165,7 @@ mod tests {
                 code: offer.code,
                 device_name: "被取消的设备".into(),
                 platform: "android".into(),
+                device_uid: String::new(),
             },
             None,
         );
@@ -1012,6 +1188,7 @@ mod tests {
                 code: offer.code,
                 device_name: "关闭后到达的手机".into(),
                 platform: "android".into(),
+                device_uid: String::new(),
             },
             None,
         );

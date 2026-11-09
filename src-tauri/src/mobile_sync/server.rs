@@ -3,15 +3,17 @@
 //! 与 `agents/http_ingest` 的相同点：hyper 1.x、头部读取超时、请求体上限、
 //! 连接/在途并发上限、退出信号驱动关闭。不同点：
 //! - 绑定 `0.0.0.0`（由设置开关控制），不绑定回环；
-//! - 路由：`/v1/health`、`/v1/pair`、`/v1/ping`，以及同步的 `/v1/changes`、`/v1/ops`；
+//! - 路由：`/v1/health`、`/v1/pair`、`/v1/ping`、同步的 `/v1/changes`、`/v1/ops`，
+//!   以及文件互传的 `/v1/files`、`/v1/files/{id}/chunk/{index}`、`.../complete`、`.../delete`；
 //! - 配对接口无鉴权（凭一次性码），其余接口用 Bearer 设备令牌；
-//! - 同步载荷用设备令牌哈希派生的密钥做 XSalsa20-Poly1305 加密，业务数据不明文上线。
+//! - 同步与文件载荷用设备令牌哈希派生的密钥做 XSalsa20-Poly1305 加密，业务数据不明文上线。
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
@@ -19,12 +21,14 @@ use hyper::header::{ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE};
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::db::Db;
+use crate::error::AppError;
+use crate::mobile_sync::files;
 use crate::mobile_sync::sync::{
     apply_push, decrypt_envelope, derive_key, encrypt_envelope, pull, PushRequest, AAD_PULL,
     AAD_PUSH, MAX_PULL_LIMIT, MAX_PUSH_OPS, SYNC_MAX_BODY,
@@ -43,6 +47,8 @@ const MAX_INFLIGHT: usize = 8;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const BODY_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// 单个分块请求体上限：192KB 明文 base64 后约 256KB，信封 JSON 再留一倍余量。
+const FILE_CHUNK_BODY_MAX: usize = 512 * 1024;
 
 pub struct ServerCtx {
     db: Arc<Db>,
@@ -500,6 +506,447 @@ async fn handle_ops(
     }
 }
 
+/// 文件互传子路由：与同步接口共用 Bearer 鉴权与加密信封。
+enum FileRoute {
+    List,
+    Create,
+    DownloadChunk { id: String, index: u64 },
+    UploadChunk { id: String, index: u64 },
+    Complete { id: String },
+    Delete { id: String },
+}
+
+enum FileRouteMatch {
+    Route(FileRoute),
+    NotFound,
+    MethodNotAllowed,
+}
+
+fn is_file_id(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// 解析文件路由；`None` 表示不是文件路径，交回通用路由。
+fn parse_file_route(method: &str, path: &str) -> Option<FileRouteMatch> {
+    if path == "/v1/files" {
+        return Some(match method {
+            "GET" => FileRouteMatch::Route(FileRoute::List),
+            "POST" => FileRouteMatch::Route(FileRoute::Create),
+            _ => FileRouteMatch::MethodNotAllowed,
+        });
+    }
+    let rest = path.strip_prefix("/v1/files/")?;
+    let segments: Vec<&str> = rest.split('/').collect();
+    let id = segments.first().copied().unwrap_or("");
+    if !is_file_id(id) {
+        return Some(FileRouteMatch::NotFound);
+    }
+    let route = match (method, segments.as_slice()) {
+        ("GET", [_, "chunk", index]) => index
+            .parse::<u64>()
+            .ok()
+            .map(|index| FileRoute::DownloadChunk { id: id.to_string(), index }),
+        ("POST", [_, "chunk", index]) => index
+            .parse::<u64>()
+            .ok()
+            .map(|index| FileRoute::UploadChunk { id: id.to_string(), index }),
+        ("POST", [_, "complete"]) => Some(FileRoute::Complete { id: id.to_string() }),
+        ("POST", [_, "delete"]) => Some(FileRoute::Delete { id: id.to_string() }),
+        _ => None,
+    };
+    Some(match route {
+        Some(route) => FileRouteMatch::Route(route),
+        None => FileRouteMatch::MethodNotAllowed,
+    })
+}
+
+async fn dispatch_file_route(
+    route: FileRoute,
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+) -> Response<Full<Bytes>> {
+    match route {
+        FileRoute::List => handle_files_list(req, ctx, peer).await,
+        FileRoute::Create => handle_file_create(req, ctx, peer).await,
+        FileRoute::DownloadChunk { id, index } => {
+            handle_file_chunk_download(req, ctx, peer, id, index).await
+        }
+        FileRoute::UploadChunk { id, index } => {
+            handle_file_chunk_upload(req, ctx, peer, id, index).await
+        }
+        FileRoute::Complete { id } => handle_file_complete(req, ctx, peer, id).await,
+        FileRoute::Delete { id } => handle_file_delete(req, ctx, peer, id).await,
+    }
+}
+
+/// 加密 JSON 响应：文件接口与同步接口一样，业务字段不进明文。
+fn encrypted_response(key: &[u8; 32], aad: &str, value: Value) -> Response<Full<Bytes>> {
+    match encrypt_envelope(key, aad, &value) {
+        Ok(envelope) => json_response(StatusCode::OK, envelope),
+        Err(error) => {
+            tracing::warn!("手机文件互传响应加密失败: {error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "文件处理失败，请重试",
+            )
+        }
+    }
+}
+
+fn file_error(error: AppError) -> Response<Full<Bytes>> {
+    match error {
+        AppError::NotFound(message) => api_error(StatusCode::NOT_FOUND, "not_found", &message),
+        AppError::Conflict(message) => api_error(StatusCode::CONFLICT, "conflict", &message),
+        AppError::Validation(message) => {
+            api_error(StatusCode::BAD_REQUEST, "invalid_request", &message)
+        }
+        other => {
+            tracing::warn!("手机文件互传失败: {other}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "文件处理失败，请重试",
+            )
+        }
+    }
+}
+
+fn parse_envelope(body: &[u8]) -> Result<Value, Response<Full<Bytes>>> {
+    serde_json::from_slice(body).map_err(|_| {
+        api_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "请求必须是加密信封 JSON",
+        )
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct CreateFileRequest {
+    name: String,
+    size: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct ChunkPayload {
+    data: String,
+}
+
+/// GET /v1/files：可下载的 `to_phone` 文件 + 本机上传记录。
+async fn handle_files_list(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let db = ctx.db.clone();
+    let device_id = device.id.clone();
+    let result = tokio::task::spawn_blocking(move || files::list_for_device(&db, &device_id)).await;
+    let key = derive_key(&token_hash);
+    match result {
+        Ok(Ok(list)) => encrypted_response(&key, files::AAD_FILES_LIST, json!({ "files": list })),
+        Ok(Err(error)) => file_error(error),
+        Err(join_error) => {
+            tracing::warn!("手机文件列表任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "文件处理失败，请重试",
+            )
+        }
+    }
+}
+
+/// POST /v1/files：手机创建上传记录，返回分块参数。
+async fn handle_file_create(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let body = match read_body(req, SYNC_MAX_BODY).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let key = derive_key(&token_hash);
+    let envelope = match parse_envelope(&body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let data = match decrypt_envelope(&key, files::AAD_FILE_CREATE, &envelope) {
+        Ok(value) => value,
+        Err(reason) => {
+            tracing::warn!("手机文件创建载荷解密失败: {reason}");
+            return api_error(StatusCode::BAD_REQUEST, "invalid_request", "文件载荷无效");
+        }
+    };
+    let request: CreateFileRequest = match serde_json::from_value(data) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "文件载荷字段不完整",
+            )
+        }
+    };
+
+    let db = ctx.db.clone();
+    let root = ctx.state.files_root().to_path_buf();
+    let device_id = device.id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        files::create_upload(&db, &root, &device_id, &request.name, request.size)
+    })
+    .await;
+    match result {
+        Ok(Ok(file)) => {
+            encrypted_response(&key, files::AAD_FILE_CREATE, json!({ "file": file }))
+        }
+        Ok(Err(error)) => file_error(error),
+        Err(join_error) => {
+            tracing::warn!("手机文件创建任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "文件处理失败，请重试",
+            )
+        }
+    }
+}
+
+/// GET /v1/files/{id}/chunk/{index}：下载一个分块（base64 放进加密信封）。
+async fn handle_file_chunk_download(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+    id: String,
+    index: u64,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let aad = files::aad_file_chunk("GET", &id, index);
+    let db = ctx.db.clone();
+    let root = ctx.state.files_root().to_path_buf();
+    let device_id = device.id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        files::read_chunk(&db, &root, Some(&device_id), &id, index)
+    })
+    .await;
+    let key = derive_key(&token_hash);
+    match result {
+        Ok(Ok(bytes)) => encrypted_response(
+            &key,
+            &aad,
+            json!({ "index": index, "data": STANDARD.encode(bytes) }),
+        ),
+        Ok(Err(error)) => file_error(error),
+        Err(join_error) => {
+            tracing::warn!("手机文件分块读取任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "文件处理失败，请重试",
+            )
+        }
+    }
+}
+
+/// POST /v1/files/{id}/chunk/{index}：上传一个分块。
+async fn handle_file_chunk_upload(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+    id: String,
+    index: u64,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let body = match read_body(req, FILE_CHUNK_BODY_MAX).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let key = derive_key(&token_hash);
+    let aad = files::aad_file_chunk("POST", &id, index);
+    let envelope = match parse_envelope(&body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let data = match decrypt_envelope(&key, &aad, &envelope) {
+        Ok(value) => value,
+        Err(reason) => {
+            tracing::warn!("手机文件分块载荷解密失败: {reason}");
+            return api_error(StatusCode::BAD_REQUEST, "invalid_request", "文件载荷无效");
+        }
+    };
+    let payload: ChunkPayload = match serde_json::from_value(data) {
+        Ok(value) => value,
+        Err(_) => {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "文件分块字段不完整",
+            )
+        }
+    };
+    let bytes = match STANDARD.decode(payload.data) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_request", "文件分块不是合法 base64")
+        }
+    };
+    if bytes.is_empty() || bytes.len() as u64 > files::CHUNK_BYTES {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request", "文件分块长度非法");
+    }
+
+    let db = ctx.db.clone();
+    let device_id = device.id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        files::write_chunk(&db, &device_id, &id, index, &bytes)
+    })
+    .await;
+    match result {
+        Ok(Ok(file)) => encrypted_response(&key, &aad, json!({ "file": file })),
+        Ok(Err(error)) => file_error(error),
+        Err(join_error) => {
+            tracing::warn!("手机文件分块写入任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "文件处理失败，请重试",
+            )
+        }
+    }
+}
+
+/// POST /v1/files/{id}/complete：校验并落盘到 inbox。
+async fn handle_file_complete(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+    id: String,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let body = match read_body(req, MAX_BODY).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let key = derive_key(&token_hash);
+    let aad = files::aad_file_complete(&id);
+    let envelope = match parse_envelope(&body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if let Err(reason) = decrypt_envelope(&key, &aad, &envelope) {
+        tracing::warn!("手机文件完成载荷解密失败: {reason}");
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request", "文件载荷无效");
+    }
+
+    let db = ctx.db.clone();
+    let root = ctx.state.files_root().to_path_buf();
+    let device_id = device.id.clone();
+    let result =
+        tokio::task::spawn_blocking(move || files::complete_upload(&db, &root, &device_id, &id))
+            .await;
+    match result {
+        Ok(Ok(file)) => encrypted_response(&key, &aad, json!({ "file": file })),
+        Ok(Err(error)) => file_error(error),
+        Err(join_error) => {
+            tracing::warn!("手机文件完成落盘任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "文件处理失败，请重试",
+            )
+        }
+    }
+}
+
+/// POST /v1/files/{id}/delete：删除记录与磁盘副本（手机可删自己的上传/已下载文件）。
+async fn handle_file_delete(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+    id: String,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let body = match read_body(req, MAX_BODY).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let key = derive_key(&token_hash);
+    let aad = files::aad_file_delete(&id);
+    let envelope = match parse_envelope(&body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if let Err(reason) = decrypt_envelope(&key, &aad, &envelope) {
+        tracing::warn!("手机文件删除载荷解密失败: {reason}");
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request", "文件载荷无效");
+    }
+
+    let db = ctx.db.clone();
+    let root = ctx.state.files_root().to_path_buf();
+    let device_id = device.id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        files::delete_file(&db, &root, Some(&device_id), &id)
+    })
+    .await;
+    match result {
+        Ok(Ok(deleted)) => encrypted_response(&key, &aad, json!({ "deleted": deleted })),
+        Ok(Err(error)) => file_error(error),
+        Err(join_error) => {
+            tracing::warn!("手机文件删除任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "文件处理失败，请重试",
+            )
+        }
+    }
+}
+
 async fn handle_health() -> Response<Full<Bytes>> {
     json_response(
         StatusCode::OK,
@@ -514,6 +961,29 @@ async fn route(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+
+    // 文件互传子路由先于通用路由解析：路径带 id/分块序号，不能走精确匹配。
+    if let Some(parsed) = parse_file_route(method.as_str(), &path) {
+        let response = match parsed {
+            FileRouteMatch::Route(route) => dispatch_file_route(route, req, ctx, peer).await,
+            FileRouteMatch::NotFound => {
+                api_error(StatusCode::NOT_FOUND, "not_found", "文件不存在")
+            }
+            FileRouteMatch::MethodNotAllowed => {
+                let mut resp = api_error(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "方法不允许",
+                );
+                resp.headers_mut()
+                    .insert(ALLOW, hyper::header::HeaderValue::from_static("GET, POST"));
+                resp
+            }
+        };
+        tracing::debug!("手机接入 {} {} -> {}", method, path, response.status());
+        return Ok(response);
+    }
+
     let response = match (method.as_str(), path.as_str()) {
         ("GET", "/v1/health") => handle_health().await,
         ("POST", "/v1/pair") => handle_pair(req, ctx, peer).await,

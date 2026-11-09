@@ -2358,6 +2358,140 @@
   overflow: hidden;
 }
 
+/* ── 页面滚动骨架（2026-11-09）────────────────────────────────
+   内容区不再整体滚动：页面根填满可用高度，页头/筛选条固定，
+   主列表或内容区独立滚动。未迁移页面仍保留 base 层的整页滚动。
+   用法：页面根加 .page-fill，列表/内容容器加 .page-scroll。 */
+.tab-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-content-tasks,
+.tab-content-agents,
+.tab-content-apps,
+.tab-content-widgets,
+.tab-content-actions,
+.tab-content-inbox,
+.tab-content-shelf,
+.tab-content-workflows,
+.tab-content-history,
+.tab-content-roadmap,
+.tab-content-help,
+.tab-content-diagnostics,
+.tab-content-resource,
+.tab-content-settings {
+  overflow: hidden;
+}
+
+.page-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-fill > * {
+  flex-shrink: 0;
+}
+
+/* 嵌套页面外壳（如规划中心的「数据源切换 + 工作区」）：内层继续吃满剩余高度。 */
+.page-fill > .page-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.page-fill > .page-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 滚动容器的子项必须保持自然高度。纵向 flex 滚动容器（如设置页分类面板、
+   任务列表）里子项默认 flex-shrink: 1，内容超高时会被压扁到正好装下，
+   scrollHeight 永远等于 clientHeight：表现为列表不能滚动、折叠分组只剩一条。
+   滚动容器里的内容应溢出而不是压缩。 */
+.page-scroll > * {
+  flex-shrink: 0;
+}
+
+/* 历史时间轴改为页内独立滚动后，吸顶日期标签的补偿从 -10px 改为 0：
+   滚动容器 .history-timeline 自身没有 padding（10px 由 .tab-content 提供）。
+   注意：不要复用 .history-body —— 那是通知摘要行的既有类（单行省略）。 */
+.history-timeline .history-day-label {
+  top: 0;
+}
+
+/* 收集与暂存：页头固定，子页填满剩余高度。收集箱用 .page-scroll 滚列表；
+   暂存架/笔记沿用各自既有的内部滚动容器。 */
+.page-fill > .collection-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.collection-body > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.shelf-workspace {
+  height: 100%;
+  min-height: 0;
+}
+
+/* 工作流：列表页页头固定、列表滚动；编辑/运行/历史/场景子页整体滚动。 */
+.workflows-panel {
+  overflow: hidden;
+}
+
+.workflows-panel.wf-editor-page {
+  overflow-y: auto;
+}
+
+/* 内容区内的整页子视图（如设置页的「添加应用」）：填满剩余高度，
+   由子视图自己的页头/列表分担滚动。 */
+.app-picker-page {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 极矮窗口（窗口最小高度 96px）：固定页头会吃掉全部可用高度，
+   退回整页滚动，保证页头与列表都还能到达。 */
+@media (max-height: 380px) {
+  .tab-content-tasks,
+  .tab-content-agents,
+  .tab-content-apps,
+  .tab-content-widgets,
+  .tab-content-actions,
+  .tab-content-inbox,
+  .tab-content-shelf,
+  .tab-content-workflows,
+  .tab-content-history,
+  .tab-content-roadmap,
+  .tab-content-help,
+  .tab-content-diagnostics,
+  .tab-content-resource,
+  .tab-content-settings {
+    overflow-y: auto;
+  }
+
+  .page-fill {
+    flex: 0 0 auto;
+    min-height: 100%;
+  }
+
+  .page-fill > .page-scroll {
+    flex: 0 0 auto;
+    overflow-y: visible;
+  }
+
+  /* 回退到 .tab-content 整页滚动时，恢复原有的 10px 内边距补偿。 */
+  .history-timeline .history-day-label {
+    top: -10px;
+  }
+}
+
 .tasks-panel {
   gap: 8px;
 }
@@ -3524,7 +3658,8 @@ textarea:focus {
   .context-body,
   .shelf-list,
   .workflows-panel,
-  .planning-project-list {
+  .planning-project-list,
+  .page-scroll {
     scrollbar-width: none;
     -ms-overflow-style: none;
   }
@@ -3535,7 +3670,8 @@ textarea:focus {
   .context-body::-webkit-scrollbar,
   .shelf-list::-webkit-scrollbar,
   .workflows-panel::-webkit-scrollbar,
-  .planning-project-list::-webkit-scrollbar {
+  .planning-project-list::-webkit-scrollbar,
+  .page-scroll::-webkit-scrollbar {
     width: 0;
     height: 0;
     display: none;
@@ -3826,8 +3962,9 @@ textarea:focus {
    不铺遮罩、不新开窗口、不用固定底栏。表单继续复用 .field / .field-row / .link-row 与 ui 基元。 */
 @layer theme {
   .task-editor-page {
-    /* 滚动交给外层 .tab-content；面板自身不形成第二层滚动 */
-    overflow: visible;
+    /* 列表页改为页头固定 + 列表滚动后，编辑态仍是整页单一滚动：
+       面板自己滚动，返回列表时由 TasksPanel 恢复列表位置。 */
+    overflow-y: auto;
   }
 
   .task-editor {

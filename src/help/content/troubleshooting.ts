@@ -36,7 +36,7 @@ export const TROUBLESHOOTING_ARTICLES: readonly HelpArticle[] = [
             type: "steps",
             items: [
               "「进入场景」工作流步骤：需要先在「工作流 → 场景工作区」创建场景；场景不存在或会形成场景/工作流循环时保存会被拒绝，这是引用校验，不是故障。",
-              "系统级拖出暂存文件：WebView2/OLE 通道未实现前请用「复制路径 / 复制文件 / 所在文件夹」替代。",
+              "按住暂存卡片可拖到资源管理器或其他应用；若目标应用不接受文件、或系统完整性级别（UIPI）拦截拖放，请用「复制路径 / 复制文件 / 所在文件夹」替代。移动后原路径可能失效，可重新定位或删除。",
               "节假日调休：按设计不接节假日 API，重复规则的「工作日」基于自然周。",
             ],
           },
@@ -69,7 +69,7 @@ export const TROUBLESHOOTING_ARTICLES: readonly HelpArticle[] = [
             type: "steps",
             items: [
               "The \"Enter scene\" workflow step needs a scene created under Workflows → Scenarios first; saving is rejected when the scene is missing or would form a scene/workflow cycle — that is reference validation, not a bug.",
-              "System-level drag-out of shelf files: until the OLE channel exists, use \"Copy path / Copy file / Reveal in folder\".",
+              "Press and hold a shelf card to drag it to Explorer or another app; if the target rejects files or UIPI blocks the cross-integrity drop, use \"Copy path / Copy file / Reveal in folder\". A move may invalidate the original path — relocate or delete the item.",
               "Public holidays: by design no holiday API is used; \"weekday\" in repeat rules means natural weeks.",
             ],
           },

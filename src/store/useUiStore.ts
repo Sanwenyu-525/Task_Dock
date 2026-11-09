@@ -9,6 +9,7 @@ export type Tab =
   | "widgets"
   | "actions"
   | "clipboard"
+  | "mobile"
   | "inbox"
   | "shelf"
   | "workflows"
@@ -43,6 +44,8 @@ export const TAB_ORDER: readonly Tab[] = [
  * 帮助中心（help）同为仅视觉入口（settings 之前），不占 Ctrl+数字。
  * 诊断中心（diagnostics）默认隐藏、不占快捷键，位于帮助之后、设置之前。
  * 资源管理（resource）是默认可见的普通入口（默认顺序在 settings 之前），不占快捷键。
+ * 手机互传（mobile）是从设置里提出来的操作入口，位于剪贴板之后、收集与暂存之前，
+ * 不占快捷键。
  */
 export const RAIL_ORDER: readonly Tab[] = [
   "tasks",
@@ -51,6 +54,7 @@ export const RAIL_ORDER: readonly Tab[] = [
   "widgets",
   "actions",
   "clipboard",
+  "mobile",
   "inbox",
   "shelf",
   "workflows",

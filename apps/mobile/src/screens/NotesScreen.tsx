@@ -1,5 +1,5 @@
 // 笔记列表：搜索 → 筛选 → 置顶/全部笔记两组（同一 FlatList 内用分组头切分）。
-// 笔记本机 CRUD 已可用；「规划中」徽标指笔记同步/跨设备仍属规划（见 docs/MOBILE_STACK.md）。
+// 笔记已接入同步：页头按是否配对显示「同步已连接 / 仅本机」。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -19,6 +19,7 @@ import { SearchField } from "../components/SearchField";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { listNotes } from "../db/notes";
+import { loadConnection } from "../db/syncConnection";
 import type { Note } from "../domain/types";
 import { describeError } from "../lib/errors";
 import type { Nav } from "../lib/nav";
@@ -48,6 +49,7 @@ function matchesQuery(note: Note, rawQuery: string): boolean {
 export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }) {
   const { tokens, scheme } = useTheme();
   const [notes, setNotes] = useState<Note[]>([]);
+  const [paired, setPaired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<NoteFilter>("all");
   const [query, setQuery] = useState("");
@@ -63,7 +65,12 @@ export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }
 
   const refresh = useCallback(async () => {
     try {
-      setNotes(await listNotes());
+      const [nextNotes, connection] = await Promise.all([
+        listNotes(),
+        loadConnection().catch(() => null),
+      ]);
+      setNotes(nextNotes);
+      setPaired(Boolean(connection));
     } catch (error) {
       showToast(`读取笔记失败：${describeError(error)}`, "danger");
     } finally {
@@ -153,7 +160,7 @@ export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }
                 <Text style={[styles.subtitle, { color: tokens.muted }]}>
                   {searching
                     ? `找到 ${visible.length} 篇 · 共 ${notes.length} 篇`
-                    : `${notes.length} 篇 · 仅本机`}
+                    : `${notes.length} 篇 · ${paired ? "同步已连接" : "仅本机"}`}
                 </Text>
               </View>
             </View>

@@ -1209,7 +1209,9 @@ describe("应用面板", () => {
     expect(slots.length).toBe(2);
     for (const slot of Array.from(slots)) {
       const launch = slot.querySelector(".cap-app");
+      // 启动按钮内部不允许再嵌任何按钮
       expect(launch?.querySelector("button")).toBeNull();
+      // 删除是启动按钮的并列兄弟（同一 slot 内），不是嵌套
       const del = slot.querySelector(".cap-app-del");
       expect(del?.tagName).toBe("BUTTON");
       expect(launch?.parentElement).toBe(del?.parentElement);

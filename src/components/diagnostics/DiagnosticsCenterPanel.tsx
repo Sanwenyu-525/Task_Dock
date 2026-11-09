@@ -923,7 +923,7 @@ export default function DiagnosticsCenterPanel() {
   }
 
   return (
-    <div className="diag-center">
+    <div className="diag-center page-fill">
       <header className="diag-center-head">
         <div className="diag-center-head-text">
           <div className="diag-center-title-row">
@@ -981,451 +981,453 @@ export default function DiagnosticsCenterPanel() {
         </div>
       </header>
 
-      {loadError && (
-        <div className="diag-center-state is-error" role="alert">
-          <AlertTriangle size={13} aria-hidden="true" />
-          <span>{t("diagnosticsCenter.list.error", { error: loadError })}</span>
-          <button type="button" className="btn sm" onClick={() => void load(offset)}>
-            {t("common.retry")}
-          </button>
-        </div>
-      )}
-      {actionError && (
-        <div className="diag-center-state is-error" role="alert">
-          <AlertTriangle size={13} aria-hidden="true" />
-          <span>{actionError}</span>
-        </div>
-      )}
-      {status?.degraded && (
-        <div className="diag-center-note is-warn" role="status">
-          <AlertTriangle size={13} aria-hidden="true" />
-          <span>
-            {t("diagnosticsCenter.overview.degraded")}
-            {status.lastError ? ` (${status.lastError})` : ""}
-          </span>
-        </div>
-      )}
-      {cleared && (
-        <div className="diag-center-state is-success" role="status">
-          <span>{t("diagnosticsCenter.list.cleared")}</span>
-        </div>
-      )}
+      <div className="page-scroll diag-body">
+        {loadError && (
+          <div className="diag-center-state is-error" role="alert">
+            <AlertTriangle size={13} aria-hidden="true" />
+            <span>{t("diagnosticsCenter.list.error", { error: loadError })}</span>
+            <button type="button" className="btn sm" onClick={() => void load(offset)}>
+              {t("common.retry")}
+            </button>
+          </div>
+        )}
+        {actionError && (
+          <div className="diag-center-state is-error" role="alert">
+            <AlertTriangle size={13} aria-hidden="true" />
+            <span>{actionError}</span>
+          </div>
+        )}
+        {status?.degraded && (
+          <div className="diag-center-note is-warn" role="status">
+            <AlertTriangle size={13} aria-hidden="true" />
+            <span>
+              {t("diagnosticsCenter.overview.degraded")}
+              {status.lastError ? ` (${status.lastError})` : ""}
+            </span>
+          </div>
+        )}
+        {cleared && (
+          <div className="diag-center-state is-success" role="status">
+            <span>{t("diagnosticsCenter.list.cleared")}</span>
+          </div>
+        )}
 
-      <section className="diag-center-overview" aria-label={t("diagnosticsCenter.overview.title")}>
-        <h2 className="diag-center-section-title">{t("diagnosticsCenter.overview.title")}</h2>
-        <div className="diag-center-metrics">
-          <div className="diag-center-metric">
-            <span className="diag-center-metric-label">
-              {t("diagnosticsCenter.overview.errors")}
-            </span>
-            <span className="diag-center-metric-value is-error">
-              {health ? health.errors : "—"}
-            </span>
-          </div>
-          <div className="diag-center-metric">
-            <span className="diag-center-metric-label">
-              {t("diagnosticsCenter.overview.warnings")}
-            </span>
-            <span className="diag-center-metric-value is-warn">
-              {health ? health.warnings : "—"}
-            </span>
-          </div>
-          <div className="diag-center-metric diag-center-metric-wide">
-            <span className="diag-center-metric-label">
-              {t("diagnosticsCenter.overview.latest")}
-            </span>
-            <span className="diag-center-metric-value">
-              {latestAnomaly ? (
-                <span className="diag-center-latest" data-tip={latestAnomaly.lastSeen}>
-                  <span className={levelClass(latestAnomaly.level)}>{latestAnomaly.level}</span>
-                  <span className="diag-center-ellipsis">
-                    {latestAnomaly.module}/{latestAnomaly.action}
+        <section className="diag-center-overview" aria-label={t("diagnosticsCenter.overview.title")}>
+          <h2 className="diag-center-section-title">{t("diagnosticsCenter.overview.title")}</h2>
+          <div className="diag-center-metrics">
+            <div className="diag-center-metric">
+              <span className="diag-center-metric-label">
+                {t("diagnosticsCenter.overview.errors")}
+              </span>
+              <span className="diag-center-metric-value is-error">
+                {health ? health.errors : "—"}
+              </span>
+            </div>
+            <div className="diag-center-metric">
+              <span className="diag-center-metric-label">
+                {t("diagnosticsCenter.overview.warnings")}
+              </span>
+              <span className="diag-center-metric-value is-warn">
+                {health ? health.warnings : "—"}
+              </span>
+            </div>
+            <div className="diag-center-metric diag-center-metric-wide">
+              <span className="diag-center-metric-label">
+                {t("diagnosticsCenter.overview.latest")}
+              </span>
+              <span className="diag-center-metric-value">
+                {latestAnomaly ? (
+                  <span className="diag-center-latest" data-tip={latestAnomaly.lastSeen}>
+                    <span className={levelClass(latestAnomaly.level)}>{latestAnomaly.level}</span>
+                    <span className="diag-center-ellipsis">
+                      {latestAnomaly.module}/{latestAnomaly.action}
+                    </span>
+                    <span className="diag-center-mono">
+                      {shortTime(latestAnomaly.lastSeen)}
+                    </span>
                   </span>
-                  <span className="diag-center-mono">
-                    {shortTime(latestAnomaly.lastSeen)}
-                  </span>
-                </span>
-              ) : health ? (
-                t("diagnosticsCenter.overview.latestNone")
-              ) : (
-                "—"
-              )}
-            </span>
-          </div>
-          <div
-            className="diag-center-metric diag-center-metric-wide diag-center-metric-capacity"
-          >
-            <span className="diag-center-metric-label">
-              {t("diagnosticsCenter.overview.capacity")}
-            </span>
-            <span className="diag-center-capacity-text diag-center-mono">
-              {status
-                ? `${formatBytes(status.totalBytes)} / ${formatBytes(status.maxTotalBytes)}`
-                : "—"}
-            </span>
+                ) : health ? (
+                  t("diagnosticsCenter.overview.latestNone")
+                ) : (
+                  "—"
+                )}
+              </span>
+            </div>
             <div
-              className={`diag-center-capacity-track ${capacityTone}`}
-              role="progressbar"
-              aria-label={t("diagnosticsCenter.overview.capacityAria", {
-                percent: capacityPercent,
-              })}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={capacityPercent}
+              className="diag-center-metric diag-center-metric-wide diag-center-metric-capacity"
             >
-              <span
-                className="diag-center-capacity-fill"
-                style={{ width: `${capacityPercent}%` }}
-              />
-            </div>
-            {capacityPercent > 90 && (
-              <span className="diag-center-capacity-note">
-                {t("diagnosticsCenter.overview.capacityNote")}
+              <span className="diag-center-metric-label">
+                {t("diagnosticsCenter.overview.capacity")}
               </span>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {!chain && (
-        <section className="diag-center-filters" aria-label={t("diagnosticsCenter.filter.title")}>
-          <h2 className="diag-center-section-title">{t("diagnosticsCenter.filter.title")}</h2>
-          <div className="diag-center-filter-grid">
-            <div className="diag-center-field">
-              <span className="diag-center-field-label">
-                {t("diagnosticsCenter.filter.range")}
+              <span className="diag-center-capacity-text diag-center-mono">
+                {status
+                  ? `${formatBytes(status.totalBytes)} / ${formatBytes(status.maxTotalBytes)}`
+                  : "—"}
               </span>
-              <Select
-                value={draft.range}
-                options={rangeOptions}
-                onChange={(value) => setDraft({ ...draft, range: value as RangeKey })}
-                ariaLabel={t("diagnosticsCenter.filter.range")}
-                size="sm"
-                align="start"
-                block
-              />
-            </div>
-            <div className="diag-center-field">
-              <span className="diag-center-field-label">
-                {t("diagnosticsCenter.filter.level")}
-              </span>
-              <Select
-                value={draft.level}
-                options={levelOptions}
-                onChange={(value) => setDraft({ ...draft, level: value as LevelKey })}
-                ariaLabel={t("diagnosticsCenter.filter.level")}
-                size="sm"
-                align="start"
-                block
-              />
-            </div>
-            <div className="diag-center-field">
-              <span className="diag-center-field-label">
-                {t("diagnosticsCenter.filter.module")}
-              </span>
-              <Select
-                value={draft.module}
-                options={moduleOptions}
-                onChange={(value) => setDraft({ ...draft, module: value })}
-                ariaLabel={t("diagnosticsCenter.filter.module")}
-                size="sm"
-                align="start"
-                block
-              />
-            </div>
-            <div className="diag-center-field">
-              <span className="diag-center-field-label">
-                {t("diagnosticsCenter.filter.keyword")}
-              </span>
-              <input
-                className="diag-center-input"
-                type="search"
-                value={draft.keyword}
-                placeholder={t("diagnosticsCenter.filter.keywordPlaceholder")}
-                aria-label={t("diagnosticsCenter.filter.keyword")}
-                onChange={(event) => setDraft({ ...draft, keyword: event.target.value })}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") applyFilter(draft);
-                }}
-              />
-            </div>
-            <div className="diag-center-filter-actions">
-              <button type="button" className="btn sm" onClick={() => applyFilter(draft)}>
-                {t("diagnosticsCenter.filter.apply")}
-              </button>
-              <button type="button" className="btn sm" onClick={resetFilter}>
-                {t("diagnosticsCenter.filter.reset")}
-              </button>
+              <div
+                className={`diag-center-capacity-track ${capacityTone}`}
+                role="progressbar"
+                aria-label={t("diagnosticsCenter.overview.capacityAria", {
+                  percent: capacityPercent,
+                })}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={capacityPercent}
+              >
+                <span
+                  className="diag-center-capacity-fill"
+                  style={{ width: `${capacityPercent}%` }}
+                />
+              </div>
+              {capacityPercent > 90 && (
+                <span className="diag-center-capacity-note">
+                  {t("diagnosticsCenter.overview.capacityNote")}
+                </span>
+              )}
             </div>
           </div>
+        </section>
 
-          <button
-            type="button"
-            className="diag-center-advanced-toggle"
-            aria-expanded={advancedOpen}
-            aria-controls={advancedId}
-            onClick={() => setAdvancedOpen((open) => !open)}
-          >
-            {advancedOpen ? (
-              <ChevronDown size={11} aria-hidden="true" />
-            ) : (
-              <ChevronRight size={11} aria-hidden="true" />
-            )}
-            <span>{t("diagnosticsCenter.filter.advanced")}</span>
-          </button>
-          {advancedOpen && (
-            <div className="diag-center-advanced" id={advancedId}>
-              <div className="diag-center-filter-grid">
-                <div className="diag-center-field">
-                  <span className="diag-center-field-label">
-                    {t("diagnosticsCenter.filter.code")}
-                  </span>
-                  <Select
-                    value={draft.errorCode}
-                    options={codeOptions}
-                    onChange={(value) => setDraft({ ...draft, errorCode: value })}
-                    ariaLabel={t("diagnosticsCenter.filter.code")}
-                    size="sm"
-                    align="start"
-                    block
-                  />
-                </div>
-                <div className="diag-center-field">
-                  <span className="diag-center-field-label">
-                    {t("diagnosticsCenter.filter.operation")}
-                  </span>
-                  <input
-                    className="diag-center-input diag-center-mono"
-                    type="text"
-                    value={draft.operationId}
-                    placeholder={t("diagnosticsCenter.filter.operationPlaceholder")}
-                    aria-label={t("diagnosticsCenter.filter.operation")}
-                    onChange={(event) =>
-                      setDraft({ ...draft, operationId: event.target.value })
-                    }
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") applyFilter(draft);
-                    }}
-                  />
-                </div>
+        {!chain && (
+          <section className="diag-center-filters" aria-label={t("diagnosticsCenter.filter.title")}>
+            <h2 className="diag-center-section-title">{t("diagnosticsCenter.filter.title")}</h2>
+            <div className="diag-center-filter-grid">
+              <div className="diag-center-field">
+                <span className="diag-center-field-label">
+                  {t("diagnosticsCenter.filter.range")}
+                </span>
+                <Select
+                  value={draft.range}
+                  options={rangeOptions}
+                  onChange={(value) => setDraft({ ...draft, range: value as RangeKey })}
+                  ariaLabel={t("diagnosticsCenter.filter.range")}
+                  size="sm"
+                  align="start"
+                  block
+                />
+              </div>
+              <div className="diag-center-field">
+                <span className="diag-center-field-label">
+                  {t("diagnosticsCenter.filter.level")}
+                </span>
+                <Select
+                  value={draft.level}
+                  options={levelOptions}
+                  onChange={(value) => setDraft({ ...draft, level: value as LevelKey })}
+                  ariaLabel={t("diagnosticsCenter.filter.level")}
+                  size="sm"
+                  align="start"
+                  block
+                />
+              </div>
+              <div className="diag-center-field">
+                <span className="diag-center-field-label">
+                  {t("diagnosticsCenter.filter.module")}
+                </span>
+                <Select
+                  value={draft.module}
+                  options={moduleOptions}
+                  onChange={(value) => setDraft({ ...draft, module: value })}
+                  ariaLabel={t("diagnosticsCenter.filter.module")}
+                  size="sm"
+                  align="start"
+                  block
+                />
+              </div>
+              <div className="diag-center-field">
+                <span className="diag-center-field-label">
+                  {t("diagnosticsCenter.filter.keyword")}
+                </span>
+                <input
+                  className="diag-center-input"
+                  type="search"
+                  value={draft.keyword}
+                  placeholder={t("diagnosticsCenter.filter.keywordPlaceholder")}
+                  aria-label={t("diagnosticsCenter.filter.keyword")}
+                  onChange={(event) => setDraft({ ...draft, keyword: event.target.value })}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") applyFilter(draft);
+                  }}
+                />
+              </div>
+              <div className="diag-center-filter-actions">
+                <button type="button" className="btn sm" onClick={() => applyFilter(draft)}>
+                  {t("diagnosticsCenter.filter.apply")}
+                </button>
+                <button type="button" className="btn sm" onClick={resetFilter}>
+                  {t("diagnosticsCenter.filter.reset")}
+                </button>
               </div>
             </div>
-          )}
-        </section>
-      )}
 
-      {!chain && lastExport && (
-        <div className="diag-center-export">
-          <span className="diag-center-export-label">
-            {t("diagnosticsCenter.export.last")}
-          </span>
-          <span className="diag-center-mono diag-center-ellipsis" data-tip={lastExport.path}>
-            {lastExport.path}
-          </span>
-          <span
-            className={`diag-center-flag ${lastExport.complete ? "is-ok" : "is-warn"}`}
-            data-tip={exportIncompleteReason ?? undefined}
-          >
-            {lastExport.complete
-              ? t("diagnosticsCenter.export.complete")
-              : t("diagnosticsCenter.export.incompleteFlag")}
-          </span>
-          {exportIncompleteReason && (
-            <div className="diag-center-note is-warn" role="status">
-              <AlertTriangle size={13} aria-hidden="true" />
-              <span>
-                {t("diagnosticsCenter.export.incomplete", {
-                  reason: exportIncompleteReason,
-                })}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
+            <button
+              type="button"
+              className="diag-center-advanced-toggle"
+              aria-expanded={advancedOpen}
+              aria-controls={advancedId}
+              onClick={() => setAdvancedOpen((open) => !open)}
+            >
+              {advancedOpen ? (
+                <ChevronDown size={11} aria-hidden="true" />
+              ) : (
+                <ChevronRight size={11} aria-hidden="true" />
+              )}
+              <span>{t("diagnosticsCenter.filter.advanced")}</span>
+            </button>
+            {advancedOpen && (
+              <div className="diag-center-advanced" id={advancedId}>
+                <div className="diag-center-filter-grid">
+                  <div className="diag-center-field">
+                    <span className="diag-center-field-label">
+                      {t("diagnosticsCenter.filter.code")}
+                    </span>
+                    <Select
+                      value={draft.errorCode}
+                      options={codeOptions}
+                      onChange={(value) => setDraft({ ...draft, errorCode: value })}
+                      ariaLabel={t("diagnosticsCenter.filter.code")}
+                      size="sm"
+                      align="start"
+                      block
+                    />
+                  </div>
+                  <div className="diag-center-field">
+                    <span className="diag-center-field-label">
+                      {t("diagnosticsCenter.filter.operation")}
+                    </span>
+                    <input
+                      className="diag-center-input diag-center-mono"
+                      type="text"
+                      value={draft.operationId}
+                      placeholder={t("diagnosticsCenter.filter.operationPlaceholder")}
+                      aria-label={t("diagnosticsCenter.filter.operation")}
+                      onChange={(event) =>
+                        setDraft({ ...draft, operationId: event.target.value })
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") applyFilter(draft);
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
-      {chain ? (
-        renderChain()
-      ) : (
-        <section className="diag-center-list" aria-label={t("diagnosticsCenter.list.title")}>
-          <div className="diag-center-list-head">
-            <h2 className="diag-center-section-title">{t("diagnosticsCenter.list.title")}</h2>
-            {page && (
-              <span className="diag-center-list-meta">
-                {t("diagnosticsCenter.list.pageInfo", {
-                  shown: page.items.length,
-                  matched: page.matched,
-                })}
-              </span>
+        {!chain && lastExport && (
+          <div className="diag-center-export">
+            <span className="diag-center-export-label">
+              {t("diagnosticsCenter.export.last")}
+            </span>
+            <span className="diag-center-mono diag-center-ellipsis" data-tip={lastExport.path}>
+              {lastExport.path}
+            </span>
+            <span
+              className={`diag-center-flag ${lastExport.complete ? "is-ok" : "is-warn"}`}
+              data-tip={exportIncompleteReason ?? undefined}
+            >
+              {lastExport.complete
+                ? t("diagnosticsCenter.export.complete")
+                : t("diagnosticsCenter.export.incompleteFlag")}
+            </span>
+            {exportIncompleteReason && (
+              <div className="diag-center-note is-warn" role="status">
+                <AlertTriangle size={13} aria-hidden="true" />
+                <span>
+                  {t("diagnosticsCenter.export.incomplete", {
+                    reason: exportIncompleteReason,
+                  })}
+                </span>
+              </div>
             )}
           </div>
+        )}
 
-          {applied.operationId.trim() && (
-            <div className="diag-center-op-chip">
-              <span className="diag-center-op-chip-label">
-                {t("diagnosticsCenter.filter.operationChip")}
-              </span>
-              <span
-                className="diag-center-mono diag-center-ellipsis"
-                data-tip={applied.operationId.trim()}
-              >
-                {applied.operationId.trim()}
-              </span>
-              <button
-                type="button"
-                className="btn sm"
-                onClick={() => void openChain(applied.operationId.trim())}
-              >
-                <Link2 size={11} aria-hidden="true" />
-                <span>{t("diagnosticsCenter.filter.viewChain")}</span>
-              </button>
-              <button
-                type="button"
-                className="btn sm"
-                onClick={clearOperationFilter}
-              >
-                <X size={11} aria-hidden="true" />
-                <span>{t("diagnosticsCenter.filter.clearOperation")}</span>
-              </button>
-            </div>
-          )}
-
-          {loadError ? null : !loaded ? (
-            <div className="diag-center-state">{t("diagnosticsCenter.list.loading")}</div>
-          ) : page && page.items.length > 0 ? (
-            <ul className="diag-center-rows">
-              {page.items.map((item: DiagnosticEventRecord, index) => {
-                const rowKey = `${item.timestamp}-${index}`;
-                const isOpen = expanded === rowKey;
-                const recovered = recoveredGroups.has(
-                  `${item.module}|${item.action}|${item.error_code ?? "-"}`,
-                );
-                return (
-                  <li key={rowKey} className="diag-center-row-item">
-                    <button
-                      type="button"
-                      className="diag-center-row"
-                      aria-expanded={isOpen}
-                      aria-label={
-                        isOpen
-                          ? t("diagnosticsCenter.list.collapse")
-                          : t("diagnosticsCenter.list.expand")
-                      }
-                      onClick={() => setExpanded(isOpen ? null : rowKey)}
-                    >
-                      {isOpen ? (
-                        <ChevronDown size={12} aria-hidden="true" />
-                      ) : (
-                        <ChevronRight size={12} aria-hidden="true" />
-                      )}
-                      <span className="diag-center-row-body">
-                        <span className="diag-center-row-line">
-                          <span className={levelClass(item.level)}>{item.level}</span>
-                          <span className="diag-center-row-module diag-center-ellipsis">
-                            {item.module}/{item.action}
-                          </span>
-                          <span
-                            className="diag-center-row-time"
-                            data-tip={item.timestamp}
-                          >
-                            {shortTime(item.timestamp)}
-                          </span>
-                          {item.count > 1 && (
-                            <span className="diag-center-row-count">×{item.count}</span>
-                          )}
-                        </span>
-                        <span className="diag-center-row-line is-sub">
-                          {item.error_code && (
-                            <span className="diag-center-row-code">{item.error_code}</span>
-                          )}
-                          <span className="diag-center-row-message diag-center-ellipsis">
-                            {item.message ?? item.action}
-                          </span>
-                          {recovered && (
-                            <span className="diag-center-row-recovered">
-                              {t("diagnosticsCenter.list.recovered")}
-                            </span>
-                          )}
-                        </span>
-                      </span>
-                    </button>
-                    {isOpen && renderDetails(item)}
-                  </li>
-                );
-              })}
-            </ul>
-          ) : filtered ? (
-            <div className="diag-center-state diag-center-state-empty">
-              <strong>{t("diagnosticsCenter.list.emptyFiltered")}</strong>
-              <span>{t("diagnosticsCenter.list.emptyFilteredHint")}</span>
-              <button type="button" className="btn sm" onClick={resetFilter}>
-                {t("diagnosticsCenter.filter.reset")}
-              </button>
-            </div>
-          ) : cleared ? (
-            // 清理成功后即使页面已滚到列表，也要在列表位置明确说明「只删日志、不删业务数据」。
-            <div className="diag-center-state is-success">
-              <strong>{t("diagnosticsCenter.list.cleared")}</strong>
-            </div>
-          ) : noLogsAtAll ? (
-            <div className="diag-center-state">
-              <strong>{t("diagnosticsCenter.list.empty")}</strong>
-              <span>{t("diagnosticsCenter.list.emptyNoLogsHint")}</span>
-            </div>
-          ) : (
-            <div className="diag-center-state">
-              <strong>{t("diagnosticsCenter.list.empty")}</strong>
-              <span>{t("diagnosticsCenter.list.emptyHint")}</span>
-            </div>
-          )}
-
-          {!loadError && (page?.truncated || (page?.skipped ?? 0) > 0) && (
-            <div className="diag-center-note">
-              {page?.truncated && <span>{t("diagnosticsCenter.list.truncated")}</span>}
-              {(page?.skipped ?? 0) > 0 && (
-                <span>{t("diagnosticsCenter.list.skipped", { count: page!.skipped })}</span>
+      {chain ? (
+          renderChain()
+        ) : (
+          <section className="diag-center-list" aria-label={t("diagnosticsCenter.list.title")}>
+            <div className="diag-center-list-head">
+              <h2 className="diag-center-section-title">{t("diagnosticsCenter.list.title")}</h2>
+              {page && (
+                <span className="diag-center-list-meta">
+                  {t("diagnosticsCenter.list.pageInfo", {
+                    shown: page.items.length,
+                    matched: page.matched,
+                  })}
+                </span>
               )}
             </div>
-          )}
 
-          <div className="diag-center-pager">
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => void load(Math.max(0, offset - PAGE_SIZE))}
-              disabled={offset === 0 || loading}
-            >
-              {t("diagnosticsCenter.list.prev")}
+            {applied.operationId.trim() && (
+              <div className="diag-center-op-chip">
+                <span className="diag-center-op-chip-label">
+                  {t("diagnosticsCenter.filter.operationChip")}
+                </span>
+                <span
+                  className="diag-center-mono diag-center-ellipsis"
+                  data-tip={applied.operationId.trim()}
+                >
+                  {applied.operationId.trim()}
+                </span>
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => void openChain(applied.operationId.trim())}
+                >
+                  <Link2 size={11} aria-hidden="true" />
+                  <span>{t("diagnosticsCenter.filter.viewChain")}</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={clearOperationFilter}
+                >
+                  <X size={11} aria-hidden="true" />
+                  <span>{t("diagnosticsCenter.filter.clearOperation")}</span>
+                </button>
+              </div>
+            )}
+
+            {loadError ? null : !loaded ? (
+              <div className="diag-center-state">{t("diagnosticsCenter.list.loading")}</div>
+            ) : page && page.items.length > 0 ? (
+              <ul className="diag-center-rows">
+                {page.items.map((item: DiagnosticEventRecord, index) => {
+                  const rowKey = `${item.timestamp}-${index}`;
+                  const isOpen = expanded === rowKey;
+                  const recovered = recoveredGroups.has(
+                    `${item.module}|${item.action}|${item.error_code ?? "-"}`,
+                  );
+                  return (
+                    <li key={rowKey} className="diag-center-row-item">
+                      <button
+                        type="button"
+                        className="diag-center-row"
+                        aria-expanded={isOpen}
+                        aria-label={
+                          isOpen
+                            ? t("diagnosticsCenter.list.collapse")
+                            : t("diagnosticsCenter.list.expand")
+                        }
+                        onClick={() => setExpanded(isOpen ? null : rowKey)}
+                      >
+                        {isOpen ? (
+                          <ChevronDown size={12} aria-hidden="true" />
+                        ) : (
+                          <ChevronRight size={12} aria-hidden="true" />
+                        )}
+                        <span className="diag-center-row-body">
+                          <span className="diag-center-row-line">
+                            <span className={levelClass(item.level)}>{item.level}</span>
+                            <span className="diag-center-row-module diag-center-ellipsis">
+                              {item.module}/{item.action}
+                            </span>
+                            <span
+                              className="diag-center-row-time"
+                              data-tip={item.timestamp}
+                            >
+                              {shortTime(item.timestamp)}
+                            </span>
+                            {item.count > 1 && (
+                              <span className="diag-center-row-count">×{item.count}</span>
+                            )}
+                          </span>
+                          <span className="diag-center-row-line is-sub">
+                            {item.error_code && (
+                              <span className="diag-center-row-code">{item.error_code}</span>
+                            )}
+                            <span className="diag-center-row-message diag-center-ellipsis">
+                              {item.message ?? item.action}
+                            </span>
+                            {recovered && (
+                              <span className="diag-center-row-recovered">
+                                {t("diagnosticsCenter.list.recovered")}
+                              </span>
+                            )}
+                          </span>
+                        </span>
+                      </button>
+                      {isOpen && renderDetails(item)}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : filtered ? (
+              <div className="diag-center-state diag-center-state-empty">
+                <strong>{t("diagnosticsCenter.list.emptyFiltered")}</strong>
+                <span>{t("diagnosticsCenter.list.emptyFilteredHint")}</span>
+                <button type="button" className="btn sm" onClick={resetFilter}>
+                  {t("diagnosticsCenter.filter.reset")}
+                </button>
+              </div>
+            ) : cleared ? (
+              // 清理成功后即使页面已滚到列表，也要在列表位置明确说明「只删日志、不删业务数据」。
+              <div className="diag-center-state is-success">
+                <strong>{t("diagnosticsCenter.list.cleared")}</strong>
+              </div>
+            ) : noLogsAtAll ? (
+              <div className="diag-center-state">
+                <strong>{t("diagnosticsCenter.list.empty")}</strong>
+                <span>{t("diagnosticsCenter.list.emptyNoLogsHint")}</span>
+              </div>
+            ) : (
+              <div className="diag-center-state">
+                <strong>{t("diagnosticsCenter.list.empty")}</strong>
+                <span>{t("diagnosticsCenter.list.emptyHint")}</span>
+              </div>
+            )}
+
+            {!loadError && (page?.truncated || (page?.skipped ?? 0) > 0) && (
+              <div className="diag-center-note">
+                {page?.truncated && <span>{t("diagnosticsCenter.list.truncated")}</span>}
+                {(page?.skipped ?? 0) > 0 && (
+                  <span>{t("diagnosticsCenter.list.skipped", { count: page!.skipped })}</span>
+                )}
+              </div>
+            )}
+
+            <div className="diag-center-pager">
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => void load(Math.max(0, offset - PAGE_SIZE))}
+                disabled={offset === 0 || loading}
+              >
+                {t("diagnosticsCenter.list.prev")}
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => void load(offset + PAGE_SIZE)}
+                disabled={!page || page.matched <= offset + page.items.length || loading}
+              >
+                {t("diagnosticsCenter.list.next")}
+              </button>
+            </div>
+          </section>
+        )}
+
+        <section className="diag-center-manage" aria-label={t("diagnosticsCenter.manage.title")}>
+          <h2 className="diag-center-section-title">{t("diagnosticsCenter.manage.title")}</h2>
+          <div className="diag-center-manage-actions">
+            <button type="button" className="btn sm" onClick={() => void onOpenDir()}>
+              <FolderOpen size={12} aria-hidden="true" />
+              <span>{t("diagnosticsCenter.action.openDir")}</span>
             </button>
             <button
               type="button"
-              className="btn sm"
-              onClick={() => void load(offset + PAGE_SIZE)}
-              disabled={!page || page.matched <= offset + page.items.length || loading}
+              className="btn sm danger"
+              onClick={() => setConfirmClear(true)}
+              disabled={busy === "clear"}
             >
-              {t("diagnosticsCenter.list.next")}
+              <Trash2 size={12} aria-hidden="true" />
+              <span>{t("diagnosticsCenter.action.clear")}</span>
             </button>
           </div>
         </section>
-      )}
-
-      <section className="diag-center-manage" aria-label={t("diagnosticsCenter.manage.title")}>
-        <h2 className="diag-center-section-title">{t("diagnosticsCenter.manage.title")}</h2>
-        <div className="diag-center-manage-actions">
-          <button type="button" className="btn sm" onClick={() => void onOpenDir()}>
-            <FolderOpen size={12} aria-hidden="true" />
-            <span>{t("diagnosticsCenter.action.openDir")}</span>
-          </button>
-          <button
-            type="button"
-            className="btn sm danger"
-            onClick={() => setConfirmClear(true)}
-            disabled={busy === "clear"}
-          >
-            <Trash2 size={12} aria-hidden="true" />
-            <span>{t("diagnosticsCenter.action.clear")}</span>
-          </button>
-        </div>
-      </section>
+      </div>
 
       <ConfirmDialog
         open={confirmClear}

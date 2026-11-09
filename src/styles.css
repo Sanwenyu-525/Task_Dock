@@ -2642,6 +2642,15 @@ code {
   min-width: 0;
 }
 
+/* 手机互传（v0.17）：从设置页提出的独立功能页。内容复用既有设置分区，
+   只补页面级间距；卡片/行样式仍走设置分区的语义 Token。 */
+.mobile-transfer-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+}
+
 /* 手机与同步（v0.16）：状态、地址、设备卡与二维码配对弹层。
    颜色全部走语义 Token；二维码黑模块白底是扫码要求，不随主题反色。 */
 .mobile-sync-status {
@@ -2728,9 +2737,34 @@ code {
   min-width: 0;
 }
 
+.mobile-sync-device-name-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mobile-sync-presence-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-tertiary);
+}
+
+.mobile-sync-presence-dot.is-online {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.mobile-sync-device-online {
+  color: var(--accent);
+}
+
 .mobile-sync-device-name {
   font-size: 12px;
   color: var(--text-primary);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2751,6 +2785,204 @@ code {
   font-size: 11px;
   line-height: 1.5;
   color: var(--status-error);
+}
+
+/* 文件互传（v1）：方向、大小、状态与逐条操作。
+   文件名必须可截断，长中文名不能撑破设置面板。 */
+/* 工具栏：窄窗下按钮整组换行，标题保持单行，避免「文件互/传」断字。 */
+.mobile-file-toolbar {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.mobile-file-toolbar > span:first-child {
+  white-space: nowrap;
+}
+
+.mobile-file-toolbar .btn-row {
+  margin-left: auto;
+}
+
+.mobile-file-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 2px 0 8px;
+}
+
+.mobile-file-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 分组头与设置页其它「标题 + 细线」节奏一致：方向、条数、剩余横线。 */
+.mobile-file-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
+
+.mobile-file-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--text-secondary);
+}
+
+.mobile-file-group-count {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+
+.mobile-file-group-rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.mobile-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mobile-file-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control, 9px);
+  background: var(--inset-face);
+}
+
+.mobile-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  flex: 0 0 auto;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.mobile-file-icon.is-to-desktop {
+  color: var(--status-success);
+  background: color-mix(in srgb, var(--status-success) 13%, transparent);
+}
+
+.mobile-file-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mobile-file-name {
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-file-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态胶囊：ready 中性（默认态不需要吸引注意），pending 琥珀，failed 红。 */
+.mobile-file-status {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--c-ink) 6%, transparent);
+}
+
+.mobile-file-status.is-pending {
+  color: var(--status-waiting);
+  background: color-mix(in srgb, var(--status-waiting) 12%, transparent);
+}
+
+.mobile-file-status.is-failed {
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 10%, transparent);
+}
+
+.mobile-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.mobile-file-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 2px 0 8px;
+  padding: 10px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-control, 9px);
+  background: var(--inset-face);
+}
+
+.mobile-file-empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  flex: 0 0 auto;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.mobile-file-empty-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mobile-file-empty-title {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.mobile-file-empty-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+/* 320/400 窄窗：ready 是默认态，隐藏中性状态胶囊，把宽度让给文件名与时间；
+   间距同步收紧，避免一行里同时挤下胶囊和两个图标按钮。 */
+@media (max-width: 360px) {
+  .mobile-file-item {
+    gap: 7px;
+    padding: 8px;
+  }
+
+  .mobile-file-status.is-ready {
+    display: none;
+  }
 }
 
 .mobile-sync-pair {
@@ -11080,6 +11312,42 @@ html[data-theme="dark"] .resource-page {
 .capsule-tab[data-tone="disconnected"] .capsule-tab-line { background: var(--status-disconnected); }
 .capsule-tab[data-tone="unknown"] .capsule-tab-line { background: var(--status-disconnected); }
 
+/* 仅活动态呼吸（2026-11-09）：与 `.cap-orb` 同一套状态语言——running 最慢最克制、
+   waiting 稍快提示需要关注、failed 略快表示异常；idle / unknown / disconnected
+   保持静态，避免标签在无事可做时持续闪烁，也避免常驻动效把「呼吸」这个状态语义稀释掉。
+   只动这一条 2×18 状态线的透明度：标签窗口区域恰好是 10×46（SetWindowRgn），
+   外侧光晕/外扩描边都会被裁掉，所以不做尺寸与位移变化。 */
+@keyframes capsule-tab-line-breathe {
+  0%,
+  100% {
+    opacity: var(--tab-line-dim, 0.45);
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+.capsule-tab[data-tone="running"] .capsule-tab-line {
+  --tab-line-dim: 0.62;
+  animation: capsule-tab-line-breathe 3.2s ease-in-out infinite;
+}
+.capsule-tab[data-tone="waiting"] .capsule-tab-line {
+  --tab-line-dim: 0.4;
+  animation: capsule-tab-line-breathe 2.2s ease-in-out infinite;
+}
+.capsule-tab[data-tone="failed"] .capsule-tab-line {
+  --tab-line-dim: 0.4;
+  animation: capsule-tab-line-breathe 2.6s ease-in-out infinite;
+}
+/* 降低动态偏好：保留静态状态线（颜色仍表达 tone），不做呼吸。 */
+@media (prefers-reduced-motion: reduce) {
+  .capsule-tab[data-tone="running"] .capsule-tab-line,
+  .capsule-tab[data-tone="waiting"] .capsule-tab-line,
+  .capsule-tab[data-tone="failed"] .capsule-tab-line {
+    animation: none;
+    opacity: 0.9;
+  }
+}
+
 /* ── 胶囊 ⇄ Edge Tab 侧滑收纳 ───────────────────────────────────
    四个停靠边共用同一组 keyframes：方向/裁剪轴由 `--tab-slide-*`
    与 `--tab-clip` 参数化，动画逻辑只有一套（恢复用反向 keyframes）。
@@ -13113,7 +13381,7 @@ html[data-theme="dark"] .resource-page {
    2026-11-06 精修：原 22px 热区在 72px 磁贴里与居中图标（34px）的包围盒重叠 3px
    （窄窗 65px 磁贴重叠 6.5px），实测 8% 的磁贴采样点会命中删除而不是启动。
    收到 18px 后名义尺寸下与图标分离（留 1px），视觉上 X 与图标也拉开 4px；
-   删除仍需二次确认，不会误删。 */
+   删除仍需二次确认，不会误删。删除是列表管理动作，位置固定，不随运行态变化。 */
 .cap-app-del {
   position: absolute;
   top: 0;
@@ -13127,8 +13395,6 @@ html[data-theme="dark"] .resource-page {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  /* 静止态用次级文本语义 Token（不是三级）：深色主题下三级对比偏弱，
-     保证删除入口在悬停/键盘聚焦出现时可辨认，不硬编码颜色。 */
   color: var(--cap-text-2);
   opacity: 0;
   pointer-events: none;
@@ -13152,6 +13418,74 @@ html[data-theme="dark"] .resource-page {
 /* 触屏没有 hover：删除入口常显，保证可发现、可操作。 */
 @media (hover: none) {
   .cap-app-del { opacity: 1; pointer-events: auto; }
+}
+/* 运行中磁贴动作条：磁贴**名称区**的一条迷你工具条，悬停/键盘聚焦时与名称
+   交叉淡入（名称淡出、动作条淡入），不遮图标、不改格子尺寸。只放运行态动作
+   （关闭窗口 / 退出应用），删除固定在磁贴右上角；未运行磁贴不渲染本动作条。 */
+.cap-app-actions {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  bottom: 3px;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--cap-panel-base);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cap-text-1) 10%, transparent);
+  opacity: 0;
+  transform: translateY(2px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.cap-app-slot:hover .cap-app-actions,
+.cap-app-slot:focus-within .cap-app-actions {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+/* 名称让位：只有带动作条的（运行中）磁贴在悬停/聚焦时淡出名称 */
+.cap-app-slot.has-actions:hover .cap-app-name,
+.cap-app-slot.has-actions:focus-within .cap-app-name {
+  opacity: 0;
+}
+.cap-app-act {
+  /* 动作按钮自带一套轻量外观：工具条本身已是面板底色表面，按钮悬停只用
+     10% 文本色叠加，不再套 chip 的卡片渐变，避免「表面套表面」的双层观感。 */
+  flex: 1 1 24px;
+  display: grid;
+  place-items: center;
+  height: 20px;
+  min-width: 0;
+  max-width: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cap-text-2);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.cap-app-act:hover {
+  background: color-mix(in srgb, var(--cap-text-1) 10%, transparent);
+  color: var(--cap-text-1);
+}
+.cap-app-act:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.cap-app-act:disabled { opacity: 0.35; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .cap-app-actions,
+  .cap-app-name {
+    transition: none;
+  }
+}
+@media (hover: none) {
+  .cap-app-actions { opacity: 1; transform: none; pointer-events: auto; }
+  /* 触屏没有悬停：动作条常显，名称一并让位，避免与工具条叠字 */
+  .cap-app-slot.has-actions .cap-app-name { opacity: 0; }
 }
 /* 运行中状态点：36px 图标片右下角 9px 实心点，绝对定位不占布局、不改格子
    尺寸。颜色用语义 Token（与完整面板徽标同源 success），分隔描边用面板底色，
@@ -13287,12 +13621,12 @@ html[data-theme="dark"] .resource-page {
   height: 2.4em;
   font-size: 10.5px;
   line-height: 1.2;
-  /* 名称左对齐（2026-11-09 用户明确：整块左对齐已回退，名称这一部分仍左对齐）。
-     图标保持居中，名称从格子左内边距起排、折行宽度不变，长名称的两行左缘一致。 */
-  text-align: left;
+  text-align: center;
   overflow: hidden;
   white-space: normal;
   word-break: break-word;
+  /* 运行中磁贴悬停时名称淡出、动作工具条淡入（交叉淡变，不改布局） */
+  transition: opacity 0.12s ease;
 }
 
 /* 网址 / 文件夹：横向排列的胶囊 */

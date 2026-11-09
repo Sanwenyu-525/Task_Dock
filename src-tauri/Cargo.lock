@@ -3989,6 +3989,7 @@ dependencies = [
  "uuid",
  "window-vibrancy 0.6.0",
  "windows",
+ "windows-core",
  "windows-future",
  "windows-sys 0.60.2",
  "winreg 0.55.0",

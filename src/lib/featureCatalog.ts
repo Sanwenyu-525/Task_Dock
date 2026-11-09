@@ -307,14 +307,14 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "任务关联（幂等；删除任务不删暂存资源）",
       "暂存条目与场景的软关联：shelf_items.scene_id，场景保存/删除时维护，删除场景只解绑不删文件",
       "纳入正式备份/恢复（托管副本全量打包、路径安全校验）",
-      "删除条目不误删剪贴板/原文件；系统级拖出前的替代：复制路径 / 复制文件（CF_HDROP）/ 所在文件夹",
+      "系统级拖出：按住卡片拖到资源管理器/其他应用（OLE DoDragDrop + CF_HDROP）；引用文件允许 Windows 默认复制/移动，托管副本只复制",
+      "删除条目不误删剪贴板/原文件；复制路径 / 复制文件（CF_HDROP）/ 所在文件夹作为键盘与回退入口",
     ],
     missingFeatures: [
-      "系统级拖出到资源管理器（WebView2/OLE 通道未实现，见 docs/shelf/）",
       "真机拖入验收（无头环境不可模拟 OS 拖放，待真机复验）",
       "暂存架侧的场景归属展示与筛选（当前只有场景编辑器单向关联，暂存架看不到被谁占用）",
     ],
-    dependencies: ["独立托管目录与配额策略", "Tauri 拖放事件（拖入）", "系统级文件拖出需 OLE/IDataObject 原生通道"],
+    dependencies: ["独立托管目录与配额策略", "Tauri 拖放事件（拖入）", "Windows OLE DoDragDrop/CF_HDROP（拖出）"],
     acceptanceCriteria: [
       "剪贴板历史与暂存架数据互不混淆",
       "暂存文件可拖出到资源管理器",

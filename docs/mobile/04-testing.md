@@ -62,6 +62,14 @@ node tmp/debug/mobile-app-skeleton/ui.mjs key 66           # Enter
 - **中文输入法吞字**：vivo IME 下 `adb shell input text` 的合成文本不提交，控件只收到 1 个字符。
   规避：输入后 `keyevent 66` 提交，再从 `uiautomator` 读控件值确认。要清空搜索框必须先让
   IME 失焦（点别的控件）再点「清除搜索」。
+- **长文本无法用 `input text` 注入**：IME 的 composing 区会丢弃大部分字符（实测 21×200 字符
+  分块输入只落下 1323 字，且 `keyevent 66` 只提交不换行）。验证超长内容改用剪贴板通道：
+  桌面端建一篇长笔记 → 手机同步后在编辑器点「复制全文」（剪贴板得到 `标题\n\n正文`）→
+  在目标输入框长按（`input swipe x y x y 900`）→ 点「粘贴」。粘贴是单次事务，字数精确。
+- **手动配对地址会被 IME 改写**：`input text "192.168.5.6:47822"` 落到输入框变成
+  `192。168。56：47822`（句点转中文、丢字符），提交时报「地址格式不正确」。规避：只输
+  `192.168.5.6`（端口默认 47822，见 `DEFAULT_MOBILE_SYNC_PORT`），或输入后人工改回半角。
+  配对码 120 秒有效，超时要在桌面弹层点「重新生成」。
 - **秒级时钟会让控件树 dump 失效**：页头时钟每秒刷新，`uiautomator dump` 持续返回
   `ERROR: could not get idle state`，`--compressed` 与 8 次重试都拿不到新文件（实测 6/6 失败）。
   规避：改用截图 + 像素定位（扫描纯白卡片带算出各行的 y 区间），不要用 `ui.mjs dump`
@@ -120,6 +128,15 @@ node tmp/debug/mobile-app-skeleton/ui.mjs key 66           # Enter
 | 43 | 任务 push：手机本地任务创建/修改/删除推送到桌面 | D | PASS（发送 21 条；桌面任务 4→22、`sync_ops=21`、`last_seen_at` 刷新；重放只 ack 由协议测试覆盖） |
 | 44 | 冲突：两端改同一任务 → 手机出现待处理冲突 → 采用桌面端 | D | PASS（手机完成任务 + 桌面改名 → 同步显示「冲突 1」；冲突页两版并列，采用桌面端后标题/状态回到桌面版本、冲突清空） |
 | 45 | 同步载荷加密与跨语言互通 | A | PASS（Rust 解密 tweetnacl 向量；手机 crypto 模块 KDF/双向信封/AAD 拒绝；Node 加密客户端跑通 pull/push） |
+| 46 | 笔记 push：手机本地笔记（含 Markdown 正文、置顶）同步到桌面 | D | PASS（2026-11-09 物理机 APK 0.1.6/vc13：待发送 16→0，发送 9 条 op；桌面 `notes` 出现「巧 review」，正文 `**stabilitymobilesync**` 完整） |
+| 47 | 笔记 pull：桌面改标题后手机同步更新 | D | PASS（标题变为「巧 review（桌面改）」、revision 更新；改回后再次同步还原） |
+| 48 | 收集箱 push / handled 墓碑 / 恢复 | D | PASS（「Z」「B」推送到桌面；桌面标 handled 后手机只剩 B；改回 inbox 后 Z 重新出现） |
+| 49 | 收集箱 / 笔记协议级：基线只含 inbox、note body 映射、冲突 server_record、client_id 重名拒绝 | A/C | PASS（Node 加密客户端 + 隔离桌面，`tmp/acceptance/mobile-sync-v2/`） |
+| 50 | 笔记冲突真机：手机改正文 + 桌面改标题 → 同步得冲突 → 冲突页标「笔记」→ 采用桌面端 | D | PASS（2026-11-09：待发送 1、同步后冲突 1；冲突页显示「笔记 · 桌面端版本 39」；采用后手机标题变为桌面版本、桌面 `revision` 不变） |
+| 51 | 收集箱冲突真机：手机删「B」+ 桌面改内容 → 同步得冲突 → 标「收集箱」→ 采用桌面端恢复本地条目 | D | PASS（冲突页显示「收集箱 · 桌面端版本 40」；采用后收集箱从 1 条恢复为 2 条且内容为桌面版本） |
+| 52 | 收集箱超 4000 字本地拦截：粘贴 4016 字后保存 → 提示且不落库 | D | PASS（提示「记录失败：收集箱内容不能超过 4000 字」，列表仍 2 条、待发送 0） |
+| 53 | 解除配对后重配同一桌面端：游标与 `server_rev/base_rev` 清零 | D | PASS（待发送保留 1；重配后首次同步接收 39 条全量基线 + 冲突 1（`base_rev=0` vs 服务端 44）；采用桌面端后收尾） |
+| 54 | 同一安装重新配对（`device_uid`）：旧授权撤销、旧令牌失效、列表只留一条 | A | PASS（2026-11-09 `cargo test --lib mobile_sync::` 33/33，含 `repairing_same_device_uid_replaces_previous_authorization`；旧客户端不传 uid 时保持原行为） |
 
 ## 5. 证据与像素复核
 
@@ -210,3 +227,16 @@ node tmp/debug/mobile-app-skeleton/ui.mjs key 66           # Enter
   解决；Rust `mobile_sync` 16 项、备份注册 1 项、`db::tests` 41 项全过；证据
   `tmp/acceptance/mobile-sync/`。模拟器系统镜像损坏（QEMU 挂起）记 ENVIRONMENT BLOCKED，
   本轮真机结果不依赖模拟器。
+- 2026-11-09 收集箱/笔记同步：矩阵新增 46–49；物理机 APK 0.1.6（versionCode 13）完成
+  笔记 push/pull、收集箱 push、handled 墓碑与恢复；Rust `mobile_sync` 20 项、`db::tests`
+  41 项全过；证据 `tmp/acceptance/mobile-sync-v2/`。笔记冲突页未单独在真机构造（协议级
+  server_record 与通用冲突页已覆盖任务）。
+- 2026-11-09 补真机三项：矩阵新增 50–52（笔记冲突页、收集箱冲突页与恢复、4000 字本地拦截），
+  三项 PASS；§3 补充「长文本无法用 `input text` 注入」与剪贴板粘贴通道。解除配对后的版本
+  清零仍需桌面端生成配对码，未执行（版本清零规则见 [07-sync.md](07-sync.md) §4.1）。
+- 2026-11-09 解除配对真机：矩阵新增 53（重配后全量拉取 + 遗留 op 冲突）PASS；§3 补充手动
+  配对地址被 IME 改写与配对码 120 秒时效的规避。测试期间并行会话在 19:59:40 用同版本
+  （0.1.6/13）覆盖安装并多次弹出安装器/整机备份确认，本轮均已拒绝或取消，未安装任何新包。
+- 2026-11-09 配对去重：矩阵新增 54（`device_uid` 重配对替换旧授权）PASS；移动端
+  `npx tsc --noEmit` exit 0。真机重配对未执行（需要安装携带 `device_uid` 的新 APK），
+  历史重复记录需在桌面端手动撤销一次。

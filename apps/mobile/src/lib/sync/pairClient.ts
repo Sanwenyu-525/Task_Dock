@@ -126,6 +126,8 @@ export async function pairWithDesktop(options: {
   code: string;
   deviceName: string;
   platform?: string;
+  /** 安装级标识：桌面端据此在重新配对时替换同一台手机的旧授权。 */
+  deviceUid: string;
   fetchImpl?: FetchLike;
 }): Promise<PairResponse> {
   if (!/^\d{6}$/.test(options.code)) {
@@ -136,6 +138,7 @@ export async function pairWithDesktop(options: {
     code: options.code,
     device_name: options.deviceName.slice(0, 64),
     platform: (options.platform ?? "android").slice(0, 32),
+    device_uid: options.deviceUid.slice(0, 64),
   });
 
   const result = await requestJson(

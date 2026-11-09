@@ -1,4 +1,4 @@
-// 分组头：左侧色条 + 名称 + (数量) + 折叠箭头，右侧分割线延伸到屏幕边；补充说明用胶囊。
+// 分组头：左侧色条 + 折叠箭头 + 名称 + (数量)，右侧分割线延伸到屏幕边；补充说明用胶囊。
 // 色条比圆点更容易在长列表里做视觉锚点，也让「今天 / 已完成」这些分区一眼可分。
 // 折叠只切展示：点击整行开合，计数始终显示，用户知道收起来了几项。
 // 纯展示，不参与分组计算（分组在 src/screens/taskGroups.ts）。
@@ -44,6 +44,20 @@ function TaskGroupHeaderBase({
   const content = (
     <>
       <View style={[styles.bar, { backgroundColor: toneColor }]} />
+      {onPress ? (
+        <View style={styles.chevronBox} pointerEvents="none">
+          <View
+            style={[
+              styles.chevron,
+              {
+                borderColor: tokens.muted,
+                transform: [{ rotate: collapsed ? "-45deg" : "45deg" }],
+                marginTop: collapsed ? 0 : -3,
+              },
+            ]}
+          />
+        </View>
+      ) : null}
       <Text style={[styles.title, { color: tokens.text }]}>{title}</Text>
       <Text style={[styles.count, { color: tokens.muted }]}>({count})</Text>
       <View style={[styles.rule, { backgroundColor: tokens.separator }]} />
@@ -63,20 +77,6 @@ function TaskGroupHeaderBase({
           >
             {hint}
           </Text>
-        </View>
-      ) : null}
-      {onPress ? (
-        <View style={styles.chevronBox} pointerEvents="none">
-          <View
-            style={[
-              styles.chevron,
-              {
-                borderColor: tokens.muted,
-                transform: [{ rotate: collapsed ? "-45deg" : "45deg" }],
-                marginTop: collapsed ? 0 : -3,
-              },
-            ]}
-          />
         </View>
       ) : null}
     </>

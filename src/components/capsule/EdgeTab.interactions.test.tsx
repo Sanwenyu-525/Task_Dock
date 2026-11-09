@@ -613,4 +613,12 @@ describe("EdgeTab 交互", () => {
       expect(showTabHint).not.toHaveBeenCalled();
     });
   });
+
+  // ── tone → data-tone：状态呼吸样式的唯一钩子（2026-11-09）─────────
+  it("tone 落到 data-tone，供仅活动态呼吸样式选中", () => {
+    const { tab, rerender } = renderLiveTab("waiting");
+    expect(tab.dataset.tone).toBe("waiting");
+    rerender(<EdgeTab edge="left" tone="idle" />);
+    expect(tab.dataset.tone).toBe("idle");
+  });
 });

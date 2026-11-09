@@ -124,6 +124,8 @@ pub const EXTENDED_TABLES: &[&str] = &[
     // 手机同步 v1（v43）：本机变更游标与 push 幂等日志，按瞬时状态处理。
     "sync_changes",
     "sync_ops",
+    // 手机文件互传（v45）：记录指向 data_dir/mobile_files，跨机恢复无意义。
+    "mobile_files",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -459,6 +461,8 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     // （seq 与来源库不一致），按瞬时表处理，只写空 section。
     rule!("sync_changes", "mobile", "all", 416, &[], true),
     rule!("sync_ops", "mobile", "all", 417, &[], true),
+    // 手机文件互传（v45）：stored_path 指向本机文件，备份只写空 section。
+    rule!("mobile_files", "mobile", "all", 418, &[], true),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -475,9 +479,11 @@ pub fn is_local_transient_table(table: &str) -> bool {
     // mobile_devices：令牌哈希是设备本地信任状态，随备份迁移到另一台机器会把
     // 「已配对」关系一起带走；按本机瞬时状态处理，恢复旧备份时也不写回。
     // sync_changes / sync_ops：同步游标与幂等日志与来源库绑定，同样不迁移。
+    // mobile_files：记录指向 data_dir/mobile_files 下的文件，随备份迁移会留下
+    // 指向不存在路径的记录；按本机瞬时状态处理。
     matches!(
         table,
-        "shelf_file_ops" | "mobile_devices" | "sync_changes" | "sync_ops"
+        "shelf_file_ops" | "mobile_devices" | "sync_changes" | "sync_ops" | "mobile_files"
     )
 }
 

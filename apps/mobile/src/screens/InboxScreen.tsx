@@ -1,5 +1,6 @@
 // 收集箱：固定顶部速记区 + 卡片列表。转任务/删除后先淡出再移除，
 // 列表不会因为数据刷新整块闪一下；转任务后停留在本页，方便连续整理。
+// 条目已接入同步：页头按是否配对显示「同步已连接 / 仅本机保存」。
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
 import {
   ActivityIndicator,
@@ -19,6 +20,7 @@ import { PressableScale } from "../components/PressableScale";
 import { SearchField } from "../components/SearchField";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { addCapture, deleteCapture, listCaptures, promoteCapture } from "../db/captures";
+import { loadConnection } from "../db/syncConnection";
 import type { Capture } from "../domain/types";
 import { describeError } from "../lib/errors";
 import { useTheme } from "../theme/ThemeProvider";
@@ -39,6 +41,7 @@ export function InboxScreen({
 }) {
   const { tokens } = useTheme();
   const [captures, setCaptures] = useState<Capture[]>([]);
+  const [paired, setPaired] = useState(false);
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -57,7 +60,12 @@ export function InboxScreen({
 
   const refresh = useCallback(async () => {
     try {
-      setCaptures(await listCaptures());
+      const [nextCaptures, connection] = await Promise.all([
+        listCaptures(),
+        loadConnection().catch(() => null),
+      ]);
+      setCaptures(nextCaptures);
+      setPaired(Boolean(connection));
     } catch (error) {
       showToast(`读取收集箱失败：${describeError(error)}`, "danger");
     } finally {
@@ -166,7 +174,7 @@ export function InboxScreen({
             <Text style={[styles.subtitle, { color: tokens.muted }]}>
               {searching
                 ? `找到 ${visible.length} 条 · 共 ${captures.length} 条速记`
-                : `${captures.length} 条速记 · 仅本机保存`}
+                : `${captures.length} 条速记 · ${paired ? "同步已连接" : "仅本机保存"}`}
             </Text>
           </View>
           <Pressable

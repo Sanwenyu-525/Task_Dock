@@ -2590,6 +2590,7 @@ fn wait_for_cleanup_tick(stop: &Arc<(Mutex<bool>, Condvar)>, dur: std::time::Dur
     *guard
 }
 
+pub mod drag_out;
 pub mod drop_targets;
 pub mod fsops;
 

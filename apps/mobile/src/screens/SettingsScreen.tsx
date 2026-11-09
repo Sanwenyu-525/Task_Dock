@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import appConfig from "../../app.json";
-import { Badge } from "../components/Badge";
 import { GlassCard } from "../components/GlassCard";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { SettingActionRow } from "../components/SettingActionRow";
@@ -183,7 +182,7 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
           </Text>
           <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
             {syncConnection
-              ? `已配对 ${syncConnection.serverName} · 任务可手动同步`
+              ? `已配对 ${syncConnection.serverName} · 任务/笔记/收集箱可手动同步`
               : "未连接桌面端 · 数据仅在本机"}
           </Text>
         </View>
@@ -280,50 +279,13 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
           />
         </Section>
 
-        <Section title="手机与同步">
-          <SettingActionRow
-            label="配对新设备"
-            helper={
-              syncConnection
-                ? `已配对：${syncConnection.serverName}`
-                : "与桌面端在同一 Wi-Fi 下扫码或输码配对"
-            }
-            trailing={syncConnection ? <Badge label="已配对" tone="active" /> : undefined}
-            chevron
-            accessibilityHint="打开配对页，扫描桌面端二维码或手动输入配对码"
-            onPress={() => nav.push("pairing")}
-          />
-          <SettingActionRow
-            label="同步"
-            helper="查看已配对连接、测试连通性与解除本机配对"
-            trailing={syncConnection ? <Badge label="已连接" tone="active" /> : undefined}
-            chevron
-            accessibilityHint="同步中心：连接状态与后续数据同步"
-            onPress={() => nav.push("sync")}
-          />
-          <SettingActionRow
-            label="主屏小组件"
-            trailing={<Badge label="规划中" />}
-            chevron
-            accessibilityHint="桌面小组件配置（规划中）"
-            onPress={() => nav.push("widget")}
-          />
-          <SettingActionRow
-            label="分享接收"
-            trailing={<Badge label="规划中" />}
-            chevron
-            accessibilityHint="系统分享到 TaskDock（规划中）"
-            onPress={() => nav.push("share")}
-          />
-        </Section>
-
         <Section title="本地数据">
           {/* 对齐原型：这一节给真实的本地数据读数，而不是一段泛化说明 */}
           <InfoRow label="数据库" value={`SQLite v${SCHEMA_VERSION} · WAL`} />
           <InfoRow label="已排期提醒" value={`${scheduledReminders} 条`} />
           <InfoRow label="本地待发操作" value={`${pendingOps} 条`} />
           <Text style={[styles.hint, { color: tokens.muted }]}>
-            写操作先落本机并记入队列；任务同步会消费任务操作，收集箱/笔记仍留在本地。
+            写操作先落本机并记入队列；同步会消费任务、笔记与收集箱操作。
           </Text>
         </Section>
 

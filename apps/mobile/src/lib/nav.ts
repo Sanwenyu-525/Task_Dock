@@ -3,6 +3,7 @@
 export type RouteKey =
   | "pairing"
   | "sync"
+  | "files"
   | "conflict"
   | "note_editor"
   | "widget"

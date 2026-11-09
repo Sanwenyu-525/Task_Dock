@@ -9,12 +9,13 @@ import { useTheme } from "../theme/ThemeProvider";
 import { barShadow } from "../theme/shadows";
 import { font, radius, space } from "../theme/tokens";
 
-export type TabKey = "tasks" | "inbox" | "notes" | "settings";
+export type TabKey = "tasks" | "inbox" | "notes" | "device" | "settings";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "tasks", label: "任务" },
   { key: "inbox", label: "收集箱" },
   { key: "notes", label: "笔记" },
+  { key: "device", label: "设备" },
   { key: "settings", label: "设置" },
 ];
 
@@ -58,6 +59,18 @@ function TabIcon({ tab, color }: { tab: TabKey; color: string }) {
         <View style={[styles.noteFold, { backgroundColor: color }]} />
         <View style={[styles.noteLine, styles.noteLineShort, { backgroundColor: color }]} />
         <View style={[styles.noteLine, styles.noteLineLong, { backgroundColor: color }]} />
+      </View>
+    );
+  }
+
+  if (tab === "device") {
+    // 设备：手机 + 桌面显示器并排，表达「与电脑连接/互传」。
+    return (
+      <View style={styles.iconBox}>
+        <View style={[styles.devicePhone, { borderColor: color }]} />
+        <View style={[styles.deviceHome, { backgroundColor: color }]} />
+        <View style={[styles.deviceScreen, { borderColor: color }]} />
+        <View style={[styles.deviceBase, { backgroundColor: color }]} />
       </View>
     );
   }
@@ -319,6 +332,41 @@ const styles = StyleSheet.create({
     top: 11.6,
     left: 6.2,
     width: 7.3,
+  },
+  // 设备图标：左侧手机、右下显示器；两者留 1dp 间隙，22dp 下不会糊成一块。
+  devicePhone: {
+    position: "absolute",
+    left: 1.2,
+    top: 2.2,
+    width: 7.2,
+    height: 14.6,
+    borderWidth: 1.7,
+    borderRadius: 1.9,
+  },
+  deviceHome: {
+    position: "absolute",
+    left: 3,
+    top: 14.3,
+    width: 3.4,
+    height: 1.2,
+    borderRadius: 0.6,
+  },
+  deviceScreen: {
+    position: "absolute",
+    left: 9.8,
+    top: 7.6,
+    width: 11,
+    height: 7.6,
+    borderWidth: 1.7,
+    borderRadius: 1.4,
+  },
+  deviceBase: {
+    position: "absolute",
+    left: 8.6,
+    top: 16.4,
+    width: 13.4,
+    height: 1.5,
+    borderRadius: 0.75,
   },
   gearRing: {
     position: "absolute",

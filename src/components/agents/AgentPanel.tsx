@@ -845,7 +845,7 @@ export default function AgentPanel() {
   }
 
   return (
-    <div className="agents-panel">
+    <div className="agents-panel page-fill">
       {snapshotError && (
         // 保留旧快照但明确标记可能过期；持续故障不依赖一次性 Toast
         <div className="empty-hint error-text" role="status">
@@ -949,211 +949,221 @@ export default function AgentPanel() {
           </div>
 
           {/* ══ 历史搜索结果（后端分页；与 Agent 名称过滤互不替代）══ */}
-          {monitorSearching && (
-            <HistorySearchResults
-              state={historySearch}
-              sources={snapshot.sources}
-              instances={snapshot.instances}
-              expanded={expanded}
-              setExpanded={setExpanded}
-              onPendingToTasks={onPendingToTasks}
-              showToast={showToast}
-              focusSessionId={agentFocus?.sessionId ?? null}
-              focusRunId={agentFocus?.refId ?? null}
-            />
-          )}
-
-          {/* ══ 监控树 ══ */}
-          {visibleAgents.length === 0 && !searchHasHits && (
-            <EmptyState
-              icon={<AgentIcon size={22} />}
-              title={monitorSearching ? tr("agent.ui.noMatch") : tr("agent.ui.noAttention")}
-              hint={
-                monitorSearching
-                  ? tr("agent.ui.noMatchHint", {
-                      query: monitorQuery.trim(),
-                      scope:
-                        monitorFilter === "attention"
-                          ? tr("agent.ui.scopeAttention")
-                          : tr("agent.ui.scopeAll"),
-                    })
-                  : monitorFilter === "attention"
-                    ? tr("agent.ui.idleHint")
-                    : tr("agent.ui.emptyHint")
-              }
-            />
-          )}
-          <div className="monitor-tree">
-            {visibleAgents.map((agent) => (
-              <AgentNode
-                key={agent.id}
-                agent={agent}
+          <div className="page-scroll agents-body">
+            {monitorSearching && (
+              <HistorySearchResults
+                state={historySearch}
+                sources={snapshot.sources}
+                instances={snapshot.instances}
                 expanded={expanded}
                 setExpanded={setExpanded}
                 onPendingToTasks={onPendingToTasks}
                 showToast={showToast}
                 focusSessionId={agentFocus?.sessionId ?? null}
                 focusRunId={agentFocus?.refId ?? null}
-                focusPin={focusPin}
-                onRequestSearchFocus={focusMonitorSearch}
-                discovery={discoveryBySource.get(agent.id)}
-                onConnect={
-                  discoveryBySource.has(agent.id)
-                    ? () => {
-                        const d = discoveryBySource.get(agent.id)!;
-                        setSection("onboard");
-                        void openWizard(d);
-                      }
-                    : undefined
-                }
-              />
-            ))}
-            {!monitorSearching && snapshot.live_summary && (
-              <AgentLiveOverflow
-                summary={snapshot.live_summary}
-                snapshotSessionCount={snapshot.sessions.length}
-                sources={snapshot.sources}
-                onPendingToTasks={onPendingToTasks}
-                showToast={showToast}
               />
             )}
+
+            {/* ══ 监控树 ══ */}
+            {visibleAgents.length === 0 && !searchHasHits && (
+              <EmptyState
+                icon={<AgentIcon size={22} />}
+                title={monitorSearching ? tr("agent.ui.noMatch") : tr("agent.ui.noAttention")}
+                hint={
+                  monitorSearching
+                    ? tr("agent.ui.noMatchHint", {
+                        query: monitorQuery.trim(),
+                        scope:
+                          monitorFilter === "attention"
+                            ? tr("agent.ui.scopeAttention")
+                            : tr("agent.ui.scopeAll"),
+                      })
+                    : monitorFilter === "attention"
+                      ? tr("agent.ui.idleHint")
+                      : tr("agent.ui.emptyHint")
+                }
+              />
+            )}
+            <div className="monitor-tree">
+              {visibleAgents.map((agent) => (
+                <AgentNode
+                  key={agent.id}
+                  agent={agent}
+                  expanded={expanded}
+                  setExpanded={setExpanded}
+                  onPendingToTasks={onPendingToTasks}
+                  showToast={showToast}
+                  focusSessionId={agentFocus?.sessionId ?? null}
+                  focusRunId={agentFocus?.refId ?? null}
+                  focusPin={focusPin}
+                  onRequestSearchFocus={focusMonitorSearch}
+                  discovery={discoveryBySource.get(agent.id)}
+                  onConnect={
+                    discoveryBySource.has(agent.id)
+                      ? () => {
+                          const d = discoveryBySource.get(agent.id)!;
+                          setSection("onboard");
+                          void openWizard(d);
+                        }
+                      : undefined
+                  }
+                />
+              ))}
+              {!monitorSearching && snapshot.live_summary && (
+                <AgentLiveOverflow
+                  summary={snapshot.live_summary}
+                  snapshotSessionCount={snapshot.sessions.length}
+                  sources={snapshot.sources}
+                  onPendingToTasks={onPendingToTasks}
+                  showToast={showToast}
+                />
+              )}
+          </div>
           </div>
         </>
       )}
 
-      {section === "stats" && <AgentStatsView />}
+      {section === "stats" && (
+        <div className="page-scroll">
+          <AgentStatsView />
+        </div>
+      )}
 
       {section === "onboard" && wizard && (
-        <AgentOnboardView
-          state={wizard}
-          onDismiss={dismissWizard}
-          onRetryPreview={() => void openWizard(wizard.agent)}
-          onInstall={() => void installWizard()}
-          onRetryVerify={() => void retryVerifyWizard()}
-          onRollback={() => void rollbackWizard()}
-        />
+        <div className="page-scroll">
+          <AgentOnboardView
+            state={wizard}
+            onDismiss={dismissWizard}
+            onRetryPreview={() => void openWizard(wizard.agent)}
+            onInstall={() => void installWizard()}
+            onRetryVerify={() => void retryVerifyWizard()}
+            onRollback={() => void rollbackWizard()}
+          />
+        </div>
       )}
 
       {section === "onboard" && !wizard && (
         <>
-          {/* ══ 自动发现（默认展开；折叠标题行保留来源数量与扫描状态）══ */}
-          <CollapsibleSection
-            id="agent-section-discovery"
-            title="Agent 自动发现"
-            icon={<Radar size={12} />}
-            badge={scanBadge}
-            expanded={sectionOpen.discovery}
-            onExpandedChange={(open) => setSectionExpanded("discovery", open)}
-          >
-            {/* 工具栏：宽时并排，窄时搜索框占满一行、扫描按钮换行，不互相挤压 */}
-            <div className="agents-toolbar">
-              <SearchField
-                className="agents-search"
-                ariaLabel="搜索 Agent 名称或来源 ID"
-                placeholder="搜索名称 / source_id"
-                value={discoverQuery}
-                onChange={setDiscoverQuery}
-                clearLabel="清空搜索"
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    e.stopPropagation();
-                    setDiscoverQuery("");
-                  }
-                }}
-              />
-              <button className="btn sm" onClick={() => void runScan()} disabled={scanning}>
-                <RefreshCw size={12} className={scanning ? "spin" : ""} />{" "}
-                {scanning ? "扫描中…" : scanData ? "重新扫描" : "扫描"}
-              </button>
-            </div>
-
-            {scanError && (
-              <div className="empty-hint error-text agents-scan-error" role="alert">
-                <span>
-                  扫描失败：{scanError}
-                  {scanData ? "；下方为上次成功结果，可能不是最新" : ""}
-                </span>
+          <div className="page-scroll agents-body">
+            {/* ══ 自动发现（默认展开；折叠标题行保留来源数量与扫描状态）══ */}
+            <CollapsibleSection
+              id="agent-section-discovery"
+              title="Agent 自动发现"
+              icon={<Radar size={12} />}
+              badge={scanBadge}
+              expanded={sectionOpen.discovery}
+              onExpandedChange={(open) => setSectionExpanded("discovery", open)}
+            >
+              {/* 工具栏：宽时并排，窄时搜索框占满一行、扫描按钮换行，不互相挤压 */}
+              <div className="agents-toolbar">
+                <SearchField
+                  className="agents-search"
+                  ariaLabel="搜索 Agent 名称或来源 ID"
+                  placeholder="搜索名称 / source_id"
+                  value={discoverQuery}
+                  onChange={setDiscoverQuery}
+                  clearLabel="清空搜索"
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      setDiscoverQuery("");
+                    }
+                  }}
+                />
                 <button className="btn sm" onClick={() => void runScan()} disabled={scanning}>
-                  重试
+                  <RefreshCw size={12} className={scanning ? "spin" : ""} />{" "}
+                  {scanning ? "扫描中…" : scanData ? "重新扫描" : "扫描"}
                 </button>
               </div>
-            )}
-            {scanning && (
-              <div className="empty-hint agents-scan-progress" role="status">
-                {scanData ? "正在重新扫描，下方结果可能不是最新…" : "正在扫描本机 Agent…"}
-              </div>
-            )}
-            {!scanning && scanState.status === "success" && scanData?.length === 0 && (
-              <div className="empty-hint">未发现已安装的 Agent；可先安装 Codex / Trae 等后重新扫描</div>
-            )}
-            {scanData && scanData.length > 0 && visibleSources.length === 0 && (
-              <div className="empty-hint">
-                没有名称或 source_id 匹配「{discoverQuery.trim()}」；清空搜索可显示全部 {scanData.length} 个来源
-              </div>
-            )}
-            {visibleSources.length > 0 && (
-              <div className="discovery-grid">
-                {visibleSources.map((a) => (
-                  <SourceCard
-                    key={a.source_id}
-                    agent={a}
-                    onConnect={() => openWizard(a)}
-                    onVerify={() => reVerify(a.source_id)}
-                    onUninstall={() => uninstallAgent(a.source_id)}
-                    onChanged={async () => {
-                      await Promise.all([runScan(), load()]);
-                    }}
-                    showToast={showToast}
-                  />
-                ))}
-              </div>
-            )}
-            <div className="endpoint-hint bridge-note">
-              <AlertTriangle size={11} /> 「已安装」仅代表在本机检测到安装，不等于已连接；
-              连接状态以真实事件证据（健康徽标）为准。
-            </div>
-          </CollapsibleSection>
 
-          {/* ══ 通用桥接（默认折叠）══ */}
-          <CollapsibleSection
-            id="agent-section-bridge"
-            title="通用桥接"
-            description="HTTP / 文件投递"
-            icon={<PlugZap size={12} />}
-            expanded={sectionOpen.bridge}
-            onExpandedChange={(open) => setSectionExpanded("bridge", open)}
-          >
-            <div className="bridge-body">
-              <div className="bridge-actions">
-                <button className="btn sm" onClick={onCopyInbox}>
-                  <Copy size={12} /> 复制目录
-                </button>
+              {scanError && (
+                <div className="empty-hint error-text agents-scan-error" role="alert">
+                  <span>
+                    扫描失败：{scanError}
+                    {scanData ? "；下方为上次成功结果，可能不是最新" : ""}
+                  </span>
+                  <button className="btn sm" onClick={() => void runScan()} disabled={scanning}>
+                    重试
+                  </button>
+                </div>
+              )}
+              {scanning && (
+                <div className="empty-hint agents-scan-progress" role="status">
+                  {scanData ? "正在重新扫描，下方结果可能不是最新…" : "正在扫描本机 Agent…"}
+                </div>
+              )}
+              {!scanning && scanState.status === "success" && scanData?.length === 0 && (
+                <div className="empty-hint">未发现已安装的 Agent；可先安装 Codex / Trae 等后重新扫描</div>
+              )}
+              {scanData && scanData.length > 0 && visibleSources.length === 0 && (
+                <div className="empty-hint">
+                  没有名称或 source_id 匹配「{discoverQuery.trim()}」；清空搜索可显示全部 {scanData.length} 个来源
+                </div>
+              )}
+              {visibleSources.length > 0 && (
+                <div className="discovery-grid">
+                  {visibleSources.map((a) => (
+                    <SourceCard
+                      key={a.source_id}
+                      agent={a}
+                      onConnect={() => openWizard(a)}
+                      onVerify={() => reVerify(a.source_id)}
+                      onUninstall={() => uninstallAgent(a.source_id)}
+                      onChanged={async () => {
+                        await Promise.all([runScan(), load()]);
+                      }}
+                      showToast={showToast}
+                    />
+                  ))}
+                </div>
+              )}
+              <div className="endpoint-hint bridge-note">
+                <AlertTriangle size={11} /> 「已安装」仅代表在本机检测到安装，不等于已连接；
+                连接状态以真实事件证据（健康徽标）为准。
               </div>
-              <EndpointInfo
-                port={settings?.http_port ?? 47821}
-                token={settings?.http_token ?? ""}
+            </CollapsibleSection>
+
+            {/* ══ 通用桥接（默认折叠）══ */}
+            <CollapsibleSection
+              id="agent-section-bridge"
+              title="通用桥接"
+              description="HTTP / 文件投递"
+              icon={<PlugZap size={12} />}
+              expanded={sectionOpen.bridge}
+              onExpandedChange={(open) => setSectionExpanded("bridge", open)}
+            >
+              <div className="bridge-body">
+                <div className="bridge-actions">
+                  <button className="btn sm" onClick={onCopyInbox}>
+                    <Copy size={12} /> 复制目录
+                  </button>
+                </div>
+                <EndpointInfo
+                  port={settings?.http_port ?? 47821}
+                  token={settings?.http_token ?? ""}
+                  showToast={showToast}
+                />
+              </div>
+            </CollapsibleSection>
+
+            {/* ══ 自定义来源（默认折叠；表单随分组展开，不再有内外两层开合）══ */}
+            <CollapsibleSection
+              id="agent-section-custom"
+              title="自定义来源"
+              description="动态注册 · HTTP / 文件投递"
+              icon={<Plus size={12} />}
+              badge={customSourceCount > 0 ? `${customSourceCount} 个` : undefined}
+              expanded={sectionOpen.custom}
+              onExpandedChange={(open) => setSectionExpanded("custom", open)}
+            >
+              <CustomSourceForm
+                onCreated={async () => {
+                  await Promise.all([load(), runScan()]);
+                }}
                 showToast={showToast}
               />
-            </div>
-          </CollapsibleSection>
-
-          {/* ══ 自定义来源（默认折叠；表单随分组展开，不再有内外两层开合）══ */}
-          <CollapsibleSection
-            id="agent-section-custom"
-            title="自定义来源"
-            description="动态注册 · HTTP / 文件投递"
-            icon={<Plus size={12} />}
-            badge={customSourceCount > 0 ? `${customSourceCount} 个` : undefined}
-            expanded={sectionOpen.custom}
-            onExpandedChange={(open) => setSectionExpanded("custom", open)}
-          >
-            <CustomSourceForm
-              onCreated={async () => {
-                await Promise.all([load(), runScan()]);
-              }}
-              showToast={showToast}
-            />
-          </CollapsibleSection>
+            </CollapsibleSection>
+          </div>
         </>
       )}
 

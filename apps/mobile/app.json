@@ -2,7 +2,7 @@
   "expo": {
     "name": "TaskDock",
     "slug": "taskdock",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "orientation": "portrait",
     "scheme": "taskdock",
     "userInterfaceStyle": "automatic",
@@ -10,7 +10,7 @@
     "icon": "./assets/icon.png",
     "android": {
       "package": "dev.taskdock.mobile",
-      "versionCode": 10,
+      "versionCode": 20,
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-foreground.png",

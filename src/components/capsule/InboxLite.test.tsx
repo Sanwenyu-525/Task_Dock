@@ -11,26 +11,42 @@
 //! - 面板卸载释放 lite 切片（作废在途响应，不多付 IPC）。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { act } from "react";
 
 const quickCaptureList = vi.fn();
 const quickCaptureState = vi.fn();
+const quickCaptureShow = vi.fn();
+const quickCaptureDelete = vi.fn();
 const markHandled = vi.fn();
 const convertToTask = vi.fn();
 const dropTargets = vi.fn();
+const shelfAddText = vi.fn();
+const shelfAddLink = vi.fn();
+const shelfGroups = vi.fn();
+const shelfStats = vi.fn();
+const notesConvert = vi.fn();
+const clipboardCopy = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   quickCaptureList: (...a: unknown[]) => quickCaptureList(...a),
   quickCaptureState: (...a: unknown[]) => quickCaptureState(...a),
+  quickCaptureShow: (...a: unknown[]) => quickCaptureShow(...a),
   quickCaptureMarkHandled: (...a: unknown[]) => markHandled(...a),
-  quickCaptureDelete: vi.fn(),
+  quickCaptureDelete: (...a: unknown[]) => quickCaptureDelete(...a),
   quickCaptureConvertToTask: (...a: unknown[]) => convertToTask(...a),
   quickCaptureSaveDraft: vi.fn(),
   quickCaptureClearDraft: vi.fn(),
   quickCaptureSetLastType: vi.fn(),
   quickCaptureSubmit: vi.fn(),
   quickCaptureHide: vi.fn(),
+  shelfAddText: (...a: unknown[]) => shelfAddText(...a),
+  shelfAddLink: (...a: unknown[]) => shelfAddLink(...a),
+  shelfGroups: (...a: unknown[]) => shelfGroups(...a),
+  shelfStats: (...a: unknown[]) => shelfStats(...a),
+  shelfUpdate: vi.fn(),
+  shelfRevealItem: vi.fn(async () => undefined),
+  shelfDragOut: vi.fn(async () => ({ effect: "none", count: 0, missing_ids: [] })),
   applyMode: async () => undefined,
   // 文件子页（默认不挂载，仍补齐导出，避免 mock 缺导出报错）
   shelfDropTargets: (...a: unknown[]) => dropTargets(...a),
@@ -55,6 +71,22 @@ vi.mock("../../lib/bridge", () => ({
     text: "文本",
   },
 }));
+
+vi.mock("../../store/useNotesStore", () => ({
+  useNotesStore: {
+    getState: () => ({
+      convertCapture: (...a: unknown[]) => notesConvert(...a),
+    }),
+  },
+}));
+
+vi.mock("../../lib/clipboard", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/clipboard")>();
+  return {
+    ...actual,
+    copyText: (...a: unknown[]) => clipboardCopy(...a),
+  };
+});
 
 import InboxLite from "./InboxLite";
 import { useCaptureStore } from "../../store/useCaptureStore";
@@ -82,10 +114,50 @@ beforeEach(() => {
   localStorage.clear();
   quickCaptureList.mockReset();
   quickCaptureState.mockReset();
+  quickCaptureShow.mockReset();
+  quickCaptureDelete.mockReset();
   markHandled.mockReset();
   convertToTask.mockReset();
   dropTargets.mockReset();
+  shelfAddText.mockReset();
+  shelfAddLink.mockReset();
+  shelfGroups.mockReset();
+  shelfStats.mockReset();
+  notesConvert.mockReset();
+  clipboardCopy.mockReset();
   dropTargets.mockResolvedValue([]);
+  quickCaptureShow.mockResolvedValue({ visible: true, focused: true });
+  quickCaptureDelete.mockResolvedValue(undefined);
+  shelfGroups.mockResolvedValue([]);
+  shelfStats.mockResolvedValue({
+    total: 0,
+    file_count: 0,
+    image_count: 0,
+    folder_count: 0,
+    link_count: 0,
+    text_count: 0,
+    managed_bytes: 0,
+    disk_bytes: 0,
+    quota_mb: 2048,
+  });
+  shelfAddText.mockResolvedValue({
+    id: "shelf-text",
+    kind: "text",
+    display_name: "暂存文本",
+    pinned: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  shelfAddLink.mockResolvedValue({
+    id: "shelf-link",
+    kind: "link",
+    display_name: "暂存链接",
+    pinned: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  notesConvert.mockResolvedValue({ duplicate: false });
+  clipboardCopy.mockResolvedValue(true);
   useCaptureStore.setState({
     items: [],
     filter: "inbox",
@@ -341,5 +413,77 @@ describe("InboxLite", () => {
     fireEvent.click(screen.getByRole("tab", { name: "快速收集" }));
     await screen.findByText("没有未处理的记录");
     expect(screen.getByRole("button", { name: "快速笔记" })).toBeTruthy();
+  });
+
+  it("头部「快速记录」打开既有快速捕获窗口", async () => {
+    quickCaptureList.mockResolvedValue([]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 0 });
+    render(<InboxLite />);
+    await screen.findByText("没有未处理的记录");
+
+    fireEvent.click(screen.getByRole("button", { name: "快速记录" }));
+    await waitFor(() => expect(quickCaptureShow).toHaveBeenCalledTimes(1));
+  });
+
+  it("更多菜单复制内容，记录保留", async () => {
+    quickCaptureList.mockResolvedValue([item("c9", "待办：写周报")]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 1 });
+    render(<InboxLite />);
+    await screen.findByText("待办：写周报");
+
+    fireEvent.click(screen.getByRole("button", { name: "「待办：写周报」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "复制内容" }));
+
+    await waitFor(() => expect(clipboardCopy).toHaveBeenCalledWith("待办：写周报"));
+    expect(await screen.findByText("已复制")).toBeTruthy();
+    expect(screen.getByText("待办：写周报")).toBeTruthy();
+  });
+
+  it("更多菜单转为笔记，保留捕获记录", async () => {
+    quickCaptureList.mockResolvedValue([item("c9", "待办：写周报")]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 1 });
+    render(<InboxLite />);
+    await screen.findByText("待办：写周报");
+
+    fireEvent.click(screen.getByRole("button", { name: "「待办：写周报」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "转为笔记" }));
+
+    await waitFor(() => expect(notesConvert).toHaveBeenCalledWith("c9"));
+    expect(await screen.findByText("已转为笔记（保留本条）")).toBeTruthy();
+    expect(screen.getByText("待办：写周报")).toBeTruthy();
+  });
+
+  it("更多菜单发送到暂存架，保留捕获记录", async () => {
+    quickCaptureList.mockResolvedValue([item("c9", "待办：写周报")]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 1 });
+    render(<InboxLite />);
+    await screen.findByText("待办：写周报");
+
+    fireEvent.click(screen.getByRole("button", { name: "「待办：写周报」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "发送到暂存架" }));
+
+    await waitFor(() =>
+      expect(shelfAddText).toHaveBeenCalledWith("待办：写周报", null),
+    );
+    expect(await screen.findByText("已发送到暂存架（保留本条）")).toBeTruthy();
+    expect(screen.getByText("待办：写周报")).toBeTruthy();
+  });
+
+  it("删除需要面板内二次确认，确认后移出列表", async () => {
+    quickCaptureList.mockResolvedValue([item("c9", "待办：写周报")]);
+    quickCaptureState.mockResolvedValue({ draft: null, last_type: "text", inbox_count: 1 });
+    render(<InboxLite />);
+    await screen.findByText("待办：写周报");
+
+    fireEvent.click(screen.getByRole("button", { name: "「待办：写周报」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "删除" }));
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "确认删除捕获记录",
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+
+    await waitFor(() => expect(quickCaptureDelete).toHaveBeenCalledWith("c9"));
+    expect(await screen.findByText("已删除记录")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("待办：写周报")).toBeNull());
   });
 });

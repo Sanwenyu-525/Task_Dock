@@ -27,17 +27,30 @@ import {
   ArrowUpRight,
   Check,
   ChevronRight,
+  Copy,
+  FolderPlus,
   Inbox,
   Lightbulb,
   Link2,
   ListPlus,
   ListTodo,
+  Loader2,
+  MoreVertical,
+  Plus,
   SquareCheckBig,
+  StickyNote,
+  Trash2,
 } from "lucide-react";
 import type { CaptureItem, CaptureKind } from "../../lib/bridge";
+import { copyText } from "../../lib/clipboard";
+import { errorMessage } from "../../lib/errors";
+import { useQuickRecord } from "../../hooks/useQuickRecord";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
+import { useNotesStore } from "../../store/useNotesStore";
+import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
+import { DropdownMenu } from "../ui";
 import { openFullApp } from "./actions";
 import InboxDropPane from "./InboxDropPane";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
@@ -98,10 +111,12 @@ export default function InboxLite() {
   const releaseLite = useCaptureStore((s) => s.releaseLite);
   const markHandled = useCaptureStore((s) => s.markHandled);
   const convertToTask = useCaptureStore((s) => s.convertToTask);
+  const remove = useCaptureStore((s) => s.remove);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<CaptureItem | null>(null);
   const [sub, setSub] = useState<InboxSub>(readSub);
   const targetCount = useDropTargetsStore((s) => s.targets.filter((t) => t.show_in_capsule).length);
   // 回调触发后从 Set 删除：连续处理多条记录时不会把已结束的计时器 ID 累积下来。
@@ -131,6 +146,15 @@ export default function InboxLite() {
     timers.current.add(t);
   };
 
+  const { openQuickRecord, opening } = useQuickRecord(flash);
+
+  // 删除确认 3s 自动收起，避免一直停留在危险态。
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const timer = window.setTimeout(() => setConfirmDelete(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [confirmDelete]);
+
   const loading = liteLoading && lite === null;
   const hasError = liteError !== null;
   // 面板口径以切片为准：lite 为 null（未加载）时不拿全局计数冒充面板状态
@@ -144,22 +168,71 @@ export default function InboxLite() {
    * 快捷处理走既有 store 命令；成功后立即从列表移除并刷新切片/计数，
    * 失败则保留记录、给出提示，并以真实列表为准重新拉取。
    */
-  const runAction = async (item: CaptureItem, kind: "convert" | "handled") => {
+  const runAction = async (
+    item: CaptureItem,
+    kind: "convert" | "handled" | "delete",
+  ) => {
     if (busyId) return;
     setBusyId(item.id);
     try {
       if (kind === "convert") {
         await convertToTask(item.id);
-      } else {
+      } else if (kind === "handled") {
         await markHandled(item.id);
+      } else {
+        await remove(item.id);
+        setConfirmDelete(null);
       }
       setHandled((prev) => new Set(prev).add(item.id));
       setExpandedId((cur) => (cur === item.id ? null : cur));
-      flash(kind === "convert" ? "已转为任务" : "已标记为已处理");
+      flash(
+        kind === "convert"
+          ? "已转为任务"
+          : kind === "handled"
+            ? "已标记为已处理"
+            : "已删除记录",
+      );
       await loadInboxLite();
     } catch {
-      flash(kind === "convert" ? "转为任务失败，请重试" : "标记失败，请重试");
+      flash(
+        kind === "convert"
+          ? "转为任务失败，请重试"
+          : kind === "handled"
+            ? "标记失败，请重试"
+            : "删除失败，请重试",
+      );
       void loadInboxLite();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /** 更多菜单：复制 / 转笔记 / 发送到暂存架。均不强行把用户拽离当前面板。 */
+  const runMenuAction = async (
+    item: CaptureItem,
+    kind: "copy" | "note" | "shelf",
+  ) => {
+    if (busyId) return;
+    setBusyId(item.id);
+    try {
+      if (kind === "copy") {
+        const text = item.kind === "link" && item.url ? item.url : item.content;
+        const ok = await copyText(text);
+        flash(ok ? "已复制" : "复制失败");
+      } else if (kind === "note") {
+        await useNotesStore.getState().convertCapture(item.id);
+        flash("已转为笔记（保留本条）");
+      } else {
+        const shelf = useShelfStore.getState();
+        if (item.kind === "link" && item.url) {
+          await shelf.addLink(item.url);
+        } else {
+          await shelf.addText(item.content);
+        }
+        flash("已发送到暂存架（保留本条）");
+      }
+    } catch (e) {
+      flash(`操作失败：${errorMessage(e)}`);
     } finally {
       setBusyId(null);
     }
@@ -181,15 +254,34 @@ export default function InboxLite() {
                 : `未处理 ${inboxCount} 条 · 最近 ${items.length} 条`
         }
         actions={
-          <button
-            type="button"
-            className="cap-iconbtn"
-            aria-label={sub === "drop" ? "打开完整文件暂存架" : "打开完整收集箱"}
-            data-tip-placement="bottom"
-            onClick={() => openFullApp(sub === "drop" ? "shelf" : "inbox")}
-          >
-            <ArrowUpRight size={15} strokeWidth={2} aria-hidden="true" />
-          </button>
+          <>
+            {sub === "capture" && (
+              <button
+                type="button"
+                className="cap-iconbtn"
+                aria-label="快速记录"
+                data-tip="快速记录"
+                data-tip-placement="bottom"
+                disabled={opening}
+                onClick={() => void openQuickRecord()}
+              >
+                {opening ? (
+                  <Loader2 size={14} className="spin" aria-hidden="true" />
+                ) : (
+                  <Plus size={15} strokeWidth={2.2} aria-hidden="true" />
+                )}
+              </button>
+            )}
+            <button
+              type="button"
+              className="cap-iconbtn"
+              aria-label={sub === "drop" ? "打开完整文件暂存架" : "打开完整收集箱"}
+              data-tip-placement="bottom"
+              onClick={() => openFullApp(sub === "drop" ? "shelf" : "inbox")}
+            >
+              <ArrowUpRight size={15} strokeWidth={2} aria-hidden="true" />
+            </button>
+          </>
         }
       />
 
@@ -283,6 +375,63 @@ export default function InboxLite() {
                       >
                         <Check size={12} strokeWidth={2.4} aria-hidden="true" />
                       </button>
+                      <DropdownMenu
+                        menuLabel={`「${label}」更多操作`}
+                        placement="bottom-end"
+                        menuMinWidth={132}
+                        trigger={(props) => (
+                          <button
+                            {...props}
+                            type="button"
+                            className="cap-mini is-icon"
+                            aria-label={`「${label}」更多操作`}
+                            data-tip="更多"
+                            disabled={busy}
+                          >
+                            <MoreVertical
+                              size={12}
+                              strokeWidth={2.2}
+                              aria-hidden="true"
+                            />
+                          </button>
+                        )}
+                        items={[
+                          {
+                            key: "copy",
+                            label: "复制内容",
+                            icon: <Copy size={12} aria-hidden="true" />,
+                            onSelect: () => void runMenuAction(it, "copy"),
+                          },
+                          {
+                            key: "note",
+                            label: "转为笔记",
+                            icon: <StickyNote size={12} aria-hidden="true" />,
+                            onSelect: () => void runMenuAction(it, "note"),
+                          },
+                          ...(it.kind === "text" ||
+                          it.kind === "idea" ||
+                          it.kind === "link"
+                            ? [
+                                {
+                                  key: "shelf",
+                                  label: "发送到暂存架",
+                                  icon: (
+                                    <FolderPlus size={12} aria-hidden="true" />
+                                  ),
+                                  onSelect: () =>
+                                    void runMenuAction(it, "shelf"),
+                                },
+                              ]
+                            : []),
+                          {
+                            key: "delete",
+                            label: "删除",
+                            icon: <Trash2 size={12} aria-hidden="true" />,
+                            danger: true,
+                            onSelect: () => setConfirmDelete(it),
+                          },
+                        ]}
+                      />
                     </span>
                   </div>
                   {open && (
@@ -306,6 +455,39 @@ export default function InboxLite() {
               );
             })}
           </div>
+
+          {confirmDelete && (
+            <div
+              className="cap-confirm"
+              role="alertdialog"
+              aria-label="确认删除捕获记录"
+            >
+              <p className="cap-confirm-text">
+                删除「{shortLabel(confirmDelete)}」？
+                <span>
+                  只删除这条捕获记录；已转任务/笔记或发送到暂存架的内容不受影响。
+                </span>
+              </p>
+              <div className="cap-confirm-actions">
+                <button
+                  type="button"
+                  className="cap-mini"
+                  disabled={busyId === confirmDelete.id}
+                  onClick={() => setConfirmDelete(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="cap-mini cap-confirm-danger"
+                  disabled={busyId === confirmDelete.id}
+                  onClick={() => void runAction(confirmDelete, "delete")}
+                >
+                  删除
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="cap-foot">
             <span className="cap-foot-note">

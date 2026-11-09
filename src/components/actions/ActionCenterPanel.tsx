@@ -294,7 +294,7 @@ export default function ActionCenterPanel() {
   }
 
   return (
-    <div className="action-panel">
+    <div className="action-panel page-fill">
       <div className="filter-bar primary">
         <div className="seg-group subtle" role="group" aria-label="行动分类">
           {(["intervention", "notification", "history"] as ActionCategory[]).map((id) => {
@@ -332,11 +332,13 @@ export default function ActionCenterPanel() {
       )}
 
       {feed?.enabled === false ? (
-        <EmptyState
-          icon={<Inbox size={22} />}
-          title="行动中心已关闭"
-          hint="Agent 事件仍会照常入库，历史与会话跳转不受影响；可在「设置」中重新开启行动中心以恢复聚合与徽标。"
-        />
+        <div className="page-scroll action-body">
+          <EmptyState
+            icon={<Inbox size={22} />}
+            title="行动中心已关闭"
+            hint="Agent 事件仍会照常入库，历史与会话跳转不受影响；可在「设置」中重新开启行动中心以恢复聚合与徽标。"
+          />
+        </div>
       ) : (
         <>
           <div className="filter-bar secondary">
@@ -451,119 +453,121 @@ export default function ActionCenterPanel() {
             </div>
           )}
 
-          {error && <div className="empty-hint error-text">加载失败：{error}</div>}
-          {!current && !error && <div className="empty-hint">加载中…</div>}
-          {current && displayedItems.length === 0 && (
-            <EmptyState
-              icon={<Inbox size={22} />}
-              title={emptyTitle(category, current.filtered_total, categoryTotal)}
-              hint={emptyHint(category, current.filtered_total, categoryTotal)}
-            />
-          )}
-          {current && displayedItems.length > 0 && (
-            <div className="action-list">
-              {displayedItems.map((item) => {
-                const leaving = exitSnapshot?.item.id === item.id;
-                return (
-                <div
-                  key={item.id}
-                  ref={(el) => {
-                    if (el) rowRefs.current.set(item.id, el);
-                    else rowRefs.current.delete(item.id);
-                  }}
-                  className={`task-card action-item p${item.priority} kind-${item.kind} ${item.acked ? "acked" : ""} ${
-                    leaving ? "leaving" : ""
-                  }`}
-                  inert={leaving || undefined}
-                  aria-hidden={leaving || undefined}
-                  style={
-                    leaving && exitSnapshot && exitSnapshot.height > 0
-                      ? ({ "--clip-exit-h": `${exitSnapshot.height}px` } as CSSProperties)
-                      : undefined
-                  }
-                >
-                  <button
-                    className="action-main"
-                    onClick={() => onOpen(item)}
-                    title={item.kind === "reminder" ? "查看任务" : "跳转到该 Agent 会话"}
+          <div className="page-scroll action-body">
+            {error && <div className="empty-hint error-text">加载失败：{error}</div>}
+            {!current && !error && <div className="empty-hint">加载中…</div>}
+            {current && displayedItems.length === 0 && (
+              <EmptyState
+                icon={<Inbox size={22} />}
+                title={emptyTitle(category, current.filtered_total, categoryTotal)}
+                hint={emptyHint(category, current.filtered_total, categoryTotal)}
+              />
+            )}
+            {current && displayedItems.length > 0 && (
+              <div className="action-list">
+                {displayedItems.map((item) => {
+                  const leaving = exitSnapshot?.item.id === item.id;
+                  return (
+                  <div
+                    key={item.id}
+                    ref={(el) => {
+                      if (el) rowRefs.current.set(item.id, el);
+                      else rowRefs.current.delete(item.id);
+                    }}
+                    className={`task-card action-item p${item.priority} kind-${item.kind} ${item.acked ? "acked" : ""} ${
+                      leaving ? "leaving" : ""
+                    }`}
+                    inert={leaving || undefined}
+                    aria-hidden={leaving || undefined}
+                    style={
+                      leaving && exitSnapshot && exitSnapshot.height > 0
+                        ? ({ "--clip-exit-h": `${exitSnapshot.height}px` } as CSSProperties)
+                        : undefined
+                    }
                   >
-                    <div className="action-head">
-                      <span className={`priority-tag p${item.priority}`}>
-                        {PRIORITY_LABELS[item.priority] ?? "P3"}
-                      </span>
-                      <span className={`action-kind k-${item.kind}`}>
-                        {item.kind === "reminder" ? <Bell size={10} /> : <AgentIcon size={10} />}
-                        {kindLabel(item.kind)}
-                      </span>
-                      {item.category === "notification" && (
-                        <span className="action-inferred">未确认</span>
-                      )}
-                      <span className="flex-spacer" />
-                      <span className="action-time">{formatRelative(item.occurred_at)}</span>
-                    </div>
-                    <div className="action-title">{item.title}</div>
-                    {item.message && <div className="action-msg">{item.message}</div>}
-                    <div className="action-meta">
-                      <span>{item.source_name}</span>
-                      {item.task_title && (
-                        <span className="action-task">任务：{item.task_title}</span>
-                      )}
-                      {item.authorization_inferred && (
-                        <span className="action-inferred">
-                          <AlertTriangle size={10} /> 推断
+                    <button
+                      className="action-main"
+                      onClick={() => onOpen(item)}
+                      title={item.kind === "reminder" ? "查看任务" : "跳转到该 Agent 会话"}
+                    >
+                      <div className="action-head">
+                        <span className={`priority-tag p${item.priority}`}>
+                          {PRIORITY_LABELS[item.priority] ?? "P3"}
                         </span>
+                        <span className={`action-kind k-${item.kind}`}>
+                          {item.kind === "reminder" ? <Bell size={10} /> : <AgentIcon size={10} />}
+                          {kindLabel(item.kind)}
+                        </span>
+                        {item.category === "notification" && (
+                          <span className="action-inferred">未确认</span>
+                        )}
+                        <span className="flex-spacer" />
+                        <span className="action-time">{formatRelative(item.occurred_at)}</span>
+                      </div>
+                      <div className="action-title">{item.title}</div>
+                      {item.message && <div className="action-msg">{item.message}</div>}
+                      <div className="action-meta">
+                        <span>{item.source_name}</span>
+                        {item.task_title && (
+                          <span className="action-task">任务：{item.task_title}</span>
+                        )}
+                        {item.authorization_inferred && (
+                          <span className="action-inferred">
+                            <AlertTriangle size={10} /> 推断
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                    <div className="action-side">
+                      {item.task_id && (
+                        <button
+                          className="icon-btn sm"
+                          onClick={() => void onOpenTaskContext(item)}
+                          disabled={busy === item.id}
+                          title="任务上下文（现场 / 关联目标）"
+                          aria-label="打开任务上下文"
+                        >
+                          <Layers size={12} />
+                        </button>
+                      )}
+                      {canAck(item) && (
+                        <button
+                          className={`icon-btn sm action-ack ${item.acked ? "acked" : ""}`}
+                          onClick={() => void onAck(item)}
+                          disabled={busy === item.id}
+                          title={item.acked ? "恢复为待处理" : "标记已处理"}
+                          aria-label={item.acked ? "恢复为待处理" : "标记已处理"}
+                        >
+                          {item.acked ? <Undo2 size={13} /> : <Check size={13} />}
+                        </button>
                       )}
                     </div>
-                  </button>
-                  <div className="action-side">
-                    {item.task_id && (
-                      <button
-                        className="icon-btn sm"
-                        onClick={() => void onOpenTaskContext(item)}
-                        disabled={busy === item.id}
-                        title="任务上下文（现场 / 关联目标）"
-                        aria-label="打开任务上下文"
-                      >
-                        <Layers size={12} />
-                      </button>
-                    )}
-                    {canAck(item) && (
-                      <button
-                        className={`icon-btn sm action-ack ${item.acked ? "acked" : ""}`}
-                        onClick={() => void onAck(item)}
-                        disabled={busy === item.id}
-                        title={item.acked ? "恢复为待处理" : "标记已处理"}
-                        aria-label={item.acked ? "恢复为待处理" : "标记已处理"}
-                      >
-                        {item.acked ? <Undo2 size={13} /> : <Check size={13} />}
-                      </button>
-                    )}
                   </div>
-                </div>
-                );
-              })}
-              {current.has_more && (
-                <div className="action-more">
-                  <button
-                    className="btn sm"
-                    onClick={() => void loadMore()}
-                    disabled={loadingMore || loading}
-                  >
-                    {loadingMore
-                      ? "加载中…"
-                      : `加载更多（已加载 ${current.loaded}/${current.filtered_total}）`}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-          {/* 计数下沉（UI-16）：不占首屏，只在全部加载完时给出总量。 */}
-          {current && !current.has_more && displayedItems.length > 0 && (
-            <div className="action-list-meta" role="status">
-              共 {current.filtered_total} 条 · 已加载 {current.loaded} 条
-            </div>
-          )}
-        </>
+                  );
+                })}
+                {current.has_more && (
+                  <div className="action-more">
+                    <button
+                      className="btn sm"
+                      onClick={() => void loadMore()}
+                      disabled={loadingMore || loading}
+                    >
+                      {loadingMore
+                        ? "加载中…"
+                        : `加载更多（已加载 ${current.loaded}/${current.filtered_total}）`}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {/* 计数下沉（UI-16）：不占首屏，只在全部加载完时给出总量。 */}
+            {current && !current.has_more && displayedItems.length > 0 && (
+              <div className="action-list-meta" role="status">
+                共 {current.filtered_total} 条 · 已加载 {current.loaded} 条
+              </div>
+            )}
+          </div>
+          </>
       )}
     </div>
   );

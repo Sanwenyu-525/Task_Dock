@@ -6,7 +6,7 @@
 //! 定位条目复用全局搜索的 `pendingLocate` 通道：完整暂存架挂载后消费意图、
 //! 清空筛选并打开详情，不另造一套「指定条目」参数。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlignLeft,
@@ -26,14 +26,18 @@ import {
   shelfGetItem,
   shelfOpenItem,
   shelfReadText,
+  shelfRevealItem,
+  type ShelfDragOutResult,
   type ShelfItem,
   type ShelfKind,
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
+import { useShelfDragOut } from "../../hooks/useShelfDragOut";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useShelfStore } from "../../store/useShelfStore";
 import { openFullApp } from "./actions";
 import { DropdownMenu } from "../ui";
+import "../shelf/shelf-ui.css";
 
 const KIND_ICONS: Record<ShelfKind, typeof FileIcon> = {
   file: FileIcon,
@@ -49,6 +53,10 @@ function storageLabel(item: ShelfItem): string {
   return item.storage_mode === "managed" ? "托管副本" : "引用原文件";
 }
 
+function isPhysical(item: ShelfItem): boolean {
+  return item.kind === "file" || item.kind === "image" || item.kind === "folder";
+}
+
 export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string) => void }) {
   const recent = useShelfStore((s) => s.recent);
   const recentLoading = useShelfStore((s) => s.recentLoading);
@@ -58,12 +66,32 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
   const loadRecent = useShelfStore((s) => s.loadRecent);
   const retryShelfSync = useShelfStore((s) => s.retryShelfSync);
   const addPaths = useShelfStore((s) => s.addPaths);
+  const updateItem = useShelfStore((s) => s.updateItem);
   const requestShelfLocate = useGlobalSearchStore((s) => s.requestShelfLocate);
   const [adding, setAdding] = useState(false);
+  const [favoriteBusyId, setFavoriteBusyId] = useState<string | null>(null);
+  const dragItemRef = useRef<ShelfItem | null>(null);
 
   useEffect(() => {
     void loadRecent();
   }, [loadRecent]);
+
+  const drag = useShelfDragOut({
+    enabled: true,
+    resolveIds: () => {
+      const item = dragItemRef.current;
+      if (!item || !isPhysical(item) || item.exists_state === "missing") {
+        return [];
+      }
+      return [item.id];
+    },
+    onSettled: (result: ShelfDragOutResult) => {
+      if (result.effect !== "move") return;
+      void loadRecent({ force: true });
+      onNotice("文件已移动；最近暂存已刷新，原路径可能已失效");
+    },
+    onError: onNotice,
+  });
 
   const openItem = useCallback(
     (item: ShelfItem) => {
@@ -174,6 +202,27 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
     [onNotice],
   );
 
+  const toggleFavorite = useCallback(
+    (item: ShelfItem) => {
+      if (favoriteBusyId) return;
+      setFavoriteBusyId(item.id);
+      void updateItem(item.id, { favorite: !item.favorite })
+        .then(() => onNotice(item.favorite ? "已取消收藏" : "已收藏"))
+        .catch((e) => onNotice(`更新收藏失败：${errorMessage(e)}`))
+        .finally(() => setFavoriteBusyId(null));
+    },
+    [favoriteBusyId, onNotice, updateItem],
+  );
+
+  const revealItem = useCallback(
+    (item: ShelfItem) => {
+      void shelfRevealItem(item.id)
+        .then(() => onNotice("已在文件夹中显示"))
+        .catch((e) => onNotice(`打开所在文件夹失败：${errorMessage(e)}`));
+    },
+    [onNotice],
+  );
+
   const addFiles = async () => {
     if (adding) return;
     setAdding(true);
@@ -259,14 +308,29 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
             const Icon = KIND_ICONS[item.kind] ?? FileIcon;
             const missing = item.exists_state === "missing";
             const kindLabel = SHELF_KIND_LABELS[item.kind] ?? item.kind;
+            const draggable = isPhysical(item) && !missing;
             return (
-              <li key={item.id} className={`cap-shelf-recent-item${missing ? " is-missing" : ""}`}>
+              <li
+                key={item.id}
+                className={`cap-shelf-recent-item${missing ? " is-missing" : ""}${draggable ? " is-draggable" : ""}`}
+                onPointerDown={(event) => {
+                  dragItemRef.current = item;
+                  drag.onPointerDown(event);
+                }}
+              >
                 <button
                   type="button"
                   className="cap-shelf-recent-main"
                   aria-label={`${item.kind === "text" ? "查看" : "打开"}「${item.display_name}」`}
-                  data-tip={item.original_path ?? item.display_name}
-                  onClick={() => openItem(item)}
+                  data-tip={
+                    draggable
+                      ? `${item.original_path ?? item.display_name} · 按住可拖出`
+                      : (item.original_path ?? item.display_name)
+                  }
+                  onClick={() => {
+                    if (drag.shouldSuppressClick()) return;
+                    openItem(item);
+                  }}
                 >
                   <span className="cap-shelf-recent-icon" aria-hidden="true">
                     <Icon size={13} strokeWidth={1.9} />
@@ -290,6 +354,7 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
                       aria-label={`「${item.display_name}」更多操作`}
                       aria-expanded={expanded}
                       data-tip="更多"
+                      data-no-drag
                       onClick={onClick}
                       onKeyDown={onKeyDown}
                     >
@@ -311,6 +376,15 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
                             onSelect: () => openItem(item),
                           },
                         ]),
+                    ...(isPhysical(item) && !missing
+                      ? [
+                          {
+                            key: "reveal",
+                            label: "在文件夹中显示",
+                            onSelect: () => revealItem(item),
+                          },
+                        ]
+                      : []),
                     ...(item.kind === "file" || item.kind === "image"
                       ? [
                           {
@@ -357,6 +431,12 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
                           },
                         ]
                       : []),
+                    {
+                      key: "favorite",
+                      label: item.favorite ? "取消收藏" : "收藏",
+                      disabled: favoriteBusyId === item.id,
+                      onSelect: () => toggleFavorite(item),
+                    },
                     {
                       key: "locate",
                       label: "在暂存架中查看",

@@ -1327,6 +1327,49 @@ fn run_powershell_with_timeout(
 
 // ── 运行状态判定 ────────────────────────────────────────────
 
+/// `tasklist` 进程名（含 `.exe`、原样大小写）→ 小写、去扩展名的进程干集合。
+///
+/// 旧实现直接拿进程名（`Weixin.exe`）与 `Path::file_stem()`（`weixin`）比较，
+/// 两者永远不相等，导致 `process_only` 分支**从未命中**：托盘驻留应用
+/// （微信、Snipaste、Clash Verge 关闭窗口后）一律被误判为未运行，运行中区
+/// 不出现、磁贴也不显示绿点。这里把进程名归一成「小写干」，与 app_key 的
+/// `file_stem()`（同样转小写）同口径比较。
+fn proc_stem_set(names: &[String]) -> std::collections::HashSet<String> {
+    names
+        .iter()
+        .map(|n| {
+            let lower = n.to_ascii_lowercase();
+            lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+        })
+        .collect()
+}
+
+/// 纯函数：单个 app_key 的运行状态（窗口优先；UWP 无 exe 身份不猜）。
+fn state_for_key(
+    key: &str,
+    has_window: bool,
+    proc_stems: &std::collections::HashSet<String>,
+) -> RunningState {
+    if has_window {
+        return RunningState::HasWindow;
+    }
+    if key.contains('!') {
+        // UWP：无 exe 身份，窗口匹配按标题提示；这里无提示则按未运行处理（不猜）
+        return RunningState::NotRunning;
+    }
+    match Path::new(key).file_stem() {
+        Some(stem) => {
+            let stem = stem.to_string_lossy().to_ascii_lowercase();
+            if proc_stems.contains(&stem) {
+                RunningState::ProcessOnly
+            } else {
+                RunningState::NotRunning
+            }
+        }
+        None => RunningState::NotRunning,
+    }
+}
+
 /// 计算一批 app_key 的运行状态：有窗口 > 仅进程 > 未运行。
 /// app_key 为 exe 路径（小写）或 AUMID（AUMID 只能判窗口标题）。
 pub fn running_states(app_keys: &[String]) -> HashMap<String, RunningState> {
@@ -1336,27 +1379,13 @@ pub fn running_states(app_keys: &[String]) -> HashMap<String, RunningState> {
     // 开着，检测却报未运行，徽标与「关闭窗口」入口一起丢失。
     let has_window = super::window_manager::identity_has_window(app_keys);
     // 进程快照（含后台/托盘进程）
-    let procs = crate::agents::managed::process_snapshot_names();
-    let mut proc_stems: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for name in &procs {
-        proc_stems.insert(name.to_ascii_lowercase());
-    }
+    let proc_stems = proc_stem_set(&crate::agents::managed::process_snapshot_names());
     for key in app_keys {
-        let state = if has_window.get(key).copied().unwrap_or(false) {
-            RunningState::HasWindow
-        } else if key.contains('!') {
-            // UWP：无 exe 身份，窗口匹配按标题提示；这里无提示则按未运行处理（不猜）
-            RunningState::NotRunning
-        } else if let Some(stem) = Path::new(key).file_stem() {
-            let stem = stem.to_string_lossy().to_string();
-            if proc_stems.contains(&stem) {
-                RunningState::ProcessOnly
-            } else {
-                RunningState::NotRunning
-            }
-        } else {
-            RunningState::NotRunning
-        };
+        let state = state_for_key(
+            key,
+            has_window.get(key).copied().unwrap_or(false),
+            &proc_stems,
+        );
         out.insert(key.clone(), state);
     }
     out
@@ -1365,6 +1394,49 @@ pub fn running_states(app_keys: &[String]) -> HashMap<String, RunningState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// tasklist 返回「Weixin.exe」这类带扩展名、原样大小写的进程名，
+    /// app_key 的 `file_stem()` 是「weixin」：归一后必须能命中 process_only。
+    /// 回归：旧实现直接比较两者（含/不含 .exe）永远不相等，托盘应用全被误判未运行，
+    /// 表现为「微信 / Snipaste 在运行却没有绿点」。
+    #[test]
+    fn process_only_matches_tasklist_names_with_extension() {
+        let stems = proc_stem_set(&[
+            "Weixin.exe".to_string(),
+            "SNIPASTE.EXE".to_string(),
+            "clash-verge.exe".to_string(),
+        ]);
+        assert!(stems.contains("weixin"));
+        assert!(stems.contains("snipaste"));
+        assert_eq!(
+            state_for_key(r"d:\微信\weixin\weixin.exe", false, &stems),
+            RunningState::ProcessOnly
+        );
+        // app_key 保留原始大小写（手工添加的目标）也要命中
+        assert_eq!(
+            state_for_key(r"D:\Tools\Snipaste.exe", false, &stems),
+            RunningState::ProcessOnly
+        );
+        assert_eq!(
+            state_for_key(r"d:\develop\clash verge\clash-verge.exe", false, &stems),
+            RunningState::ProcessOnly
+        );
+        // 进程不在 → 未运行
+        assert_eq!(
+            state_for_key(r"d:\tools\other.exe", false, &stems),
+            RunningState::NotRunning
+        );
+        // 有窗口优先
+        assert_eq!(
+            state_for_key(r"d:\微信\weixin\weixin.exe", true, &stems),
+            RunningState::HasWindow
+        );
+        // UWP 无 exe 身份：没有窗口就不猜
+        assert_eq!(
+            state_for_key("family!app", false, &stems),
+            RunningState::NotRunning
+        );
+    }
 
     /// 真机取消时序：开始菜单首个分块到达后取消——
     /// 该来源不得被标记完成，后续来源（注册表/UWP）不得启动，结果必须是 cancelled。
@@ -1816,16 +1888,19 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn running_states_distinguish_levels() {
-        // 本测试进程自身：exe 在运行（进程存在），但无顶层窗口
+        // 本测试进程自身：exe 在运行（进程存在），但无顶层窗口。
+        // 必须是 ProcessOnly——旧实现拿 file_stem（无 .exe）去比 tasklist 全名，
+        // 这里会退化成 NotRunning，「托盘应用没有绿点」就是这么来的。
         let exe = std::env::current_exe()
             .unwrap()
             .to_string_lossy()
             .to_ascii_lowercase();
         let map = running_states(&[exe]);
         let s = map.values().next().unwrap();
-        assert!(
-            *s == RunningState::ProcessOnly || *s == RunningState::NotRunning,
-            "测试进程无 GUI 窗口，不得报 HasWindow"
+        assert_eq!(
+            *s,
+            RunningState::ProcessOnly,
+            "测试进程在运行且无 GUI 窗口，应判定为仅进程"
         );
     }
 

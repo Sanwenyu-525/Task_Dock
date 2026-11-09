@@ -18,10 +18,11 @@ interface NoteDbRow {
   created_at: number;
   updated_at: number;
   rev: number;
+  server_rev: number;
 }
 
 /** 列表与读回共用一份列清单，避免两处 SELECT 漂移 */
-const NOTE_COLUMNS = `id, title, body, pinned, favorited, created_at, updated_at, rev`;
+const NOTE_COLUMNS = `id, title, body, pinned, favorited, created_at, updated_at, rev, server_rev`;
 
 function mapNoteRow(row: NoteDbRow): Note {
   return {
@@ -33,6 +34,7 @@ function mapNoteRow(row: NoteDbRow): Note {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     rev: row.rev,
+    serverRev: row.server_rev,
   };
 }
 
@@ -62,8 +64,8 @@ export async function getNote(id: string): Promise<Note | null> {
  */
 export async function insertNoteInTx(db: SQLiteDatabase, note: Note, now: number): Promise<void> {
   await db.runAsync(
-    `INSERT INTO notes (id, title, body, pinned, favorited, created_at, updated_at, rev)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO notes (id, title, body, pinned, favorited, created_at, updated_at, rev, server_rev)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       note.id,
       note.title,
@@ -73,6 +75,7 @@ export async function insertNoteInTx(db: SQLiteDatabase, note: Note, now: number
       note.createdAt,
       note.updatedAt,
       note.rev,
+      note.serverRev,
     ],
   );
   await db.runAsync(
@@ -94,6 +97,7 @@ export async function createNote(input: NewNoteInput): Promise<Note> {
     createdAt: now,
     updatedAt: now,
     rev: 0,
+    serverRev: 0,
   };
   await db.withTransactionAsync(() => insertNoteInTx(db, note, now));
   return note;
@@ -202,7 +206,7 @@ export async function updateNote(id: string, patch: NotePatch): Promise<Note | n
         newId("op"),
         "note",
         id,
-        currentRow.rev,
+        currentRow.server_rev,
         // buildPatchPayload 会丢弃 undefined、保留 null，确保「清空」不会在 JSON 里丢失
         JSON.stringify({ type: "update", patch: buildPatchPayload(applied) }),
         now,
@@ -230,7 +234,7 @@ export async function deleteNote(id: string): Promise<void> {
     await db.runAsync(
       `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [newId("op"), "note", id, current.rev, JSON.stringify({ type: "delete" }), now],
+      [newId("op"), "note", id, current.serverRev, JSON.stringify({ type: "delete" }), now],
     );
   });
 }

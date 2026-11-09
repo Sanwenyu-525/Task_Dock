@@ -99,7 +99,7 @@ export default function PlanningWorkspace() {
   }, [pendingLocate]);
 
   return (
-    <div className="planning-workspace">
+    <div className="planning-workspace page-fill">
       <div className="planning-view-bar">
         <div className="planning-view-tabs" role="tablist" aria-label="规划视图">
           {VIEW_TABS.map((tab) => {
@@ -130,28 +130,30 @@ export default function PlanningWorkspace() {
         )}
       </div>
 
-      {view === "overview" && (
-        <ProjectsView
-          onOpenFeatures={() => switchView("features")}
-          onOpenMilestones={() => switchView("milestones")}
-        />
-      )}
-      {view === "features" && (
-        <FeatureListView
-          focusFeatureId={focusFeatureId}
-          milestoneFilterId={milestoneFilterId}
-          onFocusConsumed={() => setFocusFeatureId(null)}
-          onClearMilestoneFilter={() => setMilestoneFilterId(null)}
-          onOpenMilestones={() => switchView("milestones")}
-        />
-      )}
-      {view === "kanban" && (
-        <PlanningKanban
-          onOpenFeature={openFeature}
-          onOpenFeatureList={() => switchView("features")}
-        />
-      )}
-      {view === "milestones" && <MilestonesView onOpenFeatures={openMilestone} />}
+      <div className="page-scroll planning-view-body">
+        {view === "overview" && (
+          <ProjectsView
+            onOpenFeatures={() => switchView("features")}
+            onOpenMilestones={() => switchView("milestones")}
+          />
+        )}
+        {view === "features" && (
+          <FeatureListView
+            focusFeatureId={focusFeatureId}
+            milestoneFilterId={milestoneFilterId}
+            onFocusConsumed={() => setFocusFeatureId(null)}
+            onClearMilestoneFilter={() => setMilestoneFilterId(null)}
+            onOpenMilestones={() => switchView("milestones")}
+          />
+        )}
+        {view === "kanban" && (
+          <PlanningKanban
+            onOpenFeature={openFeature}
+            onOpenFeatureList={() => switchView("features")}
+          />
+        )}
+        {view === "milestones" && <MilestonesView onOpenFeatures={openMilestone} />}
+      </div>
     </div>
   );
 }

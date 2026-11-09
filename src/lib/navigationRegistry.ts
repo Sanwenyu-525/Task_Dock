@@ -29,6 +29,7 @@ import {
   ListTodo,
   Map as MapIcon,
   Settings as SettingsIcon,
+  Smartphone,
   Workflow,
 } from "lucide-react";
 import AgentIcon, { type IconComponent } from "../components/ui/AgentIcon";
@@ -59,6 +60,7 @@ export type NavEntryId =
   | "widgets"
   | "actions"
   | "clipboard"
+  | "mobile"
   | "collection"
   | "workflows"
   | "history"
@@ -201,6 +203,21 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     defaults: {
       left: { order: 6, visible: true },
       capsule: { order: 4, visible: true },
+    },
+  },
+  {
+    id: "mobile",
+    kind: "visual",
+    surfaces: ["left"],
+    labelKey: "nav.mobile",
+    label: "手机互传",
+    icon: Smartphone,
+    tabs: ["mobile"],
+    group: "capture",
+    defaults: {
+      // 放在剪贴板之后、收集与暂存之前：都是「内容进出」类操作。
+      left: { order: 6.5, visible: true },
+      capsule: { order: 0, visible: false },
     },
   },
   {

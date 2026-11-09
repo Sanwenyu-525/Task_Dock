@@ -33,6 +33,7 @@ const api = vi.hoisted(() => ({
   shelfUnlinkTask: vi.fn(async () => undefined),
   shelfReadText: vi.fn(async () => ({ content: "正文", truncated: false })),
   shelfReadImage: vi.fn(async () => null),
+  shelfDragOut: vi.fn(),
 }));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
@@ -54,6 +55,19 @@ import { useDropTargetsStore } from "../../store/useDropTargetsStore";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
+
+/** 头部图标已收进「⋯」菜单：先开菜单再点目标项。 */
+async function openShelfMenu(name: string) {
+  fireEvent.click(screen.getByRole("button", { name: "更多暂存架操作" }));
+  const item = await screen.findByRole("menuitem", { name });
+  fireEvent.click(item);
+  return item;
+}
+
+async function openCleanupFromMenu() {
+  await openShelfMenu("空间与清理");
+  return screen.findByRole("dialog", { name: "空间占用与清理设置" });
+}
 
 function shelfRow(id: string, over: Record<string, unknown> = {}) {
   return {
@@ -122,6 +136,7 @@ beforeEach(() => {
     orphan_files_removed: 0,
   }));
   api.shelfCheckExists.mockResolvedValue([]);
+  api.shelfDragOut.mockResolvedValue({ effect: "none", count: 0, missing_ids: [] });
   api.getSettings.mockResolvedValue({ shelf_auto_cleanup_enabled: false, shelf_retention_days: 30 });
   api.updateSettings.mockResolvedValue(undefined);
   api.shelfDropTargets.mockResolvedValue([]);
@@ -183,10 +198,11 @@ function baseTarget() {
 }
 
 describe("ShelfWorkspace 内容视图分离", () => {
-  it("提供文件暂存架对应的上下文教程入口", () => {
+  it("提供文件暂存架对应的上下文教程入口", async () => {
     render(<ShelfWorkspace active={false} />);
 
-    expect(screen.getByRole("button", { name: "查看帮助：文件暂存架：临时文件的收纳区" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "更多暂存架操作" }));
+    expect(screen.getByRole("menuitem", { name: "查看帮助" })).toBeTruthy();
   });
 
   it("清空提示按后端报告显示保留内容，并刷新为权威列表", async () => {
@@ -212,7 +228,7 @@ describe("ShelfWorkspace 内容视图分离", () => {
     api.shelfList.mockResolvedValue({ items: remaining, total: remaining.length });
     api.shelfStats.mockResolvedValue(stats(remaining.length));
 
-    fireEvent.click(screen.getByRole("button", { name: "清空暂存架" }));
+    await openShelfMenu("清空暂存架");
     const dialog = await screen.findByRole("dialog", { name: "清空暂存架？" });
     fireEvent.click(within(dialog).getByRole("button", { name: "清空" }));
 
@@ -258,7 +274,7 @@ describe("ShelfWorkspace 内容视图分离", () => {
     await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
     expect(screen.getByText(/把文件、图片拖进窗口/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "投递目标管理" }));
+    await openShelfMenu("投递目标管理");
     await screen.findByRole("heading", { name: "投递目标" });
     expect(screen.queryByPlaceholderText("搜索名称 / 内容 / 备注")).toBeNull();
     expect(screen.queryByText(/把文件、图片拖进窗口/)).toBeNull();
@@ -280,7 +296,7 @@ describe("ShelfWorkspace 内容视图分离", () => {
     render(<ShelfWorkspace active />);
     await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
 
-    fireEvent.click(screen.getByRole("button", { name: "投递目标管理" }));
+    await openShelfMenu("投递目标管理");
     await screen.findByText("工作资料");
     fireEvent.click(screen.getByRole("button", { name: "编辑「工作资料」" }));
     fireEvent.change(screen.getByDisplayValue("工作资料"), { target: { value: "工作资料改" } });
@@ -327,7 +343,7 @@ describe("ShelfWorkspace 内容视图分离", () => {
     api.shelfGetItem.mockResolvedValueOnce(shelfRow("s9", { display_name: "目标文件" }));
     render(<ShelfWorkspace active />);
     await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
-    fireEvent.click(screen.getByRole("button", { name: "投递目标管理" }));
+    await openShelfMenu("投递目标管理");
     await screen.findByText("工作资料");
 
     act(() => {
@@ -346,7 +362,7 @@ describe("ShelfWorkspace 内容视图分离", () => {
     api.shelfDropTargets.mockResolvedValue([baseTarget()]);
     render(<ShelfWorkspace active />);
     await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
-    fireEvent.click(screen.getByRole("button", { name: "投递目标管理" }));
+    await openShelfMenu("投递目标管理");
     await screen.findByText("工作资料");
     fireEvent.click(screen.getByRole("button", { name: "编辑「工作资料」" }));
     await screen.findByRole("form", { name: "编辑投递目标" });
@@ -382,7 +398,7 @@ describe("ShelfWorkspace 内容视图分离", () => {
     api.shelfDropTargets.mockResolvedValue([baseTarget()]);
     render(<ShelfWorkspace active />);
     await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
-    fireEvent.click(screen.getByRole("button", { name: "投递目标管理" }));
+    await openShelfMenu("投递目标管理");
     await screen.findByText("工作资料");
     fireEvent.click(screen.getByRole("button", { name: "编辑「工作资料」" }));
     await screen.findByRole("form", { name: "编辑投递目标" });
@@ -478,8 +494,7 @@ describe("ShelfWorkspace 空态", () => {
 
 describe("ShelfWorkspace 手动过期清理", () => {
   async function openCleanupPanel() {
-    fireEvent.click(screen.getByRole("button", { name: "空间占用与清理设置" }));
-    return screen.findByRole("dialog", { name: "空间占用与清理设置" });
+    return openCleanupFromMenu();
   }
 
   const cleanupDialog = () => screen.queryByRole("dialog", { name: "清理过期条目？" });
@@ -734,7 +749,7 @@ describe("ShelfWorkspace 手动过期清理", () => {
     fireEvent.click(screen.getByRole("button", { name: "立即清理过期" }));
     await waitFor(() => expect(api.shelfCleanup).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "空间占用与清理设置" }));
+    await openShelfMenu("空间与清理");
     release({
       dry_run: true,
       candidates: 2,
@@ -779,10 +794,99 @@ describe("ShelfWorkspace 手动过期清理", () => {
     fireEvent.click(screen.getByRole("button", { name: "预览可清理" }));
     await screen.findByText(/1 项因收藏、置顶或场景引用被跳过/);
 
-    fireEvent.click(screen.getByRole("button", { name: "清空暂存架" }));
+    await openShelfMenu("清空暂存架");
     const dialog = await screen.findByRole("dialog", { name: "清空暂存架？" });
     expect(
       within(dialog).getByText(/收藏、置顶与场景引用条目保留/),
     ).toBeTruthy();
+  });
+});
+
+describe("ShelfWorkspace 工具条与拖出", () => {
+  it("筛选浮层设置类型/收藏，并可用摘要移除", async () => {
+    const rows = [shelfRow("a"), shelfRow("b", { kind: "image" })];
+    api.shelfList.mockResolvedValue({ items: rows, total: rows.length });
+    api.shelfStats.mockResolvedValue(stats(rows.length));
+    render(<ShelfWorkspace active />);
+    await screen.findByText("条目 a");
+
+    fireEvent.click(screen.getByRole("button", { name: "筛选暂存条目" }));
+    const dialog = await screen.findByRole("dialog", { name: "筛选暂存条目" });
+    const typeGroup = within(dialog).getByRole("group", { name: "类型筛选" });
+    fireEvent.click(within(typeGroup).getByRole("button", { name: "图片" }));
+    await waitFor(() => expect(useShelfStore.getState().filter.kind).toBe("image"));
+
+    const kindChip = await screen.findByRole("button", {
+      name: "移除类型筛选：图片",
+    });
+    fireEvent.click(within(dialog).getByRole("switch", { name: "只看收藏" }));
+    await waitFor(() =>
+      expect(useShelfStore.getState().filter.favorite_only).toBe(true),
+    );
+    expect(
+      screen.getByRole("button", { name: "取消只看收藏" }),
+    ).toBeTruthy();
+
+    fireEvent.click(kindChip);
+    await waitFor(() => expect(useShelfStore.getState().filter.kind).toBe("all"));
+    expect(
+      screen.queryByRole("button", { name: "移除类型筛选：图片" }),
+    ).toBeNull();
+  });
+
+  it("批量操作栏收纳为单行，移动/文件操作在菜单中可达", async () => {
+    const rows = [shelfRow("a"), shelfRow("b")];
+    api.shelfList.mockResolvedValue({ items: rows, total: rows.length });
+    api.shelfStats.mockResolvedValue(stats(rows.length));
+    render(<ShelfWorkspace active />);
+    await screen.findByText("条目 a");
+
+    fireEvent.click(screen.getByRole("button", { name: "选择 条目 a" }));
+    const bar = await screen.findByRole("toolbar", { name: "批量操作" });
+    expect(within(bar).getByText("已选 1 项")).toBeTruthy();
+    expect(within(bar).getByRole("button", { name: "收藏所选" })).toBeTruthy();
+
+    fireEvent.click(within(bar).getByRole("button", { name: "批量文件操作" }));
+    expect(await screen.findByRole("menuitem", { name: "复制文件" })).toBeTruthy();
+    expect(
+      screen.getByRole("menuitem", { name: /移动原文件到…/ }),
+    ).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /复制到…/ })).toBeTruthy();
+  });
+
+  it("拖出 move 后刷新存在性并明确提示原路径可能失效", async () => {
+    const rows = [shelfRow("a")];
+    api.shelfList.mockResolvedValue({ items: rows, total: rows.length });
+    api.shelfStats.mockResolvedValue(stats(rows.length));
+    api.shelfDragOut.mockResolvedValue({
+      effect: "move",
+      count: 1,
+      missing_ids: ["a"],
+    });
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    render(<ShelfWorkspace active />);
+
+    const name = await screen.findByRole("button", { name: "条目 a" });
+    const card = name.closest(".shelf-item") as HTMLElement;
+    expect(card.className).toContain("is-draggable");
+    fireEvent.pointerDown(card, {
+      button: 0,
+      pointerId: 1,
+      clientX: 10,
+      clientY: 10,
+    });
+    fireEvent.pointerMove(document, {
+      pointerId: 1,
+      buttons: 1,
+      clientX: 30,
+      clientY: 10,
+    });
+
+    await waitFor(() => expect(api.shelfDragOut).toHaveBeenCalledWith(["a"]));
+    await waitFor(() => expect(api.shelfCheckExists).toHaveBeenCalledWith(["a"]));
+    expect(toast).toHaveBeenCalledWith(
+      "文件已移动；暂存条目保留，原路径可能已失效，可重新定位或删除",
+      expect.objectContaining({ kind: "warning" }),
+    );
   });
 });

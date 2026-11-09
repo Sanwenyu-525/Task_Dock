@@ -515,7 +515,7 @@ pub fn shelf_copy_paths(state: State<'_, Arc<ShelfState>>, ids: Vec<String>) -> 
 }
 
 /// 复制文件本体（CF_HDROP）到系统剪贴板：资源管理器 Ctrl+V 即得文件。
-/// 这是系统级拖出未实现前的可用替代。
+/// 与原生拖出并存，作为键盘可达与拖拽失败时的回退通道。
 #[tauri::command]
 pub fn shelf_copy_files(state: State<'_, Arc<ShelfState>>, ids: Vec<String>) -> AppResult<u32> {
     let st = rt(&state);
@@ -527,6 +527,81 @@ pub fn shelf_copy_files(state: State<'_, Arc<ShelfState>>, ids: Vec<String>) -> 
         return Err(AppError::Validation("所选条目没有可复制的文件".into()));
     }
     write_system_payload(&st.app, &ClipboardPayload::Files { paths })
+}
+
+/// 系统级拖出结果：effect 为目标实际接受的放置效果。
+#[derive(Debug, Serialize)]
+pub struct ShelfDragOutResult {
+    pub effect: String,
+    pub count: usize,
+    pub missing_ids: Vec<String>,
+}
+
+/// 从暂存架卡片发起 Windows 原生文件拖出（OLE DoDragDrop）。
+///
+/// - 路径只从库内 `resolve_item_file` 解析，前端不能传任意路径；
+/// - link/text/missing 条目跳过，全部不可拖才报错；
+/// - 托管副本只允许复制，引用模式允许 Windows 默认的复制/移动；
+/// - 拖拽在专用 STA 线程执行，避免阻塞 IPC 线程，也不复用可能为 MTA 的线程池。
+#[tauri::command]
+pub async fn shelf_drag_out(
+    state: State<'_, Arc<ShelfState>>,
+    ids: Vec<String>,
+) -> AppResult<ShelfDragOutResult> {
+    if ids.is_empty() {
+        return Err(AppError::Validation("没有可拖出的条目".into()));
+    }
+    let st = rt(&state).clone();
+    let mut resolved: Vec<(String, String, std::path::PathBuf)> = Vec::with_capacity(ids.len());
+    for id in &ids {
+        // 单条失效不阻断其他条目；全部失败时下面统一报错。
+        if let Ok((item, path)) = shelf::resolve_item_file(&st.db, &st.root, id) {
+            resolved.push((id.clone(), item.storage_mode, path));
+        }
+    }
+    if resolved.is_empty() {
+        return Err(AppError::Validation(
+            "所选条目没有可拖出的文件（文件可能已失效）".into(),
+        ));
+    }
+    let modes: Vec<&str> = resolved.iter().map(|(_, mode, _)| mode.as_str()).collect();
+    let allow_move = shelf::drag_out::allow_move_for(&modes);
+    let paths: Vec<std::path::PathBuf> =
+        resolved.iter().map(|(_, _, path)| path.clone()).collect();
+    let id_by_path: std::collections::HashMap<std::path::PathBuf, String> = resolved
+        .into_iter()
+        .map(|(id, _, path)| (path, id))
+        .collect();
+
+    // 单飞守卫随线程一起持有：命令 future 被丢弃也不会提前放行第二次拖拽。
+    let guard = shelf::drag_out::DragInFlightGuard::acquire()?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("shelf-drag-out".into())
+        .spawn(move || {
+            let _guard = guard;
+            let result = shelf::drag_out::run_drag(&paths, allow_move);
+            let _ = tx.send(result);
+        })
+        .map_err(|e| AppError::Unavailable(format!("无法启动拖拽线程: {e}")))?;
+
+    let outcome = rx
+        .await
+        .map_err(|_| AppError::Unavailable("拖拽线程异常退出".into()))??;
+    let missing_ids = outcome
+        .missing_paths
+        .iter()
+        .filter_map(|path| {
+            id_by_path
+                .get(std::path::Path::new(path))
+                .cloned()
+        })
+        .collect();
+    Ok(ShelfDragOutResult {
+        effect: outcome.effect,
+        count: outcome.count,
+        missing_ids,
+    })
 }
 
 fn write_system_payload(app: &AppHandle, payload: &ClipboardPayload) -> AppResult<u32> {

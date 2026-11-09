@@ -10,7 +10,7 @@
 //! - 启动成功后的列表刷新失败不把已成功的启动说成失败。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { act } from "react";
 import stylesCss from "../../styles.css?raw";
 
@@ -375,17 +375,16 @@ describe("AppsLite 空状态区分（数据不丢失）", () => {
     expect(stylesCss).toMatch(/\.cap-app:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/);
   });
 
-  it("CSS：图标居中、名称左对齐，收藏角标与运行点分处左上/右下且都不占布局", () => {
-    // 图标保持格内水平居中（整块左对齐已按用户要求回退）
+  it("CSS：图标与名称居中，收藏角标与运行点分处左上/右下且都不占布局", () => {
     const tileBlock = stylesCss.match(/(?:^|\n)\.cap-app\s*\{([\s\S]*?)\}/);
     expect(tileBlock).toBeTruthy();
     expect(tileBlock![1]).toMatch(/align-items:\s*center/);
     expect(tileBlock![1]).not.toMatch(/align-items:\s*flex-start/);
-    // 名称这一部分左对齐：折行时两行左缘一致，且不额外加水平内边距
-    const nameBlock = stylesCss.match(/\.cap-app-name\s*\{([\s\S]*?)\}/);
+    // 名称居中（左对齐方案 2026-11-09 已按用户要求回退）
+    const nameBlock = stylesCss.match(/(?:^|\n)\.cap-app-name\s*\{([\s\S]*?)\}/);
     expect(nameBlock).toBeTruthy();
-    expect(nameBlock![1]).toMatch(/text-align:\s*left/);
-    expect(nameBlock![1]).not.toMatch(/text-align:\s*center/);
+    expect(nameBlock![1]).toMatch(/text-align:\s*center/);
+    expect(nameBlock![1]).not.toMatch(/text-align:\s*left/);
     // 收藏角标在图标片左上角，语义色沿用完整面板的收藏星（--accent）
     const favBlock = stylesCss.match(/\.cap-app-fav\s*\{([\s\S]*?)\}/);
     expect(favBlock).toBeTruthy();
@@ -396,6 +395,27 @@ describe("AppsLite 空状态区分（数据不丢失）", () => {
     // 运行点仍在右下角，两者不重叠
     expect(stylesCss).toMatch(/\.cap-app-dot\s*\{[^}]*right:\s*-2px/);
     expect(stylesCss).toMatch(/\.cap-app-dot\s*\{[^}]*bottom:\s*-2px/);
+    // 运行中磁贴动作条：绝对定位在名称区（左下/右下 3px），默认隐藏，
+    // 悬停/键盘聚焦淡入，与名称交叉淡出；未运行磁贴不渲染动作条
+    const actionsBlock = stylesCss.match(/(?:^|\n)\.cap-app-actions\s*\{([\s\S]*?)\}/);
+    expect(actionsBlock).toBeTruthy();
+    expect(actionsBlock![1]).toMatch(/position:\s*absolute/);
+    expect(actionsBlock![1]).toMatch(/left:\s*3px/);
+    expect(actionsBlock![1]).toMatch(/right:\s*3px/);
+    expect(actionsBlock![1]).toMatch(/bottom:\s*3px/);
+    expect(actionsBlock![1]).toMatch(/opacity:\s*0/);
+    expect(stylesCss).toMatch(/\.cap-app-slot:hover \.cap-app-actions/);
+    expect(stylesCss).toMatch(/\.cap-app-slot:focus-within \.cap-app-actions/);
+    // 名称只在带动作条（运行中）的磁贴上让位（交叉淡变）
+    expect(stylesCss).toMatch(/\.cap-app-slot\.has-actions:hover \.cap-app-name/);
+    expect(stylesCss).toMatch(/\.cap-app-slot\.has-actions:focus-within \.cap-app-name/);
+    // 删除仍在磁贴右上角（18px 热区），位置不随运行态变化
+    const delBlock = stylesCss.match(/(?:^|\n)\.cap-app-del\s*\{([\s\S]*?)\}/);
+    expect(delBlock).toBeTruthy();
+    expect(delBlock![1]).toMatch(/top:\s*0/);
+    expect(delBlock![1]).toMatch(/right:\s*0/);
+    expect(delBlock![1]).toMatch(/width:\s*18px/);
+    expect(delBlock![1]).toMatch(/height:\s*18px/);
   });
 
   it("CSS：标题同行布局是局部变体，默认纵向结构保持不变", () => {
@@ -664,7 +684,10 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     // 磁贴状态点由 CSS 渲染，这里确认结构位存在
     expect(document.querySelector(".cap-app-dot")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "关闭 Obsidian 的窗口" }));
+    // 「运行中」区与运行中磁贴都有同一动作：这里点运行中区的关闭按钮
+    fireEvent.click(
+      within(screen.getByTestId("running-list")).getByRole("button", { name: "关闭 Obsidian 的窗口" }),
+    );
     await waitFor(() => expect(navCloseTargetWindows).toHaveBeenCalledWith("a"));
     await waitFor(() => expect(screen.getByText("已关闭「Obsidian」的 1 个窗口")).toBeTruthy());
   });
@@ -678,6 +701,40 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     expect(document.querySelector(".cap-app-dot")).toBeTruthy();
   });
 
+  it("运行中磁贴内提供关闭窗口/退出应用按钮，非运行应用只有角落删除", async () => {
+    useNavigationStore.setState({
+      targets: [target("a", "Alpha"), target("b", "Bravo"), target("c", "Charlie")] as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    navTargetRunningStates.mockResolvedValue({ a: "has_window", b: "process_only" });
+    render(<AppsLite />);
+    // 只有运行中磁贴渲染动作条
+    await waitFor(() => expect(document.querySelectorAll(".cap-app-actions")).toHaveLength(2));
+    const slotOf = (name: string) =>
+      screen.getByRole("button", { name }).closest(".cap-app-slot") as HTMLElement;
+    const alpha = within(slotOf("启动 Alpha"));
+    const bravo = within(slotOf("启动 Bravo"));
+    const charlie = within(slotOf("启动 Charlie"));
+    // 有窗口：关闭窗口 + 退出应用在动作条里
+    expect(alpha.getByRole("button", { name: "关闭 Alpha 的窗口" })).toBeTruthy();
+    expect(alpha.getByRole("button", { name: "退出 Alpha" })).toBeTruthy();
+    // 仅后台进程：没有窗口可关，只有退出
+    expect(bravo.queryByRole("button", { name: "关闭 Bravo 的窗口" })).toBeNull();
+    expect(bravo.getByRole("button", { name: "退出 Bravo" })).toBeTruthy();
+    // 未运行：没有动作条，删除仍在角落
+    expect(charlie.queryByRole("button", { name: "关闭 Charlie 的窗口" })).toBeNull();
+    expect(charlie.queryByRole("button", { name: "退出 Charlie" })).toBeNull();
+    // 删除对所有磁贴都在右上角
+    for (const box of [alpha, bravo, charlie]) {
+      expect(box.getByRole("button", { name: /^从快捷列表删除 / })).toBeTruthy();
+    }
+
+    fireEvent.click(alpha.getByRole("button", { name: "关闭 Alpha 的窗口" }));
+    await waitFor(() => expect(navCloseTargetWindows).toHaveBeenCalledWith("a"));
+    await waitFor(() => expect(screen.getByText("已关闭「Alpha」的 1 个窗口")).toBeTruthy());
+  });
+
   it("关闭窗口后应用仍在后台运行：如实提示，不把托盘驻留说成完全关闭", async () => {
     seed([target("a", "Clash Verge")]);
     // 挂载时窗口在；关闭后（托盘驻留）只剩后台进程
@@ -686,7 +743,9 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
       .mockResolvedValue({ a: "process_only" });
     render(<AppsLite />);
     expect(await screen.findByTestId("running-list")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "关闭 Clash Verge 的窗口" }));
+    fireEvent.click(
+      within(screen.getByTestId("running-list")).getByRole("button", { name: "关闭 Clash Verge 的窗口" }),
+    );
     await waitFor(() =>
       expect(screen.getByText("已关闭「Clash Verge」的窗口（应用仍在后台运行）")).toBeTruthy(),
     );
@@ -704,7 +763,9 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     expect(await screen.findByTestId("running-list")).toBeTruthy();
     // 仅后台进程没有窗口可关：不出现关闭按钮，退出按钮仍在
     expect(screen.queryByRole("button", { name: "关闭 Obsidian 的窗口" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "退出 Obsidian" }));
+    fireEvent.click(
+      within(screen.getByTestId("running-list")).getByRole("button", { name: "退出 Obsidian" }),
+    );
     await waitFor(() => expect(navQuitTargetProcesses).toHaveBeenCalledWith("a"));
     await waitFor(() => expect(screen.getByText(/未完全退出（1\/2）/)).toBeTruthy());
     // 未完全退出：给出强制结束确认入口，但未经确认不得结束进程
@@ -723,7 +784,9 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     navKillTargetProcesses.mockResolvedValue({ matched: 2, killed: 2, failedPids: [] });
     render(<AppsLite />);
     expect(await screen.findByTestId("running-list")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "退出 Clash Verge" }));
+    fireEvent.click(
+      within(screen.getByTestId("running-list")).getByRole("button", { name: "退出 Clash Verge" }),
+    );
     expect(await screen.findByRole("alertdialog", { name: "确认强制结束应用进程" })).toBeTruthy();
     expect(navKillTargetProcesses).not.toHaveBeenCalled();
 
@@ -745,7 +808,9 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     });
     render(<AppsLite />);
     expect(await screen.findByTestId("running-list")).toBeTruthy();
-    const quitBtn = screen.getByRole("button", { name: "退出 Clash Verge" });
+    const quitBtn = within(screen.getByTestId("running-list")).getByRole("button", {
+      name: "退出 Clash Verge",
+    });
     fireEvent.click(quitBtn);
     expect(await screen.findByRole("alertdialog", { name: "确认强制结束应用进程" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
@@ -774,13 +839,35 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     expect(alpha.querySelector(".cap-app-dot")).toBeNull();
   });
 
-  it("运行中应用固定排在网格最前，其余保持原顺序", async () => {
+  it("收藏应用固定最前，运行中应用其次，其余保持原顺序", async () => {
+    useNavigationStore.setState({
+      targets: [
+        { ...target("a", "Alpha"), favorite: true },
+        target("b", "Bravo"),
+        target("c", "Charlie"),
+      ] as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    // Alpha 收藏但未运行、Bravo 有窗口、Charlie 未运行：
+    // 收藏优先于运行中（旧实现会把 Bravo 冒到 Alpha 前面）
+    navTargetRunningStates.mockResolvedValue({ b: "has_window" });
+    render(<AppsLite />);
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll(".cap-app-slot .cap-app")].map((el) =>
+          el.getAttribute("aria-label"),
+        ),
+      ).toEqual(["启动 Alpha", "启动 Bravo", "启动 Charlie"]),
+    );
+  });
+
+  it("仅后台进程（托盘驻留）同样算运行中、排在未运行应用之前", async () => {
     useNavigationStore.setState({
       targets: [target("a", "Alpha"), target("b", "Bravo"), target("c", "Charlie")] as never[],
       targetsLoaded: true,
       targetsError: null,
     });
-    // 仅后台进程（托盘驻留）同样算运行中
     navTargetRunningStates.mockResolvedValue({ c: "process_only" });
     render(<AppsLite />);
     await waitFor(() =>
@@ -807,6 +894,28 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
           el.getAttribute("aria-label"),
         ),
       ).toEqual(["启动 Bravo", "启动 Charlie", "启动 Alpha"]),
+    );
+  });
+
+  it("手动排序时收藏仍固定最前，组内沿用手动顺序", async () => {
+    writeAppGridOrder(["c", "b", "a"]);
+    useNavigationStore.setState({
+      targets: [
+        target("a", "Alpha"),
+        target("b", "Bravo"),
+        { ...target("c", "Charlie"), favorite: true },
+      ] as never[],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    navTargetRunningStates.mockResolvedValue({ b: "has_window" });
+    render(<AppsLite />);
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll(".cap-app-slot .cap-app")].map((el) =>
+          el.getAttribute("aria-label"),
+        ),
+      ).toEqual(["启动 Charlie", "启动 Bravo", "启动 Alpha"]),
     );
   });
 

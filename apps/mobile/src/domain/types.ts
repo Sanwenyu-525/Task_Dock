@@ -38,9 +38,12 @@ export interface Capture {
   /** 客户端幂等键，重复提交只保留一条（与桌面端 quick_capture_items.client_id 同思路） */
   clientId: string;
   content: string;
-  kind: "text";
+  /** 桌面端 kind 原样保留；手机端 UI 目前一律按纯文本展示 */
+  kind: string;
   createdAt: number;
   rev: number;
+  /** 桌面端最后下发的版本号；push 的 base_rev 来源。0 = 从未同步过。 */
+  serverRev: number;
 }
 
 export interface TaskCounts {
@@ -80,6 +83,8 @@ export interface Note {
   createdAt: number;
   updatedAt: number;
   rev: number;
+  /** 桌面端最后下发的版本号；push 的 base_rev 来源。0 = 从未同步过。 */
+  serverRev: number;
 }
 
 /** 新建笔记入参：title/body 都可以为空串，空笔记在保存前会被编辑器丢弃 */

@@ -98,20 +98,26 @@ const styles = StyleSheet.create({
   chevron: {
     width: 16,
     height: 16,
-    justifyContent: "center",
   },
+  // 两根 45° 圆头短杆在右端同一点相接成「>」（原型 chevron_right 的 16dp 缩放：
+  // 4dp 宽 × 8dp 高）。位置必须用 left/top 直接指定：rotate 后 translateX 是沿杆
+  // 自身轴平移，两根杆会交于中点变成「×」，而不是在端点相接。
   chevronTop: {
     position: "absolute",
-    width: 9,
+    left: 5.17,
+    top: 5.25,
+    width: 5.66,
     height: STROKE,
     borderRadius: STROKE / 2,
-    transform: [{ rotate: "45deg" }, { translateX: 2.6 }],
+    transform: [{ rotate: "45deg" }],
   },
   chevronBottom: {
     position: "absolute",
-    width: 9,
+    left: 5.17,
+    top: 9.25,
+    width: 5.66,
     height: STROKE,
     borderRadius: STROKE / 2,
-    transform: [{ rotate: "-45deg" }, { translateX: 2.6 }],
+    transform: [{ rotate: "-45deg" }],
   },
 });

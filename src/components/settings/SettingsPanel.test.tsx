@@ -53,6 +53,11 @@ vi.mock("../../lib/bridge", () => ({
   mobileSyncCancelPairing: vi.fn(async () => undefined),
   mobileSyncListDevices: vi.fn(async () => []),
   mobileSyncRevokeDevice: vi.fn(async () => true),
+  mobileFileList: vi.fn(async () => []),
+  mobileFileOffer: vi.fn(async () => []),
+  mobileFileDelete: vi.fn(async () => true),
+  mobileFileReveal: vi.fn(async () => undefined),
+  mobileFileOpenInbox: vi.fn(async () => undefined),
   planningListProjects: vi.fn(async () => []),
   resourceSnapshot: vi.fn(async () => ({
     sampledAt: "2026-11-06T00:00:00.000Z",
@@ -114,7 +119,12 @@ vi.mock("../navigation/AppPicker", () => ({ default: () => null }));
 vi.mock("./hotkeys/HotkeysSection", () => ({ default: () => null }));
 vi.mock("../../i18n/LanguageSetting", () => ({ default: () => null }));
 
-import { clipboardStats, clipboardStatus, listBackups, resourceSnapshot } from "../../lib/bridge";
+import {
+  clipboardStats,
+  clipboardStatus,
+  listBackups,
+  resourceSnapshot,
+} from "../../lib/bridge";
 import {
   SETTINGS_SECTIONS_STORAGE_KEY,
   type SettingsSectionId,
@@ -446,7 +456,7 @@ describe("设置页分组折叠", () => {
     await waitFor(() => expectExpanded(sectionHead("导航自定义"), true));
     // 数字与 navigationRegistry 默认常驻的 left 入口数一致（帮助入口默认隐藏）；
     // 再新增常驻入口时需同步更新。
-    expect(screen.getByText(/常驻 12 \/ 14 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 13 \/ 15 项/)).toBeTruthy();
     expect(sessionStorage.getItem("taskdock.settings.reveal.v1")).toBeNull();
     // 定位意图会先切到分组所属分类
     expect(

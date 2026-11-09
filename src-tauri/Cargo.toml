@@ -90,7 +90,14 @@ windows = { version = "0.62", features = [
   "Win32_Graphics_Gdi",
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
+  # OLE 拖出读回 CF_HDROP 用 STGMEDIUM（STGMEDIUM 受 StructuredStorage 门控）
+  "Win32_System_Com_StructuredStorage",
   "Win32_UI_Shell",
+  # 文件暂存架拖出（v0.9）：OLE DoDragDrop + CF_HDROP 全局内存
+  "Win32_System_Ole",
+  "Win32_System_SystemServices",
+  "Win32_System_Memory",
+  "Win32_UI_Shell_Common",
   # 轻量本地 OCR（v0.6）：Windows.Media.Ocr + SoftwareBitmap（按需创建，不在启动时初始化）
   "Foundation",
   "Foundation_Collections",
@@ -103,6 +110,9 @@ windows = { version = "0.62", features = [
   "Media_Core",
   "Media_SpeechSynthesis",
 ] }
+# `#[implement]` 宏展开需要 windows_core 直接可达；与 windows 0.62 同版本，
+# 已存在于 Cargo.lock（tao/wry 传递依赖），不是新增下载。
+windows-core = "0.62"
 # WinRT 异步操作的状态轮询与结果读取（OCR 用；与 windows 的传递依赖同版本，无新增下载）
 windows-future = "0.3"
 # 注册表读取（卸载信息 / UWP 包注册）

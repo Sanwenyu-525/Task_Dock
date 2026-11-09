@@ -23,6 +23,9 @@ const addShelfPaths = vi.fn();
 const getShelfItem = vi.fn();
 const readShelfText = vi.fn();
 const copyClipboardText = vi.fn();
+const updateShelfItem = vi.fn();
+const revealShelfItem = vi.fn();
+const dragOut = vi.fn();
 const openDialog = vi.fn();
 
 // 导航结果可控：默认成功并执行 after；个别用例模拟被未保存草稿阻止。
@@ -68,6 +71,9 @@ vi.mock("../../lib/bridge", () => ({
   shelfAddPaths: (...a: unknown[]) => addShelfPaths(...a),
   shelfGetItem: (...a: unknown[]) => getShelfItem(...a),
   shelfReadText: (...a: unknown[]) => readShelfText(...a),
+  shelfUpdate: (...a: unknown[]) => updateShelfItem(...a),
+  shelfRevealItem: (...a: unknown[]) => revealShelfItem(...a),
+  shelfDragOut: (...a: unknown[]) => dragOut(...a),
   clipboardCopyText: (...a: unknown[]) => copyClipboardText(...a),
   shelfStats: vi.fn(async () => ({
     total: 0,
@@ -197,6 +203,14 @@ beforeEach(() => {
   getShelfItem.mockResolvedValue(shelfItem({ content: "链接内容" }));
   readShelfText.mockResolvedValue({ content: "正文内容", truncated: false });
   copyClipboardText.mockResolvedValue(undefined);
+  updateShelfItem.mockReset();
+  updateShelfItem.mockImplementation(async (id: string, patch: Record<string, unknown>) =>
+    shelfItem({ id, ...patch }),
+  );
+  revealShelfItem.mockReset();
+  revealShelfItem.mockResolvedValue(undefined);
+  dragOut.mockReset();
+  dragOut.mockResolvedValue({ effect: "none", count: 0, missing_ids: [] });
   openDialog.mockResolvedValue(null);
   __resetShelfRecentCache();
   useShelfStore.setState({
@@ -563,6 +577,54 @@ describe("InboxDropPane", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "复制路径" }));
     await waitFor(() => expect(copyShelfPaths).toHaveBeenCalledWith(["s1"]));
     expect(screen.getByText("报告.pdf")).toBeTruthy();
+  });
+
+  it("最近暂存可收藏，也可在文件夹中显示", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({ items: [shelfItem()], total: 1 });
+    render(<InboxDropPane />);
+    await screen.findByText("报告.pdf");
+
+    fireEvent.click(screen.getByRole("button", { name: "「报告.pdf」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "收藏" }));
+    await waitFor(() =>
+      expect(updateShelfItem).toHaveBeenCalledWith("s1", { favorite: true }),
+    );
+    await screen.findByText("已收藏");
+
+    fireEvent.click(screen.getByRole("button", { name: "「报告.pdf」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "在文件夹中显示" }));
+    await waitFor(() => expect(revealShelfItem).toHaveBeenCalledWith("s1"));
+    await screen.findByText("已在文件夹中显示");
+  });
+
+  it("最近暂存文件行可拖出；move 后刷新最近切片并提示", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({ items: [shelfItem()], total: 1 });
+    dragOut.mockResolvedValue({ effect: "move", count: 1, missing_ids: ["s1"] });
+    render(<InboxDropPane />);
+    const name = await screen.findByText("报告.pdf");
+    const row = name.closest(".cap-shelf-recent-item") as HTMLElement;
+    expect(row.className).toContain("is-draggable");
+
+    fireEvent.pointerDown(row, {
+      button: 0,
+      pointerId: 1,
+      clientX: 10,
+      clientY: 10,
+    });
+    fireEvent.pointerMove(document, {
+      pointerId: 1,
+      buttons: 1,
+      clientX: 30,
+      clientY: 10,
+    });
+
+    await waitFor(() => expect(dragOut).toHaveBeenCalledWith(["s1"]));
+    await waitFor(() =>
+      expect(listRecent.mock.calls.length).toBeGreaterThan(1),
+    );
+    await screen.findByText("文件已移动；最近暂存已刷新，原路径可能已失效");
   });
 
   it("文本条目只提供查看/复制内容，不出现复制路径；正文按需读取", async () => {

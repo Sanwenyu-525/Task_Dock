@@ -94,16 +94,20 @@ const styles = StyleSheet.create({
   },
   head: {
     position: "absolute",
-    width: 9,
+    left: 0.47,
+    width: 7.07,
     height: STROKE,
     borderRadius: STROKE / 2,
-    left: 0,
   },
+  // 两根 45° 短杆在横杆左端同一点相接成箭头（横纵各 5dp）。位置必须显式指定 top：
+  // rotate 后的 translateX 是沿杆自身轴平移，两根杆会交在中间成「×」，横杆尖端外露。
   headTop: {
-    transform: [{ rotate: "45deg" }, { translateX: 3.2 }],
+    top: 6.75,
+    transform: [{ rotate: "-45deg" }],
   },
   headBottom: {
-    transform: [{ rotate: "-45deg" }, { translateX: 3.2 }],
+    top: 11.75,
+    transform: [{ rotate: "45deg" }],
   },
   title: {
     flexShrink: 1,

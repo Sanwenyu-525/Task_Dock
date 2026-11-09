@@ -12,7 +12,9 @@
 //! - 删除走墓碑（tasks 没有软删除列），手机端收到后只删本地副本；
 //! - op_id 幂等，重复提交只 ack。
 //!
-//! 本轮只同步任务；notes / captures 的日志与映射留到后续迭代（未知实体跳过但推进游标）。
+//! 同步实体：任务（task）、笔记（note）、收集箱（capture）。桌面端 notes 的正文列叫
+//! `content`，协议与手机端叫 `body`；收集箱的 handled/converted 状态在 pull 时映射为墓碑，
+//! 手机端只保留 inbox 条目。
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,6 +31,11 @@ use xsalsa20poly1305::{Nonce, XSalsa20Poly1305};
 
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
+use crate::notes::store::{MAX_CONTENT as NOTE_MAX_CONTENT, MAX_TITLE as NOTE_MAX_TITLE};
+use crate::quick_capture::store::{
+    KINDS as CAPTURE_KINDS, MAX_CLIENT_ID as CAPTURE_MAX_CLIENT_ID,
+    MAX_CONTENT as CAPTURE_MAX_CONTENT,
+};
 
 /// 加密信封版本；手机端必须原样接受，未来换算法时递增。
 pub const ENVELOPE_VERSION: u32 = 1;
@@ -38,8 +45,9 @@ pub const AAD_PUSH: &str = "taskdock-sync-v1|POST|/v1/ops";
 /// 单页上限与协议一致（500）；push 单批上限防止异常客户端占满内存。
 pub const MAX_PULL_LIMIT: usize = 500;
 pub const MAX_PUSH_OPS: usize = 100;
-/// 同步请求体上限：500 条任务补丁远小于此值。
-pub const SYNC_MAX_BODY: usize = 256 * 1024;
+/// 同步请求体上限：单条笔记正文上限 20 万字符（中文约 600KB），
+/// 预留加密信封与 JSON 结构后取 1MB；手机端按 UTF-8 字节数分批。
+pub const SYNC_MAX_BODY: usize = 1024 * 1024;
 
 /// 从设备令牌哈希派生同步密钥。
 ///
@@ -180,38 +188,35 @@ pub fn pull(db: &Db, since: i64, limit: usize) -> AppResult<PullPage> {
             let (seq, entity, id, deleted) = row?;
             cursor = seq;
             if deleted != 0 {
-                changes.push(SyncChange {
-                    entity,
-                    id,
-                    rev: seq,
-                    deleted: true,
-                    fields: json!({}),
-                    updated_at: 0,
-                });
+                changes.push(tombstone(&entity, &id, seq));
                 continue;
             }
-            // 未知实体（未来 notes / captures）本轮跳过，但游标推进，避免阻塞任务同步。
-            if entity != "task" {
-                continue;
-            }
-            match load_task_change(conn, &id, seq)? {
-                Some(change) => changes.push(change),
-                // 触发器保证有墓碑；若记录被其他路径物理清理而日志缺失，按删除处理。
-                None => changes.push(SyncChange {
-                    entity,
-                    id,
-                    rev: seq,
-                    deleted: true,
-                    fields: json!({}),
-                    updated_at: 0,
-                }),
-            }
+            let change = match entity.as_str() {
+                "task" => load_task_change(conn, &id, seq)?,
+                "note" => load_note_change(conn, &id, seq)?,
+                "capture" => load_capture_change(conn, &id, seq)?,
+                // 未知实体（未来扩展）跳过但推进游标，避免阻塞已知实体同步。
+                _ => continue,
+            };
+            // 触发器保证有墓碑；若记录被其他路径物理清理而日志缺失，按删除处理。
+            changes.push(change.unwrap_or_else(|| tombstone(&entity, &id, seq)));
         }
         Ok(PullPage {
             cursor: cursor.to_string(),
             changes,
         })
     })
+}
+
+fn tombstone(entity: &str, id: &str, rev: i64) -> SyncChange {
+    SyncChange {
+        entity: entity.to_string(),
+        id: id.to_string(),
+        rev,
+        deleted: true,
+        fields: json!({}),
+        updated_at: 0,
+    }
 }
 
 /// 应用一批 push 操作；所有操作与幂等记录在同一事务内。
@@ -235,67 +240,23 @@ pub fn apply_push(db: &Db, device_id: &str, ops: &[SyncOp]) -> AppResult<PushRes
                 ack.push(op.op_id.clone());
                 continue;
             }
-            if op.entity != "task" {
-                conflicts.push(conflict(op, "invalid_patch", None));
-                continue;
-            }
 
-            let latest = latest_seq(&tx, "task", &op.id)?;
-            if op.deleted {
-                match load_task_change(&tx, &op.id, latest)? {
-                    None => {
-                        // 服务器本来就没有：幂等成功，避免客户端反复重试。
-                        record_op(&tx, &op.op_id, device_id)?;
-                        ack.push(op.op_id.clone());
-                    }
-                    Some(server) => {
-                        if latest != op.base_rev {
-                            conflicts.push(conflict(op, "revision_mismatch", Some(server)));
-                            continue;
-                        }
-                        tx.execute("DELETE FROM tasks WHERE id = ?1", params![op.id])?;
-                        record_op(&tx, &op.op_id, device_id)?;
-                        ack.push(op.op_id.clone());
-                    }
+            let outcome = match op.entity.as_str() {
+                "task" => apply_task_op(&tx, device_id, op, &mut ack, &mut conflicts),
+                "note" => apply_note_op(&tx, device_id, op, &mut ack, &mut conflicts),
+                "capture" => apply_capture_op(&tx, device_id, op, &mut ack, &mut conflicts),
+                _ => {
+                    conflicts.push(conflict(op, "invalid_patch", None));
+                    Ok(())
                 }
-                continue;
-            }
-
-            match load_task_change(&tx, &op.id, latest)? {
-                None => {
-                    if op.base_rev != 0 {
-                        conflicts.push(conflict(op, "record_missing", None));
-                        continue;
-                    }
-                    match insert_task_from_patch(&tx, op) {
-                        Ok(()) => {
-                            record_op(&tx, &op.op_id, device_id)?;
-                            ack.push(op.op_id.clone());
-                        }
-                        Err(AppError::Validation(message)) => {
-                            conflicts.push(conflict(op, "invalid_patch", None));
-                            tracing::debug!("手机 push 创建被拒绝：{message}");
-                        }
-                        Err(other) => return Err(other),
-                    }
+            };
+            match outcome {
+                Ok(()) => {}
+                Err(AppError::Validation(message)) => {
+                    conflicts.push(conflict(op, "invalid_patch", None));
+                    tracing::debug!("手机 push 被拒绝：{message}");
                 }
-                Some(server) => {
-                    if latest != op.base_rev {
-                        conflicts.push(conflict(op, "revision_mismatch", Some(server)));
-                        continue;
-                    }
-                    match update_task_from_patch(&tx, &server, &op.patch) {
-                        Ok(()) => {
-                            record_op(&tx, &op.op_id, device_id)?;
-                            ack.push(op.op_id.clone());
-                        }
-                        Err(AppError::Validation(message)) => {
-                            conflicts.push(conflict(op, "invalid_patch", None));
-                            tracing::debug!("手机 push 更新被拒绝：{message}");
-                        }
-                        Err(other) => return Err(other),
-                    }
-                }
+                Err(other) => return Err(other),
             }
         }
 
@@ -310,6 +271,158 @@ fn conflict(op: &SyncOp, reason: &str, server_record: Option<SyncChange>) -> Syn
         reason: reason.to_string(),
         server_record,
     }
+}
+
+fn ack_op(
+    conn: &Connection,
+    device_id: &str,
+    op: &SyncOp,
+    ack: &mut Vec<String>,
+) -> AppResult<()> {
+    record_op(conn, &op.op_id, device_id)?;
+    ack.push(op.op_id.clone());
+    Ok(())
+}
+
+fn apply_task_op(
+    conn: &Connection,
+    device_id: &str,
+    op: &SyncOp,
+    ack: &mut Vec<String>,
+    conflicts: &mut Vec<SyncConflict>,
+) -> AppResult<()> {
+    let latest = latest_seq(conn, "task", &op.id)?;
+    if op.deleted {
+        match load_task_change(conn, &op.id, latest)? {
+            None => {
+                // 服务器本来就没有：幂等成功，避免客户端反复重试。
+                ack_op(conn, device_id, op, ack)?;
+            }
+            Some(server) => {
+                if latest != op.base_rev {
+                    conflicts.push(conflict(op, "revision_mismatch", Some(server)));
+                } else {
+                    conn.execute("DELETE FROM tasks WHERE id = ?1", params![op.id])?;
+                    ack_op(conn, device_id, op, ack)?;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    match load_task_change(conn, &op.id, latest)? {
+        None => {
+            if op.base_rev != 0 {
+                conflicts.push(conflict(op, "record_missing", None));
+            } else {
+                insert_task_from_patch(conn, op)?;
+                ack_op(conn, device_id, op, ack)?;
+            }
+        }
+        Some(server) => {
+            if latest != op.base_rev {
+                conflicts.push(conflict(op, "revision_mismatch", Some(server)));
+            } else {
+                update_task_from_patch(conn, &server, &op.patch)?;
+                ack_op(conn, device_id, op, ack)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_note_op(
+    conn: &Connection,
+    device_id: &str,
+    op: &SyncOp,
+    ack: &mut Vec<String>,
+    conflicts: &mut Vec<SyncConflict>,
+) -> AppResult<()> {
+    let latest = latest_seq(conn, "note", &op.id)?;
+    if op.deleted {
+        match load_note_change(conn, &op.id, latest)? {
+            None => {
+                ack_op(conn, device_id, op, ack)?;
+            }
+            Some(server) => {
+                if latest != op.base_rev {
+                    conflicts.push(conflict(op, "revision_mismatch", Some(server)));
+                } else {
+                    conn.execute("DELETE FROM notes WHERE id = ?1", params![op.id])?;
+                    ack_op(conn, device_id, op, ack)?;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    match load_note_change(conn, &op.id, latest)? {
+        None => {
+            if op.base_rev != 0 {
+                conflicts.push(conflict(op, "record_missing", None));
+            } else {
+                insert_note_from_patch(conn, op)?;
+                ack_op(conn, device_id, op, ack)?;
+            }
+        }
+        Some(server) => {
+            if latest != op.base_rev {
+                conflicts.push(conflict(op, "revision_mismatch", Some(server)));
+            } else {
+                update_note_from_patch(conn, &server, &op.patch)?;
+                ack_op(conn, device_id, op, ack)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_capture_op(
+    conn: &Connection,
+    device_id: &str,
+    op: &SyncOp,
+    ack: &mut Vec<String>,
+    conflicts: &mut Vec<SyncConflict>,
+) -> AppResult<()> {
+    let latest = latest_seq(conn, "capture", &op.id)?;
+    if op.deleted {
+        match load_capture_change(conn, &op.id, latest)? {
+            None => {
+                ack_op(conn, device_id, op, ack)?;
+            }
+            Some(server) => {
+                if latest != op.base_rev {
+                    conflicts.push(conflict(op, "revision_mismatch", Some(server)));
+                } else {
+                    // 桌面端已 handled/converted 的行同样按删除处理：手机端本来也不再展示。
+                    conn.execute("DELETE FROM quick_capture_items WHERE id = ?1", params![op.id])?;
+                    ack_op(conn, device_id, op, ack)?;
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    match load_capture_change(conn, &op.id, latest)? {
+        None => {
+            if op.base_rev != 0 {
+                conflicts.push(conflict(op, "record_missing", None));
+            } else {
+                insert_capture_from_patch(conn, op)?;
+                ack_op(conn, device_id, op, ack)?;
+            }
+        }
+        Some(server) => {
+            // 已 handled/converted 的条目对手机端是墓碑，不再接受内容更新。
+            if server.deleted || latest != op.base_rev {
+                conflicts.push(conflict(op, "revision_mismatch", Some(server)));
+            } else {
+                update_capture_from_patch(conn, op)?;
+                ack_op(conn, device_id, op, ack)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn op_id_applied(conn: &Connection, op_id: &str) -> AppResult<bool> {
@@ -452,6 +565,265 @@ fn load_task_change(conn: &Connection, id: &str, rev: i64) -> AppResult<Option<S
         fields,
         updated_at,
     }))
+}
+
+struct NoteRow {
+    title: String,
+    content: String,
+    pinned: i64,
+    favorite: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+fn load_note_row(conn: &Connection, id: &str) -> AppResult<Option<NoteRow>> {
+    Ok(conn
+        .query_row(
+            "SELECT title, content, pinned, favorite, created_at, updated_at
+               FROM notes WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(NoteRow {
+                    title: row.get(0)?,
+                    content: row.get(1)?,
+                    pinned: row.get(2)?,
+                    favorite: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// 桌面笔记映射为手机字段：content → body，favorite → favorited。
+/// task_id / workspace_id 是桌面端关联，手机端没有对应字段，暂不下发也不覆盖。
+fn load_note_change(conn: &Connection, id: &str, rev: i64) -> AppResult<Option<SyncChange>> {
+    let Some(row) = load_note_row(conn, id)? else {
+        return Ok(None);
+    };
+    let updated_at = iso_to_ms(&row.updated_at).unwrap_or_else(now_ms);
+    let fields = json!({
+        "title": row.title,
+        "body": row.content,
+        "pinned": row.pinned != 0,
+        "favorited": row.favorite != 0,
+        "createdAt": iso_to_ms(&row.created_at).unwrap_or(0),
+        "updatedAt": updated_at,
+    });
+    Ok(Some(SyncChange {
+        entity: "note".into(),
+        id: id.to_string(),
+        rev,
+        deleted: false,
+        fields,
+        updated_at,
+    }))
+}
+
+struct CaptureRow {
+    client_id: String,
+    kind: String,
+    content: String,
+    status: String,
+    created_at: String,
+    updated_at: String,
+}
+
+fn load_capture_row(conn: &Connection, id: &str) -> AppResult<Option<CaptureRow>> {
+    Ok(conn
+        .query_row(
+            "SELECT client_id, kind, content, status, created_at, updated_at
+               FROM quick_capture_items WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(CaptureRow {
+                    client_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    content: row.get(2)?,
+                    status: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// 收集箱只把 inbox 条目下发给手机；handled/converted 与硬删除一样是墓碑。
+fn load_capture_change(conn: &Connection, id: &str, rev: i64) -> AppResult<Option<SyncChange>> {
+    let Some(row) = load_capture_row(conn, id)? else {
+        return Ok(None);
+    };
+    if row.status != "inbox" {
+        return Ok(Some(tombstone("capture", id, rev)));
+    }
+    let updated_at = iso_to_ms(&row.updated_at).unwrap_or_else(now_ms);
+    let fields = json!({
+        "clientId": row.client_id,
+        "kind": row.kind,
+        "content": row.content,
+        "createdAt": iso_to_ms(&row.created_at).unwrap_or(0),
+        "updatedAt": updated_at,
+    });
+    Ok(Some(SyncChange {
+        entity: "capture".into(),
+        id: id.to_string(),
+        rev,
+        deleted: false,
+        fields,
+        updated_at,
+    }))
+}
+
+fn validate_note(title: &str, content: &str) -> AppResult<()> {
+    if title.chars().count() > NOTE_MAX_TITLE {
+        return Err(AppError::Validation(format!(
+            "笔记标题超过 {NOTE_MAX_TITLE} 字符"
+        )));
+    }
+    if content.chars().count() > NOTE_MAX_CONTENT {
+        return Err(AppError::Validation(format!(
+            "笔记正文超过 {NOTE_MAX_CONTENT} 字符"
+        )));
+    }
+    Ok(())
+}
+
+fn insert_note_from_patch(conn: &Connection, op: &SyncOp) -> AppResult<()> {
+    let now = now_iso();
+    let title = patch_string(&op.patch, "title")?.unwrap_or_default();
+    let content = patch_string(&op.patch, "body")?.unwrap_or_default();
+    validate_note(&title, &content)?;
+    let pinned = patch_bool(&op.patch, "pinned")?.unwrap_or(false);
+    let favorite = patch_bool(&op.patch, "favorited")?.unwrap_or(false);
+    let created_at = patch_ms(&op.patch, "createdAt")?
+        .map(ms_to_iso)
+        .unwrap_or_else(|| now.clone());
+    conn.execute(
+        "INSERT INTO notes (id, title, content, pinned, favorite, revision, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+        params![
+            op.id,
+            title,
+            content,
+            if pinned { 1 } else { 0 },
+            if favorite { 1 } else { 0 },
+            created_at,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_note_from_patch(
+    conn: &Connection,
+    current: &SyncChange,
+    patch: &Map<String, Value>,
+) -> AppResult<()> {
+    let row = load_note_row(conn, &current.id)?
+        .ok_or_else(|| AppError::Validation("笔记在更新过程中消失".into()))?;
+    let title = patch_string(patch, "title")?.unwrap_or(row.title);
+    let content = patch_string(patch, "body")?.unwrap_or(row.content);
+    validate_note(&title, &content)?;
+    let pinned = patch_bool(patch, "pinned")?
+        .map(|value| if value { 1 } else { 0 })
+        .unwrap_or(row.pinned);
+    let favorite = patch_bool(patch, "favorited")?
+        .map(|value| if value { 1 } else { 0 })
+        .unwrap_or(row.favorite);
+    conn.execute(
+        "UPDATE notes
+            SET title = ?1, content = ?2, pinned = ?3, favorite = ?4,
+                revision = revision + 1, updated_at = ?5
+          WHERE id = ?6",
+        params![title, content, pinned, favorite, now_iso(), current.id],
+    )?;
+    Ok(())
+}
+
+fn capture_client_id_exists(conn: &Connection, client_id: &str, id: &str) -> AppResult<bool> {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM quick_capture_items WHERE client_id = ?1",
+            params![client_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(existing.is_some_and(|existing_id| existing_id != id))
+}
+
+fn insert_capture_from_patch(conn: &Connection, op: &SyncOp) -> AppResult<()> {
+    let now = now_iso();
+    let client_id = patch_string(&op.patch, "clientId")?
+        .unwrap_or_else(|| op.id.clone())
+        .trim()
+        .to_string();
+    if client_id.is_empty() {
+        return Err(AppError::Validation("clientId 不能为空".into()));
+    }
+    if client_id.chars().count() > CAPTURE_MAX_CLIENT_ID {
+        return Err(AppError::Validation(format!(
+            "clientId 超过 {CAPTURE_MAX_CLIENT_ID} 字符"
+        )));
+    }
+    // 重复 client_id 已存在：同一 id 视为幂等成功，不同 id 拒绝（桌面唯一索引约束）。
+    if capture_client_id_exists(conn, &client_id, &op.id)? {
+        return Err(AppError::Validation("clientId 已被其他条目占用".into()));
+    }
+    let content = patch_string(&op.patch, "content")?
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if content.is_empty() {
+        return Err(AppError::Validation("收集箱内容不能为空".into()));
+    }
+    if content.chars().count() > CAPTURE_MAX_CONTENT {
+        return Err(AppError::Validation(format!(
+            "收集箱内容超过 {CAPTURE_MAX_CONTENT} 字符"
+        )));
+    }
+    let kind = patch_string(&op.patch, "kind")?.unwrap_or_else(|| "text".into());
+    if !CAPTURE_KINDS.contains(&kind.as_str()) {
+        return Err(AppError::Validation("未知的收集箱类型".into()));
+    }
+    let created_at = patch_ms(&op.patch, "createdAt")?
+        .map(ms_to_iso)
+        .unwrap_or_else(|| now.clone());
+    conn.execute(
+        "INSERT INTO quick_capture_items
+           (id, client_id, kind, content, url, note, status, task_id, source, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, NULL, NULL, 'inbox', NULL, 'mobile', ?5, ?6)",
+        params![op.id, client_id, kind, content, created_at, now],
+    )?;
+    Ok(())
+}
+
+fn update_capture_from_patch(conn: &Connection, op: &SyncOp) -> AppResult<()> {
+    let row = load_capture_row(conn, &op.id)?
+        .ok_or_else(|| AppError::Validation("收集箱条目在更新过程中消失".into()))?;
+    let content = match patch_string(&op.patch, "content")? {
+        Some(value) => value.trim().to_string(),
+        None => row.content,
+    };
+    if content.is_empty() {
+        return Err(AppError::Validation("收集箱内容不能为空".into()));
+    }
+    if content.chars().count() > CAPTURE_MAX_CONTENT {
+        return Err(AppError::Validation(format!(
+            "收集箱内容超过 {CAPTURE_MAX_CONTENT} 字符"
+        )));
+    }
+    let kind = match patch_string(&op.patch, "kind")? {
+        Some(value) if CAPTURE_KINDS.contains(&value.as_str()) => value,
+        Some(_) => return Err(AppError::Validation("未知的收集箱类型".into())),
+        None => row.kind,
+    };
+    conn.execute(
+        "UPDATE quick_capture_items SET content = ?1, kind = ?2, updated_at = ?3 WHERE id = ?4",
+        params![content, kind, now_iso(), op.id],
+    )?;
+    Ok(())
 }
 
 fn insert_task_from_patch(conn: &Connection, op: &SyncOp) -> AppResult<()> {
@@ -682,6 +1054,14 @@ fn patch_i64(patch: &Map<String, Value>, key: &str) -> AppResult<Option<i64>> {
     }
 }
 
+fn patch_bool(patch: &Map<String, Value>, key: &str) -> AppResult<Option<bool>> {
+    match patch.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(AppError::Validation(format!("{key} 必须是布尔值或 null"))),
+    }
+}
+
 fn patch_ms(patch: &Map<String, Value>, key: &str) -> AppResult<Option<i64>> {
     patch_i64(patch, key)
 }
@@ -763,14 +1143,47 @@ mod tests {
     }
 
     fn op(op_id: &str, id: &str, base_rev: i64, patch: Value) -> SyncOp {
+        op_for("task", op_id, id, base_rev, patch)
+    }
+
+    fn op_for(entity: &str, op_id: &str, id: &str, base_rev: i64, patch: Value) -> SyncOp {
         SyncOp {
             op_id: op_id.into(),
-            entity: "task".into(),
+            entity: entity.into(),
             id: id.into(),
             base_rev,
             patch: patch.as_object().cloned().unwrap_or_default(),
             deleted: false,
         }
+    }
+
+    fn insert_note(db: &Db, id: &str, title: &str, content: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO notes (id, title, content, pinned, favorite, revision, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 0, 0, 1,
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                params![id, title, content],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn insert_capture(db: &Db, id: &str, client_id: &str, content: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO quick_capture_items
+                   (id, client_id, kind, content, status, created_at, updated_at)
+                 VALUES (?1, ?2, 'text', ?3, 'inbox',
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                params![id, client_id, content],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -946,5 +1359,216 @@ mod tests {
         let page = pull(&db, 0, 500).unwrap();
         let tombstone = page.changes.iter().rev().find(|c| c.id == "t1").unwrap();
         assert!(tombstone.deleted);
+    }
+
+    #[test]
+    fn note_pull_trigger_maps_content_to_body() {
+        let db = test_db();
+        insert_note(&db, "n1", "桌面笔记", "第一行\n第二行");
+        let page = pull(&db, 0, 500).unwrap();
+        let change = page.changes.iter().find(|c| c.id == "n1").unwrap();
+        assert_eq!(change.entity, "note");
+        assert!(!change.deleted);
+        assert_eq!(change.fields["title"], "桌面笔记");
+        assert_eq!(change.fields["body"], "第一行\n第二行");
+        assert_eq!(change.fields["pinned"], false);
+        assert!(change.fields["updatedAt"].as_i64().unwrap() > 0);
+
+        // 桌面端修改后再次拉取：同一记录出现新版本
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE notes SET title='改名', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id='n1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let next = pull(&db, page.cursor.parse().unwrap(), 500).unwrap();
+        let updated = next.changes.iter().find(|c| c.id == "n1").unwrap();
+        assert_eq!(updated.fields["title"], "改名");
+        assert!(updated.rev > change.rev);
+    }
+
+    #[test]
+    fn note_push_create_update_delete_and_conflict() {
+        let db = test_db();
+        let create = op_for(
+            "note",
+            "op-n1",
+            "n1",
+            0,
+            json!({
+                "title": "手机笔记",
+                "body": "正文",
+                "pinned": true,
+                "favorited": false,
+                "createdAt": 1_700_000_000_000i64,
+            }),
+        );
+        let first = apply_push(&db, "device-1", &[create]).unwrap();
+        assert_eq!(first.ack, vec!["op-n1"]);
+        let row: (String, String, i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT title, content, pinned, favorite, revision FROM notes WHERE id='n1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(row, ("手机笔记".into(), "正文".into(), 1, 0, 1));
+
+        let rev = pull(&db, 0, 500)
+            .unwrap()
+            .changes
+            .iter()
+            .find(|c| c.id == "n1")
+            .unwrap()
+            .rev;
+        let update = op_for("note", "op-n2", "n1", rev, json!({"body": "新正文"}));
+        assert_eq!(apply_push(&db, "device-1", &[update]).unwrap().ack, vec!["op-n2"]);
+        let (content, revision): (String, i64) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT content, revision FROM notes WHERE id='n1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!((content.as_str(), revision), ("新正文", 2));
+
+        // 桌面端又改过：旧 base_rev 的 push 必须冲突且不覆盖
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE notes SET title='桌面新标题', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id='n1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let stale = op_for("note", "op-n3", "n1", rev, json!({"title": "手机旧标题"}));
+        let result = apply_push(&db, "device-1", &[stale]).unwrap();
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].reason, "revision_mismatch");
+        assert_eq!(
+            result.conflicts[0].server_record.as_ref().unwrap().fields["title"],
+            "桌面新标题"
+        );
+        let title: String = db
+            .with_conn(|conn| Ok(conn.query_row("SELECT title FROM notes WHERE id='n1'", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(title, "桌面新标题");
+
+        let latest = pull(&db, 0, 500)
+            .unwrap()
+            .changes
+            .iter()
+            .filter(|c| c.id == "n1")
+            .next_back()
+            .unwrap()
+            .rev;
+        let mut delete = op_for("note", "op-n4", "n1", latest, json!({}));
+        delete.deleted = true;
+        assert_eq!(apply_push(&db, "device-1", &[delete]).unwrap().ack, vec!["op-n4"]);
+        let exists: i64 = db
+            .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM notes WHERE id='n1'", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(exists, 0);
+        let tombstone = pull(&db, 0, 500)
+            .unwrap()
+            .changes
+            .iter()
+            .filter(|c| c.id == "n1")
+            .next_back()
+            .unwrap()
+            .clone();
+        assert!(tombstone.deleted);
+    }
+
+    #[test]
+    fn capture_pull_only_inbox_and_status_change_is_tombstone() {
+        let db = test_db();
+        insert_capture(&db, "c1", "client-1", "买牛奶");
+        let page = pull(&db, 0, 500).unwrap();
+        let change = page.changes.iter().find(|c| c.id == "c1").unwrap();
+        assert_eq!(change.entity, "capture");
+        assert!(!change.deleted);
+        assert_eq!(change.fields["content"], "买牛奶");
+        assert_eq!(change.fields["clientId"], "client-1");
+
+        // 桌面端标记已处理：手机端按墓碑处理
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE quick_capture_items
+                    SET status='handled', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                  WHERE id='c1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let next = pull(&db, page.cursor.parse().unwrap(), 500).unwrap();
+        let handled = next.changes.iter().find(|c| c.id == "c1").unwrap();
+        assert!(handled.deleted);
+        assert!(handled.rev > change.rev);
+    }
+
+    #[test]
+    fn capture_push_create_delete_and_duplicate_client_id() {
+        let db = test_db();
+        let create = op_for(
+            "capture",
+            "op-c1",
+            "c1",
+            0,
+            json!({"clientId": "client-1", "content": "手机收集", "kind": "text", "createdAt": 1_700_000_000_000i64}),
+        );
+        let first = apply_push(&db, "device-1", &[create.clone()]).unwrap();
+        assert_eq!(first.ack, vec!["op-c1"]);
+        let row: (String, String, String) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT client_id, content, status FROM quick_capture_items WHERE id='c1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(row, ("client-1".into(), "手机收集".into(), "inbox".into()));
+        assert_eq!(apply_push(&db, "device-1", &[create]).unwrap().ack, vec!["op-c1"]);
+
+        // 不同 id 复用同一 client_id：拒绝而不是撞唯一索引
+        let duplicate = op_for(
+            "capture",
+            "op-c2",
+            "c2",
+            0,
+            json!({"clientId": "client-1", "content": "另一条"}),
+        );
+        let result = apply_push(&db, "device-1", &[duplicate]).unwrap();
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].reason, "invalid_patch");
+
+        let rev = pull(&db, 0, 500)
+            .unwrap()
+            .changes
+            .iter()
+            .find(|c| c.id == "c1")
+            .unwrap()
+            .rev;
+        let mut delete = op_for("capture", "op-c3", "c1", rev, json!({}));
+        delete.deleted = true;
+        assert_eq!(apply_push(&db, "device-1", &[delete]).unwrap().ack, vec!["op-c3"]);
+        let exists: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM quick_capture_items WHERE id='c1'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(exists, 0);
     }
 }

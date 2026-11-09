@@ -6,7 +6,7 @@ import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Database, FlaskConical, Copy, Eye, EyeOff,
   RefreshCw, Navigation, Clipboard, Trash2, Gauge, Layers, Compass, AlertTriangle, HardDrive, LifeBuoy,
-  ScrollText, Smartphone,
+  ScrollText,
 } from "lucide-react";
 import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
 import { CollapsibleSection, Combobox } from "../ui";
@@ -53,7 +53,6 @@ import AudioSettings from "./AudioSettings";
 import DiagnosticsLogsSection from "./DiagnosticsLogsSection";
 import ReopenOnboardingButton from "../onboarding/ReopenOnboardingButton";
 import McpAccessSection from "./McpAccessSection";
-import MobileSyncSection from "./MobileSyncSection";
 import ContextHelpButton from "../help/ContextHelpButton";
 import AppManagement from "./AppManagement";
 import AppPicker from "../navigation/AppPicker";
@@ -704,7 +703,7 @@ export default function SettingsPanel() {
   }
 
   return (
-    <div className="settings-panel">
+    <div className="settings-panel page-fill">
       {dataLoadError && (
         <div className="setting-note error-text" role="alert">
           {t("settings.loadError", { error: dataLoadError })}
@@ -745,7 +744,7 @@ export default function SettingsPanel() {
       {/* 分类内容区：只渲染当前分类的分组，未选中的分类不挂载（不产生额外查询）。
           分组内部仍由 CollapsibleSection 控制展开，折叠状态沿用原有本地偏好。 */}
       <div
-        className="settings-category-panel"
+        className="settings-category-panel page-scroll"
         role="tabpanel"
         id={settingsCategoryPanelId(category)}
         aria-labelledby={settingsCategoryTabId(category)}
@@ -1474,16 +1473,6 @@ export default function SettingsPanel() {
         <McpAccessSection />
       </Section>
 
-      <Section
-        sectionId="mobile-sync"
-        icon={Smartphone}
-        title={t("settings.section.mobileSync")}
-        description={t("settings.section.mobileSyncDesc")}
-        open={openSections["mobile-sync"]}
-        onToggle={() => toggleSection("mobile-sync")}
-      >
-        <MobileSyncSection />
-      </Section>
           </>
         )}
 

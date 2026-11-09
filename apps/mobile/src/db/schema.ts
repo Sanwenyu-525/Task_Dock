@@ -127,12 +127,25 @@ UPDATE outbox SET base_rev = COALESCE((SELECT server_rev FROM tasks WHERE tasks.
  WHERE entity = 'task' AND state = 'pending';
 `;
 
+// v5：收集箱与笔记接入同步（与任务同语义）。server_rev 记录桌面端最后下发的版本号，
+// outbox 的 base_rev 改用它；升级前两者从未同步，旧 outbox 一律对齐到 0。
+export const MIGRATION_5 = `
+ALTER TABLE captures ADD COLUMN server_rev INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE notes ADD COLUMN server_rev INTEGER NOT NULL DEFAULT 0;
+
+UPDATE outbox SET base_rev = COALESCE((SELECT server_rev FROM captures WHERE captures.id = outbox.target_id), 0)
+ WHERE entity = 'capture' AND state = 'pending';
+UPDATE outbox SET base_rev = COALESCE((SELECT server_rev FROM notes WHERE notes.id = outbox.target_id), 0)
+ WHERE entity = 'note' AND state = 'pending';
+`;
+
 /** 解析顺序即执行顺序；末尾追加新迁移，不要插入或重排。 */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: MIGRATION_1 },
   { version: 2, sql: MIGRATION_2 },
   { version: 3, sql: MIGRATION_3 },
   { version: 4, sql: MIGRATION_4 },
+  { version: 5, sql: MIGRATION_5 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

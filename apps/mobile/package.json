@@ -24,7 +24,8 @@
     "react": "19.3.0",
     "react-native": "0.88.1",
     "tweetnacl": "^1.0.3",
-    "tweetnacl-util": "^0.15.1"
+    "tweetnacl-util": "^0.15.1",
+    "expo-file-system": "~58.0.13"
   },
   "devDependencies": {
     "@types/react": "~19.3.0",

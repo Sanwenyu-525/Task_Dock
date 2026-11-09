@@ -30,6 +30,12 @@ const REASON_LABEL: Record<string, string> = {
   unknown: "未知冲突",
 };
 
+const ENTITY_LABEL: Record<string, string> = {
+  task: "任务",
+  note: "笔记",
+  capture: "收集箱",
+};
+
 interface ServerRecordPreview {
   title: string | null;
   deleted: boolean;
@@ -44,7 +50,14 @@ function parseServerRecord(raw: string | null): ServerRecordPreview {
       deleted?: boolean;
       rev?: number;
     };
-    const title = typeof value.fields?.title === "string" ? value.fields.title : null;
+    const rawTitle = value.fields?.title;
+    const rawContent = value.fields?.content;
+    const title =
+      typeof rawTitle === "string" && rawTitle.trim()
+        ? rawTitle
+        : typeof rawContent === "string" && rawContent.trim()
+          ? rawContent
+          : null;
     return {
       title,
       deleted: value.deleted === true,
@@ -130,8 +143,9 @@ export function ConflictScreen({ nav }: { nav: Nav }) {
       >
         <View style={[styles.explainer, { backgroundColor: tokens.accentSoft }]}>
           <Text style={[styles.explainerText, { color: tokens.text }]}>
-            同一任务在两台设备被修改时，同步不会自动覆盖任何一端。这里并列展示冲突，
-            选择后写回本地并重新同步；截止时间、提醒、重复规则永不使用「最后写入者覆盖」。
+            同一任务、笔记或收集箱条目在两台设备被修改时，同步不会自动覆盖任何一端。
+            这里并列展示冲突，选择后写回本地并重新同步；截止时间、提醒、重复规则永不使用
+            「最后写入者覆盖」。
           </Text>
         </View>
 
@@ -140,14 +154,15 @@ export function ConflictScreen({ nav }: { nav: Nav }) {
         ) : conflicts.length === 0 ? (
           <EmptyState
             title="暂无需要处理的冲突"
-            hint="冲突只在两台设备同时修改同一条任务时出现；同步完成后会自动出现在这里"
+            hint="冲突只在两台设备同时修改同一条数据时出现；同步完成后会自动出现在这里"
           />
         ) : (
           conflicts.map((conflict) => {
             const server = parseServerRecord(conflict.server_json);
+            const entityLabel = ENTITY_LABEL[conflict.entity] ?? "记录";
             const title =
               server.title?.trim() ||
-              `任务 ${conflict.target_id.slice(0, 8)}`;
+              `${entityLabel} ${conflict.target_id.slice(0, 8)}`;
             const busy = busyId === conflict.op_id;
             return (
               <GlassCard key={conflict.op_id} style={styles.card}>
@@ -161,7 +176,7 @@ export function ConflictScreen({ nav }: { nav: Nav }) {
                   />
                 </View>
                 <Text style={[styles.cardMeta, { color: tokens.muted }]}>
-                  {formatTime(conflict.created_at)}
+                  {entityLabel} · {formatTime(conflict.created_at)}
                   {server.rev != null ? ` · 桌面端版本 ${server.rev}` : ""}
                   {server.deleted ? " · 桌面端已删除" : ""}
                 </Text>

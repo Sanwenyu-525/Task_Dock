@@ -1,5 +1,5 @@
 // 同步中心：已配对连接展示真实状态，可测试连通性、立即同步与解除本机配对。
-// v1 只同步任务（pull + push，加密载荷）；收集箱/笔记与后台同步仍在下一轮。
+// 同步范围：任务、收集箱、笔记（pull + push，加密载荷）；后台同步仍在下一轮。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -20,7 +20,7 @@ import {
   type ToastTone,
 } from "../components/Toast";
 import {
-  countPendingTaskOutbox,
+  countPendingSyncOps,
   countSyncConflicts,
   loadSyncResult,
   resetSyncState,
@@ -84,7 +84,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
   const refresh = useCallback(async () => {
     try {
       const [ops, meta, token, last, conflicts] = await Promise.all([
-        countPendingTaskOutbox(),
+        countPendingSyncOps(),
         loadConnection(),
         readToken(),
         loadSyncResult(),
@@ -283,7 +283,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
 
         <View style={styles.tiles}>
           <View style={[styles.tile, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
-            <Text style={[styles.tileLabel, { color: tokens.muted }]}>待发送任务</Text>
+            <Text style={[styles.tileLabel, { color: tokens.muted }]}>待发送操作</Text>
             <Text style={[styles.tileValue, { color: tokens.accent }]}>{pendingOps}</Text>
           </View>
           <View style={[styles.tile, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
@@ -352,7 +352,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
             }
           />
           <SettingRow label="同步冲突时" value="不自动覆盖，写入冲突页" valueTone="muted" />
-          <SettingRow label="同步范围" value="任务（v1）；收集箱/笔记下一轮" valueTone="muted" />
+          <SettingRow label="同步范围" value="任务 / 收集箱 / 笔记" valueTone="muted" />
         </SettingSection>
 
         {paired ? (
@@ -410,8 +410,8 @@ export function SyncScreen({ nav }: { nav: Nav }) {
         )}
 
         <Text style={[styles.footer, { color: tokens.faint }]}>
-          v1 只同步任务：pull 应用桌面端变更，push 发送本机修改；载荷已用配对令牌派生的密钥加密。
-          收集箱、笔记与后台同步仍在下一轮。
+          同步任务、收集箱与笔记：pull 应用桌面端变更，push 发送本机修改；载荷已用配对令牌
+          派生的密钥加密。后台同步仍在下一轮。
         </Text>
       </ScrollView>
 

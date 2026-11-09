@@ -28,8 +28,10 @@
 | 空状态插画 | 纯 CSS 渐变气泡 + 2 个 SVG 图标，静态 |
 
 页面里**没有 `requestAnimationFrame` 循环**、没有 CSS `animation` 驱动的装饰、
-没有 `@keyframes` 背景漂移。唯一的常驻动画是 v0.5 已有的 Agent 状态点呼吸（`opacity`，2.4s/1.6s），
-它在 `prefers-reduced-motion: reduce` 下被全局关闭。
+没有 `@keyframes` 背景漂移。常驻动画只出现在「有活动态 Agent」时：Agent 状态点呼吸
+（`opacity`，2.4s/1.6s）、胶囊状态球呼吸（3.2s/2.2s/2.6s）与极简标签状态线呼吸
+（2026-11-09 新增，仅 running/waiting/failed，节奏同上）；idle / unknown / disconnected
+保持静态，全部在 `prefers-reduced-motion: reduce` 下关闭。
 
 ---
 

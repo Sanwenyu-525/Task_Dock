@@ -465,6 +465,15 @@
   opacity: 1;
 }
 
+/* 搜索输入占位符相对文本原点右移 6px：原生光标固定在文本原点，占位符也从
+   同一点起排，聚焦空值时光标会紧贴占位符首字（看起来"光标压着文字"）。
+   padding 只作用于 ::placeholder，输入文本与光标位置不变；内核不支持该属性
+   时退化为原来的紧贴布局，不影响功能。 */
+.ui-search .ui-search-input::placeholder,
+.ui-combobox input::placeholder {
+  padding-left: 6px;
+}
+
 /* compact 档只压缩水平留白与图标间距，不再压低字号：
    12px 会让原生 caret 视觉高度明显小于常规输入（实测约 -8%）。
    13px + 统一行高下，垂直留白保持 2px（清空按钮 22px 决定容器高度），

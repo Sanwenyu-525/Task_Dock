@@ -1438,6 +1438,87 @@ CREATE TRIGGER trg_sync_tasks_delete AFTER DELETE ON tasks BEGIN
 END;
 "#,
     ),
+    (
+        44,
+        r#"
+-- v44（手机同步 v1.1）：收集箱与笔记接入同一份变更日志。
+-- 实体名与手机端协议一致：notes → note，quick_capture_items → capture。
+-- 收集箱的 handled/converted 在 pull 时映射为墓碑（手机端只保留 inbox），
+-- 因此这里仍记录所有状态更新，由读取端决定是否下发。
+CREATE TRIGGER trg_sync_notes_insert AFTER INSERT ON notes BEGIN
+  INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  VALUES ('note', NEW.id, 0, NEW.updated_at);
+END;
+CREATE TRIGGER trg_sync_notes_update AFTER UPDATE ON notes BEGIN
+  INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  VALUES ('note', NEW.id, 0, NEW.updated_at);
+END;
+CREATE TRIGGER trg_sync_notes_delete AFTER DELETE ON notes BEGIN
+  INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  VALUES ('note', OLD.id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER trg_sync_captures_insert AFTER INSERT ON quick_capture_items BEGIN
+  INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  VALUES ('capture', NEW.id, 0, NEW.updated_at);
+END;
+CREATE TRIGGER trg_sync_captures_update AFTER UPDATE ON quick_capture_items BEGIN
+  INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  VALUES ('capture', NEW.id, 0, NEW.updated_at);
+END;
+CREATE TRIGGER trg_sync_captures_delete AFTER DELETE ON quick_capture_items BEGIN
+  INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  VALUES ('capture', OLD.id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- 基线：只回填仍在收集箱（inbox）的条目；已处理/已转任务的条目手机端无需知道。
+INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  SELECT 'note', id, 0, updated_at FROM notes ORDER BY updated_at ASC;
+INSERT INTO sync_changes (entity, id, deleted, changed_at)
+  SELECT 'capture', id, 0, updated_at FROM quick_capture_items
+  WHERE status = 'inbox' ORDER BY created_at ASC;
+"#,
+    ),
+    (
+        45,
+        r#"
+-- v45（手机文件互传 v1）：传输记录。文件本体在 data_dir/mobile_files 下，
+-- 本表只保存元数据与进度；属于本机瞬时状态，不进备份（见 backup::is_local_transient_table）。
+-- - direction: to_phone（桌面提供下载）/ to_desktop（手机上传到桌面）
+-- - status: pending（分块接收中）/ ready（可下载或已接收）/ failed
+-- - stored_path 只在桌面进程内使用，绝不下发给手机。
+CREATE TABLE mobile_files (
+  id TEXT PRIMARY KEY NOT NULL,
+  device_id TEXT NOT NULL DEFAULT '',
+  direction TEXT NOT NULL CHECK (direction IN ('to_phone', 'to_desktop')),
+  name TEXT NOT NULL,
+  size INTEGER NOT NULL CHECK (size > 0),
+  sha256 TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('pending', 'ready', 'failed')),
+  stored_path TEXT NOT NULL DEFAULT '',
+  chunk_size INTEGER NOT NULL,
+  chunks INTEGER NOT NULL,
+  received_chunks INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX idx_mobile_files_created ON mobile_files(created_at DESC);
+CREATE INDEX idx_mobile_files_device ON mobile_files(device_id, direction, status);
+"#,
+    ),
+    (
+        46,
+        r#"
+-- v46（手机配对去重）：手机端持久化的安装级标识。
+-- - 旧客户端/旧记录为 NULL：保持原有「每次配对新增一条」的兼容行为；
+-- - 同一 uid 重新配对时，新授权写入后撤销该 uid 此前的有效记录，列表中只留最新一条；
+-- - 不加唯一约束：撤销记录保留审计历史，且「先落库、会话确认后再撤销旧行」的
+--   补偿流程要求同一 uid 允许多行短暂共存。
+ALTER TABLE mobile_devices ADD COLUMN device_uid TEXT;
+CREATE INDEX idx_mobile_devices_uid ON mobile_devices(device_uid);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

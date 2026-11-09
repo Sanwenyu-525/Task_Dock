@@ -1,7 +1,7 @@
 //! 暂存架条目卡：缩略图/类型图标、名称截断、大小、来源、时间、失效徽标、
 //! 多选复选与条目菜单（打开/定位/复制/收藏/置顶/分组/删除）。
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import {
   Clock, File, FileQuestion, Folder, Image as ImageIcon, Link2,
   MoreHorizontal, Pin, Star, Type,
@@ -9,9 +9,11 @@ import {
 import {
   shelfReadImage,
   SHELF_KIND_LABELS,
+  type ShelfDragOutResult,
   type ShelfItem,
 } from "../../lib/bridge";
 import { clipboardTime, formatBytes } from "../../lib/clipboardUi";
+import { useShelfDragOut } from "../../hooks/useShelfDragOut";
 import { DropdownMenu } from "../ui";
 import type { DropdownMenuItem } from "../ui/DropdownMenu";
 
@@ -53,6 +55,10 @@ export default function ShelfItemCard({
   onOpen,
   onToggleSelect,
   onPreview,
+  dragEnabled = false,
+  resolveDragIds,
+  onDragSettled,
+  onDragError,
 }: {
   item: ShelfItem;
   selected: boolean;
@@ -61,10 +67,31 @@ export default function ShelfItemCard({
   onOpen: () => void;
   onToggleSelect: () => void;
   onPreview: () => void;
+  /** 只有 file/image/folder 且文件存在时为 true。 */
+  dragEnabled?: boolean;
+  /** 由父级决定拖单条还是整个多选集。 */
+  resolveDragIds?: () => string[];
+  onDragSettled?: (result: ShelfDragOutResult, ids: string[]) => void;
+  onDragError?: (message: string) => void;
 }) {
   const Icon = KIND_ICONS[item.kind] ?? File;
   const missing = item.exists_state === "missing";
   const [fallbackThumb, setFallbackThumb] = useState<string | null>(null);
+  const drag = useShelfDragOut({
+    enabled: dragEnabled,
+    resolveIds: resolveDragIds ?? (() => []),
+    onSettled: onDragSettled,
+    onError: onDragError,
+  });
+  /** 拖拽收尾的 click 不应打开详情/切换选择。 */
+  const guarded = (run: () => void) => (event: MouseEvent) => {
+    if (drag.shouldSuppressClick()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    run();
+  };
   // 列表传入的 thumbUrl 为空时（如翻页合并后），图片条目自行懒加载一次
   useEffect(() => {
     if (thumbUrl || fallbackThumb || item.kind !== "image") return;
@@ -81,16 +108,18 @@ export default function ShelfItemCard({
 
   return (
     <div
-      className={`shelf-item surface-card ${selected ? "selected surface-card--selected" : ""} ${missing ? "missing" : ""}`}
+      className={`shelf-item surface-card ${selected ? "selected surface-card--selected" : ""} ${missing ? "missing" : ""} ${dragEnabled ? "is-draggable" : ""}`}
       role="listitem"
       aria-selected={selected}
       data-kind={item.kind}
+      onPointerDown={drag.onPointerDown}
     >
       <button
         type="button"
         className={`shelf-check ${selected ? "on" : ""}`}
         aria-label={selected ? `取消选择 ${item.display_name}` : `选择 ${item.display_name}`}
         aria-pressed={selected}
+        data-no-drag
         onClick={(e) => {
           e.stopPropagation();
           onToggleSelect();
@@ -102,10 +131,8 @@ export default function ShelfItemCard({
         type="button"
         className="shelf-thumb"
         aria-label={`预览 ${item.display_name}`}
-        onClick={(e) => {
-          e.stopPropagation();
-          onPreview();
-        }}
+        data-tip={dragEnabled ? "点击预览 · 按住拖到其他窗口" : undefined}
+        onClick={guarded(() => onPreview())}
       >
         {thumb ? (
           <img src={thumb} alt="" loading="lazy" draggable={false} />
@@ -122,20 +149,17 @@ export default function ShelfItemCard({
         <button
           type="button"
           className="shelf-item-name"
-          data-tip={item.display_name}
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpen();
-          }}
+          data-tip={`${item.display_name} · ${modeLabel(item)}`}
+          onClick={guarded(() => onOpen())}
         >
           {item.display_name}
         </button>
         <div className="shelf-item-meta">
           <span className="shelf-tag mode">{modeLabel(item)}</span>
           <span>{formatBytes(item.byte_size)}</span>
-          <span aria-hidden="true">·</span>
+          <span className="shelf-item-meta-sep" aria-hidden="true">·</span>
           <span className="shelf-item-src">{sourceLabel(item)}</span>
-          <span aria-hidden="true">·</span>
+          <span className="shelf-item-meta-sep" aria-hidden="true">·</span>
           <span className="shelf-item-time">
             <Clock size={11} aria-hidden="true" />
             {clipboardTime(item.created_at)}
@@ -153,6 +177,7 @@ export default function ShelfItemCard({
             type="button"
             className="icon-btn sm shelf-more"
             aria-label={`更多操作：${item.display_name}`}
+            data-no-drag
           >
             <MoreHorizontal size={15} aria-hidden="true" />
           </button>

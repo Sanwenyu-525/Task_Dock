@@ -539,7 +539,12 @@ Token 位于 `src/styles-ui.css` 的 `@layer ui :root`，所有文本输入共�
 | `--input-caret-color` | `var(--accent)` | 原生光标颜色，随主题切换 |
 
 规则：
-- 原生光标高度跟随字体度量（≈ `font-size`），`caret-color` **只改颜色**；光标偏小必须回到字号与行高，禁止伪元素、假光标、动画或 JS 模拟。
+- 原生光标高度跟随字体度量（≈ `font-size`），`caret-color` **只改颜色**；光标偏小必须回到字号与行高，禁止伪元素、假光标、动画或 JS 模拟。实测 13px 字号 + `line-height: 1.45` 时光标仍为 13px，行高不改变光标高度，唯一杠杆是字号。
 - 常规输入 13px；紧凑输入不低于 12px。高度差由 padding / 控件高度承担，不能靠压低字号。
 - 焦点环只由容器 `:focus-within` 提供一层；内层 `input` 不写 `outline` / `box-shadow`，聚焦不改变控件尺寸。
 - 新增输入先查 `SearchField`、`.input-embedded` 与本 Token 表，不另造字号或焦点样式；`caret-color` 不用于修高度。
+- **搜索占位符呼吸位（2026-11-09）**：原生光标固定在文本原点，占位符也从同一点起排，聚焦空值时
+  光标会紧贴占位符首字。`SearchField` 与 `Combobox` 统一
+  `::placeholder { padding-left: 6px }`：只移动占位符，输入文本与光标位置不变；内核不支持
+  `::placeholder` padding 时退化为原紧贴布局，不影响功能。
+

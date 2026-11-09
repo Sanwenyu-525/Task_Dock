@@ -1142,14 +1142,22 @@ describe("胶囊面板共享输入与添加入口", () => {
 
   // 2026-11-06 精修：22px 删除热区在 72px 磁贴里与 34px 图标包围盒重叠 3px
   //（窄窗 65px 磁贴重叠 6.5px），实测 8% 的磁贴采样点命中删除而不是启动。
-  // 收成 18px 后名义尺寸下两者分离；图标容器尺寸不变（不允许为避让而缩图标）。
-  it("应用磁贴删除按钮收在角上，不与居中图标热区重叠", () => {
+  // 2026-11-09：运行态动作（关闭窗口/退出应用）移到名称区工具条；删除仍在右上角，
+  // 18px 热区与 36px 图标片分离，运行中磁贴的动作条整体位于图标下方。
+  it("应用磁贴删除收在角上、动作条收在名称区，都不与居中图标热区重叠", () => {
     const del = /(?:^|\n)\.cap-app-del\s*\{([\s\S]*?)\}/.exec(appCss);
     expect(del?.[1], "缺少 .cap-app-del 基础规则").toBeTruthy();
     expect(del![1]).toMatch(/width:\s*18px/);
     expect(del![1]).toMatch(/height:\s*18px/);
     expect(del![1]).toMatch(/top:\s*0/);
     expect(del![1]).toMatch(/right:\s*0/);
+    const actions = /(?:^|\n)\.cap-app-actions\s*\{([\s\S]*?)\}/.exec(appCss);
+    expect(actions?.[1], "缺少 .cap-app-actions 基础规则").toBeTruthy();
+    expect(actions![1]).toMatch(/position:\s*absolute/);
+    expect(actions![1]).toMatch(/left:\s*3px/);
+    expect(actions![1]).toMatch(/right:\s*3px/);
+    expect(actions![1]).toMatch(/bottom:\s*3px/);
+    expect(appCss).toMatch(/\.cap-app-act\s*\{[^}]*height:\s*20px/);
     expect(appCss).toMatch(/\.cap-app-icon\s*\{[^}]*width:\s*36px/);
     expect(appCss).toMatch(/\.cap-app-icon\s*\{[^}]*height:\s*36px/);
   });

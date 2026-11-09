@@ -25,7 +25,7 @@ export default function CollectionPanel() {
   const setCollectionSub = useUiStore((s) => s.setCollectionSub);
 
   return (
-    <div className="collection-panel">
+    <div className="collection-panel page-fill">
       <div className="collection-head">
         <span className="collection-title">{t("collection.title")}</span>
         <div className="seg-group" role="tablist" aria-label={t("collection.subTabs")}>

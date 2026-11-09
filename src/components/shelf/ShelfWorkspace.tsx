@@ -3,14 +3,14 @@
 //!
 //! 拖入：监听 Tauri Webview 级 onDragDropEvent（真实 OS 文件拖入，非 HTML5 模拟），
 //! 仅在暂存架页签激活时处理；拖入默认走引用模式（不复制、不占磁盘），
-//! 「保存副本」开关可切换为托管复制。
-//! 拖出：WebView2 无可靠的系统级文件拖出通道，第一版提供复制路径/复制文件
-//! （CF_HDROP，资源管理器可直接粘贴）/打开所在文件夹作为替代，并在验收报告中如实标记。
+//! 「添加方式」菜单可切换为托管复制。
+//! 拖出：卡片按住拖动走 Windows OLE 原生文件拖出（复制/移动由目标应用决定），
+//! 复制路径/复制文件（CF_HDROP）继续作为键盘可达与失败回退。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  ChevronDown, Clipboard, FilterX, FolderInput, HardDrive, Loader2, Plus, Settings2, Star, Trash2, Upload, X,
+  Clipboard, FilterX, FolderInput, HardDrive, Loader2, Plus, Star, Trash2, Upload, X,
 } from "lucide-react";
 import {
   clipboardView,
@@ -23,6 +23,7 @@ import {
   shelfRevealItem,
   updateSettings,
   SHELF_KIND_LABELS,
+  type ShelfDragOutResult,
   type ShelfItem,
   type ShelfKind,
 } from "../../lib/bridge";
@@ -36,10 +37,10 @@ import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useGlobalSearchStore, type GlobalSearchLocateIntent } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
 import { ConfirmDialog } from "../ui/Dialog";
-import { DropdownMenu, SearchField } from "../ui";
-import ContextHelpButton from "../help/ContextHelpButton";
+import { DropdownMenu } from "../ui";
 import type { DropdownMenuItem } from "../ui/DropdownMenu";
 import ShelfItemCard from "./ShelfItemCard";
+import ShelfToolbar from "./ShelfToolbar";
 import ShelfDetail from "./ShelfDetail";
 import ShelfFileOpPanel, { type ShelfFileOpRequest } from "./ShelfFileOpPanel";
 import DropTargetManager from "./DropTargetManager";
@@ -68,15 +69,6 @@ export function copyActionLabel(items: ShelfItem[]): string {
   if (managed === items.length) return "导出副本到…";
   return "复制 / 导出到…";
 }
-
-const KIND_FILTERS: { value: ShelfKind | "all"; label: string }[] = [
-  { value: "all", label: "全部" },
-  { value: "image", label: "图片" },
-  { value: "file", label: "文件" },
-  { value: "folder", label: "文件夹" },
-  { value: "link", label: "链接" },
-  { value: "text", label: "文本" },
-];
 
 interface PendingDelete {
   ids: string[];
@@ -671,20 +663,17 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const copyLabel = copyActionLabel(copyableSelected);
   const copyHasManaged = copyableSelected.some((i) => i.storage_mode === "managed");
 
-  const quotaUsedPct =
-    stats && stats.quota_mb > 0
-      ? Math.min(100, Math.round((stats.managed_bytes / (stats.quota_mb * 1024 * 1024)) * 100))
-      : 0;
-
   // 空态必须区分「暂存架真空」与「当前筛选无结果」：stats.total 是未筛选总数。
   const hasFilters =
     filter.search.trim() !== "" ||
     filter.kind !== "all" ||
     filter.group_id !== "all" ||
     filter.favorite_only;
+  const filterCount =
+    (filter.kind !== "all" ? 1 : 0) +
+    (filter.group_id !== "all" ? 1 : 0) +
+    (filter.favorite_only ? 1 : 0);
   const shelfHasItems = (stats?.total ?? 0) > 0;
-  /** 真空：没有任何条目（不是筛选无结果）。用于精简无对象的筛选栏。 */
-  const shelfTrulyEmpty = (stats?.total ?? 0) === 0 && total === 0;
   const filteredEmpty = shelfHasItems && total === 0 && items.length === 0;
   const clearFilters = () => {
     setSearchDraft("");
@@ -696,6 +685,59 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       .then(() => showToast("文件已复制，可在资源管理器粘贴", { kind: "success" }))
       .catch((e) => showToast(`复制所选文件失败：${errorMessage(e)}`, { kind: "error" }));
   };
+
+  const favoriteSelected = () => {
+    const ids = selectedIds;
+    void (async () => {
+      // 逐项结果单独收集：批量部分失败不能整体丢弃或一律报成功。
+      const results = await Promise.all(
+        ids.map((id) =>
+          updateItem(id, { favorite: true }).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      );
+      const failed = results.filter((ok) => !ok).length;
+      const done = ids.length - failed;
+      if (failed === 0) showToast("已收藏所选", { kind: "success" });
+      else if (done === 0) showToast("收藏所选失败，请稍后重试", { kind: "error" });
+      else showToast(`已收藏 ${done} 项，${failed} 项失败`, { kind: "warning" });
+    })();
+  };
+
+  const moveSelectedToGroup = (groupId: string) => {
+    moveToGroup(selectedIds, groupId)
+      .then(() => showToast("已移动", { kind: "success" }))
+      .catch((e) => showToast(`移动分组失败：${errorMessage(e)}`, { kind: "error" }));
+  };
+
+  /** 选中多选时拖整个选择集；否则只拖当前卡片。 */
+  const dragIdsFor = useCallback(
+    (item: ShelfItem) =>
+      selectedIds.includes(item.id) && selectedIds.length > 1
+        ? selectedIds
+        : [item.id],
+    [selectedIds],
+  );
+
+  const onDragSettled = useCallback(
+    (result: ShelfDragOutResult, ids: string[]) => {
+      if (result.effect !== "move") return;
+      // 目标应用按 Windows 默认把源文件搬走；条目保留，但原路径可能已失效。
+      void verifyExists(ids);
+      showToast(
+        "文件已移动；暂存条目保留，原路径可能已失效，可重新定位或删除",
+        { kind: "warning" },
+      );
+    },
+    [showToast, verifyExists],
+  );
+
+  const onDragError = useCallback(
+    (message: string) => showToast(message, { kind: "error" }),
+    [showToast],
+  );
 
   /** dry-run 预览：只读，不触发真实清理；关闭面板后迟到的结果直接丢弃。 */
   const previewCleanup = useCallback(async (): Promise<CleanupPreview | null> => {
@@ -774,173 +816,47 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         />
       ) : (
         <>
-      {/* 面板标题行（对齐剪贴板 clip-head 结构） */}
-      <div className="shelf-head">
-        <span className="shelf-head-title">文件暂存架</span>
-        {total > 0 && <span className="shelf-head-count">{total} 项</span>}
-        <ContextHelpButton articleId="help.capture.shelf" />
-        <button
-          type="button"
-          className={`icon-btn sm ${targetsOpen ? "active" : ""}`}
-          aria-label="投递目标管理"
-          aria-expanded={targetsOpen}
-          aria-pressed={targetsOpen}
-          data-tip="投递目标（工具面板共用）"
-          onClick={() => {
-            setTargetsOpen((v) => !v);
+      <ShelfToolbar
+        searchDraft={searchDraft}
+        onSearchChange={(value) => {
+          setSearchDraft(value);
+          onSearchInput(value);
+        }}
+        copyOnAdd={copyOnAdd}
+        onCopyOnAddChange={setCopyOnAdd}
+        kind={filter.kind}
+        onKindChange={(kind) => void setFilter({ kind })}
+        groupId={filter.group_id}
+        groups={groups}
+        onGroupChange={(groupId) => void setFilter({ group_id: groupId })}
+        favoriteOnly={filter.favorite_only}
+        onFavoriteOnlyChange={(favoriteOnly) =>
+          void setFilter({ favorite_only: favoriteOnly })
+        }
+        hasFilters={hasFilters}
+        filterCount={filterCount}
+        onClearFilters={clearFilters}
+        onPickFiles={() => void pickAndAdd(false)}
+        onPickFolder={() => void pickAndAdd(true)}
+        onAddLink={() => setLinkOpen((value) => !value)}
+        onAddText={() => setTextDraft((value) => !value)}
+        onAddFromClipboard={() => void toggleClipboardPicker()}
+        onOpenTargets={() => {
+          setTargetsOpen(true);
+          closeCleanupPanel();
+        }}
+        onOpenCleanup={() => {
+          if (cleanupOpen) {
             closeCleanupPanel();
-          }}
-        >
-          <FolderInput size={14} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="icon-btn sm"
-          aria-label="空间占用与清理设置"
-          aria-expanded={cleanupOpen}
-          data-tip="空间占用与清理"
-          onClick={() => {
-            if (cleanupOpen) {
-              closeCleanupPanel();
-            } else {
-              cleanupSeq.current += 1;
-              setCleanupPreview(null);
-              setCleanupOpen(true);
-            }
-          }}
-        >
-          <Settings2 size={14} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="icon-btn sm"
-          aria-label="清空暂存架"
-          data-tip="清空（保留收藏/置顶/场景引用）"
-          onClick={() => setConfirmClear(true)}
-        >
-          <Trash2 size={14} aria-hidden="true" />
-        </button>
-      </div>
-
-      {/* 工具栏 */}
-      <div className="shelf-toolbar">
-        <button
-          type="button"
-          className="btn sm primary"
-          onClick={() => void pickAndAdd(false)}
-          data-tip="选择文件加入暂存架"
-        >
-          <Plus size={14} aria-hidden="true" /> 添加
-        </button>
-        <DropdownMenu
-          trigger={(props) => (
-            <button {...props} type="button" className="icon-btn sm" aria-label="更多添加方式">
-              <ChevronDown size={14} aria-hidden="true" />
-            </button>
-          )}
-          items={[
-            { key: "file", label: "添加文件…", onSelect: () => void pickAndAdd(false) },
-            { key: "folder", label: "添加文件夹…", onSelect: () => void pickAndAdd(true) },
-            { key: "link", label: "添加网页链接…", onSelect: () => setLinkOpen((v) => !v) },
-            { key: "text", label: "添加文本片段…", onSelect: () => setTextDraft((v) => !v) },
-            { key: "clip", label: "从剪贴板添加…", onSelect: () => void toggleClipboardPicker() },
-          ]}
-          menuLabel="添加到暂存架"
-          placement="bottom-start"
-        />
-
-        <SearchField
-          className="shelf-search"
-          size="compact"
-          value={searchDraft}
-          placeholder="搜索名称 / 内容 / 备注"
-          ariaLabel="搜索暂存条目"
-          onChange={(v) => {
-            setSearchDraft(v);
-            onSearchInput(v);
-          }}
-        />
-
-        {/* 暂存架真空时不摆一排没有对象的筛选项；有条目后恢复（筛选条件不丢） */}
-        {!shelfTrulyEmpty && (
-          <>
-        <div className="seg-group" role="tablist" aria-label="类型筛选">
-          {KIND_FILTERS.map((k) => (
-            <button
-              key={k.value}
-              type="button"
-              role="tab"
-              aria-selected={filter.kind === k.value}
-              className={`seg-btn ${filter.kind === k.value ? "active" : ""}`}
-              onClick={() => void setFilter({ kind: k.value })}
-            >
-              {k.label}
-            </button>
-          ))}
-        </div>
-
-        <DropdownMenu
-          trigger={(props) => (
-            <button {...props} type="button" className="btn sm" aria-label="分组筛选">
-              {filter.group_id === "all"
-                ? "全部分组"
-                : filter.group_id === "none"
-                  ? "未分组"
-                  : groups.find((g) => g.id === filter.group_id)?.name ?? "分组"}
-            </button>
-          )}
-          items={[
-            {
-              key: "all",
-              label: "全部分组",
-              radio: true,
-              checked: filter.group_id === "all",
-              onSelect: () => void setFilter({ group_id: "all" }),
-            },
-            {
-              key: "none",
-              label: "未分组",
-              radio: true,
-              checked: filter.group_id === "none",
-              onSelect: () => void setFilter({ group_id: "none" }),
-            },
-            ...groups.map((g) => ({
-              key: g.id,
-              label: g.name,
-              radio: true,
-              checked: filter.group_id === g.id,
-              onSelect: () => void setFilter({ group_id: g.id }),
-            })),
-          ]}
-          menuLabel="分组筛选"
-          placement="bottom-end"
-        />
-
-        <button
-          type="button"
-          className={`icon-btn sm ${filter.favorite_only ? "active" : ""}`}
-          aria-label="只看收藏"
-          aria-pressed={filter.favorite_only}
-          data-tip="只看收藏"
-          onClick={() => void setFilter({ favorite_only: !filter.favorite_only })}
-        >
-          <Star size={14} aria-hidden="true" />
-        </button>
-          </>
-        )}
-
-        <label
-          className="shelf-copy-toggle"
-          data-tip="拖入/剪贴板添加时复制副本到托管目录（默认仅引用，不占磁盘）"
-        >
-          <input
-            type="checkbox"
-            checked={copyOnAdd}
-            onChange={(e) => setCopyOnAdd(e.target.checked)}
-          />
-          保存副本
-        </label>
-      </div>
+          } else {
+            cleanupSeq.current += 1;
+            setCleanupPreview(null);
+            setCleanupOpen(true);
+          }
+        }}
+        onClearShelf={() => setConfirmClear(true)}
+        helpArticleId="help.capture.shelf"
+      />
 
       {/* 投递目标管理已改为独立视图（见顶部 targetsOpen 分支），此处不再内联。 */}
 
@@ -1044,25 +960,6 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         </div>
       )}
 
-      {/* 空间占用条 */}
-      {stats && stats.total > 0 && (
-        <div
-          className="shelf-spacebar"
-          aria-label={`空间占用：托管已用 ${formatBytes(stats.managed_bytes)}，配额 ${stats.quota_mb} MB`}
-        >
-          <HardDrive size={12} aria-hidden="true" />
-          <span>
-            {stats.total} 项 · 托管 {formatBytes(stats.managed_bytes)} / {stats.quota_mb} MB
-          </span>
-          <div className="shelf-spacebar-track" aria-hidden="true">
-            <div
-              className={`shelf-spacebar-fill ${quotaUsedPct > 90 ? "hot" : ""}`}
-              style={{ width: `${quotaUsedPct}%` }}
-            />
-          </div>
-        </div>
-      )}
-
       {(mutationSyncError || error) && items.length > 0 && (
         <div className="shelf-error" role="alert">
           {mutationSyncError ?? error}
@@ -1089,6 +986,10 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             onOpen={() => setDetail(item.id)}
             onToggleSelect={() => toggleSelect(item.id)}
             onPreview={() => setDetail(item.id)}
+            dragEnabled={canCopyItem(item)}
+            resolveDragIds={() => dragIdsFor(item)}
+            onDragSettled={onDragSettled}
+            onDragError={onDragError}
           />
         ))}
         {items.length === 0 && !loading && (mutationSyncError || error) && (
@@ -1120,6 +1021,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             <p>把文件、图片拖进窗口，或用上方「添加」收纳链接与文本。</p>
             <p className="shelf-empty-sub">
               暂存架与剪贴板互相独立：这里只保存你主动放入的内容，删除剪贴板历史不影响暂存架。
+              加入后按住卡片可拖到资源管理器或其他窗口。
             </p>
             <div className="shelf-empty-actions">
               <button type="button" className="btn sm primary" onClick={() => void pickAndAdd(false)}>
@@ -1148,66 +1050,81 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       {selectedIds.length > 0 && (
         <div className="shelf-selectbar" role="toolbar" aria-label="批量操作">
           <span className="shelf-selectbar-count">已选 {selectedIds.length} 项</span>
-          <button type="button" className="btn sm" onClick={selectAll}>
-            全选本页
+          <button
+            type="button"
+            className="btn sm"
+            data-tip="全选本页"
+            onClick={selectAll}
+          >
+            全选
+          </button>
+          <span className="flex-spacer" />
+          <button
+            type="button"
+            className="icon-btn sm"
+            aria-label="收藏所选"
+            data-tip="收藏所选"
+            onClick={favoriteSelected}
+          >
+            <Star size={14} aria-hidden="true" />
           </button>
           <DropdownMenu
             trigger={(props) => (
-              <button {...props} type="button" className="btn sm">
-                移动到分组
+              <button
+                {...props}
+                type="button"
+                className="icon-btn sm"
+                aria-label="批量文件操作"
+                data-tip="移动到分组 / 文件操作"
+              >
+                <FolderInput size={14} aria-hidden="true" />
               </button>
             )}
             items={[
-              ...groups.map((g) => ({
-                key: g.id,
-                label: g.name,
-                onSelect: () => {
-                  moveToGroup(selectedIds, g.id)
-                    .then(() => showToast("已移动", { kind: "success" }))
-                    .catch((e) => showToast(`移动分组失败：${errorMessage(e)}`, { kind: "error" }));
-                },
+              ...(groups.length > 0
+                ? [{ key: "group-label", label: "移动到分组", disabled: true }]
+                : []),
+              ...groups.map((group) => ({
+                key: group.id,
+                label: group.name,
+                onSelect: () => moveSelectedToGroup(group.id),
               })),
               {
                 key: "none",
                 label: "未分组",
-                onSelect: () => {
-                  moveToGroup(selectedIds, "none")
-                    .then(() => showToast("已移动", { kind: "success" }))
-                    .catch((e) => showToast(`移动分组失败：${errorMessage(e)}`, { kind: "error" }));
-                },
+                onSelect: () => moveSelectedToGroup("none"),
+              },
+              {
+                key: "copy-files",
+                label: "复制文件",
+                onSelect: copySelectedFiles,
+              },
+              {
+                key: "move-to",
+                label: "移动原文件到…",
+                disabled: movableSelected.length === 0,
+                description: "仅引用模式且文件存在时可移动",
+                onSelect: () => openFileOp("move", selectedItems),
+              },
+              {
+                key: "copy-to",
+                label: copyLabel,
+                disabled: copyableSelected.length === 0,
+                description: copyHasManaged
+                  ? "托管副本导出为副本，引用文件复制到目标目录"
+                  : "复制到目标目录，原文件与暂存记录保持不变",
+                onSelect: () => openFileOp("copy", selectedItems),
               },
             ]}
-            menuLabel="移动到分组"
-            placement="top-start"
+            menuLabel="批量文件操作"
+            placement="top-end"
+            menuMinWidth={190}
           />
           <button
             type="button"
-            className="btn sm"
-            onClick={() => {
-              const ids = selectedIds;
-              void (async () => {
-                // 逐项结果单独收集：批量部分失败不能整体丢弃或一律报成功。
-                const results = await Promise.all(
-                  ids.map((id) =>
-                    updateItem(id, { favorite: true }).then(
-                      () => true,
-                      () => false,
-                    ),
-                  ),
-                );
-                const failed = results.filter((ok) => !ok).length;
-                const done = ids.length - failed;
-                if (failed === 0) showToast("已收藏所选", { kind: "success" });
-                else if (done === 0) showToast("收藏所选失败，请稍后重试", { kind: "error" });
-                else showToast(`已收藏 ${done} 项，${failed} 项失败`, { kind: "warning" });
-              })();
-            }}
-          >
-            <Star size={13} aria-hidden="true" /> 收藏
-          </button>
-          <button
-            type="button"
-            className="btn sm"
+            className="icon-btn sm danger"
+            aria-label="删除所选"
+            data-tip="删除所选（受保护条目跳过）"
             onClick={() => {
               const selected = items.filter((it) => selectedIds.includes(it.id));
               setPendingDelete({
@@ -1220,35 +1137,16 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
               setConfirmDelete(true);
             }}
           >
-            <Trash2 size={13} aria-hidden="true" /> 删除
-          </button>
-          <button type="button" className="btn sm" onClick={copySelectedFiles}>
-            复制文件
+            <Trash2 size={14} aria-hidden="true" />
           </button>
           <button
             type="button"
-            className="btn sm"
-            disabled={movableSelected.length === 0}
-            data-tip="移动引用模式的原文件；托管副本请用「导出副本到…」"
-            onClick={() => openFileOp("move", selectedItems)}
+            className="icon-btn sm"
+            aria-label="取消选择"
+            data-tip="取消选择"
+            onClick={clearSelection}
           >
-            移动原文件到…
-          </button>
-          <button
-            type="button"
-            className="btn sm"
-            disabled={copyableSelected.length === 0}
-            data-tip={
-              copyHasManaged
-                ? "托管副本导出为副本，引用文件复制到目标目录；原文件均不移动"
-                : "复制到目标目录，原文件与暂存记录保持不变"
-            }
-            onClick={() => openFileOp("copy", selectedItems)}
-          >
-            {copyLabel}
-          </button>
-          <button type="button" className="btn sm" onClick={clearSelection}>
-            取消选择
+            <X size={14} aria-hidden="true" />
           </button>
         </div>
       )}

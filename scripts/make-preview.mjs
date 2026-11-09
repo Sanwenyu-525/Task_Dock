@@ -21,6 +21,8 @@ const shim = `
   const MODE = q.get("mode") || "full";
   const PRESET = q.get("preset") || "dream-gradient";
   const EMPTY = q.get("agents") === "empty";
+  // 文件互传空态：?files=empty；默认返回四种状态夹具。
+  const FILES_EMPTY = q.get("files") === "empty";
   // 扫描场景：ok（默认，立即返回完整结果）| cancelled | fail。
   // 只影响 harness 的 nav_scan_apps 返回，用于走查取消/错误状态，不参与发布包。
   const SCAN_MODE = q.get("scan") || "ok";
@@ -44,6 +46,9 @@ const shim = `
     clipboard_group_window_secs: 45, clipboard_retention_days: 30, clipboard_max_items: 2000,
     clipboard_max_storage_mb: 2048, clipboard_exclude_apps: "keepass.exe, 1password.exe",
     clipboard_paste_interval_ms: 350, clipboard_sensitive_filter: true,
+    // 与 mobile_sync_status 夹具保持一致：服务开启且已配对，避免走查时出现
+    // 「开关关闭 + 运行中 + 已配对设备」的自相矛盾状态。
+    mobile_sync_enabled: true, mobile_sync_port: 47822,
   };
 
   // ── 导航 fixture（v0.4：任务关联目标 + 应用扫描 + 能力 + 结果）──
@@ -571,6 +576,25 @@ const shim = `
     { name: "task-dock-20261023-0300.db.bak", size: 229376, modified: iso(2900) },
   ];
 
+  // ── 手机与同步 / 文件互传（视觉走查夹具）──
+  // 覆盖可下载、接收中、已接收、失败四种状态，用来核对分组头、状态胶囊与
+  // 320/400 窄窗下的文件名截断。
+  const mobileSyncStatus = {
+    enabled: true, running: true, port: 47822, lan_ip: "192.168.5.6",
+    base_url: "http://192.168.5.6:47822", server_name: "LAPTOP-RTUVXZ-G",
+    instance_id: "preview-instance", fingerprint: "1A2B3C4D", error: null,
+    pairing: null, paired_device: null,
+    devices: [
+      { id: "dev-1", name: "vivo V2323A", platform: "android", created_at: iso(600), last_seen_at: iso(3), last_ip: "192.168.5.7", revoked_at: null },
+    ],
+  };
+  const mobileFiles = [
+    { id: "mf1", direction: "to_phone", name: "季度复盘-最终版.pdf", size: 2489344, sha256: "", status: "ready", chunk_size: 196608, chunks: 13, received_chunks: 0, created_at: iso(2), updated_at: iso(2), completed_at: null },
+    { id: "mf2", direction: "to_phone", name: "会议录音 2026-11-09.m4a", size: 18350080, sha256: "", status: "pending", chunk_size: 196608, chunks: 94, received_chunks: 37, created_at: iso(4), updated_at: iso(1), completed_at: null },
+    { id: "mf3", direction: "to_desktop", name: "手机文件-20261109-204735.txt", size: 54, sha256: "", status: "ready", chunk_size: 196608, chunks: 1, received_chunks: 1, created_at: iso(8), updated_at: iso(8), completed_at: iso(8) },
+    { id: "mf4", direction: "to_desktop", name: "IMG_20261109_2031.jpg", size: 4194304, sha256: "", status: "failed", chunk_size: 196608, chunks: 22, received_chunks: 0, created_at: iso(12), updated_at: iso(12), completed_at: null },
+  ];
+
   let cbId = 0;
   const listeners = {};
 
@@ -579,6 +603,14 @@ const shim = `
     switch (cmd) {
       case "get_settings": return settings;
       case "update_settings": return { ...settings, ...(args?.patch || {}) };
+      // ── 手机与同步 / 文件互传 ──
+      case "mobile_sync_status": return mobileSyncStatus;
+      case "mobile_sync_revoke_device": return true;
+      case "mobile_file_list": return FILES_EMPTY ? [] : mobileFiles;
+      case "mobile_file_offer": return [];
+      case "mobile_file_delete": return true;
+      case "mobile_file_reveal":
+      case "mobile_file_open_inbox": return null;
       case "lifecycle_status": return lifecycleStatus;
       case "resource_snapshot": return resourceSnapshot;
       case "resource_process_diagnostics": return resourceProcesses;

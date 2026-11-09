@@ -17,7 +17,7 @@ type Source = "mine" | "builtin";
 export default function PlanningCenterPanel() {
   const [source, setSource] = useState<Source>("mine");
   return (
-    <div className="planning-panel">
+    <div className="planning-panel page-fill">
       <div className="planning-source-switch">
         <div className="seg-group subtle" role="group" aria-label="规划数据来源">
           <button

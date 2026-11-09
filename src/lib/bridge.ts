@@ -3269,9 +3269,24 @@ export const shelfReadText = (id: string) =>
 export const shelfReadImage = (id: string, full: boolean) =>
   invoke<string | null>("shelf_read_image", { id, full });
 
-/** 复制路径（文本）/ 复制文件（CF_HDROP，资源管理器可直接粘贴）——系统级拖出未实现前的替代。 */
+/** 复制路径（文本）/ 复制文件（CF_HDROP，资源管理器可直接粘贴）——拖出的键盘/回退通道。 */
 export const shelfCopyPaths = (ids: string[]) => invoke<number>("shelf_copy_paths", { ids });
 export const shelfCopyFiles = (ids: string[]) => invoke<number>("shelf_copy_files", { ids });
+
+/** 系统级拖出结果：effect 为目标应用实际接受的放置效果。 */
+export interface ShelfDragOutResult {
+  effect: "copy" | "move" | "none";
+  count: number;
+  /** move 后目标应用已搬走的源条目。 */
+  missing_ids: string[];
+}
+
+/**
+ * 从暂存架卡片发起 Windows 原生拖出（OLE DoDragDrop）。
+ * 必须在 pointerdown 后、左键仍按下时调用；路径由后端按 id 解析，前端不传路径。
+ */
+export const shelfDragOut = (ids: string[]) =>
+  invoke<ShelfDragOutResult>("shelf_drag_out", { ids });
 
 export const shelfTaskLinks = (itemId: string) =>
   invoke<ShelfTaskLink[]>("shelf_task_links", { itemId });
@@ -3973,3 +3988,35 @@ export const mobileSyncListDevices = () =>
 
 export const mobileSyncRevokeDevice = (deviceId: string) =>
   invoke<boolean>("mobile_sync_revoke_device", { deviceId });
+
+// ── 手机文件互传（v1）──────────────────────────────────────────
+// 文件本体在 data_dir/mobile_files；这些返回值与 Rust `mobile_sync::files`
+// 的 snake_case 字段一一对应，stored_path 永远不下发。
+
+export interface MobileFile {
+  id: string;
+  direction: "to_phone" | "to_desktop";
+  name: string;
+  size: number;
+  sha256: string;
+  status: "pending" | "ready" | "failed";
+  chunk_size: number;
+  chunks: number;
+  received_chunks: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export const mobileFileList = () => invoke<MobileFile[]>("mobile_file_list");
+
+export const mobileFileOffer = (paths: string[]) =>
+  invoke<MobileFile[]>("mobile_file_offer", { paths });
+
+export const mobileFileDelete = (id: string) =>
+  invoke<boolean>("mobile_file_delete", { id });
+
+export const mobileFileReveal = (id: string) =>
+  invoke<void>("mobile_file_reveal", { id });
+
+export const mobileFileOpenInbox = () => invoke<void>("mobile_file_open_inbox");

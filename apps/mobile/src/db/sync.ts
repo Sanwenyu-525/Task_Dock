@@ -5,7 +5,10 @@
 // - 本地有未发送操作（outbox）的记录，pull 不覆盖，交给 push 的 base_rev 冲突判定；
 // - push 成功的记录清空 outbox；冲突清空 outbox 并写 sync_conflicts，等用户处理；
 // - 服务端版本号存 server_rev，下一次本地编辑的 base_rev 用它，而不是本地 rev。
-import type { Change, Op, PushResult, SyncPatch } from "../lib/sync/protocol";
+// - 实体：task / note / capture；三者共用同一套 outbox 与冲突表。
+import type { SQLiteDatabase } from "expo-sqlite";
+
+import type { Change, Op, PushResult, SyncEntity, SyncPatch } from "../lib/sync/protocol";
 import { buildPatchPayload } from "../lib/sync/protocol";
 
 import { getDatabase } from "./database";
@@ -30,8 +33,9 @@ export interface PullApplyResult {
   skipped: number;
 }
 
-export interface PendingTaskOp {
+export interface PendingOp {
   op: Op;
+  entity: SyncEntity;
   targetId: string;
   /** 生成本次 op 时 outbox 的最大时间戳：结算只清理这批，不误删同步期间的新编辑 */
   maxCreatedAt: number;
@@ -80,7 +84,17 @@ export async function saveSyncResult(result: SyncLastResult): Promise<void> {
 /** 解除配对时清空游标、最近结果与待处理冲突（本机不再保留对端同步状态）。 */
 export async function resetSyncState(): Promise<void> {
   const db = getDatabase();
-  await db.runAsync("DELETE FROM sync_conflicts");
+  await db.withTransactionAsync(async () => {
+    await db.runAsync("DELETE FROM sync_conflicts");
+    // 对端可能换成另一台桌面端：服务端 seq 不保证可比，全部清零后由下一次 pull 重建。
+    await db.runAsync("UPDATE tasks SET server_rev = 0 WHERE server_rev <> 0");
+    await db.runAsync("UPDATE notes SET server_rev = 0 WHERE server_rev <> 0");
+    await db.runAsync("UPDATE captures SET server_rev = 0 WHERE server_rev <> 0");
+    await db.runAsync(
+      `UPDATE outbox SET base_rev = 0
+        WHERE entity IN ('task', 'note', 'capture') AND base_rev <> 0`,
+    );
+  });
   await setSetting(CURSOR_KEY, "");
   await db.runAsync("DELETE FROM kv WHERE key = ?", [LAST_RESULT_KEY]);
 }
@@ -140,6 +154,235 @@ function parseTaskFields(fields: Record<string, unknown>): TaskFields {
   };
 }
 
+type ApplyOutcome = "applied" | "deleted" | "skipped";
+
+async function hasPendingOutbox(
+  db: SQLiteDatabase,
+  entity: SyncEntity,
+  id: string,
+): Promise<boolean> {
+  const pending = await db.getFirstAsync<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM outbox WHERE entity = ? AND target_id = ?",
+    [entity, id],
+  );
+  return (pending?.n ?? 0) > 0;
+}
+
+async function applyTaskChange(db: SQLiteDatabase, change: Change): Promise<ApplyOutcome> {
+  if (await hasPendingOutbox(db, "task", change.id)) return "skipped";
+
+  const existing = await db.getFirstAsync<{ server_rev: number; deleted_at: number | null }>(
+    "SELECT server_rev, deleted_at FROM tasks WHERE id = ?",
+    [change.id],
+  );
+
+  if (change.deleted) {
+    if (!existing) return "skipped";
+    const now = Date.now();
+    await db.runAsync(
+      "UPDATE tasks SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = ? WHERE id = ?",
+      [now, now, change.rev, change.id],
+    );
+    return "deleted";
+  }
+
+  // 旧变更晚到（分页重放）时不回退已应用的版本。
+  if (existing && change.rev <= existing.server_rev) return "skipped";
+
+  const fields = parseTaskFields(change.fields);
+  if (existing) {
+    await db.runAsync(
+      `UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, category = ?,
+                        tags = ?, due_at = ?, remind_at = ?, advance_minutes = ?,
+                        recurrence_rule = ?, created_at = ?, updated_at = ?, completed_at = ?,
+                        rev = rev + 1, server_rev = ?, deleted_at = NULL
+         WHERE id = ?`,
+      [
+        fields.title,
+        fields.description,
+        fields.status,
+        fields.priority,
+        fields.category,
+        fields.tags,
+        fields.dueAt,
+        fields.remindAt,
+        fields.advanceMinutes,
+        fields.recurrenceRule,
+        fields.createdAt,
+        fields.updatedAt,
+        fields.completedAt,
+        change.rev,
+        change.id,
+      ],
+    );
+  } else {
+    await db.runAsync(
+      `INSERT INTO tasks (id, title, description, status, priority, category, tags,
+                          due_at, remind_at, advance_minutes, recurrence_rule,
+                          created_at, updated_at, completed_at, rev, server_rev, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)`,
+      [
+        change.id,
+        fields.title,
+        fields.description,
+        fields.status,
+        fields.priority,
+        fields.category,
+        fields.tags,
+        fields.dueAt,
+        fields.remindAt,
+        fields.advanceMinutes,
+        fields.recurrenceRule,
+        fields.createdAt,
+        fields.updatedAt,
+        fields.completedAt,
+        change.rev,
+      ],
+    );
+  }
+  return "applied";
+}
+
+interface NoteFields {
+  title: string;
+  body: string;
+  pinned: number;
+  favorited: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+function parseNoteFields(fields: Record<string, unknown>): NoteFields {
+  return {
+    title: asString(fields.title),
+    body: asString(fields.body),
+    pinned: fields.pinned === true ? 1 : 0,
+    favorited: fields.favorited === true ? 1 : 0,
+    createdAt: asNumber(fields.createdAt, Date.now()),
+    updatedAt: asNumber(fields.updatedAt, Date.now()),
+  };
+}
+
+async function applyNoteChange(db: SQLiteDatabase, change: Change): Promise<ApplyOutcome> {
+  if (await hasPendingOutbox(db, "note", change.id)) return "skipped";
+
+  const existing = await db.getFirstAsync<{ server_rev: number; deleted_at: number | null }>(
+    "SELECT server_rev, deleted_at FROM notes WHERE id = ?",
+    [change.id],
+  );
+
+  if (change.deleted) {
+    if (!existing) return "skipped";
+    const now = Date.now();
+    await db.runAsync(
+      "UPDATE notes SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = ? WHERE id = ?",
+      [now, now, change.rev, change.id],
+    );
+    return "deleted";
+  }
+
+  if (existing && change.rev <= existing.server_rev) return "skipped";
+
+  const fields = parseNoteFields(change.fields);
+  if (existing) {
+    await db.runAsync(
+      `UPDATE notes SET title = ?, body = ?, pinned = ?, favorited = ?, created_at = ?,
+                        updated_at = ?, rev = rev + 1, server_rev = ?, deleted_at = NULL
+         WHERE id = ?`,
+      [
+        fields.title,
+        fields.body,
+        fields.pinned,
+        fields.favorited,
+        fields.createdAt,
+        fields.updatedAt,
+        change.rev,
+        change.id,
+      ],
+    );
+  } else {
+    await db.runAsync(
+      `INSERT INTO notes (id, title, body, pinned, favorited, created_at, updated_at,
+                          rev, server_rev, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)`,
+      [
+        change.id,
+        fields.title,
+        fields.body,
+        fields.pinned,
+        fields.favorited,
+        fields.createdAt,
+        fields.updatedAt,
+        change.rev,
+      ],
+    );
+  }
+  return "applied";
+}
+
+interface CaptureFields {
+  clientId: string;
+  content: string;
+  kind: string;
+  createdAt: number;
+}
+
+function parseCaptureFields(fields: Record<string, unknown>): CaptureFields {
+  return {
+    clientId: asString(fields.clientId),
+    content: asString(fields.content),
+    kind: asString(fields.kind, "text") || "text",
+    createdAt: asNumber(fields.createdAt, Date.now()),
+  };
+}
+
+async function applyCaptureChange(db: SQLiteDatabase, change: Change): Promise<ApplyOutcome> {
+  if (await hasPendingOutbox(db, "capture", change.id)) return "skipped";
+
+  const existing = await db.getFirstAsync<{ server_rev: number; deleted_at: number | null }>(
+    "SELECT server_rev, deleted_at FROM captures WHERE id = ?",
+    [change.id],
+  );
+
+  if (change.deleted) {
+    if (!existing) return "skipped";
+    const now = Date.now();
+    await db.runAsync(
+      "UPDATE captures SET deleted_at = ?, rev = rev + 1, server_rev = ? WHERE id = ?",
+      [now, change.rev, change.id],
+    );
+    return "deleted";
+  }
+
+  if (existing && change.rev <= existing.server_rev) return "skipped";
+
+  const fields = parseCaptureFields(change.fields);
+  if (!fields.clientId) return "skipped";
+
+  // client_id 唯一索引：同一条目换 id 下发时不能静默覆盖另一条本地记录。
+  const clash = await db.getFirstAsync<{ id: string }>(
+    "SELECT id FROM captures WHERE client_id = ? AND id <> ?",
+    [fields.clientId, change.id],
+  );
+  if (clash) return "skipped";
+
+  if (existing) {
+    await db.runAsync(
+      `UPDATE captures SET client_id = ?, content = ?, kind = ?, created_at = ?,
+                           rev = rev + 1, server_rev = ?, deleted_at = NULL
+         WHERE id = ?`,
+      [fields.clientId, fields.content, fields.kind, fields.createdAt, change.rev, change.id],
+    );
+  } else {
+    await db.runAsync(
+      `INSERT INTO captures (id, client_id, content, kind, created_at, deleted_at, rev, server_rev)
+       VALUES (?, ?, ?, ?, ?, NULL, 1, ?)`,
+      [change.id, fields.clientId, fields.content, fields.kind, fields.createdAt, change.rev],
+    );
+  }
+  return "applied";
+}
+
 /**
  * 应用一页 pull 变更。
  *
@@ -154,96 +397,23 @@ export async function applyPullChanges(changes: readonly Change[]): Promise<Pull
 
   await db.withTransactionAsync(async () => {
     for (const change of changes) {
-      if (change.entity !== "task") {
-        skipped += 1;
-        continue;
+      let outcome: ApplyOutcome;
+      switch (change.entity) {
+        case "task":
+          outcome = await applyTaskChange(db, change);
+          break;
+        case "note":
+          outcome = await applyNoteChange(db, change);
+          break;
+        case "capture":
+          outcome = await applyCaptureChange(db, change);
+          break;
+        default:
+          outcome = "skipped";
       }
-
-      const pending = await db.getFirstAsync<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM outbox WHERE entity = 'task' AND target_id = ?",
-        [change.id],
-      );
-      if ((pending?.n ?? 0) > 0) {
-        skipped += 1;
-        continue;
-      }
-
-      const existing = await db.getFirstAsync<{ server_rev: number; deleted_at: number | null }>(
-        "SELECT server_rev, deleted_at FROM tasks WHERE id = ?",
-        [change.id],
-      );
-
-      if (change.deleted) {
-        if (!existing) {
-          skipped += 1;
-          continue;
-        }
-        await db.runAsync(
-          "UPDATE tasks SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = ? WHERE id = ?",
-          [Date.now(), Date.now(), change.rev, change.id],
-        );
-        deleted += 1;
-        continue;
-      }
-
-      // 旧变更晚到（分页重放）时不回退已应用的版本。
-      if (existing && change.rev <= existing.server_rev) {
-        skipped += 1;
-        continue;
-      }
-
-      const fields = parseTaskFields(change.fields);
-      if (existing) {
-        await db.runAsync(
-          `UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, category = ?,
-                            tags = ?, due_at = ?, remind_at = ?, advance_minutes = ?,
-                            recurrence_rule = ?, created_at = ?, updated_at = ?, completed_at = ?,
-                            rev = rev + 1, server_rev = ?, deleted_at = NULL
-             WHERE id = ?`,
-          [
-            fields.title,
-            fields.description,
-            fields.status,
-            fields.priority,
-            fields.category,
-            fields.tags,
-            fields.dueAt,
-            fields.remindAt,
-            fields.advanceMinutes,
-            fields.recurrenceRule,
-            fields.createdAt,
-            fields.updatedAt,
-            fields.completedAt,
-            change.rev,
-            change.id,
-          ],
-        );
-      } else {
-        await db.runAsync(
-          `INSERT INTO tasks (id, title, description, status, priority, category, tags,
-                              due_at, remind_at, advance_minutes, recurrence_rule,
-                              created_at, updated_at, completed_at, rev, server_rev, deleted_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)`,
-          [
-            change.id,
-            fields.title,
-            fields.description,
-            fields.status,
-            fields.priority,
-            fields.category,
-            fields.tags,
-            fields.dueAt,
-            fields.remindAt,
-            fields.advanceMinutes,
-            fields.recurrenceRule,
-            fields.createdAt,
-            fields.updatedAt,
-            fields.completedAt,
-            change.rev,
-          ],
-        );
-      }
-      applied += 1;
+      if (outcome === "applied") applied += 1;
+      else if (outcome === "deleted") deleted += 1;
+      else skipped += 1;
     }
   });
 
@@ -252,6 +422,7 @@ export async function applyPullChanges(changes: readonly Change[]): Promise<Pull
 
 interface OutboxRow {
   op_id: string;
+  entity: string;
   target_id: string;
   base_rev: number;
   payload: string;
@@ -260,110 +431,159 @@ interface OutboxRow {
 
 interface PendingGroup {
   opId: string;
+  entity: SyncEntity;
   targetId: string;
   baseRev: number;
   deleted: boolean;
   maxCreatedAt: number;
 }
 
+function isSyncEntity(value: string): value is SyncEntity {
+  return value === "task" || value === "note" || value === "capture";
+}
+
 /**
- * 把 outbox 按记录合并成 push 操作：同一条任务的多次编辑只发一次，
+ * 把 outbox 按「实体 + 记录」合并成 push 操作：同一条记录的多次编辑只发一次，
  * base_rev 取最早一次本地编辑时的服务端版本（冲突判定更保守）。
+ * 删除/转任务（promote）统一映射为墓碑。
  */
-export async function buildPendingTaskOps(): Promise<PendingTaskOp[]> {
+export async function buildPendingOps(): Promise<PendingOp[]> {
   const db = getDatabase();
   const rows = await db.getAllAsync<OutboxRow>(
-    `SELECT op_id, target_id, base_rev, payload, created_at
+    `SELECT op_id, entity, target_id, base_rev, payload, created_at
        FROM outbox
-      WHERE entity = 'task' AND state IN ('pending', 'failed')
+      WHERE entity IN ('task', 'note', 'capture') AND state IN ('pending', 'failed')
       ORDER BY created_at ASC, rowid ASC`,
   );
 
   const groups = new Map<string, PendingGroup>();
   for (const row of rows) {
-    const existing = groups.get(row.target_id);
+    if (!isSyncEntity(row.entity)) continue;
+    const key = `${row.entity}:${row.target_id}`;
+    const type = payloadType(row.payload);
+    const deleted = type === "delete" || type === "promote";
+    const existing = groups.get(key);
     if (existing) {
-      if (payloadType(row.payload) === "delete") existing.deleted = true;
+      if (deleted) existing.deleted = true;
       existing.maxCreatedAt = Math.max(existing.maxCreatedAt, row.created_at);
       continue;
     }
-    groups.set(row.target_id, {
+    groups.set(key, {
       opId: row.op_id,
+      entity: row.entity,
       targetId: row.target_id,
       baseRev: row.base_rev,
-      deleted: payloadType(row.payload) === "delete",
+      deleted,
       maxCreatedAt: row.created_at,
     });
   }
 
-  const ops: PendingTaskOp[] = [];
+  const ops: PendingOp[] = [];
   for (const group of groups.values()) {
-    const task = await db.getFirstAsync<{
-      id: string;
-      title: string;
-      description: string;
-      status: string;
-      priority: number;
-      category: string | null;
-      tags: string | null;
-      due_at: number | null;
-      remind_at: number | null;
-      advance_minutes: number | null;
-      recurrence_rule: string | null;
-      created_at: number;
-      updated_at: number;
-      completed_at: number | null;
-      deleted_at: number | null;
-    }>("SELECT * FROM tasks WHERE id = ?", [group.targetId]);
-
-    if (group.deleted) {
-      // 本地已删除：即使行已被软删除也要把墓碑发出去。
+    const push = (patch: SyncPatch, deleted = false): void => {
       ops.push({
+        entity: group.entity,
         targetId: group.targetId,
         maxCreatedAt: group.maxCreatedAt,
         op: {
           op_id: group.opId,
-          entity: "task",
+          entity: group.entity,
           id: group.targetId,
           base_rev: group.baseRev,
-          patch: {},
-          deleted: true,
+          patch,
+          ...(deleted ? { deleted: true } : {}),
         },
       });
+    };
+
+    if (group.deleted) {
+      // 本地已删除：即使行已被软删除也要把墓碑发出去。
+      push({}, true);
       continue;
     }
 
-    if (!task || task.deleted_at != null) {
-      // 本地删了但没有删除操作（异常状态）：跳过，避免把半截数据推上去。
+    if (group.entity === "task") {
+      const task = await db.getFirstAsync<{
+        title: string;
+        description: string;
+        status: string;
+        priority: number;
+        category: string | null;
+        tags: string | null;
+        due_at: number | null;
+        remind_at: number | null;
+        advance_minutes: number | null;
+        recurrence_rule: string | null;
+        created_at: number;
+        updated_at: number;
+        completed_at: number | null;
+        deleted_at: number | null;
+      }>("SELECT * FROM tasks WHERE id = ?", [group.targetId]);
+
+      if (!task || task.deleted_at != null) {
+        // 本地删了但没有删除操作（异常状态）：跳过，避免把半截数据推上去。
+        continue;
+      }
+
+      push(
+        buildPatchPayload({
+          title: task.title,
+          description: task.description,
+          status: task.status,
+          priority: task.priority,
+          category: task.category,
+          tags: parseTags(task.tags),
+          dueAt: task.due_at,
+          remindAt: task.remind_at,
+          advanceMinutes: task.advance_minutes,
+          recurrenceRule: task.recurrence_rule,
+          createdAt: task.created_at,
+          completedAt: task.completed_at,
+        }),
+      );
       continue;
     }
 
-    const patch: SyncPatch = buildPatchPayload({
-      title: task.title,
-      description: task.description,
-      status: task.status,
-      priority: task.priority,
-      category: task.category,
-      tags: parseTags(task.tags),
-      dueAt: task.due_at,
-      remindAt: task.remind_at,
-      advanceMinutes: task.advance_minutes,
-      recurrenceRule: task.recurrence_rule,
-      createdAt: task.created_at,
-      completedAt: task.completed_at,
-    });
+    if (group.entity === "note") {
+      const note = await db.getFirstAsync<{
+        title: string;
+        body: string;
+        pinned: number;
+        favorited: number;
+        created_at: number;
+        deleted_at: number | null;
+      }>("SELECT * FROM notes WHERE id = ?", [group.targetId]);
 
-    ops.push({
-      targetId: group.targetId,
-      maxCreatedAt: group.maxCreatedAt,
-      op: {
-        op_id: group.opId,
-        entity: "task",
-        id: group.targetId,
-        base_rev: group.baseRev,
-        patch,
-      },
-    });
+      if (!note || note.deleted_at != null) continue;
+      push(
+        buildPatchPayload({
+          title: note.title,
+          body: note.body,
+          pinned: note.pinned === 1,
+          favorited: note.favorited === 1,
+          createdAt: note.created_at,
+        }),
+      );
+      continue;
+    }
+
+    const capture = await db.getFirstAsync<{
+      client_id: string;
+      content: string;
+      kind: string;
+      created_at: number;
+      deleted_at: number | null;
+    }>("SELECT * FROM captures WHERE id = ?", [group.targetId]);
+
+    if (!capture || capture.deleted_at != null) continue;
+    push(
+      buildPatchPayload({
+        clientId: capture.client_id,
+        content: capture.content,
+        kind: capture.kind,
+        createdAt: capture.created_at,
+      }),
+    );
   }
 
   return ops;
@@ -394,16 +614,27 @@ function parseTags(raw: string | null): string[] {
  */
 export async function settlePush(
   result: PushResult,
-  pending: readonly PendingTaskOp[],
+  pending: readonly PendingOp[],
 ): Promise<void> {
   const db = getDatabase();
   const byOpId = new Map(pending.map((item) => [item.op.op_id, item]));
 
-  const acked = new Map<string, number>();
+  interface AckKey {
+    entity: SyncEntity;
+    targetId: string;
+    maxCreatedAt: number;
+  }
+  const acked = new Map<string, AckKey>();
   for (const opId of result.ack) {
     const item = byOpId.get(opId);
     if (!item) continue;
-    acked.set(item.targetId, Math.max(acked.get(item.targetId) ?? 0, item.maxCreatedAt));
+    const key = `${item.entity}:${item.targetId}`;
+    const existing = acked.get(key);
+    acked.set(key, {
+      entity: item.entity,
+      targetId: item.targetId,
+      maxCreatedAt: Math.max(existing?.maxCreatedAt ?? 0, item.maxCreatedAt),
+    });
   }
 
   const conflictRows: Array<SyncConflictRow & { maxCreatedAt: number }> = [];
@@ -412,7 +643,7 @@ export async function settlePush(
     if (!item) continue;
     conflictRows.push({
       op_id: conflict.op_id,
-      entity: "task",
+      entity: item.entity,
       target_id: item.targetId,
       reason: conflict.reason,
       server_json: conflict.server_record ? JSON.stringify(conflict.server_record) : null,
@@ -423,16 +654,16 @@ export async function settlePush(
 
   await db.withTransactionAsync(async () => {
     // 只删本批快照里的 outbox：同步请求期间用户继续编辑产生的新行必须保留。
-    for (const [targetId, maxCreatedAt] of acked) {
+    for (const item of acked.values()) {
       await db.runAsync(
-        "DELETE FROM outbox WHERE entity = 'task' AND target_id = ? AND created_at <= ?",
-        [targetId, maxCreatedAt],
+        "DELETE FROM outbox WHERE entity = ? AND target_id = ? AND created_at <= ?",
+        [item.entity, item.targetId, item.maxCreatedAt],
       );
     }
     for (const row of conflictRows) {
       await db.runAsync(
-        "DELETE FROM outbox WHERE entity = 'task' AND target_id = ? AND created_at <= ?",
-        [row.target_id, row.maxCreatedAt],
+        "DELETE FROM outbox WHERE entity = ? AND target_id = ? AND created_at <= ?",
+        [row.entity, row.target_id, row.maxCreatedAt],
       );
       await db.runAsync(
         `INSERT OR REPLACE INTO sync_conflicts
@@ -459,11 +690,12 @@ export async function countSyncConflicts(): Promise<number> {
   return row?.n ?? 0;
 }
 
-/** 只统计本轮可发送的任务操作；收集箱/笔记的 outbox 仍留在本机。 */
-export async function countPendingTaskOutbox(): Promise<number> {
+/** 统计本轮可发送的操作（任务 / 笔记 / 收集箱）。 */
+export async function countPendingSyncOps(): Promise<number> {
   const db = getDatabase();
   const row = await db.getFirstAsync<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM outbox WHERE entity = 'task' AND state IN ('pending', 'failed')",
+    `SELECT COUNT(*) AS n FROM outbox
+      WHERE entity IN ('task', 'note', 'capture') AND state IN ('pending', 'failed')`,
   );
   return row?.n ?? 0;
 }
@@ -478,6 +710,36 @@ function parseServerRecord(raw: string | null): Change | null {
   }
 }
 
+function conflictEntity(value: string): SyncEntity | null {
+  return value === "task" || value === "note" || value === "capture" ? value : null;
+}
+
+/** 桌面端没有该记录时，「采用桌面端」等价于软删除本地副本。 */
+async function softDeleteLocalCopy(entity: SyncEntity, id: string): Promise<void> {
+  const db = getDatabase();
+  const now = Date.now();
+  switch (entity) {
+    case "task":
+      await db.runAsync(
+        "UPDATE tasks SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = 0 WHERE id = ?",
+        [now, now, id],
+      );
+      break;
+    case "note":
+      await db.runAsync(
+        "UPDATE notes SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = 0 WHERE id = ?",
+        [now, now, id],
+      );
+      break;
+    case "capture":
+      await db.runAsync(
+        "UPDATE captures SET deleted_at = ?, rev = rev + 1, server_rev = 0 WHERE id = ?",
+        [now, id],
+      );
+      break;
+  }
+}
+
 /** 采用桌面端版本：把冲突里记录的服务端版本应用到本地，再删除冲突记录。 */
 export async function resolveConflictWithServer(conflict: SyncConflictRow): Promise<void> {
   const db = getDatabase();
@@ -486,32 +748,59 @@ export async function resolveConflictWithServer(conflict: SyncConflictRow): Prom
     // 冲突结算时已经清掉该记录的 outbox，这里不会再被「本地未发送」跳过。
     await applyPullChanges([change]);
   } else {
-    // 桌面端没有该记录：采用桌面端等价于删除本地副本。
-    await db.runAsync(
-      "UPDATE tasks SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = 0 WHERE id = ?",
-      [Date.now(), Date.now(), conflict.target_id],
-    );
+    const entity = conflictEntity(conflict.entity);
+    if (entity) await softDeleteLocalCopy(entity, conflict.target_id);
   }
   await db.runAsync("DELETE FROM sync_conflicts WHERE op_id = ?", [conflict.op_id]);
 }
 
+async function isLocalDeleted(entity: SyncEntity, id: string): Promise<boolean> {
+  const db = getDatabase();
+  const table = entity === "task" ? "tasks" : entity === "note" ? "notes" : "captures";
+  const row = await db.getFirstAsync<{ deleted_at: number | null }>(
+    `SELECT deleted_at FROM ${table} WHERE id = ?`,
+    [id],
+  );
+  return !row || row.deleted_at != null;
+}
+
 /**
- * 保留本机版本：把本地 server_rev 对齐到冲突里的服务端版本，并重新入队一次更新。
- * 之后再同步即可覆盖桌面端；若期间桌面端又改过，会再次产生冲突而不是静默覆盖。
+ * 保留本机版本：把本地 server_rev 对齐到冲突里的服务端版本，并重新入队一次写操作。
+ * 本地已删除则重新入队删除，否则入队更新；之后再同步即可覆盖桌面端。
+ * 若期间桌面端又改过，会再次产生冲突而不是静默覆盖。
  */
 export async function resolveConflictWithLocal(conflict: SyncConflictRow): Promise<void> {
+  const entity = conflictEntity(conflict.entity);
+  if (!entity) {
+    // 未知实体（旧版本遗留）：没有可重建的本地写路径，只清掉冲突记录。
+    await getDatabase().runAsync("DELETE FROM sync_conflicts WHERE op_id = ?", [conflict.op_id]);
+    return;
+  }
+
   const db = getDatabase();
   const change = parseServerRecord(conflict.server_json);
   const baseRev = Math.max(change?.rev ?? 0, 0);
   const now = Date.now();
+  const deleted = await isLocalDeleted(entity, conflict.target_id);
+  const table = entity === "task" ? "tasks" : entity === "note" ? "notes" : "captures";
 
   await db.withTransactionAsync(async () => {
-    await db.runAsync("UPDATE tasks SET server_rev = ? WHERE id = ?", [baseRev, conflict.target_id]);
+    await db.runAsync(`UPDATE ${table} SET server_rev = ? WHERE id = ?`, [
+      baseRev,
+      conflict.target_id,
+    ]);
     await db.runAsync("DELETE FROM sync_conflicts WHERE op_id = ?", [conflict.op_id]);
     await db.runAsync(
       `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
-       VALUES (?, 'task', ?, ?, ?, ?)`,
-      [newId("op"), conflict.target_id, baseRev, JSON.stringify({ type: "update" }), now],
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        newId("op"),
+        entity,
+        conflict.target_id,
+        baseRev,
+        JSON.stringify({ type: deleted ? "delete" : "update" }),
+        now,
+      ],
     );
   });
 }

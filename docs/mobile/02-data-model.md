@@ -3,7 +3,7 @@
 > 权威：`apps/mobile/src/db/schema.ts` 与各表读写模块。本文解释**为什么这样设计**，
 > 字段细节以代码为准。表字段名与桌面端 SQLite 对齐，便于将来同步直接对字段。
 
-## 1. 表结构（SCHEMA_VERSION = 3）
+## 1. 表结构（SCHEMA_VERSION = 5）
 
 ### tasks
 
@@ -35,10 +35,11 @@
 | `id` | TEXT PK | 前缀 `c_` |
 | `client_id` | TEXT NOT NULL UNIQUE | 幂等键；重复提交只落一条 |
 | `content` | TEXT NOT NULL | 原文，保留换行 |
-| `kind` | TEXT NOT NULL DEFAULT 'text' | 当前只有 `text` |
+| `kind` | TEXT NOT NULL DEFAULT 'text' | 手机创建固定 `text`；桌面下发的 kind 原样保留（UI 仍按纯文本展示） |
 | `created_at` | INTEGER NOT NULL | |
 | `deleted_at` | INTEGER NULL | 软删除 |
-| `rev` | INTEGER NOT NULL DEFAULT 0 | |
+| `rev` | INTEGER NOT NULL DEFAULT 0 | 每次写 +1（含软删除 / 转任务） |
+| `server_rev` | INTEGER NOT NULL DEFAULT 0 | v5：桌面端最后下发的版本号；push 的 `base_rev` 来源 |
 
 ### notes（v3 新增）
 
@@ -52,6 +53,7 @@
 | `created_at` / `updated_at` | INTEGER NOT NULL | epoch ms |
 | `deleted_at` | INTEGER NULL | 软删除 |
 | `rev` | INTEGER NOT NULL DEFAULT 0 | 每次写 +1；写操作与 outbox 同事务（`entity="note"`） |
+| `server_rev` | INTEGER NOT NULL DEFAULT 0 | v5：桌面端最后下发的版本号；push 的 `base_rev` 来源 |
 
 索引：`updated_at`。
 
@@ -123,13 +125,12 @@ payload 形态（当前实现）：
 
 - 每次业务写入（新建 / 编辑 / 完成 / 推进期次 / 软删除）在**同一事务**内：
   改业务表（`rev + 1`）+ 写一条 outbox。
-- **任务**（v4）的 `base_rev` 取写入前的 `server_rev`（服务端版本），不是本地 `rev`；
-  从未同步过为 0。`server_rev` 由 pull 应用时写入，push 成功后再 pull 回填。
-- capture / note 尚未接同步，仍沿用本地 `rev` 作为 `base_rev`；接入时必须改为 `server_rev`。
-- 独立模式下 outbox 只累积不发送；任务同步只消费 `entity='task'`，界面的「待发送任务」
-  只统计任务，设置页「本地待发操作」统计全部实体。
-- 已知不一致（P3，未修）：`captures` 的删除与转任务**没有** `rev + 1`，`base_rev` 固定用旧值。
-  `tasks`/`notes` 已全部自增。收集箱接同步前必须统一。
+- **三种实体**（任务 v4，收集箱 / 笔记 v5）的 `base_rev` 取写入前的 `server_rev`
+  （服务端版本），不是本地 `rev`；从未同步过为 0。`server_rev` 由 pull 应用时写入，
+  push 成功后再 pull 回填。
+- outbox 只累积不发送；同步消费 `task` / `note` / `capture` 三种实体。同步页的
+  「待发送操作」与设置页「本地待发操作」统计这三类。
+- 收集箱的软删除与转任务已 `rev + 1`，`base_rev` 使用 `server_rev`（v5 修正了此前的 P3 不一致）。
 
 ## 5. 幂等
 
@@ -196,23 +197,24 @@ payload 形态（当前实现）：
 
 | 设计稿 | 现状 | 原因 |
 |---|---|---|
-| `notes` 表 | v3 已建（本机 CRUD） | 2026-11-08 按原型落地；note 同步尚未接入 |
-| `server_rev` / `dirty` 列 | **tasks 已建 server_rev（v4）**；captures/notes 未建 | 任务同步需要服务端版本；其余实体接同步时再补 |
+| `notes` 表 | v3 已建；v5 接入同步 | 2026-11-08 按原型落地；2026-11-09 接同步 |
+| `server_rev` / `dirty` 列 | **task / note / capture 均已建 `server_rev`** | 三实体同步都需要服务端版本 |
 | `tombstones` 表 | 手机端未建；桌面端由 `sync_changes` 记录墓碑 | 手机只消费墓碑并软删除本地副本 |
 | `outbox.patch` 列 | 实际列名 `payload` | 与桌面端命名习惯统一 |
 | `tasks.dirty` | 无 | 用 outbox 是否存在待发操作表达 |
 
-### 9.1 同步元数据（v4，2026-11-09）
+### 9.1 同步元数据（v4 任务 / v5 收集箱与笔记，2026-11-09）
 
 | 数据 | 位置 | 说明 |
 |---|---|---|
-| `tasks.server_rev` | `tasks` 列 | 桌面端最后下发的版本号；push 的 `base_rev` |
+| `server_rev` | `tasks`（v4）、`notes`、`captures`（v5） | 桌面端最后下发的版本号；push 的 `base_rev` |
 | `sync_conflicts` | 手机 SQLite | `op_id`、`entity`、`target_id`、`reason`、`server_json`、`created_at`；冲突页读取 |
 | 同步游标 | `kv['sync.cursor.v1']` | 服务端 `seq`，pull 原样回传 |
 | 最近结果 | `kv['sync.last_result.v1']` | 时间、接收/发送/冲突数、错误摘要 |
 
-旧 outbox 在 v4 迁移时把 `base_rev` 从本地 `rev` 改写为 `server_rev`（从未同步为 0），避免
-历史积压操作首次同步时被误判冲突。
+旧 outbox 在 v4（任务）/ v5（收集箱、笔记）迁移时把 `base_rev` 从本地 `rev` 改写为
+`server_rev`（从未同步为 0），避免历史积压操作首次同步时被误判冲突。解除配对时把三种实体
+的 `server_rev` 与 outbox `base_rev` 归零（对端可能换成另一台桌面端，seq 不可比）。
 
 ## 10. 配对凭据与连接元数据（2026-11-08）
 
@@ -221,13 +223,15 @@ payload 形态（当前实现）：
 | 数据 | 位置 | 键/字段 | 说明 |
 |---|---|---|---|
 | 设备令牌（64 位十六进制） | `expo-secure-store` | `taskdock.sync.token.v1` | 只存本机 Keystore；绝不进 kv/SQLite/日志 |
+| 安装级设备标识 | `kv` | `device.uid.v1` | 首次配对生成 UUID；解除配对不清除，重装/清数据后重建 |
 | 连接元数据 | `kv` | `sync.connection.v1` | `baseUrl/host/port/serverName/deviceId/platform/instanceId/fingerprint/pairedAt/lastSeenAt` |
 
 - `kv` 是既有设置表，无需迁移；`deleteSetting` 只服务于解除配对时的清理。
 - 元数据解析失败按「未配对」处理，不猜测字段；令牌读取失败（Keystore 不可用/格式不符）
   同样按未配对处理，绝不回退明文存储。
-- 桌面端的设备授权表在桌面 SQLite（v42 `mobile_devices`），不在手机端；
-  详细协议与安全边界见 [06-pairing.md](06-pairing.md)。
+- 桌面端的设备授权表在桌面 SQLite（v42 `mobile_devices`；v46 增加可选 `device_uid`），
+  不在手机端；同一 uid 重新配对会撤销旧授权。详细协议与安全边界见
+  [06-pairing.md](06-pairing.md)。
 
 ## 变更记录
 
@@ -235,3 +239,7 @@ payload 形态（当前实现）：
 - 2026-11-08 v3：追加 `notes` 表（原型 notes/note_editor 两屏）；登记 note 的 outbox 载荷与
   提醒/小组件相关 kv 键。
 - 2026-11-08 配对：新增 §10（SecureStore 令牌 + kv 连接元数据），明确不新增表、不改业务表。
+- 2026-11-09 v5：`notes` / `captures` 增加 `server_rev` 并接入同步；收集箱软删除与转任务
+  补 `rev + 1`；更新 §4 base_rev 语义与 §9 差异表。
+- 2026-11-09 配对去重：手机端新增 `kv.device.uid.v1`；桌面端 v46 给 `mobile_devices`
+  增加可选 `device_uid`（NULL 兼容旧记录/旧客户端），同 uid 重配对撤销旧授权。

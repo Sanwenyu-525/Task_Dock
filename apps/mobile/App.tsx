@@ -16,6 +16,8 @@ import { subscribeReminderActions } from "./src/notifications/actions";
 import { rebuildAllReminders, rescheduleAllReminders } from "./src/notifications/reminderEngine";
 import { ensureReminderCategory, installNotificationHandler } from "./src/notifications/reminders";
 import { ConflictScreen } from "./src/screens/ConflictScreen";
+import { DeviceScreen } from "./src/screens/DeviceScreen";
+import { FilesScreen } from "./src/screens/FilesScreen";
 import { InboxScreen } from "./src/screens/InboxScreen";
 import { NoteEditorScreen } from "./src/screens/NoteEditorScreen";
 import { NotesScreen } from "./src/screens/NotesScreen";
@@ -154,6 +156,8 @@ function Shell() {
         return <PairingScreen nav={nav} />;
       case "sync":
         return <SyncScreen nav={nav} />;
+      case "files":
+        return <FilesScreen nav={nav} />;
       case "conflict":
         return <ConflictScreen nav={nav} />;
       case "note_editor":
@@ -207,6 +211,11 @@ function Shell() {
         {tab === "notes" ? (
           <ScreenFade>
             <NotesScreen version={version} nav={nav} />
+          </ScreenFade>
+        ) : null}
+        {tab === "device" ? (
+          <ScreenFade>
+            <DeviceScreen nav={nav} version={version} />
           </ScreenFade>
         ) : null}
         {tab === "settings" ? (

@@ -730,7 +730,14 @@ pub fn run() {
             // 手机接入（v0.16，默认关闭）：设置开关驱动局域网配对监听；
             // 关闭/端口变更/应用退出都会让监听循环在 2s 内退出，不留下悬挂任务。
             {
-                let mobile_state = mobile_sync::MobileSyncState::new(&db);
+                let files_root = data_dir.join("mobile_files");
+                // 上次进程遗留的半成品上传不可恢复：清理记录与 tmp 分块。
+                match mobile_sync::files::recover_pending(&db, &files_root) {
+                    Ok(0) => {}
+                    Ok(count) => tracing::info!("手机文件互传：清理 {} 条未完成上传", count),
+                    Err(error) => tracing::warn!("手机文件互传恢复失败: {error}"),
+                };
+                let mobile_state = mobile_sync::MobileSyncState::new(&db, files_root);
                 handle.manage(mobile_state.clone());
                 mobile_sync::spawn_supervisor(db.clone(), mobile_state);
             }
@@ -914,6 +921,12 @@ pub fn run() {
             commands::mobile_sync::mobile_sync_cancel_pairing,
             commands::mobile_sync::mobile_sync_list_devices,
             commands::mobile_sync::mobile_sync_revoke_device,
+            // 手机文件互传（v1；文件本体在 data_dir/mobile_files）
+            commands::mobile_sync::mobile_file_list,
+            commands::mobile_sync::mobile_file_offer,
+            commands::mobile_sync::mobile_file_delete,
+            commands::mobile_sync::mobile_file_reveal,
+            commands::mobile_sync::mobile_file_open_inbox,
             // 功能生命周期（只读批量快照；写入仍走 update_settings）
             commands::lifecycle::lifecycle_status,
             // 诊断日志（本地持久化 / 查询 / 摘要 / 导出 / 清理）
@@ -1207,6 +1220,7 @@ pub fn run() {
             commands::shelf::shelf_read_image,
             commands::shelf::shelf_copy_paths,
             commands::shelf::shelf_copy_files,
+            commands::shelf::shelf_drag_out,
             commands::shelf::shelf_task_links,
             commands::shelf::shelf_link_task,
             commands::shelf::shelf_unlink_task,
@@ -1417,9 +1431,9 @@ pub(crate) fn clear_startup_blank<R: tauri::Runtime>(app: &AppHandle<R>) -> bool
 }
 
 /// 唤回窗口：显示 + 还原最小化 + 聚焦。
-/// 主窗口虽已进任务栏（tauri.conf.json main `skipTaskbar=false`），但托盘/热键/
-/// 第二实例唤回仍必须带 unminimize：最小化状态下的窗口 show() 后仍停留在
-/// 最小化态，只有任务栏点击会自行还原。
+/// 主窗口不占任务栏（tauri.conf.json main `skipTaskbar=true`），最小化后任务栏
+/// 没有入口，所有唤回路径（托盘/热键/第二实例）都必须带 unminimize，
+/// 否则最小化的窗口 show() 后仍停留在最小化状态。
 pub(crate) fn show_and_focus(win: &tauri::WebviewWindow) {
     let _ = win.show();
     let _ = win.unminimize();

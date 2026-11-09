@@ -94,7 +94,7 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
     status: "verified",
     contentVersion: 3,
     reviewedForVersion: "v0.11",
-    reviewedOperationContractVersions: { "core.file-shelf": 2 },
+    reviewedOperationContractVersions: { "core.file-shelf": 3 },
     translations: {
       "zh-CN": {
         title: "文件暂存架：临时文件的收纳区",
@@ -106,7 +106,7 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
             items: [
               "Ctrl+6 或「收集与暂存 → 文件暂存」进入暂存架。",
               "四种添加方式：文件选择器（可多选与选文件夹）、直接拖入文件、粘贴链接、保存文本片段。",
-              "「从剪贴板添加」从最近的剪贴板条目中挑选：文件默认以「引用」方式登记原路径（不复制、不占磁盘），需要独立副本时用旁边的开关切换为复制到托管目录；文本与链接保存内容本身。之后清空剪贴板不影响已暂存内容。",
+              "「从剪贴板添加」从最近的剪贴板条目中挑选：文件默认以「引用」方式登记原路径（不复制、不占磁盘），需要独立副本时在「添加 ▾」菜单底部切到「保存副本到托管目录」；文本与链接保存内容本身。之后清空剪贴板不影响已暂存内容。",
             ],
           },
           { type: "heading", text: "整理与查找" },
@@ -118,7 +118,7 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
           {
             type: "steps",
             items: [
-              "系统级拖出资源管理器尚未支持；替代操作：「复制路径」「复制文件」「打开所在文件夹」。",
+              "按住卡片可直接拖到资源管理器或其他应用（Windows 原生拖出）；引用文件按 Windows 默认复制或移动，托管副本只复制。移动后暂存条目的原路径可能失效，可重新定位或删除；键盘与回退仍可用「复制路径」「复制文件」「打开所在文件夹」。",
               "过期清理默认关闭；开启后每 1 小时检查一次。手动「立即清理过期」会先预览候选并二次确认，确认后才删除。",
               "收藏、置顶及被场景引用的条目默认跳过，不会被过期清理；清理只删除 Task Dock 托管的副本与暂存记录，绝不删除你的原始文件。",
             ],
@@ -140,7 +140,7 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
             items: [
               "Press Ctrl+6 or open \"Capture & Shelf → File shelf\".",
               "Four ways to add: the file picker (multi-select and folders), dragging files in, pasting a link, or saving a text snippet.",
-              "\"Add from clipboard\" picks from recent clipboard entries: files are registered by reference to their original path by default (nothing is copied, no disk used); flip the nearby switch to copy a managed duplicate instead. Text and links store the content itself. Clearing the clipboard afterwards never affects what is already shelved.",
+              "\"Add from clipboard\" picks from recent clipboard entries: files are registered by reference to their original path by default (nothing is copied, no disk used); choose \"Save a managed copy\" at the bottom of the \"Add ▾\" menu when you need an independent copy. Text and links store the content itself. Clearing the clipboard afterwards never affects what is already shelved.",
             ],
           },
           { type: "heading", text: "Organize and find" },
@@ -152,7 +152,7 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
           {
             type: "steps",
             items: [
-              "System-level drag-out to Explorer is not supported yet; use \"Copy path\", \"Copy file\" or \"Reveal in folder\" instead.",
+              "Press and hold a card to drag it to Explorer or another app (native Windows drag-out); reference files follow the Windows copy/move rules, while managed copies are copy-only. After a move the shelf item's original path may become invalid — relocate or delete it; \"Copy path\", \"Copy file\" and \"Reveal in folder\" remain available for keyboard and fallback.",
               "Expiry cleanup is off by default; when enabled it checks once per hour. The manual \"Clean expired now\" first previews candidates and asks for confirmation before deleting.",
               "Favorited, pinned and scene-referenced items are skipped by default; cleanup only deletes Task Dock-managed duplicates and shelf records — never your original files.",
             ],
@@ -165,8 +165,8 @@ export const CAPTURE_ARTICLES: readonly HelpArticle[] = [
       },
     },
     keywords: {
-      "zh-CN": ["暂存架", "文件", "拖入", "分组", "过期清理", "复制路径", "托管副本"],
-      "en-US": ["shelf", "file", "drag in", "group", "expiry cleanup", "copy path", "managed copy"],
+      "zh-CN": ["暂存架", "文件", "拖入", "拖出", "分组", "过期清理", "复制路径", "托管副本"],
+      "en-US": ["shelf", "file", "drag in", "drag out", "group", "expiry cleanup", "copy path", "managed copy"],
     },
     relatedFeatureIds: ["core.file-shelf"],
     relatedRouteIds: ["inbox"],
