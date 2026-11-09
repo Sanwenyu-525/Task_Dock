@@ -7,6 +7,8 @@ export const REMINDER_CHANNEL_ID = "task-reminders";
 
 /** 提醒通知上的动作按钮：动作 id 会原样回传给响应监听器 */
 export const REMINDER_CATEGORY_ID = "task-reminder-actions";
+/** 关闭「10 分钟后」动作时使用的类别：只有「完成」按钮 */
+export const REMINDER_CATEGORY_ID_BASIC = "task-reminder-basic";
 export const REMINDER_ACTION_COMPLETE = "complete";
 export const REMINDER_ACTION_SNOOZE = "snooze";
 export const SNOOZE_MINUTES = 10;
@@ -14,14 +16,21 @@ export const SNOOZE_MINUTES = 10;
 /**
  * 注册动作按钮。进程内只做一次；失败时清掉缓存，下次排期还能重试。
  * 必须在排期之前注册，否则系统不认识 categoryIdentifier，通知上没有按钮。
+ * 两个类别一起注册：完整版（完成 + 10 分钟后）与基础版（仅完成），
+ * 排期时按用户开关选择类别（见 scheduleReminder 的 snooze 参数）。
  */
 let categoryReady: Promise<void> | null = null;
 
 export function ensureReminderCategory(): Promise<void> {
   if (!categoryReady) {
-    categoryReady = Notifications.setNotificationCategoryAsync(REMINDER_CATEGORY_ID, [
-      { identifier: REMINDER_ACTION_COMPLETE, buttonTitle: "完成" },
-      { identifier: REMINDER_ACTION_SNOOZE, buttonTitle: `${SNOOZE_MINUTES} 分钟后` },
+    categoryReady = Promise.all([
+      Notifications.setNotificationCategoryAsync(REMINDER_CATEGORY_ID, [
+        { identifier: REMINDER_ACTION_COMPLETE, buttonTitle: "完成" },
+        { identifier: REMINDER_ACTION_SNOOZE, buttonTitle: `${SNOOZE_MINUTES} 分钟后` },
+      ]),
+      Notifications.setNotificationCategoryAsync(REMINDER_CATEGORY_ID_BASIC, [
+        { identifier: REMINDER_ACTION_COMPLETE, buttonTitle: "完成" },
+      ]),
     ])
       .then(() => undefined)
       .catch((error: unknown) => {
@@ -78,6 +87,8 @@ export async function scheduleReminder(
   taskId: string,
   title: string,
   atMs: number,
+  /** false = 用基础类别（只有「完成」按钮）；开关变化只影响之后排期的提醒 */
+  snoozeEnabled = true,
 ): Promise<boolean> {
   if (atMs <= Date.now()) return false;
   const granted = await ensurePermission();
@@ -92,7 +103,7 @@ export async function scheduleReminder(
       title: "TaskDock",
       body: title,
       sound: false,
-      categoryIdentifier: REMINDER_CATEGORY_ID,
+      categoryIdentifier: snoozeEnabled ? REMINDER_CATEGORY_ID : REMINDER_CATEGORY_ID_BASIC,
       // 动作处理器靠 data.taskId 找到要操作的任务（不解析通知 id 字符串）
       data: { kind: "task-reminder", taskId },
     },

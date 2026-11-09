@@ -9,11 +9,12 @@ import { useTheme } from "../theme/ThemeProvider";
 import { barShadow } from "../theme/shadows";
 import { font, radius, space } from "../theme/tokens";
 
-export type TabKey = "tasks" | "inbox" | "settings";
+export type TabKey = "tasks" | "inbox" | "notes" | "settings";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "tasks", label: "任务" },
   { key: "inbox", label: "收集箱" },
+  { key: "notes", label: "笔记" },
   { key: "settings", label: "设置" },
 ];
 
@@ -42,6 +43,17 @@ function TabIcon({ tab, color }: { tab: TabKey; color: string }) {
           ]}
         />
         <View style={[styles.cardFront, { borderColor: color }]} />
+      </View>
+    );
+  }
+
+  if (tab === "notes") {
+    return (
+      <View style={styles.iconBox}>
+        {/* 一页纸：带折角的文档轮廓 + 两行文字线 */}
+        <View style={[styles.noteSheet, { borderColor: color }]} />
+        <View style={[styles.noteLine, styles.noteLineShort, { backgroundColor: color }]} />
+        <View style={[styles.noteLine, styles.noteLineLong, { backgroundColor: color }]} />
       </View>
     );
   }
@@ -212,6 +224,30 @@ const styles = StyleSheet.create({
     height: 11,
     borderRadius: 2.5,
     borderWidth: STROKE,
+  },
+  noteSheet: {
+    position: "absolute",
+    left: 3,
+    top: 1.5,
+    width: 12,
+    height: 15,
+    borderRadius: 2.5,
+    borderWidth: STROKE,
+  },
+  noteLine: {
+    position: "absolute",
+    height: STROKE,
+    borderRadius: 1,
+  },
+  noteLineShort: {
+    top: 6,
+    left: 6,
+    width: 6,
+  },
+  noteLineLong: {
+    top: 9.5,
+    left: 6,
+    width: 6,
   },
   sliders: {
     justifyContent: "center",

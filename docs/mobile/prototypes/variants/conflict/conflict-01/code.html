@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TaskDock - 处理冲突</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "surface-container-high": "#EEF1F7",
+            "tertiary-fixed-dim": "#ffb597",
+            "dark-primary": "#8FA8FF",
+            "surface-bright": "#fbf8ff",
+            "background": "#F3F5FA",
+            "on-surface": "#121826",
+            "on-primary-container": "#eaebff",
+            "surface-container-low": "#f4f2ff",
+            "on-primary-fixed": "#001159",
+            "primary-container": "#3a5bef",
+            "outline": "#E4E8F0",
+            "surface-container": "#E9EEF8",
+            "on-error-container": "#93000a",
+            "danger-container": "#FBE7E5",
+            "surface": "#FFFFFF",
+            "secondary": "#555e72",
+            "inverse-on-surface": "#f1effc",
+            "on-surface-faint": "#8A93A6",
+            "on-tertiary-container": "#ffe7df",
+            "dark-on-surface-variant": "#9AA6BD",
+            "tertiary-fixed": "#ffdbcd",
+            "surface-container-lowest": "#ffffff",
+            "primary-fixed": "#dee1ff",
+            "on-background": "#1a1b24",
+            "outline-variant": "#E7EBF3",
+            "surface-tint": "#294de2",
+            "on-surface-variant": "#5B6478",
+            "on-secondary-fixed-variant": "#3e475a",
+            "success": "#0E8F63",
+            "dark-surface": "#121A28",
+            "success-container": "#E4F6EE",
+            "tertiary-container": "#b94500",
+            "on-tertiary-fixed": "#360f00",
+            "dark-on-surface": "#E8EDF7",
+            "secondary-fixed-dim": "#bdc6dd",
+            "on-tertiary-fixed-variant": "#7e2c00",
+            "error": "#ba1a1a",
+            "secondary-fixed": "#d9e2fa",
+            "surface-container-highest": "#e2e1ee",
+            "secondary-container": "#d9e2fa",
+            "danger": "#C0332B",
+            "inverse-surface": "#2f3039",
+            "on-secondary-container": "#5b6478",
+            "dark-surface-container": "#0E1522",
+            "on-primary": "#ffffff",
+            "error-container": "#ffdad6",
+            "on-secondary-fixed": "#121c2c",
+            "tertiary": "#913400",
+            "primary-fixed-dim": "#b9c3ff",
+            "primary": "#153fd6",
+            "warning": "#A2620A",
+            "on-secondary": "#ffffff",
+            "on-error": "#ffffff",
+            "surface-variant": "#e2e1ee",
+            "surface-dim": "#dad9e5",
+            "on-tertiary": "#ffffff",
+            "warning-container": "#FBF0DC",
+            "on-primary-fixed-variant": "#0032c4",
+            "dark-outline": "#26324A",
+            "dark-background": "#080D16",
+            "inverse-primary": "#b9c3ff",
+            "on-danger": "#FFFFFF"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "space-xs": "0.25rem",
+            "space-lg": "1.5rem",
+            "space-md": "1rem",
+            "margin": "1rem",
+            "space-xl": "2rem",
+            "space-sm": "0.5rem",
+            "gutter": "1rem"
+          },
+          "fontFamily": {
+            "body": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"],
+            "stat": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"],
+            "meta": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"],
+            "title": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"],
+            "display": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"]
+          },
+          "fontSize": {
+            "body": [
+              "13px",
+              {
+                "lineHeight": "19px",
+                "fontWeight": "400"
+              }
+            ],
+            "stat": [
+              "26px",
+              {
+                "lineHeight": "30px",
+                "fontWeight": "800"
+              }
+            ],
+            "meta": [
+              "12px",
+              {
+                "lineHeight": "16px",
+                "fontWeight": "400"
+              }
+            ],
+            "title": [
+              "16px",
+              {
+                "lineHeight": "22px",
+                "fontWeight": "600"
+              }
+            ],
+            "display": [
+              "30px",
+              {
+                "lineHeight": "36px",
+                "letterSpacing": "-0.02em",
+                "fontWeight": "800"
+              }
+            ]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+      line-height: 1;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    body {
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-[#e7eaf2] text-on-surface antialiased min-h-screen flex justify-center items-center p-0 sm:py-6">
+<!-- Mobile Portrait Shell (390px fixed canvas width) -->
+<div class="w-full max-w-[390px] h-[844px] max-h-screen bg-background flex flex-col relative overflow-hidden sm:rounded-3xl sm:border sm:border-outline">
+<!-- 1. Android Status Bar -->
+<header class="w-full px-5 pt-3 pb-2 flex justify-between items-center bg-background select-none shrink-0 z-20">
+<span class="font-meta text-meta font-semibold text-on-surface tracking-tight">09:41</span>
+<div class="flex items-center space-x-1.5 text-on-surface">
+<span class="material-symbols-outlined text-[15px]" data-icon="wifi">wifi</span>
+<span class="material-symbols-outlined text-[15px]" data-icon="signal_cellular_alt">signal_cellular_alt</span>
+<span class="material-symbols-outlined text-[16px]" data-icon="battery_full">battery_full</span>
+</div>
+</header>
+<!-- 2. Top App Bar -->
+<div class="h-12 px-margin flex items-center justify-between bg-background shrink-0 z-20">
+<button aria-label="返回" class="w-9 h-9 flex items-center justify-start text-on-surface active:opacity-60 transition-opacity focus:outline-none">
+<span class="material-symbols-outlined text-[22px]" data-icon="arrow_back">arrow_back</span>
+</button>
+<h1 class="font-title text-title text-on-surface font-semibold tracking-tight text-center">处理冲突</h1>
+<div class="flex items-center justify-end w-9">
+<span class="font-meta text-meta font-medium text-on-surface-variant bg-surface-container px-2 py-0.5 rounded-full border border-outline">1 / 2</span>
+</div>
+</div>
+<!-- 3. Progress Indicator -->
+<div class="w-full px-margin pb-3 pt-1 flex items-center justify-center shrink-0">
+<div class="flex items-center space-x-2">
+<div class="w-6 h-1.5 rounded-full bg-primary-container"></div>
+<div class="w-2 h-1.5 rounded-full bg-outline"></div>
+</div>
+</div>
+<!-- Scrollable Content Canvas -->
+<main class="flex-1 overflow-y-auto px-margin pb-4 space-y-3.5">
+<!-- 4. Explainer Card -->
+<section class="bg-[#E8ECFE] border border-[#D6E0FC] rounded-[16px] p-3.5 flex items-start gap-2.5">
+<span class="material-symbols-outlined text-[#3A5BEF] text-[18px] mt-0.5 shrink-0" data-icon="sync_problem">sync_problem</span>
+<p class="font-body text-body text-[#22307A] leading-[19px]">
+          同一任务在两台设备被修改，请选择保留哪一版。选择后会写入新 revision 并记录解决方式。
+        </p>
+</section>
+<!-- 5. Task Identity Section -->
+<section class="bg-surface rounded-[16px] border border-outline p-3.5">
+<div class="flex items-center justify-between">
+<div class="flex items-center space-x-2">
+<h2 class="font-title text-title font-semibold text-on-surface">提交报销单</h2>
+<span class="font-meta text-[11px] font-semibold bg-surface-container text-on-surface-variant px-2 py-0.5 rounded-full">任务</span>
+</div>
+<span class="material-symbols-outlined text-on-surface-faint text-[18px]" data-icon="folder_open">folder_open</span>
+</div>
+<div class="font-meta text-[11px] text-on-surface-faint mt-1 flex items-center space-x-1.5">
+<span>本地 revision 8</span>
+<span>·</span>
+<span>桌面 revision 7</span>
+</div>
+</section>
+<!-- 6. Stacked Version Cards -->
+<div class="space-y-3">
+<!-- Card A ("本机版本") -->
+<article class="bg-surface rounded-[16px] border border-outline p-3.5 relative overflow-hidden">
+<div class="flex items-center justify-between pb-3 border-b border-outline">
+<div class="flex items-center space-x-2">
+<div class="w-[3px] h-3.5 bg-primary-container rounded-full"></div>
+<span class="font-title text-[13px] font-semibold text-on-surface">本机版本</span>
+</div>
+<span class="font-meta text-[11px] font-medium text-primary bg-primary-container/10 px-2 py-0.5 rounded-full">2 分钟前</span>
+</div>
+<div class="pt-3 space-y-2.5">
+<div class="flex items-start text-body">
+<span class="w-12 text-on-surface-variant font-meta text-meta shrink-0">标题</span>
+<span class="font-body text-body text-on-surface font-medium flex-1">提交报销单</span>
+</div>
+<div class="flex items-center text-body">
+<span class="w-12 text-on-surface-variant font-meta text-meta shrink-0">截止</span>
+<span class="font-body text-body text-on-surface flex-1 flex items-center">
+                周五 18:00
+                <span class="ml-2 font-meta text-[10px] text-primary bg-primary-container/10 px-1.5 py-0.2 rounded font-medium">更新</span>
+</span>
+</div>
+<div class="flex items-center text-body">
+<span class="w-12 text-on-surface-variant font-meta text-meta shrink-0">标签</span>
+<span class="font-body text-body text-on-surface flex-1">工作 · 财务</span>
+</div>
+<div class="flex items-center text-body">
+<span class="w-12 text-on-surface-variant font-meta text-meta shrink-0">提醒</span>
+<span class="font-body text-body text-on-surface flex-1">提前 30 分钟</span>
+</div>
+</div>
+</article>
+<!-- Card B ("桌面端版本") -->
+<article class="bg-surface rounded-[16px] border border-outline p-3.5 relative overflow-hidden">
+<div class="flex items-center justify-between pb-3 border-b border-outline">
+<div class="flex items-center space-x-2">
+<div class="w-[3px] h-3.5 bg-[#8A93A6] rounded-full"></div>
+<span class="font-title text-[13px] font-semibold text-on-surface">桌面端版本</span>
+</div>
+<span class="font-meta text-[11px] font-medium text-on-surface-variant bg-surface-container px-2 py-0.5 rounded-full">5 分钟前</span>
+</div>
+<div class="pt-3 space-y-2.5">
+<div class="flex items-start text-body">
+<span class="w-12 text-on-surface-variant font-meta text-meta shrink-0">标题</span>
+<span class="font-body text-body text-on-surface flex-1">提交报销单（10 月）</span>
+</div>
+<div class="flex items-center text-body">
+<span class="w-12 text-on-surface-variant font-meta text-meta shrink-0">截止</span>
+<span class="font-body text-body text-on-surface flex-1 text-on-surface-variant">周四 12:00</span>
+</div>
+<div class="flex items-center text-body">
+<span class="w-12 text-on-surface-variant font-meta text-meta shrink-0">标签</span>
+<span class="font-body text-body text-on-surface flex-1">工作</span>
+</div>
+<div class="flex items-center text-body">
+<span class="w-12 text-on-surface-variant font-meta text-meta shrink-0">提醒</span>
+<span class="font-body text-body text-on-surface-faint flex-1">无</span>
+</div>
+</div>
+</article>
+</div>
+</main>
+<!-- 7. Fixed Bottom Actions Area -->
+<footer class="bg-background border-t border-outline px-4 pt-3 pb-2 shrink-0 z-30">
+<div class="flex flex-col space-y-2.5">
+<!-- Primary Action -->
+<button class="w-full h-11 bg-primary-container hover:opacity-95 active:scale-[0.99] text-white font-title text-[14px] font-semibold rounded-[12px] transition flex items-center justify-center space-x-1.5 focus:outline-none" type="button">
+<span class="material-symbols-outlined text-[18px]" data-icon="check">check</span>
+<span>保留本机版本</span>
+</button>
+<!-- Secondary Action -->
+<button class="w-full h-11 bg-surface border border-outline hover:bg-surface-container-high active:scale-[0.99] text-on-surface font-title text-[14px] font-semibold rounded-[12px] transition flex items-center justify-center space-x-1.5 focus:outline-none" type="button">
+<span>保留桌面端版本</span>
+</button>
+<!-- Granular Merge Action -->
+<button class="pt-1 pb-1 text-center font-body text-[13px] font-medium text-primary-container active:opacity-75 focus:outline-none" type="button">
+          逐字段合并…
+        </button>
+</div>
+<!-- 8. Android Gesture Navigation Bar Line -->
+<div class="w-full flex justify-center pt-3 pb-1">
+<div class="w-32 h-1 bg-on-surface/20 rounded-full"></div>
+</div>
+</footer>
+</div>
+</body></html>

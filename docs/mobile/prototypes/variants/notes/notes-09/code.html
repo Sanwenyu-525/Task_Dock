@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+
+<html class="h-full bg-background" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TaskDock - 笔记</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "dark-outline": "#26324A",
+            "surface-container": "#eeedf9",
+            "on-tertiary-fixed": "#360f00",
+            "success": "#0E8F63",
+            "on-tertiary": "#ffffff",
+            "on-error": "#ffffff",
+            "dark-on-surface-variant": "#9AA6BD",
+            "surface-tint": "#294de2",
+            "dark-background": "#080D16",
+            "on-primary": "#FFFFFF",
+            "surface-variant": "#e2e1ee",
+            "danger-container": "#FBE7E5",
+            "secondary": "#555e72",
+            "error-container": "#ffdad6",
+            "surface-container-high": "#EEF1F7",
+            "on-primary-fixed": "#001159",
+            "inverse-on-surface": "#f1effc",
+            "primary-container": "#3a5bef",
+            "on-primary-fixed-variant": "#0032c4",
+            "inverse-primary": "#b9c3ff",
+            "on-danger": "#FFFFFF",
+            "dark-surface": "#121A28",
+            "on-secondary-fixed": "#121c2c",
+            "error": "#ba1a1a",
+            "surface": "#FFFFFF",
+            "on-secondary-container": "#5b6478",
+            "on-background": "#1a1b24",
+            "surface-container-highest": "#e2e1ee",
+            "on-surface-variant": "#444655",
+            "on-tertiary-container": "#ffe7df",
+            "on-error-container": "#93000a",
+            "inverse-surface": "#2f3039",
+            "primary-fixed-dim": "#b9c3ff",
+            "outline": "#E4E8F0",
+            "on-secondary-fixed-variant": "#3e475a",
+            "danger": "#C0332B",
+            "surface-container-lowest": "#ffffff",
+            "surface-bright": "#fbf8ff",
+            "dark-primary": "#8FA8FF",
+            "secondary-fixed-dim": "#bdc6dd",
+            "primary-fixed": "#dee1ff",
+            "on-primary-container": "#eaebff",
+            "dark-on-surface": "#E8EDF7",
+            "warning-container": "#FBF0DC",
+            "on-surface-faint": "#8A93A6",
+            "on-surface": "#121826",
+            "tertiary-container": "#b94500",
+            "secondary-fixed": "#d9e2fa",
+            "on-secondary": "#ffffff",
+            "primary": "#153fd6",
+            "dark-surface-container": "#0E1522",
+            "on-tertiary-fixed-variant": "#7e2c00",
+            "background": "#F3F5FA",
+            "surface-container-low": "#f4f2ff",
+            "tertiary": "#913400",
+            "tertiary-fixed": "#ffdbcd",
+            "outline-variant": "#E7EBF3",
+            "success-container": "#E4F6EE",
+            "warning": "#A2620A",
+            "secondary-container": "#d9e2fa",
+            "tertiary-fixed-dim": "#ffb597",
+            "surface-dim": "#dad9e5"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "space-xl": "2rem",
+            "space-xs": "0.25rem",
+            "space-sm": "0.5rem",
+            "space-md": "1rem",
+            "gutter": "1rem",
+            "space-lg": "1.5rem",
+            "margin": "1rem"
+          },
+          "fontFamily": {
+            "body": ["Roboto Flex", "sans-serif"],
+            "stat": ["Roboto Flex", "sans-serif"],
+            "meta": ["Roboto Flex", "sans-serif"],
+            "display": ["Roboto Flex", "sans-serif"],
+            "title": ["Roboto Flex", "sans-serif"]
+          },
+          "fontSize": {
+            "body": ["13px", {"lineHeight": "19px", "fontWeight": "400"}],
+            "stat": ["26px", {"lineHeight": "30px", "fontWeight": "800"}],
+            "meta": ["12px", {"lineHeight": "16px", "fontWeight": "400"}],
+            "display": ["30px", {"lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "800"}],
+            "title": ["16px", {"lineHeight": "22px", "fontWeight": "600"}]
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-family: 'Material Symbols Outlined';
+      font-weight: normal;
+      font-style: normal;
+      font-size: 20px;
+      line-height: 1;
+      letter-spacing: normal;
+      text-transform: none;
+      display: inline-block;
+      white-space: nowrap;
+      word-wrap: normal;
+      direction: ltr;
+      font-feature-settings: 'liga';
+      -webkit-font-smoothing: antialiased;
+    }
+    .custom-scroll::-webkit-scrollbar {
+      display: none;
+    }
+    .custom-scroll {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-surface antialiased flex justify-center min-h-screen">
+<!-- Mobile Frame 390dp max-width -->
+<main class="w-full max-w-[390px] min-h-screen bg-background relative flex flex-col border-x border-outline">
+<!-- TopAppBar Container / Top Region -->
+<header class="w-full bg-surface">
+<!-- Android Status Bar (24dp) -->
+<div class="h-6 w-full px-4 flex items-center justify-between text-on-surface select-none pt-1">
+<span class="font-meta text-meta font-bold tracking-tight text-[11px]">09:41</span>
+<div class="flex items-center gap-1.5 text-on-surface">
+<!-- Cellular Icon -->
+<svg class="w-3.5 h-3.5 fill-current" viewbox="0 0 24 24">
+<path d="M2 22h20V2L2 22z" fill-rule="evenodd"></path>
+</svg>
+<!-- Wifi Icon -->
+<svg class="w-3.5 h-3.5 fill-current" viewbox="0 0 24 24">
+<path d="M12 4C7.31 4 3.07 5.9 0 8.98L12 21 24 8.98C20.93 5.9 16.69 4 12 4z"></path>
+</svg>
+<!-- Battery Icon -->
+<svg class="w-3.5 h-3.5 fill-current" viewbox="0 0 24 24">
+<path d="M16 4h-2V2h-4v2H8c-.55 0-1 .45-1 1v16c0 .55.45 1 1 1h8c.55 0 1-.45 1-1V5c0-.55-.45-1-1-1zm-1 10H9v-2h6v2z"></path>
+</svg>
+</div>
+</div>
+<!-- TopAppBar Header Component as per JSON -->
+<div class="flex justify-between items-center w-full px-space-md py-space-sm max-w-full">
+<div class="flex items-center gap-2">
+<button aria-label="Menu" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-surface-container transition-colors text-on-surface active:opacity-80" type="button">
+<span class="material-symbols-outlined text-[22px]">menu</span>
+</button>
+<span class="font-display text-title font-bold text-on-surface">TaskDock</span>
+</div>
+<button aria-label="Search" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-surface-container transition-colors text-on-surface active:opacity-80" type="button">
+<span class="material-symbols-outlined text-[22px]">search</span>
+</button>
+</div>
+</header>
+<!-- Main Content Area -->
+<div class="px-4 pt-3 pb-32 flex flex-col gap-4">
+<!-- Page Title & Subtitle Header -->
+<section class="flex flex-col">
+<div class="flex items-center gap-2.5">
+<h1 class="font-display text-display font-extrabold text-on-surface tracking-tight text-[30px] leading-[36px]">笔记</h1>
+<span class="inline-flex items-center justify-center bg-[#E8ECFE] text-primary-container text-[11px] font-semibold px-2 py-0.5 rounded-full leading-none">
+            规划中
+          </span>
+</div>
+<p class="font-meta text-meta text-on-secondary-container mt-1">12 篇 · 仅本机</p>
+</section>
+<!-- Recessed Search Field (44dp height) -->
+<section class="relative w-full">
+<div class="h-11 w-full bg-[#E9EEF8] rounded-[12px] flex items-center px-3.5 gap-2.5">
+<svg class="w-4 h-4 text-on-surface-faint flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewbox="0 0 24 24">
+<circle cx="11" cy="11" r="7"></circle>
+<line stroke-linecap="round" x1="16.5" x2="21.5" y1="16.5" y2="21.5"></line>
+</svg>
+<input class="w-full bg-transparent border-0 p-0 font-body text-body text-on-surface placeholder-on-surface-faint focus:ring-0 focus:outline-none" placeholder="搜索笔记" type="text"/>
+</div>
+</section>
+<!-- Filter Chips Row -->
+<section class="flex items-center gap-2 overflow-x-auto custom-scroll py-0.5 select-none">
+<!-- Selected Chip: 全部 -->
+<button class="h-8 px-4 rounded-[9999px] bg-primary-container text-on-primary font-meta text-meta font-semibold flex items-center justify-center shrink-0 active:scale-95 transition-transform" type="button">
+          全部
+        </button>
+<!-- Unselected Chip: 置顶 -->
+<button class="h-8 px-4 rounded-[9999px] bg-transparent border border-outline text-on-secondary-container font-meta text-meta flex items-center justify-center shrink-0 active:scale-95 transition-transform hover:bg-surface" type="button">
+          置顶
+        </button>
+<!-- Unselected Chip: 收藏 -->
+<button class="h-8 px-4 rounded-[9999px] bg-transparent border border-outline text-on-secondary-container font-meta text-meta flex items-center justify-center shrink-0 active:scale-95 transition-transform hover:bg-surface" type="button">
+          收藏
+        </button>
+</section>
+<!-- Section 1: 置顶 (Pinned Notes) -->
+<section class="flex flex-col gap-2.5 mt-1">
+<!-- Section Header -->
+<div class="flex items-center gap-2">
+<div class="w-[3px] h-[14px] bg-primary-container rounded-full"></div>
+<h2 class="font-body text-body font-bold text-on-surface">置顶 (2)</h2>
+</div>
+<!-- Pinned Note Card 1 -->
+<article class="bg-surface rounded-[16px] border border-outline p-3.5 flex flex-col gap-2 active:bg-surface-bright transition-colors cursor-pointer">
+<div class="flex justify-between items-start gap-2">
+<h3 class="font-title text-title font-semibold text-on-surface leading-tight">Q4 目标复盘草稿</h3>
+</div>
+<p class="font-body text-body text-on-secondary-container line-clamp-2">
+            三条主线：稳定性、移动端、同步。先保证桌面端不回归，本周完成移动端列表和笔记同步协议对接。
+          </p>
+<div class="flex items-center justify-between pt-1">
+<span class="font-meta text-meta text-[11px] text-on-surface-faint leading-none">revision 12 · 2 小时前</span>
+<svg class="w-3.5 h-3.5 text-primary-container shrink-0" fill="currentColor" viewbox="0 0 24 24">
+<path d="M16 9V4l1 0V2H7v2l1 0v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"></path>
+</svg>
+</div>
+</article>
+<!-- Pinned Note Card 2 -->
+<article class="bg-surface rounded-[16px] border border-outline p-3.5 flex flex-col gap-2 active:bg-surface-bright transition-colors cursor-pointer">
+<div class="flex justify-between items-start gap-2">
+<h3 class="font-title text-title font-semibold text-on-surface leading-tight">报销流程备忘</h3>
+</div>
+<p class="font-body text-body text-on-secondary-container line-clamp-2">
+            发票原件交财务，周三前；电子版备份到网盘归档目录，项目编号必须填写在备注一栏。
+          </p>
+<div class="flex items-center justify-between pt-1">
+<span class="font-meta text-meta text-[11px] text-on-surface-faint leading-none">revision 4 · 昨天</span>
+<svg class="w-3.5 h-3.5 text-primary-container shrink-0" fill="currentColor" viewbox="0 0 24 24">
+<path d="M16 9V4l1 0V2H7v2l1 0v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"></path>
+</svg>
+</div>
+</article>
+</section>
+<!-- Section 2: 全部笔记 (All Notes) -->
+<section class="flex flex-col gap-2.5 mt-2">
+<!-- Section Header -->
+<div class="flex items-center gap-2">
+<div class="w-[3px] h-[14px] bg-on-surface-faint rounded-full"></div>
+<h2 class="font-body text-body font-bold text-on-surface">全部笔记 (10)</h2>
+</div>
+<!-- Note Card 1 -->
+<article class="bg-surface rounded-[16px] border border-outline p-3.5 flex flex-col gap-2 active:bg-surface-bright transition-colors cursor-pointer">
+<h3 class="font-title text-title font-semibold text-on-surface leading-tight">阅读摘录：深度工作</h3>
+<p class="font-body text-body text-on-secondary-container line-clamp-2">
+            高质量工作产出 = 时间 × 专注度。彻底杜绝碎片化沟通造成的注意力残留，建立日常单任务窗口机制。
+          </p>
+<div class="flex items-center justify-between pt-1">
+<span class="font-meta text-meta text-[11px] text-on-surface-faint leading-none">revision 9 · 3 天前</span>
+<svg class="w-3.5 h-3.5 text-on-surface-faint shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</div>
+</article>
+<!-- Note Card 2 -->
+<article class="bg-surface rounded-[16px] border border-outline p-3.5 flex flex-col gap-2 active:bg-surface-bright transition-colors cursor-pointer">
+<h3 class="font-title text-title font-semibold text-on-surface leading-tight">周会纪要 11/06</h3>
+<p class="font-body text-body text-on-secondary-container line-clamp-2">
+            移动端同步骨架、桌面端 P1 清理、下周真机验收。待排查离线本地数据库索引更新阻塞主线程问题。
+          </p>
+<div class="flex items-center justify-between pt-1">
+<span class="font-meta text-meta text-[11px] text-on-surface-faint leading-none">revision 3 · 3 天前</span>
+<svg class="w-3.5 h-3.5 text-on-surface-faint shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</div>
+</article>
+<!-- Note Card 3 -->
+<article class="bg-surface rounded-[16px] border border-outline p-3.5 flex flex-col gap-2 active:bg-surface-bright transition-colors cursor-pointer">
+<h3 class="font-title text-title font-semibold text-on-surface leading-tight">体检注意事项</h3>
+<p class="font-body text-body text-on-secondary-container line-clamp-2">
+            空腹、带身份证、早上 8:30 到前台取号排队。前一晚 10 点后禁止进食进水，携带过往体检对比单据。
+          </p>
+<div class="flex items-center justify-between pt-1">
+<span class="font-meta text-meta text-[11px] text-on-surface-faint leading-none">revision 1 · 上周</span>
+<svg class="w-3.5 h-3.5 text-on-surface-faint shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</div>
+</article>
+</section>
+</div>
+<!-- Floating Action Button (58dp circular) -->
+<button aria-label="新建笔记" class="fixed bottom-24 right-4 z-40 w-[58px] h-[58px] rounded-full bg-primary-container text-on-primary flex items-center justify-center active:scale-95 transition-transform" type="button">
+<svg class="w-6 h-6 stroke-white" fill="none" stroke="currentColor" stroke-width="2.5" viewbox="0 0 24 24">
+<line stroke-linecap="round" x1="12" x2="12" y1="5" y2="19"></line>
+<line stroke-linecap="round" x1="5" x2="19" y1="12" y2="12"></line>
+</svg>
+</button>
+<!-- Bottom Navigation Bar as per Shared Components JSON -->
+<!-- Destination count: 4, labels: ["任务", "收集箱", "笔记", "设置"], icons: ["task_alt", "inbox", "description", "settings"] -->
+<!-- Active Destination determined strictly: "笔记" (Index 2) -->
+<nav class="fixed bottom-space-md left-space-md right-space-md max-w-[358px] mx-auto z-50 h-[64px] bg-surface rounded-full border border-outline flex justify-around items-center px-space-md py-space-xs select-none">
+<!-- Tab 1: 任务 (Inactive) -->
+<button class="flex flex-col items-center justify-center text-secondary font-meta text-meta py-space-xs active:scale-95 transition-transform flex-1" type="button">
+<span class="material-symbols-outlined text-[20px] mb-0.5">task_alt</span>
+<span class="text-[11px] leading-tight font-medium">任务</span>
+</button>
+<!-- Tab 2: 收集箱 (Inactive) -->
+<button class="flex flex-col items-center justify-center text-secondary font-meta text-meta py-space-xs active:scale-95 transition-transform flex-1" type="button">
+<span class="material-symbols-outlined text-[20px] mb-0.5">inbox</span>
+<span class="text-[11px] leading-tight font-medium">收集箱</span>
+</button>
+<!-- Tab 3: 笔记 (ACTIVE) -->
+<button class="flex flex-col items-center justify-center text-primary font-title text-title py-space-xs active:scale-95 transition-transform flex-1 relative" type="button">
+<div class="px-3.5 py-1 rounded-full bg-[#E8ECFE] flex flex-col items-center justify-center">
+<span class="material-symbols-outlined text-[20px] text-primary mb-0.5" style="font-variation-settings: 'FILL' 1;">description</span>
+<span class="text-[11px] leading-tight font-bold text-primary">笔记</span>
+</div>
+</button>
+<!-- Tab 4: 设置 (Inactive) -->
+<button class="flex flex-col items-center justify-center text-secondary font-meta text-meta py-space-xs active:scale-95 transition-transform flex-1" type="button">
+<span class="material-symbols-outlined text-[20px] mb-0.5">settings</span>
+<span class="text-[11px] leading-tight font-medium">设置</span>
+</button>
+</nav>
+</main>
+</body></html>

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>TaskDock 配对新设备</title>
+  <!-- Google Fonts & Tailwind CDN -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            'canvas-fog': '#F3F5FA',
+            'pure-surface': '#FFFFFF',
+            'recessed-band': '#E9EEF8',
+            'charcoal-navy': '#121826',
+            'slate-mute': '#5B6478',
+            'faint-steel': '#8A93A6',
+            'hairline': '#E4E8F0',
+            'signal-blue': '#3A5BEF',
+            'soft-blue': '#E8ECFE',
+            'deep-navy': '#080D16',
+          },
+          fontFamily: {
+            sans: ['"Roboto Flex"', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      font-family: 'Roboto Flex', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #F3F5FA;
+      color: #121826;
+      -webkit-font-smoothing: antialiased;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+    }
+    .hairline-border {
+      border: 1px solid #E4E8F0;
+    }
+    .tabular {
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body class="bg-[#F3F5FA] flex justify-center py-0 sm:py-6">
+  <!-- Mobile Container (390dp / width 390px) -->
+  <div class="w-full max-w-[390px] min-h-screen bg-[#F3F5FA] flex flex-col relative select-none pb-8 sm:border sm:border-[#E4E8F0] sm:rounded-[36px] sm:shadow-none overflow-hidden">
+    
+    <!-- Android Status Bar -->
+    <div class="w-full px-5 pt-3 pb-2 flex justify-between items-center text-[#121826] text-xs font-semibold select-none z-10">
+      <span class="text-[13px] tracking-tight tabular">09:41</span>
+      <div class="flex items-center space-x-1.5 opacity-90">
+        <!-- Signal Icon -->
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 3c-4.97 0-9 4.03-9 9 0 2.12.74 4.07 1.97 5.61L12 22l7.03-4.39C20.26 16.07 21 14.12 21 12c0-4.97-4.03-9-9-9z" opacity="0.3"/>
+          <path d="M2 17h20v4H2v-4zm0-6h14v4H2v-4zm0-6h8v4H2V5z"/>
+        </svg>
+        <!-- Wifi Icon -->
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 4C7.31 4 3.07 5.9 0 8.98L12 21 24 8.98C20.93 5.9 16.69 4 12 4zm0 3.5c3.5 0 6.69 1.41 9.02 3.7L12 19.3 2.98 11.2C5.31 8.91 8.5 7.5 12 7.5z"/>
+        </svg>
+        <!-- Battery Icon -->
+        <svg class="w-5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M17 6H4c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h13c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm4 4v4c.83 0 1.5-.67 1.5-1.5v-1c0-.83-.67-1.5-1.5-1.5z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Top App Bar -->
+    <header class="w-full px-4 h-14 flex items-center justify-between border-b border-[#E4E8F0] bg-[#FFFFFF]">
+      <div class="flex items-center space-x-3">
+        <button class="w-9 h-9 flex items-center justify-center -ml-1 text-[#121826] active:bg-[#E9EEF8] rounded-full transition-colors" aria-label="返回">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"></path>
+          </svg>
+        </button>
+        <h1 class="text-[16px] font-semibold text-[#121826] tracking-tight">配对新设备</h1>
+      </div>
+      <span class="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-[#E8ECFE] text-[#3A5BEF]">
+        规划中
+      </span>
+    </header>
+
+    <!-- Scrollable Content Body -->
+    <main class="flex-1 px-4 pt-3.5 space-y-4">
+
+      <!-- Intro Text Banner -->
+      <div class="px-0.5">
+        <p class="text-[13px] leading-[19px] text-[#5B6478]">
+          与桌面端 Task Dock 在同一 Wi-Fi 下建立连接。桌面端是配对发起方，手机端只接受授权。
+        </p>
+      </div>
+
+      <!-- Step Indicator -->
+      <div class="w-full bg-[#FFFFFF] hairline-border rounded-[16px] px-4 py-3 flex items-center justify-between">
+        <!-- Step 1 (Active) -->
+        <div class="flex items-center space-x-2">
+          <div class="w-5 h-5 rounded-full bg-[#3A5BEF] text-[#FFFFFF] text-[11px] font-bold flex items-center justify-center tabular">
+            1
+          </div>
+          <span class="text-[11px] font-semibold text-[#3A5BEF]">扫描</span>
+        </div>
+
+        <!-- Connector Line -->
+        <div class="flex-1 h-[1px] bg-[#E4E8F0] mx-2.5"></div>
+
+        <!-- Step 2 (Outline) -->
+        <div class="flex items-center space-x-2">
+          <div class="w-5 h-5 rounded-full border border-[#E4E8F0] text-[#8A93A6] text-[11px] font-semibold flex items-center justify-center tabular bg-[#FFFFFF]">
+            2
+          </div>
+          <span class="text-[11px] font-medium text-[#5B6478]">确认指纹</span>
+        </div>
+
+        <!-- Connector Line -->
+        <div class="flex-1 h-[1px] bg-[#E4E8F0] mx-2.5"></div>
+
+        <!-- Step 3 (Outline) -->
+        <div class="flex items-center space-x-2">
+          <div class="w-5 h-5 rounded-full border border-[#E4E8F0] text-[#8A93A6] text-[11px] font-semibold flex items-center justify-center tabular bg-[#FFFFFF]">
+            3
+          </div>
+          <span class="text-[11px] font-medium text-[#5B6478]">完成</span>
+        </div>
+      </div>
+
+      <!-- Scanner Card -->
+      <div class="w-full bg-[#FFFFFF] hairline-border rounded-[20px] p-3.5 flex flex-col">
+        <!-- Viewfinder Box (approx 220dp tall) -->
+        <div class="w-full h-[220px] bg-[#080D16] rounded-[14px] relative overflow-hidden flex flex-col items-center justify-between p-4">
+          <!-- Ambient scan line -->
+          <div class="absolute inset-x-0 top-1/2 -translate-y-1/2 h-[1px] bg-gradient-to-r from-transparent via-[#3A5BEF] to-transparent opacity-75"></div>
+          
+          <!-- Top Corner Brackets -->
+          <div class="w-full flex justify-between items-start pointer-events-none">
+            <div class="w-5 h-5 border-t-2 border-l-2 border-[#3A5BEF] rounded-tl-sm"></div>
+            <div class="w-5 h-5 border-t-2 border-r-2 border-[#3A5BEF] rounded-tr-sm"></div>
+          </div>
+
+          <!-- Centered QR Target Reticle & Hint -->
+          <div class="flex flex-col items-center justify-center space-y-2 z-10 pointer-events-none my-auto">
+            <!-- Reticle Center Guide Box -->
+            <div class="w-24 h-24 border border-dashed border-[#3A5BEF]/40 rounded-lg flex items-center justify-center">
+              <svg class="w-8 h-8 text-[#3A5BEF]/70" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z"></path>
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 15h.008v.008H15V15zm0 3.75h.008v.008H15v-.008zm3.75-3.75h.008v.008h-.008V15zm0 3.75h.008v.008h-.008v-.008z"></path>
+              </svg>
+            </div>
+            <p class="text-[12px] font-normal text-[#E8EDF7]/85 tracking-normal">
+              将桌面端显示的二维码放入框内
+            </p>
+          </div>
+
+          <!-- Bottom Corner Brackets -->
+          <div class="w-full flex justify-between items-end pointer-events-none">
+            <div class="w-5 h-5 border-b-2 border-l-2 border-[#3A5BEF] rounded-bl-sm"></div>
+            <div class="w-5 h-5 border-b-2 border-r-2 border-[#3A5BEF] rounded-br-sm"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Divider Row -->
+      <div class="relative flex items-center justify-center my-1">
+        <div class="w-full border-t border-[#E4E8F0]"></div>
+        <span class="absolute bg-[#F3F5FA] px-3 text-[11px] font-medium text-[#8A93A6]">或</span>
+      </div>
+
+      <!-- Pairing Code Entry Card -->
+      <div class="w-full bg-[#FFFFFF] hairline-border rounded-[20px] p-4 flex flex-col space-y-3">
+        <label class="text-[13px] font-semibold text-[#121826]">
+          输入桌面端 6 位配对码
+        </label>
+        <!-- 6 Square Code Input Cells -->
+        <div class="grid grid-cols-6 gap-2 w-full pt-0.5">
+          <!-- Cell 1 -->
+          <div class="h-11 w-full bg-[#E9EEF8] rounded-[12px] flex items-center justify-center text-[18px] font-bold text-[#121826] tabular hairline-border border-[#E4E8F0]">
+            4
+          </div>
+          <!-- Cell 2 -->
+          <div class="h-11 w-full bg-[#E9EEF8] rounded-[12px] flex items-center justify-center text-[18px] font-bold text-[#121826] tabular hairline-border border-[#E4E8F0]">
+            8
+          </div>
+          <!-- Cell 3 -->
+          <div class="h-11 w-full bg-[#E9EEF8] rounded-[12px] flex items-center justify-center text-[18px] font-bold text-[#121826] tabular hairline-border border-[#E4E8F0]">
+            2
+          </div>
+          <!-- Cell 4 (Active / Focused with blue border) -->
+          <div class="h-11 w-full bg-[#FFFFFF] rounded-[12px] border-2 border-[#3A5BEF] flex items-center justify-center text-[18px] font-bold text-[#3A5BEF] tabular relative">
+            <span class="w-2 h-0.5 bg-[#3A5BEF] rounded-full animate-pulse"></span>
+          </div>
+          <!-- Cell 5 (Empty placeholder) -->
+          <div class="h-11 w-full bg-[#E9EEF8] rounded-[12px] flex items-center justify-center text-[16px] text-[#8A93A6] tabular hairline-border border-[#E4E8F0]">
+            —
+          </div>
+          <!-- Cell 6 (Empty placeholder) -->
+          <div class="h-11 w-full bg-[#E9EEF8] rounded-[12px] flex items-center justify-center text-[16px] text-[#8A93A6] tabular hairline-border border-[#E4E8F0]">
+            —
+          </div>
+        </div>
+      </div>
+
+      <!-- Primary & Secondary Buttons -->
+      <div class="space-y-2 pt-1">
+        <button class="w-full h-12 bg-[#3A5BEF] hover:bg-[#3250d4] active:scale-[0.98] text-[#FFFFFF] rounded-[14px] text-[15px] font-semibold flex items-center justify-center transition-all">
+          <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z"></path>
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z"></path>
+          </svg>
+          扫描二维码
+        </button>
+
+        <button class="w-full h-10 bg-transparent active:bg-[#E9EEF8] text-[#5B6478] hover:text-[#121826] rounded-[12px] text-[13px] font-medium flex items-center justify-center transition-colors">
+          手动输入配对码
+        </button>
+      </div>
+
+      <!-- Security Note Card -->
+      <div class="w-full bg-[#FFFFFF] hairline-border rounded-[16px] p-3 flex items-start space-x-2.5">
+        <div class="mt-0.5 text-[#3A5BEF] flex-shrink-0">
+          <!-- Shield Check Icon -->
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"></path>
+          </svg>
+        </div>
+        <p class="text-[12px] leading-[17px] text-[#5B6478]">
+          仅在局域网内配对；配对时固定证书指纹，不经过公网。剪贴板与文件路径永不同步。
+        </p>
+      </div>
+
+      <!-- Footer Helper Text -->
+      <div class="text-center pt-1 pb-4">
+        <p class="text-[11px] text-[#8A93A6] tracking-tight">
+          桌面端路径：设置 → 手机与同步 → 配对新设备
+        </p>
+      </div>
+
+    </main>
+
+  </div>
+</body>
+</html>

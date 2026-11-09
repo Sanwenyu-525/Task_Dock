@@ -2,7 +2,7 @@
 // 输入已是 selectTasks 排好序的结果，所以组内顺序沿用全局顺序（未完成→优先级→截止→新建）。
 import { startOfDay } from "../domain/taskQuery";
 import type { Task } from "../domain/types";
-import type { GroupTone } from "../components/TaskGroupHeader";
+import type { GroupHintTone, GroupTone } from "../components/TaskGroupHeader";
 
 const DAY_MS = 86_400_000;
 
@@ -15,6 +15,7 @@ export interface TaskSection {
   tasks: Task[];
   /** 分组头右侧的补充说明，例如「2 项已逾期」 */
   hint?: string;
+  hintTone?: GroupHintTone;
 }
 
 export type TaskListRow =
@@ -59,12 +60,14 @@ export function buildTaskSections(tasks: Task[], now: number): TaskSection[] {
     title: string;
     tone: GroupTone;
     hint?: string;
+    hintTone?: GroupHintTone;
   }[] = [
     {
       key: "today",
       title: "今天",
       tone: "accent",
       hint: overdueInToday > 0 ? `${overdueInToday} 项已逾期` : undefined,
+      hintTone: "warn",
     },
     { key: "week", title: "本周", tone: "muted" },
     { key: "later", title: "以后", tone: "muted" },

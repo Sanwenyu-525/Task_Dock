@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TaskDock 移动端页面原型</title>
+<style>
+  :root {
+    --bg: #f3f5fa;
+    --card: #ffffff;
+    --line: #e4e8f0;
+    --line-strong: #d5dbe8;
+    --text: #121826;
+    --soft: #5b6478;
+    --muted: #8a93a6;
+    --accent: #153fd6;
+    --accent-soft: #e8ecfe;
+    --ok: #0e8f63;
+    --ok-soft: #e4f6ee;
+    --warn: #a2620a;
+    --warn-soft: #fbf0dc;
+    --planned: #4b556b;
+    --planned-soft: #eef1f7;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 0 28px 64px; }
+  header.top {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(243,245,250,.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .top-inner { max-width: 1440px; margin: 0 auto; padding: 18px 28px 14px; }
+  .title-row { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  h1 { font-size: 26px; line-height: 1.2; margin: 0; letter-spacing: -.02em; }
+  .sub { color: var(--soft); font-size: 13px; }
+  .stats { display: flex; gap: 18px; margin-top: 10px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
+  .stats b { color: var(--text); font-size: 14px; }
+  nav.jump-nav { display: flex; gap: 14px; margin-top: 10px; font-size: 12px; flex-wrap: wrap; }
+  nav.jump-nav a { color: var(--soft); }
+  nav.jump-nav a:hover { color: var(--accent); }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  .search {
+    flex: 1 1 260px; max-width: 380px;
+    border: 1px solid var(--line-strong); background: #fff; border-radius: 10px;
+    padding: 9px 12px; font: inherit; color: var(--text); outline: none;
+  }
+  .search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    border: 1px solid var(--line-strong); background: #fff; color: var(--soft);
+    border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  main { padding-top: 26px; }
+  section.group { margin-top: 34px; }
+  section.group:first-of-type { margin-top: 0; }
+  .group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  h2 { font-size: 18px; margin: 0; letter-spacing: -.01em; }
+  .count { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 6px; }
+  .jump { color: var(--muted); font-size: 12px; }
+  .grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    overflow: hidden; display: flex; flex-direction: column;
+    transition: border-color .15s, transform .15s, box-shadow .15s;
+  }
+  .card:hover { border-color: var(--line-strong); transform: translateY(-2px); box-shadow: 0 8px 22px rgba(20,30,60,.07); }
+  .card.canonical { border-color: #b9c3ff; box-shadow: 0 0 0 1px #b9c3ff inset; }
+  .thumb {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    height: 320px; padding: 12px;
+    background:
+      linear-gradient(45deg, #f7f8fc 25%, transparent 25%, transparent 75%, #f7f8fc 75%),
+      linear-gradient(45deg, #f7f8fc 25%, #fff 25%, #fff 75%, #f7f8fc 75%);
+    background-size: 18px 18px; background-position: 0 0, 9px 9px;
+    border-bottom: 1px solid var(--line);
+  }
+  .thumb img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; border-radius: 4px; }
+  .badge {
+    position: absolute; left: 10px; bottom: 10px;
+    font-size: 11px; line-height: 1; padding: 6px 9px; border-radius: 999px;
+    background: var(--planned-soft); color: var(--planned);
+    border: 1px solid rgba(0,0,0,.05); white-space: nowrap;
+  }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+  .badge.accent { background: var(--accent); color: #fff; border-color: transparent; }
+  .body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .meta { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; }
+  .meta code { font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--soft); }
+  h3 { font-size: 14px; margin: 0; line-height: 1.4; }
+  .body p { margin: 0; color: var(--soft); font-size: 12px; line-height: 1.55; flex: 1; }
+  .links { display: flex; gap: 10px; align-items: center; font-size: 12px; padding-top: 4px; }
+  .links .src { color: var(--muted); font-size: 11px; margin-right: auto; }
+  .empty { display: none; padding: 60px 0; text-align: center; color: var(--muted); }
+  footer { margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+  @media (max-width: 640px) {
+    .wrap, .top-inner { padding-left: 16px; padding-right: 16px; }
+    .thumb { height: 260px; }
+    h1 { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="title-row">
+      <h1>TaskDock 移动端页面原型</h1>
+      <span class="sub">Flat Utility · Stitch v2 终版 + 导出变体</span>
+    </div>
+    <div class="stats">
+      <span><b>11</b> 屏终版</span>
+      <span><b>33</b> 个导出变体</span>
+      <span><b>8</b> 类页面</span>
+      <span>生成于 2026-11-08</span>
+    </div>
+    <nav class="jump-nav"><a href="#final">终版</a><a href="#group-tasks">任务</a><a href="#group-inbox">收集箱</a><a href="#group-notes">笔记</a><a href="#group-settings">设置</a><a href="#group-pairing">配对新设备</a><a href="#group-sync">同步中心</a><a href="#group-conflict">冲突处理</a><a href="#group-widget">主屏小组件</a></nav>
+    <div class="toolbar">
+      <input class="search" id="search" type="search" placeholder="搜索页面、变体、原目录或备注…" autocomplete="off">
+      <div class="chips" id="chips"><button class="chip active" data-filter="all">全部</button><button class="chip" data-filter="tasks">任务</button><button class="chip" data-filter="inbox">收集箱</button><button class="chip" data-filter="notes">笔记</button><button class="chip" data-filter="settings">设置</button><button class="chip" data-filter="pairing">配对新设备</button><button class="chip" data-filter="sync">同步中心</button><button class="chip" data-filter="conflict">冲突处理</button><button class="chip" data-filter="widget">主屏小组件</button></div>
+    </div>
+  </div>
+</header>
+<div class="wrap">
+<main>
+  <section class="group" id="final" data-group="final">
+    <div class="group-head">
+      <h2>v2 终版 <span class="count">11 屏 · 对应实现代码</span></h2>
+      <a class="jump" href="README.md">README</a>
+    </div>
+    <div class="grid">
+      <article class="card" data-screen="tasks" data-search="tasks 任务页 已实现 · 真机验证 无顶栏、四统计块、筛选胶囊、分组列表、fab、中文 tab src/screens/tasksscreen.tsx">
+        <a class="thumb" href="final/tasks/code.html" target="_blank" rel="noopener" aria-label="打开 任务页 原型 HTML">
+          <img src="final/tasks/screen.png" loading="lazy" alt="任务页 原型截图">
+          <span class="badge ok">已实现 · 真机验证</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>tasks</code><span>2560×2088</span></div>
+          <h3>任务页</h3>
+          <p>无顶栏、四统计块、筛选胶囊、分组列表、FAB、中文 Tab</p>
+          <div class="links">
+            <a href="final/tasks/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/tasks/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="inbox" data-search="inbox 收集箱 已实现 · 真机验证 速记输入、转任务/删除、无云同步状态 src/screens/inboxscreen.tsx">
+        <a class="thumb" href="final/inbox/code.html" target="_blank" rel="noopener" aria-label="打开 收集箱 原型 HTML">
+          <img src="final/inbox/screen.png" loading="lazy" alt="收集箱 原型截图">
+          <span class="badge ok">已实现 · 真机验证</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>inbox</code><span>2560×2048</span></div>
+          <h3>收集箱</h3>
+          <p>速记输入、转任务/删除、无云同步状态</p>
+          <div class="links">
+            <a href="final/inbox/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/inbox/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes 笔记列表 已实现 · 真机未走查 无顶栏、搜索、置顶/全部笔记、fab src/screens/notesscreen.tsx">
+        <a class="thumb" href="final/notes/code.html" target="_blank" rel="noopener" aria-label="打开 笔记列表 原型 HTML">
+          <img src="final/notes/screen.png" loading="lazy" alt="笔记列表 原型截图">
+          <span class="badge warn">已实现 · 真机未走查</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes</code><span>600×1600</span></div>
+          <h3>笔记列表</h3>
+          <p>无顶栏、搜索、置顶/全部笔记、FAB</p>
+          <div class="links">
+            <a href="final/notes/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/notes/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="note_editor" data-search="note_editor 笔记编辑 已实现 · 真机未走查 标题/元信息、正文、底部工具栏 src/screens/noteeditorscreen.tsx">
+        <a class="thumb" href="final/note_editor/code.html" target="_blank" rel="noopener" aria-label="打开 笔记编辑 原型 HTML">
+          <img src="final/note_editor/screen.png" loading="lazy" alt="笔记编辑 原型截图">
+          <span class="badge warn">已实现 · 真机未走查</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>note_editor</code><span>2560×2048</span></div>
+          <h3>笔记编辑</h3>
+          <p>标题/元信息、正文、底部工具栏</p>
+          <div class="links">
+            <a href="final/note_editor/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/note_editor/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="settings" data-search="settings 设置 已实现 · 真机验证 外观/提醒/本地数据/关于四分区 src/screens/settingsscreen.tsx">
+        <a class="thumb" href="final/settings/code.html" target="_blank" rel="noopener" aria-label="打开 设置 原型 HTML">
+          <img src="final/settings/screen.png" loading="lazy" alt="设置 原型截图">
+          <span class="badge ok">已实现 · 真机验证</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>settings</code><span>2560×2264</span></div>
+          <h3>设置</h3>
+          <p>外观/提醒/本地数据/关于四分区</p>
+          <div class="links">
+            <a href="final/settings/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/settings/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notifications" data-search="notifications 通知与后台 已实现 · 真机未走查 权限/测试通知真实，后台同步与远程推送为规划项 src/screens/notificationsscreen.tsx">
+        <a class="thumb" href="final/notifications/code.html" target="_blank" rel="noopener" aria-label="打开 通知与后台 原型 HTML">
+          <img src="final/notifications/screen.png" loading="lazy" alt="通知与后台 原型截图">
+          <span class="badge warn">已实现 · 真机未走查</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>notifications</code><span>2560×2172</span></div>
+          <h3>通知与后台</h3>
+          <p>权限/测试通知真实，后台同步与远程推送为规划项</p>
+          <div class="links">
+            <a href="final/notifications/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/notifications/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="pairing" data-search="pairing 配对新设备 规划态结构 协议未接网，页面为规划态 src/screens/pairingscreen.tsx">
+        <a class="thumb" href="final/pairing/code.html" target="_blank" rel="noopener" aria-label="打开 配对新设备 原型 HTML">
+          <img src="final/pairing/screen.png" loading="lazy" alt="配对新设备 原型截图">
+          <span class="badge planned">规划态结构</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>pairing</code><span>2560×2144</span></div>
+          <h3>配对新设备</h3>
+          <p>协议未接网，页面为规划态</p>
+          <div class="links">
+            <a href="final/pairing/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/pairing/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="sync" data-search="sync 同步中心 规划态结构 未接网络，待发送为本机 outbox 实数 src/screens/syncscreen.tsx">
+        <a class="thumb" href="final/sync/code.html" target="_blank" rel="noopener" aria-label="打开 同步中心 原型 HTML">
+          <img src="final/sync/screen.png" loading="lazy" alt="同步中心 原型截图">
+          <span class="badge planned">规划态结构</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>sync</code><span>2560×2048</span></div>
+          <h3>同步中心</h3>
+          <p>未接网络，待发送为本机 outbox 实数</p>
+          <div class="links">
+            <a href="final/sync/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/sync/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="conflict" data-search="conflict 冲突处理 规划态结构 无合并实现；终版缺「规划中」徽标（已接受） src/screens/conflictscreen.tsx">
+        <a class="thumb" href="final/conflict/code.html" target="_blank" rel="noopener" aria-label="打开 冲突处理 原型 HTML">
+          <img src="final/conflict/screen.png" loading="lazy" alt="冲突处理 原型截图">
+          <span class="badge planned">规划态结构</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>conflict</code><span>780×1768</span></div>
+          <h3>冲突处理</h3>
+          <p>无合并实现；终版缺「规划中」徽标（已接受）</p>
+          <div class="links">
+            <a href="final/conflict/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/conflict/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="widget" data-search="widget 主屏小组件 规划态结构 原生 appwidget 未实现，偏好存 kv；含「实时同步」旧口径 src/screens/widgetscreen.tsx">
+        <a class="thumb" href="final/widget/code.html" target="_blank" rel="noopener" aria-label="打开 主屏小组件 原型 HTML">
+          <img src="final/widget/screen.png" loading="lazy" alt="主屏小组件 原型截图">
+          <span class="badge planned">规划态结构</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>widget</code><span>665×1600</span></div>
+          <h3>主屏小组件</h3>
+          <p>原生 AppWidget 未实现，偏好存 kv；含「实时同步」旧口径</p>
+          <div class="links">
+            <a href="final/widget/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/widget/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="share" data-search="share 分享接收 规划态结构 系统 intent-filter 未接；页面可真实存收集箱 src/screens/sharescreen.tsx">
+        <a class="thumb" href="final/share/code.html" target="_blank" rel="noopener" aria-label="打开 分享接收 原型 HTML">
+          <img src="final/share/screen.png" loading="lazy" alt="分享接收 原型截图">
+          <span class="badge planned">规划态结构</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>share</code><span>2560×2048</span></div>
+          <h3>分享接收</h3>
+          <p>系统 intent-filter 未接；页面可真实存收集箱</p>
+          <div class="links">
+            <a href="final/share/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="final/share/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+    </div>
+  </section>
+  
+    <section class="group" id="group-tasks" data-group="tasks">
+      <div class="group-head">
+        <h2>任务 <span class="count">6 个变体</span></h2>
+        <a class="jump" href="#group-tasks">#tasks</a>
+      </div>
+      <div class="grid">
+      <article class="card" data-screen="tasks" data-search="tasks-01 taskdock_1 taskdock - 任务 完整任务页；无顶栏，统计块/筛选/分组/fab/中文 tab 齐全 tasks">
+        <a class="thumb" href="variants/tasks/tasks-01/code.html" target="_blank" rel="noopener" aria-label="打开 tasks-01 原型 HTML">
+          <img src="variants/tasks/tasks-01/screen.png" loading="lazy" alt="TaskDock - 任务 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>tasks-01</code><span>545×1600</span></div>
+          <h3>TaskDock - 任务</h3>
+          <p>完整任务页；无顶栏，统计块/筛选/分组/FAB/中文 Tab 齐全</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_1</span>
+            <a href="variants/tasks/tasks-01/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/tasks/tasks-01/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="tasks" data-search="tasks-02 taskdock_2 taskdock 任务列表 宽幅画布导出，手机内容靠右；页面结构同任务页 tasks">
+        <a class="thumb" href="variants/tasks/tasks-02/code.html" target="_blank" rel="noopener" aria-label="打开 tasks-02 原型 HTML">
+          <img src="variants/tasks/tasks-02/screen.png" loading="lazy" alt="TaskDock 任务列表 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>tasks-02</code><span>1600×1404</span></div>
+          <h3>TaskDock 任务列表</h3>
+          <p>宽幅画布导出，手机内容靠右；页面结构同任务页</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_2</span>
+            <a href="variants/tasks/tasks-02/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/tasks/tasks-02/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="tasks" data-search="tasks-03 taskdock_3 taskdock 任务列表 宽幅画布导出，手机内容靠右；页面结构同任务页 tasks">
+        <a class="thumb" href="variants/tasks/tasks-03/code.html" target="_blank" rel="noopener" aria-label="打开 tasks-03 原型 HTML">
+          <img src="variants/tasks/tasks-03/screen.png" loading="lazy" alt="TaskDock 任务列表 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>tasks-03</code><span>1600×1305</span></div>
+          <h3>TaskDock 任务列表</h3>
+          <p>宽幅画布导出，手机内容靠右；页面结构同任务页</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_3</span>
+            <a href="variants/tasks/tasks-03/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/tasks/tasks-03/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="tasks" data-search="tasks-04 taskdock_9 taskdock - 任务 完整任务页；分组标题带数量，其余同任务页 tasks">
+        <a class="thumb" href="variants/tasks/tasks-04/code.html" target="_blank" rel="noopener" aria-label="打开 tasks-04 原型 HTML">
+          <img src="variants/tasks/tasks-04/screen.png" loading="lazy" alt="TaskDock - 任务 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>tasks-04</code><span>530×1600</span></div>
+          <h3>TaskDock - 任务</h3>
+          <p>完整任务页；分组标题带数量，其余同任务页</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_9</span>
+            <a href="variants/tasks/tasks-04/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/tasks/tasks-04/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="tasks" data-search="tasks-05 taskdock_10 taskdock 完整任务页；无顶栏，结构同任务页 tasks">
+        <a class="thumb" href="variants/tasks/tasks-05/code.html" target="_blank" rel="noopener" aria-label="打开 tasks-05 原型 HTML">
+          <img src="variants/tasks/tasks-05/screen.png" loading="lazy" alt="TaskDock 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>tasks-05</code><span>629×1600</span></div>
+          <h3>TaskDock</h3>
+          <p>完整任务页；无顶栏，结构同任务页</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_10</span>
+            <a href="variants/tasks/tasks-05/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/tasks/tasks-05/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="tasks" data-search="tasks-06 taskdock_22 taskdock 完整任务页；无顶栏，结构同任务页 tasks">
+        <a class="thumb" href="variants/tasks/tasks-06/code.html" target="_blank" rel="noopener" aria-label="打开 tasks-06 原型 HTML">
+          <img src="variants/tasks/tasks-06/screen.png" loading="lazy" alt="TaskDock 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>tasks-06</code><span>572×1600</span></div>
+          <h3>TaskDock</h3>
+          <p>完整任务页；无顶栏，结构同任务页</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_22</span>
+            <a href="variants/tasks/tasks-06/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/tasks/tasks-06/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      </div>
+    </section>
+    <section class="group" id="group-inbox" data-group="inbox">
+      <div class="group-head">
+        <h2>收集箱 <span class="count">4 个变体</span></h2>
+        <a class="jump" href="#group-inbox">#inbox</a>
+      </div>
+      <div class="grid">
+      <article class="card" data-screen="inbox" data-search="inbox-01 taskdock_6 taskdock - 收集箱 收集箱；速记输入 + 搜索 + 列表 + 转任务/删除，结构完整 inbox">
+        <a class="thumb" href="variants/inbox/inbox-01/code.html" target="_blank" rel="noopener" aria-label="打开 inbox-01 原型 HTML">
+          <img src="variants/inbox/inbox-01/screen.png" loading="lazy" alt="TaskDock - 收集箱 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>inbox-01</code><span>657×1600</span></div>
+          <h3>TaskDock - 收集箱</h3>
+          <p>收集箱；速记输入 + 搜索 + 列表 + 转任务/删除，结构完整</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_6</span>
+            <a href="variants/inbox/inbox-01/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/inbox/inbox-01/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="inbox" data-search="inbox-02 taskdock_11 taskdock - 收集箱 收集箱；结构同 taskdock_6 inbox">
+        <a class="thumb" href="variants/inbox/inbox-02/code.html" target="_blank" rel="noopener" aria-label="打开 inbox-02 原型 HTML">
+          <img src="variants/inbox/inbox-02/screen.png" loading="lazy" alt="TaskDock - 收集箱 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>inbox-02</code><span>610×1600</span></div>
+          <h3>TaskDock - 收集箱</h3>
+          <p>收集箱；结构同 taskdock_6</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_11</span>
+            <a href="variants/inbox/inbox-02/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/inbox/inbox-02/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="inbox" data-search="inbox-03 taskdock_15 taskdock 收集箱 宽幅画布导出；收集箱结构完整，内容居中 inbox">
+        <a class="thumb" href="variants/inbox/inbox-03/code.html" target="_blank" rel="noopener" aria-label="打开 inbox-03 原型 HTML">
+          <img src="variants/inbox/inbox-03/screen.png" loading="lazy" alt="TaskDock 收集箱 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>inbox-03</code><span>1600×1280</span></div>
+          <h3>TaskDock 收集箱</h3>
+          <p>宽幅画布导出；收集箱结构完整，内容居中</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_15</span>
+            <a href="variants/inbox/inbox-03/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/inbox/inbox-03/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="inbox" data-search="inbox-04 taskdock_20 taskdock - 收集箱 收集箱；卡片间距更大，结构同 taskdock_6 inbox">
+        <a class="thumb" href="variants/inbox/inbox-04/code.html" target="_blank" rel="noopener" aria-label="打开 inbox-04 原型 HTML">
+          <img src="variants/inbox/inbox-04/screen.png" loading="lazy" alt="TaskDock - 收集箱 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>inbox-04</code><span>706×1600</span></div>
+          <h3>TaskDock - 收集箱</h3>
+          <p>收集箱；卡片间距更大，结构同 taskdock_6</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_20</span>
+            <a href="variants/inbox/inbox-04/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/inbox/inbox-04/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      </div>
+    </section>
+    <section class="group" id="group-notes" data-group="notes">
+      <div class="group-head">
+        <h2>笔记 <span class="count">12 个变体</span></h2>
+        <a class="jump" href="#group-notes">#notes</a>
+      </div>
+      <div class="grid">
+      <article class="card" data-screen="notes" data-search="notes-01 taskdock_14 taskdock - 笔记 笔记列表；顶部品牌栏 + 搜索，规划徽标，fab/中文 tab 齐全 notes">
+        <a class="thumb" href="variants/notes/notes-01/code.html" target="_blank" rel="noopener" aria-label="打开 notes-01 原型 HTML">
+          <img src="variants/notes/notes-01/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-01</code><span>559×1600</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；顶部品牌栏 + 搜索，规划徽标，FAB/中文 Tab 齐全</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_14</span>
+            <a href="variants/notes/notes-01/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-01/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-02 taskdock_16 taskdock - 笔记 笔记列表；顶部汉堡菜单 + 品牌栏，结构同 taskdock_14 notes">
+        <a class="thumb" href="variants/notes/notes-02/code.html" target="_blank" rel="noopener" aria-label="打开 notes-02 原型 HTML">
+          <img src="variants/notes/notes-02/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-02</code><span>536×1600</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；顶部汉堡菜单 + 品牌栏，结构同 taskdock_14</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_16</span>
+            <a href="variants/notes/notes-02/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-02/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-03 taskdock_17 taskdock - 笔记 笔记列表；顶部品牌栏，结构同 taskdock_14 notes">
+        <a class="thumb" href="variants/notes/notes-03/code.html" target="_blank" rel="noopener" aria-label="打开 notes-03 原型 HTML">
+          <img src="variants/notes/notes-03/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-03</code><span>553×1600</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；顶部品牌栏，结构同 taskdock_14</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_17</span>
+            <a href="variants/notes/notes-03/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-03/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-04 taskdock_19 taskdock - 笔记 笔记列表；顶部品牌栏，结构同 taskdock_14 notes">
+        <a class="thumb" href="variants/notes/notes-04/code.html" target="_blank" rel="noopener" aria-label="打开 notes-04 原型 HTML">
+          <img src="variants/notes/notes-04/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-04</code><span>520×1600</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；顶部品牌栏，结构同 taskdock_14</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_19</span>
+            <a href="variants/notes/notes-04/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-04/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-05 taskdock_21 taskdock - 笔记 笔记列表；无顶栏，结构接近 v2 终版 notes">
+        <a class="thumb" href="variants/notes/notes-05/code.html" target="_blank" rel="noopener" aria-label="打开 notes-05 原型 HTML">
+          <img src="variants/notes/notes-05/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-05</code><span>563×1600</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；无顶栏，结构接近 v2 终版</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_21</span>
+            <a href="variants/notes/notes-05/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-05/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-06 taskdock_23 taskdock - 笔记 笔记列表；原始图标名 push_pin 与 tab 文案 description 外露，不可用 notes">
+        <a class="thumb" href="variants/notes/notes-06/code.html" target="_blank" rel="noopener" aria-label="打开 notes-06 原型 HTML">
+          <img src="variants/notes/notes-06/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-06</code><span>557×1600</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；原始图标名 push_pin 与 Tab 文案 description 外露，不可用</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_23</span>
+            <a href="variants/notes/notes-06/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-06/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-07 taskdock_24 taskdock 笔记 笔记列表；底部 tab 栏被裁切 notes">
+        <a class="thumb" href="variants/notes/notes-07/code.html" target="_blank" rel="noopener" aria-label="打开 notes-07 原型 HTML">
+          <img src="variants/notes/notes-07/screen.png" loading="lazy" alt="TaskDock 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-07</code><span>487×1492</span></div>
+          <h3>TaskDock 笔记</h3>
+          <p>笔记列表；底部 Tab 栏被裁切</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_24</span>
+            <a href="variants/notes/notes-07/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-07/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-08 taskdock_25 taskdock - 笔记 笔记列表；底部 tab 栏被裁切，置顶/收藏胶囊文字竖排换行 notes">
+        <a class="thumb" href="variants/notes/notes-08/code.html" target="_blank" rel="noopener" aria-label="打开 notes-08 原型 HTML">
+          <img src="variants/notes/notes-08/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-08</code><span>487×1490</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；底部 Tab 栏被裁切，置顶/收藏胶囊文字竖排换行</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_25</span>
+            <a href="variants/notes/notes-08/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-08/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-09 taskdock_26 taskdock - 笔记 笔记列表；顶部汉堡菜单 + 品牌栏，筛选胶囊文字竖排换行 notes">
+        <a class="thumb" href="variants/notes/notes-09/code.html" target="_blank" rel="noopener" aria-label="打开 notes-09 原型 HTML">
+          <img src="variants/notes/notes-09/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-09</code><span>487×1505</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；顶部汉堡菜单 + 品牌栏，筛选胶囊文字竖排换行</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_26</span>
+            <a href="variants/notes/notes-09/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-09/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-10 taskdock_27 taskdock - 笔记 笔记列表；顶部品牌栏，无 fab notes">
+        <a class="thumb" href="variants/notes/notes-10/code.html" target="_blank" rel="noopener" aria-label="打开 notes-10 原型 HTML">
+          <img src="variants/notes/notes-10/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-10</code><span>545×1600</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；顶部品牌栏，无 FAB</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_27</span>
+            <a href="variants/notes/notes-10/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-10/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="notes" data-search="notes-11 taskdock_29 taskdock - 笔记 笔记列表；顶部 td 标识 + 同步/更多动作，结构完整 notes">
+        <a class="thumb" href="variants/notes/notes-11/code.html" target="_blank" rel="noopener" aria-label="打开 notes-11 原型 HTML">
+          <img src="variants/notes/notes-11/screen.png" loading="lazy" alt="TaskDock - 笔记 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-11</code><span>546×1600</span></div>
+          <h3>TaskDock - 笔记</h3>
+          <p>笔记列表；顶部 TD 标识 + 同步/更多动作，结构完整</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_29</span>
+            <a href="variants/notes/notes-11/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-11/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card canonical" data-screen="notes" data-search="notes-12 taskdock_30 taskdock mobile - 笔记 笔记列表；无顶栏、结构完整，v2 终版采用 notes">
+        <a class="thumb" href="variants/notes/notes-12/code.html" target="_blank" rel="noopener" aria-label="打开 notes-12 原型 HTML">
+          <img src="variants/notes/notes-12/screen.png" loading="lazy" alt="TaskDock Mobile - 笔记 截图">
+          <span class="badge accent">v2 终版</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>notes-12</code><span>600×1600</span></div>
+          <h3>TaskDock Mobile - 笔记</h3>
+          <p>笔记列表；无顶栏、结构完整，v2 终版采用</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_30</span>
+            <a href="variants/notes/notes-12/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/notes/notes-12/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      </div>
+    </section>
+    <section class="group" id="group-settings" data-group="settings">
+      <div class="group-head">
+        <h2>设置 <span class="count">5 个变体</span></h2>
+        <a class="jump" href="#group-settings">#settings</a>
+      </div>
+      <div class="grid">
+      <article class="card" data-screen="settings" data-search="settings-01 taskdock_4 taskdock 设置 设置页；统计块 + 外观/提醒/本地数据/关于，结构完整 settings">
+        <a class="thumb" href="variants/settings/settings-01/code.html" target="_blank" rel="noopener" aria-label="打开 settings-01 原型 HTML">
+          <img src="variants/settings/settings-01/screen.png" loading="lazy" alt="TaskDock 设置 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>settings-01</code><span>564×1600</span></div>
+          <h3>TaskDock 设置</h3>
+          <p>设置页；统计块 + 外观/提醒/本地数据/关于，结构完整</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_4</span>
+            <a href="variants/settings/settings-01/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/settings/settings-01/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="settings" data-search="settings-02 taskdock_5 设置 - taskdock 设置页；结构同 taskdock_4，间距略有差异 settings">
+        <a class="thumb" href="variants/settings/settings-02/code.html" target="_blank" rel="noopener" aria-label="打开 settings-02 原型 HTML">
+          <img src="variants/settings/settings-02/screen.png" loading="lazy" alt="设置 - TaskDock 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>settings-02</code><span>571×1600</span></div>
+          <h3>设置 - TaskDock</h3>
+          <p>设置页；结构同 taskdock_4，间距略有差异</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_5</span>
+            <a href="variants/settings/settings-02/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/settings/settings-02/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="settings" data-search="settings-03 taskdock_7 taskdock 设置 (移动端) 宽幅画布导出；设置页结构完整 settings">
+        <a class="thumb" href="variants/settings/settings-03/code.html" target="_blank" rel="noopener" aria-label="打开 settings-03 原型 HTML">
+          <img src="variants/settings/settings-03/screen.png" loading="lazy" alt="TaskDock 设置 (移动端) 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>settings-03</code><span>1600×1339</span></div>
+          <h3>TaskDock 设置 (移动端)</h3>
+          <p>宽幅画布导出；设置页结构完整</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_7</span>
+            <a href="variants/settings/settings-03/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/settings/settings-03/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="settings" data-search="settings-04 taskdock_12 taskdock settings 设置页；结构完整，html &lt;title&gt; 为英文但界面文案中文 settings">
+        <a class="thumb" href="variants/settings/settings-04/code.html" target="_blank" rel="noopener" aria-label="打开 settings-04 原型 HTML">
+          <img src="variants/settings/settings-04/screen.png" loading="lazy" alt="TaskDock Settings 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>settings-04</code><span>564×1600</span></div>
+          <h3>TaskDock Settings</h3>
+          <p>设置页；结构完整，HTML &lt;title&gt; 为英文但界面文案中文</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_12</span>
+            <a href="variants/settings/settings-04/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/settings/settings-04/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="settings" data-search="settings-05 taskdock_13 taskdock 设置 (移动端) 宽幅画布导出；设置页结构完整 settings">
+        <a class="thumb" href="variants/settings/settings-05/code.html" target="_blank" rel="noopener" aria-label="打开 settings-05 原型 HTML">
+          <img src="variants/settings/settings-05/screen.png" loading="lazy" alt="TaskDock 设置 (移动端) 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>settings-05</code><span>1600×1415</span></div>
+          <h3>TaskDock 设置 (移动端)</h3>
+          <p>宽幅画布导出；设置页结构完整</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_13</span>
+            <a href="variants/settings/settings-05/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/settings/settings-05/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      </div>
+    </section>
+    <section class="group" id="group-pairing" data-group="pairing">
+      <div class="group-head">
+        <h2>配对新设备 <span class="count">1 个变体</span></h2>
+        <a class="jump" href="#group-pairing">#pairing</a>
+      </div>
+      <div class="grid">
+      <article class="card" data-screen="pairing" data-search="pairing-01 taskdock_8 taskdock 配对新设备 配对新设备；规划徽标 + 三步 + 取景框 + 6 位码 + 安全说明 pairing">
+        <a class="thumb" href="variants/pairing/pairing-01/code.html" target="_blank" rel="noopener" aria-label="打开 pairing-01 原型 HTML">
+          <img src="variants/pairing/pairing-01/screen.png" loading="lazy" alt="TaskDock 配对新设备 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>pairing-01</code><span>1600×1340</span></div>
+          <h3>TaskDock 配对新设备</h3>
+          <p>配对新设备；规划徽标 + 三步 + 取景框 + 6 位码 + 安全说明</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_8</span>
+            <a href="variants/pairing/pairing-01/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/pairing/pairing-01/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      </div>
+    </section>
+    <section class="group" id="group-sync" data-group="sync">
+      <div class="group-head">
+        <h2>同步中心 <span class="count">1 个变体</span></h2>
+        <a class="jump" href="#group-sync">#sync</a>
+      </div>
+      <div class="grid">
+      <article class="card" data-screen="sync" data-search="sync-01 taskdock_18 taskdock 同步 (移动端) 同步中心；规划徽标 + 连接卡 + 待发送/待接收 + 设备行 + 开关 sync">
+        <a class="thumb" href="variants/sync/sync-01/code.html" target="_blank" rel="noopener" aria-label="打开 sync-01 原型 HTML">
+          <img src="variants/sync/sync-01/screen.png" loading="lazy" alt="TaskDock 同步 (移动端) 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>sync-01</code><span>1600×1280</span></div>
+          <h3>TaskDock 同步 (移动端)</h3>
+          <p>同步中心；规划徽标 + 连接卡 + 待发送/待接收 + 设备行 + 开关</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_18</span>
+            <a href="variants/sync/sync-01/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/sync/sync-01/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      </div>
+    </section>
+    <section class="group" id="group-conflict" data-group="conflict">
+      <div class="group-head">
+        <h2>冲突处理 <span class="count">2 个变体</span></h2>
+        <a class="jump" href="#group-conflict">#conflict</a>
+      </div>
+      <div class="grid">
+      <article class="card" data-screen="conflict" data-search="conflict-01 taskdock_28 taskdock - 处理冲突 冲突处理；返回栏 + 1/2 + 规则卡 + 双版本卡 + 三操作；无规划徽标 conflict">
+        <a class="thumb" href="variants/conflict/conflict-01/code.html" target="_blank" rel="noopener" aria-label="打开 conflict-01 原型 HTML">
+          <img src="variants/conflict/conflict-01/screen.png" loading="lazy" alt="TaskDock - 处理冲突 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>conflict-01</code><span>706×1600</span></div>
+          <h3>TaskDock - 处理冲突</h3>
+          <p>冲突处理；返回栏 + 1/2 + 规则卡 + 双版本卡 + 三操作；无规划徽标</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_28</span>
+            <a href="variants/conflict/conflict-01/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/conflict/conflict-01/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card" data-screen="conflict" data-search="conflict-02 taskdock_31 taskdock 同步冲突解决 (移动端) 冲突处理；双版本卡 + 三操作；无规划徽标、无底部 tab 栏 conflict">
+        <a class="thumb" href="variants/conflict/conflict-02/code.html" target="_blank" rel="noopener" aria-label="打开 conflict-02 原型 HTML">
+          <img src="variants/conflict/conflict-02/screen.png" loading="lazy" alt="TaskDock 同步冲突解决 (移动端) 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>conflict-02</code><span>706×1600</span></div>
+          <h3>TaskDock 同步冲突解决 (移动端)</h3>
+          <p>冲突处理；双版本卡 + 三操作；无规划徽标、无底部 Tab 栏</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_31</span>
+            <a href="variants/conflict/conflict-02/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/conflict/conflict-02/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      </div>
+    </section>
+    <section class="group" id="group-widget" data-group="widget">
+      <div class="group-head">
+        <h2>主屏小组件 <span class="count">2 个变体</span></h2>
+        <a class="jump" href="#group-widget">#widget</a>
+      </div>
+      <div class="grid">
+      <article class="card" data-screen="widget" data-search="widget-01 taskdock_32 主屏小组件 - taskdock 主屏小组件；返回栏 + 预览 + 尺寸/数据源/外观/交互 + 添加按钮；含「实时同步」文案 widget">
+        <a class="thumb" href="variants/widget/widget-01/code.html" target="_blank" rel="noopener" aria-label="打开 widget-01 原型 HTML">
+          <img src="variants/widget/widget-01/screen.png" loading="lazy" alt="主屏小组件 - TaskDock 截图">
+          
+        </a>
+        <div class="body">
+          <div class="meta"><code>widget-01</code><span>582×1600</span></div>
+          <h3>主屏小组件 - TaskDock</h3>
+          <p>主屏小组件；返回栏 + 预览 + 尺寸/数据源/外观/交互 + 添加按钮；含「实时同步」文案</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_32</span>
+            <a href="variants/widget/widget-01/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/widget/widget-01/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      <article class="card canonical" data-screen="widget" data-search="widget-02 taskdock_33 主屏小组件配置 - taskdock 主屏小组件；配置项最完整，v2 终版采用；含「实时同步」文案 widget">
+        <a class="thumb" href="variants/widget/widget-02/code.html" target="_blank" rel="noopener" aria-label="打开 widget-02 原型 HTML">
+          <img src="variants/widget/widget-02/screen.png" loading="lazy" alt="主屏小组件配置 - TaskDock 截图">
+          <span class="badge accent">v2 终版</span>
+        </a>
+        <div class="body">
+          <div class="meta"><code>widget-02</code><span>665×1600</span></div>
+          <h3>主屏小组件配置 - TaskDock</h3>
+          <p>主屏小组件；配置项最完整，v2 终版采用；含「实时同步」文案</p>
+          <div class="links">
+            <span class="src">原目录 taskdock_33</span>
+            <a href="variants/widget/widget-02/screen.png" target="_blank" rel="noopener">PNG</a>
+            <a href="variants/widget/widget-02/code.html" target="_blank" rel="noopener">HTML</a>
+          </div>
+        </div>
+      </article>
+      </div>
+    </section>
+  <div class="empty" id="empty">没有匹配的原型。清空搜索或切换页面筛选。</div>
+</main>
+<footer>
+  <span>原型 HTML 依赖 Tailwind CDN / Google Fonts，离线打开可能缺样式；视觉以 PNG 为准。</span>
+  <a href="README.md">README</a>
+  <a href="mapping.json">mapping.json</a>
+  <a href="DESIGN.md">DESIGN.md</a>
+</footer>
+</div>
+<script>
+(function () {
+  var search = document.getElementById('search');
+  var chips = Array.prototype.slice.call(document.querySelectorAll('#chips .chip'));
+  var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
+  var groups = Array.prototype.slice.call(document.querySelectorAll('section.group'));
+  var empty = document.getElementById('empty');
+  var screen = 'all';
+
+  function apply() {
+    var q = search.value.trim().toLowerCase();
+    var visible = 0;
+    cards.forEach(function (card) {
+      var okScreen = screen === 'all' || card.dataset.screen === screen;
+      var okText = !q || card.dataset.search.indexOf(q) !== -1;
+      var show = okScreen && okText;
+      card.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    groups.forEach(function (group) {
+      var any = group.querySelector('.card:not([style*="display: none"])');
+      group.style.display = any ? '' : 'none';
+    });
+    empty.style.display = visible ? 'none' : 'block';
+  }
+
+  search.addEventListener('input', apply);
+  chips.forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      chips.forEach(function (c) { c.classList.remove('active'); });
+      chip.classList.add('active');
+      screen = chip.dataset.filter;
+      apply();
+    });
+  });
+})();
+</script>
+</body>
+</html>

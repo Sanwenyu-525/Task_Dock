@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=390, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TaskDock 设置</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "on-danger": "#FFFFFF",
+            "surface-container-high": "#e8e7f3",
+            "surface-tint": "#294de2",
+            "surface-container-highest": "#e2e1ee",
+            "danger-container": "#FBE7E5",
+            "surface": "#FFFFFF",
+            "tertiary-fixed": "#ffdbcd",
+            "primary-fixed-dim": "#b9c3ff",
+            "on-primary-container": "#22307A",
+            "inverse-primary": "#b9c3ff",
+            "dark-on-surface-variant": "#9AA6BD",
+            "outline-variant": "#c4c5d8",
+            "secondary-container": "#d9e2fa",
+            "surface-bright": "#fbf8ff",
+            "on-tertiary": "#ffffff",
+            "on-tertiary-fixed": "#360f00",
+            "tertiary-container": "#b94500",
+            "surface-dim": "#dad9e5",
+            "secondary": "#555e72",
+            "on-tertiary-container": "#ffe7df",
+            "dark-background": "#080D16",
+            "on-error": "#ffffff",
+            "tertiary-fixed-dim": "#ffb597",
+            "on-background": "#1a1b24",
+            "on-surface-faint": "#8A93A6",
+            "on-primary": "#ffffff",
+            "primary-container": "#E8ECFE",
+            "success": "#0E8F63",
+            "on-tertiary-fixed-variant": "#7e2c00",
+            "on-secondary-fixed": "#121c2c",
+            "warning-container": "#FBF0DC",
+            "on-secondary": "#ffffff",
+            "on-primary-fixed-variant": "#0032c4",
+            "dark-surface-container": "#0E1522",
+            "error": "#ba1a1a",
+            "secondary-fixed-dim": "#bdc6dd",
+            "on-primary-fixed": "#001159",
+            "dark-surface": "#121A28",
+            "on-error-container": "#93000a",
+            "surface-container-lowest": "#ffffff",
+            "error-container": "#ffdad6",
+            "warning": "#A2620A",
+            "background": "#F3F5FA",
+            "primary": "#153fd6",
+            "on-surface": "#1a1b24",
+            "dark-on-surface": "#E8EDF7",
+            "outline": "#E4E8F0",
+            "danger": "#C0332B",
+            "primary-fixed": "#dee1ff",
+            "secondary-fixed": "#d9e2fa",
+            "inverse-surface": "#2f3039",
+            "on-secondary-container": "#5b6478",
+            "tertiary": "#913400",
+            "surface-container-low": "#f4f2ff",
+            "on-surface-variant": "#5B6478",
+            "surface-variant": "#e2e1ee",
+            "surface-container": "#eeedf9",
+            "on-secondary-fixed-variant": "#3e475a",
+            "dark-primary": "#8FA8FF",
+            "success-container": "#E4F6EE",
+            "dark-outline": "#26324A",
+            "inverse-on-surface": "#f1effc"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "space-sm": "0.5rem",
+            "space-md": "1rem",
+            "space-xs": "0.25rem",
+            "space-xl": "2rem",
+            "gutter": "1rem",
+            "space-lg": "1.5rem",
+            "margin": "1rem"
+          },
+          "fontFamily": {
+            "stat": ["Roboto Flex"],
+            "display": ["Roboto Flex"],
+            "title": ["Roboto Flex"],
+            "body": ["Roboto Flex"],
+            "meta": ["Roboto Flex"]
+          },
+          "fontSize": {
+            "stat": ["26px", { "lineHeight": "30px", "fontWeight": "800" }],
+            "display": ["30px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "800" }],
+            "title": ["16px", { "lineHeight": "22px", "fontWeight": "600" }],
+            "body": ["13px", { "lineHeight": "19px", "fontWeight": "400" }],
+            "meta": ["12px", { "lineHeight": "16px", "fontWeight": "400" }]
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      display: inline-block;
+      vertical-align: middle;
+      line-height: 1;
+    }
+    body {
+      font-family: 'Roboto Flex', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #F3F5FA;
+      color: #1a1b24;
+      -webkit-font-smoothing: antialiased;
+    }
+    .tnum {
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="flex justify-center min-h-screen bg-background">
+<!-- 390px Mobile Viewport Container -->
+<main class="w-[390px] max-w-[390px] min-h-screen bg-background flex flex-col relative pb-[96px]">
+<!-- Android Status Bar -->
+<header class="w-full h-[40px] px-margin flex items-center justify-between text-on-surface select-none pt-space-xs">
+<span class="font-title text-body font-semibold tracking-tight text-[#121826]">09:41</span>
+<div class="flex items-center gap-[6px] text-[#121826]">
+<span class="material-symbols-outlined text-[17px]">signal_cellular_alt</span>
+<span class="material-symbols-outlined text-[17px]">wifi</span>
+<span class="material-symbols-outlined text-[19px]">battery_full</span>
+</div>
+</header>
+<!-- Header Section -->
+<section class="px-margin pt-space-sm pb-space-md">
+<h1 class="font-display text-display text-[#121826] tracking-tight">设置</h1>
+<p class="font-meta text-meta text-on-surface-variant mt-space-xs">仅本机 · 不连接桌面端</p>
+</section>
+<!-- Data Summary Row -->
+<section class="px-margin mb-space-lg">
+<div class="grid grid-cols-3 gap-[12px]">
+<!-- Tile 1 -->
+<div class="bg-surface border border-outline rounded-[16px] p-space-md flex flex-col items-center justify-center text-center">
+<span class="font-stat text-stat tnum text-[#3A5BEF]">24</span>
+<span class="font-meta text-[11px] font-semibold text-on-surface-variant mt-space-xs">任务</span>
+</div>
+<!-- Tile 2 -->
+<div class="bg-surface border border-outline rounded-[16px] p-space-md flex flex-col items-center justify-center text-center">
+<span class="font-stat text-stat tnum text-[#3A5BEF]">6</span>
+<span class="font-meta text-[11px] font-semibold text-on-surface-variant mt-space-xs">收集</span>
+</div>
+<!-- Tile 3 -->
+<div class="bg-surface border border-outline rounded-[16px] p-space-md flex flex-col items-center justify-center text-center">
+<span class="font-stat text-stat tnum text-success">12</span>
+<span class="font-meta text-[11px] font-semibold text-on-surface-variant mt-space-xs">已完成</span>
+</div>
+</div>
+</section>
+<div class="flex flex-col gap-space-lg px-margin">
+<!-- Section 1: 外观 -->
+<section>
+<div class="flex items-center gap-[8px] mb-space-sm">
+<span class="w-[3px] h-[14px] bg-[#3A5BEF] rounded-full shrink-0"></span>
+<span class="font-title text-[13px] font-bold text-on-surface tracking-tight shrink-0">外观</span>
+<span class="h-[1px] bg-outline flex-1"></span>
+</div>
+<div class="bg-surface border border-outline rounded-[20px] p-space-md flex flex-col gap-space-md">
+<!-- Segmented Control -->
+<div class="bg-[#E9EEF8] rounded-[12px] p-[4px] grid grid-cols-3 gap-[4px] text-center">
+<button class="bg-[#3A5BEF] text-on-primary font-title text-[12px] font-bold py-[6px] rounded-lg transition-transform active:scale-95" type="button">
+              跟随系统
+            </button>
+<button class="text-on-surface-variant hover:text-on-surface font-title text-[12px] font-medium py-[6px] rounded-lg transition-colors" type="button">
+              浅色
+            </button>
+<button class="text-on-surface-variant hover:text-on-surface font-title text-[12px] font-medium py-[6px] rounded-lg transition-colors" type="button">
+              深色
+            </button>
+</div>
+<!-- Mini Theme Preview Card -->
+<div class="bg-[#F3F5FA] border border-outline rounded-[12px] p-space-sm flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="w-[18px] h-[18px] rounded-full border border-[#3A5BEF] flex items-center justify-center bg-surface">
+<span class="w-[8px] h-[8px] rounded-full bg-[#3A5BEF]"></span>
+</span>
+<span class="font-title text-[14px] font-semibold text-on-surface truncate max-w-[170px]">写周报：Q4 目标复盘</span>
+</div>
+<span class="bg-primary-container text-[#3A5BEF] font-meta text-[11px] font-semibold px-[8px] py-[2px] rounded-full shrink-0">
+              今天 18:00
+            </span>
+</div>
+</div>
+</section>
+<!-- Section 2: 提醒 -->
+<section>
+<div class="flex items-center gap-[8px] mb-space-sm">
+<span class="w-[3px] h-[14px] bg-[#3A5BEF] rounded-full shrink-0"></span>
+<span class="font-title text-[13px] font-bold text-on-surface tracking-tight shrink-0">提醒</span>
+<span class="h-[1px] bg-outline flex-1"></span>
+</div>
+<div class="bg-surface border border-outline rounded-[20px] px-space-md py-space-sm flex flex-col">
+<!-- Row 1 -->
+<div class="flex items-center justify-between min-h-[46px]">
+<span class="font-body text-body text-on-surface font-medium">通知权限</span>
+<div class="flex items-center gap-[6px]">
+<span class="w-[7px] h-[7px] rounded-full bg-success"></span>
+<span class="font-meta text-meta text-success font-semibold">已允许</span>
+</div>
+</div>
+<div class="h-[1px] bg-outline w-full"></div>
+<!-- Row 2 -->
+<div class="flex items-center justify-between min-h-[46px]">
+<span class="font-body text-body text-on-surface font-medium">提前提醒</span>
+<span class="font-meta text-meta text-on-surface-variant font-normal">默认</span>
+</div>
+<div class="h-[1px] bg-outline w-full"></div>
+<!-- Action Button -->
+<div class="py-space-sm">
+<button class="w-full min-h-[44px] rounded-[12px] border border-outline bg-surface text-[#3A5BEF] font-title text-[13px] font-semibold flex items-center justify-center active:scale-95 transition-transform hover:bg-[#F8FAFF]" type="button">
+              发送测试通知
+            </button>
+</div>
+</div>
+</section>
+<!-- Section 3: 本地数据 -->
+<section>
+<div class="flex items-center gap-[8px] mb-space-sm">
+<span class="w-[3px] h-[14px] bg-[#3A5BEF] rounded-full shrink-0"></span>
+<span class="font-title text-[13px] font-bold text-on-surface tracking-tight shrink-0">本地数据</span>
+<span class="h-[1px] bg-outline flex-1"></span>
+</div>
+<div class="bg-surface border border-outline rounded-[20px] px-space-md py-[4px] flex flex-col">
+<!-- Row 1 -->
+<div class="flex items-center justify-between min-h-[46px]">
+<span class="font-body text-body text-on-surface font-medium">数据库</span>
+<span class="font-mono text-[12px] text-on-surface-variant">SQLite v2 · WAL</span>
+</div>
+<div class="h-[1px] bg-outline w-full"></div>
+<!-- Row 2 -->
+<div class="flex items-center justify-between min-h-[46px]">
+<span class="font-body text-body text-on-surface font-medium">已排期提醒</span>
+<span class="font-meta text-meta text-on-surface-variant">3 条</span>
+</div>
+<div class="h-[1px] bg-outline w-full"></div>
+<!-- Row 3 -->
+<div class="flex items-center justify-between min-h-[46px]">
+<span class="font-body text-body text-on-surface font-medium">存储占用</span>
+<span class="font-meta text-meta text-on-surface-variant">1.2 MB</span>
+</div>
+</div>
+</section>
+<!-- Section 4: 关于 -->
+<section>
+<div class="flex items-center gap-[8px] mb-space-sm">
+<span class="w-[3px] h-[14px] bg-[#3A5BEF] rounded-full shrink-0"></span>
+<span class="font-title text-[13px] font-bold text-on-surface tracking-tight shrink-0">关于</span>
+<span class="h-[1px] bg-outline flex-1"></span>
+</div>
+<div class="bg-surface border border-outline rounded-[20px] px-space-md py-[4px] flex flex-col">
+<!-- Row 1 -->
+<div class="flex items-center justify-between min-h-[46px]">
+<span class="font-body text-body text-on-surface font-medium">版本</span>
+<span class="font-meta text-meta text-on-surface-variant">0.1.2</span>
+</div>
+<div class="h-[1px] bg-outline w-full"></div>
+<!-- Row 2 -->
+<div class="flex items-center justify-between min-h-[46px]">
+<span class="font-body text-body text-on-surface font-medium">数据范围</span>
+<span class="font-meta text-meta text-on-surface-variant">仅本机</span>
+</div>
+<div class="h-[1px] bg-outline w-full"></div>
+<!-- Row 3 -->
+<div class="flex items-center justify-between min-h-[46px] cursor-pointer">
+<span class="font-body text-body text-on-surface font-medium">开源许可</span>
+<span class="material-symbols-outlined text-on-surface-variant text-[20px]">chevron_right</span>
+</div>
+</div>
+</section>
+</div>
+<!-- Bottom Floating Tab Bar (Fixed within 390px viewport) -->
+<nav class="fixed bottom-0 left-1/2 -translate-x-1/2 w-[390px] px-margin pb-space-md pt-0 z-50 pointer-events-none">
+<div class="pointer-events-auto h-[64px] bg-surface border border-outline rounded-[24px] flex items-center justify-around px-space-sm">
+<!-- Tab 1: 任务 -->
+<a class="flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface active:scale-95 transition-all" href="#">
+<span class="material-symbols-outlined text-[22px]">task_alt</span>
+<span class="font-meta text-[11px] mt-[2px]">任务</span>
+</a>
+<!-- Tab 2: 收集箱 -->
+<a class="flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface active:scale-95 transition-all" href="#">
+<span class="material-symbols-outlined text-[22px]">inbox</span>
+<span class="font-meta text-[11px] mt-[2px]">收集箱</span>
+</a>
+<!-- Tab 3: 笔记 -->
+<a class="flex flex-col items-center justify-center text-on-surface-variant hover:text-on-surface active:scale-95 transition-all" href="#">
+<span class="material-symbols-outlined text-[22px]">description</span>
+<span class="font-meta text-[11px] mt-[2px]">笔记</span>
+</a>
+<!-- Tab 4: 设置 (Active) -->
+<a aria-current="page" class="flex flex-col items-center justify-center text-[#3A5BEF] font-semibold active:scale-95 transition-all" href="#">
+<span class="material-symbols-outlined text-[22px]" style="font-variation-settings: 'FILL' 1;">settings</span>
+<span class="font-meta text-[11px] mt-[2px] font-bold">设置</span>
+</a>
+</div>
+</nav>
+</main>
+</body></html>

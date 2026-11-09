@@ -99,6 +99,8 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
 | `react-native-safe-area-context` codegen 报标识符过长 | Windows 260 字符路径上限 | 本工程**不依赖**该库，insets 用 `src/lib/insets.ts` 纯 JS；若将来要换回，先缩短工程路径 |
 | `Unable to delete .../app-release.apk` / `Device or resource busy` | 残留 `adb install` 进程占着文件 | 只结束那个 adb 进程，不要 `adb kill-server` 影响其他会话；再清目录重编 |
 | 安装被拒，弹窗「已安装相同版本」 | 同 `versionCode` 重装 | 提升 `versionCode` 重编重装 |
+| 通知栏小图标是系统默认图标/实心白块 | `app.json` 的 expo-notifications 插件没配 `icon`，回退到启动器图标（彩色图只取 alpha 会糊成一块）；或改了配置但没重跑 prebuild | 见 §7「通知图标」，配置后必须 prebuild + 重编装机 |
+| 装机后通知栏仍显示旧图标/系统默认图标 | 系统（SystemUI/启动器）按包缓存了更新前的图标，重装 APK 不保证立即刷新 | 重启设备后再发一条通知确认；确认前不要判定为配置未生效（`dumpsys notification` 里 `icon=Icon(typ=RESOURCE pkg=dev.taskdock.mobile …)` 已指向新资源即配置正确） |
 | `adb devices` 出现两条同机条目 | USB + 无线调试同时连接 | 所有命令加 `-s <serial>` 指定 |
 | Git Bash 把 `/data/local/tmp` 变成 Windows 路径 | MSYS 路径转换 | `export MSYS_NO_PATHCONV=1` |
 | `npm run typecheck` 在仓库根报 TS5112 | 根有 `tsconfig.json`，不能用显式文件列表 | 在 `apps/mobile` 下跑，或显式加 `--ignoreConfig` |
@@ -109,6 +111,38 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
 唯一共享物是图标源 `src-tauri/icons/icon.png`（`node scripts/gen-icons.mjs` 生成 assets），
 换图标后需要重跑脚本 + `npx expo prebuild`。
 
+通知图标是另一套资源，不能直接复用彩色 `assets/icon.png`：
+
+| 资源 | 用途 | 约束 |
+|---|---|---|
+| `assets/notification-icon.png` | 状态栏小图标 | **纯白 + 透明**单色；Android 只取 alpha 通道并统一染色，彩色图会被压成实心块。由 `node scripts/gen-notification-icon.mjs` 生成（24dp 基准、8× 输出、零依赖，几何与启动页 mark 同构） |
+| `assets/icon.png` | 通知展开后右侧大图标 | 彩色启动器图标，经插件缩到 64dp 基准 |
+
+两者在 `app.json` 的 expo-notifications 插件里声明（`icon` / `largeIcon`）；插件会写
+`android/app/src/main/res/drawable-*/notification_icon.png`、`notification_large_icon.png`
+（含 mdpi…xxxhdpi 五档）与 manifest 的 `expo.modules.notifications.default_notification_icon`、
+`large_notification_icon` meta-data。改完必须 `npx expo prebuild --platform android`
+（会清空 `android/`，记得重建 `local.properties`）→ Release 构建 → 装机核对状态栏与通知展开后的图标。
+已排期的本地通知在触发时才解析图标，因此更新 APK 后无需重排提醒。
+系统侧可能按包缓存旧图标：重装后首次通知仍显示旧图标时，先重启设备再用 `dumpsys notification`
+核对 `icon=` 是否已指向 `dev.taskdock.mobile` 的 `drawable/notification_icon`，不要据此判定配置失败。
+
+## 配对与相机（2026-11-08）
+
+- `expo-camera` 已加入依赖并在 `app.json` 声明插件（中文相机用途说明、关闭录音权限）；
+  `npx expo prebuild --platform android` 会生成 `android.permission.CAMERA`。
+- `plugins/withCleartextTraffic.js` 是本地配置插件，prebuild 时给 `<application>` 加
+  `android:usesCleartextTraffic="true"`：本轮配对传输是局域网 HTTP（用户确认的 v1 基线），
+  Android 9+ 默认拦截明文，不加会表现为「配对请求超时」。TLS 计划见
+  [06-pairing.md](06-pairing.md) §5，升级 TLS 后应删除该插件并重新 prebuild。
+- `android/` 是生成目录：prebuild 会清空它，构建前必须重建 `android/local.properties`
+  （`sdk.dir` 指向含 NDK 27.1 的本机 SDK）；本机 release 构建命令不变（§3）。
+- 只出真机 ABI 时附加 `-PreactNativeArchitectures=arm64-v8a`，不要手改生成目录。
+
 ## 变更记录
 
 - 2026-11-08 首版：记录 JDK 17、镜像 Gradle、长路径约束与版本号提升流程。
+- 2026-11-08 通知图标：补充 expo-notifications `icon`/`largeIcon` 资源分工、单色约束与
+  `gen-notification-icon.mjs` 生成流程；故障表增加「图标仍是系统默认」一行。
+- 2026-11-08 配对：补充 expo-camera 权限、明文 HTTP 配置插件与 prebuild 后重建
+  `local.properties` 的约束。

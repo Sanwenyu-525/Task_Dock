@@ -1,16 +1,26 @@
-# 手机端架构（Android 独立模式）
+# 手机端架构（Android 独立模式 + 局域网配对）
 
-> 适用范围：`apps/mobile` 当前实现。联动/同步相关描述只写「骨架到什么程度」，不当作能力承诺。
+> 适用范围：`apps/mobile` 当前实现。2026-11-08 起已接入**配对与连通性探测**；
+> 数据同步（任务/笔记 pull/push）仍未实现，相关描述不当作能力承诺。
 
 ## 1. 定位与边界
 
-手机端本轮只做**独立模式**：数据全部落在本机 SQLite，不连接桌面端、不发任何真实网络请求。
+手机端业务数据全落在本机 SQLite；唯一网络能力是**用户显式发起的局域网配对与心跳**：
+
+- 桌面端保持默认关闭，只有用户开启「允许手机连接」后才监听局域网端口；
+- 手机端只在用户点「配对 / 测试连接」时发请求，不做后台轮询、不自动重试；
+- 本轮不传输任务、笔记或剪贴板内容，配对成功也不代表已同步。
 
 不可突破的边界：
 
-1. 桌面端 `http_ingest` 只监听 `127.0.0.1`，**不得**直接当作手机接入点，也不得为此改动监听地址。
+1. 桌面端 `http_ingest` 只监听 `127.0.0.1`，**不得**直接当作手机接入点，也不得为此改动监听地址；
+   手机接入是独立的 `mobile_sync` 监听与端点。
 2. 手机端不持有桌面端「权威源」的身份。将来跨设备合并以桌面端规则为准，手机端只做本地副本。
-3. 工具链、依赖不擅自新增；视觉与数据能力在现有 Expo/RN 依赖内实现。
+3. 工具链、依赖不擅自新增；本轮只新增 `expo-camera`（应用内扫码，用户已确认）与一个
+   prebuild 配置插件（局域网明文 HTTP），不引入二维码/网络/TLS 第三方库。
+4. 令牌只允许进 SecureStore；配对码、令牌不得写日志或 kv 明文。
+
+传输安全边界与已知偏差见 [06-pairing.md](06-pairing.md) §5（本轮为局域网 HTTP，TLS 属下一轮）。
 
 ## 2. 分层与依赖方向
 
@@ -46,7 +56,8 @@ src/
     taskRows.ts         行映射、列名、校验（两处共用）
     captures.ts         收集箱：幂等新增、删除、转任务
     reminderSchedule.ts 排期记录表读写
-    kv.ts               设置键值
+    kv.ts               设置键值（含连接元数据 `sync.connection.v1`）
+    syncConnection.ts   令牌 → SecureStore；连接元数据 → kv；解除配对
     diagnostics.ts      PRAGMA quick_check 等只读自检
   notifications/
     reminders.ts        通道、权限、category/action、单条排期、取消
@@ -54,28 +65,40 @@ src/
     actions.ts          通知按钮响应、去重、收起通知
   lib/
     insets.ts           纯 JS 安全区（不依赖 safe-area-context，见 §7）
-    sync/protocol.ts    补丁载荷、冲突分类、响应解析（纯函数）
-    sync/client.ts      可注入 fetch 的客户端骨架（未接线）
+    sync/protocol.ts    补丁载荷、冲突分类、响应解析（纯函数，数据同步下一轮使用）
+    sync/client.ts      同步客户端骨架（未接线；与配对客户端分开）
+    sync/pairing.ts     二维码 URI 解析、桌面地址归一化、配对码清洗（纯函数）
+    sync/pairClient.ts  `/v1/pair` 与 `/v1/ping` 客户端（超时、稳定错误码）
+    sync/pendingPairing.ts 深链配对载荷的内存队列 + 订阅
   screens/
     TasksScreen.tsx     任务列表、筛选、搜索、分组、编辑器入口
     InboxScreen.tsx     收集箱、转任务
-    SettingsScreen.tsx  主题、权限、本地数据
+    SettingsScreen.tsx  主题、权限、本地数据、配对入口
+    PairingScreen.tsx   应用内扫码/手动输码 → 确认 → 配对 → 保存令牌
+    SyncScreen.tsx      已配对连接、连通性测试、解除本机配对（数据同步下一轮）
     taskGroups.ts       列表分组（纯展示切分）
   components/           见 03-ui-spec.md §4
   theme/                tokens / ThemeProvider / MotionProvider / shadows
+plugins/withCleartextTraffic.js  prebuild 配置插件：允许局域网明文 HTTP（见 06 §5）
 ```
 
 ## 4. 启动序列
 
 `App.tsx` 的启动是**串行且失败可见**的：
 
+0. 原生启动图（`expo-splash-screen`）：模块加载时 `preventAutoHideAsync()` 保持原生图；
+   原生图与 JS 启动层使用同一张「清单骨架」，见 `03-ui-spec.md` §7.1。
 1. `installNotificationHandler()` —— 前台展示策略，必须在任何通知到达前注册。
 2. `openDatabase()` —— 打开 → `PRAGMA journal_mode=WAL` / `foreign_keys=ON` → 迁移。
-3. 迁移失败不降级、不吞异常：进入错误页，写明原因，提示重启与检查存储。
+3. 迁移失败不降级、不吞异常：进入错误页，写明原因，提示重启与检查存储；渲染错误页前
+   必须 `SplashScreen.hide()`，否则原生图会一直盖住错误信息。
 4. 通知对账（异步、失败不阻塞启动）：
    `ensureReminderCategory()` → 读 `kv.reminder_actions_version` →
    版本一致走 `rescheduleAllReminders()`，不一致走 `rebuildAllReminders()` 并写回版本。
 5. 读 `kv.theme_mode` → 挂载 `ThemeProvider` / `MotionProvider` / `Shell`。
+6. 启动层退场：`Shell` 先在启动层下方挂载（不露脸），动画播完且距 JS 首帧 ≥640ms 后，
+   启动层下沉淡出 180ms 再卸载；减少动态效果时跳过动画，就绪即卸载。
+   `MotionProvider` 因此提到启动层外层，冷启动与主界面共用同一条「减少动态」偏好。
 
 为什么对账放在开库之后、主题之前：提醒是增强能力，不能因为通知权限或系统 API 失败让应用打不开；
 但它依赖数据库，所以不能早于第 2 步。
@@ -95,6 +118,13 @@ src/
 
 约定：页面只通过 `listTasks()` / `listCaptures()` 这类函数读库，写完主动通知上层 +1，
 不做跨页缓存同步。
+
+### 5.1 推送页栈（2026-11-08 起）
+
+不引导航库。`Shell` 持有 `Route[]`（`src/lib/nav.ts` 定义 `RouteKey`/`Route`/`Nav` 契约）：
+`push` 入栈、`back` 弹栈；栈非空时全屏渲染栈顶页并隐藏 TabBar，硬件返回 = 弹栈
+（`BackHandler` 按「后注册先调用」工作，编辑页利用这一点先保存再关，避免绕过保存）。
+推送页没有页面缓存：返回后由 `version + 1` 驱动列表重查。
 
 ## 6. 提醒子系统
 
@@ -125,7 +155,9 @@ src/
 
 ### 6.3 通知动作
 
-提醒通知带 category `task-reminder-actions`，两个动作：`complete` / `snooze`。
+提醒通知带两个 category：`task-reminder-actions`（完成 + 10 分钟后）与
+`task-reminder-basic`（仅完成）。排期时按 `kv.reminder_snooze_enabled`（缺省开）
+选择类别；开关只影响**之后排期**的通知，已排下通知的按钮不会变。
 
 ```
 点击动作 → handleNotificationResponse
@@ -134,12 +166,13 @@ src/
   │    ├─ advanced（重复任务推进）→ rescheduleAllReminders()
   │    └─ 否则 cancelReminder(id)
   ├─ snooze：updateTask(id, { remindAt: now + 10min }) → rescheduleAllReminders()
-  └─ finally：dismissNotificationAsync(id) 显式收起通知
+  └─ finally：kv.reminder_dismiss_on_complete ≠ "0" 时 dismissNotificationAsync(id)
 ```
 
 - 动作走的路径与界面完全一致（`toggleTask` / `updateTask`），不另写 SQL。
 - 从冷启动进入：`getLastNotificationResponse()` 只在 10 分钟窗口内处理，防止旧响应反复触发。
 - 通知被点击后必须主动收起：真机实测过不收起会一直留在通知栏（见验收报告 §10）。
+  「通知与后台」页可关闭收起行为（关闭后完成的任务通知留在通知栏，便于回看）。
 
 ### 6.4 动作能力版本
 
@@ -167,6 +200,22 @@ src/
 接同步时必须先满足：设备配对与令牌存储、`base_rev` 冲突判定、墓碑推进、可取消且有上限的重试；
 在此之前不得把 `client.ts` 接到界面按钮上。
 
+### 8.1 配对与连接（2026-11-08 已实现）
+
+- **屏幕**：`PairingScreen` 状态机 `scan → confirm → pairing → success`；`SyncScreen` 展示
+  已配对连接、连通性测试与解除本机配对。两者都不读写业务表。
+- **纯函数**：`sync/pairing.ts` 严格解析 `taskdock://pair?v=1...`（host/port/code/v 校验），
+  归一化手动地址（不接受 https/路径），清洗 6 位码；`sync/pairClient.ts` 带 5s/8s 超时与
+  稳定错误码（`invalid_code` / `pairing_closed` / `too_many_attempts` / `unauthorized`）。
+- **凭据**：令牌只进 `expo-secure-store`（键 `taskdock.sync.token.v1`）；连接元数据进
+  `kv['sync.connection.v1']`。`clearConnection()` 同时删两处，失败可见。
+- **深链**：系统相机扫描 `taskdock://pair?...` 经 `Linking` 唤起；载荷先进
+  `sync/pendingPairing.ts` 的内存队列，配对页挂载时取走或在运行中订阅更新，不写日志。
+- **网络时机**：只在用户点「配对 / 测试连接」时请求；无后台轮询、无自动重试。
+- **明文 HTTP**：`plugins/withCleartextTraffic.js` 在 prebuild 时设置
+  `android:usesCleartextTraffic=true`（本轮已确认的 v1 基线），威胁模型见
+  [06-pairing.md](06-pairing.md) §5。
+
 ## 9. 生命周期与资源
 
 - 全局只有一个数据库句柄，`closeDatabase()` 仅测试/退出用。
@@ -176,9 +225,16 @@ src/
 
 ## 10. 明确未实现
 
-配对、同步消费、`notes`、墓碑、后台同步、远程推送、主屏小组件、iOS。详见
-[README.md](README.md) 的状态表。
+数据同步消费（任务/笔记 pull/push）、墓碑、后台同步、远程推送、主屏小组件（AppWidgetProvider）、
+系统分享接收（intent-filter）、iOS。配对与连通性探测已于 2026-11-08 实现；
+配对/同步/冲突/小组件/分享的**页面结构**自 2026-11-08 起保持「真实状态 + 规划徽标」，
+不给假数据。详见 [README.md](README.md) 的状态表与 [06-pairing.md](06-pairing.md)。
 
 ## 变更记录
 
 - 2026-11-08 首版：按当前代码（schema v2 / 0.1.1）整理，明确「设计稿 ≠ 现状」。
+- 2026-11-08 原型落轮：新增 §5.1 推送页栈；§6.3 更新为双通知类别与「完成后收起」开关；
+  §10 更新为「页面结构已就绪、能力未接入」。
+- 2026-11-08 配对落轮：§1 边界由「完全离线」改为「用户显式发起的局域网配对」；§3 模块地图
+  补齐 sync/pairing、pairClient、pendingPairing、syncConnection 与 prebuild 插件；
+  新增 §8.1；§10 区分「已配对」与「已同步」。

@@ -1,7 +1,8 @@
-# TaskDock Mobile（Android 骨架，独立模式）
+# TaskDock Mobile（Android，独立模式 + 局域网配对）
 
-Task Dock 的手机端。本轮只实现**独立模式**：全部数据落在本机 SQLite，不连接桌面端。
-联动模式（配对 / 同步 / 远程）只有表结构与设计，没有实现，见 `docs/MOBILE_STACK.md`。
+Task Dock 的手机端。业务数据全部落在本机 SQLite；2026-11-08 起支持**用户显式发起的
+局域网配对与连通性测试**（应用内扫码 / 手动输码，令牌存 SecureStore）。
+数据同步（任务/笔记 pull/push）仍未实现，见 `docs/mobile/06-pairing.md`。
 
 ## 技术栈
 
@@ -129,9 +130,15 @@ Windows 构建已知约束：
 
 生成脚本零依赖（自行解码/编码 PNG）。桌面图标换图后，重跑该脚本 + `npx expo prebuild` 即可同步。
 
+启动图是另一套资产：`node scripts/gen-splash.mjs` 生成 `assets/splash-mark.png`（浅色）与
+`splash-mark-dark.png`（深色）。它们必须与 `src/components/LaunchOverlay.tsx` 的骨架几何
+逐项一致，改任一边都要两边同步并重跑 `npx expo prebuild --platform android`。
+
 ## 未实现（明确边界）
 
-- 配对、设备身份、同步协议、冲突合并、墓碑推进：只有设计与表结构，**未实现**。
+- 同步传输、冲突合并、墓碑推进：只有协议骨架（`src/lib/sync/protocol.ts` / `client.ts`），
+  **未接线**。配对成功不代表已同步。
+- 配对与连通性测试已实现，见 `docs/mobile/06-pairing.md`（含局域网 HTTP 的已知偏差）。
 - 重复规则按自然周/自然日计算，**不支持法定节假日与调休跳过**；UI 不宣称支持。
 - 主屏小组件、系统分享接收、后台同步、远程推送：**未实现**。
 - iOS：**未验证**（本机无 macOS/Xcode），本轮只做 Android。

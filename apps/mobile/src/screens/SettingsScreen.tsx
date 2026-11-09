@@ -3,13 +3,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { Badge } from "../components/Badge";
 import { GlassCard } from "../components/GlassCard";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
+import { SettingActionRow } from "../components/SettingActionRow";
 import { StatCard } from "../components/StatCard";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { listCaptures } from "../db/captures";
-import { countPendingOutbox, listTasks } from "../db/tasks";
+import { loadConnection, type PairedConnection } from "../db/syncConnection";
+import { listTasks } from "../db/tasks";
 import { describeError } from "../lib/errors";
+import type { Nav } from "../lib/nav";
 import {
   ensurePermission,
   getPermissionLabel,
@@ -93,10 +97,11 @@ function ThemePreview({ mode }: { mode: ThemeMode }) {
   );
 }
 
-export function SettingsScreen() {
+export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: number }) {
   const { tokens, mode, setMode } = useTheme();
   const reduceMotion = useReduceMotion();
-  const [summary, setSummary] = useState({ tasks: 0, captures: 0, pendingOps: 0 });
+  const [summary, setSummary] = useState({ tasks: 0, captures: 0, completed: 0 });
+  const [syncConnection, setSyncConnection] = useState<PairedConnection | null>(null);
   const [permissionLabel, setPermissionLabel] = useState("读取中…");
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
@@ -109,14 +114,20 @@ export function SettingsScreen() {
 
   const refresh = useCallback(async () => {
     try {
-      const [tasks, captures, pendingOps, label] = await Promise.all([
+      const [tasks, captures, label, connection] = await Promise.all([
         listTasks(),
         listCaptures(),
-        countPendingOutbox(),
         getPermissionLabel(),
+        // 连接元数据读取失败不应把整页汇总拖失败：按未配对展示。
+        loadConnection().catch(() => null),
       ]);
-      setSummary({ tasks: tasks.length, captures: captures.length, pendingOps });
+      setSummary({
+        tasks: tasks.length,
+        captures: captures.length,
+        completed: tasks.filter((task) => task.status === "completed").length,
+      });
       setPermissionLabel(label);
+      setSyncConnection(connection);
     } catch (error) {
       showToast(`读取设置失败：${describeError(error)}`, "danger");
     }
@@ -124,7 +135,7 @@ export function SettingsScreen() {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, version]);
 
   const requestPermission = useCallback(async () => {
     const granted = await ensurePermission();
@@ -161,12 +172,8 @@ export function SettingsScreen() {
 
         <View style={styles.tiles}>
           <StatCard label="任务" value={summary.tasks} tone="accent" />
-          <StatCard label="收集箱" value={summary.captures} tone="neutral" />
-          <StatCard
-            label="待同步"
-            value={summary.pendingOps}
-            tone={summary.pendingOps > 0 ? "warn" : "neutral"}
-          />
+          <StatCard label="收集" value={summary.captures} tone="neutral" />
+          <StatCard label="已完成" value={summary.completed} tone="ok" />
         </View>
 
         <Section title="外观">
@@ -246,6 +253,49 @@ export function SettingsScreen() {
           <Text style={[styles.hint, { color: tokens.muted }]}>
             提醒使用系统本地通知，不依赖桌面端；权限关闭时任务照常保存，只是到点不提醒。
           </Text>
+          <SettingActionRow
+            label="通知与后台"
+            helper="权限、提醒动作与 vivo 后台限制"
+            chevron
+            onPress={() => nav.push("notifications")}
+          />
+        </Section>
+
+        <Section title="手机与同步">
+          <SettingActionRow
+            label="配对新设备"
+            helper={
+              syncConnection
+                ? `已配对：${syncConnection.serverName}`
+                : "与桌面端在同一 Wi-Fi 下扫码或输码配对"
+            }
+            trailing={syncConnection ? <Badge label="已配对" tone="active" /> : undefined}
+            chevron
+            accessibilityHint="打开配对页，扫描桌面端二维码或手动输入配对码"
+            onPress={() => nav.push("pairing")}
+          />
+          <SettingActionRow
+            label="同步"
+            helper="查看已配对连接、测试连通性与解除本机配对"
+            trailing={syncConnection ? <Badge label="已连接" tone="active" /> : undefined}
+            chevron
+            accessibilityHint="同步中心：连接状态与后续数据同步"
+            onPress={() => nav.push("sync")}
+          />
+          <SettingActionRow
+            label="主屏小组件"
+            trailing={<Badge label="规划中" />}
+            chevron
+            accessibilityHint="桌面小组件配置（规划中）"
+            onPress={() => nav.push("widget")}
+          />
+          <SettingActionRow
+            label="分享接收"
+            trailing={<Badge label="规划中" />}
+            chevron
+            accessibilityHint="系统分享到 TaskDock（规划中）"
+            onPress={() => nav.push("share")}
+          />
         </Section>
 
         <Section title="本地数据">
@@ -256,7 +306,7 @@ export function SettingsScreen() {
 
         <Section title="关于">
           {/* 版本号与 app.json 的 version 保持同步；升级版本时两处一起改 */}
-          <InfoRow label="版本" value="0.1.2" />
+          <InfoRow label="版本" value="0.1.3" />
           <InfoRow label="后端" value="本地 SQLite" />
           <InfoRow label="数据范围" value="只在本机" />
         </Section>

@@ -3,9 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Animated,
-  Keyboard,
   Modal,
-  Platform,
   Pressable,
   StyleSheet,
   View,
@@ -21,6 +19,7 @@ import { useTheme } from "../theme/ThemeProvider";
 import { floatingShadow } from "../theme/shadows";
 import { radius, space } from "../theme/tokens";
 import { useWindowInsets } from "../lib/insets";
+import { useKeyboardHeight } from "../lib/keyboard";
 
 const TRAVEL = 72;
 
@@ -45,30 +44,14 @@ export function BottomSheet({
   const reduceMotion = useReduceMotion();
   const insets = useWindowInsets();
   const [mounted, setMounted] = useState(visible);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const progress = useRef(new Animated.Value(visible ? 1 : 0)).current;
-
   /**
    * 键盘高度自己听：这个 Modal 窗口不吃 adjustResize，KeyboardAvoidingView 的
    * height 行为在真机（Android 16）上实测无效——面板会被键盘整个盖住。
    * 直接按键盘高度给容器加下内边距，位移是确定的，不依赖系统窗口行为。
+   * 实现统一收敛在 lib/keyboard.ts（笔记编辑器与分享页共用同一份）。
    */
-  useEffect(() => {
-    if (!keyboardAware) {
-      setKeyboardHeight(0);
-      return;
-    }
-    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const showSub = Keyboard.addListener(showEvent, (event) =>
-      setKeyboardHeight(event.endCoordinates.height),
-    );
-    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, [keyboardAware]);
+  const keyboardHeight = useKeyboardHeight(keyboardAware);
+  const progress = useRef(new Animated.Value(visible ? 1 : 0)).current;
 
   useEffect(() => {
     if (visible) {

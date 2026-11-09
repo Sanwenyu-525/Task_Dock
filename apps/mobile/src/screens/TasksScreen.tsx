@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
   type ListRenderItemInfo,
 } from "react-native";
 
@@ -22,12 +23,13 @@ import { TaskEditorSheet } from "../components/TaskEditorSheet";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { TaskRow } from "../components/TaskRow";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { getSetting } from "../db/kv";
 import { createTask, deleteTask, listTasks, toggleTask, updateTask } from "../db/tasks";
 import { countTasks, formatDue, matchesQuery, selectTasks } from "../domain/taskQuery";
 import { describeRecurrence, parseRecurrence } from "../domain/recurrence";
 import type { NewTaskInput, Task, TaskFilter } from "../domain/types";
 import { describeError } from "../lib/errors";
-import { rescheduleAllReminders } from "../notifications/reminderEngine";
+import { rescheduleAllReminders, SNOOZE_SETTING_KEY } from "../notifications/reminderEngine";
 import { cancelReminder, scheduleReminder } from "../notifications/reminders";
 import { useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
@@ -38,9 +40,9 @@ import { buildTaskSections, flattenSections, type SectionKey, type TaskListRow }
 
 const FILTERS: { key: TaskFilter; label: string }[] = [
   { key: "all", label: "全部" },
-  { key: "pending", label: "待办" },
+  { key: "pending", label: "未完成" },
   { key: "today", label: "今天" },
-  { key: "overdue", label: "已过期" },
+  { key: "overdue", label: "逾期" },
   { key: "completed", label: "已完成" },
 ];
 
@@ -65,22 +67,20 @@ function actionSubtitle(task: Task, now: number): string {
 }
 
 /**
- * 页头时钟：年月日 + 时分秒。
- * 单独成组件是为了把秒级刷新限制在这一行内——放回 TasksScreen 会让整个列表每秒重渲染。
+ * 页头日期：今天 + 月日 + 星期（对齐页面原型）。
+ * 单独成组件是为了把每分钟刷新限制在这一行内——放回 TasksScreen 会让整个列表跟着重渲染。
  */
 function ClockLabel({ color }: { color: string }) {
   const [tick, setTick] = useState(() => Date.now());
 
   useEffect(() => {
-    const timer = setInterval(() => setTick(Date.now()), 1000);
+    const timer = setInterval(() => setTick(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
 
   const date = new Date(tick);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  const label = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${pad(
-    date.getHours(),
-  )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  const weekday = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][date.getDay()];
+  const label = `今天 ${date.getMonth() + 1}月${date.getDate()}日 ${weekday}`;
 
   return <Text style={[styles.eyebrow, { color }]}>{label}</Text>;
 }
@@ -88,6 +88,9 @@ function ClockLabel({ color }: { color: string }) {
 export function TasksScreen({ version = 0 }: { version?: number }) {
   const { tokens, scheme } = useTheme();
   const reduceMotion = useReduceMotion();
+  // 大字号下四张统计卡并排会把「已逾期/已完成」截成省略号：改为两列两行
+  const { fontScale } = useWindowDimensions();
+  const twoColumnStats = fontScale > 1.15;
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
@@ -181,7 +184,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
         } else if (outcome.task) {
           if (outcome.task.status === "completed") await cancelReminder(task.id);
           else if (outcome.task.remindAt != null && outcome.task.remindAt > Date.now()) {
-            await scheduleReminder(task.id, outcome.task.title, outcome.task.remindAt);
+            const snooze = (await getSetting(SNOOZE_SETTING_KEY)) !== "0";
+            await scheduleReminder(task.id, outcome.task.title, outcome.task.remindAt, snooze);
           }
         }
       } catch (error) {
@@ -216,7 +220,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       try {
         const task = await createTask(input);
         if (input.remindAt != null) {
-          const scheduled = await scheduleReminder(task.id, task.title, input.remindAt);
+          const snooze = (await getSetting(SNOOZE_SETTING_KEY)) !== "0";
+          const scheduled = await scheduleReminder(task.id, task.title, input.remindAt, snooze);
           if (!scheduled) {
             showToast("提醒未排期：系统通知权限未开启，任务已保存", "warn");
           }
@@ -325,6 +330,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
             title={item.section.title}
             count={item.section.tasks.length}
             hint={item.section.hint}
+            hintTone={item.section.hintTone}
             tone={item.section.tone}
             collapsed={collapsed.has(item.section.key)}
             onPress={() => toggleSection(item.section.key)}
@@ -380,45 +386,37 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
         </View>
       </View>
 
-      {/* 四块统计压成一行：360dp 窄屏也不再两行，标签用两字缩写 + 完整无障碍文案 */}
-      <View style={styles.stats}>
-        <StatCard compact label="待办" value={counts.pending} tone="accent" />
+      {/* 四块统计：白卡 + 标签在上、数值在下；0 值退回中性色。大字号时两列两行 */}
+      <View style={[styles.stats, twoColumnStats ? styles.statsWrap : null]}>
         <StatCard
-          compact
-          label="今日"
+          label="待办"
+          value={counts.pending}
+          tone="accent"
+          style={twoColumnStats ? styles.statHalf : undefined}
+        />
+        <StatCard
+          label="今天"
           value={counts.dueToday}
-          tone={statTone(counts.dueToday, "warn")}
+          tone={statTone(counts.dueToday, "accent")}
           accessibilityLabel={`今天到期 ${counts.dueToday} 项`}
+          style={twoColumnStats ? styles.statHalf : undefined}
         />
         <StatCard
-          compact
-          label="逾期"
+          label="已逾期"
           value={counts.overdue}
-          tone={statTone(counts.overdue, "danger")}
+          tone={statTone(counts.overdue, "warn")}
           accessibilityLabel={`已过期 ${counts.overdue} 项`}
+          style={twoColumnStats ? styles.statHalf : undefined}
         />
         <StatCard
-          compact
-          label="完成"
+          label="已完成"
           value={counts.completed}
           tone={statTone(counts.completed, "ok")}
           accessibilityLabel={`已完成 ${counts.completed} 项`}
+          style={twoColumnStats ? styles.statHalf : undefined}
         />
       </View>
 
-      <SearchField
-        value={query}
-        onChangeText={setQuery}
-        placeholder="搜索标题、描述或标签"
-        accessibilityLabel="搜索任务"
-      />
-
-      {searching ? (
-        <Text style={[styles.searchHint, { color: tokens.muted }]}>
-          找到 {visible.length} 项
-          {filter === "all" ? "" : `（当前筛选：${FILTERS.find((f) => f.key === filter)?.label}）`}
-        </Text>
-      ) : null}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -436,6 +434,20 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
           />
         ))}
       </ScrollView>
+
+      <SearchField
+        value={query}
+        onChangeText={setQuery}
+        placeholder="搜索标题、描述或标签"
+        accessibilityLabel="搜索任务"
+      />
+
+      {searching ? (
+        <Text style={[styles.searchHint, { color: tokens.muted }]}>
+          找到 {visible.length} 项
+          {filter === "all" ? "" : `（当前筛选：${FILTERS.find((f) => f.key === filter)?.label}）`}
+        </Text>
+      ) : null}
     </View>
   );
 
@@ -567,6 +579,12 @@ const styles = StyleSheet.create({
   stats: {
     flexDirection: "row",
     gap: space.sm,
+  },
+  statsWrap: {
+    flexWrap: "wrap",
+  },
+  statHalf: {
+    flexBasis: "47%",
   },
   filterScroll: {
     marginHorizontal: -space.lg,

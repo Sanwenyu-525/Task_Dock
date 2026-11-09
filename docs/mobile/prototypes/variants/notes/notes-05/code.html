@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=393, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TaskDock - 笔记</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "surface-variant": "#e2e1ee",
+            "dark-outline": "#26324A",
+            "primary-fixed": "#dee1ff",
+            "primary-container": "#E8ECFE",
+            "on-surface-faint": "#8A93A6",
+            "dark-surface": "#121A28",
+            "secondary-fixed": "#d9e2fa",
+            "on-surface": "#121826",
+            "warning-container": "#FBF0DC",
+            "on-primary-container": "#22307A",
+            "tertiary-container": "#b94500",
+            "on-surface-variant": "#444655",
+            "on-tertiary": "#ffffff",
+            "on-error-container": "#93000a",
+            "on-primary": "#ffffff",
+            "surface": "#FFFFFF",
+            "on-error": "#ffffff",
+            "on-secondary-container": "#5b6478",
+            "surface-tint": "#294de2",
+            "on-danger": "#FFFFFF",
+            "tertiary": "#913400",
+            "surface-container-lowest": "#ffffff",
+            "on-secondary": "#ffffff",
+            "primary-fixed-dim": "#b9c3ff",
+            "primary": "#153fd6",
+            "dark-on-surface-variant": "#9AA6BD",
+            "outline": "#E4E8F0",
+            "success-container": "#E4F6EE",
+            "on-tertiary-fixed": "#360f00",
+            "surface-container-highest": "#e2e1ee",
+            "surface-container-high": "#EEF1F7",
+            "surface-bright": "#fbf8ff",
+            "surface-container": "#eeedf9",
+            "on-background": "#1a1b24",
+            "tertiary-fixed-dim": "#ffb597",
+            "on-secondary-fixed": "#121c2c",
+            "inverse-surface": "#2f3039",
+            "dark-surface-container": "#0E1522",
+            "inverse-primary": "#b9c3ff",
+            "on-primary-fixed-variant": "#0032c4",
+            "outline-variant": "#E7EBF3",
+            "on-secondary-fixed-variant": "#3e475a",
+            "on-tertiary-fixed-variant": "#7e2c00",
+            "warning": "#A2620A",
+            "on-tertiary-container": "#ffe7df",
+            "surface-container-low": "#f4f2ff",
+            "dark-primary": "#8FA8FF",
+            "error-container": "#ffdad6",
+            "inverse-on-surface": "#f1effc",
+            "error": "#ba1a1a",
+            "dark-background": "#080D16",
+            "danger": "#C0332B",
+            "danger-container": "#FBE7E5",
+            "dark-on-surface": "#E8EDF7",
+            "on-primary-fixed": "#001159",
+            "tertiary-fixed": "#ffdbcd",
+            "background": "#F3F5FA",
+            "secondary-container": "#d9e2fa",
+            "success": "#0E8F63",
+            "surface-dim": "#dad9e5",
+            "secondary-fixed-dim": "#bdc6dd",
+            "secondary": "#555e72"
+          },
+          borderRadius: {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          spacing: {
+            "space-xl": "2rem",
+            "space-sm": "0.5rem",
+            "space-xs": "0.25rem",
+            "margin": "1rem",
+            "space-lg": "1.5rem",
+            "gutter": "1rem",
+            "space-md": "1rem"
+          },
+          fontFamily: {
+            "stat": ["Roboto Flex"],
+            "body": ["Roboto Flex"],
+            "title": ["Roboto Flex"],
+            "display": ["Roboto Flex"],
+            "meta": ["Roboto Flex"]
+          },
+          fontSize: {
+            "stat": ["26px", { lineHeight: "30px", fontWeight: "800" }],
+            "body": ["13px", { lineHeight: "19px", fontWeight: "400" }],
+            "title": ["16px", { lineHeight: "22px", fontWeight: "600" }],
+            "display": ["30px", { lineHeight: "36px", letterSpacing: "-0.02em", fontWeight: "800" }],
+            "meta": ["12px", { lineHeight: "16px", fontWeight: "400" }]
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      display: inline-block;
+      vertical-align: middle;
+      line-height: 1;
+    }
+    body {
+      -webkit-tap-highlight-color: transparent;
+      font-family: 'Roboto Flex', sans-serif;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-surface flex justify-center min-h-screen">
+<!-- Mobile Screen Container: Width 393px -->
+<div class="w-[393px] bg-background min-h-screen flex flex-col relative select-none">
+<!-- 1. Android Status Bar -->
+<header class="w-full bg-surface px-margin pt-space-xs pb-1 flex justify-between items-center text-on-surface">
+<span class="font-meta text-meta font-semibold">09:41</span>
+<div class="flex items-center space-x-1.5">
+<span class="material-symbols-outlined text-[15px]" data-icon="wifi">wifi</span>
+<span class="material-symbols-outlined text-[15px]" data-icon="signal_cellular_alt">signal_cellular_alt</span>
+<span class="material-symbols-outlined text-[15px]" data-icon="battery_full">battery_full</span>
+</div>
+</header>
+<!-- 2. Top Bar & Header -->
+<section class="bg-surface px-margin pt-space-sm pb-space-md border-b border-outline">
+<div class="flex items-center">
+<h1 class="font-display text-display text-on-surface">笔记</h1>
+<span class="bg-primary-container text-primary font-meta text-meta font-semibold px-2 py-0.5 rounded-full ml-2">规划中</span>
+</div>
+<p class="font-meta text-meta text-on-secondary-container mt-1">12 篇 · 仅本机</p>
+</section>
+<!-- Main Content Area -->
+<main class="flex-1 px-margin pt-space-md pb-28 space-y-space-md">
+<!-- 3. Search field -->
+<div class="relative w-full h-[44px] bg-surface-container-high rounded-xl border border-outline flex items-center px-3">
+<span class="material-symbols-outlined text-on-surface-faint mr-2 text-[20px]" data-icon="search">search</span>
+<input class="w-full bg-transparent border-0 p-0 font-body text-body text-on-surface placeholder-on-surface-faint focus:ring-0" placeholder="搜索笔记" type="text"/>
+</div>
+<!-- 4. Filter chips row -->
+<nav aria-label="Filters" class="flex items-center space-x-2">
+<button class="h-[32px] px-3.5 rounded-full bg-primary text-on-primary font-meta text-meta font-semibold flex items-center justify-center" type="button">全部</button>
+<button class="h-[32px] px-3.5 rounded-full bg-surface border border-outline text-on-secondary-container font-meta text-meta flex items-center justify-center hover:bg-surface-container-low transition-colors" type="button">置顶</button>
+<button class="h-[32px] px-3.5 rounded-full bg-surface border border-outline text-on-secondary-container font-meta text-meta flex items-center justify-center hover:bg-surface-container-low transition-colors" type="button">收藏</button>
+</nav>
+<!-- 5. Section: 置顶 (2) -->
+<section class="space-y-2.5">
+<div class="flex items-center justify-between">
+<div class="flex items-center space-x-1.5">
+<span class="w-[3px] h-[14px] bg-primary rounded-full inline-block"></span>
+<span class="font-title text-title text-on-surface">置顶</span>
+</div>
+<span class="bg-surface-container-high text-on-secondary-container font-meta text-meta px-2 py-0.5 rounded-full">2</span>
+</div>
+<div class="flex flex-col gap-3">
+<!-- Card 1 -->
+<article class="bg-surface rounded-xl border border-outline p-3.5 flex flex-col justify-between">
+<div>
+<h2 class="font-title text-title text-on-surface">Q4 目标复盘草稿</h2>
+<p class="font-body text-body text-on-secondary-container mt-1 line-clamp-2">三条主线：稳定性、移动端、同步。先保证桌面端不回归，本周完成移动端列表和笔记同步协议对接。</p>
+</div>
+<div class="flex items-center justify-between mt-3 pt-2 border-t border-outline-variant">
+<span class="font-meta text-meta text-on-surface-faint">revision 12 · 2 小时前</span>
+<span class="material-symbols-outlined text-primary text-[18px]" data-icon="push_pin" data-weight="fill" style="font-variation-settings: 'FILL' 1;">push_pin</span>
+</div>
+</article>
+<!-- Card 2 -->
+<article class="bg-surface rounded-xl border border-outline p-3.5 flex flex-col justify-between">
+<div>
+<h2 class="font-title text-title text-on-surface">报销流程备忘</h2>
+<p class="font-body text-body text-on-secondary-container mt-1 line-clamp-2">发票原件交财务，周三前；电子版备份到网盘归档目录，项目编号必须填写在备注一栏。</p>
+</div>
+<div class="flex items-center justify-between mt-3 pt-2 border-t border-outline-variant">
+<span class="font-meta text-meta text-on-surface-faint">revision 4 · 昨天</span>
+<span class="material-symbols-outlined text-primary text-[18px]" data-icon="push_pin" data-weight="fill" style="font-variation-settings: 'FILL' 1;">push_pin</span>
+</div>
+</article>
+</div>
+</section>
+<!-- 6. Section Header 全部笔记 (10) -->
+<section class="space-y-2.5 pt-1">
+<div class="flex items-center justify-between">
+<div class="flex items-center space-x-1.5">
+<span class="w-[3px] h-[14px] bg-on-secondary-container rounded-full inline-block"></span>
+<span class="font-title text-title text-on-surface">全部笔记</span>
+</div>
+<span class="bg-surface-container-high text-on-secondary-container font-meta text-meta px-2 py-0.5 rounded-full">10</span>
+</div>
+<div class="flex flex-col gap-3">
+<!-- Row 1 -->
+<article class="bg-surface rounded-xl border border-outline p-3 flex flex-col justify-between">
+<div>
+<h2 class="font-title text-title text-on-surface">阅读摘录：深度工作</h2>
+<p class="font-body text-body text-on-secondary-container mt-1 line-clamp-2">高质量工作产出 = 时间 × 专注度。彻底杜绝碎片化沟通造成的注意力残留，建立日常单任务窗口机制。</p>
+</div>
+<div class="flex items-center justify-between mt-3 pt-2 border-t border-outline-variant">
+<span class="font-meta text-meta text-on-surface-faint">revision 9 · 3 天前</span>
+</div>
+</article>
+<!-- Row 2 -->
+<article class="bg-surface rounded-xl border border-outline p-3 flex flex-col justify-between">
+<div>
+<h2 class="font-title text-title text-on-surface">周会纪要 11/06</h2>
+<p class="font-body text-body text-on-secondary-container mt-1 line-clamp-2">移动端同步骨架、桌面端 P1 清理、下周真机验收。待排查离线本地数据库索引更新阻塞主线程问题。</p>
+</div>
+<div class="flex items-center justify-between mt-3 pt-2 border-t border-outline-variant">
+<span class="font-meta text-meta text-on-surface-faint">revision 3 · 3 天前</span>
+</div>
+</article>
+<!-- Row 3 -->
+<article class="bg-surface rounded-xl border border-outline p-3 flex flex-col justify-between">
+<div>
+<h2 class="font-title text-title text-on-surface">体检注意事项</h2>
+<p class="font-body text-body text-on-secondary-container mt-1 line-clamp-2">空腹、带身份证、早上 8:30 到前台取号排队。前一晚 10 点后禁止进食进水，携带过往体检对比单据。</p>
+</div>
+<div class="flex items-center justify-between mt-3 pt-2 border-t border-outline-variant">
+<span class="font-meta text-meta text-on-surface-faint">revision 1 · 上周</span>
+</div>
+</article>
+</div>
+</section>
+</main>
+<!-- 7. Floating FAB -->
+<button aria-label="新建笔记" class="fixed bottom-24 right-4 z-40 w-[58px] h-[58px] rounded-full bg-primary text-on-primary flex items-center justify-center active:scale-95 transition-transform border border-outline" type="button">
+<span class="material-symbols-outlined text-[28px]" data-icon="add">add</span>
+</button>
+<!-- 8. Floating Bottom Navigation Bar (Shared Component Execution) -->
+<nav class="fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-margin py-space-xs bg-surface dark:bg-dark-surface border-t border-outline dark:border-dark-outline docked full-width bottom-0 h-16">
+<!-- Tab 1: 任务 -->
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-dark-on-surface-variant font-meta text-meta hover:bg-surface-container-low dark:hover:bg-dark-surface-container transition-colors active:scale-95 transition-transform flex-1 py-1" href="#">
+<span class="material-symbols-outlined text-[22px]" data-icon="task_alt">task_alt</span>
+<span class="mt-0.5">任务</span>
+</a>
+<!-- Tab 2: 收集箱 -->
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-dark-on-surface-variant font-meta text-meta hover:bg-surface-container-low dark:hover:bg-dark-surface-container transition-colors active:scale-95 transition-transform flex-1 py-1" href="#">
+<span class="material-symbols-outlined text-[22px]" data-icon="inbox">inbox</span>
+<span class="mt-0.5">收集箱</span>
+</a>
+<!-- Tab 3: 笔记 (Active) -->
+<a class="flex flex-col items-center justify-center text-primary dark:text-dark-primary font-semibold font-meta text-meta hover:bg-surface-container-low dark:hover:bg-dark-surface-container transition-colors active:scale-95 transition-transform flex-1 py-1" href="#">
+<span class="material-symbols-outlined text-[22px]" data-icon="description" data-weight="fill" style="font-variation-settings: 'FILL' 1;">description</span>
+<span class="mt-0.5">笔记</span>
+</a>
+<!-- Tab 4: 设置 -->
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-dark-on-surface-variant font-meta text-meta hover:bg-surface-container-low dark:hover:bg-dark-surface-container transition-colors active:scale-95 transition-transform flex-1 py-1" href="#">
+<span class="material-symbols-outlined text-[22px]" data-icon="settings">settings</span>
+<span class="mt-0.5">设置</span>
+</a>
+</nav>
+</div>
+</body></html>

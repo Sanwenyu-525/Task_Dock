@@ -87,10 +87,29 @@ CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_at);
 CREATE INDEX IF NOT EXISTS idx_captures_created ON captures(created_at);
 `;
 
+// v3：笔记表（原型 notes/note_editor 两屏的存储）。与 tasks 同一套同步纪律：
+// rev 每次写 +1，写操作与 outbox 同事务（entity = "note"）。软删除保留行备将来生成墓碑。
+export const MIGRATION_3 = `
+CREATE TABLE IF NOT EXISTS notes (
+  id TEXT PRIMARY KEY NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  pinned INTEGER NOT NULL DEFAULT 0,
+  favorited INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER,
+  rev INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at);
+`;
+
 /** 解析顺序即执行顺序；末尾追加新迁移，不要插入或重排。 */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: MIGRATION_1 },
   { version: 2, sql: MIGRATION_2 },
+  { version: 3, sql: MIGRATION_3 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

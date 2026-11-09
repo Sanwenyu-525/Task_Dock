@@ -3,7 +3,7 @@
 > 权威：`apps/mobile/src/db/schema.ts` 与各表读写模块。本文解释**为什么这样设计**，
 > 字段细节以代码为准。表字段名与桌面端 SQLite 对齐，便于将来同步直接对字段。
 
-## 1. 表结构（SCHEMA_VERSION = 2）
+## 1. 表结构（SCHEMA_VERSION = 3）
 
 ### tasks
 
@@ -39,6 +39,21 @@
 | `deleted_at` | INTEGER NULL | 软删除 |
 | `rev` | INTEGER NOT NULL DEFAULT 0 | |
 
+### notes（v3 新增）
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | TEXT PK | 前缀 `n_` |
+| `title` | TEXT NOT NULL DEFAULT '' | 允许空串；列表展示回退摘要/「无标题」 |
+| `body` | TEXT NOT NULL DEFAULT '' | 正文，保留换行 |
+| `pinned` | INTEGER NOT NULL DEFAULT 0 | 置顶；列表排序 pinned DESC, updated_at DESC |
+| `favorited` | INTEGER NOT NULL DEFAULT 0 | 收藏；筛选用 |
+| `created_at` / `updated_at` | INTEGER NOT NULL | epoch ms |
+| `deleted_at` | INTEGER NULL | 软删除 |
+| `rev` | INTEGER NOT NULL DEFAULT 0 | 每次写 +1；写操作与 outbox 同事务（`entity="note"`） |
+
+索引：`updated_at`。
+
 ### outbox（本地写操作队列）
 
 `op_id` PK、`entity`（task/capture/note）、`target_id`、`base_rev`、`payload`（JSON）、
@@ -55,6 +70,9 @@ payload 形态（当前实现）：
 | task | `advance` | `dueAt`、`remindAt` |
 | task | `delete` | — |
 | capture | `create` / `delete` / `promote` | — |
+| note | `create` | `title` |
+| note | `update` | `patch`（title/body/pinned/favorited，三态载荷） |
+| note | `delete` | — |
 
 ### reminder_schedule
 
@@ -65,7 +83,9 @@ payload 形态（当前实现）：
 
 ### kv
 
-`key` PK、`value` TEXT。当前使用：`theme_mode`、`reminder_actions_version`。
+`key` PK、`value` TEXT。当前使用：`theme_mode`、`reminder_actions_version`、
+`reminder_snooze_enabled`（「10 分钟后」动作开关，缺省 `1`）、
+`reminder_dismiss_on_complete`（完成后收起通知开关，缺省 `1`）、`widget_prefs`（小组件配置页偏好 JSON）。
 
 ## 2. 迁移规则
 
@@ -172,12 +192,30 @@ payload 形态（当前实现）：
 
 | 设计稿 | 现状 | 原因 |
 |---|---|---|
-| `notes` 表 | 未建 | 本轮只做任务与收集箱，避免空表与假功能 |
+| `notes` 表 | v3 已建（本机 CRUD） | 2026-11-08 按原型落地；同步/合并仍以设计稿为准，`server_rev`/墓碑未建 |
 | `server_rev` / `dirty` 列 | 未建，用 `rev` + `outbox.base_rev` | 独立模式没有服务端版本；先保证写路径统一 |
 | `tombstones` 表 | 未建 | 没有同步消费者，墓碑无从推进 |
 | `outbox.patch` 列 | 实际列名 `payload` | 与桌面端命名习惯统一 |
 | `tasks.dirty` | 无 | 同上，用 outbox 是否存在待发操作表达 |
 
+## 10. 配对凭据与连接元数据（2026-11-08）
+
+配对不新增 SQLite 表，也不改业务表结构：
+
+| 数据 | 位置 | 键/字段 | 说明 |
+|---|---|---|---|
+| 设备令牌（64 位十六进制） | `expo-secure-store` | `taskdock.sync.token.v1` | 只存本机 Keystore；绝不进 kv/SQLite/日志 |
+| 连接元数据 | `kv` | `sync.connection.v1` | `baseUrl/host/port/serverName/deviceId/platform/instanceId/fingerprint/pairedAt/lastSeenAt` |
+
+- `kv` 是既有设置表，无需迁移；`deleteSetting` 只服务于解除配对时的清理。
+- 元数据解析失败按「未配对」处理，不猜测字段；令牌读取失败（Keystore 不可用/格式不符）
+  同样按未配对处理，绝不回退明文存储。
+- 桌面端的设备授权表在桌面 SQLite（v42 `mobile_devices`），不在手机端；
+  详细协议与安全边界见 [06-pairing.md](06-pairing.md)。
+
 ## 变更记录
 
 - 2026-11-08 首版：对齐 schema v2 与代码实际字段；登记 `captures` 未自增 `rev` 的已知不一致。
+- 2026-11-08 v3：追加 `notes` 表（原型 notes/note_editor 两屏）；登记 note 的 outbox 载荷与
+  提醒/小组件相关 kv 键。
+- 2026-11-08 配对：新增 §10（SecureStore 令牌 + kv 连接元数据），明确不新增表、不改业务表。

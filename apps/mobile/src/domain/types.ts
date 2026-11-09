@@ -63,3 +63,27 @@ export interface NewTaskInput {
   tags?: string[];
   category?: string | null;
 }
+
+/**
+ * 笔记：纯本机的长文本记录。title 允许为空（列表回退展示摘要/「无标题」），
+ * pinned/favorited 只影响列表排序与筛选，不参与任何业务判定。
+ * rev 与 tasks 同语义：同步预留版本号，每次写 +1。
+ */
+export interface Note {
+  id: string;
+  title: string;
+  body: string;
+  pinned: boolean;
+  favorited: boolean;
+  createdAt: number;
+  updatedAt: number;
+  rev: number;
+}
+
+/** 新建笔记入参：title/body 都可以为空串，空笔记在保存前会被编辑器丢弃 */
+export interface NewNoteInput {
+  title?: string;
+  body?: string;
+  pinned?: boolean;
+  favorited?: boolean;
+}

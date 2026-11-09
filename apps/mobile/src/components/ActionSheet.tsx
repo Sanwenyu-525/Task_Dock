@@ -22,6 +22,7 @@ export function ActionSheet({
   actions,
   onAction,
   onRequestClose,
+  entityLabel = "任务操作",
 }: {
   visible: boolean;
   title: string;
@@ -29,6 +30,8 @@ export function ActionSheet({
   actions: SheetAction[];
   onAction: (key: string) => void;
   onRequestClose: () => void;
+  /** 无障碍播报的实体前缀；笔记等复用本组件时不能仍读「任务操作」 */
+  entityLabel?: string;
 }) {
   const { tokens } = useTheme();
 
@@ -36,7 +39,7 @@ export function ActionSheet({
     <BottomSheet
       visible={visible}
       onRequestClose={onRequestClose}
-      accessibilityLabel={`任务操作：${title}`}
+      accessibilityLabel={`${entityLabel}：${title}`}
       maxHeightRatio={0.7}
     >
       <View style={styles.header}>

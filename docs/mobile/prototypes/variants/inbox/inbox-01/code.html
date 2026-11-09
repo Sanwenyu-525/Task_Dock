@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TaskDock - 收集箱</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts: Roboto Flex -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS v3 -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "surface-bright": "#fbf8ff",
+            "outline": "#E4E8F0",
+            "on-tertiary-fixed-variant": "#7e2c00",
+            "dark-primary": "#8FA8FF",
+            "inverse-surface": "#2f3039",
+            "danger": "#C0332B",
+            "primary-fixed": "#dee1ff",
+            "secondary-fixed": "#d9e2fa",
+            "on-secondary-container": "#5b6478",
+            "inverse-on-surface": "#f1effc",
+            "dark-surface": "#121A28",
+            "danger-container": "#FBE7E5",
+            "surface-container-lowest": "#ffffff",
+            "secondary-container": "#d9e2fa",
+            "on-surface-variant": "#444655",
+            "background": "#F3F5FA",
+            "dark-on-surface-variant": "#9AA6BD",
+            "surface-container-low": "#f4f2ff",
+            "on-primary-fixed": "#001159",
+            "primary-container": "#E8ECFE",
+            "on-tertiary-container": "#ffe7df",
+            "surface": "#FFFFFF",
+            "warning": "#A2620A",
+            "primary-fixed-dim": "#b9c3ff",
+            "on-danger": "#FFFFFF",
+            "on-secondary": "#ffffff",
+            "dark-surface-container": "#0E1522",
+            "primary": "#3A5BEF",
+            "surface-container-highest": "#e2e1ee",
+            "success-container": "#E4F6EE",
+            "error": "#ba1a1a",
+            "surface-container-high": "#EEF1F7",
+            "on-primary": "#ffffff",
+            "outline-variant": "#E7EBF3",
+            "on-primary-container": "#22307A",
+            "tertiary": "#913400",
+            "inverse-primary": "#b9c3ff",
+            "dark-background": "#080D16",
+            "success": "#0E8F63",
+            "on-secondary-fixed-variant": "#3e475a",
+            "surface-container": "#eeedf9",
+            "on-tertiary": "#ffffff",
+            "on-primary-fixed-variant": "#0032c4",
+            "on-surface": "#121826",
+            "error-container": "#ffdad6",
+            "on-error": "#ffffff",
+            "dark-outline": "#26324A",
+            "on-secondary-fixed": "#121c2c",
+            "tertiary-container": "#b94500",
+            "secondary-fixed-dim": "#bdc6dd",
+            "surface-dim": "#dad9e5",
+            "surface-tint": "#294de2",
+            "on-surface-faint": "#8A93A6",
+            "on-tertiary-fixed": "#360f00",
+            "tertiary-fixed": "#ffdbcd",
+            "secondary": "#555e72",
+            "on-background": "#1a1b24",
+            "surface-variant": "#e2e1ee",
+            "warning-container": "#FBF0DC",
+            "dark-on-surface": "#E8EDF7",
+            "on-error-container": "#93000a",
+            "tertiary-fixed-dim": "#ffb597"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "space-xl": "2rem",
+            "space-md": "1rem",
+            "space-xs": "0.25rem",
+            "space-sm": "0.5rem",
+            "space-lg": "1.5rem",
+            "margin": "1rem",
+            "gutter": "1rem"
+          },
+          "fontFamily": {
+            "title": ["Roboto Flex", "sans-serif"],
+            "meta": ["Roboto Flex", "sans-serif"],
+            "display": ["Roboto Flex", "sans-serif"],
+            "body": ["Roboto Flex", "sans-serif"],
+            "stat": ["Roboto Flex", "sans-serif"]
+          },
+          "fontSize": {
+            "title": [
+              "16px",
+              {
+                "lineHeight": "22px",
+                "fontWeight": "600"
+              }
+            ],
+            "meta": [
+              "12px",
+              {
+                "lineHeight": "16px",
+                "fontWeight": "400"
+              }
+            ],
+            "display": [
+              "30px",
+              {
+                "lineHeight": "36px",
+                "letterSpacing": "-0.02em",
+                "fontWeight": "800"
+              }
+            ],
+            "body": [
+              "13px",
+              {
+                "lineHeight": "19px",
+                "fontWeight": "400"
+              }
+            ],
+            "stat": [
+              "26px",
+              {
+                "lineHeight": "30px",
+                "fontWeight": "800"
+              }
+            ]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-family: 'Material Symbols Outlined';
+      font-weight: normal;
+      font-style: normal;
+      font-size: 20px;
+      line-height: 1;
+      display: inline-block;
+      text-transform: none;
+      letter-spacing: normal;
+      word-wrap: normal;
+      white-space: nowrap;
+      direction: ltr;
+      -webkit-font-smoothing: antialiased;
+    }
+    body {
+      background-color: #F3F5FA;
+      color: #121826;
+      font-family: 'Roboto Flex', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    input::placeholder {
+      color: #8A93A6;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background min-h-screen flex justify-center selection:bg-primary-container selection:text-on-primary-container">
+<!-- Mobile Device Shell: 390dp max-width strictly defined -->
+<div class="w-full max-w-[390px] min-h-screen bg-background relative flex flex-col border-x border-outline">
+<!-- Android Status Bar (09:41) -->
+<header class="w-full pt-3 px-4 pb-1 flex items-center justify-between text-on-surface select-none">
+<span class="font-title text-body font-semibold tracking-tight text-on-surface">09:41</span>
+<div class="flex items-center space-x-1.5 text-on-surface">
+<span class="material-symbols-outlined !text-[16px]">signal_cellular_alt</span>
+<span class="material-symbols-outlined !text-[16px]">wifi</span>
+<span class="material-symbols-outlined !text-[18px]">battery_full</span>
+</div>
+</header>
+<!-- Top Page Header -->
+<section class="px-4 pt-3 pb-4">
+<h1 class="font-display text-display text-on-surface tracking-tight">收集箱</h1>
+<p class="font-meta text-meta text-on-secondary-container mt-1">6 条速记 · 仅本机保存</p>
+</section>
+<!-- Main Content Canvas -->
+<main class="flex-1 px-4 space-y-3 pb-[96px]">
+<!-- Quick Capture Card -->
+<section class="bg-surface rounded-[20px] border border-outline p-4">
+<form class="space-y-2.5" onsubmit="event.preventDefault();">
+<div class="bg-[#E9EEF8] h-[44px] rounded-[12px] px-3 flex items-center justify-between">
+<input class="w-full bg-transparent border-none p-0 font-body text-body text-on-surface focus:ring-0 focus:outline-none" placeholder="随手记一条…" type="text"/>
+<button class="ml-2 flex-shrink-0 bg-primary text-white font-meta text-meta font-semibold rounded-[12px] py-1.5 px-3 active:scale-95 transition-transform" type="submit">
+              记下
+            </button>
+</div>
+<div class="flex items-center space-x-1 px-0.5">
+<span class="font-meta text-[11px] leading-[15px] text-on-surface-faint">回车保存 · 不需要切换页面</span>
+</div>
+</form>
+</section>
+<!-- Search Field -->
+<section>
+<div class="h-[44px] bg-[#E9EEF8] rounded-[12px] px-3 flex items-center space-x-2">
+<span class="material-symbols-outlined text-on-secondary-container !text-[18px]">search</span>
+<input class="w-full bg-transparent border-none p-0 font-body text-body text-on-surface placeholder-on-surface-faint focus:ring-0 focus:outline-none" placeholder="搜索收集箱" type="search"/>
+</div>
+</section>
+<!-- Capture Card List (6 items total) -->
+<section class="space-y-3 pt-1">
+<!-- Item 1 -->
+<article class="bg-surface rounded-[16px] border border-outline p-[14px]">
+<p class="font-body text-[14px] leading-[20px] font-medium text-on-surface">
+            看到一句话：计划要短，执行要稳。
+          </p>
+<div class="flex justify-between items-center mt-2.5 pt-1">
+<span class="font-meta text-meta text-on-surface-faint">2 分钟前</span>
+<div class="flex items-center space-x-2.5">
+<button class="font-meta text-meta font-semibold text-primary active:opacity-70 transition-opacity" type="button">转任务</button>
+<span class="w-[3px] h-[3px] rounded-full bg-outline"></span>
+<button class="font-meta text-meta font-semibold text-danger active:opacity-70 transition-opacity" type="button">删除</button>
+</div>
+</div>
+</article>
+<!-- Item 2 -->
+<article class="bg-surface rounded-[16px] border border-outline p-[14px]">
+<p class="font-body text-[14px] leading-[20px] font-medium text-on-surface">
+<a class="text-primary underline hover:opacity-80" href="https://stitch.withgoogle.com" rel="noopener noreferrer" target="_blank">https://stitch.withgoogle.com</a>
+<span class="text-on-surface"> 有空研究一下「用 AI 出原型」</span>
+</p>
+<div class="flex justify-between items-center mt-2.5 pt-1">
+<span class="font-meta text-meta text-on-surface-faint">1 小时前</span>
+<div class="flex items-center space-x-2.5">
+<button class="font-meta text-meta font-semibold text-primary active:opacity-70 transition-opacity" type="button">转任务</button>
+<span class="w-[3px] h-[3px] rounded-full bg-outline"></span>
+<button class="font-meta text-meta font-semibold text-danger active:opacity-70 transition-opacity" type="button">删除</button>
+</div>
+</div>
+</article>
+<!-- Item 3 -->
+<article class="bg-surface rounded-[16px] border border-outline p-[14px]">
+<p class="font-body text-[14px] leading-[20px] font-medium text-on-surface">
+            报销单要贴发票原件，财务说下周三之前。
+          </p>
+<div class="flex justify-between items-center mt-2.5 pt-1">
+<span class="font-meta text-meta text-on-surface-faint">昨天 18:20</span>
+<div class="flex items-center space-x-2.5">
+<button class="font-meta text-meta font-semibold text-primary active:opacity-70 transition-opacity" type="button">转任务</button>
+<span class="w-[3px] h-[3px] rounded-full bg-outline"></span>
+<button class="font-meta text-meta font-semibold text-danger active:opacity-70 transition-opacity" type="button">删除</button>
+</div>
+</div>
+</article>
+<!-- Item 4 -->
+<article class="bg-surface rounded-[16px] border border-outline p-[14px]">
+<p class="font-body text-[14px] leading-[20px] font-medium text-on-surface">
+            体检预约：空腹，早上 8:30 到前台取号。
+          </p>
+<div class="flex justify-between items-center mt-2.5 pt-1">
+<span class="font-meta text-meta text-on-surface-faint">昨天 09:12</span>
+<div class="flex items-center space-x-2.5">
+<button class="font-meta text-meta font-semibold text-primary active:opacity-70 transition-opacity" type="button">转任务</button>
+<span class="w-[3px] h-[3px] rounded-full bg-outline"></span>
+<button class="font-meta text-meta font-semibold text-danger active:opacity-70 transition-opacity" type="button">删除</button>
+</div>
+</div>
+</article>
+<!-- Item 5 -->
+<article class="bg-surface rounded-[16px] border border-outline p-[14px]">
+<p class="font-body text-[14px] leading-[20px] font-medium text-on-surface">
+            买一根备用的 Type-C 数据线（编织材质）。
+          </p>
+<div class="flex justify-between items-center mt-2.5 pt-1">
+<span class="font-meta text-meta text-on-surface-faint">11月5日</span>
+<div class="flex items-center space-x-2.5">
+<button class="font-meta text-meta font-semibold text-primary active:opacity-70 transition-opacity" type="button">转任务</button>
+<span class="w-[3px] h-[3px] rounded-full bg-outline"></span>
+<button class="font-meta text-meta font-semibold text-danger active:opacity-70 transition-opacity" type="button">删除</button>
+</div>
+</div>
+</article>
+<!-- Item 6 -->
+<article class="bg-surface rounded-[16px] border border-outline p-[14px]">
+<p class="font-body text-[14px] leading-[20px] font-medium text-on-surface">
+            下周一和产品团队对齐 v2.1 需求排期。
+          </p>
+<div class="flex justify-between items-center mt-2.5 pt-1">
+<span class="font-meta text-meta text-on-surface-faint">11月4日</span>
+<div class="flex items-center space-x-2.5">
+<button class="font-meta text-meta font-semibold text-primary active:opacity-70 transition-opacity" type="button">转任务</button>
+<span class="w-[3px] h-[3px] rounded-full bg-outline"></span>
+<button class="font-meta text-meta font-semibold text-danger active:opacity-70 transition-opacity" type="button">删除</button>
+</div>
+</div>
+</article>
+</section>
+</main>
+<!-- Bottom Navigation Bar (Floating pill docked above bottom, 64dp tall, 16dp horizontal margin) -->
+<div class="fixed bottom-3 left-0 right-0 flex justify-center z-50 pointer-events-none">
+<nav aria-label="Bottom Navigation" class="w-[calc(100%-32px)] max-w-[358px] h-[64px] bg-surface rounded-[24px] border border-outline flex items-center justify-around px-2 pointer-events-auto">
+<!-- Tab 1: 任务 -->
+<button class="flex flex-col items-center justify-center text-on-surface-variant flex-1 py-1 active:scale-95 transition-transform" type="button">
+<span class="material-symbols-outlined !text-[22px]">task_alt</span>
+<span class="font-meta text-[11px] leading-[14px] mt-0.5">任务</span>
+</button>
+<!-- Tab 2: 收集箱 (ACTIVE MATCH) -->
+<button aria-current="page" class="flex flex-col items-center justify-center text-primary font-semibold flex-1 py-1 active:scale-95 transition-transform" type="button">
+<div class="flex items-center justify-center px-3 py-0.5 rounded-full bg-primary-container">
+<span class="material-symbols-outlined !text-[22px] text-primary" style="font-variation-settings: 'FILL' 1;">inbox</span>
+</div>
+<span class="font-meta text-[11px] leading-[14px] mt-0.5 text-primary font-semibold">收集箱</span>
+</button>
+<!-- Tab 3: 笔记 -->
+<button class="flex flex-col items-center justify-center text-on-surface-variant flex-1 py-1 active:scale-95 transition-transform" type="button">
+<span class="material-symbols-outlined !text-[22px]">description</span>
+<span class="font-meta text-[11px] leading-[14px] mt-0.5">笔记</span>
+</button>
+<!-- Tab 4: 设置 -->
+<button class="flex flex-col items-center justify-center text-on-surface-variant flex-1 py-1 active:scale-95 transition-transform" type="button">
+<span class="material-symbols-outlined !text-[22px]">settings</span>
+<span class="font-meta text-[11px] leading-[14px] mt-0.5">设置</span>
+</button>
+</nav>
+</div>
+</div>
+</body></html>

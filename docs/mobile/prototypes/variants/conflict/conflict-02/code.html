@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TaskDock 同步冲突解决 (移动端)</title>
+<!-- Load Tailwind CSS v3 with forms and container queries plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind configuration -->
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            'canvas-fog': '#F3F5FA',
+            'charcoal-navy': '#121826',
+            'slate-mute': '#5B6478',
+            'subtle-gray': '#8A93A6',
+            'hairline': '#E4E8F0',
+            'signal-blue': '#3A5BEF',
+            'blue-soft': '#E8ECFE',
+            'blue-border': '#D5DCFC',
+            'blue-dark': '#22307A',
+          },
+          fontFamily: {
+            sans: ['"Roboto Flex"', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', 'Helvetica', 'Arial', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+<!-- Custom styles for pixel perfection and layout constraints -->
+<style data-purpose="base-layout">
+    body {
+      background-color: #F3F5FA;
+      color: #121826;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-variant-numeric: tabular-nums;
+    }
+    .safe-bottom {
+      padding-bottom: env(safe-area-inset-bottom, 12px);
+    }
+  </style>
+</head>
+<body class="flex justify-center items-start min-h-screen bg-[#F3F5FA]">
+<!-- Mobile Viewport Container: 390px fixed equivalent mobile device shell -->
+<div class="w-full max-w-[390px] min-h-screen bg-[#F3F5FA] flex flex-col justify-between relative select-none">
+<!-- BEGIN: TopContainer -->
+<div class="w-full flex-1 flex flex-col">
+<!-- Android Status Bar -->
+<div class="w-full px-6 pt-3 pb-2 flex justify-between items-center text-charcoal-navy font-semibold text-[13px] tracking-tight" data-purpose="status-bar">
+<span>09:41</span>
+<div class="flex items-center space-x-1.5">
+<!-- Wi-Fi Icon -->
+<svg class="w-4 h-4 text-charcoal-navy fill-current" viewbox="0 0 24 24">
+<path d="M12 4C7.31 4 3.07 5.9 0 8.98L12 21 24 8.98A16.88 16.88 0 0012 4zm0 2.5c3.67 0 7 1.44 9.48 3.79L12 19.34 2.52 10.29A14.36 14.36 0 0112 6.5z"></path>
+</svg>
+<!-- Cellular Network Bars -->
+<svg class="w-3.5 h-3.5 text-charcoal-navy fill-current" viewbox="0 0 24 24">
+<path d="M2 22h20V2L2 22z"></path>
+</svg>
+<!-- Battery Icon -->
+<svg class="w-4 h-4 text-charcoal-navy fill-current rotate-90" viewbox="0 0 24 24">
+<path d="M17 5v14c0 .55-.45 1-1 1H8c-.55 0-1-.45-1-1V5c0-.55.45-1 1-1h1.5V2.5c0-.28.22-.5.5-.5h4c.28 0 .5.22.5.5V4H16c.55 0 1 .45 1 1z"></path>
+</svg>
+</div>
+</div>
+<!-- BEGIN: NavigationBar -->
+<header class="px-4 py-2 flex items-center justify-between relative">
+<!-- Back Button -->
+<button aria-label="返回" class="w-9 h-9 flex items-center justify-start text-charcoal-navy active:opacity-60" type="button">
+<svg class="w-5 h-5 stroke-[2.2] stroke-current fill-none" viewbox="0 0 24 24">
+<path d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+<!-- Center Title -->
+<h1 class="text-[17px] font-semibold text-charcoal-navy tracking-normal">处理冲突</h1>
+<!-- Counter Badge -->
+<div class="w-8 h-8 flex items-center justify-center bg-[#E5E9F2] rounded-full text-slate-mute text-[11px] font-semibold tracking-tight">
+          1 / 2
+        </div>
+</header>
+<!-- END: NavigationBar -->
+<!-- Dots Progress Indicator -->
+<div class="flex justify-center items-center space-x-1.5 py-1 mb-2" data-purpose="progress-indicator">
+<span class="w-6 h-1.5 rounded-full bg-signal-blue"></span>
+<span class="w-1.5 h-1.5 rounded-full bg-[#D1D8E5]"></span>
+</div>
+<!-- BEGIN: ContentArea -->
+<main class="px-4 space-y-3 pb-6 flex-1">
+<!-- Explainer Card -->
+<section class="bg-blue-soft border border-blue-border rounded-[16px] p-3.5 flex items-start space-x-3" data-purpose="explainer-card">
+<div class="mt-0.5 flex-shrink-0 text-signal-blue">
+<!-- Sync / Conflict swap icon -->
+<svg class="w-5 h-5 fill-none stroke-[2] stroke-current" viewbox="0 0 24 24">
+<path d="M19.5 12c0-4.142-3.358-7.5-7.5-7.5a7.48 7.48 0 00-5.303 2.197L3 10m0 0v-4m0 4h4m-2.5 2c0 4.142 3.358 7.5 7.5 7.5a7.48 7.48 0 005.303-2.197L21 14m0 0v4m0-4h-4" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</div>
+<p class="text-[13px] leading-[1.45] text-blue-dark">
+            同一任务在两台设备被修改，请选择保留哪一版。选择后会写入新 revision 并记录解决方式。
+          </p>
+</section>
+<!-- Task Identity Row -->
+<section class="bg-white border border-hairline rounded-[16px] px-4 py-3 flex items-center justify-between" data-purpose="task-identity">
+<div class="flex-1 min-w-0 pr-2">
+<div class="flex items-center space-x-2">
+<span class="text-[16px] font-semibold text-charcoal-navy truncate tracking-tight">提交报销单</span>
+<span class="px-1.5 py-0.5 rounded text-[11px] font-medium bg-[#F3F5FA] text-slate-mute flex-shrink-0">任务</span>
+</div>
+<div class="mt-1 text-[11px] text-subtle-gray tracking-tight">
+              本地 revision 8 · 桌面 revision 7
+            </div>
+</div>
+<div class="text-subtle-gray flex-shrink-0">
+<!-- Folder Icon -->
+<svg class="w-5 h-5 stroke-[1.8] stroke-current fill-none" viewbox="0 0 24 24">
+<path d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.2c1.134 0 2.097-.843 2.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</div>
+</section>
+<!-- Version Card 1: 本机版本 -->
+<article class="bg-white border border-hairline rounded-[16px] p-4" data-purpose="version-card-local">
+<!-- Header Bar -->
+<div class="flex items-center justify-between pb-3 border-b border-hairline">
+<div class="flex items-center space-x-2">
+<span class="w-[3px] h-3.5 bg-signal-blue rounded-full"></span>
+<h2 class="text-[13px] font-semibold text-charcoal-navy">本机版本</h2>
+</div>
+<span class="px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-soft text-signal-blue">2 分钟前</span>
+</div>
+<!-- Key-Value Fields -->
+<div class="pt-3 space-y-2.5 text-[13px]">
+<div class="flex items-center">
+<span class="w-14 text-slate-mute">标题</span>
+<span class="font-medium text-charcoal-navy">提交报销单</span>
+</div>
+<div class="flex items-center">
+<span class="w-14 text-slate-mute">截止</span>
+<div class="flex items-center space-x-2 font-medium text-charcoal-navy">
+<span>周五 18:00</span>
+<span class="px-1.5 py-0.5 rounded text-[11px] font-semibold bg-blue-soft text-signal-blue">更新</span>
+</div>
+</div>
+<div class="flex items-center">
+<span class="w-14 text-slate-mute">标签</span>
+<span class="font-medium text-charcoal-navy">工作 · 财务</span>
+</div>
+<div class="flex items-center">
+<span class="w-14 text-slate-mute">提醒</span>
+<span class="font-medium text-charcoal-navy">提前 30 分钟</span>
+</div>
+</div>
+</article>
+<!-- Version Card 2: 桌面端版本 -->
+<article class="bg-white border border-hairline rounded-[16px] p-4" data-purpose="version-card-desktop">
+<!-- Header Bar -->
+<div class="flex items-center justify-between pb-3 border-b border-hairline">
+<div class="flex items-center space-x-2">
+<span class="w-[3px] h-3.5 bg-subtle-gray rounded-full"></span>
+<h2 class="text-[13px] font-semibold text-charcoal-navy">桌面端版本</h2>
+</div>
+<span class="px-2 py-0.5 rounded-full text-[11px] font-medium bg-[#F3F5FA] text-slate-mute">5 分钟前</span>
+</div>
+<!-- Key-Value Fields -->
+<div class="pt-3 space-y-2.5 text-[13px]">
+<div class="flex items-center">
+<span class="w-14 text-slate-mute">标题</span>
+<span class="font-medium text-charcoal-navy">提交报销单（10 月）</span>
+</div>
+<div class="flex items-center">
+<span class="w-14 text-slate-mute">截止</span>
+<span class="font-medium text-charcoal-navy">周四 12:00</span>
+</div>
+<div class="flex items-center">
+<span class="w-14 text-slate-mute">标签</span>
+<span class="font-medium text-charcoal-navy">工作</span>
+</div>
+<div class="flex items-center">
+<span class="w-14 text-slate-mute">提醒</span>
+<span class="font-medium text-charcoal-navy">无</span>
+</div>
+</div>
+</article>
+</main>
+<!-- END: ContentArea -->
+</div>
+<!-- END: TopContainer -->
+<!-- BEGIN: BottomActionsArea -->
+<footer class="w-full px-4 pt-2 safe-bottom flex flex-col items-center" data-purpose="bottom-actions">
+<!-- Primary Action: Retain Local Version -->
+<button class="w-full h-12 bg-signal-blue hover:bg-blue-600 active:bg-blue-700 text-white font-semibold text-[14px] rounded-xl flex items-center justify-center space-x-1.5 transition-colors" type="button">
+<svg class="w-4 h-4 stroke-[2.5] stroke-current fill-none" viewbox="0 0 24 24">
+<path d="M4.5 12.75l6 6 9-13.5" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span>保留本机版本</span>
+</button>
+<!-- Secondary Action: Retain Desktop Version -->
+<button class="w-full h-12 mt-2.5 bg-white border border-hairline hover:bg-gray-50 active:bg-gray-100 text-charcoal-navy font-semibold text-[14px] rounded-xl flex items-center justify-center transition-colors" type="button">
+<span>保留桌面端版本</span>
+</button>
+<!-- Text Link: Field-by-Field Merge -->
+<div class="pt-2 pb-1">
+<button class="text-signal-blue font-medium text-[13px] py-1 px-3 active:opacity-60 transition-opacity" type="button">
+          逐字段合并…
+        </button>
+</div>
+<!-- Android Bottom Home Indicator Bar -->
+<div class="w-full flex justify-center py-2">
+<div class="w-32 h-1 bg-[#D1D5DF] rounded-full"></div>
+</div>
+</footer>
+<!-- END: BottomActionsArea -->
+</div>
+</body></html>

@@ -28,6 +28,10 @@ export interface Palette {
   sheet: string;
   /** 弹层遮罩 */
   overlay: string;
+  /** 恒暗表面：取景器、演示底板等无论主题如何都保持深色的区域 */
+  ink: string;
+  /** 压在 ink 上的文字：两套主题同一个值（ink 本身就恒暗，跟着主题改会掉到不可读） */
+  inkText: string;
   text: string;
   /** 正文次级文本：说明文字用，比 muted 更实，保证 4.5:1 */
   textSoft: string;
@@ -66,6 +70,8 @@ export const palette = (scheme: ColorScheme): Palette =>
         cardHighlight: "rgba(255,255,255,0.9)",
         sheet: "#FFFFFF",
         overlay: "rgba(9,14,26,0.46)",
+        ink: "#121826",
+        inkText: "#B7C2D6",
         text: "#0F172A",
         textSoft: "#3D4A5F",
         muted: "#5D6B80",
@@ -96,6 +102,8 @@ export const palette = (scheme: ColorScheme): Palette =>
         cardHighlight: "rgba(255,255,255,0.05)",
         sheet: "#141C2B",
         overlay: "rgba(2,6,16,0.66)",
+        ink: "#0A1120",
+        inkText: "#B7C2D6",
         text: "#E9EFFA",
         textSoft: "#C2CFE2",
         muted: "#93A5BD",

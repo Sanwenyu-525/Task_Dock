@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TaskDock - 任务</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts: Roboto Flex -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS v3 -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "surface-container": "#eeedf9",
+            "surface-tint": "#294de2",
+            "primary-fixed": "#dee1ff",
+            "tertiary-fixed": "#ffdbcd",
+            "outline-variant": "#E7EBF3",
+            "surface-container-highest": "#e2e1ee",
+            "surface-bright": "#fbf8ff",
+            "tertiary-fixed-dim": "#ffb597",
+            "on-surface-variant": "#444655",
+            "error": "#ba1a1a",
+            "on-error-container": "#93000a",
+            "surface-container-lowest": "#ffffff",
+            "dark-on-surface": "#E8EDF7",
+            "on-surface": "#1a1b24",
+            "secondary-container": "#d9e2fa",
+            "on-secondary-container": "#5b6478",
+            "surface-variant": "#e2e1ee",
+            "on-secondary": "#ffffff",
+            "on-tertiary-fixed-variant": "#7e2c00",
+            "on-error": "#ffffff",
+            "dark-primary": "#8FA8FF",
+            "primary-container": "#E8ECFE",
+            "error-container": "#ffdad6",
+            "tertiary": "#913400",
+            "inverse-surface": "#2f3039",
+            "danger": "#C0332B",
+            "warning": "#A2620A",
+            "inverse-primary": "#b9c3ff",
+            "dark-background": "#080D16",
+            "surface-container-high": "#e8e7f3",
+            "dark-surface": "#121A28",
+            "secondary": "#555e72",
+            "surface-container-low": "#f4f2ff",
+            "on-surface-faint": "#8A93A6",
+            "primary-fixed-dim": "#b9c3ff",
+            "on-secondary-fixed-variant": "#3e475a",
+            "dark-outline": "#26324A",
+            "on-primary": "#FFFFFF",
+            "success": "#0E8F63",
+            "on-secondary-fixed": "#121c2c",
+            "tertiary-container": "#b94500",
+            "on-tertiary-container": "#ffe7df",
+            "on-primary-container": "#22307A",
+            "dark-on-surface-variant": "#9AA6BD",
+            "dark-surface-container": "#0E1522",
+            "on-primary-fixed": "#001159",
+            "danger-container": "#FBE7E5",
+            "success-container": "#E4F6EE",
+            "inverse-on-surface": "#f1effc",
+            "on-tertiary": "#ffffff",
+            "outline": "#E4E8F0",
+            "on-danger": "#FFFFFF",
+            "on-tertiary-fixed": "#360f00",
+            "primary": "#3A5BEF",
+            "surface": "#FFFFFF",
+            "on-primary-fixed-variant": "#0032c4",
+            "on-background": "#1a1b24",
+            "warning-container": "#FBF0DC",
+            "secondary-fixed": "#d9e2fa",
+            "background": "#F3F5FA",
+            "surface-dim": "#dad9e5",
+            "secondary-fixed-dim": "#bdc6dd"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "2xl": "1rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "space-xl": "2rem",
+            "margin": "1rem",
+            "gutter": "1rem",
+            "space-sm": "0.5rem",
+            "space-lg": "1.5rem",
+            "space-xs": "0.25rem",
+            "space-md": "1rem"
+          },
+          "fontFamily": {
+            "title": ["Roboto Flex", "sans-serif"],
+            "meta": ["Roboto Flex", "sans-serif"],
+            "display": ["Roboto Flex", "sans-serif"],
+            "stat": ["Roboto Flex", "sans-serif"],
+            "body": ["Roboto Flex", "sans-serif"]
+          },
+          "fontSize": {
+            "title": [
+              "16px",
+              {
+                "lineHeight": "22px",
+                "fontWeight": "600"
+              }
+            ],
+            "meta": [
+              "12px",
+              {
+                "lineHeight": "16px",
+                "fontWeight": "400"
+              }
+            ],
+            "display": [
+              "30px",
+              {
+                "lineHeight": "36px",
+                "letterSpacing": "-0.02em",
+                "fontWeight": "800"
+              }
+            ],
+            "stat": [
+              "26px",
+              {
+                "lineHeight": "30px",
+                "fontWeight": "800"
+              }
+            ],
+            "body": [
+              "13px",
+              {
+                "lineHeight": "19px",
+                "fontWeight": "400"
+              }
+            ]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+    .tabular-nums {
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-surface antialiased flex justify-center min-h-screen">
+<!-- Mobile Android Viewport Shell (390dp max-w) -->
+<div class="relative w-full max-w-[390px] min-h-screen bg-background flex flex-col select-none overflow-x-hidden pb-[110px]">
+<!-- 1. Android System Status Bar (No Top App Bar, Starts Direct) -->
+<div class="w-full h-7 px-4 pt-1.5 flex justify-between items-center text-on-surface-variant font-meta text-[11px] font-semibold tracking-normal z-20">
+<span>09:41</span>
+<div class="flex items-center space-x-1.5 text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">signal_cellular_4_bar</span>
+<span class="material-symbols-outlined text-[14px]">wifi</span>
+<span class="material-symbols-outlined text-[15px] -rotate-90">battery_full</span>
+</div>
+</div>
+<!-- 2. Top Area (Eyebrow + Page Title + Local Mode Badge) -->
+<div class="px-margin pt-2.5 pb-2">
+<div class="font-meta text-meta text-on-secondary-container mb-0.5 tracking-tight font-medium">
+        今天 11月8日 周六
+      </div>
+<div class="flex items-center justify-between">
+<h1 class="font-display text-display text-[#121826] font-extrabold tracking-tight">
+          任务
+        </h1>
+<div class="bg-primary-container text-primary font-meta text-[11px] px-2.5 py-0.5 rounded-full font-semibold border border-primary/10">
+          本机模式
+        </div>
+</div>
+</div>
+<!-- 3. Stat Tiles Row (4 equal tiles, 12px gap, 16px radius, tabular nums) -->
+<div class="px-margin py-2">
+<div class="grid grid-cols-4 gap-3">
+<!-- Tile 1: 待办 7 -->
+<div class="bg-surface border border-outline rounded-[16px] p-2.5 flex flex-col justify-between h-[74px]">
+<span class="font-meta text-[11px] font-semibold text-on-secondary-container">待办</span>
+<span class="font-stat text-stat tabular-nums text-primary font-extrabold">7</span>
+</div>
+<!-- Tile 2: 今天 3 -->
+<div class="bg-surface border border-outline rounded-[16px] p-2.5 flex flex-col justify-between h-[74px]">
+<span class="font-meta text-[11px] font-semibold text-on-secondary-container">今天</span>
+<span class="font-stat text-stat tabular-nums text-primary font-extrabold">3</span>
+</div>
+<!-- Tile 3: 已逾期 1 -->
+<div class="bg-surface border border-outline rounded-[16px] p-2.5 flex flex-col justify-between h-[74px]">
+<span class="font-meta text-[11px] font-semibold text-on-secondary-container">已逾期</span>
+<span class="font-stat text-stat tabular-nums text-warning font-extrabold">1</span>
+</div>
+<!-- Tile 4: 已完成 12 -->
+<div class="bg-surface border border-outline rounded-[16px] p-2.5 flex flex-col justify-between h-[74px]">
+<span class="font-meta text-[11px] font-semibold text-on-secondary-container">已完成</span>
+<span class="font-stat text-stat tabular-nums text-success font-extrabold">12</span>
+</div>
+</div>
+</div>
+<!-- 4. Horizontally Scrollable Filter Chips (32dp tall, 9999px pill) -->
+<div class="py-2.5">
+<div class="flex items-center space-x-2 px-margin overflow-x-auto no-scrollbar">
+<!-- Selected '全部' -->
+<button class="h-8 px-4 rounded-full bg-primary text-on-primary font-body text-[13px] font-semibold shrink-0 active:scale-95 transition-transform flex items-center justify-center" type="button">
+          全部
+        </button>
+<!-- Unselected '未完成' -->
+<button class="h-8 px-4 rounded-full bg-transparent border border-outline text-on-secondary-container font-body text-[13px] font-medium shrink-0 active:scale-95 transition-transform flex items-center justify-center" type="button">
+          未完成
+        </button>
+<!-- Unselected '今天' -->
+<button class="h-8 px-4 rounded-full bg-transparent border border-outline text-on-secondary-container font-body text-[13px] font-medium shrink-0 active:scale-95 transition-transform flex items-center justify-center" type="button">
+          今天
+        </button>
+<!-- Unselected '逾期' -->
+<button class="h-8 px-4 rounded-full bg-transparent border border-outline text-on-secondary-container font-body text-[13px] font-medium shrink-0 active:scale-95 transition-transform flex items-center justify-center" type="button">
+          逾期
+        </button>
+<!-- Unselected '已完成' -->
+<button class="h-8 px-4 rounded-full bg-transparent border border-outline text-on-secondary-container font-body text-[13px] font-medium shrink-0 active:scale-95 transition-transform flex items-center justify-center" type="button">
+          已完成
+        </button>
+</div>
+</div>
+<!-- 5. Search Field (44dp, 12px radius, recessed #E9EEF8) -->
+<div class="px-margin py-1">
+<div class="h-11 rounded-[12px] bg-[#E9EEF8] border border-outline px-3 flex items-center space-x-2 w-full">
+<span class="material-symbols-outlined text-[20px] text-on-surface-faint shrink-0">search</span>
+<input class="w-full bg-transparent border-0 p-0 font-body text-body text-[#121826] placeholder:text-on-surface-faint focus:ring-0 focus:outline-none" placeholder="搜索任务、标签、分类" type="text"/>
+</div>
+</div>
+<!-- 6. Grouped Task List -->
+<div class="px-margin pt-3 space-y-4">
+<!-- GROUP 1: 今天（3） -->
+<section class="space-y-2">
+<!-- Header -->
+<div class="flex items-center justify-between py-1">
+<div class="flex items-center space-x-2">
+<span class="w-[3px] h-[14px] bg-primary rounded-full inline-block"></span>
+<div class="flex items-center space-x-1.5">
+<span class="font-body text-[13px] font-bold text-[#121826]">今天</span>
+<span class="bg-surface-container text-on-surface-variant font-meta text-[11px] px-1.5 py-0.2 rounded-full font-semibold">3</span>
+</div>
+</div>
+<span class="font-meta text-meta text-warning font-semibold">1 项已逾期</span>
+</div>
+<!-- Task 1 -->
+<div class="bg-surface border border-outline rounded-[16px] p-3 flex items-start space-x-3 active:bg-surface-container-low transition-colors">
+<button class="mt-0.5 w-5 h-5 rounded-full border-2 border-outline hover:border-primary shrink-0 flex items-center justify-center transition-colors" type="button">
+</button>
+<div class="flex-1 min-w-0">
+<h2 class="font-title text-[15px] font-semibold text-[#121826] tracking-tight truncate">
+              写周报：Q4 目标复盘
+            </h2>
+<div class="flex flex-wrap items-center gap-1.5 mt-1.5">
+<span class="bg-danger-container text-danger font-meta text-[11px] font-semibold px-2 py-0.5 rounded-[4px]">
+                高优先级
+              </span>
+<span class="bg-primary-container text-primary font-meta text-[11px] font-semibold px-2 py-0.5 rounded-[4px] flex items-center gap-1">
+<span class="material-symbols-outlined text-[12px]">schedule</span>
+                今天 18:00
+              </span>
+</div>
+</div>
+</div>
+<!-- Task 2 -->
+<div class="bg-surface border border-outline rounded-[16px] p-3 flex items-start space-x-3 active:bg-surface-container-low transition-colors">
+<button class="mt-0.5 w-5 h-5 rounded-full border-2 border-outline hover:border-primary shrink-0 flex items-center justify-center transition-colors" type="button">
+</button>
+<div class="flex-1 min-w-0">
+<h2 class="font-title text-[15px] font-semibold text-[#121826] tracking-tight truncate">
+              整理桌面端验收报告
+            </h2>
+<div class="flex flex-wrap items-center gap-1.5 mt-1.5">
+<span class="bg-warning-container text-warning font-meta text-[11px] font-semibold px-2 py-0.5 rounded-[4px] flex items-center gap-1">
+<span class="material-symbols-outlined text-[12px]">error</span>
+                已逾期 2 天
+              </span>
+<span class="bg-[#EEF1F7] text-on-secondary-container font-meta text-[11px] font-medium px-2 py-0.5 rounded-[4px]">
+                工作
+              </span>
+</div>
+</div>
+</div>
+<!-- Task 3 -->
+<div class="bg-surface border border-outline rounded-[16px] p-3 flex items-start space-x-3 active:bg-surface-container-low transition-colors">
+<button class="mt-0.5 w-5 h-5 rounded-full border-2 border-outline hover:border-primary shrink-0 flex items-center justify-center transition-colors" type="button">
+</button>
+<div class="flex-1 min-w-0">
+<h2 class="font-title text-[15px] font-semibold text-[#121826] tracking-tight truncate">
+              给妈妈打电话
+            </h2>
+<div class="flex items-center space-x-1.5 mt-1">
+<span class="font-meta text-meta text-on-surface-faint">
+                无截止时间
+              </span>
+</div>
+</div>
+</div>
+</section>
+<!-- GROUP 2: 本周（2） -->
+<section class="space-y-2 pt-1">
+<!-- Header -->
+<div class="flex items-center space-x-2 py-1">
+<span class="w-[3px] h-[14px] bg-primary rounded-full inline-block"></span>
+<div class="flex items-center space-x-1.5">
+<span class="font-body text-[13px] font-bold text-[#121826]">本周</span>
+<span class="bg-surface-container text-on-surface-variant font-meta text-[11px] px-1.5 py-0.2 rounded-full font-semibold">2</span>
+</div>
+</div>
+<!-- Task 4 -->
+<div class="bg-surface border border-outline rounded-[16px] p-3 flex items-start space-x-3 active:bg-surface-container-low transition-colors">
+<button class="mt-0.5 w-5 h-5 rounded-full border-2 border-outline hover:border-primary shrink-0 flex items-center justify-center transition-colors" type="button">
+</button>
+<div class="flex-1 min-w-0">
+<h2 class="font-title text-[15px] font-semibold text-[#121826] tracking-tight truncate">
+              预约体检
+            </h2>
+<div class="flex items-center gap-1.5 mt-1">
+<span class="bg-[#EEF1F7] text-on-secondary-container font-meta text-[11px] font-medium px-2 py-0.5 rounded-[4px]">
+                周三
+              </span>
+</div>
+</div>
+</div>
+<!-- Task 5 -->
+<div class="bg-surface border border-outline rounded-[16px] p-3 flex items-start space-x-3 active:bg-surface-container-low transition-colors">
+<button class="mt-0.5 w-5 h-5 rounded-full border-2 border-outline hover:border-primary shrink-0 flex items-center justify-center transition-colors" type="button">
+</button>
+<div class="flex-1 min-w-0">
+<h2 class="font-title text-[15px] font-semibold text-[#121826] tracking-tight truncate">
+              提交报销单
+            </h2>
+<div class="flex items-center gap-1.5 mt-1">
+<span class="bg-[#EEF1F7] text-on-secondary-container font-meta text-[11px] font-medium px-2 py-0.5 rounded-[4px]">
+                周五
+              </span>
+</div>
+</div>
+</div>
+</section>
+<!-- GROUP 3: 以后（1） -->
+<section class="space-y-2 pt-1">
+<!-- Header -->
+<div class="flex items-center space-x-2 py-1">
+<span class="w-[3px] h-[14px] bg-secondary rounded-full inline-block"></span>
+<div class="flex items-center space-x-1.5">
+<span class="font-body text-[13px] font-bold text-[#121826]">以后</span>
+<span class="bg-surface-container text-on-surface-variant font-meta text-[11px] px-1.5 py-0.2 rounded-full font-semibold">1</span>
+</div>
+</div>
+<!-- Task 6 -->
+<div class="bg-surface border border-outline rounded-[16px] p-3 flex items-start space-x-3 active:bg-surface-container-low transition-colors">
+<button class="mt-0.5 w-5 h-5 rounded-full border-2 border-outline hover:border-primary shrink-0 flex items-center justify-center transition-colors" type="button">
+</button>
+<div class="flex-1 min-w-0">
+<h2 class="font-title text-[15px] font-semibold text-[#121826] tracking-tight truncate">
+              学习 Rust 异步运行时
+            </h2>
+<div class="flex items-center space-x-1.5 mt-1">
+<span class="font-meta text-meta text-on-surface-faint">长期计划</span>
+</div>
+</div>
+</div>
+</section>
+<!-- GROUP 4: 无日期（1） -->
+<section class="space-y-2 pt-1">
+<!-- Header -->
+<div class="flex items-center space-x-2 py-1">
+<span class="w-[3px] h-[14px] bg-secondary rounded-full inline-block"></span>
+<div class="flex items-center space-x-1.5">
+<span class="font-body text-[13px] font-bold text-[#121826]">无日期</span>
+<span class="bg-surface-container text-on-surface-variant font-meta text-[11px] px-1.5 py-0.2 rounded-full font-semibold">1</span>
+</div>
+</div>
+<!-- Task 7 -->
+<div class="bg-surface border border-outline rounded-[16px] p-3 flex items-start space-x-3 active:bg-surface-container-low transition-colors">
+<button class="mt-0.5 w-5 h-5 rounded-full border-2 border-outline hover:border-primary shrink-0 flex items-center justify-center transition-colors" type="button">
+</button>
+<div class="flex-1 min-w-0">
+<h2 class="font-title text-[15px] font-semibold text-[#121826] tracking-tight truncate">
+              读完《深度工作》第三章
+            </h2>
+<div class="flex items-center space-x-1.5 mt-1">
+<span class="font-meta text-meta text-on-surface-faint">收集箱收录</span>
+</div>
+</div>
+</div>
+</section>
+</div>
+<!-- 7. Floating Action Button (FAB - 58dp circle, solid #3A5BEF, bottom-right) -->
+<div class="fixed bottom-[88px] right-[max(16px,calc(50%-195px+16px))] z-40">
+<button aria-label="新建任务" class="w-[58px] h-[58px] rounded-full bg-primary text-on-primary flex items-center justify-center border border-primary/20 active:scale-90 transition-transform cursor-pointer" type="button">
+<span class="material-symbols-outlined text-[30px]" data-icon="add">add</span>
+</button>
+</div>
+<!-- 8. Floating Bottom Tab Bar (64dp tall, floating pill inset 16dp, exactly 4 tabs in Chinese) -->
+<nav class="fixed bottom-3 left-1/2 -translate-x-1/2 w-[calc(100%-32px)] max-w-[358px] h-16 bg-surface border border-outline rounded-full z-30 flex items-center justify-around px-2">
+<!-- Tab 1: 任务 (Active) -->
+<a class="flex flex-col items-center justify-center py-1 px-4 rounded-full bg-primary-container text-primary font-semibold transition-all" href="#tasks">
+<span class="material-symbols-outlined text-[20px]" data-icon="task_alt" style="font-variation-settings: 'FILL' 1;">task_alt</span>
+<span class="font-meta text-[11px] leading-tight mt-0.5">任务</span>
+</a>
+<!-- Tab 2: 收集箱 (Inactive) -->
+<a class="flex flex-col items-center justify-center py-1 px-3 text-on-secondary-container hover:text-on-surface transition-colors" href="#inbox">
+<span class="material-symbols-outlined text-[20px]" data-icon="inbox">inbox</span>
+<span class="font-meta text-[11px] leading-tight mt-0.5">收集箱</span>
+</a>
+<!-- Tab 3: 笔记 (Inactive) -->
+<a class="flex flex-col items-center justify-center py-1 px-3 text-on-secondary-container hover:text-on-surface transition-colors" href="#notes">
+<span class="material-symbols-outlined text-[20px]" data-icon="description">description</span>
+<span class="font-meta text-[11px] leading-tight mt-0.5">笔记</span>
+</a>
+<!-- Tab 4: 设置 (Inactive) -->
+<a class="flex flex-col items-center justify-center py-1 px-3 text-on-secondary-container hover:text-on-surface transition-colors" href="#settings">
+<span class="material-symbols-outlined text-[20px]" data-icon="settings">settings</span>
+<span class="font-meta text-[11px] leading-tight mt-0.5">设置</span>
+</a>
+</nav>
+<!-- 9. Android Gesture Navigation Indicator -->
+<div class="fixed bottom-0.5 left-1/2 -translate-x-1/2 w-28 h-1 bg-on-surface-variant/30 rounded-full pointer-events-none z-50"></div>
+</div>
+</body></html>

@@ -2,19 +2,15 @@
   "expo": {
     "name": "TaskDock",
     "slug": "taskdock",
-    "version": "0.1.2",
+    "version": "0.1.4",
     "orientation": "portrait",
     "scheme": "taskdock",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "icon": "./assets/icon.png",
-    "splash": {
-      "backgroundColor": "#F2F5F9",
-      "resizeMode": "contain"
-    },
     "android": {
       "package": "dev.taskdock.mobile",
-      "versionCode": 5,
+      "versionCode": 8,
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-foreground.png",
@@ -24,10 +20,33 @@
     "plugins": [
       "expo-sqlite",
       "expo-secure-store",
+      "./plugins/withCleartextTraffic.js",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "TaskDock 使用相机扫描桌面端配对二维码；画面只在本机处理，不上传。",
+          "recordAudioAndroid": false
+        }
+      ],
       [
         "expo-notifications",
         {
+          "icon": "./assets/notification-icon.png",
+          "largeIcon": "./assets/icon.png",
           "color": "#4C8DFF"
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F3F5FA",
+          "image": "./assets/splash-mark.png",
+          "imageWidth": 80,
+          "resizeMode": "contain",
+          "dark": {
+            "backgroundColor": "#080D16",
+            "image": "./assets/splash-mark-dark.png"
+          }
         }
       ]
     ]

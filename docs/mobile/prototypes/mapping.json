@@ -1,0 +1,676 @@
+{
+  "generatedAt": "2026-11-08",
+  "sourceRoot": "stitch页面原型/",
+  "destinationRoot": "docs/mobile/prototypes/",
+  "counts": {
+    "variants": 33,
+    "screensWithVariants": 8,
+    "finalScreens": 11
+  },
+  "screens": {
+    "tasks": {
+      "name": "任务",
+      "order": 1
+    },
+    "inbox": {
+      "name": "收集箱",
+      "order": 2
+    },
+    "notes": {
+      "name": "笔记",
+      "order": 3
+    },
+    "note_editor": {
+      "name": "笔记编辑",
+      "order": 4
+    },
+    "settings": {
+      "name": "设置",
+      "order": 5
+    },
+    "notifications": {
+      "name": "通知与后台",
+      "order": 6
+    },
+    "pairing": {
+      "name": "配对新设备",
+      "order": 7
+    },
+    "sync": {
+      "name": "同步中心",
+      "order": 8
+    },
+    "conflict": {
+      "name": "冲突处理",
+      "order": 9
+    },
+    "widget": {
+      "name": "主屏小组件",
+      "order": 10
+    },
+    "share": {
+      "name": "分享接收",
+      "order": 11
+    }
+  },
+  "final": {
+    "tasks": {
+      "title": "任务页",
+      "status": "已实现 · 真机验证",
+      "screen": "src/screens/TasksScreen.tsx",
+      "note": "无顶栏、四统计块、筛选胶囊、分组列表、FAB、中文 Tab",
+      "key": "tasks",
+      "order": 1,
+      "width": 2560,
+      "height": 2088,
+      "files": {
+        "screen.png": "58e0387b5f48ed0948ea0d556f364c6c553e46593f06083a862e46a37f6ba0c9",
+        "code.html": "7a03c4c7a26661101a982d3b3682520f4921db232ae65c9bee2d5684395cc57d"
+      }
+    },
+    "inbox": {
+      "title": "收集箱",
+      "status": "已实现 · 真机验证",
+      "screen": "src/screens/InboxScreen.tsx",
+      "note": "速记输入、转任务/删除、无云同步状态",
+      "key": "inbox",
+      "order": 2,
+      "width": 2560,
+      "height": 2048,
+      "files": {
+        "screen.png": "ea1e4aec6a8cf2a48db63dfbbc865fe1222631f1c79c962d9172d9667226c64a",
+        "code.html": "c74be93bc25ae3a37ee1137af21f2a642585575d9068a849ef6ac431118bfd02"
+      }
+    },
+    "settings": {
+      "title": "设置",
+      "status": "已实现 · 真机验证",
+      "screen": "src/screens/SettingsScreen.tsx",
+      "note": "外观/提醒/本地数据/关于四分区",
+      "key": "settings",
+      "order": 5,
+      "width": 2560,
+      "height": 2264,
+      "files": {
+        "screen.png": "cf9f22cffb8c7ae9bf4d2a19afbc96e7fe6b223a6d4a2b4f6d2ba849f604a6f3",
+        "code.html": "3388389ee26eb1fdfa65b681b18a08c99cd22d1cc1198a1cb9dd5eec0497d0ba"
+      }
+    },
+    "notes": {
+      "title": "笔记列表",
+      "status": "已实现 · 真机未走查",
+      "screen": "src/screens/NotesScreen.tsx",
+      "note": "无顶栏、搜索、置顶/全部笔记、FAB",
+      "key": "notes",
+      "order": 3,
+      "width": 600,
+      "height": 1600,
+      "files": {
+        "screen.png": "6c3472cdf4754c7e610d75f17580a35afd0f2b37aff733e68e077f9516384c41",
+        "code.html": "f901d5af33eb762a26e128638f533177c743aea887867d737172e67f64c673aa"
+      }
+    },
+    "note_editor": {
+      "title": "笔记编辑",
+      "status": "已实现 · 真机未走查",
+      "screen": "src/screens/NoteEditorScreen.tsx",
+      "note": "标题/元信息、正文、底部工具栏",
+      "key": "note_editor",
+      "order": 4,
+      "width": 2560,
+      "height": 2048,
+      "files": {
+        "screen.png": "7e4eecd68e8f0499178b332b3109ab3be7fe710a49851af1b5b69e27d45e63d2",
+        "code.html": "8b0272f95fc1325e2fe691a7f646d510ef0d67ff68067b060ffea3203f86d07a"
+      }
+    },
+    "notifications": {
+      "title": "通知与后台",
+      "status": "已实现 · 真机未走查",
+      "screen": "src/screens/NotificationsScreen.tsx",
+      "note": "权限/测试通知真实，后台同步与远程推送为规划项",
+      "key": "notifications",
+      "order": 6,
+      "width": 2560,
+      "height": 2172,
+      "files": {
+        "screen.png": "4b9adc99e01244bd82d54cec844241cbf5e093b21a68eb85bba3c6371ef4c876",
+        "code.html": "e64512865e928b389803eec104583fbbcf1a3b574739354f48e28df8c544d650"
+      }
+    },
+    "pairing": {
+      "title": "配对新设备",
+      "status": "规划态结构",
+      "screen": "src/screens/PairingScreen.tsx",
+      "note": "协议未接网，页面为规划态",
+      "key": "pairing",
+      "order": 7,
+      "width": 2560,
+      "height": 2144,
+      "files": {
+        "screen.png": "4cd1234dcc99fd66e43c41a72ea565dede2ad3e045b74fdf07cd41690ef28d44",
+        "code.html": "5aeb243b1fdccd95daab7478f5e1e9ff392584ef594199be90c7c08edc6af5d2"
+      }
+    },
+    "sync": {
+      "title": "同步中心",
+      "status": "规划态结构",
+      "screen": "src/screens/SyncScreen.tsx",
+      "note": "未接网络，待发送为本机 outbox 实数",
+      "key": "sync",
+      "order": 8,
+      "width": 2560,
+      "height": 2048,
+      "files": {
+        "screen.png": "c6dfffcd6dbf3f321d7f6177a8685975fc30d1f02bf0a5f5532222dea905c379",
+        "code.html": "e378118f401c7fe71189137f413064db2b56850fb4f2e8f791d2ab75e6c4d3c0"
+      }
+    },
+    "conflict": {
+      "title": "冲突处理",
+      "status": "规划态结构",
+      "screen": "src/screens/ConflictScreen.tsx",
+      "note": "无合并实现；终版缺「规划中」徽标（已接受）",
+      "key": "conflict",
+      "order": 9,
+      "width": 780,
+      "height": 1768,
+      "files": {
+        "screen.png": "210342db5dc47bf91b3214b2cc729c3a1cdbb97eed724821292aafd819490b70",
+        "code.html": "e8d651becc99dabe078e040b4c43abe94431b9ce4692c48fc0b43677c7ab7e43"
+      }
+    },
+    "widget": {
+      "title": "主屏小组件",
+      "status": "规划态结构",
+      "screen": "src/screens/WidgetScreen.tsx",
+      "note": "原生 AppWidget 未实现，偏好存 kv；含「实时同步」旧口径",
+      "key": "widget",
+      "order": 10,
+      "width": 665,
+      "height": 1600,
+      "files": {
+        "screen.png": "dd9b3af6b012ef7a50bac778472a6fc3face19530939f192fbb55b0a89c59697",
+        "code.html": "a756f752ab5223cdda855d8397d65988b0e2674b1a6dcc53969cdf3a3009ee8a"
+      }
+    },
+    "share": {
+      "title": "分享接收",
+      "status": "规划态结构",
+      "screen": "src/screens/ShareScreen.tsx",
+      "note": "系统 intent-filter 未接；页面可真实存收集箱",
+      "key": "share",
+      "order": 11,
+      "width": 2560,
+      "height": 2048,
+      "files": {
+        "screen.png": "822162a8e2e4d1495a1b76f983f22d1b21786768c59cd5f8052e86757a4ef98d",
+        "code.html": "d0e76e86f90e960feec81c5c2cf4dd140aef1c94798f42e24281a1dd9df953a4"
+      }
+    }
+  },
+  "variants": [
+    {
+      "variant": "tasks-01",
+      "source": "taskdock_1",
+      "screen": "tasks",
+      "title": "TaskDock - 任务",
+      "width": 545,
+      "height": 1600,
+      "note": "完整任务页；无顶栏，统计块/筛选/分组/FAB/中文 Tab 齐全",
+      "path": "variants/tasks/tasks-01",
+      "files": {
+        "screen.png": "0773ae9bf87ffda6a44f55bc16273c9ff40e4a26f6406a15f8e3c696870552d4",
+        "code.html": "6311effea26cc4fd4c3dfab3d91983b3868831e0cb15f3cff7f2f0657e09c738"
+      }
+    },
+    {
+      "variant": "tasks-02",
+      "source": "taskdock_2",
+      "screen": "tasks",
+      "title": "TaskDock 任务列表",
+      "width": 1600,
+      "height": 1404,
+      "note": "宽幅画布导出，手机内容靠右；页面结构同任务页",
+      "path": "variants/tasks/tasks-02",
+      "files": {
+        "screen.png": "f2bed1fba5b17a4df2e8b8242e76eb4826d0141d04291e7afbe9bdbf4e68b73c",
+        "code.html": "6d5eab383a0d8ddbd343cc2ba3e3e9789df7381bf6d44601c2d6f949c4dff92c"
+      }
+    },
+    {
+      "variant": "tasks-03",
+      "source": "taskdock_3",
+      "screen": "tasks",
+      "title": "TaskDock 任务列表",
+      "width": 1600,
+      "height": 1305,
+      "note": "宽幅画布导出，手机内容靠右；页面结构同任务页",
+      "path": "variants/tasks/tasks-03",
+      "files": {
+        "screen.png": "6b0a1a73e923a3ee59645cb49c58159ecda5ec6709e8f870860d893a806f0134",
+        "code.html": "0b2e888fe212785c741a1672e6b814ad5d1ba95ff7a6122a9fd06fc450d187ff"
+      }
+    },
+    {
+      "variant": "tasks-04",
+      "source": "taskdock_9",
+      "screen": "tasks",
+      "title": "TaskDock - 任务",
+      "width": 530,
+      "height": 1600,
+      "note": "完整任务页；分组标题带数量，其余同任务页",
+      "path": "variants/tasks/tasks-04",
+      "files": {
+        "screen.png": "330a561dbab671c9891c1adf2dd65fce64161b2483a08ee1910992c6e9a020d2",
+        "code.html": "75ac357e3626559da6ee9fb918a9d193340b9c32f2573324e9536ab2446b0e89"
+      }
+    },
+    {
+      "variant": "tasks-05",
+      "source": "taskdock_10",
+      "screen": "tasks",
+      "title": "TaskDock",
+      "width": 629,
+      "height": 1600,
+      "note": "完整任务页；无顶栏，结构同任务页",
+      "path": "variants/tasks/tasks-05",
+      "files": {
+        "screen.png": "e31859dd7a42e767ef053501393ced3e9b7a5ddb44fd75626663d974c2518b52",
+        "code.html": "5ec1abe424710a538e3867d1555bc192e735a3ce5cdc27c340d1c9f198ec883a"
+      }
+    },
+    {
+      "variant": "tasks-06",
+      "source": "taskdock_22",
+      "screen": "tasks",
+      "title": "TaskDock",
+      "width": 572,
+      "height": 1600,
+      "note": "完整任务页；无顶栏，结构同任务页",
+      "path": "variants/tasks/tasks-06",
+      "files": {
+        "screen.png": "b337c144e9964365a0e59d3b3c024302f21f725f06958f645d1020f014503274",
+        "code.html": "66b035b56cea09f1a7a98e295d7dba7ee1259e490938e6f34ce1e7871fa63163"
+      }
+    },
+    {
+      "variant": "inbox-01",
+      "source": "taskdock_6",
+      "screen": "inbox",
+      "title": "TaskDock - 收集箱",
+      "width": 657,
+      "height": 1600,
+      "note": "收集箱；速记输入 + 搜索 + 列表 + 转任务/删除，结构完整",
+      "path": "variants/inbox/inbox-01",
+      "files": {
+        "screen.png": "4a4e33c5499a262c99e8514126dbd824e44e5ba5be87d5ff464957b5b170572a",
+        "code.html": "445b60705bbcdbae9980bbc641cd113848d74b40aac2e24a7bd85f59abe0f67f"
+      }
+    },
+    {
+      "variant": "inbox-02",
+      "source": "taskdock_11",
+      "screen": "inbox",
+      "title": "TaskDock - 收集箱",
+      "width": 610,
+      "height": 1600,
+      "note": "收集箱；结构同 taskdock_6",
+      "path": "variants/inbox/inbox-02",
+      "files": {
+        "screen.png": "18cfa34502136edd722ece74bcc3efccc4917365c3142d0e3e06093f7f9c9fd2",
+        "code.html": "9b038948b14ecf6d7424197be47fb0c05dd3bb921cd847c30379c4e60aefdd8f"
+      }
+    },
+    {
+      "variant": "inbox-03",
+      "source": "taskdock_15",
+      "screen": "inbox",
+      "title": "TaskDock 收集箱",
+      "width": 1600,
+      "height": 1280,
+      "note": "宽幅画布导出；收集箱结构完整，内容居中",
+      "path": "variants/inbox/inbox-03",
+      "files": {
+        "screen.png": "099092873aed304132c28007ae9c372b5837ae269cbe8090da9e09294eeb7ab3",
+        "code.html": "79feeca524a173e28d551db0407debff474dac66c50e36f50be96a1485d2ee1f"
+      }
+    },
+    {
+      "variant": "inbox-04",
+      "source": "taskdock_20",
+      "screen": "inbox",
+      "title": "TaskDock - 收集箱",
+      "width": 706,
+      "height": 1600,
+      "note": "收集箱；卡片间距更大，结构同 taskdock_6",
+      "path": "variants/inbox/inbox-04",
+      "files": {
+        "screen.png": "496c62823efcc2c81e80fcd8d9514c5878746e24fb53da24d0281eff7563665e",
+        "code.html": "a73f412f1182a306d3dd42e10952e33c4494af265cb192da9a0fd87c359bfa03"
+      }
+    },
+    {
+      "variant": "notes-01",
+      "source": "taskdock_14",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 559,
+      "height": 1600,
+      "note": "笔记列表；顶部品牌栏 + 搜索，规划徽标，FAB/中文 Tab 齐全",
+      "path": "variants/notes/notes-01",
+      "files": {
+        "screen.png": "55a5d7e2dfe50af8e5d2f7ee3cca1d00844005037c88316e41b1bf7ab21e3110",
+        "code.html": "5be417355a86a83be85fa5cebcca0774074608a2ff939743af5dd58cf741ce0c"
+      }
+    },
+    {
+      "variant": "notes-02",
+      "source": "taskdock_16",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 536,
+      "height": 1600,
+      "note": "笔记列表；顶部汉堡菜单 + 品牌栏，结构同 taskdock_14",
+      "path": "variants/notes/notes-02",
+      "files": {
+        "screen.png": "b5fbaaa7670efc2b5881e19f7a261c8ad203df54300e146f906d4c24599f8aa8",
+        "code.html": "58c93fa3304839466eda104dcaf159876159875cf6b62f447931ba937dc96e6d"
+      }
+    },
+    {
+      "variant": "notes-03",
+      "source": "taskdock_17",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 553,
+      "height": 1600,
+      "note": "笔记列表；顶部品牌栏，结构同 taskdock_14",
+      "path": "variants/notes/notes-03",
+      "files": {
+        "screen.png": "178172aaf8ff4fbe03ff16fbd5864850471567903b52c4e52909bf42b04453a1",
+        "code.html": "37b7c1203f277a4e6ffe8985cd1e5a96b769a9b255befc40c2144925a5a75334"
+      }
+    },
+    {
+      "variant": "notes-04",
+      "source": "taskdock_19",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 520,
+      "height": 1600,
+      "note": "笔记列表；顶部品牌栏，结构同 taskdock_14",
+      "path": "variants/notes/notes-04",
+      "files": {
+        "screen.png": "aab8cc93d2640046342644f13ec9fcd5c46b7f600c4099fa53ee2de5cd88bfbe",
+        "code.html": "9d794cd0407075439a9078858385c4e770bbc0583a95f519c89b42393ce7a7f6"
+      }
+    },
+    {
+      "variant": "notes-05",
+      "source": "taskdock_21",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 563,
+      "height": 1600,
+      "note": "笔记列表；无顶栏，结构接近 v2 终版",
+      "path": "variants/notes/notes-05",
+      "files": {
+        "screen.png": "96e18aec859df4ec421506bfb9e66db0e6f3cb70d8bbfc385745c8dd62f52213",
+        "code.html": "86590eddceb36707765b5f8ded7640d62eb000577c9e1effc1778f3a65566e1a"
+      }
+    },
+    {
+      "variant": "notes-06",
+      "source": "taskdock_23",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 557,
+      "height": 1600,
+      "note": "笔记列表；原始图标名 push_pin 与 Tab 文案 description 外露，不可用",
+      "path": "variants/notes/notes-06",
+      "files": {
+        "screen.png": "f66ce72a8bef58a77c4387801f7d129128bb4c2c2fe176b4043dcb5af017feb3",
+        "code.html": "b5a90d4b7cd1e4192e10873c8aa137cf331500ac32ea41c07b7359d43858d27e"
+      }
+    },
+    {
+      "variant": "notes-07",
+      "source": "taskdock_24",
+      "screen": "notes",
+      "title": "TaskDock 笔记",
+      "width": 487,
+      "height": 1492,
+      "note": "笔记列表；底部 Tab 栏被裁切",
+      "path": "variants/notes/notes-07",
+      "files": {
+        "screen.png": "888eb5f42da9d51bc6efa5e68c51a8386504306643c772cdb3ae52475b81e4f4",
+        "code.html": "ba6f24009e9ce6238d5690427e9a9880a761df7ac55464fb39c17d67e28b0128"
+      }
+    },
+    {
+      "variant": "notes-08",
+      "source": "taskdock_25",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 487,
+      "height": 1490,
+      "note": "笔记列表；底部 Tab 栏被裁切，置顶/收藏胶囊文字竖排换行",
+      "path": "variants/notes/notes-08",
+      "files": {
+        "screen.png": "260b3241b8208eabf6539eabd7b7d2dc0ba1e8fb3aa77e1702c53be9e5d4684f",
+        "code.html": "57c13b90a9ca58ba76347dbe3bba76543362cb3312272219d70e9635d7d63428"
+      }
+    },
+    {
+      "variant": "notes-09",
+      "source": "taskdock_26",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 487,
+      "height": 1505,
+      "note": "笔记列表；顶部汉堡菜单 + 品牌栏，筛选胶囊文字竖排换行",
+      "path": "variants/notes/notes-09",
+      "files": {
+        "screen.png": "f90f86302f9050879cb9c72252f1a9f22a719cac08db98e7a2d94629041e8aa4",
+        "code.html": "89469267d82167794ad7cadb0fb6180539dd98f82cc2059e9f9b529170217f24"
+      }
+    },
+    {
+      "variant": "notes-10",
+      "source": "taskdock_27",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 545,
+      "height": 1600,
+      "note": "笔记列表；顶部品牌栏，无 FAB",
+      "path": "variants/notes/notes-10",
+      "files": {
+        "screen.png": "3c66e6d65f715c4064d832e49a20b3a4194035e86ef834091fab164eb169b8c1",
+        "code.html": "e2e408573b99b15f25b5e58f854ff90a06c10bc6dcdc5b6e8a19b3ec99cbb5f4"
+      }
+    },
+    {
+      "variant": "notes-11",
+      "source": "taskdock_29",
+      "screen": "notes",
+      "title": "TaskDock - 笔记",
+      "width": 546,
+      "height": 1600,
+      "note": "笔记列表；顶部 TD 标识 + 同步/更多动作，结构完整",
+      "path": "variants/notes/notes-11",
+      "files": {
+        "screen.png": "75221305787081e341766f5cd04c28b7fa749452033e92777c8228972352022e",
+        "code.html": "be3ecdb31ddbc81ee84b44c87a2ea107a2e057a1404db9001423429f3aed1bd9"
+      }
+    },
+    {
+      "variant": "notes-12",
+      "source": "taskdock_30",
+      "screen": "notes",
+      "title": "TaskDock Mobile - 笔记",
+      "width": 600,
+      "height": 1600,
+      "note": "笔记列表；无顶栏、结构完整，v2 终版采用",
+      "path": "variants/notes/notes-12",
+      "files": {
+        "screen.png": "6c3472cdf4754c7e610d75f17580a35afd0f2b37aff733e68e077f9516384c41",
+        "code.html": "f901d5af33eb762a26e128638f533177c743aea887867d737172e67f64c673aa"
+      }
+    },
+    {
+      "variant": "settings-01",
+      "source": "taskdock_4",
+      "screen": "settings",
+      "title": "TaskDock 设置",
+      "width": 564,
+      "height": 1600,
+      "note": "设置页；统计块 + 外观/提醒/本地数据/关于，结构完整",
+      "path": "variants/settings/settings-01",
+      "files": {
+        "screen.png": "149d2542bef2bb798c2e53e70784ed381259e025516b0eecb7c58199a4c6205f",
+        "code.html": "3bed2b224ba812e74bb617bd5a99734f77ff1caa6cfad71ca00e931ce4484c59"
+      }
+    },
+    {
+      "variant": "settings-02",
+      "source": "taskdock_5",
+      "screen": "settings",
+      "title": "设置 - TaskDock",
+      "width": 571,
+      "height": 1600,
+      "note": "设置页；结构同 taskdock_4，间距略有差异",
+      "path": "variants/settings/settings-02",
+      "files": {
+        "screen.png": "ba377b506f1456d5d488581d025a2d56061a9ced9a49fed3702e188fb53a717f",
+        "code.html": "a566ef9e1de5a825db74c0013f543f15452f939a719b9cc78ed3555bb4abdf91"
+      }
+    },
+    {
+      "variant": "settings-03",
+      "source": "taskdock_7",
+      "screen": "settings",
+      "title": "TaskDock 设置 (移动端)",
+      "width": 1600,
+      "height": 1339,
+      "note": "宽幅画布导出；设置页结构完整",
+      "path": "variants/settings/settings-03",
+      "files": {
+        "screen.png": "ae2a504605b3c3e20209114969ffb340b73078af848349383ad7750abe7ce42c",
+        "code.html": "07d36bf54d90ce47dbac901466005f1c5f2ba9a9f241e5759c0108a9e41ab8f8"
+      }
+    },
+    {
+      "variant": "settings-04",
+      "source": "taskdock_12",
+      "screen": "settings",
+      "title": "TaskDock Settings",
+      "width": 564,
+      "height": 1600,
+      "note": "设置页；结构完整，HTML <title> 为英文但界面文案中文",
+      "path": "variants/settings/settings-04",
+      "files": {
+        "screen.png": "0adf4ff71ad5b51d734abe14e6296c745deb2ca370a2b93603f2818d7f5e4710",
+        "code.html": "2709ae04ee9181f6ec2ab5dd0be611a5946588172bb6ebcce876aacb0f367f08"
+      }
+    },
+    {
+      "variant": "settings-05",
+      "source": "taskdock_13",
+      "screen": "settings",
+      "title": "TaskDock 设置 (移动端)",
+      "width": 1600,
+      "height": 1415,
+      "note": "宽幅画布导出；设置页结构完整",
+      "path": "variants/settings/settings-05",
+      "files": {
+        "screen.png": "9f167d8fff703bec564aa21fd480270f467d3cdcd1c6257e848639008cdd666f",
+        "code.html": "a3f287349957d932671ccc67f92fffa93ddb5cc720d25da438dc8c7de00e7d2d"
+      }
+    },
+    {
+      "variant": "pairing-01",
+      "source": "taskdock_8",
+      "screen": "pairing",
+      "title": "TaskDock 配对新设备",
+      "width": 1600,
+      "height": 1340,
+      "note": "配对新设备；规划徽标 + 三步 + 取景框 + 6 位码 + 安全说明",
+      "path": "variants/pairing/pairing-01",
+      "files": {
+        "screen.png": "5a71be7d64bb45ba436a51bc5758aeb6285c362013cddda361108dca8d459baf",
+        "code.html": "1bce5069e818ef8640a5daabed64333e7148d59093b4cf43bd29855338a64f16"
+      }
+    },
+    {
+      "variant": "sync-01",
+      "source": "taskdock_18",
+      "screen": "sync",
+      "title": "TaskDock 同步 (移动端)",
+      "width": 1600,
+      "height": 1280,
+      "note": "同步中心；规划徽标 + 连接卡 + 待发送/待接收 + 设备行 + 开关",
+      "path": "variants/sync/sync-01",
+      "files": {
+        "screen.png": "ebe690f4b458ad0bb9e24d99b77297cf27a0ed71db795d67fc407fe5f4ead6f0",
+        "code.html": "0c265b4545537b647aa00fb0ecac0409cdb045700751cb9e4e507189f7ee08a2"
+      }
+    },
+    {
+      "variant": "conflict-01",
+      "source": "taskdock_28",
+      "screen": "conflict",
+      "title": "TaskDock - 处理冲突",
+      "width": 706,
+      "height": 1600,
+      "note": "冲突处理；返回栏 + 1/2 + 规则卡 + 双版本卡 + 三操作；无规划徽标",
+      "path": "variants/conflict/conflict-01",
+      "files": {
+        "screen.png": "8e2a6dff53381635cabc92d04d41f29d6ed20db6a7f69052a9cacde12174e9c2",
+        "code.html": "baa3534bb07edbb2d96173ca8f8fc836ded886dbf86a66e85d5dd515edf47251"
+      }
+    },
+    {
+      "variant": "conflict-02",
+      "source": "taskdock_31",
+      "screen": "conflict",
+      "title": "TaskDock 同步冲突解决 (移动端)",
+      "width": 706,
+      "height": 1600,
+      "note": "冲突处理；双版本卡 + 三操作；无规划徽标、无底部 Tab 栏",
+      "path": "variants/conflict/conflict-02",
+      "files": {
+        "screen.png": "f2c2ee835d4595a825642133ae3c6b3652616f8b55109b8cec128a6ea792ed8f",
+        "code.html": "f23d0075c4569c0c7f14fa3fe89b9c4600dc9842f7fedda3a9cfa120d1bfff07"
+      }
+    },
+    {
+      "variant": "widget-01",
+      "source": "taskdock_32",
+      "screen": "widget",
+      "title": "主屏小组件 - TaskDock",
+      "width": 582,
+      "height": 1600,
+      "note": "主屏小组件；返回栏 + 预览 + 尺寸/数据源/外观/交互 + 添加按钮；含「实时同步」文案",
+      "path": "variants/widget/widget-01",
+      "files": {
+        "screen.png": "7feb364d9a5f7cd72a7c01e457298ae6531c62bdcafa14e65ca0fcd44cd8bbfa",
+        "code.html": "1bf2324a291879fda47001f9a0298a5794d327a56196ce2c28c7098375a309bb"
+      }
+    },
+    {
+      "variant": "widget-02",
+      "source": "taskdock_33",
+      "screen": "widget",
+      "title": "主屏小组件配置 - TaskDock",
+      "width": 665,
+      "height": 1600,
+      "note": "主屏小组件；配置项最完整，v2 终版采用；含「实时同步」文案",
+      "path": "variants/widget/widget-02",
+      "files": {
+        "screen.png": "dd9b3af6b012ef7a50bac778472a6fc3face19530939f192fbb55b0a89c59697",
+        "code.html": "a756f752ab5223cdda855d8397d65988b0e2674b1a6dcc53969cdf3a3009ee8a"
+      }
+    }
+  ]
+}

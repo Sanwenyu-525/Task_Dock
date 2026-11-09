@@ -7,7 +7,7 @@ import { formatRelative } from "../domain/taskQuery";
 import type { Capture } from "../domain/types";
 import { duration, easeOut, useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
-import { font, radius, space } from "../theme/tokens";
+import { font, space } from "../theme/tokens";
 
 import { GlassCard } from "./GlassCard";
 
@@ -116,28 +116,16 @@ function CaptureCardBase({
               accessibilityHint="转为任务后这条记录会从收集箱移除"
               disabled={exiting}
               onPress={() => onPromote(capture)}
-              style={({ pressed }) => [
-                styles.action,
-                {
-                  borderColor: tokens.accentSoft,
-                  opacity: pressed ? 0.65 : 1,
-                },
-              ]}
+              style={({ pressed }) => [styles.action, { opacity: pressed ? 0.65 : 1 }]}
             >
-              <Text style={[styles.actionText, { color: tokens.accent }]}>转为任务</Text>
+              <Text style={[styles.actionText, { color: tokens.accent }]}>转任务</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`删除收集「${capture.content}」`}
               disabled={exiting}
               onPress={() => onDelete(capture)}
-              style={({ pressed }) => [
-                styles.action,
-                {
-                  borderColor: tokens.cardBorder,
-                  opacity: pressed ? 0.65 : 1,
-                },
-              ]}
+              style={({ pressed }) => [styles.action, { opacity: pressed ? 0.65 : 1 }]}
             >
               <Text style={[styles.actionText, { color: tokens.danger }]}>删除</Text>
             </Pressable>
@@ -176,9 +164,7 @@ const styles = StyleSheet.create({
   action: {
     minHeight: 44,
     justifyContent: "center",
-    paddingHorizontal: space.md,
-    borderRadius: radius.chip,
-    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: space.sm,
   },
   actionText: {
     fontSize: font.meta,

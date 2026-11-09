@@ -164,11 +164,9 @@ export function InboxScreen({
               收集箱
             </Text>
             <Text style={[styles.subtitle, { color: tokens.muted }]}>
-              {captures.length === 0
-                ? "先记下来，之后再整理成任务"
-                : searching
-                  ? `找到 ${visible.length} 条 · 共 ${captures.length} 条待整理`
-                  : `${captures.length} 条待整理 · 转成任务后会自动离开这里`}
+              {searching
+                ? `找到 ${visible.length} 条 · 共 ${captures.length} 条速记`
+                : `${captures.length} 条速记 · 仅本机保存`}
             </Text>
           </View>
           <Pressable
@@ -197,7 +195,7 @@ export function InboxScreen({
               onChangeText={setText}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
-              placeholder="随手记一条：想法、链接、待确认的事…"
+              placeholder="随手记一条…"
               placeholderTextColor={tokens.muted}
               multiline
               textAlignVertical="top"
@@ -216,7 +214,7 @@ export function InboxScreen({
                 scaleTo={0.94}
                 contentStyle={[styles.recordButton, { backgroundColor: tokens.accentFill }]}
               >
-                <Text style={[styles.recordText, { color: tokens.onAccent }]}>记录</Text>
+                <Text style={[styles.recordText, { color: tokens.onAccent }]}>记下</Text>
               </PressableScale>
             </View>
           </View>
@@ -225,7 +223,7 @@ export function InboxScreen({
         <SearchField
           value={query}
           onChangeText={setQuery}
-          placeholder="搜索收集箱内容"
+          placeholder="搜索收集箱"
           accessibilityLabel="搜索收集箱"
         />
       </View>

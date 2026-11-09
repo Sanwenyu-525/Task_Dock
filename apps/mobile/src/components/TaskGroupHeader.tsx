@@ -1,4 +1,4 @@
-// 分组头：左侧色条 + 名称 + 数量胶囊 + 折叠箭头，右侧一条分割线延伸到屏幕边。
+// 分组头：左侧色条 + 名称 + (数量) + 折叠箭头，右侧分割线延伸到屏幕边；补充说明用胶囊。
 // 色条比圆点更容易在长列表里做视觉锚点，也让「今天 / 已完成」这些分区一眼可分。
 // 折叠只切展示：点击整行开合，计数始终显示，用户知道收起来了几项。
 // 纯展示，不参与分组计算（分组在 src/screens/taskGroups.ts）。
@@ -9,11 +9,13 @@ import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
 export type GroupTone = "accent" | "warn" | "ok" | "muted";
+export type GroupHintTone = "muted" | "warn";
 
 function TaskGroupHeaderBase({
   title,
   count,
   hint,
+  hintTone = "muted",
   tone = "muted",
   collapsed = false,
   onPress,
@@ -21,6 +23,8 @@ function TaskGroupHeaderBase({
   title: string;
   count: number;
   hint?: string;
+  /** 补充说明的色调：warn 用于「N 项已逾期」这类需要留意的提示 */
+  hintTone?: GroupHintTone;
   tone?: GroupTone;
   /** true = 该分组已折叠，任务行不显示 */
   collapsed?: boolean;
@@ -41,9 +45,26 @@ function TaskGroupHeaderBase({
     <>
       <View style={[styles.bar, { backgroundColor: toneColor }]} />
       <Text style={[styles.title, { color: tokens.text }]}>{title}</Text>
-      <View style={[styles.countPill, { backgroundColor: tokens.track }]}>
-        <Text style={[styles.count, { color: tokens.muted }]}>{count}</Text>
-      </View>
+      <Text style={[styles.count, { color: tokens.muted }]}>({count})</Text>
+      <View style={[styles.rule, { backgroundColor: tokens.separator }]} />
+      {hint ? (
+        <View
+          style={[
+            styles.hintPill,
+            { backgroundColor: hintTone === "warn" ? tokens.warnSoft : tokens.track },
+          ]}
+        >
+          <Text
+            numberOfLines={1}
+            style={[
+              styles.hint,
+              { color: hintTone === "warn" ? tokens.warn : tokens.muted },
+            ]}
+          >
+            {hint}
+          </Text>
+        </View>
+      ) : null}
       {onPress ? (
         <View style={styles.chevronBox} pointerEvents="none">
           <View
@@ -57,12 +78,6 @@ function TaskGroupHeaderBase({
             ]}
           />
         </View>
-      ) : null}
-      <View style={[styles.rule, { backgroundColor: tokens.separator }]} />
-      {hint ? (
-        <Text numberOfLines={1} style={[styles.hint, { color: tokens.muted }]}>
-          {hint}
-        </Text>
       ) : null}
     </>
   );
@@ -117,14 +132,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     letterSpacing: 0.3,
   },
-  countPill: {
-    minWidth: 22,
-    height: 18,
-    paddingHorizontal: 6,
-    borderRadius: 9,
-    alignItems: "center",
-    justifyContent: "center",
-  },
   count: {
     fontSize: font.label,
     fontWeight: "700",
@@ -146,8 +153,14 @@ const styles = StyleSheet.create({
     flex: 1,
     height: StyleSheet.hairlineWidth,
   },
+  hintPill: {
+    paddingHorizontal: space.sm,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
   hint: {
     flexShrink: 1,
     fontSize: font.label,
+    fontWeight: "600",
   },
 });

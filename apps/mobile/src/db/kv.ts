@@ -15,3 +15,9 @@ export async function setSetting(key: string, value: string): Promise<void> {
     [key, value],
   );
 }
+
+/** 删除设置键（解除配对时清理连接元数据；不存在的键视为成功）。 */
+export async function deleteSetting(key: string): Promise<void> {
+  const db = getDatabase();
+  await db.runAsync("DELETE FROM kv WHERE key = ?", [key]);
+}

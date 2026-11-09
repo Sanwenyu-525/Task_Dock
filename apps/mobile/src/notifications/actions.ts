@@ -5,6 +5,7 @@
 // 迟早一边推进、一边不推进。
 import * as Notifications from "expo-notifications";
 
+import { getSetting } from "../db/kv";
 import { getTask, toggleTask, updateTask } from "../db/tasks";
 import { rescheduleAllReminders } from "./reminderEngine";
 import {
@@ -13,6 +14,9 @@ import {
   REMINDER_ACTION_SNOOZE,
   SNOOZE_MINUTES,
 } from "./reminders";
+
+/** 「完成后收起通知」开关的 kv 键（通知与后台页维护），默认开启 */
+const DISMISS_SETTING_KEY = "reminder_dismiss_on_complete";
 
 /** 冷启动补处理的时间窗（秒）：太久以前的响应直接丢弃，避免重放一次「完成」 */
 const COLD_START_WINDOW_SECONDS = 10 * 60;
@@ -80,8 +84,12 @@ export async function handleNotificationResponse(
       await rescheduleAllReminders();
     }
   } finally {
-    // 无论成功、失败还是任务已处理过，都要把这条通知收起
-    if (isReminderAction) await dismissNotification(response);
+    // 无论成功、失败还是任务已处理过，都按用户开关决定是否收起这条通知。
+    // 关闭「完成后收起通知」时保留在通知栏里，方便回看刚完成的内容。
+    if (isReminderAction) {
+      const dismissRaw = await getSetting(DISMISS_SETTING_KEY).catch(() => null);
+      if (dismissRaw !== "0") await dismissNotification(response);
+    }
   }
 }
 

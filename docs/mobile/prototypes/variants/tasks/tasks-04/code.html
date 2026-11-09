@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TaskDock - 任务</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts: Roboto Flex -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Flex:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "tertiary-fixed-dim": "#ffb597",
+            "on-secondary-fixed": "#121c2c",
+            "surface-container": "#eeedf9",
+            "on-primary": "#ffffff",
+            "secondary": "#555e72",
+            "on-secondary": "#ffffff",
+            "surface-variant": "#e2e1ee",
+            "on-primary-fixed": "#001159",
+            "on-error": "#ffffff",
+            "error": "#ba1a1a",
+            "dark-on-surface-variant": "#9AA6BD",
+            "surface-tint": "#294de2",
+            "on-tertiary-fixed": "#360f00",
+            "dark-primary": "#8FA8FF",
+            "outline": "#E4E8F0",
+            "dark-surface-container": "#0E1522",
+            "surface-dim": "#dad9e5",
+            "surface": "#FFFFFF",
+            "primary-container": "#E8ECFE",
+            "surface-container-highest": "#e2e1ee",
+            "inverse-primary": "#b9c3ff",
+            "tertiary": "#913400",
+            "surface-container-low": "#f4f2ff",
+            "on-secondary-fixed-variant": "#3e475a",
+            "dark-background": "#080D16",
+            "danger-container": "#FBE7E5",
+            "tertiary-fixed": "#ffdbcd",
+            "secondary-container": "#d9e2fa",
+            "dark-on-surface": "#E8EDF7",
+            "success-container": "#E4F6EE",
+            "primary-fixed-dim": "#b9c3ff",
+            "inverse-on-surface": "#f1effc",
+            "on-surface-variant": "#5B6478",
+            "on-tertiary-container": "#ffe7df",
+            "background": "#F3F5FA",
+            "on-surface": "#121826",
+            "surface-container-lowest": "#ffffff",
+            "dark-surface": "#121A28",
+            "on-primary-fixed-variant": "#0032c4",
+            "primary-fixed": "#dee1ff",
+            "on-danger": "#FFFFFF",
+            "on-background": "#121826",
+            "outline-variant": "#E7EBF3",
+            "secondary-fixed-dim": "#bdc6dd",
+            "on-secondary-container": "#5b6478",
+            "danger": "#C0332B",
+            "surface-bright": "#fbf8ff",
+            "warning": "#A2620A",
+            "on-primary-container": "#eaebff",
+            "success": "#0E8F63",
+            "on-tertiary": "#ffffff",
+            "inverse-surface": "#2f3039",
+            "on-surface-faint": "#8A93A6",
+            "primary": "#3A5BEF",
+            "secondary-fixed": "#d9e2fa",
+            "on-tertiary-fixed-variant": "#7e2c00",
+            "tertiary-container": "#b94500",
+            "error-container": "#ffdad6",
+            "surface-container-high": "#EEF1F7",
+            "dark-outline": "#26324A",
+            "warning-container": "#FBF0DC",
+            "on-error-container": "#93000a"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem",
+            "2xl": "1rem",
+            "3xl": "1.25rem"
+          },
+          "spacing": {
+            "space-xs": "0.25rem",
+            "space-sm": "0.5rem",
+            "space-md": "1rem",
+            "space-lg": "1.5rem",
+            "space-xl": "2rem",
+            "margin": "1rem",
+            "gutter": "1rem"
+          },
+          "fontFamily": {
+            "meta": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"],
+            "title": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"],
+            "body": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"],
+            "stat": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"],
+            "display": ["Roboto Flex", "system-ui", "-apple-system", "sans-serif"]
+          },
+          "fontSize": {
+            "meta": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+            "title": ["16px", { "lineHeight": "22px", "fontWeight": "600" }],
+            "body": ["13px", { "lineHeight": "19px", "fontWeight": "400" }],
+            "stat": ["26px", { "lineHeight": "30px", "fontWeight": "800" }],
+            "display": ["30px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "800" }]
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+      display: inline-block;
+      vertical-align: middle;
+      line-height: 1;
+    }
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-surface antialiased font-body flex justify-center items-start min-h-full selection:bg-primary-container selection:text-primary">
+<!-- Mobile Frame Container: 390px fixed simulation for mobile portrait layout -->
+<main class="w-full max-w-[390px] min-h-screen bg-background relative flex flex-col mx-auto overflow-hidden shadow-2xl">
+<!-- 1. System Status Bar (Android standard: 09:41, wifi, battery) -->
+<header class="w-full h-8 px-5 flex items-center justify-between text-on-surface shrink-0 select-none pt-1">
+<span class="font-meta text-[13px] font-semibold tracking-tight text-on-surface">09:41</span>
+<div class="flex items-center space-x-1.5 text-on-surface">
+<span class="material-symbols-outlined text-[15px]" data-icon="signal_cellular_4_bar">signal_cellular_4_bar</span>
+<span class="material-symbols-outlined text-[15px]" data-icon="wifi">wifi</span>
+<span class="material-symbols-outlined text-[17px] rotate-90" data-icon="battery_full">battery_full</span>
+</div>
+</header>
+<!-- 2. Scrollable Canvas -->
+<section class="flex-1 overflow-y-auto no-scrollbar px-margin pt-1.5 pb-28">
+<!-- Date Eyebrow & Page Header (NO TaskDock wordmark / NO TopBar per prompt) -->
+<div class="mb-4">
+<p class="font-meta text-meta text-on-surface-variant font-medium">今天 11月8日 周六</p>
+<div class="flex items-center justify-between mt-0.5">
+<h1 class="font-display text-display text-on-surface tracking-tight font-extrabold">任务</h1>
+<div class="inline-flex items-center bg-primary-container text-primary px-2.5 py-1 rounded-full text-[11px] font-semibold tracking-wide">
+            本机模式
+          </div>
+</div>
+</div>
+<!-- Stat Tiles (Row of 4 equal cards, 16px radius, 1px hairline border) -->
+<div class="grid grid-cols-4 gap-3 mb-4">
+<!-- 待办 -->
+<div class="bg-surface rounded-2xl border border-outline p-2.5 flex flex-col items-center justify-center text-center">
+<span class="text-[11px] font-semibold text-on-surface-variant leading-none mb-1">待办</span>
+<span class="font-stat text-stat font-extrabold text-primary tabular-nums tracking-tight">7</span>
+</div>
+<!-- 今天 -->
+<div class="bg-surface rounded-2xl border border-outline p-2.5 flex flex-col items-center justify-center text-center">
+<span class="text-[11px] font-semibold text-on-surface-variant leading-none mb-1">今天</span>
+<span class="font-stat text-stat font-extrabold text-primary tabular-nums tracking-tight">3</span>
+</div>
+<!-- 已逾期 -->
+<div class="bg-surface rounded-2xl border border-outline p-2.5 flex flex-col items-center justify-center text-center">
+<span class="text-[11px] font-semibold text-on-surface-variant leading-none mb-1">已逾期</span>
+<span class="font-stat text-stat font-extrabold text-warning tabular-nums tracking-tight">1</span>
+</div>
+<!-- 已完成 -->
+<div class="bg-surface rounded-2xl border border-outline p-2.5 flex flex-col items-center justify-center text-center">
+<span class="text-[11px] font-semibold text-on-surface-variant leading-none mb-1">已完成</span>
+<span class="font-stat text-stat font-extrabold text-success tabular-nums tracking-tight">12</span>
+</div>
+</div>
+<!-- Filter Chips Row (32dp tall, 9999px rounded-full, scrollable) -->
+<div class="flex items-center space-x-2 overflow-x-auto no-scrollbar py-0.5 mb-3.5 -mx-margin px-margin">
+<!-- Selected Chip -->
+<button class="h-8 px-4 rounded-full bg-primary text-white text-[12px] font-semibold shrink-0 flex items-center justify-center transition-transform active:scale-95" type="button">
+          全部
+        </button>
+<!-- Unselected Chips -->
+<button class="h-8 px-3.5 rounded-full bg-surface border border-outline text-on-surface-variant text-[12px] font-medium shrink-0 flex items-center justify-center transition-colors active:bg-surface-container" type="button">
+          未完成
+        </button>
+<button class="h-8 px-3.5 rounded-full bg-surface border border-outline text-on-surface-variant text-[12px] font-medium shrink-0 flex items-center justify-center transition-colors active:bg-surface-container" type="button">
+          今天
+        </button>
+<button class="h-8 px-3.5 rounded-full bg-surface border border-outline text-on-surface-variant text-[12px] font-medium shrink-0 flex items-center justify-center transition-colors active:bg-surface-container" type="button">
+          逾期
+        </button>
+<button class="h-8 px-3.5 rounded-full bg-surface border border-outline text-on-surface-variant text-[12px] font-medium shrink-0 flex items-center justify-center transition-colors active:bg-surface-container" type="button">
+          已完成
+        </button>
+</div>
+<!-- Search Bar (44dp tall, #E9EEF8 background, 12px radius, hairline search icon) -->
+<div class="h-11 bg-[#E9EEF8] rounded-xl px-3.5 flex items-center mb-5 border border-transparent focus-within:border-primary/40 focus-within:bg-surface transition-all">
+<span class="material-symbols-outlined text-[19px] text-on-surface-faint mr-2.5" data-icon="search">search</span>
+<input class="w-full bg-transparent border-none p-0 text-body text-on-surface placeholder:text-on-surface-faint placeholder:text-[13px] focus:ring-0 focus:outline-none" placeholder="搜索任务、标签、分类" type="text"/>
+</div>
+<!-- Grouped Task List -->
+<div class="space-y-5">
+<!-- Group 1: 今天（3） -->
+<div>
+<!-- Group Header -->
+<div class="flex items-center justify-between mb-2.5 px-0.5">
+<div class="flex items-center space-x-1.5">
+<span class="w-[3px] h-3.5 bg-primary rounded-full inline-block"></span>
+<h2 class="font-body text-[13px] font-bold text-on-surface">今天（3）</h2>
+</div>
+<span class="font-meta text-meta font-medium text-warning">1 项已逾期</span>
+</div>
+<!-- Cards Stack -->
+<div class="space-y-2">
+<!-- Row 1: 写周报 -->
+<div class="bg-surface rounded-2xl border border-outline p-3.5 flex items-start space-x-3 transition-colors active:bg-surface-container-low">
+<button aria-label="标记完成" class="w-5 h-5 mt-0.5 rounded-full border-2 border-outline hover:border-primary/60 transition-colors shrink-0 flex items-center justify-center active:scale-90" type="button"></button>
+<div class="flex-1 min-w-0">
+<p class="font-title text-[15px] font-bold text-on-surface leading-snug">写周报：Q4 目标复盘</p>
+<div class="flex flex-wrap items-center gap-1.5 mt-2">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-danger-container text-danger leading-none">
+                    高优先级
+                  </span>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-primary-container text-primary leading-none space-x-1">
+<span class="material-symbols-outlined text-[12px]" data-icon="schedule">schedule</span>
+<span>今天 18:00</span>
+</span>
+</div>
+</div>
+</div>
+<!-- Row 2: 整理桌面端验收报告 -->
+<div class="bg-surface rounded-2xl border border-outline p-3.5 flex items-start space-x-3 transition-colors active:bg-surface-container-low">
+<button aria-label="标记完成" class="w-5 h-5 mt-0.5 rounded-full border-2 border-outline hover:border-primary/60 transition-colors shrink-0 flex items-center justify-center active:scale-90" type="button"></button>
+<div class="flex-1 min-w-0">
+<p class="font-title text-[15px] font-bold text-on-surface leading-snug">整理桌面端验收报告</p>
+<div class="flex flex-wrap items-center gap-1.5 mt-2">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-warning-container text-warning leading-none space-x-1">
+<span class="material-symbols-outlined text-[12px]" data-icon="error_outline">error_outline</span>
+<span>已逾期 2 天</span>
+</span>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#F3F5FA] text-on-surface-variant leading-none">
+                    工作
+                  </span>
+</div>
+</div>
+</div>
+<!-- Row 3: 给妈妈打电话 -->
+<div class="bg-surface rounded-2xl border border-outline p-3.5 flex items-start space-x-3 transition-colors active:bg-surface-container-low">
+<button aria-label="标记完成" class="w-5 h-5 mt-0.5 rounded-full border-2 border-outline hover:border-primary/60 transition-colors shrink-0 flex items-center justify-center active:scale-90" type="button"></button>
+<div class="flex-1 min-w-0">
+<p class="font-title text-[15px] font-bold text-on-surface leading-snug">给妈妈打电话</p>
+<p class="font-meta text-meta text-on-surface-faint mt-1.5">无截止时间</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Group 2: 本周（2） -->
+<div>
+<!-- Group Header -->
+<div class="flex items-center space-x-1.5 mb-2.5 px-0.5">
+<span class="w-[3px] h-3.5 bg-primary rounded-full inline-block"></span>
+<h2 class="font-body text-[13px] font-bold text-on-surface">本周（2）</h2>
+</div>
+<!-- Cards Stack -->
+<div class="space-y-2">
+<!-- Row 1: 预约体检 -->
+<div class="bg-surface rounded-2xl border border-outline p-3.5 flex items-start space-x-3 transition-colors active:bg-surface-container-low">
+<button aria-label="标记完成" class="w-5 h-5 mt-0.5 rounded-full border-2 border-outline hover:border-primary/60 transition-colors shrink-0 flex items-center justify-center active:scale-90" type="button"></button>
+<div class="flex-1 min-w-0">
+<p class="font-title text-[15px] font-bold text-on-surface leading-snug">预约体检</p>
+<div class="mt-2">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#F3F5FA] text-on-surface-variant leading-none">
+                    周三
+                  </span>
+</div>
+</div>
+</div>
+<!-- Row 2: 提交报销单 -->
+<div class="bg-surface rounded-2xl border border-outline p-3.5 flex items-start space-x-3 transition-colors active:bg-surface-container-low">
+<button aria-label="标记完成" class="w-5 h-5 mt-0.5 rounded-full border-2 border-outline hover:border-primary/60 transition-colors shrink-0 flex items-center justify-center active:scale-90" type="button"></button>
+<div class="flex-1 min-w-0">
+<p class="font-title text-[15px] font-bold text-on-surface leading-snug">提交报销单</p>
+<div class="mt-2">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#F3F5FA] text-on-surface-variant leading-none">
+                    周五
+                  </span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Group 3: 以后（1） -->
+<div>
+<!-- Group Header -->
+<div class="flex items-center space-x-1.5 mb-2.5 px-0.5">
+<span class="w-[3px] h-3.5 bg-primary rounded-full inline-block"></span>
+<h2 class="font-body text-[13px] font-bold text-on-surface">以后（1）</h2>
+</div>
+<div class="space-y-2">
+<div class="bg-surface rounded-2xl border border-outline p-3.5 flex items-start space-x-3 transition-colors active:bg-surface-container-low">
+<button aria-label="标记完成" class="w-5 h-5 mt-0.5 rounded-full border-2 border-outline hover:border-primary/60 transition-colors shrink-0 flex items-center justify-center active:scale-90" type="button"></button>
+<div class="flex-1 min-w-0">
+<p class="font-title text-[15px] font-bold text-on-surface leading-snug">学习 Rust 异步运行时</p>
+<div class="mt-2">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#F3F5FA] text-on-surface-variant leading-none">
+                    长期计划
+                  </span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Group 4: 无日期（1） -->
+<div>
+<!-- Group Header -->
+<div class="flex items-center space-x-1.5 mb-2.5 px-0.5">
+<span class="w-[3px] h-3.5 bg-primary rounded-full inline-block"></span>
+<h2 class="font-body text-[13px] font-bold text-on-surface">无日期（1）</h2>
+</div>
+<div class="space-y-2">
+<div class="bg-surface rounded-2xl border border-outline p-3.5 flex items-start space-x-3 transition-colors active:bg-surface-container-low">
+<button aria-label="标记完成" class="w-5 h-5 mt-0.5 rounded-full border-2 border-outline hover:border-primary/60 transition-colors shrink-0 flex items-center justify-center active:scale-90" type="button"></button>
+<div class="flex-1 min-w-0">
+<p class="font-title text-[15px] font-bold text-on-surface leading-snug">读完《深度工作》第三章</p>
+<p class="font-meta text-meta text-on-surface-faint mt-1.5">收集箱收录</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- 3. Floating Action Button (FAB) - 58dp circular, z-40, positioned above bottom bar -->
+<div class="absolute right-4 bottom-[88px] z-40">
+<button aria-label="新增任务" class="w-[58px] h-[58px] rounded-full bg-primary text-white flex items-center justify-center shadow-lg active:scale-95 transition-transform border border-primary/20 focus:outline-none" type="button">
+<span class="material-symbols-outlined text-[30px]" data-icon="add">add</span>
+</button>
+</div>
+<!-- 4. Floating Rounded Bottom Tab Bar: strictly "任务", "收集箱", "笔记", "设置" -->
+<!-- 64dp tall, inset 16dp from sides, rounded-2xl, white surface, hairline border #E4E8F0 -->
+<nav class="absolute bottom-5 left-4 right-4 h-16 bg-surface rounded-2xl border border-outline shadow-sm flex items-center justify-around px-2 z-30 select-none">
+<!-- Tab 1: 任务 (Active per destination match) -->
+<button class="flex flex-col items-center justify-center px-3.5 py-1 rounded-xl bg-primary-container text-primary font-semibold transition-all" type="button">
+<span class="material-symbols-outlined text-[20px]" data-icon="task_alt" style="font-variation-settings: 'FILL' 1;">task_alt</span>
+<span class="font-meta text-[11px] mt-0.5 tracking-tight font-semibold">任务</span>
+</button>
+<!-- Tab 2: 收集箱 (Inactive) -->
+<button class="flex flex-col items-center justify-center px-3 py-1 rounded-xl text-on-surface-variant hover:text-on-surface transition-colors" type="button">
+<span class="material-symbols-outlined text-[20px]" data-icon="inbox">inbox</span>
+<span class="font-meta text-[11px] mt-0.5 tracking-tight">收集箱</span>
+</button>
+<!-- Tab 3: 笔记 (Inactive) -->
+<button class="flex flex-col items-center justify-center px-3 py-1 rounded-xl text-on-surface-variant hover:text-on-surface transition-colors" type="button">
+<span class="material-symbols-outlined text-[20px]" data-icon="description">description</span>
+<span class="font-meta text-[11px] mt-0.5 tracking-tight">笔记</span>
+</button>
+<!-- Tab 4: 设置 (Inactive) -->
+<button class="flex flex-col items-center justify-center px-3 py-1 rounded-xl text-on-surface-variant hover:text-on-surface transition-colors" type="button">
+<span class="material-symbols-outlined text-[20px]" data-icon="settings">settings</span>
+<span class="font-meta text-[11px] mt-0.5 tracking-tight">设置</span>
+</button>
+</nav>
+<!-- 5. Android System Gesture Bar Indicator -->
+<footer class="w-full h-4 flex items-center justify-center shrink-0 z-50 pointer-events-none pb-1">
+<div class="w-28 h-1 bg-on-surface/30 rounded-full"></div>
+</footer>
+</main>
+<script>
+    // Lightweight interaction for checkboxes without framework overhead
+    document.querySelectorAll('button[aria-label="标记完成"]').forEach(btn => {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const isChecked = this.getAttribute('data-checked') === 'true';
+        if (!isChecked) {
+          this.setAttribute('data-checked', 'true');
+          this.classList.remove('border-outline');
+          this.classList.add('bg-primary', 'border-primary', 'text-white');
+          this.innerHTML = '<span class="material-symbols-outlined text-[14px]">check</span>';
+          const cardText = this.parentElement.querySelector('p');
+          if (cardText) {
+            cardText.classList.add('line-through', 'text-on-surface-faint');
+          }
+        } else {
+          this.setAttribute('data-checked', 'false');
+          this.classList.add('border-outline');
+          this.classList.remove('bg-primary', 'border-primary', 'text-white');
+          this.innerHTML = '';
+          const cardText = this.parentElement.querySelector('p');
+          if (cardText) {
+            cardText.classList.remove('line-through', 'text-on-surface-faint');
+          }
+        }
+      });
+    });
+  </script>
+</body></html>

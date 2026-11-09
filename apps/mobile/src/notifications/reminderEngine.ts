@@ -13,10 +13,14 @@ import {
   listUpcomingReminderTasks,
   saveReminderSchedule,
 } from "../db/reminderSchedule";
+import { getSetting } from "../db/kv";
 import { cancelReminder, listScheduledNotificationIds, reminderId, scheduleReminder } from "./reminders";
 
 /** 与 docs/MOBILE_STACK.md §9 一致：本地通知最多排 64 条，超出按最远触发时间淘汰 */
 export const MAX_SCHEDULED_REMINDERS = 64;
+
+/** 「10 分钟后」动作开关的 kv 键（通知与后台页维护） */
+export const SNOOZE_SETTING_KEY = "reminder_snooze_enabled";
 
 export interface RescheduleResult {
   /** 本次真正写入系统通知的数量 */
@@ -49,13 +53,16 @@ export async function rescheduleAllReminders(): Promise<RescheduleResult> {
 
 async function runReschedule(): Promise<RescheduleResult> {
   const now = Date.now();
-  const [total, tasks, schedules] = await Promise.all([
+  const [total, tasks, schedules, snoozeRaw] = await Promise.all([
     countUpcomingReminderTasks(now),
     listUpcomingReminderTasks(now, MAX_SCHEDULED_REMINDERS),
     listReminderSchedules(),
+    getSetting(SNOOZE_SETTING_KEY),
   ]);
   // 系统现状：读取失败时退回「只信本地记录」，避免对账本身把提醒全清一遍
   const systemIds = await listScheduledNotificationIds().catch(() => null);
+  /** 「10 分钟后」动作开关：只影响本次新排期的通知类别（kv 默认开启） */
+  const snoozeEnabled = snoozeRaw !== "0";
 
   // 本次允许保留的键：taskId → occurrenceAt（同一任务只保留当前 remind_at 这一条）
   const desired = new Map<string, number>();
@@ -93,7 +100,7 @@ async function runReschedule(): Promise<RescheduleResult> {
       continue;
     }
 
-    const ok = await scheduleReminder(task.id, task.title, task.remindAt);
+    const ok = await scheduleReminder(task.id, task.title, task.remindAt, snoozeEnabled);
     if (!ok) {
       // 权限未授权或时间已过去：不写记录，下次重建时会再次尝试
       skipped += 1;
