@@ -602,7 +602,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
             {incoming.length === 0 ? (
               <EmptyPanel
                 title="还没有可下载的文件"
-                hint="在电脑端「设置 → 手机与同步 → 文件互传」点「发送文件」，文件会出现在这里。"
+                hint="在电脑端左侧导航「手机互传」点「发送文件」，文件会出现在这里。"
               />
             ) : (
               incoming.map((file) => {

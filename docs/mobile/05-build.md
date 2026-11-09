@@ -67,7 +67,7 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
 | 位置 | 字段 | 角色 |
 |---|---|---|
 | `app.json` | `expo.version` | **唯一事实源**（当前 `0.1.6`） |
-| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `18`） |
+| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `21`） |
 | `android/app/build.gradle` | `versionName` / `versionCode` | 生成物，prebuild 写入；不要当作源 |
 | `src/screens/SettingsScreen.tsx` | 「关于 → 版本」 | 直接读 `app.json`，无需手改 |
 
@@ -173,3 +173,8 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
   勾选「已了解应用的风险检测结果」再点「继续安装」；安装后把该全局设置恢复为 1。
   最终 APK 0.1.6/vc18 sha256 `605cbc8a…`（arm64-v8a，非 debuggable）。本轮同时修复
   取消竞态与 SAF 半成品清理，见 [08-file-transfer.md](08-file-transfer.md) §5。
+- 2026-11-09 设备 Tab 与文件类型图标（vc20/vc21）：仅改 JS，vc20 增量构建 2m45s，
+  vc21 补入口文案后 2m01s。vc19 安装被 vivo 安全守护拦截后，vc20/vc21 在解锁状态下
+  直接 `adb install -r` 成功（仍临时把 `start_confirmation_activity` 置 0，安装后恢复 1）。
+  最终 APK 0.1.6/vc21 sha256 `3cdd309d…`，30,859,837 B（arm64-v8a，非 debuggable）；
+  vc20 为文案修正前的中间产物，不作为交付件。

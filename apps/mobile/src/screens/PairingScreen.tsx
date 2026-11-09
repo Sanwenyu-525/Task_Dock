@@ -566,7 +566,7 @@ export function PairingScreen({ nav }: { nav: Nav }) {
         </GlassCard>
 
         <Text style={[styles.footer, { color: tokens.faint }]}>
-          桌面端路径：设置 → 手机与同步 → 配对新设备
+          桌面端路径：左侧导航「手机互传」或标题栏手机图标
         </Text>
       </ScrollView>
 

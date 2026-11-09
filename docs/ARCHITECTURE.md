@@ -1567,10 +1567,11 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
 
 - 分层：`src-tauri/src/mobile_sync/`（配对会话/令牌/设备表）→ `server.rs`（hyper，
   `/v1/health`、`/v1/pair`、`/v1/ping`，以及同步的 `/v1/changes`、`/v1/ops`）→
-  `commands/mobile_sync.rs` → `src/lib/bridge.ts` → 设置页 `MobileSyncSection` +
-  全局 `MobilePairingDialog`。手机端为 `apps/mobile`（协议纯函数 + expo-camera 扫码 +
-  SecureStore 令牌）。
-- 配对入口：设置 → 手机与同步，以及标题栏「配对新设备（手机）」快捷按钮（完整/紧凑模式）。
+  `commands/mobile_sync.rs` → `src/lib/bridge.ts` → 左侧导航「手机互传」
+  `MobileTransferPanel`（复用 `MobileSyncSection`）+ 全局 `MobilePairingDialog`。
+  手机端为 `apps/mobile`（协议纯函数 + expo-camera 扫码 + SecureStore 令牌）。
+- 配对入口：左侧导航「手机互传」，以及标题栏「配对新设备（手机）」快捷按钮（完整/紧凑模式）。
+  v0.17 起从「设置 → 手机与同步」提到一级导航；设置页不再承载配对/文件列表。
   两处共用 App 根部唯一弹层实例（`src/lib/mobilePairing.ts` 管理开合）；服务未开启时弹层内
   可直接开启并生成配对码。
 - 默认关闭：设置键 `mobile_sync_enabled=false` / `mobile_sync_port=47822`；只有显式开启后
@@ -1607,7 +1608,8 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
 - 分层：`mobile_sync/files.rs`（记录、分块落盘、SHA-256、路径安全）→ `server.rs`
   （`GET/POST /v1/files`、`/v1/files/{id}/chunk/{index}`、`.../complete`、`.../delete`）→
   `commands/mobile_sync.rs`（offer/list/delete/reveal/open inbox）→ `bridge.ts` →
-  设置页 `MobileSyncSection`；手机端 `src/lib/sync/{files,fileIo}.ts` + `FilesScreen`。
+  左侧导航「手机互传」页 `MobileTransferPanel`；手机端 `src/lib/sync/{files,fileIo}.ts` +
+  `FilesScreen`（入口：底部「设备」Tab → 文件互传）。
 - 存储：`data_dir/mobile_files/{outbox,inbox,tmp}`；SQLite v45 `mobile_files`
   （本机瞬时状态，不进备份）。单文件 200MB、分块 192KB，完成时校验大小/分块数/SHA-256，
   原子改名到 `inbox/`；删除只允许 `mobile_files` 根目录内普通文件。

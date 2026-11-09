@@ -542,9 +542,12 @@ pub struct ShelfDragOutResult {
 /// - 路径只从库内 `resolve_item_file` 解析，前端不能传任意路径；
 /// - link/text/missing 条目跳过，全部不可拖才报错；
 /// - 托管副本只允许复制，引用模式允许 Windows 默认的复制/移动；
-/// - 拖拽在专用 STA 线程执行，避免阻塞 IPC 线程，也不复用可能为 MTA 的线程池。
+/// - 拖拽必须回到 Tauri 主线程执行：OLE 拖拽循环依赖调用线程的输入队列
+///   接管鼠标捕获，后台线程上跑时目标窗口收不到 `DragEnter`，表现为拖了
+///   没反应、也画不出跟随光标的文件幽灵。
 #[tauri::command]
 pub async fn shelf_drag_out(
+    app: AppHandle,
     state: State<'_, Arc<ShelfState>>,
     ids: Vec<String>,
 ) -> AppResult<ShelfDragOutResult> {
@@ -573,21 +576,19 @@ pub async fn shelf_drag_out(
         .map(|(id, _, path)| (path, id))
         .collect();
 
-    // 单飞守卫随线程一起持有：命令 future 被丢弃也不会提前放行第二次拖拽。
+    // 单飞守卫随主线程任务一起持有：命令 future 被丢弃也不会提前放行第二次拖拽。
     let guard = shelf::drag_out::DragInFlightGuard::acquire()?;
     let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("shelf-drag-out".into())
-        .spawn(move || {
-            let _guard = guard;
-            let result = shelf::drag_out::run_drag(&paths, allow_move);
-            let _ = tx.send(result);
-        })
-        .map_err(|e| AppError::Unavailable(format!("无法启动拖拽线程: {e}")))?;
+    app.run_on_main_thread(move || {
+        let _guard = guard;
+        let result = shelf::drag_out::run_drag(&paths, allow_move);
+        let _ = tx.send(result);
+    })
+    .map_err(|e| AppError::Unavailable(format!("无法调度拖拽到主线程: {e}")))?;
 
     let outcome = rx
         .await
-        .map_err(|_| AppError::Unavailable("拖拽线程异常退出".into()))??;
+        .map_err(|_| AppError::Unavailable("拖拽任务异常退出".into()))??;
     let missing_ids = outcome
         .missing_paths
         .iter()

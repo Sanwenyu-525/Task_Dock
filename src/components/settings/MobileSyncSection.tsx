@@ -1,4 +1,4 @@
-//! 设置 → 手机与同步：局域网配对状态、已授权设备与撤销。
+//! 手机互传页（左侧导航）：局域网配对状态、已授权设备与撤销。
 //!
 //! 交互约束：
 //! - 服务默认关闭；只有用户勾选后才监听局域网（Rust 主管 1s 内生效）；
@@ -435,7 +435,7 @@ export default function MobileSyncSection() {
         </div>
       </div>
 
-      <div className="setting-row">
+      <div className="setting-row mobile-sync-address-row">
         <span>{t("settings.mobileSync.address")}</span>
         <div className="btn-row">
           {status?.base_url ? (

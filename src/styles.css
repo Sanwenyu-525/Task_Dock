@@ -2693,6 +2693,28 @@ code {
   white-space: nowrap;
 }
 
+/* 320 窄窗：地址行把 URL 折到下一行，避免「局域网地址」被压成两行。 */
+@media (max-width: 360px) {
+  .mobile-sync-address-row {
+    flex-wrap: wrap;
+  }
+
+  .mobile-sync-address-row > span {
+    white-space: nowrap;
+  }
+
+  .mobile-sync-address-row .btn-row {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    margin-top: 2px;
+  }
+
+  .mobile-sync-address {
+    max-width: none;
+    min-width: 0;
+  }
+}
+
 .mobile-sync-fingerprint {
   font-size: 12px;
   letter-spacing: 0.08em;

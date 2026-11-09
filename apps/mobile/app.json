@@ -10,7 +10,7 @@
     "icon": "./assets/icon.png",
     "android": {
       "package": "dev.taskdock.mobile",
-      "versionCode": 20,
+      "versionCode": 21,
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-foreground.png",

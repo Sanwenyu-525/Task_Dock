@@ -174,7 +174,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
     if (!connection) return;
     Alert.alert(
       "解除配对",
-      `将删除本机保存的「${connection.serverName}」令牌。桌面端仍需在「设置 → 手机与同步」撤销该设备，否则它会留在桌面端列表里。`,
+      `将删除本机保存的「${connection.serverName}」令牌。桌面端仍需在左侧导航「手机互传」撤销该设备，否则它会留在桌面端列表里。`,
       [
         { text: "取消", style: "cancel" },
         {
