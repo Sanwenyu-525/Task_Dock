@@ -1587,6 +1587,13 @@ export const enUS: Record<MessageKey, string> = {
   "resource.memory.releaseNote": "Physical memory changes are managed by the OS and runtime; it may not drop by the same amount immediately.",
   "resource.process.memoryRelative": "{percent} of largest",
   "resource.process.relativeNote": "Bar length is relative to the largest value in the current list, not system memory; CPU is a single sample, not an anomaly verdict.",
+  "resource.trend.title": "Short-term trend",
+  "resource.trend.scope": "Every {seconds}s, up to {count} points; stops when you leave.",
+  "resource.trend.sampling": "Sampling — the line appears after at least 2 points",
+  "resource.trend.range": "Range {min} – {max}",
+  "resource.trend.failed": "The last automatic sample failed; retrying next cycle.",
+  "resource.aria.trend": "{title} short-term trend: {count} samples, range {min} to {max}",
+  "resource.aria.trendSampling": "{title} short-term trend: sampling, {count} points so far",
 
 
   "settings.ttsCache.note": "Only fixed phrases (such as \"Task completed\") are cached; dynamic speech containing source names or task titles stays in memory only. Over capacity, least-recently-used files are removed without touching other user files.",

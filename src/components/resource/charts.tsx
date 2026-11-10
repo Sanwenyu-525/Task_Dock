@@ -217,3 +217,143 @@ export function ChartSwatch({ colorIndex }: { colorIndex: number }) {
     />
   );
 }
+
+/* ── 短时趋势 ─────────────────────────────────────────────── */
+
+export interface TrendDatum {
+  /** 采样时刻（毫秒），决定横轴间距。 */
+  at: number;
+  /** 0–100；null = 该次读取不可用，断线而不是伪造 0%。 */
+  percent: number | null;
+}
+
+export interface TrendGeometry {
+  /** SVG path；少于 2 个有效点或全部缺失时为 null。 */
+  line: string | null;
+  /** 有效点中的真实最小值/最大值（不是绘图域的留白边界）。 */
+  min: number | null;
+  max: number | null;
+  validCount: number;
+}
+
+const TREND_WIDTH = 100;
+const TREND_HEIGHT = 30;
+/** 上下留白，避免线贴边被裁。 */
+const TREND_PAD = 3;
+
+/**
+ * 趋势折线几何：横轴按真实采样时刻，缺失点断线。
+ *
+ * 纵轴在数据区间上下留一点余量（避免平线贴边），但展示的「区间」始终是
+ * 真实最小/最大值；`null` 不参与取值，也绝不替换成 0。
+ */
+export function buildTrendGeometry(points: ReadonlyArray<TrendDatum>): TrendGeometry {
+  const valid = points.filter(
+    (point): point is { at: number; percent: number } =>
+      point.percent !== null && Number.isFinite(point.percent),
+  );
+  const realMin = valid.length ? Math.min(...valid.map((point) => point.percent)) : null;
+  const realMax = valid.length ? Math.max(...valid.map((point) => point.percent)) : null;
+  if (valid.length < 2 || realMin === null || realMax === null) {
+    return { line: null, min: realMin, max: realMax, validCount: valid.length };
+  }
+
+  const firstAt = Math.min(...points.map((point) => point.at));
+  const lastAt = Math.max(...points.map((point) => point.at));
+  const span = lastAt - firstAt;
+  const xAt = (index: number) =>
+    span > 0
+      ? ((points[index].at - firstAt) / span) * TREND_WIDTH
+      : (index / Math.max(1, points.length - 1)) * TREND_WIDTH;
+
+  // 平线（或变化极小）时给纵轴 ±0.5 的窗口，让线段落在中间而不是贴边。
+  let domainMin = realMin;
+  let domainMax = realMax;
+  if (domainMax - domainMin < 0.5) {
+    const mid = (domainMax + domainMin) / 2;
+    domainMin = Math.max(0, mid - 0.5);
+    domainMax = Math.min(100, mid + 0.5);
+  }
+  const domainSpan = domainMax - domainMin;
+  const yAt = (percent: number) =>
+    TREND_HEIGHT - TREND_PAD - ((percent - domainMin) / domainSpan) * (TREND_HEIGHT - TREND_PAD * 2);
+
+  let line = "";
+  let open = false;
+  points.forEach((point, index) => {
+    if (point.percent === null || !Number.isFinite(point.percent)) {
+      open = false;
+      return;
+    }
+    const x = xAt(index).toFixed(2);
+    const y = yAt(point.percent).toFixed(2);
+    line += `${open ? " L" : " M"}${x} ${y}`;
+    open = true;
+  });
+
+  return {
+    line: line.trim() ? line.trim() : null,
+    min: realMin,
+    max: realMax,
+    validCount: valid.length,
+  };
+}
+
+export interface TrendSparklineProps {
+  points: ReadonlyArray<TrendDatum>;
+  level: PressureLevel;
+  title: string;
+  /** 当前值（含百分号）；不可读时由调用方传「暂不可用」。 */
+  valueText: string;
+  statusText: string;
+  /** 有效点不足时的占位说明（不是错误）。 */
+  emptyText: string;
+  /** 真实区间文案；不足 2 个点时传 null。 */
+  rangeText: string | null;
+  ariaLabel: string;
+}
+
+/** 资源短时趋势折线：静态 SVG，无动画；缺失点断开，不把不可读画成 0%。 */
+export function TrendSparkline({
+  points,
+  level,
+  title,
+  valueText,
+  statusText,
+  emptyText,
+  rangeText,
+  ariaLabel,
+}: TrendSparklineProps) {
+  const geometry = buildTrendGeometry(points);
+  return (
+    <figure className={`resource-trend-card ${LEVEL_CLASS[level]}`} role="img" aria-label={ariaLabel}>
+      <figcaption className="resource-trend-head">
+        <span className="resource-trend-title">{title}</span>
+        <span className="resource-trend-value">{valueText}</span>
+        <span className="resource-trend-status">{statusText}</span>
+      </figcaption>
+      {geometry.line ? (
+        <svg
+          className="resource-trend-svg"
+          viewBox={`0 0 ${TREND_WIDTH} ${TREND_HEIGHT}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            d={geometry.line}
+            className="resource-trend-line"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+      ) : (
+        <div className="resource-trend-empty">{emptyText}</div>
+      )}
+      {rangeText && (
+        <div className="resource-trend-meta">
+          <span className="resource-trend-range">{rangeText}</span>
+        </div>
+      )}
+    </figure>
+  );
+}

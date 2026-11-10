@@ -1,10 +1,12 @@
 //! 资源管理：完整面板的一级页面（默认可见，可隐藏/排序）。
 //!
-//! 结构：概览 / 磁盘 / 内存 / 进程 四个内部分区（不是四个一级导航）。
+//! 结构：概览 / 功能运行 / 磁盘 / 内存 / 进程 五个内部分区（不是五个一级导航）。
 //! 生命周期约束：
 //! - 页面挂载时只取一次资源快照；切换分区不重复请求（分区按首次访问挂载并保持）；
 //! - 磁盘清理、磁盘分布、内存目录、进程列表都在各自首次进入时按需请求；
-//! - 没有定时器/轮询；卸载后忽略在途响应；
+//! - 唯一的周期采样是概览的短时趋势：仅概览可见且窗口未隐藏时每 10 秒一次，
+//!   最多 30 点，切换分区/停靠/卸载即停止（`hooks/useResourceTrend`）；
+//! - 卸载后忽略在途响应；
 //! - 手动刷新与失败重试走「最新请求优先」，不再用忙碌标志拦下必要的重新加载
 //!   （StrictMode 双挂载会永久停在 loading，见 `lib/asyncResource` 模块文档）。
 
@@ -20,6 +22,7 @@ import { formatBytes } from "../../lib/clipboardUi";
 import { computeUsage, formatPercent } from "../../lib/resourceMetrics";
 import { useLifecycleStore } from "../../store/useLifecycleStore";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
+import { useResourceTrend } from "../../hooks/useResourceTrend";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
 import ResourceCleanupSection, { type CleanupEstimate } from "../settings/ResourceCleanupSection";
@@ -77,6 +80,17 @@ export default function ResourceManagementPanel() {
   // 分区首次访问后保持挂载，但隐藏期不允许再发生生命周期 IPC。
   const fullViewVisible = useFullViewVisible();
   const modulesActive = segment === "modules" && fullViewVisible;
+
+  /**
+   * 概览短时趋势：仅概览分区可见且完整面板未隐藏时采样。
+   * 面板快照作为起点（不额外发首次请求），之后每 10 秒一次、最多 30 点；
+   * 切到别的分区或停靠即停止。趋势末端与环形共用同一份最新快照。
+   */
+  const trend = useResourceTrend({
+    active: segment === "overview" && fullViewVisible,
+    seed: snapshot.data,
+  });
+  const displaySnapshot = trend.latest ?? snapshot.data;
 
   /**
    * 页面级刷新（页头唯一入口）：总是重读系统快照，并只刷新**当前分区**的专属数据。
@@ -197,10 +211,11 @@ export default function ResourceManagementPanel() {
         >
           {visited.has("overview") && (
             <OverviewSegment
-              snapshot={snapshot.data}
+              snapshot={displaySnapshot}
               loading={snapshot.loading}
               error={snapshot.error}
               cleanable={cleanable}
+              trend={{ points: trend.points, failed: trend.failed }}
               onOpenDisk={() => selectSegment("disk")}
               onRefresh={snapshot.reload}
             />

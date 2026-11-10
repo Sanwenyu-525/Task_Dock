@@ -6,10 +6,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import {
+  buildTrendGeometry,
   ChartSwatch,
   MiniMeter,
   RING_CIRCUMFERENCE,
   StackedBar,
+  TrendSparkline,
   UsageBar,
   UsageRing,
 } from "./charts";
@@ -145,5 +147,85 @@ describe("StackedBar / MiniMeter / ChartSwatch", () => {
     const palette = render(<ChartSwatch colorIndex={9} />);
     // 越界索引回绕到 1
     expect(palette.container.querySelector(".resource-swatch.color-1")).toBeTruthy();
+  });
+});
+
+describe("buildTrendGeometry", () => {
+  it("少于两个有效点不画线，但保留真实最小/最大值", () => {
+    const one = buildTrendGeometry([{ at: 0, percent: 92 }]);
+    expect(one.line).toBeNull();
+    expect(one.min).toBe(92);
+    expect(one.max).toBe(92);
+    expect(one.validCount).toBe(1);
+
+    const none = buildTrendGeometry([{ at: 0, percent: null }]);
+    expect(none.line).toBeNull();
+    expect(none.min).toBeNull();
+    expect(none.max).toBeNull();
+  });
+
+  it("缺失点断线：null 不参与连线，也不替换成 0", () => {
+    const geometry = buildTrendGeometry([
+      { at: 0, percent: 90 },
+      { at: 10, percent: null },
+      { at: 20, percent: 92 },
+    ]);
+    expect(geometry.line).toBeTruthy();
+    // 两段独立折线（两个 M），中间不跨越 null
+    expect((geometry.line as string).match(/M/g)).toHaveLength(2);
+    expect(geometry.min).toBe(90);
+    expect(geometry.max).toBe(92);
+    expect(geometry.validCount).toBe(2);
+  });
+
+  it("横轴按真实采样时刻：间隔不均时位置也不均", () => {
+    const geometry = buildTrendGeometry([
+      { at: 0, percent: 90 },
+      { at: 10, percent: 91 },
+      { at: 60, percent: 92 },
+    ]);
+    expect(geometry.line).toBeTruthy();
+    const xs = [...(geometry.line as string).matchAll(/[ML]([\d.]+)/g)].map((match) =>
+      Number(match[1]),
+    );
+    // 10 秒在 60 秒窗口里应是 1/6 处，而不是等距 1/2
+    expect(xs[1]).toBeCloseTo(100 / 6, 1);
+    expect(xs[2]).toBeCloseTo(100, 1);
+  });
+});
+
+describe("TrendSparkline", () => {
+  const base = {
+    level: "critical" as const,
+    title: "磁盘",
+    valueText: "92.4%",
+    statusText: "紧张",
+    emptyText: "正在采样",
+    ariaLabel: "磁盘趋势",
+  };
+
+  it("有有效数据时绘制折线并展示真实区间", () => {
+    const { container } = render(
+      <TrendSparkline
+        {...base}
+        points={[
+          { at: 0, percent: 92 },
+          { at: 10, percent: 93.4 },
+        ]}
+        rangeText="区间 92.0% – 93.4%"
+      />,
+    );
+    expect(container.querySelector("path.resource-trend-line")).toBeTruthy();
+    expect(container.querySelector(".resource-trend-card.is-critical")).toBeTruthy();
+    expect(container.querySelector(".resource-trend-range")?.textContent).toContain("92.0%");
+    expect(container.querySelector(".resource-trend-empty")).toBeNull();
+  });
+
+  it("点不足时显示采样占位，不画假折线", () => {
+    const { container } = render(
+      <TrendSparkline {...base} points={[{ at: 0, percent: 92 }]} rangeText={null} />,
+    );
+    expect(container.querySelector("path.resource-trend-line")).toBeNull();
+    expect(container.querySelector(".resource-trend-empty")?.textContent).toBe("正在采样");
   });
 });
