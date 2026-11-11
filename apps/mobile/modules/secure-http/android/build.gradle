@@ -1,0 +1,28 @@
+// 本地 Expo 模块（docs.expo.dev/modules/local-module 标准模板）：
+// 只在 Android 构建；不引入第三方依赖，仅依赖 expo-modules-core。
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.securehttp'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "expo-modules-core.gradle")
+apply from: expoModulesCorePlugin
+applyNativeModulesAndroidLibraryModule "secure-http"
+
+android {
+  namespace "expo.modules.securehttp"
+  compileSdkVersion safeExtGet("compileSdkVersion", 35)
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+    targetSdkVersion safeExtGet("targetSdkVersion", 34)
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  implementation project(":expo-modules-core")
+}

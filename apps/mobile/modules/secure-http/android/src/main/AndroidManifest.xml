@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 本模块不申请任何权限；传输强制 HTTPS（Android 9+ 默认禁明文，保持默认）。 -->
+</manifest>
