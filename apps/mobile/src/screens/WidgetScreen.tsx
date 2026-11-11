@@ -12,6 +12,7 @@ import { PressableScale } from "../components/PressableScale";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { SettingSection } from "../components/SettingSection";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { requestPinWidget, taskDockWidgetAvailable } from "../../modules/taskdock-widget";
 import { setSetting } from "../db/kv";
 import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
@@ -93,9 +94,19 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
       .catch(() => undefined);
   }, []);
 
-  const showAddGuide = useCallback(() => {
-    showToast("长按桌面空白处 → 小组件 → TaskDock，选择 2×2 或 4×2 添加", "info");
-  }, [showToast]);
+  // 真实添加：Android 8+ 请求系统弹出「添加到桌面」确认框（requestPinAppWidget）。
+  // 桌面（launcher）不支持时回退为长按引导文案；4×4 未提供，按最近的 4×2 请求。
+  const addToHomeScreen = useCallback(() => {
+    const size = prefs.size === "2x2" ? "2x2" : "4x2";
+    const result = taskDockWidgetAvailable ? requestPinWidget(size) : null;
+    if (result?.requested) {
+      showToast("系统已弹出添加确认，确认后小组件出现在桌面", "success");
+    } else if (result && !result.supported) {
+      showToast("当前桌面不支持直接添加：长按桌面空白处 → 小组件 → TaskDock", "info");
+    } else {
+      showToast("长按桌面空白处 → 小组件 → TaskDock，选择 2×2 或 4×2 添加", "info");
+    }
+  }, [prefs.size, showToast]);
 
   const title = snapshot ? CONTENT_TITLES[snapshot.content] : CONTENT_TITLES[prefs.content];
   const count = snapshot
@@ -204,12 +215,12 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
         </SettingSection>
 
         <PressableScale
-          onPress={showAddGuide}
-          accessibilityLabel="如何添加到主屏幕"
-          accessibilityHint="查看把 TaskDock 小组件添加到桌面的步骤"
+          onPress={addToHomeScreen}
+          accessibilityLabel="添加到主屏幕"
+          accessibilityHint="请求系统把 TaskDock 小组件添加到桌面，不支持时给出手动添加步骤"
           contentStyle={[styles.primary, { backgroundColor: tokens.accentFill }]}
         >
-          <Text style={[styles.primaryText, { color: tokens.onAccent }]}>如何添加到主屏幕</Text>
+          <Text style={[styles.primaryText, { color: tokens.onAccent }]}>添加到主屏幕</Text>
         </PressableScale>
 
         <Text style={[styles.helper, { color: tokens.faint }]}>
