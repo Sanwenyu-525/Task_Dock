@@ -7,8 +7,9 @@
 //! v0.11 新增「帮助」视觉入口（settings 之前、不占 Ctrl+数字）；
 //! v0.14 新增「诊断中心」视觉入口（帮助之后、设置之前，默认隐藏，不占 Ctrl+数字）
 //! 与「资源管理」默认可见入口（设置之前、可隐藏/排序，不占 Ctrl+数字）；
-//! v0.17 新增「手机互传」视觉入口（剪贴板之后、收集与暂存之前，不占 Ctrl+数字），
-//! 因此 **15 个声明视觉入口（13 个默认可见）≠ 10 个逻辑 Tab**：
+//! v0.17 新增「手机互传」视觉入口（剪贴板之后、收集与暂存之前，不占 Ctrl+数字）；
+//! 2026-11 新增「工作台」视觉入口（最前、开发模式主要入口，不占 Ctrl+数字），
+//! 因此 **16 个声明视觉入口（14 个默认可见）≠ 10 个逻辑 Tab**：
 //! - `RAIL_ENTRIES`：视觉入口（渲染顺序、data-tip、aria-label 的事实源）；
 //! - `LOGICAL_TABS`：逻辑 Tab 顺序（= useUiStore.TAB_ORDER，快捷键 Ctrl+1…9 与 Ctrl+0 的
 //!   事实源，Ctrl+5=快速收集 inbox、Ctrl+6=文件暂存 shelf、Ctrl+0=设置，
@@ -33,6 +34,7 @@ export const LOGICAL_TABS = Object.freeze([
 
 /** 仅视觉入口、不分配 Ctrl+数字的 Tab（避免既有快捷键语义漂移）。 */
 export const RAIL_ONLY_TABS = Object.freeze([
+  "workbench",
   "apps",
   "widgets",
   "mobile",
@@ -42,6 +44,8 @@ export const RAIL_ONLY_TABS = Object.freeze([
 ]);
 
 export const RAIL_ENTRIES = Object.freeze([
+  // 开发工作台：开发模式主要入口（任务优先布局），位于最前；不占 Ctrl+数字。
+  { id: "workbench", label: "工作台", shortcut: "" },
   { id: "tasks", label: "任务", shortcut: "Ctrl+1" },
   { id: "agents", label: "Agent", shortcut: "Ctrl+2" },
   { id: "apps", label: "应用", shortcut: "" },

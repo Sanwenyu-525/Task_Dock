@@ -8,6 +8,7 @@ import {
   AppWindow,
   ArrowLeft,
   Bell,
+  Bookmark,
   Camera,
   Check,
   ChevronDown,
@@ -159,6 +160,22 @@ export default function TaskContextDrawer() {
   const drawerRef = useRef<HTMLElement>(null);
   /** 同步防重入：勾选后连点保存不能重复创建现场（状态更新到下次渲染之间也有空隙）。 */
   const captureBusyRef = useRef(false);
+
+  // 开发工作台的「当前任务」锚点：显式设置（设置键 workbench_current_task），
+  // 不自动推断；详见 workbench/DevWorkbenchPanel.tsx 头注。
+  const isCurrentTask =
+    useSettingsStore((s) => s.settings?.workbench_current_task ?? "") === (task?.id ?? "__none__");
+
+  async function onSetCurrentTask() {
+    if (!task) return;
+    if (isCurrentTask) return;
+    try {
+      await useSettingsStore.getState().update({ workbench_current_task: task.id });
+      showToast(`已将「${task.title}」设为当前任务`, { kind: "success" });
+    } catch (e) {
+      showToast(`设置当前任务失败：${errorMessage(e)}`, { kind: "error" });
+    }
+  }
 
   const refresh = useCallback(async () => {
     if (!taskId) return;
@@ -665,6 +682,15 @@ export default function TaskContextDrawer() {
               </span>
             </div>
             <div className="clip-head-actions">
+              <button
+                className="icon-btn sm"
+                onClick={() => void onSetCurrentTask()}
+                data-tip={isCurrentTask ? "当前任务（工作台）" : "设为当前任务（工作台）"}
+                aria-label={isCurrentTask ? "当前任务" : "设为当前任务"}
+                aria-pressed={isCurrentTask}
+              >
+                <Bookmark size={12} />
+              </button>
               <button className="icon-btn sm" onClick={() => void refresh()} data-tip="刷新上下文" aria-label="刷新上下文">
                 <RefreshCw size={12} />
               </button>

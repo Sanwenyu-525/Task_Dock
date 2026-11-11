@@ -117,6 +117,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "tts_reminder",
     "tts_cache_enabled",
     "tts_cache_max_mb",
+    // 开发工作台（2026-11）：当前关注的开发任务 ID（tasks.id 字符串；空 = 未设置）
+    "workbench_current_task",
 ];
 
 fn enum_of(v: &serde_json::Value, key: &str, allowed: &[&str]) -> AppResult<()> {
@@ -298,6 +300,24 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
                 .ok_or_else(|| AppError::Validation("nav_default_browser 必须是字符串".into()))?;
             if s.chars().count() > 512 {
                 return Err(AppError::Validation("nav_default_browser 过长".into()));
+            }
+            Ok(())
+        }
+        // 开发工作台当前任务：tasks.id 的字符串形式（数字 ID 序列化，64 字符足够），
+        // 空 = 未设置；不校验任务存在性（任务删除后保留原值，由前端读侧如实降级）
+        "workbench_current_task" => {
+            let s = v.as_str().ok_or_else(|| {
+                AppError::Validation("workbench_current_task 必须是字符串".into())
+            })?;
+            if s.chars().count() > 64 {
+                return Err(AppError::Validation(
+                    "workbench_current_task 过长".into(),
+                ));
+            }
+            if s.chars().any(|c| c.is_control()) {
+                return Err(AppError::Validation(
+                    "workbench_current_task 含非法控制字符".into(),
+                ));
             }
             Ok(())
         }
@@ -782,6 +802,31 @@ mod tests {
             "字符串必须拒绝"
         );
         assert_eq!(Settings::default().capsule_panel_width, 340);
+    }
+
+    /// 开发工作台当前任务：空/合法 ID 可写，超长与控制字符拒绝，非字符串拒绝。
+    #[test]
+    fn workbench_current_task_is_validated_and_allowlisted() {
+        assert!(ALLOWED_KEYS.contains(&"workbench_current_task"));
+        assert!(validate_setting("workbench_current_task", &serde_json::json!("")).is_ok());
+        assert!(validate_setting("workbench_current_task", &serde_json::json!("42")).is_ok());
+        let long = "9".repeat(65);
+        assert!(
+            validate_setting("workbench_current_task", &serde_json::json!(long)).is_err(),
+            "超过 64 字符必须拒绝"
+        );
+        let max = "9".repeat(64);
+        assert!(validate_setting("workbench_current_task", &serde_json::json!(max)).is_ok());
+        assert!(
+            validate_setting("workbench_current_task", &serde_json::json!("bad\u{0007}id")).is_err(),
+            "控制字符必须拒绝"
+        );
+        assert!(
+            validate_setting("workbench_current_task", &serde_json::json!(42)).is_err(),
+            "非字符串必须拒绝"
+        );
+        // 默认值：空串 = 未设置当前任务
+        assert_eq!(Settings::default().workbench_current_task, "");
     }
 
     #[test]

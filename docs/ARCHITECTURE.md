@@ -373,6 +373,17 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 
 ### 6. 前端（src/）
 - 三种显示模式对应三套视图；完整模式六标签页（任务/Agent/行动/剪贴板/历史/设置）。
+- **开发工作台（2026-11）**：完整模式新增「工作台」入口（`Tab: workbench`，默认可见、
+  位于侧栏最前，**不占 Ctrl+数字**；`TAB_ORDER` 不变）。页面按任务优先布局四区域：
+  当前开发任务 / Agent 运行 / 需要处理 / 快速继续（`components/workbench/DevWorkbenchPanel.tsx`）。
+  数据全部复用既有读模型：任务↔Agent 会话（`task_agent_links`）、任务↔现场
+  （`workspace_snapshots.task_id`）、任务↔场景（`task_reminder_links`）经既有
+  `task_context` 聚合命令读取；Agent 状态复用 `agent_snapshot` + `liveSummary`；
+  待处理事项复用行动中心 intervention 分区（`hasActionsFeedConsumer` 已纳入工作台，
+  计数刷新与徽标同口径）。「当前开发任务」是**显式设置键** `workbench_current_task`
+  （`application_settings`，空 = 未设置，随备份迁移；不自动推断、不按标题相似度绑定）。
+  Agent 完成一轮不改变任务状态：完成只经 `toggle_task` 由用户确认（两段式确认 + 可撤销）。
+  现场恢复复用 `workspace_restore` 单飞与逐项回执事件，成功/失败/已在恢复中就地反馈。
 - UI 基元层（v0.6）：`components/ui/` 提供 Select / Combobox / DropdownMenu / Popover /
   DateTimePicker / Dialog / Checkbox / Switch / NumberInput / Tooltip，
   项目内**不再有原生 `<select>`**；浮层定位统一交给 `@floating-ui/react`（只做定位，

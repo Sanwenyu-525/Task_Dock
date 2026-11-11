@@ -2221,6 +2221,13 @@ pub struct Settings {
     /// 工作区批量启动数量上限
     #[serde(default = "default_workspace_max")]
     pub nav_workspace_max: u32,
+    // ── 开发工作台（2026-11）──
+    /// 当前关注的开发任务 ID（tasks.id 的字符串形式；空 = 未设置）。
+    /// 只由用户显式设置/切换，不自动推断——关联必须有可靠身份依据。
+    /// 任务被删除后保留原值，由前端读侧校验并如实展示失效状态，
+    /// 不在删除路径联动清理设置（避免给 delete_task 增加隐藏副作用）。
+    #[serde(default)]
+    pub workbench_current_task: String,
     // ── 模块独立启停（v0.5.2；关闭只停本模块的后台动作，Agent 接入不受影响）──
     /// 工作现场：关闭后停止捕获与后台恢复，历史数据保留
     #[serde(default = "default_true")]

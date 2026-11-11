@@ -216,6 +216,8 @@ export function hasActionsFeedConsumer(): boolean {
   if (!isFullViewVisible()) return false;
   // 行动中心页面挂载中（tab=actions），即使入口隐藏（当前页由「更多」承担）
   if (useUiStore.getState().tab === "actions") return true;
+  // 开发工作台（2026-11）：「需要处理」区域消费 intervention 计数与列表
+  if (useUiStore.getState().tab === "workbench") return true;
   // 侧栏入口可见：徽标持续消费 counts
   const layout = selectNavigationLayout(useSettingsStore.getState().settings);
   return layout.left.includes("actions");

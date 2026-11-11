@@ -3,6 +3,7 @@ import type { Task } from "../lib/bridge";
 import { activeTabGuard } from "../lib/tabGuard";
 
 export type Tab =
+  | "workbench"
   | "tasks"
   | "agents"
   | "apps"
@@ -39,6 +40,8 @@ export const TAB_ORDER: readonly Tab[] = [
 
 /**
  * 完整模式侧边栏视觉顺序：导航渲染、提示与文档共用这一处定义。
+ * 开发工作台（workbench）是开发模式的主要入口（任务优先布局），位于最前；
+ * 它不占用 Ctrl+数字，因此与 `TAB_ORDER` 分离，避免已有快捷键语义漂移。
  * v0.10 新增「应用」入口（位于 Agent 之后、行动之前）；它不占用 Ctrl+数字，
  * 因此与 `TAB_ORDER` 分离，避免已有快捷键语义漂移。
  * 帮助中心（help）同为仅视觉入口（settings 之前），不占 Ctrl+数字。
@@ -48,6 +51,7 @@ export const TAB_ORDER: readonly Tab[] = [
  * 不占快捷键。
  */
 export const RAIL_ORDER: readonly Tab[] = [
+  "workbench",
   "tasks",
   "agents",
   "apps",

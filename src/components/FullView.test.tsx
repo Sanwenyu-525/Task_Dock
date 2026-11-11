@@ -15,6 +15,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // 面板本身有独立测试，这里只验证导航结构，避免加载全部业务依赖
+vi.mock("./workbench/DevWorkbenchPanel", () => ({ default: () => <div>workbench-panel</div> }));
 vi.mock("./tasks/TasksPanel", () => ({ default: () => <div>tasks-panel</div> }));
 vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }));
 vi.mock("./apps/AppsPanel", () => ({ default: () => <div>apps-panel</div> }));
@@ -76,11 +77,11 @@ describe("完整模式左侧导航", () => {
   /** 导航项的可访问名是「标签（徽标数）」，用正则匹配标签部分。 */
   const navItem = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
 
-  it("默认渲染十一个导航入口并隐藏帮助，保留顶部新建按钮（收集箱+暂存架合并）", () => {
+  it("默认渲染十二个导航入口并隐藏帮助，保留顶部新建按钮（收集箱+暂存架合并）", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
-    for (const label of ["任务", "Agent", "应用", "微件", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
+    for (const label of ["工作台", "任务", "Agent", "应用", "微件", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
       expect(navItem(label)).toBeTruthy();
     }
     expect(screen.queryByRole("button", { name: /^帮助/ })).toBeNull();
@@ -103,12 +104,14 @@ describe("完整模式左侧导航", () => {
     ];
     // aria-label 可能追加徽标说明（如「收集与暂存（2 条待处理收集）」），只比较入口名
     expect(items.map((el) => el.getAttribute("aria-label")?.split("（")[0])).toEqual([
+      "工作台",
       "任务",
       "Agent",
       "应用",
       "微件",
       "行动",
       "剪贴板",
+      "手机互传",
       "收集与暂存",
       "工作流",
       "历史",
@@ -202,13 +205,13 @@ describe("完整模式左侧导航", () => {
 
   it("徽标复用任务统计、行动中心计数与收集箱未处理数", () => {
     render(<FullView />);
-    // 任务 3、Agent 需介入 1、行动总数 2、收集箱未处理 2
+    // 工作台徽标（需介入 1）、任务 3、Agent 需介入 1、行动总数 2、收集箱未处理 2
     const badges = [...document.querySelectorAll(".rail-badge")].map((b) => b.textContent);
     expect(badges).toContain("3");
     expect(badges).toContain("1");
     expect(badges).toContain("2");
-    // 顺序跟随视觉入口：任务、Agent、行动、收集与暂存（徽标=待处理收集，不含暂存条目）
-    expect(badges).toEqual(["3", "1", "2", "2"]);
+    // 顺序跟随视觉入口：工作台（与 Agent 同口径的需介入计数）、任务、Agent、行动、收集与暂存
+    expect(badges).toEqual(["1", "3", "1", "2", "2"]);
   });
 
   it("顶部新建任务入口：切回任务页并触发聚焦信号", async () => {
@@ -343,12 +346,14 @@ describe("英文导航", () => {
       ...document.querySelectorAll(".rail-items .rail-label, .rail-foot > .rail-item .rail-label"),
     ].map((node) => node.textContent);
     expect(labels).toEqual([
+      "Workbench",
       "Tasks",
       "Agents",
       "Apps",
       "Widgets",
       "Actions",
       "Clipboard",
+      "Phone Transfer",
       "Capture & Shelf",
       "Workflows",
       "History",
