@@ -52,7 +52,9 @@ function deviceLabel(): string {
 }
 
 function formatFingerprint(value: string): string {
-  return value.length === 8 ? `${value.slice(0, 4)}-${value.slice(4)}` : value || "—";
+  if (value.length === 8) return `${value.slice(0, 4)}-${value.slice(4)}`;
+  if (value.length === 64) return `${value.slice(0, 12)}…${value.slice(-12)}`;
+  return value || "—";
 }
 
 interface SuccessState {
@@ -178,8 +180,13 @@ export function PairingScreen({ nav }: { nav: Nav }) {
         deviceName: deviceLabel(),
         platform: Platform.OS,
         deviceUid,
+        // v2：扫码必有 TLS 指纹（从首个字节起固定）；手动输码为空 = 首用信任，
+        // TLS 仍强制，但信任锚在首轮连接后才建立。
+        tlsFingerprint: candidate.tlsFingerprint || undefined,
       });
       const addressInfo = targetToAddress(candidate);
+      // 手动配对没有预置指纹：采用连接上观察到的指纹（TOFU），落库钉住后续同步。
+      const tlsFingerprint = candidate.tlsFingerprint || result.tlsFingerprint || "";
       await saveConnection({
         token: result.token,
         meta: {
@@ -191,6 +198,7 @@ export function PairingScreen({ nav }: { nav: Nav }) {
           platform: Platform.OS,
           instanceId: candidate.instanceId,
           fingerprint: candidate.fingerprint,
+          tlsFingerprint,
           pairedAt: result.pairedAt,
         },
       });
@@ -209,7 +217,7 @@ export function PairingScreen({ nav }: { nav: Nav }) {
   const submitManual = useCallback(() => {
     const addressInfo = normalizeDesktopAddress(address);
     if (!addressInfo) {
-      setError("地址格式不正确：请输入桌面端显示的 IP 或 IP:端口（不支持 https）");
+      setError("地址格式不正确：请输入桌面端显示的 IP 或 IP:端口");
       return;
     }
     if (!/^\d{6}$/.test(code)) {
@@ -224,6 +232,9 @@ export function PairingScreen({ nav }: { nav: Nav }) {
       serverName: "",
       instanceId: "",
       fingerprint: "",
+      // 手动输入没有二维码携带的 TLS 指纹：连接仍是 TLS，但首轮按首用信任建立，
+      // 配对成功后用连接上观察到的指纹钉住后续同步（见 runPair）。
+      tlsFingerprint: "",
       raw: "",
     });
   }, [address, code, runPair]);
@@ -343,6 +354,14 @@ export function PairingScreen({ nav }: { nav: Nav }) {
                 {target.code}
               </Text>
             </View>
+            {target.tlsFingerprint ? (
+              <View style={styles.metaRow}>
+                <Text style={[styles.metaLabel, { color: tokens.muted }]}>TLS 指纹</Text>
+                <Text style={[styles.metaValue, styles.mono, { color: tokens.text }]}>
+                  {formatFingerprint(target.tlsFingerprint)}
+                </Text>
+              </View>
+            ) : null}
             {target.fingerprint ? (
               <View style={styles.metaRow}>
                 <Text style={[styles.metaLabel, { color: tokens.muted }]}>设备指纹</Text>
@@ -352,7 +371,9 @@ export function PairingScreen({ nav }: { nav: Nav }) {
               </View>
             ) : null}
             <Text style={[styles.confirmHint, { color: tokens.muted }]}>
-              请核对设备指纹与桌面端「配对新设备」弹层显示一致，再确认授权。
+              {target.tlsFingerprint
+                ? "连接将端到端加密，并固定桌面端证书指纹；请核对设备指纹与桌面端弹层一致。"
+                : "连接将端到端加密（TLS）。手动输入暂无证书指纹可核对，建议优先使用扫码配对。"}
             </Text>
             {error ? (
               <Text accessibilityRole="alert" style={[styles.errorText, { color: tokens.danger }]}>

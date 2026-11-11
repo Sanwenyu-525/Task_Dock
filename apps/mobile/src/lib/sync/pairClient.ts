@@ -1,7 +1,8 @@
 // 配对与连通性客户端：带超时、可注入 fetch、不落任何日志/存储。
 //
 // 职责边界：
-// - 只调用桌面端 v1 的 `/v1/pair` 与 `/v1/ping`；
+// - 只调用桌面端 v2 的 `/v1/pair` 与 `/v1/ping`（v2 起传输为 TLS-only）；
+// - 默认走本地安全通道（secureFetch + SPKI 指纹固定），测试可注入 fetchImpl；
 // - 不保存令牌（由 `db/syncConnection.ts` 写入 SecureStore）；
 // - 错误携带稳定 code（invalid_code / pairing_closed / too_many_attempts /
 //   unauthorized / network / invalid_response），界面据此给可操作提示。
@@ -9,6 +10,11 @@
 import { AppError, toAppError } from "../errors";
 
 import type { DesktopAddress } from "./pairing";
+import {
+  createSecureFetch,
+  lastObservedServerFingerprint,
+  type SecureHttpNative,
+} from "./secureFetch";
 
 const PAIR_TIMEOUT_MS = 8_000;
 const PING_TIMEOUT_MS = 5_000;
@@ -44,6 +50,11 @@ export interface PairResponse {
   serverName: string;
   apiVersion: number;
   pairedAt: string;
+  /**
+   * 本次连接观察到的桌面端 TLS 指纹：扫码配对时等于二维码里的固定值；
+   * 手动输码（无 pin，首用信任）时是原生层观察到的指纹，调用方应落库钉住。
+   */
+  tlsFingerprint: string | null;
 }
 
 export interface PingResponse {
@@ -52,10 +63,6 @@ export interface PingResponse {
   deviceId: string;
   /** 桌面端当前时间（ISO），仅用于展示/漂移诊断 */
   now: string | null;
-}
-
-function defaultFetch(): FetchLike {
-  return (url, init) => fetch(url, init);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -119,7 +126,9 @@ async function requestJson(
  * 配对请求。成功返回一次性令牌与设备身份；桌面端只保存令牌哈希。
  *
  * 注意：请求体包含 6 位配对码（短时信道），不会写入本地日志；响应令牌只由调用方
- * 立刻写入 SecureStore。
+ * 立刻写入 SecureStore。`tlsFingerprint` 提供时（扫码 v2）从首个字节起就做
+ * SPKI 固定；未提供（手动输码）时按首用信任建立 TLS，并在结果里回传观察到的
+ * 指纹供落库钉住。
  */
 export async function pairWithDesktop(options: {
   address: DesktopAddress;
@@ -128,12 +137,16 @@ export async function pairWithDesktop(options: {
   platform?: string;
   /** 安装级标识：桌面端据此在重新配对时替换同一台手机的旧授权。 */
   deviceUid: string;
+  /** 桌面端 TLS SPKI SHA-256（扫码 v2 必有；手动输码为空）。 */
+  tlsFingerprint?: string;
   fetchImpl?: FetchLike;
+  native?: SecureHttpNative;
 }): Promise<PairResponse> {
   if (!/^\d{6}$/.test(options.code)) {
     throw new PairingRequestError("invalid_request", "配对码必须是 6 位数字");
   }
-  const fetchImpl = options.fetchImpl ?? defaultFetch();
+  const fetchImpl =
+    options.fetchImpl ?? createSecureFetch({ pin: options.tlsFingerprint ?? null }, options.native ?? null);
   const payload = JSON.stringify({
     code: options.code,
     device_name: options.deviceName.slice(0, 64),
@@ -179,23 +192,43 @@ export async function pairWithDesktop(options: {
   ) {
     throw new PairingRequestError("invalid_response", "桌面端返回的配对结果不完整，请升级双端版本");
   }
-  if (apiVersion !== 1) {
+  if (apiVersion !== 2) {
+    if (apiVersion === 1) {
+      throw new PairingRequestError(
+        "invalid_response",
+        "桌面端协议过旧（v1 明文），请升级桌面端后重新生成二维码",
+      );
+    }
     throw new PairingRequestError(
       "invalid_response",
       `协议版本不兼容（桌面端 v${apiVersion}），请升级双端到同一版本`,
     );
   }
 
-  return { token, deviceId, serverName, apiVersion, pairedAt };
+  return {
+    token,
+    deviceId,
+    serverName,
+    apiVersion,
+    pairedAt,
+    // 预置指纹（扫码 v2）原样返回；手动配对（首用信任）取原生层观察到的指纹。
+    tlsFingerprint:
+      options.tlsFingerprint ??
+      (options.fetchImpl ? null : lastObservedServerFingerprint(options.native)),
+  };
 }
 
 /** 连通性探测：验证令牌是否仍被桌面端接受，并刷新桌面端「最近连接」。 */
 export async function pingDesktop(options: {
   address: DesktopAddress;
   token: string;
+  /** 已钉住的 TLS 指纹（连接元数据里保存）。 */
+  tlsFingerprint?: string;
   fetchImpl?: FetchLike;
+  native?: SecureHttpNative;
 }): Promise<PingResponse> {
-  const fetchImpl = options.fetchImpl ?? defaultFetch();
+  const fetchImpl =
+    options.fetchImpl ?? createSecureFetch({ pin: options.tlsFingerprint ?? null }, options.native ?? null);
   const result = await requestJson(
     fetchImpl,
     `${options.address.baseUrl}/v1/ping`,

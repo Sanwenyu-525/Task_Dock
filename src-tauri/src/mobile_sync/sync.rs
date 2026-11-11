@@ -1187,6 +1187,19 @@ mod tests {
     }
 
     #[test]
+    fn derive_key_matches_mobile_fixed_vector() {
+        // 与 apps/mobile/src/lib/sync/__tests__/crypto.test.ts 的固定向量互为校验：
+        // 双端 KDF 必须逐字节一致，否则同步载荷互相解不开。
+        let token = "a".repeat(64);
+        let key = derive_key(&hash_token(&token));
+        let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(
+            hex,
+            "282257e1912be9b743d7cb7eeab3056560492ab079a14bf613468fa30f0a5164"
+        );
+    }
+
+    #[test]
     fn crypto_roundtrip_and_aad_binding() {
         let key = derive_key(&"ab".repeat(32));
         let envelope = encrypt_envelope(&key, AAD_PULL, &json!({"hello": "世界"})).unwrap();

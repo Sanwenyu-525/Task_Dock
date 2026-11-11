@@ -48,12 +48,21 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 # 智能剪贴板：PNG 编解码 / 内容哈希 / HTML data URI（均为 Cargo.lock 已有传递依赖，版本对齐）
 png = "0.18"
-sha2 = "0.10"
+sha2 = { version = "0.10", features = ["oid"] }
 base64 = "0.23"
 # 手机同步 v1：载荷加密。XSalsa20-Poly1305 与手机端 tweetnacl secretbox 同一算法，
 # 密钥由设备令牌哈希经 SHA-512 派生（见 mobile_sync::sync）；nonce 走 OS 随机源。
 xsalsa20poly1305 = "0.9"
 rand = "0.8"
+# 手机同步 v2：传输层硬切 TLS。服务端用系统 schannel（native-tls），不引入
+# ring/aws-lc-rs（本机构建无 nasm/cmake）。自签证书用纯 Rust 的 rsa + x509-cert
+# 生成（RSA-3072 + SHA-256 签名）：native-tls 的 Windows 后端经 legacy CryptoAPI
+# 导入私钥，不支持 EC 密钥，因此不能用 ECDSA P-256；SPKI SHA-256 指纹进二维码
+# 供手机端固定，指纹语义与算法无关。
+native-tls = "0.2"
+tokio-native-tls = "0.3"
+rsa = { version = "0.9", features = ["pem", "sha2"] }
+x509-cert = { version = "0.2", default-features = false, features = ["builder", "pem"] }
 # 自定义语音包导入校验：纯 Rust 完整解码 MP3/WAV，不启用播放后端或其他媒体格式。
 symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "pcm"] }
 # 导航系统（v0.4）：窗口枚举/焦点控制（与 window-vibrancy 传递依赖同主版本，零新增二进制）
