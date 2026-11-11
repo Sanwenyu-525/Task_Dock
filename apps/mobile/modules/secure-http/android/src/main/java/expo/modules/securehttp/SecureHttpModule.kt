@@ -19,7 +19,6 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 
 import expo.modules.kotlin.Promise
-import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -88,14 +87,11 @@ class SecureHttpModule : Module() {
       val pin = (options["pin"] as? String)?.takeIf { it.isNotEmpty() }
 
       if (url == null || !url.startsWith("https://", ignoreCase = true)) {
-        promise.reject(
-          "E_INSECURE_URL",
-          CodedException("E_INSECURE_URL", "SecureHttp 只接受 https:// 请求"),
-        )
+        promise.reject("E_INSECURE_URL", "SecureHttp 只接受 https:// 请求", null)
         return@AsyncFunction
       }
       if (cancelledIds.remove(requestId)) {
-        promise.reject("E_CANCELLED", CodedException("E_CANCELLED", "请求已取消"))
+        promise.reject("E_CANCELLED", "请求已取消", null)
         return@AsyncFunction
       }
 
@@ -108,18 +104,18 @@ class SecureHttpModule : Module() {
         try {
           val result = execute(requestId, connection)
           if (cancelledIds.remove(requestId)) {
-            promise.reject("E_CANCELLED", CodedException("E_CANCELLED", "请求已取消"))
+            promise.reject("E_CANCELLED", "请求已取消", null)
             return@submit
           }
           promise.resolve(result)
         } catch (error: Exception) {
           val wasCancelled = cancelledIds.remove(requestId) || Thread.currentThread().isInterrupted
           if (wasCancelled) {
-            promise.reject("E_CANCELLED", CodedException("E_CANCELLED", "请求已取消"))
+            promise.reject("E_CANCELLED", "请求已取消", null)
           } else {
             val code = if (error is CertificateException) "E_PIN_MISMATCH" else "E_NETWORK"
             // 错误消息只含原因摘要，不含 URL 查询参数、证书或指纹原文。
-            promise.reject(code, CodedException(code, error.message ?: error.javaClass.simpleName))
+            promise.reject(code, error.message ?: error.javaClass.simpleName, error)
           }
         } finally {
           inFlight.remove(requestId)
