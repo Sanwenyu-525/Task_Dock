@@ -20,7 +20,14 @@
 ```bash
 cd apps/mobile
 npx tsc --noEmit          # exit 0 才算通过
+npm test                  # vitest run（2026-11-12 起）：单测 93 例，exit 0 才算通过
 ```
+
+vitest（node 环境，不用 jsdom）覆盖：配对 v2 解析与 TLS 指纹校验、secureFetch 注入链路、
+KDF 跨端固定向量、信封 AAD/防篡改、同步客户端超时/退避/取消、文件分块协议、DB 迁移
+v1→v5（node:sqlite 真实 SQL harness，业务代码原样运行）、pull 应用与墓碑版本比较、
+outbox 结算与冲突守卫、冲突两条解决路径、引擎端到端（pull→push→再 pull + 提醒对账）。
+Expo 原生边界用 `src/test/mocks/` 替身替换——只换驱动，不为测试重写业务逻辑。
 
 纯函数断言（编译真实代码，不重写实现）：
 
@@ -240,3 +247,8 @@ node tmp/debug/mobile-app-skeleton/ui.mjs key 66           # Enter
 - 2026-11-09 配对去重：矩阵新增 54（`device_uid` 重配对替换旧授权）PASS；移动端
   `npx tsc --noEmit` exit 0。真机重配对未执行（需要安装携带 `device_uid` 的新 APK），
   历史重复记录需在桌面端手动撤销一次。
+
+## 变更记录
+
+- 2026-11-12 新增 `npm test`（vitest 3.2，node 环境）作为手机端自动化入口；
+  真机验收要求不变（模拟器不算证据）。

@@ -1191,7 +1191,7 @@ mod tests {
         // 与 apps/mobile/src/lib/sync/__tests__/crypto.test.ts 的固定向量互为校验：
         // 双端 KDF 必须逐字节一致，否则同步载荷互相解不开。
         let token = "a".repeat(64);
-        let key = derive_key(&hash_token(&token));
+        let key = derive_key(&crate::mobile_sync::hash_token(&token));
         let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
         assert_eq!(
             hex,
