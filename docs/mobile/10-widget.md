@@ -133,3 +133,8 @@ ALPHA，未采用（符合任务约束）。
 
 - 2026-11-12 首版：小组件原生接入（module + plugin + widgetSnapshot + WidgetScreen 改造），
   移除「规划中」徽标，配置页预览改用真实快照数据。
+- 2026-11-12 添加到主屏幕真实引导：新增 `TaskDockWidget.requestPinWidget(size)`
+  （Android 8+ `AppWidgetManager.requestPinAppWidget`，系统弹确认框），
+  WidgetScreen 主按钮改为真实请求：支持时系统直接弹添加确认；launcher 不支持
+  （`isRequestPinAppWidgetSupported=false`）或原生模块缺失时回退「长按桌面 → 小组件」
+  引导文案。4×4 未提供，请求时按最近的 4×2 处理。
