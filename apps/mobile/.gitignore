@@ -3,6 +3,7 @@
 # 曾把本地 Expo 模块 modules/secure-http/android/ 的源码静默排除在库外（2026-11-12）。
 node_modules/
 /android/
+**/android/build/
 ios/
 .expo/
 dist/
