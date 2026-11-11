@@ -4,9 +4,668 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Task Dock</title>
+    <script>
+      /* 主题提示读取器（BOOT_PROTOCOL.md §6）：在占位样式之前读 localStorage 里的
+         显式主题/预设（解析后的值，绝不存 "system"），白名单校验后写入
+         documentElement.dataset；无效或缺失不设属性，CSS 回退 prefers-color-scheme。 */
+      (function () {
+        try {
+          var hint = JSON.parse(localStorage.getItem("taskdock.boot-theme") || "null");
+          var hintTheme = hint && hint.theme;
+          var hintPreset = hint && hint.preset;
+          if (hintTheme === "light" || hintTheme === "dark") document.documentElement.dataset.theme = hintTheme;
+          if (hintPreset === "frosted" || hintPreset === "dream-gradient") document.documentElement.dataset.preset = hintPreset;
+        } catch (e) {
+          /* 读取/解析失败：按无提示处理，走系统偏好 */
+        }
+      })();
+    </script>
+    <style>
+      /* 启动占位「启动体验 V1」（2026-11-12，重构自 2026-11-11 基线；B 所有）。
+         契约：tmp/acceptance/startup-experience-v1/BOOT_PROTOCOL.md §2/§6/§7。
+         纯内联 HTML/CSS/微脚本、零依赖；状态由 public/boot/boot-watchdog.js 以
+         data-state 驱动：boot（轻量启动位）→ slow（工作区骨架屏）→ timeout/error
+         （恢复卡），ready 后加 is-leaving 淡出移除。
+         颜色全部经占位自有 --boot-* 变量：无 data-preset 时中性回退，
+         两预设（frosted 淡蓝白磨砂 / dream-gradient 蓝紫粉渐变）× 明暗共 4 组取值，
+         显式取值来自 src/styles-themes.css 对应组合的实际 token。 */
+      #boot-splash,
+      #boot-splash * {
+        box-sizing: border-box;
+      }
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: var(--boot-bg);
+        color: var(--boot-fg);
+        font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        transition: opacity 160ms ease;
+      }
+      body {
+        /* 淡出/移除瞬间不露出白底；React 挂载后由应用样式覆盖 */
+        background: var(--boot-bg);
+      }
+      #boot-splash.is-leaving {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      /* ── 占位自有 Token（§7：颜色全部经变量） ──
+         中性回退（无 data-preset）：浅色为默认，深色走显式 data-theme 或系统偏好。 */
+      :root {
+        --boot-bg: #f4f5f7;
+        --boot-fg: #4b5563;
+        --boot-strong: #232840;
+        --boot-surface: #ffffff;
+        --boot-border: rgba(35, 40, 64, 0.12);
+        --boot-border-strong: rgba(35, 40, 64, 0.2);
+        --boot-accent: #4f46e5;
+        --boot-accent-gradient: linear-gradient(135deg, #4f46e5 0%, #4338ca 55%, #6d28d9 100%);
+        --boot-accent-soft: rgba(79, 70, 229, 0.1);
+        --boot-shadow: 0 18px 44px -20px rgba(42, 46, 96, 0.35);
+        --boot-sk-base: rgba(35, 40, 64, 0.08);
+        --boot-sk-card: rgba(255, 255, 255, 0.6);
+        --boot-sk-shine: rgba(255, 255, 255, 0.55);
+      }
+      html[data-theme="dark"] {
+        --boot-bg: #17181c;
+        --boot-fg: #c8ccd4;
+        --boot-strong: #edeffa;
+        --boot-surface: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.04));
+        --boot-border: rgba(255, 255, 255, 0.12);
+        --boot-border-strong: rgba(255, 255, 255, 0.2);
+        --boot-accent: #a5a8ff;
+        --boot-accent-gradient: linear-gradient(135deg, #5257ea 0%, #4f46e5 55%, #7c3aed 100%);
+        --boot-accent-soft: rgba(165, 168, 255, 0.16);
+        --boot-shadow: 0 18px 44px -20px rgba(2, 6, 18, 0.7);
+        --boot-sk-base: rgba(255, 255, 255, 0.08);
+        --boot-sk-card: rgba(255, 255, 255, 0.045);
+        --boot-sk-shine: rgba(255, 255, 255, 0.1);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --boot-bg: #17181c;
+          --boot-fg: #c8ccd4;
+          --boot-strong: #edeffa;
+          --boot-surface: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.04));
+          --boot-border: rgba(255, 255, 255, 0.12);
+          --boot-border-strong: rgba(255, 255, 255, 0.2);
+          --boot-accent: #a5a8ff;
+          --boot-accent-gradient: linear-gradient(135deg, #5257ea 0%, #4f46e5 55%, #7c3aed 100%);
+          --boot-accent-soft: rgba(165, 168, 255, 0.16);
+          --boot-shadow: 0 18px 44px -20px rgba(2, 6, 18, 0.7);
+          --boot-sk-base: rgba(255, 255, 255, 0.08);
+          --boot-sk-card: rgba(255, 255, 255, 0.045);
+          --boot-sk-shine: rgba(255, 255, 255, 0.1);
+        }
+      }
+
+      /* frosted：淡蓝白磨砂，冷调不引入粉紫（对齐 styles-themes.css frosted 组） */
+      html[data-preset="frosted"] {
+        --boot-bg: linear-gradient(152deg, #ffffff 0%, #f3f8fe 42%, #ebf5fc 72%, #f6fbff 100%);
+        --boot-fg: #565d78;
+        --boot-strong: #232840;
+        --boot-surface: linear-gradient(158deg, rgba(255, 255, 255, 0.97) 0%, rgba(250, 253, 255, 0.92) 52%, rgba(240, 248, 252, 0.88) 100%);
+        --boot-border: rgba(80, 104, 146, 0.2);
+        --boot-border-strong: rgba(80, 104, 146, 0.32);
+        --boot-accent: #4f46e5;
+        --boot-accent-gradient: linear-gradient(140deg, #4f46e5 0%, #3730a3 48%, #5b21b6 100%);
+        --boot-accent-soft: rgba(79, 70, 229, 0.12);
+        --boot-shadow: 0 18px 44px -20px rgba(72, 82, 160, 0.45);
+        --boot-sk-base: rgba(35, 40, 64, 0.08);
+        --boot-sk-card: rgba(255, 255, 255, 0.62);
+        --boot-sk-shine: rgba(255, 255, 255, 0.6);
+      }
+      html[data-preset="frosted"][data-theme="dark"] {
+        --boot-bg: linear-gradient(152deg, #1c2234 0%, #141a29 42%, #0f1727 72%, #0f1727 100%);
+        --boot-fg: #b0b5cd;
+        --boot-strong: #edeffa;
+        --boot-surface: linear-gradient(158deg, rgba(72, 88, 118, 0.38) 0%, rgba(38, 50, 72, 0.44) 55%, rgba(27, 37, 55, 0.52) 100%);
+        --boot-border: rgba(196, 214, 255, 0.18);
+        --boot-border-strong: rgba(196, 214, 255, 0.28);
+        --boot-accent: #a5a8ff;
+        --boot-accent-gradient: linear-gradient(140deg, #4560e0 0%, #3730a3 48%, #5b21b6 100%);
+        --boot-accent-soft: rgba(165, 168, 255, 0.16);
+        --boot-shadow: 0 18px 44px -20px rgba(2, 6, 18, 0.72);
+        --boot-sk-base: rgba(255, 255, 255, 0.08);
+        --boot-sk-card: rgba(255, 255, 255, 0.045);
+        --boot-sk-shine: rgba(255, 255, 255, 0.1);
+      }
+      @media (prefers-color-scheme: dark) {
+        html[data-preset="frosted"]:not([data-theme="light"]) {
+          --boot-bg: linear-gradient(152deg, #1c2234 0%, #141a29 42%, #0f1727 72%, #0f1727 100%);
+          --boot-fg: #b0b5cd;
+          --boot-strong: #edeffa;
+          --boot-surface: linear-gradient(158deg, rgba(72, 88, 118, 0.38) 0%, rgba(38, 50, 72, 0.44) 55%, rgba(27, 37, 55, 0.52) 100%);
+          --boot-border: rgba(196, 214, 255, 0.18);
+          --boot-border-strong: rgba(196, 214, 255, 0.28);
+          --boot-accent: #a5a8ff;
+          --boot-accent-gradient: linear-gradient(140deg, #4560e0 0%, #3730a3 48%, #5b21b6 100%);
+          --boot-accent-soft: rgba(165, 168, 255, 0.16);
+          --boot-shadow: 0 18px 44px -20px rgba(2, 6, 18, 0.72);
+          --boot-sk-base: rgba(255, 255, 255, 0.08);
+          --boot-sk-card: rgba(255, 255, 255, 0.045);
+          --boot-sk-shine: rgba(255, 255, 255, 0.1);
+        }
+      }
+
+      /* dream-gradient：低饱和蓝紫粉渐变，文字可读性优先（对齐 dream-gradient 组） */
+      html[data-preset="dream-gradient"] {
+        --boot-bg: linear-gradient(158deg, #fbfcff 0%, #efeaff 34%, #fdf0f9 68%, #f5faff 100%);
+        --boot-fg: #59607a;
+        --boot-strong: #22263c;
+        --boot-surface: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(255, 255, 255, 0.88) 52%, rgba(250, 248, 255, 0.84) 100%);
+        --boot-border: rgba(74, 78, 148, 0.22);
+        --boot-border-strong: rgba(74, 78, 148, 0.34);
+        --boot-accent: #4f46e5;
+        --boot-accent-gradient: linear-gradient(135deg, #4f46e5 0%, #4338ca 55%, #6d28d9 100%);
+        --boot-accent-soft: rgba(99, 102, 241, 0.1);
+        --boot-shadow: 0 18px 44px -20px rgba(76, 72, 160, 0.42);
+        --boot-sk-base: rgba(34, 38, 60, 0.08);
+        --boot-sk-card: rgba(255, 255, 255, 0.6);
+        --boot-sk-shine: rgba(255, 255, 255, 0.6);
+      }
+      html[data-preset="dream-gradient"][data-theme="dark"] {
+        --boot-bg: linear-gradient(158deg, #14172a 0%, #191630 36%, #211827 68%, #121626 100%);
+        --boot-fg: #a4a9c2;
+        --boot-strong: #e9eaf6;
+        --boot-surface: linear-gradient(180deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.06) 52%, rgba(255, 255, 255, 0.045) 100%);
+        --boot-border: rgba(205, 208, 255, 0.16);
+        --boot-border-strong: rgba(205, 208, 255, 0.26);
+        --boot-accent: #a5a8ff;
+        --boot-accent-gradient: linear-gradient(135deg, #5257ea 0%, #4f46e5 55%, #7c3aed 100%);
+        --boot-accent-soft: rgba(165, 168, 255, 0.16);
+        --boot-shadow: 0 18px 44px -20px rgba(2, 6, 18, 0.68);
+        --boot-sk-base: rgba(255, 255, 255, 0.09);
+        --boot-sk-card: rgba(255, 255, 255, 0.05);
+        --boot-sk-shine: rgba(255, 255, 255, 0.1);
+      }
+      @media (prefers-color-scheme: dark) {
+        html[data-preset="dream-gradient"]:not([data-theme="light"]) {
+          --boot-bg: linear-gradient(158deg, #14172a 0%, #191630 36%, #211827 68%, #121626 100%);
+          --boot-fg: #a4a9c2;
+          --boot-strong: #e9eaf6;
+          --boot-surface: linear-gradient(180deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.06) 52%, rgba(255, 255, 255, 0.045) 100%);
+          --boot-border: rgba(205, 208, 255, 0.16);
+          --boot-border-strong: rgba(205, 208, 255, 0.26);
+          --boot-accent: #a5a8ff;
+          --boot-accent-gradient: linear-gradient(135deg, #5257ea 0%, #4f46e5 55%, #7c3aed 100%);
+          --boot-accent-soft: rgba(165, 168, 255, 0.16);
+          --boot-shadow: 0 18px 44px -20px rgba(2, 6, 18, 0.68);
+          --boot-sk-base: rgba(255, 255, 255, 0.09);
+          --boot-sk-card: rgba(255, 255, 255, 0.05);
+          --boot-sk-shine: rgba(255, 255, 255, 0.1);
+        }
+      }
+
+      /* ── 启动位（boot/slow 共用）：logo + 标题 + spinner + 状态行 ── */
+      .boot-intro {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+      }
+      .boot-logo {
+        width: 34px;
+        height: 34px;
+        border-radius: 11px;
+        background: var(--boot-accent-gradient);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.35),
+          0 6px 16px -6px rgba(79, 70, 229, 0.55);
+      }
+      .boot-title {
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+        color: var(--boot-strong);
+      }
+      .boot-spinner {
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--boot-accent);
+        border-right-color: transparent;
+        border-radius: 50%;
+        opacity: 0.6;
+        animation: boot-spin 900ms linear infinite;
+      }
+      .boot-status {
+        max-width: min(340px, 100%);
+        font-size: 12px;
+        text-align: center;
+        overflow-wrap: break-word;
+        opacity: 0.85;
+      }
+
+      /* ── 工作区骨架屏（slow 背景；timeout 更弱）：中性形状，无假任务名/进度 ── */
+      #boot-skeleton {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        display: none;
+        flex-direction: column;
+        gap: 16px;
+        padding: 20px 24px;
+        overflow: hidden;
+        opacity: 0.6;
+        pointer-events: none;
+        transition: opacity 240ms ease;
+      }
+      .boot-sk-top {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 40px;
+        flex: none;
+      }
+      .boot-sk-top .boot-sk-bar {
+        height: 14px;
+      }
+      .boot-sk-space {
+        flex: 1;
+      }
+      .boot-sk-dot {
+        position: relative;
+        overflow: hidden;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: var(--boot-sk-base);
+        flex: none;
+      }
+      .boot-sk-main {
+        display: flex;
+        gap: 16px;
+        flex: 1;
+        min-height: 0;
+      }
+      .boot-sk-nav {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        width: 64px;
+        flex: none;
+        padding-top: 2px;
+      }
+      .boot-sk-tile {
+        position: relative;
+        overflow: hidden;
+        width: 44px;
+        height: 34px;
+        border-radius: 10px;
+        background: var(--boot-sk-base);
+        flex: none;
+      }
+      .boot-sk-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        width: 100%;
+        max-width: 560px;
+        margin: 0 auto;
+        min-width: 0;
+      }
+      .boot-sk-row {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px 14px;
+        border-radius: 13px;
+        background: var(--boot-sk-card);
+        border: 1px solid var(--boot-border);
+      }
+      .boot-sk-bar {
+        position: relative;
+        overflow: hidden;
+        height: 12px;
+        border-radius: 8px;
+        background: var(--boot-sk-base);
+      }
+      .boot-sk-w12 { width: 12%; }
+      .boot-sk-w22 { width: 22%; }
+      .boot-sk-w28 { width: 28%; }
+      .boot-sk-w36 { width: 36%; }
+      .boot-sk-w38 { width: 38%; }
+      .boot-sk-w46 { width: 46%; }
+      .boot-sk-w52 { width: 52%; }
+      .boot-sk-w58 { width: 58%; }
+      .boot-sk-w68 { width: 68%; }
+      .boot-sk-w74 { width: 74%; }
+      .boot-sk-bar::after,
+      .boot-sk-tile::after,
+      .boot-sk-dot::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        transform: translateX(-100%);
+        background: linear-gradient(90deg, transparent, var(--boot-sk-shine), transparent);
+        animation: boot-shimmer 1800ms ease-in-out infinite;
+      }
+      .boot-sk-row:nth-child(2) .boot-sk-bar::after { animation-delay: 120ms; }
+      .boot-sk-row:nth-child(3) .boot-sk-bar::after { animation-delay: 240ms; }
+      .boot-sk-row:nth-child(4) .boot-sk-bar::after { animation-delay: 360ms; }
+
+      /* ── 恢复卡（timeout/error 共用，文案由 state 决定；§7） ── */
+      #boot-recovery {
+        position: relative;
+        z-index: 3;
+        display: none;
+        width: calc(100% - 48px);
+        max-width: 420px;
+      }
+      .boot-card {
+        padding: 20px;
+        border-radius: 16px;
+        background: var(--boot-surface);
+        border: 1px solid var(--boot-border);
+        box-shadow: var(--boot-shadow);
+      }
+      .boot-card-badge {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        margin-bottom: 10px;
+        border-radius: 9px;
+        background: var(--boot-accent-soft);
+        color: var(--boot-accent);
+        font-size: 14px;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .boot-card-title {
+        margin: 0 0 8px;
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--boot-strong);
+      }
+      .boot-card-detail {
+        margin: 0;
+        max-height: 96px;
+        font-size: 12.5px;
+        line-height: 1.65;
+        color: var(--boot-fg);
+        overflow-wrap: break-word;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 4;
+        overflow: hidden;
+      }
+      .boot-card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .boot-card-safe {
+        margin: 12px 0 0;
+        font-size: 11px;
+        line-height: 1.6;
+        color: var(--boot-fg);
+        opacity: 0.85;
+      }
+
+      /* ── 按钮：主按钮 accent 渐变底白字，次按钮描边（产品语言） ── */
+      .boot-btn {
+        appearance: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 7px 14px;
+        border-radius: 9px;
+        border: 1px solid transparent;
+        font-family: inherit;
+        font-size: 12.5px;
+        font-weight: 600;
+        line-height: 1.2;
+        cursor: pointer;
+        transition:
+          background-color 140ms ease,
+          border-color 140ms ease,
+          box-shadow 140ms ease,
+          filter 140ms ease;
+      }
+      .boot-btn:focus-visible {
+        outline: 2px solid var(--boot-accent);
+        outline-offset: 2px;
+      }
+      .boot-btn-primary {
+        background: var(--boot-accent-gradient);
+        color: #ffffff;
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.32),
+          0 4px 12px -6px rgba(79, 70, 229, 0.55);
+      }
+      .boot-btn-primary:hover {
+        filter: brightness(1.07);
+      }
+      .boot-btn-ghost {
+        background: transparent;
+        border-color: var(--boot-border-strong);
+        color: var(--boot-strong);
+      }
+      .boot-btn-ghost:hover {
+        background: var(--boot-accent-soft);
+        border-color: var(--boot-accent);
+        color: var(--boot-accent);
+      }
+
+      /* ── 状态可见性（§2；watchdog 写 data-state 驱动） ── */
+      .boot-when-boot,
+      .boot-when-slow,
+      .boot-when-timeout,
+      .boot-when-error {
+        display: none;
+      }
+      #boot-splash[data-state="boot"] .boot-when-boot { display: inline; }
+      #boot-splash[data-state="slow"] .boot-when-slow { display: inline; }
+      #boot-splash[data-state="timeout"] .boot-when-timeout { display: inline; }
+      #boot-splash[data-state="error"] .boot-when-error { display: inline; }
+      #boot-wait,
+      #boot-retry,
+      #boot-copy {
+        display: none;
+      }
+      #boot-splash[data-state="timeout"] #boot-wait { display: inline-flex; }
+      #boot-splash[data-state="timeout"] #boot-retry,
+      #boot-splash[data-state="error"] #boot-retry,
+      #boot-splash[data-state="timeout"] #boot-copy,
+      #boot-splash[data-state="error"] #boot-copy { display: inline-flex; }
+      #boot-splash[data-state="slow"] #boot-skeleton { display: flex; }
+      #boot-splash[data-state="timeout"] #boot-skeleton {
+        display: flex;
+        opacity: 0.32;
+      }
+      #boot-splash[data-state="timeout"] #boot-recovery,
+      #boot-splash[data-state="error"] #boot-recovery {
+        display: block;
+        animation: boot-rise 220ms ease-out;
+      }
+      /* timeout/error 时恢复卡自带全部信息，启动位让位 */
+      #boot-splash[data-state="timeout"] .boot-intro,
+      #boot-splash[data-state="error"] .boot-intro {
+        display: none;
+      }
+
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes boot-shimmer {
+        to {
+          transform: translateX(100%);
+        }
+      }
+      @keyframes boot-rise {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-splash,
+        #boot-skeleton {
+          transition: none;
+        }
+        #boot-splash .boot-spinner {
+          animation-duration: 3s; /* 旋转减速（§7） */
+        }
+        #boot-splash .boot-sk-bar::after,
+        #boot-splash .boot-sk-tile::after,
+        #boot-splash .boot-sk-dot::after {
+          animation: none; /* shimmer 完全静止 */
+        }
+        #boot-recovery {
+          animation: none;
+        }
+      }
+
+      /* ── 窄窗（320–400px）：流式收缩，恢复卡不裁切 ── */
+      @media (max-width: 400px) {
+        #boot-splash {
+          padding: 16px;
+        }
+        #boot-recovery {
+          width: calc(100% - 32px);
+        }
+        .boot-card {
+          padding: 16px;
+        }
+        #boot-skeleton {
+          gap: 12px;
+          padding: 14px 16px;
+        }
+        .boot-sk-nav {
+          width: 48px;
+        }
+        .boot-sk-tile {
+          width: 36px;
+          height: 30px;
+        }
+        .boot-sk-row {
+          padding: 10px 12px;
+        }
+      }
+    </style>
   </head>
   <body>
+    <div id="boot-splash" role="status" aria-live="polite" data-state="boot">
+      <div class="boot-intro">
+        <div class="boot-logo" aria-hidden="true"></div>
+        <div class="boot-title">Task Dock</div>
+        <div class="boot-spinner" aria-hidden="true"></div>
+        <div class="boot-status" id="boot-status">
+          <span class="boot-when-boot">正在启动…</span>
+          <span class="boot-when-slow">正在加载界面组件，首次启动可能需要稍久…</span>
+        </div>
+      </div>
+      <div class="boot-skeleton" id="boot-skeleton" aria-hidden="true">
+        <div class="boot-sk-top">
+          <span class="boot-sk-bar boot-sk-w22"></span>
+          <span class="boot-sk-bar boot-sk-w12"></span>
+          <span class="boot-sk-space"></span>
+          <span class="boot-sk-dot"></span>
+          <span class="boot-sk-dot"></span>
+        </div>
+        <div class="boot-sk-main">
+          <div class="boot-sk-nav">
+            <span class="boot-sk-tile"></span>
+            <span class="boot-sk-tile"></span>
+            <span class="boot-sk-tile"></span>
+            <span class="boot-sk-tile"></span>
+            <span class="boot-sk-tile"></span>
+            <span class="boot-sk-tile"></span>
+          </div>
+          <div class="boot-sk-list">
+            <div class="boot-sk-row">
+              <span class="boot-sk-bar boot-sk-w68"></span>
+              <span class="boot-sk-bar boot-sk-w36"></span>
+            </div>
+            <div class="boot-sk-row">
+              <span class="boot-sk-bar boot-sk-w46"></span>
+              <span class="boot-sk-bar boot-sk-w58"></span>
+            </div>
+            <div class="boot-sk-row">
+              <span class="boot-sk-bar boot-sk-w74"></span>
+              <span class="boot-sk-bar boot-sk-w28"></span>
+            </div>
+            <div class="boot-sk-row">
+              <span class="boot-sk-bar boot-sk-w38"></span>
+              <span class="boot-sk-bar boot-sk-w52"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="boot-recovery" id="boot-recovery">
+        <div class="boot-card">
+          <div class="boot-card-badge" aria-hidden="true">!</div>
+          <div class="boot-card-title">
+            <span class="boot-when-timeout">启动超时</span>
+            <span class="boot-when-error">启动遇到问题</span>
+          </div>
+          <p class="boot-card-detail" id="boot-detail">
+            <span class="boot-when-timeout">界面加载比预期慢。可以继续等待，或重新加载。</span>
+            <span class="boot-when-error">界面加载遇到问题。</span>
+          </p>
+          <div class="boot-card-actions">
+            <button type="button" class="boot-btn boot-btn-primary" id="boot-wait">继续等待</button>
+            <button type="button" class="boot-btn boot-btn-ghost" id="boot-retry">重新加载</button>
+            <button type="button" class="boot-btn boot-btn-ghost" id="boot-copy">复制诊断信息</button>
+          </div>
+          <p class="boot-card-safe">你的任务与设置数据保存在本机，继续等待或重新加载都不会造成数据丢失。</p>
+        </div>
+      </div>
+    </div>
     <div id="root"></div>
+    <!-- 启动看门狗：public/boot/boot-watchdog.js（经典脚本，先于下方模块脚本执行）。
+         职责（BOOT_PROTOCOL.md §2–§5）：安装 window.__TASK_DOCK_BOOT__ 状态机；捕获
+         启动期错误；经 diagnostics_record 直写 boot_timeout（UI_BOOT_TIMEOUT）/ boot_slow
+         （UI_BOOT_SLOW / UI_BOOT_ERROR）/ boot_fatal（UI_BOOT_FATAL）诊断记录；
+         「重新加载」是唯一刷新入口，绝无自动重试循环。 -->
+    <script src="/boot/boot-watchdog.js"></script>
+    <script>
+      /* 死人在场保险（BOOT_PROTOCOL.md §4，B 所有）：watchdog 文件缺失/未执行时，
+         20s 后仍无 window.__TASK_DOCK_BOOT__ 就强制淡出并移除占位，绝不永久遮挡。 */
+      setTimeout(function () {
+        if (window.__TASK_DOCK_BOOT__) return;
+        var splash = document.getElementById("boot-splash");
+        if (!splash || !splash.parentNode) return;
+        splash.classList.add("is-leaving");
+        setTimeout(function () {
+          if (splash.parentNode) splash.parentNode.removeChild(splash);
+        }, 200);
+      }, 20000);
+    </script>
+    <script>
+      /* 协议 §7：恢复卡出现（timeout/error）时根元素 role 切 alert、播报加强；
+         回到 boot/slow 时还原 status/polite。watchdog 只写 data-state，角色随态翻转。 */
+      (function () {
+        var splash = document.getElementById("boot-splash");
+        if (!splash || typeof MutationObserver !== "function") return;
+        new MutationObserver(function () {
+          var alertMode =
+            splash.getAttribute("data-state") === "timeout" ||
+            splash.getAttribute("data-state") === "error";
+          splash.setAttribute("role", alertMode ? "alert" : "status");
+          splash.setAttribute("aria-live", alertMode ? "assertive" : "polite");
+        }).observe(splash, { attributes: true, attributeFilter: ["data-state"] });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
