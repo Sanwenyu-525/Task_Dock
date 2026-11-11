@@ -55,7 +55,8 @@ class ShareIntentModule : Module() {
     if (!initialIntentInspected) {
       initialIntentInspected = true
       if (pendingText == null) {
-        val intent = appContext.reactContext?.currentActivity?.intent
+        // SDK 58：AppContext 直接暴露 currentActivity（reactContext 上不再可访问）
+        val intent = appContext.currentActivity?.intent
         if (intent != null) offerFromIntent(intent, fromNewIntent = false)
       }
     }
