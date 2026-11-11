@@ -37,6 +37,7 @@ import {
   resolveVisualPreset,
   type GlassRender,
   type MaterialSetting,
+  type ResolvedTheme,
   type VisualPreset,
 } from "../lib/theme";
 
@@ -73,6 +74,26 @@ function currentMaterial(): MaterialSetting {
 
 function currentPreset(): VisualPreset {
   return resolveVisualPreset(useSettingsStore.getState().settings?.visual_preset);
+}
+
+/**
+ * 启动主题提示镜像（tmp/acceptance/startup-experience-v1/BOOT_PROTOCOL.md §6）。
+ *
+ * 设置存后端 SQLite（经 bridge），预 React 阶段无法读取；把**解析后**的
+ * 主题/预设镜像到 localStorage，供 index.html `<head>` 内联读取器在占位渲染前
+ * 应用 `documentElement.dataset`，消除二次启动的主题闪烁。约束：
+ * - 只存解析后的 `light|dark` 与 `frosted|dream-gradient`，绝不存 `"system"`；
+ * - try/catch 全包：镜像只是提示，localStorage 不可用（禁用/写满）时不得影响
+ *   主题应用本身；镜像过期由设置到达后的真实 DOM 写入纠正。
+ */
+const BOOT_THEME_HINT_KEY = "taskdock.boot-theme";
+
+function writeBootThemeHint(theme: ResolvedTheme, preset: VisualPreset): void {
+  try {
+    localStorage.setItem(BOOT_THEME_HINT_KEY, JSON.stringify({ theme, preset }));
+  } catch {
+    // 镜像写入失败不影响主题应用（协议 §6：失败静默）。
+  }
 }
 
 /** 最近一次下发给 Win32 的半径，避免主题切换时重复 IPC。 */
@@ -206,7 +227,11 @@ export const useSettingsStore = create<{
 }>((set, get) => {
   function applyThemeToDom() {
     const flags = readSystemFlags(match, null);
-    document.documentElement.dataset.theme = resolveTheme(currentTheme(), flags);
+    const theme = resolveTheme(currentTheme(), flags);
+    document.documentElement.dataset.theme = theme;
+    // 同步刷新启动主题镜像（协议 §6）：主题变化时预设也可能已变，一并写入保证
+    // 两个字段同源新鲜。
+    writeBootThemeHint(theme, currentPreset());
   }
 
   /** 预设：只改 CSS 变量域 + Win32 圆角，不影响任何业务状态。 */
@@ -214,6 +239,8 @@ export const useSettingsStore = create<{
     const preset = currentPreset();
     const root = document.documentElement;
     root.dataset.preset = preset;
+    // 预设变化同步刷新启动主题镜像（协议 §6）；主题用当前实际解析值。
+    writeBootThemeHint(resolveTheme(currentTheme(), readSystemFlags(match, null)), preset);
     // clear_foreground 已废弃（清透预设下线）：不再读取，也不写 data-clear-fg。
     const radius = presetRadius(preset);
     if (radius !== lastRadius) {

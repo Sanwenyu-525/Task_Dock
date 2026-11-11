@@ -15,6 +15,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import { logEvent, markLogged } from "../lib/diagnostics";
+import { bootReady } from "../boot/bootProtocol";
 
 interface Props {
   children: ReactNode;
@@ -56,6 +57,16 @@ export default class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
+    // 启动协议接管信号（tmp/acceptance/startup-experience-v1/BOOT_PROTOCOL.md §3）：
+    // 渲染异常被边界捕获说明 React 仍活着、错误 UI 已接管渲染 —— 对预 React 启动
+    // 占位而言等同 ready（移除占位、露出错误 + 重试界面），不是 fail（fail 只用于
+    // React 完全无法渲染的致命失败）。bootReady 幂等且无 watchdog API 时安全 no-op
+    // （小窗口、jsdom 均不会误伤 DOM）。
+    try {
+      bootReady();
+    } catch {
+      // ignore
+    }
     // 处理器自身不能抛出异常：日志失败也不能影响兜底渲染。
     // 原始对象与堆栈只进 console（审查过的诊断通道），不进入 DOM。
     try {

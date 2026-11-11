@@ -57,6 +57,7 @@ import {
 import { useCaptureStore } from "./store/useCaptureStore";
 import { useAudioNotifications } from "./lib/audioNotification";
 import { useLocale } from "./hooks/useLocale";
+import { bootReady, bootStage } from "./boot/bootProtocol";
 
 /**
  * 启动占位（设置加载门）：设置尚未加载完成时，外壳不渲染「默认模式 + 默认导航」。
@@ -161,6 +162,17 @@ export default function App() {
       reportError(e, { operation: "读取设置", retry: () => loadSettings() }),
     );
   }, [loadSettings]);
+
+  // 启动协议 ready 信号（tmp/acceptance/startup-experience-v1/BOOT_PROTOCOL.md §3）：
+  // 设置落定即 React 接管 —— 成功 → 露出真实工作区；失败 → 露出 ShellBootState
+  // 错误 + 重试 UI，两者都该移除预 React 启动占位。bootReady 幂等，重复调用无副作用；
+  // watchdog API 缺失时它还有直接移除占位的双保险。
+  const settingsSettled = settings !== null || settingsLoadError !== null;
+  useEffect(() => {
+    if (!settingsSettled) return;
+    bootStage("settings"); // 阶段信号：设置读取落定（只记时间，不写诊断）
+    bootReady();
+  }, [settingsSettled]);
 
   // 行动中心开关：关闭时停止定时刷新并清空聚合（Agent 事件仍照常入库）；
   // 重新开启后立即补一次聚合，无需重启应用。启动加载与事件刷新都按消费者

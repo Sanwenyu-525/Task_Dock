@@ -357,6 +357,75 @@ describe("预设切换", () => {
   });
 });
 
+describe("启动主题提示镜像（BOOT_PROTOCOL §6）", () => {
+  const hint = (): Record<string, unknown> | null => {
+    const raw = localStorage.getItem("taskdock.boot-theme");
+    return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+  };
+
+  beforeEach(() => {
+    localStorage.removeItem("taskdock.boot-theme");
+  });
+
+  it("load 后写入解析后的主题与预设，绝不存 system", async () => {
+    api.getSettings.mockResolvedValue({ ...baseSettings, theme: "system" });
+    api.applyWindowMaterial.mockResolvedValue({
+      material: "glass",
+      applied: true,
+      effect: "mica",
+      os_version: "10.0.26100",
+    });
+
+    await useSettingsStore.getState().load();
+
+    // 测试环境 prefers-color-scheme 未匹配 dark → system 解析为 light
+    expect(hint()).toEqual({ theme: "light", preset: "frosted" });
+    expect(document.documentElement.dataset.theme).toBe("light");
+  });
+
+  it("主题切换即时刷新镜像（update 路径）", async () => {
+    api.getSettings.mockResolvedValue({ ...baseSettings });
+    api.applyWindowMaterial.mockResolvedValue({
+      material: "glass",
+      applied: true,
+      effect: "mica",
+      os_version: "10.0.26100",
+    });
+    api.updateSettings.mockImplementation(async (patch: Record<string, unknown>) => ({
+      ...baseSettings,
+      ...patch,
+    }));
+    await useSettingsStore.getState().load();
+
+    await useSettingsStore.getState().update({ theme: "dark" } as never);
+    expect(hint()).toEqual({ theme: "dark", preset: "frosted" });
+  });
+
+  it("镜像写入失败（localStorage 不可用）不影响主题应用", async () => {
+    api.getSettings.mockResolvedValue({ ...baseSettings });
+    api.applyWindowMaterial.mockResolvedValue({
+      material: "glass",
+      applied: true,
+      effect: "mica",
+      os_version: "10.0.26100",
+    });
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("quota exceeded");
+      });
+
+    try {
+      await useSettingsStore.getState().load();
+    } finally {
+      setItem.mockRestore();
+    }
+
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.preset).toBe("frosted");
+  });
+});
+
 describe("设置写入并发契约（串行 + 合并 + 字段级裁决）", () => {
   const BASE_FULL: Record<string, unknown> = {
     theme: "light",
