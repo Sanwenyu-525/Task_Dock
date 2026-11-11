@@ -11,7 +11,7 @@ import { openDatabase } from "./src/db/database";
 import { getSetting, setSetting } from "./src/db/kv";
 import { useWindowInsets } from "./src/lib/insets";
 import { parseWidgetRouteUri, type Route, type RouteKey } from "./src/lib/nav";
-import { offerShare, pullInitialShare, subscribePendingShare } from "./src/lib/pendingShare";
+import { offerShare, pullInitialShare, subscribeNativeShareEvents } from "./src/lib/pendingShare";
 import { offerPairingUri } from "./src/lib/sync/pendingPairing";
 import { notifyWidgetDataChanged } from "./src/lib/widgetSnapshot";
 import { subscribeReminderActions } from "./src/notifications/actions";
@@ -141,11 +141,11 @@ function Shell() {
     };
   }, [push]);
 
-  // 系统分享（ACTION_SEND text/plain）：冷启动拉取一次 + 运行中订阅事件。
+  // 系统分享（ACTION_SEND text/plain）：冷启动拉取一次 + 运行中订阅原生事件桥接入队。
   // 载荷只进内存队列，用户在分享页确认保存才落库；返回/取消会清空队列。
   useEffect(() => {
     if (pullInitialShare()) push("share");
-    return subscribePendingShare((payload) => {
+    return subscribeNativeShareEvents((payload) => {
       if (offerShare(payload)) push("share");
     });
   }, [push]);

@@ -40,6 +40,18 @@ export function subscribePendingShare(listener: Listener): () => void {
 }
 
 /**
+ * 订阅原生 onShareReceived 事件（运行中分享的唯一通道），桥接进队列：
+ * 事件载荷经 offerShare 去重入队并通知队列订阅者。原生模块缺失时返回空清理函数。
+ */
+export function subscribeNativeShareEvents(listener: Listener): () => void {
+  if (!ShareIntentModule) return () => undefined;
+  const subscription = ShareIntentModule.addListener("onShareReceived", (payload) => {
+    listener(payload);
+  });
+  return () => subscription.remove();
+}
+
+/**
  * 冷启动拉取：从原生待处理槽取初始分享并入队（原生模块缺失时静默跳过）。
  * 返回是否拉到了新载荷（调用方据此导航到分享页）。
  */
