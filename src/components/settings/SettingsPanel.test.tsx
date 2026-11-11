@@ -204,6 +204,8 @@ const BASE_SETTINGS: Settings = {
   clipboard_paste_interval_files_ms: 100,
   clipboard_sensitive_filter: true,
   quick_capture_last_type: "task",
+  // 开发工作台（2026-11）：当前任务锚点，空 = 未设置
+  workbench_current_task: "",
 };
 
 /** 设置页每个一级分类下的分组标题（顺序与页面渲染一致）。 */
@@ -454,9 +456,9 @@ describe("设置页分组折叠", () => {
     render(<SettingsPanel />);
 
     await waitFor(() => expectExpanded(sectionHead("导航自定义"), true));
-    // 数字与 navigationRegistry 默认常驻的 left 入口数一致（帮助入口默认隐藏）；
-    // 再新增常驻入口时需同步更新。
-    expect(screen.getByText(/常驻 13 \/ 15 项/)).toBeTruthy();
+    // 数字与 navigationRegistry 默认常驻的 left 入口数一致（帮助与诊断中心默认隐藏）；
+    // 再新增常驻入口时需同步更新（2026-11-12：+工作台 → 16 声明 / 14 常驻）。
+    expect(screen.getByText(/常驻 14 \/ 16 项/)).toBeTruthy();
     expect(sessionStorage.getItem("taskdock.settings.reveal.v1")).toBeNull();
     // 定位意图会先切到分组所属分类
     expect(

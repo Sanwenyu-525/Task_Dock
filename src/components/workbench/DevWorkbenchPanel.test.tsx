@@ -166,7 +166,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
 
 import { workspaceRestore, actionsOpenSession, updateSettings } from "../../lib/bridge";
 
-const BASE_SETTINGS = {
+const BASE_SETTINGS: Record<string, unknown> = {
   theme: "system",
   mode: "full",
   material: "glass",
@@ -178,7 +178,7 @@ const BASE_SETTINGS = {
     capsule: [],
     known: { left: [], capsule: [] },
   },
-} as never;
+};
 
 function seedSettings(patch: Record<string, unknown> = {}) {
   useSettingsStore.setState({
