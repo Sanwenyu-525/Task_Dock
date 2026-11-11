@@ -1,0 +1,20 @@
+// 本地 Expo module：Android 系统分享接收（ACTION_SEND text/plain）。
+// 由 Expo autolinking 自动链接（apps/mobile/modules/ 目录约定），不入 app.json 依赖。
+apply plugin: 'com.android.library'
+
+group = 'dev.taskdock.mobile'
+version = '1.0.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useDefaultAndroidSdkVersions()
+
+android {
+  namespace "dev.taskdock.modules.shareintent"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+}

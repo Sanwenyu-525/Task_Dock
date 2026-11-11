@@ -1,7 +1,9 @@
 # 原生工程由 `npx expo prebuild` 从 app.json 生成，不入库
+# /android/、/ios/ 只锚定顶层生成目录：本地 Expo module（modules/*/android/）的
+# 原生源码必须入库，裸模式会匹配任意深度、静默吞掉模块源码（2026-11-12 修正）。
 node_modules/
-android/
-ios/
+/android/
+/ios/
 .expo/
 dist/
 *.log

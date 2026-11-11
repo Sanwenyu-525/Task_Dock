@@ -10,7 +10,8 @@ import { TabBar, type TabKey } from "./src/components/TabBar";
 import { openDatabase } from "./src/db/database";
 import { getSetting, setSetting } from "./src/db/kv";
 import { useWindowInsets } from "./src/lib/insets";
-import type { Route, RouteKey } from "./src/lib/nav";
+import { parseWidgetRouteUri, type Route, type RouteKey } from "./src/lib/nav";
+import { offerShare, pullInitialShare, subscribePendingShare } from "./src/lib/pendingShare";
 import { offerPairingUri } from "./src/lib/sync/pendingPairing";
 import { subscribeReminderActions } from "./src/notifications/actions";
 import { rebuildAllReminders, rescheduleAllReminders } from "./src/notifications/reminderEngine";
@@ -102,19 +103,26 @@ function Shell() {
   const push = useCallback((key: RouteKey, noteId?: string) => {
     setStack((prev) => {
       // 深链可能在配对页已打开时重复触发：不叠加第二个相同页面，
-      // 新载荷由 pendingPairing 的订阅者就地更新。
-      if (key === "pairing" && prev[prev.length - 1]?.key === "pairing") return prev;
+      // 新载荷由 pendingPairing / pendingShare 的订阅者就地更新。
+      const topKey = prev[prev.length - 1]?.key;
+      if ((key === "pairing" || key === "share") && topKey === key) return prev;
       return [...prev, { key, noteId }];
     });
   }, []);
 
   // 深链配对：系统相机扫描 taskdock://pair?... 后唤起 App（冷启动与运行中都覆盖）。
-  // 载荷只进内存队列，不写日志；解析失败的非本应用链接静默忽略。
+  // 小组件点击：taskdock://route/<tab> 直达对应 Tab。载荷只进内存队列，不写日志；
+  // 解析失败的非本应用链接静默忽略。
   useEffect(() => {
     let active = true;
     const handle = (url: string | null | undefined) => {
       if (!active || !url) return;
-      if (offerPairingUri(url)) push("pairing");
+      if (offerPairingUri(url)) {
+        push("pairing");
+        return;
+      }
+      const tab = parseWidgetRouteUri(url);
+      if (tab) setTab(tab);
     };
     void Linking.getInitialURL()
       .then(handle)
@@ -124,6 +132,15 @@ function Shell() {
       active = false;
       subscription.remove();
     };
+  }, [push]);
+
+  // 系统分享（ACTION_SEND text/plain）：冷启动拉取一次 + 运行中订阅事件。
+  // 载荷只进内存队列，用户在分享页确认保存才落库；返回/取消会清空队列。
+  useEffect(() => {
+    if (pullInitialShare()) push("share");
+    return subscribePendingShare((payload) => {
+      if (offerShare(payload)) push("share");
+    });
   }, [push]);
 
   const back = useCallback(() => {
