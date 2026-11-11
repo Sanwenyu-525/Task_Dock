@@ -35,6 +35,7 @@ import { countTasks, formatDue, matchesQuery, selectTasks } from "../domain/task
 import { describeRecurrence, parseRecurrence } from "../domain/recurrence";
 import type { NewTaskInput, Task, TaskFilter } from "../domain/types";
 import { describeError } from "../lib/errors";
+import { notifyWidgetDataChanged } from "../lib/widgetSnapshot";
 import { rescheduleAllReminders, SNOOZE_SETTING_KEY } from "../notifications/reminderEngine";
 import { cancelReminder, scheduleReminder } from "../notifications/reminders";
 import { useReduceMotion } from "../theme/MotionProvider";
@@ -214,6 +215,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       } catch (error) {
         showToast(`操作失败：${describeError(error)}`, "danger", placement);
       }
+      // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
+      notifyWidgetDataChanged();
       await refresh(true);
     },
     [refresh, showToast],
@@ -228,6 +231,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       } catch (error) {
         showToast(`删除失败：${describeError(error)}`, "danger", placement);
       }
+      // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
+      notifyWidgetDataChanged();
       await refresh(true);
     },
     [refresh, showToast],
@@ -253,6 +258,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       } catch (error) {
         showToast(`保存失败：${describeError(error)}`, "danger", "bottom");
       }
+      // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
+      notifyWidgetDataChanged();
       await refresh(true);
     },
     [refresh, showToast],
@@ -286,6 +293,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       } catch (error) {
         showToast(`更新失败：${describeError(error)}`, "danger", "bottom");
       }
+      // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
+      notifyWidgetDataChanged();
       await refresh(true);
     },
     [refresh, showToast],

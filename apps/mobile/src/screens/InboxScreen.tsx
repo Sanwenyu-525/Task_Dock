@@ -23,6 +23,7 @@ import { addCapture, deleteCapture, listCaptures, promoteCapture } from "../db/c
 import { loadConnection } from "../db/syncConnection";
 import type { Capture } from "../domain/types";
 import { describeError } from "../lib/errors";
+import { notifyWidgetDataChanged } from "../lib/widgetSnapshot";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
@@ -89,6 +90,7 @@ export function InboxScreen({
     if (!value) return;
     try {
       const result = await addCapture(value);
+      notifyWidgetDataChanged();
       setText("");
       showToast(
         result.duplicated ? "重复提交已忽略" : "已收进收集箱",
@@ -120,6 +122,7 @@ export function InboxScreen({
     async (capture: Capture) => {
       try {
         await deleteCapture(capture.id);
+        notifyWidgetDataChanged();
         setExiting((previous) => ({ ...previous, [capture.id]: true }));
       } catch (error) {
         showToast(`删除失败：${describeError(error)}`, "danger");

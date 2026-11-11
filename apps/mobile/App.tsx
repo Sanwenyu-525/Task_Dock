@@ -13,6 +13,7 @@ import { useWindowInsets } from "./src/lib/insets";
 import { parseWidgetRouteUri, type Route, type RouteKey } from "./src/lib/nav";
 import { offerShare, pullInitialShare, subscribePendingShare } from "./src/lib/pendingShare";
 import { offerPairingUri } from "./src/lib/sync/pendingPairing";
+import { notifyWidgetDataChanged } from "./src/lib/widgetSnapshot";
 import { subscribeReminderActions } from "./src/notifications/actions";
 import { rebuildAllReminders, rescheduleAllReminders } from "./src/notifications/reminderEngine";
 import { ensureReminderCategory, installNotificationHandler } from "./src/notifications/reminders";
@@ -99,6 +100,12 @@ function Shell() {
   const handleDataChanged = useCallback(() => {
     setVersion((v) => v + 1);
   }, []);
+
+  // 数据变化（启动、前台恢复、收集箱转任务、提醒动作、分享保存）后刷新小组件快照；
+  // 内部去抖，连续变更只读库并推送一次。无轮询、无常驻服务。
+  useEffect(() => {
+    notifyWidgetDataChanged();
+  }, [version]);
 
   const push = useCallback((key: RouteKey, noteId?: string) => {
     setStack((prev) => {

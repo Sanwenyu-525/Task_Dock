@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- RemoteViews 布局：4×2 小组件。RemoteViews 不支持动态增删子视图，
+     行槽位固定三行（taskdock_widget_row1/2/3），XML 默认浅色，渲染时按快照覆盖。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/taskdock_widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/taskdock_widget_card_light"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="8dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/taskdock_widget_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/taskdock_widget_title_today"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="@color/taskdock_widget_text_light"
+            android:maxLines="1"
+            android:ellipsize="end" />
+
+        <TextView
+            android:id="@+id/taskdock_widget_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/taskdock_widget_count_badge_light"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:paddingTop="1dp"
+            android:paddingBottom="1dp"
+            android:text="0"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:textColor="@color/taskdock_widget_accent_light" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="6dp"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/taskdock_widget_row1"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/taskdock_widget_row1_check"
+                android:layout_width="12dp"
+                android:layout_height="12dp"
+                android:background="@drawable/taskdock_widget_check_pending_light"
+                android:text="" />
+
+            <TextView
+                android:id="@+id/taskdock_widget_row1_text"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:textSize="12sp"
+                android:textColor="@color/taskdock_widget_text_light"
+                android:maxLines="1"
+                android:ellipsize="end" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/taskdock_widget_row2"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/taskdock_widget_row2_check"
+                android:layout_width="12dp"
+                android:layout_height="12dp"
+                android:background="@drawable/taskdock_widget_check_pending_light"
+                android:text="" />
+
+            <TextView
+                android:id="@+id/taskdock_widget_row2_text"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:textSize="12sp"
+                android:textColor="@color/taskdock_widget_text_light"
+                android:maxLines="1"
+                android:ellipsize="end" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/taskdock_widget_row3"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/taskdock_widget_row3_check"
+                android:layout_width="12dp"
+                android:layout_height="12dp"
+                android:background="@drawable/taskdock_widget_check_pending_light"
+                android:text="" />
+
+            <TextView
+                android:id="@+id/taskdock_widget_row3_text"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:textSize="12sp"
+                android:textColor="@color/taskdock_widget_text_light"
+                android:maxLines="1"
+                android:ellipsize="end" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/taskdock_widget_empty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/taskdock_widget_empty_default"
+            android:textSize="12sp"
+            android:textColor="@color/taskdock_widget_muted_light"
+            android:visibility="gone"
+            android:maxLines="2"
+            android:ellipsize="end" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/taskdock_widget_footer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/taskdock_widget_footer_4x2"
+        android:textSize="10sp"
+        android:textColor="@color/taskdock_widget_faint_light" />
+</LinearLayout>
