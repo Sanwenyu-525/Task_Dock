@@ -87,3 +87,18 @@ export function openAppsAdd(): TabSwitchResult {
 export function openAppsManager(): TabSwitchResult {
   return openFullApp("apps");
 }
+
+/**
+ * 打开完整窗口规划中心并精确定位到指定项目/功能：**一次导航事务**。
+ *
+ * 定位意图放在 `after` 里随导航成功下发（含用户确认放弃草稿后的强制导航），
+ * 由 PlanningWorkspace 消费一次即清除；目标项目/功能可能已被删除，
+ * 由完整面板按「尽力定位 + 明确反馈」兜底，不在导航前预改规划 store 状态。
+ */
+export function openRoadmapFocus(target: {
+  projectId: string;
+  featureId?: string;
+  milestoneId?: string;
+}): TabSwitchResult {
+  return openFullApp("roadmap", () => useUiStore.getState().requestRoadmapFocus(target));
+}

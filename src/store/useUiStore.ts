@@ -107,6 +107,8 @@ const TOAST_DEDUP_MS = 2000;
 
 /** 工具面板逐项粘贴意图有效期：导航被取消/页面异常时不会在很久以后突然弹层。 */
 export const CLIPBOARD_PASTE_REQUEST_TTL_MS = 15_000;
+/** 规划中心精确定位意图的有效期：导航事务完成后立即消费，过期即作废。 */
+export const ROADMAP_FOCUS_REQUEST_TTL_MS = 15_000;
 
 /**
  * 跨 Tab 切换的待决导航：编辑中有未保存改动时只记录目标，等用户明确选择。
@@ -226,6 +228,29 @@ export const useUiStore = create<{
   requestDiagnosticsOperation: (operationId: string) => void;
   /** 取走一次性意图并清除；没有或已被消费时返回 null。 */
   consumeDiagnosticsOperation: () => string | null;
+  /**
+   * 工具面板「规划中心」发起的一次性精确定位意图：携带项目/功能（可选里程碑）。
+   * 由 PlanningWorkspace 在挂载或收到新 token 时消费一次并清除；
+   * 带 TTL：导航或页面异常时不会在很久以后突然跳到旧位置。
+   */
+  roadmapFocusRequest: {
+    token: number;
+    projectId: string;
+    featureId?: string;
+    milestoneId?: string;
+    expiresAt: number;
+  } | null;
+  requestRoadmapFocus: (target: {
+    projectId: string;
+    featureId?: string;
+    milestoneId?: string;
+  }) => void;
+  /** 取走一次性定位意图并清除；没有、已消费或已过期时返回 null。 */
+  consumeRoadmapFocus: () => {
+    projectId: string;
+    featureId?: string;
+    milestoneId?: string;
+  } | null;
 }>((set, get) => ({
   tab: "tasks",
   // 收集箱/暂存架是同一视觉入口的两个子页：setTab 落到其中之一时同步子页状态，
@@ -393,5 +418,27 @@ export const useUiStore = create<{
     if (!request) return null;
     set({ diagnosticsOperationRequest: null });
     return request.operationId;
+  },
+  roadmapFocusRequest: null,
+  requestRoadmapFocus: ({ projectId, featureId, milestoneId }) =>
+    set((s) => ({
+      roadmapFocusRequest: {
+        token: (s.roadmapFocusRequest?.token ?? 0) + 1,
+        projectId,
+        featureId,
+        milestoneId,
+        expiresAt: Date.now() + ROADMAP_FOCUS_REQUEST_TTL_MS,
+      },
+    })),
+  consumeRoadmapFocus: () => {
+    const request = get().roadmapFocusRequest;
+    if (!request) return null;
+    set({ roadmapFocusRequest: null });
+    if (Date.now() > request.expiresAt) return null;
+    return {
+      projectId: request.projectId,
+      featureId: request.featureId,
+      milestoneId: request.milestoneId,
+    };
   },
 }));
