@@ -7,6 +7,11 @@
 //!    （notification 分区；不建第二套事件系统）；
 //! D. 快速继续 —— 最近待办任务及其工作现场，逐项反馈恢复结果。
 //!
+//! Round 1 追加区块（2026-11，见 components/devwork/）：
+//! - 开发现场（DevProjectContext）：当前项目 + 只读 Git 摘要，位于区域 A 之后；
+//! - 任务交接包（DevHandoffSection）：12 节模板交接包，锚点 id=dev-handoff；
+//! - 验收工作台（DevAcceptanceSection）：派生状态 + 追加式验收记录。
+//!
 //! 数据边界：
 //! - 「当前开发任务」是用户显式设置（`workbench_current_task`），绝不按标题相似度
 //!   自动绑定；任务删除后保留原值，读侧校验并如实展示失效状态。
@@ -66,6 +71,9 @@ import { AGENT_STATE_LABELS, formatDue, formatRelative, priorityLabel } from "..
 import { verificationLabel } from "../../lib/navigation";
 import { useLocale } from "../../hooks/useLocale";
 import { t as translate } from "../../i18n";
+import DevProjectContext from "../devwork/DevProjectContext";
+import DevHandoffSection from "../devwork/DevHandoffSection";
+import DevAcceptanceSection from "../devwork/DevAcceptanceSection";
 
 /** 最近待办数量：区域 D 与空态快捷选择共用，保持首屏一屏内可读。 */
 const RECENT_LIMIT = 6;
@@ -251,10 +259,15 @@ export default function DevWorkbenchPanel() {
           refreshTick={refreshTick}
           restoringAny={restoringAny}
         />
+        {/* 开发现场（Round 1）：当前项目 + 只读 Git 摘要，紧随当前任务之后 */}
+        <DevProjectContext />
         <div className="wb-grid">
           <AgentSummarySection />
           <AttentionSection currentId={currentId} />
         </div>
+        {/* 任务交接包 / 验收工作台（Round 1）：围绕当前任务的两块工作区 */}
+        <DevHandoffSection />
+        <DevAcceptanceSection />
         <RecentSection
           excludeId={currentId}
           restores={restores}

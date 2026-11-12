@@ -126,6 +126,11 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "sync_ops",
     // 手机文件互传（v45）：记录指向 data_dir/mobile_files，跨机恢复无意义。
     "mobile_files",
+    // 开发工作台（v48）：项目 → 交接文档 → 验收记录；均为弱关联用户数据，
+    // 无外键依赖，追加在末尾即可。
+    "dev_projects",
+    "dev_handoff_packs",
+    "dev_acceptance_records",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -463,6 +468,14 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     rule!("sync_ops", "mobile", "all", 417, &[], true),
     // 手机文件互传（v45）：stored_path 指向本机文件，备份只写空 section。
     rule!("mobile_files", "mobile", "all", 418, &[], true),
+    // 开发工作台（v48）：项目登记与交接文档是用户工作产物，验收记录是追加式
+    // 历史，行数小且不含文件内容（root_path 是用户自填的本地路径，明文保存
+    // 与工作现场快照同口径），快速备份全量保存。
+    // 恢复顺序：项目 → 交接文档 → 验收记录；task_id / subject_id 为弱引用，
+    // 无外键约束，不依赖 tasks/planning 先恢复。
+    rule!("dev_projects", "devwork", "all", 420, &[], true),
+    rule!("dev_handoff_packs", "devwork", "all", 425, &[], true),
+    rule!("dev_acceptance_records", "devwork", "all", 430, &[], true),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -769,6 +782,12 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "voice_pack_assets"
         // 任务提醒联动（v41）：用户显式意图，行数小，快速备份也全量保存。
         | "task_reminder_links"
+        // 开发工作台（v48）：项目登记/交接文档/验收记录是用户工作产物，
+        // 行数小且不含文件内容（root_path 为用户自填路径，与现场快照同口径），
+        // 快速备份全量保存。
+        | "dev_projects"
+        | "dev_handoff_packs"
+        | "dev_acceptance_records"
         | "voice_bindings" => format!("SELECT * FROM {} ORDER BY rowid", table),
         // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
         "workflow_runs" => format!(

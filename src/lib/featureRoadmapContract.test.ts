@@ -153,7 +153,7 @@ describe("全目录统计契约", () => {
     for (const f of FEATURE_CATALOG) counts[f.status] += 1;
     // v0.11 第一轮新增 agent.mcp-server / ux.help-center（partial）与 ux.onboarding（implemented）；
     // 第三轮新增 ux.command-palette（implemented，2026-11-08）；
-    // 2026-11-12 开发工作台 P0 新增 core.dev-workbench（partial）。
+    // core.dev-workbench（partial）随开发工作台 P0 合入（2026-11-12），契约计数同步
     expect(counts).toEqual({ implemented: 14, partial: 16, planned: 3, blocked: 0 });
   });
 
