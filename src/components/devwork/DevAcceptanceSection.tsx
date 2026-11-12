@@ -288,13 +288,12 @@ export default function DevAcceptanceSection() {
   /** 返工提示词：只在最新判定为 fail 时可用；复制失败如实提示，不影响任何状态。 */
   const reworkPrompt = useMemo(() => {
     if (!task || !latestFail) return null;
-    return (
-      `针对任务「${task.title}」的返工请求：\n\n` +
-      `验收不通过原因：\n${latestFail.summary}\n\n` +
-      `验收标准：\n${criteriaText || "（未填写）"}\n\n` +
-      `请修复后重新提交验收。`
-    );
-  }, [criteriaText, latestFail, task]);
+    return t("devwork.acceptance.reworkPromptBody", {
+      title: task.title,
+      reason: latestFail.summary,
+      criteria: criteriaText || t("devwork.acceptance.reworkCriteriaEmpty"),
+    });
+  }, [criteriaText, latestFail, t, task]);
 
   const copyReworkPrompt = useCallback(() => {
     if (!reworkPrompt || reworkBusy) return;
@@ -313,7 +312,7 @@ export default function DevAcceptanceSection() {
     if (!task || !latestFail || reworkBusy) return;
     setReworkBusy(true);
     createTask({
-      title: `【返工】${task.title}`,
+      title: t("devwork.acceptance.reworkTaskTitle", { title: task.title }),
       description: latestFail.summary,
     })
       .then((created) => {
@@ -562,15 +561,12 @@ export default function DevAcceptanceSection() {
                 <span className="wb-row-main">
                   <span className="wb-row-title">{r.summary}</span>
                   <span className="wb-row-sub">
-                    {r.evidence
-                      ? r.evidence
-                          .split("\n")
-                          .filter(Boolean)
-                          .map((line, i) => (
-                            <span className="wb-accept-evidence-line" key={`${i}:${line}`}>
-                              {t("devwork.acceptance.evidenceLine", { index: i + 1 })} {line}
-                            </span>
-                          ))
+                    {r.evidence.length > 0
+                      ? r.evidence.map((line, i) => (
+                          <span className="wb-accept-evidence-line" key={`${i}:${line}`}>
+                            {t("devwork.acceptance.evidenceLine", { index: i + 1 })} {line}
+                          </span>
+                        ))
                       : t("devwork.acceptance.noEvidence")}
                     <span>{formatRelative(r.createdAt)}</span>
                   </span>

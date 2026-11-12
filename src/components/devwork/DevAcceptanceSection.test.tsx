@@ -98,7 +98,7 @@ function record(patch: Partial<DevAcceptanceRecord>): DevAcceptanceRecord {
     subjectId: "t1",
     verdict: "pass",
     summary: "全部通过",
-    evidence: "",
+    evidence: [],
     createdAt: "2026-11-12T09:00:00Z",
     ...patch,
   };
@@ -368,7 +368,8 @@ describe("DevAcceptanceSection · 追加式历史", () => {
           id: "r2",
           verdict: "fail",
           summary: "后记录",
-          evidence: "npm test 失败\n截图见附件",
+          // 后端真实形状：evidence 是字符串数组（DevAcceptanceRecord 契约）
+          evidence: ["npm test 失败", "截图见附件"],
           createdAt: "2026-11-12T10:00:00Z",
         }),
       ],

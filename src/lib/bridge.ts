@@ -4134,8 +4134,8 @@ export interface DevAcceptanceRecord {
   subjectId: string;
   verdict: "pass" | "fail" | "blocked" | "not_verified";
   summary: string;
-  /** 证据列表（每条一行；只存用户登记的元数据描述，不存正文/截图本体）。 */
-  evidence: string;
+  /** 证据描述数组（只存用户登记的元数据描述，不存正文/截图本体）。 */
+  evidence: string[];
   createdAt: string;
 }
 

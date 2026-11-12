@@ -38,6 +38,7 @@ import { fetchTask, type Task } from "../../lib/bridge";
 import { describeRecurrence } from "../../lib/format";
 import useImeComposition from "../../hooks/useImeComposition";
 import { resolveDevProjectChip } from "../devwork/DevProjectContext";
+import { useLocale } from "../../hooks/useLocale";
 import { openFullApp, openTaskEditor } from "./actions";
 import { dueLabel, sortPending } from "./format";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
@@ -74,6 +75,7 @@ function scopeOf(filter: Filter): TaskLiteScope {
 }
 
 export default function TasksLite() {
+  const { t } = useLocale();
   const items = useTasksStore((s) => s.lite);
   const liteScope = useTasksStore((s) => s.liteScope);
   const liteError = useTasksStore((s) => s.liteError);
@@ -439,7 +441,10 @@ export default function TasksLite() {
       {/* 当前项目 chip（Round 1）：只读、不可交互，分支仅在 probe ok 时显示；
           未设置/未命中不渲染，不留空壳 */}
       {projectChip && (
-        <div className="cap-devproject-chip" aria-label={`当前开发项目：${projectChip.name}`}>
+        <div
+          className="cap-devproject-chip"
+          aria-label={t("devwork.project.chipAria", { name: projectChip.name })}
+        >
           <FolderGit2 size={11} strokeWidth={2} aria-hidden="true" />
           <span className="cap-devproject-chip-text">
             {projectChip.name}

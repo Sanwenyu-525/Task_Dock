@@ -2455,8 +2455,11 @@ export const enUS: Record<MessageKey, string> = {
   "devwork.project.gitNotRepo": "Not a Git repository",
   "devwork.project.gitUnavailable": "git required (no usable git detected)",
   "devwork.project.gitPathMissing": "Path does not exist",
+  "devwork.project.chipAria": "Current dev project: {name}",
 
   "devwork.handoff.title": "Handoff pack",
+  "devwork.handoff.drawerTip": "Create handoff pack (workbench)",
+  "devwork.handoff.drawerAria": "Create handoff pack",
   "devwork.handoff.linkedToTask": "Linked to current task",
   "devwork.handoff.draftBadge": "Draft (no task)",
   "devwork.handoff.hint":
@@ -2558,6 +2561,10 @@ export const enUS: Record<MessageKey, string> = {
   "devwork.acceptance.recordCreateFailed":
     "Failed to save the acceptance record: {error} (your input is kept)",
   "devwork.acceptance.reworkPrompt": "Copy rework prompt",
+  "devwork.acceptance.reworkPromptBody":
+    "Rework request for task \"{title}\":\n\nAcceptance failure reason:\n{reason}\n\nAcceptance criteria:\n{criteria}\n\nPlease fix and resubmit for acceptance.",
+  "devwork.acceptance.reworkCriteriaEmpty": "(not provided)",
+  "devwork.acceptance.reworkTaskTitle": "[Rework] {title}",
   "devwork.acceptance.reworkPromptTip": "Copy the rework prompt template to the clipboard",
   "devwork.acceptance.reworkCopied": "Rework prompt copied to clipboard",
   "devwork.acceptance.reworkCopyFailed": "Copy failed; try again",

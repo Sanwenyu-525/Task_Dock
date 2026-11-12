@@ -61,6 +61,7 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useActionsStore, kindLabel as actionKindLabel } from "../../store/useActionsStore";
+import { useLocale } from "../../hooks/useLocale";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { kindLabel as clipKindLabel } from "../../lib/clipboardUi";
@@ -107,6 +108,7 @@ function verificationShort(level: string): string {
 }
 
 export default function TaskContextDrawer() {
+  const { t } = useLocale();
   const open = useUiStore((s) => s.context.open);
   const task = useUiStore((s) => s.context.task);
   const closeContext = useUiStore((s) => s.closeContext);
@@ -693,8 +695,8 @@ export default function TaskContextDrawer() {
               <button
                 className="icon-btn sm"
                 onClick={onOpenHandoff}
-                data-tip="生成交接包（工作台）"
-                aria-label="生成交接包"
+                data-tip={t("devwork.handoff.drawerTip")}
+                aria-label={t("devwork.handoff.drawerAria")}
               >
                 <FileOutput size={12} />
               </button>

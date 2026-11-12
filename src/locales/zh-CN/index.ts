@@ -2437,8 +2437,11 @@ export const zhCN = {
   "devwork.project.gitNotRepo": "不是 Git 仓库",
   "devwork.project.gitUnavailable": "需要 git（未检测到可用 git）",
   "devwork.project.gitPathMissing": "路径不存在",
+  "devwork.project.chipAria": "当前开发项目：{name}",
 
   "devwork.handoff.title": "任务交接包",
+  "devwork.handoff.drawerTip": "生成交接包（工作台）",
+  "devwork.handoff.drawerAria": "生成交接包",
   "devwork.handoff.linkedToTask": "关联当前任务",
   "devwork.handoff.draftBadge": "无任务草稿",
   "devwork.handoff.hint": "按固定模板整理交接信息；留空的节不会写入 Markdown。",
@@ -2532,6 +2535,10 @@ export const zhCN = {
   "devwork.acceptance.recordCreated": "验收记录已保存",
   "devwork.acceptance.recordCreateFailed": "保存验收记录失败：{error}（输入已保留）",
   "devwork.acceptance.reworkPrompt": "生成返工提示词",
+  "devwork.acceptance.reworkPromptBody":
+    "针对任务「{title}」的返工请求：\n\n验收不通过原因：\n{reason}\n\n验收标准：\n{criteria}\n\n请修复后重新提交验收。",
+  "devwork.acceptance.reworkCriteriaEmpty": "（未填写）",
+  "devwork.acceptance.reworkTaskTitle": "【返工】{title}",
   "devwork.acceptance.reworkPromptTip": "按返工模板复制提示词到剪贴板",
   "devwork.acceptance.reworkCopied": "返工提示词已复制到剪贴板",
   "devwork.acceptance.reworkCopyFailed": "复制失败，请重试",
