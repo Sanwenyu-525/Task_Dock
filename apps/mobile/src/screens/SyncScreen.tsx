@@ -52,7 +52,9 @@ function formatStamp(iso: string | null): string {
 }
 
 function fingerprintLabel(value: string): string {
-  return value.length === 8 ? `${value.slice(0, 4)}-${value.slice(4)}` : value;
+  if (value.length === 8) return `${value.slice(0, 4)}-${value.slice(4)}`;
+  if (value.length === 64) return `${value.slice(0, 8)}…${value.slice(-8)}`;
+  return value;
 }
 
 export function SyncScreen({ nav }: { nav: Nav }) {
@@ -96,7 +98,8 @@ export function SyncScreen({ nav }: { nav: Nav }) {
       setHasToken(Boolean(token));
       setLastResult(last);
       setConflictCount(conflicts);
-      setInvalid(false);
+      // v1 遗留连接（http://）：桌面端已硬切 TLS-only，v1 客户端无法再连通。
+      setInvalid(Boolean(meta && meta.baseUrl.startsWith("http://")));
     } catch (error) {
       if (mounted.current) showToast(`读取同步状态失败：${describeError(error)}`, "danger");
     } finally {
@@ -128,6 +131,8 @@ export function SyncScreen({ nav }: { nav: Nav }) {
         const result = await pingDesktop({
           address: { host: connection.host, port: connection.port, baseUrl: connection.baseUrl },
           token,
+          // 已钉住的桌面端 TLS 指纹；v1 旧记录为空（首用信任）。
+          tlsFingerprint: connection.tlsFingerprint || undefined,
         });
         const now = new Date().toISOString();
         await touchConnection(now);
@@ -248,7 +253,9 @@ export function SyncScreen({ nav }: { nav: Nav }) {
               </Text>
               {invalid ? (
                 <Text style={[styles.cardHint, { color: tokens.danger }]}>
-                  桌面端已撤销该设备或令牌已失效，请重新配对；本机数据不会被删除。
+                  {connection.baseUrl.startsWith("http://")
+                    ? "桌面端协议已升级（TLS 加密传输），旧连接不再受支持；请重新扫码配对，本机数据不会被删除。"
+                    : "桌面端已撤销该设备或令牌已失效，请重新配对；本机数据不会被删除。"}
                 </Text>
               ) : connection.fingerprint ? (
                 <Text style={[styles.cardHint, { color: tokens.muted }]}>

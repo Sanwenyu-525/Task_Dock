@@ -60,7 +60,7 @@
 ### outbox（本地写操作队列）
 
 `op_id` PK、`entity`（task/capture/note）、`target_id`、`base_rev`、`payload`（JSON）、
-`created_at`、`attempts`（v1 预留）、`state`（v2，默认 `pending`；`sending`/`failed` 由未来同步器维护）、
+`created_at`、`attempts`（v1 预留）、`state`（默认 `pending`；`sending`/`failed` 为重试状态；`conflict` 为 2026-11-12 新增的冲突守卫态：push 冲突后该记录的 outbox 行置此值——pull 继续跳过、`buildPendingOps`（只取 pending/failed）不重发，由冲突页「采用桌面端 / 保留本机」清理）、
 `last_error`、`last_attempt_at`（v2）。
 
 payload 形态（当前实现）：
@@ -243,3 +243,10 @@ payload 形态（当前实现）：
   补 `rev + 1`；更新 §4 base_rev 语义与 §9 差异表。
 - 2026-11-09 配对去重：手机端新增 `kv.device.uid.v1`；桌面端 v46 给 `mobile_devices`
   增加可选 `device_uid`（NULL 兼容旧记录/旧客户端），同 uid 重配对撤销旧授权。
+
+## 变更记录
+
+- 2026-11-12 outbox `state` 新增 `'conflict'` 守卫态（TEXT 列，无 schema 迁移）：
+  push 冲突后保留该记录的 outbox 行并阻断 pull 覆盖，冲突页两条解决路径负责清理；
+  同时删除墓碑应用补上 `rev <= server_rev` 比较旧墓碑跳过语义。见
+  [07-sync.md](07-sync.md) 变更记录。

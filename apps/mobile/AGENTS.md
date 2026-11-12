@@ -5,7 +5,15 @@
 
 ## 1. 定位
 
-- 只做 **Android 独立模式**：数据全部在本机，不连接桌面端、不发真实网络请求。
+> 更正（2026-11-12）：本节此前写「只做 Android 独立模式：不连接桌面端、不发真实网络请求」，
+> 与代码不符——2026-11-08 起有局域网配对，2026-11-09 起有手动同步与文件互传，
+> 2026-11-12 起传输为 TLS-only（协议 v2）。以下为当前边界；历史描述见 git 历史。
+
+- 业务数据全部在本机 SQLite；网络只限**用户显式发起**的局域网配对、连接测试、
+  手动同步与文件互传（协议 v2，TLS-only + SPKI 指纹固定，见 `docs/mobile/06-pairing.md`）。
+  不得新增后台轮询/自动同步（A3 设计另行归属）。
+- 所有请求必须走 `src/lib/sync/secureFetch.ts`（本地原生模块 `modules/secure-http/`，
+  仅接受 `https://`）；不得引入绕过指纹固定的网络路径，不得恢复明文放行插件。
 - 桌面端 `http_ingest` 只监听 `127.0.0.1`，不得改成局域网/公网监听，也不得把它当作手机接入点。
 - 不新增依赖（新增必须单独说明理由、体积影响与回退路径并取得同意）。
 
@@ -50,7 +58,9 @@
 
 ## 6. 改完必须做
 
-1. `cd apps/mobile && npx tsc --noEmit` → exit 0。
+1. `cd apps/mobile && npx tsc --noEmit` → exit 0；`npm test`（vitest）→ 全过。
+   纯函数/数据层/协议改动必须补 vitest 用例（node:sqlite harness 跑真实 SQL，
+   不为测试重写业务逻辑）。
 2. 纯函数改动：重编 `domain` 并跑 `tmp/acceptance/mobile-app-skeleton/logic/check.cjs`，
    报告实际 PASS/FAIL 数（不许只说「通过」）。
 3. 涉及数据/通知/UI：真机走一遍受影响用例；模拟器或「看起来没问题」不算证据。

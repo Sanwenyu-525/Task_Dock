@@ -15,7 +15,7 @@ const TOKEN_KEY = "taskdock.sync.token.v1";
 const DEVICE_UID_KEY = "device.uid.v1";
 
 export interface PairedConnection {
-  /** 桌面端地址，例如 http://192.168.1.10:47822（无尾斜杠） */
+  /** 桌面端地址，例如 https://192.168.1.10:47822（无尾斜杠；v1 旧记录为 http://） */
   baseUrl: string;
   host: string;
   port: number;
@@ -23,7 +23,14 @@ export interface PairedConnection {
   deviceId: string;
   platform: string;
   instanceId: string;
+  /** 桌面端实例展示指纹（8 位 hex，旧记录可能为空） */
   fingerprint: string;
+  /**
+   * 桌面端 TLS 证书 SPKI SHA-256（64 位小写 hex）。
+   * v2 配对写入；空串 = 旧版记录或手动配对未观察到指纹（连接会按首用信任处理，
+   * secureFetch 会在首次成功响应后由配对流程补钉）。
+   */
+  tlsFingerprint: string;
   pairedAt: string;
   /** 本机最后一次成功连接桌面端的时间（ISO） */
   lastSeenAt: string | null;
@@ -35,7 +42,9 @@ function parseMeta(raw: string | null): PairedConnection | null {
     const value = JSON.parse(raw) as Partial<PairedConnection>;
     if (
       typeof value.baseUrl !== "string" ||
-      !/^http:\/\/.+:\d+$/.test(value.baseUrl) ||
+      // v1 遗留记录是 http://；v2 起新写 https://。两种都接受解析，
+      // http:// 记录在实际请求层会被 secureFetch 拒绝并提示重新配对。
+      !/^https?:\/\/.+:\d+$/.test(value.baseUrl) ||
       typeof value.host !== "string" ||
       typeof value.port !== "number" ||
       typeof value.serverName !== "string" ||
@@ -54,6 +63,7 @@ function parseMeta(raw: string | null): PairedConnection | null {
       platform: typeof value.platform === "string" ? value.platform : "android",
       instanceId: typeof value.instanceId === "string" ? value.instanceId : "",
       fingerprint: typeof value.fingerprint === "string" ? value.fingerprint : "",
+      tlsFingerprint: typeof value.tlsFingerprint === "string" ? value.tlsFingerprint : "",
       pairedAt: value.pairedAt,
       lastSeenAt: typeof value.lastSeenAt === "string" ? value.lastSeenAt : null,
     };

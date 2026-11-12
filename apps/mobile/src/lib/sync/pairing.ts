@@ -1,8 +1,11 @@
 // 配对载荷解析与桌面地址归一化（纯函数，不触网、不读写存储）。
 //
-// 二维码内容由桌面端 `mobile_sync::build_pairing_uri` 生成，固定格式：
-//   taskdock://pair?v=1&host=<IPv4>&port=<u16>&code=<6位>&name=<URL编码>&instance=<id>&fp=<8位HEX>
+// 二维码内容由桌面端 `mobile_sync::build_pairing_uri` 生成，v2 固定格式：
+//   taskdock://pair?v=2&host=<IPv4>&port=<u16>&code=<6位>&name=<URL编码>
+//             &instance=<id>&fp=<8位HEX展示指纹>&tls=<64位HEX SPKI SHA-256>
 // 解析必须严格：字段缺失/越界/协议版本不兼容一律拒绝，不能带着半截目标去配网。
+// v2 起 `tls` 是必需字段：手机端从首个字节起就按该 SPKI 指纹固定桌面端身份，
+// 没有 tls 的二维码（v1 或被篡改）一律拒绝配对。
 
 export interface PairingTarget {
   /** 桌面端局域网 IPv4 或主机名（二维码当前只发 IPv4） */
@@ -16,6 +19,8 @@ export interface PairingTarget {
   instanceId: string;
   /** 桌面端短指纹（8 位十六进制，展示用） */
   fingerprint: string;
+  /** 桌面端 TLS 证书 SPKI SHA-256（64 位十六进制，小写）；缺失/非法时解析整体失败 */
+  tlsFingerprint: string;
   /** 原始二维码文本，便于诊断 */
   raw: string;
 }
@@ -23,12 +28,12 @@ export interface PairingTarget {
 export interface DesktopAddress {
   host: string;
   port: number;
-  /** 不含尾斜杠，例如 http://192.168.1.10:47822 */
+  /** 不含尾斜杠，例如 https://192.168.1.10:47822 */
   baseUrl: string;
 }
 
 export const DEFAULT_MOBILE_SYNC_PORT = 47822;
-export const MOBILE_API_VERSION = 1;
+export const MOBILE_API_VERSION = 2;
 
 const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
 const HOSTNAME = /^[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,252}[a-zA-Z0-9])?$/;
@@ -39,6 +44,12 @@ function decode(value: string): string {
   } catch {
     return "";
   }
+}
+
+/** 校验并归一化 TLS SPKI 指纹（64 位十六进制，统一转小写）。 */
+export function normalizeTlsFingerprint(raw: string): string | null {
+  const value = raw.trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(value) ? value : null;
 }
 
 /** 严格解析桌面端二维码；任何不合法字段返回 null。 */
@@ -72,6 +83,10 @@ export function parsePairingUri(raw: string): PairingTarget | null {
   const fingerprint = (params.get("fp") ?? "").trim().toUpperCase();
   if (fingerprint && !/^[0-9A-F]{8}$/.test(fingerprint)) return null;
 
+  // v2 硬要求：TLS 指纹缺失或非法的二维码不进入配对流程（fail-closed）。
+  const tlsFingerprint = normalizeTlsFingerprint(params.get("tls") ?? "");
+  if (!tlsFingerprint) return null;
+
   return {
     host,
     port,
@@ -79,6 +94,7 @@ export function parsePairingUri(raw: string): PairingTarget | null {
     serverName,
     instanceId,
     fingerprint,
+    tlsFingerprint,
     raw: text,
   };
 }
@@ -90,8 +106,9 @@ export function isValidHost(host: string): boolean {
 /**
  * 把用户输入归一化为桌面地址。
  *
- * 支持 `192.168.1.10`、`192.168.1.10:47822`、`http://192.168.1.10:47822/`；
- * 不接受 `https://`（本轮桌面端没有 TLS，静默降级会误导用户），也不接受路径。
+ * 支持 `192.168.1.10`、`192.168.1.10:47822`、`https://192.168.1.10:47822/`；
+ * v2 起桌面端是 TLS-only，统一输出 `https://`（输入带 `http://` 也按 https 处理，
+ * 明文服务已不存在）。不接受路径。
  */
 export function normalizeDesktopAddress(
   raw: string,
@@ -99,8 +116,7 @@ export function normalizeDesktopAddress(
 ): DesktopAddress | null {
   let text = raw.trim();
   if (!text) return null;
-  if (/^https:\/\//i.test(text)) return null;
-  text = text.replace(/^http:\/\//i, "");
+  text = text.replace(/^https?:\/\//i, "");
 
   const slash = text.indexOf("/");
   if (slash >= 0) {
@@ -120,14 +136,14 @@ export function normalizeDesktopAddress(
   host = host.trim();
   if (!isValidHost(host)) return null;
 
-  return { host, port, baseUrl: `http://${host}:${port}` };
+  return { host, port, baseUrl: `https://${host}:${port}` };
 }
 
 export function targetToAddress(target: PairingTarget): DesktopAddress {
   return {
     host: target.host,
     port: target.port,
-    baseUrl: `http://${target.host}:${target.port}`,
+    baseUrl: `https://${target.host}:${target.port}`,
   };
 }
 

@@ -1,6 +1,9 @@
-# 原生工程由 `npx expo prebuild` 从 app.json 生成，不入库
+# 原生工程由 `npx expo prebuild` 从 app.json 生成，不入库。
+# 锚定到 apps/mobile 顶层：裸 `android/` 会匹配任意深度的同名目录，
+# 曾把本地 Expo 模块 modules/secure-http/android/ 的源码静默排除在库外（2026-11-12）。
 node_modules/
-android/
+/android/
+**/android/build/
 ios/
 .expo/
 dist/

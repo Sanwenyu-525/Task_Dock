@@ -1,8 +1,13 @@
-# TaskDock Mobile（Android，独立模式 + 局域网配对）
+# TaskDock Mobile（Android，独立模式 + 局域网配对/同步）
 
 Task Dock 的手机端。业务数据全部落在本机 SQLite；2026-11-08 起支持**用户显式发起的
-局域网配对与连通性测试**（应用内扫码 / 手动输码，令牌存 SecureStore）。
-数据同步（任务/笔记 pull/push）仍未实现，见 `docs/mobile/06-pairing.md`。
+局域网配对与连通性测试**（应用内扫码 / 手动输码，令牌存 SecureStore）；
+2026-11-09 起支持任务 / 收集箱 / 笔记的手动双向同步与文件互传；
+2026-11-12 起传输为 **TLS-only（协议 v2，证书 SPKI 指纹固定）**。
+见 `docs/mobile/06-pairing.md`、`07-sync.md`、`08-file-transfer.md`。
+
+> 更正（2026-11-12）：本 README 此前写「数据同步仍未实现」，与代码不符
+> （同步 2026-11-09 已落地），本段已更正；历史描述见 git 历史。
 
 ## 技术栈
 
@@ -46,8 +51,16 @@ apps/mobile/
 
 ## 数据
 
-`tasks` / `captures` / `outbox` / `reminder_schedule` / `kv` 五张表，字段名与桌面端 SQLite 对齐
-（`due_at`、`remind_at`、`recurrence_rule` 等），手机端额外保留 `rev` 作为同步版本号占位。
+`tasks` / `notes` / `captures` / `outbox` / `reminder_schedule` / `sync_conflicts` / `kv`
+（SQLite v5），字段名与桌面端 SQLite 对齐；`server_rev` / `rev` 承载同步版本，`outbox`
+是本地写操作队列（含 `state='conflict'` 冲突守卫态）。详见 `docs/mobile/02-data-model.md`。
+
+## 测试
+
+```bash
+npm run typecheck   # tsc --noEmit
+npm test            # vitest：协议/加密/客户端/DB 迁移/同步编排（node:sqlite 真实 SQL harness）
+```
 
 - 迁移：`MIGRATIONS` 序列 + `PRAGMA user_version`，append-only；v1 库升级到 v2 不丢数据。
 - 写操作：业务表 + `outbox` 在**同一事务**内完成；收集箱「转为任务」是建任务 + 删条目单事务。
