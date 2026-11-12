@@ -19751,6 +19751,11 @@ span.wf-step-main {
   margin: 2px 0 8px;
 }
 
+/* 证据边界说明：已安装 / 已接入 / 在线只由真实事件判定 */
+.wb-evidence {
+  margin: 0 0 8px;
+}
+
 .wb-chip {
   display: inline-flex;
   align-items: center;

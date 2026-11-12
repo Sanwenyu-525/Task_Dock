@@ -250,12 +250,13 @@ export default function AgentsLite() {
                 ) : null}
               </span>
               <span className="cap-agent-side">
-                {r.session_id ? (
+                {/* 导航接口要求外部会话 ID（external_id）；内部行 ID 会被后端拒绝 */}
+                {session?.external_id ? (
                   <button
                     type="button"
                     className="cap-mini"
                     aria-label={`打开 ${title} 的会话`}
-                    onClick={() => void open(r.source_id, r.session_id)}
+                    onClick={() => void open(r.source_id, session.external_id)}
                   >
                     打开
                   </button>

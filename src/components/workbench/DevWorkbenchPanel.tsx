@@ -3,7 +3,8 @@
 //! 四个区域（首屏优先级从高到低）：
 //! A. 当前开发任务 —— 任务信息、关联 Agent 会话、工作现场、下一步动作；
 //! B. Agent 运行 —— 复用 `agent_snapshot` + `liveSummary` 六态聚合；
-//! C. 需要处理 —— 复用行动中心 intervention 分区（不建第二套事件系统）；
+//! C. 需要处理 —— 复用行动中心 intervention 分区 + 当前任务未读提醒
+//!    （notification 分区；不建第二套事件系统）；
 //! D. 快速继续 —— 最近待办任务及其工作现场，逐项反馈恢复结果。
 //!
 //! 数据边界：
@@ -32,6 +33,7 @@ import AgentIcon from "../ui/AgentIcon";
 import {
   actionsFeed,
   actionsOpenSession,
+  fetchTask,
   listTasks,
   onWorkspaceChanged,
   onWorkspaceRestoreProgress,
@@ -60,6 +62,7 @@ import { errorMessage } from "../../lib/errors";
 import { AGENT_STATE_LABELS, formatDue, formatRelative, priorityLabel } from "../../lib/format";
 import { verificationLabel } from "../../lib/navigation";
 import { useLocale } from "../../hooks/useLocale";
+import { t as translate } from "../../i18n";
 
 /** 最近待办数量：区域 D 与空态快捷选择共用，保持首屏一屏内可读。 */
 const RECENT_LIMIT = 6;
@@ -101,16 +104,20 @@ export default function DevWorkbenchPanel() {
     void useSettingsStore
       .getState()
       .update({ workbench_current_task: "" })
-      .catch((e) => showToast(`更新当前任务失败：${errorMessage(e)}`, { kind: "error" }));
-  }, [showToast]);
+      .catch((e) =>
+        showToast(t("workbench.setCurrentFailed", { error: errorMessage(e) }), { kind: "error" }),
+      );
+  }, [showToast, t]);
   const setCurrent = useCallback(
     (id: string) => {
       void useSettingsStore
         .getState()
         .update({ workbench_current_task: id })
-        .catch((e) => showToast(`更新当前任务失败：${errorMessage(e)}`, { kind: "error" }));
+        .catch((e) =>
+          showToast(t("workbench.setCurrentFailed", { error: errorMessage(e) }), { kind: "error" }),
+        );
     },
-    [showToast],
+    [showToast, t],
   );
 
   // ── 恢复运行时：面板内唯一一条回执订阅，区域 A/D 共用 ─────────────
@@ -186,11 +193,11 @@ export default function DevWorkbenchPanel() {
   const cancelRestore = useCallback(async () => {
     try {
       await workspaceRestoreCancel();
-      showToast("已请求取消；已发出的启动请求无法撤回", { kind: "info" });
+      showToast(t("workbench.cancelRequested"), { kind: "info" });
     } catch (e) {
-      showToast(`取消恢复失败：${errorMessage(e)}`, { kind: "error" });
+      showToast(t("workbench.cancelRestoreFailed", { error: errorMessage(e) }), { kind: "error" });
     }
-  }, [showToast]);
+  }, [showToast, t]);
 
   return (
     <div className="workbench-panel page-fill">
@@ -201,7 +208,7 @@ export default function DevWorkbenchPanel() {
         </div>
         {restoringAny && (
           <button type="button" className="btn sm" onClick={() => void cancelRestore()}>
-            停止恢复
+            {t("workbench.stopRestore")}
           </button>
         )}
       </header>
@@ -336,24 +343,28 @@ function CurrentTaskSection({
     setBusy(true);
     try {
       const updated = await toggleTask(task.id);
-      showToast(`已完成「${updated.title}」`, {
+      showToast(t("workbench.completeDone", { title: updated.title }), {
         kind: "success",
         action: {
-          label: "撤销",
+          label: t("workbench.undo"),
           run: () => {
             void toggleTask(updated.id)
               .then(() => {
                 void refresh();
                 void useTasksStore.getState().refresh();
               })
-              .catch((e) => showToast(`撤销失败：${errorMessage(e)}`, { kind: "error" }));
+              .catch((e) =>
+                showToast(t("workbench.undoFailed", { error: errorMessage(e) }), {
+                  kind: "error",
+                }),
+              );
           },
         },
       });
       await refresh();
       void useTasksStore.getState().refresh();
     } catch (e) {
-      showToast(`更新任务状态失败：${errorMessage(e)}`, { kind: "error" });
+      showToast(t("workbench.toggleFailed", { error: errorMessage(e) }), { kind: "error" });
     } finally {
       setBusy(false);
     }
@@ -363,6 +374,8 @@ function CurrentTaskSection({
   const snaps = ctx?.snapshots ?? [];
   const latest = latestSnapshot(snaps);
   const latestRestore = latest ? restores[latest.id] : undefined;
+  /** 「继续工作」的真实优先级：最新现场 → 最近关联会话（如实回执）→ 打开上下文。 */
+  const linkedAgent = ctx?.agents[0] ?? null;
 
   return (
     <section className="wb-card wb-current" aria-label={t("workbench.currentTask")}>
@@ -418,7 +431,11 @@ function CurrentTaskSection({
             <span className="wb-task-title" title={task.title}>
               {task.title}
             </span>
-            <span className="badge subtle">{task.status === "completed" ? "已完成" : "进行中"}</span>
+            <span className="badge subtle">
+              {task.status === "completed"
+                ? t("workbench.statusCompleted")
+                : t("workbench.statusPending")}
+            </span>
           </div>
           <div className="wb-task-meta">
             {task.due_at && (
@@ -429,6 +446,11 @@ function CurrentTaskSection({
               </span>
             )}
             {task.category && <span className="wb-meta-item">{task.category}</span>}
+            {task.updated_at && (
+              <span className="wb-meta-item">
+                {t("workbench.updatedAt", { time: formatRelative(task.updated_at) })}
+              </span>
+            )}
             {link?.label && (
               <span
                 className="wb-meta-item wb-meta-scene"
@@ -439,15 +461,25 @@ function CurrentTaskSection({
             )}
           </div>
 
-          {/* 下一步动作：继续工作按「有没有现场」给出真实可执行的一步 */}
+          {/* 下一步动作：继续工作按「现场 → 关联会话 → 上下文」给出真实可执行的一步 */}
           <div className="wb-actions">
             <button
               type="button"
               className="btn primary"
               disabled={restoringAny}
-              data-tip={latest ? `${t("workbench.restoreLatest")}：${latest.name}` : t("workbench.openContext")}
+              data-tip={
+                latest
+                  ? `${t("workbench.restoreLatest")}：${latest.name}`
+                  : linkedAgent
+                    ? t("workbench.resumeSession", {
+                        name: linkedAgent.title || linkedAgent.session_external_id,
+                      })
+                    : t("workbench.openContext")
+              }
               onClick={() => {
                 if (latest) void onRestore(latest);
+                else if (linkedAgent)
+                  void jumpToSession(linkedAgent.source_id, linkedAgent.session_external_id);
                 else openContext(task);
               }}
             >
@@ -458,8 +490,11 @@ function CurrentTaskSection({
             <button type="button" className="btn sm" onClick={() => openContext(task)}>
               <Layers size={12} aria-hidden="true" /> {t("workbench.openContext")}
             </button>
+            <button type="button" className="btn sm" onClick={() => setTabSafe("agents")}>
+              <AgentIcon size={12} /> {t("workbench.viewAgents")}
+            </button>
             <button type="button" className="btn sm" onClick={() => openEditor(task)}>
-              <Pencil size={12} aria-hidden="true" /> 编辑
+              <Pencil size={12} aria-hidden="true" /> {t("workbench.editTask")}
             </button>
             {task.status === "pending" && (
               <button
@@ -467,10 +502,14 @@ function CurrentTaskSection({
                 className={`btn sm${confirmDone ? " danger" : ""}`}
                 disabled={busy}
                 onClick={() => void onMarkComplete()}
-                data-tip={confirmDone ? "再次点击确认完成" : t("workbench.completeTask")}
+                data-tip={
+                  confirmDone
+                    ? t("workbench.markCompleteTip")
+                    : t("workbench.completeTask")
+                }
               >
                 {confirmDone ? <Check size={12} aria-hidden="true" /> : null}
-                {confirmDone ? "确认完成" : t("workbench.completeTask")}
+                {confirmDone ? t("workbench.markCompleteConfirm") : t("workbench.completeTask")}
               </button>
             )}
           </div>
@@ -484,7 +523,7 @@ function CurrentTaskSection({
                 <em className="badge subtle">{ctx?.agents.length ?? 0}</em>
               </div>
               {(ctx?.agents.length ?? 0) === 0 && (
-                <div className="endpoint-hint">尚未关联 Agent 会话；可在任务上下文中建立关联。</div>
+                <div className="endpoint-hint">{t("workbench.noLinkedAgents")}</div>
               )}
               {ctx?.agents.map((a) => (
                 <div className="wb-row" key={`${a.source_id}:${a.session_external_id}`}>
@@ -516,7 +555,7 @@ function CurrentTaskSection({
                 <em className="badge subtle">{snaps.length}</em>
               </div>
               {snaps.length === 0 && (
-                <div className="endpoint-hint">还没有工作现场；可在任务上下文中「保存当前现场」。</div>
+                <div className="endpoint-hint">{t("workbench.noSnapshots")}</div>
               )}
               {snaps.slice(0, 3).map((s) => (
                 <div className="wb-row" key={s.id}>
@@ -524,7 +563,7 @@ function CurrentTaskSection({
                     {s.name}
                   </span>
                   <span className="wb-row-meta">
-                    {s.item_count} 项
+                    {t("workbench.snapshotItems", { count: s.item_count })}
                     {s.last_restored_at
                       ? ` · ${t("workbench.restore")} ${formatRelative(s.last_restored_at)}`
                       : ""}
@@ -653,7 +692,7 @@ function AgentSummarySection() {
         </h3>
         <span className="flex-spacer" />
         <button type="button" className="btn sm" onClick={() => setTabSafe("agents")}>
-          全部
+          {t("workbench.viewAllAgents")}
         </button>
       </div>
       <div className="wb-chips" role="list">
@@ -665,6 +704,8 @@ function AgentSummarySection() {
           </span>
         ))}
       </div>
+      {/* 证据边界：已安装 / 已接入 / 正在运行是三个维度，页面只统计真实事件 */}
+      <p className="endpoint-hint wb-evidence">{t("workbench.agentEvidence")}</p>
       {!snapshot && (
         <div className="empty-hint" role="status">
           {t("nav.loading")}
@@ -692,7 +733,7 @@ function AgentSummarySection() {
               {t("workbench.openSession")}
             </button>
           ) : (
-            <span className="endpoint-hint">会话不在实时快照内</span>
+            <span className="endpoint-hint">{t("workbench.sessionNotInSnapshot")}</span>
           )}
         </div>
       ))}
@@ -706,36 +747,65 @@ function AttentionSection({ currentId }: { currentId: string | null }) {
   const { t } = useLocale();
   const showToast = useUiStore((s) => s.showToast);
   const setTab = useUiStore((s) => s.setTab);
+  const openContext = useUiStore((s) => s.openContext);
   const loadAgents = useAgentsStore((s) => s.load);
   // 事件驱动的计数刷新由 App 层调度（工作台已在消费者门控内）；
-  // 本地列表在 lastLoadedAt 变化后按同一节拍重取 intervention 分区，不重复订阅事件。
+  // 本地列表在 lastLoadedAt 变化后按同一节拍重取 intervention + 提醒，不重复订阅事件。
   const lastLoadedAt = useActionsStore((s) => s.lastLoadedAt);
   const countsIntervention = useActionsStore((s) => s.feed?.counts.intervention ?? null);
   const [items, setItems] = useState<ActionItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 提醒读取失败只降级提醒部分，不影响 intervention 主列表。 */
+  const [remindersFailed, setRemindersFailed] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    actionsFeed({ category: "intervention", include_acked: false, limit: TODO_LIMIT })
-      .then((feed) => {
-        if (!alive) return;
-        setItems(feed.items);
+    const intervention = actionsFeed({
+      category: "intervention",
+      include_acked: false,
+      limit: TODO_LIMIT,
+    });
+    // 重要提醒：有当前任务时只取该任务的未读提醒（可靠关系），否则取最近的全局未读提醒。
+    // 与 intervention 同一数据源（notification_history），不建第二套通知表。
+    const reminders = actionsFeed({
+      category: "notification",
+      kind: "reminder",
+      limit: currentId ? 3 : 2,
+      ...(currentId ? { task_id: currentId } : {}),
+    });
+    Promise.allSettled([intervention, reminders]).then(([a, b]) => {
+      if (!alive) return;
+      if (a.status === "fulfilled") {
+        const reminderItems = b.status === "fulfilled" ? b.value.items : [];
+        setItems([...a.value.items, ...reminderItems]);
         setError(null);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        setError(errorMessage(e));
-      });
+      } else {
+        // intervention 失败时不展示只有提醒的残缺列表，避免误以为没有待处理
+        setItems(null);
+        setError(errorMessage(a.reason));
+      }
+      setRemindersFailed(b.status === "rejected");
+    });
     return () => {
       alive = false;
     };
     // lastLoadedAt 变化（事件刷新/确认操作）后重取；挂载时也执行一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lastLoadedAt]);
+  }, [lastLoadedAt, currentId]);
 
   const onOpen = async (item: ActionItem) => {
     if (item.kind === "reminder") {
-      setTab("tasks");
+      if (!item.task_id) {
+        setTab("tasks");
+        return;
+      }
+      try {
+        const task = await fetchTask(item.task_id);
+        openContext(task);
+      } catch (e) {
+        showToast(t("workbench.jumpFailed", { error: errorMessage(e) }), { kind: "error" });
+        setTab("tasks");
+      }
       return;
     }
     if (!item.source_id || !item.session_external_id) return;
@@ -743,13 +813,31 @@ function AttentionSection({ currentId }: { currentId: string | null }) {
       const r = await actionsOpenSession(item.source_id, item.session_external_id);
       showToast(
         r.success
-          ? `已定位 ${item.source_name}（${verificationLabel(r.verification_level)}）`
-          : (r.reason ?? "跳转未完成"),
+          ? t("workbench.sessionLocatedSource", {
+              source: item.source_name,
+              level: verificationLabel(r.verification_level),
+            })
+          : (r.reason ?? t("workbench.jumpUnfinished")),
         { kind: r.success ? "success" : "error" },
       );
       if (r.success) void loadAgents();
     } catch (e) {
-      showToast(`跳转失败：${errorMessage(e)}`, { kind: "error" });
+      showToast(t("workbench.jumpFailed", { error: errorMessage(e) }), { kind: "error" });
+    }
+  };
+
+  const kindText = (kind: ActionItem["kind"]): string => {
+    switch (kind) {
+      case "failed":
+        return t("workbench.kindFailed");
+      case "authorization":
+        return t("workbench.kindAuthorization");
+      case "waiting_input":
+        return t("workbench.kindWaitingInput");
+      case "reminder":
+        return t("workbench.kindReminder");
+      default:
+        return actionKindLabel(kind);
     }
   };
 
@@ -787,21 +875,24 @@ function AttentionSection({ currentId }: { currentId: string | null }) {
       {items !== null && items.length === 0 && (
         <div className="endpoint-hint">{t("workbench.todoEmpty")}</div>
       )}
+      {remindersFailed && items !== null && (
+        <div className="endpoint-hint">{t("workbench.remindersUnavailable")}</div>
+      )}
       {items?.map((item) => (
         <button
           key={item.id}
           type="button"
           className={`wb-row wb-row-btn p${item.priority}`}
           onClick={() => void onOpen(item)}
-          title={item.kind === "reminder" ? "查看任务" : "跳转到该 Agent 会话"}
+          title={item.kind === "reminder" ? t("workbench.openTask") : t("workbench.jumpSession")}
         >
-          <span className={`action-kind k-${item.kind}`}>{actionKindLabel(item.kind)}</span>
+          <span className={`action-kind k-${item.kind}`}>{kindText(item.kind)}</span>
           <span className="wb-row-main">
             <span className="wb-row-title">{item.title}</span>
             {item.message && <span className="wb-row-sub">{item.message}</span>}
           </span>
           {item.task_id && item.task_id === currentId && (
-            <span className="badge subtle">当前任务</span>
+            <span className="badge subtle">{t("workbench.currentTaskBadge")}</span>
           )}
           <span className="wb-row-meta">{formatRelative(item.occurred_at)}</span>
         </button>
@@ -924,7 +1015,7 @@ function RecentSection({
                   {snapState === undefined || snapState.state === "loading"
                     ? ""
                     : snapState.state === "error"
-                      ? "现场状态未知"
+                      ? t("workbench.snapshotUnknown")
                       : latest
                         ? t("workbench.snapshotCount", { count: snapState.snaps.length })
                         : t("workbench.noSnapshot")}
@@ -948,7 +1039,7 @@ function RecentSection({
               <button
                 type="button"
                 className="icon-btn sm"
-                aria-label={`${t("workbench.openContext")}：${task.title}`}
+                aria-label={t("workbench.openContextAria", { title: task.title })}
                 data-tip={t("workbench.openContext")}
                 onClick={() => openContext(task)}
               >
@@ -969,12 +1060,14 @@ async function jumpToSession(sourceId: string, sessionId: string): Promise<void>
   try {
     const r = await actionsOpenSession(sourceId, sessionId);
     showToast(
-      r.success ? `已定位会话（${verificationLabel(r.verification_level)}）` : (r.reason ?? "跳转未完成"),
+      r.success
+        ? translate("workbench.sessionLocated", { level: verificationLabel(r.verification_level) })
+        : (r.reason ?? translate("workbench.jumpUnfinished")),
       { kind: r.success ? "success" : "error" },
     );
     if (r.success) void useAgentsStore.getState().load();
   } catch (e) {
-    showToast(`跳转失败：${errorMessage(e)}`, { kind: "error" });
+    showToast(translate("workbench.jumpFailed", { error: errorMessage(e) }), { kind: "error" });
   }
 }
 

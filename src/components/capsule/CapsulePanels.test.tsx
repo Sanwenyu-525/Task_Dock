@@ -749,14 +749,15 @@ describe("Agent 面板", () => {
     expect(screen.queryByText("Agent 状态读取失败")).toBeNull();
   });
 
-  it("打开会话调用真实命令；失败时如实提示", async () => {
+  it("打开会话调用真实命令并传外部会话 ID；失败时如实提示", async () => {
     useAgentsStore.setState({ snapshot });
     openAgentSession.mockRejectedValueOnce(new Error("no capability"));
     render(<AgentsLite />);
     await screen.findByText("重构登录");
     act(() => screen.getByRole("button", { name: "打开 重构登录 的会话" }).click());
     await screen.findByText("打开会话失败");
-    expect(openAgentSession).toHaveBeenCalledWith("codex", "s1");
+    // 导航命令按 (source_id, external_id) 解析会话；内部行 ID s1 必须被拒绝
+    expect(openAgentSession).toHaveBeenCalledWith("codex", "x");
   });
 
   it("底栏提供「行动」入口：只导航到完整行动页，不在胶囊内加载聚合 feed", async () => {
