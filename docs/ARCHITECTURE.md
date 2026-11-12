@@ -387,7 +387,7 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   Agent 完成一轮不改变任务状态：完成只经 `toggle_task` 由用户确认（两段式确认 + 可撤销）。
   现场恢复复用 `workspace_restore` 单飞与逐项回执事件，成功/失败/已在恢复中就地反馈；
   「继续工作」的真实优先级为最新现场 → 最近关联 Agent 会话（外部会话 ID，失败如实回执）
-  → 打开任务上下文。
+  → 打开任务上下文；页头「快速记录」直接唤起既有快速捕获窗口（`quick_capture_show`）。
 - UI 基元层（v0.6）：`components/ui/` 提供 Select / Combobox / DropdownMenu / Popover /
   DateTimePicker / Dialog / Checkbox / Switch / NumberInput / Tooltip，
   项目内**不再有原生 `<select>`**；浮层定位统一交给 `@floating-ui/react`（只做定位，

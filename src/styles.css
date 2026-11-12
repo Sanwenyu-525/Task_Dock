@@ -19951,11 +19951,21 @@ span.wf-step-main {
   min-width: 0;
 }
 
-/* 窄窗（<560px，覆盖 320/400 窄窗验收口径）：双列收单列 */
+/* 窄窗（<560px，覆盖 320/400 窄窗验收口径）：双列收单列，页头纵向排布 */
 @media (max-width: 559px) {
   .wb-grid,
   .wb-links {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wb-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .wb-head-actions {
+    justify-content: flex-start;
   }
 }
 
