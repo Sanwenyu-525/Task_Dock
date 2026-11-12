@@ -168,6 +168,38 @@ describe("胶囊编辑任务 · 单一导航事务", () => {
     expect(opened.mock.calls[0][0]?.id).toBe("t1");
   });
 
+  it("解除停靠在途时不提前打开编辑器，停靠完成后再打开", async () => {
+    const target = makeTask("t1", "整理产品周报");
+    listTasks.mockResolvedValue([target]);
+    let resolveUndock: (ok: boolean) => void = () => {};
+    const undock = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveUndock = resolve;
+        }),
+    );
+    useEdgeSnapStore.setState({ undock });
+    const opened = spyOpenEditorNow();
+
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+    fireEvent.click(screen.getByRole("button", { name: "查看「整理产品周报」详情" }));
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "编辑「整理产品周报」" }));
+    });
+
+    // 导航已切页，但停靠尚未完成：编辑器不能先于窗口解除裁剪态打开
+    expect(useUiStore.getState().tab).toBe("tasks");
+    expect(undock).toHaveBeenCalledWith("full");
+    expect(opened).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveUndock(true);
+    });
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(opened.mock.calls[0][0]?.id).toBe("t1");
+  });
+
   it("引擎未注入 undock 时回退 applyMode，同样只执行一次", () => {
     const target = makeTask("t-fallback", "回退任务");
     useEdgeSnapStore.setState({ undock: null });
