@@ -70,9 +70,10 @@ describe("结构渲染", () => {
     expect(screen.queryByRole("button", { name: /（受阻）/ })).toBeNull();
   });
 
-  it("五个分类区块条目数与目录一致（5 / 12 / 2 / 8 / 5）", () => {
+  it("五个分类区块条目数与目录一致（6 / 12 / 2 / 8 / 5）", () => {
+    // core.dev-workbench（开发工作台 P0，2026-11-12 合入）加入核心效率功能分类
     const expected: [label: string, count: number][] = [
-      ["核心效率功能", 5],
+      ["核心效率功能", 6],
       ["工作流与效率增强", 12],
       ["信息管理与生活效率", 2],
       ["Agent 扩展", 8],
@@ -175,11 +176,12 @@ describe("筛选与搜索", () => {
     expect(within(card).queryByText(/未见官方 hooks/)).toBeNull();
   });
 
-  it("优先级筛选 P0：只剩核心五项", () => {
+  it("优先级筛选 P0：只剩核心六项", () => {
     fireEvent.click(screen.getByRole("button", { name: "P0" }));
     const cards = document.querySelectorAll(".roadmap-card");
-    expect(cards).toHaveLength(5);
-    for (const title of ["全局快速捕获", "场景工作区", "Agent 行动中心", "工作现场恢复", "智能日程提醒"]) {
+    // 开发工作台（core.dev-workbench，P0）随 2026-11-12 合入加入 P0 优先级
+    expect(cards).toHaveLength(6);
+    for (const title of ["全局快速捕获", "场景工作区", "Agent 行动中心", "工作现场恢复", "智能日程提醒", "开发工作台"]) {
       expect(cardOf(title)).toBeTruthy();
     }
   });
