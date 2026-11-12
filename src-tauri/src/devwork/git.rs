@@ -58,9 +58,11 @@ enum GitRun {
     Timeout,
 }
 
-/// 执行 `git -C <root> <args>`：无 shell、无窗口、有超时。
-fn run_git(root_path: &str, args: &[&str]) -> GitRun {
-    let mut cmd = crate::winproc::hidden("git");
+/// 执行 `<program> -C <root> <args>`：无 shell、无窗口、有超时。
+/// program 一般为 "git"；probe_with_program 测试缝可注入必然不存在的名字，
+/// 触发与「git 未安装」一致的 spawn NotFound 路径。
+fn run_git(program: &str, root_path: &str, args: &[&str]) -> GitRun {
+    let mut cmd = crate::winproc::hidden(program);
     cmd.args(["-C", root_path]);
     cmd.args(args);
     run_command(&mut cmd)
@@ -123,6 +125,24 @@ fn unquote(raw: &str) -> String {
 
 /// 只读探测一个目录的 git 状态。永不 panic：任何一步失败都降级为对应字段为空。
 pub fn probe(root_path: &str) -> DevGitInfo {
+    probe_with_program(root_path, None)
+}
+
+/// probe 的测试缝：`git_program` 为 Some(name) 时用 name 替代 "git"。
+///
+/// 原理与限制（选型说明）：
+/// - Windows 上 `Command` 的可执行文件解析发生在 spawn 时、依据**父进程**的
+///   PATH，子进程环境变量（`.env("PATH", …)`）不影响解析，因此无法用环境
+///   变量伪造「git 不存在」——`probe_with_env_path` 形态的缝不可靠；
+/// - `run_command` 把一切 spawn 失败（含 `ErrorKind::NotFound`）都归为
+///   `SpawnNotFound`，probe 对它统一降级 `git_unavailable`。所以注入一个
+///   必然不存在的程序名即可复现与「git 未安装」**完全相同**的代码路径，
+///   断言结果与真实缺失等价；
+/// - 生产路径 `probe()` 传 None，行为与引入本缝之前逐字节一致；
+/// - 覆盖范围：本缝只复现 spawn 失败形态的 git_unavailable；「git 存在但
+///   单步超时」形态由 `run_command` 的 Timeout 分支覆盖，不属本缝范围。
+pub fn probe_with_program(root_path: &str, git_program: Option<&str>) -> DevGitInfo {
+    let program = git_program.unwrap_or("git");
     let probed_at = chrono::Utc::now().to_rfc3339();
     let missing = DevGitInfo {
         status: DevGitStatus::PathMissing,
@@ -140,7 +160,7 @@ pub fn probe(root_path: &str) -> DevGitInfo {
     }
 
     // ① 是否位于 git 工作树内：失败则终止（不是仓库 / git 不可用）。
-    match run_git(root_path, &["rev-parse", "--is-inside-work-tree"]) {
+    match run_git(program, root_path, &["rev-parse", "--is-inside-work-tree"]) {
         GitRun::Ok(out) if out.status.success() && out.stdout.starts_with(b"true") => {}
         // 非成功退出：git 2.x 对非仓库目录输出 "fatal: not a git repository..."；
         // 其他失败（权限异常等）同样无法继续探测，统一按 not_a_repo 降级。
@@ -164,7 +184,7 @@ pub fn probe(root_path: &str) -> DevGitInfo {
     //    用 symbolic-ref 兜底拿分支名。
     let mut branch: Option<String> = None;
     let mut detached = false;
-    match run_git(root_path, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+    match run_git(program, root_path, &["rev-parse", "--abbrev-ref", "HEAD"]) {
         GitRun::Ok(out) if out.status.success() => {
             let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if name == "HEAD" {
@@ -175,7 +195,9 @@ pub fn probe(root_path: &str) -> DevGitInfo {
         }
         GitRun::Ok(_) => {
             // 未born 分支：symbolic-ref 直接解析 HEAD 指向的引用名。
-            if let GitRun::Ok(out) = run_git(root_path, &["symbolic-ref", "--short", "HEAD"]) {
+            if let GitRun::Ok(out) =
+                run_git(program, root_path, &["symbolic-ref", "--short", "HEAD"])
+            {
                 if out.status.success() {
                     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     if !name.is_empty() {
@@ -188,7 +210,7 @@ pub fn probe(root_path: &str) -> DevGitInfo {
     }
 
     // ③ HEAD SHA：未born 分支必然失败，保持 None 即可。
-    let head_sha = match run_git(root_path, &["rev-parse", "HEAD"]) {
+    let head_sha = match run_git(program, root_path, &["rev-parse", "HEAD"]) {
         GitRun::Ok(out) if out.status.success() => {
             let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -206,8 +228,8 @@ pub fn probe(root_path: &str) -> DevGitInfo {
     //    worktree 降级（is_worktree=false），不影响其余字段。
     let (is_worktree, main_repo_path) =
         match (
-            run_git(root_path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-            run_git(root_path, &["rev-parse", "--path-format=absolute", "--git-dir"]),
+            run_git(program, root_path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+            run_git(program, root_path, &["rev-parse", "--path-format=absolute", "--git-dir"]),
         ) {
             (GitRun::Ok(common), GitRun::Ok(git_dir))
                 if common.status.success() && git_dir.status.success() =>
@@ -216,7 +238,7 @@ pub fn probe(root_path: &str) -> DevGitInfo {
                 let git_dir = String::from_utf8_lossy(&git_dir.stdout).trim().to_string();
                 if !common.is_empty() && common != git_dir {
                     // worktree list --porcelain 首行：`worktree <主仓库路径>`
-                    let main = match run_git(root_path, &["worktree", "list", "--porcelain"]) {
+                    let main = match run_git(program, root_path, &["worktree", "list", "--porcelain"]) {
                         GitRun::Ok(out) if out.status.success() => stdout_lines(&out)
                             .first()
                             .and_then(|line| line.strip_prefix("worktree "))
@@ -232,7 +254,7 @@ pub fn probe(root_path: &str) -> DevGitInfo {
         };
 
     // ⑤ 脏文件数：porcelain 非空行数，统计上限 5000 行。
-    let dirty_count = match run_git(root_path, &["status", "--porcelain"]) {
+    let dirty_count = match run_git(program, root_path, &["status", "--porcelain"]) {
         GitRun::Ok(out) if out.status.success() => {
             let count = String::from_utf8_lossy(&out.stdout)
                 .lines()
@@ -470,5 +492,28 @@ mod tests {
             GitRun::SpawnNotFound => {}
             other => panic!("不存在的可执行文件必须返回 SpawnNotFound，实际 {other:?}"),
         }
+    }
+
+    /// probe 入口端到端：git 可执行文件缺失时整体降级 git_unavailable，
+    /// 所有探测字段为空、probed_at 始终有值；全程只读、不 panic。
+    /// 本测试不依赖 git 是否安装（缺失形态本来就是被测对象）。
+    #[test]
+    fn probe_reports_git_unavailable_when_executable_missing() {
+        // 目录真实存在且为目录：排除 path_missing 干扰，断言只针对 git 缺失
+        let dir = temp_sub("no-git");
+        let absent = format!("td-git-absent-{}", uuid::Uuid::new_v4().simple());
+        let info = probe_with_program(dir.to_str().unwrap(), Some(&absent));
+        assert_eq!(info.status, DevGitStatus::GitUnavailable);
+        assert!(info.branch.is_none(), "git 缺失不得报告分支");
+        assert!(info.head_sha.is_none(), "git 缺失不得报告 HEAD");
+        assert!(info.dirty_count.is_none(), "git 缺失不得报告脏文件数");
+        assert!(info.main_repo_path.is_none());
+        assert!(!info.detached);
+        assert!(!info.is_worktree);
+        assert!(!info.probed_at.is_empty(), "probed_at 必须始终有值");
+        // None 缝与生产 probe 行为一致（同为默认程序名，这里目录无 git → not_a_repo）
+        let via_none = probe_with_program(dir.to_str().unwrap(), None);
+        assert_eq!(via_none.status, DevGitStatus::NotARepo);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
