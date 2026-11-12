@@ -670,3 +670,90 @@ fn query_operation_chain_includes_all_levels() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// 业务失败（IPC 已成功返回）必须在默认异常列表与操作链中可见：
+/// 用户复现的「数据库 CHECK 失败导致复制未执行」不允许只留在界面内联结果里。
+#[test]
+fn shelf_drop_business_failure_reaches_anomaly_list_and_operation_chain() {
+    use crate::shelf::fsops::{self, DropEntry, DropReport};
+
+    let dir = temp_dir("drop-business");
+    let diag = Diagnostics::init_at(dir.clone(), WriterConfig::default());
+    let entry = |status: &str, code: &str, stage: &str| DropEntry {
+        source: "C:\\Users\\me\\Desktop\\截图.png".into(),
+        display_name: "截图.png".into(),
+        target: None,
+        status: status.into(),
+        reason: Some("写入复制日志失败".into()),
+        recovery: None,
+        residual_source: None,
+        code: Some(code.into()),
+        stage: Some(stage.into()),
+    };
+    let report = DropReport {
+        batch_id: "batch-visible-1".into(),
+        target_id: "target-1".into(),
+        target_path: "C:\\Users\\me\\Pictures".into(),
+        op: "copy".into(),
+        total: 1,
+        success: 0,
+        skipped: 0,
+        failed: 1,
+        partial: 0,
+        entries: vec![entry(
+            "failed",
+            fsops::DROP_CODE_DB_SCHEMA,
+            "journal",
+        )],
+    };
+    for event in fsops::drop_diagnostic_events(&report, 12) {
+        assert!(diag.record(event), "业务诊断事件必须被接收");
+    }
+    assert!(diag.flush_blocking().flushed);
+
+    // 默认异常列表（WARN+，最近 24h）必须命中，且错误码可直接筛选。
+    let since = (chrono::Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+    let anomalies = query::query(
+        &dir,
+        &DiagnosticQuery {
+            anomalies_only: Some(true),
+            since: Some(since),
+            ..Default::default()
+        },
+        &Counters::default(),
+    );
+    assert_eq!(anomalies.matched, 2, "汇总 + 明细两条都要可见: {:?}", anomalies.items);
+    assert!(anomalies.items.iter().all(|e| e.module == "file"));
+    assert!(anomalies.items.iter().all(|e| {
+        e.operation_id.as_deref() == Some("batch-visible-1")
+            && e.error_code.as_deref() == Some(fsops::DROP_CODE_DB_SCHEMA)
+    }));
+
+    // 操作链：只按 operation_id 查询，拿到完整链路。
+    let chain = query::query(
+        &dir,
+        &DiagnosticQuery {
+            operation_id: Some("batch-visible-1".into()),
+            ..Default::default()
+        },
+        &Counters::default(),
+    );
+    assert_eq!(chain.matched, 2);
+    // 隐私：落盘内容不得包含路径或文件名。
+    let raw = std::fs::read_to_string(dir.join(ACTIVE_FILE)).unwrap_or_default();
+    assert!(!raw.contains("Desktop"), "诊断日志不得包含完整路径: {raw}");
+    assert!(!raw.contains("截图.png"), "诊断日志不得包含文件名: {raw}");
+    // 错误码筛选（诊断中心按错误码过滤）。
+    let by_code = query::query(
+        &dir,
+        &DiagnosticQuery {
+            error_codes: vec![fsops::DROP_CODE_DB_SCHEMA.into()],
+            anomalies_only: Some(true),
+            ..Default::default()
+        },
+        &Counters::default(),
+    );
+    assert_eq!(by_code.matched, 2);
+
+    std::fs::remove_dir_all(&dir).ok();
+}

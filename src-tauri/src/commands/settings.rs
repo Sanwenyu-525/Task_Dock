@@ -44,6 +44,12 @@ const ALLOWED_KEYS: &[&str] = &[
     "agent_alert_sound",
     "overdue_grace_hours",
     "stale_run_minutes",
+    // Agent 事件保留策略与性能诊断（设置页「数据与资源 / 诊断」可直接修改；
+    // 缺失时 update_settings 会报“未知设置键”，诊断中心也会记录一次失败）
+    "agent_event_retention_days",
+    "agent_event_max_rows",
+    "agent_event_archive",
+    "perf_diagnostics_enabled",
     "auto_backup",
     "backup_retain_days",
     // 导航偏好（v0.4）
@@ -181,6 +187,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "notify_muted"
         | "notify_done_aggregate"
         | "agent_alert_sound"
+        | "agent_event_archive"
+        | "perf_diagnostics_enabled"
         | "auto_backup"
         | "nav_prefer_focus"
         | "nav_allow_launch"
@@ -254,6 +262,9 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "mobile_sync_port" => int_in_range(v, key, 1024, 65535),
         "overdue_grace_hours" => int_in_range(v, key, 0, 24 * 60),
         "stale_run_minutes" => int_in_range(v, key, 1, 24 * 60),
+        // Agent 事件保留：0 = 不按该维度清理；天数与行数上限与设置页输入范围一致。
+        "agent_event_retention_days" => int_in_range(v, key, 0, 365),
+        "agent_event_max_rows" => int_in_range(v, key, 0, 1_000_000_000),
         "notify_burst_max" => int_in_range(v, key, 1, 20),
         "notify_rate_window_secs" => int_in_range(v, key, 10, 3600),
         "backup_retain_days" => int_in_range(v, key, 1, 365),
@@ -688,6 +699,35 @@ mod tests {
         assert!(validate_setting("backup_retain_days", &serde_json::json!(7)).is_ok());
         assert!(validate_setting("backup_retain_days", &serde_json::json!(366)).is_err());
         assert!(validate_setting("overdue_grace_hours", &serde_json::json!(24)).is_ok());
+        // Agent 事件保留与性能诊断：0 合法（不按该维度清理），越界/错类型拒绝。
+        assert!(validate_setting("agent_event_retention_days", &serde_json::json!(0)).is_ok());
+        assert!(validate_setting("agent_event_retention_days", &serde_json::json!(365)).is_ok());
+        assert!(validate_setting("agent_event_retention_days", &serde_json::json!(366)).is_err());
+        assert!(validate_setting("agent_event_max_rows", &serde_json::json!(0)).is_ok());
+        assert!(
+            validate_setting("agent_event_max_rows", &serde_json::json!(1_000_000_000)).is_ok()
+        );
+        assert!(
+            validate_setting("agent_event_max_rows", &serde_json::json!(1_000_000_001)).is_err()
+        );
+        assert!(validate_setting("agent_event_archive", &serde_json::json!(true)).is_ok());
+        assert!(validate_setting("agent_event_archive", &serde_json::json!("true")).is_err());
+        assert!(validate_setting("perf_diagnostics_enabled", &serde_json::json!(false)).is_ok());
+        assert!(validate_setting("perf_diagnostics_enabled", &serde_json::json!(1)).is_err());
+    }
+
+    /// 设置页「诊断与日志」可直接修改这四项；白名单缺失会让 update_settings 报
+    /// “未知设置键”，并让诊断中心记录一次真实的 IPC 失败。
+    #[test]
+    fn agent_retention_and_perf_settings_are_allowlisted() {
+        for key in [
+            "agent_event_retention_days",
+            "agent_event_max_rows",
+            "agent_event_archive",
+            "perf_diagnostics_enabled",
+        ] {
+            assert!(ALLOWED_KEYS.contains(&key), "{key} 必须可持久化");
+        }
     }
 
     #[test]

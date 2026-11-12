@@ -27,7 +27,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use serde_json::json;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -49,6 +49,41 @@ const AUTH_REJECT_WINDOW: Duration = Duration::from_secs(10);
 /// 端口绑定失败的日志节流：10s 重试周期下只记首次与每 30 次（约 5 分钟）一次。
 fn should_log_bind_failure(attempt: u32) -> bool {
     attempt == 1 || attempt % 30 == 0
+}
+
+/// 健康响应是否来自另一个 Task Dock：只认未鉴权 `/api/v1/health` 的 service 字段。
+fn health_body_is_task_dock(text: &str) -> bool {
+    text.contains("\"service\":\"task-dock\"")
+}
+
+/// 判断端口占用者是否是另一个 Task Dock 实例。
+///
+/// 两个实例（例如正式安装版 + `TASK_DOCK_DATA_DIR` 隔离验收实例）会争用同一个
+/// `http_port`。此时绑定失败不是本实例的功能故障，而是部署场景；探测失败/超时
+/// 一律按“其他程序”处理，避免把真实端口冲突误判为同族实例。
+async fn occupied_by_task_dock(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(Ok(mut stream)) =
+        tokio::time::timeout(Duration::from_millis(500), TcpStream::connect(addr)).await
+    else {
+        return false;
+    };
+    const REQUEST: &str =
+        "GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    let wrote = tokio::time::timeout(
+        Duration::from_millis(500),
+        stream.write_all(REQUEST.as_bytes()),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false);
+    if !wrote {
+        return false;
+    }
+    let mut buf = Vec::with_capacity(1024);
+    let mut limited = stream.take(8 * 1024);
+    let _ = tokio::time::timeout(Duration::from_millis(500), limited.read_to_end(&mut buf)).await;
+    health_body_is_task_dock(&String::from_utf8_lossy(&buf))
 }
 
 /// hyper 1.x 在设置 `header_read_timeout` 时必须同时提供 timer，否则每个连接都会 panic。
@@ -688,12 +723,23 @@ impl AgentAdapter for HttpIngestAdapter {
                         // 每小时 360 条噪声。只记首次与每 30 次（约 5 分钟）一次累计尝试。
                         bind_failures = bind_failures.saturating_add(1);
                         if should_log_bind_failure(bind_failures) {
-                            tracing::error!(
-                                "绑定 127.0.0.1:{} 失败（第 {} 次尝试，继续重试）: {}",
-                                port,
-                                bind_failures,
-                                e
-                            );
+                            // 另一个 Task Dock 实例占用同一端口是部署/验收场景
+                            // （正式安装版 + 隔离实例），不是本实例的功能故障：
+                            // 用 WARN 说明会自动接管，避免诊断中心把它当成 ERROR。
+                            if occupied_by_task_dock(port).await {
+                                tracing::warn!(
+                                    "127.0.0.1:{} 已被另一个 Task Dock 实例占用（第 {} 次尝试）；本实例会在端口释放后自动接入",
+                                    port,
+                                    bind_failures
+                                );
+                            } else {
+                                tracing::error!(
+                                    "绑定 127.0.0.1:{} 失败（第 {} 次尝试，继续重试）: {}",
+                                    port,
+                                    bind_failures,
+                                    e
+                                );
+                            }
                         }
                         tokio::select! {
                             _ = crate::agents::shutdown_signal::wait() => return,
@@ -764,6 +810,56 @@ mod tests {
         assert!(should_log_bind_failure(30), "每 30 次（约 5 分钟）记录一次");
         assert!(!should_log_bind_failure(31));
         assert!(should_log_bind_failure(60));
+    }
+
+    /// 只把 Task Dock 自己的健康响应认作“同族实例”，其他服务的响应不得误判。
+    #[test]
+    fn task_dock_health_body_is_recognized() {
+        assert!(health_body_is_task_dock(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{\"ok\":true,\"service\":\"task-dock\",\"queue\":{}}"
+        ));
+        assert!(!health_body_is_task_dock(
+            "HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"service\":\"other-app\"}"
+        ));
+        assert!(!health_body_is_task_dock(""));
+        assert!(!health_body_is_task_dock("HTTP/1.1 404 Not Found"));
+    }
+
+    /// 真实回环探测：同族健康响应判 true，其他服务与未监听端口判 false。
+    #[tokio::test]
+    async fn health_probe_distinguishes_task_dock_from_other_listeners() {
+        use tokio::io::AsyncReadExt;
+
+        async fn serve(body: &'static str) -> u16 {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 1024];
+                    let _ = stream.read(&mut buf).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                }
+            });
+            port
+        }
+
+        let taskdock = serve("{\"ok\":true,\"service\":\"task-dock\"}").await;
+        assert!(occupied_by_task_dock(taskdock).await);
+
+        let other = serve("{\"ok\":true,\"service\":\"other-app\"}").await;
+        assert!(!occupied_by_task_dock(other).await);
+
+        // 绑定后立即释放：端口未被监听时必须按“其他程序/不可达”处理。
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let closed = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!occupied_by_task_dock(closed).await);
     }
 
     /// 聚合状态必须按实例隔离：测试与多监听器不得共享全局窗口状态。

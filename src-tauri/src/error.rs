@@ -33,6 +33,9 @@ pub enum AppError {
     /// 依赖服务暂时不可用（如接入管线未启动）：可重试
     #[error("服务暂不可用: {0}")]
     Unavailable(String),
+    /// 需要用户先在系统设置中开启隐私/权限开关（如 Windows 在线语音识别）
+    #[error("需要系统权限: {0}")]
+    PermissionRequired(String),
     /// 状态冲突（如已有同类长任务进行中）；调用方应等待或显式取消
     #[error("操作冲突: {0}")]
     Conflict(String),
@@ -202,6 +205,12 @@ impl AppError {
                 severity: ErrorSeverity::Error,
                 retryable: true,
             },
+            AppError::PermissionRequired(_) => ErrorMeta {
+                code: "PERMISSION_REQUIRED",
+                category: ErrorCategory::Permission,
+                severity: ErrorSeverity::Warning,
+                retryable: true,
+            },
             AppError::Conflict(_) => ErrorMeta {
                 code: "CONFLICT",
                 category: ErrorCategory::Conflict,
@@ -263,6 +272,7 @@ impl AppError {
                     format!("服务暂不可用：{}", sanitize(m))
                 }
             }
+            AppError::PermissionRequired(m) => sanitize(m),
             AppError::Conflict(m) => sanitize(m),
         }
     }
@@ -296,6 +306,7 @@ impl AppError {
             AppError::NotFound(m) => AppError::NotFound(m.clone()),
             AppError::Overloaded(m) => AppError::Overloaded(m.clone()),
             AppError::Unavailable(m) => AppError::Unavailable(m.clone()),
+            AppError::PermissionRequired(m) => AppError::PermissionRequired(m.clone()),
             AppError::Conflict(m) => AppError::Conflict(m.clone()),
             AppError::Agent(m) => AppError::Agent(m.clone()),
             other => AppError::Agent(other.to_string()),
@@ -546,6 +557,15 @@ mod tests {
         assert!(!msg.contains("SELECT"));
         assert!(!msg.contains("main.rs"));
         assert!(msg.contains("<已隐藏>"));
+    }
+
+    #[test]
+    fn permission_required_keeps_actionable_message() {
+        let e = AppError::PermissionRequired("请先开启 Windows 在线语音识别".into());
+        assert_eq!(e.code(), "PERMISSION_REQUIRED");
+        assert_eq!(e.category().as_str(), "permission");
+        assert!(e.retryable());
+        assert_eq!(e.user_message(), "请先开启 Windows 在线语音识别");
     }
 
     #[test]

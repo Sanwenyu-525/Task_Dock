@@ -13,6 +13,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::clipboard::platform::ClipboardPayload;
 use crate::db::Settings;
+use crate::diagnostics::Diagnostics;
 use crate::error::{AppError, AppResult};
 use crate::shelf::{self, ShelfState};
 
@@ -851,20 +852,32 @@ fn sanitize_batch_id(raw: &str) -> String {
 ///
 /// - 目标按 id 解析，前端不传目录字符串；
 /// - 默认复制且保留源文件；目标配置为 move 时走「同卷改名 / 跨卷复制校验后删源」；
-/// - 单条失败不影响其他独立条目，结果逐条返回。
+/// - 单条失败不影响其他独立条目，结果逐条返回；
+/// - 返回前在 Rust 业务边界写诊断事件（`operation_id = batch_id`）：
+///   IPC 成功但存在真实失败时，诊断中心仍能追踪；写日志失败绝不影响投递结果。
 #[tauri::command]
 pub async fn shelf_drop_to_directory(
     state: State<'_, Arc<ShelfState>>,
+    diag: State<'_, Arc<Diagnostics>>,
     target_id: String,
     paths: Vec<String>,
     batch_id: Option<String>,
 ) -> AppResult<shelf::fsops::DropReport> {
     let st = state.inner().clone();
     let batch = sanitize_batch_id(batch_id.as_deref().unwrap_or(""));
-    tauri::async_runtime::spawn_blocking(move || {
+    let started = std::time::Instant::now();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let target = shelf::drop_targets::get(&st.db, &target_id)?;
         shelf::fsops::drop_paths(&st.db, &st.root, &target, &paths, &batch)
     })
     .await
-    .map_err(|e| AppError::Agent(format!("文件投递任务失败: {e}")))?
+    .map_err(|e| AppError::Agent(format!("文件投递任务失败: {e}")))?;
+    if let Ok(report) = &result {
+        let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        for event in shelf::fsops::drop_diagnostic_events(report, elapsed) {
+            // 非阻塞入队；队列满/日志降级只计数，不改变投递结果。
+            let _ = diag.record(event);
+        }
+    }
+    result
 }

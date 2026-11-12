@@ -1345,6 +1345,10 @@ fn proc_stem_set(names: &[String]) -> std::collections::HashSet<String> {
 }
 
 /// 纯函数：单个 app_key 的运行状态（窗口优先；UWP 无 exe 身份不猜）。
+///
+/// 配置为启动器（`... Launcher.exe`）时，启动器拉起主程序后自身退出：
+/// 进程只以主程序名存在，按启动器文件名干匹配会永远判未运行。这里用
+/// 家族名（`Qoder CN Launcher.exe` → `Qoder CN.exe`）做兜底身份。
 fn state_for_key(
     key: &str,
     has_window: bool,
@@ -1360,7 +1364,9 @@ fn state_for_key(
     match Path::new(key).file_stem() {
         Some(stem) => {
             let stem = stem.to_string_lossy().to_ascii_lowercase();
-            if proc_stems.contains(&stem) {
+            let family_running = super::window_manager::launcher_family_stem(key)
+                .is_some_and(|family| proc_stems.contains(&family));
+            if proc_stems.contains(&stem) || family_running {
                 RunningState::ProcessOnly
             } else {
                 RunningState::NotRunning
@@ -1435,6 +1441,49 @@ mod tests {
         assert_eq!(
             state_for_key("family!app", false, &stems),
             RunningState::NotRunning
+        );
+    }
+
+    /// 启动器外壳：配置的是 `Qoder CN Launcher.exe` / `DingtalkLauncher.exe`，
+    /// 启动器拉起主程序后自身退出，运行中的进程只有主程序名。
+    /// 回归：只按启动器文件名干匹配会把「应用明明开着」误判为未运行（无绿点）。
+    #[test]
+    fn launcher_key_matches_running_main_process_family() {
+        let stems = proc_stem_set(&[
+            "Qoder CN.exe".to_string(),
+            "DingTalk.exe".to_string(),
+        ]);
+        assert_eq!(
+            state_for_key(
+                r"c:\users\asus\appdata\local\qoder cn\qoder cn launcher\qoder cn launcher.exe",
+                false,
+                &stems
+            ),
+            RunningState::ProcessOnly,
+            "启动器目标必须能匹配到主程序同名进程"
+        );
+        assert_eq!(
+            state_for_key(
+                r"d:\钉钉\dingding\dingtalklauncher.exe",
+                false,
+                &stems
+            ),
+            RunningState::ProcessOnly,
+            "无分隔符的 Launcher 词尾同样要能匹配主程序"
+        );
+        // 家族名只做完整文件名干比较：相近但不同的应用不得被误判为运行
+        assert_eq!(
+            state_for_key(r"c:\tools\qoder-cn-launcher\qoder-cn.exe", false, &stems),
+            RunningState::NotRunning
+        );
+        // 有窗口优先于进程判定
+        assert_eq!(
+            state_for_key(
+                r"c:\users\asus\appdata\local\qoder cn\qoder cn launcher\qoder cn launcher.exe",
+                true,
+                &stems
+            ),
+            RunningState::HasWindow
         );
     }
 

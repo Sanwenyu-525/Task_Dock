@@ -27,6 +27,7 @@ use crate::error::{AppError, AppResult};
 use crate::navigation::window_manager;
 
 pub mod store;
+pub mod voice;
 
 /// 窗口 label（与 tauri.conf.json / capabilities/capture.json 一致）。
 pub const WINDOW_LABEL: &str = "capture";
@@ -232,6 +233,10 @@ pub fn hide_capture(app: &AppHandle, restore_focus: bool) {
     if !win.is_visible().unwrap_or(false) {
         return;
     }
+    // 隐藏即释放麦克风：即使前端来不及 stop，听写会话也不在后台空转。
+    if let Some(voice) = app.try_state::<Arc<voice::VoiceInput>>() {
+        voice.stop_async();
+    }
     // 必须在 hide 之前判断：hide 之后前台必然易主，按字面判断永远不会成立。
     let capture_hwnd = win.hwnd().ok().map(|h| h.0 as isize).unwrap_or(0);
     let was_foreground = capture_hwnd != 0 && window_manager::foreground_window() == capture_hwnd;
@@ -258,6 +263,11 @@ pub fn init(app: &AppHandle) {
         tracing::warn!(window = WINDOW_LABEL, "快速捕获窗口未创建，跳过事件挂接");
         return;
     };
+    // 头部拖拽相位监视（与微件同一协议）：松手瞬间结束前端 grabbing 光标会话。
+    // init 在 setup（主线程）执行，子类化可直接安装；drag_watch 自身幂等。
+    if let Ok(hwnd) = win.hwnd() {
+        crate::drag_watch::install(app, hwnd.0 as isize, WINDOW_LABEL);
+    }
     let handle = app.clone();
     win.on_window_event(move |event| match event {
         tauri::WindowEvent::Focused(false) => {
@@ -418,6 +428,46 @@ pub fn quick_capture_show(app: AppHandle) -> AppResult<QuickCaptureShowResult> {
 #[tauri::command]
 pub fn quick_capture_hide(app: AppHandle) {
     hide_capture(&app, true);
+}
+
+/// 启动语音输入（听写模式）：成功后在 capture 窗口收到 capture-voice-* 事件。
+/// 阻塞等待工作线程回包，因此放到 blocking 线程池，不占用 IPC/主线程。
+#[tauri::command]
+pub async fn quick_capture_voice_start(
+    app: AppHandle,
+    voice: State<'_, Arc<voice::VoiceInput>>,
+) -> AppResult<voice::VoiceStartResult> {
+    let voice = Arc::clone(&voice);
+    tauri::async_runtime::spawn_blocking(move || voice.start(&app).map_err(|e| e.into_app_error()))
+        .await
+        .map_err(|e| AppError::Unavailable(format!("语音输入线程异常: {e}")))?
+}
+
+/// 停止语音输入并等待会话关闭（幂等；未启动过时返回空列表）。
+/// 返回值是停止收尾期间才定稿的片段（StopAsync 会补发最后一批结果），
+/// 前端在 stopping 相位追加进正文，避免「说完立刻点停止」丢最后一句。
+#[tauri::command]
+pub async fn quick_capture_voice_stop(
+    voice: State<'_, Arc<voice::VoiceInput>>,
+) -> AppResult<Vec<String>> {
+    let voice = Arc::clone(&voice);
+    tauri::async_runtime::spawn_blocking(move || voice.stop().map_err(|e| e.into_app_error()))
+        .await
+        .map_err(|e| AppError::Unavailable(format!("语音输入线程异常: {e}")))?
+}
+
+/// 语音隐私策略未接受时的恢复入口：打开 Windows「语音」隐私设置页。
+/// 是否开启「在线语音识别」由用户决定，应用不修改系统隐私设置。
+#[tauri::command]
+pub fn quick_capture_open_speech_settings(app: AppHandle) -> AppResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url("ms-settings:privacy-speech", None::<&str>)
+        .map_err(|e| {
+            AppError::Validation(format!(
+                "无法打开设置，请手动进入「设置 > 隐私和安全性 > 语音」：{e}"
+            ))
+        })
 }
 
 // ── 单测 ────────────────────────────────────────────────────

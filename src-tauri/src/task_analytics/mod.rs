@@ -1193,7 +1193,9 @@ mod tests {
         assert_eq!(after.status, "pending", "重复任务完成后必须保持 pending");
         assert!(after.due_at.is_some());
         assert_eq!(count_events(&db), 2);
-        let report = report_at(&db, RangeKind::Week, fixed_now()).unwrap();
+        // 完成事件由真实 `toggle_task_inner` 按当前时钟写入，统计窗口也必须用
+        // 当前时间；写死 `fixed_now()` 会在今天与 2026-11-04 不在同一周时读成 0。
+        let report = report_at(&db, RangeKind::Week, Local::now()).unwrap();
         assert_eq!(report.summary.completed, 2);
         assert_eq!(report.summary.recurring_completed, 2);
     }
@@ -1382,8 +1384,21 @@ mod tests {
     fn late_completion_counts_as_overdue() {
         let db = setup();
         let due = local_iso(2026, 11, 2, 9, 0);
-        let task = create_task_inner(&db, task_input("迟交", Some(due), None)).unwrap();
-        toggle_task_inner(&db, &task.id).unwrap();
+        let task = create_task_inner(&db, task_input("迟交", Some(due.clone()), None)).unwrap();
+        // 完成事件用固定时刻写入：真实 toggle 取当前时钟，写死的统计窗口会随
+        // 运行日期漂移（2026-11-04 之后必然读成 0）。本用例验证统计口径，不验证时钟。
+        let completed_at = local_iso(2026, 11, 3, 10, 0);
+        record_at_due(&db, &task.id, &completed_at, &due);
+        // 与 toggle 的落库形态一致：任务行也要标完成，否则统计把「未完成 ·
+        // 有旧事件」当作重开后的残留事件，覆盖掉这次完成。
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tasks SET status = 'completed', completed_at = ?1 WHERE id = ?2",
+                rusqlite::params![completed_at, task.id],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
 
         let report = report_at(&db, RangeKind::Week, fixed_now()).unwrap();
         assert_eq!(report.summary.completed, 1);

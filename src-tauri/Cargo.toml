@@ -109,6 +109,9 @@ windows = { version = "0.62", features = [
   # 与 OCR 共用同一 windows/0.62 版本，Media_Core 提供 SpeechSynthesisStream。
   "Media_Core",
   "Media_SpeechSynthesis",
+  # 快速捕获语音输入（WinRT SpeechRecognizer 听写模式）：与 TTS 同一 windows crate，
+  # 只启用模块 feature，不新增依赖下载（windows-collections 已在 Cargo.lock）。
+  "Media_SpeechRecognition",
 ] }
 # `#[implement]` 宏展开需要 windows_core 直接可达；与 windows 0.62 同版本，
 # 已存在于 Cargo.lock（tao/wry 传递依赖），不是新增下载。

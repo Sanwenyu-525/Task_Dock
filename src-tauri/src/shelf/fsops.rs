@@ -14,6 +14,7 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 
+use crate::diagnostics;
 use super::drop_targets::{DropTarget, OP_COPY, OP_MOVE};
 use super::*;
 
@@ -1500,16 +1501,41 @@ struct PathOutcome {
     reason: Option<String>,
     recovery: Option<String>,
     residual_source: Option<PathBuf>,
+    /// 稳定失败分类：只进入诊断事件与结构化结果，不替代 `reason` 的用户文案。
+    code: Option<&'static str>,
+    /// 失败阶段：prepare / resolve / journal / commit / copy / cleanup / rewrite。
+    stage: Option<&'static str>,
 }
 
+/// 投递失败分类（稳定错误码，<=40 字符，仅大写/数字/下划线）。
+///
+/// 约束：SQLite 结构不兼容必须归入 `SHELF_DROP_DB_SCHEMA_INCOMPATIBLE`，
+/// 不能被误写成文件格式错误；诊断中心据此聚合，不依赖 `reason` 文案匹配。
+pub const DROP_CODE_DB_SCHEMA: &str = "SHELF_DROP_DB_SCHEMA_INCOMPATIBLE";
+pub const DROP_CODE_DB: &str = "SHELF_DROP_DB";
+pub const DROP_CODE_SOURCE_MISSING: &str = "SHELF_DROP_SOURCE_MISSING";
+pub const DROP_CODE_ACCESS_DENIED: &str = "SHELF_DROP_ACCESS_DENIED";
+pub const DROP_CODE_FILE_BUSY: &str = "SHELF_DROP_FILE_BUSY";
+pub const DROP_CODE_CONFLICT: &str = "SHELF_DROP_CONFLICT";
+pub const DROP_CODE_IO: &str = "SHELF_DROP_IO";
+pub const DROP_CODE_VALIDATION: &str = "SHELF_DROP_VALIDATION";
+pub const DROP_CODE_UNSUPPORTED: &str = "SHELF_DROP_UNSUPPORTED";
+pub const DROP_CODE_TARGET_UNAVAILABLE: &str = "SHELF_DROP_TARGET_UNAVAILABLE";
+pub const DROP_CODE_PARTIAL: &str = "SHELF_DROP_PARTIAL";
+pub const DROP_CODE_UNKNOWN: &str = "SHELF_DROP_UNKNOWN";
+/// 一次投递出现多种失败分类时的汇总码；明细事件仍带各自的稳定码。
+pub const DROP_CODE_MULTI_FAILURE: &str = "SHELF_DROP_MULTI_FAILURE";
+
 impl PathOutcome {
-    fn failed(reason: impl Into<String>) -> Self {
+    fn failed_at(code: &'static str, stage: &'static str, reason: impl Into<String>) -> Self {
         Self {
             status: "failed",
             target: None,
             reason: Some(reason.into()),
             recovery: None,
             residual_source: None,
+            code: Some(code),
+            stage: Some(stage),
         }
     }
 
@@ -1520,6 +1546,8 @@ impl PathOutcome {
             reason: Some(reason.into()),
             recovery: None,
             residual_source: None,
+            code: None,
+            stage: None,
         }
     }
 
@@ -1530,8 +1558,56 @@ impl PathOutcome {
             reason: None,
             recovery: None,
             residual_source: None,
+            code: None,
+            stage: None,
         }
     }
+}
+
+/// 把 `AppError` 映射成稳定投递错误码（不泄漏底层 SQL/路径）。
+fn app_error_code(e: &AppError) -> &'static str {
+    match e {
+        AppError::Db(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("CHECK constraint failed") || msg.contains("no such table")
+                || msg.contains("no such column") =>
+        {
+            DROP_CODE_DB_SCHEMA
+        }
+        AppError::Db(_) => DROP_CODE_DB,
+        AppError::Io(io) => io_error_code(io),
+        AppError::Validation(_) => DROP_CODE_VALIDATION,
+        AppError::NotFound(_) => DROP_CODE_SOURCE_MISSING,
+        AppError::PermissionRequired(_) => DROP_CODE_ACCESS_DENIED,
+        AppError::Conflict(_) => DROP_CODE_CONFLICT,
+        _ => DROP_CODE_UNKNOWN,
+    }
+}
+
+/// Windows 常见 IO 错误到稳定分类：共享冲突/占用与权限拒绝必须可区分。
+fn io_error_code(e: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind;
+    match e.kind() {
+        ErrorKind::NotFound => DROP_CODE_SOURCE_MISSING,
+        ErrorKind::PermissionDenied => DROP_CODE_ACCESS_DENIED,
+        ErrorKind::AlreadyExists => DROP_CODE_CONFLICT,
+        _ => match e.raw_os_error() {
+            Some(2) | Some(3) => DROP_CODE_SOURCE_MISSING,
+            Some(5) => DROP_CODE_ACCESS_DENIED,
+            // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION
+            Some(32) | Some(33) => DROP_CODE_FILE_BUSY,
+            Some(80) | Some(183) => DROP_CODE_CONFLICT,
+            _ => DROP_CODE_IO,
+        },
+    }
+}
+
+/// 操作日志写入失败：数据库/约束问题必须与文件 IO 分开，供诊断中心正确归类。
+fn journal_failed(e: &AppError, prefix: &str) -> PathOutcome {
+    let code = match e {
+        AppError::Db(_) => app_error_code(e),
+        _ => DROP_CODE_DB,
+    };
+    PathOutcome::failed_at(code, "journal", format!("{prefix}: {e}"))
 }
 
 /// 复制单个路径到目标目录（流式 + 校验 + 临时副本原子提交）。
@@ -1547,11 +1623,13 @@ fn copy_path_core(
 ) -> PathOutcome {
     let is_dir = src.is_dir();
     if let Err(e) = ensure_copy_dest_safe(src, target_dir) {
-        return PathOutcome::failed(e.to_string());
+        return PathOutcome::failed_at(DROP_CODE_VALIDATION, "prepare", e.to_string());
     }
     let (target, skipped) = match resolve_target(target_dir, name, is_dir, strategy) {
         Ok(v) => v,
-        Err(e) => return PathOutcome::failed(e.to_string()),
+        Err(e) => {
+            return PathOutcome::failed_at(app_error_code(&e), "resolve", e.to_string());
+        }
     };
     if skipped {
         return PathOutcome::skipped("目标目录已存在同名文件（同名策略：跳过）", Some(target));
@@ -1560,15 +1638,15 @@ fn copy_path_core(
     // 不会各自写临时副本再互相覆盖（提交本身也已有原子无覆盖语义兜底）。
     let _target_claim = match claim_paths(&[(target.clone(), ClaimMode::Exclusive)]) {
         Ok(c) => c,
-        Err(e) => return PathOutcome::failed(e.to_string()),
+        Err(e) => return PathOutcome::failed_at(app_error_code(&e), "prepare", e.to_string()),
     };
     let part = match part_path(&target) {
         Ok(p) => p,
-        Err(e) => return PathOutcome::failed(e.to_string()),
+        Err(e) => return PathOutcome::failed_at(app_error_code(&e), "prepare", e.to_string()),
     };
     let journal = match journal_insert(db, journal_item, "copy", src, &part) {
         Ok(id) => id,
-        Err(e) => return PathOutcome::failed(format!("写入复制日志失败，未执行复制: {e}")),
+        Err(e) => return journal_failed(&e, "写入复制日志失败，未执行复制"),
     };
     match copy_with_verify(src, &part, &target, is_dir) {
         Ok(()) => {
@@ -1582,7 +1660,7 @@ fn copy_path_core(
             if let Err(e2) = journal_done(db, &journal) {
                 tracing::warn!("复制失败后清理操作日志失败: {e2}");
             }
-            let mut out = PathOutcome::failed(e.to_string());
+            let mut out = PathOutcome::failed_at(app_error_code(&e), "copy", e.to_string());
             out.target = Some(target);
             out
         }
@@ -1610,19 +1688,29 @@ fn move_path_core(
         if let Ok(c) = std::fs::canonicalize(src) {
             if let Ok(t) = std::fs::canonicalize(target_dir) {
                 if t.starts_with(&c) {
-                    return PathOutcome::failed("不能把文件夹移动到它自身或子目录中");
+                    return PathOutcome::failed_at(
+                        DROP_CODE_VALIDATION,
+                        "prepare",
+                        "不能把文件夹移动到它自身或子目录中",
+                    );
                 }
             }
         }
     }
     if let Ok(m) = entry_meta(src) {
         if is_reparse_point(&m) {
-            return PathOutcome::failed("路径是符号链接/联接点/重解析点，暂不支持移动");
+            return PathOutcome::failed_at(
+                DROP_CODE_UNSUPPORTED,
+                "prepare",
+                "路径是符号链接/联接点/重解析点，暂不支持移动",
+            );
         }
     }
     let (target, skipped) = match resolve_target(target_dir, name, is_dir, strategy) {
         Ok(v) => v,
-        Err(e) => return PathOutcome::failed(e.to_string()),
+        Err(e) => {
+            return PathOutcome::failed_at(app_error_code(&e), "resolve", e.to_string());
+        }
     };
     if skipped {
         return PathOutcome::skipped("目标目录已存在同名文件（同名策略：跳过）", Some(target));
@@ -1631,20 +1719,24 @@ fn move_path_core(
     // 而不是在同一目标上互相 rename（提交本身也保证不覆盖）。
     let _target_claim = match claim_paths(&[(target.clone(), ClaimMode::Exclusive)]) {
         Ok(c) => c,
-        Err(e) => return PathOutcome::failed(e.to_string()),
+        Err(e) => return PathOutcome::failed_at(app_error_code(&e), "prepare", e.to_string()),
     };
     // 目标目录可能在解析之后被外部程序移除：在真正移动前给出可读原因。
     if let Some(parent) = target.parent() {
         if !parent.is_dir() {
-            return PathOutcome::failed(format!(
-                "目标目录在移动前已不存在或不可访问: {}",
-                parent.display()
-            ));
+            return PathOutcome::failed_at(
+                DROP_CODE_TARGET_UNAVAILABLE,
+                "prepare",
+                format!(
+                    "目标目录在移动前已不存在或不可访问: {}",
+                    parent.display()
+                ),
+            );
         }
     }
     let journal = match journal_insert(db, journal_item, "move", src, &target) {
         Ok(id) => id,
-        Err(e) => return PathOutcome::failed(format!("写入移动日志失败，未执行移动: {e}")),
+        Err(e) => return journal_failed(&e, "写入移动日志失败，未执行移动"),
     };
 
     #[cfg(test)]
@@ -1680,9 +1772,11 @@ fn move_path_core(
                                 if let Err(e2) = journal_done(db, &journal) {
                                     tracing::warn!("回滚后清理操作日志失败: {e2}");
                                 }
-                                PathOutcome::failed(format!(
-                                    "更新暂存架路径失败，已回滚移动: {e}"
-                                ))
+                                PathOutcome::failed_at(
+                                    DROP_CODE_DB,
+                                    "rewrite",
+                                    format!("更新暂存架路径失败，已回滚移动: {e}"),
+                                )
                             }
                             Err(rollback_err) => PathOutcome {
                                 status: "partial",
@@ -1694,6 +1788,8 @@ fn move_path_core(
                                     "保持目标文件在原位，重启应用以自动恢复引用".into(),
                                 ),
                                 residual_source: None,
+                                code: Some(DROP_CODE_PARTIAL),
+                                stage: Some("rewrite"),
                             },
                         }
                     }
@@ -1704,7 +1800,9 @@ fn move_path_core(
                 if let Err(e2) = journal_done(db, &journal) {
                     tracing::warn!("目标被占用后清理操作日志失败: {e2}");
                 }
-                return PathOutcome::failed(
+                return PathOutcome::failed_at(
+                    DROP_CODE_CONFLICT,
+                    "commit",
                     "目标位置在移动过程中出现同名文件，未覆盖任何文件；请确认后重试",
                 );
             }
@@ -1715,7 +1813,11 @@ fn move_path_core(
                 if let Err(e2) = journal_done(db, &journal) {
                     tracing::warn!("移动失败后清理操作日志失败: {e2}");
                 }
-                return PathOutcome::failed(format!("移动失败: {e}"));
+                return PathOutcome::failed_at(
+                    io_error_code(&e),
+                    "commit",
+                    format!("移动失败: {e}"),
+                );
             }
         }
     }
@@ -1727,7 +1829,7 @@ fn move_path_core(
             if let Err(e2) = journal_done(db, &journal) {
                 tracing::warn!("准备临时副本失败后清理操作日志失败: {e2}");
             }
-            return PathOutcome::failed(e.to_string());
+            return PathOutcome::failed_at(app_error_code(&e), "prepare", e.to_string());
         }
     };
     // 日志先指向临时副本：中途退出时恢复逻辑可精确清理本次创建的 part。
@@ -1735,14 +1837,18 @@ fn move_path_core(
         if let Err(e2) = journal_done(db, &journal) {
             tracing::warn!("记录临时副本路径失败后清理操作日志失败: {e2}");
         }
-        return PathOutcome::failed(format!("记录临时副本路径失败，未执行移动: {e}"));
+        return journal_failed(&e, "记录临时副本路径失败，未执行移动");
     }
     if let Err(e) = copy_with_verify(src, &part, &target, is_dir) {
         remove_best_effort(&part);
         if let Err(e2) = journal_done(db, &journal) {
             tracing::warn!("跨盘复制失败后清理操作日志失败: {e2}");
         }
-        return PathOutcome::failed(format!("跨盘复制或校验失败，源文件未删除: {e}"));
+        return PathOutcome::failed_at(
+            app_error_code(&e),
+            "copy",
+            format!("跨盘复制或校验失败，源文件未删除: {e}"),
+        );
     }
     // 至此目标已完整校验。关键阶段日志失败时绝不继续删除源。
     if let Err(e) = journal_mark_copied(db, &journal, &target) {
@@ -1754,6 +1860,8 @@ fn move_path_core(
             )),
             recovery: Some("检查源与目标两份副本，确认后手动删除多余的一份".into()),
             residual_source: None,
+            code: Some(app_error_code(&e)),
+            stage: Some("journal"),
         };
     }
 
@@ -1779,6 +1887,8 @@ fn move_path_core(
                         )),
                         recovery: Some("保持目标文件在原位，重启应用以自动恢复引用".into()),
                         residual_source: None,
+                        code: Some(DROP_CODE_DB),
+                        stage: Some("rewrite"),
                     }
                 }
             }
@@ -1802,6 +1912,8 @@ fn move_path_core(
                                 "目标副本完整可用；请手动检查并删除残留源目录".into(),
                             ),
                             residual_source: Some(src.to_path_buf()),
+                            code: Some(DROP_CODE_PARTIAL),
+                            stage: Some("cleanup"),
                         }
                     } else {
                         let mut out = PathOutcome::ok(target);
@@ -1827,6 +1939,8 @@ fn move_path_core(
                         } else {
                             None
                         },
+                        code: Some(DROP_CODE_PARTIAL),
+                        stage: Some("cleanup"),
                     }
                 }
             }
@@ -2323,6 +2437,12 @@ pub struct DropEntry {
     pub recovery: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub residual_source: Option<String>,
+    /// 稳定失败分类（诊断聚合用；UI 仍展示 `reason`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// 失败阶段：prepare/resolve/journal/commit/copy/cleanup/rewrite。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2339,6 +2459,158 @@ pub struct DropReport {
     pub failed: i64,
     pub partial: i64,
     pub entries: Vec<DropEntry>,
+}
+
+/// 稳定错误码对应的诊断分类（与 `error::ErrorCategory` 的字符串取值保持一致）。
+pub fn drop_code_category(code: &str) -> &'static str {
+    match code {
+        DROP_CODE_DB_SCHEMA | DROP_CODE_DB => "database",
+        DROP_CODE_SOURCE_MISSING | DROP_CODE_TARGET_UNAVAILABLE => "not_found",
+        DROP_CODE_ACCESS_DENIED => "permission",
+        DROP_CODE_FILE_BUSY | DROP_CODE_IO => "io",
+        DROP_CODE_CONFLICT => "conflict",
+        DROP_CODE_VALIDATION => "validation",
+        DROP_CODE_UNSUPPORTED => "unsupported",
+        DROP_CODE_PARTIAL => "integrity",
+        _ => "unknown",
+    }
+}
+
+/// 单次投递最多写几条失败明细（按错误码/阶段聚合）；其余只计入汇总。
+pub const MAX_DROP_FAILURE_EVENTS: usize = 4;
+
+/// 把一次投递的业务结果映射为**有界**诊断事件。
+///
+/// - 汇总事件始终一条：全部成功 = INFO/success；部分失败 = WARN/failed；
+///   全部失败 = ERROR/failed（命中数据库结构不兼容时即使部分失败也升级为 ERROR）；
+/// - 明细事件按（错误码, 阶段）聚合，最多 [`MAX_DROP_FAILURE_EVENTS`] 条；
+/// - 只写计数、模式、目标 id、阶段与稳定错误码，**绝不写路径、文件名或原始错误文本**；
+/// - 正常跳过（同名策略/已在目标内）不算失败，只进入汇总计数。
+///
+/// 事件级判定放在 Rust 业务边界：即使前端面板已卸载、胶囊窗口已关闭，
+/// 结果仍然可在诊断中心按 `operation_id = batch_id` 追踪。
+pub fn drop_diagnostic_events(
+    report: &DropReport,
+    duration_ms: u64,
+) -> Vec<diagnostics::DiagnosticEvent> {
+    use crate::diagnostics::{DiagLevel, DiagStatus};
+    use serde_json::Value as Json;
+    use std::collections::BTreeMap;
+
+    let mut groups: BTreeMap<(String, String), i64> = BTreeMap::new();
+    for entry in &report.entries {
+        if entry.status != "failed" && entry.status != "partial" {
+            continue;
+        }
+        let code = entry
+            .code
+            .clone()
+            .unwrap_or_else(|| DROP_CODE_UNKNOWN.to_string());
+        let stage = entry.stage.clone().unwrap_or_else(|| "unknown".to_string());
+        *groups.entry((code, stage)).or_insert(0) += 1;
+    }
+
+    let failure_total = report.failed + report.partial;
+    let has_failure = failure_total > 0;
+    let all_failed =
+        report.failed > 0 && report.success == 0 && report.skipped == 0 && report.partial == 0;
+    let db_schema = groups
+        .keys()
+        .any(|(code, _)| code == DROP_CODE_DB_SCHEMA);
+    // 明确的预期拒绝（校验/不支持/冲突/目标不可用）全量失败时用 WARN，
+    // 真实 IO/权限/数据库故障才升级为 ERROR。
+    let only_expected_rejection = !groups.is_empty()
+        && groups.keys().all(|(code, _)| {
+            matches!(
+                code.as_str(),
+                DROP_CODE_VALIDATION
+                    | DROP_CODE_UNSUPPORTED
+                    | DROP_CODE_CONFLICT
+                    | DROP_CODE_TARGET_UNAVAILABLE
+            )
+        });
+
+    let (level, event, status) = if !has_failure {
+        (DiagLevel::Info, "drop_completed", DiagStatus::Success)
+    } else if db_schema || (all_failed && !only_expected_rejection) {
+        (DiagLevel::Error, "drop_failed", DiagStatus::Failed)
+    } else {
+        (DiagLevel::Warn, "drop_partial", DiagStatus::Failed)
+    };
+
+    let mut summary = diagnostics::event(level, "file", "shelf_drop_to_directory", event)
+        .status(status)
+        .stage("business")
+        .operation(&report.batch_id)
+        .duration_ms(duration_ms)
+        .metadata("total", Json::from(report.total))
+        .metadata("success", Json::from(report.success))
+        .metadata("skipped", Json::from(report.skipped))
+        .metadata("failed", Json::from(report.failed))
+        .metadata("partial", Json::from(report.partial))
+        .metadata("mode", Json::from(report.op.clone()))
+        .metadata("target_id", Json::from(report.target_id.clone()))
+        .metadata("failure_groups", Json::from(groups.len() as u64))
+        .message(format!(
+            "文件投递{}：共 {} 项，成功 {}、跳过 {}、失败 {}、部分完成 {}",
+            if !has_failure {
+                "完成"
+            } else if all_failed {
+                "失败"
+            } else {
+                "部分失败"
+            },
+            report.total,
+            report.success,
+            report.skipped,
+            report.failed,
+            report.partial
+        ))
+        .build();
+    if !groups.is_empty() {
+        let (code, category) = if groups.len() == 1 {
+            let (code, _) = groups.keys().next().expect("非空");
+            (code.clone(), drop_code_category(code))
+        } else {
+            (
+                DROP_CODE_MULTI_FAILURE.to_string(),
+                drop_code_category(DROP_CODE_UNKNOWN),
+            )
+        };
+        summary.error_code = Some(code);
+        summary.error_category = Some(category.to_string());
+    }
+
+    let mut events = vec![summary];
+    let mut grouped: Vec<((String, String), i64)> = groups.into_iter().collect();
+    // 失败多的分组优先，保证被截断时保留最有信息量的分类。
+    grouped.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    for ((code, stage), count) in grouped.into_iter().take(MAX_DROP_FAILURE_EVENTS) {
+        let group_level = if code == DROP_CODE_DB_SCHEMA || (all_failed && !only_expected_rejection)
+        {
+            DiagLevel::Error
+        } else {
+            DiagLevel::Warn
+        };
+        events.push(
+            diagnostics::event(
+                group_level,
+                "file",
+                "shelf_drop_to_directory",
+                "drop_item_failed",
+            )
+            .status(DiagStatus::Failed)
+            .operation(&report.batch_id)
+            .stage(&stage)
+            .error_code(&code)
+            .error_category(drop_code_category(&code))
+            .metadata("count", Json::from(count))
+            .metadata("mode", Json::from(report.op.clone()))
+            .message(format!("文件投递失败 {count} 项（{code}）"))
+            .build(),
+        );
+    }
+    events
 }
 
 /// 校验并去重拖入路径：只接受绝对路径，重复项按大小写不敏感去重。
@@ -2453,22 +2725,43 @@ pub fn drop_paths(
                         )),
                         recovery: Some("检查源目录残留副本与目标目录，删除多余的一份".into()),
                         residual_source: Some(residual),
+                        code: Some(DROP_CODE_PARTIAL),
+                        stage: Some("prepare"),
                     }
                 }
             }
         } else if !src.exists() {
-            PathOutcome::failed("源文件已不存在（可能已被移动或删除）")
+            PathOutcome::failed_at(
+                DROP_CODE_SOURCE_MISSING,
+                "prepare",
+                "源文件已不存在（可能已被移动或删除）",
+            )
         } else if parent_eq_ci(&src, &dir) {
             PathOutcome::skipped("已经在目标目录内，未重复处理", None)
         } else if let Ok(canon_src) = std::fs::canonicalize(&src) {
             match std::fs::canonicalize(root) {
                 Ok(canon_root) if canon_src.starts_with(&canon_root) => {
-                    PathOutcome::failed("不能把暂存架自己的托管目录投递到外部目录")
+                    // 暂存架托管目录只能「导出副本」：复制是只读操作，不改变暂存记录；
+                    // 移动会把内部副本搬出托管目录，直接让条目失效，与拖出通道
+                    // `allow_move_for` 的「托管项只复制」约束保持一致。
+                    if move_mode {
+                        PathOutcome::failed_at(
+                            DROP_CODE_UNSUPPORTED,
+                            "prepare",
+                            "暂存架托管副本不能在移动模式目标上移动；请改用复制模式或先导出副本",
+                        )
+                    } else {
+                        run_drop_one(db, &journal_item, &src, &dir, strategy, move_mode)
+                    }
                 }
                 _ => run_drop_one(db, &journal_item, &src, &dir, strategy, move_mode),
             }
         } else {
-            PathOutcome::failed("无法读取源路径（权限不足或路径不可访问）")
+            PathOutcome::failed_at(
+                DROP_CODE_IO,
+                "prepare",
+                "无法读取源路径（权限不足或路径不可访问）",
+            )
         };
 
         // 只要父目录有明确结果（成功/按策略跳过/部分完成），子项就不再单独操作；
@@ -2486,6 +2779,8 @@ pub fn drop_paths(
             residual_source: outcome
                 .residual_source
                 .map(|p| p.to_string_lossy().into_owned()),
+            code: outcome.code.map(str::to_string),
+            stage: outcome.stage.map(str::to_string),
         });
     }
 
@@ -2522,7 +2817,7 @@ fn run_drop_one(
 ) -> PathOutcome {
     let name = match source_name(src) {
         Ok(n) => n,
-        Err(e) => return PathOutcome::failed(e.to_string()),
+        Err(e) => return PathOutcome::failed_at(app_error_code(&e), "prepare", e.to_string()),
     };
     if move_mode {
         move_path_core(db, journal_item, src, &name, dir, strategy, &|_, _| Ok(()))

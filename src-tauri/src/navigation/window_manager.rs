@@ -9,6 +9,7 @@
 //! 非 Windows 平台提供空实现（编译不炸，导航如实报不支持）。
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -511,8 +512,101 @@ pub(crate) fn uwp_family(key: &str) -> Option<String> {
     Some(family.to_ascii_lowercase())
 }
 
-/// 纯函数：判定一组窗口各自是否属于给定 UWP 包族名（窗口 exe 路径包含族名，
-/// 大小写不敏感——正常数据已小写，这里兜底防调用方传入原始大小写）。
+/// 启动器外壳 → 主程序家族名（`Qoder CN Launcher.exe` → `qoder cn`，
+/// `DingtalkLauncher.exe` → `dingtalk`；无启动器词尾返回 None）。
+///
+/// 版本化安装的启动器拉起真正的主程序后自身退出，主程序的窗口与常驻进程
+/// 不再属于启动器路径，父进程链也随启动器退出而断开：只按配置 exe 匹配会
+/// 一直判「未运行」。这里用文件名词尾推导家族名做兜底身份。
+///
+/// 规则刻意保守：只接受完整词尾 `launcher` / `sclauncher`（可带数字后缀）
+/// 且剩余名称含字母，不按任意子串裁剪，避免把普通应用误当成启动器。
+pub(crate) fn launcher_family_stem(exe: &str) -> Option<String> {
+    let trimmed = exe.trim();
+    // AUMID 没有 exe 文件名语义，不做启动器推导
+    if trimmed.is_empty() || trimmed.contains('!') {
+        return None;
+    }
+    let stem = Path::new(trimmed)
+        .file_stem()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let stem = stem.trim_end_matches(|c: char| c.is_ascii_digit());
+    // `ScLauncher` 是部分厂商的「快捷方式启动器」命名（如 QQ 的
+    // `QQScLauncher.exe` → `QQ.exe`）；只按完整词尾匹配，避免把 `disc` 之类
+    // 正常名称裁成过短前缀。
+    let base = stem
+        .strip_suffix("sclauncher")
+        .or_else(|| stem.strip_suffix("launcher"))?;
+    let base = base.trim_end_matches([' ', '.', '-', '_']).trim();
+    if base.len() < 2 || !base.chars().any(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    Some(base.to_string())
+}
+
+#[cfg(windows)]
+fn exe_stem_lower(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+}
+
+/// 从 WindowsApps 安装路径推导包族名：
+/// `...\WindowsApps\<Name>_<Version>_<Arch>__<PublisherId>\<exe>` → `<Name>_<PublisherId>`。
+///
+/// 打包应用的安装目录名包含版本/架构，直接拿族名做子串匹配永远不命中
+/// （`Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe` 不包含
+/// `microsoft.windowsterminal_8wekyb3d8bbwe`）。结构不符合标准包目录时返回 None，
+/// 不做猜测。
+pub(crate) fn package_family_from_windowsapps_exe(exe: &str) -> Option<String> {
+    const MARKER: &str = "\\windowsapps\\";
+    let lower = exe.trim().to_ascii_lowercase();
+    let idx = lower.find(MARKER)?;
+    let folder = lower[idx + MARKER.len()..].split('\\').next()?;
+    let mut parts = folder.split('_');
+    let name = parts.next()?;
+    let version = parts.next()?;
+    let arch = parts.next()?;
+    let empty = parts.next()?;
+    let publisher = parts.next()?;
+    if name.is_empty() || publisher.is_empty() || !empty.is_empty() {
+        return None;
+    }
+    if !version.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
+    if !matches!(arch, "x64" | "x86" | "arm" | "arm64" | "neutral") {
+        return None;
+    }
+    Some(format!("{name}_{publisher}"))
+}
+
+fn exe_matches_uwp_family(exe: &str, family: &str) -> bool {
+    let exe = exe.trim().to_ascii_lowercase();
+    let family = family.trim().to_ascii_lowercase();
+    if family.is_empty() {
+        return false;
+    }
+    exe.contains(&family)
+        || package_family_from_windowsapps_exe(&exe).as_deref() == Some(family.as_str())
+}
+
+fn aumid_family(aumid: &str) -> Option<String> {
+    let family = aumid.split('!').next()?.trim();
+    if family.is_empty() {
+        None
+    } else {
+        Some(family.to_ascii_lowercase())
+    }
+}
+
+fn aumid_family_of_pid(pid: u32) -> Option<String> {
+    aumid_of_pid(pid).and_then(|a| aumid_family(&a))
+}
+
+/// 纯函数：判定一组窗口各自是否属于给定 UWP 包族名。
+/// 兼容两种路径形态：路径直接包含族名，或标准 WindowsApps 包目录（含版本/架构）。
 pub(crate) fn windows_hit_families(
     windows: &[WindowInfo],
     families: &[String],
@@ -523,9 +617,8 @@ pub(crate) fn windows_hit_families(
         .collect();
     for w in windows {
         if let Some(exe) = &w.exe_path {
-            let exe = exe.to_ascii_lowercase();
             for (family, hit) in out.iter_mut() {
-                if !*hit && exe.contains(family.as_str()) {
+                if !*hit && exe_matches_uwp_family(exe, family) {
                     *hit = true;
                 }
             }
@@ -534,7 +627,8 @@ pub(crate) fn windows_hit_families(
     out
 }
 
-/// 按 UWP 包族名找窗口（窗口 exe 路径包含族名，即该打包应用当前可见的窗口）。
+/// 按 UWP 包族名找窗口：窗口进程的 AUMID 是权威身份；exe 路径能直接证明
+/// （WindowsApps 标准包目录或路径含族名）时也接受。
 pub fn windows_for_family(family: &str) -> Vec<WindowInfo> {
     let family = family.trim().to_ascii_lowercase();
     if family.is_empty() {
@@ -543,9 +637,11 @@ pub fn windows_for_family(family: &str) -> Vec<WindowInfo> {
     top_windows_force()
         .into_iter()
         .filter(|w| {
-            w.exe_path
+            let by_path = w
+                .exe_path
                 .as_deref()
-                .is_some_and(|exe| exe.contains(&family))
+                .is_some_and(|exe| exe_matches_uwp_family(exe, &family));
+            by_path || aumid_family_of_pid(w.pid).as_deref() == Some(family.as_str())
         })
         .collect()
 }
@@ -789,6 +885,51 @@ mod imp {
         }
     }
 
+    /// 打包应用进程的 AUMID（`Family!App`）。这是 UWP 窗口的权威身份：
+    /// WindowsApps 目录名带版本/架构，路径子串匹配不到族名；系统组件的 exe
+    /// 甚至不在 WindowsApps 下（如设置的 `C:\Windows\ImmersiveControlPanel`）。
+    /// 未打包进程返回 None；查询失败不猜测。
+    pub(super) fn aumid_of_pid(pid: u32) -> Option<String> {
+        const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+        #[link(name = "kernel32")]
+        extern "system" {
+            #[link_name = "GetApplicationUserModelId"]
+            fn get_application_user_model_id(
+                hprocess: HANDLE,
+                applicationusermodelidlength: *mut u32,
+                applicationusermodelid: *mut u16,
+            ) -> u32;
+        }
+        if pid == 0 {
+            return None;
+        }
+        unsafe {
+            let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let mut len: u32 = 0;
+            let rc =
+                get_application_user_model_id(handle, &mut len, std::ptr::null_mut());
+            if rc != ERROR_INSUFFICIENT_BUFFER || len == 0 {
+                CloseHandle(handle);
+                return None;
+            }
+            let mut buf = vec![0u16; len as usize];
+            let mut cap = len;
+            let rc = get_application_user_model_id(handle, &mut cap, buf.as_mut_ptr());
+            CloseHandle(handle);
+            if rc != 0 {
+                return None;
+            }
+            let used = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            if used == 0 {
+                return None;
+            }
+            Some(String::from_utf16_lossy(&buf[..used]))
+        }
+    }
+
     /// 一次性进程快照：pid → parent_pid。
     fn process_parent_map() -> std::collections::HashMap<u32, u32> {
         let mut parents: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
@@ -832,15 +973,42 @@ mod imp {
         out
     }
 
+    /// 进程 exe 的文件名干若命中启动器家族名，把对应目标标记为「有窗口」。
+    /// 只认完整文件名干相等，不做子串匹配，避免把同目录的其他进程误算进来。
+    fn mark_launcher_family_hits(
+        out: &mut std::collections::HashMap<String, bool>,
+        families: &[(String, String)],
+        exe_path: &str,
+    ) {
+        if families.is_empty() {
+            return;
+        }
+        let Some(stem) = exe_stem_lower(exe_path) else {
+            return;
+        };
+        for (key, family) in families {
+            if *family == stem {
+                if let Some(hit) = out.get_mut(key) {
+                    *hit = true;
+                }
+            }
+        }
+    }
+
     /// 目标进程树：返回所有「自身或任意祖先进程的 exe 路径 == target」的 PID。
     ///
     /// 微信/QQ/酷狗等宿主把窗口交给子进程持有，单看窗口 PID 的 exe 会漏掉；
     /// 这里用 Toolhelp 快照一次性拿到父子关系，再逐个核对可执行路径。
     /// 仅在 exe 身份直接匹配不到窗口时调用（标题提示路径），正常导航不付这笔开销。
+    ///
+    /// 配置为启动器（`... Launcher.exe`）时，启动器拉起主程序后自身退出，
+    /// 主程序与启动器的路径、父子链都不再相连；此时按家族名词尾再匹配一次，
+    /// 否则窗口与「退出/结束」动作都定位不到真正在运行的应用。
     pub(super) fn identity_pids(target_exe: &str) -> HashSet<u32> {
         use std::collections::{HashMap, HashSet as LocalSet};
         let parents = process_parent_map();
         let want = target_exe.trim().to_ascii_lowercase();
+        let family = launcher_family_stem(&want);
         let mut cache: HashMap<u32, bool> = HashMap::new();
         let mut related: LocalSet<u32> = LocalSet::new();
         for &pid in parents.keys() {
@@ -853,7 +1021,12 @@ mod imp {
                     }
                     break;
                 }
-                let is_target = exe_path_of_pid(cur).is_some_and(|p| p.eq_ignore_ascii_case(&want));
+                let is_target = exe_path_of_pid(cur).is_some_and(|p| {
+                    p.eq_ignore_ascii_case(&want)
+                        || family
+                            .as_deref()
+                            .is_some_and(|f| exe_stem_lower(&p).as_deref() == Some(f))
+                });
                 cache.insert(cur, is_target);
                 if is_target {
                     related.insert(pid);
@@ -1027,7 +1200,21 @@ mod imp {
             .collect();
         if !uwp.is_empty() {
             let families: Vec<String> = uwp.iter().map(|(_, f)| f.clone()).collect();
-            let hits = windows_hit_families(&windows, &families);
+            let mut hits = windows_hit_families(&windows, &families);
+            // 进程 AUMID 是打包应用的权威身份；只在需要判定 UWP 时查询，
+            // 普通 exe 目标不付这笔 OpenProcess 开销。
+            let mut aumid_cache: std::collections::HashMap<u32, Option<String>> =
+                std::collections::HashMap::new();
+            for w in &windows {
+                let family = aumid_cache
+                    .entry(w.pid)
+                    .or_insert_with(|| aumid_family_of_pid(w.pid));
+                if let Some(family) = family {
+                    if let Some(hit) = hits.get_mut(family.as_str()) {
+                        *hit = true;
+                    }
+                }
+            }
             for (lower_key, family) in &uwp {
                 if hits.get(family).copied().unwrap_or(false) {
                     if let Some(hit) = out.get_mut(lower_key) {
@@ -1037,6 +1224,14 @@ mod imp {
             }
         }
         let parents = process_parent_map();
+        // 启动器外壳的家族名：版本化安装的启动器拉起主程序后退出，
+        // 窗口属于主程序（如 `Qoder CN.exe`），启动器路径与父子链都不可用。
+        let launcher_families: Vec<(String, String)> = exe_keys
+            .iter()
+            .filter_map(|k| {
+                launcher_family_stem(k).map(|f| (k.trim().to_ascii_lowercase(), f))
+            })
+            .collect();
         // 祖先 exe 查询带记忆化：多个窗口共享祖先链，避免重复 OpenProcess
         let mut exe_cache: std::collections::HashMap<u32, Option<String>> =
             std::collections::HashMap::new();
@@ -1046,6 +1241,7 @@ mod imp {
                 if let Some(hit) = out.get_mut(exe) {
                     *hit = true;
                 }
+                mark_launcher_family_hits(&mut out, &launcher_families, exe);
             }
             // 沿父链找子进程宿主：任意祖先 exe 命中即视为该身份有窗口
             let mut cur = w.pid;
@@ -1056,6 +1252,7 @@ mod imp {
                     if let Some(hit) = out.get_mut(&p.to_ascii_lowercase()) {
                         *hit = true;
                     }
+                    mark_launcher_family_hits(&mut out, &launcher_families, p);
                 }
                 match parents.get(&cur) {
                     Some(&parent) => cur = parent,
@@ -1221,6 +1418,9 @@ mod imp {
     pub(super) fn exe_path_of_pid(_pid: u32) -> Option<String> {
         None
     }
+    pub(super) fn aumid_of_pid(_pid: u32) -> Option<String> {
+        None
+    }
     pub(super) fn identity_pids(_target_exe: &str) -> HashSet<u32> {
         HashSet::new()
     }
@@ -1270,10 +1470,10 @@ mod imp {
 }
 
 use imp::{
-    close_windows_impl, descendant_pids, enumerate_now, exe_path_of_pid, focus_window_impl,
-    identity_has_window_impl, identity_pids, kill_processes_impl, pids_with_descendants_impl,
-    post_quit_threads_impl, request_processes_quit_impl, threads_of_pids_impl,
-    wait_processes_exit_impl,
+    aumid_of_pid, close_windows_impl, descendant_pids, enumerate_now, exe_path_of_pid,
+    focus_window_impl, identity_has_window_impl, identity_pids, kill_processes_impl,
+    pids_with_descendants_impl, post_quit_threads_impl, request_processes_quit_impl,
+    threads_of_pids_impl, wait_processes_exit_impl,
 };
 
 #[cfg(test)]
@@ -1632,6 +1832,42 @@ mod tests {
     }
 
     #[test]
+    fn launcher_family_stem_derives_main_app_name() {
+        assert_eq!(
+            launcher_family_stem(
+                r"c:\users\asus\appdata\local\qoder cn\qoder cn launcher\qoder cn launcher.exe"
+            )
+            .as_deref(),
+            Some("qoder cn")
+        );
+        assert_eq!(
+            launcher_family_stem(r"d:\钉钉\dingding\dingtalklauncher.exe").as_deref(),
+            Some("dingtalk")
+        );
+        assert_eq!(
+            launcher_family_stem("C:\\App\\AppLauncher64.exe").as_deref(),
+            Some("app")
+        );
+        // 真机快捷方式形态：QQ 的 ScLauncher、Blender 的 launcher
+        assert_eq!(
+            launcher_family_stem(r"c:\program files (x86)\tencent\qq\bin\qqsclauncher.exe")
+                .as_deref(),
+            Some("qq")
+        );
+        assert_eq!(
+            launcher_family_stem(r"c:\program files\blender foundation\blender 5.2\blender-launcher.exe")
+                .as_deref(),
+            Some("blender")
+        );
+        // 非启动器、空名或纯数字名不推导，避免误伤正常应用
+        assert_eq!(launcher_family_stem("C:\\App\\Qoder.exe"), None);
+        assert_eq!(launcher_family_stem("C:\\App\\launcher.exe"), None);
+        assert_eq!(launcher_family_stem("C:\\App\\123launcher.exe"), None);
+        // UWP AUMID 没有 exe 文件名语义
+        assert_eq!(launcher_family_stem("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"), None);
+    }
+
+    #[test]
     fn windows_hit_families_matches_by_exe_path_containment() {
         let windows = vec![
             win_at(
@@ -1649,6 +1885,57 @@ mod tests {
         let out = windows_hit_families(&windows, &families);
         assert!(out["microsoft.windowsterminal_8wekyb3d8bbwe"], "打包应用窗口应按族名命中");
         assert!(!out["openai.codex_2p2nqsd0c76g0"], "未运行的包不得误报");
+    }
+
+    #[test]
+    fn versioned_windowsapps_path_resolves_package_family() {
+        // 真机路径形态（Windows Terminal 1.24）：目录名含版本与架构，
+        // 旧实现用族名做子串永远匹配不到，UWP 目标因此永远没有绿点。
+        let exe = r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe";
+        assert_eq!(
+            package_family_from_windowsapps_exe(exe).as_deref(),
+            Some("microsoft.windowsterminal_8wekyb3d8bbwe")
+        );
+        let windows = vec![win_at(1, 101, "终端", Some(exe))];
+        let out = windows_hit_families(
+            &windows,
+            &["microsoft.windowsterminal_8wekyb3d8bbwe".to_string()],
+        );
+        assert!(out["microsoft.windowsterminal_8wekyb3d8bbwe"]);
+
+        // 系统组件的 exe 不在 WindowsApps 下，路径无法推导族名（由进程 AUMID 兜底）
+        assert_eq!(
+            package_family_from_windowsapps_exe(
+                r"C:\Windows\ImmersiveControlPanel\SystemSettings.exe"
+            ),
+            None
+        );
+        // 结构不标准时不猜测
+        assert_eq!(
+            package_family_from_windowsapps_exe(r"C:\Program Files\WindowsApps\not-a-package\a.exe"),
+            None
+        );
+        assert_eq!(
+            package_family_from_windowsapps_exe(
+                r"C:\Program Files\WindowsApps\App_1.0.0_x64_extra_8wekyb3d8bbwe\a.exe"
+            ),
+            None,
+            "缺少标准双下划线分隔时不推导"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn aumid_family_uses_package_prefix() {
+        assert_eq!(
+            aumid_family("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App").as_deref(),
+            Some("microsoft.windowsterminal_8wekyb3d8bbwe")
+        );
+        assert_eq!(
+            aumid_family("windows.immersivecontrolpanel_cw5n1h2txyewy!Microsoft.Windows.ImmersiveControlPanel").as_deref(),
+            Some("windows.immersivecontrolpanel_cw5n1h2txyewy")
+        );
+        assert_eq!(aumid_family(""), None);
     }
 
     #[cfg(windows)]
@@ -1693,10 +1980,22 @@ mod tests {
 
             let exe = exe_path_of(std::process::id()).expect("测试进程应能解析自身 exe");
             let absent = "c:\\not\\a\\real\\app.exe".to_string();
-            let keys = vec![exe.clone(), absent.clone()];
+            // 以本测试进程名伪造一个启动器身份：启动器拉起主程序后退出时，
+            // 只剩主程序持有窗口，运行态必须能按家族名命中。
+            let stem = std::path::Path::new(&exe)
+                .file_stem()
+                .expect("测试进程 exe 应有文件名")
+                .to_string_lossy()
+                .to_ascii_lowercase();
+            let launcher_key = format!("c:\\not\\real\\{stem} launcher.exe");
+            let keys = vec![exe.clone(), absent.clone(), launcher_key.clone()];
             let out = identity_has_window(&keys);
             assert!(out[&exe], "本进程持有的窗口应按 exe 身份命中");
             assert!(!out[&absent], "不存在的身份不得误报有窗口");
+            assert!(
+                out[&launcher_key],
+                "启动器身份应按主程序家族名命中窗口（否则版本化安装的应用永远没有绿点）"
+            );
 
             DestroyWindow(hwnd);
             let mut msg: MSG = std::mem::zeroed();
@@ -1713,6 +2012,23 @@ mod tests {
         let pid = std::process::id();
         let exe = exe_path_of(pid).expect("测试进程应能解析自身 exe");
         assert!(exe.ends_with(".exe"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn identity_pids_follows_launcher_family_to_main_process() {
+        let pid = std::process::id();
+        let exe = exe_path_of(pid).expect("测试进程应能解析自身 exe");
+        let stem = std::path::Path::new(&exe)
+            .file_stem()
+            .expect("测试进程 exe 应有文件名")
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        let launcher = format!("c:\\not\\real\\{stem} launcher.exe");
+        assert!(
+            pids_for_identity(&launcher).contains(&pid),
+            "退出/结束动作必须能沿启动器家族名找到主程序进程"
+        );
     }
 
     #[test]

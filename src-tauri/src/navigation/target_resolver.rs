@@ -501,21 +501,34 @@ pub fn running_states_by_id(
     let keys: Vec<String> = apps.iter().map(|t| t.app_key.clone()).collect();
     let running = super::app_discovery::running_states(&keys);
     for t in apps {
-        // 配置失效优先于运行态：exe 被卸载 / 迁移后不能显示"运行中"。
-        let no_identity = t.exe_path.is_empty() && t.app_user_model_id.is_empty();
-        let exe_gone = !t.exe_path.is_empty() && !std::path::Path::new(&t.exe_path).exists();
-        let state = if no_identity || exe_gone {
-            "unavailable"
-        } else {
-            match running.get(&t.app_key) {
-                Some(super::app_discovery::RunningState::HasWindow) => "has_window",
-                Some(super::app_discovery::RunningState::ProcessOnly) => "process_only",
-                _ => "not_running",
-            }
-        };
-        out.insert(t.id.clone(), state.to_string());
+        out.insert(t.id.clone(), effective_running_state(t, &running).to_string());
     }
     Ok(out)
+}
+
+/// 应用目标的运行态文案。保存的 exe 路径失效（版本化安装升级后旧目录被删）
+/// 但同类进程仍在运行时，按实际运行态返回；确实没在运行才报 unavailable。
+/// 否则旧路径上的应用会明明开着却显示失效、没有绿点。
+fn effective_running_state(
+    target: &NavTargetRow,
+    running: &std::collections::HashMap<String, super::app_discovery::RunningState>,
+) -> &'static str {
+    if target.exe_path.is_empty() && target.app_user_model_id.is_empty() {
+        return "unavailable";
+    }
+    match running.get(&target.app_key) {
+        Some(super::app_discovery::RunningState::HasWindow) => "has_window",
+        Some(super::app_discovery::RunningState::ProcessOnly) => "process_only",
+        _ => {
+            let exe_gone = !target.exe_path.is_empty()
+                && !std::path::Path::new(&target.exe_path).exists();
+            if exe_gone {
+                "unavailable"
+            } else {
+                "not_running"
+            }
+        }
+    }
 }
 
 /// 校验目标可执行关闭/退出/结束动作：仅 application；exe 身份与 UWP 包族名
@@ -1073,24 +1086,7 @@ fn link_rows(
                 let target = by_id.get(&target_id)?.clone();
                 // 运行状态 + 配置有效性
                 let state = if target.target_type == "application" {
-                    // 配置本身失效：既没有 exe 身份也没有 AUMID，或 exe 已被卸载/迁移
-                    let no_identity =
-                        target.exe_path.is_empty() && target.app_user_model_id.is_empty();
-                    let exe_gone = !target.exe_path.is_empty()
-                        && !std::path::Path::new(&target.exe_path).exists();
-                    if no_identity || exe_gone {
-                        "unavailable".to_string()
-                    } else {
-                        running
-                            .get(&target.app_key)
-                            .map(|s| match s {
-                                super::app_discovery::RunningState::HasWindow => "has_window",
-                                super::app_discovery::RunningState::ProcessOnly => "process_only",
-                                super::app_discovery::RunningState::NotRunning => "not_running",
-                            })
-                            .unwrap_or("not_running")
-                            .to_string()
-                    }
+                    effective_running_state(&target, &running).to_string()
                 } else {
                     // url/file/directory/agent_session 无进程态
                     match target.target_type.as_str() {
@@ -1411,6 +1407,48 @@ mod tests {
         link_task(&db, "t1", "x1", false, "default").unwrap();
         let links = task_targets(&db, "t1").unwrap();
         assert_eq!(links[0].running_state, "unavailable");
+    }
+
+    /// 版本化安装升级后，保存的旧目录 exe 已被删除，但新版本进程仍在运行：
+    /// 此时不能把应用显示成 unavailable（没有绿点），应按实际运行态报 process_only。
+    #[test]
+    fn missing_saved_exe_but_running_process_reports_process_only() {
+        let db = Db::open_in_memory().unwrap();
+        let stem = std::env::current_exe()
+            .unwrap()
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        let gone = format!("C:\\Gone\\{stem}.exe");
+        let key = gone.to_ascii_lowercase();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO navigation_targets (id, display_name, target_type, app_key, exe_path, launch_args, working_dir, app_user_model_id, url, path, agent_source_id, agent_session_id, window_title_hint, icon, category, favorite, hidden, use_count, created_at, updated_at)
+                 VALUES ('x2', '已升级应用', 'application', ?1, ?2, '', '', '', '', '', '', '', '', '', '', 0, 0, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                rusqlite::params![key, gone],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags, advance_minutes, created_at, updated_at)
+                 VALUES ('t2', 'T2', '', 2, 'pending', '', '[]', 0, ?1, ?1)",
+                rusqlite::params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        link_task(&db, "t2", "x2", false, "default").unwrap();
+        let links = task_targets(&db, "t2").unwrap();
+        assert_eq!(
+            links[0].running_state, "process_only",
+            "旧路径失效但同类进程在运行时应如实报告运行态"
+        );
+        let states = running_states_by_id(&db, &["x2".to_string()]).unwrap();
+        assert_eq!(states["x2"], "process_only");
     }
 
     // ── 问题 2 回归：Agent 会话可信目标链路 ────────────────────

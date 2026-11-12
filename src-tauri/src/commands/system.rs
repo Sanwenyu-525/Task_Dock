@@ -416,6 +416,9 @@ pub fn cancel_undock_anchor() {
 /// 这条只做启动放行，不抢焦点、不触发唤回，也不会在未撤销时重复写区域。
 #[tauri::command]
 pub fn notify_ui_ready(app: AppHandle) -> bool {
+    // 不论空白区域是否已撤销，都说明前端已经真正跑起来；启动告警线程据此
+    // 区分「加载慢但最终就绪」与「前端始终没起来」。
+    crate::UI_READY.store(true, Ordering::SeqCst);
     let cleared = crate::clear_startup_blank(&app);
     if cleared {
         tracing::debug!("前端首屏就绪，已撤销启动空白区域");

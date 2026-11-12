@@ -1519,6 +1519,36 @@ ALTER TABLE mobile_devices ADD COLUMN device_uid TEXT;
 CREATE INDEX idx_mobile_devices_uid ON mobile_devices(device_uid);
 "#,
     ),
+    (
+        47,
+        r#"
+-- v47（兼容修正）：早期构建把 shelf_file_ops.op 的约束写成了单值
+-- `CHECK (op IN ('move'))`，而 v34 之后的源码已改为允许 move/copy。
+-- 这类库的 PRAGMA user_version 已是 46，历史迁移不会重放，复制投递写日志
+-- 必然触发 CHECK 失败（UI 报「写入复制日志失败，未执行复制」）。
+-- 这里重建表把约束修正为双值，并原样保留全部未完成操作日志与索引；
+-- 正常完成的日志本就会删除，该表只承载启动恢复依据，不是用户业务数据。
+-- 迁移在 apply_migrations 的单事务内执行：任何一步失败都整体回滚，schema 与
+-- user_version 保持迁移前状态；重建后再次启动不会再改写数据。
+DROP TABLE IF EXISTS shelf_file_ops_v47_rebuild;
+CREATE TABLE shelf_file_ops_v47_rebuild (
+  id TEXT PRIMARY KEY NOT NULL,
+  item_id TEXT NOT NULL,
+  op TEXT NOT NULL CHECK (op IN ('move','copy')),
+  phase TEXT NOT NULL CHECK (phase IN ('intent','copied','moved')),
+  source TEXT NOT NULL,
+  target TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+-- 整表复制：旧约束只可能写入 move；若存在无法解释的 op/phase（外部改库等
+-- 异常现场），INSERT 会失败并触发整条迁移回滚，绝不静默丢行。
+INSERT INTO shelf_file_ops_v47_rebuild (id, item_id, op, phase, source, target, created_at)
+  SELECT id, item_id, op, phase, source, target, created_at FROM shelf_file_ops;
+DROP TABLE shelf_file_ops;
+ALTER TABLE shelf_file_ops_v47_rebuild RENAME TO shelf_file_ops;
+CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -2063,6 +2093,12 @@ fn open_reader(path: &Path) -> AppResult<Connection> {
 
 // rusqlite optional 扩展
 use rusqlite::OptionalExtension;
+
+/// 测试专用：迁移列表只读访问（用于构造历史 schema 夹具，生产代码不暴露迁移文本）。
+#[cfg(test)]
+pub(crate) fn migrations_for_test() -> &'static [(i64, &'static str)] {
+    MIGRATIONS
+}
 
 /// 按序应用迁移：每一步迁移 SQL 与 user_version 更新在同一个事务内原子提交。
 ///
@@ -4005,6 +4041,210 @@ mod tests {
             .unwrap();
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    /// v47 夹具：把 `shelf_file_ops` 还原成旧版单值 CHECK。
+    ///
+    /// 历史构建曾用 `op IN ('move')` 建表，随后源码把 v34 原地改成双值；
+    /// 已有库的 `user_version` 已是 46，迁移不会重放，复制写日志必然失败。
+    fn install_legacy_move_only_journal(conn: &Connection) {
+        conn.execute_batch(
+            r#"
+DROP TABLE shelf_file_ops;
+CREATE TABLE shelf_file_ops (
+  id TEXT PRIMARY KEY NOT NULL,
+  item_id TEXT NOT NULL,
+  op TEXT NOT NULL CHECK (op IN ('move')),
+  phase TEXT NOT NULL CHECK (phase IN ('intent','copied','moved')),
+  source TEXT NOT NULL,
+  target TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
+"#,
+        )
+        .unwrap();
+    }
+
+    /// v47：旧版 move-only 约束库升级后允许 copy，未完成日志与索引原样保留，
+    /// 重复启动不再改写；这是用户实际数据库（user_version=46 + 单值 CHECK）的回归。
+    #[test]
+    fn v47_repairs_legacy_move_only_journal_and_preserves_pending_rows() {
+        let dir = std::env::temp_dir().join(format!("td-mig47-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let now = "2026-11-12T10:00:00+00:00";
+        {
+            let conn = Connection::open(&path).unwrap();
+            apply_migrations(&conn, 0, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+            install_legacy_move_only_journal(&conn);
+            conn.execute(
+                "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
+                 VALUES ('pending-move', 'item-1', 'move', 'intent', 'C:\\src\\a.png', 'C:\\dst\\a.png.part', ?1)",
+                rusqlite::params![now],
+            )
+            .unwrap();
+            // 旧约束现场：复制写日志必须失败（用户看到的就是这个错误文本）
+            let err = conn
+                .execute(
+                    "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
+                     VALUES ('copy-1', 'item-1', 'copy', 'intent', 'C:\\src\\b.png', 'C:\\dst\\b.png.part', ?1)",
+                    rusqlite::params![now],
+                )
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("CHECK constraint failed"),
+                "旧库夹具应复现单值约束: {err}"
+            );
+        }
+
+        let db = Db::open(&path).unwrap();
+        db.with_conn(|c| {
+            let version: i64 = c
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(version, MIGRATIONS[MIGRATIONS.len() - 1].0);
+            let sql: String = c
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='shelf_file_ops'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert!(sql.contains("'move','copy'"), "约束应修正为双值: {sql}");
+            let index: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_shelf_file_ops_created'",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(index, 1, "重建后必须恢复 created_at 索引");
+            // 未完成操作日志逐字段保留
+            let row = c
+                .query_row(
+                    "SELECT item_id, op, phase, source, target, created_at FROM shelf_file_ops WHERE id='pending-move'",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, String>(5)?,
+                        ))
+                    },
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(
+                row,
+                (
+                    "item-1".to_string(),
+                    "move".to_string(),
+                    "intent".to_string(),
+                    "C:\\src\\a.png".to_string(),
+                    "C:\\dst\\a.png.part".to_string(),
+                    now.to_string()
+                )
+            );
+            // 升级后 copy 与 move 都能写入
+            c.execute(
+                "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
+                 VALUES ('copy-2', 'drop:batch-1', 'copy', 'intent', 'C:\\src\\b.png', 'C:\\dst\\b.png.part', ?1)",
+                rusqlite::params![now],
+            )
+            .map_err(AppError::from)?;
+            c.execute(
+                "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
+                 VALUES ('move-2', 'item-2', 'move', 'copied', 'C:\\src\\c.png', 'C:\\dst\\c.png', ?1)",
+                rusqlite::params![now],
+            )
+            .map_err(AppError::from)?;
+            let n: i64 = c
+                .query_row("SELECT COUNT(*) FROM shelf_file_ops", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(n, 3, "历史日志与新日志都必须保留");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        // 重复启动：版本不推进，日志行不被重复重建或丢失
+        let db2 = Db::open(&path).unwrap();
+        db2.with_conn(|c| {
+            let version: i64 = c
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(version, MIGRATIONS[MIGRATIONS.len() - 1].0);
+            let n: i64 = c
+                .query_row("SELECT COUNT(*) FROM shelf_file_ops", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(n, 3, "重复启动不得丢失操作日志");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// v47 失败路径：出现无法解释的 op（外部改库/绕过约束写入）时整条迁移回滚，
+    /// 不静默丢行、不把 user_version 推到 47。
+    #[test]
+    fn v47_rolls_back_when_journal_has_unexpected_values() {
+        let dir = std::env::temp_dir().join(format!("td-mig47bad-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let conn = Connection::open(&path).unwrap();
+        apply_migrations(&conn, 0, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        install_legacy_move_only_journal(&conn);
+        conn.pragma_update(None, "ignore_check_constraints", "ON")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
+             VALUES ('weird', 'item-x', 'link', 'intent', 'C:\\src\\x', 'C:\\dst\\x', '2026-11-12T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "ignore_check_constraints", "OFF")
+            .unwrap();
+
+        let err = apply_migrations(
+            &conn,
+            46,
+            &MIGRATIONS[MIGRATIONS.len() - 1..],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::Db(_)),
+            "约束失败应映射为数据库错误: {err:?}"
+        );
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 46, "失败迁移不得推进 user_version");
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='shelf_file_ops'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sql.contains("op IN ('move')"), "回滚后旧表保持不变");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM shelf_file_ops WHERE id='weird'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1, "无法解释的恢复日志必须保留，不能静默删除");
+        let leftover: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='shelf_file_ops_v47_rebuild'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftover, 0, "回滚后不得残留重建临时表");
+        drop(conn);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// v4（0.4 统一导航）：从 v3 库升级 —— 新表齐备、旧数据原样、task_agent_links 兼容并存。

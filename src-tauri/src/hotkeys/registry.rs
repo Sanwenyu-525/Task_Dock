@@ -56,9 +56,11 @@ fn classify(error: tauri_plugin_global_shortcut::Error) -> RegisterError {
     let raw = error.to_string();
     let lower = raw.to_ascii_lowercase();
     if lower.contains("already registered") {
-        RegisterError::Occupied(format!("组合已被其他程序占用：{raw}"))
+        // 插件原文会带 `HotKey { mods: ..., key: ..., id: ... }` 内部 Debug 噪声，
+        // 对用户和诊断中心没有价值（组合名已由 accelerator 字段记录）。
+        RegisterError::Occupied("该组合已被其他程序占用".into())
     } else if lower.contains("unable to register") {
-        RegisterError::Occupied(format!("系统拒绝注册（可能已被其他程序占用）：{raw}"))
+        RegisterError::Occupied("系统拒绝注册（可能已被其他程序占用）".into())
     } else {
         RegisterError::Failed(raw)
     }

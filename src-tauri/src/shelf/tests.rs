@@ -2410,6 +2410,315 @@ fn drop_move_removes_source_only_after_target_complete() {
 }
 
 #[test]
+fn drop_managed_shelf_file_copies_but_never_moves() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let root = tmp.shelf();
+    // 模拟托管副本：位于暂存架 root/files 内，条目记录依赖它继续存在。
+    let managed_dir = root.join("files");
+    std::fs::create_dir_all(&managed_dir).unwrap();
+    let managed = write_source(&managed_dir, "托管.txt", b"payload");
+
+    let copy_target = add_target(&db, &root, &tmp.0, "归档", "out");
+    let report = fsops::drop_paths(
+        &db,
+        &root,
+        &copy_target,
+        &[managed.to_string_lossy().into_owned()],
+        "b1",
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    assert!(managed.exists(), "复制托管副本不得删除源");
+    assert_eq!(
+        std::fs::read(tmp.0.join("out").join("托管.txt")).unwrap(),
+        b"payload"
+    );
+
+    let move_dir = tmp.0.join("moved");
+    std::fs::create_dir_all(&move_dir).unwrap();
+    let move_target = drop_targets::create(
+        &db,
+        &root,
+        "移动目标",
+        &move_dir.to_string_lossy(),
+        true,
+        "move",
+        "rename",
+    )
+    .unwrap();
+    let report = fsops::drop_paths(
+        &db,
+        &root,
+        &move_target,
+        &[managed.to_string_lossy().into_owned()],
+        "b2",
+    )
+    .unwrap();
+    assert_eq!(report.failed, 1, "{:?}", report.entries);
+    assert!(managed.exists(), "移动模式必须拒绝搬走托管副本");
+    assert!(!move_dir.join("托管.txt").exists());
+    assert!(
+        report.entries[0]
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("托管副本"),
+        "{:?}",
+        report.entries
+    );
+}
+
+#[test]
+fn drop_copy_png_on_legacy_schema_database_is_repaired_by_v47() {
+    // 用户现场复现：旧构建写下的库 user_version 已是 46，但 shelf_file_ops
+    // 仍是单值 `CHECK (op IN ('move'))`；v47 必须在不丢历史日志的前提下修复。
+    let tmp = TempRoot::new();
+    let db_path = tmp.0.join("task-dock.db");
+    {
+        let all = crate::db::migrations_for_test();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        // 只应用到 v46，再手工还原旧版约束（模拟已发布构建留下的表结构）
+        crate::db::apply_migrations(&conn, 0, &all[..all.len() - 1]).unwrap();
+        conn.execute_batch(
+            r#"
+DROP TABLE shelf_file_ops;
+CREATE TABLE shelf_file_ops (
+  id TEXT PRIMARY KEY NOT NULL,
+  item_id TEXT NOT NULL,
+  op TEXT NOT NULL CHECK (op IN ('move')),
+  phase TEXT NOT NULL CHECK (phase IN ('intent','copied','moved')),
+  source TEXT NOT NULL,
+  target TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
+"#,
+        )
+        .unwrap();
+        // 旧构建遗留的未完成移动日志：迁移必须原样保留
+        conn.execute(
+            "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
+             VALUES ('legacy-move', 'item-old', 'move', 'intent', 'C:\\old\\a.png', 'C:\\old\\a.png.part', '2026-11-12T09:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+    }
+    // 重新打开触发 v47
+    let db = Db::open(&db_path).unwrap();
+    let root = tmp.shelf();
+    std::fs::create_dir_all(&root).unwrap();
+    let src_dir = tmp.0.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let png = write_source(&src_dir, "截图.png", &tiny_png());
+    let target = add_target(&db, &root, &tmp.0, "图片归档", "images");
+
+    let report = fsops::drop_paths(
+        &db,
+        &root,
+        &target,
+        &[png.to_string_lossy().into_owned()],
+        "batch-legacy",
+    )
+    .unwrap();
+    assert_eq!(report.success, 1, "{:?}", report.entries);
+    assert_eq!(report.failed, 0, "迁移后复制不得再触发 CHECK 失败");
+    assert!(png.exists(), "复制模式必须保留源 PNG");
+    let copied = tmp.0.join("images").join("截图.png");
+    assert_eq!(std::fs::read(&copied).unwrap(), tiny_png());
+    // 历史未完成 move 日志仍在（copy 日志成功后已清理）
+    let legacy: (String, String, String) = db
+        .with_conn(|c| {
+            c.query_row(
+                "SELECT op, phase, item_id FROM shelf_file_ops WHERE id = 'legacy-move'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(AppError::from)
+        })
+        .unwrap();
+    assert_eq!(
+        legacy,
+        ("move".to_string(), "intent".to_string(), "item-old".to_string()),
+        "历史恢复日志必须逐字段保留"
+    );
+}
+
+#[test]
+fn drop_copy_journal_failure_is_classified_and_never_touches_files() {
+    let tmp = TempRoot::new();
+    let db = Db::open_in_memory().unwrap();
+    let root = tmp.shelf();
+    let src = write_source(&tmp.0, "截图.png", &tiny_png());
+    let target = add_target(&db, &root, &tmp.0, "归档", "out");
+    fsops::test_support::set_once("journal_insert_fail");
+    let report = fsops::drop_paths(
+        &db,
+        &root,
+        &target,
+        &[src.to_string_lossy().into_owned()],
+        "batch-journal-fail",
+    )
+    .unwrap();
+    clear_faults();
+    assert_eq!(report.failed, 1, "{:?}", report.entries);
+    let entry = &report.entries[0];
+    assert_eq!(
+        entry.code.as_deref(),
+        Some(fsops::DROP_CODE_DB),
+        "日志写入失败必须归类为数据库问题，而不是 PNG/格式错误"
+    );
+    assert_eq!(entry.stage.as_deref(), Some("journal"));
+    assert!(src.exists(), "日志失败时不得移动/删除源");
+    assert!(
+        !tmp.0.join("out").join("截图.png").exists(),
+        "日志写入失败后不得继续执行复制"
+    );
+    let rows: i64 = db
+        .with_conn(|c| {
+            c.query_row("SELECT COUNT(*) FROM shelf_file_ops", [], |r| r.get(0))
+                .map_err(AppError::from)
+        })
+        .unwrap();
+    assert_eq!(rows, 0, "失败注入未落库，不得留下半条操作日志");
+}
+
+#[test]
+fn drop_diagnostics_are_bounded_classified_and_privacy_safe() {
+    use crate::diagnostics::DiagLevel;
+
+    let entry = |status: &str, code: Option<&str>, stage: Option<&str>| fsops::DropEntry {
+        source: "C:\\secret\\私有 文件.png".into(),
+        display_name: "私有 文件.png".into(),
+        target: None,
+        status: status.into(),
+        reason: Some("C:\\secret\\私有 文件.png 失败".into()),
+        recovery: None,
+        residual_source: None,
+        code: code.map(str::to_string),
+        stage: stage.map(str::to_string),
+    };
+    let make = |total: i64,
+                success: i64,
+                skipped: i64,
+                failed: i64,
+                partial: i64,
+                entries: Vec<fsops::DropEntry>| fsops::DropReport {
+        batch_id: "batch-diag-1".into(),
+        target_id: "target-1".into(),
+        target_path: "C:\\secret\\out".into(),
+        op: "copy".into(),
+        total,
+        success,
+        skipped,
+        failed,
+        partial,
+        entries,
+    };
+    let report = make(
+        4,
+        1,
+        1,
+        1,
+        1,
+        vec![
+            entry("ok", None, None),
+            entry(
+                "failed",
+                Some(fsops::DROP_CODE_DB_SCHEMA),
+                Some("journal"),
+            ),
+            entry("skipped", None, None),
+            entry("partial", Some(fsops::DROP_CODE_PARTIAL), Some("cleanup")),
+        ],
+    );
+    let events = fsops::drop_diagnostic_events(&report, 1234);
+    assert_eq!(events.len(), 3, "1 条汇总 + 2 组失败明细");
+    let summary = &events[0];
+    assert_eq!(summary.level, DiagLevel::Error, "数据库结构不兼容必须 ERROR");
+    assert_eq!(summary.event, "drop_failed");
+    assert_eq!(summary.operation_id.as_deref(), Some("batch-diag-1"));
+    assert_eq!(summary.stage.as_deref(), Some("business"));
+    assert_eq!(summary.duration_ms, Some(1234));
+    assert_eq!(
+        summary.error_code.as_deref(),
+        Some(fsops::DROP_CODE_MULTI_FAILURE),
+        "多种失败分类不得统一写成未知错误"
+    );
+    let metadata = summary.metadata.as_ref().expect("汇总必须带计数");
+    assert_eq!(metadata.get("total").unwrap().as_i64(), Some(4));
+    assert_eq!(metadata.get("success").unwrap().as_i64(), Some(1));
+    assert_eq!(metadata.get("skipped").unwrap().as_i64(), Some(1));
+    assert_eq!(metadata.get("failed").unwrap().as_i64(), Some(1));
+    assert_eq!(metadata.get("partial").unwrap().as_i64(), Some(1));
+    assert_eq!(metadata.get("mode").unwrap().as_str(), Some("copy"));
+    assert_eq!(metadata.get("failure_groups").unwrap().as_i64(), Some(2));
+    assert!(events[1..].iter().all(|e| e.event == "drop_item_failed"));
+    assert!(events[1..].iter().any(|e| {
+        e.error_code.as_deref() == Some(fsops::DROP_CODE_DB_SCHEMA)
+            && e.stage.as_deref() == Some("journal")
+            && e.error_category.as_deref() == Some("database")
+    }));
+    // 隐私：整批序列化后不得出现路径或文件名
+    let serialized = serde_json::to_string(&events).unwrap();
+    assert!(!serialized.contains("secret"), "诊断不得包含完整路径: {serialized}");
+    assert!(!serialized.contains("私有"), "诊断不得包含文件名: {serialized}");
+
+    // 全部成功：INFO，不污染异常列表，也不带错误码
+    let ok_report = make(
+        2,
+        2,
+        0,
+        0,
+        0,
+        vec![entry("ok", None, None), entry("ok", None, None)],
+    );
+    let ok_events = fsops::drop_diagnostic_events(&ok_report, 5);
+    assert_eq!(ok_events.len(), 1);
+    assert_eq!(ok_events[0].level, DiagLevel::Info);
+    assert_eq!(ok_events[0].event, "drop_completed");
+    assert!(ok_events[0].error_code.is_none());
+
+    // 只有正常跳过：也不算失败
+    let skip_report = make(1, 0, 1, 0, 0, vec![entry("skipped", None, None)]);
+    let skip_events = fsops::drop_diagnostic_events(&skip_report, 1);
+    assert_eq!(skip_events[0].level, DiagLevel::Info);
+    assert_eq!(skip_events[0].event, "drop_completed");
+
+    // 有界：6 种不同错误码最多写 4 条明细
+    let many = make(
+        6,
+        0,
+        0,
+        6,
+        0,
+        vec![
+            entry("failed", Some(fsops::DROP_CODE_IO), Some("copy")),
+            entry("failed", Some(fsops::DROP_CODE_ACCESS_DENIED), Some("copy")),
+            entry("failed", Some(fsops::DROP_CODE_FILE_BUSY), Some("commit")),
+            entry(
+                "failed",
+                Some(fsops::DROP_CODE_SOURCE_MISSING),
+                Some("prepare"),
+            ),
+            entry("failed", Some(fsops::DROP_CODE_VALIDATION), Some("resolve")),
+            entry("failed", Some(fsops::DROP_CODE_CONFLICT), Some("commit")),
+        ],
+    );
+    let many_events = fsops::drop_diagnostic_events(&many, 10);
+    assert_eq!(
+        many_events.len(),
+        1 + fsops::MAX_DROP_FAILURE_EVENTS,
+        "批量失败必须截断明细，不能无上限写日志"
+    );
+    assert!(many_events[0].metadata.as_ref().unwrap().get("failure_groups")
+        .unwrap()
+        .as_i64()
+        .unwrap()
+        >= 6);
+}
+
+#[test]
 fn drop_skips_same_dir_and_duplicate_batch_entries() {
     let tmp = TempRoot::new();
     let db = Db::open_in_memory().unwrap();

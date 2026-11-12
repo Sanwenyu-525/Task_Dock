@@ -1931,9 +1931,81 @@ mod tests {
         );
     }
 
-    // ── 前后端 IPC 契约（真实载荷反序列化）────────────────────
+    /// 重复任务完成一期：只推进一期、只记一条「本期」完成事件，提醒重建到下一期。
+    #[test]
+    fn recurring_toggle_advances_one_period_and_rebuilds_reminders() {
+        let db = db();
+        let due = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let t = create_task_inner(
+            &db,
+            TaskInput {
+                title: "每日站会".into(),
+                due_at: tri(Some(due.clone())),
+                advance_minutes: Some(30),
+                recurrence: Some(Some(crate::recurrence::RecurrenceRuleInput {
+                    freq: "daily".into(),
+                    interval: 1,
+                    by_weekday: vec![],
+                    by_monthday: None,
+                    by_setpos: None,
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-    /// 模拟 TaskEditor.onSave 实际发出的 JSON：
+        let after = toggle_task_inner(&db, &t.id).unwrap();
+        assert_eq!(after.status, "pending", "重复任务完成后应继续 pending");
+        let next_due = after.due_at.clone().expect("下一期应有截止时间");
+        let old = chrono::DateTime::parse_from_rfc3339(&due)
+            .unwrap()
+            .with_timezone(&Utc);
+        let next = chrono::DateTime::parse_from_rfc3339(&next_due)
+            .unwrap()
+            .with_timezone(&Utc);
+        let gap = next - old;
+        assert!(
+            (gap.num_hours() - 24).abs() <= 1,
+            "一次完成只能推进一期（约 24h），实际 {} 小时",
+            gap.num_hours()
+        );
+
+        // 只记录被消耗的这一期，且只有一条。
+        let events: Vec<(Option<String>, String)> = db
+            .with_conn(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT due_at, kind FROM task_completion_events WHERE task_id = ?1",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![t.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(events.len(), 1, "完成一期只允许一条完成事件");
+        assert_eq!(events[0].0.as_deref(), Some(due.as_str()));
+        assert_eq!(events[0].1, "recurring");
+
+        // 旧的未触发提醒被替换成下一期的 advance + due 两条，时间与下一期一致。
+        let reminders: Vec<(String, String)> = db
+            .with_conn(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT kind, remind_at FROM task_reminders
+                     WHERE task_id = ?1 AND fired = 0 ORDER BY kind",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![t.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(reminders.len(), 2, "下一期应只有 advance + due 两条提醒");
+        assert_eq!(reminders[0].0, "advance");
+        assert_eq!(reminders[1].0, "due");
+        assert_eq!(reminders[1].1, next_due);
+        let advance_at = chrono::DateTime::parse_from_rfc3339(&reminders[0].1)
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(next - advance_at, chrono::Duration::minutes(30));
+    }
+
+    // ── 前后端 IPC 契约（真实载荷反序列化）────────────────────    /// 模拟 TaskEditor.onSave 实际发出的 JSON：
     /// 未改动时间字段时**不带键**，选择「不重复」时显式 `recurrence: null`。
     #[test]
     fn ipc_payload_omitting_time_keys_keeps_them() {

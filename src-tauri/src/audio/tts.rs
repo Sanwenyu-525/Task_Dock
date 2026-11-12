@@ -409,7 +409,7 @@ fn read_stream(
 }
 
 #[cfg(windows)]
-mod com {
+pub(crate) mod com {
     use windows::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 

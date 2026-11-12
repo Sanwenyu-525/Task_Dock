@@ -64,6 +64,13 @@ static TRAY_STATE: AtomicU8 = AtomicU8::new(255);
 /// 必须把窗口恢复成正常区域，否则会留下一个只有 1px 的不可见窗口。
 const BLANK_REGION_FALLBACK_MS: u64 = 4000;
 
+/// 启动就绪异常告警阈值：4s 兜底只负责让窗口可见；开发态 Vite 模块加载
+/// 5–8s 仍属正常，10s 后前端仍未确认就绪才写入诊断异常。
+const STARTUP_READY_WARN_MS: u64 = 10_000;
+
+/// 前端是否已确认首屏就绪（`notify_ui_ready`）。只在启动告警线程里消费。
+pub(crate) static UI_READY: AtomicBool = AtomicBool::new(false);
+
 // ── 托盘 ────────────────────────────────────────────────────
 
 fn tray_icon_bytes(state: AgentState) -> &'static [u8] {
@@ -480,6 +487,8 @@ pub fn run() {
                 audio_cache_dir.clone(),
             )));
             handle.manage(Arc::new(audio::AudioService::new(audio_cache_dir)));
+            // 快速捕获语音输入：只构造服务对象，工作线程与 COM 在首次使用时才创建。
+            handle.manage(Arc::new(quick_capture::voice::VoiceInput::new()));
             let settings = db::Settings::load(&db).unwrap_or_else(|e| {
                 tracing::warn!(
                     "启动时读取设置失败，使用默认值（剪贴板等模块将按默认关闭）: {}",
@@ -670,15 +679,40 @@ pub fn run() {
                         );
                     }
                     let fallback = handle.clone();
+                    let boot_mode = settings.mode.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(
                             BLANK_REGION_FALLBACK_MS,
                         ));
                         if clear_startup_blank(&fallback) {
-                            tracing::warn!(
-                                "前端未在 {}ms 内确认就绪，已撤销启动空白区域",
-                                BLANK_REGION_FALLBACK_MS
-                            );
+                            // 4s 只负责撤销空白区域（窗口先可见）；再等到 10s 仍未收到
+                            // 前端就绪才记异常，避免把开发态 5–8s 的正常加载记成故障。
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                STARTUP_READY_WARN_MS.saturating_sub(
+                                    BLANK_REGION_FALLBACK_MS,
+                                ),
+                            ));
+                            if UI_READY.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            // 记录成结构化启动诊断（而不是普通 tracing 文案）：诊断中心
+                            // 只显示「前端未就绪」无法判断是模块加载慢、Wry/WebView 故障，
+                            // 还是停靠恢复把窗口卡住；这里带上模式、实际尺寸与 DPI。
+                            let (w, h, scale) = fallback
+                                .get_webview_window("main")
+                                .and_then(|win| {
+                                    let size = win.outer_size().ok()?;
+                                    let scale = win.scale_factor().unwrap_or(1.0);
+                                    Some((size.width, size.height, scale))
+                                })
+                                .unwrap_or((0, 0, 1.0));
+                            diagnostics::emit(startup_timeout_event(
+                                STARTUP_READY_WARN_MS,
+                                &boot_mode,
+                                w,
+                                h,
+                                scale,
+                            ));
                         }
                     });
                 }
@@ -1195,6 +1229,9 @@ pub fn run() {
             quick_capture::quick_capture_convert_to_task,
             quick_capture::quick_capture_show,
             quick_capture::quick_capture_hide,
+            quick_capture::quick_capture_voice_start,
+            quick_capture::quick_capture_voice_stop,
+            quick_capture::quick_capture_open_speech_settings,
             // 统一任务上下文（v0.5）
             commands::context::task_context,
             // 文件暂存架（v0.8）
@@ -1353,6 +1390,11 @@ pub fn request_exit(app: &AppHandle) {
             }
         }
         let _ = app.emit("app-shutting-down", ());
+        // 停止语音输入：关闭听写会话释放麦克风，并结束工作线程（未使用过时立即返回）。
+        if let Some(voice) = app.try_state::<Arc<quick_capture::voice::VoiceInput>>() {
+            let voice = Arc::clone(&voice);
+            let _ = tauri::async_runtime::spawn_blocking(move || voice.shutdown()).await;
+        }
         // 停止语音工作线程：设置退出标志取消在途合成，再等待线程结束（毫秒级）。
         if let Some(audio) = app.try_state::<Arc<audio::AudioService>>() {
             let service = Arc::clone(&audio);
@@ -1407,6 +1449,36 @@ fn window_mostly_offscreen<R: tauri::Runtime>(win: &tauri::WebviewWindow<R>) -> 
         Some(!commands::settings::is_rect_mostly_visible(&rect, &bounds))
     })()
     .unwrap_or(false)
+}
+
+/// 启动就绪超时的结构化诊断事件（纯构造，单测锁定模块/动作/错误码与元数据）。
+fn startup_timeout_event(
+    elapsed_ms: u64,
+    mode: &str,
+    w: u32,
+    h: u32,
+    scale: f64,
+) -> diagnostics::DiagnosticEvent {
+    diagnostics::event(
+        diagnostics::DiagLevel::Warn,
+        "window",
+        "startup_ready_timeout",
+        "timeout",
+    )
+    .status(diagnostics::DiagStatus::Failed)
+    .error_code("UI_BOOT_TIMEOUT")
+    .error_category("unknown")
+    .duration_ms(elapsed_ms)
+    .message(format!(
+        "应用启动 {}ms 后前端仍未确认就绪（mode={}，窗口 {}x{}，scale={:.2}），窗口已先恢复可见",
+        elapsed_ms, mode, w, h, scale
+    ))
+    .metadata("mode", serde_json::Value::String(mode.to_string()))
+    .metadata(
+        "reason",
+        serde_json::Value::String("frontend_not_ready".to_string()),
+    )
+    .build()
 }
 
 /// 启动阶段的主窗口显示：窗口始终 show()，但若上次退出是停靠态，先把 Win32
@@ -1736,5 +1808,30 @@ mod tests {
         let a = instance_identifier_for("x", Some(std::ffi::OsStr::new("C:/Tmp/Ab")));
         let b = instance_identifier_for("x", Some(std::ffi::OsStr::new("c:/tmp/ab")));
         assert_eq!(a, b, "Windows 路径大小写不同不应产生第二个实例身份");
+    }
+
+    #[test]
+    fn startup_timeout_event_is_structured_for_diagnostics_center() {
+        let event = startup_timeout_event(10_000, "full", 500, 700, 1.25);
+        assert_eq!(event.level, diagnostics::DiagLevel::Warn);
+        assert_eq!(event.module, "window");
+        assert_eq!(event.action, "startup_ready_timeout");
+        assert_eq!(event.event, "timeout");
+        assert_eq!(event.error_code.as_deref(), Some("UI_BOOT_TIMEOUT"));
+        assert_eq!(event.status, Some(diagnostics::DiagStatus::Failed));
+        assert_eq!(event.duration_ms, Some(10_000));
+        let message = event.message.as_deref().unwrap_or_default();
+        assert!(message.contains("10000ms"), "message 必须带阈值：{message}");
+        assert!(message.contains("mode=full"), "message 必须带模式：{message}");
+        assert!(message.contains("500x700"), "message 必须带窗口尺寸：{message}");
+        let metadata = event.metadata.as_ref().expect("必须有结构化元数据");
+        assert_eq!(
+            metadata.get("mode").and_then(|v| v.as_str()),
+            Some("full")
+        );
+        assert_eq!(
+            metadata.get("reason").and_then(|v| v.as_str()),
+            Some("frontend_not_ready")
+        );
     }
 }
