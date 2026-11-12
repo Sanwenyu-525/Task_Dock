@@ -36,12 +36,17 @@ import {
 } from "../../lib/featureCatalog";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { PlanningFeatureStatusBadge, PlanningProgressBar } from "../roadmap/PlanningBits";
-import { openFullApp } from "./actions";
+import { useLocale } from "../../hooks/useLocale";
+import { SearchField } from "../ui";
+import { openFullApp, openRoadmapFocus } from "./actions";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
 
 type View = "features" | "projects";
 type Source = "mine" | "builtin";
 type Filter = "all" | "todo" | "active" | "done";
+
+/** 查找防抖：输入停顿 250ms 才生效（客户端过滤）。 */
+const SEARCH_DEBOUNCE_MS = 250;
 
 const SOURCES: readonly SegOption<Source>[] = [
   { value: "mine", label: "我的项目" },
@@ -106,6 +111,7 @@ function projectProgressText(project: PlanningProject): string {
 }
 
 export default function PlanningLite() {
+  const { t } = useLocale();
   const projects = usePlanningStore((s) => s.projects);
   const projectsLoading = usePlanningStore((s) => s.projectsLoading);
   const projectsError = usePlanningStore((s) => s.projectsError);
@@ -119,6 +125,9 @@ export default function PlanningLite() {
   const [view, setView] = useState<View>("features");
   const [source, setSource] = useState<Source>("mine");
   const [filter, setFilter] = useState<Filter>("all");
+  /** 快速查找：对已加载功能（含内置目录）的客户端过滤，250ms 防抖，不新增 IPC。 */
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [busyStep, setBusyStep] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -184,15 +193,50 @@ export default function PlanningLite() {
 
   const scopeReady = activeProjectId !== null && loadedForProject === activeProjectId;
 
+  // 搜索 250ms 防抖：输入停顿后才更新生效的查找词（纯客户端过滤，无 IPC）。
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
   const visible = useMemo(() => {
     // 数据范围与当前项目不一致时视为读取中：不拿上一个项目的功能冒充当前项目。
     if (!scopeReady) return null;
-    const list = features.filter((f) => matchesFilter(f.status, filter));
+    const q = search.trim().toLowerCase();
+    const list = features
+      .filter((f) => matchesFilter(f.status, filter))
+      .filter(
+        (f) =>
+          !q ||
+          f.title.toLowerCase().includes(q) ||
+          (f.description ?? "").toLowerCase().includes(q),
+      );
     return list.sort(
       (a, b) =>
         STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || a.sort_order - b.sort_order,
     );
-  }, [scopeReady, features, filter]);
+  }, [scopeReady, features, filter, search]);
+
+  /** 内置目录的客户端过滤：命中项所在分组才显示，避免空分组占位。 */
+  const builtinGroups = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return BUILTIN_GROUPS;
+    return BUILTIN_GROUPS.map(({ category, items }) => ({
+      category,
+      items: items.filter(
+        (f) =>
+          f.title.toLowerCase().includes(q) || f.description.toLowerCase().includes(q),
+      ),
+    })).filter((g) => g.items.length > 0);
+  }, [search]);
+
+  /** 已选择项目时的完整规划入口：一次性定位意图随导航事务下发（consume-once）。 */
+  const openFullPlanning = useCallback(() => {
+    if (activeProjectId) {
+      return openRoadmapFocus({ projectId: activeProjectId });
+    }
+    return openFullApp("roadmap");
+  }, [activeProjectId]);
 
   const openProject = (id: string) => {
     setExpandedId(null);
@@ -283,7 +327,7 @@ export default function PlanningLite() {
             <MapIcon size={12} strokeWidth={1.8} aria-hidden="true" />
             选择项目查看功能
           </span>
-          <button type="button" className="cap-link" onClick={() => openFullApp("roadmap")}>
+          <button type="button" className="cap-link" onClick={openFullPlanning}>
             完整规划
             <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
           </button>
@@ -335,9 +379,19 @@ export default function PlanningLite() {
         <Segmented label="功能筛选" options={FILTERS} value={filter} onChange={setFilter} />
       )}
 
+      <SearchField
+        value={searchInput}
+        onChange={setSearchInput}
+        placeholder={t("capsule.planning.searchPlaceholder")}
+        ariaLabel={t("capsule.planning.searchAria")}
+        clearLabel={t("capsule.planning.searchClear")}
+        size="compact"
+        className="cap-search ui-search--capsule"
+      />
+
       {showingBuiltin ? (
         <div className="cap-list">
-          {BUILTIN_GROUPS.map(({ category, items }) => (
+          {builtinGroups.map(({ category, items }) => (
             <section
               key={category}
               className="cap-plan-section"
@@ -427,7 +481,11 @@ export default function PlanningLite() {
               icon={<FolderKanban size={22} strokeWidth={1.6} aria-hidden="true" />}
               text={features.length === 0 ? "这个项目还没有功能" : "当前筛选没有功能"}
               actionLabel={features.length === 0 ? "去完整规划中心添加" : undefined}
-              onAction={features.length === 0 ? () => openFullApp("roadmap") : undefined}
+              onAction={
+                features.length === 0 && activeProject
+                  ? () => openRoadmapFocus({ projectId: activeProject.id })
+                  : undefined
+              }
             />
           )}
 
@@ -437,6 +495,7 @@ export default function PlanningLite() {
             <FeatureRow
               key={feature.id}
               feature={feature}
+              projectId={activeProject.id}
               open={expandedId === feature.id}
               busyStep={busyStep}
               onToggle={() => setExpandedId((cur) => (cur === feature.id ? null : feature.id))}
@@ -468,7 +527,7 @@ export default function PlanningLite() {
               <i style={{ width: `${donePct}%` }} />
             </span>
           ) : null}
-          <button type="button" className="cap-link" onClick={() => openFullApp("roadmap")}>
+          <button type="button" className="cap-link" onClick={openFullPlanning}>
             完整规划
             <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
           </button>
@@ -480,12 +539,15 @@ export default function PlanningLite() {
 
 function FeatureRow({
   feature,
+  projectId,
   open,
   busyStep,
   onToggle,
   onToggleStep,
 }: {
   feature: PlanningFeature;
+  /** 所属项目 id：完整规划入口按它下发一次性定位意图（功能详情直达该功能）。 */
+  projectId: string | null;
   open: boolean;
   busyStep: string | null;
   onToggle: () => void;
@@ -572,7 +634,15 @@ function FeatureRow({
           )}
 
           <div className="cap-detail-actions">
-            <button type="button" className="cap-mini" onClick={() => openFullApp("roadmap")}>
+            <button
+              type="button"
+              className="cap-mini"
+              onClick={() =>
+                projectId
+                  ? openRoadmapFocus({ projectId, featureId: feature.id })
+                  : openFullApp("roadmap")
+              }
+            >
               完整规划
             </button>
           </div>

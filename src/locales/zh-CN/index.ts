@@ -2477,6 +2477,23 @@ export const zhCN = {
   "capsule.agents.actionsEntry": "行动",
   "capsule.agents.openFullShort": "Agent 页",
 
+  // ── 胶囊 · 应用面板 ──
+  "capsule.apps.favoriteAria": "收藏 {name}",
+  "capsule.apps.unfavoriteAria": "取消收藏 {name}",
+  "capsule.apps.favorited": "已收藏「{name}」",
+  "capsule.apps.unfavorited": "已取消收藏「{name}」",
+  "capsule.apps.favoriteSavedStale": "已更新「{name}」的收藏，但列表刷新失败，稍后自动恢复",
+  "capsule.apps.favoriteFailed": "收藏「{name}」失败：{error}",
+
+  // ── 胶囊 · 规划面板 ──
+  "capsule.planning.searchPlaceholder": "查找功能…",
+  "capsule.planning.searchAria": "查找规划功能",
+  "capsule.planning.searchClear": "清除功能查找",
+
+  // ── 胶囊 · 收集箱投递结果条 ──
+  "capsule.inboxDrop.retryFailed": "重试失败项（{count}）",
+  "capsule.inboxDrop.retryFailedAria": "重新投递失败或跳过的 {count} 项",
+
   // ── 开发工作台（2026-11）──
   "workbench.subtitle": "当前任务 · Agent 状态 · 待处理事项",
   "workbench.currentTask": "当前开发任务",

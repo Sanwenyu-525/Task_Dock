@@ -33,6 +33,7 @@ import { onAppGridOrderApplied, schedulePreferencesMirror } from "../../lib/user
 import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import AppIcon from "../ui/AppIcon";
 import { SearchField } from "../ui";
+import { useLocale } from "../../hooks/useLocale";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { openAppsAdd, openAppsManager } from "./actions";
 import { EmptyState, PanelHead } from "./PanelKit";
@@ -56,6 +57,8 @@ function launchFailureReason(raw: unknown): string {
 }
 
 export default function AppsLite() {
+  // 磁贴渲染里有局部 `t`（NavTarget）占位：翻译函数固定命名 `tr`，避免遮蔽。
+  const { t: tr } = useLocale();
   const targets = useNavigationStore((s) => s.targets);
   const targetsLoaded = useNavigationStore((s) => s.targetsLoaded);
   const targetsError = useNavigationStore((s) => s.targetsError);
@@ -99,6 +102,12 @@ export default function AppsLite() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   /** 恢复显示（隐藏 → 可见）：逐个按钮忙碌态；只改 hidden，不动名称/收藏/启动参数。 */
   const [restoreBusyId, setRestoreBusyId] = useState<string | null>(null);
+  /**
+   * 一键收藏：乐观覆盖（id → 期望值），成功由权威刷新接管、失败回滚到旧值。
+   * store 是共享只读消费（useNavigationStore），本地覆盖只影响展示排序与角标。
+   */
+  const [favOverride, setFavOverride] = useState<Record<string, boolean>>({});
+  const [favBusyId, setFavBusyId] = useState<string | null>(null);
   /** 后端删除成功但刷新失败时，本地先隐藏该项，避免旧缓存把「已删除」显示回来。 */
   const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(new Set());
   const cancelRef = useRef<HTMLButtonElement | null>(null);
@@ -199,11 +208,19 @@ export default function AppsLite() {
 
   // 默认顺序沿用应用中心的规则：收藏优先 → 最近使用 → 名称。
   // `last_used_at` / `use_count` 仍来自后端真实计数，这里只做展示排序。
-  const ranked = useMemo(() => sortTargetsForDisplay(visible), [visible]);
+  // 收藏切换的乐观覆盖在此合成：排序、置顶规则与角标立即反映期望值。
+  const ranked = useMemo(
+    () => sortTargetsForDisplay(visible.map((t) => ({ ...t, favorite: favOverride[t.id] ?? t.favorite }))),
+    [visible, favOverride],
+  );
 
   const rankedExtras = useMemo(
-    () => sortTargetsForDisplay(extras, { recent: false }),
-    [extras],
+    () =>
+      sortTargetsForDisplay(
+        extras.map((t) => ({ ...t, favorite: favOverride[t.id] ?? t.favorite })),
+        { recent: false },
+      ),
+    [extras, favOverride],
   );
 
   // 与选择器/应用中心共用同一套搜索规则（中文连续子串、英文大小写、身份绑定别名），
@@ -483,6 +500,52 @@ export default function AppsLite() {
       flash(`恢复显示失败：${err.reason || err.message || "未知错误"}`);
     } finally {
       setRestoreBusyId(null);
+    }
+  };
+
+  /**
+   * 一键收藏/取消收藏（nav_update_target 的 favorite 字段，与完整面板同一命令）：
+   * 乐观更新立即反映到排序与角标；写库成功后拉权威列表并撤掉本地覆盖；
+   * 失败回滚到旧值并如实提示，不把失败说成已收藏。
+   */
+  const toggleFavorite = async (t: NavTarget) => {
+    if (favBusyId) return;
+    const next = !(favOverride[t.id] ?? t.favorite);
+    setFavBusyId(t.id);
+    setFavOverride((prev) => ({ ...prev, [t.id]: next }));
+    try {
+      await navUpdateTarget(t.id, { favorite: next });
+      const outcome = await loadTargets(true);
+      setFavOverride((prev) => {
+        if (!(t.id in prev)) return prev;
+        const nextMap = { ...prev };
+        delete nextMap[t.id];
+        return nextMap;
+      });
+      flash(
+        outcome === "error"
+          ? tr("capsule.apps.favoriteSavedStale", { name: t.display_name })
+          : next
+            ? tr("capsule.apps.favorited", { name: t.display_name })
+            : tr("capsule.apps.unfavorited", { name: t.display_name }),
+      );
+    } catch (e) {
+      // 失败回滚：撤掉乐观覆盖，回到共享 store 的真实值
+      setFavOverride((prev) => {
+        if (!(t.id in prev)) return prev;
+        const nextMap = { ...prev };
+        delete nextMap[t.id];
+        return nextMap;
+      });
+      const err = normalizeError(e, "nav_update_target");
+      flash(
+        tr("capsule.apps.favoriteFailed", {
+          name: t.display_name,
+          error: err.reason || err.message || tr("common.unknown"),
+        }),
+      );
+    } finally {
+      setFavBusyId(null);
     }
   };
 
@@ -869,6 +932,7 @@ export default function AppsLite() {
               const running = runningStates[t.id];
               const hasWindow = running === "has_window";
               const isRunning = isTargetRunning(runningStates, t.id);
+              const favored = favOverride[t.id] ?? t.favorite;
               return (
                 <div
                   key={t.id}
@@ -976,6 +1040,36 @@ export default function AppsLite() {
                       </button>
                     </div>
                   )}
+                  {/* 一键收藏：删除左侧的同级兄弟按钮，与完整面板同一命令；
+                      乐观更新 + 失败回滚，busy 时与启动/删除互斥。 */}
+                  <button
+                    type="button"
+                    className={`cap-app-fav${favored ? " is-on" : ""}`}
+                    aria-label={
+                      favored
+                        ? tr("capsule.apps.unfavoriteAria", { name: t.display_name })
+                        : tr("capsule.apps.favoriteAria", { name: t.display_name })
+                    }
+                    aria-pressed={favored}
+                    data-tip={
+                      favored
+                        ? tr("capsule.apps.unfavoriteAria", { name: t.display_name })
+                        : tr("capsule.apps.favoriteAria", { name: t.display_name })
+                    }
+                    disabled={busy || favBusyId === t.id}
+                    onClick={() => void toggleFavorite(t)}
+                  >
+                    {favBusyId === t.id ? (
+                      <Loader2 size={11} className="spin" aria-hidden="true" />
+                    ) : (
+                      <Star
+                        size={11}
+                        strokeWidth={favored ? 0 : 1.8}
+                        fill={favored ? "currentColor" : "none"}
+                        aria-hidden="true"
+                      />
+                    )}
+                  </button>
                   {/* 删除是启动的并列兄弟按钮，绝不嵌套在启动按钮内。
                       列表管理动作固定在磁贴右上角，与运行态动作条分开。 */}
                   <button

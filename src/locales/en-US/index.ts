@@ -2495,6 +2495,23 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.agents.actionsEntry": "Actions",
   "capsule.agents.openFullShort": "Agents page",
 
+  // ── Capsule · Apps panel ──
+  "capsule.apps.favoriteAria": "Favorite {name}",
+  "capsule.apps.unfavoriteAria": "Unfavorite {name}",
+  "capsule.apps.favorited": "Favorited \"{name}\"",
+  "capsule.apps.unfavorited": "Unfavorited \"{name}\"",
+  "capsule.apps.favoriteSavedStale": "Favorite updated for \"{name}\", but the list refresh failed — it will catch up shortly",
+  "capsule.apps.favoriteFailed": "Couldn't favorite \"{name}\": {error}",
+
+  // ── Capsule · Planning panel ──
+  "capsule.planning.searchPlaceholder": "Find a feature…",
+  "capsule.planning.searchAria": "Search planning features",
+  "capsule.planning.searchClear": "Clear feature search",
+
+  // ── Capsule · Inbox drop result bar ──
+  "capsule.inboxDrop.retryFailed": "Retry failed ({count})",
+  "capsule.inboxDrop.retryFailedAria": "Re-drop {count} failed or skipped item(s)",
+
   // ── Dev workbench (2026-11) ──
   "workbench.subtitle": "Current task · Agent status · Items to handle",
   "workbench.currentTask": "Current dev task",
