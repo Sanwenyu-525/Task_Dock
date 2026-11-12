@@ -14,6 +14,8 @@ import { AppError } from "../errors";
 
 import { FILE_CANCELLED_MESSAGE, type FileClient, type RemoteFile } from "./files";
 
+import { Sha256 } from "./sha256";
+
 type Handle = ReturnType<FsFile["open"]>;
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -184,6 +186,11 @@ export async function uploadLocalFile(
 /**
  * 电脑 → 手机：写入用户选择的 SAF 目录，成功后返回本地 URI。
  * 中途失败会删除半成品，避免用户看到一个大小不对的文件。
+ *
+ * 完整性复核（fail-closed）：桌面端在提供文件时就落库了明文 SHA-256（`mobile_files.sha256`），
+ * 下载时对解密后的分块字节流式计算同一摘要（`Sha256` 按块增量更新，不缓存整个文件），
+ * 全部写完后与清单比对；不一致视为传输层被篡改/损坏，删除本地半成品并明确报错，
+ * 绝不把校验失败的文件留在用户目录里。
  */
 export async function downloadRemoteFile(
   client: FileClient,
@@ -196,14 +203,23 @@ export async function downloadRemoteFile(
   const target = directory.createFile(file.name, mimeForName(file.name));
   let handle: Handle | null = null;
   let completed = false;
+  const digest = new Sha256();
+  const expectedSha256 = file.sha256.trim().toLowerCase();
   try {
     handle = target.open(FileMode.WriteOnly);
     for (let index = 0; index < file.chunks; index += 1) {
       throwIfCancelled(isCancelled);
       const bytes = await client.downloadChunk(file.id, index);
       throwIfCancelled(isCancelled);
+      digest.update(bytes);
       await handle.writeBytes(bytes);
       onProgress(index + 1, file.chunks);
+    }
+    if (expectedSha256 && digest.hex() !== expectedSha256) {
+      throw new AppError(
+        "validation",
+        "下载文件的 SHA-256 与桌面端清单不一致，本地文件已删除；请重新下载，若重复出现请重新配对",
+      );
     }
     completed = true;
   } finally {
@@ -214,6 +230,7 @@ export async function downloadRemoteFile(
     }
     // SAF 的 delete 在文件句柄未关闭时会失败；必须先 close 再删半成品，
     // 否则取消/失败会在用户目录里留下一个大小不对的文件（真机实测）。
+    // SHA-256 复核失败同样走这里：completed 仍为 false，半成品被删除。
     if (!completed) {
       try {
         target.delete();

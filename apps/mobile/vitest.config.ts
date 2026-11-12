@@ -17,6 +17,7 @@ export default defineConfig({
       "expo-crypto": mock("expo-crypto"),
       "expo-modules-core": mock("expo-modules-core"),
       "expo-notifications": mock("expo-notifications"),
+      "expo-file-system": mock("expo-file-system"),
     },
   },
   test: {
