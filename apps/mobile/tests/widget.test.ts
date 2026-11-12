@@ -1,7 +1,7 @@
 // 小组件/深链纯函数单测（vitest，无新增运行时依赖）。
 // 被测对象不碰原生与 SQLite：db 层与原生模块用桩替换，countTasks/selectTasks
 // 走真实 domain 纯函数（与任务页同一套排序口径）。
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../modules/taskdock-widget", () => ({
   taskDockWidgetAvailable: true,
@@ -127,9 +127,17 @@ describe("parseWidgetPrefs（kv 损坏容错）", () => {
 
 describe("buildWidgetSnapshot（真实 domain 计数 + 桩数据）", () => {
   beforeEach(() => {
+    // buildWidgetSnapshot 内部用 Date.now() 取「今天」口径；固定时钟到 NOW，
+    // 否则真实日期跨天后（2026-11-13 实测）「今天到期」用例随日期漂移失败。
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
     vi.mocked(getSetting).mockResolvedValue(null);
     vi.mocked(listTasks).mockResolvedValue([]);
     vi.mocked(listCaptures).mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   const dueTodayPending = makeTask({ id: "t1", title: "今天到期未完成", dueAt: NOW - 3600_000 });
