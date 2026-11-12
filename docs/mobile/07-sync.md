@@ -242,3 +242,6 @@ APK 0.1.6（versionCode 13）sha256 `ad349b80d657f7f8c031052dcfb123180d20723e61e
   的提醒时间在手机通知里生效。outbox `state` 新增 `'conflict'` 值（TEXT 列，无迁移）。
   新增 vitest 自动化测试 93 例（node:sqlite 真实 SQL harness），覆盖 pull/push/冲突/
   幂等/迁移/文件分块/引擎端到端；真机回归 **未执行**（本机无真机连接）。
+- 2026-11-12 集成审计补充：同步入口增加指纹 fail-closed（缺 SPKI 指纹直接拒绝并提示
+  重新配对，不再静默降级为首用信任）；测试总数在集成后为 118 例（同步 95 + 小组件/
+  分享 23），`npm run typecheck` 通过；真机复验仍未执行（无连接设备）。
