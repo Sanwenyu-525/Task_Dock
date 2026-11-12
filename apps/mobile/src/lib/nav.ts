@@ -21,3 +21,19 @@ export interface Nav {
   push: (key: RouteKey, noteId?: string) => void;
   back: () => void;
 }
+
+/** 小组件点击深链允许直达的 Tab（推送页不在深链白名单里，避免无参打开） */
+export type WidgetRouteTab = "tasks" | "inbox";
+
+/**
+ * 解析小组件点击深链：taskdock://route/<tab>。
+ * 只放行白名单 Tab（冷启动与已运行都可用），其他链接返回 null 由调用方忽略。
+ */
+export function parseWidgetRouteUri(url: string | null | undefined): WidgetRouteTab | null {
+  if (!url) return null;
+  const prefix = "taskdock://route/";
+  if (!url.startsWith(prefix)) return null;
+  const tab = url.slice(prefix.length).split(/[?#]/, 1)[0];
+  if (tab === "tasks" || tab === "inbox") return tab;
+  return null;
+}

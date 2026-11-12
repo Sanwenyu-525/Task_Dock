@@ -1,0 +1,20 @@
+// 本地 Expo module：Android 系统分享接收（ACTION_SEND text/plain）。
+// 由 Expo autolinking 自动链接（apps/mobile/modules/ 目录约定），不入 app.json 依赖。
+// 2026-11-12 编译验证修正：旧模板引用的 expo-modules-core/ExpoModulesCorePlugin.gradle
+// 助手脚本在 Expo SDK 58 已移除（配置阶段直接失败），改用 SDK 58 的
+// expo-module-gradle-plugin 标准写法（自动接入 expo-modules-core 与安全默认值）。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.taskdock.mobile'
+version = '1.0.0'
+
+android {
+  namespace "dev.taskdock.modules.shareintent"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+}

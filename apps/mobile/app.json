@@ -2,7 +2,7 @@
   "expo": {
     "name": "TaskDock",
     "slug": "taskdock",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "orientation": "portrait",
     "scheme": "taskdock",
     "userInterfaceStyle": "automatic",
@@ -10,7 +10,7 @@
     "icon": "./assets/icon.png",
     "android": {
       "package": "dev.taskdock.mobile",
-      "versionCode": 21,
+      "versionCode": 22,
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-foreground.png",
@@ -20,6 +20,8 @@
     "plugins": [
       "expo-sqlite",
       "expo-secure-store",
+      "./plugins/withShareTargetActivity.js",
+      "./plugins/withTaskDockWidgets.js",
       [
         "expo-camera",
         {

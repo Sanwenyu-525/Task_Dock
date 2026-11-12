@@ -1,8 +1,12 @@
-// 分享接收：share-target 页面结构。真实「来自系统分享」需要原生 intent-filter
-// （后续原生轮接入）；本屏通过路由参数接收文本，无参数时展示等待态。
-// 参数里的文本可以直接真实落库：保存到收集箱走与收集箱一致的 addCapture。
-import { useCallback, useRef, useState } from "react";
-import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+// 分享接收：接收系统 ACTION_SEND(text/plain) 载荷，用户确认后才写入收集箱。
+// 载荷经 src/lib/pendingShare 的内存队列进入本屏：挂载时消费最早的待处理分享，
+// 运行中新分享由订阅就地更新。返回/取消/保存都会清空队列，不残留待处理载荷。
+//
+// 关于标签/备注：captures 表没有这两列（schema 与桌面端收集箱对齐，迁移文件不在
+// 本任务所有权内），为避免用户填写后被静默丢弃，本屏不提供这两个输入。
+// 决策记录见 docs/mobile/09-share-receive.md。
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { AppBar } from "../components/AppBar";
 import { Badge } from "../components/Badge";
@@ -14,26 +18,22 @@ import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
 import { useKeyboardHeight } from "../lib/keyboard";
 import type { Nav } from "../lib/nav";
+import {
+  consumePendingShare,
+  discardPendingShare,
+  subscribePendingShare,
+} from "../lib/pendingShare";
+import type { ShareIntentPayload } from "../../modules/share-intent";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
-export function ShareScreen({
-  nav,
-  sharedText,
-  onDataChanged,
-}: {
-  nav: Nav;
-  /** 将来由系统分享 intent 传入；当前入口没有真实分享源 */
-  sharedText?: string;
-  onDataChanged: () => void;
-}) {
+export function ShareScreen({ nav, onDataChanged }: { nav: Nav; onDataChanged: () => void }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
-  /** 输入框在页面底部：edge-to-edge 下系统不收缩窗口，需要自己给键盘让位 */
+  /** 输入区在页面底部：edge-to-edge 下系统不收缩窗口，需要自己给键盘让位 */
   const keyboardHeight = useKeyboardHeight();
-  const text = sharedText ?? "";
-  const [tagsText, setTagsText] = useState("");
-  const [note, setNote] = useState("");
+  /** 当前展示的分享载荷：挂载时消费队列最早一条，之后新分享就地替换 */
+  const [payload, setPayload] = useState<ShareIntentPayload | null>(() => consumePendingShare());
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
@@ -44,11 +44,27 @@ export function ShareScreen({
   }, []);
   const dismissToast = useCallback(() => setToast(null), []);
 
+  // 运行中再次收到分享：消费队列里最新一条，就地替换展示内容
+  useEffect(
+    () =>
+      subscribePendingShare((next) => {
+        const taken = consumePendingShare();
+        if (taken) setPayload(taken);
+        else setPayload(next);
+      }),
+    [],
+  );
+
+  // 离开本屏即丢弃待处理载荷（保存与取消都适用）：返回键经 App 的栈 pop 也会走这里，
+  // 保证「用户返回键取消 → 不残留待处理载荷」。
+  useEffect(() => () => discardPendingShare(), []);
+
   const handleSave = useCallback(async () => {
-    if (saving) return;
+    if (saving || !payload) return;
     setSaving(true);
     try {
-      await addCapture(text);
+      await addCapture(payload.text);
+      discardPendingShare();
       onDataChanged();
       showToast("已保存到收集箱", "success");
       nav.back();
@@ -57,115 +73,78 @@ export function ShareScreen({
     } finally {
       setSaving(false);
     }
-  }, [nav, onDataChanged, showToast, text]);
+  }, [nav, onDataChanged, payload, showToast]);
+
+  const handleCancel = useCallback(() => {
+    discardPendingShare();
+    nav.back();
+  }, [nav]);
 
   return (
     <View style={styles.container}>
-      <AppBar title="分享到 TaskDock" badge={<Badge label="规划中" />} onBack={nav.back} />
+      <AppBar title="分享到 TaskDock" badge={<Badge label="已接入" tone="active" />} onBack={handleCancel} />
 
       <ScrollView
         contentContainerStyle={[styles.content, { paddingBottom: 48 + keyboardHeight }]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-      {text ? (
-        <GlassCard style={styles.preview}>
-          <Text style={[styles.previewText, { color: tokens.text }]}>{text}</Text>
-          <Text style={[styles.previewMeta, { color: tokens.faint }]}>文本</Text>
-        </GlassCard>
-      ) : (
-        <GlassCard style={styles.preview}>
-          <Text style={[styles.previewText, { color: tokens.muted }]}>
-            还没有收到分享内容
-          </Text>
-          <Text style={[styles.previewMeta, { color: tokens.faint }]}>
-            系统分享接收需要原生 intent-filter，接入后浏览器选「分享到 TaskDock」即可到达本页
-          </Text>
-        </GlassCard>
-      )}
+        {payload ? (
+          <GlassCard style={styles.preview}>
+            <Text style={[styles.previewText, { color: tokens.text }]}>{payload.text}</Text>
+            <Text style={[styles.previewMeta, { color: tokens.faint }]}>
+              {payload.truncated
+                ? `文本 · 原文 ${payload.originalLength} 字，超出收集箱上限已截断为 4000 字`
+                : "文本"}
+            </Text>
+          </GlassCard>
+        ) : (
+          <GlassCard style={styles.preview}>
+            <Text style={[styles.previewText, { color: tokens.muted }]}>还没有收到分享内容</Text>
+            <Text style={[styles.previewMeta, { color: tokens.faint }]}>
+              在浏览器或其他应用里选「分享到 TaskDock」，就会打开本页
+            </Text>
+          </GlassCard>
+        )}
 
-      <GlassCard style={styles.form}>
-        <Text style={[styles.formLabel, { color: tokens.text }]}>保存到</Text>
-        <View
-          style={[
-            styles.segment,
-            { backgroundColor: tokens.bgAccent },
+        <GlassCard style={styles.form}>
+          <Text style={[styles.formLabel, { color: tokens.text }]}>保存到</Text>
+          <View style={[styles.segment, { backgroundColor: tokens.bgAccent }]}>
+            <View style={[styles.segmentActive, { backgroundColor: tokens.accentFill }]}>
+              <Text style={[styles.segmentText, { color: tokens.onAccent }]}>收集箱</Text>
+            </View>
+            <View style={styles.segmentIdle}>
+              <Text style={[styles.segmentText, { color: tokens.muted }]}>新任务</Text>
+            </View>
+          </View>
+          <Text style={[styles.formHint, { color: tokens.faint }]}>
+            保存后可在收集箱一键转为任务并补充标签、备注
+          </Text>
+        </GlassCard>
+
+        <PressableScale
+          onPress={() => void handleSave()}
+          accessibilityLabel="保存到收集箱"
+          accessibilityHint={payload ? "把分享内容存入收集箱" : "还没有可保存的分享内容"}
+          disabled={!payload}
+          contentStyle={[
+            styles.primary,
+            { backgroundColor: tokens.accentFill, opacity: payload ? 1 : 0.45 },
           ]}
         >
-          <View style={[styles.segmentActive, { backgroundColor: tokens.accentFill }]}>
-            <Text style={[styles.segmentText, { color: tokens.onAccent }]}>收集箱</Text>
-          </View>
-          <View style={styles.segmentIdle}>
-            <Text style={[styles.segmentText, { color: tokens.muted }]}>新任务</Text>
-          </View>
-        </View>
+          <Text style={[styles.primaryText, { color: tokens.onAccent }]}>保存到收集箱</Text>
+        </PressableScale>
 
-        <Text style={[styles.formLabel, { color: tokens.text }]}>标签</Text>
-        <TextInput
-          accessibilityLabel="标签"
-          value={tagsText}
-          onChangeText={setTagsText}
-          placeholder="用空格分隔，如：研究 原型"
-          placeholderTextColor={tokens.faint}
-          underlineColorAndroid="transparent"
-          editable={Boolean(text)}
-          style={[
-            styles.input,
-            {
-              backgroundColor: tokens.bgAccent,
-              borderColor: tokens.cardBorder,
-              color: tokens.text,
-              // 没有分享内容时输入框不可编辑：不能仍画成可输入的常态
-              opacity: text ? 1 : 0.55,
-            },
-          ]}
-        />
+        <PressableScale onPress={handleCancel} accessibilityLabel="取消" contentStyle={styles.secondary}>
+          <Text style={[styles.secondaryText, { color: tokens.accent }]}>取消</Text>
+        </PressableScale>
 
-        <Text style={[styles.formLabel, { color: tokens.text }]}>补充备注（可选）</Text>
-        <TextInput
-          accessibilityLabel="补充备注"
-          value={note}
-          onChangeText={setNote}
-          placeholder="补充一句（可选）"
-          placeholderTextColor={tokens.faint}
-          underlineColorAndroid="transparent"
-          editable={Boolean(text)}
-          style={[
-            styles.input,
-            {
-              backgroundColor: tokens.bgAccent,
-              borderColor: tokens.cardBorder,
-              color: tokens.text,
-              // 没有分享内容时输入框不可编辑：不能仍画成可输入的常态
-              opacity: text ? 1 : 0.55,
-            },
-          ]}
-        />
-      </GlassCard>
-
-      <PressableScale
-        onPress={() => void handleSave()}
-        accessibilityLabel="保存到收集箱"
-        accessibilityHint={text ? "把分享内容存入收集箱" : "还没有可保存的分享内容"}
-        disabled={!text}
-        contentStyle={[
-          styles.primary,
-          { backgroundColor: tokens.accentFill, opacity: text ? 1 : 0.45 },
-        ]}
-      >
-        <Text style={[styles.primaryText, { color: tokens.onAccent }]}>保存到收集箱</Text>
-      </PressableScale>
-
-      <PressableScale onPress={nav.back} accessibilityLabel="取消" contentStyle={styles.secondary}>
-        <Text style={[styles.secondaryText, { color: tokens.accent }]}>取消</Text>
-      </PressableScale>
-
-      <Text style={[styles.footer, { color: tokens.faint }]}>
-        分享内容只保存在本机，不进入剪贴板历史，也不随同步外发。
-      </Text>
+        <Text style={[styles.footer, { color: tokens.faint }]}>
+          保存后进入本机收集箱；已配对桌面端时，内容会随同步发送到桌面端。分享内容不会进入剪贴板历史。
+        </Text>
       </ScrollView>
 
-      {/* 保存按钮在页面底部：提示留在底部；键盘弹起时抬到键盘上沿 */}
+      {/* 唯一操作在页面底部：提示留在底部；键盘弹起时抬到键盘上沿 */}
       <Toast
         toast={toast}
         onDismiss={dismissToast}
@@ -205,6 +184,10 @@ const styles = StyleSheet.create({
     fontSize: font.body,
     fontWeight: "600",
   },
+  formHint: {
+    fontSize: font.label,
+    lineHeight: 15,
+  },
   segment: {
     flexDirection: "row",
     borderRadius: radius.control,
@@ -227,14 +210,6 @@ const styles = StyleSheet.create({
   segmentText: {
     fontSize: font.body,
     fontWeight: "600",
-  },
-  input: {
-    minHeight: 44,
-    borderRadius: radius.control,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    fontSize: font.body,
   },
   primary: {
     minHeight: 48,

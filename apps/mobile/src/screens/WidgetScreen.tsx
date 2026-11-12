@@ -1,5 +1,7 @@
-// 主屏小组件：配置页结构（预览 / 尺寸 / 内容 / 外观）。偏好存 kv，
-// 「添加到主屏幕」是规划能力——Android 小组件需要原生 AppWidgetProvider（expo-widgets 仍 ALPHA）。
+// 主屏小组件：配置页（预览 / 尺寸 / 内容 / 外观）。偏好存 kv（widget_prefs），
+// 变化后经 src/lib/widgetSnapshot 推送快照并刷新已添加的原生小组件实例。
+// 预览与原生小组件共用同一份真实快照数据（无假数据）；尺寸在系统小组件选择器
+// 添加时选择（2×2 / 4×2），此处的尺寸偏好决定预览形状。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -10,15 +12,22 @@ import { PressableScale } from "../components/PressableScale";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { SettingSection } from "../components/SettingSection";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
-import { getSetting, setSetting } from "../db/kv";
+import { requestPinWidget, taskDockWidgetAvailable } from "../../modules/taskdock-widget";
+import { setSetting } from "../db/kv";
 import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
+import {
+  DEFAULT_WIDGET_PREFS,
+  refreshWidgetSnapshot,
+  WIDGET_PREFS_KEY,
+  type WidgetAppearance,
+  type WidgetContent,
+  type WidgetPrefs,
+  type WidgetSize,
+  type WidgetSnapshot,
+} from "../lib/widgetSnapshot";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
-
-type WidgetSize = "2x2" | "4x2" | "4x4";
-type WidgetContent = "today" | "pending" | "captures";
-type WidgetAppearance = "system" | "light" | "dark";
 
 const SIZES: SegmentOption<WidgetSize>[] = [
   { value: "2x2", label: "2×2" },
@@ -38,39 +47,17 @@ const APPEARANCES: { key: WidgetAppearance; label: string }[] = [
   { key: "dark", label: "深色" },
 ];
 
-const WIDGET_PREFS_KEY = "widget_prefs";
-
-interface WidgetPrefs {
-  size: WidgetSize;
-  content: WidgetContent;
-  appearance: WidgetAppearance;
-}
-
-const DEFAULT_PREFS: WidgetPrefs = { size: "4x2", content: "today", appearance: "system" };
-
-function parsePrefs(raw: string | null): WidgetPrefs {
-  if (!raw) return DEFAULT_PREFS;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return DEFAULT_PREFS;
-    const record = parsed as Record<string, unknown>;
-    const size = SIZES.some((s) => s.value === record.size) ? (record.size as WidgetSize) : DEFAULT_PREFS.size;
-    const content = CONTENTS.some((c) => c.key === record.content)
-      ? (record.content as WidgetContent)
-      : DEFAULT_PREFS.content;
-    const appearance = APPEARANCES.some((a) => a.key === record.appearance)
-      ? (record.appearance as WidgetAppearance)
-      : DEFAULT_PREFS.appearance;
-    return { size, content, appearance };
-  } catch {
-    return DEFAULT_PREFS;
-  }
-}
+const CONTENT_TITLES: Record<WidgetContent, string> = {
+  today: "今天",
+  pending: "待办",
+  captures: "收集箱",
+};
 
 export function WidgetScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
-  const [prefs, setPrefs] = useState<WidgetPrefs>(DEFAULT_PREFS);
+  const [prefs, setPrefs] = useState<WidgetPrefs>(DEFAULT_WIDGET_PREFS);
+  const [snapshot, setSnapshot] = useState<WidgetSnapshot | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
 
@@ -84,10 +71,11 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
     let cancelled = false;
     void (async () => {
       try {
-        const parsed = parsePrefs(await getSetting(WIDGET_PREFS_KEY));
-        if (!cancelled) setPrefs(parsed);
+        // 首次进入：读偏好 + 构建真实快照（原生推送失败也返回快照供预览用）
+        const next = await refreshWidgetSnapshot();
+        if (!cancelled && next) setSnapshot(next);
       } catch {
-        // 偏好读不到就用默认值：配置页不因 kv 异常而不可用
+        // 预览不可用不阻塞配置页
       }
     })();
     return () => {
@@ -97,52 +85,85 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
 
   const savePrefs = useCallback((next: WidgetPrefs) => {
     setPrefs(next);
-    void setSetting(WIDGET_PREFS_KEY, JSON.stringify(next)).catch(() => undefined);
+    // 偏好变化立即生效：写 kv + 用新偏好构建快照推送（已添加的小组件马上重渲染）
+    void setSetting(WIDGET_PREFS_KEY, JSON.stringify(next))
+      .then(() => refreshWidgetSnapshot(next))
+      .then((snapshot) => {
+        if (snapshot) setSnapshot(snapshot);
+      })
+      .catch(() => undefined);
   }, []);
 
-  const plannedAction = useCallback(
-    () => showToast("小组件能力规划中：需要原生 AppWidgetProvider，尚未接入"),
-    [showToast],
-  );
+  // 真实添加：Android 8+ 请求系统弹出「添加到桌面」确认框（requestPinAppWidget）。
+  // 桌面（launcher）不支持时回退为长按引导文案；4×4 未提供，按最近的 4×2 请求。
+  const addToHomeScreen = useCallback(() => {
+    const size = prefs.size === "2x2" ? "2x2" : "4x2";
+    const result = taskDockWidgetAvailable ? requestPinWidget(size) : null;
+    if (result?.requested) {
+      showToast("系统已弹出添加确认，确认后小组件出现在桌面", "success");
+    } else if (result && !result.supported) {
+      showToast("当前桌面不支持直接添加：长按桌面空白处 → 小组件 → TaskDock", "info");
+    } else {
+      showToast("长按桌面空白处 → 小组件 → TaskDock，选择 2×2 或 4×2 添加", "info");
+    }
+  }, [prefs.size, showToast]);
+
+  const title = snapshot ? CONTENT_TITLES[snapshot.content] : CONTENT_TITLES[prefs.content];
+  const count = snapshot
+    ? prefs.content === "captures"
+      ? snapshot.captureCount
+      : prefs.content === "pending"
+        ? snapshot.pendingCount
+        : snapshot.todayCount
+    : 0;
+  const rows = snapshot?.items ?? [];
+  const widePreview = prefs.size !== "2x2";
+  const maxRows = widePreview ? 3 : 1;
+  const previewRows = rows.slice(0, maxRows);
 
   return (
     <View style={styles.container}>
-      {/* 顶栏固定在滚动容器外：滚动后返回箭头不能跟着滚走（真机实测会被滚出屏幕） */}
-      <AppBar title="主屏小组件" badge={<Badge label="规划中" />} onBack={nav.back} />
+      <AppBar title="主屏小组件" badge={<Badge label="已接入" tone="active" />} onBack={nav.back} />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* 桌面预览：bgAccent 底上摆两张组件卡；勾选框只是视觉元素 */}
+        {/* 桌面预览：与原生 RemoteViews 同一份数据、同一套圆角/配色语义 */}
         <View style={[styles.preview, { backgroundColor: tokens.bgAccent }]}>
-          <View style={[styles.widgetCard, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
+          <View
+            style={[
+              styles.widgetCard,
+              widePreview ? null : styles.widgetSmall,
+              { backgroundColor: tokens.card, borderColor: tokens.cardBorder },
+            ]}
+          >
             <View style={styles.widgetHead}>
-              <Text style={[styles.widgetTitle, { color: tokens.text }]}>今天</Text>
-              <View style={[styles.widgetCount, { backgroundColor: tokens.accentSoft }]}>
-                <Text style={[styles.widgetCountText, { color: tokens.accent }]}>3</Text>
-              </View>
+              <Text style={[styles.widgetTitle, { color: tokens.text }]}>{title}</Text>
+              {widePreview ? (
+                <View style={[styles.widgetCount, { backgroundColor: tokens.accentSoft }]}>
+                  <Text style={[styles.widgetCountText, { color: tokens.accent }]}>{count}</Text>
+                </View>
+              ) : (
+                <Text style={[styles.widgetBig, { color: tokens.accent }]}>{count}</Text>
+              )}
             </View>
-            {["写周报：Q4 目标复盘", "预约体检", "给妈妈打电话"].map((label) => (
-              <View key={label} style={styles.widgetRow}>
-                <View style={[styles.widgetCheck, { borderColor: tokens.muted }]} />
+            {previewRows.map((row, index) => (
+              <View key={`${row.t}-${index}`} style={styles.widgetRow}>
+                <View
+                  style={[
+                    styles.widgetCheck,
+                    { backgroundColor: row.done ? tokens.ok : "transparent", borderColor: tokens.muted },
+                  ]}
+                />
                 <Text numberOfLines={1} style={[styles.widgetRowText, { color: tokens.text }]}>
-                  {label}
+                  {row.t}
                 </Text>
               </View>
             ))}
-            <Text style={[styles.widgetFooter, { color: tokens.faint }]}>TaskDock · 4×2</Text>
-          </View>
-
-          <View style={[styles.widgetCard, styles.widgetSmall, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
-            <View style={styles.widgetHead}>
-              <Text style={[styles.widgetTitle, { color: tokens.text }]}>今天</Text>
-              <Text style={[styles.widgetBig, { color: tokens.accent }]}>3</Text>
-            </View>
-            <View style={styles.widgetRow}>
-              <View style={[styles.widgetCheck, { borderColor: tokens.muted }]} />
-              <Text numberOfLines={1} style={[styles.widgetRowText, { color: tokens.text }]}>
-                写周报：Q4 目标复盘
-              </Text>
-            </View>
-            <Text style={[styles.widgetFooter, { color: tokens.faint }]}>TaskDock · 2×2</Text>
+            {snapshot && previewRows.length === 0 ? (
+              <Text style={[styles.widgetEmpty, { color: tokens.muted }]}>{snapshot.empty}</Text>
+            ) : null}
+            <Text style={[styles.widgetFooter, { color: tokens.faint }]}>
+              TaskDock · {prefs.size.replace("x", "×")}
+            </Text>
           </View>
         </View>
 
@@ -153,6 +174,11 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
             onChange={(size) => savePrefs({ ...prefs, size })}
             accessibilityLabel="小组件尺寸"
           />
+          {prefs.size === "4x4" ? (
+            <Text style={[styles.sizeHint, { color: tokens.faint }]}>
+              4×4 暂未提供：添加时请在系统选择器里选 2×2 或 4×2
+            </Text>
+          ) : null}
         </SettingSection>
 
         <SettingSection title="内容">
@@ -181,19 +207,24 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
               />
             ))}
           </View>
+          {prefs.appearance === "system" ? (
+            <Text style={[styles.sizeHint, { color: tokens.faint }]}>
+              跟随系统：系统切换明暗后，下次打开 TaskDock 时小组件同步重渲染
+            </Text>
+          ) : null}
         </SettingSection>
 
         <PressableScale
-          onPress={plannedAction}
+          onPress={addToHomeScreen}
           accessibilityLabel="添加到主屏幕"
-          accessibilityHint="小组件能力规划中，点击查看说明"
+          accessibilityHint="请求系统把 TaskDock 小组件添加到桌面，不支持时给出手动添加步骤"
           contentStyle={[styles.primary, { backgroundColor: tokens.accentFill }]}
         >
           <Text style={[styles.primaryText, { color: tokens.onAccent }]}>添加到主屏幕</Text>
         </PressableScale>
 
         <Text style={[styles.helper, { color: tokens.faint }]}>
-          Android：长按桌面空白处 → 小组件 → TaskDock
+          Android：长按桌面空白处 → 小组件 → TaskDock。内容变化时小组件自动更新。
         </Text>
       </ScrollView>
 
@@ -274,6 +305,9 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     fontSize: font.meta,
   },
+  widgetEmpty: {
+    fontSize: font.meta,
+  },
   widgetFooter: {
     fontSize: font.label,
   },
@@ -281,6 +315,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: space.sm,
+  },
+  sizeHint: {
+    fontSize: font.label,
+    lineHeight: 15,
   },
   primary: {
     minHeight: 48,
