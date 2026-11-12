@@ -11,10 +11,16 @@
 //! - 「运行中」筛选来自后端 `nav_target_running_states` 的真实窗口/进程快照
 //!   （打开页面或启动成功后按需查询一次，不轮询）；查询失败如实提示，不用
 //!   `use_count` / `last_used_at` 推断运行态。
+//! - 应用网格顺序与胶囊同源（lib/appGridOrder）：手动序为基，收藏/运行置顶只
+//!   作为展示层叠加；拖动或 Alt+←/→ 调整顺序，启动不改写手动序。
 //! - 添加复用 `AppPicker standalone` 子页面；编辑复用共享 `TargetEditForm` 页内表单；
 //!   本页只做删除确认与刷新，不写第二套保存逻辑。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback, useEffect, useMemo, useRef, useState,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   AlertTriangle, FolderOpen, LayoutGrid, Link2, Loader2, MoreHorizontal, OctagonX, Pencil, Plus,
   Power, RefreshCw, SquareX, Star, Trash2, EyeOff, Eye, X,
@@ -29,6 +35,13 @@ import {
   type NavTarget,
 } from "../../lib/navigation";
 import { prioritizeFavoritesAndRunning, searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
+import {
+  buildAppGrid, filterAppGrid, moveAppGridBy, moveAppGridId,
+  readAppGridOrder, writeAppGridOrder,
+  type AppGridEntry,
+} from "../../lib/appGridOrder";
+import { onAppGridOrderApplied, schedulePreferencesMirror } from "../../lib/userPreferences";
+import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import AppIcon from "../ui/AppIcon";
 import { ConfirmDialog, DropdownMenu, EmptyState, SearchField } from "../ui";
@@ -36,6 +49,7 @@ import AppPicker from "../navigation/AppPicker";
 import TargetEditForm from "./TargetEditForm";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
+import "./apps-ui.css";
 
 type AppFilter = "all" | "favorite" | "recent" | "running";
 
@@ -101,6 +115,40 @@ export default function AppsPanel() {
       让徽标/关闭按钮跟上真实状态；定时器可取消、卸载即清，非常驻轮询。 */
   const stateRecheckTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
+  // ── 网格手动排序（与胶囊 AppsLite 同一 lib/appGridOrder 数据源）──
+  /** 用户手动网格顺序；null = 使用自然顺序。 */
+  const [savedOrder, setSavedOrder] = useState<string[] | null>(() => readAppGridOrder());
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropHint, setDropHint] = useState<{ id: string; after: boolean } | null>(null);
+  const dragIdRef = useRef<string | null>(null);
+  /**
+   * 拖放结束后浏览器可能补发一次 click。不能用「距上次 drop 的时间窗」判断：
+   * 那会把拖完后立刻点击的**其他**应用也一起吞掉。真实点击一定先有 pointerdown
+   * （键盘激活则是 keydown），补发的 click 两者都没有——用这个事实区分。
+   */
+  const suppressClickRef = useRef(false);
+
+  /**
+   * 完整面板被 DeferredView 保活（胶囊停靠期只是 CSS 隐藏 + inert）：
+   * 在胶囊里排完序回到完整面板时必须重读手动序，否则显示旧顺序。
+   * 以「完整面板可见性」翻转作为重读信号（回完整模式/重新激活各触发一次），
+   * 不引入定时器或事件监听。
+   */
+  const fullViewVisible = useFullViewVisible();
+  useEffect(() => {
+    setSavedOrder(readAppGridOrder());
+  }, [fullViewVisible]);
+
+  // 备份恢复会替换 localStorage 中的网格顺序：已挂载的面板同步重读，
+  // 不必重启应用。订阅在卸载时解除，不产生常驻监听。
+  useEffect(
+    () =>
+      onAppGridOrderApplied(() => {
+        setSavedOrder(readAppGridOrder());
+      }),
+    [],
+  );
+
   useEffect(
     () => () => {
       for (const t of stateRecheckTimers.current) clearTimeout(t);
@@ -154,6 +202,45 @@ export default function AppsPanel() {
     void fetchRunningStates();
   }, [targetsLoaded, appIdsKey, fetchRunningStates]);
 
+  /**
+   * 完整网格（手动序为基）：自然展示顺序（收藏 → 最近 → 名称）交给
+   * `buildAppGrid` 套手动序。未知 id 容错由 buildAppGrid 保证——已删除/隐藏/
+   * 被过滤的应用自动跳过，新增应用追加在顺序末尾；APP_ADD_KEY（胶囊加号）
+   * 不在本页渲染，但保留在顺序数组里，跨面板移动顺序时加号位置不漂移。
+   */
+  const fullGrid = useMemo(
+    () => buildAppGrid(sortTargetsForDisplay(apps), savedOrder),
+    [apps, savedOrder],
+  );
+  /**
+   * 置顶规则（与胶囊应用面板同一函数同一规则，2026-11-09 口径）：
+   * 收藏最前，运行中其次，其余保持当前顺序（手动排序时即手动顺序）。
+   * 只改展示顺序，不改后端数据与手动排序本身；「全部」筛选之外的手动序不参与
+   * （收藏/最近/运行中各有自己的排序规则，与胶囊无对应视图）。
+   */
+  const displayGrid = useMemo(() => {
+    if (filter !== "all") return fullGrid;
+    const appEntries = fullGrid.filter(
+      (entry): entry is Extract<AppGridEntry<NavTarget>, { type: "app" }> => entry.type === "app",
+    );
+    const hasPinned = appEntries.some(
+      (entry) => Boolean(entry.app.favorite) || isTargetRunning(runningStates, entry.app.id),
+    );
+    // 没有收藏也没有运行中：保持完整网格原样（含手动顺序）
+    if (!hasPinned) return fullGrid;
+    const add = fullGrid.filter((entry) => entry.type === "add");
+    return [
+      ...prioritizeFavoritesAndRunning(
+        appEntries,
+        (entry) => Boolean(entry.app.favorite),
+        (entry) => isTargetRunning(runningStates, entry.app.id),
+      ),
+      ...add,
+    ];
+  }, [fullGrid, filter, runningStates]);
+  /** 手动排序提交基准：展示顺序 id（含胶囊加号占位），与胶囊 commitOrder 同源。 */
+  const fullOrder = useMemo(() => displayGrid.map((entry) => entry.id), [displayGrid]);
+
   const visibleApps = useMemo(() => {
     // 与应用选择器共用搜索规则（中文连续子串 / 英文大小写 / 身份绑定别名），
     // 数据范围是「已配置集合」（apps），不是扫描到的全部应用。
@@ -180,15 +267,18 @@ export default function AppsPanel() {
     } else if (filter === "running") {
       list = list.filter((t) => isTargetRunning(runningStates, t.id));
     } else {
-      // 与胶囊应用面板同一置顶规则：收藏最前，运行中其次，其余按最近/名称。
-      list = prioritizeFavoritesAndRunning(
-        sortTargetsForDisplay(list),
-        (t) => Boolean(t.favorite),
-        (t) => isTargetRunning(runningStates, t.id),
-      );
+      // 「全部」视图：手动序为基 + 收藏/运行置顶叠加（displayGrid），
+      // 搜索只过滤不重排（与胶囊 filterAppGrid 同一函数），加号占位不渲染。
+      const matched = query.trim() ? new Set(list.map((t) => t.id)) : null;
+      return filterAppGrid(displayGrid, matched)
+        .filter(
+          (entry): entry is Extract<AppGridEntry<NavTarget>, { type: "app" }> =>
+            entry.type === "app",
+        )
+        .map((entry) => entry.app);
     }
     return list;
-  }, [apps, query, filter, runningStates]);
+  }, [apps, query, filter, runningStates, displayGrid]);
 
   const visibleExtras = useMemo(() => {
     const byId = new Map(extras.map((t) => [t.id, t]));
@@ -528,6 +618,90 @@ export default function AppsPanel() {
     ];
   }
 
+  // ── 网格排序（与胶囊 AppsLite 同一交互与提交语义）────────────
+  // 只用原生 HTML5 拖放与键盘移动，不引入拖拽库；本页没有加号磁贴，
+  // 顺序数组里的 APP_ADD_KEY 占位保留但不渲染。
+  const commitOrder = (next: string[]) => {
+    if (next.length === 0) return;
+    writeAppGridOrder(next);
+    setSavedOrder(next);
+    // 排序属于用户偏好：防抖镜像到 preferences.json，随完整/快速备份迁移。
+    schedulePreferencesMirror();
+    showToast("顺序已保存", { kind: "success" });
+  };
+
+  const isDropAfter = (event: ReactDragEvent<HTMLElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return event.clientX > rect.left + rect.width / 2;
+  };
+
+  const onDragStart = (event: ReactDragEvent<HTMLElement>, id: string) => {
+    dragIdRef.current = id;
+    setDragId(id);
+    // 新一轮拖拽开始：清掉上一轮可能残留的「补发 click」防护。
+    suppressClickRef.current = false;
+    event.dataTransfer.effectAllowed = "move";
+    // Firefox/WebView 需要 setData 才会真正开始拖拽；内容本身不参与业务。
+    event.dataTransfer.setData("text/plain", id);
+  };
+
+  const onDragOver = (event: ReactDragEvent<HTMLElement>, id: string) => {
+    const dragged = dragIdRef.current;
+    if (!dragged || dragged === id) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const after = isDropAfter(event);
+    setDropHint((prev) =>
+      prev?.id === id && prev.after === after ? prev : { id, after },
+    );
+  };
+
+  const endDrag = () => {
+    dragIdRef.current = null;
+    setDragId(null);
+    setDropHint(null);
+    // 拖拽结束（含取消）：浏览器可能补发一次 click，它没有新的 pointerdown。
+    // 置位不会影响真实点击——真实点击的 pointerdown 会先把标记清掉。
+    suppressClickRef.current = true;
+  };
+
+  const onDrop = (event: ReactDragEvent<HTMLElement>, targetId: string) => {
+    const dragged = dragIdRef.current;
+    if (!dragged || dragged === targetId) {
+      endDrag();
+      return;
+    }
+    event.preventDefault();
+    const after = isDropAfter(event);
+    commitOrder(moveAppGridId(fullOrder, dragged, targetId, after));
+    endDrag();
+  };
+
+  /**
+   * 拖放后浏览器补发的 click：没有新的 pointerdown（键盘激活也没有 keydown）。
+   * 只有这种情况忽略一次；真实点击/键盘激活会先清掉标记，因此拖完立刻点其他
+   * 应用都能正常启动，不需要再移动一次鼠标。
+   */
+  const shouldIgnoreClick = () => {
+    if (!suppressClickRef.current) return false;
+    suppressClickRef.current = false;
+    return true;
+  };
+
+  const onOrderKeyDown = (event: ReactKeyboardEvent<HTMLElement>, id: string) => {
+    if (!event.altKey) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const next = moveAppGridBy(fullOrder, id, event.key === "ArrowLeft" ? -1 : 1);
+    if (next.every((value, index) => value === fullOrder[index])) return;
+    commitOrder(next);
+  };
+
+  const dropClass = (id: string) => {
+    if (dropHint?.id !== id) return "";
+    return dropHint.after ? "is-drop-after" : "is-drop-before";
+  };
+
   function renderStar(t: NavTarget) {
     return (
       <button
@@ -589,13 +763,33 @@ export default function AppsPanel() {
     const busy = launchingIds.has(t.id);
     // 单行卡片：主区域（图标 + 名称/状态）是一个按钮，收藏/更多是并列的独立
     // 按钮（不是嵌套按钮），因此点收藏与菜单不会冒泡触发启动。
+    // 卡片同时是排序项：拖动主按钮换位，落点提示挂在整个磁贴上。
     return (
-      <div className={`apps-tile ${menuOpenId === t.id ? "is-menu-open" : ""}`} key={t.id}>
+      <div
+        className={`apps-tile ${menuOpenId === t.id ? "is-menu-open" : ""} ${dragId === t.id ? "is-dragging" : ""} ${dropClass(t.id)}`}
+        key={t.id}
+        data-grid-id={t.id}
+        onDragOver={(e) => onDragOver(e, t.id)}
+        onDragLeave={(e) => {
+          const related = e.relatedTarget;
+          if (related instanceof Node && e.currentTarget.contains(related)) return;
+          setDropHint((hint) => (hint?.id === t.id ? null : hint));
+        }}
+        onDrop={(e) => onDrop(e, t.id)}
+      >
         <button
           type="button"
           className="apps-tile-main"
-          onClick={() => void launch(t)}
+          onClick={() => {
+            // 拖放结束的补发 click 不启动应用（见 suppressClickRef 注释）。
+            if (shouldIgnoreClick()) return;
+            void launch(t);
+          }}
           disabled={busy}
+          draggable={!busy}
+          onDragStart={(e) => onDragStart(e, t.id)}
+          onDragEnd={endDrag}
+          onKeyDown={(e) => onOrderKeyDown(e, t.id)}
           // 只在名称被截断时由 hover/focus 同步挂 data-tip；不再把 exe 路径塞进 tooltip
           data-tip={busy ? tr("apps.launching") : undefined}
           data-tip-locked={busy ? "1" : undefined}
@@ -854,8 +1048,24 @@ export default function AppsPanel() {
           </div>
         )}
 
+        {targetsLoaded && !noAppsAtAll && filter === "all" && savedOrder && (
+          <p className="apps-sort-hint" role="note">
+            手动排序已开启：拖动磁贴或按 Alt+←/→ 调整顺序；点击磁贴仍是启动应用。
+          </p>
+        )}
+
         {targetsLoaded && !noAppsAtAll && (
-          <div className="apps-grid" aria-label={tr("apps.gridAria")}>
+          <div
+            className="apps-grid"
+            aria-label={tr("apps.gridAria")}
+            // 真实按下 / 键盘激活会先经过捕获阶段，清掉拖放后的「补发 click」防护。
+            onPointerDownCapture={() => {
+              suppressClickRef.current = false;
+            }}
+            onKeyDownCapture={() => {
+              suppressClickRef.current = false;
+            }}
+          >
             {visibleApps.map(renderTile)}
           </div>
         )}

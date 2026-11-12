@@ -4,12 +4,16 @@
 //! - 首次挂载加载项目列表，并自动选中第一个未归档项目（之后由用户显式切换）；
 //! - 看板点卡片 → 功能视图并展开同一张卡片；里程碑「查看关联功能」→ 功能视图
 //!   并预选该里程碑；这两类跳转状态只存在于工作区，不写进 Store，避免污染持久数据；
+//! - 精确定位意图（useUiStore.roadmapFocusRequest）：工具面板发起的一次性跳转，
+//!   挂载或新 token 时消费一次；目标可能已被删除，按「尽力定位 + 明确反馈」兜底，
+//!   不在导航前预改 planning store 状态；
 //! - 不轮询、不重复加载：项目切换统一走 selectProject 的代际防护。
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Flag, KanbanSquare, LayoutList, LayoutDashboard } from "lucide-react";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
+import { useUiStore } from "../../store/useUiStore";
 import ProjectsView from "./ProjectsView";
 import FeatureListView from "./FeatureListView";
 import PlanningKanban from "./PlanningKanban";
@@ -32,6 +36,7 @@ export default function PlanningWorkspace() {
   const loadProjects = usePlanningStore((s) => s.loadProjects);
   const activeProjectId = usePlanningStore((s) => s.activeProjectId);
   const selectProject = usePlanningStore((s) => s.selectProject);
+  const showToast = useUiStore((s) => s.showToast);
 
   const [view, setView] = useState<PlanningView>("overview");
   const [focusFeatureId, setFocusFeatureId] = useState<string | null>(null);
@@ -73,6 +78,78 @@ export default function PlanningWorkspace() {
     setMilestoneFilterId(milestoneId);
     setView("features");
   };
+
+  // ── 精确定位意图（工具面板「规划中心」→ 完整面板）──────────────
+  // 代际防乱序：连续两次意图只执行最新一次；selectProject 内部另有 featuresSeq，
+  // 迟到的响应不会把别的项目数据覆盖进来。
+  const locateRunSeq = useRef(0);
+  const runRoadmapFocus = useCallback(
+    async (target: { projectId: string; featureId?: string; milestoneId?: string }) => {
+      const seq = ++locateRunSeq.current;
+      // 项目列表尚未就绪（挂载即定位的窗口期）先补一次加载；已有列表则直接判断存在性。
+      const st0 = usePlanningStore.getState();
+      if (st0.projects.length === 0 && (st0.projectsLoading || st0.projectsError === null)) {
+        await loadProjects();
+      }
+      if (seq !== locateRunSeq.current) return;
+      if (!usePlanningStore.getState().projects.some((p) => p.id === target.projectId)) {
+        // 项目已删除：不切换任何视图，明确反馈（不预改 planning store 状态）。
+        showToast("项目不存在或已删除", { kind: "warning" });
+        return;
+      }
+      await selectProject(target.projectId);
+      if (seq !== locateRunSeq.current) return;
+      const st = usePlanningStore.getState();
+      // 竞态兜底：用户已手动切走（代际失效）或加载失败，放弃本次定位，不抢当前视图。
+      if (st.activeProjectId !== target.projectId || st.loadedForProject !== target.projectId) {
+        return;
+      }
+      if (st.featuresError) {
+        showToast(`项目数据加载失败，无法精确定位：${st.featuresError}`, { kind: "error" });
+        return;
+      }
+      if (target.featureId) {
+        const feature = st.features.find((f) => f.id === target.featureId);
+        if (feature) {
+          openFeature(feature.id);
+        } else {
+          // 功能不存在：落到该项目功能列表并反馈，不伪装定位成功。
+          setFocusFeatureId(null);
+          setMilestoneFilterId(null);
+          setView("features");
+          showToast("功能不存在或已被删除，已定位到项目功能列表", { kind: "warning" });
+        }
+        return;
+      }
+      if (target.milestoneId) {
+        const milestone = st.milestones.find((m) => m.id === target.milestoneId);
+        if (milestone) {
+          openMilestone(milestone.id);
+        } else {
+          setFocusFeatureId(null);
+          setMilestoneFilterId(null);
+          setView("milestones");
+          showToast("里程碑不存在或已被删除，已定位到项目里程碑列表", { kind: "warning" });
+        }
+        return;
+      }
+      // 仅项目级定位 → 项目总览。
+      setFocusFeatureId(null);
+      setMilestoneFilterId(null);
+      setView("overview");
+    },
+    [loadProjects, selectProject, showToast],
+  );
+
+  // 挂载与每次新 token 时消费一次：无意图/已过期（TTL）返回 null，静默跳过。
+  const roadmapFocusRequest = useUiStore((s) => s.roadmapFocusRequest);
+  const consumeRoadmapFocus = useUiStore((s) => s.consumeRoadmapFocus);
+  useEffect(() => {
+    if (!roadmapFocusRequest) return;
+    const target = consumeRoadmapFocus();
+    if (!target) return;
+    void runRoadmapFocus(target);
+  }, [roadmapFocusRequest, consumeRoadmapFocus, runRoadmapFocus]);
 
   // 全局搜索定位：按结果类型分发到既有视图跳转（不修改任何规划数据）。
   // feature/milestone 先确保所属项目被选中，再复用 openFeature/openMilestone。

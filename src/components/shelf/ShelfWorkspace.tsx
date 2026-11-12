@@ -4,6 +4,9 @@
 //! 拖入：监听 Tauri Webview 级 onDragDropEvent（真实 OS 文件拖入，非 HTML5 模拟），
 //! 仅在暂存架页签激活时处理；拖入默认走引用模式（不复制、不占磁盘），
 //! 「添加方式」菜单可切换为托管复制。
+//! 拖入路由：目标管理视图（targetsOpen）下按松手坐标命中目标卡片 → 真实文件
+//! 投递（useDropTargetsStore.drop）；未命中卡片仍按上述方式暂存。两个动作互斥，
+//! 一次原生拖放只被其中一个消费（lib/fileDrop 仲裁保证单消费者，会话内再兜一层）。
 //! 拖出：卡片按住拖动走 Windows OLE 原生文件拖出（复制/移动由目标应用决定），
 //! 复制路径/复制文件（CF_HDROP）继续作为键盘可达与失败回退。
 
@@ -31,7 +34,7 @@ import {
 import { formatBytes } from "../../lib/clipboardUi";
 import { errorMessage } from "../../lib/errors";
 import { isCapsuleMode } from "../../lib/edgeSnap";
-import { registerFileDropConsumer } from "../../lib/fileDrop";
+import { dropTargetAt, registerFileDropConsumer, type DropPoint } from "../../lib/fileDrop";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
@@ -46,6 +49,7 @@ import ShelfToolbar from "./ShelfToolbar";
 import ShelfDetail from "./ShelfDetail";
 import ShelfFileOpPanel, { type ShelfFileOpRequest } from "./ShelfFileOpPanel";
 import DropTargetManager from "./DropTargetManager";
+import { deliverToTarget } from "./shelfDeliver";
 import { shelfDeleteFeedback } from "./shelfDeleteFeedback";
 import { shelfCleanupFeedback } from "./shelfCleanupFeedback";
 
@@ -420,41 +424,159 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   // ── OS 文件拖入（统一拖放分发，仅本页签真实可见时认领；随卸载释放）──
   // 不用 `onDragDropEvent` 直接订阅：胶囊「文件投递」也在争用同一条 Webview 事件，
   // 由 `lib/fileDrop` 统一仲裁，一次拖入只会有一个面板处理。
-  // `copyOnAdd` 用 ref 读取而不是 effect 依赖：拖拽会话中途切换添加方式
-  // 不应重新注册消费者（重注册会清空 owner，正在进行的拖入随即丢失）。
+  // `copyOnAdd` / `targetsOpen` 用 ref 读取而不是 effect 依赖：拖拽会话中途切换
+  // 添加方式或进出目标管理视图都不应重新注册消费者（重注册会清空 owner，
+  // 正在进行的拖入随即丢失）。
   const copyOnAddRef = useRef(copyOnAdd);
   useEffect(() => {
     copyOnAddRef.current = copyOnAdd;
   }, [copyOnAdd]);
-  const dropEnabled = active && fullViewVisible && !capsuleMode && !targetsOpen;
+  const targetsOpenRef = useRef(targetsOpen);
+  useEffect(() => {
+    targetsOpenRef.current = targetsOpen;
+  }, [targetsOpen]);
+
+  /** 目标管理视图里的卡片悬停高亮（投递落点），与整页暂存高亮互斥。 */
+  const [overTargetId, setOverTargetId] = useState<string | null>(null);
+  const overTargetRef = useRef<string | null>(null);
+  const setOverTarget = useCallback((id: string | null) => {
+    // over 是高频事件：只在实际换卡时触发渲染
+    if (overTargetRef.current === id) return;
+    overTargetRef.current = id;
+    setOverTargetId(id);
+  }, []);
+  /** 目标管理视图内是否正有拖入会话：驱动「松手即投递/暂存」提示条。 */
+  const [targetsDragging, setTargetsDragging] = useState(false);
+
+  /**
+   * 一次原生拖入会话只允许执行一个动作（投递或暂存）。
+   * fileDrop 在 drop 后已结束会话，这里再兜一层：重复/迟到的 drop 不得
+   * 重复投递或重复暂存；新会话必须由 enter（或 enter 未认领时的 over）开启。
+   */
+  const dropSession = useRef({ active: false, handled: false });
+
+  /** 只命中「当前配置仍存在的目标卡片」；刚被删除的入口不接收投递。 */
+  const hitTarget = useCallback((point: DropPoint): string | null => {
+    const id = dropTargetAt(point);
+    if (!id) return null;
+    return useDropTargetsStore.getState().targets.some((t) => t.id === id) ? id : null;
+  }, []);
+
+  /** 悬停高亮的唯一入口：每次都用当前坐标重新命中，卡片与整页遮罩互斥。 */
+  const applyTargetOver = useCallback(
+    (point: DropPoint | null) => {
+      if (!point || !targetsOpenRef.current) {
+        setOverTarget(null);
+        return;
+      }
+      setOverTarget(hitTarget(point));
+    },
+    [hitTarget, setOverTarget],
+  );
+
+  /** 暂存动作：原始路径直接交给 addPaths，与工具条/选择器同一口径。 */
+  const stageDropped = useCallback(
+    (paths: string[]) => {
+      addPaths(paths, copyOnAddRef.current ? "managed" : "reference", "drag")
+        .then((r) => reportAdd(r, "已暂存"))
+        .catch((e) => showToast(`暂存拖入文件失败：${errorMessage(e)}`, { kind: "error" }));
+    },
+    [addPaths, reportAdd, showToast],
+  );
+
+  /** 投递动作：可用性兜底在 deliverToTarget 内统一处理；结果条由 store 驱动。 */
+  const deliverDropped = useCallback(
+    async (targetId: string, paths: string[]) => {
+      const result = await deliverToTarget(targetId, paths);
+      if (result.kind === "blocked") {
+        showToast(result.reason, { kind: "error" });
+        return;
+      }
+      if (result.kind === "error") {
+        showToast(`投递失败：${result.message}`, { kind: "error" });
+        return;
+      }
+      // 失败/部分完成必须显式提示（结果条在目标卡片下方，首次可能收起）。
+      const { report, targetName } = result;
+      if (report.failed > 0 || report.partial > 0) {
+        const parts: string[] = [];
+        if (report.failed > 0) parts.push(`${report.failed} 项失败`);
+        if (report.partial > 0) parts.push(`${report.partial} 项部分完成`);
+        showToast(`投递到「${targetName}」：${parts.join("、")}，详情见目标卡片下方结果`, {
+          kind: "warning",
+        });
+      }
+    },
+    [showToast],
+  );
+
+  const dropEnabled = active && fullViewVisible && !capsuleMode;
   useEffect(() => {
     // 胶囊模式下本页被整体隐藏（dock-app inert），极简/紧凑模式下完整面板
     // 同样只是 CSS 隐藏；两种隐藏态都绝不能抢拖入事件——否则拖到可见界面上的
     // 文件会被悄悄塞进隐藏的暂存架。
-    // 投递目标管理视图只负责目录配置：拖入不归暂存架管（要求一次拖入只有一个消费者）。
+    // 目标管理视图也是本消费者的落点范围：按松手坐标路由——命中目标卡片
+    // 投递到真实目录，未命中仍按暂存处理（一次拖入只执行其中一个动作）。
     if (!dropEnabled) return;
     return registerFileDropConsumer({
       id: "shelf-workspace",
       // 低于胶囊投递卡片：胶囊展开时投递优先，其余情况由暂存架接收
       priority: 10,
       claim: () => true,
-      onEnter: () => setDragOver(true),
-      onOver: () => setDragOver(true),
-      onLeave: () => setDragOver(false),
-      onDrop: (paths) => {
-        // 先清高亮：无论后续是否执行，松手后都不能留下遮罩。
+      onEnter: () => {
+        dropSession.current = { active: true, handled: false };
+        setOverTarget(null);
+        // 目标管理视图不给整页遮罩：落点提示由视图内的提示条与卡片高亮承担。
+        if (!targetsOpenRef.current) setDragOver(true);
+        else setTargetsDragging(true);
+      },
+      onOver: (point) => {
+        const session = dropSession.current;
+        if (!session.active) {
+          // enter 时未认领（例如目标列表刚加载完）允许在 over 阶段补开一次；
+          // 已经 drop 过的会话不再接迟到 over，避免重复高亮。
+          if (session.handled) return;
+          dropSession.current = { active: true, handled: false };
+        }
+        if (targetsOpenRef.current) {
+          setTargetsDragging(true);
+          applyTargetOver(point);
+        } else {
+          setDragOver(true);
+        }
+      },
+      onLeave: () => {
+        dropSession.current = { active: false, handled: false };
         setDragOver(false);
+        setTargetsDragging(false);
+        setOverTarget(null);
+      },
+      onDrop: (paths, point) => {
+        const session = dropSession.current;
+        // 先清高亮：无论后续是否执行，松手后都不能留下遮罩或卡片高亮。
+        setDragOver(false);
+        setTargetsDragging(false);
+        setOverTarget(null);
+        // 一次会话只执行一个动作：重复 drop 与 leave 后的迟到 drop 不得再操作文件。
+        if (!session.active || session.handled) return;
+        session.handled = true;
+        session.active = false;
         // 系统未给出路径：静默复位，不调用 addPaths，也不报「已暂存」。
         // （用户拖入的空/相对路径由 store 预检拦截并计入失败，走 reportAdd 明确提示。）
         if (paths.length === 0) return;
-        // 原始路径直接交给 addPaths：预检下沉到 store 后，预检失败与后端失败
-        // 在同一 operation 内汇总，UI 报告与诊断 metadata 的 total/failed 一致。
-        addPaths(paths, copyOnAddRef.current ? "managed" : "reference", "drag")
-          .then((r) => reportAdd(r, "已暂存"))
-          .catch((e) => showToast(`暂存拖入文件失败：${errorMessage(e)}`, { kind: "error" }));
+        if (targetsOpenRef.current) {
+          // 用松手瞬间的坐标重新命中：over 缓存可能已经过期（悬停 A 后快速移到
+          // B 直接松手，不会再收到 over）。无坐标无法命中卡片，退回暂存动作。
+          const targetId = point ? hitTarget(point) : null;
+          if (targetId) {
+            void deliverDropped(targetId, paths);
+            return;
+          }
+        }
+        stageDropped(paths);
       },
     });
-  }, [dropEnabled, addPaths, showToast, reportAdd]);
+  }, [dropEnabled, applyTargetOver, deliverDropped, hitTarget, setOverTarget, stageDropped]);
 
   // ── 添加动作 ──
   const pickAndAdd = async (dirs: boolean) => {
@@ -887,13 +1009,17 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   return (
     <div className={`shelf-workspace ${dragOver ? "drag-over" : ""}`}>
       {targetsOpen ? (
-        /* 目标管理是独立内容视图：暂存架工具栏/筛选/列表/空态都不再挂载 */
+        /* 目标管理是独立内容视图：暂存架工具栏/筛选/列表/空态都不再挂载。
+           拖入由 ShelfWorkspace 的消费者统一路由：命中目标卡片即投递，
+           未命中仍暂存；这里只透传拖放高亮状态。 */
         <DropTargetManager
           onClose={() => {
             setTargetsOpen(false);
             setTargetsDirty(false);
           }}
           onDirtyChange={setTargetsDirty}
+          dragActive={targetsDragging}
+          overTargetId={overTargetId}
         />
       ) : (
         <>

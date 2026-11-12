@@ -22,6 +22,8 @@ const api = vi.hoisted(() => ({
   shelfStats: vi.fn(),
   shelfCheckExists: vi.fn(),
   shelfDropTargets: vi.fn(),
+  shelfDropToDirectory: vi.fn(),
+  shelfDropTargetOpen: vi.fn(),
   shelfReadImage: vi.fn(async () => null),
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
@@ -56,7 +58,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 import ShelfWorkspace from "./ShelfWorkspace";
 import { __resetFileDrop, fileDropListening } from "../../lib/fileDrop";
 import { useShelfStore } from "../../store/useShelfStore";
-import { useDropTargetsStore } from "../../store/useDropTargetsStore";
+import { useDropTargetsStore, __resetDropSubmitGuard } from "../../store/useDropTargetsStore";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -152,6 +154,9 @@ async function renderShelf() {
 
 beforeEach(() => {
   __resetFileDrop();
+  // 清空 store 模块级的「重复提交」窗口：投递用例间同一目标+同一路径
+  // 的 700ms 去重不得跨用例生效。
+  __resetDropSubmitGuard();
   webview.listeners.clear();
   webview.onDragDropEvent.mockClear();
   Object.values(api).forEach((fn) => fn.mockReset());
@@ -346,9 +351,8 @@ describe("完整暂存架拖入 · 真实事件链", () => {
     expect(api.shelfAddPaths).not.toHaveBeenCalled();
   });
 
-  it("切到「投递目标管理」后释放消费者并清高亮，迟到 drop 不进入暂存架", async () => {
+  it("切到「投递目标管理」后清整页高亮、订阅保留（投递区仍按落点路由）", async () => {
     const { container } = await renderShelf();
-    const staleHandler = [...webview.listeners][0] as DragHandler;
 
     act(() => emit({ type: "enter", paths: ["C:\\tmp\\a.png"], position: { x: 1, y: 1 } }));
     expect(container.querySelector(".shelf-workspace.drag-over")).toBeTruthy();
@@ -357,15 +361,11 @@ describe("完整暂存架拖入 · 真实事件链", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "投递目标管理" }));
 
     await waitFor(() => expect(screen.getByText("投递目标")).toBeTruthy());
-    await waitFor(() => expect(webview.listeners.size).toBe(0));
+    // 目标管理视图不再释放消费者：拖入由同一消费者按松手坐标路由（卡片投递/空白暂存）。
+    await waitFor(() => expect(webview.listeners.size).toBe(1));
+    // 进入视图后整页暂存遮罩立即清除（不掩盖目标卡片）。
     expect(container.querySelector(".shelf-workspace.drag-over")).toBeNull();
-
-    act(() =>
-      staleHandler({
-        payload: { type: "drop", paths: ["C:\\tmp\\late.png"], position: { x: 1, y: 1 } },
-      }),
-    );
-    expect(api.shelfAddPaths).not.toHaveBeenCalled();
+    expect(container.querySelector(".shelf-dropzone")).toBeNull();
   });
 
   it("引用/托管模式切换：传给后端正确的 storageMode", async () => {
@@ -592,5 +592,439 @@ describe("完整暂存架拖入 · 生命周期门控", () => {
     });
     expect(webview.onDragDropEvent).not.toHaveBeenCalled();
     expect(fileDropListening()).toBe(false);
+  });
+});
+
+// ── 完整面板投递区：目标管理视图内的真实文件投递 ──────────────────
+
+function dropTargetFixture(over: Record<string, unknown> = {}) {
+  return {
+    id: "t1",
+    name: "工作资料",
+    path: "D:\\Work",
+    sort_order: 0,
+    show_in_capsule: false,
+    op_mode: "copy" as const,
+    conflict: "rename" as const,
+    available: true,
+    created_at: "2026-11-01T00:00:00Z",
+    updated_at: "2026-11-01T00:00:00Z",
+    ...over,
+  };
+}
+
+function dropReportFixture(over: Record<string, unknown> = {}) {
+  return {
+    batch_id: "batch-1",
+    target_id: "t1",
+    target_path: "D:\\Work",
+    op: "copy" as const,
+    total: 2,
+    success: 2,
+    skipped: 0,
+    failed: 0,
+    partial: 0,
+    entries: [
+      {
+        source: "C:\\tmp\\a.png",
+        display_name: "a.png",
+        target: "D:\\Work\\a.png",
+        status: "ok" as const,
+        reason: null,
+        recovery: null,
+        residual_source: null,
+        code: null,
+        stage: null,
+      },
+      {
+        source: "C:\\tmp\\b.pdf",
+        display_name: "b.pdf",
+        target: "D:\\Work\\b.pdf",
+        status: "ok" as const,
+        reason: null,
+        recovery: null,
+        residual_source: null,
+        code: null,
+        stage: null,
+      },
+    ],
+    ...over,
+  };
+}
+
+/** 进入目标管理视图并预置一个目标（loaded + TTL 内，避免挂载时重复探测）。 */
+async function renderTargetsView(target = dropTargetFixture()) {
+  const utils = await renderShelf();
+  useDropTargetsStore.setState({
+    targets: [target],
+    loaded: true,
+    lastProbeAt: Date.now(),
+  });
+  fireEvent.click(screen.getByRole("button", { name: "更多暂存架操作" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "投递目标管理" }));
+  await screen.findByText("工作资料");
+  return utils;
+}
+
+describe("完整面板投递区 · 拖放路由", () => {
+  it("命中目标卡片：松手即真实投递，不进暂存架", async () => {
+    const { container } = await renderTargetsView();
+    const report = dropReportFixture();
+    api.shelfDropToDirectory.mockResolvedValue(report);
+
+    const row = container.querySelector<HTMLElement>('[data-drop-target="t1"]')!;
+    expect(row).toBeTruthy();
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => row;
+    try {
+      act(() => {
+        emit({ type: "enter", paths: ["C:\\tmp\\a.png", "C:\\tmp\\b.pdf"], position: { x: 40, y: 40 } });
+        emit({ type: "over", position: { x: 40, y: 40 } });
+      });
+      // 命中卡片：卡片高亮 + 提示文案与暂存动作可区分
+      expect(container.querySelector('[data-drop-target="t1"].is-over')).toBeTruthy();
+      expect(screen.getByText("松开鼠标即投递到「工作资料」")).toBeTruthy();
+      expect(container.querySelector(".shelf-dropzone")).toBeNull();
+
+      act(() =>
+        emit({
+          type: "drop",
+          paths: ["C:\\tmp\\a.png", "C:\\tmp\\b.pdf"],
+          position: { x: 40, y: 40 },
+        }),
+      );
+    } finally {
+      document.elementFromPoint = original;
+    }
+
+    await waitFor(() =>
+      expect(api.shelfDropToDirectory).toHaveBeenCalledTimes(1),
+    );
+    expect(api.shelfDropToDirectory).toHaveBeenCalledWith("t1", ["C:\\tmp\\a.png", "C:\\tmp\\b.pdf"], expect.any(String));
+    expect(api.shelfAddPaths).not.toHaveBeenCalled();
+    // 松手后高亮立即清除
+    await waitFor(() =>
+      expect(container.querySelector('[data-drop-target="t1"].is-over')).toBeNull(),
+    );
+    // 成功结果条按目标展示
+    expect(await screen.findByText(/最近投递：成功 2 项 · 跳过 0 项 · 失败 0 项/)).toBeTruthy();
+  });
+
+  it("未命中卡片（空白处松手）：维持暂存动作，不投递", async () => {
+    await renderTargetsView();
+    // jsdom 默认 elementFromPoint 返回 null → 未命中任何卡片
+    act(() => emitSession(["C:\\tmp\\stage.png"], { x: 300, y: 300 }));
+
+    await waitFor(() => expect(api.shelfAddPaths).toHaveBeenCalledTimes(1));
+    expect(api.shelfAddPaths).toHaveBeenCalledWith(["C:\\tmp\\stage.png"], "reference", "drag", null);
+    expect(api.shelfDropToDirectory).not.toHaveBeenCalled();
+  });
+
+  it("目标管理视图内无坐标 drop：无法命中卡片，退回暂存动作", async () => {
+    await renderTargetsView();
+    act(() => emitSession(["C:\\tmp\\nostage.png"]));
+
+    await waitFor(() => expect(api.shelfAddPaths).toHaveBeenCalledTimes(1));
+    expect(api.shelfAddPaths).toHaveBeenCalledWith(["C:\\tmp\\nostage.png"], "reference", "drag", null);
+    expect(api.shelfDropToDirectory).not.toHaveBeenCalled();
+  });
+
+  it("投递中的会话只消费一次：重复 drop 不重复投递", async () => {
+    await renderTargetsView();
+    api.shelfDropToDirectory.mockResolvedValue(dropReportFixture());
+    const row = document.querySelector<HTMLElement>('[data-drop-target="t1"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => row;
+    try {
+      act(() => {
+        emit({ type: "enter", paths: ["C:\\tmp\\a.png"], position: { x: 40, y: 40 } });
+        emit({ type: "over", position: { x: 40, y: 40 } });
+        emit({ type: "drop", paths: ["C:\\tmp\\a.png"], position: { x: 40, y: 40 } });
+        emit({ type: "drop", paths: ["C:\\tmp\\a.png"], position: { x: 40, y: 40 } });
+      });
+    } finally {
+      document.elementFromPoint = original;
+    }
+    await waitFor(() => expect(api.shelfDropToDirectory).toHaveBeenCalledTimes(1));
+  });
+
+  it("拖入高亮跟随落点：卡片之间移动时只高亮当前卡片，leave 清除", async () => {
+    const { container } = await renderTargetsView(
+      dropTargetFixture({ id: "t1" }),
+    );
+    useDropTargetsStore.setState({
+      targets: [dropTargetFixture({ id: "t1" }), dropTargetFixture({ id: "t2", name: "归档", path: "E:\\Archive" })],
+    });
+    await screen.findByText("归档");
+    const rowOf = (id: string) =>
+      container.querySelector<HTMLElement>(`[data-drop-target="${id}"]`)!;
+    expect(rowOf("t1")).toBeTruthy();
+    expect(rowOf("t2")).toBeTruthy();
+    const original = document.elementFromPoint;
+    document.elementFromPoint = (x: number) => {
+      const el = x === 10 ? rowOf("t1") : x === 20 ? rowOf("t2") : null;
+      return el;
+    };
+    try {
+      act(() => {
+        emit({ type: "enter", paths: ["C:\\tmp\\a.png"], position: { x: 10, y: 10 } });
+        emit({ type: "over", position: { x: 10, y: 10 } });
+      });
+      expect(rowOf("t1").className).toContain("is-over");
+      expect(rowOf("t2").className).not.toContain("is-over");
+
+      act(() => emit({ type: "over", position: { x: 20, y: 10 } }));
+      expect(rowOf("t1").className).not.toContain("is-over");
+      expect(rowOf("t2").className).toContain("is-over");
+      expect(screen.getByText("松开鼠标即投递到「归档」")).toBeTruthy();
+
+      act(() => emit({ type: "over", position: { x: 300, y: 300 } }));
+      expect(container.querySelector(".shelf-drop-target-row.is-over")).toBeNull();
+      expect(screen.getByText(/把文件拖到目标卡片上投递；空白处松手将暂存到文件暂存架/)).toBeTruthy();
+
+      act(() => emit({ type: "leave", position: { x: 300, y: 300 } }));
+      expect(screen.queryByText(/空白处松手将暂存到文件暂存架/)).toBeNull();
+    } finally {
+      document.elementFromPoint = original;
+    }
+  });
+});
+
+describe("完整面板投递区 · 结果条与失败兜底", () => {
+  it("失败结果：逐项原因、恢复建议与残留提示可见，默认展开", async () => {
+    await renderTargetsView();
+    api.shelfDropToDirectory.mockResolvedValue(
+      dropReportFixture({
+        total: 2,
+        success: 0,
+        failed: 1,
+        partial: 1,
+        entries: [
+          {
+            source: "C:\\tmp\\locked.docx",
+            display_name: "locked.docx",
+            target: null,
+            status: "failed" as const,
+            reason: "文件被其他程序占用",
+            recovery: "关闭占用程序后重试",
+            residual_source: null,
+            code: "io_error",
+            stage: "copy",
+          },
+          {
+            source: "C:\\tmp\\big.bin",
+            display_name: "big.bin",
+            target: "D:\\Work\\big.bin",
+            status: "partial" as const,
+            reason: "写入中断",
+            recovery: null,
+            residual_source: "D:\\Work\\big.bin.part",
+            code: "io_error",
+            stage: "commit",
+          },
+        ],
+      }),
+    );
+
+    const row = document.querySelector<HTMLElement>('[data-drop-target="t1"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => row;
+    try {
+      act(() =>
+        emitSession(["C:\\tmp\\locked.docx", "C:\\tmp\\big.bin"], { x: 40, y: 40 }),
+      );
+    } finally {
+      document.elementFromPoint = original;
+    }
+
+    await waitFor(() => expect(api.shelfDropToDirectory).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/成功 0 项 · 跳过 0 项 · 部分完成 1 项 · 失败 1 项/)).toBeTruthy();
+    expect(screen.getByText("locked.docx")).toBeTruthy();
+    expect(screen.getByText("文件被其他程序占用")).toBeTruthy();
+    expect(screen.getByText("关闭占用程序后重试")).toBeTruthy();
+    expect(screen.getByText(/可能残留：D:\\Work\\big\.bin\.part/)).toBeTruthy();
+    // 失败不冒充成功
+    expect(useUiStore.getState().toasts.some((t) => t.kind === "warning")).toBe(true);
+  });
+
+  it("「查看诊断」把批次 operation_id 随导航事务下发", async () => {
+    await renderTargetsView();
+    api.shelfDropToDirectory.mockResolvedValue(
+      dropReportFixture({
+        success: 0,
+        failed: 2,
+        partial: 0,
+        entries: [
+          { source: "C:\\tmp\\a.png", display_name: "a.png", status: "failed" as const, reason: "无权限" },
+          { source: "C:\\tmp\\b.pdf", display_name: "b.pdf", status: "failed" as const, reason: "无权限" },
+        ],
+      }),
+    );
+    const row = document.querySelector<HTMLElement>('[data-drop-target="t1"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => row;
+    try {
+      act(() => emitSession(["C:\\tmp\\a.png"], { x: 40, y: 40 }));
+    } finally {
+      document.elementFromPoint = original;
+    }
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看诊断" }));
+    await waitFor(() =>
+      expect(useUiStore.getState().diagnosticsOperationRequest).toMatchObject({
+        operationId: "batch-1",
+      }),
+    );
+    expect(useUiStore.getState().tab).toBe("diagnostics");
+  });
+
+  it("「重试失败项」把非 ok 条目的 source 原样重投并展示新结果", async () => {
+    await renderTargetsView();
+    api.shelfDropToDirectory
+      .mockResolvedValueOnce(
+        dropReportFixture({
+          total: 3,
+          success: 1,
+          skipped: 1,
+          failed: 1,
+          entries: [
+            { source: "C:\\tmp\\a.png", display_name: "a.png", status: "ok" as const },
+            { source: "C:\\tmp\\dup.png", display_name: "dup.png", status: "skipped" as const, reason: "同名跳过" },
+            { source: "C:\\tmp\\denied.pdf", display_name: "denied.pdf", status: "failed" as const, reason: "没有访问权限" },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        dropReportFixture({
+          batch_id: "batch-2",
+          total: 2,
+          success: 2,
+          skipped: 0,
+          failed: 0,
+          partial: 0,
+          entries: [
+            { source: "C:\\tmp\\dup.png", display_name: "dup.png", status: "ok" as const },
+            { source: "C:\\tmp\\denied.pdf", display_name: "denied.pdf", status: "ok" as const },
+          ],
+        }),
+      );
+
+    const row = document.querySelector<HTMLElement>('[data-drop-target="t1"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => row;
+    try {
+      act(() => emitSession(["C:\\tmp\\a.png", "C:\\tmp\\dup.png", "C:\\tmp\\denied.pdf"], { x: 40, y: 40 }));
+    } finally {
+      document.elementFromPoint = original;
+    }
+    await waitFor(() => expect(api.shelfDropToDirectory).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: /重试失败项（2）/ }));
+    await waitFor(() => expect(api.shelfDropToDirectory).toHaveBeenCalledTimes(2));
+    // skipped + failed 的 source 都收集重投，成功项不重复投递
+    expect(api.shelfDropToDirectory).toHaveBeenLastCalledWith(
+      "t1",
+      ["C:\\tmp\\dup.png", "C:\\tmp\\denied.pdf"],
+      expect.any(String),
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/最近投递：成功 2 项 · 跳过 0 项 · 失败 0 项/)).toBeTruthy(),
+    );
+    expect(useUiStore.getState().toasts.some((t) => t.message.includes("重试完成"))).toBe(true);
+  });
+
+  it("不可用目录：投递前强制重探，仍不可用则明确拒绝，不投递也不暂存", async () => {
+    await renderTargetsView(dropTargetFixture({ available: false }));
+    api.shelfDropTargets.mockResolvedValue([dropTargetFixture({ available: false })]);
+    const row = document.querySelector<HTMLElement>('[data-drop-target="t1"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => row;
+    try {
+      act(() => emitSession(["C:\\tmp\\a.png"], { x: 40, y: 40 }));
+    } finally {
+      document.elementFromPoint = original;
+    }
+
+    await waitFor(() => expect(api.shelfDropTargets).toHaveBeenCalledTimes(1));
+    // 强制重探发生在投递前
+    await waitFor(() =>
+      expect(
+        useUiStore.getState().toasts.some((t) => t.message.includes("目录不可用，未执行投递")),
+      ).toBe(true),
+    );
+    expect(api.shelfDropToDirectory).not.toHaveBeenCalled();
+    expect(api.shelfAddPaths).not.toHaveBeenCalled();
+  });
+
+  it("可用性是旧快照：重探后恢复可用则正常投递", async () => {
+    await renderTargetsView(dropTargetFixture({ available: false }));
+    // 第一次读取（强制重探）返回恢复后的列表
+    api.shelfDropTargets.mockResolvedValue([dropTargetFixture({ available: true })]);
+    api.shelfDropToDirectory.mockResolvedValue(dropReportFixture());
+    const row = document.querySelector<HTMLElement>('[data-drop-target="t1"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => row;
+    try {
+      act(() => emitSession(["C:\\tmp\\a.png"], { x: 40, y: 40 }));
+    } finally {
+      document.elementFromPoint = original;
+    }
+
+    await waitFor(() => expect(api.shelfDropToDirectory).toHaveBeenCalledTimes(1));
+    expect(api.shelfDropToDirectory).toHaveBeenCalledWith("t1", ["C:\\tmp\\a.png"], expect.any(String));
+    expect(api.shelfAddPaths).not.toHaveBeenCalled();
+  });
+
+  it("「打开目标文件夹」「清除结果」直达既有命令", async () => {
+    await renderTargetsView();
+    api.shelfDropToDirectory.mockResolvedValue(dropReportFixture());
+    api.shelfDropTargetOpen.mockResolvedValue(undefined);
+    const row = document.querySelector<HTMLElement>('[data-drop-target="t1"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => row;
+    try {
+      act(() => emitSession(["C:\\tmp\\a.png"], { x: 40, y: 40 }));
+    } finally {
+      document.elementFromPoint = original;
+    }
+    await screen.findByText(/最近投递：成功 2 项/);
+
+    fireEvent.click(screen.getByRole("button", { name: "打开目标文件夹" }));
+    await waitFor(() => expect(api.shelfDropTargetOpen).toHaveBeenCalledWith("t1"));
+
+    fireEvent.click(screen.getByRole("button", { name: "清除「工作资料」的投递结果" }));
+    await waitFor(() => expect(useDropTargetsStore.getState().reports["t1"]).toBeUndefined());
+    expect(screen.queryByText(/最近投递：成功 2 项/)).toBeNull();
+  });
+
+  it("投递目标被移除后，重要的失败结果保留为孤儿报告，不再可投递", async () => {
+    await renderTargetsView();
+    api.shelfDropToDirectory.mockResolvedValue(
+      dropReportFixture({
+        success: 0,
+        failed: 1,
+        entries: [
+          { source: "C:\\tmp\\a.png", display_name: "a.png", status: "failed" as const, reason: "无权限" },
+        ],
+      }),
+    );
+    const row = document.querySelector<HTMLElement>('[data-drop-target="t1"]')!;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => row;
+    try {
+      act(() => emitSession(["C:\\tmp\\a.png"], { x: 40, y: 40 }));
+    } finally {
+      document.elementFromPoint = original;
+    }
+    await screen.findByText(/失败 1 项/);
+
+    // 移除入口：配置删除走 store，重要报告保留
+    act(() => {
+      useDropTargetsStore.setState({ targets: [] });
+    });
+    expect(await screen.findByText(/有未完成的投递：失败 1 项/)).toBeTruthy();
+    expect(screen.getByText(/目标入口已移除；请到「D:\\Work」手工核对残留文件。/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "清除结果" }));
+    await waitFor(() => expect(useDropTargetsStore.getState().reports["t1"]).toBeUndefined());
   });
 });

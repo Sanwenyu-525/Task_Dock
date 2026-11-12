@@ -1,0 +1,46 @@
+/* 应用中心（完整面板）：网格手动排序的落点提示与状态样式（2026-11-13）。
+   语义 Token 与结构对齐胶囊应用网格（styles.css .cap-app-slot.is-drop-*），
+   只在本组件生效，不写裸 z-index、不硬编码颜色。 */
+
+/* 手动排序状态提示：只占一行小字，让「当前处于手动排序」可被感知，
+   并说明点击磁贴仍是启动，避免把拖拽误当启动。 */
+.apps-sort-hint {
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* 拖动中的磁贴退后；可排序磁贴 grab、拖动中 grabbing。 */
+.apps-tile.is-dragging {
+  opacity: 0.55;
+}
+
+.apps-tile.is-dragging .apps-tile-main {
+  cursor: grabbing;
+}
+
+/* 落点提示：中线判定，落点侧用强调色短竖线表达（不挤占布局、不挡命中）。 */
+.apps-tile.is-drop-before::before,
+.apps-tile.is-drop-after::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.apps-tile.is-drop-before::before {
+  left: -3px;
+}
+
+.apps-tile.is-drop-after::after {
+  right: -3px;
+}

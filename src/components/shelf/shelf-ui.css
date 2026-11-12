@@ -241,6 +241,167 @@
   cursor: grab;
 }
 
+/* ── 投递区（目标管理视图内的真实文件投递落点）──────────────
+   命中高亮用内描边 + accent-soft 面（与胶囊卡片同语义），只作用于
+   卡片自身样式层，不新增元素，不会挡住 elementFromPoint 命中。 */
+.shelf-drop-target-row.is-over {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.shelf-targets-drop-hint {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  padding: 5px 9px;
+  border-radius: var(--radius-control);
+  border: 1px dashed var(--border-strong);
+  background: var(--surface-raised);
+}
+
+/* ── 投递结果条：目标卡片下方最近一次投递的计数与逐项原因 ── */
+.shelf-drop-report {
+  margin: 3px 0 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  font-size: 10.5px;
+}
+
+.shelf-drop-report.is-warn {
+  border-color: color-mix(in srgb, var(--status-waiting) 40%, transparent);
+}
+
+.shelf-drop-report-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 10.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.shelf-drop-report-head:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: 4px;
+}
+
+.shelf-drop-report.is-warn .shelf-drop-report-head svg {
+  color: var(--status-waiting);
+}
+
+.shelf-drop-report-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-drop-report-head .is-open {
+  transform: rotate(180deg);
+}
+
+.shelf-drop-report-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 6px 0 0;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.shelf-drop-report-list li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  min-width: 0;
+}
+
+.shelf-drop-report-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.shelf-drop-report-tag {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  line-height: 15px;
+  background: var(--control-face);
+  color: var(--text-secondary);
+}
+
+.shelf-drop-report-tag.is-failed {
+  background: color-mix(in srgb, var(--status-error) 18%, transparent);
+  color: var(--status-error);
+}
+
+.shelf-drop-report-tag.is-partial {
+  background: color-mix(in srgb, var(--status-waiting) 18%, transparent);
+  color: var(--status-waiting);
+}
+
+.shelf-drop-report-tag.is-skipped {
+  background: var(--control-face);
+  color: var(--text-tertiary);
+}
+
+.shelf-drop-report-reason {
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.shelf-drop-report-residual,
+.shelf-drop-report-recovery {
+  min-width: 0;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.shelf-drop-report-residual {
+  color: var(--status-waiting);
+}
+
+.shelf-drop-report-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+}
+
+.shelf-drop-report-actions .link-btn {
+  font-size: 10.5px;
+}
+
+.shelf-drop-report.is-orphan {
+  border-color: color-mix(in srgb, var(--status-waiting) 40%, transparent);
+}
+
 /* ── 窄容器：添加/筛选收成图标，搜索仍保留可输入宽度 ── */
 @container shelf-panel (max-width: 360px) {
   .shelf-workspace .shelf-toolbar {
