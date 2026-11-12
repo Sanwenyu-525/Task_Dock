@@ -28,7 +28,6 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  RotateCcw,
   Trash2,
 } from "lucide-react";
 import type {
@@ -83,7 +82,6 @@ export default function DropTargetManager({
   const remove = useDropTargetsStore((s) => s.remove);
   const move = useDropTargetsStore((s) => s.move);
   const openDir = useDropTargetsStore((s) => s.openDir);
-  const clearReport = useDropTargetsStore((s) => s.clearReport);
   const showToast = useUiStore((s) => s.showToast);
   const [adding, setAdding] = useState(false);
   /** 正在编辑的目标 id：表单就地替换该行，不新开模态。 */

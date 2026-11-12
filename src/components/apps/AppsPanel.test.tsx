@@ -17,7 +17,9 @@ import {
 } from "@testing-library/react";
 
 import { useNavigationStore } from "../../store/useNavigationStore";
+import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
 import { useUiStore } from "../../store/useUiStore";
+import { APP_ADD_KEY, APP_GRID_ORDER_KEY, clearAppGridOrder } from "../../lib/appGridOrder";
 import AppsPanel from "./AppsPanel";
 import {
   navCloseTargetWindows,
@@ -99,9 +101,14 @@ function seed(targets: NavTarget[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearAppGridOrder();
+  useEdgeSnapStore.setState({ phase: "free" });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  clearAppGridOrder();
+});
 
 describe("AppsPanel 应用中心", () => {
   it("顶部标题/副标题与添加入口；点击添加打开独立配置选择器", async () => {
@@ -714,5 +721,217 @@ describe("AppsPanel 应用中心", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ── 应用网格手动排序（与胶囊 AppsLite 同一 lib/appGridOrder 数据源）──
+
+function savedOrderInStorage(): string[] | null {
+  const raw = localStorage.getItem(APP_GRID_ORDER_KEY);
+  if (!raw) return null;
+  const parsed = JSON.parse(raw) as { version: number; order: string[] };
+  return parsed.order;
+}
+
+function writeSavedOrder(order: string[]) {
+  localStorage.setItem(APP_GRID_ORDER_KEY, JSON.stringify({ version: 1, order }));
+}
+
+/** 三应用固定 id/名：a=Obsidian、b=VS Code、c=Zed，避免依赖自然排序细节。 */
+function seedThreeApps() {
+  seed([
+    targetFix({ id: "a", app_key: "obsidian", display_name: "Obsidian" }),
+    targetFix({ id: "b", app_key: "code", display_name: "VS Code" }),
+    targetFix({ id: "c", app_key: "zed", display_name: "Zed" }),
+  ]);
+}
+
+function tileNames(): string[] {
+  return Array.from(document.querySelectorAll(".apps-tile-name")).map((el) => el.textContent);
+}
+
+function mainButtonOf(name: string): HTMLButtonElement {
+  return screen.getByRole("button", { name: `启动 ${name}` }) as HTMLButtonElement;
+}
+
+function tileOf(name: string): HTMLElement {
+  return mainButtonOf(name).closest(".apps-tile") as HTMLElement;
+}
+
+describe("AppsPanel 应用网格手动排序", () => {
+
+  // 前置 describe 的 mockResolvedValue 实现会跨用例残留（vi.clearAllMocks 不清除实现），
+  // 这里显式复位为「无运行态」，保证排序断言不依赖执行顺序。
+  beforeEach(() => {
+    vi.mocked(navTargetRunningStates).mockReset();
+    vi.mocked(navTargetRunningStates).mockResolvedValue({});
+  });
+
+  it("读序：默认「全部」视图按手动序显示；未排序时保持自然规则", async () => {
+    seedThreeApps();
+    writeSavedOrder(["c", "a", "b"]);
+    render(<AppsPanel />);
+    await waitFor(() =>
+      expect(tileNames()).toEqual(["Zed", "Obsidian", "VS Code"]),
+    );
+  });
+
+  it("置顶只作展示层叠加：收藏/运行置顶，其余保持手动序；启动不改写手动序", async () => {
+    seedThreeApps();
+    writeSavedOrder(["c", "a", "b"]);
+    vi.mocked(navTargetRunningStates).mockResolvedValue({ a: "has_window" });
+    render(<AppsPanel />);
+    // 运行中的 Obsidian 置顶，其余保持手动序（Zed 在 VS Code 前）
+    await waitFor(() =>
+      expect(tileNames()).toEqual(["Obsidian", "Zed", "VS Code"]),
+    );
+
+    // 启动成功并刷新清单后，localStorage 手动序不被改写
+    vi.mocked(navNavigate).mockResolvedValueOnce({
+      success: true,
+      requested_action: "launch",
+      actual_action: "launch",
+      fallback_used: false,
+      target_id: "c",
+      verification_level: "window-confirmed",
+    });
+    fireEvent.click(mainButtonOf("Zed"));
+    await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
+    expect(savedOrderInStorage()).toEqual(["c", "a", "b"]);
+  });
+
+  /**
+   * jsdom 没有 DragEvent：fireEvent.dragOver/drop 只能造出普通 Event，
+   * clientX 不会带上。这里手工构造带 clientX 与 dataTransfer 的真实事件，
+   * 让落点中线判定可以走到 after 分支。
+   */
+  function fireDrag(el: Element, type: "dragover" | "drop", clientX: number) {
+    const event = document.createEvent("Event");
+    event.initEvent(type, true, true);
+    Object.defineProperty(event, "clientX", { value: clientX });
+    Object.defineProperty(event, "dataTransfer", {
+      value: { setData: vi.fn(), effectAllowed: "", dropEffect: "" },
+    });
+    fireEvent(el, event);
+  }
+
+  it("拖拽写序：落点中线判定，写回 localStorage + 提示已保存，且不触发启动", async () => {
+    seedThreeApps();
+    render(<AppsPanel />);
+    await screen.findByText("Obsidian");
+    expect(screen.queryByText(/手动排序已开启/)).toBeNull();
+
+    // 拖 Obsidian 到 VS Code 右半侧（after=true）
+    fireEvent.dragStart(mainButtonOf("Obsidian"), {
+      dataTransfer: { effectAllowed: "", setData: vi.fn() },
+    });
+    fireDrag(tileOf("VS Code"), "dragover", 999);
+    expect(tileOf("VS Code").className).toContain("is-drop-after");
+
+    // 前置用例遗留的 warning 可能占满 Toast 队列（上限 3，驱逐策略会丢弃新的
+    // success 提示）：断言前先清空队列，保证「顺序已保存」可见。
+    useUiStore.setState({ toasts: [], toast: null });
+    fireDrag(tileOf("VS Code"), "drop", 999);
+    await waitFor(() =>
+      expect(savedOrderInStorage()).toEqual(["b", "a", "c", APP_ADD_KEY]),
+    );
+    await waitFor(() =>
+      expect(useUiStore.getState().toasts.some((t) => t.message === "顺序已保存")).toBe(true),
+    );
+    expect(tileNames()).toEqual(["VS Code", "Obsidian", "Zed"]);
+    // 拖拽绝不触发启动
+    expect(navNavigate).not.toHaveBeenCalled();
+    // 手动序生效后显示排序提示
+    expect(screen.getByText(/手动排序已开启/)).toBeTruthy();
+  });
+
+  it("拖拽结束的补发 click 不启动应用；真实 pointerdown 后恢复点击", async () => {
+    seedThreeApps();
+    render(<AppsPanel />);
+    await screen.findByText("Obsidian");
+
+    fireEvent.dragStart(mainButtonOf("Obsidian"), {
+      dataTransfer: { effectAllowed: "", setData: vi.fn() },
+    });
+    fireEvent.drop(tileOf("VS Code"), { clientX: 999, dataTransfer: { dropEffect: "" } });
+    await waitFor(() => expect(savedOrderInStorage()).toBeTruthy());
+
+    // 浏览器补发的 click（没有 pointerdown）被忽略
+    fireEvent.click(mainButtonOf("Obsidian"));
+    expect(navNavigate).not.toHaveBeenCalled();
+
+    // 真实点击（先 pointerdown）恢复启动
+    fireEvent.pointerDown(mainButtonOf("Zed"));
+    fireEvent.click(mainButtonOf("Zed"));
+    await waitFor(() => expect(navNavigate).toHaveBeenCalledWith("c"));
+  });
+
+  it("键盘 Alt+←/→ 逐格移动并写回", async () => {
+    seedThreeApps();
+    writeSavedOrder(["c", "a", "b"]);
+    render(<AppsPanel />);
+    await screen.findByText("Zed");
+
+    // 本页没有加号磁贴，但顺序数组保留胶囊加号占位（跨面板顺序不漂移）
+    fireEvent.keyDown(mainButtonOf("Zed"), { key: "ArrowRight", altKey: true });
+    await waitFor(() => expect(savedOrderInStorage()).toEqual(["a", "c", "b", APP_ADD_KEY]));
+
+    fireEvent.keyDown(mainButtonOf("Zed"), { key: "ArrowLeft", altKey: true });
+    await waitFor(() => expect(savedOrderInStorage()).toEqual(["c", "a", "b", APP_ADD_KEY]));
+
+    // 不带 Alt 的方向键不参与排序
+    fireEvent.keyDown(mainButtonOf("Zed"), { key: "ArrowRight" });
+    expect(savedOrderInStorage()).toEqual(["c", "a", "b", APP_ADD_KEY]);
+    expect(navNavigate).not.toHaveBeenCalled();
+  });
+
+  it("顺序容错：已删除/隐藏应用自动跳过，新增应用追加在末尾", async () => {
+    seedThreeApps();
+    writeSavedOrder(["c", "ghost", "a", "b"]);
+    render(<AppsPanel />);
+    // ghost 不在任何清单里：被 buildAppGrid 跳过，顺序不中断
+    await waitFor(() => expect(tileNames()).toEqual(["Zed", "Obsidian", "VS Code"]));
+
+    // 新增应用 d（不在手动序中）追加在末尾
+    useNavigationStore.setState((s) => ({
+      targets: [
+        ...s.targets,
+        targetFix({ id: "d", app_key: "delta", display_name: "Delta" }),
+      ],
+    }));
+    await waitFor(() =>
+      expect(tileNames()).toEqual(["Zed", "Obsidian", "VS Code", "Delta"]),
+    );
+  });
+
+  it("保活重读：胶囊里排完序回到完整面板后显示新顺序", async () => {
+    seedThreeApps();
+    writeSavedOrder(["c", "a", "b"]);
+    render(<AppsPanel />);
+    await waitFor(() => expect(tileNames()).toEqual(["Zed", "Obsidian", "VS Code"]));
+
+    // 胶囊期间（完整面板 CSS 隐藏）另一面板改写手动序
+    writeSavedOrder(["b", "a", "c"]);
+    // 完整面板可见性翻转：进入停靠 → 回到 docked-full
+    await act(async () => {
+      useEdgeSnapStore.setState({ phase: "docked-visible" });
+    });
+    await act(async () => {
+      useEdgeSnapStore.setState({ phase: "docked-full" });
+    });
+    await waitFor(() => expect(tileNames()).toEqual(["VS Code", "Obsidian", "Zed"]));
+  });
+
+  it("收藏/最近/运行筛选不使用手动序（保持各自排序规则）", async () => {
+    seed([
+      targetFix({ id: "a", app_key: "obsidian", display_name: "Obsidian" }),
+      targetFix({ id: "b", app_key: "code", display_name: "VS Code", favorite: true }),
+    ]);
+    writeSavedOrder(["a", "b"]);
+    render(<AppsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "收藏" }));
+    // 收藏筛选按名称排序（favorite=false 传给 sortTargetsForDisplay），
+    // 不按手动序，也不受置顶叠加影响
+    await waitFor(() => expect(tileNames()).toEqual(["VS Code"]));
   });
 });
