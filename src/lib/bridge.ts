@@ -405,6 +405,8 @@ export interface Settings {
   nav_remember_window: boolean;
   nav_default_browser: string;
   nav_workspace_max: number;
+  /** 开发工作台（2026-11）：当前关注的开发任务 ID（tasks.id 字符串；空 = 未设置）。 */
+  workbench_current_task: string;
   // 模块独立启停（v0.5 整改）
   workspace_enabled: boolean;
   actions_enabled: boolean;

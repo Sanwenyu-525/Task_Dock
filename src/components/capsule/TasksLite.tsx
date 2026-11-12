@@ -22,9 +22,10 @@
 //! 而是提示下一期并展示刷新后的新期次——第二次 toggle 会继续推进，不能当作撤销。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Check, CheckCircle2, ChevronRight, ListTodo, Plus } from "lucide-react";
+import { Bell, BookmarkCheck, Check, CheckCircle2, ChevronRight, ListTodo, Plus } from "lucide-react";
 import { useTasksStore, type TaskLiteScope } from "../../store/useTasksStore";
-import type { Task } from "../../lib/bridge";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { fetchTask, type Task } from "../../lib/bridge";
 import { describeRecurrence } from "../../lib/format";
 import useImeComposition from "../../hooks/useImeComposition";
 import { openFullApp, openTaskEditor } from "./actions";
@@ -90,6 +91,35 @@ export default function TasksLite() {
   const completeTokens = useRef(new Map<string, number>());
   const ime = useImeComposition();
   const stats = useTasksStore((s) => s.stats);
+
+  // 开发工作台「当前任务」在胶囊内的置顶标记（显式设置，不自动推断）。
+  // 列表里有就用列表数据；不在轻量列表（超出 LIMIT 12）时按需单独取一次。
+  const currentId = useSettingsStore((s) => s.settings?.workbench_current_task ?? "") || null;
+  const [fetchedCurrent, setFetchedCurrent] = useState<Task | null>(null);
+  useEffect(() => {
+    // 轻量列表未落地前不补取：否则会先为 null 取一次、列表到达后再取一次。
+    if (items === null) return;
+    if (!currentId || items.some((t) => t.id === currentId)) {
+      setFetchedCurrent(null);
+      return;
+    }
+    let alive = true;
+    fetchTask(currentId)
+      .then((task) => {
+        if (alive) setFetchedCurrent(task);
+      })
+      .catch(() => {
+        // 任务可能已被删除：胶囊内不弹窗，标记条退场（工作台内会如实展示失效态）
+        if (alive) setFetchedCurrent(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [currentId, items]);
+  const currentTask = useMemo(
+    () => (currentId ? (items?.find((t) => t.id === currentId) ?? fetchedCurrent) : null),
+    [currentId, items, fetchedCurrent],
+  );
 
   // 面板打开 → 取一次轻量列表；关闭 → 释放并作废在途响应。
   useEffect(() => {
@@ -298,8 +328,12 @@ export default function TasksLite() {
     const doneList = items
       .filter((t) => t.status === "completed")
       .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
-    return [...pendingList, ...doneList].filter((t) => !hidden.has(t.id)).slice(0, 12);
-  }, [items, liteScope, filter, hidden]);
+    return [...pendingList, ...doneList]
+      .filter((t) => !hidden.has(t.id))
+      // 当前任务已在置顶标记条展示时，从普通列表中去重（标记条是唯一入口，不重复占行）
+      .filter((t) => !(currentTask && t.id === currentTask.id))
+      .slice(0, 12);
+  }, [items, liteScope, filter, hidden, currentTask]);
 
   const localDone = items?.filter((t) => t.status === "completed").length ?? 0;
   const pending = stats?.pending ?? items?.filter((t) => t.status !== "completed").length ?? 0;
@@ -341,6 +375,29 @@ export default function TasksLite() {
       />
 
       <Segmented label="任务筛选" options={FILTERS} value={filter} onChange={changeFilter} />
+
+      {/* 当前任务置顶条（开发工作台锚点）：一个点击直达工作台，继续工作不进任务列表翻找 */}
+      {currentTask && (
+        <div className={`cap-item cap-current-row${currentTask.status === "completed" ? " is-done" : ""}`}>
+          <span className="cap-current-flag" aria-hidden="true">
+            <BookmarkCheck size={12} strokeWidth={2} />
+          </span>
+          <button
+            type="button"
+            className="cap-main cap-row-open"
+            aria-label={`当前任务「${currentTask.title}」，打开工作台`}
+            onClick={() => void openFullApp("workbench")}
+          >
+            <span className="cap-item-title" title={currentTask.title}>
+              {currentTask.title}
+            </span>
+            <span className="cap-task-tags">
+              <span className="cap-tag">当前</span>
+              {currentTask.status === "completed" ? <span className="cap-pill tone-done">已完成</span> : null}
+            </span>
+          </button>
+        </div>
+      )}
 
       <div className="cap-list">
         {/* 错误优先于空态：读取失败绝不伪装成「暂无任务」。

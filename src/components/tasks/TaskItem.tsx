@@ -5,12 +5,24 @@
 //! 菜单顶部提供「打开工作区」（批量启动由 WorkspaceLauncher 执行）。
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { AlarmClock, Check, Clock, Repeat, Link2, Pencil, Rocket, Layers } from "lucide-react";
+import {
+  AlarmClock,
+  Bookmark,
+  BookmarkCheck,
+  Check,
+  Clock,
+  Repeat,
+  Link2,
+  Pencil,
+  Rocket,
+  Layers,
+} from "lucide-react";
 import type { Task } from "../../lib/bridge";
 import { snoozeReminder } from "../../lib/bridge";
 import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
 import { useTasksStore, taskViewKey } from "../../store/useTasksStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { formatDue, isOverdue, priorityLabel, describeRecurrence } from "../../lib/format";
 import { navNavigate, resultMessage } from "../../lib/navigation";
@@ -73,6 +85,10 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
   const showToast = useUiStore((s) => s.showToast);
   const openWorkspace = useUiStore((s) => s.openWorkspace);
   const openContext = useUiStore((s) => s.openContext);
+  // 开发工作台的「当前任务」锚点：显式设置（设置键 workbench_current_task），
+  // 不自动推断；详见 workbench/DevWorkbenchPanel.tsx 头注。
+  const isCurrentTask =
+    useSettingsStore((s) => s.settings?.workbench_current_task ?? "") === task.id;
   const links = useNavigationStore((s) => s.linksByTask[task.id]) ?? [];
   const [menuOpen, setMenuOpen] = useState(false);
   /** 状态切换请求在途：挡住连点把同一条任务翻回翻去 */
@@ -218,6 +234,24 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
       showToast(`延后提醒失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setSnoozeBusy(false);
+    }
+  }
+
+  /** 设为当前任务（开发工作台锚点）：显式动作，成功后给一键跳转工作台的入口。 */
+  async function onSetCurrent() {
+    try {
+      await useSettingsStore.getState().update({ workbench_current_task: task.id });
+      showToast(`已将「${task.title}」设为当前任务`, {
+        kind: "success",
+        action: {
+          label: "打开工作台",
+          run: () => {
+            void useUiStore.getState().setTab("workbench");
+          },
+        },
+      });
+    } catch (e) {
+      showToast(`设置当前任务失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 
@@ -382,6 +416,25 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
           >
             <Layers size={13} />
           </button>
+          {task.status === "pending" &&
+            (isCurrentTask ? (
+              <span
+                className="icon-btn sm task-current is-current"
+                data-tip="当前任务（工作台）"
+                aria-label="当前任务"
+              >
+                <BookmarkCheck size={13} aria-hidden="true" />
+              </span>
+            ) : (
+              <button
+                className="icon-btn sm task-current"
+                onClick={() => void onSetCurrent()}
+                data-tip="设为当前任务（工作台）"
+                aria-label={`设为当前任务：${task.title}`}
+              >
+                <Bookmark size={13} aria-hidden="true" />
+              </button>
+            ))}
           <button className="icon-btn sm task-edit" onClick={() => openEditor(task)} data-tip="编辑任务" aria-label="编辑任务">
             <Pencil size={13} />
           </button>
