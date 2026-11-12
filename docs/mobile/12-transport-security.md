@@ -29,7 +29,7 @@
 | 指纹定义 | `SHA-256(leaf.publicKey.encoded)`，即 SPKI DER，64 位小写 hex | 同上 `spki_fingerprint_from_cert_pem` |
 | 证书文件 | `data_dir/mobile_tls/cert.pem`、`key.pem`；损坏/被篡改时整体重建 | 同上 `load_or_create` |
 | 轮换 | 剩余有效期 ≤ 30 天（或文件不可解析）时**重新生成证书与私钥**，指纹随之改变，日志明确提示「已配对设备需重新配对」 | 同上 `cert_renewal_needed`、`RENEWAL_WINDOW` |
-| 下发路径 | 配对二维码 v2 的 `tls=` 参数（离线信道）；二维码只含一次性配对码，**不含设备令牌** | `src-tauri/src/mobile_sync/mod.rs` `qr_payload` |
+| 下发路径 | 配对二维码 v2 的 `tls=` 参数（离线信道）；二维码只含配对码（120 秒 TTL、配对成功后不可复用），**不含设备令牌** | `src-tauri/src/mobile_sync/mod.rs` `qr_payload` |
 | 手机端持久化 | 指纹进 kv（`sync.connection`），令牌进 SecureStore | `apps/mobile/src/db/syncConnection.ts` |
 | 手动输码 | 无 `tls=` 时首轮为 TOFU：仍是 TLS，但不比对指纹；由原生层回传观察到的指纹并由 JS 落库钉住 | `apps/mobile/src/lib/sync/pairClient.ts` |
 
