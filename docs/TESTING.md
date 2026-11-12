@@ -17,6 +17,35 @@
 
 ## 一、自动化测试结果
 
+### 启动器型应用运行态识别修复（2026-11-11）
+
+现象：胶囊「应用」面板中 Qoder CN 已运行却无绿点。目标配置的是
+`...\Qoder CN Launcher\Qoder CN Launcher.exe`，而窗口与常驻进程属于启动器拉起的
+版本化主程序（`...\.qoder-versions\0.5.7\Qoder CN.exe`），启动器自身已退出；
+**根因是身份不匹配，不是轮询时机**。
+
+修复：`window_manager::launcher_family_stem` 从 `... Launcher.exe` / `... ScLauncher.exe`
+推导主程序家族名（`Qoder CN Launcher.exe` → `qoder cn`），运行态（`has_window` /
+`process_only`）、窗口定位、退出/结束动作共用同一套判定；家族名只做完整文件名干比较，
+不做子串匹配。
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| `cargo test --lib navigation:: -- --test-threads=4`（`D:\Develop\task_dock\src-tauri`） | **PASS 110 passed / 0 failed / 5 ignored**（7.51s，exit 0，2026-11-11 17:19） | 新增 `launcher_family_stem_derives_main_app_name`、`identity_pids_follows_launcher_family_to_main_process`、`launcher_key_matches_running_main_process_family`；`identity_has_window_sees_own_process_window` 扩展为真实窗口 + 伪造启动器身份，验证家族名命中且不误伤不存在的身份 |
+| 真机探针（临时测试已执行并移除） | `Qoder CN Launcher` → `Some(HasWindow)`；英文 `Qoder Launcher`（无同名主程序）→ `Some(NotRunning)`；`windows_for_identity` 命中标题「Qoder CN」、exe 为版本化主程序 | 2026-11-11 同日会话内实测；探针未保留在仓库 |
+
+**同日扩大排查（2026-11-11，其他「已启动但无绿点」形态）**：
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| UWP 打包应用窗口识别：WindowsApps 目录名含版本/架构，旧逻辑用族名做路径子串永远不命中 | **修复并真机验证**：Windows Terminal 运行中，`Microsoft.WindowsTerminal_8wekyb3d8bbwe!App` → `Some(HasWindow)`；`windows_for_family` 返回真实窗口（exe 位于 `...WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe`）。新增按标准包目录解析族名 + 进程 AUMID（`GetApplicationUserModelId`）补权威身份 | 新增 `versioned_windowsapps_path_resolves_package_family`、`aumid_family_uses_package_prefix`；探针在 2026-11-11 会话内执行后移除 |
+| 保存的 exe 路径已随版本升级失效、但同类进程仍在运行：旧逻辑强制 `unavailable`（无绿点） | **修复**：运行态优先；确实未运行才报 `unavailable` | `missing_saved_exe_but_running_process_reports_process_only` |
+| 其他启动器命名：开始菜单实测发现 QQ 的 `QQScLauncher.exe`（主程序 `QQ.exe`）、Blender 的 `blender-launcher.exe` | **修复/覆盖**：`launcher_family_stem` 支持 `ScLauncher` 词尾；Blender 由既有 `launcher` 词尾覆盖 | `tmp/debug/launcher-runstate/shortcut-launchers.txt`；`launcher_family_stem_derives_main_app_name` 已补断言 |
+| `tasklist /FO CSV` 进程名截断/非 ASCII 导致漏判的怀疑 | **本机未发现**：最长进程名 36 字符、无非 ASCII 名称，不构成不足来源 | `tmp/debug/launcher-runstate/tasklist-names.txt` |
+| `cargo test --lib navigation:: -- --test-threads=4` 全量复跑（`D:\Develop\task_dock\src-tauri`） | **PASS 113 passed / 0 failed / 5 ignored**（7.00s，exit 0，2026-11-11 17:38） | 覆盖上述新增用例；另一次高负载并行运行时 `tasklist` 快照 5s 超时被缓存为空，致 2 个依赖进程快照的用例短暂失败，隔离与整组复跑均通过——属既有 TTL 缓存的环境抖动，记录待优化，非本次改动回归 |
+
+**本次未覆盖**：Squirrel 型 `Update.exe --processStart ...` 启动器（本机无样本）；UWP 应用无顶层窗口或窗口被 cloak 时仍按未运行处理；`ApplicationFrameHost` 托管且拿不到 AUMID 的旧式 UWP 窗口。
+
 ### 多 Agent Worktree 隔离机制（2026-11-07）
 
 | 检查 | 结果 | 证据 |
@@ -815,8 +844,8 @@ Rust：`cargo test --lib` 覆盖 `capsule_regions`（四边 × 折叠/展开、D
 
 | 文件 | 覆盖 |
 |---|---|
-| `src/capture/captureUtils.test.ts` | 五类型常量与未知值回落、单选组循环索引、链接识别与句末标点剥离、`suggestKind` 只建议（链接优先于时间词）、空/超长/首行标题校验、提交输入拆分（链接→url+note、`www.` 补协议）、备注截断、草稿状态机与文案、`formatClock`/`newClientId`/`formatError` |
-| `src/capture/CaptureApp.test.tsx` | 挂载同步 last_type 与空内容禁用保存、主题快照、切换类型立即保存草稿、方向键/Home/End 循环、建议不静默改类型、600ms 防抖且只展示后端确认时间、保存失败重试、失焦/`capture-flush-draft`/隐藏事件 flush、唤起恢复草稿提示、字数阈值、Ctrl+Enter 提交成功后约 500ms 隐藏、失败保留内容与同一 client_id、防重复提交、空内容拒绝、链接拆分提交、Esc 关闭、关闭按钮走 bridge、IME 组合中不提交 |
+| `src/capture/captureUtils.test.ts` | 五类型常量与未知值回落、单选组循环索引、链接识别与句末标点剥离、`suggestKind` 只建议（链接优先于时间词）、空/超长/首行标题校验、提交输入拆分（链接→url+note、`www.` 补协议）、备注截断、草稿状态机与文案、`formatClock`/`newClientId`/`formatError`；2026-11-11 增：`appendDictation`（中文直拼、ASCII 词界单空格、空片段 no-op、超限截断+overflow）、`voiceListeningMessage`（中文/回退语言/空语言） |
+| `src/capture/CaptureApp.test.tsx` | 挂载同步 last_type 与空内容禁用保存、主题快照、切换类型立即保存草稿、方向键/Home/End 循环、建议不静默改类型、600ms 防抖且只展示后端确认时间、保存失败重试、失焦/`capture-flush-draft`/隐藏事件 flush、唤起恢复草稿提示、字数阈值、Ctrl+Enter 提交成功后约 500ms 隐藏、失败保留内容与同一 client_id、防重复提交、空内容拒绝、链接拆分提交、Esc 关闭、关闭按钮走 bridge、IME 组合中不提交；2026-11-11 增：语音启动/停止、临时结果只展示不写正文、定稿片段追加、错误状态回 idle、静音超时信息态、启动失败文案、关闭前停止语音、启动中取消补发停止、头部 drag-region DOM 契约（关闭按钮不参与）；2026-11-11 增：`PERMISSION_REQUIRED` 启动失败展示中文说明与「打开设置」入口、点击后调用 bridge 并提示重启 Task Dock、普通启动失败不显示该入口；录音态按钮图标由麦克风切换为暂停、idle 恢复麦克风；停止回包补发的定稿片段追加进正文、`stopping` 期间定稿事件不丢且状态事件不提前回 idle |
 | `src/components/inbox/CaptureInboxPanel.test.tsx` | 加载未处理列表与类型/内容/时间渲染、筛选全部、复制（链接优先复制 URL）、转任务后移除并递减徽标、标记已处理、全部筛选下禁用处理操作、删除就地二次确认（取消/确认）、两种空态文案、加载失败重试、刷新当前筛选 |
 | `src/lib/featureCatalog.test.ts` | 快速捕获登记为 implemented 且 verification 仍 unverified、能力/入口文本含独立捕获窗口/五类型/收集箱/幂等、partial 集合调整、全目录计数（2026-11-06 起为 31 = 13 implemented + 15 partial + 3 planned + 0 blocked；本行 v0.7 记录时点为 28 = 4 / 8 / 16 / 0，已被后续迭代覆盖） |
 | `src/components/roadmap/FeatureRoadmapPanel.test.tsx` | partial 样例改为场景工作区、quick-capture 显示已实现横幅并给出现有入口 |
@@ -825,14 +854,26 @@ Rust：`cargo test --lib` 的 `quick_capture` 模块覆盖窗口定位（主屏�
 偏移、DPI 缩放、工作区过小收缩、非法 scale 回退）、迁移 v17 建表/索引、五种类型落位、空/超长
 内容拒绝且不落行、client_id 重复提交幂等（不重复建任务）、建任务失败回滚捕获行并保留草稿、
 草稿保存/恢复/清空且不混入 items、标记已处理/删除/转任务、task/todo 建可查询任务、列表筛选与
-limit 钳制、last_type 设置与 state。
+limit 钳制、last_type 设置与 state。2026-11-11 增 `quick_capture::voice` 纯逻辑用例：会话结束
+原因 → `idle/error` 与文案（自然结束不报错、麦克风/网络/语言失败可操作）、WinRT 结果状态分类、
+状态事件载荷 camelCase 且不含正文；2026-11-11 增：隐私策略未接受（`0x80045509` /
+`0x800455A0`）映射为 `PERMISSION_REQUIRED`（category permission、中文可操作文案且含重启指引），
+其他引擎错误保留阶段上下文；`StartAsync` 异步失败通过 `GetResults()` 读取真实 HRESULT。
 
 **真机验收未执行**：全局热键在真实 Windows 桌面的唤起、唤起前前台焦点恢复、DPI
 125%/150%/200%、多显示器定位、置顶/任务栏层级与失焦隐藏未验证；jsdom 单测与浏览器渲染不能
-替代。全量 `cargo test` 本轮在 `src-tauri/target/debug/task-dock.exe` 被并行实例占用时失败
+替代。语音隐私恢复入口的真实 `ms-settings:privacy-speech` 打开、用户在设置中开启「在线语音
+识别」以及开启后成功听写同样未验证（隔离预览只覆盖错误态与按钮调用）。停止补发的真实
+时机（WinRT 是否在 `StopAsync` 中实际送出最后一句）必须真机录音验收；jsdom/预览只覆盖
+前端收到补发片段后的追加与 stopping 状态机。全量 `cargo test` 本轮在 `src-tauri/target/debug/task-dock.exe` 被并行实例占用时失败
 （os error 5），属环境阻塞，不作为通过证据。详细未验证项见
 [quick-capture/README.md](quick-capture/README.md) 与
 `tmp/acceptance/quick-capture/report.md`。
+
+**2026-11-11 头部拖拽 / 语音输入（v0.7 增补）**：自动化只覆盖 DOM 契约、光标会话、语音状态机
+与纯逻辑；**真实窗口拖动、WM_EXITSIZEMOVE 相位、麦克风录音与系统语音包必须真机验收**（通道
+E/F）。隔离浏览器预览（通道 B）只验证布局与状态渲染，不代表原生窗口与系统音频。证据与未验证
+项见 `tmp/acceptance/capture-drag-voice/report.md`。
 
 ## 智能日程提醒 2.0（2026-11-03）
 
@@ -866,3 +907,30 @@ Rust：`cargo test` 覆盖新建 5/30 分钟提醒、到期只触发一次、延
 - **2026-11-06 晚更正（规划整改收尾）**：上述「编译阻断」与 junction 旧结论已被新的全量运行覆盖——19:26 `cargo test --lib` 实际执行（1367 passed / 1 failed / 4 ignored），junction 3 项通过；唯一失败 `fs_safety` 于 19:45 以独立分类目录夹具修复（`fs_safety::tests` 5/5，生产实现未改）。旧日志与结论保留，仅作历史记录。
 - Windows 原生 Tauri 页面、双主题/窄窗/高 DPI 走查未执行；DOM 测试不替代原生证据。资源清理当前结论见 `tmp/acceptance/resource-cleaner/report.md`。
 
+
+## 文件投递失败诊断与 v47 迁移（2026-11-12）
+
+- 根因夹具：真实文件库先应用迁移至 v46，再重建为旧版 `shelf_file_ops`
+  `CHECK (op IN ('move'))`；重新打开触发 v47 后，复制 PNG 成功、源文件保留、历史未完成
+  move 日志逐字段保留（`shelf::tests::drop_copy_png_on_legacy_schema_database_is_repaired_by_v47`）。
+- Rust 定向（`src-tauri`，测试二进制直接执行）：
+  - `v47` 过滤 3/3 通过：旧约束修复、保行 + 重复启动、异常行整体回滚；
+  - `drop_` 过滤 37/37 通过（含日志写入故障注入、托管副本移动拒绝、父/子批次、冲突策略）；
+  - `privacy` 8/8、`diagnostics::` 43/43；
+  - 全量 `--test-threads=1 --skip "audio::tests::"`：**1596 passed / 0 failed / 8 ignored**
+    （162.61s）。`audio::tests::` 6 项在整模块运行时于
+    `engine_metadata_is_truthful_and_unavailable_engine_is_structural` 处稳定 SIGSEGV
+    （单独运行该用例与 `audio::tts`/`audio::voice_packs` 全部通过）；该模块属其他任务的
+    未提交 WIP（`audio/tts.rs` 仅可见性改动、`quick_capture/voice.rs` 新增），本次未修改，
+    记为环境/范围外阻塞，不计为通过。
+- 前端：`npm run build` 退出 0（TypeScript + Vite，日志 `npm-build-final-20261112.log`）。
+- 前端全量：默认 `npm test` 在低内存环境 OOM（`MarkCompactCollector ... JS heap out of memory`）；
+  按低内存配方 `npx vitest run --pool=forks --poolOptions.forks.singleFork --maxWorkers=1`
+  得到 **231/233 文件、3483/3487 用例通过**；2 个失败文件
+  （`CapsuleDragCursor.test.tsx` 3 项、`Popover.edge.test.tsx` 1 项）单独复跑
+  **2/2 文件通过**，判定为全量长跑下的环境性抖动，与本任务改动无调用关系。
+- 诊断可见性：`diagnostics::tests::shelf_drop_business_failure_reaches_anomaly_list_and_operation_chain`
+  断言默认异常列表（WARN+、24h）、`operation_id` 操作链、错误码筛选均命中，
+  且落盘内容不含路径/文件名。
+- 未验证：真实 WebView2 下「查看诊断」跳转与操作链展示、320/400 窄窗三链接排版、
+  真实 Tauri 实例重启后的 v47 迁移（未对用户正式库执行迁移）。

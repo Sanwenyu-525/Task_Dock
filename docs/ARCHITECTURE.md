@@ -70,6 +70,12 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 - `Db`：单写连接 `Mutex<Connection>` + 3 个只读连接（WAL `query_only=ON`，round-robin）。
   读路径走 `with_read`，不占写锁；锁中毒时自动恢复。
 - 迁移机制：`MIGRATIONS` 数组按 `PRAGMA user_version` 顺序应用，新增版本只追加不修改。
+  - 2026-11-12 v47：修复历史库 `shelf_file_ops.op` 的单值 `CHECK (op IN ('move'))`。这类库由
+    早期构建写入，`user_version` 已是 46，现行源码虽已改成 `('move','copy')`，但历史迁移不会
+    重放，复制投递写日志必然触发 CHECK 失败。v47 在单事务内重建表、逐列复制未完成日志并恢复
+    `idx_shelf_file_ops_created`；无法解释的 op/phase 会让迁移整体回滚（`user_version` 不变、
+    不丢行）。新库同样重建一次，结果等价。诊断事件与错误码见
+    [DIAGNOSTICS.md §21](DIAGNOSTICS.md#21-文件投递业务失败记录与旧库兼容2026-11-12)。
 - 设置存储：`application_settings` 键值表 + `Settings` 强类型视图（`#[serde(default)]` 兜底）。
   - 2026-11-04：反序列化失败改为逐键定位（`salvage_invalid_settings`），仅类型损坏的字段
     各自回退默认，其他合法设置与数据库原始值不变；剪贴板安全配置继续 fail-closed；诊断只记录
@@ -279,6 +285,16 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `QueryFullProcessImageNameW` 关联进程身份；**进程身份优先、标题仅作同款多窗口二次过滤**
   （`windows_for_identity`：exe 路径直接命中 + Toolhelp 进程树覆盖微信/QQ/酷狗等
   多进程宿主；跨应用同名标题不会进入候选集，HWND 失效/路径变化不会唤醒旧软件）。
+  **启动器身份兜底（2026-11-11）**：配置指向版本化安装的 `... Launcher.exe` 时，启动器
+  拉起主程序后自身退出，窗口与常驻进程只属于主程序（如 `Qoder CN Launcher.exe` →
+  `Qoder CN.exe`）；身份匹配在 exe 路径与进程树之外增加「Launcher/ScLauncher 词尾 →
+  主程序家族名」兜底（`QQScLauncher.exe` → `qq`），运行态、窗口定位与退出/结束动作共用
+  同一套判定，家族名只做完整文件名干比较，不做子串匹配。
+  **UWP 身份（2026-11-11）**：WindowsApps 安装目录名含版本与架构
+  （`<Name>_<Version>_<Arch>__<PublisherId>`），族名子串永远不命中；窗口匹配改为解析标准
+  包目录得到 `Name_PublisherId`，并对窗口进程查询 `GetApplicationUserModelId` 取得
+  `Family!App` 权威身份补判。系统组件窗口（如设置）拿不到 AUMID 时保持不猜测。
+  若后续发现其他启动器/更新器命名形态，按同样方式补词尾规则并补真机回归。
   焦点控制「IsWindow 核验 → SW_RESTORE → SetForegroundWindow →（被拒时把**调用线程与目标
   窗口线程**都 AttachThreadInput 到当前前台线程 + BringWindowToTop 后重试，不注入 ALT 按键）→
   前台句柄轮询核实」。桌面没有前台窗口（锁屏/无输入会话）时系统无法授予前台资格，此时如实返回
@@ -445,6 +461,7 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   | VALIDATION_ERROR | validation | warning | true | 输入/参数校验失败 |
   | NOT_FOUND | not_found / io | warning | false | 任务、文件、窗口不存在 |
   | PERMISSION_DENIED | permission | error | false | 文件/目录权限不足 |
+  | PERMISSION_REQUIRED | permission | warning | true | 需用户先在系统设置开启的隐私/权限开关（如在线语音识别） |
   | IO_ERROR | io | error | true | 磁盘、文件占用、写入失败 |
   | DATABASE_ERROR | database | error | false | SQLite 读写失败 |
   | DATABASE_BUSY | database | warning | true | 数据库被占用/锁等待 |
@@ -815,7 +832,9 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `AppPicker standalone`、编辑复用共享 `TargetEditForm`、启动/聚焦复用 `navNavigate`。
   运行态来自 `nav_target_running_states`（复用 `app_discovery::running_states` 的真实
   窗口枚举 + 进程快照），只在打开页面 / 启动成功后按需查询一次，**不轮询**；
-  `has_window/process_only` 才算运行中，`unavailable` 表示配置失效，不作推断。
+  `has_window/process_only` 才算运行中，`unavailable` 表示配置失效，不作推断；保存的 exe
+  路径随版本升级失效但同类进程仍在运行时，按实际运行态显示，只有确实未运行才报
+  `unavailable`（2026-11-11）。
 - 应用搜索与图标（v0.11）：`lib/appSearch.ts` 统一搜索（中文连续子串、英文大小写不敏感、
   身份绑定别名、完全匹配 → 前缀 → 包含 → 别名排序）；选择器搜索「已发现集合」，
   应用中心/胶囊搜索「已配置集合」。`components/ui/AppIcon.tsx` 按需异步取真实 Windows 图标
@@ -1116,9 +1135,9 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
 | `notification` | 桌面通知 | 400×400，固定 | 隐藏后复用 |
 | `capture` | 快速捕获（v0.7） | 640×360，固定、不占任务栏 | `prevent_close` + hide 复用同一 WebView |
 
-捕获窗口 capability 仅 `core:default` + `core:event:default`
+捕获窗口 capability 为 `core:default` + `core:event:default` + `core:window:allow-start-dragging`
 （`src-tauri/capabilities/capture.json`），业务调用走自定义命令，不在窗口内直接调 Tauri
-window API。
+window API；唯一的窗口 API 是 drag-region 触发的原生拖动（2026-11-11）。
 
 **生命周期**：
 - `Ctrl+Shift+Space` 与托盘/右键菜单「快速捕获」都调用 `quick_capture::toggle`：隐藏时记录
@@ -1133,6 +1152,41 @@ window API。
 - 前端收到 `quick-capture-summoned` 后重读 `quick_capture_state`，恢复草稿与上次类型
   （设置键 `quick_capture_last_type`）。
 
+**头部拖拽（2026-11-11）**：标题、类型标签与空白区声明 `data-tauri-drag-region`（关闭按钮不声明），
+由 Tauri drag-region 进入 Win32 系统移动循环；`src/capture/main.tsx` 安装
+`installNativeDragBridge()`，后端 `drag_watch::install` 监听 `WM_ENTERSIZEMOVE`/`WM_EXITSIZEMOVE`
+并发 `window-drag {phase, generation}`，前端据此切换 `grabbing` 光标会话（与主窗/微件同一协议）。
+捕获窗固定 640×360，拖拽只改位置不改尺寸；双击拖拽面被前端拦截，避免默认
+`internal_toggle_maximize` 把卡片撑满屏幕。
+
+**语音输入（2026-11-11）**：`quick_capture/voice.rs` 封装
+`Windows.Media.SpeechRecognition.SpeechRecognizer`（听写主题约束）的连续识别会话。
+- 专用常驻线程只初始化一次 MTA COM（与 `audio::tts` 同一理由：避免 windows-core 激活工厂
+  缓存在套间拆除后失效）；任务队列有界（8），满载返回可重试 busy；启动/停止全部带超时轮询，
+  命令层 `spawn_blocking`，不阻塞 UI。
+- 首次 `start` 才创建线程与会话；`stop`、窗口隐藏/失焦、提交、应用退出都会停止会话并
+  `Close` 识别器，麦克风不后台常驻。自然静音超时（初始 10s、连续 30s）由 WinRT 结束会话。
+- 语言优先中文听写语言；系统无中文识别包时回退系统语音语言并通过
+  `VoiceStartResult.language` 如实上报，前端提示「系统未提供中文语音包」。
+- 事件只发 capture 窗口：`capture-voice-partial`（临时假设，仅展示）、`capture-voice-final`
+  （定稿片段，追加正文，草稿防抖落盘）、`capture-voice-status`
+  （`{status: idle|error, code, message}`）。识别正文不进日志、不进错误文案。
+- 识别引擎由 Windows 语音服务提供；是否走在线识别取决于系统「在线语音识别」设置，
+  Task Dock 自身不保存、不上传音频。
+- **隐私开关未开启（2026-11-11 增补）**：WinRT 返回隐私策略未接受
+  （`0x80045509` / `0x800455A0`）时映射为结构化 `PERMISSION_REQUIRED`（不再把英文系统
+  原文直接暴露给用户），前端展示中文说明与「打开设置」入口，经
+  `quick_capture_open_speech_settings` 打开 `ms-settings:privacy-speech`；应用不代替用户
+  修改系统隐私设置。Windows 按进程缓存该判定，运行期间才开启设置的旧进程仍会失败，
+  因此文案明确要求重启 Task Dock 后重试。`StartAsync`/`CompileConstraintsAsync` 的异步
+  失败现在读取 `GetResults()` 的真实 HRESULT 再分类，不再退化成无原因的通用错误。
+- **停止时补发最后一句（2026-11-11 增补）**：
+  `SpeechContinuousRecognitionSession.StopAsync` 会把待定音频交给 `ResultGenerated`
+  （`CancelAsync` 才丢弃）。停止收尾期间后端保持结果通道打开，把片段改道到有界缓冲
+  （上限 64 条）并随 `quick_capture_voice_stop` 回包返回；前端新增 `stopping` 相位，期间
+  继续接收 `capture-voice-final`，用户主动停止时收到回包后追加片段再回 idle。
+  停止完成前把 `active` 置 false 会吞掉最后一句，相关命令与事件契约同步为返回片段数组。
+
 **提交与数据流**：`quick_capture_submit` 在单事务内完成「按 `client_id` 查重 → 插入
 `quick_capture_items` → task/todo 在同一事务用 `commands::tasks::create_task_tx` 建任务并回写
 `task_id`/`status='converted'` → 删除 active 草稿 → 提交」；唯一索引冲突时回查并返回
@@ -1145,8 +1199,9 @@ inbox/handled/converted、可选 url/note/task_id、`client_id` 唯一索引）�
 `quick_capture_draft`（单行 `id='active'` 草稿），两表均登记 `BACKUP_TABLES`（core 组）。
 
 **隐私**：捕获内容只来自用户显式输入，不读剪贴板、不采集密码/凭据；日志与错误信息不记录
-正文，错误不拼接内容；无任何外网请求。功能与用户说明见
-[quick-capture/README.md](quick-capture/README.md)。
+正文，错误不拼接内容；无任何外网请求。语音输入仅在用户点击麦克风后录音，音频交给 Windows
+语音识别服务，Task Dock 不保存音频与识别中间结果（只把定稿片段写入正文/草稿）。功能与用户
+说明见 [quick-capture/README.md](quick-capture/README.md)。
 
 ### 12. 任务统计 / 快速笔记 / 自定义快捷键 / Agent 工作时间统计（v0.9，2026-11-04）
 

@@ -325,3 +325,144 @@ IPC 查询参数使用 camelCase（项目参数规范）。
    `Command ... not found`；详细模式落入 Rust `DEBUG` 探针「诊断日志级别已切换」并经动态
    EnvFilter 生效（正常模式 2 事件链、详细模式 3 事件链含 `stage=persist`）；恢复常规后无新增
    DEBUG。诊断中心查询/导出/清理二次确认/深浅主题/320px 视口（无横向溢出）均实测。
+
+## 18. 复查修复记录（2026-11-11）
+
+本轮来自隔离真实实例走查（`tmp/acceptance/diagnostics-center-real-20261111/report.md`），
+修复以下长期契约问题：
+
+1. **终态 `event` 必须等于 `status`**：`startOperation` 的 `success/fail/cancel/recovered`
+   统一经 `finish()` 落盘，此前继承 `base.event="started"`，导致 JSONL 出现
+   `event="started"` + `status="success"`。现在 `finish()` 显式写入 `event: status`；诊断中心
+   读 `status` 的展示不受影响，按 `event` 检索/导出恢复正确语义。
+2. **同毫秒操作链顺序**：后端按批次入库统一生成时间戳，短操作的 `started` 与终态常同毫秒；
+   `diagnostics_query` 返回新→旧，前端不得“相同时间保持原序”。`sortByTimeAsc` 改为同时间
+   反转序号（`right.index - left.index`），保证时间线先 `started` 后终态。
+3. **链视图作用域**：进入操作链后，头部「导出报告」只按 `operationId` 导出当前链路，
+   「复制摘要」复用链路脱敏摘要；不再静默作用于异常列表筛选。
+4. **异常行可访问名称**：移除行按钮的 `aria-label`（此前全部读作「展开详情」），由行内
+   module/action/message 提供可访问名称，保留 `aria-expanded`。
+5. **异步状态分键**：诊断中心的加载/导出/清理改为独立的 `busy.load/export/clear`，
+   加载结束不再提前清空仍在进行的导出/清理 spinner。
+
+定向验证：`npx vitest run src/components/diagnostics/DiagnosticsCenterPanel.test.tsx
+src/lib/diagnostics.test.ts`（42 tests passed）、`npx tsc --noEmit`（退出码 0）。
+
+## 19. 记录项修复（2026-11-11）
+
+诊断中心「异常列表」中出现的系统事件也需要修复源头，而不是只改展示：
+
+1. **设置白名单补齐**：设置页「诊断与日志」可修改的
+   `agent_event_retention_days` / `agent_event_max_rows` / `agent_event_archive` /
+   `perf_diagnostics_enabled` 此前不在 `update_settings` 白名单，保存会报「未知设置键」
+   并被诊断日志记录为一次真实失败。现已加入白名单并按类型/范围校验：
+   保留天数 0–365（0 = 不按时间清理）、最大行数 0–1,000,000,000（0 = 不按行数清理），
+   归档与性能诊断仅接受布尔值。
+2. **HTTP 端口被另一实例占用**：`http_ingest` 绑定失败时先请求
+   `GET /api/v1/health`；若响应 `service="task-dock"`，说明是另一个 Task Dock 实例
+   （正式安装版 + `TASK_DOCK_DATA_DIR` 隔离实例），日志降为 WARN 并明确「本实例会在端口
+   释放后自动接入」；其他程序占用仍记 ERROR。探测超时/失败一律按其他程序处理。
+3. **热键冲突消息**：`Occupied` 不再拼接插件内部的
+   `HotKey { mods: ..., key: ..., id: ... }` Debug 文本，改为「该组合已被其他程序占用」/
+   「系统拒绝注册（可能已被其他程序占用）」；组合名已由日志的 `accelerator` 字段记录。
+
+边界：多个实例争用全局资源（热键、固定 HTTP 端口）属于部署/验收场景，不会因为「修复」
+变成两个实例都可注册；诊断日志现在会准确区分「同族实例占用」与「真实故障」，避免误报。
+
+真机复验（2026-11-11 20:26–20:31，两个隔离实例）：后启动实例记录
+`WARN agents/http_ingest ... 已被另一个 Task Dock 实例占用`（无 ERROR）；前者退出后约 10s
+后者自动接管 47821。设置页「性能诊断」开关与保留天数经真实 UI 修改后回读一致
+（`perf_diagnostics_enabled` true↔false、`agent_event_retention_days` 30→32→30），
+诊断日志无 `update_settings` 失败事件。
+
+## 20. 启动空白（界面「崩溃」）修复（2026-11-11）
+
+**现象**：开发实例启动后窗口还在，但客户端区域空白（有时露出原生标题栏），用户看不到
+任何 UI；诊断中心只看到一条 `前端未在 4000ms 内确认就绪`，没有可归因的异常记录。
+
+**根因**（CDP + 真实 WebView2 复现）：Vite 开发服务器默认 `optimizeDeps.holdUntilCrawlEnd =
+true`，大模块图的入口依赖扫描完成前不返回模块请求；本仓库可把 `/src/main.tsx` 及依赖卡住
+40–100s。此时 `#root` 为空、`installGlobalErrorHandlers` / ErrorBoundary 都还没执行，窗口
+透明（Tauri `transparent: true`）→ 看起来像「窗口在但 UI 崩溃」。热重载后 Vite 已有模块
+缓存，首屏恢复 1s 级，所以用户会觉得「刚才崩溃了/又好了」。同一机制也解释了 4s 兜底告警。
+
+**修复**：
+
+1. **静态启动占位**（`index.html`）：内联样式 + 经典脚本先于所有模块执行；显示
+   「正在启动…」，4s 改为「加载组件可能稍久」，15s 显示重试按钮。期间窗口始终有可见内容，
+   不再空白。React 挂载（`#root` 出现子节点）后占位淡出移除。
+2. **启动看门狗上报**：经典脚本先安装 `error` / `unhandledrejection` 监听（补齐模块初始化
+   之前无处理器的缺口）；15s 未挂载直接经 `diagnostics_record` 写
+   `ui/boot_timeout`（WARN，`UI_BOOT_TIMEOUT`，metadata：`reason=frontend_root_not_mounted`、
+   `event_count`）。挂载成功但耗时 ≥4s 或捕获到启动期错误时写 `ui/boot_slow`
+   （WARN，`UI_BOOT_SLOW`，`duration_ms` 为实测耗时）；正常快速启动不写记录。
+3. **后端结构化超时**：`lib.rs` 的启动兜底线程仍按 4s 撤销 1×1 空白区域（让窗口先可见），
+   但只在 **10s** 后仍未收到 `notify_ui_ready` 时写
+   `window/startup_ready_timeout`（WARN，`UI_BOOT_TIMEOUT`），消息带 mode、窗口物理尺寸、
+   scale，metadata 为 `mode` / `reason=frontend_not_ready`。`commands/system.rs` 的
+   `notify_ui_ready` 置位 `UI_READY`。这样开发态 5–8s 的正常加载不会产生异常记录。
+4. **开发首屏加速**（`vite.config.ts`）：`optimizeDeps.holdUntilCrawlEnd = false`，先放行
+   已发现依赖、后续发现新依赖由 Vite 客户端整页重载补齐；并给主窗/快速捕获/右键菜单/
+   通知/标签提示/微件入口加 `server.warmup.clientFiles`。实测修复前冷启动 40–100s 才挂载，
+   修复后约 3.5s 挂载、占位正常淡出。
+
+需要注意：`ui/boot_timeout` / `ui/boot_slow` 来自 `index.html` 的经典脚本，不经过前端
+`diagnostics.ts` 队列；字段使用后端 `parse_frontend_event` 接受的 snake_case，metadata 只
+使用隐私白名单内 key（`reason` / `event_count` / `mode`）。`window/startup_ready_timeout`
+来自 Rust 结构化事件，出现在诊断中心「异常列表」中可按 `module=window` 筛选。
+
+
+
+## 21. 文件投递业务失败记录与旧库兼容（2026-11-12）
+
+**问题**：收集箱把 PNG 拖入「文件 → 目录卡片」时，界面显示
+`成功 0 项 · 跳过 0 项 · 失败 1 项 / 写入复制日志失败，未执行复制：数据库错误：CHECK constraint failed: op IN ('move')`，
+但诊断中心没有任何记录。原因有两层：
+
+1. 业务失败没有诊断归属：`shelf_drop_to_directory` 即使 `failed > 0` 也是**成功返回**
+   `DropReport`，`invokeCommand` 不会产生 IPC 失败事件；此前没有任何层把逐条结果转成诊断事件。
+2. 数据库结构陈旧：用户库 `PRAGMA user_version = 46`，但 `shelf_file_ops.op` 仍是旧版
+   `CHECK (op IN ('move'))`。历史构建写下的 v34 表与现行源码（`('move','copy')`）不一致，
+   而迁移只按 `user_version` 前进、不会重放。修复见 `ARCHITECTURE.md` 的 v47 迁移说明。
+
+**事件契约（Rust 业务边界，`commands::shelf::shelf_drop_to_directory`）**：
+
+- `module = file`，`action = shelf_drop_to_directory`，`operation_id = DropReport.batch_id`；
+- 汇总事件（每次业务返回一条）：
+  - 全部成功（含正常跳过）→ `INFO`，`event = drop_completed`，`status = success`；
+  - 部分失败 / 含 partial → `WARN`，`event = drop_partial`，`status = failed`；
+  - 全部失败 → `ERROR`，`event = drop_failed`，`status = failed`；
+  - 全部失败但全部是明确预期拒绝（校验 / 不支持 / 冲突 / 目标不可用）→ `WARN`；
+  - 命中 `SHELF_DROP_DB_SCHEMA_INCOMPATIBLE` 时即使还有成功项也升级为 `ERROR`；
+- 明细事件：按（稳定错误码, 阶段）聚合，`event = drop_item_failed`，最多
+  `MAX_DROP_FAILURE_EVENTS = 4` 条；汇总事件 metadata 的 `failure_groups` 保留真实分组数；
+- 汇总 metadata（白名单已登记）：`total` / `success` / `skipped` / `failed` / `partial` /
+  `mode`（copy|move）/ `target_id` / `failure_groups`；不含路径、文件名、原始错误文本；
+- 正常跳过（同名策略、已在目标目录内）不是失败，只计入 `skipped`；
+- 写诊断失败不改变投递结果：`Diagnostics::record` 非阻塞，队列满/降级只计数。
+
+**稳定错误码**：
+
+| 错误码 | 分类 | 含义 |
+|---|---|---|
+| `SHELF_DROP_DB_SCHEMA_INCOMPATIBLE` | database | 操作日志表结构不兼容（旧 CHECK、缺表/缺列） |
+| `SHELF_DROP_DB` | database | 其他数据库读写失败 |
+| `SHELF_DROP_SOURCE_MISSING` | not_found | 源文件已不存在 |
+| `SHELF_DROP_TARGET_UNAVAILABLE` | not_found | 目标目录在操作前已不可用 |
+| `SHELF_DROP_ACCESS_DENIED` | permission | 权限拒绝 |
+| `SHELF_DROP_FILE_BUSY` | io | 文件被占用（共享/锁冲突） |
+| `SHELF_DROP_CONFLICT` | conflict | 目标已存在且策略不允许覆盖 |
+| `SHELF_DROP_IO` | io | 其他文件读写/校验失败 |
+| `SHELF_DROP_VALIDATION` | validation | 参数/路径校验拒绝 |
+| `SHELF_DROP_UNSUPPORTED` | unsupported | 明确不支持的语义（如移动托管副本） |
+| `SHELF_DROP_PARTIAL` | integrity | 目标完整、源清理或引用更新未完成 |
+| `SHELF_DROP_MULTI_FAILURE` | unknown | 一次批次存在多种失败分类时的汇总码 |
+| `SHELF_DROP_UNKNOWN` | unknown | 未能归类的失败 |
+
+**可见性**：默认异常列表（WARN+、最近 24 小时）可直接看到汇总与明细；按
+`operation_id = batch_id` 可打开完整操作链；错误码可直接筛选。收集箱结果条在
+`failed > 0 || partial > 0` 时提供「查看诊断」入口（一次性导航意图，不轮询、不新建弹窗）。
+
+**去重边界**：IPC 层失败（目标不可用、参数非法等 `Err` 返回）仍由
+`invokeCommand → logIpcFailure` 记录一条 `stage = ipc` 的事件；业务汇总事件只在
+`Ok(report)` 时写入且 `stage = business`，同一故障不会在两层各记一次。

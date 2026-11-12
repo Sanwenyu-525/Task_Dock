@@ -297,11 +297,20 @@ docked-revealed → docked-hidden | docked-visible | free
   后端先过滤/排序再 `LIMIT 12`，本地不再二次截断，避免逾期任务挤掉今天到期项。
   2026-11-04 再更正：日程改用 `sort=scheduled`（未来/未逾期在前、逾期在后），
   成员不变（逾期仍属日程），面板保留后端顺序、不再本地按逾期优先重排。）
+  （2026-11-11 补充：完成成功后底栏保留 6 秒「撤销」入口，撤销走同一 `toggle`
+  写回真实状态；已完成条目点击勾选圈即可恢复为待办（勾回），不再只能从展开详情操作。
+  撤销/勾回会作废尚未执行的 320ms 移出动画，避免迟到的隐藏把已恢复的任务再藏掉。）
+  （2026-11-11 更正：重复任务完成一期后后端仍返回 `pending`（只推进期次），
+  此时不移出列表、不提供「撤销」——再次 `toggle` 会继续推进期次而不是回退；
+  底栏改为提示下一期，普通任务的限时撤销与已完成条目勾回语义不变。）
 - **Agent** `AgentsLite`：`useAgentsStore.snapshot` 派生 `liveRuns` / `liveSummary`，
-  按 failed → waiting → running → disconnected 排序；会话数/运行数/时间全部来自快照，
+  按 waiting → failed → running → disconnected 排序（与完整 Agent 页共用
+  `attentionRank`，等待介入优先）；会话数/运行数/时间全部来自快照，
   不写死名称、不伪造进度；每个 Agent 只有「打开会话」「查看」两个真实动作。
 - **剪贴板** `ClipboardLite`：`clipboard_view({limit:20})`；复制不写回历史、不刷新顺序，
   失败不显示「已复制」；截图组用三张叠放封面（`clipboardGroup` 最多 2 组）。
+  副标题条数按**实际渲染行**统计（列表最多 8 条 + 当前可见截图组），
+  不报载入快照的 20 条总数，避免「最近 20 条」与屏幕行数对不上。
 - **应用** `AppsLite`：`useNavigationStore.targets`（用户已配置目标），4 列网格最多 7 个 +
   「添加」；搜索是本地过滤；`navNavigate` 的 `success/actual_action/fallback_used/reason`
   逐项映射为提示，不把失败说成已启动。
