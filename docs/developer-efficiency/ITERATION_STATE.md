@@ -52,8 +52,9 @@
 - cargo 定向合并后（主树+worktree 各一次）：36/36；`npx tsc --noEmit` 0 错；`npm run build` exit 0
 - 独立验收（子智能体 C）：18 项验收组 17 PASS，P1-1 修复后转通过；报告 acceptance-round1.md
 - 真机：**NOT VERIFIED**（清单见 ACCEPTANCE.md；ROADMAP R2-2）
-- 观察项：NavigationVisibility.integration 2 例全量并发下偶发（4 次全量=败/过/败/?；隔离恒过），
-  第 4 次结果回填本文件 logs/vitest-main-postmerge2.log；已登记 R2-7 稳定化。
+- 观察项：NavigationVisibility.integration 2 例全量并发下偶发（4 次全量=败/过/败/过，约 50%
+  复现率；隔离恒过；与 P1-1 修复无因果）——logs/vitest-main-postmerge2.log 为第 4 次全绿记录；
+  已登记 R2-2 稳定化。
 
 ## 下一轮任务清单（编号稳定，按优先级；完成不删除，标记 ✅）
 
