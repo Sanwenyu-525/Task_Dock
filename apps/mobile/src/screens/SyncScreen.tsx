@@ -36,6 +36,7 @@ import {
 import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
+import { isLegacyConnection } from "../lib/sync/connectionState";
 import { syncNow } from "../lib/sync/engine";
 import { PairingRequestError, pingDesktop, pairingErrorMessage } from "../lib/sync/pairClient";
 import { useTheme } from "../theme/ThemeProvider";
@@ -98,8 +99,8 @@ export function SyncScreen({ nav }: { nav: Nav }) {
       setHasToken(Boolean(token));
       setLastResult(last);
       setConflictCount(conflicts);
-      // v1 遗留连接（http://）：桌面端已硬切 TLS-only，v1 客户端无法再连通。
-      setInvalid(Boolean(meta && meta.baseUrl.startsWith("http://")));
+      // v1 遗留连接（http:// 或缺少 SPKI 指纹）：桌面端已硬切 TLS-only，无法再连通。
+      setInvalid(isLegacyConnection(meta));
     } catch (error) {
       if (mounted.current) showToast(`读取同步状态失败：${describeError(error)}`, "danger");
     } finally {

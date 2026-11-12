@@ -27,9 +27,12 @@ import {
   DEFAULT_WIDGET_PREFS,
   notifyWidgetDataChanged,
   parseWidgetPrefs,
+  previewCount,
   refreshWidgetSnapshot,
+  resolvePreviewContent,
   WIDGET_PREFS_KEY,
   type WidgetPrefs,
+  type WidgetSnapshot,
 } from "../src/lib/widgetSnapshot";
 
 /** 固定时刻：2026-11-12 12:00 本地时间（下午，便于构造「今天到期」） */
@@ -256,5 +259,41 @@ describe("refreshWidgetSnapshot / notifyWidgetDataChanged（推送与去抖）",
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// 真机回归：偏好与快照瞬时不同步时，标题/计数/行必须同一口径。
+// 现象：内容选中「今天任务」却显示「待办 0」，下面列着待办行。
+describe("小组件预览口径（偏好 vs 快照）", () => {
+  function snapshotWith(content: WidgetSnapshot["content"]): WidgetSnapshot {
+    return {
+      v: 1,
+      updatedAt: NOW,
+      content,
+      appearance: "system",
+      todayCount: 0,
+      pendingCount: 14,
+      captureCount: 3,
+      items: [{ t: "开会", done: false }],
+      empty: "没有待办任务",
+    };
+  }
+
+  it("快照为待办、偏好仍停在今天时，标题与计数都按快照待办取", () => {
+    const snapshot = snapshotWith("pending");
+    const content = resolvePreviewContent("today", snapshot);
+    expect(content).toBe("pending");
+    expect(previewCount(content, snapshot)).toBe(14);
+  });
+
+  it("没有快照时沿用偏好内容，计数为 0", () => {
+    expect(resolvePreviewContent("today", null)).toBe("today");
+    expect(previewCount("today", null)).toBe(0);
+  });
+
+  it("收集箱内容取 captureCount，今天内容取 todayCount", () => {
+    const snapshot = snapshotWith("pending");
+    expect(previewCount("captures", snapshot)).toBe(3);
+    expect(previewCount("today", snapshot)).toBe(0);
   });
 });

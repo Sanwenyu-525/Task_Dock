@@ -153,6 +153,31 @@ export async function refreshWidgetSnapshot(prefsOverride?: WidgetPrefs): Promis
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * 预览实际展示的内容口径：以快照为准。
+ *
+ * 偏好与快照可能瞬时不同步（例如重新进入页面时偏好还没读回、快照已是上次构建的
+ * 内容）。标题、计数与行必须来自同一份数据，否则会出现「待办 0」但下面列着待办行。
+ */
+export function resolvePreviewContent(
+  prefsContent: WidgetContent,
+  snapshot: WidgetSnapshot | null,
+): WidgetContent {
+  return snapshot?.content ?? prefsContent;
+}
+
+/** 预览头部计数：必须与 resolvePreviewContent 的内容同源。 */
+export function previewCount(
+  content: WidgetContent,
+  snapshot: WidgetSnapshot | null,
+): number {
+  if (!snapshot) return 0;
+  if (content === "captures") return snapshot.captureCount;
+  if (content === "pending") return snapshot.pendingCount;
+  return snapshot.todayCount;
+}
+
+
 /** 数据变化后刷新小组件：去抖 400ms，连续变更（勾选+列表刷新）只读库推送一次。 */
 export function notifyWidgetDataChanged(): void {
   if (debounceTimer) clearTimeout(debounceTimer);

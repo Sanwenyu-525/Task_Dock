@@ -13,12 +13,15 @@ import { SegmentedControl, type SegmentOption } from "../components/SegmentedCon
 import { SettingSection } from "../components/SettingSection";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { requestPinWidget, taskDockWidgetAvailable } from "../../modules/taskdock-widget";
-import { setSetting } from "../db/kv";
+import { getSetting, setSetting } from "../db/kv";
 import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
 import {
   DEFAULT_WIDGET_PREFS,
+  parseWidgetPrefs,
+  previewCount,
   refreshWidgetSnapshot,
+  resolvePreviewContent,
   WIDGET_PREFS_KEY,
   type WidgetAppearance,
   type WidgetContent,
@@ -71,8 +74,12 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
     let cancelled = false;
     void (async () => {
       try {
-        // 首次进入：读偏好 + 构建真实快照（原生推送失败也返回快照供预览用）
-        const next = await refreshWidgetSnapshot();
+        // 首次进入：先读回已保存偏好，再按同一份偏好构建真实快照。
+        // 只写不读会让页面每次回到默认值，也会让预览口径与快照内容不一致。
+        const stored = parseWidgetPrefs(await getSetting(WIDGET_PREFS_KEY));
+        if (cancelled) return;
+        setPrefs(stored);
+        const next = await refreshWidgetSnapshot(stored);
         if (!cancelled && next) setSnapshot(next);
       } catch {
         // 预览不可用不阻塞配置页
@@ -108,14 +115,10 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
     }
   }, [prefs.size, showToast]);
 
-  const title = snapshot ? CONTENT_TITLES[snapshot.content] : CONTENT_TITLES[prefs.content];
-  const count = snapshot
-    ? prefs.content === "captures"
-      ? snapshot.captureCount
-      : prefs.content === "pending"
-        ? snapshot.pendingCount
-        : snapshot.todayCount
-    : 0;
+  // 标题、计数、行统一按快照内容取，避免偏好与快照瞬时不同步时口径打架。
+  const previewContent = resolvePreviewContent(prefs.content, snapshot);
+  const title = CONTENT_TITLES[previewContent];
+  const count = previewCount(previewContent, snapshot);
   const rows = snapshot?.items ?? [];
   const widePreview = prefs.size !== "2x2";
   const maxRows = widePreview ? 3 : 1;

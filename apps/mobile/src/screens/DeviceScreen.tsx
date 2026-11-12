@@ -23,6 +23,7 @@ import {
 import { countPendingOutbox } from "../db/tasks";
 import { describeError } from "../lib/errors";
 import type { Nav } from "../lib/nav";
+import { isLegacyConnection } from "../lib/sync/connectionState";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
@@ -85,9 +86,11 @@ export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number 
     };
   }, [refresh, version]);
 
-  const paired = Boolean(connection && hasToken);
-  // 连接元数据还在但令牌已丢失：不能显示健康态，也不能直接当「未配对」把数据说丢。
-  const invalid = Boolean(connection && !hasToken);
+  const legacy = isLegacyConnection(connection);
+  // 连接元数据还在但令牌丢失、或是 v1 遗留/缺指纹记录：都不能显示健康态，
+  // 也不能直接当「未配对」把数据说丢。
+  const invalid = Boolean(connection) && (legacy || !hasToken);
+  const paired = Boolean(connection && hasToken) && !invalid;
   const statusLabel = loading
     ? "读取中…"
     : paired
@@ -110,7 +113,9 @@ export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number 
               : paired
                 ? `已连接 ${connection?.serverName ?? "桌面端"}`
                 : invalid
-                  ? "配对信息需要重新确认"
+                  ? legacy
+                    ? "桌面端已升级加密传输，请重新配对"
+                    : "配对信息需要重新确认"
                   : "尚未连接桌面端 · 数据只在本机"}
           </Text>
         </View>
@@ -124,7 +129,7 @@ export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number 
               </Text>
             </View>
             <StatusPill
-              label={paired ? "已连接" : invalid ? "令牌失效" : "未配对"}
+              label={paired ? "已连接" : invalid ? "需重新配对" : "未配对"}
               tone={statusTone}
             />
           </View>
@@ -205,7 +210,13 @@ export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number 
                 ? `已配对：${connection.serverName}`
                 : "扫码或输入 6 位码，与桌面端建立连接"
             }
-            trailing={connection ? <Badge label="已配对" tone="active" /> : undefined}
+            trailing={
+              paired ? (
+                <Badge label="已配对" tone="active" />
+              ) : invalid ? (
+                <Badge label="需重新配对" tone="unimplemented" />
+              ) : undefined
+            }
             chevron
             accessibilityHint="打开配对页，扫描二维码或手动输入配对码"
             onPress={() => nav.push("pairing")}
@@ -213,17 +224,17 @@ export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number 
           <SettingActionRow
             label="主屏小组件"
             helper="把今天的任务放到桌面"
-            trailing={<Badge label="规划中" />}
+            trailing={<Badge label="已接入" tone="active" />}
             chevron
-            accessibilityHint="桌面小组件配置（规划中）"
+            accessibilityHint="桌面小组件配置"
             onPress={() => nav.push("widget")}
           />
           <SettingActionRow
             label="分享接收"
             helper="从其他应用分享文本到收集箱"
-            trailing={<Badge label="规划中" />}
+            trailing={<Badge label="已接入" tone="active" />}
             chevron
-            accessibilityHint="系统分享到 TaskDock（规划中）"
+            accessibilityHint="系统分享到 TaskDock"
             onPress={() => nav.push("share")}
           />
         </SettingSection>
