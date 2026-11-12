@@ -2,20 +2,23 @@
 
 > 本文件是迭代状态记录（不是任务书）。总任务书原样保留在 [MASTER_PROMPT.md](MASTER_PROMPT.md)，
 > 每次新执行先读本文件，不得从功能一重新开始。
-> 最后更新：2026-11-13（Round 1 完成并已集成 main @ 614411d）。
+> 最后更新：2026-11-13 02:2x（Round 1 已集成 main @ 614411d；Round 2a 已交付 worktree 分支
+> 9384944，**集成被并行 WIP 阻塞**，见下）。
 
 ## 当前总体状态
 
-- **当前 Phase**：Phase 1（开发上下文与交接闭环）——Round 1 已交付并集成；Round 2 待启动
+- **当前 Phase**：Phase 1——Round 1 已集成；Round 2a（R2-3/R2-6）已交付待集成；R2-1/R2-2 未启动
 - **开发 Worktree**：`D:\Develop\task_dock-worktrees\dev-efficiency-p1`，分支
-  `agent/dev-efficiency-p1`，HEAD 2bec5e4（已全部合入 main，合并提交 614411d）
-- **主树状态**：main @ 614411d，工作树干净（除本档案的后续更新）
+  `agent/dev-efficiency-p1`，HEAD **9384944**（= 2bec5e4 + 48a189c(R2-6 后端) + 9384944(R2-3 前端)）
+- **主树状态**：main @ 145d4c7 + **另一会话活跃 WIP 7 文件**（InboxDropPane*/InboxRecentShelf/
+  fileDrop*/locales zh+en——暂存架任务），其中 **locales/zh-CN 与 en-US 与 Round 2a 分支重叠，
+  `git merge` 会被未提交改动拒绝**。不得代提交、不得覆盖对方改动。
 - **构建缓存**：`D:\Develop\task_dock\src-tauri\target-dev-efficiency-p1`（build-guard 已登记，
-  Round 2 若复用同 worktree 可继续用；整体收尾时 `build-guard cleanup --dir <该目录> --execute`）
-- **验收报告**：`tmp/acceptance/dev-efficiency-p1/report-round1.md`（+ audit-baseline.md +
-  acceptance-round1.md + logs/ 14 个原始日志）
-- **注意**：本仓库存在并行会话（本轮期间 main 四次前进：29d8d37 / a8e7908 / e17db59 / 614411d）。
-  a8e7908 是另一会话修复的同一批基线测试失败；开工必须重新 `git status` + `git log` 对照。
+  Round 2 复用同 worktree 可继续用；整体收尾时 `build-guard cleanup --dir <该目录> --execute`）
+- **验收报告**：`tmp/acceptance/dev-efficiency-p1/report-round1.md`（+ Round 2a 节、
+  audit-baseline.md、acceptance-round1.md、logs/ 原始日志）
+- **注意**：本仓库并行会话活跃（本轮期间 main 已 6 次前进 + 暂存架 WIP 进行中）。开工必须重新
+  `git status` + `git log` 对照。
 
 ## 八功能状态矩阵（实现状态 / 验证状态 分列）
 
@@ -58,16 +61,20 @@
 
 ## 下一轮任务清单（编号稳定，按优先级；完成不删除，标记 ✅）
 
+- **R2-0（P0，立即）**：集成 Round 2a（worktree 9384944）到 main——前置条件：暂存架会话提交其
+  locales WIP。步骤：`worktree-guard check` 确认无重叠 → 主树 `git merge --no-ff
+  agent/dev-efficiency-p1` → 合并后 vitest 全量 + cargo 定向复测 → 更新本文件
 - **R2-1（P1）**：Round 1 真机验收（通道 C/E：真实 git 仓库+worktree 探测、胶囊 chip、三区块、
   设置键重启恢复、320/400 窄窗、深浅主题 × 两预设、中英文），报告补真机节
 - **R2-2（P1）**：NavigationVisibility.integration 2 例偶发失败根因定位与稳定化（先根因，
-  不调等待时间掩盖）
-- **R2-3（P1）**：交接包「资料选择」补齐（P2-1 遗留）：task_context 聚合只读字段 + notes/shelf
-  条目勾选进 source_summary 与 Markdown（P1-9 前置）
+  不调等待时间掩盖；5 次全量=败/过/败/过/败，隔离恒过）
+- **R2-3（P1）✅**：交接包「资料选择」补齐——已交付 worktree 9384944（DevHandoffSection 18/18、
+  bridge 补 notesList 只读包装、zh/en +11 key、tsc 0 错；全量 vitest 3638/1=已知偶发、
+  cargo 1655/0/8），待 R2-0 集成
 - **R2-4（P2）**：交接包关联 Agent 会话快照（task_agent_links 取材，链路 A 后半段）
 - **R2-5（P2）**：验收工作台「从 Agent 执行轮次生成待验收项」（链路 B：agent 完成 → 待验收）
-- **R2-6（P2）**：probe 级 git_unavailable 端到端测试（P3-1 遗留）；交接包 11 vs 10 包装的
-  文案勘误已随 2bec5e4 处理
+- **R2-6（P2）✅**：probe 级 git_unavailable 端到端测试——已交付 worktree 48a189c
+  （probe_with_program 测试缝，devwork 20/20，生产零行为变化）
 - **R2-7（P2）**：Phase 2 预研启动——Worktree 关联表 + 重叠文件检测（复用 worktree-guard
   check --json 语义）；开发环境监控登记表设计（服务/测试命令，参照 workflow_runs 状态机）
 - **R2-8（P3）**：开发现场第三层识别可行性调研（前台 IDE 进程元数据，需探针授权，先方案后实现）
