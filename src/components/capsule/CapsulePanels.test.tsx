@@ -1091,6 +1091,64 @@ describe("Agent 面板", () => {
     expect(screen.getByText(/运行\s*301/)).toBeTruthy();
   });
 
+  it("状态筛选分段：对实时集合客户端过滤，不新增后端调用", async () => {
+    const mkRun = (
+      id: string,
+      status: "running" | "waiting" | "failed" | "disconnected",
+      title: string,
+    ) => ({
+      id,
+      session_id: `s-${id}`,
+      source_id: "codex",
+      external_run_id: null,
+      task_title: title,
+      status,
+      started_at: iso(now - 60_000),
+      updated_at: new Date(Date.now() - 1000).toISOString(),
+      ended_at: null,
+      pending_items: [],
+    });
+    useAgentsStore.setState({
+      snapshot: {
+        sources: [],
+        instances: [],
+        sessions: [],
+        runs: [
+          mkRun("r-w", "waiting", "等待中的任务"),
+          mkRun("r-f", "failed", "失败的任务"),
+          mkRun("r-r", "running", "运行中的任务"),
+          mkRun("r-d", "disconnected", "失联的任务"),
+        ],
+      },
+    });
+    const { container } = render(<AgentsLite />);
+    await screen.findByText("等待中的任务");
+    expect(container.querySelectorAll(".cap-agent-row").length).toBe(4);
+    const callsBefore = agentSnapshot.mock.calls.length;
+
+    // 等待分段：只剩等待轮次；快照来自本地事件流，切分段不发 IPC
+    act(() => screen.getByRole("tab", { name: "等待" }).click());
+    expect(screen.getByText("等待中的任务")).toBeTruthy();
+    expect(screen.queryByText("失败的任务")).toBeNull();
+    expect(container.querySelectorAll(".cap-agent-row").length).toBe(1);
+    expect(agentSnapshot.mock.calls.length).toBe(callsBefore);
+
+    // 失败分段
+    act(() => screen.getByRole("tab", { name: "失败" }).click());
+    await screen.findByText("失败的任务");
+    expect(screen.queryByText("等待中的任务")).toBeNull();
+
+    // 失联分段
+    act(() => screen.getByRole("tab", { name: "失联" }).click());
+    await screen.findByText("失联的任务");
+    expect(screen.queryByText("运行中的任务")).toBeNull();
+
+    // 该状态下没有的（运行中分段被上一条排除校验过）→ 分段空态，不冒充全局空态
+    act(() => screen.getByRole("tab", { name: "运行中" }).click());
+    await screen.findByText("运行中的任务");
+    expect(container.querySelectorAll(".cap-agent-row").length).toBe(1);
+  });
+
   it("首次读取失败显示错误空态并重试，不永久停在「读取中…」", async () => {
     agentSnapshot.mockRejectedValueOnce(new Error("ipc broken"));
     render(<AgentsLite />);
