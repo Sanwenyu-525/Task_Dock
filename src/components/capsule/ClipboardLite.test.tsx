@@ -1646,3 +1646,24 @@ describe("二级页面统一关闭入口", () => {
     expect(screen.getByRole("button", { name: "返回列表" })).toBeTruthy();
   });
 });
+
+describe("列表口径与展示行数一致", () => {
+  it("副标题不报载入快照总数：最多展示 8 条就写 8 条", async () => {
+    const twenty = Array.from({ length: 20 }, (_, i) =>
+      item({ id: `lite-cap-${i}`, kind: "text", title: `记录 ${i}`, preview: `预览 ${i}` }),
+    );
+    clipboardView.mockResolvedValue(view(twenty));
+    render(<ClipboardLite />);
+    await screen.findByText("记录 0");
+    expect(screen.getByText("最近 8 条")).toBeTruthy();
+    expect(screen.queryByText(/最近 20 条/)).toBeNull();
+  });
+
+  it("截图组计入实际渲染行数，并按可见组数标注", async () => {
+    const g = group({ id: "lite-cap-group", name: "截图组口径", image_count: 2, item_count: 2 });
+    clipboardView.mockResolvedValue(view([], [g]));
+    render(<ClipboardLite />);
+    await screen.findByText("截图组口径");
+    expect(screen.getByText("最近 1 条 · 含 1 个截图组")).toBeTruthy();
+  });
+});

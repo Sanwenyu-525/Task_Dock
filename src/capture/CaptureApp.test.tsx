@@ -46,16 +46,27 @@ const bridge = vi.hoisted(() => {
   const summoned: Array<() => void> = [];
   const hidden: Array<() => void> = [];
   const flushDraft: Array<() => void> = [];
+  const voicePartial: Array<(payload: { text: string }) => void> = [];
+  const voiceFinal: Array<(payload: { text: string }) => void> = [];
+  const voiceStatus: Array<
+    (payload: { status: "idle" | "error"; code: string; message: string | null }) => void
+  > = [];
   return {
     summoned,
     hidden,
     flushDraft,
+    voicePartial,
+    voiceFinal,
+    voiceStatus,
     getSettings: vi.fn(),
     quickCaptureState: vi.fn(),
     quickCaptureSaveDraft: vi.fn(),
     quickCaptureSetLastType: vi.fn(),
     quickCaptureSubmit: vi.fn(),
     quickCaptureHide: vi.fn(),
+    quickCaptureVoiceStart: vi.fn(),
+    quickCaptureVoiceStop: vi.fn(),
+    quickCaptureOpenSpeechSettings: vi.fn(),
     onQuickCaptureSummoned: vi.fn((cb: () => void) => {
       summoned.push(cb);
       return Promise.resolve(() => undefined);
@@ -68,6 +79,20 @@ const bridge = vi.hoisted(() => {
       flushDraft.push(cb);
       return Promise.resolve(() => undefined);
     }),
+    onCaptureVoicePartial: vi.fn((cb: (payload: { text: string }) => void) => {
+      voicePartial.push(cb);
+      return Promise.resolve(() => undefined);
+    }),
+    onCaptureVoiceFinal: vi.fn((cb: (payload: { text: string }) => void) => {
+      voiceFinal.push(cb);
+      return Promise.resolve(() => undefined);
+    }),
+    onCaptureVoiceStatus: vi.fn(
+      (cb: (payload: { status: "idle" | "error"; code: string; message: string | null }) => void) => {
+        voiceStatus.push(cb);
+        return Promise.resolve(() => undefined);
+      },
+    ),
   };
 });
 
@@ -120,6 +145,9 @@ beforeEach(() => {
   bridge.summoned.length = 0;
   bridge.hidden.length = 0;
   bridge.flushDraft.length = 0;
+  bridge.voicePartial.length = 0;
+  bridge.voiceFinal.length = 0;
+  bridge.voiceStatus.length = 0;
   vi.clearAllMocks();
   bridge.getSettings.mockResolvedValue({ theme: "dark", visual_preset: "dream-gradient" });
   bridge.quickCaptureState.mockResolvedValue({ ...DEFAULT_STATE });
@@ -127,6 +155,9 @@ beforeEach(() => {
   bridge.quickCaptureSetLastType.mockResolvedValue(undefined);
   bridge.quickCaptureSubmit.mockImplementation(async (input: SubmitInputLike) => okSubmit(input));
   bridge.quickCaptureHide.mockResolvedValue(undefined);
+  bridge.quickCaptureVoiceStart.mockResolvedValue({ language: "zh-CN" });
+  bridge.quickCaptureVoiceStop.mockResolvedValue([]);
+  bridge.quickCaptureOpenSpeechSettings.mockResolvedValue(undefined);
   delete document.documentElement.dataset.theme;
   delete document.documentElement.dataset.preset;
 });
@@ -357,6 +388,50 @@ describe("CaptureApp / 提交", () => {
     );
   });
 
+  it("提交期间输入的下一条不被旧响应清空，也不自动藏窗", async () => {
+    const pending = deferred<SubmitResultLike>();
+    bridge.quickCaptureSubmit.mockReturnValueOnce(pending.promise);
+    await renderCapture();
+    fireEvent.change(textarea(), { target: { value: "第一条" } });
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(bridge.quickCaptureSubmit).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(textarea(), { target: { value: "第二条" } });
+    await act(async () => {
+      pending.resolve(okSubmit({ client_id: "c1", kind: "task", content: "第一条" }));
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("新内容已保留"),
+    );
+    expect(textarea().value).toBe("第二条");
+    expect(bridge.quickCaptureHide).not.toHaveBeenCalled();
+    // 新草稿要立即落库，不能因提交锁吞掉防抖保存
+    await waitFor(() =>
+      expect(bridge.quickCaptureSaveDraft).toHaveBeenCalledWith("task", "第二条"),
+    );
+  });
+
+  it("提交期间处于输入法组合态时不清空已提交文本", async () => {
+    const pending = deferred<SubmitResultLike>();
+    bridge.quickCaptureSubmit.mockReturnValueOnce(pending.promise);
+    await renderCapture();
+    fireEvent.change(textarea(), { target: { value: "第一条" } });
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(bridge.quickCaptureSubmit).toHaveBeenCalledTimes(1));
+
+    // 组合期间 value 可能还没更新：不能把「未改动」当成可清空
+    fireEvent.compositionStart(textarea());
+    await act(async () => {
+      pending.resolve(okSubmit({ client_id: "c1", kind: "task", content: "第一条" }));
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("新内容已保留"),
+    );
+    expect(textarea().value).toBe("第一条");
+    expect(bridge.quickCaptureHide).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(textarea());
+  });
+
   it("空内容按 Ctrl+Enter 拒绝提交并给出错误提示", async () => {
     await renderCapture();
     fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
@@ -442,5 +517,197 @@ describe("CaptureApp / 键盘与关闭", () => {
     await waitFor(() =>
       expect(bridge.quickCaptureSaveDraft).toHaveBeenCalledWith("task", "隐藏前内容"),
     );
+  });
+});
+
+describe("CaptureApp / 语音输入", () => {
+  it("麦克风启动后展示实时转写，定稿片段追加进正文，再点停止回到 idle", async () => {
+    await renderCapture();
+    fireEvent.change(textarea(), { target: { value: "明天" } });
+    const micButton = screen.getByRole("button", { name: "语音输入" });
+    expect(micButton.querySelector(".lucide-mic")).not.toBeNull();
+    expect(micButton.querySelector(".lucide-pause")).toBeNull();
+    fireEvent.click(micButton);
+    expect(bridge.quickCaptureVoiceStart).toHaveBeenCalledTimes(1);
+    const stopButton = await screen.findByRole("button", { name: "停止语音输入" });
+    expect(stopButton.getAttribute("aria-pressed")).toBe("true");
+    // 录音中图标切换为暂停语义，而不是继续显示麦克风
+    expect(stopButton.querySelector(".lucide-pause")).not.toBeNull();
+    expect(stopButton.querySelector(".lucide-mic")).toBeNull();
+    expect(screen.getByText("正在听写，点击麦克风结束")).toBeTruthy();
+
+    // 临时结果只展示在反馈行，不写正文
+    await act(async () => {
+      bridge.voicePartial.forEach((cb) => cb({ text: "十点" }));
+    });
+    expect(screen.getByText("十点")).toBeTruthy();
+    expect(textarea().value).toBe("明天");
+
+    await act(async () => {
+      bridge.voiceFinal.forEach((cb) => cb({ text: "开会" }));
+    });
+    expect(textarea().value).toBe("明天开会");
+    expect(screen.queryByText("十点")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "停止语音输入" }));
+    expect(bridge.quickCaptureVoiceStop).toHaveBeenCalledTimes(1);
+    // 停止命令收尾前保持 stopping（补发片段仍可追加），完成后回 idle
+    await screen.findByRole("button", { name: "语音输入" });
+  });
+
+  it("停止时后端补发的定稿片段追加进正文", async () => {
+    bridge.quickCaptureVoiceStop.mockResolvedValueOnce(["十点开会"]);
+    await renderCapture();
+    fireEvent.change(textarea(), { target: { value: "明天" } });
+    fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+    await screen.findByRole("button", { name: "停止语音输入" });
+    fireEvent.click(screen.getByRole("button", { name: "停止语音输入" }));
+    await screen.findByRole("button", { name: "语音输入" });
+    expect(textarea().value).toBe("明天十点开会");
+  });
+
+  it("停止收尾期间到达的定稿事件不丢，状态事件不提前回 idle", async () => {
+    const pending = deferred<string[]>();
+    bridge.quickCaptureVoiceStop.mockReturnValueOnce(pending.promise);
+    await renderCapture();
+    fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+    await screen.findByRole("button", { name: "停止语音输入" });
+    fireEvent.click(screen.getByRole("button", { name: "停止语音输入" }));
+    const stopping = screen.getByRole("button", { name: "正在结束语音输入" });
+    expect(stopping.getAttribute("aria-busy")).toBe("true");
+
+    // 停止请求发出后、命令回包前的定稿仍要追加
+    await act(async () => {
+      bridge.voiceFinal.forEach((cb) => cb({ text: "十点" }));
+    });
+    expect(textarea().value).toBe("十点");
+
+    // 后端 Completed 先到时只记录错误信息，不得提前结束 stopping
+    await act(async () => {
+      bridge.voiceStatus.forEach((cb) => cb({ status: "idle", code: "canceled", message: null }));
+    });
+    expect(screen.getByRole("button", { name: "正在结束语音输入" })).toBeTruthy();
+
+    await act(async () => {
+      pending.resolve([]);
+      await Promise.resolve();
+    });
+    await screen.findByRole("button", { name: "语音输入" });
+    expect(textarea().value).toBe("十点");
+  });
+
+  it("语音会话错误事件回到 idle 并展示可操作提示，不再补发停止", async () => {
+    await renderCapture();
+    fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+    await screen.findByRole("button", { name: "停止语音输入" });
+    await act(async () => {
+      bridge.voiceStatus.forEach((cb) =>
+        cb({
+          status: "error",
+          code: "microphone",
+          message: "无法访问麦克风，请检查 Windows 隐私设置中的麦克风权限",
+        }),
+      );
+    });
+    expect(screen.getByRole("alert").textContent).toContain("无法访问麦克风");
+    expect(screen.getByRole("button", { name: "语音输入" })).toBeTruthy();
+    expect(bridge.quickCaptureVoiceStop).not.toHaveBeenCalled();
+  });
+
+  it("静音超时的 idle 状态提示只作为信息，不标红", async () => {
+    await renderCapture();
+    fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+    await screen.findByRole("button", { name: "停止语音输入" });
+    await act(async () => {
+      bridge.voiceStatus.forEach((cb) =>
+        cb({
+          status: "idle",
+          code: "timeout",
+          message: "较长时间未检测到语音，语音输入已结束",
+        }),
+      );
+    });
+    expect(screen.getByRole("status").textContent).toContain("较长时间未检测到语音");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("启动失败展示后端文案并保持 idle", async () => {
+    bridge.quickCaptureVoiceStart.mockRejectedValueOnce(
+      new Error("服务暂不可用：语音输入启动超时，请重试"),
+    );
+    await renderCapture();
+    fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("语音输入启动超时"),
+    );
+    expect(screen.getByRole("button", { name: "语音输入" })).toBeTruthy();
+    // 只有系统隐私开关受阻时才出现设置入口
+    expect(screen.queryByRole("button", { name: "打开设置" })).toBeNull();
+  });
+
+  it("系统语音隐私未开启时展示中文说明与打开设置入口", async () => {
+    bridge.quickCaptureVoiceStart.mockRejectedValueOnce({
+      code: "PERMISSION_REQUIRED",
+      category: "permission",
+      severity: "warning",
+      retryable: true,
+      message: "Windows 在线语音识别未开启或尚未生效，请在系统设置中开启后重启 Task Dock 再试",
+    });
+    await renderCapture();
+    fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("重启 Task Dock"),
+    );
+    const action = screen.getByRole("button", { name: "打开设置" });
+    fireEvent.click(action);
+    await waitFor(() =>
+      expect(bridge.quickCaptureOpenSpeechSettings).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain("已打开设置"),
+    );
+    // 打开设置后仍可再次打开，按钮不因一次点击消失
+    expect(screen.getByRole("button", { name: "打开设置" })).toBeTruthy();
+  });
+
+  it("关闭窗口会先停止语音会话", async () => {
+    await renderCapture();
+    fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+    await screen.findByRole("button", { name: "停止语音输入" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(bridge.quickCaptureVoiceStop).toHaveBeenCalled();
+    expect(bridge.quickCaptureHide).toHaveBeenCalledWith("user");
+  });
+
+  it("启动中取消会补发停止，不会回到 listening", async () => {
+    const pending = deferred<{ language: string }>();
+    bridge.quickCaptureVoiceStart.mockReturnValueOnce(pending.promise);
+    await renderCapture();
+    fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+    expect(screen.getByRole("button", { name: "语音输入" }).getAttribute("aria-busy")).toBe(
+      "true",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "语音输入" }));
+    await act(async () => {
+      pending.resolve({ language: "zh-CN" });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(bridge.quickCaptureVoiceStop).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "语音输入" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "停止语音输入" })).toBeNull();
+  });
+});
+
+describe("CaptureApp / 头部拖拽", () => {
+  it("头部与标题声明原生拖拽区域，关闭按钮不参与拖拽", async () => {
+    await renderCapture();
+    const heading = screen.getByRole("heading", { name: "快速捕获" });
+    const head = heading.closest("header") as HTMLElement;
+    expect(head.hasAttribute("data-tauri-drag-region")).toBe(true);
+    expect(head.className).toContain("ui-drag-surface");
+    expect(head.className).toContain("ui-drag-session");
+    expect(heading.hasAttribute("data-tauri-drag-region")).toBe(true);
+    const closeButton = screen.getByRole("button", { name: "关闭快速捕获" });
+    expect(closeButton.hasAttribute("data-tauri-drag-region")).toBe(false);
   });
 });

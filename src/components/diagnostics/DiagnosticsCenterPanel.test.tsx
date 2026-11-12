@@ -13,17 +13,30 @@ import {
   within,
 } from "@testing-library/react";
 
-const mocks = vi.hoisted(() => ({
-  status: vi.fn(),
-  summary: vi.fn(),
-  query: vi.fn(),
-  clear: vi.fn(),
-  exportReport: vi.fn(),
-  openDir: vi.fn(),
-  showToast: vi.fn(),
-  setClientVerboseMode: vi.fn(),
-  fullVisible: { value: true },
-}));
+const mocks = vi.hoisted(() => {
+  const ui = {
+    showToast: vi.fn(),
+    diagnosticsOperationRequest: null as { token: number; operationId: string } | null,
+    consumeDiagnosticsOperation: vi.fn((): string | null => {
+      const request = ui.diagnosticsOperationRequest;
+      if (!request) return null;
+      ui.diagnosticsOperationRequest = null;
+      return request.operationId;
+    }),
+  };
+  return {
+    status: vi.fn(),
+    summary: vi.fn(),
+    query: vi.fn(),
+    clear: vi.fn(),
+    exportReport: vi.fn(),
+    openDir: vi.fn(),
+    showToast: ui.showToast,
+    setClientVerboseMode: vi.fn(),
+    fullVisible: { value: true },
+    ui,
+  };
+});
 
 vi.mock("../../lib/bridge", () => ({
   diagnosticsStatus: mocks.status,
@@ -43,8 +56,7 @@ vi.mock("../../lib/errors", () => ({
 }));
 
 vi.mock("../../store/useUiStore", () => ({
-  useUiStore: (selector: (state: { showToast: typeof mocks.showToast }) => unknown) =>
-    selector({ showToast: mocks.showToast }),
+  useUiStore: (selector: (state: typeof mocks.ui) => unknown) => selector(mocks.ui),
 }));
 
 vi.mock("../../hooks/useMainUiVisible", () => ({
@@ -184,6 +196,11 @@ function pageWithMessage(message: string) {
   };
 }
 
+/** 行按钮的可访问名称来自行内文本（module/action/message），不再用 aria-label。 */
+function rowButton() {
+  return screen.getByRole("button", { name: /clipboard\/paste_batch/ });
+}
+
 beforeEach(() => {
   mocks.fullVisible.value = true;
   mocks.status.mockReset().mockResolvedValue(STATUS);
@@ -205,6 +222,8 @@ beforeEach(() => {
   mocks.openDir.mockReset().mockResolvedValue(undefined);
   mocks.showToast.mockReset();
   mocks.setClientVerboseMode.mockReset();
+  mocks.ui.diagnosticsOperationRequest = null;
+  mocks.ui.consumeDiagnosticsOperation.mockClear();
 });
 
 afterEach(() => cleanup());
@@ -267,7 +286,7 @@ describe("DiagnosticsCenterPanel", () => {
     await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
 
     fireEvent.click(
-      screen.getByRole("button", { name: "diagnosticsCenter.list.expand" }),
+      rowButton(),
     );
     fireEvent.click(
       screen.getByRole("button", { name: "diagnosticsCenter.list.chain" }),
@@ -300,7 +319,7 @@ describe("DiagnosticsCenterPanel", () => {
   it("操作链 0 条与缺少 started/终态时给出明确提示", async () => {
     const openChain = () => {
       fireEvent.click(
-        screen.getByRole("button", { name: "diagnosticsCenter.list.expand" }),
+        rowButton(),
       );
       fireEvent.click(
         screen.getByRole("button", { name: "diagnosticsCenter.list.chain" }),
@@ -349,7 +368,7 @@ describe("DiagnosticsCenterPanel", () => {
     await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
 
     fireEvent.click(
-      screen.getByRole("button", { name: "diagnosticsCenter.list.expand" }),
+      rowButton(),
     );
     fireEvent.click(
       screen.getByRole("button", { name: "diagnosticsCenter.list.chain" }),
@@ -371,7 +390,7 @@ describe("DiagnosticsCenterPanel", () => {
     await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
 
     fireEvent.click(
-      screen.getByRole("button", { name: "diagnosticsCenter.list.expand" }),
+      rowButton(),
     );
     expect(screen.queryByRole("button", { name: "diagnosticsCenter.list.chain" })).toBeNull();
     expect(screen.getByText("diagnosticsCenter.list.noOperation")).toBeTruthy();
@@ -412,6 +431,53 @@ describe("DiagnosticsCenterPanel", () => {
     expect(
       await screen.findByRole("list", { name: "diagnosticsCenter.chain.title" }),
     ).toBeTruthy();
+  });
+
+  it("一次性诊断意图：按 operationId 查询操作链，不带列表筛选并消费清除", async () => {
+    mocks.ui.diagnosticsOperationRequest = { token: 1, operationId: "op-drop-batch" };
+    mocks.query.mockImplementation((filter: { operationId?: string }) =>
+      filter?.operationId ? Promise.resolve(CHAIN_PAGE) : Promise.resolve(PAGE),
+    );
+    render(<DiagnosticsCenterPanel />);
+
+    const chainCall = () =>
+      mocks.query.mock.calls.find(
+        ([filter]) => filter?.operationId === "op-drop-batch" && filter?.limit === 200,
+      );
+    await waitFor(() => expect(chainCall()).toBeTruthy());
+    expect(chainCall()?.[0]).toEqual({
+      operationId: "op-drop-batch",
+      limit: 200,
+      offset: 0,
+    });
+    expect(chainCall()?.[0].anomaliesOnly).toBeUndefined();
+    expect(chainCall()?.[0].levels).toBeUndefined();
+
+    await waitFor(() => expect(mocks.ui.diagnosticsOperationRequest).toBeNull());
+    expect(mocks.ui.consumeDiagnosticsOperation).toHaveBeenCalled();
+    expect(
+      await screen.findByRole("list", { name: "diagnosticsCenter.chain.title" }),
+    ).toBeTruthy();
+  });
+
+  it("面板已挂载时收到新的诊断意图：无需重新挂载即可定位操作链", async () => {
+    const { rerender } = render(<DiagnosticsCenterPanel />);
+    await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
+
+    mocks.query.mockImplementation((filter: { operationId?: string }) =>
+      filter?.operationId ? Promise.resolve(CHAIN_PAGE) : Promise.resolve(PAGE),
+    );
+    mocks.ui.diagnosticsOperationRequest = { token: 2, operationId: "op-late" };
+    rerender(<DiagnosticsCenterPanel />);
+
+    await waitFor(() =>
+      expect(
+        mocks.query.mock.calls.some(
+          ([filter]) => filter?.operationId === "op-late" && filter?.limit === 200,
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(mocks.ui.diagnosticsOperationRequest).toBeNull());
   });
 
   it("快速切换筛选时旧响应不得覆盖新结果", async () => {
@@ -575,5 +641,134 @@ describe("DiagnosticsCenterPanel", () => {
 
     expect(screen.getByText(/diagnosticsCenter\.overview\.degraded/)).toBeTruthy();
     expect(screen.getByText(/disk full/)).toBeTruthy();
+  });
+
+  it("异常行的可访问名称来自行内容，而不是仅有展开动作", async () => {
+    render(<DiagnosticsCenterPanel />);
+    const row = await screen.findByRole("button", { name: /clipboard\/paste_batch/ });
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    expect(row.getAttribute("aria-label")).toBeNull();
+    expect(row.textContent).toContain("批量粘贴失败");
+  });
+
+  it("操作链同毫秒事件按写入顺序展示：started 在终态之前", async () => {
+    const sameTime = "2026-11-06T18:02:00.000+08:00";
+    mocks.query.mockImplementation((filter: { operationId?: string }) =>
+      filter?.operationId
+        ? Promise.resolve({
+            ...CHAIN_PAGE,
+            items: [
+              {
+                ...PAGE.items[0],
+                timestamp: sameTime,
+                action: "finish",
+                event: "success",
+                status: "success",
+                message: "链-终态",
+              },
+              {
+                ...PAGE.items[0],
+                timestamp: sameTime,
+                action: "start",
+                event: "started",
+                status: "started",
+                message: "链-起点",
+              },
+            ],
+          })
+        : Promise.resolve(PAGE),
+    );
+    render(<DiagnosticsCenterPanel />);
+    await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(rowButton());
+    fireEvent.click(
+      screen.getByRole("button", { name: "diagnosticsCenter.list.chain" }),
+    );
+
+    const timeline = await screen.findByRole("list", {
+      name: "diagnosticsCenter.chain.title",
+    });
+    const items = within(timeline).getAllByRole("listitem");
+    // 后端返回新→旧；同毫秒时必须反转，保证 started 在终态之前。
+    expect(items[0].textContent).toContain("链-起点");
+    expect(items[1].textContent).toContain("链-终态");
+  });
+
+  it("操作链视图下导出与复制摘要作用于当前链路", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    try {
+      mocks.query.mockImplementation((filter: { operationId?: string }) =>
+        filter?.operationId ? Promise.resolve(CHAIN_PAGE) : Promise.resolve(PAGE),
+      );
+      render(<DiagnosticsCenterPanel />);
+      await waitFor(() => expect(mocks.query).toHaveBeenCalledTimes(1));
+
+      fireEvent.click(rowButton());
+      fireEvent.click(
+        screen.getByRole("button", { name: "diagnosticsCenter.list.chain" }),
+      );
+      await screen.findByRole("list", { name: "diagnosticsCenter.chain.title" });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "diagnosticsCenter.action.export" }),
+      );
+      await waitFor(() => expect(mocks.exportReport).toHaveBeenCalledTimes(1));
+      // 只按 operationId 导出链路，不带列表筛选/anomaliesOnly。
+      expect(mocks.exportReport.mock.calls[0][0]).toEqual({
+        operationId: "op-1234abcd",
+      });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "diagnosticsCenter.action.copySummary" }),
+      );
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      expect(writeText.mock.calls[0][0]).toContain("diagnosticsCenter.chain.copyTitle");
+      expect(writeText.mock.calls[0][0]).toContain("链-旧");
+      expect(writeText.mock.calls[0][0]).toContain("链-新");
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).clipboard;
+    }
+  });
+
+  it("加载与导出状态互不覆盖：加载结束后导出按钮仍保持禁用", async () => {
+    let resolveStatus: (value: unknown) => void = () => {};
+    const statusPromise = new Promise((resolve) => {
+      resolveStatus = resolve;
+    });
+    mocks.status.mockReturnValue(statusPromise);
+    let resolveExport: (value: unknown) => void = () => {};
+    const exportPromise = new Promise((resolve) => {
+      resolveExport = resolve;
+    });
+    mocks.exportReport.mockReturnValue(exportPromise);
+
+    render(<DiagnosticsCenterPanel />);
+    const exportButton = screen.getByRole("button", {
+      name: "diagnosticsCenter.action.export",
+    }) as HTMLButtonElement;
+    fireEvent.click(exportButton);
+    expect(mocks.exportReport).toHaveBeenCalledTimes(1);
+
+    // 加载结束只清 load 状态，不能把仍在进行的导出 spinner 一起清掉。
+    resolveStatus(STATUS);
+    await waitFor(() =>
+      expect(screen.getByText("diagnosticsCenter.overview.modeNormal")).toBeTruthy(),
+    );
+    expect(exportButton.disabled).toBe(true);
+
+    resolveExport({
+      path: "C:\\data\\diagnostics\\exports\\diagnostic-report.json",
+      bytes: 1024,
+      records: 0,
+      truncated: false,
+      complete: true,
+      flushIssue: null,
+    });
+    await waitFor(() => expect(exportButton.disabled).toBe(false));
   });
 });

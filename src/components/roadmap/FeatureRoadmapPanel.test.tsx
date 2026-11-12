@@ -11,7 +11,7 @@ import { cleanup, render, screen, within, fireEvent } from "@testing-library/rea
 import { useState } from "react";
 import FeatureRoadmapPanel, { FeatureCard } from "./FeatureRoadmapPanel";
 import type { FeatureEntry } from "../../lib/featureCatalog";
-import { CORE_FEATURE_IDS, featureCatalogSummary } from "../../lib/featureCatalog";
+import { CORE_FEATURE_IDS, FEATURE_CATALOG, featureCatalogSummary } from "../../lib/featureCatalog";
 
 beforeEach(() => {
   // 无外部依赖：目录是纯静态数据，面板不需要 mock bridge
@@ -98,8 +98,14 @@ describe("四类状态卡片交互", () => {
     expect(within(card).getByText("功能待完善")).toBeTruthy();
     expect(within(card).getByText("已具备能力")).toBeTruthy();
     expect(within(card).getByText("待补齐")).toBeTruthy();
-    // 缺口具体可见，而不是一句空话（场景实体/管理界面已交付，缺口改为进入侧边界）
-    expect(within(card).getByText(/直接进入的取消与超时/)).toBeTruthy();
+    // 缺口具体可见，而不是一句空话；进入取消/超时已交付，剩余缺口是退出场景等。
+    const scene = FEATURE_CATALOG.find((entry) => entry.title === "场景工作区");
+    expect(scene?.status).toBe("partial");
+    expect(scene?.missingFeatures.length).toBeGreaterThan(0);
+    expect(within(card).getAllByText(/「退出场景」动作/).length).toBeGreaterThan(0);
+    for (const gap of scene?.missingFeatures ?? []) {
+      expect(within(card).getByText(gap)).toBeTruthy();
+    }
   });
 
   it("implemented：全局快速捕获落地后显示已实现横幅并给出现有入口", () => {

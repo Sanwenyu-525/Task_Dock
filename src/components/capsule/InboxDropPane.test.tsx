@@ -25,6 +25,7 @@ const readShelfText = vi.fn();
 const copyClipboardText = vi.fn();
 const updateShelfItem = vi.fn();
 const revealShelfItem = vi.fn();
+const deleteShelfItems = vi.fn();
 const dragOut = vi.fn();
 const openDialog = vi.fn();
 
@@ -74,6 +75,7 @@ vi.mock("../../lib/bridge", () => ({
   shelfUpdate: (...a: unknown[]) => updateShelfItem(...a),
   shelfRevealItem: (...a: unknown[]) => revealShelfItem(...a),
   shelfDragOut: (...a: unknown[]) => dragOut(...a),
+  shelfDelete: (...a: unknown[]) => deleteShelfItems(...a),
   clipboardCopyText: (...a: unknown[]) => copyClipboardText(...a),
   shelfStats: vi.fn(async () => ({
     total: 0,
@@ -101,6 +103,7 @@ import InboxDropPane from "./InboxDropPane";
 import { useDropTargetsStore, __resetDropSubmitGuard } from "../../store/useDropTargetsStore";
 import { useShelfStore, __resetShelfRecentCache } from "../../store/useShelfStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
+import { useUiStore } from "../../store/useUiStore";
 import { __resetFileDrop } from "../../lib/fileDrop";
 
 function target(over: Partial<Record<string, unknown>> = {}) {
@@ -209,6 +212,13 @@ beforeEach(() => {
   );
   revealShelfItem.mockReset();
   revealShelfItem.mockResolvedValue(undefined);
+  deleteShelfItems.mockReset();
+  deleteShelfItems.mockResolvedValue({
+    deleted: 1,
+    skipped: 0,
+    freed_bytes: 0,
+    failed_files: 0,
+  });
   dragOut.mockReset();
   dragOut.mockResolvedValue({ effect: "none", count: 0, missing_ids: [] });
   openDialog.mockResolvedValue(null);
@@ -234,6 +244,7 @@ beforeEach(() => {
     lastTargetId: null,
     manageRequest: 0,
   });
+  useUiStore.setState({ diagnosticsOperationRequest: null });
 });
 
 afterEach(() => {
@@ -288,7 +299,102 @@ describe("InboxDropPane", () => {
     expect(typeof dropToDirectory.mock.calls[0][2]).toBe("string");
 
     await screen.findByText(/成功 1 项 · 跳过 0 项 · 失败 0 项/);
+    // 全部成功：没有失败诊断可看，不出现「查看诊断」入口。
+    expect(screen.queryByRole("button", { name: "查看诊断" })).toBeNull();
     document.elementFromPoint = original;
+  });
+
+  it("投递失败 → 结果条提供「查看诊断」，导航成功后下发该批次 operation_id", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    dropToDirectory.mockResolvedValue(
+      report({
+        success: 0,
+        failed: 1,
+        entries: [
+          {
+            source: "C:\\a.txt",
+            display_name: "a.txt",
+            target: "D:\\Work\\a.txt",
+            status: "failed",
+            reason: "拒绝访问",
+          },
+        ],
+      }),
+    );
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await flush();
+
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+    emit({ type: "enter", position: { x: 10, y: 10 }, paths: [] });
+    emit({ type: "over", position: { x: 10, y: 10 } });
+    emit({ type: "drop", position: { x: 10, y: 10 }, paths: ["C:\\a.txt"] });
+    await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看诊断" }));
+    expect(openFullAppMock).toHaveBeenCalledWith("diagnostics", expect.any(Function));
+    // 意图在导航成功后的 after 中下发，携带后端原样返回的批次 id。
+    expect(useUiStore.getState().diagnosticsOperationRequest).toEqual({
+      token: 1,
+      operationId: "b1",
+    });
+    document.elementFromPoint = original;
+  });
+
+  it("诊断导航被保存中拒绝 → 提示失败且不残留一次性意图", async () => {
+    openFullAppMock.mockImplementationOnce(() => "blocked");
+    dropTargets.mockResolvedValue([target()]);
+    dropToDirectory.mockResolvedValue(
+      report({
+        success: 0,
+        partial: 1,
+        entries: [
+          {
+            source: "C:\\a.txt",
+            display_name: "a.txt",
+            target: "D:\\Work\\a.txt",
+            status: "partial",
+            reason: "部分内容写入失败",
+          },
+        ],
+      }),
+    );
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await flush();
+
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+    emit({ type: "enter", position: { x: 10, y: 10 }, paths: [] });
+    emit({ type: "over", position: { x: 10, y: 10 } });
+    emit({ type: "drop", position: { x: 10, y: 10 }, paths: ["C:\\a.txt"] });
+    await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看诊断" }));
+    await screen.findByText(/无法打开诊断中心/);
+    expect(useUiStore.getState().diagnosticsOperationRequest).toBeNull();
+    document.elementFromPoint = original;
+  });
+
+  it("拖入提示渲染在目标网格之后，不改变卡片几何（自拖放命中回归）", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await flush();
+
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    const hint = await screen.findByText("把文件拖到目标卡片上");
+    const grid = container.querySelector(".cap-drop-grid") as HTMLElement;
+    expect(grid).toBeTruthy();
+    // 提示条必须在网格之后：从暂存架拖出的原生 OLE 事件在拖拽结束后才处理，
+    // 提示条若插在网格上方，卡片会先下移，随后 drop 按真实坐标命中失败。
+    expect(
+      grid.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    emit({ type: "leave" });
   });
 
   it("未命中任何卡片 → 不执行任何文件操作，并清除高亮", async () => {
@@ -561,6 +667,101 @@ describe("InboxDropPane", () => {
     expect(listRecent).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 4, offset: 0 }),
     );
+  });
+
+  it("最近暂存按文件类型显示不同图标与短类型名", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({
+      items: [
+        shelfItem(),
+        shelfItem({
+          id: "s2",
+          kind: "image",
+          display_name: "截图.png",
+          file_ext: "png",
+        }),
+        shelfItem({
+          id: "s3",
+          kind: "folder",
+          display_name: "项目目录",
+          original_path: "D:\\Work\\项目目录",
+          file_ext: null,
+        }),
+      ],
+      total: 3,
+    });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("报告.pdf");
+
+    expect(screen.getByText("PDF 文档 · 引用原文件")).toBeTruthy();
+    expect(screen.getByText("PNG 图片 · 引用原文件")).toBeTruthy();
+    expect(screen.getByText("文件夹 · 引用原文件")).toBeTruthy();
+
+    const icons = container.querySelectorAll(".cap-shelf-recent-icon");
+    expect(icons[0].className).toContain("file-tone-doc");
+    expect(icons[1].className).toContain("file-tone-image");
+    expect(icons[2].className).toContain("file-tone-folder");
+  });
+
+  it("最近暂存可删除：按钮先确认，成功后刷新并提示", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({ items: [shelfItem()], total: 1 });
+    render(<InboxDropPane />);
+    await screen.findByText("报告.pdf");
+
+    fireEvent.click(screen.getByRole("button", { name: "删除「报告.pdf」" }));
+    const confirm = screen.getByRole("group", { name: "删除「报告.pdf」" });
+    expect(within(confirm).getByText(/只删暂存记录/)).toBeTruthy();
+    // 原删除按钮已卸载：焦点先落到「取消」，键盘用户不会丢失位置。
+    expect(document.activeElement).toBe(
+      within(confirm).getByRole("button", { name: "取消" }),
+    );
+
+    fireEvent.click(within(confirm).getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("group", { name: "删除「报告.pdf」" })).toBeNull();
+    expect(deleteShelfItems).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除「报告.pdf」" }));
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "删除「报告.pdf」" })).getByRole(
+        "button",
+        { name: "删除" },
+      ),
+    );
+    await waitFor(() => expect(deleteShelfItems).toHaveBeenCalledWith(["s1"], false));
+    await screen.findByText("已删除 1 项");
+  });
+
+  it("受保护条目删除需明确提示，确认后传 includeProtected", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({
+      items: [shelfItem({ favorite: true })],
+      total: 1,
+    });
+    render(<InboxDropPane />);
+    await screen.findByText("报告.pdf");
+
+    fireEvent.click(screen.getByRole("button", { name: "删除「报告.pdf」" }));
+    expect(screen.getByText(/已收藏\/置顶\/被场景引用/)).toBeTruthy();
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "删除「报告.pdf」" })).getByRole(
+        "button",
+        { name: "删除" },
+      ),
+    );
+    await waitFor(() => expect(deleteShelfItems).toHaveBeenCalledWith(["s1"], true));
+  });
+
+  it("更多菜单同样提供删除入口", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({ items: [shelfItem()], total: 1 });
+    render(<InboxDropPane />);
+    await screen.findByText("报告.pdf");
+
+    fireEvent.click(screen.getByRole("button", { name: "「报告.pdf」更多操作" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "删除" }));
+    expect(screen.getByRole("group", { name: "删除「报告.pdf」" })).toBeTruthy();
+    expect(deleteShelfItems).not.toHaveBeenCalled();
   });
 
   it("最近暂存的更多菜单可复制文件/路径，不改变列表", async () => {
@@ -837,5 +1038,16 @@ describe("InboxDropPane", () => {
 
     fireEvent.click(within(foot).getByRole("button", { name: "取消" }));
     await screen.findByText("工作资料");
+  });
+
+  it("诊断意图一次性消费：取走后清空，重复消费返回 null", () => {
+    useUiStore.getState().requestDiagnosticsOperation("b9");
+    expect(useUiStore.getState().diagnosticsOperationRequest).toEqual({
+      token: 1,
+      operationId: "b9",
+    });
+    expect(useUiStore.getState().consumeDiagnosticsOperation()).toBe("b9");
+    expect(useUiStore.getState().diagnosticsOperationRequest).toBeNull();
+    expect(useUiStore.getState().consumeDiagnosticsOperation()).toBeNull();
   });
 });

@@ -241,6 +241,8 @@ describe("startOperation 生命周期", () => {
     expect(stage.metadata).toEqual({ step: 1 });
 
     expect(success.level).toBe("INFO");
+    // 终态 event 必须与 status 一致，而不是继承 started。
+    expect(success.event).toBe("success");
     expect(success.status).toBe("success");
     expect(success.message).toBe("done");
     expect(success.metadata).toEqual({ rows: 2 });
@@ -266,12 +268,40 @@ describe("startOperation 生命周期", () => {
       level: "CRITICAL",
       module: "task",
       action: "delete_task",
+      event: "failed",
       status: "failed",
       error_code: "DATA_INTEGRITY_ERROR",
       message: "操作失败",
     });
     expect(typeof failed.duration_ms).toBe("number");
     expect(failed.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("cancel / recovered 的终态 event 与 status 一致", async () => {
+    const cancelled = diag.startOperation("task", "cancel_task");
+    cancelled.cancel("用户取消");
+    const recovered = diag.startOperation("task", "recover_task");
+    recovered.recovered("已恢复");
+    const failed = diag.startOperation("task", "fail_task");
+    failed.fail({ code: "IO_ERROR", message: "写库失败" });
+
+    await flushAll();
+
+    const terminal = (id: string) => {
+      const events = allEvents().filter((event) => event.operation_id === id);
+      return events[events.length - 1];
+    };
+    expect(terminal(cancelled.id)).toMatchObject({
+      event: "cancelled",
+      status: "cancelled",
+      message: "用户取消",
+    });
+    expect(terminal(recovered.id)).toMatchObject({
+      event: "recovered",
+      status: "recovered",
+      message: "已恢复",
+    });
+    expect(terminal(failed.id)).toMatchObject({ event: "failed", status: "failed" });
   });
 });
 

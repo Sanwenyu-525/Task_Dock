@@ -103,7 +103,7 @@ function seedTasks() {
 beforeEach(() => {
   vi.clearAllMocks();
   useUiStore.setState({ editor: { open: false, task: null } });
-  // jsdom 的 requestAnimationFrame 兜底（搜索按钮展开后用 rAF 聚焦输入框）
+  // jsdom 的 requestAnimationFrame 兜底（退出编辑态后恢复列表滚动位置）
   vi.stubGlobal(
     "requestAnimationFrame",
     (cb: FrameRequestCallback) => setTimeout(() => cb(0), 0) as unknown as number,
@@ -130,7 +130,7 @@ describe("TasksPanel 筛选交互", () => {
     expect(useTasksStore.getState().filter).toEqual(currentFilter);
   });
 
-  it("点击搜索按钮展开输入框，输入关键词过滤任务列表", async () => {
+  it("常驻搜索框输入关键词即时过滤任务列表", async () => {
     const user = userEvent.setup();
     seedTasks();
     render(<TasksPanel />);
@@ -519,6 +519,31 @@ describe("统计卡逾期入口", () => {
   });
 });
 
+describe("窄口径下钻空态", () => {
+  it("只有未完成列表使用 due_today 空态说明，切到已完成不误导去「今日」看逾期", () => {
+    useNavigationStore.setState({ linksByTask: {}, linksError: null });
+    useTasksStore.setState({
+      tasks: [],
+      loading: false,
+      error: null,
+      stats: { pending: 0, overdue: 0, due_today: 0, completed_today: 0, next_due_at: null },
+      filter: { view: "due_today", status: "pending", sort: "due" },
+      exitHolds: [],
+    });
+    const { unmount } = render(<TasksPanel />);
+    expect(screen.getByText("今天没有到期任务")).toBeTruthy();
+    expect(screen.getByText(/切到「今日」/)).toBeTruthy();
+
+    unmount();
+    useTasksStore.setState({
+      filter: { view: "due_today", status: "completed", sort: "due" },
+    });
+    render(<TasksPanel />);
+    expect(screen.getByText("这里还很清爽")).toBeTruthy();
+    expect(screen.queryByText(/切到「今日」/)).toBeNull();
+  });
+});
+
 describe("任务页统计概览", () => {
   it("三卡只保留「数值 + 标签」，不重复绘制图标", () => {
     seedTasks();
@@ -549,6 +574,12 @@ describe("任务页统计概览", () => {
     expect(useTasksStore.getState().filter).toMatchObject({ view: "all", status: "pending" });
 
     fireEvent.click(cards[1]);
+    // 卡片数值来自窄口径 due_today，下钻必须用同一口径，列表条数才与卡片一致
+    expect(useTasksStore.getState().filter).toMatchObject({ view: "due_today", status: "pending" });
+    expect(screen.getByRole("button", { name: "今日" }).getAttribute("aria-pressed")).toBe("true");
+
+    // 点「今日」分段回到含无期限/逾期的完整今日视图
+    fireEvent.click(screen.getByRole("button", { name: "今日" }));
     expect(useTasksStore.getState().filter).toMatchObject({ view: "today", status: "pending" });
 
     fireEvent.click(cards[2]);

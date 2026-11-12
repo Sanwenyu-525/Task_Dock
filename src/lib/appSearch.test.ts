@@ -7,6 +7,7 @@
 import { describe, expect, it } from "vitest";
 import {
   matchRank,
+  prioritizeFavoritesAndRunning,
   searchApps,
   sortTargetsForDisplay,
   APP_PAGE_SIZE,
@@ -180,6 +181,34 @@ describe("快捷目标展示排序（完整面板与胶囊共用）", () => {
     const input = [t("B"), t("A")];
     sortTargetsForDisplay(input);
     expect(input.map((x) => x.display_name)).toEqual(["B", "A"]);
+  });
+});
+
+describe("收藏/运行中置顶（完整面板与胶囊共用）", () => {
+  const entry = (name: string, favorite = false) => ({ name, favorite });
+
+  it("收藏最前、运行中其次、其余保持输入顺序", () => {
+    const ordered = prioritizeFavoritesAndRunning(
+      [entry("B"), entry("C", true), entry("D"), entry("A")],
+      (x) => x.favorite,
+      (x) => x.name === "D",
+    );
+    expect(ordered.map((x) => x.name)).toEqual(["C", "D", "B", "A"]);
+  });
+
+  it("收藏本身在运行中也不重复，仍归收藏组", () => {
+    const ordered = prioritizeFavoritesAndRunning(
+      [entry("运行"), entry("收藏且运行", true), entry("普通")],
+      (x) => x.favorite,
+      (x) => x.name !== "普通",
+    );
+    expect(ordered.map((x) => x.name)).toEqual(["收藏且运行", "运行", "普通"]);
+  });
+
+  it("不修改入参数组", () => {
+    const input = [entry("B"), entry("A", true)];
+    prioritizeFavoritesAndRunning(input, (x) => x.favorite, () => false);
+    expect(input.map((x) => x.name)).toEqual(["B", "A"]);
   });
 });
 

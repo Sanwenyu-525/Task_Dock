@@ -54,7 +54,7 @@ describe("导航自定义区块", () => {
     useUiStore.setState({ tab: "apps" });
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText(/常驻 12 \/ 14 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 13 \/ 15 项/)).toBeTruthy();
     const appsSwitch = screen.getByRole("switch", {
       name: "应用导航入口显示",
     }) as HTMLInputElement;
@@ -74,7 +74,7 @@ describe("导航自定义区块", () => {
     expect(
       (useSettingsStore.getState().settings?.navigation_layout as { left: string[] }).left,
     ).not.toContain("apps");
-    expect(screen.getByText(/常驻 11 \/ 14 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 12 \/ 15 项/)).toBeTruthy();
   });
 
   it("「设置」是锁定入口：开关禁用、无排序按钮并标注固定", () => {
@@ -199,7 +199,7 @@ describe("导航自定义区块 · 英文", () => {
     setLocalePreference("en-US");
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText("12 of 14 pinned")).toBeTruthy();
+    expect(screen.getByText("13 of 15 pinned")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Full panel" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Docked capsule" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Show Tasks navigation entry" })).toBeTruthy();

@@ -185,6 +185,27 @@ describe("AppsPanel 应用中心", () => {
     await waitFor(() => expect(navListTargets).toHaveBeenCalledWith(true));
   });
 
+  it("默认视图按收藏 → 运行中 → 其余置顶，与胶囊应用面板一致", async () => {
+    seed([
+      targetFix({ id: "a", app_key: "zeta", display_name: "Zeta 运行" }),
+      targetFix({ id: "b", app_key: "alpha", display_name: "Alpha 普通" }),
+      targetFix({ id: "c", app_key: "beta", display_name: "Beta 收藏", favorite: true }),
+      targetFix({ id: "d", app_key: "gamma", display_name: "Gamma 托盘" }),
+    ]);
+    vi.mocked(navTargetRunningStates).mockResolvedValue({
+      a: "has_window",
+      d: "process_only",
+      b: "not_running",
+      c: "not_running",
+    });
+    render(<AppsPanel />);
+
+    await waitFor(() => {
+      const names = Array.from(document.querySelectorAll(".apps-tile-name")).map((el) => el.textContent);
+      expect(names).toEqual(["Beta 收藏", "Gamma 托盘", "Zeta 运行", "Alpha 普通"]);
+    });
+  });
+
   it("「运行中」使用后端真实状态快照，不靠使用次数推断", async () => {
     const a = targetFix({ id: "a", app_key: "obsidian", display_name: "Obsidian" });
     const b = targetFix({ id: "b", app_key: "code", display_name: "VS Code", use_count: 9 });

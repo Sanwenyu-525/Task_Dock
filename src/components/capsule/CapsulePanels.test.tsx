@@ -233,6 +233,46 @@ describe("任务面板", () => {
     await waitFor(() => expect(screen.queryByText("整理产品周报")).toBeNull(), { timeout: 2000 });
   });
 
+  it("完成并移出后切到「已完成」仍能看到该任务", async () => {
+    const completed = { ...items[0], status: "completed", completed_at: iso(now) };
+    listTasks.mockImplementation(async (args: { status?: string }) =>
+      args.status === "completed" ? [completed] : items,
+    );
+    toggleTask.mockResolvedValue(completed);
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+
+    act(() => {
+      screen.getByRole("button", { name: "完成「整理产品周报」" }).click();
+    });
+    await waitFor(() => expect(screen.queryByText("整理产品周报")).toBeNull(), { timeout: 2000 });
+
+    act(() => screen.getByRole("tab", { name: "已完成" }).click());
+    await screen.findByText("整理产品周报");
+  });
+
+  it("完成后的移出动画不跨分段：320ms 内切到「已完成」也不会隐藏刚完成项", async () => {
+    const completed = { ...items[0], status: "completed", completed_at: iso(now) };
+    listTasks.mockImplementation(async (args: { status?: string }) =>
+      args.status === "completed" ? [completed] : items,
+    );
+    toggleTask.mockResolvedValue(completed);
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+
+    act(() => {
+      screen.getByRole("button", { name: "完成「整理产品周报」" }).click();
+    });
+    act(() => screen.getByRole("tab", { name: "已完成" }).click());
+    await screen.findByText("整理产品周报");
+
+    // 等过原分段 320ms 的移出定时器，新分段不应被它追加 hidden
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    expect(screen.getByText("整理产品周报")).toBeTruthy();
+  });
+
   it("完成失败必须回滚：任务仍在列表且给出失败提示", async () => {
     listTasks.mockResolvedValue(items);
     toggleTask.mockRejectedValue(new Error("db locked"));
@@ -404,13 +444,186 @@ describe("任务面板", () => {
     expect(listTasks).toHaveBeenCalledTimes(6);
   });
 
-  it("已完成的条目不提供「再点一次完成」的假入口", async () => {
+  it("已完成的条目不提供「再点一次完成」的假入口，勾选圈只用于勾回", async () => {
     listTasks.mockResolvedValue([
       task("t4", "整理依赖清单", null, { status: "completed", completed_at: iso(now - 120_000) }),
     ]);
     render(<TasksLite />);
     await screen.findByText("整理依赖清单");
     expect(screen.queryByRole("button", { name: "完成「整理依赖清单」" })).toBeNull();
+    expect(screen.getByRole("button", { name: "将「整理依赖清单」恢复为待办" })).toBeTruthy();
+  });
+
+  it("完成后可撤销：撤销后任务回到当前列表，而不是只撤掉视觉态", async () => {
+    const original = items[0];
+    let done = false;
+    listTasks.mockImplementation(async () => [
+      done ? { ...original, status: "completed" as const, completed_at: iso(now) } : original,
+      ...items.slice(1),
+    ]);
+    toggleTask.mockImplementation(async () => {
+      done = !done;
+      return done
+        ? { ...original, status: "completed" as const, completed_at: iso(now) }
+        : original;
+    });
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+
+    act(() => {
+      screen.getByRole("button", { name: "完成「整理产品周报」" }).click();
+    });
+    const undoBtn = await screen.findByRole("button", { name: "撤销完成「整理产品周报」" });
+    await waitFor(() => expect(screen.queryByText("整理产品周报")).toBeNull(), { timeout: 2000 });
+
+    act(() => undoBtn.click());
+    // 撤销走真实 toggle + 刷新：任务重新出现在列表，而底栏确认已撤销
+    expect(await screen.findByText("整理产品周报")).toBeTruthy();
+    await screen.findByText("已撤销完成");
+    await waitFor(() => expect(toggleTask).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("button", { name: "撤销完成「整理产品周报」" })).toBeNull();
+  });
+
+  it("已完成条目可直接勾回：点击勾选圈恢复为待办", async () => {
+    const completed = task("t4", "整理依赖清单", null, {
+      status: "completed",
+      completed_at: iso(now - 120_000),
+    });
+    const pending = task("t4", "整理依赖清单", null);
+    let done = true;
+    listTasks.mockImplementation(async () => [done ? completed : pending]);
+    toggleTask.mockImplementation(async () => {
+      done = false;
+      return pending;
+    });
+    render(<TasksLite />);
+    await screen.findByText("整理依赖清单");
+
+    act(() => {
+      screen.getByRole("button", { name: "将「整理依赖清单」恢复为待办" }).click();
+    });
+    expect(await screen.findByRole("button", { name: "完成「整理依赖清单」" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "将「整理依赖清单」恢复为待办" })).toBeNull();
+    await screen.findByText("已重新打开");
+  });
+
+  it("同一任务的完成在途时连点只发一次请求，其他任务仍可操作", async () => {
+    // 独立 ID：本用例故意让 IPC 永不返回，不能污染后续用例的同一任务。
+    listTasks.mockResolvedValue([task("hang1", "在途任务", null), task("hang2", "另一个任务", null)]);
+    // 永不返回：模拟第一次 IPC 还没回来时的第二次点击。
+    toggleTask.mockReturnValue(new Promise(() => {}));
+    render(<TasksLite />);
+    await screen.findByText("在途任务");
+
+    const first = screen.getByRole("button", { name: "完成「在途任务」" });
+    fireEvent.click(first);
+    fireEvent.click(first);
+    // 另一个任务不受该任务在途锁影响
+    fireEvent.click(screen.getByRole("button", { name: "完成「另一个任务」" }));
+
+    expect(toggleTask.mock.calls.map((call) => call[0])).toEqual(["hang1", "hang2"]);
+  });
+
+  it("完成失败后可直接重试：失败回滚，第二次成功才移出", async () => {
+    listTasks.mockResolvedValue(items);
+    let attempts = 0;
+    toggleTask.mockImplementation(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("db locked");
+      return { ...items[0], status: "completed" as const, completed_at: iso(now) };
+    });
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+
+    fireEvent.click(screen.getByRole("button", { name: "完成「整理产品周报」" }));
+    await screen.findByText("完成失败，已回滚");
+    expect(screen.getByText("整理产品周报")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "完成「整理产品周报」" }));
+    await waitFor(() => expect(toggleTask).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("整理产品周报")).toBeNull(), { timeout: 2000 });
+  });
+
+  it("重复任务完成一期后显示下一期，不隐藏也不提供「撤销」", async () => {
+    const recurring = task("r1", "每日样例", now, {
+      recurrence: {
+        id: "rule-r1",
+        freq: "daily",
+        interval: 1,
+        by_weekday: [],
+        by_monthday: null,
+        until: null,
+        anchor: iso(now),
+      },
+    });
+    const next = { ...recurring, due_at: iso(now + 86_400_000) };
+    let current = recurring;
+    listTasks.mockImplementation(async () => [current]);
+    toggleTask.mockImplementation(async () => {
+      current = next;
+      return next;
+    });
+    render(<TasksLite />);
+    await screen.findByText("每日样例");
+
+    act(() => {
+      screen.getByRole("button", { name: "完成「每日样例」" }).click();
+    });
+    await waitFor(() => expect(toggleTask).toHaveBeenCalledTimes(1));
+
+    // 仍是同一任务（期次推进），显示刷新后的下一期；不伪装成已完成。
+    expect(await screen.findByText("明天 12:00")).toBeTruthy();
+    expect(screen.getByText("每日样例")).toBeTruthy();
+    expect(await screen.findByText(/已完成本期，下一期/)).toBeTruthy();
+    // 第二次 toggle 会继续推进期次，绝不当作撤销入口。
+    expect(screen.queryByRole("button", { name: /撤销完成/ })).toBeNull();
+    expect(toggleTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("提交期间输入的第二条不被旧响应清空", async () => {
+    listTasks.mockResolvedValue(items);
+    let finish!: (value: unknown) => void;
+    createFromQuickAdd.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+
+    const input = screen.getByLabelText("快速添加任务") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "第一条" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(createFromQuickAdd).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(input, { target: { value: "第二条" } });
+    await act(async () => {
+      finish(task("n1", "第一条", null));
+    });
+    expect(input.value).toBe("第二条");
+  });
+
+  it("提交期间处于输入法组合态时不清空输入", async () => {
+    listTasks.mockResolvedValue(items);
+    let finish!: (value: unknown) => void;
+    createFromQuickAdd.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<TasksLite />);
+    await screen.findByText("整理产品周报");
+
+    const input = screen.getByLabelText("快速添加任务") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "第一条" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    // composition 期间 value 可能还没有新内容：不能按「未改动」清空旧文本
+    fireEvent.compositionStart(input);
+    await act(async () => {
+      finish(task("n1", "第一条", null));
+    });
+    expect(input.value).toBe("第一条");
+    fireEvent.compositionEnd(input);
   });
 });
 
@@ -681,6 +894,47 @@ describe("Agent 面板", () => {
     ],
   };
 
+  it("关注优先级与完整页一致：等待介入排在失败之前", async () => {
+    useAgentsStore.setState({
+      snapshot: {
+        sources: [],
+        instances: [],
+        sessions: [
+          {
+            id: "s-w", source_id: "codex", external_id: "ext-w", title: "等待会话",
+            status: "waiting", first_seen_at: iso(now - 60_000), last_seen_at: iso(now - 1000),
+            last_run_id: "r-w",
+          },
+          {
+            id: "s-f", source_id: "codex", external_id: "ext-f", title: "失败会话",
+            status: "failed", first_seen_at: iso(now - 60_000), last_seen_at: iso(now - 500),
+            last_run_id: "r-f",
+          },
+        ],
+        runs: [
+          // 失败的时间更新，仍应排在等待之后：优先级高于时间排序。
+          {
+            // failed 只在近 1 小时窗口内计入实时列表，用真实当前时间而非测试锚点。
+            id: "r-f", session_id: "s-f", source_id: "codex", external_run_id: null,
+            task_title: "失败任务", status: "failed", started_at: iso(now - 60_000),
+            updated_at: new Date(Date.now() - 500).toISOString(),
+            ended_at: new Date(Date.now() - 500).toISOString(), pending_items: [],
+          },
+          {
+            id: "r-w", session_id: "s-w", source_id: "codex", external_run_id: null,
+            task_title: "等待任务", status: "waiting", started_at: iso(now - 60_000),
+            updated_at: iso(now - 1000), ended_at: null, pending_items: [],
+          },
+        ],
+      },
+    });
+    const { container } = render(<AgentsLite />);
+    await screen.findByText("等待任务");
+    const names = Array.from(container.querySelectorAll(".cap-agent-name"))
+      .map((el) => el.textContent);
+    expect(names).toEqual(["等待任务", "失败任务"]);
+  });
+
   it("状态标签带文字，会话数/运行数来自快照", async () => {
     useAgentsStore.setState({ snapshot });
     const { container } = render(<AgentsLite />);
@@ -756,7 +1010,20 @@ describe("Agent 面板", () => {
     await screen.findByText("重构登录");
     act(() => screen.getByRole("button", { name: "打开 重构登录 的会话" }).click());
     await screen.findByText("打开会话失败");
-    expect(openAgentSession).toHaveBeenCalledWith("codex", "s1");
+    // 后端按 external_id 校验会话；run.session_id（s1）是本地行 ID，传它必然失败。
+    expect(openAgentSession).toHaveBeenCalledWith("codex", "x");
+  });
+
+  it("会话不在快照明细时不提供必然失败的「打开」，改为进完整页", async () => {
+    useAgentsStore.setState({ snapshot: { ...snapshot, sessions: [] } });
+    useUiStore.setState({ tab: "tasks", pendingTab: null });
+    render(<AgentsLite />);
+    await screen.findByText("重构登录");
+
+    expect(screen.queryByRole("button", { name: "打开 重构登录 的会话" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "查看 重构登录" }));
+    expect(useUiStore.getState().tab).toBe("agents");
+    expect(openAgentSession).not.toHaveBeenCalled();
   });
 
   it("底栏提供「行动」入口：只导航到完整行动页，不在胶囊内加载聚合 feed", async () => {

@@ -7,6 +7,7 @@ import {
   CONTENT_MAX,
   NOTE_MAX,
   TASK_TITLE_MAX,
+  appendDictation,
   composeSubmitInput,
   describeDraft,
   draftReducer,
@@ -22,6 +23,7 @@ import {
   normalizeKind,
   suggestKind,
   validateCapture,
+  voiceListeningMessage,
   wrapKindIndex,
 } from "./captureUtils";
 
@@ -218,5 +220,54 @@ describe("captureUtils / 幂等键与错误文案", () => {
     expect(formatError("网络中断")).toBe("网络中断");
     expect(formatError(new Error("   "))).toBe("未知错误");
     expect(formatError(null)).toBe("未知错误");
+  });
+});
+
+describe("captureUtils / 语音听写", () => {
+  it("appendDictation 不改已有正文，中文直接拼接", () => {
+    expect(appendDictation("", "明天十点开会")).toEqual({
+      content: "明天十点开会",
+      overflow: false,
+    });
+    expect(appendDictation("写周报", "周五前发出去")).toEqual({
+      content: "写周报周五前发出去",
+      overflow: false,
+    });
+    // 已有正文以空白结尾时不再补空格
+    expect(appendDictation("记一下\n", "买牛奶").content).toBe("记一下\n买牛奶");
+  });
+
+  it("appendDictation 只在两个 ASCII 词之间补一个空格", () => {
+    expect(appendDictation("send email", "to Bob").content).toBe("send email to Bob");
+    expect(appendDictation("版本 v2", "beta").content).toBe("版本 v2 beta");
+    // 中文与英文相邻不插空格
+    expect(appendDictation("安装", "Node").content).toBe("安装Node");
+    expect(appendDictation("Node", "安装").content).toBe("Node安装");
+  });
+
+  it("appendDictation 空片段不产生任何变化", () => {
+    expect(appendDictation("已有内容", "   ")).toEqual({
+      content: "已有内容",
+      overflow: false,
+    });
+  });
+
+  it("appendDictation 超出上限时截断并报告 overflow", () => {
+    const existing = "a".repeat(CONTENT_MAX - 3);
+    const result = appendDictation(existing, "bcdef");
+    expect(result.content).toHaveLength(CONTENT_MAX);
+    // 词间空格也占用额度：只剩 2 个字符可写
+    expect(result.content.endsWith("a bc")).toBe(true);
+    expect(result.overflow).toBe(true);
+
+    const full = appendDictation("a".repeat(CONTENT_MAX), "再来一句");
+    expect(full).toEqual({ content: "a".repeat(CONTENT_MAX), overflow: true });
+  });
+
+  it("voiceListeningMessage 对非中文语音包如实说明回退语言", () => {
+    expect(voiceListeningMessage("zh-CN")).toBe("正在听写，点击麦克风结束");
+    expect(voiceListeningMessage("en-US")).toContain("系统未提供中文语音包");
+    expect(voiceListeningMessage("en-US")).toContain("en-US");
+    expect(voiceListeningMessage("")).toContain("系统语音");
   });
 });
