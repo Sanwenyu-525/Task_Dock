@@ -91,7 +91,7 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
   };
 });
 
-import TasksLite from "./TasksLite";
+import TasksLite, { FILTER_STORAGE_KEY } from "./TasksLite";
 import AgentsLite from "./AgentsLite";
 import ClipboardLite from "./ClipboardLite";
 import AppsLite from "./AppsLite";
@@ -210,6 +210,9 @@ beforeEach(() => {
   useNavigationStore.setState({ targets: [], targetsLoaded: false, targetsError: null });
   useSettingsStore.setState({ settings: null });
   clearAppGridOrder();
+  // 任务分段/滚动位置记忆是跨会话的（localStorage）：每个用例从默认分段开始
+  localStorage.removeItem(FILTER_STORAGE_KEY);
+  localStorage.removeItem("taskdock.capsule.tasks.scroll.v1");
 });
 
 afterEach(() => {
@@ -389,7 +392,7 @@ describe("任务面板", () => {
     });
 
     const tabs = screen.getAllByRole("tab").map((el) => el.textContent);
-    expect(tabs).toEqual(["全部", "待办", "今日", "日程", "已完成"]);
+    expect(tabs).toEqual(["全部", "待办", "今日", "日程", "逾期", "已完成"]);
 
     act(() => screen.getByRole("tab", { name: "待办" }).click());
     await screen.findByText("整理产品周报");
@@ -866,8 +869,91 @@ describe("任务分段查询语义", () => {
     act(() => screen.getByRole("tab", { name: "日程" }).click());
     await screen.findByText("暂无日程任务");
 
+    act(() => screen.getByRole("tab", { name: "逾期" }).click());
+    await screen.findByText("暂无逾期任务");
+
     act(() => screen.getByRole("tab", { name: "已完成" }).click());
     await screen.findByText("暂无已完成任务");
+  });
+
+  it("逾期分段使用后端 view=overdue 的真实查询，不在本地从 pending 截断", async () => {
+    const pool = [task("b1", "普通待办", now + 3600_000)];
+    const overdueTask = task("ov1", "上周就该交的表", now - 86400_000);
+    listTasks.mockImplementation(async (args: { view?: string }) =>
+      args.view === "overdue" ? [overdueTask] : pool,
+    );
+    render(<TasksLite />);
+    await screen.findByText("普通待办");
+
+    act(() => screen.getByRole("tab", { name: "逾期" }).click());
+    await screen.findByText("上周就该交的表");
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "overdue",
+      status: "pending",
+      sort: "due",
+      limit: 12,
+    });
+  });
+
+  it("分段记忆持久化：重开面板回到上次分段", async () => {
+    const pool = [task("b1", "普通待办", now + 3600_000)];
+    const completed = task("t9", "已收尾的部署", null, {
+      status: "completed",
+      completed_at: iso(now - 60_000),
+    });
+    listTasks.mockImplementation(async (args: { status?: string }) =>
+      args.status === "completed" ? [completed] : pool,
+    );
+    const { unmount } = render(<TasksLite />);
+    await screen.findByText("普通待办");
+
+    act(() => screen.getByRole("tab", { name: "已完成" }).click());
+    await screen.findByText("已收尾的部署");
+    unmount();
+
+    // 重开面板：初始查询直接按记住的「已完成」分段发起
+    render(<TasksLite />);
+    await screen.findByText("已收尾的部署");
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "all",
+      status: "completed",
+      sort: "completed",
+      limit: 12,
+    });
+  });
+
+  it("轻量搜索走后端 search 参数（250ms 防抖），与分段范围叠加", async () => {
+    const pool = [task("b1", "普通待办", now + 3600_000)];
+    const hit = task("q1", "周报归档", now + 3600_000);
+    listTasks.mockImplementation(async (args: { search?: string }) =>
+      args.search ? [hit] : pool,
+    );
+    render(<TasksLite />);
+    await screen.findByText("普通待办");
+    listTasks.mockClear();
+
+    fireEvent.change(screen.getByLabelText("搜索任务"), { target: { value: "周报" } });
+    await waitFor(
+      () =>
+        expect(listTasks).toHaveBeenLastCalledWith(
+          expect.objectContaining({ view: "all", status: "all", search: "周报" }),
+        ),
+      { timeout: 1000 },
+    );
+    await screen.findByText("周报归档");
+  });
+
+  it("滚动位置写入 localStorage（分段切换/重开恢复的数据来源）", async () => {
+    const pool = [task("b1", "普通待办", now + 3600_000)];
+    listTasks.mockResolvedValue(pool);
+    render(<TasksLite />);
+    await screen.findByText("普通待办");
+    const list = document.querySelector(".cap-list") as HTMLElement;
+    Object.defineProperty(list, "scrollTop", { value: 88, configurable: true, writable: true });
+    fireEvent.scroll(list);
+    expect(JSON.parse(localStorage.getItem("taskdock.capsule.tasks.scroll.v1") ?? "{}")).toEqual({
+      all: 88,
+    });
   });
 });
 
