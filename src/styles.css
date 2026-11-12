@@ -13677,6 +13677,46 @@ html[data-theme="dark"] .resource-page {
 @media (hover: none) {
   .cap-app-del { opacity: 1; pointer-events: auto; }
 }
+/* 一键收藏（2026-11-13）：与删除同一套角标语言，位于删除左侧（right:20px）。
+   已收藏常显（用户显式选择不能只靠悬停发现）；未收藏与删除一样悬停出现。 */
+.cap-app-fav {
+  position: absolute;
+  top: 0;
+  right: 20px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cap-text-2);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.cap-app-slot:hover .cap-app-fav,
+.cap-app-slot:focus-within .cap-app-fav,
+.cap-app-fav:focus-visible,
+.cap-app-fav.is-on {
+  opacity: 1;
+  pointer-events: auto;
+}
+.cap-app-fav.is-on { color: var(--accent); }
+.cap-app-fav:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.cap-app-fav:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.cap-app-fav:disabled { opacity: 0.35; pointer-events: none; }
+@media (hover: none) {
+  .cap-app-fav { opacity: 1; pointer-events: auto; }
+}
 /* 运行中磁贴动作条：磁贴**名称区**的一条迷你工具条，悬停/键盘聚焦时与名称
    交叉淡入（名称淡出、动作条淡入），不遮图标、不改格子尺寸。只放运行态动作
    （关闭窗口 / 退出应用），删除固定在磁贴右上角；未运行磁贴不渲染本动作条。 */

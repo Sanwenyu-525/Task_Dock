@@ -71,6 +71,8 @@ function reset() {
     lite: null,
     liteScope: "all",
     liteTarget: "all",
+    liteSearch: "",
+    liteSearchTarget: "",
     liteLoading: false,
     liteError: null,
     exitHolds: [],
@@ -257,5 +259,67 @@ describe("任务保存操作链", () => {
     } finally {
       setDiagnosticTransport(null);
     }
+  });
+});
+
+describe("轻量列表分段/搜索（W2）", () => {
+  it("逾期分段走后端 view=overdue 的真实查询", async () => {
+    listMock.mockResolvedValue([taskOf("ov1")]);
+    await useTasksStore.getState().loadLite("overdue");
+    expect(listMock).toHaveBeenCalledWith({ view: "overdue", status: "pending", sort: "due", limit: 12 });
+    const s = useTasksStore.getState();
+    expect(s.liteScope).toBe("overdue");
+    expect(s.lite?.map((t) => t.id)).toEqual(["ov1"]);
+  });
+
+  it("搜索词与范围一起下发；数据落地后 liteSearch 与 liteScope 同步", async () => {
+    listMock.mockResolvedValue([taskOf("q1")]);
+    await useTasksStore.getState().loadLite("pending", { search: "周报" });
+    expect(listMock).toHaveBeenCalledWith({
+      view: "all",
+      status: "pending",
+      sort: "due",
+      limit: 12,
+      search: "周报",
+    });
+    const s = useTasksStore.getState();
+    expect(s.liteSearch).toBe("周报");
+    expect(s.liteSearchTarget).toBe("周报");
+  });
+
+  it("同范围同搜索词在途合并；搜索词变化不被合并，旧响应不覆盖新搜索", async () => {
+    const first = deferred<Task[]>();
+    const second = deferred<Task[]>();
+    listMock.mockImplementation((f: TaskFilter = {}) => (f.search === "旧词" ? first.promise : second.promise));
+
+    const p1 = useTasksStore.getState().loadLite("pending", { search: "旧词" });
+    // 同范围+同搜索词：合并为一次
+    const p2 = useTasksStore.getState().loadLite("pending", { search: "旧词" });
+    // 搜索词变化：立即发新请求
+    const p3 = useTasksStore.getState().loadLite("pending", { search: "新词" });
+
+    second.resolve([taskOf("new1")]);
+    await p3;
+    expect(useTasksStore.getState().lite?.map((t) => t.id)).toEqual(["new1"]);
+    expect(useTasksStore.getState().liteSearch).toBe("新词");
+
+    // 旧搜索的响应迟到：不得覆盖
+    first.resolve([taskOf("old1")]);
+    await p1;
+    expect(useTasksStore.getState().lite?.map((t) => t.id)).toEqual(["new1"]);
+    expect(useTasksStore.getState().liteScope).toBe("pending");
+    expect(useTasksStore.getState().liteSearch).toBe("新词");
+    void p2;
+  });
+
+  it("releaseLite 复位分段与搜索词（重开面板重新确认）", async () => {
+    listMock.mockResolvedValue([taskOf("a")]);
+    await useTasksStore.getState().loadLite("overdue", { search: "关键词" });
+    useTasksStore.getState().releaseLite();
+    const s = useTasksStore.getState();
+    expect(s.lite).toBeNull();
+    expect(s.liteScope).toBe("all");
+    expect(s.liteSearch).toBe("");
+    expect(s.liteSearchTarget).toBe("");
   });
 });

@@ -1657,15 +1657,17 @@ describe("二级页面统一关闭入口", () => {
 });
 
 describe("列表口径与展示行数一致", () => {
-  it("副标题不报载入快照总数：最多展示 8 条就写 8 条", async () => {
+  it("副标题报告实际渲染行数；后端总数更大时补充范围说明", async () => {
     const twenty = Array.from({ length: 20 }, (_, i) =>
       item({ id: `lite-cap-${i}`, kind: "text", title: `记录 ${i}`, preview: `预览 ${i}` }),
     );
-    clipboardView.mockResolvedValue(view(twenty));
+    // 后端按每类上限返回前 30 条；total_items 表示该筛选下的真实总数
+    clipboardView.mockResolvedValue({ ...view(twenty), total_items: 45 });
     render(<ClipboardLite />);
     await screen.findByText("记录 0");
-    expect(screen.getByText("最近 8 条")).toBeTruthy();
-    expect(screen.queryByText(/最近 20 条/)).toBeNull();
+    expect(screen.getByText("最近 20 条 · 共 45 条")).toBeTruthy();
+    // 渲染行数 = 全部 20 条（面板不再本地截断为 8 条）
+    expect(screen.getByText("记录 19")).toBeTruthy();
   });
 
   it("截图组计入实际渲染行数，并按可见组数标注", async () => {

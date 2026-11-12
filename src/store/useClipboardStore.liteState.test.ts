@@ -19,7 +19,7 @@ vi.mock("../lib/bridge", () => ({
 }));
 
 import { clipboardStatus, clipboardView, type ClipboardStatus, type ClipboardView } from "../lib/bridge";
-import { clipboardMonitorState, useClipboardStore } from "./useClipboardStore";
+import { clipboardMonitorState, resetClipboardRequestState, useClipboardStore } from "./useClipboardStore";
 
 const mockedView = vi.mocked(clipboardView);
 const mockedStatus = vi.mocked(clipboardStatus);
@@ -51,12 +51,17 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockedView.mockReset();
   mockedStatus.mockReset();
+  // 代际/每类缓存一并重置：跨用例的缓存命中会让「再次查询」变成空操作
+  resetClipboardRequestState();
   useClipboardStore.setState({
     lite: null,
     liteLoading: false,
     liteStatus: "loading",
     liteError: null,
     monitor: "checking",
+    liteFilter: "all|",
+    liteFilterTarget: "all|",
+    liteTotal: null,
   });
 });
 
@@ -90,7 +95,8 @@ describe("loadLite 数据状态机", () => {
     mockedView.mockResolvedValue(viewOf(["keep-1"]));
     await useClipboardStore.getState().loadLite();
     mockedView.mockRejectedValue(new Error("boom"));
-    await useClipboardStore.getState().loadLite();
+    // 重试路径必须 force：同键普通查询命中每类缓存是复用，不是刷新
+    await useClipboardStore.getState().loadLite(undefined, { force: true });
     const s = useClipboardStore.getState();
     expect(s.liteStatus).toBe("error");
     expect(s.lite?.items.map((i) => i.id)).toEqual(["keep-1"]);
@@ -183,5 +189,60 @@ describe("clipboardMonitorState 派生纯函数（六态映射）", () => {
   it("enabled 且未暂停：monitoring=true → ok，否则 → notRunning（监听线程未运行）", () => {
     expect(clipboardMonitorState(statusOf({ monitoring: true }), false)).toBe("ok");
     expect(clipboardMonitorState(statusOf({ monitoring: false }), false)).toBe("notRunning");
+  });
+});
+
+describe("loadLite 分段/搜索查询（W1）", () => {
+  it("分段查询把 kind/search 传给后端并带每类上限", async () => {
+    mockedView.mockResolvedValue(viewOf(["t1"]));
+    await useClipboardStore.getState().loadLite({ kind: "text", search: "周报" });
+    expect(mockedView).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "text", search: "周报", limit: 30 }),
+    );
+    const s = useClipboardStore.getState();
+    expect(s.liteFilter).toBe("text|周报");
+    expect(s.liteTotal).toBe(1);
+  });
+
+  it("同键再次查询命中每类缓存，不重发 IPC；切分段才发新请求", async () => {
+    mockedView.mockResolvedValue(viewOf(["a"]));
+    await useClipboardStore.getState().loadLite({ kind: "all" });
+    await useClipboardStore.getState().loadLite({ kind: "all" });
+    expect(mockedView).toHaveBeenCalledTimes(1);
+    mockedView.mockResolvedValue(viewOf(["u1"]));
+    await useClipboardStore.getState().loadLite({ kind: "text" });
+    expect(mockedView).toHaveBeenCalledTimes(2);
+    expect(useClipboardStore.getState().lite?.items.map((i) => i.id)).toEqual(["u1"]);
+  });
+
+  it("force 跳过缓存：实时事件/手动重试拿服务端最新结果", async () => {
+    mockedView.mockResolvedValue(viewOf(["old"]));
+    await useClipboardStore.getState().loadLite({ kind: "all" });
+    mockedView.mockResolvedValue(viewOf(["new"]));
+    await useClipboardStore.getState().loadLite(undefined, { force: true });
+    expect(mockedView).toHaveBeenCalledTimes(2);
+    expect(useClipboardStore.getState().lite?.items.map((i) => i.id)).toEqual(["new"]);
+  });
+
+  it("无参数重复最近一次目标筛选（实时事件合并进当前筛选，不退回全部）", async () => {
+    mockedView.mockResolvedValue(viewOf(["i1"]));
+    await useClipboardStore.getState().loadLite({ kind: "image", search: "设计" });
+    mockedView.mockClear();
+    mockedView.mockResolvedValue(viewOf(["i2"]));
+    await useClipboardStore.getState().loadLite(undefined, { force: true });
+    expect(mockedView).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "image", search: "设计" }),
+    );
+  });
+
+  it("分段失败：liteFilter 保持旧值（面板识别「当前分段尚无成功数据」）", async () => {
+    mockedView.mockResolvedValue(viewOf(["a"]));
+    await useClipboardStore.getState().loadLite({ kind: "all" });
+    mockedView.mockRejectedValue(new Error("boom"));
+    await useClipboardStore.getState().loadLite({ kind: "text" });
+    const s = useClipboardStore.getState();
+    expect(s.liteFilter).toBe("all|");
+    expect(s.liteFilterTarget).toBe("text|");
+    expect(s.liteStatus).toBe("error");
   });
 });

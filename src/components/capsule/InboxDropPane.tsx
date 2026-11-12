@@ -91,6 +91,8 @@ export default function InboxDropPane() {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  /** 「重试失败项」在途：同一批次只允许一个重试（drop 内部还有同目标单飞兜底）。 */
+  const [retryBusy, setRetryBusy] = useState(false);
   const overRef = useRef<string | null>(null);
   /**
    * 一次原生拖入会话只允许执行一次落点动作。
@@ -351,6 +353,23 @@ export default function InboxDropPane() {
   // 跳过不是成功，部分完成也不是失败：三类都列出来，由用户判断是否需要处理。
   const pendingEntries = (lastReport?.entries ?? []).filter((e) => e.status !== "ok");
 
+  /**
+   * 重试失败项：把失败/跳过/部分完成条目的源路径**原样重投**到同一目标
+   * （entries[].source 是投递时的源路径，move 目标的残留已由 residual_source 提示）。
+   * 无 entries 或全部成功时不显示入口；重投复用 submit 的可用性探测与结果条。
+   */
+  const retryPending = useCallback(async () => {
+    if (!lastReport || retryBusy) return;
+    const paths = pendingEntries.map((e) => e.source).filter((p) => typeof p === "string" && p.length > 0);
+    if (paths.length === 0) return;
+    setRetryBusy(true);
+    try {
+      await submit(lastReport.target_id, paths);
+    } finally {
+      setRetryBusy(false);
+    }
+  }, [lastReport, pendingEntries, retryBusy, submit]);
+
   const empty = visible.length === 0;
 
   return (
@@ -515,6 +534,20 @@ export default function InboxDropPane() {
                 </p>
               )}
               <div className="cap-drop-result-actions">
+                {pendingEntries.length > 0 && (
+                  <button
+                    type="button"
+                    className="cap-link"
+                    aria-label={t("capsule.inboxDrop.retryFailedAria", { count: pendingEntries.length })}
+                    disabled={retryBusy || Boolean(lastTargetId && ops[lastTargetId])}
+                    onClick={() => void retryPending()}
+                  >
+                    {retryBusy ? (
+                      <Loader2 size={11} className="spin" aria-hidden="true" />
+                    ) : null}
+                    {t("capsule.inboxDrop.retryFailed", { count: pendingEntries.length })}
+                  </button>
+                )}
                 {(lastReport.failed > 0 || lastReport.partial > 0) && (
                   <button
                     type="button"

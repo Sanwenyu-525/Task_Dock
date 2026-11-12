@@ -91,7 +91,7 @@ vi.mock("../../lib/navigation", async (importOriginal) => {
   };
 });
 
-import TasksLite from "./TasksLite";
+import TasksLite, { FILTER_STORAGE_KEY } from "./TasksLite";
 import AgentsLite from "./AgentsLite";
 import ClipboardLite from "./ClipboardLite";
 import AppsLite from "./AppsLite";
@@ -104,6 +104,7 @@ import {
 import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useClipboardStore } from "../../store/useClipboardStore";
+import { useLifecycleStore } from "../../store/useLifecycleStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -209,6 +210,9 @@ beforeEach(() => {
   useNavigationStore.setState({ targets: [], targetsLoaded: false, targetsError: null });
   useSettingsStore.setState({ settings: null });
   clearAppGridOrder();
+  // 任务分段/滚动位置记忆是跨会话的（localStorage）：每个用例从默认分段开始
+  localStorage.removeItem(FILTER_STORAGE_KEY);
+  localStorage.removeItem("taskdock.capsule.tasks.scroll.v1");
 });
 
 afterEach(() => {
@@ -388,7 +392,7 @@ describe("任务面板", () => {
     });
 
     const tabs = screen.getAllByRole("tab").map((el) => el.textContent);
-    expect(tabs).toEqual(["全部", "待办", "今日", "日程", "已完成"]);
+    expect(tabs).toEqual(["全部", "待办", "今日", "日程", "逾期", "已完成"]);
 
     act(() => screen.getByRole("tab", { name: "待办" }).click());
     await screen.findByText("整理产品周报");
@@ -865,8 +869,91 @@ describe("任务分段查询语义", () => {
     act(() => screen.getByRole("tab", { name: "日程" }).click());
     await screen.findByText("暂无日程任务");
 
+    act(() => screen.getByRole("tab", { name: "逾期" }).click());
+    await screen.findByText("暂无逾期任务");
+
     act(() => screen.getByRole("tab", { name: "已完成" }).click());
     await screen.findByText("暂无已完成任务");
+  });
+
+  it("逾期分段使用后端 view=overdue 的真实查询，不在本地从 pending 截断", async () => {
+    const pool = [task("b1", "普通待办", now + 3600_000)];
+    const overdueTask = task("ov1", "上周就该交的表", now - 86400_000);
+    listTasks.mockImplementation(async (args: { view?: string }) =>
+      args.view === "overdue" ? [overdueTask] : pool,
+    );
+    render(<TasksLite />);
+    await screen.findByText("普通待办");
+
+    act(() => screen.getByRole("tab", { name: "逾期" }).click());
+    await screen.findByText("上周就该交的表");
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "overdue",
+      status: "pending",
+      sort: "due",
+      limit: 12,
+    });
+  });
+
+  it("分段记忆持久化：重开面板回到上次分段", async () => {
+    const pool = [task("b1", "普通待办", now + 3600_000)];
+    const completed = task("t9", "已收尾的部署", null, {
+      status: "completed",
+      completed_at: iso(now - 60_000),
+    });
+    listTasks.mockImplementation(async (args: { status?: string }) =>
+      args.status === "completed" ? [completed] : pool,
+    );
+    const { unmount } = render(<TasksLite />);
+    await screen.findByText("普通待办");
+
+    act(() => screen.getByRole("tab", { name: "已完成" }).click());
+    await screen.findByText("已收尾的部署");
+    unmount();
+
+    // 重开面板：初始查询直接按记住的「已完成」分段发起
+    render(<TasksLite />);
+    await screen.findByText("已收尾的部署");
+    expect(listTasks).toHaveBeenLastCalledWith({
+      view: "all",
+      status: "completed",
+      sort: "completed",
+      limit: 12,
+    });
+  });
+
+  it("轻量搜索走后端 search 参数（250ms 防抖），与分段范围叠加", async () => {
+    const pool = [task("b1", "普通待办", now + 3600_000)];
+    const hit = task("q1", "周报归档", now + 3600_000);
+    listTasks.mockImplementation(async (args: { search?: string }) =>
+      args.search ? [hit] : pool,
+    );
+    render(<TasksLite />);
+    await screen.findByText("普通待办");
+    listTasks.mockClear();
+
+    fireEvent.change(screen.getByLabelText("搜索任务"), { target: { value: "周报" } });
+    await waitFor(
+      () =>
+        expect(listTasks).toHaveBeenLastCalledWith(
+          expect.objectContaining({ view: "all", status: "all", search: "周报" }),
+        ),
+      { timeout: 1000 },
+    );
+    await screen.findByText("周报归档");
+  });
+
+  it("滚动位置写入 localStorage（分段切换/重开恢复的数据来源）", async () => {
+    const pool = [task("b1", "普通待办", now + 3600_000)];
+    listTasks.mockResolvedValue(pool);
+    render(<TasksLite />);
+    await screen.findByText("普通待办");
+    const list = document.querySelector(".cap-list") as HTMLElement;
+    Object.defineProperty(list, "scrollTop", { value: 88, configurable: true, writable: true });
+    fireEvent.scroll(list);
+    expect(JSON.parse(localStorage.getItem("taskdock.capsule.tasks.scroll.v1") ?? "{}")).toEqual({
+      all: 88,
+    });
   });
 });
 
@@ -1004,6 +1091,64 @@ describe("Agent 面板", () => {
     expect(screen.getByText(/运行\s*301/)).toBeTruthy();
   });
 
+  it("状态筛选分段：对实时集合客户端过滤，不新增后端调用", async () => {
+    const mkRun = (
+      id: string,
+      status: "running" | "waiting" | "failed" | "disconnected",
+      title: string,
+    ) => ({
+      id,
+      session_id: `s-${id}`,
+      source_id: "codex",
+      external_run_id: null,
+      task_title: title,
+      status,
+      started_at: iso(now - 60_000),
+      updated_at: new Date(Date.now() - 1000).toISOString(),
+      ended_at: null,
+      pending_items: [],
+    });
+    useAgentsStore.setState({
+      snapshot: {
+        sources: [],
+        instances: [],
+        sessions: [],
+        runs: [
+          mkRun("r-w", "waiting", "等待中的任务"),
+          mkRun("r-f", "failed", "失败的任务"),
+          mkRun("r-r", "running", "运行中的任务"),
+          mkRun("r-d", "disconnected", "失联的任务"),
+        ],
+      },
+    });
+    const { container } = render(<AgentsLite />);
+    await screen.findByText("等待中的任务");
+    expect(container.querySelectorAll(".cap-agent-row").length).toBe(4);
+    const callsBefore = agentSnapshot.mock.calls.length;
+
+    // 等待分段：只剩等待轮次；快照来自本地事件流，切分段不发 IPC
+    act(() => screen.getByRole("tab", { name: "等待" }).click());
+    expect(screen.getByText("等待中的任务")).toBeTruthy();
+    expect(screen.queryByText("失败的任务")).toBeNull();
+    expect(container.querySelectorAll(".cap-agent-row").length).toBe(1);
+    expect(agentSnapshot.mock.calls.length).toBe(callsBefore);
+
+    // 失败分段
+    act(() => screen.getByRole("tab", { name: "失败" }).click());
+    await screen.findByText("失败的任务");
+    expect(screen.queryByText("等待中的任务")).toBeNull();
+
+    // 失联分段
+    act(() => screen.getByRole("tab", { name: "失联" }).click());
+    await screen.findByText("失联的任务");
+    expect(screen.queryByText("运行中的任务")).toBeNull();
+
+    // 该状态下没有的（运行中分段被上一条排除校验过）→ 分段空态，不冒充全局空态
+    act(() => screen.getByRole("tab", { name: "运行中" }).click());
+    await screen.findByText("运行中的任务");
+    expect(container.querySelectorAll(".cap-agent-row").length).toBe(1);
+  });
+
   it("首次读取失败显示错误空态并重试，不永久停在「读取中…」", async () => {
     agentSnapshot.mockRejectedValueOnce(new Error("ipc broken"));
     render(<AgentsLite />);
@@ -1122,24 +1267,87 @@ describe("剪贴板面板", () => {
     total_items: 2,
   };
 
-  it("类型筛选与单项复制走真实命令，且复制后顺序不变", async () => {
-    clipboardView.mockResolvedValue(view);
+  it("类型筛选由后端查询表达（kind 参数 + 每类上限），复制后顺序不变", async () => {
+    // mock 后端真实行为：按 kind 过滤、limit=30，面板不再「先取再筛」
+    clipboardView.mockImplementation((filter: { kind?: string | null; limit?: number | null }) =>
+      Promise.resolve({
+        items: view.items.filter((i) => !filter.kind || i.kind === filter.kind),
+        groups: [],
+        stats: {},
+        total_items: view.items.filter((i) => !filter.kind || i.kind === filter.kind).length,
+      }),
+    );
     clipboardCopyItem.mockResolvedValue({ mode: "text", bytes: 1, warnings: [], sequence: 1 });
     const { container } = render(<ClipboardLite />);
     await screen.findByText("界面设计方案");
-
     const firstBefore = container.querySelector(".cap-item .cap-item-title")?.textContent;
 
     act(() => screen.getByRole("tab", { name: "图片" }).click());
-    expect(screen.queryByText(/液态融合翼片/)).toBeNull();
+    await waitFor(() =>
+      expect(clipboardView).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "image", limit: 30 }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByText(/液态融合翼片/)).toBeNull());
     expect(screen.getByText("界面设计方案")).toBeTruthy();
 
     act(() => screen.getByRole("tab", { name: "全部" }).click());
+    await screen.findByText(/液态融合翼片/);
+    const callsBeforeCopy = clipboardView.mock.calls.length;
     act(() => screen.getByRole("button", { name: "复制「界面设计方案」" }).click());
     await waitFor(() => expect(clipboardCopyItem).toHaveBeenCalledWith("c2"));
     // 复制不触发重新拉取：历史顺序不因复制而跳动
-    expect(clipboardView).toHaveBeenCalledTimes(1);
+    expect(clipboardView).toHaveBeenCalledTimes(callsBeforeCopy);
     expect(container.querySelector(".cap-item .cap-item-title")?.textContent).toBe(firstBefore);
+  });
+
+  it("搜索走后端 search 参数（250ms 防抖后发起查询）", async () => {
+    clipboardView.mockResolvedValue(view);
+    render(<ClipboardLite />);
+    await screen.findByText("界面设计方案");
+    clipboardView.mockClear();
+    clipboardView.mockResolvedValue(view);
+
+    fireEvent.change(screen.getByLabelText("搜索剪贴板记录"), {
+      target: { value: "方案" },
+    });
+    await waitFor(
+      () =>
+        expect(clipboardView).toHaveBeenCalledWith(
+          expect.objectContaining({ search: "方案", limit: 30 }),
+        ),
+      { timeout: 1000 },
+    );
+  });
+
+  it("暂停/恢复走生命周期适配层（同一意图源），写库成功后回读监听状态", async () => {
+    clipboardView.mockResolvedValue(view);
+    const setPaused = vi
+      .spyOn(useLifecycleStore.getState(), "setPaused")
+      .mockResolvedValue("ok");
+    render(<ClipboardLite />);
+    await screen.findByText("界面设计方案");
+
+    act(() => screen.getByRole("button", { name: "暂停监听" }).click());
+    await waitFor(() => expect(setPaused).toHaveBeenCalledWith("clipboard", true));
+    // 回读真实状态（loadMonitor → clipboardStatus），不把「配置已写入」冒充「已暂停」
+    await waitFor(() => expect(clipboardStatus).toHaveBeenCalled());
+    setPaused.mockRestore();
+  });
+
+  it("暂停失败给出错误提示，不伪装成功", async () => {
+    clipboardView.mockResolvedValue(view);
+    const setPaused = vi
+      .spyOn(useLifecycleStore.getState(), "setPaused")
+      .mockResolvedValue("failed");
+    render(<ClipboardLite />);
+    await screen.findByText("界面设计方案");
+
+    act(() => screen.getByRole("button", { name: "暂停监听" }).click());
+    await waitFor(() =>
+      expect(useUiStore.getState().toasts.some((t) => t.kind === "error")).toBe(true),
+    );
+    setPaused.mockRestore();
   });
 
   it("复制失败给出明确提示，且不显示成功勾选", async () => {

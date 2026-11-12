@@ -1,18 +1,22 @@
 //! 任务面板（胶囊内，对照 `docs/design-refs/v07/停靠效果图/01-tasks.png`）。
 //!
 //! 数据：**不再自持列表**。列表来自 `useTasksStore.lite`（挂载时按「全部」
-//! 读取一份真实结果，切换分段时按该分段的真实查询再读一份）——完成/新增走
-//! store 的动作落库，store.refresh() 在面板打开时保持当前分段刷新这份轻量
+//! 读取一份真实结果，切换分段/搜索时按该范围的真实查询再读一份）——完成/新增走
+//! store 的动作落库，store.refresh() 在面板打开时保持当前分段+搜索刷新这份轻量
 //! 列表，主窗口与胶囊因此只有一个状态源。
 //!
 //! 分段查询对应关系：待办=status=pending；今日=后端 view=due_today（本地今天
 //! 到期且未完成）；日程=后端 view=scheduled（due_at 非空且未完成）并按
-//! sort=scheduled 把未逾期/未来任务排在逾期之前（成员不变，仅顺序）；已完成=
-//! status=completed 按完成时间倒序；全部=最近创建的真实任务。**后端先按真实
-//! 条件过滤、排序，最后 LIMIT 12**，前端不做「前 12 条再筛」的二次截断——
-//! 否则 20 条逾期任务会把今天到期的任务挤出结果，面板误显示为空。
+//! sort=scheduled 把未逾期/未来任务排在逾期之前（成员不变，仅顺序）；逾期=
+//! 后端 view=overdue（due_at < now 且未完成）；已完成=status=completed 按完成
+//! 时间倒序；全部=最近创建的真实任务。**后端先按真实条件过滤、排序，最后
+//! LIMIT 12**，前端不做「前 12 条再筛」的二次截断——否则 20 条逾期任务会把
+//! 今天到期的任务挤出结果，面板误显示为空。
 //! 面板底栏明确标注「最近记录」，完整入口在「全部任务」。
 //! 已完成的量来自 `stats.completed_today`，不伪造数据。
+//!
+//! 轻量搜索走后端 search 参数（250ms 防抖 + 请求代际），范围 = 当前分段的
+//! 真实查询；分段记忆与滚动位置恢复都落在 localStorage（参考收集箱子页记忆）。
 //!
 //! 完成交互：先置 `is-done` 视觉态（320ms）再移出列表；底栏给出限时「撤销」，
 //! 已完成条目也可直接点勾选圈恢复为待办（勾回）。`toggle` 失败则撤销该视觉态
@@ -21,7 +25,7 @@
 //! 重复任务完成后后端只推进期次（任务仍 pending）：此时不隐藏、不给「撤销」，
 //! 而是提示下一期并展示刷新后的新期次——第二次 toggle 会继续推进，不能当作撤销。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Bell,
   BookmarkCheck,
@@ -30,6 +34,7 @@ import {
   ChevronRight,
   FolderGit2,
   ListTodo,
+  Loader2,
   Plus,
 } from "lucide-react";
 import { useTasksStore, type TaskLiteScope } from "../../store/useTasksStore";
@@ -38,35 +43,74 @@ import { fetchTask, type Task } from "../../lib/bridge";
 import { describeRecurrence } from "../../lib/format";
 import useImeComposition from "../../hooks/useImeComposition";
 import { resolveDevProjectChip } from "../devwork/DevProjectContext";
-import { useLocale } from "../../hooks/useLocale";
+import { useLocale, type UseLocaleResult } from "../../hooks/useLocale";
 import { openFullApp, openTaskEditor } from "./actions";
 import { dueLabel, sortPending } from "./format";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
+import { SearchField } from "../ui";
 
-type Filter = "all" | "pending" | "today" | "scheduled" | "done";
+type Filter = "all" | "pending" | "today" | "scheduled" | "overdue" | "done";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
+/** 分段记忆（localStorage）：参考收集箱子页记忆 taskdock.capsule.inbox.sub.v1。 */
+export const FILTER_STORAGE_KEY = "taskdock.capsule.tasks.sub.v1";
+/** 滚动位置恢复（localStorage）：键 = 分段，值 = 最后一次 scrollTop。 */
+const SCROLL_STORAGE_KEY = "taskdock.capsule.tasks.scroll.v1";
+const FILTER_VALUES: readonly Filter[] = ["all", "pending", "today", "scheduled", "overdue", "done"];
+/** 搜索防抖：输入停顿 250ms 才发起查询（后端 search 参数）。 */
+const SEARCH_DEBOUNCE_MS = 250;
+
+function readStoredFilter(): Filter {
+  try {
+    const raw = localStorage.getItem(FILTER_STORAGE_KEY);
+    if (raw && FILTER_VALUES.includes(raw as Filter)) return raw as Filter;
+  } catch {
+    // localStorage 不可用时回到默认分段
+  }
+  return "all";
+}
+
+function readScrollMap(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(SCROLL_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object") return parsed as Record<string, number>;
+  } catch {
+    // 解析失败当作无记录
+  }
+  return {};
+}
+
+function writeScrollMap(map: Record<string, number>) {
+  try {
+    localStorage.setItem(SCROLL_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // 写不进（隐私模式/配额）不影响功能：只丢跨会话恢复
+  }
+}
+
 /** 详情里的绝对时间（行内只给「今天/逾期」相对文案，详情需要可核对的时刻）。 */
-function momentLabel(iso: string | null | undefined): string {
+function momentLabel(iso: string | null | undefined, locale: string): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return "";
   const sameYear = d.getFullYear() === new Date().getFullYear();
-  return `${sameYear ? "" : `${d.getFullYear()}/`}${d.getMonth() + 1}月${d.getDate()}日 ${pad(
-    d.getHours(),
-  )}:${pad(d.getMinutes())}`;
+  const dateText = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(d);
+  return `${sameYear ? "" : `${d.getFullYear()}/`}${dateText} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 分段与效果图一致：全部 / 待办 / 今日 / 日程 / 已完成。
- *  全部 = 待办 + 已完成（同一份真实列表，已完成排在后面且不可勾选）。 */
-const FILTERS: readonly SegOption<Filter>[] = [
-  { value: "all", label: "全部" },
-  { value: "pending", label: "待办" },
-  { value: "today", label: "今日" },
-  { value: "scheduled", label: "日程" },
-  { value: "done", label: "已完成" },
-];
+/** 分段与效果图一致：全部 / 待办 / 今日 / 日程 / 逾期 / 已完成。 */
+function filterOptions(t: UseLocaleResult["t"]): readonly SegOption<Filter>[] {
+  return [
+    { value: "all", label: t("capsule.tasks.filter.all") },
+    { value: "pending", label: t("capsule.tasks.filter.pending") },
+    { value: "today", label: t("capsule.tasks.filter.today") },
+    { value: "scheduled", label: t("capsule.tasks.filter.scheduled") },
+    { value: "overdue", label: t("capsule.tasks.filter.overdue") },
+    { value: "done", label: t("capsule.tasks.filter.done") },
+  ];
+}
 
 /** 分段 → 轻量查询范围：一一对应，每个分段只取自己需要的真实结果。 */
 function scopeOf(filter: Filter): TaskLiteScope {
@@ -75,14 +119,18 @@ function scopeOf(filter: Filter): TaskLiteScope {
 }
 
 export default function TasksLite() {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const items = useTasksStore((s) => s.lite);
   const liteScope = useTasksStore((s) => s.liteScope);
+  const liteSearch = useTasksStore((s) => s.liteSearch);
   const liteError = useTasksStore((s) => s.liteError);
   const loadLite = useTasksStore((s) => s.loadLite);
   const releaseLite = useTasksStore((s) => s.releaseLite);
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filter, setFilter] = useState<Filter>(readStoredFilter);
   const filterRef = useRef<Filter>(filter);
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const searchRef = useRef("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [completing, setCompleting] = useState<ReadonlySet<string>>(new Set());
@@ -103,6 +151,10 @@ export default function TasksLite() {
   const completeTokens = useRef(new Map<string, number>());
   const ime = useImeComposition();
   const stats = useTasksStore((s) => s.stats);
+  // 滚动恢复：分段切换与面板重开都回到该分段最后的位置（写穿 localStorage）。
+  const listRef = useRef<HTMLDivElement>(null);
+  const scrollMap = useRef<Record<string, number>>(readScrollMap());
+  const restoredKey = useRef<string | null>(null);
 
   // 开发工作台「当前任务」在胶囊内的置顶标记（显式设置，不自动推断）。
   // 列表里有就用列表数据；不在轻量列表（超出 LIMIT 12）时按需单独取一次。
@@ -160,17 +212,31 @@ export default function TasksLite() {
     };
   }, [currentProjectId]);
 
-  // 面板打开 → 取一次轻量列表；关闭 → 释放并作废在途响应。
+  // 面板打开 → 按记住的分段取一次轻量列表；关闭 → 释放并作废在途响应。
+  const initialScope = useRef(scopeOf(filterRef.current));
   useEffect(() => {
-    void loadLite("all");
+    void loadLite(initialScope.current);
     return () => releaseLite();
   }, [loadLite, releaseLite]);
 
+  // 搜索 250ms 防抖：输入停顿后才更新生效的搜索词。
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(searchInput), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  // 生效搜索词变化 → 按当前分段 + 搜索词重新确认（store 内同范围在途请求合并）。
+  useEffect(() => {
+    if (debouncedSearch === searchRef.current) return;
+    searchRef.current = debouncedSearch;
+    void loadLite(scopeOf(filterRef.current), { search: debouncedSearch });
+  }, [debouncedSearch, loadLite]);
+
   /**
    * 切分段只在数据范围不同时重新读取：每个分段对应一份真实查询。
-   * `liteScope` 是已有数据的范围，`liteTarget` 是最近请求的范围；两者任一
-   * 与目标不一致就要重新确认——否则切回刚离开的分段时，在途响应会把旧范围
-   * 数据作废，而面板误以为已有数据不再请求，最终停在空白。
+   * `liteScope` 是已有数据的范围，`liteTarget`/`liteSearchTarget` 是最近请求的
+   * 目标；任一与目标不一致就要重新确认——否则切回刚离开的分段时，在途响应会
+   * 把旧范围数据作废，而面板误以为已有数据不再请求，最终停在空白。
    */
   const changeFilter = (next: Filter) => {
     if (next !== filterRef.current) {
@@ -180,14 +246,20 @@ export default function TasksLite() {
       setHidden(new Set());
     }
     setFilter(next);
+    try {
+      localStorage.setItem(FILTER_STORAGE_KEY, next);
+    } catch {
+      // 写不进时只丢跨会话记忆，功能不受影响
+    }
     const target = scopeOf(next);
     const state = useTasksStore.getState();
     if (
       state.liteScope !== target ||
       state.liteTarget !== target ||
+      state.liteSearchTarget !== debouncedSearch ||
       state.liteError !== null
     ) {
-      void loadLite(target);
+      void loadLite(target, { search: debouncedSearch });
     }
   };
 
@@ -228,7 +300,7 @@ export default function TasksLite() {
       // 组合中的候选）不能被这次响应清空；组合态下 value 可能仍是旧文本。
       setText((cur) => (ime.isComposingNow() || cur !== raw ? cur : ""));
     } catch {
-      flash("添加失败，请重试"); // 失败保留输入，用户可重试
+      flash(t("capsule.tasks.addFailed")); // 失败保留输入，用户可重试
     } finally {
       setBusy(false);
     }
@@ -267,7 +339,11 @@ export default function TasksLite() {
           next.delete(id);
           return next;
         });
-        flash(updated.due_at ? `已完成本期，下一期 ${momentLabel(updated.due_at)}` : "已完成本期");
+        flash(
+          updated.due_at
+            ? t("capsule.tasks.recurrenceNext", { time: momentLabel(updated.due_at, locale) })
+            : t("capsule.tasks.recurrenceDone"),
+        );
       }
     } catch {
       setCompleting((prev) => {
@@ -275,7 +351,7 @@ export default function TasksLite() {
         next.delete(id);
         return next;
       });
-      flash("完成失败，已回滚");
+      flash(t("capsule.tasks.completeFailed"));
       void loadLite(scopeOf(filterRef.current)); // 重新拉当前分段的真实状态，不靠本地猜测
     } finally {
       completingRef.current.delete(id);
@@ -308,9 +384,9 @@ export default function TasksLite() {
         return next;
       });
       setUndo((cur) => (cur?.id === target.id ? null : cur));
-      flash("已撤销完成");
+      flash(t("capsule.tasks.undoDone"));
     } catch {
-      flash("撤销失败，请重试");
+      flash(t("capsule.tasks.undoFailed"));
       void loadLite(scopeOf(filterRef.current));
     } finally {
       setUndoing(false);
@@ -333,9 +409,9 @@ export default function TasksLite() {
         return next;
       });
       setUndo((cur) => (cur?.id === id ? null : cur));
-      flash("已重新打开");
+      flash(t("capsule.tasks.reopened"));
     } catch {
-      flash("操作失败，已回滚");
+      flash(t("capsule.tasks.reopenFailed"));
       void loadLite(scope);
     } finally {
       setReopening(null);
@@ -351,11 +427,12 @@ export default function TasksLite() {
 
   const now = Date.now();
   const scope = scopeOf(filter);
-  // 只有「已成功写入的数据范围」与当前分段一致时，才允许据此判断空态。
-  const scopeReady = items !== null && liteScope === scope;
+  // 只有「已成功写入的数据范围」与当前分段+搜索一致时，才允许据此判断空态。
+  const scopeReady =
+    items !== null && liteScope === scope && liteSearch === debouncedSearch;
   const visible = useMemo(() => {
     // 分段范围与已取回数据不一致时视为读取中：不拿旧范围的列表冒充新分段
-    if (!items || liteScope !== scopeOf(filter)) return null;
+    if (!items || liteScope !== scopeOf(filter) || liteSearch !== debouncedSearch) return null;
     // 范围已由后端查询表达（过滤 + 排序 + LIMIT），面板只负责展示排序与移出动画。
     // 「日程」保留后端 sort=scheduled 的「未来优先、逾期置后」顺序；其余分段
     // 仍用本地 sortPending（逾期优先）。本地再按逾期优先排会把后端已排好的
@@ -372,7 +449,7 @@ export default function TasksLite() {
       // 当前任务已在置顶标记条展示时，从普通列表中去重（标记条是唯一入口，不重复占行）
       .filter((t) => !(currentTask && t.id === currentTask.id))
       .slice(0, 12);
-  }, [items, liteScope, filter, hidden, currentTask]);
+  }, [items, liteScope, liteSearch, debouncedSearch, filter, hidden, currentTask]);
 
   const localDone = items?.filter((t) => t.status === "completed").length ?? 0;
   const pending = stats?.pending ?? items?.filter((t) => t.status !== "completed").length ?? 0;
@@ -386,25 +463,49 @@ export default function TasksLite() {
   const noTasksAtAll = scopeReady && items !== null && items.length === 0;
   const emptyText =
     filter === "done"
-      ? "暂无已完成任务"
+      ? t("capsule.tasks.empty.done")
       : filter === "today"
-        ? "今天没有到期任务"
+        ? t("capsule.tasks.empty.today")
         : filter === "scheduled"
-          ? "暂无日程任务"
-          : filter === "pending"
-            ? "暂无待办任务"
-            : "暂无任务";
+          ? t("capsule.tasks.empty.scheduled")
+          : filter === "overdue"
+            ? t("capsule.tasks.empty.overdue")
+            : filter === "pending"
+              ? t("capsule.tasks.empty.pending")
+              : t("capsule.tasks.empty.all");
+
+  // 分段切换/搜索落地后恢复该分段记住的滚动位置（面板重开也生效）。
+  useLayoutEffect(() => {
+    const key = `${filter}|${debouncedSearch}`;
+    if (!scopeReady || restoredKey.current === key) return;
+    restoredKey.current = key;
+    const el = listRef.current;
+    if (el) el.scrollTop = scrollMap.current[filter] ?? 0;
+  }, [scopeReady, filter, debouncedSearch]);
+
+  const onListScroll = () => {
+    const top = listRef.current?.scrollTop ?? 0;
+    if (scrollMap.current[filter] === top) return;
+    scrollMap.current[filter] = top;
+    writeScrollMap(scrollMap.current);
+  };
+
+  const filters = useMemo(() => filterOptions(t), [t]);
 
   return (
     <>
       <PanelHead
-        title="任务"
-        sub={stats ? `今天 ${today} 项 · 待办 ${pending}` : "读取中"}
+        title={t("capsule.tasks.title")}
+        sub={
+          stats
+            ? t("capsule.tasks.subSummary", { today, pending })
+            : t("common.loading")
+        }
         actions={
           <button
             type="button"
             className="cap-iconbtn"
-            aria-label="快速新增任务"
+            aria-label={t("capsule.tasks.quickAddAria")}
             data-tip-placement="bottom"
             onClick={() => inputRef.current?.focus()}
           >
@@ -413,7 +514,22 @@ export default function TasksLite() {
         }
       />
 
-      <Segmented label="任务筛选" options={FILTERS} value={filter} onChange={changeFilter} />
+      <Segmented
+        label={t("capsule.tasks.filterAria")}
+        options={filters}
+        value={filter}
+        onChange={changeFilter}
+      />
+
+      <SearchField
+        value={searchInput}
+        onChange={setSearchInput}
+        placeholder={t("capsule.tasks.searchPlaceholder")}
+        ariaLabel={t("capsule.tasks.searchAria")}
+        clearLabel={t("capsule.tasks.searchClear")}
+        size="compact"
+        className="cap-search ui-search--capsule"
+      />
 
       {/* 当前任务置顶条（开发工作台锚点）：一个点击直达工作台，继续工作不进任务列表翻找 */}
       {currentTask && (
@@ -424,15 +540,17 @@ export default function TasksLite() {
           <button
             type="button"
             className="cap-main cap-row-open"
-            aria-label={`当前任务「${currentTask.title}」，打开工作台`}
+            aria-label={t("capsule.tasks.currentTaskAria", { title: currentTask.title })}
             onClick={() => void openFullApp("workbench")}
           >
             <span className="cap-item-title" title={currentTask.title}>
               {currentTask.title}
             </span>
             <span className="cap-task-tags">
-              <span className="cap-tag">当前</span>
-              {currentTask.status === "completed" ? <span className="cap-pill tone-done">已完成</span> : null}
+              <span className="cap-tag">{t("capsule.tasks.currentTag")}</span>
+              {currentTask.status === "completed" ? (
+                <span className="cap-pill tone-done">{t("capsule.tasks.pillDone")}</span>
+              ) : null}
             </span>
           </button>
         </div>
@@ -453,50 +571,57 @@ export default function TasksLite() {
         </div>
       )}
 
-      <div className="cap-list">
+      <div className="cap-list" ref={listRef} onScroll={onListScroll}>
         {/* 错误优先于空态：读取失败绝不伪装成「暂无任务」。
             当前分段尚无成功数据时给错误空态；已有当前分段数据则保留列表 + 错误条。 */}
         {dataError && !scopeReady && (
           <EmptyState
             icon={<ListTodo size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text="任务列表读取失败"
-            actionLabel="重试"
-            onAction={() => void loadLite(scope)}
+            text={t("capsule.tasks.emptyError")}
+            actionLabel={t("common.retry")}
+            onAction={() => void loadLite(scope, { search: debouncedSearch })}
           />
         )}
 
         {dataError && scopeReady && (
           <div className="cap-item cap-error-row" role="alert">
-            <span className="cap-error-text">刷新失败，显示的是上次结果</span>
+            <span className="cap-error-text">{t("capsule.panel.staleText")}</span>
             <button
               type="button"
               className="cap-mini"
-              aria-label="重试读取任务列表"
-              onClick={() => void loadLite(scope)}
+              aria-label={t("capsule.tasks.retryListAria")}
+              onClick={() => void loadLite(scope, { search: debouncedSearch })}
             >
-              重试
+              {t("common.retry")}
             </button>
           </div>
+        )}
+
+        {!dataError && !scopeReady && (
+          <EmptyState
+            icon={<Loader2 size={22} strokeWidth={1.6} className="spin" aria-hidden="true" />}
+            text={t("common.loading")}
+          />
         )}
 
         {!dataError && scopeReady && visible !== null && visible.length === 0 && (
           <EmptyState
             icon={<ListTodo size={22} strokeWidth={1.6} aria-hidden="true" />}
             text={emptyText}
-            actionLabel={noTasksAtAll ? "新建任务" : undefined}
+            actionLabel={noTasksAtAll ? t("capsule.tasks.emptyCreateAction") : undefined}
             onAction={() => inputRef.current?.focus()}
           />
         )}
-        {scopeReady && visible?.map((t) => {
-          const due = dueLabel(t.due_at, now);
-          const completed = t.status === "completed";
-          const isDone = completing.has(t.id) || completed;
-          const open = expandedId === t.id;
-          const desc = t.description.trim();
-          const remind = t.next_remind_at ?? t.remind_at;
-          const recurrence = describeRecurrence(t.recurrence);
+        {scopeReady && visible?.map((task) => {
+          const due = dueLabel(task.due_at, now);
+          const completed = task.status === "completed";
+          const isDone = completing.has(task.id) || completed;
+          const open = expandedId === task.id;
+          const desc = task.description.trim();
+          const remind = task.next_remind_at ?? task.remind_at;
+          const recurrence = describeRecurrence(task.recurrence);
           return (
-            <div className="cap-task-group" key={t.id}>
+            <div className="cap-task-group" key={task.id}>
               <div className={`cap-item cap-task-row${isDone ? " is-done" : ""}`}>
                 {completed ? (
                   // 已完成条目：点勾选圈直接恢复为待办（勾回），不必先展开详情。
@@ -504,11 +629,11 @@ export default function TasksLite() {
                   <button
                     type="button"
                     className="cap-check is-checked"
-                    aria-label={`将「${t.title}」恢复为待办`}
-                    data-tip="恢复为待办"
-                    aria-busy={reopening === t.id}
-                    disabled={reopening === t.id}
-                    onClick={() => void reopen(t.id)}
+                    aria-label={t("capsule.tasks.reopenRowAria", { title: task.title })}
+                    data-tip={t("capsule.tasks.reopenTip")}
+                    aria-busy={reopening === task.id}
+                    disabled={reopening === task.id}
+                    onClick={() => void reopen(task.id)}
                   >
                     <Check size={11} strokeWidth={3} aria-hidden="true" />
                   </button>
@@ -516,11 +641,11 @@ export default function TasksLite() {
                   <button
                     type="button"
                     className={`cap-check${isDone ? " is-checked" : ""}`}
-                    aria-label={`完成「${t.title}」`}
+                    aria-label={t("capsule.tasks.completeAria", { title: task.title })}
                     // 行内已经显示标题：提示只给动作，不重复长文案
-                    data-tip="标记完成"
+                    data-tip={t("capsule.tasks.completeTip")}
                     aria-pressed={isDone}
-                    onClick={() => void complete(t)}
+                    onClick={() => void complete(task)}
                   >
                     <Check size={11} strokeWidth={3} aria-hidden="true" />
                   </button>
@@ -528,65 +653,73 @@ export default function TasksLite() {
                 <button
                   type="button"
                   className="cap-main cap-row-open"
-                  aria-label={`${open ? "收起" : "查看"}「${t.title}」详情`}
+                  aria-label={
+                    open
+                      ? t("capsule.tasks.rowAriaCollapse", { title: task.title })
+                      : t("capsule.tasks.rowAriaOpen", { title: task.title })
+                  }
                   aria-expanded={open}
-                  aria-controls={`task-detail-${t.id}`}
-                  onClick={() => setExpandedId(open ? null : t.id)}
+                  aria-controls={`task-detail-${task.id}`}
+                  onClick={() => setExpandedId(open ? null : task.id)}
                 >
-                  <span className="cap-item-title" title={t.title}>
-                    {t.title}
+                  <span className="cap-item-title" title={task.title}>
+                    {task.title}
                   </span>
                   <span className="cap-task-tags">
-                    {t.category ? <span className="cap-tag">{t.category}</span> : null}
-                    {t.due_at ? (
+                    {task.category ? <span className="cap-tag">{task.category}</span> : null}
+                    {task.due_at ? (
                       <span className={`cap-pill tone-${due.tone}`}>{due.text}</span>
                     ) : (
-                      <span className="cap-item-sub">无期限</span>
+                      <span className="cap-item-sub">{t("capsule.tasks.noDue")}</span>
                     )}
                   </span>
                 </button>
                 <span className="cap-task-side">
-                  {t.remind_at ? (
-                    <span className="cap-task-bell" aria-label="已设置提醒" title="已设置提醒">
+                  {task.remind_at ? (
+                    <span
+                      className="cap-task-bell"
+                      aria-label={t("capsule.tasks.hasRemind")}
+                      title={t("capsule.tasks.hasRemind")}
+                    >
                       <Bell size={12} strokeWidth={1.8} aria-hidden="true" />
                     </span>
                   ) : null}
                 </span>
               </div>
               {open && (
-                <div className="cap-task-detail" id={`task-detail-${t.id}`}>
+                <div className="cap-task-detail" id={`task-detail-${task.id}`}>
                   {desc ? (
                     <p className="cap-detail-desc">{desc}</p>
                   ) : (
-                    <p className="cap-detail-desc is-muted">暂无备注</p>
+                    <p className="cap-detail-desc is-muted">{t("capsule.tasks.noDesc")}</p>
                   )}
-                  {t.due_at ? (
+                  {task.due_at ? (
                     <div className="cap-detail-row">
-                      <span className="cap-detail-label">截止</span>
-                      <span className="cap-detail-value">{momentLabel(t.due_at)}</span>
+                      <span className="cap-detail-label">{t("capsule.tasks.label.due")}</span>
+                      <span className="cap-detail-value">{momentLabel(task.due_at, locale)}</span>
                     </div>
                   ) : null}
                   {remind ? (
                     <div className="cap-detail-row">
-                      <span className="cap-detail-label">提醒</span>
-                      <span className="cap-detail-value">{momentLabel(remind)}</span>
+                      <span className="cap-detail-label">{t("capsule.tasks.label.remind")}</span>
+                      <span className="cap-detail-value">{momentLabel(remind, locale)}</span>
                     </div>
                   ) : null}
-                  {t.category ? (
+                  {task.category ? (
                     <div className="cap-detail-row">
-                      <span className="cap-detail-label">分类</span>
-                      <span className="cap-detail-value">{t.category}</span>
+                      <span className="cap-detail-label">{t("capsule.tasks.label.category")}</span>
+                      <span className="cap-detail-value">{task.category}</span>
                     </div>
                   ) : null}
-                  {t.tags.length > 0 ? (
+                  {task.tags.length > 0 ? (
                     <div className="cap-detail-row">
-                      <span className="cap-detail-label">标签</span>
-                      <span className="cap-detail-value">{t.tags.join(" · ")}</span>
+                      <span className="cap-detail-label">{t("capsule.tasks.label.tags")}</span>
+                      <span className="cap-detail-value">{task.tags.join(" · ")}</span>
                     </div>
                   ) : null}
                   {recurrence ? (
                     <div className="cap-detail-row">
-                      <span className="cap-detail-label">重复</span>
+                      <span className="cap-detail-label">{t("capsule.tasks.label.repeat")}</span>
                       <span className="cap-detail-value">{recurrence}</span>
                     </div>
                   ) : null}
@@ -595,21 +728,21 @@ export default function TasksLite() {
                       <button
                         type="button"
                         className="cap-mini is-ok"
-                        aria-label={`重新打开「${t.title}」`}
-                        aria-busy={reopening === t.id}
-                        disabled={reopening === t.id}
-                        onClick={() => void reopen(t.id)}
+                        aria-label={t("capsule.tasks.reopenAria", { title: task.title })}
+                        aria-busy={reopening === task.id}
+                        disabled={reopening === task.id}
+                        onClick={() => void reopen(task.id)}
                       >
-                        重新打开
+                        {t("capsule.tasks.reopenBtn")}
                       </button>
                     ) : null}
                     <button
                       type="button"
                       className="cap-mini"
-                      aria-label={`编辑「${t.title}」`}
-                      onClick={() => edit(t)}
+                      aria-label={t("capsule.tasks.editAria", { title: task.title })}
+                      onClick={() => edit(task)}
                     >
-                      编辑
+                      {t("capsule.tasks.editBtn")}
                     </button>
                   </div>
                 </div>
@@ -622,7 +755,10 @@ export default function TasksLite() {
       <div className="cap-foot">
         <span className="cap-foot-note">
           <CheckCircle2 size={12} strokeWidth={1.8} aria-hidden="true" />
-          {notice ?? (undo ? `已完成「${undo.title}」` : `最近记录 · 完成 ${doneToday}`)}
+          {notice ??
+            (undo
+              ? t("capsule.tasks.footUndoPrompt", { title: undo.title })
+              : t("capsule.tasks.footRecent", { done: doneToday }))}
         </span>
         {/* 全局零任务时没有「今天的完成进度」可言，不渲染无意义的 0% 进度条 */}
         {total > 0 && (
@@ -635,15 +771,15 @@ export default function TasksLite() {
             <button
               type="button"
               className="cap-link"
-              aria-label={`撤销完成「${undo.title}」`}
+              aria-label={t("capsule.tasks.undoAria", { title: undo.title })}
               disabled={undoing}
               onClick={() => void undoComplete()}
             >
-              撤销
+              {t("capsule.tasks.undoBtn")}
             </button>
           ) : null}
           <button type="button" className="cap-link" onClick={() => openFullApp("tasks")}>
-            全部任务
+            {t("capsule.tasks.openFull")}
             <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
           </button>
         </div>
@@ -670,8 +806,8 @@ export default function TasksLite() {
               setText("");
             }
           }}
-          placeholder="添加任务，回车保存"
-          aria-label="快速添加任务"
+          placeholder={t("capsule.tasks.inputPlaceholder")}
+          aria-label={t("capsule.tasks.inputAria")}
           maxLength={200}
         />
       </div>

@@ -56,7 +56,7 @@ export function taskViewKey(f: TaskFilter): string {
  * 每个范围都由后端**先按真实条件过滤、排序，再 LIMIT**，
  * 今日/日程不再从「前 12 条 pending」里本地筛选，避免被逾期/无期限任务截断。
  */
-export type TaskLiteScope = "all" | "pending" | "today" | "scheduled" | "completed";
+export type TaskLiteScope = "all" | "pending" | "today" | "scheduled" | "overdue" | "completed";
 
 /**
  * 每个范围对应的真实查询（全部复用 list_tasks，不另建 SQL）：
@@ -65,6 +65,7 @@ export type TaskLiteScope = "all" | "pending" | "today" | "scheduled" | "complet
  * - today     本地今天到期且未完成（后端 view=due_today）
  * - scheduled 有截止时间且未完成（后端 view=scheduled，只看 due_at；sort=scheduled
  *   让未逾期/未来任务排在逾期之前，避免积压的逾期任务占满 12 条把今天与未来挡住）
+ * - overdue   已逾期且未完成（后端 view=overdue，due_at < now）
  * - completed 已完成，按完成时间倒序
  * limit:12 与面板实际展示量一致（后端 clamp 1..=200）。
  */
@@ -73,6 +74,7 @@ const LITE_QUERY: Record<TaskLiteScope, TaskFilter> = {
   pending: { view: "all", status: "pending", sort: "due", limit: 12 },
   today: { view: "due_today", status: "pending", sort: "due", limit: 12 },
   scheduled: { view: "scheduled", status: "pending", sort: "scheduled", limit: 12 },
+  overdue: { view: "overdue", status: "pending", sort: "due", limit: 12 },
   completed: { view: "all", status: "completed", sort: "completed", limit: 12 },
 };
 
@@ -124,11 +126,21 @@ export const useTasksStore = create<{
    * 而面板误以为「已有数据」不再请求，最终停在空白。
    */
   liteTarget: TaskLiteScope;
+  /** 当前 `lite` 数据对应的搜索词（成功写入后才更新；"" = 未按搜索过滤）。 */
+  liteSearch: string;
+  /** 最近一次请求的目标搜索词（可能在途或失败），与 liteSearch 分开防「切回即空白」。 */
+  liteSearchTarget: string;
   liteLoading: boolean;
   /** 轻量列表最近一次查询的错误；null = 无错误。失败时旧 lite 原样保留 */
   liteError: string | null;
-  /** 读一次轻量列表（可按分段指定范围；force 用于写入后的强制刷新） */
-  loadLite: (scope?: TaskLiteScope, opts?: { force?: boolean }) => Promise<void>;
+  /**
+   * 读一次轻量列表（可按分段指定范围与搜索词；force 用于写入后的强制刷新）。
+   * 同范围+同搜索词的在途请求合并为一次；搜索词变化不被合并，立即发新请求。
+   */
+  loadLite: (
+    scope?: TaskLiteScope,
+    opts?: { force?: boolean; search?: string },
+  ) => Promise<void>;
   /** 面板卸载：作废在途请求并释放轻量列表 */
   releaseLite: () => void;
   /** 刷新列表 + 统计；面板打开时顺带刷新轻量列表 */
@@ -162,6 +174,8 @@ export const useTasksStore = create<{
   lite: null,
   liteScope: "all",
   liteTarget: "all",
+  liteSearch: "",
+  liteSearchTarget: "",
   liteLoading: false,
   liteError: null,
   exitHolds: [],
@@ -198,21 +212,37 @@ export const useTasksStore = create<{
   },
   loadLite: async (scope, opts) => {
     const target = scope ?? get().liteTarget;
-    // 同范围请求在途时合并为一次：快速重复点击分段不叠加 IPC。
-    // 写入后的 refresh 传 force，确保拿到落库后的新结果。
-    if (!opts?.force && get().liteLoading && target === get().liteTarget) return;
+    const search = (opts?.search ?? get().liteSearchTarget) || "";
+    // 同范围+同搜索词请求在途时合并为一次：快速重复点击分段不叠加 IPC。
+    // 搜索词变化（或范围变化）不被合并；写入后的 refresh 传 force，
+    // 确保拿到落库后的新结果。
+    if (
+      !opts?.force &&
+      get().liteLoading &&
+      target === get().liteTarget &&
+      search === get().liteSearchTarget
+    ) {
+      return;
+    }
     const seq = ++liteSeq;
-    set({ liteLoading: true, liteTarget: target });
+    set({ liteLoading: true, liteTarget: target, liteSearchTarget: search });
     try {
-      const lite = await listTasks(LITE_QUERY[target]);
+      const query = LITE_QUERY[target];
+      const lite = await listTasks(search ? { ...query, search } : query);
       if (seq !== liteSeq) return; // 已有更新的请求，丢弃这次响应
-      set({ lite, liteScope: target, liteLoading: false, liteError: null });
+      set({
+        lite,
+        liteScope: target,
+        liteSearch: search,
+        liteLoading: false,
+        liteError: null,
+      });
     } catch (e) {
       if (seq !== liteSeq) return;
       // 失败不清除已成功数据：有旧列表则保留展示并由面板叠加错误提示，
       // 没有旧列表（lite === null）时面板显示错误空态。两者都可重试，
-      // 绝不把失败伪装成「暂无任务」。liteScope 保持旧值，面板据范围不一致
-      // 停用旧数据的空态判断。
+      // 绝不把失败伪装成「暂无任务」。liteScope/liteSearch 保持旧值，
+      // 面板据范围不一致停用旧数据的空态判断。
       set({ liteLoading: false, liteError: errorMessage(e) });
     }
   },
@@ -222,6 +252,8 @@ export const useTasksStore = create<{
       lite: null,
       liteScope: "all",
       liteTarget: "all",
+      liteSearch: "",
+      liteSearchTarget: "",
       liteLoading: false,
       liteError: null,
     });
