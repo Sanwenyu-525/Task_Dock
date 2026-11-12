@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  FileOutput,
   Layers,
   Link2,
   RefreshCw,
@@ -76,6 +77,7 @@ import {
 import { TargetAvatar } from "../navigation/TargetMenu";
 import { Checkbox } from "../ui";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
+import { revealDevHandoff } from "../devwork/DevHandoffSection";
 
 const ITEM_KIND_LABELS: Record<string, string> = {
   application: "应用",
@@ -175,6 +177,12 @@ export default function TaskContextDrawer() {
     } catch (e) {
       showToast(`设置当前任务失败：${errorMessage(e)}`, { kind: "error" });
     }
+  }
+
+  // 生成交接包：切到工作台 Tab 并滚动定位到交接区（走既有 setTab 门禁，
+  // 不新增导航目标类型；草稿被拦截时由确认条接管 after 回调）。
+  function onOpenHandoff() {
+    useUiStore.getState().setTab("workbench", { after: revealDevHandoff });
   }
 
   const refresh = useCallback(async () => {
@@ -682,6 +690,14 @@ export default function TaskContextDrawer() {
               </span>
             </div>
             <div className="clip-head-actions">
+              <button
+                className="icon-btn sm"
+                onClick={onOpenHandoff}
+                data-tip="生成交接包（工作台）"
+                aria-label="生成交接包"
+              >
+                <FileOutput size={12} />
+              </button>
               <button
                 className="icon-btn sm"
                 onClick={() => void onSetCurrentTask()}

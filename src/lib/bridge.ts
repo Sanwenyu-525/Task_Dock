@@ -407,6 +407,11 @@ export interface Settings {
   nav_workspace_max: number;
   /** 开发工作台（2026-11）：当前关注的开发任务 ID（tasks.id 字符串；空 = 未设置）。 */
   workbench_current_task: string;
+  /**
+   * 开发现场（2026-11 Round 1）：当前开发项目 ID（dev_projects.id，UUID 字符串；
+   * 空 = 未设置）。旧库缺键时后端返回空串，前端读侧按可选处理。
+   */
+  workbench_current_project?: string;
   // 模块独立启停（v0.5 整改）
   workspace_enabled: boolean;
   actions_enabled: boolean;
@@ -4073,3 +4078,139 @@ export const mobileFileReveal = (id: string) =>
   invoke<void>("mobile_file_reveal", { id });
 
 export const mobileFileOpenInbox = () => invoke<void>("mobile_file_open_inbox");
+
+// ── 开发现场 / 任务交接 / 验收工作台（dev workbench Round 1）────────────
+// 与后端 `dev_*` 命令一一对应；参数 camelCase（IPC 约定见 AGENTS.md 第 4 节）。
+// 全部命令只读元数据或写入显式提交的内容：Git 摘要不含文件内容，交接包正文
+// 只经 dev_handoff_save 落库，敏感扫描结果绝不回传命中原文（只回传位置与类型）。
+
+/** 开发项目：本地代码仓库目录的元数据。`exists` 由后端保存/读取时校验目录。 */
+export interface DevProject {
+  id: string;
+  name: string;
+  rootPath: string;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+  /** false = 目录已不存在：前端显示失效徽标，不自动删除。 */
+  exists: boolean;
+}
+
+/** dev_project_probe 的 Git 摘要状态：非 ok 时其余字段为空值，前端按状态降级展示。 */
+export type DevGitStatus = "ok" | "not_a_repo" | "git_unavailable" | "path_missing";
+
+/** 只读 Git 现场摘要：分支 / 未提交数 / worktree 标记。不读取任何文件内容。 */
+export interface DevGitInfo {
+  status: DevGitStatus;
+  branch: string | null;
+  detached: boolean;
+  isWorktree: boolean;
+  mainRepoPath: string | null;
+  headSha: string | null;
+  /** null = 未能统计（如 git 不可用），前端不得显示为 0。 */
+  dirtyCount: number | null;
+  probedAt: string;
+}
+
+/** 任务交接包的一个历史版本（追加式：只新增版本，不覆盖旧版）。 */
+export interface DevHandoffPack {
+  id: string;
+  /** null = 无当前任务的草稿交接包。 */
+  taskId: string | null;
+  title: string;
+  version: number;
+  contentMd: string;
+  /** 保存时的来源清单（JSON 字符串），用于回溯预填依据。 */
+  sourceSummary: string;
+  /** 保存时的敏感扫描结论摘要（非命中原文）。 */
+  secretScan: string;
+  createdAt: string;
+}
+
+/** 验收记录：追加式历史，无更新/删除入口。 */
+export interface DevAcceptanceRecord {
+  id: string;
+  subjectKind: "task" | "planning_feature";
+  subjectId: string;
+  verdict: "pass" | "fail" | "blocked" | "not_verified";
+  summary: string;
+  /** 证据列表（每条一行；只存用户登记的元数据描述，不存正文/截图本体）。 */
+  evidence: string;
+  createdAt: string;
+}
+
+/** 敏感扫描命中：只给类型与位置（第几段文本第几行），绝不回传原文。 */
+export interface SecretFinding {
+  /** 命中的第几段输入文本（0 起）。 */
+  textIndex: number;
+  /** 命中行号（1 起，按该段文本计）。 */
+  line: number;
+  /** 命中的敏感模式类型（如 token / password）。 */
+  kind: string;
+}
+
+export const devProjectList = () => invoke<{ projects: DevProject[] }>("dev_project_list");
+
+export const devProjectSave = (input: {
+  id: string | null;
+  name: string;
+  rootPath: string;
+  note?: string;
+}) => invoke<{ project: DevProject }>("dev_project_save", { id: input.id, name: input.name, rootPath: input.rootPath, note: input.note ?? "" });
+
+export const devProjectDelete = (id: string) => invoke<{ ok: true }>("dev_project_delete", { id });
+
+export const devProjectProbe = (rootPath: string) =>
+  invoke<DevGitInfo>("dev_project_probe", { rootPath });
+
+export const devHandoffSave = (input: {
+  taskId: string | null;
+  title: string;
+  contentMd: string;
+  sourceSummary?: string;
+}) =>
+  invoke<{ pack: DevHandoffPack }>("dev_handoff_save", {
+    taskId: input.taskId,
+    title: input.title,
+    contentMd: input.contentMd,
+    sourceSummary: input.sourceSummary ?? "",
+  });
+
+export const devHandoffList = (opts?: { taskId?: string | null; limit?: number }) =>
+  invoke<{ packs: DevHandoffPack[] }>("dev_handoff_list", {
+    taskId: opts?.taskId ?? null,
+    limit: opts?.limit ?? null,
+  });
+
+export const devHandoffGet = (id: string) => invoke<{ pack: DevHandoffPack }>("dev_handoff_get", { id });
+
+export const devHandoffDelete = (id: string) => invoke<{ ok: true }>("dev_handoff_delete", { id });
+
+export const devHandoffSecretScan = (texts: string[]) =>
+  invoke<{ findings: SecretFinding[]; truncated: boolean }>("dev_handoff_secret_scan", { texts });
+
+export const devAcceptanceRecordCreate = (input: {
+  subjectKind: "task" | "planning_feature";
+  subjectId: string;
+  verdict: "pass" | "fail" | "blocked" | "not_verified";
+  summary: string;
+  evidence?: string[];
+}) =>
+  invoke<{ record: DevAcceptanceRecord }>("dev_acceptance_record_create", {
+    subjectKind: input.subjectKind,
+    subjectId: input.subjectId,
+    verdict: input.verdict,
+    summary: input.summary,
+    evidence: input.evidence ?? [],
+  });
+
+export const devAcceptanceRecordList = (opts?: {
+  subjectKind?: "task" | "planning_feature" | null;
+  subjectId?: string | null;
+  limit?: number;
+}) =>
+  invoke<{ records: DevAcceptanceRecord[] }>("dev_acceptance_record_list", {
+    subjectKind: opts?.subjectKind ?? null,
+    subjectId: opts?.subjectId ?? null,
+    limit: opts?.limit ?? null,
+  });

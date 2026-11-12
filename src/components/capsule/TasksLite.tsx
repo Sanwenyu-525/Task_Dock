@@ -22,12 +22,22 @@
 //! 而是提示下一期并展示刷新后的新期次——第二次 toggle 会继续推进，不能当作撤销。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, BookmarkCheck, Check, CheckCircle2, ChevronRight, ListTodo, Plus } from "lucide-react";
+import {
+  Bell,
+  BookmarkCheck,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  FolderGit2,
+  ListTodo,
+  Plus,
+} from "lucide-react";
 import { useTasksStore, type TaskLiteScope } from "../../store/useTasksStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { fetchTask, type Task } from "../../lib/bridge";
 import { describeRecurrence } from "../../lib/format";
 import useImeComposition from "../../hooks/useImeComposition";
+import { resolveDevProjectChip } from "../devwork/DevProjectContext";
 import { openFullApp, openTaskEditor } from "./actions";
 import { dueLabel, sortPending } from "./format";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
@@ -120,6 +130,33 @@ export default function TasksLite() {
     () => (currentId ? (items?.find((t) => t.id === currentId) ?? fetchedCurrent) : null),
     [currentId, items, fetchedCurrent],
   );
+
+  // 开发工作台「当前项目」chip（Round 1）：与工作台开发现场区块共享 30s 缓存
+  // （resolveDevProjectChip 内部命中同一份模块级缓存），不重复请求。
+  // 列表未命中 / 读取失败 / 未设置：一律不渲染 chip，不渲染空壳。
+  const currentProjectId =
+    useSettingsStore((s) => s.settings?.workbench_current_project ?? "") || null;
+  const [projectChip, setProjectChip] = useState<{
+    name: string;
+    branch: string | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!currentProjectId) {
+      setProjectChip(null);
+      return;
+    }
+    let alive = true;
+    resolveDevProjectChip(currentProjectId)
+      .then((c) => {
+        if (alive) setProjectChip(c);
+      })
+      .catch(() => {
+        if (alive) setProjectChip(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [currentProjectId]);
 
   // 面板打开 → 取一次轻量列表；关闭 → 释放并作废在途响应。
   useEffect(() => {
@@ -396,6 +433,18 @@ export default function TasksLite() {
               {currentTask.status === "completed" ? <span className="cap-pill tone-done">已完成</span> : null}
             </span>
           </button>
+        </div>
+      )}
+
+      {/* 当前项目 chip（Round 1）：只读、不可交互，分支仅在 probe ok 时显示；
+          未设置/未命中不渲染，不留空壳 */}
+      {projectChip && (
+        <div className="cap-devproject-chip" aria-label={`当前开发项目：${projectChip.name}`}>
+          <FolderGit2 size={11} strokeWidth={2} aria-hidden="true" />
+          <span className="cap-devproject-chip-text">
+            {projectChip.name}
+            {projectChip.branch ? ` · ${projectChip.branch}` : ""}
+          </span>
         </div>
       )}
 

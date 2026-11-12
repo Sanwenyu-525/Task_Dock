@@ -187,6 +187,12 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     getSettings: vi.fn(async () => useSettingsStore.getState().settings ?? {}),
     onWorkspaceChanged: vi.fn(async () => () => {}),
     onWorkspaceRestoreProgress: vi.fn(async () => () => {}),
+    // dev workbench Round 1：本面板新增的三个子区块（开发现场/交接包/验收）默认空数据，
+    // 保持既有断言聚焦原四区域；新区块行为由 src/components/devwork/*.test.tsx 覆盖
+    devProjectList: vi.fn(async () => ({ projects: [] })),
+    devHandoffList: vi.fn(async () => ({ packs: [] })),
+    listTaskLinks: vi.fn(async () => []),
+    devAcceptanceRecordList: vi.fn(async () => ({ records: [] })),
   };
 });
 
@@ -291,8 +297,10 @@ describe("开发工作台", () => {
     // 当前任务的现场来自 task_context，不再为它调用 workspaceList
     expect(workspaceList).not.toHaveBeenCalledWith("a");
     expect(workspaceList).toHaveBeenCalledWith("b");
-    // 最近区不重复出现当前任务标题
-    expect(screen.queryAllByText("重构剪贴板模块")).toHaveLength(1);
+    // 最近区不重复出现当前任务标题（限定「快速继续」区：Round 1 起，交接包预填
+    // 的 textarea 会合法展示任务标题，全局唯一不再成立；本断言只约束最近区）
+    const recentSection = screen.getByRole("region", { name: "快速继续" });
+    expect(within(recentSection).queryAllByText("重构剪贴板模块")).toHaveLength(0);
   });
 
   it("任务已删除：展示失效状态，不伪造任务内容，也不静默清除设置", async () => {

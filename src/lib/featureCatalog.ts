@@ -211,9 +211,10 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     id: "core.dev-workbench",
     category: "core",
     title: "开发工作台",
-    description: "以「当前开发任务」为核心的工作台：任务、Agent 状态、待处理事项与快速继续。",
+    description:
+      "以「当前开发任务」为核心的工作台：任务、Agent 状态、待处理事项、快速继续，以及开发现场 / 任务交接包 / 验收工作台。",
     detail:
-      "面向 AI 辅助开发的任务优先布局：用户显式把一个开发任务设为「当前」，工作台集中展示它的关联 Agent 会话、工作现场与下一步动作；Agent 运行状态与需要处理的事项直接复用既有监控与行动中心数据（不建第二套事件系统）；最近待办任务及其现场支持一键恢复并逐项反馈真实结果。当前任务锚点是显式设置键（workbench_current_task），不按标题相似度自动绑定；Agent 完成一轮不改变任务状态，完成必须用户确认。",
+      "面向 AI 辅助开发的任务优先布局：用户显式把一个开发任务设为「当前」，工作台集中展示它的关联 Agent 会话、工作现场与下一步动作；Agent 运行状态与需要处理的事项直接复用既有监控与行动中心数据（不建第二套事件系统）；最近待办任务及其现场支持一键恢复并逐项反馈真实结果。当前任务锚点是显式设置键（workbench_current_task），不按标题相似度自动绑定；Agent 完成一轮不改变任务状态，完成必须用户确认。Round 1（2026-11）新增：开发现场（当前项目 + 只读 Git 摘要，显式设置键 workbench_current_project）、任务交接包（12 节模板、敏感扫描、追加式版本）与验收工作台（派生状态 + 追加式验收记录，无更新/删除入口）。",
     status: "partial",
     priority: "P0",
     existingFeatures: [
@@ -225,16 +226,20 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "快速继续：最近待办 + 现场摘要 + 单项恢复与结果反馈",
       "工作台头部「快速记录」直接唤起既有快速捕获窗口（不要求先进任务页）",
       "任务卡与上下文抽屉「设为当前任务」；胶囊任务面板当前任务置顶条",
+      "开发现场（Round 1）：显式选择开发项目（dev_project_*）+ 只读 Git 摘要（分支 / 未提交数 / worktree，非 ok 按状态降级），目录失效只显示徽标；胶囊任务面板当前项目 chip",
+      "任务交接包（Round 1）：12 节固定模板（空节不输出）、任务/项目/验收标准初始预填（不覆盖已编辑内容）、敏感扫描（只显示位置与类型，不回传原文）、复制 Markdown、追加式版本记录",
+      "验收工作台（Round 1）：派生状态徽章（验收判定 > 功能状态 > 任务状态）、验收标准只读清单、手工证据登记、四个验收动作（summary 必填）、追加式历史记录（无更新/删除入口）、返工提示词与返工任务（仅最新判定为 fail 时）",
+      "上下文抽屉「生成交接包」跨页入口：切到工作台并滚动定位交接区（复用 setTab 门禁）",
     ],
     missingFeatures: [
-      "P1 项目开发上下文：项目目录 / Git 仓库 / 分支与任务的关联展示",
-      "P1 Git 状态摘要（只读：分支 / 未提交变更 / 最近提交）",
+      "P1 Git 状态摘要补充：最近提交列表（当前只有分支 / 未提交数 / worktree 标记）",
       "P1 测试与构建结果归集（以真实执行记录为准，不用 Agent 文案冒充）",
     ],
     dependencies: [
       "task_agent_links / workspace_snapshots.task_id / task_reminder_links（既有任务关联数据）",
       "agent_snapshot + actions feed（既有监控与行动中心读模型）",
-      "设置键 workbench_current_task（application_settings，随备份迁移）",
+      "设置键 workbench_current_task / workbench_current_project（application_settings，随备份迁移）",
+      "dev_project_* / dev_handoff_* / dev_acceptance_* 命令（Round 1 后端契约）",
     ],
     acceptanceCriteria: [
       "选择开发任务后，工作台首屏可见任务、下一步动作、Agent 状态与待处理事项",

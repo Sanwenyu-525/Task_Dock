@@ -1,0 +1,549 @@
+//! 任务交接包区块（dev workbench Round 1）。
+//!
+//! - 12 节固定模板；空节不输出（Markdown 中略过该节，绝不输出空标题）。
+//! - 初始预填：任务标题/备注 → 「任务目标」；当前项目名/分支/路径 → 「项目背景」；
+//!   关联功能 acceptance_criteria → 「验收标准」。只填用户未编辑过的节，
+//!   绝不覆盖已输入内容；编辑态全部在 React state，复制/保存失败不丢内容。
+//! - 敏感扫描走 `dev_handoff_secret_scan`：命中只显示「节名 + 行号 + 类型」，
+//!   绝不渲染命中原文。
+//! - 保存为追加式版本（dev_handoff_save），contentMd 与预览严格一致；
+//!   版本列表展示同 taskId 最近 5 版，支持查看/复制/删除（删除走 ConfirmDialog）。
+//! - 「生成交接包」跨页入口（TaskContextDrawer）经 revealDevHandoff 滚动定位到本区块。
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ClipboardList, ScrollText, ShieldAlert } from "lucide-react";
+import { ConfirmDialog } from "../ui";
+import {
+  devHandoffDelete,
+  devHandoffList,
+  devHandoffSave,
+  devHandoffSecretScan,
+  fetchTask,
+  type DevHandoffPack,
+  type DevProject,
+  type SecretFinding,
+  type Task,
+} from "../../lib/bridge";
+import { copyText } from "../../lib/clipboard";
+import { errorMessage, normalizeError } from "../../lib/errors";
+import { formatRelative } from "../../lib/format";
+import { useLocale } from "../../hooks/useLocale";
+import { useUiStore } from "../../store/useUiStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { fetchDevProjectListCached, probeDevGitCached } from "./DevProjectContext";
+import { findFeaturesForTask, type DevLinkedFeature } from "./DevAcceptanceSection";
+
+/** 交接包 12 节固定模板（节顺序即 Markdown 输出顺序）。 */
+const HANDOFF_SECTIONS = [
+  { key: "background", i18n: "devwork.handoff.sec.background" },
+  { key: "goal", i18n: "devwork.handoff.sec.goal" },
+  { key: "progress", i18n: "devwork.handoff.sec.progress" },
+  { key: "scope", i18n: "devwork.handoff.sec.scope" },
+  { key: "codePaths", i18n: "devwork.handoff.sec.codePaths" },
+  { key: "constraints", i18n: "devwork.handoff.sec.constraints" },
+  { key: "dependencies", i18n: "devwork.handoff.sec.dependencies" },
+  { key: "criteria", i18n: "devwork.handoff.sec.criteria" },
+  { key: "screenshots", i18n: "devwork.handoff.sec.screenshots" },
+  { key: "testing", i18n: "devwork.handoff.sec.testing" },
+  { key: "forbidden", i18n: "devwork.handoff.sec.forbidden" },
+  { key: "reporting", i18n: "devwork.handoff.sec.reporting" },
+] as const;
+
+export type HandoffKey = (typeof HANDOFF_SECTIONS)[number]["key"];
+
+type HandoffSections = Record<HandoffKey, string>;
+
+function emptySections(): HandoffSections {
+  return {
+    background: "",
+    goal: "",
+    progress: "",
+    scope: "",
+    codePaths: "",
+    constraints: "",
+    dependencies: "",
+    criteria: "",
+    screenshots: "",
+    testing: "",
+    forbidden: "",
+    reporting: "",
+  };
+}
+
+/**
+ * 生成 Markdown：空节略过（不输出空标题）；标题恒为第一行。
+ * labels 由调用方按当前语言传入，保证输出与预览严格一致。
+ */
+export function buildHandoffMarkdown(
+  title: string,
+  labels: Record<HandoffKey, string>,
+  sections: HandoffSections,
+): string {
+  const lines: string[] = [`# 任务交接包：${title}`];
+  for (const s of HANDOFF_SECTIONS) {
+    const body = (sections[s.key] ?? "").trim();
+    if (!body) continue;
+    lines.push("", `## ${labels[s.key]}`, body);
+  }
+  return lines.join("\n");
+}
+
+/** 跨页定位：切到工作台后滚动到交接区并短暂高亮（静态描边，无动画）。 */
+export function revealDevHandoff(): void {
+  // after 回调在 setTab 同步执行，面板可能尚未提交渲染：双 rAF 等 DOM 就绪
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const el = document.getElementById("dev-handoff");
+      if (!el) return;
+      el.scrollIntoView({ block: "start" });
+      el.classList.add("dev-section-flash");
+      window.setTimeout(() => el.classList.remove("dev-section-flash"), 1600);
+    });
+  });
+}
+
+export default function DevHandoffSection() {
+  const { t } = useLocale();
+  const showToast = useUiStore((s) => s.showToast);
+  const taskId = useSettingsStore((s) => s.settings?.workbench_current_task ?? "") || null;
+  const projectId = useSettingsStore((s) => s.settings?.workbench_current_project ?? "") || null;
+
+  const [task, setTask] = useState<Task | null>(null);
+  const [taskMissing, setTaskMissing] = useState(false);
+  const [project, setProject] = useState<DevProject | null>(null);
+  const [features, setFeatures] = useState<DevLinkedFeature[] | null>(null);
+
+  const [title, setTitle] = useState("");
+  const [sections, setSections] = useState<HandoffSections>(emptySections);
+  /** 用户编辑过的节：预填绝不覆盖。 */
+  const editedRef = useRef<ReadonlySet<HandoffKey>>(new Set());
+  /** 本草稿实际预填过的节：写入 sourceSummary 供回溯。 */
+  const prefilledRef = useRef<ReadonlySet<HandoffKey>>(new Set());
+
+  const [scan, setScan] = useState<{ findings: SecretFinding[]; truncated: boolean } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [copying, setCopying] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [packs, setPacks] = useState<DevHandoffPack[] | null>(null);
+  const [viewPackId, setViewPackId] = useState<string | null>(null);
+  const [pendingDeletePackId, setPendingDeletePackId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const labels = useMemo(() => {
+    const out = {} as Record<HandoffKey, string>;
+    for (const s of HANDOFF_SECTIONS) out[s.key] = t(s.i18n);
+    return out;
+  }, [t]);
+
+  /** 换任务 = 新草稿：清空全部编辑与预填痕迹（含无任务草稿态）。 */
+  useEffect(() => {
+    setTask(null);
+    setTaskMissing(false);
+    setFeatures(null);
+    setTitle("");
+    setSections(emptySections());
+    editedRef.current = new Set();
+    prefilledRef.current = new Set();
+    setScan(null);
+    setScanError(null);
+    setCopyError(null);
+    setSaveError(null);
+    setViewPackId(null);
+  }, [taskId]);
+
+  // 当前任务数据：标题/备注预填来源；任务已删除时如实提示（保存退化为草稿）
+  useEffect(() => {
+    if (!taskId) return;
+    let alive = true;
+    fetchTask(taskId)
+      .then((task) => {
+        if (alive) setTask(task);
+      })
+      .catch((e) => {
+        // 只把「任务本身不存在」标为失效；其它读取失败同样不预填，但不阻塞交接包
+        const err = normalizeError(e);
+        const missing =
+          err.code === "NOT_FOUND" ||
+          (err.legacy && /not[_ ]?found|不存在|no rows|未找到/i.test(err.message));
+        if (alive && missing) setTaskMissing(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!taskId) return;
+    let alive = true;
+    // 关联功能查询失败只影响「验收标准」预填，不阻塞交接包本身（不伪造无关联）
+    void findFeaturesForTask(taskId)
+      .then((rows) => {
+        if (alive) setFeatures(rows);
+      })
+      .catch(() => {
+        if (alive) setFeatures([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [taskId]);
+
+  /** 预填一个节：只在「用户未编辑 且 目前为空」时写入。 */
+  const applyPrefill = useCallback((key: HandoffKey, value: string) => {
+    const v = value.trim();
+    if (!v) return;
+    if (editedRef.current.has(key)) return;
+    prefilledRef.current = new Set(prefilledRef.current).add(key);
+    setSections((m) => (m[key].trim() ? m : { ...m, [key]: v }));
+  }, []);
+
+  // 任务数据到达：标题 + 任务目标预填
+  useEffect(() => {
+    if (!task) return;
+    setTitle((cur) => (cur.trim() ? cur : task.title));
+    applyPrefill(
+      "goal",
+      [task.title, task.description].filter((s) => s.trim()).join("\n"),
+    );
+  }, [task, applyPrefill]);
+
+  // 当前项目 + Git 摘要到达：项目背景预填（名称 + 路径 + 分支/未提交摘要）
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    fetchDevProjectListCached()
+      .then((rows) => {
+        if (!alive) return;
+        const p = rows.find((r) => r.id === projectId) ?? null;
+        setProject(p);
+        if (!p) return;
+        return probeDevGitCached(p.rootPath)
+          .then((info) => {
+            if (!alive) return;
+            const parts = [`项目：${p.name}`, `路径：${p.rootPath}`];
+            if (info.status === "ok") {
+              const gitParts: string[] = [];
+              if (info.branch) gitParts.push(`分支：${info.branch}`);
+              if (info.dirtyCount !== null) gitParts.push(`未提交 ${info.dirtyCount} 处`);
+              if (info.isWorktree) gitParts.push("worktree");
+              if (gitParts.length > 0) parts.push(gitParts.join(" · "));
+            }
+            applyPrefill("background", parts.join("\n"));
+          })
+          .catch(() => {
+            if (alive) applyPrefill("background", `项目：${p.name}\n路径：${p.rootPath}`);
+          });
+      })
+      .catch(() => {
+        // 项目列表读取失败：不预填项目背景，如实留空
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectId, applyPrefill]);
+
+  // 关联功能到达：验收标准预填（取第一条非空 acceptance_criteria）
+  useEffect(() => {
+    if (!features) return;
+    for (const f of features) {
+      if (f.feature.acceptance_criteria.trim()) {
+        applyPrefill("criteria", f.feature.acceptance_criteria);
+        break;
+      }
+    }
+  }, [features, applyPrefill]);
+
+  const loadPacks = useCallback((id: string | null) => {
+    return devHandoffList({ taskId: id, limit: 5 })
+      .then(({ packs: rows }) => setPacks(rows))
+      .catch(() => setPacks([]));
+  }, []);
+
+  useEffect(() => {
+    void loadPacks(taskId);
+  }, [taskId, loadPacks]);
+
+  const onSectionChange = useCallback((key: HandoffKey, value: string) => {
+    editedRef.current = new Set(editedRef.current).add(key);
+    setSections((m) => ({ ...m, [key]: value }));
+  }, []);
+
+  const preview = useMemo(
+    () => buildHandoffMarkdown(title.trim() || t("devwork.handoff.untitled"), labels, sections),
+    [labels, sections, t, title],
+  );
+
+  const titleFilled = title.trim().length > 0;
+
+  const runSecretScan = useCallback(() => {
+    if (scanning) return;
+    setScanning(true);
+    setScanError(null);
+    devHandoffSecretScan(HANDOFF_SECTIONS.map((s) => sections[s.key]))
+      .then((r) => setScan({ findings: r.findings, truncated: r.truncated }))
+      .catch((e) => setScanError(errorMessage(e)))
+      .finally(() => setScanning(false));
+  }, [scanning, sections]);
+
+  const copyMarkdown = useCallback(() => {
+    if (copying) return;
+    setCopying(true);
+    setCopyError(null);
+    copyText(preview)
+      .then((ok) => {
+        if (ok) {
+          showToast(t("devwork.handoff.copied"), { kind: "success" });
+        } else {
+          // 剪贴板被拒/占用：如实报错；编辑态都在 state，内容不丢失
+          setCopyError(t("devwork.handoff.copyFailed"));
+        }
+      })
+      .finally(() => setCopying(false));
+  }, [copying, preview, showToast, t]);
+
+  const saveVersion = useCallback(() => {
+    if (saving || !titleFilled) return;
+    setSaving(true);
+    setSaveError(null);
+    const sourceSummary = JSON.stringify({
+      taskId,
+      projectId: project?.id ?? null,
+      featureIds: (features ?? []).map((f) => f.feature.id),
+      prefilled: [...prefilledRef.current],
+    });
+    devHandoffSave({
+      taskId,
+      title: title.trim(),
+      contentMd: preview,
+      sourceSummary,
+    })
+      .then(({ pack }) => {
+        showToast(t("devwork.handoff.saveDone", { version: pack.version }), { kind: "success" });
+        return loadPacks(taskId);
+      })
+      .catch((e) => {
+        // 保存失败不清空任何编辑态：标题、正文与预览保持原样，可重试
+        setSaveError(t("devwork.handoff.saveFailed", { error: errorMessage(e) }));
+      })
+      .finally(() => setSaving(false));
+  }, [features, loadPacks, preview, project, saving, showToast, t, taskId, title, titleFilled]);
+
+  const deletePack = useCallback(() => {
+    if (!pendingDeletePackId) return;
+    setDeleting(true);
+    devHandoffDelete(pendingDeletePackId)
+      .then(() => {
+        setPendingDeletePackId(null);
+        setViewPackId((cur) => (cur === pendingDeletePackId ? null : cur));
+        return loadPacks(taskId);
+      })
+      .catch((e) => {
+        showToast(t("devwork.handoff.deleteFailed", { error: errorMessage(e) }), { kind: "error" });
+      })
+      .finally(() => setDeleting(false));
+  }, [loadPacks, pendingDeletePackId, showToast, t, taskId]);
+
+  const findingText = useCallback(
+    (f: SecretFinding): string => {
+      const section = HANDOFF_SECTIONS[f.textIndex];
+      const name = section ? labels[section.key] : `#${f.textIndex}`;
+      return t("devwork.handoff.scanFindingItem", { section: name, line: f.line, kind: f.kind });
+    },
+    [labels, t],
+  );
+
+  return (
+    <section className="wb-card" id="dev-handoff" aria-label={t("devwork.handoff.title")}>
+      <div className="wb-section-head">
+        <h3 className="wb-section-title">
+          <ClipboardList size={13} aria-hidden="true" /> {t("devwork.handoff.title")}
+        </h3>
+        <span className="flex-spacer" />
+        {taskId ? (
+          <span className="badge subtle">{t("devwork.handoff.linkedToTask")}</span>
+        ) : (
+          <span className="badge subtle">{t("devwork.handoff.draftBadge")}</span>
+        )}
+      </div>
+      <p className="endpoint-hint">{t("devwork.handoff.hint")}</p>
+
+      {/* 当前任务被删除：如实提示，保存退化为无任务草稿，不静默关联 */}
+      {taskId && taskMissing && (
+        <div className="wb-stale" role="alert">
+          <span className="wb-stale-text">{t("devwork.acceptance.taskMissing")}</span>
+        </div>
+      )}
+
+      <label className="field">
+        <span>{t("devwork.handoff.packTitle")}</span>
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          aria-label={t("devwork.handoff.packTitle")}
+          maxLength={200}
+          placeholder={task?.title ?? t("devwork.handoff.untitled")}
+        />
+      </label>
+
+      <div className="wb-handoff-grid">
+        {HANDOFF_SECTIONS.map((s) => (
+          <label className="field wb-handoff-field" key={s.key}>
+            <span>{labels[s.key]}</span>
+            <textarea
+              rows={2}
+              value={sections[s.key]}
+              onChange={(e) => onSectionChange(s.key, e.target.value)}
+              aria-label={labels[s.key]}
+            />
+          </label>
+        ))}
+      </div>
+
+      <div className="wb-handoff-preview-wrap">
+        <div className="wb-links-title">
+          <ScrollText size={12} aria-hidden="true" /> {t("devwork.handoff.previewTitle")}
+        </div>
+        <pre className="wb-handoff-preview" aria-label={t("devwork.handoff.previewTitle")}>
+          {preview}
+        </pre>
+      </div>
+
+      {/* 敏感扫描：只显示节名/行号/类型，绝不渲染命中原文 */}
+      <div className="wb-accept-block">
+        <button
+          type="button"
+          className="btn sm"
+          disabled={scanning}
+          onClick={runSecretScan}
+          data-tip={t("devwork.handoff.scanTip")}
+        >
+          <ShieldAlert size={12} aria-hidden="true" /> {t("devwork.handoff.scan")}
+        </button>
+        {scanError && (
+          <div className="wb-error-row" role="alert">
+            <span>{t("devwork.handoff.scanFailed", { error: scanError })}</span>
+          </div>
+        )}
+        {scan && !scanError && scan.findings.length === 0 && (
+          <div className="wb-scan-clean" role="status">
+            {t("devwork.handoff.scanClean")}
+          </div>
+        )}
+        {scan && scan.findings.length > 0 && (
+          <div className="wb-scan-findings" role="alert">
+            <div>{t("devwork.handoff.scanFindings", { count: scan.findings.length })}</div>
+            <ul>
+              {scan.findings.map((f, i) => (
+                <li key={`${f.textIndex}:${f.line}:${f.kind}:${i}`}>{findingText(f)}</li>
+              ))}
+            </ul>
+            {scan.truncated && <div className="endpoint-hint">{t("devwork.handoff.scanTruncated")}</div>}
+          </div>
+        )}
+      </div>
+
+      <div className="wb-actions wb-handoff-actions">
+        <button type="button" className="btn primary sm" disabled={copying} onClick={copyMarkdown}>
+          {t("devwork.handoff.copyMd")}
+        </button>
+        <button
+          type="button"
+          className="btn sm"
+          disabled={saving || !titleFilled}
+          onClick={saveVersion}
+          data-tip={titleFilled ? undefined : t("devwork.handoff.titleRequired")}
+        >
+          {t("devwork.handoff.saveVersion")}
+        </button>
+      </div>
+      {!titleFilled && (
+        <div className="endpoint-hint">{t("devwork.handoff.titleRequired")}</div>
+      )}
+      {copyError && (
+        <div className="wb-error-row" role="alert">
+          <span>{copyError}</span>
+        </div>
+      )}
+      {saveError && (
+        <div className="wb-error-row" role="alert">
+          <span>{saveError}</span>
+        </div>
+      )}
+
+      {/* 版本记录：同 taskId 最近 5 版；查看 / 复制 / 删除（追加式，不提供编辑） */}
+      <div className="wb-accept-block">
+        <div className="wb-links-title">{t("devwork.handoff.versionsTitle")}</div>
+        {packs === null && (
+          <div className="empty-hint" role="status">
+            {t("nav.loading")}
+          </div>
+        )}
+        {packs !== null && packs.length === 0 && (
+          <div className="endpoint-hint">{t("devwork.handoff.versionsEmpty")}</div>
+        )}
+        {packs?.map((p) => (
+          <div className="wb-row wb-handoff-pack" key={p.id}>
+            <span className="wb-row-main">
+              <span className="wb-row-title">
+                {t("devwork.handoff.packVersion", { version: p.version })} · {p.title}
+              </span>
+              <span className="wb-row-sub">{formatRelative(p.createdAt)}</span>
+            </span>
+            <button
+              type="button"
+              className="btn sm"
+              aria-expanded={viewPackId === p.id}
+              onClick={() => setViewPackId((cur) => (cur === p.id ? null : p.id))}
+            >
+              {viewPackId === p.id ? t("devwork.handoff.viewClose") : t("devwork.handoff.view")}
+            </button>
+            <button
+              type="button"
+              className="icon-btn sm"
+              aria-label={t("devwork.handoff.copyPackAria", { version: p.version })}
+              data-tip={t("devwork.handoff.copyMd")}
+              onClick={() => {
+                void copyText(p.contentMd).then((ok) => {
+                  if (ok) showToast(t("devwork.handoff.copied"), { kind: "success" });
+                  else showToast(t("devwork.handoff.copyFailed"), { kind: "error" });
+                });
+              }}
+            >
+              ⧉
+            </button>
+            <button
+              type="button"
+              className="icon-btn sm"
+              aria-label={t("devwork.handoff.deletePackAria", { version: p.version })}
+              data-tip={t("devwork.handoff.deletePack")}
+              onClick={() => setPendingDeletePackId(p.id)}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        {viewPackId && (
+          <pre className="wb-handoff-preview wb-handoff-pack-view" aria-live="polite">
+            {packs?.find((p) => p.id === viewPackId)?.contentMd ?? ""}
+          </pre>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={pendingDeletePackId !== null}
+        title={t("devwork.handoff.deletePackTitle")}
+        detail={t("devwork.handoff.deletePackDetail", {
+          version: packs?.find((p) => p.id === pendingDeletePackId)?.version ?? "",
+        })}
+        confirmLabel={t("devwork.handoff.deletePack")}
+        danger
+        busy={deleting}
+        onConfirm={() => void deletePack()}
+        onCancel={() => setPendingDeletePackId(null)}
+      />
+    </section>
+  );
+}
