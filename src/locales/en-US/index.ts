@@ -2332,6 +2332,7 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.inboxDrop.shelfAdded": "Staged {added} item(s)",
   "capsule.inboxDrop.shelfPartial": "Partly staged: {added} succeeded, {failed} failed ({reason})",
   "capsule.inboxDrop.shelfFailed": "{failed} item(s) couldn't be staged: {reason}",
+  "capsule.inboxDrop.shelfNothingToAdd": "No files to add",
   "capsule.inboxDrop.shelfAddError": "Couldn't stage files: {error}",
 
   // ── Dev workbench (2026-11) ──

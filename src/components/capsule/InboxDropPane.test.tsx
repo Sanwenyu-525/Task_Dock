@@ -105,6 +105,7 @@ import { useShelfStore, __resetShelfRecentCache } from "../../store/useShelfStor
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
 import { __resetFileDrop } from "../../lib/fileDrop";
+import type { ShelfFailedEntry } from "../../lib/bridge";
 
 /** 每个用例都可能改写 DPI/命中函数：统一在 afterEach 复原，避免串味。 */
 const initialDpr = window.devicePixelRatio;
@@ -176,6 +177,23 @@ function shelfItem(over: Record<string, unknown> = {}) {
     updated_at: "2026-11-01T00:00:00Z",
     ...over,
   };
+}
+
+/**
+ * 临时替换 store 的 addPaths：按重构后契约直接 mock（原始路径进、
+ * `{ added, failed }` 出，failed 已合并预检与后端失败），让用例与
+ * store 内部实现解耦。返回恢复函数，测试 finally 里调用。
+ */
+function stubAddPaths(
+  impl: (
+    paths: string[],
+    mode: "reference" | "managed",
+    source: "picker" | "drag" | "manual",
+  ) => Promise<{ added: number; failed: ShelfFailedEntry[] }>,
+): () => void {
+  const original = useShelfStore.getState().addPaths;
+  useShelfStore.setState({ addPaths: vi.fn(impl) });
+  return () => useShelfStore.setState({ addPaths: original });
 }
 
 beforeEach(() => {
@@ -480,6 +498,60 @@ describe("InboxDropPane", () => {
     emit({ type: "drop", position: { x: 0, y: 0 }, paths: ["C:\\a.txt"] });
     expect(dropToDirectory).not.toHaveBeenCalled();
     expect(addShelfPaths).not.toHaveBeenCalled();
+  });
+
+  it("拖拽会话进行中卸载：owner 立即清理，迟到 drop 不执行任何文件操作", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container, unmount } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await flush();
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+    emit({ type: "enter", position: { x: 10, y: 10 }, paths: [] });
+    emit({ type: "over", position: { x: 10, y: 10 } });
+    await waitFor(() => expect(card.className).toContain("is-over"));
+
+    unmount();
+    // 注销清理会把会话中的 owner 一并清空：随后迟到的 drop 无人接收，不得投递。
+    emit({ type: "drop", position: { x: 10, y: 10 }, paths: ["C:\\a.txt"] });
+    await flush();
+
+    expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(addShelfPaths).not.toHaveBeenCalled();
+    document.elementFromPoint = original;
+  });
+
+  it("暂存在途时卸载：迟到返回不更新 UI、不触发最近切片刷新", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    let resolveAdd: (value: { added: number; failed: ShelfFailedEntry[] }) => void = () => {};
+    const restore = stubAddPaths(
+      () =>
+        new Promise<{ added: number; failed: ShelfFailedEntry[] }>((resolve) => {
+          resolveAdd = resolve;
+        }),
+    );
+    try {
+      const { container, unmount } = render(<InboxDropPane />);
+      await screen.findByText("工作资料");
+      const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+      document.elementFromPoint = () => zone;
+      emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+      emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\a.txt"] });
+      await waitFor(() => expect(useShelfStore.getState().addPaths).toHaveBeenCalledTimes(1));
+
+      const recentCalls = listRecent.mock.calls.length;
+      unmount();
+      resolveAdd({ added: 1, failed: [] });
+      await flush();
+      await flush();
+
+      // 卸载后不更新任何本地状态：flash 被 alive 守卫拦下，finally 里的
+      // loadRecent(force) 也不再执行（新增条目由 store 自身合并保证可见）。
+      expect(listRecent.mock.calls.length).toBe(recentCalls);
+    } finally {
+      restore();
+    }
   });
 
   it("点击卡片主体打开真实目录", async () => {
@@ -795,6 +867,28 @@ describe("InboxDropPane", () => {
     expect(dropToDirectory).not.toHaveBeenCalled();
   });
 
+  it("空 paths 不执行文件操作，但 UI 必须复位（高亮与拖拽提示消失）", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await flush();
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    await waitFor(() => expect(card.className).toContain("is-over"));
+    expect(screen.getByText("松开鼠标即投递到「工作资料」")).toBeTruthy();
+
+    emit({ type: "drop", position: { x: 20, y: 20 }, paths: [] });
+    await waitFor(() => expect(card.className).not.toContain("is-over"));
+    expect(screen.queryByText(/松开鼠标即投递到/)).toBeNull();
+    expect(screen.queryByText("把文件拖到目标卡片上")).toBeNull();
+    expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(addShelfPaths).not.toHaveBeenCalled();
+    document.elementFromPoint = original;
+  });
+
   it("目标在拖入期间被删除 → 原卡片位置不再投递，也不落到暂存架", async () => {
     dropTargets.mockResolvedValue([target()]);
     const { container } = render(<InboxDropPane />);
@@ -862,6 +956,29 @@ describe("InboxDropPane", () => {
 
     await screen.findByText("有 1 项未能暂存：权限不足");
     expect(screen.queryByText(/已暂存/)).toBeNull();
+  });
+
+  it("暂存结果 0/0（后端既无成功也无失败）→ 明确提示，不静默也不冒充成功", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    // 按重构后 addPaths 契约 mock：全部无效时 added=0 且 failed 非空；这里
+    // 单独覆盖后端空批次（0/0）形态，UI 必须给出与完整暂存架同口径的提示。
+    const restore = stubAddPaths(async () => ({ added: 0, failed: [] }));
+    try {
+      const { container } = render(<InboxDropPane />);
+      await screen.findByText("工作资料");
+      const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+      document.elementFromPoint = () => zone;
+      emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+      emit({ type: "over", position: { x: 20, y: 20 } });
+      emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\a.txt"] });
+
+      await screen.findByText("没有可添加的文件");
+      // 一条结果只出一条提示：不出现「已暂存」，也没有重复提示
+      expect(screen.queryByText(/已暂存/)).toBeNull();
+      expect(screen.getAllByText("没有可添加的文件")).toHaveLength(1);
+    } finally {
+      restore();
+    }
   });
 
   it.each([1.25, 2])("DPI %s：物理坐标换算后仍命中卡片与最近暂存", async (dpr) => {
@@ -1254,6 +1371,22 @@ describe("InboxDropPane", () => {
     );
     // 添加后强制刷新最近切片
     await waitFor(() => expect(listRecent.mock.calls.length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("文件选择器添加结果 0/0 → 同样提示「没有可添加的文件」，不静默", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const restore = stubAddPaths(async () => ({ added: 0, failed: [] }));
+    try {
+      openDialog.mockResolvedValue(["C:\\Docs\\新文件.txt"]);
+      render(<InboxDropPane />);
+      await screen.findByText("最近暂存");
+
+      fireEvent.click(screen.getByRole("button", { name: "添加文件到暂存架" }));
+      await screen.findByText("没有可添加的文件");
+      expect(screen.queryByText(/已暂存/)).toBeNull();
+    } finally {
+      restore();
+    }
   });
 
   it("卡片更多菜单：单目标时上移/下移不可用，拖入期间菜单会收起", async () => {

@@ -250,6 +250,10 @@ export default function InboxDropPane() {
           );
         } else if (result.added > 0) {
           flash(t("capsule.inboxDrop.shelfAdded", { added: result.added }));
+        } else {
+          // added=0 且 failed=0（空批次/全部被过滤）：与完整暂存架 reportAdd
+          // 同口径提示，不得静默结束，也不能显示「已暂存」。
+          flash(t("capsule.inboxDrop.shelfNothingToAdd"));
         }
       } catch (e) {
         if (alive.current) {

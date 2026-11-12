@@ -278,10 +278,18 @@ export default function InboxRecentShelf({
       if (!picked) return;
       const paths = Array.isArray(picked) ? picked : [picked];
       const r = await addPaths(paths, "reference", "picker");
-      if (r.added > 0) onNotice(`已暂存 ${r.added} 项`);
-      if (r.failed.length > 0) {
-        const first = r.failed[0];
-        onNotice(`有 ${r.failed.length} 项未能暂存：${first.reason}`);
+      // 与拖入路径（InboxDropPane.addToShelf）同一套文案与分支：部分失败合并为
+      // 一条汇总（两条 onNotice 会互相覆盖），0/0 不静默、不冒充成功。
+      const failed = r.failed.length;
+      const reason = r.failed[0]?.reason ?? "";
+      if (r.added > 0 && failed > 0) {
+        onNotice(t("capsule.inboxDrop.shelfPartial", { added: r.added, failed, reason }));
+      } else if (r.added > 0) {
+        onNotice(t("capsule.inboxDrop.shelfAdded", { added: r.added }));
+      } else if (failed > 0) {
+        onNotice(t("capsule.inboxDrop.shelfFailed", { failed, reason }));
+      } else {
+        onNotice(t("capsule.inboxDrop.shelfNothingToAdd"));
       }
       // addPaths 只刷新完整列表；这里让最近切片立刻反映新增条目。
       await loadRecent({ force: true });

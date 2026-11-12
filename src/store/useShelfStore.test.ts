@@ -370,8 +370,9 @@ describe("useShelfStore", () => {
         added: [makeItem(`ok-${failure.code}`)],
         failed: [{ path: "x", reason: "r", code: failure.code, category: failure.category }],
       });
+      // 预检已下沉到 store：必须传绝对路径，否则在 validate 阶段被拦截、不进后端。
       const events = await captureShelfAddEvents(() =>
-        useShelfStore.getState().addPaths(["x"], "managed", "picker"),
+        useShelfStore.getState().addPaths(["D:\\x.txt"], "managed", "picker"),
       );
       const terminal = events.find((event) => event.status === "failed");
       expect(terminal?.level, failure.code).toBe(failure.level);
@@ -389,7 +390,10 @@ describe("useShelfStore", () => {
     });
 
     const events = await captureShelfAddEvents(async () => {
-      const result = await useShelfStore.getState().addPaths(["a", "b"], "reference", "drag");
+      // 预检已下沉到 store：占位路径必须是绝对路径，否则不进后端。
+      const result = await useShelfStore
+        .getState()
+        .addPaths(["D:\\a.txt", "D:\\b.txt"], "reference", "drag");
       expect(result.added).toBe(0);
       expect(result.failed).toHaveLength(2);
     });
@@ -425,7 +429,7 @@ describe("useShelfStore", () => {
     });
 
     const events = await captureShelfAddEvents(() =>
-      useShelfStore.getState().addPaths(["a", "b"], "reference", "drag"),
+      useShelfStore.getState().addPaths(["D:\\a.txt", "D:\\b.txt"], "reference", "drag"),
     );
 
     const terminal = events.find((event) => event.status === "failed");

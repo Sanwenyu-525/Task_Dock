@@ -198,6 +198,43 @@ describe("fileDrop 分发", () => {
     expect(drop).not.toHaveBeenCalled();
   });
 
+  it("drop 后 owner 立即清空：同一会话重复 drop 只投递一次", async () => {
+    const drop = vi.fn();
+    registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onDrop: drop,
+    });
+    await flush();
+    emit({ type: "enter", position: { x: 10, y: 10 }, paths: [] });
+    emit({ type: "drop", position: { x: 10, y: 10 }, paths: ["C:\\a.txt"] });
+    emit({ type: "drop", position: { x: 10, y: 10 }, paths: ["C:\\a.txt"] });
+    expect(drop).toHaveBeenCalledTimes(1);
+  });
+
+  it("注销正在会话中的消费者：owner 立即清空并回调复位，迟到 drop 不再投递", async () => {
+    const leave = vi.fn();
+    const drop = vi.fn();
+    const off = registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onLeave: leave,
+      onDrop: drop,
+    });
+    await flush();
+    emit({ type: "enter", position: { x: 10, y: 10 }, paths: [] });
+    emit({ type: "over", position: { x: 10, y: 10 } });
+
+    off();
+    expect(leave).toHaveBeenCalledTimes(1);
+
+    // 会话已随注销结束：迟到的 drop 不得投给已注销的消费者
+    emit({ type: "drop", position: { x: 10, y: 10 }, paths: ["C:\\a.txt"] });
+    expect(drop).not.toHaveBeenCalled();
+  });
+
   it("缺少位置时把 null 交给 over/drop，由消费者拒绝", async () => {
     const over = vi.fn();
     const drop = vi.fn();
@@ -239,6 +276,26 @@ describe("fileDrop 分发", () => {
 
     document.elementFromPoint = original;
     card.remove();
+  });
+
+  it("命中测试支持 data-drop-zone 接收区（命中与未命中）", () => {
+    const zone = document.createElement("div");
+    zone.setAttribute("data-drop-zone", "shelf-recent");
+    const child = document.createElement("span");
+    zone.appendChild(child);
+    document.body.appendChild(zone);
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => child;
+
+    expect(dropTargetAt({ x: 5, y: 5 }, "data-drop-zone")).toBe("shelf-recent");
+    // 默认属性只认投递卡片：接收区不会被当成卡片命中
+    expect(dropTargetAt({ x: 5, y: 5 })).toBeNull();
+
+    document.elementFromPoint = () => null;
+    expect(dropTargetAt({ x: 5, y: 5 }, "data-drop-zone")).toBeNull();
+
+    document.elementFromPoint = original;
+    zone.remove();
   });
 });
 

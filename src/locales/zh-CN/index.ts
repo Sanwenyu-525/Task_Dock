@@ -2314,6 +2314,7 @@ export const zhCN = {
   "capsule.inboxDrop.shelfAdded": "已暂存 {added} 项",
   "capsule.inboxDrop.shelfPartial": "已部分暂存：成功 {added} 项，{failed} 项失败（{reason}）",
   "capsule.inboxDrop.shelfFailed": "有 {failed} 项未能暂存：{reason}",
+  "capsule.inboxDrop.shelfNothingToAdd": "没有可添加的文件",
   "capsule.inboxDrop.shelfAddError": "暂存文件失败：{error}",
 
   // ── 开发工作台（2026-11）──

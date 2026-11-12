@@ -85,6 +85,12 @@ interface ShelfState {
   setFilter: (patch: Partial<ShelfFilter>) => Promise<void>;
   refreshMeta: () => Promise<boolean>;
   retryShelfSync: () => Promise<boolean>;
+  /**
+   * 批量添加文件/文件夹。接收**原始路径**（调用方不做预过滤）：空白/相对路径
+   * 由 store 内部预检拦截，预检失败与后端失败在同一 operation 内汇总。
+   * 返回 { added, failed }，failed = [预检失败..., 后端失败...]（预检失败在前）；
+   * 全部无效/空数组时 added=0 且不调后端。
+   */
   addPaths: (
     paths: string[],
     mode: "reference" | "managed",
@@ -170,17 +176,19 @@ function sortItems(items: ShelfItem[]): ShelfItem[] {
 
 // ── 添加结果分级（诊断中心可稳定筛选） ──────────────────────
 //
-// 一次投递可能同时有成功与失败条目。旧实现无论 `failed` 多少都写 `success`，
+// 一次投递可能同时有预检失败与后端失败条目。旧实现无论 `failed` 多少都写 `success`，
 // 诊断中心只能看到「添加成功」，真实失败仅存在于界面 Toast。这里按返回的 report
 // 做一次**有界汇总**：
 // - 全成功 → INFO/success（保持既有行为）；
 // - 部分/全部失败 → failed 终态 + 稳定合成码，级别由失败分类决定；
 // - 0 添加 0 失败 → WARN/failed（后端没有可落库内容）；
+// - 空数组/全部无效 → WARN/failed（validate 阶段终态，不调后端）；
 // metadata 只放计数、模式、来源与稳定错误码，绝不写路径/文件名。
 
 const SHELF_ADD_PARTIAL_FAILED = "SHELF_ADD_PARTIAL_FAILED";
 const SHELF_ADD_FAILED = "SHELF_ADD_FAILED";
 const SHELF_ADD_NO_INPUT = "SHELF_ADD_NO_INPUT";
+const SHELF_ADD_ALL_INVALID = "SHELF_ADD_ALL_INVALID";
 const SHELF_ADD_REFRESH_FAILED = "SHELF_ADD_REFRESH_FAILED";
 const SHELF_FAILURE_CODES_MAX = 3;
 const SHELF_FAILURE_CODE_MAX_CHARS = 40;
@@ -288,6 +296,36 @@ function uniformShelfFailureCode(failed: ShelfFailedEntry[]): string | undefined
   if (codes.length === 0 || codes.some((code) => !code)) return undefined;
   const first = codes[0];
   return codes.every((code) => code === first) ? first : undefined;
+}
+
+// ── 拖入路径预检（原 ShelfWorkspace UI 层辅助下沉）─────────────
+//
+// 下沉到 store 的原因：预检失败必须与后端失败共用同一个 operation 生命周期
+// 和同一份 { added, failed } 返回值，否则 UI 报告与诊断 metadata 的
+// total/failed 会对不上（一次拖入两种口径）。预检失败条目带
+// category: "validation"，让 summarizeShelfFailures 把它归为预期拒绝
+// （WARN 级），不误升级为 ERROR。
+
+/** Windows 绝对路径（盘符或 UNC）；POSIX 绝对路径用于跨平台与测试兜底。 */
+function isAbsoluteDropPath(path: string): boolean {
+  return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
+}
+
+/** 拖入路径客户端预检：空白/相对路径不进后端；失败条目保留原始输入路径。 */
+function splitDropPaths(paths: string[]): { valid: string[]; invalid: ShelfFailedEntry[] } {
+  const valid: string[] = [];
+  const invalid: ShelfFailedEntry[] = [];
+  for (const raw of paths) {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      invalid.push({ path: raw, reason: "路径为空", code: "empty_path", category: "validation" });
+    } else if (!isAbsoluteDropPath(trimmed)) {
+      invalid.push({ path: raw, reason: "只接受绝对路径", code: "relative_path", category: "validation" });
+    } else {
+      valid.push(trimmed);
+    }
+  }
+  return { valid, invalid };
 }
 
 function shelfAddMetadata(
@@ -482,22 +520,65 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   },
 
   addPaths: async (paths, mode, source, groupId) => {
-    // 一次投递 = 一个 operation_id；只记录数量/来源/存储模式，绝不记录文件路径。
+    // 一次投递 = 一个 operation_id；预检与后端提交共用同一生命周期，只记录
+    // 数量/来源/存储模式，绝不记录文件路径。total = 原始输入总数（含无效项），
+    // 与返回给 UI 的 { added, failed } 数量一致。
     const op = startOperation("file", "shelf_add_paths");
+    const total = paths.length;
+
+    // ── 预检：空白/相对路径不进后端（原 UI 层 splitDropPaths 下沉）──
+    const { valid, invalid } = splitDropPaths(paths);
+
+    if (valid.length === 0) {
+      // 没有任何有效路径：validate 阶段终态，不调后端、不改 store 数据。
+      // 空数组（连无效项都没有）与「有输入但全部无效」区分错误码，便于诊断筛选；
+      // 返回的 failed 仍为预检失败列表（0/0 只属于「后端既没添加也没失败」的形态）。
+      const code = total > 0 ? SHELF_ADD_ALL_INVALID : SHELF_ADD_NO_INPUT;
+      op.stage("validate");
+      op.fail(
+        { code, category: "validation" },
+        {
+          severity: "WARN",
+          stage: "validate",
+          message:
+            total > 0
+              ? `暂存添加失败：共 ${total} 项，全部为空路径或相对路径`
+              : "暂存添加未产生任何条目",
+          metadata: shelfAddMetadata(
+            total,
+            0,
+            invalid.length,
+            mode,
+            source,
+            shelfFailureCodes(invalid),
+          ),
+        },
+      );
+      return { added: 0, failed: invalid };
+    }
+
     let report: ShelfAddReport;
     try {
       op.stage("validate");
       op.stage("persist");
-      report = await shelfAddPaths(paths, mode, source, groupId ?? null);
+      // 只把有效路径提交后端；无效项不浪费一次 IPC，也不产生后端逐项失败。
+      report = await shelfAddPaths(valid, mode, source, groupId ?? null);
     } catch (e) {
       // 参数/IPC 失败仍抛给 UI（保持既有行为）；业务失败在下面按 report 记录。
       op.fail(e);
       throw e;
     }
 
+    // UI 与诊断共用同一份失败合集：预检失败在前、后端失败在后（顺序钉死在测试），
+    // 保证 reportAdd 展示的数量与诊断 metadata 的 failed 一致。
+    const mergedFailed = [...invalid, ...report.failed];
     const added = report.added.length;
-    const failed = report.failed.length;
-    const failureCodes = shelfFailureCodes(report.failed);
+    const failed = mergedFailed.length;
+    const failureCodes = shelfFailureCodes(mergedFailed);
+    // 部分失败/全部失败终态的 stage 归因：只要后端返回过失败条目，persist 阶段
+    // 就确实发生了失败（更晚、更严重；「预检失败+后端失败」混合终态同此归因）；
+    // 失败全部来自预检（后端没有失败条目）时归 validate，与实际发生位置一致。
+    const failureStage = report.failed.length > 0 ? "persist" : "validate";
 
     if (added > 0) {
       // 真实存在的收尾步骤：本地合并 + 元数据/列表刷新。
@@ -531,54 +612,57 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
           error_code: SHELF_ADD_REFRESH_FAILED,
           error_category: "unknown",
           message: "暂存内容已添加，但列表刷新失败，界面可能不是最新状态",
-          metadata: shelfAddMetadata(paths.length, added, failed, mode, source),
+          metadata: shelfAddMetadata(total, added, failed, mode, source),
         });
       }
     }
 
     if (failed === 0 && added > 0) {
       op.success({
-        metadata: shelfAddMetadata(paths.length, added, failed, mode, source),
+        metadata: shelfAddMetadata(total, added, failed, mode, source),
       });
     } else if (failed > 0 && added > 0) {
-      const { level, category } = summarizeShelfFailures(report.failed);
+      const { level, category } = summarizeShelfFailures(mergedFailed);
       op.fail(
         { code: SHELF_ADD_PARTIAL_FAILED, category },
         {
           severity: level,
-          // 失败本身发生在 persist；finalize 只是收尾刷新，不作为失败阶段。
-          stage: "persist",
-          message: `暂存添加部分失败：共 ${paths.length} 项，成功 ${added}、失败 ${failed}`,
-          metadata: shelfAddMetadata(paths.length, added, failed, mode, source, failureCodes),
+          // 失败发生在 failureStage（persist 或 validate，见上方归因注释）；
+          // finalize 只是收尾刷新，不作为失败阶段。
+          stage: failureStage,
+          message: `暂存添加部分失败：共 ${total} 项，成功 ${added}、失败 ${failed}`,
+          metadata: shelfAddMetadata(total, added, failed, mode, source, failureCodes),
         },
       );
     } else if (failed > 0) {
-      const { level, category } = summarizeShelfFailures(report.failed);
-      const code = uniformShelfFailureCode(report.failed) ?? SHELF_ADD_FAILED;
+      const { level, category } = summarizeShelfFailures(mergedFailed);
+      const code = uniformShelfFailureCode(mergedFailed) ?? SHELF_ADD_FAILED;
       op.fail(
         { code, category },
         {
           severity: level,
-          stage: "persist",
-          message: `暂存添加失败：共 ${paths.length} 项，成功 0、失败 ${failed}`,
-          metadata: shelfAddMetadata(paths.length, added, failed, mode, source, failureCodes),
+          stage: failureStage,
+          message: `暂存添加失败：共 ${total} 项，成功 0、失败 ${failed}`,
+          metadata: shelfAddMetadata(total, added, failed, mode, source, failureCodes),
         },
       );
     } else {
-      // paths 非空但后端既没添加也没失败：不能伪装成成功。
+      // 有效路径非空但后端既没添加也没失败：不能伪装成成功。这不是某条路径
+      // 的失败，而是 persist 阶段后端无产出，stage 固定为 persist。
       op.fail(
         { code: SHELF_ADD_NO_INPUT, category: "validation" },
         {
           severity: "WARN",
           stage: "persist",
           message: "暂存添加未产生任何条目",
-          metadata: shelfAddMetadata(paths.length, added, failed, mode, source),
+          metadata: shelfAddMetadata(total, added, failed, mode, source),
         },
       );
     }
 
-    // 业务失败不抛给 UI：调用方按返回的 added/failed 展示逐条结果。
-    return { added, failed: report.failed };
+    // 业务失败不抛给 UI：调用方按返回的 added/failed 展示逐条结果
+    // （failed = [预检失败..., 后端失败...]，预检失败在前）。
+    return { added, failed: mergedFailed };
   },
 
   addLink: async (url, groupId) => {

@@ -24,6 +24,7 @@ import {
   updateSettings,
   SHELF_KIND_LABELS,
   type ShelfDragOutResult,
+  type ShelfFailedEntry,
   type ShelfItem,
   type ShelfKind,
 } from "../../lib/bridge";
@@ -71,22 +72,7 @@ export function copyActionLabel(items: ShelfItem[]): string {
   return "复制 / 导出到…";
 }
 
-/** 拖入失败项：后端会补充可选 code/category，旧版本只有 reason。 */
-interface ShelfAddFailure {
-  path: string;
-  reason: string;
-  /** 后端 `AppError::code`；旧后端可能缺省或为 null。 */
-  code?: string | null;
-  /** 后端 `AppError::category`；旧后端可能缺省或为 null。 */
-  category?: string | null;
-}
-
-interface ShelfAddOutcome {
-  added: number;
-  failed: ShelfAddFailure[];
-}
-
-/** 失败码（后端为大写 `AppError::code`）→ 用户可读原因；未知 code 原样展示。 */
+/** 失败码（后端为大写 `AppError::code`，预检码为小写）→ 用户可读原因；未知 code 原样展示。 */
 const ADD_FAILURE_CODE_LABELS: Record<string, string> = {
   empty_path: "路径为空",
   relative_path: "只接受绝对路径",
@@ -107,7 +93,7 @@ const ADD_FAILURE_CODE_LABELS: Record<string, string> = {
   service_overloaded: "服务繁忙",
 };
 
-function addFailureReason(f: ShelfAddFailure): string {
+function addFailureReason(f: ShelfFailedEntry): string {
   const code = f.code?.trim();
   if (code) {
     const key = code.toLowerCase();
@@ -119,11 +105,6 @@ function addFailureReason(f: ShelfAddFailure): string {
   return f.reason?.trim() || "未知原因";
 }
 
-/** Windows 绝对路径（盘符或 UNC）；POSIX 绝对路径用于跨平台与测试兜底。 */
-function isAbsoluteDropPath(path: string): boolean {
-  return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
-}
-
 /** toast 只展示文件名，不把完整路径带进提示（保持既有隐私口径）。 */
 function dropPathName(path: string): string {
   const parts = path
@@ -131,27 +112,6 @@ function dropPathName(path: string): string {
     .map((part) => part.trim())
     .filter(Boolean);
   return parts.at(-1) ?? "（空路径）";
-}
-
-/**
- * 拖入路径客户端预检：空白/相对路径不进后端。
- * 后端会对整批返回 Validation 错误或逐项 failed；提前拆开能给出明确提示，
- * 也避免「空批次调用 addPaths 后既不成功也不失败」的静默状态。
- */
-function splitDropPaths(paths: string[]): { valid: string[]; invalid: ShelfAddFailure[] } {
-  const valid: string[] = [];
-  const invalid: ShelfAddFailure[] = [];
-  for (const raw of paths) {
-    const trimmed = raw.trim();
-    if (!trimmed) {
-      invalid.push({ path: raw, reason: "路径为空", code: "empty_path" });
-    } else if (!isAbsoluteDropPath(trimmed)) {
-      invalid.push({ path: raw, reason: "只接受绝对路径", code: "relative_path" });
-    } else {
-      valid.push(trimmed);
-    }
-  }
-  return { valid, invalid };
 }
 
 interface PendingDelete {
@@ -426,8 +386,9 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     [],
   );
 
+  /** addPaths 返回的合并结果（预检失败 + 后端失败已在 store 内汇总完毕）。 */
   const reportAdd = useCallback(
-    (r: ShelfAddOutcome, verb: string) => {
+    (r: { added: number; failed: ShelfFailedEntry[] }, verb: string) => {
       const failed = r.failed ?? [];
       // 成功与失败并存：只发一条汇总，避免一次拖入刷 N 条错误 toast。
       if (r.added > 0 && failed.length > 0) {
@@ -484,17 +445,12 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         // 先清高亮：无论后续是否执行，松手后都不能留下遮罩。
         setDragOver(false);
         // 系统未给出路径：静默复位，不调用 addPaths，也不报「已暂存」。
+        // （用户拖入的空/相对路径由 store 预检拦截并计入失败，走 reportAdd 明确提示。）
         if (paths.length === 0) return;
-        const { valid, invalid } = splitDropPaths(paths);
-        if (valid.length === 0) {
-          // 全部为空/相对路径：不请求后端，但必须明确告知失败。
-          reportAdd({ added: 0, failed: invalid }, "已暂存");
-          return;
-        }
-        addPaths(valid, copyOnAddRef.current ? "managed" : "reference", "drag")
-          .then((r) =>
-            reportAdd({ added: r.added, failed: [...invalid, ...r.failed] }, "已暂存"),
-          )
+        // 原始路径直接交给 addPaths：预检下沉到 store 后，预检失败与后端失败
+        // 在同一 operation 内汇总，UI 报告与诊断 metadata 的 total/failed 一致。
+        addPaths(paths, copyOnAddRef.current ? "managed" : "reference", "drag")
+          .then((r) => reportAdd(r, "已暂存"))
           .catch((e) => showToast(`暂存拖入文件失败：${errorMessage(e)}`, { kind: "error" }));
       },
     });
