@@ -1,12 +1,15 @@
-//! 投递目标管理（完整面板内的独立内容视图）。
+//! 投递目标管理（完整面板内的独立内容视图 + 真实文件投递区）。
 //!
 //! 结构（与「文件暂存架」视图互斥，不新增左侧导航 Tab）：
-//! 返回暂存架 → 标题与目标数量 → 主要添加操作 → 目录列表 → 辅助刷新/说明。
-//! 拖入语义：本视图只负责目录配置，**不接管文件拖入**（ShelfWorkspace 在
-//! `targetsOpen` 时释放拖放消费者），避免在管理目标时把文件误加进暂存架。
+//! 返回暂存架 → 标题与目标数量 → 主要添加操作 → 目标卡片列表（含最近投递结果）
+//! → 辅助刷新/说明。
+//! 拖入语义：本视图是投递落点之一。拖入订阅仍在 ShelfWorkspace（全面板唯一消费者），
+//! 松手坐标命中这里的 `data-drop-target` 卡片 → 真实投递到该目录；未命中仍按
+//! 暂存处理。卡片高亮与提示条只表达落点，不改变这一路由归属。
 //!
 //! 与工具面板共享同一份配置（同一后端表 + 同一 store）：这里改名称/路径/模式/可见性，
-//! 胶囊「文件」子页立即看到；反过来也成立。
+//! 胶囊「文件」子页立即看到；反过来也成立。投递结果（store.reports）同样共享：
+//! 胶囊里投递失败的批次在对应目标卡片下方也能看到并可重试。
 //!
 //! 所有的删除都只是「移除快捷入口」：真实目录与其中的文件一律不动。
 
@@ -16,6 +19,8 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  Check,
+  ChevronDown,
   Eye,
   EyeOff,
   Folder,
@@ -23,14 +28,22 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Trash2,
 } from "lucide-react";
-import type { DropTargetOpMode, ShelfConflictStrategy, ShelfDropTarget } from "../../lib/bridge";
+import type {
+  DropTargetOpMode,
+  ShelfConflictStrategy,
+  ShelfDropEntry,
+  ShelfDropReport,
+  ShelfDropTarget,
+} from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { ConfirmDialog } from "../ui/Dialog";
 import DropTargetForm from "./DropTargetForm";
+import { deliverToTarget } from "./shelfDeliver";
 
 function shortPath(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -38,22 +51,39 @@ function shortPath(path: string): string {
   return `…\\${parts.slice(-3).join("\\")}`;
 }
 
+/** 结果条的状态标签：跳过 / 部分完成都不能被说成成功（与胶囊同口径）。 */
+const STATUS_LABEL: Record<ShelfDropEntry["status"], string> = {
+  ok: "成功",
+  skipped: "跳过",
+  failed: "失败",
+  partial: "部分完成",
+};
+
 export default function DropTargetManager({
   onClose,
   onDirtyChange,
+  dragActive = false,
+  overTargetId = null,
 }: {
   onClose: () => void;
   /** 把「有未保存表单」上报给工作区：外部定位需要先确认才能切换视图。 */
   onDirtyChange?: (dirty: boolean) => void;
+  /** 拖入会话进行中（由 ShelfWorkspace 消费者透传）：驱动落点提示条。 */
+  dragActive?: boolean;
+  /** 当前悬停命中的目标卡片 id：卡片用强调色内描边表达投递落点。 */
+  overTargetId?: string | null;
 }) {
   const targets = useDropTargetsStore((s) => s.targets);
   const loading = useDropTargetsStore((s) => s.loading);
   const error = useDropTargetsStore((s) => s.error);
+  const reports = useDropTargetsStore((s) => s.reports);
+  const reportNames = useDropTargetsStore((s) => s.reportNames);
   const load = useDropTargetsStore((s) => s.load);
   const update = useDropTargetsStore((s) => s.update);
   const remove = useDropTargetsStore((s) => s.remove);
   const move = useDropTargetsStore((s) => s.move);
   const openDir = useDropTargetsStore((s) => s.openDir);
+  const clearReport = useDropTargetsStore((s) => s.clearReport);
   const showToast = useUiStore((s) => s.showToast);
   const [adding, setAdding] = useState(false);
   /** 正在编辑的目标 id：表单就地替换该行，不新开模态。 */
@@ -144,7 +174,18 @@ export default function DropTargetManager({
 
       <p className="shelf-targets-desc">
         拖进工具面板「收集箱 → 文件」中的目标卡片，即按这里的配置写入真实目录；默认复制并保留源文件。
+        也可以把文件直接拖到下方目标卡片上完成投递；拖到卡片之外松手则暂存到文件暂存架。
       </p>
+
+      {/* 落点提示必须渲染在目标列表之前但只占一行：拖入进行中才出现，
+          与胶囊同一语义（命中卡片投递，空白松手暂存）。 */}
+      {dragActive && targets.length > 0 && (
+        <p className="shelf-targets-drop-hint is-live" role="status">
+          {overTargetId
+            ? `松开鼠标即投递到「${targets.find((t) => t.id === overTargetId)?.name ?? ""}」`
+            : "把文件拖到目标卡片上投递；空白处松手将暂存到文件暂存架"}
+        </p>
+      )}
 
       {error && (
         <div className="shelf-targets-error" role="alert">
@@ -209,6 +250,7 @@ export default function DropTargetManager({
                   first={index === 0}
                   last={index === targets.length - 1}
                   confirming={confirmId === t.id}
+                  over={overTargetId === t.id}
                   onOpen={() => void run(() => openDir(t.id))}
                   onEdit={() => setEditing(t.id)}
                   onMove={(dir) => void run(() => move(t.id, dir))}
@@ -233,10 +275,25 @@ export default function DropTargetManager({
                   }}
                 />
               )}
+              {/* 最近一次投递结果跟着目标卡片走：胶囊里投递的批次在这里同样可见。 */}
+              {editing !== t.id && reports[t.id] && (
+                <TargetReport
+                  key={reports[t.id].batch_id}
+                  report={reports[t.id]}
+                  target={t}
+                />
+              )}
             </li>
           ))}
         </ul>
       )}
+
+      {/* 目标入口已移除但结果重要（有失败/部分完成）的报告：保留可见，不丢关键信息。 */}
+      {Object.entries(reports)
+        .filter(([id]) => !targets.some((t) => t.id === id))
+        .map(([id, report]) => (
+          <OrphanReport key={report.batch_id} report={report} name={reportNames[id] ?? ""} />
+        ))}
 
       <p className="shelf-drop-targets-note">
         移除只删除快捷入口，不会删除真实目录或其中的文件；投递默认复制并保留源文件。
@@ -265,6 +322,7 @@ function TargetRow({
   first,
   last,
   confirming,
+  over,
   onOpen,
   onEdit,
   onMove,
@@ -279,6 +337,8 @@ function TargetRow({
   first: boolean;
   last: boolean;
   confirming: boolean;
+  /** 拖入悬停命中本卡片：强调色内描边表达投递落点（样式层不挡命中）。 */
+  over: boolean;
   onOpen: () => void;
   onEdit: () => void;
   onMove: (dir: "up" | "down") => void;
@@ -290,7 +350,10 @@ function TargetRow({
   onConfirmRemove: () => void;
 }) {
   return (
-    <div className={`shelf-drop-target-row${target.available ? "" : " is-off"}`}>
+    <div
+      className={`shelf-drop-target-row${target.available ? "" : " is-off"}${over ? " is-over" : ""}`}
+      data-drop-target={target.id}
+    >
       <span className="shelf-drop-target-icon" aria-hidden="true">
         <Folder size={15} strokeWidth={1.8} />
       </span>
@@ -415,6 +478,232 @@ function TargetRow({
             <Trash2 size={12} aria-hidden="true" />
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** 逐项结果里需要解释的条目（跳过不是成功，部分完成也不是失败）。 */
+function pendingEntriesOf(report: ShelfDropReport): ShelfDropEntry[] {
+  return (report.entries ?? []).filter((e) => e.status !== "ok");
+}
+
+/** 目标卡片下方的最近投递结果：计数、逐项原因与恢复建议、可操作出口。 */
+function TargetReport({ report, target }: { report: ShelfDropReport; target: ShelfDropTarget }) {
+  const openDir = useDropTargetsStore((s) => s.openDir);
+  const clearReport = useDropTargetsStore((s) => s.clearReport);
+  const showToast = useUiStore((s) => s.showToast);
+  /** 有失败/部分完成时默认展开：用户需要立刻看到原因，而不是再点一次。 */
+  const [open, setOpen] = useState(report.failed > 0 || report.partial > 0);
+  const [retrying, setRetrying] = useState(false);
+
+  // 新批次到达时重置展开态：上一批的手动收起不迁移到新结果。
+  useEffect(() => {
+    setOpen(report.failed > 0 || report.partial > 0);
+  }, [report.batch_id, report.failed, report.partial]);
+
+  const pending = pendingEntriesOf(report);
+  const hasProblem = report.failed > 0 || report.partial > 0;
+
+  /** 查看诊断：意图随导航事务下发（`after`），取消/保存中拦截时不残留。 */
+  const showDiagnostics = () => {
+    useUiStore.getState().setTab("diagnostics", {
+      after: () => useUiStore.getState().requestDiagnosticsOperation(report.batch_id),
+    });
+  };
+
+  /** 重试失败项：failed/partial/skipped 的 source 原样重投，可用性兜底同拖放投递。 */
+  const retryPending = async () => {
+    if (retrying) return;
+    const sources = pending.map((e) => e.source);
+    if (sources.length === 0) return;
+    setRetrying(true);
+    try {
+      const result = await deliverToTarget(target.id, sources);
+      if (result.kind === "blocked") {
+        showToast(result.reason, { kind: "error" });
+        return;
+      }
+      if (result.kind === "error") {
+        showToast(`重试投递失败：${result.message}`, { kind: "error" });
+        return;
+      }
+      // 新报告已由 store 落库并替换展示；有剩余失败再显式提示，不冒充全部成功。
+      const r = result.report;
+      if (r.failed > 0 || r.partial > 0) {
+        const parts: string[] = [];
+        if (r.failed > 0) parts.push(`${r.failed} 项失败`);
+        if (r.partial > 0) parts.push(`${r.partial} 项部分完成`);
+        showToast(`重试完成：${parts.join("、")}，详情见结果条`, { kind: "warning" });
+      } else if (r.skipped > 0) {
+        showToast(`重试完成：${r.success} 项成功，${r.skipped} 项跳过`, { kind: "success" });
+      } else {
+        showToast(`重试完成：${r.success} 项成功`, { kind: "success" });
+      }
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  return (
+    <div className={`shelf-drop-report${hasProblem ? " is-warn" : ""}`}>
+      <button
+        type="button"
+        className="shelf-drop-report-head"
+        aria-expanded={open}
+        aria-controls={`shelf-drop-report-detail-${report.target_id}`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {hasProblem ? (
+          <AlertTriangle size={13} strokeWidth={2.2} aria-hidden="true" />
+        ) : (
+          <Check size={13} strokeWidth={2.4} aria-hidden="true" />
+        )}
+        <span className="shelf-drop-report-text">
+          最近投递：成功 {report.success} 项 · 跳过 {report.skipped} 项
+          {report.partial > 0 ? ` · 部分完成 ${report.partial} 项` : ""}
+          {` · 失败 ${report.failed} 项`}
+        </span>
+        <ChevronDown
+          size={12}
+          strokeWidth={2.2}
+          aria-hidden="true"
+          className={open ? "is-open" : undefined}
+        />
+      </button>
+      {open && (
+        <ul
+          className="shelf-drop-report-list"
+          id={`shelf-drop-report-detail-${report.target_id}`}
+        >
+          {pending.map((e, i) => (
+            <li key={`${e.source}-${i}`}>
+              <span className="shelf-drop-report-name" title={e.source}>
+                <span className={`shelf-drop-report-tag is-${e.status}`}>
+                  {STATUS_LABEL[e.status] ?? e.status}
+                </span>
+                {e.display_name}
+              </span>
+              <span className="shelf-drop-report-reason">{e.reason ?? STATUS_LABEL[e.status]}</span>
+              {e.residual_source && (
+                <span className="shelf-drop-report-residual" title={e.residual_source}>
+                  可能残留：{e.residual_source}
+                </span>
+              )}
+              {e.recovery && <span className="shelf-drop-report-recovery">{e.recovery}</span>}
+            </li>
+          ))}
+          {pending.length === 0 && (
+            <li>
+              <span className="shelf-drop-report-reason">全部条目已完整写入目标目录。</span>
+            </li>
+          )}
+        </ul>
+      )}
+      <div className="shelf-drop-report-actions">
+        {hasProblem && (
+          <button type="button" className="link-btn" onClick={showDiagnostics}>
+            查看诊断
+          </button>
+        )}
+        {pending.length > 0 && (
+          <button
+            type="button"
+            className="link-btn"
+            disabled={retrying}
+            onClick={() => void retryPending()}
+          >
+            {retrying ? <Loader2 size={11} className="spin" aria-hidden="true" /> : null}
+            重试失败项（{pending.length}）
+          </button>
+        )}
+        <button
+          type="button"
+          className="link-btn"
+          onClick={() => void openDir(target.id).catch((e) => showToast(errorMessage(e), { kind: "error" }))}
+        >
+          打开目标文件夹
+        </button>
+        <button
+          type="button"
+          className="link-btn"
+          aria-label={`清除「${target.name}」的投递结果`}
+          onClick={() => clearReport(target.id)}
+        >
+          清除结果
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 目标入口已移除但结果仍重要（有失败/部分完成）的孤儿报告：不丢关键信息。 */
+function OrphanReport({ report, name }: { report: ShelfDropReport; name: string }) {
+  const clearReport = useDropTargetsStore((s) => s.clearReport);
+  const [open, setOpen] = useState(true);
+  const pending = pendingEntriesOf(report);
+  return (
+    <div className="shelf-drop-report is-warn is-orphan">
+      <button
+        type="button"
+        className="shelf-drop-report-head"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <AlertTriangle size={13} strokeWidth={2.2} aria-hidden="true" />
+        <span className="shelf-drop-report-text">
+          「{name || "已移除的目标"}」有未完成的投递：失败 {report.failed} 项
+          {report.partial > 0 ? ` · 部分完成 ${report.partial} 项` : ""}
+          {report.skipped > 0 ? ` · 跳过 ${report.skipped} 项` : ""}
+        </span>
+        <ChevronDown
+          size={12}
+          strokeWidth={2.2}
+          aria-hidden="true"
+          className={open ? "is-open" : undefined}
+        />
+      </button>
+      {open && (
+        <ul className="shelf-drop-report-list">
+          {pending.map((e, i) => (
+            <li key={`${e.source}-${i}`}>
+              <span className="shelf-drop-report-name" title={e.source}>
+                <span className={`shelf-drop-report-tag is-${e.status}`}>
+                  {STATUS_LABEL[e.status] ?? e.status}
+                </span>
+                {e.display_name}
+              </span>
+              <span className="shelf-drop-report-reason">{e.reason ?? STATUS_LABEL[e.status]}</span>
+              {e.residual_source && (
+                <span className="shelf-drop-report-residual" title={e.residual_source}>
+                  可能残留：{e.residual_source}
+                </span>
+              )}
+              {e.recovery && <span className="shelf-drop-report-recovery">{e.recovery}</span>}
+            </li>
+          ))}
+          <li>
+            <span className="shelf-drop-report-reason">
+              目标入口已移除；请到「{report.target_path}」手工核对残留文件。
+            </span>
+          </li>
+        </ul>
+      )}
+      <div className="shelf-drop-report-actions">
+        <button
+          type="button"
+          className="link-btn"
+          onClick={() =>
+            useUiStore.getState().setTab("diagnostics", {
+              after: () => useUiStore.getState().requestDiagnosticsOperation(report.batch_id),
+            })
+          }
+        >
+          查看诊断
+        </button>
+        <button type="button" className="link-btn" onClick={() => clearReport(report.target_id)}>
+          清除结果
+        </button>
       </div>
     </div>
   );

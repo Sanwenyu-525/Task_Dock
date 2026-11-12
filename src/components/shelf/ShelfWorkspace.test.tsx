@@ -281,14 +281,15 @@ describe("ShelfWorkspace 内容视图分离", () => {
     expect(screen.queryByRole("tablist", { name: "类型筛选" })).toBeNull();
     expect(screen.getByRole("button", { name: "返回文件暂存架" })).toBeTruthy();
 
-    // 目标管理期间不注册文件拖入消费者（拖入不归暂存架管）
+    // 目标管理期间消费者不重注册：拖入仍由同一消费者按落点路由
+    //（命中目标卡片投递、未命中暂存），进出视图不应产生注册抖动。
     expect(dropMock.register).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "返回文件暂存架" }));
     await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
     expect(screen.queryByRole("heading", { name: "投递目标" })).toBeNull();
-    // 返回后恢复拖入
-    await waitFor(() => expect(dropMock.register).toHaveBeenCalledTimes(2));
+    // 返回后仍是同一次注册（无注销/重注册抖动）
+    expect(dropMock.register).toHaveBeenCalledTimes(1);
   });
 
   it("有未保存的目标表单时，返回暂存架必须先确认", async () => {
