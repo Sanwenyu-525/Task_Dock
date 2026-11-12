@@ -663,7 +663,10 @@ describe("A4 截图组有界预览", () => {
     ).toBeTruthy();
 
     fireEvent.click(paste);
-    expect(useUiStore.getState().clipboardPasteRequest?.groupId).toBe("lite-group-paste");
+    // 粘贴意图随导航 after 下发，解除停靠完成后才写入。
+    await waitFor(() =>
+      expect(useUiStore.getState().clipboardPasteRequest?.groupId).toBe("lite-group-paste"),
+    );
     expect(useUiStore.getState().tab).toBe("clipboard");
   });
 
@@ -700,7 +703,10 @@ describe("A4 截图组有界预览", () => {
     expect(discard).toHaveBeenCalledTimes(1);
     expect(useUiStore.getState().tab).toBe("clipboard");
     expect(useUiStore.getState().pendingTab).toBeNull();
-    expect(useUiStore.getState().clipboardPasteRequest?.groupId).toBe("lite-group-nav");
+    // 意图在导航成功（含解除停靠完成）后写入，异步等待。
+    await waitFor(() =>
+      expect(useUiStore.getState().clipboardPasteRequest?.groupId).toBe("lite-group-nav"),
+    );
 
     render(<ClipboardPanel />);
     expect(await screen.findByText(/逐项粘贴 · 截图组 导航/)).toBeTruthy();
@@ -758,7 +764,10 @@ describe("A4 截图组有界预览", () => {
     await screen.findByText("意图 A");
     fireEvent.click(screen.getByRole("button", { name: "逐项粘贴截图组「意图 A」" }));
     fireEvent.click(screen.getByRole("button", { name: "逐项粘贴截图组「意图 B」" }));
-    expect(useUiStore.getState().clipboardPasteRequest?.groupId).toBe("seq-intent-b");
+    // 两次点击各对应一次导航事务；after 异步执行，最后一次意图胜出。
+    await waitFor(() =>
+      expect(useUiStore.getState().clipboardPasteRequest?.groupId).toBe("seq-intent-b"),
+    );
 
     render(<ClipboardPanel />);
     expect(await screen.findByText(/逐项粘贴 · 意图 B/)).toBeTruthy();

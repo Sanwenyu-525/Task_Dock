@@ -337,7 +337,8 @@ describe("InboxLite", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "快速笔记" }));
     expect(useUiStore.getState().tab).toBe("inbox");
-    expect(useUiStore.getState().collectionSub).toBe("notes");
+    // 子页切换在导航 after 中执行，解除停靠完成后才写入。
+    await waitFor(() => expect(useUiStore.getState().collectionSub).toBe("notes"));
     expect(useUiStore.getState().pendingTab).toBeNull();
   });
 
@@ -392,7 +393,8 @@ describe("InboxLite", () => {
       act(() => useUiStore.getState().confirmPendingTab());
       expect(discard).toHaveBeenCalledTimes(1);
       expect(useUiStore.getState().tab).toBe("inbox");
-      expect(useUiStore.getState().collectionSub).toBe("notes");
+      // 子页切换在导航 after 中执行，解除停靠完成后才写入。
+      await waitFor(() => expect(useUiStore.getState().collectionSub).toBe("notes"));
       expect(useUiStore.getState().pendingTab).toBeNull();
     } finally {
       unregister();

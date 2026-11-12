@@ -357,7 +357,8 @@ describe("任务面板", () => {
     act(() => {
       screen.getByRole("button", { name: "编辑「整理产品周报」" }).click();
     });
-    expect(useUiStore.getState().editor.open).toBe(true);
+    // 解除停靠是异步事务：导航 after（打开编辑器）在解除完成后才执行。
+    await waitFor(() => expect(useUiStore.getState().editor.open).toBe(true));
     expect(useUiStore.getState().editor.task?.id).toBe("t1");
     expect(useUiStore.getState().tab).toBe("tasks");
   });
@@ -1277,7 +1278,8 @@ describe("应用面板", () => {
     expect(add.querySelector("svg")).toBeTruthy();
     expect(screen.queryByText("添加应用")).toBeNull();
     fireEvent.click(add);
-    expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0);
+    // 添加意图随导航 after 下发，解除停靠完成后才写入。
+    await waitFor(() => expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0));
     expect(useUiStore.getState().appConfig).toBeNull();
     expect(useUiStore.getState().tab).toBe("apps");
   });
@@ -1401,7 +1403,7 @@ describe("应用面板", () => {
     // 未配置时空态提供唯一添加入口，不再额外渲染网格加号。
     expect(add.closest(".cap-empty")).toBeTruthy();
     fireEvent.click(add);
-    expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0);
+    await waitFor(() => expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0));
     expect(useUiStore.getState().appConfig).toBeNull();
     expect(useUiStore.getState().tab).toBe("apps");
 
