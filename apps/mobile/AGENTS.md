@@ -14,6 +14,14 @@
   不得新增后台轮询/自动同步（A3 设计另行归属）。
 - 所有请求必须走 `src/lib/sync/secureFetch.ts`（本地原生模块 `modules/secure-http/`，
   仅接受 `https://`）；不得引入绕过指纹固定的网络路径，不得恢复明文放行插件。
+  已配对连接缺少已钉住的 SPKI 指纹时必须 **fail-closed**（提示重新配对），
+  不得退回「首用信任」继续发送设备令牌。
+- 本地 Expo 模块共三个，均由 autolinking 链接、由 `plugins/` 里的 config plugin 写清单：
+  `secure-http`（TLS + 指纹固定）、`share-intent`（ACTION_SEND 接收）、
+  `taskdock-widget`（AppWidgetProvider 2×2 / 4×2）。改原生代码后必须重跑
+  `npx expo prebuild --platform android` 并做 Gradle 编译验证；`android/` 仍不入库。
+- 小组件与分享接收**只允许事件驱动**：小组件 `updatePeriodMillis=0`，不得引入后台轮询、
+  常驻服务或定时刷新；快照只写标题/勾选态/计数/时间戳，绝不写令牌、密钥或同步元数据。
 - 桌面端 `http_ingest` 只监听 `127.0.0.1`，不得改成局域网/公网监听，也不得把它当作手机接入点。
 - 不新增依赖（新增必须单独说明理由、体积影响与回退路径并取得同意）。
 

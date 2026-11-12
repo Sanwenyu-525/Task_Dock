@@ -59,7 +59,7 @@ apps/mobile/
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # vitest：111 例（协议/加密/客户端/DB 迁移/同步编排 + 小组件/深链纯函数）
+npm test            # vitest：118 例（协议/加密/客户端/DB 迁移/同步编排 + 小组件/深链/分享队列纯函数）
 ```
 
 测试目录有两处：`src/**/*.test.ts`（同步与数据层，node:sqlite 真实 SQL harness）与

@@ -49,9 +49,9 @@
 - 传输安全（2026-11-12，协议 v2）：TLS-only 监听 + 证书 SPKI 指纹固定 + 移除明文放行；
   真机复验未执行（无连接设备），单测/类型检查证据见
   [06-pairing.md](06-pairing.md) §8
-- 自动化测试（2026-11-12 集成后）：`npm test`（vitest）**111 例**，覆盖协议/加密/客户端/
-  DB 迁移/同步编排（93）与小组件快照/深链白名单纯函数（18）；`npm run typecheck` 通过。
-  真机运行时仍待验证，见 [04-testing.md](04-testing.md)。
+- 自动化测试（2026-11-12 集成后）：`npm test`（vitest）**118 例**，覆盖协议/加密/客户端/
+  DB 迁移/同步编排（95）与小组件快照/深链白名单/分享载荷队列纯函数（23）；
+  `npm run typecheck` 通过。真机运行时仍待验证，见 [04-testing.md](04-testing.md)。
 
 ### 已实现（本轮 UI 落地，真机未走查）
 
@@ -126,6 +126,6 @@
   条目（真机复验未执行，如实标注）。
 - 2026-11-12 双分支集成：`agent/mobile-stability-fix`（TLS v2）与 `agent/mobile-feature-dev`
   （分享接收 / 主屏小组件）合入集成分支。本条更正状态矩阵：小组件与分享接收从「未实现」
-  移入「已实现并接入」（构建层 + 111 例自动化测试；真机运行时未验证）；测试数 93 → 111；
+  移入「已实现并接入」（构建层 + 118 例自动化测试；真机运行时未验证）；测试数 93 → 118；
   后台同步与远程推送仍未实现。新增 [09-share-receive.md](09-share-receive.md)、
   [10-widget.md](10-widget.md)、[11-background-sync-design.md](11-background-sync-design.md)。
