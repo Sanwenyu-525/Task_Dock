@@ -230,7 +230,6 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "P1 项目开发上下文：项目目录 / Git 仓库 / 分支与任务的关联展示",
       "P1 Git 状态摘要（只读：分支 / 未提交变更 / 最近提交）",
       "P1 测试与构建结果归集（以真实执行记录为准，不用 Agent 文案冒充）",
-      "工作台真机验收（Win32 恢复链路、多 DPI、贴边胶囊回归）",
     ],
     dependencies: [
       "task_agent_links / workspace_snapshots.task_id / task_reminder_links（既有任务关联数据）",

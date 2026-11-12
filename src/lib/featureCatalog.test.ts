@@ -233,6 +233,8 @@ describe("统计摘要", () => {
     // 真机走查（2026-11-04）通过的 5 项 implemented 记为 verified；
     // v0.11 新增四项（mcp-server / help-center / onboarding / command-palette）
     // 自动化测试已具备但真机未走查，保持 unverified
+    // core.dev-workbench 仍是 partial（P1 项目/Git/测试归集未做），按契约保持 unverified；
+    // 其已实现的 P0 闭环另有隔离实例真机证据（见 tmp/acceptance/dev-workbench-p0/）。
     expect(s.verified).toBe(8);
     expect(s.unverified).toBe(25);
     expect(s.verified + s.unverified).toBe(s.total);
