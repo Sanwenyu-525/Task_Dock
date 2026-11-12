@@ -18,6 +18,10 @@
 | [06-pairing.md](06-pairing.md) | 配对协议、二维码/深链、令牌存储、安全偏差与验收证据 | `docs/ARCHITECTURE.md` 手机配对章 |
 | [07-sync.md](07-sync.md) | 任务 / 收集箱 / 笔记双向增量同步、载荷加密、冲突处理、真机验收 | `docs/ARCHITECTURE.md` 手机同步章 |
 | [08-file-transfer.md](08-file-transfer.md) | 文件互传 v1：双向分块加密、SAF 接收目录、桌面文件列表与验收 | `docs/ARCHITECTURE.md` 手机文件互传章 |
+| [09-share-receive.md](09-share-receive.md) | 系统分享接收：`ACTION_SEND`、冷/热启动、去重与确认落库 | —（手机端专项） |
+| [10-widget.md](10-widget.md) | 主屏小组件 2×2 / 4×2：快照、点击路由、刷新与主题 | —（手机端专项） |
+| [11-background-sync-design.md](11-background-sync-design.md) | 后台/自动同步方案评估（**仅设计，未实现**） | — |
+| [12-transport-security.md](12-transport-security.md) | 传输安全索引：威胁模型、SPKI 固定、fail-closed、偏差与安全验收矩阵 | `docs/ARCHITECTURE.md` 四、安全设计 / 手机配对章 |
 | [prototypes/](prototypes/README.md) | Stitch 页面原型：v2 终版 11 屏 + 33 个导出变体（按页面归组，含画廊 `index.html`） | 设计稿/参考图 |
 | [../MOBILE_STACK.md](../MOBILE_STACK.md) | 选型与共享边界**设计稿**（含未实现能力的规划，不是现状） | 选型报告 |
 | [../../apps/mobile/AGENTS.md](../../apps/mobile/AGENTS.md) | 本目录的开发红线与提交前自检 | 根 `AGENTS.md` |
@@ -129,3 +133,6 @@
   移入「已实现并接入」（构建层 + 118 例自动化测试；真机运行时未验证）；测试数 93 → 118；
   后台同步与远程推送仍未实现。新增 [09-share-receive.md](09-share-receive.md)、
   [10-widget.md](10-widget.md)、[11-background-sync-design.md](11-background-sync-design.md)。
+- 2026-11-12 安全文档收口：新增 [12-transport-security.md](12-transport-security.md)——把散落在
+  06/07/08 的 TLS v2 要求收成单一索引（威胁模型、SPKI 信任锚、fail-closed 三入口、令牌与撤销、
+  已知偏差、安全验收矩阵），明确真机复验未执行。文档地图同时补齐 09–12 条目。
