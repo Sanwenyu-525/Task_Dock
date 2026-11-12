@@ -154,8 +154,10 @@ github_token | sk_token | jwt | generic_assignment`。规则：
     目录不存在/未识别时如实显示降级态；「打开项目目录」按钮走既有 opener 能力。
   - `DevHandoffSection.tsx`（「任务交接包」）：从当前任务（无任务则允许无任务草稿）生成交接包：
     12 节模板表单（项目背景/任务目标/实现情况/修改范围/关联代码路径/技术限制/依赖任务/验收
-    标准/关联截图与问题/测试要求/禁止事项/结果汇报格式）+ 资料选择（task_context 聚合只读
-    字段 + 用户勾选 notes/shelf 条目名）→ 预览 Markdown → secret scan（发现项列出类型+行号，
+    标准/关联截图与问题/测试要求/禁止事项/结果汇报格式）+ 资料选择（Round 2a 落地：仅关联任务时
+    显示，笔记/暂存架各最近 ≤20 条复选，选中条目名以「已选资料清单」bullet 追加到项目背景节末尾，
+    sourceSummary 记录 selectedNotes/selectedShelfItems id 清单；条目正文不带入，正文导入需显式
+    授权与大小限制，属后续轮）→ 预览 Markdown → secret scan（发现项列出类型+行号，
     不回显内容，用户自行修正）→ 一键复制（navigator.clipboard）+ 保存版本；版本列表（同任务
     最近 5 版，可查看/复制/删除）。
   - `DevAcceptanceSection.tsx`（「验收工作台」）：对当前任务或其关联 planning feature 显示派生
