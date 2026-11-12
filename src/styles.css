@@ -19722,3 +19722,405 @@ span.wf-step-main {
     }
   }
 }
+
+/* ── 开发工作台（2026-11）────────────────────────────────────────
+   以「当前开发任务」为核心的任务优先布局：A 当前任务 / B Agent 运行 /
+   C 需要处理 / D 快速继续。只使用语义 Token（--surface-raised /
+   --border-subtle / --status-* / --text-*），不引入新颜色体系；
+   组件结构与数据来源见 DevWorkbenchPanel.tsx 头注。 */
+.wb-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 0;
+  flex-shrink: 0;
+}
+
+.wb-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.wb-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.wb-subtitle {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.wb-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 2px 14px;
+}
+
+/* B/C 双列；窄窗（320–400）收成单列，避免横向滚动 */
+.wb-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.wb-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  padding: 10px 12px 12px;
+  min-width: 0;
+}
+
+.wb-section-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.wb-section-title {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.wb-section-title .badge {
+  margin-left: 2px;
+}
+
+.wb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  min-height: 28px;
+  min-width: 0;
+}
+
+/* 行内固定件不参与收缩：窄窗下 badge/按钮整体换行，而不是逐字折行 */
+.wb-row .action-kind,
+.wb-row .badge,
+.wb-row .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 「与当前任务相关」标记：书签图标替代文字徽标，给标题留出可读宽度 */
+.wb-current-mark {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
+}
+
+.wb-row:hover {
+  background: var(--surface-hover);
+}
+
+/* 整行可点的条目（需要处理）：恢复按钮语义，无默认按钮外观 */
+.wb-row-btn {
+  width: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.wb-row-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.wb-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-row-title {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-row-sub {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-row-meta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.wb-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.wb-recent-row:hover {
+  background: var(--surface-hover);
+}
+
+/* Agent 运行六态摘要芯片：数字 + 文字双编码（不只靠颜色） */
+.wb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 8px;
+}
+
+/* 证据边界说明：已安装 / 已接入 / 在线只由真实事件判定 */
+.wb-evidence {
+  margin: 0 0 8px;
+}
+
+.wb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.wb-chip em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.wb-chip.tone-waiting em {
+  color: var(--status-waiting);
+}
+
+.wb-chip.tone-failed em {
+  color: var(--status-error);
+}
+
+.wb-chip.tone-running em {
+  color: var(--status-running);
+}
+
+.wb-chip.tone-disconnected em {
+  color: var(--status-disconnected);
+}
+
+.wb-task-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  min-width: 0;
+}
+
+.wb-task-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+}
+
+.wb-meta-item {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.wb-meta-item.is-overdue {
+  color: var(--status-error);
+}
+
+.wb-meta-scene {
+  color: var(--accent);
+}
+
+.wb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 2px;
+}
+
+/* 确认完成的两段式按钮：点亮时用危险色提示「即将写入状态」 */
+.wb-actions .btn.danger {
+  color: var(--c-danger);
+  border-color: color-mix(in srgb, var(--c-danger) 45%, transparent);
+}
+
+.wb-links {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 14px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.wb-links-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.wb-links-title .badge {
+  margin-left: 2px;
+}
+
+/* 空态与失效态 */
+.wb-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wb-empty-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.wb-empty .endpoint-hint {
+  margin: 0;
+}
+
+.wb-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0;
+}
+
+.wb-empty-more {
+  align-self: flex-start;
+}
+
+.wb-stale {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--status-error);
+}
+
+.wb-stale-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wb-error-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--status-error);
+  min-width: 0;
+}
+
+/* 窄窗（<560px，覆盖 320/400 窄窗验收口径）：双列收单列，页头纵向排布 */
+@media (max-width: 559px) {
+  .wb-grid,
+  .wb-links {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wb-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .wb-head-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-row,
+  .wb-recent-row {
+    transition: none;
+  }
+}
+
+/* 任务卡「设为当前任务」入口（开发工作台锚点）：已是当前任务时显示静态标记 */
+.task-current.is-current {
+  color: var(--accent);
+  cursor: default;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 胶囊任务面板「当前任务」置顶条：轻量单行，不挤占分段列表 */
+.cap-current-row {
+  align-items: center;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--cap-accent-soft, var(--accent-soft));
+}
+
+.cap-current-flag {
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}

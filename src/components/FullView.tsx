@@ -62,6 +62,7 @@ import { useLocale } from "../hooks/useLocale";
 import { requestSettingsSectionReveal } from "../lib/settingsSections";
 
 const AppsPanel = lazy(() => import("./apps/AppsPanel"));
+const DevWorkbenchPanel = lazy(() => import("./workbench/DevWorkbenchPanel"));
 const WidgetsPanel = lazy(() => import("./widgets/WidgetsPanel"));
 const MobileTransferPanel = lazy(() => import("./mobile/MobileTransferPanel"));
 const WorkflowsPanel = lazy(() => import("./workflows/WorkflowsPanel"));
@@ -402,6 +403,7 @@ export default function FullView() {
         >
           {/* 低频页首次进入时异步加载；fallback 只占位、不做持续动画，避免闪烁。 */}
           <Suspense fallback={<div className="panel-loading" role="status" aria-label={t("nav.loading")} />}>
+            {tab === "workbench" && <DevWorkbenchPanel />}
             {tab === "tasks" && <TasksPanel />}
             {tab === "agents" && <AgentPanel />}
             {tab === "apps" && <AppsPanel />}

@@ -17,6 +17,7 @@ import { act } from "react";
 const listTasks = vi.fn();
 const toggleTask = vi.fn();
 const taskStats = vi.fn();
+const fetchTask = vi.fn();
 const createFromQuickAdd = vi.fn();
 const clipboardView = vi.fn();
 const clipboardGroup = vi.fn();
@@ -37,6 +38,7 @@ vi.mock("../../lib/bridge", () => ({
   listTasks: (...a: unknown[]) => listTasks(...a),
   toggleTask: (...a: unknown[]) => toggleTask(...a),
   taskStats: (...a: unknown[]) => taskStats(...a),
+  fetchTask: (...a: unknown[]) => fetchTask(...a),
   createFromQuickAdd: (...a: unknown[]) => createFromQuickAdd(...a),
   createTask: vi.fn(),
   updateTask: vi.fn(),
@@ -142,6 +144,7 @@ beforeEach(() => {
   listTasks.mockReset();
   toggleTask.mockReset();
   taskStats.mockReset();
+  fetchTask.mockReset();
   createFromQuickAdd.mockReset();
   clipboardView.mockReset();
   clipboardGroup.mockReset();
@@ -625,6 +628,20 @@ describe("任务面板", () => {
     expect(input.value).toBe("第一条");
     fireEvent.compositionEnd(input);
   });
+
+  it("当前任务不在轻量列表时只补取一次，列表加载前不重复请求", async () => {
+    useSettingsStore.setState({
+      settings: { workbench_current_task: "outside" } as never,
+    });
+    fetchTask.mockResolvedValue(task("outside", "列表之外的当前任务", null));
+    listTasks.mockResolvedValue([task("t1", "普通待办", null)]);
+    render(<TasksLite />);
+    await screen.findByText("列表之外的当前任务");
+    // 初始 items=null 时不得抢跑；列表落地后只补取一次
+    await waitFor(() => expect(fetchTask).toHaveBeenCalledTimes(1));
+    expect(fetchTask).toHaveBeenCalledWith("outside");
+    expect(screen.getByText("普通待办")).toBeTruthy();
+  });
 });
 
 describe("任务分段查询语义", () => {
@@ -1003,7 +1020,7 @@ describe("Agent 面板", () => {
     expect(screen.queryByText("Agent 状态读取失败")).toBeNull();
   });
 
-  it("打开会话调用真实命令；失败时如实提示", async () => {
+  it("打开会话调用真实命令并传外部会话 ID；失败时如实提示", async () => {
     useAgentsStore.setState({ snapshot });
     openAgentSession.mockRejectedValueOnce(new Error("no capability"));
     render(<AgentsLite />);

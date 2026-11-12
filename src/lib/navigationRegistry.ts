@@ -24,6 +24,7 @@ import {
   HardDrive,
   History,
   Inbox,
+  LayoutDashboard,
   LayoutGrid,
   LifeBuoy,
   ListTodo,
@@ -54,6 +55,7 @@ export type NavEntryKind = "page" | "merged" | "agent-status" | "visual";
 export type NavGroup = "core" | "capture" | "planning" | "system";
 
 export type NavEntryId =
+  | "workbench"
   | "tasks"
   | "agents"
   | "apps"
@@ -109,6 +111,21 @@ export interface NavEntry {
 
 /** 声明顺序无关于展示顺序；展示顺序一律按 `defaults[surface].order`。 */
 export const NAV_ENTRIES: readonly NavEntry[] = [
+  {
+    id: "workbench",
+    kind: "page",
+    surfaces: ["left"],
+    labelKey: "nav.workbench",
+    label: "工作台",
+    icon: LayoutDashboard,
+    tabs: ["workbench"],
+    group: "core",
+    badge: "intervention",
+    defaults: {
+      left: { order: 0.5, visible: true },
+      capsule: { order: 1, visible: false },
+    },
+  },
   {
     id: "tasks",
     kind: "page",

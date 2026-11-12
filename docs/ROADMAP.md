@@ -74,7 +74,9 @@
 >
 > **目录已同步（2026-11-05）**：`featureCatalog.ts` 中 Claude / Cursor / Gemini 三项已由 planned 改为 implemented，与上表一致；三者 `verification` 仍为 unverified，只有真实会话事件入库后才可改为 verified。
 >
-> **目录已同步（2026-11-08，v0.11 第三轮）**：新增全局命令面板（implemented·unverified，59 用例）；场景工作区与工作现场恢复补记 v40 窗口几何捕获/恢复（真机跨显示器落地未验证）；MCP 真实客户端联调经官方 MCP Inspector 全链路通过（`tmp/acceptance/mcp-inspector-e2e/`）。此前 2026-11-06（规划纠偏）以代码为准修正了场景/工作流/暂存架/MCP/帮助/引导六项过期描述。当前总数统计以 `featureCatalog.ts` 为准（implemented 14 / partial 15 / planned 3 / blocked 0；已验证 8 / 未验证 24）。
+> **目录已同步（2026-11-08，v0.11 第三轮）**：新增全局命令面板（implemented·unverified，59 用例）；场景工作区与工作现场恢复补记 v40 窗口几何捕获/恢复（真机跨显示器落地未验证）；MCP 真实客户端联调经官方 MCP Inspector 全链路通过（`tmp/acceptance/mcp-inspector-e2e/`）。此前 2026-11-06（规划纠偏）以代码为准修正了场景/工作流/暂存架/MCP/帮助/引导六项过期描述。
+>
+> **目录已同步（2026-11-12，开发工作台 P0）**：新增 `core.dev-workbench`（partial·unverified；按目录契约，partial 不标 verified）：完整模式「工作台」任务优先布局（当前开发任务 / Agent 运行 / 需要处理 / 快速继续），复用 `task_context`、`agent_snapshot`、行动中心 intervention/notification 与 `workspace_restore` 回执；当前任务为显式设置键 `workbench_current_task`，Agent 完成一轮不改任务状态。隔离实例真机验收 16/16（含恢复成功 window-confirmed、完成后任务仍 pending、快速捕获原生显隐与前台返回）与 Dock 7/7（左吸附 58×446 → 展开 404×446 → 收起 → 完整面板 400×560）通过；P1 仍缺 Git 摘要、测试结果归集、项目上下文关联。当前总数统计以 `featureCatalog.ts` 为准（implemented 14 / partial 16 / planned 3 / blocked 0；已验证 8 / 未验证 25）。
 >
 > 已完成并从规划移除（避免失效条目）：Qoder / WorkBuddy 专用适配器（hooks 接入已实现并真实联调，见 [AGENT_COVERAGE_MATRIX.md](../AGENT_COVERAGE_MATRIX.md)）；Agent 人工介入收件箱（已落地为 Agent 行动中心 `core.agent-action-center`）。
 

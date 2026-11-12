@@ -18,20 +18,22 @@ import userEvent from "@testing-library/user-event";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
 import TaskItem from "./TaskItem";
 import type { Task, TaskFilter } from "../../lib/bridge";
 import type { NavTarget, TaskNavLink } from "../../lib/navigation";
 import { EXIT_MS } from "../../lib/motion";
 
-const { toggleTask, navNavigate, listTasks } = vi.hoisted(() => ({
+const { toggleTask, navNavigate, listTasks, updateSettings } = vi.hoisted(() => ({
   toggleTask: vi.fn(),
   navNavigate: vi.fn(),
   listTasks: vi.fn(),
+  updateSettings: vi.fn(),
 }));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/bridge")>();
-  return { ...actual, toggleTask, listTasks };
+  return { ...actual, toggleTask, listTasks, updateSettings };
 });
 
 vi.mock("../../lib/navigation", async (importOriginal) => {
@@ -171,6 +173,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // 当前任务锚点会跨用例残留，避免影响后续卡片的静态标记/按钮分支
+  useSettingsStore.setState({ settings: null });
 });
 
 describe("TaskItem 交互", () => {
@@ -334,6 +338,26 @@ describe("TaskItem 交互", () => {
 
     resolveToggle(taskFix({ ...PENDING, status: "completed" }));
     await waitFor(() => expect(btn.getAttribute("aria-busy")).toBe("false"));
+  });
+
+  it("设为当前任务：写入 workbench_current_task，并提供打开工作台的后续动作", async () => {
+    seed(PENDING);
+    useSettingsStore.setState({ settings: { workbench_current_task: "" } as never });
+    updateSettings.mockImplementation(async (patch: Record<string, unknown>) => ({
+      ...(useSettingsStore.getState().settings ?? {}),
+      ...patch,
+    }));
+    render(<TaskItem task={PENDING} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "设为当前任务：写周报" }));
+    await waitFor(() =>
+      expect(updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ workbench_current_task: "t1" }),
+      ),
+    );
+    const toast = useUiStore.getState().toasts.at(-1);
+    expect(toast?.message).toContain("已将「写周报」设为当前任务");
+    expect(toast?.action?.label).toBe("打开工作台");
   });
 });
 

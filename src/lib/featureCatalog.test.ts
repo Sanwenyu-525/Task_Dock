@@ -152,11 +152,11 @@ describe("目录结构契约", () => {
     expect(groups.reduce((n, g) => n + g.items.length, 0)).toBe(FEATURE_CATALOG.length);
   });
 
-  it("五个展示分区条目数为 core 5 / workflow 12 / info 2 / agent 8 / ecosystem 5", () => {
+  it("五个展示分区条目数为 core 6 / workflow 12 / info 2 / agent 8 / ecosystem 5", () => {
     const counts = Object.fromEntries(
       featuresByCategory().map((g) => [g.category, g.items.length]),
     );
-    expect(counts).toEqual({ core: 5, workflow: 12, info: 2, agent: 8, ecosystem: 5 });
+    expect(counts).toEqual({ core: 6, workflow: 12, info: 2, agent: 8, ecosystem: 5 });
   });
 
   it("每项必备字段非空", () => {
@@ -210,9 +210,10 @@ describe("目录结构契约", () => {
 });
 
 describe("统计摘要", () => {
-  it("全目录状态计数与验收基线一致（32 = 14 + 15 + 3 + 0）", () => {
+  it("全目录状态计数与验收基线一致（33 = 14 + 16 + 3 + 0）", () => {
     const s = featureCatalogSummary();
-    expect(s.total).toBe(32);
+    expect(s.total).toBe(33);
+    // coreTotal 是 CORE_FEATURE_IDS 锁定的 12 项核心功能，与目录总数无关
     expect(s.coreTotal).toBe(12);
     // v0.10（2026-11-04 七项功能验收整改）：专注与休息、快速笔记、Agent 工作时间统计、
     // 任务统计与效率分析、自定义全局快捷键 planned→implemented；
@@ -222,8 +223,9 @@ describe("统计摘要", () => {
     // 2026-11-06 v0.11 第一轮：新增 agent.mcp-server（partial）、ux.help-center（partial）、
     // ux.onboarding（implemented，unverified）；三项真实 UI 验收均待真机，verification 保持 unverified。
     // 2026-11-08 v0.11 第三轮：新增 ux.command-palette（implemented，unverified）。
+    // 2026-11-12：新增 core.dev-workbench（partial，P0 闭环已实现，P1 上下文能力与真机验收未做）。
     expect(s.implemented).toBe(14);
-    expect(s.partial).toBe(15);
+    expect(s.partial).toBe(16);
     expect(s.planned).toBe(3);
     expect(s.blocked).toBe(0);
     // 状态计数之和必须等于总功能数
@@ -231,8 +233,10 @@ describe("统计摘要", () => {
     // 真机走查（2026-11-04）通过的 5 项 implemented 记为 verified；
     // v0.11 新增四项（mcp-server / help-center / onboarding / command-palette）
     // 自动化测试已具备但真机未走查，保持 unverified
+    // core.dev-workbench 仍是 partial（P1 项目/Git/测试归集未做），按契约保持 unverified；
+    // 其已实现的 P0 闭环另有隔离实例真机证据（见 tmp/acceptance/dev-workbench-p0/）。
     expect(s.verified).toBe(8);
-    expect(s.unverified).toBe(24);
+    expect(s.unverified).toBe(25);
     expect(s.verified + s.unverified).toBe(s.total);
   });
 

@@ -24,13 +24,37 @@ export function openFullApp(tab: Tab, after?: () => void): TabSwitchResult {
     after: () => {
       const undock = useEdgeSnapStore.getState().undock;
       if (undock) {
-        undock("full");
+        const result = undock("full");
+        // 真实引擎返回 Promise<boolean>：解除停靠完成后再执行 after，避免在
+        // Win32 裁剪态里提前打开编辑器/选择器（会被裁掉或夺错焦点）。
+        // 既有的同步桩/旧实现返回 void 时保持原同步语义。
+        if (isThenable(result)) {
+          void result
+            .then((ok) => {
+              if (ok) after?.();
+            })
+            .catch(() => {});
+        } else {
+          after?.();
+        }
       } else {
-        void applyMode("full");
+        const result = applyMode("full");
+        if (isThenable(result)) {
+          void result.then(() => after?.()).catch(() => {});
+        } else {
+          after?.();
+        }
       }
-      after?.();
     },
   });
+}
+
+function isThenable(value: unknown): value is Promise<unknown> {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
 }
 
 /**
