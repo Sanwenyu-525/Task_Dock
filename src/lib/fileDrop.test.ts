@@ -7,17 +7,21 @@
 //! 无人认领不投递、注销后释放监听、物理像素→CSS 像素换算。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DiagnosticInput } from "./diagnostics";
 
 type Handler = (event: { payload: Record<string, unknown> }) => void;
 
 const handlers: Handler[] = [];
 const unlisten = vi.fn();
 
+/** 默认订阅成功；可观测性用例临时替换为 reject，验证失败路径。 */
+let subscribeImpl: (() => Promise<() => void>) | null = null;
+
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
     onDragDropEvent: (cb: Handler) => {
       handlers.push(cb);
-      return Promise.resolve(unlisten);
+      return subscribeImpl ? subscribeImpl() : Promise.resolve(unlisten);
     },
   }),
 }));
@@ -42,11 +46,14 @@ function emit(payload: Record<string, unknown>): void {
 beforeEach(() => {
   handlers.length = 0;
   unlisten.mockClear();
+  subscribeImpl = null;
   __resetFileDrop();
 });
 
 afterEach(() => {
+  subscribeImpl = null;
   __resetFileDrop();
+  vi.restoreAllMocks();
 });
 
 describe("fileDrop 分发", () => {
@@ -232,5 +239,89 @@ describe("fileDrop 分发", () => {
 
     document.elementFromPoint = original;
     card.remove();
+  });
+});
+
+describe("监听失败可观测性", () => {
+  it("订阅失败记录 WARN、5s 内去重、恢复后记录 recovered，且不泄漏路径", async () => {
+    // 独立模块实例：诊断侧的去重窗口是模块级状态，不污染其它用例。
+    vi.resetModules();
+    const diag = await import("./diagnostics");
+    const drop = await import("./fileDrop");
+    const batches: DiagnosticInput[][] = [];
+    diag.setDiagnosticTransport(async (events) => {
+      batches.push([...events]);
+    });
+    let now = 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    const secret = "C:\\secret\\private.txt";
+    subscribeImpl = () =>
+      Promise.reject(Object.assign(new Error(secret), { name: "PathError" }));
+
+    const consumer = (id: string) => ({
+      id,
+      priority: 1,
+      claim: () => true,
+      onDrop: () => {},
+    });
+    const events = () => batches.flat();
+    const failures = () =>
+      events().filter((e) => e.event === "failed" && e.action === "file_drop_listener");
+
+    const off1 = drop.registerFileDropConsumer(consumer("diag-1"));
+    await flush();
+    await flush();
+    await diag.flushDiagnostics();
+
+    expect(failures()).toHaveLength(1);
+    expect(failures()[0]).toMatchObject({
+      level: "WARN",
+      module: "file",
+      stage: "subscribe",
+      error_code: "FILE_DROP_LISTENER_FAILED",
+    });
+    // 异常 message 里带测试路径，但持久化事件只保留类型名，绝不带出路径。
+    expect(JSON.stringify(events())).not.toContain("secret");
+    expect(JSON.stringify(events())).not.toContain("private.txt");
+
+    // 同一阶段 5s 内重复失败：去重，不逐次刷屏。
+    const off2 = drop.registerFileDropConsumer(consumer("diag-2"));
+    await flush();
+    await flush();
+    await diag.flushDiagnostics();
+    expect(failures()).toHaveLength(1);
+
+    // 超过去重窗口后再次失败：重新记录。
+    now += 5_001;
+    const off3 = drop.registerFileDropConsumer(consumer("diag-3"));
+    await flush();
+    await flush();
+    await diag.flushDiagnostics();
+    expect(failures()).toHaveLength(2);
+
+    // 订阅恢复：仅在失败过之后补一条 recovered。
+    subscribeImpl = null;
+    const off4 = drop.registerFileDropConsumer(consumer("diag-4"));
+    await flush();
+    await flush();
+    await diag.flushDiagnostics();
+    expect(events().filter((e) => e.event === "recovered")).toHaveLength(1);
+
+    // 退订失败：记录 unlisten 阶段，仍然不抛、不泄漏路径。
+    unlisten.mockImplementationOnce(() => {
+      throw new Error(secret);
+    });
+    off1();
+    off2();
+    off3();
+    off4(); // 最后一个消费者 → releaseListener → unlisten 抛错
+    await flush();
+    await diag.flushDiagnostics();
+    expect(failures().filter((e) => e.stage === "unlisten")).toHaveLength(1);
+    expect(JSON.stringify(events())).not.toContain("private.txt");
+
+    diag.setDiagnosticTransport(null);
+    nowSpy.mockRestore();
   });
 });

@@ -12461,6 +12461,7 @@ html[data-theme="dark"] .resource-page {
 
 /* ── 最近暂存（工具面板「文件」子页，与投递互补）── */
 .cap-shelf-recent {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -12609,6 +12610,35 @@ html[data-theme="dark"] .resource-page {
   overflow-wrap: anywhere;
 }
 .cap-shelf-recent-hint.is-error { color: var(--status-error); }
+
+/* 原生文件拖入「最近暂存」：整个拖拽会话有轻提示，光标落在接收区时加强。
+   高亮只用内描边 + 极淡底色（与投递卡片同一套材质语言），不改变列表几何；
+   提示浮层绝对定位且 pointer-events: none，既不挤占列表，也不参与落点命中。 */
+.cap-shelf-recent.is-drop-active {
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.cap-shelf-recent.is-drop-over {
+  background: var(--cap-accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.cap-shelf-recent-drop-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 4px 8px;
+  border-radius: 9px;
+  background: var(--cap-card-face-hover);
+  box-shadow: var(--cap-card-shadow);
+  color: var(--cap-text-2);
+  font-size: 9.5px;
+  line-height: 1.35;
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
 
 /* 结果条：一行汇总，点开看逐条原因；不伪造百分比 */
 .cap-drop-result {

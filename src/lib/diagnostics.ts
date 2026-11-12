@@ -437,6 +437,16 @@ export interface OperationExtras {
   message?: string;
   metadata?: Record<string, string | number | boolean>;
   retryCount?: number;
+  /**
+   * 显式覆盖终态级别（例如业务侧已按失败类型判定 integrity → CRITICAL）。
+   * 不传时沿用 `fail()` 的 code/category 推断，保持旧调用方行为。
+   */
+  severity?: DiagLevel;
+  /**
+   * 显式覆盖失败终态的 stage。用于「阶段已推进到 finalize，但业务失败本身发生在
+   * persist」的场景（如批次部分失败）；不传时沿用最后推进的阶段。
+   */
+  stage?: string;
 }
 
 export interface DiagnosticOperation {
@@ -511,12 +521,14 @@ export function startOperation(
   ) => {
     if (finished) return;
     finished = true;
+    // 失败必须回答“卡在哪一步”：普通模式下 stage 事件被过滤，这里补到终态上。
+    // 调用方可用 extras.stage 覆盖（例如 finalize 已推进，但失败发生在 persist）。
+    const terminalStage = extras?.stage ?? lastStage;
     logEvent({
       ...event,
       // 终态事件名必须与 status 一致；base 里的 event 是 started，不能沿用。
       event: status,
-      // 失败必须回答“卡在哪一步”：普通模式下 stage 事件被过滤，这里补到终态上。
-      ...(status === "failed" && lastStage !== null ? { stage: lastStage } : {}),
+      ...(status === "failed" && terminalStage != null ? { stage: terminalStage } : {}),
       level,
       status,
       operation_id: id,
@@ -557,12 +569,14 @@ export function startOperation(
       const message =
         extras?.message ??
         (typeof shape.message === "string" ? shape.message : "操作失败");
-      const level: DiagLevel =
+      const inferred: DiagLevel =
         code === "DATA_INTEGRITY_ERROR"
           ? "CRITICAL"
           : category === "validation" || code === "VALIDATION_ERROR"
             ? "WARN"
             : "ERROR";
+      // 显式 severity 优先：业务汇总可能由多种底层错误合成，无法只靠一个 code 推断。
+      const level: DiagLevel = extras?.severity ?? inferred;
       finish(
         { ...base, level, module, action, error_code: code, error_category: category },
         "failed",
@@ -645,6 +659,86 @@ export function logIpcSuccess(command: string, durationMs?: number): void {
       status: "success",
       duration_ms: durationMs,
       metadata: { command, stage: "ipc" },
+    });
+  } catch {
+    // ignore
+  }
+}
+
+// ── 原生文件拖放监听 ────────────────────────────────────────
+//
+// `lib/fileDrop` 是全应用唯一的 `onDragDropEvent` 订阅方。订阅失败时前端
+// 表现为「拖入毫无反应」，此前只能看到界面没有高亮、诊断中心也没有记录，
+// 无法区分「监听没建立」「落点没命中」「业务失败」三个阶段。
+// 这里只记录**订阅/退订本身**的失败与恢复：低频、有界、无路径、无原始堆栈；
+// 正常拖拽的 enter/over/drop 不写持久化日志（避免高频噪声）。
+
+/** 同一阶段失败的去重窗口：注册重试可能连续失败，不逐次刷屏。 */
+const FILE_DROP_FAILURE_DEDUPE_MS = 5_000;
+let fileDropFailureAt = 0;
+let fileDropFailureStage: string | null = null;
+let fileDropFailedSinceLastRecovery = false;
+
+/**
+ * 记录一次原生文件拖放订阅失败（订阅或退订）。
+ * 只写稳定分类与阶段，不写路径、窗口句柄或原始异常文本。
+ */
+export function logFileDropListenerFailure(
+  stage: "subscribe" | "unlisten",
+  error: unknown,
+): void {
+  try {
+    fileDropFailedSinceLastRecovery = true;
+    const now = Date.now();
+    if (
+      now - fileDropFailureAt < FILE_DROP_FAILURE_DEDUPE_MS &&
+      fileDropFailureStage === stage
+    ) {
+      return;
+    }
+    fileDropFailureAt = now;
+    fileDropFailureStage = stage;
+    // 只保留异常类型名（若有），绝不带出可能含路径的 message。
+    // 异常对象本身可能不可访问（如 revoked Proxy），取类型名失败不能吞掉整条事件。
+    let kind = "unknown";
+    try {
+      if (error instanceof Error && typeof error.name === "string" && error.name.length <= 40) {
+        kind = error.name;
+      }
+    } catch {
+      kind = "unknown";
+    }
+    logEvent({
+      level: "WARN",
+      module: "file",
+      action: "file_drop_listener",
+      event: "failed",
+      status: "failed",
+      stage,
+      error_code: "FILE_DROP_LISTENER_FAILED",
+      error_category: "ipc",
+      message: "系统文件拖放监听不可用，拖入可能没有反应",
+      metadata: { stage, kind },
+    });
+  } catch {
+    // 诊断绝不能反过来影响拖放。
+  }
+}
+
+/** 订阅成功恢复后补一条恢复事件（仅在失败过之后写一次）。 */
+export function noteFileDropListenerRecovered(): void {
+  try {
+    if (!fileDropFailedSinceLastRecovery) return;
+    fileDropFailedSinceLastRecovery = false;
+    fileDropFailureStage = null;
+    logEvent({
+      level: "INFO",
+      module: "file",
+      action: "file_drop_listener",
+      event: "recovered",
+      status: "recovered",
+      message: "系统文件拖放监听已恢复",
+      metadata: { stage: "subscribe" },
     });
   } catch {
     // ignore

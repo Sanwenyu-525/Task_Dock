@@ -41,7 +41,7 @@ import { DropdownMenu } from "../ui";
 import DropTargetForm from "../shelf/DropTargetForm";
 import type { ShelfDropTarget } from "../../lib/bridge";
 import { openFullApp } from "./actions";
-import InboxRecentShelf from "./InboxRecentShelf";
+import InboxRecentShelf, { SHELF_RECENT_DROP_ZONE } from "./InboxRecentShelf";
 import { EmptyState } from "./PanelKit";
 
 /** 表单与底栏共用：底栏按钮通过 form 属性提交，不在表单里再放一套主操作。 */
@@ -81,6 +81,8 @@ export default function InboxDropPane() {
   const requestManage = useDropTargetsStore((s) => s.requestManage);
 
   const [overId, setOverId] = useState<string | null>(null);
+  /** 落点是否在「最近暂存」接收区：与 overId 互斥，由同一套实时命中决定。 */
+  const [shelfOver, setShelfOver] = useState(false);
   const [dragging, setDragging] = useState(false);
   /** null=不在表单里；"new"=新增；其余为目标 id=编辑 */
   const [editing, setEditing] = useState<string | null>(null);
@@ -90,6 +92,12 @@ export default function InboxDropPane() {
   const [notice, setNotice] = useState<string | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const overRef = useRef<string | null>(null);
+  /**
+   * 一次原生拖入会话只允许执行一次落点动作。
+   * fileDrop 在 drop 后已结束会话，这里再兜一层：重复/迟到的 drop 不得
+   * 重复投递或重复暂存；新会话必须由 enter（或 enter 未认领时的 over）开启。
+   */
+  const dropSession = useRef({ active: false, handled: false });
   const timers = useRef(new Set<number>());
   /** 卸载后不再更新任何本地状态：投递可能在面板关闭后才返回（结果由 store 保留）。 */
   const alive = useRef(true);
@@ -144,11 +152,37 @@ export default function InboxDropPane() {
     return list.some((t) => t.id === id && t.show_in_capsule) ? id : null;
   }, []);
 
+  /** 只认本面板的「最近暂存」接收区；其它 data-drop-zone 不参与路由。 */
+  const hitShelfZone = useCallback(
+    (point: DropPoint): boolean =>
+      dropTargetAt(point, "data-drop-zone") === SHELF_RECENT_DROP_ZONE,
+    [],
+  );
+
+  /**
+   * 悬停高亮的唯一入口：每次都用当前坐标重新命中，卡片与接收区互斥。
+   * `over` 是高频事件，但 `setOver` 只在换卡时触发渲染，布尔高亮同理。
+   */
+  const applyOver = useCallback(
+    (point: DropPoint | null) => {
+      if (!point) {
+        setOver(null);
+        setShelfOver(false);
+        return;
+      }
+      const id = hitVisible(point);
+      setOver(id);
+      setShelfOver(id === null && hitShelfZone(point));
+    },
+    [hitShelfZone, hitVisible, setOver],
+  );
+
   // 视图切换（进入表单、目标被隐藏/删除）时旧高亮立即失效：
   // 已不在列表里的卡片不能继续显示「松开即投递到…」。
   useEffect(() => {
     if (editing !== null) {
       setOver(null);
+      setShelfOver(false);
       setDragging(false);
       return;
     }
@@ -192,6 +226,46 @@ export default function InboxDropPane() {
   );
 
   /**
+   * 拖入「最近暂存」：默认引用模式，只登记原文件路径，绝不移动/删除源文件。
+   * 结果必须区分成功、失败与部分失败：部分失败只能说「部分」，不能冒充成功。
+   */
+  const addToShelf = useCallback(
+    async (paths: string[]) => {
+      try {
+        const result = await useShelfStore
+          .getState()
+          .addPaths(paths, "reference", "drag");
+        if (!alive.current) return;
+        const failed = result.failed.length;
+        if (failed > 0) {
+          const reason = result.failed[0]?.reason ?? "";
+          flash(
+            result.added > 0
+              ? t("capsule.inboxDrop.shelfPartial", {
+                  added: result.added,
+                  failed,
+                  reason,
+                })
+              : t("capsule.inboxDrop.shelfFailed", { failed, reason }),
+          );
+        } else if (result.added > 0) {
+          flash(t("capsule.inboxDrop.shelfAdded", { added: result.added }));
+        }
+      } catch (e) {
+        if (alive.current) {
+          flash(t("capsule.inboxDrop.shelfAddError", { error: errorMessage(e) }));
+        }
+      } finally {
+        // 与文件选择器同一口径：以最近切片为准刷新（新增条目立即可见）。
+        if (alive.current) {
+          void useShelfStore.getState().loadRecent({ force: true });
+        }
+      }
+    },
+    [flash, t],
+  );
+
+  /**
    * 结果条「查看诊断」：进入完整窗口诊断中心并定位到本批次操作链。
    * 意图只在导航成功后下发（`after`），取消草稿确认或保存中拒绝时不会残留；
    * 硬拒绝（saving）才额外提示，`pending` 由全局离开确认条接管。
@@ -207,30 +281,62 @@ export default function InboxDropPane() {
   );
 
   // ── 拖入订阅（面板在即订阅，卸载即释放；全应用只有一条 Webview 监听）──
+  //
+  // 本面板是胶囊拖拽会话的**唯一消费者**：目录卡片与「最近暂存」都在它的
+  // 落点范围内，因此不能在两者各注册一个消费者（会出现一次拖入被处理两次，
+  // 或在 enter 时按优先级抢走整个会话）。由这里按松手坐标路由：
+  //   可见卡片 → 目录投递；最近暂存 → 引用暂存；空白/其它 → 不执行。
   useEffect(() => {
     return registerFileDropConsumer({
       id: "capsule-inbox-drop",
       priority: 20,
-      claim: () =>
-        useDropTargetsStore.getState().targets.some((t) => t.show_in_capsule),
-      onEnter: () => setDragging(true),
-      onOver: (point) => setOver(point ? hitVisible(point) : null),
-      onLeave: () => {
+      // 面板在即接管：即使没有可见目录卡片，「最近暂存」仍是有效接收区。
+      // 是否真的执行由 over/drop 的实时命中决定，未命中一律不碰文件。
+      claim: () => true,
+      onEnter: () => {
+        dropSession.current = { active: true, handled: false };
         setOver(null);
+        setShelfOver(false);
+        setDragging(true);
+      },
+      onOver: (point) => {
+        const session = dropSession.current;
+        if (!session.active) {
+          // enter 时未认领（例如目标列表刚加载完）允许在 over 阶段补开一次；
+          // 已经 drop 过的会话不再接迟到 over，避免重复高亮。
+          if (session.handled) return;
+          dropSession.current = { active: true, handled: false };
+        }
+        applyOver(point);
+      },
+      onLeave: () => {
+        dropSession.current = { active: false, handled: false };
+        setOver(null);
+        setShelfOver(false);
         setDragging(false);
       },
       onDrop: (paths, point) => {
-        // 用**松手瞬间**的坐标重新命中：`over` 缓存可能已经过期（悬停 A 后快速移到
-        // B 直接松手，不会再收到 over），拿缓存会让文件落进上一张卡片。
-        // 没有坐标、没命中卡片、或卡片已隐藏/删除时一律不执行文件操作。
-        const targetId = point ? hitVisible(point) : null;
+        const session = dropSession.current;
         setOver(null);
+        setShelfOver(false);
         setDragging(false);
-        if (!targetId || paths.length === 0) return;
-        void submit(targetId, paths);
+        // 一次会话只执行一次：重复 drop 与 leave 后的迟到 drop 都不得再操作文件。
+        if (!session.active || session.handled) return;
+        session.handled = true;
+        session.active = false;
+        // 用**松手瞬间**的坐标重新命中：`over` 缓存可能已经过期（悬停 A 后快速移到
+        // B 直接松手，不会再收到 over），拿缓存会让文件落进上一张卡片/上一区域。
+        // 没有坐标、空 paths、空白/未命中时一律不执行文件操作。
+        if (!point || paths.length === 0) return;
+        const targetId = hitVisible(point);
+        if (targetId) {
+          void submit(targetId, paths);
+          return;
+        }
+        if (hitShelfZone(point)) void addToShelf(paths);
       },
     });
-  }, [hitVisible, setOver, submit]);
+  }, [addToShelf, applyOver, hitShelfZone, hitVisible, submit]);
 
   const lastReport = lastTargetId ? reports[lastTargetId] ?? null : null;
   const lastTarget = lastTargetId ? targets.find((t) => t.id === lastTargetId) ?? null : null;
@@ -442,8 +548,14 @@ export default function InboxDropPane() {
             </p>
           )}
 
-          {/* 与投递互补：不用打开完整面板就能看到最近暂存并直接打开/复制 */}
-          <InboxRecentShelf onNotice={flash} />
+          {/* 与投递互补：不用打开完整面板就能看到最近暂存并直接打开/复制。
+              它同时是本面板拖入会话的第二个落点（引用暂存），由上面的消费者统一路由。 */}
+          <InboxRecentShelf
+            onNotice={flash}
+            dropZone
+            dropActive={dragging}
+            dropOver={shelfOver}
+          />
         </>
       )}
       </div>

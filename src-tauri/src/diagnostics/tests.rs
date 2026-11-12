@@ -757,3 +757,101 @@ fn shelf_drop_business_failure_reaches_anomaly_list_and_operation_chain() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// 暂存添加的**业务结果分级**事件必须可在默认异常列表、操作链与错误码筛选中命中；
+/// metadata 的 `added` / `failure_codes` 必须通过隐私白名单落盘。
+#[test]
+fn shelf_add_business_result_is_visible_and_privacy_safe() {
+    use serde_json::json;
+
+    let dir = temp_dir("shelf-add-business");
+    let diag = Diagnostics::init_at(dir.clone(), WriterConfig::default());
+    let operation = "shelf-add-visible-1";
+    let failed_event = super::event(
+        DiagLevel::Warn,
+        "file",
+        "shelf_add_paths",
+        "暂存添加部分失败：共 2 项，成功 1、失败 1",
+    )
+    .status(DiagStatus::Failed)
+    .stage("persist")
+    .operation(operation)
+    .error_code("SHELF_ADD_PARTIAL_FAILED")
+    .error_category("validation")
+    .metadata("count", json!(2))
+    .metadata("total", json!(2))
+    .metadata("added", json!(1))
+    .metadata("failed", json!(1))
+    .metadata("mode", json!("reference"))
+    .metadata("source", json!("drag"))
+    .metadata("failure_codes", json!("VALIDATION_ERROR"))
+    .build();
+    assert!(diag.record(failed_event), "业务失败事件必须被接收");
+    // 同一 operation 的成功终态：用于验证操作链仍能聚合。
+    assert!(diag.record(
+        super::event(DiagLevel::Info, "file", "shelf_add_paths", "暂存添加完成")
+            .status(DiagStatus::Success)
+            .operation(operation)
+            .metadata("added", json!(1))
+            .build()
+    ));
+    assert!(diag.flush_blocking().flushed);
+
+    // 默认异常列表（WARN+、最近 24h、module=file）。
+    let since = (chrono::Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+    let anomalies = query::query(
+        &dir,
+        &DiagnosticQuery {
+            anomalies_only: Some(true),
+            since: Some(since),
+            modules: vec!["file".into()],
+            ..Default::default()
+        },
+        &Counters::default(),
+    );
+    assert_eq!(
+        anomalies.matched, 1,
+        "只应命中 WARN 汇总: {:?}",
+        anomalies.items
+    );
+    let item = &anomalies.items[0];
+    assert_eq!(item.operation_id.as_deref(), Some(operation));
+    assert_eq!(item.error_code.as_deref(), Some("SHELF_ADD_PARTIAL_FAILED"));
+    assert_eq!(item.stage.as_deref(), Some("persist"));
+    let meta = item.metadata.as_ref().expect("metadata 必须落盘");
+    assert_eq!(meta.get("added").and_then(|v| v.as_i64()), Some(1));
+    assert_eq!(
+        meta.get("failure_codes").and_then(|v| v.as_str()),
+        Some("VALIDATION_ERROR")
+    );
+
+    // 操作链：按 operation_id 拿到 started/success/failed 全链路。
+    let chain = query::query(
+        &dir,
+        &DiagnosticQuery {
+            operation_id: Some(operation.into()),
+            ..Default::default()
+        },
+        &Counters::default(),
+    );
+    assert_eq!(chain.matched, 2);
+
+    // 错误码筛选（诊断中心「查看诊断」深链与手动筛选共用同一查询）。
+    let by_code = query::query(
+        &dir,
+        &DiagnosticQuery {
+            error_codes: vec!["SHELF_ADD_PARTIAL_FAILED".into()],
+            anomalies_only: Some(true),
+            ..Default::default()
+        },
+        &Counters::default(),
+    );
+    assert_eq!(by_code.matched, 1);
+
+    // 隐私：metadata 只放计数与稳定码，不写路径/文件名。
+    let raw = std::fs::read_to_string(dir.join(ACTIVE_FILE)).unwrap_or_default();
+    assert!(!raw.contains("Desktop"), "诊断日志不得包含路径: {raw}");
+    assert!(!raw.contains("secret.txt"), "诊断日志不得包含文件名: {raw}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -31,6 +31,7 @@ import { formatBytes } from "../../lib/clipboardUi";
 import { errorMessage } from "../../lib/errors";
 import { isCapsuleMode } from "../../lib/edgeSnap";
 import { registerFileDropConsumer } from "../../lib/fileDrop";
+import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
@@ -70,6 +71,89 @@ export function copyActionLabel(items: ShelfItem[]): string {
   return "复制 / 导出到…";
 }
 
+/** 拖入失败项：后端会补充可选 code/category，旧版本只有 reason。 */
+interface ShelfAddFailure {
+  path: string;
+  reason: string;
+  /** 后端 `AppError::code`；旧后端可能缺省或为 null。 */
+  code?: string | null;
+  /** 后端 `AppError::category`；旧后端可能缺省或为 null。 */
+  category?: string | null;
+}
+
+interface ShelfAddOutcome {
+  added: number;
+  failed: ShelfAddFailure[];
+}
+
+/** 失败码（后端为大写 `AppError::code`）→ 用户可读原因；未知 code 原样展示。 */
+const ADD_FAILURE_CODE_LABELS: Record<string, string> = {
+  empty_path: "路径为空",
+  relative_path: "只接受绝对路径",
+  not_found: "文件不存在",
+  unsupported: "不支持的文件类型",
+  permission_denied: "没有访问权限",
+  permission_required: "需要额外权限",
+  duplicate: "已在暂存架中",
+  conflict: "存在冲突",
+  quota_exceeded: "托管空间不足",
+  copy_failed: "复制失败",
+  io_error: "读写失败",
+  database_error: "数据库错误",
+  database_busy: "数据库忙，请稍后重试",
+  data_integrity_error: "数据完整性错误",
+  timeout: "操作超时",
+  service_unavailable: "服务不可用",
+  service_overloaded: "服务繁忙",
+};
+
+function addFailureReason(f: ShelfAddFailure): string {
+  const code = f.code?.trim();
+  if (code) {
+    const key = code.toLowerCase();
+    // VALIDATION_ERROR 覆盖“文件夹不能托管/配额不足/路径非法”等多种原因，
+    // 统一显示“参数无效”会丢掉可操作信息，因此保留后端具体 reason。
+    if (key === "validation_error") return f.reason?.trim() || "参数无效";
+    return ADD_FAILURE_CODE_LABELS[key] ?? code;
+  }
+  return f.reason?.trim() || "未知原因";
+}
+
+/** Windows 绝对路径（盘符或 UNC）；POSIX 绝对路径用于跨平台与测试兜底。 */
+function isAbsoluteDropPath(path: string): boolean {
+  return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
+}
+
+/** toast 只展示文件名，不把完整路径带进提示（保持既有隐私口径）。 */
+function dropPathName(path: string): string {
+  const parts = path
+    .split(/[\\/]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.at(-1) ?? "（空路径）";
+}
+
+/**
+ * 拖入路径客户端预检：空白/相对路径不进后端。
+ * 后端会对整批返回 Validation 错误或逐项 failed；提前拆开能给出明确提示，
+ * 也避免「空批次调用 addPaths 后既不成功也不失败」的静默状态。
+ */
+function splitDropPaths(paths: string[]): { valid: string[]; invalid: ShelfAddFailure[] } {
+  const valid: string[] = [];
+  const invalid: ShelfAddFailure[] = [];
+  for (const raw of paths) {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      invalid.push({ path: raw, reason: "路径为空", code: "empty_path" });
+    } else if (!isAbsoluteDropPath(trimmed)) {
+      invalid.push({ path: raw, reason: "只接受绝对路径", code: "relative_path" });
+    } else {
+      valid.push(trimmed);
+    }
+  }
+  return { valid, invalid };
+}
+
 interface PendingDelete {
   ids: string[];
   includeProtected: boolean;
@@ -96,6 +180,9 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const setTab = useUiStore((s) => s.setTab);
   // 胶囊模式下本页被整体隐藏（dock-app inert）：拖入事件必须让给胶囊面板
   const capsuleMode = useEdgeSnapStore((s) => isCapsuleMode(s.phase));
+  // 完整面板在极简/紧凑模式下只是 CSS 隐藏、组件仍挂载（DeferredView 保活）：
+  // 此时注册拖入消费者会让隐藏的暂存架抢走可见界面的文件拖入。
+  const fullViewVisible = useFullViewVisible();
   const items = useShelfStore((s) => s.items);
   const total = useShelfStore((s) => s.total);
   const groups = useShelfStore((s) => s.groups);
@@ -340,23 +427,51 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   );
 
   const reportAdd = useCallback(
-    (r: { added: number; failed: { path: string; reason: string }[] }, verb: string) => {
-      if (r.added > 0) showToast(`${verb} ${r.added} 项`, { kind: "success" });
-      for (const f of r.failed) {
-        showToast(`无法添加「${f.path.split(/[\\/]/).pop()}」：${f.reason}`, { kind: "error" });
+    (r: ShelfAddOutcome, verb: string) => {
+      const failed = r.failed ?? [];
+      // 成功与失败并存：只发一条汇总，避免一次拖入刷 N 条错误 toast。
+      if (r.added > 0 && failed.length > 0) {
+        const first = failed[0];
+        showToast(
+          `${verb} ${r.added} 项，${failed.length} 项失败：${dropPathName(first.path)} — ${addFailureReason(first)}`,
+          { kind: "warning" },
+        );
+        return;
       }
+      if (r.added > 0) {
+        showToast(`${verb} ${r.added} 项`, { kind: "success" });
+        return;
+      }
+      if (failed.length > 0) {
+        const first = failed[0];
+        const more = failed.length > 1 ? `（共 ${failed.length} 项失败）` : "";
+        showToast(`无法添加「${dropPathName(first.path)}」：${addFailureReason(first)}${more}`, {
+          kind: "error",
+        });
+        return;
+      }
+      // 后端既没有成功也没有失败（空批次/全部被过滤）：不得静默当作成功。
+      showToast("没有可添加的文件", { kind: "warning" });
     },
     [showToast],
   );
 
-  // ── OS 文件拖入（统一拖放分发，仅本页签激活时认领；随卸载释放）──
+  // ── OS 文件拖入（统一拖放分发，仅本页签真实可见时认领；随卸载释放）──
   // 不用 `onDragDropEvent` 直接订阅：胶囊「文件投递」也在争用同一条 Webview 事件，
   // 由 `lib/fileDrop` 统一仲裁，一次拖入只会有一个面板处理。
+  // `copyOnAdd` 用 ref 读取而不是 effect 依赖：拖拽会话中途切换添加方式
+  // 不应重新注册消费者（重注册会清空 owner，正在进行的拖入随即丢失）。
+  const copyOnAddRef = useRef(copyOnAdd);
   useEffect(() => {
-    // 胶囊模式下本页被整体隐藏（dock-app inert），绝不能再抢拖入事件——
-    // 否则拖到胶囊上的文件会被悄悄塞进暂存架。
+    copyOnAddRef.current = copyOnAdd;
+  }, [copyOnAdd]);
+  const dropEnabled = active && fullViewVisible && !capsuleMode && !targetsOpen;
+  useEffect(() => {
+    // 胶囊模式下本页被整体隐藏（dock-app inert），极简/紧凑模式下完整面板
+    // 同样只是 CSS 隐藏；两种隐藏态都绝不能抢拖入事件——否则拖到可见界面上的
+    // 文件会被悄悄塞进隐藏的暂存架。
     // 投递目标管理视图只负责目录配置：拖入不归暂存架管（要求一次拖入只有一个消费者）。
-    if (!active || capsuleMode || targetsOpen) return;
+    if (!dropEnabled) return;
     return registerFileDropConsumer({
       id: "shelf-workspace",
       // 低于胶囊投递卡片：胶囊展开时投递优先，其余情况由暂存架接收
@@ -366,14 +481,24 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       onOver: () => setDragOver(true),
       onLeave: () => setDragOver(false),
       onDrop: (paths) => {
+        // 先清高亮：无论后续是否执行，松手后都不能留下遮罩。
         setDragOver(false);
+        // 系统未给出路径：静默复位，不调用 addPaths，也不报「已暂存」。
         if (paths.length === 0) return;
-        addPaths(paths, copyOnAdd ? "managed" : "reference", "drag")
-          .then((r) => reportAdd(r, "已暂存"))
+        const { valid, invalid } = splitDropPaths(paths);
+        if (valid.length === 0) {
+          // 全部为空/相对路径：不请求后端，但必须明确告知失败。
+          reportAdd({ added: 0, failed: invalid }, "已暂存");
+          return;
+        }
+        addPaths(valid, copyOnAddRef.current ? "managed" : "reference", "drag")
+          .then((r) =>
+            reportAdd({ added: r.added, failed: [...invalid, ...r.failed] }, "已暂存"),
+          )
           .catch((e) => showToast(`暂存拖入文件失败：${errorMessage(e)}`, { kind: "error" }));
       },
     });
-  }, [active, capsuleMode, targetsOpen, copyOnAdd, addPaths, showToast, reportAdd]);
+  }, [dropEnabled, addPaths, showToast, reportAdd]);
 
   // ── 添加动作 ──
   const pickAndAdd = async (dirs: boolean) => {

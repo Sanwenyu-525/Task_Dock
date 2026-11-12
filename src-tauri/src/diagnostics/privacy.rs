@@ -34,8 +34,10 @@ const ALLOWED_META_KEYS: &[&str] = &[
     "count",
     "duration_bucket",
     "engine",
-    // 文件投递批次汇总：只有计数与目标 id，不含路径/文件名。
+    // 文件投递/暂存添加批次汇总：只有计数、来源与稳定错误码，不含路径/文件名。
+    "added",
     "failed",
+    "failure_codes",
     "failure_groups",
     "partial",
     "skipped",
@@ -251,6 +253,29 @@ mod tests {
     fn metadata_empty_returns_none() {
         let raw = json!({ "token": "x" });
         assert!(sanitize_metadata(raw.as_object().unwrap()).is_none());
+    }
+
+    /// 暂存添加汇总事件只带计数/模式/来源/失败码；新增 key 必须在白名单内。
+    #[test]
+    fn shelf_add_summary_metadata_keys_are_whitelisted() {
+        let raw = json!({
+            "count": 3,
+            "total": 3,
+            "added": 2,
+            "failed": 1,
+            "mode": "reference",
+            "source": "drag",
+            "failure_codes": "IO_ERROR,VALIDATION_ERROR",
+        });
+        let filtered = sanitize_metadata(raw.as_object().unwrap()).unwrap();
+        assert_eq!(filtered.len(), 7);
+        assert_eq!(filtered.get("added").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(
+            filtered.get("failure_codes").and_then(|v| v.as_str()),
+            Some("IO_ERROR,VALIDATION_ERROR")
+        );
+        // 单事件仍远低于 key 数量上限。
+        assert!(filtered.len() <= MAX_METADATA_KEYS);
     }
 
     #[test]

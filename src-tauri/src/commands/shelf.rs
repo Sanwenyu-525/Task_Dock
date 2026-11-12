@@ -21,6 +21,24 @@ use crate::shelf::{self, ShelfState};
 pub struct ShelfFailedEntry {
     pub path: String,
     pub reason: String,
+    /// 稳定错误码（`AppError::code`）。可选，旧前端可忽略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// 稳定错误分类（`AppError::category`），前端据此分级与聚合。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+}
+
+impl ShelfFailedEntry {
+    /// 单条失败从统一错误类型带出可机读分类；文案仍保持既有 `reason`。
+    fn from_error(path: String, err: &AppError) -> Self {
+        Self {
+            path,
+            reason: err.to_string(),
+            code: Some(err.code().to_string()),
+            category: Some(err.category().as_str().to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -147,10 +165,7 @@ pub async fn shelf_add_paths(
             };
             match result {
                 Ok(item) => added.push(item),
-                Err(e) => failed.push(ShelfFailedEntry {
-                    path: raw,
-                    reason: e.to_string(),
-                }),
+                Err(e) => failed.push(ShelfFailedEntry::from_error(raw, &e)),
             }
         }
         ShelfAddReport { added, failed }
@@ -213,10 +228,7 @@ pub async fn shelf_add_from_clipboard(
             let snapshot = match shelf::snapshot_clipboard_item(&st.db, &clip_root, &item_id) {
                 Ok(s) => s,
                 Err(e) => {
-                    failed.push(ShelfFailedEntry {
-                        path: item_id,
-                        reason: e.to_string(),
-                    });
+                    failed.push(ShelfFailedEntry::from_error(item_id, &e));
                     continue;
                 }
             };
@@ -232,10 +244,7 @@ pub async fn shelf_add_from_clipboard(
                         group_id.as_deref(),
                     ) {
                         Ok(item) => added.push(item),
-                        Err(e) => failed.push(ShelfFailedEntry {
-                            path: item_id,
-                            reason: e.to_string(),
-                        }),
+                        Err(e) => failed.push(ShelfFailedEntry::from_error(item_id, &e)),
                     }
                 }
                 shelf::ClipboardSnapshot::Paths { paths } => {
@@ -261,35 +270,30 @@ pub async fn shelf_add_from_clipboard(
                         };
                         match result {
                             Ok(item) => added.push(item),
-                            Err(e) => failed.push(ShelfFailedEntry {
-                                path: raw,
-                                reason: e.to_string(),
-                            }),
+                            Err(e) => failed.push(ShelfFailedEntry::from_error(raw, &e)),
                         }
                     }
                 }
                 shelf::ClipboardSnapshot::Text { text } => {
                     match shelf::add_text(&st.db, &text, "clipboard", group_id.as_deref()) {
                         Ok(item) => added.push(item),
-                        Err(e) => failed.push(ShelfFailedEntry {
-                            path: item_id,
-                            reason: e.to_string(),
-                        }),
+                        Err(e) => failed.push(ShelfFailedEntry::from_error(item_id, &e)),
                     }
                 }
                 shelf::ClipboardSnapshot::Url { url } => {
                     match shelf::add_link(&st.db, &url, group_id.as_deref()) {
                         Ok(item) => added.push(item),
-                        Err(e) => failed.push(ShelfFailedEntry {
-                            path: item_id,
-                            reason: e.to_string(),
-                        }),
+                        Err(e) => failed.push(ShelfFailedEntry::from_error(item_id, &e)),
                     }
                 }
                 shelf::ClipboardSnapshot::Unsupported { reason } => {
+                    // 没有底层 AppError：使用稳定错误码表达「明确不支持」，
+                    // 前端仍展示原始 reason。
                     failed.push(ShelfFailedEntry {
                         path: item_id,
                         reason,
+                        code: Some("UNSUPPORTED".into()),
+                        category: Some("unsupported".into()),
                     });
                 }
             }

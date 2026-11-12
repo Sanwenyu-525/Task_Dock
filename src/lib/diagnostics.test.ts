@@ -545,4 +545,114 @@ describe("stage 与失败定位", () => {
     );
     expect(success?.stage).toBeUndefined();
   });
+
+  it("OperationExtras 可覆盖失败终态的 severity 与 stage", async () => {
+    const op = diag.startOperation("file", "shelf_add_paths");
+    op.stage("persist");
+    op.stage("finalize");
+    op.fail(
+      { code: "SHELF_ADD_PARTIAL_FAILED", category: "validation" },
+      {
+        severity: "CRITICAL",
+        stage: "persist",
+        message: "部分失败",
+        metadata: { added: 1 },
+      },
+    );
+
+    await flushAll();
+
+    const terminal = allEvents().find(
+      (event) => event.operation_id === op.id && event.status === "failed",
+    );
+    expect(terminal).toMatchObject({
+      level: "CRITICAL",
+      status: "failed",
+      stage: "persist",
+      error_code: "SHELF_ADD_PARTIAL_FAILED",
+      message: "部分失败",
+      metadata: { added: 1 },
+    });
+  });
+});
+
+describe("文件拖放监听诊断", () => {
+  it("订阅失败写 WARN/failed，恢复后补一条 INFO/recovered（只写一次）", async () => {
+    diag.logFileDropListenerFailure("subscribe", new TypeError("listen failed"));
+    await flushAll();
+
+    let events = allEvents().filter((event) => event.action === "file_drop_listener");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      level: "WARN",
+      module: "file",
+      action: "file_drop_listener",
+      event: "failed",
+      status: "failed",
+      stage: "subscribe",
+      error_code: "FILE_DROP_LISTENER_FAILED",
+      error_category: "ipc",
+      metadata: { stage: "subscribe", kind: "TypeError" },
+    });
+
+    diag.noteFileDropListenerRecovered();
+    diag.noteFileDropListenerRecovered();
+    await flushAll();
+
+    events = allEvents().filter((event) => event.action === "file_drop_listener");
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      level: "INFO",
+      event: "recovered",
+      status: "recovered",
+      metadata: { stage: "subscribe" },
+    });
+  });
+
+  it("同阶段 5s 内只写一次，超过窗口后允许再次记录", async () => {
+    diag.logFileDropListenerFailure("subscribe", new Error("first"));
+    diag.logFileDropListenerFailure("subscribe", new Error("second"));
+    await flushAll();
+    expect(
+      allEvents().filter((event) => event.action === "file_drop_listener"),
+    ).toHaveLength(1);
+
+    vi.advanceTimersByTime(4_999);
+    diag.logFileDropListenerFailure("subscribe", new Error("third"));
+    await flushAll();
+    expect(
+      allEvents().filter((event) => event.action === "file_drop_listener"),
+    ).toHaveLength(1);
+
+    vi.advanceTimersByTime(2);
+    diag.logFileDropListenerFailure("subscribe", new Error("fourth"));
+    await flushAll();
+    expect(
+      allEvents().filter((event) => event.action === "file_drop_listener"),
+    ).toHaveLength(2);
+  });
+
+  it("只记录异常类型名，不含测试路径/原始 message，且任何情况都不抛出", async () => {
+    const rawMessage = "failed to read D:\\secret\\note.txt";
+    diag.logFileDropListenerFailure("subscribe", new Error(rawMessage));
+
+    // 异常对象本身不可访问（revoked Proxy）也不得上抛。
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    expect(() =>
+      diag.logFileDropListenerFailure("unlisten", proxy as unknown),
+    ).not.toThrow();
+
+    await flushAll();
+
+    const events = allEvents().filter((event) => event.action === "file_drop_listener");
+    // 不同阶段不被同阶段去重抑制；异常对象不可读时 kind 回退 unknown。
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.metadata?.kind)).toEqual(["Error", "unknown"]);
+
+    const payload = JSON.stringify(events);
+    expect(payload).not.toContain("secret");
+    expect(payload).not.toContain("note.txt");
+    expect(payload).not.toContain("failed to read");
+  });
 });

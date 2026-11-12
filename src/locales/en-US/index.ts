@@ -2325,4 +2325,11 @@ export const enUS: Record<MessageKey, string> = {
   // ── Inbox file drop: failed result → diagnostics center ──
   "capsule.inboxDrop.viewDiagnostics": "View diagnostics",
   "capsule.inboxDrop.diagnosticsBlocked": "Couldn't open Diagnostics: the current page is still saving. Try again shortly.",
+
+  // ── Inbox file drop: drop into Recent shelf (reference mode) ──
+  "capsule.inboxDrop.shelfDropHint": "Drop files here to stage them · saved as references, originals untouched",
+  "capsule.inboxDrop.shelfAdded": "Staged {added} item(s)",
+  "capsule.inboxDrop.shelfPartial": "Partly staged: {added} succeeded, {failed} failed ({reason})",
+  "capsule.inboxDrop.shelfFailed": "{failed} item(s) couldn't be staged: {reason}",
+  "capsule.inboxDrop.shelfAddError": "Couldn't stage files: {error}",
 };

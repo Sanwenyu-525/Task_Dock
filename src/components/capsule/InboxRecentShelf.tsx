@@ -22,6 +22,7 @@ import {
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
 import { shelfFileTypeUi } from "../../lib/fileTypeUi";
+import { useLocale } from "../../hooks/useLocale";
 import { useShelfDragOut } from "../../hooks/useShelfDragOut";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useShelfStore } from "../../store/useShelfStore";
@@ -40,7 +41,30 @@ function isPhysical(item: ShelfItem): boolean {
   return item.kind === "file" || item.kind === "image" || item.kind === "folder";
 }
 
-export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string) => void }) {
+/**
+ * 最近暂存接收区的稳定标记。
+ * 只有接入了 `lib/fileDrop` 仲裁器的容器（胶囊「文件」子页）才暴露它；
+ * 命中由仲裁者用 `dropTargetAt(point, "data-drop-zone")` 完成。
+ */
+export const SHELF_RECENT_DROP_ZONE = "shelf-recent";
+
+interface InboxRecentShelfProps {
+  onNotice: (msg: string) => void;
+  /** 拖拽会话进行中：显示「可暂存」轻提示（绝对定位，不挤占列表空间）。 */
+  dropActive?: boolean;
+  /** 当前落点就在本接收区：强调高亮。 */
+  dropOver?: boolean;
+  /** 是否暴露原生文件拖放标记；未接仲裁器时不暴露，避免命中一个没人处理的目标。 */
+  dropZone?: boolean;
+}
+
+export default function InboxRecentShelf({
+  onNotice,
+  dropActive = false,
+  dropOver = false,
+  dropZone = false,
+}: InboxRecentShelfProps) {
+  const { t } = useLocale();
   const recent = useShelfStore((s) => s.recent);
   const recentLoading = useShelfStore((s) => s.recentLoading);
   const recentLoaded = useShelfStore((s) => s.recentLoaded);
@@ -273,7 +297,17 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
     void (mutationSyncError ? retryShelfSync() : loadRecent({ force: true }));
 
   return (
-    <section className="cap-shelf-recent" aria-label="最近暂存">
+    <section
+      className={[
+        "cap-shelf-recent",
+        dropZone && dropActive ? "is-drop-active" : "",
+        dropZone && dropOver ? "is-drop-over" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      aria-label="最近暂存"
+      data-drop-zone={dropZone ? SHELF_RECENT_DROP_ZONE : undefined}
+    >
       <div className="cap-shelf-recent-head">
         <span className="cap-shelf-recent-title">最近暂存</span>
         {recent.length > 0 && <span className="cap-shelf-recent-count">{recent.length}</span>}
@@ -539,6 +573,13 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
           })}
         </ul>
         </>
+      )}
+      {/* 绝对定位的拖入提示：只在拖拽期间出现，不推挤列表，也不参与落点命中。
+          整个会话期间接收区有轻高亮，光标真正落在其上时再加强。 */}
+      {dropZone && dropActive && (
+        <p className="cap-shelf-recent-drop-hint" role="status">
+          {t("capsule.inboxDrop.shelfDropHint")}
+        </p>
       )}
     </section>
   );

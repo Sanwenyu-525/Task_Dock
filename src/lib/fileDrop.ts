@@ -13,12 +13,18 @@
 //! - 没有消费者认领时，事件被丢弃——不执行任何文件操作（fail-closed）；
 //! - 坐标：Tauri 给的是**物理像素**，这里换算成 CSS 像素再做 DOM 命中，
 //!   让 100%/125%/150%/200% DPI 与多显示器共用同一套命中逻辑；
-//! - 坐标缺失（系统未给出位置）时传 `null`，由消费者决定拒绝，绝不臆造 `(0,0)`。
+//! - 坐标缺失（系统未给出位置）时传 `null`，由消费者决定拒绝，绝不臆造 `(0,0)`；
+//! - 订阅/退订本身失败时写一条去重的 WARN（不含路径），恢复后补一条 recovered；
+//!   正常拖拽过程不写持久化日志，失败后下次注册仍会重试。
 //!
 //! 不使用 HTML5 `dragover` / `drop`：Windows 上从资源管理器拖入的文件不会带
 //! `dataTransfer.files` 的可用路径，只有 Tauri 的原生事件才是真实来源。
 
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import {
+  logFileDropListenerFailure,
+  noteFileDropListenerRecovered,
+} from "./diagnostics";
 
 /** CSS 像素坐标（相对 webview 视口左上角）。 */
 export interface DropPoint {
@@ -121,6 +127,18 @@ function handle(payload: {
   previous?.onLeave?.();
 }
 
+/**
+ * 退订失败只记录诊断（WARN 去重），不让清理路径把异常抛回 UI。
+ * 订阅成功后的「立即退订」（消费者在返回前卸载）也走这里，语义一致。
+ */
+function callUnlisten(un: () => void): void {
+  try {
+    un();
+  } catch (e) {
+    logFileDropListenerFailure("unlisten", e);
+  }
+}
+
 async function ensureListener(): Promise<void> {
   if (unlisten || subscribing) return;
   subscribing = true;
@@ -128,14 +146,18 @@ async function ensureListener(): Promise<void> {
     const un = await getCurrentWebview().onDragDropEvent((event) => {
       handle(event.payload as unknown as { type: string; paths?: string[]; position?: { x: number; y: number } });
     });
+    // 订阅成功：若此前失败过，补一条恢复事件（helper 内部只写一次）。
+    noteFileDropListenerRecovered();
     if (consumers.length === 0) {
       // 订阅返回前最后一个消费者已卸载：立刻退订，不留常驻监听
-      un?.();
+      callUnlisten(un);
     } else {
-      unlisten = un ?? null;
+      unlisten = un;
     }
-  } catch {
-    // 订阅失败（权限/平台不支持）：保持未监听，下次注册时重试，不抛给 UI
+  } catch (e) {
+    // 订阅失败（权限/平台不支持）：保持未监听，下次注册时重试，不抛给 UI。
+    // 只记录订阅阶段本身，正常 enter/over/drop 不写持久化日志。
+    logFileDropListenerFailure("subscribe", e);
     unlisten = null;
   } finally {
     subscribing = false;
@@ -145,13 +167,7 @@ async function ensureListener(): Promise<void> {
 function releaseListener(): void {
   const un = unlisten;
   unlisten = null;
-  if (un) {
-    try {
-      un();
-    } catch {
-      // 退订失败不影响后续逻辑：unlisten 已置空，重复注册会重新订阅
-    }
-  }
+  if (un) callUnlisten(un);
 }
 
 /**

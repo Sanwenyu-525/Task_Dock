@@ -27,14 +27,16 @@ import {
   type ShelfCleanupReport,
   type ShelfConflictStrategy,
   type ShelfDeleteReport,
+  type ShelfFailedEntry,
   type ShelfGroup,
   type ShelfItem,
   type ShelfKind,
+  type ShelfAddReport,
   type ShelfOpReport,
   type ShelfStats,
   type ShelfUpdatePatch,
 } from "../lib/bridge";
-import { startOperation } from "../lib/diagnostics";
+import { logEvent, startOperation, type DiagLevel } from "../lib/diagnostics";
 
 /** 分页大小：与剪贴板面板一致的后端分页节奏。 */
 export const SHELF_PAGE_SIZE = 100;
@@ -88,14 +90,14 @@ interface ShelfState {
     mode: "reference" | "managed",
     source: "picker" | "drag" | "manual",
     groupId?: string | null,
-  ) => Promise<{ added: number; failed: { path: string; reason: string }[] }>;
+  ) => Promise<{ added: number; failed: ShelfFailedEntry[] }>;
   addLink: (url: string, groupId?: string | null) => Promise<ShelfItem>;
   addText: (text: string, groupId?: string | null) => Promise<ShelfItem>;
   addFromClipboard: (
     itemIds: string[],
     mode: "reference" | "managed",
     groupId?: string | null,
-  ) => Promise<{ added: number; failed: { path: string; reason: string }[] }>;
+  ) => Promise<{ added: number; failed: ShelfFailedEntry[] }>;
   updateItem: (id: string, patch: ShelfUpdatePatch) => Promise<ShelfItem>;
   deleteItems: (ids: string[], includeProtected: boolean) => Promise<ShelfMutationResult>;
   clearShelf: (includeProtected: boolean) => Promise<ShelfMutationResult>;
@@ -164,6 +166,148 @@ function sortItems(items: ShelfItem[]): ShelfItem[] {
     if (a.created_at !== b.created_at) return a.created_at < b.created_at ? 1 : -1;
     return a.id < b.id ? 1 : -1;
   });
+}
+
+// ── 添加结果分级（诊断中心可稳定筛选） ──────────────────────
+//
+// 一次投递可能同时有成功与失败条目。旧实现无论 `failed` 多少都写 `success`，
+// 诊断中心只能看到「添加成功」，真实失败仅存在于界面 Toast。这里按返回的 report
+// 做一次**有界汇总**：
+// - 全成功 → INFO/success（保持既有行为）；
+// - 部分/全部失败 → failed 终态 + 稳定合成码，级别由失败分类决定；
+// - 0 添加 0 失败 → WARN/failed（后端没有可落库内容）；
+// metadata 只放计数、模式、来源与稳定错误码，绝不写路径/文件名。
+
+const SHELF_ADD_PARTIAL_FAILED = "SHELF_ADD_PARTIAL_FAILED";
+const SHELF_ADD_FAILED = "SHELF_ADD_FAILED";
+const SHELF_ADD_NO_INPUT = "SHELF_ADD_NO_INPUT";
+const SHELF_ADD_REFRESH_FAILED = "SHELF_ADD_REFRESH_FAILED";
+const SHELF_FAILURE_CODES_MAX = 3;
+const SHELF_FAILURE_CODE_MAX_CHARS = 40;
+
+/** 明确属于「用户输入/目标状态」的预期拒绝：全量失败时只需 WARN。 */
+const EXPECTED_FAILURE_CATEGORIES = new Set([
+  "validation",
+  "not_found",
+  "unsupported",
+  "conflict",
+]);
+
+/** 失败条目的稳定分类；兼容只有 path/reason 的旧后端（按错误码回退）。 */
+function failureCategoryOf(entry: ShelfFailedEntry): string {
+  const category = typeof entry.category === "string" ? entry.category.trim() : "";
+  if (category) return category;
+  switch ((entry.code ?? "").trim()) {
+    case "DATA_INTEGRITY_ERROR":
+      return "integrity";
+    case "DATABASE_ERROR":
+    case "DATABASE_BUSY":
+      return "database";
+    case "IO_ERROR":
+      return "io";
+    case "PERMISSION_DENIED":
+    case "PERMISSION_REQUIRED":
+      return "permission";
+    case "SERVICE_UNAVAILABLE":
+    case "SERVICE_OVERLOADED":
+      return "service";
+    case "TIMEOUT":
+      return "timeout";
+    case "VALIDATION_ERROR":
+      return "validation";
+    case "NOT_FOUND":
+      return "not_found";
+    case "UNSUPPORTED":
+      return "unsupported";
+    case "CONFLICT":
+      return "conflict";
+    default:
+      return "unknown";
+  }
+}
+
+const FAILURE_CATEGORY_RANK: Record<string, number> = {
+  integrity: 5,
+  database: 4,
+  io: 3,
+  permission: 3,
+  service: 3,
+  timeout: 3,
+  unknown: 3,
+  agent: 3,
+  config: 3,
+  ipc: 3,
+  validation: 1,
+  not_found: 1,
+  unsupported: 1,
+  conflict: 1,
+};
+
+/**
+ * 汇总失败级别与代表分类：
+ * - 任一 integrity → CRITICAL；
+ * - 全部是预期拒绝（validation/not_found/unsupported/conflict）→ WARN；
+ * - 其余（io/permission/service/timeout/database/unknown…）→ ERROR。
+ */
+function summarizeShelfFailures(failed: ShelfFailedEntry[]): {
+  level: DiagLevel;
+  category: string;
+} {
+  const categories = failed.map(failureCategoryOf);
+  if (categories.some((category) => category === "integrity")) {
+    return { level: "CRITICAL", category: "integrity" };
+  }
+  const onlyExpected = categories.every((category) => EXPECTED_FAILURE_CATEGORIES.has(category));
+  let category = categories[0] ?? "unknown";
+  for (const candidate of categories) {
+    if ((FAILURE_CATEGORY_RANK[candidate] ?? 3) > (FAILURE_CATEGORY_RANK[category] ?? 3)) {
+      category = candidate;
+    }
+  }
+  return { level: onlyExpected ? "WARN" : "ERROR", category };
+}
+
+/** 去重、限 3 个、单个 ≤40 字符的失败码串（诊断中心可直接看分类）。 */
+function shelfFailureCodes(failed: ShelfFailedEntry[]): string | undefined {
+  const codes: string[] = [];
+  for (const entry of failed) {
+    const code = typeof entry.code === "string" ? entry.code.trim() : "";
+    if (!code) continue;
+    const bounded = code.slice(0, SHELF_FAILURE_CODE_MAX_CHARS);
+    if (!codes.includes(bounded)) codes.push(bounded);
+    if (codes.length >= SHELF_FAILURE_CODES_MAX) break;
+  }
+  return codes.length > 0 ? codes.join(",") : undefined;
+}
+
+/** 全部失败且所有条目错误码一致时才复用真实后端码；否则用合成码。 */
+function uniformShelfFailureCode(failed: ShelfFailedEntry[]): string | undefined {
+  const codes = failed.map((entry) =>
+    typeof entry.code === "string" ? entry.code.trim() : "",
+  );
+  if (codes.length === 0 || codes.some((code) => !code)) return undefined;
+  const first = codes[0];
+  return codes.every((code) => code === first) ? first : undefined;
+}
+
+function shelfAddMetadata(
+  paths: number,
+  added: number,
+  failed: number,
+  mode: "reference" | "managed",
+  source: "picker" | "drag" | "manual",
+  failureCodes?: string,
+): Record<string, string | number | boolean> {
+  const metadata: Record<string, string | number | boolean> = {
+    count: paths,
+    total: paths,
+    added,
+    failed,
+    mode,
+    source,
+  };
+  if (failureCodes) metadata.failure_codes = failureCodes;
+  return metadata;
 }
 
 export const useShelfStore = create<ShelfState>((set, get) => ({
@@ -340,34 +484,101 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
   addPaths: async (paths, mode, source, groupId) => {
     // 一次投递 = 一个 operation_id；只记录数量/来源/存储模式，绝不记录文件路径。
     const op = startOperation("file", "shelf_add_paths");
+    let report: ShelfAddReport;
     try {
+      op.stage("validate");
       op.stage("persist");
-      const report = await shelfAddPaths(paths, mode, source, groupId ?? null);
-      if (report.added.length > 0) {
-        // 真实存在的收尾步骤：本地合并 + 元数据/列表刷新。
-        op.stage("finalize");
-        set((s) => ({
-          items: sortItems([...report.added, ...s.items]),
-          recent: [...report.added, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
-        }));
-        invalidateRecent();
-        void get().refreshMeta();
-        await get().load({ silent: true });
-      }
-      op.success({
-        metadata: {
-          count: paths.length,
-          added: report.added.length,
-          failed: report.failed.length,
-          mode,
-          source,
-        },
-      });
-      return { added: report.added.length, failed: report.failed };
+      report = await shelfAddPaths(paths, mode, source, groupId ?? null);
     } catch (e) {
+      // 参数/IPC 失败仍抛给 UI（保持既有行为）；业务失败在下面按 report 记录。
       op.fail(e);
       throw e;
     }
+
+    const added = report.added.length;
+    const failed = report.failed.length;
+    const failureCodes = shelfFailureCodes(report.failed);
+
+    if (added > 0) {
+      // 真实存在的收尾步骤：本地合并 + 元数据/列表刷新。
+      op.stage("finalize");
+      set((s) => ({
+        items: sortItems([...report.added, ...s.items]),
+        recent: [...report.added, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
+      }));
+      invalidateRecent();
+      // 收尾刷新失败不得改写添加结论：load/refreshMeta 内部已捕获错误并返回
+      // false，这里再兜一层异常，只写 WARN，仍返回 report。
+      let synced = false;
+      try {
+        const meta = get().refreshMeta();
+        const listOk = await get().load({ silent: true });
+        const metaOk = await meta;
+        synced = listOk && metaOk;
+      } catch {
+        synced = false;
+      }
+      if (!synced) {
+        // 这是同一次操作里的**次级**故障，不是添加终态：不写 status，
+        // 避免同一 operation_id 同时出现 failed 与 success 两个终态。
+        logEvent({
+          level: "WARN",
+          module: "file",
+          action: "shelf_add_paths",
+          event: "refresh_failed",
+          stage: "finalize",
+          operation_id: op.id,
+          error_code: SHELF_ADD_REFRESH_FAILED,
+          error_category: "unknown",
+          message: "暂存内容已添加，但列表刷新失败，界面可能不是最新状态",
+          metadata: shelfAddMetadata(paths.length, added, failed, mode, source),
+        });
+      }
+    }
+
+    if (failed === 0 && added > 0) {
+      op.success({
+        metadata: shelfAddMetadata(paths.length, added, failed, mode, source),
+      });
+    } else if (failed > 0 && added > 0) {
+      const { level, category } = summarizeShelfFailures(report.failed);
+      op.fail(
+        { code: SHELF_ADD_PARTIAL_FAILED, category },
+        {
+          severity: level,
+          // 失败本身发生在 persist；finalize 只是收尾刷新，不作为失败阶段。
+          stage: "persist",
+          message: `暂存添加部分失败：共 ${paths.length} 项，成功 ${added}、失败 ${failed}`,
+          metadata: shelfAddMetadata(paths.length, added, failed, mode, source, failureCodes),
+        },
+      );
+    } else if (failed > 0) {
+      const { level, category } = summarizeShelfFailures(report.failed);
+      const code = uniformShelfFailureCode(report.failed) ?? SHELF_ADD_FAILED;
+      op.fail(
+        { code, category },
+        {
+          severity: level,
+          stage: "persist",
+          message: `暂存添加失败：共 ${paths.length} 项，成功 0、失败 ${failed}`,
+          metadata: shelfAddMetadata(paths.length, added, failed, mode, source, failureCodes),
+        },
+      );
+    } else {
+      // paths 非空但后端既没添加也没失败：不能伪装成成功。
+      op.fail(
+        { code: SHELF_ADD_NO_INPUT, category: "validation" },
+        {
+          severity: "WARN",
+          stage: "persist",
+          message: "暂存添加未产生任何条目",
+          metadata: shelfAddMetadata(paths.length, added, failed, mode, source),
+        },
+      );
+    }
+
+    // 业务失败不抛给 UI：调用方按返回的 added/failed 展示逐条结果。
+    return { added, failed: report.failed };
   },
 
   addLink: async (url, groupId) => {

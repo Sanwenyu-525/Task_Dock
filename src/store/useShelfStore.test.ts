@@ -158,10 +158,12 @@ import { useShelfStore, __resetShelfRecentCache, SHELF_RECENT_LIMIT } from "./us
 import {
   clientDiagnosticsStats,
   flushDiagnostics,
+  setClientVerboseMode,
   setDiagnosticTransport,
   type DiagnosticInput,
 } from "../lib/diagnostics";
 import {
+  shelfAddPaths,
   shelfList,
   shelfStats,
   shelfGroups,
@@ -172,6 +174,27 @@ import {
 } from "../lib/bridge";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+/** 捕获一次操作产生的 `shelf_add_paths` 诊断事件（先清掉旧队列）。 */
+async function captureShelfAddEvents(
+  run: () => Promise<unknown>,
+): Promise<DiagnosticInput[]> {
+  // 先清空此前用例可能残留的队列，确保只断言本用例产生的事件。
+  setDiagnosticTransport(async () => {});
+  while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+
+  const events: DiagnosticInput[] = [];
+  setDiagnosticTransport(async (batch) => {
+    events.push(...batch);
+  });
+  try {
+    await run();
+    while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+  } finally {
+    setDiagnosticTransport(null);
+  }
+  return events.filter((event) => event.action === "shelf_add_paths");
+}
 
 describe("useShelfStore", () => {
   beforeEach(() => {
@@ -266,6 +289,203 @@ describe("useShelfStore", () => {
     } finally {
       setDiagnosticTransport(null);
     }
+  });
+
+  it("addPaths 记录 validate → persist → finalize 阶段推进", async () => {
+    setClientVerboseMode(true);
+    try {
+      const events = await captureShelfAddEvents(() =>
+        useShelfStore.getState().addPaths(["D:\\stage.txt"], "reference", "drag"),
+      );
+      const stages = events
+        .filter((event) => event.event === "stage")
+        .map((event) => event.stage);
+      expect(stages).toEqual(["validate", "persist", "finalize"]);
+      // 同一 operation_id 贯穿阶段与终态。
+      expect(new Set(events.map((event) => event.operation_id)).size).toBe(1);
+    } finally {
+      setClientVerboseMode(false);
+    }
+  });
+
+  it("addPaths 部分失败（validation）记 WARN/SHELF_ADD_PARTIAL_FAILED，仍返回逐条结果", async () => {
+    (shelfAddPaths as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      added: [makeItem("ok")],
+      failed: [
+        {
+          path: "D:\\secret\\bad.txt",
+          reason: "格式不支持",
+          code: "VALIDATION_ERROR",
+          category: "validation",
+        },
+      ],
+    });
+
+    const events = await captureShelfAddEvents(async () => {
+      const result = await useShelfStore
+        .getState()
+        .addPaths(["D:\\secret\\ok.txt", "D:\\secret\\bad.txt"], "reference", "drag");
+      expect(result.added).toBe(1);
+      expect(result.failed).toHaveLength(1);
+      expect(result.failed[0].path).toBe("D:\\secret\\bad.txt");
+    });
+
+    const started = events.find((event) => event.status === "started");
+    const terminal = events.find((event) => event.status === "failed");
+    expect(terminal).toMatchObject({
+      level: "WARN",
+      module: "file",
+      status: "failed",
+      stage: "persist",
+      error_code: "SHELF_ADD_PARTIAL_FAILED",
+      error_category: "validation",
+      metadata: {
+        count: 2,
+        total: 2,
+        added: 1,
+        failed: 1,
+        mode: "reference",
+        source: "drag",
+        failure_codes: "VALIDATION_ERROR",
+      },
+    });
+    // 一个批次只有一个 operation_id。
+    expect(terminal?.operation_id).toBe(started?.operation_id);
+    expect(new Set(events.map((event) => event.operation_id)).size).toBe(1);
+    // 隐私红线：路径/文件名只存在于返回给 UI 的 report，不进诊断事件。
+    const payload = JSON.stringify(events);
+    expect(payload).not.toContain("secret");
+    expect(payload).not.toContain("bad.txt");
+  });
+
+  it("addPaths 部分失败按故障分类升级：io/database→ERROR，integrity→CRITICAL", async () => {
+    const cases = [
+      { code: "IO_ERROR", category: "io", level: "ERROR" },
+      { code: "DATABASE_ERROR", category: "database", level: "ERROR" },
+      { code: "DATA_INTEGRITY_ERROR", category: "integrity", level: "CRITICAL" },
+    ] as const;
+
+    for (const failure of cases) {
+      (shelfAddPaths as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        added: [makeItem(`ok-${failure.code}`)],
+        failed: [{ path: "x", reason: "r", code: failure.code, category: failure.category }],
+      });
+      const events = await captureShelfAddEvents(() =>
+        useShelfStore.getState().addPaths(["x"], "managed", "picker"),
+      );
+      const terminal = events.find((event) => event.status === "failed");
+      expect(terminal?.level, failure.code).toBe(failure.level);
+      expect(terminal?.error_code).toBe("SHELF_ADD_PARTIAL_FAILED");
+    }
+  });
+
+  it("addPaths 全部失败复用一致的稳定后端错误码，并带 failure_codes", async () => {
+    (shelfAddPaths as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      added: [],
+      failed: [
+        { path: "a", reason: "r1", code: "IO_ERROR", category: "io" },
+        { path: "b", reason: "r2", code: "IO_ERROR", category: "io" },
+      ],
+    });
+
+    const events = await captureShelfAddEvents(async () => {
+      const result = await useShelfStore.getState().addPaths(["a", "b"], "reference", "drag");
+      expect(result.added).toBe(0);
+      expect(result.failed).toHaveLength(2);
+    });
+
+    const terminal = events.find((event) => event.status === "failed");
+    expect(terminal).toMatchObject({
+      level: "ERROR",
+      status: "failed",
+      stage: "persist",
+      error_code: "IO_ERROR",
+      error_category: "io",
+      metadata: {
+        count: 2,
+        total: 2,
+        added: 0,
+        failed: 2,
+        mode: "reference",
+        source: "drag",
+        failure_codes: "IO_ERROR",
+      },
+    });
+    // 全部失败不触发收尾刷新。
+    expect(shelfList).not.toHaveBeenCalled();
+  });
+
+  it("addPaths 全部失败但错误码不一致时使用合成码 SHELF_ADD_FAILED", async () => {
+    (shelfAddPaths as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      added: [],
+      failed: [
+        { path: "a", reason: "r", code: "IO_ERROR", category: "io" },
+        { path: "b", reason: "r", code: "NOT_FOUND", category: "not_found" },
+      ],
+    });
+
+    const events = await captureShelfAddEvents(() =>
+      useShelfStore.getState().addPaths(["a", "b"], "reference", "drag"),
+    );
+
+    const terminal = events.find((event) => event.status === "failed");
+    expect(terminal).toMatchObject({
+      level: "ERROR",
+      error_code: "SHELF_ADD_FAILED",
+      metadata: { failure_codes: "IO_ERROR,NOT_FOUND" },
+    });
+  });
+
+  it("addPaths 0 添加 0 失败记 WARN/SHELF_ADD_NO_INPUT，不伪装成功", async () => {
+    (shelfAddPaths as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      added: [],
+      failed: [],
+    });
+
+    const events = await captureShelfAddEvents(async () => {
+      const result = await useShelfStore
+        .getState()
+        .addPaths(["D:\\ignored.txt"], "reference", "drag");
+      expect(result).toEqual({ added: 0, failed: [] });
+    });
+
+    const terminal = events.find((event) => event.status === "failed");
+    expect(terminal).toMatchObject({
+      level: "WARN",
+      status: "failed",
+      stage: "persist",
+      error_code: "SHELF_ADD_NO_INPUT",
+      error_category: "validation",
+      metadata: { added: 0, failed: 0, total: 1 },
+    });
+  });
+
+  it("收尾刷新失败只记 WARN，不 reject 添加结果", async () => {
+    (shelfStats as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("stats down"));
+
+    const events = await captureShelfAddEvents(async () => {
+      const result = await useShelfStore
+        .getState()
+        .addPaths(["D:\\new.txt"], "reference", "drag");
+      expect(result.added).toBe(1);
+    });
+
+    const refresh = events.find((event) => event.error_code === "SHELF_ADD_REFRESH_FAILED");
+    const success = events.find((event) => event.status === "success");
+    expect(refresh).toMatchObject({
+      level: "WARN",
+      module: "file",
+      stage: "finalize",
+      error_category: "unknown",
+      metadata: { added: 1, failed: 0 },
+    });
+    // 次级故障不写终态：同一 operation_id 只能有一个 success 终态，
+    // 否则操作链里会同时出现 failed 与 success。
+    expect(refresh?.status).toBeUndefined();
+    expect(success).toBeTruthy();
+    expect(refresh?.operation_id).toBe(success?.operation_id);
+    // 添加结论不被刷新失败改写。
+    expect(success?.metadata).toMatchObject({ added: 1, failed: 0 });
   });
 
   it("addFromClipboard 上报逐条失败原因", async () => {

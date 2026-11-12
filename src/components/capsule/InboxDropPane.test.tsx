@@ -106,6 +106,10 @@ import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
 import { __resetFileDrop } from "../../lib/fileDrop";
 
+/** 每个用例都可能改写 DPI/命中函数：统一在 afterEach 复原，避免串味。 */
+const initialDpr = window.devicePixelRatio;
+const initialElementFromPoint = document.elementFromPoint;
+
 function target(over: Partial<Record<string, unknown>> = {}) {
   return {
     id: "t1",
@@ -250,6 +254,11 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   __resetFileDrop();
+  Object.defineProperty(window, "devicePixelRatio", {
+    configurable: true,
+    value: initialDpr,
+  });
+  document.elementFromPoint = initialElementFromPoint;
 });
 
 describe("InboxDropPane", () => {
@@ -418,6 +427,7 @@ describe("InboxDropPane", () => {
     emit({ type: "drop", position: { x: 300, y: 300 }, paths: ["C:\\a.txt"] });
     await flush();
     expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(addShelfPaths).not.toHaveBeenCalled();
     document.elementFromPoint = original;
   });
 
@@ -455,6 +465,7 @@ describe("InboxDropPane", () => {
 
     await screen.findByText(/目录不可用，未执行投递/);
     expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(addShelfPaths).not.toHaveBeenCalled();
     document.elementFromPoint = original;
   });
 
@@ -468,6 +479,7 @@ describe("InboxDropPane", () => {
     expect(unlisten).toHaveBeenCalled();
     emit({ type: "drop", position: { x: 0, y: 0 }, paths: ["C:\\a.txt"] });
     expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(addShelfPaths).not.toHaveBeenCalled();
   });
 
   it("点击卡片主体打开真实目录", async () => {
@@ -497,6 +509,7 @@ describe("InboxDropPane", () => {
     await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
     await flush();
     expect(dropToDirectory).toHaveBeenCalledTimes(1);
+    expect(addShelfPaths).not.toHaveBeenCalled();
     document.elementFromPoint = original;
   });
 
@@ -570,6 +583,7 @@ describe("InboxDropPane", () => {
     await flush();
 
     expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(addShelfPaths).not.toHaveBeenCalled();
     document.elementFromPoint = original;
   });
 
@@ -640,6 +654,245 @@ describe("InboxDropPane", () => {
     await flush();
     expect(dropToDirectory).not.toHaveBeenCalled();
     document.elementFromPoint = original;
+  });
+
+  // ── 单消费者落点仲裁：目录卡片 / 最近暂存 / 空白 ─────────────
+
+  it("拖入最近暂存区 → 只按引用暂存一次，不投递任何目录", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    addShelfPaths.mockResolvedValue({ added: [shelfItem()], failed: [] });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await screen.findByText("最近暂存");
+
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+    expect(zone).toBeTruthy();
+    document.elementFromPoint = () => zone;
+
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    await waitFor(() => expect(zone.className).toContain("is-drop-over"));
+    expect(screen.getByText(/拖入文件即可暂存/)).toBeTruthy();
+
+    emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\Docs\\新文件.txt"] });
+    await waitFor(() => expect(addShelfPaths).toHaveBeenCalledTimes(1));
+    expect(addShelfPaths).toHaveBeenCalledWith(
+      ["C:\\Docs\\新文件.txt"],
+      "reference",
+      "drag",
+      null,
+    );
+    expect(dropToDirectory).not.toHaveBeenCalled();
+    await screen.findByText("已暂存 1 项");
+  });
+
+  it("没有可见目录卡片时，最近暂存仍可接收拖入", async () => {
+    dropTargets.mockResolvedValue([]);
+    addShelfPaths.mockResolvedValue({ added: [shelfItem()], failed: [] });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("最近暂存");
+
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+    document.elementFromPoint = () => zone;
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\Docs\\无目标.txt"] });
+
+    await waitFor(() => expect(addShelfPaths).toHaveBeenCalledTimes(1));
+    expect(dropToDirectory).not.toHaveBeenCalled();
+  });
+
+  it("悬停卡片后移到最近暂存松手 → 只暂存，不投递目录", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    addShelfPaths.mockResolvedValue({ added: [shelfItem()], failed: [] });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+
+    document.elementFromPoint = () => card;
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    await waitFor(() => expect(card.className).toContain("is-over"));
+    // 会话期间接收区有轻高亮，但没有落点高亮
+    await waitFor(() => expect(zone.className).toContain("is-drop-active"));
+    expect(zone.className).not.toContain("is-drop-over");
+
+    // 直接移到接收区松手：over 必须实时切换高亮，drop 用松手坐标重新命中
+    document.elementFromPoint = () => zone;
+    emit({ type: "over", position: { x: 30, y: 300 } });
+    await waitFor(() => expect(zone.className).toContain("is-drop-over"));
+    expect(card.className).not.toContain("is-over");
+
+    emit({ type: "drop", position: { x: 30, y: 300 }, paths: ["C:\\a.txt"] });
+    await waitFor(() => expect(addShelfPaths).toHaveBeenCalledTimes(1));
+    expect(dropToDirectory).not.toHaveBeenCalled();
+  });
+
+  it("悬停最近暂存后移到卡片松手 → 只投递目录，不暂存", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    dropToDirectory.mockResolvedValue(report());
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+
+    document.elementFromPoint = () => zone;
+    emit({ type: "enter", position: { x: 30, y: 300 }, paths: [] });
+    emit({ type: "over", position: { x: 30, y: 300 } });
+    await waitFor(() => expect(zone.className).toContain("is-drop-over"));
+
+    document.elementFromPoint = () => card;
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    await waitFor(() => expect(card.className).toContain("is-over"));
+    expect(zone.className).not.toContain("is-drop-over");
+
+    emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\a.txt"] });
+    await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
+    expect(dropToDirectory.mock.calls[0][0]).toBe("t1");
+    expect(addShelfPaths).not.toHaveBeenCalled();
+  });
+
+  it("重复 drop 到最近暂存只暂存一次", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    addShelfPaths.mockResolvedValue({ added: [shelfItem()], failed: [] });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+    document.elementFromPoint = () => zone;
+
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\a.txt"] });
+    emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\a.txt"] });
+
+    await waitFor(() => expect(addShelfPaths).toHaveBeenCalledTimes(1));
+    await flush();
+    expect(addShelfPaths).toHaveBeenCalledTimes(1);
+    expect(dropToDirectory).not.toHaveBeenCalled();
+  });
+
+  it("最近暂存收到缺坐标或空 paths → 不执行暂存", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+    document.elementFromPoint = () => zone;
+
+    // 会话 1：没有坐标 → 不猜目标
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    emit({ type: "drop", paths: ["C:\\a.txt"] });
+    await flush();
+
+    // 会话 2：paths 为空 → 不执行
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    emit({ type: "drop", position: { x: 20, y: 20 }, paths: [] });
+    await flush();
+
+    expect(addShelfPaths).not.toHaveBeenCalled();
+    expect(dropToDirectory).not.toHaveBeenCalled();
+  });
+
+  it("目标在拖入期间被删除 → 原卡片位置不再投递，也不落到暂存架", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    document.elementFromPoint = () => card;
+
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    await waitFor(() => expect(card.className).toContain("is-over"));
+
+    await act(async () => {
+      useDropTargetsStore.setState({ targets: [] });
+    });
+    await waitFor(() => expect(screen.queryByText("工作资料")).toBeNull());
+
+    emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\a.txt"] });
+    await flush();
+    expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(addShelfPaths).not.toHaveBeenCalled();
+  });
+
+  it("最近暂存部分失败 → 只提示「部分」，不冒充成功", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    addShelfPaths.mockResolvedValue({
+      added: [shelfItem()],
+      failed: [
+        { path: "C:\\b.txt", reason: "访问被拒绝" },
+        { path: "C:\\c.txt", reason: "磁盘已满" },
+      ],
+    });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+    document.elementFromPoint = () => zone;
+
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    emit({
+      type: "drop",
+      position: { x: 20, y: 20 },
+      paths: ["C:\\a.txt", "C:\\b.txt", "C:\\c.txt"],
+    });
+
+    await screen.findByText(/已部分暂存/);
+    expect(screen.getByText(/成功 1 项/)).toBeTruthy();
+    expect(screen.getByText(/2 项失败（访问被拒绝）/)).toBeTruthy();
+    expect(dropToDirectory).not.toHaveBeenCalled();
+  });
+
+  it("最近暂存全部失败 → 明确失败条数与首条原因", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    addShelfPaths.mockResolvedValue({
+      added: [],
+      failed: [{ path: "C:\\b.txt", reason: "权限不足" }],
+    });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+    document.elementFromPoint = () => zone;
+
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\b.txt"] });
+
+    await screen.findByText("有 1 项未能暂存：权限不足");
+    expect(screen.queryByText(/已暂存/)).toBeNull();
+  });
+
+  it.each([1.25, 2])("DPI %s：物理坐标换算后仍命中卡片与最近暂存", async (dpr) => {
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: dpr,
+    });
+    dropTargets.mockResolvedValue([target()]);
+    dropToDirectory.mockResolvedValue(report());
+    addShelfPaths.mockResolvedValue({ added: [shelfItem()], failed: [] });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+
+    // 只接受换算后的 CSS 坐标 (100,50)：直接用物理坐标会落到别处。
+    document.elementFromPoint = (x: number, y: number) =>
+      Math.abs(x - 100) < 0.001 && Math.abs(y - 50) < 0.001 ? card : null;
+    emit({ type: "enter", position: { x: 100 * dpr, y: 50 * dpr }, paths: [] });
+    emit({ type: "over", position: { x: 100 * dpr, y: 50 * dpr } });
+    emit({ type: "drop", position: { x: 100 * dpr, y: 50 * dpr }, paths: ["C:\\a.txt"] });
+    await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
+    expect(dropToDirectory.mock.calls[0][0]).toBe("t1");
+
+    document.elementFromPoint = (x: number, y: number) =>
+      Math.abs(x - 100) < 0.001 && Math.abs(y - 50) < 0.001 ? zone : null;
+    emit({ type: "enter", position: { x: 100 * dpr, y: 50 * dpr }, paths: [] });
+    emit({ type: "over", position: { x: 100 * dpr, y: 50 * dpr } });
+    emit({ type: "drop", position: { x: 100 * dpr, y: 50 * dpr }, paths: ["C:\\b.txt"] });
+    await waitFor(() => expect(addShelfPaths).toHaveBeenCalledTimes(1));
+    expect(addShelfPaths).toHaveBeenCalledWith(["C:\\b.txt"], "reference", "drag", null);
   });
 
   it("最近暂存展示条目与可访问性，点击行直接打开", async () => {

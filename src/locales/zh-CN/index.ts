@@ -2307,6 +2307,13 @@ export const zhCN = {
   // ── 收集箱文件投递：失败结果条 → 诊断中心 ──
   "capsule.inboxDrop.viewDiagnostics": "查看诊断",
   "capsule.inboxDrop.diagnosticsBlocked": "无法打开诊断中心：当前页面正在保存，请稍后重试。",
+
+  // ── 收集箱文件投递：拖入「最近暂存」（引用模式）──
+  "capsule.inboxDrop.shelfDropHint": "拖入文件即可暂存 · 默认保存引用，不复制原文件",
+  "capsule.inboxDrop.shelfAdded": "已暂存 {added} 项",
+  "capsule.inboxDrop.shelfPartial": "已部分暂存：成功 {added} 项，{failed} 项失败（{reason}）",
+  "capsule.inboxDrop.shelfFailed": "有 {failed} 项未能暂存：{reason}",
+  "capsule.inboxDrop.shelfAddError": "暂存文件失败：{error}",
 } as const;
 
 export type MessageKey = keyof typeof zhCN;

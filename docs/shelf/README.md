@@ -123,6 +123,18 @@
 - **验收状态**：无头会话无法产生真实 OS 拖拽 → ENVIRONMENT BLOCKED，待真机
   复验（证据见 `tmp/acceptance/file-shelf/report.md`）。
 
+### 添加结果分级与诊断（2026-11-12）
+
+- `ShelfAddReport.failed[]` 在 `path` / `reason` 之外新增可选 `code` / `category`
+  （来自 `AppError::code()` / `category()`）；`None` 时不序列化，旧前端兼容。
+- `addPaths` 不再无条件写成功：全成功 `INFO/success`；部分失败
+  `SHELF_ADD_PARTIAL_FAILED`、全部失败 `SHELF_ADD_FAILED`（错误码一致时复用真实码）、
+  0 添加 0 失败 `SHELF_ADD_NO_INPUT`；级别按失败分类（integrity → CRITICAL，
+  validation/not_found/unsupported/conflict → WARN，其余 ERROR）。
+- 收尾刷新失败只追加 `SHELF_ADD_REFRESH_FAILED`（WARN，stage=finalize），不改变
+  添加结果、不 reject；诊断 metadata 只含计数/模式/来源/失败码，不含路径或文件名。
+- 业务失败事件约定与筛选路径见 `docs/DIAGNOSTICS.md` §22。
+
 ### 拖出（2026-11-09 已实现，真机待验收）
 
 - 通道：前端按住卡片超过 5px 位移后调用 `shelf_drag_out`，命令层用
@@ -677,3 +689,29 @@ status / reason? / recovery? / residual_source?`。状态取值与 `ShelfOpEntry
   （真实文件库从 v46+旧约束升级后复制 PNG）覆盖；诊断侧由
   `diagnostics::tests::shelf_drop_business_failure_reaches_anomaly_list_and_operation_chain`
   验证默认异常列表、操作链、错误码筛选与隐私边界。真机 WebView2 跳转未验证。
+
+### 12.10 拖放接收修复与统一仲裁（2026-11-12）
+
+- **完整暂存架**（`ShelfWorkspace`）：拖入消费者只在「页面真实可见」时注册——
+  `active && useFullViewVisible() && !capsuleMode && !targetsOpen`。此前只看逻辑 Tab，
+  而完整面板在极简/紧凑模式下由 `DeferredView` 保活、仅 CSS 隐藏，隐藏的暂存架会继续
+  以 `claim: () => true` 抢走可见界面上的拖入，文件被悄悄加进看不见的暂存架。
+- **拖拽会话稳定**：`copyOnAdd` 改为 ref 读取，切换引用/托管不再重注册消费者
+  （重注册会清空 `owner`，正在进行的拖入会在松手时被 fail-closed 丢弃）。
+- **路径预检**：空白/相对路径不进入后端；全部无效时明确失败提示，混合批次只提交有效
+  路径并把无效项并入失败汇总。`added=0 && failed=0` 不再静默当作成功；失败提示合并为
+  一条（成功数 + 失败数 + 首条原因），不按条目刷 N 个 toast、不把完整路径写进提示。
+- **胶囊统一仲裁**：仍是 `InboxDropPane` 一个消费者（priority 20）接管整个拖拽会话，
+  `onOver`/`onDrop` 用**当前/松手瞬间坐标**路由：可见目录卡片 → 目录投递；最近暂存
+  `data-drop-zone="shelf-recent"` → `addPaths(..., "reference", "drag")`；空白/缺坐标/
+  空 paths → 不执行。一次会话只执行一次；`leave` 后迟到的 drop 不生效；卡片与接收区
+  高亮互斥，`onDrop` 不复用 over 缓存。
+- **最近暂存接收区**：有条目/空列表都可接收；拖拽期间显示轻提示与内描边高亮，绝对定位、
+  `pointer-events: none`，不挤占列表、不挡命中；既有「+」添加、列表、删除、OLE 拖出不变。
+- **监听可观测**：`lib/fileDrop` 的订阅/退订失败写一条 5s 去重的 WARN
+  （`module=file`、`action=file_drop_listener`、`stage=subscribe|unlisten`、不含路径/
+  原始 message），恢复后补一条 `recovered`；正常 enter/over/drop 不写持久化日志，
+  失败后下次注册仍会重试。
+- **验证边界**：jsdom 端到端覆盖 enter→over→drop→`shelf_add_paths`/`shelfDropToDirectory`、
+  落点切换、重复 drop、缺坐标、DPI 1.25/2、页面卸载/切视图与监听失败恢复；真实 Windows
+  资源管理器 OLE 拖入、真实 DPI/多显示器与窄窗视觉仍需真机验收（本轮未执行）。

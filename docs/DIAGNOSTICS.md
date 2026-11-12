@@ -466,3 +466,47 @@ true`，大模块图的入口依赖扫描完成前不返回模块请求；本仓
 **去重边界**：IPC 层失败（目标不可用、参数非法等 `Err` 返回）仍由
 `invokeCommand → logIpcFailure` 记录一条 `stage = ipc` 的事件；业务汇总事件只在
 `Ok(report)` 时写入且 `stage = business`，同一故障不会在两层各记一次。
+
+## 22. 暂存添加业务结果分级与结构化失败（2026-11-12）
+
+**问题**：`shelf_add_paths` 即使逐条失败也是 `Ok(ShelfAddReport)` 返回，
+`useShelfStore.addPaths` 无论 `failed.length` 多少都写一条 `success`；诊断中心因此只看到
+「添加成功」，用户只能从界面 Toast 感知失败。与此同时 `ShelfFailedEntry` 只有
+`path/reason` 自由文本，前端无法稳定分级或聚合。
+
+**后端契约（`commands::shelf::ShelfFailedEntry`）**：保留 `path` / `reason`，新增可选
+`code`（`AppError::code`）与 `category`（`AppError::category`）；`None` 时字段不序列化，
+旧前端忽略即可。无底层错误的明确拒绝（如剪贴板快照 `Unsupported`）使用
+`UNSUPPORTED` / `unsupported`。单条失败不阻断其他文件，添加语义不变。
+
+**前端汇总事件（`useShelfStore.addPaths`，`module = file`、`action = shelf_add_paths`、
+一次投递一个 `operation_id`）**：
+
+| 结果 | level / status | stage | error_code |
+|---|---|---|---|
+| `failed=0 && added>0`（全成功） | `INFO` / `success` | —（终态不带 stage） | 无 |
+| `added>0 && failed>0`（部分失败） | 见下方级别规则 / `failed` | `persist` | `SHELF_ADD_PARTIAL_FAILED` |
+| `added=0 && failed>0`（全部失败） | 见下方级别规则 / `failed` | `persist` | 全部失败码一致且非空时复用真实后端码，否则 `SHELF_ADD_FAILED` |
+| `paths` 非空但 `added=0 && failed=0` | `WARN` / `failed` | `persist` | `SHELF_ADD_NO_INPUT`（`category = validation`） |
+| 参数/IPC 抛错 | `invokeCommand` 既有推断（validation → WARN，其余 ERROR） | `ipc`/最后阶段 | 真实 `AppError` 码 |
+
+级别规则（部分/全部失败）：任一失败 `category = integrity`（或
+`code = DATA_INTEGRITY_ERROR`）→ `CRITICAL`；全部失败均为
+`validation / not_found / unsupported / conflict` → `WARN`；其余（`io / permission /
+service / timeout / database / unknown`…）→ `ERROR`。`OperationExtras` 新增可选
+`severity` / `stage`，允许业务汇总覆盖 `fail()` 的推断，旧调用方行为不变。
+
+**metadata（均已登记 `ALLOWED_META_KEYS`）**：`count` / `total` / `added` / `failed` /
+`mode` / `source`；失败时附 `failure_codes`（去重、最多 3 个、逗号分隔、单个 ≤40 字符）。
+不含路径、文件名、正文或原始堆栈；`path` 只存在于返回给 UI 的 report。
+
+**阶段推进**：`validate → persist → finalize`；`finalize` 仅在有新增条目时执行（本地乐观
+合并 + 权威列表/元数据刷新）。若收尾刷新失败，追加一条
+`WARN / stage=finalize / error_code=SHELF_ADD_REFRESH_FAILED` 事件（**不带 status**，
+避免同一 `operation_id` 同时出现 failed 与 success 两个终态），但**不改写添加结论**、
+不 reject `addPaths`，仍返回后端 report。
+
+**可见性**：上述 WARN 及以上事件可在默认异常列表（WARN+、最近 24 小时、`module=file`）
+直接看到；按 `operation_id` 可打开操作链；`SHELF_ADD_PARTIAL_FAILED` /
+`SHELF_ADD_FAILED` / `SHELF_ADD_NO_INPUT` / `SHELF_ADD_REFRESH_FAILED` 可直接按错误码
+筛选。前端单测与 Rust 诊断查询测试覆盖这三条路径。

@@ -606,6 +606,51 @@ fn add_reference_folder_and_missing_path() {
     assert!(add_reference(&db, &tmp.shelf(), "x.txt", "picker", None).is_err());
 }
 
+/// 添加失败报告必须带可机读的稳定错误码/分类，同时保持 path/reason 兼容。
+#[test]
+fn shelf_failed_entry_serializes_code_and_category() {
+    use crate::commands::shelf::{ShelfAddReport, ShelfFailedEntry};
+
+    let failed = ShelfFailedEntry {
+        path: "D:\\tmp\\x.txt".into(),
+        reason: "文件或路径不存在".into(),
+        code: Some("NOT_FOUND".into()),
+        category: Some("not_found".into()),
+    };
+    let value = serde_json::to_value(&failed).unwrap();
+    assert_eq!(value["path"].as_str(), Some("D:\\tmp\\x.txt"));
+    assert_eq!(value["reason"].as_str(), Some("文件或路径不存在"));
+    assert_eq!(value["code"].as_str(), Some("NOT_FOUND"));
+    assert_eq!(value["category"].as_str(), Some("not_found"));
+
+    // 报告序列化保持 added/failed 契约；code/category 是附加字段。
+    let report = ShelfAddReport {
+        added: Vec::new(),
+        failed: vec![failed],
+    };
+    let report_value = serde_json::to_value(&report).unwrap();
+    assert_eq!(report_value["added"].as_array().map(Vec::len), Some(0));
+    assert_eq!(
+        report_value["failed"][0]["code"].as_str(),
+        Some("NOT_FOUND")
+    );
+    assert_eq!(
+        report_value["failed"][0]["category"].as_str(),
+        Some("not_found")
+    );
+
+    // 旧构造（无结构化分类）仍可序列化，不凭空补空串。
+    let legacy = ShelfFailedEntry {
+        path: "x".into(),
+        reason: "r".into(),
+        code: None,
+        category: None,
+    };
+    let legacy_value = serde_json::to_value(legacy).unwrap();
+    assert!(legacy_value.get("code").is_none());
+    assert!(legacy_value.get("category").is_none());
+}
+
 #[test]
 fn managed_copy_roundtrip_and_delete_removes_owned_file() {
     let tmp = TempRoot::new();

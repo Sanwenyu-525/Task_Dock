@@ -3173,6 +3173,10 @@ export interface ShelfStats {
 export interface ShelfFailedEntry {
   path: string;
   reason: string;
+  /** 稳定错误码（后端 `AppError::code`）；旧后端/未知类型时缺省。 */
+  code?: string | null;
+  /** 稳定错误分类（后端 `AppError::category`）；旧后端时缺省。 */
+  category?: string | null;
 }
 
 export interface ShelfAddReport {

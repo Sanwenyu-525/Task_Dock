@@ -934,3 +934,82 @@ Rust：`cargo test` 覆盖新建 5/30 分钟提醒、到期只触发一次、延
   且落盘内容不含路径/文件名。
 - 未验证：真实 WebView2 下「查看诊断」跳转与操作链展示、320/400 窄窗三链接排版、
   真实 Tauri 实例重启后的 v47 迁移（未对用户正式库执行迁移）。
+
+## 暂存添加结果分级与拖放监听诊断（2026-11-12）
+
+新增覆盖：
+
+| 文件 | 覆盖 |
+|---|---|
+| `src/store/useShelfStore.test.ts` | 全成功；部分失败（validation→WARN、io/database→ERROR、integrity→CRITICAL）；全部失败复用一致真实错误码；混合错误码回退 `SHELF_ADD_FAILED`；0+0 → `SHELF_ADD_NO_INPUT`；收尾刷新失败只记 `SHELF_ADD_REFRESH_FAILED` 且不 reject；`validate→persist→finalize` 阶段推进；单批次 operation_id 一致；诊断事件不含路径/文件名 |
+| `src/lib/diagnostics.test.ts` | `OperationExtras.severity/stage` 覆盖失败终态；拖放订阅失败 WARN、同阶段 5s 去重、恢复 INFO 只写一次、只记录异常类型名、不可读异常对象也不抛 |
+| `src-tauri/src/diagnostics/privacy.rs` | `added` / `failure_codes` 白名单与单事件 key 上限 |
+| `src-tauri/src/diagnostics/tests.rs` | 暂存添加 WARN 汇总在默认异常列表（WARN+/24h/module=file）、operation_id 操作链、error_code 筛选中命中；metadata 经隐私过滤仍保留 `added` / `failure_codes` |
+| `src-tauri/src/shelf/tests.rs` | `ShelfFailedEntry` 序列化含 `code/category`，缺失时不序列化；`path/reason` 契约保持 |
+
+实跑记录（Windows 10.0.22631，2026-11-12）：
+
+- 前端定向（仓库根）：
+  `npx vitest run src/store/useShelfStore.test.ts src/lib/diagnostics.test.ts --pool=forks --poolOptions.forks.singleFork --maxWorkers=1`
+  退出码 0，2 个文件 / 63 个用例通过（`useShelfStore` 34、`diagnostics` 29）；日志
+  `tmp/acceptance/file-drop-drag-20261112/vitest-shelf-diagnostics-20261112.log`。
+- 类型检查：`npx tsc --noEmit` 退出码 0（此前一度被范围外 `src/lib/fileDrop.ts` WIP 阻断，
+  该 WIP 随后已由对应 Agent 修复）；日志
+  `tmp/acceptance/file-drop-drag-20261112/tsc-20261112.log`。
+- Rust 定向（`src-tauri`，`CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1`）：
+  `cargo test --lib -- diagnostics::` 退出码 0，46 passed / 0 failed（含新增
+  `diagnostics::tests::shelf_add_business_result_is_visible_and_privacy_safe` 与
+  `diagnostics::privacy::tests::shelf_add_summary_metadata_keys_are_whitelisted`）；
+  日志 `tmp/acceptance/file-drop-drag-20261112/rust-diagnostics-20261112-retry2.log`。
+- 后续回归直接执行已编译测试二进制
+  `src-tauri/target/debug/deps/task_dock_lib-a1117155ef89aa39.exe`（逻辑改动完成后的构建）：
+  `shelf::tests::add_` 2/2、`managed_` 13/13、
+  `shelf_failed_entry_serializes_code_and_category` 1/1、`v47` 3/3、`drop_` 37/37、
+  `shelf_drop_business_failure` 1/1，退出码均为 0；日志同目录
+  `rust-shelf-tests-add-20261112.log`、`rust-shelf-tests-managed-20261112.log`、
+  `rust-shelf-failed-entry-20261112.log`、`rust-v47-20261112.log`、
+  `rust-drop-filter-20261112.log`、`rust-shelf-drop-business-20261112.log`。
+- **环境阻塞**：完成上述测试后仅对两处断言做了换行格式化，重新执行
+  `cargo test --lib --no-run` 连续两次在 `rustc` 阶段报
+  `memory allocation of ... failed` / `STATUS_STACK_BUFFER_OVERRUN`；当时系统可用物理内存
+  约 1.2–2.4 GB（16 GB 机器，其他会话并行构建）。这是低内存环境失败，不是编译错误；
+  全量重建与最终复跑由主 Agent 在内存空闲时执行。未清理任何构建缓存。
+- 未验证：真实 WebView2 下部分失败/全部失败的操作链展示与「查看诊断」深链、真实 OS 拖入
+  触发订阅失败路径（需故障注入或真机）。
+
+## 拖放接收与暂存诊断联合验收（2026-11-12，主智能体）
+
+本轮新增/调整的自动化覆盖（全部为真实 `lib/fileDrop` + 假 Webview 事件源，
+只 mock `@tauri-apps/api/webview` 与 `lib/bridge`）：
+
+| 文件 | 覆盖 |
+|---|---|
+| `src/components/shelf/ShelfWorkspace.drop.test.tsx`（新，26） | enter→over→drop→`shelf_add_paths`→store→列表；PNG/PDF/多文件/文件夹/中文/空格路径；部分失败、全部失败（code 优先）、0/0、重复 drop、无坐标、leave 后 drop、卸载/切目标管理视图后的迟到 drop、引用/托管模式、拖拽中切换添加方式、StrictMode 双挂载、胶囊/`docked-full`/`active=false`、极简/紧凑模式隐藏不注册、空白/相对/混合路径 |
+| `src/components/capsule/InboxDropPane.test.tsx`（+） | 单消费者路由：卡片投递 ↔ 最近暂存 ↔ 空白；松手瞬间重新命中；卡片/接收区互斥高亮；重复 drop 一次；缺坐标/空 paths；目标删除/隐藏/面板卸载；DPI 1.25/2 物理坐标换算；监听失败 WARN/恢复 |
+| `src/components/capsule/InboxRecentShelf.test.tsx`（新，6） | 未接仲裁器不暴露 `data-drop-zone`；空列表/有条目均可接收；轻提示只在拖拽期间出现且不占布局；添加按钮保持可用；英文文案 |
+| `src/lib/fileDrop.test.ts`（+） | 订阅失败 WARN（5s 同阶段去重）、恢复 recovered、退订失败、异常 message 中的路径不落盘 |
+| `src/lib/diagnostics.test.ts`（+） | `OperationExtras.severity/stage` 覆盖；监听 helper 去重/恢复/不可读异常不抛 |
+| `src/store/useShelfStore.test.ts`（+8） | 全成功/部分/全部/0+0/收尾刷新失败不 reject/operation_id 一致/不写路径 |
+
+实跑记录（工作目录 `D:\Develop\task_dock`，2026-11-12）：
+
+| 命令 | 退出码 | 结果 | 证据 |
+|---|---|---|---|
+| 上表 6 个文件 + 既有 `ShelfWorkspace.test`/`CollectionPanel`/`i18n`，共 9 个（single fork） | 0 | **9 文件 / 213 用例全部通过** | `tmp/acceptance/file-drop-drag-20261112/main-vitest-affected-final.log` |
+| `npx tsc --noEmit` | 0 | 全仓类型检查通过 | `.../main-tsc.log` |
+| `npm run build` | 0 | tsc + vite 生产构建通过（21.52s） | `.../main-npm-build.log` |
+| `npm test`（默认并发） | 1 | 236 文件 / 3554 用例：**3553 passed / 1 failed**；唯一失败为 `ClipboardPanel.test.tsx > 离场卡片键盘不可达`，单文件复跑 **34/34 通过**（长跑抖动，与本轮改动无调用关系） | `.../main-npm-test-default.log`、`.../main-vitest-clipboard-isolation.log` |
+| 全量 `npx vitest run --pool=forks --poolOptions.forks.singleFork --maxWorkers=1` | 1 | 235 文件 / 3542 用例：3532 passed / 10 failed。其中 6 个为并行任务的 `ActiveReminders.test.tsx` WIP（组件默认折叠、测试未同步）；其余 4 个 `CapsuleDragCursor`(3) + `Popover.edge`(1) 单文件复跑 **17/17 通过** | `.../main-vitest-full.log`、`.../main-vitest-flaky-rerun.log` |
+| 同全量命令但排除并行 WIP 的 `ActiveReminders.test.tsx` | 1 | 233 passed / 2 failed（即上述 4 个抖动用例），无本轮相关失败 | `.../main-vitest-full-excluding-foreign.log` |
+| `cargo check --lib`（`src-tauri`，`CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1`） | 0 | 通过（仅既有 warning） | `.../main-cargo-check.log` |
+| `cargo test --lib --no-run` | 0 | 测试二进制重建成功（1m32s） | `.../main-cargo-test-norun.log` |
+| `cargo test --lib -- --test-threads=1 --skip "audio::tests::"` | 0 | **1599 passed / 0 failed / 8 ignored** | `.../main-cargo-test-lib-final.log` |
+| 测试二进制 `--skip "audio::tests::"` 全量 | 0 | 1599 / 0 / 8（115.59s） | `.../main-rust-full-final.log` |
+| 过滤 `v47` / `drop_` / `shelf_drop_business_failure` / `shelf_add_business_result` / `shelf_failed_entry` | 0 | 3 / 37 / 1 / 1 / 1，全部通过 | `.../main-rust-regression-filtered.log` |
+| `audio::` 模块（范围外并行 WIP） | 139 | 在 `concurrent_first_use_creates_worker_once_and_reuses_it` 之后于 `engine_metadata_*` SIGSEGV；该用例单独运行通过（0.02s） | `.../main-rust-audio-only.log`、`.../main-rust-audio-engine-single.log` |
+
+结论与边界：
+- 完整暂存架与胶囊最近暂存的拖入链路在自动化层已端到端验证（含落点、模式、失败分级与诊断）；
+- **未验证**：真实资源管理器 OLE 拖入、真实 WebView2 窗口下的 DPI/多显示器/窄窗视觉、
+  诊断中心「查看诊断」真机跳转。当前用户实例正在运行且未开启 CDP，单实例锁会终止隔离实例，
+  因此本轮标记 `ENVIRONMENT BLOCKED`，复验步骤见验收报告。
