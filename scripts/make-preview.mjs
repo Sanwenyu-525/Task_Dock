@@ -26,6 +26,9 @@ const shim = `
   // 扫描场景：ok（默认，立即返回完整结果）| cancelled | fail。
   // 只影响 harness 的 nav_scan_apps 返回，用于走查取消/错误状态，不参与发布包。
   const SCAN_MODE = q.get("scan") || "ok";
+  // 开发工作台：?wb=current 预置「当前任务」锚点（t1），用于走查四区域；
+  // 默认空锚点，保持其他页面截图与旧行为不变。
+  const WB_CURRENT = q.get("wb") === "current";
   const now = new Date();
   const iso = (minAgo) => new Date(now.getTime() - minAgo * 60000).toISOString();
 
@@ -38,6 +41,7 @@ const shim = `
     overdue_grace_hours: 24, stale_run_minutes: 15, auto_backup: true, backup_retain_days: 7,
     nav_prefer_focus: true, nav_allow_launch: true, nav_fallback: true,
     nav_remember_window: true, nav_default_browser: "", nav_workspace_max: 8,
+    workbench_current_task: WB_CURRENT ? "t1" : "",
     ingest_queue_capacity: 1024, ingest_batch_size: 100, ingest_coalesce_ms: 250,
     agent_event_retention_days: 14, agent_event_max_rows: 20000, agent_event_archive: true,
     agent_inbox_max_file_bytes: 65536, agent_inbox_max_files: 500, perf_diagnostics_enabled: true,
@@ -666,7 +670,27 @@ const shim = `
       case "notification_page": return { items: notifications, has_more: false, filtered_total: notifications.length };
       case "notification_inbox_stats": return { unread: notifications.filter((n) => !n.is_read).length, total: notifications.length };
       case "list_agent_events": return { items: events, has_more: false, filtered_total: events.length };
-      case "actions_feed": return actionFeed;
+      case "actions_feed": {
+        // 按分类返回真实子集：intervention 不含 running/reminder，notification 只含提醒；
+        // 工作台同时消费两个分类，不能把同一批条目重复渲染两次。
+        const feedCategory = args?.filter?.category || "intervention";
+        const feedKind = args?.filter?.kind;
+        const inCategory =
+          feedCategory === "notification"
+            ? actionItems.filter((i) => i.kind === "reminder")
+            : actionItems.filter((i) =>
+                ["failed", "authorization", "waiting_input"].includes(i.kind),
+              );
+        const items = feedKind ? inCategory.filter((i) => i.kind === feedKind) : inCategory;
+        return {
+          ...actionFeed,
+          category: feedCategory,
+          items,
+          db_total: items.length,
+          filtered_total: items.length,
+          loaded: items.length,
+        };
+      }
       case "planning_list_projects":
         return planningProjects.filter((p) => args?.includeArchived || !p.archived);
       case "planning_list_features":
@@ -718,6 +742,8 @@ const shim = `
         return list.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100));
       }
       case "quick_capture_state": return { draft: null, last_type: "task", inbox_count: 3 };
+      case "quick_capture_show":
+      case "quick_capture_hide": return null;
       case "shelf_list": return {
         items: [
           { id: "sh1", kind: "file", display_name: "global-card-spec.md", source_kind: "picker", storage_mode: "reference", original_path: "D:\\\\Develop\\\\task_dock\\\\docs\\\\ui-themes\\\\01-design-spec.md", managed_path: null, content: null, byte_size: 18432, file_ext: "md", favorite: false, pinned: true, exists_state: "ok", group_id: "sg1", scene_id: null, note: "", expire_at: null, created_at: iso(30), updated_at: iso(20) },

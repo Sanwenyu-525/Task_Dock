@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  BookmarkCheck,
   Check,
   ChevronRight,
   CircleAlert,
@@ -28,6 +29,7 @@ import {
   ListTodo,
   Pencil,
   Save,
+  Zap,
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import {
@@ -37,6 +39,7 @@ import {
   listTasks,
   onWorkspaceChanged,
   onWorkspaceRestoreProgress,
+  quickCaptureShow,
   taskContext,
   taskReminderLinkGet,
   toggleTask,
@@ -199,6 +202,13 @@ export default function DevWorkbenchPanel() {
     }
   }, [showToast, t]);
 
+  /** 快速记录：直接唤起既有快速捕获窗口，不要求先进任务页。 */
+  const openQuickCapture = useCallback(() => {
+    void quickCaptureShow().catch((e) =>
+      showToast(t("workbench.quickCaptureFailed", { error: errorMessage(e) }), { kind: "error" }),
+    );
+  }, [showToast, t]);
+
   return (
     <div className="workbench-panel page-fill">
       <header className="wb-head">
@@ -206,11 +216,21 @@ export default function DevWorkbenchPanel() {
           <h2 className="wb-title">{t("nav.workbench")}</h2>
           <p className="wb-subtitle">{t("workbench.subtitle")}</p>
         </div>
-        {restoringAny && (
-          <button type="button" className="btn sm" onClick={() => void cancelRestore()}>
-            {t("workbench.stopRestore")}
+        <div className="wb-head-actions">
+          <button
+            type="button"
+            className="btn sm"
+            onClick={openQuickCapture}
+            data-tip={t("workbench.quickCapture")}
+          >
+            <Zap size={12} aria-hidden="true" /> {t("workbench.quickCapture")}
           </button>
-        )}
+          {restoringAny && (
+            <button type="button" className="btn sm" onClick={() => void cancelRestore()}>
+              {t("workbench.stopRestore")}
+            </button>
+          )}
+        </div>
       </header>
       <div className="page-scroll wb-body">
         <CurrentTaskSection
@@ -531,12 +551,14 @@ function CurrentTaskSection({
                     className={`agent-dot state-${a.state}`}
                     title={AGENT_STATE_LABELS[a.state] ?? a.state}
                   />
-                  <span className="wb-row-main" title={a.title || a.session_external_id}>
-                    {a.title || a.session_external_id}
-                  </span>
-                  <span className="wb-row-meta">
-                    {AGENT_STATE_LABELS[a.state] ?? a.state}
-                    {a.last_seen_at ? ` · ${formatRelative(a.last_seen_at)}` : ""}
+                  <span className="wb-row-main">
+                    <span className="wb-row-title" title={a.title || a.session_external_id}>
+                      {a.title || a.session_external_id}
+                    </span>
+                    <span className="wb-row-sub">
+                      {AGENT_STATE_LABELS[a.state] ?? a.state}
+                      {a.last_seen_at ? ` · ${formatRelative(a.last_seen_at)}` : ""}
+                    </span>
                   </span>
                   <button
                     type="button"
@@ -559,14 +581,16 @@ function CurrentTaskSection({
               )}
               {snaps.slice(0, 3).map((s) => (
                 <div className="wb-row" key={s.id}>
-                  <span className="wb-row-main" title={s.name}>
-                    {s.name}
-                  </span>
-                  <span className="wb-row-meta">
-                    {t("workbench.snapshotItems", { count: s.item_count })}
-                    {s.last_restored_at
-                      ? ` · ${t("workbench.restore")} ${formatRelative(s.last_restored_at)}`
-                      : ""}
+                  <span className="wb-row-main">
+                    <span className="wb-row-title" title={s.name}>
+                      {s.name}
+                    </span>
+                    <span className="wb-row-sub">
+                      {t("workbench.snapshotItems", { count: s.item_count })}
+                      {s.last_restored_at
+                        ? ` · ${t("workbench.restore")} ${formatRelative(s.last_restored_at)}`
+                        : ""}
+                    </span>
                   </span>
                   <button
                     type="button"
@@ -720,10 +744,12 @@ function AgentSummarySection() {
             className={`agent-dot state-${run.status}`}
             title={AGENT_STATE_LABELS[run.status] ?? run.status}
           />
-          <span className="wb-row-main" title={run.task_title || session?.title || ""}>
-            {run.task_title || session?.title || session?.external_id || run.id}
+          <span className="wb-row-main">
+            <span className="wb-row-title" title={run.task_title || session?.title || ""}>
+              {run.task_title || session?.title || session?.external_id || run.id}
+            </span>
+            <span className="wb-row-sub">{formatRelative(run.updated_at)}</span>
           </span>
-          <span className="wb-row-meta">{formatRelative(run.updated_at)}</span>
           {session ? (
             <button
               type="button"
@@ -889,12 +915,22 @@ function AttentionSection({ currentId }: { currentId: string | null }) {
           <span className={`action-kind k-${item.kind}`}>{kindText(item.kind)}</span>
           <span className="wb-row-main">
             <span className="wb-row-title">{item.title}</span>
-            {item.message && <span className="wb-row-sub">{item.message}</span>}
+            <span className="wb-row-sub">
+              {item.message}
+              {item.message ? " · " : ""}
+              {formatRelative(item.occurred_at)}
+            </span>
           </span>
           {item.task_id && item.task_id === currentId && (
-            <span className="badge subtle">{t("workbench.currentTaskBadge")}</span>
+            <span
+              className="wb-current-mark"
+              role="img"
+              aria-label={t("workbench.currentTaskBadge")}
+              data-tip={t("workbench.currentTaskBadge")}
+            >
+              <BookmarkCheck size={12} aria-hidden="true" />
+            </span>
           )}
-          <span className="wb-row-meta">{formatRelative(item.occurred_at)}</span>
         </button>
       ))}
     </section>

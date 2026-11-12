@@ -2372,6 +2372,8 @@ export const zhCN = {
   "workbench.snapshotItems": "{count} 项",
   "workbench.snapshotUnknown": "现场状态未知",
   "workbench.openContextAria": "打开任务上下文：{title}",
+  "workbench.quickCapture": "快速记录",
+  "workbench.quickCaptureFailed": "打开快速记录失败：{error}",
 } as const;
 
 export type MessageKey = keyof typeof zhCN;

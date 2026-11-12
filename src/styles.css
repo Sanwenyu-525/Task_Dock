@@ -19612,6 +19612,15 @@ span.wf-step-main {
   flex-shrink: 0;
 }
 
+.wb-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .wb-title {
   margin: 0;
   font-size: 15px;
@@ -19651,6 +19660,7 @@ span.wf-step-main {
 .wb-section-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -19663,6 +19673,7 @@ span.wf-step-main {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
+  white-space: nowrap;
 }
 
 .wb-section-title .badge {
@@ -19677,6 +19688,22 @@ span.wf-step-main {
   border-radius: 8px;
   min-height: 28px;
   min-width: 0;
+}
+
+/* 行内固定件不参与收缩：窄窗下 badge/按钮整体换行，而不是逐字折行 */
+.wb-row .action-kind,
+.wb-row .badge,
+.wb-row .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 「与当前任务相关」标记：书签图标替代文字徽标，给标题留出可读宽度 */
+.wb-current-mark {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
 }
 
 .wb-row:hover {
@@ -19705,6 +19732,9 @@ span.wf-step-main {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .wb-row-title {

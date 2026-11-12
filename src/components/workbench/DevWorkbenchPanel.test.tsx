@@ -154,6 +154,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     workspaceList: vi.fn(async () => []),
     workspaceRestore: vi.fn(async () => true),
     workspaceRestoreCancel: vi.fn(async () => undefined),
+    quickCaptureShow: vi.fn(async () => undefined),
     agentSnapshot: vi.fn(async () => ({ sources: [], instances: [], sessions: [], runs: [] })),
     actionsFeed: vi.fn(async (filter?: { category?: string }) => {
       const category = filter?.category ?? "intervention";
@@ -189,7 +190,14 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
   };
 });
 
-import { taskContext, workspaceRestore, actionsOpenSession, toggleTask, updateSettings } from "../../lib/bridge";
+import {
+  taskContext,
+  workspaceRestore,
+  actionsOpenSession,
+  toggleTask,
+  updateSettings,
+  quickCaptureShow,
+} from "../../lib/bridge";
 
 const BASE_SETTINGS: Record<string, unknown> = {
   theme: "system",
@@ -324,9 +332,9 @@ describe("开发工作台", () => {
     // kind 标签与条目标题都是「等待输入」：用 AllBy 断言存在，点击走整行按钮
     const marks = await screen.findAllByText("等待输入");
     expect(marks.length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("需要确认补丁")).toBeTruthy();
+    expect(screen.getByText(/需要确认补丁/)).toBeTruthy();
     // 与当前任务关联的条目带「当前任务」标记（intervention 与提醒均可能命中）
-    expect(screen.getAllByText("当前任务").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByRole("img", { name: "当前任务" }).length).toBeGreaterThanOrEqual(1);
     fireEvent.click(screen.getByTitle("跳转到该 Agent 会话"));
     await waitFor(() => {
       expect(actionsOpenSession).toHaveBeenCalledWith("codex", "sess-1");
@@ -393,10 +401,18 @@ describe("开发工作台", () => {
     seedSettings({ workbench_current_task: "a" });
     render(<DevWorkbenchPanel />);
     expect(await screen.findByText("任务提醒：重构剪贴板模块")).toBeTruthy();
-    expect(screen.getByText("今天 18:00 截止")).toBeTruthy();
+    expect(screen.getByText(/今天 18:00 截止/)).toBeTruthy();
     fireEvent.click(screen.getByTitle("查看任务上下文"));
     await waitFor(() => expect(useUiStore.getState().context.open).toBe(true));
     expect(useUiStore.getState().context.task?.id).toBe("a");
+  });
+
+  it("快速记录：直接唤起既有快速捕获窗口，不要求先进任务页", async () => {
+    seedSettings({ workbench_current_task: "a" });
+    render(<DevWorkbenchPanel />);
+    await screen.findByText("重构剪贴板模块");
+    fireEvent.click(screen.getByRole("button", { name: "快速记录" }));
+    await waitFor(() => expect(quickCaptureShow).toHaveBeenCalledTimes(1));
   });
 
   it("英文界面：工作台区域标题与动作全部本地化", async () => {
@@ -408,6 +424,7 @@ describe("开发工作台", () => {
     expect(screen.getByText("Needs attention")).toBeTruthy();
     expect(screen.getByText("Quick resume")).toBeTruthy();
     expect(screen.getByText("Agent activity")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Quick capture" })).toBeTruthy();
     expect(screen.queryByText("继续工作")).toBeNull();
   });
 });
