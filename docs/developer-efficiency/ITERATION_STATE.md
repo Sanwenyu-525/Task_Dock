@@ -2,97 +2,91 @@
 
 > 本文件是迭代状态记录（不是任务书）。总任务书原样保留在 [MASTER_PROMPT.md](MASTER_PROMPT.md)，
 > 每次新执行先读本文件，不得从功能一重新开始。
-> 最后更新：2026-11-13（Round 1 集成与验证阶段，由主智能体写入）。
+> 最后更新：2026-11-13（Round 1 完成并已集成 main @ 614411d）。
 
 ## 当前总体状态
 
-- **当前 Phase**：Phase 1（开发上下文与交接闭环）
-- **当前迭代**：Round 1（进行中——代码完成，全量验证与独立验收执行中）
+- **当前 Phase**：Phase 1（开发上下文与交接闭环）——Round 1 已交付并集成；Round 2 待启动
 - **开发 Worktree**：`D:\Develop\task_dock-worktrees\dev-efficiency-p1`，分支
-  `agent/dev-efficiency-p1`（基线 55288a8），**尚未提交**（提交由主智能体在验收后执行）
-- **构建缓存**：`D:\Develop\task_dock\src-tauri\target-dev-efficiency-p1`（已用 build-guard
-  register 登记，任务结束需 cleanup --execute 回收）
-- **主树状态**：main @ 55288a8（P0 工作台 + 手机端集成已合入）；主树还有本任务未跟踪的
-  `docs/developer-efficiency/`（本档案）与 `tmp/acceptance/dev-efficiency-p1/`
+  `agent/dev-efficiency-p1`，HEAD 2bec5e4（已全部合入 main，合并提交 614411d）
+- **主树状态**：main @ 614411d，工作树干净（除本档案的后续更新）
+- **构建缓存**：`D:\Develop\task_dock\src-tauri\target-dev-efficiency-p1`（build-guard 已登记，
+  Round 2 若复用同 worktree 可继续用；整体收尾时 `build-guard cleanup --dir <该目录> --execute`）
+- **验收报告**：`tmp/acceptance/dev-efficiency-p1/report-round1.md`（+ audit-baseline.md +
+  acceptance-round1.md + logs/ 14 个原始日志）
+- **注意**：本仓库存在并行会话（本轮期间 main 四次前进：29d8d37 / a8e7908 / e17db59 / 614411d）。
+  a8e7908 是另一会话修复的同一批基线测试失败；开工必须重新 `git status` + `git log` 对照。
 
 ## 八功能状态矩阵（实现状态 / 验证状态 分列）
 
 | # | 功能 | 实现 | 验证 | 本轮变化 |
 |---|---|---|---|---|
-| ① | 开发现场感知 | **in_progress**（MVP：项目登记+当前选择+git 探测+胶囊 chip） | unverified（自动化过，真机未验） | Round 1 交付 |
-| ② | Agent 任务交接包 | **in_progress**（MVP：12 节模板+敏感扫描+版本化保存+复制） | unverified（同上） | Round 1 交付 |
-| ③ | 开发验收工作台 | **in_progress**（MVP：追加式验收记录+派生状态+返工提示词/任务） | unverified（同上） | Round 1 交付 |
-| ④ | Git/Worktree 协调中心 | not_started（仅 git 探测的 worktree 识别已就位） | – | – |
+| ① | 开发现场感知 | **implemented(MVP)**：项目登记/当前选择/git 只读探测/worktree 识别/胶囊 chip | partially_verified（自动化全绿；真机未验） | Round 1 交付 |
+| ② | Agent 任务交接包 | **implemented(MVP)**：12 节模板/敏感扫描/版本化保存/复制 | partially_verified（同上） | Round 1 交付 |
+| ③ | 开发验收工作台 | **implemented(MVP)**：追加式验收记录/派生状态/返工提示词与返工任务 | partially_verified（同上） | Round 1 交付 |
+| ④ | Git/Worktree 协调中心 | in_progress(0%)：仅 git 探测的 worktree 识别就位 | unverified | – |
 | ⑤ | 智能问题复现包 | not_started | – | – |
 | ⑥ | 开发环境监控 | not_started | – | – |
 | ⑦ | 情境化快捷操作 | not_started | – | – |
 | ⑧ | 工作现场增强恢复 | not_started（workspace v40 为基座） | – | – |
 
-## Round 1 已完成内容（真实改动）
+## Round 1 交付清单（已集成 main）
 
-**后端（子智能体 A）**：
-- 新建 `src-tauri/src/devwork/`（git.rs 只读探测 7 测试、secrets.rs 敏感扫描 11 测试）
-- 新建 `src-tauri/src/commands/dev_workbench.rs`（11 命令，14 测试）
-- `db/mod.rs`：MIGRATIONS v48（三表+四索引+CHECK）+ Settings `workbench_current_project` + 迁移测试
-- `commands/settings.rs` 白名单+校验+单测；`commands/backup.rs` BACKUP_TABLES/EXTENDED/generic_sql
-  三处登记（三处一致性有测试强制）；`commands/mod.rs`、`lib.rs` 注册
-- 定向结果：devwork 19 / dev_workbench 14 / migration 5 / settings 10 全绿；全量 cargo --lib
-  1653 通过 / 1 失败（v47 夹具脆性，主智能体已修）/ 8 ignored
+**提交链**：a2fd8e1(后端) → 36ef332(前端) → cc52b2a(目录计数契约同步) → 4381267(merge main，
+与另一会话 a8e7908 的同义修复冲突已解) → 2bec5e4(独立验收 P1-1 修复+i18n) → 614411d(merge main
+集成) → ddaeadb(档案)。
 
-**前端（子智能体 B）**：
-- 新建 `src/lib/acceptanceStatus.ts`（派生纯函数 19 测试）、`src/components/devwork/`
-  三组件（DevProjectContext 10 / DevHandoffSection 11 / DevAcceptanceSection 16 测试）
-- `bridge.ts` 追加 10 命令包装+类型（与 A 的 Rust 签名零偏离）
-- DevWorkbenchPanel 挂载三区块；TaskContextDrawer「生成交接包」入口（走既有门禁 setTab）
-- TasksLite 当前项目 chip（与 DevProjectContext 共享 30s TTL 缓存）
-- locales zh/en 各 +143 key（键集一致 21 测试过）；featureCatalog core.dev-workbench 条目同步；
-  styles.css 末尾 dev workbench Token 块
-- tsc 0 错误；定向 81/81；回归 TaskContextDrawer 8/8、DevWorkbenchPanel 15/15
+- 后端：迁移 v48 三表四索引；`workbench_current_project` 设置键；`devwork/git.rs` 只读探测
+  （2s 超时、CREATE_NO_WINDOW、只读白名单）；`devwork/secrets.rs` 六类敏感扫描（不回显原文）；
+  11 个 dev_workbench 命令；BACKUP_TABLES/EXTENDED/generic_sql 三处登记。
+- 前端：DevWorkbenchPanel 三区块（DevProjectContext / DevHandoffSection / DevAcceptanceSection）、
+  TaskContextDrawer「生成交接包」入口、TasksLite 项目 chip、acceptanceStatus 派生函数、
+  bridge 10+1 包装、locales zh/en +149 key、featureCatalog core.dev-workbench 同步。
+- 集成修复：shelf v47 夹具按版本号定位（v48 追加的必然碎裂）；featureRoadmapContract/
+  FeatureRoadmapPanel 计数同步（与 a8e7908 同义双修）。
 
-**主智能体集成修复**：
-- `src-tauri/src/shelf/tests.rs` v47 夹具改按版本号定位（v48 追加后「倒数第一条」漂移导致的
-  必然碎裂，与 A 在 db/mod.rs 的两处同款修正）
-- `src/lib/featureRoadmapContract.test.ts` 目录计数 32→33、partial 15→16（P0 合并漏同步的
-  基线契约漂移，HEAD 已核实）
+## 验证状态（最终口径，全部真实输出）
 
-**已核实的基线预存缺陷（本轮不修）**：CapsulePanels 3 例（HEAD 复现，P2，涉及 useUiStore
-editor/tab 联动，归属 P0 合并）——已登记 ACCEPTANCE.md，建议 Round 2 修复。
+- cargo `test --lib` 全量：**1654 passed / 0 failed / 8 ignored**
+- vitest 全量（worktree 最终）：**3632 passed / 0 failed**（242 文件）
+- cargo 定向合并后（主树+worktree 各一次）：36/36；`npx tsc --noEmit` 0 错；`npm run build` exit 0
+- 独立验收（子智能体 C）：18 项验收组 17 PASS，P1-1 修复后转通过；报告 acceptance-round1.md
+- 真机：**NOT VERIFIED**（清单见 ACCEPTANCE.md；ROADMAP R2-2）
+- 观察项：NavigationVisibility.integration 2 例全量并发下偶发（4 次全量=败/过/败/?；隔离恒过），
+  第 4 次结果回填本文件 logs/vitest-main-postmerge2.log；已登记 R2-7 稳定化。
 
-## 验证状态（本节以最后一次运行为准，更新时覆盖）
+## 下一轮任务清单（编号稳定，按优先级；完成不删除，标记 ✅）
 
-- cargo 全量 `--lib`（worktree, v48+夹具修复后）：**见报告 §5**（执行中/结果回填
-  `tmp/acceptance/dev-efficiency-p1/report-round1.md`）
-- vitest 全量：同上
-- `npm run build`：同上
-- 独立验收（子智能体 C 复用 audit 上下文）：同上
-- 真机：**NOT VERIFIED**（清单见 ACCEPTANCE.md Round 1 节）
-
-## 下一轮任务清单（编号稳定，按优先级）
-
-- **R2-1（P1）**：修复 CapsulePanels 3 例预存失败（useUiStore editor/tab 联动，P0 合并回归）
-- **R2-2（P1）**：Round 1 真机验收执行（通道 C/E：git 探测真仓库+worktree、胶囊 chip、三区块、
-  设置键重启恢复、320/400 窄窗、深浅主题、中英文），报告补真机节
-- **R2-3（P1）**：交接包关联 Agent 会话快照（task_agent_links 取材，链路 A 后半段）
-- **R2-4（P2）**：验收工作台「从 Agent 执行轮次生成待验收项」（链路 B：agent 完成 → 待验收）
-- **R2-5（P2）**：主树集成落地（本轮 worktree 提交经 worktree-guard check 后合并 main，合并后复测）
-- **R2-6（P2）**：开发现场第三层识别可行性调研（前台 IDE 进程元数据，需探针授权，先出方案再实现）
-- 备选：Worktree 关联表（Phase 2 提前预研，复用 worktree-guard check --json 语义）
+- **R2-1（P1）**：Round 1 真机验收（通道 C/E：真实 git 仓库+worktree 探测、胶囊 chip、三区块、
+  设置键重启恢复、320/400 窄窗、深浅主题 × 两预设、中英文），报告补真机节
+- **R2-2（P1）**：NavigationVisibility.integration 2 例偶发失败根因定位与稳定化（先根因，
+  不调等待时间掩盖）
+- **R2-3（P1）**：交接包「资料选择」补齐（P2-1 遗留）：task_context 聚合只读字段 + notes/shelf
+  条目勾选进 source_summary 与 Markdown（P1-9 前置）
+- **R2-4（P2）**：交接包关联 Agent 会话快照（task_agent_links 取材，链路 A 后半段）
+- **R2-5（P2）**：验收工作台「从 Agent 执行轮次生成待验收项」（链路 B：agent 完成 → 待验收）
+- **R2-6（P2）**：probe 级 git_unavailable 端到端测试（P3-1 遗留）；交接包 11 vs 10 包装的
+  文案勘误已随 2bec5e4 处理
+- **R2-7（P2）**：Phase 2 预研启动——Worktree 关联表 + 重叠文件检测（复用 worktree-guard
+  check --json 语义）；开发环境监控登记表设计（服务/测试命令，参照 workflow_runs 状态机）
+- **R2-8（P3）**：开发现场第三层识别可行性调研（前台 IDE 进程元数据，需探针授权，先方案后实现）
 
 ## 阻塞与风险登记
 
 - 16GB 内存压力：cargo 必须 `CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0` + 任务专属 target；
-  vitest 全量若 OOM 用 singleFork 法（记忆 task-dock-low-memory-build-diagnostics 配方）
-- 主树其他会话活跃（本轮期间 main 从 967f5cd 推进到 55288a8）：集成前必须重跑
-  `worktree-guard check`，重叠文件（bridge.ts / locales / styles.css / featureCatalog 等）
-  由主智能体串行合并
-- 真机验收未做：结论只能写「部分通过」，不得宣称整体完成
+  vitest 全量若 OOM 用 singleFork 法（记忆 task-dock-low-memory-build-diagnostics）
+- **junction 穿透删除事故已固化**：`git worktree remove --force` 会穿透 node_modules junction
+  清空目标（本轮两次事故各赔一次 npm ci）；删前必须先 `cmd /c rmdir <junction>`（记忆
+  task-dock-worktree-isolation）
+- 并行会话活跃：每次开工重新对照 git 状态；bridge.ts/locales/styles.css/featureCatalog 是
+  高频重叠面，合并前必跑 `worktree-guard check`
+- 真机验收未做：整体结论保持「部分通过」，不得宣称八功能完成
 
 ## 恢复检查点（下一执行从这里开始）
 
-1. 读本文件 + `git status`（主树）+ `git worktree list`（确认 dev-efficiency-p1 是否还在）
-2. 若 worktree 存在：进 `dev-efficiency-p1`，先看 `git log`/`git status` 确认 Round 1 提交状态
-   （本轮计划提交 1-2 个 commit 在 agent/dev-efficiency-p1 分支）
-3. 按「下一轮任务清单」从 R2-1 开始执行；R2-5（主树集成）需先 `node scripts/worktree-guard.mjs
-   check --task dev-efficiency-p1`
-4. 任务全部收尾时：`build-guard cleanup --dir D:\Develop\task_dock\src-tauri\target-dev-efficiency-p1
-   --execute` 回收缓存（默认 dry-run，确认后再 execute）
+1. 读本文件 + 主树 `git status`/`git log`（确认是否有并行会话新提交）
+2. 决定 Round 2 工作位置：若主树干净且无并行迹象，可直接用主树 + 新 worktree 二选一
+   （跨模块任务仍建议一任务一 Worktree：`node scripts/worktree-guard.mjs create --task <task>`）
+3. 从 R2-1 开始执行（真机验收可用现有隔离实例配方：记忆 task-dock-cdp-instance-isolation）
+4. Round 2 结束时：更新本文件 + ACCEPTANCE.md + tmp/acceptance/<task>/report-round2.md
+5. 全部八功能收尾时才回收 build-guard 缓存与 worktree（cleanup 默认 dry-run）
