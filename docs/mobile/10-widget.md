@@ -115,13 +115,20 @@ RemoteViews 约束：不能动态增删子视图 → 行槽位固定（4×2 三�
 | prebuild 清单含两个 receiver 与元数据 | A（静态） | PASS（见验收报告） |
 | autolinking 解析本地 module | A | PASS |
 | typecheck | A | PASS |
-| 原生编译（assembleDebug/assembleRelease） | A | 见验收报告命令记录 |
-| 添加 2×2 / 4×2 → 显示真实任务数据 | E/真机 | 见验收报告（未执行则写明） |
-| 勾选任务 → 小组件计数与行更新 | E/真机 | 同上 |
-| 收集箱保存分享 → captures 小组件更新 | E/真机 | 同上 |
-| 点击小组件 → 进入对应 Tab（冷启动） | D/真机 | 同上 |
-| 空数据空态 / JSON 损坏不崩 | D/真机 | 同上 |
-| 系统明暗切换后 system 外观重渲染 | E/真机 | 同上 |
+| 原生编译（assembleDebug/assembleRelease） | A | Debug PASS；Release 见验收报告（环境阻塞） |
+| 两个 Provider 在真机注册 | D/真机 | **PASS**：`dumpsys appwidget` 列出 `TaskDockWidget2x2/4x2`，`updatePeriodMillis=0`、`resizeMode=3` |
+| 快照写入 SharedPreferences | D/真机 | **PASS**：`taskdock_widget.xml` 含 `snapshot_v1`（pendingCount=14、4 行、无令牌字段） |
+| 配置页预览/尺寸/内容/外观 | D/真机 | **PASS**：内容切换后快照重建；修复了重进不读回偏好与「待办 0」口径不一致 |
+| 添加 2×2 / 4×2 → 显示真实任务数据 | E/真机 | **FAIL（厂商桌面）**：`requestPinAppWidget` 返回 `requested=true`，vivo OriginOS 桌面不弹确认框；长按桌面 → 组件面板也不列标准 AppWidget，无法落桌面 |
+| 勾选任务 → 小组件计数与行更新 | E/真机 | 未验证（无实例） |
+| 收集箱保存分享 → captures 小组件更新 | E/真机 | 未验证（无实例） |
+| 点击小组件 → 进入对应 Tab（冷启动） | D/真机 | 未验证（无实例）；深链 `taskdock://route/inbox` 已单独 PASS |
+| 空数据空态 / JSON 损坏不崩 | D/真机 | 未验证（无实例） |
+| 系统明暗切换后 system 外观重渲染 | E/真机 | 未验证（无实例） |
+
+真机证据：`tmp/acceptance/mobile-device-debug/`（`dumpsys appwidget`、`taskdock_widget.xml`、
+截图 08/23/24/42）。添加流程在 vivo 桌面被厂商实现阻断，文案已改为「若系统未弹确认，
+请长按桌面空白处 → 组件 → TaskDock」的手动兜底；其他厂商桌面仍需各自验证。
 
 ## 9. 依赖说明
 
@@ -138,3 +145,9 @@ ALPHA，未采用（符合任务约束）。
   WidgetScreen 主按钮改为真实请求：支持时系统直接弹添加确认；launcher 不支持
   （`isRequestPinAppWidgetSupported=false`）或原生模块缺失时回退「长按桌面 → 小组件」
   引导文案。4×4 未提供，请求时按最近的 4×2 处理。
+- 2026-11-12 真机走查（vivo V2323A / Android 16）：两个 Provider 注册、快照写入、
+  配置页真实数据均 PASS；`requestPinAppWidget` 在该桌面返回 `true` 却不弹确认框，
+  系统「原子组件」面板也不列标准 AppWidget，**落桌面被厂商桌面实现阻断**。同时修正：
+  WidgetScreen 进入时读回 kv 偏好（此前只写不读，会回落默认值并覆盖用户选择）、
+  预览标题/计数/行改为同源（消除「待办 0 却列出待办行」）；`DeviceScreen` 的
+  「规划中」徽标此前实际未移除，本次改为「已接入」。

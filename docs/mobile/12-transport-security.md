@@ -1,8 +1,9 @@
 # 传输安全（TLS-only + SPKI 指纹固定，协议 v2）
 
 > 状态：**代码已实现并集成**（2026-11-12，`integration/mobile-final-acceptance`）。
-> 证据来自 Rust/TS 自动化测试、`expo prebuild` 清单核验与 Debug APK 构建；
-> **TLS v2 之后的真机复验未执行**（当时无连接设备），本文不把构建层结论写成真机结论。
+> 证据来自 Rust/TS 自动化测试、`expo prebuild` 清单核验、Debug APK 构建，以及
+> 2026-11-12 晚的真机 fail-closed 走查（vivo V2323A / Android 16）。
+> **v2 扫码配对与同步端到端真机复验未执行**（当时桌面端未运行），本文不把构建层结论写成真机结论。
 >
 > 本文是手机端安全要求的索引与偏差清单；协议字段与端点细节见
 > [06-pairing.md](06-pairing.md)、[07-sync.md](07-sync.md)、[08-file-transfer.md](08-file-transfer.md)。
@@ -109,7 +110,7 @@ cause 链识别 `CertificateException` 并返回 `E_PIN_MISMATCH`（`SecureHttpM
 | 已知 | 未显式限定 TLS 版本 | 由 Windows schannel 默认策略协商；未做 1.2/1.3 下限的单测断言 |
 | 已知 | Debug APK 清单含 `usesCleartextTraffic=true` | 来自 Expo 生成的 `app/src/debug/AndroidManifest.xml`（Metro 调试用），非产品代码；`secure-http` 仍只放行 https。**Release 清单是否不含该属性未验证**（Release 未产出） |
 | 已知 | 手机端下载后无本地 SHA-256 复核 | expo-crypto 58 无文件摘要 API；桌面端在 `complete` 时已计算并落库 |
-| 阻塞 | 真机运行时未验证 | 无连接设备；TLS v2 的扫码配对、同步、文件互传未在物理机复验 |
+| 未执行 | v2 配对/同步/文件互传端到端真机验证 | 2026-11-12 真机只验证了旧 v1 连接的 fail-closed 与重新配对提示；桌面端 v2 未运行，扫码配对、TLS 握手、双向同步、分块传输均未在物理机复验 |
 
 ## 9. 安全验收矩阵
 
@@ -119,12 +120,16 @@ cause 链识别 `CertificateException` 并返回 `E_PIN_MISMATCH`（`SecureHttpM
 | 不得静默降级明文 | 无明文监听/无回退分支；`E_INSECURE_URL` | `plaintext_clients_get_no_http_response` | PASS（自动化） |
 | 配对令牌不落明文 | SecureStore + `token_hash` | `token_hash_is_sha256_and_never_equals_token` | PASS（自动化） |
 | 无效证书身份必须失败 | SPKI 比对失败 → `E_PIN_MISMATCH` | `untrusted_root_fails_handshake` + 映射测试 | PASS（自动化） |
-| 缺指纹不得发送令牌 | 三入口 fail-closed | `engine.test.ts` / `files.test.ts` | PASS（自动化） |
+| 缺指纹不得发送令牌 | 三入口 fail-closed | `engine.test.ts` / `files.test.ts` | PASS（自动化 + 真机：文件刷新拒绝并提示重新配对） |
 | 撤销后立即失效 | `revoked_at` + 401 | `changes_with_revoked_device_returns_401` | PASS（自动化） |
 | 重新配对流程 | 二维码/输码 + 同 uid 撤销旧记录 | 配对解析与设备测试 | PASS（自动化） |
-| 真机端到端 | — | 无设备 | **未执行（ENVIRONMENT BLOCKED）** |
+| 旧 v1 连接不得显示健康态 | `isLegacyConnection`（http 或缺指纹） | 设备/同步/任务/笔记/收集箱/设置六处统一 | PASS（真机 2026-11-12） |
+| 真机 v2 配对 + 同步 + 文件互传端到端 | — | 桌面端未运行 | **未执行** |
 
 ## 变更记录
 
 - 2026-11-12 首版：整合 `agent/mobile-stability-fix` 的 TLS v2 成果与集成期审计修复，
   把散落在 06/07/08 的安全要求收成单一索引，并列出 6 项已知偏差与 1 项真机阻塞。
+- 2026-11-12 真机补充：旧 v1 `http://` 连接在设备页/同步页/任务/笔记/收集箱/设置六处统一
+  显示「需重新配对」并拒绝发请求（新增 `isLegacyConnection` + 5 条用例）；v2 配对/同步/
+  文件互传端到端仍未执行（桌面端未运行）。

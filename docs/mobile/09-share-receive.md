@@ -97,14 +97,19 @@ interface ShareIntentPayload {
 |---|---|---|
 | prebuild 生成清单含 SEND intent-filter、`singleTask` | A（静态） | PASS（grep 生成物，见验收报告） |
 | typecheck | A | PASS（exit 0） |
-| 原生编译（assembleDebug/assembleRelease） | A | 见验收报告命令记录 |
-| 冷启动分享 → 分享页 → 保存 → 收集箱出现且列表刷新 | D/真机 | 见验收报告（未执行则写明） |
-| 已运行分享（onNewIntent）→ 分享页就地更新 | D/真机 | 同上 |
-| 返回键取消后再次进入分享页为空态 | D/真机 | 同上 |
-| 超长文本截断提示 | D/真机 | 同上 |
-| 图片分享（EXTRA_STREAM）不弹页 | D/真机 | 同上 |
+| 原生编译（assembleDebug/assembleRelease） | A | Debug PASS；Release 见验收报告（环境阻塞） |
+| 冷启动分享 → 分享页 → 保存 → 收集箱出现且列表刷新 | D/真机 | **PASS**：vivo V2323A，force-stop 后 `ACTION_SEND` 拉起，面板显示 URL+正文与「已接入」；点保存后 `captures` 新增 1 条 |
+| 已运行分享（onNewIntent）→ 分享页就地更新 | D/真机 | **PASS**：第二次分享内容替换为 `HOT-START…`，无叠加、无重复面板 |
+| 返回键取消后再次进入分享页为空态 | D/真机 | 未执行 |
+| 超长文本截断提示 | D/真机 | **PASS**：4500 字 → 预览下方「原文 4500 字，超出收集箱上限已截断为 4000 字」；DB 实测 `length(content)=4000`（无静默丢失；长文本会把保存按钮顶到屏外，需滚动，记为 P3） |
+| 图片分享（EXTRA_STREAM）不弹页 | D/真机 | 未执行 |
+
+真机证据：`tmp/acceptance/mobile-device-debug/`（截图 02–06、DB 拉取与查询）。
 
 ## 变更记录
 
 - 2026-11-12 首版：分享接收原生接入（module + plugin + pendingShare + ShareScreen 改造），
   移除标签/备注输入（captures 表无列、迁移文件不在所有权内），修正页脚同步隐私说明。
+- 2026-11-12 真机验证（vivo V2323A / Android 16，debug vc22）：冷启动、已运行
+  `onNewIntent`、4500 字截断（DB 实测 4000）、确认后落收集箱均 PASS；取消后空态与
+  图片分享未执行。长文本预览把主操作顶到屏外（需滚动）记为 P3。

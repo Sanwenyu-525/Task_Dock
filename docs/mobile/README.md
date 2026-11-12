@@ -75,9 +75,9 @@
 | 任务同步 / 冲突检测 / 墓碑 | **已实现并在物理机验证**（2026-11-09），见 [07-sync.md](07-sync.md) |
 | 收集箱 / 笔记同步 | **已实现并在物理机验证**（2026-11-09）；字段级自动合并、后台同步未实现 |
 | `server_rev` / 墓碑日志（收集箱、笔记） | **已建**（v5）；日志保留期清理未实现 |
-| TLS + SPKI 指纹固定 | **已实现**（2026-11-12，单测/类型检查证据见 [06-pairing.md](06-pairing.md) §8）；真机复验未执行（无连接设备） |
-| 系统分享接收（`ACTION_SEND` text/plain） | **已实现并接入**（2026-11-12）；prebuild 清单/单测/构建验证，真机运行时未验证；见 [09-share-receive.md](09-share-receive.md) |
-| 主屏小组件（AppWidgetProvider 2×2 / 4×2） | **已实现并接入**（2026-11-12）；prebuild 清单/单测/构建验证，真机运行时未验证；见 [10-widget.md](10-widget.md) |
+| TLS + SPKI 指纹固定 | **已实现**（2026-11-12）；单测/类型检查 + 真机 fail-closed 验证（旧 `http://` 连接在设备页/同步页/设置页显示「需重新配对」，文件刷新拒绝发送指纹缺失请求）；**v2 扫码配对与同步端到端未执行**（桌面端未运行） |
+| 系统分享接收（`ACTION_SEND` text/plain） | **已实现并在真机验证**（2026-11-12，vivo V2323A）：冷启动、运行中 `onNewIntent`、4500 字截断（DB 实测 4000）、确认后落收集箱均 PASS；取消空态与图片分享未执行。见 [09-share-receive.md](09-share-receive.md) |
+| 主屏小组件（AppWidgetProvider 2×2 / 4×2） | **已实现，真机部分验证**（2026-11-12）：Provider 注册、无轮询、快照写入、配置页真实数据 PASS；vivo OriginOS 桌面 `requestPinAppWidget` 不弹确认框、系统组件面板不列标准 AppWidget，**落桌面被厂商实现阻断**；点击/刷新/空态未验证。见 [10-widget.md](10-widget.md) |
 | 后台 / 自动同步、远程推送 | **未实现**（后台方案见 [11-background-sync-design.md](11-background-sync-design.md)，仅设计评估） |
 | iOS | 未验证（本机无 macOS/Xcode），本轮只做 Android |
 
@@ -136,3 +136,7 @@
 - 2026-11-12 安全文档收口：新增 [12-transport-security.md](12-transport-security.md)——把散落在
   06/07/08 的 TLS v2 要求收成单一索引（威胁模型、SPKI 信任锚、fail-closed 三入口、令牌与撤销、
   已知偏差、安全验收矩阵），明确真机复验未执行。文档地图同时补齐 09–12 条目。
+- 2026-11-12 真机走查（vivo V2323A / Android 16，debug vc22 覆盖 vc21、数据完整）：分享冷/热启动、
+  超长截断、确认落库 PASS；小组件 Provider/快照/配置页 PASS，落桌面被 vivo 桌面阻断；
+  旧 v1 连接在五处界面统一显示「需重新配对」并拒绝发请求。修复 3 个真机缺陷（小组件偏好
+  未读回、预览计数不同源、遗留连接显示「已同步」）与 1 个误导提示；测试 118→126。
