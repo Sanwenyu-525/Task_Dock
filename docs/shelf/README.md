@@ -134,6 +134,12 @@
 - 收尾刷新失败只追加 `SHELF_ADD_REFRESH_FAILED`（WARN，stage=finalize），不改变
   添加结果、不 reject；诊断 metadata 只含计数/模式/来源/失败码，不含路径或文件名。
 - 业务失败事件约定与筛选路径见 `docs/DIAGNOSTICS.md` §22。
+- **2026-11-13 更正**：拖入路径客户端预检（空白/相对路径）从 `ShelfWorkspace` 下沉到
+  `useShelfStore.addPaths` 内部，预检失败与后端失败共用同一 `operation_id` 与同一份
+  `{added, failed}` 返回值（预检失败在前）；全部输入无效 →
+  `SHELF_ADD_ALL_INVALID`（WARN，stage=validate，不调后端）；metadata `total` 含无效项，
+  `failure_codes` 可含 `empty_path` / `relative_path`。调用方不再预过滤路径。详见
+  `docs/DIAGNOSTICS.md` §22a。
 
 ### 拖出（2026-11-09 已实现，真机待验收）
 

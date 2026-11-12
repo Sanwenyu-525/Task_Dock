@@ -942,6 +942,7 @@ Rust：`cargo test` 覆盖新建 5/30 分钟提醒、到期只触发一次、延
 | 文件 | 覆盖 |
 |---|---|
 | `src/store/useShelfStore.test.ts` | 全成功；部分失败（validation→WARN、io/database→ERROR、integrity→CRITICAL）；全部失败复用一致真实错误码；混合错误码回退 `SHELF_ADD_FAILED`；0+0 → `SHELF_ADD_NO_INPUT`；收尾刷新失败只记 `SHELF_ADD_REFRESH_FAILED` 且不 reject；`validate→persist→finalize` 阶段推进；单批次 operation_id 一致；诊断事件不含路径/文件名 |
+| `src/store/useShelfStore.addPaths.test.ts`（2026-11-13 新增，11） | 预检下沉 store 契约：全部有效成功；混合输入（预检失败+后端成功/部分失败/全失败）数量与诊断一致（total=原始数）；全部无效 → `SHELF_ADD_ALL_INVALID`（WARN/validate/不调后端/不改数据）；空数组 → `SHELF_ADD_NO_INPUT`（validate）；0/0 → `SHELF_ADD_NO_INPUT`（persist）；预检失败条目带 `category: validation`；返回 `failed` 顺序（预检在前）；单 operation_id 单终态；metadata 白名单无路径/文件名 |
 | `src/lib/diagnostics.test.ts` | `OperationExtras.severity/stage` 覆盖失败终态；拖放订阅失败 WARN、同阶段 5s 去重、恢复 INFO 只写一次、只记录异常类型名、不可读异常对象也不抛 |
 | `src-tauri/src/diagnostics/privacy.rs` | `added` / `failure_codes` 白名单与单事件 key 上限 |
 | `src-tauri/src/diagnostics/tests.rs` | 暂存添加 WARN 汇总在默认异常列表（WARN+/24h/module=file）、operation_id 操作链、error_code 筛选中命中；metadata 经隐私过滤仍保留 `added` / `failure_codes` |

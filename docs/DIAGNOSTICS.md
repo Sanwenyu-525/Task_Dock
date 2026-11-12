@@ -510,3 +510,24 @@ service / timeout / database / unknown`…）→ `ERROR`。`OperationExtras` 新
 直接看到；按 `operation_id` 可打开操作链；`SHELF_ADD_PARTIAL_FAILED` /
 `SHELF_ADD_FAILED` / `SHELF_ADD_NO_INPUT` / `SHELF_ADD_REFRESH_FAILED` 可直接按错误码
 筛选。前端单测与 Rust 诊断查询测试覆盖这三条路径。
+
+## 22a. 预检失败并入同一操作（2026-11-13 更正）
+
+上一节表格中「部分失败/全部失败」行的 `stage` 与数量口径自本日起更正：拖入路径的客户端
+预检（空白/相对路径）从 `ShelfWorkspace` UI 层**下沉到 `useShelfStore.addPaths` 内部**，
+预检失败与后端失败共用同一个 `operation_id` 与同一份返回值，修复「UI 报告合并了无效项、
+诊断却只统计有效项」的数量不一致，以及「全部路径无效时不产生任何诊断操作」的缺口。
+
+| 结果 | level / status | stage | error_code |
+|---|---|---|---|
+| 全部输入无效（`total>0` 且有效项为 0，不调后端） | `WARN` / `failed` | `validate` | `SHELF_ADD_ALL_INVALID`（新增，`category = validation`） |
+| 空数组（`total=0`，不调后端） | `WARN` / `failed` | `validate` | `SHELF_ADD_NO_INPUT` |
+| 混合输入后端无失败条目（失败全部来自预检） | 见级别规则 / `failed` | `validate` | `SHELF_ADD_PARTIAL_FAILED`（有新增）或全部失败码一致时复用预检码 |
+| 混合输入且后端返回失败条目 | 见级别规则 / `failed` | `persist` | 同上一节规则 |
+
+其余口径：`metadata.total` = **原始输入总数（含无效项）**；`failed` = 预检失败 + 后端失败
+之和；`failure_codes` 可包含预检码 `empty_path` / `relative_path`（沿用去重 ≤3、单个
+≤40 字符约束）；返回给 UI 的 `failed` 数组为「预检失败在前、后端失败在后」，UI 与诊断
+数量严格一致。预检失败条目带 `category: "validation"`，级别仍按预期拒绝归 `WARN`。
+调用方不再预过滤路径（文件选择器路径必为绝对路径，行为不变）；胶囊「最近暂存」与完整
+暂存架拖入共用此契约。
