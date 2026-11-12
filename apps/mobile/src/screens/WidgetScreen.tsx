@@ -107,7 +107,9 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
     const size = prefs.size === "2x2" ? "2x2" : "4x2";
     const result = taskDockWidgetAvailable ? requestPinWidget(size) : null;
     if (result?.requested) {
-      showToast("系统已弹出添加确认，确认后小组件出现在桌面", "success");
+      // requestPinAppWidget 返回 true 只代表请求已被系统接受，不保证桌面一定弹窗
+      // （vivo OriginOS 桌面实测不弹）。文案给出手动兜底路径，避免用户干等。
+      showToast("已请求添加到桌面；若系统未弹确认，请长按桌面空白处 → 组件 → TaskDock", "info");
     } else if (result && !result.supported) {
       showToast("当前桌面不支持直接添加：长按桌面空白处 → 小组件 → TaskDock", "info");
     } else {
