@@ -41,7 +41,8 @@
   `help.agents.mcp-authorization` 正文已按当前源码更新（MCP Inspector 端到端联调已通过），
   但其敏感契约源文件（`src-tauri/src/db/mod.rs`）有并行在途改动，转 verified 会升级为阻断，
   故如实保持 needs_review，待该改动合入后再转正。
-  文章总量 25 篇：24 verified / 1 needs_review / 0 draft。
+  文章总量 26 篇：24 verified / 1 needs_review / 1 draft（2026-11-12 新增
+  `help.tasks.dev-workbench`，正文按工作台源码编写、待人工界面核对）。
 
 ### 2.3 结构化 section
 
