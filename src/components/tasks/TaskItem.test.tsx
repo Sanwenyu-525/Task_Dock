@@ -546,3 +546,28 @@ describe("TaskItem 离场期隔离与焦点交接", () => {
     expect(useTasksStore.getState().tasks.map((t) => t.id)).toEqual(["a", "b"]);
   });
 });
+
+describe("TaskItem 元信息行", () => {
+  it("无截止时间/提醒/重复/分类/标签/关联时整行不渲染，只有标题的任务卡不多占一行", () => {
+    // 守的契约：空 .task-meta 会额外占行高（紧凑视图尤其明显）；
+    // 没有元信息时该容器必须完全不存在，而不是渲染空 div。
+    seed(PENDING);
+    const { container } = render(<TaskItem task={PENDING} />);
+    expect(container.querySelector(".task-item")).toBeTruthy();
+    expect(container.querySelector(".task-meta")).toBeNull();
+  });
+
+  it("有截止时间时渲染元信息行与到期文案", () => {
+    // 守的契约：折叠空容器的同时不能误删真实元信息。
+    const withDue = taskFix({
+      id: "t2",
+      title: "交周报",
+      due_at: "2026-11-20T09:00:00.000Z",
+    });
+    seed(withDue);
+    const { container } = render(<TaskItem task={withDue} />);
+    const meta = container.querySelector(".task-meta");
+    expect(meta).toBeTruthy();
+    expect(meta!.querySelector(".task-due")).toBeTruthy();
+  });
+});

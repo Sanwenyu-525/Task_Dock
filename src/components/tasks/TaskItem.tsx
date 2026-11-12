@@ -54,7 +54,7 @@ function focusAfterExit(anchorId: string | null): void {
   }
   const fallback =
     document.querySelector<HTMLElement>(".tasks-panel .quick-add-input") ??
-    document.querySelector<HTMLElement>(".tasks-panel .filter-bar.primary .seg-btn");
+    document.querySelector<HTMLElement>(".tasks-panel .tasks-viewbar .seg-btn");
   fallback?.focus();
 }
 
@@ -235,6 +235,15 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
   // 旧实现把它挂在 `!compact` 上，而「+N」入口只在 >3 个目标时出现，
   // 于是紧凑模式下关联 2~3 个目标时**完全没有**启动整个工作区的入口。
   const canLaunchWorkspace = links.length >= 2;
+  // 没有任何元信息时不要留一层空的 .task-meta：空 div 会额外占行高，
+  // 让「只有标题」的任务卡凭空空出一行（紧凑视图尤其明显）。
+  const hasMeta =
+    !!task.due_at ||
+    (task.status === "pending" && !!task.next_remind_at) ||
+    !!task.recurrence ||
+    !!task.category ||
+    task.tags.length > 0 ||
+    task.linked_agents > 0;
 
   return (
     <div
@@ -276,40 +285,42 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
           <span className={`priority-tag p${task.priority}`}>{priorityLabel(task.priority)}</span>
           <span className="task-title">{task.title}</span>
         </div>
-        <div className="task-meta">
-          {task.due_at && (
-            <span className={`task-due ${overdue ? "overdue" : ""}`}>
-              <Clock size={11} /> {formatDue(task.due_at)}
-            </span>
-          )}
-          {task.status === "pending" && task.next_remind_at && (
-            <span className="task-next-remind">
-              <AlarmClock size={11} /> 提醒 {formatDue(task.next_remind_at)}
-            </span>
-          )}
-          {task.recurrence && (
-            <span
-              className="task-rec"
-              data-tip={`重复：${describeRecurrence(task.recurrence)}`}
-            >
-              <Repeat size={11} /> {describeRecurrence(task.recurrence)}
-            </span>
-          )}
-          {task.category && <span className="task-cat">{task.category}</span>}
-          {task.tags.map((t) => (
-            <span key={t} className="task-tag">
-              #{t}
-            </span>
-          ))}
-          {task.linked_agents > 0 && (
-            <span
-              className="task-link"
-              data-tip={`关联 ${task.linked_agents} 个 Agent 会话`}
-            >
-              <Link2 size={11} /> {task.linked_agents}
-            </span>
-          )}
-        </div>
+        {hasMeta && (
+          <div className="task-meta">
+            {task.due_at && (
+              <span className={`task-due ${overdue ? "overdue" : ""}`}>
+                <Clock size={11} /> {formatDue(task.due_at)}
+              </span>
+            )}
+            {task.status === "pending" && task.next_remind_at && (
+              <span className="task-next-remind">
+                <AlarmClock size={11} /> 提醒 {formatDue(task.next_remind_at)}
+              </span>
+            )}
+            {task.recurrence && (
+              <span
+                className="task-rec"
+                data-tip={`重复：${describeRecurrence(task.recurrence)}`}
+              >
+                <Repeat size={11} /> {describeRecurrence(task.recurrence)}
+              </span>
+            )}
+            {task.category && <span className="task-cat">{task.category}</span>}
+            {task.tags.map((t) => (
+              <span key={t} className="task-tag">
+                #{t}
+              </span>
+            ))}
+            {task.linked_agents > 0 && (
+              <span
+                className="task-link"
+                data-tip={`关联 ${task.linked_agents} 个 Agent 会话`}
+              >
+                <Link2 size={11} /> {task.linked_agents}
+              </span>
+            )}
+          </div>
+        )}
         {links.length > 0 && (
           <div className="task-nav-row" role="group" aria-label="关联目标">
             {inline.map((l) => (

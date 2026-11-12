@@ -1,0 +1,269 @@
+/*
+ * 任务页布局（2026-11-12「任务优先」重构）。
+ *
+ * 只负责布局与间距；颜色 / 圆角 / 阴影 / 材质一律沿用既有语义 Token，
+ * 不在此文件复制第二套皮肤。文件不带 @layer，天然高于 base/theme，因此
+ * 每条选择器都必须以 .tasks-panel 或 .tasks-subview 开头做作用域隔离，
+ * 避免改到其他页面共用的 .filter-bar / .task-card / .page-fill 行为。
+ */
+
+/* 页根：列表 / 专注 / 统计三种模式都填满内容区剩余高度。 */
+.tasks-panel {
+  min-height: 0;
+  gap: 6px;
+}
+
+/* 固定头部：紧凑概览 + 快速添加 + 工具行 + 搜索行。 */
+.tasks-panel .tasks-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* 紧凑统计卡：单行数值 + 标签，仍保留下钻点击与 warn 语义。 */
+.tasks-panel .tasks-overview--compact .overview-card {
+  padding: 3px 8px;
+  gap: 5px;
+  border-radius: 8px;
+}
+
+.tasks-panel .tasks-overview--compact .overview-value {
+  font-size: 14px;
+}
+
+.tasks-panel .tasks-overview--compact .overview-label {
+  font-size: 10.5px;
+}
+
+/* 日期筛选 + 工具操作安排在同一行；窄窗只允许日期分段横向滚动，
+   工具图标永远不换行掉到第二行。 */
+.tasks-panel .tasks-viewbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.tasks-panel .tasks-viewbar .seg-group {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tasks-panel .tasks-viewbar .seg-group::-webkit-scrollbar {
+  display: none;
+}
+
+/* 日期标签永不被省略号截断：宽度不足时让分段容器横向滚动、
+   标签保持完整可读。否则 320 宽下「全部/今日/明日」会被压成「全…」，
+   既丢了信息也无法分辨当前筛选。 */
+.tasks-panel .tasks-views .seg-btn {
+  flex: 0 0 auto;
+}
+
+.tasks-panel .tasks-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* 搜索 + 状态 + 排序同一行：搜索吃掉剩余宽度，其余控件不被压扁。 */
+.tasks-panel .tasks-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.tasks-panel .tasks-filterbar .search-box {
+  flex: 1 1 110px;
+  min-width: 0;
+}
+
+.tasks-panel .tasks-filterbar .seg-group {
+  flex: 0 0 auto;
+}
+
+.tasks-panel .tasks-filterbar .sort-select {
+  flex: 0 0 auto;
+  max-width: 84px;
+}
+
+/* 极窄窗（320px 级别）：收紧状态按钮与排序宽度。
+   320 窗口的可用内容宽度实测只有 ~274px，搜索框与「未完成/已完成/全部状态」
+   + 排序挤在同一行时搜索只剩 32px（等于不可用）。这里让搜索独占一行、
+   状态与排序落到第二行 —— 属于固定头内的合理收纳，不是工具图标溢出换行。 */
+@media (max-width: 380px) {
+  .tasks-panel .tasks-filterbar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .tasks-panel .tasks-filterbar .search-box {
+    flex: 1 1 100%;
+  }
+
+  .tasks-panel .tasks-filterbar .seg-group {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .tasks-panel .tasks-filterbar .seg-btn {
+    padding: 3px 6px;
+  }
+
+  .tasks-panel .tasks-filterbar .sort-select {
+    max-width: 72px;
+  }
+}
+
+/* 任务卡密度（仅任务页）：把固定头部让出的高度还给列表，
+   同时保留标题行省略与元信息换行规则。 */
+.tasks-panel .task-item {
+  padding: 6px 8px;
+  gap: 7px;
+}
+
+.tasks-panel .task-meta {
+  margin-top: 2px;
+  gap: 6px;
+}
+
+.tasks-panel .task-nav-row {
+  margin-top: 3px;
+  gap: 3px;
+}
+
+/* 列表占据头部之外的剩余高度并独立滚动（.page-scroll 已给 overflow-y）。 */
+.tasks-panel > .task-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 子视图头：返回按钮 + 模式标题；内容区占满剩余高度。 */
+.tasks-subview .tasks-subview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tasks-subview .tasks-subview-back {
+  flex: 0 0 auto;
+}
+
+.tasks-subview .tasks-subview-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+.tasks-subview .tasks-subview-title svg {
+  flex: 0 0 auto;
+}
+
+.tasks-subview .tasks-subview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 统计视图：容器负责占满高度，面板自身滚动、图表随宽度收缩。 */
+.tasks-subview .tasks-analytics-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tasks-subview .tasks-analytics-body > .analytics-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 提醒折叠摘要：默认只占一行；展开后的条目仍走原有卡片布局。 */
+.tasks-panel .active-reminders-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+}
+
+.tasks-panel .active-reminders-summary-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.tasks-panel .active-reminders-summary-count {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.tasks-panel .active-reminders-summary-next {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tasks-panel .active-reminders-chevron {
+  flex: 0 0 auto;
+  transition: transform 0.12s;
+}
+
+.tasks-panel .active-reminders.is-expanded .active-reminders-chevron {
+  transform: rotate(180deg);
+}
+
+.tasks-panel .active-reminders-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tasks-panel .active-reminders-chevron {
+    transition: none;
+  }
+}
+
+/* 极矮窗口沿用 styles-themes.css 的整页滚动降级：那个 @media 位于 theme 层，
+   本文件无 @layer 会天然压过它，因此这里必须显式把列表/子视图内容还原为
+   自然高度，否则固定头部仍会吃掉全部可用高度。 */
+@media (max-height: 380px) {
+  .tasks-panel {
+    min-height: 100%;
+  }
+
+  .tasks-panel > .task-list {
+    flex: 0 0 auto;
+  }
+
+  .tasks-subview .tasks-subview-body {
+    flex: 0 0 auto;
+  }
+
+  .tasks-subview .tasks-analytics-body {
+    display: block;
+  }
+}

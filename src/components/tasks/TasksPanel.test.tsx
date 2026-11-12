@@ -154,10 +154,17 @@ describe("TasksPanel 筛选交互", () => {
 
     const searchInput = await screen.findByPlaceholderText(/搜索标题/);
     const list = document.querySelector(".task-list")!;
+    const head = document.querySelector(".tasks-head")!;
     expect(list).toBeTruthy();
+    expect(head).toBeTruthy();
+    // 搜索框、筛选条、日期视图与概览都在固定页头内，不随列表滚动
+    expect(head.contains(searchInput)).toBe(true);
+    expect(head.contains(document.querySelector(".tasks-filterbar"))).toBe(true);
+    expect(head.contains(document.querySelector(".tasks-viewbar"))).toBe(true);
+    expect(head.contains(document.querySelector(".tasks-overview"))).toBe(true);
     expect(list.contains(searchInput)).toBe(false);
-    expect(list.contains(document.querySelector(".filter-bar.primary"))).toBe(false);
-    expect(list.contains(document.querySelector(".filter-bar.secondary"))).toBe(false);
+    expect(list.contains(document.querySelector(".tasks-filterbar"))).toBe(false);
+    expect(list.contains(document.querySelector(".tasks-viewbar"))).toBe(false);
     expect(list.contains(document.querySelector(".tasks-overview"))).toBe(false);
   });
 

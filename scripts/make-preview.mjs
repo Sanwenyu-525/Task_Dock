@@ -170,6 +170,140 @@ const shim = `
     stats.due_today = 0;
   }
 
+  // ?reminders=1：任务页「进行中的提醒」摘要走查夹具。
+  // 默认不注入（返回空数组），避免改变其它走查脚本的基线截图。
+  const ACTIVE_REMINDERS =
+    q.get("reminders") === "1"
+      ? [
+          {
+            reminderId: "rem1",
+            taskId: "t1",
+            taskTitle: "审阅 v0.3 视觉验收报告",
+            remindAt: new Date(now.getTime() + 5 * 60_000 + 27_000).toISOString(),
+            occurrence: new Date(now.getTime() + 5 * 60_000 + 27_000).toISOString(),
+            kind: "due",
+            snoozed: false,
+            taskStatus: "pending",
+            hasRecurrence: false,
+          },
+          {
+            reminderId: "rem2",
+            taskId: "t2",
+            taskTitle: "修复监控树实例分组",
+            remindAt: new Date(now.getTime() + 45 * 60_000).toISOString(),
+            occurrence: new Date(now.getTime() + 45 * 60_000).toISOString(),
+            kind: "advance",
+            snoozed: false,
+            taskStatus: "pending",
+            hasRecurrence: true,
+          },
+        ]
+      : [];
+
+  // 专注与休息走查夹具：focus_snapshot / focus_history 缺了会拿到 null，
+  // FocusWorkspace 无法渲染（预览 harness 的历史缺口，不是产品问题）。
+  const FOCUS_PREFS = {
+    focus_minutes: 25,
+    short_break_minutes: 5,
+    long_break_minutes: 15,
+    long_break_every: 4,
+    auto_start_break: false,
+    auto_start_next: false,
+    sedentary_enabled: false,
+    sedentary_interval_minutes: 60,
+  };
+  const FOCUS_SNAPSHOT = {
+    active: {
+      id: "fs1",
+      kind: "focus",
+      state: "focusing",
+      task_id: "t1",
+      task_title: "审阅 v0.3 视觉验收报告",
+      task_deleted: false,
+      planned_seconds: 1500,
+      extension_seconds: 0,
+      accumulated_ms: 8 * 60_000,
+      remaining_ms: 17 * 60_000,
+      started_at: iso(8),
+      running_since: iso(8),
+      paused_at: null,
+      pause_reason: null,
+      round_index: 2,
+      clock_jumps: 0,
+    },
+    prefs: FOCUS_PREFS,
+    today: { day: new Date(now.getTime()).toISOString().slice(0, 10), focus_ms: 75 * 60_000, break_ms: 15 * 60_000, completed_focus: 3 },
+    rounds_since_long: 2,
+    sedentary: { enabled: false, interval_minutes: 60, next_at: null },
+    server_now: iso(0),
+  };
+  const FOCUS_HISTORY = [
+    { id: "fh1", kind: "focus", state: "completed", task_id: "t1", task_title: "审阅 v0.3 视觉验收报告", task_deleted: false, planned_seconds: 1500, accumulated_ms: 25 * 60_000, started_at: iso(140), ended_at: iso(115), round_index: 3 },
+    { id: "fh2", kind: "short_break", state: "completed", task_id: null, task_title: "", task_deleted: false, planned_seconds: 300, accumulated_ms: 5 * 60_000, started_at: iso(200), ended_at: iso(195), round_index: 2 },
+    { id: "fh3", kind: "focus", state: "cancelled", task_id: "t2", task_title: "修复监控树实例分组", task_deleted: true, planned_seconds: 1500, accumulated_ms: 6 * 60_000, started_at: iso(300), ended_at: iso(294), round_index: 2 },
+  ];
+
+  // 任务统计（analytics）走查夹具：按请求的 range 生成同形状数据，让「统计模式
+  // 占满高度 / 图表随宽度收缩」能在预览里被真实度量（默认页不打开该子视图）。
+  function analyticsFixture(range) {
+    const points = range === "month" ? 12 : range === "week" ? 7 : 8;
+    const day = 86_400_000;
+    const trend = Array.from({ length: points }, (_, i) => {
+      const start = new Date(now.getTime() - (points - 1 - i) * day).toISOString();
+      const completed = (i * 3) % 7;
+      const overdue = (i * 2) % 4;
+      return {
+        key: "p" + i,
+        label: "",
+        start,
+        end: start,
+        completed,
+        due: completed + overdue + 1,
+        due_completed: completed,
+        due_overdue: overdue,
+        completion_rate: 0.774,
+        overdue_rate: 0.161,
+      };
+    });
+    return {
+      range,
+      range_label: "",
+      range_start: trend[0].start,
+      range_end: trend[trend.length - 1].end,
+      generated_at: iso(0),
+      summary: {
+        completed: 24,
+        recurring_completed: 6,
+        due: 31,
+        due_completed: 24,
+        due_overdue: 5,
+        completion_rate: 0.774,
+        overdue_rate: 0.161,
+      },
+      trend,
+      by_category: [
+        { category: "工作", completed: 12, share: 0.5 },
+        { category: "开发", completed: 8, share: 0.3333 },
+        { category: "未分类", completed: 4, share: 0.1667 },
+      ],
+      by_priority: [
+        { priority: 0, completed: 4, share: 0.1667 },
+        { priority: 1, completed: 9, share: 0.375 },
+        { priority: 2, completed: 7, share: 0.2916 },
+        { priority: 3, completed: 4, share: 0.1667 },
+      ],
+      history_complete: true,
+      definitions: {
+        completed: "完成动作计数：期内完成次数（重复任务每次推进都计入）。",
+        completion_rate: "完成率 = 期内完成次数 ÷ 期内到期任务数。",
+        overdue_rate: "逾期率 = 期内到期且逾期未完成 ÷ 期内到期任务数。",
+        trend: "趋势按本地日期分桶，完成与逾期分别计数。",
+        distribution: "分布按分类与优先级统计完成占比。",
+        history: "分母完整性：存在无法还原的重复任务期次时可能偏高。",
+      },
+    };
+  }
+
   const notifications = [
     { id: "n1", kind: "agent_waiting", title: "Codex 等待处理", body: "重构登录模块 · 等待人工确认", ref_type: "agent_run", ref_id: "run1", occurrence: "x1", is_read: false, created_at: iso(2) },
     { id: "n2", kind: "reminder", title: "审阅 v0.3 视觉验收报告", body: "今天 到期", ref_type: "task", ref_id: "t1", occurrence: "x2", is_read: false, created_at: iso(30) },
@@ -657,6 +791,10 @@ const shim = `
         });
       }
       case "task_stats": return stats;
+      case "active_reminders": return ACTIVE_REMINDERS;
+      case "task_analytics": return analyticsFixture(args?.range || "day");
+      case "focus_snapshot": return FOCUS_SNAPSHOT;
+      case "focus_history": return FOCUS_HISTORY;
       case "list_task_links": return taskAgentLinks.filter((l) => l.task_id === args?.taskId);
       case "parse_quick_add": return { title: (args?.text || "").replace(/明天|下午|三点/g, "").trim() || "新任务", due_at: iso(1440), recurrence: null, advance_minutes: null, matched: ["明天", "下午三点"], has_explicit_time: true, date_only: false };
       case "agent_snapshot": return snapshot;

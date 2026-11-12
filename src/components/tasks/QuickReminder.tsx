@@ -4,6 +4,9 @@
 //! - 数据复用现有 tasks + task_reminders（remind_at = 绝对时间，秒级由调度器负责，
 //!   剩余时间只在展示层换算）；
 //! - 与自然语言快速录入（QuickAdd）并存，互不替代。
+//!
+//! 任务页不再常驻这一行：默认由「更多」菜单按需打开，父级用受控 `open` 强制展开；
+//! 不传 props 时保持原有自管理折叠行为（其它调用方与测试不受影响）。
 
 import { useState } from "react";
 import { BellRing, ChevronDown, Loader2 } from "lucide-react";
@@ -21,11 +24,24 @@ const PRESET_MINUTES = [5, 10, 15, 30, 60];
 /** 自定义上限：24 小时（与后端 snooze 钳制一致）。 */
 const MAX_MINUTES = 24 * 60;
 
-export default function QuickReminder() {
+export interface QuickReminderProps {
+  /** 受控展开：传入后展开状态由父级决定（任务页从工具菜单打开）。 */
+  open?: boolean;
+  /** 受控模式下请求收起（折叠头或关闭入口触发）。 */
+  onClose?: () => void;
+}
+
+export default function QuickReminder({ open: controlledOpen, onClose }: QuickReminderProps = {}) {
   const { t } = useLocale();
   // 默认收起：快捷提醒不是每次打开任务页都需要的操作，收起后把高度还给任务列表；
   // 展开后所有预设/自定义能力与语义保持不变（仅视觉收纳，不改创建逻辑）。
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  /** 受控模式只上报收起；展开由父级决定，组件不私改外部状态。 */
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setInternalOpen(next);
+    else if (!next) onClose?.();
+  };
   const [title, setTitle] = useState("");
   const [customOpen, setCustomOpen] = useState(false);
   const [hours, setHours] = useState(0);
@@ -88,7 +104,7 @@ export default function QuickReminder() {
         className="quick-reminder-toggle"
         aria-expanded={open}
         aria-label={open ? t("quickReminder.collapse") : t("quickReminder.expand")}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen(!open)}
       >
         <BellRing size={13} />
         <span>{t("quickReminder.collapsed")}</span>
@@ -97,80 +113,80 @@ export default function QuickReminder() {
       </button>
       {open && (
         <div className="quick-reminder-body">
-      <div className="quick-add-row">
-        <BellRing size={14} className="quick-add-icon" />
-        <input
-          className="quick-add-input input-embedded"
-          placeholder={t("quickReminder.placeholder")}
-          aria-label={t("quickReminder.placeholder")}
-          value={title}
-          disabled={creating}
-          maxLength={200}
-          onChange={(e) => setTitle(e.target.value)}
-          onCompositionStart={ime.onCompositionStart}
-          onCompositionEnd={ime.onCompositionEnd}
-          onKeyDown={(e) => {
-            // 输入法确认候选的那次 Enter 不创建提醒，避免候选词未确认就误创建
-            if (ime.isComposing(e)) return;
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void start(10);
-            }
-          }}
-        />
-        {creating && <Loader2 size={12} className="spin quick-add-spinner" />}
-      </div>
-      <div className="quick-reminder-presets">
-        {PRESET_MINUTES.map((minutes) => (
-          <button
-            key={minutes}
-            className="seg-btn sm"
-            disabled={creating}
-            onClick={() => void start(minutes)}
-          >
-            {minutes >= 60
-              ? t("format.hours", { n: minutes / 60 })
-              : t("format.minutes", { n: minutes })}
-          </button>
-        ))}
-        <button
-          className={`seg-btn sm ${customOpen ? "active" : ""}`}
-          aria-expanded={customOpen}
-          disabled={creating}
-          onClick={() => {
-            setCustomOpen((v) => !v);
-            setError("");
-          }}
-        >
-          {t("quickReminder.custom")}
-        </button>
-      </div>
-      {customOpen && (
-        <div className="quick-reminder-custom">
-          <NumberInput
-            size="sm"
-            min={0}
-            max={23}
-            value={hours}
-            ariaLabel={t("quickReminder.customHoursAria")}
-            onChange={setHours}
-          />
-          <span className="endpoint-hint">{t("quickReminder.hoursUnit")}</span>
-          <NumberInput
-            size="sm"
-            min={0}
-            max={59}
-            value={minutes}
-            ariaLabel={t("quickReminder.customMinutesAria")}
-            onChange={setMinutes}
-          />
-          <span className="endpoint-hint">{t("quickReminder.minutesUnit")}</span>
-          <button className="btn primary sm" onClick={onStartCustom} disabled={creating}>
-            {creating ? t("quickReminder.creating") : t("quickReminder.start")}
-          </button>
-        </div>
-      )}
-      {error && <div className="preview-hint error">{error}</div>}
+          <div className="quick-add-row">
+            <BellRing size={14} className="quick-add-icon" />
+            <input
+              className="quick-add-input input-embedded"
+              placeholder={t("quickReminder.placeholder")}
+              aria-label={t("quickReminder.placeholder")}
+              value={title}
+              disabled={creating}
+              maxLength={200}
+              onChange={(e) => setTitle(e.target.value)}
+              onCompositionStart={ime.onCompositionStart}
+              onCompositionEnd={ime.onCompositionEnd}
+              onKeyDown={(e) => {
+                // 输入法确认候选的那次 Enter 不创建提醒，避免候选词未确认就误创建
+                if (ime.isComposing(e)) return;
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void start(10);
+                }
+              }}
+            />
+            {creating && <Loader2 size={12} className="spin quick-add-spinner" />}
+          </div>
+          <div className="quick-reminder-presets">
+            {PRESET_MINUTES.map((minutes) => (
+              <button
+                key={minutes}
+                className="seg-btn sm"
+                disabled={creating}
+                onClick={() => void start(minutes)}
+              >
+                {minutes >= 60
+                  ? t("format.hours", { n: minutes / 60 })
+                  : t("format.minutes", { n: minutes })}
+              </button>
+            ))}
+            <button
+              className={`seg-btn sm ${customOpen ? "active" : ""}`}
+              aria-expanded={customOpen}
+              disabled={creating}
+              onClick={() => {
+                setCustomOpen((v) => !v);
+                setError("");
+              }}
+            >
+              {t("quickReminder.custom")}
+            </button>
+          </div>
+          {customOpen && (
+            <div className="quick-reminder-custom">
+              <NumberInput
+                size="sm"
+                min={0}
+                max={23}
+                value={hours}
+                ariaLabel={t("quickReminder.customHoursAria")}
+                onChange={setHours}
+              />
+              <span className="endpoint-hint">{t("quickReminder.hoursUnit")}</span>
+              <NumberInput
+                size="sm"
+                min={0}
+                max={59}
+                value={minutes}
+                ariaLabel={t("quickReminder.customMinutesAria")}
+                onChange={setMinutes}
+              />
+              <span className="endpoint-hint">{t("quickReminder.minutesUnit")}</span>
+              <button className="btn primary sm" onClick={onStartCustom} disabled={creating}>
+                {creating ? t("quickReminder.creating") : t("quickReminder.start")}
+              </button>
+            </div>
+          )}
+          {error && <div className="preview-hint error">{error}</div>}
         </div>
       )}
     </div>

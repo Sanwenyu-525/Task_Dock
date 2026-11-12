@@ -166,4 +166,32 @@ describe("QuickReminder", () => {
 
     resolveCreate(taskResult("写周报"));
   });
+
+  it("受控模式：点「收起快捷提醒」只上报 onClose，不私自改外部 open", async () => {
+    // 守的契约：任务页由「更多」菜单管理展开状态，组件必须是无状态的受控视图；
+    // 收起动作只能通过 onClose 通知父级，父级不响应时组件不能自行消失。
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<QuickReminder open onClose={onClose} />);
+
+    expect(screen.getByPlaceholderText(/快速提醒/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "收起快捷提醒" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    // 父级仍传 open=true：视图保持展开，创建入口不受影响
+    expect(screen.getByPlaceholderText(/快速提醒/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "5 分钟" })).toBeTruthy();
+  });
+
+  it("非受控模式：不传 props 时仍能自行展开与收起", async () => {
+    // 守的契约：受控改造不破坏独立调用方的原有自管理行为。
+    const user = userEvent.setup();
+    render(<QuickReminder />);
+
+    expect(screen.queryByPlaceholderText(/快速提醒/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "展开快捷提醒" }));
+    expect(screen.getByPlaceholderText(/快速提醒/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "收起快捷提醒" }));
+    expect(screen.queryByPlaceholderText(/快速提醒/)).toBeNull();
+  });
 });

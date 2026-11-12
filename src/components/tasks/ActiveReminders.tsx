@@ -8,9 +8,12 @@
 //!   取消只对非重复任务开放（重复任务的 due 提醒是推进引擎输入）；
 //! - 延后走真实后端 snooze_reminder，反馈 Toast（含撤销）由 App 的
 //!   reminder-snoozed 统一处理，本组件不重复弹。
+//!
+//! 任务页默认只显示单行摘要（标题 + 条数 + 最近倒计时），展开后才渲染条目：
+//! 提醒调度在后端，折叠状态不影响任何到期触发。
 
-import { useCallback, useEffect, useState } from "react";
-import { AlarmClock, BellOff, Clock3, Timer, X } from "lucide-react";
+import { useCallback, useEffect, useId, useState } from "react";
+import { AlarmClock, BellOff, ChevronDown, Clock3, Timer, X } from "lucide-react";
 import {
   activeReminders,
   cancelReminders,
@@ -32,27 +35,27 @@ import { localizedErrorMessage } from "../../i18n/errors";
 const SNOOZE_MINUTES = [5, 10, 30, 60];
 
 /**
- * 倒计时行：共享时钟的唯一订阅点。
+ * 倒计时行：只消费父级传入的 `now`，自身不订阅时钟。
  *
- * 拆成子组件是为了让「页面隐藏 → 不渲染 → 不订阅」成立：容器挂载在
- * TasksPanel（DeferredView 保活），停靠/切换模式时整体不可见，若容器自身
- * 订阅时钟，共享定时器会为隐藏页面每秒空转。行组件只在可见时挂载 ——
- * 最后一个消费者退出即释放时钟（sharedClock 语义），恢复可见时重新订阅，
- * 时钟首订阅者会重新对齐当前时间，倒计时不会滞后。
+ * 容器在「可见且有数据」时才渲染内部视图，内部视图是共享时钟的唯一订阅点：
+ * 停靠/切换模式导致整体不可见时，视图卸载 → 最后一个消费者退出 → 共享
+ * 定时器释放，不为隐藏页面每秒空转。恢复可见时重新订阅，时钟首订阅者会
+ * 重新对齐当前时间，倒计时不会滞后。
  */
 function ReminderRows({
   items,
+  now,
   busyTaskId,
   onSnooze,
   onCancel,
 }: {
   items: ActiveReminder[];
+  now: number;
   busyTaskId: string | null;
   onSnooze: (item: ActiveReminder, minutes: number) => void;
   onCancel: (item: ActiveReminder) => void;
 }) {
   const { t } = useLocale();
-  const now = useSharedClock();
 
   return (
     <>
@@ -135,14 +138,101 @@ function ReminderRows({
   );
 }
 
-export default function ActiveReminders() {
+/**
+ * 可见且有数据时才挂载的提醒视图：共享时钟的唯一订阅点。
+ * 折叠态只渲染摘要（同样需要 now 显示最近倒计时），因此时钟在两种
+ * 展开状态下都只存在一份消费者。
+ */
+function ActiveRemindersView({
+  items,
+  expanded,
+  onToggleExpanded,
+  busyTaskId,
+  onSnooze,
+  onCancel,
+}: {
+  items: ActiveReminder[];
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  busyTaskId: string | null;
+  onSnooze: (item: ActiveReminder, minutes: number) => void;
+  onCancel: (item: ActiveReminder) => void;
+}) {
+  const { t } = useLocale();
+  const now = useSharedClock();
+  const rowsId = useId();
+
+  // 摘要只展示最近一条（remindAt 最小）的倒计时；无效时间按「已到期」处理，
+  // 与行内口径一致，避免出现 NaN 文案。
+  const next = items.reduce((a, b) =>
+    new Date(a.remindAt).getTime() <= new Date(b.remindAt).getTime() ? a : b,
+  );
+  const nextMs = new Date(next.remindAt).getTime();
+  const nextExpired = !Number.isFinite(nextMs) || nextMs <= now;
+
+  return (
+    <div
+      className={`active-reminders ${expanded ? "is-expanded" : "is-collapsed"}`}
+      role="region"
+      aria-label={t("activeReminders.region")}
+    >
+      <button
+        type="button"
+        className="active-reminders-summary"
+        aria-expanded={expanded}
+        aria-controls={rowsId}
+        aria-label={
+          expanded
+            ? t("activeReminders.collapseSummary")
+            : t("activeReminders.expandSummary")
+        }
+        onClick={onToggleExpanded}
+      >
+        <Timer size={12} aria-hidden="true" />
+        <span className="active-reminders-summary-label">{t("activeReminders.title")}</span>
+        <span className="active-reminders-summary-count">
+          {t("activeReminders.count", { count: items.length })}
+        </span>
+        <span className="flex-spacer" />
+        <span className="active-reminders-summary-next">
+          {nextExpired ? t("activeReminders.expired") : formatCountdown(nextMs - now)}
+        </span>
+        <ChevronDown size={12} className="active-reminders-chevron" aria-hidden="true" />
+      </button>
+      {expanded && (
+        <div className="active-reminders-rows" id={rowsId}>
+          <ReminderRows
+            items={items}
+            now={now}
+            busyTaskId={busyTaskId}
+            onSnooze={onSnooze}
+            onCancel={onCancel}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+export interface ActiveRemindersProps {
+  /**
+   * 父级切到专注/统计子视图时置 true：组件**保持挂载**（保留已取回的 items
+   * 与展开状态），但不渲染任何 DOM。这样返回列表时摘要行立即在位，
+   * 列表高度不会因为提醒数据的异步回包再变一次，滚动位置才能精确恢复。
+   */
+  hidden?: boolean;
+}
+
+export default function ActiveReminders({ hidden = false }: ActiveRemindersProps = {}) {
   const { t } = useLocale();
   const [items, setItems] = useState<ActiveReminder[] | null>(null);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  // 折叠状态放在容器：停靠/切模式期间视图卸载，恢复可见后仍保留用户的展开选择。
+  const [expanded, setExpanded] = useState(false);
   const showToast = useUiStore((s) => s.showToast);
   const refreshTasks = useTasksStore((s) => s.refresh);
   // 页面活跃态：TasksPanel 常驻挂载（DeferredView 保活），停靠/模式切换时
-  // 本组件不可见 —— 不渲染行组件即不订阅共享时钟（见 ReminderRows）。
+  // 本组件不可见 —— 不渲染内部视图即不订阅共享时钟。
   // 数据事件订阅保留：reminder-fired/snoozed 仍会刷新 items，保证恢复可见
   // 时数据是新的；提醒「调度」在后端，与前端渲染无关，不受此影响。
   const visible = useFullViewVisible();
@@ -201,23 +291,16 @@ export default function ActiveReminders() {
     }
   }
 
-  if (!visible || items === null || items.length === 0) return null;
+  if (hidden || !visible || items === null || items.length === 0) return null;
 
   return (
-    <div className="active-reminders" role="region" aria-label={t("activeReminders.region")}>
-      <div className="active-reminders-head">
-        <Timer size={12} />
-        <span>{t("activeReminders.title")}</span>
-        <span className="endpoint-hint">
-          {t("activeReminders.count", { count: items.length })}
-        </span>
-      </div>
-      <ReminderRows
-        items={items}
-        busyTaskId={busyTaskId}
-        onSnooze={(item, minutes) => void onSnooze(item, minutes)}
-        onCancel={(item) => void onCancel(item)}
-      />
-    </div>
+    <ActiveRemindersView
+      items={items}
+      expanded={expanded}
+      onToggleExpanded={() => setExpanded((v) => !v)}
+      busyTaskId={busyTaskId}
+      onSnooze={(item, minutes) => void onSnooze(item, minutes)}
+      onCancel={(item) => void onCancel(item)}
+    />
   );
 }

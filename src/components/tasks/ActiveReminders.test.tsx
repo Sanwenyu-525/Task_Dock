@@ -6,11 +6,11 @@
 //! - >1h 显示时:分、<1h 显示分:秒、到期显示「已到期」；
 //! - 延后走真实 snooze_reminder；失败弹真实错误不显示成功；
 //! - 重复任务不提供「取消」（due 提醒是推进引擎输入）；
+//! - 默认折叠为单行摘要，展开后才渲染条目与操作；
 //! - 卸载后释放 reminder-fired / reminder-snoozed 订阅。
 
-import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { useUiStore } from "../../store/useUiStore";
@@ -83,6 +83,14 @@ function item(p: Partial<ActiveReminder> & Pick<ActiveReminder, "taskId" | "task
   };
 }
 
+/**
+ * 提醒列表默认折叠：需要操作条目的用例先展开摘要。
+ * 折叠只影响渲染，不改变后端调度；展开按钮的可访问名随状态切换。
+ */
+async function expandList(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "展开提醒列表" }));
+}
+
 describe("ActiveReminders", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -112,16 +120,21 @@ describe("ActiveReminders", () => {
     // 与口径本身无关。保留真实定时器，避免影响 findByText 的等待机制。
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
+      const user = userEvent.setup();
       activeReminders.mockResolvedValue([
         item({ taskId: "t1", taskTitle: "一小时以上", remindAt: new Date(Date.now() + 90 * 60_000).toISOString() }),
         item({ taskId: "t2", taskTitle: "不足一小时", remindAt: new Date(Date.now() + 30_000).toISOString() }),
         item({ taskId: "t3", taskTitle: "过期提醒", remindAt: new Date(Date.now() - 5_000).toISOString() }),
       ]);
-      render(<ActiveReminders />);
+      const { container } = render(<ActiveReminders />);
+      await screen.findByRole("button", { name: "展开提醒列表" });
+      await expandList(user);
       expect(await screen.findByText("一小时以上")).toBeTruthy();
-      expect(screen.getByText("1:30")).toBeTruthy();
-      expect(screen.getByText("00:30")).toBeTruthy();
-      const expiredText = screen.getByText("已到期");
+      // 摘要本身也显示最近一条的「已到期」，口径断言限定在展开后的条目区
+      const rows = container.querySelector<HTMLElement>(".active-reminders-rows")!;
+      expect(within(rows).getByText("1:30")).toBeTruthy();
+      expect(within(rows).getByText("00:30")).toBeTruthy();
+      const expiredText = within(rows).getByText("已到期");
       expect(expiredText).toBeTruthy();
       // 项目未引入 jest-dom：用原生 classList 断言，避免依赖额外匹配器
       expect(expiredText.closest(".active-reminder-card")?.classList.contains("expired")).toBe(true);
@@ -136,6 +149,8 @@ describe("ActiveReminders", () => {
       item({ taskId: "t1", taskTitle: "写周报", remindAt: new Date(Date.now() + 30 * 60_000).toISOString() }),
     ]);
     render(<ActiveReminders />);
+    await screen.findByRole("button", { name: "展开提醒列表" });
+    await expandList(user);
     await screen.findByText("写周报");
     // DropdownMenu 触发器打开菜单
     await user.click(screen.getByRole("button", { name: /延后「写周报」/ }));
@@ -152,6 +167,8 @@ describe("ActiveReminders", () => {
     ]);
     snoozeReminder.mockRejectedValue(new Error("任务已完成，无法延后提醒（当前状态: completed）"));
     render(<ActiveReminders />);
+    await screen.findByRole("button", { name: "展开提醒列表" });
+    await expandList(user);
     await screen.findByText("过期任务");
     await user.click(screen.getByRole("button", { name: /延后「过期任务」/ }));
     await user.click(await screen.findByRole("menuitem", { name: "5 分钟后再提醒" }));
@@ -168,6 +185,8 @@ describe("ActiveReminders", () => {
     ]);
     cancelReminders.mockResolvedValue(1);
     render(<ActiveReminders />);
+    await screen.findByRole("button", { name: "展开提醒列表" });
+    await expandList(user);
     await screen.findByText("每日站会");
     expect(screen.queryByRole("button", { name: /取消「每日站会」/ })).toBeNull();
     await user.click(screen.getByRole("button", { name: /取消「一次性提醒」/ }));
@@ -175,19 +194,58 @@ describe("ActiveReminders", () => {
   });
 
   it("已延后的提醒带「已延后」标记", async () => {
+    const user = userEvent.setup();
     const remindAt = new Date(Date.now() + 30 * 60_000).toISOString();
     activeReminders.mockResolvedValue([
       item({ taskId: "t1", taskTitle: "被延后的", remindAt, occurrence: new Date(Date.now() + 20 * 60_000).toISOString(), snoozed: true }),
     ]);
     render(<ActiveReminders />);
+    await screen.findByRole("button", { name: "展开提醒列表" });
+    await expandList(user);
     expect(await screen.findByText("已延后")).toBeTruthy();
   });
 
+  it("默认折叠为单行摘要：条数与最近倒计时可见，条目不渲染；展开后能力可用", async () => {
+    // 守的契约：折叠只收纳展示，不改变数据与操作可达性 ——
+    // 摘要必须给出条数与最近倒计时，展开后每条的延后/取消入口都还在。
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      activeReminders.mockResolvedValue([
+        item({ taskId: "near", taskTitle: "最近的提醒", remindAt: new Date(Date.now() + 20 * 60_000).toISOString() }),
+        item({ taskId: "far", taskTitle: "较远的提醒", remindAt: new Date(Date.now() + 50 * 60_000).toISOString() }),
+      ]);
+      const { container } = render(<ActiveReminders />);
+      const toggle = await screen.findByRole("button", { name: "展开提醒列表" });
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(container.querySelector(".active-reminders-rows")).toBeNull();
+      expect(container.querySelectorAll(".active-reminder-card")).toHaveLength(0);
+      expect(container.querySelector(".active-reminders-summary-count")?.textContent).toBe("2 条");
+      // 最近一条（20 分钟）的倒计时在摘要里，不展示较远的那条
+      expect(container.querySelector(".active-reminders-summary-next")?.textContent).toBe("20:00");
+      expect(screen.queryByText("较远的提醒")).toBeNull();
+
+      // 受控展开是同步状态切换：用 fireEvent 避免 userEvent 异步 wrapper 与
+      // 共享时钟在 Fake Date 下的 act 时序噪声。
+      fireEvent.click(toggle);
+      expect(screen.getByRole("button", { name: "收起提醒列表" }).getAttribute("aria-expanded")).toBe("true");
+      await screen.findByText("最近的提醒");
+      expect(container.querySelectorAll(".active-reminder-card")).toHaveLength(2);
+      // 展开后原操作入口保持：延后与取消都按任务标题可访问
+      expect(screen.getByRole("button", { name: /延后「最近的提醒」/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /取消「最近的提醒」/ })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("停靠隐藏期不渲染倒计时并释放共享时钟，恢复可见时重新订阅", async () => {
+    const user = userEvent.setup();
     activeReminders.mockResolvedValue([
       item({ taskId: "t1", taskTitle: "停靠测试", remindAt: new Date(Date.now() + 30 * 60_000).toISOString() }),
     ]);
     const view = render(<ActiveReminders />);
+    await screen.findByRole("button", { name: "展开提醒列表" });
+    await expandList(user);
     expect(await screen.findByText("停靠测试")).toBeTruthy();
     expect(clockRunning()).toBe(true);
     // 停靠（主界面 display:none + inert）：行组件不渲染 → 最后一个时钟
@@ -195,7 +253,7 @@ describe("ActiveReminders", () => {
     act(() => useEdgeSnapStore.setState({ phase: "docked-revealed" }));
     expect(screen.queryByText("停靠测试")).toBeNull();
     expect(clockRunning()).toBe(false);
-    // 解除停靠：重新挂载 → 重新订阅；items 状态保留在容器，无重新拉取闪烁。
+    // 解除停靠：重新挂载 → 重新订阅；items 与展开状态保留在容器，无重新拉取闪烁。
     act(() => useEdgeSnapStore.setState({ phase: "free" }));
     expect(await screen.findByText("停靠测试")).toBeTruthy();
     expect(clockRunning()).toBe(true);
