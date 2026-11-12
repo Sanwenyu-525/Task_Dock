@@ -126,13 +126,20 @@ export function SyncScreen({ nav }: { nav: Nav }) {
         showToast("本机令牌缺失或已损坏，请重新配对", "danger", placement);
         return;
       }
+      // v2 起连接测试也走指纹固定：指纹缺失（v1 旧记录 / 手动配对未观察到）时
+      // 不发送令牌，直接提示重新配对，避免以首用信任把 Bearer 令牌交给中间人。
+      const pin = (connection.tlsFingerprint ?? "").trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(pin)) {
+        showToast("缺少桌面端 TLS 指纹，请重新扫码配对", "danger", placement);
+        return;
+      }
       setBusy(true);
       try {
         const result = await pingDesktop({
           address: { host: connection.host, port: connection.port, baseUrl: connection.baseUrl },
           token,
-          // 已钉住的桌面端 TLS 指纹；v1 旧记录为空（首用信任）。
-          tlsFingerprint: connection.tlsFingerprint || undefined,
+          // 已钉住的桌面端 TLS 指纹（上面已强制非空）。
+          tlsFingerprint: pin,
         });
         const now = new Date().toISOString();
         await touchConnection(now);

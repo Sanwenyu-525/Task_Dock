@@ -59,8 +59,12 @@ apps/mobile/
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # vitest：协议/加密/客户端/DB 迁移/同步编排（node:sqlite 真实 SQL harness）
+npm test            # vitest：111 例（协议/加密/客户端/DB 迁移/同步编排 + 小组件/深链纯函数）
 ```
+
+测试目录有两处：`src/**/*.test.ts`（同步与数据层，node:sqlite 真实 SQL harness）与
+`tests/**/*.test.ts`（小组件快照与深链白名单纯函数）。`vitest.config.ts` 必须留在本目录，
+否则会向上命中桌面端根 `vite.config.ts`。
 
 - 迁移：`MIGRATIONS` 序列 + `PRAGMA user_version`，append-only；v1 库升级到 v2 不丢数据。
 - 写操作：业务表 + `outbox` 在**同一事务**内完成；收集箱「转为任务」是建任务 + 删条目单事务。
@@ -147,11 +151,18 @@ Windows 构建已知约束：
 `splash-mark-dark.png`（深色）。它们必须与 `src/components/LaunchOverlay.tsx` 的骨架几何
 逐项一致，改任一边都要两边同步并重跑 `npx expo prebuild --platform android`。
 
-## 未实现（明确边界）
+## 能力边界（2026-11-12 更正）
 
-- 同步传输、冲突合并、墓碑推进：只有协议骨架（`src/lib/sync/protocol.ts` / `client.ts`），
-  **未接线**。配对成功不代表已同步。
-- 配对与连通性测试已实现，见 `docs/mobile/06-pairing.md`（含局域网 HTTP 的已知偏差）。
+> 更正（2026-11-12）：本节此前写「同步未接线」「局域网 HTTP」「小组件/分享未实现」，
+> 与代码不符。以下为当前事实；历史描述见 git 历史。
+
+- 配对、连通性测试、任务/笔记/收集箱双向同步、冲突与墓碑：**已实现并接线**
+  （2026-11-09 物理机验证）。2026-11-12 起传输为 TLS-only + SPKI 指纹固定（协议 v2），
+  该版本的真机复验未执行。见 `docs/mobile/06-pairing.md`、`07-sync.md`。
+- 系统分享接收（`ACTION_SEND` `text/plain`）与主屏小组件（2×2 / 4×2）：**已实现并接入**
+  （2026-11-12，构建层与自动化测试验证；真机运行时未验证）。
+  见 `docs/mobile/09-share-receive.md`、`10-widget.md`。
+- 后台/自动同步、远程推送：**未实现**（后台方案仅有设计评估，
+  见 `docs/mobile/11-background-sync-design.md`）。
 - 重复规则按自然周/自然日计算，**不支持法定节假日与调休跳过**；UI 不宣称支持。
-- 主屏小组件、系统分享接收、后台同步、远程推送：**未实现**。
 - iOS：**未验证**（本机无 macOS/Xcode），本轮只做 Android。

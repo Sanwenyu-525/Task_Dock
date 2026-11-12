@@ -17,6 +17,7 @@ import { loadConnection } from "../../db/syncConnection";
 
 import { decryptEnvelope, encryptEnvelope } from "./crypto";
 import type { FetchLike, FetchInitLike } from "./client";
+import { normalizeTlsFingerprint } from "./pairing";
 import { createLazyPinnedFetch } from "./secureFetch";
 
 /** 分块请求可能比同步 JSON 慢，但仍需有界；超时后按退避重试。 */
@@ -185,7 +186,16 @@ export function createFileClient(options: FileClientOptions): FileClient {
 
   const fetchImpl: FetchLike =
     options.fetchImpl ??
-    createLazyPinnedFetch(async () => (await loadConnection())?.tlsFingerprint || null);
+    createLazyPinnedFetch(async () => {
+      // 文件分块携带设备令牌：与同步一致，已配对连接必须有已钉住的 SPKI 指纹，
+      // 缺失时 fail-closed（拒绝以首用信任发令牌），提示重新配对。
+      const connection = await loadConnection();
+      const pin = normalizeTlsFingerprint(connection?.tlsFingerprint ?? "");
+      if (!pin) {
+        throw new AppError("validation", "缺少桌面端 TLS 指纹，请重新扫码配对后再传文件");
+      }
+      return pin;
+    });
   const active = new Set<ActiveOperation>();
 
   function sleep(ms: number): Promise<void> {

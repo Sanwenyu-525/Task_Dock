@@ -68,6 +68,12 @@ function headerRecord(headers?: Record<string, string>): Record<string, string> 
   return out;
 }
 
+/** Expo 原生 Promise 拒绝把 `promise.reject(code, ...)` 的 code 挂在 error.code 上。 */
+function isPinMismatch(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  return (error as { code?: unknown }).code === "E_PIN_MISMATCH";
+}
+
 /**
  * 构造一个 FetchLike。与全局 fetch 的差异：
  * - 只接受 https://；http:// 直接抛 validation（提示重新配对）；
@@ -118,9 +124,18 @@ export function createSecureFetch(
       if (init.signal?.aborted) {
         throw new AppError("network", "请求已取消");
       }
-      // 原生层拒绝（指纹不匹配/握手失败/超时）统一收敛为 network/validation，
-      // 不把证书字节、URL 参数等细节带进异常链。
       if (error instanceof AppError) throw error;
+      // 原生层把「证书/指纹不匹配」单独编码：给可操作提示，不把证书细节带进异常链。
+      // 连接本身已失败（安全语义成立），这里只改善用户能否理解原因。
+      if (isPinMismatch(error)) {
+        throw new AppError(
+          "validation",
+          "桌面端证书指纹不匹配（可能存在中间人），请重新扫码配对",
+          error,
+        );
+      }
+      // 原生层拒绝（握手失败/超时）统一收敛为 network/validation，
+      // 不把证书字节、URL 参数等细节带进异常链。
       throw toAppError(error, "network");
     } finally {
       init.signal?.removeEventListener("abort", onAbort);

@@ -266,3 +266,19 @@ describe("syncNow（端到端，真实落库）", () => {
     )).toEqual({ value: "1" });
   });
 });
+
+describe("syncNow（TLS 指纹 fail-closed）", () => {
+  // 回归：此前 `connection.tlsFingerprint || null` 会把缺失指纹静默降级为
+  // 「首用信任」传输，令牌可能被中间人拿走并派生同步密钥。
+  it("已配对连接缺少 SPKI 指纹时拒绝同步，且在创建传输前就失败", async () => {
+    const { loadConnection } = await import("../../../db/syncConnection");
+    vi.mocked(loadConnection).mockResolvedValueOnce({
+      ...connectionFixture,
+      tlsFingerprint: "",
+    });
+
+    // 不注入 fetchImpl：若实现继续构建 secureFetch，会先撞上「测试环境没有原生模块」，
+    // 因此断言错误文案即可证明在触达传输层前已 fail-closed。
+    await expect(syncNow()).rejects.toThrow(/TLS 指纹/);
+  });
+});

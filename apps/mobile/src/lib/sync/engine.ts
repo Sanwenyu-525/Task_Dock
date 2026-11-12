@@ -22,6 +22,7 @@ import { AppError } from "../errors";
 
 import { createSyncClient, type FetchLike, type SyncClient } from "./client";
 import { deriveSyncKey } from "./crypto";
+import { normalizeTlsFingerprint } from "./pairing";
 import { createSecureFetch } from "./secureFetch";
 
 const PAGE_SIZE = 500;
@@ -115,13 +116,20 @@ async function execute(options: { fetchImpl?: FetchLike }): Promise<SyncLastResu
   }
 
   const key = await deriveSyncKey(token);
+  // v2 起桌面端身份由 SPKI 指纹固定：已配对连接必须带指纹。指纹缺失
+  // （手动配对未观察到 / 元数据损坏 / v1 旧记录）时拒绝同步，绝不以首用信任
+  // 静默降级——否则一次未固定的连接就能让中间人取得令牌并派生同步密钥。
+  // fetchImpl 为测试注入（生产代码不传），此时由注入实现负责传输安全。
+  const pin = normalizeTlsFingerprint(connection.tlsFingerprint);
+  if (!pin && !options.fetchImpl) {
+    throw new AppError("validation", "缺少桌面端 TLS 指纹，请重新扫码配对后再同步");
+  }
   const client = createSyncClient({
     baseUrl: connection.baseUrl,
     token,
     deviceId: connection.deviceId,
     syncKey: key,
-    fetchImpl:
-      options.fetchImpl ?? createSecureFetch({ pin: connection.tlsFingerprint || null }),
+    fetchImpl: options.fetchImpl ?? createSecureFetch({ pin }),
   });
 
   try {

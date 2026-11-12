@@ -1,10 +1,14 @@
 // 文件互传客户端测试：注入 fetchImpl 验证分块协议、AAD 绑定、重试与取消。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AppError } from "../../errors";
 import { deriveSyncKey, encryptEnvelope, decryptEnvelope } from "../crypto";
 import { AAD_FILES_LIST, createFileClient, type RemoteFile } from "../files";
 import { createSyncClient, type FetchLike, type HttpResponseLike } from "../client";
+
+// 连接元数据只用于「未注入 fetchImpl」的 fail-closed 用例；其余用例全部注入 fetchImpl。
+const { loadConnectionMock } = vi.hoisted(() => ({ loadConnectionMock: vi.fn() }));
+vi.mock("../../../db/syncConnection", () => ({ loadConnection: loadConnectionMock }));
 
 const TOKEN = "a".repeat(64);
 
@@ -160,5 +164,21 @@ describe("FetchLike 契约一致性", () => {
     const syncClient = createSyncClient({ baseUrl: "https://host", token: TOKEN, syncKey: key, fetchImpl });
     const page = await syncClient.pull("0", 1);
     expect(page.changes).toEqual([]);
+  });
+});
+
+describe("文件传输 TLS 指纹 fail-closed", () => {
+  // 回归：此前缺指纹时惰性通道返回 null，等于以「首用信任」把 Bearer 令牌
+  // 与文件分块发给未固定身份的对端；现必须在发请求前拒绝。
+  it("已配对连接缺少 SPKI 指纹时拒绝发请求", async () => {
+    loadConnectionMock.mockResolvedValueOnce({ tlsFingerprint: "" });
+    const key = await deriveSyncKey(TOKEN);
+    const client = createFileClient({
+      baseUrl: "https://192.168.1.10:47822",
+      token: TOKEN,
+      syncKey: key,
+    });
+
+    await expect(client.list()).rejects.toThrow(/TLS 指纹/);
   });
 });

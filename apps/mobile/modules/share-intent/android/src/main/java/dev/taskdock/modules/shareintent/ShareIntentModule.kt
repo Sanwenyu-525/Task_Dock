@@ -53,11 +53,15 @@ class ShareIntentModule : Module() {
   /** JS 启动时拉取：首次调用时解析当前 Activity 的启动 Intent（冷启动分享） */
   private fun takePendingShare(): Map<String, Any?>? {
     if (!initialIntentInspected) {
-      initialIntentInspected = true
-      if (pendingText == null) {
-        // SDK 58：AppContext 直接暴露 currentActivity（reactContext 上不再可访问）
-        val intent = appContext.currentActivity?.intent
-        if (intent != null) offerFromIntent(intent, fromNewIntent = false)
+      // 只有确实拿到启动 Intent（或已有更新的待处理分享）时才闩住：若此刻 Activity
+      // 尚未就绪（currentActivity 为 null），保持未闩状态，下一次调用再试，
+      // 避免冷启动分享因一次过早的调用被静默丢弃。
+      val intent = if (pendingText == null) appContext.currentActivity?.intent else null
+      if (intent != null) {
+        initialIntentInspected = true
+        offerFromIntent(intent, fromNewIntent = false)
+      } else if (pendingText != null) {
+        initialIntentInspected = true
       }
     }
     val payload = buildPayload(pendingText, pendingTruncated, pendingOriginalLength)

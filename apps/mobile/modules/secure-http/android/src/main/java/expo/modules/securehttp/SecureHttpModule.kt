@@ -113,7 +113,9 @@ class SecureHttpModule : Module() {
           if (wasCancelled) {
             promise.reject("E_CANCELLED", "请求已取消", null)
           } else {
-            val code = if (error is CertificateException) "E_PIN_MISMATCH" else "E_NETWORK"
+            // 证书/指纹错误常被 HttpsURLConnection 包在 SSLHandshakeException 里：
+            // 沿 cause 链判定，否则「指纹不匹配」会被误报成普通网络错误。
+            val code = if (isCertificateFailure(error)) "E_PIN_MISMATCH" else "E_NETWORK"
             // 错误消息只含原因摘要，不含 URL 查询参数、证书或指纹原文。
             promise.reject(code, error.message ?: error.javaClass.simpleName, error)
           }
@@ -189,6 +191,18 @@ class SecureHttpModule : Module() {
     return out.toString("UTF-8")
   }
 
+  /** 沿 cause 链判定证书类失败（TLS 层常把 CertificateException 再包一层）。 */
+  private fun isCertificateFailure(error: Throwable?): Boolean {
+    var current = error
+    var depth = 0
+    while (current != null && depth < MAX_CAUSE_DEPTH) {
+      if (current is CertificateException) return true
+      current = current.cause
+      depth += 1
+    }
+    return false
+  }
+
   private fun spkiSha256Hex(certificate: X509Certificate): String {
     // publicKey.encoded = X.509 SubjectPublicKeyInfo DER；与桌面端指纹同一输入。
     val digest = MessageDigest.getInstance("SHA-256").digest(certificate.publicKey.encoded)
@@ -198,6 +212,8 @@ class SecureHttpModule : Module() {
   private companion object {
     /** 同步协议单包上限 1MB + 文件分块信封 ~512KB，取 4MB 防御性上限。 */
     const val MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+    /** cause 链深度上限：防御病态异常链导致的无界遍历。 */
+    const val MAX_CAUSE_DEPTH = 8
   }
 }
 
