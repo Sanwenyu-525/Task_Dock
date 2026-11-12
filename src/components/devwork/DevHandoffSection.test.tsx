@@ -6,7 +6,9 @@
 //! 2. 空节不输出：预览 Markdown 不含未填写节的标题；
 //! 3. 敏感扫描：命中只显示「节名 + 行号 + 类型」，绝不渲染原文；无命中显示绿色提示；
 //! 4. 复制成功/失败：失败时错误提示且编辑内容不丢失；
-//! 5. 保存版本：dev_handoff_save 参数与预览一致，成功后刷新版本列表；失败不丢编辑。
+//! 5. 保存版本：dev_handoff_save 参数与预览一致，成功后刷新版本列表；失败不丢编辑；
+//! 6. 资料选择（Round 2a）：两数据源加载/勾选追加到预览/取消减少/加载失败降级/
+//!    无任务隐藏/sourceSummary 含 selectedNotes + selectedShelfItems。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -16,7 +18,14 @@ import { useUiStore } from "../../store/useUiStore";
 import { useLocaleStore } from "../../i18n";
 import DevHandoffSection from "./DevHandoffSection";
 import { invalidateDevProjectCache } from "./DevProjectContext";
-import type { DevGitInfo, DevHandoffPack, DevProject, Task } from "../../lib/bridge";
+import type {
+  DevGitInfo,
+  DevHandoffPack,
+  DevProject,
+  NoteSummary,
+  ShelfItem,
+  Task,
+} from "../../lib/bridge";
 
 const FIX_TASK: Task = {
   id: "t1",
@@ -82,6 +91,8 @@ const {
   devHandoffSave,
   devHandoffDelete,
   devHandoffSecretScan,
+  notesList,
+  shelfList,
   copyText,
 } = vi.hoisted(() => ({
   fetchTask: vi.fn(),
@@ -94,6 +105,8 @@ const {
   devHandoffSave: vi.fn(),
   devHandoffDelete: vi.fn(),
   devHandoffSecretScan: vi.fn(),
+  notesList: vi.fn(),
+  shelfList: vi.fn(),
   copyText: vi.fn(),
 }));
 
@@ -111,6 +124,8 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     devHandoffSave,
     devHandoffDelete,
     devHandoffSecretScan,
+    notesList,
+    shelfList,
     updateSettings: vi.fn(async (patch: Record<string, unknown>) => ({
       ...(useSettingsStore.getState().settings ?? {}),
       ...patch,
@@ -149,6 +164,8 @@ beforeEach(() => {
     pack: packOf({ title: input.title, version: 1 }),
   }));
   devHandoffDelete.mockResolvedValue({ ok: true });
+  notesList.mockResolvedValue([]);
+  shelfList.mockResolvedValue({ items: [], total: 0 });
   copyText.mockResolvedValue(true);
 });
 
@@ -400,6 +417,188 @@ describe("DevHandoffSection · 保存版本", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "删除版本" }));
     await waitFor(() => {
       expect(devHandoffDelete).toHaveBeenCalledWith("pk1");
+    });
+  });
+});
+
+// ── 资料选择（Round 2a）──────────────────────────────────────────
+
+const FIX_NOTES: NoteSummary[] = [
+  {
+    id: "n1",
+    title: "部署备忘",
+    excerpt: "",
+    pinned: false,
+    favorite: false,
+    task_id: null,
+    workspace_id: null,
+    source_capture_id: null,
+    revision: 1,
+    created_at: "2026-11-12T00:00:00Z",
+    updated_at: "2026-11-12T00:00:00Z",
+    content_chars: 0,
+  },
+  {
+    id: "n2",
+    title: "联调结论",
+    excerpt: "",
+    pinned: false,
+    favorite: false,
+    task_id: null,
+    workspace_id: null,
+    source_capture_id: null,
+    revision: 1,
+    created_at: "2026-11-12T00:00:00Z",
+    updated_at: "2026-11-12T00:00:00Z",
+    content_chars: 0,
+  },
+];
+
+const FIX_SHELF: ShelfItem = {
+  id: "s1",
+  kind: "file",
+  display_name: "验收截图.png",
+  source_kind: "drag",
+  storage_mode: "reference",
+  original_path: "D:\shots\a.png",
+  managed_path: null,
+  content: null,
+  byte_size: 1024,
+  file_ext: "png",
+  favorite: false,
+  pinned: false,
+  exists_state: "ok",
+  group_id: null,
+  scene_id: null,
+  note: "",
+  expire_at: null,
+  created_at: "2026-11-12T00:00:00Z",
+  updated_at: "2026-11-12T00:00:00Z",
+};
+
+/** 项目背景 textarea 的当前内容。 */
+function backgroundBox(): HTMLTextAreaElement {
+  return screen.getByLabelText("项目背景") as HTMLTextAreaElement;
+}
+
+describe("DevHandoffSection · 资料选择（Round 2a）", () => {
+  it("两数据源加载：笔记标题与暂存架名称出现在勾选列表", async () => {
+    notesList.mockResolvedValue(FIX_NOTES);
+    shelfList.mockResolvedValue({ items: [FIX_SHELF], total: 1 });
+    render(<DevHandoffSection />);
+    expect(await screen.findByLabelText("部署备忘")).toBeTruthy();
+    expect(screen.getByLabelText("联调结论")).toBeTruthy();
+    expect(screen.getByLabelText("验收截图.png")).toBeTruthy();
+    // 各取最近 ≤20 条：limit 参数正确
+    expect(notesList).toHaveBeenCalledWith({ limit: 20, offset: 0 });
+    expect(shelfList).toHaveBeenCalledWith({ limit: 20, sort: "recent" });
+  });
+
+  it("勾选 3 条 → 预览出现 3 行 bullet；取消 1 条 → 剩 2 行", async () => {
+    notesList.mockResolvedValue([
+      ...FIX_NOTES,
+      { ...FIX_NOTES[0], id: "n3", title: "排障记录" },
+    ]);
+    shelfList.mockResolvedValue({ items: [FIX_SHELF], total: 1 });
+    render(<DevHandoffSection />);
+    fireEvent.click(await screen.findByLabelText("部署备忘"));
+    fireEvent.click(screen.getByLabelText("联调结论"));
+    fireEvent.click(screen.getByLabelText("验收截图.png"));
+    const preview = await screen.findByLabelText("Markdown 预览");
+    await waitFor(() => {
+      expect(preview.textContent).toContain("已选资料清单");
+    });
+    expect(preview.textContent).toContain("- 部署备忘");
+    expect(preview.textContent).toContain("- 联调结论");
+    expect(preview.textContent).toContain("- 验收截图.png");
+    // 取消 1 条 → 剩 2 行
+    fireEvent.click(screen.getByLabelText("联调结论"));
+    await waitFor(() => {
+      expect(preview.textContent).not.toContain("- 联调结论");
+    });
+    expect(preview.textContent).toContain("- 部署备忘");
+    expect(preview.textContent).toContain("- 验收截图.png");
+  });
+
+  it("已编辑「项目背景」后勾选仍追加，取消后基础内容保留", async () => {
+    notesList.mockResolvedValue(FIX_NOTES);
+    shelfList.mockResolvedValue({ items: [], total: 0 });
+    render(<DevHandoffSection />);
+    // 数据未到齐前先编辑项目背景（含预填竞态：直接等预填落地再改）
+    const bg = (await screen.findByLabelText("项目背景")) as HTMLTextAreaElement;
+    await waitFor(() => expect(bg.value).not.toBe(""));
+    fireEvent.change(bg, { target: { value: "我的背景" } });
+    fireEvent.click(await screen.findByLabelText("部署备忘"));
+    fireEvent.click(screen.getByLabelText("联调结论"));
+    const preview = await screen.findByLabelText("Markdown 预览");
+    await waitFor(() => {
+      expect(preview.textContent).toContain("我的背景\n\n已选资料清单");
+    });
+    expect(preview.textContent).toContain("- 部署备忘");
+    expect(preview.textContent).toContain("- 联调结论");
+    // 全部取消：追加块消失，基础内容原样保留（textarea 值不被追加块污染）
+    fireEvent.click(screen.getByLabelText("部署备忘"));
+    fireEvent.click(screen.getByLabelText("联调结论"));
+    await waitFor(() => {
+      expect(preview.textContent).not.toContain("已选资料清单");
+    });
+    expect(preview.textContent).toContain("我的背景");
+    expect(backgroundBox().value).toBe("我的背景");
+  });
+
+  it("加载失败降级：notes 失败显示错误行，shelf 仍渲染，表单不受阻", async () => {
+    notesList.mockRejectedValue(new Error("boom"));
+    shelfList.mockResolvedValue({ items: [FIX_SHELF], total: 1 });
+    render(<DevHandoffSection />);
+    expect(await screen.findByText(/笔记列表读取失败/)).toBeTruthy();
+    expect(screen.getByLabelText("验收截图.png")).toBeTruthy();
+    // 表单其他部分不受阻：任务目标 textarea 正常存在
+    expect(screen.getByLabelText("任务目标")).toBeTruthy();
+  });
+
+  it("无任务草稿：资料区隐藏，不发起两数据源请求", async () => {
+    seedSettings({ workbench_current_task: "" });
+    render(<DevHandoffSection />);
+    expect(await screen.findByLabelText("任务目标")).toBeTruthy();
+    expect(screen.queryByText("资料选择")).toBeNull();
+    expect(notesList).not.toHaveBeenCalled();
+    expect(shelfList).not.toHaveBeenCalled();
+  });
+
+  it("sourceSummary 记录 selectedNotes 与 selectedShelfItems（id 列表）", async () => {
+    notesList.mockResolvedValue(FIX_NOTES);
+    shelfList.mockResolvedValue({ items: [FIX_SHELF], total: 1 });
+    render(<DevHandoffSection />);
+    fireEvent.click(await screen.findByLabelText("部署备忘"));
+    fireEvent.click(screen.getByLabelText("验收截图.png"));
+    fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
+    await waitFor(() => {
+      expect(devHandoffSave).toHaveBeenCalledTimes(1);
+    });
+    const arg = vi.mocked(devHandoffSave).mock.calls[0][0] as { sourceSummary: string };
+    const source = JSON.parse(arg.sourceSummary) as {
+      selectedNotes: string[];
+      selectedShelfItems: string[];
+    };
+    expect(source.selectedNotes).toEqual(["n1"]);
+    expect(source.selectedShelfItems).toEqual(["s1"]);
+  });
+
+  it("全选把当前已加载条目全部勾选；清空一键移除", async () => {
+    notesList.mockResolvedValue(FIX_NOTES);
+    shelfList.mockResolvedValue({ items: [FIX_SHELF], total: 1 });
+    render(<DevHandoffSection />);
+    await screen.findByLabelText("部署备忘");
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    const preview = await screen.findByLabelText("Markdown 预览");
+    await waitFor(() => {
+      expect(preview.textContent).toContain("- 部署备忘");
+      expect(preview.textContent).toContain("- 联调结论");
+      expect(preview.textContent).toContain("- 验收截图.png");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "清空" }));
+    await waitFor(() => {
+      expect(preview.textContent).not.toContain("已选资料清单");
     });
   });
 });

@@ -193,6 +193,9 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     devHandoffList: vi.fn(async () => ({ packs: [] })),
     listTaskLinks: vi.fn(async () => []),
     devAcceptanceRecordList: vi.fn(async () => ({ records: [] })),
+    // Round 2a：交接包「资料选择」两数据源默认空（资料区行为在 DevHandoffSection.test.tsx）
+    notesList: vi.fn(async () => []),
+    shelfList: vi.fn(async () => ({ items: [], total: 0 })),
   };
 });
 
