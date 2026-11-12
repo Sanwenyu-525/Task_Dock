@@ -105,7 +105,7 @@ describe("剪贴板实时监听", () => {
     await vi.advanceTimersByTimeAsync(301);
 
     expect(mockedView).toHaveBeenCalledTimes(1);
-    expect(mockedView).toHaveBeenCalledWith(expect.objectContaining({ limit: 20 }));
+    expect(mockedView).toHaveBeenCalledWith(expect.objectContaining({ limit: 30 }));
     await vi.advanceTimersByTimeAsync(0);
     expect(useClipboardStore.getState().lite?.items.map((i) => i.id)).toEqual(["a"]);
   });
@@ -150,7 +150,7 @@ describe("剪贴板实时监听", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(mockedView).toHaveBeenCalledWith(expect.objectContaining({ limit: 80 }));
-    expect(mockedView).toHaveBeenCalledWith(expect.objectContaining({ limit: 20 }));
+    expect(mockedView).toHaveBeenCalledWith(expect.objectContaining({ limit: 30 }));
   });
 
   it("订阅失败后销毁空作用域并重试，恢复后事件仍能刷新", async () => {

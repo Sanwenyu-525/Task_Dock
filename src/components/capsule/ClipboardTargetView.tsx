@@ -70,8 +70,9 @@ export default function ClipboardTargetView({
       : null;
 
   // 条目已被删除：只请求一次轻量列表刷新（不自动返回、不轮询）。
+  // force 跳过每类缓存：这里要的是服务端最新结果，不是上次查询的复用。
   useEffect(() => {
-    if (itemMissing) void loadLite();
+    if (itemMissing) void loadLite(undefined, { force: true });
   }, [itemMissing, loadLite]);
 
   const select = (target: PasteTarget) => {

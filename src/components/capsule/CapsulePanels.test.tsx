@@ -104,6 +104,7 @@ import {
 import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useClipboardStore } from "../../store/useClipboardStore";
+import { useLifecycleStore } from "../../store/useLifecycleStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -1122,24 +1123,87 @@ describe("剪贴板面板", () => {
     total_items: 2,
   };
 
-  it("类型筛选与单项复制走真实命令，且复制后顺序不变", async () => {
-    clipboardView.mockResolvedValue(view);
+  it("类型筛选由后端查询表达（kind 参数 + 每类上限），复制后顺序不变", async () => {
+    // mock 后端真实行为：按 kind 过滤、limit=30，面板不再「先取再筛」
+    clipboardView.mockImplementation((filter: { kind?: string | null; limit?: number | null }) =>
+      Promise.resolve({
+        items: view.items.filter((i) => !filter.kind || i.kind === filter.kind),
+        groups: [],
+        stats: {},
+        total_items: view.items.filter((i) => !filter.kind || i.kind === filter.kind).length,
+      }),
+    );
     clipboardCopyItem.mockResolvedValue({ mode: "text", bytes: 1, warnings: [], sequence: 1 });
     const { container } = render(<ClipboardLite />);
     await screen.findByText("界面设计方案");
-
     const firstBefore = container.querySelector(".cap-item .cap-item-title")?.textContent;
 
     act(() => screen.getByRole("tab", { name: "图片" }).click());
-    expect(screen.queryByText(/液态融合翼片/)).toBeNull();
+    await waitFor(() =>
+      expect(clipboardView).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "image", limit: 30 }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByText(/液态融合翼片/)).toBeNull());
     expect(screen.getByText("界面设计方案")).toBeTruthy();
 
     act(() => screen.getByRole("tab", { name: "全部" }).click());
+    await screen.findByText(/液态融合翼片/);
+    const callsBeforeCopy = clipboardView.mock.calls.length;
     act(() => screen.getByRole("button", { name: "复制「界面设计方案」" }).click());
     await waitFor(() => expect(clipboardCopyItem).toHaveBeenCalledWith("c2"));
     // 复制不触发重新拉取：历史顺序不因复制而跳动
-    expect(clipboardView).toHaveBeenCalledTimes(1);
+    expect(clipboardView).toHaveBeenCalledTimes(callsBeforeCopy);
     expect(container.querySelector(".cap-item .cap-item-title")?.textContent).toBe(firstBefore);
+  });
+
+  it("搜索走后端 search 参数（250ms 防抖后发起查询）", async () => {
+    clipboardView.mockResolvedValue(view);
+    render(<ClipboardLite />);
+    await screen.findByText("界面设计方案");
+    clipboardView.mockClear();
+    clipboardView.mockResolvedValue(view);
+
+    fireEvent.change(screen.getByLabelText("搜索剪贴板记录"), {
+      target: { value: "方案" },
+    });
+    await waitFor(
+      () =>
+        expect(clipboardView).toHaveBeenCalledWith(
+          expect.objectContaining({ search: "方案", limit: 30 }),
+        ),
+      { timeout: 1000 },
+    );
+  });
+
+  it("暂停/恢复走生命周期适配层（同一意图源），写库成功后回读监听状态", async () => {
+    clipboardView.mockResolvedValue(view);
+    const setPaused = vi
+      .spyOn(useLifecycleStore.getState(), "setPaused")
+      .mockResolvedValue("ok");
+    render(<ClipboardLite />);
+    await screen.findByText("界面设计方案");
+
+    act(() => screen.getByRole("button", { name: "暂停监听" }).click());
+    await waitFor(() => expect(setPaused).toHaveBeenCalledWith("clipboard", true));
+    // 回读真实状态（loadMonitor → clipboardStatus），不把「配置已写入」冒充「已暂停」
+    await waitFor(() => expect(clipboardStatus).toHaveBeenCalled());
+    setPaused.mockRestore();
+  });
+
+  it("暂停失败给出错误提示，不伪装成功", async () => {
+    clipboardView.mockResolvedValue(view);
+    const setPaused = vi
+      .spyOn(useLifecycleStore.getState(), "setPaused")
+      .mockResolvedValue("failed");
+    render(<ClipboardLite />);
+    await screen.findByText("界面设计方案");
+
+    act(() => screen.getByRole("button", { name: "暂停监听" }).click());
+    await waitFor(() =>
+      expect(useUiStore.getState().toasts.some((t) => t.kind === "error")).toBe(true),
+    );
+    setPaused.mockRestore();
   });
 
   it("复制失败给出明确提示，且不显示成功勾选", async () => {

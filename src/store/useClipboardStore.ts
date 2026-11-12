@@ -79,6 +79,42 @@ export interface ClipboardFilters {
 }
 
 /**
+ * 胶囊面板的分段筛选：与完整页 KIND_CHIPS 同一套后端 kind 原值
+ * （text/url/html/image/files），不发明第二套类型语言。
+ */
+export type ClipboardLiteKind = "all" | "text" | "url" | "html" | "image" | "files";
+
+/** 胶囊轻量视图的查询：分段（后端 kind）+ 搜索词（后端 search）。 */
+export interface ClipboardLiteQuery {
+  kind?: ClipboardLiteKind;
+  search?: string;
+}
+
+/** 轻量视图每类上限：后端 limit 上限 200，这里取 30 与「范围说明」一致。 */
+export const CLIPBOARD_LITE_LIMIT = 30;
+
+/** 筛选键：`kind|search`，同一键的结果在面板会话内复用（切换分段不再重查）。 */
+function liteFilterKey(query: ClipboardLiteQuery): string {
+  return `${query.kind ?? "all"}|${(query.search ?? "").trim()}`;
+}
+
+/**
+ * 每类最近结果缓存（面板打开期间）：键 → 该筛选下的 items/groups/total。
+ * 只由 store 读写；releaseLite / resetAfterClear / 测试重置时清空，
+ * 不跨面板会话复用（重开面板重新确认，不携带旧结论）。
+ */
+interface LiteCacheEntry {
+  items: ClipboardItem[];
+  groups: ClipboardGroup[];
+  total: number;
+}
+const liteCache = new Map<string, LiteCacheEntry>();
+/** 缓存上限：搜索词每次变化都是新键，超出按插入序淘汰最旧的。 */
+const LITE_CACHE_MAX = 12;
+/** 最近一次目标查询：无参 loadLite（实时事件/重试）按它重复，不退回「全部」。 */
+let lastLiteQuery: ClipboardLiteQuery = { kind: "all", search: "" };
+
+/**
  * 离场快照：后端已删除、但退出动画还没播完的行。
  *
  * 删除命令会立刻 `emit_changed`，静默刷新与后台采集随时可能落库；若按服务端结果
@@ -235,7 +271,7 @@ export const useClipboardStore = create<{
   clearSelection: () => void;
   /** 订阅后端变更；**全局只建一个** Tauri 监听，页面与抽屉共享 */
   /**
-   * 胶囊面板的轻量视图：只有 view=all 的前 20 条，不加载分页与历史。
+   * 胶囊面板的轻量视图：当前筛选（分段 + 搜索）下后端真实查询的前 30 条。
    * null = 面板未打开（此时 live 回调不刷它，不多付一次 IPC）。
    */
   lite: { items: ClipboardItem[]; groups: ClipboardGroup[] } | null;
@@ -246,14 +282,28 @@ export const useClipboardStore = create<{
   /** 监听运行状态（clipboardStatus 派生；与列表错误分开显示） */
   monitor: ClipboardMonitorState;
   /**
-   * 轻量视图面板是否处于活跃态（独立于 `lite` 是否有数据）。
+   * 当前 `lite` 数据对应的筛选键（`kind|search`），成功写入后才更新；
+   * 面板据此判断「已取回的数据范围」与当前分段/搜索是否一致（同任务面板 liteScope）。
+   */
+  liteFilter: string;
+  /** 最近一次请求的目标筛选键（可能在途或失败），与 liteFilter 分开防「切回即空白」。 */
+  liteFilterTarget: string;
+  /** 当前筛选下后端真实总数（范围说明用）；unknown 时 null。 */
+  liteTotal: number | null;
+  /**
+   * 轻量面板是否处于活跃态（独立于 `lite` 是否有数据）。
    *
    * 组件挂载即活跃，哪怕首次查询失败（`lite === null`）或正在读取——事件到达
    * 时必须继续刷新，否则「打开面板 → 复制 → 读取失败一次」会永久停在错误空态。
    */
   liteActive: boolean;
-  /** 读一次轻量视图（胶囊面板挂载时调用；失败不清除已成功数据） */
-  loadLite: () => Promise<void>;
+  /**
+   * 读一次轻量视图（胶囊面板挂载 / 切分段 / 改搜索时调用；失败不清除已成功数据）。
+   * - 同一筛选键的最近结果在面板会话内缓存：切换分段不重发 IPC；
+   * - `force` 跳过缓存（实时事件与手动重试），仍按最新一次目标筛选查询；
+   * - 无参数时重复「最近一次目标筛选」，实时事件与错误重试共用这一行为。
+   */
+  loadLite: (query?: ClipboardLiteQuery, opts?: { force?: boolean }) => Promise<void>;
   /** 读一次监听状态（面板打开与手动重试时调用，不轮询） */
   loadMonitor: () => Promise<void>;
   /** 面板卸载：作废在途请求并释放轻量视图 */
@@ -477,6 +527,7 @@ export const useClipboardStore = create<{
       filterGen += 1;
       reqSeq += 1;
       liteSeq += 1;
+      liteCache.clear(); // 全量清空后旧筛选缓存一律作废，重查以服务端为准
       const stats = s.view?.stats;
       return {
         exiting: {},
@@ -509,6 +560,7 @@ export const useClipboardStore = create<{
         lite: s.lite ? { items: [], groups: [] } : s.lite,
         liteStatus: s.lite ? "empty" : s.liteStatus,
         liteError: null,
+        liteTotal: s.lite ? 0 : s.liteTotal,
       };
     }),
 
@@ -534,23 +586,62 @@ export const useClipboardStore = create<{
   liteError: null,
   liteActive: false,
   monitor: "checking",
-  loadLite: async () => {
+  liteFilter: "all|",
+  liteFilterTarget: "all|",
+  liteTotal: null,
+  loadLite: async (query, opts) => {
+    // 无参数 = 重复最近一次目标筛选：实时事件与错误重试都走这条路径。
+    const target = query ?? lastLiteQuery;
+    if (query) lastLiteQuery = query;
+    const key = liteFilterKey(target);
+    const kind = target.kind ?? "all";
+    const search = (target.search ?? "").trim();
+    // 命中缓存：切换分段/搜索不重发 IPC；面板会话内每类只查一次。
+    if (!opts?.force && liteCache.has(key)) {
+      const hit = liteCache.get(key)!;
+      const hasData = hit.items.length > 0 || hit.groups.length > 0;
+      set({
+        lite: { items: hit.items, groups: hit.groups },
+        liteLoading: false,
+        liteStatus: hasData ? "ready" : "empty",
+        liteError: null,
+        liteFilter: key,
+        liteFilterTarget: key,
+        liteTotal: hit.total,
+      });
+      return;
+    }
     const seq = ++liteSeq;
-    set({ liteLoading: true, liteStatus: "loading" });
+    set({ liteLoading: true, liteFilterTarget: key });
     try {
-      const view = await clipboardView({ limit: 20 });
+      const view = await clipboardView({
+        kind: kind === "all" ? undefined : kind,
+        search: search || undefined,
+        limit: CLIPBOARD_LITE_LIMIT,
+      });
       if (seq !== liteSeq) return; // 已有更新的请求，丢弃这次响应
       const hasData = view.items.length > 0 || view.groups.length > 0;
+      liteCache.set(key, { items: view.items, groups: view.groups, total: view.total_items });
+      // 超出上限按插入序淘汰最旧的键，长会话搜索不无限增长
+      while (liteCache.size > LITE_CACHE_MAX) {
+        const oldest = liteCache.keys().next().value;
+        if (oldest === undefined) break;
+        liteCache.delete(oldest);
+      }
       set({
         lite: { items: view.items, groups: view.groups },
         liteLoading: false,
         liteStatus: hasData ? "ready" : "empty",
         liteError: null,
+        liteFilter: key,
+        liteFilterTarget: key,
+        liteTotal: view.total_items,
       });
     } catch (e) {
       if (seq !== liteSeq) return;
       // 失败不清除已成功的数据：lite 原样保留（面板显示旧数据 + 错误条）；
       // 从未成功过（lite === null）时面板显示错误空态。两条路都可重试。
+      // liteFilter 保持旧值：面板据此识别「当前分段尚无成功数据」。
       set({ liteLoading: false, liteStatus: "error", liteError: String(e) });
     }
   },
@@ -568,6 +659,8 @@ export const useClipboardStore = create<{
   releaseLite: () => {
     liteSeq += 1; // 卸载后回来的响应一律作废
     monitorSeq += 1;
+    liteCache.clear(); // 每类缓存只属于本次面板会话，重开重新确认
+    lastLiteQuery = { kind: "all", search: "" };
     // 面板卸载即不再活跃；即使组件清理顺序异常，也不留下活跃引用
     liveLiteRefs = 0;
     set({
@@ -577,6 +670,9 @@ export const useClipboardStore = create<{
       liteError: null,
       liteActive: false,
       monitor: "checking", // 下次打开重新确认，绝不带着旧结论伪装新鲜
+      liteFilter: "all|",
+      liteFilterTarget: "all|",
+      liteTotal: null,
     });
     ensureLive();
   },
@@ -688,8 +784,9 @@ function handleClipboardChanged() {
     liveTimer = undefined;
     const state = useClipboardStore.getState();
     if (liveFullRefs > 0) void state.load({ silent: true });
-    // 用活跃态而不是 `lite !== null`：首次读取失败时也要能被事件带出错误态
-    if (liveLiteRefs > 0) void state.loadLite();
+    // 用活跃态而不是 `lite !== null`：首次读取失败时也要能被事件带出错误态。
+    // 重复最近一次目标筛选并强制跳过缓存：合并进当前分段/搜索，不退回「全部」。
+    if (liveLiteRefs > 0) void state.loadLite(undefined, { force: true });
   }, LIVE_DEBOUNCE_MS);
 }
 
@@ -699,6 +796,7 @@ export function resetClipboardRequestState() {
   reqSeq += 1;
   // 代际已推进，任何遗留的离场快照都不该再钉进新列表；收尾定时器一并回收
   dropExitTimers();
+  liteCache.clear();
   teardownLive();
   liveFullRefs = 0;
   liveLiteRefs = 0;
