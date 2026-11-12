@@ -2523,8 +2523,10 @@ fn drop_copy_png_on_legacy_schema_database_is_repaired_by_v47() {
     {
         let all = crate::db::migrations_for_test();
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        // 只应用到 v46，再手工还原旧版约束（模拟已发布构建留下的表结构）
-        crate::db::apply_migrations(&conn, 0, &all[..all.len() - 1]).unwrap();
+        // 只应用到 v46，再手工还原旧版约束（模拟已发布构建留下的表结构）。
+        // 按版本号定位切片，避免后续追加迁移（如 v48）时「倒数第一条」漂移。
+        let idx46 = all.iter().position(|(v, _)| *v == 46).unwrap();
+        crate::db::apply_migrations(&conn, 0, &all[..idx46 + 1]).unwrap();
         conn.execute_batch(
             r#"
 DROP TABLE shelf_file_ops;

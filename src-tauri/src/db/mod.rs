@@ -1549,6 +1549,52 @@ ALTER TABLE shelf_file_ops_v47_rebuild RENAME TO shelf_file_ops;
 CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
 "#,
     ),
+    (
+        48,
+        r#"
+-- v48（开发工作台）：开发项目登记、交接文档版本、验收记录三张表。
+-- - dev_projects：用户显式登记的项目根目录；root_path 唯一（同一目录不重复登记），
+--   不与 tasks/planning 关联（弱引用，由前端负责失效展示）；
+-- - dev_handoff_packs：交接文档按版本追加（task_id 为空时以 title 为版本键），
+--   旧版本保留作历史，不覆盖；
+-- - dev_acceptance_records：验收结论只追加不修改；subject_kind/verdict 由 CHECK
+--   拦截非法值，subject_id 为弱引用（任务/规划删除后记录保留，前端如实展示失效）。
+CREATE TABLE dev_projects (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  root_path TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_dev_projects_root_path ON dev_projects(root_path);
+
+CREATE TABLE dev_handoff_packs (
+  id TEXT PRIMARY KEY NOT NULL,
+  task_id TEXT,
+  title TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  content_md TEXT NOT NULL,
+  source_summary TEXT NOT NULL DEFAULT '{}',
+  secret_scan TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_dev_handoff_packs_task ON dev_handoff_packs(task_id, version);
+CREATE INDEX idx_dev_handoff_packs_recent ON dev_handoff_packs(created_at);
+
+CREATE TABLE dev_acceptance_records (
+  id TEXT PRIMARY KEY NOT NULL,
+  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('task','planning_feature')),
+  subject_id TEXT NOT NULL,
+  verdict TEXT NOT NULL CHECK (verdict IN ('pass','fail','blocked','not_verified')),
+  summary TEXT NOT NULL DEFAULT '',
+  evidence TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_dev_acceptance_records_subject
+  ON dev_acceptance_records(subject_kind, subject_id, created_at);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -2264,6 +2310,11 @@ pub struct Settings {
     /// 不在删除路径联动清理设置（避免给 delete_task 增加隐藏副作用）。
     #[serde(default)]
     pub workbench_current_task: String,
+    /// 当前关注的开发项目 ID（dev_projects.id；空 = 未设置）。
+    /// 与 workbench_current_task 同一语义：只由用户显式设置/切换，不自动推断；
+    /// 项目被删除后保留原值，由前端读侧校验并如实展示失效状态。
+    #[serde(default)]
+    pub workbench_current_project: String,
     // ── 模块独立启停（v0.5.2；关闭只停本模块的后台动作，Agent 接入不受影响）──
     /// 工作现场：关闭后停止捕获与后台恢复，历史数据保留
     #[serde(default = "default_true")]
@@ -4083,7 +4134,10 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
         let now = "2026-11-12T10:00:00+00:00";
         {
             let conn = Connection::open(&path).unwrap();
-            apply_migrations(&conn, 0, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+            // 只应用到 v46（v47 之前的最后一条），再手工还原旧版约束；
+            // 按版本号定位，避免依赖「最后一条迁移」（v48 之后 len-1 不再是 v46）。
+            let idx46 = MIGRATIONS.iter().position(|(v, _)| *v == 46).unwrap();
+            apply_migrations(&conn, 0, &MIGRATIONS[..idx46 + 1]).unwrap();
             install_legacy_move_only_journal(&conn);
             conn.execute(
                 "INSERT INTO shelf_file_ops (id, item_id, op, phase, source, target, created_at) \
@@ -4201,7 +4255,10 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.db");
         let conn = Connection::open(&path).unwrap();
-        apply_migrations(&conn, 0, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        // 只应用到 v46，再手工还原旧版约束（模拟已发布构建留下的表结构）；
+        // 按版本号定位 v47，避免依赖「最后一条迁移」。
+        let idx47 = MIGRATIONS.iter().position(|(v, _)| *v == 47).unwrap();
+        apply_migrations(&conn, 0, &MIGRATIONS[..idx47]).unwrap();
         install_legacy_move_only_journal(&conn);
         conn.pragma_update(None, "ignore_check_constraints", "ON")
             .unwrap();
@@ -4214,12 +4271,7 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
         conn.pragma_update(None, "ignore_check_constraints", "OFF")
             .unwrap();
 
-        let err = apply_migrations(
-            &conn,
-            46,
-            &MIGRATIONS[MIGRATIONS.len() - 1..],
-        )
-        .unwrap_err();
+        let err = apply_migrations(&conn, 46, &MIGRATIONS[idx47..]).unwrap_err();
         assert!(
             matches!(err, AppError::Db(_)),
             "约束失败应映射为数据库错误: {err:?}"
@@ -4762,7 +4814,9 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
     #[test]
     fn v29_normalizes_legacy_visual_preset_only() {
         let conn = Connection::open_in_memory().unwrap();
-        apply_migrations(&conn, 0, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        // 只应用到 v28（v29 之前），按版本号定位，避免依赖「最后一条迁移」。
+        let idx28 = MIGRATIONS.iter().position(|(v, _)| *v == 28).unwrap();
+        apply_migrations(&conn, 0, &MIGRATIONS[..idx28 + 1]).unwrap();
         conn.execute(
             "INSERT INTO application_settings (key, value, updated_at) VALUES
              ('visual_preset', '\"liquid-glass\"', '2026-10-29T00:00:00+00:00'),
@@ -5467,5 +5521,89 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
             .is_none());
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v48（开发工作台）：版本号、三张表、索引与 CHECK 约束一次性验证。
+    #[test]
+    fn v48_dev_workbench_migration_creates_tables_indexes_and_checks() {
+        let db = Db::open_in_memory().unwrap();
+        let version: i64 = db
+            .with_read(|conn| {
+                conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(version, 48, "新库必须迁移到 v48");
+
+        // 三张表 + 五个索引（1 个唯一 + 2 个 handoff + 1 个 acceptance）
+        db.with_read(|conn| {
+            let tables: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+                     ('dev_projects','dev_handoff_packs','dev_acceptance_records')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(tables, 3, "三张新表必须存在");
+            let indexes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
+                     ('idx_dev_projects_root_path','idx_dev_handoff_packs_task',
+                      'idx_dev_handoff_packs_recent','idx_dev_acceptance_records_subject')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(indexes, 4, "四个新索引必须存在");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO dev_projects (id, name, root_path, note, created_at, updated_at)
+                 VALUES ('p1', '项目', 'C:/repo', '', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            // root_path 唯一索引必须生效
+            let dup = conn.execute(
+                "INSERT INTO dev_projects (id, name, root_path, note, created_at, updated_at)
+                 VALUES ('p2', '重复', 'C:/repo', '', ?1, ?1)",
+                [&now],
+            );
+            assert!(dup.is_err(), "root_path 唯一约束必须生效");
+
+            conn.execute(
+                "INSERT INTO dev_handoff_packs (id, task_id, title, version, content_md, created_at)
+                 VALUES ('h1', NULL, '交接', 1, '# 内容', ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+
+            conn.execute(
+                "INSERT INTO dev_acceptance_records (id, subject_kind, subject_id, verdict, summary, created_at)
+                 VALUES ('a1', 'task', 't1', 'pass', '通过', ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            // CHECK 约束：非法 verdict / subject_kind 必须被拦截
+            let bad_verdict = conn.execute(
+                "INSERT INTO dev_acceptance_records (id, subject_kind, subject_id, verdict, summary, created_at)
+                 VALUES ('a2', 'task', 't1', 'maybe', '', ?1)",
+                [&now],
+            );
+            assert!(bad_verdict.is_err(), "verdict CHECK 必须生效");
+            let bad_kind = conn.execute(
+                "INSERT INTO dev_acceptance_records (id, subject_kind, subject_id, verdict, summary, created_at)
+                 VALUES ('a3', 'note', 't1', 'pass', '', ?1)",
+                [&now],
+            );
+            assert!(bad_kind.is_err(), "subject_kind CHECK 必须生效");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
     }
 }

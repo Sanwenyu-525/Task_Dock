@@ -11,6 +11,7 @@ pub mod clipboard;
 pub mod commands;
 pub mod context_menu;
 pub mod db;
+pub mod devwork;
 pub mod diagnostics;
 mod drag_signal;
 mod drag_watch;
@@ -1297,6 +1298,18 @@ pub fn run() {
             commands::workflows::workflow_list_runs,
             // 全局搜索（v0.9，统一只读检索层）
             commands::global_search::global_search,
+            // 开发工作台（v48）：项目登记 / git 只读探测 / 交接文档版本 / 敏感扫描 / 验收记录
+            commands::dev_workbench::dev_project_list,
+            commands::dev_workbench::dev_project_save,
+            commands::dev_workbench::dev_project_delete,
+            commands::dev_workbench::dev_project_probe,
+            commands::dev_workbench::dev_handoff_save,
+            commands::dev_workbench::dev_handoff_list,
+            commands::dev_workbench::dev_handoff_get,
+            commands::dev_workbench::dev_handoff_delete,
+            commands::dev_workbench::dev_handoff_secret_scan,
+            commands::dev_workbench::dev_acceptance_record_create,
+            commands::dev_workbench::dev_acceptance_record_list,
         ])
         .build(context)
         .expect("启动 Task Dock 失败")
