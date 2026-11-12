@@ -104,7 +104,9 @@ DevGitInfo { status: 'ok'|'not_a_repo'|'git_unavailable'|'path_missing',
 DevHandoffPack { id, taskId: string|null, title, version, contentMd,
                  sourceSummary: string, secretScan: string, createdAt }
 DevAcceptanceRecord { id, subjectKind, subjectId, verdict, summary,
-                      evidence: string, createdAt }
+                      evidence: string[], createdAt }
+// 更正（2026-11-13，独立验收 P1-1）：evidence 为字符串数组（后端 Vec<String>），
+// 初版契约误写为 string 导致前端按整串渲染的隐患，已修复并补真实形状测试
 SecretFinding { textIndex: number, line: number, kind: string }
 ```
 
@@ -144,7 +146,7 @@ github_token | sk_token | jwt | generic_assignment`。规则：
 
 ## 7. 前端落点（Round 1，全部挂既有页面，不新增导航入口）
 
-- **DevWorkbenchPanel**（`src/components/context/DevWorkbenchPanel.tsx`）新增三块（新组件文件，
+- **DevWorkbenchPanel**（`src/components/workbench/DevWorkbenchPanel.tsx`）新增三块（新组件文件，
   面板内挂载）：
   - `DevProjectContext.tsx`（区域 A2「开发现场」）：当前项目选择（下拉 dev_projects + 新建/
     编辑/删除/设为当前，写 `workbench_current_project` 设置）、git 摘要行（分支 · dirty 数 ·
