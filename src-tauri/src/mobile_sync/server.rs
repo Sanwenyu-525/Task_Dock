@@ -1,8 +1,10 @@
-//! 手机接入 HTTP 监听（局域网 IPv4：配对、探测与加密同步）。
+//! 手机接入 HTTPS 监听（局域网 IPv4：配对、探测与加密同步；v2 起 TLS-only）。
 //!
 //! 与 `agents/http_ingest` 的相同点：hyper 1.x、头部读取超时、请求体上限、
 //! 连接/在途并发上限、退出信号驱动关闭。不同点：
 //! - 绑定 `0.0.0.0`（由设置开关控制），不绑定回环；
+//! - 每条连接先经 `mobile_sync::tls` 的自签证书 acceptor 完成 TLS 握手，
+//!   **不存在明文回退**：明文客户端在握手处被拒绝（fail-closed）；
 //! - 路由：`/v1/health`、`/v1/pair`、`/v1/ping`、同步的 `/v1/changes`、`/v1/ops`，
 //!   以及文件互传的 `/v1/files`、`/v1/files/{id}/chunk/{index}`、`.../complete`、`.../delete`；
 //! - 配对接口无鉴权（凭一次性码），其余接口用 Bearer 设备令牌；
@@ -37,6 +39,7 @@ use crate::mobile_sync::{
     authenticate_device, complete_pairing, hash_token, MobileDevice, MobileSyncState, PairFailure,
     PairRequest, API_VERSION,
 };
+use crate::mobile_sync::tls::TlsIdentity;
 
 /// 配对/探测请求体上限：只接受很小的 JSON，杜绝大包占用内存。
 const MAX_BODY: usize = 4 * 1024;
@@ -54,6 +57,8 @@ pub struct ServerCtx {
     db: Arc<Db>,
     state: MobileSyncState,
     request_sem: Arc<Semaphore>,
+    /// TLS-only 身份：所有连接必须先过这一关，没有明文路径。
+    tls: TlsIdentity,
 }
 
 /// 绑定局域网全部 IPv4 接口。Windows 防火墙首次可能弹窗询问，属预期行为。
@@ -1004,39 +1009,45 @@ async fn route(
 }
 
 async fn handle_conn(stream: TcpStream, peer: SocketAddr, ctx: Arc<ServerCtx>) {
+    // v2 起 TLS-only：握手失败（明文 HTTP、端口扫描、协议不匹配）直接断开，
+    // 不发送任何 HTTP 响应，也不回退明文。握手本身计入连接总超时。
+    let tls_stream = match ctx.tls.acceptor().accept(stream).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            // 只记错误分类，不记对端提供的任何证书/主机名细节。
+            tracing::debug!("手机接入 TLS 握手失败（可能为明文客户端或扫描）: {error}");
+            return;
+        }
+    };
     let service = service_fn(move |req: Request<Incoming>| {
         let ctx = ctx.clone();
         async move { route(req, ctx, peer).await }
     });
-    let conn = http1_builder().serve_connection(TokioIo::new(stream), service);
+    let conn = http1_builder().serve_connection(TokioIo::new(tls_stream), service);
     if tokio::time::timeout(REQUEST_TIMEOUT, conn).await.is_err() {
         tracing::debug!("手机接入连接处理超时（peer 已连接）");
     }
 }
 
+/// TLS 端口上不能写明文 HTTP 响应：连接满时直接断开 TCP，
+/// 客户端表现为握手失败/连接重置，与本端口「无明文」的硬约束一致。
 async fn reject_busy(mut stream: TcpStream) {
-    let body = r#"{"error":"too_many_connections","message":"连接数已满，请稍后重试"}"#.as_bytes();
-    let head = format!(
-        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json; charset=utf-8\r\n\
-         Cache-Control: no-store\r\nRetry-After: 1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(head.as_bytes()).await;
-    let _ = stream.write_all(body).await;
     let _ = stream.shutdown().await;
 }
 
-/// 监听循环：跟随设置启停/端口变更与应用退出信号。
+/// 监听循环：跟随设置启停/端口变更与应用退出信号。`tls` 由主管在绑定前加载。
 pub async fn serve(
     listener: TcpListener,
     db: Arc<Db>,
     state: MobileSyncState,
     port: u16,
+    tls: TlsIdentity,
 ) {
     let ctx = Arc::new(ServerCtx {
         db: db.clone(),
         state,
         request_sem: Arc::new(Semaphore::new(MAX_INFLIGHT)),
+        tls,
     });
     let conn_sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut tick = tokio::time::interval(Duration::from_secs(2));
@@ -1083,5 +1094,375 @@ pub async fn serve(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mobile_sync::{hash_token, tls, PairRequest};
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    /// 全测试共享一份 TLS 身份：RSA-3072 生成需要数秒，避免每个用例重复生成。
+    fn shared_tls() -> &'static tls::TlsIdentity {
+        static TLS: OnceLock<tls::TlsIdentity> = OnceLock::new();
+        TLS.get_or_init(|| {
+            let dir = std::env::temp_dir().join("taskdock-mobile-server-test");
+            tls::load_or_create(&dir).expect("测试 TLS 身份")
+        })
+    }
+
+    fn shared_cert_pem() -> &'static String {
+        static PEM: OnceLock<String> = OnceLock::new();
+        PEM.get_or_init(|| {
+            let dir = std::env::temp_dir().join("taskdock-mobile-server-test");
+            std::fs::read_to_string(dir.join(tls::TLS_DIR_NAME).join(tls::CERT_FILE))
+                .expect("读取测试证书")
+        })
+    }
+
+    /// 启动一个真实的 TLS-only 监听（随机端口），返回端口。
+    async fn spawn_server(db: &Arc<Db>, state: &MobileSyncState) -> u16 {
+        let listener = bind(0).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        db.set_setting("mobile_sync_enabled", serde_json::json!(true))
+            .unwrap();
+        db.set_setting("mobile_sync_port", serde_json::json!(port))
+            .unwrap();
+        state.set_running(port);
+        let db = db.clone();
+        let state = state.clone();
+        let tls = shared_tls().clone();
+        tokio::spawn(async move {
+            serve(listener, db, state, port, tls).await;
+        });
+        port
+    }
+
+    fn test_state() -> MobileSyncState {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        MobileSyncState::new(&db, std::env::temp_dir().join("taskdock-mobile-server-test-files"))
+    }
+
+    fn connector() -> tokio_native_tls::TlsConnector {
+        let pem = shared_cert_pem();
+        let mut builder = native_tls::TlsConnector::builder();
+        builder
+            .add_root_certificate(
+                native_tls::Certificate::from_pem(pem.as_bytes()).expect("解析测试证书"),
+            )
+            // 自签证书只有 CN，不含 IP SAN；身份由根证书链承担（与手机端
+            // SPKI 指纹固定同级的验证强度），主机名校验在此明确关闭。
+            .danger_accept_invalid_hostnames(true);
+        tokio_native_tls::TlsConnector::from(builder.build().unwrap())
+    }
+
+    /// 发起一次 HTTPS 请求并返回 (status, body)。
+    async fn tls_request(
+        port: u16,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&str>,
+    ) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut tls = connector()
+            .connect("localhost", tcp)
+            .await
+            .expect("TLS 握手应成功");
+        let mut request = format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
+        if let Some(token) = token {
+            request.push_str(&format!("Authorization: Bearer {token}\r\n"));
+        }
+        if let Some(body) = body {
+            request.push_str(&format!(
+                "Content-Type: application/json\r\nContent-Length: {}\r\n",
+                body.len()
+            ));
+        }
+        request.push_str("\r\n");
+        if let Some(body) = body {
+            request.push_str(body);
+        }
+        tls.write_all(request.as_bytes()).await.unwrap();
+        let mut raw = Vec::new();
+        tls.read_to_end(&mut raw).await.unwrap();
+        let text = String::from_utf8_lossy(&raw).to_string();
+        let status: u16 = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        let body = text
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body.to_string())
+            .unwrap_or_default();
+        (status, body)
+    }
+
+    /// 直接用明文 TCP 请求（v1 旧客户端行为）：不得得到任何 HTTP 响应。
+    async fn plaintext_request(port: u16, request: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        tcp.write_all(request.as_bytes()).await.unwrap();
+        let mut raw = Vec::new();
+        // 握手失败后服务端断开：读端要么 EOF 要么报错，都不该出现 200。
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            let _ = tcp.read_to_end(&mut raw).await;
+        })
+        .await;
+        String::from_utf8_lossy(&raw).to_string()
+    }
+
+    fn device_token_fixture() -> String {
+        "ab".repeat(32)
+    }
+
+    fn insert_device(db: &Arc<Db>, device_id: &str, token: &str) {
+        let hash = hash_token(token);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO mobile_devices (id, name, platform, token_hash, created_at)
+                 VALUES (?1, '测试手机', 'android', ?2, '2026-11-12T00:00:00Z')",
+                rusqlite::params![device_id, hash],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_succeeds_and_health_reports_v2() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let (status, body) = tls_request(port, "GET", "/v1/health", None, None).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("\"api_version\":2"), "{body}");
+        assert!(body.contains("taskdock-mobile-sync"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn plaintext_clients_get_no_http_response() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let text =
+            plaintext_request(port, "GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n").await;
+        assert!(
+            !text.contains("200"),
+            "明文请求不应得到任何 HTTP 响应：{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn untrusted_root_fails_handshake() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        // 用另一份自签证书做客户端根：不应信任服务端证书。
+        let other_dir = std::env::temp_dir().join("taskdock-mobile-server-test-other");
+        let _ = tls::load_or_create(&other_dir).unwrap();
+        let other_pem =
+            std::fs::read_to_string(other_dir.join(tls::TLS_DIR_NAME).join(tls::CERT_FILE))
+                .unwrap();
+        let builder = native_tls::TlsConnector::builder()
+            .add_root_certificate(
+                native_tls::Certificate::from_pem(other_pem.as_bytes()).unwrap(),
+            )
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .unwrap();
+        let other_connector = tokio_native_tls::TlsConnector::from(builder);
+        let result = other_connector.connect("localhost", tcp).await;
+        assert!(result.is_err(), "陌生根证书的 TLS 握手必须失败");
+    }
+
+    #[tokio::test]
+    async fn changes_with_invalid_token_returns_401() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let token = "a".repeat(64);
+        let (status, body) =
+            tls_request(port, "GET", "/v1/changes?since=0", Some(&token), None).await;
+        assert_eq!(status, 401, "{body}");
+        assert!(body.contains("unauthorized"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn changes_with_revoked_device_returns_401() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let token = device_token_fixture();
+        insert_device(&db, "device-revoked", &token);
+        assert!(crate::mobile_sync::revoke_device(&db, "device-revoked").unwrap());
+        let (status, body) =
+            tls_request(port, "GET", "/v1/changes?since=0", Some(&token), None).await;
+        assert_eq!(status, 401, "{body}");
+    }
+
+    #[tokio::test]
+    async fn pair_wrong_code_locks_after_max_attempts() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        state.start_session_for_test("123456");
+
+        let body = r#"{"code":"999999","device_name":"Pixel","platform":"android"}"#;
+        for attempt in 1..=5 {
+            let (status, resp) = tls_request(port, "POST", "/v1/pair", None, Some(body)).await;
+            if attempt < 5 {
+                assert_eq!(status, 401, "第 {attempt} 次: {resp}");
+            } else {
+                assert_eq!(status, 429, "第 {attempt} 次: {resp}");
+                assert!(resp.contains("too_many_attempts"), "{resp}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ops_replay_is_idempotent_and_wrong_key_rejected() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let token = device_token_fixture();
+        insert_device(&db, "device-ops", &token);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags,
+                                    advance_minutes, created_at, updated_at)
+                 VALUES ('task-1', '旧标题', '', 1, 'pending', '', '[]', 0,
+                         '2026-11-12T00:00:00Z', '2026-11-12T00:00:00Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        // v43 触发器在 INSERT 时已写一条变更日志：以真实最新 seq 作为 base_rev。
+        let base_rev: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT MAX(seq) FROM sync_changes WHERE entity='task' AND id='task-1'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+
+        let key = derive_key(&hash_token(&token));
+        let envelope = encrypt_envelope(
+            &key,
+            AAD_PUSH,
+            &serde_json::json!({
+                "device_id": "device-ops",
+                "ops": [{
+                    "op_id": "op-replay-1",
+                    "entity": "task",
+                    "id": "task-1",
+                    "base_rev": base_rev,
+                    "patch": { "title": "新标题" }
+                }]
+            }),
+        )
+        .unwrap();
+        let body = serde_json::to_string(&envelope).unwrap();
+
+        for round in 1..=2 {
+            let (status, resp) =
+                tls_request(port, "POST", "/v1/ops", Some(&token), Some(&body)).await;
+            assert_eq!(status, 200, "第 {round} 轮: {resp}");
+            let data = decrypt_envelope(&key, AAD_PUSH, &serde_json::from_str(&resp).unwrap())
+                .expect("响应应可用正确密钥解密");
+            assert_eq!(
+                data["ack"],
+                serde_json::json!(["op-replay-1"]),
+                "第 {round} 轮 conflicts={:?}",
+                data["conflicts"]
+            );
+        }
+
+        // 幂等：重放不产生第二条 sync_ops；变更日志 = INSERT 基线 + 一次 UPDATE，
+        // 重放不产生第三条。
+        let (ops_count, changes_count, title): (i64, i64, String) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row("SELECT COUNT(*) FROM sync_ops", [], |r| r.get(0))?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM sync_changes WHERE entity='task' AND id='task-1'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    conn.query_row("SELECT title FROM tasks WHERE id='task-1'", [], |r| {
+                        r.get(0)
+                    })?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(ops_count, 1);
+        assert_eq!(changes_count, 2);
+        assert_eq!(title, "新标题");
+
+        // 错误密钥：解密失败 → 400，不落库。
+        let other_key = derive_key(&"ff".repeat(32));
+        let bad = serde_json::to_string(
+            &encrypt_envelope(
+                &other_key,
+                AAD_PUSH,
+                &serde_json::json!({"device_id": "device-ops", "ops": []}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let (status, _) = tls_request(port, "POST", "/v1/ops", Some(&token), Some(&bad)).await;
+        assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
+    async fn changes_returns_encrypted_envelope_for_paired_device() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let token = device_token_fixture();
+        insert_device(&db, "device-pull", &token);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tasks (id, title, description, priority, status, category, tags,
+                                    advance_minutes, created_at, updated_at)
+                 VALUES ('task-pull', '机密任务', '', 1, 'pending', '', '[]', 0,
+                         '2026-11-12T00:00:00Z', '2026-11-12T00:00:00Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO sync_changes (entity, id, deleted, changed_at)
+                 VALUES ('task', 'task-pull', 0, '2026-11-12T00:00:00Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let (status, resp) =
+            tls_request(port, "GET", "/v1/changes?since=0", Some(&token), None).await;
+        assert_eq!(status, 200);
+        // 传输层之上仍是加密信封：明文里不应出现任务标题。
+        assert!(!resp.contains("机密任务"), "pull 响应必须加密：{resp}");
+        let key = derive_key(&hash_token(&token));
+        let data = decrypt_envelope(&key, AAD_PULL, &serde_json::from_str(&resp).unwrap()).unwrap();
+        assert_eq!(data["changes"][0]["fields"]["title"], "机密任务");
+    }
+
+    #[test]
+    fn pair_request_deserializes_v2_clients() {
+        let request: PairRequest = serde_json::from_str(
+            r#"{"code":"482913","device_name":"Android 手机","platform":"android","device_uid":"0f8fad5b-d9cb-469f-a165-70867728950e"}"#,
+        )
+        .unwrap();
+        assert_eq!(request.code, "482913");
+        assert_eq!(request.device_uid.len(), 36);
     }
 }

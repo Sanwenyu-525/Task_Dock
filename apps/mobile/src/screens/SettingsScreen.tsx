@@ -16,6 +16,7 @@ import { loadConnection, type PairedConnection } from "../db/syncConnection";
 import { countPendingOutbox, listTasks } from "../db/tasks";
 import { describeError } from "../lib/errors";
 import type { Nav } from "../lib/nav";
+import { isLegacyConnection } from "../lib/sync/connectionState";
 import {
   ensurePermission,
   getPermissionLabel,
@@ -181,9 +182,11 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
             设置
           </Text>
           <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
-            {syncConnection
-              ? `已配对 ${syncConnection.serverName} · 任务/笔记/收集箱可手动同步`
-              : "未连接桌面端 · 数据仅在本机"}
+            {syncConnection && isLegacyConnection(syncConnection)
+              ? `需重新配对 ${syncConnection.serverName} · 桌面端已升级加密传输`
+              : syncConnection
+                ? `已配对 ${syncConnection.serverName} · 任务/笔记/收集箱可手动同步`
+                : "未连接桌面端 · 数据仅在本机"}
           </Text>
         </View>
 

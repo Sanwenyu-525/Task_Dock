@@ -21,8 +21,10 @@ import { SearchField } from "../components/SearchField";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { addCapture, deleteCapture, listCaptures, promoteCapture } from "../db/captures";
 import { loadConnection } from "../db/syncConnection";
+import { isLegacyConnection } from "../lib/sync/connectionState";
 import type { Capture } from "../domain/types";
 import { describeError } from "../lib/errors";
+import { notifyWidgetDataChanged } from "../lib/widgetSnapshot";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
@@ -65,7 +67,8 @@ export function InboxScreen({
         loadConnection().catch(() => null),
       ]);
       setCaptures(nextCaptures);
-      setPaired(Boolean(connection));
+      // v1 遗留/缺指纹连接在 TLS-only 桌面端上已不可用，不能显示「同步已连接」。
+      setPaired(Boolean(connection) && !isLegacyConnection(connection));
     } catch (error) {
       showToast(`读取收集箱失败：${describeError(error)}`, "danger");
     } finally {
@@ -89,6 +92,7 @@ export function InboxScreen({
     if (!value) return;
     try {
       const result = await addCapture(value);
+      notifyWidgetDataChanged();
       setText("");
       showToast(
         result.duplicated ? "重复提交已忽略" : "已收进收集箱",
@@ -120,6 +124,7 @@ export function InboxScreen({
     async (capture: Capture) => {
       try {
         await deleteCapture(capture.id);
+        notifyWidgetDataChanged();
         setExiting((previous) => ({ ...previous, [capture.id]: true }));
       } catch (error) {
         showToast(`删除失败：${describeError(error)}`, "danger");

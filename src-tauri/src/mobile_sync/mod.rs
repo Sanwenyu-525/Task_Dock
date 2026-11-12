@@ -1,11 +1,12 @@
-//! 手机端配对与局域网连接（v0.16）。
+//! 手机端配对与局域网连接（v0.16，2026-11-12 起传输硬切 TLS）。
 //!
 //! 设计边界（对应 docs/mobile/01-architecture.md 与 MOBILE_STACK.md §3）：
 //! - 桌面端是配对授权中心：只有用户显式开启「允许手机连接」后才监听局域网 IPv4；
 //! - 配对使用**一次性 6 位码 + 120 秒窗口 + 最多 5 次尝试**，成功后签发高熵设备令牌；
 //! - 数据库只保存令牌的 SHA-256 哈希，明文令牌只在配对响应里返回一次，绝不写日志；
-//! - 本轮传输为局域网 HTTP（用户已确认的 v1 基线），不提供 TLS；威胁模型与后续
-//!   TLS/指纹固定计划见验收报告与 docs/mobile/06-pairing.md；
+//! - 传输为 **TLS-only**（`mobile_sync::tls` 的自签证书 + schannel，v2 协议）：
+//!   不保留任何明文监听、不做静默降级；手机端以证书 SPKI SHA-256 指纹固定桌面端身份，
+//!   指纹通过配对二维码（`tls=` 参数）离线送达；
 //! - 服务只接受配对与连通性探测（`/v1/ping`），不提供任何业务数据读写；
 //! - 撤销设备写 `revoked_at` 软删除，已撤销令牌立即失效；
 //! - 所有网络任务可取消：应用退出信号、设置关闭、端口变更都会让监听循环退出。
@@ -13,7 +14,7 @@
 //! 安全约束：
 //! - 牌令牌比较走常量时间；配对码比较同样不使用 `==`；
 //! - 请求体上限 4KB、头部读取超时、请求处理超时、连接/在途并发上限；
-//! - 日志不记录请求体、配对码、令牌、设备名与精确设备指纹。
+//! - 日志不记录请求体、配对码、令牌、设备名与精确设备指纹；TLS 指纹是公开值可记录。
 
 use std::net::UdpSocket;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -30,9 +31,13 @@ use crate::error::{AppError, AppResult};
 pub mod files;
 pub mod server;
 pub mod sync;
+pub mod tls;
 
 /// 协议版本：手机端据此拒绝不兼容的桌面端。
-pub const API_VERSION: u32 = 1;
+///
+/// v2（2026-11-12）：传输硬切 TLS-only + SPKI 指纹固定。v1 客户端连 v2 服务端会
+/// 在 TLS 握手处失败（不再有明文监听），需要升级 APK 并重新配对。
+pub const API_VERSION: u32 = 2;
 /// 配对码有效期：足够用户扫码/输码，又限制可暴力尝试窗口。
 pub const PAIRING_TTL_SECS: u64 = 120;
 /// 单个配对会话允许的错误尝试次数；超过后必须重新生成配对码。
@@ -61,6 +66,9 @@ struct Inner {
     error: Option<String>,
     server_name: String,
     instance_id: String,
+    /// TLS 身份（自签证书 acceptor + SPKI 指纹）。加载成功后常驻；停止监听不清除，
+    /// 状态页仍可展示指纹。None = 尚未加载（监听不可用，fail-closed）。
+    tls: Option<tls::TlsIdentity>,
 }
 
 struct PairingSession {
@@ -108,6 +116,8 @@ pub struct MobileSyncStatus {
     pub server_name: String,
     pub instance_id: String,
     pub fingerprint: String,
+    /// TLS 证书 SPKI SHA-256（64 位小写 hex）；尚未加载时为空串。
+    pub tls_fingerprint: String,
     pub error: Option<String>,
     pub pairing: Option<PairingStatus>,
     pub paired_device: Option<PairedNotice>,
@@ -124,6 +134,8 @@ pub struct PairingOffer {
     pub server_name: String,
     pub instance_id: String,
     pub fingerprint: String,
+    /// TLS 证书 SPKI SHA-256（64 位小写 hex）；已编入二维码 `tls=` 参数。
+    pub tls_fingerprint: String,
     pub qr_payload: String,
 }
 
@@ -176,6 +188,7 @@ impl MobileSyncState {
                 error: None,
                 server_name,
                 instance_id,
+                tls: None,
             })),
             files_root,
         }
@@ -184,6 +197,15 @@ impl MobileSyncState {
     /// 文件互传根目录（只读）。
     pub fn files_root(&self) -> &std::path::Path {
         &self.files_root
+    }
+
+    /// 数据目录（TLS 证书所在）。files_root 恒为 `<data_dir>/mobile_files`，
+    /// 因此取父目录即数据目录；无父目录时退回当前目录（异常路径，加载证书会失败并显示）。
+    pub fn data_dir(&self) -> std::borrow::Cow<'_, std::path::Path> {
+        self.files_root
+            .parent()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| std::borrow::Cow::Owned(std::path::PathBuf::from(".")))
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -227,6 +249,29 @@ impl MobileSyncState {
     fn server_name(&self) -> String {
         self.lock().server_name.clone()
     }
+
+    /// 当前 TLS 身份（含 acceptor 与指纹）；未加载时为 None。
+    pub fn tls_identity(&self) -> Option<tls::TlsIdentity> {
+        self.lock().tls.clone()
+    }
+
+    /// 写入 TLS 身份（成功加载后调用一次；重复调用以最新为准）。
+    pub fn set_tls_identity(&self, identity: tls::TlsIdentity) {
+        self.lock().tls = Some(identity);
+    }
+
+    /// 测试专用：不依赖局域网 IP 探测，直接放置一个活动配对会话。
+    #[cfg(test)]
+    pub fn start_session_for_test(&self, code: &str) {
+        let mut inner = self.lock();
+        inner.session = Some(PairingSession {
+            id: Uuid::new_v4().simple().to_string(),
+            code: code.to_string(),
+            expires_at: Instant::now() + Duration::from_secs(PAIRING_TTL_SECS),
+            attempts: 0,
+            paired: None,
+        });
+    }
 }
 
 /// 后台监听主管：跟随设置启停与端口变更，负责绑定/释放监听。
@@ -265,12 +310,33 @@ async fn run_supervisor(db: Arc<Db>, state: MobileSyncState) {
             continue;
         }
 
+        // TLS 身份（自签证书）只在首次需要时加载一次，之后常驻状态。
+        // 加载失败 fail-closed：不回退明文监听，按绑定失败同样的节奏重试。
+        let tls = match state.tls_identity() {
+            Some(identity) => identity,
+            None => match tls::load_or_create(state.data_dir().as_ref()) {
+                Ok(identity) => {
+                    state.set_tls_identity(identity.clone());
+                    identity
+                }
+                Err(message) => {
+                    if last_error.as_deref() != Some(message.as_str()) {
+                        tracing::warn!("手机接入 TLS 初始化失败: {message}");
+                        last_error = Some(message.clone());
+                    }
+                    state.set_error(message);
+                    wait_or_shutdown(Duration::from_secs(5)).await;
+                    continue;
+                }
+            },
+        };
+
         match server::bind(port).await {
             Ok(listener) => {
                 last_error = None;
                 state.set_running(port);
-                tracing::info!("手机接入监听 0.0.0.0:{}（仅局域网，需用户开启）", port);
-                server::serve(listener, db.clone(), state.clone(), port).await;
+                tracing::info!("手机接入监听 0.0.0.0:{}（TLS-only，仅局域网，需用户开启）", port);
+                server::serve(listener, db.clone(), state.clone(), port, tls.clone()).await;
                 state.set_stopped();
             }
             Err(e) => {
@@ -310,6 +376,7 @@ pub fn status(db: &Db, state: &MobileSyncState) -> MobileSyncStatus {
         error,
         pairing,
         paired_device,
+        tls_fingerprint,
     ) = {
         let mut inner = state.lock();
 
@@ -347,6 +414,11 @@ pub fn status(db: &Db, state: &MobileSyncState) -> MobileSyncStatus {
             inner.error.clone(),
             pairing,
             paired_device,
+            inner
+                .tls
+                .as_ref()
+                .map(|identity| identity.fingerprint().to_string())
+                .unwrap_or_default(),
         )
     };
 
@@ -356,10 +428,13 @@ pub fn status(db: &Db, state: &MobileSyncState) -> MobileSyncStatus {
         running,
         port,
         lan_ip: lan_ip.clone(),
-        base_url: lan_ip.as_ref().map(|ip| format!("http://{ip}:{port}")),
+        // v2 起传输为 TLS-only；地址仅用于状态展示，真实连接由二维码里的
+        // host/port + tls 指纹驱动。保留 http:// 形式会误导，改为 https://。
+        base_url: lan_ip.as_ref().map(|ip| format!("https://{ip}:{port}")),
         server_name,
         fingerprint: fingerprint_of(&instance_id),
         instance_id,
+        tls_fingerprint,
         error,
         pairing,
         paired_device,
@@ -381,7 +456,7 @@ pub fn start_pairing(db: &Db, state: &MobileSyncState) -> AppResult<PairingOffer
         )
     })?;
 
-    let (server_name, instance_id, port, code) = {
+    let (server_name, instance_id, port, code, tls) = {
         let mut inner = state.lock();
         let Some(bound_port) = inner.bound_port else {
             return Err(AppError::Unavailable(
@@ -393,6 +468,12 @@ pub fn start_pairing(db: &Db, state: &MobileSyncState) -> AppResult<PairingOffer
                 "手机接入端口正在切换，请稍后重试".into(),
             ));
         }
+        // TLS 身份未就绪时不允许配对：二维码必须携带 SPKI 指纹作为信任锚。
+        let Some(tls) = inner.tls.clone() else {
+            return Err(AppError::Unavailable(
+                "TLS 证书尚未就绪，请稍后重试".into(),
+            ));
+        };
         let now = Instant::now();
         let session = PairingSession {
             id: Uuid::new_v4().simple().to_string(),
@@ -408,10 +489,12 @@ pub fn start_pairing(db: &Db, state: &MobileSyncState) -> AppResult<PairingOffer
             inner.instance_id.clone(),
             bound_port,
             code,
+            tls,
         )
     };
 
     let fingerprint = fingerprint_of(&instance_id);
+    let tls_fingerprint = tls.fingerprint().to_string();
     let qr_payload = build_pairing_uri(
         &lan_ip,
         port,
@@ -419,6 +502,7 @@ pub fn start_pairing(db: &Db, state: &MobileSyncState) -> AppResult<PairingOffer
         &server_name,
         &instance_id,
         &fingerprint,
+        &tls_fingerprint,
     );
 
     Ok(PairingOffer {
@@ -429,6 +513,7 @@ pub fn start_pairing(db: &Db, state: &MobileSyncState) -> AppResult<PairingOffer
         server_name,
         instance_id,
         fingerprint,
+        tls_fingerprint,
         qr_payload,
     })
 }
@@ -683,6 +768,8 @@ pub fn detect_lan_ip() -> Option<String> {
 /// 二维码内容：手机端扫码后可直接解析，也可退回手动输入。
 ///
 /// 固定字段顺序便于测试与跨端解析；所有值做百分号编码，设备名可包含中文/空格。
+/// v2 起额外携带 `tls=`：证书 SPKI SHA-256（64 位小写 hex），手机端据此做
+/// 首字节起的指纹固定；`fp=` 仍是实例展示指纹（8 位十六进制，非密钥）。
 pub fn build_pairing_uri(
     host: &str,
     port: u16,
@@ -690,9 +777,10 @@ pub fn build_pairing_uri(
     server_name: &str,
     instance_id: &str,
     fingerprint: &str,
+    tls_fingerprint: &str,
 ) -> String {
     format!(
-        "taskdock://pair?v={}&host={}&port={}&code={}&name={}&instance={}&fp={}",
+        "taskdock://pair?v={}&host={}&port={}&code={}&name={}&instance={}&fp={}&tls={}",
         API_VERSION,
         percent_encode(host),
         port,
@@ -700,6 +788,7 @@ pub fn build_pairing_uri(
         percent_encode(server_name),
         percent_encode(instance_id),
         percent_encode(fingerprint),
+        percent_encode(tls_fingerprint),
     )
 }
 
@@ -856,6 +945,11 @@ mod tests {
             std::env::temp_dir().join("taskdock-mobile-files-state-test"),
         );
         state.set_running(47822);
+        // TLS 身份用真实自签证书（一次性生成后由测试目录缓存），保证
+        // start_pairing / 二维码路径按生产逻辑走通。
+        let tls_dir = std::env::temp_dir().join("taskdock-mobile-tls-state-test");
+        let identity = tls::load_or_create(&tls_dir).expect("测试 TLS 身份");
+        state.set_tls_identity(identity);
         state
     }
 
@@ -872,15 +966,32 @@ mod tests {
             attempts: 0,
             paired: None,
         });
+        let tls_fingerprint = inner
+            .tls
+            .as_ref()
+            .map(|identity| identity.fingerprint().to_string())
+            .unwrap_or_default();
+        let (server_name, instance_id) = (inner.server_name.clone(), inner.instance_id.clone());
+        let display_fingerprint = fingerprint_of(&instance_id);
+        let qr_payload = build_pairing_uri(
+            "192.0.2.10",
+            47822,
+            &code,
+            &server_name,
+            &instance_id,
+            &display_fingerprint,
+            &tls_fingerprint,
+        );
         PairingOffer {
             code,
             expires_in_secs: PAIRING_TTL_SECS,
             lan_ip: "192.0.2.10".into(),
             port: 47822,
-            server_name: inner.server_name.clone(),
-            instance_id: inner.instance_id.clone(),
-            fingerprint: fingerprint_of(&inner.instance_id),
-            qr_payload: String::new(),
+            server_name,
+            instance_id,
+            fingerprint: display_fingerprint,
+            tls_fingerprint,
+            qr_payload,
         }
     }
 
@@ -896,6 +1007,7 @@ mod tests {
 
     #[test]
     fn pairing_uri_is_stable_and_percent_encodes_display_name() {
+        let tls_fp = "a".repeat(64);
         let uri = build_pairing_uri(
             "192.168.1.10",
             47822,
@@ -903,12 +1015,26 @@ mod tests {
             "我的 台式机",
             "abc123def456",
             "1A2B3C4D",
+            &tls_fp,
         );
         assert_eq!(
             uri,
-            "taskdock://pair?v=1&host=192.168.1.10&port=47822&code=042913&\
-             name=%E6%88%91%E7%9A%84%20%E5%8F%B0%E5%BC%8F%E6%9C%BA&instance=abc123def456&fp=1A2B3C4D"
+            format!(
+                "taskdock://pair?v=2&host=192.168.1.10&port=47822&code=042913&\
+                 name=%E6%88%91%E7%9A%84%20%E5%8F%B0%E5%BC%8F%E6%9C%BA&instance=abc123def456&\
+                 fp=1A2B3C4D&tls={tls_fp}"
+            )
         );
+    }
+
+    #[test]
+    fn pairing_offer_embeds_tls_fingerprint_in_qr_payload() {
+        let db = Db::open_in_memory().unwrap();
+        let state = test_state(&db);
+        let offer = start_session(&state);
+        assert_eq!(offer.tls_fingerprint.len(), 64);
+        assert!(offer.qr_payload.contains(&format!("tls={}", offer.tls_fingerprint)));
+        assert!(offer.qr_payload.contains("v=2"));
     }
 
     #[test]

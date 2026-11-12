@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TaskDock 小组件配色：镜像 src/theme/tokens.ts 的语义 Token（映射表见 docs/mobile/10-widget.md）。
+     明暗两套各自命名，渲染时按快照 appearance 选择；这里不使用 values-night 限定符，
+     因为强浅/强深偏好需要程序化选择，跟随系统时也已由代码读取夜间模式决定。 -->
+<resources>
+    <!-- light（palette("light")） -->
+    <color name="taskdock_widget_card_light">#FFFFFF</color>
+    <color name="taskdock_widget_border_light">#E4E8F0</color>
+    <color name="taskdock_widget_text_light">#0F172A</color>
+    <color name="taskdock_widget_muted_light">#5D6B80</color>
+    <color name="taskdock_widget_faint_light">#94A1B5</color>
+    <color name="taskdock_widget_accent_light">#3A5BEF</color>
+    <!-- accentSoft rgba(58,91,239,0.10) → alpha 0x1A -->
+    <color name="taskdock_widget_accent_soft_light">#1A3A5BEF</color>
+    <color name="taskdock_widget_ok_light">#0E8F63</color>
+
+    <!-- dark（palette("dark")） -->
+    <color name="taskdock_widget_card_dark">#121A28</color>
+    <!-- cardBorder rgba(148,180,226,0.14) → alpha 0x24 -->
+    <color name="taskdock_widget_border_dark">#2494B4E2</color>
+    <color name="taskdock_widget_text_dark">#E9EFFA</color>
+    <color name="taskdock_widget_muted_dark">#93A5BD</color>
+    <color name="taskdock_widget_faint_dark">#6C7F99</color>
+    <color name="taskdock_widget_accent_dark">#8FA8FF</color>
+    <!-- accentSoft rgba(143,168,255,0.16) → alpha 0x29 -->
+    <color name="taskdock_widget_accent_soft_dark">#298FA8FF</color>
+    <color name="taskdock_widget_ok_dark">#37D399</color>
+</resources>

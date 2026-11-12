@@ -1,0 +1,21 @@
+// 本地 Expo module：Android 主屏小组件（AppWidgetProvider + RemoteViews）。
+// Provider/布局/元数据 XML 都在本 module 内（prebuild 可再生）；receiver 由
+// plugins/withTaskDockWidgets.js 注册进应用清单。由 Expo autolinking 自动链接。
+// 2026-11-12 编译验证修正：旧模板引用的 expo-modules-core/ExpoModulesCorePlugin.gradle
+// 助手脚本在 Expo SDK 58 已移除（配置阶段直接失败），改用 SDK 58 的
+// expo-module-gradle-plugin 标准写法（自动接入 expo-modules-core 与安全默认值）。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.taskdock.mobile'
+version = '1.0.0'
+
+android {
+  namespace "dev.taskdock.modules.taskdockwidget"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+}

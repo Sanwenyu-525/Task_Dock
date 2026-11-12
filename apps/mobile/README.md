@@ -1,11 +1,15 @@
-# TaskDock Mobile（Android，独立模式 + 局域网配对）
+# TaskDock Mobile（Android，独立模式 + 局域网配对/同步）
 
 Task Dock 的手机端。业务数据全部落在本机 SQLite；2026-11-08 起支持**用户显式发起的
 局域网配对与连通性测试**（应用内扫码 / 手动输码，令牌存 SecureStore）。
 2026-11-09 起已实现**任务 / 收集箱 / 笔记的手动双向增量同步**（手机「同步」页点「立即同步」，
 pull → push → 再 pull）；文件互传走同一配对通道的独立协议。两者都只在用户已配对的局域网内、
-由用户操作触发，后台同步与字段级自动合并仍未实现。协议与边界见 `docs/mobile/07-sync.md`
-与 `docs/mobile/08-file-transfer.md`。
+由用户操作触发，后台同步与字段级自动合并仍未实现。
+2026-11-12 起传输为 **TLS-only（协议 v2，证书 SPKI 指纹固定）**。
+协议与边界见 `docs/mobile/06-pairing.md`、`07-sync.md`、`08-file-transfer.md`。
+
+> 更正（2026-11-12）：本 README 此前写「数据同步仍未实现」，与代码不符
+> （同步 2026-11-09 已落地），本段已更正；历史描述见 git 历史。
 
 ## 技术栈
 
@@ -49,8 +53,20 @@ apps/mobile/
 
 ## 数据
 
-`tasks` / `captures` / `outbox` / `reminder_schedule` / `kv` 五张表，字段名与桌面端 SQLite 对齐
-（`due_at`、`remind_at`、`recurrence_rule` 等），手机端额外保留 `rev` 作为同步版本号占位。
+`tasks` / `notes` / `captures` / `outbox` / `reminder_schedule` / `sync_conflicts` / `kv`
+（SQLite v5），字段名与桌面端 SQLite 对齐；`server_rev` / `rev` 承载同步版本，`outbox`
+是本地写操作队列（含 `state='conflict'` 冲突守卫态）。详见 `docs/mobile/02-data-model.md`。
+
+## 测试
+
+```bash
+npm run typecheck   # tsc --noEmit
+npm test            # vitest：126 例（协议/加密/客户端/DB 迁移/同步编排 + 小组件/深链/分享队列/遗留连接判定纯函数）
+```
+
+测试目录有两处：`src/**/*.test.ts`（同步与数据层，node:sqlite 真实 SQL harness）与
+`tests/**/*.test.ts`（小组件快照与深链白名单纯函数）。`vitest.config.ts` 必须留在本目录，
+否则会向上命中桌面端根 `vite.config.ts`。
 
 - 迁移：`MIGRATIONS` 序列 + `PRAGMA user_version`，append-only；v1 库升级到 v2 不丢数据。
 - 写操作：业务表 + `outbox` 在**同一事务**内完成；收集箱「转为任务」是建任务 + 删条目单事务。
@@ -137,11 +153,21 @@ Windows 构建已知约束：
 `splash-mark-dark.png`（深色）。它们必须与 `src/components/LaunchOverlay.tsx` 的骨架几何
 逐项一致，改任一边都要两边同步并重跑 `npx expo prebuild --platform android`。
 
-## 未实现（明确边界）
+## 能力边界（2026-11-12 更正）
 
-- 同步传输、冲突合并、墓碑推进：只有协议骨架（`src/lib/sync/protocol.ts` / `client.ts`），
-  **未接线**。配对成功不代表已同步。
-- 配对与连通性测试已实现，见 `docs/mobile/06-pairing.md`（含局域网 HTTP 的已知偏差）。
+> 更正（2026-11-12）：本节此前写「同步未接线」「局域网 HTTP」「小组件/分享未实现」，
+> 与代码不符。以下为当前事实；历史描述见 git 历史。
+
+- 配对、连通性测试、任务/笔记/收集箱双向同步、冲突与墓碑：**已实现并接线**
+  （2026-11-09 物理机验证）。2026-11-12 起传输为 TLS-only + SPKI 指纹固定（协议 v2）；
+  真机已验证旧 v1 连接 fail-closed 与「需重新配对」提示，**v2 扫码配对/同步端到端仍未复验**。
+  见 `docs/mobile/06-pairing.md`、`07-sync.md`。
+- 系统分享接收（`ACTION_SEND` `text/plain`）与主屏小组件（2×2 / 4×2）：**已实现并接入**。
+  真机（vivo V2323A / Android 16，2026-11-12）：分享冷/热启动、超长截断、确认落收集箱 PASS；
+  小组件 Provider/快照/配置页 PASS，但 vivo 桌面 `requestPinAppWidget` 不弹确认框、
+  「原子组件」面板不列标准 AppWidget，落桌面被厂商实现阻断（点击/刷新未验证）。
+  见 `docs/mobile/09-share-receive.md`、`10-widget.md`。
+- 后台/自动同步、远程推送：**未实现**（后台方案仅有设计评估，
+  见 `docs/mobile/11-background-sync-design.md`）。
 - 重复规则按自然周/自然日计算，**不支持法定节假日与调休跳过**；UI 不宣称支持。
-- 主屏小组件、系统分享接收、后台同步、远程推送：**未实现**。
 - iOS：**未验证**（本机无 macOS/Xcode），本轮只做 Android。

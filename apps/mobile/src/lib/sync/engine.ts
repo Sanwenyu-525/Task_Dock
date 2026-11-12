@@ -3,7 +3,9 @@
 // 约束：
 // - 单飞：并发触发共用同一个 Promise，避免重复请求与游标竞争；
 // - 不自动重试冲突：冲突落库后交给冲突页；
-// - 每次同步结束都写最近结果，UI 直接读 kv，不必自己拼状态。
+// - 每次同步结束都写最近结果，UI 直接读 kv，不必自己拼状态；
+// - 传输走本地安全通道（secureFetch + SPKI 指纹固定）；pull 落地后触发一次
+//   系统提醒对账（桌面端改过的提醒时间要在手机通知里生效），对账失败不阻断同步。
 import {
   applyPullChanges,
   buildPendingOps,
@@ -15,10 +17,13 @@ import {
   type SyncLastResult,
 } from "../../db/sync";
 import { loadConnection, readToken, touchConnection } from "../../db/syncConnection";
+import { rescheduleAllReminders } from "../../notifications/reminderEngine";
 import { AppError } from "../errors";
 
-import { createSyncClient, type SyncClient } from "./client";
+import { createSyncClient, type FetchLike, type SyncClient } from "./client";
 import { deriveSyncKey } from "./crypto";
+import { normalizeTlsFingerprint } from "./pairing";
+import { createSecureFetch } from "./secureFetch";
 
 const PAGE_SIZE = 500;
 /** 单次同步最多翻 10 页，防止异常服务端让客户端死循环。 */
@@ -67,10 +72,15 @@ export function isSyncing(): boolean {
   return inFlight !== null;
 }
 
-/** 触发一次同步；已有在途同步时复用同一结果。 */
-export function syncNow(): Promise<SyncLastResult> {
+/**
+ * 触发一次同步；已有在途同步时复用同一结果。
+ *
+ * `fetchImpl` 仅供测试注入（默认走 secureFetch + 连接里钉住的 TLS 指纹）；
+ * 生产代码不应传该参数。
+ */
+export function syncNow(options: { fetchImpl?: FetchLike } = {}): Promise<SyncLastResult> {
   if (inFlight) return inFlight;
-  const task = execute().finally(() => {
+  const task = execute(options).finally(() => {
     inFlight = null;
   });
   inFlight = task;
@@ -95,7 +105,7 @@ async function pullAll(client: SyncClient): Promise<{ pulled: number; applied: n
   return { pulled, applied };
 }
 
-async function execute(): Promise<SyncLastResult> {
+async function execute(options: { fetchImpl?: FetchLike }): Promise<SyncLastResult> {
   const connection = await loadConnection();
   if (!connection) {
     throw new AppError("validation", "尚未配对，请先扫描桌面端二维码");
@@ -106,11 +116,20 @@ async function execute(): Promise<SyncLastResult> {
   }
 
   const key = await deriveSyncKey(token);
+  // v2 起桌面端身份由 SPKI 指纹固定：已配对连接必须带指纹。指纹缺失
+  // （手动配对未观察到 / 元数据损坏 / v1 旧记录）时拒绝同步，绝不以首用信任
+  // 静默降级——否则一次未固定的连接就能让中间人取得令牌并派生同步密钥。
+  // fetchImpl 为测试注入（生产代码不传），此时由注入实现负责传输安全。
+  const pin = normalizeTlsFingerprint(connection.tlsFingerprint);
+  if (!pin && !options.fetchImpl) {
+    throw new AppError("validation", "缺少桌面端 TLS 指纹，请重新扫码配对后再同步");
+  }
   const client = createSyncClient({
     baseUrl: connection.baseUrl,
     token,
     deviceId: connection.deviceId,
     syncKey: key,
+    fetchImpl: options.fetchImpl ?? createSecureFetch({ pin }),
   });
 
   try {
@@ -138,6 +157,11 @@ async function execute(): Promise<SyncLastResult> {
       pushed,
       conflicts,
     };
+    // pull 落地了新变更：桌面端可能改了/删了提醒时间，触发一次系统通知对账。
+    // 对账失败（权限被撤等）不应让整轮同步报错，只留下次启动/前台恢复再对账。
+    if (pull.applied > 0) {
+      await rescheduleAllReminders().catch(() => undefined);
+    }
     // 服务端在鉴权时已刷新 last_seen；本机元数据也同步更新，避免同步页还显示旧时间。
     await touchConnection(new Date().toISOString());
     await saveSyncResult(outcome);

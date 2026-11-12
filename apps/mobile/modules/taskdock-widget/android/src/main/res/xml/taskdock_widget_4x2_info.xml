@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- appwidget-provider 元数据：4×2。updatePeriodMillis=0 → 系统不做周期轮询，
+     更新只由应用内数据变化推送（TaskDockWidgetModule.pushWidgetSnapshot）与
+     系统在开机/桌面重建时的 onUpdate 驱动。 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="250dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="4"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/taskdock_widget_4x2"
+    android:previewLayout="@layout/taskdock_widget_4x2"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:description="@string/taskdock_widget_description" />

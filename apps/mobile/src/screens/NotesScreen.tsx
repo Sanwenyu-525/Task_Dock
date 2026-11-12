@@ -20,6 +20,7 @@ import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { listNotes } from "../db/notes";
 import { loadConnection } from "../db/syncConnection";
+import { isLegacyConnection } from "../lib/sync/connectionState";
 import type { Note } from "../domain/types";
 import { describeError } from "../lib/errors";
 import type { Nav } from "../lib/nav";
@@ -70,7 +71,8 @@ export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }
         loadConnection().catch(() => null),
       ]);
       setNotes(nextNotes);
-      setPaired(Boolean(connection));
+      // v1 遗留/缺指纹连接在 TLS-only 桌面端上已不可用，不能显示「同步已连接」。
+      setPaired(Boolean(connection) && !isLegacyConnection(connection));
     } catch (error) {
       showToast(`读取笔记失败：${describeError(error)}`, "danger");
     } finally {

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="taskdock_widget_description">TaskDock 任务速览：今天任务、待办与收集箱计数</string>
+    <string name="taskdock_widget_title_today">今天</string>
+    <string name="taskdock_widget_title_pending">待办</string>
+    <string name="taskdock_widget_title_captures">收集箱</string>
+    <string name="taskdock_widget_empty_default">暂无内容</string>
+    <string name="taskdock_widget_footer_4x2">TaskDock · 4×2</string>
+    <string name="taskdock_widget_footer_2x2">TaskDock · 2×2</string>
+</resources>

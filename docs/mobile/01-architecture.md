@@ -17,11 +17,16 @@
 1. 桌面端 `http_ingest` 只监听 `127.0.0.1`，**不得**直接当作手机接入点，也不得为此改动监听地址；
    手机接入是独立的 `mobile_sync` 监听与端点。
 2. 手机端不持有桌面端「权威源」的身份。将来跨设备合并以桌面端规则为准，手机端只做本地副本。
-3. 工具链、依赖不擅自新增；本轮只新增 `expo-camera`（应用内扫码，用户已确认）与一个
-   prebuild 配置插件（局域网明文 HTTP），不引入二维码/网络/TLS 第三方库。
-4. 令牌只允许进 SecureStore；配对码、令牌不得写日志或 kv 明文。
+3. 工具链、依赖不擅自新增；2026-11-12 起新增本地 Expo 原生模块
+   `modules/secure-http/`（Kotlin HttpsURLConnection + SPKI 指纹固定），作为同步/
+   配对/文件互传的唯一安全传输通道；`withCleartextTraffic` 明文放行插件已移除，
+   Android 9+ 默认禁明文 = fail-closed。
+4. 令牌只允许进 SecureStore；配对码、令牌、证书与私钥不得写日志或 kv 明文
+   （TLS SPKI 指纹为公开值，允许进日志与状态接口）。
 
-传输安全边界与已知偏差见 [06-pairing.md](06-pairing.md) §5（本轮为局域网 HTTP，TLS 属下一轮）。
+传输为 **TLS-only（协议 v2）**：二维码携带 SPKI SHA-256 指纹，手机端从首个字节起
+固定桌面端身份；威胁模型与实现细节见 [06-pairing.md](06-pairing.md) §5.1
+（2026-11-08～11 的明文 HTTP 偏差已消除，历史记录保留在该篇变更记录）。
 
 ## 2. 分层与依赖方向
 
@@ -72,8 +77,9 @@ src/
     sync/client.ts      同步客户端（超时/退避/加密信封）
     sync/crypto.ts      KDF 与 XSalsa20-Poly1305 信封
     sync/engine.ts      pull → push → 再 pull 的单飞编排
-    sync/pairing.ts     二维码 URI 解析、桌面地址归一化、配对码清洗（纯函数）
+    sync/pairing.ts     二维码 URI（v2，含 TLS 指纹）解析、地址归一化、配对码清洗（纯函数）
     sync/pairClient.ts  `/v1/pair` 与 `/v1/ping` 客户端（超时、稳定错误码）
+    sync/secureFetch.ts 安全通道 FetchLike 包装（SPKI 指纹固定；原生实现可注入）
     sync/pendingPairing.ts 深链配对载荷的内存队列 + 订阅
   screens/
     TasksScreen.tsx     任务列表、筛选、搜索、分组、编辑器入口
@@ -85,7 +91,7 @@ src/
     taskGroups.ts       列表分组（纯展示切分）
   components/           见 03-ui-spec.md §4
   theme/                tokens / ThemeProvider / MotionProvider / shadows
-plugins/withCleartextTraffic.js  prebuild 配置插件：允许局域网明文 HTTP（见 06 §5）
+modules/secure-http/        本地 Expo 原生模块：HTTPS + SPKI 指纹固定（Android Kotlin）
 ```
 
 ## 4. 启动序列
@@ -249,3 +255,10 @@ plugins/withCleartextTraffic.js  prebuild 配置插件：允许局域网明文 H
 - 2026-11-08 配对落轮：§1 边界由「完全离线」改为「用户显式发起的局域网配对」；§3 模块地图
   补齐 sync/pairing、pairClient、pendingPairing、syncConnection 与 prebuild 插件；
   新增 §8.1；§10 区分「已配对」与「已同步」。
+
+## 变更记录
+
+- 2026-11-12 传输硬切 TLS（协议 v2）：新增本地原生模块 `modules/secure-http/` 与
+  `src/lib/sync/secureFetch.ts`；移除 `withCleartextTraffic` 明文放行插件；
+  传输安全边界从「局域网明文 HTTP（明确偏差）」改为「TLS-only + SPKI 指纹固定」，
+  详见 [06-pairing.md](06-pairing.md) §5.1。

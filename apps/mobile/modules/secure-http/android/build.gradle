@@ -1,0 +1,19 @@
+// 本地 Expo 模块：SDK 58 标准模板（expo-module-gradle-plugin 自动接入
+// expo-modules-core 与安全默认值）。只在 Android 构建；无第三方依赖。
+// 2026-11-12 编译验证修正：旧模板引用的 expo-modules-core.gradle 助手脚本
+// 在 SDK 58 已移除，改用插件写法。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.securehttp'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.securehttp"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}

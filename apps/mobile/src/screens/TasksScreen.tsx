@@ -30,11 +30,13 @@ import {
 } from "../components/Toast";
 import { getSetting } from "../db/kv";
 import { loadConnection } from "../db/syncConnection";
+import { isLegacyConnection } from "../lib/sync/connectionState";
 import { createTask, deleteTask, listTasks, toggleTask, updateTask } from "../db/tasks";
 import { countTasks, formatDue, matchesQuery, selectTasks } from "../domain/taskQuery";
 import { describeRecurrence, parseRecurrence } from "../domain/recurrence";
 import type { NewTaskInput, Task, TaskFilter } from "../domain/types";
 import { describeError } from "../lib/errors";
+import { notifyWidgetDataChanged } from "../lib/widgetSnapshot";
 import { rescheduleAllReminders, SNOOZE_SETTING_KEY } from "../notifications/reminderEngine";
 import { cancelReminder, scheduleReminder } from "../notifications/reminders";
 import { useReduceMotion } from "../theme/MotionProvider";
@@ -166,12 +168,13 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
     void refresh();
   }, [refresh, version]);
 
-  // 配对状态只影响页头标签：配对后显示「同步已连接」，解除后回到「本机模式」
+  // 配对状态只影响页头标签：配对后显示「同步已连接」，解除后回到「本机模式」。
+  // v1 遗留/缺指纹连接在 TLS-only 桌面端上已不可用，按未配对处理。
   useEffect(() => {
     let active = true;
     void loadConnection()
       .then((connection) => {
-        if (active) setPaired(Boolean(connection));
+        if (active) setPaired(Boolean(connection) && !isLegacyConnection(connection));
       })
       .catch(() => undefined);
     return () => {
@@ -214,6 +217,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       } catch (error) {
         showToast(`操作失败：${describeError(error)}`, "danger", placement);
       }
+      // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
+      notifyWidgetDataChanged();
       await refresh(true);
     },
     [refresh, showToast],
@@ -228,6 +233,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       } catch (error) {
         showToast(`删除失败：${describeError(error)}`, "danger", placement);
       }
+      // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
+      notifyWidgetDataChanged();
       await refresh(true);
     },
     [refresh, showToast],
@@ -253,6 +260,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       } catch (error) {
         showToast(`保存失败：${describeError(error)}`, "danger", "bottom");
       }
+      // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
+      notifyWidgetDataChanged();
       await refresh(true);
     },
     [refresh, showToast],
@@ -286,6 +295,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
       } catch (error) {
         showToast(`更新失败：${describeError(error)}`, "danger", "bottom");
       }
+      // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
+      notifyWidgetDataChanged();
       await refresh(true);
     },
     [refresh, showToast],

@@ -4,13 +4,21 @@
 // 「方法 + /v1/files/{id}/chunk/{index}」，把密文换到别的文件/序号会解密失败。
 // 本文件不读写本地文件系统：分块字节由调用方（fileIo.ts）提供/消费，
 // 便于在无原生模块的环境里单独验证协议与重试逻辑。
+//
+// 传输默认走本地安全通道（secureFetch + 已配对连接里的 SPKI 指纹）：
+// fetchImpl 缺省时惰性读取连接元数据（首请求时解析，之后缓存），
+// 测试可注入纯内存 fetchImpl，不触网也不读库。
 
 import { decodeBase64, encodeBase64 } from "tweetnacl-util";
 
 import { AppError, isAppError, toAppError } from "../errors";
 
+import { loadConnection } from "../../db/syncConnection";
+
 import { decryptEnvelope, encryptEnvelope } from "./crypto";
 import type { FetchLike, FetchInitLike } from "./client";
+import { normalizeTlsFingerprint } from "./pairing";
+import { createLazyPinnedFetch } from "./secureFetch";
 
 /** 分块请求可能比同步 JSON 慢，但仍需有界；超时后按退避重试。 */
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -176,7 +184,18 @@ export function createFileClient(options: FileClientOptions): FileClient {
     throw new AppError("validation", "文件传输密钥长度错误");
   }
 
-  const fetchImpl: FetchLike = options.fetchImpl ?? ((url, init) => fetch(url, init));
+  const fetchImpl: FetchLike =
+    options.fetchImpl ??
+    createLazyPinnedFetch(async () => {
+      // 文件分块携带设备令牌：与同步一致，已配对连接必须有已钉住的 SPKI 指纹，
+      // 缺失时 fail-closed（拒绝以首用信任发令牌），提示重新配对。
+      const connection = await loadConnection();
+      const pin = normalizeTlsFingerprint(connection?.tlsFingerprint ?? "");
+      if (!pin) {
+        throw new AppError("validation", "缺少桌面端 TLS 指纹，请重新扫码配对后再传文件");
+      }
+      return pin;
+    });
   const active = new Set<ActiveOperation>();
 
   function sleep(ms: number): Promise<void> {

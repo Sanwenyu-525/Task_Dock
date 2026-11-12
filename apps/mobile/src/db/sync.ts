@@ -178,6 +178,10 @@ async function applyTaskChange(db: SQLiteDatabase, change: Change): Promise<Appl
 
   if (change.deleted) {
     if (!existing) return "skipped";
+    // 旧墓碑（rev <= server_rev）不得覆盖更新版本的记录：与内容更新的
+    // 版本比较对称。否则重放/游标重置后，晚到的旧墓碑会把较新的本地
+    // 内容删掉并把 server_rev 拨回去（2026-11-12 修复）。
+    if (change.rev <= existing.server_rev) return "skipped";
     const now = Date.now();
     await db.runAsync(
       "UPDATE tasks SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = ? WHERE id = ?",
@@ -273,6 +277,8 @@ async function applyNoteChange(db: SQLiteDatabase, change: Change): Promise<Appl
 
   if (change.deleted) {
     if (!existing) return "skipped";
+    // 同 applyTaskChange：旧墓碑不得回退较新记录（2026-11-12 修复）。
+    if (change.rev <= existing.server_rev) return "skipped";
     const now = Date.now();
     await db.runAsync(
       "UPDATE notes SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = ? WHERE id = ?",
@@ -346,6 +352,8 @@ async function applyCaptureChange(db: SQLiteDatabase, change: Change): Promise<A
 
   if (change.deleted) {
     if (!existing) return "skipped";
+    // 同 applyTaskChange：旧墓碑不得回退较新记录（2026-11-12 修复）。
+    if (change.rev <= existing.server_rev) return "skipped";
     const now = Date.now();
     await db.runAsync(
       "UPDATE captures SET deleted_at = ?, rev = rev + 1, server_rev = ? WHERE id = ?",
@@ -661,8 +669,14 @@ export async function settlePush(
       );
     }
     for (const row of conflictRows) {
+      // 冲突不删 outbox，改置 state='conflict' 守卫：
+      // - pull 继续跳过该记录，本地未决版本不被服务端版本覆盖（等用户决定）；
+      // - buildPendingOps 只取 pending/failed，不会把冲突记录反复重发；
+      // - 用户在冲突页「采用桌面端 / 保留本机」时再清理守卫行（见 resolve*）。
+      // 2026-11-12 修复：原先冲突即删 outbox，随后引擎的再 pull 会用服务端
+      // 版本静默覆盖本地未决修改，「保留本机」实际无本机可保留。
       await db.runAsync(
-        "DELETE FROM outbox WHERE entity = ? AND target_id = ? AND created_at <= ?",
+        "UPDATE outbox SET state = 'conflict' WHERE entity = ? AND target_id = ? AND created_at <= ?",
         [row.entity, row.target_id, row.maxCreatedAt],
       );
       await db.runAsync(
@@ -740,16 +754,26 @@ async function softDeleteLocalCopy(entity: SyncEntity, id: string): Promise<void
   }
 }
 
-/** 采用桌面端版本：把冲突里记录的服务端版本应用到本地，再删除冲突记录。 */
+/** 采用桌面端版本：清掉该记录的冲突守卫行，应用服务端版本，删除冲突记录。 */
 export async function resolveConflictWithServer(conflict: SyncConflictRow): Promise<void> {
   const db = getDatabase();
+  const entity = conflictEntity(conflict.entity);
   const change = parseServerRecord(conflict.server_json);
   if (change) {
-    // 冲突结算时已经清掉该记录的 outbox，这里不会再被「本地未发送」跳过。
+    // 先清 state='conflict' 的守卫行，否则 applyPullChanges 会按「本地未发送」跳过。
+    await db.runAsync(
+      "DELETE FROM outbox WHERE entity = ? AND target_id = ? AND state = 'conflict'",
+      [entity ?? "", conflict.target_id],
+    );
     await applyPullChanges([change]);
   } else {
-    const entity = conflictEntity(conflict.entity);
-    if (entity) await softDeleteLocalCopy(entity, conflict.target_id);
+    if (entity) {
+      await db.runAsync(
+        "DELETE FROM outbox WHERE entity = ? AND target_id = ? AND state = 'conflict'",
+        [entity, conflict.target_id],
+      );
+      await softDeleteLocalCopy(entity, conflict.target_id);
+    }
   }
   await db.runAsync("DELETE FROM sync_conflicts WHERE op_id = ?", [conflict.op_id]);
 }
@@ -789,6 +813,11 @@ export async function resolveConflictWithLocal(conflict: SyncConflictRow): Promi
       baseRev,
       conflict.target_id,
     ]);
+    // 清掉冲突守卫行：本机版本重新入队后，由下一次 push 正常判定。
+    await db.runAsync(
+      "DELETE FROM outbox WHERE entity = ? AND target_id = ? AND state = 'conflict'",
+      [entity, conflict.target_id],
+    );
     await db.runAsync("DELETE FROM sync_conflicts WHERE op_id = ?", [conflict.op_id]);
     await db.runAsync(
       `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)

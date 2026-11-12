@@ -36,6 +36,7 @@ import {
 import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
+import { isLegacyConnection } from "../lib/sync/connectionState";
 import { syncNow } from "../lib/sync/engine";
 import { PairingRequestError, pingDesktop, pairingErrorMessage } from "../lib/sync/pairClient";
 import { useTheme } from "../theme/ThemeProvider";
@@ -52,7 +53,9 @@ function formatStamp(iso: string | null): string {
 }
 
 function fingerprintLabel(value: string): string {
-  return value.length === 8 ? `${value.slice(0, 4)}-${value.slice(4)}` : value;
+  if (value.length === 8) return `${value.slice(0, 4)}-${value.slice(4)}`;
+  if (value.length === 64) return `${value.slice(0, 8)}…${value.slice(-8)}`;
+  return value;
 }
 
 export function SyncScreen({ nav }: { nav: Nav }) {
@@ -96,7 +99,8 @@ export function SyncScreen({ nav }: { nav: Nav }) {
       setHasToken(Boolean(token));
       setLastResult(last);
       setConflictCount(conflicts);
-      setInvalid(false);
+      // v1 遗留连接（http:// 或缺少 SPKI 指纹）：桌面端已硬切 TLS-only，无法再连通。
+      setInvalid(isLegacyConnection(meta));
     } catch (error) {
       if (mounted.current) showToast(`读取同步状态失败：${describeError(error)}`, "danger");
     } finally {
@@ -123,11 +127,20 @@ export function SyncScreen({ nav }: { nav: Nav }) {
         showToast("本机令牌缺失或已损坏，请重新配对", "danger", placement);
         return;
       }
+      // v2 起连接测试也走指纹固定：指纹缺失（v1 旧记录 / 手动配对未观察到）时
+      // 不发送令牌，直接提示重新配对，避免以首用信任把 Bearer 令牌交给中间人。
+      const pin = (connection.tlsFingerprint ?? "").trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(pin)) {
+        showToast("缺少桌面端 TLS 指纹，请重新扫码配对", "danger", placement);
+        return;
+      }
       setBusy(true);
       try {
         const result = await pingDesktop({
           address: { host: connection.host, port: connection.port, baseUrl: connection.baseUrl },
           token,
+          // 已钉住的桌面端 TLS 指纹（上面已强制非空）。
+          tlsFingerprint: pin,
         });
         const now = new Date().toISOString();
         await touchConnection(now);
@@ -248,7 +261,9 @@ export function SyncScreen({ nav }: { nav: Nav }) {
               </Text>
               {invalid ? (
                 <Text style={[styles.cardHint, { color: tokens.danger }]}>
-                  桌面端已撤销该设备或令牌已失效，请重新配对；本机数据不会被删除。
+                  {connection.baseUrl.startsWith("http://")
+                    ? "桌面端协议已升级（TLS 加密传输），旧连接不再受支持；请重新扫码配对，本机数据不会被删除。"
+                    : "桌面端已撤销该设备或令牌已失效，请重新配对；本机数据不会被删除。"}
                 </Text>
               ) : connection.fingerprint ? (
                 <Text style={[styles.cardHint, { color: tokens.muted }]}>
