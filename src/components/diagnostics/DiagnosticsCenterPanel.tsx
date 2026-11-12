@@ -62,6 +62,8 @@ const RANGE_HOURS: Record<RangeKey, number> = {
 
 type RangeKey = "1h" | "24h" | "7d" | "all";
 type LevelKey = "ALL" | "WARN" | "ERROR" | "CRITICAL";
+/** 三类异步动作各自持有状态，互不覆盖（加载中导出/清理时 spinner 不应提前恢复）。 */
+type BusyKey = "load" | "export" | "clear";
 
 interface FilterDraft {
   range: RangeKey;
@@ -177,14 +179,18 @@ function buildListFilter(draft: FilterDraft, offset?: number): DiagnosticQuery {
   };
 }
 
-/** 按 `Date.parse` 升序；解析失败的放末尾，相同时间保持原序（稳定排序）。 */
+/**
+ * 按 `Date.parse` 升序；解析失败的放末尾。
+ * 后端查询返回新→旧（`query.rs` 按文件/行倒序读取），同一毫秒的事件在文件中仍按发生顺序
+ * 写入，因此时间相同必须反转序号，否则终态会排到 started 前面。
+ */
 function sortByTimeAsc(items: DiagnosticEventRecord[]): DiagnosticEventRecord[] {
   return items
     .map((item, index) => {
       const at = Date.parse(item.timestamp);
       return { item, index, at: Number.isFinite(at) ? at : Number.MAX_SAFE_INTEGER };
     })
-    .sort((left, right) => left.at - right.at || left.index - right.index)
+    .sort((left, right) => left.at - right.at || right.index - left.index)
     .map((entry) => entry.item);
 }
 
@@ -214,6 +220,8 @@ const TERMINAL_STATUSES: ReadonlySet<DiagnosticStatusValue> = new Set([
 export default function DiagnosticsCenterPanel() {
   const { t } = useLocale();
   const showToast = useUiStore((s) => s.showToast);
+  const diagnosticsOperationRequest = useUiStore((s) => s.diagnosticsOperationRequest);
+  const consumeDiagnosticsOperation = useUiStore((s) => s.consumeDiagnosticsOperation);
   const fullVisible = useFullViewVisible();
   const advancedId = useId();
 
@@ -225,7 +233,14 @@ export default function DiagnosticsCenterPanel() {
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusyState] = useState<Record<BusyKey, boolean>>({
+    load: false,
+    export: false,
+    clear: false,
+  });
+  const setBusy = useCallback((key: BusyKey, value: boolean) => {
+    setBusyState((prev) => (prev[key] === value ? prev : { ...prev, [key]: value }));
+  }, []);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [cleared, setCleared] = useState(false);
@@ -250,7 +265,7 @@ export default function DiagnosticsCenterPanel() {
   const load = useCallback(
     async (nextOffset: number) => {
       const seq = ++requestSeq.current;
-      setBusy("load");
+      setBusy("load", true);
       try {
         const listFilter = buildListFilter(applied, nextOffset);
         // 分面摘要不按模块/错误码收窄，否则选中后下拉只剩自己、无法再切换。
@@ -282,28 +297,49 @@ export default function DiagnosticsCenterPanel() {
         setSummary(null);
         setPage(null);
       } finally {
-        if (seq === requestSeq.current) setBusy(null);
+        if (seq === requestSeq.current) setBusy("load", false);
       }
     },
-    [applied],
+    [applied, setBusy],
   );
 
-  // 只在完整面板可见（页面真正显示）时加载；隐藏/卸载时递增序号丢弃在途响应。
+  // 只在完整面板可见（页面真正显示）时加载；筛选变化（load 身份变化）时重新加载。
   useEffect(() => {
     if (!fullVisible) {
-      requestSeq.current += 1;
-      chainSeq.current += 1;
-      setBusy(null);
+      setBusy("load", false);
       // 隐藏期间丢弃在途响应；重新可见时回到异常列表，避免停留在过期的加载态。
       setChain(null);
       return;
     }
     void load(0);
+  }, [fullVisible, load, setBusy]);
+
+  // 隐藏/卸载时递增序号丢弃在途响应。与加载 effect 分开：筛选变化触发的重载
+  // 不应取消正在打开的操作链（「查看诊断」会同时写入筛选并打开链路）。
+  useEffect(() => {
+    if (!fullVisible) return;
     return () => {
       requestSeq.current += 1;
       chainSeq.current += 1;
     };
-  }, [fullVisible, load]);
+  }, [fullVisible]);
+
+  /**
+   * 「查看诊断」一次性意图：收集箱投递失败结果条在导航成功后写入 operation_id。
+   * 本页是 lazy 挂载，意图可能先于挂载写入，因此订阅 token 而不是只读挂载快照；
+   * 面板已挂载时新 token 同样触发。消费即清除，关闭操作链后再次进入不会复现。
+   * 不可见（停靠胶囊期）不消费、不查询。
+   */
+  useEffect(() => {
+    if (!fullVisible || !diagnosticsOperationRequest) return;
+    const operationId = consumeDiagnosticsOperation();
+    if (!operationId) return;
+    // 写入现有筛选的 operationId：退出操作链后 chip 仍可再次查看/清除。
+    applyFilter({ ...applied, operationId });
+    void openChain(operationId);
+    // 意图是唯一触发条件；applied/applyFilter/openChain 只读取本次渲染的最新值。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fullVisible, diagnosticsOperationRequest, consumeDiagnosticsOperation]);
 
   function applyFilter(next: FilterDraft) {
     setCleared(false);
@@ -485,6 +521,11 @@ export default function DiagnosticsCenterPanel() {
   }
 
   async function onCopySummary() {
+    // 链视图下摘要必须来自当前链路，不能悄悄复制成异常列表摘要。
+    if (chain) {
+      await onCopyChainSummary();
+      return;
+    }
     const lines: string[] = [`Task Dock ${t("diagnosticsCenter.title")}`];
     if (status) {
       lines.push(
@@ -511,12 +552,18 @@ export default function DiagnosticsCenterPanel() {
   }
 
   async function onExport() {
-    setBusy("export");
+    setBusy("export", true);
     setActionError(null);
     try {
-      const filter = buildListFilter(applied);
-      delete filter.offset;
-      delete filter.limit;
+      // 链视图下导出当前操作链（只按 operationId），列表视图才带列表筛选。
+      let filter: DiagnosticQuery;
+      if (chain) {
+        filter = { operationId: chain.operationId };
+      } else {
+        filter = buildListFilter(applied);
+        delete filter.offset;
+        delete filter.limit;
+      }
       const result = (await diagnosticsExport(filter)) as ExportOutcome;
       const complete = result.complete ?? !result.truncated;
       setLastExport({
@@ -536,7 +583,7 @@ export default function DiagnosticsCenterPanel() {
       // 原样展示后端错误（磁盘满、权限不足等），不做静默重试。
       setActionError(errorMessage(e));
     } finally {
-      setBusy(null);
+      setBusy("export", false);
     }
   }
 
@@ -550,7 +597,7 @@ export default function DiagnosticsCenterPanel() {
   }
 
   async function onClear() {
-    setBusy("clear");
+    setBusy("clear", true);
     setActionError(null);
     try {
       const result = (await diagnosticsClear()) as ClearOutcome;
@@ -575,7 +622,7 @@ export default function DiagnosticsCenterPanel() {
       setConfirmClear(false);
       showToast(message, { kind: "error" });
     } finally {
-      setBusy(null);
+      setBusy("clear", false);
     }
   }
 
@@ -610,7 +657,7 @@ export default function DiagnosticsCenterPanel() {
     status.totalBytes === 0 &&
     status.written === 0 &&
     (page?.scanned ?? 0) === 0;
-  const loading = busy === "load";
+  const loading = busy.load;
 
   const chainStarted =
     chain?.items.some((item) => item.status === "started" || item.event === "started") ?? false;
@@ -973,7 +1020,7 @@ export default function DiagnosticsCenterPanel() {
             type="button"
             className="btn sm"
             onClick={() => void onExport()}
-            disabled={busy === "export"}
+            disabled={busy.export}
           >
             <Download size={12} aria-hidden="true" />
             <span>{t("diagnosticsCenter.action.export")}</span>
@@ -1306,11 +1353,6 @@ export default function DiagnosticsCenterPanel() {
                         type="button"
                         className="diag-center-row"
                         aria-expanded={isOpen}
-                        aria-label={
-                          isOpen
-                            ? t("diagnosticsCenter.list.collapse")
-                            : t("diagnosticsCenter.list.expand")
-                        }
                         onClick={() => setExpanded(isOpen ? null : rowKey)}
                       >
                         {isOpen ? (
@@ -1420,7 +1462,7 @@ export default function DiagnosticsCenterPanel() {
               type="button"
               className="btn sm danger"
               onClick={() => setConfirmClear(true)}
-              disabled={busy === "clear"}
+              disabled={busy.clear}
             >
               <Trash2 size={12} aria-hidden="true" />
               <span>{t("diagnosticsCenter.action.clear")}</span>
@@ -1435,7 +1477,7 @@ export default function DiagnosticsCenterPanel() {
         detail={t("diagnosticsCenter.clear.detail")}
         confirmLabel={t("diagnosticsCenter.clear.confirm")}
         danger
-        busy={busy === "clear"}
+        busy={busy.clear}
         onConfirm={() => void onClear()}
         onCancel={() => setConfirmClear(false)}
       />

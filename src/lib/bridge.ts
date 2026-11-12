@@ -2424,6 +2424,22 @@ export const quickCaptureShow = () =>
 export const quickCaptureHide = (_reason?: "user" | "success") =>
   invoke<void>("quick_capture_hide");
 
+/** 语音输入启动结果：language 是实际使用的识别语言（BCP-47，回退时为系统语音语言）。 */
+export interface CaptureVoiceStartResult {
+  language: string;
+}
+
+export const quickCaptureVoiceStart = () =>
+  invoke<CaptureVoiceStartResult>("quick_capture_voice_start");
+/**
+ * 停止听写并释放麦克风；返回停止瞬间才定稿的片段
+ * （WinRT StopAsync 会补发待定结果；未启动过时为空数组）。
+ */
+export const quickCaptureVoiceStop = () => invoke<string[]>("quick_capture_voice_stop");
+/** 打开 Windows「语音」隐私设置（在线语音识别未开启时的一步恢复入口）。 */
+export const quickCaptureOpenSpeechSettings = () =>
+  invoke<void>("quick_capture_open_speech_settings");
+
 // ── 事件订阅 ──
 /**
  * 后端批量聚合后的 Agent 变化事件（一批一次，不随事件数量线性增长）。
@@ -2631,6 +2647,33 @@ export const onQuickCaptureCreated = (
 /** 应用退出前要求立即落盘草稿（窗口可能即将销毁）。 */
 export const onCaptureFlushDraft = (cb: () => void): Promise<UnlistenFn> =>
   listen("capture-flush-draft", () => cb());
+
+/** 语音事件载荷：识别正文只走事件，不进日志。 */
+export interface CaptureVoiceText {
+  text: string;
+}
+
+/** 语音会话状态：idle = 自然结束/静音超时；error = 需要用户处理。 */
+export interface CaptureVoiceStatus {
+  status: "idle" | "error";
+  code: string;
+  message: string | null;
+}
+
+/** 临时识别结果（实时字幕，会被下一帧替换，不写入正文）。 */
+export const onCaptureVoicePartial = (
+  cb: (payload: CaptureVoiceText) => void,
+): Promise<UnlistenFn> =>
+  listen<CaptureVoiceText>("capture-voice-partial", (e) => cb(e.payload));
+/** 定稿片段（前端追加进正文，草稿防抖负责落盘）。 */
+export const onCaptureVoiceFinal = (
+  cb: (payload: CaptureVoiceText) => void,
+): Promise<UnlistenFn> =>
+  listen<CaptureVoiceText>("capture-voice-final", (e) => cb(e.payload));
+export const onCaptureVoiceStatus = (
+  cb: (payload: CaptureVoiceStatus) => void,
+): Promise<UnlistenFn> =>
+  listen<CaptureVoiceStatus>("capture-voice-status", (e) => cb(e.payload));
 
 // ── 规划中心（v0.7）：用户自建项目的功能规划、步骤、里程碑与进度历史 ──
 // 数据边界：Task Dock 内置路线图（lib/featureCatalog.ts）不入库、不可通过本节命令修改。
@@ -3424,6 +3467,10 @@ export interface ShelfDropEntry {
   reason?: string | null;
   recovery?: string | null;
   residual_source?: string | null;
+  /** 稳定失败分类（诊断聚合用），如 SHELF_DROP_DB_SCHEMA_INCOMPATIBLE */
+  code?: string | null;
+  /** 失败阶段：prepare/resolve/journal/commit/copy/cleanup/rewrite */
+  stage?: string | null;
 }
 
 export interface ShelfDropReport {

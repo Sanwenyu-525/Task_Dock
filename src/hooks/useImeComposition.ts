@@ -16,6 +16,8 @@ export interface ImeCompositionGuard {
   onCompositionEnd: (event: CompositionEvent<Element>) => void;
   /** 当前按键是否属于输入法候选操作（Enter/Escape 等不应触发业务动作） */
   isComposing: (event: KeyboardEvent<Element>) => boolean;
+  /** 当前是否仍处于组合态：供没有 KeyboardEvent 的异步回调判断（如提交响应清空输入前） */
+  isComposingNow: () => boolean;
 }
 
 export default function useImeComposition(): ImeCompositionGuard {
@@ -33,5 +35,8 @@ export default function useImeComposition(): ImeCompositionGuard {
     return composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229;
   }, []);
 
-  return { onCompositionStart, onCompositionEnd, isComposing };
+  // 异步回调里没有 KeyboardEvent 可用，直接读组件维护的组合标记。
+  const isComposingNow = useCallback(() => composingRef.current, []);
+
+  return { onCompositionStart, onCompositionEnd, isComposing, isComposingNow };
 }

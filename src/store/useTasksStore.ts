@@ -23,6 +23,18 @@ let liteSeq = 0;
 let loadSeq = 0;
 
 /**
+ * 同一任务的完成切换单飞：双击/键盘连按在第一个请求返回前不再叠加第二次
+ * `toggle_task`。失败时条目立即移除，允许用户重试；不同任务互不影响。
+ * 这里放在 store 而不是各组件，胶囊、主列表与通知动作共用同一份在途状态。
+ */
+interface ToggleFlight {
+  promise: Promise<Task>;
+  /** 任一调用方要求刷新列表即刷新（主列表会传 refresh:false 自己收尾） */
+  wantsRefresh: boolean;
+}
+const toggleFlights = new Map<string, ToggleFlight>();
+
+/**
  * 视图身份：离场、焦点交接、快照等跨异步边界的行为只比较语义筛选，
  * 不比较对象引用——A→B→A 会生成新对象但仍是同一个视图。
  */
@@ -257,11 +269,28 @@ export const useTasksStore = create<{
     }
   },
   toggle: async (id, opts) => {
-    const t = await toggleTask(id);
-    // 离场动画由调用方负责收尾：写入已经落库，这里只把「同步列表」交还给它
-    if (opts?.refresh === false) return t;
-    await get().refresh();
-    return t;
+    // 同一任务已有在途切换：复用同一个结果，不叠加第二次状态翻转。
+    const inflight = toggleFlights.get(id);
+    if (inflight) {
+      if (opts?.refresh !== false) inflight.wantsRefresh = true;
+      return inflight.promise;
+    }
+    const flight = { wantsRefresh: opts?.refresh !== false } as ToggleFlight;
+    const run = (async () => {
+      const t = await toggleTask(id);
+      // 离场动画由调用方负责收尾：写入已经落库，这里只把「同步列表」交还给它。
+      // 若并发的另一个调用方要求刷新，则按更强的那次要求执行一次。
+      if (flight.wantsRefresh) await get().refresh();
+      return t;
+    })();
+    flight.promise = run;
+    toggleFlights.set(id, flight);
+    // 成功或失败都释放单飞条目：失败后用户可以直接重试。
+    const clear = () => {
+      if (toggleFlights.get(id) === flight) toggleFlights.delete(id);
+    };
+    run.then(clear, clear);
+    return run;
   },
   remove: async (id) => {
     await deleteTask(id);

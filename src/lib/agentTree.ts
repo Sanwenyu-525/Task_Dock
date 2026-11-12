@@ -159,7 +159,8 @@ const ATTENTION_ORDER: Record<string, number> = {
   idle: 4,
 };
 
-function attentionRank(state: string): number {
+/** 关注排序等级：完整 Agent 页与胶囊共用同一优先级（等待介入 > 失败 > 运行中 > 失联）。 */
+export function attentionRank(state: string): number {
   return ATTENTION_ORDER[state] ?? 5;
 }
 

@@ -28,10 +28,30 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    // 开发期首屏（2026-11-11）：默认 true 会等整个入口依赖扫描完成才放行请求，
+    // 本仓库模块图较大时首屏被拖到 40–100 秒，表现为「窗口在但没有 UI」。
+    // 先放行已发现的依赖，后续发现新依赖时由 Vite 客户端自动整页重载补齐。
+    holdUntilCrawlEnd: false,
+  },
   server: {
     port: 1420,
     strictPort: true,
     host: host || false,
+    // 开发期首屏预热（2026-11-11）：Vite 冷启动的依赖预构建会阻塞入口模块请求，
+    // 大模块图能把 `#root` 空白拖到十几秒以上（表现为「窗口在但没有 UI」）。
+    // 在 dev server 启动时就预转换各入口及其依赖图，把这段时间挪到前端真正加载前。
+    warmup: {
+      clientFiles: [
+        "./src/main.tsx",
+        "./src/App.tsx",
+        "./src/capture/main.tsx",
+        "./src/context-menu/main.tsx",
+        "./src/notifications/main.tsx",
+        "./src/tab-hint/main.tsx",
+        "./src/widgets/main.tsx",
+      ],
+    },
     watch: {
       ignored: ["**/src-tauri/**"],
     },

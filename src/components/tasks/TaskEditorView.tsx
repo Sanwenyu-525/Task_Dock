@@ -670,7 +670,7 @@ export default function TaskEditorView({ task, onClose }: TaskEditorViewProps) {
           <span>标签（逗号分隔）</span>
           <input value={tagsText} onChange={(e) => setTagsText(e.target.value)} placeholder="审计, Windows" />
         </label>
-        <div className="field-row">
+        <div className="field-row field-row-datetime">
           <label className="field">
             <span>截止时间</span>
             <DateTimePicker

@@ -513,6 +513,8 @@ export function startOperation(
     finished = true;
     logEvent({
       ...event,
+      // 终态事件名必须与 status 一致；base 里的 event 是 started，不能沿用。
+      event: status,
       // 失败必须回答“卡在哪一步”：普通模式下 stage 事件被过滤，这里补到终态上。
       ...(status === "failed" && lastStage !== null ? { stage: lastStage } : {}),
       level,

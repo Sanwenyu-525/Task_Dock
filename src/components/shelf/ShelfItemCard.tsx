@@ -2,28 +2,17 @@
 //! 多选复选与条目菜单（打开/定位/复制/收藏/置顶/分组/删除）。
 
 import { useEffect, useState, type MouseEvent } from "react";
-import {
-  Clock, File, FileQuestion, Folder, Image as ImageIcon, Link2,
-  MoreHorizontal, Pin, Star, Type,
-} from "lucide-react";
+import { Clock, FileQuestion, MoreHorizontal, Pin, Star } from "lucide-react";
 import {
   shelfReadImage,
-  SHELF_KIND_LABELS,
   type ShelfDragOutResult,
   type ShelfItem,
 } from "../../lib/bridge";
 import { clipboardTime, formatBytes } from "../../lib/clipboardUi";
+import { shelfFileTypeUi } from "../../lib/fileTypeUi";
 import { useShelfDragOut } from "../../hooks/useShelfDragOut";
 import { DropdownMenu } from "../ui";
 import type { DropdownMenuItem } from "../ui/DropdownMenu";
-
-const KIND_ICONS = {
-  file: File,
-  folder: Folder,
-  image: ImageIcon,
-  link: Link2,
-  text: Type,
-} as const;
 
 function sourceLabel(item: ShelfItem): string {
   switch (item.source_kind) {
@@ -74,7 +63,8 @@ export default function ShelfItemCard({
   onDragSettled?: (result: ShelfDragOutResult, ids: string[]) => void;
   onDragError?: (message: string) => void;
 }) {
-  const Icon = KIND_ICONS[item.kind] ?? File;
+  const type = shelfFileTypeUi(item);
+  const Icon = type.icon;
   const missing = item.exists_state === "missing";
   const [fallbackThumb, setFallbackThumb] = useState<string | null>(null);
   const drag = useShelfDragOut({
@@ -129,7 +119,7 @@ export default function ShelfItemCard({
       </button>
       <button
         type="button"
-        className="shelf-thumb"
+        className={`shelf-thumb file-tone-${type.tone}`}
         aria-label={`预览 ${item.display_name}`}
         data-tip={dragEnabled ? "点击预览 · 按住拖到其他窗口" : undefined}
         onClick={guarded(() => onPreview())}
@@ -149,7 +139,7 @@ export default function ShelfItemCard({
         <button
           type="button"
           className="shelf-item-name"
-          data-tip={`${item.display_name} · ${modeLabel(item)}`}
+          data-tip={`${item.display_name} · ${type.label} · ${modeLabel(item)}`}
           onClick={guarded(() => onOpen())}
         >
           {item.display_name}
@@ -189,5 +179,3 @@ export default function ShelfItemCard({
     </div>
   );
 }
-
-export { SHELF_KIND_LABELS };

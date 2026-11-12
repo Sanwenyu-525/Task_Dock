@@ -8,6 +8,7 @@ import CaptureApp from "./CaptureApp";
 import ErrorBoundary from "../components/ErrorBoundary";
 import TooltipLayer from "../components/ui/TooltipLayer";
 import { installGlobalErrorHandlers } from "../lib/globalErrors";
+import { installNativeDragBridge } from "../lib/dragCursorSession";
 import { initLocale } from "../i18n";
 import "../styles-themes.css";
 // 悬停提示沿用主窗同一套 .ui-tooltip / .ui-popover 基元，不另写一套提示样式。
@@ -17,6 +18,8 @@ import "./styles-capture.css";
 initLocale();
 // 小窗没有 Toast 宿主：异步异常只记录诊断，不把提示发到不可见窗口。
 installGlobalErrorHandlers({ toast: false });
+// 头部拖拽走原生移动循环：松手瞬间由 WM_EXITSIZEMOVE 相位结束 grabbing 光标会话。
+installNativeDragBridge();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

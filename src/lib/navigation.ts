@@ -384,6 +384,20 @@ export function avatarHue(key: string): number {
   return h;
 }
 
+/**
+ * 「运行中」统一口径：有窗口或仅后台进程（托盘驻留）都算运行中。
+ * 完整应用中心与胶囊应用面板共用，避免一边显示绿点、一边不置顶的分裂。
+ */
+export const RUNNING_TARGET_STATES: ReadonlySet<string> = new Set(["has_window", "process_only"]);
+
+/** 按目标 id 判断运行中；`unavailable`（配置失效）不算运行中。 */
+export function isTargetRunning(
+  states: Readonly<Record<string, string>>,
+  id: string,
+): boolean {
+  return RUNNING_TARGET_STATES.has(states[id] ?? "");
+}
+
 /** 运行状态 → 徽标语义（不可用/运行中/未运行）。 */
 export function stateBadge(state: string): { label: string; tone: "ok" | "idle" | "bad" } {
   switch (state) {

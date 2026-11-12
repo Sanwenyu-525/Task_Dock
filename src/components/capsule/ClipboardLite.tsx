@@ -300,7 +300,9 @@ export default function ClipboardLite() {
   }, [items, filter]);
 
   const showGroups = groups.length > 0 && (filter === "all" || filter === "image");
-  const total = items?.length ?? 0;
+  // 副标题口径 = 实际渲染的行数（列表最多 8 条 + 当前可见的截图组），
+  // 不报载入快照总数：否则「最近 20 条」与屏幕上的 8 行对不上。
+  const shownRows = (list?.length ?? 0) + (showGroups ? groups.length : 0);
   // 数据错误与监听状态分开：error 时有旧数据 → 旧列表 + 错误条；无数据 → 错误空态
   const dataError = liteStatus === "error";
   const loadingData = liteStatus === "loading" && lite === null;
@@ -381,7 +383,9 @@ export default function ClipboardLite() {
             ? "读取中"
             : dataError && items === null
               ? "读取失败"
-              : `最近 ${total} 条 · 含 ${groups.length} 个截图组`
+              : `最近 ${shownRows} 条${
+                  showGroups && groups.length > 0 ? ` · 含 ${groups.length} 个截图组` : ""
+                }`
         }
         actions={
           <button

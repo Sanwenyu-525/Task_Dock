@@ -1939,11 +1939,12 @@ export const zhCN = {
   // ── 任务页 ──
   "tasks.overview.pendingTip": "全部未完成任务",
   "tasks.overview.pending": "待完成",
-  "tasks.overview.dueTodayTip": "今天到期",
+  "tasks.overview.dueTodayTip": "今天到期（仅未完成）；点击只看这些任务",
   "tasks.overview.dueToday": "今日到期",
   "tasks.overview.overdueTip": "已过期未完成",
   "tasks.overview.overdue": "逾期",
   "tasks.view.today": "今日",
+  "tasks.view.todayDueTip": "当前只显示今天到期的未完成任务；点击「今日」查看完整今日视图",
   "tasks.view.tomorrow": "明日",
   "tasks.view.week": "本周",
   "tasks.view.overdue": "逾期",
@@ -1962,7 +1963,7 @@ export const zhCN = {
   "tasks.search.open": "搜索任务",
   "tasks.statusAria": "状态",
   "tasks.sortAria": "排序方式",
-  "tasks.searchPlaceholder": "搜索标题 / 描述（Enter 确认）",
+  "tasks.searchPlaceholder": "搜索标题 / 描述",
   "tasks.searchClear": "清空搜索",
   "tasks.searchAria": "搜索任务",
   "tasks.linksFailed": "关联信息读取失败：{error}（卡片上的关联目标可能不是最新）",
@@ -1971,8 +1972,10 @@ export const zhCN = {
   "tasks.loadFailed": "任务读取失败",
   "tasks.empty.search": "没有匹配的任务",
   "tasks.empty.overdue": "没有逾期任务，很好",
+  "tasks.empty.dueToday": "今天没有到期任务",
   "tasks.empty.default": "这里还很清爽",
   "tasks.empty.searchHint": "换个关键词，或清空搜索查看全部",
+  "tasks.empty.dueTodayHint": "切到「今日」可以查看逾期和无截止时间的任务",
   "tasks.empty.defaultHint": "用上方输入框快速添加，支持「明天下午三点开会」这样的自然语言",
 
   // ── Agent 页（导航与监控外壳） ──
@@ -2262,6 +2265,7 @@ export const zhCN = {
   "errors.VALIDATION_ERROR": "输入内容不合法，请检查后重试",
   "errors.NOT_FOUND": "目标不存在或已被删除",
   "errors.PERMISSION_DENIED": "没有执行该操作的权限",
+  "errors.PERMISSION_REQUIRED": "需要先在系统设置中开启相关权限",
   "errors.IO_ERROR": "文件读写失败，请检查磁盘空间与权限",
   "errors.DATABASE_ERROR": "数据库操作失败",
   "errors.DATABASE_BUSY": "数据库正忙，请稍后重试",
@@ -2293,6 +2297,10 @@ export const zhCN = {
   "commandPalette.scenarioBusy": "已有场景正在进入，请等待完成后再试",
   "commandPalette.scenarioDone": "场景「{name}」进入完成：成功 {ok} 项，未成功 {bad} 项",
   "commandPalette.scenarioEnterFailed": "进入场景「{name}」失败：{error}",
+
+  // ── 收集箱文件投递：失败结果条 → 诊断中心 ──
+  "capsule.inboxDrop.viewDiagnostics": "查看诊断",
+  "capsule.inboxDrop.diagnosticsBlocked": "无法打开诊断中心：当前页面正在保存，请稍后重试。",
 } as const;
 
 export type MessageKey = keyof typeof zhCN;

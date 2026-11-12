@@ -33,7 +33,10 @@ import {
   type DropPoint,
 } from "../../lib/fileDrop";
 import { errorMessage } from "../../lib/errors";
+import { useLocale } from "../../hooks/useLocale";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
+import { useShelfStore } from "../../store/useShelfStore";
+import { useUiStore } from "../../store/useUiStore";
 import { DropdownMenu } from "../ui";
 import DropTargetForm from "../shelf/DropTargetForm";
 import type { ShelfDropTarget } from "../../lib/bridge";
@@ -60,6 +63,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default function InboxDropPane() {
+  const { t } = useLocale();
   const targets = useDropTargetsStore((s) => s.targets);
   const loading = useDropTargetsStore((s) => s.loading);
   const loaded = useDropTargetsStore((s) => s.loaded);
@@ -170,6 +174,9 @@ export default function InboxDropPane() {
       try {
         const report = await drop(targetId, paths);
         if (!report || !alive.current) return; // 被去重/在途守卫拦下，或面板已关闭
+        // 投递源可能是「最近暂存」里的文件：move 模式目标会把源文件搬走，
+        // 引用条目随即失效；复制也顺带刷新存在性。一次小切片查询，不轮询。
+        void useShelfStore.getState().loadRecent({ force: true });
         setReportOpen(report.failed > 0 || report.partial > 0);
         if (report.failed > 0 || report.partial > 0) {
           const parts: string[] = [];
@@ -182,6 +189,21 @@ export default function InboxDropPane() {
       }
     },
     [drop, flash],
+  );
+
+  /**
+   * 结果条「查看诊断」：进入完整窗口诊断中心并定位到本批次操作链。
+   * 意图只在导航成功后下发（`after`），取消草稿确认或保存中拒绝时不会残留；
+   * 硬拒绝（saving）才额外提示，`pending` 由全局离开确认条接管。
+   */
+  const showDiagnostics = useCallback(
+    (operationId: string) => {
+      const result = openFullApp("diagnostics", () =>
+        useUiStore.getState().requestDiagnosticsOperation(operationId),
+      );
+      if (result === "blocked") flash(t("capsule.inboxDrop.diagnosticsBlocked"));
+    },
+    [flash, t],
   );
 
   // ── 拖入订阅（面板在即订阅，卸载即释放；全应用只有一条 Webview 监听）──
@@ -265,15 +287,6 @@ export default function InboxDropPane() {
             />
           )}
 
-          {/* 拖入中的「准备投递」状态：明确告诉用户松手会落到哪里 */}
-          {dragging && visible.length > 0 && (
-            <p className="cap-drop-hint is-live" role="status">
-              {overId
-                ? `松开鼠标即投递到「${visible.find((t) => t.id === overId)?.name ?? ""}」`
-                : "把文件拖到目标卡片上"}
-            </p>
-          )}
-
           {visible.length > 0 && (
             <div
               className={`cap-drop-grid${dragging ? " is-dragging" : ""}`}
@@ -308,6 +321,19 @@ export default function InboxDropPane() {
                 />
               ))}
             </div>
+          )}
+
+          {/* 拖入提示必须渲染在目标网格**之后**：从暂存架拖出的原生 OLE 拖拽
+              运行在主线程，enter/over/drop 事件要等 DoDragDrop 返回后才被处理。
+              若提示条插在网格上方，enter 触发的那次渲染会把卡片整体下移，随后
+              drop 按真实松手坐标重新命中时就会落到提示条/空白处，导致投递丢失。
+              放在网格下方只影响下方内容，卡片几何在拖拽期间保持不变。 */}
+          {dragging && visible.length > 0 && (
+            <p className="cap-drop-hint is-live" role="status">
+              {overId
+                ? `松开鼠标即投递到「${visible.find((t) => t.id === overId)?.name ?? ""}」`
+                : "把文件拖到目标卡片上"}
+            </p>
           )}
 
           {visible.length === 0 && targets.length > 0 && (
@@ -379,6 +405,15 @@ export default function InboxDropPane() {
                 </p>
               )}
               <div className="cap-drop-result-actions">
+                {(lastReport.failed > 0 || lastReport.partial > 0) && (
+                  <button
+                    type="button"
+                    className="cap-link"
+                    onClick={() => showDiagnostics(lastReport.batch_id)}
+                  >
+                    {t("capsule.inboxDrop.viewDiagnostics")}
+                  </button>
+                )}
                 {lastTarget ? (
                   <button
                     type="button"

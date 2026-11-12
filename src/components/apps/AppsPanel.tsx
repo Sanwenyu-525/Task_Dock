@@ -25,10 +25,10 @@ import { errorMessage, normalizeError } from "../../lib/errors";
 import {
   navCloseTargetWindows, navDeleteTarget, navKillTargetProcesses, navNavigate,
   navQuitTargetProcesses, navTargetRunningStates, navUpdateTarget,
-  resultMessage, stateBadge, TARGET_TYPE_LABELS,
+  isTargetRunning, resultMessage, stateBadge, TARGET_TYPE_LABELS,
   type NavTarget,
 } from "../../lib/navigation";
-import { searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
+import { prioritizeFavoritesAndRunning, searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
 import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import AppIcon from "../ui/AppIcon";
 import { ConfirmDialog, DropdownMenu, EmptyState, SearchField } from "../ui";
@@ -45,9 +45,6 @@ const FILTERS: ReadonlyArray<{ id: AppFilter; labelKey: MessageKey }> = [
   { id: "recent", labelKey: "apps.filter.recent" },
   { id: "running", labelKey: "apps.filter.running" },
 ];
-
-/** 「运行中」只认真实快照；`unavailable` 是配置失效，不算运行中。 */
-const RUNNING_STATES = new Set(["has_window", "process_only"]);
 
 /**
  * 只有名称真的被省略号截断时才给卡片挂 `data-tip`（值为应用名），
@@ -181,9 +178,14 @@ export default function AppsPanel() {
     } else if (filter === "recent") {
       list = sortTargetsForDisplay(list.filter((t) => !!t.last_used_at), { favorite: false });
     } else if (filter === "running") {
-      list = list.filter((t) => RUNNING_STATES.has(runningStates[t.id]));
+      list = list.filter((t) => isTargetRunning(runningStates, t.id));
     } else {
-      list = sortTargetsForDisplay(list);
+      // 与胶囊应用面板同一置顶规则：收藏最前，运行中其次，其余按最近/名称。
+      list = prioritizeFavoritesAndRunning(
+        sortTargetsForDisplay(list),
+        (t) => Boolean(t.favorite),
+        (t) => isTargetRunning(runningStates, t.id),
+      );
     }
     return list;
   }, [apps, query, filter, runningStates]);
@@ -493,7 +495,7 @@ export default function AppsPanel() {
       // 关闭窗口是高频动作，已上卡片操作区（见 renderTile），菜单不再重复。
       // 退出应用 = WM_QUIT 优雅档（等价托盘退出）；结束进程 = 强杀（破坏性，
       // 仅运行中提供且需确认弹窗）。
-      ...(RUNNING_STATES.has(runningStates[t.id] ?? "")
+      ...(isTargetRunning(runningStates, t.id)
         ? [
             {
               key: "quit-app",
@@ -583,7 +585,7 @@ export default function AppsPanel() {
 
   function renderTile(t: NavTarget) {
     const running = runningStates[t.id];
-    const badge = RUNNING_STATES.has(running) ? stateBadge(running) : null;
+    const badge = isTargetRunning(runningStates, t.id) ? stateBadge(running) : null;
     const busy = launchingIds.has(t.id);
     // 单行卡片：主区域（图标 + 名称/状态）是一个按钮，收藏/更多是并列的独立
     // 按钮（不是嵌套按钮），因此点收藏与菜单不会冒泡触发启动。

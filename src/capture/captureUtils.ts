@@ -199,3 +199,50 @@ export function formatError(error: unknown): string {
   const trimmed = message.trim();
   return trimmed || "未知错误";
 }
+
+// ── 语音输入 ───────────────────────────────────────────────────
+export interface AppendDictationResult {
+  content: string;
+  /** true = 片段超出上限被截断，调用方应停止听写并提示 */
+  overflow: boolean;
+}
+
+/**
+ * 定稿片段追加：绝不改写已有正文；只在两个 ASCII 词之间补一个空格
+ * （中文与英文/数字相邻时不插空格）。超出上限时截断片段并报告 overflow。
+ */
+export function appendDictation(
+  existing: string,
+  segment: string,
+  max: number = CONTENT_MAX,
+): AppendDictationResult {
+  const addition = segment.trim();
+  if (!addition) return { content: existing, overflow: false };
+  const needsSpace =
+    existing.length > 0 &&
+    !/\s$/.test(existing) &&
+    /[A-Za-z0-9]$/.test(existing) &&
+    /^[A-Za-z0-9]/.test(addition);
+  const separator = needsSpace ? " " : "";
+  const available = max - existing.length - separator.length;
+  if (available <= 0) return { content: existing, overflow: true };
+  const clipped = addition.slice(0, available);
+  return {
+    content: existing + separator + clipped,
+    overflow: clipped.length < addition.length,
+  };
+}
+
+/**
+ * 听写中的提示文案：系统没有中文识别包时如实说明回退语言，
+ * 不让用户以为说的是中文却被识别成别的语言。
+ */
+export function voiceListeningMessage(language: string): string {
+  const tag = language.trim();
+  if (!tag.toLowerCase().startsWith("zh")) {
+    return tag
+      ? `系统未提供中文语音包，正在使用 ${tag} 听写，点击麦克风结束`
+      : "系统未提供中文语音包，正在使用系统语音听写，点击麦克风结束";
+  }
+  return "正在听写，点击麦克风结束";
+}

@@ -14,11 +14,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { Eye, LayoutGrid, Loader2, Plus, Power, Search, SquareX, Star, X } from "lucide-react";
 import {
   navCloseTargetWindows, navDeleteTarget, navKillTargetProcesses, navNavigate,
-  navQuitTargetProcesses, navTargetRunningStates, navUpdateTarget, avatarHue, resultMessage,
+  navQuitTargetProcesses, navTargetRunningStates, navUpdateTarget, avatarHue,
+  isTargetRunning, resultMessage,
   type NavTarget,
 } from "../../lib/navigation";
 import { normalizeError } from "../../lib/errors";
-import { searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
+import { prioritizeFavoritesAndRunning, searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
 import {
   buildAppGrid,
   filterAppGrid,
@@ -242,7 +243,7 @@ export default function AppsLite() {
     [ranked, savedOrder],
   );
   /**
-   * 置顶规则（2026-11-09 用户反馈，按优先级）：
+   * 置顶规则（2026-11-09 用户反馈，与完整应用中心共用同一函数）：
    * 1）收藏应用**最前**：收藏是用户显式选择，不能被运行中分组挤到后面；
    * 2）运行中的应用（有窗口或仅后台进程）其次：点击后不再因「最近使用」冒泡沉底；
    * 3）其余保持原顺序（自然顺序或用户手动顺序），加号仍在末尾。
@@ -250,18 +251,23 @@ export default function AppsLite() {
    * 手动排序本身。
    */
   const displayGrid = useMemo(() => {
-    const isRunning = (t: NavTarget) =>
-      runningStates[t.id] === "has_window" || runningStates[t.id] === "process_only";
     const apps = fullGrid.filter(
       (entry): entry is Extract<AppGridEntry<NavTarget>, { type: "app" }> => entry.type === "app",
     );
-    const favorites = apps.filter((entry) => entry.app.favorite);
-    const running = apps.filter((entry) => !entry.app.favorite && isRunning(entry.app));
-    const rest = apps.filter((entry) => !entry.app.favorite && !isRunning(entry.app));
+    const hasPinned = apps.some(
+      (entry) => Boolean(entry.app.favorite) || isTargetRunning(runningStates, entry.app.id),
+    );
     // 没有收藏也没有运行中：保持完整网格原样（含手动顺序与加号位置）
-    if (favorites.length === 0 && running.length === 0) return fullGrid;
+    if (!hasPinned) return fullGrid;
     const add = fullGrid.filter((entry) => entry.type === "add");
-    return [...favorites, ...running, ...rest, ...add];
+    return [
+      ...prioritizeFavoritesAndRunning(
+        apps,
+        (entry) => Boolean(entry.app.favorite),
+        (entry) => isTargetRunning(runningStates, entry.app.id),
+      ),
+      ...add,
+    ];
   }, [fullGrid, runningStates]);
   const fullOrder = useMemo(() => displayGrid.map((entry) => entry.id), [displayGrid]);
   /** 搜索命中的应用 id；null = 不过滤。 */
@@ -576,10 +582,7 @@ export default function AppsLite() {
   /** 运行中的应用（has_window 或仅后台进程）：驱动磁贴状态点与「运行中」快捷区。
       只认真实快照，unavailable（配置失效）不算运行中。 */
   const runningApps = useMemo(
-    () =>
-      visible.filter(
-        (t) => runningStates[t.id] === "has_window" || runningStates[t.id] === "process_only",
-      ),
+    () => visible.filter((t) => isTargetRunning(runningStates, t.id)),
     [visible, runningStates],
   );
 
@@ -865,7 +868,7 @@ export default function AppsLite() {
               const busy = launchingIds.has(t.id);
               const running = runningStates[t.id];
               const hasWindow = running === "has_window";
-              const isRunning = hasWindow || running === "process_only";
+              const isRunning = isTargetRunning(runningStates, t.id);
               return (
                 <div
                   key={t.id}
@@ -921,8 +924,7 @@ export default function AppsLite() {
                       {/* 运行状态点与「运行中」快捷区、运行中置顶、完整面板徽标
                           同一口径：有窗口或仅有后台进程（托盘驻留）都算运行中。
                           只显示 has_window 会让托盘应用看起来「打开了却没有绿点」。 */}
-                      {(runningStates[t.id] === "has_window" ||
-                        runningStates[t.id] === "process_only") && (
+                      {isTargetRunning(runningStates, t.id) && (
                         <i className="cap-app-dot" aria-hidden="true" />
                       )}
                       {busy && (

@@ -1,5 +1,5 @@
-//! 任务面板：统计概览 → 快速添加 → 日期筛选（主）→ 状态/排序（次级）→ 列表。
-//! 筛选器视觉权重低于任务本身；搜索可展开收起，不占常驻高度。
+//! 任务面板：统计概览 → 快速添加 → 日期筛选（主）→ 搜索 → 状态/排序（次级）→ 列表。
+//! 筛选器视觉权重低于任务本身；搜索框常驻在日期筛选下方，不随列表滚动。
 //! v0.6：卡片层级与空状态插画按视觉预设重绘（结构不变，两套皮肤共用）。
 //! v0.9：编辑任务改为页面内编辑态（列表 ↔ 编辑切换），退出后恢复列表滚动位置；
 //! 筛选状态本就在 `useTasksStore`，切换不丢失。
@@ -102,6 +102,11 @@ export default function TasksPanel() {
   }, [analyticsOpen, focusOpen]);
 
   const hasSearch = !!filter.search?.trim();
+  // 「今日到期」卡下钻到窄口径 due_today；它仍属于「今日」分段，切换分段回到宽口径。
+  const todayTabActive = filter.view === "today" || filter.view === "due_today";
+  // 空态口径说明只对下钻后的未完成列表成立；切到「已完成/全部」后不再提示去看逾期。
+  const dueTodayEmpty =
+    filter.view === "due_today" && (filter.status ?? "pending") === "pending";
 
   /**
    * 离场补渲染：完成行的动画还没播完时，后台整表刷新可能先把这一行抽走。
@@ -175,11 +180,11 @@ export default function TasksPanel() {
           data-tip={t("tasks.overview.dueTodayTip")}
           role="button"
           tabIndex={0}
-          onClick={() => setFilter({ view: "today", status: "pending" })}
+          onClick={() => setFilter({ view: "due_today", status: "pending" })}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              setFilter({ view: "today", status: "pending" });
+              setFilter({ view: "due_today", status: "pending" });
             }
           }}
         >
@@ -212,16 +217,24 @@ export default function TasksPanel() {
       {/* 主筛选：日期视图优先 */}
       <div className="filter-bar primary">
         <div className="seg-group" role="group" aria-label={t("tasks.rangeAria")}>
-          {VIEWS.map((v) => (
-            <button
-              key={v.id}
-              className={`seg-btn ${filter.view === v.id ? "active" : ""}`}
-              aria-pressed={filter.view === v.id}
-              onClick={() => setFilter({ view: v.id })}
-            >
-              {t(v.labelKey)}
-            </button>
-          ))}
+          {VIEWS.map((v) => {
+            const active = v.id === "today" ? todayTabActive : filter.view === v.id;
+            return (
+              <button
+                key={v.id}
+                className={`seg-btn ${active ? "active" : ""}`}
+                aria-pressed={active}
+                data-tip={
+                  v.id === "today" && filter.view === "due_today"
+                    ? t("tasks.view.todayDueTip")
+                    : undefined
+                }
+                onClick={() => setFilter({ view: v.id })}
+              >
+                {t(v.labelKey)}
+              </button>
+            );
+          })}
         </div>
         <span className="flex-spacer" />
         {/* 提醒调度暂停：只暂停到期提醒触发，任务数据与共享调度循环不受影响。 */}
@@ -364,12 +377,18 @@ export default function TasksPanel() {
               <div className="empty-title">
                 {hasSearch
                   ? t("tasks.empty.search")
-                  : filter.view === "overdue"
-                    ? t("tasks.empty.overdue")
-                    : t("tasks.empty.default")}
+                  : dueTodayEmpty
+                    ? t("tasks.empty.dueToday")
+                    : filter.view === "overdue"
+                      ? t("tasks.empty.overdue")
+                      : t("tasks.empty.default")}
               </div>
               <div className="empty-hint">
-                {hasSearch ? t("tasks.empty.searchHint") : t("tasks.empty.defaultHint")}
+                {hasSearch
+                  ? t("tasks.empty.searchHint")
+                  : dueTodayEmpty
+                    ? t("tasks.empty.dueTodayHint")
+                    : t("tasks.empty.defaultHint")}
               </div>
             </div>
           )}

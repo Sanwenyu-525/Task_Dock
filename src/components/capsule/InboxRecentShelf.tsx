@@ -8,18 +8,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { Loader2, MoreVertical, Plus, Trash2 } from "lucide-react";
 import {
-  AlignLeft,
-  File as FileIcon,
-  Folder,
-  Image as ImageIcon,
-  Link2,
-  Loader2,
-  MoreVertical,
-  Plus,
-} from "lucide-react";
-import {
-  SHELF_KIND_LABELS,
   clipboardCopyText,
   shelfCopyFiles,
   shelfCopyPaths,
@@ -29,23 +19,16 @@ import {
   shelfRevealItem,
   type ShelfDragOutResult,
   type ShelfItem,
-  type ShelfKind,
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
+import { shelfFileTypeUi } from "../../lib/fileTypeUi";
 import { useShelfDragOut } from "../../hooks/useShelfDragOut";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useShelfStore } from "../../store/useShelfStore";
+import { shelfDeleteFeedback } from "../shelf/shelfDeleteFeedback";
 import { openFullApp } from "./actions";
 import { DropdownMenu } from "../ui";
 import "../shelf/shelf-ui.css";
-
-const KIND_ICONS: Record<ShelfKind, typeof FileIcon> = {
-  file: FileIcon,
-  image: ImageIcon,
-  folder: Folder,
-  link: Link2,
-  text: AlignLeft,
-};
 
 function storageLabel(item: ShelfItem): string {
   if (item.kind === "link") return "链接";
@@ -67,14 +50,24 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
   const retryShelfSync = useShelfStore((s) => s.retryShelfSync);
   const addPaths = useShelfStore((s) => s.addPaths);
   const updateItem = useShelfStore((s) => s.updateItem);
+  const deleteItems = useShelfStore((s) => s.deleteItems);
   const requestShelfLocate = useGlobalSearchStore((s) => s.requestShelfLocate);
   const [adding, setAdding] = useState(false);
   const [favoriteBusyId, setFavoriteBusyId] = useState<string | null>(null);
+  /** 待确认删除的条目：确认面板直接替换该行内容，保证点击处可见。 */
+  const [confirmDelete, setConfirmDelete] = useState<ShelfItem | null>(null);
+  const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
   const dragItemRef = useRef<ShelfItem | null>(null);
+  /** 确认展开后把焦点移到「取消」：键盘用户不会因为原按钮卸载而丢失焦点。 */
+  const confirmCancelRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     void loadRecent();
   }, [loadRecent]);
+
+  useEffect(() => {
+    if (confirmDelete) confirmCancelRef.current?.focus();
+  }, [confirmDelete]);
 
   const drag = useShelfDragOut({
     enabled: true,
@@ -214,6 +207,32 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
     [favoriteBusyId, onNotice, updateItem],
   );
 
+  /**
+   * 删除单条暂存记录。
+   *
+   * 收藏/置顶/被场景引用的条目在完整暂存架里默认受保护；胶囊里同样先确认，
+   * 确认后才传 `includeProtected=true`。删除只影响暂存记录：托管副本会被删，
+   * 引用模式的原文件不动（与完整面板口径一致）。
+   */
+  const removeItem = useCallback(
+    async (item: ShelfItem) => {
+      if (deleteBusyId) return;
+      setDeleteBusyId(item.id);
+      try {
+        const includeProtected =
+          item.favorite || item.pinned || item.scene_id != null;
+        const result = await deleteItems([item.id], includeProtected);
+        onNotice(shelfDeleteFeedback(result, "delete").message);
+        setConfirmDelete(null);
+      } catch (e) {
+        onNotice(`删除暂存项失败：${errorMessage(e)}`);
+      } finally {
+        setDeleteBusyId(null);
+      }
+    },
+    [deleteBusyId, deleteItems, onNotice],
+  );
+
   const revealItem = useCallback(
     (item: ShelfItem) => {
       void shelfRevealItem(item.id)
@@ -305,145 +324,216 @@ export default function InboxRecentShelf({ onNotice }: { onNotice: (msg: string)
         )}
         <ul className="cap-shelf-recent-list">
           {recent.map((item) => {
-            const Icon = KIND_ICONS[item.kind] ?? FileIcon;
+            const type = shelfFileTypeUi(item);
+            const Icon = type.icon;
             const missing = item.exists_state === "missing";
-            const kindLabel = SHELF_KIND_LABELS[item.kind] ?? item.kind;
             const draggable = isPhysical(item) && !missing;
+            const confirming = confirmDelete?.id === item.id;
+            const deleteBusy = deleteBusyId === item.id;
+            // link/text 的存储方式与类型同名：只写一次类型，不显示「文本 · 文本」。
+            const showStorage = item.kind !== "link" && item.kind !== "text";
+            const protectedItem = item.favorite || item.pinned || item.scene_id != null;
             return (
               <li
                 key={item.id}
-                className={`cap-shelf-recent-item${missing ? " is-missing" : ""}${draggable ? " is-draggable" : ""}`}
+                className={`cap-shelf-recent-item${missing ? " is-missing" : ""}${draggable && !confirming ? " is-draggable" : ""}${confirming ? " is-confirming" : ""}`}
                 onPointerDown={(event) => {
+                  // 确认删除期间该行只响应确认按钮，不发起拖出。
+                  if (confirming) return;
                   dragItemRef.current = item;
                   drag.onPointerDown(event);
                 }}
               >
-                <button
-                  type="button"
-                  className="cap-shelf-recent-main"
-                  aria-label={`${item.kind === "text" ? "查看" : "打开"}「${item.display_name}」`}
-                  data-tip={
-                    draggable
-                      ? `${item.original_path ?? item.display_name} · 按住可拖出`
-                      : (item.original_path ?? item.display_name)
-                  }
-                  onClick={() => {
-                    if (drag.shouldSuppressClick()) return;
-                    openItem(item);
-                  }}
-                >
-                  <span className="cap-shelf-recent-icon" aria-hidden="true">
-                    <Icon size={13} strokeWidth={1.9} />
-                  </span>
-                  <span className="cap-shelf-recent-text">
-                    <span className="cap-shelf-recent-name">{item.display_name}</span>
-                    <span className="cap-shelf-recent-sub">
-                      {kindLabel} · {storageLabel(item)}
-                      {missing ? " · 原文件不可用" : ""}
+                {confirming ? (
+                  <div
+                    className="cap-shelf-recent-confirm"
+                    role="group"
+                    aria-label={`删除「${item.display_name}」`}
+                  >
+                    <span className="cap-shelf-recent-confirm-text">
+                      删除「{item.display_name}」？
+                      {protectedItem
+                        ? "已收藏/置顶/被场景引用，确认后一并删除。"
+                        : "只删暂存记录，引用的原文件不受影响。"}
                     </span>
-                  </span>
-                </button>
-                <DropdownMenu
-                  menuLabel={`「${item.display_name}」操作`}
-                  placement="bottom-end"
-                  trigger={({ ref, onClick, onKeyDown, expanded }) => (
-                    <button
-                      ref={ref}
-                      type="button"
-                      className="cap-mini is-icon cap-shelf-recent-more"
-                      aria-label={`「${item.display_name}」更多操作`}
-                      aria-expanded={expanded}
-                      data-tip="更多"
-                      data-no-drag
-                      onClick={onClick}
-                      onKeyDown={onKeyDown}
+                    <span className="cap-shelf-recent-confirm-actions">
+                      <button
+                        ref={confirmCancelRef}
+                        type="button"
+                        className="cap-mini"
+                        disabled={deleteBusy}
+                        onClick={() => setConfirmDelete(null)}
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        className="cap-mini cap-confirm-danger"
+                        disabled={deleteBusy}
+                        onClick={() => void removeItem(item)}
+                      >
+                        {deleteBusy ? (
+                          <Loader2 size={11} className="spin" aria-hidden="true" />
+                        ) : null}
+                        删除
+                      </button>
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                  <button
+                    type="button"
+                    className="cap-shelf-recent-main"
+                    aria-label={`${item.kind === "text" ? "查看" : "打开"}「${item.display_name}」`}
+                    data-tip={
+                      draggable
+                        ? `${item.original_path ?? item.display_name} · 按住可拖出`
+                        : (item.original_path ?? item.display_name)
+                    }
+                    onClick={() => {
+                      if (drag.shouldSuppressClick()) return;
+                      openItem(item);
+                    }}
+                  >
+                    <span
+                      className={`cap-shelf-recent-icon file-tone-${type.tone}`}
+                      aria-hidden="true"
                     >
-                      <MoreVertical size={12} strokeWidth={2.2} aria-hidden="true" />
-                    </button>
-                  )}
-                  items={[
-                    ...(item.kind === "text"
-                      ? []
-                      : [
-                          {
-                            key: "open",
-                            label:
-                              item.kind === "link"
-                                ? "打开链接"
-                                : item.kind === "folder"
-                                  ? "打开目录"
-                                  : "打开",
-                            onSelect: () => openItem(item),
-                          },
-                        ]),
-                    ...(isPhysical(item) && !missing
-                      ? [
-                          {
-                            key: "reveal",
-                            label: "在文件夹中显示",
-                            onSelect: () => revealItem(item),
-                          },
-                        ]
-                      : []),
-                    ...(item.kind === "file" || item.kind === "image"
-                      ? [
-                          {
-                            key: "copy-file",
-                            label: "复制文件",
-                            onSelect: () => copyFile(item),
-                          },
-                          {
-                            key: "copy-path",
-                            label: "复制路径",
-                            onSelect: () => copyPath(item),
-                          },
-                        ]
-                      : []),
-                    ...(item.kind === "folder"
-                      ? [
-                          {
-                            key: "copy-path",
-                            label: "复制路径",
-                            onSelect: () => copyPath(item),
-                          },
-                        ]
-                      : []),
-                    ...(item.kind === "link"
-                      ? [
-                          {
-                            key: "copy-link",
-                            label: "复制链接",
-                            onSelect: () => copyLink(item),
-                          },
-                        ]
-                      : []),
-                    ...(item.kind === "text"
-                      ? [
-                          {
-                            key: "view",
-                            label: "查看内容",
-                            onSelect: () => openItem(item),
-                          },
-                          {
-                            key: "copy-text",
-                            label: "复制内容",
-                            onSelect: () => copyText(item),
-                          },
-                        ]
-                      : []),
-                    {
-                      key: "favorite",
-                      label: item.favorite ? "取消收藏" : "收藏",
-                      disabled: favoriteBusyId === item.id,
-                      onSelect: () => toggleFavorite(item),
-                    },
-                    {
-                      key: "locate",
-                      label: "在暂存架中查看",
-                      onSelect: () => locate(item),
-                    },
-                  ]}
-                />
+                      <Icon size={13} strokeWidth={1.9} />
+                    </span>
+                    <span className="cap-shelf-recent-text">
+                      <span className="cap-shelf-recent-name">{item.display_name}</span>
+                      <span className="cap-shelf-recent-sub">
+                        {type.label}
+                        {showStorage ? ` · ${storageLabel(item)}` : ""}
+                        {missing ? " · 原文件不可用" : ""}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="cap-mini is-icon cap-shelf-recent-del"
+                    aria-label={`删除「${item.display_name}」`}
+                    data-tip="删除"
+                    data-no-drag
+                    disabled={deleteBusy}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setConfirmDelete(item);
+                    }}
+                  >
+                    <Trash2 size={12} strokeWidth={2.2} aria-hidden="true" />
+                  </button>
+                  <DropdownMenu
+                    menuLabel={`「${item.display_name}」操作`}
+                    placement="bottom-end"
+                    trigger={({ ref, onClick, onKeyDown, expanded }) => (
+                      <button
+                        ref={ref}
+                        type="button"
+                        className="cap-mini is-icon cap-shelf-recent-more"
+                        aria-label={`「${item.display_name}」更多操作`}
+                        aria-expanded={expanded}
+                        data-tip="更多"
+                        data-no-drag
+                        onClick={onClick}
+                        onKeyDown={onKeyDown}
+                      >
+                        <MoreVertical size={12} strokeWidth={2.2} aria-hidden="true" />
+                      </button>
+                    )}
+                    items={[
+                      ...(item.kind === "text"
+                        ? []
+                        : [
+                            {
+                              key: "open",
+                              label:
+                                item.kind === "link"
+                                  ? "打开链接"
+                                  : item.kind === "folder"
+                                    ? "打开目录"
+                                    : "打开",
+                              onSelect: () => openItem(item),
+                            },
+                          ]),
+                      ...(isPhysical(item) && !missing
+                        ? [
+                            {
+                              key: "reveal",
+                              label: "在文件夹中显示",
+                              onSelect: () => revealItem(item),
+                            },
+                          ]
+                        : []),
+                      ...(item.kind === "file" || item.kind === "image"
+                        ? [
+                            {
+                              key: "copy-file",
+                              label: "复制文件",
+                              onSelect: () => copyFile(item),
+                            },
+                            {
+                              key: "copy-path",
+                              label: "复制路径",
+                              onSelect: () => copyPath(item),
+                            },
+                          ]
+                        : []),
+                      ...(item.kind === "folder"
+                        ? [
+                            {
+                              key: "copy-path",
+                              label: "复制路径",
+                              onSelect: () => copyPath(item),
+                            },
+                          ]
+                        : []),
+                      ...(item.kind === "link"
+                        ? [
+                            {
+                              key: "copy-link",
+                              label: "复制链接",
+                              onSelect: () => copyLink(item),
+                            },
+                          ]
+                        : []),
+                      ...(item.kind === "text"
+                        ? [
+                            {
+                              key: "view",
+                              label: "查看内容",
+                              onSelect: () => openItem(item),
+                            },
+                            {
+                              key: "copy-text",
+                              label: "复制内容",
+                              onSelect: () => copyText(item),
+                            },
+                          ]
+                        : []),
+                      {
+                        key: "favorite",
+                        label: item.favorite ? "取消收藏" : "收藏",
+                        disabled: favoriteBusyId === item.id,
+                        onSelect: () => toggleFavorite(item),
+                      },
+                      {
+                        key: "locate",
+                        label: "在暂存架中查看",
+                        onSelect: () => locate(item),
+                      },
+                      {
+                        key: "delete",
+                        label: "删除",
+                        danger: true,
+                        disabled: deleteBusyId === item.id,
+                        onSelect: () => setConfirmDelete(item),
+                      },
+                    ]}
+                  />
+                  </>
+                )}
               </li>
             );
           })}

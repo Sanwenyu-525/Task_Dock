@@ -239,6 +239,129 @@ body {
   outline-offset: 1px;
 }
 
+/* 语音隐私未开启时的恢复入口：文本按钮，不抢反馈文案的宽度。 */
+.capture-feedback-action {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.capture-feedback-action:hover {
+  text-decoration-thickness: 2px;
+}
+
+.capture-feedback-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── 语音输入：麦克风按钮 + 实时转写 ───────────────────────
+   按钮位于反馈行右端，不压正文；听写中整颗按钮切到 accent 面，
+   实时转写占用反馈行并带一根静态音量条（无限动画只在这里出现）。 */
+.capture-voice-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.capture-voice-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-voice-bars {
+  flex: none;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 10px;
+}
+
+.capture-voice-bars i {
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--accent);
+  transform-origin: bottom;
+  animation: capture-voice-bar 900ms ease-in-out infinite;
+}
+
+.capture-voice-bars i:nth-child(2) {
+  height: 65%;
+  animation-delay: 150ms;
+}
+
+.capture-voice-bars i:nth-child(3) {
+  height: 82%;
+  animation-delay: 300ms;
+}
+
+.capture-mic {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--control-face);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+
+.capture-mic:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.capture-mic.is-listening {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--capture-on-accent);
+}
+
+.capture-mic.is-listening:hover:not(:disabled) {
+  background: var(--accent-hover);
+  color: var(--capture-on-accent);
+}
+
+.capture-mic:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.capture-mic:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@keyframes capture-voice-bar {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
 /* ── 类型单选组 ───────────────────────────────────────────── */
 .capture-kinds {
   display: flex;
@@ -382,8 +505,12 @@ body {
   .capture-close,
   .capture-kind,
   .capture-suggest,
+  .capture-mic,
   .capture-submit {
     transition: none !important;
+  }
+  .capture-voice-bars i {
+    animation: none !important;
   }
 }
 }

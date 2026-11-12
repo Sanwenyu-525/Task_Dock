@@ -14,9 +14,12 @@
 //! 面板底栏明确标注「最近记录」，完整入口在「全部任务」。
 //! 已完成的量来自 `stats.completed_today`，不伪造数据。
 //!
-//! 完成交互：先置 `is-done` 视觉态（320ms）再移出列表；`toggle` 失败则撤销
-//! 该视觉态并重新拉取真实列表，同时在底栏给出一次失败提示——
-//! 绝不把没保存成功的任务伪装成已完成。
+//! 完成交互：先置 `is-done` 视觉态（320ms）再移出列表；底栏给出限时「撤销」，
+//! 已完成条目也可直接点勾选圈恢复为待办（勾回）。`toggle` 失败则撤销该视觉态
+//! 并重新拉取真实列表，同时在底栏给出一次失败提示——
+//! 绝不把没保存成功的任务伪装成已完成，也不把撤销失败说成已恢复。
+//! 重复任务完成后后端只推进期次（任务仍 pending）：此时不隐藏、不给「撤销」，
+//! 而是提示下一期并展示刷新后的新期次——第二次 toggle 会继续推进，不能当作撤销。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Check, CheckCircle2, ChevronRight, ListTodo, Plus } from "lucide-react";
@@ -66,16 +69,25 @@ export default function TasksLite() {
   const loadLite = useTasksStore((s) => s.loadLite);
   const releaseLite = useTasksStore((s) => s.releaseLite);
   const [filter, setFilter] = useState<Filter>("all");
+  const filterRef = useRef<Filter>(filter);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [completing, setCompleting] = useState<ReadonlySet<string>>(new Set());
+  /** 在途完成的同步锁：`completing` 是异步 state，同一 tick 的连点会都读到旧值。 */
+  const completingRef = useRef(new Set<string>());
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [reopening, setReopening] = useState<string | null>(null);
+  /** 最近一次完成：底栏据此提供限时撤销，不把「完成」做成不可逆操作。 */
+  const [undo, setUndo] = useState<{ id: string; title: string } | null>(null);
+  const [undoing, setUndoing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // 计时器用 Set 并在回调触发后删除：长期打开的面板不会把已结束的 ID 一直累积。
   const timers = useRef(new Set<number>());
+  // 每个任务最近一次「完成」的序号：撤销/勾回会递增它，使尚未执行的移出失效。
+  // 不依赖刷新后的列表状态判断——刷新可能失败或滞后，不能让它决定动画是否收尾。
+  const completeTokens = useRef(new Map<string, number>());
   const ime = useImeComposition();
   const stats = useTasksStore((s) => s.stats);
 
@@ -92,6 +104,12 @@ export default function TasksLite() {
    * 数据作废，而面板误以为已有数据不再请求，最终停在空白。
    */
   const changeFilter = (next: Filter) => {
+    if (next !== filterRef.current) {
+      filterRef.current = next;
+      // 「完成后移出」只属于完成时的分段：切段后按真实状态重新展示，
+      // 否则刚完成的任务切到「已完成」也会被本地 hidden 隐藏。
+      setHidden(new Set());
+    }
     setFilter(next);
     const target = scopeOf(next);
     const state = useTasksStore.getState();
@@ -130,13 +148,16 @@ export default function TasksLite() {
   );
 
   const add = async () => {
-    const v = text.trim();
+    const raw = text;
+    const v = raw.trim();
     if (!v || busy) return;
     setBusy(true);
     try {
       // store 的 quickCreate 内部 refresh()：面板打开时已含轻量列表刷新
       await useTasksStore.getState().quickCreate(v, null, null, null);
-      setText("");
+      // 只清空「提交后没有改动」的输入：提交期间新输入的第二条内容（含输入法
+      // 组合中的候选）不能被这次响应清空；组合态下 value 可能仍是旧文本。
+      setText((cur) => (ime.isComposingNow() || cur !== raw ? cur : ""));
     } catch {
       flash("添加失败，请重试"); // 失败保留输入，用户可重试
     } finally {
@@ -144,13 +165,41 @@ export default function TasksLite() {
     }
   };
 
-  const complete = async (id: string) => {
+  const complete = async (target: Task) => {
+    const id = target.id;
+    // 同一任务的完成请求在途时忽略后续点击（双击/键盘连按）；其他任务不受影响。
+    if (completingRef.current.has(id)) return;
+    completingRef.current.add(id);
+    const completedIn = filterRef.current;
     setCompleting((prev) => new Set(prev).add(id));
     try {
-      await useTasksStore.getState().toggle(id);
+      const updated = await useTasksStore.getState().toggle(id);
       setExpandedId((cur) => (cur === id ? null : cur));
-      // 视觉反馈先行：留 320ms 让勾选动画可见，再移出列表
-      later(() => setHidden((prev) => new Set(prev).add(id)), 320);
+      if (updated.status === "completed") {
+        setUndo({ id, title: target.title });
+        // 撤销入口限时保留；期间又完成了别的任务时，只让最新一次的定时器生效。
+        later(() => setUndo((cur) => (cur?.id === id ? null : cur)), 6000);
+        // 视觉反馈先行：留 320ms 让勾选动画可见，再移出列表。
+        // 期间切了分段就不再加 hidden——新分段应按真实状态展示。
+        const token = (completeTokens.current.get(id) ?? 0) + 1;
+        completeTokens.current.set(id, token);
+        later(() => {
+          if (filterRef.current !== completedIn) return;
+          // 撤销/勾回已递增序号：这次移出属于旧的一次完成，不能再隐藏已恢复的任务。
+          if (completeTokens.current.get(id) !== token) return;
+          setHidden((prev) => new Set(prev).add(id));
+        }, 320);
+      } else {
+        // 重复任务：后端只把期次推进到下一次，任务仍是 pending。
+        // 不隐藏、不提供「撤销」——再次 toggle 只会继续推进期次，不是回退。
+        setCompleting((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        flash(updated.due_at ? `已完成本期，下一期 ${momentLabel(updated.due_at)}` : "已完成本期");
+      }
     } catch {
       setCompleting((prev) => {
         const next = new Set(prev);
@@ -158,17 +207,63 @@ export default function TasksLite() {
         return next;
       });
       flash("完成失败，已回滚");
-      void loadLite(scopeOf(filter)); // 重新拉当前分段的真实状态，不靠本地猜测
+      void loadLite(scopeOf(filterRef.current)); // 重新拉当前分段的真实状态，不靠本地猜测
+    } finally {
+      completingRef.current.delete(id);
     }
   };
 
-  /** 已完成任务重新打开：状态写回仍走 store，失败同样回滚并重拉真实列表。 */
+  /**
+   * 撤销最近一次完成：走同一个 `toggle` 写回真实状态（不是只改本地视觉），
+   * 失败时保留撤销入口并重拉真实列表，不把失败的撤销说成已恢复。
+   */
+  const undoComplete = async () => {
+    if (!undo || undoing) return;
+    const target = undo;
+    setUndoing(true);
+    try {
+      await useTasksStore.getState().toggle(target.id);
+      completeTokens.current.set(target.id, (completeTokens.current.get(target.id) ?? 0) + 1);
+      // 完成时的勾选态与移出态都只属于「已完成」：撤销后必须一并清掉，
+      // 否则回到列表的任务会被旧的 completing 记录继续画成已勾选。
+      setCompleting((prev) => {
+        if (!prev.has(target.id)) return prev;
+        const next = new Set(prev);
+        next.delete(target.id);
+        return next;
+      });
+      setHidden((prev) => {
+        if (!prev.has(target.id)) return prev;
+        const next = new Set(prev);
+        next.delete(target.id);
+        return next;
+      });
+      setUndo((cur) => (cur?.id === target.id ? null : cur));
+      flash("已撤销完成");
+    } catch {
+      flash("撤销失败，请重试");
+      void loadLite(scopeOf(filterRef.current));
+    } finally {
+      setUndoing(false);
+    }
+  };
+
+  /** 已完成任务重新打开（勾回）：状态写回仍走 store，失败同样回滚并重拉真实列表。 */
   const reopen = async (id: string) => {
     if (reopening) return;
     setReopening(id);
     try {
       await useTasksStore.getState().toggle(id);
+      completeTokens.current.set(id, (completeTokens.current.get(id) ?? 0) + 1);
       setExpandedId(null);
+      // 与撤销同理：旧的完成视觉态不能跟着任务回到待办列表。
+      setCompleting((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setUndo((cur) => (cur?.id === id ? null : cur));
       flash("已重新打开");
     } catch {
       flash("操作失败，已回滚");
@@ -293,11 +388,19 @@ export default function TasksLite() {
             <div className="cap-task-group" key={t.id}>
               <div className={`cap-item cap-task-row${isDone ? " is-done" : ""}`}>
                 {completed ? (
-                  // 已完成的条目只呈现状态，不给「再点一次」的完成入口；
-                  // 重新打开放在展开详情里，避免行内误触。
-                  <span className="cap-check is-checked is-static" aria-hidden="true">
-                    <Check size={11} strokeWidth={3} />
-                  </span>
+                  // 已完成条目：点勾选圈直接恢复为待办（勾回），不必先展开详情。
+                  // completed 状态下 toggle 只会写回 pending，不会误触发「再完成一次」。
+                  <button
+                    type="button"
+                    className="cap-check is-checked"
+                    aria-label={`将「${t.title}」恢复为待办`}
+                    data-tip="恢复为待办"
+                    aria-busy={reopening === t.id}
+                    disabled={reopening === t.id}
+                    onClick={() => void reopen(t.id)}
+                  >
+                    <Check size={11} strokeWidth={3} aria-hidden="true" />
+                  </button>
                 ) : (
                   <button
                     type="button"
@@ -306,7 +409,7 @@ export default function TasksLite() {
                     // 行内已经显示标题：提示只给动作，不重复长文案
                     data-tip="标记完成"
                     aria-pressed={isDone}
-                    onClick={() => void complete(t.id)}
+                    onClick={() => void complete(t)}
                   >
                     <Check size={11} strokeWidth={3} aria-hidden="true" />
                   </button>
@@ -408,7 +511,7 @@ export default function TasksLite() {
       <div className="cap-foot">
         <span className="cap-foot-note">
           <CheckCircle2 size={12} strokeWidth={1.8} aria-hidden="true" />
-          {notice ?? `最近记录 · 完成 ${doneToday}`}
+          {notice ?? (undo ? `已完成「${undo.title}」` : `最近记录 · 完成 ${doneToday}`)}
         </span>
         {/* 全局零任务时没有「今天的完成进度」可言，不渲染无意义的 0% 进度条 */}
         {total > 0 && (
@@ -416,10 +519,23 @@ export default function TasksLite() {
             <i style={{ width: `${pct}%` }} />
           </span>
         )}
-        <button type="button" className="cap-link" onClick={() => openFullApp("tasks")}>
-          全部任务
-          <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
-        </button>
+        <div className="cap-actions">
+          {undo ? (
+            <button
+              type="button"
+              className="cap-link"
+              aria-label={`撤销完成「${undo.title}」`}
+              disabled={undoing}
+              onClick={() => void undoComplete()}
+            >
+              撤销
+            </button>
+          ) : null}
+          <button type="button" className="cap-link" onClick={() => openFullApp("tasks")}>
+            全部任务
+            <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        </div>
       </div>
 
       <div className="cap-input cap-task-add">

@@ -4088,6 +4088,15 @@ textarea:focus {
       flex: 1 1 auto;
     }
   }
+
+  /* 默认 400px 主窗下截止/提醒两列会把「2026-11-12 15:00」截断，
+     这一行在窄窗改单列，完整值不再依赖悬停提示。 */
+  @media (max-width: 460px) {
+    .task-editor-body .field-row-datetime {
+      flex-direction: column;
+      gap: 6px;
+    }
+  }
 }
 
 /* ── 逐项粘贴：目标卡片选中 / 跳转 / 说明折叠（主题级覆盖） ── */

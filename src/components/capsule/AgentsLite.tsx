@@ -19,18 +19,11 @@ import AgentIcon from "../ui/AgentIcon";
 import { openAgentSession } from "../../lib/bridge";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
-import { liveRuns, liveSummary } from "../../lib/agentTree";
+import { attentionRank, liveRuns, liveSummary } from "../../lib/agentTree";
 import { AGENT_STATE_LABELS } from "../../lib/format";
 import { avatarHue } from "../../lib/navigation";
 import { openFullApp } from "./actions";
 import { EmptyState, PanelHead } from "./PanelKit";
-
-const STATE_ORDER: Record<string, number> = {
-  failed: 0,
-  waiting: 1,
-  running: 2,
-  disconnected: 3,
-};
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
@@ -76,8 +69,9 @@ export default function AgentsLite() {
     () =>
       [...liveRuns(snapshot?.runs ?? [])]
         .sort((a, b) => {
-          const ra = STATE_ORDER[a.status] ?? 9;
-          const rb = STATE_ORDER[b.status] ?? 9;
+          // 与完整 Agent 页同源：等待介入优先于失败（可直接行动的先看到）。
+          const ra = attentionRank(a.status);
+          const rb = attentionRank(b.status);
           if (ra !== rb) return ra - rb;
           return (b.updated_at ?? "").localeCompare(a.updated_at ?? "");
         })
@@ -98,9 +92,11 @@ export default function AgentsLite() {
     }
   };
 
-  const open = async (sourceId: string, sessionId: string) => {
+  /** 打开会话：后端按 `agent_sessions.external_id` 校验并恢复，不能传本地行 ID
+      （`run.session_id` 是内部外键，传它必然查不到会话）。 */
+  const open = async (sourceId: string, externalSessionId: string) => {
     try {
-      await openAgentSession(sourceId, sessionId);
+      await openAgentSession(sourceId, externalSessionId);
     } catch {
       // 会话跳转依赖具体 Agent 的能力：失败时如实提示，不伪造成功
       setNotice("打开会话失败");
@@ -201,6 +197,9 @@ export default function AgentsLite() {
         )}
         {runs.map((r) => {
           const session = snapshot?.sessions.find((s) => s.id === r.session_id);
+          /** 可直接跳转的外部会话 ID；会话不在当前快照明细里（被截断或已清理）时为空，
+              此时不提供「打开」（传内部 ID 必然失败），改为进完整页查看。 */
+          const externalSessionId = session?.external_id ?? "";
           const title = r.task_title || session?.title || r.source_id;
           const label = AGENT_STATE_LABELS[r.status] ?? r.status;
           const sourceCounts = snapshot?.live_summary?.by_source?.[r.source_id];
@@ -250,12 +249,12 @@ export default function AgentsLite() {
                 ) : null}
               </span>
               <span className="cap-agent-side">
-                {r.session_id ? (
+                {externalSessionId ? (
                   <button
                     type="button"
                     className="cap-mini"
                     aria-label={`打开 ${title} 的会话`}
-                    onClick={() => void open(r.source_id, r.session_id)}
+                    onClick={() => void open(r.source_id, externalSessionId)}
                   >
                     打开
                   </button>

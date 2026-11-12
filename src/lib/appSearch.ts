@@ -148,5 +148,26 @@ export function sortTargetsForDisplay<T extends TargetSortFields>(
   return [...items].sort((a, b) => compareTargetOrder(a, b, opts));
 }
 
+/**
+ * 置顶排序：收藏最前，运行中其次，其余保持输入顺序。
+ * 输入顺序由各端决定（完整面板是先按最近/名称排好的列表，胶囊是用户手动顺序）；
+ * 收藏是用户显式选择，不能被运行中挤到后面。只改展示顺序，不改后端数据。
+ */
+export function prioritizeFavoritesAndRunning<T>(
+  items: readonly T[],
+  isFavorite: (item: T) => boolean,
+  isRunning: (item: T) => boolean,
+): T[] {
+  const favorites: T[] = [];
+  const running: T[] = [];
+  const rest: T[] = [];
+  for (const item of items) {
+    if (isFavorite(item)) favorites.push(item);
+    else if (isRunning(item)) running.push(item);
+    else rest.push(item);
+  }
+  return [...favorites, ...running, ...rest];
+}
+
 /** 列表分页大小：不做「只给前 N 条」的假完整，滚到底部/点加载更多继续取。 */
 export const APP_PAGE_SIZE = 40;

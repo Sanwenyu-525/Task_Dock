@@ -43,6 +43,21 @@
   --status-success: #15803d;
   --status-error: #b91c1c;
   --status-disconnected: #5b6577;
+  /* 文件类型图标色调（暂存架/收集箱）：按文件类别区分，不复用状态语义。
+     文档/链接跟随强调色，其余类别在深色主题单独提亮，保证图标可辨。 */
+  --file-tone-doc: var(--accent);
+  --file-tone-sheet: #15803d;
+  --file-tone-slide: #c2410c;
+  --file-tone-image: #0e7490;
+  --file-tone-media: #7c3aed;
+  --file-tone-archive: #b45309;
+  --file-tone-code: #0f766e;
+  --file-tone-data: #0369a1;
+  --file-tone-program: #475569;
+  --file-tone-folder: #b45309;
+  --file-tone-link: var(--accent);
+  --file-tone-text: var(--text-secondary);
+  --file-tone-other: var(--text-secondary);
   /* 优先级 */
   --p0: #b91c1c;
   --p1: #c2410c;
@@ -147,6 +162,19 @@
   --status-success: #4ade80;
   --status-error: #f87171;
   --status-disconnected: #6b7688;
+  --file-tone-doc: #a5b4fc;
+  --file-tone-sheet: #4ade80;
+  --file-tone-slide: #fb923c;
+  --file-tone-image: #67e8f9;
+  --file-tone-media: #c4b5fd;
+  --file-tone-archive: #fbbf24;
+  --file-tone-code: #5eead4;
+  --file-tone-data: #7dd3fc;
+  --file-tone-program: #94a3b8;
+  --file-tone-folder: #fbbf24;
+  --file-tone-link: var(--accent);
+  --file-tone-text: var(--text-secondary);
+  --file-tone-other: var(--text-secondary);
   --p0: #f87171;
   --p1: #fb923c;
   --p2: #60a5fa;
@@ -3285,7 +3313,11 @@ code {
   padding: 0 0 4px;
 }
 
+/* 320px 窄窗下不能让标签被搜索框挤成「查找设 / 置」：标签不收缩，
+   剩余宽度交给可收缩的搜索框（它的 min-width: 0 允许让位）。 */
 .settings-jump-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
   color: var(--text-tertiary);
   font-size: 11px;
 }
@@ -12117,7 +12149,6 @@ html[data-theme="dark"] .resource-page {
   cursor: pointer;
   transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease, scale 0.12s ease;
 }
-.cap-check.is-static { cursor: default; pointer-events: none; }
 .cap-check:hover {
   border-color: var(--accent);
   background: var(--cap-accent-soft);
@@ -12125,6 +12156,8 @@ html[data-theme="dark"] .resource-page {
 }
 .cap-check:active { scale: 0.9; }
 .cap-check:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* 勾回进行中：不可重复点击，也不能再触发 hover 的「可完成」暗示 */
+.cap-check:disabled { opacity: 0.55; cursor: default; pointer-events: none; }
 .cap-check.is-checked {
   border-color: var(--accent);
   background: var(--accent);
@@ -12218,6 +12251,7 @@ html[data-theme="dark"] .resource-page {
   transition: background 0.12s ease;
 }
 .cap-link:hover { background: var(--cap-accent-soft); }
+.cap-link:disabled { opacity: 0.5; cursor: default; background: transparent; }
 .cap-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 /* 进度条（任务底栏「已完成 1 项」） */
@@ -12521,6 +12555,49 @@ html[data-theme="dark"] .resource-page {
 .cap-shelf-recent-item.is-missing .cap-shelf-recent-name { color: var(--cap-text-3); }
 .cap-shelf-recent-item.is-missing .cap-shelf-recent-sub { color: var(--status-error); }
 .cap-shelf-recent-more { flex: 0 0 auto; width: 22px; height: 22px; }
+/* 删除按钮与「更多」同尺寸；确认面板替换整行内容，点击处即可见。 */
+.cap-shelf-recent-del { flex: 0 0 auto; width: 22px; height: 22px; }
+.cap-shelf-recent-item.is-confirming {
+  background: var(--cap-card-face-hover);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--status-error) 26%, transparent);
+}
+.cap-shelf-recent-confirm {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 3px;
+}
+.cap-shelf-recent-confirm-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 9.5px;
+  line-height: 1.35;
+  color: var(--cap-text-2);
+  overflow-wrap: anywhere;
+}
+.cap-shelf-recent-confirm-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.cap-shelf-recent-confirm-actions .cap-mini { height: 22px; padding: 0 7px; font-size: 10px; }
+/* 文件类型色调：放在具体图标容器规则之后，同优先级下覆盖默认 accent/次级文字色。 */
+.file-tone-doc { color: var(--file-tone-doc); }
+.file-tone-sheet { color: var(--file-tone-sheet); }
+.file-tone-slide { color: var(--file-tone-slide); }
+.file-tone-image { color: var(--file-tone-image); }
+.file-tone-media { color: var(--file-tone-media); }
+.file-tone-archive { color: var(--file-tone-archive); }
+.file-tone-code { color: var(--file-tone-code); }
+.file-tone-data { color: var(--file-tone-data); }
+.file-tone-program { color: var(--file-tone-program); }
+.file-tone-folder { color: var(--file-tone-folder); }
+.file-tone-link { color: var(--file-tone-link); }
+.file-tone-text { color: var(--file-tone-text); }
+.file-tone-other { color: var(--file-tone-other); }
 .cap-shelf-recent-hint {
   display: flex;
   align-items: center;
@@ -12637,6 +12714,8 @@ html[data-theme="dark"] .resource-page {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 失败结果条多一个「查看诊断」入口：320 窄窗或英文文案下允许换行，避免撑破胶囊。 */
+  flex-wrap: wrap;
   padding-top: 2px;
   border-top: 1px solid var(--cap-divider);
 }
@@ -16295,6 +16374,22 @@ html[data-theme="dark"] .resource-page {
   overflow: hidden;
   position: relative;
 }
+
+/* 完整暂存架卡片的类型色调：.shelf-thumb 在本层更靠后定义，单类选择器会覆盖
+   前面的 .file-tone-*；这里用复合选择器提高优先级，保证文件类型图标颜色生效。 */
+.shelf-thumb.file-tone-doc { color: var(--file-tone-doc); }
+.shelf-thumb.file-tone-sheet { color: var(--file-tone-sheet); }
+.shelf-thumb.file-tone-slide { color: var(--file-tone-slide); }
+.shelf-thumb.file-tone-image { color: var(--file-tone-image); }
+.shelf-thumb.file-tone-media { color: var(--file-tone-media); }
+.shelf-thumb.file-tone-archive { color: var(--file-tone-archive); }
+.shelf-thumb.file-tone-code { color: var(--file-tone-code); }
+.shelf-thumb.file-tone-data { color: var(--file-tone-data); }
+.shelf-thumb.file-tone-program { color: var(--file-tone-program); }
+.shelf-thumb.file-tone-folder { color: var(--file-tone-folder); }
+.shelf-thumb.file-tone-link { color: var(--file-tone-link); }
+.shelf-thumb.file-tone-text { color: var(--file-tone-text); }
+.shelf-thumb.file-tone-other { color: var(--file-tone-other); }
 
 .shelf-thumb img {
   width: 100%;

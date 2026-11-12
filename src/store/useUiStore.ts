@@ -213,6 +213,15 @@ export const useUiStore = create<{
   /** 从上下文帮助或设置入口进入帮助中心的来源页；离开 help Tab 时自动清空。 */
   helpReturnTab: Tab | null;
   setHelpReturnTab: (tab: Tab | null) => void;
+  /**
+   * 收集箱投递结果条「查看诊断」的一次性意图：携带批次 operation_id。
+   * 由 DiagnosticsCenterPanel 在挂载/收到新 token 时消费并清除，
+   * 避免下次进入诊断中心重复定位同一个操作链。
+   */
+  diagnosticsOperationRequest: { token: number; operationId: string } | null;
+  requestDiagnosticsOperation: (operationId: string) => void;
+  /** 取走一次性意图并清除；没有或已被消费时返回 null。 */
+  consumeDiagnosticsOperation: () => string | null;
 }>((set, get) => ({
   tab: "tasks",
   // 收集箱/暂存架是同一视觉入口的两个子页：setTab 落到其中之一时同步子页状态，
@@ -367,4 +376,18 @@ export const useUiStore = create<{
   clearHelpArticleRequest: () => set({ helpOpenRequest: null }),
   helpReturnTab: null,
   setHelpReturnTab: (helpReturnTab) => set({ helpReturnTab }),
+  diagnosticsOperationRequest: null,
+  requestDiagnosticsOperation: (operationId) =>
+    set((s) => ({
+      diagnosticsOperationRequest: {
+        token: (s.diagnosticsOperationRequest?.token ?? 0) + 1,
+        operationId,
+      },
+    })),
+  consumeDiagnosticsOperation: () => {
+    const request = get().diagnosticsOperationRequest;
+    if (!request) return null;
+    set({ diagnosticsOperationRequest: null });
+    return request.operationId;
+  },
 }));

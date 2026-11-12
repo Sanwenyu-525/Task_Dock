@@ -21,6 +21,7 @@ import {
   parseLooseInput,
   todayLocal,
 } from "../../lib/datetime";
+import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import { useLocale } from "../../hooks/useLocale";
 
 export interface DateTimePickerProps {
@@ -130,6 +131,15 @@ export default function DateTimePicker({
         aria-expanded={open}
         disabled={disabled}
         onClick={() => (open ? setOpen(false) : openPicker())}
+        onMouseEnter={(e) => {
+          // 窄窗只显示截断值时，悬停给出完整日期时间；未截断不制造重复提示。
+          if (value) syncTruncatedTip(e.currentTarget, ".ui-dtp-text", formatLocalDisplay(value));
+        }}
+        onMouseLeave={(e) => clearTip(e.currentTarget)}
+        onFocus={(e) => {
+          if (value) syncTruncatedTip(e.currentTarget, ".ui-dtp-text", formatLocalDisplay(value));
+        }}
+        onBlur={(e) => clearTip(e.currentTarget)}
       >
         <CalendarDays size={13} className="ui-dtp-icon" aria-hidden="true" />
         <span className="ui-dtp-text">{value ? formatLocalDisplay(value) : resolvedPlaceholder}</span>
@@ -139,6 +149,7 @@ export default function DateTimePicker({
             role="button"
             tabIndex={-1}
             aria-label={t("dateTime.clearAria")}
+            data-tip={t("dateTime.clearAria")}
             onMouseDown={(e) => {
               e.preventDefault();
               e.stopPropagation();

@@ -17,11 +17,11 @@ import {
   shelfReadText,
   shelfRevealItem,
   shelfTaskLinks,
-  SHELF_KIND_LABELS,
   type ShelfItem,
   type ShelfTaskLink,
 } from "../../lib/bridge";
 import { clipboardTime, formatBytes } from "../../lib/clipboardUi";
+import { shelfFileTypeUi } from "../../lib/fileTypeUi";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
 import { ConfirmDialog } from "../ui/Dialog";
@@ -184,7 +184,7 @@ export default function ShelfDetail({
 
   const metaRows = useMemo(
     () => [
-      ["类型", SHELF_KIND_LABELS[item.kind]],
+      ["类型", shelfFileTypeUi(item).label],
       [
         "存储",
         item.kind === "link"

@@ -1958,11 +1958,12 @@ export const enUS: Record<MessageKey, string> = {
   // ── Tasks page ──
   "tasks.overview.pendingTip": "All incomplete tasks",
   "tasks.overview.pending": "To do",
-  "tasks.overview.dueTodayTip": "Due today",
+  "tasks.overview.dueTodayTip": "Due today (pending only); click to view only these tasks",
   "tasks.overview.dueToday": "Due today",
   "tasks.overview.overdueTip": "Overdue and incomplete",
   "tasks.overview.overdue": "Overdue",
   "tasks.view.today": "Today",
+  "tasks.view.todayDueTip": "Showing tasks due today only; click Today for the full today view",
   "tasks.view.tomorrow": "Tomorrow",
   "tasks.view.week": "This week",
   "tasks.view.overdue": "Overdue",
@@ -1981,7 +1982,7 @@ export const enUS: Record<MessageKey, string> = {
   "tasks.search.open": "Search tasks",
   "tasks.statusAria": "Status",
   "tasks.sortAria": "Sort order",
-  "tasks.searchPlaceholder": "Search title / description (Enter to apply)",
+  "tasks.searchPlaceholder": "Search title / description",
   "tasks.searchClear": "Clear search",
   "tasks.searchAria": "Search tasks",
   "tasks.linksFailed": "Could not read task links: {error} (link badges may be stale)",
@@ -1990,8 +1991,10 @@ export const enUS: Record<MessageKey, string> = {
   "tasks.loadFailed": "Could not load tasks",
   "tasks.empty.search": "No matching tasks",
   "tasks.empty.overdue": "No overdue tasks. Nice.",
+  "tasks.empty.dueToday": "Nothing is due today",
   "tasks.empty.default": "Nothing here yet",
   "tasks.empty.searchHint": "Try another keyword, or clear the search to see everything",
+  "tasks.empty.dueTodayHint": "Switch to Today to see overdue tasks and tasks without a due time",
   "tasks.empty.defaultHint": "Use the box above to add tasks; natural language like \"meeting tomorrow at 3pm\" works",
 
   // ── Agents page (navigation and monitor shell) ──
@@ -2280,6 +2283,7 @@ export const enUS: Record<MessageKey, string> = {
   "errors.VALIDATION_ERROR": "Invalid input. Check it and try again.",
   "errors.NOT_FOUND": "The item does not exist or was deleted.",
   "errors.PERMISSION_DENIED": "You do not have permission for this action.",
+  "errors.PERMISSION_REQUIRED": "A system permission is required. Enable it in Settings and try again.",
   "errors.IO_ERROR": "File read/write failed. Check disk space and permissions.",
   "errors.DATABASE_ERROR": "Database operation failed.",
   "errors.DATABASE_BUSY": "The database is busy. Try again shortly.",
@@ -2311,4 +2315,8 @@ export const enUS: Record<MessageKey, string> = {
   "commandPalette.scenarioBusy": "Another scenario is already entering. Wait for it to finish.",
   "commandPalette.scenarioDone": "Scenario \"{name}\" finished: {ok} succeeded, {bad} not succeeded.",
   "commandPalette.scenarioEnterFailed": "Failed to enter scenario \"{name}\": {error}",
+
+  // ── Inbox file drop: failed result → diagnostics center ──
+  "capsule.inboxDrop.viewDiagnostics": "View diagnostics",
+  "capsule.inboxDrop.diagnosticsBlocked": "Couldn't open Diagnostics: the current page is still saving. Try again shortly.",
 };

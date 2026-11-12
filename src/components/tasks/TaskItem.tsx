@@ -77,6 +77,8 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
   const [menuOpen, setMenuOpen] = useState(false);
   /** 状态切换请求在途：挡住连点把同一条任务翻回翻去 */
   const [busy, setBusy] = useState(false);
+  /** `busy` 是异步 state，同一 tick 的连点会都读到旧值；同步锁负责真正去重。 */
+  const busyRef = useRef(false);
   /** 延后请求在途：挡住连点发出多次 snooze */
   const [snoozeBusy, setSnoozeBusy] = useState(false);
   /**
@@ -94,7 +96,8 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
   }, [filter]);
 
   async function onToggle() {
-    if (busy || isLeaving) return;
+    if (busyRef.current || busy || isLeaving) return;
+    busyRef.current = true;
     const was = task.status;
     const filterAtStart = useTasksStore.getState().filter;
     const viewAtStart = taskViewKey(filterAtStart);
@@ -178,6 +181,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
       showToast(`更新任务状态失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       if (held && holdToken !== null) releaseExitHold(task.id, holdToken);
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -284,7 +288,10 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
             </span>
           )}
           {task.recurrence && (
-            <span className="task-rec" title={`重复：${describeRecurrence(task.recurrence)}`}>
+            <span
+              className="task-rec"
+              data-tip={`重复：${describeRecurrence(task.recurrence)}`}
+            >
               <Repeat size={11} /> {describeRecurrence(task.recurrence)}
             </span>
           )}
@@ -295,7 +302,10 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
             </span>
           ))}
           {task.linked_agents > 0 && (
-            <span className="task-link" title={`关联 ${task.linked_agents} 个 Agent 会话`}>
+            <span
+              className="task-link"
+              data-tip={`关联 ${task.linked_agents} 个 Agent 会话`}
+            >
               <Link2 size={11} /> {task.linked_agents}
             </span>
           )}
@@ -367,7 +377,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
           <button
             className="icon-btn sm task-context"
             onClick={() => openContext(task)}
-            title="任务上下文（现场 / Agent / 关联）"
+            data-tip="任务上下文（现场 / Agent / 关联）"
             aria-label="任务上下文"
           >
             <Layers size={13} />
