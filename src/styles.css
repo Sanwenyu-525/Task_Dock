@@ -20485,3 +20485,50 @@ span.wf-step-main {
     box-shadow: none;
   }
 }
+
+/* ═════════════════════════════════════════════════════════════════
+   dev workbench (Round 2a)
+   交接包「资料选择」：两列勾选组（快速笔记 / 暂存架条目）。
+   复用既有 .wb-* 节奏与语义 Token；复选框为 ui-checkbox 既有原语。
+   ═════════════════════════════════════════════════════════════════ */
+
+.wb-materials-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.wb-materials-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.wb-materials-group-title {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.wb-materials-item {
+  min-width: 0;
+  align-items: center;
+}
+
+.wb-materials-item .wb-materials-item-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 400px) {
+  .wb-materials-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

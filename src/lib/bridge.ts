@@ -4214,3 +4214,42 @@ export const devAcceptanceRecordList = (opts?: {
     subjectId: opts?.subjectId ?? null,
     limit: opts?.limit ?? null,
   });
+
+// ── 快速笔记（notes_*，2026-11-13 Round 2a）──────────────────────────
+// notes_list 一直由 useNotesStore 直接 invokeCommand 调用；为交接包「资料选择」
+// 补一个类型化包装（只读列表），字段与后端 notes/store.rs 的 NoteSummary 一一对应。
+// 不新增后端命令，不改既有 useNotesStore 路径。
+
+export interface NoteSummary {
+  id: string;
+  title: string;
+  excerpt: string;
+  pinned: boolean;
+  favorite: boolean;
+  task_id: string | null;
+  workspace_id: string | null;
+  source_capture_id: string | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  content_chars: number;
+}
+
+export const notesList = (opts?: {
+  query?: string | null;
+  pinnedOnly?: boolean;
+  favoriteOnly?: boolean;
+  taskId?: string | null;
+  workspaceId?: string | null;
+  limit?: number;
+  offset?: number;
+}) =>
+  invoke<NoteSummary[]>("notes_list", {
+    query: opts?.query ?? null,
+    pinnedOnly: opts?.pinnedOnly ?? false,
+    favoriteOnly: opts?.favoriteOnly ?? false,
+    taskId: opts?.taskId ?? null,
+    workspaceId: opts?.workspaceId ?? null,
+    limit: opts?.limit ?? null,
+    offset: opts?.offset ?? null,
+  });

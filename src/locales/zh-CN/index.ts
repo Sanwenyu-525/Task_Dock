@@ -2486,6 +2486,17 @@ export const zhCN = {
   "devwork.handoff.deletePackTitle": "删除交接包版本",
   "devwork.handoff.deletePackDetail": "将删除版本 v{version}；此操作不可撤销。",
   "devwork.handoff.deleteFailed": "删除版本失败：{error}",
+  "devwork.handoff.materialsTitle": "资料选择",
+  "devwork.handoff.materialsHint": "勾选要带入交接包的笔记 / 暂存架条目；只写条目名，不带入正文。",
+  "devwork.handoff.materialsHeading": "已选资料清单",
+  "devwork.handoff.notesGroup": "快速笔记",
+  "devwork.handoff.shelfGroup": "暂存架条目",
+  "devwork.handoff.notesEmpty": "暂无笔记",
+  "devwork.handoff.shelfEmpty": "暂存架为空",
+  "devwork.handoff.notesLoadFailed": "笔记列表读取失败：{error}",
+  "devwork.handoff.shelfLoadFailed": "暂存架读取失败：{error}",
+  "devwork.handoff.selectAll": "全选",
+  "devwork.handoff.clearSelected": "清空",
 
   "devwork.acceptance.title": "验收工作台",
   "devwork.acceptance.boundary":

@@ -2507,6 +2507,18 @@ export const enUS: Record<MessageKey, string> = {
   "devwork.handoff.deletePackTitle": "Delete handoff version",
   "devwork.handoff.deletePackDetail": "This deletes version v{version}; it cannot be undone.",
   "devwork.handoff.deleteFailed": "Failed to delete the version: {error}",
+  "devwork.handoff.materialsTitle": "Materials",
+  "devwork.handoff.materialsHint":
+    "Pick notes / shelf items to reference in the pack; only item names are written, never their content.",
+  "devwork.handoff.materialsHeading": "Selected materials",
+  "devwork.handoff.notesGroup": "Quick notes",
+  "devwork.handoff.shelfGroup": "Shelf items",
+  "devwork.handoff.notesEmpty": "No notes",
+  "devwork.handoff.shelfEmpty": "Shelf is empty",
+  "devwork.handoff.notesLoadFailed": "Failed to load notes: {error}",
+  "devwork.handoff.shelfLoadFailed": "Failed to load shelf items: {error}",
+  "devwork.handoff.selectAll": "Select all",
+  "devwork.handoff.clearSelected": "Clear",
 
   "devwork.acceptance.title": "Acceptance bench",
   "devwork.acceptance.boundary":

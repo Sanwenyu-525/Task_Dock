@@ -1,9 +1,14 @@
-//! 任务交接包区块（dev workbench Round 1）。
+//! 任务交接包区块（dev workbench Round 1；Round 2a 增补「资料选择」）。
 //!
 //! - 12 节固定模板；空节不输出（Markdown 中略过该节，绝不输出空标题）。
 //! - 初始预填：任务标题/备注 → 「任务目标」；当前项目名/分支/路径 → 「项目背景」；
 //!   关联功能 acceptance_criteria → 「验收标准」。只填用户未编辑过的节，
 //!   绝不覆盖已输入内容；编辑态全部在 React state，复制/保存失败不丢内容。
+//! - 资料选择（Round 2a，仅有关联任务时显示）：勾选快速笔记 / 暂存架条目（各最近
+//!   ≤20 条），选中条目**只以条目名**追加到「项目背景」节末尾（小标题 + bullet
+//!   list），绝不带入正文内容；追加块在预览中实时生成，不写入 textarea 编辑态，
+//!   用户已编辑的「项目背景」保持原样。sourceSummary 记录 selectedNotes /
+//!   selectedShelfItems（id 列表）供回溯。
 //! - 敏感扫描走 `dev_handoff_secret_scan`：命中只显示「节名 + 行号 + 类型」，
 //!   绝不渲染命中原文。
 //! - 保存为追加式版本（dev_handoff_save），contentMd 与预览严格一致；
@@ -12,16 +17,20 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardList, ScrollText, ShieldAlert } from "lucide-react";
-import { ConfirmDialog } from "../ui";
+import { Checkbox, ConfirmDialog } from "../ui";
 import {
   devHandoffDelete,
   devHandoffList,
   devHandoffSave,
   devHandoffSecretScan,
   fetchTask,
+  notesList,
+  shelfList,
   type DevHandoffPack,
   type DevProject,
+  type NoteSummary,
   type SecretFinding,
+  type ShelfItem,
   type Task,
 } from "../../lib/bridge";
 import { copyText } from "../../lib/clipboard";
@@ -50,6 +59,15 @@ const HANDOFF_SECTIONS = [
 ] as const;
 
 export type HandoffKey = (typeof HANDOFF_SECTIONS)[number]["key"];
+
+/** 资料选择每组显示的条目上限（笔记 / 暂存架各取最近 20 条）。 */
+const MATERIALS_LIMIT = 20;
+
+/** 一条已勾选资料：记录展示名与来源，列表重载后 bullet 仍可还原。 */
+interface SelectedMaterial {
+  name: string;
+  kind: "note" | "shelf";
+}
 
 type HandoffSections = Record<HandoffKey, string>;
 
@@ -113,6 +131,16 @@ export default function DevHandoffSection() {
   const [project, setProject] = useState<DevProject | null>(null);
   const [features, setFeatures] = useState<DevLinkedFeature[] | null>(null);
 
+  // ── 资料选择（Round 2a）：两数据源各自加载、各自降级，互不阻塞 ──
+  const [notes, setNotes] = useState<NoteSummary[] | null>(null);
+  const [notesError, setNotesError] = useState<string | null>(null);
+  const [shelfItems, setShelfItems] = useState<ShelfItem[] | null>(null);
+  const [shelfError, setShelfError] = useState<string | null>(null);
+  /** 已勾选资料（id → 名称/来源）。Map 保序：勾选顺序即 bullet 输出顺序。 */
+  const [selectedMaterials, setSelectedMaterials] = useState<
+    Map<string, SelectedMaterial>
+  >(new Map());
+
   const [title, setTitle] = useState("");
   const [sections, setSections] = useState<HandoffSections>(emptySections);
   /** 用户编辑过的节：预填绝不覆盖。 */
@@ -152,6 +180,11 @@ export default function DevHandoffSection() {
     setCopyError(null);
     setSaveError(null);
     setViewPackId(null);
+    setNotes(null);
+    setNotesError(null);
+    setShelfItems(null);
+    setShelfError(null);
+    setSelectedMaterials(new Map());
   }, [taskId]);
 
   // 当前任务数据：标题/备注预填来源；任务已删除时如实提示（保存退化为草稿）
@@ -266,14 +299,91 @@ export default function DevHandoffSection() {
     void loadPacks(taskId);
   }, [taskId, loadPacks]);
 
+  // ── 资料选择（Round 2a）：仅有关联任务时加载；两数据源各自失败各自降级 ──
+  useEffect(() => {
+    if (!taskId || taskMissing) return;
+    let alive = true;
+    notesList({ limit: MATERIALS_LIMIT, offset: 0 })
+      .then((rows) => {
+        if (alive) {
+          setNotes(rows);
+          setNotesError(null);
+        }
+      })
+      .catch((e) => {
+        if (alive) setNotesError(errorMessage(e));
+      });
+    shelfList({ limit: MATERIALS_LIMIT, sort: "recent" })
+      .then((page) => {
+        if (alive) {
+          setShelfItems(page.items);
+          setShelfError(null);
+        }
+      })
+      .catch((e) => {
+        if (alive) setShelfError(errorMessage(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [taskId, taskMissing]);
+
+  /** 勾选/取消一条资料：取消后 Map 中移除，bullet 实时减少。 */
+  const toggleMaterial = useCallback(
+    (id: string, name: string, kind: SelectedMaterial["kind"], checked: boolean) => {
+      setSelectedMaterials((m) => {
+        const next = new Map(m);
+        if (checked) next.set(id, { name, kind });
+        else next.delete(id);
+        return next;
+      });
+    },
+    [],
+  );
+
+  /** 全选：把当前已加载的两数据源条目全部加入（不覆盖已有勾选）。 */
+  const selectAllMaterials = useCallback(() => {
+    setSelectedMaterials((m) => {
+      const next = new Map(m);
+      for (const n of notes ?? []) {
+        if (!next.has(n.id)) next.set(n.id, { name: n.title, kind: "note" });
+      }
+      for (const s of shelfItems ?? []) {
+        if (!next.has(s.id)) next.set(s.id, { name: s.display_name, kind: "shelf" });
+      }
+      return next;
+    });
+  }, [notes, shelfItems]);
+
+  const clearSelectedMaterials = useCallback(() => setSelectedMaterials(new Map()), []);
+
   const onSectionChange = useCallback((key: HandoffKey, value: string) => {
     editedRef.current = new Set(editedRef.current).add(key);
     setSections((m) => ({ ...m, [key]: value }));
   }, []);
 
+  /**
+   * 项目背景的组合值：用户编辑/预填的基础内容 + 已勾选资料的追加块（末尾）。
+   * 追加块只在预览与保存内容中生成，不写回 textarea 编辑态——因此用户编辑过
+   * 「项目背景」后勾选变化仍实时反映，取消勾选后基础内容原样保留。
+   */
+  const backgroundComposed = useMemo(() => {
+    const names = [...selectedMaterials.values()].map((m) => m.name);
+    if (names.length === 0) return sections.background;
+    const block = [t("devwork.handoff.materialsHeading"), ...names.map((n) => `- ${n}`)].join(
+      "\n",
+    );
+    const base = sections.background.trimEnd();
+    return base ? `${base}\n\n${block}` : block;
+  }, [sections.background, selectedMaterials, t]);
+
   const preview = useMemo(
-    () => buildHandoffMarkdown(title.trim() || t("devwork.handoff.untitled"), labels, sections),
-    [labels, sections, t, title],
+    () =>
+      buildHandoffMarkdown(title.trim() || t("devwork.handoff.untitled"), labels, {
+        ...sections,
+        background: backgroundComposed,
+      }),
+    [backgroundComposed, labels, sections, t, title],
   );
 
   const titleFilled = title.trim().length > 0;
@@ -313,6 +423,13 @@ export default function DevHandoffSection() {
       projectId: project?.id ?? null,
       featureIds: (features ?? []).map((f) => f.feature.id),
       prefilled: [...prefilledRef.current],
+      // Round 2a：勾选资料的 id 清单（bullet 只写条目名，回溯用 id）
+      selectedNotes: [...selectedMaterials.entries()]
+        .filter(([, v]) => v.kind === "note")
+        .map(([id]) => id),
+      selectedShelfItems: [...selectedMaterials.entries()]
+        .filter(([, v]) => v.kind === "shelf")
+        .map(([id]) => id),
     });
     devHandoffSave({
       taskId,
@@ -329,7 +446,19 @@ export default function DevHandoffSection() {
         setSaveError(t("devwork.handoff.saveFailed", { error: errorMessage(e) }));
       })
       .finally(() => setSaving(false));
-  }, [features, loadPacks, preview, project, saving, showToast, t, taskId, title, titleFilled]);
+  }, [
+    features,
+    loadPacks,
+    preview,
+    project,
+    saving,
+    selectedMaterials,
+    showToast,
+    t,
+    taskId,
+    title,
+    titleFilled,
+  ]);
 
   const deletePack = useCallback(() => {
     if (!pendingDeletePackId) return;
@@ -401,6 +530,102 @@ export default function DevHandoffSection() {
           </label>
         ))}
       </div>
+
+      {/* 资料选择（Round 2a）：仅有关联任务时显示；只选条目名，不带入正文。
+          勾选结果在预览「项目背景」末尾实时生成追加块，不写回编辑态。 */}
+      {taskId && !taskMissing && (
+        <div className="wb-accept-block wb-materials">
+          <div className="wb-links-title">
+            {t("devwork.handoff.materialsTitle")}
+            <span className="flex-spacer" />
+            <button
+              type="button"
+              className="btn sm"
+              disabled={(notes?.length ?? 0) + (shelfItems?.length ?? 0) === 0}
+              onClick={selectAllMaterials}
+            >
+              {t("devwork.handoff.selectAll")}
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              disabled={selectedMaterials.size === 0}
+              onClick={clearSelectedMaterials}
+            >
+              {t("devwork.handoff.clearSelected")}
+            </button>
+          </div>
+          <p className="endpoint-hint">{t("devwork.handoff.materialsHint")}</p>
+          {notesError && (
+            <div className="wb-error-row" role="alert">
+              <span>{t("devwork.handoff.notesLoadFailed", { error: notesError })}</span>
+            </div>
+          )}
+          {shelfError && (
+            <div className="wb-error-row" role="alert">
+              <span>{t("devwork.handoff.shelfLoadFailed", { error: shelfError })}</span>
+            </div>
+          )}
+          <div className="wb-materials-grid">
+            <div
+              className="wb-materials-group"
+              role="group"
+              aria-label={t("devwork.handoff.notesGroup")}
+            >
+              <div className="wb-materials-group-title">{t("devwork.handoff.notesGroup")}</div>
+              {notes === null && !notesError && (
+                <div className="empty-hint" role="status">
+                  {t("nav.loading")}
+                </div>
+              )}
+              {notes !== null && notes.length === 0 && (
+                <div className="endpoint-hint">{t("devwork.handoff.notesEmpty")}</div>
+              )}
+              {notes?.map((n) => (
+                <Checkbox
+                  key={n.id}
+                  checked={selectedMaterials.has(n.id)}
+                  onChange={(checked) => toggleMaterial(n.id, n.title, "note", checked)}
+                  className="wb-materials-item"
+                  label={
+                    <span className="wb-materials-item-name" data-tip={n.title}>
+                      {n.title}
+                    </span>
+                  }
+                />
+              ))}
+            </div>
+            <div
+              className="wb-materials-group"
+              role="group"
+              aria-label={t("devwork.handoff.shelfGroup")}
+            >
+              <div className="wb-materials-group-title">{t("devwork.handoff.shelfGroup")}</div>
+              {shelfItems === null && !shelfError && (
+                <div className="empty-hint" role="status">
+                  {t("nav.loading")}
+                </div>
+              )}
+              {shelfItems !== null && shelfItems.length === 0 && (
+                <div className="endpoint-hint">{t("devwork.handoff.shelfEmpty")}</div>
+              )}
+              {shelfItems?.map((s) => (
+                <Checkbox
+                  key={s.id}
+                  checked={selectedMaterials.has(s.id)}
+                  onChange={(checked) => toggleMaterial(s.id, s.display_name, "shelf", checked)}
+                  className="wb-materials-item"
+                  label={
+                    <span className="wb-materials-item-name" data-tip={s.display_name}>
+                      {s.display_name}
+                    </span>
+                  }
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="wb-handoff-preview-wrap">
         <div className="wb-links-title">
