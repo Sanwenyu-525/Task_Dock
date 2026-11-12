@@ -59,7 +59,7 @@ apps/mobile/
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # vitest：118 例（协议/加密/客户端/DB 迁移/同步编排 + 小组件/深链/分享队列纯函数）
+npm test            # vitest：126 例（协议/加密/客户端/DB 迁移/同步编排 + 小组件/深链/分享队列/遗留连接判定纯函数）
 ```
 
 测试目录有两处：`src/**/*.test.ts`（同步与数据层，node:sqlite 真实 SQL harness）与
@@ -157,10 +157,13 @@ Windows 构建已知约束：
 > 与代码不符。以下为当前事实；历史描述见 git 历史。
 
 - 配对、连通性测试、任务/笔记/收集箱双向同步、冲突与墓碑：**已实现并接线**
-  （2026-11-09 物理机验证）。2026-11-12 起传输为 TLS-only + SPKI 指纹固定（协议 v2），
-  该版本的真机复验未执行。见 `docs/mobile/06-pairing.md`、`07-sync.md`。
-- 系统分享接收（`ACTION_SEND` `text/plain`）与主屏小组件（2×2 / 4×2）：**已实现并接入**
-  （2026-11-12，构建层与自动化测试验证；真机运行时未验证）。
+  （2026-11-09 物理机验证）。2026-11-12 起传输为 TLS-only + SPKI 指纹固定（协议 v2）；
+  真机已验证旧 v1 连接 fail-closed 与「需重新配对」提示，**v2 扫码配对/同步端到端仍未复验**。
+  见 `docs/mobile/06-pairing.md`、`07-sync.md`。
+- 系统分享接收（`ACTION_SEND` `text/plain`）与主屏小组件（2×2 / 4×2）：**已实现并接入**。
+  真机（vivo V2323A / Android 16，2026-11-12）：分享冷/热启动、超长截断、确认落收集箱 PASS；
+  小组件 Provider/快照/配置页 PASS，但 vivo 桌面 `requestPinAppWidget` 不弹确认框、
+  「原子组件」面板不列标准 AppWidget，落桌面被厂商实现阻断（点击/刷新未验证）。
   见 `docs/mobile/09-share-receive.md`、`10-widget.md`。
 - 后台/自动同步、远程推送：**未实现**（后台方案仅有设计评估，
   见 `docs/mobile/11-background-sync-design.md`）。
