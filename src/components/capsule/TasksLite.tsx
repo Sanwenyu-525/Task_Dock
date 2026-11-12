@@ -85,7 +85,9 @@ export default function TasksLite() {
   const currentId = useSettingsStore((s) => s.settings?.workbench_current_task ?? "") || null;
   const [fetchedCurrent, setFetchedCurrent] = useState<Task | null>(null);
   useEffect(() => {
-    if (!currentId || items?.some((t) => t.id === currentId)) {
+    // 轻量列表未落地前不补取：否则会先为 null 取一次、列表到达后再取一次。
+    if (items === null) return;
+    if (!currentId || items.some((t) => t.id === currentId)) {
       setFetchedCurrent(null);
       return;
     }

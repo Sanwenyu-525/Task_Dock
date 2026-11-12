@@ -193,6 +193,8 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
 import {
   taskContext,
   workspaceRestore,
+  workspaceList,
+  listTasks,
   actionsOpenSession,
   toggleTask,
   updateSettings,
@@ -279,6 +281,20 @@ describe("开发工作台", () => {
     });
   });
 
+  it("最近任务不重复展示当前任务，且不为当前任务重复查询现场", async () => {
+    seedSettings({ workbench_current_task: "a" });
+    const other: Task = { ...FIX_TASK, id: "b", title: "最近任务" };
+    vi.mocked(listTasks).mockResolvedValue([FIX_TASK, other]);
+    vi.mocked(workspaceList).mockResolvedValue([]);
+    render(<DevWorkbenchPanel />);
+    await screen.findByText("最近任务");
+    // 当前任务的现场来自 task_context，不再为它调用 workspaceList
+    expect(workspaceList).not.toHaveBeenCalledWith("a");
+    expect(workspaceList).toHaveBeenCalledWith("b");
+    // 最近区不重复出现当前任务标题
+    expect(screen.queryAllByText("重构剪贴板模块")).toHaveLength(1);
+  });
+
   it("任务已删除：展示失效状态，不伪造任务内容，也不静默清除设置", async () => {
     seedSettings({ workbench_current_task: "gone" });
     const { taskContext } = await import("../../lib/bridge");
@@ -291,6 +307,35 @@ describe("开发工作台", () => {
     expect(within(alert).getByRole("button", { name: "打开任务页" })).toBeTruthy();
     expect(within(alert).getByRole("button", { name: "取消当前" })).toBeTruthy();
     expect(useSettingsStore.getState().settings).toMatchObject({ workbench_current_task: "gone" });
+  });
+
+  it("结构化 NOT_FOUND：不依赖错误文案也判定失效", async () => {
+    seedSettings({ workbench_current_task: "gone" });
+    // 文案里没有任何「不存在 / not found」字样，只有稳定错误码
+    vi.mocked(taskContext).mockRejectedValue({
+      code: "NOT_FOUND",
+      category: "not_found",
+      severity: "warning",
+      retryable: false,
+      message: "记录缺失",
+    });
+    render(<DevWorkbenchPanel />);
+    expect(await screen.findByText(/该任务已不存在/)).toBeTruthy();
+    expect(screen.queryByText(/读取失败/)).toBeNull();
+  });
+
+  it("非 NOT_FOUND 的数据库错误即使文案含 not found 也不误判失效", async () => {
+    seedSettings({ workbench_current_task: "a" });
+    vi.mocked(taskContext).mockRejectedValue({
+      code: "DATABASE_ERROR",
+      category: "database",
+      severity: "error",
+      retryable: false,
+      message: "database not found: table tasks",
+    });
+    render(<DevWorkbenchPanel />);
+    expect(await screen.findByText(/读取失败/)).toBeTruthy();
+    expect(screen.queryByText(/该任务已不存在/)).toBeNull();
   });
 
   it("Agent 摘要：等待/完成计数来自快照聚合；快照未加载时显示中性占位", async () => {

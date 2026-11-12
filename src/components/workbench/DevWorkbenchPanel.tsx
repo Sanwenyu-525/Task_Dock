@@ -61,7 +61,7 @@ import { useActionsStore, kindLabel as actionKindLabel } from "../../store/useAc
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { liveSummary } from "../../lib/agentTree";
 import { createSubscriptionScope } from "../../lib/subscriptions";
-import { errorMessage } from "../../lib/errors";
+import { errorMessage, normalizeError } from "../../lib/errors";
 import { AGENT_STATE_LABELS, formatDue, formatRelative, priorityLabel } from "../../lib/format";
 import { verificationLabel } from "../../lib/navigation";
 import { useLocale } from "../../hooks/useLocale";
@@ -93,9 +93,18 @@ function latestSnapshot(snaps: SnapshotSummary[]): SnapshotSummary | null {
   return best;
 }
 
-/** 后端「任务不存在」类错误的读侧判定（fetch_task/task_context 404 语义）。 */
-function isTaskMissingError(msg: string): boolean {
-  return /not[_ ]?found|不存在|no rows|未找到/i.test(msg);
+/**
+ * 后端「任务不存在」的读侧判定。
+ *
+ * 优先使用结构化错误码 `NOT_FOUND`：`task_context` 只在任务本身缺失时返回它，
+ * 数据库/IO 等错误即使文案里带 "not found" 也不能把任务误判成已删除。
+ * 仅对旧后端（纯字符串 / Error）保留文案兜底。
+ */
+function isTaskMissingError(raw: unknown): boolean {
+  const err = normalizeError(raw);
+  if (err.code === "NOT_FOUND") return true;
+  if (!err.legacy) return false;
+  return /not[_ ]?found|不存在|no rows|未找到/i.test(err.message);
 }
 
 export default function DevWorkbenchPanel() {
@@ -311,7 +320,7 @@ function CurrentTaskSection({
     } catch (e) {
       // 读侧校验：任务不存在（已删除）时不静默清空设置，如实展示失效状态
       const msg = errorMessage(e);
-      if (isTaskMissingError(msg)) setStale(true);
+      if (isTaskMissingError(e)) setStale(true);
       else setError(msg);
     }
   }, [currentId]);
@@ -983,6 +992,8 @@ function RecentSection({
     if (!recent) return;
     let alive = true;
     for (const task of recent) {
+      // 当前任务的现场已由 task_context 提供，这里不重复查询
+      if (task.id === excludeId) continue;
       const cur = snapsByTask[task.id];
       if (cur && (cur.state === "loading" || cur.state === "ok")) continue;
       setSnapsByTask((m) => ({ ...m, [task.id]: { state: "loading", snaps: [] } }));
@@ -999,7 +1010,7 @@ function RecentSection({
     };
     // snapsByTask 只作已加载判断（读快照引用）；刷新由 refreshTick 显式触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recent]);
+  }, [recent, excludeId]);
 
   return (
     <section className="wb-card" aria-label={t("workbench.recent")}>
