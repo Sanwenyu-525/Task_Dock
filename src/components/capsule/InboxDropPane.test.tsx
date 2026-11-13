@@ -1468,14 +1468,14 @@ describe("InboxDropPane 重试失败项（W4）", () => {
     await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
     await screen.findByText(/成功 0 项 · 跳过 1 项 · 失败 2 项/);
 
-    fireEvent.click(await screen.findByRole("button", { name: /重试失败项/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /重新投递/ }));
     await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(2));
     // 第二次投递 = 失败/跳过条目的源路径（保持原序），目标不变
     expect(dropToDirectory.mock.calls[1][0]).toBe("t1");
     expect(dropToDirectory.mock.calls[1][1]).toEqual(["C:\a.txt", "C:\b.txt", "C:\c.txt"]);
     // 重试全部成功后结果条恢复成功口径，重试入口消失
     await screen.findByText(/成功 1 项 · 跳过 0 项 · 失败 0 项/);
-    expect(screen.queryByRole("button", { name: /重试失败项/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /重新投递/ })).toBeNull();
     document.elementFromPoint = original;
   });
 
@@ -1494,7 +1494,7 @@ describe("InboxDropPane 重试失败项（W4）", () => {
     emit({ type: "drop", position: { x: 10, y: 10 }, paths: ["C:\a.txt"] });
     await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
     await screen.findByText(/成功 1 项 · 跳过 0 项 · 失败 0 项/);
-    expect(screen.queryByRole("button", { name: /重试失败项/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /重新投递/ })).toBeNull();
     document.elementFromPoint = original;
   });
 });

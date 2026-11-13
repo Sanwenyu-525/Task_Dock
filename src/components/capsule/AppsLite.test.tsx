@@ -980,9 +980,12 @@ describe("AppsLite 一键收藏（W4）", () => {
     await waitFor(() => expect(navListTargets).toHaveBeenCalled());
     // 收藏项置顶规则不变：收藏的 Obsidian 排在 Zed 之前（收藏优先语义未被破坏）
     await waitFor(() => {
-      const names = screen
-        .getAllByTestId(/^grid-/)
-        .map((el) => el.getAttribute("data-grid-id"));
+      const order = screen
+        .getAllByRole("button", { name: /^启动 / })
+        .map((el) => el.getAttribute("aria-label") ?? "");
+      expect(order.indexOf("启动 Obsidian")).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf("启动 Zed")).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf("启动 Obsidian")).toBeLessThan(order.indexOf("启动 Zed"));
     });
   });
 
