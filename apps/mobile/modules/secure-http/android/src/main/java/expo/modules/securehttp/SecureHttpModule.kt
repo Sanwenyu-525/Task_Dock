@@ -99,9 +99,28 @@ class SecureHttpModule : Module() {
       // 真正的连接/读写在工作线程里进行。
       val connection = URL(url).openConnection() as HttpsURLConnection
       configure(connection, timeoutMs, pin)
+      // 请求方法与头部必须显式落到 connection 上：HttpsURLConnection 默认 GET、
+      // 不带自定义头。漏掉时配对 POST 在服务端变成 GET（405 method_not_allowed）、
+      // Bearer 鉴权头丢失（401），同步与文件上传全断——2026-11-13 真机 v2 配对实测。
+      connection.requestMethod = method
+      for ((rawName, rawValue) in headers) {
+        val headerName = rawName as? String ?: continue
+        val headerValue = rawValue as? String ?: continue
+        connection.setRequestProperty(headerName, headerValue)
+      }
+      val requestBody = body
+      if (requestBody != null) {
+        connection.doOutput = true
+      }
 
       val future = executor.submit {
         try {
+          if (requestBody != null) {
+            if (Thread.currentThread().isInterrupted || cancelledIds.contains(requestId)) {
+              throw InterruptedException("请求已取消")
+            }
+            connection.outputStream.use { it.write(requestBody.toByteArray(Charsets.UTF_8)) }
+          }
           val result = execute(requestId, connection)
           if (cancelledIds.remove(requestId)) {
             promise.reject("E_CANCELLED", "请求已取消", null)
