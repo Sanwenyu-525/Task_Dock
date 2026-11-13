@@ -1122,3 +1122,46 @@ Rust：`cargo test` 覆盖新建 5/30 分钟提醒、到期只触发一次、延
 `ENVIRONMENT BLOCKED / 未验证`：本轮未执行真实 Windows 桌面拖放（Chrome/ChatGPT 网页图片、
 Outlook 附件、截图工具），也不得用受控 OLE 测试源的成功替代第三方应用兼容结论。
 详见报告 §真机验收。
+
+## 通用跨应用拖入 · 第二轮独立验收（2026-11-13 晚）
+
+上一轮记录保留在上方；本节为本轮复跑与修复后的最终数字，命令均在
+`D:\Develop\task_dock-worktrees\universal-drag` 执行。
+
+### 新增测试手段
+
+- **受控 OLE 测试源**：`src-tauri/src/dragdrop/ole_test_source.rs`（仅 `cfg(test)`）实现真实
+  `IDataObject` / `IEnumFORMATETC` / `IStream`，生产代码经 `EnumFormatEtc → GetData →
+  ReleaseStgMedium` 真实 COM 路径读取。覆盖纯文本、`HTML Format`、`PNG`、
+  `FileGroupDescriptorW`+`FileContents(TYMED_ISTREAM)`、描述符尾部填充、两种违约 TYMED。
+- **真实落库**：`src-tauri/src/dragdrop/commit.rs` 的 `commit_to_shelf_with` 用
+  `Db::open_in_memory()` + 独立临时目录 + 真实 `shelf::add_*`，验证 URL/文本/图片确实进入
+  SQLite 与托管目录，而不是只返回一个「看起来成功」的结构。
+- **前端原生桥事件链**：`InboxDropPane.test.tsx` 新增 5 例、`ShelfWorkspace.drop.test.tsx`
+  新增 2 例，走 `probe(enter) → accepted → payload`，断言「链接只传 operationId」「文本投目录被拒」
+  「图片投目录」「本地路径降级」「不支持内容提示并释放」。
+
+### 本轮修出的真实缺陷（均先失败后修复）
+
+1. **P0 GIT CLSID 写错**（`0000033C` → `00000323`）：`git()` 恒 `None`，所有虚拟文件流读取失败；
+2. P1 谎报 TYMED 时 `ReleaseStgMedium` 触发访问违例；
+3. P1 `FileGroupDescriptorW` 缓冲区大于 `4+620×N` 时附件被旁路格式顶替；
+4. P1 虚拟文件实际写入总量无上限（只看声明大小）；
+5. P2 短 ASCII 文本被误判为 UTF-16；6. P2 `skipped` 未进入提交报告且重复计数；
+7. P3 `drag_bridge_status` 缺窗口数；8. P3 不支持内容不展示具体原因；9. 测试自身期望修正。
+
+### 测试结果
+
+| 项 | 命令 | 退出码 | 结果 | 证据 |
+|---|---|---|---|---|
+| Rust dragdrop | `cargo test --lib dragdrop::`（`-j1`、`CARGO_PROFILE_TEST_DEBUG=0`） | 0 | **69 / 69**（含 9 受控 OLE + 3 落库） | `tmp/acceptance/universal-drag/cargo-test-dragdrop-11.log` |
+| Rust 全量 lib | `cargo test --lib -j1` | 0 | **1734 passed / 0 failed / 8 ignored** | `cargo-test-lib-all-2.log` |
+| 前端 UI 拖拽 | `vitest run InboxDropPane.test.tsx ShelfWorkspace.drop.test.tsx` | 0 | **113 / 113** | 会话输出 |
+| 前端库/store | `vitest run fileDrop dragPayload useShelfStore useDropTargetsStore useShelfDragOut InboxRecentShelf DropTargetManager i18n` | 0 | **135 / 135** | 会话输出 |
+| 类型检查 | `npx tsc --noEmit` | 0 | 无输出 | `tsc-4.log` |
+| 生产构建 | `npx vite build` | 0 | `built in 18.98s` | `vite-build-3.log` |
+
+本机仍为 16GB 内存、低可用内存环境：Rust 测试必须 `-j1` + 关闭 test profile debuginfo，
+曾出现一次 rustc `STATUS_STACK_BUFFER_OVERRUN`，重试通过（环境问题，非代码）。
+**真机**：会话锁屏（`LockApp`），Windows 原生 OLE 拖入/拖出、真实 DPI、多显示器仍为
+`ENVIRONMENT BLOCKED / UNVERIFIED`；受控 OLE 测试不能替代第三方应用真机结论。

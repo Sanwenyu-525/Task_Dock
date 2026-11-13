@@ -197,14 +197,14 @@ impl Drop for ShelfMaintenancePermit {
 }
 
 impl CopyGate {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: Mutex::new(CopyGateState::default()),
             cv: Condvar::new(),
         }
     }
 
-    fn acquire(self: &Arc<Self>) -> CopyPermit {
+    pub(crate) fn acquire(self: &Arc<Self>) -> CopyPermit {
         let mut state = self.state.lock().expect("复制闸锁");
         while state.maintenance || state.active >= COPY_CONCURRENCY {
             state = self.cv.wait(state).expect("复制闸锁");
@@ -240,7 +240,7 @@ pub struct ShelfState {
     pub db: Arc<Db>,
     pub root: PathBuf,
     pub app: tauri::AppHandle,
-    copy_gate: Arc<CopyGate>,
+    pub(crate) copy_gate: Arc<CopyGate>,
     /// 自动清理线程：只有持久化开关为真时才存在（暂停 = 真正停止线程）。
     cleanup: Mutex<Option<AutoCleanupWorker>>,
     /// 仍存活的自动清理线程数量（生命周期探针，不参与控制）。用计数而不是布尔：
@@ -669,7 +669,7 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShelfItem> {
     })
 }
 
-fn get_item(db: &Db, id: &str) -> AppResult<ShelfItem> {
+pub(crate) fn get_item(db: &Db, id: &str) -> AppResult<ShelfItem> {
     // 单条读取带 content（link=URL / text=正文）；列表查询不带（大文本不进前端内存）
     let sql = format!("SELECT {ITEM_COLS}, content FROM shelf_items WHERE id = ?1");
     db.with_read(|conn| {

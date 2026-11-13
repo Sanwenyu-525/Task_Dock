@@ -3298,6 +3298,8 @@ export const shelfAddFromClipboard = (
 export const dragBridgeStatus = () =>
   invoke<{
     active: boolean;
+    /** 成功接管的窗口数：1 表示可能仍有 WebView 子窗口走 wry 的路径处理器。 */
+    windows: number;
     maxItems: number;
     maxTextBytes: number;
     maxImageBytes: number;

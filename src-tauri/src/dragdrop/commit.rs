@@ -81,6 +81,30 @@ pub fn commit_to_shelf(
     storage_mode: &str,
     group_id: Option<&str>,
 ) -> AppResult<DragCommitReport> {
+    commit_to_shelf_with(
+        &st.db,
+        &st.root,
+        &st.copy_gate,
+        drop_state,
+        operation_id,
+        storage_mode,
+        group_id,
+    )
+}
+
+/// 与 [`commit_to_shelf`] 同实现，但只依赖 `Db`/根目录/复制闸。
+///
+/// 拆出来是为了让「非路径内容真正入库」可以用真实 SQLite + 临时目录验证，
+/// 不必构造 `tauri::AppHandle`（`ShelfState` 需要它才能启动自动清理线程）。
+pub(crate) fn commit_to_shelf_with(
+    db: &crate::db::Db,
+    root: &Path,
+    gate: &std::sync::Arc<crate::shelf::CopyGate>,
+    drop_state: &DragDropState,
+    operation_id: &str,
+    storage_mode: &str,
+    group_id: Option<&str>,
+) -> AppResult<DragCommitReport> {
     if !matches!(storage_mode, MODE_REFERENCE | MODE_MANAGED) {
         return Err(AppError::Validation(format!(
             "未知存储模式: {storage_mode}"
@@ -95,7 +119,9 @@ pub fn commit_to_shelf(
 
     let mut added: Vec<ShelfItem> = Vec::new();
     let mut failed: Vec<ShelfFailedEntry> = Vec::new();
-    let mut skipped = 0usize;
+    // 拖入阶段已经丢弃/失败的条目（超量、目录项、读取失败）不属于提交失败，
+    // 但必须如实出现在报告里，否则「部分成功」会被说成「全部成功」。
+    let skipped = op.skipped();
 
     if phase == OpPhase::Failed && items.is_empty() {
         // 全部失败：如实返回失败，不制造「0 条成功」的假象。
@@ -113,11 +139,11 @@ pub fn commit_to_shelf(
     for item in &items {
         match item {
             StagedItem::LocalPath { path } => {
-                let _permit = st.acquire_copy_permit();
+                let _permit = gate.acquire();
                 let result = if storage_mode == MODE_MANAGED {
-                    shelf::add_managed(&st.db, &st.root, path, "drag", group_id)
+                    shelf::add_managed(db, root, path, "drag", group_id)
                 } else {
-                    shelf::add_reference(&st.db, &st.root, path, "drag", group_id)
+                    shelf::add_reference(db, root, path, "drag", group_id)
                 };
                 match result {
                     Ok(item) => added.push(item),
@@ -132,12 +158,12 @@ pub fn commit_to_shelf(
             } => {
                 // 图片与虚拟文件都走「无原始路径」的托管入口；
                 // **绝不**把暂存临时路径写成 original_path。
-                let _permit = st.acquire_copy_permit();
+                let _permit = gate.acquire();
                 let display = match item_kind {
                     StagedKind::Image => Some(name.as_str()),
                     StagedKind::VirtualFile => Some(name.as_str()),
                 };
-                match shelf::add_managed_from(&st.db, &st.root, path, display, "drag", group_id)
+                match shelf::add_managed_from(db, root, path, display, "drag", group_id)
                 {
                     Ok(item) => added.push(item),
                     Err(e) => failed.push(failed_entry(name.clone(), &e)),
@@ -145,12 +171,12 @@ pub fn commit_to_shelf(
             }
             StagedItem::Text { text, from_html } => {
                 let source = if *from_html { "drag-html" } else { "drag" };
-                match shelf::add_text(&st.db, text, source, group_id) {
+                match shelf::add_text(db, text, source, group_id) {
                     Ok(item) => added.push(item),
                     Err(e) => failed.push(failed_entry("文本内容".into(), &e)),
                 }
             }
-            StagedItem::Url { url, .. } => match shelf::add_link(&st.db, url, group_id) {
+            StagedItem::Url { url, .. } => match shelf::add_link(db, url, group_id) {
                 Ok(item) => added.push(item),
                 Err(e) => failed.push(failed_entry("网页链接".into(), &e)),
             },
@@ -272,4 +298,171 @@ pub fn staged_path_in_session(dir: &Path, path: &Path) -> bool {
         return false;
     };
     canon_path.starts_with(&canon_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+    use crate::dragdrop::payload::DragPayloadView;
+    use crate::dragdrop::{DragDropState, DragProbe, StagedItem, StagedKind};
+    use crate::shelf::{CopyGate, ListFilter, KIND_IMAGE, KIND_LINK, KIND_TEXT};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    /// 临时目录：只在系统临时区，结束即删。
+    struct TempRoot(PathBuf);
+
+    impl TempRoot {
+        fn new() -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("taskdock-commit-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn filter() -> ListFilter {
+        ListFilter {
+            search: None,
+            kind: "all".into(),
+            group_id: "all".into(),
+            favorite_only: false,
+            limit: 50,
+            offset: 0,
+            sort: "recent".into(),
+        }
+    }
+
+    fn staged_op(ds: &DragDropState, view: DragPayloadView, items: Vec<StagedItem>) -> String {
+        let probe = DragProbe::from_view(&view, Vec::new());
+        let op = ds.begin(probe, None, view);
+        op.finish(items, Vec::new(), 0);
+        op.id.clone()
+    }
+
+    #[test]
+    fn 链接会话真正落库为链接条目() {
+        let tmp = TempRoot::new();
+        let db = Db::open_in_memory().unwrap();
+        let root = tmp.path().join("shelf-root");
+        let gate = Arc::new(CopyGate::new());
+        let ds = DragDropState::new(tmp.path().join("incoming"));
+        let url = "https://example.com/page";
+        let op_id = staged_op(
+            &ds,
+            DragPayloadView::Url {
+                url: url.into(),
+                is_image: false,
+            },
+            vec![StagedItem::Url {
+                url: url.into(),
+                is_image: false,
+            }],
+        );
+
+        let report =
+            commit_to_shelf_with(&db, &root, &gate, &ds, &op_id, "reference", None).unwrap();
+        assert_eq!(report.added.len(), 1, "{:?}", report.failed);
+        assert_eq!(report.added[0].kind, KIND_LINK);
+        assert_eq!(report.added[0].content.as_deref(), Some(url));
+
+        // 从数据库重新读：证明不是只在返回结构里「看起来成功」。
+        let page = crate::shelf::list(&db, &filter()).unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, report.added[0].id);
+        let persisted = crate::shelf::get_item(&db, &report.added[0].id).unwrap();
+        assert_eq!(persisted.kind, KIND_LINK);
+        assert_eq!(persisted.content.as_deref(), Some(url));
+    }
+
+    #[test]
+    fn 文本会话真正落库并能读回正文() {
+        let tmp = TempRoot::new();
+        let db = Db::open_in_memory().unwrap();
+        let root = tmp.path().join("shelf-root");
+        let gate = Arc::new(CopyGate::new());
+        let ds = DragDropState::new(tmp.path().join("incoming"));
+        let text = "从网页拖入的一段正文";
+        let op_id = staged_op(
+            &ds,
+            DragPayloadView::Text {
+                text_preview: text.into(),
+                chars: text.chars().count(),
+            },
+            vec![StagedItem::Text {
+                text: text.into(),
+                from_html: false,
+            }],
+        );
+
+        let report =
+            commit_to_shelf_with(&db, &root, &gate, &ds, &op_id, "reference", None).unwrap();
+        assert_eq!(report.added.len(), 1, "{:?}", report.failed);
+        assert_eq!(report.added[0].kind, KIND_TEXT);
+        let (read, truncated) =
+            crate::shelf::read_text(&db, &root, &report.added[0].id).unwrap();
+        assert_eq!(read, text);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn 图片会话落成托管副本且没有伪造原始路径() {
+        let tmp = TempRoot::new();
+        let db = Db::open_in_memory().unwrap();
+        let root = tmp.path().join("shelf-root");
+        let gate = Arc::new(CopyGate::new());
+        let ds = DragDropState::new(tmp.path().join("incoming"));
+        let png = crate::clipboard::image::encode_png(
+            &[255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255],
+            2,
+            2,
+        )
+        .unwrap();
+        let view = DragPayloadView::Image {
+            items: Vec::new(),
+            count: 1,
+        };
+        let probe = DragProbe::from_view(&view, Vec::new());
+        let op = ds.begin(probe, None, view);
+        let staged = crate::dragdrop::stage::write_bytes(&op.dir, "01-pic.png", &png).unwrap();
+        op.finish(
+            vec![StagedItem::Staged {
+                path: staged,
+                name: "pic.png".into(),
+                size: png.len() as u64,
+                kind: StagedKind::Image,
+                mime: Some("image/png".into()),
+                width: Some(2),
+                height: Some(2),
+            }],
+            Vec::new(),
+            0,
+        );
+
+        let report =
+            commit_to_shelf_with(&db, &root, &gate, &ds, &op.id, "reference", None).unwrap();
+        assert_eq!(report.added.len(), 1, "{:?}", report.failed);
+        let item = &report.added[0];
+        assert_eq!(item.kind, KIND_IMAGE);
+        assert_eq!(item.storage_mode, MODE_MANAGED);
+        // 绝不允许把暂存临时路径写成 original_path。
+        assert!(item.original_path.is_none());
+        let managed = item.managed_path.as_ref().expect("托管路径");
+        assert!(
+            root.join(managed).exists(),
+            "托管副本必须真实存在: {managed}"
+        );
+        // 暂存目录已被清理（内容已托管）。
+        assert!(!op.dir.exists());
+    }
 }

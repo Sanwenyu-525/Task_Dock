@@ -96,6 +96,14 @@ pub fn bridge_active() -> bool {
     INSTALLED.load(Ordering::SeqCst) > 0
 }
 
+/// 成功接管 `IDropTarget` 的窗口数（含 WebView 子窗口）。
+///
+/// 这个数字是「桥是否真的盖住鼠标下的窗口」的唯一运行时证据：
+/// 只接管顶层窗口时，WebView 子窗口仍由 wry 那个只认路径的处理器接管。
+pub fn installed_windows() -> usize {
+    INSTALLED.load(Ordering::SeqCst)
+}
+
 fn bridge() -> Option<(AppHandle, String, Arc<DragDropState>, isize)> {
     let guard = BRIDGE.lock().unwrap_or_else(|e| e.into_inner());
     guard
@@ -360,6 +368,8 @@ impl IDropTarget_Impl for BridgeTarget_Impl {
         let probe = DragProbe::from_view(&base_view, facts.formats.clone());
 
         let op = state.begin(probe.clone(), point.as_ref().map(|p| (p.x, p.y)), base_view);
+        // 先记住受理结论，`probe` 马上会随事件载荷移动出去。
+        let accepted = probe.can_shelf || probe.can_directory;
         emit_to_webview(
             &app,
             &label,
@@ -504,7 +514,12 @@ impl IDropTarget_Impl for BridgeTarget_Impl {
             });
         }
 
-        // 拖拽结束：光标复位，不再给 COPY。
+        // `Drop` 是拖放的最后一次回调：来源据此判断落点是否真的接受了内容。
+        // 可处理内容回 COPY（我们已受理，会在后台落库）；完全不可读时保持
+        // 开头设置的 NONE，让来源如实显示失败，而不是以为已经复制成功。
+        if accepted {
+            unsafe { *pdw_effect = DROPEFFECT_COPY };
+        }
         Ok(())
     }
 }
@@ -687,6 +702,18 @@ fn read_hglobal(obj: &IDataObject, cf: u16, cap: usize) -> Option<Vec<u8>> {
             Err(e) if e.code() == DV_E_FORMATETC => return None,
             Err(_) => return None,
         };
+        // `GetData` 成功不等于返回的就是请求的 TYMED：OLE 允许来源忽略请求
+        // （个别邮件客户端/浏览器扩展会这么做）。此时 `u` 联合体里不是 HGLOBAL，
+        // 直接读等同于拿句柄当内存指针——必须先核对。
+        //
+        // 核对失败时**不能**调用 `ReleaseStgMedium`：它按 `medium.tymed` 释放，
+        // 而类型已被来源谎报，释放动作本身就可能解引用错误指针并崩溃
+        // （实测：把 HGLOBAL 谎报成 ISTREAM 会在 ReleaseStgMedium 里 AV）。
+        // 这里选择拒绝并泄漏这一个异常 medium：拖入回调崩溃的代价远大于一次泄漏，
+        // 且这类来源本身违反 OLE 契约。
+        if medium.tymed != TYMED_HGLOBAL.0 as u32 {
+            return None;
+        }
         let h = medium.u.hGlobal;
         let size = GlobalSize(h);
         if size == 0 || size > cap {
@@ -705,6 +732,50 @@ fn read_hglobal(obj: &IDataObject, cf: u16, cap: usize) -> Option<Vec<u8>> {
     }
 }
 
+/// 同 [`read_hglobal`]，但只取前 `cap` 字节（允许来源分配得比实际数据大）。
+///
+/// 只给「读头部即可判定」的结构使用：`FileGroupDescriptorW` 的缓冲区大小由
+/// 来源决定，常见实现会一次分配整块内存（4 + 620×N）或对齐到更大容量；
+/// 若按「超过上限就整块放弃」，描述符会在分类阶段被判成「没有虚拟文件」，
+/// 附件随即被同批的 HTML/文本旁路格式顶替——静默丢内容。这里只读头部，
+/// 解析器仍会按实际长度报 `Truncated`/`TooMany`。
+fn read_hglobal_prefix(obj: &IDataObject, cf: u16, cap: usize) -> Option<Vec<u8>> {
+    let fmt = FORMATETC {
+        cfFormat: cf,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32,
+    };
+    unsafe {
+        let mut medium = match obj.GetData(&fmt) {
+            Ok(m) => m,
+            Err(e) if e.code() == DV_E_FORMATETC => return None,
+            Err(_) => return None,
+        };
+        if medium.tymed != TYMED_HGLOBAL.0 as u32 {
+            // 同上：temed 被来源谎报时，ReleaseStgMedium 本身不安全，拒绝并放弃。
+            return None;
+        }
+        let h = medium.u.hGlobal;
+        let size = GlobalSize(h) as usize;
+        if size == 0 {
+            ReleaseStgMedium(&mut medium);
+            return None;
+        }
+        let take = size.min(cap);
+        let ptr = GlobalLock(h);
+        if ptr.is_null() {
+            ReleaseStgMedium(&mut medium);
+            return None;
+        }
+        let out = std::slice::from_raw_parts(ptr as *const u8, take).to_vec();
+        let _ = GlobalUnlock(h);
+        ReleaseStgMedium(&mut medium);
+        Some(out)
+    }
+}
+
 /// UTF-16 / UTF-8 自动判别（含 BOM）。
 fn decode_text_bytes(raw: &[u8]) -> Option<String> {
     if raw.len() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
@@ -712,10 +783,13 @@ fn decode_text_bytes(raw: &[u8]) -> Option<String> {
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
-        return Some(String::from_utf16_lossy(&units));
+        return Some(String::from_utf16_lossy(&units).trim_end_matches('\0').to_string());
     }
-    // 大量 0 字节 ⇒ 基本可判定是 UTF-16LE。
-    if raw.len() >= 2 && raw.iter().filter(|b| **b == 0).count() > raw.len() / 4 {
+    // UTF-16LE 的强信号：偶数长度，且至少一半的**高字节**为 0。
+    // 旧判据是「零字节数 > 总长/4」，会把短 ASCII（如 "abc\0\0"）误判成 UTF-16。
+    let pairs = raw.len() / 2;
+    let odd_zeros = raw.chunks_exact(2).filter(|c| c[1] == 0).count();
+    if raw.len() % 2 == 0 && pairs >= 2 && odd_zeros * 2 >= pairs {
         let units: Vec<u16> = raw
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
@@ -726,11 +800,24 @@ fn decode_text_bytes(raw: &[u8]) -> Option<String> {
                 .to_string(),
         );
     }
-    let text = match std::str::from_utf8(raw) {
-        Ok(s) => s.to_string(),
-        Err(_) => String::from_utf8_lossy(raw).into_owned(),
-    };
-    Some(text.trim_end_matches('\0').to_string())
+    match std::str::from_utf8(raw) {
+        Ok(s) => Some(s.trim_end_matches('\0').to_string()),
+        Err(_) => {
+            // 不是合法 UTF-8：偶数长度时优先按 UTF-16LE 解（无 BOM 的中文
+            // CF_UNICODETEXT 常见）；出现替换字符说明猜错，退回 lossy UTF-8。
+            if raw.len() % 2 == 0 {
+                let units: Vec<u16> = raw
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                let text = String::from_utf16_lossy(&units);
+                if !text.contains('\u{FFFD}') {
+                    return Some(text.trim_end_matches('\0').to_string());
+                }
+            }
+            Some(String::from_utf8_lossy(raw).trim_end_matches('\0').to_string())
+        }
+    }
 }
 
 /// `HTML Format` 有一段 `Version:/StartHTML:` 头，真 HTML 从 `StartHTML` 偏移开始。
@@ -828,7 +915,7 @@ fn read_descriptor_count(obj: &IDataObject, formats: &[(u16, String)]) -> usize 
     else {
         return 0;
     };
-    match read_hglobal(obj, id, 4 + MAX_ITEMS * 620) {
+    match read_hglobal_prefix(obj, id, 4 + MAX_ITEMS * 620) {
         Some(raw) if raw.len() >= 4 => {
             u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize
         }
@@ -892,7 +979,7 @@ fn collect_virtual(
         });
         return;
     };
-    let Some(raw) = read_hglobal(obj, fd_id as u16, 4 + MAX_ITEMS * 620) else {
+    let Some(raw) = read_hglobal_prefix(obj, fd_id as u16, 4 + MAX_ITEMS * 620) else {
         *skipped += 1;
         failures.push(PayloadFailure {
             code: codes::DRAG_PAYLOAD_INVALID.into(),
@@ -1012,6 +1099,12 @@ fn obtain_content(
     };
     unsafe {
         if let Ok(mut medium) = obj.GetData(&stream_fmt) {
+            // 与 `read_hglobal` 同理：来源可能无视 TYMED。若不是 IStream，
+            // `u.pstm` 不是接口指针，解引用会直接崩在 Drop 回调里。
+            // 同样**不**调用 ReleaseStgMedium：按被谎报的 tymed 释放本身就不安全。
+            if medium.tymed != TYMED_ISTREAM.0 as u32 || medium.u.pstm.is_none() {
+                return Err(codes::DRAG_VIRTUAL_FILE_READ_FAILED);
+            }
             // `STGMEDIUM_0.pstm` 是 `ManuallyDrop<Option<IStream>>`：clone 会 AddRef，
             // 于是我们持有一份独立引用；ReleaseStgMedium 释放的是 medium 自己那份。
             let held: Option<IStream> = (*medium.u.pstm).clone();
@@ -1032,8 +1125,14 @@ fn obtain_content(
 
 /// 进程内 GIT 实例（每个 apartment 一个；cookie 进程内通用）。
 fn git() -> Option<IGlobalInterfaceTable> {
-    // CLSID_StdGlobalInterfaceTable = {0000033C-0000-0000-C000-000000000046}
-    let clsid = GUID::from_u128(0x0000_033c_0000_0000_c000_0000_0000_0046);
+    // CLSID_StdGlobalInterfaceTable = {00000323-0000-0000-C000-000000000046}
+    //
+    // 这个值取自本机 uuid.lib 的 COFF 符号表（CLSID_StdGlobalInterfaceTable
+    // 的 16 字节定义），不是手抄：早前写成 0000033C 时 CoCreateInstance 返回
+    // E_NOINTERFACE，git() 恒为 None，**所有虚拟文件都会被读成
+    // DRAG_VIRTUAL_FILE_READ_FAILED**。受控 OLE 测试（ole_test_source）覆盖了
+    // 这条路径，改错会立刻失败。
+    let clsid = GUID::from_u128(0x0000_0323_0000_0000_c000_0000_0000_0046);
     unsafe {
         CoCreateInstance::<_, IGlobalInterfaceTable>(&clsid, None, CLSCTX_INPROC_SERVER).ok()
     }
@@ -1122,6 +1221,9 @@ fn run_job(job: WorkerJob) {
     } = job;
 
     let mut seq = 0usize;
+    // 单条上限之外还必须有**实际写入总量**上限：描述符里的声明大小由来源填写，
+    // 可以谎报（例如声称 1KB、流里给 1GB）。只校验声明值等于把磁盘交给对方。
+    let mut staged_total: u64 = 0;
     for p in pending {
         seq += 1;
         match p {
@@ -1146,17 +1248,29 @@ fn run_job(job: WorkerJob) {
                     });
                     continue;
                 }
+                if staged_total.saturating_add(bytes.len() as u64) > MAX_VIRTUAL_TOTAL_BYTES {
+                    failures.push(PayloadFailure {
+                        code: codes::DRAG_SIZE_LIMIT_EXCEEDED.into(),
+                        scope: kind.as_str().into(),
+                        format: Some(name),
+                        reason: "单次拖入内容总量超过上限".into(),
+                    });
+                    continue;
+                }
                 let physical = format!("{:02}-{}", seq, sanitize_file_name(&name, "拖入文件"));
                 match stage::write_bytes(&op.dir, &physical, &bytes) {
-                    Ok(path) => items.push(StagedItem::Staged {
-                        path,
-                        name: sanitize_file_name(&name, "拖入文件"),
-                        size: bytes.len() as u64,
-                        kind,
-                        mime,
-                        width,
-                        height,
-                    }),
+                    Ok(path) => {
+                        staged_total = staged_total.saturating_add(bytes.len() as u64);
+                        items.push(StagedItem::Staged {
+                            path,
+                            name: sanitize_file_name(&name, "拖入文件"),
+                            size: bytes.len() as u64,
+                            kind,
+                            mime,
+                            width,
+                            height,
+                        });
+                    }
                     Err(e) => failures.push(PayloadFailure {
                         code: codes::DRAG_COMMIT_FAILED.into(),
                         scope: kind.as_str().into(),
@@ -1169,32 +1283,47 @@ fn run_job(job: WorkerJob) {
                 name,
                 declared,
                 cookie,
-            } => match read_stream_to_file(
-                &op.dir,
-                &format!("{:02}-{}", seq, sanitize_file_name(&name, "附件")),
-                declared,
-                cookie,
-            ) {
-                Ok((path, size)) => items.push(StagedItem::Staged {
-                    path,
-                    name: sanitize_file_name(&name, "附件"),
-                    size,
-                    kind: StagedKind::VirtualFile,
-                    mime: mime_for(&name),
-                    width: None,
-                    height: None,
-                }),
-                Err(code) => failures.push(PayloadFailure {
-                    code: code.to_string(),
-                    scope: "virtual-file".into(),
-                    format: Some(name),
-                    reason: codes::message(code).into(),
-                }),
-            },
+            } => {
+                let remaining = MAX_VIRTUAL_TOTAL_BYTES.saturating_sub(staged_total);
+                if remaining == 0 {
+                    failures.push(PayloadFailure {
+                        code: codes::DRAG_SIZE_LIMIT_EXCEEDED.into(),
+                        scope: "virtual-file".into(),
+                        format: Some(name),
+                        reason: "单次拖入内容总量超过上限".into(),
+                    });
+                    continue;
+                }
+                match read_stream_to_file(
+                    &op.dir,
+                    &format!("{:02}-{}", seq, sanitize_file_name(&name, "附件")),
+                    declared,
+                    cookie,
+                    remaining,
+                ) {
+                    Ok((path, size)) => {
+                        staged_total = staged_total.saturating_add(size);
+                        items.push(StagedItem::Staged {
+                            path,
+                            name: sanitize_file_name(&name, "附件"),
+                            size,
+                            kind: StagedKind::VirtualFile,
+                            mime: mime_for(&name),
+                            width: None,
+                            height: None,
+                        });
+                    }
+                    Err(code) => failures.push(PayloadFailure {
+                        code: code.to_string(),
+                        scope: "virtual-file".into(),
+                        format: Some(name),
+                        reason: codes::message(code).into(),
+                    }),
+                }
+            }
         }
     }
 
-    let skipped = skipped + failures.len();
     op.finish(items, failures.clone(), skipped);
     let view = op
         .inner
@@ -1227,6 +1356,7 @@ fn read_stream_to_file(
     name: &str,
     declared: Option<u64>,
     cookie: u32,
+    hard_cap: u64,
 ) -> Result<(PathBuf, u64), &'static str> {
     let git = git().ok_or(codes::DRAG_VIRTUAL_FILE_READ_FAILED)?;
     let mut raw: *mut std::ffi::c_void = std::ptr::null_mut();
@@ -1244,8 +1374,11 @@ fn read_stream_to_file(
     use std::io::Write;
     let mut buf = vec![0u8; 64 * 1024];
     let mut total: u64 = 0;
+    // 声明值只能收紧、不能放宽：来源声称 1KB 就最多写 1KB，
+    // 声称未知则用「本批剩余额度」与单条上限中更小者兜底。
     let limit = declared
-        .unwrap_or(MAX_VIRTUAL_FILE_BYTES)
+        .unwrap_or(hard_cap)
+        .min(hard_cap)
         .min(MAX_VIRTUAL_FILE_BYTES);
     loop {
         let mut read: u32 = 0;
@@ -1460,6 +1593,274 @@ mod tests {
     fn 文本解码_非法utf8不丢弃内容() {
         // 0xFF 不是合法 UTF-8 起始字节：按 lossy 保留，而不是返回 None
         assert!(decode_text_bytes(&[b'a', 0xFF, b'b']).is_some());
+    }
+
+    // ── 受控 OLE 数据对象（真实 COM 调用）────────────────────
+    //
+    // 这些用例使用 `ole_test_source` 里真正的 `IDataObject` / `IStream` 实现，
+    // 走完 `EnumFormatEtc → GetData → ReleaseStgMedium` 的真实 COM 路径；
+    // 仍**不能**替代真机：不覆盖 `RegisterDragDrop` 接管与真实鼠标时序。
+    mod controlled_ole {
+        use std::path::PathBuf;
+
+        use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
+
+        use crate::dragdrop::classify::Classification;
+        use crate::dragdrop::codes;
+        use crate::dragdrop::ole_test_source as src;
+        use crate::dragdrop::MAX_VIRTUAL_TOTAL_BYTES;
+
+        use super::super::{
+            classify, collect_virtual, probe_facts, read_image, read_stream_to_file, ImageSource,
+            Pending, ProbeDepth,
+        };
+
+        /// 每个测试线程独立初始化 COM（GIT / CoCreateInstance 需要）。
+        struct ComGuard {
+            uninit: bool,
+        }
+
+        impl ComGuard {
+            fn new() -> Self {
+                // GIT（CLSID_StdGlobalInterfaceTable）需要 OLE 初始化，而不只是
+                // CoInitializeEx：只初始化 COM 时 CoCreateInstance 会返回一个
+                // 不支持 IGlobalInterfaceTable 的对象（实测 E_NOINTERFACE）。
+                // 生产进程由 tao 在主线程调用 OleInitialize，所以真实环境可用。
+                let hr = unsafe { OleInitialize(None) };
+                Self { uninit: hr.is_ok() }
+            }
+        }
+
+        impl Drop for ComGuard {
+            fn drop(&mut self) {
+                if self.uninit {
+                    unsafe { OleUninitialize() };
+                }
+            }
+        }
+
+        struct TempDir(PathBuf);
+
+        impl TempDir {
+            fn new() -> Self {
+                let dir =
+                    std::env::temp_dir().join(format!("taskdock-ole-{}", uuid::Uuid::new_v4()));
+                std::fs::create_dir_all(&dir).unwrap();
+                Self(dir)
+            }
+
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+        }
+
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        #[test]
+        fn 受控_ole_git_可创建() {
+            let _com = ComGuard::new();
+            // 这一条直接钉住 CLSID_StdGlobalInterfaceTable。写成错误值
+            // （例如 0000033C）时 CoCreateInstance 返回 E_NOINTERFACE，
+            // git() 恒为 None，所有虚拟文件都会读失败且没有明确诊断。
+            assert!(
+                super::super::git().is_some(),
+                "GIT 创建失败：虚拟文件流无法跨线程读取"
+            );
+        }
+
+        #[test]
+        fn 受控_ole_纯文本被识别为文本() {
+            let _com = ComGuard::new();
+            let obj = src::text("来自网页的一段文本");
+            let facts = probe_facts(&obj, ProbeDepth::Full);
+            assert_eq!(facts.text.as_deref(), Some("来自网页的一段文本"));
+            match classify(&facts) {
+                Classification::Text(text) => assert_eq!(text, "来自网页的一段文本"),
+                other => panic!("分类错误: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn 受控_ole_html_提取纯文本与图片地址() {
+            let _com = ComGuard::new();
+            let obj = src::html(r#"<b>你好</b><img src="https://example.com/a.png">"#);
+            let facts = probe_facts(&obj, ProbeDepth::Full);
+            match classify(&facts) {
+                Classification::Html { text, image_url } => {
+                    assert!(text.contains("你好"), "{text}");
+                    assert_eq!(image_url.as_deref(), Some("https://example.com/a.png"));
+                }
+                other => panic!("分类错误: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn 受控_ole_png_字节被解码并重新编码() {
+            let _com = ComGuard::new();
+            let rgba = vec![
+                255u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ];
+            let png = crate::clipboard::image::encode_png(&rgba, 2, 2).expect("encode png");
+            let obj = src::png(png);
+            let facts = probe_facts(&obj, ProbeDepth::Full);
+            assert!(facts.has_png_bytes);
+            assert!(matches!(
+                classify(&facts),
+                Classification::Image(ImageSource::Png)
+            ));
+            let (bytes, w, h) = read_image(&obj, ImageSource::Png).expect("read png");
+            assert_eq!((w, h), (2, 2));
+            assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
+        }
+
+        #[test]
+        fn 受控_ole_虚拟文件流写盘并清洗路径() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files(&[
+                ("..\\..\\evil.txt".to_string(), b"evil-content".to_vec()),
+                ("normal.pdf".to_string(), b"%PDF-1.4".to_vec()),
+            ]);
+            let facts = probe_facts(&obj, ProbeDepth::Full);
+            assert_eq!(facts.file_descriptor_count, 2);
+            assert!(matches!(
+                classify(&facts),
+                Classification::VirtualFiles { count: 2 }
+            ));
+
+            let dir = TempDir::new();
+            let mut pending = Vec::new();
+            let mut failures = Vec::new();
+            let mut skipped = 0usize;
+            collect_virtual(
+                &obj,
+                2,
+                dir.path(),
+                &mut pending,
+                &mut failures,
+                &mut skipped,
+            );
+            assert_eq!(pending.len(), 2, "failures={failures:?}");
+
+            let mut staged: Vec<(String, u64, Vec<u8>)> = Vec::new();
+            for (i, p) in pending.into_iter().enumerate() {
+                match p {
+                    Pending::Stream {
+                        name,
+                        declared,
+                        cookie,
+                    } => {
+                        let (path, size) = read_stream_to_file(
+                            dir.path(),
+                            &format!("{:02}-{name}", i + 1),
+                            declared,
+                            cookie,
+                            MAX_VIRTUAL_TOTAL_BYTES,
+                        )
+                        .expect("流的真实读取");
+                        let content = std::fs::read(&path).unwrap();
+                        assert_eq!(content.len() as u64, size);
+                        staged.push((name, size, content));
+                    }
+                    _ => panic!("虚拟文件必须是流"),
+                }
+            }
+            assert_eq!(staged[0].0, "evil.txt", "路径分隔与上跳必须被清洗");
+            assert_eq!(staged[0].2, b"evil-content");
+            assert_eq!(staged[1].0, "normal.pdf");
+            assert_eq!(staged[1].2, b"%PDF-1.4");
+            assert!(staged
+                .iter()
+                .all(|(n, ..)| !n.contains("..") && !n.contains('\\') && !n.contains('/')));
+        }
+
+        #[test]
+        fn 受控_ole_描述符缓冲区大于上限时只读头部() {
+            let _com = ComGuard::new();
+            // 真实来源常把 HGLOBAL 分配得比 4 + 620×N 更大（尾部填充）。
+            let obj = src::virtual_files_padded(
+                &[("padded.bin".to_string(), vec![1, 2, 3])],
+                8192,
+            );
+            let facts = probe_facts(&obj, ProbeDepth::Full);
+            assert_eq!(facts.file_descriptor_count, 1, "必须只读头部而不是整块放弃");
+            assert!(matches!(
+                classify(&facts),
+                Classification::VirtualFiles { count: 1 }
+            ));
+        }
+
+        #[test]
+        fn 受控_ole_错误_tymed_不被当作内容() {
+            let _com = ComGuard::new();
+            let obj = src::text_with_wrong_tymed("不应被读取");
+            let facts = probe_facts(&obj, ProbeDepth::Full);
+            // 关键结论是「没有崩溃」：返回的 medium 声称 ISTREAM，
+            // 生产代码若直接读 u.hGlobal 会解引用无效指针。
+            assert!(facts.text.is_none(), "错误 TYMED 不得被当成 HGLOBAL");
+        }
+
+        #[test]
+        fn 受控_ole_filecontents_返回_hglobal_时失败而非崩溃() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files_wrong_tymed("a.txt");
+            let dir = TempDir::new();
+            let mut pending = Vec::new();
+            let mut failures = Vec::new();
+            let mut skipped = 0usize;
+            collect_virtual(
+                &obj,
+                1,
+                dir.path(),
+                &mut pending,
+                &mut failures,
+                &mut skipped,
+            );
+            assert!(pending.is_empty(), "错误 TYMED 不能进入流读取");
+            assert_eq!(failures.len(), 1);
+            assert_eq!(
+                failures[0].code,
+                codes::DRAG_VIRTUAL_FILE_READ_FAILED,
+                "失败必须有稳定错误码"
+            );
+        }
+
+        #[test]
+        fn 受控_ole_流读取超过本批额度时中止并清理() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files(&[("big.bin".to_string(), vec![7u8; 10])]);
+            let dir = TempDir::new();
+            let mut pending = Vec::new();
+            let mut failures = Vec::new();
+            let mut skipped = 0usize;
+            collect_virtual(
+                &obj,
+                1,
+                dir.path(),
+                &mut pending,
+                &mut failures,
+                &mut skipped,
+            );
+            let Pending::Stream {
+                declared, cookie, ..
+            } = pending.remove(0)
+            else {
+                panic!("期望流");
+            };
+            let err = read_stream_to_file(dir.path(), "01-big.bin", declared, cookie, 4)
+                .expect_err("超过本批额度必须失败");
+            assert_eq!(err, codes::DRAG_SIZE_LIMIT_EXCEEDED);
+            assert!(!dir.path().join("01-big.bin").exists(), "不得留下半成品");
+            let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().contains("taskdock-part"))
+                .collect();
+            assert!(leftovers.is_empty(), "不得残留 .part");
+        }
     }
 }
 

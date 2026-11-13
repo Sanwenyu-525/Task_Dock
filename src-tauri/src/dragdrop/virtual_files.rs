@@ -222,14 +222,14 @@ mod tests {
 
     #[test]
     fn 超限与截断都明确报错() {
-        // 声明 100 条但只给了 1 条的长度 → 截断
+        // 声明 10 条但只给了 1 条的长度 → 截断
         let mut buf = vec![0u8; 4 + FILEDESCRIPTORW_LEN];
-        buf[0..4].copy_from_slice(&100u32.to_le_bytes());
+        buf[0..4].copy_from_slice(&10u32.to_le_bytes());
         assert_eq!(
             parse_file_group_descriptor_w(&buf),
             Err(DescError::Truncated)
         );
-        // 声明多于上限 → 直接拒绝
+        // 声明多于上限 → 直接拒绝（上限判断优先于长度判断）
         let mut buf2 = vec![0u8; 4];
         buf2[0..4].copy_from_slice(&((MAX_ITEMS + 1) as u32).to_le_bytes());
         assert_eq!(

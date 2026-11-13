@@ -47,18 +47,29 @@ pub mod text;
 pub mod virtual_files;
 #[cfg(windows)]
 pub mod windows_ole;
+
+/// 受控 OLE 数据对象测试源：只在测试编译，不进入发布产物。
+#[cfg(all(test, windows))]
+pub mod ole_test_source;
 pub use classify::DragFacts;
 pub use codes::*;
 pub use payload::*;
 
 // 平台无关的入口：`lib.rs` 不需要知道 Windows 细节，也不需要 `cfg` 分支。
 #[cfg(windows)]
-pub use windows_ole::{bridge_active, install as install_native_bridge, report_install_failure};
+pub use windows_ole::{
+    bridge_active, install as install_native_bridge, installed_windows, report_install_failure,
+};
 
 /// 非 Windows 平台没有 OLE 拖入桥：返回 false 让前端继续走 Tauri 内置事件。
 #[cfg(not(windows))]
 pub fn bridge_active() -> bool {
     false
+}
+
+#[cfg(not(windows))]
+pub fn installed_windows() -> usize {
+    0
 }
 
 #[cfg(not(windows))]
@@ -193,6 +204,14 @@ impl StagedOp {
             guard.failures.clone(),
             guard.view.clone(),
         )
+    }
+
+    /// 拖入阶段被忽略的条目数（超量/无法读取/目录项），提交报告要如实带上。
+    pub fn skipped(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .skipped
     }
 
     /// 收尾：写入真实条目/失败并生成最终视图。

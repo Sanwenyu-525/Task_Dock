@@ -588,7 +588,11 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         }
       }
       if (payload.kind === "unsupported") {
-        showToast("无法识别拖入内容，未暂存任何东西", { kind: "error" });
+        // 后端原因是已脱敏的人读说明（只有格式名/计数）；有就展示具体原因。
+        showToast(
+          payload.reason.trim() || "无法识别拖入内容，未暂存任何东西",
+          { kind: "error" },
+        );
         void discardOperation(meta.operationId, "unsupported");
         return;
       }

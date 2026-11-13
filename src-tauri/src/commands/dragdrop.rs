@@ -26,6 +26,9 @@ use crate::shelf::fsops::DropReport;
 pub struct DragBridgeStatus {
     /// 原生桥是否安装成功（false ⇒ 只支持本地文件路径，与改造前一致）。
     pub active: bool,
+    /// 成功接管 `IDropTarget` 的窗口数（顶层 + WebView 子窗口）。
+    /// `active=true` 但 `windows=1` 说明 WebView 子窗口可能仍由 wry 旧处理器接管。
+    pub windows: usize,
     pub max_items: usize,
     pub max_text_bytes: usize,
     pub max_image_bytes: u64,
@@ -35,6 +38,7 @@ pub struct DragBridgeStatus {
 pub fn drag_bridge_status() -> DragBridgeStatus {
     DragBridgeStatus {
         active: bridge_active(),
+        windows: crate::dragdrop::installed_windows(),
         max_items: crate::dragdrop::MAX_ITEMS,
         max_text_bytes: crate::dragdrop::MAX_TEXT_BYTES,
         max_image_bytes: crate::dragdrop::MAX_IMAGE_BYTES,

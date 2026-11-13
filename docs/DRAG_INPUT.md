@@ -163,3 +163,39 @@ unsupported { formats, reason, code }
    按 `operationId` 读取，避免预览截断被当成全文。
 4. 原生桥只在 Windows 生效；非 Windows 平台 `bridge_active()` 返回 false，
    前端自动退回 Tauri 内置事件（仅本地路径）。
+
+## 10. 第二轮独立验收与修复（2026-11-13）
+
+本轮在 `agent/universal-drag`（基线 `547cd30`）上独立复验上一轮成果，不重写分层，
+只修复实测发现的问题。
+
+### 10.1 实测发现并修复
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| 谎报 TYMED 的来源会让拖入回调崩溃（`STATUS_ACCESS_VIOLATION`） | 校验出 `medium.tymed` 不符后仍调用 `ReleaseStgMedium`；该 API 按被谎报的 tymed 释放，本身就会解引用错误指针 | 类型不符时**不释放**、直接拒绝并放弃这个 medium：宁可泄漏一个违约 medium，也不在 `DoDragDrop` 内崩溃 |
+| `FileGroupDescriptorW` 缓冲区比 `4+620×N` 大时被整块放弃 → 附件被同批 HTML/文本旁路顶替 | `read_hglobal` 对超过 cap 的 HGLOBAL 一律返回 `None` | 新增 `read_hglobal_prefix`：只读头部；解析器仍按真实长度报 `Truncated`/`TooMany` |
+| 虚拟文件「声明大小」可信，实际写入总量无上限 | 只用描述符声明值校验 | 增加本批**实际写入总量** `MAX_VIRTUAL_TOTAL_BYTES`，逐条扣减；谎报大小无法突破 |
+| 短 ASCII 文本被误判为 UTF-16（`abc\0\0`） | 判据「零字节数 > 总长/4」对短文本不成立 | 改为「偶数长度 + 至少一半高字节为 0」；非法 UTF-8 再尝试 UTF-16LE（无 BOM 的中文 `CF_UNICODETEXT`） |
+| 拖入阶段 `skipped` 未进入提交报告 / 失败被重复计数 | `snapshot` 不含 `skipped`；`skipped += failures.len()` | `StagedOp::skipped()` 进入提交报告；`skipped` 与 `failures` 分开 |
+| `drag_bridge_status` 只能看到 `active`，无法判断 WebView 子窗口是否接管 | 未暴露窗口数 | 新增 `windows`：`active=true, windows=1` 说明子窗口可能仍走 wry 旧处理器 |
+| 不支持内容只显示笼统文案 | 未使用后端已脱敏的 `reason` | 有 `reason` 时优先展示（仍不含正文/路径） |
+
+### 10.2 受控 OLE 测试源
+
+`src-tauri/src/dragdrop/ole_test_source.rs`（仅 `cfg(test)` 编译）实现真实的
+`IDataObject` / `IEnumFORMATETC` / `IStream`，可构造 `CF_UNICODETEXT`、`HTML Format`、
+`PNG`、`FileGroupDescriptorW` + `FileContents(TYMED_ISTREAM)`，以及两种**故意违反 TYMED
+契约**的数据对象。生产代码经 `EnumFormatEtc → GetData → ReleaseStgMedium` 的真实 COM
+路径读取，不是对读取函数打桩。
+
+覆盖：文本分类、HTML 提取、PNG 解码重编码、虚拟文件双流写盘与文件名清洗、描述符尾部
+填充、错误 TYMED 不崩溃、`FileContents` 返回 HGLOBAL 时失败而非崩溃、流读取超过本批额度
+时中止并清理 `.part`。
+
+**边界**：不覆盖 `RegisterDragDrop` 接管、WebView2 窗口链与真实鼠标时序，不能替代真机。
+
+### 10.3 真机状态
+
+验收时会话仍处于锁屏（`LockApp` 运行），物理拖拽、真实系统 DPI、多显示器均为
+**UNVERIFIED**；结论与阻塞原因见 `tmp/acceptance/universal-drag/report.md` 第二轮章节。

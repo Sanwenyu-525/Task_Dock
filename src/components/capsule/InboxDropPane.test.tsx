@@ -28,6 +28,10 @@ const revealShelfItem = vi.fn();
 const deleteShelfItems = vi.fn();
 const dragOut = vi.fn();
 const openDialog = vi.fn();
+// 原生桥（通用拖入）通道：提交/放弃都只传 operationId。
+const commitPayloadShelf = vi.fn();
+const commitPayloadDirectory = vi.fn();
+const discardPayload = vi.fn();
 
 // 导航结果可控：默认成功并执行 after；个别用例模拟被未保存草稿阻止。
 const openFullAppMock = vi.hoisted(() =>
@@ -40,6 +44,8 @@ vi.mock("./actions", () => ({ openFullApp: openFullAppMock }));
 
 type Handler = (event: { payload: Record<string, unknown> }) => void;
 const handlers: Handler[] = [];
+/** 原生桥事件（taskdock://drag-*）的监听回调，按事件名分组。 */
+const bridgeHandlers = new Map<string, Handler[]>();
 const unlisten = vi.fn();
 
 vi.mock("@tauri-apps/api/webview", () => ({
@@ -47,6 +53,19 @@ vi.mock("@tauri-apps/api/webview", () => ({
     onDragDropEvent: (cb: Handler) => {
       handlers.push(cb);
       return Promise.resolve(unlisten);
+    },
+    // `lib/fileDrop` 用 webview.listen 订阅原生桥事件；测试里捕获回调后
+    // 直接投递 = 模拟 Rust 侧 emit，不经过任何真实 Tauri IPC。
+    listen: (name: string, cb: Handler) => {
+      const list = bridgeHandlers.get(name) ?? [];
+      list.push(cb);
+      bridgeHandlers.set(name, list);
+      return Promise.resolve(() => {
+        bridgeHandlers.set(
+          name,
+          (bridgeHandlers.get(name) ?? []).filter((h) => h !== cb),
+        );
+      });
     },
   }),
 }));
@@ -77,6 +96,16 @@ vi.mock("../../lib/bridge", () => ({
   shelfDragOut: (...a: unknown[]) => dragOut(...a),
   shelfDelete: (...a: unknown[]) => deleteShelfItems(...a),
   clipboardCopyText: (...a: unknown[]) => copyClipboardText(...a),
+  // 通用拖入：前端只传 operationId（内容留在后端暂存区）。
+  dragPayloadCommitShelf: (...a: unknown[]) => commitPayloadShelf(...a),
+  dragPayloadCommitDirectory: (...a: unknown[]) => commitPayloadDirectory(...a),
+  dragPayloadDiscard: (...a: unknown[]) => discardPayload(...a),
+  dragBridgeStatus: async () => ({
+    active: true,
+    maxItems: 32,
+    maxTextBytes: 524288,
+    maxImageBytes: 67108864,
+  }),
   shelfStats: vi.fn(async () => ({
     total: 0,
     file_count: 0,
@@ -135,6 +164,15 @@ async function flush(): Promise<void> {
 function emit(payload: Record<string, unknown>): void {
   for (const h of handlers) h({ payload });
 }
+
+/** 触发一次原生桥事件（模拟 Rust `taskdock://drag-*` 的 emit）。 */
+function emitBridge(name: string, payload: Record<string, unknown>): void {
+  for (const h of bridgeHandlers.get(name) ?? []) h({ payload });
+}
+
+const BRIDGE_PROBE = "taskdock://drag-probe";
+const BRIDGE_ACCEPTED = "taskdock://drag-accepted";
+const BRIDGE_PAYLOAD = "taskdock://drag-payload";
 
 function report(over: Record<string, unknown> = {}) {
   return {
@@ -199,6 +237,11 @@ function stubAddPaths(
 beforeEach(() => {
   localStorage.clear();
   handlers.length = 0;
+  bridgeHandlers.clear();
+  commitPayloadShelf.mockReset();
+  commitPayloadDirectory.mockReset();
+  discardPayload.mockReset();
+  discardPayload.mockResolvedValue(true);
   dropTargets.mockReset();
   dropToDirectory.mockReset();
   openDir.mockReset();
@@ -1853,5 +1896,221 @@ describe("InboxDropPane 重试失败项（W4）", () => {
     await screen.findByText(/成功 1 项 · 跳过 0 项 · 失败 0 项/);
     expect(screen.queryByRole("button", { name: /重新投递/ })).toBeNull();
     document.elementFromPoint = original;
+  });
+
+  // ── 原生桥：非路径内容的真实落点路由 ──────────────────────
+  //
+  // 这些用例走 `lib/fileDrop` 的双通道订阅：probe(enter) → accepted → payload，
+  // 与 Rust `TaskDock://drag-*` 的事件顺序一致；高亮/落点仍由坐标命中决定。
+
+  /** 等桥的三个监听都挂上（注册消费者是异步的）。 */
+  async function waitBridgeReady(): Promise<void> {
+    await waitFor(() =>
+      expect(bridgeHandlers.get(BRIDGE_PROBE)?.length ?? 0).toBeGreaterThan(0),
+    );
+    await waitFor(() =>
+      expect(bridgeHandlers.get(BRIDGE_PAYLOAD)?.length ?? 0).toBeGreaterThan(0),
+    );
+  }
+
+  it("原生桥：链接落在最近暂存 → 只提交 operationId，不把 URL 当路径", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    commitPayloadShelf.mockResolvedValue({
+      operationId: "op-1",
+      kind: "url",
+      added: [shelfItem({ kind: "link", display_name: "example.com", content: "https://example.com" })],
+      failed: [],
+      failures: [],
+      skipped: 0,
+    });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+
+    const zone = container.querySelector(
+      '[data-drop-zone="shelf-recent"]',
+    ) as HTMLElement;
+    expect(zone).toBeTruthy();
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => zone;
+
+    const probe = {
+      kind: "url",
+      count: 1,
+      canShelf: true,
+      canDirectory: false,
+      formats: ["HTML Format", "UniformResourceLocatorW"],
+    };
+    emitBridge(BRIDGE_PROBE, { phase: "enter", point: { x: 20, y: 20 }, probe });
+    emitBridge(BRIDGE_ACCEPTED, { operationId: "op-1", point: { x: 20, y: 20 }, probe });
+    emitBridge(BRIDGE_PAYLOAD, {
+      operationId: "op-1",
+      point: { x: 20, y: 20 },
+      payload: { kind: "url", url: "https://example.com", isImage: false },
+      failures: [],
+      skipped: 0,
+    });
+
+    await waitFor(() => expect(commitPayloadShelf).toHaveBeenCalledTimes(1));
+    expect(commitPayloadShelf.mock.calls[0]).toEqual(["op-1", "reference", null]);
+    expect(discardPayload).not.toHaveBeenCalled();
+    expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(addShelfPaths).not.toHaveBeenCalled();
+    await screen.findByText(/已暂存 1 项/);
+    document.elementFromPoint = original;
+  });
+
+  it("原生桥：文本落在目录卡片 → 明确拒绝，不生成 .txt、不留临时副本", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+
+    const probe = {
+      kind: "text",
+      count: 1,
+      canShelf: true,
+      canDirectory: false,
+      formats: ["CF_UNICODETEXT"],
+    };
+    emitBridge(BRIDGE_PROBE, { phase: "enter", point: { x: 20, y: 20 }, probe });
+    emitBridge(BRIDGE_ACCEPTED, { operationId: "op-2", point: { x: 20, y: 20 }, probe });
+    emitBridge(BRIDGE_PAYLOAD, {
+      operationId: "op-2",
+      point: { x: 20, y: 20 },
+      payload: { kind: "text", textPreview: "一段文字", chars: 4 },
+      failures: [],
+      skipped: 0,
+    });
+
+    await waitFor(() => expect(discardPayload).toHaveBeenCalledTimes(1));
+    expect(discardPayload.mock.calls[0][0]).toBe("op-2");
+    expect(commitPayloadDirectory).not.toHaveBeenCalled();
+    expect(dropToDirectory).not.toHaveBeenCalled();
+    await screen.findByText("此内容不能直接投递到文件夹");
+    document.elementFromPoint = original;
+  });
+
+  it("原生桥：图片字节落在目录卡片 → 传 operationId 提交，不走路径通道", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    commitPayloadDirectory.mockResolvedValue(report());
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+
+    const probe = {
+      kind: "image",
+      count: 1,
+      canShelf: true,
+      canDirectory: true,
+      formats: ["PNG"],
+    };
+    emitBridge(BRIDGE_PROBE, { phase: "enter", point: { x: 20, y: 20 }, probe });
+    emitBridge(BRIDGE_ACCEPTED, { operationId: "op-3", point: { x: 20, y: 20 }, probe });
+    emitBridge(BRIDGE_PAYLOAD, {
+      operationId: "op-3",
+      point: { x: 20, y: 20 },
+      payload: {
+        kind: "image",
+        count: 1,
+        items: [
+          { name: "拖入图片.png", size: 128, itemKind: "image", mime: "image/png", width: 2, height: 2 },
+        ],
+      },
+      failures: [],
+      skipped: 0,
+    });
+
+    await waitFor(() => expect(commitPayloadDirectory).toHaveBeenCalledTimes(1));
+    expect(commitPayloadDirectory.mock.calls[0][0]).toBe("t1");
+    expect(commitPayloadDirectory.mock.calls[0][1]).toBe("op-3");
+    expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(discardPayload).not.toHaveBeenCalled();
+    document.elementFromPoint = original;
+  });
+
+  it("原生桥：本地文件仍走既有路径语义（预检/去重/在途守卫不变）", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    dropToDirectory.mockResolvedValue(report());
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+
+    const probe = {
+      kind: "local-files",
+      count: 1,
+      canShelf: true,
+      canDirectory: true,
+      formats: ["CF_HDROP"],
+    };
+    emitBridge(BRIDGE_PROBE, { phase: "enter", point: { x: 20, y: 20 }, probe });
+    emitBridge(BRIDGE_ACCEPTED, { operationId: "op-4", point: { x: 20, y: 20 }, probe });
+    emitBridge(BRIDGE_PAYLOAD, {
+      operationId: "op-4",
+      point: { x: 20, y: 20 },
+      payload: { kind: "local-files", paths: ["C:\\a.txt"], count: 1 },
+      failures: [],
+      skipped: 0,
+    });
+
+    await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
+    expect(dropToDirectory.mock.calls[0][1]).toEqual(["C:\\a.txt"]);
+    // 会话交给路径通道后必须释放，避免临时副本悬挂。
+    expect(discardPayload).toHaveBeenCalledWith("op-4");
+    document.elementFromPoint = original;
+  });
+
+  it("原生桥：未识别内容且未命中接收区 → 明确提示并释放会话", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => null;
+
+    const probe = {
+      kind: "unsupported",
+      count: 0,
+      canShelf: false,
+      canDirectory: false,
+      formats: ["SomePrivateFormat"],
+    };
+    emitBridge(BRIDGE_PROBE, { phase: "enter", point: { x: 400, y: 400 }, probe });
+    emitBridge(BRIDGE_ACCEPTED, { operationId: "op-5", point: { x: 400, y: 400 }, probe });
+    emitBridge(BRIDGE_PAYLOAD, {
+      operationId: "op-5",
+      point: { x: 400, y: 400 },
+      payload: {
+        kind: "unsupported",
+        formats: ["SomePrivateFormat"],
+        reason: "来源没有提供可读取的内容",
+        code: "DRAG_FORMAT_UNSUPPORTED",
+      },
+      failures: [],
+      skipped: 0,
+    });
+
+    await waitFor(() => expect(discardPayload).toHaveBeenCalledTimes(1));
+    // 释放命令只接收 operationId；原因仅用于前端诊断，不写进 IPC。
+    expect(discardPayload).toHaveBeenCalledWith("op-5");
+    expect(dropToDirectory).not.toHaveBeenCalled();
+    expect(commitPayloadShelf).not.toHaveBeenCalled();
+    // 后端给出具体原因时展示原因，而不是笼统一句「无法识别」。
+    await screen.findByText("来源没有提供可读取的内容");
+    document.elementFromPoint = original;
+    // 容器变量仅用于保持渲染句柄，避免未使用告警。
+    expect(container).toBeTruthy();
   });
 });

@@ -29,6 +29,10 @@ const api = vi.hoisted(() => ({
   updateSettings: vi.fn(),
   listTasks: vi.fn(async () => []),
   shelfTaskLinks: vi.fn(async () => []),
+  // 通用拖入（非路径内容）：只传 operationId，内容留在后端暂存区。
+  dragPayloadCommitShelf: vi.fn(),
+  dragPayloadCommitDirectory: vi.fn(),
+  dragPayloadDiscard: vi.fn(),
 }));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
@@ -40,6 +44,11 @@ type DragHandler = (event: { payload: Record<string, unknown> }) => void;
 
 const webview = vi.hoisted(() => {
   const listeners = new Set<(event: { payload: Record<string, unknown> }) => void>();
+  // 原生桥事件（taskdock://drag-*）：与内置路径通道分开捕获。
+  const bridgeListeners = new Map<
+    string,
+    Set<(event: { payload: Record<string, unknown> }) => void>
+  >();
   const onDragDropEvent = vi.fn(
     async (cb: (event: { payload: Record<string, unknown> }) => void) => {
       listeners.add(cb);
@@ -48,11 +57,21 @@ const webview = vi.hoisted(() => {
       };
     },
   );
-  return { listeners, onDragDropEvent };
+  return { listeners, bridgeListeners, onDragDropEvent };
 });
 
 vi.mock("@tauri-apps/api/webview", () => ({
-  getCurrentWebview: () => ({ onDragDropEvent: webview.onDragDropEvent }),
+  getCurrentWebview: () => ({
+    onDragDropEvent: webview.onDragDropEvent,
+    listen: (name: string, cb: (event: { payload: Record<string, unknown> }) => void) => {
+      const set = webview.bridgeListeners.get(name) ?? new Set();
+      set.add(cb);
+      webview.bridgeListeners.set(name, set);
+      return Promise.resolve(() => {
+        webview.bridgeListeners.get(name)?.delete(cb);
+      });
+    },
+  }),
 }));
 
 import ShelfWorkspace from "./ShelfWorkspace";
@@ -125,6 +144,17 @@ function emit(payload: Record<string, unknown>) {
   for (const handler of [...webview.listeners]) handler({ payload });
 }
 
+const BRIDGE_PROBE = "taskdock://drag-probe";
+const BRIDGE_ACCEPTED = "taskdock://drag-accepted";
+const BRIDGE_PAYLOAD = "taskdock://drag-payload";
+
+/** 触发一次原生桥事件（模拟 Rust `taskdock://drag-*` 的 emit）。 */
+function emitBridge(name: string, payload: Record<string, unknown>) {
+  for (const handler of [...(webview.bridgeListeners.get(name) ?? [])]) {
+    handler({ payload });
+  }
+}
+
 /** 一次完整会话：enter → over → drop。position 省略即模拟「系统未给出坐标」。 */
 function emitSession(
   paths: string[],
@@ -149,6 +179,10 @@ async function renderShelf() {
   await screen.findByPlaceholderText("搜索名称 / 内容 / 备注");
   await waitFor(() => expect(webview.onDragDropEvent).toHaveBeenCalled());
   await waitFor(() => expect(fileDropListening()).toBe(true));
+  // 原生桥的三个监听是异步挂载的：等到位后再发事件，避免时序假失败。
+  await waitFor(() =>
+    expect(webview.bridgeListeners.get(BRIDGE_PROBE)?.size ?? 0).toBeGreaterThan(0),
+  );
   return utils;
 }
 
@@ -158,6 +192,7 @@ beforeEach(() => {
   // 的 700ms 去重不得跨用例生效。
   __resetDropSubmitGuard();
   webview.listeners.clear();
+  webview.bridgeListeners.clear();
   webview.onDragDropEvent.mockClear();
   Object.values(api).forEach((fn) => fn.mockReset());
 
@@ -173,6 +208,16 @@ beforeEach(() => {
   api.shelfStats.mockImplementation(async () => stats(serverItems.length));
   api.shelfCheckExists.mockResolvedValue([]);
   api.shelfDropTargets.mockResolvedValue([]);
+  // 通用拖入：默认「链接暂存成功」，个别用例覆盖。
+  api.dragPayloadDiscard.mockResolvedValue(true);
+  api.dragPayloadCommitShelf.mockResolvedValue({
+    operationId: "op-bridge",
+    kind: "url",
+    added: [itemFor("C:\\shelf-link.txt")],
+    failed: [],
+    failures: [],
+    skipped: 0,
+  });
   api.getSettings.mockResolvedValue({
     shelf_auto_cleanup_enabled: false,
     shelf_retention_days: 30,
@@ -1026,5 +1071,80 @@ describe("完整面板投递区 · 结果条与失败兜底", () => {
     expect(screen.getByText(/目标入口已移除；请到「D:\\Work」手工核对残留文件。/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "清除结果" }));
     await waitFor(() => expect(useDropTargetsStore.getState().reports["t1"]).toBeUndefined());
+  });
+});
+
+describe("通用拖入（原生桥）· 非路径内容", () => {
+  it("链接落在暂存架 → 只把 operationId 交给后端，条目入列", async () => {
+    await renderShelf();
+    const probe = {
+      kind: "url",
+      count: 1,
+      canShelf: true,
+      canDirectory: false,
+      formats: ["HTML Format", "UniformResourceLocatorW"],
+    };
+    act(() => {
+      emitBridge(BRIDGE_PROBE, { phase: "enter", point: { x: 40, y: 40 }, probe });
+      emitBridge(BRIDGE_ACCEPTED, {
+        operationId: "op-9",
+        point: { x: 40, y: 40 },
+        probe,
+      });
+      emitBridge(BRIDGE_PAYLOAD, {
+        operationId: "op-9",
+        point: { x: 40, y: 40 },
+        payload: { kind: "url", url: "https://example.com", isImage: false },
+        failures: [],
+        skipped: 0,
+      });
+    });
+
+    await waitFor(() => expect(api.dragPayloadCommitShelf).toHaveBeenCalledTimes(1));
+    // 前端不重建内容，只传会话 id；本地路径未参与。
+    expect(api.dragPayloadCommitShelf.mock.calls[0][0]).toBe("op-9");
+    expect(api.dragPayloadCommitShelf.mock.calls[0][1]).toBe("reference");
+    expect(api.dragPayloadDiscard).not.toHaveBeenCalled();
+    expect(api.shelfAddPaths).not.toHaveBeenCalled();
+    await waitFor(() => expect(lastToast()?.message).toBe("已暂存 1 项"));
+  });
+
+  it("未识别内容 → 明确提示并释放会话，不静默成功", async () => {
+    await renderShelf();
+    const probe = {
+      kind: "unsupported",
+      count: 0,
+      canShelf: false,
+      canDirectory: false,
+      formats: ["SomePrivateFormat"],
+    };
+    act(() => {
+      emitBridge(BRIDGE_PROBE, { phase: "enter", point: { x: 40, y: 40 }, probe });
+      emitBridge(BRIDGE_ACCEPTED, {
+        operationId: "op-10",
+        point: { x: 40, y: 40 },
+        probe,
+      });
+      emitBridge(BRIDGE_PAYLOAD, {
+        operationId: "op-10",
+        point: { x: 40, y: 40 },
+        payload: {
+          kind: "unsupported",
+          formats: ["SomePrivateFormat"],
+          reason: "来源没有提供可读取的内容",
+          code: "DRAG_FORMAT_UNSUPPORTED",
+        },
+        failures: [],
+        skipped: 0,
+      });
+    });
+
+    await waitFor(() => expect(api.dragPayloadDiscard).toHaveBeenCalledWith("op-10"));
+    expect(api.dragPayloadCommitShelf).not.toHaveBeenCalled();
+    expect(api.shelfAddPaths).not.toHaveBeenCalled();
+    // 具体原因来自后端（已脱敏），优先于笼统的「无法识别」。
+    await waitFor(() =>
+      expect(lastToast()?.message).toBe("来源没有提供可读取的内容"),
+    );
   });
 });

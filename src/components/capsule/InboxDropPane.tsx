@@ -509,6 +509,12 @@ export default function InboxDropPane() {
     (payload: DragPayloadView, point: DropPoint | null, meta: DropPayloadMeta) => {
       const targetId = point ? hitVisible(point) : null;
       const shelfZone = point ? hitShelfZone(point) : false;
+      // 后端给出的是已脱敏的人读原因（只含格式名/计数，不含内容）；
+      // 有具体原因时优先展示，避免所有失败都被说成同一句「无法识别」。
+      const unsupportedText =
+        payload.kind === "unsupported" && payload.reason.trim()
+          ? payload.reason
+          : t("capsule.inboxDrop.dragUnsupported");
 
       if (targetId) {
         if (!canDropToDirectory(payload)) {
@@ -529,7 +535,7 @@ export default function InboxDropPane() {
 
       if (shelfZone) {
         if (payload.kind === "unsupported") {
-          flash(t("capsule.inboxDrop.dragUnsupported"));
+          flash(unsupportedText);
           void discardOperation(meta.operationId, "unsupported");
           return;
         }
@@ -545,7 +551,7 @@ export default function InboxDropPane() {
       void discardOperation(meta.operationId, "no-target");
       if (payload.kind === "unsupported") {
         // 可识别但不支持的内容必须明确说「没暂存」，不能静默失败。
-        flash(t("capsule.inboxDrop.dragUnsupported"));
+        flash(unsupportedText);
       }
     },
     [

@@ -21,7 +21,8 @@ export type DeliverResult =
 export async function deliverToTarget(
   targetId: string,
   paths: string[],
-): Promise<DeliverResult> {  const target = useDropTargetsStore
+): Promise<DeliverResult> {
+  const target = useDropTargetsStore
     .getState()
     .targets.find((t) => t.id === targetId);
   if (!target) {
