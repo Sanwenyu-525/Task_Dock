@@ -19,6 +19,7 @@ import {
   type NavTarget,
 } from "../../lib/navigation";
 import { normalizeError } from "../../lib/errors";
+import type { MessageKey, MessageParams } from "../../i18n";
 import { prioritizeFavoritesAndRunning, searchApps, sortTargetsForDisplay } from "../../lib/appSearch";
 import {
   buildAppGrid,
@@ -39,20 +40,23 @@ import { openAppsAdd, openAppsManager } from "./actions";
 import { EmptyState, PanelHead } from "./PanelKit";
 
 /** 启动异常 → 可读原因：按稳定错误码区分权限/缺失/超时，不展示堆栈或原始路径。 */
-function launchFailureReason(raw: unknown): string {
+function launchFailureReason(
+  raw: unknown,
+  t: (key: MessageKey, params?: MessageParams) => string,
+): string {
   const err = normalizeError(raw, "nav_navigate");
   switch (err.code) {
     case "PERMISSION_DENIED":
-      return "没有权限启动该应用";
+      return t("capsule.apps.launchNoPermission");
     case "NOT_FOUND":
-      return "应用或窗口不存在";
+      return t("capsule.apps.launchNotFound");
     case "TIMEOUT":
-      return "启动超时，请稍后重试";
+      return t("capsule.apps.launchTimeout");
     case "SERVICE_UNAVAILABLE":
     case "SERVICE_OVERLOADED":
-      return "启动服务暂不可用，请稍后重试";
+      return t("capsule.apps.launchUnavailable");
     default:
-      return err.reason || err.message || "启动失败";
+      return err.reason || err.message || t("capsule.apps.launchFailed");
   }
 }
 
@@ -383,7 +387,12 @@ export default function AppsLite() {
         scheduleStateRecheck();
       }
     } catch (e) {
-      flash(`${name}：${launchFailureReason(e)}`);
+      flash(
+        tr("capsule.apps.launchFailedNamed", {
+          name,
+          reason: launchFailureReason(e, tr),
+        }),
+      );
     } finally {
       markLaunching(id, false);
     }
@@ -418,10 +427,10 @@ export default function AppsLite() {
   const hiddenAuxCount = hiddenRelevant.length - hiddenApps.length;
   const hiddenSummary =
     hiddenApps.length > 0 && hiddenAuxCount === 0
-      ? "已添加的应用均处于隐藏状态"
+      ? tr("capsule.apps.hiddenApps")
       : hiddenApps.length === 0
-        ? "已添加的网址 / 文件夹 / 文件均处于隐藏状态"
-        : "已添加的快捷目标均处于隐藏状态";
+        ? tr("capsule.apps.hiddenAux")
+        : tr("capsule.apps.hiddenAll");
   const hasAgentOnly = useMemo(
     () =>
       targetsLoaded &&
@@ -466,12 +475,18 @@ export default function AppsLite() {
         setPendingDelete(null);
         const [tOutcome, lOutcome] = await Promise.all([loadTargets(true), loadTaskLinks()]);
         if (tOutcome === "ok" && lOutcome === "ok") setRemovedIds(new Set());
-        flash(tOutcome === "error" || lOutcome === "error"
-          ? "该快捷目标已不存在，但列表刷新失败"
-          : "该快捷目标已不存在，列表已刷新");
+        flash(
+          tOutcome === "error" || lOutcome === "error"
+            ? tr("capsule.apps.alreadyDeletedStale")
+            : tr("capsule.apps.alreadyDeleted"),
+        );
       } else {
         // 删除失败必须保留应用项，不把配置从列表里误删。
-        flash(`删除失败：${err.reason || err.message || "未知错误"}`);
+        flash(
+          tr("capsule.apps.deleteFailed", {
+            error: err.reason || err.message || tr("capsule.apps.unknownError"),
+          }),
+        );
       }
       setDeleteBusy(false);
       return;
@@ -481,9 +496,11 @@ export default function AppsLite() {
     setPendingDelete(null);
     const [tOutcome, lOutcome] = await Promise.all([loadTargets(true), loadTaskLinks()]);
     if (tOutcome === "ok" && lOutcome === "ok") setRemovedIds(new Set());
-    flash(tOutcome === "error" || lOutcome === "error"
-      ? "目标已删除，但列表刷新失败"
-      : "目标已删除");
+    flash(
+      tOutcome === "error" || lOutcome === "error"
+        ? tr("capsule.apps.deletedStale")
+        : tr("capsule.apps.deleted"),
+    );
     setDeleteBusy(false);
   };
 
@@ -494,10 +511,18 @@ export default function AppsLite() {
     try {
       await navUpdateTarget(t.id, { hidden: false });
       const outcome = await loadTargets(true);
-      flash(outcome === "error" ? "已恢复显示，但列表刷新失败" : `已恢复显示「${t.display_name}」`);
+      flash(
+        outcome === "error"
+          ? tr("capsule.apps.restoredStale")
+          : tr("capsule.apps.restored", { name: t.display_name }),
+      );
     } catch (e) {
       const err = normalizeError(e, "nav_update_target");
-      flash(`恢复显示失败：${err.reason || err.message || "未知错误"}`);
+      flash(
+        tr("capsule.apps.restoreFailed", {
+          error: err.reason || err.message || tr("capsule.apps.unknownError"),
+        }),
+      );
     } finally {
       setRestoreBusyId(null);
     }
@@ -557,22 +582,41 @@ export default function AppsLite() {
     if (closingRef.current.has(t.id)) return;
     markClosing(t.id, true);
     // 先给即时反馈：后端核实窗口消失最长要等 2s，这段时间不能像什么都没发生。
-    flash(`正在关闭「${t.display_name}」的窗口…`);
+    flash(tr("capsule.apps.closingWindows", { name: t.display_name }));
     try {
       const r = await navCloseTargetWindows(t.id);
       const states = await fetchRunningStates();
       if (r.requested === 0) {
-        flash(`「${t.display_name}」当前没有打开的窗口`);
+        flash(tr("capsule.apps.noWindows", { name: t.display_name }));
       } else if (r.stillOpen.length > 0) {
-        flash(`「${t.display_name}」还有 ${r.stillOpen.length} 个窗口未关闭（可能等待确认或需要权限）`);
+        flash(
+          tr("capsule.apps.windowsStillOpen", {
+            name: t.display_name,
+            count: r.stillOpen.length,
+          }),
+        );
       } else if (states[t.id] === "process_only") {
-        flash(`已关闭「${t.display_name}」的窗口（应用仍在后台运行）`);
+        flash(
+          tr("capsule.apps.windowsClosedBackground", {
+            name: t.display_name,
+          }),
+        );
       } else {
-        flash(`已关闭「${t.display_name}」的 ${r.closed} 个窗口`);
+        flash(
+          tr("capsule.apps.windowsClosed", {
+            name: t.display_name,
+            count: r.closed,
+          }),
+        );
       }
     } catch (e) {
       const err = normalizeError(e, "nav_close_target_windows");
-      flash(`关闭「${t.display_name}」的窗口失败：${err.reason || err.message || "未知错误"}`);
+      flash(
+        tr("capsule.apps.closeWindowsFailed", {
+          name: t.display_name,
+          error: err.reason || err.message || tr("capsule.apps.unknownError"),
+        }),
+      );
     } finally {
       markClosing(t.id, false);
     }
@@ -586,25 +630,36 @@ export default function AppsLite() {
     if (quitRef.current) return;
     quitRef.current = true;
     setQuitId(t.id);
-    flash(`正在退出「${t.display_name}」…`);
+    flash(tr("capsule.apps.quitting", { name: t.display_name }));
     try {
       const r = await navQuitTargetProcesses(t.id);
       await fetchRunningStates();
       if (r.processTotal === 0) {
-        flash(`「${t.display_name}」当前没有在运行的进程`);
+        flash(tr("capsule.apps.noProcesses", { name: t.display_name }));
       } else if (r.processExited < r.processTotal) {
-        flash(`「${t.display_name}」未完全退出（${r.processExited}/${r.processTotal}）`);
+        flash(
+          tr("capsule.apps.quitPartial", {
+            name: t.display_name,
+            exited: r.processExited,
+            total: r.processTotal,
+          }),
+        );
         // 应用不响应 WM_QUIT：提供破坏性但可控的收尾手段，必须经确认条。
         killTriggerRef.current = trigger ?? null;
         restoreKillFocusRef.current = false;
         setPendingDelete(null);
         setPendingKill(t);
       } else {
-        flash(`已退出「${t.display_name}」`);
+        flash(tr("capsule.apps.quitDone", { name: t.display_name }));
       }
     } catch (e) {
       const err = normalizeError(e, "nav_quit_target_processes");
-      flash(`退出「${t.display_name}」失败：${err.reason || err.message || "未知错误"}`);
+      flash(
+        tr("capsule.apps.quitFailed", {
+          name: t.display_name,
+          error: err.reason || err.message || tr("capsule.apps.unknownError"),
+        }),
+      );
     } finally {
       quitRef.current = false;
       setQuitId(null);
@@ -626,16 +681,32 @@ export default function AppsLite() {
     try {
       const r = await navKillTargetProcesses(target.id);
       if (r.matched === 0) {
-        flash(`「${target.display_name}」当前没有可结束的进程`);
+        flash(tr("capsule.apps.noKillable", { name: target.display_name }));
       } else if (r.killed < r.matched) {
-        flash(`已结束「${target.display_name}」的 ${r.killed}/${r.matched} 个进程，其余无权限或已退出`);
+        flash(
+          tr("capsule.apps.killPartial", {
+            name: target.display_name,
+            killed: r.killed,
+            matched: r.matched,
+          }),
+        );
       } else {
-        flash(`已强制结束「${target.display_name}」的 ${r.killed} 个进程`);
+        flash(
+          tr("capsule.apps.killDone", {
+            name: target.display_name,
+            count: r.killed,
+          }),
+        );
       }
       await fetchRunningStates();
     } catch (e) {
       const err = normalizeError(e, "nav_kill_target_processes");
-      flash(`强制结束「${target.display_name}」失败：${err.reason || err.message || "未知错误"}`);
+      flash(
+        tr("capsule.apps.killFailed", {
+          name: target.display_name,
+          error: err.reason || err.message || tr("capsule.apps.unknownError"),
+        }),
+      );
     } finally {
       setKillBusy(false);
       setPendingKill(null);
@@ -657,7 +728,7 @@ export default function AppsLite() {
     setSavedOrder(next);
     // 排序属于用户偏好：防抖镜像到 preferences.json，随完整/快速备份迁移。
     schedulePreferencesMirror();
-    flash("顺序已保存");
+    flash(tr("capsule.apps.orderSaved"));
   };
 
   const isDropAfter = (event: ReactDragEvent<HTMLElement>) => {
@@ -734,23 +805,33 @@ export default function AppsLite() {
 
   return (
     <>
-      <PanelHead title="应用" sub="常用应用 · 快捷启动与窗口切换" layout="inline" />
+      <PanelHead
+        title={tr("capsule.apps.title")}
+        sub={tr("capsule.apps.subtitle")}
+        layout="inline"
+      />
 
       <SearchField
         value={query}
         onChange={setQuery}
-        placeholder="搜索已配置的快捷应用…"
-        ariaLabel="搜索快捷应用"
-        clearLabel="清除应用搜索"
+        placeholder={tr("capsule.apps.searchPlaceholder")}
+        ariaLabel={tr("capsule.apps.searchAria")}
+        clearLabel={tr("capsule.apps.searchClear")}
         size="compact"
         className="cap-search ui-search--capsule"
       />
 
       {pendingDelete && (
-        <div className="cap-confirm" role="alertdialog" aria-label="确认删除快捷目标">
+        <div
+          className="cap-confirm"
+          role="alertdialog"
+          aria-label={tr("capsule.apps.deleteConfirmAria")}
+        >
           <p className="cap-confirm-text">
-            从快捷列表删除「{pendingDelete.display_name}」？
-            <span>只删除 task_dock 中的快捷目标，不会卸载应用或删除程序文件；相关任务关联会一并解除。</span>
+            {tr("capsule.apps.deleteConfirmTitle", {
+              name: pendingDelete.display_name,
+            })}
+            <span>{tr("capsule.apps.deleteConfirmDetail")}</span>
           </p>
           <div className="cap-confirm-actions">
             <button
@@ -760,7 +841,7 @@ export default function AppsLite() {
               onClick={cancelDelete}
               disabled={deleteBusy}
             >
-              取消
+              {tr("common.cancel")}
             </button>
             <button
               type="button"
@@ -768,17 +849,23 @@ export default function AppsLite() {
               onClick={() => void confirmDelete()}
               disabled={deleteBusy || launchingIds.has(pendingDelete.id)}
             >
-              删除
+              {tr("capsule.apps.delete")}
             </button>
           </div>
         </div>
       )}
 
       {pendingKill && (
-        <div className="cap-confirm" role="alertdialog" aria-label="确认强制结束应用进程">
+        <div
+          className="cap-confirm"
+          role="alertdialog"
+          aria-label={tr("capsule.apps.killConfirmAria")}
+        >
           <p className="cap-confirm-text">
-            强制结束「{pendingKill.display_name}」？
-            <span>将结束该应用的全部进程（含托盘/后台），不走应用自身的保存流程，未保存的数据会丢失。</span>
+            {tr("capsule.apps.killConfirmTitle", {
+              name: pendingKill.display_name,
+            })}
+            <span>{tr("capsule.apps.killConfirmDetail")}</span>
           </p>
           <div className="cap-confirm-actions">
             <button
@@ -788,7 +875,7 @@ export default function AppsLite() {
               onClick={cancelKill}
               disabled={killBusy}
             >
-              取消
+              {tr("common.cancel")}
             </button>
             <button
               type="button"
@@ -796,7 +883,7 @@ export default function AppsLite() {
               onClick={() => void confirmKill()}
               disabled={killBusy}
             >
-              强制结束
+              {tr("capsule.apps.kill")}
             </button>
           </div>
         </div>
@@ -806,24 +893,29 @@ export default function AppsLite() {
         {isLoading && (
           <EmptyState
             icon={<Loader2 size={22} strokeWidth={1.6} className="spin" aria-hidden="true" />}
-            text="正在读取快捷应用…"
+            text={tr("capsule.apps.loading")}
           />
         )}
 
         {loadFailedFresh && (
           <EmptyState
             icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text="快捷应用读取失败"
-            actionLabel="重试"
+            text={tr("capsule.apps.emptyError")}
+            actionLabel={tr("common.retry")}
             onAction={() => void loadTargets()}
           />
         )}
 
         {loadFailedStale && (
           <div className="cap-item cap-error-row" role="alert">
-            <span className="cap-error-text">刷新失败，显示的是上次结果</span>
-            <button type="button" className="cap-mini" aria-label="重试读取快捷应用" onClick={() => void loadTargets()}>
-              重试
+            <span className="cap-error-text">{tr("capsule.panel.staleText")}</span>
+            <button
+              type="button"
+              className="cap-mini"
+              aria-label={tr("capsule.apps.retryAria")}
+              onClick={() => void loadTargets()}
+            >
+              {tr("common.retry")}
             </button>
           </div>
         )}
@@ -831,8 +923,8 @@ export default function AppsLite() {
         {neverConfigured && !query.trim() && (
           <EmptyState
             icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text="尚未配置快捷应用"
-            actionLabel="添加应用"
+            text={tr("capsule.apps.emptyNone")}
+            actionLabel={tr("capsule.apps.addApp")}
             onAction={() => openAppsAdd()}
             className="cap-empty--centered"
           />
@@ -845,18 +937,24 @@ export default function AppsLite() {
               // 文案按真实隐藏对象区分：网址/文件夹被隐藏时不能说成「应用均隐藏」。
               text={hiddenSummary}
               // 网格整体收起时加号也随之消失，这里保留同一个添加入口（不是第二套流程）。
-              actionLabel="添加应用"
+              actionLabel={tr("capsule.apps.addApp")}
               onAction={() => openAppsAdd()}
             />
             <div className="cap-recent" data-testid="hidden-restore-list">
-              <span className="cap-recent-title">已隐藏（共 {hiddenRelevant.length}）</span>
+              <span className="cap-recent-title">
+                {tr("capsule.apps.hiddenCount", {
+                  count: hiddenRelevant.length,
+                })}
+              </span>
               <span className="cap-recent-list">
                 {hiddenRelevant.map((t) => (
                   <button
                     type="button"
                     key={t.id}
                     className="cap-recent-chip"
-                    aria-label={`恢复显示 ${t.display_name}`}
+                    aria-label={tr("capsule.apps.restoreAria", {
+                      name: t.display_name,
+                    })}
                     disabled={restoreBusyId === t.id}
                     onClick={() => void restoreHiddenItem(t)}
                   >
@@ -868,7 +966,11 @@ export default function AppsLite() {
                       {(t.display_name || "?").slice(0, 1).toUpperCase()}
                     </i>
                     <span>{t.display_name}</span>
-                    <span>{restoreBusyId === t.id ? "恢复中…" : "恢复显示"}</span>
+                    <span>
+                      {restoreBusyId === t.id
+                        ? tr("capsule.apps.restoring")
+                        : tr("capsule.apps.restore")}
+                    </span>
                   </button>
                 ))}
               </span>
@@ -879,14 +981,14 @@ export default function AppsLite() {
         {hasAgentOnly && !query.trim() && (
           <EmptyState
             icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text="Agent 会话在 Agent 面板中管理"
+            text={tr("capsule.apps.agentOnly")}
           />
         )}
 
         {targetsLoaded && !loadFailedFresh && !neverConfigured && !allHidden && !hasAgentOnly && (
           <div
             className="cap-app-grid"
-            aria-label="应用网格，拖动或在项目上按 Alt+左右方向键调整顺序"
+            aria-label={tr("capsule.apps.gridAria")}
             // 真实按下 / 键盘激活会先经过捕获阶段，清掉拖放后的「补发 click」防护。
             onPointerDownCapture={() => {
               suppressClickRef.current = false;
@@ -903,7 +1005,7 @@ export default function AppsLite() {
                     type="button"
                     data-grid-id={entry.id}
                     className={`cap-app cap-app-add ${dragId === entry.id ? "is-dragging" : ""} ${dropClass(entry.id)}`}
-                    aria-label="添加应用"
+                    aria-label={tr("capsule.apps.addApp")}
                     draggable
                     onDragStart={(e) => onDragStart(e, entry.id)}
                     onDragEnd={endDrag}
@@ -923,7 +1025,7 @@ export default function AppsLite() {
                     <span className="cap-app-avatar is-add" aria-hidden="true">
                       <Plus size={18} strokeWidth={2.4} />
                     </span>
-                    <span className="cap-app-name">添加</span>
+                    <span className="cap-app-name">{tr("capsule.apps.add")}</span>
                   </button>
                 );
               }
@@ -950,7 +1052,9 @@ export default function AppsLite() {
                     type="button"
                     data-grid-id={t.id}
                     className="cap-app"
-                    aria-label={`启动 ${t.display_name}`}
+                    aria-label={tr("capsule.apps.launchAria", {
+                      name: t.display_name,
+                    })}
                     aria-busy={busy}
                     disabled={busy}
                     draggable={!busy}
@@ -1012,8 +1116,10 @@ export default function AppsLite() {
                         <button
                           type="button"
                           className="cap-app-act"
-                          data-tip="关闭窗口"
-                          aria-label={`关闭 ${t.display_name} 的窗口`}
+                          data-tip={tr("capsule.apps.closeWindowTip")}
+                          aria-label={tr("capsule.apps.closeWindowAria", {
+                            name: t.display_name,
+                          })}
                           disabled={busy || closingIds.has(t.id)}
                           onClick={() => void closeWindow(t)}
                         >
@@ -1027,8 +1133,10 @@ export default function AppsLite() {
                       <button
                         type="button"
                         className="cap-app-act"
-                        data-tip="退出应用"
-                        aria-label={`退出 ${t.display_name}`}
+                        data-tip={tr("capsule.apps.quitTip")}
+                        aria-label={tr("capsule.apps.quitAria", {
+                          name: t.display_name,
+                        })}
                         disabled={busy || quitId !== null}
                         onClick={(e) => void quitApp(t, e.currentTarget)}
                       >
@@ -1075,7 +1183,9 @@ export default function AppsLite() {
                   <button
                     type="button"
                     className="cap-app-del"
-                    aria-label={`从快捷列表删除 ${t.display_name}`}
+                    aria-label={tr("capsule.apps.deleteAria", {
+                      name: t.display_name,
+                    })}
                     disabled={busy}
                     onClick={(e) => requestDelete(t, e.currentTarget)}
                   >
@@ -1092,7 +1202,9 @@ export default function AppsLite() {
             不再要求跳到完整面板才能把应用真正关掉。 */}
         {targetsLoaded && !loadFailedFresh && runningApps.length > 0 && (
           <div className="cap-recent" data-testid="running-list">
-            <span className="cap-recent-title">运行中（{runningApps.length}）</span>
+            <span className="cap-recent-title">
+              {tr("capsule.apps.runningCount", { count: runningApps.length })}
+            </span>
             <span className="cap-recent-list cap-run-list">
               {runningApps.map((t) => {
                 const hasWindow = runningStates[t.id] === "has_window";
@@ -1101,7 +1213,9 @@ export default function AppsLite() {
                     <button
                       type="button"
                       className="cap-run-main"
-                      aria-label={`启动或聚焦 ${t.display_name}`}
+                      aria-label={tr("capsule.apps.launchOrFocusAria", {
+                        name: t.display_name,
+                      })}
                       disabled={launchingIds.has(t.id)}
                       onClick={() => void launch(t.id, t.display_name)}
                     >
@@ -1112,8 +1226,10 @@ export default function AppsLite() {
                       <button
                         type="button"
                         className="cap-chip-btn"
-                        data-tip="关闭窗口"
-                        aria-label={`关闭 ${t.display_name} 的窗口`}
+                        data-tip={tr("capsule.apps.closeWindowTip")}
+                        aria-label={tr("capsule.apps.closeWindowAria", {
+                          name: t.display_name,
+                        })}
                         disabled={closingIds.has(t.id)}
                         onClick={() => void closeWindow(t)}
                       >
@@ -1127,8 +1243,10 @@ export default function AppsLite() {
                     <button
                       type="button"
                       className="cap-chip-btn"
-                      data-tip="退出应用"
-                      aria-label={`退出 ${t.display_name}`}
+                      data-tip={tr("capsule.apps.quitTip")}
+                      aria-label={tr("capsule.apps.quitAria", {
+                        name: t.display_name,
+                      })}
                       disabled={quitId !== null}
                       onClick={(e) => void quitApp(t, e.currentTarget)}
                     >
@@ -1148,7 +1266,9 @@ export default function AppsLite() {
         {extras.length > 0 && !loadFailedFresh && extraList.length > 0 && (
           <div className="cap-recent">
             <span className="cap-recent-title">
-              {query.trim() ? "匹配的网址 / 文件夹 / 文件" : "网址 / 文件夹 / 文件"}
+              {query.trim()
+                ? tr("capsule.apps.extrasMatched")
+                : tr("capsule.apps.extras")}
             </span>
             <span className="cap-recent-list">
               {extraList.map((t) => (
@@ -1156,7 +1276,9 @@ export default function AppsLite() {
                   type="button"
                   key={t.id}
                   className="cap-recent-chip"
-                  aria-label={`打开 ${t.display_name}`}
+                  aria-label={tr("capsule.apps.openAria", {
+                    name: t.display_name,
+                  })}
                   disabled={launchingIds.has(t.id)}
                   onClick={() => void launch(t.id, t.display_name)}
                   // 与磁贴同一规则：只在名称被省略时提示完整名称，不把网址/路径弹成浮层。
@@ -1182,15 +1304,17 @@ export default function AppsLite() {
         {query.trim() && filtered.apps.length === 0 && extraList.length === 0 && !loadFailedFresh && (
           <EmptyState
             icon={<Search size={20} strokeWidth={1.6} aria-hidden="true" />}
-            text="没有匹配的应用"
+            text={tr("capsule.apps.emptySearch")}
           />
         )}
       </div>
 
       <div className="cap-foot">
-        <span className="cap-foot-note">{notice ?? "点击即启动或聚焦已有窗口"}</span>
+        <span className="cap-foot-note">
+          {notice ?? tr("capsule.apps.footNote")}
+        </span>
         <button type="button" className="cap-link" onClick={openAppsManager}>
-          管理
+          {tr("capsule.apps.manage")}
         </button>
       </div>
     </>
