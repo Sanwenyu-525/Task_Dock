@@ -115,6 +115,9 @@ async function renderPanel() {
 describe("TaskAnalyticsPanel", () => {
   beforeEach(() => {
     localStorage.clear();
+    // 单 fork 全量运行时，jsdom localStorage 与 i18n store 会跨测试文件保留；
+    // 本文件断言中文文案，必须在每个用例前把语言钉回 zh-CN，不能依赖文件顺序。
+    setLocalePreference("zh-CN");
     fetchTaskAnalytics.mockReset();
     fetchTaskAnalytics.mockResolvedValue(fixture());
   });

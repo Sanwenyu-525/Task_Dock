@@ -108,6 +108,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // 本文件的语言切换用例会把共享 store 留在 en-US；单 fork 全量运行会把
+  // 模块/localStorage 状态带到下一个测试文件，必须复位。
+  useLocaleStore.setState({ preference: "zh-CN", locale: "zh-CN" });
+  localStorage.clear();
 });
 
 describe("computeOverflowEdges", () => {
