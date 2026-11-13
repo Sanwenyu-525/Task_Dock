@@ -26,6 +26,7 @@ import {
   type PlanningProject,
   type PlanningStep,
 } from "../../lib/bridge";
+import type { MessageKey, MessageParams } from "../../i18n";
 import {
   CATEGORY_META,
   FEATURE_CATALOG,
@@ -47,18 +48,6 @@ type Filter = "all" | "todo" | "active" | "done";
 
 /** 查找防抖：输入停顿 250ms 才生效（客户端过滤）。 */
 const SEARCH_DEBOUNCE_MS = 250;
-
-const SOURCES: readonly SegOption<Source>[] = [
-  { value: "mine", label: "我的项目" },
-  { value: "builtin", label: "内置路线图" },
-];
-
-const FILTERS: readonly SegOption<Filter>[] = [
-  { value: "all", label: "全部" },
-  { value: "todo", label: "待办" },
-  { value: "active", label: "进行中" },
-  { value: "done", label: "已完成" },
-];
 
 /** 内置路线图是静态目录：分组与总数在模块级算一次，切换来源不重复遍历。 */
 const BUILTIN_GROUPS = featuresByCategory();
@@ -99,15 +88,28 @@ const STATUS_ORDER: Record<PlanningFeatureStatus, number> = {
   completed: 5,
 };
 
-function statsText(project: PlanningProject | null): string {
-  if (!project) return "未选择项目";
-  if (!project.stats.has_features) return "尚未添加功能";
-  return `${project.stats.feature_completed}/${project.stats.feature_total} 完成 · ${project.stats.progress_percent}%`;
+function statsText(
+  project: PlanningProject | null,
+  t: (key: MessageKey, params?: MessageParams) => string,
+): string {
+  if (!project) return t("capsule.planning.noProject");
+  if (!project.stats.has_features) return t("capsule.planning.noFeatures");
+  return t("capsule.planning.stats", {
+    completed: project.stats.feature_completed,
+    total: project.stats.feature_total,
+    percent: project.stats.progress_percent,
+  });
 }
 
-function projectProgressText(project: PlanningProject): string {
-  if (!project.stats.has_features) return "尚未添加功能";
-  return `${project.stats.feature_completed}/${project.stats.feature_total} 完成`;
+function projectProgressText(
+  project: PlanningProject,
+  t: (key: MessageKey, params?: MessageParams) => string,
+): string {
+  if (!project.stats.has_features) return t("capsule.planning.noFeatures");
+  return t("capsule.planning.progress", {
+    completed: project.stats.feature_completed,
+    total: project.stats.feature_total,
+  });
 }
 
 export default function PlanningLite() {
@@ -250,24 +252,43 @@ export default function PlanningLite() {
     try {
       await updateStep(step.id, { done: !step.done });
     } catch {
-      flash("步骤更新失败，请重试");
+      flash(t("capsule.planning.stepFailed"));
     } finally {
       setBusyStep(null);
     }
   };
+
+  const sources: readonly SegOption<Source>[] = [
+    { value: "mine", label: t("capsule.planning.source.mine") },
+    { value: "builtin", label: t("capsule.planning.source.builtin") },
+  ];
+  const filters: readonly SegOption<Filter>[] = [
+    { value: "all", label: t("capsule.planning.filter.all") },
+    { value: "todo", label: t("capsule.planning.filter.todo") },
+    { value: "active", label: t("capsule.planning.filter.active") },
+    { value: "done", label: t("capsule.planning.filter.done") },
+  ];
 
   // ── 项目列表（二级视图）──────────────────────────────────────────
   if (view === "projects") {
     return (
       <>
         <PanelHead
-          title="规划中心"
-          sub={!bootedState ? "读取中" : projects.length > 0 ? `${projects.length} 个项目` : "暂无项目"}
+          title={t("capsule.planning.title")}
+          sub={
+            !bootedState
+              ? t("capsule.planning.loading")
+              : projects.length > 0
+                ? t("capsule.planning.projectCount", {
+                    count: projects.length,
+                  })
+                : t("capsule.planning.emptyProjectsShort")
+          }
           actions={
             <button
               type="button"
               className="cap-iconbtn"
-              aria-label="返回规划面板"
+              aria-label={t("capsule.planning.backAria")}
               onClick={() => setView("features")}
             >
               <ChevronLeft size={16} strokeWidth={2.2} aria-hidden="true" />
@@ -278,22 +299,22 @@ export default function PlanningLite() {
           {!bootedState || (projectsLoading && projects.length === 0) ? (
             <EmptyState
               icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
-              text="正在读取项目…"
+              text={t("capsule.planning.projectsLoading")}
             />
           ) : null}
           {bootedState && projectsError && projects.length === 0 && (
             <EmptyState
               icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
-              text="项目列表读取失败"
-              actionLabel="重试"
+              text={t("capsule.planning.projectsError")}
+              actionLabel={t("common.retry")}
               onAction={() => void loadProjects()}
             />
           )}
           {bootedState && !projectsLoading && !projectsError && projects.length === 0 && (
             <EmptyState
               icon={<FolderKanban size={22} strokeWidth={1.6} aria-hidden="true" />}
-              text="还没有规划项目"
-              actionLabel="去完整规划中心创建"
+              text={t("capsule.planning.emptyProjects")}
+              actionLabel={t("capsule.planning.createInFull")}
               onAction={() => openFullApp("roadmap")}
             />
           )}
@@ -304,16 +325,22 @@ export default function PlanningLite() {
               className={`cap-item cap-plan-row cap-plan-project${
                 project.id === activeProjectId ? " is-active" : ""
               }`}
-              aria-label={`打开项目「${project.name}」`}
+              aria-label={t("capsule.planning.openProjectAria", {
+                name: project.name,
+              })}
               aria-pressed={project.id === activeProjectId}
               onClick={() => openProject(project.id)}
             >
               <span className="cap-main">
                 <span className="cap-plan-line">
                   <span className="cap-item-title">{project.name}</span>
-                  {project.archived ? <span className="cap-tag">已归档</span> : null}
+                  {project.archived ? (
+                    <span className="cap-tag">{t("capsule.planning.archived")}</span>
+                  ) : null}
                 </span>
-                <span className="cap-item-sub">{projectProgressText(project)}</span>
+                <span className="cap-item-sub">
+                  {projectProgressText(project, t)}
+                </span>
                 {project.stats.has_features ? (
                   <PlanningProgressBar value={project.stats.progress_percent} />
                 ) : null}
@@ -325,10 +352,10 @@ export default function PlanningLite() {
         <div className="cap-foot">
           <span className="cap-foot-note">
             <MapIcon size={12} strokeWidth={1.8} aria-hidden="true" />
-            选择项目查看功能
+            {t("capsule.planning.footPickProject")}
           </span>
           <button type="button" className="cap-link" onClick={openFullPlanning}>
-            完整规划
+            {t("capsule.planning.openFull")}
             <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
           </button>
         </div>
@@ -337,7 +364,7 @@ export default function PlanningLite() {
   }
 
   // ── 功能列表（一级视图）──────────────────────────────────────────
-  const projectName = activeProject?.name ?? "未选择项目";
+  const projectName = activeProject?.name ?? t("capsule.planning.noProject");
   const showingBuiltin = source === "builtin";
   const emptyProjectList =
     bootedState && !projectsLoading && !projectsError && projects.length === 0;
@@ -350,14 +377,17 @@ export default function PlanningLite() {
   return (
     <>
       <PanelHead
-        title="规划中心"
+        title={t("capsule.planning.title")}
         sub={
           !bootedState
-            ? "读取中"
+            ? t("capsule.planning.loading")
             : showingBuiltin
-              ? `内置路线图 · ${FEATURE_CATALOG.length} 项 · 已实现 ${BUILTIN_IMPLEMENTED}`
+              ? t("capsule.planning.builtinSub", {
+                  total: FEATURE_CATALOG.length,
+                  done: BUILTIN_IMPLEMENTED,
+                })
               : activeProject
-                ? `${projectName} · ${statsText(activeProject)}`
+                ? `${projectName} · ${statsText(activeProject, t)}`
                 : projectName
         }
         actions={
@@ -365,7 +395,7 @@ export default function PlanningLite() {
             <button
               type="button"
               className="cap-iconbtn"
-              aria-label="切换规划项目"
+              aria-label={t("capsule.planning.switchAria")}
               onClick={() => setView("projects")}
             >
               <FolderKanban size={16} strokeWidth={2} aria-hidden="true" />
@@ -374,9 +404,19 @@ export default function PlanningLite() {
         }
       />
 
-      <Segmented label="规划数据来源" options={SOURCES} value={source} onChange={setSource} />
+      <Segmented
+        label={t("capsule.planning.sourceAria")}
+        options={sources}
+        value={source}
+        onChange={setSource}
+      />
       {!showingBuiltin && (
-        <Segmented label="功能筛选" options={FILTERS} value={filter} onChange={setFilter} />
+        <Segmented
+          label={t("capsule.planning.filterAria")}
+          options={filters}
+          value={filter}
+          onChange={setFilter}
+        />
       )}
 
       <SearchField
@@ -417,8 +457,8 @@ export default function PlanningLite() {
         {bootedState && projectsError && projects.length === 0 && (
           <EmptyState
             icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text="项目列表读取失败"
-            actionLabel="重试"
+            text={t("capsule.planning.projectsError")}
+            actionLabel={t("common.retry")}
             onAction={() => void loadProjects()}
           />
         )}
@@ -426,8 +466,8 @@ export default function PlanningLite() {
         {emptyProjectList && (
           <EmptyState
             icon={<FolderKanban size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text="还没有规划项目"
-            actionLabel="去完整规划中心创建"
+            text={t("capsule.planning.emptyProjects")}
+            actionLabel={t("capsule.planning.createInFull")}
             onAction={() => openFullApp("roadmap")}
           />
         )}
@@ -435,8 +475,8 @@ export default function PlanningLite() {
         {noActiveProject && (
           <EmptyState
             icon={<FolderKanban size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text="选择一个项目查看功能"
-            actionLabel="选择项目"
+            text={t("capsule.planning.footPickProject")}
+            actionLabel={t("capsule.planning.selectProject")}
             onAction={() => setView("projects")}
           />
         )}
@@ -446,22 +486,22 @@ export default function PlanningLite() {
           loadedForProject !== activeProjectId && (
             <EmptyState
               icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
-              text="功能列表读取失败"
-              actionLabel="重试"
+              text={t("capsule.planning.featuresError")}
+              actionLabel={t("common.retry")}
               onAction={() => void usePlanningStore.getState().selectProject(activeProject.id)}
             />
           )}
 
         {activeProject && featuresError && loadedForProject === activeProjectId && (
           <div className="cap-item cap-error-row" role="alert">
-            <span className="cap-error-text">刷新失败，显示的是上次结果</span>
+            <span className="cap-error-text">{t("capsule.panel.staleText")}</span>
             <button
               type="button"
               className="cap-mini"
-              aria-label="重试读取功能列表"
+              aria-label={t("capsule.planning.retryFeaturesAria")}
               onClick={() => void usePlanningStore.getState().selectProject(activeProject.id)}
             >
-              重试
+              {t("common.retry")}
             </button>
           </div>
         )}
@@ -469,7 +509,7 @@ export default function PlanningLite() {
         {activeProject && !scopeReady && !featuresError && (
           <EmptyState
             icon={<MapIcon size={22} strokeWidth={1.6} aria-hidden="true" />}
-            text="正在读取功能…"
+            text={t("capsule.planning.featuresLoading")}
           />
         )}
 
@@ -479,8 +519,16 @@ export default function PlanningLite() {
           visible.length === 0 && (
             <EmptyState
               icon={<FolderKanban size={22} strokeWidth={1.6} aria-hidden="true" />}
-              text={features.length === 0 ? "这个项目还没有功能" : "当前筛选没有功能"}
-              actionLabel={features.length === 0 ? "去完整规划中心添加" : undefined}
+              text={
+                features.length === 0
+                  ? t("capsule.planning.emptyFeatures")
+                  : t("capsule.planning.emptyFiltered")
+              }
+              actionLabel={
+                features.length === 0
+                  ? t("capsule.planning.addInFull")
+                  : undefined
+              }
               onAction={
                 features.length === 0 && activeProject
                   ? () => openRoadmapFocus({ projectId: activeProject.id })
@@ -509,10 +557,10 @@ export default function PlanningLite() {
         <div className="cap-foot">
           <span className="cap-foot-note">
             <MapIcon size={12} strokeWidth={1.8} aria-hidden="true" />
-            只读 · 来自功能目录
+            {t("capsule.planning.builtinFoot")}
           </span>
           <button type="button" className="cap-link" onClick={() => openFullApp("roadmap")}>
-            完整规划
+            {t("capsule.planning.openFull")}
             <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
           </button>
         </div>
@@ -520,7 +568,7 @@ export default function PlanningLite() {
         <div className="cap-foot">
           <span className="cap-foot-note">
             <MapIcon size={12} strokeWidth={1.8} aria-hidden="true" />
-            {notice ?? statsText(activeProject)}
+            {notice ?? statsText(activeProject, t)}
           </span>
           {activeProject?.stats.has_features ? (
             <span className="cap-progress" aria-hidden="true">
@@ -528,7 +576,7 @@ export default function PlanningLite() {
             </span>
           ) : null}
           <button type="button" className="cap-link" onClick={openFullPlanning}>
-            完整规划
+            {t("capsule.planning.openFull")}
             <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
           </button>
         </div>
@@ -553,13 +601,20 @@ function FeatureRow({
   onToggle: () => void;
   onToggleStep: (step: PlanningStep) => Promise<void>;
 }) {
+  const { t } = useLocale();
   return (
     <div className={`cap-plan-feature${open ? " is-open" : ""}`}>
       <div className="cap-item cap-plan-feature-head">
         <button
           type="button"
           className="cap-main cap-row-open"
-          aria-label={`${open ? "收起" : "查看"}「${feature.title}」详情`}
+          aria-label={
+            open
+              ? t("capsule.planning.rowAriaCollapse", {
+                  title: feature.title,
+                })
+              : t("capsule.planning.rowAriaOpen", { title: feature.title })
+          }
           aria-expanded={open}
           aria-controls={`plan-feature-${feature.id}`}
           onClick={onToggle}
@@ -585,8 +640,11 @@ function FeatureRow({
             ) : null}
             <span className="cap-item-sub">
               {feature.step_total > 0
-                ? `${feature.step_done}/${feature.step_total} 步骤`
-                : "未拆分步骤"}
+                ? t("capsule.planning.stepCount", {
+                    done: feature.step_done,
+                    total: feature.step_total,
+                  })
+                : t("capsule.planning.noSteps")}
             </span>
           </span>
         </button>
@@ -597,17 +655,27 @@ function FeatureRow({
           {feature.description ? (
             <p className="cap-detail-desc">{feature.description}</p>
           ) : (
-            <p className="cap-detail-desc is-muted">暂无描述</p>
+            <p className="cap-detail-desc is-muted">
+              {t("capsule.planning.noDesc")}
+            </p>
           )}
           {feature.acceptance_criteria ? (
             <div className="cap-detail-row">
-              <span className="cap-detail-label">验收</span>
+              <span className="cap-detail-label">
+                {t("capsule.planning.acceptance")}
+              </span>
               <span className="cap-detail-value">{feature.acceptance_criteria}</span>
             </div>
           ) : null}
 
           {feature.steps.length > 0 ? (
-            <div className="cap-plan-steps" role="group" aria-label={`「${feature.title}」的步骤`}>
+            <div
+              className="cap-plan-steps"
+              role="group"
+              aria-label={t("capsule.planning.stepsAria", {
+                title: feature.title,
+              })}
+            >
               {feature.steps.map((step) => (
                 <button
                   key={step.id}
@@ -615,7 +683,13 @@ function FeatureRow({
                   className="cap-plan-step"
                   aria-pressed={step.done}
                   aria-label={
-                    step.done ? `重新打开步骤「${step.title}」` : `完成步骤「${step.title}」`
+                    step.done
+                      ? t("capsule.planning.stepReopenAria", {
+                          title: step.title,
+                        })
+                      : t("capsule.planning.stepCompleteAria", {
+                          title: step.title,
+                        })
                   }
                   disabled={busyStep === step.id}
                   onClick={() => void onToggleStep(step)}
@@ -630,7 +704,9 @@ function FeatureRow({
               ))}
             </div>
           ) : (
-            <p className="cap-detail-desc is-muted">尚未拆分步骤</p>
+            <p className="cap-detail-desc is-muted">
+              {t("capsule.planning.stepsEmpty")}
+            </p>
           )}
 
           <div className="cap-detail-actions">
@@ -643,7 +719,7 @@ function FeatureRow({
                   : openFullApp("roadmap")
               }
             >
-              完整规划
+              {t("capsule.planning.openFull")}
             </button>
           </div>
         </div>
@@ -666,6 +742,7 @@ function BuiltinFeatureRow({
   open: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useLocale();
   const tone = BUILTIN_STATUS_TONE[feature.status];
   return (
     <div className={`cap-plan-feature${open ? " is-open" : ""}`}>
@@ -673,7 +750,13 @@ function BuiltinFeatureRow({
         <button
           type="button"
           className="cap-main cap-row-open"
-          aria-label={`${open ? "收起" : "查看"}「${feature.title}」详情`}
+          aria-label={
+            open
+              ? t("capsule.planning.rowAriaCollapse", {
+                  title: feature.title,
+                })
+              : t("capsule.planning.rowAriaOpen", { title: feature.title })
+          }
           aria-expanded={open}
           aria-controls={`plan-builtin-${feature.id}`}
           onClick={onToggle}
@@ -706,13 +789,15 @@ function BuiltinFeatureRow({
           <p className="cap-detail-desc">{feature.detail}</p>
           {feature.status === "blocked" && feature.blockedReason ? (
             <div className="cap-detail-row">
-              <span className="cap-detail-label">阻塞</span>
+              <span className="cap-detail-label">
+                {t("capsule.planning.blocked")}
+              </span>
               <span className="cap-detail-value">{feature.blockedReason}</span>
             </div>
           ) : null}
           <div className="cap-detail-actions">
             <button type="button" className="cap-mini" onClick={() => openFullApp("roadmap")}>
-              完整规划
+              {t("capsule.planning.openFull")}
             </button>
           </div>
         </div>

@@ -44,6 +44,7 @@ import {
 import type { CaptureItem, CaptureKind } from "../../lib/bridge";
 import { copyText } from "../../lib/clipboard";
 import { errorMessage } from "../../lib/errors";
+import { useLocale } from "../../hooks/useLocale";
 import { useQuickRecord } from "../../hooks/useQuickRecord";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
@@ -59,11 +60,6 @@ import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
 const SUB_STORAGE_KEY = "taskdock.capsule.inbox.sub.v1";
 
 type InboxSub = "capture" | "drop";
-
-const SUB_OPTIONS: readonly SegOption<InboxSub>[] = [
-  { value: "capture", label: "快速收集" },
-  { value: "drop", label: "文件" },
-];
 
 function readSub(): InboxSub {
   try {
@@ -90,19 +86,20 @@ const KIND_ICONS: Record<CaptureKind, typeof ListTodo> = {
   link: Link2,
 };
 
-function previewOf(item: CaptureItem): string {
+function previewOf(item: CaptureItem, emptyLabel: string): string {
   const raw = (item.content || "").replace(/\s+/g, " ").trim();
   if (raw) return raw;
   if (item.url) return item.url;
-  return "（空内容）";
+  return emptyLabel;
 }
 
 /** 动作按钮的可访问名称要短：正文可能很长，不能整段塞进 aria-label。 */
-function shortLabel(item: CaptureItem): string {
-  return previewOf(item).slice(0, 24);
+function shortLabel(item: CaptureItem, emptyLabel: string): string {
+  return previewOf(item, emptyLabel).slice(0, 24);
 }
 
 export default function InboxLite() {
+  const { t } = useLocale();
   const lite = useCaptureStore((s) => s.lite);
   const liteLoading = useCaptureStore((s) => s.liteLoading);
   const liteError = useCaptureStore((s) => s.liteError);
@@ -187,19 +184,19 @@ export default function InboxLite() {
       setExpandedId((cur) => (cur === item.id ? null : cur));
       flash(
         kind === "convert"
-          ? "已转为任务"
+          ? t("capsule.inbox.converted")
           : kind === "handled"
-            ? "已标记为已处理"
-            : "已删除记录",
+            ? t("capsule.inbox.handled")
+            : t("capsule.inbox.deleted"),
       );
       await loadInboxLite();
     } catch {
       flash(
         kind === "convert"
-          ? "转为任务失败，请重试"
+          ? t("capsule.inbox.convertFailed")
           : kind === "handled"
-            ? "标记失败，请重试"
-            : "删除失败，请重试",
+            ? t("capsule.inbox.handleFailed")
+            : t("capsule.inbox.deleteFailed"),
       );
       void loadInboxLite();
     } finally {
@@ -218,10 +215,10 @@ export default function InboxLite() {
       if (kind === "copy") {
         const text = item.kind === "link" && item.url ? item.url : item.content;
         const ok = await copyText(text);
-        flash(ok ? "已复制" : "复制失败");
+        flash(ok ? t("capsule.inbox.copied") : t("capsule.inbox.copyFailed"));
       } else if (kind === "note") {
         await useNotesStore.getState().convertCapture(item.id);
-        flash("已转为笔记（保留本条）");
+        flash(t("capsule.inbox.convertedToNote"));
       } else {
         const shelf = useShelfStore.getState();
         if (item.kind === "link" && item.url) {
@@ -229,29 +226,38 @@ export default function InboxLite() {
         } else {
           await shelf.addText(item.content);
         }
-        flash("已发送到暂存架（保留本条）");
+        flash(t("capsule.inbox.sentToShelf"));
       }
     } catch (e) {
-      flash(`操作失败：${errorMessage(e)}`);
+      flash(t("capsule.inbox.actionFailed", { error: errorMessage(e) }));
     } finally {
       setBusyId(null);
     }
   };
 
+  const subOptions: readonly SegOption<InboxSub>[] = [
+    { value: "capture", label: t("capsule.inbox.sub.capture") },
+    { value: "drop", label: t("capsule.inbox.sub.drop") },
+  ];
+  const emptyContent = t("capsule.inbox.emptyContent");
+
   return (
     <>
       <PanelHead
-        title="收集箱"
+        title={t("capsule.inbox.title")}
         sub={
           sub === "drop"
             ? targetCount > 0
-              ? `拖文件到卡片即可投递 · ${targetCount} 个目标`
-              : "把文件拖到目标卡片直接归档"
+              ? t("capsule.inbox.dropSubTargets", { count: targetCount })
+              : t("capsule.inbox.dropSub")
             : loading
-              ? "读取中"
+              ? t("capsule.inbox.loading")
               : hasError
-                ? "读取失败"
-                : `未处理 ${inboxCount} 条 · 最近 ${items.length} 条`
+                ? t("capsule.inbox.loadFailed")
+                : t("capsule.inbox.subCounts", {
+                    pending: inboxCount,
+                    recent: items.length,
+                  })
         }
         actions={
           <>
@@ -259,8 +265,8 @@ export default function InboxLite() {
               <button
                 type="button"
                 className="cap-iconbtn"
-                aria-label="快速记录"
-                data-tip="快速记录"
+                aria-label={t("capsule.inbox.quickRecord")}
+                data-tip={t("capsule.inbox.quickRecord")}
                 data-tip-placement="bottom"
                 disabled={opening}
                 onClick={() => void openQuickRecord()}
@@ -275,7 +281,11 @@ export default function InboxLite() {
             <button
               type="button"
               className="cap-iconbtn"
-              aria-label={sub === "drop" ? "打开完整文件暂存架" : "打开完整收集箱"}
+              aria-label={
+                sub === "drop"
+                  ? t("capsule.inbox.openFullShelf")
+                  : t("capsule.inbox.openFullInbox")
+              }
               data-tip-placement="bottom"
               onClick={() => openFullApp(sub === "drop" ? "shelf" : "inbox")}
             >
@@ -286,8 +296,8 @@ export default function InboxLite() {
       />
 
       <Segmented
-        label="收集箱子页"
-        options={SUB_OPTIONS}
+        label={t("capsule.inbox.subAria")}
+        options={subOptions}
         value={sub}
         onChange={(next) => {
           setSub(next);
@@ -303,9 +313,14 @@ export default function InboxLite() {
             {/* 错误优先于空态：有旧数据时叠加错误提示条（可重试），没有则错误空态 */}
             {hasError && items.length > 0 && (
               <div className="cap-item cap-error-row" role="alert">
-                <span className="cap-error-text">读取失败，显示的是上次结果</span>
-                <button type="button" className="cap-mini" aria-label="重试读取收集箱" onClick={retry}>
-                  重试
+                <span className="cap-error-text">{t("capsule.inbox.staleText")}</span>
+                <button
+                  type="button"
+                  className="cap-mini"
+                  aria-label={t("capsule.inbox.retryAria")}
+                  onClick={retry}
+                >
+                  {t("common.retry")}
                 </button>
               </div>
             )}
@@ -313,8 +328,8 @@ export default function InboxLite() {
             {hasError && items.length === 0 && (
               <EmptyState
                 icon={<Inbox size={22} strokeWidth={1.6} aria-hidden="true" />}
-                text="收集箱读取失败"
-                actionLabel="重试"
+                text={t("capsule.inbox.emptyError")}
+                actionLabel={t("common.retry")}
                 onAction={retry}
               />
             )}
@@ -322,8 +337,8 @@ export default function InboxLite() {
             {!hasError && !loading && items.length === 0 && (
               <EmptyState
                 icon={<Inbox size={22} strokeWidth={1.6} aria-hidden="true" />}
-                text="没有未处理的记录"
-                actionLabel="打开完整收集箱"
+                text={t("capsule.inbox.empty")}
+                actionLabel={t("capsule.inbox.openFullInbox")}
                 onAction={() => openFullApp("inbox")}
               />
             )}
@@ -332,8 +347,8 @@ export default function InboxLite() {
               const Icon = KIND_ICONS[it.kind] ?? AlignLeft;
               const open = expandedId === it.id;
               const busy = busyId === it.id;
-              const label = shortLabel(it);
-              const full = (it.content || "").trim() || it.url || "（空内容）";
+              const label = shortLabel(it, emptyContent);
+              const full = (it.content || "").trim() || it.url || emptyContent;
               return (
                 <div className="cap-inbox-group" key={it.id}>
                   <div className="cap-item cap-clip-row" aria-busy={busy}>
@@ -343,23 +358,29 @@ export default function InboxLite() {
                     <button
                       type="button"
                       className="cap-main cap-row-open"
-                      aria-label={`${open ? "收起" : "查看"}「${label}」`}
+                      aria-label={
+                        open
+                          ? t("capsule.inbox.rowAriaCollapse", { label })
+                          : t("capsule.inbox.rowAriaOpen", { label })
+                      }
                       aria-expanded={open}
                       aria-controls={`capture-detail-${it.id}`}
                       onClick={() => setExpandedId(open ? null : it.id)}
                     >
-                      <span className="cap-item-title clip-2">{previewOf(it)}</span>
+                      <span className="cap-item-title clip-2">{previewOf(it, emptyContent)}</span>
                       <span className="cap-item-sub">
                         {it.note ? `${it.note} · ` : ""}
-                        {it.kind === "link" && it.url ? "链接" : "捕获"}
+                        {it.kind === "link" && it.url
+                          ? t("capsule.inbox.kindLink")
+                          : t("capsule.inbox.kindCapture")}
                       </span>
                     </button>
                     <span className="cap-inbox-actions">
                       <button
                         type="button"
                         className="cap-mini is-icon"
-                        aria-label={`将「${label}」转为任务`}
-                        data-tip="转为任务"
+                        aria-label={t("capsule.inbox.convertAria", { label })}
+                        data-tip={t("capsule.inbox.convertTip")}
                         disabled={busy}
                         onClick={() => void runAction(it, "convert")}
                       >
@@ -368,15 +389,15 @@ export default function InboxLite() {
                       <button
                         type="button"
                         className="cap-mini is-icon"
-                        aria-label={`标记「${label}」已处理`}
-                        data-tip="标记已处理"
+                        aria-label={t("capsule.inbox.handleAria", { label })}
+                        data-tip={t("capsule.inbox.handleTip")}
                         disabled={busy}
                         onClick={() => void runAction(it, "handled")}
                       >
                         <Check size={12} strokeWidth={2.4} aria-hidden="true" />
                       </button>
                       <DropdownMenu
-                        menuLabel={`「${label}」更多操作`}
+                        menuLabel={t("capsule.inbox.moreAria", { label })}
                         placement="bottom-end"
                         menuMinWidth={132}
                         trigger={(props) => (
@@ -384,8 +405,8 @@ export default function InboxLite() {
                             {...props}
                             type="button"
                             className="cap-mini is-icon"
-                            aria-label={`「${label}」更多操作`}
-                            data-tip="更多"
+                            aria-label={t("capsule.inbox.moreAria", { label })}
+                            data-tip={t("capsule.inbox.moreTip")}
                             disabled={busy}
                           >
                             <MoreVertical
@@ -398,13 +419,13 @@ export default function InboxLite() {
                         items={[
                           {
                             key: "copy",
-                            label: "复制内容",
+                            label: t("capsule.inbox.copyContent"),
                             icon: <Copy size={12} aria-hidden="true" />,
                             onSelect: () => void runMenuAction(it, "copy"),
                           },
                           {
                             key: "note",
-                            label: "转为笔记",
+                            label: t("capsule.inbox.convertNote"),
                             icon: <StickyNote size={12} aria-hidden="true" />,
                             onSelect: () => void runMenuAction(it, "note"),
                           },
@@ -414,7 +435,7 @@ export default function InboxLite() {
                             ? [
                                 {
                                   key: "shelf",
-                                  label: "发送到暂存架",
+                                  label: t("capsule.inbox.sendShelf"),
                                   icon: (
                                     <FolderPlus size={12} aria-hidden="true" />
                                   ),
@@ -425,7 +446,7 @@ export default function InboxLite() {
                             : []),
                           {
                             key: "delete",
-                            label: "删除",
+                            label: t("capsule.inbox.delete"),
                             icon: <Trash2 size={12} aria-hidden="true" />,
                             danger: true,
                             onSelect: () => setConfirmDelete(it),
@@ -439,13 +460,13 @@ export default function InboxLite() {
                       <p className="cap-detail-desc">{full}</p>
                       {it.url && it.kind === "link" ? (
                         <div className="cap-detail-row">
-                          <span className="cap-detail-label">链接</span>
+                          <span className="cap-detail-label">{t("capsule.inbox.linkLabel")}</span>
                           <span className="cap-detail-value">{it.url}</span>
                         </div>
                       ) : null}
                       {it.note ? (
                         <div className="cap-detail-row">
-                          <span className="cap-detail-label">备注</span>
+                          <span className="cap-detail-label">{t("capsule.inbox.noteLabel")}</span>
                           <span className="cap-detail-value">{it.note}</span>
                         </div>
                       ) : null}
@@ -460,13 +481,13 @@ export default function InboxLite() {
             <div
               className="cap-confirm"
               role="alertdialog"
-              aria-label="确认删除捕获记录"
+              aria-label={t("capsule.inbox.deleteConfirmAria")}
             >
               <p className="cap-confirm-text">
-                删除「{shortLabel(confirmDelete)}」？
-                <span>
-                  只删除这条捕获记录；已转任务/笔记或发送到暂存架的内容不受影响。
-                </span>
+                {t("capsule.inbox.deleteConfirmTitle", {
+                  label: shortLabel(confirmDelete, emptyContent),
+                })}
+                <span>{t("capsule.inbox.deleteConfirmDetail")}</span>
               </p>
               <div className="cap-confirm-actions">
                 <button
@@ -475,7 +496,7 @@ export default function InboxLite() {
                   disabled={busyId === confirmDelete.id}
                   onClick={() => setConfirmDelete(null)}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="button"
@@ -483,7 +504,7 @@ export default function InboxLite() {
                   disabled={busyId === confirmDelete.id}
                   onClick={() => void runAction(confirmDelete, "delete")}
                 >
-                  删除
+                  {t("capsule.inbox.delete")}
                 </button>
               </div>
             </div>
@@ -491,7 +512,7 @@ export default function InboxLite() {
 
           <div className="cap-foot">
             <span className="cap-foot-note">
-              {notice ?? "快速捕获的记录先落在这里，处理完自动移出"}
+              {notice ?? t("capsule.inbox.footNote")}
             </span>
             <div className="cap-actions">
               {/* 快速笔记复用完整面板的第三个子页（NotesPanel），胶囊不新建编辑器；
@@ -503,11 +524,11 @@ export default function InboxLite() {
                   openFullApp("inbox", () => useUiStore.getState().setCollectionSub("notes"))
                 }
               >
-                快速笔记
+                {t("capsule.inbox.quickNotes")}
                 <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
               </button>
               <button type="button" className="cap-link" onClick={() => openFullApp("inbox")}>
-                完整收集箱
+                {t("capsule.inbox.toFullInbox")}
                 <ArrowUpRight size={12} strokeWidth={2.2} aria-hidden="true" />
               </button>
             </div>
