@@ -76,6 +76,40 @@ describe("useShelfDragOut", () => {
     expect(result.current.shouldSuppressClick()).toBe(true);
   });
 
+  it("发起原生拖出前只通知一次 onDragStart（DoDragDrop 期间的 UI 形态依赖它）", () => {
+    const onDragStart = vi.fn();
+    const { result } = renderHook(() =>
+      useShelfDragOut({ enabled: true, resolveIds: () => ["a"], onDragStart }),
+    );
+
+    act(() => {
+      result.current.onPointerDown(pointerDownEvent());
+      // 阈值内的移动不触发
+      dispatchPointer("pointermove", { clientX: 12, clientY: 10 });
+      dispatchPointer("pointermove", { clientX: 30, clientY: 10 });
+      dispatchPointer("pointermove", { clientX: 40, clientY: 10 });
+    });
+
+    expect(onDragStart).toHaveBeenCalledTimes(1);
+    expect(dragOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolveIds 为空或未超过阈值时不通知 onDragStart", () => {
+    const onDragStart = vi.fn();
+    const { result } = renderHook(() =>
+      useShelfDragOut({ enabled: true, resolveIds: () => [], onDragStart }),
+    );
+
+    act(() => {
+      result.current.onPointerDown(pointerDownEvent());
+      dispatchPointer("pointermove", { clientX: 12, clientY: 10 });
+      dispatchPointer("pointermove", { clientX: 40, clientY: 10 });
+    });
+
+    expect(onDragStart).not.toHaveBeenCalled();
+    expect(dragOut).not.toHaveBeenCalled();
+  });
+
   it("data-no-drag 控件（勾选/更多菜单）不进入拖出", () => {
     const button = document.createElement("button");
     button.dataset.noDrag = "true";

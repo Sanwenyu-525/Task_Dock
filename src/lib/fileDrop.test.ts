@@ -253,6 +253,30 @@ describe("fileDrop 分发", () => {
     expect(drop).toHaveBeenCalledWith(["C:\\a.txt"], null);
   });
 
+  it("enter 也把换算后的坐标交给认领者：静止拖入不依赖 over 才能高亮", async () => {
+    const original = window.devicePixelRatio;
+    Object.defineProperty(window, "devicePixelRatio", { value: 1.25, configurable: true });
+    const enter = vi.fn();
+    registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onEnter: enter,
+      onDrop: () => {},
+    });
+    await flush();
+
+    // OLE 只在鼠标移动时发 over；进入窗口那一刻的坐标是唯一能立即命中的机会。
+    emit({ type: "enter", position: { x: 250, y: 125 }, paths: ["C:\\a.txt"] });
+    expect(enter).toHaveBeenCalledTimes(1);
+    expect(enter).toHaveBeenCalledWith({ x: 200, y: 100 });
+
+    emit({ type: "enter", paths: [] });
+    expect(enter).toHaveBeenLastCalledWith(null);
+
+    Object.defineProperty(window, "devicePixelRatio", { value: original, configurable: true });
+  });
+
   it("物理像素按 devicePixelRatio 换算成 CSS 像素", () => {
     const original = window.devicePixelRatio;
     Object.defineProperty(window, "devicePixelRatio", { value: 1.25, configurable: true });

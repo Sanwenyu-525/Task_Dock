@@ -406,22 +406,334 @@ describe("InboxDropPane", () => {
     document.elementFromPoint = original;
   });
 
-  it("拖入提示渲染在目标网格之后，不改变卡片几何（自拖放命中回归）", async () => {
+  it("正在投递的卡片在拖拽中不冒充可投递（状态与样式必须一致）", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await flush();
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+
+    await act(async () => {
+      useDropTargetsStore.setState({
+        ops: { t1: { targetId: "t1", total: 2, startedAt: Date.now() } },
+      });
+    });
+    expect(screen.getByText(/正在复制 2 项/)).toBeTruthy();
+
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+    await act(async () => {
+      emit({ type: "enter", position: { x: 10, y: 10 }, paths: [] });
+    });
+    expect(card.dataset.dropState).toBe("blocked");
+    // 强调描边只属于可投递卡片：既不显示 ready 的可接收描边，也不显示 over
+    expect(card.className).not.toContain("is-dragging");
+    expect(card.className).not.toContain("is-over");
+
+    await act(async () => {
+      emit({ type: "over", position: { x: 10, y: 10 } });
+    });
+    expect(card.className).not.toContain("is-over");
+    expect(card.className).not.toContain("is-over-blocked");
+    expect(screen.queryByText(/松手即/)).toBeNull();
+    document.elementFromPoint = original;
+  });
+
+  it("拖拽期间滚动投递列表：按最后一次坐标重算命中，不需要新的 over", async () => {
+    dropTargets.mockResolvedValue([
+      target(),
+      target({ id: "t2", name: "图片归档", path: "D:\\Pics", sort_order: 1 }),
+    ]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await screen.findByText("图片归档");
+    await flush();
+    const card = container.querySelector('[data-drop-target="t2"]') as HTMLElement;
+    const scroller = container.querySelector(".cap-drop") as HTMLElement;
+
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => null;
+    await act(async () => {
+      emit({ type: "enter", position: { x: 30, y: 300 }, paths: [] });
+    });
+    expect(card.dataset.dropState).toBe("ready");
+
+    // 滚动让内容位移：光标下方变成了这张卡，但系统不会再发 over
+    document.elementFromPoint = () => card;
+    await act(async () => {
+      fireEvent.scroll(scroller);
+    });
+    await waitFor(() => expect(card.dataset.dropState).toBe("over"));
+    document.elementFromPoint = original;
+  });
+
+  it("读屏播报当前落点：只在悬停具体目标时播报，离开后清空", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await flush();
+    const live = container.querySelector(".cap-drop-live") as HTMLElement;
+    expect(live.getAttribute("role")).toBe("status");
+    expect(live.className).toContain("sr-only");
+    expect(live.textContent).toBe("");
+
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+    await act(async () => {
+      emit({ type: "enter", position: { x: 10, y: 10 }, paths: [] });
+    });
+    expect(live.textContent).toBe("松开鼠标即投递到「工作资料」");
+
+    document.elementFromPoint = () => null;
+    await act(async () => {
+      emit({ type: "over", position: { x: 300, y: 300 } });
+    });
+    expect(live.textContent).toBe("");
+    document.elementFromPoint = original;
+  });
+
+  it("读屏播报不会为一个放不进的目标撒谎（不可用卡片）", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await flush();
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const live = container.querySelector(".cap-drop-live") as HTMLElement;
+
+    await act(async () => {
+      useDropTargetsStore.setState((state) => ({
+        targets: state.targets.map((item) => ({ ...item, available: false })),
+      }));
+    });
+    expect(screen.getByText("目录不可用")).toBeTruthy();
+
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+    await act(async () => {
+      emit({ type: "enter", position: { x: 10, y: 10 }, paths: [] });
+    });
+    expect(card.className).toContain("is-over-blocked");
+    expect(live.textContent).toBe("");
+    document.elementFromPoint = original;
+  });
+
+  it("普通状态没有任何拖拽提示：投递提示只在拖拽会话中出现", async () => {
     dropTargets.mockResolvedValue([target()]);
     const { container } = render(<InboxDropPane />);
     await screen.findByText("工作资料");
     await flush();
 
-    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
-    const hint = await screen.findByText("把文件拖到目标卡片上");
-    const grid = container.querySelector(".cap-drop-grid") as HTMLElement;
-    expect(grid).toBeTruthy();
-    // 提示条必须在网格之后：从暂存架拖出的原生 OLE 事件在拖拽结束后才处理，
-    // 提示条若插在网格上方，卡片会先下移，随后 drop 按真实坐标命中失败。
-    expect(
-      grid.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+    // 顶部 PanelHead 已说明「拖文件到卡片即可投递」，静止态不再重复任何提示。
+    expect(card.dataset.dropState).toBe("idle");
+    expect(card.className).not.toContain("is-dragging");
+    expect(screen.queryByText(/松手即/)).toBeNull();
+    expect(zone.className).not.toContain("is-drop-active");
+    expect(screen.queryByText(/松开即加入/)).toBeNull();
+  });
+
+  it("拖拽开始：可用卡片都进入可投递形态，不可用目标不冒充可投递", async () => {
+    dropTargets.mockResolvedValue([
+      target(),
+      target({
+        id: "t2",
+        name: "离线盘",
+        path: "Z:\\Offline",
+        sort_order: 1,
+        available: false,
+      }),
+    ]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await screen.findByText("离线盘");
+    await flush();
+
+    const a = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const b = container.querySelector('[data-drop-target="t2"]') as HTMLElement;
+    await act(async () => {
+      emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    });
+
+    // 可投递：图标换成语义明确的「文件夹 + 向内箭头」，但仍保留完整模式说明
+    // （含「删除源文件」警告）——不只用透明度表达状态。
+    expect(a.dataset.dropState).toBe("ready");
+    expect(a.className).toContain("is-dragging");
+    expect(a.querySelector(".lucide-folder-input")).toBeTruthy();
+    expect(a.querySelector(".cap-drop-status")?.textContent).toBe("复制 · 保留源文件");
+
+    // 不可投递：保留红字徽标与普通图标，不能和可接收目标长得一样。
+    expect(b.dataset.dropState).toBe("blocked");
+    expect(b.querySelector(".lucide-folder-input")).toBeNull();
+    expect(b.querySelector(".cap-drop-status")?.textContent).toBe("目录不可用");
+
+    // 光标停在不可用目标上：可以标记为「当前指向」，但状态仍是 blocked，
+    // 文案保持「目录不可用」，不会显示「松手即投递」。
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => b;
+    await act(async () => {
+      emit({ type: "over", position: { x: 220, y: 20 } });
+    });
+    expect(b.className).toContain("is-over");
+    expect(b.dataset.dropState).toBe("blocked");
+    expect(b.querySelector(".cap-drop-status")?.textContent).toBe("目录不可用");
+    expect(screen.queryByText(/松手即/)).toBeNull();
+    document.elementFromPoint = original;
+
     emit({ type: "leave" });
+    await waitFor(() => expect(a.dataset.dropState).toBe("idle"));
+    expect(b.className).not.toContain("is-over");
+  });
+
+  it("enter 自带的坐标立即命中：拖进窗口后停在卡片上也能高亮（OLE 静止不补发 over）", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await flush();
+
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+
+    // 只有 enter、没有任何 over：这正是「鼠标已经在卡片上，界面却仍提示把文件
+    // 拖到目标卡片上」的原始复现条件（OLE 只在鼠标移动时才发 DragOver）。
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+
+    await waitFor(() => expect(card.dataset.dropState).toBe("over"));
+    expect(card.className).toContain("is-over");
+    expect(screen.getByText("松手即复制")).toBeTruthy();
+
+    emit({ type: "leave" });
+    await waitFor(() => expect(card.dataset.dropState).toBe("idle"));
+    expect(screen.queryByText("松手即复制")).toBeNull();
+    document.elementFromPoint = original;
+  });
+
+  it("enter 早于目标列表渲染：列表到达后按最后一次坐标补算命中，不必再动鼠标", async () => {
+    let resolveTargets: (value: unknown) => void = () => {};
+    dropTargets.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveTargets = resolve;
+        }),
+    );
+    const { container } = render(<InboxDropPane />);
+    await flush();
+
+    const original = document.elementFromPoint;
+    // 命中函数在调用时才查 DOM：卡片出现的那一刻即可被命中。
+    document.elementFromPoint = () =>
+      container.querySelector('[data-drop-target="t1"]');
+
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    expect(container.querySelector('[data-drop-target="t1"]')).toBeNull();
+
+    await act(async () => {
+      resolveTargets([target()]);
+    });
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+
+    // 列表返回后卡片才出现，而 over 不会再来一次：必须自动补算命中。
+    await waitFor(() => expect(card.dataset.dropState).toBe("over"));
+    expect(screen.getByText("松手即复制")).toBeTruthy();
+    document.elementFromPoint = original;
+  });
+
+  it("悬停 A → 悬停 B → 离开目标：高亮与文案严格互斥，并按实时坐标切换", async () => {
+    dropTargets.mockResolvedValue([
+      target(),
+      target({
+        id: "t2",
+        name: "图片归档",
+        path: "D:\\Pics",
+        sort_order: 1,
+        op_mode: "move",
+      }),
+    ]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await screen.findByText("图片归档");
+    await flush();
+
+    const a = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const b = container.querySelector('[data-drop-target="t2"]') as HTMLElement;
+    const original = document.elementFromPoint;
+
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    document.elementFromPoint = () => a;
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    await waitFor(() => expect(a.dataset.dropState).toBe("over"));
+    expect(b.dataset.dropState).toBe("ready");
+    expect(screen.getByText("松手即复制")).toBeTruthy();
+    expect(screen.queryByText("松手即移动")).toBeNull();
+    // 未悬停的卡片仍保留完整模式语义（含删源警告）
+    expect(screen.getByText("移动 · 删除源文件")).toBeTruthy();
+
+    document.elementFromPoint = () => b;
+    emit({ type: "over", position: { x: 220, y: 20 } });
+    await waitFor(() => expect(b.dataset.dropState).toBe("over"));
+    expect(a.dataset.dropState).toBe("ready");
+    expect(screen.getByText("松手即移动")).toBeTruthy();
+    expect(screen.queryByText("松手即复制")).toBeNull();
+    expect(screen.getByText("复制 · 保留源文件")).toBeTruthy();
+
+    document.elementFromPoint = () => null;
+    emit({ type: "over", position: { x: 300, y: 300 } });
+    await waitFor(() => expect(a.dataset.dropState).toBe("ready"));
+    expect(b.dataset.dropState).toBe("ready");
+    expect(screen.queryByText(/松手即/)).toBeNull();
+    document.elementFromPoint = original;
+  });
+
+  it("拖拽期间不插入文档流元素：卡片结构与子节点数在 enter/悬停前后不变（自拖放命中回归）", async () => {
+    dropTargets.mockResolvedValue([
+      target(),
+      target({ id: "t2", name: "图片归档", path: "D:\\Pics", sort_order: 1 }),
+    ]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await screen.findByText("图片归档");
+    await flush();
+
+    const scroller = container.querySelector(".cap-drop") as HTMLElement;
+    const cards = ["t1", "t2"].map(
+      (id) => container.querySelector(`[data-drop-target="${id}"]`) as HTMLElement,
+    );
+    const childrenBefore = Array.from(scroller.children);
+    // 只比较 SVG 之外的结构：图标在拖拽期间会从 folder 换成 folder-input，
+    // 内部 path 数量不同，但外层尺寸、卡片结构与命中区域都不变。
+    const signature = (el: HTMLElement) =>
+      Array.from(el.querySelectorAll("*"))
+        .filter((node) => !node.closest("svg"))
+        .map((node) => node.tagName)
+        .join(">");
+    const signatures = cards.map(signature);
+    const counts = cards.map((card) => card.children.length);
+
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => cards[0];
+    emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
+    emit({ type: "over", position: { x: 20, y: 20 } });
+    await waitFor(() => expect(cards[0].dataset.dropState).toBe("over"));
+
+    // 2026-11-10 的回归形态：拖入提示作为普通流元素插入，卡片整体下移 32.7px，
+    // drop 按真实松手坐标命中失败。现在拖拽状态只改类名/文案/图标：
+    // 不新增任何流内节点，卡片子节点数也不变（几何由浏览器 harness 实测）。
+    expect(scroller.children.length).toBe(childrenBefore.length);
+    expect(
+      Array.from(scroller.children).every((el, i) => el === childrenBefore[i]),
+    ).toBe(true);
+    expect(cards.map(signature)).toEqual(signatures);
+    expect(cards.map((card) => card.children.length)).toEqual(counts);
+    expect(cards[0].querySelector(".cap-drop-meta")?.children.length).toBe(1);
+
+    emit({ type: "leave" });
+    await waitFor(() => expect(cards[0].dataset.dropState).toBe("idle"));
+    expect(
+      Array.from(scroller.children).every((el, i) => el === childrenBefore[i]),
+    ).toBe(true);
+    document.elementFromPoint = original;
   });
 
   it("未命中任何卡片 → 不执行任何文件操作，并清除高亮", async () => {
@@ -744,7 +1056,8 @@ describe("InboxDropPane", () => {
     emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
     emit({ type: "over", position: { x: 20, y: 20 } });
     await waitFor(() => expect(zone.className).toContain("is-drop-over"));
-    expect(screen.getByText(/拖入文件即可暂存/)).toBeTruthy();
+    // 落点在接收区：文案必须明确「松手会发生什么」，与目录卡片的悬停语义同构
+    expect(screen.getByText(/松开即加入/)).toBeTruthy();
 
     emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\Docs\\新文件.txt"] });
     await waitFor(() => expect(addShelfPaths).toHaveBeenCalledTimes(1));
@@ -873,17 +1186,20 @@ describe("InboxDropPane", () => {
     await screen.findByText("工作资料");
     await flush();
     const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
     const original = document.elementFromPoint;
     document.elementFromPoint = () => card;
     emit({ type: "enter", position: { x: 20, y: 20 }, paths: [] });
     emit({ type: "over", position: { x: 20, y: 20 } });
     await waitFor(() => expect(card.className).toContain("is-over"));
-    expect(screen.getByText("松开鼠标即投递到「工作资料」")).toBeTruthy();
+    expect(screen.getByText("松手即复制")).toBeTruthy();
 
     emit({ type: "drop", position: { x: 20, y: 20 }, paths: [] });
     await waitFor(() => expect(card.className).not.toContain("is-over"));
-    expect(screen.queryByText(/松开鼠标即投递到/)).toBeNull();
-    expect(screen.queryByText("把文件拖到目标卡片上")).toBeNull();
+    expect(card.dataset.dropState).toBe("idle");
+    expect(zone.className).not.toContain("is-drop-active");
+    expect(screen.queryByText(/松手即/)).toBeNull();
+    expect(screen.queryByText(/松开即加入/)).toBeNull();
     expect(dropToDirectory).not.toHaveBeenCalled();
     expect(addShelfPaths).not.toHaveBeenCalled();
     document.elementFromPoint = original;
@@ -1196,6 +1512,47 @@ describe("InboxDropPane", () => {
       expect(listRecent.mock.calls.length).toBeGreaterThan(1),
     );
     await screen.findByText("文件已移动；最近暂存已刷新，原路径可能已失效");
+  });
+
+  it("暂存行开始原生拖出即给出可投递形态（事件被 DoDragDrop 缓冲），结束后复位", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    listRecent.mockResolvedValue({ items: [shelfItem()], total: 1 });
+    let finish: (value: { effect: string; count: number; missing_ids: string[] }) => void =
+      () => {};
+    dragOut.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const { container } = render(<InboxDropPane />);
+    const name = await screen.findByText("报告.pdf");
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const zone = container.querySelector('[data-drop-zone="shelf-recent"]') as HTMLElement;
+    const row = name.closest(".cap-shelf-recent-item") as HTMLElement;
+    expect(card.dataset.dropState).toBe("idle");
+
+    fireEvent.pointerDown(row, { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(document, {
+      pointerId: 1,
+      buttons: 1,
+      clientX: 30,
+      clientY: 10,
+    });
+
+    // 应用内拖出：DoDragDrop 在 UI 线程运行，原生 enter/over/drop 全部被缓冲，
+    // 只能靠发起方的前置信号立刻给出「可以放」的形态。
+    await waitFor(() => expect(card.dataset.dropState).toBe("ready"));
+    expect(zone.className).toContain("is-drop-active");
+    // 前置信号只表示「拖拽已开始」，不冒充命中：没有坐标就没有落点高亮
+    expect(zone.className).not.toContain("is-drop-over");
+    expect(screen.queryByText(/松手即/)).toBeNull();
+
+    await act(async () => {
+      finish({ effect: "none", count: 0, missing_ids: [] });
+    });
+    await waitFor(() => expect(card.dataset.dropState).toBe("idle"));
+    expect(zone.className).not.toContain("is-drop-active");
   });
 
   it("文本条目只提供查看/复制内容，不出现复制路径；正文按需读取", async () => {

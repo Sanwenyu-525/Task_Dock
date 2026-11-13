@@ -111,7 +111,7 @@ describe("InboxRecentShelf 拖入接收区", () => {
     expect(section.hasAttribute("data-drop-zone")).toBe(false);
     expect(section.className).not.toContain("is-drop-active");
     expect(section.className).not.toContain("is-drop-over");
-    expect(screen.queryByText(/拖入文件即可暂存/)).toBeNull();
+    expect(screen.queryByText(/可暂存/)).toBeNull();
   });
 
   it("空列表也可接收：拖拽期间显示轻提示与落点高亮", async () => {
@@ -124,8 +124,10 @@ describe("InboxRecentShelf 拖入接收区", () => {
     expect(section.getAttribute("data-drop-zone")).toBe(SHELF_RECENT_DROP_ZONE);
     expect(section.className).toContain("is-drop-active");
     expect(section.className).toContain("is-drop-over");
-    const hint = screen.getByText(/拖入文件即可暂存/);
+    // 落点在接收区：短标签只回答「松手会怎样」；「只保存引用」的语义由同区域的说明承担
+    const hint = screen.getByText(/松开即加入/);
     expect(hint.closest(".cap-shelf-recent")).toBe(section);
+    expect(screen.getByText(/默认只保存引用/)).toBeTruthy();
   });
 
   it("提示与高亮只在拖拽期间出现，拖拽结束后不占用列表空间", async () => {
@@ -135,20 +137,50 @@ describe("InboxRecentShelf 拖入接收区", () => {
     await screen.findByText("最近暂存");
     const section = sectionOf(container);
     expect(section.className).not.toContain("is-drop-active");
-    expect(screen.queryByText(/拖入文件即可暂存/)).toBeNull();
+    expect(screen.queryByText(/可暂存/)).toBeNull();
 
     rerender(<InboxRecentShelf onNotice={vi.fn()} dropZone dropActive />);
     expect(section.className).toContain("is-drop-active");
     expect(section.className).not.toContain("is-drop-over");
-    expect(screen.getByText(/拖入文件即可暂存/)).toBeTruthy();
+    expect(screen.getByText(/可暂存/)).toBeTruthy();
 
     rerender(<InboxRecentShelf onNotice={vi.fn()} dropZone dropActive dropOver />);
     expect(section.className).toContain("is-drop-over");
+    expect(screen.getByText(/松开即加入/)).toBeTruthy();
+    expect(screen.queryByText(/可暂存/)).toBeNull();
 
     rerender(<InboxRecentShelf onNotice={vi.fn()} dropZone />);
     expect(section.className).not.toContain("is-drop-active");
     expect(section.className).not.toContain("is-drop-over");
-    expect(screen.queryByText(/拖入文件即可暂存/)).toBeNull();
+    expect(screen.queryByText(/可暂存/)).toBeNull();
+    expect(screen.queryByText(/松开即加入/)).toBeNull();
+  });
+
+  it("拖入提示只在标题行内：不进入列表项，也不改变列表条目数", async () => {
+    listRecent.mockResolvedValue({
+      items: [shelfItem(), shelfItem({ id: "s2", display_name: "截图.png" })],
+      total: 2,
+    });
+    const { container, rerender } = render(
+      <InboxRecentShelf onNotice={vi.fn()} dropZone />,
+    );
+    await screen.findByText("报告.pdf");
+    const list = container.querySelector(".cap-shelf-recent-list") as HTMLElement;
+    const itemsBefore = Array.from(list.children);
+    expect(itemsBefore.length).toBe(2);
+
+    rerender(<InboxRecentShelf onNotice={vi.fn()} dropZone dropActive dropOver />);
+    const hint = screen.getByText(/松开即加入/);
+    // 提示是标题行里的状态标签（与 22px 按钮同高）：不插进 <ul> 里挤占列表空间，
+    // 也不再是盖住最后一行的绝对定位浮层。
+    expect(hint.closest(".cap-shelf-recent-list")).toBeNull();
+    expect(hint.closest(".cap-shelf-recent-head")).toBeTruthy();
+    expect(hint.tagName).toBe("SPAN");
+    expect(list.children.length).toBe(itemsBefore.length);
+    expect(Array.from(list.children).every((el, i) => el === itemsBefore[i])).toBe(true);
+    // 拖拽提示出现期间原有条目与操作入口仍在
+    expect(screen.getByText("报告.pdf")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "添加文件到暂存架" })).toBeTruthy();
   });
 
   it("有条目时同样可接收，现有最近列表保持可见", async () => {
@@ -160,7 +192,7 @@ describe("InboxRecentShelf 拖入接收区", () => {
 
     const section = sectionOf(container);
     expect(section.getAttribute("data-drop-zone")).toBe(SHELF_RECENT_DROP_ZONE);
-    expect(screen.getByText(/拖入文件即可暂存/)).toBeTruthy();
+    expect(screen.getByText(/松开即加入/)).toBeTruthy();
     expect(screen.getByText("报告.pdf")).toBeTruthy();
   });
 
@@ -181,9 +213,14 @@ describe("InboxRecentShelf 拖入接收区", () => {
     );
   });
 
-  it("英文环境使用对应提示文案", async () => {
+  it("英文环境使用对应提示文案（拖拽中 / 落点在上）", async () => {
     useLocaleStore.setState({ locale: "en-US", preference: "en-US" });
-    render(<InboxRecentShelf onNotice={vi.fn()} dropZone dropActive />);
-    await screen.findByText(/Drop files here to stage them/);
+    const { rerender } = render(
+      <InboxRecentShelf onNotice={vi.fn()} dropZone dropActive />,
+    );
+    await screen.findByText(/Droppable/);
+
+    rerender(<InboxRecentShelf onNotice={vi.fn()} dropZone dropActive dropOver />);
+    await screen.findByText(/Release to add/);
   });
 });
