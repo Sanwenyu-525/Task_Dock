@@ -6,7 +6,12 @@ Task Dock 的手机端。业务数据全部落在本机 SQLite；2026-11-08 起�
 pull → push → 再 pull）；文件互传走同一配对通道的独立协议。两者都只在用户已配对的局域网内、
 由用户操作触发，后台同步与字段级自动合并仍未实现。
 2026-11-12 起传输为 **TLS-only（协议 v2，证书 SPKI 指纹固定）**。
-协议与边界见 `docs/mobile/06-pairing.md`、`07-sync.md`、`08-file-transfer.md`。
+2026-11-13 真机收口：**v2 配对 / 双向同步 / 文件互传在物理机端到端通过**（vivo V2323A ↔
+真实桌面服务）；同轮修复 3 个真机才暴露的缺陷——TLS 证书必须是叶证书（CA 根证书被
+Android 拒绝，`KEY_USAGE_BIT_INCORRECT`）、`secure-http` 未落地请求方法/头部/请求体
+（POST 变无头 GET、Bearer 丢失）、重配对不重置增量游标。
+协议与边界见 `docs/mobile/06-pairing.md`、`07-sync.md`、`08-file-transfer.md`、
+`12-transport-security.md`。
 
 > 更正（2026-11-12）：本 README 此前写「数据同步仍未实现」，与代码不符
 > （同步 2026-11-09 已落地），本段已更正；历史描述见 git 历史。

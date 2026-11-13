@@ -222,7 +222,20 @@ SPKI SHA-256（v2 扫码配对必有；手动输码配对在首轮连接后落�
 
 ## 8. 验收证据
 
-### 2026-11-12（TLS v2，本轮）
+### 2026-11-13（真机 v2 收口，本轮）
+
+| 项 | 命令/通道 | 结果 |
+|---|---|---|
+| 桌面 v2 服务真实运行 + 明文 fail-closed | 隔离实例 + `adb reverse` + 手机 `curl` | PASS（TLS 握手 200 `{"api_version":2}`；明文连接 0 字节断开） |
+| **TLS 叶证书修复** | 真机 `curl -v` 观察握手 | 旧 CA 根证书被 Android 拒绝（`KEY_USAGE_BIT_INCORRECT`）；改 `Profile::Leaf` 后握手成功。8 项 TLS 单测（含叶证书扩展断言与代际轮换）PASS |
+| **secure-http 方法/头部/请求体落地** | 真机配对（深链=扫码等价载荷，预置 SPKI 指纹） | 修复前 POST /v1/pair 变 GET → 405「方法不允许」；修复后配对 200，桌面设备列表出现「Android 手机」 |
+| 配对成功与令牌持久化 | 手机 UI + 桌面 `mobile_sync_list_devices` | PASS（令牌入 SecureStore，桌面只存哈希；`last_ip=127.0.0.1`（reverse 通道）） |
+| **重配对游标重置** | 重新配对后 pull | 修复前旧 cursor=44 > 新库 seq=3 → `pulled:0`；修复后 cursor 0→3、`applied:3` |
+| 设备撤销即时失效 | 桌面撤销 → 手机刷新 | PASS（HTTP 401） |
+| 撤销后重新配对恢复 | 再走深链配对 | PASS（设备列表恢复 1 台，同步恢复） |
+| 环境备注 | Windows 防火墙 Private profile 未放行 LAN 入站 | 真机经 `adb reverse` 回环通道验证；真实局域网使用需放行桌面端入站或手动输码核对 IP |
+
+### 2026-11-12（TLS v2，历史）
 
 | 项 | 命令/通道 | 结果 |
 |---|---|---|
@@ -295,3 +308,18 @@ SPKI SHA-256（v2 扫码配对必有；手动输码配对在首轮连接后落�
   `src/lib/sync/__tests__/engine.test.ts`、`files.test.ts` 各 1 例。
   另：原生层证书/指纹失败沿 cause 链识别为 `E_PIN_MISMATCH`，界面给出
   「证书指纹不匹配（可能存在中间人）」提示；连接本身在此之前已经失败。
+- 2026-11-13 真机收口（v2 首次在物理机跑通，发现并修复 2 个发布阻断 + 1 个 P2）：
+  - **证书必须是 TLS 叶证书**：旧 `Profile::Root` 生成的是 CA 根证书（keyUsage 只有
+    keyCertSign/cRLSign），Android/OpenSSL 严格校验握手直接失败
+    （`KEY_USAGE_BIT_INCORRECT`，手机 `curl -v` 实测）；Node 桌面版校验宽松曾掩盖。
+    现用 `Profile::Leaf`（digitalSignature+keyEncipherment，CA=false），并以
+    `cert-generation=leaf-v1` 代际标记自动轮换旧证书（指纹变化，已配对设备需重新配对）。
+  - **`SecureHttpModule` 落地请求方法/头部/请求体**：此前只配置 TLS/超时，
+    `method`/`headers`/`body` 从未写到连接——POST /v1/pair 退化为 GET（405
+    method_not_allowed）、Bearer 头丢失（同步/文件 401）、请求体为空。修复后真机
+    配对、同步 push/pull、文件双向互传全部通过。
+  - **重新配对重置增量游标**：旧连接 `sync.cursor.v1=44` 对新桌面实例（seq=3）无效，
+    pull 恒为 0；现按连接身份（baseUrl/instanceId/deviceId）变化清空游标，同身份
+    重复保存不重置（重放幂等）。
+  - 环境：真机验证经 `adb reverse` 回环通道完成（本机 Windows Private profile 防火墙
+    未放行 47822/47899 入站，日常实例同样不可达）；真实局域网使用需放行桌面端入站。
