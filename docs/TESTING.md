@@ -1169,3 +1169,11 @@ Outlook 附件、截图工具），也不得用受控 OLE 测试源的成功替�
 2026-11-13 晚补充：隔离实例（`TASK_DOCK_DATA_DIR` + `WEBVIEW2_USER_DATA_FOLDER`）可正常启动，
 日志确认 `通用拖入原生接收桥已安装 … windows=7`（顶层 + 6 个 WebView 子窗口均接管）；
 仍无物理鼠标拖拽，第三方应用/真实 DPI/多显示器结论不变。
+
+### 合并进 main 后（2026-11-13 20:08）
+
+`main` 从 `547cd30` fast-forward 到 `dc4b223`，并行 WIP 经三方合并保留（5 个重叠文件：
+`src-tauri/src/{lib.rs,commands/mod.rs}`、`src/lib/bridge.ts`、两个 locales）。合并后：
+`cargo check -j1` exit 0（56.10s）；`npx tsc --noEmit` 仅剩 1 个并行 WIP 错误
+（`src/lib/capsuleLayout.test.ts` 未使用变量），拖入相关文件 0 错误。
+备份 ref：`backup/main-pre-universal-drag-20261113-200834`。
