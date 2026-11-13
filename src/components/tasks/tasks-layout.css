@@ -51,10 +51,35 @@
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+  /* 作为按钮 offsetLeft 的基准，激活项入视直接用 offsetLeft/offsetWidth 手算，
+     不调用 scrollIntoView，避免带动页面或父容器滚动。 */
+  position: relative;
 }
 
 .tasks-panel .tasks-viewbar .seg-group::-webkit-scrollbar {
   display: none;
+}
+
+/* 横向溢出可发现性：只在还有隐藏内容的一侧淡化内容边缘（12px），
+   到起点/终点对应指示立即消失，正常宽度完全不出现。用 mask 而不是
+   叠加色块，主题/材质无关，也不会永久压在可见按钮文字上。
+   渐变宽度与 useViewsOverflow.ts 的 VIEW_REVEAL_MARGIN 保持一致。 */
+.tasks-panel .tasks-views[data-overflow-start="true"] {
+  mask-image: linear-gradient(to right, transparent 0, #000 12px);
+}
+
+.tasks-panel .tasks-views[data-overflow-end="true"] {
+  mask-image: linear-gradient(to left, transparent 0, #000 12px);
+}
+
+.tasks-panel .tasks-views[data-overflow-start="true"][data-overflow-end="true"] {
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 12px,
+    #000 calc(100% - 12px),
+    transparent 100%
+  );
 }
 
 /* 日期标签永不被省略号截断：宽度不足时让分段容器横向滚动、
@@ -239,6 +264,11 @@
   flex-direction: column;
   gap: 5px;
   margin-top: 5px;
+  /* 到期提醒可能很多（每个带截止时间的任务都会产生一条）：条目区限高并内部
+     滚动，避免展开后把任务列表压成 0 高、条目本身又被窗口裁切。 */
+  max-height: 168px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 @media (prefers-reduced-motion: reduce) {

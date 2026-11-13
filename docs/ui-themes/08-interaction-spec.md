@@ -155,7 +155,21 @@ API 细节见 [09-component-api.md](09-component-api.md)。
 
 ---
 
-## 3. 定位规则
+### 2.7 横向筛选条的溢出可发现性（2026-11-13）
+
+任务页日期筛选（全部 / 今日 / 明日 / 本周 / 逾期）在 320/360 窄窗放不下时保持**单行横向滚动**，
+工具图标不换行；为避免「看不见的隐藏项」，约定：
+
+- 仅在仍有隐藏内容的一侧显示 12px 边缘遮罩（`mask-image` 渐变，主题/材质无关）；滚到起点或终点
+  时对应侧立即消失，正常宽度无溢出时完全不出现。
+- 激活项在外部下钻、键盘 Tab 聚焦、语言切换导致按钮宽度变化后，按 `offsetLeft/offsetWidth`
+  手算 `scrollLeft` 并保留 12px 遮罩边距进入可见区；**不调用 `scrollIntoView`**，不带动页面滚动。
+- 鼠标竖向滚轮在横向仍有余量时映射为横向滚动并 `preventDefault`，到边界放行默认行为；触摸板
+  `deltaX`、触屏原生手势与键盘 Tab 均可访问全部筛选项。
+- 溢出状态由 `scroll` 事件 + `ResizeObserver` + 渲染后布局 effect 驱动，无轮询/定时器；
+  实现见 `src/components/tasks/useViewsOverflow.ts`，遮罩宽度 `VIEW_REVEAL_MARGIN` 与 CSS 必须一致。
+
+
 
 浮层定位统一交给 `@floating-ui/react`（**只做定位这一件事**，不引入整套 UI 框架）：
 

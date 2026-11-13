@@ -36,6 +36,7 @@ import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
 import ContextHelpButton from "../help/ContextHelpButton";
 import ModuleRunControl from "../lifecycle/ModuleRunControl";
+import { useViewsOverflow } from "./useViewsOverflow";
 import "./tasks-layout.css";
 
 /** 任务页三种模式：列表是工作台，专注/统计是独立工作视图（与列表互斥）。 */
@@ -63,7 +64,7 @@ const SORTS: readonly { id: "due" | "priority" | "created"; labelKey: MessageKey
 ] as const;
 
 export default function TasksPanel() {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const filter = useTasksStore((s) => s.filter);
   const setFilter = useTasksStore((s) => s.setFilter);
   const tasks = useTasksStore((s) => s.tasks);
@@ -83,6 +84,11 @@ export default function TasksPanel() {
   const [quickReminderOpen, setQuickReminderOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const listScrollTop = useRef(0);
+  // 日期分段容器：横向溢出指示与激活项入视都由 useViewsOverflow 负责。
+  const viewsRef = useRef<HTMLDivElement>(null);
+  // 指针按下后的 focus 不做「入视」滚动：mousedown 与 mouseup 之间把按钮
+  // 从指针下移走会让 click 落到祖先，部分可见的日期项会点不动。
+  const pointerFocusRef = useRef(false);
   // 返回列表时把焦点交还给进入子视图的按钮（键盘用户不丢上下文）。
   const focusButtonRef = useRef<HTMLButtonElement>(null);
   const analyticsButtonRef = useRef<HTMLButtonElement>(null);
@@ -176,6 +182,14 @@ export default function TasksPanel() {
     }
     return out;
   }, [tasks, exitHolds]);
+
+  // 日期分段横向滚动（320/360 窄窗）：溢出侧显示边缘渐变；激活项在
+  // 外部下钻 / 键盘聚焦 / 语言切换后自动进入可见区。编辑态与子视图不监听。
+  const activeView = todayTabActive ? "today" : filter.view ?? "all";
+  const viewsOverflow = useViewsOverflow(viewsRef, activeView, {
+    enabled: !editor.open && mode === "list",
+    reflowKey: locale,
+  });
 
   // 全局搜索定位：消费一次性意图（只处理任务类；workspace 意图由 TaskContextDrawer 消费）。
   // 用关键词过滤确保目标可见，数据渲染后滚动高亮。
@@ -294,7 +308,14 @@ export default function TasksPanel() {
           {/* 日期筛选常驻；提醒调度、帮助、专注、统计、更多集中在同一行。
               窄窗只允许日期分段横向滚动，工具图标不换行。 */}
           <div className="tasks-viewbar">
-            <div className="seg-group tasks-views" role="group" aria-label={t("tasks.rangeAria")}>
+            <div
+              ref={viewsRef}
+              className="seg-group tasks-views"
+              role="group"
+              aria-label={t("tasks.rangeAria")}
+              data-overflow-start={viewsOverflow.start ? "true" : undefined}
+              data-overflow-end={viewsOverflow.end ? "true" : undefined}
+            >
               {VIEWS.map((v) => {
                 const active = v.id === "today" ? todayTabActive : filter.view === v.id;
                 return (
@@ -302,11 +323,26 @@ export default function TasksPanel() {
                     key={v.id}
                     className={`seg-btn ${active ? "active" : ""}`}
                     aria-pressed={active}
+                    data-view={v.id}
                     data-tip={
                       v.id === "today" && filter.view === "due_today"
                         ? t("tasks.view.todayDueTip")
                         : undefined
                     }
+                    // 键盘 Tab 到被遮住的日期项时，立即把它带进可见区；
+                    // 鼠标/触摸按下触发的 focus 跳过（否则按钮会在按下与抬起
+                    // 之间移走，click 丢失）。指针点击后由 activeView 变化
+                    // 的 effect 完成入视。
+                    onPointerDown={() => {
+                      pointerFocusRef.current = true;
+                    }}
+                    onFocus={() => {
+                      if (pointerFocusRef.current) {
+                        pointerFocusRef.current = false;
+                        return;
+                      }
+                      viewsOverflow.reveal(v.id);
+                    }}
                     onClick={() => setFilter({ view: v.id })}
                   >
                     {t(v.labelKey)}
