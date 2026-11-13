@@ -8,7 +8,10 @@
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 
+import { connectionIdentityChanged } from "../lib/sync/connectionIdentity";
+
 import { deleteSetting, getSetting, setSetting } from "./kv";
+import { saveSyncCursor } from "./sync";
 
 const META_KEY = "sync.connection.v1";
 const TOKEN_KEY = "taskdock.sync.token.v1";
@@ -103,9 +106,31 @@ export async function saveConnection(input: {
   token: string;
   meta: Omit<PairedConnection, "lastSeenAt">;
 }): Promise<void> {
+  const previous = await loadConnection();
   await SecureStore.setItemAsync(TOKEN_KEY, input.token);
   try {
     await setSetting(META_KEY, JSON.stringify({ ...input.meta, lastSeenAt: null }));
+    // 换桌面实例/地址/授权后旧增量游标不再适用：服务端变更序号按实例独立，
+    // 沿用旧游标会让 pull 跳过新桌面端的早期变更（2026-11-13 真机实测）。
+    // 重放全部变更对已应用的记录是幂等跳过，代价可接受。
+    if (
+      connectionIdentityChanged(
+        previous
+          ? {
+              baseUrl: previous.baseUrl,
+              instanceId: previous.instanceId,
+              deviceId: previous.deviceId,
+            }
+          : null,
+        {
+          baseUrl: input.meta.baseUrl,
+          instanceId: input.meta.instanceId,
+          deviceId: input.meta.deviceId,
+        },
+      )
+    ) {
+      await saveSyncCursor("");
+    }
   } catch (error) {
     // 元数据写失败时清掉令牌，避免留下无法展示/无法解除的孤儿凭据。
     await SecureStore.deleteItemAsync(TOKEN_KEY).catch(() => undefined);
