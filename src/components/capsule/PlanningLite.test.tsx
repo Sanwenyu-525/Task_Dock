@@ -326,6 +326,21 @@ describe("PlanningLite", () => {
     expect(openFullApp).toHaveBeenCalledWith("roadmap", expect.any(Function));
   });
 
+  it("未选择项目（读取失败）时底栏「完整规划」直接切页，不携带定位意图", async () => {
+    // 项目列表读取失败 → 没有可定位的目标；底部入口必须退化为普通切页，
+    // 不能带着空/陈旧的项目 id 下发一次意图（否则完整面板会提示项目不存在）。
+    planningListProjects.mockRejectedValue(new Error("planning db unavailable"));
+
+    render(<PlanningLite />);
+
+    const button = await screen.findByRole("button", { name: /完整规划/ });
+    fireEvent.click(button);
+    expect(openFullApp).toHaveBeenCalledTimes(1);
+    // 普通切页只有一个参数；定位意图版本会是 openFullApp("roadmap", after)
+    expect(openFullApp.mock.calls[0]).toHaveLength(1);
+    expect(requestRoadmapFocus).not.toHaveBeenCalled();
+  });
+
   it("功能详情的「完整规划」按项目+功能下发定位意图（openRoadmapFocus）", async () => {
     planningListProjects.mockResolvedValue([project()]);
     planningListFeatures.mockResolvedValue([feature()]);
