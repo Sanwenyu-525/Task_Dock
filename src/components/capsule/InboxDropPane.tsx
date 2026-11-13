@@ -54,16 +54,15 @@ function shortPath(path: string): string {
   return `…\\${parts.slice(-2).join("\\")}`;
 }
 
-/** 结果条的状态标签：跳过 / 部分完成都不能被说成成功。 */
-const STATUS_LABEL: Record<string, string> = {
-  ok: "成功",
-  skipped: "跳过",
-  failed: "失败",
-  partial: "部分完成",
-};
-
 export default function InboxDropPane() {
   const { t } = useLocale();
+  /** 结果条的状态标签：跳过 / 部分完成都不能被说成成功。 */
+  const statusLabel: Record<string, string> = {
+    ok: t("capsule.inboxDrop.status.ok"),
+    skipped: t("capsule.inboxDrop.status.skipped"),
+    failed: t("capsule.inboxDrop.status.failed"),
+    partial: t("capsule.inboxDrop.status.partial"),
+  };
   const targets = useDropTargetsStore((s) => s.targets);
   const loading = useDropTargetsStore((s) => s.loading);
   const loaded = useDropTargetsStore((s) => s.loaded);
@@ -203,7 +202,11 @@ export default function InboxDropPane() {
         await useDropTargetsStore.getState().load({ force: true });
         const fresh = useDropTargetsStore.getState().targets.find((t) => t.id === targetId);
         if (!fresh || !fresh.available) {
-          if (alive.current) flash(`「${target.name}」目录不可用，未执行投递`);
+          if (alive.current) {
+            flash(
+              t("capsule.inboxDrop.targetUnavailable", { name: target.name }),
+            );
+          }
           return;
         }
       }
@@ -214,17 +217,36 @@ export default function InboxDropPane() {
         // 引用条目随即失效；复制也顺带刷新存在性。一次小切片查询，不轮询。
         void useShelfStore.getState().loadRecent({ force: true });
         setReportOpen(report.failed > 0 || report.partial > 0);
-        if (report.failed > 0 || report.partial > 0) {
-          const parts: string[] = [];
-          if (report.failed > 0) parts.push(`${report.failed} 项失败`);
-          if (report.partial > 0) parts.push(`${report.partial} 项部分完成`);
-          flash(`「${target.name}」${parts.join("、")}，详情见下方结果`);
+        if (report.failed > 0 && report.partial > 0) {
+          flash(
+            t("capsule.inboxDrop.flashFailedPartial", {
+              name: target.name,
+              failed: report.failed,
+              partial: report.partial,
+            }),
+          );
+        } else if (report.failed > 0) {
+          flash(
+            t("capsule.inboxDrop.flashFailed", {
+              name: target.name,
+              count: report.failed,
+            }),
+          );
+        } else if (report.partial > 0) {
+          flash(
+            t("capsule.inboxDrop.flashPartial", {
+              name: target.name,
+              count: report.partial,
+            }),
+          );
         }
       } catch (e) {
-        if (alive.current) flash(`投递失败：${errorMessage(e)}`);
+        if (alive.current) {
+          flash(t("capsule.inboxDrop.dropFailed", { error: errorMessage(e) }));
+        }
       }
     },
-    [drop, flash],
+    [drop, flash, t],
   );
 
   /**
@@ -352,6 +374,35 @@ export default function InboxDropPane() {
   const targetGone = lastTargetId !== null && lastTarget === null;
   // 跳过不是成功，部分完成也不是失败：三类都列出来，由用户判断是否需要处理。
   const pendingEntries = (lastReport?.entries ?? []).filter((e) => e.status !== "ok");
+  const reportSummary = lastReport
+    ? lastReport.partial > 0
+      ? lastTargetName
+        ? t("capsule.inboxDrop.resultSummaryNamedPartial", {
+            name: lastTargetName,
+            success: lastReport.success,
+            skipped: lastReport.skipped,
+            partial: lastReport.partial,
+            failed: lastReport.failed,
+          })
+        : t("capsule.inboxDrop.resultSummaryPartial", {
+            success: lastReport.success,
+            skipped: lastReport.skipped,
+            partial: lastReport.partial,
+            failed: lastReport.failed,
+          })
+      : lastTargetName
+        ? t("capsule.inboxDrop.resultSummaryNamed", {
+            name: lastTargetName,
+            success: lastReport.success,
+            skipped: lastReport.skipped,
+            failed: lastReport.failed,
+          })
+        : t("capsule.inboxDrop.resultSummary", {
+            success: lastReport.success,
+            skipped: lastReport.skipped,
+            failed: lastReport.failed,
+          })
+    : "";
 
   /**
    * 重试失败项：把失败/跳过/部分完成条目的源路径**原样重投**到同一目标
@@ -382,7 +433,7 @@ export default function InboxDropPane() {
             className="cap-mini"
             onClick={() => void load({ force: true })}
           >
-            重试
+            {t("common.retry")}
           </button>
         </div>
       )}
@@ -410,8 +461,14 @@ export default function InboxDropPane() {
           {empty && !loading && !error && targets.length === 0 && (
             <EmptyState
               icon={<FolderInput size={22} strokeWidth={1.6} aria-hidden="true" />}
-              text={loaded ? "还没有文件投递目标" : "正在读取投递目标"}
-              actionLabel={loaded ? "添加目标文件夹" : undefined}
+              text={
+                loaded
+                  ? t("capsule.inboxDrop.emptyNone")
+                  : t("capsule.inboxDrop.emptyLoading")
+              }
+              actionLabel={
+                loaded ? t("capsule.inboxDrop.addTargetFolder") : undefined
+              }
               onAction={loaded ? () => setEditing("new") : undefined}
             />
           )}
@@ -420,7 +477,7 @@ export default function InboxDropPane() {
             <div
               className={`cap-drop-grid${dragging ? " is-dragging" : ""}`}
               role="list"
-              aria-label="文件投递目标"
+              aria-label={t("capsule.inboxDrop.listAria")}
             >
               {visible.map((t, index) => (
                 <DropCard
@@ -444,7 +501,11 @@ export default function InboxDropPane() {
                   onConfirmRemove={() => {
                     setConfirmRemove(null);
                     void remove(t.id)
-                      .then(() => flash(`已移除「${t.name}」，目录与文件未改动`))
+                      .then(() =>
+                        flash(
+                          t("capsule.inboxDrop.removed", { name: t.name }),
+                        ),
+                      )
                       .catch((e) => flash(errorMessage(e)));
                   }}
                 />
@@ -460,14 +521,17 @@ export default function InboxDropPane() {
           {dragging && visible.length > 0 && (
             <p className="cap-drop-hint is-live" role="status">
               {overId
-                ? `松开鼠标即投递到「${visible.find((t) => t.id === overId)?.name ?? ""}」`
-                : "把文件拖到目标卡片上"}
+                ? t("capsule.inboxDrop.releaseTo", {
+                    name:
+                      visible.find((target) => target.id === overId)?.name ?? "",
+                  })
+                : t("capsule.inboxDrop.dragHint")}
             </p>
           )}
 
           {visible.length === 0 && targets.length > 0 && (
             <p className="cap-drop-hint">
-              有 {targets.length} 个目标未勾选「在工具面板显示」，可在完整面板里开启。
+              {t("capsule.inboxDrop.hiddenTargets", { count: targets.length })}
             </p>
           )}
 
@@ -485,12 +549,7 @@ export default function InboxDropPane() {
                 ) : (
                   <AlertTriangle size={13} strokeWidth={2.2} aria-hidden="true" />
                 )}
-                <span className="cap-drop-result-text">
-                  {lastTargetName ? `${lastTargetName}：` : ""}成功 {lastReport.success} 项 · 跳过{" "}
-                  {lastReport.skipped} 项
-                  {lastReport.partial > 0 ? ` · 部分完成 ${lastReport.partial} 项` : ""}
-                  {` · 失败 ${lastReport.failed} 项`}
-                </span>
+                <span className="cap-drop-result-text">{reportSummary}</span>
                 <ChevronDown
                   size={12}
                   strokeWidth={2.2}
@@ -504,14 +563,18 @@ export default function InboxDropPane() {
                     <li key={`${e.source}-${i}`}>
                       <span className="cap-drop-result-name" title={e.source}>
                         <span className={`cap-drop-result-tag is-${e.status}`}>
-                          {STATUS_LABEL[e.status] ?? e.status}
+                          {statusLabel[e.status] ?? e.status}
                         </span>
                         {e.display_name}
                       </span>
-                      <span className="cap-drop-result-reason">{e.reason ?? STATUS_LABEL[e.status]}</span>
+                      <span className="cap-drop-result-reason">
+                        {e.reason ?? statusLabel[e.status]}
+                      </span>
                       {e.residual_source && (
                         <span className="cap-drop-result-residual" title={e.residual_source}>
-                          可能残留：{e.residual_source}
+                          {t("capsule.inboxDrop.residual", {
+                            path: e.residual_source,
+                          })}
                         </span>
                       )}
                       {e.recovery && (
@@ -522,7 +585,7 @@ export default function InboxDropPane() {
                   {pendingEntries.length === 0 && (
                     <li>
                       <span className="cap-drop-result-reason">
-                        全部条目已完整写入目标目录。
+                        {t("capsule.inboxDrop.allWritten")}
                       </span>
                     </li>
                   )}
@@ -530,7 +593,9 @@ export default function InboxDropPane() {
               )}
               {targetGone && (
                 <p className="cap-drop-result-reason">
-                  目标入口已移除；本次结果仍保留，失败的条目请到「{lastReport.target_path}」手工核对。
+                  {t("capsule.inboxDrop.targetGone", {
+                    path: lastReport.target_path,
+                  })}
                 </p>
               )}
               <div className="cap-drop-result-actions">
@@ -565,7 +630,7 @@ export default function InboxDropPane() {
                       void openDir(lastReport.target_id).catch((e) => flash(errorMessage(e)));
                     }}
                   >
-                    打开目标文件夹
+                    {t("capsule.inboxDrop.openTargetFolder")}
                   </button>
                 ) : (
                   <span className="cap-drop-result-reason" title={lastReport.target_path}>
@@ -573,7 +638,7 @@ export default function InboxDropPane() {
                   </span>
                 )}
                 <button type="button" className="cap-link" onClick={() => clearReport(lastReport.target_id)}>
-                  收起
+                  {t("capsule.inboxDrop.collapse")}
                 </button>
               </div>
             </div>
@@ -609,7 +674,9 @@ export default function InboxDropPane() {
               disabled={formBusy}
             >
               {formBusy ? <Loader2 size={11} className="spin" aria-hidden="true" /> : null}
-              {editing === "new" ? "添加目标" : "保存"}
+              {editing === "new"
+                ? t("capsule.inboxDrop.addTarget")
+                : t("capsule.inboxDrop.save")}
             </button>
             <button
               type="button"
@@ -620,13 +687,14 @@ export default function InboxDropPane() {
                 setFormBusy(false);
               }}
             >
-              取消
+              {t("common.cancel")}
             </button>
           </>
         ) : (
           <>
             <button type="button" className="cap-mini" onClick={() => setEditing("new")}>
-              <Plus size={12} strokeWidth={2.4} aria-hidden="true" /> 添加目标
+              <Plus size={12} strokeWidth={2.4} aria-hidden="true" />{" "}
+              {t("capsule.inboxDrop.addTarget")}
             </button>
             <button
               type="button"
@@ -637,7 +705,7 @@ export default function InboxDropPane() {
                 openFullApp("shelf", () => requestManage());
               }}
             >
-              管理
+              {t("capsule.inboxDrop.manage")}
               <Folder size={12} strokeWidth={2.2} aria-hidden="true" />
             </button>
           </>
@@ -676,7 +744,11 @@ function DropCard({
   onCancelRemove: () => void;
   onConfirmRemove: () => void;
 }) {
-  const modeLabel = target.op_mode === "move" ? "移动 · 删除源文件" : "复制 · 保留源文件";
+  const { t } = useLocale();
+  const modeLabel =
+    target.op_mode === "move"
+      ? t("capsule.inboxDrop.modeMove")
+      : t("capsule.inboxDrop.modeCopy");
   return (
     <div
       className={[
@@ -695,7 +767,7 @@ function DropCard({
       <button
         type="button"
         className="cap-drop-main"
-        aria-label={`打开「${target.name}」目录`}
+        aria-label={t("capsule.inboxDrop.openTargetAria", { name: target.name })}
         data-tip={target.path}
         onClick={onOpen}
       >
@@ -714,14 +786,22 @@ function DropCard({
         {op ? (
           <span className="cap-drop-busy" role="status">
             <Loader2 size={11} className="spin" aria-hidden="true" />
-            {target.op_mode === "move" ? "正在移动" : "正在复制"} {op.total} 项
+            {target.op_mode === "move"
+              ? t("capsule.inboxDrop.busyMove", { count: op.total })
+              : t("capsule.inboxDrop.busyCopy", { count: op.total })}
           </span>
         ) : !target.available ? (
-          <span className="cap-drop-status is-bad">目录不可用</span>
+          <span className="cap-drop-status is-bad">
+            {t("capsule.inboxDrop.unavailable")}
+          </span>
         ) : (
           <span
             className={`cap-drop-status is-mode ${target.op_mode === "move" ? "is-warn" : ""}`}
-            data-tip={target.op_mode === "move" ? "投递完成后删除源文件" : "保留源文件"}
+            data-tip={
+              target.op_mode === "move"
+                ? t("capsule.inboxDrop.moveTip")
+                : t("capsule.inboxDrop.copyTip")
+            }
           >
             {modeLabel}
           </span>
@@ -732,7 +812,7 @@ function DropCard({
       {!confirming && (
         <DropdownMenu
           key={dragging ? "drag" : "idle"}
-          menuLabel={`「${target.name}」操作`}
+          menuLabel={t("capsule.inboxDrop.cardMenuAria", { name: target.name })}
           placement="bottom-end"
           menuMinWidth={132}
           trigger={({ ref, onClick, onKeyDown, expanded }) => (
@@ -740,9 +820,11 @@ function DropCard({
               ref={ref}
               type="button"
               className="cap-drop-more"
-              aria-label={`「${target.name}」更多操作`}
+              aria-label={t("capsule.inboxDrop.cardMoreAria", {
+                name: target.name,
+              })}
               aria-expanded={expanded}
-              data-tip="更多"
+              data-tip={t("capsule.inboxDrop.moreTip")}
               onClick={onClick}
               onKeyDown={onKeyDown}
             >
@@ -752,27 +834,27 @@ function DropCard({
           items={[
             {
               key: "edit",
-              label: "编辑",
+              label: t("capsule.inboxDrop.edit"),
               icon: <Pencil size={12} strokeWidth={2.2} aria-hidden="true" />,
               onSelect: onEdit,
             },
             {
               key: "up",
-              label: "上移",
+              label: t("capsule.inboxDrop.moveUp"),
               icon: <ArrowUp size={12} strokeWidth={2.2} aria-hidden="true" />,
               disabled: first,
               onSelect: () => onMove("up"),
             },
             {
               key: "down",
-              label: "下移",
+              label: t("capsule.inboxDrop.moveDown"),
               icon: <ArrowDown size={12} strokeWidth={2.2} aria-hidden="true" />,
               disabled: last,
               onSelect: () => onMove("down"),
             },
             {
               key: "remove",
-              label: "移除入口（不删文件）",
+              label: t("capsule.inboxDrop.remove"),
               icon: <Trash2 size={12} strokeWidth={2.2} aria-hidden="true" />,
               danger: true,
               onSelect: onAskRemove,
@@ -782,14 +864,20 @@ function DropCard({
       )}
 
       {confirming && (
-        <span className="cap-drop-confirm" role="group" aria-label={`移除「${target.name}」`}>
-          <span className="cap-drop-confirm-text">移除入口？目录与文件不动</span>
+        <span
+          className="cap-drop-confirm"
+          role="group"
+          aria-label={t("capsule.inboxDrop.removeAria", { name: target.name })}
+        >
+          <span className="cap-drop-confirm-text">
+            {t("capsule.inboxDrop.removeConfirm")}
+          </span>
           <span className="cap-drop-confirm-actions">
             <button type="button" className="cap-mini is-primary" onClick={onConfirmRemove}>
-              移除
+              {t("capsule.inboxDrop.removeBtn")}
             </button>
             <button type="button" className="cap-mini" onClick={onCancelRemove}>
-              取消
+              {t("common.cancel")}
             </button>
           </span>
         </span>
