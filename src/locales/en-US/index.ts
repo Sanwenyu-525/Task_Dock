@@ -2606,6 +2606,7 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.planning.openProjectAria": "Open project \"{name}\"",
   "capsule.planning.archived": "Archived",
   "capsule.planning.footPickProject": "Select a project to view features",
+  "capsule.planning.selectProject": "Select project",
   "capsule.planning.openFull": "Full planning",
   "capsule.planning.builtinSub": "Built-in roadmap · {total} items · {done} implemented",
   "capsule.planning.switchAria": "Switch planning project",

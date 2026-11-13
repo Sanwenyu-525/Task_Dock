@@ -2588,6 +2588,7 @@ export const zhCN = {
   "capsule.planning.openProjectAria": "打开项目「{name}」",
   "capsule.planning.archived": "已归档",
   "capsule.planning.footPickProject": "选择项目查看功能",
+  "capsule.planning.selectProject": "选择项目",
   "capsule.planning.openFull": "完整规划",
   "capsule.planning.builtinSub": "内置路线图 · {total} 项 · 已实现 {done}",
   "capsule.planning.switchAria": "切换规划项目",
