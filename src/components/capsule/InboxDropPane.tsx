@@ -479,31 +479,33 @@ export default function InboxDropPane() {
               role="list"
               aria-label={t("capsule.inboxDrop.listAria")}
             >
-              {visible.map((t, index) => (
+              {visible.map((target, index) => (
                 <DropCard
-                  key={t.id}
-                  target={t}
-                  over={overId === t.id}
-                  op={ops[t.id]}
+                  key={target.id}
+                  target={target}
+                  over={overId === target.id}
+                  op={ops[target.id]}
                   dragging={dragging}
                   first={index === 0}
                   last={index === visible.length - 1}
-                  confirming={confirmRemove === t.id}
+                  confirming={confirmRemove === target.id}
                   onOpen={() => {
-                    void openDir(t.id).catch((e) => flash(errorMessage(e)));
+                    void openDir(target.id).catch((e) => flash(errorMessage(e)));
                   }}
-                  onEdit={() => setEditing(t.id)}
+                  onEdit={() => setEditing(target.id)}
                   onMove={(dir) => {
-                    void move(t.id, dir).catch((e) => flash(errorMessage(e)));
+                    void move(target.id, dir).catch((e) => flash(errorMessage(e)));
                   }}
-                  onAskRemove={() => setConfirmRemove(t.id)}
+                  onAskRemove={() => setConfirmRemove(target.id)}
                   onCancelRemove={() => setConfirmRemove(null)}
                   onConfirmRemove={() => {
                     setConfirmRemove(null);
-                    void remove(t.id)
+                    void remove(target.id)
                       .then(() =>
                         flash(
-                          t("capsule.inboxDrop.removed", { name: t.name }),
+                          t("capsule.inboxDrop.removed", {
+                            name: target.name,
+                          }),
                         ),
                       )
                       .catch((e) => flash(errorMessage(e)));
