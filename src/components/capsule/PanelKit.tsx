@@ -12,6 +12,7 @@
 import type { ReactNode } from "react";
 import { X } from "lucide-react";
 import { useDragRegion } from "../../lib/dragCursorSession";
+import { useLocale } from "../../hooks/useLocale";
 import { usePanelClose } from "./panelClose";
 
 /**
@@ -38,14 +39,16 @@ import { usePanelClose } from "./panelClose";
  *   不会被当成窗口拖拽手柄。
  * - `label` 由调用方给出面板名，读屏与自动化都能区分是哪一个面板的关闭入口。
  */
-export function PanelCloseButton({ label = "关闭面板" }: { label?: string }) {
+export function PanelCloseButton({ label }: { label?: string }) {
+  const { t } = useLocale();
   const onClose = usePanelClose();
   if (!onClose) return null;
+  const resolvedLabel = label ?? t("capsule.panel.close");
   return (
     <button
       type="button"
       className="cap-close"
-      aria-label={label}
+      aria-label={resolvedLabel}
       // 标题区在面板顶边：气泡朝下才不会落在 Win32 可见区域之外被裁掉
       data-tip-placement="bottom"
       onClick={() => onClose()}
@@ -72,6 +75,7 @@ export function PanelHead({
   layout?: "stack" | "inline";
 }) {
   const headRef = useDragRegion<HTMLElement>();
+  const { t } = useLocale();
   const onClose = usePanelClose();
 
   return (
@@ -96,7 +100,7 @@ export function PanelHead({
       {actions || onClose ? (
         <div className="cap-actions">
           {actions}
-          <PanelCloseButton label={`关闭${title}面板`} />
+          <PanelCloseButton label={t("capsule.panel.closeTitle", { title })} />
         </div>
       ) : null}
     </header>
