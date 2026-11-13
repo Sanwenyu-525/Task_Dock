@@ -1154,8 +1154,9 @@ Outlook 附件、截图工具），也不得用受控 OLE 测试源的成功替�
 
 | 项 | 命令 | 退出码 | 结果 | 证据 |
 |---|---|---|---|---|
-| Rust dragdrop | `cargo test --lib dragdrop::`（`-j1`、`CARGO_PROFILE_TEST_DEBUG=0`） | 0 | **69 / 69**（含 9 受控 OLE + 3 落库） | `tmp/acceptance/universal-drag/cargo-test-dragdrop-11.log` |
+| Rust dragdrop | `cargo test --lib dragdrop::`（`-j1`、`CARGO_PROFILE_TEST_DEBUG=0`） | 0 | **69 / 69**（含 9 受控 OLE + 3 落库） | `tmp/acceptance/universal-drag/cargo-test-dragdrop-12.log` |
 | Rust 全量 lib | `cargo test --lib -j1` | 0 | **1734 passed / 0 failed / 8 ignored** | `cargo-test-lib-all-2.log` |
+| Rust 编译检查 | `cargo check -j1` | 0 | `Finished dev profile in 35.93s` | `cargo-check-final.log` |
 | 前端 UI 拖拽 | `vitest run InboxDropPane.test.tsx ShelfWorkspace.drop.test.tsx` | 0 | **113 / 113** | 会话输出 |
 | 前端库/store | `vitest run fileDrop dragPayload useShelfStore useDropTargetsStore useShelfDragOut InboxRecentShelf DropTargetManager i18n` | 0 | **135 / 135** | 会话输出 |
 | 类型检查 | `npx tsc --noEmit` | 0 | 无输出 | `tsc-4.log` |
@@ -1165,3 +1166,6 @@ Outlook 附件、截图工具），也不得用受控 OLE 测试源的成功替�
 曾出现一次 rustc `STATUS_STACK_BUFFER_OVERRUN`，重试通过（环境问题，非代码）。
 **真机**：会话锁屏（`LockApp`），Windows 原生 OLE 拖入/拖出、真实 DPI、多显示器仍为
 `ENVIRONMENT BLOCKED / UNVERIFIED`；受控 OLE 测试不能替代第三方应用真机结论。
+2026-11-13 晚补充：隔离实例（`TASK_DOCK_DATA_DIR` + `WEBVIEW2_USER_DATA_FOLDER`）可正常启动，
+日志确认 `通用拖入原生接收桥已安装 … windows=7`（顶层 + 6 个 WebView 子窗口均接管）；
+仍无物理鼠标拖拽，第三方应用/真实 DPI/多显示器结论不变。
