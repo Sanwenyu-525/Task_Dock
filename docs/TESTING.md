@@ -1014,3 +1014,60 @@ Rust：`cargo test` 覆盖新建 5/30 分钟提醒、到期只触发一次、延
 - **未验证**：真实资源管理器 OLE 拖入、真实 WebView2 窗口下的 DPI/多显示器/窄窗视觉、
   诊断中心「查看诊断」真机跳转。当前用户实例正在运行且未开启 CDP，单实例锁会终止隔离实例，
   因此本轮标记 `ENVIRONMENT BLOCKED`，复验步骤见验收报告。
+
+## 收集箱文件投递：拖入视觉状态与命中修复（2026-11-13）
+
+任务：工具面板「收集箱 → 文件」的拖入视觉升级 + 修复「鼠标已在卡片上却识别不到目标」。
+根因与实现见 [docs/shelf/README.md](shelf/README.md) §12.5 / §12.7；完整报告见
+`tmp/acceptance/file-drop-ux/report.md`（`tmp/` 不入库）。
+
+### 自动化覆盖（本轮新增/调整）
+
+| 文件 | 新增/调整 |
+|---|---|
+| `src/lib/fileDrop.test.ts` | `enter` 把换算后的坐标交给认领者；缺位置时传 `null` |
+| `src/components/capsule/InboxDropPane.test.tsx` | enter 立即命中（无 over）；目标列表晚到后按最后坐标补算；滚动时重算命中；拖拽开始两卡可投递 + 不可用目标 blocked；悬停 A/B 互斥与文案切换；不可用目标悬停不显示「松手即…」；正在投递的卡片不冒充可投递；读屏播报；拖拽期间不插入流内节点（节点同一性 + 子节点数 + SVG 之外的标签序列）；暂存行拖出前置信号 |
+| `src/components/capsule/InboxRecentShelf.test.tsx` | 接收区标签在标题行（不进入列表、列表条目不变）；拖拽中/落点在上两种文案；英文文案 |
+| `src/hooks/useShelfDragOut.test.tsx` | `onDragStart` 只在真正发起原生拖出前触发一次 |
+
+拖入事件仍走**真实的** `lib/fileDrop` 分发（只 mock Webview 订阅），不 mock 命中链路。
+
+### 测试结果（2026-11-13）
+
+| 项 | 命令 | 退出码 | 结果 | 证据 |
+|---|---|---|---|---|
+| 定向套件 | `vitest run fileDrop.test.ts + 胶囊/暂存架/hook 三个套件` | 0 | 99 / 99 | 会话输出 |
+| 全量（5 片 + 2 片分半） | `run-full-suite-final.sh` / `run-retry.sh` | 0 | **246 文件 / 3749 用例全部通过**（ac、ad 两片因 V8 OOM 崩溃后分半复跑全绿） | `tmp/acceptance/file-drop-ux/final-group-*.log`、`retry-*.log` |
+| 早期失败归因 | 隔离复跑 / 单文件复跑 | 0 | `McpAccessSection`（`singleFork` 关闭隔离致 localStorage 残留）467/467、`NavigationVisibility.integration` 18/18、`AgentPanel` 36/36 | `group-ac-isolated.log` 等 |
+| `tsc` | `npx tsc --noEmit` | 0 | 无输出 | 会话输出 |
+| 生产构建 | `npx vite build --outDir tmp/acceptance/file-drop-ux/dist --emptyOutDir` | 0 | built in 11.36s | `tmp/acceptance/file-drop-ux/build.log` |
+
+> 低内存说明：本机 16GB 且并行会话占用高，单进程跑 246 个文件会触发 V8
+> `Zone Allocation failed`；单个 `vite build` 也出现过一次原生崩溃（exit 3，重试成功）。
+> `singleFork` 会**关闭文件隔离**（跨文件共享 `localStorage`），因此做全量时优先用
+> `--poolOptions.forks.maxForks=1`（保留隔离 + 单 worker），并接受个别文件因跨文件
+> 模块状态需要单独复跑归因。
+
+### 几何 / 命中实测（通道 B，浏览器 harness）
+
+`tmp/acceptance/file-drop-ux/{harness.html,harness.tsx,tauri-stub.js,measure.mjs}`：
+加载**真实组件 + 真实 CSS**，只替换 Tauri IPC/事件通道；在 Chromium 里测量
+`getBoundingClientRect`、`document.elementFromPoint` 与 computed style。
+
+| 分片 | 结果 |
+|---|---|
+| w280 / w320 / w340 / w400（浅色，中文） | 24 / 23 / 24 / 24，全部通过 |
+| dark340（暗色）、en340（英文） | 24 / 24，全部通过 |
+| DPI 1 / 1.25 / 1.5 / 2 | 各 1 项命中检查通过（含「未换算则不命中」负向对照） |
+
+关键断言：拖拽开始/悬停/悬停接收区时卡片、接收区、标题行、列表的 `x/y/w/h` 位移 ≤1px；
+悬停文案单行不省略；接收区标签切换文案不改变标题行/列表矩形；ready 态图标叠层真的生效
+（防止把渐变 token 传给 `color-mix` 导致整条声明失效）；拖入层 `pointer-events: none`
+且不抢 `elementFromPoint`。
+
+### 未验证
+
+- Windows 原生 OLE 拖入/拖出、真实鼠标命中、真实 DPI 与多显示器：验收时会话锁屏
+  （`LockApp`），物理拖拽不可执行 → `ENVIRONMENT BLOCKED`；
+- 原生实例冒烟：隔离实例可启动、真实 WebView2 `devicePixelRatio=1.25`、页面正常渲染，
+  但未驱动到胶囊面板（需要持久化停靠相位）——不能替代拖拽验收。
