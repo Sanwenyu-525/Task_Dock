@@ -21,6 +21,7 @@ import {
   type ShelfItem,
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
+import type { MessageKey, MessageParams } from "../../i18n";
 import { shelfFileTypeUi } from "../../lib/fileTypeUi";
 import { useLocale } from "../../hooks/useLocale";
 import { useShelfDragOut } from "../../hooks/useShelfDragOut";
@@ -31,10 +32,15 @@ import { openFullApp } from "./actions";
 import { DropdownMenu } from "../ui";
 import "../shelf/shelf-ui.css";
 
-function storageLabel(item: ShelfItem): string {
-  if (item.kind === "link") return "链接";
-  if (item.kind === "text") return "文本";
-  return item.storage_mode === "managed" ? "托管副本" : "引用原文件";
+function storageLabel(
+  item: ShelfItem,
+  t: (key: MessageKey, params?: MessageParams) => string,
+): string {
+  if (item.kind === "link") return t("capsule.recentShelf.storage.link");
+  if (item.kind === "text") return t("capsule.recentShelf.storage.text");
+  return item.storage_mode === "managed"
+    ? t("capsule.recentShelf.storage.managed")
+    : t("capsule.recentShelf.storage.reference");
 }
 
 function isPhysical(item: ShelfItem): boolean {
@@ -105,7 +111,7 @@ export default function InboxRecentShelf({
     onSettled: (result: ShelfDragOutResult) => {
       if (result.effect !== "move") return;
       void loadRecent({ force: true });
-      onNotice("文件已移动；最近暂存已刷新，原路径可能已失效");
+      onNotice(t("capsule.recentShelf.moved"));
     },
     onError: onNotice,
   });
@@ -118,12 +124,14 @@ export default function InboxRecentShelf({
         return;
       }
       if (item.kind !== "link" && item.exists_state === "missing") {
-        onNotice("文件不存在，无法打开");
+        onNotice(t("capsule.recentShelf.missingOpen"));
         return;
       }
-      void shelfOpenItem(item.id).catch((e) => onNotice(`打开失败：${errorMessage(e)}`));
+      void shelfOpenItem(item.id).catch((e) =>
+        onNotice(t("capsule.recentShelf.openFailed", { error: errorMessage(e) })),
+      );
     },
-    [onNotice, requestShelfLocate],
+    [onNotice, requestShelfLocate, t],
   );
 
   const locate = useCallback(
@@ -136,27 +144,31 @@ export default function InboxRecentShelf({
   const copyFile = useCallback(
     (item: ShelfItem) => {
       if (item.exists_state === "missing") {
-        onNotice("文件不存在，无法复制");
+        onNotice(t("capsule.recentShelf.missingCopy"));
         return;
       }
       void shelfCopyFiles([item.id])
-        .then(() => onNotice("文件已复制，可在资源管理器粘贴"))
-        .catch((e) => onNotice(`复制文件失败：${errorMessage(e)}`));
+        .then(() => onNotice(t("capsule.recentShelf.copiedFiles")))
+        .catch((e) =>
+          onNotice(t("capsule.recentShelf.copyFilesFailed", { error: errorMessage(e) })),
+        );
     },
-    [onNotice],
+    [onNotice, t],
   );
 
   const copyPath = useCallback(
     (item: ShelfItem) => {
       if (item.kind !== "link" && item.kind !== "text" && item.exists_state === "missing") {
-        onNotice("文件不存在，无法复制路径");
+        onNotice(t("capsule.recentShelf.missingCopyPath"));
         return;
       }
       void shelfCopyPaths([item.id])
-        .then(() => onNotice("路径已复制"))
-        .catch((e) => onNotice(`复制路径失败：${errorMessage(e)}`));
+        .then(() => onNotice(t("capsule.recentShelf.pathCopied")))
+        .catch((e) =>
+          onNotice(t("capsule.recentShelf.copyPathFailed", { error: errorMessage(e) })),
+        );
     },
-    [onNotice],
+    [onNotice, t],
   );
 
   const copyLink = useCallback(
@@ -168,22 +180,22 @@ export default function InboxRecentShelf({
           const full = await shelfGetItem(item.id);
           url = (full.content ?? "").trim();
         } catch (e) {
-          onNotice(`链接内容读取失败：${errorMessage(e)}`);
+          onNotice(t("capsule.recentShelf.linkReadFailed", { error: errorMessage(e) }));
           return;
         }
         if (!url) {
-          onNotice("链接内容读取失败：链接为空");
+          onNotice(t("capsule.recentShelf.linkEmpty"));
           return;
         }
         try {
           await clipboardCopyText(url);
-          onNotice("链接已复制");
+          onNotice(t("capsule.recentShelf.linkCopied"));
         } catch (e) {
-          onNotice(`剪贴板写入失败：${errorMessage(e)}`);
+          onNotice(t("capsule.recentShelf.clipboardFailed", { error: errorMessage(e) }));
         }
       })();
     },
-    [onNotice],
+    [onNotice, t],
   );
 
   const copyText = useCallback(
@@ -196,27 +208,27 @@ export default function InboxRecentShelf({
           content = payload.content;
           truncated = payload.truncated;
         } catch (e) {
-          onNotice(`内容读取失败：${errorMessage(e)}`);
+          onNotice(t("capsule.recentShelf.textReadFailed", { error: errorMessage(e) }));
           return;
         }
         if (truncated) {
           // 宁可明确拒绝，也不把截断正文当完整内容复制给用户。
-          onNotice("内容过大，未能完整复制");
+          onNotice(t("capsule.recentShelf.textTruncated"));
           return;
         }
         if (!content) {
-          onNotice("内容为空，没有可复制的内容");
+          onNotice(t("capsule.recentShelf.textEmpty"));
           return;
         }
         try {
           await clipboardCopyText(content);
-          onNotice("内容已复制");
+          onNotice(t("capsule.recentShelf.textCopied"));
         } catch (e) {
-          onNotice(`剪贴板写入失败：${errorMessage(e)}`);
+          onNotice(t("capsule.recentShelf.clipboardFailed", { error: errorMessage(e) }));
         }
       })();
     },
-    [onNotice],
+    [onNotice, t],
   );
 
   const toggleFavorite = useCallback(
@@ -224,11 +236,19 @@ export default function InboxRecentShelf({
       if (favoriteBusyId) return;
       setFavoriteBusyId(item.id);
       void updateItem(item.id, { favorite: !item.favorite })
-        .then(() => onNotice(item.favorite ? "已取消收藏" : "已收藏"))
-        .catch((e) => onNotice(`更新收藏失败：${errorMessage(e)}`))
+        .then(() =>
+          onNotice(
+            item.favorite
+              ? t("capsule.recentShelf.unfavorited")
+              : t("capsule.recentShelf.favorited"),
+          ),
+        )
+        .catch((e) =>
+          onNotice(t("capsule.recentShelf.favoriteFailed", { error: errorMessage(e) })),
+        )
         .finally(() => setFavoriteBusyId(null));
     },
-    [favoriteBusyId, onNotice, updateItem],
+    [favoriteBusyId, onNotice, t, updateItem],
   );
 
   /**
@@ -249,21 +269,23 @@ export default function InboxRecentShelf({
         onNotice(shelfDeleteFeedback(result, "delete").message);
         setConfirmDelete(null);
       } catch (e) {
-        onNotice(`删除暂存项失败：${errorMessage(e)}`);
+        onNotice(t("capsule.recentShelf.deleteFailed", { error: errorMessage(e) }));
       } finally {
         setDeleteBusyId(null);
       }
     },
-    [deleteBusyId, deleteItems, onNotice],
+    [deleteBusyId, deleteItems, onNotice, t],
   );
 
   const revealItem = useCallback(
     (item: ShelfItem) => {
       void shelfRevealItem(item.id)
-        .then(() => onNotice("已在文件夹中显示"))
-        .catch((e) => onNotice(`打开所在文件夹失败：${errorMessage(e)}`));
+        .then(() => onNotice(t("capsule.recentShelf.revealed")))
+        .catch((e) =>
+          onNotice(t("capsule.recentShelf.revealFailed", { error: errorMessage(e) })),
+        );
     },
-    [onNotice],
+    [onNotice, t],
   );
 
   const addFiles = async () => {
@@ -273,7 +295,7 @@ export default function InboxRecentShelf({
       const picked = await openDialog({
         multiple: true,
         directory: false,
-        title: "选择要暂存的文件",
+        title: t("capsule.recentShelf.pickTitle"),
       });
       if (!picked) return;
       const paths = Array.isArray(picked) ? picked : [picked];
@@ -294,7 +316,7 @@ export default function InboxRecentShelf({
       // addPaths 只刷新完整列表；这里让最近切片立刻反映新增条目。
       await loadRecent({ force: true });
     } catch (e) {
-      onNotice(`暂存文件失败：${errorMessage(e)}`);
+      onNotice(t("capsule.inboxDrop.shelfAddError", { error: errorMessage(e) }));
     } finally {
       setAdding(false);
     }
@@ -313,18 +335,18 @@ export default function InboxRecentShelf({
       ]
         .filter(Boolean)
         .join(" ")}
-      aria-label="最近暂存"
+      aria-label={t("capsule.recentShelf.title")}
       data-drop-zone={dropZone ? SHELF_RECENT_DROP_ZONE : undefined}
     >
       <div className="cap-shelf-recent-head">
-        <span className="cap-shelf-recent-title">最近暂存</span>
+        <span className="cap-shelf-recent-title">{t("capsule.recentShelf.title")}</span>
         {recent.length > 0 && <span className="cap-shelf-recent-count">{recent.length}</span>}
         <span className="cap-shelf-recent-gap" />
         <button
           type="button"
           className="cap-mini is-icon"
-          aria-label="添加文件到暂存架"
-          data-tip="添加文件到暂存架"
+          aria-label={t("capsule.recentShelf.add")}
+          data-tip={t("capsule.recentShelf.add")}
           disabled={adding}
           onClick={() => void addFiles()}
         >
@@ -335,32 +357,30 @@ export default function InboxRecentShelf({
           )}
         </button>
         <button type="button" className="cap-link" onClick={() => openFullApp("shelf")}>
-          查看全部
+          {t("capsule.recentShelf.viewAll")}
         </button>
       </div>
 
       {(recentError || mutationSyncError) && recent.length === 0 ? (
         <p className="cap-shelf-recent-hint is-error" role="alert">
-          暂存架状态刷新失败
+          {t("capsule.recentShelf.refreshFailed")}
           <button type="button" className="cap-mini" onClick={retryRecent}>
-            重试同步
+            {t("capsule.recentShelf.retrySync")}
           </button>
         </p>
       ) : recentLoading && recent.length === 0 ? (
         <p className="cap-shelf-recent-hint" role="status">
-          正在读取最近暂存…
+          {t("capsule.recentShelf.loading")}
         </p>
       ) : showEmpty ? (
-        <p className="cap-shelf-recent-hint">
-          暂存架还是空的；用「+」添加文件，默认只保存引用、不复制原文件。
-        </p>
+        <p className="cap-shelf-recent-hint">{t("capsule.recentShelf.empty")}</p>
       ) : (
         <>
         {(recentError || mutationSyncError) && (
           <p className="cap-shelf-recent-hint is-error" role="alert">
-            暂存架状态刷新失败，当前列表可能未同步。
+            {t("capsule.recentShelf.refreshFailedStale")}
             <button type="button" className="cap-mini" onClick={retryRecent}>
-              重试同步
+              {t("capsule.recentShelf.retrySync")}
             </button>
           </p>
         )}
@@ -390,13 +410,17 @@ export default function InboxRecentShelf({
                   <div
                     className="cap-shelf-recent-confirm"
                     role="group"
-                    aria-label={`删除「${item.display_name}」`}
+                    aria-label={t("capsule.recentShelf.deleteAria", {
+                      name: item.display_name,
+                    })}
                   >
                     <span className="cap-shelf-recent-confirm-text">
-                      删除「{item.display_name}」？
+                      {t("capsule.recentShelf.deleteConfirmTitle", {
+                        name: item.display_name,
+                      })}
                       {protectedItem
-                        ? "已收藏/置顶/被场景引用，确认后一并删除。"
-                        : "只删暂存记录，引用的原文件不受影响。"}
+                        ? t("capsule.recentShelf.deleteConfirmProtected")
+                        : t("capsule.recentShelf.deleteConfirmDetail")}
                     </span>
                     <span className="cap-shelf-recent-confirm-actions">
                       <button
@@ -406,7 +430,7 @@ export default function InboxRecentShelf({
                         disabled={deleteBusy}
                         onClick={() => setConfirmDelete(null)}
                       >
-                        取消
+                        {t("common.cancel")}
                       </button>
                       <button
                         type="button"
@@ -417,7 +441,7 @@ export default function InboxRecentShelf({
                         {deleteBusy ? (
                           <Loader2 size={11} className="spin" aria-hidden="true" />
                         ) : null}
-                        删除
+                        {t("capsule.recentShelf.delete")}
                       </button>
                     </span>
                   </div>
@@ -426,10 +450,20 @@ export default function InboxRecentShelf({
                   <button
                     type="button"
                     className="cap-shelf-recent-main"
-                    aria-label={`${item.kind === "text" ? "查看" : "打开"}「${item.display_name}」`}
+                    aria-label={
+                      item.kind === "text"
+                        ? t("capsule.recentShelf.rowAriaView", {
+                            name: item.display_name,
+                          })
+                        : t("capsule.recentShelf.rowAriaOpen", {
+                            name: item.display_name,
+                          })
+                    }
                     data-tip={
                       draggable
-                        ? `${item.original_path ?? item.display_name} · 按住可拖出`
+                        ? t("capsule.recentShelf.dragTip", {
+                            name: item.original_path ?? item.display_name,
+                          })
                         : (item.original_path ?? item.display_name)
                     }
                     onClick={() => {
@@ -447,16 +481,18 @@ export default function InboxRecentShelf({
                       <span className="cap-shelf-recent-name">{item.display_name}</span>
                       <span className="cap-shelf-recent-sub">
                         {type.label}
-                        {showStorage ? ` · ${storageLabel(item)}` : ""}
-                        {missing ? " · 原文件不可用" : ""}
+                        {showStorage ? ` · ${storageLabel(item, t)}` : ""}
+                        {missing ? ` · ${t("capsule.recentShelf.missingMark")}` : ""}
                       </span>
                     </span>
                   </button>
                   <button
                     type="button"
                     className="cap-mini is-icon cap-shelf-recent-del"
-                    aria-label={`删除「${item.display_name}」`}
-                    data-tip="删除"
+                    aria-label={t("capsule.recentShelf.deleteAria", {
+                      name: item.display_name,
+                    })}
+                    data-tip={t("capsule.recentShelf.deleteTip")}
                     data-no-drag
                     disabled={deleteBusy}
                     onClick={(event) => {
@@ -467,16 +503,20 @@ export default function InboxRecentShelf({
                     <Trash2 size={12} strokeWidth={2.2} aria-hidden="true" />
                   </button>
                   <DropdownMenu
-                    menuLabel={`「${item.display_name}」操作`}
+                    menuLabel={t("capsule.recentShelf.menuAria", {
+                      name: item.display_name,
+                    })}
                     placement="bottom-end"
                     trigger={({ ref, onClick, onKeyDown, expanded }) => (
                       <button
                         ref={ref}
                         type="button"
                         className="cap-mini is-icon cap-shelf-recent-more"
-                        aria-label={`「${item.display_name}」更多操作`}
+                        aria-label={t("capsule.recentShelf.moreAria", {
+                          name: item.display_name,
+                        })}
                         aria-expanded={expanded}
-                        data-tip="更多"
+                        data-tip={t("capsule.recentShelf.moreTip")}
                         data-no-drag
                         onClick={onClick}
                         onKeyDown={onKeyDown}
@@ -492,10 +532,10 @@ export default function InboxRecentShelf({
                               key: "open",
                               label:
                                 item.kind === "link"
-                                  ? "打开链接"
+                                  ? t("capsule.recentShelf.openLink")
                                   : item.kind === "folder"
-                                    ? "打开目录"
-                                    : "打开",
+                                    ? t("capsule.recentShelf.openFolder")
+                                    : t("capsule.recentShelf.open"),
                               onSelect: () => openItem(item),
                             },
                           ]),
@@ -503,7 +543,7 @@ export default function InboxRecentShelf({
                         ? [
                             {
                               key: "reveal",
-                              label: "在文件夹中显示",
+                              label: t("capsule.recentShelf.reveal"),
                               onSelect: () => revealItem(item),
                             },
                           ]
@@ -512,12 +552,12 @@ export default function InboxRecentShelf({
                         ? [
                             {
                               key: "copy-file",
-                              label: "复制文件",
+                              label: t("capsule.recentShelf.copyFile"),
                               onSelect: () => copyFile(item),
                             },
                             {
                               key: "copy-path",
-                              label: "复制路径",
+                              label: t("capsule.recentShelf.copyPath"),
                               onSelect: () => copyPath(item),
                             },
                           ]
@@ -526,7 +566,7 @@ export default function InboxRecentShelf({
                         ? [
                             {
                               key: "copy-path",
-                              label: "复制路径",
+                              label: t("capsule.recentShelf.copyPath"),
                               onSelect: () => copyPath(item),
                             },
                           ]
@@ -535,7 +575,7 @@ export default function InboxRecentShelf({
                         ? [
                             {
                               key: "copy-link",
-                              label: "复制链接",
+                              label: t("capsule.recentShelf.copyLink"),
                               onSelect: () => copyLink(item),
                             },
                           ]
@@ -544,30 +584,32 @@ export default function InboxRecentShelf({
                         ? [
                             {
                               key: "view",
-                              label: "查看内容",
+                              label: t("capsule.recentShelf.viewContent"),
                               onSelect: () => openItem(item),
                             },
                             {
                               key: "copy-text",
-                              label: "复制内容",
+                              label: t("capsule.recentShelf.copyText"),
                               onSelect: () => copyText(item),
                             },
                           ]
                         : []),
                       {
                         key: "favorite",
-                        label: item.favorite ? "取消收藏" : "收藏",
+                        label: item.favorite
+                          ? t("capsule.recentShelf.unfavorite")
+                          : t("capsule.recentShelf.favorite"),
                         disabled: favoriteBusyId === item.id,
                         onSelect: () => toggleFavorite(item),
                       },
                       {
                         key: "locate",
-                        label: "在暂存架中查看",
+                        label: t("capsule.recentShelf.locate"),
                         onSelect: () => locate(item),
                       },
                       {
                         key: "delete",
-                        label: "删除",
+                        label: t("capsule.recentShelf.delete"),
                         danger: true,
                         disabled: deleteBusyId === item.id,
                         onSelect: () => setConfirmDelete(item),
