@@ -1044,7 +1044,7 @@ export default function AppsLite() {
                       乐观更新 + 失败回滚，busy 时与启动/删除互斥。 */}
                   <button
                     type="button"
-                    className={`cap-app-fav${favored ? " is-on" : ""}`}
+                    className={`cap-app-fav-toggle${favored ? " is-on" : ""}`}
                     aria-label={
                       favored
                         ? tr("capsule.apps.unfavoriteAria", { name: t.display_name })

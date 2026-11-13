@@ -19,6 +19,7 @@ const planningListMilestones = vi.fn();
 const planningUpdateStep = vi.fn();
 const onPlanningChanged = vi.fn(async (_cb: () => void) => () => {});
 const openFullApp = vi.fn();
+const requestRoadmapFocus = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   planningListProjects: (...a: unknown[]) => planningListProjects(...a),
@@ -47,6 +48,10 @@ vi.mock("../../lib/bridge", () => ({
 
 vi.mock("./actions", () => ({
   openFullApp: (...a: unknown[]) => openFullApp(...a),
+  // openRoadmapFocus = openFullApp("roadmap") + 导航成功后下发一次性定位意图。
+  // mock 记录意图参数：断言「切页」与「定位目标」两件事。
+  openRoadmapFocus: (target: { projectId: string; featureId?: string }) =>
+    openFullApp("roadmap", () => requestRoadmapFocus(target)),
 }));
 
 vi.mock("../roadmap/PlanningBits", () => ({
@@ -152,6 +157,7 @@ beforeEach(() => {
   planningUpdateStep.mockReset();
   onPlanningChanged.mockClear();
   openFullApp.mockReset();
+  requestRoadmapFocus.mockReset();
   resetStore();
 });
 
@@ -315,7 +321,62 @@ describe("PlanningLite", () => {
     render(<PlanningLite />);
     await waitFor(() => expect(screen.getByText("登录流程")).toBeTruthy());
 
+    // 已选择项目：完整规划按当前项目下发一次性定位意图（仍是同一导航事务）
     fireEvent.click(screen.getByRole("button", { name: /完整规划/ }));
-    expect(openFullApp).toHaveBeenCalledWith("roadmap");
+    expect(openFullApp).toHaveBeenCalledWith("roadmap", expect.any(Function));
+  });
+
+  it("功能详情的「完整规划」按项目+功能下发定位意图（openRoadmapFocus）", async () => {
+    planningListProjects.mockResolvedValue([project()]);
+    planningListFeatures.mockResolvedValue([feature()]);
+    planningListMilestones.mockResolvedValue([]);
+
+    render(<PlanningLite />);
+    await waitFor(() => expect(screen.getByText("登录流程")).toBeTruthy());
+
+    // 展开功能详情 → 点详情里的「完整规划」（底栏同名按钮之外，取详情内的 cap-mini）
+    fireEvent.click(screen.getByRole("button", { name: /查看「登录流程」详情/ }));
+    const detailBtn = screen
+      .getAllByRole("button", { name: "完整规划" })
+      .find((el) => el.className.includes("cap-mini"));
+    expect(detailBtn).toBeTruthy();
+    fireEvent.click(detailBtn!);
+    expect(openFullApp).toHaveBeenCalledWith("roadmap", expect.any(Function));
+    // 真实契约：定位意图绑定在导航事务上，只在导航成功后下发一次（consume-once）。
+    // mock 的 openFullApp 不会自己执行 after，这里模拟「导航成功」触发它。
+    const after = openFullApp.mock.calls
+      .filter((c) => c[0] === "roadmap" && typeof c[1] === "function")
+      .map((c) => c[1] as () => void)
+      .pop();
+    after?.();
+    expect(requestRoadmapFocus).toHaveBeenCalledTimes(1);
+    expect(requestRoadmapFocus).toHaveBeenCalledWith({ projectId: "p1", featureId: "f1" });
+  });
+
+  it("快速查找：客户端过滤已加载功能（含内置目录），不新增 IPC", async () => {
+    planningListProjects.mockResolvedValue([project()]);
+    planningListFeatures.mockResolvedValue([
+      feature(),
+      feature({ id: "f2", title: "导出报表", description: "按周导出" }),
+    ]);
+    planningListMilestones.mockResolvedValue([]);
+
+    render(<PlanningLite />);
+    await waitFor(() => expect(screen.getByText("登录流程")).toBeTruthy());
+    const callsBefore = planningListFeatures.mock.calls.length;
+
+    fireEvent.change(screen.getByLabelText("查找规划功能"), {
+      target: { value: "导出" },
+    });
+    // 250ms 防抖后过滤生效：未命中的「登录流程」从列表消失
+    await waitFor(() => expect(screen.queryByText("登录流程")).toBeNull(), { timeout: 1000 });
+    expect(screen.getByText("导出报表")).toBeTruthy();
+    // 客户端过滤：不重发功能查询
+    expect(planningListFeatures.mock.calls.length).toBe(callsBefore);
+
+    // 清空搜索恢复完整列表
+    fireEvent.change(screen.getByLabelText("查找规划功能"), { target: { value: "" } });
+    await waitFor(() => expect(screen.getByText("登录流程")).toBeTruthy(), { timeout: 1000 });
+    expect(screen.getByText("导出报表")).toBeTruthy();
   });
 });

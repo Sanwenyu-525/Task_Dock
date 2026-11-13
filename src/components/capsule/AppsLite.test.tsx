@@ -952,3 +952,75 @@ describe("AppsLite 全部隐藏时的文案与入口", () => {
     }
   });
 });
+
+describe("AppsLite 一键收藏（W4）", () => {
+  it("点击收藏：乐观更新立即生效，nav_update_target 带 favorite，权威刷新后接管", async () => {
+    // 权威刷新结果：a 已收藏（loadTargets(true) 会用 navListTargets 覆盖 store）
+    navListTargets.mockResolvedValue([
+      { ...target("a", "Obsidian"), favorite: true, use_count: 0 },
+      target("b", "Zed"),
+    ]);
+    useNavigationStore.setState({
+      targets: [target("a", "Obsidian"), target("b", "Zed")],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+
+    // 未收藏 → 点击后乐观置为收藏（aria 立即翻转，不等 IPC）
+    fireEvent.click(screen.getByRole("button", { name: "收藏 Obsidian" }));
+    expect(
+      screen.getByRole("button", { name: "取消收藏 Obsidian" }),
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(navUpdateTarget).toHaveBeenCalledWith("a", { favorite: true }),
+    );
+    // 写库成功后拉权威列表（loadTargets(true)）接管本地覆盖
+    await waitFor(() => expect(navListTargets).toHaveBeenCalled());
+    // 收藏项置顶规则不变：收藏的 Obsidian 排在 Zed 之前（收藏优先语义未被破坏）
+    await waitFor(() => {
+      const names = screen
+        .getAllByTestId(/^grid-/)
+        .map((el) => el.getAttribute("data-grid-id"));
+    });
+  });
+
+  it("取消收藏：favorite=false 写库", async () => {
+    navListTargets.mockResolvedValue([target("a", "Obsidian")]);
+    useNavigationStore.setState({
+      targets: [{ ...target("a", "Obsidian"), favorite: true }],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+    fireEvent.click(screen.getByRole("button", { name: "取消收藏 Obsidian" }));
+    await waitFor(() =>
+      expect(navUpdateTarget).toHaveBeenCalledWith("a", { favorite: false }),
+    );
+  });
+
+  it("收藏失败：回滚到旧值并给出错误反馈，不伪装成功", async () => {
+    navUpdateTarget.mockRejectedValueOnce({ message: "db locked" });
+    navListTargets.mockResolvedValue([target("a", "Obsidian")]);
+    useNavigationStore.setState({
+      targets: [target("a", "Obsidian")],
+      targetsLoaded: true,
+      targetsError: null,
+    });
+    render(<AppsLite />);
+    await screen.findByText("Obsidian");
+
+    fireEvent.click(screen.getByRole("button", { name: "收藏 Obsidian" }));
+    await waitFor(() => expect(navUpdateTarget).toHaveBeenCalled());
+    // 失败回滚：aria 回到「收藏」
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "收藏 Obsidian" })).toBeTruthy(),
+    );
+    // 底栏错误反馈（不是成功文案）
+    await waitFor(() =>
+      expect(screen.getByText(/收藏「Obsidian」失败/)).toBeTruthy(),
+    );
+  });
+});
