@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticInput } from "./diagnostics";
 
 type Handler = (event: { payload: Record<string, unknown> }) => void;
+type ListenHandler = (event: { payload: unknown }) => void;
 
 const handlers: Handler[] = [];
 const unlisten = vi.fn();
@@ -17,18 +18,32 @@ const unlisten = vi.fn();
 /** 默认订阅成功；可观测性用例临时替换为 reject，验证失败路径。 */
 let subscribeImpl: (() => Promise<() => void>) | null = null;
 
+/** 原生桥事件通道：默认「环境不支持」，富载荷用例各自注册自己的监听。 */
+let listenImpl: ((name: string, cb: ListenHandler) => Promise<() => void>) | null = null;
+const bridgeHandlers = new Map<string, ListenHandler[]>();
+
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
     onDragDropEvent: (cb: Handler) => {
       handlers.push(cb);
       return subscribeImpl ? subscribeImpl() : Promise.resolve(unlisten);
     },
+    // 真实环境里 `Webview.listen` 一定存在；这里默认 reject 模拟「桥未安装/旧版本」，
+    // 只有富载荷用例才把它变成可用通道。
+    listen: (name: string, cb: ListenHandler) =>
+      listenImpl
+        ? listenImpl(name, cb)
+        : Promise.reject(new Error("native bridge channel unavailable in this test")),
   }),
 }));
+
+const bridgeMock = vi.hoisted(() => ({ dragPayloadDiscard: vi.fn(async () => {}) }));
+vi.mock("./bridge", () => bridgeMock);
 
 import {
   __resetFileDrop,
   dropTargetAt,
+  fileDropBridgeListening,
   fileDropListening,
   registerFileDropConsumer,
   toCssPoint,
@@ -47,14 +62,38 @@ beforeEach(() => {
   handlers.length = 0;
   unlisten.mockClear();
   subscribeImpl = null;
+  listenImpl = null;
+  bridgeHandlers.clear();
+  bridgeMock.dragPayloadDiscard.mockClear();
   __resetFileDrop();
 });
 
 afterEach(() => {
   subscribeImpl = null;
+  listenImpl = null;
+  bridgeHandlers.clear();
   __resetFileDrop();
   vi.restoreAllMocks();
 });
+
+/** 打开原生桥通道：按事件名登记监听，返回退订句柄。 */
+function enableBridge(): void {
+  listenImpl = async (name, cb) => {
+    const list = bridgeHandlers.get(name) ?? [];
+    list.push(cb);
+    bridgeHandlers.set(name, list);
+    return () => {
+      bridgeHandlers.set(
+        name,
+        (bridgeHandlers.get(name) ?? []).filter((h) => h !== cb),
+      );
+    };
+  };
+}
+
+function emitBridge(name: string, payload: unknown): void {
+  for (const h of bridgeHandlers.get(name) ?? []) h({ payload });
+}
 
 describe("fileDrop 分发", () => {
   it("只在有消费者时建立一条订阅，全部注销后立即释放", async () => {
@@ -404,5 +443,250 @@ describe("监听失败可观测性", () => {
 
     diag.setDiagnosticTransport(null);
     nowSpy.mockRestore();
+  });
+});
+
+describe("原生桥通道：通用拖入（图片/链接/文本/虚拟文件）", () => {
+  /** 桥通道的 3 条监听是逐个 await 建立的：多让出几次微任务。 */
+  async function flushBridge(): Promise<void> {
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  }
+
+  const PROBE = "taskdock://drag-probe";
+  const ACCEPTED = "taskdock://drag-accepted";
+  const PAYLOAD = "taskdock://drag-payload";
+
+  it("通道可用时建立 3 条监听；没有消费者时不保留任何监听", async () => {
+    enableBridge();
+    const off = registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onDrop: () => {},
+    });
+    await flushBridge();
+    expect(fileDropBridgeListening()).toBe(true);
+    // 三种事件各一条，避免同一事件重复投递
+    expect(bridgeHandlers.get(PROBE)).toHaveLength(1);
+    expect(bridgeHandlers.get(ACCEPTED)).toHaveLength(1);
+    expect(bridgeHandlers.get(PAYLOAD)).toHaveLength(1);
+    // 主通道（本地路径）仍只有一条订阅
+    expect(handlers.length).toBe(1);
+
+    off();
+    await flushBridge();
+    expect(fileDropBridgeListening()).toBe(false);
+  });
+
+  it("环境不支持桥通道时不报错，也不影响本地路径通道", async () => {
+    // listenImpl 保持 null：listen 直接 reject（旧版本/桥未安装）
+    const drop = vi.fn();
+    const off = registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onDrop: drop,
+    });
+    await flushBridge();
+    expect(fileDropBridgeListening()).toBe(false);
+    expect(fileDropListening()).toBe(true);
+
+    emit({ type: "enter", position: { x: 10, y: 10 }, paths: [] });
+    emit({ type: "drop", position: { x: 10, y: 10 }, paths: ["C:\\a.txt"] });
+    expect(drop).toHaveBeenCalledTimes(1);
+    off();
+  });
+
+  it("enter 把探测结果与 CSS 坐标交给 onProbe，坐标按 DPR 换算", async () => {
+    const original = window.devicePixelRatio;
+    Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
+    enableBridge();
+    const enter = vi.fn();
+    const probe = vi.fn();
+    registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onEnter: enter,
+      onProbe: probe,
+      onDrop: () => {},
+    });
+    await flushBridge();
+
+    emitBridge(PROBE, {
+      phase: "enter",
+      point: { x: 100, y: 60 },
+      probe: { kind: "image", count: 1, canShelf: true, canDirectory: true, formats: ["PNG"] },
+    });
+
+    expect(enter).toHaveBeenCalledWith({ x: 50, y: 30 });
+    expect(probe).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "image", canDirectory: true }),
+      { x: 50, y: 30 },
+    );
+    Object.defineProperty(window, "devicePixelRatio", { value: original, configurable: true });
+  });
+
+  it("leave 让消费者复位：onLeave + onProbe(null)", async () => {
+    enableBridge();
+    const leave = vi.fn();
+    const probe = vi.fn();
+    registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onLeave: leave,
+      onProbe: probe,
+      onDrop: () => {},
+    });
+    await flushBridge();
+    emitBridge(PROBE, { phase: "enter", probe: { kind: "text", canShelf: true } });
+    emitBridge(PROBE, { phase: "leave" });
+    expect(leave).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenLastCalledWith(null, null);
+  });
+
+  it("松手已受理但无人认领：立刻释放后端暂存副本，不静默挂起", async () => {
+    enableBridge();
+    registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => false,
+      onDrop: () => {},
+    });
+    await flushBridge();
+
+    emitBridge(ACCEPTED, {
+      operationId: "op-1",
+      probe: { kind: "image", canShelf: true, canDirectory: true },
+    });
+    await flushBridge();
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-1");
+  });
+
+  it("accepted → payload：只投递一次，meta 带上 operationId 与失败清单", async () => {
+    enableBridge();
+    const accepted = vi.fn();
+    const payload = vi.fn();
+    registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onAccepted: accepted,
+      onPayload: payload,
+      onDrop: () => {},
+    });
+    await flushBridge();
+
+    emitBridge(PROBE, { phase: "enter", point: { x: 4, y: 4 }, probe: { kind: "image" } });
+    emitBridge(ACCEPTED, {
+      operationId: "op-2",
+      point: { x: 4, y: 4 },
+      probe: { kind: "image", canShelf: true, canDirectory: true },
+    });
+    expect(accepted).toHaveBeenCalledTimes(1);
+    // 受理阶段还没有内容：绝不能提前当成成功
+    expect(payload).not.toHaveBeenCalled();
+
+    emitBridge(PAYLOAD, {
+      operationId: "op-2",
+      point: { x: 4, y: 4 },
+      payload: { kind: "image", items: [], count: 1 },
+      failures: [{ code: "DRAG_IMAGE_DECODE_FAILED", scope: "item", reason: "解码失败" }],
+      skipped: 2,
+    });
+
+    expect(payload).toHaveBeenCalledTimes(1);
+    const [view, point, meta] = payload.mock.calls[0];
+    expect(view.kind).toBe("image");
+    expect(point).toEqual({ x: 4, y: 4 });
+    expect(meta).toMatchObject({ operationId: "op-2", skipped: 2 });
+    expect(meta.failures[0].code).toBe("DRAG_IMAGE_DECODE_FAILED");
+    expect(bridgeMock.dragPayloadDiscard).not.toHaveBeenCalled();
+  });
+
+  it("迟到载荷（operationId 不匹配）被释放，不再投递", async () => {
+    enableBridge();
+    const payload = vi.fn();
+    registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onPayload: payload,
+      onDrop: () => {},
+    });
+    await flushBridge();
+
+    emitBridge(PAYLOAD, {
+      operationId: "op-unknown",
+      payload: { kind: "text", textPreview: "hi", chars: 2 },
+      failures: [],
+      skipped: 0,
+    });
+    expect(payload).not.toHaveBeenCalled();
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-unknown");
+  });
+
+  it("消费者没实现富通道时：本地文件回落 onDrop，其它类型释放并记诊断", async () => {
+    enableBridge();
+    const drop = vi.fn();
+    registerFileDropConsumer({
+      id: "shelf",
+      priority: 10,
+      claim: () => true,
+      onDrop: drop,
+    });
+    await flushBridge();
+
+    // 真实顺序：先 probe enter 认领消费者，再 accepted，最后 payload。
+    emitBridge(PROBE, { phase: "enter", probe: { kind: "local-files", canShelf: true } });
+
+    // 本地文件：与旧通道完全一致的交付
+    emitBridge(ACCEPTED, { operationId: "op-l", probe: { kind: "local-files" } });
+    emitBridge(PAYLOAD, {
+      operationId: "op-l",
+      payload: { kind: "local-files", paths: ["C:\\a.txt"], count: 1 },
+      failures: [],
+      skipped: 0,
+    });
+    expect(drop).toHaveBeenCalledWith(["C:\\a.txt"], null);
+
+    // 网页链接：不能伪装成本地路径，也不能假装保存成功
+    emitBridge(PROBE, { phase: "enter", probe: { kind: "url" } });
+    emitBridge(ACCEPTED, { operationId: "op-u", probe: { kind: "url" } });
+    emitBridge(PAYLOAD, {
+      operationId: "op-u",
+      payload: { kind: "url", url: "https://example.com", isImage: false },
+      failures: [],
+      skipped: 0,
+    });
+    expect(drop).toHaveBeenCalledTimes(1);
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-u");
+  });
+
+  it("消费者在会话中被注销：迟到载荷释放，不投给已注销的面板", async () => {
+    enableBridge();
+    const payload = vi.fn();
+    const off = registerFileDropConsumer({
+      id: "capsule",
+      priority: 20,
+      claim: () => true,
+      onPayload: payload,
+      onDrop: () => {},
+    });
+    await flushBridge();
+
+    emitBridge(PROBE, { phase: "enter", probe: { kind: "image" } });
+    emitBridge(ACCEPTED, { operationId: "op-3", probe: { kind: "image" } });
+    off();
+    emitBridge(PAYLOAD, {
+      operationId: "op-3",
+      payload: { kind: "image", items: [], count: 1 },
+      failures: [],
+      skipped: 0,
+    });
+
+    expect(payload).not.toHaveBeenCalled();
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-3");
   });
 });

@@ -13,6 +13,7 @@ pub mod context_menu;
 pub mod db;
 pub mod devwork;
 pub mod diagnostics;
+pub mod dragdrop;
 mod drag_signal;
 mod drag_watch;
 pub mod error;
@@ -535,6 +536,15 @@ pub fn run() {
             shelf_state.apply_auto_cleanup(settings.shelf_auto_cleanup_enabled);
             handle.manage(shelf_state);
 
+            // 通用跨应用拖入（v49）：暂存区放 app data 下**独立**目录，
+            // 不放 shelf 托管目录——否则会被孤儿文件清扫逻辑误判为托管残留。
+            // 启动时扫一次上次异常退出遗留的会话目录，之后不再轮询。
+            let drag_drop_state = Arc::new(dragdrop::DragDropState::new(
+                data_dir.join("drag-incoming"),
+            ));
+            drag_drop_state.sweep();
+            handle.manage(drag_drop_state.clone());
+
             let hub = Arc::new(AgentHub::new(handle.clone(), db.clone()));
             handle.manage(hub.clone());
 
@@ -604,6 +614,36 @@ pub fn run() {
                         }));
                     }
                     Err(e) => tracing::warn!("无法获取主窗句柄，拖拽磁力未安装: {e}"),
+                }
+                // 通用跨应用拖入：接替 wry 那个**只认 CF_HDROP** 的 IDropTarget
+                //（它在 DragEnter 里读不到文件路径就直接返回 NONE，网页图片/链接/
+                // 文本/虚拟文件因此在事件层被吞掉，前端与诊断都看不到）。
+                // 必须在 WebView 创建之后安装；安装失败时**不撤销** wry 的注册，
+                // 拖入退化为「仅支持本地路径」，与改造前完全一致（fail-safe）。
+                match win.hwnd() {
+                    Ok(h) => {
+                        match dragdrop::install_native_bridge(
+                            &handle,
+                            "main",
+                            h.0 as isize,
+                            drag_drop_state.clone(),
+                        ) {
+                            Ok(windows) => tracing::info!(
+                                windows,
+                                "通用拖入原生接收桥已安装（替换 wry 的路径专用处理器）"
+                            ),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "通用拖入原生接收桥安装失败，已退化为仅支持本地文件路径: {e}"
+                                );
+                                dragdrop::report_install_failure(&e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("无法获取主窗句柄，通用拖入未安装: {e}");
+                        dragdrop::report_install_failure(&format!("无主窗句柄: {e}"));
+                    }
                 }
                 magnetic::watch_destroy(&win);
                 // 拖拽期间 `window_shape::apply` 会跳过回读与 DWM 写入（逐帧写会让
@@ -1277,6 +1317,12 @@ pub fn run() {
             commands::shelf::shelf_drop_target_move,
             commands::shelf::shelf_drop_target_open,
             commands::shelf::shelf_drop_to_directory,
+            // 通用跨应用拖入（v49）：提交 / 放弃 / 桥状态
+            commands::dragdrop::drag_bridge_status,
+            commands::dragdrop::drag_payload_commit_shelf,
+            commands::dragdrop::drag_payload_commit_directory,
+            commands::dragdrop::drag_payload_discard,
+            commands::dragdrop::drag_report_client_issue,
             // 一键工作流（v0.9）
             commands::workflows::workflow_list,
             commands::workflows::workflow_get,
@@ -1316,10 +1362,18 @@ pub fn run() {
         .run(|app_handle, event| {
             // 所有退出路径统一走异步排空：托盘、quit_app、窗口关闭/系统退出。
             // 禁止在 UI 主线程同步等待 Tokio future。
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            // `ref api`：`ExitRequestApi` 不实现 Copy，按值绑定会 move 掉 event，
+            // 后面的 `RunEvent::Exit` 分支就无法再判断（同一回调要处理多个事件）。
+            if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
                 if !EXIT_READY.load(Ordering::SeqCst) {
                     api.prevent_exit();
                     request_exit(app_handle);
+                }
+            }
+            // 进程真正退出前清空拖入暂存：不留悬空临时文件与 GIT 表项。
+            if let tauri::RunEvent::Exit = event {
+                if let Some(drag) = app_handle.try_state::<Arc<dragdrop::DragDropState>>() {
+                    drag.clear();
                 }
             }
         });

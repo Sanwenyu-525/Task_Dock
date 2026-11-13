@@ -854,7 +854,36 @@ pub fn add_managed(
     group_id: Option<&str>,
 ) -> AppResult<ShelfItem> {
     let src = require_existing_path(raw_path)?;
-    let meta = std::fs::metadata(&src)
+    let original = src.to_string_lossy().to_string();
+    add_managed_inner(db, root, &src, Some(original), None, source_kind, group_id)
+}
+
+/// 托管一份**没有真实来源路径**的独立副本（虚拟文件、拖入图片字节）。
+///
+/// 与 [`add_managed`] 共用全部配额/磁盘余量/流式复制/原子改名/缩略图逻辑，
+/// 唯一区别是 `original_path` 固定为 `None`：暂存临时路径绝不能写成原始路径，
+/// 否则来源应用退出后再按 `original_path` 去找会得到一条「失效」条目。
+pub fn add_managed_from(
+    db: &Db,
+    root: &Path,
+    src: &Path,
+    display_name: Option<&str>,
+    source_kind: &str,
+    group_id: Option<&str>,
+) -> AppResult<ShelfItem> {
+    add_managed_inner(db, root, src, None, display_name, source_kind, group_id)
+}
+
+fn add_managed_inner(
+    db: &Db,
+    root: &Path,
+    src: &Path,
+    original_path: Option<String>,
+    display_override: Option<&str>,
+    source_kind: &str,
+    group_id: Option<&str>,
+) -> AppResult<ShelfItem> {
+    let meta = std::fs::metadata(src)
         .map_err(|e| AppError::Validation(format!("无法读取文件信息: {}", e)))?;
     if meta.is_dir() {
         return Err(AppError::Validation(
@@ -894,17 +923,17 @@ pub fn add_managed(
         }
     }
 
-    let ext = ext_of(&src);
+    let ext = ext_of(src);
     let kind = if ext.as_deref().map(is_image_ext).unwrap_or(false) {
         KIND_IMAGE
     } else {
         KIND_FILE
     };
-    let display_name = validate_add_name(
-        &src.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "未命名".into()),
-    )?;
+    let raw_display = display_override
+        .map(|s| s.to_string())
+        .or_else(|| src.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "未命名".into());
+    let display_name = validate_add_name(&raw_display)?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let sub = if kind == KIND_IMAGE {
@@ -925,7 +954,7 @@ pub fn add_managed(
     let tmp = root.join(format!("{rel}.part"));
     let mut written: u64 = 0;
     let copy = (|| -> AppResult<()> {
-        let mut reader = BufReader::with_capacity(COPY_CHUNK, std::fs::File::open(&src)?);
+        let mut reader = BufReader::with_capacity(COPY_CHUNK, std::fs::File::open(src)?);
         let mut writer = BufWriter::with_capacity(COPY_CHUNK, std::fs::File::create(&tmp)?);
         let mut buf = vec![0u8; COPY_CHUNK];
         loop {
@@ -959,7 +988,7 @@ pub fn add_managed(
         display_name,
         source_kind: source_kind.into(),
         storage_mode: MODE_MANAGED.into(),
-        original_path: Some(src.to_string_lossy().to_string()),
+        original_path,
         managed_path: Some(rel),
         content: None,
         byte_size: size.min(i64::MAX as u64) as i64,

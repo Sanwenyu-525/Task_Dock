@@ -1071,3 +1071,54 @@ Rust：`cargo test` 覆盖新建 5/30 分钟提醒、到期只触发一次、延
   （`LockApp`），物理拖拽不可执行 → `ENVIRONMENT BLOCKED`；
 - 原生实例冒烟：隔离实例可启动、真实 WebView2 `devicePixelRatio=1.25`、页面正常渲染，
   但未驱动到胶囊面板（需要持久化停靠相位）——不能替代拖拽验收。
+
+## 通用跨应用拖入（2026-11-13）
+
+任务：把「外部应用拖入」从只支持真实本地文件路径，升级为统一的跨应用拖入输入系统
+（网页图片 / 链接 / 纯文本 / HTML / OLE 虚拟文件 / 截图位图），同时保留既有本地文件
+拖入、文件拖出与目录复制/移动语义。架构与契约见 [DRAG_INPUT.md](DRAG_INPUT.md)，
+任务级报告见 `tmp/acceptance/universal-drag/report.md`。
+
+## 自动化覆盖（本轮新增/调整）
+
+| 文件 | 覆盖 |
+|---|---|
+| `src-tauri/src/dragdrop/payload.rs` | 判别式视图的 `kind/count/can_*` 与「混合视图按真实条目重算」 |
+| `src-tauri/src/dragdrop/classify.rs` | 9 级优先阶梯：真实路径 > 虚拟文件 > PNG > URL/HTML > 文本 > DIB 兜底 > unsupported；空路径不算本地文件；预览 DIB 不抢真实内容 |
+| `src-tauri/src/dragdrop/names.rs` | 文件名清洗：路径穿越、保留名、非法字符、长度、`.`/`..` |
+| `src-tauri/src/dragdrop/text.rs` | HTML→文本、图片地址识别、URL 归一化、文本预览与长度上限 |
+| `src-tauri/src/dragdrop/virtual_files.rs` | `FileGroupDescriptorW` 解析（含超长/截断/超条数） |
+| `src-tauri/src/dragdrop/stage.rs` | 暂存目录、`*.part` 原子改名、失败清理、孤儿 sweep |
+| `src-tauri/src/dragdrop/windows_ole.rs` | `CF_HDROP` 宽/ANSI 解析、条数上限、截断与越界不 panic；`HTML Format` 偏移提取（含落在多字节字符中间时不 panic）；文本解码（BOM/UTF-16/非法 UTF-8 不丢内容） |
+| `src/lib/dragPayload.test.ts` | 类型标签、可投递判定（url/text/html/unsupported 一律拒绝）、预览字段防御性收敛、`DIRECTORY_REJECT_MESSAGE` 文案 |
+| `src/lib/fileDrop.test.ts` | 双通道：桥可用时 3 条监听 + 主通道 1 条；环境不支持时静默降级；`accepted` 无人认领即释放；`accepted→payload` 只投一次；迟到 payload 释放；consumer 未实现 `onPayload` 时 local-files 回落、其它类型释放；注销后释放挂起会话；空 `paths` 不判「不支持」 |
+| `src/store/useShelfStore.test.ts` | `commitDragPayload`：只传 operationId、条目并入列表/最近并刷新统计；提交失败与拖入失败合并（带错误码）；0/0 记 `DRAG_NO_READABLE_CONTENT`；会话过期抛错且不写入 |
+| `src/store/useDropTargetsStore.test.ts` | `commit(targetId, operationId)`：同目标单飞、700ms 内重复被吞、失败清在途并抛错、空 id 忽略 |
+| `src/components/capsule/InboxDropPane.test.tsx` | 既有落点/几何/读屏用例全部保留（本轮的探测只影响提示，不改变命中） |
+| `src/components/capsule/InboxRecentShelf.test.tsx` | 接收区提示文案（`dropHint` 不新增流内节点） |
+| `src/components/shelf/DropTargetManager.test.tsx` | 落点提示条：可投递 / 被拒（「此内容不能直接投递到文件夹」） |
+
+## 测试命令与结果
+
+| 项 | 命令 | 退出码 | 结果 |
+|---|---|---|---|
+| 类型检查 | `npx tsc --noEmit` | 0 | 通过 |
+| 前端构建 | `npx vite build` | 0 | `✓ built in 9.88s` |
+| 前端定向 | `vitest run`（fileDrop / dragPayload / 胶囊 / 暂存架 / 两个 store） | 0 | 全部通过（新增 38 + 4 + 4 例） |
+| 前端分块回归 | 19 批 × 6 文件（`src/{lib,store,components/capsule,components/shelf,hooks}`） | 0（19/19） | 114 文件 / 2028 用例通过 |
+| Rust 编译检查 | `cargo check` | 0 | 通过 |
+| Rust 新增单测（57 例） | `cargo test dragdrop` | 101 | **ENVIRONMENT BLOCKED**（见下） |
+
+本机 15.6GB 内存、可用仅 ~2.2GB 且页面文件不足以支撑大峰值：
+`cargo test` 在链接 `task-dock` lib 时出现 `rustc-LLVM ERROR: out of memory`，
+最终报 `页面文件太小，无法完成操作 (os error 1455)`；
+`vitest run`（247 文件并行）出现 `JavaScript heap out of memory`。
+因此 Rust 套件按 `ENVIRONMENT BLOCKED` 记录，前端改为**分块串行**执行。
+证据：`tmp/acceptance/universal-drag/cargo-test-dragdrop-{1..7}.log`、
+`vitest-chunks/chunk-01..19.log`、`vitest-full-{1,2}.log`。
+
+## 真机验收
+
+`ENVIRONMENT BLOCKED / 未验证`：本轮未执行真实 Windows 桌面拖放（Chrome/ChatGPT 网页图片、
+Outlook 附件、截图工具），也不得用受控 OLE 测试源的成功替代第三方应用兼容结论。
+详见报告 §真机验收。

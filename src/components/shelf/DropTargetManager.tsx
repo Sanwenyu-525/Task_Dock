@@ -63,6 +63,7 @@ export default function DropTargetManager({
   onDirtyChange,
   dragActive = false,
   overTargetId = null,
+  dropBlocked = false,
 }: {
   onClose: () => void;
   /** 把「有未保存表单」上报给工作区：外部定位需要先确认才能切换视图。 */
@@ -71,6 +72,8 @@ export default function DropTargetManager({
   dragActive?: boolean;
   /** 当前悬停命中的目标卡片 id：卡片用强调色内描边表达投递落点。 */
   overTargetId?: string | null;
+  /** 当前拖入内容不能变成真实文件（链接/文本/未识别）：提示条如实说明不能投递。 */
+  dropBlocked?: boolean;
 }) {
   const targets = useDropTargetsStore((s) => s.targets);
   const loading = useDropTargetsStore((s) => s.loading);
@@ -179,9 +182,11 @@ export default function DropTargetManager({
           与胶囊同一语义（命中卡片投递，空白松手暂存）。 */}
       {dragActive && targets.length > 0 && (
         <p className="shelf-targets-drop-hint is-live" role="status">
-          {overTargetId
-            ? `松开鼠标即投递到「${targets.find((t) => t.id === overTargetId)?.name ?? ""}」`
-            : "把文件拖到目标卡片上投递；空白处松手将暂存到文件暂存架"}
+          {dropBlocked
+            ? "此内容不能直接投递到文件夹；松手不会写入任何目录"
+            : overTargetId
+              ? `松开鼠标即投递到「${targets.find((t) => t.id === overTargetId)?.name ?? ""}」`
+              : "把文件拖到目标卡片上投递；空白处松手将暂存到文件暂存架"}
         </p>
       )}
 

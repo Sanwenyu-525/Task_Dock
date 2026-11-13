@@ -2319,6 +2319,19 @@ export const zhCN = {
   "capsule.inboxDrop.shelfNothingToAdd": "没有可添加的文件",
   "capsule.inboxDrop.shelfAddError": "暂存文件失败：{error}",
 
+  // ── 通用跨应用拖入：按类型给出「松手会发生什么」的提示（v49）──
+  // 只描述已识别的类型；识别不出时退回上面的默认文案，绝不编造类型。
+  "capsule.inboxDrop.hintFiles": "松开即可添加文件",
+  "capsule.inboxDrop.hintImage": "松开即可暂存图片",
+  "capsule.inboxDrop.hintLink": "松开即可保存链接",
+  "capsule.inboxDrop.hintText": "松开即可暂存文本",
+  "capsule.inboxDrop.hintVirtual": "松开即可读取并暂存附件",
+  "capsule.inboxDrop.hintMixed": "松开即可按类型分别暂存",
+  "capsule.inboxDrop.hintUnsupported": "此内容无法暂存",
+  "capsule.inboxDrop.dirBlocked": "此内容不能直接投递到文件夹",
+  "capsule.inboxDrop.dragReading": "正在读取拖入内容…",
+  "capsule.inboxDrop.dragUnsupported": "无法识别拖入内容，未暂存任何东西",
+
   // ── 胶囊工具面板共用（六面板 + PanelKit）──
   "capsule.panel.staleText": "刷新失败，显示的是上次结果",
   "capsule.panel.retryListAria": "重试读取列表",

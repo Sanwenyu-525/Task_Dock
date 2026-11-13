@@ -531,3 +531,36 @@ service / timeout / database / unknown`…）→ `ERROR`。`OperationExtras` 新
 数量严格一致。预检失败条目带 `category: "validation"`，级别仍按预期拒绝归 `WARN`。
 调用方不再预过滤路径（文件选择器路径必为绝对路径，行为不变）；胶囊「最近暂存」与完整
 暂存架拖入共用此契约。
+
+## 23. 通用跨应用拖入的诊断口径（2026-11-13）
+
+原生桥（`src-tauri/src/dragdrop/`）接管 Windows OLE 拖放后，**「没有条目入库」不再等于
+「没有发生拖入」**，因此补齐了从原生事件到落库的完整链路。约定如下（详见
+[DRAG_INPUT.md](DRAG_INPUT.md)）：
+
+- 模块固定 `dragdrop`；`operation_id` = 后端拖入会话 id（`drag-<uuid>`），事件
+  `taskdock://drag-accepted` / `drag-payload` 与前端 `drag_payload_commit_*` 共用同一个
+  id，可据此把「受理 → 读取 → 落库」串成一条链。
+- `enter`/`over`/`leave` 只做类型探测，**不写诊断**（鼠标移动不得产生事件风暴）。
+- 诊断里只允许出现：类型 kind、格式**名称**、条数、字节数、耗时、错误码。
+  禁止出现：文本/HTML 正文、完整 URL、原始图片字节、文件路径。
+
+| error_code | category | 触发条件 |
+|---|---|---|
+| `DRAG_FORMAT_UNSUPPORTED` | `unsupported` | 来源只提供了本机不处理的格式 |
+| `DRAG_NO_READABLE_CONTENT` | `unsupported` | 有拖入事件，但没有任何可读格式（`GetData` 全部失败） |
+| `DRAG_PAYLOAD_INVALID` | `validation` | 探测成功但内容为空/结构非法 |
+| `DRAG_IMAGE_DECODE_FAILED` | `unsupported` | PNG/DIB 解码失败或尺寸超限 |
+| `DRAG_VIRTUAL_FILE_READ_FAILED` | `io` | 虚拟文件流读取中断、写盘失败 |
+| `DRAG_REMOTE_FETCH_DENIED` | `permission` | 远程获取被地址/策略拒绝（预留，不做自动下载） |
+| `DRAG_REMOTE_FETCH_FAILED` | `network` | 远程获取失败（预留） |
+| `DRAG_SIZE_LIMIT_EXCEEDED` | `validation` | 单条/单批超过上限 |
+| `DRAG_PERMISSION_DENIED` | `permission` | 系统拒绝访问来源 |
+| `DRAG_TARGET_UNAVAILABLE` | `unavailable` | 目标目录不可用（缓存过期后重探仍不可用） |
+| `DRAG_NATIVE_BRIDGE_FAILED` | `unsupported` | 原生接收桥安装失败（已退化为仅本地路径） |
+| `DRAG_COMMIT_FAILED` | `io` | 落库失败 |
+| `DRAG_OPERATION_EXPIRED` | `validation` | 提交一个已被消费/过期的 `operation_id` |
+
+前端另有一条 `drag-payload-unhandled`（`module=dragdrop`，`action=dispatch`）：消费者没有
+富通道实现却收到了图片/链接/文本/虚拟文件，此时内容会被释放并记 `failed`，**不会**当作
+成功。

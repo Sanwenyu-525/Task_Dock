@@ -1699,3 +1699,22 @@ v0.5 扩展表。新增迁移表若未登记，`backup_registry_covers_every_sch
 - 兼容性：新增表 `mobile_files` 已登记本机瞬时表；无新增设置键，旧库升级只追加迁移 v45。
   详见 [docs/mobile/08-file-transfer.md](mobile/08-file-transfer.md)。
 
+## 通用跨应用拖入（dragdrop/，2026-11-13）
+
+窗口拖入不再只是「文件路径」：Windows 上由 `src-tauri/src/dragdrop/` 接管 OLE 接收
+（`IDropTarget` 装到主窗与全部子 HWND，替换 wry 那个只认 `CF_HDROP` 的处理器），
+把来源内容分类成 `local-files / virtual-files / image / url / html / text / mixed /
+unsupported`，字节与流落到 `data_dir/drag-incoming` 的暂存副本，前端只拿
+`operationId` 与有界预览；提交时复用既有 `shelf` 入库与 `fsops::drop_paths` 投递，
+**不新增第二套存储**，也不改前端 `lib/fileDrop` 的单消费者仲裁。
+
+- 事件：`taskdock://drag-probe`（enter/over/leave）、`drag-accepted`（松手受理）、
+  `drag-payload`（暂存完成），与 Tauri 内置 `tauri://drag-*` 并列；非 Windows 平台
+  自动退回内置通道（只有本地路径）。
+- 契约、类型阶梯、资源上限、目录/暂存语义与已知差异见
+  [docs/DRAG_INPUT.md](DRAG_INPUT.md)；错误码见 [docs/DIAGNOSTICS.md](DIAGNOSTICS.md) §23。
+- 兼容性：`dragDropEnabled` 保持开启（关掉会让资源管理器拖入一起失效）；
+  无新增 SQLite 迁移、无新增设置键；暂存目录只在真实 `Drop` 后创建，退出清理 +
+  启动 sweep。
+
+

@@ -21,8 +21,7 @@ export type DeliverResult =
 export async function deliverToTarget(
   targetId: string,
   paths: string[],
-): Promise<DeliverResult> {
-  const target = useDropTargetsStore
+): Promise<DeliverResult> {  const target = useDropTargetsStore
     .getState()
     .targets.find((t) => t.id === targetId);
   if (!target) {
@@ -43,6 +42,43 @@ export async function deliverToTarget(
   try {
     const report = await useDropTargetsStore.getState().drop(targetId, paths);
     // null = 在途守卫/去重窗口拦下：未投递，如实说明而不是当作成功。
+    if (!report) {
+      return {
+        kind: "blocked",
+        reason: `「${target.name}」已有投递在进行中，请等待完成后再试`,
+      };
+    }
+    return { kind: "delivered", report, targetName: target.name };
+  } catch (e) {
+    return { kind: "error", message: errorMessage(e) };
+  }
+}
+
+/**
+ * 投递一次「通用拖入」会话到目标目录（v49）。
+ *
+ * 内容（虚拟文件流 / 图片字节）已经在后端暂存区，这里只传 `operationId`；
+ * 其余兜底与 `deliverToTarget` **完全一致**：目标按 id 解析、不可用先重探一次、
+ * 在途/去重守卫拦下时如实报「未执行」，绝不伪装成功。
+ */
+export async function deliverOperationToTarget(
+  targetId: string,
+  operationId: string,
+  count: number,
+): Promise<DeliverResult> {
+  const target = useDropTargetsStore.getState().targets.find((t) => t.id === targetId);
+  if (!target) {
+    return { kind: "blocked", reason: "投递目标不存在或已被移除" };
+  }
+  if (!target.available) {
+    await useDropTargetsStore.getState().load({ force: true });
+    const fresh = useDropTargetsStore.getState().targets.find((t) => t.id === targetId);
+    if (!fresh || !fresh.available) {
+      return { kind: "blocked", reason: `「${target.name}」目录不可用，未执行投递` };
+    }
+  }
+  try {
+    const report = await useDropTargetsStore.getState().commit(targetId, operationId, count);
     if (!report) {
       return {
         kind: "blocked",

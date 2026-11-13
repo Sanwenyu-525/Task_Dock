@@ -5,6 +5,7 @@
 
 import { create } from "zustand";
 import {
+  dragPayloadCommitShelf,
   shelfAddFromClipboard,
   shelfAddLink,
   shelfAddPaths,
@@ -37,6 +38,7 @@ import {
   type ShelfUpdatePatch,
 } from "../lib/bridge";
 import { logEvent, startOperation, type DiagLevel } from "../lib/diagnostics";
+import type { DragFailure } from "../lib/dragPayload";
 
 /** 分页大小：与剪贴板面板一致的后端分页节奏。 */
 export const SHELF_PAGE_SIZE = 100;
@@ -104,6 +106,23 @@ interface ShelfState {
     mode: "reference" | "managed",
     groupId?: string | null,
   ) => Promise<{ added: number; failed: ShelfFailedEntry[] }>;
+  /**
+   * 提交一次「通用拖入」会话（v49）。
+   *
+   * 与 `addPaths` 的根本区别：内容（文本/HTML/图片/虚拟文件）已经在后端暂存区，
+   * 前端**只传 `operationId`**，不重建也不截断内容；`mode` 只影响真实本地路径。
+   */
+  commitDragPayload: (
+    operationId: string,
+    mode: "reference" | "managed",
+    groupId?: string | null,
+  ) => Promise<{
+    added: number;
+    failed: ShelfFailedEntry[];
+    failures: DragFailure[];
+    skipped: number;
+    kind: string;
+  }>;
   updateItem: (id: string, patch: ShelfUpdatePatch) => Promise<ShelfItem>;
   deleteItems: (ids: string[], includeProtected: boolean) => Promise<ShelfMutationResult>;
   clearShelf: (includeProtected: boolean) => Promise<ShelfMutationResult>;
@@ -699,6 +718,96 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
       await get().load({ silent: true });
     }
     return { added: report.added.length, failed: report.failed };
+  },
+
+  commitDragPayload: async (operationId, mode, groupId) => {
+    // 一条诊断链贯穿「松手 → 落库」：operation_id 用后端的拖入会话 id，
+    // 与 `drag-accepted` / `drag-payload` 事件串得起来（不含路径与正文）。
+    const op = startOperation("dragdrop", "drag_payload_commit_shelf", {
+      metadata: { mode, operation_id: operationId },
+    });
+    let report;
+    try {
+      op.stage("persist");
+      report = await dragPayloadCommitShelf(operationId, mode, groupId ?? null);
+    } catch (e) {
+      op.fail(e);
+      throw e;
+    }
+
+    const added = report.added.length;
+    // 两类失败合并展示：提交阶段逐条失败（failed）+ 拖入阶段就失败的条目（failures）。
+    const failures = Array.isArray(report.failures) ? report.failures : [];
+    const mergedFailed: ShelfFailedEntry[] = [
+      ...(report.failed ?? []),
+      ...failures.map((f: DragFailure) => ({
+        path: f.format ?? "拖入内容",
+        reason: f.reason,
+        code: f.code,
+        category: undefined,
+      })),
+    ];
+    const failed = mergedFailed.length;
+
+    if (added > 0) {
+      op.stage("finalize");
+      set((s) => ({
+        items: sortItems([...report.added, ...s.items]),
+        recent: [...report.added, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
+      }));
+      invalidateRecent();
+      try {
+        await get().refreshMeta();
+        await get().load({ silent: true });
+      } catch {
+        // 收尾刷新是次级故障：不写终态，添加结论已经由 added/failed 决定。
+      }
+    }
+
+    const meta = {
+      kind: report.kind,
+      added,
+      failed,
+      skipped: report.skipped,
+      mode,
+      operation_id: operationId,
+    };
+    if (failed === 0 && added > 0) {
+      op.success({ metadata: meta });
+    } else if (failed > 0) {
+      op.fail(
+        {
+          code: failures[0]?.code ?? "DRAG_COMMIT_FAILED",
+          category: failures.length > 0 ? "unsupported" : "io",
+        },
+        {
+          severity: "WARN",
+          message:
+            added > 0
+              ? `拖入内容部分暂存成功：成功 ${added}、失败 ${failed}`
+              : `拖入内容暂存失败：共 ${failed} 项未入库`,
+          metadata: meta,
+        },
+      );
+    } else {
+      // 既没 added 也没 failed：不能伪装成功（与 addPaths 同口径）。
+      op.fail(
+        { code: "DRAG_NO_READABLE_CONTENT", category: "validation" },
+        {
+          severity: "WARN",
+          message: "拖入内容未产生任何暂存条目",
+          metadata: meta,
+        },
+      );
+    }
+
+    return {
+      added,
+      failed: mergedFailed,
+      failures,
+      skipped: report.skipped,
+      kind: report.kind,
+    };
   },
 
   updateItem: async (id, patch) => {

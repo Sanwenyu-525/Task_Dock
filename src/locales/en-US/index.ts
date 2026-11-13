@@ -2337,6 +2337,17 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.inboxDrop.shelfNothingToAdd": "No files to add",
   "capsule.inboxDrop.shelfAddError": "Couldn't stage files: {error}",
 
+  // ── Universal cross-app drop: per-type "what happens on release" hints (v49) ──
+  "capsule.inboxDrop.hintFiles": "Release to add files",
+  "capsule.inboxDrop.hintImage": "Release to stage the image",
+  "capsule.inboxDrop.hintLink": "Release to save the link",
+  "capsule.inboxDrop.hintText": "Release to stage the text",
+  "capsule.inboxDrop.hintVirtual": "Release to read and stage the attachment",
+  "capsule.inboxDrop.hintMixed": "Release to stage each item by type",
+  "capsule.inboxDrop.hintUnsupported": "This content can't be staged",
+  "capsule.inboxDrop.dirBlocked": "This content can't be delivered to a folder",
+  "capsule.inboxDrop.dragReading": "Reading dropped content…",
+  "capsule.inboxDrop.dragUnsupported": "Unrecognized dropped content — nothing was staged",
   // ── Capsule tool panels shared (six panels + PanelKit) ──
   "capsule.panel.staleText": "Refresh failed — showing the previous result",
   "capsule.panel.retryListAria": "Retry loading the list",

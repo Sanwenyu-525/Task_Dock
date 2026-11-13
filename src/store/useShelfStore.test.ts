@@ -151,6 +151,15 @@ vi.mock("../lib/bridge", () => {
     shelfGroupRename: vi.fn(async () => undefined),
     shelfGroupDelete: vi.fn(async () => undefined),
     shelfUnlinkTask: vi.fn(async () => undefined),
+    // 通用拖入：只传 operationId，内容由后端暂存区读取（这里返回构造好的结果）
+    dragPayloadCommitShelf: vi.fn(async () => ({
+      operation_id: "op",
+      kind: "local-files",
+      added: [],
+      failed: [],
+      failures: [],
+      skipped: 0,
+    })),
   };
 });
 
@@ -170,6 +179,7 @@ import {
   shelfCheckExists,
   shelfDelete,
   shelfCleanup,
+  dragPayloadCommitShelf,
   type ShelfItem,
 } from "../lib/bridge";
 
@@ -923,3 +933,95 @@ describe("useShelfStore", () => {
     expect(useShelfStore.getState().cleanupBusy).toBe(false);
   });
 });
+
+describe("useShelfStore 提交拖入会话（commitDragPayload）", () => {
+  const commit = (id: string) =>
+    useShelfStore.getState().commitDragPayload(id, "reference", null);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockShelf.server = [makeItem("a")];
+    __resetShelfRecentCache();
+    useShelfStore.setState({ items: [], recent: [], recentLoaded: false, stats: null, error: null });
+  });
+
+  it("成功：只传 operationId，后端返回的条目并入列表与最近，并刷新统计", async () => {
+    const item = makeItem("img-1", { kind: "image", display_name: "拖入图片.png" });
+    (dragPayloadCommitShelf as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      operation_id: "op-1",
+      kind: "image",
+      added: [item],
+      failed: [],
+      failures: [],
+      skipped: 0,
+    });
+
+    const r = await commit("op-1");
+    // 前端不传路径、不传字节，只传会话 id 与存储模式
+    expect(dragPayloadCommitShelf).toHaveBeenCalledWith("op-1", "reference", null);
+    expect(r).toEqual({ added: 1, failed: [], failures: [], skipped: 0, kind: "image" });
+    expect(useShelfStore.getState().recent[0].id).toBe("img-1");
+    expect(shelfStats).toHaveBeenCalled();
+  });
+
+  it("部分失败：提交阶段逐条失败与拖入阶段失败合并成一份清单（带错误码）", async () => {
+    (dragPayloadCommitShelf as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      operation_id: "op-2",
+      kind: "mixed",
+      added: [makeItem("ok-1")],
+      failed: [{ path: "big.zip", reason: "超过托管上限" }],
+      failures: [
+        { code: "DRAG_SIZE_LIMIT_EXCEEDED", scope: "item", format: "PNG", reason: "图片超过 64MB" },
+      ],
+      skipped: 2,
+    });
+
+    const r = await commit("op-2");
+    expect(r.added).toBe(1);
+    expect(r.failed).toHaveLength(2);
+    expect(r.failed[1]).toMatchObject({
+      path: "PNG",
+      reason: "图片超过 64MB",
+      code: "DRAG_SIZE_LIMIT_EXCEEDED",
+    });
+    expect(r.skipped).toBe(2);
+  });
+
+  it("什么都没收下（0/0）：如实返回空结果，不伪装成功，并记 DRAG_NO_READABLE_CONTENT", async () => {
+    const events: DiagnosticInput[] = [];
+    setDiagnosticTransport(async (batch) => {
+      events.push(...batch);
+    });
+    (dragPayloadCommitShelf as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      operation_id: "op-3",
+      kind: "unsupported",
+      added: [],
+      failed: [],
+      failures: [],
+      skipped: 0,
+    });
+
+    try {
+      const r = await commit("op-3");
+      while (clientDiagnosticsStats().queued > 0) await flushDiagnostics();
+      expect(r.added).toBe(0);
+      expect(r.failed).toHaveLength(0);
+      const commitEvent = events
+        .filter((e) => e.action === "drag_payload_commit_shelf")
+        .at(-1);
+      expect(commitEvent?.status).toBe("failed");
+      expect(commitEvent?.error_code).toBe("DRAG_NO_READABLE_CONTENT");
+    } finally {
+      setDiagnosticTransport(null);
+    }
+  });
+
+  it("后端拒绝（会话过期）：抛给调用方并且不写任何条目", async () => {
+    (dragPayloadCommitShelf as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("DRAG_OPERATION_EXPIRED：op-x"),
+    );
+    await expect(commit("op-x")).rejects.toThrow("DRAG_OPERATION_EXPIRED");
+    expect(useShelfStore.getState().recent).toHaveLength(0);
+  });
+});
+

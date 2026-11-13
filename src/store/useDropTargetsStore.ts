@@ -16,6 +16,7 @@
 
 import { create } from "zustand";
 import {
+  dragPayloadCommitDirectory,
   shelfDropTargetCreate,
   shelfDropTargetDelete,
   shelfDropTargetMove,
@@ -72,6 +73,18 @@ interface DropTargetsState {
   openDir: (id: string) => Promise<void>;
   /** 投递一批路径；返回报告（被守卫拦下时返回 null） */
   drop: (targetId: string, paths: string[]) => Promise<ShelfDropReport | null>;
+  /**
+   * 提交一次「通用拖入」会话到目录卡片（v49）。
+   *
+   * 与 `drop` 的区别只有内容来源：路径/虚拟文件/图片字节已经在后端暂存区，
+   * 前端只传 `operationId`（不传字节、不传临时路径）。在途守卫、去重窗口、
+   * 结果条与诊断关联全部复用同一套状态。
+   */
+  commit: (
+    targetId: string,
+    operationId: string,
+    count?: number,
+  ) => Promise<ShelfDropReport | null>;
   clearReport: (targetId: string) => void;
   requestManage: () => void;
   consumeManage: () => void;
@@ -263,6 +276,47 @@ export const useDropTargetsStore = create<DropTargetsState>((set, get) => {
       }));
       try {
         const report = await shelfDropToDirectory(targetId, clean, crypto.randomUUID());
+        set((s) => {
+          const ops = { ...s.ops };
+          delete ops[targetId];
+          return {
+            ops,
+            reports: { ...s.reports, [targetId]: report },
+            lastTargetId: targetId,
+          };
+        });
+        return report;
+      } catch (e) {
+        set((s) => {
+          const ops = { ...s.ops };
+          delete ops[targetId];
+          return { ops, error: errorMessage(e) };
+        });
+        throw e;
+      }
+    },
+
+    commit: async (targetId, operationId, count) => {
+      if (!operationId) return null;
+      const state = get();
+      // 与 drop 完全一致的在途守卫：同一目标同时只允许一批。
+      if (state.ops[targetId]) return null;
+      const key = batchKey(targetId, [operationId]);
+      const now = Date.now();
+      if (lastSubmit && lastSubmit.key === key && now - lastSubmit.at < DUPLICATE_WINDOW_MS) {
+        return null;
+      }
+      lastSubmit = { key, at: now };
+      const targetName = state.targets.find((t) => t.id === targetId)?.name ?? "";
+      // 条数只用于「正在复制/移动 N 项」文案：拖入阶段已知数量时传真实值。
+      const total = Math.max(1, count ?? 1);
+
+      set((s) => ({
+        ops: { ...s.ops, [targetId]: { targetId, total, startedAt: now } },
+        reportNames: { ...s.reportNames, [targetId]: targetName },
+      }));
+      try {
+        const report = await dragPayloadCommitDirectory(targetId, operationId);
         set((s) => {
           const ops = { ...s.ops };
           delete ops[targetId];

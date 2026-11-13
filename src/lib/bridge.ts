@@ -3292,6 +3292,66 @@ export const shelfAddFromClipboard = (
     groupId: groupId ?? null,
   });
 
+// ── 通用跨应用拖入（v49）────────────────────────────────────
+
+/** 原生拖入桥状态：false 表示只能用 Tauri 内置的「本地路径」拖入。 */
+export const dragBridgeStatus = () =>
+  invoke<{
+    active: boolean;
+    maxItems: number;
+    maxTextBytes: number;
+    maxImageBytes: number;
+  }>("drag_bridge_status");
+
+/**
+ * 提交一次拖入会话到最近暂存。
+ *
+ * **只传 `operationId`**：后端从暂存区取内容，前端无法借这条命令指定任意路径。
+ * 文本/HTML/图片/虚拟文件都由后端自己落库，前端不参与搬运，避免截断与丢失。
+ */
+export const dragPayloadCommitShelf = (
+  operationId: string,
+  storageMode: ShelfStorageMode,
+  groupId?: string | null,
+) =>
+  invoke<{
+    operationId: string;
+    kind: string;
+    added: ShelfItem[];
+    failed: { path: string; reason: string; code?: string; category?: string }[];
+    failures: {
+      code: string;
+      scope: string;
+      format?: string;
+      reason: string;
+    }[];
+    skipped: number;
+  }>("drag_payload_commit_shelf", {
+    operationId,
+    storageMode,
+    groupId: groupId ?? null,
+  });
+
+/** 提交一次拖入会话到目录目标卡片（仅本地文件/虚拟文件/图片可投递）。 */
+export const dragPayloadCommitDirectory = (
+  operationId: string,
+  targetId: string,
+  batchId?: string | null,
+) =>
+  invoke<ShelfDropReport>("drag_payload_commit_directory", {
+    operationId,
+    targetId,
+    batchId: batchId ?? null,
+  });
+
+/** 放弃一次拖入会话：释放暂存副本（未命中落点/用户取消/消费者已卸载）。 */
+export const dragPayloadDiscard = (operationId: string) =>
+  invoke<boolean>("drag_payload_discard", { operationId });
+
+/** 前端补记一条拖入异常（只接受枚举化的码与短标签）。 */
+export const dragReportClientIssue = (code: string, stage: string) =>
+  invoke<void>("drag_report_client_issue", { code, stage });
+
 /** 单条全量读取（含 content）：列表载荷不带大文本。 */
 export const shelfGetItem = (id: string) => invoke<ShelfItem>("shelf_get_item", { id });
 

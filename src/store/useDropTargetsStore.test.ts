@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dropTargets = vi.fn();
 const dropToDirectory = vi.fn();
+const commitToDirectory = vi.fn();
 const deleteTarget = vi.fn();
 const createTarget = vi.fn();
 const updateTarget = vi.fn();
@@ -23,6 +24,7 @@ vi.mock("../lib/bridge", () => ({
   shelfDropTargetMove: (...a: unknown[]) => moveTarget(...a),
   shelfDropTargetOpen: vi.fn(),
   shelfDropToDirectory: (...a: unknown[]) => dropToDirectory(...a),
+  dragPayloadCommitDirectory: (...a: unknown[]) => commitToDirectory(...a),
   applyMode: async () => undefined,
 }));
 
@@ -323,5 +325,62 @@ describe("useDropTargetsStore 写操作与在途加载的竞态", () => {
     await p1;
     expect(useDropTargetsStore.getState().targets.map((t) => t.id)).toEqual(["forced"]);
     expect(dropTargets).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("useDropTargetsStore 提交拖入会话（commit）", () => {
+  it("只传 operationId：在途状态、结果条与最近目标都按路径通道同一套口径更新", async () => {
+    useDropTargetsStore.setState({ targets: [target()], loaded: true });
+    const pending = deferred<ReturnType<typeof report>>();
+    commitToDirectory.mockReturnValueOnce(pending.promise);
+
+    const p = useDropTargetsStore.getState().commit("t1", "op-1", 2);
+
+    // 在途：目标卡片据此显示「正在复制 2 项」，且不接受第二批
+    expect(useDropTargetsStore.getState().ops["t1"]).toMatchObject({ targetId: "t1", total: 2 });
+    expect(commitToDirectory).toHaveBeenCalledWith("t1", "op-1");
+    expect(await useDropTargetsStore.getState().commit("t1", "op-2", 1)).toBeNull();
+
+    pending.resolve(report() as never);
+    const result = await p;
+    expect(result?.success).toBe(1);
+    const state = useDropTargetsStore.getState();
+    expect(state.ops["t1"]).toBeUndefined();
+    expect(state.reports["t1"]).toMatchObject({ batch_id: "b1" });
+    expect(state.lastTargetId).toBe("t1");
+    expect(state.reportNames["t1"]).toBe("工作资料");
+  });
+
+  it("同一 operationId 在 700ms 内重复提交被吞掉（一次拖放只写一次）", async () => {
+    useDropTargetsStore.setState({ targets: [target()], loaded: true });
+    commitToDirectory.mockResolvedValue(report());
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+
+    await useDropTargetsStore.getState().commit("t1", "op-dup");
+    expect(await useDropTargetsStore.getState().commit("t1", "op-dup")).toBeNull();
+    expect(commitToDirectory).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(1_000_000 + 701);
+    await useDropTargetsStore.getState().commit("t1", "op-dup");
+    expect(commitToDirectory).toHaveBeenCalledTimes(2);
+  });
+
+  it("提交失败：清掉在途状态、如实记录错误并抛给调用方（不伪装成功）", async () => {
+    useDropTargetsStore.setState({ targets: [target()], loaded: true });
+    commitToDirectory.mockRejectedValueOnce(new Error("目录不可写"));
+
+    await expect(useDropTargetsStore.getState().commit("t1", "op-bad")).rejects.toThrow(
+      "目录不可写",
+    );
+    const state = useDropTargetsStore.getState();
+    expect(state.ops["t1"]).toBeUndefined();
+    expect(state.error).toBe("目录不可写");
+    expect(state.reports["t1"]).toBeUndefined();
+  });
+
+  it("空 operationId 直接忽略（不产生空提交）", async () => {
+    useDropTargetsStore.setState({ targets: [target()], loaded: true });
+    expect(await useDropTargetsStore.getState().commit("t1", "")).toBeNull();
+    expect(commitToDirectory).not.toHaveBeenCalled();
   });
 });

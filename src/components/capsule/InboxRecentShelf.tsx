@@ -60,6 +60,11 @@ interface InboxRecentShelfProps {
   dropActive?: boolean;
   /** 当前落点就在本接收区：强调高亮，并把提示换成「松开即加入」。 */
   dropOver?: boolean;
+  /**
+   * 悬停时的类型化提示（「松开即可暂存图片」「松开即可保存链接」…）。
+   * 只替换标题行里那一个标签的文本，不新增元素、不改行高；为空时用默认文案。
+   */
+  dropHint?: string;
   /** 是否暴露原生文件拖放标记；未接仲裁器时不暴露，避免命中一个没人处理的目标。 */
   dropZone?: boolean;
   /**
@@ -76,6 +81,7 @@ export default function InboxRecentShelf({
   dropActive = false,
   dropOver = false,
   dropZone = false,
+  dropHint,
   onDragOutStart,
   onDragOutEnd,
 }: InboxRecentShelfProps) {
@@ -360,7 +366,7 @@ export default function InboxRecentShelf({
         {dropZone && dropActive && (
           <span className="cap-shelf-recent-drop-hint" role="status">
             {dropOver
-              ? t("capsule.inboxDrop.shelfDropHintOver")
+              ? dropHint ?? t("capsule.inboxDrop.shelfDropHintOver")
               : t("capsule.inboxDrop.shelfDropHint")}
           </span>
         )}

@@ -34,7 +34,13 @@ import {
 import { formatBytes } from "../../lib/clipboardUi";
 import { errorMessage } from "../../lib/errors";
 import { isCapsuleMode } from "../../lib/edgeSnap";
-import { dropTargetAt, registerFileDropConsumer, type DropPoint } from "../../lib/fileDrop";
+import { dropTargetAt, discardOperation, registerFileDropConsumer, type DropPayloadMeta, type DropPoint } from "../../lib/fileDrop";
+import {
+  canDropToDirectory,
+  payloadCount,
+  type DragPayloadView,
+  type DragProbe,
+} from "../../lib/dragPayload";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
@@ -49,7 +55,7 @@ import ShelfToolbar from "./ShelfToolbar";
 import ShelfDetail from "./ShelfDetail";
 import ShelfFileOpPanel, { type ShelfFileOpRequest } from "./ShelfFileOpPanel";
 import DropTargetManager from "./DropTargetManager";
-import { deliverToTarget } from "./shelfDeliver";
+import { deliverToTarget, deliverOperationToTarget } from "./shelfDeliver";
 import { shelfDeleteFeedback } from "./shelfDeleteFeedback";
 import { shelfCleanupFeedback } from "./shelfCleanupFeedback";
 
@@ -510,6 +516,92 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     [showToast],
   );
 
+  /**
+   * 拖入内容的类型探测（原生桥）：只驱动提示与「能否投递到文件夹」，
+   * 松手落点仍由坐标命中决定。桥未给出探测时为 null，交互保持原样。
+   */
+  const [dropProbe, setDropProbe] = useState<DragProbe | null>(null);
+  /** 当前拖入内容不能变成真实文件（链接/文本/未识别）：目标卡片不给投递承诺。 */
+  const dropBlocked = Boolean(targetsDragging && dropProbe && !dropProbe.canDirectory);
+
+  /** 暂存一次拖入会话：内容已在后端暂存区，前端只传 operationId。 */
+  const stageOperation = useCallback(
+    (operationId: string) => {
+      useShelfStore
+        .getState()
+        .commitDragPayload(operationId, copyOnAddRef.current ? "managed" : "reference", null)
+        .then((r) => reportAdd(r, "已暂存"))
+        .catch((e) => showToast(`暂存拖入内容失败：${errorMessage(e)}`, { kind: "error" }));
+    },
+    [reportAdd, showToast],
+  );
+
+  /** 投递一次拖入会话到目标目录（虚拟文件/图片字节）：兜底与 deliverToTarget 一致。 */
+  const deliverOperation = useCallback(
+    async (targetId: string, operationId: string, count: number) => {
+      const result = await deliverOperationToTarget(targetId, operationId, count);
+      if (result.kind === "blocked") {
+        showToast(result.reason, { kind: "error" });
+        void discardOperation(operationId, "directory-blocked");
+        return;
+      }
+      if (result.kind === "error") {
+        showToast(`投递失败：${result.message}`, { kind: "error" });
+        void discardOperation(operationId, "directory-error");
+        return;
+      }
+      const { report, targetName } = result;
+      if (report.failed > 0 || report.partial > 0) {
+        const parts: string[] = [];
+        if (report.failed > 0) parts.push(`${report.failed} 项失败`);
+        if (report.partial > 0) parts.push(`${report.partial} 项部分完成`);
+        showToast(`投递到「${targetName}」：${parts.join("、")}，详情见目标卡片下方结果`, {
+          kind: "warning",
+        });
+      }
+    },
+    [showToast],
+  );
+
+  /**
+   * 通用拖入载荷路由（原生桥通道）。与路径通道同一套命中：
+   * 目标管理视图内命中卡片 → 目录投递（仅文件类）；其余情况 → 暂存架。
+   */
+  const routeDropPayload = useCallback(
+    (payload: DragPayloadView, point: DropPoint | null, meta: DropPayloadMeta) => {
+      if (targetsOpenRef.current) {
+        const targetId = point ? hitTarget(point) : null;
+        if (targetId) {
+          if (!canDropToDirectory(payload)) {
+            // 链接/文本绝不隐式写成文件，也不留下无主暂存副本。
+            showToast("此内容不能直接投递到文件夹；松手不会写入任何目录", { kind: "warning" });
+            void discardOperation(meta.operationId, "directory-kind-rejected");
+            return;
+          }
+          if (payload.kind === "local-files") {
+            void discardOperation(meta.operationId, "local-files-delegated");
+            void deliverDropped(targetId, payload.paths);
+            return;
+          }
+          void deliverOperation(targetId, meta.operationId, payloadCount(payload));
+          return;
+        }
+      }
+      if (payload.kind === "unsupported") {
+        showToast("无法识别拖入内容，未暂存任何东西", { kind: "error" });
+        void discardOperation(meta.operationId, "unsupported");
+        return;
+      }
+      if (payload.kind === "local-files") {
+        void discardOperation(meta.operationId, "local-files-delegated");
+        stageDropped(payload.paths);
+        return;
+      }
+      stageOperation(meta.operationId);
+    },
+    [deliverDropped, deliverOperation, hitTarget, showToast, stageDropped, stageOperation],
+  );
+
   const dropEnabled = active && fullViewVisible && !capsuleMode;
   useEffect(() => {
     // 胶囊模式下本页被整体隐藏（dock-app inert），极简/紧凑模式下完整面板
@@ -550,6 +642,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         setDragOver(false);
         setTargetsDragging(false);
         setOverTarget(null);
+        setDropProbe(null);
       },
       onDrop: (paths, point) => {
         const session = dropSession.current;
@@ -557,6 +650,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         setDragOver(false);
         setTargetsDragging(false);
         setOverTarget(null);
+        setDropProbe(null);
         // 一次会话只执行一个动作：重复 drop 与 leave 后的迟到 drop 不得再操作文件。
         if (!session.active || session.handled) return;
         session.handled = true;
@@ -575,8 +669,31 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         }
         stageDropped(paths);
       },
+      // 类型探测只更新提示与卡片可用形态，不参与命中。
+      onProbe: (next) => {
+        setDropProbe(next);
+      },
+      // 松手已受理、内容仍在后端读取：先复位高亮，等载荷到达再决定动作。
+      onAccepted: () => {
+        dropSession.current = { active: false, handled: true };
+        setDragOver(false);
+        setTargetsDragging(false);
+        setOverTarget(null);
+      },
+      onPayload: (payload, point, meta) => {
+        setDropProbe(null);
+        routeDropPayload(payload, point, meta);
+      },
     });
-  }, [dropEnabled, applyTargetOver, deliverDropped, hitTarget, setOverTarget, stageDropped]);
+  }, [
+    dropEnabled,
+    applyTargetOver,
+    deliverDropped,
+    hitTarget,
+    routeDropPayload,
+    setOverTarget,
+    stageDropped,
+  ]);
 
   // ── 添加动作 ──
   const pickAndAdd = async (dirs: boolean) => {
@@ -1020,6 +1137,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           onDirtyChange={setTargetsDirty}
           dragActive={targetsDragging}
           overTargetId={overTargetId}
+          dropBlocked={dropBlocked}
         />
       ) : (
         <>

@@ -779,3 +779,32 @@ status / reason? / recovery? / residual_source?`。状态取值与 `ShelfOpEntry
 **验证与未验证**：见 `tmp/acceptance/file-drop-ux/report.md`。
 浏览器 harness 只代表浏览器渲染；Windows 原生窗口下的真实 OLE 拖入、真实 DPI、
 多显示器、跨窗口拖出仍未真机验收（会话锁屏 `ENVIRONMENT BLOCKED`）。
+
+### 12.11 跨应用拖入：非路径内容接入暂存架（2026-11-13）
+
+原有实现只接收**真实本地路径**（`CF_HDROP`），网页图片、链接、选中文本、HTML、Outlook
+附件（虚拟文件）、截图位图在原生事件层就被 wry 的处理器丢弃。本轮把 Windows OLE 接收
+整体接管（`src-tauri/src/dragdrop/`），并让暂存架按**真实类型**落库。完整架构见
+[../DRAG_INPUT.md](../DRAG_INPUT.md)。
+
+暂存架侧的变化（**不新增第二套存储、不改仲裁**）：
+
+- **入口**：`useShelfStore.commitDragPayload(operationId, mode, groupId)`。前端只传
+  `operationId`；文本/HTML 正文、图片字节、虚拟文件内容全部留在后端暂存区，
+  由 `drag_payload_commit_shelf` 读取并入库。
+- **入库方式**：本地路径仍是「引用 / 托管」二选一；虚拟文件与图片字节一律走
+  `shelf::add_managed_from`（`original_path = None`，绝不把暂存临时路径伪装成原始路径）；
+  链接走 `add_link`、文本走 `add_text`（`from_html` 时来源记为 `drag-html`）。
+- **失败口径**：与 `addPaths` 相同——`added=0 && failed=0` 不假装成功；
+  失败清单 = 提交阶段逐条失败 + 拖入阶段失败（带 `DRAG_*` 错误码）。
+- **目录卡片**：链接/文本/HTML **拒绝**进入目录（不做隐式 `URL.txt`）。
+  `useDropTargetsStore.commit(targetId, operationId, count)` 复用同一套在途单飞、
+  700ms 去重、结果条与 `reportNames` 状态；内容由后端 `fsops::drop_paths` 落到真实目录。
+  「移动并删除源文件」只对真实本地路径生效，暂存副本没有源可删。
+- **交互**：探测只影响提示（「松开即可暂存图片 / 保存链接 / 暂存文本 / 添加文件」），
+  **不改变命中**；不可投递时卡片 meta 行显示「此内容不能直接投递到文件夹」，
+  行高与卡片矩形不变。
+- **验证边界**：Rust 侧暂存/分类/清洗/上限与前端分发有单测；真实 Windows 上的
+  Chrome/ChatGPT 拖入、Outlook 附件、截图工具拖出仍需真机验收，结论以
+  `tmp/acceptance/universal-drag/report.md` 为准。
+
