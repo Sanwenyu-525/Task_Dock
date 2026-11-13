@@ -23,6 +23,12 @@ export interface ShelfDragOutOptions {
   resolveIds: () => string[];
   /** link/text/missing 条目必须为 false。 */
   enabled: boolean;
+  /**
+   * 即将调用后端发起原生 OLE 拖出（左键已按住且位移超过阈值）。
+   * 用于在拖拽真正开始前给出 UI 形态：`DoDragDrop` 在 UI 线程运行期间，
+   * 原生 enter/over/drop 会被缓冲到拖拽结束，界面拿不到实时事件。
+   */
+  onDragStart?: () => void;
   onSettled?: (result: ShelfDragOutResult, ids: string[]) => void;
   onError?: (message: string) => void;
   /** 测试/诊断用：覆盖 click 抑制时长。 */
@@ -44,6 +50,7 @@ interface DragStart {
 export function useShelfDragOut({
   resolveIds,
   enabled,
+  onDragStart,
   onSettled,
   onError,
   suppressMs = CLICK_SUPPRESS_MS,
@@ -57,12 +64,14 @@ export function useShelfDragOut({
   const mountedRef = useRef(true);
   const enabledRef = useRef(enabled);
   const resolveRef = useRef(resolveIds);
+  const dragStartRef = useRef(onDragStart);
   const settledRef = useRef(onSettled);
   const errorRef = useRef(onError);
   const suppressMsRef = useRef(suppressMs);
 
   enabledRef.current = enabled;
   resolveRef.current = resolveIds;
+  dragStartRef.current = onDragStart;
   settledRef.current = onSettled;
   errorRef.current = onError;
   suppressMsRef.current = suppressMs;
@@ -157,6 +166,10 @@ export function useShelfDragOut({
           activeRef.current = false;
           draggingRef.current = false;
         }, DRAG_WATCHDOG_MS);
+
+        // 进入原生拖拽前先通知 UI：DoDragDrop 在 UI 线程运行，期间原生
+        // enter/over/drop 会被缓冲到拖拽结束，这是应用内拖出唯一的「已开始」时机。
+        dragStartRef.current?.();
 
         void shelfDragOut(ids)
           .then((result) => {

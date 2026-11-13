@@ -2328,7 +2328,9 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.inboxDrop.diagnosticsBlocked": "Couldn't open Diagnostics: the current page is still saving. Try again shortly.",
 
   // ── Inbox file drop: drop into Recent shelf (reference mode) ──
-  "capsule.inboxDrop.shelfDropHint": "Drop files here to stage them · saved as references, originals untouched",
+  "capsule.inboxDrop.shelfDropHint": "Droppable",
+  // Cursor is actually over the zone: state the release action explicitly.
+  "capsule.inboxDrop.shelfDropHintOver": "Release to add",
   "capsule.inboxDrop.shelfAdded": "Staged {added} item(s)",
   "capsule.inboxDrop.shelfPartial": "Partly staged: {added} succeeded, {failed} failed ({reason})",
   "capsule.inboxDrop.shelfFailed": "{failed} item(s) couldn't be staged: {reason}",
@@ -2675,6 +2677,9 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.inboxDrop.manage": "Manage",
   "capsule.inboxDrop.modeMove": "Move · Delete source files",
   "capsule.inboxDrop.modeCopy": "Copy · Keep source files",
+  // While hovering a target: answer only "what happens on release".
+  "capsule.inboxDrop.releaseCopy": "Release to copy",
+  "capsule.inboxDrop.releaseMove": "Release to move",
   "capsule.inboxDrop.openTargetAria": "Open the \"{name}\" folder",
   "capsule.inboxDrop.busyMove": "Moving {count} item(s)",
   "capsule.inboxDrop.busyCopy": "Copying {count} item(s)",

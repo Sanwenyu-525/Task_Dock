@@ -14,6 +14,9 @@
 //! - 坐标：Tauri 给的是**物理像素**，这里换算成 CSS 像素再做 DOM 命中，
 //!   让 100%/125%/150%/200% DPI 与多显示器共用同一套命中逻辑；
 //! - 坐标缺失（系统未给出位置）时传 `null`，由消费者决定拒绝，绝不臆造 `(0,0)`；
+//! - `enter` 也会带上坐标：Windows OLE 只在**鼠标移动**时发 `DragOver`，wry 不节流
+//!   也不补发；若用户进入窗口后立刻停住、或 `over` 早于目标卡片渲染，
+//!   只靠 `over` 驱动高亮就会一直停在「无目标」。消费者应在 `enter` 时先命中一次；
 //! - 订阅/退订本身失败时写一条去重的 WARN（不含路径），恢复后补一条 recovered；
 //!   正常拖拽过程不写持久化日志，失败后下次注册仍会重试。
 //!
@@ -39,7 +42,11 @@ export interface FileDropConsumer {
   priority: number;
   /** 是否愿意接管本次拖入；在 enter/over 时调用，必须无副作用 */
   claim: () => boolean;
-  onEnter?: () => void;
+  /**
+   * 进入窗口。`point` 是进入瞬间的坐标（null=系统未给出位置）：必须据此
+   * 立即命中一次，因为后续 `over` 只在鼠标移动时才有，静止时不会补发。
+   */
+  onEnter?: (point: DropPoint | null) => void;
   /** `point` 为 null 表示系统未给出位置，UI 必须清除高亮而不是猜一个目标 */
   onOver?: (point: DropPoint | null) => void;
   onLeave?: () => void;
@@ -104,7 +111,7 @@ function handle(payload: {
   const point: DropPoint | null = payload.position ? toCssPoint(payload.position) : null;
   if (payload.type === "enter") {
     owner = pickOwner();
-    owner?.onEnter?.();
+    owner?.onEnter?.(point);
     return;
   }
   if (payload.type === "over") {

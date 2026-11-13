@@ -82,7 +82,17 @@ export default function InboxDropPane() {
   const [overId, setOverId] = useState<string | null>(null);
   /** 落点是否在「最近暂存」接收区：与 overId 互斥，由同一套实时命中决定。 */
   const [shelfOver, setShelfOver] = useState(false);
+  /** 原生拖入会话进行中（enter 已到、leave/drop 未到）。 */
   const [dragging, setDragging] = useState(false);
+  /**
+   * 应用内拖出（最近暂存行 → 卡片）的前置信号。
+   * 该路径的 `shelf_drag_out` 在 UI 线程执行 `DoDragDrop`，tao 会把原生
+   * enter/over/drop 全部缓冲到拖拽结束后才派发——拖拽期间面板收不到任何原生
+   * 事件。没有这个前置信号，整段拖拽里界面完全静止（看起来「不能投递」）。
+   */
+  const [localDrag, setLocalDrag] = useState(false);
+  /** 拖拽进行中（原生会话或应用内拖出）：卡片/接收区的可投递形态只看这一个值。 */
+  const dragActive = dragging || localDrag;
   /** null=不在表单里；"new"=新增；其余为目标 id=编辑 */
   const [editing, setEditing] = useState<string | null>(null);
   /** 表单在途状态：底栏按钮与表单共享，避免重复提交/取消丢失。 */
@@ -93,6 +103,15 @@ export default function InboxDropPane() {
   /** 「重试失败项」在途：同一批次只允许一个重试（drop 内部还有同目标单飞兜底）。 */
   const [retryBusy, setRetryBusy] = useState(false);
   const overRef = useRef<string | null>(null);
+  /**
+   * 最后一次 enter/over 的坐标（CSS 像素）。拖拽期间目标列表晚到、卡片被
+   * 隐藏/删除、面板滚动都会让上一次命中失效，用它重算，不必等鼠标再动一次。
+   */
+  const lastPoint = useRef<DropPoint | null>(null);
+  /** 应用内拖出的兜底复位计时器（后端 OLE 循环卡死时不能让面板永久停在拖拽形态）。 */
+  const localDragTimer = useRef<number | null>(null);
+  /** 投递列表滚动容器：滚动会改变卡片位置，需要按最后一次坐标重算命中。 */
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   /**
    * 一次原生拖入会话只允许执行一次落点动作。
    * fileDrop 在 drop 后已结束会话，这里再兜一层：重复/迟到的 drop 不得
@@ -166,6 +185,7 @@ export default function InboxDropPane() {
    */
   const applyOver = useCallback(
     (point: DropPoint | null) => {
+      lastPoint.current = point;
       if (!point) {
         setOver(null);
         setShelfOver(false);
@@ -178,6 +198,22 @@ export default function InboxDropPane() {
     [hitShelfZone, hitVisible, setOver],
   );
 
+  /**
+   * 用最后一次已知坐标重算命中。
+   *
+   * 为什么需要：`over` 由 OLE 在**鼠标移动**时驱动（wry 不节流也不补发），
+   * 而 `enter` 只有一次。只要命中发生在「目标卡片还没渲染」（面板刚打开、
+   * 目标列表 IPC 晚到）或「布局刚变化」（列表更新、面板滚动）的时刻，
+   * `overId` 就会停在 null，用户看到的是「鼠标明明在卡片上，界面却一直提示
+   * 把文件拖到卡片上」，直到再动一下鼠标才恢复。这里在已知状态变化后补算一次，
+   * 不改变坐标换算、也不改变松手时按实时坐标重新命中的规则。
+   */
+  const rehit = useCallback(() => {
+    if (!dropSession.current.active) return;
+    const point = lastPoint.current;
+    if (point) applyOver(point);
+  }, [applyOver]);
+
   // 视图切换（进入表单、目标被隐藏/删除）时旧高亮立即失效：
   // 已不在列表里的卡片不能继续显示「松开即投递到…」。
   useEffect(() => {
@@ -185,12 +221,57 @@ export default function InboxDropPane() {
       setOver(null);
       setShelfOver(false);
       setDragging(false);
+      setLocalDrag(false);
       return;
     }
     if (overRef.current && !visible.some((t) => t.id === overRef.current)) {
       setOver(null);
     }
-  }, [editing, visible, setOver]);
+    // 目标列表在拖拽期间才就绪/变化：按最后一次坐标补算一次命中。
+    rehit();
+  }, [editing, visible, setOver, rehit]);
+
+  // 拖拽期间滚动投递列表会改变卡片位置：同样按最后一次坐标重算，
+  // 避免高亮停在一张已经移走的卡片上。监听只在会话期间存在，结束即释放。
+  useEffect(() => {
+    if (!dragging) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener("scroll", rehit, { passive: true });
+    return () => el.removeEventListener("scroll", rehit);
+  }, [dragging, rehit]);
+
+  /** 应用内拖出开始：原生事件被 DoDragDrop 阻塞，先用前置信号给出可投递形态。 */
+  const beginLocalDrag = useCallback(() => {
+    if (!alive.current) return;
+    setOver(null);
+    setShelfOver(false);
+    setLocalDrag(true);
+    if (localDragTimer.current !== null) window.clearTimeout(localDragTimer.current);
+    // 与 useShelfDragOut 的看门狗同量级：OLE 循环若始终不返回，界面不能永久停在拖拽态。
+    localDragTimer.current = window.setTimeout(() => {
+      localDragTimer.current = null;
+      setLocalDrag(false);
+    }, 30_000);
+  }, []);
+
+  const endLocalDrag = useCallback(() => {
+    if (localDragTimer.current !== null) {
+      window.clearTimeout(localDragTimer.current);
+      localDragTimer.current = null;
+    }
+    setLocalDrag(false);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (localDragTimer.current !== null) {
+        window.clearTimeout(localDragTimer.current);
+        localDragTimer.current = null;
+      }
+    },
+    [],
+  );
 
   const submit = useCallback(
     async (targetId: string, paths: string[]) => {
@@ -321,11 +402,12 @@ export default function InboxDropPane() {
       // 面板在即接管：即使没有可见目录卡片，「最近暂存」仍是有效接收区。
       // 是否真的执行由 over/drop 的实时命中决定，未命中一律不碰文件。
       claim: () => true,
-      onEnter: () => {
+      onEnter: (point) => {
         dropSession.current = { active: true, handled: false };
-        setOver(null);
-        setShelfOver(false);
         setDragging(true);
+        // 进入那一瞬间就按坐标命中一次：OLE 只在鼠标移动时发 over，
+        // 用户「拖进来后停在卡片上」不会有第二次机会；命中不到就保持无高亮。
+        applyOver(point);
       },
       onOver: (point) => {
         const session = dropSession.current;
@@ -335,19 +417,25 @@ export default function InboxDropPane() {
           if (session.handled) return;
           dropSession.current = { active: true, handled: false };
         }
+        // 收到 over 本身就是「拖拽正在进行」的证据：enter 被错过时也要进入可投递形态。
+        setDragging(true);
         applyOver(point);
       },
       onLeave: () => {
         dropSession.current = { active: false, handled: false };
+        lastPoint.current = null;
         setOver(null);
         setShelfOver(false);
         setDragging(false);
+        endLocalDrag();
       },
       onDrop: (paths, point) => {
         const session = dropSession.current;
+        lastPoint.current = null;
         setOver(null);
         setShelfOver(false);
         setDragging(false);
+        endLocalDrag();
         // 一次会话只执行一次：重复 drop 与 leave 后的迟到 drop 都不得再操作文件。
         if (!session.active || session.handled) return;
         session.handled = true;
@@ -364,7 +452,7 @@ export default function InboxDropPane() {
         if (hitShelfZone(point)) void addToShelf(paths);
       },
     });
-  }, [addToShelf, applyOver, hitShelfZone, hitVisible, submit]);
+  }, [addToShelf, applyOver, endLocalDrag, hitShelfZone, hitVisible, submit]);
 
   const lastReport = lastTargetId ? reports[lastTargetId] ?? null : null;
   const lastTarget = lastTargetId ? targets.find((t) => t.id === lastTargetId) ?? null : null;
@@ -422,6 +510,17 @@ export default function InboxDropPane() {
   }, [lastReport, pendingEntries, retryBusy, submit]);
 
   const empty = visible.length === 0;
+  /**
+   * 读屏播报用的落点名：只在实际可投递时给出。
+   * 指向「目录不可用 / 正在投递」的卡片却播报「会投递到这里」是在骗读屏用户。
+   */
+  const overTarget = overId
+    ? visible.find((target) => target.id === overId)
+    : undefined;
+  const liveDropName =
+    overTarget && overTarget.available && !ops[overTarget.id]
+      ? overTarget.name
+      : "";
 
   return (
     <>
@@ -438,7 +537,7 @@ export default function InboxDropPane() {
         </div>
       )}
 
-      <div className="cap-drop">
+      <div className="cap-drop" ref={scrollRef}>
       {editing !== null ? (
         <DropTargetForm
           target={editing === "new" ? null : targets.find((t) => t.id === editing) ?? null}
@@ -475,7 +574,7 @@ export default function InboxDropPane() {
 
           {visible.length > 0 && (
             <div
-              className={`cap-drop-grid${dragging ? " is-dragging" : ""}`}
+              className={`cap-drop-grid${dragActive ? " is-dragging" : ""}`}
               role="list"
               aria-label={t("capsule.inboxDrop.listAria")}
             >
@@ -485,7 +584,7 @@ export default function InboxDropPane() {
                   target={target}
                   over={overId === target.id}
                   op={ops[target.id]}
-                  dragging={dragging}
+                  dragActive={dragActive}
                   first={index === 0}
                   last={index === visible.length - 1}
                   confirming={confirmRemove === target.id}
@@ -515,21 +614,20 @@ export default function InboxDropPane() {
             </div>
           )}
 
-          {/* 拖入提示必须渲染在目标网格**之后**：从暂存架拖出的原生 OLE 拖拽
-              运行在主线程，enter/over/drop 事件要等 DoDragDrop 返回后才被处理。
-              若提示条插在网格上方，enter 触发的那次渲染会把卡片整体下移，随后
-              drop 按真实松手坐标重新命中时就会落到提示条/空白处，导致投递丢失。
-              放在网格下方只影响下方内容，卡片几何在拖拽期间保持不变。 */}
-          {dragging && visible.length > 0 && (
-            <p className="cap-drop-hint is-live" role="status">
-              {overId
-                ? t("capsule.inboxDrop.releaseTo", {
-                    name:
-                      visible.find((target) => target.id === overId)?.name ?? "",
-                  })
-                : t("capsule.inboxDrop.dragHint")}
-            </p>
-          )}
+          {/* 拖拽过程中的动态文案只放在目标自身（卡片 meta 行 / 接收区标题行标签）：
+              顶部已说明「拖文件到卡片即可投递 · N 个目标」，再插一条面板级提示
+              既与顶部重复，又会作为普通文档流元素改变下方接收区几何。
+              这也是 2026-11-10「提示条把卡片下移 32.7px 导致 drop 命中失败」
+              的同类风险点，因此不再渲染任何面板级拖入提示。 */}
+
+          {/* 拖入时唯一的读屏播报源：视觉文案分散在各卡片上，这里只播报「当前落点」
+              一次，避免多张卡的 live 区域重复播报。视觉隐藏、不占布局也不参与命中；
+              不悬停任何目标时内容为空（不播报与顶部重复的冗余信息）。 */}
+          <span className="sr-only cap-drop-live" role="status">
+            {dragActive && liveDropName
+              ? t("capsule.inboxDrop.releaseTo", { name: liveDropName })
+              : ""}
+          </span>
 
           {visible.length === 0 && targets.length > 0 && (
             <p className="cap-drop-hint">
@@ -657,8 +755,10 @@ export default function InboxDropPane() {
           <InboxRecentShelf
             onNotice={flash}
             dropZone
-            dropActive={dragging}
+            dropActive={dragActive}
             dropOver={shelfOver}
+            onDragOutStart={beginLocalDrag}
+            onDragOutEnd={endLocalDrag}
           />
         </>
       )}
@@ -721,7 +821,7 @@ function DropCard({
   target,
   over,
   op,
-  dragging,
+  dragActive,
   first,
   last,
   confirming,
@@ -735,7 +835,7 @@ function DropCard({
   target: ShelfDropTarget;
   over: boolean;
   op?: { total: number };
-  dragging: boolean;
+  dragActive: boolean;
   first: boolean;
   last: boolean;
   confirming: boolean;
@@ -751,19 +851,50 @@ function DropCard({
     target.op_mode === "move"
       ? t("capsule.inboxDrop.modeMove")
       : t("capsule.inboxDrop.modeCopy");
+  /** 投递中（正在复制/移动）与目录不可用的卡片不参与「可投递」形态。 */
+  const droppable = target.available && !op;
+  /**
+   * 拖拽期间的三态，只用这一处判定，避免「可投递」与「当前落点」互相矛盾：
+   * ready=可以接收但光标不在其上；over=松开就投递到这张卡；blocked=不可投递。
+   */
+  const dropState = !dragActive
+    ? "idle"
+    : !droppable
+      ? "blocked"
+      : over
+        ? "over"
+        : "ready";
+  // 图标换成语义更明确的「文件夹 + 向内箭头」：不靠透明度也能看出这是接收区。
+  const Icon = dragActive && target.available ? FolderInput : Folder;
+  /**
+   * 悬停时 meta 行只回答「松手会发生什么」；未悬停时保留完整模式说明
+   * （含「删除源文件」警告）。两者都是单行、同一字号，不改变卡片高度。
+   */
+  const releaseLabel =
+    dropState === "over"
+      ? target.op_mode === "move"
+        ? t("capsule.inboxDrop.releaseMove")
+        : t("capsule.inboxDrop.releaseCopy")
+      : null;
+  /** 指向一张放不进去的卡片：用警示描边说明「这里不能投」，而不是复用它 is-over 的强调样式。 */
+  const blockedOver = dragActive && over && !target.available;
   return (
     <div
       className={[
         "cap-drop-card",
-        over ? "is-over" : "",
+        dropState === "over" ? "is-over" : "",
         op ? "is-busy" : "",
         target.available ? "" : "is-off",
-        dragging && !over ? "is-idle" : "",
+        dropState === "ready" ? "is-idle" : "",
+        // 强调描边只加在**拖拽中且当前可投递**的卡片上；静止态/正在投递/不可用都不加
+        dragActive && droppable ? "is-dragging" : "",
+        blockedOver ? "is-over-blocked" : "",
         confirming ? "is-confirming" : "",
       ]
         .filter(Boolean)
         .join(" ")}
       data-drop-target={target.id}
+      data-drop-state={dropState}
       role="listitem"
     >
       <button
@@ -774,7 +905,7 @@ function DropCard({
         onClick={onOpen}
       >
         <span className="cap-drop-icon" aria-hidden="true">
-          <Folder size={15} strokeWidth={1.8} />
+          <Icon size={15} strokeWidth={1.8} />
         </span>
         <span className="cap-drop-name" title={target.name}>
           {target.name}
@@ -796,6 +927,17 @@ function DropCard({
           <span className="cap-drop-status is-bad">
             {t("capsule.inboxDrop.unavailable")}
           </span>
+        ) : releaseLabel ? (
+          <span
+            className="cap-drop-status is-release"
+            data-tip={
+              target.op_mode === "move"
+                ? t("capsule.inboxDrop.moveTip")
+                : t("capsule.inboxDrop.copyTip")
+            }
+          >
+            {releaseLabel}
+          </span>
         ) : (
           <span
             className={`cap-drop-status is-mode ${target.op_mode === "move" ? "is-warn" : ""}`}
@@ -813,7 +955,7 @@ function DropCard({
       {/* 菜单在拖入开始时重置：展开的弹层不能挡住落点命中 */}
       {!confirming && (
         <DropdownMenu
-          key={dragging ? "drag" : "idle"}
+          key={dragActive ? "drag" : "idle"}
           menuLabel={t("capsule.inboxDrop.cardMenuAria", { name: target.name })}
           placement="bottom-end"
           menuMinWidth={132}

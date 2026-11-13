@@ -12328,14 +12328,45 @@ html[data-theme="dark"] .resource-page {
   transition: background 0.14s ease, box-shadow 0.14s ease, opacity 0.14s ease;
 }
 .cap-drop-card:hover { background: var(--cap-card-face-hover); }
-/* 拖入中：未命中的卡片轻微退后，命中的那张用强调色内描边表达落点 */
-.cap-drop-card.is-idle { opacity: 0.78; }
+/* 拖入中：**不能只用透明度**表达「这里可以放」。未命中的卡片补一圈 1px
+   强调内描边（inset box-shadow 不改变尺寸、不改变命中区域），透明度收在 0.86，
+   保证它仍清晰可读，只是不与当前落点争夺注意力。 */
+.cap-drop-card.is-dragging {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent),
+    var(--cap-card-shadow);
+}
+.cap-drop-card.is-idle { opacity: 0.86; }
+/* `--cap-tile-face` 是渐变（<image>），**不能**直接传给 color-mix（整条声明会在
+   computed-value 阶段失效，图标底色变透明）。用一层半透明强调色叠在原有渐变之上
+   表达「可接收」的底色微调，两个主题都成立。 */
+.cap-drop-card.is-idle .cap-drop-icon {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--accent) 12%, transparent),
+      color-mix(in srgb, var(--accent) 12%, transparent)
+    ),
+    var(--cap-tile-face);
+}
+/* 当前落点：整张卡片成为唯一焦点（强调底色 + 1.5px 内描边）。
+   不加发光、不加缩放——面板本身已是一块玻璃，再叠光会糊成一片。 */
 .cap-drop-card.is-over {
   background: var(--cap-accent-soft);
   box-shadow:
     inset 0 0 0 1.5px var(--accent),
     var(--cap-card-shadow);
   opacity: 1;
+}
+/* 不可投递的卡片不进入「可投递」形态：不使用 is-dragging（强调描边只加在可投递卡上），
+   保留红字徽标与低透明度。 */
+/* 光标停在一张**不可投递**的卡片上：不能显示成「松手就会投递到这里」，
+   改用警示色描边，配合卡片内的「目录不可用」文字说明为什么放不进去。 */
+.cap-drop-card.is-over-blocked {
+  background: color-mix(in srgb, var(--status-waiting) 8%, transparent);
+  box-shadow:
+    inset 0 0 0 1.5px var(--status-waiting),
+    var(--cap-card-shadow);
+  opacity: 0.86;
 }
 /* 不可用靠文字徽标表达，不只用透明度；菜单展开/确认时保持原位置不跳动 */
 .cap-drop-card.is-off { opacity: 0.72; }
@@ -12397,13 +12428,25 @@ html[data-theme="dark"] .resource-page {
   padding-left: 25px;
 }
 .cap-drop-status {
+  /* 单行省略：英文模式文案（"Move · Delete source files"）在 340/320 宽的卡片里
+     本来就会折成两行，而悬停文案更短——一旦折行，切换文案就会改变卡片高度，
+     进而推动下方接收区（实测英文 340 宽会位移 13.53px）。固定单行后，
+     所有 meta 状态高度一致；完整说明仍在 data-tip 与目标表单里。 */
+  min-width: 0;
   font-size: 9.5px;
   font-weight: 600;
   color: var(--cap-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cap-drop-status.is-mode { font-weight: 550; color: var(--cap-text-2); }
 .cap-drop-status.is-warn { color: var(--status-waiting); }
 .cap-drop-status.is-bad { color: var(--status-error); }
+/* 悬停当前目标时只回答「松手会发生什么」：单行同字号，不改变卡片高度 */
+.cap-drop-status.is-release { font-weight: 700; color: var(--accent); }
+/* 拖入播报区（.sr-only 已裁成 1px）：绝不参与落点命中 */
+.cap-drop-live { pointer-events: none; }
 .cap-drop-busy {
   display: inline-flex;
   align-items: center;
@@ -12477,11 +12520,18 @@ html[data-theme="dark"] .resource-page {
   min-height: 22px;
 }
 .cap-shelf-recent-title {
+  flex: 0 0 auto;
   font-size: 10.5px;
   font-weight: 650;
+  white-space: nowrap;
   color: var(--cap-text-2);
 }
-.cap-shelf-recent-count { font-size: 9.5px; color: var(--cap-text-3); }
+.cap-shelf-recent-count {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  white-space: nowrap;
+  color: var(--cap-text-3);
+}
 .cap-shelf-recent-gap { flex: 1 1 auto; min-width: 0; }
 .cap-shelf-recent-head .cap-mini.is-icon { width: 22px; height: 22px; }
 .cap-shelf-recent-list {
@@ -12613,30 +12663,34 @@ html[data-theme="dark"] .resource-page {
 
 /* 原生文件拖入「最近暂存」：整个拖拽会话有轻提示，光标落在接收区时加强。
    高亮只用内描边 + 极淡底色（与投递卡片同一套材质语言），不改变列表几何；
-   提示浮层绝对定位且 pointer-events: none，既不挤占列表，也不参与落点命中。 */
+   状态标签固定在标题行内、`pointer-events: none`，既不挤占列表，也不参与落点命中。 */
 .cap-shelf-recent.is-drop-active {
   border-radius: 12px;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 20%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .cap-shelf-recent.is-drop-over {
   background: var(--cap-accent-soft);
   box-shadow: inset 0 0 0 1.5px var(--accent);
 }
+/* 拖入提示做成标题行内的状态标签：
+   - 标题行高度由 22px 的按钮决定，标签只占行内空间，不改变接收区/列表几何；
+   - 不再用列表底部的绝对定位浮层——那会遮住最后一条的打开/删除入口，
+     拖拽期间反而看不清列表。
+   文案在会话期间说明「可以暂存」，光标落到接收区时改成「松开即加入」。 */
 .cap-shelf-recent-drop-hint {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  margin: 0;
-  padding: 4px 8px;
-  border-radius: 9px;
-  background: var(--cap-card-face-hover);
-  box-shadow: var(--cap-card-shadow);
-  color: var(--cap-text-2);
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--cap-accent-soft);
+  color: var(--accent);
   font-size: 9.5px;
+  font-weight: 600;
   line-height: 1.35;
-  text-align: center;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
 }
 
@@ -12848,17 +12902,6 @@ html[data-theme="dark"] .resource-page {
   line-height: 1.4;
   color: var(--cap-text-3);
   overflow-wrap: anywhere;
-}
-/* 拖入中：提示条是当前唯一需要读的信息，用强调色把它从卡片里提出来 */
-.cap-drop-hint.is-live {
-  flex: 0 0 auto;
-  padding: 5px 8px;
-  border-radius: 9px;
-  background: var(--cap-accent-soft);
-  color: var(--accent);
-  font-size: 10.5px;
-  font-weight: 600;
-  text-align: center;
 }
 .cap-drop-error {
   display: flex;

@@ -2310,7 +2310,9 @@ export const zhCN = {
   "capsule.inboxDrop.diagnosticsBlocked": "无法打开诊断中心：当前页面正在保存，请稍后重试。",
 
   // ── 收集箱文件投递：拖入「最近暂存」（引用模式）──
-  "capsule.inboxDrop.shelfDropHint": "拖入文件即可暂存 · 默认保存引用，不复制原文件",
+  "capsule.inboxDrop.shelfDropHint": "可暂存",
+  // 光标真正落在接收区：明确「松手会发生什么」，与目录卡片的「松手即复制/移动」同构
+  "capsule.inboxDrop.shelfDropHintOver": "松开即加入",
   "capsule.inboxDrop.shelfAdded": "已暂存 {added} 项",
   "capsule.inboxDrop.shelfPartial": "已部分暂存：成功 {added} 项，{failed} 项失败（{reason}）",
   "capsule.inboxDrop.shelfFailed": "有 {failed} 项未能暂存：{reason}",
@@ -2657,6 +2659,9 @@ export const zhCN = {
   "capsule.inboxDrop.manage": "管理",
   "capsule.inboxDrop.modeMove": "移动 · 删除源文件",
   "capsule.inboxDrop.modeCopy": "复制 · 保留源文件",
+  // 拖入悬停：只回答「松手会发生什么」，与未悬停时的完整模式说明互斥展示
+  "capsule.inboxDrop.releaseCopy": "松手即复制",
+  "capsule.inboxDrop.releaseMove": "松手即移动",
   "capsule.inboxDrop.openTargetAria": "打开「{name}」目录",
   "capsule.inboxDrop.busyMove": "正在移动 {count} 项",
   "capsule.inboxDrop.busyCopy": "正在复制 {count} 项",

@@ -56,12 +56,19 @@ export const SHELF_RECENT_DROP_ZONE = "shelf-recent";
 
 interface InboxRecentShelfProps {
   onNotice: (msg: string) => void;
-  /** 拖拽会话进行中：显示「可暂存」轻提示（绝对定位，不挤占列表空间）。 */
+  /** 拖拽会话进行中：在标题行显示「可暂存」状态标签（不改变行高与列表几何）。 */
   dropActive?: boolean;
-  /** 当前落点就在本接收区：强调高亮。 */
+  /** 当前落点就在本接收区：强调高亮，并把提示换成「松开即加入」。 */
   dropOver?: boolean;
   /** 是否暴露原生文件拖放标记；未接仲裁器时不暴露，避免命中一个没人处理的目标。 */
   dropZone?: boolean;
+  /**
+   * 本接收区里的行开始**原生拖出**（暂存行 → 其他窗口/投递卡片）。
+   * 应用内拖出的 OLE 循环在 UI 线程运行，会缓冲掉原生 enter/over/drop，
+   * 上层据此提前给出「可投递」形态；`onDragOutEnd` 负责复位。
+   */
+  onDragOutStart?: () => void;
+  onDragOutEnd?: () => void;
 }
 
 export default function InboxRecentShelf({
@@ -69,6 +76,8 @@ export default function InboxRecentShelf({
   dropActive = false,
   dropOver = false,
   dropZone = false,
+  onDragOutStart,
+  onDragOutEnd,
 }: InboxRecentShelfProps) {
   const { t } = useLocale();
   const recent = useShelfStore((s) => s.recent);
@@ -108,12 +117,17 @@ export default function InboxRecentShelf({
       }
       return [item.id];
     },
+    onDragStart: onDragOutStart,
     onSettled: (result: ShelfDragOutResult) => {
+      onDragOutEnd?.();
       if (result.effect !== "move") return;
       void loadRecent({ force: true });
       onNotice(t("capsule.recentShelf.moved"));
     },
-    onError: onNotice,
+    onError: (message) => {
+      onDragOutEnd?.();
+      onNotice(message);
+    },
   });
 
   const openItem = useCallback(
@@ -341,6 +355,15 @@ export default function InboxRecentShelf({
       <div className="cap-shelf-recent-head">
         <span className="cap-shelf-recent-title">{t("capsule.recentShelf.title")}</span>
         {recent.length > 0 && <span className="cap-shelf-recent-count">{recent.length}</span>}
+        {/* 拖入状态固定在标题行：标题行高度由 22px 按钮决定，标签只占行内空间，
+            不增加段落高度；放在列表上方也不会遮住最后一条（底部浮层会盖住行内容）。 */}
+        {dropZone && dropActive && (
+          <span className="cap-shelf-recent-drop-hint" role="status">
+            {dropOver
+              ? t("capsule.inboxDrop.shelfDropHintOver")
+              : t("capsule.inboxDrop.shelfDropHint")}
+          </span>
+        )}
         <span className="cap-shelf-recent-gap" />
         <button
           type="button"
@@ -624,13 +647,7 @@ export default function InboxRecentShelf({
         </ul>
         </>
       )}
-      {/* 绝对定位的拖入提示：只在拖拽期间出现，不推挤列表，也不参与落点命中。
-          整个会话期间接收区有轻高亮，光标真正落在其上时再加强。 */}
-      {dropZone && dropActive && (
-        <p className="cap-shelf-recent-drop-hint" role="status">
-          {t("capsule.inboxDrop.shelfDropHint")}
-        </p>
-      )}
+
     </section>
   );
 }
