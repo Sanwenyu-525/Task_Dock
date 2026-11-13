@@ -2698,6 +2698,7 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.inbox.subAria": "Inbox subpages",
   "capsule.inbox.loading": "Loading",
   "capsule.inbox.loadFailed": "Load failed",
+  "capsule.inbox.staleText": "Couldn't load — showing the previous result",
   "capsule.inbox.subCounts": "{pending} unprocessed · {recent} recent",
   "capsule.inbox.dropSub": "Drop files onto a target card to file them",
   "capsule.inbox.dropSubTargets": "Drop files onto a card to deliver · {count} target(s)",

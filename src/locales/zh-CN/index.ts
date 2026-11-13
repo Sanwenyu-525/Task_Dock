@@ -2680,6 +2680,7 @@ export const zhCN = {
   "capsule.inbox.subAria": "收集箱子页",
   "capsule.inbox.loading": "读取中",
   "capsule.inbox.loadFailed": "读取失败",
+  "capsule.inbox.staleText": "读取失败，显示的是上次结果",
   "capsule.inbox.subCounts": "未处理 {pending} 条 · 最近 {recent} 条",
   "capsule.inbox.dropSub": "把文件拖到目标卡片直接归档",
   "capsule.inbox.dropSubTargets": "拖文件到卡片即可投递 · {count} 个目标",
