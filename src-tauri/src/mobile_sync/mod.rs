@@ -16,7 +16,11 @@
 //! - 请求体上限 4KB、头部读取超时、请求处理超时、连接/在途并发上限；
 //! - 日志不记录请求体、配对码、令牌、设备名与精确设备指纹；TLS 指纹是公开值可记录。
 
+// UDP 默认路由探测只保留在非 Windows 平台的候选枚举里；Windows 用
+// GetAdaptersAddresses 枚举全部单播 IPv4（见 enumerate_ipv4_candidates）。
+#[cfg(not(windows))]
 use std::net::UdpSocket;
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -751,17 +755,159 @@ fn map_device_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MobileDevice> {
     })
 }
 
-/// 检测默认路由使用的局域网 IPv4。UDP connect 不发送任何数据包，只让内核选源地址。
+/// 检测用于二维码/状态展示的局域网 IPv4。
+///
+/// v0.16.1（2026-11-13）：原先用 UDP connect 默认路由取源地址，TUN 代理
+///（Clash/Meta fake-ip 198.18.0.0/15）环境会把虚拟网卡地址当「局域网地址」，
+/// 二维码 host 对手机不可达、扫码配对主路径失效。改为枚举本机全部单播 IPv4
+/// 后由 [`pick_lan_ip`] 纯函数选择；选择失败返回 None——宁可拒绝生成二维码，
+/// 也不给不可达地址（fail-closed）。
 pub fn detect_lan_ip() -> Option<String> {
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
-    let ip = socket.local_addr().ok()?.ip();
-    if ip.is_loopback() || ip.is_unspecified() {
-        None
-    } else if let std::net::IpAddr::V4(v4) = ip {
-        Some(v4.to_string())
-    } else {
-        None
+    pick_lan_ip(&enumerate_ipv4_candidates())
+}
+
+/// 从候选地址中选择最合适的局域网 IPv4（纯函数，可单测）。
+///
+/// 过滤：回环 / 未指定 / 链路本地（169.254/16）/ 198.18.0.0-15（RFC 2544 benchmark，
+/// TUN fake-ip 网段）。
+/// 优先级：192.168/16 > 10/8 > 172.16/12 > 其他私网（CGNAT 100.64/10）> 其他；
+/// 同优先级内主机位为 `.1` 结尾者靠后（x.x.x.1 惯例是网关/虚拟网卡 host 侧）；
+/// 同分并列保持枚举顺序（首个优先），同一组地址的选取结果可复现。
+pub(crate) fn pick_lan_ip(candidates: &[String]) -> Option<String> {
+    let mut best: Option<(u8, bool, Ipv4Addr)> = None;
+    for raw in candidates {
+        let Ok(ip) = raw.trim().parse::<Ipv4Addr>() else {
+            continue;
+        };
+        if ip.is_loopback() || ip.is_unspecified() || ip.is_link_local() {
+            continue;
+        }
+        let octets = ip.octets();
+        // 198.18.0.0/15：RFC 2544 基准测试网段，Clash/Meta 等 TUN fake-ip 常用，
+        // 局域网设备不可达。
+        if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
+            continue;
+        }
+        let priority = if octets[0] == 192 && octets[1] == 168 {
+            0u8
+        } else if octets[0] == 10 {
+            1
+        } else if octets[0] == 172 && (16..=31).contains(&octets[1]) {
+            2
+        } else if octets[0] == 100 && (octets[1] & 0b1100_0000) == 0b0100_0000 {
+            // 100.64.0.0/10 运营商级 NAT（Tailscale 等虚拟组网常用）
+            3
+        } else {
+            4
+        };
+        let gateway_like = octets[3] == 1;
+        let better = match best {
+            None => true,
+            Some((best_priority, best_gateway_like, _)) => {
+                priority < best_priority
+                    || (priority == best_priority && best_gateway_like && !gateway_like)
+            }
+        };
+        if better {
+            best = Some((priority, gateway_like, ip));
+        }
+    }
+    best.map(|(_, _, ip)| ip.to_string())
+}
+
+/// 枚举本机全部单播 IPv4 地址（只取 Up 状态适配器）。
+///
+/// Windows 实现：iphlpapi `GetAdaptersAddresses`（跳过 anycast/multicast/DNS 列表），
+/// 遍历适配器链表与其单播地址链表；回环/隧道/虚拟网卡地址交给 [`pick_lan_ip`] 按地址段过滤。
+#[cfg(windows)]
+fn enumerate_ipv4_candidates() -> Vec<String> {
+    use std::ptr::null_mut;
+
+    use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
+        GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, SOCKADDR};
+
+    const FAMILY: u32 = AF_INET as u32;
+    const FLAGS: u32 =
+        GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+
+    let mut size: u32 = 0;
+    // 第一次调用探测所需缓冲区大小（预期 ERROR_BUFFER_OVERFLOW 并回填 size）。
+    let probe = unsafe {
+        GetAdaptersAddresses(FAMILY, FLAGS, std::ptr::null(), null_mut(), &mut size)
+    };
+    if probe != ERROR_BUFFER_OVERFLOW || size == 0 {
+        return Vec::new();
+    }
+    let mut buffer = vec![0u8; size as usize];
+    let result = unsafe {
+        GetAdaptersAddresses(
+            FAMILY,
+            FLAGS,
+            std::ptr::null(),
+            buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>(),
+            &mut size,
+        )
+    };
+    if result != NO_ERROR {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+    while !adapter.is_null() {
+        let adapter_ref = unsafe { &*adapter };
+        // OperStatus == 1 即 IfOperStatusUp（不引入 Ndis 常量之外的比较语义）。
+        if adapter_ref.OperStatus == IfOperStatusUp {
+            let mut unicast = adapter_ref.FirstUnicastAddress;
+            while !unicast.is_null() {
+                let entry = unsafe { &*unicast };
+                let sockaddr = entry.Address.lpSockaddr;
+                if !sockaddr.is_null()
+                    && entry.Address.iSockaddrLength as usize >= std::mem::size_of::<SOCKADDR>()
+                {
+                    let raw = unsafe { &*sockaddr };
+                    if raw.sa_family == AF_INET {
+                        let octets: [u8; 4] = [
+                            raw.sa_data[0] as u8,
+                            raw.sa_data[1] as u8,
+                            raw.sa_data[2] as u8,
+                            raw.sa_data[3] as u8,
+                        ];
+                        out.push(Ipv4Addr::from(octets).to_string());
+                    }
+                }
+                unicast = entry.Next;
+            }
+        }
+        adapter = adapter_ref.Next;
+    }
+    out
+}
+
+/// 非 Windows：退回默认路由源地址单候选（过滤与选择逻辑与 Windows 相同）。
+#[cfg(not(windows))]
+fn enumerate_ipv4_candidates() -> Vec<String> {
+    let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
+        return Vec::new();
+    };
+    if socket.connect("8.8.8.8:80").is_err() {
+        return Vec::new();
+    }
+    let Ok(addr) = socket.local_addr() else {
+        return Vec::new();
+    };
+    match addr.ip() {
+        std::net::IpAddr::V4(v4)
+            if !v4.is_loopback() && !v4.is_unspecified() && !v4.is_link_local() =>
+        {
+            vec![v4.to_string()]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -1003,6 +1149,110 @@ mod tests {
             assert!(code.bytes().all(|b| b.is_ascii_digit()));
             assert!(code.parse::<u32>().unwrap() < 1_000_000);
         }
+    }
+
+    fn ips(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn pick_lan_ip_prefers_wlan_over_tun_fake_ip() {
+        // TUN + WLAN：fake-ip 网段被过滤，选真实 WLAN 地址
+        assert_eq!(
+            pick_lan_ip(&ips(&["198.18.0.1", "192.168.5.6"])).as_deref(),
+            Some("192.168.5.6")
+        );
+    }
+
+    #[test]
+    fn pick_lan_ip_tun_only_yields_none() {
+        // TUN-only（fake-ip + 基准网段全覆盖）+ 噪声地址：宁选 None 不给不可达地址
+        assert_eq!(
+            pick_lan_ip(&ips(&[
+                "198.18.0.1",
+                "198.19.200.7",
+                "127.0.0.1",
+                "169.254.10.5",
+                "0.0.0.0",
+            ])),
+            None
+        );
+    }
+
+    #[test]
+    fn pick_lan_ip_handles_multiple_virtual_adapters() {
+        // 多虚拟网卡：TUN fake-ip + CGNAT 组网 + WLAN 网关 + WLAN 主机
+        assert_eq!(
+            pick_lan_ip(&ips(&[
+                "198.18.0.1",
+                "100.64.3.9",
+                "192.168.5.1",
+                "192.168.5.6",
+                "172.20.1.4",
+            ]))
+            .as_deref(),
+            Some("192.168.5.6")
+        );
+    }
+
+    #[test]
+    fn pick_lan_ip_without_candidates_is_none() {
+        assert_eq!(pick_lan_ip(&ips(&[])), None);
+        // 非法值被忽略而非 panic
+        assert_eq!(pick_lan_ip(&ips(&["not-an-ip", "999.1.1.1", ""])), None);
+    }
+
+    #[test]
+    fn pick_lan_ip_follows_private_network_priority() {
+        // 192.168/16 > 10/8 > 172.16/12 > CGNAT 100.64/10
+        assert_eq!(
+            pick_lan_ip(&ips(&["10.0.3.7", "192.168.1.23"])).as_deref(),
+            Some("192.168.1.23")
+        );
+        assert_eq!(
+            pick_lan_ip(&ips(&["172.16.0.5", "10.1.2.3"])).as_deref(),
+            Some("10.1.2.3")
+        );
+        assert_eq!(
+            pick_lan_ip(&ips(&["100.64.1.5", "172.20.3.4"])).as_deref(),
+            Some("172.20.3.4")
+        );
+    }
+
+    #[test]
+    fn pick_lan_ip_avoids_gateway_like_host_address() {
+        // 同优先级内 .1 结尾（网关/虚拟网卡 host 侧）靠后，且与枚举顺序无关
+        assert_eq!(
+            pick_lan_ip(&ips(&["192.168.5.1", "192.168.5.6"])).as_deref(),
+            Some("192.168.5.6")
+        );
+        assert_eq!(
+            pick_lan_ip(&ips(&["192.168.5.6", "192.168.5.1"])).as_deref(),
+            Some("192.168.5.6")
+        );
+        // 只有 .1 时仍然可用（不因惯例而拒绝唯一候选）
+        assert_eq!(
+            pick_lan_ip(&ips(&["192.168.5.1"])).as_deref(),
+            Some("192.168.5.1")
+        );
+    }
+
+    #[test]
+    fn pick_lan_ip_keeps_enumeration_order_for_equal_candidates() {
+        // 同档并列保持首见顺序（可复现）
+        assert_eq!(
+            pick_lan_ip(&ips(&["203.0.113.7", "8.8.8.8"])).as_deref(),
+            Some("203.0.113.7")
+        );
+    }
+
+    #[test]
+    fn pick_lan_ip_filters_loopback_link_local_and_tun_noise() {
+        assert_eq!(
+            pick_lan_ip(&ips(&["127.0.0.1", "169.254.9.9", "198.18.0.1", "192.168.7.8"]))
+                .as_deref(),
+            Some("192.168.7.8")
+        );
     }
 
     #[test]

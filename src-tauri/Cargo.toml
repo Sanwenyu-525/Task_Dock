@@ -91,6 +91,13 @@ windows-sys = { version = "0.60", features = [
   "Win32_UI_Shell",
   # Agent Hooks 配置写入：MoveFileExW 原子替换（MOVEFILE_REPLACE_EXISTING | WRITE_THROUGH）
   "Win32_Storage_FileSystem",
+  # 手机接入局域网地址枚举（v0.16.1）：GetAdaptersAddresses 枚举单播 IPv4，
+  # 替代默认路由 UDP 探测（TUN fake-ip 198.18.0.0/15 会误选虚拟网卡地址）。
+  # 仅追加 feature：IpHelper 为 API 本体；WinSock 是 SOCKET_ADDRESS/SOCKADDR；
+  # Ndis 是 IP_ADAPTER_ADDRESSES_LH 结构的 cfg 门控必需项（OperStatus/Luid 字段）。
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_Networking_WinSock",
+  "Win32_NetworkManagement_Ndis",
 ] }
 # Windows Shell COM（仅图标链路用）：IShellLinkW 解析 .lnk 真实目标、
 # IShellItemImageFactory 取 UWP 包图标。版本与 Cargo.lock 现有传递依赖一致（无新增下载）。
