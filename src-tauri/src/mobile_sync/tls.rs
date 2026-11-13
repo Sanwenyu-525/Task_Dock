@@ -43,6 +43,14 @@ const RENEWAL_WINDOW: Duration = Duration::from_secs(30 * 24 * 3600);
 pub const TLS_DIR_NAME: &str = "mobile_tls";
 pub(crate) const CERT_FILE: &str = "cert.pem";
 const KEY_FILE: &str = "key.pem";
+/// 证书代际标记：v0.16.1 之前用 `Profile::Root` 生成的是 **CA 根证书**
+/// （keyUsage 只有 keyCertSign/cRLSign，且 basicConstraints CA=true）。作为 TLS
+/// 叶证书使用时，Android/OpenSSL 严格校验握手直接失败（KEY_USAGE_BIT_INCORRECT，
+/// 2026-11-13 真机实测）；Node/OpenSSL 桌面版校验宽松所以自动化测试未暴露。
+/// 现在改用 `Profile::Leaf`（digitalSignature + keyEncipherment，CA=false）。
+/// 标记文件缺失或与当前代际不符时强制重建一次（指纹变化，已配对设备需重新配对）。
+const CERT_GENERATION: &str = "leaf-v1";
+const CERT_GENERATION_FILE: &str = "cert-generation";
 
 /// 可直接用于监听的 TLS 身份。
 #[derive(Clone)]
@@ -67,25 +75,35 @@ pub fn load_or_create(data_dir: &Path) -> Result<TlsIdentity, String> {
     let dir = data_dir.join(TLS_DIR_NAME);
     let cert_path = dir.join(CERT_FILE);
     let key_path = dir.join(KEY_FILE);
+    let generation_current = cert_generation_matches(&dir, CERT_GENERATION);
 
-    if let (Ok(cert_pem), Ok(key_pem)) = (
-        std::fs::read_to_string(&cert_path),
-        std::fs::read_to_string(&key_path),
-    ) {
-        match identity_from_pem(&cert_pem, &key_pem) {
-            Ok(identity) => {
-                // 剩余有效期不足（或文件被外部改动成过期证书）时整体轮换。
-                if cert_renewal_needed(&cert_pem) {
-                    tracing::info!("手机接入 TLS 证书临近到期，生成新证书（已配对设备需重新配对）");
-                } else {
-                    return Ok(identity);
+    if generation_current {
+        if let (Ok(cert_pem), Ok(key_pem)) = (
+            std::fs::read_to_string(&cert_path),
+            std::fs::read_to_string(&key_path),
+        ) {
+            match identity_from_pem(&cert_pem, &key_pem) {
+                Ok(identity) => {
+                    // 剩余有效期不足（或文件被外部改动成过期证书）时整体轮换。
+                    if cert_renewal_needed(&cert_pem) {
+                        tracing::info!(
+                            "手机接入 TLS 证书临近到期，生成新证书（已配对设备需重新配对）"
+                        );
+                    } else {
+                        return Ok(identity);
+                    }
+                }
+                Err(error) => {
+                    // 文件损坏/被篡改：重建而不是带病运行；不把密钥或证书内容写日志。
+                    tracing::warn!("手机接入 TLS 证书文件不可用，重新生成: {error}");
                 }
             }
-            Err(error) => {
-                // 文件损坏/被篡改：重建而不是带病运行；不把密钥或证书内容写日志。
-                tracing::warn!("手机接入 TLS 证书文件不可用，重新生成: {error}");
-            }
         }
+    } else if cert_path.exists() || key_path.exists() {
+        // 旧代际证书是 CA 根证书，Android 握手必失败：整体轮换而不是带病运行。
+        tracing::info!(
+            "手机接入 TLS 证书代际升级（CA 根证书 → 叶证书，Android 握手兼容），重新生成（已配对设备需重新配对）"
+        );
     }
 
     let (cert_pem, key_pem) = generate_self_signed().map_err(|e| {
@@ -98,11 +116,22 @@ pub fn load_or_create(data_dir: &Path) -> Result<TlsIdentity, String> {
         .map_err(|e| format!("写入 TLS 证书失败（{}）: {e}", cert_path.display()))?;
     std::fs::write(&key_path, &key_pem)
         .map_err(|e| format!("写入 TLS 私钥失败（{}）: {e}", key_path.display()))?;
+    // 代际标记最后写：中途失败时下次启动按旧代际重建，收敛到一致身份。
+    if let Err(error) = std::fs::write(dir.join(CERT_GENERATION_FILE), CERT_GENERATION) {
+        tracing::warn!("写入手机接入 TLS 证书代际标记失败（下次启动会重新生成证书）: {error}");
+    }
 
     let identity =
         identity_from_pem(&cert_pem, &key_pem).map_err(|e| format!("新证书不可用: {e}"))?;
     tracing::info!("手机接入 TLS：已生成自签证书，SPKI 指纹 {}", identity.fingerprint());
     Ok(identity)
+}
+
+/// 证书代际标记是否匹配；缺失/不可读按旧代际处理（触发一次轮换）。
+fn cert_generation_matches(dir: &Path, expected: &str) -> bool {
+    std::fs::read_to_string(dir.join(CERT_GENERATION_FILE))
+        .map(|value| value.trim() == expected)
+        .unwrap_or(false)
 }
 
 fn identity_from_pem(cert_pem: &str, key_pem: &str) -> Result<TlsIdentity, String> {
@@ -140,7 +169,14 @@ fn generate_self_signed() -> Result<(String, String), String> {
         .map_err(|e| format!("构造证书有效期失败: {e}"))?;
 
     let builder = CertificateBuilder::new(
-        Profile::Root,
+        // 必须是 TLS **叶证书**：Android/OpenSSL 严格校验 keyUsage，把 CA 根证书
+        // （keyUsage 只有 keyCertSign/cRLSign）当服务端证书会在握手时直接失败
+        // （KEY_USAGE_BIT_INCORRECT，2026-11-13 真机实测）。自签 issuer=subject。
+        Profile::Leaf {
+            issuer: subject.clone(),
+            enable_key_agreement: false,
+            enable_key_encipherment: true,
+        },
         SerialNumber::new(&serial_bytes).map_err(|e| format!("构造证书序列号失败: {e}"))?,
         validity,
         subject,
@@ -259,5 +295,57 @@ mod tests {
             .subject
             .to_string()
             .contains("TaskDock"));
+    }
+
+    #[test]
+    fn generated_cert_is_tls_leaf_not_ca() {
+        use x509_cert::der::Decode;
+        use x509_cert::ext::pkix::{BasicConstraints, KeyUsage};
+
+        let dir = temp_dir("leaf");
+        load_or_create(&dir).unwrap();
+        let cert_pem = std::fs::read_to_string(dir.join(TLS_DIR_NAME).join(CERT_FILE)).unwrap();
+        let cert = x509_cert::Certificate::from_pem(&cert_pem).unwrap();
+        let extensions = cert
+            .tbs_certificate
+            .extensions
+            .as_ref()
+            .expect("自签证书必须有扩展");
+
+        let mut key_usage: Option<KeyUsage> = None;
+        let mut basic: Option<BasicConstraints> = None;
+        for ext in extensions {
+            if let Ok(ku) = KeyUsage::from_der(ext.extn_value.as_bytes()) {
+                key_usage = Some(ku);
+            }
+            if let Ok(bc) = BasicConstraints::from_der(ext.extn_value.as_bytes()) {
+                basic = Some(bc);
+            }
+        }
+        // Android/OpenSSL 握手要求服务端证书 keyUsage 含 digitalSignature，
+        // 且不得是 CA 证书（2026-11-13 真机 KEY_USAGE_BIT_INCORRECT 回归防护）。
+        assert!(
+            key_usage.expect("KeyUsage 扩展").digital_signature(),
+            "TLS 叶证书必须含 digitalSignature"
+        );
+        assert!(!basic.expect("BasicConstraints 扩展").ca, "TLS 叶证书不能是 CA");
+    }
+
+    #[test]
+    fn legacy_generation_without_marker_is_rotated() {
+        let dir = temp_dir("legacy-gen");
+        let first = load_or_create(&dir).unwrap();
+        // 模拟 v0.16.0 旧数据目录：只有证书文件、没有代际标记；旧证书是
+        // CA 根证书（Android 不可用），必须轮换而不是继续加载。
+        std::fs::remove_file(dir.join(TLS_DIR_NAME).join(CERT_GENERATION_FILE)).unwrap();
+        let second = load_or_create(&dir).unwrap();
+        assert_ne!(
+            first.fingerprint(),
+            second.fingerprint(),
+            "无代际标记时必须轮换证书"
+        );
+        // 轮换后标记写入，后续加载保持稳定（不再换指纹）。
+        let third = load_or_create(&dir).unwrap();
+        assert_eq!(second.fingerprint(), third.fingerprint());
     }
 }
