@@ -665,11 +665,13 @@ export default function WorkbenchShell() {
       ackNav(request.requestId, "failed", t("workbench.navUnknown", { tab: String(target.tab) }));
       return;
     }
-    // 对象级定位必须真的有消费者：objectId 当前只承载两类**工作台窗口内**的
-    // 一次性意图（规划功能聚焦 / 诊断操作链），其余宁可明确拒绝，也不能悄悄
-    // 丢掉 ID 却回执「已精确定位」。sub 只支持收集与暂存子页。
+    // 对象级定位必须真的有消费者：objectId 当前只承载三类**工作台窗口内**的
+    // 一次性意图（规划功能聚焦 / 诊断操作链 / 应用页添加弹层），其余宁可明确
+    // 拒绝，也不能悄悄丢掉 ID 却回执「已精确定位」。sub 只支持收集与暂存子页。
     const unsupported = target.objectId
-      ? target.tab !== "roadmap" && target.tab !== "diagnostics"
+      ? target.tab !== "roadmap" &&
+        target.tab !== "diagnostics" &&
+        !(target.tab === "apps" && target.objectId === "add")
         ? "工作台暂不支持对象级定位（objectId），请使用页面/项目/任务入口"
         : target.tab === "roadmap" && !target.projectId
           ? "规划功能定位需要项目上下文（projectId）"
@@ -737,8 +739,9 @@ export default function WorkbenchShell() {
     };
     /**
      * 对象级定位意图：写入**本窗口**的一次性意图 store（不是主窗的）——
-     * PlanningWorkspace/DiagnosticsCenterPanel 消费 token，挂载或已在页时各消费一次。
-     * 放在 commitProject 之后：意图携带的 projectId 已是权威活跃项目。
+     * PlanningWorkspace/DiagnosticsCenterPanel/AppsPanel 消费 token，挂载或
+     * 已在页时各消费一次。放在 commitProject 之后：意图携带的 projectId 已是
+     * 权威活跃项目；导航失败/取消不会走到这里，意图不残留。
      */
     const applyObjectIntent = () => {
       const objectId = target.objectId;
@@ -748,6 +751,9 @@ export default function WorkbenchShell() {
         ui.requestRoadmapFocus({ projectId: targetProject as string, featureId: objectId });
       } else if (target.tab === "diagnostics") {
         ui.requestDiagnosticsOperation(objectId);
+      } else if (target.tab === "apps" && objectId === "add") {
+        // 应用页添加弹层：AppsPanel 消费 token（自带脏编辑器守卫与单弹层状态）。
+        ui.requestAppsAdd();
       }
     };
     /**

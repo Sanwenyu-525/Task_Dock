@@ -16,7 +16,7 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
       "zh-CN": {
         title: "完整面板导览：导航、新建任务与徽标",
         summary:
-          "认识完整模式左侧导航的 12 个入口、顶部新建任务按钮与徽标数字的含义。",
+          "认识快捷工具面板左侧导航、顶部新建任务按钮与徽标数字的含义。",
         sections: [
           {
             type: "paragraph",
@@ -205,7 +205,7 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
           },
           {
             type: "tip",
-            text: "在完整模式内想快速记一条，也可以用任务页顶部的快速录入框——它是同一能力的页面内子集。",
+            text: "在快捷工具面板内想快速记一条，也可以用任务页顶部的快速录入框——它是同一能力的页面内子集。",
           },
         ],
       },
@@ -431,7 +431,7 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
           { type: "heading", text: "引导长什么样" },
           {
             type: "paragraph",
-            text: "引导是右下角的页内卡片（不是全屏弹窗），不抢占焦点，不创建任何业务数据——每一步的按钮只做页面跳转。仅完整模式显示；停靠或胶囊形态下不会出现。",
+            text: "引导是右下角的页内卡片（不是全屏弹窗），不抢占焦点，不创建任何业务数据——每一步的按钮只做页面跳转。仅快捷工具面板（展开形态）显示；停靠或胶囊形态下不会出现。",
           },
           { type: "heading", text: "三步内容" },
           {

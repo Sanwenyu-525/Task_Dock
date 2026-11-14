@@ -26,8 +26,8 @@ const navQuitTargetProcesses = vi.fn();
 const navKillTargetProcesses = vi.fn();
 // 形态收敛（2026-11-14）：「添加应用/管理应用」直达唯一工作台，不再下发主窗
 // appsAddRequest 一次性意图（主窗应用页已退化为摘要交接页，意图无处消费）。
-const openAppsAdd = vi.fn();
-const openAppsManager = vi.fn();
+const openAppsAdd = vi.fn(async () => ({ status: "succeeded" }));
+const openAppsManager = vi.fn(async () => ({ status: "succeeded" }));
 
 vi.mock("../../lib/bridge", () => ({
   applyMode: async () => undefined,
@@ -52,8 +52,10 @@ vi.mock("../../lib/bridge", () => ({
 }));
 
 vi.mock("./actions", () => ({
-  openAppsAdd: (...a: unknown[]) => openAppsAdd(...a),
-  openAppsManager: (...a: unknown[]) => openAppsManager(...a),
+  openAppsAdd: () => openAppsAdd(),
+  openAppsManager: () => openAppsManager(),
+  // 添加/管理直达工作台后统一经 withWorkbenchToast 反馈（P0-2）。
+  withWorkbenchToast: (p: unknown) => Promise.resolve(p),
 }));
 
 // 只替换真实 IPC 调用，结果解释与图标工具使用真实实现，避免测试复制产品文案。

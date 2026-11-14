@@ -39,7 +39,11 @@ import { usePlanningStore } from "../../store/usePlanningStore";
 import { PlanningFeatureStatusBadge, PlanningProgressBar } from "../roadmap/PlanningBits";
 import { useLocale } from "../../hooks/useLocale";
 import { SearchField } from "../ui";
-import { openWorkbenchPage, openRoadmapFocus } from "./actions";
+import {
+  openWorkbenchPageWithToast,
+  openRoadmapFocus,
+  withWorkbenchToast,
+} from "./actions";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
 
 type View = "features" | "projects";
@@ -234,7 +238,7 @@ export default function PlanningLite() {
 
   /** 已选择项目时的完整规划入口：直达唯一工作台规划中心（项目级定位随导航事务下发）。 */
   const openFullPlanning = useCallback(() => {
-    void openWorkbenchPage("roadmap", activeProjectId ?? undefined);
+    void openWorkbenchPageWithToast("roadmap", activeProjectId ?? undefined);
   }, [activeProjectId]);
 
   const openProject = (id: string) => {
@@ -312,7 +316,7 @@ export default function PlanningLite() {
               icon={<FolderKanban size={22} strokeWidth={1.6} aria-hidden="true" />}
               text={t("capsule.planning.emptyProjects")}
               actionLabel={t("capsule.planning.createInFull")}
-              onAction={() => void openWorkbenchPage("roadmap")}
+              onAction={() => void openWorkbenchPageWithToast("roadmap")}
             />
           )}
           {orderedProjects.map((project) => (
@@ -465,7 +469,7 @@ export default function PlanningLite() {
             icon={<FolderKanban size={22} strokeWidth={1.6} aria-hidden="true" />}
             text={t("capsule.planning.emptyProjects")}
             actionLabel={t("capsule.planning.createInFull")}
-            onAction={() => void openWorkbenchPage("roadmap")}
+            onAction={() => void openWorkbenchPageWithToast("roadmap")}
           />
         )}
 
@@ -528,7 +532,7 @@ export default function PlanningLite() {
               }
               onAction={
                 features.length === 0 && activeProject
-                  ? () => void openRoadmapFocus({ projectId: activeProject.id })
+                  ? () => void withWorkbenchToast(openRoadmapFocus({ projectId: activeProject.id }))
                   : undefined
               }
             />
@@ -556,7 +560,7 @@ export default function PlanningLite() {
             <MapIcon size={12} strokeWidth={1.8} aria-hidden="true" />
             {t("capsule.planning.builtinFoot")}
           </span>
-          <button type="button" className="cap-link" onClick={() => void openWorkbenchPage("roadmap")}>
+          <button type="button" className="cap-link" onClick={() => void openWorkbenchPageWithToast("roadmap")}>
             {t("capsule.planning.openFull")}
             <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
           </button>
@@ -712,8 +716,8 @@ function FeatureRow({
               className="cap-mini"
               onClick={() =>
                 projectId
-                  ? void openRoadmapFocus({ projectId, featureId: feature.id })
-                  : void openWorkbenchPage("roadmap")
+                  ? void withWorkbenchToast(openRoadmapFocus({ projectId, featureId: feature.id }))
+                  : void openWorkbenchPageWithToast("roadmap")
               }
             >
               {t("capsule.planning.openFull")}
@@ -793,7 +797,7 @@ function BuiltinFeatureRow({
             </div>
           ) : null}
           <div className="cap-detail-actions">
-            <button type="button" className="cap-mini" onClick={() => void openWorkbenchPage("roadmap")}>
+            <button type="button" className="cap-mini" onClick={() => void openWorkbenchPageWithToast("roadmap")}>
               {t("capsule.planning.openFull")}
             </button>
           </div>

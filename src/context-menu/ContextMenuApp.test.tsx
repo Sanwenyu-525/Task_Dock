@@ -315,21 +315,21 @@ describe("键盘交互", () => {
     render(<ContextMenuApp />);
     const menu = await screen.findByRole("menu");
     fireShow();
-    // 初始焦点：第一个勾选项 = 紧凑模式（快照 mode=compact）
+    // 初始焦点：第一个勾选项 = 紧凑模式（快照 mode=compact，兼容项殿后）
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "紧凑模式" })),
+      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "紧凑模式（旧版兼容）" })),
     );
-    // ↓ 移到下一项（完整模式），Enter 触发
+    // ↓ 移到下一项（下一组：吸附方式「胶囊隐藏」），Enter 触发
     await user.keyboard("{ArrowDown}");
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "完整模式" })),
+      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "胶囊隐藏" })),
     );
     await user.keyboard("{Enter}");
-    expect(lastInvoke("context_menu_action")?.[1]).toEqual({ action: "mode:full" });
+    expect(lastInvoke("context_menu_action")?.[1]).toEqual({ action: "snap-form:capsule" });
     void menu;
   });
 
-  it("键盘导航顺序：布局模式 → 吸附方式 → 外观与系统，Enter 触发吸附动作", async () => {
+  it("键盘导航顺序：界面形态 → 吸附方式 → 外观与系统，Enter 触发吸附动作", async () => {
     const user = userEvent.setup();
     invokeMock.mockImplementation((cmd) =>
       cmd === "get_settings"
@@ -341,17 +341,13 @@ describe("键盘交互", () => {
     render(<ContextMenuApp />);
     await screen.findByRole("menu");
     fireShow();
-    // 初始焦点：第一个勾选项 = 极简模式（snap 组排在布局组之后、主题组之前）
+    // 初始焦点：第一个勾选项 = 切换极简悬浮（open-workbench 是一次性动作不参与勾选）
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "极简模式" })),
+      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "切换极简悬浮" })),
     );
     await user.keyboard("{ArrowDown}");
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "紧凑模式" })),
-    );
-    await user.keyboard("{ArrowDown}");
-    await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "完整模式" })),
+      expect(document.activeElement).toBe(screen.getByRole("menuitemradio", { name: "紧凑模式（旧版兼容）" })),
     );
     await user.keyboard("{ArrowDown}");
     await waitFor(() =>

@@ -262,4 +262,46 @@ describe("useEdgeTabMenuActions", () => {
     expect(restoreTab).not.toHaveBeenCalled();
     expect(invokeMock).not.toHaveBeenCalled();
   });
+
+  it("订阅首次失败后有界退避重试并成功订阅（启动竞态不再静默失效）", async () => {
+    const listenMock = vi.mocked(listen);
+    const restoreTab = vi.fn(async () => true);
+    useEdgeSnapStore.setState({ restoreTab });
+    listenMock.mockRejectedValueOnce(new Error("ipc not ready"));
+    vi.useFakeTimers();
+    try {
+      const { unmount } = renderHook(() => useEdgeTabMenuActions());
+      // 第一次订阅被拒绝：microtask 冲刷后调度 400ms 重试
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handler).toBeNull();
+      await vi.advanceTimersByTimeAsync(400);
+      // 重试成功（回落到工厂默认实现）：handler 可用，事件可执行并回执
+      handler?.({ payload: { id: 31, action: "expand" } });
+      await vi.waitFor(() => expect(restoreTab).toHaveBeenCalledTimes(1));
+      unmount();
+      expect(unlisten).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("订阅持续失败写诊断并停止重试（不无限循环）", async () => {
+    const listenMock = vi.mocked(listen);
+    listenMock.mockClear();
+    listenMock.mockRejectedValue(new Error("ipc down"));
+    vi.useFakeTimers();
+    try {
+      renderHook(() => useEdgeTabMenuActions());
+      // 5 次尝试（0..4）+ 最长退避 1600ms：全部失败后不再有新尝试
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(listenMock).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+      // 恢复工厂默认实现，避免持续 rejection 泄漏到后续用例
+      listenMock.mockImplementation(async (_e: string, cb: (event: { payload: unknown }) => void) => {
+        handler = cb;
+        return unlisten;
+      });
+    }
+  });
 });

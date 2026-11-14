@@ -262,6 +262,50 @@ describe("WorkbenchShell", () => {
     expect(useUiStore.getState().roadmapFocusRequest).toBeNull();
   });
 
+  it("apps + objectId=add：真实导航成功后写入添加弹层意图（P1-1）", async () => {
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    useUiStore.setState({ appsAddRequest: null });
+
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9153,
+      target: { tab: "apps", objectId: "add" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9153,
+        status: "succeeded",
+        error: null,
+      }),
+    );
+    // 意图写在**工作台窗口**的 store：AppsPanel 消费 token 打开添加弹层；
+    // 导航失败/取消不会走到这里，意图不残留。
+    expect(useUiStore.getState().appsAddRequest).not.toBeNull();
+  });
+
+  it("apps 携带未知 objectId 时明确拒绝，不悄悄丢弃（P1-1）", async () => {
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    useUiStore.setState({ appsAddRequest: null });
+
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9154,
+      target: { tab: "apps", objectId: "delete-app-1" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9154,
+        status: "failed",
+        error: expect.stringContaining("工作台暂不支持对象级定位"),
+      }),
+    );
+    expect(useUiStore.getState().appsAddRequest).toBeNull();
+  });
+
   // ── P0 / P1 导航事务回归 ─────────────────────────────────────────────
 
   const projects = [

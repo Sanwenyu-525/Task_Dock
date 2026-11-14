@@ -51,7 +51,7 @@ import { useAgentsStore } from "../../store/useAgentsStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore, type Tab } from "../../store/useUiStore";
 import { useWidgetsStore, type WidgetDesktopPhase } from "../../store/useWidgetsStore";
-import { openFullApp, openWorkbenchPageWithToast } from "../capsule/actions";
+import { openFullApp, openPanelOrWorkbench, openWorkbenchPageWithToast } from "../capsule/actions";
 
 const REMINDER_DEBOUNCE_MS = 800;
 /** 任务 Store 一次操作可能连发多次通知；合并成一次后端查询。 */
@@ -711,7 +711,9 @@ export default function WidgetDesktopBridge() {
           break;
         }
         case "open-panel":
-          openFullApp((payload.tab as Tab) ?? "tasks");
+          // 任意标签转发：快捷页就地打开；完整功能页直达工作台（不得经旧完整
+          // 面板交接页中转，也不能把异步改道谎报为已切页）。
+          openPanelOrWorkbench((payload.tab as Tab) ?? "tasks");
           break;
         case "open-agents":
           openFullApp("agents");

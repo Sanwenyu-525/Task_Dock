@@ -18,8 +18,12 @@ const planningListFeatures = vi.fn();
 const planningListMilestones = vi.fn();
 const planningUpdateStep = vi.fn();
 const onPlanningChanged = vi.fn(async (_cb: () => void) => () => {});
-const openWorkbenchPage = vi.fn();
-const openRoadmapFocus = vi.fn();
+const openWorkbenchPage = vi.fn(
+  async (_tab: string, _projectId?: string | null) => ({ status: "succeeded" }),
+);
+const openRoadmapFocus = vi.fn(
+  async (_target: { projectId: string; featureId?: string }) => ({ status: "succeeded" }),
+);
 
 vi.mock("../../lib/bridge", () => ({
   planningListProjects: (...a: unknown[]) => planningListProjects(...a),
@@ -47,11 +51,12 @@ vi.mock("../../lib/bridge", () => ({
 }));
 
 vi.mock("./actions", () => ({
-  // 形态收敛（2026-11-14）：完整规划直达唯一工作台。
-  // openWorkbenchPage(tab, projectId) = 工作台页面级落点；
-  // openRoadmapFocus({ projectId }) = 项目级定位（功能级聚焦协议暂不支持）。
-  openWorkbenchPage: (...a: unknown[]) => openWorkbenchPage(...a),
-  openRoadmapFocus: (...a: unknown[]) => openRoadmapFocus(...a),
+  // 形态收敛（2026-11-14）：完整规划直达唯一工作台，失败经统一 toast 反馈。
+  // openWorkbenchPageWithToast(tab, projectId) = 页面级落点（内部含失败反馈）；
+  // openRoadmapFocus({ projectId, featureId? }) = 项目/功能级定位。
+  openWorkbenchPageWithToast: (tab: string, projectId?: string | null) => openWorkbenchPage(tab, projectId),
+  openRoadmapFocus: (target: { projectId: string; featureId?: string }) => openRoadmapFocus(target),
+  withWorkbenchToast: (p: unknown) => Promise.resolve(p),
 }));
 
 vi.mock("../roadmap/PlanningBits", () => ({

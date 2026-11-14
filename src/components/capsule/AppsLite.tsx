@@ -36,7 +36,7 @@ import AppIcon from "../ui/AppIcon";
 import { SearchField } from "../ui";
 import { useLocale } from "../../hooks/useLocale";
 import { useNavigationStore } from "../../store/useNavigationStore";
-import { openAppsAdd, openAppsManager } from "./actions";
+import { openAppsAdd, openAppsManager, withWorkbenchToast } from "./actions";
 import { EmptyState, PanelHead } from "./PanelKit";
 
 /** 启动异常 → 可读原因：按稳定错误码区分权限/缺失/超时，不展示堆栈或原始路径。 */
@@ -925,7 +925,7 @@ export default function AppsLite() {
             icon={<LayoutGrid size={22} strokeWidth={1.6} aria-hidden="true" />}
             text={tr("capsule.apps.emptyNone")}
             actionLabel={tr("capsule.apps.addApp")}
-            onAction={() => void openAppsAdd()}
+            onAction={() => void withWorkbenchToast(openAppsAdd())}
             className="cap-empty--centered"
           />
         )}
@@ -938,7 +938,7 @@ export default function AppsLite() {
               text={hiddenSummary}
               // 网格整体收起时加号也随之消失，这里保留同一个添加入口（不是第二套流程）。
               actionLabel={tr("capsule.apps.addApp")}
-              onAction={() => void openAppsAdd()}
+              onAction={() => void withWorkbenchToast(openAppsAdd())}
             />
             <div className="cap-recent" data-testid="hidden-restore-list">
               <span className="cap-recent-title">
@@ -1019,7 +1019,7 @@ export default function AppsLite() {
                     onKeyDown={(e) => onOrderKeyDown(e, entry.id)}
                     onClick={() => {
                       if (shouldIgnoreClick()) return;
-                      void openAppsAdd();
+                      void withWorkbenchToast(openAppsAdd());
                     }}
                   >
                     <span className="cap-app-avatar is-add" aria-hidden="true">
@@ -1313,7 +1313,7 @@ export default function AppsLite() {
         <span className="cap-foot-note">
           {notice ?? tr("capsule.apps.footNote")}
         </span>
-        <button type="button" className="cap-link" onClick={() => void openAppsManager()}>
+        <button type="button" className="cap-link" onClick={() => void withWorkbenchToast(openAppsManager())}>
           {tr("capsule.apps.manage")}
         </button>
       </div>

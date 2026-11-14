@@ -25,6 +25,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { listen } from "@tauri-apps/api/event";
 import { isTauri } from "@tauri-apps/api/core";
 import { invokeCommand } from "../lib/errors";
+import { logEvent } from "../lib/diagnostics";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 import { openWorkbenchHome } from "../lib/workbenchNav";
 
@@ -126,9 +127,10 @@ export function useEdgeTabMenuActions(): void {
     if (!isTauri()) return;
     let disposed = false;
     let unlisten: UnlistenFn | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     // 单调请求 id：重复投递/迟到事件只执行一次（后端每次请求都是新 id）。
     let lastId = 0;
-    void listen<TabActionRequest | string>(TAB_MENU_ACTION_EVENT, (event) => {
+    const onEvent = (event: { payload: unknown }) => {
       const req = parseTabAction(event.payload);
       if (!req) return;
       if (req.id !== 0 && req.id <= lastId) return;
@@ -153,17 +155,45 @@ export function useEdgeTabMenuActions(): void {
           // 回执失败：后端按超时返回明确失败，不会静默当作成功。
         }
       })();
-    })
-      .then((fn) => {
-        // 订阅兑现前已卸载：立即释放，避免监听器泄漏
-        if (disposed) fn();
-        else unlisten = fn;
-      })
-      .catch(() => {
-        // 事件系统不可用（预览/测试环境）：菜单入口自然失效，不影响标签交互
-      });
+    };
+    /**
+     * 订阅（有界重试）：应用启动极早期 effects 可能先于事件 IPC 就绪，
+     * listen 一次性失败若被静默吞掉，托盘/标签菜单动作会**永久**无应答
+     * （后端只能等满 8s 超时；2026-11-14 原生验收实测命中）。失败后短暂
+     * 退避重试（共 ≤5 次）；持续失败写诊断并保持失效，不再静默假装已订阅。
+     */
+    const subscribe = (attempt: number): void => {
+      listen<TabActionRequest | string>(TAB_MENU_ACTION_EVENT, onEvent)
+        .then((fn) => {
+          // 订阅兑现前已卸载：立即释放，避免监听器泄漏
+          if (disposed) {
+            fn();
+            return;
+          }
+          unlisten = fn;
+        })
+        .catch(() => {
+          if (disposed) return;
+          if (attempt < 4) {
+            retryTimer = setTimeout(() => subscribe(attempt + 1), 400 * (attempt + 1));
+            return;
+          }
+          logEvent({
+            level: "WARN",
+            module: "edge-tab-menu",
+            action: "subscribe",
+            event: "subscribe-failed",
+            message: "edge-tab-action 订阅持续失败，托盘/标签菜单动作不可用（可重启应用恢复）",
+          });
+        });
+    };
+    subscribe(0);
     return () => {
       disposed = true;
+      if (retryTimer !== null) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       unlisten?.();
       unlisten = null;
     };

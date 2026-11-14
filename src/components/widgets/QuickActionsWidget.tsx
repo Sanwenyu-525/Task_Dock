@@ -6,7 +6,7 @@ import { Clipboard, Inbox, Plus, Workflow } from "lucide-react";
 
 import { useLocale } from "../../hooks/useLocale";
 import { useUiStore } from "../../store/useUiStore";
-import { openFullApp, openWorkbenchPage } from "../capsule/actions";
+import { openFullApp, openWorkbenchPageWithToast } from "../capsule/actions";
 
 const ACTIONS = [
   {
@@ -20,7 +20,7 @@ const ACTIONS = [
   },
   { key: "capture", labelKey: "widgets.quickActions.capture", icon: Inbox, run: () => openFullApp("inbox") },
   { key: "clipboard", labelKey: "widgets.quickActions.clipboard", icon: Clipboard, run: () => openFullApp("clipboard") },
-  { key: "workflows", labelKey: "widgets.quickActions.workflows", icon: Workflow, run: () => void openWorkbenchPage("workflows") },
+  { key: "workflows", labelKey: "widgets.quickActions.workflows", icon: Workflow, run: () => void openWorkbenchPageWithToast("workflows") },
 ] as const;
 
 export type QuickActionKey = (typeof ACTIONS)[number]["key"];

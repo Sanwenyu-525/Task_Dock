@@ -44,7 +44,12 @@ import { describeRecurrence } from "../../lib/format";
 import useImeComposition from "../../hooks/useImeComposition";
 import { resolveDevProjectChip } from "../devwork/DevProjectContext";
 import { useLocale, type UseLocaleResult } from "../../hooks/useLocale";
-import { openFullApp, openTaskEditor, openWorkbenchPage } from "./actions";
+import {
+  openFullApp,
+  openTaskEditor,
+  openWorkbenchTaskFocus,
+  withWorkbenchToast,
+} from "./actions";
 import { dueLabel, sortPending } from "./format";
 import { EmptyState, PanelHead, Segmented, type SegOption } from "./PanelKit";
 import { SearchField } from "../ui";
@@ -541,7 +546,7 @@ export default function TasksLite() {
             type="button"
             className="cap-main cap-row-open"
             aria-label={t("capsule.tasks.currentTaskAria", { title: currentTask.title })}
-            onClick={() => void openWorkbenchPage("workbench")}
+            onClick={() => void withWorkbenchToast(openWorkbenchTaskFocus(String(currentTask.id)))}
           >
             <span className="cap-item-title" title={currentTask.title}>
               {currentTask.title}

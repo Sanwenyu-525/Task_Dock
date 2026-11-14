@@ -1514,9 +1514,10 @@ describe("应用面板", () => {
     expect(add.querySelector("svg")).toBeTruthy();
     expect(screen.queryByText("添加应用")).toBeNull();
     fireEvent.click(add);
-    // 形态收敛：添加应用直达唯一工作台应用页，不再写主窗一次性意图/切主窗 tab。
+    // 形态收敛 + P1-1：添加应用直达工作台应用页并携带 objectId="add"（添加弹层
+    // 一次性意图，工作台真实切换成功后才写入工作台窗口的 store）；主窗 store 不写。
     await waitFor(() => expect(openWorkbench).toHaveBeenCalledTimes(1));
-    expect(openWorkbench.mock.calls[0][0]).toEqual({ tab: "apps", projectId: null });
+    expect(openWorkbench.mock.calls[0][0]).toEqual({ tab: "apps", objectId: "add" });
     expect(useUiStore.getState().appsAddRequest).toBeNull();
     expect(useUiStore.getState().appConfig).toBeNull();
   });
@@ -1641,13 +1642,14 @@ describe("应用面板", () => {
     expect(add.closest(".cap-empty")).toBeTruthy();
     fireEvent.click(add);
     await waitFor(() => expect(openWorkbench).toHaveBeenCalledTimes(1));
-    expect(openWorkbench.mock.calls[0][0]).toEqual({ tab: "apps", projectId: null });
+    expect(openWorkbench.mock.calls[0][0]).toEqual({ tab: "apps", objectId: "add" });
 
     // 顶部重复的管理图标已删除，只保留底部「管理」；管理同样直达工作台应用页。
     useUiStore.setState({ appConfig: null, appsAddRequest: null, tab: "tasks" });
     expect(screen.queryByRole("button", { name: "管理快捷应用" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "管理" }));
     await waitFor(() => expect(openWorkbench).toHaveBeenCalledTimes(2));
+    // 「管理」是页面级落点（不携带添加意图）。
     expect(openWorkbench.mock.calls[1][0]).toEqual({ tab: "apps", projectId: null });
   });
 

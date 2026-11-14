@@ -46,6 +46,8 @@ vi.mock("./liveSources", () => ({ WIDGET_SOURCES: {} }));
 
 vi.mock("../capsule/actions", () => ({
   openFullApp: vi.fn(),
+  // open-panel 任意标签转发：分流快捷页/工作台页（P0-2）。
+  openPanelOrWorkbench: vi.fn(),
   // 形态收敛后微件的完整功能动作走工作台直达；默认回执 succeeded（测试不关心导航细节）。
   openWorkbenchPageWithToast: vi.fn(async () => ({ status: "succeeded" })),
 }));

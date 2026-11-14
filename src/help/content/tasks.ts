@@ -145,7 +145,7 @@ export const TASKS_ARTICLES: readonly HelpArticle[] = [
           },
           {
             type: "paragraph",
-            text: "专注进行中，完整模式的悬浮胶囊会显示当前阶段与剩余时间；每日专注记录与历史在专注页查看，按本地日期聚合。",
+            text: "专注进行中，悬浮胶囊会显示当前阶段与剩余时间；每日专注记录与历史在专注页查看，按本地日期聚合。",
           },
           {
             type: "tip",
