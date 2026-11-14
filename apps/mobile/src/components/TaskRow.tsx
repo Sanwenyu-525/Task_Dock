@@ -18,12 +18,14 @@ import { formatDue } from "../domain/taskQuery";
 import type { Task } from "../domain/types";
 import { duration, easeOut, useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
-import { font, space } from "../theme/tokens";
+import { font, radius, space } from "../theme/tokens";
 
 import { AppIcon } from "./icons/AppIcon";
 import { SwipeRow, type SwipeRowApi } from "./SwipeRow";
 
 const PRIORITY_LABEL: Record<number, string> = { 1: "低优先级", 2: "中优先级", 3: "高优先级" };
+/** 行内只显示一字标签：完整语义放进行主体的无障碍文案，避免色块拉长整行 */
+const PRIORITY_SHORT: Record<number, string> = { 1: "低", 2: "中", 3: "高" };
 /** 入场 stagger 只给前 9 行，滚动时新挂载的行不再重复动画 */
 const STAGGER_LIMIT = 8;
 /** 勾选命中区：44dp 见方，不与行主体重叠 */
@@ -33,6 +35,7 @@ function TaskRowBase({
   task,
   now,
   entranceIndex,
+  last,
   onToggle,
   onOpenEditor,
   onOpenActions,
@@ -41,6 +44,8 @@ function TaskRowBase({
   task: Task;
   now: number;
   entranceIndex: number;
+  /** 分组列表末行：底部两角收圆 */
+  last?: boolean;
   onToggle: (task: Task) => void;
   /** 轻点行主体：打开同一个 TaskEditorSheet 的编辑态 */
   onOpenEditor: (task: Task) => void;
@@ -148,9 +153,10 @@ function TaskRowBase({
     () =>
       progress.interpolate({
         inputRange: [0, 1],
-        outputRange: [tokens.muted, tokens.ok],
+        // 未选中的圆圈用 faint 而不是 muted：24dp 圆圈在长列表里不该抢过标题
+        outputRange: [tokens.faint, tokens.ok],
       }),
-    [progress, tokens.muted, tokens.ok],
+    [progress, tokens.faint, tokens.ok],
   );
   const checkBackground = useMemo(
     () =>
@@ -199,6 +205,14 @@ function TaskRowBase({
         actionLabel="删除"
         actionAccessibilityLabel={`删除任务 ${task.title}`}
         surface={done ? tokens.cardDone : undefined}
+        radii={{
+          topLeft: 0,
+          topRight: 0,
+          bottomLeft: last ? radius.row : 0,
+          bottomRight: last ? radius.row : 0,
+        }}
+        // 首行不画顶边：分组头本身是带色的连续条；每行只保留一条底边作为分隔线
+        borderEdges={{ top: false, bottom: true, left: true, right: true }}
       >
         {(api) => (
           <View style={styles.row}>
@@ -232,7 +246,7 @@ function TaskRowBase({
             {/* 行主体：打开编辑；长按动作表 */}
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`任务：${task.title}${done ? "，已完成" : ""}`}
+              accessibilityLabel={`任务：${task.title}${task.priority > 0 ? `，${PRIORITY_LABEL[task.priority]}` : ""}${done ? "，已完成" : ""}`}
               accessibilityHint="轻点编辑任务，长按打开更多操作，向左滑动可删除"
               accessibilityActions={[{ name: "longpress", label: "打开任务操作" }]}
               onAccessibilityAction={(event) => {
@@ -261,10 +275,6 @@ function TaskRowBase({
                 >
                   {task.title}
                 </Animated.Text>
-                {/* 行主体进编辑：右侧箭头让「不是整行打卡」这件事看得见 */}
-                <View style={styles.openHint}>
-                  <AppIcon name="chevronRight" color={tokens.faint} size={16} />
-                </View>
               </View>
 
               <View style={styles.meta}>
@@ -288,7 +298,15 @@ function TaskRowBase({
                         { color: task.priority >= 2 ? priorityColor : tokens.muted },
                       ]}
                     >
-                      {PRIORITY_LABEL[task.priority] ?? "低优先级"}
+                      {PRIORITY_SHORT[task.priority] ?? "低"}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {task.category ? (
+                  <View style={[styles.badge, { backgroundColor: tokens.accentSoft }]}>
+                    <Text numberOfLines={1} style={[styles.badgeText, { color: tokens.accentText }]}>
+                      {task.category}
                     </Text>
                   </View>
                 ) : null}
@@ -368,7 +386,7 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    borderWidth: 1.6,
+    borderWidth: 1.75,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -396,11 +414,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     lineHeight: 22,
     maxWidth: "100%",
-  },
-  openHint: {
-    marginLeft: "auto",
-    paddingLeft: 2,
-    paddingTop: 4,
   },
   meta: {
     flexDirection: "row",

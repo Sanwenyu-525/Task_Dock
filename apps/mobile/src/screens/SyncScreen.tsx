@@ -318,7 +318,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           </Text>
         ) : null}
 
-        <SettingSection title="已配对设备">
+        <SettingSection icon="desktop" title="已配对设备">
           {connection && hasToken ? (
             <SettingActionRow
               label={connection.serverName}
@@ -343,7 +343,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           )}
         </SettingSection>
 
-        <SettingSection title="同步设置" trailing={<Badge label="后台待接入" />}>
+        <SettingSection icon="settings" title="同步设置" trailing={<Badge label="后台待接入" />}>
           <SettingActionRow
             label="仅 Wi-Fi 下同步"
             trailing={

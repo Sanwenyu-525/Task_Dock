@@ -80,7 +80,7 @@ export function FeatureIconPlaceholder({
     >
       <IconTile
         name={icon}
-        size={grid ? 48 : compactMode ? 40 : 46}
+        size={grid ? 48 : 46}
         tone="neutral"
       />
       <Text
@@ -113,8 +113,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   compactWrap: {
-    minHeight: 78,
-    gap: 6,
+    minHeight: 84,
+    gap: 7,
+    /** 与 IconEntry 完全同高：同一行里真实入口和占位不能一个高一个矮 */
+    paddingVertical: space.sm,
+    /** 一行里某个标签折成两行时，其余单元拉伸到同高，图标与标签基线仍对齐 */
+    flexGrow: 1,
   },
   gridWrap: {
     minHeight: 92,
@@ -156,7 +160,7 @@ const styles = StyleSheet.create({
   compactLabel: {
     fontSize: font.label,
     fontWeight: "600",
-    lineHeight: 15,
+    lineHeight: 16,
   },
   hint: {
     fontSize: font.label,

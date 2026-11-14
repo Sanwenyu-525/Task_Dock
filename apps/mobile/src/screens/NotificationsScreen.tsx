@@ -110,7 +110,7 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
       <AppBar title="通知与后台" onBack={nav.back} />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <SettingSection title="通知权限">
+        <SettingSection icon="bell" title="通知权限">
           <View style={styles.statusRow}>
             <Text style={[styles.statusLabel, { color: tokens.muted }]}>系统通知权限</Text>
             <StatusPill label={permissionLabel} tone={tone} />
@@ -138,7 +138,7 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
           </PressableScale>
         </SettingSection>
 
-        <SettingSection title="提醒动作">
+        <SettingSection icon="alarm" title="提醒动作">
           <SettingActionRow
             label="完成后收起通知"
             helper="在通知上点「完成」后，把这条通知从通知栏收起"
@@ -185,7 +185,7 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
           </Pressable>
         </View>
 
-        <SettingSection title="远程推送" trailing={<Badge label="未实现" tone="unimplemented" />}>
+        <SettingSection icon="cloudOff" title="远程推送" trailing={<Badge label="未实现" tone="unimplemented" />}>
           <SettingActionRow
             label="远程推送"
             helper="需要厂商推送账号与中继服务，当前未接入"
@@ -201,7 +201,7 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
           <SettingRow label="推送服务" value="未配置" valueTone="muted" />
         </SettingSection>
 
-        <SettingSection title="后台同步" trailing={<Badge label="规划中" />}>
+        <SettingSection icon="sync" title="后台同步" trailing={<Badge label="规划中" />}>
           <SettingActionRow
             label="后台同步"
             helper="仅在有待同步内容且已配对时运行，完成后注销；随同步能力一起提供"

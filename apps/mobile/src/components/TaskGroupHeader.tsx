@@ -1,14 +1,14 @@
-// 分组头：左侧色条 + 折叠箭头 + 名称 + (数量)，右侧分割线延伸到屏幕边；补充说明用胶囊。
-// 色条比圆点更容易在长列表里做视觉锚点，也让「今天 / 已完成」这些分区一眼可分。
-// 折叠只切展示：点击整行开合，计数始终显示，用户知道收起来了几项。
+// 分组条：与任务行拼成一个连续分组卡，而不是「标题 + 一堆独立白卡」。
+// 浅蓝 = 待办/今天，浅绿 = 已完成，浅琥珀 = 需要留意的逾期提示。
+// 左侧语义图标放在实色圆底上，计数用白底胶囊，右侧折叠箭头；点击整条开合。
 // 纯展示，不参与分组计算（分组在 src/screens/taskGroups.ts）。
 import { memo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
-import { font, space } from "../theme/tokens";
+import { font, radius, space } from "../theme/tokens";
 
-import { AppIcon } from "./icons/AppIcon";
+import { AppIcon, type IconName } from "./icons/AppIcon";
 
 export type GroupTone = "accent" | "warn" | "ok" | "muted";
 export type GroupHintTone = "muted" | "warn";
@@ -16,6 +16,7 @@ export type GroupHintTone = "muted" | "warn";
 function TaskGroupHeaderBase({
   title,
   count,
+  icon,
   hint,
   hintTone = "muted",
   tone = "muted",
@@ -24,6 +25,8 @@ function TaskGroupHeaderBase({
 }: {
   title: string;
   count: number;
+  /** 分组语义图标；不传时用通用列表图标 */
+  icon?: IconName;
   hint?: string;
   /** 补充说明的色调：warn 用于「N 项已逾期」这类需要留意的提示 */
   hintTone?: GroupHintTone;
@@ -34,30 +37,34 @@ function TaskGroupHeaderBase({
   onPress?: () => void;
 }) {
   const { tokens } = useTheme();
-  const toneColor =
+  const background =
+    tone === "accent"
+      ? tokens.accentWash
+      : tone === "warn"
+        ? tokens.warnSoft
+        : tone === "ok"
+          ? tokens.okSoft
+          : tokens.bgAccent;
+  const mark =
     tone === "accent"
       ? tokens.accent
       : tone === "warn"
         ? tokens.warn
         : tone === "ok"
           ? tokens.ok
-          : tokens.faint;
+          : tokens.muted;
+  const markText =
+    tone === "ok" ? tokens.onOk : tone === "muted" ? tokens.textSoft : tokens.onAccent;
 
   const content = (
     <>
-      <View style={[styles.bar, { backgroundColor: toneColor }]} />
-      {onPress ? (
-        <View style={styles.chevronBox} pointerEvents="none">
-          <AppIcon
-            name={collapsed ? "chevronRight" : "chevronDown"}
-            color={tokens.muted}
-            size={16}
-          />
-        </View>
-      ) : null}
+      <View style={[styles.mark, { backgroundColor: tone === "muted" ? tokens.track : mark }]}>
+        <AppIcon name={icon ?? "list"} color={markText} size={13} />
+      </View>
       <Text style={[styles.title, { color: tokens.text }]}>{title}</Text>
-      <Text style={[styles.count, { color: tokens.muted }]}>({count})</Text>
-      <View style={[styles.rule, { backgroundColor: tokens.separator }]} />
+      <View style={[styles.countPill, { backgroundColor: tokens.card }]}>
+        <Text style={[styles.count, { color: mark }]}>{count}</Text>
+      </View>
       {hint ? (
         <View
           style={[
@@ -67,17 +74,29 @@ function TaskGroupHeaderBase({
         >
           <Text
             numberOfLines={1}
-            style={[
-              styles.hint,
-              { color: hintTone === "warn" ? tokens.warn : tokens.muted },
-            ]}
+            style={[styles.hint, { color: hintTone === "warn" ? tokens.warn : tokens.muted }]}
           >
             {hint}
           </Text>
         </View>
       ) : null}
+      {onPress ? (
+        <View style={styles.chevronBox} pointerEvents="none">
+          <AppIcon name={collapsed ? "chevronRight" : "chevronDown"} color={tokens.muted} size={16} />
+        </View>
+      ) : null}
     </>
   );
+
+  const shape = {
+    backgroundColor: background,
+    borderTopLeftRadius: radius.row,
+    borderTopRightRadius: radius.row,
+    borderBottomLeftRadius: collapsed ? radius.row : 0,
+    borderBottomRightRadius: collapsed ? radius.row : 0,
+    borderBottomWidth: collapsed ? 0 : StyleSheet.hairlineWidth,
+    borderBottomColor: tokens.separator,
+  };
 
   if (!onPress) {
     return (
@@ -85,7 +104,7 @@ function TaskGroupHeaderBase({
         accessible
         accessibilityRole="header"
         accessibilityLabel={`${title}，${count} 项${hint ? `，${hint}` : ""}`}
-        style={styles.row}
+        style={[styles.row, shape]}
       >
         {content}
       </View>
@@ -99,8 +118,7 @@ function TaskGroupHeaderBase({
       accessibilityHint={collapsed ? "展开该分组" : "折叠该分组"}
       accessibilityState={{ expanded: !collapsed }}
       onPress={onPress}
-      hitSlop={{ top: 6, bottom: 6 }}
-      style={({ pressed }) => [styles.row, { opacity: pressed ? 0.7 : 1 }]}
+      style={({ pressed }) => [styles.row, shape, { opacity: pressed ? 0.72 : 1 }]}
     >
       {content}
     </Pressable>
@@ -112,37 +130,37 @@ export const TaskGroupHeader = memo(TaskGroupHeaderBase);
 
 const styles = StyleSheet.create({
   row: {
+    minHeight: 46,
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-    paddingTop: space.lg,
-    paddingBottom: space.sm,
-    paddingHorizontal: space.xs,
+    paddingHorizontal: space.md,
+    marginTop: space.md,
   },
-  bar: {
-    width: 3,
-    height: 14,
-    borderRadius: 2,
+  mark: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
   },
   title: {
-    fontSize: font.meta + 1,
+    fontSize: font.body + 1,
     fontWeight: "700",
-    letterSpacing: 0.3,
+    letterSpacing: 0.1,
+  },
+  countPill: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    paddingHorizontal: 5,
+    alignItems: "center",
+    justifyContent: "center",
   },
   count: {
     fontSize: font.label,
     fontWeight: "700",
     fontVariant: ["tabular-nums"],
-  },
-  chevronBox: {
-    width: 16,
-    height: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  rule: {
-    flex: 1,
-    height: StyleSheet.hairlineWidth,
   },
   hintPill: {
     paddingHorizontal: space.sm,
@@ -153,5 +171,12 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     fontSize: font.label,
     fontWeight: "600",
+  },
+  chevronBox: {
+    marginLeft: "auto",
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

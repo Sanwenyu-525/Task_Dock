@@ -53,16 +53,16 @@ export function cardShadow(scheme: ColorScheme): ViewStyle {
   return scheme === "dark"
     ? {
         shadowColor: "#000000",
-        shadowOpacity: 0.35,
-        shadowRadius: 8,
+        shadowOpacity: 0.28,
+        shadowRadius: 7,
         shadowOffset: { width: 0, height: 2 },
-        elevation: 3,
+        elevation: 2,
       }
     : {
         shadowColor: "#1B4B8F",
-        shadowOpacity: 0.08,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 3 },
-        elevation: 3,
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 2 },
+        elevation: 2,
       };
 }

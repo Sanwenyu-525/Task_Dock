@@ -1,6 +1,7 @@
 {
-  "_comment": "语义图标映射：左侧是 App 内使用的语义名（唯一入口 AppIcon），右侧取自项目已有的 lucide 图标几何（桌面端 src/ 已在用同一套）。改这里之后要重跑 tools/build-icons.mjs 生成位图。",
+  "_comment": "语义图标映射：左侧是 App 内使用的语义名（唯一入口 AppIcon），右侧取自项目已有的 lucide 图标几何（桌面端 src/ 已在用同一套）。改这里之后要重跑 npm run icons:generate（生成器 apps/mobile/scripts/gen-ui-icons.mjs）；IconGallery 可逐枚真实渲染检查。",
   "map": {
+    "brand": "code-xml",
     "home": "house",
     "tasks": "list-checks",
     "workspace": "layers",
@@ -35,6 +36,7 @@
     "upload": "upload",
     "send": "send",
     "calendar": "calendar",
+    "calendarDays": "calendar-days",
     "clock": "clock",
     "alarm": "alarm-clock",
     "tag": "tag",
@@ -59,7 +61,7 @@
     "clipboard": "clipboard",
     "workflow": "workflow",
     "snippet": "code-xml",
-    "api": "webhook",
+    "api": "plug",
     "json": "braces",
     "regex": "regex",
     "sparkles": "sparkles",
@@ -98,8 +100,15 @@
     "bold": "bold",
     "hash": "hash"
   },
-  "small": [
-    "check",
+  "overrides": {
+    "_comment": "少量业务图标在 lucide 几何上做同语言微调：文件轮廓沿用 lucide file，内部标记换成更直读的字符。",
+    "filePdf": [
+      ["path", { "d": "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }],
+      ["path", { "d": "M14 2v4a2 2 0 0 0 2 2h4" }],
+      ["path", { "d": "M9 18v-6h2a2 2 0 0 1 0 4H9" }]
+    ]
+  },
+  "small": [    "check",
     "clock",
     "chevronDown",
     "chevronUp",
@@ -115,6 +124,7 @@
     "add"
   ],
   "large": [
+    "brand",
     "inbox",
     "note",
     "sync",

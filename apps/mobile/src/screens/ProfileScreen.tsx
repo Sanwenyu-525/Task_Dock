@@ -8,9 +8,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import appConfig from "../../app.json";
+import { BrandMark } from "../components/BrandMark";
 import { EntryRow } from "../components/EntryRow";
 import { GlassCard } from "../components/GlassCard";
-import { IconTile } from "../components/IconTile";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { SectionHeader } from "../components/SectionHeader";
 import { StatusPill } from "../components/StatusPill";
@@ -23,7 +23,7 @@ import { describeError } from "../lib/errors";
 import type { AppNav } from "../lib/nav";
 import { isLegacyConnection } from "../lib/sync/connectionState";
 import { useTheme } from "../theme/ThemeProvider";
-import { font, radius, space } from "../theme/tokens";
+import { font, space } from "../theme/tokens";
 
 const THEME_LABEL = { system: "跟随系统", light: "浅色", dark: "深色" } as const;
 
@@ -94,14 +94,33 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
   const paired = Boolean(connection && hasToken) && !invalid;
   const statusLabel = loading ? "读取中…" : paired ? "已配对" : invalid ? "需重新配对" : "本机模式";
   const statusTone = paired ? "ok" : invalid ? "danger" : "neutral";
+  const deviceName = loading
+    ? "正在读取连接状态"
+    : paired
+      ? (connection?.serverName ?? "桌面端")
+      : invalid
+        ? "需要重新配对"
+        : "本机模式";
+  const deviceNote = paired
+    ? "同步需在同步中心手动发起，不会在后台自动传输"
+    : invalid
+      ? "桌面端已升级加密传输，请重新配对"
+      : "尚未连接桌面端 · 数据只在本机";
 
   return (
     <View style={styles.root}>
       <ScreenHeader title="我的" />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <GlassCard style={styles.appCard}>
-          <IconTile name="project" size={46} tone="brand" iconSize={24} />
+        <GlassCard
+          style={[
+            styles.appCard,
+            {
+              backgroundImage: `linear-gradient(118deg, ${tokens.card} 0%, ${tokens.accentWash} 100%)`,
+            },
+          ]}
+        >
+          <BrandMark size={56} />
           <View style={styles.appText}>
             <Text style={[styles.appName, { color: tokens.text }]}>Task Dock</Text>
             {/* 连点版本号 5 次进入图标预览（开发验收用，不占正式入口） */}
@@ -129,16 +148,15 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
             <View style={styles.group}>
               <SectionHeader icon="smartphone" title="设备与连接" />
               <GlassCard level="primary" style={styles.statusCard}>
-                <View style={styles.statusRow}>
+                <View style={styles.statusTop}>
                   <StatusPill label={statusLabel} tone={statusTone} />
-                  <Text numberOfLines={2} style={[styles.statusNote, { color: tokens.muted }]}>
-                    {paired
-                      ? `配对设备 ${connection?.serverName ?? "桌面端"} · 同步需手动发起`
-                      : invalid
-                        ? "桌面端已升级加密传输，请重新配对"
-                        : "尚未连接桌面端 · 数据只在本机"}
+                  <Text numberOfLines={1} style={[styles.statusDevice, { color: tokens.text }]}>
+                    {deviceName}
                   </Text>
                 </View>
+                <Text numberOfLines={2} style={[styles.statusNote, { color: tokens.muted }]}>
+                  {deviceNote}
+                </Text>
               </GlassCard>
 
               <GlassCard style={styles.card}>
@@ -152,18 +170,21 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                   icon="transfer"
                   label="文件互传"
                   helper="局域网内收发文件（TLS + 指纹固定）"
+                  divider
                   onPress={() => nav.push("files")}
                 />
                 <EntryRow
                   icon="smartphone"
                   label="配对新设备"
                   helper="扫描桌面端二维码或输入 6 位配对码"
+                  divider
                   onPress={() => nav.push("pairing")}
                 />
                 <EntryRow
                   icon="desktop"
                   label="设备详情"
                   helper="完整连接信息与解除配对"
+                  divider
                   onPress={() => nav.push("device")}
                 />
                 {/* 次要入口收成一行链接：仍然真实可达，但不再各占一行 56dp */}
@@ -212,12 +233,14 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                 <EntryRow
                   icon="inbox"
                   label="收集箱"
+                  divider
                   onPress={() => nav.push("inbox")}
                   trailingText={`${summary.captures} 条`}
                 />
                 <EntryRow
                   icon="bell"
                   label="通知"
+                  divider
                   onPress={() => nav.push("notifications")}
                 />
               </GlassCard>
@@ -262,29 +285,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.md,
     paddingHorizontal: space.lg,
-    paddingVertical: space.md,
+    paddingVertical: space.md + 2,
   },
-  appIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: radius.control,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  appText: { flex: 1, gap: 1 },
-  appName: { fontSize: font.section, fontWeight: "800", letterSpacing: -0.2 },
+  appText: { flex: 1, gap: 2 },
+  appName: { fontSize: font.section + 2, fontWeight: "800", letterSpacing: -0.2 },
   appMeta: { fontSize: font.meta },
   errorCard: { padding: space.lg, gap: space.xs },
   errorTitle: { fontSize: font.body, fontWeight: "700" },
   errorHint: { fontSize: font.label, lineHeight: 17 },
-  statusCard: { paddingHorizontal: space.md, paddingVertical: space.sm },
-  statusRow: {
+  statusCard: { paddingHorizontal: space.md + 2, paddingVertical: space.md, gap: 6 },
+  statusTop: {
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-    minHeight: 44,
   },
-  statusNote: { flex: 1, fontSize: font.label, lineHeight: 17 },
+  statusDevice: { flex: 1, fontSize: font.body + 1, fontWeight: "700" },
+  statusNote: { fontSize: font.label, lineHeight: 17 },
   card: { paddingHorizontal: space.md, paddingVertical: space.xxs },
   subLinks: {
     flexDirection: "row",

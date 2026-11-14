@@ -1,5 +1,6 @@
-// 设置类分区块：色条 + 标题的卡片容器。从 SettingsScreen 的私有 Section 泛化，
+// 设置类分区块：图标底板 + 标题的卡片容器。从 SettingsScreen 的私有 Section 泛化，
 // 供设置页与推送页（同步/通知）共用；头部右侧可挂徽标。
+// 图标与一级页的 SectionHeader / 任务分组头同一套 AppIcon 语言，不再用色条。
 import type { ReactNode } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
@@ -7,12 +8,15 @@ import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
 import { GlassCard } from "./GlassCard";
+import { AppIcon, type IconName } from "./icons/AppIcon";
 
 export function SettingSection({
+  icon,
   title,
   trailing,
   children,
 }: {
+  icon: IconName;
   title: string;
   trailing?: ReactNode;
   children: ReactNode;
@@ -23,7 +27,9 @@ export function SettingSection({
     <GlassCard style={styles.section}>
       <View style={styles.head}>
         <View style={styles.headRow}>
-          <View style={[styles.bar, { backgroundColor: tokens.accent }]} />
+          <View style={[styles.iconTile, { backgroundColor: tokens.accentSoft }]}>
+            <AppIcon name={icon} size={14} color={tokens.accent} />
+          </View>
           <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
             {title}
           </Text>
@@ -51,10 +57,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.sm,
   },
-  bar: {
-    width: 3,
-    height: 14,
-    borderRadius: 2,
+  iconTile: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
   },
   title: {
     fontSize: font.title,

@@ -177,7 +177,7 @@ export function DeviceScreen({
           ) : null}
         </GlassCard>
 
-        <SettingSection title="同步与传输">
+        <SettingSection icon="sync" title="同步与传输">
           <SettingActionRow
             label="同步中心"
             helper={
@@ -215,7 +215,7 @@ export function DeviceScreen({
           />
         </SettingSection>
 
-        <SettingSection title="连接与更多">
+        <SettingSection icon="link" title="连接与更多">
           <SettingActionRow
             label="配对新设备"
             helper={

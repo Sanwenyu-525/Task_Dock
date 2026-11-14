@@ -1,11 +1,15 @@
 // 图标契约测试：语义表与生成位图必须一一对应，且位图必须是合法的透明 PNG data URI。
 // 这条测试的价值是挡住「加了语义名却忘了重跑生成器」和「生成器输出被手改」两类事故。
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import iconMap from "../iconMap.json";
-import { ICON_BITMAP } from "../iconAssets.g";
+import { ICON_BITMAP, ICON_MAP_HASH } from "../iconAssets.g";
 
 const names = Object.keys(iconMap.map);
+const overrides = (iconMap.overrides ?? {}) as Record<string, unknown>;
+const overrideNames = Object.keys(overrides).filter((name) => name !== "_comment");
 
 describe("icon map / bitmap contract", () => {
   it("每个语义名都有 md 位图", () => {
@@ -41,5 +45,31 @@ describe("icon map / bitmap contract", () => {
     for (const [name, lucide] of Object.entries(iconMap.map)) {
       expect(lucide, name).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
     }
+  });
+
+  it("overrides 只覆盖已存在的语义名，且每枚至少有轮廓路径", () => {
+    for (const name of overrideNames) {
+      expect(names, name).toContain(name);
+      const nodes = overrides[name];
+      expect(Array.isArray(nodes), name).toBe(true);
+      expect((nodes as unknown[]).length, name).toBeGreaterThan(0);
+    }
+  });
+
+  it("映射指纹与生成资源一致（改了 iconMap 必须重新生成）", () => {
+    const canonical = JSON.stringify({
+      map: Object.fromEntries(
+        Object.entries(iconMap.map).sort(([a], [b]) => a.localeCompare(b)),
+      ),
+      small: [...iconMap.small].sort(),
+      large: [...iconMap.large].sort(),
+      overrides: Object.fromEntries(
+        Object.entries(overrides)
+          .filter(([name]) => name !== "_comment")
+          .sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    });
+    const expected = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+    expect(ICON_MAP_HASH).toBe(expected);
   });
 });

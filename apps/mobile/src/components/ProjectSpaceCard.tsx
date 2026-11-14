@@ -100,28 +100,35 @@ export function ProjectSpaceCard({
 }
 
 /**
- * 真实数据未同步时的紧凑占位（约 72dp）：只说明状态，不重复模块标题「项目空间」。
+ * 真实数据未同步时的紧凑空状态（约 76dp）：只说明状态，不重复模块标题「项目空间」。
  * 不渲染演示项目名、版本号、成员、百分比，也不提供假跳转。
+ *
+ * 第七轮视觉：从「浅蓝实心条」改成虚线空状态面板——它明确告诉用户这里还没有内容，
+ * 不会和下方真实可点的工具入口混成同一层级，也不再是一条宽白卡。
  */
 export function ProjectSpacePlaceholder() {
   const { tokens } = useTheme();
 
   return (
-    <GlassCard
-      level="primary"
-      style={styles.placeholder}
+    <View
+      accessible
       accessibilityLabel="项目数据尚未同步到手机"
+      accessibilityState={{ disabled: true }}
+      style={[styles.placeholder, { borderColor: tokens.cardBorderStrong }]}
     >
-      <IconTile name="project" size={44} />
+      <IconTile name="project" size={34} tone="neutral" />
       <View style={styles.placeholderText}>
         <Text style={[styles.placeholderTitle, { color: tokens.text }]}>
           项目数据尚未同步到手机
         </Text>
         <Text numberOfLines={1} style={[styles.placeholderHint, { color: tokens.muted }]}>
-          接入后在这里查看项目与事项
+          桌面端接入项目后，自动显示项目与事项
         </Text>
       </View>
-    </GlassCard>
+      <View style={[styles.pendingPill, { backgroundColor: tokens.bgAccent }]}>
+        <Text style={[styles.pendingText, { color: tokens.muted }]}>待接入</Text>
+      </View>
+    </View>
   );
 }
 
@@ -165,8 +172,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     minHeight: 76,
     paddingVertical: space.md,
-    paddingHorizontal: space.lg,
+    paddingHorizontal: space.md,
     gap: space.md,
+    borderRadius: radius.row,
+    borderWidth: 1,
+    borderStyle: "dashed",
   },
   placeholderText: {
     flex: 1,
@@ -178,5 +188,14 @@ const styles = StyleSheet.create({
   },
   placeholderHint: {
     fontSize: font.label,
+  },
+  pendingPill: {
+    paddingHorizontal: space.sm,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  pendingText: {
+    fontSize: font.label,
+    fontWeight: "600",
   },
 });

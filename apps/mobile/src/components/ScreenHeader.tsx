@@ -1,4 +1,5 @@
 // 一级页面顶栏：左侧标题（可带副标题），右侧动作插槽；高度 56dp，不参与纵向滚动。
+// 第七轮：参考图顶栏与页面共用浅蓝底，不再画一条贯穿全屏的分割线。
 import type { ReactNode } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
@@ -19,7 +20,7 @@ export function ScreenHeader({
   const { tokens } = useTheme();
 
   return (
-    <View style={[styles.bar, { borderColor: tokens.separator }]}>
+    <View style={styles.bar}>
       <View style={styles.titleBlock}>
         <Text accessibilityRole="header" numberOfLines={1} style={[styles.title, { color: tokens.text }]}>
           {title}
@@ -42,7 +43,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.sm,
     paddingHorizontal: space.lg,
-    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   titleBlock: {
     flex: 1,

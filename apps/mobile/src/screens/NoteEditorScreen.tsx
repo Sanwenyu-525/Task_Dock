@@ -290,7 +290,7 @@ export function NoteEditorScreen({
         onBack={handleBack}
         right={
           <>
-            <PinGlyph
+            <PinButton
               color={pinned ? tokens.accent : tokens.muted}
               active={pinned}
               onPress={() => void togglePinned()}
@@ -395,7 +395,7 @@ export function NoteEditorScreen({
 }
 
 /** AppBar 右侧图钉按钮：激活时用 accent 颜色表达「已置顶」 */
-function PinGlyph({
+function PinButton({
   color,
   onPress,
   active,

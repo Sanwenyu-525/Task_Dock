@@ -30,6 +30,8 @@ export function SwipeRow({
   actionLabel,
   actionAccessibilityLabel,
   surface,
+  radii,
+  borderEdges,
 }: {
   children: (api: SwipeRowApi) => ReactNode;
   onAction: () => void;
@@ -37,6 +39,20 @@ export function SwipeRow({
   actionAccessibilityLabel: string;
   /** 卡片表面色：完成态等需要变色时由调用方传入（必须不透明，否则红底会透出来） */
   surface?: string;
+  /** 分组列表用：首行顶部直角、末行底部圆角，行与行之间只保留一条 hairline */
+  radii?: {
+    topLeft?: number;
+    topRight?: number;
+    bottomLeft?: number;
+    bottomRight?: number;
+  };
+  /** 分组列表用：首行不画顶边，靠分组头衔接 */
+  borderEdges?: {
+    top?: boolean;
+    bottom?: boolean;
+    left?: boolean;
+    right?: boolean;
+  };
 }) {
   const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
@@ -47,6 +63,16 @@ export function SwipeRow({
   const startRef = useRef(0);
   // 只用于无障碍状态与红底可点击性，不参与位移计算
   const [open, setOpen] = useState(false);
+  const topLeft = radii?.topLeft ?? radius.row;
+  const topRight = radii?.topRight ?? radius.row;
+  const bottomLeft = radii?.bottomLeft ?? radius.row;
+  const bottomRight = radii?.bottomRight ?? radius.row;
+  const edges = {
+    top: borderEdges?.top ?? true,
+    bottom: borderEdges?.bottom ?? true,
+    left: borderEdges?.left ?? true,
+    right: borderEdges?.right ?? true,
+  };
 
   /** 位移与圆角必须同步落值：二者由同一手势偏移推导，避免弹簧与插值各跑一套 */
   const applyOffset = useCallback(
@@ -142,13 +168,28 @@ export function SwipeRow({
   );
 
   // 右侧两个圆角随开启进度收成直角：红底左侧是直角，卡片右侧必须接得上
-  const cornerRadius = useMemo(
-    () => corner.interpolate({ inputRange: [0, 1], outputRange: [radius.row, 0] }),
-    [corner],
+  const topRightRadius = useMemo(
+    () => corner.interpolate({ inputRange: [0, 1], outputRange: [topRight, 0] }),
+    [corner, topRight],
+  );
+  const bottomRightRadius = useMemo(
+    () => corner.interpolate({ inputRange: [0, 1], outputRange: [bottomRight, 0] }),
+    [bottomRight, corner],
   );
 
   return (
-    <View style={[styles.container, { backgroundColor: tokens.cardSolid }]}>
+    <View
+      style={[
+        styles.container,
+        {
+          backgroundColor: tokens.cardSolid,
+          borderTopLeftRadius: topLeft,
+          borderTopRightRadius: topRight,
+          borderBottomLeftRadius: bottomLeft,
+          borderBottomRightRadius: bottomRight,
+        },
+      ]}
+    >
       <Animated.View
         style={[
           styles.actionZone,
@@ -156,6 +197,8 @@ export function SwipeRow({
             backgroundColor: tokens.dangerFill,
             opacity: actionOpacity,
             pointerEvents: open ? "auto" : "none",
+            borderTopRightRadius: topRight,
+            borderBottomRightRadius: bottomRight,
           },
         ]}
         importantForAccessibility={open ? "auto" : "no-hide-descendants"}
@@ -180,10 +223,14 @@ export function SwipeRow({
           {
             backgroundColor: surface ?? tokens.cardSolid,
             borderColor: tokens.cardBorder,
-            borderTopLeftRadius: radius.row,
-            borderBottomLeftRadius: radius.row,
-            borderTopRightRadius: cornerRadius,
-            borderBottomRightRadius: cornerRadius,
+            borderTopWidth: edges.top ? StyleSheet.hairlineWidth : 0,
+            borderBottomWidth: edges.bottom ? StyleSheet.hairlineWidth : 0,
+            borderLeftWidth: edges.left ? StyleSheet.hairlineWidth : 0,
+            borderRightWidth: edges.right ? StyleSheet.hairlineWidth : 0,
+            borderTopLeftRadius: topLeft,
+            borderBottomLeftRadius: bottomLeft,
+            borderTopRightRadius: topRightRadius,
+            borderBottomRightRadius: bottomRightRadius,
             transform: [{ translateX }],
           },
         ]}
@@ -202,7 +249,6 @@ export function SwipeRow({
 
 const styles = StyleSheet.create({
   container: {
-    borderRadius: radius.row,
     // 内容滑出时裁掉超出卡片的部分，红色底才只从右侧露出
     overflow: "hidden",
   },
@@ -214,9 +260,6 @@ const styles = StyleSheet.create({
     bottom: 1,
     right: 1,
     width: ACTION_WIDTH,
-    // 外侧（右）圆角与卡片一致；内侧（左）保持直角，与卡片开启后的直角相接
-    borderTopRightRadius: radius.row,
-    borderBottomRightRadius: radius.row,
   },
   actionPress: {
     flex: 1,
@@ -229,7 +272,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   front: {
-    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: "solid",
   },
   highlight: {
     position: "absolute",

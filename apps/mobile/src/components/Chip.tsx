@@ -14,6 +14,7 @@ export function Chip({
   accessibilityLabel,
   accessibilityHint,
   disabled = false,
+  variant = "solid",
 }: {
   label: string;
   active: boolean;
@@ -21,10 +22,31 @@ export function Chip({
   accessibilityLabel?: string;
   accessibilityHint?: string;
   disabled?: boolean;
+  /** solid = 实心蓝选中（旧筛选）；soft = 浅蓝选中（次级筛选，视觉权重低于分段控件） */
+  variant?: "solid" | "soft";
 }) {
   const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
   const progress = useRef(new Animated.Value(active ? 1 : 0)).current;
+
+  const palette =
+    variant === "soft"
+      ? {
+          idleBg: tokens.card,
+          idleBorder: tokens.cardBorder,
+          idleText: tokens.muted,
+          activeBg: tokens.accentSoft,
+          activeBorder: tokens.accentSoft,
+          activeText: tokens.accentText,
+        }
+      : {
+          idleBg: tokens.track,
+          idleBorder: tokens.cardBorder,
+          idleText: tokens.textSoft,
+          activeBg: tokens.accentFill,
+          activeBorder: tokens.accentFill,
+          activeText: tokens.onAccent,
+        };
 
   useEffect(() => {
     if (reduceMotion) {
@@ -45,25 +67,25 @@ export function Chip({
     () =>
       progress.interpolate({
         inputRange: [0, 1],
-        outputRange: [tokens.track, tokens.accentFill],
+        outputRange: [palette.idleBg, palette.activeBg],
       }),
-    [progress, tokens.accentFill, tokens.track],
+    [palette.activeBg, palette.idleBg, progress],
   );
   const border = useMemo(
     () =>
       progress.interpolate({
         inputRange: [0, 1],
-        outputRange: [tokens.cardBorder, tokens.accentFill],
+        outputRange: [palette.idleBorder, palette.activeBorder],
       }),
-    [progress, tokens.accentFill, tokens.cardBorder],
+    [palette.activeBorder, palette.idleBorder, progress],
   );
   const color = useMemo(
     () =>
       progress.interpolate({
         inputRange: [0, 1],
-        outputRange: [tokens.textSoft, tokens.onAccent],
+        outputRange: [palette.idleText, palette.activeText],
       }),
-    [progress, tokens.onAccent, tokens.textSoft],
+    [palette.activeText, palette.idleText, progress],
   );
 
   return (

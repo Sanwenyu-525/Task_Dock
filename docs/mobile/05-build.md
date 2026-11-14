@@ -32,8 +32,16 @@ prebuild 会按 `app.json` 重新生成 `versionName` / `versionCode` / 包名�
 ```bash
 cd apps/mobile
 npx tsc --noEmit                       # 类型检查（提交前必须 exit 0）
+npm run icons:generate                 # iconMap.json → iconAssets.g.ts（构建期位图）
+npm run icons:check                    # 只校验生成物是否最新，不写文件
 npm run android                        # 调试构建 + 装机（expo run:android）
 ```
+
+图标生成器是 `scripts/gen-ui-icons.mjs`：路径全部相对脚本位置，不依赖盘符/用户名；
+几何读取仓库已有的 `lucide-react`（根或 `apps/mobile` 的 `node_modules`），栅格化使用仓库已有的
+Playwright + Chromium。环境准备只需 `npx playwright install chromium`，**不新增 npm 依赖**。
+`iconMap.json` 的 `overrides` 用于少量业务图标的同语言微调；生成物首行的 `ICON_MAP_HASH`
+由契约测试校验，改映射后必须重跑生成器。
 
 Release 构建（验收用）：
 
@@ -66,8 +74,8 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
 
 | 位置 | 字段 | 角色 |
 |---|---|---|
-| `app.json` | `expo.version` | **唯一事实源**（当前 `0.1.6`） |
-| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `21`） |
+| `app.json` | `expo.version` | **唯一事实源**（当前 `0.1.7`） |
+| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `24`） |
 | `android/app/build.gradle` | `versionName` / `versionCode` | 生成物，prebuild 写入；不要当作源 |
 | `src/screens/SettingsScreen.tsx` | 「关于 → 版本」 | 直接读 `app.json`，无需手改 |
 

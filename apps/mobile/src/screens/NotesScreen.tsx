@@ -138,7 +138,18 @@ export function NotesScreen({
     ({ item }: ListRenderItemInfo<NoteListRow>) => {
       if (item.type === "section") {
         return (
-          <TaskGroupHeader title={item.title} count={item.count} tone={item.tone} />
+          <TaskGroupHeader
+            title={item.title}
+            count={item.count}
+            tone={item.tone}
+            icon={
+              item.key === "section-pinned"
+                ? "pin"
+                : item.key === "section-favorited"
+                  ? "star"
+                  : "note"
+            }
+          />
         );
       }
       return <NoteCard note={item.note} now={now} onPress={openEditor} />;

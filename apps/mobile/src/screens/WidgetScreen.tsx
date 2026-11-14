@@ -172,7 +172,7 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
           </View>
         </View>
 
-        <SettingSection title="尺寸">
+        <SettingSection icon="smartphone" title="尺寸">
           <SegmentedControl
             options={SIZES}
             value={prefs.size}
@@ -186,7 +186,7 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
           ) : null}
         </SettingSection>
 
-        <SettingSection title="内容">
+        <SettingSection icon="list" title="内容">
           <View style={styles.chipRow}>
             {CONTENTS.map((item) => (
               <Chip
@@ -200,7 +200,7 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
           </View>
         </SettingSection>
 
-        <SettingSection title="外观">
+        <SettingSection icon="sparkles" title="外观">
           <View style={styles.chipRow}>
             {APPEARANCES.map((item) => (
               <Chip

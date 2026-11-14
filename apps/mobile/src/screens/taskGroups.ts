@@ -1,12 +1,16 @@
 // 任务分组：纯展示层的切分，不改排序、不改筛选语义。
-// 输入已是 selectTasks 排好序的结果，所以组内顺序沿用全局顺序（未完成→优先级→截止→新建）。
-import { startOfDay } from "../domain/taskQuery";
+// 输入已是 selectTasksByFilter 排好序的结果，所以组内顺序沿用全局顺序
+//（未完成→优先级→截止→新建）。
+import { endOfWeekExclusive, startOfDay } from "../domain/taskQuery";
 import type { Task } from "../domain/types";
 import type { GroupHintTone, GroupTone } from "../components/TaskGroupHeader";
 
 const DAY_MS = 86_400_000;
 
 export type SectionKey = "today" | "week" | "later" | "undated" | "done";
+
+/** 行在所属分组中的位置：首/末行决定分组卡的圆角 */
+export type TaskRowPosition = "only" | "first" | "middle" | "last";
 
 export interface TaskSection {
   key: SectionKey;
@@ -20,13 +24,7 @@ export interface TaskSection {
 
 export type TaskListRow =
   | { type: "section"; section: TaskSection }
-  | { type: "task"; task: Task; entranceIndex: number };
-
-/** 本周边界（开区间）：下周一 00:00；今天就是周日时是明天 00:00 */
-function weekEndExclusive(now: number): number {
-  const weekday = new Date(now).getDay();
-  return startOfDay(now) + (((7 - weekday) % 7) + 1) * DAY_MS;
-}
+  | { type: "task"; task: Task; entranceIndex: number; position: TaskRowPosition };
 
 function sectionOf(task: Task, now: number, weekEnd: number): SectionKey {
   if (task.status === "completed") return "done";
@@ -39,7 +37,7 @@ function sectionOf(task: Task, now: number, weekEnd: number): SectionKey {
 }
 
 export function buildTaskSections(tasks: Task[], now: number): TaskSection[] {
-  const weekEnd = weekEndExclusive(now);
+  const weekEnd = endOfWeekExclusive(now);
   const buckets: Record<SectionKey, Task[]> = {
     today: [],
     week: [],
@@ -93,9 +91,17 @@ export function flattenSections(
     rows.push({ type: "section", section });
     // 折叠只影响展示：分组头仍然保留，计数照常显示
     if (collapsed?.has(section.key)) continue;
-    for (const task of section.tasks) {
+    const total = section.tasks.length;
+    for (let index = 0; index < total; index += 1) {
+      const position: TaskRowPosition =
+        total === 1 ? "only" : index === 0 ? "first" : index === total - 1 ? "last" : "middle";
       // 只有前 9 个任务参与入场 stagger；再多的行在滚动时直接呈现，避免列表一直"飞"
-      rows.push({ type: "task", task, entranceIndex: Math.min(ordinal, 9) });
+      rows.push({
+        type: "task",
+        task: section.tasks[index],
+        entranceIndex: Math.min(ordinal, 9),
+        position,
+      });
       ordinal += 1;
     }
   }

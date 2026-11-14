@@ -1,8 +1,14 @@
-// 文件类型图标：类型只决定「形状」，颜色由调用方决定（来自电脑 accent / 发往电脑 ok）。
+// 文件类型图标：类型决定形状 + 语义色；传出的方向（电脑→手机 / 手机→电脑）由外层底板表达。
 //
-// 第四轮：形状统一走 AppIcon（lucide 几何），不再用 View 拼三角形/笑脸。
-// 不给每种文件配一个色：语义色只用于状态，十几种类型色会让整列变成彩色噪音，
-// 也会把「接收中 / 失败」这两个真正需要被看见的状态淹掉。
+// 第五轮：类型不再共用一种灰/蓝——
+//   - PDF 走 danger 红、Markdown 走 accent 蓝、图片/视频/代码各有语义色，
+//     文件名里的扩展名与图标颜色一起解决「PDF 认不出、Markdown 和普通文档混淆」；
+//   - 颜色只取语义 Token，不引入十几种装饰色；接收中/失败等真正需要警觉的状态仍由
+//     行内文字与底板控制，不会被类型色淹没。
+// 形状仍统一走 AppIcon（lucide 几何），不允许页面自己画文件图标。
+import type { Palette } from "../theme/tokens";
+import { useTheme } from "../theme/ThemeProvider";
+
 import { AppIcon, type IconName } from "./icons/AppIcon";
 
 export type FileTypeKind =
@@ -134,14 +140,39 @@ const ICON_BY_KIND: Record<FileTypeKind, IconName> = {
   generic: "fileGeneric",
 };
 
+/** 类型 → 语义色 Token：只用于图标本身，不是状态色。 */
+const TONE_BY_KIND: Record<FileTypeKind, keyof Palette> = {
+  pdf: "danger",
+  doc: "accentText",
+  sheet: "ok",
+  slide: "warn",
+  image: "accentText",
+  video: "accent",
+  audio: "ok",
+  archive: "warn",
+  code: "accent",
+  text: "muted",
+  markdown: "accent",
+  apk: "warn",
+  generic: "muted",
+};
+
 export function FileTypeIcon({
   kind,
   color,
-  size = 20,
+  size = 22,
 }: {
   kind: FileTypeKind;
-  color: string;
+  /** 需要覆盖类型色时传入（例如状态强调）；默认按类型取语义色 */
+  color?: string;
   size?: number;
 }) {
-  return <AppIcon name={ICON_BY_KIND[kind]} color={color} size={size} />;
+  const { tokens } = useTheme();
+  return (
+    <AppIcon
+      name={ICON_BY_KIND[kind]}
+      color={color ?? tokens[TONE_BY_KIND[kind]]}
+      size={size}
+    />
+  );
 }

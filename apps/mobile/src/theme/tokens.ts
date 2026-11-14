@@ -47,6 +47,8 @@ export interface Palette {
   accentSoft: string;
   /** 辅助青蓝：用于装饰性色块、图标底板与分区标识（不承载正文） */
   accentAlt: string;
+  /** 辅助青蓝的浅底：只用于统计磁贴图标底板这类装饰面，不承载正文 */
+  accentAltSoft: string;
   /** 浅蓝水洗底：装饰渐变块、占位图标底板的合成色 */
   accentWash: string;
   /** 水洗底的渐变终点：只用于欢迎区这类大块的柔和渐变（RN backgroundImage，无第三方依赖） */
@@ -59,6 +61,10 @@ export interface Palette {
   tileBorder: string;
   /** 一级卡片的描边：比 hairline 实一点，用于需要「被看见」的重点卡片 */
   cardBorderStrong: string;
+  /** 品牌块渐变的起点：只给 BrandMark 用，不用于普通按钮 */
+  brandBase: string;
+  /** 品牌块渐变的终点：与品牌蓝同色系的青蓝，形成参考效果图的蓝→青过渡 */
+  brandBaseAlt: string;
   onAccent: string;
   ok: string;
   okSoft: string;
@@ -99,12 +105,15 @@ export const palette = (scheme: ColorScheme): Palette =>
         accentFill: "#0D66E0",
         accentSoft: "rgba(22,119,255,0.10)",
         accentAlt: "#35B8F5",
+        accentAltSoft: "rgba(53,184,245,0.14)",
         accentWash: "#EAF4FF",
         accentWashAlt: "#DDEBFF",
         tileBase: "#EAF3FF",
         tileBaseAlt: "#D9E9FF",
         tileBorder: "rgba(22,119,255,0.10)",
         cardBorderStrong: "#DCE7F5",
+        brandBase: "#1677FF",
+        brandBaseAlt: "#35C2F5",
         onAccent: "#FFFFFF",
         ok: "#0A7A6F",
         okSoft: "rgba(25,198,194,0.12)",
@@ -139,12 +148,15 @@ export const palette = (scheme: ColorScheme): Palette =>
         accentFill: "#0D66E0",
         accentSoft: "rgba(127,179,255,0.16)",
         accentAlt: "#67C8F7",
+        accentAltSoft: "rgba(103,200,247,0.16)",
         accentWash: "rgba(53,184,245,0.14)",
         accentWashAlt: "rgba(103,200,247,0.06)",
         tileBase: "rgba(53,184,245,0.13)",
         tileBaseAlt: "rgba(103,200,247,0.19)",
         tileBorder: "rgba(140,175,220,0.16)",
         cardBorderStrong: "rgba(140,175,220,0.22)",
+        brandBase: "#2F7BEF",
+        brandBaseAlt: "#36C0F2",
         onAccent: "#FFFFFF",
         ok: "#3ED6C6",
         okSoft: "rgba(62,214,198,0.14)",
@@ -168,6 +180,8 @@ export const font = {
   page: 24,
   /** 启动层/引导的展示字 */
   display: 30,
+  /** 首页欢迎区问候语：比页面标题大一档，但不占用展示字层级 */
+  hero: 26,
   /** 统计数字 */
   stat: 26,
   /** 模块标题（区域标题、卡片标题） */

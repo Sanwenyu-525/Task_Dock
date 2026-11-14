@@ -14,6 +14,7 @@ export function EntryRow({
   helper,
   onPress,
   trailingText,
+  divider = false,
 }: {
   icon: IconName;
   label: string;
@@ -21,9 +22,17 @@ export function EntryRow({
   /** 省略 onPress 即为占位行：不可点、无二级页 */
   onPress?: () => void;
   trailingText?: string;
+  /** 同一张卡里的第二行起加一条 hairline，避免多行融合成一团 */
+  divider?: boolean;
 }) {
   const { tokens } = useTheme();
   const enabled = Boolean(onPress);
+  const rowStyle = [
+    styles.row,
+    divider
+      ? { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: tokens.separator }
+      : null,
+  ];
 
   const body = (
     <>
@@ -53,7 +62,7 @@ export function EntryRow({
         accessible
         accessibilityLabel={helper ? `${label}，${helper}` : `${label}，移动端暂未接入`}
         accessibilityState={{ disabled: true }}
-        style={styles.row}
+        style={rowStyle}
       >
         {body}
       </View>
@@ -66,7 +75,7 @@ export function EntryRow({
       accessibilityLabel={label}
       accessibilityHint={helper}
       style={styles.press}
-      contentStyle={styles.row}
+      contentStyle={rowStyle}
       scaleTo={0.98}
     >
       {body}

@@ -19,18 +19,23 @@ export function SegmentedControl<T extends string>({
   renderSegment,
   accessibilityLabel,
   emphasis = "soft",
+  size = "regular",
 }: {
   options: SegmentOption<T>[];
   value: T;
   onChange: (value: T) => void;
   renderSegment?: (option: SegmentOption<T>, selected: boolean) => ReactNode;
   accessibilityLabel: string;
-  /** soft = 白底胶囊 + 蓝字（设置页）；accent = 蓝底白字（工作区分段，对齐设计稿） */
+  /** soft = 白底胶囊 + 蓝字（设置页）；accent = 蓝底白字（工作区/任务分段） */
   emphasis?: "soft" | "accent";
+  /** compact = 一级页面顶部的状态筛选，高度 40dp 左右 */
+  size?: "regular" | "compact";
 }) {
   const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
   const [trackWidth, setTrackWidth] = useState(0);
+  const compact = size === "compact";
+  const padding = compact ? 3 : space.xs;
   const index = Math.max(
     0,
     options.findIndex((option) => option.value === value),
@@ -53,7 +58,7 @@ export function SegmentedControl<T extends string>({
     return () => animation.stop();
   }, [index, position, reduceMotion]);
 
-  const innerWidth = Math.max(0, trackWidth - space.sm);
+  const innerWidth = Math.max(0, trackWidth - padding * 2);
   const segmentWidth = options.length > 0 ? innerWidth / options.length : 0;
 
   const indicatorStyle = useMemo(
@@ -69,7 +74,15 @@ export function SegmentedControl<T extends string>({
       accessibilityRole="radiogroup"
       accessibilityLabel={accessibilityLabel}
       onLayout={(event) => setTrackWidth(event.nativeEvent.layout.width)}
-      style={[styles.track, { backgroundColor: tokens.track, borderColor: tokens.cardBorder }]}
+      style={[
+        styles.track,
+        {
+          backgroundColor: tokens.track,
+          borderColor: tokens.cardBorder,
+          padding,
+          borderRadius: compact ? radius.control : radius.control + 4,
+        },
+      ]}
     >
       {segmentWidth > 0 ? (
         <Animated.View
@@ -77,6 +90,9 @@ export function SegmentedControl<T extends string>({
           style={[
             styles.indicator,
             {
+              top: padding,
+              bottom: padding,
+              left: padding,
               backgroundColor: emphasis === "accent" ? tokens.accentFill : tokens.cardSolid,
               borderColor: emphasis === "accent" ? tokens.accentFill : tokens.accentSoft,
             },
@@ -93,14 +109,20 @@ export function SegmentedControl<T extends string>({
             accessibilityLabel={option.label}
             accessibilityState={{ checked: selected }}
             onPress={() => onChange(option.value)}
-            style={({ pressed }) => [styles.segment, { opacity: pressed ? 0.7 : 1 }]}
+            style={({ pressed }) => [
+              styles.segment,
+              compact ? styles.segmentCompact : null,
+              { opacity: pressed ? 0.7 : 1 },
+            ]}
           >
             {renderSegment ? (
               renderSegment(option, selected)
             ) : (
               <Text
+                numberOfLines={1}
                 style={[
                   styles.label,
+                  compact ? styles.labelCompact : null,
                   {
                     color: selected
                       ? emphasis === "accent"
@@ -130,9 +152,6 @@ const styles = StyleSheet.create({
   },
   indicator: {
     position: "absolute",
-    top: space.xs,
-    bottom: space.xs,
-    left: space.xs,
     borderRadius: radius.control,
     borderWidth: 1,
   },
@@ -144,9 +163,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.xs,
     paddingVertical: space.xs,
   },
+  segmentCompact: {
+    minHeight: 32,
+    paddingVertical: 2,
+  },
   label: {
     fontSize: font.meta,
     fontWeight: "600",
+  },
+  labelCompact: {
+    fontSize: font.meta,
   },
   labelActive: {
     fontWeight: "700",

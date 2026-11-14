@@ -114,7 +114,7 @@ function formatFileTime(iso: string | null): string {
   return sameDay ? `今天 ${time}` : `${date.getMonth() + 1}月${date.getDate()}日 ${time}`;
 }
 
-function RemoveGlyph({ color }: { color: string }) {
+function RemoveIcon({ color }: { color: string }) {
   return <AppIcon name="close" color={color} size={14} />;
 }
 
@@ -132,8 +132,17 @@ function SectionHeader({
   return (
     <View style={styles.sectionHead}>
       <View
-        style={[styles.sectionBar, { backgroundColor: tone === "accent" ? tokens.accent : tokens.ok }]}
-      />
+        style={[
+          styles.sectionIcon,
+          { backgroundColor: tone === "accent" ? tokens.accentSoft : tokens.okSoft },
+        ]}
+      >
+        <AppIcon
+          name={tone === "accent" ? "download" : "upload"}
+          color={tone === "accent" ? tokens.accent : tokens.ok}
+          size={14}
+        />
+      </View>
       <Text accessibilityRole="header" style={[styles.sectionTitle, { color: tokens.text }]}>
         {title}
       </Text>
@@ -194,10 +203,7 @@ function FileRow({
           { backgroundColor: incoming ? tokens.accentSoft : tokens.okSoft },
         ]}
       >
-        <FileTypeIcon
-          kind={fileTypeOf(file.name)}
-          color={incoming ? tokens.accent : tokens.ok}
-        />
+        <FileTypeIcon kind={fileTypeOf(file.name)} />
       </View>
 
       <View style={styles.fileMain}>
@@ -218,7 +224,7 @@ function FileRow({
         hitSlop={ROW_HIT_SLOP}
         contentStyle={styles.removeButton}
       >
-        <RemoveGlyph color={tokens.muted} />
+        <RemoveIcon color={tokens.muted} />
       </PressableScale>
     </View>
   );
@@ -818,10 +824,12 @@ const styles = StyleSheet.create({
     gap: space.sm,
     marginTop: space.lg,
   },
-  sectionBar: {
-    width: 3,
-    height: 14,
-    borderRadius: 2,
+  sectionIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
   },
   sectionTitle: {
     fontSize: font.body,

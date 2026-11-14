@@ -10,6 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "icons:generate": "node scripts/gen-ui-icons.mjs",
+    "icons:check": "node scripts/gen-ui-icons.mjs --check",
     "build:android": "cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {

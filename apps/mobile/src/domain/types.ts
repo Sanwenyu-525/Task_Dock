@@ -8,6 +8,12 @@ export type Priority = 0 | 1 | 2 | 3;
 /** all=未完成+已完成；today=今天到期且未完成；overdue=已过期且未完成 */
 export type TaskFilter = "all" | "pending" | "completed" | "today" | "overdue";
 
+/** 任务页主筛选：只看状态，不和时间范围混在一起 */
+export type TaskStatusFilter = "all" | "pending" | "completed";
+
+/** 任务页次级筛选：时间范围；any = 不限制 */
+export type TaskPeriodFilter = "any" | "today" | "week" | "later" | "undated" | "overdue";
+
 export interface Task {
   id: string;
   title: string;

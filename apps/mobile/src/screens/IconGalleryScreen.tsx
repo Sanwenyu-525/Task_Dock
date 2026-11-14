@@ -6,6 +6,8 @@
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { AppBar } from "../components/AppBar";
+import { BrandMark } from "../components/BrandMark";
+import { FileTypeIcon, type FileTypeKind } from "../components/FileTypeIcon";
 import { GlassCard } from "../components/GlassCard";
 import { IconTile } from "../components/IconTile";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
@@ -30,6 +32,22 @@ const STATE_SAMPLE: IconName[] = [
   "warning",
   "error",
   "transfer",
+];
+/** 文件类型形状 + 语义色逐项真实渲染：重点看 PDF / Markdown / 文档是否可分 */
+const FILE_KINDS: FileTypeKind[] = [
+  "pdf",
+  "doc",
+  "sheet",
+  "slide",
+  "image",
+  "video",
+  "audio",
+  "archive",
+  "code",
+  "text",
+  "markdown",
+  "apk",
+  "generic",
 ];
 
 export function IconGalleryScreen({ nav }: { nav: Nav }) {
@@ -117,7 +135,7 @@ export function IconGalleryScreen({ nav }: { nav: Nav }) {
           ))}
         </GlassCard>
 
-        <Text style={[styles.section, { color: tokens.text }]}>底板：一级入口 / 占位 / 品牌</Text>
+        <Text style={[styles.section, { color: tokens.text }]}>底板：一级入口 / 占位</Text>
         <GlassCard style={styles.card}>
           <View style={styles.tileRow}>
             <IconTile name="inbox" size={46} />
@@ -125,7 +143,36 @@ export function IconGalleryScreen({ nav }: { nav: Nav }) {
             <IconTile name="inbox" size={36} />
             <IconTile name="inbox" size={30} iconSize={18} />
             <IconTile name="clipboard" size={46} tone="neutral" />
-            <IconTile name="project" size={46} tone="brand" />
+          </View>
+        </GlassCard>
+
+        <Text style={[styles.section, { color: tokens.text }]}>文件类型（形状 + 语义色）</Text>
+        <GlassCard style={styles.card}>
+          <View style={styles.fileGrid}>
+            {FILE_KINDS.map((kind) => (
+              <View key={kind} style={styles.fileCell}>
+                <FileTypeIcon kind={kind} size={24} />
+                <Text numberOfLines={1} style={[styles.cellName, { color: tokens.muted }]}>
+                  {kind}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </GlassCard>
+
+        <Text style={[styles.section, { color: tokens.text }]}>品牌标识 64 / 46 / 32 / 24</Text>
+        <GlassCard style={styles.card}>
+          <View style={styles.tileRow}>
+            <BrandMark size={64} />
+            <BrandMark size={46} />
+            <BrandMark size={32} />
+            <BrandMark size={24} />
+          </View>
+          {/* 深底检查：品牌块在深色表面和普通白卡上都必须清晰 */}
+          <View style={[styles.brandOnDark, { backgroundColor: tokens.ink }]}>
+            <BrandMark size={46} />
+            <BrandMark size={32} />
+            <BrandMark size={24} />
           </View>
         </GlassCard>
       </ScrollView>
@@ -186,5 +233,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.sm,
     padding: space.xs,
+  },
+  brandOnDark: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+    marginTop: space.xs,
+    padding: space.md,
+    borderRadius: 14,
+  },
+  fileGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  fileCell: {
+    width: "20%",
+    alignItems: "center",
+    paddingVertical: space.sm,
+    gap: 4,
   },
 });

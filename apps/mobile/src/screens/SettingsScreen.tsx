@@ -9,6 +9,7 @@ import { GlassCard } from "../components/GlassCard";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { SettingActionRow } from "../components/SettingActionRow";
 import { MetricTile } from "../components/MetricTile";
+import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { listCaptures } from "../db/captures";
 import { listReminderSchedules } from "../db/reminderSchedule";
@@ -42,12 +43,22 @@ function permissionTone(label: string): PermissionTone {
   return "warn";
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({
+  icon,
+  title,
+  children,
+}: {
+  icon: IconName;
+  title: string;
+  children: ReactNode;
+}) {
   const { tokens } = useTheme();
   return (
     <GlassCard style={styles.section}>
       <View style={styles.sectionHead}>
-        <View style={[styles.sectionBar, { backgroundColor: tokens.accent }]} />
+        <View style={[styles.sectionIcon, { backgroundColor: tokens.accentSoft }]}>
+          <AppIcon name={icon} size={14} color={tokens.accent} />
+        </View>
         <Text accessibilityRole="header" style={[styles.sectionTitle, { color: tokens.text }]}>
           {title}
         </Text>
@@ -206,15 +217,21 @@ export function SettingsScreen({
         {/* 与首页效率概览同一形态：一张卡三段，不再各占一张白卡 */}
         <GlassCard style={styles.tiles}>
           <View style={styles.tilesRow}>
-            <MetricTile variant="column" label="任务" value={summary.tasks} tone="accent" />
+            <MetricTile variant="column" icon="tasks" label="任务" value={summary.tasks} tone="accent" />
             <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
-            <MetricTile variant="column" label="收集" value={summary.captures} />
+            <MetricTile variant="column" icon="inbox" label="收集" value={summary.captures} />
             <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
-            <MetricTile variant="column" label="已完成" value={summary.completed} tone="ok" />
+            <MetricTile
+              variant="column"
+              icon="success"
+              label="已完成"
+              value={summary.completed}
+              tone="ok"
+            />
           </View>
         </GlassCard>
 
-        <Section title="外观">
+        <Section icon="sparkles" title="外观">
           <SegmentedControl
             options={MODES}
             value={mode}
@@ -248,7 +265,7 @@ export function SettingsScreen({
           </View>
         </Section>
 
-        <Section title="提醒">
+        <Section icon="bell" title="提醒">
           <View style={styles.permissionRow}>
             <Text style={[styles.lineLabel, { color: tokens.muted }]}>系统通知权限</Text>
             <View style={[styles.statusPill, { backgroundColor: toneBg }]}>
@@ -300,7 +317,7 @@ export function SettingsScreen({
           />
         </Section>
 
-        <Section title="本地数据">
+        <Section icon="database" title="本地数据">
           {/* 对齐原型：这一节给真实的本地数据读数，而不是一段泛化说明 */}
           <InfoRow label="数据库" value={`SQLite v${SCHEMA_VERSION} · WAL`} />
           <InfoRow label="已排期提醒" value={`${scheduledReminders} 条`} />
@@ -310,7 +327,7 @@ export function SettingsScreen({
           </Text>
         </Section>
 
-        <Section title="关于">
+        <Section icon="info" title="关于">
           {/* 版本号直接读 app.json，避免每轮发版后忘记同步这里的文案 */}
           <InfoRow label="版本" value={appConfig.expo.version} />
           <InfoRow label="后端" value="本地 SQLite" />
@@ -360,10 +377,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.sm,
   },
-  sectionBar: {
-    width: 3,
-    height: 14,
-    borderRadius: 2,
+  sectionIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
   },
   sectionTitle: { fontSize: font.title, fontWeight: "700" },
   sectionRule: {

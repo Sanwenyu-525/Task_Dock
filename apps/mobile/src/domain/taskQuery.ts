@@ -1,6 +1,12 @@
 // 纯函数查询层：不依赖 React、不依赖 SQLite，未来可直接迁入 shared/。
 // 桌面端同语义实现在 Rust，此处保证手机端离线视图与桌面一致。
-import type { Task, TaskCounts, TaskFilter } from "./types";
+import type {
+  Task,
+  TaskCounts,
+  TaskFilter,
+  TaskPeriodFilter,
+  TaskStatusFilter,
+} from "./types";
 
 const DAY_MS = 86_400_000;
 
@@ -59,6 +65,53 @@ export function sortTasks(tasks: Task[]): Task[] {
 
 export function selectTasks(tasks: Task[], filter: TaskFilter, now: number): Task[] {
   return sortTasks(tasks.filter((t) => matchesFilter(t, filter, now)));
+}
+
+/**
+ * 本周边界（开区间）：下周一 00:00；今天就是周日时是明天 00:00。
+ * 任务页的「本周」和分组用的周界必须一致，所以只在这里定义一次。
+ */
+export function endOfWeekExclusive(now: number): number {
+  const weekday = new Date(now).getDay();
+  return startOfDay(now) + (((7 - weekday) % 7) + 1) * DAY_MS;
+}
+
+/** 次级时间筛选：和状态筛选正交，调用方组合两段条件，不产生第二套筛选状态 */
+export function matchesPeriod(task: Task, period: TaskPeriodFilter, now: number): boolean {
+  const start = startOfDay(now);
+  const weekEnd = endOfWeekExclusive(now);
+  switch (period) {
+    case "any":
+      return true;
+    case "today":
+      return task.dueAt != null && task.dueAt >= start && task.dueAt < start + DAY_MS;
+    case "week":
+      // 本周包含今天与今天之前尚未过期的时段；更早的逾期只出现在「逾期」里
+      return task.dueAt != null && task.dueAt >= start && task.dueAt < weekEnd;
+    case "later":
+      return task.dueAt != null && task.dueAt >= weekEnd;
+    case "undated":
+      return task.dueAt == null;
+    case "overdue":
+      return isOverdue(task, now);
+    default:
+      return false;
+  }
+}
+
+function matchesStatus(task: Task, status: TaskStatusFilter): boolean {
+  if (status === "all") return true;
+  return task.status === status;
+}
+
+/** 任务页唯一组合入口：状态（主筛选）× 时间范围（次级筛选）→ 统一排序 */
+export function selectTasksByFilter(
+  tasks: Task[],
+  status: TaskStatusFilter,
+  period: TaskPeriodFilter,
+  now: number,
+): Task[] {
+  return sortTasks(tasks.filter((t) => matchesStatus(t, status) && matchesPeriod(t, period, now)));
 }
 
 /**

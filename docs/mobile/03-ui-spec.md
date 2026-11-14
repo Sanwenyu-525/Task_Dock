@@ -15,7 +15,13 @@
 
 **图标**：统一 `AppIcon`（`src/components/icons/`）。几何取自项目已有的 lucide 图标
 （桌面端 `lucide-react` 已在用同一套），构建期栅格化成单色位图，运行时只做 `tintColor`。
-不引入运行时图标库、图标字体或 Emoji；新增语义必须同时更新 `iconMap.json` 并重跑生成器。
+不引入运行时图标库、图标字体或 Emoji；新增/修改语义必须更新 `iconMap.json` 并运行
+`npm run icons:generate`（生成器 `apps/mobile/scripts/gen-ui-icons.mjs`，路径全部相对脚本位置，
+不依赖盘符或用户名），`npm run icons:check` 只校验生成物是否最新、不写文件。
+少量业务图标可在 `iconMap.json` 的 `overrides` 里沿用 lucide 文件轮廓做同语言微调（如 PDF 的 P）。
+
+**品牌**：应用自身标识只用 `BrandMark`（蓝→青渐变圆角方块 + 白色 `</>`），
+不得复用 `project` / `workspace` / `boxes` / `folders` 等功能语义，也不允许页面各画一个方块。
 
 明确不采用：半透明玻璃卡片、整块渐变背景、夸张投影、大圆角玻璃拟态、自定义字体
 （字体需要新增资产依赖，未经授权不引入）。
@@ -43,6 +49,7 @@
 | `accentFill` | 强调**填充**（承载白字，≥4.5:1） | `#0D66E0` | `#0D66E0` |
 | `accentSoft` | 强调底色（选中胶囊） | 10% | 16% |
 | `accentAlt` | 辅助青蓝（装饰色块/分区标识） | `#35B8F5` | `#67C8F7` |
+| `brandBase` / `brandBaseAlt` | 仅 `BrandMark` 的蓝→青渐变 | `#1677FF` / `#35C2F5` | `#2F7BEF` / `#36C0F2` |
 | `accentWash` | 浅蓝水洗底（欢迎区/占位底板） | `#EAF4FF` | 青蓝 14% |
 | `ok` / `okSoft` / `onOk` | 成功（勾选，文字与白勾均 ≥4.5:1） | `#0A7A6F` | `#3ED6C6` / 深色勾 |
 | `warn` / `warnSoft` | 警示（逾期、待同步） | `#8A5006` | `#F0B45B` |
@@ -84,7 +91,7 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
 
 1. **半透明卡片不许用 `elevation`。** Android 把阴影画在视图下方，半透明卡片会把阴影透出来，
    浅色模式下表现为卡片里嵌一块矩形白/灰框。四级调整（2026-11-14）：表面已全部改实色，
-   因此**只允许一级卡（`level="primary"`）**用 `cardShadow()` 的 3dp 轻阴影 + 强一档描边，
+   因此**只允许一级卡（`level="primary"`）**用 `cardShadow()` 的 2dp 轻阴影 + 强一档描边，
    二级/三级卡仍然零 `elevation`。半透明表面 + 阴影的组合仍然禁止。
 2. **表面必须不透明。** `card`、`cardSolid`、`cardDone`、`sheet` 都是实色；
    `cardSolid` 语义是「需要完全遮住下层时用的合成色」，滑删层依赖它。
@@ -104,29 +111,30 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
 
 | 组件 | 职责 | 约束 |
 |---|---|---|
-| `GlassCard` | 卡片表面（三级） | `primary` 强描边 + 极轻阴影（只给今日专注/设备状态/项目摘要）；`secondary`（默认）实色 + hairline；`tertiary` 无边框浅蓝容器（图标组）。半透明表面仍然禁止 |
+| `GlassCard` | 卡片表面（三级） | `primary` 强描边 + 极轻阴影（只给今日专注/设备状态这类重点卡）；`secondary`（默认）实色 + hairline；`tertiary` 无边框浅蓝容器（图标组、未接入占位）。半透明表面仍然禁止 |
 | `SwipeRow` | 双向滑删容器 | 红底圆角/内缩见 §3；卡片表面色由 `surface` 传入，必须不透明 |
-| `TaskRow` | 任务行 | 标题 16/600，最多两行；**三个热区互不重叠**：左侧 44dp 勾选区只切换完成/恢复、行主体轻点打开 `TaskEditorSheet`、任意区域长按开动作表、左滑删除；优先级/截止/逾期/重复/标签用 12sp 胶囊（截止 accentSoft + 时钟，逾期 warnSoft）；完成态淡青底 + 白勾 + 标题删除线。交互路由由 `src/domain/taskRowAction.ts` 定义并有回归测试 |
-| `TaskGroupHeader` | 分组头 | 3×14 色条 + 13/700 标题 + 数量胶囊 + 折叠箭头 + 右侧细分隔线；有 `onPress` 时整行可点，箭头随开合转向 |
-| `MetricTile` | 统计磁贴 | 色点 + 12sp 标签 + 26sp/800 数字；`variant="column"` 由调用方放进一张卡（首页效率概览、设置页摘要都是「一张卡三段」）；0 值退回中性色；只接收真实统计值（`StatCard` 已删除，避免两套统计组件） |
+| `TaskRow` | 任务行 | 标题 16/600，最多两行；**三个热区互不重叠**：左侧 44dp 勾选区只切换完成/恢复、行主体轻点打开 `TaskEditorSheet`、任意区域长按开动作表、左滑删除；优先级/截止/逾期/重复/标签用 12sp 胶囊（优先级只显示「高/中/低」一字，完整语义进无障碍文案；截止 accentSoft + 时钟，逾期 warnSoft）；完成态淡青底 + 白勾 + 标题删除线。交互路由由 `src/domain/taskRowAction.ts` 定义并有回归测试 |
+| `TaskGroupHeader` | 分组头 | 24dp 语义图标底板（24/8 圆角，色调随分组）+ 13/700 标题 + 数量 + 折叠箭头 + 右侧细分隔线 + 可选的逾期/恢复提示胶囊；有 `onPress` 时整行可点，箭头随开合转向 |
+| `MetricTile` | 统计磁贴 | 18dp 语义图标 + 26sp/800 数字 + 12sp 标签，左对齐；`variant="column"` 由调用方放进一张卡（首页效率概览、设置页摘要都是「一张卡三段」）；0 值图标/数字退回中性色；只接收真实统计值（`StatCard` 已删除，避免两套统计组件） |
 | `TabBar` | 底部导航 | 浮动圆角栏 + 滑动指示胶囊；**5 个一级栏：首页 / 任务 / 工作区 / 工具 / 我的**，图标走 `AppIcon`（home / tasks / workspace / tools / profile，22dp），选中项 accent 图标 + `accentText` 文字 + `accentSoft` 胶囊；点击项 ≥54dp |
 | `ScreenHeader` | 一级页顶栏 | 56dp，标题 `font.page` + 右侧 44dp 图标插槽；不参与内容滚动 |
 | `BackButton` | 二级页返回 | 44dp 命中区，`AppIcon name="back"`（22dp），仅在 `onBack` 传入时渲染 |
-| `AppIcon` | 全站唯一图标出口 | 语义名 → lucide 几何；按尺寸自动选 md(96px)/sm(64px)/lg(128px) 位图，保证 16→32dp 视觉重量一致；`tintColor` 着色，`fadeDuration=0` 防闪烁 |
-| `IconTile` | 图标底板 | `primary` 浅蓝渐变底 + 细描边 + 蓝线图标（真实入口）；`neutral` 中性底 + 灰线（未接入）；`brand` 蓝底白图标（应用标识）；圆角 = 边长的 30% |
-| `FeatureIconPlaceholder` | 未接入能力占位 | 图标+名称(+说明)，`accessibilityState.disabled`，不可点、不渲染二级页；`inline` 变体可省略 `label`（模块标题已写明名称时不重复） |
+| `AppIcon` | 全站唯一图标出口 | 语义名 → lucide 几何（或 `iconMap.json` 的 `overrides`）；按尺寸自动选 md(96px)/sm(64px)/lg(128px) 位图，保证 16→32dp 视觉重量一致；`tintColor` 着色，`fadeDuration=0` 防闪烁；生成物带 `ICON_MAP_HASH`，测试会拦住「改了映射没重跑生成器」 |
+| `FileTypeIcon` | 文件类型图标 | 形状由 `fileTypeKind` 决定（PDF 用文件轮廓 + P，Markdown 用文件 + 笔），颜色取自语义 Token（PDF danger、文档 accentText、表格/音频 ok、演示/压缩/APK warn、代码/视频 accent、文本/通用 muted）；传出的方向由外层底板表达，不再用同一套灰色 |
+| `IconTile` | 图标底板 | `primary` 浅蓝渐变底 + 细描边 + 蓝线图标（真实入口）；`neutral` 中性底 + 灰线（未接入）；圆角 = 边长的 30%；品牌块不再走这里，统一 `BrandMark` |
+| `BrandMark` | 应用品牌标识 | 蓝→青渐变圆角方块 + 白色 `</>`；24/32/46/64dp 四档；不得复用 `project`/`boxes` 等业务图标 |
+| `FeatureIconPlaceholder` | 未接入能力占位 | 图标+名称(+说明)，`accessibilityState.disabled`，不可点、不渲染二级页；`compact` 用 46dp 中性底板并与 `IconEntry` 同为 85dp 内容高度，同一行内图标/文字基线对齐；`inline` 变体可省略 `label`（模块标题已写明名称时不重复） |
 | `ClampedText` | 长文本限高 | 默认 N 行，用透明同宽文本量真实行数决定是否显示「展开全文」；收集箱长速记固定 5 行 |
 | `IconEntry` | 四列真实入口 | 46dp `IconTile` + 12sp 名称，`badge` 只传真实计数 |
-| `MetricTile` | 首页统计磁贴 | 色点 + 12sp 标签 + 26sp/800 数字；**无装饰图标底板**，0 值一律中性色；只接收真实统计值 |
 | `SectionHeader` | 区域标题 | 图标 + 标题 + 右侧动作；无 `onAction` 时动作文字置灰不可点 |
-| `ProjectSpaceCard` / `ProjectSpacePlaceholder` | 项目空间 | 卡片字段全来自 `workspace_projects` 语义；未同步时渲染 76dp 紧凑占位，卡内不重复模块标题 |
-| `FileCollectionCard` | 文件集合 | 三列文件夹卡；有 `onPress` 才是真实入口，否则标注「暂未接入」 |
+| `ProjectSpaceCard` / `ProjectSpacePlaceholder` | 项目空间 | 卡片字段全来自 `workspace_projects` 语义；未同步时渲染 72dp 无边框浅蓝占位 + 36dp 中性图标，视觉权重低于「常用工具」，卡内不重复模块标题 |
+| `FileCollectionCard` | 文件集合 | 三列文件夹卡；有 `onPress` 才是真实入口（白卡 + 描边 + 蓝色图标/说明），否则标注「暂未接入」（浅蓝无描边面板 + 中性图标） |
 | `Chip` | 筛选/选项 | 选中用 `accentFill` 承载白字（不是 `accent`） |
 | `SegmentedControl` | 分段控件 | 内容由调用方渲染；只负责轨道、滑动指示器、无障碍语义 |
 | `BottomSheet` | 弹层基座 | 全应用唯一弹层手感；关闭动画播完再卸载；减少动效时直接呈现 |
 | `ActionSheet` | 长按动作表 | 替代原生 Alert；只回调不改数据 |
 | `TaskEditorSheet` | 任务编辑器 | 三态提交；重复预设；标签与相对提醒见 §6 |
-| `SearchField` | 搜索框 | 44dp；自绘放大镜与清除按钮；清除按钮要有 label |
+| `SearchField` | 搜索框 | 44dp；`AppIcon` 放大镜与清除按钮；清除按钮要有 label |
 | `Toast` | 轻提示 | 位置跟随操作区：顶部/中部操作、列表行与加载错误置顶（推送页在 AppBar 下 8dp，Tab 页贴页面顶端）；FAB、底部主按钮、底部工具行与长按动作表触发的提示贴底，并避开 FAB/工具栏/键盘/安全区。2.4s 自动淡出、不拦截触摸；用 `id` 区分同文案连续提示 |
 | `EmptyState` | 空态 | 说「下一步做什么」，不只说「没有内容」 |
 | `PressableScale` | 按压回弹 | 只做 transform + native driver；减少动效时不缩放 |
@@ -134,7 +142,7 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
 | `AppBar` | 推送页顶栏 | 自绘返回箭头 + 16/600 标题 + 徽标/动作插槽；返回热区 ≥44dp |
 | `Badge` | 规划状态徽标 | `planned`（accentSoft 底/accent 字）与 `unimplemented`（track 底/muted 字） |
 | `ToggleSwitch` | 开关 | RN 核心 Switch 包 token 配色；disabled 态交系统渲染 |
-| `SettingSection` | 设置分区块 | GlassCard + 3×14 色条标题；头部右侧可挂徽标 |
+| `SettingSection` | 设置分区块 | GlassCard + 24dp 图标底板标题（图标随 section 语义）；头部右侧可挂徽标 |
 | `SettingRow` | 静态信息行 | label 左 / value 右；`valueTone="muted"` 表达未配置/规划值 |
 | `SettingActionRow` | 可点设置行 | label(+helper) + 尾部插槽 + 可选箭头；命中区 ≥44dp；无 onPress 退化为静态行 |
 | `StatusPill` | 状态胶囊 | 状态点 + 文案，ok/warn/danger/neutral 四态 |
@@ -148,16 +156,16 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
 
 ```
 工作台                              [通知]
-┌ 早上好，开发者        [白底图标块] ┐   ← accentWash 欢迎区，80dp
-│ 专注重要的事，高效推进每一个任务。    │
-└──────────────────────────────────┘
+┌ 早上好，开发者           [BrandMark] ┐   ← 白→accentWash 渐变欢迎区，92dp
+│ 专注重要的事，高效推进…（320/130%+ 用短句）│
+└──────────────────────────────────────┘
 🎯 今日专注
-   当前待办 ·（分类）   任务标题 20sp（最多两行）
-   [优先级] [🕒 截止时间]
+   当前专注 [待处理]    任务标题 21sp（最多两行）
+   [中] [🕒 截止时间] [分类]
    ─────────────────────────────
-   轻点打开任务页处理            查看任务 ›
+   任务页可查看全部待办             [去处理 ›]
 📈 效率概览                查看详情 ›
-   [待办任务] [今日到期] [已完成]   ← 三磁贴，320dp/大字号自动两列
+   [icon 待办 15] [icon 今日 0] [icon 完成 9]   ← 一张卡三段，320dp/大字号不裂
 📄 最近内容                  更多 ›
    笔记/速记 × 最多 3 条（真实 updatedAt 倒序）
 ⊞ 快捷入口
@@ -345,13 +353,20 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
 - 不给二级/三级卡片加 `elevation` / `shadow*`；不用半透明卡片表面（一级卡的 `cardShadow()` 例外，见 §3.1）。
 - 不写死颜色、圆角、间距；不从组件里直接读 `useColorScheme`（统一走 `useTheme()`）。
 - 不新增运行时图标库、图标字体或 Emoji；不手绘通用图标（统一 `AppIcon`）。
-  图标几何只能来自 `iconMap.json` 的 lucide 映射，新增语义要重跑生成器。
-- 不做整块渐变、模糊、玻璃拟态。渐变只允许出现在三处：`IconTile` 底板、首页欢迎区、
-  一级卡片的描边/阴影强调；都用 RN 原生 `backgroundImage` 与 `elevation`，不引第三方渐变库。
+  图标几何来自 `iconMap.json` 的 lucide 映射与少量 `overrides`；新增/修改语义要运行
+  `npm run icons:generate`，提交前跑 `npm run icons:check`。
+- 品牌标识只用 `BrandMark`，不复用 `project` / `workspace` / `boxes` / `folders` 等功能语义。
+- 不做整块渐变、模糊、玻璃拟态。渐变只允许出现在四处：`IconTile` 底板、`BrandMark`、
+  首页欢迎区、一级卡片的描边/阴影强调；都用 RN 原生 `backgroundImage` 与 `elevation`，
+  不引第三方渐变库。文件类型色只能取语义 Token，不得给 13 种类型各配一种装饰色。
 - 不用原生 `Alert` 做操作反馈（用 Toast / ActionSheet）。
 - 不为了「更花」改业务语义（完成态、逾期分组、重复推进的文案与数据必须一致）。
 
 ## 9. 未验证项
+
+> 2026-11-14 第五轮更正：下列前三项已在本轮真机复验（320/375/390/430dp、深色、130%/150%
+> 字号均有截图，证据见 `tmp/acceptance/mobile-visual-system-v5/report.md`）。仍保留原记录以说明
+> 当时的验证边界。
 
 - 320dp 窄屏下的换行与溢出：**未复验**（本轮真机为 1080×2400 / 约 393dp）。
 - TalkBack 完整朗读顺序：**未验证**（只检查了关键控件有 label）。
@@ -549,3 +564,61 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
 **兼容性**：不改业务语义、不改数据层、不改导航结构（仅新增一个无入口的验收路由）；
 包体变化为 96 枚图标约 186KB 原始 PNG（base64 后约 253KB，未压缩进 JS bundle）；
 深色模式、320–430dp、130%/150% 字号均真机复拍。
+
+## 2026-11-14 第五轮：图标工程归位、品牌统一与视觉收口
+
+**背景**：第四轮的图标质量已达标，但生成器仍在 `tmp/acceptance/.../tools/build-icons.mjs`，
+含 `D:/Develop/task_dock` 绝对路径；首页/我的用 `IconTile tone="brand"` + `project`（boxes）
+冒充品牌；API 用 `webhook` 难辨识；PDF 用 `file-badge` 读不出；欢迎区、统计区、分组头与效果图仍有差距。
+
+**做法**：
+1. 生成器迁入 `apps/mobile/scripts/gen-ui-icons.mjs`，全部路径基于 `import.meta.url`；
+   lucide 从 `apps/mobile/node_modules` 或仓库根 `node_modules` 定位，Playwright 缺 Chromium 时
+   回退扫描 `ms-playwright/chromium-*`；失败给明确错误。新增 `npm run icons:generate` /
+   `icons:check`，生成物带 `ICON_MAP_HASH`，契约测试会拦住「改映射未重跑」。
+   连续两次生成 SHA-256 一致（`tmp/acceptance/mobile-visual-system-v5/build/icons-final-run*.sha256`）。
+2. 品牌：新增 `BrandMark`（`brandBase`→`brandBaseAlt` 渐变 + 白 `</>`），首页欢迎区 48/36dp、
+   我的应用卡 54dp、图标预览 24/32/46/64dp；`IconTile` 删除 `brand` 语气，禁止再用 `project` 冒充品牌。
+3. 图标语义：`api` webhook→`plug`；新增 `brand`→`code-xml`、`calendarDays`→`calendar-days`；
+   `filePdf` 用 `overrides` 在 lucide 文件轮廓内画 P；`fileMarkdown` 保留文件+笔；
+   文件类型色改为语义 Token（PDF danger、文档 accentText、表格/音频 ok、演示/压缩/APK warn 等），
+   方向仍由 FilesScreen 底板表达。
+4. 视觉：欢迎区改为白→accentWash 渐变（品牌块在 320dp 用 36dp，130%+ 字号隐藏）；
+   `MetricTile` 改「18dp 图标 → 26/800 数字 → 12 标签」左对齐；今日专注卡加“当前专注/待处理”、
+   分类胶囊和“去处理”按钮；任务优先级只显示一字；`TaskGroupHeader` 改 24dp 语义图标底板，
+   折叠箭头移到数量后；`SettingSection` / 设置页 / Files 分组头统一为图标底板；
+   `cardShadow()` 3dp→2dp；Profile 行间加 hairline。
+5. 窄屏/字号：320dp 欢迎语用短句「专注重要的事，高效推进。」；任务筛选在 320dp 或 130%+ 换行；
+   130%/150% 欢迎语同一短句，避免“务。”孤字换行；工作区文件集合在 130%+ 字号改为全宽横排，
+   避免三列卡把「文件暂存架」压成省略号。
+
+**验证**：`tsc --noEmit` exit 0；vitest 21 文件 / 205 用例通过；`icons:check` 98 图标 / 125 变体
+up-to-date；真机 vc44→vc48，360/320/375/390/430dp、浅/深色、100%/130%/150% 矩阵与 12 个二级页
+截图；任务创建/勾选/编辑/长按/滑删、收集箱 3→4→3 回归通过。正式 Gradle `assembleRelease`
+仍 **BLOCKED**（构建时可用内存约 1.7GB，历史 JVM 崩溃），本轮用 `expo export:embed` + release
+底包 repack 验证，不视为发布构建。
+
+
+## 2026-11-14 第六轮：视觉收口（工作区权重、占位区分、工具页基线）
+
+**背景**：第五轮已完成图标、品牌、五页与二级页整改。本轮按真机 vc49 截图复核，只修真实缺陷，
+不重建设计系统：① 工作区项目占位仍用 `GlassCard level="primary"`（强描边 + 阴影 + 44dp 蓝底图标），
+在手机端没有项目数据时反而比可用的常用工具更醒目；② 文件集合三张卡都是白卡 + 描边，
+真实/未接入只靠图标颜色区分，扫视时仍像三个都能点；③ 工具页同一行里真实入口用 46dp 底板，
+占位用 40dp 底板，320/360dp 下「快速笔记」与「剪贴板」等标签基线相差约 4–6dp。
+
+**做法**：
+1. `ProjectSpacePlaceholder` 降为 `GlassCard level="tertiary"`（无边框浅蓝），图标改 36dp 中性底板，
+   高度 72dp；保留「尚未同步」状态与说明，不增加假项目/进度/跳转。工作区视觉重量恢复为
+   **真实常用工具 ＞ 未接入的项目/协作占位**。
+2. `FileCollectionCard`：真实入口保持白卡 + hairline + 蓝色图标 + `accentText` 说明；
+   未接入项改 `bgAccent` 无描边面板 + 中性图标 + `muted` 文字。三项仍等高、等距，占位卡内不写假数量。
+3. `FeatureIconPlaceholder` 的 `compact` 变体改为 46dp 中性底板、`gap:7`、标签 `lineHeight:16`、
+   `paddingVertical:8`，与 `IconEntry` 完全同高（85dp 内容），同一行内图标与文字基线对齐。
+4. 其余页面与组件不改：首页/任务/我的、二级页、图标映射、品牌组件、Token 值均保持第五轮状态。
+
+**验证**：`tsc --noEmit` exit 0；vitest 21 文件 / 205 用例通过；`icons:check` 98 图标 / 125 变体；
+真机 vc50（`expo export:embed` + release 底包 repack，非 Gradle release）拍摄整改前/后五页，
+320/360/390/430dp 与深色五页；任务创建/完成/恢复/编辑/长按动作表/滑删、四个工作区入口、
+快速笔记、设备详情、设置与 Android 返回键回归通过，测试任务已删除，统计恢复 15/0/9。
+证据：`tmp/acceptance/mobile-visual-system-v6/`。正式 `assembleRelease` 仍 **BLOCKED**（内存限制）。
