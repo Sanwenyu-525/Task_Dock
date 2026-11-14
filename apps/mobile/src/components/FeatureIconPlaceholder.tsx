@@ -1,11 +1,15 @@
 // 功能占位：桌面端已有、移动端尚未接入的能力只保留一个线性图标 + 名称。
 // 硬约束：不可点击、不渲染二级页、不写库、不显示任何假数字/假进度。
+//
+// 视觉口径（第四轮）：占位与真实入口必须一眼可分——真实入口用浅蓝底板 + 蓝线图标，
+// 占位用中性底板 + 灰线图标，且不挂徽标、不出现箭头。
 import { StyleSheet, Text, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
-import { font, radius, space } from "../theme/tokens";
+import { font, space } from "../theme/tokens";
 
-import { Glyph, type GlyphName } from "./Glyph";
+import { IconTile } from "./IconTile";
+import { type IconName } from "./icons/AppIcon";
 
 type PlaceholderVariant = "stacked" | "compact" | "grid" | "inline";
 
@@ -15,10 +19,13 @@ export function FeatureIconPlaceholder({
   hint = "移动端暂未接入",
   compact = false,
   variant,
+  spokenLabel,
 }: {
-  icon: GlyphName;
+  icon: IconName;
   /** 省略时说明文字单独成行：模块标题已写明名称时不再重复一遍 */
   label?: string;
+  /** 视觉名称在窄屏上需要缩写时，给读屏保留完整名称 */
+  spokenLabel?: string;
   hint?: string;
   /** @deprecated 使用 variant="compact"；保留是为了兼容既有调用 */
   compact?: boolean;
@@ -38,13 +45,11 @@ export function FeatureIconPlaceholder({
       <View
         accessible
         accessibilityRole="image"
-        accessibilityLabel={label ? `${label}，${hint}` : hint}
+        accessibilityLabel={label ? `${spokenLabel ?? label}，${hint}` : hint}
         accessibilityState={{ disabled: true }}
         style={styles.inlineWrap}
       >
-        <View style={[styles.inlineTile, { backgroundColor: tokens.track, borderColor: tokens.separator }]}>
-          <Glyph name={icon} color={tokens.faint} size={20} />
-        </View>
+        <IconTile name={icon} size={36} tone="neutral" />
         <View style={styles.inlineText}>
           {label ? (
             <Text numberOfLines={1} style={[styles.inlineLabel, { color: tokens.muted }]}>
@@ -69,20 +74,15 @@ export function FeatureIconPlaceholder({
     <View
       accessible
       accessibilityRole="image"
-      accessibilityLabel={`${label}，${hint}`}
+      accessibilityLabel={`${spokenLabel ?? label}，${hint}`}
       accessibilityState={{ disabled: true }}
       style={[styles.wrap, compactMode ? styles.compactWrap : null, grid ? styles.gridWrap : null]}
     >
-      <View
-        style={[
-          styles.tile,
-          compactMode ? styles.compactTile : null,
-          grid ? styles.gridTile : null,
-          { backgroundColor: tokens.track, borderColor: tokens.separator },
-        ]}
-      >
-        <Glyph name={icon} color={tokens.faint} size={compactMode ? 20 : 22} />
-      </View>
+      <IconTile
+        name={icon}
+        size={grid ? 48 : compactMode ? 40 : 46}
+        tone="neutral"
+      />
       <Text
         numberOfLines={compactMode ? 2 : 1}
         style={[
@@ -114,11 +114,11 @@ const styles = StyleSheet.create({
   },
   compactWrap: {
     minHeight: 78,
-    gap: 5,
+    gap: 6,
   },
   gridWrap: {
-    minHeight: 90,
-    gap: 7,
+    minHeight: 92,
+    gap: 8,
   },
   inlineWrap: {
     minHeight: 56,
@@ -127,14 +127,6 @@ const styles = StyleSheet.create({
     gap: space.md,
     paddingVertical: space.xs,
     paddingHorizontal: space.xs,
-  },
-  inlineTile: {
-    width: 36,
-    height: 36,
-    borderRadius: 11,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
   },
   inlineText: {
     flex: 1,
@@ -153,24 +145,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     lineHeight: 19,
   },
-  tile: {
-    width: 46,
-    height: 46,
-    borderRadius: radius.control,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  compactTile: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-  },
-  gridTile: {
-    width: 48,
-    height: 48,
-    borderRadius: radius.control,
-  },
   label: {
     fontSize: font.meta,
     fontWeight: "600",
@@ -182,7 +156,7 @@ const styles = StyleSheet.create({
   compactLabel: {
     fontSize: font.label,
     fontWeight: "600",
-    lineHeight: 14,
+    lineHeight: 15,
   },
   hint: {
     fontSize: font.label,

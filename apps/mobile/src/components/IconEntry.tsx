@@ -3,9 +3,10 @@
 import { StyleSheet, Text, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
-import { font, radius, space } from "../theme/tokens";
+import { font, space } from "../theme/tokens";
 
-import { Glyph, type GlyphName } from "./Glyph";
+import { IconTile } from "./IconTile";
+import { type IconName } from "./icons/AppIcon";
 import { PressableScale } from "./PressableScale";
 
 export function IconEntry({
@@ -15,7 +16,7 @@ export function IconEntry({
   accessibilityHint,
   badge,
 }: {
-  icon: GlyphName;
+  icon: IconName;
   label: string;
   onPress: () => void;
   accessibilityHint?: string;
@@ -33,8 +34,8 @@ export function IconEntry({
       contentStyle={styles.content}
       scaleTo={0.94}
     >
-      <View style={[styles.tile, { backgroundColor: tokens.accentSoft }]}>
-        <Glyph name={icon} color={tokens.accent} size={22} />
+      <View>
+        <IconTile name={icon} size={46} />
         {badge != null && badge > 0 ? (
           <View style={[styles.badge, { backgroundColor: tokens.accentFill }]}>
             <Text numberOfLines={1} style={[styles.badgeText, { color: tokens.onAccent }]}>
@@ -59,16 +60,9 @@ const styles = StyleSheet.create({
   content: {
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    paddingVertical: space.xs,
-    minHeight: 80,
-  },
-  tile: {
-    width: 46,
-    height: 46,
-    borderRadius: radius.control,
-    alignItems: "center",
-    justifyContent: "center",
+    gap: 7,
+    paddingVertical: space.sm,
+    minHeight: 84,
   },
   badge: {
     position: "absolute",

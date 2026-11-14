@@ -28,6 +28,7 @@ import { NotesScreen } from "./src/screens/NotesScreen";
 import { NotificationsScreen } from "./src/screens/NotificationsScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
 import { ProfileScreen } from "./src/screens/ProfileScreen";
+import { IconGalleryScreen } from "./src/screens/IconGalleryScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
 import { ShareScreen } from "./src/screens/ShareScreen";
 import { SyncScreen } from "./src/screens/SyncScreen";
@@ -264,6 +265,8 @@ function Shell() {
         return <DeviceScreen nav={nav} version={version} onBack={back} />;
       case "settings":
         return <SettingsScreen nav={nav} version={version} onBack={back} />;
+      case "icon_gallery":
+        return <IconGalleryScreen nav={nav} />;
     }
   };
 

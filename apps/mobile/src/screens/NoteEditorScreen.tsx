@@ -16,6 +16,7 @@ import {
 
 import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { AppBar } from "../components/AppBar";
+import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import {
   Toast,
   TOAST_TOP_PUSH,
@@ -262,9 +263,9 @@ export function NoteEditorScreen({
 
   const sheetActions = useMemo<SheetAction[]>(
     () => [
-      { key: "copy", label: "复制全文", hint: "标题与正文一起复制" },
-      { key: "share", label: "分享笔记", hint: "调起系统分享面板" },
-      { key: "delete", label: "删除笔记", tone: "danger", hint: "删除后不再出现在笔记列表" },
+      { key: "copy", label: "复制全文", icon: "copy", hint: "标题与正文一起复制" },
+      { key: "share", label: "分享笔记", icon: "share", hint: "调起系统分享面板" },
+      { key: "delete", label: "删除笔记", tone: "danger", icon: "delete", hint: "删除后不再出现在笔记列表" },
     ],
     [],
   );
@@ -362,10 +363,10 @@ export function NoteEditorScreen({
           },
         ]}
       >
-        <ToolButton label="B" accessibilityLabel="加粗标记" onPress={wrapBold} bold />
-        <ToolButton label="≡" accessibilityLabel="插入列表项" onPress={insertList} />
-        <ToolButton label="#" accessibilityLabel="插入标签" onPress={insertTag} />
-        <ToolButton label="↗" accessibilityLabel="分享笔记" onPress={() => void handleShare()} />
+        <ToolButton icon="bold" accessibilityLabel="加粗标记" onPress={wrapBold} />
+        <ToolButton icon="list" accessibilityLabel="插入列表项" onPress={insertList} />
+        <ToolButton icon="hash" accessibilityLabel="插入标签" onPress={insertTag} />
+        <ToolButton icon="share" accessibilityLabel="分享笔记" onPress={() => void handleShare()} />
       </View>
 
       <Toast
@@ -393,7 +394,7 @@ export function NoteEditorScreen({
   );
 }
 
-/** AppBar 右侧图钉按钮：激活时用 accent 实心表达「已置顶」 */
+/** AppBar 右侧图钉按钮：激活时用 accent 颜色表达「已置顶」 */
 function PinGlyph({
   color,
   onPress,
@@ -407,19 +408,12 @@ function PinGlyph({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={active ? "取消置顶" : "置顶笔记"}
+      accessibilityState={{ selected: active }}
       onPress={onPress}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       style={({ pressed }) => [styles.iconButton, { opacity: pressed ? 0.6 : 1 }]}
     >
-      <View style={styles.pinGlyph}>
-        <View
-          style={[
-            styles.pinGlyphHead,
-            { backgroundColor: active ? color : "transparent", borderColor: color },
-          ]}
-        />
-        <View style={[styles.pinGlyphStem, { backgroundColor: color }]} />
-      </View>
+      <AppIcon name="pin" color={color} size={21} />
     </Pressable>
   );
 }
@@ -435,11 +429,7 @@ function MoreButton({ onPress }: { onPress: () => void }) {
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       style={({ pressed }) => [styles.iconButton, { opacity: pressed ? 0.6 : 1 }]}
     >
-      <View style={styles.moreGlyph}>
-        <View style={[styles.moreDot, { backgroundColor: tokens.muted }]} />
-        <View style={[styles.moreDot, { backgroundColor: tokens.muted }]} />
-        <View style={[styles.moreDot, { backgroundColor: tokens.muted }]} />
-      </View>
+      <AppIcon name="more" color={tokens.muted} size={21} />
     </Pressable>
   );
 }
@@ -472,15 +462,13 @@ function ActionText({
 }
 
 function ToolButton({
-  label,
+  icon,
   onPress,
   accessibilityLabel,
-  bold = false,
 }: {
-  label: string;
+  icon: IconName;
   onPress: () => void;
   accessibilityLabel: string;
-  bold?: boolean;
 }) {
   const { tokens } = useTheme();
 
@@ -491,15 +479,7 @@ function ToolButton({
       onPress={onPress}
       style={({ pressed }) => [styles.toolButton, { opacity: pressed ? 0.6 : 1 }]}
     >
-      <Text
-        style={[
-          styles.toolGlyph,
-          { color: tokens.textSoft },
-          bold ? { fontWeight: "800", fontSize: font.title + 2 } : null,
-        ]}
-      >
-        {label}
-      </Text>
+      <AppIcon name={icon} color={tokens.textSoft} size={22} />
     </Pressable>
   );
 }
@@ -578,42 +558,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  toolGlyph: {
-    fontSize: font.title,
-    lineHeight: font.title + 4,
-  },
   iconButton: {
     width: 44,
     height: 44,
     alignItems: "center",
     justifyContent: "center",
-  },
-  pinGlyph: {
-    width: 18,
-    height: 18,
-    alignItems: "center",
-  },
-  pinGlyphHead: {
-    width: 9,
-    height: 9,
-    borderRadius: 2,
-    borderWidth: 1.5,
-    transform: [{ rotate: "45deg" }],
-    marginTop: 2,
-  },
-  pinGlyphStem: {
-    width: 1.5,
-    height: 6,
-    borderRadius: 1,
-    marginTop: 1,
-  },
-  moreGlyph: {
-    flexDirection: "row",
-    gap: 3,
-  },
-  moreDot: {
-    width: 3.5,
-    height: 3.5,
-    borderRadius: 2,
   },
 });

@@ -7,8 +7,8 @@
 // - 协作动态同理：本机笔记/文件互传活动不会被伪装成团队协作动态。
 // - 真实可用的只有移动端已有能力：收集箱、笔记、文件互传、同步中心。
 //
-// 第三轮口径：占位不重复模块标题（标题已写「我的项目空间」，卡里不再写「项目空间」），
-// 顶部不放 disabled 搜索/新建按钮——不可用的按钮不做视觉承诺。
+// 第四轮口径（视觉）：分组容器改成无边框浅蓝面板；文件集合保留三张白卡（「卡片」与
+// 「分组容器」是两种层级，不能都做成白卡）；占位图标用中性底板，与真实入口一眼可分。
 import { useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -33,10 +33,10 @@ const TABS: SegmentOption<WorkspaceTab>[] = [
 
 /** 我的工作区：桌面端独立能力，手机端只有图标占位（不渲染无数据的空详情页） */
 const MINE_ENTRIES = [
-  { icon: "layers", label: "场景工作区" },
-  { icon: "workflow", label: "开发工作台" },
-  { icon: "target", label: "工作现场" },
-  { icon: "pulse", label: "工作流" },
+  { icon: "scene", label: "场景工作区" },
+  { icon: "terminal", label: "开发工作台" },
+  { icon: "site", label: "工作现场" },
+  { icon: "workflow", label: "工作流" },
 ] as const;
 
 export function WorkspaceScreen({
@@ -65,15 +65,15 @@ export function WorkspaceScreen({
         {tab === "projects" ? (
           <>
             <View style={styles.group}>
-              <SectionHeader icon="layers" title="我的项目空间" />
+              <SectionHeader icon="project" title="我的项目空间" />
               <ProjectSpacePlaceholder />
             </View>
 
             <View style={styles.group}>
               {/* 没有用户自定义置顶配置，标题不能用「置顶工具」暗示可排序；
                   四项是固定常用入口，编辑按钮也就不展示。 */}
-              <SectionHeader icon="pin" title="常用工具" />
-              <GlassCard style={styles.gridCard}>
+              <SectionHeader icon="wrench" title="常用工具" />
+              <GlassCard level="tertiary" style={styles.gridCard}>
                 <View style={styles.grid}>
                   <IconEntry
                     icon="inbox"
@@ -81,7 +81,7 @@ export function WorkspaceScreen({
                     badge={inboxCount}
                     onPress={() => nav.push("inbox")}
                   />
-                  <IconEntry icon="doc" label="笔记" onPress={() => nav.push("notes")} />
+                  <IconEntry icon="note" label="笔记" onPress={() => nav.push("notes")} />
                   <IconEntry
                     icon="transfer"
                     label="文件互传"
@@ -93,11 +93,11 @@ export function WorkspaceScreen({
             </View>
 
             <View style={styles.group}>
-              <SectionHeader icon="pulse" title="协作动态" />
-              <GlassCard style={styles.inlineCard}>
+              <SectionHeader icon="users" title="协作动态" />
+              <GlassCard level="tertiary" style={styles.inlineCard}>
                 {/* 模块标题已经写了「协作动态」，占位里只说明状态 */}
                 <FeatureIconPlaceholder
-                  icon="pulse"
+                  icon="users"
                   hint="项目活动尚未同步到手机"
                   variant="inline"
                 />
@@ -105,7 +105,7 @@ export function WorkspaceScreen({
             </View>
 
             <View style={styles.group}>
-              <SectionHeader icon="folder" title="文件集合" />
+              <SectionHeader icon="folders" title="文件集合" />
               <View style={styles.filesRow}>
                 <FileCollectionCard
                   icon="transfer"
@@ -113,16 +113,16 @@ export function WorkspaceScreen({
                   caption="打开互传"
                   onPress={() => nav.push("files")}
                 />
-                <FileCollectionCard icon="shelf" label="文件暂存架" />
-                <FileCollectionCard icon="cube" label="项目资源" />
+                <FileCollectionCard icon="fileStack" label="文件暂存架" />
+                <FileCollectionCard icon="package" label="项目资源" />
               </View>
             </View>
           </>
         ) : (
           <>
             <View style={styles.group}>
-              <SectionHeader icon="layers" title="我的工作区" />
-              <GlassCard style={styles.gridCard}>
+              <SectionHeader icon="briefcase" title="我的工作区" />
+              <GlassCard level="tertiary" style={styles.gridCard}>
                 <View style={styles.entryGrid}>
                   {MINE_ENTRIES.map((entry) => (
                     <View key={entry.label} style={styles.entryCell}>

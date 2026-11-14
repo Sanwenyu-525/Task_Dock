@@ -1,18 +1,21 @@
 // 空态：给「下一步做什么」而不是只说「这里没有内容」。
-// 装饰圆环只用边框与低透明底色，不引入图片资源。
+// 第四轮：装饰圆环换成 32dp 语义图标 + 柔和底板（同一套 AppIcon），空态也有明确含义。
 import { StyleSheet, Text, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
+import { AppIcon, type IconName } from "./icons/AppIcon";
 import { PressableScale } from "./PressableScale";
 
 export function EmptyState({
+  icon = "inbox",
   title,
   hint,
   actionLabel,
   onAction,
 }: {
+  icon?: IconName;
   title: string;
   hint: string;
   actionLabel?: string;
@@ -24,9 +27,9 @@ export function EmptyState({
     <View style={styles.wrap}>
       <View
         importantForAccessibility="no-hide-descendants"
-        style={[styles.orb, { borderColor: tokens.accentSoft, backgroundColor: tokens.accentSoft }]}
+        style={[styles.orb, { backgroundColor: tokens.tileBase, borderColor: tokens.tileBorder }]}
       >
-        <View style={[styles.orbDot, { backgroundColor: tokens.accent }]} />
+        <AppIcon name={icon} size={32} color={tokens.accent} />
       </View>
       <Text style={[styles.title, { color: tokens.text }]}>{title}</Text>
       <Text style={[styles.hint, { color: tokens.muted }]}>{hint}</Text>
@@ -52,19 +55,13 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   orb: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    borderWidth: 1,
+    width: 64,
+    height: 64,
+    borderRadius: 22,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: space.xs,
-  },
-  orbDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    opacity: 0.75,
   },
   title: {
     fontSize: font.title,

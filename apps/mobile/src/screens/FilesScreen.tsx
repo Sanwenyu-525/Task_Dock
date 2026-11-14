@@ -27,6 +27,7 @@ import { AppBar } from "../components/AppBar";
 import { EmptyState } from "../components/EmptyState";
 import { FileTypeIcon, fileTypeOf } from "../components/FileTypeIcon";
 import { GlassCard } from "../components/GlassCard";
+import { AppIcon } from "../components/icons/AppIcon";
 import { PressableScale } from "../components/PressableScale";
 import {
   Toast,
@@ -114,16 +115,7 @@ function formatFileTime(iso: string | null): string {
 }
 
 function RemoveGlyph({ color }: { color: string }) {
-  return (
-    <View style={styles.removeGlyph} importantForAccessibility="no-hide-descendants">
-      <View
-        style={[styles.removeBar, { backgroundColor: color, transform: [{ rotate: "45deg" }] }]}
-      />
-      <View
-        style={[styles.removeBar, { backgroundColor: color, transform: [{ rotate: "-45deg" }] }]}
-      />
-    </View>
-  );
+  return <AppIcon name="close" color={color} size={14} />;
 }
 
 function SectionHeader({
@@ -573,6 +565,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
           </View>
         ) : !connection ? (
           <EmptyState
+            icon="transfer"
             title="尚未配对"
             hint="文件互传需要先与桌面端在同一 Wi-Fi 下配对，传输只走局域网。"
             actionLabel="去配对"
@@ -905,18 +898,6 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: "center",
     justifyContent: "center",
-  },
-  removeGlyph: {
-    width: 14,
-    height: 14,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  removeBar: {
-    position: "absolute",
-    width: 13,
-    height: 1.5,
-    borderRadius: 1,
   },
   footer: {
     marginTop: space.lg,

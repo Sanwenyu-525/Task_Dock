@@ -153,6 +153,7 @@ export function ConflictScreen({ nav }: { nav: Nav }) {
           <Text style={[styles.loading, { color: tokens.muted }]}>读取冲突…</Text>
         ) : conflicts.length === 0 ? (
           <EmptyState
+            icon="warning"
             title="暂无需要处理的冲突"
             hint="冲突只在两台设备同时修改同一条数据时出现；同步完成后会自动出现在这里"
           />

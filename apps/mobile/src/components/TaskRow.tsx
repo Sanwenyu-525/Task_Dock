@@ -20,7 +20,7 @@ import { duration, easeOut, useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
-import { Glyph } from "./Glyph";
+import { AppIcon } from "./icons/AppIcon";
 import { SwipeRow, type SwipeRowApi } from "./SwipeRow";
 
 const PRIORITY_LABEL: Record<number, string> = { 1: "低优先级", 2: "中优先级", 3: "高优先级" };
@@ -28,17 +28,6 @@ const PRIORITY_LABEL: Record<number, string> = { 1: "低优先级", 2: "中优�
 const STAGGER_LIMIT = 8;
 /** 勾选命中区：44dp 见方，不与行主体重叠 */
 const CHECK_HIT = 44;
-
-/** 截止时间前的小时钟：11px 表盘 + 时针/分针，和原型的时间胶囊同一语义 */
-function ClockGlyph({ color }: { color: string }) {
-  return (
-    <View style={styles.clock}>
-      <View style={[styles.clockFace, { borderColor: color }]} />
-      <View style={[styles.clockHandHour, { backgroundColor: color }]} />
-      <View style={[styles.clockHandMinute, { backgroundColor: color }]} />
-    </View>
-  );
-}
 
 function TaskRowBase({
   task,
@@ -234,9 +223,9 @@ function TaskRowBase({
                   },
                 ]}
               >
-                <Animated.Text style={[styles.checkMark, { color: tokens.onOk }, markStyle]}>
-                  ✓
-                </Animated.Text>
+                <Animated.View style={[styles.checkMark, markStyle]}>
+                  <AppIcon name="check" color={tokens.onOk} size={14} />
+                </Animated.View>
               </Animated.View>
             </Pressable>
 
@@ -274,7 +263,7 @@ function TaskRowBase({
                 </Animated.Text>
                 {/* 行主体进编辑：右侧箭头让「不是整行打卡」这件事看得见 */}
                 <View style={styles.openHint}>
-                  <Glyph name="chevron" color={tokens.faint} size={13} />
+                  <AppIcon name="chevronRight" color={tokens.faint} size={16} />
                 </View>
               </View>
 
@@ -317,7 +306,7 @@ function TaskRowBase({
                   ) : (
                     // 未完成：截止时间做成蓝底时间胶囊（原型形态），比裸文本更易扫读
                     <View style={[styles.badge, { backgroundColor: tokens.accentSoft }]}>
-                      <ClockGlyph color={tokens.accentText} />
+                      <AppIcon name="clock" color={tokens.accentText} size={12} />
                       <Text style={[styles.badgeText, { color: tokens.accentText }]}>{due}</Text>
                     </View>
                   )
@@ -384,9 +373,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   checkMark: {
-    fontSize: 13,
-    fontWeight: "700",
-    lineHeight: 16,
+    width: 14,
+    height: 14,
+    alignItems: "center",
+    justifyContent: "center",
   },
   body: {
     flex: 1,
@@ -429,34 +419,6 @@ const styles = StyleSheet.create({
   badgeText: {
     fontSize: font.label,
     fontWeight: "600",
-  },
-  clock: {
-    width: 10,
-    height: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  clockFace: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    borderWidth: 1.2,
-  },
-  clockHandHour: {
-    position: "absolute",
-    left: 4.4,
-    top: 2.2,
-    width: 1.2,
-    height: 3.2,
-    borderRadius: 0.6,
-  },
-  clockHandMinute: {
-    position: "absolute",
-    left: 5,
-    top: 4.4,
-    width: 3.2,
-    height: 1.2,
-    borderRadius: 0.6,
   },
   metaText: {
     fontSize: font.meta,

@@ -1,10 +1,12 @@
-// 搜索框：任务页与收集箱共用。放大镜与清除按钮都是绘制的，不引图标库，
-// 与 TabBar/FAB 的画法保持一致；命中区按 44dp 补齐。
+// 搜索框：任务页与收集箱共用。放大镜与清除按钮统一走 AppIcon（同一套线性图标），
+// 命中区按 44dp 补齐。
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
+
+import { AppIcon } from "./icons/AppIcon";
 
 export function SearchField({
   value,
@@ -31,8 +33,7 @@ export function SearchField({
       ]}
     >
       <View pointerEvents="none" style={styles.glyph}>
-        <View style={[styles.lens, { borderColor: tokens.muted }]} />
-        <View style={[styles.handle, { backgroundColor: tokens.muted }]} />
+        <AppIcon name="search" color={tokens.muted} size={18} />
       </View>
 
       <TextInput
@@ -58,7 +59,7 @@ export function SearchField({
           hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
           style={({ pressed }) => [styles.clear, { opacity: pressed ? 0.55 : 1 }]}
         >
-          <Text style={[styles.clearGlyph, { color: tokens.muted }]}>×</Text>
+          <AppIcon name="close" color={tokens.muted} size={16} />
         </Pressable>
       ) : null}
     </View>
@@ -76,25 +77,10 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   glyph: {
-    width: 13,
-    height: 13,
+    width: 18,
+    height: 18,
     justifyContent: "center",
     alignItems: "center",
-  },
-  lens: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    borderWidth: 1.5,
-  },
-  handle: {
-    position: "absolute",
-    right: 0,
-    bottom: 0,
-    width: 5,
-    height: 1.5,
-    borderRadius: 1,
-    transform: [{ rotate: "45deg" }],
   },
   input: {
     flex: 1,
@@ -107,9 +93,5 @@ const styles = StyleSheet.create({
     minHeight: 44,
     alignItems: "center",
     justifyContent: "center",
-  },
-  clearGlyph: {
-    fontSize: 22,
-    lineHeight: 24,
   },
 });

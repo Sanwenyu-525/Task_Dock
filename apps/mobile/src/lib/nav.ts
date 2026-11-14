@@ -14,7 +14,9 @@ export type RouteKey =
   | "inbox"
   | "notes"
   | "device"
-  | "settings";
+  | "settings"
+  // 开发验收专用（无导航入口，长按「我的」页版本号进入），不进正式信息架构
+  | "icon_gallery";
 
 /** 底部五栏：顺序即 TabBar 渲染顺序（首页 / 任务 / 工作区 / 工具 / 我的） */
 export type TabKey = "home" | "tasks" | "workspace" | "tools" | "profile";

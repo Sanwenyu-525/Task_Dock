@@ -95,6 +95,8 @@ export function TasksScreen({
   // 大字号/320dp 下四个统计项并排会截断：改为两列两行
   const { width, fontScale } = useWindowDimensions();
   const twoColumnStats = fontScale > 1.15 || width < 360;
+  // Android 的 font_scale 以 float32 传到 RN，1.3 实际是 1.29999995，不能用 >= 1.3
+  const largeFont = fontScale > 1.25;
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
@@ -323,10 +325,22 @@ export function TasksScreen({
               : "标记为完成"
             : "标记为未完成",
         tone: "primary",
+        icon: actionTask.status === "pending" ? "success" : "pending",
         hint: rule ? `${describeRecurrence(rule)}：只推进到下一期，不进入已完成` : undefined,
       },
-      { key: "edit", label: "编辑任务", hint: "标题、优先级、截止时间、重复与提醒" },
-      { key: "delete", label: "删除任务", tone: "danger", hint: "删除后不再出现在任务列表" },
+      {
+        key: "edit",
+        label: "编辑任务",
+        icon: "edit",
+        hint: "标题、优先级、截止时间、重复与提醒",
+      },
+      {
+        key: "delete",
+        label: "删除任务",
+        tone: "danger",
+        icon: "delete",
+        hint: "删除后不再出现在任务列表",
+      },
     ];
   }, [actionTask]);
 
@@ -426,23 +440,39 @@ export function TasksScreen({
 
   const listHeader = (
     <View style={styles.header}>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        accessibilityLabel="任务筛选"
-        style={styles.filterScroll}
-        contentContainerStyle={styles.filterRow}
-      >
-        {FILTERS.map((item) => (
-          <Chip
-            key={item.key}
-            label={item.label}
-            active={filter === item.key}
-            accessibilityLabel={`筛选 ${item.label}`}
-            onPress={() => setFilter(item.key)}
-          />
-        ))}
-      </ScrollView>
+      {/* 130% 以上字号：五个胶囊横排会超出屏幕且看不出还能滑动，改成换行排布，
+          保证「已完成」也直接可见、可点。常规字号仍用横向滚动，保持单行高度。 */}
+      {largeFont ? (
+        <View style={styles.filterWrap} accessibilityLabel="任务筛选">
+          {FILTERS.map((item) => (
+            <Chip
+              key={item.key}
+              label={item.label}
+              active={filter === item.key}
+              accessibilityLabel={`筛选 ${item.label}`}
+              onPress={() => setFilter(item.key)}
+            />
+          ))}
+        </View>
+      ) : (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          accessibilityLabel="任务筛选"
+          style={styles.filterScroll}
+          contentContainerStyle={styles.filterRow}
+        >
+          {FILTERS.map((item) => (
+            <Chip
+              key={item.key}
+              label={item.label}
+              active={filter === item.key}
+              accessibilityLabel={`筛选 ${item.label}`}
+              onPress={() => setFilter(item.key)}
+            />
+          ))}
+        </ScrollView>
+      )}
 
       {searchOpen ? (
         <SearchField
@@ -510,7 +540,7 @@ export function TasksScreen({
               onPress={toggleSearch}
             />
             <HeaderIconButton
-              icon="plus"
+              icon="add"
               accessibilityLabel="新建任务"
               onPress={openCreate}
             />
@@ -528,6 +558,7 @@ export function TasksScreen({
           ListHeaderComponent={listHeader}
           ListEmptyComponent={
             <EmptyState
+              icon="tasks"
               title={emptyCopy.title}
               hint={emptyCopy.hint}
               actionLabel={searching ? "清除搜索" : showCreateAction ? "新建任务" : "查看全部任务"}
@@ -625,6 +656,11 @@ const styles = StyleSheet.create({
   },
   filterScroll: {
     marginHorizontal: -space.lg,
+  },
+  filterWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space.sm,
   },
   filterRow: {
     flexDirection: "row",

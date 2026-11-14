@@ -49,6 +49,16 @@ export interface Palette {
   accentAlt: string;
   /** 浅蓝水洗底：装饰渐变块、占位图标底板的合成色 */
   accentWash: string;
+  /** 水洗底的渐变终点：只用于欢迎区这类大块的柔和渐变（RN backgroundImage，无第三方依赖） */
+  accentWashAlt: string;
+  /** 图标底板基色（一级入口）：比 accentWash 再实一点，能托住 22dp 线性图标 */
+  tileBase: string;
+  /** 图标底板的渐变终点：同色系、只差一档，避免出现「贴片」式的硬边光斑 */
+  tileBaseAlt: string;
+  /** 图标底板描边：只用于一级入口，把底板从白卡上托起来 */
+  tileBorder: string;
+  /** 一级卡片的描边：比 hairline 实一点，用于需要「被看见」的重点卡片 */
+  cardBorderStrong: string;
   onAccent: string;
   ok: string;
   okSoft: string;
@@ -90,6 +100,11 @@ export const palette = (scheme: ColorScheme): Palette =>
         accentSoft: "rgba(22,119,255,0.10)",
         accentAlt: "#35B8F5",
         accentWash: "#EAF4FF",
+        accentWashAlt: "#DDEBFF",
+        tileBase: "#EAF3FF",
+        tileBaseAlt: "#D9E9FF",
+        tileBorder: "rgba(22,119,255,0.10)",
+        cardBorderStrong: "#DCE7F5",
         onAccent: "#FFFFFF",
         ok: "#0A7A6F",
         okSoft: "rgba(25,198,194,0.12)",
@@ -125,6 +140,11 @@ export const palette = (scheme: ColorScheme): Palette =>
         accentSoft: "rgba(127,179,255,0.16)",
         accentAlt: "#67C8F7",
         accentWash: "rgba(53,184,245,0.14)",
+        accentWashAlt: "rgba(103,200,247,0.06)",
+        tileBase: "rgba(53,184,245,0.13)",
+        tileBaseAlt: "rgba(103,200,247,0.19)",
+        tileBorder: "rgba(140,175,220,0.16)",
+        cardBorderStrong: "rgba(140,175,220,0.22)",
         onAccent: "#FFFFFF",
         ok: "#3ED6C6",
         okSoft: "rgba(62,214,198,0.14)",
@@ -140,7 +160,7 @@ export const palette = (scheme: ColorScheme): Palette =>
       };
 
 export const space = { xxs: 2, xs: 4, sm: 8, md: 12, lg: 16, section: 20, xl: 22, xxl: 30 };
-export const radius = { card: 20, row: 16, control: 12, tile: 12, sheet: 28, chip: 999 };
+export const radius = { card: 20, row: 16, control: 12, tile: 12, iconTile: 14, sheet: 28, chip: 999 };
 // 字阶（2026-11-13 第三轮）：正文从 13 提到 14、辅助说明 12→13、标签 11→12，
 // 11sp 只留给 TabBar 这类纯导航短词；字号只能由语义角色决定，组件不得自造数值。
 export const font = {

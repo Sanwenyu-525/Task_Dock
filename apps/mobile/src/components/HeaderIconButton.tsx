@@ -3,20 +3,24 @@ import { Pressable, StyleSheet } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
 
-import { Glyph, type GlyphName } from "./Glyph";
+import { AppIcon, type IconName } from "./icons/AppIcon";
 
 export function HeaderIconButton({
   icon,
   accessibilityLabel,
   onPress,
   disabled = false,
+  tone = "default",
 }: {
-  icon: GlyphName;
+  icon: IconName;
   accessibilityLabel: string;
   onPress?: () => void;
   disabled?: boolean;
+  /** default = 正文色（主操作）；muted = 次要操作（如关闭搜索） */
+  tone?: "default" | "muted";
 }) {
   const { tokens } = useTheme();
+  const color = disabled ? tokens.faint : tone === "muted" ? tokens.muted : tokens.text;
 
   return (
     <Pressable
@@ -31,7 +35,7 @@ export function HeaderIconButton({
         { opacity: disabled ? 0.4 : pressed ? 0.6 : 1 },
       ]}
     >
-      <Glyph name={icon} color={disabled ? tokens.faint : tokens.text} size={22} />
+      <AppIcon name={icon} color={color} size={22} />
     </Pressable>
   );
 }

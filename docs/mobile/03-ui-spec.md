@@ -4,14 +4,20 @@
 
 ## 1. 设计方向
 
-保留产品既有的蓝/藏青识别色与语义 Token 体系，形态改成 **Flat + 色块分区**：
+保留产品既有的蓝/藏青识别色与语义 Token 体系，形态是 **Flat + 色块分区**，
+在「实色表面」之上加两层克制的层次（第四轮，2026-11-14）：
 
-- 表面不透明、卡片零 `elevation`，纵深只靠「实色表面 + hairline 边框 + 顶边高光」。
-- 分区用色块（统计磁贴、分组色条、标签胶囊）而不是加更多卡片边框。
-- 字阶对比拉大：页标题 30/800，正文 13，元信息 12/11。
+- 表面不透明；卡片分三级（`GlassCard level`）：一级卡（今日专注/设备状态/项目摘要）用强一档描边 +
+  极轻 `elevation`，二级卡（普通内容组）用 hairline，三级容器（工具图标组）不用边框。
+- 分区用色块（图标底板、分组色条、标签胶囊）而不是加更多卡片边框。
+- 字阶对比拉大：页标题 24/800，正文 14，元信息 13，标签 12。
 - 动效轻量：只做透明度与 transform，尊重系统「减少动态效果」。
 
-明确不采用：半透明玻璃卡片、卡片投影、渐变背景、第三方图标库、自定义字体
+**图标**：统一 `AppIcon`（`src/components/icons/`）。几何取自项目已有的 lucide 图标
+（桌面端 `lucide-react` 已在用同一套），构建期栅格化成单色位图，运行时只做 `tintColor`。
+不引入运行时图标库、图标字体或 Emoji；新增语义必须同时更新 `iconMap.json` 并重跑生成器。
+
+明确不采用：半透明玻璃卡片、整块渐变背景、夸张投影、大圆角玻璃拟态、自定义字体
 （字体需要新增资产依赖，未经授权不引入）。
 
 ## 2. Token
@@ -76,8 +82,10 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
 
 ## 3. 表面硬规则（每条都有真机根因）
 
-1. **卡片不许用 `elevation`。** Android 把阴影画在视图下方，半透明卡片会把阴影透出来，
-   浅色模式下表现为卡片里嵌一块矩形白/灰框。层级只靠实色表面 + 边框 + 顶边高光。
+1. **半透明卡片不许用 `elevation`。** Android 把阴影画在视图下方，半透明卡片会把阴影透出来，
+   浅色模式下表现为卡片里嵌一块矩形白/灰框。四级调整（2026-11-14）：表面已全部改实色，
+   因此**只允许一级卡（`level="primary"`）**用 `cardShadow()` 的 3dp 轻阴影 + 强一档描边，
+   二级/三级卡仍然零 `elevation`。半透明表面 + 阴影的组合仍然禁止。
 2. **表面必须不透明。** `card`、`cardSolid`、`cardDone`、`sheet` 都是实色；
    `cardSolid` 语义是「需要完全遮住下层时用的合成色」，滑删层依赖它。
 3. **所有 `TextInput` 显式给底色 + `underlineColorAndroid="transparent"`。**
@@ -96,18 +104,19 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
 
 | 组件 | 职责 | 约束 |
 |---|---|---|
-| `GlassCard` | 一级卡片表面 | 实色 + hairline + 顶边高光；**不带 elevation** |
+| `GlassCard` | 卡片表面（三级） | `primary` 强描边 + 极轻阴影（只给今日专注/设备状态/项目摘要）；`secondary`（默认）实色 + hairline；`tertiary` 无边框浅蓝容器（图标组）。半透明表面仍然禁止 |
 | `SwipeRow` | 双向滑删容器 | 红底圆角/内缩见 §3；卡片表面色由 `surface` 传入，必须不透明 |
 | `TaskRow` | 任务行 | 标题 16/600，最多两行；**三个热区互不重叠**：左侧 44dp 勾选区只切换完成/恢复、行主体轻点打开 `TaskEditorSheet`、任意区域长按开动作表、左滑删除；优先级/截止/逾期/重复/标签用 12sp 胶囊（截止 accentSoft + 时钟，逾期 warnSoft）；完成态淡青底 + 白勾 + 标题删除线。交互路由由 `src/domain/taskRowAction.ts` 定义并有回归测试 |
 | `TaskGroupHeader` | 分组头 | 3×14 色条 + 13/700 标题 + 数量胶囊 + 折叠箭头 + 右侧细分隔线；有 `onPress` 时整行可点，箭头随开合转向 |
-| `StatCard` | 统计磁贴 | 白卡，标签在上、数值在下（26/800）；0 值退回中性色；大字号（`fontScale > 1.15`）由调用方切 2×2 |
-| `TabBar` | 底部导航 | 浮动圆角栏 + 滑动指示胶囊；**5 个新一级栏：首页 / 任务 / 工作区 / 工具 / 我的**，图标走 `Glyph`（home / check / layers / grid / user），选中项 accent 文字 + `accentSoft` 胶囊；点击项 ≥54dp |
+| `MetricTile` | 统计磁贴 | 色点 + 12sp 标签 + 26sp/800 数字；`variant="column"` 由调用方放进一张卡（首页效率概览、设置页摘要都是「一张卡三段」）；0 值退回中性色；只接收真实统计值（`StatCard` 已删除，避免两套统计组件） |
+| `TabBar` | 底部导航 | 浮动圆角栏 + 滑动指示胶囊；**5 个一级栏：首页 / 任务 / 工作区 / 工具 / 我的**，图标走 `AppIcon`（home / tasks / workspace / tools / profile，22dp），选中项 accent 图标 + `accentText` 文字 + `accentSoft` 胶囊；点击项 ≥54dp |
 | `ScreenHeader` | 一级页顶栏 | 56dp，标题 `font.page` + 右侧 44dp 图标插槽；不参与内容滚动 |
-| `BackButton` | 二级页返回 | 44dp 命中区，`Glyph name="back"`，仅在 `onBack` 传入时渲染 |
-| `Glyph` | 线性图标集 | 22dp 视框内用 View 绘制，不引图标库；按 `size/22` 缩放 |
+| `BackButton` | 二级页返回 | 44dp 命中区，`AppIcon name="back"`（22dp），仅在 `onBack` 传入时渲染 |
+| `AppIcon` | 全站唯一图标出口 | 语义名 → lucide 几何；按尺寸自动选 md(96px)/sm(64px)/lg(128px) 位图，保证 16→32dp 视觉重量一致；`tintColor` 着色，`fadeDuration=0` 防闪烁 |
+| `IconTile` | 图标底板 | `primary` 浅蓝渐变底 + 细描边 + 蓝线图标（真实入口）；`neutral` 中性底 + 灰线（未接入）；`brand` 蓝底白图标（应用标识）；圆角 = 边长的 30% |
 | `FeatureIconPlaceholder` | 未接入能力占位 | 图标+名称(+说明)，`accessibilityState.disabled`，不可点、不渲染二级页；`inline` 变体可省略 `label`（模块标题已写明名称时不重复） |
 | `ClampedText` | 长文本限高 | 默认 N 行，用透明同宽文本量真实行数决定是否显示「展开全文」；收集箱长速记固定 5 行 |
-| `IconEntry` | 四列真实入口 | 46dp 图标底板 + 名称，`badge` 只传真实计数 |
+| `IconEntry` | 四列真实入口 | 46dp `IconTile` + 12sp 名称，`badge` 只传真实计数 |
 | `MetricTile` | 首页统计磁贴 | 色点 + 12sp 标签 + 26sp/800 数字；**无装饰图标底板**，0 值一律中性色；只接收真实统计值 |
 | `SectionHeader` | 区域标题 | 图标 + 标题 + 右侧动作；无 `onAction` 时动作文字置灰不可点 |
 | `ProjectSpaceCard` / `ProjectSpacePlaceholder` | 项目空间 | 卡片字段全来自 `workspace_projects` 语义；未同步时渲染 76dp 紧凑占位，卡内不重复模块标题 |
@@ -333,11 +342,13 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
 
 ## 8. 禁止事项
 
-- 不给卡片加 `elevation` / `shadow*`；不用半透明卡片表面。
+- 不给二级/三级卡片加 `elevation` / `shadow*`；不用半透明卡片表面（一级卡的 `cardShadow()` 例外，见 §3.1）。
 - 不写死颜色、圆角、间距；不从组件里直接读 `useColorScheme`（统一走 `useTheme()`）。
-- 不新增图标库或图片装饰（空态用边框圆环，图标用 View 自绘）。
+- 不新增运行时图标库、图标字体或 Emoji；不手绘通用图标（统一 `AppIcon`）。
+  图标几何只能来自 `iconMap.json` 的 lucide 映射，新增语义要重跑生成器。
+- 不做整块渐变、模糊、玻璃拟态。渐变只允许出现在三处：`IconTile` 底板、首页欢迎区、
+  一级卡片的描边/阴影强调；都用 RN 原生 `backgroundImage` 与 `elevation`，不引第三方渐变库。
 - 不用原生 `Alert` 做操作反馈（用 Toast / ActionSheet）。
-- 不用渐变、模糊、大圆角玻璃拟态。
 - 不为了「更花」改业务语义（完成态、逾期分组、重复推进的文案与数据必须一致）。
 
 ## 9. 未验证项
@@ -502,3 +513,39 @@ font   = { page: 24, display: 30, stat: 26, section: 17, title: 16, reading: 15,
     release 重打包真机 360dp 浅色完成五页 + 编辑弹层截图。深色 / 320·375·390·430dp /
     130%·150% 字号矩阵与正式 `assembleRelease` **未执行**（设备占用、内存 1.6GB），见
     `tmp/acceptance/mobile-blue-cyan-ui/round3-report.md`。
+
+## 2026-11-14 第四轮：图标体系重建、卡片分层与局部渐变（最小范围放宽）
+
+**背景**：第三轮之后，图标仍是 `Glyph.tsx` 用 View/矩形/旋转线条手绘，比例、曲线、交点和视觉重量
+都达不到成品水平；`AppBar`/`FileTypeIcon`/`NoteEditorScreen`/`FilesScreen` 还各自画图标，
+存在多套并行实现。卡片全部同一层级，缺少主次。
+
+**技术约束（决定了方案）**：本机可用内存约 1.1GB，`react-native-svg` 属于原生模块，需要
+`expo prebuild` + Gradle 重建 APK（历史多次 `hs_err_pid` JVM 崩溃）；图标字体同样要往 APK
+`res/` 注册资源，必须重建 `resources.arsc`。因此本轮不引入任何新依赖。
+
+**做法**：
+1. 图标几何复用**项目已有的** lucide（桌面端 `lucide-react@0.469` 正在使用），
+   用 `tmp/acceptance/mobile-visual-system-v4/tools/build-icons.mjs` 在构建期栅格化为
+   md 96px / sm 64px / lg 128px 三档透明 PNG，base64 内联进 `iconAssets.g.ts`，
+   运行时由 `AppIcon` 用 `tintColor` 着色。语义表在 `src/components/icons/iconMap.json`（96 枚）。
+2. `Glyph.tsx`、`FileTypeIcon` 的手绘逻辑、`AppBar`/`BackButton` 的箭头、`NoteEditor` 的
+   图钉/更多/工具栏字符、`FilesScreen` 的删除叉、`SearchField` 的放大镜与叉、`NotesScreen` 的
+   FAB 加号，全部改为 `AppIcon`；`Glyph.tsx` 与 `StatCard.tsx` 已删除。
+3. `GlassCard` 增加 `level`（primary/secondary/tertiary）；`IconTile` 统一图标底板；
+   `MetricTile` 增加 `column` 变体（首页效率概览、设置页摘要共用「一张卡三段」）；
+   `ActionSheet` 动作支持行首图标；`EmptyState` 改为 32dp 语义图标 + 柔和底板。
+4. 允许的局部效果（**仅此三类**）：`IconTile` 与欢迎区的 `linear-gradient`（RN 原生
+   `backgroundImage`，Fabric 实现，无第三方库）、一级卡片的 `cardShadow()`（3dp，实色表面下安全）、
+   `tintColor` 单色图标。禁止整块渐变、模糊、玻璃拟态与大面积炫光。
+5. 窄屏 / 大字号适配：欢迎区在 `width < 360 || fontScale >= 1.3` 时隐藏品牌块（纯装饰），
+   避免「下午好，开发者」在 150% 字号下折成两行；任务筛选在 `fontScale >= 1.3` 时改为换行排布，
+   「已完成」不再被横向滚动裁掉；工具页「文件暂存架」视觉名缩为「暂存架」（读屏仍播报全称）。
+6. 图标验收页 `IconGalleryScreen`（开发专用，无导航入口，我的 → 连点版本号 5 次进入），
+   展示全部图标 @24、16/20/24/32 尺寸矩阵、正常/选中/禁用三态、三种底板。
+7. 契约测试 `src/components/icons/__tests__/iconMap.test.ts`：语义表与位图一一对应、
+   `sm`/`lg` 变体齐全、每个 data URI 都是合法 PNG 头，防止「加了语义名忘记跑生成器」。
+
+**兼容性**：不改业务语义、不改数据层、不改导航结构（仅新增一个无入口的验收路由）；
+包体变化为 96 枚图标约 186KB 原始 PNG（base64 后约 253KB，未压缩进 JS bundle）；
+深色模式、320–430dp、130%/150% 字号均真机复拍。

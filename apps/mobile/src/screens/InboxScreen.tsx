@@ -263,6 +263,7 @@ export function InboxScreen({
           ListEmptyComponent={
             searching ? (
               <EmptyState
+                icon="search"
                 title="没有匹配的记录"
                 hint={`没有内容包含「${trimmedQuery}」的记录；搜索只在本机收集箱内匹配文字`}
                 actionLabel="清除搜索"
@@ -270,6 +271,7 @@ export function InboxScreen({
               />
             ) : (
               <EmptyState
+                icon="inbox"
                 title="收集箱是空的"
                 hint="想到什么先记下来，不必先想清楚归类和截止时间"
                 actionLabel="写第一条"

@@ -4,7 +4,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
-import { Glyph, type GlyphName } from "./Glyph";
+import { AppIcon, type IconName } from "./icons/AppIcon";
 
 export function SectionHeader({
   icon,
@@ -12,7 +12,7 @@ export function SectionHeader({
   actionLabel,
   onAction,
 }: {
-  icon: GlyphName;
+  icon: IconName;
   title: string;
   actionLabel?: string;
   onAction?: () => void;
@@ -21,7 +21,7 @@ export function SectionHeader({
 
   return (
     <View style={styles.row}>
-      <Glyph name={icon} color={tokens.accent} size={18} />
+      <AppIcon name={icon} color={tokens.accent} size={18} />
       <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
         {title}
       </Text>
@@ -35,7 +35,7 @@ export function SectionHeader({
             style={({ pressed }) => [styles.action, { opacity: pressed ? 0.6 : 1 }]}
           >
             <Text style={[styles.actionText, { color: tokens.accentText }]}>{actionLabel}</Text>
-            <Glyph name="chevron" color={tokens.accent} size={14} />
+            <AppIcon name="chevronRight" color={tokens.accent} size={14} />
           </Pressable>
         ) : (
           <Text style={[styles.actionText, styles.actionMuted, { color: tokens.faint }]}>
@@ -51,7 +51,7 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: space.sm,
     minHeight: 24,
   },
   title: {

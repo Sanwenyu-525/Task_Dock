@@ -1,10 +1,11 @@
-// 列表行入口：图标底板 + 标题/说明 + 箭头。真实入口可点；占位行用 muted 色且不可点。
+// 列表行入口：图标底板 + 标题/说明 + 箭头。真实入口可点；占位行用中性底板且不可点。
 import { StyleSheet, Text, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
-import { font, radius, space } from "../theme/tokens";
+import { font, space } from "../theme/tokens";
 
-import { Glyph, type GlyphName } from "./Glyph";
+import { IconTile } from "./IconTile";
+import { AppIcon, type IconName } from "./icons/AppIcon";
 import { PressableScale } from "./PressableScale";
 
 export function EntryRow({
@@ -14,7 +15,7 @@ export function EntryRow({
   onPress,
   trailingText,
 }: {
-  icon: GlyphName;
+  icon: IconName;
   label: string;
   helper?: string;
   /** 省略 onPress 即为占位行：不可点、无二级页 */
@@ -26,9 +27,7 @@ export function EntryRow({
 
   const body = (
     <>
-      <View style={[styles.tile, { backgroundColor: enabled ? tokens.accentWash : tokens.track }]}>
-        <Glyph name={icon} color={enabled ? tokens.accent : tokens.faint} size={18} />
-      </View>
+      <IconTile name={icon} size={36} tone={enabled ? "primary" : "neutral"} />
       <View style={styles.text}>
         <Text numberOfLines={1} style={[styles.label, { color: enabled ? tokens.text : tokens.muted }]}>
           {label}
@@ -44,7 +43,7 @@ export function EntryRow({
           {trailingText}
         </Text>
       ) : null}
-      {enabled ? <Glyph name="chevron" color={tokens.faint} size={14} /> : null}
+      {enabled ? <AppIcon name="chevronRight" color={tokens.faint} size={16} /> : null}
     </>
   );
 
@@ -83,13 +82,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.md,
     paddingVertical: space.xs,
-  },
-  tile: {
-    width: 36,
-    height: 36,
-    borderRadius: radius.control,
-    alignItems: "center",
-    justifyContent: "center",
   },
   text: { flex: 1, gap: 1 },
   label: { fontSize: font.body, fontWeight: "600" },

@@ -1,11 +1,12 @@
 // 文件集合卡片：三列文件夹型入口。真实入口（文件互传）可点；未接入的暂存架/项目资源
-// 只作占位，不显示虚假的文件数量。
+// 只作占位，不显示虚假的文件数量。底板与真实/占位状态同 IconEntry 一套口径。
 import { StyleSheet, Text, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
-import { Glyph, type GlyphName } from "./Glyph";
+import { IconTile } from "./IconTile";
+import { type IconName } from "./icons/AppIcon";
 import { PressableScale } from "./PressableScale";
 
 export function FileCollectionCard({
@@ -14,7 +15,7 @@ export function FileCollectionCard({
   caption,
   onPress,
 }: {
-  icon: GlyphName;
+  icon: IconName;
   label: string;
   /** 真实入口的一行说明；未接入占位不需要说明文字 */
   caption?: string;
@@ -22,13 +23,10 @@ export function FileCollectionCard({
 }) {
   const { tokens } = useTheme();
   const enabled = Boolean(onPress);
-  const color = enabled ? tokens.accent : tokens.faint;
 
   const inner = (
     <>
-      <View style={[styles.tile, { backgroundColor: enabled ? tokens.accentWash : tokens.track }]}>
-        <Glyph name={icon} color={color} size={20} />
-      </View>
+      <IconTile name={icon} size={40} tone={enabled ? "primary" : "neutral"} />
       <Text numberOfLines={1} style={[styles.label, { color: enabled ? tokens.text : tokens.muted }]}>
         {label}
       </Text>
@@ -37,14 +35,13 @@ export function FileCollectionCard({
         numberOfLines={1}
         style={[styles.caption, { color: enabled ? tokens.muted : tokens.faint }]}
       >
-        {caption ?? ""}
+        {caption ?? (enabled ? "" : "暂未接入")}
       </Text>
     </>
   );
 
   const style = [
     styles.card,
-    !enabled ? styles.placeholderCard : null,
     { backgroundColor: tokens.card, borderColor: tokens.cardBorder },
   ];
 
@@ -68,7 +65,7 @@ export function FileCollectionCard({
       accessibilityHint={caption}
       style={styles.press}
       contentStyle={style}
-      scaleTo={0.95}
+      scaleTo={0.96}
     >
       {inner}
     </PressableScale>
@@ -79,24 +76,13 @@ const styles = StyleSheet.create({
   press: { flex: 1 },
   card: {
     flex: 1,
-    minHeight: 88,
+    minHeight: 96,
     borderRadius: radius.row,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: space.sm,
-    gap: 3,
+    paddingHorizontal: 11,
+    paddingVertical: space.sm + 2,
+    gap: 4,
     justifyContent: "center",
-  },
-  placeholderCard: {
-    opacity: 0.92,
-  },
-  tile: {
-    width: 38,
-    height: 38,
-    borderRadius: radius.control,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: space.xs,
   },
   label: {
     fontSize: font.meta,

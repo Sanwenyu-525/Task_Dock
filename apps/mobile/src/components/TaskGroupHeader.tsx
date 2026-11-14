@@ -8,6 +8,8 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
+import { AppIcon } from "./icons/AppIcon";
+
 export type GroupTone = "accent" | "warn" | "ok" | "muted";
 export type GroupHintTone = "muted" | "warn";
 
@@ -46,15 +48,10 @@ function TaskGroupHeaderBase({
       <View style={[styles.bar, { backgroundColor: toneColor }]} />
       {onPress ? (
         <View style={styles.chevronBox} pointerEvents="none">
-          <View
-            style={[
-              styles.chevron,
-              {
-                borderColor: tokens.muted,
-                transform: [{ rotate: collapsed ? "-45deg" : "45deg" }],
-                marginTop: collapsed ? 0 : -3,
-              },
-            ]}
+          <AppIcon
+            name={collapsed ? "chevronRight" : "chevronDown"}
+            color={tokens.muted}
+            size={16}
           />
         </View>
       ) : null}
@@ -138,16 +135,10 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
   },
   chevronBox: {
-    width: 14,
-    height: 14,
+    width: 16,
+    height: 16,
     alignItems: "center",
     justifyContent: "center",
-  },
-  chevron: {
-    width: 6,
-    height: 6,
-    borderRightWidth: 1.5,
-    borderBottomWidth: 1.5,
   },
   rule: {
     flex: 1,

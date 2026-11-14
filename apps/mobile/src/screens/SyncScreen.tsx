@@ -336,6 +336,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
             />
           ) : (
             <EmptyState
+              icon="sync"
               title="还没有配对设备"
               hint="先在桌面端发起配对，设备会出现在这里；撤销设备不会清空本机数据"
             />

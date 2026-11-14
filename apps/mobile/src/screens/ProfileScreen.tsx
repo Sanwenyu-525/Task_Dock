@@ -10,7 +10,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import appConfig from "../../app.json";
 import { EntryRow } from "../components/EntryRow";
 import { GlassCard } from "../components/GlassCard";
-import { Glyph } from "../components/Glyph";
+import { IconTile } from "../components/IconTile";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { SectionHeader } from "../components/SectionHeader";
 import { StatusPill } from "../components/StatusPill";
@@ -35,6 +35,19 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
   const [summary, setSummary] = useState({ tasks: 0, captures: 0, notes: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** 版本号连点计数：图标预览是开发验收页，不给正式入口 */
+  const versionTaps = useRef(0);
+  const lastVersionTap = useRef(0);
+
+  const handleVersionPress = useCallback(() => {
+    const at = Date.now();
+    versionTaps.current = at - lastVersionTap.current < 1200 ? versionTaps.current + 1 : 1;
+    lastVersionTap.current = at;
+    if (versionTaps.current >= 5) {
+      versionTaps.current = 0;
+      nav.push("icon_gallery");
+    }
+  }, [nav]);
   const requestSeq = useRef(0);
   const mounted = useRef(true);
 
@@ -88,14 +101,19 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <GlassCard style={styles.appCard}>
-          <View style={[styles.appIcon, { backgroundColor: tokens.accentFill }]}>
-            <Glyph name="code" color={tokens.onAccent} size={22} />
-          </View>
+          <IconTile name="project" size={46} tone="brand" iconSize={24} />
           <View style={styles.appText}>
             <Text style={[styles.appName, { color: tokens.text }]}>Task Dock</Text>
-            <Text style={[styles.appMeta, { color: tokens.muted }]}>
-              开发效率中枢 · v{appConfig.expo.version}
-            </Text>
+            {/* 连点版本号 5 次进入图标预览（开发验收用，不占正式入口） */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`版本 v${appConfig.expo.version}，连点 5 次打开图标预览`}
+              onPress={handleVersionPress}
+            >
+              <Text style={[styles.appMeta, { color: tokens.muted }]}>
+                开发效率中枢 · v{appConfig.expo.version}
+              </Text>
+            </Pressable>
           </View>
         </GlassCard>
 
@@ -109,8 +127,8 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
         ) : (
           <>
             <View style={styles.group}>
-              <SectionHeader icon="device" title="设备与连接" />
-              <GlassCard style={styles.statusCard}>
+              <SectionHeader icon="smartphone" title="设备与连接" />
+              <GlassCard level="primary" style={styles.statusCard}>
                 <View style={styles.statusRow}>
                   <StatusPill label={statusLabel} tone={statusTone} />
                   <Text numberOfLines={2} style={[styles.statusNote, { color: tokens.muted }]}>
@@ -137,13 +155,13 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                   onPress={() => nav.push("files")}
                 />
                 <EntryRow
-                  icon="device"
+                  icon="smartphone"
                   label="配对新设备"
                   helper="扫描桌面端二维码或输入 6 位配对码"
                   onPress={() => nav.push("pairing")}
                 />
                 <EntryRow
-                  icon="device"
+                  icon="desktop"
                   label="设备详情"
                   helper="完整连接信息与解除配对"
                   onPress={() => nav.push("device")}
@@ -183,10 +201,10 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
             </View>
 
             <View style={styles.group}>
-              <SectionHeader icon="doc" title="个人功能" />
+              <SectionHeader icon="profile" title="个人功能" />
               <GlassCard style={styles.card}>
                 <EntryRow
-                  icon="doc"
+                  icon="note"
                   label="笔记"
                   onPress={() => nav.push("notes")}
                   trailingText={`${summary.notes} 条`}
@@ -206,10 +224,10 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
             </View>
 
             <View style={styles.group}>
-              <SectionHeader icon="grid" title="设置与偏好" />
+              <SectionHeader icon="settings" title="设置与偏好" />
               <GlassCard style={styles.card}>
                 <EntryRow
-                  icon="grid"
+                  icon="settings"
                   label="设置"
                   helper={`主题（${THEME_LABEL[mode]}）、通知提醒、本地数据与关于`}
                   onPress={() => nav.push("settings")}

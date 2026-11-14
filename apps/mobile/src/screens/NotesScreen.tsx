@@ -14,6 +14,7 @@ import {
 import { Chip } from "../components/Chip";
 import { BackButton } from "../components/BackButton";
 import { EmptyState } from "../components/EmptyState";
+import { AppIcon } from "../components/icons/AppIcon";
 import { NoteCard } from "../components/NoteCard";
 import { PressableScale } from "../components/PressableScale";
 import { SearchField } from "../components/SearchField";
@@ -208,6 +209,7 @@ export function NotesScreen({
         }
         ListEmptyComponent={
           <EmptyState
+            icon="note"
             title={emptyCopy.title}
             hint={emptyCopy.hint}
             actionLabel={searching ? "清除搜索" : "新建笔记"}
@@ -233,10 +235,7 @@ export function NotesScreen({
           floatingShadow(scheme),
         ]}
       >
-        <View style={styles.fabGlyph}>
-          <View style={[styles.fabBar, styles.fabBarH, { backgroundColor: tokens.onAccent }]} />
-          <View style={[styles.fabBar, styles.fabBarV, { backgroundColor: tokens.onAccent }]} />
-        </View>
+        <AppIcon name="add" color={tokens.onAccent} size={26} />
       </PressableScale>
 
       <Toast toast={toast} onDismiss={dismissToast} placement="top" />
@@ -290,27 +289,5 @@ const styles = StyleSheet.create({
     borderRadius: 29,
     alignItems: "center",
     justifyContent: "center",
-  },
-  fabGlyph: {
-    width: 24,
-    height: 24,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  fabBar: {
-    position: "absolute",
-    borderRadius: 1.2,
-  },
-  fabBarH: {
-    left: 1,
-    top: 10.9,
-    width: 22,
-    height: 2.2,
-  },
-  fabBarV: {
-    left: 10.9,
-    top: 1,
-    width: 2.2,
-    height: 22,
   },
 });

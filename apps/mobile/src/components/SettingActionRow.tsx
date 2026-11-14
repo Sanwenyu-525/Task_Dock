@@ -6,7 +6,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
-const STROKE = 1.5;
+import { AppIcon } from "./icons/AppIcon";
 
 export function SettingActionRow({
   label,
@@ -42,12 +42,7 @@ export function SettingActionRow({
         ) : null}
       </View>
       {trailing ? <View style={styles.trailing}>{trailing}</View> : null}
-      {chevron ? (
-        <View style={styles.chevron} pointerEvents="none">
-          <View style={[styles.chevronTop, { backgroundColor: tokens.faint }]} />
-          <View style={[styles.chevronBottom, { backgroundColor: tokens.faint }]} />
-        </View>
-      ) : null}
+      {chevron ? <AppIcon name="chevronRight" color={tokens.faint} size={16} /> : null}
     </>
   );
 
@@ -94,30 +89,5 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-  },
-  chevron: {
-    width: 16,
-    height: 16,
-  },
-  // 两根 45° 圆头短杆在右端同一点相接成「>」（原型 chevron_right 的 16dp 缩放：
-  // 4dp 宽 × 8dp 高）。位置必须用 left/top 直接指定：rotate 后 translateX 是沿杆
-  // 自身轴平移，两根杆会交于中点变成「×」，而不是在端点相接。
-  chevronTop: {
-    position: "absolute",
-    left: 5.17,
-    top: 5.25,
-    width: 5.66,
-    height: STROKE,
-    borderRadius: STROKE / 2,
-    transform: [{ rotate: "45deg" }],
-  },
-  chevronBottom: {
-    position: "absolute",
-    left: 5.17,
-    top: 9.25,
-    width: 5.66,
-    height: STROKE,
-    borderRadius: STROKE / 2,
-    transform: [{ rotate: "-45deg" }],
   },
 });

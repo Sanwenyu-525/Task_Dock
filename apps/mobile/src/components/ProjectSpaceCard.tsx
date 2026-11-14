@@ -15,14 +15,15 @@ import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
 import { GlassCard } from "./GlassCard";
-import { Glyph, type GlyphName } from "./Glyph";
+import { IconTile } from "./IconTile";
+import { type IconName } from "./icons/AppIcon";
 import { PressableScale } from "./PressableScale";
 
-const KIND_ICON: Record<WorkspaceProjectSummary["kind"], GlyphName> = {
+const KIND_ICON: Record<WorkspaceProjectSummary["kind"], IconName> = {
   development: "code",
-  game: "grid",
-  ai_comic: "sparkle",
-  general: "cube",
+  game: "tools",
+  ai_comic: "sparkles",
+  general: "project",
 };
 
 export function ProjectSpaceCard({
@@ -40,9 +41,7 @@ export function ProjectSpaceCard({
   const body = (
     <GlassCard style={[styles.card, { width }]}>
       <View style={styles.cardInner}>
-        <View style={[styles.iconTile, { backgroundColor: tokens.accentWash }]}>
-          <Glyph name={KIND_ICON[project.kind]} color={tokens.accent} size={18} />
-        </View>
+        <IconTile name={KIND_ICON[project.kind]} size={38} />
         <Text numberOfLines={2} style={[styles.name, { color: tokens.text }]}>
           {project.name}
         </Text>
@@ -101,17 +100,19 @@ export function ProjectSpaceCard({
 }
 
 /**
- * 真实数据未同步时的紧凑占位（约 76dp）：只说明状态，不重复模块标题「项目空间」。
+ * 真实数据未同步时的紧凑占位（约 72dp）：只说明状态，不重复模块标题「项目空间」。
  * 不渲染演示项目名、版本号、成员、百分比，也不提供假跳转。
  */
 export function ProjectSpacePlaceholder() {
   const { tokens } = useTheme();
 
   return (
-    <GlassCard style={styles.placeholder} accessibilityLabel="项目数据尚未同步到手机">
-      <View style={[styles.placeholderIcon, { backgroundColor: tokens.accentWash }]}>
-        <Glyph name="layers" color={tokens.accent} size={22} />
-      </View>
+    <GlassCard
+      level="primary"
+      style={styles.placeholder}
+      accessibilityLabel="项目数据尚未同步到手机"
+    >
+      <IconTile name="project" size={44} />
       <View style={styles.placeholderText}>
         <Text style={[styles.placeholderTitle, { color: tokens.text }]}>
           项目数据尚未同步到手机
@@ -134,14 +135,6 @@ const styles = StyleSheet.create({
     gap: 6,
     minHeight: 142,
     justifyContent: "flex-start",
-  },
-  iconTile: {
-    width: 36,
-    height: 36,
-    borderRadius: radius.control,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 2,
   },
   name: {
     fontSize: font.body,
@@ -174,13 +167,6 @@ const styles = StyleSheet.create({
     paddingVertical: space.md,
     paddingHorizontal: space.lg,
     gap: space.md,
-  },
-  placeholderIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: radius.control,
-    alignItems: "center",
-    justifyContent: "center",
   },
   placeholderText: {
     flex: 1,

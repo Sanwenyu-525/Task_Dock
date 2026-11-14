@@ -1,12 +1,11 @@
-// 推送页顶栏：返回箭头 + 标题 + 右侧动作插槽。
-// 返回箭头用 View 绘制（与 TabBar/FAB 同一套笔触），热区 44dp。
+// 推送页顶栏：返回按钮 + 标题 + 右侧动作插槽。返回图标与 TabBar 同源（AppIcon），热区 44dp。
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
-const STROKE = 1.5;
+import { AppIcon } from "./icons/AppIcon";
 
 /** 顶栏高度：Toast 等浮层用它计算「AppBar 下沿」锚点，避免两处各写一个值 */
 export const APP_BAR_HEIGHT = 56;
@@ -33,24 +32,7 @@ export function AppBar({
         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
         style={({ pressed }) => [styles.back, { opacity: pressed ? 0.6 : 1 }]}
       >
-        {/* 箭头 = 一段横杆 + 两根 45° 斜线组成箭头 */}
-        <View style={styles.arrow}>
-          <View style={[styles.shaft, { backgroundColor: tokens.text }]} />
-          <View
-            style={[
-              styles.head,
-              styles.headTop,
-              { backgroundColor: tokens.text },
-            ]}
-          />
-          <View
-            style={[
-              styles.head,
-              styles.headBottom,
-              { backgroundColor: tokens.text },
-            ]}
-          />
-        </View>
+        <AppIcon name="back" color={tokens.text} size={22} />
       </Pressable>
 
       <Text numberOfLines={1} accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
@@ -80,34 +62,7 @@ const styles = StyleSheet.create({
     height: 44,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: space.xs,
-  },
-  arrow: {
-    width: 20,
-    height: 20,
-    justifyContent: "center",
-  },
-  shaft: {
-    width: 14,
-    height: STROKE,
-    borderRadius: STROKE / 2,
-  },
-  head: {
-    position: "absolute",
-    left: 0.47,
-    width: 7.07,
-    height: STROKE,
-    borderRadius: STROKE / 2,
-  },
-  // 两根 45° 短杆在横杆左端同一点相接成箭头（横纵各 5dp）。位置必须显式指定 top：
-  // rotate 后的 translateX 是沿杆自身轴平移，两根杆会交在中间成「×」，横杆尖端外露。
-  headTop: {
-    top: 6.75,
-    transform: [{ rotate: "-45deg" }],
-  },
-  headBottom: {
-    top: 11.75,
-    transform: [{ rotate: "45deg" }],
+    marginRight: space.xxs,
   },
   title: {
     flexShrink: 1,

@@ -6,6 +6,7 @@ import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
 import { BottomSheet } from "./BottomSheet";
+import { AppIcon, type IconName } from "./icons/AppIcon";
 
 export interface SheetAction {
   key: string;
@@ -13,6 +14,8 @@ export interface SheetAction {
   hint?: string;
   tone?: "default" | "primary" | "danger";
   disabled?: boolean;
+  /** 可选的行首图标；只有语义明确时才给，避免每个动作都挂图标变成装饰 */
+  icon?: IconName;
 }
 
 export function ActionSheet({
@@ -76,6 +79,7 @@ export function ActionSheet({
                 { opacity: action.disabled ? 0.4 : pressed ? 0.6 : 1 },
               ]}
             >
+              {action.icon ? <AppIcon name={action.icon} color={color} size={20} /> : null}
               <View style={styles.actionBody}>
                 <Text style={[styles.actionLabel, { color }]}>{action.label}</Text>
                 {action.hint ? (
@@ -126,11 +130,14 @@ const styles = StyleSheet.create({
   },
   action: {
     minHeight: 54,
-    justifyContent: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
   },
   actionBody: {
+    flex: 1,
     gap: 2,
   },
   actionLabel: {

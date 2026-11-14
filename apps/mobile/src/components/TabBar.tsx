@@ -1,6 +1,6 @@
 // 底部标签栏：蓝青专业版五栏（首页 / 任务 / 工作区 / 工具 / 我的）。
 // 选中态 = 浅蓝滑动胶囊 + 蓝色图标与文字；未选中 = 蓝灰线性图标。
-// 图标统一走 Glyph（View 绘制），点击区 ≥ 52dp，尊重系统减少动画设置。
+// 图标统一走 AppIcon（与全站同一套 lucide 几何），点击区 ≥ 54dp，尊重系统减少动画设置。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -10,16 +10,16 @@ import { useTheme } from "../theme/ThemeProvider";
 import { barShadow } from "../theme/shadows";
 import { font, radius, space } from "../theme/tokens";
 
-import { Glyph, type GlyphName } from "./Glyph";
+import { AppIcon, type IconName } from "./icons/AppIcon";
 
 export type { TabKey };
 
-const TABS: { key: TabKey; label: string; icon: GlyphName }[] = [
+const TABS: { key: TabKey; label: string; icon: IconName }[] = [
   { key: "home", label: "首页", icon: "home" },
-  { key: "tasks", label: "任务", icon: "check" },
-  { key: "workspace", label: "工作区", icon: "layers" },
-  { key: "tools", label: "工具", icon: "grid" },
-  { key: "profile", label: "我的", icon: "user" },
+  { key: "tasks", label: "任务", icon: "tasks" },
+  { key: "workspace", label: "工作区", icon: "workspace" },
+  { key: "tools", label: "工具", icon: "tools" },
+  { key: "profile", label: "我的", icon: "profile" },
 ];
 
 export function TabBar({
@@ -96,7 +96,7 @@ export function TabBar({
                 onPress={() => onChange(tab.key)}
                 style={({ pressed }) => [styles.item, { opacity: pressed ? 0.7 : 1 }]}
               >
-                <Glyph name={tab.icon} color={color} size={22} />
+                <AppIcon name={tab.icon} color={color} size={22} />
                 <Text
                   numberOfLines={1}
                   style={[

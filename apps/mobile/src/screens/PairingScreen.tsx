@@ -25,6 +25,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { AppBar } from "../components/AppBar";
 import { Badge } from "../components/Badge";
 import { GlassCard } from "../components/GlassCard";
+import { AppIcon } from "../components/icons/AppIcon";
 import { PressableScale } from "../components/PressableScale";
 import { Toast, TOAST_TOP_PUSH, type ToastMessage, type ToastTone } from "../components/Toast";
 import { loadConnection, loadOrCreateDeviceUid, saveConnection } from "../db/syncConnection";
@@ -318,7 +319,7 @@ export function PairingScreen({ nav }: { nav: Nav }) {
         {success ? (
           <GlassCard style={styles.successCard}>
             <View style={[styles.successMark, { backgroundColor: tokens.okSoft }]}>
-              <Text style={[styles.successCheck, { color: tokens.ok }]}>✓</Text>
+              <AppIcon name="check" color={tokens.ok} size={34} />
             </View>
             <Text style={[styles.successTitle, { color: tokens.text }]}>配对成功</Text>
             <Text style={[styles.successText, { color: tokens.textSoft }]}>
@@ -846,11 +847,6 @@ const styles = StyleSheet.create({
     borderRadius: 29,
     alignItems: "center",
     justifyContent: "center",
-  },
-  successCheck: {
-    fontSize: 30,
-    fontWeight: "700",
-    lineHeight: 34,
   },
   successTitle: {
     fontSize: font.title + 2,

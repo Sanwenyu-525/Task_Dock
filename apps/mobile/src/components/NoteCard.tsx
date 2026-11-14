@@ -10,6 +10,7 @@ import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
 import { GlassCard } from "./GlassCard";
+import { AppIcon } from "./icons/AppIcon";
 
 function NoteCardBase({
   note,
@@ -45,10 +46,9 @@ function NoteCardBase({
           </Text>
           {/* 图钉放在 footer 右侧：标题行保持纯文本宽度，长标题不会被图标挤断 */}
           {note.pinned ? (
-            <View style={styles.pin} accessibilityLabel="已置顶">
+            <View accessibilityLabel="已置顶">
               {/* 置顶图钉：斜置的针头方块 + 针杆，同 1.5dp 笔触 */}
-              <View style={[styles.pinHead, { backgroundColor: tokens.accent }]} />
-              <View style={[styles.pinStem, { backgroundColor: tokens.accent }]} />
+              <AppIcon name="pin" color={tokens.accent} size={16} />
             </View>
           ) : null}
         </View>
@@ -68,26 +68,6 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     fontSize: font.title,
     fontWeight: "700",
-  },
-  pin: {
-    width: 16,
-    height: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: "auto",
-  },
-  pinHead: {
-    width: 7,
-    height: 7,
-    borderRadius: 2,
-    transform: [{ rotate: "45deg" }],
-    marginTop: 3,
-  },
-  pinStem: {
-    width: 1.5,
-    height: 6,
-    borderRadius: 1,
-    marginTop: -1,
   },
   excerpt: {
     fontSize: font.reading,

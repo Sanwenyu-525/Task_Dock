@@ -1,9 +1,9 @@
-// 返回按钮：44dp 热区，箭头用 View 画（与 AppBar 同一朝向与笔触）。
+// 返回按钮：44dp 热区，箭头与 AppBar 同源（AppIcon back）。
 import { Pressable, StyleSheet } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
 
-import { Glyph } from "./Glyph";
+import { AppIcon } from "./icons/AppIcon";
 
 export function BackButton({
   onPress,
@@ -22,7 +22,7 @@ export function BackButton({
       hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
       style={({ pressed }) => [styles.button, { opacity: pressed ? 0.6 : 1 }]}
     >
-      <Glyph name="back" color={tokens.text} size={22} />
+      <AppIcon name="back" color={tokens.text} size={22} />
     </Pressable>
   );
 }

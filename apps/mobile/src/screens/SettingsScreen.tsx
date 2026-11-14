@@ -8,7 +8,7 @@ import { BackButton } from "../components/BackButton";
 import { GlassCard } from "../components/GlassCard";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { SettingActionRow } from "../components/SettingActionRow";
-import { StatCard } from "../components/StatCard";
+import { MetricTile } from "../components/MetricTile";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { listCaptures } from "../db/captures";
 import { listReminderSchedules } from "../db/reminderSchedule";
@@ -203,11 +203,16 @@ export function SettingsScreen({
           </View>
         </View>
 
-        <View style={styles.tiles}>
-          <StatCard label="任务" value={summary.tasks} tone="accent" />
-          <StatCard label="收集" value={summary.captures} tone="neutral" />
-          <StatCard label="已完成" value={summary.completed} tone="ok" />
-        </View>
+        {/* 与首页效率概览同一形态：一张卡三段，不再各占一张白卡 */}
+        <GlassCard style={styles.tiles}>
+          <View style={styles.tilesRow}>
+            <MetricTile variant="column" label="任务" value={summary.tasks} tone="accent" />
+            <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
+            <MetricTile variant="column" label="收集" value={summary.captures} />
+            <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
+            <MetricTile variant="column" label="已完成" value={summary.completed} tone="ok" />
+          </View>
+        </GlassCard>
 
         <Section title="外观">
           <SegmentedControl
@@ -336,9 +341,15 @@ const styles = StyleSheet.create({
   },
   subtitle: { fontSize: font.meta },
   tiles: {
+    paddingVertical: space.xs,
+  },
+  tilesRow: {
     flexDirection: "row",
-    gap: space.sm,
-    marginBottom: space.xs,
+    alignItems: "stretch",
+  },
+  tileDivider: {
+    width: StyleSheet.hairlineWidth,
+    marginVertical: space.sm,
   },
   section: {
     padding: space.md + 2,
