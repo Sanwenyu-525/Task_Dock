@@ -130,6 +130,54 @@ export function moveEntryInList(
   return next;
 }
 
+/**
+ * 拖拽排序：把入口放到 `toIndex`（**最终数组下标**，含固定入口）。
+ *
+ * 与 `moveEntryInList` 共用同一套固定项语义：固定入口原地不动，普通入口可以
+ * 跨过它们；因此先把目标索引钳制到「可排序段」内（左侧设置固定在末尾、
+ * 胶囊 Agent 状态球固定在端头），再在去掉被拖行后的数组里插入，最后把固定项
+ * 钉回它原来的绝对下标。这样：
+ * - 拖到固定项附近不会产生「普通入口跑到锁定项之后」的非法顺序，
+ *   下一次读取归一化时也就不需要再纠正，UI 与持久化结果一致；
+ * - 成员集合（显隐）完全不变，只改变顺序；
+ * - 目标索引越界（拖过列表末端）按边界收敛，不抛错、不丢项。
+ */
+export function moveEntryToIndex(
+  ids: readonly string[],
+  id: string,
+  toIndex: number,
+  isFixed: (id: string) => boolean = () => false,
+): string[] {
+  const from = ids.indexOf(id);
+  if (from < 0 || isFixed(id)) return [...ids];
+  const others = ids.filter((entryId) => entryId !== id);
+  if (others.length === 0) return [...ids];
+
+  // 可排序段边界：首尾连续固定项之间的区间。归一化保证固定项只在两端，
+  // 这里对中间出现的固定项同样安全（仅参与钉回，不参与钳制）。
+  let first = 0;
+  while (first < ids.length && isFixed(ids[first])) first += 1;
+  let last = ids.length - 1;
+  while (last >= 0 && isFixed(ids[last])) last -= 1;
+  const lower = Math.min(first, last);
+  const upper = Math.max(lower, last);
+  const target = Math.min(Math.max(toIndex, lower), upper);
+
+  const inserted = [...others];
+  inserted.splice(Math.min(target, inserted.length), 0, id);
+
+  // 固定项钉回原绝对下标：普通入口的插入不会间接挪走固定项。
+  const pinned = ids
+    .map((entryId, index) => ({ entryId, index }))
+    .filter(({ entryId }) => isFixed(entryId));
+  if (pinned.length === 0) return inserted;
+  const next = inserted.filter((entryId) => !isFixed(entryId));
+  for (const { entryId, index } of pinned) {
+    next.splice(Math.min(index, next.length), 0, entryId);
+  }
+  return next;
+}
+
 function sanitizeSurfaceList(
   value: unknown,
   surface: NavSurface,

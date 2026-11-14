@@ -92,9 +92,14 @@ export interface FileDropConsumer {
   onProbe?: (probe: DragProbe | null, point: DropPoint | null) => void;
   /**
    * 松手被受理、内容仍在后端读取。用于把 UI 切到「读取中」，
-   * 此时不要开始提交，也还没有 `operationId` 之外的任何信息。
+   * 此时不要开始提交。第三个参数带本次会话的 `operationId`，
+   * 便于 UI 忽略**旧会话**的迟到载荷，不误清新会话的读取态。
    */
-  onAccepted?: (probe: DragProbe, point: DropPoint | null) => void;
+  onAccepted?: (
+    probe: DragProbe,
+    point: DropPoint | null,
+    meta: { operationId: string },
+  ) => void;
   /**
    * 载荷就绪（`kind` 为任意可识别类型，包括本地文件）。
    *
@@ -123,9 +128,94 @@ let primaryUn: (() => void) | null = null;
 let bridgeUns: Array<() => void> = [];
 let subscribing = false;
 
-/** 一次松手之后、载荷到达之前挂起的会话。 */
-let pending: { operationId: string; consumer: FileDropConsumer; point: DropPoint | null } | null =
-  null;
+/**
+ * 一次松手之后、载荷到达之前挂起的会话。
+ *
+ * 必须按 `operationId` 分开管理：虚拟文件读取可能持续几十秒，用户完全可能
+ * 在第一轮还没完成时开始第二轮。单槽实现会让第二轮覆盖第一轮，随后两轮
+ * 的 payload 互相把对方的 pending 清掉——两个拖入都丢。
+ */
+interface PendingDropSession {
+  operationId: string;
+  consumer: FileDropConsumer;
+  point: DropPoint | null;
+  createdAt: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/** 挂起会话上限：与后端 `MAX_STAGE_OPS` 一致，绝不让 Map 无界增长。 */
+const MAX_PENDING = 8;
+/** 会话存活时间：与后端 `STAGE_TTL` 一致（10 分钟）。 */
+const PENDING_TTL_MS = 10 * 60 * 1000;
+/** 「已交付 / 已释放」operationId 的记忆上限（只用于去重，不是会话存储）。 */
+const MAX_REMEMBERED = 32;
+
+const pending = new Map<string, PendingDropSession>();
+/** 已交付过 payload 的会话：重复 payload 必须忽略，且**不能**再 discard。 */
+const deliveredOps = new Map<string, number>();
+/** 已发过后端释放请求的会话：同一 operationId 只发一次。 */
+const releasedOps = new Map<string, number>();
+
+/** 有界记忆：超出上限时淘汰最早插入的 id。 */
+function remember(map: Map<string, number>, id: string): void {
+  map.delete(id);
+  map.set(id, Date.now());
+  while (map.size > MAX_REMEMBERED) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+
+/** 清掉会话的 TTL 定时器（会话结束/被淘汰时必须调用）。 */
+function clearSessionTimer(session: PendingDropSession): void {
+  if (session.timer !== null) {
+    clearTimeout(session.timer);
+    session.timer = null;
+  }
+}
+
+/** 移出并释放一个挂起会话（淘汰/过期/注销/退订）。 */
+function dropSession(operationId: string, reason: string): void {
+  const session = pending.get(operationId);
+  if (!session) return;
+  pending.delete(operationId);
+  clearSessionTimer(session);
+  void discardOperation(operationId, reason);
+}
+
+/** 登记一个挂起会话；超过上限时淘汰最老的，而不是清空整张表。 */
+function rememberSession(
+  operationId: string,
+  consumer: FileDropConsumer,
+  point: DropPoint | null,
+): void {
+  while (pending.size >= MAX_PENDING) {
+    const oldest = [...pending.values()].sort((a, b) => a.createdAt - b.createdAt)[0];
+    if (!oldest) break;
+    dropSession(oldest.operationId, "pending-evicted");
+  }
+  const session: PendingDropSession = {
+    operationId,
+    consumer,
+    point,
+    createdAt: Date.now(),
+    timer: null,
+  };
+  // 到点仍未收到 payload：主动释放后端暂存，不等后端 10 分钟 TTL。
+  session.timer = setTimeout(() => {
+    dropSession(operationId, "pending-expired");
+  }, PENDING_TTL_MS);
+  pending.set(operationId, session);
+}
+
+/** 释放某个消费者名下的全部未完成会话（面板卸载）。 */
+function releaseConsumerSessions(consumer: FileDropConsumer, reason: string): void {
+  const ids = [...pending.values()]
+    .filter((session) => session.consumer === consumer)
+    .map((session) => session.operationId);
+  for (const id of ids) dropSession(id, reason);
+}
 
 function pickOwner(): FileDropConsumer | null {
   let best: FileDropConsumer | null = null;
@@ -243,42 +333,63 @@ function handleAccepted(payload: DragAcceptedEvent): void {
   if (!probe || typeof payload.operationId !== "string") {
     return;
   }
+  const operationId = payload.operationId;
+  // 同一 operationId 的重复 accepted：保留已有会话（不能覆盖），也不能当成
+  // 「无人认领」把它释放掉。已交付/已释放的 id 不再建会话，否则会变成
+  // 「永远等不到 payload」的僵尸，直到 TTL 才清。
+  if (
+    pending.has(operationId) ||
+    deliveredOps.has(operationId) ||
+    releasedOps.has(operationId)
+  ) {
+    return;
+  }
   const point = pointOf(payload.point);
   const consumer = owner;
   owner = null;
   if (!consumer) {
     // 无人认领却已受理：没有消费者会提交，立刻释放后端暂存副本。
-    void discardOperation(payload.operationId, "accepted-without-consumer");
+    void discardOperation(operationId, "accepted-without-consumer");
     return;
   }
-  pending = { operationId: payload.operationId, consumer, point };
-  consumer.onAccepted?.(probe, point);
+  rememberSession(operationId, consumer, point);
+  consumer.onAccepted?.(probe, point, { operationId });
 }
 
-/** 载荷就绪：一次性投递给挂起的消费者。 */
+/** 载荷就绪：只投递给**该 operationId 对应**的消费者。 */
 function handlePayload(event: DragPayloadEvent): void {
   if (!event || typeof event.operationId !== "string" || !event.payload) return;
-  const current = pending;
-  pending = null;
-  if (!current || current.operationId !== event.operationId) {
-    // 会话已结束（消费者卸载 / 端口重载）：迟到载荷必须释放，不能让临时副本挂着。
+  const session = pending.get(event.operationId);
+  if (!session) {
+    if (deliveredOps.has(event.operationId)) {
+      // 重复 payload：已交付过一次，不能再投递；此时也不能 discard——
+      // consumer 可能正在异步提交这个 operationId，抢走它会让本次拖入失败。
+      return;
+    }
+    // 会话已结束（消费者卸载 / 退订 / 过期）：迟到载荷必须释放，不能让临时副本挂着。
     void discardOperation(event.operationId, "stale-payload");
     return;
   }
-  const point = event.point ? toCssPoint(event.point) : current.point;
+  pending.delete(event.operationId);
+  clearSessionTimer(session);
+  remember(deliveredOps, event.operationId);
+
+  const point = event.point ? toCssPoint(event.point) : session.point;
   const meta: DropPayloadMeta = {
     operationId: event.operationId,
     failures: Array.isArray(event.failures) ? event.failures : [],
     skipped: typeof event.skipped === "number" ? event.skipped : 0,
   };
 
-  if (current.consumer.onPayload) {
-    current.consumer.onPayload(event.payload, point, meta);
+  if (session.consumer.onPayload) {
+    session.consumer.onPayload(event.payload, point, meta);
     return;
   }
   // 降级通道：老消费者只认路径，本地文件保持原样交付。
+  // 本地路径不依赖后端暂存，交付后立刻释放会话，避免白占 8 个槽位之一。
   if (event.payload.kind === "local-files") {
-    current.consumer.onDrop(event.payload.paths ?? [], point);
+    session.consumer.onDrop(event.payload.paths ?? [], point);
+    void discardOperation(meta.operationId, "local-files-fallback");
     return;
   }
   // 消费者没实现富通道但拿到了富载荷：明确记一条，然后释放，不假装成功。
@@ -304,6 +415,30 @@ export async function discardOperation(
   operationId: string,
   reason: string,
 ): Promise<void> {
+  // 同一 operationId 只发一次释放请求：会话可能同时被「注销 + 迟到 payload」
+  // 两条路径回收，重复 IPC 没有意义。
+  if (releasedOps.has(operationId)) return;
+  remember(releasedOps, operationId);
+
+  // 调用方主动取消的正是挂起会话时，先把它移出表：否则迟到的 payload
+  // 仍会投给消费者，而后端暂存已经被释放，提交必然失败。
+  const session = pending.get(operationId);
+  if (session) {
+    pending.delete(operationId);
+    clearSessionTimer(session);
+  }
+
+  // 每个会话只写一条 DEBUG（不含内容/路径）：用于定位「这次拖入为什么没落库」。
+  logEvent({
+    level: "DEBUG",
+    module: "dragdrop",
+    action: "discard",
+    event: "drag-payload-discarded",
+    status: "success",
+    message: `已释放拖入会话：${reason}`,
+    operation_id: operationId,
+  });
+
   try {
     await dragPayloadDiscard(operationId);
   } catch {
@@ -408,7 +543,8 @@ function releaseListener(): void {
   const bridge = bridgeUns;
   bridgeUns = [];
   for (const u of bridge) callUnlisten(u);
-  pending = null;
+  // 所有监听都已退订：不会再有 payload 到达，释放全部挂起会话。
+  for (const id of [...pending.keys()]) dropSession(id, "listener-released");
 }
 
 /**
@@ -431,11 +567,8 @@ export function registerFileDropConsumer(consumer: FileDropConsumer): () => void
       owner = null;
       consumer.onLeave?.();
     }
-    if (pending?.consumer === consumer) {
-      const op = pending.operationId;
-      pending = null;
-      void discardOperation(op, "consumer-unregistered");
-    }
+    // 只释放该消费者名下的会话：其它面板（或第二轮拖入）的会话不受影响。
+    releaseConsumerSessions(consumer, "consumer-unregistered");
     if (consumers.length === 0) releaseListener();
   };
 }
@@ -444,13 +577,19 @@ export function registerFileDropConsumer(consumer: FileDropConsumer): () => void
 export function __resetFileDrop(): void {
   consumers = [];
   owner = null;
-  pending = null;
   releaseListener();
+  deliveredOps.clear();
+  releasedOps.clear();
 }
 
 /** 测试/诊断用：当前是否有活跃订阅。 */
 export function fileDropListening(): boolean {
   return primaryUn !== null || bridgeUns.length > 0;
+}
+
+/** 测试/诊断用：当前挂起的会话数（有界，≤ `MAX_PENDING`）。 */
+export function fileDropPendingCount(): number {
+  return pending.size;
 }
 
 /** 测试/诊断用：富内容通道是否已订阅。 */

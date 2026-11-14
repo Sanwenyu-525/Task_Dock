@@ -1,4 +1,5 @@
-//! 分类胶囊的左侧（或顶/底）轨道：Agent 总状态 + 五个分类入口 + 形态出口。
+//! 分类胶囊的左侧（或顶/底）轨道：Agent 总状态 + 五个分类入口 + 底部 26px 快捷区
+//! （注册中心声明的直接入口，如「工作空间」／完整面板／极简标签）。
 //!
 //! 只渲染，不做决策：状态来自 `railStatus()`（真实 store 聚合），
 //! 相位来自 `useEdgeSnapStore`，当前分类来自 `useCapsuleStore`。
@@ -119,6 +120,40 @@ export function railTipPlacement(
   return lead || first ? "right" : "left";
 }
 
+/**
+ * 底部快捷区的提示方向。
+ *
+ * 上/下停靠时窗口可见区域 = 轨道(476×56) + 居中面板(340 宽)，面板比轨道窄；
+ * 快捷区紧贴轨道末端，若按「朝内」弹（上停靠朝下、下停靠朝上），气泡会横向
+ * 越出面板可见矩形，被 `SetWindowRgn` 裁掉两侧——P0-01 新增工作空间入口后
+ * 末端多了一个 26px 按钮，这个风险变大。因此水平停靠改为**沿轨道朝中心**
+ * （左）弹出：气泡始终落在 56px 厚的翼片带内，必然可见。
+ * 左右停靠时面板高 440，垂直居中的快捷按钮气泡朝面板内仍完整可见。
+ */
+export function railQuickTipPlacement(
+  form: RailTipForm,
+  edge: SnapEdge | null,
+  expanded: boolean,
+): TipPlacement {
+  if (form !== "docked" || !edge) return FLOATING_TIP;
+  if (expanded && (edge === "top" || edge === "bottom")) return "left";
+  return railTipPlacement(form, edge, expanded, false);
+}
+
+/**
+ * Agent 端头球的提示方向：与快捷区同理，水平停靠时端头球在轨道最左端，
+ * 朝内（下/上）的气泡会有一半落在面板之外；改为沿轨道朝中心（右）。
+ */
+export function railOrbTipPlacement(
+  form: RailTipForm,
+  edge: SnapEdge | null,
+  expanded: boolean,
+): TipPlacement {
+  if (form !== "docked" || !edge) return FLOATING_TIP;
+  if (expanded && (edge === "top" || edge === "bottom")) return "right";
+  return railTipPlacement(form, edge, expanded, true);
+}
+
 /** 分类项图标按钮边长（与 `.cap-btn` 一致）。 */
 const CAP_ITEM_CSS = 36;
 /** 收起按钮边长（与 `.cap-collapse` 一致）：比图标小，朝内偏移必须按自己的边长算。 */
@@ -180,6 +215,8 @@ export default function CapsuleRail({
   onCollapse,
   onForm,
   onTab,
+  onDirectEntry,
+  directEntryError,
 }: {
   edge: SnapEdge;
   status: RailStatus;
@@ -192,6 +229,10 @@ export default function CapsuleRail({
   onForm?: () => void;
   /** 可选：收起为极简标签（Edge Tab）；未启用吸附时缺省。 */
   onTab?: () => void;
+  /** 可选：胶囊肩部直接入口（如工作空间）点击回调。 */
+  onDirectEntry?: (id: string) => void;
+  /** 直接入口的最近一次失败：折叠态也要能看到，因此画在按钮自身。 */
+  directEntryError?: { id: string; message: string } | null;
 }) {
   const vertical = edge === "left" || edge === "right";
   const { railRef, dragging } = useRailDragCursor();
@@ -234,6 +275,10 @@ export default function CapsuleRail({
       capsuleEntries.filter(
         (entry) => entry.id !== "agents" && entry.capsuleCategory !== undefined,
       ),
+    [capsuleEntries],
+  );
+  const directEntries = useMemo(
+    () => capsuleEntries.filter((entry) => entry.id !== "agents" && entry.directCapsule),
     [capsuleEntries],
   );
   // 合法分类集合包含 Agent 端头球：只留状态球时也能切到 Agent，而不是停在隐藏分类。
@@ -286,7 +331,7 @@ export default function CapsuleRail({
           className="cap-orb"
           data-tone={status.agentsLoaded ? status.agentTone : "unknown"}
           data-tip={CATEGORY_LABELS.agents}
-          data-tip-placement={railTipPlacement("docked", edge, expanded, true)}
+          data-tip-placement={railOrbTipPlacement("docked", edge, expanded)}
           data-tip-offset={
             expanded
               ? CAPSULE_TIP_INWARD_OFFSET + (vertical ? 0 : TIP_ORB_HORIZONTAL_EXTRA_CSS)
@@ -362,42 +407,87 @@ export default function CapsuleRail({
 
       <div className="cap-sep cap-sep-bottom" aria-hidden="true" />
 
-      {/* 形态切换：把停靠展示从「胶囊」换成完整窗口（设置/右键菜单之外的最小入口）。
-          折叠态同样可用（这是离开胶囊形态的轻量出口），文案与图标复用轨道视觉。
-          这里只切换**本次停靠会话**的临时形态，不写持久化默认吸附方式。 */}
-      {onForm && (
-        <button
-          type="button"
-          className="cap-collapse cap-form"
-          /* 折叠态只保留「完整面板 / 收起」两个短词：完整提示在展开态仍可读，
-             `aria-label` 两种状态都保持完整语义 */
-          data-tip={expanded ? t("capsule.toFullTip") : t("capsule.toFull")}
-          data-tip-placement={railTipPlacement("docked", edge, expanded)}
-          data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
-          {...compactTipProps}
-          aria-label={t("capsule.toFull")}
-          onClick={onForm}
-        >
-          <Expand size={15} strokeWidth={2} aria-hidden="true" />
-        </button>
+      {/* 底部快捷区（26px 次级动作，与 36px 分类按钮区分层级）：
+          1. 注册中心声明的直接入口（当前为「工作空间」，点击直接打开独立专业窗口，
+             不展开面板）；数量由导航配置决定，隐藏后其余按钮自动回流；
+          2. 形态切换（胶囊 → 完整面板）；
+          3. 极简标签（胶囊 → Edge Tab）。
+          三个按钮共用 `.cap-quick` 的 4px 间距与同一套 26px 命中区，
+          不再各自挂 margin——见 `lib/capsuleLayout.ts` 的 `RAIL_QUICK_CSS`。 */}
+      {(directEntries.length > 0 || onForm || onTab) && (
+        <div className="cap-quick">
+          {directEntries.map((entry) => {
+            const Icon = entry.icon;
+            const failure =
+              directEntryError && directEntryError.id === entry.id
+                ? directEntryError.message
+                : null;
+            return (
+              <button
+                key={entry.id}
+                type="button"
+                className={`cap-quick-btn cap-direct${failure ? " has-error" : ""}`}
+                data-tip={failure ?? (entry.labelKey ? t(entry.labelKey) : entry.label)}
+                data-tip-placement={railQuickTipPlacement("docked", edge, expanded)}
+                data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
+                {...compactTipProps}
+                aria-label={failure ? `${entry.label}：${failure}` : entry.label}
+                aria-pressed={false}
+                onClick={() => onDirectEntry?.(entry.id)}
+              >
+                <Icon size={15} strokeWidth={1.9} aria-hidden="true" />
+                {failure && (
+                  <span className="cap-quick-error" aria-hidden="true">!</span>
+                )}
+              </button>
+            );
+          })}
+
+          {/* 形态切换：把停靠展示从「胶囊」换成完整窗口（设置/右键菜单之外的最小入口）。
+              折叠态同样可用（这是离开胶囊形态的轻量出口），文案与图标复用轨道视觉。
+              这里只切换**本次停靠会话**的临时形态，不写持久化默认吸附方式。 */}
+          {onForm && (
+            <button
+              type="button"
+              className="cap-collapse cap-form"
+              /* 折叠态只保留「完整面板 / 收起」两个短词：完整提示在展开态仍可读，
+                 `aria-label` 两种状态都保持完整语义 */
+              data-tip={expanded ? t("capsule.toFullTip") : t("capsule.toFull")}
+              data-tip-placement={railQuickTipPlacement("docked", edge, expanded)}
+              data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
+              {...compactTipProps}
+              aria-label={t("capsule.toFull")}
+              onClick={onForm}
+            >
+              <Expand size={15} strokeWidth={2} aria-hidden="true" />
+            </button>
+          )}
+
+          {/* 极简吸附态入口：紧贴在「完整面板」按钮下方，尺寸/材质/焦点与它完全一致；
+              图标四角朝内（与 Expand 的朝外四角相反），一眼可分。
+              语义是 Capsule → Edge Tab，绝不接完整面板的收起逻辑。 */}
+          {onTab && (
+            <button
+              type="button"
+              className="cap-collapse cap-to-tab"
+              data-tip={expanded ? t("capsule.toTabTip") : t("capsule.collapse")}
+              data-tip-placement={railQuickTipPlacement("docked", edge, expanded)}
+              data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
+              {...compactTipProps}
+              aria-label={t("capsule.toTabAria")}
+              onClick={onTab}
+            >
+              <Shrink size={15} strokeWidth={2} aria-hidden="true" />
+            </button>
+          )}
+        </div>
       )}
 
-      {/* 极简吸附态入口：紧贴在「完整面板」按钮下方，尺寸/材质/焦点与它完全一致；
-          图标四角朝内（与 Expand 的朝外四角相反），一眼可分。
-          语义是 Capsule → Edge Tab，绝不接完整面板的收起逻辑。 */}
-      {onTab && (
-        <button
-          type="button"
-          className="cap-collapse cap-to-tab"
-          data-tip={expanded ? t("capsule.toTabTip") : t("capsule.collapse")}
-          data-tip-placement={railTipPlacement("docked", edge, expanded)}
-          data-tip-offset={expanded ? CAPSULE_TIP_COLLAPSE_OFFSET : undefined}
-          {...compactTipProps}
-          aria-label={t("capsule.toTabAria")}
-          onClick={onTab}
-        >
-          <Shrink size={15} strokeWidth={2} aria-hidden="true" />
-        </button>
+      {/* 失败播报：折叠态没有 Toast 空间，aria-live 让读屏用户也能得到结果 */}
+      {directEntryError && (
+        <span className="sr-only" role="status" aria-live="polite">
+          {directEntryError.message}
+        </span>
       )}
 
     </div>

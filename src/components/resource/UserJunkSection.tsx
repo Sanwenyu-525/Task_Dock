@@ -139,6 +139,8 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
   const [cleaning, setCleaning] = useState(false);
   const [expiryReached, setExpiryReached] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 上次扫描后是否清空过选择：明确告诉用户「重新扫描不等于沿用上次授权」。 */
+  const [selectionReset, setSelectionReset] = useState(false);
   const mountedRef = useRef(false);
   const requestRef = useRef(0);
 
@@ -174,21 +176,22 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
   async function scan() {
     if (busy) return;
     const request = ++requestRef.current;
+    const hadSelection = selection.length > 0;
     setScanning(true);
     setPreview(null);
     setExpiryReached(false);
     setConfirming(false);
     setReport(null);
     setError(null);
+    // 新扫描 = 新授权：绝不沿用上一次的勾选（尤其是回收站清空这类不可恢复操作）。
+    setSelection([]);
+    setSelectionReset(hadSelection);
     try {
       const result = await resourceJunkPreview([...CATEGORIES]);
       if (!mountedRef.current || request !== requestRef.current) return;
       setPreview(result);
-      setSelection((current) =>
-        current.filter((category) =>
-          result.categories.some((row) => row.category === category && isUsable(row)),
-        ),
-      );
+      // 扫描结果换了一轮，旧选择一律失效；用户必须重新确认要删什么。
+      setSelection([]);
       if (!result.categories.some((row) => row.status !== "unavailable")) {
         setError(t("resource.junk.error.allUnavailable"));
       }
@@ -205,6 +208,7 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
       if (checked) return current.includes(category) ? current : [...current, category];
       return current.filter((item) => item !== category);
     });
+    setSelectionReset(false);
     setConfirming(false);
   }
 
@@ -241,7 +245,12 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
   return (
     <section className="resource-cleanup" aria-labelledby="resource-junk-title">
       <div className="resource-cleanup-section-head">
-        <h3 className="resource-cleanup-heading" id="resource-junk-title">
+        <h3
+          className="resource-cleanup-heading resource-anchor-heading"
+          id="resource-junk-title"
+          data-resource-anchor-focus
+          tabIndex={-1}
+        >
           {t("resource.junk.title")}
         </h3>
         {preview && (
@@ -273,6 +282,11 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
                       <span className="resource-cleanup-title">
                         <Icon size={13} aria-hidden="true" />
                         {categoryName(category)}
+                        {category === "recycle_bin" && (
+                          <span className="resource-danger-tag">
+                            {t("resource.junk.irreversible")}
+                          </span>
+                        )}
                       </span>
                       <span className="resource-cleanup-description">
                         {t(info.description)}
@@ -354,7 +368,7 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
           )}
         </button>
         <button
-          className="btn sm"
+          className="btn sm resource-danger-btn"
           type="button"
           onClick={() => setConfirming(true)}
           disabled={busy || !preview || expired || usableSelection.length === 0 || confirming}
@@ -370,6 +384,11 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
         </span>
       </div>
 
+      {preview && selectionReset && (
+        <div className="setting-note" role="status">
+          {t("resource.junk.selectionReset")}
+        </div>
+      )}
       {preview && expired && (
         <div className="setting-note resource-cleanup-error" role="alert">
           {t("resource.junk.expired")}
@@ -398,6 +417,12 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
             ))}
           </div>
           <p className="setting-note">{t("resource.junk.confirmWarning")}</p>
+          {usableSelection.includes("recycle_bin") && (
+            <p className="setting-note resource-cleanup-danger-note" role="alert">
+              <AlertTriangle size={12} aria-hidden="true" />{" "}
+              {t("resource.junk.confirmRecycle")}
+            </p>
+          )}
           <div className="resource-cleanup-actions">
             <button
               className="btn sm"
@@ -408,7 +433,7 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
               {t("settings.resourceCleanup.cancel")}
             </button>
             <button
-              className="btn sm"
+              className="btn sm primary resource-danger-btn is-confirm"
               type="button"
               onClick={() => void execute()}
               disabled={cleaning || usableSelection.length === 0}

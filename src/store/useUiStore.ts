@@ -4,6 +4,7 @@ import { activeTabGuard } from "../lib/tabGuard";
 
 export type Tab =
   | "workbench"
+  | "workspace"
   | "tasks"
   | "agents"
   | "apps"
@@ -52,6 +53,7 @@ export const TAB_ORDER: readonly Tab[] = [
  */
 export const RAIL_ORDER: readonly Tab[] = [
   "workbench",
+  "workspace",
   "tasks",
   "agents",
   "apps",
@@ -118,6 +120,12 @@ export interface PendingTabNav {
   tab: Tab;
   guardId: string;
   after: (() => void) | null;
+  /**
+   * 用户对待决导航做出最终选择时回调：`confirmed` 在切页之后调用
+   * （after 抛错也保证调用），`cancelled` 不切页。跨窗口导航事务用它把
+   * 「pending」变成确定的最终结果，避免调用方只能等到超时。
+   */
+  onResolve?: ((result: "confirmed" | "cancelled") => void) | null;
 }
 
 /**
@@ -130,7 +138,10 @@ export type TabSwitchResult = "switched" | "pending" | "blocked";
 
 export const useUiStore = create<{
   tab: Tab;
-  setTab: (t: Tab, opts?: { force?: boolean; after?: () => void }) => TabSwitchResult;
+  setTab: (
+    t: Tab,
+    opts?: { force?: boolean; after?: () => void; onResolve?: (result: "confirmed" | "cancelled") => void },
+  ) => TabSwitchResult;
   /** 有待决的未保存切换时，由全局确认条消费 */
   pendingTab: PendingTabNav | null;
   confirmPendingTab: () => void;
@@ -270,7 +281,14 @@ export const useUiStore = create<{
           return "blocked";
         }
         if (guard.isDirty()) {
-          set({ pendingTab: { tab: t, guardId: guard.id, after: opts?.after ?? null } });
+          set({
+            pendingTab: {
+              tab: t,
+              guardId: guard.id,
+              after: opts?.after ?? null,
+              onResolve: opts?.onResolve ?? null,
+            },
+          });
           return "pending";
         }
       }
@@ -291,9 +309,18 @@ export const useUiStore = create<{
     const guard = activeTabGuard();
     if (guard && guard.id === pending.guardId) guard.discard();
     set({ pendingTab: null });
-    get().setTab(pending.tab, { force: true, after: pending.after ?? undefined });
+    try {
+      get().setTab(pending.tab, { force: true, after: pending.after ?? undefined });
+    } finally {
+      // 无论 after 是否抛错，「用户已确认」这个最终态都要回传。
+      pending.onResolve?.("confirmed");
+    }
   },
-  cancelPendingTab: () => set({ pendingTab: null }),
+  cancelPendingTab: () => {
+    const pending = get().pendingTab;
+    set({ pendingTab: null });
+    pending?.onResolve?.("cancelled");
+  },
   collectionSub: "inbox",
   setCollectionSub: (sub) => set({ collectionSub: sub }),
   editor: { open: false, task: null },

@@ -17,8 +17,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardList, ScrollText, ShieldAlert } from "lucide-react";
-import { Checkbox, ConfirmDialog } from "../ui";
+import { Checkbox, Combobox, ConfirmDialog } from "../ui";
 import {
+  agentHistorySessions,
   devHandoffDelete,
   devHandoffList,
   devHandoffSave,
@@ -26,6 +27,7 @@ import {
   fetchTask,
   notesList,
   shelfList,
+  type AgentHistorySession,
   type DevHandoffPack,
   type DevProject,
   type NoteSummary,
@@ -62,6 +64,14 @@ export type HandoffKey = (typeof HANDOFF_SECTIONS)[number]["key"];
 
 /** 资料选择每组显示的条目上限（笔记 / 暂存架各取最近 20 条）。 */
 const MATERIALS_LIMIT = 20;
+
+/** Combobox 的「不关联」占位值：绝不会作为会话身份保存。 */
+const SESSION_NONE = "\u0000none";
+
+/** 会话身份键：与后端 task_agent_links 一致（source_id + external_id）。 */
+function sessionKey(s: { source_id: string; external_id: string }): string {
+  return `${s.source_id}\u0000${s.external_id}`;
+}
 
 /** 一条已勾选资料：记录展示名与来源，列表重载后 bullet 仍可还原。 */
 interface SelectedMaterial {
@@ -148,6 +158,38 @@ export default function DevHandoffSection() {
   /** 本草稿实际预填过的节：写入 sourceSummary 供回溯。 */
   const prefilledRef = useRef<ReadonlySet<HandoffKey>>(new Set());
 
+  // ── Agent 会话关联（v50）：只登记身份，不推断、不自动执行 ──
+  const [sessions, setSessions] = useState<AgentHistorySession[] | null>(null);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [sessionKeyword, setSessionKeyword] = useState("");
+  /** 已选会话（保存到包上；不使用标题匹配身份）。 */
+  const [linkedSession, setLinkedSession] = useState<AgentHistorySession | null>(null);
+  const sessionsSeqRef = useRef(0);
+
+  /** 会话查询：实时 + 历史统一入口；用序号丢弃过期响应，不设置轮询。 */
+  const fetchSessions = useCallback((keyword: string) => {
+    const seq = ++sessionsSeqRef.current;
+    agentHistorySessions({
+      keyword: keyword.trim() || undefined,
+      includeLive: true,
+      limit: 20,
+    })
+      .then(({ items }) => {
+        if (seq !== sessionsSeqRef.current) return;
+        setSessions(items);
+        setSessionsError(null);
+      })
+      .catch((e) => {
+        if (seq !== sessionsSeqRef.current) return;
+        setSessions([]);
+        setSessionsError(errorMessage(e));
+      });
+  }, []);
+
+  useEffect(() => {
+    fetchSessions("");
+  }, [fetchSessions]);
+
   const [scan, setScan] = useState<{ findings: SecretFinding[]; truncated: boolean } | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -185,6 +227,8 @@ export default function DevHandoffSection() {
     setShelfItems(null);
     setShelfError(null);
     setSelectedMaterials(new Map());
+    // 换任务不清空会话候选（全局列表），但必须清空本任务已选关联
+    setLinkedSession(null);
   }, [taskId]);
 
   // 当前任务数据：标题/备注预填来源；任务已删除时如实提示（保存退化为草稿）
@@ -436,6 +480,8 @@ export default function DevHandoffSection() {
       title: title.trim(),
       contentMd: preview,
       sourceSummary,
+      agentSourceId: linkedSession?.source_id ?? null,
+      agentSessionExternalId: linkedSession?.external_id ?? null,
     })
       .then(({ pack }) => {
         showToast(t("devwork.handoff.saveDone", { version: pack.version }), { kind: "success" });
@@ -448,6 +494,7 @@ export default function DevHandoffSection() {
       .finally(() => setSaving(false));
   }, [
     features,
+    linkedSession,
     loadPacks,
     preview,
     project,
@@ -516,6 +563,69 @@ export default function DevHandoffSection() {
           placeholder={task?.title ?? t("devwork.handoff.untitled")}
         />
       </label>
+
+      {/* Agent 会话关联（v50）：只登记「交给哪个会话」，不推断身份、不自动执行 */}
+      <div className="wb-accept-block wb-handoff-session">
+        <div className="wb-links-title">{t("devwork.handoff.agentSessionTitle")}</div>
+        <p className="endpoint-hint">{t("devwork.handoff.agentSessionHint")}</p>
+        <div className="wb-accept-evidence-row">
+          <input
+            className="wb-accept-criteria-input"
+            value={sessionKeyword}
+            onChange={(e) => setSessionKeyword(e.target.value)}
+            aria-label={t("devwork.handoff.agentSessionSearchPlaceholder")}
+            placeholder={t("devwork.handoff.agentSessionSearchPlaceholder")}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                fetchSessions(sessionKeyword);
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => fetchSessions(sessionKeyword)}
+          >
+            {t("devwork.handoff.agentSessionSearch")}
+          </button>
+        </div>
+        {sessionsError && (
+          <div className="wb-error-row" role="alert">
+            <span>{t("devwork.handoff.agentSessionLoadFailed", { error: sessionsError })}</span>
+          </div>
+        )}
+        <Combobox
+          value={linkedSession ? sessionKey(linkedSession) : ""}
+          options={[
+            ...(sessions ?? []).map((s) => ({
+              value: sessionKey(s),
+              label: `${s.title || s.external_id} · ${s.status}`,
+              hint: s.source_id,
+            })),
+            { value: SESSION_NONE, label: t("devwork.handoff.agentSessionClear") },
+          ]}
+          onChange={(key) => {
+            if (key === SESSION_NONE) {
+              setLinkedSession(null);
+              return;
+            }
+            setLinkedSession((sessions ?? []).find((s) => sessionKey(s) === key) ?? null);
+          }}
+          ariaLabel={t("devwork.handoff.agentSessionTitle")}
+          searchPlaceholder={t("devwork.handoff.agentSessionSearchPlaceholder")}
+          emptyText={t("devwork.handoff.agentSessionEmpty")}
+          placeholder={t("devwork.handoff.agentSessionNone")}
+          size="sm"
+        />
+        <div className="endpoint-hint">
+          {linkedSession
+            ? t("devwork.handoff.agentSessionLinked", {
+                title: linkedSession.title || linkedSession.external_id,
+              })
+            : t("devwork.handoff.agentSessionRecent", { count: sessions?.length ?? 0 })}
+        </div>
+      </div>
 
       <div className="wb-handoff-grid">
         {HANDOFF_SECTIONS.map((s) => (
@@ -715,7 +825,19 @@ export default function DevHandoffSection() {
               <span className="wb-row-title">
                 {t("devwork.handoff.packVersion", { version: p.version })} · {p.title}
               </span>
-              <span className="wb-row-sub">{formatRelative(p.createdAt)}</span>
+              <span className="wb-row-sub">
+                {p.agentSessionExternalId && (
+                  <span>
+                    {t("devwork.handoff.agentSessionPack", {
+                      title: p.agentSessionTitle || p.agentSessionExternalId,
+                    })}
+                    {!p.agentSessionAvailable
+                      ? ` · ${t("devwork.handoff.agentSessionStale")}`
+                      : ""}
+                  </span>
+                )}
+                <span>{formatRelative(p.createdAt)}</span>
+              </span>
             </span>
             <button
               type="button"

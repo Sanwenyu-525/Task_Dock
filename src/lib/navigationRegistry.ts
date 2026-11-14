@@ -24,6 +24,7 @@ import {
   HardDrive,
   History,
   Inbox,
+  Layers,
   LayoutDashboard,
   LayoutGrid,
   LifeBuoy,
@@ -56,6 +57,7 @@ export type NavGroup = "core" | "capture" | "planning" | "system";
 
 export type NavEntryId =
   | "workbench"
+  | "workspace"
   | "tasks"
   | "agents"
   | "apps"
@@ -100,6 +102,8 @@ export interface NavEntry {
   badge?: NavBadge;
   /** 胶囊分类身份（仅胶囊入口）：决定该入口打开哪个轻量面板。 */
   capsuleCategory?: CapsuleCategory;
+  /** 胶囊肩部直接入口：不打开轻量面板，直接打开独立专业窗口（如工作空间）。 */
+  directCapsule?: boolean;
   /** 各界面的默认值：顺序用于首次安装与「恢复默认」，可见用于新入口合并。 */
   defaults: Readonly<Record<NavSurface, { order: number; visible: boolean }>>;
   /**
@@ -124,6 +128,21 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     defaults: {
       left: { order: 0.5, visible: true },
       capsule: { order: 1, visible: false },
+    },
+  },
+  {
+    id: "workspace",
+    kind: "page",
+    surfaces: ["left", "capsule"],
+    labelKey: "nav.workspace",
+    label: "工作空间",
+    icon: Layers,
+    tabs: ["workspace"],
+    group: "core",
+    directCapsule: true,
+    defaults: {
+      left: { order: 0.6, visible: true },
+      capsule: { order: 7, visible: true },
     },
   },
   {

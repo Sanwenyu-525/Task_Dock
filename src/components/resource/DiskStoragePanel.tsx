@@ -11,6 +11,7 @@ import { useEffect, useRef } from "react";
 import { resourceDiskUsage, type ResourceStorageEntry } from "../../lib/bridge";
 import { useAsyncResource } from "../../lib/asyncResource";
 import { formatBytes } from "../../lib/clipboardUi";
+import { formatLocalStamp } from "../../lib/format";
 import { buildBreakdown, formatPercent } from "../../lib/resourceMetrics";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
@@ -32,6 +33,10 @@ const ENTRY_LABELS: Record<string, MessageKey> = {
 interface DiskStoragePanelProps {
   /** 清理完成/页面级刷新时递增，触发重新统计（隐藏分区不会被动重扫）。 */
   refreshToken: number;
+  /** 嵌入折叠区块时不再渲染自己的标题与说明（由外层折叠头提供）。 */
+  embedded?: boolean;
+  /** 统计进行中状态：页头刷新按钮据此显示忙碌态。 */
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 function entryStatusKey(entry: ResourceStorageEntry): MessageKey | null {
@@ -40,7 +45,11 @@ function entryStatusKey(entry: ResourceStorageEntry): MessageKey | null {
   return null;
 }
 
-export default function DiskStoragePanel({ refreshToken }: DiskStoragePanelProps) {
+export default function DiskStoragePanel({
+  refreshToken,
+  embedded = false,
+  onLoadingChange,
+}: DiskStoragePanelProps) {
   const { t } = useLocale();
   const data = useAsyncResource("resource:diskUsage", resourceDiskUsage);
   /** 首次挂载由请求槽负责；只有 token 真正变化（清理完成/页面刷新）才重新统计。 */
@@ -51,6 +60,11 @@ export default function DiskStoragePanel({ refreshToken }: DiskStoragePanelProps
     prevTokenRef.current = refreshToken;
     data.reload();
   }, [refreshToken, data.reload]);
+
+  // 统计中状态上报给页头：磁盘页刷新按钮需要覆盖目录统计而不只是快照。
+  useEffect(() => {
+    onLoadingChange?.(data.loading);
+  }, [data.loading, onLoadingChange]);
 
   const rows = data.data;
   const incomplete = Boolean(
@@ -63,15 +77,43 @@ export default function DiskStoragePanel({ refreshToken }: DiskStoragePanelProps
     sorted.map((entry) => ({ id: entry.id, bytes: entry.bytes })),
     rows?.totalBytes ?? null,
   );
+  /** 调色板序号按整体容量排序固定：分组展示时图例与条形仍同序同色。 */
+  const colorIndexById = new Map(sorted.map((entry, index) => [entry.id, index + 1]));
+  const groups = (
+    [
+      { kind: "regenerable", label: "resource.storage.groupRegenerable" },
+      { kind: "persistent", label: "resource.storage.groupPersistent" },
+    ] as const
+  )
+    .map((group) => ({
+      ...group,
+      rows: sorted.filter((entry) => entry.kind === group.kind),
+    }))
+    .filter((group) => group.rows.length > 0);
+  const sampled = rows?.sampledAt ? formatLocalStamp(rows.sampledAt) : null;
 
   return (
-    <section className="resource-storage" aria-labelledby="resource-storage-title">
-      <div className="resource-cleanup-section-head">
-        <h3 className="resource-cleanup-heading" id="resource-storage-title">
-          {t("resource.storage.title")}
-        </h3>
-      </div>
-      <p className="setting-note">{t("resource.storage.desc")}</p>
+    <section
+      className={`resource-storage${embedded ? " is-embedded" : ""}`}
+      aria-labelledby={embedded ? undefined : "resource-storage-title"}
+      aria-label={embedded ? t("resource.storage.title") : undefined}
+      aria-busy={data.loading}
+    >
+      {!embedded && (
+        <>
+          <div className="resource-cleanup-section-head">
+            <h3
+              className="resource-cleanup-heading resource-anchor-heading"
+              id="resource-storage-title"
+              data-resource-anchor-focus
+              tabIndex={-1}
+            >
+              {t("resource.storage.title")}
+            </h3>
+          </div>
+          <p className="setting-note">{t("resource.storage.desc")}</p>
+        </>
+      )}
       {data.error && (
         <div className="setting-note resource-cleanup-error" role="alert">
           {t("resource.storage.failed", { error: data.error })}
@@ -102,6 +144,13 @@ export default function DiskStoragePanel({ refreshToken }: DiskStoragePanelProps
             <span>{t("resource.storage.total")}</span>
             <strong>{formatBytes(rows.totalBytes)}</strong>
           </div>
+          {sampled && (
+            <p className="resource-storage-sampled">
+              {t("settings.resourceCleanup.sampledAt", {
+                time: `${sampled.date} ${sampled.time}`,
+              })}
+            </p>
+          )}
           <StackedBar
             slices={slices.map((slice, index) => ({ ...slice, colorIndex: index + 1 }))}
             ariaLabel={t("resource.aria.breakdown", {
@@ -113,44 +162,44 @@ export default function DiskStoragePanel({ refreshToken }: DiskStoragePanelProps
           <p className="setting-note resource-share-note">
             {incomplete ? t("resource.storage.sharePartial") : t("resource.storage.shareNote")}
           </p>
-          <ul className="resource-storage-list">
-            {sorted.map((entry, index) => {
-              const percent = slices[index]?.percent ?? null;
-              const statusKey = entryStatusKey(entry);
-              return (
-                <li className="resource-storage-row" key={entry.id}>
-                  <ChartSwatch colorIndex={index + 1} />
-                  <span className="resource-storage-name">
-                    {ENTRY_LABELS[entry.id] ? t(ENTRY_LABELS[entry.id]) : entry.id}
-                    <em
-                      className={`resource-kind-tag kind-${entry.kind}`}
-                    >
-                      {t(
-                        entry.kind === "regenerable"
-                          ? "resource.storage.kindRegenerable"
-                          : "resource.storage.kindPersistent",
-                      )}
-                    </em>
-                  </span>
-                  <span className="resource-storage-share">
-                    {entry.bytes === 0
-                      ? "—"
-                      : percent === null
-                        ? t("settings.resourceCleanup.unavailable")
-                        : formatPercent(percent)}
-                  </span>
-                  <span className="resource-storage-meta">
-                    {entry.status === "missing"
-                      ? t("resource.storage.missing")
-                      : `${formatBytes(entry.bytes)} · ${t("settings.resourceCleanup.files", {
-                          count: entry.files,
-                        })}`}
-                    {statusKey && entry.status !== "missing" ? ` · ${t(statusKey)}` : ""}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
+          {groups.map((group) => (
+            <div className="resource-storage-group" key={group.kind}>
+              <h4 className="resource-storage-group-title">
+                {t(group.label)}
+                <span>{t("resource.storage.groupCount", { count: group.rows.length })}</span>
+              </h4>
+              <ul className="resource-storage-list">
+                {group.rows.map((entry) => {
+                  const colorIndex = colorIndexById.get(entry.id) ?? 1;
+                  const percent = slices[colorIndex - 1]?.percent ?? null;
+                  const statusKey = entryStatusKey(entry);
+                  return (
+                    <li className="resource-storage-row" key={entry.id}>
+                      <ChartSwatch colorIndex={colorIndex} />
+                      <span className="resource-storage-name" data-tip={t(ENTRY_LABELS[entry.id] ?? entry.id)}>
+                        {ENTRY_LABELS[entry.id] ? t(ENTRY_LABELS[entry.id]) : entry.id}
+                      </span>
+                      <span className="resource-storage-share">
+                        {entry.bytes === 0
+                          ? "—"
+                          : percent === null
+                            ? t("settings.resourceCleanup.unavailable")
+                            : formatPercent(percent)}
+                      </span>
+                      <span className="resource-storage-meta">
+                        {entry.status === "missing"
+                          ? t("resource.storage.missing")
+                          : `${formatBytes(entry.bytes)} · ${t("settings.resourceCleanup.files", {
+                              count: entry.files,
+                            })}`}
+                        {statusKey && entry.status !== "missing" ? ` · ${t(statusKey)}` : ""}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
           <p className="setting-note">{t("resource.storage.keepNote")}</p>
         </>
       )}

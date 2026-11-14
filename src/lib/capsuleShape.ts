@@ -49,8 +49,16 @@ export interface Point {
 
 /** 翼片厚度（CSS px）：垂直停靠为宽，水平停靠为高。 */
 export const WING_THICKNESS_CSS = 56;
-/** 翼片平直主体长度（CSS px，沿边方向）：两侧肩部之间的平直段（外框 = 270 + 2×88 = 446）。 */
-export const WING_LENGTH_CSS = 270;
+/**
+ * 翼片平直主体长度（CSS px，沿边方向）：两侧肩部之间的平直段。
+ *
+ * 2026-11-13（P0-01）由 270 扩到 300，外框 = 300 + 2×88 = 476。扩展量等于
+ * 新增「工作空间」26px 快捷入口 + 4px 间距（见 `CapsuleRail` 的 `.cap-quick`），
+ * 因此**内容组两端进入肩部的深度与扩展前完全相同**（都是 30.5px），
+ * 每个既有按钮相对肩部曲线的位置不变；没有缩小任何既有命中区。
+ * 该数字是跨端契约：Rust `commands/system.rs::CAPSULE_LENGTH_CSS` 必须同步。
+ */
+export const WING_LENGTH_CSS = 300;
 /**
  * 单侧液态肩部的沿边跨度（CSS px）：厚度的 1.57 倍。
  *
@@ -99,7 +107,7 @@ export interface WingBox {
 
 export interface WingShape {
   metrics: WingMetrics;
-  /** 轨道外框尺寸（含两侧肩部）：垂直停靠为 56×(270+2×88)=56×446 */
+  /** 轨道外框尺寸（含两侧肩部）：垂直停靠为 56×(300+2×88)=56×476 */
   box: WingBox;
   /** 局部坐标轮廓（0..box.w / 0..box.h），已按 `inflate` 外扩 */
   outline: Point[];
@@ -271,9 +279,39 @@ export function wingRimPath(outline: Point[]): string {
   return outline.map((p, i) => `${i === 0 ? "M" : "L"}${f(p.x)} ${f(p.y)}`).join(" ");
 }
 
+/**
+ * 翼片在「沿边坐标 u」处的可见厚度（物理像素）——布局契约的判定工具。
+ *
+ * 胶囊轨道是 Win32 区域裁剪窗口：按钮只有落在翼片可见轮廓内才既能看见又能点击。
+ * 按钮若放到肩部收窄段，超出曲线的那部分会被 `SetWindowRgn` 直接裁掉（看起来
+ * 图标缺一角、点不到）。本函数把「曲线多厚」变成可断言的数字，供
+ * `capsuleLayout.test.ts` 锁定「内容组端点所需厚度 ≥ 控件边长」。
+ *
+ * @param scale DPI 缩放
+ * @param alongFromCenter 距轨道沿边中心的距离（物理像素，取绝对值）
+ */
+export function wingThicknessAt(scale: number, alongFromCenter: number): number {
+  const { thickness, length, shoulder } = wingMetrics(scale);
+  const u = Math.abs(alongFromCenter);
+  const half = length / 2;
+  if (u <= half) return thickness;
+  if (u >= half + shoulder) return 0;
+  // x(t) = S·[1.305(t−t²) + t³] 在 [0,1] 上单调递增：二分求该 u 对应的 t，
+  // 再代入 v(t) = T(1−t)²(1+2t)。与 Rust 侧同一条曲线、同一组参数。
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 24; i += 1) {
+    const mid = (lo + hi) / 2;
+    const x = shoulder * (1.305 * (mid - mid * mid) + mid * mid * mid);
+    if (half + x < u) lo = mid;
+    else hi = mid;
+  }
+  const t = (lo + hi) / 2;
+  return thickness * (1 - t) * (1 - t) * (1 + 2 * t);
+}
+
 /** 射线法点内判定（与 `CreatePolygonRgn` 的填充语义一致）。 */
-export function pointInPolygon(p: Point, poly: Point[]): boolean {
-  let inside = false;
+export function pointInPolygon(p: Point, poly: Point[]): boolean {  let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i += 1) {
     const a = poly[i];
     const b = poly[j];

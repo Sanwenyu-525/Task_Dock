@@ -157,6 +157,8 @@ export default function ResourceCleanupSection({
   const [error, setError] = useState<string | null>(null);
   /** 预览 TTL 已到：只由一次性的到期计时器设置，不用轮询检查时间。 */
   const [expiryReached, setExpiryReached] = useState(false);
+  /** 重新扫描后是否清空过勾选：明确提示旧授权不沿用。 */
+  const [selectionReset, setSelectionReset] = useState(false);
   /** 上报给概览的估算（唯一来源）。 */
   const [estimate, setEstimate] = useState<CleanupEstimate>(INITIAL_ESTIMATE);
   const mountedRef = useRef(false);
@@ -201,6 +203,7 @@ export default function ResourceCleanupSection({
   async function scan() {
     if (busy) return;
     const request = ++requestRef.current;
+    const hadSelection = selection.length > 0;
     setPhase("scanning");
     setPreview(null);
     setExpiryReached(false);
@@ -208,17 +211,14 @@ export default function ResourceCleanupSection({
     setReport(null);
     setError(null);
     setConfirming(false);
+    // 新一轮扫描 = 新一轮授权：不沿用上一轮的勾选。
+    setSelection([]);
+    setSelectionReset(hadSelection);
     try {
       const result = await resourceCleanupPreview([...CATEGORIES]);
       if (!mountedRef.current || request !== requestRef.current) return;
       setPreview(result);
-      setSelection((current) =>
-        current.filter((category) =>
-          result.categories.some(
-            (row) => row.category === category && isPreviewUsable(row) && row.candidates > 0,
-          ),
-        ),
-      );
+      setSelection([]);
       const hasUsableCategory = result.categories.some(isPreviewUsable);
       const hasPartialCategory = result.categories.some(
         (row) => row.status === "partial" || row.status === "incomplete" || row.status === "unavailable",
@@ -249,6 +249,7 @@ export default function ResourceCleanupSection({
       if (checked) return current.includes(category) ? current : [...current, category];
       return current.filter((item) => item !== category);
     });
+    setSelectionReset(false);
     setConfirming(false);
   }
 
@@ -289,9 +290,18 @@ export default function ResourceCleanupSection({
 
   return (
     <div className="resource-management">
-      <section className="resource-cleanup" aria-labelledby="resource-cleanup-title">
+      <section
+        className="resource-cleanup"
+        aria-labelledby="resource-cleanup-title"
+        aria-busy={busy}
+      >
         <div className="resource-cleanup-section-head">
-          <h3 className="resource-cleanup-heading" id="resource-cleanup-title">
+          <h3
+            className="resource-cleanup-heading resource-anchor-heading"
+            id="resource-cleanup-title"
+            data-resource-anchor-focus
+            tabIndex={-1}
+          >
             {t("settings.resourceCleanup.categoriesTitle")}
           </h3>
           {preview && (
@@ -387,7 +397,7 @@ export default function ResourceCleanupSection({
           {t(phase === "scanning" ? "settings.resourceCleanup.scanning" : preview ? "settings.resourceCleanup.rescan" : "settings.resourceCleanup.scan")}
         </button>
         <button
-          className="btn sm"
+          className="btn sm primary"
           type="button"
           onClick={() => setConfirming(true)}
           disabled={busy || !preview || expired || usableSelection.length === 0 || confirming}
@@ -404,6 +414,11 @@ export default function ResourceCleanupSection({
         </span>
       </div>
 
+      {preview && selectionReset && (
+        <div className="setting-note" role="status">
+          {t("resource.cleanup.selectionReset")}
+        </div>
+      )}
       {preview && expired && (
         <div className="setting-note resource-cleanup-error" role="alert">
           {t("settings.resourceCleanup.expired")}
@@ -431,7 +446,12 @@ export default function ResourceCleanupSection({
             <button className="btn sm" type="button" onClick={() => setConfirming(false)} disabled={busy}>
               {t("settings.resourceCleanup.cancel")}
             </button>
-            <button className="btn sm" type="button" onClick={() => void execute()} disabled={busy || usableSelection.length === 0}>
+            <button
+              className="btn sm primary resource-danger-btn is-confirm"
+              type="button"
+              onClick={() => void execute()}
+              disabled={busy || usableSelection.length === 0}
+            >
               {phase === "cleaning" ? t("settings.resourceCleanup.cleaning") : t("settings.resourceCleanup.confirm")}
             </button>
           </div>

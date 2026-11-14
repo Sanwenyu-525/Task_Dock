@@ -7,6 +7,7 @@ import { Smartphone } from "lucide-react";
 import { useLocale } from "../../hooks/useLocale";
 import MobileSyncSection from "../settings/MobileSyncSection";
 import { CollapsibleSection } from "../ui";
+import VirtualDisplaySection from "./VirtualDisplaySection";
 
 export default function MobileTransferPanel() {
   const { t } = useLocale();
@@ -23,6 +24,7 @@ export default function MobileTransferPanel() {
       >
         <MobileSyncSection />
       </CollapsibleSection>
+      <VirtualDisplaySection />
     </div>
   );
 }

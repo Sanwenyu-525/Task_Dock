@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Loader2, MoreVertical, Plus, Trash2 } from "lucide-react";
+import { FolderInput, Loader2, MoreVertical, Plus, Trash2 } from "lucide-react";
 import {
   clipboardCopyText,
   shelfCopyFiles,
@@ -365,9 +365,20 @@ export default function InboxRecentShelf({
             不增加段落高度；放在列表上方也不会遮住最后一条（底部浮层会盖住行内容）。 */}
         {dropZone && dropActive && (
           <span className="cap-shelf-recent-drop-hint" role="status">
-            {dropOver
-              ? dropHint ?? t("capsule.inboxDrop.shelfDropHintOver")
-              : t("capsule.inboxDrop.shelfDropHint")}
+            {/* 视觉只留短词：窄面板下标题/计数/按钮不被长文案挤压。
+                视觉层 aria-hidden，读屏层始终有内容：
+                - 会话中：「可暂存」；
+                - 悬停接收区：类型化完整提示（如「松开即可添加图片」）。 */}
+            <span aria-hidden="true">
+              {dropOver
+                ? t("capsule.inboxDrop.shelfDropHintShortOver")
+                : t("capsule.inboxDrop.shelfDropHint")}
+            </span>
+            <span className="sr-only">
+              {dropOver
+                ? dropHint ?? t("capsule.inboxDrop.shelfDropHintOver")
+                : t("capsule.inboxDrop.shelfDropHintSr")}
+            </span>
           </span>
         )}
         <span className="cap-shelf-recent-gap" />
@@ -402,7 +413,27 @@ export default function InboxRecentShelf({
           {t("capsule.recentShelf.loading")}
         </p>
       ) : showEmpty ? (
-        <p className="cap-shelf-recent-hint">{t("capsule.recentShelf.empty")}</p>
+        dropZone && dropActive ? (
+          // 空暂存架没有列表可保护：换成轻量接收态（图标 + 一句话 + 可接收类型），
+          // 与玻璃材质一致，不新造一张大卡片。
+          <div className="cap-shelf-recent-empty-drop" role="status">
+            <span className="cap-shelf-recent-empty-icon" aria-hidden="true">
+              <FolderInput size={16} strokeWidth={1.8} />
+            </span>
+            <span className="cap-shelf-recent-empty-copy">
+              <span className="cap-shelf-recent-empty-title">
+                {dropOver
+                  ? t("capsule.inboxDrop.shelfDropEmptyOverTitle")
+                  : t("capsule.inboxDrop.shelfDropEmptyTitle")}
+              </span>
+              <span className="cap-shelf-recent-empty-detail">
+                {t("capsule.inboxDrop.shelfDropEmptyDetail")}
+              </span>
+            </span>
+          </div>
+        ) : (
+          <p className="cap-shelf-recent-hint">{t("capsule.recentShelf.empty")}</p>
+        )
       ) : (
         <>
         {(recentError || mutationSyncError) && (

@@ -9,12 +9,14 @@
 //! - shared：共享基础设施，明确说明「停止会丢失什么」，不提供模块级按钮；
 //! - ondemand：纯按需执行，显示状态但不造无效暂停按钮。
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   AppWindow,
   Archive,
   Bell,
+  ChevronRight,
   Clipboard,
   FileText,
   History,
@@ -119,6 +121,19 @@ export default function RuntimeModulesSection({ active = true }: { active?: bool
   const settingsKey = lifecycleSettingsKey(settings);
   /** 上次真正查询时使用的设置键：隐藏期间不更新，重新显示后必然重查一次。 */
   const queriedKeyRef = useRef<string | null>(null);
+  /** 只默认折叠纯按需分组：常驻/任务/共享仍直接可见，避免把功能藏起来。 */
+  const [collapsed, setCollapsed] = useState<ReadonlySet<LifecycleCategory>>(
+    () => new Set<LifecycleCategory>(["ondemand"]),
+  );
+
+  function toggleGroup(category: LifecycleCategory) {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }
 
   // 只在分区可见时查询：首次显示、重新显示、可见期间相关设置变化。
   // 隐藏时不因任何设置变化发请求；没有轮询与常驻定时器。
@@ -166,6 +181,22 @@ export default function RuntimeModulesSection({ active = true }: { active?: bool
         </div>
       )}
 
+      {/* 快照过期/读取失败：旧状态只能作为参考，不能继续显示成已验证的实时状态。 */}
+      {statuses && stale && (
+        <div className="runtime-section-stale" role="status" data-runtime-stale="true">
+          <AlertTriangle size={13} aria-hidden="true" />
+          <span>
+            {t(
+              loading
+                ? "resource.modules.refreshingState"
+                : error
+                  ? "resource.modules.staleFailed"
+                  : "resource.modules.stale",
+            )}
+          </span>
+        </div>
+      )}
+
       {!grouped && loading && (
         <p className="runtime-section-loading" role="status">
           {t("resource.reading")}
@@ -176,10 +207,26 @@ export default function RuntimeModulesSection({ active = true }: { active?: bool
         GROUPS.map((group) => {
           const items = grouped.get(group.id);
           if (!items || items.length === 0) return null;
+          const groupOpen = !collapsed.has(group.id);
           return (
             <div className="runtime-group" key={group.id}>
-              <h4 className="runtime-group-title">{t(group.label)}</h4>
-              <ul className="runtime-list">
+              <h4 className="runtime-group-title">
+                <button
+                  type="button"
+                  className="runtime-group-toggle"
+                  aria-expanded={groupOpen}
+                  onClick={() => toggleGroup(group.id)}
+                >
+                  <ChevronRight
+                    size={12}
+                    className={`runtime-group-chevron${groupOpen ? " is-open" : ""}`}
+                    aria-hidden="true"
+                  />
+                  <span>{t(group.label)}</span>
+                  <span className="runtime-group-count">{items.length}</span>
+                </button>
+              </h4>
+              <ul className="runtime-list" hidden={!groupOpen}>
                 {items.map((item) => {
                   const presentation = presentationFor(item.id);
                   const Icon = presentation ? ICONS[presentation.icon] : Activity;
@@ -189,14 +236,17 @@ export default function RuntimeModulesSection({ active = true }: { active?: bool
                   const errorKey = item.error
                     ? LIFECYCLE_ERROR_LABELS[item.error]
                     : undefined;
+                  const unverified = stale && Boolean(statuses);
                   return (
                     <li
                       key={item.id}
-                      className={`runtime-row tone-${stateTone(item.state)}`}
+                      className={`runtime-row tone-${stateTone(item.state)}${
+                        unverified ? " is-unverified" : ""
+                      }`}
                       data-module-id={item.id}
                     >
                       <span className="runtime-icon" aria-hidden="true">
-                        <Icon size={14} />
+                        <Icon size={15} />
                       </span>
                       <div className="runtime-main">
                         <div className="runtime-title">
@@ -205,6 +255,11 @@ export default function RuntimeModulesSection({ active = true }: { active?: bool
                           </strong>
                           <span className={`runtime-state tone-${stateTone(item.state)}`}>
                             <i aria-hidden="true" /> {stateLabel}
+                            {unverified && (
+                              <em className="runtime-state-unverified">
+                                {t("resource.modules.unverified")}
+                              </em>
+                            )}
                           </span>
                           <span
                             className={`runtime-bg-badge${item.background.length > 0 ? " on" : ""}`}

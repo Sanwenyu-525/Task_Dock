@@ -4263,9 +4263,7 @@ html[data-theme="dark"] .resource-page {
 }
 
 .resource-volume-count {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
+  font-size: 11px;
 }
 
 .resource-volume-kind {
@@ -4273,7 +4271,7 @@ html[data-theme="dark"] .resource-page {
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
   color: var(--text-tertiary);
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 400;
   white-space: nowrap;
 }
@@ -4464,15 +4462,10 @@ html[data-theme="dark"] .resource-page {
 
 .resource-metric-strip {
   display: grid;
-  /* 320 窄窗也能排成 2 列（内容宽 258），避免 4 张卡竖向拉长整页。 */
+  /* 基础网格由 2026-11-13 的视觉重构区块统一覆盖（4 列 / 内存 3 列 / 窄窗 2 列）。 */
   grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
   gap: 8px;
   min-width: 0;
-}
-
-/* 指标卡为奇数张时（内存页 3 张），最后一张占满整行，避免半行空洞。 */
-.resource-metric-strip > .resource-metric:last-child:nth-child(odd) {
-  grid-column: 1 / -1;
 }
 
 .resource-metric {
@@ -11036,8 +11029,8 @@ html[data-theme="dark"] .resource-page {
    内容组（36 + 10 + 212 + 13 + 30 + 30 = 331）居中后落在 ±165.5：
    平直主体覆盖 ±135，端点再进入肩部 30.5px，该处厚度约 36.6px，仍满足
    「肩部厚度 ≥ 36px」，因此五分类的端头按钮不会被曲线切掉。 */
-.cap-v { flex-direction: column; width: 56px; height: 446px; }
-.cap-h { flex-direction: row; width: 446px; height: 56px; }
+.cap-v { flex-direction: column; width: 56px; height: 476px; }
+.cap-h { flex-direction: row; width: 476px; height: 56px; }
 
 /* 拖拽光标语义（2026-11-05 · drag-cursor-feedback）：
    轨道根节点的 grab 由 `styles-ui.css` 的 `.ui-drag-surface` 提供；
@@ -11355,13 +11348,56 @@ html[data-theme="dark"] .resource-page {
 .cap-collapse:hover { background: var(--wing-hover); color: var(--text-primary); }
 .cap-collapse:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
-/* 形态切换按钮（胶囊 → 完整面板）：复用 26px 尺寸与材质，
-   只多一个沿轨道的间距，不重排既有按钮。 */
-.cap-form { margin-top: 4px; }
-.cap-h .cap-form { margin-top: 0; margin-left: 4px; }
+/* 底部快捷区（26px 次级动作：工作空间直接入口 / 完整面板 / 极简标签）。
+   与 36px 分类按钮区分层级；间距统一由 gap 提供——按钮不再各自挂 margin，
+   几何总和由 `lib/capsuleLayout.ts::railContentExtent` 与契约测试锁定。 */
+.cap-quick {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cap-h .cap-quick { flex-direction: row; }
+.cap-quick-btn {
+  position: relative;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--wing-collapse);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.cap-quick-btn:hover { background: var(--wing-hover); color: var(--text-primary); }
+.cap-quick-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* 直接入口失败（P1-03）：胶囊折叠态看不到 Toast，失败必须画在按钮自身。
+   只改前景/背景，不改变 26px 命中区与几何，避免再次踩 P0-01 的肩部余量。 */
+.cap-quick-btn.has-error {
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--status-error) 45%, transparent);
+}
+.cap-quick-error {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 8px;
+  height: 8px;
+  font-size: 8px;
+  line-height: 8px;
+  font-weight: 700;
+  color: var(--status-error);
+  pointer-events: none;
+}
+
+/* 形态切换按钮（胶囊 → 完整面板）：复用 26px 尺寸与材质，间距由 `.cap-quick`
+   的 gap 提供。 */
 /* 极简标签入口与「完整面板」入口同一尺寸/间距，紧接在其下方。 */
-.cap-to-tab { margin-top: 4px; }
-.cap-h .cap-to-tab { margin-top: 0; margin-left: 4px; }
 
 /* 完整面板停靠态的轻量「收缩为胶囊」入口：贴着停靠边居中悬浮，
    不占内容布局；宽度/圆角/色板沿用胶囊按钮 Token，深浅主题自动跟随。 */
@@ -12661,37 +12697,112 @@ html[data-theme="dark"] .resource-page {
 }
 .cap-shelf-recent-hint.is-error { color: var(--status-error); }
 
-/* 原生文件拖入「最近暂存」：整个拖拽会话有轻提示，光标落在接收区时加强。
-   高亮只用内描边 + 极淡底色（与投递卡片同一套材质语言），不改变列表几何；
-   状态标签固定在标题行内、`pointer-events: none`，既不挤占列表，也不参与落点命中。 */
-.cap-shelf-recent.is-drop-active {
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--accent) 5%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+/* 原生文件拖入「最近暂存」：只做轻量状态表达，不把整个列表包成接收容器。
+   顶部 1–2px 强调线 + 标题行短标签已足够说明「这里能接」；
+   `is-drop-over` 只加强强调线与标签，不铺整片高饱和底色，也不改变任何几何。 */
+.cap-shelf-recent.is-drop-active::before,
+.cap-shelf-recent.is-drop-over::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 1px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--accent) 42%, transparent);
+  pointer-events: none;
 }
-.cap-shelf-recent.is-drop-over {
-  background: var(--cap-accent-soft);
-  box-shadow: inset 0 0 0 1.5px var(--accent);
+.cap-shelf-recent.is-drop-over::before {
+  height: 2px;
+  background: var(--accent);
 }
-/* 拖入提示做成标题行内的状态标签：
-   - 标题行高度由 22px 的按钮决定，标签只占行内空间，不改变接收区/列表几何；
-   - 不再用列表底部的绝对定位浮层——那会遮住最后一条的打开/删除入口，
-     拖拽期间反而看不清列表。
-   文案在会话期间说明「可以暂存」，光标落到接收区时改成「松开即加入」。 */
+.cap-shelf-recent.is-drop-active .cap-shelf-recent-title { color: var(--cap-text-1); }
+.cap-shelf-recent.is-drop-over .cap-shelf-recent-title { color: var(--accent); }
+
+/* 标题行内的状态标签：
+   - 视觉只留短词（「可暂存」/「松开暂存」），完整类型化文案在 sr-only；
+   - 不新增行、不改标题行高度，也不挤占标题/计数/按钮。 */
 .cap-shelf-recent-drop-hint {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
   padding: 1px 6px;
   border-radius: 999px;
-  background: var(--cap-accent-soft);
-  color: var(--accent);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--cap-text-2);
   font-size: 9.5px;
   font-weight: 600;
   line-height: 1.35;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   pointer-events: none;
+}
+.cap-shelf-recent.is-drop-over .cap-shelf-recent-drop-hint {
+  background: var(--cap-accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent);
+  color: var(--accent);
+}
+
+/* 空暂存架的拖入接收态：轻量块，不是一张独立大卡片；
+   只在没有列表可保护时出现，不改变非空列表的任何几何。 */
+.cap-shelf-recent-empty-drop {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
+  pointer-events: none;
+}
+.cap-shelf-recent.is-drop-over .cap-shelf-recent-empty-drop {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent);
+}
+.cap-shelf-recent-empty-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  color: var(--accent);
+  background: var(--cap-tile-face);
+  box-shadow: var(--cap-tile-ring);
+}
+.cap-shelf-recent-empty-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cap-shelf-recent-empty-title {
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--cap-text-1);
+}
+.cap-shelf-recent-empty-detail {
+  font-size: 9px;
+  line-height: 1.35;
+  color: var(--cap-text-3);
+  overflow-wrap: anywhere;
+}
+@container cap-panel (max-width: 360px) {
+  /* 窄面板：拖拽时优先保证标题与操作按钮，计数视觉让位但仍留在可访问性树里
+     （不能用 display:none，那会把「共 N 条」从读屏里一起删掉）。
+     用面板自身宽度而不是视口宽度：胶囊窗口宽度会随停靠边/轨道变化。 */
+  .cap-shelf-recent.is-drop-active .cap-shelf-recent-count {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
 }
 
 /* 结果条：一行汇总，点开看逐条原因；不伪造百分比 */
@@ -12896,11 +13007,113 @@ html[data-theme="dark"] .resource-page {
 .cap-drop-form-actions { display: flex; align-items: center; gap: 6px; padding-top: 2px; }
 
 .cap-drop-hint,
-.cap-drop-notice {
+.cap-drop-notice-flash {
   margin: 0;
   font-size: 10px;
   line-height: 1.4;
   color: var(--cap-text-3);
+  overflow-wrap: anywhere;
+}
+
+/* 结构化拖入状态行：图标 + 短标题 + 诊断码/详情/入口。
+   始终在文档流内，不覆盖列表或卡片；错误/部分成功不自动消失。
+   标题行与元信息行分开，窄面板下换行而不是截断。 */
+.cap-drop-notice {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 7px 6px 8px;
+  border-radius: 10px;
+  background: var(--cap-card-face);
+  box-shadow: inset 0 0 0 1px var(--cap-divider);
+  color: var(--cap-text-2);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.cap-drop-notice-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  color: var(--cap-text-3);
+}
+.cap-drop-notice.is-busy .cap-drop-notice-icon { color: var(--accent); }
+.cap-drop-notice.is-success .cap-drop-notice-icon { color: var(--status-success); }
+.cap-drop-notice.is-warn .cap-drop-notice-icon { color: var(--status-waiting); }
+.cap-drop-notice.is-error {
+  background: color-mix(in srgb, var(--status-error) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--status-error) 24%, transparent);
+}
+.cap-drop-notice.is-error .cap-drop-notice-icon { color: var(--status-error); }
+.cap-drop-notice-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cap-drop-notice-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.cap-drop-notice-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--cap-text-1);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.cap-drop-notice.is-error .cap-drop-notice-title { color: var(--status-error); }
+.cap-drop-notice-close {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: -2px -2px 0 0;
+}
+.cap-drop-notice-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  min-width: 0;
+}
+.cap-drop-notice-code {
+  min-width: 0;
+  font: 600 8.5px/1.3 ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--cap-text-3);
+  overflow-wrap: anywhere;
+}
+.cap-drop-notice-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cap-text-3);
+  font-size: 9.5px;
+  cursor: pointer;
+}
+.cap-drop-notice-toggle:hover { color: var(--cap-text-2); }
+.cap-drop-notice-toggle:focus-visible {
+  outline: none;
+  border-radius: 5px;
+  box-shadow: var(--focus-ring);
+}
+.cap-drop-notice-toggle svg { transition: transform 0.14s ease; }
+.cap-drop-notice-toggle svg.is-open { transform: rotate(180deg); }
+.cap-drop-notice-detail {
+  margin: 0;
+  color: var(--cap-text-2);
+  font-size: 9.5px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 .cap-drop-error {
@@ -18011,10 +18224,46 @@ span.wf-step-main {
   white-space: nowrap;
 }
 
+/* 排序列表：自身是滚动容器（拖拽自动滚动只作用于这里，不滚动整个设置页）。
+   max-height 用 vh 收敛，窄窗/矮窗下也不会把页面撑走；scrollbar-gutter 预留
+   滚动条宽度，两个界面切换时不出现行宽跳动。 */
 .nav-visibility-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  position: relative;
+  max-height: clamp(200px, 42vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  /* 经典（非覆盖）细滚动条：系统开启「自动隐藏滚动条」时，只声明 width 会退化成
+     不可见的覆盖态；显式给 scrollbar-color 才会常显，长列表才有「可滚动」提示。 */
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-tertiary) 45%, transparent) transparent;
+  /* 左右各给 4px：焦点环不被 overflow 裁掉；负外边距抵消，行右边界不变。 */
+  padding-inline: 4px;
+  margin-inline: -4px;
+}
+
+/* 旧内核兜底（支持标准 scrollbar-* 的 Chromium 会忽略这些伪元素规则） */
+.nav-visibility-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.nav-visibility-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nav-visibility-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-tertiary) 40%, transparent);
+  background-clip: padding-box;
+}
+
+.nav-visibility-list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-tertiary) 60%, transparent);
+  background-clip: padding-box;
 }
 
 .nav-visibility-row {
@@ -18022,19 +18271,210 @@ span.wf-step-main {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  position: relative;
+  border-radius: 6px;
+  /* 拖拽让位 170ms：其它行平滑开合；拖拽中的行关闭过渡、直接跟手。 */
+  transition:
+    transform 170ms cubic-bezier(0.2, 0, 0, 1),
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.nav-visibility-row:hover {
+  background: var(--surface-hover);
+}
+
+/* 连续调整态：极浅蓝紫底 + 左侧细强调条，同屏只有一个入口处于该状态。 */
+.nav-visibility-row.is-active {
+  background: var(--accent-soft);
+}
+
+.nav-visibility-row.is-active::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 0;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.7;
+}
+
+/* 拖拽中的行：轻微浮起（柔和阴影 + 主题色描边），不缩放、不旋转。 */
+.nav-visibility-row.is-dragging {
+  z-index: 3;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-overlay);
+  border-bottom-color: transparent;
+  cursor: grabbing;
+  transition: none;
+}
+
+/* 拖拽落点：空位里的一条细强调线，明确但不过度。 */
+.nav-visibility-drop-line {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  pointer-events: none;
+  transform: translateY(-2px);
+  animation: nav-drop-line-in 120ms ease-out;
+}
+
+@keyframes nav-drop-line-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 拖拽期间禁止选中文本 / 显示抓取光标（body 类由拖拽会话增删）。 */
+body.nav-reorder-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+
+/* 拖拽手柄：常驻占位（不因 hover 才插入导致行内文字跳位），默认弱化，悬停/聚焦/
+   调整态增强。触屏没有 hover，用 (hover: none) 常显半透明。 */
+.nav-visibility-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  height: 20px;
+  margin-inline-start: -2px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  opacity: 0;
+  cursor: grab;
+  touch-action: none;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.nav-visibility-handle.is-static {
+  visibility: hidden;
+}
+
+.nav-visibility-handle:active {
+  cursor: grabbing;
+}
+
+.nav-visibility-row:hover .nav-visibility-handle,
+.nav-visibility-row:focus-within .nav-visibility-handle,
+.nav-visibility-row.is-active .nav-visibility-handle {
+  opacity: 0.8;
+}
+
+.nav-visibility-row:hover .nav-visibility-handle:hover {
+  opacity: 1;
+  color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.nav-visibility-handle:focus-visible {
+  outline: none;
+  opacity: 1;
+  box-shadow: var(--focus-ring);
+}
+
+@media (hover: none) {
+  .nav-visibility-handle {
+    opacity: 0.6;
+  }
+}
+
+/* 固定调整条：只在调整态出现、不常驻；上/下按钮与行内箭头同款，位置不随行移动。 */
+.nav-visibility-adjust {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  animation: nav-adjust-in 140ms ease-out;
+}
+
+.nav-visibility-adjust-text {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.nav-visibility-adjust-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-visibility-adjust-pos {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.nav-visibility-adjust-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+@keyframes nav-adjust-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-visibility-row,
+  .nav-visibility-handle {
+    transition: none;
+  }
+
+  .nav-visibility-adjust,
+  .nav-visibility-drop-line {
+    animation: none;
+  }
 }
 
 .nav-visibility-entry {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1 1 auto;
   min-width: 0;
+  /* 导航名是控件标签而非正文，拖拽时不应顺带选中文字。 */
+  user-select: none;
 }
 
 .nav-visibility-entry-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .nav-visibility-shortcut {
@@ -18102,6 +18542,19 @@ span.wf-step-main {
 @media (max-width: 400px) {
   .nav-visibility-row {
     align-items: flex-start;
+  }
+
+  /* 窄窗优先保住导航名与开关：快捷键标签是辅助信息，让位而不是挤压名称。 */
+  .nav-visibility-shortcut {
+    display: none;
+  }
+
+  .nav-visibility-adjust {
+    flex-wrap: wrap;
+  }
+
+  .nav-visibility-adjust-actions {
+    margin-inline-start: auto;
   }
 }
 
@@ -20614,5 +21067,1441 @@ span.wf-step-main {
 @media (max-width: 400px) {
   .wb-materials-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ══════════ 资源管理 · 视觉与信息层级重构（2026-11-13） ══════════
+   目标：概览仪表盘化、磁盘分区按「容量 → 清理 → 分析 → 占用」分层、
+   正文可读字号、32px 操作热区、320/400/560 宽度与深浅主题一致。
+   约束：
+   - 只作用于资源管理页面与资源清理组件，不改其他页面基线；
+   - 颜色全部走语义 Token；状态同时用文字表达，不单靠颜色；
+   - 不引入图表库、Canvas 或常驻动画；唯一动效是 pending 指示点与折叠箭头，
+     均尊重 prefers-reduced-motion。 */
+
+/* ── 页面骨架与页头 ─────────────────────────────── */
+.resource-page {
+  gap: 10px;
+}
+
+.resource-page-head {
+  align-items: center;
+  gap: 10px;
+}
+
+.resource-page-title h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+.resource-page-title p {
+  margin-top: 3px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.resource-page-head > .btn {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  gap: 6px;
+}
+
+.resource-page-head > .btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.resource-segments {
+  padding: 4px;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--surface-raised, transparent) 62%, transparent);
+}
+
+.resource-segment {
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 550;
+}
+
+/* 英文标签更长：收紧内边距与字号，避免「Processes」在 400 宽单独占一整行。 */
+html[lang^="en"] .resource-segment {
+  padding: 6px 8px;
+  font-size: 11.5px;
+}
+
+.resource-segment.active {
+  font-weight: 650;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* 刷新作用域：页头按钮只影响当前分区；这行文字让作用域始终可见。 */
+.resource-scope-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -2px 0 0;
+  padding: 0 2px;
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.resource-scope-line svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+  opacity: 0.8;
+}
+
+.resource-scope-line span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.resource-page-body {
+  padding-bottom: 4px;
+}
+
+/* ── 区块锚点与操作热区 ─────────────────────────── */
+.resource-anchor {
+  min-width: 0;
+  scroll-margin-top: 10px;
+}
+
+.resource-anchor-heading {
+  scroll-margin-top: 10px;
+}
+
+.resource-anchor-heading:focus-visible,
+.resource-anchor:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 5px;
+}
+
+.resource-page .btn.sm,
+.resource-management .btn.sm {
+  min-height: 32px;
+  padding: 0 11px;
+  gap: 6px;
+  border-radius: var(--radius-control);
+  font-size: 12px;
+}
+
+.resource-page .btn.sm svg,
+.resource-management .btn.sm svg {
+  width: 13px;
+  height: 13px;
+}
+
+.resource-page .resource-icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+
+.resource-page .resource-icon-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.resource-page .resource-link-btn,
+.resource-management .resource-link-btn {
+  min-height: 28px;
+  padding: 3px 10px;
+  font-size: 11.5px;
+}
+
+/* 危险操作：普通清理入口用描边危险色，最终确认用实心危险色；
+   两者都与「扫描」「取消」等次级操作区分。 */
+.resource-danger-btn:not(.is-confirm) {
+  border-color: color-mix(
+    in srgb,
+    var(--status-error, var(--c-danger)) 34%,
+    var(--border-subtle)
+  );
+  color: var(--status-error, var(--c-danger));
+}
+
+.resource-danger-btn:not(.is-confirm):hover:not(:disabled) {
+  background: color-mix(
+    in srgb,
+    var(--status-error, var(--c-danger)) 10%,
+    transparent
+  );
+}
+
+.resource-danger-btn.is-confirm {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--status-error, var(--c-danger)) 88%, var(--c-night));
+  color: var(--c-paper, #fff);
+  box-shadow: 0 6px 16px -8px
+    color-mix(in srgb, var(--status-error, var(--c-danger)) 70%, transparent);
+}
+
+.resource-danger-btn.is-confirm:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--status-error, var(--c-danger)) 94%, var(--c-night));
+  color: var(--c-paper, #fff);
+}
+
+.resource-danger-tag {
+  padding: 0 5px;
+  border: 1px solid
+    color-mix(in srgb, var(--status-error, var(--c-danger)) 40%, transparent);
+  border-radius: 999px;
+  color: var(--status-error, var(--c-danger));
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.resource-cleanup-danger-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: var(--status-error, var(--c-danger));
+}
+
+.resource-cleanup-danger-note svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* 跨分区快照失败条：文字可换行，重试按钮不挤压错误信息。 */
+.resource-snapshot-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.resource-snapshot-error > span {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── 概览：有效性条 / 主卡 / 关注摘要 ────────────── */
+.resource-freshness {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface-raised, transparent) 58%, transparent);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.resource-freshness-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.resource-freshness-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.resource-freshness-time {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.resource-freshness.is-live .resource-freshness-dot {
+  background: var(--status-success);
+}
+
+.resource-freshness.is-updating {
+  border-style: dashed;
+}
+
+.resource-freshness.is-updating .resource-freshness-dot {
+  background: var(--status-waiting);
+}
+
+.resource-freshness.is-historical {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--status-waiting) 40%, var(--border-subtle));
+  background: color-mix(in srgb, var(--status-waiting) 8%, transparent);
+}
+
+.resource-freshness.is-historical .resource-freshness-dot {
+  background: var(--status-waiting);
+}
+
+.resource-freshness.is-failed {
+  border-color: color-mix(in srgb, var(--status-error) 38%, var(--border-subtle));
+  background: color-mix(in srgb, var(--status-error) 7%, transparent);
+}
+
+.resource-freshness.is-failed .resource-freshness-dot {
+  background: var(--status-error);
+}
+
+.resource-freshness.is-pending .resource-freshness-dot {
+  background: var(--accent);
+  animation: resource-freshness-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes resource-freshness-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resource-freshness.is-pending .resource-freshness-dot {
+    animation: none;
+  }
+}
+
+.resource-dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.resource-hero-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  box-shadow: var(--card-shadow, none);
+}
+
+.resource-hero-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.resource-scope-chip {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.resource-hero-subject {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.resource-hero-card .resource-ring {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.resource-hero-card .resource-ring-figure {
+  width: min(150px, 62%);
+}
+
+.resource-hero-card .resource-ring-center strong {
+  font-size: 26px;
+  letter-spacing: -0.02em;
+}
+
+.resource-hero-card .resource-ring-center span {
+  font-size: 11.5px;
+}
+
+.resource-hero-card .resource-ring-title {
+  font-size: 12.5px;
+}
+
+.resource-hero-card .resource-ring-caption span:not(.resource-ring-title) {
+  font-size: 11px;
+}
+
+.resource-hero-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.resource-hero-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.resource-hero-facts dt {
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.resource-hero-facts dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.resource-hero-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.resource-hero-link:hover {
+  background: var(--rail-hover-face);
+  color: var(--text-primary);
+}
+
+.resource-hero-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.resource-attention {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.resource-attention > svg {
+  flex: 0 0 auto;
+}
+
+.resource-attention.is-ok > svg {
+  color: var(--status-success);
+}
+
+.resource-attention.is-warn {
+  border-color: color-mix(in srgb, var(--status-waiting) 34%, var(--border-subtle));
+  background: color-mix(in srgb, var(--status-waiting) 7%, transparent);
+}
+
+.resource-attention.is-warn > svg {
+  color: var(--status-waiting);
+}
+
+.resource-attention-text {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.resource-attention-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.resource-attention-item {
+  padding: 1px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.resource-attention-item.is-attention {
+  border-color: color-mix(in srgb, var(--status-waiting) 38%, transparent);
+  color: var(--status-waiting);
+}
+
+.resource-attention-item.is-critical {
+  border-color: color-mix(in srgb, var(--status-error) 38%, transparent);
+  color: var(--status-error);
+}
+
+.resource-attention-item.is-unknown {
+  border-style: dashed;
+  color: var(--text-tertiary);
+}
+
+/* ── 概览：应用指标 / 趋势 / 卷条 ───────────────── */
+.resource-metric-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+/* 内存页只有 3 个指标：三列铺满，不留半行空洞。 */
+.resource-memory .resource-metric-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.resource-metric {
+  gap: 3px;
+  padding: 10px 11px;
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+button.resource-metric {
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.resource-overview-label {
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.resource-metric-value {
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.resource-metric-sub {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.resource-metric-action {
+  align-items: stretch;
+  cursor: pointer;
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border-subtle));
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+
+.resource-metric-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-raised));
+}
+
+.resource-metric-action:disabled {
+  cursor: default;
+}
+
+.resource-metric-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.resource-metric-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 2px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.resource-trend-section {
+  gap: 8px;
+}
+
+.resource-trend-scope {
+  font-size: 11px;
+}
+
+.resource-trend {
+  gap: 10px;
+}
+
+.resource-trend-card {
+  gap: 5px;
+  padding: 9px 11px;
+  background: var(--surface-raised);
+}
+
+.resource-trend-title {
+  font-size: 11.5px;
+}
+
+.resource-trend-value {
+  font-size: 13px;
+}
+
+.resource-trend-status {
+  font-size: 10.5px;
+}
+
+.resource-trend-svg {
+  height: 40px;
+}
+
+.resource-trend-empty {
+  min-height: 40px;
+  font-size: 10.5px;
+}
+
+.resource-trend-meta {
+  font-size: 11px;
+}
+
+.resource-volume-strip {
+  gap: 8px;
+}
+
+.resource-volume-chip {
+  padding: 7px 9px;
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+}
+
+.resource-volume-name {
+  font-size: 12px;
+}
+
+.resource-volume-value {
+  font-size: 12.5px;
+}
+
+/* ── 磁盘 A：卷容量卡片 ─────────────────────────── */
+.resource-disk {
+  gap: 16px;
+}
+
+.resource-disk-volumes {
+  display: block;
+}
+
+.resource-disk-volumes-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
+.resource-volume-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
+  gap: 9px;
+  min-width: 0;
+}
+
+.resource-volume-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+.resource-volume-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.resource-volume-card-name {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+}
+
+.resource-volume-card .resource-volume-kind {
+  font-size: 10.5px;
+}
+
+.resource-status-pill {
+  margin-left: auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.resource-status-pill.is-normal {
+  border-color: color-mix(in srgb, var(--status-success) 30%, transparent);
+  color: var(--status-success);
+}
+
+.resource-status-pill.is-attention {
+  border-color: color-mix(in srgb, var(--status-waiting) 38%, transparent);
+  color: var(--status-waiting);
+}
+
+.resource-status-pill.is-critical {
+  border-color: color-mix(in srgb, var(--status-error) 38%, transparent);
+  color: var(--status-error);
+}
+
+.resource-status-pill.is-unknown {
+  border-style: dashed;
+  color: var(--text-tertiary);
+}
+
+.resource-volume-card .resource-bar-label {
+  font-size: 11px;
+}
+
+.resource-volume-card .resource-bar-value {
+  font-size: 11.5px;
+}
+
+.resource-volume-card .resource-bar-detail {
+  font-size: 10.5px;
+}
+
+/* ── 磁盘 B：清理区块（用户级 / 应用级各自成卡） ── */
+.resource-cleaning {
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+.resource-cleaning .resource-cleanup,
+.resource-cleaning .resource-management {
+  gap: 9px;
+}
+
+.resource-cleaning .resource-cleanup-heading {
+  font-size: 13.5px;
+}
+
+.resource-page .resource-cleanup-row {
+  padding: 10px 0;
+  gap: 12px;
+}
+
+.resource-page .resource-cleanup-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.resource-page .resource-cleanup-description,
+.resource-page .resource-cleanup-category-stats,
+.resource-page .resource-cleanup-row-status,
+.resource-page .resource-cleanup-selection-summary {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.resource-page .resource-cleanup-category-stats strong {
+  font-size: 11.5px;
+}
+
+.resource-page .resource-cleanup-actions {
+  gap: 8px;
+}
+
+.resource-page .resource-cleanup-actions .btn {
+  min-height: 32px;
+  padding: 0 11px;
+  font-size: 12px;
+}
+
+/* 禁用的主操作必须明显「不可用」：渐变主按钮在半透明下仍像可点。 */
+.resource-page .btn.primary:disabled,
+.resource-management .btn.primary:disabled {
+  background: var(--control-face);
+  color: var(--text-tertiary);
+  box-shadow: none;
+  opacity: 0.7;
+  filter: none;
+}
+
+.resource-page .resource-cleanup-confirm,
+.resource-page .resource-cleanup-result {
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+}
+
+/* ── 磁盘 C：空间分析 ───────────────────────────── */
+.resource-analysis {
+  gap: 10px;
+}
+
+.resource-analysis-pathbar {
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface-base) 45%, transparent);
+}
+
+.resource-analysis-path {
+  font-size: 11.5px;
+}
+
+.resource-analysis-summary {
+  font-size: 11px;
+}
+
+.resource-analysis-scope {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.resource-analysis-scope-path {
+  flex: 1 1 150px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-analysis-scope-time {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.resource-analysis-subtitle {
+  font-size: 12px;
+}
+
+.resource-analysis-name {
+  font-size: 12px;
+}
+
+.resource-analysis-size {
+  font-size: 12px;
+}
+
+.resource-analysis-meta {
+  font-size: 11px;
+}
+
+.resource-analysis-file-parent {
+  font-size: 10.5px;
+}
+
+.resource-analysis-folder,
+.resource-analysis-root-row,
+.resource-analysis-file {
+  padding: 8px 5px;
+}
+
+/* ── 磁盘 D：应用数据占用 ───────────────────────── */
+.resource-storage {
+  gap: 8px;
+}
+
+.resource-storage-total {
+  padding: 8px 0 6px;
+  font-size: 12px;
+}
+
+.resource-storage-total strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.resource-storage-sampled {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.resource-storage-group {
+  gap: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.resource-storage-group-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 2px 0;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.resource-storage-group-title span {
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+.resource-storage-row {
+  padding: 7px 0;
+  font-size: 11.5px;
+}
+
+.resource-storage-name {
+  color: var(--text-primary);
+  font-size: 11.5px;
+}
+
+.resource-storage-share {
+  font-size: 11.5px;
+}
+
+.resource-storage-meta {
+  font-size: 11px;
+}
+
+/* ── 折叠区块（资源页内）─────────────────────────── */
+.resource-anchor .collapsible-section {
+  background: var(--surface-raised);
+}
+
+.resource-anchor .collapsible-toggle {
+  padding: 11px 12px;
+}
+
+.resource-anchor .collapsible-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.resource-anchor .collapsible-desc {
+  font-size: 11.5px;
+}
+
+.resource-anchor .collapsible-badge {
+  font-size: 10.5px;
+}
+
+.resource-anchor .collapsible-body {
+  padding: 4px 12px 12px;
+}
+
+/* 资源页专用折叠区块：折叠只 hidden，不卸载内容（保留扫描结果与已加载数据）。 */
+.resource-collapsible {
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.resource-collapsible-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 100%;
+  min-height: 44px;
+  padding: 11px 12px;
+  border-radius: var(--radius-card);
+  color: inherit;
+  text-align: left;
+}
+
+.resource-collapsible-toggle:hover {
+  background: var(--surface-hover);
+}
+
+.resource-collapsible-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.resource-collapsible-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.resource-collapsible-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
+.resource-collapsible-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.resource-collapsible-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.resource-collapsible-chevron {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  transition: transform 140ms ease;
+}
+
+.resource-collapsible-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.resource-collapsible-desc {
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.resource-collapsible-body {
+  padding: 2px 12px 12px;
+  min-width: 0;
+}
+
+.resource-collapsible-body[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resource-collapsible-chevron {
+    transition: none;
+  }
+}
+
+/* ── 内存 ───────────────────────────────────────── */
+.resource-memory {
+  gap: 14px;
+}
+
+.resource-memory-release {
+  gap: 9px;
+  padding-top: 10px;
+}
+
+.resource-memory-total {
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+.resource-memory-remaining {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.resource-memory .resource-bar-label,
+.resource-memory .resource-bar-value {
+  font-size: 12px;
+}
+
+.resource-memory .resource-bar-detail {
+  font-size: 11px;
+}
+
+/* ── 进程 ───────────────────────────────────────── */
+.resource-process-name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.resource-process-meta {
+  font-size: 11px;
+}
+
+.resource-process-metrics {
+  font-size: 11.5px;
+}
+
+.resource-process-chip,
+.resource-process-status {
+  font-size: 10.5px;
+}
+
+.resource-process-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.resource-process-list-note {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+/* 进程列表限高滚动：页面不随进程数量无限增长，行内容仍完整可读。 */
+.resource-process-list {
+  max-height: 380px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 2px;
+}
+
+.resource-process-list:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.resource-process-row {
+  padding: 9px 6px;
+}
+
+/* 进程行的 CPU/内存标签与数值是功能信息：11px 下限，动态用等宽数字。 */
+.resource-process-bar-label,
+.resource-process-bar-note {
+  font-size: 11px;
+}
+
+.resource-page .resource-process-sort .ui-select-trigger.size-sm {
+  min-height: 32px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.resource-process-self-grid dt {
+  font-size: 11px;
+}
+
+.resource-process-self-grid dd {
+  font-size: 12.5px;
+}
+
+.resource-process-sampled {
+  font-size: 11px;
+}
+
+.resource-diagnostics .resource-cleanup-heading {
+  font-size: 14px;
+}
+
+/* ── 功能运行：分组折叠 + 状态过期标识 ──────────── */
+.runtime-section-head h3 {
+  font-size: 14.5px;
+}
+
+.runtime-section-head p {
+  font-size: 12px;
+}
+
+.runtime-group {
+  gap: 6px;
+}
+
+.runtime-group-title {
+  margin: 2px 0 0;
+}
+
+.runtime-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-align: left;
+}
+
+.runtime-group-toggle:hover {
+  background: var(--rail-hover-face);
+  color: var(--text-primary);
+}
+
+.runtime-group-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.runtime-group-chevron {
+  color: var(--text-tertiary);
+  transition: transform 140ms ease;
+}
+
+.runtime-group-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.runtime-group-count {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-tertiary) 12%, transparent);
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.runtime-list {
+  border-radius: 11px;
+  background: var(--surface-raised);
+}
+
+.runtime-list[hidden] {
+  display: none;
+}
+
+.runtime-row {
+  gap: 9px;
+  padding: 10px 11px;
+}
+
+.runtime-title strong {
+  font-size: 12.5px;
+}
+
+.runtime-state {
+  padding: 1px 6px;
+  font-size: 10.5px;
+}
+
+.runtime-state-unverified {
+  margin-left: 4px;
+  padding-left: 4px;
+  border-left: 1px solid currentColor;
+  font-size: 10px;
+  font-style: normal;
+  opacity: 0.9;
+}
+
+.runtime-bg-badge {
+  font-size: 10.5px;
+}
+
+.runtime-scope,
+.runtime-bg-list {
+  font-size: 11px;
+}
+
+.runtime-error {
+  font-size: 11px;
+}
+
+.runtime-managed {
+  max-width: 120px;
+  font-size: 10.5px;
+}
+
+.runtime-section-error {
+  padding: 8px 10px;
+  font-size: 11px;
+}
+
+.runtime-section-stale {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px dashed color-mix(in srgb, var(--status-waiting) 45%, var(--border-subtle));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--status-waiting) 7%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.runtime-section-stale svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--status-waiting);
+}
+
+.runtime-section-footnote {
+  font-size: 11px;
+}
+
+/* ── 响应式：680 / 560 / 440 / 380 ───────────────── */
+@media (max-width: 680px) {
+  /* 四张指标卡在中等宽度挤成 110px 会迫使标签折行；改为 2×2 更易扫读。 */
+  .resource-page .resource-metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* 内存页 3 张卡：第三张占满整行，不留半行空洞。 */
+  .resource-memory .resource-metric-strip > .resource-metric:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 560px) {
+  .resource-page-head {
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+
+  .resource-page-title {
+    flex: 1 1 120px;
+  }
+
+  .resource-page-title p {
+    line-height: 1.4;
+  }
+
+  .resource-segments {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  /* 中宽（441–560）均分铺满；更窄时才按内容宽度居中，避免英文长标签被拉成整行。 */
+  .resource-segment {
+    flex: 1 1 auto;
+    min-height: 32px;
+    padding: 5px 8px;
+  }
+
+  .resource-page-title h2 {
+    font-size: 15px;
+  }
+
+  .resource-page-title p {
+    font-size: 11.5px;
+  }
+
+  .resource-dashboard {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .resource-hero-card .resource-ring-figure {
+    width: min(150px, 55%);
+  }
+
+  .resource-trend {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* 英文标签（Memory）需要更宽的标签列，26px 会折行。 */
+  .resource-process-bar {
+    grid-template-columns: 38px minmax(0, 1fr) auto;
+  }
+
+  .resource-freshness-time {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+}
+
+@media (max-width: 440px) {
+  .resource-segment {
+    flex: 0 1 auto;
+    padding: 5px 7px;
+  }
+}
+
+@media (max-width: 380px) {
+  .resource-page {
+    gap: 8px;
+  }
+
+  .resource-segment {
+    flex: 0 1 auto;
+    min-height: 32px;
+    padding: 4px 7px;
+  }
+
+  .resource-hero-card {
+    padding: 10px;
+  }
+
+  .resource-hero-card .resource-ring-figure {
+    width: 132px;
+  }
+
+  .resource-hero-card .resource-ring-center strong {
+    font-size: 22px;
+  }
+
+  .resource-hero-facts dd {
+    font-size: 12px;
+  }
+
+  .resource-metric {
+    padding: 9px 10px;
+  }
+
+  .resource-metric-value {
+    font-size: 14px;
+  }
+
+  .resource-process-row {
+    padding: 8px 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .runtime-group-chevron {
+    transition: none;
   }
 }

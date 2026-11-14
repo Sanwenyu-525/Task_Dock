@@ -41,7 +41,7 @@ import {
   type DragPayloadView,
   type DragProbe,
 } from "../../lib/dragPayload";
-import { errorMessage } from "../../lib/errors";
+import { errorMessage, sanitizeForUser } from "../../lib/errors";
 import type { MessageKey } from "../../i18n";
 import { useLocale } from "../../hooks/useLocale";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
@@ -51,6 +51,9 @@ import { DropdownMenu } from "../ui";
 import DropTargetForm from "../shelf/DropTargetForm";
 import type { ShelfDropReport, ShelfDropTarget } from "../../lib/bridge";
 import { openFullApp } from "./actions";
+import DragStatusNotice, {
+  type DragStatusTone,
+} from "./DragStatusNotice";
 import InboxRecentShelf, { SHELF_RECENT_DROP_ZONE } from "./InboxRecentShelf";
 import { EmptyState } from "./PanelKit";
 
@@ -65,6 +68,45 @@ function shortPath(path: string): string {
 }
 
 /** 载荷条数：只用于「正在复制/移动 N 项」这类真实计数文案。 */
+
+/** 稳定拖入错误码：后端以 `DRAG_*：说明` 形式表达语义，前端只单独展示码。 */
+const DRAG_CODE_RE = /\bDRAG_[A-Z0-9_]{2,}\b/;
+
+/** 从任意错误/失败原因里提取稳定码；提取不到就不编造。 */
+function dragCodeOf(raw: unknown): string | undefined {
+  const text =
+    typeof raw === "string" ? raw : raw instanceof Error ? raw.message : "";
+  const match = text.match(DRAG_CODE_RE);
+  return match ? match[0] : undefined;
+}
+
+/**
+ * 失败原因压成一句可读说明：去掉稳定码、脱敏路径/凭证并限长。
+ * 稳定码由 `cap-drop-notice-code` 单独展示，不混在正文里。
+ */
+function compactDragDetail(raw: unknown, code?: string): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  let text = sanitizeForUser(raw);
+  if (!text) return undefined;
+  if (code) {
+    text = text.split(code).join(" ").replace(/^[\s:：\-—·]+/, "").trim();
+  }
+  if (!text || text === code) return undefined;
+  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+}
+
+/**
+ * 结构化拖入状态行的本地状态。
+ * `id` 让「同一条状态更新」与「旧计时器到期」可区分，避免误清新状态。
+ */
+interface DragNoticeState {
+  id: number;
+  tone: DragStatusTone;
+  title: string;
+  detail?: string;
+  code?: string;
+  operationId?: string;
+}
 
 /**
  * 「最近暂存」接收区在悬停时显示的文案：只说已识别类型能做什么。
@@ -165,6 +207,8 @@ export default function InboxDropPane() {
    * 重复投递或重复暂存；新会话必须由 enter（或 enter 未认领时的 over）开启。
    */
   const dropSession = useRef({ active: false, handled: false });
+  /** 当前已受理、仍在读取的 operationId：旧会话的迟到载荷不得清掉新会话的读取态。 */
+  const acceptedOp = useRef<string | null>(null);
   const timers = useRef(new Set<number>());
   /** 卸载后不再更新任何本地状态：投递可能在面板关闭后才返回（结果由 store 保留）。 */
   const alive = useRef(true);
@@ -203,6 +247,59 @@ export default function InboxDropPane() {
     }, 3200);
     timers.current.add(t);
   }, []);
+
+  /**
+   * 结构化状态行：新状态替换旧状态；只有显式传入 `autoHideMs` 才自动消失。
+   * 读取中给 30s 上限（桥异常时不能永久停在「正在读取」），错误/部分成功
+   * 必须由用户关闭或下一条状态替换，绝不 3.2s 后偷偷消失。
+   */
+  const [dragNotice, setDragNotice] = useState<DragNoticeState | null>(null);
+  const dragNoticeSeq = useRef(0);
+  const pushDragNotice = useCallback(
+    (next: Omit<DragNoticeState, "id">, autoHideMs?: number) => {
+      if (!alive.current) return;
+      const id = ++dragNoticeSeq.current;
+      setDragNotice({ ...next, id });
+      if (autoHideMs && autoHideMs > 0) {
+        const timer = window.setTimeout(() => {
+          timers.current.delete(timer);
+          setDragNotice((n) => (n && n.id === id ? null : n));
+        }, autoHideMs);
+        timers.current.add(timer);
+      }
+    },
+    [],
+  );
+  const dismissDragNotice = useCallback(() => setDragNotice(null), []);
+
+  /** 稳定码 → 一句短标题；未知码回退到「读取/投递/暂存失败」，不展示原文。 */
+  const dragNoticeTitle = useCallback(
+    (code: string | undefined, fallback: "read" | "drop" | "shelf"): string => {
+      switch (code) {
+        case "DRAG_PAYLOAD_INVALID":
+        case "DRAG_VIRTUAL_FILE_READ_FAILED":
+        case "DRAG_VIRTUAL_INDEX_INVALID":
+        case "DRAG_IMAGE_DECODE_FAILED":
+          return t("capsule.inboxDrop.noticeReadFailed");
+        case "DRAG_FORMAT_UNSUPPORTED":
+        case "DRAG_NO_READABLE_CONTENT":
+          return t("capsule.inboxDrop.noticeUnsupported");
+        case "DRAG_SIZE_LIMIT_EXCEEDED":
+        case "DRAG_MEMORY_CONTENT_TOO_LARGE":
+          return t("capsule.inboxDrop.noticeTooLarge");
+        case "DRAG_TOO_MANY_ITEMS":
+          return t("capsule.inboxDrop.noticeTooMany");
+        case "DRAG_OPERATION_EXPIRED":
+          return t("capsule.inboxDrop.noticeExpired");
+        default:
+          if (fallback === "shelf") return t("capsule.inboxDrop.noticeShelfFailed");
+          return fallback === "read"
+            ? t("capsule.inboxDrop.noticeReadFailed")
+            : t("capsule.inboxDrop.noticeDropFailed");
+      }
+    },
+    [t],
+  );
 
   const setOver = useCallback((id: string | null) => {
     // 高频 over 事件只在实际换卡时触发一次渲染，避免拖入时反复重排
@@ -379,11 +476,20 @@ export default function InboxDropPane() {
         announceReport(report, target.name);
       } catch (e) {
         if (alive.current) {
-          flash(t("capsule.inboxDrop.dropFailed", { error: errorMessage(e) }));
+          const code = dragCodeOf(e);
+          pushDragNotice({
+            tone: "error",
+            title: dragNoticeTitle(code, "drop"),
+            detail:
+              code === "DRAG_PAYLOAD_INVALID"
+                ? t("capsule.inboxDrop.noticeReadFailedDetail")
+                : compactDragDetail(errorMessage(e), code),
+            code,
+          });
         }
       }
     },
-    [announceReport, drop, flash, resolveTarget, t],
+    [announceReport, dragNoticeTitle, drop, pushDragNotice, resolveTarget, t],
   );
 
   /**
@@ -407,11 +513,21 @@ export default function InboxDropPane() {
         announceReport(report, target.name);
       } catch (e) {
         if (alive.current) {
-          flash(t("capsule.inboxDrop.dropFailed", { error: errorMessage(e) }));
+          const code = dragCodeOf(e);
+          pushDragNotice({
+            tone: "error",
+            title: dragNoticeTitle(code, "drop"),
+            detail:
+              code === "DRAG_PAYLOAD_INVALID"
+                ? t("capsule.inboxDrop.noticeReadFailedDetail")
+                : compactDragDetail(errorMessage(e), code),
+            code,
+            operationId,
+          });
         }
       }
     },
-    [announceReport, flash, resolveTarget, t],
+    [announceReport, dragNoticeTitle, pushDragNotice, resolveTarget, t],
   );
 
   /**
@@ -428,21 +544,65 @@ export default function InboxDropPane() {
           .commitDragPayload(operationId, "reference", null);
         if (!alive.current) return;
         const failed = r.failed.length;
-        const reason = r.failed[0]?.reason ?? "";
+        const first = r.failed[0];
+        const code = dragCodeOf(first?.code) ?? dragCodeOf(first?.reason);
+        const reasonText =
+          code === "DRAG_PAYLOAD_INVALID"
+            ? t("capsule.inboxDrop.noticeReadFailedDetail")
+            : compactDragDetail(first?.reason, code);
         if (failed > 0) {
-          flash(
-            r.added > 0
-              ? t("capsule.inboxDrop.shelfPartial", { added: r.added, failed, reason })
-              : t("capsule.inboxDrop.shelfFailed", { failed, reason }),
-          );
+          pushDragNotice({
+            tone: r.added > 0 ? "warn" : "error",
+            title:
+              r.added > 0
+                ? t("capsule.inboxDrop.noticePartial")
+                : dragNoticeTitle(code, "shelf"),
+            detail: reasonText
+              ? r.added > 0
+                ? t("capsule.inboxDrop.shelfPartial", {
+                    added: r.added,
+                    failed,
+                    reason: reasonText,
+                  })
+                : t("capsule.inboxDrop.shelfFailed", {
+                    failed,
+                    reason: reasonText,
+                  })
+              : undefined,
+            code,
+            operationId,
+          });
         } else if (r.added > 0) {
-          flash(t("capsule.inboxDrop.shelfAdded", { added: r.added }));
+          // 成功是信息类：可以自动消失，不占用后续拖拽的空间。
+          pushDragNotice(
+            {
+              tone: "success",
+              title: t("capsule.inboxDrop.shelfAdded", { added: r.added }),
+            },
+            3200,
+          );
         } else {
-          flash(t("capsule.inboxDrop.shelfNothingToAdd"));
+          pushDragNotice(
+            {
+              tone: "info",
+              title: t("capsule.inboxDrop.shelfNothingToAdd"),
+            },
+            3200,
+          );
         }
       } catch (e) {
         if (alive.current) {
-          flash(t("capsule.inboxDrop.shelfAddError", { error: errorMessage(e) }));
+          const code = dragCodeOf(e);
+          pushDragNotice({
+            tone: "error",
+            title: dragNoticeTitle(code, "shelf"),
+            detail:
+              code === "DRAG_PAYLOAD_INVALID"
+                ? t("capsule.inboxDrop.noticeReadFailedDetail")
+                : compactDragDetail(errorMessage(e), code),
+            code,
+            operationId,
+          });
         }
       } finally {
         if (alive.current) {
@@ -450,7 +610,7 @@ export default function InboxDropPane() {
         }
       }
     },
-    [flash, t],
+    [dragNoticeTitle, pushDragNotice, t],
   );
 
   /**
@@ -465,27 +625,64 @@ export default function InboxDropPane() {
           .addPaths(paths, "reference", "drag");
         if (!alive.current) return;
         const failed = result.failed.length;
+        const first = result.failed[0];
+        const code = dragCodeOf(first?.code) ?? dragCodeOf(first?.reason);
+        const reasonText =
+          code === "DRAG_PAYLOAD_INVALID"
+            ? t("capsule.inboxDrop.noticeReadFailedDetail")
+            : compactDragDetail(first?.reason, code);
         if (failed > 0) {
-          const reason = result.failed[0]?.reason ?? "";
-          flash(
-            result.added > 0
-              ? t("capsule.inboxDrop.shelfPartial", {
-                  added: result.added,
-                  failed,
-                  reason,
-                })
-              : t("capsule.inboxDrop.shelfFailed", { failed, reason }),
-          );
+          pushDragNotice({
+            tone: result.added > 0 ? "warn" : "error",
+            title:
+              result.added > 0
+                ? t("capsule.inboxDrop.noticePartial")
+                : dragNoticeTitle(code, "shelf"),
+            detail: reasonText
+              ? result.added > 0
+                ? t("capsule.inboxDrop.shelfPartial", {
+                    added: result.added,
+                    failed,
+                    reason: reasonText,
+                  })
+                : t("capsule.inboxDrop.shelfFailed", {
+                    failed,
+                    reason: reasonText,
+                  })
+              : undefined,
+            code,
+          });
         } else if (result.added > 0) {
-          flash(t("capsule.inboxDrop.shelfAdded", { added: result.added }));
+          pushDragNotice(
+            {
+              tone: "success",
+              title: t("capsule.inboxDrop.shelfAdded", { added: result.added }),
+            },
+            3200,
+          );
         } else {
           // added=0 且 failed=0（空批次/全部被过滤）：与完整暂存架 reportAdd
           // 同口径提示，不得静默结束，也不能显示「已暂存」。
-          flash(t("capsule.inboxDrop.shelfNothingToAdd"));
+          pushDragNotice(
+            {
+              tone: "info",
+              title: t("capsule.inboxDrop.shelfNothingToAdd"),
+            },
+            3200,
+          );
         }
       } catch (e) {
         if (alive.current) {
-          flash(t("capsule.inboxDrop.shelfAddError", { error: errorMessage(e) }));
+          const code = dragCodeOf(e);
+          pushDragNotice({
+            tone: "error",
+            title: dragNoticeTitle(code, "shelf"),
+            detail:
+              code === "DRAG_PAYLOAD_INVALID"
+                ? t("capsule.inboxDrop.noticeReadFailedDetail")
+                : compactDragDetail(errorMessage(e), code),
+            code,
+          });
         }
       } finally {
         // 与文件选择器同一口径：以最近切片为准刷新（新增条目立即可见）。
@@ -494,7 +691,7 @@ export default function InboxDropPane() {
         }
       }
     },
-    [flash, t],
+    [dragNoticeTitle, pushDragNotice, t],
   );
 
   /**
@@ -509,15 +706,49 @@ export default function InboxDropPane() {
     (payload: DragPayloadView, point: DropPoint | null, meta: DropPayloadMeta) => {
       const targetId = point ? hitVisible(point) : null;
       const shelfZone = point ? hitShelfZone(point) : false;
-      // 后端给出的是已脱敏的人读原因（只含格式名/计数，不含内容）；
-      // 有具体原因时优先展示，避免所有失败都被说成同一句「无法识别」。
-      const unsupportedText =
-        payload.kind === "unsupported" && payload.reason.trim()
-          ? payload.reason
-          : t("capsule.inboxDrop.dragUnsupported");
+      const failure = meta.failures[0];
+
+      /**
+       * 放弃会话并给出结构化失败反馈。
+       * 标题/码/详情分开：`DRAG_PAYLOAD_INVALID` 只显示固定说明，绝不把
+       * Rust 原始结构错误或路径塞进界面；其他码沿用后端已脱敏 reason。
+       */
+      const reportDroppedContent = () => {
+        const code =
+          payload.kind === "unsupported"
+            ? payload.code.trim() || failure?.code
+            : failure?.code;
+        const isInvalid = code === "DRAG_PAYLOAD_INVALID";
+        const rawReason =
+          payload.kind === "unsupported"
+            ? payload.reason.trim() || failure?.reason || ""
+            : failure?.reason || "";
+        const detail = isInvalid
+          ? t("capsule.inboxDrop.noticeReadFailedDetail")
+          : compactDragDetail(rawReason, code) ??
+            (payload.kind === "unsupported"
+              ? t("capsule.inboxDrop.dragUnsupported")
+              : undefined);
+        pushDragNotice({
+          tone: "error",
+          title: code
+            ? dragNoticeTitle(code, "read")
+            : t("capsule.inboxDrop.noticeUnsupported"),
+          detail,
+          code,
+          operationId: meta.operationId,
+        });
+      };
 
       if (targetId) {
         if (!canDropToDirectory(payload)) {
+          // 先区分「内容本身读不出来」与「类型不适合文件夹」：
+          // 前者必须给出准确码/详情/诊断入口，不能被一句 dirBlocked 覆盖。
+          if (payload.kind === "unsupported" || failure) {
+            reportDroppedContent();
+            void discardOperation(meta.operationId, "directory-kind-rejected");
+            return;
+          }
           // 不做隐式转换：目录里不会出现「链接.txt」这种凭空生成的文件。
           flash(t("capsule.inboxDrop.dirBlocked"));
           void discardOperation(meta.operationId, "directory-kind-rejected");
@@ -535,7 +766,7 @@ export default function InboxDropPane() {
 
       if (shelfZone) {
         if (payload.kind === "unsupported") {
-          flash(unsupportedText);
+          reportDroppedContent();
           void discardOperation(meta.operationId, "unsupported");
           return;
         }
@@ -551,16 +782,22 @@ export default function InboxDropPane() {
       void discardOperation(meta.operationId, "no-target");
       if (payload.kind === "unsupported") {
         // 可识别但不支持的内容必须明确说「没暂存」，不能静默失败。
-        flash(unsupportedText);
+        reportDroppedContent();
+      } else if (failure) {
+        // 没命中接收区且拖入阶段确有读取失败：如实说明，不把「拖到空白处」
+        // 这种正常放弃误报成错误。
+        reportDroppedContent();
       }
     },
     [
       addToShelf,
       commitDirectory,
       commitShelf,
+      dragNoticeTitle,
       flash,
       hitShelfZone,
       hitVisible,
+      pushDragNotice,
       submit,
       t,
     ],
@@ -596,7 +833,10 @@ export default function InboxDropPane() {
       claim: () => true,
       onEnter: (point) => {
         dropSession.current = { active: true, handled: false };
+        acceptedOp.current = null;
         setDragging(true);
+        // 新会话开始：上一轮若停在「正在读取」，不能继续误导这一轮。
+        setDragNotice((n) => (n?.tone === "busy" ? null : n));
         // 进入那一瞬间就按坐标命中一次：OLE 只在鼠标移动时发 over，
         // 用户「拖进来后停在卡片上」不会有第二次机会；命中不到就保持无高亮。
         applyOver(point);
@@ -608,6 +848,7 @@ export default function InboxDropPane() {
           // 已经 drop 过的会话不再接迟到 over，避免重复高亮。
           if (session.handled) return;
           dropSession.current = { active: true, handled: false };
+          acceptedOp.current = null;
         }
         // 收到 over 本身就是「拖拽正在进行」的证据：enter 被错过时也要进入可投递形态。
         setDragging(true);
@@ -650,19 +891,31 @@ export default function InboxDropPane() {
         setProbe(next);
       },
       // 松手已被受理、内容仍在后端读取：先如实说「读取中」，不预判成功。
-      onAccepted: (next) => {
+      onAccepted: (next, _point, meta) => {
         dropSession.current = { active: false, handled: true };
+        acceptedOp.current = meta.operationId;
         lastPoint.current = null;
         setOver(null);
         setShelfOver(false);
         setDragging(false);
         setProbe(next);
         endLocalDrag();
-        flash(t("capsule.inboxDrop.dragReading"));
+        // 松手已被受理、内容仍在后端读取：结构化「正在读取」带 spinner，
+        // 30s 上限避免桥异常时永久停在读取态。
+        pushDragNotice(
+          { tone: "busy", title: t("capsule.inboxDrop.dragReading") },
+          30_000,
+        );
       },
       // 载荷就绪：按松手坐标路由到暂存架或目录卡片，未命中则释放后端暂存副本。
       onPayload: (payload, point, meta) => {
         setProbe(null);
+        // 内容已就绪：只让**当前**会话清掉读取态；旧会话的迟到载荷不能把
+        // 新会话的「正在读取」提前抹掉（fileDrop 已按 operationId 路由）。
+        if (acceptedOp.current === meta.operationId) {
+          acceptedOp.current = null;
+          setDragNotice((n) => (n?.tone === "busy" ? null : n));
+        }
         routePayload(payload, point, meta);
       },
     });
@@ -670,9 +923,9 @@ export default function InboxDropPane() {
     addToShelf,
     applyOver,
     endLocalDrag,
-    flash,
     hitShelfZone,
     hitVisible,
+    pushDragNotice,
     routePayload,
     submit,
     t,
@@ -978,8 +1231,25 @@ export default function InboxDropPane() {
             </div>
           )}
 
+          {/* 结构化状态行：在文档流内、不覆盖列表/卡片，错误不会自动消失；
+              轻提示（flash）仍保留为 3.2s 单行信息。 */}
+          {dragNotice && (
+            <DragStatusNotice
+              key={dragNotice.id}
+              tone={dragNotice.tone}
+              title={dragNotice.title}
+              detail={dragNotice.detail}
+              code={dragNotice.code}
+              operationId={dragNotice.operationId}
+              onDiagnostics={
+                dragNotice.operationId ? showDiagnostics : undefined
+              }
+              onDismiss={dismissDragNotice}
+            />
+          )}
+
           {notice && (
-            <p className="cap-drop-notice" role="status">
+            <p className="cap-drop-notice-flash" role="status">
               {notice}
             </p>
           )}

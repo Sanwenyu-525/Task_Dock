@@ -38,6 +38,7 @@ import { isCapsuleMode, measureTitlebarHeight } from "./lib/edgeSnap";
 import { resolveWindowMode } from "./lib/windowMode";
 import { createSubscriptionScope } from "./lib/subscriptions";
 import { setWindowEscapeHandler } from "./lib/overlayStack";
+import { openDevWorkbenchInMainWindow } from "./lib/mainWindowNavigation";
 import {
   notifyUiReady,
   normalizeAgentChangedPayload,
@@ -47,6 +48,8 @@ import {
   onModeChanged,
   onNotification,
   onNotificationNavigate,
+  onProjectWorkspaceOpenDevWorkbench,
+  projectWorkspaceOpenDevWorkbenchAck,
   onQuickCaptureCreated,
   onReminderFired,
   onReminderSnoozed,
@@ -301,6 +304,42 @@ export default function App() {
     scope.add(onSnapFormChanged((form) => {
       // 右键菜单已持久化；这里同步偏好，吸附引擎订阅 store 后原地切换形态。
       syncExternal({ snap_display_mode: form === "full" ? "full" : "capsule" });
+    }));
+    scope.add(onProjectWorkspaceOpenDevWorkbench(({ requestId, devProjectId }) => {
+      // P0-02 / P0-A：不再「setTab 即成功」。完整事务（唤醒 → 退出胶囊 → 完整模式 →
+      // 提交开发项目上下文 → 导航门禁 → 校验 → 聚焦）走既有状态机，完成后回执真实结果；
+      // 草稿拦截时回 pending，用户确认/取消后再回一条最终结果（onSettled）。
+      // 回执按顺序发送：pending 与最终结果不能因为两次 invoke 并发而乱序
+      // （乱序时工作空间窗口可能先收到终态、再被迟到的 pending 覆盖）。
+      let ackChain: Promise<void> = Promise.resolve();
+      const ack = (outcome: Awaited<ReturnType<typeof openDevWorkbenchInMainWindow>>) => {
+        ackChain = ackChain.then(
+          () => send(outcome),
+          () => send(outcome),
+        );
+        return ackChain;
+      };
+      const send = async (outcome: Awaited<ReturnType<typeof openDevWorkbenchInMainWindow>>) => {
+        try {
+          await projectWorkspaceOpenDevWorkbenchAck({
+            requestId,
+            ok: outcome.ok,
+            pending: outcome.pending,
+            status: outcome.status,
+            error: outcome.error,
+          });
+        } catch (e) {
+          // 回执失败时工作空间窗口会超时并提示「未收到回执」，这里只记录
+          reportError(e, { operation: "回执开发工作台导航结果" });
+        }
+      };
+      void (async () => {
+        const outcome = await openDevWorkbenchInMainWindow(
+          { requestId, devProjectId },
+          { onSettled: (final) => void ack(final) },
+        );
+        await ack(outcome);
+      })();
     }));
     scope.add(onAppReady(() => {
       // refreshTasks 已包含 loadStats（useTasksStore.refresh），不再重复发一次统计 IPC

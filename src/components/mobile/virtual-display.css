@@ -1,0 +1,107 @@
+/* Android 虚拟屏 MVP：只补齐本区块需要的布局，颜色/圆角全部用语义 Token。 */
+
+.virtual-display {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vd-toolchain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.vd-tool {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: var(--radius-control, 8px);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vd-control {
+  display: flex;
+  flex: 0 1 320px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* 行标签不参与收缩换行：窄面板下「工具链 / 设备 / 应用」保持单行。 */
+.virtual-display .setting-row > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.vd-control > * {
+  width: 100%;
+}
+
+.vd-note-warn {
+  color: var(--status-waiting);
+}
+
+.vd-note-error {
+  color: var(--status-error);
+}
+
+.vd-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+}
+
+.vd-sessions-title {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.vd-session {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control, 8px);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.vd-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-success);
+}
+
+.vd-session-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vd-session-package {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vd-session-meta {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

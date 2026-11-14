@@ -412,7 +412,8 @@ export interface Settings {
    * 空 = 未设置）。旧库缺键时后端返回空串，前端读侧按可选处理。
    */
   workbench_current_project?: string;
-  // 模块独立启停（v0.5 整改）
+  /** 工作空间（v49）：当前活跃的工作空间项目 ID；空/未设置 = 无活跃项目。 */
+  workspace_active_project?: string;  // 模块独立启停（v0.5 整改）
   workspace_enabled: boolean;
   actions_enabled: boolean;
   /** 行动中心临时暂停：只停自动聚合刷新与徽标，历史仍可手动查看。 */
@@ -3300,6 +3301,8 @@ export const dragBridgeStatus = () =>
     active: boolean;
     /** 成功接管的窗口数：1 表示可能仍有 WebView 子窗口走 wry 的路径处理器。 */
     windows: number;
+    /** 注册失败的窗口数：非 0 表示部分接管，这些窗口收不到富内容。 */
+    failedWindows: number;
     maxItems: number;
     maxTextBytes: number;
     maxImageBytes: number;
@@ -4187,6 +4190,13 @@ export interface DevHandoffPack {
   /** 保存时的敏感扫描结论摘要（非命中原文）。 */
   secretScan: string;
   createdAt: string;
+  /** v50：该交接包要交给哪个 Agent 会话执行（与 task_agent_links 同一身份口径）。 */
+  agentSourceId: string | null;
+  agentSessionExternalId: string | null;
+  /** 读时派生：会话标题；会话被删除时为 null。 */
+  agentSessionTitle: string | null;
+  /** 读时派生：该会话当前是否仍存在。 */
+  agentSessionAvailable: boolean;
 }
 
 /** 验收记录：追加式历史，无更新/删除入口。 */
@@ -4199,6 +4209,33 @@ export interface DevAcceptanceRecord {
   /** 证据描述数组（只存用户登记的元数据描述，不存正文/截图本体）。 */
   evidence: string[];
   createdAt: string;
+  /** v50：本记录针对的 Agent 轮次（人工登记时可选标注；历史记录为 null）。 */
+  agentSourceId: string | null;
+  agentSessionExternalId: string | null;
+  agentRunExternalId: string | null;
+}
+
+/**
+ * 「Agent 已完成、可人工验收」的轮次候选（后端只读派生，不落库、不自动通过）。
+ * 已登记过验收的轮次仍会返回，并带 accepted* 字段。
+ */
+export interface DevAgentRunCandidate {
+  sourceId: string;
+  sessionExternalId: string;
+  /** agent_sessions 行 ID（供按会话继续查轮次）。 */
+  sessionId: string;
+  sessionTitle: string;
+  sessionStatus: string;
+  /** user = 手工关联；auto = 导航目标影子关联；handoff = 由交接包绑定的会话。 */
+  linkOrigin: "user" | "auto" | "handoff" | string;
+  runExternalId: string;
+  runTaskTitle: string | null;
+  runStatus: string;
+  endedAt: string | null;
+  updatedAt: string;
+  acceptedRecordId: string | null;
+  acceptedVerdict: "pass" | "fail" | "blocked" | "not_verified" | null;
+  acceptedAt: string | null;
 }
 
 /** 敏感扫描命中：只给类型与位置（第几段文本第几行），绝不回传原文。 */
@@ -4230,12 +4267,17 @@ export const devHandoffSave = (input: {
   title: string;
   contentMd: string;
   sourceSummary?: string;
+  /** 可选：把该版本绑定到一个真实存在的 Agent 会话（v50）。 */
+  agentSourceId?: string | null;
+  agentSessionExternalId?: string | null;
 }) =>
   invoke<{ pack: DevHandoffPack }>("dev_handoff_save", {
     taskId: input.taskId,
     title: input.title,
     contentMd: input.contentMd,
     sourceSummary: input.sourceSummary ?? "",
+    agentSourceId: input.agentSourceId ?? null,
+    agentSessionExternalId: input.agentSessionExternalId ?? null,
   });
 
 export const devHandoffList = (opts?: { taskId?: string | null; limit?: number }) =>
@@ -4257,6 +4299,10 @@ export const devAcceptanceRecordCreate = (input: {
   verdict: "pass" | "fail" | "blocked" | "not_verified";
   summary: string;
   evidence?: string[];
+  /** 可选：标注本结论针对哪个 Agent 轮次（三者必须同时给出且真实存在）。 */
+  agentSourceId?: string | null;
+  agentSessionExternalId?: string | null;
+  agentRunExternalId?: string | null;
 }) =>
   invoke<{ record: DevAcceptanceRecord }>("dev_acceptance_record_create", {
     subjectKind: input.subjectKind,
@@ -4264,6 +4310,19 @@ export const devAcceptanceRecordCreate = (input: {
     verdict: input.verdict,
     summary: input.summary,
     evidence: input.evidence ?? [],
+    agentSourceId: input.agentSourceId ?? null,
+    agentSessionExternalId: input.agentSessionExternalId ?? null,
+    agentRunExternalId: input.agentRunExternalId ?? null,
+  });
+
+/**
+ * 当前任务关联会话里「已完成」的 Agent 轮次（只读派生）。
+ * 不自动生成验收记录；已登记的轮次带 accepted*，供前端标注「已验收」。
+ */
+export const devAcceptanceAgentRuns = (taskId: string, limit = 10) =>
+  invoke<{ runs: DevAgentRunCandidate[]; truncated: boolean }>("dev_acceptance_agent_runs", {
+    taskId,
+    limit,
   });
 
 export const devAcceptanceRecordList = (opts?: {
@@ -4315,3 +4374,267 @@ export const notesList = (opts?: {
     limit: opts?.limit ?? null,
     offset: opts?.offset ?? null,
   });
+// ── 项目工作空间（project workspace，v49）────────────────
+export type WorkspaceKind = "development" | "game" | "ai_comic" | "general";
+export type WorkspaceProjectStatus = "active" | "archived";
+export type WorkspaceItemStatus = "todo" | "doing" | "blocked" | "done" | "archived";
+
+export interface WorkspaceProject {
+  id: string;
+  name: string;
+  kind: WorkspaceKind;
+  status: WorkspaceProjectStatus;
+  rootPath: string;
+  rootExists: boolean;
+  devProjectId: string | null;
+  devProjectExists: boolean;
+  devProjectName: string | null;
+  note: string;
+  itemCount: number;
+  taskLinkCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceInstance {
+  projectId: string;
+  activeModule: string;
+  layoutJson: string;
+  lastOpenedAt: string | null;
+}
+
+export interface WorkspaceItem {
+  id: string;
+  projectId: string;
+  parentId: string | null;
+  title: string;
+  stage: string;
+  status: WorkspaceItemStatus;
+  sortOrder: number;
+  metadataJson: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkspaceTaskLink {
+  projectId: string;
+  taskId: string;
+  title: string;
+  status: string;
+  priority: number;
+  dueAt: string | null;
+  createdAt: string;
+}
+
+export const workspaceProjectList = (status?: WorkspaceProjectStatus | null) =>
+  invoke<{ projects: WorkspaceProject[] }>("workspace_project_list", { status: status ?? null });
+
+export const workspaceProjectGet = (id: string) =>
+  invoke<{ project: WorkspaceProject }>("workspace_project_get", { id });
+
+export const workspaceProjectSave = (input: {
+  id?: string | null;
+  name: string;
+  kind: WorkspaceKind;
+  rootPath?: string | null;
+  devProjectId?: string | null;
+  note?: string | null;
+}) =>
+  invoke<{ project: WorkspaceProject }>("workspace_project_save", {
+    id: input.id ?? null,
+    name: input.name,
+    kind: input.kind,
+    rootPath: input.rootPath ?? null,
+    devProjectId: input.devProjectId ?? null,
+    note: input.note ?? null,
+  });
+
+export const workspaceProjectSetStatus = (id: string, status: WorkspaceProjectStatus) =>
+  invoke<{ project: WorkspaceProject }>("workspace_project_set_status", { id, status });
+
+export const workspaceProjectDelete = (id: string) =>
+  invoke<{ ok: true }>("workspace_project_delete", { id });
+
+export const workspaceSetActiveProject = (projectId: string | null) =>
+  invoke<{ projectId: string }>("workspace_set_active_project", { projectId: projectId ?? null });
+
+export const workspaceInstanceGet = (projectId: string) =>
+  invoke<{ instance: WorkspaceInstance }>("workspace_instance_get", { projectId });
+
+export const workspaceInstanceSave = (input: {
+  projectId: string;
+  activeModule: string;
+  layoutJson?: string | null;
+}) =>
+  invoke<{ instance: WorkspaceInstance }>("workspace_instance_save", {
+    projectId: input.projectId,
+    activeModule: input.activeModule,
+    layoutJson: input.layoutJson ?? null,
+  });
+
+export const workspaceItemList = (projectId: string) =>
+  invoke<{ items: WorkspaceItem[] }>("workspace_item_list", { projectId });
+
+export const workspaceItemSave = (input: {
+  id?: string | null;
+  projectId: string;
+  parentId?: string | null;
+  title: string;
+  stage?: string | null;
+  status?: WorkspaceItemStatus | null;
+  sortOrder?: number | null;
+  metadataJson?: string | null;
+}) =>
+  invoke<{ item: WorkspaceItem }>("workspace_item_save", {
+    id: input.id ?? null,
+    projectId: input.projectId,
+    parentId: input.parentId ?? null,
+    title: input.title,
+    stage: input.stage ?? null,
+    status: input.status ?? null,
+    sortOrder: input.sortOrder ?? null,
+    metadataJson: input.metadataJson ?? null,
+  });
+
+export const workspaceItemDelete = (id: string) =>
+  invoke<{ ok: true }>("workspace_item_delete", { id });
+
+export const workspaceTaskLinkList = (projectId: string) =>
+  invoke<{ links: WorkspaceTaskLink[] }>("workspace_task_link_list", { projectId });
+
+export const workspaceTaskLinkAdd = (projectId: string, taskId: string) =>
+  invoke<{ ok: true }>("workspace_task_link_add", { projectId, taskId });
+
+export const workspaceTaskUnlink = (projectId: string, taskId: string) =>
+  invoke<{ ok: true }>("workspace_task_unlink", { projectId, taskId });
+
+export const openProjectWorkspaceWindow = (input?: { projectId?: string | null }) =>
+  invoke<{ opened: boolean; projectId: string | null }>("open_project_workspace_window", {
+    projectId: input?.projectId ?? null,
+  });
+
+/**
+ * 「在开发工作台打开」：返回 `requestId`，**事件送达 ≠ 成功**。
+ * 主窗口在解除胶囊停靠、切到开发工作台页后必须回执（见 ack），
+ * 工作空间窗口据回执展示真实结果。
+ *
+ * `requestId` 由调用方**在发命令之前**生成并登记：主窗口的回执可能先到，
+ * 若等命令返回才知道编号，早到的回执只能被丢弃。
+ */
+export const projectWorkspaceOpenDevWorkbench = (projectId: string, requestId: number) =>
+  invoke<{ requestId: number; devProjectId: string }>(
+    "project_workspace_open_dev_workbench",
+    { projectId, requestId },
+  );
+
+/** 主窗口回执本次跨窗口导航事务的真实结果。 */
+export const projectWorkspaceOpenDevWorkbenchAck = (input: {
+  requestId: number;
+  ok: boolean;
+  pending: boolean;
+  status?: OpenDevWorkbenchStatus;
+  error?: string | null;
+}) =>
+  invoke<void>("project_workspace_open_dev_workbench_ack", {
+    requestId: input.requestId,
+    ok: input.ok,
+    pending: input.pending,
+    status: input.status ?? null,
+    error: input.error ?? null,
+  });
+
+export const onProjectWorkspaceWindowClosed = (cb: (payload: unknown) => void) =>
+  listen<unknown>("project-workspace-window-closed", (e) => cb(e.payload));
+
+export const onProjectWorkspaceProjectSelected = (cb: (payload: { projectId: string }) => void) =>
+  listen<{ projectId: string }>("project-workspace-project-selected", (e) => cb(e.payload));
+
+export const onProjectWorkspaceOpenDevWorkbench = (
+  cb: (payload: { requestId: number; devProjectId: string }) => void,
+) =>
+  listen<{ requestId: number; devProjectId: string }>(
+    "project-workspace-open-dev-workbench",
+    (e) => cb(e.payload),
+  );
+
+/** 跨窗口导航回执的终态；`pending` 之后主窗口还会再发一条最终回执。 */
+export type OpenDevWorkbenchStatus = "pending" | "succeeded" | "cancelled" | "failed";
+
+export interface OpenDevWorkbenchAck {
+  requestId: number;
+  ok: boolean;
+  pending: boolean;
+  status?: OpenDevWorkbenchStatus;
+  error: string | null;
+}
+
+/** 工作空间窗口侧：接收主窗口回执（迟到/重复按 requestId 去重由调用方处理）。 */
+export const onProjectWorkspaceOpenDevWorkbenchResult = (
+  cb: (payload: OpenDevWorkbenchAck) => void,
+) =>
+  listen<OpenDevWorkbenchAck>("project-workspace-open-dev-workbench-result", (e) =>
+    cb(e.payload),
+  );
+
+// ── Android 虚拟屏 MVP（实验）──────────────────────────────────
+//
+// 桌面端只托管 scrcpy 进程：虚拟屏与输入由 scrcpy 独立窗口提供。
+// 设备/应用均从本机 adb 实时读取，不落库；会话仅存在于本次运行期。
+
+export interface VdDevice {
+  serial: string;
+  state: string;
+  model: string | null;
+  product: string | null;
+  device: string | null;
+  transport_id: string | null;
+}
+
+export interface VdDeviceList {
+  devices: VdDevice[];
+  error: string | null;
+}
+
+export interface VdApp {
+  package: string;
+}
+
+export interface VdSession {
+  id: string;
+  pid: number;
+  serial: string;
+  package: string;
+  started_at: string;
+  alive: boolean;
+}
+
+export interface VdProbe {
+  adb_path: string | null;
+  adb_version: string | null;
+  scrcpy_path: string | null;
+  scrcpy_version: string | null;
+  devices: VdDevice[];
+  error: string | null;
+}
+
+/** 工具链与设备一次性探测（页面打开时调用）。 */
+export const vdProbe = () => invoke<VdProbe>("vd_probe");
+
+/** 轻量轮询：只读 ADB 设备状态。 */
+export const vdDevices = () => invoke<VdDeviceList>("vd_devices");
+
+/** 设备上可启动的包名列表（系统 + 第三方）。 */
+export const vdListApps = (serial: string) =>
+  invoke<VdApp[]>("vd_list_apps", { serial });
+
+/** 创建虚拟屏并启动应用（scrcpy 独立窗口）。 */
+export const vdStart = (serial: string, packageName: string) =>
+  invoke<VdSession>("vd_start", { serial, package: packageName });
+
+/** 关闭会话；已退出的会话返回 false。 */
+export const vdStop = (sessionId: string) =>
+  invoke<boolean>("vd_stop", { sessionId });
+
+/** 运行中的会话；已退出的会话由后端回收。 */
+export const vdSessions = () => invoke<VdSession[]>("vd_sessions");
+

@@ -182,6 +182,14 @@ export default function MemorySegment({
       {releaseError && (
         <div className="setting-note resource-cleanup-error" role="alert">
           {t("resource.memory.failed", { error: releaseError })}
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => void release()}
+            disabled={releaseLocked || !catalog.data || catalog.data.totalBytes === 0}
+          >
+            {t("common.retry")}
+          </button>
         </div>
       )}
 
@@ -268,9 +276,18 @@ export default function MemorySegment({
         </div>
       </div>
 
-      <section className="resource-memory-release" aria-labelledby="resource-memory-release-title">
+      <section
+        className="resource-memory-release resource-anchor"
+        data-resource-anchor="reclaim"
+        aria-labelledby="resource-memory-release-title"
+      >
         <div className="resource-cleanup-section-head">
-          <h3 className="resource-cleanup-heading" id="resource-memory-release-title">
+          <h3
+            className="resource-cleanup-heading resource-anchor-heading"
+            id="resource-memory-release-title"
+            data-resource-anchor-focus
+            tabIndex={-1}
+          >
             {t("resource.memory.reclaimable")}
           </h3>
           {reclaimed !== null && (
@@ -365,6 +382,15 @@ export default function MemorySegment({
                 ? t("resource.memory.released", { bytes: formatBytes(released.releasedBytes) })
                 : t("resource.memory.releasedNothing")}
             </p>
+            {released.releasedBytes > 0 && catalog.data && (
+              <p className="resource-memory-remaining" role="status">
+                {catalog.loading
+                  ? t("resource.memory.releasedMeasuring")
+                  : t("resource.memory.releasedRemaining", {
+                      bytes: formatBytes(catalog.data.totalBytes),
+                    })}
+              </p>
+            )}
             <ul>
               {released.sources.map((source) => (
                 <li key={source.id}>

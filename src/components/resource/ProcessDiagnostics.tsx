@@ -363,7 +363,19 @@ export default function ProcessDiagnostics({
           )}
           {others.length > 0 && (
             <>
-              <ul className="resource-process-list">
+              <div className="resource-process-list-head">
+                <span className="resource-overview-label">
+                  {t("resource.process.listCount", { count: others.length })}
+                </span>
+                <span className="resource-process-list-note">
+                  {t("resource.process.listNote")}
+                </span>
+              </div>
+              <ul
+                className="resource-process-list"
+                tabIndex={0}
+                aria-label={t("resource.process.listAria", { count: others.length })}
+              >
                 {others.map((row) => (
                   <ProcessLine
                     key={`${row.pid}-${row.name}`}

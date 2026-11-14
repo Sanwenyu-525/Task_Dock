@@ -7,8 +7,8 @@
 //! 2. 窗口应放在哪（贴边齐平 + 胶囊沿边居中）。
 //!
 //! 尺寸与 `src-tauri/src/window_shape.rs` 的 `CAPSULE_*` 常量是跨端契约
-//! （两端各有单测锁定同一组数字）：厚 56、平直主体 270、单侧液态肩部 88
-//! （外框 446×56）、面板默认 340×440（2026-11-09 起宽度可在 280–480 拖拽，
+//! （两端各有单测锁定同一组数字）：厚 56、平直主体 300、单侧液态肩部 88
+//! （外框 476×56）、面板默认 340×440（2026-11-09 起宽度可在 280–480 拖拽，
 //! 窗口按最大 480 预留容器）、间隙 8。外形本身由 `lib/capsuleShape.ts`
 //! 唯一定义，本文件只负责**摆放**（容器、贴边位置、区域矩形与轮廓）。
 //!
@@ -34,10 +34,46 @@ import {
 export const RAIL_THICKNESS_CSS = WING_THICKNESS_CSS;
 /** 轨道平直主体长度（CSS px，沿边方向）：不含两侧液态肩部。 */
 export const RAIL_LENGTH_CSS = WING_LENGTH_CSS;
-/** 单侧液态肩部沿边跨度（CSS px）：轨道外框 = 主体长度 + 2×肩宽 = 446。 */
+/** 单侧液态肩部沿边跨度（CSS px）：轨道外框 = 主体长度 + 2×肩宽 = 476。 */
 export const RAIL_SHOULDER_CSS = WING_SHOULDER_CSS;
 /** 轨道外框沿边尺寸（CSS px，含两侧肩部）：容器沿边方向至少要放下它。 */
-export const RAIL_SPAN_CSS = RAIL_LENGTH_CSS + 2 * RAIL_SHOULDER_CSS; // 446
+export const RAIL_SPAN_CSS = RAIL_LENGTH_CSS + 2 * RAIL_SHOULDER_CSS; // 476
+
+/**
+ * 轨道内容组的尺寸契约（CSS px）——与 `styles.css` 的 `.cap-*` 规则同源。
+ *
+ * 为什么把数字放在这里：胶囊是 Win32 区域裁剪窗口，内容组超出「肩部仍足够厚」
+ * 的区间时，端头按钮会被裁掉一部分（可见但点不到）。把控件尺寸/间距显式化，
+ * `capsuleLayout.test.ts` 才能用 `wingThicknessAt` 断言「新增入口不会挤进肩部」。
+ * 改这里必须同步 `styles.css` 的对应规则。
+ */
+export const RAIL_ORB_CSS = 36;
+/** Agent 状态球与其后内容组的间距（垂直停靠为 margin-bottom）。 */
+export const RAIL_ORB_GAP_CSS = 10;
+export const RAIL_CATEGORY_CSS = 36;
+export const RAIL_CATEGORY_GAP_CSS = 8;
+/** 分隔线占位：1px 线 + 沿边两侧各 6px。 */
+export const RAIL_SEPARATOR_CSS = 13;
+/** 底部快捷区按钮（工作空间入口 / 完整面板 / 极简标签）边长。 */
+export const RAIL_QUICK_CSS = 26;
+/** 快捷区按钮间距。 */
+export const RAIL_QUICK_GAP_CSS = 4;
+
+/**
+ * 轨道内容组沿边总长度（CSS px）。
+ *
+ * 内容组在轨道上居中排布，因此**两端各向外延伸 extent/2**；端点处的翼片厚度
+ * 必须 ≥ 该端点控件边长，否则被原生区域裁切。`quick` 含底部快捷区全部按钮
+ * （工作空间直接入口 + 完整面板 + 极简标签）。
+ */
+export function railContentExtent(categories: number, quick: number, orb = true): number {
+  const orbPart = orb ? RAIL_ORB_CSS + RAIL_ORB_GAP_CSS : 0;
+  const categoryPart = categories > 0
+    ? categories * RAIL_CATEGORY_CSS + (categories - 1) * RAIL_CATEGORY_GAP_CSS
+    : 0;
+  const quickPart = quick > 0 ? quick * RAIL_QUICK_CSS + (quick - 1) * RAIL_QUICK_GAP_CSS : 0;
+  return orbPart + categoryPart + quickPart + RAIL_SEPARATOR_CSS;
+}
 /** 功能面板默认宽（CSS px）：设置里没有记录时的设计基准。 */
 export const PANEL_WIDTH_CSS = 340;
 /**
@@ -147,11 +183,12 @@ export const isVerticalEdge = (edge: SnapEdge): boolean => edge === "left" || ed
 /**
  * 胶囊容器尺寸（CSS px）。厚度方向固定为「轨道 + 间隙 + 面板」；
  * 沿边方向必须同时放下轨道外框与面板，取两者较大值：
- * - 垂直停靠：宽 56+8+480 = 544，高 max(440, 446) = 446；
- * - 水平停靠：宽 max(446, 480) = 480，高 56+8+440 = 504。
+ * - 垂直停靠：宽 56+8+480 = 544，高 max(440, 476) = 476；
+ * - 水平停靠：宽 max(476, 480) = 480，高 56+8+440 = 504。
  *
- * 轨道从 400 扩到 446 是为了容纳第 5 个分类（规划中心）：内容组 331 居中后
- * 端点落在 ±165.5，仍需处于「肩部厚度 ≥ 36px」的区间（新的平直主体 270）。
+ * 轨道从 400 扩到 446 是为了容纳第 5 个分类（规划中心）；2026-11-13（P0-01）
+ * 再扩到 476：新增「工作空间」26px 直接入口 + 4px 间距放在底部快捷区，
+ * 平直主体 270→300，内容组两端进入肩部的深度保持 30.5px 不变。
  */
 export function capsuleContainerSize(edge: SnapEdge): Size {
   return isVerticalEdge(edge)

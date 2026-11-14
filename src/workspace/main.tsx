@@ -1,0 +1,13 @@
+import "./workspace.css";
+import "../styles-themes.css";
+import "../styles-ui.css";
+
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import WorkspaceApp from "./WorkspaceApp";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <WorkspaceApp />
+  </StrictMode>,
+);

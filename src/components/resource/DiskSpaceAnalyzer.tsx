@@ -22,6 +22,7 @@ import {
   type ResourceDiskScanReport,
 } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
+import { formatLocalStamp } from "../../lib/format";
 import { localizedErrorMessage } from "../../i18n/errors";
 import { formatPercent, proportionPercent } from "../../lib/resourceMetrics";
 import { useLocale } from "../../hooks/useLocale";
@@ -30,6 +31,8 @@ import { MiniMeter } from "./charts";
 interface DiskSpaceAnalyzerProps {
   /** 初始目录（通常是数据目录所在卷的根，如 `C:\`）；不会自动扫描。 */
   defaultPath: string | null;
+  /** 嵌入折叠区块时不再渲染自己的标题与说明（由外层折叠头提供）。 */
+  embedded?: boolean;
 }
 
 function parentOf(path: string): string {
@@ -37,12 +40,14 @@ function parentOf(path: string): string {
   return index > 0 ? path.slice(0, index) : path;
 }
 
-export default function DiskSpaceAnalyzer({ defaultPath }: DiskSpaceAnalyzerProps) {
+export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: DiskSpaceAnalyzerProps) {
   const { t } = useLocale();
   const [path, setPath] = useState(defaultPath ?? "");
   const [report, setReport] = useState<ResourceDiskScanReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 失败的目标目录：重试必须重扫真正失败的那一个，而不是当前输入框里的路径。 */
+  const [failedTarget, setFailedTarget] = useState<string | null>(null);
   const [revealError, setRevealError] = useState<string | null>(null);
   const mountedRef = useRef(false);
   const requestRef = useRef(0);
@@ -67,6 +72,9 @@ export default function DiskSpaceAnalyzer({ defaultPath }: DiskSpaceAnalyzerProp
     setLoading(true);
     setError(null);
     setRevealError(null);
+    setFailedTarget(null);
+    // 目标目录一变，旧报告立即作废：绝不让新路径下面挂着上一个目录的数据。
+    if (report && report.path !== next) setReport(null);
     try {
       const result = await resourceDiskAnalyze(next);
       if (!mountedRef.current || request !== requestRef.current) return;
@@ -74,6 +82,9 @@ export default function DiskSpaceAnalyzer({ defaultPath }: DiskSpaceAnalyzerProp
       setPath(result.path);
     } catch (reason) {
       if (!mountedRef.current || request !== requestRef.current) return;
+      // 失败时清空报告：错误路径旁边不能继续展示上一次成功的结果。
+      setReport(null);
+      setFailedTarget(next);
       setError(localizedErrorMessage(reason));
     } finally {
       if (mountedRef.current && request === requestRef.current) setLoading(false);
@@ -87,9 +98,17 @@ export default function DiskSpaceAnalyzer({ defaultPath }: DiskSpaceAnalyzerProp
         multiple: false,
         title: t("resource.analysis.choose"),
       });
-      if (typeof picked !== "string" || !picked) return;
-      setPath(picked);
-      await scan(picked);
+      if (typeof picked !== "string" || !picked.trim()) return;
+      const next = picked.trim();
+      if (next !== path) {
+        // 路径输入先同步、旧结果先作废，再发起扫描（失败也不会留下错配报告）。
+        setPath(next);
+        setReport(null);
+        setError(null);
+        setFailedTarget(null);
+        setRevealError(null);
+      }
+      await scan(next);
     } catch (reason) {
       setError(localizedErrorMessage(reason));
     }
@@ -112,20 +131,37 @@ export default function DiskSpaceAnalyzer({ defaultPath }: DiskSpaceAnalyzerProp
         ms: report.elapsedMs,
       })
     : null;
+  /** 只展示与当前路径一致的报告；不一致时宁可要求重扫，也不混用旧数据。 */
+  const reportMatchesPath = report !== null && report.path === path;
+  const reportTime = report ? formatLocalStamp(report.sampledAt) : null;
 
   return (
-    <section className="resource-analysis" aria-labelledby="resource-analysis-title">
-      <div className="resource-cleanup-section-head">
-        <h3 className="resource-cleanup-heading" id="resource-analysis-title">
-          {t("resource.analysis.title")}
-        </h3>
-        {report && (
-          <span className="resource-volume-count">
-            {t("resource.analysis.dirCount", { count: report.totalDirs })}
-          </span>
-        )}
-      </div>
-      <p className="setting-note">{t("resource.analysis.desc")}</p>
+    <section
+      className={`resource-analysis${embedded ? " is-embedded" : ""}`}
+      aria-labelledby={embedded ? undefined : "resource-analysis-title"}
+      aria-label={embedded ? t("resource.analysis.title") : undefined}
+      aria-busy={loading}
+    >
+      {!embedded && (
+        <>
+          <div className="resource-cleanup-section-head">
+            <h3
+              className="resource-cleanup-heading resource-anchor-heading"
+              id="resource-analysis-title"
+              data-resource-anchor-focus
+              tabIndex={-1}
+            >
+              {t("resource.analysis.title")}
+            </h3>
+            {report && (
+              <span className="resource-volume-count">
+                {t("resource.analysis.dirCount", { count: report.totalDirs })}
+              </span>
+            )}
+          </div>
+          <p className="setting-note">{t("resource.analysis.desc")}</p>
+        </>
+      )}
 
       <div className="resource-analysis-pathbar">
         <span className="resource-analysis-path" data-tip={path || undefined}>
@@ -164,7 +200,13 @@ export default function DiskSpaceAnalyzer({ defaultPath }: DiskSpaceAnalyzerProp
       {error && (
         <div className="setting-note resource-cleanup-error" role="alert">
           {t("resource.analysis.failed", { error })}
-          <button type="button" className="btn sm" onClick={() => void scan()} disabled={loading}>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => void scan(failedTarget ?? undefined)}
+            disabled={loading}
+            data-retry-path={failedTarget ?? path}
+          >
             {t("common.retry")}
           </button>
         </div>
@@ -179,8 +221,27 @@ export default function DiskSpaceAnalyzer({ defaultPath }: DiskSpaceAnalyzerProp
         <p className="setting-note">{t("resource.analysis.notScanned")}</p>
       )}
 
-      {report && (
+      {report && !reportMatchesPath && (
+        <div className="setting-note resource-cleanup-error" role="alert">
+          {t("resource.analysis.pathMismatch", { path: report.path })}
+          <button type="button" className="btn sm" onClick={() => void scan()} disabled={loading}>
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
+
+      {report && reportMatchesPath && (
         <div className="resource-analysis-result" aria-busy={loading}>
+          <div className="resource-analysis-scope" data-tip={report.path}>
+            <span className="resource-analysis-scope-path">{report.path}</span>
+            {reportTime && (
+              <span className="resource-analysis-scope-time">
+                {t("resource.analysis.resultTime", {
+                  time: `${reportTime.date} ${reportTime.time}`,
+                })}
+              </span>
+            )}
+          </div>
           <p className="resource-analysis-summary">{summary}</p>
           {(report.truncated || report.skippedErrors > 0) && (
             <div className="setting-note resource-cleanup-error" role="status">

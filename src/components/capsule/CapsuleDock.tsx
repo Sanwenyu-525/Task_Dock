@@ -42,6 +42,9 @@ import { useAgentsStore } from "../../store/useAgentsStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { registerOverlay } from "../../lib/overlayStack";
 import { useEdgeTabMenuActions } from "../../hooks/useEdgeTabMenuActions";
+import { openProjectWorkspaceWindow } from "../../lib/bridge";
+import { errorMessage } from "../../lib/errors";
+import { logEvent } from "../../lib/diagnostics";
 
 /**
  * 把引擎的面板宽度写到面板的 CSS 变量。
@@ -93,6 +96,11 @@ export default function CapsuleDock() {
   // 未加载（false）传 null：徽标显示中性，不把未知伪装成 0
   const status = railStatus(stats, snapshot, Date.now(), inboxCountLoaded ? inboxCount : null);
   const [pulse, setPulse] = useState(0);
+  // 直接入口失败反馈（P1-03）：胶囊可能处于折叠态，不能只依赖主窗口 Toast。
+  // 失败写入轨道按钮自身（红色 +「!」+ 提示气泡 + aria-live），折叠态同样可见。
+  const [directError, setDirectError] = useState<{ id: string; message: string } | null>(null);
+  const directErrorTimer = useRef<number | null>(null);
+  const mountedRef = useRef(true);
   /** 面板根节点：PanelWidthStyle 把引擎宽度写到它的 CSS 变量上。 */
   const panelRef = useRef<HTMLElement | null>(null);
   /**
@@ -124,6 +132,43 @@ export default function CapsuleDock() {
     const t = window.setTimeout(() => setPulse(0), 620);
     return () => window.clearTimeout(t);
   }, [feedback]);
+
+  // 直接入口失败提示 8s 自动消退；卸载时清定时器，避免卸载后 setState
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (directErrorTimer.current !== null) window.clearTimeout(directErrorTimer.current);
+    };
+  }, []);
+
+  /**
+   * 直接入口（工作空间独立窗口）：
+   * 打开失败不再 `catch(() => {})`——胶囊通常在折叠态，主窗口 Toast 看不见。
+   * 失败写到按钮自身（红点 + 提示 + aria-live），并进入既有诊断通道。
+   */
+  const openDirectEntry = useCallback((id: string) => {
+    if (directErrorTimer.current !== null) {
+      window.clearTimeout(directErrorTimer.current);
+      directErrorTimer.current = null;
+    }
+    setDirectError(null);
+    void openProjectWorkspaceWindow({}).catch((e) => {
+      const message = errorMessage(e);
+      if (!mountedRef.current) return;
+      setDirectError({ id, message });
+      logEvent({
+        level: "WARN",
+        module: "workspace-window",
+        action: "open-direct-entry",
+        event: "direct-entry-failed",
+        message,
+      });
+      directErrorTimer.current = window.setTimeout(() => {
+        if (mountedRef.current) setDirectError(null);
+      }, 8000);
+    });
+  }, []);
 
   // 收起只切相位，不改分类：`active` 恒有值，「哪个分类」与「面板是否可见」
   // 不再由同一个字段兼职，因此不会出现「相位已展开、分类已清空」的中间帧。
@@ -186,6 +231,8 @@ export default function CapsuleDock() {
           onCollapse={closePanel}
           onForm={formSwitch ? () => formSwitch("full") : undefined}
           onTab={collapseToTab ?? undefined}
+          directEntryError={directError}
+          onDirectEntry={openDirectEntry}
         />
       )}
       {Panel && activeCategory && (

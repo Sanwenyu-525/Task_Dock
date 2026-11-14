@@ -25,6 +25,7 @@ export default defineConfig({
         capture: resolve(__dirname, "capture.html"),
         "tab-hint": resolve(__dirname, "tab-hint.html"),
         widget: resolve(__dirname, "widget.html"),
+        workspace: resolve(__dirname, "workspace.html"),
       },
     },
   },
@@ -50,6 +51,7 @@ export default defineConfig({
         "./src/notifications/main.tsx",
         "./src/tab-hint/main.tsx",
         "./src/widgets/main.tsx",
+        "./src/workspace/main.tsx",
       ],
     },
     watch: {

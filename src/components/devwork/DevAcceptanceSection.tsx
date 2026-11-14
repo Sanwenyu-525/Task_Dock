@@ -9,10 +9,11 @@
 //! - summary 必填：为空时四个验收动作全部禁用，绝不提交空结论。
 //! - 返工提示词 / 返工任务只在最新判定为 fail 时提供。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardCheck, History, ListChecks, ScrollText } from "lucide-react";
 import {
   createTask,
+  devAcceptanceAgentRuns,
   devAcceptanceRecordCreate,
   devAcceptanceRecordList,
   fetchTask,
@@ -20,6 +21,7 @@ import {
   planningListAgentFeatureLinks,
   planningListFeatures,
   type DevAcceptanceRecord,
+  type DevAgentRunCandidate,
   type PlanningFeature,
   type Task,
 } from "../../lib/bridge";
@@ -136,6 +138,13 @@ const VERDICT_ACTIONS: { verdict: DevVerdict; key: MessageKey; tone: string }[] 
   { verdict: "not_verified", key: VERDICT_LABELS.not_verified, tone: "muted" },
 ];
 
+/** 轮次关联来源 → 文案（后端只返回这三种真实来源）。 */
+const LINK_ORIGIN_LABELS: Record<string, MessageKey> = {
+  user: "devwork.acceptance.agentRunLinkUser",
+  auto: "devwork.acceptance.agentRunLinkAuto",
+  handoff: "devwork.acceptance.agentRunLinkHandoff",
+};
+
 /** 历史记录倒序（createdAt 降序；同刻按 id 稳定排序，不依赖后端返回顺序）。 */
 function sortRecordsDesc(records: DevAcceptanceRecord[]): DevAcceptanceRecord[] {
   return [...records].sort((a, b) =>
@@ -156,6 +165,16 @@ export default function DevAcceptanceSection() {
   const [records, setRecords] = useState<DevAcceptanceRecord[] | null>(null);
   const [recordsError, setRecordsError] = useState<string | null>(null);
 
+  // ── Agent 已完成轮次（v50）：只读候选，结论仍必须人工选择 ──
+  const [candidates, setCandidates] = useState<DevAgentRunCandidate[] | null>(null);
+  const [candidatesError, setCandidatesError] = useState<string | null>(null);
+  const [candidatesTruncated, setCandidatesTruncated] = useState(false);
+  /** 当前选中的轮次：本次验收记录将标注该来源；不选则为普通任务级验收。 */
+  const [selectedRun, setSelectedRun] = useState<DevAgentRunCandidate | null>(null);
+  /** 当前任务的最新值：异步响应回来时据此丢弃过期结果（切任务不串数据）。 */
+  const taskIdRef = useRef<string | null>(taskId);
+  taskIdRef.current = taskId;
+
   const [summary, setSummary] = useState("");
   const [evidenceInput, setEvidenceInput] = useState("");
   const [evidenceDraft, setEvidenceDraft] = useState<string[]>([]);
@@ -173,6 +192,10 @@ export default function DevAcceptanceSection() {
     setFeatureError(null);
     setRecords(null);
     setRecordsError(null);
+    setCandidates(null);
+    setCandidatesError(null);
+    setCandidatesTruncated(false);
+    setSelectedRun(null);
     setSummary("");
     setEvidenceDraft([]);
     setEvidenceInput("");
@@ -224,6 +247,26 @@ export default function DevAcceptanceSection() {
     void loadRecords(taskId);
   }, [taskId, loadRecords]);
 
+  const loadCandidates = useCallback((id: string) => {
+    return devAcceptanceAgentRuns(id, 10)
+      .then(({ runs, truncated }) => {
+        if (taskIdRef.current !== id) return;
+        setCandidates(runs);
+        setCandidatesTruncated(truncated);
+        setCandidatesError(null);
+      })
+      .catch((e) => {
+        if (taskIdRef.current !== id) return;
+        setCandidates([]);
+        setCandidatesError(errorMessage(e));
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!taskId) return;
+    void loadCandidates(taskId);
+  }, [taskId, loadCandidates]);
+
   const sortedRecords = useMemo(() => records ?? [], [records]);
   const latestVerdict = sortedRecords[0]?.verdict ?? null;
   const latestFail = sortedRecords.find((r) => r.verdict === "fail") ?? null;
@@ -266,12 +309,18 @@ export default function DevAcceptanceSection() {
         verdict,
         summary: summary.trim(),
         evidence: evidenceDraft,
+        // 只有用户显式选中某个已完成轮次时才标注来源；不自动关联
+        agentSourceId: selectedRun?.sourceId ?? null,
+        agentSessionExternalId: selectedRun?.sessionExternalId ?? null,
+        agentRunExternalId: selectedRun?.runExternalId ?? null,
       })
         .then(() => {
           showToast(t("devwork.acceptance.recordCreated"), { kind: "success" });
           setSummary("");
           setEvidenceDraft([]);
           setEvidenceInput("");
+          setSelectedRun(null);
+          void loadCandidates(taskId);
           return loadRecords(taskId);
         })
         .catch((e) => {
@@ -282,7 +331,33 @@ export default function DevAcceptanceSection() {
         })
         .finally(() => setCreating(false));
     },
-    [creating, evidenceDraft, loadRecords, showToast, summaryFilled, t, task, taskId],
+    [
+      creating,
+      evidenceDraft,
+      loadCandidates,
+      loadRecords,
+      selectedRun,
+      showToast,
+      summaryFilled,
+      t,
+      task,
+      taskId,
+    ],
+  );
+
+  /** 未被任何验收记录引用的已完成轮次数量（只作展示，不代表任何结论）。 */
+  const pendingCandidateCount = useMemo(
+    () => (candidates ?? []).filter((c) => !c.acceptedRecordId).length,
+    [candidates],
+  );
+
+  /** 历史记录里的轮次来源 → 可读标题（候选里查不到时退回轮次 ID，不编造）。 */
+  const runTitleFor = useCallback(
+    (runExternalId: string): string => {
+      const hit = (candidates ?? []).find((c) => c.runExternalId === runExternalId);
+      return hit?.runTaskTitle || hit?.runExternalId || runExternalId;
+    },
+    [candidates],
   );
 
   /** 返工提示词：只在最新判定为 fail 时可用；复制失败如实提示，不影响任何状态。 */
@@ -451,8 +526,101 @@ export default function DevAcceptanceSection() {
             )}
           </div>
 
+          {/* Agent 已完成轮次（v50）：只读候选；结论必须人工选择，绝不自动通过 */}
+          <div className="wb-accept-block wb-accept-agent-runs">
+            <div className="wb-links-title">
+              {t("devwork.acceptance.agentRunsTitle")}
+              <em className="badge subtle">{pendingCandidateCount}</em>
+              {candidatesTruncated && (
+                <span className="endpoint-hint">
+                  {t("devwork.acceptance.agentRunsTruncated", { count: candidates?.length ?? 0 })}
+                </span>
+              )}
+            </div>
+            <p className="endpoint-hint">{t("devwork.acceptance.agentRunsBoundary")}</p>
+            {candidatesError && (
+              <div className="wb-error-row" role="alert">
+                <span>{t("devwork.acceptance.agentRunsLoadFailed", { error: candidatesError })}</span>
+              </div>
+            )}
+            {!candidatesError && candidates === null && (
+              <div className="empty-hint" role="status">
+                {t("nav.loading")}
+              </div>
+            )}
+            {candidates !== null && candidates.length === 0 && (
+              <div className="endpoint-hint">{t("devwork.acceptance.agentRunsEmpty")}</div>
+            )}
+            {candidates?.map((c) => {
+              const selected = selectedRun?.runExternalId === c.runExternalId;
+              return (
+                <div
+                  className="wb-row wb-accept-agent-run"
+                  key={`${c.sourceId}:${c.sessionExternalId}:${c.runExternalId}`}
+                >
+                  <span className="wb-row-main">
+                    <span className="wb-row-title">
+                      {c.runTaskTitle || c.runExternalId}
+                    </span>
+                    <span className="wb-row-sub">
+                      <span>
+                        {t("devwork.acceptance.agentRunSession", {
+                          title: c.sessionTitle || c.sessionExternalId,
+                        })}
+                      </span>
+                      <span>
+                        {t(
+                          LINK_ORIGIN_LABELS[c.linkOrigin] ??
+                            "devwork.acceptance.agentRunLinkUser",
+                        )}
+                      </span>
+                      {c.endedAt && <span>{formatRelative(c.endedAt)}</span>}
+                    </span>
+                  </span>
+                  {c.acceptedRecordId ? (
+                    <span
+                      className={`badge subtle wb-verdict tone-${
+                        c.acceptedVerdict ?? "muted"
+                      }`}
+                    >
+                      {t("devwork.acceptance.agentRunAccepted")}
+                      {c.acceptedVerdict ? ` · ${t(VERDICT_LABELS[c.acceptedVerdict])}` : ""}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn sm"
+                      aria-pressed={selected}
+                      onClick={() => setSelectedRun(selected ? null : c)}
+                    >
+                      {selected
+                        ? t("devwork.acceptance.agentRunClear")
+                        : t("devwork.acceptance.agentRunAccept")}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
           {/* 手工证据登记 + 验收动作 */}
           <div className="wb-accept-block">
+            {selectedRun && (
+              <div className="wb-accept-selected-run" role="status">
+                <span>
+                  {t("devwork.acceptance.agentRunSelected", {
+                    title: selectedRun.runTaskTitle || selectedRun.runExternalId,
+                  })}
+                </span>
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => setSelectedRun(null)}
+                >
+                  {t("devwork.acceptance.agentRunClear")}
+                </button>
+              </div>
+            )}
             <label className="field">
               <span>{t("devwork.acceptance.summaryLabel")}</span>
               <input
@@ -561,6 +729,13 @@ export default function DevAcceptanceSection() {
                 <span className="wb-row-main">
                   <span className="wb-row-title">{r.summary}</span>
                   <span className="wb-row-sub">
+                    {r.agentRunExternalId && (
+                      <span>
+                        {t("devwork.acceptance.agentRunEvidence", {
+                          title: runTitleFor(r.agentRunExternalId),
+                        })}
+                      </span>
+                    )}
                     {r.evidence.length > 0
                       ? r.evidence.map((line, i) => (
                           <span className="wb-accept-evidence-line" key={`${i}:${line}`}>
