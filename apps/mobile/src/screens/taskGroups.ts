@@ -72,7 +72,7 @@ export function buildTaskSections(tasks: Task[], now: number): TaskSection[] {
     { key: "week", title: "本周", tone: "muted" },
     { key: "later", title: "以后", tone: "muted" },
     { key: "undated", title: "无日期", tone: "muted" },
-    { key: "done", title: "已完成", tone: "ok", hint: "轻点可恢复" },
+    { key: "done", title: "已完成", tone: "ok", hint: "勾选可恢复" },
   ];
 
   return definitions

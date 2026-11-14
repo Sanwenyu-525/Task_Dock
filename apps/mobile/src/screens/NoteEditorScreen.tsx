@@ -464,7 +464,7 @@ function ActionText({
       hitSlop={{ top: 6, bottom: 6, left: 2, right: 2 }}
       style={({ pressed }) => [styles.actionText, { opacity: pressed ? 0.6 : 1 }]}
     >
-      <Text style={{ color: tokens.accent, fontSize: font.body, fontWeight: active ? "700" : "500" }}>
+      <Text style={{ color: tokens.accentText, fontSize: font.body, fontWeight: active ? "700" : "500" }}>
         {label}
       </Text>
     </Pressable>

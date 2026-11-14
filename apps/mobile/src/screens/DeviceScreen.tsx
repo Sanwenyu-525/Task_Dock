@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Badge } from "../components/Badge";
+import { BackButton } from "../components/BackButton";
 import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
 import { SettingActionRow } from "../components/SettingActionRow";
@@ -40,7 +41,16 @@ function formatStamp(iso: string | null): string {
   return sameYear ? `${day} ${time}` : `${date.getFullYear()}年${day} ${time}`;
 }
 
-export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number }) {
+export function DeviceScreen({
+  nav,
+  version = 0,
+  onBack,
+}: {
+  nav: Nav;
+  version?: number;
+  /** 从「我的」进入时的返回；一级栏时代不传 */
+  onBack?: () => void;
+}) {
   const { tokens } = useTheme();
   const [connection, setConnection] = useState<PairedConnection | null>(null);
   const [hasToken, setHasToken] = useState(false);
@@ -94,7 +104,7 @@ export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number 
   const statusLabel = loading
     ? "读取中…"
     : paired
-      ? "同步已连接"
+      ? "已配对"
       : invalid
         ? "需重新配对"
         : "本机模式";
@@ -103,21 +113,24 @@ export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number 
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.titleBlock}>
-          <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
-            设备
-          </Text>
-          <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
-            {loading
-              ? "正在读取连接状态…"
-              : paired
-                ? `已连接 ${connection?.serverName ?? "桌面端"}`
-                : invalid
-                  ? legacy
-                    ? "桌面端已升级加密传输，请重新配对"
-                    : "配对信息需要重新确认"
-                  : "尚未连接桌面端 · 数据只在本机"}
-          </Text>
+        <View style={styles.headerRow}>
+          {onBack ? <BackButton onPress={onBack} /> : null}
+          <View style={styles.titleBlock}>
+            <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
+              设备
+            </Text>
+            <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
+              {loading
+                ? "正在读取连接状态…"
+                : paired
+                  ? `配对设备 ${connection?.serverName ?? "桌面端"} · 同步需手动发起`
+                  : invalid
+                    ? legacy
+                      ? "桌面端已升级加密传输，请重新配对"
+                      : "配对信息需要重新确认"
+                    : "尚未连接桌面端 · 数据只在本机"}
+            </Text>
+          </View>
         </View>
 
         <GlassCard style={styles.statusCard}>
@@ -129,7 +142,7 @@ export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number 
               </Text>
             </View>
             <StatusPill
-              label={paired ? "已连接" : invalid ? "需重新配对" : "未配对"}
+              label={paired ? "已配对" : invalid ? "需重新配对" : "未配对"}
               tone={statusTone}
             />
           </View>
@@ -174,7 +187,7 @@ export function DeviceScreen({ nav, version = 0 }: { nav: Nav; version?: number 
             }
             trailing={
               paired ? (
-                <Badge label="已连接" tone="active" />
+                <Badge label="已配对" tone="active" />
               ) : invalid ? (
                 <Badge label="需重新配对" tone="unimplemented" />
               ) : undefined
@@ -259,14 +272,21 @@ const styles = StyleSheet.create({
     paddingBottom: 44,
     gap: space.md,
   },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: space.sm,
+  },
   titleBlock: {
+    flex: 1,
     gap: 1,
     marginBottom: space.xs,
   },
   title: {
-    fontSize: font.display,
+    fontSize: font.page,
     fontWeight: "800",
-    letterSpacing: -0.8,
+    letterSpacing: -0.5,
+    lineHeight: font.page + 7,
   },
   subtitle: {
     fontSize: font.meta,

@@ -1,6 +1,6 @@
 // 收集箱：固定顶部速记区 + 卡片列表。转任务/删除后先淡出再移除，
 // 列表不会因为数据刷新整块闪一下；转任务后停留在本页，方便连续整理。
-// 条目已接入同步：页头按是否配对显示「同步已连接 / 仅本机保存」。
+// 页头只表达配对状态（已配对 / 仅本机保存），不把配对元数据说成在线或已同步。
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
 import {
   ActivityIndicator,
@@ -14,6 +14,7 @@ import {
 } from "react-native";
 
 import { CaptureCard } from "../components/CaptureCard";
+import { BackButton } from "../components/BackButton";
 import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
@@ -35,11 +36,14 @@ function CardSeparator() {
 export function InboxScreen({
   onPromoted,
   onOpenTasks,
+  onBack,
 }: {
   /** 数据已变化：通知外层递增版本号，切回任务页时能拿到新数据 */
   onPromoted: () => void;
   /** 用户主动查看任务页（转任务后不再强制跳转，避免打断连续整理） */
   onOpenTasks: () => void;
+  /** 作为「工具」二级页打开时的返回；一级栏时代不传，保持原行为 */
+  onBack?: () => void;
 }) {
   const { tokens } = useTheme();
   const [captures, setCaptures] = useState<Capture[]>([]);
@@ -67,7 +71,7 @@ export function InboxScreen({
         loadConnection().catch(() => null),
       ]);
       setCaptures(nextCaptures);
-      // v1 遗留/缺指纹连接在 TLS-only 桌面端上已不可用，不能显示「同步已连接」。
+      // v1 遗留/缺指纹连接在 TLS-only 桌面端上已不可用，不能显示健康配对态。
       setPaired(Boolean(connection) && !isLegacyConnection(connection));
     } catch (error) {
       showToast(`读取收集箱失败：${describeError(error)}`, "danger");
@@ -172,6 +176,7 @@ export function InboxScreen({
     <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.titleRow}>
+          {onBack ? <BackButton onPress={onBack} /> : null}
           <View style={styles.titleBlock}>
             <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
               收集箱
@@ -179,7 +184,7 @@ export function InboxScreen({
             <Text style={[styles.subtitle, { color: tokens.muted }]}>
               {searching
                 ? `找到 ${visible.length} 条 · 共 ${captures.length} 条速记`
-                : `${captures.length} 条速记 · ${paired ? "同步已连接" : "仅本机保存"}`}
+                : `${captures.length} 条速记 · ${paired ? "已配对" : "仅本机保存"}`}
             </Text>
           </View>
           <Pressable
@@ -190,7 +195,7 @@ export function InboxScreen({
             hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
             style={({ pressed }) => [styles.navLink, { opacity: pressed ? 0.6 : 1 }]}
           >
-            <Text style={[styles.navLinkText, { color: tokens.accent }]}>任务页 →</Text>
+            <Text style={[styles.navLinkText, { color: tokens.accentText }]}>任务页 →</Text>
           </Pressable>
         </View>
 
@@ -298,10 +303,10 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   title: {
-    fontSize: font.display,
+    fontSize: font.page,
     fontWeight: "800",
-    letterSpacing: -0.8,
-    lineHeight: font.display + 8,
+    letterSpacing: -0.5,
+    lineHeight: font.page + 7,
   },
   subtitle: {
     fontSize: font.meta,

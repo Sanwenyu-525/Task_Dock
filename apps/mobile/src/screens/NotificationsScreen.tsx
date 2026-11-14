@@ -134,7 +134,7 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
             accessibilityLabel="发送测试通知"
             contentStyle={[styles.ghost, { borderColor: tokens.cardBorder }]}
           >
-            <Text style={[styles.ghostText, { color: tokens.accent }]}>发送测试通知</Text>
+            <Text style={[styles.ghostText, { color: tokens.accentText }]}>发送测试通知</Text>
           </PressableScale>
         </SettingSection>
 
@@ -181,7 +181,7 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
             onPress={() => void Linking.openSettings().catch(() => undefined)}
             style={({ pressed }) => [styles.linkRow, { opacity: pressed ? 0.6 : 1 }]}
           >
-            <Text style={[styles.linkText, { color: tokens.accent }]}>去设置允许后台运行 →</Text>
+            <Text style={[styles.linkText, { color: tokens.accentText }]}>去设置允许后台运行 →</Text>
           </Pressable>
         </View>
 

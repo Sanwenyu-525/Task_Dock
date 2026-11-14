@@ -69,11 +69,16 @@
 1. `cd apps/mobile && npx tsc --noEmit` → exit 0；`npm test`（vitest）→ 全过。
    纯函数/数据层/协议改动必须补 vitest 用例（node:sqlite harness 跑真实 SQL，
    不为测试重写业务逻辑）。
-2. 纯函数改动：重编 `domain` 并跑 `tmp/acceptance/mobile-app-skeleton/logic/check.cjs`，
-   报告实际 PASS/FAIL 数（不许只说「通过」）。
+2. 纯函数改动：执行与受影响功能直接相关的专项测试并补回归用例（重复任务规则、任务查询/搜索、
+   同步协议、导航纯函数、数据模型各按对应测试入口），报告实际 PASS/FAIL 数，不许只说「通过」。
+   `tmp/acceptance/mobile-app-skeleton/logic/check.cjs` 是 2026-11-08 的历史专项脚本（`tmp/`
+   不入库，新环境默认不存在），只覆盖
+   重复规则/搜索匹配/笔记文本，且需先把 `src/domain/*.ts` 编译到 `tmp/.../logic/js` 并补
+   `{"type":"commonjs"}`（见 `docs/mobile/04-testing.md`）；仅在改动落入其覆盖范围且产物可用时
+   执行，产物不可用则如实写「未执行」并改用对应测试入口，不得当作全移动端统一测试框架。
 3. 涉及数据/通知/UI：真机走一遍受影响用例；模拟器或「看起来没问题」不算证据。
-4. 在 `tmp/acceptance/mobile-app-skeleton/report.md` **追加**分节（范围/根因/修改/命令与退出码/
-   已验证/未验证/证据路径/结论），不改写历史节。
+4. 任务级报告写 `tmp/acceptance/<task-name>/report.md`（当前任务专属目录，短横线英文）；
+   历史报告保持原样，不改写。分节：范围/根因/修改/命令与退出码/已验证/未验证/证据路径/结论。
 5. 交付前列 `git status`，只含本次预期改动；不自动 commit / push。
 
 ## 7. Skill 路由（移动端）

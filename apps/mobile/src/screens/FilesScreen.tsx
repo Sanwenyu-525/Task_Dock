@@ -592,7 +592,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
                 accessibilityLabel={saveDir ? "更改接收位置" : "选择接收位置"}
                 contentStyle={styles.dirAction}
               >
-                <Text style={[styles.dirActionText, { color: tokens.accent }]}>
+                <Text style={[styles.dirActionText, { color: tokens.accentText }]}>
                   {saveDir ? "更改" : "选择"}
                 </Text>
               </PressableScale>
@@ -617,12 +617,12 @@ export function FilesScreen({ nav }: { nav: Nav }) {
                       hitSlop={ROW_HIT_SLOP}
                       contentStyle={[styles.rowAction, { backgroundColor: tokens.accentSoft }]}
                     >
-                      <Text style={[styles.rowActionText, { color: tokens.accent }]}>打开</Text>
+                      <Text style={[styles.rowActionText, { color: tokens.accentText }]}>打开</Text>
                     </PressableScale>
                   );
                 } else if (active) {
                   action = (
-                    <Text style={[styles.rowBusy, { color: tokens.accent }]}>下载中</Text>
+                    <Text style={[styles.rowBusy, { color: tokens.accentText }]}>下载中</Text>
                   );
                 } else if (file.status === "ready") {
                   action = (
@@ -691,7 +691,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
           {transfer ? (
             <>
               <View style={styles.dockHead}>
-                <Text style={[styles.dockKind, { color: tokens.accent }]}>
+                <Text style={[styles.dockKind, { color: tokens.accentText }]}>
                   {transfer.kind === "upload" ? "正在上传" : "正在下载"}
                 </Text>
                 <Text numberOfLines={1} style={[styles.dockName, { color: tokens.text }]}>

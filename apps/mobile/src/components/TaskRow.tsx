@@ -1,21 +1,33 @@
-// 任务行：完成态用「勾选弹入 + 标题删除线渐显 + 文字变弱」表达，不做瞬间切换；
-// 向左滑动露出右侧删除底，长按打开动作表。行内容与动画都留在本组件内，
-// 列表只负责给数据与回调，避免父级每次刷新都重建行组件。
+// 任务行：完成态用「勾选弹入 + 标题删除线渐显 + 文字变弱」表达，不做瞬间切换。
+//
+// 交互分区（第三轮整改，防误触）：
+//   - 左侧 44dp 勾选热区：只切换完成/恢复，做了什么都看得见；
+//   - 行主体：打开已有任务编辑弹层（复用 TaskEditorSheet），不再整行切换完成；
+//   - 长按行主体：打开动作表；向左滑动：露出删除。
+// 三个热区互不重叠，也不靠 hitSlop 互相侵入，避免「想查看却把任务点完了」。
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { describeRecurrence, parseRecurrence } from "../domain/recurrence";
+import {
+  taskRowAction,
+  type TaskRowGesture,
+  type TaskRowHit,
+} from "../domain/taskRowAction";
 import { formatDue } from "../domain/taskQuery";
 import type { Task } from "../domain/types";
 import { duration, easeOut, useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
+import { Glyph } from "./Glyph";
 import { SwipeRow, type SwipeRowApi } from "./SwipeRow";
 
 const PRIORITY_LABEL: Record<number, string> = { 1: "低优先级", 2: "中优先级", 3: "高优先级" };
 /** 入场 stagger 只给前 9 行，滚动时新挂载的行不再重复动画 */
 const STAGGER_LIMIT = 8;
+/** 勾选命中区：44dp 见方，不与行主体重叠 */
+const CHECK_HIT = 44;
 
 /** 截止时间前的小时钟：11px 表盘 + 时针/分针，和原型的时间胶囊同一语义 */
 function ClockGlyph({ color }: { color: string }) {
@@ -33,6 +45,7 @@ function TaskRowBase({
   now,
   entranceIndex,
   onToggle,
+  onOpenEditor,
   onOpenActions,
   onDelete,
 }: {
@@ -40,6 +53,8 @@ function TaskRowBase({
   now: number;
   entranceIndex: number;
   onToggle: (task: Task) => void;
+  /** 轻点行主体：打开同一个 TaskEditorSheet 的编辑态 */
+  onOpenEditor: (task: Task) => void;
   onOpenActions: (task: Task) => void;
   onDelete: (task: Task) => void;
 }) {
@@ -169,26 +184,23 @@ function TaskRowBase({
   // 已完成行的标题会退回默认黑、在深色卡片上几乎不可读；删除线仍用 opacity 淡入。
   const titleColor = done ? tokens.muted : tokens.text;
 
-  const handlePress = useCallback(
-    (api: SwipeRowApi) => {
+  /** 唯一的路由入口：热区 + 手势 → 动作（契约见 domain/taskRowAction.ts） */
+  const handleHit = useCallback(
+    (hit: TaskRowHit, gesture: TaskRowGesture, api: SwipeRowApi) => {
+      const action = taskRowAction(hit, gesture);
+      if (action === "toggle") {
+        onToggle(task);
+        return;
+      }
+      // 滑删打开时，第一次点击只负责收起滑层，不跳编辑器/动作表
       if (api.isOpen()) {
         api.close();
         return;
       }
-      onToggle(task);
+      if (action === "openActions") onOpenActions(task);
+      else onOpenEditor(task);
     },
-    [onToggle, task],
-  );
-
-  const handleLongPress = useCallback(
-    (api: SwipeRowApi) => {
-      if (api.isOpen()) {
-        api.close();
-        return;
-      }
-      onOpenActions(task);
-    },
-    [onOpenActions, task],
+    [onOpenActions, onOpenEditor, onToggle, task],
   );
 
   return (
@@ -200,25 +212,18 @@ function TaskRowBase({
         surface={done ? tokens.cardDone : undefined}
       >
         {(api) => (
-          <Pressable
-            accessibilityRole="checkbox"
-            accessibilityLabel={`任务：${task.title}${done ? "，已完成" : ""}`}
-            accessibilityHint={
-              done
-                ? "轻点恢复为待办，长按打开更多操作，向左滑动可删除"
-                : "轻点标记完成，长按打开更多操作，向左滑动可删除"
-            }
-            accessibilityState={{ checked: done }}
-            accessibilityActions={[{ name: "longpress", label: "打开任务操作" }]}
-            onAccessibilityAction={(event) => {
-              if (event.nativeEvent.actionName === "longpress") onOpenActions(task);
-            }}
-            onPress={() => handlePress(api)}
-            onLongPress={() => handleLongPress(api)}
-            delayLongPress={320}
-            style={({ pressed }) => [styles.row, { opacity: pressed ? 0.72 : 1 }]}
-          >
-            <View importantForAccessibility="no-hide-descendants" style={styles.checkWrap}>
+          <View style={styles.row}>
+            {/* 勾选：独立热区，只负责完成/恢复 */}
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityLabel={done ? `恢复任务：${task.title}` : `完成任务：${task.title}`}
+              accessibilityHint={
+                done ? "轻点恢复为待办，不会打开任务内容" : "轻点标记完成，不会打开任务内容"
+              }
+              accessibilityState={{ checked: done }}
+              onPress={() => handleHit("checkbox", "press", api)}
+              style={({ pressed }) => [styles.checkHit, { opacity: pressed ? 0.62 : 1 }]}
+            >
               <Animated.View
                 style={[
                   styles.check,
@@ -233,28 +238,44 @@ function TaskRowBase({
                   ✓
                 </Animated.Text>
               </Animated.View>
-            </View>
+            </Pressable>
 
-            <View style={styles.body}>
-              <View style={styles.titleWrap}>
-                <Animated.Text numberOfLines={2} style={[styles.title, { color: titleColor }]}>
-                  {task.title}
-                </Animated.Text>
+            {/* 行主体：打开编辑；长按动作表 */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`任务：${task.title}${done ? "，已完成" : ""}`}
+              accessibilityHint="轻点编辑任务，长按打开更多操作，向左滑动可删除"
+              accessibilityActions={[{ name: "longpress", label: "打开任务操作" }]}
+              onAccessibilityAction={(event) => {
+                if (event.nativeEvent.actionName === "longpress") onOpenActions(task);
+              }}
+              onPress={() => handleHit("body", "press", api)}
+              onLongPress={() => handleHit("body", "longPress", api)}
+              delayLongPress={320}
+              style={({ pressed }) => [styles.body, { opacity: pressed ? 0.72 : 1 }]}
+            >
+              <View style={styles.titleRow}>
                 {/*
-                  删除线用一层同排版、透明字的文本叠在上面：Text 的 textDecorationLine
-                  无法插值，但可以整层淡入，且天然覆盖换行后的每一行。
+                  删除线直接落在标题上：真机验证过「透明字 + textDecorationColor」的
+                  覆盖层在 Fabric 下不画线（decoration 跟随 color 变成透明），
+                  于是改为完成态直接给 title 加 decoration，颜色淡入仍由 checkbox 承担。
                 */}
                 <Animated.Text
-                  importantForAccessibility="no"
                   numberOfLines={2}
                   style={[
                     styles.title,
-                    styles.strike,
-                    { opacity: progress, textDecorationColor: tokens.muted },
+                    { color: titleColor },
+                    done
+                      ? { textDecorationLine: "line-through", textDecorationColor: tokens.muted }
+                      : null,
                   ]}
                 >
                   {task.title}
                 </Animated.Text>
+                {/* 行主体进编辑：右侧箭头让「不是整行打卡」这件事看得见 */}
+                <View style={styles.openHint}>
+                  <Glyph name="chevron" color={tokens.faint} size={13} />
+                </View>
               </View>
 
               <View style={styles.meta}>
@@ -296,15 +317,15 @@ function TaskRowBase({
                   ) : (
                     // 未完成：截止时间做成蓝底时间胶囊（原型形态），比裸文本更易扫读
                     <View style={[styles.badge, { backgroundColor: tokens.accentSoft }]}>
-                      <ClockGlyph color={tokens.accent} />
-                      <Text style={[styles.badgeText, { color: tokens.accent }]}>{due}</Text>
+                      <ClockGlyph color={tokens.accentText} />
+                      <Text style={[styles.badgeText, { color: tokens.accentText }]}>{due}</Text>
                     </View>
                   )
                 ) : null}
 
                 {repeatLabel ? (
                   <View style={[styles.badge, { backgroundColor: tokens.accentSoft }]}>
-                    <Text style={[styles.badgeText, { color: tokens.accent }]}>
+                    <Text style={[styles.badgeText, { color: tokens.accentText }]}>
                       重复 · {repeatLabel}
                     </Text>
                   </View>
@@ -330,8 +351,8 @@ function TaskRowBase({
                   </Text>
                 ) : null}
               </View>
-            </View>
-          </Pressable>
+            </Pressable>
+          </View>
         )}
       </SwipeRow>
     </Animated.View>
@@ -345,18 +366,20 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: space.md,
-    paddingHorizontal: space.md + 2,
-    paddingVertical: space.md + 1,
+    paddingLeft: space.xs,
+    paddingRight: space.md,
   },
-  checkWrap: {
-    paddingTop: 1,
+  checkHit: {
+    width: CHECK_HIT,
+    height: CHECK_HIT,
+    alignItems: "center",
+    justifyContent: "center",
   },
   check: {
     width: 24,
     height: 24,
     borderRadius: 12,
-    borderWidth: 1.5,
+    borderWidth: 1.6,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -367,26 +390,27 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
-    gap: 4,
+    gap: 3,
+    paddingTop: 11,
+    paddingBottom: space.sm,
+    paddingRight: space.xs,
   },
-  titleWrap: {
-    position: "relative",
-    // 让标题按内容宽度收缩：删除线只划在文字上，而不是整行横线
+  titleRow: {
+    flexDirection: "row",
     alignItems: "flex-start",
+    gap: space.xs,
   },
   title: {
+    flexShrink: 1,
     fontSize: font.title,
     fontWeight: "600",
     lineHeight: 22,
     maxWidth: "100%",
   },
-  strike: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    maxWidth: "100%",
-    color: "transparent",
-    textDecorationLine: "line-through",
+  openHint: {
+    marginLeft: "auto",
+    paddingLeft: 2,
+    paddingTop: 4,
   },
   meta: {
     flexDirection: "row",
@@ -404,6 +428,7 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     fontSize: font.label,
+    fontWeight: "600",
   },
   clock: {
     width: 10,

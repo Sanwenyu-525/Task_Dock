@@ -9,6 +9,7 @@ import { duration, easeOut, useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
+import { ClampedText } from "./ClampedText";
 import { GlassCard } from "./GlassCard";
 
 const STAGGER_LIMIT = 8;
@@ -104,7 +105,8 @@ function CaptureCardBase({
   return (
     <Animated.View style={animatedStyle}>
       <GlassCard style={styles.card}>
-        <Text style={[styles.content, { color: tokens.text }]}>{capture.content}</Text>
+        {/* 长速记最多 5 行：一条超长文本不该把整屏占满，需要时再展开 */}
+        <ClampedText maxLines={5} text={capture.content} style={[styles.content, { color: tokens.text }]} />
         <View style={styles.footer}>
           <Text style={[styles.time, { color: tokens.muted }]}>
             {formatRelative(capture.createdAt, now)}
@@ -118,7 +120,7 @@ function CaptureCardBase({
               onPress={() => onPromote(capture)}
               style={({ pressed }) => [styles.action, { opacity: pressed ? 0.65 : 1 }]}
             >
-              <Text style={[styles.actionText, { color: tokens.accent }]}>转任务</Text>
+              <Text style={[styles.actionText, { color: tokens.accentText }]}>转任务</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -144,8 +146,8 @@ const styles = StyleSheet.create({
     gap: space.sm + 2,
   },
   content: {
-    fontSize: font.title,
-    lineHeight: 21,
+    fontSize: font.reading,
+    lineHeight: 22,
   },
   footer: {
     flexDirection: "row",

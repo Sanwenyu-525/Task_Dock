@@ -299,7 +299,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
         <View style={styles.tiles}>
           <View style={[styles.tile, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
             <Text style={[styles.tileLabel, { color: tokens.muted }]}>待发送操作</Text>
-            <Text style={[styles.tileValue, { color: tokens.accent }]}>{pendingOps}</Text>
+            <Text style={[styles.tileValue, { color: tokens.accentText }]}>{pendingOps}</Text>
           </View>
           <View style={[styles.tile, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
             <Text style={[styles.tileLabel, { color: tokens.muted }]}>上次接收</Text>
@@ -393,7 +393,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
               accessibilityState={{ disabled: busy }}
               contentStyle={styles.secondary}
             >
-              <Text style={[styles.secondaryText, { color: tokens.accent }]}>
+              <Text style={[styles.secondaryText, { color: tokens.accentText }]}>
                 {busy ? "正在测试连接…" : "测试连接"}
               </Text>
             </PressableScale>

@@ -72,7 +72,7 @@ const styles = StyleSheet.create({
   },
   hint: {
     fontSize: font.meta,
-    lineHeight: 18,
+    lineHeight: 20,
     textAlign: "center",
     maxWidth: 260,
   },

@@ -7,6 +7,7 @@ import { StatusBar } from "expo-status-bar";
 
 import { LaunchOverlay } from "./src/components/LaunchOverlay";
 import { TabBar, type TabKey } from "./src/components/TabBar";
+import { listCaptures } from "./src/db/captures";
 import { openDatabase } from "./src/db/database";
 import { getSetting, setSetting } from "./src/db/kv";
 import { useWindowInsets } from "./src/lib/insets";
@@ -20,16 +21,20 @@ import { ensureReminderCategory, installNotificationHandler } from "./src/notifi
 import { ConflictScreen } from "./src/screens/ConflictScreen";
 import { DeviceScreen } from "./src/screens/DeviceScreen";
 import { FilesScreen } from "./src/screens/FilesScreen";
+import { HomeScreen } from "./src/screens/HomeScreen";
 import { InboxScreen } from "./src/screens/InboxScreen";
 import { NoteEditorScreen } from "./src/screens/NoteEditorScreen";
 import { NotesScreen } from "./src/screens/NotesScreen";
 import { NotificationsScreen } from "./src/screens/NotificationsScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
+import { ProfileScreen } from "./src/screens/ProfileScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
 import { ShareScreen } from "./src/screens/ShareScreen";
 import { SyncScreen } from "./src/screens/SyncScreen";
 import { TasksScreen } from "./src/screens/TasksScreen";
+import { ToolsScreen } from "./src/screens/ToolsScreen";
 import { WidgetScreen } from "./src/screens/WidgetScreen";
+import { WorkspaceScreen } from "./src/screens/WorkspaceScreen";
 import { duration, easeOut, MotionProvider, useReduceMotion } from "./src/theme/MotionProvider";
 import { ThemeProvider, useTheme } from "./src/theme/ThemeProvider";
 import { font, palette, space, type ThemeMode } from "./src/theme/tokens";
@@ -77,9 +82,16 @@ function ScreenFade({ children }: { children: ReactNode }) {
 function Shell() {
   const { tokens, scheme } = useTheme();
   const insets = useWindowInsets();
-  const [tab, setTab] = useState<TabKey>("tasks");
+  // 蓝青专业版：默认进入「首页」，任务仍是独立一级栏
+  const [tab, setTab] = useState<TabKey>("home");
   /** 数据版本号：前台恢复、收集箱转任务后自增，驱动列表重查 */
   const [version, setVersion] = useState(0);
+  /** 首页/工作区的收集箱徽标：与收集箱页共用同一个数据源（只读计数） */
+  const [inboxCount, setInboxCount] = useState(0);
+  /** 首页「新建任务」快捷入口：切到任务栏并打开发编辑器（复用任务页现有弹层） */
+  const [createSignal, setCreateSignal] = useState(0);
+  /** 信号被任务页消费后立即归零；避免切走再切回时旧信号重复弹层 */
+  const [createPending, setCreatePending] = useState(false);
   /** 推送栈：非空时全屏盖在 Tab 之上（隐藏 TabBar），硬件返回 = pop */
   const [stack, setStack] = useState<Route[]>([]);
 
@@ -107,6 +119,23 @@ function Shell() {
     notifyWidgetDataChanged();
   }, [version]);
 
+  // 收集箱徽标：只读计数，与收集箱页共用 listCaptures（不另建 Store，也不轮询）
+  const badgeSeq = useRef(0);
+  useEffect(() => {
+    let active = true;
+    const request = ++badgeSeq.current;
+    void listCaptures()
+      .then((items) => {
+        // version 快速连续变化时，只让最新一次结果写入，避免旧响应覆盖新计数
+        if (active && request === badgeSeq.current) setInboxCount(items.length);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      badgeSeq.current += 1;
+    };
+  }, [version]);
+
   const push = useCallback((key: RouteKey, noteId?: string) => {
     setStack((prev) => {
       // 深链可能在配对页已打开时重复触发：不叠加第二个相同页面，
@@ -129,7 +158,14 @@ function Shell() {
         return;
       }
       const tab = parseWidgetRouteUri(url);
-      if (tab) setTab(tab);
+      if (!tab) return;
+      // 收集箱在新导航里是「工具」栏的二级页：先切栏再推入，不能直接当 Tab
+      if (tab === "inbox") {
+        setTab("tools");
+        push("inbox");
+        return;
+      }
+      setTab(tab);
     };
     void Linking.getInitialURL()
       .then(handle)
@@ -156,7 +192,19 @@ function Shell() {
     setStack((prev) => prev.slice(0, -1));
   }, []);
 
-  const nav = useMemo(() => ({ push, back }), [push, back]);
+  const openCreateTask = useCallback(() => {
+    // 复用任务页现有的 TaskEditorSheet：只发一个「打开新建」信号，不复制表单
+    setTab("tasks");
+    setCreateSignal((value) => value + 1);
+    setCreatePending(true);
+  }, []);
+
+  const consumeCreateSignal = useCallback(() => setCreatePending(false), []);
+
+  const nav = useMemo(
+    () => ({ push, back, openTab: setTab, openCreateTask }),
+    [push, back, openCreateTask],
+  );
 
   // 硬件返回：栈非空时 pop 栈顶。NoteEditor 会注册自己的返回监听（晚于这里注册，
   // RN 先调用后注册者），因此编辑页的未保存内容会先走「保存再关」，不会绕过。
@@ -198,6 +246,24 @@ function Shell() {
         return <ShareScreen nav={nav} onDataChanged={handleDataChanged} />;
       case "notifications":
         return <NotificationsScreen nav={nav} />;
+      case "inbox":
+        return (
+          <InboxScreen
+            onPromoted={handleDataChanged}
+            onOpenTasks={() => {
+              // 「任务页 →」：先弹栈再切栏，避免二级页叠在任务页上
+              back();
+              setTab("tasks");
+            }}
+            onBack={back}
+          />
+        );
+      case "notes":
+        return <NotesScreen version={version} nav={nav} onBack={back} />;
+      case "device":
+        return <DeviceScreen nav={nav} version={version} onBack={back} />;
+      case "settings":
+        return <SettingsScreen nav={nav} version={version} onBack={back} />;
     }
   };
 
@@ -219,32 +285,33 @@ function Shell() {
         aria-hidden={Boolean(top)}
         importantForAccessibility={top ? "no-hide-descendants" : "auto"}
       >
-        {tab === "tasks" ? (
+        {tab === "home" ? (
           <ScreenFade>
-            <TasksScreen version={version} />
+            <HomeScreen version={version} nav={nav} inboxCount={inboxCount} />
           </ScreenFade>
         ) : null}
-        {tab === "inbox" ? (
+        {tab === "tasks" ? (
           <ScreenFade>
-            <InboxScreen
-              onPromoted={handleDataChanged}
-              onOpenTasks={() => setTab("tasks")}
+            <TasksScreen
+              version={version}
+              openCreateSignal={createPending ? createSignal : 0}
+              onConsumeCreateSignal={consumeCreateSignal}
             />
           </ScreenFade>
         ) : null}
-        {tab === "notes" ? (
+        {tab === "workspace" ? (
           <ScreenFade>
-            <NotesScreen version={version} nav={nav} />
+            <WorkspaceScreen nav={nav} inboxCount={inboxCount} />
           </ScreenFade>
         ) : null}
-        {tab === "device" ? (
+        {tab === "tools" ? (
           <ScreenFade>
-            <DeviceScreen nav={nav} version={version} />
+            <ToolsScreen nav={nav} inboxCount={inboxCount} />
           </ScreenFade>
         ) : null}
-        {tab === "settings" ? (
+        {tab === "profile" ? (
           <ScreenFade>
-            <SettingsScreen nav={nav} version={version} />
+            <ProfileScreen nav={nav} version={version} />
           </ScreenFade>
         ) : null}
       </View>

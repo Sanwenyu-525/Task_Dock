@@ -136,7 +136,7 @@ export function ShareScreen({ nav, onDataChanged }: { nav: Nav; onDataChanged: (
         </PressableScale>
 
         <PressableScale onPress={handleCancel} accessibilityLabel="取消" contentStyle={styles.secondary}>
-          <Text style={[styles.secondaryText, { color: tokens.accent }]}>取消</Text>
+          <Text style={[styles.secondaryText, { color: tokens.accentText }]}>取消</Text>
         </PressableScale>
 
         <Text style={[styles.footer, { color: tokens.faint }]}>

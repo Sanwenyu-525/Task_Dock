@@ -402,7 +402,7 @@ export function PairingScreen({ nav }: { nav: Nav }) {
               accessibilityLabel="重新扫描"
               contentStyle={styles.secondary}
             >
-              <Text style={[styles.secondaryText, { color: tokens.accent }]}>重新扫描</Text>
+              <Text style={[styles.secondaryText, { color: tokens.accentText }]}>重新扫描</Text>
             </PressableScale>
           </GlassCard>
         ) : (

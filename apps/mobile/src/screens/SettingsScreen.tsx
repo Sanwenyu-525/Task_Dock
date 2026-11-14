@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import appConfig from "../../app.json";
+import { BackButton } from "../components/BackButton";
 import { GlassCard } from "../components/GlassCard";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { SettingActionRow } from "../components/SettingActionRow";
@@ -102,7 +103,16 @@ function ThemePreview({ mode }: { mode: ThemeMode }) {
   );
 }
 
-export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: number }) {
+export function SettingsScreen({
+  nav,
+  version = 0,
+  onBack,
+}: {
+  nav: Nav;
+  version?: number;
+  /** 从「我的」进入时的返回；一级栏时代不传 */
+  onBack?: () => void;
+}) {
   const { tokens, mode, setMode } = useTheme();
   const reduceMotion = useReduceMotion();
   const [summary, setSummary] = useState({ tasks: 0, captures: 0, completed: 0 });
@@ -177,17 +187,20 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.titleBlock}>
-          <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
-            设置
-          </Text>
-          <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
-            {syncConnection && isLegacyConnection(syncConnection)
-              ? `需重新配对 ${syncConnection.serverName} · 桌面端已升级加密传输`
-              : syncConnection
-                ? `已配对 ${syncConnection.serverName} · 任务/笔记/收集箱可手动同步`
-                : "未连接桌面端 · 数据仅在本机"}
-          </Text>
+        <View style={styles.headerRow}>
+          {onBack ? <BackButton onPress={onBack} /> : null}
+          <View style={styles.titleBlock}>
+            <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
+              设置
+            </Text>
+            <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
+              {syncConnection && isLegacyConnection(syncConnection)
+                ? `需重新配对 ${syncConnection.serverName} · 桌面端已升级加密传输`
+                : syncConnection
+                  ? `已配对 ${syncConnection.serverName} · 任务/笔记/收集箱可手动同步`
+                  : "未连接桌面端 · 数据仅在本机"}
+            </Text>
+          </View>
         </View>
 
         <View style={styles.tiles}>
@@ -264,7 +277,7 @@ export function SettingsScreen({ nav, version = 0 }: { nav: Nav; version?: numbe
               { borderColor: tokens.accent, opacity: pressed ? 0.7 : 1 },
             ]}
           >
-            <Text style={[styles.ghostText, { color: tokens.accent }]}>发送测试通知</Text>
+            <Text style={[styles.ghostText, { color: tokens.accentText }]}>发送测试通知</Text>
           </Pressable>
           {tone === "danger" ? (
             <Text style={[styles.hint, { color: tokens.danger }]}>
@@ -313,8 +326,14 @@ const styles = StyleSheet.create({
     paddingBottom: 44,
     gap: space.md,
   },
-  titleBlock: { gap: 1, marginBottom: space.xs },
-  title: { fontSize: font.display, fontWeight: "800", letterSpacing: -0.8 },
+  headerRow: { flexDirection: "row", alignItems: "flex-start", gap: space.sm },
+  titleBlock: { flex: 1, gap: 1, marginBottom: space.xs },
+  title: {
+    fontSize: font.page,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+    lineHeight: font.page + 7,
+  },
   subtitle: { fontSize: font.meta },
   tiles: {
     flexDirection: "row",

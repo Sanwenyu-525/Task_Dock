@@ -101,6 +101,6 @@ const styles = StyleSheet.create({
   label: {
     fontSize: font.meta,
     fontWeight: "600",
-    lineHeight: font.meta + 6,
+    lineHeight: font.meta + 5,
   },
 });

@@ -18,12 +18,15 @@ export function SegmentedControl<T extends string>({
   onChange,
   renderSegment,
   accessibilityLabel,
+  emphasis = "soft",
 }: {
   options: SegmentOption<T>[];
   value: T;
   onChange: (value: T) => void;
   renderSegment?: (option: SegmentOption<T>, selected: boolean) => ReactNode;
   accessibilityLabel: string;
+  /** soft = 白底胶囊 + 蓝字（设置页）；accent = 蓝底白字（工作区分段，对齐设计稿） */
+  emphasis?: "soft" | "accent";
 }) {
   const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
@@ -74,8 +77,8 @@ export function SegmentedControl<T extends string>({
           style={[
             styles.indicator,
             {
-              backgroundColor: tokens.cardSolid,
-              borderColor: tokens.accentSoft,
+              backgroundColor: emphasis === "accent" ? tokens.accentFill : tokens.cardSolid,
+              borderColor: emphasis === "accent" ? tokens.accentFill : tokens.accentSoft,
             },
             indicatorStyle,
           ]}
@@ -98,7 +101,13 @@ export function SegmentedControl<T extends string>({
               <Text
                 style={[
                   styles.label,
-                  { color: selected ? tokens.accent : tokens.muted },
+                  {
+                    color: selected
+                      ? emphasis === "accent"
+                        ? tokens.onAccent
+                        : tokens.accent
+                      : tokens.muted,
+                  },
                   selected ? styles.labelActive : null,
                 ]}
               >

@@ -144,10 +144,10 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
               <Text style={[styles.widgetTitle, { color: tokens.text }]}>{title}</Text>
               {widePreview ? (
                 <View style={[styles.widgetCount, { backgroundColor: tokens.accentSoft }]}>
-                  <Text style={[styles.widgetCountText, { color: tokens.accent }]}>{count}</Text>
+                  <Text style={[styles.widgetCountText, { color: tokens.accentText }]}>{count}</Text>
                 </View>
               ) : (
-                <Text style={[styles.widgetBig, { color: tokens.accent }]}>{count}</Text>
+                <Text style={[styles.widgetBig, { color: tokens.accentText }]}>{count}</Text>
               )}
             </View>
             {previewRows.map((row, index) => (

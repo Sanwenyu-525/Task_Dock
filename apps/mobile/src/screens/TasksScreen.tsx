@@ -1,5 +1,5 @@
 // 任务页：统计 → 筛选 → 分组列表（同一 FlatList 内用分组头切分，不做嵌套列表）。
-// 交互约定：轻点完成、左右滑动删除、长按打开动作表；编辑与新建共用 TaskEditorSheet。
+// 交互约定：勾选完成/恢复、轻点行主体打开编辑、长按动作表、向左滑动删除；编辑与新建共用 TaskEditorSheet。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -16,9 +16,9 @@ import {
 import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { Chip } from "../components/Chip";
 import { EmptyState } from "../components/EmptyState";
-import { PressableScale } from "../components/PressableScale";
+import { HeaderIconButton } from "../components/HeaderIconButton";
 import { SearchField } from "../components/SearchField";
-import { StatCard, type StatTone } from "../components/StatCard";
+import { ScreenHeader } from "../components/ScreenHeader";
 import { TaskEditorSheet } from "../components/TaskEditorSheet";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { TaskRow } from "../components/TaskRow";
@@ -29,19 +29,17 @@ import {
   type ToastTone,
 } from "../components/Toast";
 import { getSetting } from "../db/kv";
-import { loadConnection } from "../db/syncConnection";
-import { isLegacyConnection } from "../lib/sync/connectionState";
 import { createTask, deleteTask, listTasks, toggleTask, updateTask } from "../db/tasks";
 import { countTasks, formatDue, matchesQuery, selectTasks } from "../domain/taskQuery";
 import { describeRecurrence, parseRecurrence } from "../domain/recurrence";
 import type { NewTaskInput, Task, TaskFilter } from "../domain/types";
 import { describeError } from "../lib/errors";
+import { shouldConsumeCreateSignal } from "../lib/nav";
 import { notifyWidgetDataChanged } from "../lib/widgetSnapshot";
 import { rescheduleAllReminders, SNOOZE_SETTING_KEY } from "../notifications/reminderEngine";
 import { cancelReminder, scheduleReminder } from "../notifications/reminders";
 import { useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
-import { floatingShadow } from "../theme/shadows";
 import { font, radius, space } from "../theme/tokens";
 
 import { buildTaskSections, flattenSections, type SectionKey, type TaskListRow } from "./taskGroups";
@@ -55,7 +53,7 @@ const FILTERS: { key: TaskFilter; label: string }[] = [
 ];
 
 const EMPTY_COPY: Record<TaskFilter, { title: string; hint: string }> = {
-  all: { title: "还没有任务", hint: "点右下角 + 记下第一件事；还没想清楚的先丢进收集箱" },
+  all: { title: "还没有任务", hint: "点右上角 + 记下第一件事；还没想清楚的先丢进收集箱" },
   pending: { title: "没有待办任务", hint: "手上的事都处理完了，先歇一会儿" },
   today: { title: "今天没有到期任务", hint: "没有卡在今天的事，可以推进别的工作" },
   overdue: { title: "没有逾期任务", hint: "保持这个节奏，别让截止日期追上来" },
@@ -74,37 +72,35 @@ function actionSubtitle(task: Task, now: number): string {
   return rule ? `${due} · ${describeRecurrence(rule)}` : due;
 }
 
-/**
- * 页头日期：今天 + 月日 + 星期（对齐页面原型）。
- * 单独成组件是为了把每分钟刷新限制在这一行内——放回 TasksScreen 会让整个列表跟着重渲染。
- */
-function ClockLabel({ color }: { color: string }) {
-  const [tick, setTick] = useState(() => Date.now());
-
-  useEffect(() => {
-    const timer = setInterval(() => setTick(Date.now()), 60_000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const date = new Date(tick);
+/** 页头副标题：今天 + 月日 + 星期，仅展示日期用途，不再是每秒跳动的时钟。 */
+function formatDayLabel(now: number): string {
+  const date = new Date(now);
   const weekday = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][date.getDay()];
-  const label = `今天 ${date.getMonth() + 1}月${date.getDate()}日 ${weekday}`;
-
-  return <Text style={[styles.eyebrow, { color }]}>{label}</Text>;
+  return `今天 ${date.getMonth() + 1}月${date.getDate()}日 ${weekday}`;
 }
 
-export function TasksScreen({ version = 0 }: { version?: number }) {
-  const { tokens, scheme } = useTheme();
+export function TasksScreen({
+  version = 0,
+  openCreateSignal = 0,
+  onConsumeCreateSignal,
+}: {
+  version?: number;
+  /** 首页/工作区快捷入口发出的「打开新建」信号；0 = 无信号 */
+  openCreateSignal?: number;
+  /** 消费后由 Shell 立刻归零，避免页面卸载重挂时再次打开弹层 */
+  onConsumeCreateSignal?: () => void;
+}) {
+  const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
-  // 大字号下四张统计卡并排会把「已逾期/已完成」截成省略号：改为两列两行
-  const { fontScale } = useWindowDimensions();
-  const twoColumnStats = fontScale > 1.15;
+  // 大字号/320dp 下四个统计项并排会截断：改为两列两行
+  const { width, fontScale } = useWindowDimensions();
+  const twoColumnStats = fontScale > 1.15 || width < 360;
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
-  const [paired, setPaired] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /** 折叠的分组：只影响展示，计数与分组头始终保留 */
   const [collapsed, setCollapsed] = useState<ReadonlySet<SectionKey>>(() => new Set());
@@ -117,6 +113,8 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
   const [actionOpen, setActionOpen] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
+  const refreshSeq = useRef(0);
+  const mounted = useRef(true);
 
   const showToast = useCallback(
     (text: string, tone: ToastTone = "info", placement?: ToastPlacement) => {
@@ -148,14 +146,19 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
 
   const refresh = useCallback(
     async (animated = false) => {
+      const request = ++refreshSeq.current;
       try {
         const next = await listTasks();
+        // 过期请求（连续操作/快速切页）不能覆盖最新列表
+        if (!mounted.current || request !== refreshSeq.current) return;
         // 配置必须紧贴数据提交：提前调用会被其它状态更新消费掉
         if (animated) animateLayout();
         setTasks(next);
       } catch (error) {
+        if (!mounted.current || request !== refreshSeq.current) return;
         showToast(`读取任务失败：${describeError(error)}`, "danger");
       } finally {
+        if (!mounted.current || request !== refreshSeq.current) return;
         setNow(Date.now());
         setLoading(false);
       }
@@ -168,19 +171,14 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
     void refresh();
   }, [refresh, version]);
 
-  // 配对状态只影响页头标签：配对后显示「同步已连接」，解除后回到「本机模式」。
-  // v1 遗留/缺指纹连接在 TLS-only 桌面端上已不可用，按未配对处理。
+  // 卸载时让在途请求失效，避免异步结果写已卸载组件
   useEffect(() => {
-    let active = true;
-    void loadConnection()
-      .then((connection) => {
-        if (active) setPaired(Boolean(connection) && !isLegacyConnection(connection));
-      })
-      .catch(() => undefined);
+    mounted.current = true;
     return () => {
-      active = false;
+      mounted.current = false;
+      refreshSeq.current += 1;
     };
-  }, [version]);
+  }, []);
 
   // 跨过零点 / 提醒到点后，「今天」「已过期」要跟着变，不能让列表停留在旧判定
   useEffect(() => {
@@ -356,6 +354,22 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
     setEditorOpen(true);
   }, []);
 
+  /** 轻点任务主体：打开同一个编辑弹层，不新增第二套详情页 */
+  const openEditor = useCallback((task: Task) => {
+    setEditorState({ mode: "edit", task });
+    setEditorOpen(true);
+  }, []);
+
+  // 首页「新建任务」快捷入口：切到任务栏后直接打开同一个 TaskEditorSheet。
+  // 打开一次就通知 Shell 归零；否则页面切走再切回（组件重挂载）会重复消费旧信号。
+  const lastCreateSignal = useRef(0);
+  useEffect(() => {
+    if (!shouldConsumeCreateSignal(openCreateSignal, lastCreateSignal.current)) return;
+    lastCreateSignal.current = openCreateSignal;
+    openCreate();
+    onConsumeCreateSignal?.();
+  }, [onConsumeCreateSignal, openCreate, openCreateSignal]);
+
   const renderRow = useCallback(
     ({ item }: ListRenderItemInfo<TaskListRow>) => {
       if (item.type === "section") {
@@ -377,12 +391,13 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
           now={now}
           entranceIndex={item.entranceIndex}
           onToggle={handleToggle}
+          onOpenEditor={openEditor}
           onOpenActions={handleOpenActions}
           onDelete={handleDelete}
         />
       );
     },
-    [collapsed, handleDelete, handleOpenActions, handleToggle, now, toggleSection],
+    [collapsed, handleDelete, handleOpenActions, handleToggle, now, openEditor, toggleSection],
   );
 
   const keyExtractor = useCallback(
@@ -392,8 +407,7 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
   );
 
   // 统计色只在「有问题」时启用强调色：0 项逾期不该整片飘红
-  const statTone = (value: number, tone: StatTone): StatTone => (value > 0 ? tone : "neutral");
-
+  const overdueTone = counts.overdue > 0 ? tokens.warn : tokens.textSoft;
   const editorTask = editorState.mode === "edit" ? editorState.task : null;
   const trimmedQuery = query.trim();
   const searching = trimmedQuery.length > 0;
@@ -405,55 +419,13 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
     : EMPTY_COPY[filter];
   const showCreateAction = !searching && (filter === "all" || filter === "pending");
 
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) setQuery("");
+    setSearchOpen((open) => !open);
+  }, [searchOpen]);
+
   const listHeader = (
     <View style={styles.header}>
-      <View style={styles.titleRow}>
-        <View style={styles.titleBlock}>
-          <ClockLabel color={tokens.muted} />
-          <Text accessibilityRole="header" style={[styles.screenTitle, { color: tokens.text }]}>
-            任务
-          </Text>
-        </View>
-        {/* 模式标签只表达数据归属：未配对是本机模式，已配对则是同步已连接。
-            不用绿点，避免被读成「在线」而掩盖实际同步结果。 */}
-        <View style={[styles.localBadge, { backgroundColor: tokens.accentSoft }]}>
-          <Text style={[styles.localText, { color: tokens.accent }]}>
-            {paired ? "同步已连接" : "本机模式"}
-          </Text>
-        </View>
-      </View>
-
-      {/* 四块统计：白卡 + 标签在上、数值在下；0 值退回中性色。大字号时两列两行 */}
-      <View style={[styles.stats, twoColumnStats ? styles.statsWrap : null]}>
-        <StatCard
-          label="待办"
-          value={counts.pending}
-          tone="accent"
-          style={twoColumnStats ? styles.statHalf : undefined}
-        />
-        <StatCard
-          label="今天"
-          value={counts.dueToday}
-          tone={statTone(counts.dueToday, "accent")}
-          accessibilityLabel={`今天到期 ${counts.dueToday} 项`}
-          style={twoColumnStats ? styles.statHalf : undefined}
-        />
-        <StatCard
-          label="已逾期"
-          value={counts.overdue}
-          tone={statTone(counts.overdue, "warn")}
-          accessibilityLabel={`已过期 ${counts.overdue} 项`}
-          style={twoColumnStats ? styles.statHalf : undefined}
-        />
-        <StatCard
-          label="已完成"
-          value={counts.completed}
-          tone={statTone(counts.completed, "ok")}
-          accessibilityLabel={`已完成 ${counts.completed} 项`}
-          style={twoColumnStats ? styles.statHalf : undefined}
-        />
-      </View>
-
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -472,12 +444,49 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
         ))}
       </ScrollView>
 
-      <SearchField
-        value={query}
-        onChangeText={setQuery}
-        placeholder="搜索任务、标签、分类"
-        accessibilityLabel="搜索任务"
-      />
+      {searchOpen ? (
+        <SearchField
+          value={query}
+          onChangeText={setQuery}
+          placeholder="搜索任务、标签、分类"
+          accessibilityLabel="搜索任务"
+        />
+      ) : null}
+
+      {/* 紧凑统计条：四个真实计数，替代上一版四张高统计卡 */}
+      <View
+        style={[
+          styles.statsStrip,
+          { backgroundColor: tokens.bgAccent },
+          twoColumnStats ? styles.statsWrap : null,
+        ]}
+      >
+        {[
+          { key: "pending", label: "待办", value: counts.pending, color: tokens.accentText },
+          { key: "today", label: "今天", value: counts.dueToday, color: tokens.accentText },
+          { key: "overdue", label: "逾期", value: counts.overdue, color: overdueTone },
+          { key: "completed", label: "完成", value: counts.completed, color: tokens.ok },
+        ].map((item, index) => (
+          <View
+            key={item.key}
+            style={[
+              styles.statItem,
+              twoColumnStats ? styles.statHalf : null,
+              index > 0 && !twoColumnStats
+                ? [styles.statDivider, { borderLeftColor: tokens.separator }]
+                : null,
+            ]}
+            accessibilityLabel={`${item.label} ${item.value} 项`}
+          >
+            <Text numberOfLines={1} style={[styles.statLabel, { color: tokens.muted }]}>
+              {item.label}
+            </Text>
+            <Text numberOfLines={1} style={[styles.statValue, { color: item.color }]}>
+              {item.value}
+            </Text>
+          </View>
+        ))}
+      </View>
 
       {searching ? (
         <Text style={[styles.searchHint, { color: tokens.muted }]}>
@@ -490,6 +499,25 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
 
   return (
     <View style={styles.container}>
+      <ScreenHeader
+        title="任务"
+        subtitle={formatDayLabel(now)}
+        right={
+          <>
+            <HeaderIconButton
+              icon="search"
+              accessibilityLabel={searchOpen ? "关闭任务搜索" : "搜索任务"}
+              onPress={toggleSearch}
+            />
+            <HeaderIconButton
+              icon="plus"
+              accessibilityLabel="新建任务"
+              onPress={openCreate}
+            />
+          </>
+        }
+      />
+
       {loading ? (
         <ActivityIndicator style={styles.loading} color={tokens.accent} />
       ) : (
@@ -522,28 +550,11 @@ export function TasksScreen({ version = 0 }: { version?: number }) {
         />
       )}
 
-      <PressableScale
-        onPress={openCreate}
-        accessibilityLabel="新建任务"
-        accessibilityHint="打开新建任务面板"
-        style={styles.fab}
-        contentStyle={[
-          styles.fabInner,
-          { backgroundColor: tokens.accentFill },
-          floatingShadow(scheme),
-        ]}
-      >
-        <View style={styles.fabGlyph}>
-          <View style={[styles.fabBar, styles.fabBarH, { backgroundColor: tokens.onAccent }]} />
-          <View style={[styles.fabBar, styles.fabBarV, { backgroundColor: tokens.onAccent }]} />
-        </View>
-      </PressableScale>
-
       <Toast
         toast={toast}
         onDismiss={dismissToast}
         placement="top"
-        bottomOffset={space.lg + 68}
+        bottomOffset={space.lg + 32}
       />
 
       <ActionSheet
@@ -574,51 +585,43 @@ const styles = StyleSheet.create({
     gap: space.md,
     paddingBottom: space.xs,
   },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: space.sm,
-  },
-  titleBlock: {
-    flex: 1,
-    gap: 1,
-  },
-  eyebrow: {
-    fontSize: font.meta,
-    fontWeight: "600",
-    letterSpacing: 0.2,
-    // 秒级数字用等宽数字，跳动时整行不会左右抖
-    fontVariant: ["tabular-nums"],
-  },
-  screenTitle: {
-    fontSize: font.display,
-    fontWeight: "800",
-    letterSpacing: -0.8,
-    lineHeight: font.display + 8,
-  },
-  localBadge: {
-    marginTop: space.sm,
-    paddingHorizontal: space.sm + 2,
-    paddingVertical: 5,
-    borderRadius: radius.chip,
-  },
-  localText: {
-    fontSize: font.label,
-    fontWeight: "600",
-  },
   searchHint: {
     fontSize: font.meta,
   },
-  stats: {
+  statsStrip: {
     flexDirection: "row",
-    gap: space.sm,
+    alignItems: "center",
+    flexWrap: "wrap",
+    borderRadius: radius.row,
+    paddingVertical: space.xs,
+    paddingHorizontal: space.xxs,
+    rowGap: space.xs,
   },
   statsWrap: {
-    flexWrap: "wrap",
+    rowGap: space.xs,
+  },
+  statItem: {
+    flexBasis: "25%",
+    flexGrow: 1,
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "center",
+    gap: 4,
+    paddingHorizontal: 2,
+  },
+  statDivider: {
+    borderLeftWidth: StyleSheet.hairlineWidth,
   },
   statHalf: {
-    flexBasis: "47%",
+    flexBasis: "50%",
+  },
+  statLabel: {
+    fontSize: font.label,
+  },
+  statValue: {
+    fontSize: font.section,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
   },
   filterScroll: {
     marginHorizontal: -space.lg,
@@ -631,43 +634,9 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: space.lg,
-    paddingBottom: 96,
+    paddingBottom: 32,
   },
   rowGap: {
     height: space.sm,
-  },
-  fab: {
-    position: "absolute",
-    right: space.lg,
-    bottom: space.lg,
-  },
-  fabInner: {
-    width: 58,
-    height: 58,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  fabGlyph: {
-    width: 24,
-    height: 24,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  fabBar: {
-    position: "absolute",
-    borderRadius: 1.2,
-  },
-  fabBarH: {
-    left: 1,
-    top: 10.9,
-    width: 22,
-    height: 2.2,
-  },
-  fabBarV: {
-    left: 10.9,
-    top: 1,
-    width: 2.2,
-    height: 22,
   },
 });

@@ -1,5 +1,5 @@
 // 笔记列表：搜索 → 筛选 → 置顶/全部笔记两组（同一 FlatList 内用分组头切分）。
-// 笔记已接入同步：页头按是否配对显示「同步已连接 / 仅本机」。
+// 页头只表达配对状态（已配对 / 仅本机），不把「已配对」说成「已连接」或「已同步」。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -12,6 +12,7 @@ import {
 } from "react-native";
 
 import { Chip } from "../components/Chip";
+import { BackButton } from "../components/BackButton";
 import { EmptyState } from "../components/EmptyState";
 import { NoteCard } from "../components/NoteCard";
 import { PressableScale } from "../components/PressableScale";
@@ -23,6 +24,7 @@ import { loadConnection } from "../db/syncConnection";
 import { isLegacyConnection } from "../lib/sync/connectionState";
 import type { Note } from "../domain/types";
 import { describeError } from "../lib/errors";
+import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
 import { floatingShadow } from "../theme/shadows";
@@ -47,8 +49,18 @@ function matchesQuery(note: Note, rawQuery: string): boolean {
   return note.title.toLowerCase().includes(query) || note.body.toLowerCase().includes(query);
 }
 
-export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }) {
+export function NotesScreen({
+  version = 0,
+  nav,
+  onBack,
+}: {
+  version?: number;
+  nav: Nav;
+  /** 作为「工具」二级页打开时的返回；一级栏时代不传 */
+  onBack?: () => void;
+}) {
   const { tokens, scheme } = useTheme();
+  const insets = useWindowInsets();
   const [notes, setNotes] = useState<Note[]>([]);
   const [paired, setPaired] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -71,7 +83,7 @@ export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }
         loadConnection().catch(() => null),
       ]);
       setNotes(nextNotes);
-      // v1 遗留/缺指纹连接在 TLS-only 桌面端上已不可用，不能显示「同步已连接」。
+      // v1 遗留/缺指纹连接在 TLS-only 桌面端上已不可用，不能显示健康配对态。
       setPaired(Boolean(connection) && !isLegacyConnection(connection));
     } catch (error) {
       showToast(`读取笔记失败：${describeError(error)}`, "danger");
@@ -155,6 +167,7 @@ export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }
         ListHeaderComponent={
           <View style={styles.header}>
             <View style={styles.titleRow}>
+              {onBack ? <BackButton onPress={onBack} /> : null}
               <View style={styles.titleBlock}>
                 <Text accessibilityRole="header" style={[styles.screenTitle, { color: tokens.text }]}>
                   笔记
@@ -162,7 +175,7 @@ export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }
                 <Text style={[styles.subtitle, { color: tokens.muted }]}>
                   {searching
                     ? `找到 ${visible.length} 篇 · 共 ${notes.length} 篇`
-                    : `${notes.length} 篇 · ${paired ? "同步已连接" : "仅本机"}`}
+                    : `${notes.length} 篇 · ${paired ? "已配对" : "仅本机"}`}
                 </Text>
               </View>
             </View>
@@ -213,7 +226,7 @@ export function NotesScreen({ version = 0, nav }: { version?: number; nav: Nav }
         onPress={() => openEditor(null)}
         accessibilityLabel="新建笔记"
         accessibilityHint="打开笔记编辑页"
-        style={styles.fab}
+        style={[styles.fab, { bottom: space.lg + insets.bottom }]}
         contentStyle={[
           styles.fabInner,
           { backgroundColor: tokens.accentFill },
@@ -247,10 +260,10 @@ const styles = StyleSheet.create({
   },
   titleBlock: { flex: 1, gap: 1 },
   screenTitle: {
-    fontSize: font.display,
+    fontSize: font.page,
     fontWeight: "800",
-    letterSpacing: -0.8,
-    lineHeight: font.display + 8,
+    letterSpacing: -0.5,
+    lineHeight: font.page + 7,
   },
   subtitle: { fontSize: font.meta },
   filterScroll: {
@@ -274,7 +287,7 @@ const styles = StyleSheet.create({
   fabInner: {
     width: 58,
     height: 58,
-    borderRadius: 18,
+    borderRadius: 29,
     alignItems: "center",
     justifyContent: "center",
   },
