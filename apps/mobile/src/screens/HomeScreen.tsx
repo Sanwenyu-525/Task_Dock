@@ -295,13 +295,6 @@ export function HomeScreen({
                       <AppIcon name="chevronRight" color={tokens.onAccent} size={20} />
                     </View>
                   </View>
-
-                  <View style={[styles.focusFooter, { borderTopColor: tokens.separator }]}>
-                    <Text numberOfLines={1} style={[styles.focusHint, { color: tokens.muted }]}>
-                      任务页可查看全部待办 · {counts.pending} 项
-                    </Text>
-                    <Text style={[styles.focusLink, { color: tokens.accentText }]}>去处理</Text>
-                  </View>
                 </GlassCard>
               </PressableScale>
             ) : (
@@ -448,14 +441,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
     paddingBottom: space.xxl,
-    gap: space.lg + 2,
+    gap: space.lg,
   },
   hero: {
     // 通栏：抵消页面左右内边距，让浅蓝渐变贴住屏幕两侧
     marginHorizontal: -space.lg,
     paddingHorizontal: space.lg,
-    paddingVertical: space.lg,
-    minHeight: 124,
+    paddingVertical: space.lg - 2,
+    minHeight: 118,
     flexDirection: "row",
     alignItems: "center",
     gap: space.md,
@@ -502,7 +495,7 @@ const styles = StyleSheet.create({
   focusPress: {},
   focusCard: {
     padding: space.lg,
-    gap: space.md,
+    gap: space.sm + 2,
   },
   focusHeader: { flexDirection: "row", alignItems: "center", gap: space.sm },
   focusKicker: { fontSize: font.section - 1, fontWeight: "700", letterSpacing: -0.2 },
@@ -537,15 +530,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  focusFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.sm,
-    paddingTop: space.sm + 2,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
   focusHint: { flexShrink: 1, fontSize: font.label, lineHeight: 17 },
-  focusLink: { marginLeft: "auto", fontSize: font.label, fontWeight: "700" },
   emptyFocus: { alignItems: "flex-start", gap: space.sm },
   statsRow: { flexDirection: "row", gap: space.sm, alignItems: "stretch" },
   emptyText: { fontSize: font.meta, lineHeight: 20, paddingVertical: space.xs },

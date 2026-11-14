@@ -122,11 +122,8 @@ export function ProjectSpacePlaceholder() {
           项目数据尚未同步到手机
         </Text>
         <Text numberOfLines={1} style={[styles.placeholderHint, { color: tokens.muted }]}>
-          桌面端接入项目后，自动显示项目与事项
+          桌面端接入后显示项目与事项
         </Text>
-      </View>
-      <View style={[styles.pendingPill, { backgroundColor: tokens.bgAccent }]}>
-        <Text style={[styles.pendingText, { color: tokens.muted }]}>待接入</Text>
       </View>
     </View>
   );
@@ -188,14 +185,5 @@ const styles = StyleSheet.create({
   },
   placeholderHint: {
     fontSize: font.label,
-  },
-  pendingPill: {
-    paddingHorizontal: space.sm,
-    paddingVertical: 3,
-    borderRadius: 999,
-  },
-  pendingText: {
-    fontSize: font.label,
-    fontWeight: "600",
   },
 });

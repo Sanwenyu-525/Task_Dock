@@ -15,6 +15,7 @@ import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-n
 import { FeatureIconPlaceholder } from "../components/FeatureIconPlaceholder";
 import { FileCollectionCard } from "../components/FileCollectionCard";
 import { IconEntry } from "../components/IconEntry";
+import { AppIcon } from "../components/icons/AppIcon";
 import { ProjectSpacePlaceholder } from "../components/ProjectSpaceCard";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { SectionHeader } from "../components/SectionHeader";
@@ -96,12 +97,16 @@ export function WorkspaceScreen({
             <View style={styles.group}>
               <SectionHeader icon="users" title="协作动态" />
               {/* 没有卡片外壳，避免一条很宽的空卡；占位只说明状态 */}
-              <View style={styles.activityPlaceholder}>
-                <FeatureIconPlaceholder
-                  icon="users"
-                  hint="项目活动尚未同步到手机"
-                  variant="inline"
-                />
+              <View
+                accessible
+                accessibilityLabel="项目活动尚未同步到手机"
+                accessibilityState={{ disabled: true }}
+                style={styles.activityPlaceholder}
+              >
+                <AppIcon name="users" color={tokens.faint} size={18} />
+                <Text style={[styles.activityText, { color: tokens.muted }]}>
+                  项目活动尚未同步到手机
+                </Text>
               </View>
             </View>
 
@@ -169,7 +174,14 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   activityPlaceholder: {
+    minHeight: 32,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
     paddingHorizontal: 2,
+  },
+  activityText: {
+    fontSize: font.meta,
   },
   filesRow: { flexDirection: "row", gap: space.sm, alignItems: "stretch" },
   filesColumn: { gap: space.sm },

@@ -84,10 +84,12 @@ export function matchesPeriod(task: Task, period: TaskPeriodFilter, now: number)
     case "any":
       return true;
     case "today":
-      return task.dueAt != null && task.dueAt >= start && task.dueAt < start + DAY_MS;
+      // 与任务页「今天」分组同口径：所有在今天结束前到期的事都算今天要处理，
+      // 包括往日逾期；否则分组里有 2 项、点「今天」却得到空列表，语义会打架。
+      return task.dueAt != null && task.dueAt < start + DAY_MS;
     case "week":
-      // 本周包含今天与今天之前尚未过期的时段；更早的逾期只出现在「逾期」里
-      return task.dueAt != null && task.dueAt >= start && task.dueAt < weekEnd;
+      // 本周 = 截至周日结束仍未处理的截止时间（含今天与往日逾期）
+      return task.dueAt != null && task.dueAt < weekEnd;
     case "later":
       return task.dueAt != null && task.dueAt >= weekEnd;
     case "undated":

@@ -283,8 +283,9 @@ function TaskRowBase({
                     style={[
                       styles.badge,
                       {
-                        backgroundColor:
-                          task.priority >= 3
+                        backgroundColor: done
+                          ? tokens.track
+                          : task.priority >= 3
                             ? tokens.dangerSoft
                             : task.priority === 2
                               ? tokens.warnSoft
@@ -295,7 +296,13 @@ function TaskRowBase({
                     <Text
                       style={[
                         styles.badgeText,
-                        { color: task.priority >= 2 ? priorityColor : tokens.muted },
+                        {
+                          color: done
+                            ? tokens.muted
+                            : task.priority >= 2
+                              ? priorityColor
+                              : tokens.muted,
+                        },
                       ]}
                     >
                       {PRIORITY_SHORT[task.priority] ?? "低"}
@@ -304,8 +311,19 @@ function TaskRowBase({
                 ) : null}
 
                 {task.category ? (
-                  <View style={[styles.badge, { backgroundColor: tokens.accentSoft }]}>
-                    <Text numberOfLines={1} style={[styles.badgeText, { color: tokens.accentText }]}>
+                  <View
+                    style={[
+                      styles.badge,
+                      { backgroundColor: done ? tokens.track : tokens.accentSoft },
+                    ]}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.badgeText,
+                        { color: done ? tokens.muted : tokens.accentText },
+                      ]}
+                    >
                       {task.category}
                     </Text>
                   </View>
