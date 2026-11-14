@@ -294,9 +294,9 @@ fn capsule_for(hwnd: isize) -> Option<CapsuleParams> {
 // 而 CSS 的尖端渐隐只能降低 WebView 内容的 alpha，无法遮住窗口边框本身。
 //
 // 因此停靠形态直接清掉窗口边框样式：胶囊容器按面板最大宽度预留
-// （544×446 / 480×504），位置与尺寸由前端事务控制，停靠期只切区域；
+// （544×476 / 480×504），位置与尺寸由前端事务控制，停靠期只切区域；
 // 实测清样式前后 `GetWindowRect` 与 `GetClientRect` 完全一致
-// （505×558 @125%），WebView 内容不位移。
+// （505×595 @125%），WebView 内容不位移。
 // 恢复完整窗时只还原进入停靠前记录的边框位，不碰 `WS_MAXIMIZEBOX` 等由
 // `magnetic.rs` 独立管理的位。
 
@@ -1882,7 +1882,7 @@ mod tests {
             params: CapsuleParams {
                 edge: 0,
                 thickness_css: 56,
-                length_css: 270,
+                length_css: 300,
                 panel_w_css: CAPSULE_PANEL_WIDTH_CSS,
                 expanded: false,
                 tab: false,
@@ -1974,7 +1974,7 @@ mod tests {
             params: CapsuleParams {
                 edge: 2,
                 thickness_css: 56,
-                length_css: 270,
+                length_css: 300,
                 panel_w_css: CAPSULE_PANEL_WIDTH_CSS,
                 expanded: false,
                 tab: false,
@@ -2426,16 +2426,16 @@ mod tests {
     const CAP: CapsuleParams = CapsuleParams {
         edge: 0,
         thickness_css: 56,
-        length_css: 270,
+        length_css: 300,
         panel_w_css: CAPSULE_PANEL_WIDTH_CSS,
         expanded: false,
         tab: false,
     };
     /// 胶囊容器（前端在停靠时把窗口撑到该尺寸；按面板最大宽度 480 预留）：
-    /// 垂直停靠 56+8+480 = 544 × 446（高 = 轨道外框 446 > 面板 440）。
+    /// 垂直停靠 56+8+480 = 544 × 476（高 = 轨道外框 476 > 面板 440）。
     const CONTAINER_W: i32 = 544;
-    const CONTAINER_H: i32 = 446;
-    /// 水平停靠容器：宽 max(轨道外框 446, 面板最大宽 480) = 480，
+    const CONTAINER_H: i32 = 476;
+    /// 水平停靠容器：宽 max(轨道外框 476, 面板最大宽 480) = 480，
     /// 高 56+8+440 = 504。
     const CONTAINER_W_HORIZ: i32 = 480;
     const CONTAINER_H_HORIZ: i32 = 504;
@@ -2560,7 +2560,7 @@ mod tests {
     fn capsule_contract_matches_frontend_constants() {
         // 跨端契约：与 src/lib/capsuleLayout.ts 同一组数字（两端各有单测）
         assert_eq!(CAP.thickness_css, 56);
-        assert_eq!(CAP.length_css, 270);
+        assert_eq!(CAP.length_css, 300);
         assert_eq!(CAPSULE_SHOULDER_CSS, 88);
         assert_eq!(WING_SAMPLES, 18);
         assert_eq!(CAPSULE_PANEL_WIDTH_CSS, 340);
@@ -2569,7 +2569,7 @@ mod tests {
         assert_eq!(CAPSULE_PANEL_HEIGHT_CSS, 440);
         assert_eq!(CAPSULE_GAP_CSS, 8);
         assert_eq!(CAPSULE_PANEL_RADIUS_CSS, 24);
-        // 前端 capsuleContainerSize：垂直 56+8+480 = 544、水平 max(446,480) = 480
+        // 前端 capsuleContainerSize：垂直 56+8+480 = 544、水平 max(476,480) = 480
         assert_eq!(
             CAP.thickness_css + CAPSULE_GAP_CSS + CAPSULE_PANEL_MAX_WIDTH_CSS,
             544
@@ -2597,19 +2597,19 @@ mod tests {
     fn wing_outline_golden_points_match_frontend() {
         // 金标准点位（100%、bottom、inflate=0）：前端 capsuleShape.test.ts 断言同一组
         // 数字。任何一侧改动采样段数/映射/参数都会让这里先红。
-        let (bw, bh, pts) = wing_outline(3, 1.0, 56, 270, 0.0);
-        assert_eq!((bw, bh), (446, 56), "外框 = 平直主体 270 + 两侧肩部 88");
+        let (bw, bh, pts) = wing_outline(3, 1.0, 56, 300, 0.0);
+        assert_eq!((bw, bh), (476, 56), "外框 = 平直主体 300 + 两侧肩部 88");
         assert_eq!(pts.len(), 38, "两侧各 19 个贝塞尔采样点（含端点）");
         let at = |i: usize| (pts[i].0.round() as i32, pts[i].1.round() as i32);
         // 贴边尖端：切线水平，落在下缘（局部 y = 高度）
         assert_eq!(at(0), (0, 56));
-        assert_eq!(at(37), (446, 56));
+        assert_eq!(at(37), (476, 56));
         // 肩部中段（v = 厚度/2）与接近贴边处
         assert_eq!(at(9), (48, 28));
         assert_eq!(at(13), (63, 11));
-        // 平直主体两端：顶边完整 270px
+        // 平直主体两端：顶边完整 300px
         assert_eq!(at(18), (88, 0));
-        assert_eq!(at(19), (358, 0));
+        assert_eq!(at(19), (388, 0));
         // 左右对称：镜像点逐点重合（浮点比较，容差 1e-9）
         for i in 0..pts.len() {
             let a = pts[i];
@@ -2643,15 +2643,15 @@ mod tests {
 
     #[test]
     fn capsule_rail_is_flush_to_dock_side_and_centered() {
-        // 100%：left → 轨道贴窗口左缘、垂直居中、外框 56×446（主体 270 + 两侧肩部 88）
+        // 100%：left → 轨道贴窗口左缘、垂直居中、外框 56×476（主体 300 + 两侧肩部 88）
         let s = capsule_regions(CONTAINER_W, CONTAINER_H, 1.0, &CAP).unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            (0, (446 - 446) / 2, 56, 446)
+            (0, (476 - 476) / 2, 56, 476)
         );
         assert!(s.panel.is_none(), "折叠态不得包含面板区域");
         // 区域多边形含 2px AA 外扩：内侧与两端各多 2px，贴边侧被窗口裁掉
-        assert_eq!(s.bounds(), (0, 0, 58, 446));
+        assert_eq!(s.bounds(), (0, 0, 58, 476));
 
         // right → 贴窗口右缘
         let s = capsule_regions(
@@ -2662,7 +2662,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!((s.rail.x, s.rail.y), (CONTAINER_W - 56, 0));
-        // top → 贴窗口上缘的横向轨道 446×56（x 由容器宽度居中）
+        // top → 贴窗口上缘的横向轨道 476×56（x 由容器宽度居中）
         let s = capsule_regions(
             CONTAINER_W_HORIZ,
             CONTAINER_H_HORIZ,
@@ -2672,7 +2672,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            ((CONTAINER_W_HORIZ - 446) / 2, 0, 446, 56)
+            ((CONTAINER_W_HORIZ - 476) / 2, 0, 476, 56)
         );
         // bottom → 贴窗口下缘
         let s = capsule_regions(
@@ -2684,7 +2684,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (s.rail.x, s.rail.y, s.rail.width, s.rail.height),
-            ((CONTAINER_W_HORIZ - 446) / 2, 504 - 56, 446, 56)
+            ((CONTAINER_W_HORIZ - 476) / 2, 504 - 56, 476, 56)
         );
     }
 
@@ -2700,7 +2700,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!((s.rail.x, s.rail.y), expect_flush, "edge={edge}");
-            assert_eq!((s.rail.width, s.rail.height), (56, 446), "edge={edge}");
+            assert_eq!((s.rail.width, s.rail.height), (56, 476), "edge={edge}");
             let (nx, ny) = s.notch_probe.unwrap();
             assert!(
                 !poly_contains(&s.rail_polygon, nx, ny),
@@ -2708,8 +2708,8 @@ mod tests {
             );
         }
         for (edge, expect_flush) in [
-            (2u8, ((CONTAINER_W_HORIZ - 446) / 2, 0)),
-            (3, ((CONTAINER_W_HORIZ - 446) / 2, 504 - 56)),
+            (2u8, ((CONTAINER_W_HORIZ - 476) / 2, 0)),
+            (3, ((CONTAINER_W_HORIZ - 476) / 2, 504 - 56)),
         ] {
             let s = capsule_regions(
                 CONTAINER_W_HORIZ,
@@ -2719,7 +2719,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!((s.rail.x, s.rail.y), expect_flush, "edge={edge}");
-            assert_eq!((s.rail.width, s.rail.height), (446, 56), "edge={edge}");
+            assert_eq!((s.rail.width, s.rail.height), (476, 56), "edge={edge}");
             let (nx, ny) = s.notch_probe.unwrap();
             assert!(
                 !poly_contains(&s.rail_polygon, nx, ny),
@@ -2839,14 +2839,14 @@ mod tests {
         let p = s.panel.expect("展开态必须有面板区域");
         assert_eq!(
             (p.x, p.y, p.width, p.height),
-            (56 + 8, (446 - 440) / 2, CAPSULE_PANEL_WIDTH_CSS as i32, 440)
+            (56 + 8, (476 - 440) / 2, CAPSULE_PANEL_WIDTH_CSS as i32, 440)
         );
         assert_eq!(
             p.radius, 24,
             "面板区域半径必须与 CSS 24px 一致（减小半径会让角部成为超集，露出圆角外背景）"
         );
         // 联合包围盒 = 整块容器
-        assert_eq!(s.bounds(), (0, 0, 404, 446));
+        assert_eq!(s.bounds(), (0, 0, 404, 476));
         // 间隙中点必须落在区域之外（两块区域不连通）
         let (gx, gy) = s.gap_probe.expect("展开态应有间隙探针");
         assert!(!poly_contains(&s.rail_polygon, gx, gy));
@@ -2993,7 +2993,7 @@ mod tests {
         // 旧容器（404 宽）放不下 480 面板：必须整体失败，而不是把面板裁小
         assert!(capsule_regions(
             404,
-            446,
+            476,
             1.0,
             &CapsuleParams {
                 panel_w_css: CAPSULE_PANEL_MAX_WIDTH_CSS,
@@ -3006,9 +3006,9 @@ mod tests {
 
     #[test]
     fn capsule_region_scales_with_dpi() {
-        // 厚度 56→70→84；沿边外框 = 主体 + 2×肩宽（100%: 270+176=446，
-        // 125%: 338+220=558，150%: 405+264=669）
-        for (scale, t, along) in [(1.0f64, 56i32, 446i32), (1.25, 70, 558), (1.5, 84, 669)] {
+        // 厚度 56→70→84；沿边外框 = 主体 + 2×肩宽（100%: 300+176=476，
+        // 125%: 375+220=595，150%: 450+264=714）
+        for (scale, t, along) in [(1.0f64, 56i32, 476i32), (1.25, 70, 595), (1.5, 84, 714)] {
             let s = capsule_regions(2000, 2000, scale, &CAP).unwrap();
             assert_eq!((s.rail.width, s.rail.height), (t, along), "scale={scale}");
             // 缺角探针在任何 DPI 下都必须落在翼片之外
@@ -3128,7 +3128,7 @@ mod tests {
                 WS_POPUP,
                 -2000,
                 -2000,
-                446,
+                476,
                 504,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -3143,15 +3143,15 @@ mod tests {
             let apply_region = |edge: u8, expanded: bool| -> CapsuleRegionSet {
                 use windows_sys::Win32::Foundation::POINT;
                 use windows_sys::Win32::Graphics::Gdi::{CreatePolygonRgn, WINDING};
-                // 默认 340 面板的最小窗口：垂直 404×446 / 水平 446×504；
-                // 生产容器按最大宽度 480 预留（544×446 / 480×504），这里保留
+                // 默认 340 面板的最小窗口：垂直 404×476 / 水平 476×504；
+                // 生产容器按最大宽度 480 预留（544×476 / 480×504），这里保留
                 // 最小窗口口径以同时覆盖「刚好放下」的边界。
                 let cap = CapsuleParams {
                     edge,
                     expanded,
                     ..CAP
                 };
-                let (w, h) = if edge <= 1 { (404, 446) } else { (446, 504) };
+                let (w, h) = if edge <= 1 { (404, 476) } else { (476, 504) };
                 let set = capsule_regions(w, h, 1.0, &cap).unwrap();
                 let pts: Vec<POINT> = set
                     .rail_polygon
@@ -3183,15 +3183,15 @@ mod tests {
                 set
             };
 
-            // 四边折叠：只有轨道，外框尺寸随方向变化（主体 270 + 两侧肩部 88）
+            // 四边折叠：只有轨道，外框尺寸随方向变化（主体 300 + 两侧肩部 88）
             let left = apply_region(0, false);
-            assert_eq!((left.rail.width, left.rail.height), (56, 446));
+            assert_eq!((left.rail.width, left.rail.height), (56, 476));
             assert!(left.panel.is_none());
             let top = apply_region(2, false);
             assert_eq!(
                 (top.rail.width, top.rail.height),
-                (446, 56),
-                "顶边必须横向 446×56"
+                (476, 56),
+                "顶边必须横向 476×56"
             );
 
             // 四边展开：轨道 + 面板联合区域，间隙处不连通
@@ -3209,9 +3209,9 @@ mod tests {
                 expanded: true,
                 ..CAP
             };
-            assert!(apply_capsule_pass(hwnd as isize, 446, 504, 1.0, cap, false));
+            assert!(apply_capsule_pass(hwnd as isize, 476, 504, 1.0, cap, false));
             assert!(
-                apply_capsule_pass(hwnd as isize, 446, 504, 1.0, cap, false),
+                apply_capsule_pass(hwnd as isize, 476, 504, 1.0, cap, false),
                 "缓存命中后回读校验必须仍然成立"
             );
 
@@ -3440,7 +3440,7 @@ mod tests {
                 -2000,
                 -2000,
                 404,
-                446,
+                476,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),

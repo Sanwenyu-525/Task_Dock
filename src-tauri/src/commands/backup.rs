@@ -131,6 +131,11 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "dev_projects",
     "dev_handoff_packs",
     "dev_acceptance_records",
+    // 项目工作空间（v49）：项目 → 实例/事项 → 任务关联（外键依赖序）。
+    "workspace_projects",
+    "workspace_instances",
+    "workspace_items",
+    "workspace_task_links",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -476,6 +481,34 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     rule!("dev_projects", "devwork", "all", 420, &[], true),
     rule!("dev_handoff_packs", "devwork", "all", 425, &[], true),
     rule!("dev_acceptance_records", "devwork", "all", 430, &[], true),
+    // 项目工作空间（v49）：项目登记、窗口实例、通用事项、任务关联。根目录与
+    // dev_project_id 都是弱引用/路径引用，表内不含外部文件内容；删除工作空间
+    // 只删除本地元数据。恢复顺序：项目 → 实例/事项 → 任务关联。
+    rule!("workspace_projects", "core", "all", 435, &[], true),
+    rule!(
+        "workspace_instances",
+        "core",
+        "all",
+        440,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "workspace_items",
+        "core",
+        "all",
+        445,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "workspace_task_links",
+        "core",
+        "all",
+        450,
+        &["workspace_projects", "tasks"],
+        true
+    ),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -788,6 +821,11 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "dev_projects"
         | "dev_handoff_packs"
         | "dev_acceptance_records"
+        // 项目工作空间（v49）：本地元数据体积小，快速备份全量保存。
+        | "workspace_projects"
+        | "workspace_instances"
+        | "workspace_items"
+        | "workspace_task_links"
         | "voice_bindings" => format!("SELECT * FROM {} ORDER BY rowid", table),
         // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
         "workflow_runs" => format!(

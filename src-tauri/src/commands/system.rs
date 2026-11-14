@@ -182,13 +182,15 @@ pub fn apply_window_radius(app: AppHandle, radius: f64) -> AppResult<bool> {
 /// 的 `WING_*` 是跨端契约（两端单测锁定；修改必须同步）。
 ///
 /// 外框 = 平直主体 `LENGTH` + 两侧肩部 `CAPSULE_SHOULDER_CSS`（88）：
-/// 270 + 2×88 = 446，与 CSS `.cap-v / .cap-h` 的 446px 和 SVG viewBox 一致。
+/// 300 + 2×88 = 476，与 CSS `.cap-v / .cap-h` 的 476px 和 SVG viewBox 一致。
 /// 2026-11-07 由 224（外框 400）扩到 270（外框 446），为第 5 个胶囊分类
-///（规划中心）留出命中区；平直主体加长后，端点仍落在肩部厚度 ≥36px 的区间。
-/// 旧值 300 属于「外扩 26」时代的尺寸，会让 Rust 区域比 CSS 翼片高 38%（可见胶囊
-/// 之外留下一条透明但可点击的命中带）。
+///（规划中心）留出命中区；2026-11-13（P0-01）再扩到 300（外框 476）：底部
+/// 快捷区新增 26px「工作空间」直接入口 + 4px 间距，平直主体同步加长同样的
+/// 30px，因此内容组两端进入肩部的深度仍是 30.5px，既有按钮命中区不变。
+/// 长度只允许与 CSS 翼片同步修改：Rust 区域与 CSS 轮廓必须来自同一组数字，
+/// 否则会出现「可见胶囊之外留下透明但可点击的命中带」或「按钮被裁掉一角」。
 pub const CAPSULE_THICKNESS_CSS: u32 = 56;
-pub const CAPSULE_LENGTH_CSS: u32 = 270;
+pub const CAPSULE_LENGTH_CSS: u32 = 300;
 
 /// 胶囊区域写入的单调序号。前端在每次状态切换时自增并随请求下发；
 /// IPC 命令可能并发执行，迟到的旧请求若先落到 `set_capsule` 会把区域改回旧形状。
@@ -1044,7 +1046,7 @@ mod tests {
     fn capsule_geometry_contract_matches_frontend() {
         // 跨端契约：与 src/lib/capsuleShape.ts / capsuleLayout.ts 同一组数字
         assert_eq!(CAPSULE_THICKNESS_CSS, 56);
-        assert_eq!(CAPSULE_LENGTH_CSS, 270);
+        assert_eq!(CAPSULE_LENGTH_CSS, 300);
         assert_eq!(crate::window_shape::CAPSULE_SHOULDER_CSS, 88);
         for (scale, expect_t) in [(1.0f64, 56i32), (1.25, 70), (1.5, 84), (2.0, 112)] {
             let cap = crate::window_shape::CapsuleParams {
@@ -1060,10 +1062,10 @@ mod tests {
             let set = crate::window_shape::capsule_regions(2000, 1200, scale, &cap).unwrap();
             assert_eq!(set.rail.width, expect_t, "scale={scale}");
             // 主体与肩部**各自**取整后再相加（与 wing_metrics 一致），
-            // 不能先加后乘：125% 下 round(337.5)=338、round(110)=110。
+            // 不能先加后乘：125% 下 round(375)=375、round(110)=110。
             assert_eq!(
                 set.rail.height,
-                (270.0f64 * scale).round() as i32 + 2 * (88.0f64 * scale).round() as i32,
+                (300.0f64 * scale).round() as i32 + 2 * (88.0f64 * scale).round() as i32,
                 "scale={scale}"
             );
             // 区域是多边形而非外框矩形：外框缺角必须在区域之外

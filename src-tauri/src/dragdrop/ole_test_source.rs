@@ -12,7 +12,7 @@
 //! 它**不能**替代真机验收：不覆盖 `RegisterDragDrop` 接管、WebView2 的
 //! 窗口链、真实鼠标的 `DragEnter/DragOver/Drop` 时序。
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use windows::core::{implement, Ref, Result as WinResult, BOOL, HRESULT, PCWSTR};
@@ -29,9 +29,11 @@ use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM
 const E_NOTIMPL: HRESULT = HRESULT(0x8000_4001u32 as i32);
 const E_INVALIDARG: HRESULT = HRESULT(0x8007_0057u32 as i32);
 
-/// `FILEDESCRIPTORW` 单条长度（与 `virtual_files::FILEDESCRIPTORW_LEN` 相同）。
-const FILEDESCRIPTORW_LEN: usize = 620;
+/// `FD_FILESIZE`：`nFileSizeHigh/Low` 有效。
 const FD_FILESIZE: u32 = 0x0000_0040;
+/// `FD_ATTRIBUTES`：目录属性有效。
+const FD_ATTRIBUTES: u32 = 0x0000_0004;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
 
 /// 取一个命名剪贴板格式 id（与生产代码 `format_id` 同源）。
 pub fn registered_id(name: &str) -> u16 {
@@ -52,8 +54,12 @@ enum Payload {
     /// 用于验证生产代码不会把句柄当接口指针解引用。
     BytesWithWrongTymed(Vec<u8>),
     /// **故意**违反 TYMED 契约：按 `TYMED_ISTREAM` 匹配请求，却返回 HGLOBAL。
-    /// 用于验证 `obtain_content` 会核对 `medium.tymed` 而不是盲解 `pstm`。
+    /// 用于验证 `obtain_content` 会核对 `medium.tymed`，并按实际类型读取字节。
     GlobalForStreamRequest(Vec<u8>),
+    /// 合法的空 HGLOBAL（`GlobalSize == 0`）：验证空内容有明确失败码。
+    EmptyGlobal,
+    /// 第一次 `Read` 后把取消标记置位：验证「读到一半被取消」的清理路径。
+    CancelAfterFirstRead(Arc<Vec<u8>>, Arc<AtomicBool>),
 }
 
 #[derive(Clone)]
@@ -68,8 +74,12 @@ impl Entry {
         // 这里表示「参与请求匹配的类型」，不是返回的 medium 声明类型：
         // 两个 Wrong 变体正是要在匹配通过后返回错误的 tymed，用来验证防御分支。
         match self.payload {
-            Payload::Bytes(_) | Payload::BytesWithWrongTymed(_) => TYMED_HGLOBAL.0 as u32,
-            Payload::Stream(_) | Payload::GlobalForStreamRequest(_) => TYMED_ISTREAM.0 as u32,
+            Payload::Bytes(_) | Payload::BytesWithWrongTymed(_) | Payload::EmptyGlobal => {
+                TYMED_HGLOBAL.0 as u32
+            }
+            Payload::Stream(_)
+            | Payload::GlobalForStreamRequest(_)
+            | Payload::CancelAfterFirstRead(..) => TYMED_ISTREAM.0 as u32,
         }
     }
 }
@@ -101,11 +111,35 @@ fn hglobal_medium(bytes: &[u8]) -> STGMEDIUM {
     }
 }
 
+fn stream_medium(stream: IStream) -> STGMEDIUM {
+    STGMEDIUM {
+        tymed: TYMED_ISTREAM.0 as u32,
+        u: STGMEDIUM_0 {
+            pstm: std::mem::ManuallyDrop::new(Some(stream)),
+        },
+        pUnkForRelease: std::mem::ManuallyDrop::new(None),
+    }
+}
+
+/// 合法的空 HGLOBAL：`GlobalSize` 为 0。
+fn empty_global_medium() -> STGMEDIUM {
+    unsafe {
+        let h: HGLOBAL = GlobalAlloc(GMEM_MOVEABLE, 0).expect("GlobalAlloc(0)");
+        STGMEDIUM {
+            tymed: TYMED_HGLOBAL.0 as u32,
+            u: STGMEDIUM_0 { hGlobal: h },
+            pUnkForRelease: std::mem::ManuallyDrop::new(None),
+        }
+    }
+}
+
 /// 内存流：`FileContents` 的最小实现。
 #[implement(IStream)]
 struct TestStream {
     data: Arc<Vec<u8>>,
     pos: AtomicUsize,
+    /// 每读到数据就置位：模拟「读取过程中用户取消」。
+    cancel_after: Option<Arc<AtomicBool>>,
 }
 
 impl ISequentialStream_Impl for TestStream_Impl {
@@ -127,6 +161,11 @@ impl ISequentialStream_Impl for TestStream_Impl {
             }
         }
         self.pos.store(pos + n, Ordering::SeqCst);
+        if n > 0 {
+            if let Some(flag) = &self.cancel_after {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }
         HRESULT(0)
     }
 
@@ -289,20 +328,23 @@ impl IDataObject_Impl for TestDataObject_Impl {
             // 契约违规用例：请求 ISTREAM，却返回 HGLOBAL。
             Payload::GlobalForStreamRequest(bytes) => hglobal_medium(bytes),
             Payload::Bytes(bytes) => hglobal_medium(bytes),
-            Payload::Stream(data) => {
-                let stream: IStream = TestStream {
+            Payload::EmptyGlobal => empty_global_medium(),
+            Payload::Stream(data) => stream_medium(
+                TestStream {
                     data: data.clone(),
                     pos: AtomicUsize::new(0),
+                    cancel_after: None,
                 }
-                .into();
-                STGMEDIUM {
-                    tymed: TYMED_ISTREAM.0 as u32,
-                    u: STGMEDIUM_0 {
-                        pstm: std::mem::ManuallyDrop::new(Some(stream)),
-                    },
-                    pUnkForRelease: std::mem::ManuallyDrop::new(None),
+                .into(),
+            ),
+            Payload::CancelAfterFirstRead(data, flag) => stream_medium(
+                TestStream {
+                    data: data.clone(),
+                    pos: AtomicUsize::new(0),
+                    cancel_after: Some(flag.clone()),
                 }
-            }
+                .into(),
+            ),
         })
     }
 
@@ -424,6 +466,15 @@ pub fn png(bytes: Vec<u8>) -> IDataObject {
     }])
 }
 
+/// 命名 `PNG` 格式存在，但内容是合法空 HGLOBAL（验证错误码不是「超限」）。
+pub fn png_empty() -> IDataObject {
+    object(vec![Entry {
+        cf: registered_id("PNG"),
+        lindex: -1,
+        payload: Payload::EmptyGlobal,
+    }])
+}
+
 /// 与 `CF_UNICODETEXT` 同 id，但故意声明错误的 TYMED。
 pub fn text_with_wrong_tymed(text: &str) -> IDataObject {
     let mut bytes: Vec<u8> = text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
@@ -435,22 +486,41 @@ pub fn text_with_wrong_tymed(text: &str) -> IDataObject {
     }])
 }
 
-fn descriptor(name: &str, size: Option<u64>) -> Vec<u8> {
-    let mut buf = vec![0u8; FILEDESCRIPTORW_LEN];
-    let flags: u32 = 0x0000_0004 | if size.is_some() { FD_FILESIZE } else { 0 };
-    buf[0..4].copy_from_slice(&flags.to_le_bytes());
+/// 用 **Windows SDK 结构本身** 构造一条描述符。
+///
+/// 不复制生产常量、不手算 620/592：`FILEDESCRIPTORW` 的大小与偏移由
+/// `windows` crate 的 `#[repr(C, packed(1))]` 绑定决定。若生产解析器再次
+/// 写错长度，这里产出的仍是真实 ABI 数据，测试会直接失败。
+fn descriptor(name: &str, size: Option<u64>, directory: bool) -> Vec<u8> {
+    use windows::Win32::UI::Shell::FILEDESCRIPTORW;
+
+    let mut fd = FILEDESCRIPTORW::default();
+    fd.dwFlags = FD_ATTRIBUTES | if size.is_some() { FD_FILESIZE } else { 0 };
+    if directory {
+        fd.dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    }
     let (hi, lo) = match size {
         Some(v) => ((v >> 32) as u32, v as u32),
         None => (u32::MAX, u32::MAX),
     };
-    buf[64..68].copy_from_slice(&hi.to_le_bytes());
-    buf[68..72].copy_from_slice(&lo.to_le_bytes());
-    // 文件名偏移 72，最多 260 个 WCHAR。
-    for (i, unit) in name.encode_utf16().take(259).enumerate() {
-        let at = 72 + i * 2;
-        buf[at..at + 2].copy_from_slice(&unit.to_le_bytes());
+    fd.nFileSizeHigh = hi;
+    fd.nFileSizeLow = lo;
+    let mut name_units = [0u16; 260];
+    for (slot, unit) in name_units
+        .iter_mut()
+        .zip(name.encode_utf16().take(259))
+    {
+        *slot = unit;
     }
-    buf
+    fd.cFileName = name_units;
+    // `packed(1)` 的结构没有内部填充，按字节读出的就是磁盘上的 ABI 布局。
+    let raw = unsafe {
+        std::slice::from_raw_parts(
+            &fd as *const FILEDESCRIPTORW as *const u8,
+            std::mem::size_of::<FILEDESCRIPTORW>(),
+        )
+    };
+    raw.to_vec()
 }
 
 /// `FileGroupDescriptorW` + `FileContents`（每项一个 `TYMED_ISTREAM`）。
@@ -460,13 +530,13 @@ pub fn virtual_files(files: &[(String, Vec<u8>)]) -> IDataObject {
 
 /// 同 [`virtual_files`]，但描述符缓冲区尾部额外填充 `extra` 字节。
 ///
-/// 真实来源（尤其 Outlook）常把 HGLOBAL 分配得比 `4 + 620×N` 更大；
+/// 真实来源（尤其 Outlook）常把 HGLOBAL 分配得比 `4 + 592×N` 更大；
 /// 生产代码必须只读头部而不是因为「缓冲区超上限」整块放弃。
 pub fn virtual_files_padded(files: &[(String, Vec<u8>)], extra: usize) -> IDataObject {
     let mut group = vec![0u8; 4];
     group[0..4].copy_from_slice(&(files.len() as u32).to_le_bytes());
     for (name, bytes) in files {
-        group.extend_from_slice(&descriptor(name, Some(bytes.len() as u64)));
+        group.extend_from_slice(&descriptor(name, Some(bytes.len() as u64), false));
     }
     group.extend(std::iter::repeat(0u8).take(extra));
     let mut entries = vec![Entry {
@@ -485,13 +555,283 @@ pub fn virtual_files_padded(files: &[(String, Vec<u8>)], extra: usize) -> IDataO
     object(entries)
 }
 
+/// 多虚拟文件，`FileContents` **全部**以 `TYMED_HGLOBAL` 提供。
+///
+/// 每个索引对应自己的内容：回退路径若丢掉 `lindex`（旧实现传 `-1`），
+/// 读取会直接失败或串到别的文件，测试会立刻发现。
+pub fn virtual_files_hglobal(files: &[(String, Vec<u8>)]) -> IDataObject {
+    let mut entries = vec![Entry {
+        cf: registered_id("FileGroupDescriptorW"),
+        lindex: -1,
+        payload: Payload::Bytes(group_descriptor(files)),
+    }];
+    let contents = registered_id("FileContents");
+    for (i, (_, bytes)) in files.iter().enumerate() {
+        entries.push(Entry {
+            cf: contents,
+            lindex: i as i32,
+            payload: Payload::Bytes(bytes.clone()),
+        });
+    }
+    object(entries)
+}
+
+/// 每个文件分别指定用流还是内存块提供（`streams[i] == true` 表示 IStream）。
+///
+/// 用于验证同一批拖入里「流优先、内存回退」可以共存，且索引一一对应。
+pub fn virtual_files_mixed(files: &[(String, Vec<u8>)], streams: &[bool]) -> IDataObject {
+    let mut entries = vec![Entry {
+        cf: registered_id("FileGroupDescriptorW"),
+        lindex: -1,
+        payload: Payload::Bytes(group_descriptor(files)),
+    }];
+    let contents = registered_id("FileContents");
+    for (i, (_, bytes)) in files.iter().enumerate() {
+        let payload = if streams.get(i).copied().unwrap_or(false) {
+            Payload::Stream(Arc::new(bytes.clone()))
+        } else {
+            Payload::Bytes(bytes.clone())
+        };
+        entries.push(Entry {
+            cf: contents,
+            lindex: i as i32,
+            payload,
+        });
+    }
+    object(entries)
+}
+
+/// 同一索引同时提供 `TYMED_ISTREAM` 与 `TYMED_HGLOBAL`，内容故意不同。
+///
+/// 生产代码必须优先使用流（大文件可流式写盘），不能因为 HGLOBAL 先匹配就退回内存。
+pub fn virtual_files_both(stream: &[u8], global: &[u8]) -> IDataObject {
+    let name = "both.bin".to_string();
+    let files = vec![(name, stream.to_vec())];
+    let contents = registered_id("FileContents");
+    object(vec![
+        Entry {
+            cf: registered_id("FileGroupDescriptorW"),
+            lindex: -1,
+            payload: Payload::Bytes(group_descriptor(&files)),
+        },
+        // 内存块排在前面：`GetData` 按条目顺序匹配，若实现没有优先请求 ISTREAM，
+        // 就会拿到 global-content，测试据此区分。
+        Entry {
+            cf: contents,
+            lindex: 0,
+            payload: Payload::Bytes(global.to_vec()),
+        },
+        Entry {
+            cf: contents,
+            lindex: 0,
+            payload: Payload::Stream(Arc::new(stream.to_vec())),
+        },
+    ])
+}
+
+/// 描述符声明全部文件，但 `FileContents` 只提供前 `provided` 项。
+///
+/// 真实来源（邮件客户端）在部分附件失效时会这样：能读的必须落盘，
+/// 缺索引的那几项必须报 `DRAG_VIRTUAL_INDEX_INVALID`，不能整体失败。
+pub fn virtual_files_partial(files: &[(String, Vec<u8>)], provided: usize) -> IDataObject {
+    let mut entries = vec![Entry {
+        cf: registered_id("FileGroupDescriptorW"),
+        lindex: -1,
+        payload: Payload::Bytes(group_descriptor(files)),
+    }];
+    let contents = registered_id("FileContents");
+    for (i, (_, bytes)) in files.iter().take(provided).enumerate() {
+        entries.push(Entry {
+            cf: contents,
+            lindex: i as i32,
+            payload: Payload::Stream(Arc::new(bytes.clone())),
+        });
+    }
+    object(entries)
+}
+
+/// 单个虚拟文件，内容是合法但为空的 HGLOBAL（`GlobalSize == 0`）。
+pub fn virtual_files_empty(name: &str) -> IDataObject {
+    let mut group = vec![0u8; 4];
+    group[0..4].copy_from_slice(&1u32.to_le_bytes());
+    group.extend_from_slice(&descriptor(name, Some(0), false));
+    object(vec![
+        Entry {
+            cf: registered_id("FileGroupDescriptorW"),
+            lindex: -1,
+            payload: Payload::Bytes(group),
+        },
+        Entry {
+            cf: registered_id("FileContents"),
+            lindex: 0,
+            payload: Payload::EmptyGlobal,
+        },
+    ])
+}
+
+/// 多虚拟文件，`FileContents` 全为 HGLOBAL，且实际块比描述符声明多 `extra` 字节。
+///
+/// 真实来源可能分配更大的缓冲区（对齐/复用）；落盘必须按声明长度截断，
+/// 不能把尾部填充当成文件内容。
+pub fn virtual_files_hglobal_padded(files: &[(String, Vec<u8>)], extra: usize) -> IDataObject {
+    let mut entries = vec![Entry {
+        cf: registered_id("FileGroupDescriptorW"),
+        lindex: -1,
+        payload: Payload::Bytes(group_descriptor(files)),
+    }];
+    let contents = registered_id("FileContents");
+    for (i, (_, bytes)) in files.iter().enumerate() {
+        let mut padded = bytes.clone();
+        padded.extend(std::iter::repeat(0xA5u8).take(extra));
+        entries.push(Entry {
+            cf: contents,
+            lindex: i as i32,
+            payload: Payload::Bytes(padded),
+        });
+    }
+    object(entries)
+}
+
+/// 单个虚拟文件，第一次 `Read` 后置位取消标记（模拟读取中途取消）。
+pub fn virtual_files_cancel_on_first_read(
+    name: &str,
+    bytes: Vec<u8>,
+) -> (IDataObject, Arc<AtomicBool>) {
+    let flag = Arc::new(AtomicBool::new(false));
+    let group = group_descriptor(&[(name.to_string(), bytes.clone())]);
+    let obj = object(vec![
+        Entry {
+            cf: registered_id("FileGroupDescriptorW"),
+            lindex: -1,
+            payload: Payload::Bytes(group),
+        },
+        Entry {
+            cf: registered_id("FileContents"),
+            lindex: 0,
+            payload: Payload::CancelAfterFirstRead(Arc::new(bytes), flag.clone()),
+        },
+    ]);
+    (obj, flag)
+}
+
+/// 构造 `FileGroupDescriptorW` 缓冲区（只用于测试来源）。
+fn group_descriptor(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut group = vec![0u8; 4];
+    group[0..4].copy_from_slice(&(files.len() as u32).to_le_bytes());
+    for (name, bytes) in files {
+        group.extend_from_slice(&descriptor(name, Some(bytes.len() as u64), false));
+    }
+    group
+}
+
+/// 一个原始描述符槽位：用来构造「原始顺序里夹着无效项」的来源。
+///
+/// - `directory = true`：目录项，生产解析器应跳过；
+/// - `name = ""`：空名，生产解析器应跳过；
+/// - `declared`：描述符里声明的大小（可故意超过上限，而 `contents` 仍然提供，
+///   证明生产代码不会去读被跳过项的流）；
+/// - `contents = None`：`FileContents` 不提供该原始索引（部分成功场景）。
+pub struct VirtualSlot {
+    pub name: String,
+    pub directory: bool,
+    pub declared: Option<u64>,
+    pub contents: Option<Vec<u8>>,
+}
+
+impl VirtualSlot {
+    pub fn file(name: &str, bytes: &[u8]) -> Self {
+        Self {
+            name: name.to_string(),
+            directory: false,
+            declared: Some(bytes.len() as u64),
+            contents: Some(bytes.to_vec()),
+        }
+    }
+
+    pub fn directory(name: &str, decoy: &[u8]) -> Self {
+        Self {
+            name: name.to_string(),
+            directory: true,
+            declared: None,
+            contents: Some(decoy.to_vec()),
+        }
+    }
+
+    pub fn empty_name(decoy: &[u8]) -> Self {
+        Self {
+            name: String::new(),
+            directory: false,
+            declared: Some(decoy.len() as u64),
+            contents: Some(decoy.to_vec()),
+        }
+    }
+
+    pub fn missing(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            directory: false,
+            declared: None,
+            contents: None,
+        }
+    }
+
+    pub fn oversize(name: &str, declared: u64, decoy: &[u8]) -> Self {
+        Self {
+            name: name.to_string(),
+            directory: false,
+            declared: Some(declared),
+            contents: Some(decoy.to_vec()),
+        }
+    }
+}
+
+/// 按**原始位置**构造描述符与 `FileContents`。
+///
+/// `FileContents` 的 `lindex` 始终是槽位下标，且被跳过的槽位也可能提供
+/// 内容（诱饵）。生产代码若用过滤后的下标读取，就会读到诱饵/串位。
+pub fn virtual_files_slots(slots: &[VirtualSlot]) -> IDataObject {
+    let mut group = vec![0u8; 4];
+    group[0..4].copy_from_slice(&(slots.len() as u32).to_le_bytes());
+    for slot in slots {
+        let size = slot
+            .declared
+            .or_else(|| slot.contents.as_ref().map(|b| b.len() as u64));
+        group.extend_from_slice(&descriptor(&slot.name, size, slot.directory));
+    }
+    let mut entries = vec![Entry {
+        cf: registered_id("FileGroupDescriptorW"),
+        lindex: -1,
+        payload: Payload::Bytes(group),
+    }];
+    let contents = registered_id("FileContents");
+    for (index, slot) in slots.iter().enumerate() {
+        if let Some(bytes) = &slot.contents {
+            entries.push(Entry {
+                cf: contents,
+                lindex: index as i32,
+                payload: Payload::Stream(Arc::new(bytes.clone())),
+            });
+        }
+    }
+    object(entries)
+}
+
+/// 直接提供一个原始 `FileGroupDescriptorW` 缓冲区（用于构造损坏/截断样本）。
+pub fn virtual_files_raw_group(group: Vec<u8>) -> IDataObject {
+    object(vec![Entry {
+        cf: registered_id("FileGroupDescriptorW"),
+        lindex: -1,
+        payload: Payload::Bytes(group),
+    }])
+}
+
 /// 单个虚拟文件，但 `FileContents` 对 `TYMED_ISTREAM` 请求返回 HGLOBAL。
-/// 真实世界里偶有实现无视 `FORMATETC.tymed`；生产代码必须核对后失败，
-/// 而不是把 HGLOBAL 当 `IStream` 解引用。
+/// 真实世界里偶有实现无视 `FORMATETC.tymed`；生产代码必须核对实际类型后
+/// 按内存块读取，而不是把 HGLOBAL 当 `IStream` 解引用。
 pub fn virtual_files_wrong_tymed(name: &str) -> IDataObject {
     let mut group = vec![0u8; 4];
     group[0..4].copy_from_slice(&1u32.to_le_bytes());
-    group.extend_from_slice(&descriptor(name, Some(4)));
+    group.extend_from_slice(&descriptor(name, Some(4), false));
     let entries = vec![
         Entry {
             cf: registered_id("FileGroupDescriptorW"),

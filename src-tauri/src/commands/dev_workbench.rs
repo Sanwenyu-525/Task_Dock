@@ -57,6 +57,13 @@ pub struct DevHandoffPack {
     /// 敏感扫描结果（JSON 对象字符串），原样保存，由前端解释。
     pub secret_scan: String,
     pub created_at: String,
+    /// v50：该交接包要交给哪个 Agent 会话执行（与 task_agent_links 同一身份口径）。
+    pub agent_source_id: Option<String>,
+    pub agent_session_external_id: Option<String>,
+    /// 读时派生：会话标题（会话被删除时为 None，不落库、不猜测）。
+    pub agent_session_title: Option<String>,
+    /// 读时派生：该 (source, session_external_id) 当前是否仍存在。
+    pub agent_session_available: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -70,6 +77,36 @@ pub struct DevAcceptanceRecord {
     /// 证据路径列表（库内为 JSON 数组字符串，读时解析；损坏行降级为空数组）。
     pub evidence: Vec<String>,
     pub created_at: String,
+    /// v50：本记录针对哪个 Agent 轮次（人工登记时可选标注；历史记录为 None）。
+    pub agent_source_id: Option<String>,
+    pub agent_session_external_id: Option<String>,
+    pub agent_run_external_id: Option<String>,
+}
+
+/// 一个「Agent 已完成、可人工验收」的轮次候选（读时派生，不落库）。
+///
+/// 只从真实关联链取数：任务 → task_agent_links → agent_sessions → agent_runs。
+/// `accepted_*` 有值表示该任务已针对这一轮次登记过验收记录（仍然可以再次登记，
+/// 例如返工后复验；记录只追加）。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DevAgentRunCandidate {
+    pub source_id: String,
+    pub session_external_id: String,
+    /// agent_sessions.id（行 ID，供前端按会话继续查轮次）。
+    pub session_id: String,
+    pub session_title: String,
+    pub session_status: String,
+    /// 关联来源：user（手工关联）| auto（导航目标影子关联）。
+    pub link_origin: String,
+    pub run_external_id: String,
+    pub run_task_title: Option<String>,
+    pub run_status: String,
+    pub ended_at: Option<String>,
+    pub updated_at: String,
+    pub accepted_record_id: Option<String>,
+    pub accepted_verdict: Option<String>,
+    pub accepted_at: Option<String>,
 }
 
 // ── 命令响应包装 ─────────────────────────────────────────────────────
@@ -121,6 +158,13 @@ pub struct DevAcceptanceList {
     pub records: Vec<DevAcceptanceRecord>,
 }
 
+#[derive(Serialize, Debug)]
+pub struct DevAgentRunCandidates {
+    pub runs: Vec<DevAgentRunCandidate>,
+    /// 超出 limit 时为 true：前端如实提示「还有更多」，不静默截断。
+    pub truncated: bool,
+}
+
 // ── 行映射与公共校验 ─────────────────────────────────────────────────
 
 fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<DevProject> {
@@ -136,6 +180,18 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<DevProject> {
     })
 }
 
+/// 交接包读取的公共 SELECT：LEFT JOIN 会话表派生标题与有效性，
+/// 会话/来源被删除时标题为 NULL、available=0（历史版本仍原样保留）。
+const HANDOFF_SELECT: &str = "SELECT p.id, p.task_id, p.title, p.version, p.content_md,
+        p.source_summary, p.secret_scan, p.created_at,
+        p.agent_source_id, p.agent_session_external_id,
+        s.title AS agent_session_title,
+        (s.id IS NOT NULL) AS agent_session_available
+ FROM dev_handoff_packs p
+ LEFT JOIN agent_sessions s
+   ON s.source_id = p.agent_source_id
+  AND s.external_id = p.agent_session_external_id";
+
 fn row_to_handoff(row: &rusqlite::Row<'_>) -> rusqlite::Result<DevHandoffPack> {
     Ok(DevHandoffPack {
         id: row.get("id")?,
@@ -146,6 +202,10 @@ fn row_to_handoff(row: &rusqlite::Row<'_>) -> rusqlite::Result<DevHandoffPack> {
         source_summary: row.get("source_summary")?,
         secret_scan: row.get("secret_scan")?,
         created_at: row.get("created_at")?,
+        agent_source_id: row.get("agent_source_id")?,
+        agent_session_external_id: row.get("agent_session_external_id")?,
+        agent_session_title: row.get("agent_session_title")?,
+        agent_session_available: row.get::<_, i64>("agent_session_available")? != 0,
     })
 }
 
@@ -161,7 +221,45 @@ fn row_to_acceptance(row: &rusqlite::Row<'_>) -> rusqlite::Result<DevAcceptanceR
         summary: row.get("summary")?,
         evidence,
         created_at: row.get("created_at")?,
+        agent_source_id: row.get("agent_source_id")?,
+        agent_session_external_id: row.get("agent_session_external_id")?,
+        agent_run_external_id: row.get("agent_run_external_id")?,
     })
+}
+
+/// Agent 弱引用三元组归一：全空 → 全 None；只给一部分 → Validation。
+///
+/// `require_run=false` 用于交接包（只关联会话，不绑定轮次）。
+/// 这里只做形状校验；「是否真实存在」由各命令按自己的语义再查。
+fn normalize_agent_refs(
+    source_id: Option<String>,
+    session_external_id: Option<String>,
+    run_external_id: Option<String>,
+    require_run: bool,
+) -> AppResult<(Option<String>, Option<String>, Option<String>)> {
+    let norm = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let source = norm(source_id);
+    let session = norm(session_external_id);
+    let run = norm(run_external_id);
+    if source.is_none() && session.is_none() && run.is_none() {
+        return Ok((None, None, None));
+    }
+    let pair_missing = source.is_none() || session.is_none();
+    let run_missing = require_run && run.is_none();
+    if pair_missing || run_missing {
+        return Err(AppError::Validation(if require_run {
+            "Agent 轮次关联必须同时提供 agentSourceId / agentSessionExternalId / agentRunExternalId"
+                .into()
+        } else {
+            "Agent 会话关联必须同时提供 agentSourceId / agentSessionExternalId".into()
+        }));
+    }
+    if !require_run && run.is_some() {
+        return Err(AppError::Validation(
+            "交接包只关联会话，不接受单一轮次字段".into(),
+        ));
+    }
+    Ok((source, session, run))
 }
 
 /// 唯一索引冲突 → Conflict：dev_projects 的 root_path 唯一。
@@ -311,6 +409,9 @@ pub fn dev_project_probe_impl(root_path: String) -> DevGitInfo {
 
 /// 保存交接文档（按版本追加）：version = 同键当前最大版本 + 1。
 /// 版本键：task_id 有值用 task_id；为空用 title（task_id IS NULL AND title = ?）。
+///
+/// v50：可同时登记「交给哪个 Agent 会话」；会话必须真实存在（不以标题猜身份），
+/// 身份口径与 task_agent_links 一致：`(source_id, agent_sessions.external_id)`。
 pub fn dev_handoff_save_impl(
     db: &Db,
     task_id: Option<String>,
@@ -318,6 +419,8 @@ pub fn dev_handoff_save_impl(
     content_md: String,
     source_summary: Option<String>,
     secret_scan: Option<String>,
+    agent_source_id: Option<String>,
+    agent_session_external_id: Option<String>,
 ) -> AppResult<DevHandoffPack> {
     let title = title.trim();
     if title.is_empty() {
@@ -329,6 +432,8 @@ pub fn dev_handoff_save_impl(
         .filter(|s| !s.is_empty());
     let source_summary = normalize_json_object(source_summary, "source_summary")?;
     let secret_scan = normalize_json_object(secret_scan, "secret_scan")?;
+    let (agent_source_id, agent_session_external_id, _) =
+        normalize_agent_refs(agent_source_id, agent_session_external_id, None, false)?;
     let now = now_iso();
     let id = uuid::Uuid::new_v4().to_string();
     db.with_conn(|conn| {
@@ -346,10 +451,35 @@ pub fn dev_handoff_save_impl(
                 |r| r.get(0),
             )?,
         };
+        if let (Some(src), Some(ses)) = (&agent_source_id, &agent_session_external_id) {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE source_id = ?1 AND external_id = ?2)",
+                params![src, ses],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Err(AppError::NotFound(format!(
+                    "Agent 会话不存在：{src}/{ses}"
+                )));
+            }
+        }
         conn.execute(
-            "INSERT INTO dev_handoff_packs (id, task_id, title, version, content_md, source_summary, secret_scan, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id, task_id, title, version, content_md, source_summary, secret_scan, now],
+            "INSERT INTO dev_handoff_packs
+             (id, task_id, title, version, content_md, source_summary, secret_scan, created_at,
+              agent_source_id, agent_session_external_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                id,
+                task_id,
+                title,
+                version,
+                content_md,
+                source_summary,
+                secret_scan,
+                now,
+                agent_source_id,
+                agent_session_external_id
+            ],
         )?;
         Ok(())
     })?;
@@ -370,14 +500,16 @@ pub fn dev_handoff_list_impl(
         .filter(|s| !s.is_empty());
     db.with_read(|conn| {
         let filtered = task_id.is_some();
-        let mut stmt = conn.prepare(if filtered {
-            "SELECT id, task_id, title, version, content_md, source_summary, secret_scan, created_at
-             FROM dev_handoff_packs WHERE task_id = ?1
-             ORDER BY created_at DESC, version DESC LIMIT ?2"
+        let mut stmt = conn.prepare(&if filtered {
+            format!(
+                "{HANDOFF_SELECT} WHERE p.task_id = ?1
+                 ORDER BY p.created_at DESC, p.version DESC LIMIT ?2"
+            )
         } else {
-            "SELECT id, task_id, title, version, content_md, source_summary, secret_scan, created_at
-             FROM dev_handoff_packs
-             ORDER BY created_at DESC, version DESC LIMIT ?1"
+            format!(
+                "{HANDOFF_SELECT}
+                 ORDER BY p.created_at DESC, p.version DESC LIMIT ?1"
+            )
         })?;
         let rows = if let Some(tid) = task_id {
             stmt.query_map(params![tid, limit], row_to_handoff)?
@@ -395,8 +527,7 @@ pub fn dev_handoff_list_impl(
 pub fn dev_handoff_get_impl(db: &Db, id: &str) -> AppResult<DevHandoffPack> {
     db.with_read(|conn| {
         conn.query_row(
-            "SELECT id, task_id, title, version, content_md, source_summary, secret_scan, created_at
-             FROM dev_handoff_packs WHERE id = ?1",
+            &format!("{HANDOFF_SELECT} WHERE p.id = ?1"),
             params![id],
             row_to_handoff,
         )
@@ -432,6 +563,10 @@ pub fn dev_handoff_secret_scan_impl(texts: Vec<String>) -> DevSecretScan {
 
 /// 写入验收记录（只追加）：subject_kind/verdict 命令层先校验，CHECK 兜底。
 /// 不校验任务/规划是否存在：弱关联，失效展示由前端负责。
+///
+/// v50：可标注本次人工验收针对哪个 Agent 轮次。给了三元组就必须真实存在
+/// （来源 + 会话 + 轮次），避免前端拼错身份或伪造「某轮次已验收」。
+/// 记录本身仍然只由用户显式选择结论后写入，Agent 完成事件不会自动落库。
 pub fn dev_acceptance_record_create_impl(
     db: &Db,
     subject_kind: String,
@@ -439,6 +574,9 @@ pub fn dev_acceptance_record_create_impl(
     verdict: String,
     summary: String,
     evidence: Option<Vec<String>>,
+    agent_source_id: Option<String>,
+    agent_session_external_id: Option<String>,
+    agent_run_external_id: Option<String>,
 ) -> AppResult<DevAcceptanceRecord> {
     if !SUBJECT_KINDS.contains(&subject_kind.as_str()) {
         return Err(AppError::Validation(format!(
@@ -458,6 +596,13 @@ pub fn dev_acceptance_record_create_impl(
     if subject_id.is_empty() {
         return Err(AppError::Validation("subject_id 不能为空".into()));
     }
+    let (agent_source_id, agent_session_external_id, agent_run_external_id) =
+        normalize_agent_refs(
+            agent_source_id,
+            agent_session_external_id,
+            agent_run_external_id,
+            true,
+        )?;
     // 空缺补 '[]'，否则序列化为 JSON 数组字符串（列契约：合法 JSON）
     let evidence_json = match evidence {
         None => "[]".to_string(),
@@ -466,10 +611,44 @@ pub fn dev_acceptance_record_create_impl(
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_iso();
     db.with_conn(|conn| {
+        if let (Some(src), Some(ses), Some(run)) = (
+            &agent_source_id,
+            &agent_session_external_id,
+            &agent_run_external_id,
+        ) {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM agent_runs r
+                    JOIN agent_sessions s ON s.id = r.session_id
+                    WHERE s.source_id = ?1 AND s.external_id = ?2
+                      AND r.external_run_id = ?3 AND r.origin = 'real'
+                 )",
+                params![src, ses, run],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Err(AppError::NotFound(format!(
+                    "Agent 轮次不存在：{src}/{ses}/{run}"
+                )));
+            }
+        }
         conn.execute(
-            "INSERT INTO dev_acceptance_records (id, subject_kind, subject_id, verdict, summary, evidence, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, subject_kind, subject_id, verdict, summary, evidence_json, now],
+            "INSERT INTO dev_acceptance_records
+             (id, subject_kind, subject_id, verdict, summary, evidence, created_at,
+              agent_source_id, agent_session_external_id, agent_run_external_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                id,
+                subject_kind,
+                subject_id,
+                verdict,
+                summary,
+                evidence_json,
+                now,
+                agent_source_id,
+                agent_session_external_id,
+                agent_run_external_id
+            ],
         )?;
         Ok(())
     })?;
@@ -481,6 +660,9 @@ pub fn dev_acceptance_record_create_impl(
         summary,
         evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
         created_at: now,
+        agent_source_id,
+        agent_session_external_id,
+        agent_run_external_id,
     })
 }
 
@@ -496,7 +678,8 @@ pub fn dev_acceptance_record_list_impl(
     db.with_read(|conn| {
         // 过滤条件全部是字符串绑定，按出现顺序生成占位符
         let mut binds: Vec<String> = Vec::new();
-        let mut sql = "SELECT id, subject_kind, subject_id, verdict, summary, evidence, created_at
+        let mut sql = "SELECT id, subject_kind, subject_id, verdict, summary, evidence, created_at,
+                              agent_source_id, agent_session_external_id, agent_run_external_id
                        FROM dev_acceptance_records"
             .to_string();
         if let Some(kind) = subject_kind.filter(|s| !s.trim().is_empty()) {
@@ -527,6 +710,102 @@ pub fn dev_acceptance_record_list_impl(
             out.push(r.map_err(AppError::from)?);
         }
         Ok(out)
+    })
+}
+
+// ── Agent 已完成轮次（待人工验收候选）────────────────────────────────
+
+/// 列出「当前任务关联会话里已完成、尚未被同一任务验收记录引用」的 Agent 轮次。
+///
+/// 只读派生，不落库、不自动创建验收记录：
+/// - 关联链：task_agent_links ∪ 本任务交接包绑定的会话（v50）→ agent_sessions
+///   → agent_runs（origin='real'）；
+/// - 只取 `status='completed'`（失败轮次属于问题排查，不进验收候选）；
+/// - 已登记过的轮次仍返回，并带 `accepted_*`，供前端展示「已验收」而不是隐藏；
+/// - 按结束时间倒序，limit 默认 10 / 上限 50，超限 `truncated=true`。
+pub fn dev_acceptance_agent_runs_impl(
+    db: &Db,
+    task_id: String,
+    limit: Option<i64>,
+) -> AppResult<DevAgentRunCandidates> {
+    let task_id = task_id.trim();
+    if task_id.is_empty() {
+        return Err(AppError::Validation("task_id 不能为空".into()));
+    }
+    let limit = limit.unwrap_or(10).clamp(1, 50);
+    db.with_read(|conn| {
+        let mut stmt = conn.prepare(
+            "WITH raw AS (
+                SELECT source_id, session_external_id, MAX(origin) AS origin
+                FROM task_agent_links
+                WHERE task_id = ?1
+                GROUP BY source_id, session_external_id
+                UNION ALL
+                -- v50：交接包已绑定的会话同样属于本任务的执行链（不要求再手工关联）
+                SELECT agent_source_id, agent_session_external_id, 'handoff' AS origin
+                FROM dev_handoff_packs
+                WHERE task_id = ?1
+                  AND agent_source_id IS NOT NULL
+                  AND agent_session_external_id IS NOT NULL
+             ),
+             linked AS (
+                SELECT source_id, session_external_id,
+                       CASE WHEN MAX(origin) = 'user' THEN 'user'
+                            WHEN MAX(origin) = 'handoff' THEN 'handoff'
+                            ELSE 'auto' END AS link_origin
+                FROM raw
+                GROUP BY source_id, session_external_id
+             )
+             SELECT l.source_id, l.session_external_id, l.link_origin,
+                    s.id AS session_id, s.title AS session_title, s.status AS session_status,
+                    r.external_run_id, r.task_title AS run_task_title,
+                    r.status AS run_status, r.ended_at, r.updated_at,
+                    ar.id AS accepted_record_id, ar.verdict AS accepted_verdict,
+                    ar.created_at AS accepted_at
+             FROM linked l
+             JOIN agent_sessions s
+               ON s.source_id = l.source_id AND s.external_id = l.session_external_id
+             JOIN agent_runs r
+               ON r.session_id = s.id AND r.origin = 'real'
+             LEFT JOIN dev_acceptance_records ar
+               ON ar.subject_kind = 'task' AND ar.subject_id = ?1
+              AND ar.agent_source_id = l.source_id
+              AND ar.agent_session_external_id = l.session_external_id
+              AND ar.agent_run_external_id = r.external_run_id
+             WHERE s.origin = 'real'
+               AND r.status = 'completed'
+               AND r.external_run_id IS NOT NULL
+             ORDER BY COALESCE(r.ended_at, r.updated_at) DESC, r.id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![task_id, limit + 1], |r| {
+            Ok(DevAgentRunCandidate {
+                source_id: r.get(0)?,
+                session_external_id: r.get(1)?,
+                link_origin: r.get(2)?,
+                session_id: r.get(3)?,
+                session_title: r.get(4)?,
+                session_status: r.get(5)?,
+                run_external_id: r.get(6)?,
+                run_task_title: r.get(7)?,
+                run_status: r.get(8)?,
+                ended_at: r.get(9)?,
+                updated_at: r.get(10)?,
+                accepted_record_id: r.get(11)?,
+                accepted_verdict: r.get(12)?,
+                accepted_at: r.get(13)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(AppError::from)?);
+        }
+        let truncated = out.len() as i64 > limit;
+        out.truncate(limit as usize);
+        Ok(DevAgentRunCandidates {
+            runs: out,
+            truncated,
+        })
     })
 }
 
@@ -571,9 +850,20 @@ pub fn dev_handoff_save(
     content_md: String,
     source_summary: Option<String>,
     secret_scan: Option<String>,
+    agent_source_id: Option<String>,
+    agent_session_external_id: Option<String>,
 ) -> AppResult<DevHandoffSaved> {
     Ok(DevHandoffSaved {
-        pack: dev_handoff_save_impl(&db, task_id, title, content_md, source_summary, secret_scan)?,
+        pack: dev_handoff_save_impl(
+            &db,
+            task_id,
+            title,
+            content_md,
+            source_summary,
+            secret_scan,
+            agent_source_id,
+            agent_session_external_id,
+        )?,
     })
 }
 
@@ -614,12 +904,32 @@ pub fn dev_acceptance_record_create(
     verdict: String,
     summary: String,
     evidence: Option<Vec<String>>,
+    agent_source_id: Option<String>,
+    agent_session_external_id: Option<String>,
+    agent_run_external_id: Option<String>,
 ) -> AppResult<DevAcceptanceSaved> {
     Ok(DevAcceptanceSaved {
         record: dev_acceptance_record_create_impl(
-            &db, subject_kind, subject_id, verdict, summary, evidence,
+            &db,
+            subject_kind,
+            subject_id,
+            verdict,
+            summary,
+            evidence,
+            agent_source_id,
+            agent_session_external_id,
+            agent_run_external_id,
         )?,
     })
+}
+
+#[tauri::command]
+pub fn dev_acceptance_agent_runs(
+    db: State<'_, Arc<Db>>,
+    task_id: String,
+    limit: Option<i64>,
+) -> AppResult<DevAgentRunCandidates> {
+    dev_acceptance_agent_runs_impl(&db, task_id, limit)
 }
 
 #[tauri::command]
@@ -817,6 +1127,8 @@ mod tests {
                 format!("# {title}"),
                 None,
                 None,
+                None,
+                None,
             )
             .unwrap()
         };
@@ -897,6 +1209,8 @@ mod tests {
             "内容".into(),
             Some("{\"files\": 3}".into()),
             Some("{\"findings\": []}".into()),
+            None,
+            None,
         )
         .unwrap();
         let got = dev_handoff_get_impl(&db, &saved.id).unwrap();
@@ -913,8 +1227,17 @@ mod tests {
     #[test]
     fn handoff_save_rejects_bad_title_and_bad_json_fields() {
         let db = Db::open_in_memory().unwrap();
-        let err = dev_handoff_save_impl(&db, None, "  ".into(), "内容".into(), None, None)
-            .unwrap_err();
+        let err = dev_handoff_save_impl(
+            &db,
+            None,
+            "  ".into(),
+            "内容".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(err.code(), "VALIDATION_ERROR");
         // 非法 JSON / 非对象：写入前报错，不落库
         let err = dev_handoff_save_impl(
@@ -923,6 +1246,8 @@ mod tests {
             "交接".into(),
             "内容".into(),
             Some("not-json".into()),
+            None,
+            None,
             None,
         )
         .unwrap_err();
@@ -934,6 +1259,8 @@ mod tests {
             "内容".into(),
             None,
             Some("[1,2]".into()),
+            None,
+            None,
         )
         .unwrap_err();
         assert_eq!(err.code(), "VALIDATION_ERROR");
@@ -945,6 +1272,8 @@ mod tests {
             "内容".into(),
             Some("  ".into()),
             Some(String::new()),
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(pack.source_summary, "{}");
@@ -977,6 +1306,9 @@ mod tests {
             "pass".into(),
             "核心链路通过".into(),
             Some(vec!["docs/a.md".into(), "docs/b.md".into()]),
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(record.subject_id, "42");
@@ -990,6 +1322,9 @@ mod tests {
             "blocked".into(),
             "阻塞".into(),
             None,
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert!(empty.evidence.is_empty());
@@ -1002,6 +1337,9 @@ mod tests {
             "pass".into(),
             String::new(),
             None,
+            None,
+            None,
+            None,
         )
         .unwrap_err();
         assert_eq!(err.code(), "VALIDATION_ERROR");
@@ -1012,6 +1350,9 @@ mod tests {
             "maybe".into(),
             String::new(),
             None,
+            None,
+            None,
+            None,
         )
         .unwrap_err();
         assert_eq!(err.code(), "VALIDATION_ERROR");
@@ -1021,6 +1362,9 @@ mod tests {
             "  ".into(),
             "pass".into(),
             String::new(),
+            None,
+            None,
+            None,
             None,
         )
         .unwrap_err();
@@ -1109,6 +1453,9 @@ mod tests {
                     (*verdict).into(),
                     String::new(),
                     None,
+                    None,
+                    None,
+                    None,
                 )
                 .unwrap_or_else(|e| panic!("{kind}/{verdict} 必须可写入: {e}"));
             }
@@ -1120,5 +1467,384 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count as usize, SUBJECT_KINDS.len() * VERDICTS.len());
+    }
+
+    /// 真实 Agent 图的最小夹具：来源 / 会话 / 已完成轮次 / 任务 / 用户关联。
+    fn seed_agent_graph(db: &Db, now: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO agent_sources (id, display_name, created_at, updated_at)
+                 VALUES ('src-a', '来源 A', ?1, ?1)",
+                [now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO agent_sessions
+                 (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                 VALUES ('sess-a', 'src-a', 'ext-a', '会话 A', 'idle', ?1, ?1)",
+                [now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO agent_runs
+                 (id, session_id, source_id, external_run_id, task_title, status,
+                  started_at, updated_at, ended_at)
+                 VALUES ('run-a', 'sess-a', 'src-a', 'run-ext-1', '实现登录', 'completed',
+                         ?1, ?1, ?1)",
+                [now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO tasks (id, title, created_at, updated_at)
+                 VALUES ('task-x', '任务 X', ?1, ?1)",
+                [now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO task_agent_links
+                 (id, task_id, source_id, session_external_id, run_external_id, created_at)
+                 VALUES ('link-x', 'task-x', 'src-a', 'ext-a', NULL, ?1)",
+                [now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn handoff_save_links_agent_session_and_derives_availability() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        seed_agent_graph(&db, &now);
+
+        let pack = dev_handoff_save_impl(
+            &db,
+            Some("task-x".into()),
+            "交接".into(),
+            "内容".into(),
+            None,
+            None,
+            Some("src-a".into()),
+            Some("ext-a".into()),
+        )
+        .unwrap();
+        assert_eq!(pack.agent_source_id.as_deref(), Some("src-a"));
+        assert_eq!(pack.agent_session_external_id.as_deref(), Some("ext-a"));
+        assert_eq!(pack.agent_session_title.as_deref(), Some("会话 A"));
+        assert!(pack.agent_session_available);
+
+        // 列表查询同样携带派生字段（不是只写不读）
+        let list = dev_handoff_list_impl(&db, Some("task-x".into()), None).unwrap();
+        assert_eq!(list[0].agent_session_title.as_deref(), Some("会话 A"));
+        assert!(list[0].agent_session_available);
+
+        // 会话被删除：历史版本保留，available=false 且不猜测标题
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM agent_sessions WHERE id = 'sess-a'", [])
+                .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let after = dev_handoff_get_impl(&db, &pack.id).unwrap();
+        assert!(!after.agent_session_available);
+        assert!(after.agent_session_title.is_none());
+        assert_eq!(after.content_md, "内容");
+        assert_eq!(after.agent_session_external_id.as_deref(), Some("ext-a"));
+    }
+
+    #[test]
+    fn handoff_agent_session_requires_complete_pair_and_existing_session() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        seed_agent_graph(&db, &now);
+
+        // 只给 source：形状不完整，写入前拒绝
+        let err = dev_handoff_save_impl(
+            &db,
+            None,
+            "交接".into(),
+            "内容".into(),
+            None,
+            None,
+            Some("src-a".into()),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "VALIDATION_ERROR");
+
+        // 会话不存在：不以标题/前缀猜测身份
+        let err = dev_handoff_save_impl(
+            &db,
+            None,
+            "交接".into(),
+            "内容".into(),
+            None,
+            None,
+            Some("src-a".into()),
+            Some("missing".into()),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+
+        // 失败不落库
+        assert!(dev_handoff_list_impl(&db, None, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn acceptance_records_agent_run_provenance_roundtrip_and_validation() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        seed_agent_graph(&db, &now);
+
+        let rec = dev_acceptance_record_create_impl(
+            &db,
+            "task".into(),
+            "task-x".into(),
+            "pass".into(),
+            "人工核对通过".into(),
+            None,
+            Some("src-a".into()),
+            Some("ext-a".into()),
+            Some("run-ext-1".into()),
+        )
+        .unwrap();
+        assert_eq!(rec.agent_source_id.as_deref(), Some("src-a"));
+        assert_eq!(rec.agent_session_external_id.as_deref(), Some("ext-a"));
+        assert_eq!(rec.agent_run_external_id.as_deref(), Some("run-ext-1"));
+
+        let list = dev_acceptance_record_list_impl(
+            &db,
+            Some("task".into()),
+            Some("task-x".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].agent_run_external_id.as_deref(), Some("run-ext-1"));
+
+        // 轮次不存在 → NOT_FOUND（不伪造「某轮次已验收」）
+        let err = dev_acceptance_record_create_impl(
+            &db,
+            "task".into(),
+            "task-x".into(),
+            "pass".into(),
+            "x".into(),
+            None,
+            Some("src-a".into()),
+            Some("ext-a".into()),
+            Some("missing-run".into()),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "NOT_FOUND");
+
+        // 三元组缺项 → VALIDATION_ERROR
+        let err = dev_acceptance_record_create_impl(
+            &db,
+            "task".into(),
+            "task-x".into(),
+            "pass".into(),
+            "x".into(),
+            None,
+            Some("src-a".into()),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "VALIDATION_ERROR");
+
+        // 不关联轮次的历史写法仍然可用（三个字段全空）
+        let plain = dev_acceptance_record_create_impl(
+            &db,
+            "task".into(),
+            "task-x".into(),
+            "fail".into(),
+            "历史写法".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(plain.agent_run_external_id.is_none());
+    }
+
+    #[test]
+    fn agent_run_candidates_are_task_scoped_completed_only_and_mark_accepted() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        seed_agent_graph(&db, &now);
+
+        // 同会话的 running 轮次与缺 external_run_id 的完成轮次都不进候选
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO agent_runs
+                 (id, session_id, source_id, external_run_id, task_title, status,
+                  started_at, updated_at, ended_at)
+                 VALUES ('run-live', 'sess-a', 'src-a', 'run-ext-live', '进行中', 'running',
+                         ?1, ?1, NULL)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO agent_runs
+                 (id, session_id, source_id, external_run_id, task_title, status,
+                  started_at, updated_at, ended_at)
+                 VALUES ('run-noext', 'sess-a', 'src-a', NULL, '无外部 ID', 'completed',
+                         ?1, ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            // 未关联到任务的会话，即使完成也不属于本任务候选
+            conn.execute(
+                "INSERT INTO agent_sessions
+                 (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                 VALUES ('sess-other', 'src-a', 'ext-other', '无关会话', 'idle', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO agent_runs
+                 (id, session_id, source_id, external_run_id, task_title, status,
+                  started_at, updated_at, ended_at)
+                 VALUES ('run-other', 'sess-other', 'src-a', 'run-ext-other', '无关', 'completed',
+                         ?1, ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let out = dev_acceptance_agent_runs_impl(&db, "task-x".into(), None).unwrap();
+        assert_eq!(out.runs.len(), 1, "只返回本任务关联会话的完成轮次");
+        assert_eq!(out.runs[0].run_external_id, "run-ext-1");
+        assert_eq!(out.runs[0].link_origin, "user");
+        assert!(out.runs[0].accepted_record_id.is_none());
+        assert!(!out.truncated);
+
+        // 人工登记后：同一轮次标记已验收但仍返回（不隐藏历史）
+        dev_acceptance_record_create_impl(
+            &db,
+            "task".into(),
+            "task-x".into(),
+            "pass".into(),
+            "通过".into(),
+            None,
+            Some("src-a".into()),
+            Some("ext-a".into()),
+            Some("run-ext-1".into()),
+        )
+        .unwrap();
+        let accepted = dev_acceptance_agent_runs_impl(&db, "task-x".into(), None).unwrap();
+        assert_eq!(accepted.runs[0].accepted_verdict.as_deref(), Some("pass"));
+        assert!(accepted.runs[0].accepted_record_id.is_some());
+
+        // auto（导航目标影子关联）也作为真实关联链参与，并如实标注 origin
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO task_agent_links
+                 (id, task_id, source_id, session_external_id, run_external_id, origin, created_at)
+                 VALUES ('link-auto', 'task-x', 'src-a', 'ext-other', NULL, 'auto', ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let with_auto = dev_acceptance_agent_runs_impl(&db, "task-x".into(), None).unwrap();
+        assert_eq!(with_auto.runs.len(), 2);
+        let auto = with_auto
+            .runs
+            .iter()
+            .find(|r| r.run_external_id == "run-ext-other")
+            .expect("auto 关联轮次必须出现");
+        assert_eq!(auto.link_origin, "auto");
+
+        // limit 与截断提示
+        let limited = dev_acceptance_agent_runs_impl(&db, "task-x".into(), Some(1)).unwrap();
+        assert_eq!(limited.runs.len(), 1);
+        assert!(limited.truncated, "超过 limit 必须如实标记 truncated");
+
+        // 无关联任务为空；空 task_id 拒绝
+        assert!(dev_acceptance_agent_runs_impl(&db, "task-other".into(), None)
+            .unwrap()
+            .runs
+            .is_empty());
+        let err = dev_acceptance_agent_runs_impl(&db, "  ".into(), None).unwrap_err();
+        assert_eq!(err.code(), "VALIDATION_ERROR");
+    }
+
+    #[test]
+    fn agent_run_candidates_include_handoff_bound_sessions_with_origin() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        // 只建交接包关联、不建 task_agent_links：完成轮次仍应进入候选
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO agent_sources (id, display_name, created_at, updated_at)
+                 VALUES ('src-h', '来源 H', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO agent_sessions
+                 (id, source_id, external_id, title, status, first_seen_at, last_seen_at)
+                 VALUES ('sess-h', 'src-h', 'ext-h', '交接包会话', 'idle', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO agent_runs
+                 (id, session_id, source_id, external_run_id, task_title, status,
+                  started_at, updated_at, ended_at)
+                 VALUES ('run-h', 'sess-h', 'src-h', 'run-ext-h', '交接包执行', 'completed',
+                         ?1, ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO tasks (id, title, created_at, updated_at)
+                 VALUES ('task-h', '任务 H', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let pack = dev_handoff_save_impl(
+            &db,
+            Some("task-h".into()),
+            "交接 H".into(),
+            "内容".into(),
+            None,
+            None,
+            Some("src-h".into()),
+            Some("ext-h".into()),
+        )
+        .unwrap();
+        assert!(pack.agent_session_available);
+
+        let out = dev_acceptance_agent_runs_impl(&db, "task-h".into(), None).unwrap();
+        assert_eq!(out.runs.len(), 1);
+        assert_eq!(out.runs[0].run_external_id, "run-ext-h");
+        assert_eq!(out.runs[0].link_origin, "handoff");
+
+        // 同一会话同时有手工关联时，以 user 为最高优先级（不重复出两行）
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO task_agent_links
+                 (id, task_id, source_id, session_external_id, run_external_id, origin, created_at)
+                 VALUES ('link-h', 'task-h', 'src-h', 'ext-h', NULL, 'user', ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let merged = dev_acceptance_agent_runs_impl(&db, "task-h".into(), None).unwrap();
+        assert_eq!(merged.runs.len(), 1, "同一会话不得重复出两行");
+        assert_eq!(merged.runs[0].link_origin, "user");
     }
 }

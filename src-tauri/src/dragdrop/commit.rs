@@ -29,6 +29,27 @@ use super::payload::{DragPayloadView, PayloadFailure};
 use super::stage;
 use super::{codes, DragDropState, OpPhase, StagedItem, StagedKind};
 
+/// 提交期间把会话目录登记为「活跃」，离开作用域（正常/提前返回/panic）时解除。
+///
+/// 根因：`take_for_commit` 会把会话移出注册表，但目录还要被复制/移动；此时
+/// 新拖入触发的孤儿清扫只认注册表，会把正在复制的目录删掉。
+struct CommitGuard<'a> {
+    state: &'a DragDropState,
+    id: &'a str,
+}
+
+impl<'a> CommitGuard<'a> {
+    fn new(state: &'a DragDropState, id: &'a str) -> Self {
+        Self { state, id }
+    }
+}
+
+impl Drop for CommitGuard<'_> {
+    fn drop(&mut self) {
+        self.state.finish_commit(self.id);
+    }
+}
+
 /// 目录落点拒绝非文件类型时的稳定文案（不含任何来源内容）。
 const DIR_UNSUPPORTED_MSG: &str = 
     "此内容不能直接投递到文件夹：链接与文本不会自动生成文件。请先拖入最近暂存";
@@ -61,13 +82,18 @@ fn take_ready_op(
     };
     if op.snapshot().0 == OpPhase::Reading {
         // 仍在读流：**不**消费会话，让前端重试；此时 take 会把条目吞掉。
-        return Err(AppError::Unavailable(
-            "拖入内容仍在读取，请稍后重试".into(),
-        ));
+        // 前缀稳定码让诊断中心能按码聚合，而不是只看到通用 UNAVAILABLE。
+        return Err(AppError::Unavailable(format!(
+            "{}：拖入内容仍在读取，请稍后重试",
+            super::codes::DRAG_PAYLOAD_PENDING
+        )));
     }
-    state
-        .take_for_commit(operation_id)
-        .ok_or_else(|| AppError::Conflict("该拖入内容已被处理，请勿重复提交".into()))
+    state.take_for_commit(operation_id).ok_or_else(|| {
+        AppError::Conflict(format!(
+            "{}：该拖入内容已被处理，请勿重复提交",
+            super::codes::DRAG_OPERATION_EXPIRED
+        ))
+    })
 }
 
 /// 提交到「最近暂存」。
@@ -111,6 +137,7 @@ pub(crate) fn commit_to_shelf_with(
         )));
     }
     let op = take_ready_op(drop_state, operation_id)?;
+    let _commit = CommitGuard::new(drop_state, &op.id);
     let (phase, items, failures, view) = op.snapshot();
     let kind = view
         .as_ref()
@@ -208,6 +235,7 @@ pub fn commit_to_directory(
     batch_id: &str,
 ) -> AppResult<DropReport> {
     let op = take_ready_op(drop_state, operation_id)?;
+    let _commit = CommitGuard::new(drop_state, &op.id);
     let (phase, items, _failures, view) = op.snapshot();
 
     let allow = view

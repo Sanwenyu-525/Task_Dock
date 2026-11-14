@@ -8,7 +8,11 @@
 //!
 //! 生命周期与线程模型（本模块最容易出错的地方）：
 //! - 安装在主线程（tao 已 `OleInitialize`），WebView 创建完成后；
-//!   安装失败**不撤销** wry 的注册 → 退化为「只能拖入本地路径」，与改造前一致；
+//!   OLE 每个窗口只允许一个 drop target，接管必须先 `RevokeDragDrop` 再
+//!   `RegisterDragDrop`，因此**注册失败的窗口无法自动恢复 wry 的处理器**：
+//!   这是平台限制（OLE 没有取回旧处理器的 API），不是 fail-safe。实现会重试一次、
+//!   如实计数、写 `DRAG_NATIVE_BRIDGE_PARTIAL`/`DRAG_NATIVE_BRIDGE_FAILED` 诊断，
+//!   并保留撤销失败的接口对象不释放；
 //! - `IDropTarget` 回调由 COM 编组到 STA（主线程），回调里只做**廉价操作**：
 //!   枚举格式 + 有界读 HGLOBAL（文本/HTML/URL/PNG/DIB 头）；
 //! - `GetData` 必须在 `Drop` 返回前完成（OLE 契约：数据对象只在拖放调用内有效）。
@@ -20,7 +24,7 @@
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
@@ -28,7 +32,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, EventTarget};
 use windows::core::{implement, Interface, Ref, BOOL, GUID, PCWSTR};
-use windows::Win32::Foundation::{DV_E_FORMATETC, HWND, LPARAM, POINT, POINTL};
+use windows::Win32::Foundation::{DV_E_FORMATETC, DV_E_LINDEX, HWND, LPARAM, POINT, POINTL};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, IDataObject, IGlobalInterfaceTable, IStream,
@@ -53,23 +57,35 @@ use crate::dragdrop::codes;
 use crate::dragdrop::names::sanitize_file_name;
 use crate::dragdrop::payload::{DragPayloadView, DragProbe, PayloadFailure};
 use crate::dragdrop::stage;
-use crate::dragdrop::virtual_files::{parse_file_group_descriptor_w, DescError};
+use crate::dragdrop::virtual_files::{
+    parse_file_group_descriptor_w, DescError, FILEDESCRIPTORW_LEN,
+};
 use crate::dragdrop::{
     DragDropState, StagedItem, StagedKind, EVENT_ACCEPTED, EVENT_PAYLOAD, EVENT_PROBE,
-    MAX_HTML_BYTES, MAX_IMAGE_BYTES, MAX_ITEMS, MAX_TEXT_BYTES, MAX_VIRTUAL_FILE_BYTES,
-    MAX_VIRTUAL_TOTAL_BYTES, OVER_THROTTLE,
+    MAX_HTML_BYTES, MAX_IMAGE_BYTES, MAX_ITEMS, MAX_MEMORY_CONTENT_BYTES,
+    MAX_MEMORY_TOTAL_BYTES, MAX_TEXT_BYTES, MAX_VIRTUAL_FILE_BYTES, MAX_VIRTUAL_TOTAL_BYTES,
+    OVER_THROTTLE,
 };
 
 // ── 全局状态 ───────────────────────────────────────────────
 
 /// 登记成功注册的窗口数（>0 表示原生桥生效）。
 static INSTALLED: AtomicUsize = AtomicUsize::new(0);
+/// 注册失败的窗口数（顶层与子窗口合计）。
+///
+/// 单独计数而不并入 `INSTALLED`：顶层成功、WebView 子窗口失败时桥仍然
+/// `active`，但鼠标下命中的窗口可能仍由 wry 的路径处理器接管——必须让
+/// 状态与诊断如实暴露「部分接管」。
+static FAILED: AtomicUsize = AtomicUsize::new(0);
 
-// 已注册的 `IDropTarget` 必须活到进程结束：COM 只持有裸接口指针。
+// 已注册的 `IDropTarget` 必须活到卸载/进程退出：COM 只持有裸接口指针。
 // 用 thread_local 而不是 static：安装/卸载只发生在主线程，也避免把
 // 非 Send 的 COM 指针放进全局表。
+//
+// 句柄与接口成对保存：撤销成功才释放接口；撤销失败（窗口已销毁/句柄异常）
+// 时保留对象，绝不制造悬空指针。
 thread_local! {
-    static TARGETS: RefCell<Vec<IDropTarget>> = const { RefCell::new(Vec::new()) };
+    static TARGETS: RefCell<Vec<(HWND, IDropTarget)>> = const { RefCell::new(Vec::new()) };
 }
 
 struct Bridge {
@@ -104,6 +120,11 @@ pub fn installed_windows() -> usize {
     INSTALLED.load(Ordering::SeqCst)
 }
 
+/// 注册失败的窗口数（`installed_windows() > 0 && failed_windows() > 0` 即部分接管）。
+pub fn failed_windows() -> usize {
+    FAILED.load(Ordering::SeqCst)
+}
+
 fn bridge() -> Option<(AppHandle, String, Arc<DragDropState>, isize)> {
     let guard = BRIDGE.lock().unwrap_or_else(|e| e.into_inner());
     guard
@@ -120,17 +141,122 @@ fn point_of(hwnd: HWND, pt: &POINTL) -> Option<PointPx> {
     Some(PointPx { x: p.x, y: p.y })
 }
 
+/// 安装结果：**分别**记录真实接管情况。
+///
+/// 只返回「装了几个窗口」不够：顶层成功、WebView 子窗口全失败时，鼠标下命中的
+/// 仍是 wry 的路径专用处理器。失败数必须单独暴露，不能把「部分接管」说成成功。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InstallReport {
+    pub total: usize,
+    pub installed: usize,
+    pub failed: usize,
+    /// 首次注册失败、重试后成功的窗口数。
+    pub recovered: usize,
+    /// 顶层窗口是否被本桥接管。
+    pub top_level_ok: bool,
+}
+
+impl InstallReport {
+    /// 部分接管：有窗口成功、也有窗口失败。
+    pub fn partial(&self) -> bool {
+        self.installed > 0 && self.failed > 0
+    }
+}
+
+/// 一个待接管的窗口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TargetSlot {
+    hwnd: HWND,
+    top_level: bool,
+}
+
+/// 顶层窗口 + 全部子窗口（顶层在首位）。
+///
+/// WebView2 会在导航/加载过程中创建子窗口，所以每次安装都重新枚举，
+/// 不使用缓存。
+fn collect_targets(hwnd: HWND) -> Vec<TargetSlot> {
+    let mut slots = vec![TargetSlot {
+        hwnd,
+        top_level: true,
+    }];
+    let mut collected: Vec<HWND> = Vec::new();
+    unsafe {
+        let ptr = &mut collected as *mut Vec<HWND>;
+        let _ = EnumChildWindows(Some(hwnd), Some(enum_child), LPARAM(ptr as isize));
+    }
+    for child in collected {
+        if child == hwnd {
+            continue;
+        }
+        slots.push(TargetSlot {
+            hwnd: child,
+            top_level: false,
+        });
+    }
+    slots
+}
+
+/// 逐槽注册（纯逻辑，注册动作由调用方注入，便于测试失败分支）。
+///
+/// 失败后重试一次：真实环境里最常见的失败是「刚撤销/刚创建」的时序竞争。
+/// 重试仍失败则如实计入 `failed`——绝不把失败窗口算进 `installed`。
+/// OLE 没有「取回上一个处理器」的 API，因此撤销后无法恢复 wry 的对象；
+/// 这一点是平台限制，只能在报告与诊断中如实说明，不能声称 fail-safe。
+fn install_slots(
+    slots: &[TargetSlot],
+    mut register: impl FnMut(&TargetSlot) -> Result<(), String>,
+) -> (InstallReport, Option<String>) {
+    let mut report = InstallReport {
+        total: slots.len(),
+        ..Default::default()
+    };
+    let mut last_error: Option<String> = None;
+    for slot in slots {
+        match register(slot) {
+            Ok(()) => {
+                report.installed += 1;
+                if slot.top_level {
+                    report.top_level_ok = true;
+                }
+            }
+            Err(_first) => match register(slot) {
+                Ok(()) => {
+                    report.installed += 1;
+                    report.recovered += 1;
+                    if slot.top_level {
+                        report.top_level_ok = true;
+                    }
+                }
+                Err(second) => {
+                    report.failed += 1;
+                    last_error = Some(second);
+                }
+            },
+        }
+    }
+    (report, last_error)
+}
+
 /// 安装原生接收桥：接管顶层窗口与全部子窗口的 `IDropTarget`。
 ///
-/// 返回登记成功的窗口数（≥1 即可用）。失败时把桥状态还原为「未安装」，
-/// **不撤销** wry 的注册，行为退化为「只能接收本地路径」。
+/// 返回逐窗口的真实接管结果。全部失败时把桥状态还原为「未安装」并返回错误；
+/// 部分失败时桥仍然可用，但会写一条 `DRAG_NATIVE_BRIDGE_PARTIAL` 诊断并暴露
+/// 失败窗口数。
+///
+/// **平台限制**：接管必须先撤销原处理器，注册失败的窗口无法恢复 wry 的处理器
+/// （OLE 没有取回 API）。因此这里不声称 fail-safe，只保证：重试一次、如实计数、
+/// 不把失败窗口算作成功、不释放撤销失败的接口对象。
+///
+/// 重复安装是安全的：先撤销上一次的注册（OLE 每窗口只允许一个 drop target）。
 pub fn install(
     app: &AppHandle,
     label: &str,
     hwnd: isize,
     state: Arc<DragDropState>,
-) -> Result<usize, String> {
+) -> Result<InstallReport, String> {
     let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+    // 重复安装：先撤干净，否则 RegisterDragDrop 会因为已有处理器而全部失败。
+    uninstall_registered();
     {
         let mut guard = BRIDGE.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(Bridge {
@@ -141,42 +267,63 @@ pub fn install(
         });
     }
 
-    let mut targets: Vec<HWND> = vec![hwnd];
-    // 子窗口（WebView2 的宿主窗口）也要接管：wry 就在这些窗口上注册，
-    // 鼠标下命中的是窗口链里最内层那个。
-    unsafe {
-        let mut collected: Vec<HWND> = Vec::new();
-        let ptr = &mut collected as *mut Vec<HWND>;
-        let _ = EnumChildWindows(Some(hwnd), Some(enum_child), LPARAM(ptr as isize));
-        targets.extend(collected);
-    }
-
-    let mut installed = 0usize;
-    let mut last_error: Option<String> = None;
-    for target_hwnd in targets {
+    let slots = collect_targets(hwnd);
+    let mut registered: Vec<(HWND, IDropTarget)> = Vec::new();
+    let (report, last_error) = install_slots(&slots, |slot| {
         let target: IDropTarget = BridgeTarget.into();
-        // 先撤销：wry 或其他组件可能已注册；撤销失败说明本来就没注册，继续即可。
-        let revoked = unsafe { RevokeDragDrop(target_hwnd) };
-        match unsafe { RegisterDragDrop(target_hwnd, &target) } {
+        // 撤销 wry 或其他组件的处理器；撤销失败说明本来就没注册，继续即可。
+        let revoked = unsafe { RevokeDragDrop(slot.hwnd) };
+        match unsafe { RegisterDragDrop(slot.hwnd, &target) } {
             Ok(()) => {
-                installed += 1;
-                TARGETS.with(|list| list.borrow_mut().push(target));
+                registered.push((slot.hwnd, target));
+                // 不记录 HWND：句柄属于运行时身份，匿名诊断只需层级与计数。
                 tracing::debug!(
-                    hwnd = target_hwnd.0 as isize,
+                    top_level = slot.top_level,
                     revoked = revoked.is_ok(),
                     "拖入接收已挂接"
                 );
+                Ok(())
             }
-            Err(e) => last_error = Some(format!("{e}")),
+            Err(e) => Err(format!("{e}")),
         }
-    }
+    });
 
-    INSTALLED.store(installed, Ordering::SeqCst);
-    if installed == 0 {
+    INSTALLED.store(report.installed, Ordering::SeqCst);
+    FAILED.store(report.failed, Ordering::SeqCst);
+    if report.installed == 0 {
         *BRIDGE.lock().unwrap_or_else(|e| e.into_inner()) = None;
         return Err(last_error.unwrap_or_else(|| "没有可注册的窗口".into()));
     }
-    Ok(installed)
+    TARGETS.with(|list| list.borrow_mut().extend(registered));
+    if report.partial() {
+        report_install_partial(&report);
+    }
+    Ok(report)
+}
+
+/// 撤销本进程登记过的全部拖入接管（只在安装线程/主线程调用）。
+///
+/// 幂等：列表里的项撤销成功后即被移除；撤销失败的项保留，避免在可能仍被
+/// COM 引用的窗口上释放接口。`uninstall_registered` 不会触碰 `BRIDGE`，
+/// 供 `install` 的重复安装复用。
+fn uninstall_registered() {
+    TARGETS.with(|list| {
+        let mut list = list.borrow_mut();
+        // retain 的谓词返回 true 表示「保留」：只有撤销失败才保留。
+        list.retain(|(hwnd, _)| unsafe { RevokeDragDrop(*hwnd) }.is_err());
+    });
+    INSTALLED.store(0, Ordering::SeqCst);
+    FAILED.store(0, Ordering::SeqCst);
+}
+
+/// 窗口销毁/程序退出时解除接管。
+///
+/// 关闭程序本身会由系统回收注册；这里显式撤销是为了「窗口销毁后在进程内
+/// 重建」的场景不留下指向已销毁窗口的注册。对已销毁句柄调用只会返回
+/// `DRAGDROP_E_INVALIDHWND`，不会崩溃。
+pub fn uninstall() {
+    uninstall_registered();
+    *BRIDGE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 unsafe extern "system" fn enum_child(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -636,11 +783,15 @@ fn probe_facts(obj: &IDataObject, depth: ProbeDepth) -> DragFacts {
     if formats.iter().any(|(id, _)| *id == CF_HDROP.0) {
         facts.hdrop_paths = read_hdrop(obj).unwrap_or_default();
     }
-    if formats.iter().any(|(_, n)| {
-        n.eq_ignore_ascii_case("FileGroupDescriptorW")
-            || n.eq_ignore_ascii_case("FileGroupDescriptor")
-    }) {
+    let has_w_descriptor = formats
+        .iter()
+        .any(|(_, n)| n.eq_ignore_ascii_case("FileGroupDescriptorW"));
+    let has_ansi_descriptor = formats
+        .iter()
+        .any(|(_, n)| n.eq_ignore_ascii_case("FileGroupDescriptor"));
+    if has_w_descriptor || has_ansi_descriptor {
         facts.file_descriptor_count = read_descriptor_count(obj, &formats);
+        facts.has_ansi_file_descriptor = has_ansi_descriptor && !has_w_descriptor;
     }
     if formats
         .iter()
@@ -685,57 +836,105 @@ fn probe_facts(obj: &IDataObject, depth: ProbeDepth) -> DragFacts {
 
 // ── 有界读取 ───────────────────────────────────────────────
 
+/// `TYMED_HGLOBAL` 读取失败的分类。
+///
+/// 调用方要据此给出**准确**的错误码：拿不到索引（`Unavailable`）与
+/// 内容超限（`TooLarge`）对用户是两件不同的事。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HgError {
+    /// 来源没有提供该格式/索引（`DV_E_FORMATETC`）。
+    Unavailable,
+    /// 来源返回的 TYMED 与请求不符；不能安全释放，直接拒绝。
+    WrongTymed,
+    /// 数据超过调用方给定的内存上限。
+    TooLarge,
+    /// 内容为空或无法锁定。
+    Empty,
+    /// `GetData` 失败于「格式/索引之外」的原因（OOM、存储错误等）。
+    Failed,
+}
+
+/// `GetData` 是否在说「没有这个格式/索引」。
+///
+/// `DV_E_LINDEX` 也是同一语义：来源有该格式但没有这个序号。其它错误
+/// （如 `E_OUTOFMEMORY`）必须按读取失败处理，不能误报成「来源缺索引」。
+fn is_missing_format(code: windows::core::HRESULT) -> bool {
+    code == DV_E_FORMATETC || code == DV_E_LINDEX
+}
+
 /// 读一个 `TYMED_HGLOBAL` 格式的原始字节；超过 `cap` 直接放弃（不截断，
 /// 截断的图片/文件比没有更危险）。
 fn read_hglobal(obj: &IDataObject, cf: u16, cap: usize) -> Option<Vec<u8>> {
+    // 普通格式（文本/HTML/图片）的 `lindex` 固定为 -1：它不是多条目格式。
+    unsafe { read_hglobal_index(obj, cf, -1, cap).ok() }
+}
+
+/// 带索引的 `TYMED_HGLOBAL` 读取。
+///
+/// `FileContents` 是**多条目格式**：`FORMATETC.lindex` 就是虚拟文件在
+/// `FileGroupDescriptorW` 里的序号。用 `-1` 去要第 N 个文件会拿到
+/// `DV_E_FORMATETC`（或来源的「全部内容」），因此回退路径必须与流路径使用
+/// **同一个** `index`。
+unsafe fn read_hglobal_index(
+    obj: &IDataObject,
+    cf: u16,
+    index: i32,
+    cap: usize,
+) -> Result<Vec<u8>, HgError> {
     let fmt = FORMATETC {
         cfFormat: cf,
         ptd: std::ptr::null_mut(),
         dwAspect: DVASPECT_CONTENT.0,
-        lindex: -1,
+        lindex: index,
         tymed: TYMED_HGLOBAL.0 as u32,
     };
-    unsafe {
-        let mut medium = match obj.GetData(&fmt) {
-            Ok(m) => m,
-            // 来源没提供这个格式（DV_E_FORMATETC）是正常情况，不算错误。
-            Err(e) if e.code() == DV_E_FORMATETC => return None,
-            Err(_) => return None,
-        };
-        // `GetData` 成功不等于返回的就是请求的 TYMED：OLE 允许来源忽略请求
-        // （个别邮件客户端/浏览器扩展会这么做）。此时 `u` 联合体里不是 HGLOBAL，
-        // 直接读等同于拿句柄当内存指针——必须先核对。
-        //
-        // 核对失败时**不能**调用 `ReleaseStgMedium`：它按 `medium.tymed` 释放，
-        // 而类型已被来源谎报，释放动作本身就可能解引用错误指针并崩溃
-        // （实测：把 HGLOBAL 谎报成 ISTREAM 会在 ReleaseStgMedium 里 AV）。
-        // 这里选择拒绝并泄漏这一个异常 medium：拖入回调崩溃的代价远大于一次泄漏，
-        // 且这类来源本身违反 OLE 契约。
-        if medium.tymed != TYMED_HGLOBAL.0 as u32 {
-            return None;
-        }
-        let h = medium.u.hGlobal;
-        let size = GlobalSize(h);
-        if size == 0 || size > cap {
-            ReleaseStgMedium(&mut medium);
-            return None;
-        }
-        let ptr = GlobalLock(h);
-        if ptr.is_null() {
-            ReleaseStgMedium(&mut medium);
-            return None;
-        }
-        let out = std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
-        let _ = GlobalUnlock(h);
+    let mut medium = match obj.GetData(&fmt) {
+        Ok(m) => m,
+        // 来源没提供这个格式/索引是正常情况；其它错误是真正的读取失败。
+        Err(e) if is_missing_format(e.code()) => return Err(HgError::Unavailable),
+        Err(_) => return Err(HgError::Failed),
+    };
+    // `GetData` 成功不等于返回的就是请求的 TYMED：OLE 允许来源忽略请求
+    // （个别邮件客户端/浏览器扩展会这么做）。此时 `u` 联合体里不是 HGLOBAL，
+    // 直接读等同于拿句柄当内存指针——必须先核对。
+    //
+    // 核对失败时**不能**调用 `ReleaseStgMedium`：它按 `medium.tymed` 释放，
+    // 而类型可能被来源谎报，释放动作本身就可能解引用错误指针并崩溃
+    // （实测：把 HGLOBAL 谎报成 ISTREAM 会在 ReleaseStgMedium 里 AV）。
+    // 这里选择拒绝并泄漏这一个异常 medium：拖入回调崩溃的代价远大于一次泄漏，
+    // 且这类来源本身违反 OLE 契约。
+    if medium.tymed != TYMED_HGLOBAL.0 as u32 {
+        return Err(HgError::WrongTymed);
+    }
+    let h = medium.u.hGlobal;
+    let size = GlobalSize(h);
+    if size == 0 {
         ReleaseStgMedium(&mut medium);
-        Some(out)
+        return Err(HgError::Empty);
+    }
+    if size > cap {
+        ReleaseStgMedium(&mut medium);
+        return Err(HgError::TooLarge);
+    }
+    let ptr = GlobalLock(h);
+    if ptr.is_null() {
+        ReleaseStgMedium(&mut medium);
+        return Err(HgError::Empty);
+    }
+    let out = std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
+    let _ = GlobalUnlock(h);
+    ReleaseStgMedium(&mut medium);
+    if out.is_empty() {
+        Err(HgError::Empty)
+    } else {
+        Ok(out)
     }
 }
 
 /// 同 [`read_hglobal`]，但只取前 `cap` 字节（允许来源分配得比实际数据大）。
 ///
 /// 只给「读头部即可判定」的结构使用：`FileGroupDescriptorW` 的缓冲区大小由
-/// 来源决定，常见实现会一次分配整块内存（4 + 620×N）或对齐到更大容量；
+/// 来源决定，常见实现会一次分配整块内存（4 + 592×N）或对齐到更大容量；
 /// 若按「超过上限就整块放弃」，描述符会在分类阶段被判成「没有虚拟文件」，
 /// 附件随即被同批的 HTML/文本旁路格式顶替——静默丢内容。这里只读头部，
 /// 解析器仍会按实际长度报 `Truncated`/`TooMany`。
@@ -907,6 +1106,9 @@ fn parse_hdrop_bytes(raw: &[u8]) -> Vec<String> {
 }
 
 /// 描述符数量：只解析头部，供 `enter` 探测用。
+///
+/// 只读 4 字节数量头：`DragOver` 每次都会走到这里，没必要为计数复制整组描述符
+/// （完整缓冲区由 `collect_virtual` 在 Drop 阶段按 `4 + 592×N` 读取）。
 fn read_descriptor_count(obj: &IDataObject, formats: &[(u16, String)]) -> usize {
     let Some(id) = formats
         .iter()
@@ -915,12 +1117,33 @@ fn read_descriptor_count(obj: &IDataObject, formats: &[(u16, String)]) -> usize 
     else {
         return 0;
     };
-    match read_hglobal_prefix(obj, id, 4 + MAX_ITEMS * 620) {
+    match read_hglobal_prefix(obj, id, 4) {
         Some(raw) if raw.len() >= 4 => {
-            u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize
+            // 只用于提示的计数：恶意/损坏头可能给出 u32::MAX，先按项目上限收敛，
+            // 避免进入/悬停时界面出现荒谬数字；Drop 阶段仍会按 TooMany 明确拒绝。
+            (u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize).min(MAX_ITEMS)
         }
         _ => 0,
     }
+}
+
+/// 图片 HGLOBAL 读取失败 → 稳定码。
+///
+/// 旧实现把所有失败都映射成 `DRAG_SIZE_LIMIT_EXCEEDED`：来源返回空块/TYMED
+/// 违约时，用户会看到「超过大小上限」这种错误解释。现在按原因区分。
+fn image_read_error(error: HgError) -> &'static str {
+    match error {
+        HgError::TooLarge => codes::DRAG_SIZE_LIMIT_EXCEEDED,
+        HgError::WrongTymed => codes::DRAG_PAYLOAD_INVALID,
+        HgError::Unavailable | HgError::Empty | HgError::Failed => {
+            codes::DRAG_NO_READABLE_CONTENT
+        }
+    }
+}
+
+/// 读图片格式（`lindex=-1`）并保留失败原因。
+fn read_image_hglobal(obj: &IDataObject, cf: u16, cap: usize) -> Result<Vec<u8>, HgError> {
+    unsafe { read_hglobal_index(obj, cf, -1, cap) }
 }
 
 /// Drop 阶段读取图片字节并统一转 PNG。
@@ -933,8 +1156,8 @@ fn read_image(
             let id = format_id("PNG")
                 .or_else(|| format_id("image/png"))
                 .ok_or(codes::DRAG_FORMAT_UNSUPPORTED)?;
-            let raw = read_hglobal(obj, id as u16, MAX_IMAGE_BYTES as usize)
-                .ok_or(codes::DRAG_SIZE_LIMIT_EXCEEDED)?;
+            let raw = read_image_hglobal(obj, id as u16, MAX_IMAGE_BYTES as usize)
+                .map_err(image_read_error)?;
             // 真正解码一遍：魔数、MIME、尺寸、数据完整性都在这一步被验证。
             let (rgba, w, h) =
                 decode_png_rgba(&raw).map_err(|_| codes::DRAG_IMAGE_DECODE_FAILED)?;
@@ -945,10 +1168,13 @@ fn read_image(
             Ok((png, w, h))
         }
         ImageSource::Dib => {
-            // DIBV5 优先（带 alpha），退回 CF_DIB。
-            let raw = read_hglobal(obj, 17, MAX_IMAGE_BYTES as usize)
-                .or_else(|| read_hglobal(obj, 8, MAX_IMAGE_BYTES as usize))
-                .ok_or(codes::DRAG_SIZE_LIMIT_EXCEEDED)?;
+            // DIBV5 优先（带 alpha），退回 CF_DIB。第一个格式不可用时才尝试第二个；
+            // 两个都失败时保留第二个（更通用）的准确原因。
+            let raw = match read_image_hglobal(obj, 17, MAX_IMAGE_BYTES as usize) {
+                Ok(raw) => raw,
+                Err(_) => read_image_hglobal(obj, 8, MAX_IMAGE_BYTES as usize)
+                    .map_err(image_read_error)?,
+            };
             let (rgba, w, h) = dib_to_rgba(&raw).ok_or(codes::DRAG_IMAGE_DECODE_FAILED)?;
             if !within_image_limits(w as usize, h as usize) {
                 return Err(codes::DRAG_SIZE_LIMIT_EXCEEDED);
@@ -979,7 +1205,8 @@ fn collect_virtual(
         });
         return;
     };
-    let Some(raw) = read_hglobal_prefix(obj, fd_id as u16, 4 + MAX_ITEMS * 620) else {
+    let Some(raw) = read_hglobal_prefix(obj, fd_id as u16, 4 + MAX_ITEMS * FILEDESCRIPTORW_LEN)
+    else {
         *skipped += 1;
         failures.push(PayloadFailure {
             code: codes::DRAG_PAYLOAD_INVALID.into(),
@@ -992,10 +1219,11 @@ fn collect_virtual(
     let group = match parse_file_group_descriptor_w(&raw) {
         Ok(g) => g,
         Err(e) => {
-            *skipped += 1;
+            // 整组都不可用：按数量头计入 skipped（不是只算 1 项），部分成功报告才准确。
+            *skipped += expected.max(1);
             failures.push(PayloadFailure {
                 code: match e {
-                    DescError::TooMany => codes::DRAG_SIZE_LIMIT_EXCEEDED,
+                    DescError::TooMany => codes::DRAG_TOO_MANY_ITEMS,
                     DescError::Truncated => codes::DRAG_PAYLOAD_INVALID,
                 }
                 .into(),
@@ -1031,33 +1259,83 @@ fn collect_virtual(
         return;
     };
 
-    for (index, desc) in group.files.iter().enumerate() {
-        // 索引必须来自描述符顺序：OLE 的 lindex 就是这个序号。
-        match obtain_content(obj, fc_id as u16, index as i32) {
+    // 内存块不能流式写盘，必须在 `Drop` 回调里整块复制：除单条上限外还要有
+    // 本批总量预算，否则 32 条 × 64MB 会让主线程一次持有 2GB。
+    let mut memory_total: u64 = 0;
+    for desc in &group.files {
+        // 索引必须来自**原始描述符序号**：空名/目录/超限条目被跳过后，
+        // `group.files` 的下标会前移，用过滤后下标会读错文件内容。
+        match obtain_content(obj, fc_id as u16, desc.original_index as i32) {
             Ok(Content::Stream(cookie)) => pending.push(Pending::Stream {
                 name: desc.name.clone(),
                 declared: desc.size,
                 cookie,
             }),
-            Ok(Content::Bytes(bytes)) => pending.push(Pending::Bytes {
-                name: desc.name.clone(),
-                bytes,
-                kind: StagedKind::VirtualFile,
-                mime: mime_for(&desc.name),
-                width: None,
-                height: None,
-            }),
-            Err(code) => {
+            Ok(Content::Bytes(mut bytes)) => {
+                // 描述符声明的长度是上界：HGLOBAL 的块大小可能带尾部填充。
+                if let Some(declared) = desc.size {
+                    if bytes.len() as u64 > declared {
+                        bytes.truncate(declared as usize);
+                    }
+                }
+                if exceeds_memory_budget(memory_total, bytes.len() as u64) {
+                    *skipped += 1;
+                    failures.push(PayloadFailure {
+                        code: codes::DRAG_MEMORY_CONTENT_TOO_LARGE.into(),
+                        scope: "virtual-file".into(),
+                        format: Some(desc.name.clone()),
+                        reason: format!(
+                            "{}（单次内存数据总量上限 {} MB）",
+                            codes::message(codes::DRAG_MEMORY_CONTENT_TOO_LARGE),
+                            MAX_MEMORY_TOTAL_BYTES / (1024 * 1024)
+                        ),
+                    });
+                    continue;
+                }
+                memory_total = memory_total.saturating_add(bytes.len() as u64);
+                pending.push(Pending::Bytes {
+                    name: desc.name.clone(),
+                    bytes,
+                    kind: StagedKind::VirtualFile,
+                    mime: mime_for(&desc.name),
+                    width: None,
+                    height: None,
+                });
+            }
+            Err(e) => {
                 *skipped += 1;
+                let code = e.code();
+                let reason = match e {
+                    ContentError::IndexUnavailable => {
+                        // 序号只是计数，不是内容，可以安全写进诊断。
+                        // 用**原始**序号，用户/日志才能对应来源里的第几项。
+                        format!(
+                            "{}（第 {} 项）",
+                            codes::message(code),
+                            desc.original_index + 1
+                        )
+                    }
+                    ContentError::TooLargeForMemory => format!(
+                        "{}（{} MB）",
+                        codes::message(code),
+                        MAX_MEMORY_CONTENT_BYTES / (1024 * 1024)
+                    ),
+                    ContentError::ReadFailed => codes::message(code).into(),
+                };
                 failures.push(PayloadFailure {
                     code: code.to_string(),
                     scope: "virtual-file".into(),
                     format: Some(desc.name.clone()),
-                    reason: codes::message(code).into(),
+                    reason,
                 });
             }
         }
     }
+}
+
+/// 单次拖入的内存数据总量预算（纯函数，便于单测）。
+fn exceeds_memory_budget(total: u64, next: u64) -> bool {
+    total.saturating_add(next) > MAX_MEMORY_TOTAL_BYTES
 }
 
 fn mime_for(name: &str) -> Option<String> {
@@ -1083,13 +1361,33 @@ enum Content {
     Bytes(Vec<u8>),
 }
 
+/// 内容获取失败的原因（映射到稳定错误码，便于诊断与用户反馈）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContentError {
+    /// 描述符声明了这一项，但 `FileContents` 给不出该索引（lindex 不匹配/缺失）。
+    IndexUnavailable,
+    /// 来源只提供内存块，且超过安全读取上限。
+    TooLargeForMemory,
+    /// 读取失败（空内容、GIT 注册失败、TYMED 违约等）。
+    ReadFailed,
+}
+
+impl ContentError {
+    fn code(self) -> &'static str {
+        match self {
+            ContentError::IndexUnavailable => codes::DRAG_VIRTUAL_INDEX_INVALID,
+            ContentError::TooLargeForMemory => codes::DRAG_MEMORY_CONTENT_TOO_LARGE,
+            ContentError::ReadFailed => codes::DRAG_VIRTUAL_FILE_READ_FAILED,
+        }
+    }
+}
+
 /// `GetData(FileContents, lindex=i)`：优先 `TYMED_ISTREAM`，退回 `TYMED_HGLOBAL`。
 /// **必须在 `Drop` 调用内执行**（OLE 契约）。
-fn obtain_content(
-    obj: &IDataObject,
-    cf: u16,
-    index: i32,
-) -> Result<Content, &'static str> {
+///
+/// 两条路径都用**同一个 `index`**：`lindex` 是虚拟文件的序号，`-1`（旧实现
+/// 的回退值）在多文件来源里拿不到第 i 个文件。
+fn obtain_content(obj: &IDataObject, cf: u16, index: i32) -> Result<Content, ContentError> {
     let stream_fmt = FORMATETC {
         cfFormat: cf,
         ptd: std::ptr::null_mut(),
@@ -1098,28 +1396,90 @@ fn obtain_content(
         tymed: TYMED_ISTREAM.0 as u32,
     };
     unsafe {
-        if let Ok(mut medium) = obj.GetData(&stream_fmt) {
-            // 与 `read_hglobal` 同理：来源可能无视 TYMED。若不是 IStream，
-            // `u.pstm` 不是接口指针，解引用会直接崩在 Drop 回调里。
-            // 同样**不**调用 ReleaseStgMedium：按被谎报的 tymed 释放本身就不安全。
-            if medium.tymed != TYMED_ISTREAM.0 as u32 || medium.u.pstm.is_none() {
-                return Err(codes::DRAG_VIRTUAL_FILE_READ_FAILED);
+        match obj.GetData(&stream_fmt) {
+            Ok(mut medium) => {
+                let tymed = medium.tymed;
+                if tymed == TYMED_ISTREAM.0 as u32 && medium.u.pstm.is_some() {
+                    // `STGMEDIUM_0.pstm` 是 `ManuallyDrop<Option<IStream>>`：clone 会 AddRef，
+                    // 于是我们持有一份独立引用；ReleaseStgMedium 释放的是 medium 自己那份。
+                    let held: Option<IStream> = (*medium.u.pstm).clone();
+                    let registered = held.as_ref().and_then(register_stream);
+                    drop(held);
+                    ReleaseStgMedium(&mut medium);
+                    return match registered {
+                        Some(cookie) => Ok(Content::Stream(cookie)),
+                        None => Err(ContentError::ReadFailed),
+                    };
+                }
+                if tymed == TYMED_HGLOBAL.0 as u32 {
+                    // 来源无视了 TYMED 请求，但**如实**返回了 HGLOBAL：
+                    // 内容确实在内存块里，按同一个索引读出来即可（不是错误）。
+                    let bytes = take_hglobal_bytes(medium, MAX_MEMORY_CONTENT_BYTES as usize)?;
+                    return Ok(Content::Bytes(bytes));
+                }
+                // 谎报/其它类型：**不**调用 ReleaseStgMedium（见 read_hglobal_index 注释），
+                // 拒绝并放弃这一个 medium。
+                //
+                // 已知残余风险：如果来源把 HGLOBAL 谎报成 TYMED_ISTREAM 并给出非空
+                // `pstm`，这里无法安全识别——校验 `pstm` 是否为真接口指针只能靠
+                // 调用它（AddRef），而对假指针调用就已经 AV。OLE 没有可靠的
+                // 「这个指针是不是接口」API，因此 ISTREAM 分支**依赖来源遵守契约**；
+                // 只支持内存块的正常来源会返回 `tymed=HGLOBAL`（已正确处理）。
+                // 见 report.md「D. 剩余风险」。
+                return Err(ContentError::ReadFailed);
             }
-            // `STGMEDIUM_0.pstm` 是 `ManuallyDrop<Option<IStream>>`：clone 会 AddRef，
-            // 于是我们持有一份独立引用；ReleaseStgMedium 释放的是 medium 自己那份。
-            let held: Option<IStream> = (*medium.u.pstm).clone();
-            let registered = held.as_ref().and_then(register_stream);
-            drop(held);
-            ReleaseStgMedium(&mut medium);
-            return match registered {
-                Some(cookie) => Ok(Content::Stream(cookie)),
-                None => Err(codes::DRAG_VIRTUAL_FILE_READ_FAILED),
-            };
+            // 流不可用：退回内存块。只有「流」与「内存块」都说格式/索引不存在，
+            // 才能确定是 lindex 不匹配（而不是读取失败）。
+            Err(e) => fallback_to_hglobal(obj, cf, index, is_missing_format(e.code())),
         }
     }
-    match read_hglobal(obj, cf, MAX_IMAGE_BYTES as usize) {
-        Some(bytes) if !bytes.is_empty() => Ok(Content::Bytes(bytes)),
-        _ => Err(codes::DRAG_VIRTUAL_FILE_READ_FAILED),
+}
+
+/// 流路径不可用时的内存块回退：**必须沿用同一个 `lindex`**。
+fn fallback_to_hglobal(
+    obj: &IDataObject,
+    cf: u16,
+    index: i32,
+    stream_unavailable: bool,
+) -> Result<Content, ContentError> {
+    match unsafe { read_hglobal_index(obj, cf, index, MAX_MEMORY_CONTENT_BYTES as usize) } {
+        Ok(bytes) => Ok(Content::Bytes(bytes)),
+        Err(HgError::TooLarge) => Err(ContentError::TooLargeForMemory),
+        Err(HgError::Unavailable) if stream_unavailable => Err(ContentError::IndexUnavailable),
+        Err(_) => Err(ContentError::ReadFailed),
+    }
+}
+
+/// 从一个**已核对**为 `TYMED_HGLOBAL` 的 medium 里复制字节并释放它。
+///
+/// 调用方保证 `medium.tymed == TYMED_HGLOBAL`：只有这种情形下
+/// `ReleaseStgMedium` 才是安全的。
+unsafe fn take_hglobal_bytes(
+    mut medium: windows::Win32::System::Com::STGMEDIUM,
+    cap: usize,
+) -> Result<Vec<u8>, ContentError> {
+    let h = medium.u.hGlobal;
+    let size = GlobalSize(h);
+    if size == 0 {
+        ReleaseStgMedium(&mut medium);
+        return Err(ContentError::ReadFailed);
+    }
+    if size > cap {
+        ReleaseStgMedium(&mut medium);
+        return Err(ContentError::TooLargeForMemory);
+    }
+    let ptr = GlobalLock(h);
+    if ptr.is_null() {
+        ReleaseStgMedium(&mut medium);
+        return Err(ContentError::ReadFailed);
+    }
+    let out = std::slice::from_raw_parts(ptr as *const u8, size).to_vec();
+    let _ = GlobalUnlock(h);
+    ReleaseStgMedium(&mut medium);
+    if out.is_empty() {
+        Err(ContentError::ReadFailed)
+    } else {
+        Ok(out)
     }
 }
 
@@ -1141,6 +1501,13 @@ fn git() -> Option<IGlobalInterfaceTable> {
 fn register_stream(stream: &IStream) -> Option<u32> {
     let git = git()?;
     unsafe { git.RegisterInterfaceInGlobal(stream, &IStream::IID).ok() }
+}
+
+/// 撤销一个未消费的 GIT cookie（取消 / 会话被放弃时必须调用）。
+fn revoke_cookie(cookie: u32) {
+    if let Some(git) = git() {
+        let _ = unsafe { git.RevokeInterfaceFromGlobal(cookie) };
+    }
 }
 
 // ── 后台暂存线程 ───────────────────────────────────────────
@@ -1202,9 +1569,11 @@ fn enqueue(job: WorkerJob) {
     }
     if let Some(tx) = guard.as_ref() {
         if let Err(e) = tx.send(job) {
+            // `SendError` 会把 job 原样退回：同步执行，绝不丢掉用户拖入的内容，
+            // 也避免流 cookie 无人消费而泄漏在 GIT 里。
             tracing::warn!("拖入暂存任务投递失败，同步兜底: {e}");
             drop(guard);
-            // send 失败时 job 已被返回，这里无法再取回，只能记录并让会话自然过期。
+            run_job(e.0);
         }
     }
 }
@@ -1220,11 +1589,66 @@ fn run_job(job: WorkerJob) {
         skipped,
     } = job;
 
+    stage_pending(&op, &mut items, pending, &mut failures);
+
+    // 会话在读取期间被放弃/淘汰/提交：不再收尾、不再发事件。
+    // 还要再删一次目录：`open_part` / `write_bytes` 都会 `ensure_dir`，
+    // 若取消发生在写盘中途，目录可能已经被重新建出来。
+    if op.released() {
+        stage::remove_dir(&op.dir);
+        return;
+    }
+
+    op.finish(items, failures.clone(), skipped);
+    let view = op
+        .inner
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .view
+        .clone()
+        .unwrap_or(DragPayloadView::Unsupported {
+            formats: Vec::new(),
+            reason: codes::message(codes::DRAG_NO_READABLE_CONTENT).into(),
+            code: codes::DRAG_NO_READABLE_CONTENT.into(),
+        });
+    emit_to_webview(
+        &app,
+        &label,
+        EVENT_PAYLOAD,
+        &PayloadEvent {
+            operation_id: op.id.clone(),
+            point: op.point.map(|(x, y)| PointPx { x, y }),
+            payload: view,
+            failures,
+            skipped,
+        },
+    );
+}
+
+/// 把内存条目/流写入暂存目录，返回**实际写入总量**。
+///
+/// 每次写盘前核对会话是否已被释放：`discard` / TTL 回收 / 上限淘汰 / 提交
+/// 都会置位取消标记。旧实现不核对，`ensure_dir` 会把刚被删掉的暂存目录
+/// 重新建出来，留下永远没人认领的副本。
+fn stage_pending(
+    op: &crate::dragdrop::StagedOp,
+    items: &mut Vec<StagedItem>,
+    pending: Vec<Pending>,
+    failures: &mut Vec<PayloadFailure>,
+) -> u64 {
     let mut seq = 0usize;
     // 单条上限之外还必须有**实际写入总量**上限：描述符里的声明大小由来源填写，
     // 可以谎报（例如声称 1KB、流里给 1GB）。只校验声明值等于把磁盘交给对方。
     let mut staged_total: u64 = 0;
     for p in pending {
+        if op.released() {
+            // 已登记进 GIT 的流必须撤销，否则接口会一直挂在全局表里。
+            // 用 `continue` 而不是 `break`：同一批里可能还有多个 cookie 要回收。
+            if let Pending::Stream { cookie, .. } = p {
+                revoke_cookie(cookie);
+            }
+            continue;
+        }
         seq += 1;
         match p {
             Pending::Bytes {
@@ -1286,6 +1710,8 @@ fn run_job(job: WorkerJob) {
             } => {
                 let remaining = MAX_VIRTUAL_TOTAL_BYTES.saturating_sub(staged_total);
                 if remaining == 0 {
+                    // 不读取也必须撤销 cookie，否则这一条流会一直挂在 GIT 里。
+                    revoke_cookie(cookie);
                     failures.push(PayloadFailure {
                         code: codes::DRAG_SIZE_LIMIT_EXCEEDED.into(),
                         scope: "virtual-file".into(),
@@ -1300,6 +1726,7 @@ fn run_job(job: WorkerJob) {
                     declared,
                     cookie,
                     remaining,
+                    &op.consumed,
                 ) {
                     Ok((path, size)) => {
                         staged_total = staged_total.saturating_add(size);
@@ -1323,31 +1750,7 @@ fn run_job(job: WorkerJob) {
             }
         }
     }
-
-    op.finish(items, failures.clone(), skipped);
-    let view = op
-        .inner
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .view
-        .clone()
-        .unwrap_or(DragPayloadView::Unsupported {
-            formats: Vec::new(),
-            reason: codes::message(codes::DRAG_NO_READABLE_CONTENT).into(),
-            code: codes::DRAG_NO_READABLE_CONTENT.into(),
-        });
-    emit_to_webview(
-        &app,
-        &label,
-        EVENT_PAYLOAD,
-        &PayloadEvent {
-            operation_id: op.id.clone(),
-            point: op.point.map(|(x, y)| PointPx { x, y }),
-            payload: view,
-            failures,
-            skipped,
-        },
-    );
+    staged_total
 }
 
 /// 从 GIT 取回流并流式写入暂存文件（64KB 一块，超过上限立即中止并清理）。
@@ -1357,6 +1760,8 @@ fn read_stream_to_file(
     declared: Option<u64>,
     cookie: u32,
     hard_cap: u64,
+    // 会话取消标记：`discard`/TTL/淘汰/提交会置位，读到一半也要立即停下并删 `.part`。
+    cancel: &AtomicBool,
 ) -> Result<(PathBuf, u64), &'static str> {
     let git = git().ok_or(codes::DRAG_VIRTUAL_FILE_READ_FAILED)?;
     let mut raw: *mut std::ffi::c_void = std::ptr::null_mut();
@@ -1367,6 +1772,10 @@ fn read_stream_to_file(
         return Err(codes::DRAG_VIRTUAL_FILE_READ_FAILED);
     }
     let stream = unsafe { IStream::from_raw(raw) };
+    // cookie 已撤销、stream 即将释放；已经取消就直接返回，不创建任何临时文件。
+    if cancel.load(Ordering::SeqCst) {
+        return Err(codes::DRAG_OPERATION_EXPIRED);
+    }
 
     let safe_name = sanitize_file_name(name, "附件");
     let (part, mut file) =
@@ -1381,6 +1790,11 @@ fn read_stream_to_file(
         .min(hard_cap)
         .min(MAX_VIRTUAL_FILE_BYTES);
     loop {
+        // 每块都核对：一个 2GB 的流读几分钟，用户随时可能关闭面板/放弃。
+        if cancel.load(Ordering::SeqCst) {
+            stage::drop_part(&part);
+            return Err(codes::DRAG_OPERATION_EXPIRED);
+        }
         let mut read: u32 = 0;
         let hr = unsafe {
             stream.Read(buf.as_mut_ptr() as *mut _, buf.len() as u32, Some(&mut read))
@@ -1418,6 +1832,31 @@ fn read_stream_to_file(
 ///
 /// 走 `diagnostics::emit`（全局入口）：诊断系统尚未初始化时只会被静默丢弃，
 /// 不会反过来影响启动流程。
+/// 部分接管时写一条结构化诊断：只含窗口计数，不含句柄与内容。
+fn report_install_partial(report: &InstallReport) {
+    use crate::diagnostics::{self, DiagLevel, DiagStatus};
+    diagnostics::emit(
+        diagnostics::event(
+            DiagLevel::Warn,
+            "dragdrop",
+            "install-bridge",
+            "native-drop-bridge",
+        )
+        .status(DiagStatus::Failed)
+        .stage("setup")
+        .operation("drag-bridge-install")
+        .error_code(codes::DRAG_NATIVE_BRIDGE_PARTIAL)
+        .error_category(codes::category(codes::DRAG_NATIVE_BRIDGE_PARTIAL))
+        .message("部分窗口未能接管原生拖入接收")
+        .metadata("total", serde_json::json!(report.total))
+        .metadata("installed", serde_json::json!(report.installed))
+        .metadata("failed", serde_json::json!(report.failed))
+        .metadata("recovered", serde_json::json!(report.recovered))
+        .metadata("topLevelOk", serde_json::json!(report.top_level_ok))
+        .build(),
+    );
+}
+
 pub fn report_install_failure(error: &str) {
     use crate::diagnostics::{self, DiagLevel, DiagStatus};
     diagnostics::emit(
@@ -1602,6 +2041,7 @@ mod tests {
     // 仍**不能**替代真机：不覆盖 `RegisterDragDrop` 接管与真实鼠标时序。
     mod controlled_ole {
         use std::path::PathBuf;
+        use std::sync::Arc;
 
         use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 
@@ -1609,10 +2049,12 @@ mod tests {
         use crate::dragdrop::codes;
         use crate::dragdrop::ole_test_source as src;
         use crate::dragdrop::MAX_VIRTUAL_TOTAL_BYTES;
+        use crate::dragdrop::MAX_VIRTUAL_FILE_BYTES;
+        use crate::dragdrop::MAX_ITEMS;
 
         use super::super::{
             classify, collect_virtual, probe_facts, read_image, read_stream_to_file, ImageSource,
-            Pending, ProbeDepth,
+            PayloadFailure, Pending, ProbeDepth,
         };
 
         /// 每个测试线程独立初始化 COM（GIT / CoCreateInstance 需要）。
@@ -1759,6 +2201,7 @@ mod tests {
                             declared,
                             cookie,
                             MAX_VIRTUAL_TOTAL_BYTES,
+                            &std::sync::atomic::AtomicBool::new(false),
                         )
                         .expect("流的真实读取");
                         let content = std::fs::read(&path).unwrap();
@@ -1780,7 +2223,7 @@ mod tests {
         #[test]
         fn 受控_ole_描述符缓冲区大于上限时只读头部() {
             let _com = ComGuard::new();
-            // 真实来源常把 HGLOBAL 分配得比 4 + 620×N 更大（尾部填充）。
+            // 真实来源常把 HGLOBAL 分配得比 4 + 592×N 更大（尾部填充）。
             let obj = src::virtual_files_padded(
                 &[("padded.bin".to_string(), vec![1, 2, 3])],
                 8192,
@@ -1804,9 +2247,152 @@ mod tests {
         }
 
         #[test]
-        fn 受控_ole_filecontents_返回_hglobal_时失败而非崩溃() {
+        fn 受控_ole_流请求遇到_hglobal_时按内存块回退() {
             let _com = ComGuard::new();
+            // 来源无视 TYMED：请求 ISTREAM 却返回 HGLOBAL（medium.tymed 如实为 HGLOBAL）。
+            // 这是合法的「只支持内存块」来源，必须按字节读取，不能崩、也不能假装失败。
             let obj = src::virtual_files_wrong_tymed("a.txt");
+            let dir = TempDir::new();
+            let (staged, failures, _op) = run_staging(&obj, 1, dir.path());
+            assert!(failures.is_empty(), "failures={failures:?}");
+            assert_eq!(staged.len(), 1);
+            assert_eq!(staged[0].0, "a.txt");
+            assert_eq!(staged[0].1, b"data");
+        }
+
+        #[test]
+        fn 受控_ole_空_png_报无内容而不是超限() {
+            let _com = ComGuard::new();
+            let obj = src::png_empty();
+            let err = read_image(&obj, ImageSource::Png).expect_err("空 PNG 不得成功");
+            assert_eq!(
+                err,
+                codes::DRAG_NO_READABLE_CONTENT,
+                "空块不是大小超限，错误码必须准确"
+            );
+        }
+
+        #[test]
+        fn 图片读取错误码按原因区分() {
+            use super::super::{image_read_error, HgError};
+            assert_eq!(
+                image_read_error(HgError::TooLarge),
+                codes::DRAG_SIZE_LIMIT_EXCEEDED
+            );
+            assert_eq!(
+                image_read_error(HgError::WrongTymed),
+                codes::DRAG_PAYLOAD_INVALID
+            );
+            for error in [HgError::Unavailable, HgError::Empty, HgError::Failed] {
+                assert_eq!(image_read_error(error), codes::DRAG_NO_READABLE_CONTENT);
+            }
+        }
+
+        /// 跑完整链路：`collect_virtual` → `stage_pending`（含 GIT 流读取与清洗）。
+        /// 返回 (名字, 落盘内容) 与失败清单。
+        fn run_staging(
+            obj: &windows::Win32::System::Com::IDataObject,
+            expected: usize,
+            dir: &std::path::Path,
+        ) -> (Vec<(String, Vec<u8>)>, Vec<PayloadFailure>, Arc<crate::dragdrop::StagedOp>) {
+            let (staged, failures, op, _) = run_staging_full(obj, expected, dir);
+            (staged, failures, op)
+        }
+
+        /// 同 [`run_staging`]，额外返回 `skipped`（目录/空名/超限/读失败计数）。
+        fn run_staging_full(
+            obj: &windows::Win32::System::Com::IDataObject,
+            expected: usize,
+            dir: &std::path::Path,
+        ) -> (
+            Vec<(String, Vec<u8>)>,
+            Vec<PayloadFailure>,
+            Arc<crate::dragdrop::StagedOp>,
+            usize,
+        ) {
+            let view = crate::dragdrop::DragPayloadView::VirtualFiles {
+                items: Vec::new(),
+                count: expected,
+            };
+            let probe = crate::dragdrop::DragProbe::from_view(&view, Vec::new());
+            let ds = crate::dragdrop::DragDropState::new(dir.to_path_buf());
+            let op = ds.begin(probe, None, view);
+            let mut pending = Vec::new();
+            let mut failures = Vec::new();
+            let mut skipped = 0usize;
+            collect_virtual(
+                obj,
+                expected,
+                &op.dir,
+                &mut pending,
+                &mut failures,
+                &mut skipped,
+            );
+            let mut items = Vec::new();
+            super::super::stage_pending(&op, &mut items, pending, &mut failures);
+            let staged = items
+                .iter()
+                .filter_map(|item| match item {
+                    crate::dragdrop::StagedItem::Staged { path, name, .. } => {
+                        Some((name.clone(), std::fs::read(path).expect("落盘内容可读")))
+                    }
+                    _ => None,
+                })
+                .collect();
+            (staged, failures, op, skipped)
+        }
+
+        #[test]
+        fn 受控_ole_单虚拟文件_hglobal_回退() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files_hglobal(&[("a.bin".to_string(), b"alpha".to_vec())]);
+            let dir = TempDir::new();
+            let (staged, failures, _op) = run_staging(&obj, 1, dir.path());
+            assert!(failures.is_empty(), "failures={failures:?}");
+            assert_eq!(staged.len(), 1);
+            assert_eq!(staged[0].0, "a.bin");
+            assert_eq!(staged[0].1, b"alpha");
+        }
+
+        #[test]
+        fn 受控_ole_多虚拟文件_hglobal_按索引取对内容() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files_hglobal(&[
+                ("one.txt".to_string(), b"AAA".to_vec()),
+                ("two.txt".to_string(), b"BBBB".to_vec()),
+                ("three.txt".to_string(), b"CCCCC".to_vec()),
+            ]);
+            let dir = TempDir::new();
+            let (staged, failures, _op) = run_staging(&obj, 3, dir.path());
+            assert!(failures.is_empty(), "failures={failures:?}");
+            assert_eq!(staged.len(), 3);
+            // 内容与索引必须一一对应：回退时丢掉 lindex 会串内容或直接失败。
+            assert_eq!(staged[0], ("one.txt".to_string(), b"AAA".to_vec()));
+            assert_eq!(staged[1], ("two.txt".to_string(), b"BBBB".to_vec()));
+            assert_eq!(staged[2], ("three.txt".to_string(), b"CCCCC".to_vec()));
+        }
+
+        #[test]
+        fn 受控_ole_流与内存混合来源各自读取() {
+            let _com = ComGuard::new();
+            let files = [
+                ("stream.txt".to_string(), b"from-stream".to_vec()),
+                ("memory.txt".to_string(), b"from-memory".to_vec()),
+            ];
+            for streams in [[true, false], [false, true]] {
+                let obj = src::virtual_files_mixed(&files, &streams);
+                let dir = TempDir::new();
+                let (staged, failures, _op) = run_staging(&obj, 2, dir.path());
+                assert!(failures.is_empty(), "{streams:?} failures={failures:?}");
+                assert_eq!(staged[0], ("stream.txt".to_string(), b"from-stream".to_vec()));
+                assert_eq!(staged[1], ("memory.txt".to_string(), b"from-memory".to_vec()));
+            }
+        }
+
+        #[test]
+        fn 受控_ole_同时提供流与内存时优先使用流() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files_both(b"stream-content", b"global-content");
             let dir = TempDir::new();
             let mut pending = Vec::new();
             let mut failures = Vec::new();
@@ -1819,13 +2405,372 @@ mod tests {
                 &mut failures,
                 &mut skipped,
             );
-            assert!(pending.is_empty(), "错误 TYMED 不能进入流读取");
-            assert_eq!(failures.len(), 1);
+            assert!(failures.is_empty());
+            match pending.remove(0) {
+                Pending::Stream { cookie, .. } => super::super::revoke_cookie(cookie),
+                _ => panic!("必须优先走 IStream，不能退回内存块"),
+            }
+            // 再跑一次完整链路，确认落盘的是流里的内容。
+            let (staged, failures, _op) = run_staging(&obj, 1, dir.path());
+            assert!(failures.is_empty());
+            assert_eq!(staged[0].1, b"stream-content");
+        }
+
+        #[test]
+        fn 受控_ole_跳过目录后仍按原始索引读取() {
+            let _com = ComGuard::new();
+            // 原始第 0 项是目录，但仍给它一份**诱饵内容**；第 1/2 项才是文件。
+            // 若实现用过滤后的下标，a.txt 会读到第 0 项的诱饵内容。
+            let slots = [
+                src::VirtualSlot::directory("folder", b"DIR-DECOY"),
+                src::VirtualSlot::file("a.txt", b"A-CONTENT"),
+                src::VirtualSlot::file("b.png", b"B-CONTENT"),
+            ];
+            let obj = src::virtual_files_slots(&slots);
+            let dir = TempDir::new();
+            let (staged, failures, _op, skipped) = run_staging_full(&obj, 3, dir.path());
+            assert!(failures.is_empty(), "failures={failures:?}");
+            assert_eq!(skipped, 1, "目录项必须计入 skipped");
             assert_eq!(
-                failures[0].code,
-                codes::DRAG_VIRTUAL_FILE_READ_FAILED,
-                "失败必须有稳定错误码"
+                staged,
+                vec![
+                    ("a.txt".to_string(), b"A-CONTENT".to_vec()),
+                    ("b.png".to_string(), b"B-CONTENT".to_vec()),
+                ],
+                "目录的 FileContents 不得被读成 a.txt"
             );
+            assert!(!staged.iter().any(|(_, bytes)| bytes.as_slice() == b"DIR-DECOY"));
+        }
+
+        #[test]
+        fn 受控_ole_中间超限文件被跳过后后续仍按原始索引() {
+            let _com = ComGuard::new();
+            let slots = [
+                src::VirtualSlot::file("first.txt", b"FIRST"),
+                src::VirtualSlot::oversize(
+                    "huge.bin",
+                    MAX_VIRTUAL_FILE_BYTES + 1,
+                    b"OVERSIZE-DECOY",
+                ),
+                src::VirtualSlot::file("last.txt", b"LAST"),
+            ];
+            let obj = src::virtual_files_slots(&slots);
+            let dir = TempDir::new();
+            let (staged, failures, _op, skipped) = run_staging_full(&obj, 3, dir.path());
+            assert!(failures.is_empty(), "failures={failures:?}");
+            assert_eq!(skipped, 1, "超限项必须计入 skipped");
+            assert_eq!(
+                staged,
+                vec![
+                    ("first.txt".to_string(), b"FIRST".to_vec()),
+                    ("last.txt".to_string(), b"LAST".to_vec()),
+                ],
+                "超限项不能串到后续文件，也不能读取它的内容"
+            );
+            assert!(!staged.iter().any(|(_, bytes)| bytes.as_slice() == b"OVERSIZE-DECOY"));
+        }
+
+        #[test]
+        fn 受控_ole_连续无效条目后第一个有效项用原始索引() {
+            let _com = ComGuard::new();
+            let slots = [
+                src::VirtualSlot::empty_name(b"EMPTY-DECOY"),
+                src::VirtualSlot::directory("folder", b"DIR-DECOY"),
+                src::VirtualSlot::file("only.txt", b"ONLY"),
+            ];
+            let obj = src::virtual_files_slots(&slots);
+            let dir = TempDir::new();
+            let (staged, failures, _op, skipped) = run_staging_full(&obj, 3, dir.path());
+            assert!(failures.is_empty(), "failures={failures:?}");
+            assert_eq!(skipped, 2);
+            assert_eq!(
+                staged,
+                vec![("only.txt".to_string(), b"ONLY".to_vec())],
+                "第 2 项必须用 lindex=2 读取"
+            );
+            assert!(!staged
+                .iter()
+                .any(|(_, bytes)| bytes.as_slice() == b"EMPTY-DECOY"
+                    || bytes.as_slice() == b"DIR-DECOY"));
+        }
+
+        #[test]
+        fn 受控_ole_首个有效项位于原始列表最后() {
+            let _com = ComGuard::new();
+            let slots = [
+                src::VirtualSlot::directory("d0", b"X0"),
+                src::VirtualSlot::directory("d1", b"X1"),
+                src::VirtualSlot::directory("d2", b"X2"),
+                src::VirtualSlot::file("tail.txt", b"TAIL"),
+            ];
+            let obj = src::virtual_files_slots(&slots);
+            let dir = TempDir::new();
+            let (staged, failures, _op, skipped) = run_staging_full(&obj, 4, dir.path());
+            assert!(failures.is_empty(), "failures={failures:?}");
+            assert_eq!(skipped, 3);
+            assert_eq!(
+                staged,
+                vec![("tail.txt".to_string(), b"TAIL".to_vec())],
+                "最后一个描述符必须用 lindex=3 读取"
+            );
+        }
+
+        #[test]
+        fn 受控_ole_缺失索引按原始序号报告() {
+            let _com = ComGuard::new();
+            let slots = [
+                src::VirtualSlot::file("ok.txt", b"OK"),
+                src::VirtualSlot::missing("missing-1.txt"),
+                src::VirtualSlot::missing("missing-2.txt"),
+            ];
+            let obj = src::virtual_files_slots(&slots);
+            let dir = TempDir::new();
+            let (staged, failures, _op, skipped) = run_staging_full(&obj, 3, dir.path());
+            assert_eq!(staged, vec![("ok.txt".to_string(), b"OK".to_vec())]);
+            assert_eq!(skipped, 2);
+            assert_eq!(failures.len(), 2);
+            assert!(failures
+                .iter()
+                .all(|f| f.code == codes::DRAG_VIRTUAL_INDEX_INVALID));
+            assert!(failures[0].reason.contains("第 2 项"), "{}", failures[0].reason);
+            assert!(failures[1].reason.contains("第 3 项"), "{}", failures[1].reason);
+        }
+
+        #[test]
+        fn 受控_ole_描述符截断不静默丢弃且报准确码() {
+            let _com = ComGuard::new();
+            // 头部声明 2 项，但只给 1 条 596 字节描述符（真实截断）。
+            let mut group = Vec::new();
+            group.extend_from_slice(&2u32.to_le_bytes());
+            let one = {
+                // 用 SDK 结构构造，长度不依赖生产常量。
+                let mut fd = windows::Win32::UI::Shell::FILEDESCRIPTORW::default();
+                fd.dwFlags = 0x44;
+                fd.nFileSizeLow = 3;
+                let mut name_units = [0u16; 260];
+                for (slot, unit) in name_units
+                    .iter_mut()
+                    .zip("a.txt".encode_utf16())
+                {
+                    *slot = unit;
+                }
+                fd.cFileName = name_units;
+                let raw = unsafe {
+                    std::slice::from_raw_parts(
+                        &fd as *const _ as *const u8,
+                        std::mem::size_of::<windows::Win32::UI::Shell::FILEDESCRIPTORW>(),
+                    )
+                };
+                raw.to_vec()
+            };
+            group.extend_from_slice(&one);
+            assert_eq!(one.len(), 592);
+            assert_eq!(group.len(), 596);
+
+            let obj = src::virtual_files_raw_group(group);
+            let facts = probe_facts(&obj, ProbeDepth::Full);
+            // 分类阶段只读数量头：不能因为正文损坏就静默变成「没有虚拟文件」。
+            assert_eq!(facts.file_descriptor_count, 2);
+            assert!(matches!(
+                classify(&facts),
+                Classification::VirtualFiles { count: 2 }
+            ));
+
+            let dir = TempDir::new();
+            let mut pending = Vec::new();
+            let mut failures = Vec::new();
+            let mut skipped = 0usize;
+            collect_virtual(
+                &obj,
+                2,
+                dir.path(),
+                &mut pending,
+                &mut failures,
+                &mut skipped,
+            );
+            assert!(pending.is_empty());
+            assert_eq!(skipped, 2, "整组 2 项都不可用，skipped 不能只算 1");
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].code, codes::DRAG_PAYLOAD_INVALID);
+            assert!(failures[0].reason.contains("不完整"), "{}", failures[0].reason);
+        }
+
+        #[test]
+        fn 受控_ole_恶意数量在提示层收敛且报条数超限() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files_raw_group(u32::MAX.to_le_bytes().to_vec());
+            let facts = probe_facts(&obj, ProbeDepth::Full);
+            // 提示层不能显示 4294967295，先收敛到项目上限；Drop 阶段再明确拒绝。
+            assert_eq!(facts.file_descriptor_count, MAX_ITEMS);
+
+            let dir = TempDir::new();
+            let mut pending = Vec::new();
+            let mut failures = Vec::new();
+            let mut skipped = 0usize;
+            collect_virtual(
+                &obj,
+                facts.file_descriptor_count,
+                dir.path(),
+                &mut pending,
+                &mut failures,
+                &mut skipped,
+            );
+            assert!(pending.is_empty());
+            assert_eq!(skipped, MAX_ITEMS);
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].code, codes::DRAG_TOO_MANY_ITEMS);
+        }
+
+        #[test]
+        fn 受控_ole_部分索引缺失时如实报告() {
+            let _com = ComGuard::new();
+            let files = [
+                ("ok.txt".to_string(), b"OK".to_vec()),
+                ("missing.txt".to_string(), b"".to_vec()),
+            ];
+            let obj = src::virtual_files_partial(&files, 1);
+            let dir = TempDir::new();
+            let (staged, failures, _op) = run_staging(&obj, 2, dir.path());
+            assert_eq!(staged.len(), 1, "能读的必须落盘");
+            assert_eq!(staged[0], ("ok.txt".to_string(), b"OK".to_vec()));
+            assert_eq!(failures.len(), 1, "缺索引的必须如实报告");
+            assert_eq!(failures[0].code, codes::DRAG_VIRTUAL_INDEX_INVALID);
+            assert_eq!(failures[0].format.as_deref(), Some("missing.txt"));
+            assert!(failures[0].reason.contains("第 2 项"), "{}", failures[0].reason);
+        }
+
+        #[test]
+        fn 受控_ole_空内容明确失败且不残留() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files_empty("empty.bin");
+            let dir = TempDir::new();
+            let (staged, failures, op) = run_staging(&obj, 1, dir.path());
+            assert!(staged.is_empty(), "空内容不得被当成成功");
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].code, codes::DRAG_VIRTUAL_FILE_READ_FAILED);
+            let leftovers = std::fs::read_dir(&op.dir)
+                .map(|rd| rd.flatten().count())
+                .unwrap_or(0);
+            assert_eq!(leftovers, 0, "失败后不得残留正式文件或 .part");
+        }
+
+        #[test]
+        fn 受控_ole_内存内容超过安全上限被拒绝() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files_hglobal(&[("big.bin".to_string(), vec![7u8; 32])]);
+            let contents = src::registered_id("FileContents");
+            // 用小 cap 验证上限策略，避免真的分配 64MB。
+            assert_eq!(
+                unsafe { super::super::read_hglobal_index(&obj, contents, 0, 16) },
+                Err(super::super::HgError::TooLarge)
+            );
+            assert_eq!(
+                unsafe { super::super::read_hglobal_index(&obj, contents, 0, 64) }
+                    .expect("足够上限可读")
+                    .len(),
+                32
+            );
+            // 旧实现的回退索引是 -1：多文件来源在这个索引上拿不到内容。
+            // 这条断言直接钉住「回退必须带 lindex」。
+            assert_eq!(
+                unsafe { super::super::read_hglobal_index(&obj, contents, -1, 64) },
+                Err(super::super::HgError::Unavailable)
+            );
+        }
+
+        #[test]
+        fn 受控_ole_流读取中途取消也会清理分片() {
+            let _com = ComGuard::new();
+            // 128KB > 64KB 一块：第一次 Read 后把取消标记置位，第二次循环必须中止。
+            let (obj, cancel) =
+                src::virtual_files_cancel_on_first_read("big.bin", vec![9u8; 128 * 1024]);
+            let dir = TempDir::new();
+            let mut pending = Vec::new();
+            let mut failures = Vec::new();
+            let mut skipped = 0usize;
+            collect_virtual(
+                &obj,
+                1,
+                dir.path(),
+                &mut pending,
+                &mut failures,
+                &mut skipped,
+            );
+            let Pending::Stream {
+                declared, cookie, ..
+            } = pending.remove(0)
+            else {
+                panic!("期望流");
+            };
+            let err = read_stream_to_file(
+                dir.path(),
+                "01-big.bin",
+                declared,
+                cookie,
+                MAX_VIRTUAL_TOTAL_BYTES,
+                &cancel,
+            )
+            .expect_err("中途取消必须中止");
+            assert_eq!(err, codes::DRAG_OPERATION_EXPIRED);
+            assert_eq!(
+                std::fs::read_dir(dir.path())
+                    .map(|rd| rd.flatten().count())
+                    .unwrap_or(0),
+                0,
+                "中途取消不得残留 .part"
+            );
+        }
+
+        #[test]
+        fn 受控_ole_hglobal_块大于声明大小时按声明截断() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files_hglobal_padded(
+                &[("a.bin".to_string(), b"abc".to_vec())],
+                16,
+            );
+            let dir = TempDir::new();
+            let (staged, failures, _op) = run_staging(&obj, 1, dir.path());
+            assert!(failures.is_empty(), "failures={failures:?}");
+            assert_eq!(staged[0].1, b"abc", "不得把 HGLOBAL 尾部填充写进文件");
+        }
+
+        #[test]
+        fn 受控_ole_流读取可被取消且不残留分片() {
+            let _com = ComGuard::new();
+            let obj = src::virtual_files(&[("big.bin".to_string(), vec![1u8; 64 * 1024])]);
+            let dir = TempDir::new();
+            let mut pending = Vec::new();
+            let mut failures = Vec::new();
+            let mut skipped = 0usize;
+            collect_virtual(
+                &obj,
+                1,
+                dir.path(),
+                &mut pending,
+                &mut failures,
+                &mut skipped,
+            );
+            let Pending::Stream {
+                declared, cookie, ..
+            } = pending.remove(0)
+            else {
+                panic!("期望流");
+            };
+            let cancel = std::sync::atomic::AtomicBool::new(true);
+            let err = read_stream_to_file(
+                dir.path(),
+                "01-big.bin",
+                declared,
+                cookie,
+                MAX_VIRTUAL_TOTAL_BYTES,
+                &cancel,
+            )
+            .expect_err("取消后必须中止");
+            assert_eq!(err, codes::DRAG_OPERATION_EXPIRED);
+            let leftovers = std::fs::read_dir(dir.path())
+                .map(|rd| rd.flatten().count())
+                .unwrap_or(0);
+            assert_eq!(leftovers, 0, "取消后不得留下半成品或 .part");
         }
 
         #[test]
@@ -1850,8 +2795,15 @@ mod tests {
             else {
                 panic!("期望流");
             };
-            let err = read_stream_to_file(dir.path(), "01-big.bin", declared, cookie, 4)
-                .expect_err("超过本批额度必须失败");
+            let err = read_stream_to_file(
+                dir.path(),
+                "01-big.bin",
+                declared,
+                cookie,
+                4,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .expect_err("超过本批额度必须失败");
             assert_eq!(err, codes::DRAG_SIZE_LIMIT_EXCEEDED);
             assert!(!dir.path().join("01-big.bin").exists(), "不得留下半成品");
             let leftovers: Vec<_> = std::fs::read_dir(dir.path())
@@ -1861,6 +2813,171 @@ mod tests {
                 .collect();
             assert!(leftovers.is_empty(), "不得残留 .part");
         }
+    }
+
+    // ── 安装账目（纯逻辑，不需要真实窗口）──────────────────────
+    //
+    // `RegisterDragDrop` 的冲突难以自动构造，因此把「逐窗口注册 + 失败/重试
+    // 记账」抽成 `install_slots`，用注入的注册动作覆盖全部失败分支；
+    // 真实接管仍由隔离实例冒烟与真机验收覆盖。
+    mod install_accounting {
+        use windows::Win32::Foundation::HWND;
+
+        use super::super::{install_slots, InstallReport, TargetSlot};
+
+        fn slot(id: usize, top_level: bool) -> TargetSlot {
+            TargetSlot {
+                hwnd: HWND(id as *mut core::ffi::c_void),
+                top_level,
+            }
+        }
+
+        #[test]
+        fn 全部注册成功() {
+            let slots = [slot(1, true), slot(2, false), slot(3, false)];
+            let (report, err) = install_slots(&slots, |_| Ok(()));
+            assert_eq!(report, InstallReport {
+                total: 3,
+                installed: 3,
+                failed: 0,
+                recovered: 0,
+                top_level_ok: true,
+            });
+            assert!(!report.partial());
+            assert!(err.is_none());
+        }
+
+        #[test]
+        fn 顶层成功子窗口失败时如实计失败() {
+            let slots = [slot(1, true), slot(2, false), slot(3, false)];
+            let (report, err) = install_slots(&slots, |s| {
+                if s.top_level {
+                    Ok(())
+                } else {
+                    Err("child failed".into())
+                }
+            });
+            assert_eq!(report.installed, 1);
+            assert_eq!(report.failed, 2);
+            assert_eq!(report.recovered, 0, "失败重试各一次，仍未成功");
+            assert!(report.top_level_ok);
+            assert!(report.partial());
+            assert_eq!(err.as_deref(), Some("child failed"));
+        }
+
+        #[test]
+        fn 顶层失败子窗口成功时标记部分接管() {
+            let slots = [slot(1, true), slot(2, false)];
+            let (report, _) = install_slots(&slots, |s| {
+                if s.top_level {
+                    Err("top failed".into())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(report.installed, 1, "子窗口接管仍然可用");
+            assert_eq!(report.failed, 1);
+            assert!(!report.top_level_ok);
+            assert!(report.partial(), "顶层失败必须暴露为部分接管，不能报全部成功");
+        }
+
+        #[test]
+        fn 全部失败返回最后的错误() {
+            let slots = [slot(1, true), slot(2, false)];
+            let (report, err) = install_slots(&slots, |_| Err("no ole".into()));
+            assert_eq!(report.installed, 0);
+            assert_eq!(report.failed, 2);
+            assert!(!report.top_level_ok);
+            assert!(!report.partial(), "全失败不是部分接管");
+            assert_eq!(err.as_deref(), Some("no ole"));
+        }
+
+        #[test]
+        fn 首次失败重试成功计入_recovered() {
+            let slots = [slot(1, true), slot(2, false)];
+            let mut attempts = std::collections::HashMap::new();
+            let (report, err) = install_slots(&slots, |s| {
+                let n = attempts.entry(s.hwnd.0 as usize).or_insert(0);
+                *n += 1;
+                if *n == 1 {
+                    Err("transient".into())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(report.installed, 2);
+            assert_eq!(report.recovered, 2);
+            assert_eq!(report.failed, 0);
+            assert!(err.is_none());
+        }
+
+        #[test]
+        fn 重复安装账目一致且不累加() {
+            let slots = [slot(1, true), slot(2, false)];
+            let (first, _) = install_slots(&slots, |_| Ok(()));
+            let (second, _) = install_slots(&slots, |_| Ok(()));
+            assert_eq!(first, second);
+            assert_eq!(second.installed, 2, "重复安装按本次结果计数，不累加上一次");
+        }
+    }
+
+    #[test]
+    fn 已放弃会话的后台暂存不再写盘() {
+        use crate::dragdrop::{
+            DragDropState, DragPayloadView, DragProbe, StagedKind,
+        };
+
+        let root = std::env::temp_dir().join(format!("taskdock-cancel-{}", uuid::Uuid::new_v4()));
+        let ds = DragDropState::new(root.join("incoming"));
+        let view = DragPayloadView::Text {
+            text_preview: String::new(),
+            chars: 0,
+        };
+        let probe = DragProbe::from_view(&view, Vec::new());
+        let op = ds.begin(probe, None, view);
+        // 模拟：用户在后台读取/写盘前关闭了面板（前端 discard）。
+        assert!(ds.discard(&op.id));
+
+        let mut items = Vec::new();
+        let mut failures = Vec::new();
+        let total = super::stage_pending(
+            &op,
+            &mut items,
+            vec![super::Pending::Bytes {
+                name: "a.txt".into(),
+                bytes: b"hello".to_vec(),
+                kind: StagedKind::VirtualFile,
+                mime: None,
+                width: None,
+                height: None,
+            }],
+            &mut failures,
+        );
+        assert_eq!(total, 0, "已放弃会话不得再写入任何字节");
+        assert!(items.is_empty());
+        assert!(failures.is_empty());
+        assert!(!op.dir.exists(), "取消后不得把暂存目录重新建出来");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 内存数据总量预算按字节累计() {
+        use crate::dragdrop::MAX_MEMORY_TOTAL_BYTES;
+        assert!(!super::exceeds_memory_budget(0, MAX_MEMORY_TOTAL_BYTES));
+        assert!(super::exceeds_memory_budget(MAX_MEMORY_TOTAL_BYTES, 1));
+        assert!(
+            super::exceeds_memory_budget(u64::MAX, 1),
+            "饱和运算不得回绕成「预算充足」"
+        );
+    }
+
+    #[test]
+    fn 卸载在未安装时是安全的幂等操作() {
+        // 不触碰真实窗口：句柄表为空时只重置计数，重复调用不 panic。
+        super::uninstall();
+        super::uninstall();
+        assert_eq!(super::installed_windows(), 0);
+        assert_eq!(super::failed_windows(), 0);
     }
 }
 

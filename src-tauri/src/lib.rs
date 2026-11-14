@@ -31,6 +31,7 @@ mod notes;
 pub mod notification_window;
 pub mod quick_capture;
 pub mod recurrence;
+mod project_workspace_window;
 pub mod resource_cleanup;
 pub mod scheduler;
 pub mod shelf;
@@ -618,8 +619,9 @@ pub fn run() {
                 // 通用跨应用拖入：接替 wry 那个**只认 CF_HDROP** 的 IDropTarget
                 //（它在 DragEnter 里读不到文件路径就直接返回 NONE，网页图片/链接/
                 // 文本/虚拟文件因此在事件层被吞掉，前端与诊断都看不到）。
-                // 必须在 WebView 创建之后安装；安装失败时**不撤销** wry 的注册，
-                // 拖入退化为「仅支持本地路径」，与改造前完全一致（fail-safe）。
+                // 必须在 WebView 创建之后安装。OLE 每窗口只允许一个 drop target，
+                // 接管必须先撤销原处理器；注册失败的窗口无法恢复 wry 的处理器
+                //（平台限制，见 dragdrop::windows_ole 顶部），因此失败会如实写诊断。
                 match win.hwnd() {
                     Ok(h) => {
                         match dragdrop::install_native_bridge(
@@ -628,8 +630,11 @@ pub fn run() {
                             h.0 as isize,
                             drag_drop_state.clone(),
                         ) {
-                            Ok(windows) => tracing::info!(
-                                windows,
+                            Ok(report) => tracing::info!(
+                                windows = report.installed,
+                                failed = report.failed,
+                                recovered = report.recovered,
+                                top_level_ok = report.top_level_ok,
                                 "通用拖入原生接收桥已安装（替换 wry 的路径专用处理器）"
                             ),
                             Err(e) => {
@@ -645,6 +650,13 @@ pub fn run() {
                         dragdrop::report_install_failure(&format!("无主窗句柄: {e}"));
                     }
                 }
+                // 窗口销毁时撤销本进程的拖入接管：进程内重建窗口会复用/新建 HWND，
+                // 旧注册必须解除，绝不留给系统回收。对已销毁句柄撤销只会返回错误。
+                win.on_window_event(|event| {
+                    if matches!(event, tauri::WindowEvent::Destroyed) {
+                        dragdrop::uninstall_native_bridge();
+                    }
+                });
                 magnetic::watch_destroy(&win);
                 // 拖拽期间 `window_shape::apply` 会跳过回读与 DWM 写入（逐帧写会让
                 // DWM 反复重新合成，表现为拖动中整窗透明）。松手时由磁力层的
@@ -1356,6 +1368,33 @@ pub fn run() {
             commands::dev_workbench::dev_handoff_secret_scan,
             commands::dev_workbench::dev_acceptance_record_create,
             commands::dev_workbench::dev_acceptance_record_list,
+            commands::dev_workbench::dev_acceptance_agent_runs,
+            // 项目工作空间（v49）：项目 / 实例 / 通用事项 / 任务关联
+            commands::project_workspace::workspace_project_list,
+            commands::project_workspace::workspace_project_get,
+            commands::project_workspace::workspace_project_save,
+            commands::project_workspace::workspace_project_set_status,
+            commands::project_workspace::workspace_project_delete,
+            commands::project_workspace::workspace_set_active_project,
+            commands::project_workspace::workspace_instance_get,
+            commands::project_workspace::workspace_instance_save,
+            commands::project_workspace::workspace_item_list,
+            commands::project_workspace::workspace_item_save,
+            commands::project_workspace::workspace_item_delete,
+            commands::project_workspace::workspace_task_link_list,
+            commands::project_workspace::workspace_task_link_add,
+            commands::project_workspace::workspace_task_unlink,
+            // 项目工作空间独立窗口（v49）：打开/聚焦、在开发工作台打开（含结果回执）
+            project_workspace_window::open_project_workspace_window,
+            project_workspace_window::project_workspace_open_dev_workbench,
+            project_workspace_window::project_workspace_open_dev_workbench_ack,
+            // Android 虚拟屏 MVP（实验）：ADB 设备/应用枚举 + scrcpy 进程托管
+            commands::virtual_display::vd_probe,
+            commands::virtual_display::vd_devices,
+            commands::virtual_display::vd_list_apps,
+            commands::virtual_display::vd_start,
+            commands::virtual_display::vd_stop,
+            commands::virtual_display::vd_sessions,
         ])
         .build(context)
         .expect("启动 Task Dock 失败")
@@ -1389,6 +1428,8 @@ pub fn request_exit(app: &AppHandle) {
     if EXIT_REQUESTED.swap(true, Ordering::SeqCst) {
         return;
     }
+    // 独立工作空间窗口不会走主窗口的关闭流程：退出前强制落一次几何。
+    project_workspace_window::persist_geometry_on_exit(app);
     // 1. 先停接入方（HTTP accept / 文件投递扫描），避免排空期间又有新事件进入。
     agents::shutdown_signal::begin();
     let app = app.clone();

@@ -110,6 +110,11 @@ pub struct DragFacts {
     pub hdrop_paths: Vec<String>,
     /// `FileGroupDescriptorW/A` 中的描述符数量。
     pub file_descriptor_count: usize,
+    /// 来源只提供 ANSI `FileGroupDescriptor`（没有 W 版本）。
+    ///
+    /// 本项目只解析 W 描述符；若把它当成「没有虚拟文件」，同批的 HTML/文本/PNG
+    /// 会顶替真正的附件。这里显式记录，分类阶段给出「暂不支持」而不是静默降级。
+    pub has_ansi_file_descriptor: bool,
     /// 是否提供 `PNG` / `image/png` 这类**完整图片字节**格式。
     pub has_png_bytes: bool,
     /// 是否提供 `CF_DIB` / `CF_DIBV5`（可能只是拖拽预览图）。
@@ -153,6 +158,14 @@ pub fn classify(facts: &DragFacts) -> Classification {
     if facts.file_descriptor_count > 0 {
         return Classification::VirtualFiles {
             count: facts.file_descriptor_count,
+        };
+    }
+    // 3b) 只有 ANSI 描述符：明确报告「暂不支持」，不能让同批的 HTML/文本/PNG
+    //     静默顶替真正的附件（也不能把预览图当成原图保存）。
+    if facts.has_ansi_file_descriptor {
+        return Classification::Unsupported {
+            reason: "来源只提供 ANSI 虚拟文件描述符（暂不支持），未保存其文件".into(),
+            code: codes::DRAG_FORMAT_UNSUPPORTED,
         };
     }
     // 4) 命名图片格式 = 真正的图片字节。
@@ -320,6 +333,99 @@ mod tests {
                 assert_eq!(code, codes::DRAG_FORMAT_UNSUPPORTED);
             }
             other => panic!("blob 地址不得被当作图片或链接，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 真实虚拟文件优先于同一批的图片预览与链接() {
+        // 浏览器/邮件客户端可能同时塞 PNG/HTML/URL/DIB，其中 PNG/DIB 往往只是
+        // 拖拽预览图。只要来源声明了虚拟文件（描述符数量 > 0），就必须先走
+        // 真实文件内容，不能拿预览图冒充原图。
+        let f = DragFacts {
+            formats: vec![
+                "FileGroupDescriptorW".into(),
+                "FileContents".into(),
+                "PNG".into(),
+                "HTML Format".into(),
+                "text/uri-list".into(),
+                "CF_DIB".into(),
+            ],
+            file_descriptor_count: 2,
+            has_png_bytes: true,
+            has_dib: true,
+            html: Some(r#"<img src="https://cdn.example/preview.png">"#.into()),
+            url: Some("https://cdn.example/preview.png".into()),
+            text: Some("https://cdn.example/preview.png".into()),
+            ..facts()
+        };
+        assert_eq!(classify(&f), Classification::VirtualFiles { count: 2 });
+    }
+
+    #[test]
+    fn 虚拟文件与本地路径同批时本地路径不被旁路格式顶掉() {
+        let f = DragFacts {
+            formats: vec![
+                "CF_HDROP".into(),
+                "FileGroupDescriptorW".into(),
+                "PNG".into(),
+                "HTML Format".into(),
+                "CF_DIB".into(),
+            ],
+            hdrop_paths: vec!["C:\\a\\真实.txt".into()],
+            file_descriptor_count: 1,
+            has_png_bytes: true,
+            has_dib: true,
+            html: Some(r#"<img src="https://cdn.example/preview.png">"#.into()),
+            ..facts()
+        };
+        match classify(&f) {
+            Classification::Mixed {
+                local_paths,
+                virtual_count,
+            } => {
+                assert_eq!(local_paths, vec!["C:\\a\\真实.txt".to_string()]);
+                assert_eq!(virtual_count, 1);
+            }
+            other => panic!("实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 只有_ansi_描述符时明确不支持而不是让文本顶替() {
+        let f = DragFacts {
+            formats: vec![
+                "FileGroupDescriptor".into(),
+                "FileContents".into(),
+                "CF_UNICODETEXT".into(),
+                "PNG".into(),
+            ],
+            has_ansi_file_descriptor: true,
+            has_png_bytes: true,
+            text: Some("附件".into()),
+            ..facts()
+        };
+        match classify(&f) {
+            Classification::Unsupported { code, reason } => {
+                assert_eq!(code, codes::DRAG_FORMAT_UNSUPPORTED);
+                assert!(reason.contains("ANSI"), "{reason}");
+            }
+            other => panic!("ANSI-only 不得静默降级，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ansi_描述符与本地路径同批时仍优先本地路径() {
+        let f = DragFacts {
+            formats: vec!["CF_HDROP".into(), "FileGroupDescriptor".into()],
+            hdrop_paths: vec!["C:\\a\\真实.txt".into()],
+            has_ansi_file_descriptor: true,
+            ..facts()
+        };
+        match classify(&f) {
+            Classification::LocalFiles { paths } => {
+                assert_eq!(paths, vec!["C:\\a\\真实.txt".to_string()]);
+            }
+            other => panic!("实际 {other:?}"),
         }
     }
 

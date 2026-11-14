@@ -1595,6 +1595,96 @@ CREATE INDEX idx_dev_acceptance_records_subject
   ON dev_acceptance_records(subject_kind, subject_id, created_at);
 "#,
     ),
+    (
+        49,
+        r#"
+-- v49（项目工作空间 P0）：跨工具的长期工作容器，与 dev_projects（单仓库登记）、
+-- scenarios（启动清单）、workspace_snapshots（现场快照）不是同一概念。
+-- - workspace_projects：kind 限定四类专业方向；status 只允许 active/archived；
+--   root_path 可空，只登记路径，绝不移动/覆盖/删除外部文件；dev_project_id 是
+--   dev_projects.id 的弱引用（无外键），任一方向删除都不级联删除另一方；
+-- - workspace_instances：每个项目一份窗口状态，项目删除时级联清理；
+-- - workspace_items：通用事项/阶段节点（集数、镜头、角色、构建、测试…），
+--   parent_id 自引用级联；status 与 metadata_json 在命令层再校验；
+-- - workspace_task_links：项目 ↔ 现有任务的多对多关联，任务删除时级联清理，
+--   不复制任务内容。
+CREATE TABLE workspace_projects (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('development','game','ai_comic','general')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+  root_path TEXT NOT NULL DEFAULT '',
+  dev_project_id TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_workspace_projects_status
+  ON workspace_projects(status, updated_at DESC);
+CREATE INDEX idx_workspace_projects_dev
+  ON workspace_projects(dev_project_id);
+
+CREATE TABLE workspace_instances (
+  project_id TEXT PRIMARY KEY NOT NULL
+    REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  active_module TEXT NOT NULL DEFAULT 'overview',
+  layout_json TEXT NOT NULL DEFAULT '{}',
+  last_opened_at TEXT
+);
+
+CREATE TABLE workspace_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL
+    REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  parent_id TEXT REFERENCES workspace_items(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'todo'
+    CHECK (status IN ('todo','doing','blocked','done','archived')),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_workspace_items_project
+  ON workspace_items(project_id, status, sort_order);
+CREATE INDEX idx_workspace_items_parent
+  ON workspace_items(parent_id);
+
+CREATE TABLE workspace_task_links (
+  project_id TEXT NOT NULL
+    REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, task_id)
+);
+CREATE INDEX idx_workspace_task_links_task
+  ON workspace_task_links(task_id);
+"#,
+    ),
+    (
+        50,
+        r#"
+-- v50（效率中枢 U2）：把「开发工作台」与既有 Agent 会话/轮次打通，不新建会话或
+-- 任务系统，只加弱引用列（无外键）：
+-- - dev_handoff_packs.agent_source_id / agent_session_external_id：该交接包要交给
+--   哪个 Agent 会话执行；与 task_agent_links 使用同一身份口径 (source_id,
+--   session_external_id)，会话/来源删除后历史版本保留，读侧派生 available；
+-- - dev_acceptance_records.agent_*：人工验收记录可标注「针对哪个 Agent 轮次」，
+--   用于「Agent 已完成轮次」列表去重；记录仍只追加，结论仍必须人工选择。
+ALTER TABLE dev_handoff_packs ADD COLUMN agent_source_id TEXT;
+ALTER TABLE dev_handoff_packs ADD COLUMN agent_session_external_id TEXT;
+ALTER TABLE dev_acceptance_records ADD COLUMN agent_source_id TEXT;
+ALTER TABLE dev_acceptance_records ADD COLUMN agent_session_external_id TEXT;
+ALTER TABLE dev_acceptance_records ADD COLUMN agent_run_external_id TEXT;
+-- 反向查询（某会话的交接包 / 某轮次的验收记录）走这两个索引；
+-- 正常读取仍以主键或 subject 索引为主。
+CREATE INDEX idx_dev_handoff_packs_agent
+  ON dev_handoff_packs(agent_source_id, agent_session_external_id);
+CREATE INDEX idx_dev_acceptance_records_agent
+  ON dev_acceptance_records(agent_source_id, agent_session_external_id, agent_run_external_id);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -2467,6 +2557,12 @@ pub struct Settings {
     /// 本地语音缓存容量上限（MB，1~2048，默认 50）
     #[serde(default = "default_tts_cache_max_mb")]
     pub tts_cache_max_mb: u32,
+    // ── 项目工作空间（v49）──
+    /// 当前打开/关注的工作空间项目 ID（workspace_projects.id；空 = 未设置）。
+    /// 只由用户显式选择；项目删除后保留原值，由读侧校验并如实展示失效状态。
+    /// 窗口几何 `workspace_window_rect` 属于窗口自管内部状态，不进入前端 Settings 快照。
+    #[serde(default)]
+    pub workspace_active_project: String,
 }
 
 fn default_theme() -> String {
@@ -5533,7 +5629,11 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
                     .map_err(AppError::from)
             })
             .unwrap();
-        assert_eq!(version, 48, "新库必须迁移到 v48");
+        assert_eq!(
+            version,
+            MIGRATIONS[MIGRATIONS.len() - 1].0,
+            "新库必须迁移到最新版（v48 之后追加了 v49/v50）"
+        );
 
         // 三张表 + 五个索引（1 个唯一 + 2 个 handoff + 1 个 acceptance）
         db.with_read(|conn| {
@@ -5605,5 +5705,248 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
             Ok::<_, AppError>(())
         })
         .unwrap();
+    }
+
+    /// v49（项目工作空间）：版本号、四张表、索引、CHECK 约束与级联删除。
+    #[test]
+    fn v49_workspace_projects_migration_creates_tables_indexes_and_checks() {
+        let db = Db::open_in_memory().unwrap();
+        let version: i64 = db
+            .with_read(|conn| {
+                conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+                    .map_err(AppError::from)
+            })
+            .unwrap();
+        assert_eq!(
+            version,
+            MIGRATIONS[MIGRATIONS.len() - 1].0,
+            "新库必须迁移到最新版（v49 之后追加了 v50）"
+        );
+
+        db.with_read(|conn| {
+            let tables: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
+                     ('workspace_projects','workspace_instances','workspace_items',
+                      'workspace_task_links')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(tables, 4, "四张新表必须存在");
+            let indexes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
+                     ('idx_workspace_projects_status','idx_workspace_projects_dev',
+                      'idx_workspace_items_project','idx_workspace_items_parent',
+                      'idx_workspace_task_links_task')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(indexes, 5, "五个新索引必须存在");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO workspace_projects
+                 (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+                 VALUES ('w1', '项目', 'development', 'active', 'C:/repo', NULL, '', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            // 非法 kind / status 必须被拦截
+            assert!(conn
+                .execute(
+                    "INSERT INTO workspace_projects
+                     (id, name, kind, status, created_at, updated_at)
+                     VALUES ('w2', '非法', 'music', 'active', ?1, ?1)",
+                    [&now],
+                )
+                .is_err());
+            assert!(conn
+                .execute(
+                    "INSERT INTO workspace_projects
+                     (id, name, kind, status, created_at, updated_at)
+                     VALUES ('w3', '非法', 'general', 'paused', ?1, ?1)",
+                    [&now],
+                )
+                .is_err());
+
+            conn.execute(
+                "INSERT INTO workspace_instances (project_id, active_module, layout_json, last_opened_at)
+                 VALUES ('w1', 'overview', '{}', ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO workspace_items
+                 (id, project_id, parent_id, title, stage, status, sort_order, metadata_json, created_at, updated_at)
+                 VALUES ('i1', 'w1', NULL, '第一集', 'storyboard', 'todo', 0, '{}', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO workspace_items
+                 (id, project_id, parent_id, title, stage, status, sort_order, metadata_json, created_at, updated_at)
+                 VALUES ('i2', 'w1', 'i1', '镜头 1', '', 'doing', 0, '{}', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            assert!(conn
+                .execute(
+                    "INSERT INTO workspace_items
+                     (id, project_id, title, status, created_at, updated_at)
+                     VALUES ('i3', 'w1', '非法状态', 'unknown', ?1, ?1)",
+                    [&now],
+                )
+                .is_err());
+
+            conn.execute(
+                "INSERT INTO tasks (id, title, created_at, updated_at) VALUES ('t1', '任务', ?1, ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+            conn.execute(
+                "INSERT INTO workspace_task_links (project_id, task_id, created_at)
+                 VALUES ('w1', 't1', ?1)",
+                [&now],
+            )
+            .map_err(AppError::from)?;
+
+            // 项目删除级联到实例/事项/关联
+            conn.execute("DELETE FROM workspace_projects WHERE id = 'w1'", [])
+                .map_err(AppError::from)?;
+            for table in [
+                "workspace_instances",
+                "workspace_items",
+                "workspace_task_links",
+            ] {
+                let left: i64 = conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |r| r.get(0))
+                    .map_err(AppError::from)?;
+                assert_eq!(left, 0, "{} 必须随项目级联删除", table);
+            }
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+    }
+
+    /// v50（效率中枢 U2）：两张既有表新增 Agent 弱引用列与索引；
+    /// 用户从 v49 升级时旧版本行必须原样保留，新列默认 NULL（不伪造关联）。
+    #[test]
+    fn v50_agent_links_migration_adds_columns_and_preserves_v49_rows() {
+        let dir = std::env::temp_dir().join(format!("td-mig50-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let now = "2026-11-14T10:00:00+00:00";
+        {
+            let conn = Connection::open(&path).unwrap();
+            // 只应用到 v49（v50 之前最后一条），模拟真实用户库
+            let idx49 = MIGRATIONS.iter().position(|(v, _)| *v == 49).unwrap();
+            apply_migrations(&conn, 0, &MIGRATIONS[..idx49 + 1]).unwrap();
+            conn.execute(
+                "INSERT INTO dev_handoff_packs
+                 (id, task_id, title, version, content_md, source_summary, secret_scan, created_at)
+                 VALUES ('pack-old', 'task-a', '旧交接包', 1, '# 内容', '{}', '{}', ?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO dev_acceptance_records
+                 (id, subject_kind, subject_id, verdict, summary, evidence, created_at)
+                 VALUES ('acc-old', 'task', 'task-a', 'pass', '旧结论', '[]', ?1)",
+                [now],
+            )
+            .unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        db.with_conn(|c| {
+            let version: i64 = c
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(
+                version,
+                MIGRATIONS[MIGRATIONS.len() - 1].0,
+                "升级后必须到最新版"
+            );
+            let pack_cols: Vec<String> = c
+                .prepare("PRAGMA table_info(dev_handoff_packs)")
+                .map_err(AppError::from)?
+                .query_map([], |r| r.get::<_, String>(1))
+                .map_err(AppError::from)?
+                .collect::<Result<_, _>>()
+                .map_err(AppError::from)?;
+            assert!(pack_cols.contains(&"agent_source_id".to_string()));
+            assert!(pack_cols.contains(&"agent_session_external_id".to_string()));
+            let acc_cols: Vec<String> = c
+                .prepare("PRAGMA table_info(dev_acceptance_records)")
+                .map_err(AppError::from)?
+                .query_map([], |r| r.get::<_, String>(1))
+                .map_err(AppError::from)?
+                .collect::<Result<_, _>>()
+                .map_err(AppError::from)?;
+            for col in [
+                "agent_source_id",
+                "agent_session_external_id",
+                "agent_run_external_id",
+            ] {
+                assert!(acc_cols.contains(&col.to_string()), "缺少列 {col}");
+            }
+            let indexes: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
+                     ('idx_dev_handoff_packs_agent','idx_dev_acceptance_records_agent')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(indexes, 2, "两个反向查询索引必须存在");
+
+            // 旧行保留，新列 NULL（不是空串，不伪造「已关联」）
+            let pack = c
+                .query_row(
+                    "SELECT title, version, content_md, agent_source_id, agent_session_external_id
+                     FROM dev_handoff_packs WHERE id = 'pack-old'",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                        ))
+                    },
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(pack, ("旧交接包".into(), 1, "# 内容".into(), None, None));
+            let acc = c
+                .query_row(
+                    "SELECT verdict, summary, agent_source_id, agent_session_external_id,
+                            agent_run_external_id
+                     FROM dev_acceptance_records WHERE id = 'acc-old'",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                        ))
+                    },
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(acc, ("pass".into(), "旧结论".into(), None, None, None));
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

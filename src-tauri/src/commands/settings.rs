@@ -127,6 +127,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "workbench_current_task",
     // 开发工作台（2026-11）：当前关注的开发项目 ID（dev_projects.id；空 = 未设置）
     "workbench_current_project",
+    // 项目工作空间（v49）：当前打开的工作空间项目 ID（workspace_projects.id；空 = 未设置）
+    "workspace_active_project",
 ];
 
 fn enum_of(v: &serde_json::Value, key: &str, allowed: &[&str]) -> AppResult<()> {
@@ -348,6 +350,24 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
             if s.chars().any(|c| c.is_control()) {
                 return Err(AppError::Validation(
                     "workbench_current_project 含非法控制字符".into(),
+                ));
+            }
+            Ok(())
+        }
+        // 项目工作空间当前项目：workspace_projects.id（UUID，64 字符足够），
+        // 空 = 未设置；不校验存在性（项目删除后保留原值，由读侧如实降级）
+        "workspace_active_project" => {
+            let s = v.as_str().ok_or_else(|| {
+                AppError::Validation("workspace_active_project 必须是字符串".into())
+            })?;
+            if s.chars().count() > 64 {
+                return Err(AppError::Validation(
+                    "workspace_active_project 过长".into(),
+                ));
+            }
+            if s.chars().any(|c| c.is_control()) {
+                return Err(AppError::Validation(
+                    "workspace_active_project 含非法控制字符".into(),
                 ));
             }
             Ok(())
@@ -920,6 +940,35 @@ mod tests {
         );
         // 默认值：空串 = 未设置当前项目
         assert_eq!(Settings::default().workbench_current_project, "");
+    }
+
+    /// 项目工作空间当前项目：空/合法 ID 可写，超长与控制字符拒绝，非字符串拒绝。
+    #[test]
+    fn workspace_active_project_is_validated_and_allowlisted() {
+        assert!(ALLOWED_KEYS.contains(&"workspace_active_project"));
+        assert!(validate_setting("workspace_active_project", &serde_json::json!("")).is_ok());
+        assert!(validate_setting("workspace_active_project", &serde_json::json!("42")).is_ok());
+        let long = "9".repeat(65);
+        assert!(
+            validate_setting("workspace_active_project", &serde_json::json!(long)).is_err(),
+            "超过 64 字符必须拒绝"
+        );
+        let max = "9".repeat(64);
+        assert!(validate_setting("workspace_active_project", &serde_json::json!(max)).is_ok());
+        assert!(
+            validate_setting(
+                "workspace_active_project",
+                &serde_json::json!("bad\u{0007}id")
+            )
+            .is_err(),
+            "控制字符必须拒绝"
+        );
+        assert!(
+            validate_setting("workspace_active_project", &serde_json::json!(42)).is_err(),
+            "非字符串必须拒绝"
+        );
+        // 默认值：空串 = 未设置当前项目
+        assert_eq!(Settings::default().workspace_active_project, "");
     }
 
     #[test]
