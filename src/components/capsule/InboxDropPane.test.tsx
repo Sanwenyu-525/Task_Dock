@@ -1292,6 +1292,9 @@ describe("InboxDropPane", () => {
       paths: ["C:\\a.txt", "C:\\b.txt", "C:\\c.txt"],
     });
 
+    await screen.findByText("部分内容未暂存");
+    // 详情默认折叠：展开后才看到成功/失败计数与首条原因
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
     await screen.findByText(/已部分暂存/);
     expect(screen.getByText(/成功 1 项/)).toBeTruthy();
     expect(screen.getByText(/2 项失败（访问被拒绝）/)).toBeTruthy();
@@ -1313,6 +1316,8 @@ describe("InboxDropPane", () => {
     emit({ type: "over", position: { x: 20, y: 20 } });
     emit({ type: "drop", position: { x: 20, y: 20 }, paths: ["C:\\b.txt"] });
 
+    await screen.findByText("暂存失败");
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
     await screen.findByText("有 1 项未能暂存：权限不足");
     expect(screen.queryByText(/已暂存/)).toBeNull();
   });
@@ -1913,6 +1918,59 @@ describe("InboxDropPane 重试失败项（W4）", () => {
     );
   }
 
+  /** 最近暂存接收区的 DOM 节点；模拟坐标命中到它（不改真实布局）。 */
+  function shelfZoneOf(container: HTMLElement): HTMLElement {
+    const zone = container.querySelector(
+      '[data-drop-zone="shelf-recent"]',
+    ) as HTMLElement;
+    expect(zone).toBeTruthy();
+    return zone;
+  }
+
+  /**
+   * 模拟一次完整的原生桥会话：probe(enter) → accepted → payload。
+   * 与 Rust 事件顺序一致；点固定命中提供的元素。
+   */
+  function emitBridgeSession(
+    hit: HTMLElement,
+    options: {
+      operationId: string;
+      payload: Record<string, unknown>;
+      failures?: Array<Record<string, unknown>>;
+      skipped?: number;
+      probeKind?: string;
+      probeCanShelf?: boolean;
+    },
+  ): void {
+    const point = { x: 20, y: 20 };
+    const probe = {
+      kind: options.probeKind ?? "unsupported",
+      count: 1,
+      canShelf: options.probeCanShelf ?? false,
+      canDirectory: false,
+      formats: ["SomeFormat"],
+    };
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => hit;
+    try {
+      emitBridge(BRIDGE_PROBE, { phase: "enter", point, probe });
+      emitBridge(BRIDGE_ACCEPTED, {
+        operationId: options.operationId,
+        point,
+        probe,
+      });
+      emitBridge(BRIDGE_PAYLOAD, {
+        operationId: options.operationId,
+        point,
+        payload: options.payload,
+        failures: options.failures ?? [],
+        skipped: options.skipped ?? 0,
+      });
+    } finally {
+      document.elementFromPoint = original;
+    }
+  }
+
   it("原生桥：链接落在最近暂存 → 只提交 operationId，不把 URL 当路径", async () => {
     dropTargets.mockResolvedValue([target()]);
     commitPayloadShelf.mockResolvedValue({
@@ -2107,10 +2165,328 @@ describe("InboxDropPane 重试失败项（W4）", () => {
     expect(discardPayload).toHaveBeenCalledWith("op-5");
     expect(dropToDirectory).not.toHaveBeenCalled();
     expect(commitPayloadShelf).not.toHaveBeenCalled();
-    // 后端给出具体原因时展示原因，而不是笼统一句「无法识别」。
+    // 结构化状态行：标题说明「无法暂存」，详情折叠；展开后显示脱敏原因。
+    await screen.findByText("此内容无法暂存");
+    expect(screen.getByText("DRAG_FORMAT_UNSUPPORTED")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
     await screen.findByText("来源没有提供可读取的内容");
     document.elementFromPoint = original;
     // 容器变量仅用于保持渲染句柄，避免未使用告警。
     expect(container).toBeTruthy();
+  });
+
+  // ── 结构化拖入状态行（P2）：读取中/成功/部分/失败/不支持 ──────────
+
+  it("DRAG_PAYLOAD_INVALID → 紧凑错误行：短标题、可展开详情、等宽诊断码、查看诊断", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+    const zone = shelfZoneOf(container);
+
+    emitBridgeSession(zone, {
+      operationId: "op-invalid",
+      probeKind: "unsupported",
+      payload: {
+        kind: "unsupported",
+        formats: ["FileGroupDescriptorW"],
+        // Rust 原始结构错误只用于内部诊断，界面不得展示。
+        reason: "虚拟文件描述符不完整：流索引 3 不存在",
+        code: "DRAG_PAYLOAD_INVALID",
+      },
+      failures: [
+        {
+          code: "DRAG_PAYLOAD_INVALID",
+          scope: "virtual-file",
+          format: "FileGroupDescriptorW",
+          reason: "虚拟文件描述符不完整：流索引 3 不存在",
+        },
+      ],
+    });
+
+    await waitFor(() => expect(discardPayload).toHaveBeenCalledTimes(1));
+    const notice = await screen.findByText("读取文件失败");
+    expect(notice.closest(".cap-drop-notice")?.getAttribute("data-drag-notice")).toBe(
+      "error",
+    );
+    // 诊断码单独展示；原始结构错误/路径不进入界面
+    expect(screen.getByText("DRAG_PAYLOAD_INVALID")).toBeTruthy();
+    expect(screen.queryByText(/虚拟文件描述符不完整/)).toBeNull();
+    expect(screen.queryByText(/流索引/)).toBeNull();
+    // 详情默认折叠，点击标题旁的「详情」后展开固定说明
+    expect(screen.queryByText("来源提供的文件描述信息不符合要求。")).toBeNull();
+    const toggle = screen.getByRole("button", { name: /详情/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await screen.findByText("来源提供的文件描述信息不符合要求。");
+
+    // 有 operationId 才给「查看诊断」；导航成功后下发一次性意图
+    fireEvent.click(screen.getByRole("button", { name: "查看诊断" }));
+    expect(openFullAppMock).toHaveBeenCalledWith(
+      "diagnostics",
+      expect.any(Function),
+    );
+    expect(useUiStore.getState().diagnosticsOperationRequest).toEqual({
+      token: 1,
+      operationId: "op-invalid",
+    });
+  });
+
+  it("损坏载荷落在目录卡片：准确失败码不被 dirBlocked 覆盖", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+    const card = container.querySelector(
+      '[data-drop-target="t1"]',
+    ) as HTMLElement;
+
+    emitBridgeSession(card, {
+      operationId: "op-card-invalid",
+      payload: {
+        kind: "unsupported",
+        formats: ["FileGroupDescriptorW"],
+        reason: "虚拟文件描述符不完整",
+        code: "DRAG_PAYLOAD_INVALID",
+      },
+      failures: [
+        {
+          code: "DRAG_PAYLOAD_INVALID",
+          scope: "virtual-file",
+          format: "FileGroupDescriptorW",
+          reason: "虚拟文件描述符不完整",
+        },
+      ],
+    });
+
+    await waitFor(() =>
+      expect(discardPayload).toHaveBeenCalledWith("op-card-invalid"),
+    );
+    // 落在目录卡片上时，「内容读不出来」应优先展示准确码与详情入口，
+    // 而不是被「此内容不能直接投递到文件夹」覆盖。
+    expect(await screen.findByText("读取文件失败")).toBeTruthy();
+    expect(screen.getByText("DRAG_PAYLOAD_INVALID")).toBeTruthy();
+    expect(screen.queryByText("此内容不能直接投递到文件夹")).toBeNull();
+    expect(commitPayloadDirectory).not.toHaveBeenCalled();
+  });
+
+  it("读取中 → spinner + 「正在读取」，不显示错误；成功结果接管且不误报失败", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    commitPayloadShelf.mockResolvedValue({
+      operationId: "op-ok",
+      kind: "url",
+      added: [shelfItem({ kind: "link", display_name: "example.com" })],
+      failed: [],
+      failures: [],
+      skipped: 0,
+    });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+    const zone = shelfZoneOf(container);
+    const point = { x: 20, y: 20 };
+    const probe = {
+      kind: "url",
+      count: 1,
+      canShelf: true,
+      canDirectory: false,
+      formats: ["UniformResourceLocatorW"],
+    };
+
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => zone;
+    emitBridge(BRIDGE_PROBE, { phase: "enter", point, probe });
+    emitBridge(BRIDGE_ACCEPTED, { operationId: "op-ok", point, probe });
+    // 载荷尚未到达：结构化读取中状态，带 spinner，不是错误
+    const busy = await screen.findByText("正在读取拖入内容…");
+    const busyRow = busy.closest(".cap-drop-notice") as HTMLElement;
+    expect(busyRow.getAttribute("data-drag-notice")).toBe("busy");
+    expect(busyRow.querySelector(".spin")).toBeTruthy();
+    expect(screen.queryByText("读取文件失败")).toBeNull();
+    expect(container.querySelector('[data-drag-notice="error"]')).toBeNull();
+
+    emitBridge(BRIDGE_PAYLOAD, {
+      operationId: "op-ok",
+      point,
+      payload: { kind: "url", url: "https://example.com", isImage: false },
+      failures: [],
+      skipped: 0,
+    });
+    document.elementFromPoint = original;
+
+    await waitFor(() => expect(commitPayloadShelf).toHaveBeenCalledTimes(1));
+    const success = await screen.findByText("已暂存 1 项");
+    expect(
+      success.closest(".cap-drop-notice")?.getAttribute("data-drag-notice"),
+    ).toBe("success");
+    expect(screen.queryByText("读取文件失败")).toBeNull();
+    expect(screen.queryByText("暂存失败")).toBeNull();
+  });
+
+  it("部分成功 → warn 状态行（成功/失败计数 + 可展开原因），不冒充失败或成功", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    commitPayloadShelf.mockResolvedValue({
+      operationId: "op-part",
+      kind: "virtual-files",
+      added: [shelfItem({ display_name: "附件-1.txt" })],
+      failed: [
+        {
+          path: "FileGroupDescriptorW",
+          reason: "虚拟文件读取失败",
+          code: "DRAG_VIRTUAL_FILE_READ_FAILED",
+        },
+      ],
+      failures: [],
+      skipped: 0,
+    });
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+    const zone = shelfZoneOf(container);
+
+    emitBridgeSession(zone, {
+      operationId: "op-part",
+      probeKind: "virtual-files",
+      probeCanShelf: true,
+      payload: { kind: "virtual-files", items: [], count: 2 },
+    });
+
+    await waitFor(() => expect(commitPayloadShelf).toHaveBeenCalledTimes(1));
+    const title = await screen.findByText("部分内容未暂存");
+    const notice = title.closest(".cap-drop-notice") as HTMLElement;
+    expect(notice.getAttribute("data-drag-notice")).toBe("warn");
+    expect(screen.getByText("DRAG_VIRTUAL_FILE_READ_FAILED")).toBeTruthy();
+    expect(screen.queryByText("暂存失败")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    await screen.findByText(/成功 1 项，1 项失败/);
+    await screen.findByText(/虚拟文件读取失败/);
+  });
+
+  it("错误行在文档流内：不进入投递网格、可关闭，关闭后新 enter 仍能进入拖拽态", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+    const zone = shelfZoneOf(container);
+
+    emitBridgeSession(zone, {
+      operationId: "op-err",
+      payload: {
+        kind: "unsupported",
+        formats: ["SomeFormat"],
+        reason: "来源没有提供可读取的内容",
+        code: "DRAG_FORMAT_UNSUPPORTED",
+      },
+    });
+
+    const title = await screen.findByText("此内容无法暂存");
+    const notice = title.closest(".cap-drop-notice") as HTMLElement;
+    const grid = container.querySelector(".cap-drop-grid") as HTMLElement;
+    expect(grid).toBeTruthy();
+    expect(grid.contains(notice)).toBe(false);
+    expect(notice.parentElement?.classList.contains("cap-drop")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    await waitFor(() => expect(screen.queryByText("此内容无法暂存")).toBeNull());
+    expect(container.querySelector(".cap-drop-notice")).toBeNull();
+
+    // 关闭后不残留拖拽态；下一次 enter 能重新进入可投递形态
+    expect(container.querySelector(".cap-drop-grid")?.className).not.toContain(
+      "is-dragging",
+    );
+    const card = container.querySelector('[data-drop-target="t1"]') as HTMLElement;
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => card;
+    emitBridge(BRIDGE_PROBE, {
+      phase: "enter",
+      point: { x: 20, y: 20 },
+      probe: {
+        kind: "local-files",
+        count: 1,
+        canShelf: true,
+        canDirectory: true,
+        formats: ["CF_HDROP"],
+      },
+    });
+    document.elementFromPoint = original;
+    await waitFor(() =>
+      expect(container.querySelector(".cap-drop-grid")?.className).toContain(
+        "is-dragging",
+      ),
+    );
+  });
+
+  it("旧会话迟到载荷不清掉新会话的读取态", async () => {
+    dropTargets.mockResolvedValue([target()]);
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("工作资料");
+    await waitBridgeReady();
+    const zone = shelfZoneOf(container);
+    const original = document.elementFromPoint;
+    document.elementFromPoint = () => zone;
+
+    const probeOf = (kind: string) => ({
+      kind,
+      count: 1,
+      canShelf: true,
+      canDirectory: false,
+      formats: ["UniformResourceLocatorW"],
+    });
+    // 旧会话受理（point 为 null：迟到载荷不会命中任何接收区，只释放后端）。
+    emitBridge(BRIDGE_PROBE, {
+      phase: "enter",
+      point: null,
+      probe: probeOf("url"),
+    });
+    emitBridge(BRIDGE_ACCEPTED, {
+      operationId: "op-old",
+      point: null,
+      probe: probeOf("url"),
+    });
+    // 新会话紧接着受理：界面进入新的「正在读取」。
+    emitBridge(BRIDGE_PROBE, {
+      phase: "enter",
+      point: { x: 20, y: 20 },
+      probe: probeOf("url"),
+    });
+    emitBridge(BRIDGE_ACCEPTED, {
+      operationId: "op-new",
+      point: null,
+      probe: probeOf("url"),
+    });
+    expect(await screen.findByText("正在读取拖入内容…")).toBeTruthy();
+
+    // 旧载荷此刻才到：只允许释放旧后端会话，不能抹掉新会话的读取态。
+    emitBridge(BRIDGE_PAYLOAD, {
+      operationId: "op-old",
+      point: null,
+      payload: { kind: "url", url: "https://old.example", isImage: false },
+      failures: [],
+      skipped: 0,
+    });
+    await waitFor(() => expect(discardPayload).toHaveBeenCalledWith("op-old"));
+    expect(screen.getByText("正在读取拖入内容…")).toBeTruthy();
+
+    // 新载荷到达后才结束读取态，并按真实结果给出成功反馈。
+    commitPayloadShelf.mockResolvedValue({
+      operationId: "op-new",
+      kind: "url",
+      added: [shelfItem({ kind: "link", display_name: "example.com" })],
+      failed: [],
+      failures: [],
+      skipped: 0,
+    });
+    emitBridge(BRIDGE_PAYLOAD, {
+      operationId: "op-new",
+      point: { x: 20, y: 20 },
+      payload: { kind: "url", url: "https://new.example", isImage: false },
+      failures: [],
+      skipped: 0,
+    });
+    await waitFor(() => expect(commitPayloadShelf).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("已暂存 1 项")).toBeTruthy();
+    expect(screen.queryByText("正在读取拖入内容…")).toBeNull();
+    document.elementFromPoint = original;
   });
 });

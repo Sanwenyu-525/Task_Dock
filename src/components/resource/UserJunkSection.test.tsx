@@ -215,6 +215,32 @@ describe("UserJunkSection", () => {
     expect(screen.queryByText(/confirmTitle/)).toBeNull();
   });
 
+  it("重新扫描清空上一次的危险类别勾选，不沿用旧授权", async () => {
+    mocks.preview
+      .mockResolvedValueOnce(PREVIEW)
+      .mockResolvedValueOnce({ ...PREVIEW, previewId: "junk-preview-2" });
+    render(<UserJunkSection />);
+    fireEvent.click(screen.getByRole("button", { name: "resource.junk.scan" }));
+    const recycle = await screen.findByRole("checkbox", {
+      name: "resource.junk.category.recycleBin",
+    });
+    fireEvent.click(recycle);
+    expect(cleanButton().disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "resource.junk.rescan" }));
+    await waitFor(() => expect(mocks.preview).toHaveBeenCalledTimes(2));
+
+    // 新预览到达后：旧勾选全部失效，清理按钮回到禁用。
+    expect(await screen.findByText("resource.junk.selectionReset")).toBeTruthy();
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes).toHaveLength(4);
+    expect(boxes.every((box) => !box.checked)).toBe(true);
+    expect(cleanButton().disabled).toBe(true);
+    expect(screen.queryByText(/resource\.junk\.confirmTitle/)).toBeNull();
+    // 回收站类别始终带不可恢复标记
+    expect(screen.getByText("resource.junk.irreversible")).toBeTruthy();
+  });
+
   it("扫描失败显示错误，不伪造 0 B", async () => {
     mocks.preview.mockRejectedValueOnce(new Error("CLEANUP_BUSY"));
     render(<UserJunkSection />);

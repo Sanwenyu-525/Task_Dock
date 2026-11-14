@@ -21,6 +21,7 @@ import { useLocaleStore } from "../../i18n";
 import DevAcceptanceSection from "./DevAcceptanceSection";
 import type {
   DevAcceptanceRecord,
+  DevAgentRunCandidate,
   PlanningAgentFeatureLink,
   PlanningFeature,
   Task,
@@ -100,6 +101,9 @@ function record(patch: Partial<DevAcceptanceRecord>): DevAcceptanceRecord {
     summary: "全部通过",
     evidence: [],
     createdAt: "2026-11-12T09:00:00Z",
+    agentSourceId: null,
+    agentSessionExternalId: null,
+    agentRunExternalId: null,
     ...patch,
   };
 }
@@ -111,6 +115,7 @@ const {
   planningListFeatures,
   devAcceptanceRecordList,
   devAcceptanceRecordCreate,
+  devAcceptanceAgentRuns,
   createTask,
   copyText,
 } = vi.hoisted(() => ({
@@ -120,6 +125,7 @@ const {
   planningListFeatures: vi.fn(),
   devAcceptanceRecordList: vi.fn(),
   devAcceptanceRecordCreate: vi.fn(),
+  devAcceptanceAgentRuns: vi.fn(),
   createTask: vi.fn(),
   copyText: vi.fn(),
 }));
@@ -134,6 +140,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     planningListFeatures,
     devAcceptanceRecordList,
     devAcceptanceRecordCreate,
+    devAcceptanceAgentRuns,
     createTask,
     updateSettings: vi.fn(async (patch: Record<string, unknown>) => ({
       ...(useSettingsStore.getState().settings ?? {}),
@@ -165,6 +172,7 @@ function seedHappyPath() {
   planningListAgentFeatureLinks.mockResolvedValue([FIX_FEATURE_LINK]);
   planningListFeatures.mockResolvedValue([FIX_FEATURE]);
   devAcceptanceRecordList.mockResolvedValue({ records: [] });
+  devAcceptanceAgentRuns.mockResolvedValue({ runs: [], truncated: false });
 }
 
 beforeEach(() => {
@@ -253,6 +261,10 @@ describe("DevAcceptanceSection · 验收动作与证据", () => {
         verdict: "pass",
         summary: "npm test 全量通过",
         evidence: [],
+        // 未选中 Agent 轮次时不得伪造来源
+        agentSourceId: null,
+        agentSessionExternalId: null,
+        agentRunExternalId: null,
       });
     });
     // 创建成功后重读记录列表
@@ -383,5 +395,126 @@ describe("DevAcceptanceSection · 追加式历史", () => {
     // 追加式：历史记录区没有任何「编辑 / 删除」按钮
     expect(screen.queryAllByRole("button", { name: "删除" })).toHaveLength(0);
     expect(screen.queryAllByRole("button", { name: "编辑" })).toHaveLength(0);
+  });
+});
+
+const FIX_RUN: DevAgentRunCandidate = {
+  sourceId: "codex",
+  sessionExternalId: "sess-ext-1",
+  sessionId: "sess-row-1",
+  sessionTitle: "实现交接包关联",
+  sessionStatus: "idle",
+  linkOrigin: "user",
+  runExternalId: "run-ext-9",
+  runTaskTitle: "实现交接包会话关联",
+  runStatus: "completed",
+  endedAt: "2026-11-14T09:30:00Z",
+  updatedAt: "2026-11-14T09:30:00Z",
+  acceptedRecordId: null,
+  acceptedVerdict: null,
+  acceptedAt: null,
+};
+
+describe("DevAcceptanceSection · Agent 已完成轮次（v50）", () => {
+  it("已完成轮次可选中登记：创建记录携带来源，成功后刷新候选", async () => {
+    devAcceptanceAgentRuns.mockResolvedValue({ runs: [FIX_RUN], truncated: false });
+    render(<DevAcceptanceSection />);
+    expect(await screen.findByText("Agent 已完成轮次")).toBeTruthy();
+    expect(await screen.findByText("实现交接包会话关联")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "登记验收" }));
+    expect(await screen.findByText("本次结论将关联轮次：实现交接包会话关联")).toBeTruthy();
+
+    const summaryInput = screen.getByLabelText("验收结论摘要（必填）") as HTMLInputElement;
+    fireEvent.change(summaryInput, { target: { value: "人工核对通过" } });
+    fireEvent.click(screen.getByRole("button", { name: "验收通过" }));
+
+    await waitFor(() => {
+      expect(devAcceptanceRecordCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          subjectKind: "task",
+          subjectId: "t1",
+          verdict: "pass",
+          agentSourceId: "codex",
+          agentSessionExternalId: "sess-ext-1",
+          agentRunExternalId: "run-ext-9",
+        }),
+      );
+    });
+    // 创建成功后重读候选（已验收状态由后端派生）
+    await waitFor(() => {
+      expect(devAcceptanceAgentRuns.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("Agent 完成不等于通过：未选轮次时动作仍要求 summary，且不会自动产生结论", async () => {
+    devAcceptanceAgentRuns.mockResolvedValue({ runs: [FIX_RUN], truncated: false });
+    render(<DevAcceptanceSection />);
+    await screen.findByText("实现交接包会话关联");
+    // 未填写 summary：验收动作全部禁用（不存在「完成即通过」的捷径）
+    expect(screen.getByRole("button", { name: "验收通过" })).toHaveProperty("disabled", true);
+    // 也没有任何自动登记按钮
+    expect(screen.queryByRole("button", { name: "自动通过" })).toBeNull();
+  });
+
+  it("已登记验收的轮次显示结论徽章，不再提供登记入口", async () => {
+    devAcceptanceAgentRuns.mockResolvedValue({
+      runs: [
+        {
+          ...FIX_RUN,
+          acceptedRecordId: "r-old",
+          acceptedVerdict: "fail",
+          acceptedAt: "2026-11-14T10:00:00Z",
+        },
+      ],
+      truncated: false,
+    });
+    render(<DevAcceptanceSection />);
+    expect(await screen.findByText(/已验收 · 验收不通过/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "登记验收" })).toBeNull();
+  });
+
+  it("候选读取失败：如实提示，不影响手工验收", async () => {
+    devAcceptanceAgentRuns.mockRejectedValue(new Error("task links unavailable"));
+    render(<DevAcceptanceSection />);
+    expect(await screen.findByText(/Agent 轮次读取失败/)).toBeTruthy();
+    // 手工验收仍可用
+    const summaryInput = screen.getByLabelText("验收结论摘要（必填）") as HTMLInputElement;
+    fireEvent.change(summaryInput, { target: { value: "手工核对" } });
+    fireEvent.click(screen.getByRole("button", { name: "验收通过" }));
+    await waitFor(() => expect(devAcceptanceRecordCreate).toHaveBeenCalledTimes(1));
+  });
+
+  it("历史记录展示关联轮次来源", async () => {
+    devAcceptanceAgentRuns.mockResolvedValue({ runs: [FIX_RUN], truncated: false });
+    devAcceptanceRecordList.mockResolvedValue({
+      records: [
+        record({
+          id: "r-linked",
+          summary: "轮次已核对",
+          agentSourceId: "codex",
+          agentSessionExternalId: "sess-ext-1",
+          agentRunExternalId: "run-ext-9",
+        }),
+      ],
+    });
+    render(<DevAcceptanceSection />);
+    expect(await screen.findByText("关联 Agent 轮次：实现交接包会话关联")).toBeTruthy();
+  });
+
+  it("候选被截断时如实提示条数", async () => {
+    devAcceptanceAgentRuns.mockResolvedValue({ runs: [FIX_RUN], truncated: true });
+    render(<DevAcceptanceSection />);
+    expect(await screen.findByText(/仅显示最近 1 个轮次/)).toBeTruthy();
+  });
+
+  it("交接包绑定的会话：来源标注「交接包关联」，不冒充手工关联", async () => {
+    devAcceptanceAgentRuns.mockResolvedValue({
+      runs: [{ ...FIX_RUN, linkOrigin: "handoff" }],
+      truncated: false,
+    });
+    render(<DevAcceptanceSection />);
+    expect(await screen.findByText("交接包关联")).toBeTruthy();
+    expect(screen.queryByText("手工关联")).toBeNull();
   });
 });

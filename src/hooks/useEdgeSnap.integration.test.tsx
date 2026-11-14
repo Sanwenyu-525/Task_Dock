@@ -485,17 +485,17 @@ describe("停靠：窗口贴边 + 区域切轨道", () => {
     expect(saved.center).toBe(580);
   });
 
-  it("窗口小于胶囊容器时先撑到 544×446（否则面板放不下）", async () => {
+  it("窗口小于胶囊容器时先撑到 544×476（否则面板放不下）", async () => {
     world.size = { width: 280, height: 140 }; // minimal 模式
     mount();
     await advance(50);
     await dockLeft();
 
-    expect(world.sizeCalls.at(-1)).toEqual({ w: 544, h: 446 });
+    expect(world.sizeCalls.at(-1)).toEqual({ w: 544, h: 476 });
     expect(phase()).toBe("docked-visible");
   });
 
-  it("Aero Snap 半屏尺寸（1280×690）在停靠时归一为容器 544×446", async () => {
+  it("Aero Snap 半屏尺寸（1280×690）在停靠时归一为容器 544×476", async () => {
     world.pos = { x: 320, y: 300 };
     world.size = { width: 1280, height: 690 }; // Windows 先把窗口吸成左半屏
     mount();
@@ -505,7 +505,7 @@ describe("停靠：窗口贴边 + 区域切轨道", () => {
     await advance(400);
 
     expect(phase()).toBe("docked-visible");
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     expect(world.pos.x).toBe(0);
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
@@ -692,9 +692,9 @@ describe("重启恢复与唤回", () => {
 
     expect(phase()).toBe("docked-hidden");
     expect(world.pos.x).toBe(0);
-    // 停靠时窗口归一为容器高 446，中心 516 → y = 516 - 223 = 293
-    expect(world.pos.y).toBe(293);
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    // 停靠时窗口归一为容器高 476，中心 516 → y = 516 - 238 = 278
+    expect(world.pos.y).toBe(278);
+    expect(world.size).toEqual({ width: 544, height: 476 });
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
 
@@ -859,7 +859,7 @@ describe("解除吸附", () => {
     mount();
     await advance(50);
     await dockLeft();
-    expect(world.size).toEqual({ width: 544, height: 446 }); // 停靠容器
+    expect(world.size).toEqual({ width: 544, height: 476 }); // 停靠容器
 
     world.swallowModeSizeCalls = 1; // 第一次 applyMode 返回成功但尺寸未变
     await dragTo(120, 300);
@@ -869,7 +869,7 @@ describe("解除吸附", () => {
     expect(world.modeCalls.filter((m) => m === "full").length).toBeGreaterThanOrEqual(2);
     expect(world.size).toEqual({ width: 400, height: 560 }); // full 模式已真正恢复
     // 任何写入都不得是胶囊容器尺寸
-    expect(world.rectWrites.some((r) => r.w === 544 && r.h === 446)).toBe(false);
+    expect(world.rectWrites.some((r) => r.w === 544 && r.h === 476)).toBe(false);
   });
 
   it("重试用尽仍被吞掉：有界停止并把容器尺寸挡在 window_rect 之外", async () => {
@@ -883,7 +883,7 @@ describe("解除吸附", () => {
 
     expect(phase()).toBe("free");
     expect(world.modeCalls.filter((m) => m === "full")).toHaveLength(4);
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     expect(world.rectWrites).toHaveLength(0);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
@@ -1114,7 +1114,7 @@ describe("停靠失败后的窗口几何回滚", () => {
     await advance(600);
 
     expect(phase()).toBe("candidate");
-    expect(world.sizeCalls.at(-1)).toEqual({ w: 280, h: 140 }); // 不遗留 544×446
+    expect(world.sizeCalls.at(-1)).toEqual({ w: 280, h: 140 }); // 不遗留 544×476
     expect(world.setPositionCalls).toHaveLength(0);
     expect(world.regionCalls).toHaveLength(0);
     expect(world.snapWrites).toHaveLength(0);
@@ -1131,7 +1131,7 @@ describe("停靠失败后的窗口几何回滚", () => {
 
     // §5.1：setSize 失败后不得继续 move/region
     expect(phase()).toBe("candidate");
-    expect(world.sizeCalls.every((c) => c.w === 544 && c.h === 446)).toBe(true);
+    expect(world.sizeCalls.every((c) => c.w === 544 && c.h === 476)).toBe(true);
     expect(world.setPositionCalls).toHaveLength(0);
     expect(world.regionCalls).toHaveLength(0);
     expect(world.snapWrites).toHaveLength(0);
@@ -1244,7 +1244,7 @@ describe("磁力层联动", () => {
     mount();
     await advance(50);
     await dockLeft();
-    expect(world.magnetDockCalls.at(-1)).toEqual({ edge: "left", x: 0, y: 357 });
+    expect(world.magnetDockCalls.at(-1)).toEqual({ edge: "left", x: 0, y: 342 }); // 轨道中心 = y 342 + 476/2
 
     await dragTo(120, 300);
     await advance(2200);
@@ -1280,9 +1280,9 @@ describe("磁力层联动", () => {
     expect(phase()).toBe("docked-visible");
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
     // 沿边位置写回基准与持久化（重启/断连恢复不会回到旧位置）
-    // 窗口左上角基准（沿边 = y）；胶囊中心另算 = 340 + 446/2
+    // 窗口左上角基准（沿边 = y）；胶囊中心另算 = 340 + 476/2
     expect(world.magnetDockCalls.at(-1)).toEqual({ edge: "left", x: 0, y: 340 });
-    expect(world.snapWrites.at(-1)?.center).toBe(340 + 223);
+    expect(world.snapWrites.at(-1)?.center).toBe(340 + 238);
   });
 
   it("法向拖出超过提交阈值：解除", async () => {
@@ -1473,7 +1473,7 @@ describe("完整面板与停靠形态事务", () => {
     mount();
     await advance(50);
     await dockLeft();
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
 
     await dragTo(120, 300);
     await advance(2600);
@@ -1505,7 +1505,7 @@ describe("完整面板与停靠形态事务", () => {
     await advance(800);
     expect(phase()).toBe("docked-hidden");
 
-    expect(world.rectWrites.some((r) => r.w === 544 && r.h === 446)).toBe(false);
+    expect(world.rectWrites.some((r) => r.w === 544 && r.h === 476)).toBe(false);
   });
 
   it("6) full → capsule：原地收成胶囊（容器尺寸 + 轨道区域）", async () => {
@@ -1520,7 +1520,7 @@ describe("完整面板与停靠形态事务", () => {
     await setPref("capsule");
 
     expect(phase()).toBe("docked-hidden");
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
 
@@ -1549,7 +1549,7 @@ describe("完整面板与停靠形态事务", () => {
     // 等待切换结果期间光标不在轨道上，相位会先自动折叠；关键是**没有**进入
     // docked-full，且几何仍是胶囊容器、偏好回滚到胶囊。
     expect(phase()).toBe("docked-hidden");
-    expect(world.size).toEqual({ width: 544, height: 446 }); // 几何回滚到胶囊容器
+    expect(world.size).toEqual({ width: 544, height: 476 }); // 几何回滚到胶囊容器
     expect(useSettingsStore.getState().settings?.snap_display_mode).toBe("capsule");
   });
 
@@ -1592,7 +1592,7 @@ describe("完整面板与停靠形态事务", () => {
     await advance(3400);
 
     expect(world.pos.x).toBe(1056); // 1600 - 544
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     // 高频推进会让光标离开轨道而自动隐藏；隐藏不改变窗口位置（新模型只换区域）。
     expect(phase()).toBe("docked-hidden");
   });
@@ -1601,7 +1601,7 @@ describe("完整面板与停靠形态事务", () => {
     mount();
     await advance(50);
     await dockLeft();
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
 
     world.monitors = [
       {
@@ -1614,8 +1614,8 @@ describe("完整面板与停靠形态事务", () => {
     ];
     await advance(3400);
 
-    expect(world.sizeCalls.at(-1)).toEqual({ w: 816, h: 669 });
-    expect(world.size).toEqual({ width: 816, height: 669 });
+    expect(world.sizeCalls.at(-1)).toEqual({ w: 816, h: 714 });
+    expect(world.size).toEqual({ width: 816, height: 714 });
     expect(world.pos.x).toBe(0);
     expect(phase()).toBe("docked-hidden");
   });
@@ -1647,8 +1647,8 @@ describe("完整面板与停靠形态事务", () => {
     await advance(500);
 
     expect(phase()).toBe("docked-hidden");
-    expect(world.pos).toEqual({ x: 3296, y: 293 }); // 1920+1920-544；0+516-223
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.pos).toEqual({ x: 3296, y: 278 }); // 1920+1920-544；0+516-223
+    expect(world.size).toEqual({ width: 544, height: 476 });
   });
 
   it("13) 旧记录兼容（无比例/显示器）：用记录里的绝对中心", async () => {
@@ -1657,7 +1657,7 @@ describe("完整面板与停靠形态事务", () => {
     await advance(500);
 
     expect(phase()).toBe("docked-hidden");
-    expect(world.pos).toEqual({ x: 0, y: 293 });
+    expect(world.pos).toEqual({ x: 0, y: 278 });
   });
 
   it("14) 比例优先：越界的旧绝对中心被忽略，按比例重新落点", async () => {
@@ -1666,7 +1666,7 @@ describe("完整面板与停靠形态事务", () => {
     await advance(500);
 
     expect(phase()).toBe("docked-hidden");
-    expect(world.pos).toEqual({ x: 0, y: 35 }); // 0.25*1032 = 258 → 258-223
+    expect(world.pos).toEqual({ x: 0, y: 20 }); // 0.25*1032 = 258 → 258-238
   });
 });
 
@@ -1817,7 +1817,7 @@ describe("临时停靠形态与会话隔离", () => {
 
     await dockLeft();
     expect(phase()).toBe("docked-visible");
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     expect(pref()).toBe("capsule");
   });
 
@@ -1832,7 +1832,7 @@ describe("临时停靠形态与会话隔离", () => {
 
     await tempForm("capsule");
     expect(phase()).toBe("docked-hidden");
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     expect(pref()).toBe("full");
 
     await dragTo(120, 300);
@@ -1857,7 +1857,7 @@ describe("临时停靠形态与会话隔离", () => {
     // 没有进入 docked-full，几何仍是胶囊容器；偏好保持 capsule（区别于
     // requestDockForm 的「偏好回滚」，这里本来就没写过偏好）。
     expect(phase()).not.toBe("docked-full");
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     expect(pref()).toBe("capsule");
   });
 
@@ -1901,7 +1901,7 @@ describe("临时停靠形态与会话隔离", () => {
     await advance(300);
     await dockLeft();
     expect(phase()).toBe("docked-visible");
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
   });
 
   it("A6) 快速连续临时切换：只落最后一次目标，偏好不变", async () => {
@@ -1940,7 +1940,7 @@ describe("临时停靠形态与会话隔离", () => {
     await advance(1200);
 
     expect(["docked-visible", "docked-hidden"]).toContain(phase());
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     expect(pref()).toBe("capsule");
   });
 
@@ -1989,13 +1989,13 @@ describe("临时停靠形态与会话隔离", () => {
       name: "左缘",
       drag: [20, 300] as const,
       fullSize: { width: 400, height: 560 },
-      capsuleSize: { width: 544, height: 446 },
+      capsuleSize: { width: 544, height: 476 },
     },
     {
       name: "右缘",
       drag: [1500, 300] as const,
       fullSize: { width: 400, height: 560 },
-      capsuleSize: { width: 544, height: 446 },
+      capsuleSize: { width: 544, height: 476 },
     },
     {
       name: "上缘",
@@ -2131,9 +2131,9 @@ describe("沿边拖动的吸附意图", () => {
     await move(0, 700);
     await advance(2200);
     expect(["docked-visible", "docked-hidden"]).toContain(phase());
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     // 沿边位置更新、形态未被误切。
-    expect(world.snapWrites.at(-1)?.center).toBe(savedBefore.center === null ? null : 923);
+    expect(world.snapWrites.at(-1)?.center).toBe(savedBefore.center === null ? null : 938);
   });
 });
 
@@ -2409,7 +2409,7 @@ describe("Edge Tab：收起 / 恢复（复用胶囊区域事务）", () => {
 
     expect(phase()).toBe("docked-tab");
     expect(world.pos.x).toBe(0);
-    expect(world.pos.y).toBe(293);
+    expect(world.pos.y).toBe(278);
     expect(lastRegion()).toEqual({ mode: "tab", edge: "left" });
   });
 });
@@ -2460,7 +2460,7 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
     await advance(50);
     await dockLeft();
     expect(phase()).toBe("docked-visible");
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
 
     // ① 抓起胶囊拖离：首个越过磁吸退出阈值的事件触发解除（几何恢复随之启动）
     await dragTo(40, 300);
@@ -2481,7 +2481,7 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
     await advance(4000);
     expect(["docked-visible", "docked-hidden"]).toContain(phase());
     expect(world.pos.x).toBe(0);
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
     // 偏好不得被拖离/再吸附改写（store 未加载设置时引擎按缺省 capsule 回退）
     expect(useSettingsStore.getState().settings?.snap_display_mode ?? "capsule").toBe("capsule");
@@ -2537,7 +2537,7 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
     // 光标可能已触发空闲收起（docked-hidden 只能从停靠相位到达，同样证明吸附）
     expect(["docked-visible", "docked-hidden"]).toContain(phase());
     expect(world.pos.x).toBe(0);
-    expect(world.size).toEqual({ width: 544, height: 446 });
+    expect(world.size).toEqual({ width: 544, height: 476 });
   });
 
   it("D4) 同一手势内拖离再拖回原边：识别为新一轮吸附", async () => {
@@ -2603,9 +2603,9 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
     await advance(3400);
     expect(["docked-visible", "docked-hidden"]).toContain(phase());
     const restoreWrite = world.sizeCalls.findIndex((s) => s.w === 1000 && s.h === 700);
-    // 首次停靠也写过 544×446：只找恢复写回**之后**的那次（再吸附的容器重建）
+    // 首次停靠也写过 544×476：只找恢复写回**之后**的那次（再吸附的容器重建）
     const dockWrite = world.sizeCalls.findIndex(
-      (s, i) => i > restoreWrite && s.w === 544 && s.h === 446,
+      (s, i) => i > restoreWrite && s.w === 544 && s.h === 476,
     );
     expect(restoreWrite).toBeGreaterThanOrEqual(0);
     expect(dockWrite).toBeGreaterThan(restoreWrite);
@@ -2646,7 +2646,7 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
     await advance(50);
     await dockLeft();
     expect(phase()).toBe("docked-visible");
-    expect(world.size).toEqual({ width: 680, height: 558 }); // 544×446 × 1.25
+    expect(world.size).toEqual({ width: 680, height: 595 }); // 544×476 × 1.25
 
     await dragTo(48, 300); // 物理像素：48 > 38 退出阈值
     await anchorDragTo(375, 375);
@@ -2660,7 +2660,7 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
 
     expect(["docked-visible", "docked-hidden"]).toContain(phase());
     expect(world.pos.x).toBe(0);
-    expect(world.size).toEqual({ width: 680, height: 558 });
+    expect(world.size).toEqual({ width: 680, height: 595 });
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
 
@@ -2673,7 +2673,7 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
 
     for (let round = 1; round <= 3; round += 1) {
       expect(["docked-visible", "docked-hidden"]).toContain(phase());
-      expect(world.size).toEqual({ width: 544, height: 446 });
+      expect(world.size).toEqual({ width: 544, height: 476 });
       const anchorCallsBefore = world.undockAnchorCalls.length;
 
       // 与 D1 相同的时序：拖离触发解除（后台恢复启动）→ 锚定帧 →
@@ -2691,7 +2691,7 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
 
       expect(["docked-visible", "docked-hidden"]).toContain(phase());
       expect(world.pos.x).toBe(0);
-      expect(world.size).toEqual({ width: 544, height: 446 });
+      expect(world.size).toEqual({ width: 544, height: 476 });
       expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
       // 每轮恰好一次锚定请求：解除路径不跨轮重复请求、不泄漏
       expect(world.undockAnchorCalls.length).toBe(anchorCallsBefore + 1);
@@ -2767,7 +2767,7 @@ describe("拖离后重新吸附（capsule-redock 回归）", () => {
 
     expect(["docked-visible", "docked-hidden"]).toContain(phase());
     expect(world.pos.x).toBe(0);
-    expect(world.size).toEqual({ width: 680, height: 558 }); // 容器 544×446 × 1.25
+    expect(world.size).toEqual({ width: 680, height: 595 }); // 容器 544×476 × 1.25
     expect(lastRegion()).toEqual({ mode: "rail", edge: "left" });
   });
 
@@ -2906,17 +2906,18 @@ describe("Edge Tab 异步拖动一致性", () => {
     await act(async () => {
       const s = useEdgeSnapStore.getState();
       s.beginTabDrag?.();
-      s.dragTabBy?.(60);
+      s.dragTabBy?.(-60);
       s.endTabDrag?.();
       // 不等待上一轮 IPC 落地，立即开始下一轮（delta 相对新会话基准）
       s.beginTabDrag?.();
-      s.dragTabBy?.(160);
+      s.dragTabBy?.(-160);
       s.endTabDrag?.();
       await Promise.resolve();
     });
     await advance(1000);
     // 两轮位移累加（基准是上一轮终态），旧目标不得排在新目标之后覆盖
-    expect(world.pos.y).toBe(baseY + 60 + 160);
+    // 向上拖动：476 高的容器在 1040 工作区里向下只剩 ~214px 余量，避免触底夹紧
+    expect(world.pos.y).toBe(baseY - 60 - 160);
     expect(world.snapWrites.at(-1)?.center).toBe(tabCenter());
   });
 
@@ -3064,7 +3065,8 @@ describe("Edge Tab 异步拖动一致性", () => {
       await Promise.resolve();
     });
     await advance(800);
-    expect(world.pos.y).toBe(477);
+    // 目标中心 700 → 窗口 y = 700 - 476/2 = 462（容器高度 P0-01 后为 476）
+    expect(world.pos.y).toBe(462);
     const saved = world.snapWrites.at(-1)!;
     expect(saved.center).toBe(tabCenter());
     expect(saved.center).toBe(700);

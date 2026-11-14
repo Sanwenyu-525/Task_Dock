@@ -967,6 +967,8 @@ describe("ResourceManagementPanel", () => {
     // 磁盘：页头刷新更新磁盘分布
     fireEvent.click(tab("resource.segment.disk"));
     await waitFor(() => expect(mocks.diskUsage).toHaveBeenCalledTimes(1));
+    // 进入磁盘页会先统计一次占用；统计期间刷新按钮按忙碌态禁用，等结算后再点。
+    await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(refresh);
     await waitFor(() => expect(mocks.diskUsage).toHaveBeenCalledTimes(2));
     expect(mocks.snapshot).toHaveBeenCalledTimes(3);
@@ -1095,6 +1097,10 @@ describe("ResourceManagementPanel", () => {
     expect(mocks.diskAnalyze).not.toHaveBeenCalled();
     const diskPanel = document.getElementById("resource-panel-disk") as HTMLElement;
     expect(within(diskPanel).getByText("C:\\")).toBeTruthy();
+    // 空间分析默认折叠：先展开（折叠只 hidden，不卸载，路径已就绪）
+    fireEvent.click(
+      within(diskPanel).getByRole("button", { name: /resource\.analysis\.title/ }),
+    );
     fireEvent.click(
       within(diskPanel).getByRole("button", { name: "resource.analysis.scan" }),
     );
@@ -1137,18 +1143,28 @@ describe("ResourceManagementPanel", () => {
       ),
     ];
     expect(bars).toHaveLength(3);
-    expect(bars[0].querySelector(".resource-bar-value")?.textContent).toBe(
-      "50.0% · resource.level.normal",
-    );
-    expect(bars[1].querySelector(".resource-bar-value")?.textContent).toBe(
-      "92.0% · resource.level.critical",
-    );
+    // 状态由卡片头部的文字状态标签表达；条形右侧只显示百分比，避免重复。
+    expect(bars[0].querySelector(".resource-bar-value")?.textContent).toBe("50.0%");
+    expect(bars[1].querySelector(".resource-bar-value")?.textContent).toBe("92.0%");
     // 等级文案走与环形一致的 resource.level.unknown（真实文案同为「暂不可用」）
     expect(bars[2].querySelector(".resource-bar-value")?.textContent).toBe(
       "resource.level.unknown",
     );
     expect(bars[2].querySelector(".resource-bar-fill")).toBeNull();
-    expect(bars[2].textContent).toContain("resource.volume.kind.remote");
+    // 卷类型现在位于卡片头部（与卷名、状态标签同一行），不再挤在条形右侧。
+    expect(bars[2].closest(".resource-volume-card")?.textContent).toContain(
+      "resource.volume.kind.remote",
+    );
+    const pills = [
+      ...document.querySelectorAll<HTMLElement>(
+        "#resource-panel-disk .resource-volume-card .resource-status-pill",
+      ),
+    ];
+    expect(pills.map((pill) => pill.textContent)).toEqual([
+      "resource.level.normal",
+      "resource.level.critical",
+      "resource.level.unknown",
+    ]);
   });
 
   it("部分统计且 0 B：概览不把 0 B 当作确认无可清理", async () => {
@@ -1247,6 +1263,131 @@ describe("ResourceManagementPanel", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("刷新失败：趋势旧读数只作历史展示，不伪装成当前", async () => {
+    mocks.snapshot
+      .mockResolvedValueOnce(SNAPSHOT)
+      .mockRejectedValueOnce({ code: "UNKNOWN_ERROR" })
+      .mockResolvedValueOnce({
+        ...SNAPSHOT,
+        sampledAt: "2026-11-06T00:01:00.000Z",
+      });
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    const overview = document.getElementById("resource-panel-overview") as HTMLElement;
+    expect(await within(overview).findByText("resource.freshness.live")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "resource.refresh" }));
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(2));
+
+    // 刷新失败：仍能看到最后一次成功读数，但状态必须是「历史读数」。
+    expect(
+      await within(overview).findByText("resource.freshness.historical"),
+    ).toBeTruthy();
+    expect(within(overview).queryByText("resource.freshness.live")).toBeNull();
+    expect(within(overview).getAllByText("50.0%").length).toBeGreaterThan(0);
+    expect(within(overview).getByRole("alert").textContent).toContain(
+      "settings.resourceCleanup.snapshotFailed",
+    );
+
+    // 重试成功：恢复为当前读数，历史标记消失。
+    fireEvent.click(within(overview).getByRole("button", { name: "common.retry" }));
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(3));
+    expect(await within(overview).findByText("resource.freshness.live")).toBeTruthy();
+    expect(within(overview).queryByText("resource.freshness.historical")).toBeNull();
+  });
+
+  it("概览跳转精确定位到应用缓存清理区块并移动焦点", async () => {
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    const overview = document.getElementById("resource-panel-overview") as HTMLElement;
+
+    fireEvent.click(
+      within(overview).getByRole("button", { name: "resource.overview.cleanableAria" }),
+    );
+
+    await waitFor(() =>
+      expect(tab("resource.segment.disk").getAttribute("aria-selected")).toBe("true"),
+    );
+    const anchor = document.querySelector('[data-resource-anchor="app-cache"]');
+    expect(anchor).toBeTruthy();
+    expect(anchor?.querySelector("#resource-cleanup-title")).toBeTruthy();
+    // 焦点落在目标区块标题上（tabIndex=-1），不依赖固定延时。
+    await waitFor(() => expect(document.activeElement?.id).toBe("resource-cleanup-title"));
+  });
+
+  it("磁盘诊断区块默认折叠、展开不重复统计", async () => {
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    fireEvent.click(tab("resource.segment.disk"));
+    await waitFor(() => expect(mocks.diskUsage).toHaveBeenCalledTimes(1));
+
+    const diskPanel = document.getElementById("resource-panel-disk") as HTMLElement;
+    const analysisToggle = within(diskPanel).getByRole("button", {
+      name: /resource\.analysis\.title/,
+    });
+    expect(analysisToggle.getAttribute("aria-expanded")).toBe("false");
+    // 折叠只 hidden，不卸载：默认路径已在 DOM 中，但不会自动扫描。
+    expect(within(diskPanel).getByText("C:\\")).toBeTruthy();
+    expect(mocks.diskAnalyze).not.toHaveBeenCalled();
+
+    fireEvent.click(analysisToggle);
+    expect(analysisToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      within(diskPanel).getByRole("button", { name: "resource.analysis.scan" }),
+    ).toBeTruthy();
+
+    // 折叠/展开属于纯展示操作，不触发新的目录统计。
+    fireEvent.click(analysisToggle);
+    fireEvent.click(analysisToggle);
+    expect(mocks.diskUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it("页头刷新作用域：可见说明与提示随当前分区变化", async () => {
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    const refresh = screen.getByRole("button", { name: "resource.refresh" });
+    expect(screen.getByText("resource.refreshScope.overview")).toBeTruthy();
+    expect(refresh.getAttribute("data-tip")).toContain("resource.refreshScope.overview");
+
+    fireEvent.click(tab("resource.segment.disk"));
+    expect(screen.getByText("resource.refreshScope.disk")).toBeTruthy();
+    expect(refresh.getAttribute("data-tip")).toContain("resource.refreshScope.disk");
+
+    fireEvent.click(tab("resource.segment.memory"));
+    expect(screen.getByText("resource.refreshScope.memory")).toBeTruthy();
+  });
+
+  it("快照失败后切到其他分区：仍显示读取失败与重试，不把空数据当成无卷", async () => {
+    mocks.snapshot.mockRejectedValueOnce({ code: "UNKNOWN_ERROR" });
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+
+    fireEvent.click(tab("resource.segment.disk"));
+    await waitFor(() => expect(mocks.diskUsage).toHaveBeenCalledTimes(1));
+    // 概览内的错误块随分区隐藏；跨分区失败提示仍可见。
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts.length).toBeGreaterThan(0);
+    expect(
+      alerts.some((node) => node.textContent?.includes("settings.resourceCleanup.snapshotFailed")),
+    ).toBe(true);
+    const retry = alerts
+      .flatMap((node) => within(node).queryAllByRole("button", { name: "common.retry" }))
+      .at(0);
+    expect(retry).toBeTruthy();
+
+    mocks.snapshot.mockResolvedValueOnce(SNAPSHOT);
+    fireEvent.click(retry as HTMLButtonElement);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        screen
+          .queryAllByRole("alert")
+          .some((node) => node.textContent?.includes("settings.resourceCleanup.snapshotFailed")),
+      ).toBe(false),
+    );
   });
 
   it("五个分区 Tab 全部渲染，并支持方向键 / Home / End", async () => {

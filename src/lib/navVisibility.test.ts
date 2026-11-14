@@ -15,6 +15,7 @@ import {
   isEntryVisible,
   isTabHidden,
   moveEntryInList,
+  moveEntryToIndex,
   normalizeNavigationLayout,
   readLegacyHiddenEntryIds,
   safeTabForHiddenEntry,
@@ -400,5 +401,78 @@ describe("胶囊 Agent 状态球排序边界", () => {
       known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
     });
     expect(config.left).toEqual(["apps", "tasks", "history", "settings"]);
+  });
+});
+
+// ── 拖拽落位（2026-11-13）────────────────────────────────────────
+// `moveEntryToIndex` 是拖拽排序的唯一顺序实现：目标下标按**最终数组**语义，
+// 固定入口原地钉住，普通入口不越出可排序段。
+describe("拖拽落位：moveEntryToIndex", () => {
+  const ids = ["tasks", "agents", "apps", "widgets", "settings"];
+  const isFixed = (id: string) => id === "settings";
+
+  it("向下拖动：目标行与中间行前移，被拖行落到目标下标", () => {
+    expect(moveEntryToIndex(ids, "tasks", 2, isFixed)).toEqual([
+      "agents",
+      "apps",
+      "tasks",
+      "widgets",
+      "settings",
+    ]);
+  });
+
+  it("向上拖动：中间行后移，被拖行落到目标下标", () => {
+    expect(moveEntryToIndex(ids, "widgets", 1, isFixed)).toEqual([
+      "tasks",
+      "widgets",
+      "agents",
+      "apps",
+      "settings",
+    ]);
+  });
+
+  it("拖到首位 / 末位：目标下标越界时按边界收敛", () => {
+    expect(moveEntryToIndex(ids, "widgets", 0, isFixed)[0]).toBe("widgets");
+    const toEnd = moveEntryToIndex(ids, "tasks", 99, isFixed);
+    // 锁定入口固定在最后：普通入口最多排到它前面
+    expect(toEnd).toEqual(["agents", "apps", "widgets", "tasks", "settings"]);
+    expect(moveEntryToIndex(ids, "tasks", -5, isFixed)[0]).toBe("tasks");
+  });
+
+  it("固定入口自身不可移动，也不会被普通入口推走", () => {
+    expect(moveEntryToIndex(ids, "settings", 0, isFixed)).toEqual(ids);
+    const moved = moveEntryToIndex(ids, "apps", 99, isFixed);
+    expect(moved[moved.length - 1]).toBe("settings");
+  });
+
+  it("成员集合不变：只改顺序，不影响显隐", () => {
+    const moved = moveEntryToIndex(ids, "agents", 3, isFixed);
+    expect([...moved].sort()).toEqual([...ids].sort());
+    expect(moved).toHaveLength(ids.length);
+  });
+
+  it("未知 ID / 单元素列表原样返回副本", () => {
+    expect(moveEntryToIndex(ids, "nope", 1, isFixed)).toEqual(ids);
+    expect(moveEntryToIndex(ids, "nope", 1, isFixed)).not.toBe(ids);
+    expect(moveEntryToIndex(["tasks"], "tasks", 0)).toEqual(["tasks"]);
+  });
+
+  it("胶囊端头 Agent 固定：普通分类可以排到它后面，但不会挤走它", () => {
+    const capsule = ["agents", "tasks", "inbox", "clipboard"];
+    const fixedAgent = (id: string) => id === "agents";
+    const moved = moveEntryToIndex(capsule, "clipboard", 0, fixedAgent);
+    expect(moved).toEqual(["agents", "clipboard", "tasks", "inbox"]);
+    expect(moved[0]).toBe("agents");
+  });
+
+  it("归一化对 moveEntryToIndex 的输出保持幂等（UI 顺序 = 持久化顺序）", () => {
+    const moved = moveEntryToIndex(ids, "apps", 0, isFixed);
+    const { config } = normalizeNavigationLayout({
+      version: NAV_LAYOUT_VERSION,
+      left: moved,
+      capsule: allEntryIds("capsule"),
+      known: { left: ALL_LEFT, capsule: allEntryIds("capsule") },
+    });
+    expect(config.left).toEqual(moved);
   });
 });

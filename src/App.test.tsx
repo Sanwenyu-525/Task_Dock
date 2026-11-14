@@ -113,6 +113,9 @@ vi.mock("./lib/bridge", () => ({
   onModeChanged: bridgeMock.listener("mode-changed"),
   onNotification: bridgeMock.listener("notification"),
   onNotificationNavigate: bridgeMock.listener("notification-navigate"),
+  // 工作空间跨窗口导航（P0-A）：外壳测试只需要订阅/反订阅与回执桩。
+  onProjectWorkspaceOpenDevWorkbench: bridgeMock.listener("project-workspace-open-dev-workbench"),
+  projectWorkspaceOpenDevWorkbenchAck: async () => {},
   onQuickCaptureCreated: bridgeMock.listener("quick-capture-created"),
   onReminderFired: bridgeMock.listener("reminder-fired"),
   onReminderSnoozed: bridgeMock.listener("reminder-snoozed"),

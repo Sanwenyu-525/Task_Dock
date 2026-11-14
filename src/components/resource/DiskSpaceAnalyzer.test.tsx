@@ -155,6 +155,76 @@ describe("DiskSpaceAnalyzer", () => {
     expect(within(alert).getByRole("button", { name: "common.retry" })).toBeTruthy();
   });
 
+  it("切换目录后旧报告立即作废，失败不残留旧路径数据", async () => {
+    render(<DiskSpaceAnalyzer defaultPath={"C:\\"} />);
+    fireEvent.click(screen.getByRole("button", { name: "resource.analysis.scan" }));
+    expect(await screen.findByText("big.bin")).toBeTruthy();
+
+    mocks.openDialog.mockResolvedValue("D:\\Data");
+    mocks.analyze.mockRejectedValueOnce(new Error("权限不足"));
+    mocks.analyze.mockResolvedValueOnce({
+      ...REPORT,
+      path: "D:\\Data",
+      parent: "D:\\",
+      folders: [],
+      files: [],
+      totalFiles: 1,
+      totalDirs: 0,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "resource.analysis.choose" }));
+    await waitFor(() => expect(mocks.analyze).toHaveBeenLastCalledWith("D:\\Data"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("resource.analysis.failed");
+    // 旧目录（C:\Temp）的报告不能挂在新路径下。
+    expect(screen.queryByText("big.bin")).toBeNull();
+    expect(screen.queryByText(/resource\.analysis\.summary/)).toBeNull();
+    expect(screen.getByText("D:\\Data")).toBeTruthy();
+    expect(alert.querySelector("[data-retry-path]")?.getAttribute("data-retry-path")).toBe(
+      "D:\\Data",
+    );
+
+    // 重试目标就是真正失败的目录。
+    fireEvent.click(within(alert).getByRole("button", { name: "common.retry" }));
+    await waitFor(() => expect(mocks.analyze).toHaveBeenLastCalledWith("D:\\Data"));
+    // 结果区显式绑定的就是本次扫描目录。
+    expect(
+      await screen.findByText("resource.analysis.resultTime", { exact: false }),
+    ).toBeTruthy();
+    expect(document.querySelector(".resource-analysis-scope-path")?.textContent).toBe(
+      "D:\\Data",
+    );
+  });
+
+  it("子目录扫描失败后重试仍指向失败目录，不退回旧路径", async () => {
+    render(<DiskSpaceAnalyzer defaultPath={"C:\\Temp"} />);
+    fireEvent.click(screen.getByRole("button", { name: "resource.analysis.scan" }));
+    const alpha = await screen.findByRole("button", { name: /analysisFolder.*alpha/ });
+
+    mocks.analyze.mockRejectedValueOnce(new Error("权限不足"));
+    fireEvent.click(alpha);
+    await waitFor(() => expect(mocks.analyze).toHaveBeenLastCalledWith("C:\\Temp\\alpha"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.querySelector("[data-retry-path]")?.getAttribute("data-retry-path")).toBe(
+      "C:\\Temp\\alpha",
+    );
+    // 失败后旧报告被清空，避免把 C:\Temp 的结果显示在当前目录下。
+    expect(screen.queryByText(/resource\.analysis\.summary/)).toBeNull();
+
+    mocks.analyze.mockResolvedValueOnce({
+      ...REPORT,
+      path: "C:\\Temp\\alpha",
+      parent: "C:\\Temp",
+      folders: [],
+      files: [],
+    });
+    fireEvent.click(within(alert).getByRole("button", { name: "common.retry" }));
+    await waitFor(() =>
+      expect(mocks.analyze).toHaveBeenLastCalledWith("C:\\Temp\\alpha"),
+    );
+  });
+
   it("空目录显示空态而不是伪造数据", async () => {
     mocks.analyze.mockResolvedValue({
       ...REPORT,

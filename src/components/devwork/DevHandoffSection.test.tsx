@@ -19,6 +19,7 @@ import { useLocaleStore } from "../../i18n";
 import DevHandoffSection from "./DevHandoffSection";
 import { invalidateDevProjectCache } from "./DevProjectContext";
 import type {
+  AgentHistorySession,
   DevGitInfo,
   DevHandoffPack,
   DevProject,
@@ -76,6 +77,10 @@ function packOf(patch: Partial<DevHandoffPack>): DevHandoffPack {
     sourceSummary: "",
     secretScan: "",
     createdAt: "2026-11-12T09:00:00Z",
+    agentSourceId: null,
+    agentSessionExternalId: null,
+    agentSessionTitle: null,
+    agentSessionAvailable: false,
     ...patch,
   };
 }
@@ -93,6 +98,7 @@ const {
   devHandoffSecretScan,
   notesList,
   shelfList,
+  agentHistorySessions,
   copyText,
 } = vi.hoisted(() => ({
   fetchTask: vi.fn(),
@@ -107,6 +113,7 @@ const {
   devHandoffSecretScan: vi.fn(),
   notesList: vi.fn(),
   shelfList: vi.fn(),
+  agentHistorySessions: vi.fn(),
   copyText: vi.fn(),
 }));
 
@@ -126,6 +133,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     devHandoffSecretScan,
     notesList,
     shelfList,
+    agentHistorySessions,
     updateSettings: vi.fn(async (patch: Record<string, unknown>) => ({
       ...(useSettingsStore.getState().settings ?? {}),
       ...patch,
@@ -166,6 +174,7 @@ beforeEach(() => {
   devHandoffDelete.mockResolvedValue({ ok: true });
   notesList.mockResolvedValue([]);
   shelfList.mockResolvedValue({ items: [], total: 0 });
+  agentHistorySessions.mockResolvedValue({ items: [], total: 0, next_cursor: null });
   copyText.mockResolvedValue(true);
 });
 
@@ -600,5 +609,107 @@ describe("DevHandoffSection · 资料选择（Round 2a）", () => {
     await waitFor(() => {
       expect(preview.textContent).not.toContain("已选资料清单");
     });
+  });
+});
+
+const FIX_SESSION: AgentHistorySession = {
+  id: "sess-row-1",
+  source_id: "codex",
+  external_id: "sess-ext-1",
+  title: "实现交接包关联",
+  status: "running",
+  first_seen_at: "2026-11-14T08:00:00Z",
+  last_seen_at: "2026-11-14T09:00:00Z",
+  last_run_id: null,
+  instance_id: null,
+  run_count: 3,
+  live_state: "running",
+  live_run_count: 1,
+};
+
+describe("DevHandoffSection · Agent 会话关联（v50）", () => {
+  it("选择真实会话后保存：dev_handoff_save 携带 source/external 身份", async () => {
+    agentHistorySessions.mockResolvedValue({ items: [FIX_SESSION], total: 1, next_cursor: null });
+    render(<DevHandoffSection />);
+    const combo = (await screen.findByRole("combobox", {
+      name: "执行 Agent 会话（可选）",
+    })) as HTMLInputElement;
+    fireEvent.focus(combo);
+    fireEvent.click(await screen.findByRole("option", { name: /实现交接包关联/ }));
+    expect(await screen.findByText("已关联：实现交接包关联")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
+    await waitFor(() => expect(devHandoffSave).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(devHandoffSave).mock.calls[0][0] as {
+      taskId: string | null;
+      agentSourceId: string | null;
+      agentSessionExternalId: string | null;
+    };
+    expect(arg.taskId).toBe("t1");
+    expect(arg.agentSourceId).toBe("codex");
+    expect(arg.agentSessionExternalId).toBe("sess-ext-1");
+    // 会话候选只查真实会话（实时 + 历史），不按标题猜
+    expect(agentHistorySessions).toHaveBeenCalledWith(
+      expect.objectContaining({ includeLive: true, limit: 20 }),
+    );
+  });
+
+  it("选择「不关联」后保存：两个身份字段为 null", async () => {
+    agentHistorySessions.mockResolvedValue({ items: [FIX_SESSION], total: 1, next_cursor: null });
+    render(<DevHandoffSection />);
+    const combo = (await screen.findByRole("combobox", {
+      name: "执行 Agent 会话（可选）",
+    })) as HTMLInputElement;
+    fireEvent.focus(combo);
+    fireEvent.click(await screen.findByRole("option", { name: /实现交接包关联/ }));
+    fireEvent.focus(combo);
+    fireEvent.click(await screen.findByRole("option", { name: /不关联/ }));
+
+    fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
+    await waitFor(() => expect(devHandoffSave).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(devHandoffSave).mock.calls[0][0] as {
+      agentSourceId: string | null;
+      agentSessionExternalId: string | null;
+    };
+    expect(arg.agentSourceId).toBeNull();
+    expect(arg.agentSessionExternalId).toBeNull();
+  });
+
+  it("版本列表展示关联会话；失效时如实标注「会话已失效」", async () => {
+    devHandoffList.mockResolvedValue({
+      packs: [
+        packOf({
+          id: "pk-live",
+          version: 2,
+          agentSourceId: "codex",
+          agentSessionExternalId: "sess-ext-1",
+          agentSessionTitle: "实现交接包关联",
+          agentSessionAvailable: true,
+        }),
+        packOf({
+          id: "pk-stale",
+          version: 1,
+          agentSourceId: "codex",
+          agentSessionExternalId: "sess-gone",
+          agentSessionTitle: null,
+          agentSessionAvailable: false,
+        }),
+      ],
+    });
+    render(<DevHandoffSection />);
+    expect(await screen.findByText("会话：实现交接包关联")).toBeTruthy();
+    // 失效会话没有标题：退回展示 external id，并明确标注已失效
+    expect(await screen.findByText("会话：sess-gone · 会话已失效")).toBeTruthy();
+  });
+
+  it("会话列表读取失败：如实提示，不伪造候选", async () => {
+    agentHistorySessions.mockRejectedValue(new Error("agent hub offline"));
+    render(<DevHandoffSection />);
+    expect(await screen.findByText(/会话列表读取失败/)).toBeTruthy();
+    // 失败时仍然可以保存「不关联」的交接包（标题异步预填完成后才可保存）
+    const titleInput = screen.getByLabelText("交接包标题") as HTMLInputElement;
+    await waitFor(() => expect(titleInput.value).not.toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
+    await waitFor(() => expect(devHandoffSave).toHaveBeenCalledTimes(1));
   });
 });

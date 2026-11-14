@@ -42,9 +42,11 @@ vi.mock("./bridge", () => bridgeMock);
 
 import {
   __resetFileDrop,
+  discardOperation,
   dropTargetAt,
   fileDropBridgeListening,
   fileDropListening,
+  fileDropPendingCount,
   registerFileDropConsumer,
   toCssPoint,
 } from "./fileDrop";
@@ -650,6 +652,8 @@ describe("原生桥通道：通用拖入（图片/链接/文本/虚拟文件）"
       skipped: 0,
     });
     expect(drop).toHaveBeenCalledWith(["C:\\a.txt"], null);
+    // 本地路径已交付，后端会话不再需要：立即释放，不白占槽位。
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-l");
 
     // 网页链接：不能伪装成本地路径，也不能假装保存成功
     emitBridge(PROBE, { phase: "enter", probe: { kind: "url" } });
@@ -688,5 +692,291 @@ describe("原生桥通道：通用拖入（图片/链接/文本/虚拟文件）"
 
     expect(payload).not.toHaveBeenCalled();
     expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-3");
+  });
+});
+
+describe("原生桥会话并发：按 operationId 独立管理", () => {
+  const PROBE = "taskdock://drag-probe";
+  const ACCEPTED = "taskdock://drag-accepted";
+  const PAYLOAD = "taskdock://drag-payload";
+
+  async function flushBridge(): Promise<void> {
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  }
+
+  /** 注册一个记录 onPayload/onAccepted 的消费者。 */
+  function consumerWith(id: string, priority = 10) {
+    const payload = vi.fn();
+    const accepted = vi.fn();
+    const off = registerFileDropConsumer({
+      id,
+      priority,
+      claim: () => true,
+      onAccepted: accepted,
+      onPayload: payload,
+      onDrop: () => {},
+    });
+    return { payload, accepted, off };
+  }
+
+  /** 进入窗口并松手受理（先 probe enter 认领，再 accepted）。 */
+  function accept(operationId: string, point = { x: 1, y: 1 }): void {
+    emitBridge(PROBE, { phase: "enter", probe: { kind: "virtual-files" } });
+    emitBridge(ACCEPTED, {
+      operationId,
+      point,
+      probe: { kind: "virtual-files", canShelf: true, canDirectory: true },
+    });
+  }
+
+  function deliver(operationId: string): void {
+    emitBridge(PAYLOAD, {
+      operationId,
+      payload: { kind: "virtual-files", items: [], count: 1 },
+      failures: [],
+      skipped: 0,
+    });
+  }
+
+  it("accepted(A) accepted(B) → payload(A) payload(B)：两轮都正确交付", async () => {
+    enableBridge();
+    const c = consumerWith("c");
+    await flushBridge();
+
+    accept("op-A");
+    accept("op-B");
+    expect(fileDropPendingCount()).toBe(2);
+
+    deliver("op-A");
+    deliver("op-B");
+
+    expect(c.payload).toHaveBeenCalledTimes(2);
+    expect(c.payload.mock.calls.map((call) => call[2].operationId)).toEqual(["op-A", "op-B"]);
+    expect(fileDropPendingCount()).toBe(0);
+    expect(bridgeMock.dragPayloadDiscard).not.toHaveBeenCalled();
+    c.off();
+  });
+
+  it("accepted(A) accepted(B) → payload(B) payload(A)：乱序完成也各自交付", async () => {
+    enableBridge();
+    const c = consumerWith("c");
+    await flushBridge();
+
+    accept("op-A");
+    accept("op-B");
+    deliver("op-B");
+    deliver("op-A");
+
+    expect(c.payload).toHaveBeenCalledTimes(2);
+    expect(c.payload.mock.calls.map((call) => call[2].operationId)).toEqual(["op-B", "op-A"]);
+    expect(fileDropPendingCount()).toBe(0);
+    c.off();
+  });
+
+  it("注销消费者 A：B 正常完成，A 被释放且不投给已卸载面板", async () => {
+    enableBridge();
+    let aClaims = true;
+    const aPayload = vi.fn();
+    const aOff = registerFileDropConsumer({
+      id: "a",
+      priority: 10,
+      claim: () => aClaims,
+      onPayload: aPayload,
+      onDrop: () => {},
+    });
+    const b = consumerWith("b", 5);
+    await flushBridge();
+
+    accept("op-A");
+    expect(aPayload).not.toHaveBeenCalled();
+
+    // A 不再认领，第二轮由 B 接管。
+    aClaims = false;
+    accept("op-B");
+    expect(fileDropPendingCount()).toBe(2);
+
+    aOff();
+    expect(fileDropPendingCount()).toBe(1);
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-A");
+
+    deliver("op-B");
+    deliver("op-A");
+
+    expect(b.payload).toHaveBeenCalledTimes(1);
+    expect(b.payload.mock.calls[0][2].operationId).toBe("op-B");
+    expect(aPayload).not.toHaveBeenCalled();
+    // 会话已在注销时释放；迟到 payload 不得让已卸载消费者收到内容。
+    expect(fileDropPendingCount()).toBe(0);
+    b.off();
+  });
+
+  it("重复 payload：只交付一次，也不误释放正在提交的会话", async () => {
+    enableBridge();
+    const c = consumerWith("c");
+    await flushBridge();
+
+    accept("op-A");
+    deliver("op-A");
+    deliver("op-A");
+    deliver("op-A");
+
+    expect(c.payload).toHaveBeenCalledTimes(1);
+    // consumer 可能正在异步提交 op-A：重复 payload 不能发出 discard 抢走它。
+    expect(bridgeMock.dragPayloadDiscard).not.toHaveBeenCalled();
+    c.off();
+  });
+
+  it("未知 operationId 的 payload 被释放，不影响 A、B", async () => {
+    enableBridge();
+    const c = consumerWith("c");
+    await flushBridge();
+
+    accept("op-A");
+    accept("op-B");
+    deliver("op-unknown");
+    deliver("op-A");
+    deliver("op-B");
+
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-unknown");
+    expect(c.payload).toHaveBeenCalledTimes(2);
+    c.off();
+  });
+
+  it("超过挂起上限（8）时淘汰最老会话，其余会话仍可交付", async () => {
+    enableBridge();
+    const c = consumerWith("c");
+    await flushBridge();
+
+    // 9 个会话：第 1 个必须被淘汰（与后端 MAX_STAGE_OPS=8 对齐）。
+    for (let i = 0; i < 9; i += 1) accept(`op-${i}`);
+    expect(fileDropPendingCount()).toBe(8);
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-0");
+
+    deliver("op-0");
+    expect(c.payload).not.toHaveBeenCalled();
+
+    deliver("op-8");
+    expect(c.payload).toHaveBeenCalledTimes(1);
+    expect(c.payload.mock.calls[0][2].operationId).toBe("op-8");
+    c.off();
+  });
+
+  it("会话超时未收到 payload：释放后端暂存，迟到载荷不再交付", async () => {
+    vi.useFakeTimers();
+    try {
+      enableBridge();
+      const c = consumerWith("c");
+      await flushBridge();
+
+      accept("op-slow");
+      expect(fileDropPendingCount()).toBe(1);
+
+      // 10 分钟 TTL 过期（与后端 STAGE_TTL 一致）。
+      vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+      expect(fileDropPendingCount()).toBe(0);
+      expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-slow");
+
+      deliver("op-slow");
+      expect(c.payload).not.toHaveBeenCalled();
+      c.off();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("大文件读取慢于小文件：先完成的小文件不会覆盖仍在读的大文件", async () => {
+    vi.useFakeTimers();
+    try {
+      enableBridge();
+      const c = consumerWith("c");
+      await flushBridge();
+
+      accept("op-big");
+      accept("op-small");
+      // 大文件读了 30 秒（远小于 TTL），期间小文件先完成。
+      vi.advanceTimersByTime(30_000);
+      deliver("op-small");
+      expect(c.payload).toHaveBeenCalledTimes(1);
+
+      // 再等 30 秒，大文件才完成：必须仍然交付给同一个消费者。
+      vi.advanceTimersByTime(30_000);
+      deliver("op-big");
+      expect(c.payload).toHaveBeenCalledTimes(2);
+      expect(c.payload.mock.calls.map((call) => call[2].operationId)).toEqual([
+        "op-small",
+        "op-big",
+      ]);
+      expect(fileDropPendingCount()).toBe(0);
+      c.off();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("两轮分属不同消费者：payload 只投给各自会话的消费者", async () => {
+    enableBridge();
+    let aClaims = true;
+    const aPayload = vi.fn();
+    const aOff = registerFileDropConsumer({
+      id: "a",
+      priority: 10,
+      claim: () => aClaims,
+      onPayload: aPayload,
+      onDrop: () => {},
+    });
+    const b = consumerWith("b", 5);
+    await flushBridge();
+
+    accept("op-A");
+    aClaims = false;
+    accept("op-B");
+
+    // 交错完成：A 的载荷不能投给 B，反之亦然。
+    deliver("op-B");
+    deliver("op-A");
+
+    expect(b.payload).toHaveBeenCalledTimes(1);
+    expect(b.payload.mock.calls[0][2].operationId).toBe("op-B");
+    expect(aPayload).toHaveBeenCalledTimes(1);
+    expect(aPayload.mock.calls[0][2].operationId).toBe("op-A");
+    aOff();
+    b.off();
+  });
+
+  it("已释放的 operationId 再次 accepted：不建立僵尸会话", async () => {
+    enableBridge();
+    const c = consumerWith("c");
+    await flushBridge();
+
+    accept("op-x");
+    await discardOperation("op-x", "user-cancelled");
+    expect(fileDropPendingCount()).toBe(0);
+    c.accepted.mockClear();
+
+    // 后端异常重发 accepted：不能再挂起（否则会显示「读取中」直到 TTL）。
+    accept("op-x");
+    expect(fileDropPendingCount()).toBe(0);
+    expect(c.accepted).not.toHaveBeenCalled();
+    c.off();
+  });
+
+  it("调用方主动取消挂起会话：后端被释放，迟到 payload 不再交付", async () => {
+    enableBridge();
+    const c = consumerWith("c");
+    await flushBridge();
+
+    accept("op-cancel");
+    expect(fileDropPendingCount()).toBe(1);
+    await discardOperation("op-cancel", "user-cancelled");
+    expect(fileDropPendingCount()).toBe(0);
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledWith("op-cancel");
+
+    deliver("op-cancel");
+    expect(c.payload).not.toHaveBeenCalled();
+
+    // 重复取消只发一次释放请求。
+    await discardOperation("op-cancel", "user-cancelled");
+    expect(bridgeMock.dragPayloadDiscard).toHaveBeenCalledTimes(1);
+    c.off();
   });
 });

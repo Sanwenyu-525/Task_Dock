@@ -34,7 +34,14 @@ describe("导航注册中心", () => {
         expect(["left", "capsule"]).toContain(surface);
       }
       if (entry.surfaces.includes("capsule")) {
-        expect(entry.capsuleCategory).toBeTruthy();
+        // P0-01（2026-11-13）：工作空间这类直接入口打开独立窗口，不参与分类页签，
+        // 因此没有 capsuleCategory 是合法状态；但必须有可读名称（提示/aria）。
+        if (entry.directCapsule) {
+          expect(entry.capsuleCategory).toBeUndefined();
+          expect(entry.label || entry.labelKey).toBeTruthy();
+        } else {
+          expect(entry.capsuleCategory).toBeTruthy();
+        }
       }
     }
   });

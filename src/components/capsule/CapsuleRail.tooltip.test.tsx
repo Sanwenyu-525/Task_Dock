@@ -20,6 +20,8 @@ import CapsuleRail, {
   CAPSULE_TIP_COLLAPSE_OFFSET,
   CAPSULE_TIP_INWARD_OFFSET,
   capsuleTipInwardOffset,
+  railOrbTipPlacement,
+  railQuickTipPlacement,
   railTipPlacement,
 } from "./CapsuleRail";
 import type { RailStatus } from "../../lib/capsuleModel";
@@ -27,6 +29,7 @@ import type { SnapEdge } from "../../lib/edgeSnap";
 import { computeTooltipPosition } from "../ui/TooltipLayer";
 import { WING_AA_INSET, pointInPolygon, wingShape } from "../../lib/capsuleShape";
 import {
+  RAIL_LENGTH_CSS,
   RAIL_THICKNESS_CSS,
   capsuleContainerSize,
   capsuleRegionsPhysical,
@@ -77,8 +80,9 @@ function tipsOf(edge: SnapEdge, expanded: boolean, withForm = false) {
 }
 
 describe("胶囊轨道图标提示", () => {
-  it("每个图标按钮的提示文案就是图标名（Agent 状态球 + 五个分类）", () => {
-    // 轨道五类：任务 / 收集箱 / 剪贴板 / 应用 / 规划中心，Agent 只在状态球。
+  it("每个图标按钮的提示文案就是图标名（Agent 状态球 + 五个分类 + 工作空间快捷入口）", () => {
+    // 轨道五类：任务 / 收集箱 / 剪贴板 / 应用 / 规划中心，Agent 只在状态球；
+    // 工作空间是 `.cap-quick` 里的 26px 直接入口（P0-01：不占分类组长度）。
     expect(tipsOf("right", true).map((t) => t.tip)).toEqual([
       "Agent",
       "任务",
@@ -86,6 +90,7 @@ describe("胶囊轨道图标提示", () => {
       "剪贴板",
       "应用",
       "规划中心",
+      "工作空间",
     ]);
   });
 
@@ -98,28 +103,41 @@ describe("胶囊轨道图标提示", () => {
       "剪贴板",
       "应用",
       "规划中心",
+      "工作空间",
       "展开完整面板",
       "收起为极简标签",
     ]);
-    expect(tips.slice(6).map((t) => t.offset)).toEqual(["25", "25"]);
+    expect(tips.slice(6).map((t) => t.offset)).toEqual(["25", "25", "25"]);
   });
 
-  it.each(EDGES)("edge=%s：展开态六个锚点一律朝屏幕内侧（面板侧）", (edge) => {
-    expect(tipsOf(edge, true).map((t) => t.placement)).toEqual(Array(6).fill(INWARD[edge]));
+  it.each(EDGES)("edge=%s：展开态七个锚点朝屏幕内侧（面板侧；水平停靠两端沿轨道朝中心）", (edge) => {
+    const vertical = edge === "left" || edge === "right";
+    // 上/下停靠时面板（340）比轨道（476）窄：端头球与快捷区若朝内，气泡会横向
+    // 越出面板可见区域被 Win32 裁掉，因此沿轨道朝中心（orb→right，快捷区→left）。
+    const expected = vertical
+      ? Array(7).fill(INWARD[edge])
+      : ["right", INWARD[edge], INWARD[edge], INWARD[edge], INWARD[edge], INWARD[edge], "left"];
+    expect(tipsOf(edge, true).map((t) => t.placement)).toEqual(expected);
   });
 
   it.each(EDGES)("edge=%s：展开态把气泡外扩到面板可见区内（按锚点边长换算）", (edge) => {
-    // DOM 顺序：Agent 状态球 → 任务 / 收集箱 / 剪贴板 / 应用 / 规划中心（均为 36px）
+    // DOM 顺序：Agent 状态球 → 五类（36px）→ 工作空间 / 完整面板 / 极简标签（26px）
     const vertical = edge === "left" || edge === "right";
-    const anchorSizes = [36, 36, 36, 36, 36, 36];
+    const anchorSizes = [36, 36, 36, 36, 36, 36, 26];
     expect(tipsOf(edge, true).map((t) => t.offset)).toEqual(
       anchorSizes.map((size, i) =>
+        // 26px 快捷区按钮用固定的折叠常量（0.36×26 ≈ 9 → 取 25 与其图标尺度匹配）；
         // 水平停靠时端头球多推 24px，越过面板 24px 圆角切点。
-        String(i === 0 && !vertical ? capsuleTipInwardOffset(size) + 24 : capsuleTipInwardOffset(size))
-      )
+        i >= 6
+          ? String(CAPSULE_TIP_COLLAPSE_OFFSET)
+          : String(
+              i === 0 && !vertical
+                ? capsuleTipInwardOffset(size) + 24
+                : capsuleTipInwardOffset(size),
+            ),
+      ),
     );
     expect(CAPSULE_TIP_INWARD_OFFSET).toBe(20);
-    // 形态出口按钮仍是 26px；常量保留给 form/tab，不再给底部收起箭头。
     expect(CAPSULE_TIP_COLLAPSE_OFFSET).toBe(25);
   });
 
@@ -136,10 +154,12 @@ describe("胶囊轨道图标提示", () => {
       "top",
       "top",
       "top",
+      "top",
     ]);
     expect(tipsOf("left", false).map((t) => t.placement)).toEqual([
       "bottom",
       "bottom",
+      "top",
       "top",
       "top",
       "top",
@@ -152,10 +172,12 @@ describe("胶囊轨道图标提示", () => {
       "left",
       "left",
       "left",
+      "left",
     ]);
     expect(tipsOf("bottom", false).map((t) => t.placement)).toEqual([
       "right",
       "right",
+      "left",
       "left",
       "left",
       "left",
@@ -225,25 +247,39 @@ describe("分类悬停指示块（白色翼片）", () => {
 // 绘制。下面用真实的几何函数（`wingShape` / `capsuleRegionsPhysical`）验证
 // 「按 CSS 布局算出的按钮位置 + 按 TooltipLayer/Popover 算出的气泡矩形」落在区域内。
 //
-// 布局数字来自 src/styles.css：.cap-v/.cap-h 外框 446×56；.cap-orb 36 + 下间距 10；
-// .cap-nav 212（5×36 + 4×8）；.cap-sep 1px + 上下各 6（共 13）；底部「完整面板/极简标签」
-// 各 26 + 上间距 4（共 60）。内容组 = 36 + 10 + 212 + 13 + 60 = 331。
+// 布局数字来自 src/styles.css：.cap-v/.cap-h 外框 476×56；.cap-orb 36 + 下间距 10；
+// .cap-nav 212（5×36 + 4×8）；.cap-sep 1px + 上下各 6（共 13）；底部 .cap-quick
+// 三个 26px 按钮 + 两个 4px 间距（工作空间 / 完整面板 / 极简标签，共 86）。
+// 内容组 = 36 + 10 + 212 + 13 + 86 = 357（2026-11-13 P0-01：新增工作空间入口）。
 // 气泡尺寸来自 src/styles-ui.css 的 .ui-tooltip（padding 5/8、1px 描边、字号 11、
 // line-height 1.45）；最宽文案「规划中心」按 4×11px 估。
-const RAIL_LEN = 446;
+const RAIL_LEN = 476;
 const CAP_ITEM = 36;
-const CONTENT = 36 + 10 + 212 + 13 + 30 + 30; // 331
-const LEAD = { start: (RAIL_LEN - CONTENT) / 2, size: CAP_ITEM }; // 57.5 → 93.5
+const QUICK_ITEM = 26;
+const CONTENT = 36 + 10 + 212 + 13 + QUICK_ITEM * 3 + 4 * 2; // 357
+const LEAD = { start: (RAIL_LEN - CONTENT) / 2, size: CAP_ITEM }; // 59.5 → 95.5
 const CATEGORY = [0, 1, 2, 3, 4].map((i) => ({
   start: LEAD.start + CAP_ITEM + 10 + i * 44,
   size: CAP_ITEM,
 }));
-const SLOTS = [LEAD, ...CATEGORY];
+const QUICK_START = LEAD.start + CAP_ITEM + 10 + 212 + 13; // 330.5
+const QUICK = [0, 1, 2].map((i) => ({ start: QUICK_START + i * (QUICK_ITEM + 4), size: QUICK_ITEM }));
+const SLOTS = [LEAD, ...CATEGORY, ...QUICK];
 const TIP_H = Math.ceil(11 * 1.45) + 5 * 2 + 2; // 28（常规气泡高度）
 // 展开态各锚点文案宽度：Agent 端头球用紧凑气泡（44），分类按中文 11px/字
 // （含 padding 16 + border 2）估：任务 40 / 收集箱 51 / 剪贴板 51 / 应用 40 /
-// 规划中心 62。
-const SLOT_WIDTHS = [5 * 5.5 + 6 * 2 + 2, 2 * 11 + 18, 3 * 11 + 18, 3 * 11 + 18, 2 * 11 + 18, 4 * 11 + 18];
+// 规划中心 62；底部快捷区：工作空间 62 / 展开完整面板 84 / 收起为极简标签 95。
+const SLOT_WIDTHS = [
+  5 * 5.5 + 6 * 2 + 2,
+  2 * 11 + 18,
+  3 * 11 + 18,
+  3 * 11 + 18,
+  2 * 11 + 18,
+  4 * 11 + 18,
+  4 * 11 + 18,
+  6 * 11 + 18,
+  7 * 11 + 18,
+];
 // 折叠态全部使用紧凑气泡（10.5px 字号、padding 3/6）；规划中心折叠为「规划」。
 const SLOT_WIDTHS_FOLDED = [
   5 * 5.5 + 6 * 2 + 2,
@@ -252,6 +288,9 @@ const SLOT_WIDTHS_FOLDED = [
   3 * 11 + 14,
   2 * 11 + 14,
   2 * 11 + 14,
+  4 * 10.5 + 14,
+  4 * 10.5 + 14,
+  2 * 10.5 + 14,
 ];
 const DEFAULT_OFFSET = 6;
 
@@ -292,7 +331,7 @@ function probePoints(rect: { xs: [number, number]; ys: [number, number] }, margi
 }
 
 describe("轨道提示气泡落在 Win32 可见区域内", () => {
-  it.each(EDGES)("edge=%s：折叠态 6 个图标的气泡都在翼片多边形内（含 2px 余量）", (edge) => {
+  it.each(EDGES)("edge=%s：折叠态 9 个图标的气泡都在翼片多边形内（含 2px 余量）", (edge) => {
     const axis = edge === "left" || edge === "right" ? "vertical" : "horizontal";
     const { box, outline } = wingShape(edge, 1, WING_AA_INSET);
     expect([box.w, box.h].sort((a, b) => a - b)).toEqual([RAIL_THICKNESS_CSS, RAIL_LEN]);
@@ -310,7 +349,7 @@ describe("轨道提示气泡落在 Win32 可见区域内", () => {
     expect(outside).toEqual([]);
   });
 
-  it.each(EDGES)("edge=%s：展开态 6 个图标的气泡都在面板可见矩形内", (edge) => {
+  it.each(EDGES)("edge=%s：展开态 9 个锚点的气泡都落在可见区域（面板内 / 水平停靠的翼片带）", (edge) => {
     const size = capsuleContainerSize(edge);
     const regions = capsuleRegionsPhysical(size.w, size.h, edge, true, 1);
     const panel = regions.panel;
@@ -318,40 +357,66 @@ describe("轨道提示气泡落在 Win32 可见区域内", () => {
     if (!panel) return;
 
     const vertical = edge === "left" || edge === "right";
-    const center = vertical
+    const crossCenter = vertical
       ? regions.rail.x + RAIL_THICKNESS_CSS / 2
       : regions.rail.y + RAIL_THICKNESS_CSS / 2;
     const outside: string[] = [];
 
     SLOTS.forEach((slot, i) => {
-      const placement = railTipPlacement("docked", edge, true, i === 0);
-      expect(placement).toBe(INWARD[edge]);
+      const placement =
+        i === 0
+          ? railOrbTipPlacement("docked", edge, true)
+          : i >= 6
+            ? railQuickTipPlacement("docked", edge, true)
+            : railTipPlacement("docked", edge, true, false, false);
       // 沿边坐标：气泡在另一条轴上以图标中心居中（Popover 的对应轴对齐语义）
       const alongStart = (vertical ? regions.rail.y : regions.rail.x) + slot.start;
       const alongCenter = alongStart + slot.size / 2;
       // 横跨坐标：从图标靠内侧的边再外扩该锚点自己的朝内距离
-      // （36px 图标 20；都保证气泡起点落在面板可见矩形内）
+      // （36px 图标 20；26px 快捷按钮取 25；水平停靠端头球多推 24 越过圆角切点）
       const inward =
-        capsuleTipInwardOffset(slot.size) + (i === 0 && !vertical ? 24 : 0);
-      const near = center + slot.size / 2 + inward;
+        i >= 6
+          ? CAPSULE_TIP_COLLAPSE_OFFSET
+          : capsuleTipInwardOffset(slot.size) + (i === 0 && !vertical ? 24 : 0);
       const width = SLOT_WIDTHS[i];
-      const far = near + (vertical ? width : TIP_H);
       let rect: { xs: [number, number]; ys: [number, number] };
       if (vertical) {
         const xs: [number, number] =
           edge === "left"
-            ? [near, far]
-            : [center - slot.size / 2 - inward - width, center - slot.size / 2 - inward];
+            ? [crossCenter + slot.size / 2 + inward, crossCenter + slot.size / 2 + inward + width]
+            : [crossCenter - slot.size / 2 - inward - width, crossCenter - slot.size / 2 - inward];
         rect = { xs, ys: [alongCenter - TIP_H / 2, alongCenter + TIP_H / 2] };
+      } else if (placement === "right" || placement === "left") {
+        // 沿轨道朝中心：气泡落在 56px 厚的翼片带内（沿边方向不越出平直主体）
+        const xs: [number, number] =
+          placement === "right"
+            ? [alongStart + slot.size + inward, alongStart + slot.size + inward + width]
+            : [alongStart - inward - width, alongStart - inward];
+        rect = { xs, ys: [crossCenter - TIP_H / 2, crossCenter + TIP_H / 2] };
       } else {
         const ys: [number, number] =
           edge === "top"
-            ? [near, far]
-            : [center - slot.size / 2 - inward - TIP_H, center - slot.size / 2 - inward];
+            ? [crossCenter + slot.size / 2 + inward, crossCenter + slot.size / 2 + inward + TIP_H]
+            : [crossCenter - slot.size / 2 - inward - TIP_H, crossCenter - slot.size / 2 - inward];
         rect = { xs: [alongCenter - width / 2, alongCenter + width / 2], ys };
       }
+
+      const railCenter = vertical ? regions.rail.y + regions.rail.h / 2 : regions.rail.x + regions.rail.w / 2;
+      const alongProbe = vertical
+        ? [rect.ys[0], rect.ys[1]]
+        : [rect.xs[0], rect.xs[1]];
       for (const p of probePoints(rect, 0)) {
-        if (!pointInRoundedRect(p.x, p.y, panel, regions.panelRadius, 0)) {
+        const inPanel = pointInRoundedRect(p.x, p.y, panel, regions.panelRadius, 0);
+        const inRailBand =
+          p.x >= regions.rail.x &&
+          p.x <= regions.rail.x + regions.rail.w &&
+          p.y >= regions.rail.y &&
+          p.y <= regions.rail.y + regions.rail.h;
+        // 沿轨道弹出的气泡必须落在平直主体内，否则会伸进肩部曲面被裁掉
+        const withinFlatBody = alongProbe.every(
+          (v) => Math.abs(v - railCenter) <= RAIL_LENGTH_CSS / 2,
+        );
+        if (!(inPanel || (inRailBand && withinFlatBody))) {
           outside.push(`slot${i}/${placement}@${p.x},${p.y}`);
         }
       }

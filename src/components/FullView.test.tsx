@@ -77,11 +77,11 @@ describe("完整模式左侧导航", () => {
   /** 导航项的可访问名是「标签（徽标数）」，用正则匹配标签部分。 */
   const navItem = (label: string) => screen.getByRole("button", { name: new RegExp(`^${label}`) });
 
-  it("默认渲染十二个导航入口并隐藏帮助，保留顶部新建按钮（收集箱+暂存架合并）", () => {
+  it("默认渲染十三个导航入口并隐藏帮助，保留顶部新建按钮（收集箱+暂存架合并）", () => {
     render(<FullView />);
     const nav = screen.getByRole("navigation", { name: "主导航" });
     expect(nav).toBeTruthy();
-    for (const label of ["工作台", "任务", "Agent", "应用", "微件", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
+    for (const label of ["工作台", "工作空间", "任务", "Agent", "应用", "微件", "行动", "剪贴板", "收集与暂存", "工作流", "历史", "规划中心", "设置"]) {
       expect(navItem(label)).toBeTruthy();
     }
     expect(screen.queryByRole("button", { name: /^帮助/ })).toBeNull();
@@ -105,6 +105,7 @@ describe("完整模式左侧导航", () => {
     // aria-label 可能追加徽标说明（如「收集与暂存（2 条待处理收集）」），只比较入口名
     expect(items.map((el) => el.getAttribute("aria-label")?.split("（")[0])).toEqual([
       "工作台",
+      "工作空间",
       "任务",
       "Agent",
       "应用",
@@ -347,6 +348,7 @@ describe("英文导航", () => {
     ].map((node) => node.textContent);
     expect(labels).toEqual([
       "Workbench",
+      "Workspace",
       "Tasks",
       "Agents",
       "Apps",

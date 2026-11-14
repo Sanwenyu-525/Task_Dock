@@ -282,6 +282,30 @@ describe("RuntimeModulesSection", () => {
     expect(bridge.updateSettings).not.toHaveBeenCalled();
   });
 
+  it("状态刷新失败：旧状态标记为未确认，不冒充实时状态", async () => {
+    bridge.lifecycleStatus
+      .mockResolvedValueOnce([status("clipboard")])
+      .mockRejectedValue(new Error("IPC 失败"));
+    render(<RuntimeModulesSection active />);
+    await screen.findByText("lifecycle.module.clipboard.label");
+    expect(screen.queryByText("resource.modules.unverified")).toBeNull();
+
+    // 设置变化触发重查；重查失败后旧快照仍在，但必须标注未确认。
+    await act(async () => {
+      useSettingsStore.setState({
+        settings: { ...SETTINGS, clipboard_paused: true } as Settings,
+      });
+    });
+    await waitFor(() => expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(2));
+
+    expect(await screen.findByText("resource.modules.staleFailed")).toBeTruthy();
+    expect(screen.getByText("resource.modules.unverified")).toBeTruthy();
+    const row = document.querySelector('[data-module-id="clipboard"]') as HTMLElement;
+    expect(row.className).toContain("is-unverified");
+    // 旧状态仍显示，但已有失败错误入口，不把失败吞掉。
+    expect(screen.getByRole("alert").textContent).toContain("resource.modules.error");
+  });
+
   it("可见时相关设置变化才重查状态", async () => {
     bridge.lifecycleStatus.mockResolvedValue([status("clipboard")]);
     render(<RuntimeModulesSection active />);

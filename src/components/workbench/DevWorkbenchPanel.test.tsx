@@ -196,6 +196,9 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     // Round 2a：交接包「资料选择」两数据源默认空（资料区行为在 DevHandoffSection.test.tsx）
     notesList: vi.fn(async () => []),
     shelfList: vi.fn(async () => ({ items: [], total: 0 })),
+    // v50：交接包「Agent 会话」候选与验收「已完成轮次」默认空
+    agentHistorySessions: vi.fn(async () => ({ items: [], total: 0, next_cursor: null })),
+    devAcceptanceAgentRuns: vi.fn(async () => ({ runs: [], truncated: false })),
   };
 });
 

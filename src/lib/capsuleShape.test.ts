@@ -23,9 +23,9 @@ const EDGES: SnapEdge[] = ["left", "right", "top", "bottom"];
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
 describe("参数契约（与 window_shape.rs 同步）", () => {
-  it("厚 56 / 平直主体 270 / 单侧肩 88 / 比例 0.435·0.565 / 18 段", () => {
+  it("厚 56 / 平直主体 300 / 单侧肩 88 / 比例 0.435·0.565 / 18 段", () => {
     expect(WING_THICKNESS_CSS).toBe(56);
-    expect(WING_LENGTH_CSS).toBe(270);
+    expect(WING_LENGTH_CSS).toBe(300);
     expect(WING_SHOULDER_CSS).toBe(88);
     expect(WING_CREST_RATIO).toBeCloseTo(0.435, 6);
     expect(WING_TAIL_RATIO).toBeCloseTo(0.565, 6);
@@ -33,18 +33,18 @@ describe("参数契约（与 window_shape.rs 同步）", () => {
     expect(WING_AA_INSET).toBe(2);
   });
 
-  it("DPI 缩放：外框沿边尺寸 = 主体 + 2×肩宽 = 446，不随取整漂移", () => {
-    expect(wingShape("left", 1).box).toEqual({ w: 56, h: 446 });
-    expect(wingShape("left", 1.25).box).toEqual({ w: 70, h: 558 });
-    expect(wingShape("left", 1.5).box).toEqual({ w: 84, h: 669 });
-    expect(wingShape("bottom", 1).box).toEqual({ w: 446, h: 56 });
+  it("DPI 缩放：外框沿边尺寸 = 主体 + 2×肩宽 = 476，不随取整漂移", () => {
+    expect(wingShape("left", 1).box).toEqual({ w: 56, h: 476 });
+    expect(wingShape("left", 1.25).box).toEqual({ w: 70, h: 595 });
+    expect(wingShape("left", 1.5).box).toEqual({ w: 84, h: 714 });
+    expect(wingShape("bottom", 1).box).toEqual({ w: 476, h: 56 });
   });
 
   it("非法 DPI 回退 1；极小缩放下肩宽仍 ≥1px（不退化成圆角矩形）", () => {
-    expect(wingShape("left", Number.NaN).box).toEqual({ w: 56, h: 446 });
+    expect(wingShape("left", Number.NaN).box).toEqual({ w: 56, h: 476 });
     const tiny = wingMetrics(0.1);
     expect(tiny.thickness).toBe(6);
-    expect(tiny.length).toBe(27);
+    expect(tiny.length).toBe(30);
     expect(tiny.shoulder).toBeGreaterThanOrEqual(1);
   });
 });
@@ -52,19 +52,19 @@ describe("参数契约（与 window_shape.rs 同步）", () => {
 describe("轮廓形状", () => {
   it("金标准点位（bottom / 100%）：与 Rust 断言同一组数字", () => {
     const { box, outline } = wingShape("bottom", 1);
-    expect(box).toEqual({ w: 446, h: 56 });
+    expect(box).toEqual({ w: 476, h: 56 });
     // 两侧各 19 个贝塞尔采样点（含两个端点）
     expect(outline).toHaveLength(38);
     const at = (i: number) => [round2(outline[i].x), round2(outline[i].y)];
     // 贴边尖端：落在下缘（局部 y = 高度）
     expect(at(0)).toEqual([0, 56]);
-    expect(at(37)).toEqual([446, 56]);
+    expect(at(37)).toEqual([476, 56]);
     // 左肩采样点：肩部中段（v = 厚度/2）
     expect(at(9)).toEqual([48.29, 28]);
     expect(at(13)).toEqual([63.07, 10.56]);
-    // 平直主体两端：顶边完整 270px，中间没有斜弦
+    // 平直主体两端：顶边完整 300px，中间没有斜弦
     expect(at(18)).toEqual([88, 0]);
-    expect(at(19)).toEqual([358, 0]);
+    expect(at(19)).toEqual([388, 0]);
   });
 
   it("贴边切线连续：首段几乎平行于屏幕边缘（液态融合而非圆角靠近边缘）", () => {
@@ -123,7 +123,7 @@ describe("轮廓形状", () => {
     for (const edge of EDGES) {
       const { box, outline } = wingShape(edge, 1);
       const vertical = edge === "left" || edge === "right";
-      expect(vertical ? box : { w: box.h, h: box.w }).toEqual({ w: 56, h: 446 });
+      expect(vertical ? box : { w: box.h, h: box.w }).toEqual({ w: 56, h: 476 });
       for (const p of outline) {
         expect(p.x).toBeGreaterThanOrEqual(-1e-9);
         expect(p.y).toBeGreaterThanOrEqual(-1e-9);
@@ -140,13 +140,13 @@ describe("轮廓形状", () => {
       const samples = vertical
         ? [
             { x: box.w / 2, y: box.h / 2 },
-            { x: box.w / 2, y: (box.h - 270) / 2 + 4 },
-            { x: box.w / 2, y: (box.h + 270) / 2 - 4 },
+            { x: box.w / 2, y: (box.h - 300) / 2 + 4 },
+            { x: box.w / 2, y: (box.h + 300) / 2 - 4 },
           ]
         : [
             { x: box.w / 2, y: box.h / 2 },
-            { x: (box.w - 270) / 2 + 4, y: box.h / 2 },
-            { x: (box.w + 270) / 2 - 4, y: box.h / 2 },
+            { x: (box.w - 300) / 2 + 4, y: box.h / 2 },
+            { x: (box.w + 300) / 2 - 4, y: box.h / 2 },
           ];
       for (const p of samples) {
         expect(pointInPolygon(p, outline), `edge=${edge} (${p.x},${p.y})`).toBe(true);
@@ -194,7 +194,7 @@ describe("区域外扩（AA 补偿）", () => {
     // 尖点斜切补偿：每个尖点多出一个点
     expect(outer).toHaveLength(inner.length + 2);
     let hit = 0;
-    for (let x = 1; x < 446; x += 3) {
+    for (let x = 1; x < 476; x += 3) {
       for (let y = 1; y < 56; y += 3) {
         const p = { x, y };
         if (!pointInPolygon(p, inner)) continue;

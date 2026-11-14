@@ -110,13 +110,17 @@ function mount(phase: "docked-hidden" | "docked-revealed" = "docked-revealed") {
     candidateEdge: null,
     reveal,
     collapse,
+    // 生产环境由吸附引擎注入：测试没显式注入时补与真实形态一致的 stub，
+    // 快捷区恒有「完整面板 / 极简标签」两个按钮（P0-01 后工作空间也在此）。
+    formSwitch: useEdgeSnapStore.getState().formSwitch ?? ((async () => true) as never),
+    collapseToTab: useEdgeSnapStore.getState().collapseToTab ?? ((async () => true) as never),
   });
   return render(<CapsuleDock />);
 }
 
 /** 轨道分类按钮的悬停文案（就是分类名），按渲染顺序。 */
 function categoryTips(container: HTMLElement): string[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(".cap-nav .cap-btn")).map(
+  return Array.from(container.querySelectorAll<HTMLElement>(".cap-nav .cap-btn:not(.cap-direct)")).map(
     (el) => el.dataset.tip ?? "",
   );
 }
@@ -142,7 +146,7 @@ afterEach(() => {
 
 describe("C1 · 注册中心与胶囊入口集合一致", () => {
   it("胶囊面入口唯一，默认可见与默认顺序同源", () => {
-    expect(CAPSULE_IDS).toEqual(["agents", "tasks", "inbox", "clipboard", "apps", "roadmap"]);
+    expect(CAPSULE_IDS).toEqual(["agents", "tasks", "inbox", "clipboard", "apps", "roadmap", "workspace"]);
     expect(defaultVisibleIds("capsule")).toEqual(CAPSULE_IDS);
     // 注册中心里没有任何「只在胶囊出现但没被 entriesForSurface 收录」的孤儿入口
     const declared = NAV_ENTRIES.filter((entry) => entry.surfaces.includes("capsule")).map(
@@ -151,8 +155,41 @@ describe("C1 · 注册中心与胶囊入口集合一致", () => {
     expect(new Set(declared)).toEqual(new Set(CAPSULE_IDS));
   });
 
-  it("每个胶囊入口都有分类身份，且分类身份不重复（一人一个面板）", () => {
-    const categories = CAPSULE_IDS.map((id) => navEntry(id)!.capsuleCategory);
+  /**
+   * P0-01（2026-11-13）：工作空间入口必须**不占用分类组长度**。
+   *
+   * 轨道是 Win32 区域裁剪窗口：7 个 36px 控件塞进同一个居中纵列会把两端推进
+   * 肩部收窄区（内容 375 / 外框 446，端点 ±187.5 处厚度仅 ~13.7px），
+   * Agent 球与形态出口都会被裁掉一角。工作空间入口因此作为 26px 次级按钮
+   * 落在底部 `.cap-quick`，分类组保持 5 个 36px 控件。
+   */
+  it("工作空间直接入口位于底部快捷区，不占用分类组长度", () => {
+    const { container } = mount("docked-hidden");
+    expect(container.querySelectorAll(".cap-nav .cap-btn").length).toBe(5);
+    const quick = container.querySelector(".cap-quick") as HTMLElement;
+    expect(quick).toBeTruthy();
+    const direct = container.querySelector(".cap-direct") as HTMLButtonElement;
+    expect(direct).toBeTruthy();
+    expect(quick.contains(direct)).toBe(true);
+    expect(direct.getAttribute("aria-label")).toBe("工作空间");
+    // 快捷区：工作空间 + 完整面板 + 极简标签，三个按钮同一 26px 命中区
+    expect(quick.querySelectorAll("button").length).toBe(3);
+    expect(direct.className).toContain("cap-quick-btn");
+  });
+
+  it("隐藏工作空间入口后快捷区回流，其余入口与分类组不受影响", () => {
+    useLayout(CAPSULE_IDS.filter((id) => id !== "workspace"));
+    const { container } = mount("docked-hidden");
+    expect(container.querySelector(".cap-direct")).toBeNull();
+    expect(container.querySelectorAll(".cap-quick button").length).toBe(2);
+    expect(container.querySelectorAll(".cap-nav .cap-btn").length).toBe(5);
+  });
+
+  it("每个胶囊入口都有分类身份或直接入口标记，且分类身份不重复（一人一个面板）", () => {
+    const direct = CAPSULE_IDS.filter((id) => navEntry(id)!.directCapsule);
+    expect(direct).toEqual(["workspace"]);
+    const categorized = CAPSULE_IDS.filter((id) => !navEntry(id)!.directCapsule);
+    const categories = categorized.map((id) => navEntry(id)!.capsuleCategory);
     expect(categories.every(Boolean)).toBe(true);
     expect(new Set(categories).size).toBe(categories.length);
     // 逻辑 Tab 归属与分类身份一致，避免「入口叫 A、面板开 B」
@@ -162,10 +199,13 @@ describe("C1 · 注册中心与胶囊入口集合一致", () => {
     expect(navEntry("apps")!.tabs).toEqual(["apps"]);
     expect(navEntry("roadmap")!.tabs).toEqual(["roadmap"]);
     expect(navEntry("agents")!.tabs).toEqual(["agents"]);
+    expect(navEntry("workspace")!.tabs).toEqual(["workspace"]);
   });
 
   it("每个分类都能打开对应面板（新增分类必须同时补面板映射）", () => {
-    const categories = CAPSULE_IDS.map((id) => navEntry(id)!.capsuleCategory!) as CapsuleCategory[];
+    const categories = CAPSULE_IDS
+      .filter((id) => !navEntry(id)!.directCapsule)
+      .map((id) => navEntry(id)!.capsuleCategory!) as CapsuleCategory[];
     for (const category of categories) {
       cleanup();
       useCapsuleStore.setState({ active: category });
@@ -217,8 +257,7 @@ describe("C1 · Agent 状态球是全局入口，不是分类页签", () => {
     useLayout(["tasks", "inbox", "clipboard", "apps"]);
     const { container } = mount();
     expect(container.querySelector(".cap-orb")).toBeNull();
-    expect(container.querySelectorAll(".cap-nav .cap-btn").length).toBe(4);
-    // 状态球隐藏后 active=agents 属于「不可见分类」：静默切到仍可见的第一个分类
+    expect(container.querySelectorAll(".cap-nav .cap-btn").length).toBe(4);    // 状态球隐藏后 active=agents 属于「不可见分类」：静默切到仍可见的第一个分类
     expect(useCapsuleStore.getState().active).toBe("tasks");
     expect(container.querySelector(".capsule-panel")!.getAttribute("aria-label")).toBe(
       "任务面板",
@@ -322,7 +361,7 @@ describe("C1 · 排序与显隐持久化，两套配置互不影响", () => {
 
     const stored = useSettingsStore.getState().settings![NAV_LAYOUT_SETTING_KEY] as NavLayoutConfig;
     expect(stored.capsule).not.toContain("apps");
-    expect(stored.capsule).toEqual(["agents", "tasks", "inbox", "clipboard", "roadmap"]);
+    expect(stored.capsule).toEqual(["agents", "tasks", "inbox", "clipboard", "roadmap", "workspace"]);
     // 完整面板一栏完全未被触碰
     expect(stored.left).toEqual(layout([...CAPSULE_IDS]).left);
     expect(stored.version).toBe(NAV_LAYOUT_VERSION);
@@ -344,6 +383,7 @@ describe("C1 · 排序与显隐持久化，两套配置互不影响", () => {
       "clipboard",
       "apps",
       "roadmap",
+      "workspace",
     ]);
     expect(stored.left).toEqual(layout([...CAPSULE_IDS]).left);
 

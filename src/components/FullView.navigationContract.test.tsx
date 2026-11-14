@@ -22,6 +22,7 @@ import { cleanup, render } from "@testing-library/react";
 
 // 与 FullView.test.tsx 保持一致：只验证导航结构，不加载面板业务依赖。
 vi.mock("./workbench/DevWorkbenchPanel", () => ({ default: () => <div>workbench-panel</div> }));
+vi.mock("./workspace/WorkspaceProjectsPanel", () => ({ default: () => <div>workspace-panel</div> }));
 vi.mock("./tasks/TasksPanel", () => ({ default: () => <div>tasks-panel</div> }));
 vi.mock("./agents/AgentPanel", () => ({ default: () => <div>agents-panel</div> }));
 vi.mock("./apps/AppsPanel", () => ({ default: () => <div>apps-panel</div> }));
@@ -54,7 +55,7 @@ afterEach(cleanup);
 
 describe("脚本侧导航契约与真实导航一致", () => {
   it("默认可见视觉入口 14 项；逻辑 Tab 10 项且与 TAB_ORDER 完全一致", () => {
-    expect(RAIL_ITEM_COUNT).toBe(14);
+    expect(RAIL_ITEM_COUNT).toBe(15);
     expect([...LOGICAL_TABS]).toEqual([...TAB_ORDER]);
     // 合并入口覆盖 inbox+shelf，其余 1:1；「工作台」「应用」「微件」「帮助」「诊断中心」「资源管理」是仅视觉入口
     const covered = RAIL_ENTRIES.flatMap((e) => (e.tabs ?? [e.id]));

@@ -54,7 +54,7 @@ describe("导航自定义区块", () => {
     useUiStore.setState({ tab: "apps" });
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText(/常驻 14 \/ 16 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 15 \/ 17 项/)).toBeTruthy();
     const appsSwitch = screen.getByRole("switch", {
       name: "应用导航入口显示",
     }) as HTMLInputElement;
@@ -74,7 +74,7 @@ describe("导航自定义区块", () => {
     expect(
       (useSettingsStore.getState().settings?.navigation_layout as { left: string[] }).left,
     ).not.toContain("apps");
-    expect(screen.getByText(/常驻 13 \/ 16 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 14 \/ 17 项/)).toBeTruthy();
   });
 
   it("「设置」是锁定入口：开关禁用、无排序按钮并标注固定", () => {
@@ -165,7 +165,7 @@ describe("导航自定义区块", () => {
     render(<NavigationVisibilitySection />);
     await user.click(screen.getByRole("button", { name: "停靠胶囊" }));
 
-    expect(screen.getByText(/常驻 0 \/ 6 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 0 \/ 7 项/)).toBeTruthy();
     expect(screen.getByText(/切换为完整面板/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "恢复停靠胶囊默认导航配置" })).toBeTruthy();
   });
@@ -199,7 +199,7 @@ describe("导航自定义区块 · 英文", () => {
     setLocalePreference("en-US");
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText("14 of 16 pinned")).toBeTruthy();
+    expect(screen.getByText("15 of 17 pinned")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Full panel" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Docked capsule" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Show Tasks navigation entry" })).toBeTruthy();
@@ -281,7 +281,7 @@ describe("排序按钮可见性与边界", () => {
       const labels = [
         ...document.querySelectorAll(".nav-visibility-row .nav-visibility-entry-label"),
       ].map((el) => el.textContent);
-      expect(labels).toEqual(["Agent", "收集箱", "任务", "剪贴板", "应用", "规划中心"]);
+      expect(labels).toEqual(["Agent", "收集箱", "任务", "剪贴板", "应用", "规划中心", "工作空间"]);
     });
   });
 

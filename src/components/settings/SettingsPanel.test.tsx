@@ -458,7 +458,7 @@ describe("设置页分组折叠", () => {
     await waitFor(() => expectExpanded(sectionHead("导航自定义"), true));
     // 数字与 navigationRegistry 默认常驻的 left 入口数一致（帮助与诊断中心默认隐藏）；
     // 再新增常驻入口时需同步更新（2026-11-12：+工作台 → 16 声明 / 14 常驻）。
-    expect(screen.getByText(/常驻 14 \/ 16 项/)).toBeTruthy();
+    expect(screen.getByText(/常驻 15 \/ 17 项/)).toBeTruthy();
     expect(sessionStorage.getItem("taskdock.settings.reveal.v1")).toBeNull();
     // 定位意图会先切到分组所属分类
     expect(
