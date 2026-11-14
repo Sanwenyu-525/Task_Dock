@@ -24,6 +24,10 @@ const navTargetRunningStates = vi.fn();
 const navCloseTargetWindows = vi.fn();
 const navQuitTargetProcesses = vi.fn();
 const navKillTargetProcesses = vi.fn();
+// 形态收敛（2026-11-14）：「添加应用/管理应用」直达唯一工作台，不再下发主窗
+// appsAddRequest 一次性意图（主窗应用页已退化为摘要交接页，意图无处消费）。
+const openAppsAdd = vi.fn();
+const openAppsManager = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   applyMode: async () => undefined,
@@ -45,6 +49,11 @@ vi.mock("../../lib/bridge", () => ({
     apply_restore: false,
     restore_id: null,
   }),
+}));
+
+vi.mock("./actions", () => ({
+  openAppsAdd: (...a: unknown[]) => openAppsAdd(...a),
+  openAppsManager: (...a: unknown[]) => openAppsManager(...a),
 }));
 
 // 只替换真实 IPC 调用，结果解释与图标工具使用真实实现，避免测试复制产品文案。
@@ -121,6 +130,8 @@ beforeEach(() => {
   });
   navKillTargetProcesses.mockReset();
   navKillTargetProcesses.mockResolvedValue({ matched: 1, killed: 1, failedPids: [] });
+  openAppsAdd.mockReset();
+  openAppsManager.mockReset();
   useNavigationStore.setState({
     targets: [target("a", "Obsidian")],
     targetsLoaded: true,
@@ -542,19 +553,21 @@ describe("AppsLite 拖拽结束后的点击判定", () => {
     expect(navNavigate).toHaveBeenCalledWith("b");
   });
 
-  it("拖完立刻点加号：补发 click 被忽略，真实点击仍能打开添加页", async () => {
+  it("拖完立刻点加号：补发 click 被忽略，真实点击仍能直达工作台添加应用", async () => {
     seedTwo();
     render(<AppsLite />);
     dropAOnB();
     const add = screen.getByRole("button", { name: "添加应用" });
 
-    // 补发 click（无 pointerdown）不触发添加意图
+    // 补发 click（无 pointerdown）不触发添加入口
     fireEvent.click(add);
-    expect(useUiStore.getState().appsAddRequest).toBeNull();
+    expect(openAppsAdd).not.toHaveBeenCalled();
 
     fireEvent.pointerDown(add);
     await act(async () => { fireEvent.click(add); });
-    expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0);
+    // 形态收敛：添加应用直达唯一工作台应用页（不再写主窗 appsAddRequest 意图）
+    expect(openAppsAdd).toHaveBeenCalledTimes(1);
+    expect(useUiStore.getState().appsAddRequest).toBeNull();
   });
 
   it("拖拽取消（Esc）后状态清理：不残留拖动标记，真实点击不受影响", async () => {

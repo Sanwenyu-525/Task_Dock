@@ -18,8 +18,8 @@ const planningListFeatures = vi.fn();
 const planningListMilestones = vi.fn();
 const planningUpdateStep = vi.fn();
 const onPlanningChanged = vi.fn(async (_cb: () => void) => () => {});
-const openFullApp = vi.fn();
-const requestRoadmapFocus = vi.fn();
+const openWorkbenchPage = vi.fn();
+const openRoadmapFocus = vi.fn();
 
 vi.mock("../../lib/bridge", () => ({
   planningListProjects: (...a: unknown[]) => planningListProjects(...a),
@@ -47,11 +47,11 @@ vi.mock("../../lib/bridge", () => ({
 }));
 
 vi.mock("./actions", () => ({
-  openFullApp: (...a: unknown[]) => openFullApp(...a),
-  // openRoadmapFocus = openFullApp("roadmap") + 导航成功后下发一次性定位意图。
-  // mock 记录意图参数：断言「切页」与「定位目标」两件事。
-  openRoadmapFocus: (target: { projectId: string; featureId?: string }) =>
-    openFullApp("roadmap", () => requestRoadmapFocus(target)),
+  // 形态收敛（2026-11-14）：完整规划直达唯一工作台。
+  // openWorkbenchPage(tab, projectId) = 工作台页面级落点；
+  // openRoadmapFocus({ projectId }) = 项目级定位（功能级聚焦协议暂不支持）。
+  openWorkbenchPage: (...a: unknown[]) => openWorkbenchPage(...a),
+  openRoadmapFocus: (...a: unknown[]) => openRoadmapFocus(...a),
 }));
 
 vi.mock("../roadmap/PlanningBits", () => ({
@@ -156,8 +156,8 @@ beforeEach(() => {
   planningListMilestones.mockReset();
   planningUpdateStep.mockReset();
   onPlanningChanged.mockClear();
-  openFullApp.mockReset();
-  requestRoadmapFocus.mockReset();
+  openWorkbenchPage.mockReset();
+  openRoadmapFocus.mockReset();
   resetStore();
 });
 
@@ -313,7 +313,7 @@ describe("PlanningLite", () => {
     await waitFor(() => expect(planningListProjects).toHaveBeenCalledTimes(2));
   });
 
-  it("底栏「完整规划」跳转完整规划中心", async () => {
+  it("底栏「完整规划」直达唯一工作台规划中心（项目级定位随导航事务下发）", async () => {
     planningListProjects.mockResolvedValue([project()]);
     planningListFeatures.mockResolvedValue([feature()]);
     planningListMilestones.mockResolvedValue([]);
@@ -321,27 +321,27 @@ describe("PlanningLite", () => {
     render(<PlanningLite />);
     await waitFor(() => expect(screen.getByText("登录流程")).toBeTruthy());
 
-    // 已选择项目：完整规划按当前项目下发一次性定位意图（仍是同一导航事务）
+    // 已选择项目：完整规划直达工作台并携带项目定位（不经旧完整面板中转）
     fireEvent.click(screen.getByRole("button", { name: /完整规划/ }));
-    expect(openFullApp).toHaveBeenCalledWith("roadmap", expect.any(Function));
+    expect(openWorkbenchPage).toHaveBeenCalledWith("roadmap", "p1");
   });
 
-  it("未选择项目（读取失败）时底栏「完整规划」直接切页，不携带定位意图", async () => {
-    // 项目列表读取失败 → 没有可定位的目标；底部入口必须退化为普通切页，
-    // 不能带着空/陈旧的项目 id 下发一次意图（否则完整面板会提示项目不存在）。
+  it("未选择项目（读取失败）时底栏「完整规划」仍直达工作台，但不携带项目定位", async () => {
+    // 项目列表读取失败 → 没有可定位的目标；底部入口直达规划中心页面，
+    // 不能带着空/陈旧的项目 id 下发定位（否则工作台会提示项目不存在）。
     planningListProjects.mockRejectedValue(new Error("planning db unavailable"));
 
     render(<PlanningLite />);
 
     const button = await screen.findByRole("button", { name: /完整规划/ });
     fireEvent.click(button);
-    expect(openFullApp).toHaveBeenCalledTimes(1);
-    // 普通切页只有一个参数；定位意图版本会是 openFullApp("roadmap", after)
-    expect(openFullApp.mock.calls[0]).toHaveLength(1);
-    expect(requestRoadmapFocus).not.toHaveBeenCalled();
+    expect(openWorkbenchPage).toHaveBeenCalledTimes(1);
+    expect(openWorkbenchPage.mock.calls[0][0]).toBe("roadmap");
+    expect(openWorkbenchPage.mock.calls[0][1]).toBeUndefined();
+    expect(openRoadmapFocus).not.toHaveBeenCalled();
   });
 
-  it("功能详情的「完整规划」按项目+功能下发定位意图（openRoadmapFocus）", async () => {
+  it("功能详情的「完整规划」直达规划中心并定位到所属项目（openRoadmapFocus）", async () => {
     planningListProjects.mockResolvedValue([project()]);
     planningListFeatures.mockResolvedValue([feature()]);
     planningListMilestones.mockResolvedValue([]);
@@ -349,23 +349,17 @@ describe("PlanningLite", () => {
     render(<PlanningLite />);
     await waitFor(() => expect(screen.getByText("登录流程")).toBeTruthy());
 
-    // 展开功能详情 → 点详情里的「完整规划」（底栏同名按钮之外，取详情内的 cap-mini）
+    // 展开功能详情 → 点详情里的「完整规划」（底栏同名按钮之外，取详情内的 cap-mini）。
+    // 形态收敛：功能级聚焦协议暂不支持跨窗下发，落点为该项目在规划中心的列表页。
     fireEvent.click(screen.getByRole("button", { name: /查看「登录流程」详情/ }));
     const detailBtn = screen
       .getAllByRole("button", { name: "完整规划" })
       .find((el) => el.className.includes("cap-mini"));
     expect(detailBtn).toBeTruthy();
     fireEvent.click(detailBtn!);
-    expect(openFullApp).toHaveBeenCalledWith("roadmap", expect.any(Function));
-    // 真实契约：定位意图绑定在导航事务上，只在导航成功后下发一次（consume-once）。
-    // mock 的 openFullApp 不会自己执行 after，这里模拟「导航成功」触发它。
-    const after = openFullApp.mock.calls
-      .filter((c) => c[0] === "roadmap" && typeof c[1] === "function")
-      .map((c) => c[1] as () => void)
-      .pop();
-    after?.();
-    expect(requestRoadmapFocus).toHaveBeenCalledTimes(1);
-    expect(requestRoadmapFocus).toHaveBeenCalledWith({ projectId: "p1", featureId: "f1" });
+    expect(openRoadmapFocus).toHaveBeenCalledTimes(1);
+    expect(openRoadmapFocus).toHaveBeenCalledWith({ projectId: "p1" });
+    expect(openWorkbenchPage).not.toHaveBeenCalled();
   });
 
   it("快速查找：客户端过滤已加载功能（含内置目录），不新增 IPC", async () => {

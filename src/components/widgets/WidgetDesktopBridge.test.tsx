@@ -44,7 +44,11 @@ vi.mock("../../lib/widgets/desktopBridge", async (importOriginal) => {
 
 vi.mock("./liveSources", () => ({ WIDGET_SOURCES: {} }));
 
-vi.mock("../capsule/actions", () => ({ openFullApp: vi.fn() }));
+vi.mock("../capsule/actions", () => ({
+  openFullApp: vi.fn(),
+  // 形态收敛后微件的完整功能动作走工作台直达；默认回执 succeeded（测试不关心导航细节）。
+  openWorkbenchPageWithToast: vi.fn(async () => ({ status: "succeeded" })),
+}));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/bridge")>();

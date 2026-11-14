@@ -32,6 +32,32 @@ const navListTargets = vi.fn();
 const navNavigate = vi.fn();
 const navDeleteTarget = vi.fn();
 const navAllTaskLinks = vi.fn();
+// 形态收敛（2026-11-14）：完整功能动作直达唯一工作台。mock 记录导航目标，
+// 各用例按新契约断言「直达工作台」，不再断言主窗 tab/一次性意图。
+const openWorkbench = vi.fn();
+
+vi.mock("../../lib/workbenchNav", () => ({
+  openWorkbench: (...a: unknown[]) => openWorkbench(...a),
+  openWorkbenchHome: () => openWorkbench({ tab: "home", projectId: null }),
+}));
+
+const workbenchOk = async () => ({
+  ok: true,
+  pending: false,
+  status: "succeeded" as const,
+  error: null,
+  requestId: 1,
+  created: false,
+  settled: Promise.resolve({
+    ok: true,
+    pending: false,
+    status: "succeeded" as const,
+    error: null,
+    requestId: 1,
+    created: false,
+    settled: Promise.resolve(null) as unknown as Promise<never>,
+  }),
+});
 
 vi.mock("../../lib/bridge", () => ({
   onClipboardChanged: async () => () => {},
@@ -162,6 +188,8 @@ beforeEach(() => {
   navDeleteTarget.mockReset();
   navAllTaskLinks.mockReset();
   navAllTaskLinks.mockResolvedValue([]);
+  openWorkbench.mockReset();
+  openWorkbench.mockImplementation(workbenchOk);
   taskStats.mockResolvedValue({
     pending: 0,
     overdue: 0,
@@ -1471,7 +1499,7 @@ describe("应用面板", () => {
     expect(screen.queryByText("尚未配置快捷应用")).toBeNull();
   });
 
-  it("添加按钮始终可见（列表占满也不消失），点击进入应用中心添加页而不是设置页", async () => {
+  it("添加按钮始终可见（列表占满也不消失），点击直达工作台应用页而不是设置页", async () => {
     useNavigationStore.setState({
       targets: Array.from({ length: 8 }, (_, i) => target(`a${i}`, `应用${i}`)),
       targetsLoaded: true,
@@ -1486,10 +1514,11 @@ describe("应用面板", () => {
     expect(add.querySelector("svg")).toBeTruthy();
     expect(screen.queryByText("添加应用")).toBeNull();
     fireEvent.click(add);
-    // 添加意图随导航 after 下发，解除停靠完成后才写入。
-    await waitFor(() => expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0));
+    // 形态收敛：添加应用直达唯一工作台应用页，不再写主窗一次性意图/切主窗 tab。
+    await waitFor(() => expect(openWorkbench).toHaveBeenCalledTimes(1));
+    expect(openWorkbench.mock.calls[0][0]).toEqual({ tab: "apps", projectId: null });
+    expect(useUiStore.getState().appsAddRequest).toBeNull();
     expect(useUiStore.getState().appConfig).toBeNull();
-    expect(useUiStore.getState().tab).toBe("apps");
   });
 
   it("Lite 不再重复展示「最近使用」：同一应用只在网格出现一次", async () => {
@@ -1602,7 +1631,7 @@ describe("应用面板", () => {
     expect(screen.queryByText("Agent 会话")).toBeNull();
   });
 
-  it("空状态提示「尚未配置」时加号仍在网格内；点加号进入应用中心添加页，底部「管理」进入应用中心", async () => {
+  it("空状态提示「尚未配置」时加号仍在网格内；点加号/底部「管理」都直达工作台应用页", async () => {
     useNavigationStore.setState({ targets: [], targetsLoaded: true, targetsError: null });
     useUiStore.setState({ appConfig: null, appsAddRequest: null, tab: "tasks" });
     render(<AppsLite />);
@@ -1611,16 +1640,15 @@ describe("应用面板", () => {
     // 未配置时空态提供唯一添加入口，不再额外渲染网格加号。
     expect(add.closest(".cap-empty")).toBeTruthy();
     fireEvent.click(add);
-    await waitFor(() => expect(useUiStore.getState().appsAddRequest?.token).toBeGreaterThan(0));
-    expect(useUiStore.getState().appConfig).toBeNull();
-    expect(useUiStore.getState().tab).toBe("apps");
+    await waitFor(() => expect(openWorkbench).toHaveBeenCalledTimes(1));
+    expect(openWorkbench.mock.calls[0][0]).toEqual({ tab: "apps", projectId: null });
 
-    // 顶部重复的管理图标已删除，只保留底部「管理」；管理不写设置页意图。
+    // 顶部重复的管理图标已删除，只保留底部「管理」；管理同样直达工作台应用页。
     useUiStore.setState({ appConfig: null, appsAddRequest: null, tab: "tasks" });
     expect(screen.queryByRole("button", { name: "管理快捷应用" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "管理" }));
-    expect(useUiStore.getState().appConfig).toBeNull();
-    expect(useUiStore.getState().tab).toBe("apps");
+    await waitFor(() => expect(openWorkbench).toHaveBeenCalledTimes(2));
+    expect(openWorkbench.mock.calls[1][0]).toEqual({ tab: "apps", projectId: null });
   });
 
   it("启动成功后刷新共享目标（最近使用排序反映真实计数）", async () => {

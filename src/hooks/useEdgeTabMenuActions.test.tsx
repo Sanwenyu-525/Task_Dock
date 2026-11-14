@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const unlisten = vi.fn();
 let handler: ((event: { payload: unknown }) => void) | null = null;
+const openWorkbenchHome = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -25,6 +26,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 vi.mock("../lib/errors", () => ({
   invokeCommand: vi.fn(async () => true),
+}));
+vi.mock("../lib/workbenchNav", () => ({
+  openWorkbenchHome: (...a: unknown[]) => openWorkbenchHome(...a),
 }));
 
 import {
@@ -70,6 +74,28 @@ describe("runTabMenuAction", () => {
   it("undock：走既有解除吸附事务", async () => {
     await expect(runTabMenuAction("undock")).resolves.toEqual({ ok: true });
     expect(undock).toHaveBeenCalledTimes(1);
+  });
+
+  it("workbench：直达唯一工作台，succeeded/pending 回 ok，failed 回真实原因", async () => {
+    // 形态收敛（2026-11-14）：托盘/悬浮栏「打开完整工作台」共用本通道。
+    openWorkbenchHome.mockReset();
+    openWorkbenchHome.mockResolvedValue({ status: "succeeded" });
+    await expect(runTabMenuAction("workbench")).resolves.toEqual({ ok: true });
+    // 初始回执上限 7 秒，略小于后端 8 秒转发超时：先给出可读失败原因。
+    expect(openWorkbenchHome).toHaveBeenCalledWith({ timeoutMs: 7000 });
+
+    // pending = 工作台已弹出草稿确认条（窗口已就绪），按成功回执，菜单收起。
+    openWorkbenchHome.mockResolvedValue({ status: "pending" });
+    await expect(runTabMenuAction("workbench")).resolves.toEqual({ ok: true });
+
+    openWorkbenchHome.mockResolvedValue({ status: "failed", error: "工作台导航失败" });
+    await expect(runTabMenuAction("workbench")).resolves.toEqual({
+      ok: false,
+      error: "工作台导航失败",
+    });
+    expect(restoreTab).not.toHaveBeenCalled();
+    expect(formSwitch).not.toHaveBeenCalled();
+    expect(undock).not.toHaveBeenCalled();
   });
 
   it("事务返回 false 时回传可重试的失败原因（不假装成功）", async () => {

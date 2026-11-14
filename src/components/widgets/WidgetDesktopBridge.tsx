@@ -51,7 +51,7 @@ import { useAgentsStore } from "../../store/useAgentsStore";
 import { useTasksStore } from "../../store/useTasksStore";
 import { useUiStore, type Tab } from "../../store/useUiStore";
 import { useWidgetsStore, type WidgetDesktopPhase } from "../../store/useWidgetsStore";
-import { openFullApp } from "../capsule/actions";
+import { openFullApp, openWorkbenchPageWithToast } from "../capsule/actions";
 
 const REMINDER_DEBOUNCE_MS = 800;
 /** 任务 Store 一次操作可能连发多次通知；合并成一次后端查询。 */
@@ -727,7 +727,9 @@ export default function WidgetDesktopBridge() {
           openFullApp("clipboard");
           break;
         case "workflows":
-          openFullApp("workflows");
+          // 工作流是完整功能：直达唯一工作台（Phase D 后主窗该页只是摘要交接页，
+          // 经旧面板中转会变成「微件 → 摘要页 → 再点一次 → 工作台」二次跳转）。
+          void openWorkbenchPageWithToast("workflows");
           break;
         case "retry-efficiency":
           WIDGET_SOURCES.efficiency?.retry?.();

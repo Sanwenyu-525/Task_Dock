@@ -31,8 +31,6 @@ const DROP_TARGETS_STORE = src("../../store/useDropTargetsStore.ts");
 const CLIPBOARD_LITE = src("./ClipboardLite.tsx");
 const CLIPBOARD_STORE = src("../../store/useClipboardStore.ts");
 const PLANNING_LITE = src("./PlanningLite.tsx");
-const PLANNING_WORKSPACE = src("../roadmap/PlanningWorkspace.tsx");
-const UI_STORE = src("../../store/useUiStore.ts");
 const CAPSULE_ACTIONS = src("./actions.ts");
 
 describe("契约：应用手动排序跨面板同源（P0-2）", () => {
@@ -101,17 +99,15 @@ describe("契约：剪贴板分类查询由后端过滤（P1-1）", () => {
   });
 });
 
-describe("契约：规划中心精确定位双端接线（P1-2）", () => {
-  it("工具面板经 openRoadmapFocus 下发一次性意图，完整面板消费同一意图", () => {
+describe("契约：规划中心直达工作台（形态收敛 2026-11-14，取代旧 P1-2 主窗意图接线）", () => {
+  it("工具面板经 openRoadmapFocus/openWorkbenchPage 直达唯一工作台规划中心", () => {
     expect(PLANNING_LITE).toContain("openRoadmapFocus");
-    expect(CAPSULE_ACTIONS).toContain("requestRoadmapFocus");
-    expect(UI_STORE).toContain("consumeRoadmapFocus");
-    expect(PLANNING_WORKSPACE).toContain("consumeRoadmapFocus");
-  });
-
-  it("定位意图绑定导航事务（after），不在导航前预写状态", () => {
-    // actions.ts 的 openRoadmapFocus 必须经 openFullApp 的 after 通道
-    expect(CAPSULE_ACTIONS).toMatch(/openFullApp\("roadmap",\s*\(\)\s*=>/);
+    // actions.ts 的 openRoadmapFocus/openFullPlanning 都必须经工作台导航事务，
+    // 不再回到「旧完整面板 → 摘要交接页 → 工作台」的二次跳转。
+    expect(CAPSULE_ACTIONS).toMatch(/openWorkbenchPage\("roadmap"/);
+    // 旧的主窗一次性定位意图（requestRoadmapFocus）消费者面板已不在主窗渲染，
+    // 胶囊动作层不得再下发（下发即悬空）。
+    expect(CAPSULE_ACTIONS).not.toContain("requestRoadmapFocus");
   });
 });
 
