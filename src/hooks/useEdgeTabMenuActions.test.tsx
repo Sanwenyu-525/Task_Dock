@@ -285,6 +285,28 @@ describe("useEdgeTabMenuActions", () => {
     }
   });
 
+  it("listen 启动期挂起：超时判失败并重试，迟到兑现的旧订阅被释放", async () => {
+    const listenMock = vi.mocked(listen);
+    listenMock.mockClear();
+    const restoreTab = vi.fn(async () => true);
+    useEdgeSnapStore.setState({ restoreTab });
+    // 第一次尝试永久挂起（启动竞态）；重试回落到默认实现（成功订阅）。
+    listenMock.mockImplementationOnce(() => new Promise(() => {}));
+    vi.useFakeTimers();
+    try {
+      renderHook(() => useEdgeTabMenuActions());
+      // 2s 超时判失败 → 400ms 后重试成功
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(handler).toBeNull();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(handler).not.toBeNull();
+      handler?.({ payload: { id: 41, action: "expand" } });
+      await vi.waitFor(() => expect(restoreTab).toHaveBeenCalledTimes(1));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("订阅持续失败写诊断并停止重试（不无限循环）", async () => {
     const listenMock = vi.mocked(listen);
     listenMock.mockClear();
@@ -298,8 +320,9 @@ describe("useEdgeTabMenuActions", () => {
     } finally {
       vi.useRealTimers();
       // 恢复工厂默认实现，避免持续 rejection 泄漏到后续用例
-      listenMock.mockImplementation(async (_e: string, cb: (event: { payload: unknown }) => void) => {
-        handler = cb;
+      listenMock.mockImplementation(async (_event, cb) => {
+        // api 的 EventCallback 携带完整 Event 对象；测试只消费 payload，收窄收下。
+        handler = cb as unknown as typeof handler;
         return unlisten;
       });
     }

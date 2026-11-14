@@ -157,14 +157,45 @@ export function useEdgeTabMenuActions(): void {
       })();
     };
     /**
-     * 订阅（有界重试）：应用启动极早期 effects 可能先于事件 IPC 就绪，
-     * listen 一次性失败若被静默吞掉，托盘/标签菜单动作会**永久**无应答
-     * （后端只能等满 8s 超时；2026-11-14 原生验收实测命中）。失败后短暂
-     * 退避重试（共 ≤5 次）；持续失败写诊断并保持失效，不再静默假装已订阅。
+     * 订阅（每次尝试有超时 + 有界重试）：应用启动极早期的事件 IPC 可能
+     * **永久挂起**（invoke 丢失，既不 resolve 也不 reject——2026-11-14 原生
+     * 验收实测命中：托盘「打开完整工作台」动作链路整段无应答），单纯依赖
+     * catch 重试不够。每次 listen 给 2s 超时，超时按失败处理并退避重试
+     * （共 ≤5 次）；迟到兑现的旧订阅立即释放，不留重复监听器。持续失败
+     * 写诊断并保持失效——绝不静默假装已订阅。
      */
+    const SUBSCRIBE_TIMEOUT_MS = 2_000;
+    const handleSubscribeFailure = (attempt: number): void => {
+      if (disposed) return;
+      if (attempt < 4) {
+        retryTimer = setTimeout(() => subscribe(attempt + 1), 400 * (attempt + 1));
+        return;
+      }
+      logEvent({
+        level: "WARN",
+        module: "edge-tab-menu",
+        action: "subscribe",
+        event: "subscribe-failed",
+        message: "edge-tab-action 订阅持续失败，托盘/标签菜单动作不可用（可重启应用恢复）",
+      });
+    };
     const subscribe = (attempt: number): void => {
+      if (disposed) return;
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        handleSubscribeFailure(attempt);
+      }, SUBSCRIBE_TIMEOUT_MS);
       listen<TabActionRequest | string>(TAB_MENU_ACTION_EVENT, onEvent)
         .then((fn) => {
+          clearTimeout(timeout);
+          if (settled) {
+            // 旧尝试在判失败并重试之后才迟到兑现：立即释放，避免重复监听。
+            fn();
+            return;
+          }
+          settled = true;
           // 订阅兑现前已卸载：立即释放，避免监听器泄漏
           if (disposed) {
             fn();
@@ -173,18 +204,10 @@ export function useEdgeTabMenuActions(): void {
           unlisten = fn;
         })
         .catch(() => {
-          if (disposed) return;
-          if (attempt < 4) {
-            retryTimer = setTimeout(() => subscribe(attempt + 1), 400 * (attempt + 1));
-            return;
-          }
-          logEvent({
-            level: "WARN",
-            module: "edge-tab-menu",
-            action: "subscribe",
-            event: "subscribe-failed",
-            message: "edge-tab-action 订阅持续失败，托盘/标签菜单动作不可用（可重启应用恢复）",
-          });
+          clearTimeout(timeout);
+          if (settled) return;
+          settled = true;
+          handleSubscribeFailure(attempt);
         });
     };
     subscribe(0);
