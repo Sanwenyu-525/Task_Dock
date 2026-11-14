@@ -1,7 +1,8 @@
-//! 工作台右侧上下文栏（U0）：项目 / 开发项目 / Agent 的真实状态。
+//! 工作台右侧上下文栏（U0）：当前任务 / 项目 / 开发项目 / Agent / 需要处理的
+//! 真实状态。
 //!
 //! 不是每个功能都需要右栏：本组件只承载跨功能共用的上下文，不复制各页面的
-//! 详情视图；没有项目时如实降级为「未选择项目」，不显示假数据。
+//! 详情视图；没有项目/当前任务时如实降级，不显示假数据。
 
 import { FolderOpen, GitBranch, Loader2, PlayCircle, Settings2 } from "lucide-react";
 import { openPath as openSystemPath } from "@tauri-apps/plugin-opener";
@@ -9,8 +10,13 @@ import { openPath as openSystemPath } from "@tauri-apps/plugin-opener";
 import AgentIcon from "../components/ui/AgentIcon";
 import { useLocale } from "../hooks/useLocale";
 import { useAgentsStore } from "../store/useAgentsStore";
+import { useTasksStore } from "../store/useTasksStore";
+import { useSettingsStore } from "../store/useSettingsStore";
+import { useActionsStore } from "../store/useActionsStore";
 import { useWorkspaceDevContext } from "../workspace/useWorkspaceProjectContext";
 import { resolveWorkspaceProfile } from "../workspace/workspaceProfiles";
+import { priorityLabelKey } from "../lib/commandPhrases";
+import { formatLocalizedDateTime, formatLocalizedRelative } from "../i18n/format";
 import { errorMessage } from "../lib/errors";
 import type { WorkspaceProject } from "../lib/bridge";
 
@@ -19,6 +25,7 @@ interface Props {
   onOpenProject: () => void;
   onOpenProjectSettings: () => void;
   onOpenDevWorkbench: () => void;
+  onOpenTask: () => void;
   onNotice: (kind: "ok" | "error" | "info", text: string) => void;
 }
 
@@ -27,12 +34,20 @@ export default function WorkbenchContextPane({
   onOpenProject,
   onOpenProjectSettings,
   onOpenDevWorkbench,
+  onOpenTask,
   onNotice,
 }: Props) {
   const { t } = useLocale();
   const snapshot = useAgentsStore((s) => s.snapshot);
   const snapshotError = useAgentsStore((s) => s.snapshotError);
+  const feedItems = useActionsStore((s) => s.feed?.items ?? null);
   const dev = useWorkspaceDevContext(project?.devProjectId ?? null);
+
+  // 当前任务：设置键指向真实任务时才显示详情；失效/未设置如实降级。
+  const currentTaskId = useSettingsStore((s) => s.settings?.workbench_current_task ?? "");
+  const currentTask = useTasksStore((s) =>
+    currentTaskId ? s.tasks.find((task) => String(task.id) === currentTaskId) : undefined,
+  );
 
   const profile = resolveWorkspaceProfile(project?.kind);
   const sums = snapshot?.live_summary;
@@ -53,6 +68,37 @@ export default function WorkbenchContextPane({
       <header className="wb-context-head">
         <h3>{t("workbench.context")}</h3>
       </header>
+
+      <section className="wb-context-block" aria-labelledby="wb-context-task">
+        <h4 id="wb-context-task">{t("workbench.contextCurrentTask")}</h4>
+        {!currentTask && <p className="wb-muted">{t("workbench.contextNoTask")}</p>}
+        {currentTask && (
+          <>
+            <p className="wb-context-task-name">{currentTask.title}</p>
+            <dl className="wb-context-facts">
+              <dt>{t("workbench.contextTaskStatus")}</dt>
+              <dd>
+                {currentTask.status === "completed"
+                  ? t("workbench.taskStatusCompleted")
+                  : t("workbench.taskStatusPending")}
+              </dd>
+              <dt>{t("workbench.contextPriority")}</dt>
+              <dd>{t(priorityLabelKey(currentTask.priority))}</dd>
+              <dt>{t("workbench.contextDue")}</dt>
+              <dd>
+                {currentTask.due_at
+                  ? formatLocalizedDateTime(currentTask.due_at)
+                  : t("workbench.taskNoDue")}
+              </dd>
+            </dl>
+            <div className="wb-context-task-actions">
+              <button type="button" className="btn sm" onClick={onOpenTask}>
+                <PlayCircle size={12} aria-hidden="true" /> {t("nav.tasks")}
+              </button>
+            </div>
+          </>
+        )}
+      </section>
 
       <section className="wb-context-block" aria-labelledby="wb-context-project">
         <h4 id="wb-context-project">{t("workbench.projectsTitle")}</h4>
@@ -167,6 +213,30 @@ export default function WorkbenchContextPane({
             <span>{t("workbench.agentFailed")}</span>
           </div>
         </div>
+      </section>
+
+      <section className="wb-context-block" aria-labelledby="wb-context-activity">
+        <h4 id="wb-context-activity">{t("workbench.contextRecentActivity")}</h4>
+        {!feedItems || feedItems.length === 0 ? (
+          <p className="wb-muted">{t("workbench.contextActivityEmpty")}</p>
+        ) : (
+          <div>
+            {feedItems.slice(0, 4).map((item) => (
+              <div key={item.id} className="wb-activity-row">
+                <span
+                  className={`wb-activity-dot${item.priority <= 1 ? "" : " is-muted"}`}
+                  aria-hidden="true"
+                />
+                <span className="wb-activity-body">
+                  <span className="wb-activity-title">{item.title}</span>
+                  <span className="wb-activity-meta">
+                    {formatLocalizedRelative(item.occurred_at)}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </aside>
   );

@@ -822,11 +822,37 @@ const shim = `
   let snapshotTick = 0;
   const listeners = {};
 
+  // 统一工作台（workbench-preview.html）走查夹具：两个示例项目，仅 harness 使用。
+  // 注意：本文件主体位于模板字符串内，路径反斜杠必须写四个（经字符串折叠后剩两个）。
+  const WORKBENCH_PROJECTS = [
+    { id: "wp1", name: "产品研发工作空间", kind: "general", status: "active", rootPath: "", rootExists: false, devProjectId: null, devProjectExists: false, devProjectName: null, note: "", itemCount: 12, taskLinkCount: 5, createdAt: iso(600), updatedAt: iso(30) },
+    { id: "wp2", name: "星港回响 · AI 漫剧", kind: "ai_comic", status: "active", rootPath: "D:\\\\Projects\\\\starlight", rootExists: true, devProjectId: null, devProjectExists: false, devProjectName: null, note: "", itemCount: 28, taskLinkCount: 9, createdAt: iso(1200), updatedAt: iso(90) },
+  ];
+
   async function invoke(cmd, args) {
     await new Promise((r) => setTimeout(r, 30));
     switch (cmd) {
       case "get_settings": return settings;
       case "update_settings": return { ...settings, ...(args?.patch || {}) };
+      // ── 统一工作台外壳（workspace.html）走查：Shell 启动门 + 首页/状态栏最小数据 ──
+      case "workspace_project_list": return { projects: WORKBENCH_PROJECTS };
+      case "dev_project_list": return { projects: [] };
+      case "workspace_project_save": return { project: WORKBENCH_PROJECTS[0] };
+      case "workspace_set_active_project": return { ok: true };
+      case "workbench_take_nav": return null;
+      case "workbench_nav_ack": return undefined;
+      case "resource_snapshot":
+        return {
+          sampledAt: iso(0),
+          application: { knownCacheBytes: 0, knownCacheFiles: 0, status: "ready" },
+          memory: { totalBytes: 16 * 1024 ** 3, availableBytes: 6 * 1024 ** 3 },
+          disks: [
+            { volume: "D:", kind: "fixed", totalBytes: 512 * 1024 ** 3, availableBytes: 428 * 1024 ** 3 },
+            { volume: "C:", kind: "fixed", totalBytes: 512 * 1024 ** 3, availableBytes: 96 * 1024 ** 3 },
+          ],
+          process: { supported: true, truncated: false, omittedExternal: 0, omittedUnknown: 0, processes: [] },
+        };
+      case "plugin:app|version": return "0.0.0";
       // ── 手机与同步 / 文件互传 ──
       case "mobile_sync_status": return mobileSyncStatus;
       case "mobile_sync_revoke_device": return true;
@@ -1248,10 +1274,19 @@ const preview = html.replace(
 );
 writeFileSync(join(dist, "preview.html"), preview);
 
+// 统一工作台预览入口：同一份 shim 注入 dist/workspace.html，供 WorkbenchShell 走查。
+const wsHtml = readFileSync(join(dist, "workspace.html"), "utf8");
+const wsPreview = wsHtml.replace(
+  /<script type="module"/,
+  '<script src="/preview-shim.js"></script>\n    <script type="module"',
+);
+writeFileSync(join(dist, "workbench-preview.html"), wsPreview);
+
 // 同时落到 .preview/：vite build 会清空 dist/，并发构建时 dist 里的 harness 会
 // 被抹掉，导致走查页面退化成 404/无 IPC mock。.preview/ 不参与构建，保留一份稳定副本，
 // 由 scripts/serve-preview.mjs 直接提供，dist/ 里的副本仅作兼容。
 mkdirSync(join(root, ".preview"), { recursive: true });
 writeFileSync(join(root, ".preview", "preview-shim.js"), shim);
 writeFileSync(join(root, ".preview", "preview.html"), preview);
-console.log("preview.html + preview-shim.js 已生成（dist/ 与 .preview/）");
+writeFileSync(join(root, ".preview", "workbench-preview.html"), wsPreview);
+console.log("preview.html + workbench-preview.html + preview-shim.js 已生成（dist/ 与 .preview/）");

@@ -19,6 +19,7 @@
 //! - 持久化布局：`workbench_layout`（本文件经 `workbenchLayout.ts` 串行写入）。
 
 import {
+  Fragment,
   lazy,
   Suspense,
   useCallback,
@@ -30,10 +31,14 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
+  Inbox,
+  Layers,
   LayoutDashboard,
+  ListTodo,
   MoreHorizontal,
   PanelRight,
   Plus,
@@ -71,7 +76,8 @@ import { useAgentsStore } from "../store/useAgentsStore";
 import { useUiStore, type Tab, type TabSwitchResult } from "../store/useUiStore";
 import { useHotkeysRuntime } from "../store/useHotkeysStore";
 import { useGlobalSearchStore } from "../store/useGlobalSearchStore";
-import { useNavigationLayout } from "../lib/navigationLayout";import {
+import { useNavigationLayout } from "../lib/navigationLayout";
+import {
   entriesForSurface,
   lockedEntryIds,
   navEntry,
@@ -100,6 +106,7 @@ import {
   onProjectWorkspaceProjectSelected,
   onSettingsChanged,
   onWorkbenchNavigate,
+  resourceSnapshot,
   workbenchNavAck,
   workbenchTakeNav,
   workspaceProjectList,
@@ -111,6 +118,7 @@ import {
   type WorkspaceKind,
   type WorkspaceProject,
 } from "../lib/bridge";
+import { formatBytes } from "../lib/clipboardUi";
 import { createActiveProjectWriter, type ActiveProjectWriter } from "../workspace/activeProjectWriter";
 import { resolveWorkspaceProfile, WORKSPACE_PROFILES } from "../workspace/workspaceProfiles";
 import { errorMessage } from "../lib/errors";
@@ -284,6 +292,15 @@ export default function WorkbenchShell() {
       // 失败原因由 settingsError 在启动页如实展示，不在这里吞成成功。
     });
   }, [loadSettings]);
+
+  // 工作台是独立 WebView，不能假定主窗口 store 已经加载过业务数据。
+  // 这里只做一次权威读取（任务与统计 / Agent 快照 / 行动中心计数）；
+  // 不注册提醒、Agent 或微件订阅，避免第二套后台调度。
+  useEffect(() => {
+    void useTasksStore.getState().refresh().catch(() => {});
+    void useAgentsStore.getState().load().catch(() => {});
+    void useActionsStore.getState().load().catch(() => {});
+  }, []);
 
   // ── 布局 hydration：只在设置首次就绪时套用一次 ────────────────────────
   useEffect(() => {
@@ -878,6 +895,30 @@ export default function WorkbenchShell() {
     .filter((entry): entry is NavEntry => entry !== undefined);
   const hiddenEntries = LEFT_ENTRIES.filter((entry) => !layout.left.includes(entry.id));
 
+  // 导航分节（统一工作台信息架构，2026-11-14）：core=工作协同；capture/planning=
+  // 自动化与内容；system=项目与系统。用户自定义排序仍生效（分节内保持用户相对
+  // 顺序）；用户跨分节移动入口时它仍归入原分节（显隐/排序配置不受影响）。
+  const navSections = useMemo(() => {
+    const sectionOf = (entry: NavEntry): "core" | "flow" | "system" => {
+      if (entry.group === "system") return "system";
+      if (entry.group === "core") return "core";
+      return "flow";
+    };
+    const buckets: Record<"core" | "flow" | "system", NavEntry[]> = {
+      core: [],
+      flow: [],
+      system: [],
+    };
+    for (const entry of entriesToRender) buckets[sectionOf(entry)].push(entry);
+    return (
+      [
+        { key: "core", label: t("nav.group.core"), items: buckets.core },
+        { key: "flow", label: t("nav.group.flow"), items: buckets.flow },
+        { key: "system", label: t("nav.group.system"), items: buckets.system },
+      ] as Array<{ key: "core" | "flow" | "system"; label: string; items: NavEntry[] }>
+    ).filter((section) => section.items.length > 0);
+  }, [entriesToRender, t]);
+
   const counts = {
     intervention: actionsEnabled ? actionFeed?.counts.intervention ?? 0 : 0,
     attention: actionsEnabled ? attentionCount(actionFeed) : 0,
@@ -973,6 +1014,35 @@ export default function WorkbenchShell() {
 
   const searchOpen = useGlobalSearchStore((s) => s.openSearch);
 
+  // ── 底部状态栏（一次性真实数据；失败/非 Tauri 环境只隐藏对应项，不显示假值） ──
+  // sessions 字段在旧快照/部分 mock 里可能缺失：可选链降级为「不显示」。
+  const agentSessionCount = useAgentsStore((s) => s.snapshot?.sessions?.length ?? null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [statusDisk, setStatusDisk] = useState<{ volume: string; free: string } | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    // 版本与磁盘都是可选富信息：预览/单测等非 Tauri 环境 invoke 会拒绝，
+    // 这里按「取不到就不渲染」降级，属于展示层的可选数据而非业务结果。
+    void getVersion()
+      .then((version) => {
+        if (!disposed) setAppVersion(version);
+      })
+      .catch(() => {});
+    void resourceSnapshot()
+      .then((snapshot) => {
+        if (disposed) return;
+        // 数据目录所在卷排首位（后端约定）；取第一个有可用空间的卷。
+        const disk = snapshot.disks.find((item) => item.availableBytes !== null);
+        if (disk && disk.availableBytes !== null) {
+          setStatusDisk({ volume: disk.volume, free: formatBytes(disk.availableBytes) });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
   // ── 启动门：设置 + 路由 hydration 完成前不渲染假页面 ────────────────
   const booted = settingsReady && routeHydrated && projectHydrated;
   if (!booted) {
@@ -1036,34 +1106,41 @@ export default function WorkbenchShell() {
             <span>{t("workbench.home")}</span>
           </button>
           <div className="wb-nav-sep" role="presentation" />
-          {entriesToRender.map((entry) => {
-            const active = !atHome && entry.tabs.includes(tab);
-            const count = entry.badge ? counts[entry.badge] : 0;
-            const label = navLabel(entry, t);
-            return (
-              <button
-                key={entry.id}
-                type="button"
-                className={`wb-nav-item${active ? " active" : ""}`}
-                aria-current={active ? "page" : undefined}
-                aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
-                data-tip={label}
-                onClick={() => {
-                  openEntry(entry);
-                }}
-              >
-                <span className="wb-nav-icon">
-                  <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
-                  {count > 0 && (
-                    <em className={`wb-nav-badge${entry.badge === "pending" ? " is-subtle" : ""}`}>
-                      {count > 99 ? "99+" : count}
-                    </em>
-                  )}
-                </span>
-                <span className="wb-nav-label">{label}</span>
-              </button>
-            );
-          })}
+          {navSections.map((section) => (
+            <Fragment key={section.key}>
+              <div className="wb-nav-group" role="presentation">
+                {section.label}
+              </div>
+              {section.items.map((entry) => {
+                const active = !atHome && entry.tabs.includes(tab);
+                const count = entry.badge ? counts[entry.badge] : 0;
+                const label = navLabel(entry, t);
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className={`wb-nav-item${active ? " active" : ""}`}
+                    aria-current={active ? "page" : undefined}
+                    aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
+                    data-tip={label}
+                    onClick={() => {
+                      openEntry(entry);
+                    }}
+                  >
+                    <span className="wb-nav-icon">
+                      <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
+                      {count > 0 && (
+                        <em className={`wb-nav-badge${entry.badge === "pending" ? " is-subtle" : ""}`}>
+                          {count > 99 ? "99+" : count}
+                        </em>
+                      )}
+                    </span>
+                    <span className="wb-nav-label">{label}</span>
+                  </button>
+                );
+              })}
+            </Fragment>
+          ))}
         </div>
 
         <div className="wb-nav-foot">
@@ -1155,6 +1232,12 @@ export default function WorkbenchShell() {
 
       <div className="wb-main">
         <header className="wb-topbar">
+          <div className="wb-topbar-brand">
+            <span className="wb-brand-mark" aria-hidden="true">
+              <Layers size={13} strokeWidth={2} />
+            </span>
+            <span className="wb-brand-name">TaskDock</span>
+          </div>
           <div className="wb-topbar-title">
             <h1 id="wb-page-heading">{routeLabel}</h1>
             {selected && (
@@ -1177,6 +1260,62 @@ export default function WorkbenchShell() {
             )}
           </div>
           <div className="wb-topbar-actions">
+            <button
+              type="button"
+              className="wb-search-field"
+              aria-label={t("workbench.search")}
+              data-tip={`${t("workbench.search")} (Ctrl+Shift+F)`}
+              onClick={searchOpen}
+            >
+              <Search size={13} aria-hidden="true" />
+              <span className="wb-search-ph">{t("workbench.searchPlaceholder")}</span>
+              <kbd className="wb-search-kbd">{t("workbench.searchHint")}</kbd>
+            </button>
+            <DropdownMenu
+              menuLabel={t("workbench.createAria")}
+              placement="bottom-end"
+              trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                <button
+                  ref={ref}
+                  type="button"
+                  className="wb-create-btn"
+                  aria-haspopup="menu"
+                  aria-expanded={expanded}
+                  aria-label={t("workbench.createAria")}
+                  onClick={onClick}
+                  onKeyDown={onKeyDown}
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  <span>{t("workbench.create")}</span>
+                </button>
+              )}
+              items={[
+                {
+                  key: "new-task",
+                  label: t("workbench.createTask"),
+                  icon: <ListTodo size={14} />,
+                  onSelect: () => {
+                    goRoute("tasks");
+                    bumpQuickAdd();
+                  },
+                },
+                {
+                  key: "new-project",
+                  label: t("workbench.createProject"),
+                  icon: <Plus size={14} />,
+                  onSelect: openCreateProject,
+                },
+                {
+                  key: "collect",
+                  label: t("workbench.openCollection"),
+                  icon: <Inbox size={14} />,
+                  onSelect: () => {
+                    setCollectionSub("inbox");
+                    goRoute("inbox");
+                  },
+                },
+              ]}
+            />
             <Select
               value={selectedId ?? ""}
               options={projectOptions}
@@ -1194,15 +1333,6 @@ export default function WorkbenchShell() {
               onClick={openCreateProject}
             >
               <Plus size={15} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              className="wb-icon-btn"
-              aria-label={t("workbench.search")}
-              data-tip={`${t("workbench.search")} (Ctrl+Shift+F)`}
-              onClick={searchOpen}
-            >
-              <Search size={15} aria-hidden="true" />
             </button>
             <button
               type="button"
@@ -1232,6 +1362,10 @@ export default function WorkbenchShell() {
                   goRoute("workspace");
                 }}
                 onCreateProject={openCreateProject}
+                onQuickAddTask={() => {
+                  goRoute("tasks");
+                  bumpQuickAdd();
+                }}
               />
             </div>
 
@@ -1382,11 +1516,30 @@ export default function WorkbenchShell() {
                 onOpenProject={() => goRoute("workspace")}
                 onOpenProjectSettings={openProjectSettings}
                 onOpenDevWorkbench={() => void openDevWorkbenchForProject(selected)}
+                onOpenTask={() => goRoute("tasks")}
                 onNotice={showNotice}
               />
             </>
           )}
         </div>
+
+        <footer className="wb-statusbar" role="contentinfo">
+          {agentSessionCount !== null && (
+            <span className="wb-status-item">
+              {t("workbench.statusAgentSessions", { count: agentSessionCount })}
+            </span>
+          )}
+          {statusDisk && (
+            <span className="wb-status-item">
+              {t("workbench.statusDiskFree", { volume: statusDisk.volume, free: statusDisk.free })}
+            </span>
+          )}
+          {appVersion && (
+            <span className="wb-status-item wb-status-end">
+              {t("workbench.statusVersion", { version: appVersion })}
+            </span>
+          )}
+        </footer>
       </div>
 
       <GlobalSearchDialog />

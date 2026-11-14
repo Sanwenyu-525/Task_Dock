@@ -217,7 +217,9 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     label: "行动",
     icon: PointerClickIcon,
     tabs: ["actions"],
-    group: "core",
+    // 2026-11-14：与统一工作台信息架构对齐（效果图把行动中心/剪贴板归入
+    // 「自动化与内容」组）；当前无消费方按 group 渲染，不影响显隐与排序。
+    group: "capture",
     shortcut: "Ctrl+3",
     badge: "attention",
     defaults: {
@@ -233,7 +235,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     label: "剪贴板",
     icon: Clipboard,
     tabs: ["clipboard"],
-    group: "core",
+    group: "capture",
     shortcut: "Ctrl+4",
     capsuleCategory: "clipboard",
     defaults: {

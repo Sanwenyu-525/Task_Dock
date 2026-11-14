@@ -16,6 +16,11 @@ const bridge = vi.hoisted(() => ({
   workbenchNavAck: vi.fn(),
   onProjectWorkspaceProjectSelected: vi.fn(),
   onSettingsChanged: vi.fn(),
+  // 外壳挂载时的一次性业务读取（不启动后台调度）。
+  listTasks: vi.fn(),
+  taskStats: vi.fn(),
+  agentSnapshot: vi.fn(),
+  actionsFeed: vi.fn(),
 }));
 
 vi.mock("../lib/bridge", async (importOriginal) => {
@@ -86,6 +91,24 @@ beforeEach(() => {
   bridge.workbenchNavAck.mockResolvedValue(undefined);
   bridge.onProjectWorkspaceProjectSelected.mockImplementation(unlisten);
   bridge.onSettingsChanged.mockImplementation(unlisten);
+  bridge.listTasks.mockResolvedValue([]);
+  bridge.taskStats.mockResolvedValue({
+    pending: 0,
+    overdue: 0,
+    due_today: 0,
+    completed_today: 0,
+    next_due_at: null,
+  });
+  bridge.agentSnapshot.mockResolvedValue({
+    live: [],
+    live_summary: { running: 0, waiting: 0, failed: 0, disconnected: 0 },
+  });
+  bridge.actionsFeed.mockResolvedValue({
+    enabled: false,
+    generated_at: "2026-11-14T00:00:00Z",
+    counts: { total: 0, intervention: 0, running: 0, reminder: 0 },
+    items: [],
+  });
 
   useSettingsStore.setState({
     settings: SETTINGS as never,
@@ -115,8 +138,8 @@ describe("WorkbenchShell", () => {
     }
     // 项目选择器降级为「未选择项目」，不是空白/假项目。
     expect(screen.getByRole("combobox").textContent).toContain("未选择项目");
-    // 首页通用入口可用（不需要先建项目）。
-    expect(screen.getByText("任务", { selector: ".wb-quick span" })).toBeTruthy();
+    // 首页通用入口可用（不需要先建项目）：快速操作宫格含「新建任务」。
+    expect(screen.getByText("新建任务", { selector: ".wb-quick-tile span" })).toBeTruthy();
   });
 
   it("点击侧栏切换到任务页并持久化工作台路由", async () => {
@@ -164,6 +187,29 @@ describe("WorkbenchShell", () => {
     expect(await screen.findByTestId("agents-panel")).toBeTruthy();
     expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
       requestId: 9001,
+      status: "succeeded",
+      error: null,
+    });
+  });
+
+  it("一次 ping 拉空积压队列：页面重载期间错过的请求也会被处理并回执", async () => {
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    bridge.workbenchTakeNav
+      .mockResolvedValueOnce({ requestId: 9101, target: { tab: "tasks" } })
+      .mockResolvedValueOnce({ requestId: 9102, target: { tab: "agents" } })
+      .mockResolvedValue(null);
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    expect(await screen.findByTestId("agents-panel")).toBeTruthy();
+    expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+      requestId: 9101,
+      status: "succeeded",
+      error: null,
+    });
+    expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+      requestId: 9102,
       status: "succeeded",
       error: null,
     });

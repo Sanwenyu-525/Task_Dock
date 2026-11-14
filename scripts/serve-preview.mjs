@@ -36,7 +36,11 @@ function resolve(urlPath) {
   // 直接与 "/preview.html" 比较永远不成立 → harness 永远 404。
   // 因此统一剥掉前导分隔符并忽略大小写后再比较。
   const base = clean.replace(/^[/\\]+/, "").toLowerCase();
-  if (base === "preview.html" || base === "preview-shim.js") {
+  if (
+    base === "preview.html" ||
+    base === "workbench-preview.html" ||
+    base === "preview-shim.js"
+  ) {
     const p = join(previewDir, base);
     return existsSync(p) ? p : null;
   }
