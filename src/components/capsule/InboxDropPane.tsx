@@ -48,11 +48,10 @@ import { useLocale } from "../../hooks/useLocale";
 import { useShelfCollected } from "../../hooks/useShelfCollected";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
 import { useShelfStore } from "../../store/useShelfStore";
-import { useUiStore } from "../../store/useUiStore";
 import { DropdownMenu } from "../ui";
 import DropTargetForm from "../shelf/DropTargetForm";
 import type { ShelfDropReport, ShelfDropTarget, ShelfPasteReport, ShelfCollectedEvent } from "../../lib/bridge";
-import { openFullApp } from "./actions";
+import { openDiagnosticsOperation, openFullApp } from "./actions";
 import DragStatusNotice, {
   type DragStatusTone,
 } from "./DragStatusNotice";
@@ -1042,16 +1041,18 @@ export default function InboxDropPane() {
   );
 
   /**
-   * 结果条「查看诊断」：进入完整窗口诊断中心并定位到本批次操作链。
-   * 意图只在导航成功后下发（`after`），取消草稿确认或保存中拒绝时不会残留；
-   * 硬拒绝（saving）才额外提示，`pending` 由全局离开确认条接管。
+   * 结果条「查看诊断」：直达唯一工作台诊断中心并定位到本批次操作链。
+   * operationId 经跨窗协议 objectId 下发（形态收敛 P2 补全），由工作台窗口的
+   * DiagnosticsCenterPanel 消费一次性意图；导航事务自带草稿门禁与真实回执，
+   * failed 的可读原因就地提示，不静默、不经主窗交接页中转。
    */
   const showDiagnostics = useCallback(
     (operationId: string) => {
-      const result = openFullApp("diagnostics", () =>
-        useUiStore.getState().requestDiagnosticsOperation(operationId),
-      );
-      if (result === "blocked") flash(t("capsule.inboxDrop.diagnosticsBlocked"));
+      void openDiagnosticsOperation(operationId).then((outcome) => {
+        if (outcome.status === "failed") {
+          flash(outcome.error ?? t("capsule.inboxDrop.diagnosticsBlocked"));
+        }
+      });
     },
     [flash, t],
   );

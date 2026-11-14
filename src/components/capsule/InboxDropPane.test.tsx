@@ -41,7 +41,16 @@ const openFullAppMock = vi.hoisted(() =>
     return "switched";
   }),
 );
-vi.mock("./actions", () => ({ openFullApp: openFullAppMock }));
+// 形态收敛（2026-11-14）：诊断直达唯一工作台，operationId 经跨窗协议下发。
+const openDiagnosticsOperationMock = vi.hoisted(() =>
+  vi.fn(async (_operationId: string): Promise<{ status: string; error?: string | null }> => ({
+    status: "succeeded",
+  })),
+);
+vi.mock("./actions", () => ({
+  openFullApp: openFullAppMock,
+  openDiagnosticsOperation: openDiagnosticsOperationMock,
+}));
 
 type Handler = (event: { payload: Record<string, unknown> }) => void;
 const handlers: Handler[] = [];
@@ -428,17 +437,17 @@ describe("InboxDropPane", () => {
     await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
 
     fireEvent.click(await screen.findByRole("button", { name: "查看诊断" }));
-    expect(openFullAppMock).toHaveBeenCalledWith("diagnostics", expect.any(Function));
-    // 意图在导航成功后的 after 中下发，携带后端原样返回的批次 id。
-    expect(useUiStore.getState().diagnosticsOperationRequest).toEqual({
-      token: 1,
-      operationId: "b1",
-    });
+    // 直达唯一工作台：批次 id 原样经跨窗协议下发；主窗不再写一次性意图。
+    expect(openDiagnosticsOperationMock).toHaveBeenCalledWith("b1");
+    expect(useUiStore.getState().diagnosticsOperationRequest).toBeNull();
     document.elementFromPoint = original;
   });
 
-  it("诊断导航被保存中拒绝 → 提示失败且不残留一次性意图", async () => {
-    openFullAppMock.mockImplementationOnce(() => "blocked");
+  it("诊断导航失败 → 提示真实原因且不残留一次性意图", async () => {
+    openDiagnosticsOperationMock.mockResolvedValueOnce({
+      status: "failed",
+      error: "工作台导航失败：测试原因",
+    });
     dropTargets.mockResolvedValue([target()]);
     dropToDirectory.mockResolvedValue(
       report({
@@ -468,7 +477,7 @@ describe("InboxDropPane", () => {
     await waitFor(() => expect(dropToDirectory).toHaveBeenCalledTimes(1));
 
     fireEvent.click(await screen.findByRole("button", { name: "查看诊断" }));
-    await screen.findByText(/无法打开诊断中心/);
+    await screen.findByText(/工作台导航失败：测试原因/);
     expect(useUiStore.getState().diagnosticsOperationRequest).toBeNull();
     document.elementFromPoint = original;
   });
@@ -2245,16 +2254,10 @@ describe("InboxDropPane 重试失败项（W4）", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     await screen.findByText("来源提供的文件描述信息不符合要求。");
 
-    // 有 operationId 才给「查看诊断」；导航成功后下发一次性意图
+    // 有 operationId 才给「查看诊断」；直达唯一工作台，批次 id 原样下发
     fireEvent.click(screen.getByRole("button", { name: "查看诊断" }));
-    expect(openFullAppMock).toHaveBeenCalledWith(
-      "diagnostics",
-      expect.any(Function),
-    );
-    expect(useUiStore.getState().diagnosticsOperationRequest).toEqual({
-      token: 1,
-      operationId: "op-invalid",
-    });
+    expect(openDiagnosticsOperationMock).toHaveBeenCalledWith("op-invalid");
+    expect(useUiStore.getState().diagnosticsOperationRequest).toBeNull();
   });
 
   it("损坏载荷落在目录卡片：准确失败码不被 dirBlocked 覆盖", async () => {

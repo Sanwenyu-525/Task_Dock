@@ -350,7 +350,7 @@ describe("PlanningLite", () => {
     await waitFor(() => expect(screen.getByText("登录流程")).toBeTruthy());
 
     // 展开功能详情 → 点详情里的「完整规划」（底栏同名按钮之外，取详情内的 cap-mini）。
-    // 形态收敛：功能级聚焦协议暂不支持跨窗下发，落点为该项目在规划中心的列表页。
+    // 功能级聚焦经跨窗协议 objectId 下发，由工作台窗口内 PlanningWorkspace 消费。
     fireEvent.click(screen.getByRole("button", { name: /查看「登录流程」详情/ }));
     const detailBtn = screen
       .getAllByRole("button", { name: "完整规划" })
@@ -358,7 +358,7 @@ describe("PlanningLite", () => {
     expect(detailBtn).toBeTruthy();
     fireEvent.click(detailBtn!);
     expect(openRoadmapFocus).toHaveBeenCalledTimes(1);
-    expect(openRoadmapFocus).toHaveBeenCalledWith({ projectId: "p1" });
+    expect(openRoadmapFocus).toHaveBeenCalledWith({ projectId: "p1", featureId: "f1" });
     expect(openWorkbenchPage).not.toHaveBeenCalled();
   });
 

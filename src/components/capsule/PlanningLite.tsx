@@ -712,7 +712,7 @@ function FeatureRow({
               className="cap-mini"
               onClick={() =>
                 projectId
-                  ? void openRoadmapFocus({ projectId })
+                  ? void openRoadmapFocus({ projectId, featureId: feature.id })
                   : void openWorkbenchPage("roadmap")
               }
             >

@@ -137,13 +137,29 @@ export function openAppsManager(): Promise<WorkbenchNavOutcome> {
 }
 
 /**
- * 打开唯一工作台的规划中心并提交项目级定位：**一次导航事务**。
+ * 打开唯一工作台的规划中心并提交项目级/功能级定位：**一次导航事务**。
  *
- * 定位随 target.projectId 经跨窗协议下发，目标项目可能已被删除——由工作台按
- * 「尽力定位 + 明确反馈」兜底，不在导航前预改规划 store 状态。
- * 功能级（featureId）/里程碑级聚焦当前协议不支持（ objectId 明确拒绝），
- * 这里只提交项目级目标，落点为规划中心该项目的功能列表页。
+ * `featureId` 经跨窗协议 objectId 下发（形态收敛 P2 补全）：工作台外壳校验
+ * 「roadmap 必须携带 projectId」后写入工作台窗口的一次性意图，由
+ * PlanningWorkspace 消费 token 完成精确定位；目标项目/功能可能已被删除——
+ * 由工作台按「尽力定位 + 明确反馈」兜底，不在导航前预改规划 store 状态。
+ * 里程碑级聚焦协议暂不支持（objectId 单值无法区分两类对象），不在此传。
  */
-export function openRoadmapFocus(target: { projectId: string }): Promise<WorkbenchNavOutcome> {
-  return openWorkbenchPage("roadmap", target.projectId);
+export function openRoadmapFocus(target: {
+  projectId: string;
+  featureId?: string;
+}): Promise<WorkbenchNavOutcome> {
+  return openWorkbench({
+    tab: "roadmap",
+    projectId: target.projectId,
+    objectId: target.featureId ?? null,
+  });
+}
+
+/**
+ * 打开唯一工作台的诊断中心并定位到指定操作链：objectId 经跨窗协议下发，
+ * 由工作台窗口的 DiagnosticsCenterPanel 消费一次性意图（token 语义）。
+ */
+export function openDiagnosticsOperation(operationId: string): Promise<WorkbenchNavOutcome> {
+  return openWorkbench({ tab: "diagnostics", objectId: operationId });
 }

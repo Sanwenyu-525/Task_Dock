@@ -221,6 +221,47 @@ describe("WorkbenchShell", () => {
     });
   });
 
+  it("objectId（诊断操作链）：写入本窗口一次性意图并回执 succeeded", async () => {
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9151,
+      target: { tab: "diagnostics", objectId: "op-77" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9151,
+        status: "succeeded",
+        error: null,
+      }),
+    );
+    // 意图写在**工作台窗口**的 store：DiagnosticsCenterPanel 消费 token 完成定位。
+    expect(useUiStore.getState().diagnosticsOperationRequest?.operationId).toBe("op-77");
+  });
+
+  it("objectId（规划功能）缺项目上下文时明确拒绝，不悄悄丢弃 ID", async () => {
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9152,
+      target: { tab: "roadmap", objectId: "f1" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9152,
+        status: "failed",
+        error: expect.stringContaining("规划功能定位需要项目上下文"),
+      }),
+    );
+    expect(useUiStore.getState().roadmapFocusRequest).toBeNull();
+  });
+
   // ── P0 / P1 导航事务回归 ─────────────────────────────────────────────
 
   const projects = [
