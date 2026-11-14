@@ -59,6 +59,7 @@ export default function ShelfItemCard({
   onSelectRange,
   onContextMenu,
   onInternalDragStart,
+  isClickSuppressed,
   dragEnabled = false,
   resolveDragIds,
   onDragSettled,
@@ -83,6 +84,8 @@ export default function ShelfItemCard({
   onContextMenu?: (event: MouseEvent<HTMLElement>) => void;
   /** Alt+左键按下：应用内拖动到垃圾桶（父级负责手势与命中）。 */
   onInternalDragStart?: (event: PointerEvent<HTMLElement>) => void;
+  /** 父级的拖拽收尾 click 抑制（Alt 内部拖动成功后不要误触选择）。 */
+  isClickSuppressed?: () => boolean;
   /** 只有 file/image/folder 且文件存在时为 true。 */
   dragEnabled?: boolean;
   /** 由父级决定拖单条还是整个多选集。 */
@@ -100,6 +103,9 @@ export default function ShelfItemCard({
     onSettled: onDragSettled,
     onError: onDragError,
   });
+  const clickSuppressed = () =>
+    drag.shouldSuppressClick() || Boolean(isClickSuppressed?.());
+
   /** 名称/缩略图上的修饰键点击：优先执行多选语义，不打开内容。 */
   const modifierSelect = (event: MouseEvent): boolean => {
     if (event.shiftKey && onSelectRange) {
@@ -139,7 +145,7 @@ export default function ShelfItemCard({
       tabIndex={-1}
       onContextMenu={onContextMenu}
       onClick={(event) => {
-        if (drag.shouldSuppressClick()) return;
+        if (clickSuppressed()) return;
         // 卡片内按钮各自处理点击；这里只处理空白/元信息区域的“单选”。
         if ((event.target as Element | null)?.closest?.("button, a, input")) return;
         if (modifierSelect(event)) return;
@@ -179,7 +185,7 @@ export default function ShelfItemCard({
         aria-label={`预览 ${item.display_name}`}
         data-tip={dragEnabled ? "点击预览 · 拖到其他窗口 · Alt+拖动可拖入垃圾桶" : undefined}
         onClick={(event) => {
-          if (drag.shouldSuppressClick()) {
+          if (clickSuppressed()) {
             event.preventDefault();
             return;
           }
@@ -205,7 +211,7 @@ export default function ShelfItemCard({
           className="shelf-item-name"
           data-tip={`${item.display_name} · ${type.label} · ${modeLabel(item)}`}
           onClick={(event) => {
-            if (drag.shouldSuppressClick()) {
+            if (clickSuppressed()) {
               event.preventDefault();
               return;
             }

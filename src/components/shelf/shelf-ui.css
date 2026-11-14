@@ -788,7 +788,7 @@
 }
 
 @container shelf-panel (max-width: 360px) {
-  .shelf-list--grid {
+  .shelf-list.shelf-list--grid {
     grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
     gap: 8px;
   }
@@ -817,7 +817,8 @@
   gap: 1px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
-  background: var(--surface-raised);
+  /* 不透明底：玻璃材质的 surface-raised 可能半透明，菜单文字不能被下层卡片穿透。 */
+  background: var(--surface-base);
   box-shadow: var(--card-shadow);
 }
 

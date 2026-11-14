@@ -997,6 +997,15 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     invalidateRecent();
     // 恢复后必须走权威列表同步：条目可能不在当前筛选/分页内，不能只靠本地插入。
     const synced = await get().retryShelfSync();
+    // 快照里的 exists_state 是删除前的值：恢复后重新核对当前加载项，避免把
+    // 保留期内已被外部删除的文件继续显示为可用。
+    if (synced) {
+      const ids = get()
+        .items.filter((item) => item.kind !== "link" && item.kind !== "text")
+        .map((item) => item.id)
+        .slice(0, 200);
+      if (ids.length > 0) void get().verifyExists(ids).catch(() => {});
+    }
     return { report, synced };
   },
 
@@ -1140,8 +1149,14 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
         : [...s.selectedIds, id],
     })),
 
-  setSelection: (ids) =>
-    set({ selectedIds: [...new Set(ids.filter((id) => Boolean(id)))] }),
+  setSelection: (ids) => {
+    const loaded = new Set(get().items.map((item) => item.id));
+    set({
+      selectedIds: [
+        ...new Set(ids.filter((id) => Boolean(id) && loaded.has(id))),
+      ],
+    });
+  },
 
   selectAll: () => set((s) => ({ selectedIds: s.items.map((i) => i.id) })),
 

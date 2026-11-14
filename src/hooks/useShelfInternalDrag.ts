@@ -138,6 +138,10 @@ export function useShelfInternalDrag({
       };
 
       const onBlur = () => cancel();
+      // 指针离开文档：清掉 ghost/垃圾桶高亮，避免窗口外松手后残留。
+      const onPointerOut = (outEvent: PointerEvent) => {
+        if (!outEvent.relatedTarget) cancel();
+      };
       const onVisibility = () => {
         if (document.visibilityState === "hidden") cancel();
       };
@@ -154,6 +158,7 @@ export function useShelfInternalDrag({
           document.removeEventListener("pointerup", onUp);
           document.removeEventListener("pointercancel", onCancelEvent);
           document.removeEventListener("visibilitychange", onVisibility);
+          document.removeEventListener("pointerout", onPointerOut);
           window.removeEventListener("blur", onBlur);
         },
       };
@@ -162,6 +167,7 @@ export function useShelfInternalDrag({
       document.addEventListener("pointerup", onUp, { passive: true });
       document.addEventListener("pointercancel", onCancelEvent, { passive: true });
       document.addEventListener("visibilitychange", onVisibility);
+      document.addEventListener("pointerout", onPointerOut);
       window.addEventListener("blur", onBlur);
     },
     [cancel, finish],

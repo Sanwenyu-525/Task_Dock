@@ -357,6 +357,30 @@ describe("框选", () => {
     // 框选绝不触发 Windows OLE 拖出。
     expect(api.shelfDragOut).not.toHaveBeenCalled();
   });
+
+  it("框选中按 Esc 取消并保留取消前的选择", async () => {
+    await renderWith([row("a"), row("b")]);
+    const cardA = document.querySelector<HTMLElement>('[data-shelf-id="a"]')!;
+    fireEvent.click(cardA);
+    expect(useShelfStore.getState().selectedIds).toEqual(["a"]);
+
+    const list = screen.getByRole("list", { name: "暂存条目" });
+    vi.spyOn(list, "getBoundingClientRect").mockReturnValue(rect(0, 0, 500, 300));
+    const cards = Array.from(document.querySelectorAll<HTMLElement>("[data-shelf-id]"));
+    cards.forEach((card, index) => {
+      vi.spyOn(card, "getBoundingClientRect").mockReturnValue(
+        rect(10, 10 + index * 50, 400, 44),
+      );
+    });
+
+    fireEvent.pointerDown(list, { button: 0, clientX: 5, clientY: 5, pointerId: 2 });
+    fireEvent.pointerMove(document, { clientX: 300, clientY: 110, pointerId: 2 });
+    await waitFor(() => expect(document.querySelector(".shelf-marquee")).toBeTruthy());
+
+    fireEvent.keyDown(list, { key: "Escape" });
+    await waitFor(() => expect(document.querySelector(".shelf-marquee")).toBeNull());
+    expect(useShelfStore.getState().selectedIds).toEqual(["a"]);
+  });
 });
 
 describe("视图与垃圾桶", () => {
@@ -446,6 +470,21 @@ describe("右键菜单与键盘", () => {
     expect(menu.textContent).toContain("删除 2 项");
     fireEvent.click(within(menu).getByRole("menuitem", { name: /删除 2 项/ }));
     expect(await screen.findByRole("dialog", { name: "删除 2 个条目？" })).toBeTruthy();
+  });
+
+  it("右键删除单条收藏项：显式确认后可删，不被静默跳过", async () => {
+    await renderWith([row("fav", { favorite: true })]);
+    fireEvent.contextMenu(document.querySelector<HTMLElement>('[data-shelf-id="fav"]')!, {
+      clientX: 30,
+      clientY: 30,
+    });
+    const menu = await screen.findByRole("menu", { name: "条目操作（1 项）" });
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /删除/ }));
+    const dialog = await screen.findByRole("dialog", { name: "删除受保护的条目？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+    await waitFor(() =>
+      expect(api.shelfTrashDelete).toHaveBeenCalledWith(["fav"], true),
+    );
   });
 
   it("方向键移动焦点并单选，Shift+方向键扩展选择", async () => {

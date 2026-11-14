@@ -370,6 +370,12 @@ export function useShelfMarquee({
         if (sessionRef.current) cancelGesture();
       };
 
+      // 指针离开文档（例如在窗口外松手且系统未派发 blur/pointercancel）：
+      // 立即取消，避免半透明矩形与旧选择残留到下一次指针事件。
+      const onPointerOut = (outEvent: PointerEvent) => {
+        if (!outEvent.relatedTarget && sessionRef.current) cancelGesture();
+      };
+
       const onVisibilityChange = () => {
         if (document.visibilityState === "hidden" && sessionRef.current) {
           cancelGesture();
@@ -395,6 +401,7 @@ export function useShelfMarquee({
           document.removeEventListener("pointercancel", onPointerCancel);
           document.removeEventListener("keydown", onKeyDown);
           document.removeEventListener("visibilitychange", onVisibilityChange);
+          document.removeEventListener("pointerout", onPointerOut);
           window.removeEventListener("blur", onBlur);
         },
       };
@@ -404,6 +411,7 @@ export function useShelfMarquee({
       document.addEventListener("pointercancel", onPointerCancel, { passive: true });
       document.addEventListener("keydown", onKeyDown);
       document.addEventListener("visibilitychange", onVisibilityChange);
+      document.addEventListener("pointerout", onPointerOut);
       window.addEventListener("blur", onBlur);
     },
     [cancelGesture, clearSession, scheduleFrame],

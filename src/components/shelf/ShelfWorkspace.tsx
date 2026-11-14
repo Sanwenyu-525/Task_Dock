@@ -174,6 +174,8 @@ type ShelfGridSize = "s" | "m" | "l";
 
 const SHELF_VIEW_KEY = "taskdock.shelf.view";
 const SHELF_GRID_SIZE_KEY = "taskdock.shelf.gridSize";
+/** 与后端 shelf::trash::MAX_TRASH_ITEMS 一致：确认框展示的数量必须是真正会处理的。 */
+const MAX_TRASH_BATCH = 500;
 
 /** 视图偏好只影响本机呈现：读失败（隐私模式/测试环境）时回退列表。 */
 function readViewPref(): ShelfViewMode {
@@ -1481,8 +1483,14 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   );
 
   const openDeleteConfirm = useCallback((ids: string[], includeProtected = false) => {
-    const unique = [...new Set(ids.filter(Boolean))];
+    let unique = [...new Set(ids.filter(Boolean))];
     if (unique.length === 0) return;
+    if (unique.length > MAX_TRASH_BATCH) {
+      unique = unique.slice(0, MAX_TRASH_BATCH);
+      showToast(`一次最多移除 ${MAX_TRASH_BATCH} 项，已取前 ${MAX_TRASH_BATCH} 项`, {
+        kind: "warning",
+      });
+    }
     const chosen = itemsRef.current.filter((item) => unique.includes(item.id));
     setPendingDelete({
       ids: unique,
@@ -1491,7 +1499,20 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       hasScene: chosen.some((item) => item.scene_id != null),
     });
     setConfirmDelete(true);
-  }, []);
+  }, [showToast]);
+
+  /** 单条受保护条目：与卡片「⋯」菜单一致，显式确认后可删；多选仍保守跳过。 */
+  const openDeleteConfirmForEntry = useCallback(
+    (ids: string[]) => {
+      const single =
+        ids.length === 1 ? itemsRef.current.find((item) => item.id === ids[0]) : undefined;
+      const includeProtected = Boolean(
+        single && (single.favorite || single.pinned || single.scene_id != null),
+      );
+      openDeleteConfirm(ids, includeProtected);
+    },
+    [openDeleteConfirm],
+  );
 
   /** 右键：已选条目上右键作用于整个选择集；未选中条目先改为单选。 */
   const openContextMenu = useCallback(
@@ -1591,13 +1612,25 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       if (direction > 0 && itemsRef.current.length < total) {
         setLightboxLoading(true);
         try {
-          await loadMore();
-          const latest = useShelfStore.getState();
-          const after = imageItemsOf(latest.items);
-          const at = after.findIndex((item) => item.id === currentId);
-          const candidate = at >= 0 ? after[at + 1] : after[after.length - 1];
-          if (candidate && candidate.id !== currentId) setLightboxId(candidate.id);
-          else showToast("已经是最后一张图片", { kind: "info" });
+          // 尾部可能连续多页没有图片：最多继续加载 3 页，避免把「下一页没图」
+          // 误报成「已经是最后一张」。
+          let advanced = false;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            const before = useShelfStore.getState();
+            if (before.items.length >= before.total) break;
+            await loadMore();
+            const latest = useShelfStore.getState();
+            const after = imageItemsOf(latest.items);
+            const at = after.findIndex((item) => item.id === currentId);
+            const candidate = at >= 0 ? after[at + 1] : after[after.length - 1];
+            if (candidate && candidate.id !== currentId) {
+              setLightboxId(candidate.id);
+              advanced = true;
+              break;
+            }
+            if (latest.items.length <= before.items.length) break;
+          }
+          if (!advanced) showToast("已经是最后一张图片", { kind: "info" });
         } catch (e) {
           showToast(`加载更多图片失败：${errorMessage(e)}`, { kind: "error" });
         } finally {
@@ -1644,7 +1677,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const internalDrag = useShelfInternalDrag({
     enabled: active && fullViewVisible && !capsuleMode && !targetsOpen,
     getTrashRect: trashHitRect,
-    onDrop: (ids) => openDeleteConfirm(ids, false),
+    onDrop: (ids) => openDeleteConfirmForEntry(ids),
   });
 
   /** 框选预览期间卡片也显示临时选中态（不写 store）。 */
@@ -1676,7 +1709,13 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const handleListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.defaultPrevented) return;
     const target = event.target as Element | null;
-    if (target?.closest?.("input,textarea,select,[contenteditable='true']")) return;
+    if (
+      target?.closest?.(
+        "input,textarea,select,[contenteditable='true'],button,a,[role='button']",
+      )
+    ) {
+      return;
+    }
     const list = itemsRef.current;
 
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
@@ -1686,6 +1725,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       return;
     }
     if (event.key === "Escape") {
+      // 框选中按 Esc：交给 useShelfMarquee 取消，保留取消前的选择（不能先清空）。
+      if (marquee.active) return;
       if (overlayOpen) return;
       if (detailId) {
         event.preventDefault();
@@ -1737,7 +1778,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             : [];
       if (targetIds.length === 0) return;
       event.preventDefault();
-      openDeleteConfirm(targetIds, false);
+      if (targetIds.length === 1) openDeleteConfirmForEntry(targetIds);
+      else openDeleteConfirm(targetIds, false);
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
@@ -1900,7 +1942,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         icon: <Trash2 size={13} aria-hidden="true" />,
         danger: true,
         disabled: chosen.length === 0,
-        onSelect: () => openDeleteConfirm(ids, false),
+        onSelect: () => openDeleteConfirmForEntry(ids),
       },
     ];
   };
@@ -2277,6 +2319,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
             onSelectRange={() => selectRange(item.id)}
             onContextMenu={(event) => openContextMenu(event, item)}
             onInternalDragStart={(event) => internalDrag.start(event, dragIdsFor(item))}
+            isClickSuppressed={internalDrag.shouldSuppressClick}
             onPreview={() => setDetail(item.id)}
             onPreviewImage={
               item.kind === "image" ? () => setLightboxId(item.id) : undefined
@@ -2355,7 +2398,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       )}
 
       {/* 多选操作栏 */}
-      {selectedIds.length > 0 && (
+      {selectedIds.length > 0 && marqueePreview === null && (
         <div className="shelf-selectbar" role="toolbar" aria-label="批量操作">
           <span className="shelf-selectbar-count">已选 {selectedIds.length} 项</span>
           <button
@@ -2578,7 +2621,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           }}
           onRequestDelete={(item) => {
             setLightboxId(null);
-            openDeleteConfirm([item.id], false);
+            openDeleteConfirmForEntry([item.id]);
           }}
         />
       )}
@@ -2684,7 +2727,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
       <ConfirmDialog
         open={confirmClear}
         title="清空暂存架？"
-        detail="删除全部未收藏、未置顶、未被场景引用的条目（收藏、置顶与场景引用条目保留）。托管副本会被删除，引用的原文件不受影响。"
+        detail="删除全部未收藏、未置顶、未被场景引用的条目（收藏、置顶与场景引用条目保留）。清空不会进入暂存回收站，无法撤销；托管副本会立即删除，引用的原文件不受影响。如需可撤销，请改用选择后「删除」。"
         confirmLabel="清空"
         danger
         busy={deletionBusy}

@@ -17,6 +17,8 @@ use std::os::windows::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use windows::core::PCWSTR;
+use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 
 use crate::error::{AppError, AppResult};
 use crate::file_workspace::delete_paths;
@@ -27,6 +29,8 @@ pub const MAX_EXECUTE_PATHS: usize = 100;
 const MAX_PATH_CHARS: usize = 260;
 /// FILE_ATTRIBUTE_REPARSE_POINT（std MetadataExt::file_attributes）。
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+/// Windows 驱动类型：固定磁盘（GetDriveTypeW 返回 3）。
+const DRIVE_FIXED: u32 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RecycleEntry {
@@ -246,7 +250,7 @@ fn report_entry(candidate: &Candidate, status: &str, reason: Option<String>) -> 
 // ── 校验与路径分析 ──────────────────────────────────────────
 
 fn analyze(raw_paths: &[String], protected: &[PathBuf]) -> Vec<Candidate> {
-    let roots = protected_roots(protected);
+    let roots = protected_dirs(protected);
     let mut candidates: Vec<Candidate> = raw_paths
         .iter()
         .map(|raw| match validate_one(raw, &roots) {
@@ -299,7 +303,7 @@ fn analyze(raw_paths: &[String], protected: &[PathBuf]) -> Vec<Candidate> {
 /// 返回 (元数据, 指纹键, 父子判定键, 展示名)。
 fn validate_one(
     raw: &str,
-    protected: &[PathBuf],
+    protected: &ProtectedDirs,
 ) -> Result<(ValidMeta, String, String, String), String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -323,6 +327,11 @@ fn validate_one(
     }
     if path.parent().is_none() || path.components().count() <= 1 {
         return Err("不允许删除盘符根目录".into());
+    }
+    // 映射网络盘（Z:\ 等）没有可靠回收站；U 盘/光驱同理。只允许本地固定磁盘，
+    // 避免 FOF_ALLOWUNDO 在无回收站的卷上退化成永久删除。
+    if let Some(reason) = drive_reason(&path) {
+        return Err(reason);
     }
 
     let meta = match std::fs::symlink_metadata(&path) {
@@ -349,6 +358,10 @@ fn validate_one(
     let tree_key = std::fs::canonicalize(&path)
         .map(|canonical| normalize_key(&canonical))
         .unwrap_or_else(|_| key.clone());
+    // canonical 可能把映射盘解析成 UNC；网络共享路径一律拒绝。
+    if tree_key.starts_with("\\\\") {
+        return Err("网络共享路径不支持回收站删除".into());
+    }
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -365,7 +378,33 @@ fn validate_one(
     ))
 }
 
-fn protected_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
+/// 只允许本地固定磁盘：网络映射盘、U 盘、光驱等无法保证回收站可恢复。
+fn drive_reason(path: &Path) -> Option<String> {
+    let raw = path.to_string_lossy();
+    let bytes = raw.as_bytes();
+    if bytes.len() < 2 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic() {
+        return Some("不是本地盘符路径".into());
+    }
+    let root = &raw[..2];
+    let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    let kind = unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) };
+    if kind == DRIVE_FIXED {
+        None
+    } else {
+        Some("仅支持本地固定磁盘；网络盘/U 盘/光驱无法保证回收站可恢复".into())
+    }
+}
+
+/// 受保护目录分两层：
+/// - `roots`：自身及全部子目录都拒绝（系统目录、程序目录、AppData、Task Dock 数据目录）；
+/// - `self_only`：只拒绝目录本身及其祖先（用户配置目录根、公共目录根），
+///   其下的桌面/下载/文档仍允许用户显式拖入回收站。
+struct ProtectedDirs {
+    roots: Vec<PathBuf>,
+    self_only: Vec<PathBuf>,
+}
+
+fn protected_dirs(extra: &[PathBuf]) -> ProtectedDirs {
     let mut roots: Vec<PathBuf> = Vec::new();
     for variable in [
         "SystemRoot",
@@ -373,8 +412,8 @@ fn protected_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
         "ProgramFiles",
         "ProgramFiles(x86)",
         "ProgramData",
-        "USERPROFILE",
-        "PUBLIC",
+        "APPDATA",
+        "LOCALAPPDATA",
     ] {
         if let Some(value) = std::env::var_os(variable) {
             if !value.is_empty() {
@@ -382,21 +421,37 @@ fn protected_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
             }
         }
     }
-    for path in extra {
-        if !path.as_os_str().is_empty() {
-            roots.push(path.clone());
+    roots.extend(extra.iter().filter(|path| !path.as_os_str().is_empty()).cloned());
+
+    let mut self_only: Vec<PathBuf> = Vec::new();
+    for variable in ["USERPROFILE", "PUBLIC"] {
+        if let Some(value) = std::env::var_os(variable) {
+            if !value.is_empty() {
+                self_only.push(PathBuf::from(value));
+            }
         }
     }
+
     let mut seen = HashSet::new();
     roots.retain(|root| seen.insert(normalize_key(root)));
-    roots
+    let mut seen = HashSet::new();
+    self_only.retain(|root| seen.insert(normalize_key(root)));
+    ProtectedDirs { roots, self_only }
 }
 
-fn protected_conflict(path: &Path, protected: &[PathBuf]) -> bool {
+fn protected_conflict(path: &Path, protected: &ProtectedDirs) -> bool {
     let target = canonical_or_lexical(path);
-    protected.iter().any(|root| {
+    let blocked_root = protected.roots.iter().any(|root| {
         let root_key = canonical_or_lexical(root);
         is_same_or_under(&target, &root_key) || is_same_or_under(&root_key, &target)
+    });
+    if blocked_root {
+        return true;
+    }
+    // self_only：目录本身或它的祖先（例如 C:\Users）不能删；其子目录允许。
+    protected.self_only.iter().any(|root| {
+        let root_key = canonical_or_lexical(root);
+        target == root_key || is_same_or_under(&root_key, &target)
     })
 }
 
@@ -446,7 +501,7 @@ mod tests {
             .join("target")
             .join("td-recycle-tests");
         std::fs::create_dir_all(&base).ok()?;
-        if protected_conflict(&base, &protected_roots(&[])) {
+        if protected_conflict(&base, &protected_dirs(&[])) {
             eprintln!("跳过回收站删除测试：{base:?} 位于受保护目录内");
             return None;
         }
@@ -653,5 +708,38 @@ mod tests {
             .map(|index| format!("D:\\no-such-file-{index}.txt"))
             .collect();
         assert!(execute(&raw, &[], &[]).is_err());
+    }
+
+    #[test]
+    fn user_profile_children_are_allowed_but_root_and_appdata_are_blocked() {
+        let Some(profile) = std::env::var_os("USERPROFILE").map(PathBuf::from) else {
+            return;
+        };
+        let dirs = protected_dirs(&[]);
+        assert!(protected_conflict(&profile, &dirs), "整个用户目录必须拒绝");
+        if let Some(parent) = profile.parent() {
+            assert!(protected_conflict(parent, &dirs), "用户目录的父级必须拒绝");
+        }
+        assert!(
+            !protected_conflict(&profile.join("Desktop").join("a.txt"), &dirs),
+            "桌面文件应允许用户显式拖入回收站"
+        );
+        assert!(
+            !protected_conflict(&profile.join("Downloads").join("a.txt"), &dirs),
+            "下载目录应允许用户显式拖入回收站"
+        );
+        if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+            assert!(
+                protected_conflict(&appdata.join("SomeApp").join("x.txt"), &dirs),
+                "AppData 子目录仍受保护"
+            );
+        }
+    }
+
+    #[test]
+    fn non_fixed_drive_is_rejected() {
+        // Q: 通常不存在；无论不存在还是网络/可移动盘，都必须给出拒绝原因。
+        assert!(drive_reason(Path::new(r"Q:\a.txt")).is_some());
+        assert!(drive_reason(Path::new(r"\\server\share\a.txt")).is_some());
     }
 }

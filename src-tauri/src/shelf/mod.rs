@@ -281,6 +281,11 @@ impl ShelfState {
         purge_part_files(&root)?;
         // 上次退出/崩溃留下的移动日志：启动时按最小恢复规则对齐磁盘与数据库。
         fsops::recover_pending_file_ops(&db);
+        // 回收站保留期（7 天）在启动时收敛：只删除已过期批次的快照与托管副本，
+        // 通常为空；失败不阻断启动，残留由下次启动或手动清理兜底。
+        if let Err(e) = trash::purge_expired(&db, &root) {
+            tracing::warn!(error = %e, "暂存回收站过期清理失败");
+        }
         Ok(Self {
             db,
             root,
@@ -1839,14 +1844,48 @@ pub(crate) fn file_identity(path: &Path) -> Option<u128> {
     }
 }
 
+/// 回收站快照中仍被引用的托管路径（相对 shelf 根）。
+///
+/// 软删除只把行移入 `shelf_trash`，托管文件在 7 天保留期内仍属于用户数据；
+/// 孤儿清理若只看 `shelf_items` 会把这些文件当无主文件永久删除，撤销后只剩
+/// 缺文件的记录。快照损坏时返回错误，让调用方中止整轮孤儿清理（宁可少删）。
+fn trash_referenced_paths(conn: &Connection) -> AppResult<HashSet<String>> {
+    let mut set = HashSet::new();
+    let mut stmt = conn.prepare("SELECT payload FROM shelf_trash")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let payload = row?;
+        let value: serde_json::Value = serde_json::from_str(&payload).map_err(|error| {
+            AppError::Validation(format!("暂存回收站快照损坏，已中止孤儿清理: {error}"))
+        })?;
+        let Some(item) = value.get("item") else {
+            continue;
+        };
+        if let Some(path) = item.get("managed_path").and_then(|v| v.as_str()) {
+            if !path.trim().is_empty() {
+                set.insert(path.to_string());
+            }
+        }
+        if item.get("kind").and_then(|v| v.as_str()) == Some(KIND_IMAGE) {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                set.insert(format!("thumbs/{id}.png"));
+            }
+        }
+    }
+    Ok(set)
+}
+
 /// 孤儿文件兜底：数据库删除失败或复制中断留下的无主文件，下次清理时移除。
-/// 引用集合 = 全部 managed_path + 全部缩略图（thumbs/{id}.png）。
+/// 引用集合 = 全部 managed_path + 全部缩略图（thumbs/{id}.png）+ 回收站快照引用。
 /// 任一引用查询失败时整轮中止，不使用部分引用集合判断孤儿。
 pub fn purge_orphan_files(db: &Db, root: &Path) -> AppResult<OrphanCleanupReport> {
     // Both reference queries must succeed before any file is examined. Returning the local set
     // only after the closure completes prevents a partial set from authorizing deletion.
     let referenced = match db.with_read(|conn| {
         let mut set = std::collections::HashSet::new();
+        for path in trash_referenced_paths(conn)? {
+            set.insert(path);
+        }
         let mut stmt =
             conn.prepare("SELECT managed_path FROM shelf_items WHERE managed_path IS NOT NULL")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
@@ -2032,6 +2071,11 @@ fn remove_orphan_if_unreferenced(
     db.with_conn(|conn| {
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> AppResult<OrphanRemoveOutcome> {
+            // 回收站保留期内的文件仍被快照引用：必须先于置空/删除判断。
+            let trash_paths = trash_referenced_paths(conn)?;
+            if trash_paths.contains(&relative) {
+                return Ok(OrphanRemoveOutcome::Skipped);
+            }
             let referenced: bool = if sub == "thumbs" {
                 let id = name.strip_suffix(".png").unwrap_or_default();
                 conn.query_row(

@@ -1076,4 +1076,39 @@ mod tests {
         assert_eq!(report.removed, 1);
         assert_eq!(count(&db).unwrap(), 1);
     }
+
+    /// 回收站保留期内，孤儿清理不得把快照仍引用的托管文件/缩略图当无主文件删除。
+    /// 这是撤销真实可用的前提（否则只恢复记录、文件已被永久删掉）。
+    #[test]
+    fn orphan_cleanup_keeps_managed_files_referenced_by_trash() {
+        let db = test_db();
+        let root = test_root("orphan-safety");
+        let id = seed(&db, "截图.png");
+        let managed = attach_managed(&db, &root, &id);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE shelf_items SET kind = 'image', file_ext = 'png' WHERE id = ?1",
+                params![id],
+            )
+            .map_err(AppError::from)
+        })
+        .unwrap();
+        let thumb = root.join("thumbs").join(format!("{id}.png"));
+        std::fs::write(&thumb, b"thumb").expect("write thumb");
+
+        let deleted = soft_delete(&db, std::slice::from_ref(&id), false).expect("soft delete");
+        assert_eq!(deleted.removed, 1);
+        assert!(managed.exists() && thumb.exists(), "软删除不得动托管副本");
+
+        let orphans = crate::shelf::purge_orphan_files(&db, &root).expect("orphan cleanup");
+        assert_eq!(orphans.removed_files, 0, "回收站引用必须计入孤儿清理引用集");
+        assert!(managed.exists(), "保留期内托管主文件必须存在");
+        assert!(thumb.exists(), "保留期内缩略图必须存在");
+
+        let restored = restore(&db, &deleted.batch_id).expect("restore");
+        assert_eq!(restored.restored, 1);
+        assert!(managed.exists(), "撤销后文件仍可用");
+
+        cleanup(&root);
+    }
 }
