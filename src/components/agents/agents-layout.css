@@ -1,0 +1,47 @@
+/*
+ * Agent 页布局（2026-11-14 统一工作台改造）。
+ *
+ * 只负责布局与密度；颜色 / 圆角 / 阴影一律沿用既有语义 Token，
+ * 不在此复制第二套皮肤。文件不带 @layer，天然高于 base/theme，因此
+ * 每条选择器都以 .agents-panel 开头做作用域隔离，避免改到其他页面
+ * 共用的 .filter-bar / .summary-card / .tree-row 行为。
+ */
+
+/* 页根：收紧纵向间距，把头部让出的高度还给会话树。 */
+.agents-panel {
+  gap: 6px;
+}
+
+/* 统计卡一行密度（对照效果图「4 统计卡一行」）：值与标签同行，高度对齐
+   任务页紧凑概览卡；零值语义（.muted）与状态色沿用 styles.css，不在此重复。 */
+.agents-panel .agent-summary {
+  gap: 6px;
+}
+
+.agents-panel .summary-card {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 9px;
+}
+
+.agents-panel .summary-card .summary-value {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+/* 工具行：分区切换 + 状态筛选 + 搜索同行，刷新 / 帮助靠右；窄窗沿用
+   .filter-bar 的整体换行，这里只把换行后的行距再收紧一档。 */
+.agents-panel .agents-tool-row {
+  row-gap: 4px;
+}
+
+/* 会话树行密度：行高压紧凑一档，同一屏容纳更多会话行。 */
+.agents-panel .monitor-tree .tree-row {
+  padding: 3px 6px;
+}
+
+/* 运行中徽标与「等待 / 异常」同级强调（对照效果图状态徽标视觉）。 */
+.agents-panel .session-state.state-running {
+  font-weight: 600;
+}

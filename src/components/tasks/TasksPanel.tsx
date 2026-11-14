@@ -7,6 +7,8 @@
 //! 搜索框紧跟在日期筛选下面、状态/排序上面。
 //! 2026-11-12：改为「任务优先」的三模式视图（列表 / 专注 / 统计）。工具入口集中到
 //! 单行操作区，列表占满剩余高度；专注与统计是独立工作视图，不再携带列表工具栏。
+//! 2026-11-14：概览三卡压成一行紧凑摘要（styles 不变，视觉降权见 tasks-layout.css）；
+//! ≥480px 时概览摘要与快速添加同排，头部省一行——DOM 顺序不变，布局由 CSS 网格重排。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QuickAdd from "./QuickAdd";

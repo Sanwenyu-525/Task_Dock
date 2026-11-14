@@ -55,6 +55,7 @@ import AgentStatsView from "./stats/AgentStatsView";
 import { useLocale } from "../../hooks/useLocale";
 import ContextHelpButton from "../help/ContextHelpButton";
 import AgentPlanningLinks from "./AgentPlanningLinks";
+import "./agents-layout.css";
 
 // 徽标只描述「接入证据强度」，不把已安装 / 已配置 / 验证通过 / 已连接混为一谈。
 // 徽标只做「一级短标签」，窄卡片下优先让徽标换行而不是挤压名称，完整证据解释放在展开区（HEALTH_DETAILS），
@@ -855,8 +856,30 @@ export default function AgentPanel() {
           </button>
         </div>
       )}
-      {/* ══ 分区切换 ══ */}
-      <div className="filter-bar">
+      {/* ══ 状态摘要（监控分区）：一行紧凑统计卡，为会话列表让出高度 ══ */}
+      {section === "monitor" && (
+        <div className="agent-summary">
+          <div className={`summary-card s-running ${summary.running ? "" : "muted"}`} data-tip={tr("agent.ui.runningTip")}>
+            <span className="summary-value">{summary.running}</span>
+            <span className="summary-label">{tr("agent.ui.running")}</span>
+          </div>
+          <div className={`summary-card s-waiting ${summary.waiting ? "" : "muted"}`} data-tip={tr("agent.ui.waitingTip")}>
+            <span className="summary-value">{summary.waiting}</span>
+            <span className="summary-label">{tr("agent.ui.waiting")}</span>
+          </div>
+          <div className={`summary-card s-error ${summary.failed ? "" : "muted"}`} data-tip={tr("agent.ui.failedTip")}>
+            <span className="summary-value">{summary.failed}</span>
+            <span className="summary-label">{tr("agent.ui.failed")}</span>
+          </div>
+          <div className="summary-card muted" data-tip={tr("agent.ui.sourcesTip")}>
+            <span className="summary-value">{connectedSources}</span>
+            <span className="summary-label">{tr("agent.ui.sources")}</span>
+          </div>
+        </div>
+      )}
+
+      {/* ══ 工具行：分区切换 +（监控）状态筛选与搜索；刷新 / 帮助靠右 ══ */}
+      <div className="filter-bar agents-tool-row">
         <div className="seg-group agents-section-switch" role="tablist" aria-label={tr("agent.ui.sectionAria")}>
           <button
             className={`seg-btn ${section === "monitor" ? "active" : ""}`}
@@ -883,33 +906,8 @@ export default function AgentPanel() {
             <PlugZap size={12} /> {tr("agent.ui.onboard")}
           </button>
         </div>
-        <span className="flex-spacer" />
-        <ContextHelpButton articleId="help.agents.hooks-onboarding" />
-      </div>
-
-      {section === "monitor" && (
-        <>
-          {/* ══ 状态摘要 ══ */}
-          <div className="agent-summary">
-            <div className={`summary-card s-running ${summary.running ? "" : "muted"}`} data-tip={tr("agent.ui.runningTip")}>
-              <span className="summary-value">{summary.running}</span>
-              <span className="summary-label">{tr("agent.ui.running")}</span>
-            </div>
-            <div className={`summary-card s-waiting ${summary.waiting ? "" : "muted"}`} data-tip={tr("agent.ui.waitingTip")}>
-              <span className="summary-value">{summary.waiting}</span>
-              <span className="summary-label">{tr("agent.ui.waiting")}</span>
-            </div>
-            <div className={`summary-card s-error ${summary.failed ? "" : "muted"}`} data-tip={tr("agent.ui.failedTip")}>
-              <span className="summary-value">{summary.failed}</span>
-              <span className="summary-label">{tr("agent.ui.failed")}</span>
-            </div>
-            <div className="summary-card muted" data-tip={tr("agent.ui.sourcesTip")}>
-              <span className="summary-value">{connectedSources}</span>
-              <span className="summary-label">{tr("agent.ui.sources")}</span>
-            </div>
-          </div>
-
-          <div className="filter-bar primary">
+        {section === "monitor" && (
+          <>
             <div className="seg-group subtle" role="group" aria-label={tr("agent.ui.filterAria")}>
               {MONITOR_FILTERS.map((f) => (
                 <button
@@ -937,19 +935,25 @@ export default function AgentPanel() {
                 }
               }}
             />
-            <span className="flex-spacer" />
-            <button
-              className="btn sm"
-              onClick={load}
-              data-tip={tr("agent.ui.refreshTip")}
-              aria-label={tr("agent.ui.refresh")}
-            >
-              <RefreshCw size={12} /> {tr("agent.ui.refresh")}
-            </button>
-          </div>
+          </>
+        )}
+        <span className="flex-spacer" />
+        {section === "monitor" && (
+          <button
+            className="btn sm"
+            onClick={load}
+            data-tip={tr("agent.ui.refreshTip")}
+            aria-label={tr("agent.ui.refresh")}
+          >
+            <RefreshCw size={12} /> {tr("agent.ui.refresh")}
+          </button>
+        )}
+        <ContextHelpButton articleId="help.agents.hooks-onboarding" />
+      </div>
 
-          {/* ══ 历史搜索结果（后端分页；与 Agent 名称过滤互不替代）══ */}
-          <div className="page-scroll agents-body">
+      {/* ══ 历史搜索结果（后端分页；与 Agent 名称过滤互不替代）══ */}
+      {section === "monitor" && (
+        <div className="page-scroll agents-body">
             {monitorSearching && (
               <HistorySearchResults
                 state={historySearch}
@@ -1019,8 +1023,7 @@ export default function AgentPanel() {
                 />
               )}
           </div>
-          </div>
-        </>
+        </div>
       )}
 
       {section === "stats" && (

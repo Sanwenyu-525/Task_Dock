@@ -1,5 +1,7 @@
 /*
  * 任务页布局（2026-11-12「任务优先」重构）。
+ * 2026-11-14：概览三卡压成一行紧凑摘要；≥480px 概览摘要与快速添加同排，
+ * ≥900px 放宽行留白并让状态/排序靠右。仅动本文件与 TasksPanel 注释。
  *
  * 只负责布局与间距；颜色 / 圆角 / 阴影 / 材质一律沿用既有语义 Token，
  * 不在此文件复制第二套皮肤。文件不带 @layer，天然高于 base/theme，因此
@@ -21,19 +23,80 @@
   flex-shrink: 0;
 }
 
-/* 紧凑统计卡：单行数值 + 标签，仍保留下钻点击与 warn 语义。 */
+/* 紧凑统计摘要（2026-11-14）：三卡压成一行纯文本摘要 —— 去卡面边框/底色，
+   只留「数值 + 标签」chip，hover 才出现底色（可下钻 affordance 由 styles.css
+   的 .is-clickable:hover / .warn:hover 继续）。仍保留下钻点击与 warn 语义，
+   DOM（.overview-card×3）不变，只做视觉降权：统计是参考信息，列表才是主角。 */
+.tasks-panel .tasks-overview--compact {
+  /* 严格一行：显式压过 styles.css ≤280px 断点把概览降级为两列 grid 的规则 */
+  display: flex;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
 .tasks-panel .tasks-overview--compact .overview-card {
-  padding: 3px 8px;
-  gap: 5px;
-  border-radius: 8px;
+  flex: 0 1 auto;
+  padding: 2px 7px;
+  gap: 4px;
+  border-radius: 6px;
+  border-color: transparent;
+  background: none;
 }
 
 .tasks-panel .tasks-overview--compact .overview-value {
-  font-size: 14px;
+  font-size: 12.5px;
 }
 
 .tasks-panel .tasks-overview--compact .overview-label {
   font-size: 10.5px;
+  /* 概览摘要必须严格一行：压过 styles.css ≤280px 断点里 label 换行的降级 */
+  white-space: nowrap;
+}
+
+/* 宽屏（≥480px）：概览摘要与快速添加同排，头部再省一行高度。
+   DOM 顺序不变（modes 测试契约守 overview → quick-add → viewbar → filterbar），
+   只由网格重排视觉行；<480px 回落为原有单列堆叠，320 窄窗不回归。
+   概览列用 fit-content(280px)：中英双语文案（zh≈209px / en≈242px）都放得下，
+   同时保证极端情况下 chips 收缩省略、快速添加列不吃到 0 宽。 */
+@media (min-width: 480px) {
+  .tasks-panel .tasks-head {
+    display: grid;
+    grid-template-columns: fit-content(280px) minmax(0, 1fr);
+    align-items: center;
+    column-gap: 10px;
+    row-gap: 5px;
+  }
+
+  .tasks-panel .tasks-head > .tasks-overview--compact {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .tasks-panel .tasks-head > .quick-add {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .tasks-panel .tasks-head > .tasks-viewbar,
+  .tasks-panel .tasks-head > .tasks-filterbar,
+  .tasks-panel .tasks-head > .quick-reminder {
+    grid-column: 1 / -1;
+  }
+
+  /* 解析预览/错误出现时快速添加占满整行：右列宽度放日期选择器太挤；
+     旧引擎不支持 :has 时静默不匹配，退化为右列内的原始行为。 */
+  .tasks-panel .tasks-head > .quick-add:has(> .quick-add-preview, > .preview-hint) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+/* 任务页内快速添加行收紧：只调本页（QuickAdd 还被首页/全视图等宿主复用）。 */
+.tasks-panel .quick-add-row {
+  padding: 3px 8px;
+  gap: 6px;
 }
 
 /* 日期筛选 + 工具操作安排在同一行；窄窗只允许日期分段横向滚动，
@@ -168,6 +231,24 @@
 .tasks-panel > .task-list {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* 宽屏宿主（工作台 .wb-route，~900-1100px 内容宽）：任务行放宽水平留白，
+   搜索不再无限拉伸、状态/排序靠右（对齐效果图的工具行）。
+   窄窗行为不变；搜索 flex-shrink:1 保证英文等长文案下仍可收缩。
+   位置在密度/搜索基础规则之后：同特异性下靠源码顺序生效。 */
+@media (min-width: 900px) {
+  .tasks-panel .task-item {
+    padding: 7px 12px;
+  }
+
+  .tasks-panel .tasks-filterbar .search-box {
+    flex: 0 1 420px;
+  }
+
+  .tasks-panel .tasks-filterbar > .seg-group {
+    margin-left: auto;
+  }
 }
 
 /* 子视图头：返回按钮 + 模式标题；内容区占满剩余高度。 */
