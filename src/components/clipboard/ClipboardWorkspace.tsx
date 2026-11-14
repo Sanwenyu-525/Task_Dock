@@ -60,6 +60,8 @@ import PastePanel from "./PastePanel";
 import type { AskConfirm, ClipboardDetail } from "./types";
 import ContextHelpButton from "../help/ContextHelpButton";
 import { requestSettingsSectionReveal } from "../../lib/settingsSections";
+// 页面态专属布局（网格密度 / 详情两栏）；所有规则带 .clipboard-page 前缀，抽屉态不受影响。
+import "./clipboard-page.css";
 
 const KIND_CHIPS: { id: string; label: string }[] = [
   { id: "all", label: "全部" },
@@ -1042,7 +1044,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     }
     return (
       <>
-        <div className="clip-list" ref={listRef}>
+        {/* 页面态加网格修饰类（宽屏自适应多列）；抽屉保持原单列列表 */}
+        <div className={`clip-list${isDrawer ? "" : " clip-list-grid"}`} ref={listRef}>
           {items.map((item) => (
             <ClipboardItemCard
               key={item.id}

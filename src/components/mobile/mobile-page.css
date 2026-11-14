@@ -1,0 +1,44 @@
+/*
+ * 手机互传页布局（2026-11-14 统一工作台改造）。
+ * 只负责页面骨架与宽屏两栏；MobileSyncSection / VirtualDisplaySection 内部
+ * 样式在 styles.css / virtual-display.css，不在此重复。文件不带 @layer，
+ * 每条选择器以 .mobile-transfer-panel 前缀做作用域隔离。
+ */
+
+.mobile-transfer-panel.page-fill {
+  gap: 10px;
+}
+
+/* 页面级页头：图标 + 标题 + 副标题（复用 wf-head-row 的既有排版语义）。
+   页面容器已有 .tab-content 的 10px 内边距，这里不叠加。 */
+.mobile-transfer-panel .mobile-page-head .wf-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* 宽屏两栏：主列（配对/设备/传输）+ 右列（虚拟屏与扩展能力）。
+   窄内容区退化为单列纵向堆叠（与旧版一致）。 */
+.mobile-transfer-panel .mobile-body {
+  min-height: 0;
+}
+.mobile-transfer-panel .mobile-body-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  max-width: 1280px;
+}
+.mobile-transfer-panel .mobile-body-main,
+.mobile-transfer-panel .mobile-body-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (max-width: 1080px) {
+  .mobile-transfer-panel .mobile-body-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

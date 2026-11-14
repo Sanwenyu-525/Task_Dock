@@ -17,6 +17,7 @@ import {
   RefreshCw,
   ShieldQuestion,
   Undo2,
+  Zap,
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import {
@@ -295,6 +296,16 @@ export default function ActionCenterPanel() {
 
   return (
     <div className="action-panel page-fill">
+      {/* 页面级页头（2026-11-14 统一工作台适配）；分类计数徽标保留在下方筛选行。
+          本页文案历史上为硬编码中文（i18n 欠账，范围外），页头暂跟随现状。 */}
+      <header className="wf-head-row action-page-head">
+        <div>
+          <h2 className="wf-title">
+            <Zap size={16} aria-hidden="true" /> 行动中心
+          </h2>
+          <p className="wf-subtitle">汇总来自 Agent、任务、工作流的待处理事项</p>
+        </div>
+      </header>
       <div className="filter-bar primary">
         <div className="seg-group subtle" role="group" aria-label="行动分类">
           {(["intervention", "notification", "history"] as ActionCategory[]).map((id) => {

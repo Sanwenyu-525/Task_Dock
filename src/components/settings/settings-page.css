@@ -1,0 +1,31 @@
+/*
+ * 设置页布局（2026-11-14 统一工作台改造）。
+ * 只负责页面级页头间距与宽屏内容限宽；分类导航（横向 tablist + 吸顶）、
+ * 跳转搜索与 setting-row 的既有样式/交互在 styles.css，不在此重复。
+ * 文件不带 @layer，每条选择器以 .settings-panel 前缀做作用域隔离。
+ */
+
+.settings-panel.page-fill {
+  gap: 8px;
+}
+
+/* 宽屏下分类内容限宽居中（对照效果图 ~900-1100px 内容列），避免
+   setting-row 无限拉长；窄内容区自动回落为占满。 */
+.settings-panel .settings-category-panel {
+  max-width: 1120px;
+  width: 100%;
+  margin-inline: auto;
+}
+
+/* 跳转搜索与分类导航同宽限宽，保持两列对齐关系。 */
+.settings-panel .settings-jump {
+  max-width: 1120px;
+  width: 100%;
+  margin-inline: auto;
+}
+.settings-panel .settings-categories {
+  max-width: 1120px;
+  width: 100%;
+  margin-inline: auto;
+}
+

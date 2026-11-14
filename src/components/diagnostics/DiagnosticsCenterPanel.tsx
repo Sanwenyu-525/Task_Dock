@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
   ArrowLeft,
   ChevronDown,
@@ -974,7 +975,9 @@ export default function DiagnosticsCenterPanel() {
       <header className="diag-center-head">
         <div className="diag-center-head-text">
           <div className="diag-center-title-row">
-            <h1 className="diag-center-title">{t("diagnosticsCenter.title")}</h1>
+            <h1 className="diag-center-title">
+              <Activity size={15} aria-hidden="true" /> {t("diagnosticsCenter.title")}
+            </h1>
             <span
               className={`diag-center-mode${status?.mode === "verbose" ? " is-verbose" : ""}`}
               data-tip={t("diagnosticsCenter.mode.readonlyHint")}

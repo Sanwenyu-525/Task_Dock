@@ -6,9 +6,10 @@ import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Palette, AppWindow, Bell, Database, FlaskConical, Copy, Eye, EyeOff,
   RefreshCw, Navigation, Clipboard, Trash2, Gauge, Layers, Compass, AlertTriangle, HardDrive, LifeBuoy,
-  ScrollText,
+  ScrollText, Settings as SettingsIcon,
 } from "lucide-react";
 import AgentIcon, { type IconComponent } from "../ui/AgentIcon";
+import "./settings-page.css";
 import { CollapsibleSection, Combobox } from "../ui";
 import {
   auditTestData,
@@ -704,6 +705,15 @@ export default function SettingsPanel() {
 
   return (
     <div className="settings-panel page-fill">
+      {/* 页面级页头（2026-11-14 统一工作台适配）；分类导航与跳转搜索保持既有交互。 */}
+      <header className="wf-head-row settings-page-head">
+        <div>
+          <h2 className="wf-title">
+            <SettingsIcon size={16} aria-hidden="true" /> {t("nav.settings")}
+          </h2>
+          <p className="wf-subtitle">{t("settings.pageSubtitle")}</p>
+        </div>
+      </header>
       {dataLoadError && (
         <div className="setting-note error-text" role="alert">
           {t("settings.loadError", { error: dataLoadError })}

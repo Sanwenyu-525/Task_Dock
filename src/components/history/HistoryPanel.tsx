@@ -9,7 +9,7 @@
 //! 旧页并提示刷新，绝不把有缺口的列表伪装成完整时间轴。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, CheckCheck, Trash2, ChevronRight, ChevronDown, Inbox } from "lucide-react";
+import { Bell, CheckCheck, Trash2, ChevronRight, ChevronDown, History, Inbox } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import {
   clearNotifications,
@@ -340,6 +340,15 @@ export default function HistoryPanel() {
 
   return (
     <div className="history-panel page-fill">
+      {/* 页面级页头（2026-11-14 统一工作台适配）：标题与副标题锚定当前页。 */}
+      <header className="wf-head-row history-page-head">
+        <div>
+          <h2 className="wf-title">
+            <History size={16} aria-hidden="true" /> {tr("history.pageTitle")}
+          </h2>
+          <p className="wf-subtitle">{tr("history.pageSubtitle")}</p>
+        </div>
+      </header>
       {/* 过滤工具栏：第一行 = 筛选（时间 → 来源 → 类型，窄窗口时靠后的先换行），
           第二行 = 统计 + 批量操作，两行职责分离互不挤压 */}
       <div className="filter-bar primary">

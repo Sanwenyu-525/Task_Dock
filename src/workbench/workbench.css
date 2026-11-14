@@ -1261,3 +1261,18 @@ body.wb-resizing {
 }
 
 /* 首页 v2 响应式：auto-fit 按容器宽度自适应列数，无需视口断点。 */
+
+/* ── 页面级页头图标对齐（2026-11-14 统一工作台）：各功能页 wf-title /
+   diag-center-title 内嵌 lucide 图标后的垂直居中；统一放在外壳样式层，
+   避免每页复制。选择器均带各自面板前缀，只影响含图标的标题行。 ── */
+.action-panel .wf-title,
+.planning-panel .wf-title,
+.history-panel .wf-title,
+.apps-panel .wf-title,
+.settings-panel .wf-title,
+.mobile-transfer-panel .wf-title,
+.diag-center-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}

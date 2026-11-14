@@ -8,6 +8,8 @@
 //! 保留 roadmap Tab 身份：导航、快捷键（Ctrl+7）与既有测试不受改名影响。
 
 import { useState } from "react";
+import { Map as MapIcon } from "lucide-react";
+import { useLocale } from "../../hooks/useLocale";
 import ContextHelpButton from "../help/ContextHelpButton";
 import FeatureRoadmapPanel from "./FeatureRoadmapPanel";
 import PlanningWorkspace from "./PlanningWorkspace";
@@ -16,8 +18,19 @@ type Source = "mine" | "builtin";
 
 export default function PlanningCenterPanel() {
   const [source, setSource] = useState<Source>("mine");
+  const { t } = useLocale();
   return (
     <div className="planning-panel page-fill">
+      {/* 页面级页头（2026-11-14 统一工作台适配）；数据源切换保留在下方。 */}
+      <header className="wf-head-row planning-page-head">
+        <div>
+          <h2 className="wf-title">
+            <MapIcon size={16} aria-hidden="true" /> {t("nav.roadmap")}
+          </h2>
+          <p className="wf-subtitle">{t("planning.pageSubtitle")}</p>
+        </div>
+        <ContextHelpButton articleId="help.workflows.planning-center" />
+      </header>
       <div className="planning-source-switch">
         <div className="seg-group subtle" role="group" aria-label="规划数据来源">
           <button
@@ -35,7 +48,6 @@ export default function PlanningCenterPanel() {
             内置路线图
           </button>
         </div>
-        <ContextHelpButton articleId="help.workflows.planning-center" />
       </div>
       {source === "mine" ? <PlanningWorkspace /> : <FeatureRoadmapPanel />}
     </div>

@@ -929,7 +929,9 @@ export default function AppsPanel() {
     <div className="apps-panel page-fill">
       <header className="wf-head-row apps-head">
         <div>
-          <h2 className="wf-title">{tr("apps.title")}</h2>
+          <h2 className="wf-title">
+            <LayoutGrid size={16} aria-hidden="true" /> {tr("apps.title")}
+          </h2>
           <p className="wf-subtitle">{tr("apps.subtitle")}</p>
         </div>
         <div className="wf-head-actions">

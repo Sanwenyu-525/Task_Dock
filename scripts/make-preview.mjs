@@ -822,12 +822,20 @@ const shim = `
   let snapshotTick = 0;
   const listeners = {};
 
-  // 统一工作台（workbench-preview.html）走查夹具：两个示例项目，仅 harness 使用。
+  // 统一工作台（workbench-preview.html）走查夹具：两个示例项目 + 工作流，仅 harness 使用。
   // 注意：本文件主体位于模板字符串内，路径反斜杠必须写四个（经字符串折叠后剩两个）。
   const WORKBENCH_PROJECTS = [
     { id: "wp1", name: "产品研发工作空间", kind: "general", status: "active", rootPath: "", rootExists: false, devProjectId: null, devProjectExists: false, devProjectName: null, note: "", itemCount: 12, taskLinkCount: 5, createdAt: iso(600), updatedAt: iso(30) },
     { id: "wp2", name: "星港回响 · AI 漫剧", kind: "ai_comic", status: "active", rootPath: "D:\\\\Projects\\\\starlight", rootExists: true, devProjectId: null, devProjectExists: false, devProjectName: null, note: "", itemCount: 28, taskLinkCount: 9, createdAt: iso(1200), updatedAt: iso(90) },
   ];
+  const WORKBENCH_WORKFLOWS = [
+    { id: "wf1", name: "需求收集与整理", description: "收集内容 → 任务分类 → 生成摘要", enabled: true, sort_order: 0, step_count: 4, created_at: iso(900), updated_at: iso(60), last_run_at: iso(25) },
+    { id: "wf2", name: "版本发布准备", description: "检查清单 → 资源打包 → 发布通知", enabled: true, sort_order: 1, step_count: 3, created_at: iso(800), updated_at: iso(120), last_run_at: iso(600) },
+  ];
+  const WORKBENCH_LAST_RUNS = {
+    wf1: { run_id: "wfr1", workflow_id: "wf1", status: "completed", total_steps: 4, completed_steps: 4, error: null, started_at: iso(30), started_at_local: new Date(Date.now() - 30 * 60000).toLocaleString(), finished_at: iso(25) },
+    wf2: { run_id: "wfr2", workflow_id: "wf2", status: "failed", total_steps: 3, completed_steps: 2, error: "资源打包超时", started_at: iso(600), started_at_local: new Date(Date.now() - 600 * 60000).toLocaleString(), finished_at: iso(590) },
+  };
 
   async function invoke(cmd, args) {
     await new Promise((r) => setTimeout(r, 30));
@@ -841,6 +849,15 @@ const shim = `
       case "workspace_set_active_project": return { ok: true };
       case "workbench_take_nav": return null;
       case "workbench_nav_ack": return undefined;
+      // ── 工作流列表态（对照效果图 05）：真实形状摘要，含最近运行 ──
+      case "workflow_list": return WORKBENCH_WORKFLOWS;
+      case "workflow_active": return null;
+      case "workflow_last_run_summary": return WORKBENCH_LAST_RUNS[args?.id] ?? null;
+      // ── 虚拟屏（手机互传页右栏）：数组契约命令必须返回数组，避免 harness null 破约 ──
+      case "vd_probe": return { adb_path: null, adb_version: null, scrcpy_path: null, scrcpy_version: null, supports_new_display: false, supports_ime_local: false, devices: [], error: null };
+      case "vd_devices": return { devices: [], adb_ok: false, error: null };
+      case "vd_sessions": return [];
+      case "vd_list_apps": return { serial: "", device_uid: "", launchable_known: false, apps: [] };
       case "resource_snapshot":
         return {
           sampledAt: iso(0),

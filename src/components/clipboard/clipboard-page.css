@@ -1,0 +1,114 @@
+/*
+ * 智能剪贴板「页面态」布局（2026-11-14 统一工作台改造）。
+ *
+ * 只服务 variant="page"（根元素 .clipboard-page）；抽屉根元素是
+ * .clipboard-drawer，不含任何一条规则的前缀，形态零变化。
+ * 做法与 agents-layout.css 一致：不带 @layer，每条选择器带面板作用域
+ * 前缀；颜色 / 圆角 / 阴影一律沿用既有语义 Token，不复制第二套皮肤。
+ *
+ * 宽窄判断用容器查询（容器是 .clip-body）：页面态占据工作台内容区，
+ * 视口宽度 ≠ 面板可用宽度，媒体查询会在带侧栏的布局下误判。
+ * 抽屉态不建立容器，即使类名意外复用也不会命中 @container 规则。
+ */
+
+/* ── 容器：以列表 / 详情实际可用宽度响应 ── */
+.clipboard-page .clip-body {
+  container-type: inline-size;
+  container-name: clip-page;
+}
+
+/* 页头标题：对照效果图升一档（仅页面态；抽屉仍是原小字标题） */
+.clipboard-page .clip-head-title > span:first-of-type {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ── 条目卡片网格 ──
+   ≥720px 起按可用宽度自适应 2-3 列（minmax 330px：三列约需 1020px 容器）。
+   只作用于历史条目列表（.clip-list-grid 由 page 态挂载时附加）；
+   分组列表与「加载更多」按钮不在网格内，保持原有单列节奏。 */
+@container clip-page (min-width: 720px) {
+  .clipboard-page .clip-list-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+    gap: 8px;
+  }
+
+  /* 卡片改纵向排布：徽标+时间 / 标题+预览 / 来源 / 底部动作行，
+     与效果图自上而下的信息层级一致；DOM 顺序不动，纯视觉重排。 */
+  .clipboard-page .clip-list-grid .clip-item {
+    position: relative;
+    flex-direction: column;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding: 9px 11px;
+  }
+
+  /* 勾选框悬浮右上角，不再独占一行；未选中且未悬停时淡化，
+     键盘聚焦 / 悬停 / 已选三种情况恢复完全不透明（Tab 顺序不变）。 */
+  .clipboard-page .clip-list-grid .clip-item > .clip-check {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    opacity: 0.4;
+    transition: opacity 0.12s;
+  }
+
+  .clipboard-page .clip-list-grid .clip-item:hover > .clip-check,
+  .clipboard-page .clip-list-grid .clip-item > .clip-check:focus-visible,
+  .clipboard-page .clip-list-grid .clip-item.selected > .clip-check {
+    opacity: 1;
+  }
+
+  /* 时间标签在顶行右侧，给悬浮的勾选框留出位置，避免重叠 */
+  .clipboard-page .clip-list-grid .clip-item .clip-item-top {
+    padding-right: 26px;
+  }
+
+  /* 主内容吃掉剩余高度，中部留白集中在来源行之后，动作行贴底 */
+  .clipboard-page .clip-list-grid .clip-item > .clip-item-main {
+    flex: 1 1 auto;
+  }
+
+  /* 底部动作行：横向铺开、按钮靠右，上方一条细分隔线（效果图同款） */
+  .clipboard-page .clip-list-grid .clip-item > .clip-actions {
+    margin-left: 0;
+    justify-content: flex-end;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-subtle);
+  }
+}
+
+/* ── 详情宽屏排版 ──
+   ≥1120px 时详情内容改为网格：所有面板先统一单列网格化
+   （与原纵向 flex 等效，对分组详情 / 逐项粘贴 / 复制切换三个共用了
+   .clip-detail-body 的面板是零行为差异），只有条目详情
+   （.clip-detail-item-body）升为两栏：「采集环境」移到右栏，
+   正文 / 图片 / OCR / 链接等类型专属区块占满左栏完整宽度。 */
+@container clip-page (min-width: 1120px) {
+  .clipboard-page .clip-detail-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 8px;
+    column-gap: 12px;
+    align-items: start;
+  }
+
+  /* 默认全部子块进左栏；采集环境块独占右栏。
+     显式列 + 自动行的放置结果可预测：左栏子块按 DOM 顺序从第 1 行排起，
+     不受右栏占位影响。 */
+  .clipboard-page .clip-detail-body > * {
+    grid-column: 1;
+  }
+
+  .clipboard-page .clip-detail-item-body {
+    grid-template-columns: minmax(0, 1fr) 288px;
+  }
+
+  .clipboard-page .clip-detail-item-body > .clip-source-block {
+    grid-column: 2;
+    grid-row: 1 / span 12;
+  }
+}

@@ -464,7 +464,8 @@ export default function ClipboardItemDetail({
         </div>
       </div>
 
-      <div className="clip-detail-body">
+      {/* 条目详情修饰类：页面态宽屏下「采集环境」右栏化（见 clipboard-page.css） */}
+      <div className="clip-detail-body clip-detail-item-body">
         <div className="clip-title-row">
           {editingTitle ? (
             <>

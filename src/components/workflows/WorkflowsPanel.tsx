@@ -5,7 +5,7 @@
 //! createSubscriptionScope 模式，卸载即释放）；面板隐藏时运行照常进行，
 //! 重新挂载用 refreshActive() 按需查询，不做轮询；子视图不重复订阅。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Copy,
   History,
@@ -22,6 +22,7 @@ import {
   WORKFLOW_RUN_STATUS_LABELS,
   type Workflow,
   type WorkflowDetail,
+  type WorkflowLastRunSummary,
 } from "../../lib/bridge";
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { onWorkflowRunProgress } from "../../lib/bridge";
@@ -35,6 +36,7 @@ import WorkflowRunView from "./WorkflowRunView";
 import WorkflowHistoryView from "./WorkflowHistoryView";
 import ScenarioWorkspaceView from "./ScenarioWorkspaceView";
 import { useLocale } from "../../hooks/useLocale";
+import "./workflows-page.css";
 
 /** 内容区的滚动容器（页面级单一滚动）：向上找第一个 overflow-y 可滚动的祖先。 */
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
@@ -206,6 +208,30 @@ export default function WorkflowsPanel() {
       "工作流")
     : null;
 
+  // 统计行只用真实数据源：列表长度 / 启用数 / 全局活动运行槽；
+  // 「今日完成」「等待处理」无后端聚合数据源，不显示该卡（不伪造数字）。
+  const enabledCount = useMemo(
+    () => workflows?.filter((w) => w.enabled).length ?? 0,
+    [workflows],
+  );
+
+  /** 最近运行（lastRuns 真实摘要，按开始时间倒序取前 4 条）。 */
+  const recentRuns = useMemo(() => {
+    if (!workflows) return [];
+    return workflows
+      .map((wf) => {
+        const run = lastRuns[wf.id];
+        return run ? { wf, run } : null;
+      })
+      .filter((x): x is { wf: Workflow; run: WorkflowLastRunSummary } => x !== null)
+      .sort((a, b) => b.run.started_at.localeCompare(a.run.started_at))
+      .slice(0, 4);
+  }, [workflows, lastRuns]);
+
+  const activeTotal = activeRunDetail?.total_steps ?? 0;
+  const activePct =
+    activeTotal > 0 ? Math.round(((activeRunDetail?.completed_steps ?? 0) / activeTotal) * 100) : 0;
+
   return (
     <div ref={rootRef} className={`workflows-panel page-fill${page ? " wf-editor-page" : ""}`}>
       {page?.kind === "edit" ? (
@@ -267,6 +293,31 @@ export default function WorkflowsPanel() {
       </header>
 
       <div className="page-scroll wf-body">
+        {/* 统计行（2026-11-14，对照效果图「4 统计卡一行」）：只用真实数据源——
+            列表长度 / 启用数 / 全局单槽活动运行 / 最近运行条数；无来源的
+            「今日完成」类数字不渲染。 */}
+        {workflows ? (
+          <div className="wf-stat-row">
+            <span className="wf-stat-chip">
+              工作流 <strong>{workflows.length}</strong>
+              <em>启用 {enabledCount}</em>
+            </span>
+            <span className="wf-stat-chip">
+              运行中 <strong>{activeRun ? 1 : 0}</strong>
+            </span>
+            <span className="wf-stat-chip">
+              最近运行 <strong>{recentRuns.length}</strong>
+            </span>
+            {activeRun && activeTotal > 0 && (
+              <span className="wf-stat-chip wf-stat-progress">
+                进度 <strong>{activePct}%</strong>
+                <span className="wf-wf-bar" aria-hidden="true">
+                  <i style={{ width: `${activePct}%` }} />
+                </span>
+              </span>
+            )}
+          </div>
+        ) : null}
         {activeRun ? (
           <div className="wf-active-banner" role="status">
             <Loader2 size={13} className="spin" aria-hidden="true" />
@@ -445,6 +496,31 @@ export default function WorkflowsPanel() {
               );
             })}
           </div>
+        ) : null}
+
+        {/* 最近运行（2026-11-14，对照效果图）：lastRuns 真实摘要，含失败原因。 */}
+        {recentRuns.length > 0 ? (
+          <section className="wf-recent" aria-label="最近运行">
+            <h3 className="wf-recent-title">最近运行</h3>
+            <ul className="wf-rowlist">
+              {recentRuns.map(({ wf, run }) => (
+                <li key={run.run_id}>
+                  <button
+                    type="button"
+                    className="wf-recent-row"
+                    onClick={() => openHistory(wf)}
+                    data-tip="查看该工作流的运行历史"
+                  >
+                    <span className="wf-recent-name">{wf.name}</span>
+                    <span className={`wf-run-state kind-${runStatusKind(run.status)}`}>
+                      {WORKFLOW_RUN_STATUS_LABELS[run.status]}
+                    </span>
+                    <span className="wf-recent-meta">{run.started_at_local}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
         ) : null}
       </div>
 
