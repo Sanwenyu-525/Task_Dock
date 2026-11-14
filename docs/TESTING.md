@@ -1330,7 +1330,7 @@ cargo test --lib backup:: -j1           # 26 passed / 0 failed
 cargo test --lib hotkeys:: -j1          # 37 passed / 0 failed
 cargo test --lib dragdrop:: -j1         # 122 passed / 0 failed
 cargo test --lib clipboard:: -j1        # 211 passed / 0 failed / 1 ignored
-cargo test --lib shelf::ingest::tests   # 9 passed
+cargo test --lib shelf::ingest::tests   # 10 passed
 cargo test --lib shelf::sendto::tests   # 3 passed
 cargo test --lib paste_report_tests     # 3 passed
 ```
@@ -1338,16 +1338,18 @@ cargo test --lib paste_report_tests     # 3 passed
 测试 exe 仍需 `mt.exe` 嵌入 comctl32 v6 清单（与上轮相同）：
 `mt.exe -manifest tmp/acceptance/universal-drag/comctl6.manifest -outputresource:<exe>;#1`。
 
-`cargo test --lib -j1` 全量编译在当前共享工作区 **ENVIRONMENT BLOCKED**：
-其他会话并发占用内存，剩余约 2.1–2.5 GB 时 rustc 报
-`rust-LLVM ERROR: out of memory / STATUS_STACK_BUFFER_OVERRUN`；改用已成功链接的
-测试二进制直接运行又在 audio 用例段 `Segmentation fault`。因此本轮不声称全量 lib
-通过，只报告上述模块级结果。相关日志：`tmp/collect-paste-cargo-lib.log`。
+`cargo test --lib -j1` 全量编译第一次在低内存窗口失败（rust-LLVM OOM /
+`STATUS_STACK_BUFFER_OVERRUN`），待其他会话释放内存后重新构建并直接运行测试二进制：
+**1855 passed / 1 failed / 8 ignored**。唯一失败是并行任务的
+`commands::virtual_display::process::tests::build_args_include_mode_specific_flags`，
+与本轮路径无关。日志：`tmp/collect-paste-cargo-lib.log`（失败构建）与
+`tmp/collect-paste-cargo-lib-final2.log`（最终结果）。
 
 ```bash
 npx tsc --noEmit                        # exit 0
-npx vite build                          # exit 0，6.91s（仅 chunk 体积提示）
-npx vitest run <6 个目标文件>            # 143 passed（另有 ShelfWorkspace 单文件 38）
+npx vite build                          # exit 0，9.12s（最终构建；此前 6.05s 同配置）（仅 chunk 体积提示）
+npx vitest run <8 个目标文件>            # 248 passed
+npx vitest run                           # 4063 passed / 2 failed（269 文件，审查修复前快照；其他任务 VirtualDisplaySection）
 node tmp/acceptance/collect-paste/run-evidence.mjs        # 326/326 checks
 node tmp/acceptance/collect-paste/run-shelf-toolbar.mjs   # 228/228 checks
 ```
@@ -1357,7 +1359,7 @@ node tmp/acceptance/collect-paste/run-shelf-toolbar.mjs   # 228/228 checks
 - 胶囊：320/360/400 × 浅/深 × 空/1/3/10 条 × DPR 1/1.25/1.5/2；
   粘贴成功/部分失败/空/占用（延迟）各状态；测量标题行、粘贴/添加/查看全部按钮
   互不重叠且在行内，已有文件行 top/height 变化 ≤1px，反馈位于列表之后不覆盖文件。
-  产出 `tmp/acceptance/collect-paste/geometry.json` 与 16 张截图。
+  产出 `tmp/acceptance/collect-paste/geometry.json` 与 15 张胶囊截图 + 3 张工具条截图。
 - 完整暂存架工具条：600/900/1200 × 浅/深 × 粘贴 idle/busy × 右键发送 off/on；
   添加/粘贴/搜索/筛选/更多不重叠、全部在工具条内、搜索框保有可用宽度、
   工具条高度稳定、读取中按钮禁用。产出 `shelf-toolbar-geometry.json`。

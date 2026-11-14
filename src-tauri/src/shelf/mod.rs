@@ -2687,11 +2687,17 @@ fn wait_for_cleanup_tick(stop: &Arc<(Mutex<bool>, Condvar)>, dur: std::time::Dur
     *guard
 }
 
+pub mod batch;
+pub mod dedup;
 pub mod drag_out;
 pub mod drop_targets;
 pub mod fsops;
 pub mod ingest;
+pub mod recycle;
+pub mod rules;
 pub mod sendto;
+pub mod tags;
+pub mod trash;
 
 #[cfg(test)]
 mod tests;

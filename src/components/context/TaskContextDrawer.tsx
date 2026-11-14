@@ -66,6 +66,8 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { kindLabel as clipKindLabel } from "../../lib/clipboardUi";
 import { errorMessage } from "../../lib/errors";
+import { isWorkbenchHost } from "../../lib/windowHost";
+import { openWorkbench } from "../../lib/workbenchNav";
 import { AGENT_STATE_LABELS, formatRelative } from "../../lib/format";
 import {
   navNavigate,
@@ -181,10 +183,21 @@ export default function TaskContextDrawer() {
     }
   }
 
-  // 生成交接包：切到工作台 Tab 并滚动定位到交接区（走既有 setTab 门禁，
-  // 不新增导航目标类型；草稿被拦截时由确认条接管 after 回调）。
+  // 生成交接包：工作台内切 Tab 并定位交接区；主窗口（Quick Surface）内直接
+  // 打开唯一工作台的开发工作台路由，不落回 Phase D 的兼容页（多一跳）。
   function onOpenHandoff() {
-    useUiStore.getState().setTab("workbench", { after: revealDevHandoff });
+    if (isWorkbenchHost()) {
+      useUiStore.getState().setTab("workbench", { after: revealDevHandoff });
+      return;
+    }
+    closeContext();
+    void openWorkbench({ tab: "workbench", taskId })
+      .then((outcome) => {
+        if (outcome.status === "failed") {
+          showToast(`打开工作台失败：${outcome.error ?? "未知错误"}`, { kind: "error" });
+        }
+      })
+      .catch((e) => showToast(`打开工作台失败：${errorMessage(e)}`, { kind: "error" }));
   }
 
   const refresh = useCallback(async () => {

@@ -10,6 +10,7 @@
 import {
   Expand,
   Eye,
+  LayoutGrid,
   Minus,
   Monitor,
   Moon,
@@ -30,6 +31,7 @@ export type MenuAction =
   | "show"
   | "quick-add"
   | "quick-capture"
+  | "open-workbench"
   | "mode:minimal"
   | "mode:compact"
   | "mode:full"
@@ -92,11 +94,15 @@ export const MENU_GROUPS: readonly MenuGroupDef[] = [
   },
   {
     key: "layout",
-    label: "布局模式",
+    // 三层产品形态（2026-11-14 形态收敛）：完整工作台是独立 workspace 窗口；
+    // 主窗 full 视图更名为「快捷工具面板」；极简=极简悬浮；compact 只是旧版
+    // 兼容形态（枚举/持久化不变），不再与三层并列为主要产品入口。
+    label: "界面形态",
     items: [
-      { key: "mode-minimal", label: "极简模式", icon: Minus, action: "mode:minimal", radio: "mode" },
-      { key: "mode-compact", label: "紧凑模式", icon: Square, action: "mode:compact", radio: "mode" },
-      { key: "mode-full", label: "完整模式", icon: PanelsTopLeft, action: "mode:full", radio: "mode" },
+      { key: "open-workbench", label: "打开完整工作台", icon: LayoutGrid, action: "open-workbench" },
+      { key: "mode-full", label: "展开快捷工具面板", icon: PanelsTopLeft, action: "mode:full", radio: "mode" },
+      { key: "mode-minimal", label: "切换极简悬浮", icon: Minus, action: "mode:minimal", radio: "mode" },
+      { key: "mode-compact", label: "紧凑模式（旧版兼容）", icon: Square, action: "mode:compact", radio: "mode" },
     ],
   },
   {

@@ -26,6 +26,8 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { formatDue, isOverdue, priorityLabel, describeRecurrence } from "../../lib/format";
 import { navNavigate, resultMessage } from "../../lib/navigation";
+import { isWorkbenchHost } from "../../lib/windowHost";
+import { openWorkbench } from "../../lib/workbenchNav";
 import { errorMessage } from "../../lib/errors";
 import { clearTip, syncTruncatedTip } from "../../lib/nameTip";
 import TargetMenu, { TargetAvatar } from "../navigation/TargetMenu";
@@ -246,7 +248,23 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
         action: {
           label: "打开工作台",
           run: () => {
-            void useUiStore.getState().setTab("workbench");
+            // 工作台内直接切路由；主窗口（Quick Surface）里打开唯一工作台，
+            // 不落回 Phase D 兼容页。
+            if (isWorkbenchHost()) {
+              void useUiStore.getState().setTab("workbench");
+              return;
+            }
+            void openWorkbench({ tab: "workbench", taskId: task.id })
+              .then((outcome) => {
+                if (outcome.status === "failed") {
+                  showToast(`打开工作台失败：${outcome.error ?? "未知错误"}`, {
+                    kind: "error",
+                  });
+                }
+              })
+              .catch((e) =>
+                showToast(`打开工作台失败：${errorMessage(e)}`, { kind: "error" }),
+              );
           },
         },
       });

@@ -1,7 +1,14 @@
 //! 暂存架条目卡：缩略图/类型图标、名称截断、大小、来源、时间、失效徽标、
 //! 多选复选与条目菜单（打开/定位/复制/收藏/置顶/分组/删除）。
+//!
+//! 交互分工（与框选/拖出手势的仲裁）：
+//! - 缩略图：图片直接打开灯箱，其他类型打开详情；
+//! - 名称：打开详情；
+//! - 勾选：切换选择；
+//! - 卡片空白/元信息：普通点击单选，Ctrl 切换，Shift 连选；
+//! - 卡片主体按住拖动：Windows OLE 拖出；Alt+拖动：应用内拖入垃圾桶（不进入 OLE）。
 
-import { useEffect, useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent, type PointerEvent } from "react";
 import { Clock, FileQuestion, MoreHorizontal, Pin, Star } from "lucide-react";
 import {
   shelfReadImage,
@@ -39,11 +46,19 @@ function modeLabel(item: ShelfItem): string {
 export default function ShelfItemCard({
   item,
   selected,
+  focused = false,
+  layout = "list",
   thumbUrl,
   menuItems,
   onOpen,
   onToggleSelect,
   onPreview,
+  onPreviewImage,
+  onSelectOnly,
+  onSelectToggle,
+  onSelectRange,
+  onContextMenu,
+  onInternalDragStart,
   dragEnabled = false,
   resolveDragIds,
   onDragSettled,
@@ -51,11 +66,23 @@ export default function ShelfItemCard({
 }: {
   item: ShelfItem;
   selected: boolean;
+  /** 键盘焦点位置（与选中态分离，焦点必须有可见指示）。 */
+  focused?: boolean;
+  layout?: "list" | "grid";
   thumbUrl: string | null;
   menuItems: DropdownMenuItem[];
   onOpen: () => void;
   onToggleSelect: () => void;
   onPreview: () => void;
+  /** 图片缩略图单击：直接打开灯箱（不再先进入详情）。 */
+  onPreviewImage?: () => void;
+  onSelectOnly?: () => void;
+  onSelectToggle?: () => void;
+  onSelectRange?: () => void;
+  /** 右键：按当前选择集合打开上下文菜单（未选中条目会先改为单选）。 */
+  onContextMenu?: (event: MouseEvent<HTMLElement>) => void;
+  /** Alt+左键按下：应用内拖动到垃圾桶（父级负责手势与命中）。 */
+  onInternalDragStart?: (event: PointerEvent<HTMLElement>) => void;
   /** 只有 file/image/folder 且文件存在时为 true。 */
   dragEnabled?: boolean;
   /** 由父级决定拖单条还是整个多选集。 */
@@ -73,14 +100,19 @@ export default function ShelfItemCard({
     onSettled: onDragSettled,
     onError: onDragError,
   });
-  /** 拖拽收尾的 click 不应打开详情/切换选择。 */
-  const guarded = (run: () => void) => (event: MouseEvent) => {
-    if (drag.shouldSuppressClick()) {
+  /** 名称/缩略图上的修饰键点击：优先执行多选语义，不打开内容。 */
+  const modifierSelect = (event: MouseEvent): boolean => {
+    if (event.shiftKey && onSelectRange) {
       event.preventDefault();
-      event.stopPropagation();
-      return;
+      onSelectRange();
+      return true;
     }
-    run();
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      onSelectToggle?.();
+      return true;
+    }
+    return false;
   };
   // 列表传入的 thumbUrl 为空时（如翻页合并后），图片条目自行懒加载一次
   useEffect(() => {
@@ -98,11 +130,35 @@ export default function ShelfItemCard({
 
   return (
     <div
-      className={`shelf-item surface-card ${selected ? "selected surface-card--selected" : ""} ${missing ? "missing" : ""} ${dragEnabled ? "is-draggable" : ""}`}
+      className={`shelf-item surface-card ${selected ? "selected surface-card--selected" : ""} ${missing ? "missing" : ""} ${dragEnabled ? "is-draggable" : ""} ${focused ? "is-focused" : ""} shelf-item--${layout}`}
       role="listitem"
       aria-selected={selected}
+      aria-current={focused ? "true" : undefined}
       data-kind={item.kind}
-      onPointerDown={drag.onPointerDown}
+      data-shelf-id={item.id}
+      tabIndex={-1}
+      onContextMenu={onContextMenu}
+      onClick={(event) => {
+        if (drag.shouldSuppressClick()) return;
+        // 卡片内按钮各自处理点击；这里只处理空白/元信息区域的“单选”。
+        if ((event.target as Element | null)?.closest?.("button, a, input")) return;
+        if (modifierSelect(event)) return;
+        onSelectOnly?.();
+      }}
+      onPointerDown={(event) => {
+        const target = event.target as Element | null;
+        if (
+          event.altKey &&
+          event.button === 0 &&
+          onInternalDragStart &&
+          !target?.closest?.("[data-no-drag]")
+        ) {
+          event.preventDefault();
+          onInternalDragStart(event);
+          return;
+        }
+        drag.onPointerDown(event);
+      }}
     >
       <button
         type="button"
@@ -121,13 +177,21 @@ export default function ShelfItemCard({
         type="button"
         className={`shelf-thumb file-tone-${type.tone}`}
         aria-label={`预览 ${item.display_name}`}
-        data-tip={dragEnabled ? "点击预览 · 按住拖到其他窗口" : undefined}
-        onClick={guarded(() => onPreview())}
+        data-tip={dragEnabled ? "点击预览 · 拖到其他窗口 · Alt+拖动可拖入垃圾桶" : undefined}
+        onClick={(event) => {
+          if (drag.shouldSuppressClick()) {
+            event.preventDefault();
+            return;
+          }
+          if (modifierSelect(event)) return;
+          if (item.kind === "image" && onPreviewImage) onPreviewImage();
+          else onPreview();
+        }}
       >
         {thumb ? (
           <img src={thumb} alt="" loading="lazy" draggable={false} />
         ) : (
-          <Icon size={22} strokeWidth={1.6} aria-hidden="true" />
+          <Icon size={layout === "grid" ? 30 : 22} strokeWidth={1.6} aria-hidden="true" />
         )}
         {missing && (
           <span className="shelf-thumb-badge missing" data-tip="原文件/副本已失效">
@@ -140,7 +204,14 @@ export default function ShelfItemCard({
           type="button"
           className="shelf-item-name"
           data-tip={`${item.display_name} · ${type.label} · ${modeLabel(item)}`}
-          onClick={guarded(() => onOpen())}
+          onClick={(event) => {
+            if (drag.shouldSuppressClick()) {
+              event.preventDefault();
+              return;
+            }
+            if (modifierSelect(event)) return;
+            onOpen();
+          }}
         >
           {item.display_name}
         </button>

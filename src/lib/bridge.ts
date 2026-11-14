@@ -454,6 +454,8 @@ export interface Settings {
   shelf_auto_cleanup_enabled?: boolean;
   shelf_retention_days?: number;
   shelf_max_storage_mb?: number;
+  /** 可选收集规则（版本化 JSON）：默认空；规则默认关闭，只支持加标签/归组。 */
+  shelf_collect_rules?: ShelfRuleSet;
   /**
    * 导航入口布局（v0.12）：完整面板与停靠胶囊各自的可见入口 + 排序。
    * 版本化 JSON 对象，结构见 `src/lib/navVisibility.ts`；缺失或损坏时前端回退
@@ -3322,6 +3324,69 @@ export interface ShelfDeleteReport {
   failed_files: number;
 }
 
+/** 软删除（回收站）：托管副本在保留期内保留，batch_id 用于撤销。 */
+export interface ShelfTrashDeleteReport {
+  batch_id: string;
+  removed: number;
+  skipped_protected: number;
+  managed_retained: number;
+}
+
+export interface ShelfTrashRestoreReport {
+  batch_id: string;
+  restored: number;
+  conflicts: number;
+  restored_relations: number;
+}
+
+export interface ShelfTrashPurgeReport {
+  batches: number;
+  items: number;
+  freed_bytes: number;
+  failed_files: number;
+}
+
+/** 外部真实文件删除预览：status=blocked 的条目绝不会被删除。 */
+export interface ShelfRecycleEntry {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  byte_size: number;
+  modified_ms: number;
+  status: "ready" | "blocked";
+  reason: string | null;
+}
+
+export interface ShelfRecyclePreview {
+  entries: ShelfRecycleEntry[];
+  ready: number;
+  blocked: number;
+  has_dirs: boolean;
+  total_bytes: number;
+}
+
+/** 确认时的文件指纹：执行前重新比对，变化即跳过（不删）。 */
+export interface ShelfRecycleExpectation {
+  path: string;
+  is_dir: boolean;
+  byte_size: number;
+  modified_ms: number;
+}
+
+export interface ShelfRecycleReportEntry {
+  path: string;
+  name: string;
+  status: "ok" | "skipped" | "failed";
+  reason: string | null;
+}
+
+export interface ShelfRecycleReport {
+  deleted: number;
+  skipped: number;
+  failed: number;
+  entries: ShelfRecycleReportEntry[];
+}
+
 export interface ShelfCleanupReport {
   dry_run: boolean;
   candidates: number;
@@ -3520,6 +3585,29 @@ export const shelfUpdate = (id: string, patch: ShelfUpdatePatch) =>
 export const shelfDelete = (ids: string[], includeProtected: boolean) =>
   invoke<ShelfDeleteReport>("shelf_delete", { ids, includeProtected });
 
+/** 软删除到回收站：可撤销；托管副本在保留期内不删除。 */
+export const shelfTrashDelete = (ids: string[], includeProtected: boolean) =>
+  invoke<ShelfTrashDeleteReport>("shelf_trash_delete", { ids, includeProtected });
+
+export const shelfTrashRestore = (batchId: string) =>
+  invoke<ShelfTrashRestoreReport>("shelf_trash_restore", { batchId });
+
+/** 清理回收站：不传 batchId 时只清理已过期批次。 */
+export const shelfTrashPurge = (batchId?: string) =>
+  invoke<ShelfTrashPurgeReport>("shelf_trash_purge", { batchId: batchId ?? null });
+
+export const shelfTrashCount = () => invoke<number>("shelf_trash_count");
+
+/** 外部文件→回收站：预览只读，不删除任何文件。 */
+export const shelfRecyclePreview = (paths: string[]) =>
+  invoke<ShelfRecyclePreview>("shelf_recycle_preview", { paths });
+
+/** 外部文件→回收站：逐项复核指纹后调用 Windows 回收站，绝不永久删除。 */
+export const shelfRecycleExecute = (
+  paths: string[],
+  expected: ShelfRecycleExpectation[],
+) => invoke<ShelfRecycleReport>("shelf_recycle_execute", { paths, expected });
+
 export const shelfClear = (includeProtected: boolean) =>
   invoke<ShelfDeleteReport>("shelf_clear", { includeProtected });
 
@@ -3582,6 +3670,194 @@ export const shelfLinkProject = (itemId: string, projectId: string) =>
 
 export const shelfUnlinkProject = (itemId: string, projectId: string) =>
   invoke<void>("shelf_unlink_project", { itemId, projectId });
+
+/** 批量关联报告：条目级失败不影响其余条目，重复关联幂等。 */
+export interface ShelfBatchLinkFailure {
+  item_id: string;
+  code: string;
+  reason: string;
+}
+
+export interface ShelfBatchLinkReport {
+  target: "project" | "task";
+  target_id: string;
+  target_name: string;
+  linked: number;
+  duplicates: number;
+  failed: ShelfBatchLinkFailure[];
+  success: boolean;
+  partial: boolean;
+  code: string | null;
+}
+
+export const shelfBatchLink = (
+  ids: string[],
+  target: "project" | "task",
+  targetId: string,
+) => invoke<ShelfBatchLinkReport>("shelf_batch_link", { ids, target, targetId });
+
+// ── 标签（v52）：只存关系，不做自动整理 ──────────────────────
+
+export interface ShelfTagFailure {
+  item_id: string;
+  code: string;
+  reason: string;
+}
+
+export interface ShelfTagChangeReport {
+  tags: string[];
+  items: number;
+  changed: number;
+  skipped: number;
+  failed: ShelfTagFailure[];
+  success: boolean;
+  partial: boolean;
+  code: string | null;
+}
+
+export interface ShelfRecentTag {
+  tag: string;
+  count: number;
+  last_used_at: string;
+}
+
+export const shelfItemTags = (itemId: string) =>
+  invoke<string[]>("shelf_item_tags", { itemId });
+
+export const shelfTagItems = (
+  ids: string[],
+  tags: string[],
+  mode: "add" | "remove",
+) => invoke<ShelfTagChangeReport>("shelf_tag_items", { ids, tags, mode });
+
+export const shelfRecentTags = (limit?: number) =>
+  invoke<ShelfRecentTag[]>("shelf_recent_tags", { limit: limit ?? null });
+
+// ── 重复内容检测：只提示，不自动合并/删除 ─────────────────────
+
+export interface ShelfDedupItem {
+  id: string;
+  display_name: string;
+  kind: string;
+  byte_size: number;
+  original_path: string | null;
+  content_hash: string | null;
+}
+
+export interface ShelfDedupGroup {
+  kind: "exact" | "same_path" | "similar_image" | "same_name";
+  key: string;
+  items: ShelfDedupItem[];
+}
+
+export interface ShelfDedupFailure {
+  item_id: string;
+  code: string;
+  reason: string;
+}
+
+export interface ShelfDedupReport {
+  scanned: number;
+  hashed: number;
+  groups: ShelfDedupGroup[];
+  unreadable: ShelfDedupFailure[];
+  truncated: boolean;
+}
+
+export const shelfDuplicateScan = (ids?: string[]) =>
+  invoke<ShelfDedupReport>("shelf_duplicate_scan", { ids: ids && ids.length > 0 ? ids : null });
+
+// ── 可选收集规则（P3）：默认关闭，只支持可逆动作 ───────────────
+
+export interface ShelfRuleMatch {
+  kinds?: string[];
+  exts?: string[];
+  name_contains?: string;
+  source_kinds?: string[];
+}
+
+export interface ShelfRuleAction {
+  type: "add_tag" | "assign_group";
+  value: string;
+}
+
+export interface ShelfRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  match: ShelfRuleMatch;
+  action: ShelfRuleAction;
+}
+
+export interface ShelfRuleSet {
+  version: number;
+  rules: ShelfRule[];
+}
+
+export interface ShelfRulePreviewMatch {
+  rule_id: string;
+  rule_name: string;
+  item_id: string;
+  item_name: string;
+  action_type: string;
+  action_value: string;
+}
+
+export interface ShelfRulePreviewConflict {
+  item_id: string;
+  item_name: string;
+  rule_ids: string[];
+  rule_names: string[];
+}
+
+export interface ShelfRuleCount {
+  rule_id: string;
+  rule_name: string;
+  matched: number;
+}
+
+export interface ShelfRulePreview {
+  evaluated_items: number;
+  matched_items: number;
+  matches: ShelfRulePreviewMatch[];
+  conflicts: ShelfRulePreviewConflict[];
+  per_rule: ShelfRuleCount[];
+  truncated: boolean;
+}
+
+export interface ShelfRuleApplyEntry {
+  item_id: string;
+  item_name: string;
+  rule_id: string;
+  action_type: string;
+  action_value: string;
+  applied: boolean;
+  reason: string | null;
+}
+
+export interface ShelfRuleApplyReport {
+  evaluated_items: number;
+  applied: number;
+  tagged: number;
+  grouped: number;
+  skipped: number;
+  entries: ShelfRuleApplyEntry[];
+  truncated: boolean;
+}
+
+/** 预览草稿规则（不落库）；rules 省略时读已保存设置。 */
+export const shelfRulesPreview = (rules?: ShelfRuleSet | null) =>
+  invoke<ShelfRulePreview>("shelf_rules_preview", { rules: rules ?? null });
+
+/** 应用已保存且启用的规则；只做加标签/归组。 */
+export const shelfRulesApply = (ids?: string[]) =>
+  invoke<ShelfRuleApplyReport>("shelf_rules_apply", {
+    ids: ids && ids.length > 0 ? ids : null,
+  });
+
+export const shelfPasteScreenshot = (groupId?: string | null) =>
+  invoke<ShelfPasteReport>("shelf_paste_screenshot", { groupId: groupId ?? null });
 
 /** 暂存架图片 OCR：复用剪贴板本地 OCR 引擎，不自动上传、不改动原图。 */
 export const shelfOcrItem = (id: string, requestId: string) =>
@@ -4687,10 +4963,22 @@ export const workspaceTaskLinkAdd = (projectId: string, taskId: string) =>
 export const workspaceTaskUnlink = (projectId: string, taskId: string) =>
   invoke<{ ok: true }>("workspace_task_unlink", { projectId, taskId });
 
-export const openProjectWorkspaceWindow = (input?: { projectId?: string | null }) =>
-  invoke<{ opened: boolean; projectId: string | null }>("open_project_workspace_window", {
-    projectId: input?.projectId ?? null,
-  });
+/**
+ * 旧 IPC 兼容入口：只把请求适配为统一工作台导航并返回 requestId。
+ * `opened=true` 不代表导航已生效；需要最终结果时用返回的 requestId 等待
+ * `workbench-nav-ack`（或优先使用 `workbenchNav.openWorkbench`）。
+ */
+export const openProjectWorkspaceWindow = (input?: {
+  projectId?: string | null;
+  requestId?: number;
+}) =>
+  invoke<{ opened: boolean; projectId: string | null; requestId: number | null }>(
+    "open_project_workspace_window",
+    {
+      projectId: input?.projectId ?? null,
+      requestId: input?.requestId ?? null,
+    },
+  );
 
 // ── 统一工作台（U0）：结构化导航协议 ─────────────────────────────────
 //
@@ -4789,9 +5077,6 @@ export const projectWorkspaceOpenDevWorkbenchAck = (input: {
 
 export const onProjectWorkspaceWindowClosed = (cb: (payload: unknown) => void) =>
   listen<unknown>("project-workspace-window-closed", (e) => cb(e.payload));
-
-export const onProjectWorkspaceProjectSelected = (cb: (payload: { projectId: string }) => void) =>
-  listen<{ projectId: string }>("project-workspace-project-selected", (e) => cb(e.payload));
 
 export const onProjectWorkspaceOpenDevWorkbench = (
   cb: (payload: { requestId: number; devProjectId: string }) => void,
@@ -4988,3 +5273,102 @@ export const vdReconnect = (serial: string) =>
   invoke<boolean>("vd_reconnect", { serial });
 
 
+
+// ── 文件工作区（多目录文件浏览/操作/缩略图）────────────────────────────
+
+/** 目录条目（后端 file_workspace::FsEntry）。 */
+export interface FsEntry {
+  name: string;
+  kind: "dir" | "file" | "link";
+  ext: string;
+  size: number | null;
+  modifiedMs: number | null;
+  hidden: boolean;
+  /** folder/image/video/audio/text/doc/sheet/slide/archive/code/data/program/link/other */
+  category: string;
+}
+
+export interface FsDirListing {
+  path: string;
+  entries: FsEntry[];
+  truncated: boolean;
+}
+
+export interface FsDirSignature {
+  exists: boolean;
+  isDir: boolean;
+  modifiedMs: number | null;
+}
+
+export interface FsPlace {
+  name: string;
+  path: string;
+  /** fixed | removable | network | optical | ram | unknown */
+  driveKind: string;
+}
+
+export interface FsEntryReport {
+  source: string;
+  target: string | null;
+  status: "ok" | "failed" | "skipped";
+  reason: string | null;
+}
+
+export interface FsOpReport {
+  attempted: number;
+  ok: number;
+  failed: number;
+  skipped: number;
+  entries: FsEntryReport[];
+}
+
+export interface FsStat {
+  path: string;
+  exists: boolean;
+  kind: "dir" | "file" | "link" | "missing";
+  size: number | null;
+  createdMs: number | null;
+  modifiedMs: number | null;
+  readonly: boolean;
+  hidden: boolean;
+  childCount: number | null;
+  childTruncated: boolean;
+}
+
+export const fsListDir = (path: string, showHidden: boolean) =>
+  invoke<FsDirListing>("fs_list_dir", { path, showHidden });
+
+export const fsDirSignature = (path: string) =>
+  invoke<FsDirSignature>("fs_dir_signature", { path });
+
+export const fsPlaces = () => invoke<FsPlace[]>("fs_places");
+
+export const fsCreateDir = (parent: string, name: string) =>
+  invoke<string>("fs_create_dir", { parent, name });
+
+export const fsCreateFile = (parent: string, name: string) =>
+  invoke<string>("fs_create_file", { parent, name });
+
+export const fsRename = (path: string, newName: string) =>
+  invoke<string>("fs_rename", { path, newName });
+
+/** conflict: skip | rename | overwrite */
+export const fsCopyPaths = (paths: string[], targetDir: string, conflict: string) =>
+  invoke<FsOpReport>("fs_copy_paths", { paths, targetDir, conflict });
+
+/** conflict: skip | rename | overwrite */
+export const fsMovePaths = (paths: string[], targetDir: string, conflict: string) =>
+  invoke<FsOpReport>("fs_move_paths", { paths, targetDir, conflict });
+
+export const fsDeletePaths = (paths: string[], permanent: boolean) =>
+  invoke<FsOpReport>("fs_delete_paths", { paths, permanent });
+
+export const fsStat = (paths: string[]) => invoke<FsStat[]>("fs_stat", { paths });
+
+export const fsOpen = (path: string) => invoke<void>("fs_open", { path });
+
+export const fsReveal = (path: string) => invoke<void>("fs_reveal", { path });
+
+/** 缩略图（PNG data URL）；无处理器返回 null，由前端回落类型图标。 */
+export const fsThumbnail = (path: string, maxPx: number) =>
+  invoke<string | null>("fs_thumbnail", { path, maxPx });

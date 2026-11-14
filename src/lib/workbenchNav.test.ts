@@ -1,6 +1,5 @@
-//! 跨窗口工作台导航事务：回执先到、超时、取消、编号不一致与失败都必须如实收敛。
-//!
-//! 这里锁定「事件送达 ≠ 导航成功」：只有收到同号 ack 才算 succeeded。
+//! 跨窗口工作台导航事务：回执先到、pending 生命周期、取消、编号不一致与失败
+//! 都必须如实收敛。这里锁定「事件送达 ≠ 导航成功」，也锁定 pending 不是终态。
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,7 +13,11 @@ const bridge = vi.hoisted(() => ({
 vi.mock("./bridge", () => bridge);
 vi.mock("./diagnostics", () => ({ logEvent: vi.fn() }));
 
-import { openWorkbench, __resetWorkbenchNavForTests } from "./workbenchNav";
+import {
+  openWorkbench,
+  openWorkbenchAndWait,
+  __resetWorkbenchNavForTests,
+} from "./workbenchNav";
 
 type AckHandler = (ack: {
   requestId: number;
@@ -53,27 +56,100 @@ describe("openWorkbench", () => {
     expect(outcome.status).toBe("succeeded");
     expect(outcome.ok).toBe(true);
     expect(outcome.created).toBe(false);
+    expect(outcome.settled).toBeTruthy();
+    await expect(outcome.settled).resolves.toMatchObject({ status: "succeeded" });
     expect(unlistenCalls).toBe(1);
   });
 
-  it("pending / cancelled / failed 原样收敛，不伪装成功", async () => {
-    const cases = [
-      { status: "pending" as const, error: null },
+  it("pending 返回后保留监听，最终 succeeded 可追踪", async () => {
+    bridge.workbenchOpenWindow.mockImplementation(async ({ requestId }: { requestId: number }) => {
+      ackHandler?.({ requestId, status: "pending", error: null });
+      return { requestId, created: true };
+    });
+    const outcome = await openWorkbench(
+      { tab: "workspace", projectId: "p2" },
+      { requestId: 201 },
+    );
+    expect(outcome.status).toBe("pending");
+    expect(outcome.pending).toBe(true);
+    expect(outcome.ok).toBe(false);
+    expect(unlistenCalls).toBe(0);
+
+    const handler = ackHandler;
+    expect(handler).toBeTruthy();
+    handler?.({ requestId: 201, status: "succeeded", error: null });
+
+    const final = await outcome.settled;
+    expect(final.status).toBe("succeeded");
+    expect(final.ok).toBe(true);
+    expect(unlistenCalls).toBe(1);
+
+    // 终态之后的重复回执不得改写已收敛结果。
+    const settledAgain = outcome.settled;
+    handler?.({ requestId: 201, status: "failed", error: "迟到回执" });
+    await Promise.resolve();
+    await expect(settledAgain).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it("pending → cancelled / failed 都收敛到最终结果，不被当成超时", async () => {
+    for (const [index, entry] of [
       { status: "cancelled" as const, error: null },
-      { status: "failed" as const, error: "路由被拒绝" },
-    ];
-    for (const [index, entry] of cases.entries()) {
-      const requestId = 200 + index;
-      bridge.workbenchOpenWindow.mockImplementation(async () => {
-        ackHandler?.({ requestId, status: entry.status, error: entry.error });
-        return { requestId, created: true };
+      { status: "failed" as const, error: "项目切换失败" },
+    ].entries()) {
+      ackHandler = null;
+      unlistenCalls = 0;
+      bridge.onWorkbenchNavAck.mockImplementation(async (handler: AckHandler) => {
+        ackHandler = handler;
+        return () => {
+          unlistenCalls += 1;
+          ackHandler = null;
+        };
       });
-      const outcome = await openWorkbench({ tab: "agents" }, { requestId });
-      expect(outcome.status).toBe(entry.status);
-      expect(outcome.ok).toBe(false);
-      expect(outcome.pending).toBe(entry.status === "pending");
-      if (entry.error) expect(outcome.error).toBe(entry.error);
+      const requestId = 210 + index;
+      bridge.workbenchOpenWindow.mockImplementation(async () => {
+        ackHandler?.({ requestId, status: "pending", error: null });
+        return { requestId, created: false };
+      });
+      const outcome = await openWorkbench({ tab: "tasks" }, { requestId });
+      expect(outcome.status).toBe("pending");
+      (ackHandler as AckHandler | null)?.({ requestId, status: entry.status, error: entry.error });
+      const final = await outcome.settled;
+      expect(final.status).toBe(entry.status);
+      if (entry.error) expect(final.error).toContain(entry.error);
+      expect(unlistenCalls).toBe(1);
     }
+  });
+
+  it("pending 超时收敛为 failed（不永远停在 pending）", async () => {
+    bridge.workbenchOpenWindow.mockImplementation(async ({ requestId }: { requestId: number }) => {
+      ackHandler?.({ requestId, status: "pending", error: null });
+      return { requestId, created: false };
+    });
+    const outcome = await openWorkbench(
+      { tab: "tasks" },
+      { requestId: 220, pendingTimeoutMs: 10 },
+    );
+    expect(outcome.status).toBe("pending");
+    const final = await outcome.settled;
+    expect(final.status).toBe("failed");
+    expect(final.error).toContain("等待工作台确认超时");
+    expect(unlistenCalls).toBe(1);
+  });
+
+  it("重复 pending 不重复计时，也不改写初始结果", async () => {
+    bridge.workbenchOpenWindow.mockImplementation(async ({ requestId }: { requestId: number }) => {
+      ackHandler?.({ requestId, status: "pending", error: null });
+      return { requestId, created: false };
+    });
+    const outcome = await openWorkbench(
+      { tab: "tasks" },
+      { requestId: 230, pendingTimeoutMs: 10_000 },
+    );
+    const handler = ackHandler;
+    handler?.({ requestId: 230, status: "pending", error: null });
+    expect(outcome.status).toBe("pending");
+    handler?.({ requestId: 230, status: "succeeded", error: null });
+    await expect(outcome.settled).resolves.toMatchObject({ status: "succeeded" });
   });
 
   it("超时返回 failed 并带可读原因（不宣称已打开）", async () => {
@@ -82,6 +158,7 @@ describe("openWorkbench", () => {
     expect(outcome.status).toBe("failed");
     expect(outcome.ok).toBe(false);
     expect(outcome.error).toContain("未在");
+    await expect(outcome.settled).resolves.toMatchObject({ status: "failed" });
   });
 
   it("命令失败（窗口不可用）如实返回 failed", async () => {
@@ -89,6 +166,7 @@ describe("openWorkbench", () => {
     const outcome = await openWorkbench({ tab: "home" }, { requestId: 401 });
     expect(outcome.status).toBe("failed");
     expect(outcome.error).toContain("主窗口不可用");
+    await expect(outcome.settled).resolves.toMatchObject({ status: "failed" });
   });
 
   it("回执编号与请求不一致时拒绝把结果记到错误对象上", async () => {
@@ -107,5 +185,20 @@ describe("openWorkbench", () => {
     expect(outcome.status).toBe("failed");
     expect(outcome.error).toContain("订阅工作台回执");
     expect(bridge.workbenchOpenWindow).not.toHaveBeenCalled();
+  });
+});
+
+describe("openWorkbenchAndWait", () => {
+  it("pending 时等待最终确认，而不是把 pending 当结果返回", async () => {
+    bridge.workbenchOpenWindow.mockImplementation(async ({ requestId }: { requestId: number }) => {
+      ackHandler?.({ requestId, status: "pending", error: null });
+      return { requestId, created: false };
+    });
+    const waiting = openWorkbenchAndWait({ tab: "workspace" }, { requestId: 701 });
+    await vi.waitFor(() => expect(ackHandler).toBeTruthy());
+    ackHandler?.({ requestId: 701, status: "pending", error: null });
+    await vi.waitFor(() => expect(unlistenCalls).toBe(0));
+    ackHandler?.({ requestId: 701, status: "cancelled", error: null });
+    await expect(waiting).resolves.toMatchObject({ status: "cancelled" });
   });
 });

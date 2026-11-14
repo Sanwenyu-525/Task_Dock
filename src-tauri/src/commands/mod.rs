@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod data;
 pub mod dev_workbench;
 pub mod dragdrop;
+pub mod file_workspace;
 pub mod focus;
 pub mod global_search;
 pub mod hotkeys;

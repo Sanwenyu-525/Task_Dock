@@ -15716,6 +15716,275 @@ code {
   color: var(--menu-danger);
 }
 
+/* 批量关联：目标类型切换 + 选择器 + 说明，复用公共按钮/Select 视觉。 */
+.shelf-batch-link {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.shelf-batch-link-mode {
+  display: flex;
+  gap: 6px;
+}
+
+.shelf-batch-link-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+/* 标签（v52）：详情 chips + 批量对话框最近标签；不新增颜色 Token。 */
+.shelf-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.shelf-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  font-size: 11px;
+  color: var(--text-secondary);
+  max-width: 100%;
+}
+
+button.shelf-tag-chip {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+button.shelf-tag-chip:hover {
+  border-color: var(--border-strong, var(--border-subtle));
+  color: var(--text-primary);
+}
+
+.shelf-tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.shelf-tag-remove:hover {
+  color: var(--menu-danger);
+}
+
+.shelf-tag-recent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.shelf-tag-recent-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+/* 重复检测结果 */
+.shelf-dedup-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 48vh;
+  overflow: auto;
+}
+
+.shelf-dedup-group {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.shelf-dedup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.shelf-dedup-kind {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.shelf-dedup-kind.is-exact {
+  color: var(--status-error);
+}
+
+.shelf-dedup-kind.is-same_path {
+  color: var(--status-waiting);
+}
+
+.shelf-dedup-kind.is-similar_image {
+  color: var(--accent);
+}
+
+.shelf-dedup-kind.is-same_name {
+  color: var(--text-secondary);
+}
+
+.shelf-dedup-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.shelf-dedup-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shelf-dedup-items > li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 11px;
+}
+
+.shelf-dedup-name {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+
+.shelf-dedup-meta,
+.shelf-dedup-path {
+  color: var(--text-tertiary);
+}
+
+.shelf-dedup-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 可选收集规则 */
+.shelf-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.shelf-rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.shelf-rule-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.shelf-rule-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shelf-rule-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.shelf-rule-priority {
+  width: 64px;
+  flex: 0 0 auto;
+}
+
+.shelf-rule-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.shelf-rule-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-width: 0;
+}
+
+.shelf-rule-result {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.shelf-rule-result h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.shelf-rule-result p {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.shelf-rule-matches {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 26vh;
+  overflow: auto;
+}
+
+.shelf-rule-matches > li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+}
+
+@media (max-width: 560px) {
+  .shelf-rule-body {
+    grid-template-columns: 1fr;
+  }
+}
+
 .shelf-note-input {
   width: 100%;
   resize: vertical;

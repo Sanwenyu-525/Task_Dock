@@ -9,7 +9,7 @@
 //!   `Settings` 快照）；恢复时收敛到目标显示器工作区，显示器消失时回落到主屏；
 //! - 最大化状态单独记忆：最大化期间不覆盖正常几何，下次打开仍可还原窗口大小。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -28,7 +28,6 @@ use crate::error::{AppError, AppResult};
 
 pub const WINDOW_LABEL: &str = "workspace";
 pub const EVENT_WINDOW_CLOSED: &str = "project-workspace-window-closed";
-pub const EVENT_PROJECT_SELECTED: &str = "project-workspace-project-selected";
 pub const EVENT_OPEN_DEV_WORKBENCH: &str = "project-workspace-open-dev-workbench";
 /// 主窗口 → 工作空间窗口：本次「打开开发工作台」事务的**真实结果**回执。
 /// 事件已发送不等于用户看到了开发工作台（主窗口可能仍在胶囊里），
@@ -134,10 +133,27 @@ pub struct WorkbenchOpenResult {
     pub created: bool,
 }
 
+#[derive(Debug, Clone)]
+struct AwaitingWorkbenchNav {
+    request: WorkbenchNavRequest,
+    since: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TerminalWorkbenchNav {
+    request_id: i64,
+    at: Instant,
+}
+
+/// 导航请求生命周期（Rust 侧权威状态）：
+/// - `pending`：待交付（队首会重复交付，页面重载不丢请求）；
+/// - `awaiting`：已交付且已回 `pending`，等用户确认；移出交付队列，后续请求可继续推进；
+/// - `terminal`：已收敛到 succeeded / cancelled / failed；同号重复/迟到回执只处理一次。
 #[derive(Default)]
 struct WorkbenchNavQueue {
-    /// 待工作台拉取的请求（最多 8 条；连续快速导航按顺序交付）。
     pending: VecDeque<WorkbenchNavRequest>,
+    awaiting: HashMap<i64, AwaitingWorkbenchNav>,
+    terminal: VecDeque<TerminalWorkbenchNav>,
     last_request_id: i64,
 }
 
@@ -145,6 +161,12 @@ static WORKBENCH_NAV: LazyLock<Mutex<WorkbenchNavQueue>> =
     LazyLock::new(|| Mutex::new(WorkbenchNavQueue::default()));
 
 const WORKBENCH_NAV_QUEUE_MAX: usize = 8;
+/// `pending`（等待用户确认）超过该时长仍未收到最终回执：按失效清理，避免永久悬挂。
+/// 前端 `openWorkbench().settled` 使用更长的超时，保证这里先清理、前端再如实报超时。
+const WORKBENCH_NAV_AWAIT_TIMEOUT: Duration = Duration::from_secs(300);
+/// 终态编号保留窗口：重复/迟到回执在此窗口内幂等忽略。
+const WORKBENCH_NAV_TERMINAL_TTL: Duration = Duration::from_secs(600);
+const WORKBENCH_NAV_TERMINAL_MAX: usize = 64;
 
 fn normalize_optional_field(value: Option<String>, field: &str) -> AppResult<Option<String>> {
     let Some(raw) = value else { return Ok(None) };
@@ -181,19 +203,69 @@ pub fn normalize_workbench_target(
     Ok(target)
 }
 
-fn enqueue_workbench_nav(
+/// 清理超时的 awaiting 请求，并维护终态去重窗口。返回本次失效的请求编号。
+/// 调用方负责把失效结果以 `failed` 回执广播给主窗口（没有接收方时静默）。
+fn prune_workbench_nav_locked(
+    queue: &mut WorkbenchNavQueue,
+    now: Instant,
+) -> Vec<i64> {
+    let mut expired = Vec::new();
+    queue.awaiting.retain(|id, item| {
+        if now.saturating_duration_since(item.since) > WORKBENCH_NAV_AWAIT_TIMEOUT {
+            expired.push(*id);
+            false
+        } else {
+            true
+        }
+    });
+    for id in &expired {
+        queue.terminal.push_back(TerminalWorkbenchNav {
+            request_id: *id,
+            at: now,
+        });
+    }
+    while let Some(front) = queue.terminal.front() {
+        if now.saturating_duration_since(front.at) > WORKBENCH_NAV_TERMINAL_TTL
+            || queue.terminal.len() > WORKBENCH_NAV_TERMINAL_MAX
+        {
+            queue.terminal.pop_front();
+        } else {
+            break;
+        }
+    }
+    expired
+}
+
+fn nav_request_known(queue: &WorkbenchNavQueue, request_id: i64) -> bool {
+    queue.pending.iter().any(|req| req.request_id == request_id)
+        || queue.awaiting.contains_key(&request_id)
+        || queue
+            .terminal
+            .iter()
+            .any(|item| item.request_id == request_id)
+}
+
+/// 入队并返回（新请求, 被容量淘汰的最旧请求）。淘汰只发生在未交付队列：
+/// `awaiting` 已让出队首，不会阻塞新导航。
+fn enqueue_workbench_nav_inner(
     target: WorkbenchNavTarget,
     request_id: Option<i64>,
-) -> AppResult<WorkbenchNavRequest> {
+) -> AppResult<(WorkbenchNavRequest, Option<WorkbenchNavRequest>)> {
     let mut queue = WORKBENCH_NAV
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    prune_workbench_nav_locked(&mut queue, Instant::now());
     let id = match request_id {
         Some(id) => {
             if id <= 0 {
                 return Err(AppError::Validation(
                     "导航请求编号必须为正整数".to_string(),
                 ));
+            }
+            if nav_request_known(&queue, id) {
+                return Err(AppError::Validation(format!(
+                    "导航请求编号重复: {id}"
+                )));
             }
             // 调用方在发命令之前已登记回执：编号必须原样使用，不能改成新号，
             // 否则早到的回执会因编号不匹配被丢弃（假超时）。
@@ -209,36 +281,131 @@ fn enqueue_workbench_nav(
         request_id: id,
         target,
     };
-    // 队列满时丢弃最旧的未交付请求：新目标优先，旧调用方会按超时失败如实反馈。
-    if queue.pending.len() >= WORKBENCH_NAV_QUEUE_MAX {
-        queue.pending.pop_front();
-    }
+    // 队列满时淘汰最旧的未交付请求：新目标优先；被淘汰的调用方由主窗口按失败收敛。
+    let evicted = if queue.pending.len() >= WORKBENCH_NAV_QUEUE_MAX {
+        queue.pending.pop_front()
+    } else {
+        None
+    };
     queue.pending.push_back(request.clone());
-    Ok(request)
+    Ok((request, evicted))
+}
+
+fn enqueue_workbench_nav(
+    target: WorkbenchNavTarget,
+    request_id: Option<i64>,
+) -> AppResult<WorkbenchNavRequest> {
+    Ok(enqueue_workbench_nav_inner(target, request_id)?.0)
+}
+
+/// 读取队首并清理超时 awaiting。只**读取**、不弹出：工作台可能因 StrictMode
+/// 双执行/页面重载在拉取后立即销毁，弹出的请求会随之丢失。请求只在
+/// `workbench_nav_ack` 回执后移出；工作台按 requestId 去重，重复拉取不会重复执行。
+fn take_pending_workbench_nav_with_expired() -> (Option<WorkbenchNavRequest>, Vec<i64>) {
+    let mut queue = WORKBENCH_NAV
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let expired = prune_workbench_nav_locked(&mut queue, Instant::now());
+    (queue.pending.front().cloned(), expired)
 }
 
 fn take_pending_workbench_nav() -> Option<WorkbenchNavRequest> {
-    // 只**读取队首**，不弹出：工作台可能因 StrictMode 双执行/页面重载在拉取后
-    // 立即销毁，弹出的请求会随之丢失。请求只在 `workbench_nav_ack` 回执后移除；
-    // 工作台按 requestId 去重，重复拉取不会重复执行。
-    WORKBENCH_NAV
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .pending
-        .front()
-        .cloned()
+    take_pending_workbench_nav_with_expired().0
 }
 
-/// 回执后移除队列中同号请求：事件快路径已处理的请求不会在窗口重载时被再次执行。
+/// 回执后移除同号请求（含已进入 awaiting 的请求）。
 fn clear_pending_workbench_nav(request_id: i64) {
     if let Ok(mut queue) = WORKBENCH_NAV.lock() {
         queue.pending.retain(|req| req.request_id != request_id);
+        queue.awaiting.remove(&request_id);
     }
 }
 
+/// 应用一次回执。返回 `(是否广播, 本次超时失效的编号)`。
+///
+/// - `pending`：把请求从交付队列移入 awaiting；后续请求可继续推进。
+/// - 终态：移出 pending/awaiting 并登记 terminal；同号重复回执不再广播。
+fn apply_workbench_nav_ack_locked(
+    queue: &mut WorkbenchNavQueue,
+    request_id: i64,
+    status: &str,
+    now: Instant,
+) -> (bool, Vec<i64>) {
+    let expired = prune_workbench_nav_locked(queue, now);
+    let already_terminal = queue
+        .terminal
+        .iter()
+        .any(|item| item.request_id == request_id);
+    if status == ACK_STATUS_PENDING {
+        if already_terminal {
+            return (false, expired);
+        }
+        if let Some(position) = queue
+            .pending
+            .iter()
+            .position(|req| req.request_id == request_id)
+        {
+            let request = queue
+                .pending
+                .remove(position)
+                .expect("position came from iter");
+            queue.awaiting.insert(
+                request_id,
+                AwaitingWorkbenchNav {
+                    request,
+                    since: now,
+                },
+            );
+        }
+        // awaiting 已存在（重复 pending）或编号未知：仍广播。重复状态对前端幂等，
+        // 而事件丢失时重复回执是唯一的恢复手段；生命周期不被改变。
+        return (true, expired);
+    }
+
+    if already_terminal {
+        return (false, expired);
+    }
+    queue.pending.retain(|req| req.request_id != request_id);
+    queue.awaiting.remove(&request_id);
+    queue.terminal.push_back(TerminalWorkbenchNav {
+        request_id,
+        at: now,
+    });
+    (true, expired)
+}
+
+/// 清空并返回所有未终结请求：窗口销毁时逐个以 `cancelled` 收敛，调用方不会
+/// 永久停在 pending。测试也用它验证队列彻底清空。
+fn drain_workbench_nav_requests() -> Vec<WorkbenchNavRequest> {
+    let mut queue = WORKBENCH_NAV
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut requests: Vec<WorkbenchNavRequest> = queue.pending.drain(..).collect();
+    requests.extend(queue.awaiting.drain().map(|(_, item)| item.request));
+    queue.terminal.clear();
+    requests
+}
+
 fn clear_workbench_nav_queue() {
-    if let Ok(mut queue) = WORKBENCH_NAV.lock() {
-        queue.pending.clear();
+    drop(drain_workbench_nav_requests());
+}
+
+/// 广播导航回执；主窗口不存在时忽略（没有接收方不是错误）。
+fn emit_nav_ack_event(
+    app: &AppHandle,
+    request_id: i64,
+    status: &str,
+    error: Option<String>,
+) {
+    if let Some(main) = app.get_webview_window(MAIN_LABEL) {
+        let _ = main.emit(
+            EVENT_WORKBENCH_NAV_ACK,
+            WorkbenchNavAckEvent {
+                request_id,
+                status: status.to_string(),
+                error,
+            },
+        );
     }
 }
 
@@ -298,12 +465,9 @@ impl WorkArea {
 pub struct WorkspaceWindowInfo {
     pub opened: bool,
     pub project_id: Option<String>,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ProjectSelectedEvent {
-    project_id: String,
+    /// 旧入口适配器生成的导航编号；调用方等待 `workbench-nav-ack` 时必须用它，
+    /// `opened=true` 只代表窗口已打开/聚焦，不代表目标项目导航已生效。
+    pub request_id: Option<i64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -576,8 +740,16 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
             save_geometry(&app, &w, false);
         }
         tauri::WindowEvent::Destroyed => {
-            // 窗口销毁后队列里的请求已无接收方：清空，避免下次打开执行过期导航。
-            clear_workbench_nav_queue();
+            // 窗口销毁后队列里的请求已无接收方：逐个以 cancelled 收敛，
+            // 调用方不会永久停在 pending；同时避免下次打开执行过期导航。
+            for request in drain_workbench_nav_requests() {
+                emit_nav_ack_event(
+                    &app,
+                    request.request_id,
+                    ACK_STATUS_CANCELLED,
+                    Some("工作台窗口已关闭，导航已取消".to_string()),
+                );
+            }
             if let Some(main) = app.get_webview_window(MAIN_LABEL) {
                 let _ = main.emit(EVENT_WINDOW_CLOSED, ());
             }
@@ -592,10 +764,14 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
 /// - 新窗口的 WebView 可能在我们返回之前就开始挂载，因此**先入队**才能被
 ///   `workbench_take_nav` 拉到；
 /// - 已存在窗口同时推一条事件作为快路径（事件丢失仍可从队列拉取）。
+///
+/// **活跃项目不在原生层提交**：带 projectId 的导航可能被工作台内的未保存草稿
+/// 取消或拒绝。活跃项目由工作台外壳在路由切换成功/用户确认后通过
+/// `workspace_set_active_project` 串行提交，原生层只负责把目标放进队列。
 fn open_or_focus_workbench(
     app: &AppHandle,
     db: &Db,
-    project_id: Option<&str>,
+    _project_id: Option<&str>,
     nav: Option<WorkbenchNavTarget>,
     request_id: Option<i64>,
 ) -> AppResult<(bool, Option<i64>)> {
@@ -605,16 +781,16 @@ fn open_or_focus_workbench(
             existing.show()?;
         }
         let _ = existing.set_focus();
-        // 先提交活跃项目：写失败直接返回，不把导航请求留在队列里（否则调用方
-        // 看到失败、窗口之后却可能被焦点拉取带到目标页）。
-        if let Some(id) = project_id {
-            crate::commands::project_workspace::workspace_set_active_project_impl(
-                db,
-                Some(id.to_string()),
-            )?;
-        }
         if let Some(target) = nav {
-            let request = enqueue_workbench_nav(target, request_id)?;
+            let (request, evicted) = enqueue_workbench_nav_inner(target, request_id)?;
+            if let Some(stale) = evicted {
+                emit_nav_ack_event(
+                    app,
+                    stale.request_id,
+                    ACK_STATUS_FAILED,
+                    Some("导航队列已满，该请求已被新目标取代".to_string()),
+                );
+            }
             let request_id = request.request_id;
             if let Err(error) = existing.emit(EVENT_WORKBENCH_NAVIGATE, request) {
                 // 事件没送出去也没有窗口会来拉取：撤销这次排队并如实报错。
@@ -636,34 +812,22 @@ fn open_or_focus_workbench(
 
     // 新窗口必须先入队再创建：WebView 可能在 build 返回前就开始挂载并拉取队列。
     let nav_request = match nav {
-        Some(target) => Some(enqueue_workbench_nav(target, request_id)?),
+        Some(target) => {
+            let (request, evicted) = enqueue_workbench_nav_inner(target, request_id)?;
+            if let Some(stale) = evicted {
+                emit_nav_ack_event(
+                    app,
+                    stale.request_id,
+                    ACK_STATUS_FAILED,
+                    Some("导航队列已满，该请求已被新目标取代".to_string()),
+                );
+            }
+            Some(request)
+        }
         None => None,
     };
 
-    // 新窗口：UI 启动时会读取 `workspace_active_project` 决定初始项目，因此必须在
-    // WebView 加载之前写活跃值；窗口创建/显示失败则回滚，避免「没打开却已切换」。
-    let previous_active = db
-        .get_setting("workspace_active_project")
-        .ok()
-        .flatten()
-        .and_then(|v| v.as_str().map(str::to_string));
-    if let Some(id) = project_id {
-        if let Err(error) =
-            crate::commands::project_workspace::workspace_set_active_project_impl(
-                db,
-                Some(id.to_string()),
-            )
-        {
-            // 活跃项目没写成：撤销已排队的导航，避免窗口稍后打开时执行过期目标。
-            if let Some(request) = &nav_request {
-                clear_pending_workbench_nav(request.request_id);
-            }
-            return Err(error);
-        }
-    }
-    let rollback_active = |db: &Db, previous: Option<String>| {
-        let _ = crate::commands::project_workspace::workspace_set_active_project_impl(db, previous);
-    };
+    // 新窗口：导航目标已入队，WebView 挂载后由外壳应用路由并提交项目。
     let rollback_nav = |request: &Option<WorkbenchNavRequest>| {
         if let Some(req) = request {
             clear_pending_workbench_nav(req.request_id);
@@ -691,9 +855,6 @@ fn open_or_focus_workbench(
         Ok(win) => win,
         Err(e) => {
             rollback_nav(&nav_request);
-            if project_id.is_some() {
-                rollback_active(db, previous_active);
-            }
             return Err(e.into());
         }
     };
@@ -703,9 +864,6 @@ fn open_or_focus_workbench(
     if let Err(e) = win.show() {
         let _ = win.close();
         rollback_nav(&nav_request);
-        if project_id.is_some() {
-            rollback_active(db, previous_active);
-        }
         return Err(e.into());
     }
     let _ = win.set_focus();
@@ -771,7 +929,16 @@ pub fn workbench_take_nav(window: WebviewWindow) -> AppResult<Option<WorkbenchNa
             "只有工作台窗口可以拉取导航请求".to_string(),
         ));
     }
-    Ok(take_pending_workbench_nav())
+    let (request, expired) = take_pending_workbench_nav_with_expired();
+    for request_id in expired {
+        emit_nav_ack_event(
+            window.app_handle(),
+            request_id,
+            ACK_STATUS_FAILED,
+            Some("等待用户确认超时，导航已失效".to_string()),
+        );
+    }
+    Ok(request)
 }
 
 /// 工作台回执：把本次导航的**真实结果**转给主窗口调用方。
@@ -797,21 +964,31 @@ pub fn workbench_nav_ack(
         ));
     }
     let status = normalize_ack_status(true, false, Some(status.as_str()))?;
-    clear_pending_workbench_nav(request_id);
-    if let Some(main) = app.get_webview_window(MAIN_LABEL) {
-        let _ = main.emit(
-            EVENT_WORKBENCH_NAV_ACK,
-            WorkbenchNavAckEvent {
-                request_id,
-                status,
-                error,
-            },
+    let (broadcast, expired) = {
+        let mut queue = WORKBENCH_NAV
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        apply_workbench_nav_ack_locked(&mut queue, request_id, &status, Instant::now())
+    };
+    for expired_id in expired {
+        emit_nav_ack_event(
+            &app,
+            expired_id,
+            ACK_STATUS_FAILED,
+            Some("等待用户确认超时，导航已失效".to_string()),
         );
+    }
+    if broadcast {
+        emit_nav_ack_event(&app, request_id, &status, error);
     }
     Ok(())
 }
 
-/// 打开/聚焦专业窗口。由主窗口胶囊肩部入口或完整面板调用。
+/// 旧 IPC 兼容适配器：打开/聚焦统一工作台，并把「打开某项目」转换为同一条
+/// 结构化导航事务（`workbench_open_window` 的兼容入口）。
+///
+/// 只入队一次，不再广播可绕过草稿门禁的 `project-selected` 事件；活跃项目仍由
+/// 工作台外壳在路由成功/用户确认后提交，因此取消导航不会改活跃项目。
 ///
 /// 必须是 async：同步命令阻塞 IPC 线程时，WebView2 控制器创建等待消息循环会卡死。
 #[tauri::command]
@@ -820,6 +997,7 @@ pub async fn open_project_workspace_window(
     window: WebviewWindow,
     db: State<'_, Arc<Db>>,
     project_id: Option<String>,
+    request_id: Option<i64>,
 ) -> AppResult<WorkspaceWindowInfo> {
     if window.label() != MAIN_LABEL {
         return Err(AppError::Validation(
@@ -835,20 +1013,15 @@ pub async fn open_project_workspace_window(
     }
 
     // 旧入口语义是「打开某个工作空间项目」：映射为工作台的项目路由目标，
-    // 让新工作台与旧调用方共享同一条导航协议（而不是只切窗口不切页）。
+    // 让旧调用方与新入口共享同一条导航协议（页面切换、草稿门禁、回执与项目提交）。
+    // 只入队一次：不再额外发送可直接改项目状态的事件。
     let nav = project_id.as_ref().map(|id| WorkbenchNavTarget {
         tab: "workspace".to_string(),
         project_id: Some(id.clone()),
         ..Default::default()
     });
     let (_, request_id) =
-        open_or_focus_workbench(&app, &db, project_id.as_deref(), nav, None)?;
-    if let Some(id) = project_id.clone() {
-        if let Some(existing) = app.get_webview_window(WINDOW_LABEL) {
-            // 兼容旧工作台 UI：它只监听 project-selected；新 UI 会同时消费导航队列。
-            let _ = existing.emit(EVENT_PROJECT_SELECTED, ProjectSelectedEvent { project_id: id });
-        }
-    }
+        open_or_focus_workbench(&app, &db, project_id.as_deref(), nav, request_id)?;
     Ok(WorkspaceWindowInfo {
         opened: true,
         project_id: if request_id.is_some() {
@@ -856,6 +1029,7 @@ pub async fn open_project_workspace_window(
         } else {
             None
         },
+        request_id,
     })
 }
 
@@ -989,6 +1163,9 @@ pub fn persist_geometry_on_exit(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 导航队列是进程级全局状态：并行测试必须串行访问，否则互相清空/推进。
+    static NAV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn area() -> WorkArea {
         WorkArea {
@@ -1178,6 +1355,7 @@ mod tests {
     /// 导航队列按顺序交付；回执会清掉尚未拉取的同号请求（防止窗口重载重复执行）。
     #[test]
     fn workbench_nav_queue_delivers_in_order_and_ack_clears_pending() {
+        let _guard = NAV_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_workbench_nav_queue();
         let first = enqueue_workbench_nav(
             WorkbenchNavTarget {
@@ -1227,6 +1405,254 @@ mod tests {
         let third = enqueue_workbench_nav(WorkbenchNavTarget::default(), None).unwrap();
         assert!(third.request_id > 9001);
         clear_workbench_nav_queue();
+    }
+
+    /// pending 不是终态：它必须移出交付队列（不阻塞后续导航），且最终回执只广播一次。
+    #[test]
+    fn workbench_nav_pending_unblocks_queue_and_final_ack_is_idempotent() {
+        let _guard = NAV_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_workbench_nav_queue();
+        let (first, evicted) = enqueue_workbench_nav_inner(
+            WorkbenchNavTarget {
+                tab: "tasks".into(),
+                ..Default::default()
+            },
+            Some(7301),
+        )
+        .unwrap();
+        assert!(evicted.is_none());
+        let (second, _) = enqueue_workbench_nav_inner(WorkbenchNavTarget::default(), Some(7302))
+            .unwrap();
+        assert_eq!(
+            take_pending_workbench_nav().map(|req| req.request_id),
+            Some(first.request_id)
+        );
+
+        let now = Instant::now();
+        let (broadcast, expired) = {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            apply_workbench_nav_ack_locked(&mut queue, 7301, ACK_STATUS_PENDING, now)
+        };
+        assert!(broadcast);
+        assert!(expired.is_empty());
+        // 队首 pending 已让出：第二条可以立即交付，不会等到用户确认。
+        assert_eq!(
+            take_pending_workbench_nav().map(|req| req.request_id),
+            Some(second.request_id)
+        );
+
+        // 重复 pending 仍广播（事件可能丢失），但生命周期状态不变。
+        let (duplicate_pending, _) = {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            apply_workbench_nav_ack_locked(&mut queue, 7301, ACK_STATUS_PENDING, now)
+        };
+        assert!(duplicate_pending);
+        {
+            let queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(queue.awaiting.contains_key(&7301));
+            assert_eq!(queue.pending.len(), 1);
+        }
+
+        let (final_broadcast, expired) = {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            apply_workbench_nav_ack_locked(
+                &mut queue,
+                7301,
+                ACK_STATUS_SUCCEEDED,
+                now + Duration::from_secs(1),
+            )
+        };
+        assert!(final_broadcast);
+        assert!(expired.is_empty());
+        // 重复终态回执必须幂等：不再广播，也不重新进入任何生命周期集合。
+        let (duplicate_final, _) = {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            apply_workbench_nav_ack_locked(
+                &mut queue,
+                7301,
+                ACK_STATUS_SUCCEEDED,
+                now + Duration::from_secs(2),
+            )
+        };
+        assert!(!duplicate_final);
+        {
+            let queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(!queue.awaiting.contains_key(&7301));
+            assert!(queue.terminal.iter().any(|item| item.request_id == 7301));
+        }
+        clear_workbench_nav_queue();
+    }
+
+    /// 等待确认超时：请求从 awaiting 清理并按失效处理，迟到终态不再广播。
+    #[test]
+    fn workbench_nav_await_timeout_expires_and_late_ack_is_ignored() {
+        let _guard = NAV_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_workbench_nav_queue();
+        let (request, _) = enqueue_workbench_nav_inner(WorkbenchNavTarget::default(), Some(7311))
+            .unwrap();
+        let started = Instant::now();
+        {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (broadcast, _) = apply_workbench_nav_ack_locked(
+                &mut queue,
+                request.request_id,
+                ACK_STATUS_PENDING,
+                started,
+            );
+            assert!(broadcast);
+        }
+        let later = started + WORKBENCH_NAV_AWAIT_TIMEOUT + Duration::from_secs(1);
+        let (broadcast, expired) = {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            apply_workbench_nav_ack_locked(
+                &mut queue,
+                request.request_id,
+                ACK_STATUS_PENDING,
+                later,
+            )
+        };
+        assert!(!broadcast, "超时请求的迟到 pending 不应再广播");
+        assert_eq!(expired, vec![request.request_id]);
+        let (late_final, _) = {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            apply_workbench_nav_ack_locked(
+                &mut queue,
+                request.request_id,
+                ACK_STATUS_SUCCEEDED,
+                later + Duration::from_secs(1),
+            )
+        };
+        assert!(!late_final, "超时后迟到终态应按幂等忽略");
+        clear_workbench_nav_queue();
+    }
+
+    /// 队列满时淘汰最旧未交付请求，新目标优先；被淘汰的编号由调用方失败收敛。
+    #[test]
+    fn workbench_nav_queue_evicts_oldest_when_full() {
+        let _guard = NAV_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_workbench_nav_queue();
+        let mut first_id = 0;
+        for index in 0..WORKBENCH_NAV_QUEUE_MAX {
+            let (request, evicted) = enqueue_workbench_nav_inner(
+                WorkbenchNavTarget::default(),
+                Some(7400 + index as i64),
+            )
+            .unwrap();
+            assert!(evicted.is_none());
+            if index == 0 {
+                first_id = request.request_id;
+            }
+        }
+        let (newest, evicted) = enqueue_workbench_nav_inner(
+            WorkbenchNavTarget::default(),
+            Some(7499),
+        )
+        .unwrap();
+        assert_eq!(evicted.map(|req| req.request_id), Some(first_id));
+        assert_eq!(
+            take_pending_workbench_nav().map(|req| req.request_id),
+            Some(first_id + 1)
+        );
+        assert_eq!(newest.request_id, 7499);
+        clear_workbench_nav_queue();
+    }
+
+    /// 请求编号在 queued / awaiting / terminal 三个阶段都不可复用。
+    #[test]
+    fn workbench_nav_request_id_is_unique_across_lifecycle() {
+        let _guard = NAV_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_workbench_nav_queue();
+        enqueue_workbench_nav(WorkbenchNavTarget::default(), Some(7501)).unwrap();
+        assert!(
+            enqueue_workbench_nav(WorkbenchNavTarget::default(), Some(7501)).is_err(),
+            "queued 阶段不得复用编号"
+        );
+        {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            apply_workbench_nav_ack_locked(&mut queue, 7501, ACK_STATUS_PENDING, Instant::now());
+        }
+        assert!(
+            enqueue_workbench_nav(WorkbenchNavTarget::default(), Some(7501)).is_err(),
+            "awaiting 阶段不得复用编号"
+        );
+        {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            apply_workbench_nav_ack_locked(&mut queue, 7501, ACK_STATUS_CANCELLED, Instant::now());
+        }
+        assert!(
+            enqueue_workbench_nav(WorkbenchNavTarget::default(), Some(7501)).is_err(),
+            "terminal 阶段不得复用编号"
+        );
+        clear_workbench_nav_queue();
+    }
+
+    /// 窗口销毁：所有未终结请求（含 awaiting）都被取出，供调用方按 cancelled 收敛。
+    #[test]
+    fn workbench_nav_drain_returns_queued_and_awaiting_requests() {
+        let _guard = NAV_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        clear_workbench_nav_queue();
+        let first = enqueue_workbench_nav(WorkbenchNavTarget::default(), Some(7601)).unwrap();
+        let second = enqueue_workbench_nav(WorkbenchNavTarget::default(), Some(7602)).unwrap();
+        {
+            let mut queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            apply_workbench_nav_ack_locked(
+                &mut queue,
+                first.request_id,
+                ACK_STATUS_PENDING,
+                Instant::now(),
+            );
+        }
+        let mut drained: Vec<i64> = drain_workbench_nav_requests()
+            .into_iter()
+            .map(|req| req.request_id)
+            .collect();
+        drained.sort();
+        assert_eq!(drained, vec![first.request_id, second.request_id]);
+        {
+            let queue = WORKBENCH_NAV
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(queue.pending.is_empty());
+            assert!(queue.awaiting.is_empty());
+            assert!(queue.terminal.is_empty());
+        }
+    }
+
+    /// 旧 IPC 适配器必须把 requestId 暴露给调用方，否则无法等待真实回执。
+    #[test]
+    fn legacy_open_adapter_result_exposes_request_id() {
+        let info = WorkspaceWindowInfo {
+            opened: true,
+            project_id: Some("p1".into()),
+            request_id: Some(42),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"requestId\":42"), "{json}");
+        assert!(json.contains("\"projectId\":\"p1\""), "{json}");
     }
 
     /// 跨窗口载荷必须是 camelCase，且 ack 的 status 是权威字段。

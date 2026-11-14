@@ -413,7 +413,12 @@ export default function OverviewSegment({
           )}
           <span className="resource-attention-text">
             {attention.length > 0
-              ? t("resource.overview.attentionSummary", { count: attention.length })
+              ? t(
+                  attention.length === 1
+                    ? "resource.overview.attentionSummaryOne"
+                    : "resource.overview.attentionSummary",
+                  { count: attention.length },
+                )
               : t("resource.overview.attentionNone")}
           </span>
           {attention.length > 0 && (

@@ -5,6 +5,7 @@ import { activeTabGuard } from "../lib/tabGuard";
 export type Tab =
   | "workbench"
   | "workspace"
+  | "files"
   | "tasks"
   | "agents"
   | "apps"
@@ -54,6 +55,7 @@ export const TAB_ORDER: readonly Tab[] = [
 export const RAIL_ORDER: readonly Tab[] = [
   "workbench",
   "workspace",
+  "files",
   "tasks",
   "agents",
   "apps",

@@ -41,7 +41,6 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { registerOverlay } from "../../lib/overlayStack";
-import { useEdgeTabMenuActions } from "../../hooks/useEdgeTabMenuActions";
 import { openWorkbenchHome } from "../../lib/workbenchNav";
 import { errorMessage } from "../../lib/errors";
 import { logEvent } from "../../lib/diagnostics";
@@ -118,9 +117,9 @@ export default function CapsuleDock() {
     }
   }, []);
 
-  // 极简标签右键菜单的动作桥：菜单窗口只发命令，恢复/形态切换/解除仍走
-  // 本组件挂载的这套吸附引擎（唯一状态机），不复制第二套窗口状态管理。
-  useEdgeTabMenuActions();
+  // 极简标签右键菜单的动作桥已上移到 `App` 常驻挂载（形态收敛后同一通道还
+  // 承载托盘「打开完整工作台」动作；托盘触发时主窗可能不在胶囊形态，
+  // 挂载在胶囊组件会让托盘动作失去监听者）。
 
   // 异常提示音（waiting/failed）已统一由 audioNotification 服务接管：它订阅后端
   // `audio-event`（真实事件 ID），负责去重、冷却、队列与 TTS，不再从胶囊状态派生第二套规则。

@@ -263,6 +263,43 @@ pub async fn shelf_paste_current(
     Ok(paste_report_from(report))
 }
 
+/// 截图/剪贴板图片直接暂存：只接受图片字节，复用粘贴的读取与托管链路。
+///
+/// 项目没有内置截图引擎：Windows 截图（Win+Shift+S、Snipaste 等）完成后图片在
+/// 系统剪贴板，这里负责把它保存为独立托管副本，不依赖剪贴板历史开关。
+#[tauri::command]
+pub async fn shelf_paste_screenshot(
+    state: State<'_, Arc<ShelfState>>,
+    group_id: Option<String>,
+) -> AppResult<ShelfPasteReport> {
+    let st = state.inner().clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        let read = crate::clipboard::platform::read_clipboard(true);
+        let intake = shelf::ingest::ClipboardIntake::from_read(read);
+        if matches!(&intake, shelf::ingest::ClipboardIntake::Image { .. }) {
+            shelf::ingest::save(
+                &st.db,
+                &st.root,
+                intake,
+                shelf::MODE_MANAGED,
+                "clipboard",
+                group_id.as_deref(),
+            )
+        } else {
+            // 明确区分「没有截图」与其他粘贴失败，不偷存文本/文件。
+            shelf::ingest::IntakeOutcome::empty(
+                "image",
+                "CLIPBOARD_NO_IMAGE",
+                "当前剪贴板没有截图图片。请先截图（如 Win+Shift+S），再点击暂存截图。".into(),
+                false,
+            )
+        }
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("截图暂存任务失败: {e}")))?;
+    Ok(paste_report_from(report))
+}
+
 /// 资源管理器右键「发送到 Task Dock」的当前状态（HKCU 动词）。
 #[tauri::command]
 pub fn shelf_sendto_status() -> shelf::sendto::SendToStatus {
@@ -459,6 +496,96 @@ pub fn shelf_clear(
 ) -> AppResult<shelf::ShelfDeleteReport> {
     let st = rt(&state);
     shelf::clear(&st.db, &st.root, include_protected)
+}
+
+// ── 删除撤销（回收站）────────────────────────────────────────
+
+/// 软删除：条目移入回收站（shelf_trash），托管副本在保留期内不删除，可撤销。
+#[tauri::command]
+pub fn shelf_trash_delete(
+    state: State<'_, Arc<ShelfState>>,
+    ids: Vec<String>,
+    include_protected: bool,
+) -> AppResult<shelf::trash::TrashDeleteReport> {
+    shelf::trash::soft_delete(&rt(&state).db, &ids, include_protected)
+}
+
+/// 撤销一次删除（按批次恢复条目、标签与项目/任务关联）。
+#[tauri::command]
+pub fn shelf_trash_restore(
+    state: State<'_, Arc<ShelfState>>,
+    batch_id: String,
+) -> AppResult<shelf::trash::TrashRestoreReport> {
+    shelf::trash::restore(&rt(&state).db, batch_id.trim())
+}
+
+/// 清理回收站：指定批次或所有已过期批次。删除的是托管副本与快照，不可再撤销。
+#[tauri::command]
+pub async fn shelf_trash_purge(
+    state: State<'_, Arc<ShelfState>>,
+    batch_id: Option<String>,
+) -> AppResult<shelf::trash::TrashPurgeReport> {
+    let st = rt(&state).clone();
+    let batch = batch_id
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty());
+    tauri::async_runtime::spawn_blocking(move || match batch {
+        Some(batch_id) => shelf::trash::purge_batch(&st.db, &st.root, &batch_id),
+        None => shelf::trash::purge_expired(&st.db, &st.root),
+    })
+    .await
+    .map_err(|e| AppError::Unavailable(format!("回收站清理任务失败: {e}")))?
+}
+
+/// 回收站条数（用于诊断与「可撤销」提示，不暴露内容）。
+#[tauri::command]
+pub fn shelf_trash_count(state: State<'_, Arc<ShelfState>>) -> AppResult<i64> {
+    shelf::trash::count(&rt(&state).db)
+}
+
+// ── 外部文件回收站（拖入垃圾桶）──────────────────────────────
+
+/// 受保护目录：应用数据目录（隔离实例走 TASK_DOCK_DATA_DIR）与暂存架根。
+fn recycle_protected_dirs(app: &AppHandle, st: &ShelfState) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = std::env::var_os("TASK_DOCK_DATA_DIR").map(std::path::PathBuf::from) {
+        dirs.push(dir);
+    } else if let Ok(dir) = app.path().app_data_dir() {
+        dirs.push(dir);
+    }
+    dirs.push(st.root.clone());
+    dirs
+}
+
+/// 只读预览：路径是否可安全移入 Windows 回收站，不执行任何删除。
+#[tauri::command]
+pub fn shelf_recycle_preview(
+    app: AppHandle,
+    state: State<'_, Arc<ShelfState>>,
+    paths: Vec<String>,
+) -> AppResult<shelf::recycle::RecyclePreview> {
+    let st = rt(&state);
+    Ok(shelf::recycle::preview(
+        &paths,
+        &recycle_protected_dirs(&app, st),
+    ))
+}
+
+/// 执行回收站删除：逐项复核确认时的指纹，任何失败只报告，绝不永久删除。
+#[tauri::command]
+pub async fn shelf_recycle_execute(
+    app: AppHandle,
+    state: State<'_, Arc<ShelfState>>,
+    paths: Vec<String>,
+    expected: Vec<shelf::recycle::RecycleExpectation>,
+) -> AppResult<shelf::recycle::RecycleReport> {
+    let st = rt(&state).clone();
+    let protected = recycle_protected_dirs(&app, &st);
+    tauri::async_runtime::spawn_blocking(move || {
+        shelf::recycle::execute(&paths, &expected, &protected)
+    })
+    .await
+    .map_err(|e| AppError::Unavailable(format!("回收站任务失败: {e}")))?
 }
 
 /// 过期清理：dry_run 只返回预览（候选数/释放字节/受保护跳过数）。
@@ -788,6 +915,87 @@ pub fn shelf_unlink_project(
     shelf::unlink_project(&rt(&state).db, &item_id, &project_id)
 }
 
+/// 批量关联项目/任务：复用既有关系表，条目级失败以报告返回。
+#[tauri::command]
+pub fn shelf_batch_link(
+    state: State<'_, Arc<ShelfState>>,
+    ids: Vec<String>,
+    target: String,
+    target_id: String,
+) -> AppResult<shelf::batch::BatchLinkReport> {
+    shelf::batch::link_many(&rt(&state).db, &ids, &target, &target_id)
+}
+
+// ── 标签（v52）：批量打标、最近标签；只存关系 ─────────────────
+
+#[tauri::command]
+pub fn shelf_item_tags(
+    state: State<'_, Arc<ShelfState>>,
+    item_id: String,
+) -> AppResult<Vec<String>> {
+    shelf::tags::item_tags(&rt(&state).db, &item_id)
+}
+
+#[tauri::command]
+pub fn shelf_tag_items(
+    state: State<'_, Arc<ShelfState>>,
+    ids: Vec<String>,
+    tags: Vec<String>,
+    mode: String,
+) -> AppResult<shelf::tags::TagChangeReport> {
+    match mode.as_str() {
+        "add" => shelf::tags::add_tags(&rt(&state).db, &ids, &tags),
+        "remove" => shelf::tags::remove_tags(&rt(&state).db, &ids, &tags),
+        _ => Err(crate::error::AppError::Validation(
+            "标签操作必须是 add 或 remove".into(),
+        )),
+    }
+}
+
+#[tauri::command]
+pub fn shelf_recent_tags(
+    state: State<'_, Arc<ShelfState>>,
+    limit: Option<usize>,
+) -> AppResult<Vec<shelf::tags::RecentTag>> {
+    shelf::tags::recent_tags(&rt(&state).db, limit.unwrap_or(shelf::tags::MAX_RECENT_TAGS))
+}
+
+/// 重复内容检测：只提示，不自动合并/删除；结果写回哈希供下次复用。
+#[tauri::command]
+pub async fn shelf_duplicate_scan(
+    state: State<'_, Arc<ShelfState>>,
+    ids: Option<Vec<String>>,
+) -> AppResult<shelf::dedup::DedupReport> {
+    let rt = rt(&state).clone();
+    let ids = ids.filter(|v| !v.is_empty());
+    tauri::async_runtime::spawn_blocking(move || {
+        shelf::dedup::scan(&rt.db, &rt.root, ids.as_deref())
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unavailable(format!("重复检测任务失败: {e}")))?
+}
+
+// ── 可选收集规则（P3）：默认关闭，只支持可逆动作 ─────────────
+
+/// 预览规则匹配；`rules` 可传未保存的草稿，省略时读已保存设置。
+#[tauri::command]
+pub fn shelf_rules_preview(
+    state: State<'_, Arc<ShelfState>>,
+    rules: Option<serde_json::Value>,
+) -> AppResult<shelf::rules::RulePreview> {
+    shelf::rules::preview(&rt(&state).db, rules.as_ref())
+}
+
+/// 应用已启用规则（加标签 / 归组）。是显式操作，不会在粘贴后自动执行。
+#[tauri::command]
+pub fn shelf_rules_apply(
+    state: State<'_, Arc<ShelfState>>,
+    ids: Option<Vec<String>>,
+) -> AppResult<shelf::rules::RuleApplyReport> {
+    let ids = ids.filter(|v| !v.is_empty());
+    shelf::rules::apply(&rt(&state).db, ids.as_deref())
+}
+
 /// 对暂存架图片执行本地 OCR（复用剪贴板 OCR 引擎，不新增模型/服务）。
 /// 只读取托管副本或引用原图的字节，不改动原图；识别结果由前端决定是否存为文本。
 #[tauri::command]
@@ -809,6 +1017,14 @@ pub async fn shelf_ocr_item(
             return Err(AppError::Validation("只有图片条目可以提取文字".into()));
         }
         let (_item, path) = shelf::resolve_item_file(&st.db, &st.root, &id)?;
+        // 先看文件大小再整读：托管图片上限 2GB，直接 fs::read 会在解码预算检查前
+        // 把整个文件读入内存。与剪贴板图片读取上限保持一致（64MB）。
+        let size = std::fs::metadata(&path)
+            .map(|m| m.len())
+            .map_err(|e| AppError::Validation(format!("无法读取图片信息: {e}")))?;
+        if size > crate::clipboard::MAX_IMAGE_BYTES as u64 {
+            return Ok(crate::clipboard::ocr::OcrReport::too_large_file(size));
+        }
         let bytes = std::fs::read(&path)?;
         Ok(clipboard.ocr.recognize_png(&bytes, &request))
     })
@@ -817,10 +1033,7 @@ pub async fn shelf_ocr_item(
 }
 
 #[tauri::command]
-pub fn shelf_ocr_cancel(
-    app: AppHandle,
-    request_id: String,
-) -> AppResult<bool> {
+pub fn shelf_ocr_cancel(app: AppHandle, request_id: String) -> AppResult<bool> {
     let clipboard = app
         .try_state::<Arc<crate::clipboard::ClipboardRuntime>>()
         .ok_or_else(|| AppError::Unavailable("剪贴板 OCR 服务未就绪".into()))?;

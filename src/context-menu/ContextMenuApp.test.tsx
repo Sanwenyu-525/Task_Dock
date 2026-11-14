@@ -77,10 +77,10 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("渲染结构", () => {
-  it("渲染五组标题与全部 13 个菜单项", async () => {
+  it("渲染五组标题与全部 14 个菜单项", async () => {
     const { container } = render(<ContextMenuApp />);
     await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
-    const groupLabels = ["常用操作", "布局模式", "吸附方式", "外观与系统", "退出操作"];
+    const groupLabels = ["常用操作", "界面形态", "吸附方式", "外观与系统", "退出操作"];
     for (const label of groupLabels) {
       expect(screen.getByText(label)).toBeTruthy();
     }
@@ -89,11 +89,11 @@ describe("渲染结构", () => {
       groupLabels,
     );
     expect(container.querySelectorAll(".menu-sep")).toHaveLength(4);
-    expect(screen.getAllByRole("menuitem")).toHaveLength(4); // 显示/隐藏 · 快速添加 · 快速捕获 · 退出
-    expect(screen.getAllByRole("menuitemradio")).toHaveLength(8); // 3 模式 + 2 吸附方式 + 3 主题
+    expect(screen.getAllByRole("menuitem")).toHaveLength(5); // 显示/隐藏 · 快速添加 · 快速捕获 · 打开完整工作台 · 退出
+    expect(screen.getAllByRole("menuitemradio")).toHaveLength(8); // 3 形态 + 2 吸附方式 + 3 主题
     expect(screen.getAllByRole("menuitemcheckbox")).toHaveLength(1); // 自启动
-    // 13 个可交互项，没有多余的按钮混进菜单
-    expect(container.querySelectorAll("button")).toHaveLength(13);
+    // 14 个可交互项，没有多余的按钮混进菜单
+    expect(container.querySelectorAll("button")).toHaveLength(14);
   });
 
   it("勾选态与设置快照同步（mode=compact / theme=dark / 自启动开）", async () => {
@@ -104,9 +104,9 @@ describe("渲染结构", () => {
     );
     fireShow();
     render(<ContextMenuApp />);
-    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "紧凑模式" }).getAttribute("aria-checked")).toBe("true"));
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "紧凑模式（旧版兼容）" }).getAttribute("aria-checked")).toBe("true"));
     expect(screen.getByRole("menuitemradio", { name: "深色主题" }).getAttribute("aria-checked")).toBe("true");
-    expect(screen.getByRole("menuitemradio", { name: "极简模式" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("menuitemradio", { name: "切换极简悬浮" }).getAttribute("aria-checked")).toBe("false");
     expect(screen.getByRole("menuitemcheckbox", { name: "开机自启动" }).getAttribute("aria-checked")).toBe("true");
   });
 
@@ -144,7 +144,7 @@ describe("动作分发", () => {
     const user = userEvent.setup();
     render(<ContextMenuApp />);
     await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
-    await user.click(screen.getByRole("menuitemradio", { name: "紧凑模式" }));
+    await user.click(screen.getByRole("menuitemradio", { name: "紧凑模式（旧版兼容）" }));
     expect(lastInvoke("context_menu_action")?.[1]).toEqual({ action: "mode:compact" });
   });
 

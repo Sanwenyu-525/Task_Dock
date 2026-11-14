@@ -14,13 +14,14 @@ const bridge = vi.hoisted(() => ({
   onWorkbenchNavigate: vi.fn(),
   workbenchTakeNav: vi.fn(),
   workbenchNavAck: vi.fn(),
-  onProjectWorkspaceProjectSelected: vi.fn(),
   onSettingsChanged: vi.fn(),
   // 外壳挂载时的一次性业务读取（不启动后台调度）。
   listTasks: vi.fn(),
   taskStats: vi.fn(),
   agentSnapshot: vi.fn(),
   actionsFeed: vi.fn(),
+  // taskId 不在当前列表时的权威读取（P1-02）。
+  fetchTask: vi.fn(),
 }));
 
 vi.mock("../lib/bridge", async (importOriginal) => {
@@ -61,6 +62,7 @@ vi.mock("../components/ui/TooltipLayer", () => ({ default: () => null }));
 vi.mock("../store/useHotkeysStore", () => ({ useHotkeysRuntime: () => undefined }));
 
 import WorkbenchShell from "./WorkbenchShell";
+import { registerTabGuard } from "../lib/tabGuard";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore } from "../store/useActionsStore";
@@ -89,7 +91,7 @@ beforeEach(() => {
   bridge.onWorkbenchNavigate.mockImplementation(unlisten);
   bridge.workbenchTakeNav.mockResolvedValue(null);
   bridge.workbenchNavAck.mockResolvedValue(undefined);
-  bridge.onProjectWorkspaceProjectSelected.mockImplementation(unlisten);
+  bridge.fetchTask.mockRejectedValue(new Error("任务不存在"));
   bridge.onSettingsChanged.mockImplementation(unlisten);
   bridge.listTasks.mockResolvedValue([]);
   bridge.taskStats.mockResolvedValue({
@@ -119,10 +121,14 @@ beforeEach(() => {
       ...patch,
     })) as never,
   });
-  useTasksStore.setState({ stats: null });
+  useTasksStore.setState({ stats: null, tasks: [] });
   useActionsStore.setState({ feed: null });
   useCaptureStore.setState({ inboxCount: 0, refreshInboxCount: vi.fn() as never });
-  useUiStore.setState({ tab: "tasks", pendingTab: null });
+  useUiStore.setState({
+    tab: "tasks",
+    pendingTab: null,
+    context: { open: false, task: null },
+  });
 });
 
 afterEach(cleanup);
@@ -213,5 +219,212 @@ describe("WorkbenchShell", () => {
       status: "succeeded",
       error: null,
     });
+  });
+
+  // ── P0 / P1 导航事务回归 ─────────────────────────────────────────────
+
+  const projects = [
+    { id: "A", name: "项目 A", kind: "general", status: "active", itemCount: 0, taskLinkCount: 0 },
+    { id: "B", name: "项目 B", kind: "general", status: "active", itemCount: 0, taskLinkCount: 0 },
+  ];
+
+  async function renderWithProjects(): Promise<void> {
+    bridge.workspaceProjectList.mockResolvedValue({ projects });
+    useSettingsStore.setState({
+      settings: { ...SETTINGS, workspace_active_project: "A" } as never,
+    });
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    await waitFor(() =>
+      expect(screen.getByRole("combobox").textContent).toContain("项目 A"),
+    );
+  }
+
+  function registerDirtyGuard(): { unregister: () => void; discarded: () => boolean } {
+    let discarded = false;
+    const unregister = registerTabGuard({
+      id: "test-draft",
+      label: () => "测试草稿",
+      isDirty: () => true,
+      isBusy: () => false,
+      discard: () => {
+        discarded = true;
+      },
+    });
+    return { unregister, discarded: () => discarded };
+  }
+
+  it("场景 A：项目导航被草稿拦截，取消后仍停留项目 A 且不写活跃项目", async () => {
+    await renderWithProjects();
+    const guard = registerDirtyGuard();
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9201,
+      target: { tab: "workspace", projectId: "B" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9201,
+        status: "pending",
+        error: null,
+      }),
+    );
+    expect(bridge.workspaceSetActiveProject).not.toHaveBeenCalled();
+
+    useUiStore.getState().cancelPendingTab();
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9201,
+        status: "cancelled",
+        error: null,
+      }),
+    );
+    expect(bridge.workspaceSetActiveProject).not.toHaveBeenCalled();
+    expect(screen.getByRole("combobox").textContent).toContain("项目 A");
+    guard.unregister();
+  });
+
+  it("场景 B：草稿确认后才提交项目 B，并对外回执 succeeded", async () => {
+    await renderWithProjects();
+    const guard = registerDirtyGuard();
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9202,
+      target: { tab: "workspace", projectId: "B" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9202,
+        status: "pending",
+        error: null,
+      }),
+    );
+
+    useUiStore.getState().confirmPendingTab();
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9202,
+        status: "succeeded",
+        error: null,
+      }),
+    );
+    expect(guard.discarded()).toBe(true);
+    expect(bridge.workspaceSetActiveProject).toHaveBeenCalledWith("B");
+    await waitFor(() =>
+      expect(screen.getByRole("combobox").textContent).toContain("项目 B"),
+    );
+    guard.unregister();
+  });
+
+  it("场景 C：taskId 不在列表时按 ID 读取并打开真实任务上下文", async () => {
+    const hidden = { id: "t-hidden", title: "被筛选隐藏的任务" };
+    bridge.fetchTask.mockResolvedValue(hidden as never);
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9301,
+      target: { tab: "tasks", taskId: "t-hidden" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9301,
+        status: "succeeded",
+        error: null,
+      }),
+    );
+    expect(bridge.fetchTask).toHaveBeenCalledWith("t-hidden");
+    expect(useUiStore.getState().context.task?.id).toBe("t-hidden");
+  });
+
+  it("场景 C-失败：任务不存在时回执 failed，不伪装成定位成功", async () => {
+    bridge.fetchTask.mockRejectedValue(new Error("任务不存在: t-gone"));
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9302,
+      target: { tab: "workbench", taskId: "t-gone" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9302,
+        status: "failed",
+        error: expect.stringContaining("无法定位任务 t-gone"),
+      }),
+    );
+  });
+
+  it("objectId/sub 无消费者或目标不支持时明确拒绝，不悄悄丢弃", async () => {
+    bridge.workbenchTakeNav
+      .mockResolvedValueOnce({
+        requestId: 9401,
+        target: { tab: "tasks", objectId: "obj-1" },
+      })
+      .mockResolvedValueOnce({
+        requestId: 9402,
+        target: { tab: "tasks", sub: "notes" },
+      });
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9401,
+        status: "failed",
+        error: expect.stringContaining("对象级定位"),
+      }),
+    );
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9402,
+        status: "failed",
+        error: expect.stringContaining("sub 仅支持"),
+      }),
+    );
+  });
+
+  it("场景 D：pending 旧请求被新导航取代时按 cancelled 收敛，新目标生效", async () => {
+    await renderWithProjects();
+    const guard = registerDirtyGuard();
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9501,
+      target: { tab: "agents" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9501,
+        status: "pending",
+        error: null,
+      }),
+    );
+
+    // 用户先解决草稿（例如保存完成），随后发起新的导航。
+    guard.unregister();
+    bridge.workbenchTakeNav.mockResolvedValueOnce({
+      requestId: 9502,
+      target: { tab: "tasks" },
+    });
+    window.dispatchEvent(new Event("taskdock-workbench-nav-ping"));
+
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9501,
+        status: "cancelled",
+        error: null,
+      }),
+    );
+    await waitFor(() =>
+      expect(bridge.workbenchNavAck).toHaveBeenCalledWith({
+        requestId: 9502,
+        status: "succeeded",
+        error: null,
+      }),
+    );
   });
 });

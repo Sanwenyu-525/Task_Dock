@@ -5,6 +5,11 @@
 //! （`useEdgeSnap` 注入到 store 的恢复/形态切换/解除事务），事务结束后再把
 //! **真实结果**回传给后端（`tab_menu_action_result`）。
 //!
+//! 2026-11-14 形态收敛：同一通道现在还承载托盘/悬浮栏菜单的 `workbench`
+//! 动作（打开完整工作台）。本桥因此挂载在 `App`（主窗常驻），不再挂在
+//! `CapsuleDock`——托盘动作触发时主窗可能处于任意形态，标签菜单与托盘菜单
+//! 共用一条通道与一套去重回执；`workbench` 分支与吸附状态机无关，不抢占互斥区。
+//!
 //! 为什么需要结果回执：事件 emit 成功只代表主窗收到了请求，不代表窗口真的
 //! 进入了目标状态。菜单必须等主窗事务结果才能决定「隐藏（成功）」还是
 //! 「保留并显示失败原因」——不能用「请求已发出」冒充「操作已完成」。
@@ -21,6 +26,7 @@ import { listen } from "@tauri-apps/api/event";
 import { isTauri } from "@tauri-apps/api/core";
 import { invokeCommand } from "../lib/errors";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
+import { openWorkbenchHome } from "../lib/workbenchNav";
 
 /** 与 Rust `context_menu::TAB_ACTION_EVENT` 的转发事件名一致。 */
 export const TAB_MENU_ACTION_EVENT = "edge-tab-action";
@@ -79,6 +85,15 @@ export async function runTabMenuAction(action: string): Promise<TabMenuActionRes
         return ok
           ? OK
           : { ok: false, error: "退出吸附失败，窗口保持吸附状态，请重试" };
+      }
+      case "workbench": {
+        // 打开完整工作台（托盘/悬浮栏菜单共用本通道）。初始回执上限 7 秒，
+        // 略小于后端 8 秒转发超时：先给出可读失败原因，不让通道超时抢答。
+        // pending（工作台有草稿确认条）= 窗口已就绪，按成功回执。
+        const outcome = await openWorkbenchHome({ timeoutMs: 7000 });
+        return outcome.status === "failed"
+          ? { ok: false, error: outcome.error ?? "打开完整工作台失败，请重试" }
+          : OK;
       }
       default:
         return { ok: false, error: "未知的菜单动作" };

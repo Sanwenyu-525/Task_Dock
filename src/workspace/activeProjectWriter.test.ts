@@ -117,6 +117,47 @@ describe("activeProjectWriter", () => {
     expect(writer.latest()).toBeUndefined();
   });
 
+  it("submit 告知写入是否被更新选择取代（导航提交不覆盖新选择）", async () => {
+    const gate = deferred();
+    const calls: Array<string | null> = [];
+    const writer = createActiveProjectWriter(async (value) => {
+      calls.push(value);
+      if (value === "A") await gate.promise;
+    });
+
+    const first = writer.submit("A");
+    const second = writer.submit("B");
+    gate.resolve();
+    await expect(first).resolves.toMatchObject({ applied: false, error: null });
+    await expect(second).resolves.toMatchObject({ applied: true, error: null });
+    expect(calls).toEqual(["A", "B"]);
+  });
+
+  it("尚未开始的排队值被新值取代时立即返回 applied=false", async () => {
+    const gate = deferred();
+    const writer = createActiveProjectWriter(async (value) => {
+      if (value === "A") await gate.promise;
+    });
+    const first = writer.submit("A");
+    const second = writer.submit("B");
+    const third = writer.submit("C");
+    await expect(second).resolves.toMatchObject({ applied: false, error: null });
+    gate.resolve();
+    await expect(first).resolves.toMatchObject({ applied: false, error: null });
+    await expect(third).resolves.toMatchObject({ applied: true, error: null });
+    await writer.idle();
+  });
+
+  it("落库失败的 submit 返回 error，调用方可据此回滚 UI", async () => {
+    const writer = createActiveProjectWriter(async () => {
+      throw new Error("磁盘写入失败");
+    });
+    await expect(writer.submit("B")).resolves.toMatchObject({
+      applied: false,
+      error: expect.any(Error),
+    });
+  });
+
   it("同一时刻最多一个 IPC 写入", async () => {
     let concurrent = 0;
     let maxConcurrent = 0;

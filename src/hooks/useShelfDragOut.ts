@@ -112,6 +112,8 @@ export function useShelfDragOut({
     (event: ReactPointerEvent<HTMLElement>) => {
       if (!enabledRef.current || activeRef.current) return;
       if (event.button !== 0) return;
+      // Alt+拖动是应用内「拖入垃圾桶」手势：绝不能同时进入 OLE 拖出循环。
+      if (event.altKey) return;
       const target = event.target as Element | null;
       // 勾选、更多菜单等显式交互控件不参与拖出。
       if (target?.closest?.("[data-no-drag]")) return;

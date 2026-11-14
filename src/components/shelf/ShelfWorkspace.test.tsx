@@ -39,6 +39,10 @@ const api = vi.hoisted(() => ({
   shelfReadImage: vi.fn(async () => null),
   shelfDragOut: vi.fn(),
   shelfPasteCurrent: vi.fn(),
+  shelfPasteScreenshot: vi.fn(),
+  shelfRecentTags: vi.fn(),
+  shelfTagItems: vi.fn(),
+  shelfDuplicateScan: vi.fn(),
   shelfSendToStatus: vi.fn(),
   shelfSendToEnable: vi.fn(),
   shelfSendToDisable: vi.fn(),
@@ -177,6 +181,24 @@ beforeEach(() => {
     stale: false,
   });
   api.shelfSendToDisable.mockResolvedValue(undefined);
+  api.shelfRecentTags.mockResolvedValue([]);
+  api.shelfTagItems.mockResolvedValue({
+    tags: [],
+    items: 0,
+    changed: 0,
+    skipped: 0,
+    failed: [],
+    success: true,
+    partial: false,
+    code: null,
+  });
+  api.shelfDuplicateScan.mockResolvedValue({
+    scanned: 0,
+    hashed: 0,
+    groups: [],
+    unreadable: [],
+    truncated: false,
+  });
   api.getSettings.mockResolvedValue({ shelf_auto_cleanup_enabled: false, shelf_retention_days: 30 });
   api.updateSettings.mockResolvedValue(undefined);
   api.shelfDropTargets.mockResolvedValue([]);
@@ -893,6 +915,33 @@ describe("ShelfWorkspace 工具条与拖出", () => {
       screen.getByRole("menuitem", { name: /移动原文件到…/ }),
     ).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: /复制到…/ })).toBeTruthy();
+
+    // 批量关联入口与详情共用同一套项目/任务来源。
+    fireEvent.click(within(bar).getByRole("button", { name: "批量关联项目或任务" }));
+    const linkDialog = await screen.findByRole("dialog", { name: "批量关联项目或任务" });
+    await waitFor(() =>
+      expect(within(linkDialog).getByText("暂无可关联项目")).toBeTruthy(),
+    );
+    expect(within(linkDialog).getByRole("button", { name: "任务" })).toBeTruthy();
+    expect(useShelfStore.getState().selectedIds).toEqual(["a"]);
+  });
+
+  it("批量标签与重复检测从多选操作栏可达", async () => {
+    const rows = [shelfRow("a"), shelfRow("b")];
+    api.shelfList.mockResolvedValue({ items: rows, total: rows.length });
+    api.shelfStats.mockResolvedValue(stats(rows.length));
+    render(<ShelfWorkspace active />);
+    await screen.findByText("条目 a");
+    fireEvent.click(screen.getByRole("button", { name: "选择 条目 a" }));
+    const bar = await screen.findByRole("toolbar", { name: "批量操作" });
+
+    fireEvent.click(within(bar).getByRole("button", { name: "批量标签" }));
+    expect(await screen.findByRole("dialog", { name: "批量添加或移除标签" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    fireEvent.click(within(bar).getByRole("button", { name: "检测所选重复内容" }));
+    expect(await screen.findByRole("dialog", { name: "重复内容检测结果" })).toBeTruthy();
+    await waitFor(() => expect(api.shelfDuplicateScan).toHaveBeenCalledWith(["a"]));
   });
 
   it("拖出 move 后刷新存在性并明确提示原路径可能失效", async () => {
@@ -958,6 +1007,41 @@ describe("ShelfWorkspace 主动粘贴当前剪贴板", () => {
     await screen.findByRole("button", { name: "粘贴当前剪贴板" });
     fireEvent.keyDown(window, { key: "v", ctrlKey: true });
     await waitFor(() => expect(api.shelfPasteCurrent).toHaveBeenCalledTimes(1));
+  });
+
+  it("添加菜单可暂存剪贴板截图（只走图片入口）", async () => {
+    api.shelfPasteScreenshot.mockResolvedValue(
+      pasteReport({ content_kind: "image", added: [shelfRow("s1", { kind: "image" })], added_ids: ["s1"] }),
+    );
+    render(<ShelfWorkspace active />);
+    fireEvent.click(await screen.findByRole("button", { name: "更多添加方式" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /暂存剪贴板截图/ }));
+    await waitFor(() => expect(api.shelfPasteScreenshot).toHaveBeenCalledWith(null));
+    expect(api.shelfPasteCurrent).not.toHaveBeenCalled();
+  });
+
+  it("剪贴板没有截图时给出明确提示", async () => {
+    api.shelfPasteScreenshot.mockResolvedValue(
+      pasteReport({
+        content_kind: "image",
+        success: false,
+        failed: [
+          { path: "", reason: "当前剪贴板没有截图图片。", code: "CLIPBOARD_NO_IMAGE", category: "unsupported" },
+        ],
+        requires_user_action: true,
+        code: "CLIPBOARD_NO_IMAGE",
+      }),
+    );
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    render(<ShelfWorkspace active />);
+    fireEvent.click(await screen.findByRole("button", { name: "更多添加方式" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /暂存剪贴板截图/ }));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        "当前剪贴板没有截图图片，请先截图再暂存",
+        { kind: "warning", code: "CLIPBOARD_NO_IMAGE" },
+      ),
+    );
   });
 
   it("搜索框内 Ctrl+V 使用系统粘贴，不进暂存架", async () => {

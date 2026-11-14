@@ -121,6 +121,16 @@ impl OcrReport {
         r
     }
 
+    /// 文件本身超过读取上限：在 `std::fs::read` 之前拒绝，避免把超大文件整块读进内存。
+    pub fn too_large_file(bytes: u64) -> Self {
+        let mut r = Self::base(STATUS_TOO_LARGE, "image_too_large");
+        r.reason = Some(format!(
+            "图片文件过大（{} MB），请截取需要的局部后再识别",
+            bytes / (1024 * 1024)
+        ));
+        r
+    }
+
     /// 超过解码前预算：不启动引擎，也不写成「没有识别到文字」。
     fn too_large(width: u32, height: u32, estimated_bytes: u64) -> Self {
         let mut r = Self::base(STATUS_TOO_LARGE, "image_too_large");
@@ -428,12 +438,7 @@ impl OcrService {
         self.recognize_bytes(png, request_id, Instant::now())
     }
 
-    fn recognize_bytes(
-        &self,
-        bytes: &[u8],
-        request_id: &str,
-        started: Instant,
-    ) -> OcrReport {
+    fn recognize_bytes(&self, bytes: &[u8], request_id: &str, started: Instant) -> OcrReport {
         if self
             .busy
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)

@@ -36,6 +36,7 @@ import { ConfirmDialog } from "../ui/Dialog";
 import Select from "../ui/Select";
 import HtmlReader from "../clipboard/HtmlReader";
 import ShelfImageLightbox from "./ShelfImageLightbox";
+import { splitTagInput } from "./ShelfTagDialog";
 import { shelfDeleteFeedback } from "./shelfDeleteFeedback";
 
 /** 文本预览上限（后端已截断；这里只控制渲染量）。 */
@@ -59,6 +60,8 @@ export default function ShelfDetail({
   const verifyExists = useShelfStore((s) => s.verifyExists);
   const deletionBusy = useShelfStore((s) => s.deletionBusy);
   const retryShelfSync = useShelfStore((s) => s.retryShelfSync);
+  const itemTags = useShelfStore((s) => s.itemTags);
+  const tagItems = useShelfStore((s) => s.tagItems);
 
   const [lightbox, setLightbox] = useState(false);
   const [textContent, setTextContent] = useState<string | null>(null);
@@ -74,6 +77,9 @@ export default function ShelfDetail({
   const [projectState, setProjectState] = useState<"loading" | "ready" | "error">("loading");
   const [projectError, setProjectError] = useState("");
   const [projectToLink, setProjectToLink] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState("");
+  const [tagBusy, setTagBusy] = useState(false);
   const [ocrBusy, setOcrBusy] = useState(false);
   const [ocrText, setOcrText] = useState("");
   const [ocrError, setOcrError] = useState("");
@@ -157,6 +163,50 @@ export default function ShelfDetail({
       setProjectLinks(await shelfProjectLinks(item.id));
     } catch (e) {
       showToast(String(e), { kind: "error" });
+    }
+  };
+
+  const reloadTags = async () => {
+    try {
+      setTags(await itemTags(item.id));
+    } catch {
+      // 标签是辅助信息：读取失败不阻断详情，其他操作照常。
+      setTags([]);
+    }
+  };
+
+  useEffect(() => {
+    setTags([]);
+    setTagInput("");
+    void reloadTags();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.id]);
+
+  const addTag = async () => {
+    const next = splitTagInput(tagInput);
+    if (next.length === 0 || tagBusy) return;
+    setTagBusy(true);
+    try {
+      const r = await tagItems([item.id], next, "add");
+      if (r.success) setTagInput("");
+      await reloadTags();
+    } catch (e) {
+      showToast(`添加标签失败：${String(e)}`, { kind: "error" });
+    } finally {
+      setTagBusy(false);
+    }
+  };
+
+  const removeTag = async (tag: string) => {
+    if (tagBusy) return;
+    setTagBusy(true);
+    try {
+      await tagItems([item.id], [tag], "remove");
+      await reloadTags();
+    } catch (e) {
+      showToast(`移除标签失败：${String(e)}`, { kind: "error" });
+    } finally {
+      setTagBusy(false);
     }
   };
 
@@ -656,6 +706,55 @@ export default function ShelfDetail({
             onClick={() => void addProjectLink()}
           >
             <Plus size={13} aria-hidden="true" /> 关联
+          </button>
+        </div>
+      </section>
+
+      {/* 标签（v52）：只存关系，批量入口在暂存架多选操作栏 */}
+      <section className="shelf-detail-links" aria-label="条目标签">
+        <h4>标签</h4>
+        {tags.length === 0 ? (
+          <p className="shelf-links-empty">尚未添加标签</p>
+        ) : (
+          <ul className="shelf-tag-list">
+            {tags.map((tag) => (
+              <li key={tag} className="shelf-tag-chip">
+                <span>{tag}</span>
+                <button
+                  type="button"
+                  className="shelf-tag-remove"
+                  aria-label={`移除标签 ${tag}`}
+                  disabled={tagBusy}
+                  onClick={() => void removeTag(tag)}
+                >
+                  <X size={11} aria-hidden="true" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="shelf-links-add">
+          <input
+            className="input"
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+            placeholder="新增标签（空格或逗号分隔）"
+            aria-label="新增标签"
+            disabled={tagBusy}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void addTag();
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="btn sm"
+            disabled={tagBusy || splitTagInput(tagInput).length === 0}
+            onClick={() => void addTag()}
+          >
+            <Plus size={13} aria-hidden="true" /> 添加
           </button>
         </div>
       </section>

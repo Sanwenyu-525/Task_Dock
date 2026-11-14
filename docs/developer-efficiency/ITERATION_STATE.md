@@ -140,20 +140,30 @@
   前端逐字段降级、串行写入；`navigation_layout` 与项目 `layout_json` 不变、不清空。
 - **权限**：workspace capability 仍只有 event/dialog/opener；微件显示/隐藏/重置允许
   main/workspace，快照发布仍仅 main；capability 契约测试锁定不复制主窗口权限。
-- **测试**：新 Vitest 28 项（布局 8、导航协议 6、路由 4、权限 3、首页 3、外壳 4）+ 可见性门控 2 项；
-  合并回归 815 项 / 44 文件通过；`npx tsc --noEmit` exit 0（0 错）；`npm run build` exit 0
-  （`built in 7.02s`）。
-  Rust `cargo check --lib --tests` 通过；测试 exe 定向 **59 passed / 0 failed**
-  （工作台 9、设置 13、微件 11、备份 26）。备份套件曾因并行暂存架任务的
-  `shelf_project_links` 缺快速备份分支失败，其所有者修复后最终树复跑 26/26。
-  构建期间共享 target 内存压力导致两次 `STATUS_STACK_BUFFER_OVERRUN`，
-  `RUST_MIN_STACK=134217728` 重试后成功。
-- **原生冒烟（隔离实例，2026-11-14）**：单工作台目标、创建即导航、已存在窗口导航、
-  无项目使用、右栏、路由持久化、ack 清队、任务栏扩展样式、最大化/恢复、WM_CLOSE 后
-  主窗口存活与重开均通过（1180×760 @125% DPI 单屏；二进制 sha256 与截图见
-  `tmp/acceptance/efficiency-hub-u0/native3/`）。原生阶段发现并修复两处协议缺陷：
-  StrictMode 拉取后丢弃导致请求丢失（take 改 peek-until-ack）、事件丢失后需等聚焦
-  （Rust 页面 ping）。
-- **未完成**：Phase D 主窗口旧完整面板退役（需原生逐页验收后执行）；胶囊四边停靠、
-  多显示器、150%/200% DPI、逐页视觉、草稿确认/取消真机、资源释放与性能未验证。
+- **Phase D（主窗口收敛，2026-11-14）**：主窗口完整模式中开发工作台、项目工作空间、
+  应用、微件、手机互传、工作流、历史、规划、帮助、诊断、资源 11 个大型管理页不再挂载
+  原面板，统一渲染 `WorkbenchHandoff`（摘要 + 在完整工作台中打开）；点击走
+  `workbench_open_window` 并落到对应路由。任务/Agent/行动/剪贴板/收集与暂存仍属快捷面，
+  设置仍是主窗口窗口/外观配置入口；导航显隐/排序、Ctrl+数字语义与旧数据不变。
+- **测试（最终树）**：Vitest 全量 **270 文件 / 4078 passed / 0 failed**（单 worker，
+  677.79s，`tmp/acceptance/efficiency-hub-u0/vitest-full-final.log`）；`npm run build`
+  （tsc + vite）exit 0（5.58s）。Rust 全量（排除已知 audio::tests 组崩溃）**1854 passed /
+  2 failed / 8 ignored**；2 个失败均在并行任务文件（`shelf_tags` 未登记备份策略、
+  virtual_display 参数断言），隔离复跑仍失败，不属 U0 改动；`audio::tts` +
+  `audio::voice_packs` 18/18、`audio::tests` 6 项逐项通过。U0 定向 Rust
+  工作台 9 / 设置 13 / 微件 11 全过。
+- **原生冒烟（隔离实例，2026-11-14，最终二进制）**：胶囊四边停靠（left/right/top/bottom
+  几何与轨道方向）、展开/收起、胶囊直接入口打开工作台、WM_CLOSE 后胶囊继续可用并重开；
+  工作台 19 路由逐页渲染、任务栏 `WS_EX_APPWINDOW`、最大化/恢复；草稿确认条、取消保留
+  草稿、确认后切页、项目上下文只在确认后提交、持久化任务未被修改；Phase D 9 个入口
+  原生点击与跳转。1180×760 @125% DPI 单屏（CSS 944×608）。
+- **原生阶段发现并修复**：StrictMode 拉取后丢弃（take 改 peek-until-ack）、事件丢失后
+  等聚焦（Rust 页面 ping）、`.wb-body` 与开发工作台既有类冲突导致内容区/右栏纵向堆叠
+  （外壳改名 `wb-workarea`）、944 CSS 三栏主内容仅 392px（右栏阈值改 1000）、页面重载
+  期间积压请求（拉取改为逐条拉空）、Rust 提前写活跃项目导致取消导航仍改上下文
+  （删除原生预写，统一由外壳确认后提交）、工作台不读任务/Agent/行动数据（启动一次性读取）。
+- **未完成/环境受限**：多显示器（本机仅 1 屏）、150%/200% DPI（固定 125%，改系统缩放会
+  影响并行会话）、2K/4K 逐页视觉/键盘走查、Phase E 游戏/AI 漫剧专业闭环（仍只有事项阶段）；
+  迁移前性能基线未测，当前仅有迁移后采样（胶囊隐藏 0.00 CPU-s/10s；工作台空闲
+  0.13 CPU-s/10s；开关 3 轮关闭后 845–868MB，未观察到单调增长，不宣称无泄漏）。
 

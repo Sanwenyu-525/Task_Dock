@@ -1706,6 +1706,45 @@ CREATE INDEX idx_shelf_project_links_item
 ALTER TABLE shelf_drop_targets ADD COLUMN last_used_at TEXT NOT NULL DEFAULT '';
 "#,
     ),
+    (
+        52,
+        r#"
+-- v52（智能整理）：暂存条目标签 + 内容哈希/相似图指纹。
+-- - shelf_tags：多对多标签，条目删除级联清理；不复制内容，不做自动合并。
+-- - content_hash：可复算的 SHA-256（文本正文/链接/文件字节），仅用于重复提示，
+--   不自动删除或合并；image_hash：8×8 均值哈希，仅提示「相似图片」。
+CREATE TABLE shelf_tags (
+  item_id TEXT NOT NULL
+    REFERENCES shelf_items(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (item_id, tag)
+);
+CREATE INDEX idx_shelf_tags_tag ON shelf_tags(tag, created_at DESC);
+ALTER TABLE shelf_items ADD COLUMN content_hash TEXT;
+ALTER TABLE shelf_items ADD COLUMN image_hash TEXT;
+CREATE INDEX idx_shelf_items_content_hash
+  ON shelf_items(content_hash) WHERE content_hash IS NOT NULL;
+"#,
+    ),
+    (
+        53,
+        r#"
+-- v53（删除撤销）：暂存条目回收站。
+-- - 删除时把整行与标签/关联的 JSON 快照写入 shelf_trash，再从 shelf_items 删行；
+--   列表/统计/搜索等既有查询无需改动（行已不在原表）。
+-- - 托管副本在回收站保留期内不删除，撤销可完整恢复；过期清理时才删除文件。
+-- - batch_id 让一次删除的多个条目共享同一条撤销记录。
+CREATE TABLE shelf_trash (
+  id TEXT PRIMARY KEY NOT NULL,
+  batch_id TEXT NOT NULL,
+  deleted_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+CREATE INDEX idx_shelf_trash_batch ON shelf_trash(batch_id);
+CREATE INDEX idx_shelf_trash_deleted ON shelf_trash(deleted_at);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -2504,6 +2543,10 @@ pub struct Settings {
     /// 托管副本总配额（MB）；引用模式不计入配额
     #[serde(default = "default_shelf_max_storage")]
     pub shelf_max_storage_mb: u32,
+    /// 暂存架可选收集规则（版本化 JSON）。默认空 = 无规则；规则默认关闭，
+    /// 只支持「加标签 / 归组」两类可逆动作，不自动移动或删除文件。
+    #[serde(default)]
+    pub shelf_collect_rules: serde_json::Value,
     // ── 导航入口布局（v0.12；缺失时前端回退注册中心默认值）──
     /// 版本化 JSON：`{ version, left: [], capsule: [], known: {...} }`。
     /// 完整面板与停靠胶囊各自保存显隐与排序；后端只做结构校验，不参与语义合并。

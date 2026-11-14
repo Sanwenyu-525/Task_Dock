@@ -809,6 +809,19 @@ pub async fn context_menu_action(app: AppHandle, action: String) -> MenuActionRe
             crate::request_exit(&app);
             ok_result(&db)
         }
+        // 打开完整工作台（三层形态收敛）：workspace 窗口只能由主窗打开（
+        // `workbench_open_window` 有主窗专属守卫，菜单 WebView 不能直接调），
+        // 因此复用极简标签菜单的同一条转发通道：emit 到主窗 → 主窗前端调
+        // `openWorkbenchHome` → 回执真实结果。等待真实事务结果，成功才收菜单。
+        "open-workbench" => {
+            match run_tab_action(&app, "workbench".to_string()).await {
+                Ok(()) => ok_result(&db),
+                Err(message) => {
+                    tracing::warn!(%message, "打开完整工作台未完成");
+                    err_result(&db, format!("打开完整工作台失败：{message}"))
+                }
+            }
+        }
         // 极简标签三项：菜单只转发命令，吸附状态机与窗口几何全部留在主窗引擎
         // （`useEdgeSnap` 拥有唯一的恢复/展开/解除事务），这里不复制第二套业务逻辑。
         // **等待主窗事务的真实结果**：emit 成功只代表请求已送达，不代表窗口已切换。

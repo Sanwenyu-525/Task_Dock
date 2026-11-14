@@ -835,3 +835,114 @@ status / reason? / recovery? / residual_source?`。状态取值与 `ShelfOpEntry
   全量备份。
 - **未完成/限制**：标签体系未单独建表（沿用分组/备注）；可配置收集规则未实现；
   剪贴板虚拟文件主动粘贴明确不支持；资源管理器右键发送与全局热键需真机验收。
+
+## 13. 选择、拖拽与删除撤销（2026-11-14）
+
+本轮把暂存架从「能拖入/拖出」补齐为接近资源管理器的操作面：矩形框选、Ctrl/Shift 多选、
+键盘操作、列表/网格双视图、拖拽垃圾桶、Windows 回收站删除与可撤销的条目移除、缩略图直开
+灯箱与连续浏览。所有新增能力都复用既有暂存模型、`file_workspace::delete_paths` 与
+Windows 回收站，不新建第二套文件管理或图片存储。
+
+### 13.1 手势所有权（框选 vs 原生 OLE 拖出）
+
+| 起点 | 行为 | 实现 |
+|---|---|---|
+| 列表/网格空白（含左侧留白、行间距） | 矩形框选 | `src/hooks/useShelfMarquee.ts`（容器 `onPointerDown`） |
+| 卡片主体 | Windows OLE 拖出（可拖到其他应用） | `useShelfDragOut`（保持原实现） |
+| 卡片 + **Alt** | 应用内拖入垃圾桶，不进入 OLE | `useShelfInternalDrag.ts`；`useShelfDragOut` 显式忽略 Alt |
+| 勾选框 / 更多菜单 | 切换选择 / 打开菜单 | `data-no-drag` |
+| 缩略图 | 图片直接开灯箱；其他类型开详情 | `ShelfItemCard` |
+| 名称 | 打开详情（带 Ctrl/Shift 时为多选） | `ShelfItemCard` |
+
+- 框选只在空白处起拖：条目、按钮、输入框、`[data-no-drag]`、`[data-marquee-ignore]` 上的按下
+  不启动；位移超过 4px 才进入手势，避免点击抖动。
+- 条目几何在手势开始时测量一次（内容坐标），`pointermove` 只做算术；移动用
+  `requestAnimationFrame` 合并，每帧最多一次回调；松手时才把结果写入 store，拖动过程只更新
+  本地预览选中态，不对持久状态逐帧写入。
+- 靠近列表上下边缘 28px 自动滚动（每帧 18px），滚动期间持续重算命中。
+- Esc / 窗口失焦 / 页面隐藏 / `pointercancel` / 组件卸载取消手势并清理监听、rAF 与预览；
+  取消不提交选择。框选结束 350ms 内的 click 被吞掉，避免清空刚提交的选择。
+- 普通框选替换选择；Ctrl+框选与手势开始时的基准选择做对称差（可增减）。反向拖动、多行、
+  列表/网格切换后的坐标都由同一套内容坐标计算；不依赖 HTML5 `draggable`。
+
+### 13.2 多选与键盘
+
+- 卡片空白/元信息区单击 = 单选；Ctrl/Cmd+单击 = 切换；Shift+单击 = 从锚点连选（替换选择）。
+- 焦点与选中态分离：卡片 `data-shelf-id` + `.is-focused`（focus ring），方向键移动焦点并滚动到
+  可见区域；Shift+方向键扩展选择。
+- 列表容器（`.shelf-list`，`tabIndex=0`）上的快捷键：
+  `Ctrl+A` 全选已加载条目、`Esc` 取消选择（详情打开时先关详情，弹层打开时让给弹层）、
+  `Space` 切换焦点条目、`Enter` 打开详情、`Delete` 打开删除确认、`Ctrl+C` 复制文件/路径
+  （纯文本/链接复制正文）。输入框、textarea、contenteditable、select 内不拦截。
+- 批量拖出沿用 `dragIdsFor`：拖已选卡片时拖整个选择集，拖未选卡片只拖该条。
+
+### 13.3 列表 / 网格双视图
+
+- 工具条视图按钮切换列表/网格；偏好写入 `localStorage`（`taskdock.shelf.view` /
+  `taskdock.shelf.gridSize`），不改数据库、不影响其他机器。
+- 网格按容器宽度自适应列数（`auto-fill minmax(108/148/196px, 1fr)`，S/M/L 三档），保留当前
+  筛选、排序、滚动位置与选中集合；图片用既有 `shelf_read_image(full=false)` 缩略图，非图片显示
+  类型图标；长名称两行截断。
+- 窄容器（≤360px）网格最小列宽降到 96px，工具栏图标化，不产生横向滚动。
+
+### 13.4 拖拽垃圾桶与 Windows 回收站
+
+工具条右侧固定一个垃圾桶图标（平时小图标，不占大面积红色区域）。两种来源：
+
+1. **暂存条目**：按住 **Alt** 拖动已选/单条卡片到垃圾桶 → 打开移除确认 → 软删除（见 13.5）。
+   Alt+拖动不会调用 OLE，也不影响普通拖出到其他应用；未按 Alt 的拖动仍是系统拖出。
+2. **资源管理器文件/文件夹**：直接拖到垃圾桶 → 先调用 `shelf_recycle_preview` 做只读预览，
+   确认框展示真实文件/文件夹数量、总大小与逐项拒绝原因；用户确认后才调用
+   `shelf_recycle_execute`，逐项复核确认时的指纹（类型/大小/修改时间）并调用
+   `file_workspace::delete_paths(permanent=false)`（Windows 回收站）。**绝不回退永久删除**。
+   同一次原生拖入命中垃圾桶时只执行删除，不会再暂存；链接/文本/虚拟内容明确拒绝。
+
+安全网关 `src-tauri/src/shelf/recycle.rs` 拒绝：相对/空路径、`..`、UNC 与设备路径、超长路径、
+盘符根、系统目录（SystemRoot/Program Files/ProgramData/用户目录等）及其祖先/后代、Task Dock
+数据目录与暂存根、符号链接/重解析点、不存在或元数据不可读的路径；同一批父子路径只保留最浅层。
+单批上限 100 项。删除失败只报告失败原因，不升级为永久删除、不伪造成功。
+
+> 实现修复：`file_workspace::recycle_delete` 之前把 `canonicalize` 返回的 `\?\` verbatim 路径
+> 直接交给 `SHFileOperationW`，真实回收站调用返回 124（DE_INVALIDFILES）。本轮在调用前还原为
+> 普通绝对路径/UNC，Rust 真实回收站测试通过。
+
+### 13.5 删除撤销（v53 回收站）
+
+- 迁移 v53 新增 `shelf_trash(id, batch_id, deleted_at, payload)`。`shelf_trash_delete` 在同一事务内
+  把整行 + 标签 + 项目/任务关联写成 JSON 快照，再从 `shelf_items` 删行；**托管副本与缩略图不删除**，
+  保留 7 天（`TRASH_RETENTION_HOURS`）。
+- 删除成功 toast 提供「撤销」：`shelf_trash_restore(batch_id)` 恢复行、标签与仍存在的关联；
+  id 冲突不覆盖现存条目，分组已删除时 `group_id` 置 NULL。
+- `shelf_trash_purge`（无 batch_id 时只清过期批次）才删除托管文件与快照；回收站属于本机瞬时状态，
+  备份写空 section，不跨机器迁移。
+- 引用模式原文件、收藏/置顶/场景引用保护语义保持不变：批量删除默认跳过受保护条目，确认框明确
+  说明跳过数量与原因。
+
+### 13.6 图片灯箱（序列化）
+
+- 点击图片缩略图**直接**打开灯箱（不再经过详情）；点击名称仍开详情。其他类型缩略图开详情。
+- 灯箱接收当前筛选/排序下的图片序列：`←/→`、前后按钮、`n / total`；到已加载尾部时调用
+  `loadMore` 再前进，仍无下一张则明确提示。滚轮缩放、拖动平移、双击适应/100%、重置缩放、
+  Esc/遮罩关闭、焦点恢复到打开前的控件；加载失败可重试或跳到下一张。
+- 快捷操作：复制图片文件、收藏、所在文件夹、查看详情、删除（进入同一软删除确认）。
+
+### 13.7 IPC 与数据
+
+新增命令：`shelf_trash_delete` / `shelf_trash_restore` / `shelf_trash_purge` /
+`shelf_trash_count` / `shelf_recycle_preview` / `shelf_recycle_execute`。前端统一经
+`src/lib/bridge.ts`；报告字段为 snake_case，命令参数 camelCase。备份登记
+`EXTENDED_TABLES` 并标记 `is_local_transient_table`；v53 迁移只追加。
+
+### 13.8 测试与证据
+
+- Rust：`shelf::trash` 10/10、`shelf::recycle` 6/6（含真实 Windows 回收站删除、指纹变化跳过、
+  盘符根/系统目录/UNC/父子去重拒绝）。日志见 `tmp/acceptance/workbench-shelf-efficiency-20261114/`。
+- 前端：暂存架相关 18 个测试文件 281/281；新增框选 hook 14、Alt 拖动 hook 6、工作区交互 11、
+  灯箱 8。`npx vite build` 通过；`npx tsc --noEmit` 在本轮文件内无错误（工作树仍有并行任务
+  `filesWorkspace` / `workbench` 的既有 TS 错误，未归因于本轮）。
+- Chromium 视觉/交互：`visual-check.mjs` 13 项全部通过（深/浅主题、1280/600/360、列表/网格、
+  框选、Ctrl 多选、右键菜单、Alt 拖入垃圾桶、删除撤销、灯箱序列、100 条、150% DPI）；
+  截图与 `visual-results.json` 同目录。
+- 未验证/限制：列表模式框选只能从留白/行距起拖（未缩小行点击区）；Alt+拖动是显式内部手势，
+  普通拖动进入 OLE 后无法同时充当应用内垃圾桶；真实 Tauri WebView2 的 DPI/多显示器/系统
+  回收站 UI 仍需原生真机复核；相似图去重仍只对结构化 PNG 生效（见 §13 之外的既有说明）。

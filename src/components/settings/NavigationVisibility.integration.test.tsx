@@ -219,7 +219,7 @@ describe("导航显隐 · 主内容区始终有效", () => {
     const user = userEvent.setup();
     useUiStore.setState({ tab: "apps" });
     renderAll();
-    expect(await screen.findByText("apps-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-apps")).toBeTruthy();
 
     await user.click(switchFor("应用"));
     await waitFor(() => expect(useUiStore.getState().tab).toBe("tasks"));
@@ -275,7 +275,7 @@ describe("导航显隐 · 主内容区始终有效", () => {
     const item = await screen.findByRole("menuitemradio", { name: /应用/ });
     await user.click(item);
     expect(useUiStore.getState().tab).toBe("apps");
-    expect(await screen.findByText("apps-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-apps")).toBeTruthy();
     // 打开隐藏页不改变配置：侧栏仍是 10 项，「更多」呈当前页选中态
     expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 1);
     expect(
@@ -385,7 +385,7 @@ describe("隐藏当前入口 · 安全恢复与草稿门禁", () => {
       // 配置已落库，但页面没有被强制切走（草稿安全）
       expect(useUiStore.getState().tab).toBe("apps");
       await waitFor(() => expect(useUiStore.getState().pendingTab?.tab).toBe("tasks"));
-      expect(await screen.findByText("apps-panel")).toBeTruthy();
+      expect(await screen.findByTestId("workbench-handoff-apps")).toBeTruthy();
       expectContentAlive();
 
       act(() => useUiStore.getState().confirmPendingTab());
@@ -415,7 +415,7 @@ describe("隐藏当前入口 · 安全恢复与草稿门禁", () => {
 
       act(() => useUiStore.getState().cancelPendingTab());
       expect(useUiStore.getState().tab).toBe("apps");
-      expect(await screen.findByText("apps-panel")).toBeTruthy();
+      expect(await screen.findByTestId("workbench-handoff-apps")).toBeTruthy();
       // 入口已隐藏但页面仍可编辑/保存：不制造无法退出的死路，设置入口仍可达
       expect(railLabels()[railLabels().length - 1]).toBe("设置");
       expectContentAlive();
@@ -442,7 +442,7 @@ describe("隐藏当前入口 · 安全恢复与草稿门禁", () => {
       expect(useUiStore.getState().tab).toBe("apps");
       const toasts = useUiStore.getState().toasts;
       expect(toasts.some((t) => t.kind === "warning" && t.code === "tab-guard-busy")).toBe(true);
-      expect(await screen.findByText("apps-panel")).toBeTruthy();
+      expect(await screen.findByTestId("workbench-handoff-apps")).toBeTruthy();
       expectContentAlive();
     } finally {
       dispose();
@@ -541,7 +541,7 @@ describe("隐藏当前入口 · 安全恢复与草稿门禁", () => {
     await user.click(switchFor("微件"));
     await waitFor(() => expect(railLabels()).toHaveLength(DEFAULT_LEFT_COUNT - 2));
     expect(useUiStore.getState().tab).toBe("apps");
-    expect(await screen.findByText("apps-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-apps")).toBeTruthy();
     expectContentAlive();
   });
 });

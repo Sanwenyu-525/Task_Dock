@@ -2577,6 +2577,18 @@ describe("InboxDropPane 主动粘贴当前剪贴板", () => {
     expect(pasteShelfCurrent).not.toHaveBeenCalled();
   });
 
+  it("目录表单打开时不消费 Ctrl+V（焦点在按钮上）", async () => {
+    dropTargets.mockResolvedValue([]);
+    pasteShelfCurrent.mockResolvedValue(pasteReport());
+    render(<InboxDropPane />);
+    await screen.findByText("还没有文件投递目标");
+    fireEvent.click(screen.getByRole("button", { name: /添加目标文件夹/ }));
+    await flush();
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await flush();
+    expect(pasteShelfCurrent).not.toHaveBeenCalled();
+  });
+
   it("弹层打开时不消费 Ctrl+V", async () => {
     dropTargets.mockResolvedValue([]);
     pasteShelfCurrent.mockResolvedValue(pasteReport());

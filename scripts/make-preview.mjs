@@ -865,7 +865,38 @@ const shim = `
       { id: "sh4", kind: "folder", display_name: "旧版验收截图（已移动）", source_kind: "picker", storage_mode: "reference", original_path: "D:\\\\Archive\\\\old-shots", managed_path: null, content: null, byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "missing", group_id: "sg1", scene_id: null, note: "", expire_at: null, created_at: iso(300), updated_at: iso(290) },
       { id: "sh5", kind: "text", display_name: "卡片分层职责草稿", source_kind: "manual", storage_mode: "reference", original_path: null, managed_path: null, content: "基础材质 / 方案 D 变体 / 交互变体", byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "", expire_at: null, created_at: iso(420), updated_at: iso(400) },
     ];
-    if (q.get("shelf") !== "rich") return base;
+    if (q.get("shelf") !== "rich") {
+      if (q.get("shelf") !== "rich100") return base;
+      const many = Array.from({ length: 100 }, (_, index) => {
+        const isImage = index % 3 === 0;
+        const seq = String(index + 1).padStart(3, "0");
+        const name = isImage
+          ? "批量素材-" + seq + "-AI-角色与场景参考图.png"
+          : "批量文档-" + seq + "-需求与验收记录-较长文件名.md";
+        return {
+          id: "many-" + seq,
+          kind: isImage ? "image" : "file",
+          display_name: name,
+          source_kind: "drag",
+          storage_mode: index % 2 === 0 ? "managed" : "reference",
+          original_path: "D:\\\\Materials\\\\Batch\\\\" + name,
+          managed_path: isImage ? "images/many-" + seq + ".png" : null,
+          content: null,
+          byte_size: 8192 + index * 1024,
+          file_ext: isImage ? "png" : "md",
+          favorite: index === 7,
+          pinned: index === 5,
+          exists_state: "ok",
+          group_id: null,
+          scene_id: null,
+          note: "",
+          expire_at: null,
+          created_at: iso(900 + index),
+          updated_at: iso(890 + index),
+        };
+      });
+      return many;
+    }
     const images = [
       "AI-角色设定-三视图-长文件名用于检查网格截断-01.png",
       "场景概念-雨夜霓虹街道-02.png",

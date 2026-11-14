@@ -93,10 +93,15 @@ const ALLOWED_KEYS: &[&str] = &[
     "shelf_auto_cleanup_enabled",
     "shelf_retention_days",
     "shelf_max_storage_mb",
+    // 暂存架可选收集规则（版本化 JSON）：默认关闭，只支持可逆动作
+    "shelf_collect_rules",
     // 导航入口布局（v0.12）：完整面板 / 停靠胶囊各自的显隐与排序（版本化 JSON）
     "navigation_layout",
     // 统一工作台布局（U0）：上次路由 / 项目 / 右栏显隐 / 分栏宽度（版本化 JSON）
     "workbench_layout",
+    // 文件工作区布局（多目录文件工作区）：分割树 / 标签 / 自定义模板（版本化 JSON，
+    // 语义归一化由前端 filesWorkspace 持久化层负责，后端只做结构边界校验）
+    "file_workspace_layouts",
     // 统一提示音 / 语音播报 / 本地语音缓存（v0.13）
     "audio_sound_enabled",
     "audio_sound_volume",
@@ -492,6 +497,46 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
                         )));
                     }
                 }
+            }
+            Ok(())
+        }
+        // 暂存架可选收集规则：只允许可逆动作（加标签 / 归组），规则默认关闭。
+        "shelf_collect_rules" => crate::shelf::rules::validate_json(v).map(|_| ()),
+        // 文件工作区布局：只做结构边界校验（分割树语义由前端归一化）。
+        // 上限：状态键 ≤ 8（global + 项目 LRU）、模板 ≤ 20、整体 ≤ 256KB。
+        "file_workspace_layouts" => {
+            let obj = v.as_object().ok_or_else(|| {
+                AppError::Validation("file_workspace_layouts 必须是 JSON 对象".into())
+            })?;
+            if obj.get("version").and_then(|value| value.as_u64()).is_none() {
+                return Err(AppError::Validation(
+                    "file_workspace_layouts.version 必须是正整数".into(),
+                ));
+            }
+            if let Some(states) = obj.get("states") {
+                let states = states.as_object().ok_or_else(|| {
+                    AppError::Validation("file_workspace_layouts.states 必须是对象".into())
+                })?;
+                if states.len() > 8 {
+                    return Err(AppError::Validation(
+                        "file_workspace_layouts.states 超过 8 个".into(),
+                    ));
+                }
+            }
+            if let Some(templates) = obj.get("templates") {
+                let templates = templates.as_array().ok_or_else(|| {
+                    AppError::Validation("file_workspace_layouts.templates 必须是数组".into())
+                })?;
+                if templates.len() > 20 {
+                    return Err(AppError::Validation(
+                        "file_workspace_layouts.templates 超过 20 个".into(),
+                    ));
+                }
+            }
+            if v.to_string().chars().count() > 256 * 1024 {
+                return Err(AppError::Validation(
+                    "file_workspace_layouts 超过 256KB".into(),
+                ));
             }
             Ok(())
         }

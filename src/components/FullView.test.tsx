@@ -29,6 +29,9 @@ vi.mock("./history/HistoryPanel", () => ({ default: () => <div>history-panel</di
 vi.mock("./roadmap/PlanningCenterPanel", () => ({ default: () => <div>roadmap-panel</div> }));
 vi.mock("./help/HelpCenterPanel", () => ({ default: () => <div>help-panel</div> }));
 vi.mock("./settings/SettingsPanel", () => ({ default: () => <div>settings-panel</div> }));
+// Phase D：工作台专属页在主窗口退化为兼容入口；点击按钮只调用统一打开协议。
+const openWorkbench = vi.hoisted(() => vi.fn(async () => ({ status: "succeeded" })));
+vi.mock("../lib/workbenchNav", () => ({ openWorkbench, openWorkbenchHome: vi.fn() }));
 
 import FullView from "./FullView";
 import { useUiStore } from "../store/useUiStore";
@@ -70,7 +73,10 @@ function seedCounts() {
   useCaptureStore.setState({ items: [], filter: "inbox", loading: false, error: null, inboxCount: 2 });
 }
 
-beforeEach(seedCounts);
+beforeEach(() => {
+  seedCounts();
+  vi.mocked(openWorkbench).mockClear();
+});
 afterEach(cleanup);
 
 describe("完整模式左侧导航", () => {
@@ -122,14 +128,27 @@ describe("完整模式左侧导航", () => {
     ]);
 
     await user.click(navItem("应用"));
-    expect(await screen.findByText("apps-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-apps")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("apps");
     expect(navItem("应用").getAttribute("aria-current")).toBe("page");
 
     await user.click(navItem("微件"));
-    expect(await screen.findByText("widgets-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-widgets")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("widgets");
     expect(navItem("微件").getAttribute("aria-current")).toBe("page");
+  });
+
+  it("工作台专属功能在主窗口退化为兼容入口，按钮走统一工作台打开协议", async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({ tab: "apps" });
+    render(<FullView />);
+
+    // 旧完整面板不再挂载第二套宿主，只保留摘要与跳转。
+    expect(screen.getByTestId("workbench-handoff-apps")).toBeTruthy();
+    expect(screen.queryByText("apps-panel")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "在完整工作台中打开" }));
+    expect(openWorkbench).toHaveBeenCalledWith({ tab: "apps" });
   });
 
   it("点击导航切换面板，并保留 aria-current 语义", async () => {
@@ -137,7 +156,7 @@ describe("完整模式左侧导航", () => {
     render(<FullView />);
 
     await user.click(navItem("历史"));
-    expect(await screen.findByText("history-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-history")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("history");
     expect(navItem("历史").getAttribute("aria-current")).toBe("page");
     expect(navItem("任务").getAttribute("aria-current")).toBeNull();
@@ -185,7 +204,7 @@ describe("完整模式左侧导航", () => {
     render(<FullView />);
 
     await user.click(navItem("规划中心"));
-    expect(await screen.findByText("roadmap-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-roadmap")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("roadmap");
     expect(navItem("规划中心").getAttribute("aria-current")).toBe("page");
     expect(navItem("历史").getAttribute("aria-current")).toBeNull();
@@ -198,7 +217,7 @@ describe("完整模式左侧导航", () => {
     render(<FullView />);
 
     await user.click(navItem("帮助"));
-    expect(await screen.findByText("help-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-help")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("help");
     expect(navItem("帮助").getAttribute("aria-current")).toBe("page");
     expect(navItem("规划中心").getAttribute("aria-current")).toBeNull();
@@ -267,7 +286,7 @@ describe("导航显隐", () => {
 
     // 隐藏只影响侧栏：页面照常渲染，但**图标绝不临时插回**，其余图标位置不动
     expect(useUiStore.getState().tab).toBe("apps");
-    expect(await screen.findByText("apps-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-apps")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "应用" })).toBeNull();
     // 选中态改由「更多」承担：按钮标记为当前页，菜单内该项处于勾选状态
     expect(more.getAttribute("aria-current")).toBe("page");
@@ -382,7 +401,7 @@ describe("英文导航", () => {
     render(<FullView />);
 
     await user.click(screen.getByRole("button", { name: "Roadmap" }));
-    expect(await screen.findByText("roadmap-panel")).toBeTruthy();
+    expect(await screen.findByTestId("workbench-handoff-roadmap")).toBeTruthy();
     expect(useUiStore.getState().tab).toBe("roadmap");
   });
 

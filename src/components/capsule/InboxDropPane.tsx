@@ -442,7 +442,9 @@ export default function InboxDropPane() {
   }, [pushDragNotice, t]);
 
   // 只在「文件」子页挂载期间生效；编辑框/弹层由 shouldHandleShelfPaste 放行。
+  // 目录表单不是 overlay 层：表单打开时即使焦点在按钮/单选上也不能触发粘贴。
   useEffect(() => {
+    if (editing !== null || confirmRemove !== null) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!shouldHandleShelfPaste(event, { busy: pasteBusyRef.current })) return;
       event.preventDefault();
@@ -450,7 +452,7 @@ export default function InboxDropPane() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [pasteCurrent]);
+  }, [pasteCurrent, editing, confirmRemove]);
 
   // 全局收集热键 / 资源管理器「发送到」：后台入库不经过本面板，事件到达后
   // 复用同一套状态行展示结果（不把正文/路径放进事件或日志）。

@@ -93,25 +93,28 @@
 
 | ID | 功能 | 对应代码 | 已实现范围 | 尚未实现/未验证 | 实现 | 验证 | 阻塞 | 下一次行动 |
 |---|---|---|---|---|---|---|---|---|
-| U0-01 | 单一大型工作台窗口职责 | `project_workspace_window.rs`、`workspace.html`、`src/workspace/main.tsx` | `workspace` 承载全部完整功能；沿用原 label/几何/关闭语义；无第三窗口；辅助窗口不变 | 胶囊四边停靠/多显示器/150%-200% DPI/焦点策略 | implemented | partially_verified（自动化 + 原生隔离实例：创建/关闭/重开、任务栏扩展样式、最大化/恢复、125% DPI 单屏） | 无 | 隔离实例补四边胶囊、双屏、150/200% DPI |
-| U0-02 | 统一工作台外壳 | `src/workbench/WorkbenchShell.tsx`、`ProjectWorkspacePanel.tsx`、`WorkbenchHome.tsx`、`WorkbenchContextPane.tsx` | 左栏复用注册中心；顶栏项目/类型/搜索/Agent 状态/右栏；无项目首页；项目内容迁移（非复制）；每页独立错误边界；主题跟随设置 | 880 最小窗/150%-200% DPI/逐页视觉与键盘走查 | implemented | partially_verified（组件测试 + 原生 944×608 外壳/17 个侧栏项（含更多/设置）/右栏/路由） | 无 | 880 最小窗、150%/200% DPI、逐页走查 |
-| U0-03 | 应用级导航契约 | `navigationRegistry.ts`、`workbenchNav.ts`、`workbench_open_window/take_nav/nav_ack` | 单一注册中心；结构化目标（tab/项目/任务/对象/子页）；客户端 requestId；入队+拉取+事件+页面 ping；回执四态；pending 最终态；12s 超时；草稿门禁；同窗口开发工作台路由 | 原生草稿确认/取消时序；迟到回执 UI 修正 | implemented | partially_verified（Vitest 10 + Rust 9 + 原生创建即导航/已存在窗口导航/ack 清队） | 无 | 原生验证未保存草稿确认/取消与项目上下文回滚 |
-| U0-04 | 状态分层与跨窗口同步 | `windowHost.ts`、`useMainUiVisible.ts`、`settings-changed` | 业务状态/全局上下文/窗口 UI/持久化布局四类分离；事件只广播键名+来源+单调修订号；工作台不重复音频/微件/通知调度；项目选择串行 latest-wins | 两进程并发写活跃项目（单实例锁下不成立） | implemented | partially_verified（单测 + 权限契约） | 无 | 真机双窗口同时操作、主题/导航同步 |
-| U0-05 | 解除主窗口绑定 | `windowHost.ts`、`WorkbenchPageActiveContext`、`useMainUiVisible.test.tsx` | 工作台角色下不读主窗口 mode/吸附相位；隐藏但保活的页面按真实 active 暂停消费者刷新；快捷键作用于本窗口；移动配对不再改主窗口 mode | 各页面在原生 WebView 下的实际刷新节奏 | implemented | partially_verified（hook 门控测试；真机未验） | 无 | 逐页观察隐藏/恢复后的订阅与刷新 |
-| U0-06 | 三层布局协议 | `workbenchLayout.ts`、`settings.rs`、`navigationLayout.ts`、`workspaceProfiles.ts` | `workbench_layout` v1（路由/项目/右栏/宽度）+ 客户端归一化与串行写入；后端结构校验；损坏回默认；旧导航/项目布局不清空；窗口几何仍恢复 | 布局自由拖动/IDE 式编排（本轮明确不做） | implemented | partially_verified（Vitest 8 + Rust settings 测试；真机未验） | 无 | 真机重启恢复路由/宽度/右栏 |
-| U0-07 | 功能迁移 Phase A–C | `WorkbenchShell` + 既有面板 | 首页/任务/Agent/开发工作台/项目/收集与暂存/剪贴板/应用/微件/工作流/历史/规划/帮助/诊断/资源/设置/手机互传均已挂载复用；项目页不再有第二套导航 | Phase D 主窗口退役；原生逐页验收 | implemented（A–C） | partially_verified（构建+页面组件测试；真机未验） | 主窗口退役受真机验收阻塞 | 真机逐页核对后执行 Phase D |
-| U0-08 | 窗口能力与权限审计 | `capabilities/workspace.json`、`widget_windows.rs`、`settings.rs` | 工作台只保留 event/dialog/opener；不复制主窗口 notification/autostart/global-shortcut/窗口几何；微件显示/隐藏/重置允许 main/workspace，快照发布仍仅 main；设置广播带来源 | 原生 WebView2 实际权限拒绝路径 | implemented | verified（capability 契约 + Rust 标签测试） | 无 | 真机验证工作台内文件选择/打开目录成功 |
-| U0-09 | 性能与生命周期 | 窗口按需创建、DeferredView、消费者门控 | 工作台关闭即销毁 WebView；已访问页保活但隐藏页暂停可选刷新；无第二套通知/音频/微件调度 | 真机空闲 CPU/内存、首次启动、重复开关、资源释放 | partially_implemented | unverified（无原生测量，不编造比例） | 无真机测量环境 | 隔离实例测量并附二进制/场景/样本 |
-| U0-10 | UI 与信息层级 | `workbench.css`、Shell | 1180×760 三栏布局；宽屏取消 560px 阅读限制；窄窗（<920 CSS）自动收起右栏与折叠导航标签；语义 Token；空/加载/错误态 | 2K/4K、150%/200% DPI、多显示器、逐页深浅主题视觉 | implemented | partially_verified（原生 125% 单屏 944×608、右栏可见；视觉走查未做） | 无 | 真机 + 预览逐页走查 |
+| U0-01 | 单一大型工作台窗口职责 | `project_workspace_window.rs`、`workspace.html`、`src/workspace/main.tsx` | `workspace` 承载全部完整功能；沿用原 label/几何/关闭语义；无第三窗口；辅助窗口不变 | 多显示器、150%-200% DPI（本机单屏 125%，环境受限） | implemented | partially_verified（原生隔离实例：创建/关闭/重开、任务栏 `WS_EX_APPWINDOW`、最大化/恢复、125% DPI 单屏、胶囊四边停靠/展开收起） | 多屏/150-200% 无环境 | 在具备多显示器/可改缩放的环境补测 |
+| U0-02 | 统一工作台外壳 | `src/workbench/WorkbenchShell.tsx`、`ProjectWorkspacePanel.tsx`、`WorkbenchHome.tsx`、`WorkbenchContextPane.tsx` | 左栏复用注册中心；顶栏项目/类型/搜索/Agent 状态/右栏；无项目首页；项目内容迁移（非复制）；每页独立错误边界；主题跟随设置；工作台启动一次性读取任务/Agent/行动权威数据 | 880 最小窗、150%-200% DPI、2K/4K、逐页键盘走查 | implemented | partially_verified（组件测试 + 原生 944×608 外壳/17 个侧栏项/19 路由逐页渲染/窄窗自动收右栏） | 无 | 880 最小窗、高 DPI、逐页键盘走查 |
+| U0-03 | 应用级导航契约 | `navigationRegistry.ts`、`workbenchNav.ts`、`workbench_open_window/take_nav/nav_ack` | 单一注册中心；结构化目标（tab/项目/任务/对象/子页）；客户端 requestId；入队+拉取+事件+页面 ping；**一次事件拉空队列**；回执四态；pending 最终态；12s 超时；草稿门禁；**活跃项目只在确认/切页成功后提交** | 迟到回执的 UI 修正（超时后迟到成功只记录，不改页面） | implemented | partially_verified（Vitest 11 + Rust 9 + 原生创建即导航/已存在窗口导航/ack 清队/**草稿取消保留/确认切页/项目上下文不提前写入**） | 无 | 迟到回执 UI 策略（P3） |
+| U0-04 | 状态分层与跨窗口同步 | `windowHost.ts`、`useMainUiVisible.ts`、`settings-changed`、`WorkbenchShell` 一次性读取 | 业务状态/全局上下文/窗口 UI/持久化布局四类分离；事件只广播键名+来源+单调修订号；工作台不重复音频/微件/通知调度；项目选择串行 latest-wins；独立 WebView 不依赖主窗口 store 已加载 | 两进程并发写活跃项目（单实例锁下不成立）；更多页面在原生下的刷新节奏 | implemented | partially_verified（单测 + 权限契约 + 原生草稿/项目上下文时序 + 工作台独立读取任务/Agent/行动） | 无 | 逐页观察隐藏/恢复后的订阅刷新 |
+| U0-05 | 解除主窗口绑定 | `windowHost.ts`、`WorkbenchPageActiveContext`、`useMainUiVisible.test.tsx` | 工作台角色下不读主窗口 mode/吸附相位；隐藏但保活的页面按真实 active 暂停消费者刷新；快捷键作用于本窗口；移动配对不再改主窗口 mode | 各页面在原生 WebView 下的实际刷新节奏 | implemented | partially_verified（hook 门控测试 + 原生隐藏任务页保活/工作台路由切换） | 无 | 逐页观察隐藏/恢复后的订阅与刷新 |
+| U0-06 | 三层布局协议 | `workbenchLayout.ts`、`settings.rs`、`navigationLayout.ts`、`workspaceProfiles.ts` | `workbench_layout` v1（路由/项目/右栏/宽度）+ 客户端归一化与串行写入；后端结构校验；损坏回默认；旧导航/项目布局不清空；窗口几何仍恢复 | 布局自由拖动/IDE 式编排（本轮明确不做）；宽度/右栏重启恢复未逐项原生复测 | implemented | partially_verified（Vitest 8 + Rust settings 13 + 原生路由持久化） | 无 | 真机重启恢复宽度/右栏 |
+| U0-07 | 功能迁移 Phase A–D | `WorkbenchShell` + 既有面板 + `WorkbenchHandoff` | 首页/任务/Agent/开发工作台/项目/收集与暂存/剪贴板/应用/微件/工作流/历史/规划/帮助/诊断/资源/设置/手机互传均已挂载复用；**Phase D：主窗口 11 个大型管理页退化为摘要+跳转**，任务/Agent/行动/剪贴板/收集/设置为快捷面保留 | Phase E 游戏/AI 漫剧专业模块只有事项阶段（与旧边界一致）；2K/4K 逐页视觉 | implemented（A–D） | partially_verified（构建 + 组件测试 + 原生 19 路由逐页 + Phase D 9 个入口原生点击/跳转） | 无 | 专业模块闭环另立任务 |
+| U0-08 | 窗口能力与权限审计 | `capabilities/workspace.json`、`widget_windows.rs`、`settings.rs` | 工作台只保留 event/dialog/opener；不复制主窗口 notification/autostart/global-shortcut/窗口几何；微件显示/隐藏/重置允许 main/workspace，快照发布仍仅 main；设置广播带来源 | 原生 WebView2 实际权限拒绝路径 | implemented | verified（capability 契约 + Rust 标签测试） | 无 | 可选：原生验证工作台内文件选择/打开目录 |
+| U0-09 | 性能与生命周期 | 窗口按需创建、DeferredView、消费者门控、一次性读取 | 工作台关闭即销毁 WebView；已访问页保活但隐藏页暂停可选刷新；无第二套通知/音频/微件调度；工作台打开/关闭 3 轮与空闲 CPU 已采样 | 迁移前基线未测；更长周期/更多页面组合未测 | implemented | partially_verified（隔离实例客观采样：胶囊隐藏 0.00 CPU-s/10s；工作台空闲 0.13 CPU-s/10s；开关 3 轮关闭后总 WS 845–868MB，未观察到单调增长，不宣称无泄漏） | 无 | 需要“迁移前”对照时另做基线快照 |
+| U0-10 | UI 与信息层级 | `workbench.css`、Shell | 1180×760 三栏布局；宽屏取消 560px 阅读限制；**<1000 CSS 自动收起右栏**，默认 944 CSS 下主内容 716px；语义 Token；空/加载/错误态 | 880 最小窗、2K/4K、150%/200% DPI、多显示器、逐页深浅主题/键盘 | implemented | partially_verified（原生 944×608 单屏、19 页截图、右栏按阈值收起、胶囊四向轨道） | 高 DPI/多屏无环境 | 真机 + 预览逐页走查 |
 
-Phase D（主窗口旧完整面板退役）：**not_started**。主窗口完整面板仍保留为 400×560 快捷
-面板与兼容入口；按验收红线，需先在 Windows 真机完成工作台逐页验收，再逐步退化为摘要/跳转，
-本轮不删除任何现有功能。
+Phase D（主窗口旧完整面板退役）：**implemented（2026-11-14）**。主窗口完整模式中
+开发工作台、项目工作空间、应用、微件、手机互传、工作流、历史、规划中心、帮助、诊断中心、
+资源管理 11 个大型管理页不再挂载原面板，统一渲染 `WorkbenchHandoff`（功能摘要 + 「在完整
+工作台中打开」）；点击走真实 `workbench_open_window` 协议并落到对应路由。任务、Agent、行动、
+剪贴板、收集与暂存属于胶囊快捷面，设置属于主窗口自身窗口/外观配置，继续保留。导航显隐/排序、
+Ctrl+数字语义与旧数据不变；工作台侧栏仍是唯一完整功能入口。
 
 明确未做（不冒充）：
 
 - 没有新增第三个大型窗口；没有把辅助窗口并入工作台。
 - 没有复制 FullView 的 JSX，也没有复制任务/Agent/项目等业务实现；工作台直接复用既有面板。
-- 没有删除主窗口完整面板（Phase D 未执行）。
-- 没有宣称原生窗口、DPI、多显示器、任务栏、资源释放已验收。
+- Phase D 是「兼容入口 + 跳转」，不是删除主窗口；快捷面功能未删。
+- 没有宣称多显示器、150%/200% DPI、2K/4K 视觉、资源无泄漏已验收。
 

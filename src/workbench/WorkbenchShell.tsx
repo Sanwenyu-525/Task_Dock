@@ -103,7 +103,7 @@ import {
 } from "../lib/workbenchLayout";
 import {
   devProjectList,
-  onProjectWorkspaceProjectSelected,
+  fetchTask,
   onSettingsChanged,
   onWorkbenchNavigate,
   resourceSnapshot,
@@ -137,6 +137,7 @@ const SettingsPanel = lazy(() => import("../components/settings/SettingsPanel"))
 const HelpCenterPanel = lazy(() => import("../components/help/HelpCenterPanel"));
 const DiagnosticsCenterPanel = lazy(() => import("../components/diagnostics/DiagnosticsCenterPanel"));
 const ResourceManagementPanel = lazy(() => import("../components/resource/ResourceManagementPanel"));
+const FilesWorkspacePanel = lazy(() => import("../components/files/FilesWorkspacePanel"));
 
 /** 左侧入口（与主窗口共用注册中心；声明顺序无关于展示顺序）。 */
 const LEFT_ENTRIES = entriesForSurface("left");
@@ -257,6 +258,12 @@ export default function WorkbenchShell() {
   const routeHydratedRef = useRef(false);
   const projectHydratedRef = useRef(false);
   const handledNavRef = useRef<Set<number>>(new Set());
+  /**
+   * 活跃项目的「选择意图」序号：用户手动选择/导航提交都会推进。
+   * 写入队列只保证最后一次**值**落库；序号用于让迟到导航提交识别自己是否已被
+   * 更新的显式选择取代，避免「页面切到 A、持久化却是 B」。
+   */
+  const projectIntentSeq = useRef(0);
 
   const toastError = useCallback(
     (key: "workbench.layoutSaveFailed" | "workbench.projectRecordFailed", error: unknown) => {
@@ -386,21 +393,46 @@ export default function WorkbenchShell() {
         await workspaceSetActiveProject(value);
       },
       (error, superseded) => {
-        if (!superseded) {
-          toastErrorRef.current("workbench.projectRecordFailed", error);
-        }
+        // 用户可见错误由本文件的 submit 调用方处理；这里只留诊断，避免同一失败
+        // 既弹 Toast 又由导航回执报告一次。
+        if (superseded) return;
+        logEvent({
+          level: "WARN",
+          module: "workbench",
+          action: "active-project",
+          event: "write-failed",
+          message: errorMessage(error),
+        });
       },
     );
   }
 
   const selectProject = useCallback(
     (id: string | null) => {
+      // 显式改选项目本身就是「取消当前待决导航」：不取消的话，用户确认旧导航
+      // 会在稍后覆盖这次选择，造成 UI 与持久化不一致。
+      if (useUiStore.getState().pendingTab) {
+        useUiStore.getState().cancelPendingTab();
+      }
+      projectIntentSeq.current += 1;
+      const intent = projectIntentSeq.current;
+      const previous = selectedIdRef.current;
       setSelectedId(id);
       // 选择即所有权：串行写入，最后一次选择最终落库（旧写入不会覆盖新选择）。
-      activeWriterRef.current?.write(id);
-      void setWorkbenchProject(id).catch((e) =>
-        toastErrorRef.current("workbench.projectRecordFailed", e),
-      );
+      void activeWriterRef.current?.submit(id).then((result) => {
+        if (result.error) {
+          // 只有本次仍是最后一次意图时才回滚 UI；已被更新选择取代时不打扰用户。
+          if (projectIntentSeq.current === intent) {
+            setSelectedId(previous);
+            toastErrorRef.current("workbench.projectRecordFailed", result.error);
+          }
+          return;
+        }
+        if (!result.applied) return;
+        void setWorkbenchProject(id).catch((e) =>
+          toastErrorRef.current("workbench.projectRecordFailed", e),
+        );
+      });
     },
     [],
   );
@@ -633,6 +665,19 @@ export default function WorkbenchShell() {
       ackNav(request.requestId, "failed", t("workbench.navUnknown", { tab: String(target.tab) }));
       return;
     }
+    // 对象级定位必须真的有消费者：当前没有 objectId 路由，宁可明确拒绝，
+    // 也不能悄悄丢掉 ID 却回执「已精确定位」。sub 只支持收集与暂存子页。
+    const unsupported = target.objectId
+      ? "工作台暂不支持对象级定位（objectId），请使用页面/项目/任务入口"
+      : target.sub && target.tab !== "inbox" && target.tab !== "shelf"
+        ? "sub 仅支持收集与暂存入口"
+        : target.taskId && target.tab !== "tasks" && target.tab !== "workbench"
+          ? "taskId 仅支持任务页或开发工作台"
+          : null;
+    if (unsupported) {
+      ackNav(request.requestId, "failed", unsupported);
+      return;
+    }
     navAppliedRef.current = true;
     routeHydratedRef.current = true;
     setRouteHydrated(true);
@@ -645,32 +690,35 @@ export default function WorkbenchShell() {
     let projectCommitted = false;
     const commitProject = async (): Promise<string | null> => {
       if (!targetProject) return null;
-      try {
-        await workspaceSetActiveProject(targetProject);
-        projectCommitted = true;
-        navAppliedProjectRef.current = true;
-        projectHydratedRef.current = true;
-        setProjectHydrated(true);
-        setSelectedId(targetProject);
-        void setWorkbenchProject(targetProject).catch(() => {});
-        // 目标项目可能刚在其他窗口创建：刷新列表，避免头部显示「未选择项目」。
-        void refreshProjects();
-        return null;
-      } catch (e) {
-        return errorMessage(e);
+      // 导航提交也走唯一串行队列：不能绕过 latest-wins 直接 invoke，否则快速
+      // 手动改选后，较慢的导航写入可能最后落库并覆盖新选择。
+      projectIntentSeq.current += 1;
+      const result = await activeWriterRef.current!.submit(targetProject);
+      if (result.error) return errorMessage(result.error);
+      if (!result.applied) {
+        return "项目选择已被更新的选择取代，请重试";
       }
+      projectCommitted = true;
+      navAppliedProjectRef.current = true;
+      projectHydratedRef.current = true;
+      setProjectHydrated(true);
+      setSelectedId(targetProject);
+      void setWorkbenchProject(targetProject).catch(() => {});
+      // 目标项目可能刚在其他窗口创建：刷新列表，避免头部显示「未选择项目」。
+      void refreshProjects();
+      return null;
     };
     const rollbackProject = async () => {
       if (!projectCommitted) return;
-      try {
-        await workspaceSetActiveProject(previousActive || null);
-      } catch (e) {
+      projectIntentSeq.current += 1;
+      const result = await activeWriterRef.current!.submit(previousActive || null);
+      if (result.error) {
         logEvent({
           level: "WARN",
           module: "workbench-nav",
           action: "rollback-project",
           event: "rollback-failed",
-          message: errorMessage(e),
+          message: errorMessage(result.error),
         });
       }
       setSelectedId(previousProjectId);
@@ -682,22 +730,33 @@ export default function WorkbenchShell() {
         setCollectionSub(sub);
       }
     };
-    const focusTask = () => {
-      if (!target.taskId) return;
-      const task = useTasksStore
+    /**
+     * taskId 精确定位：当前列表只是缓存，可能被筛选/分页/冷启动截断。
+     * 列表中没有时按 ID 读取真实任务；读取失败就明确回执失败，不能把
+     * 「页面上没找到」包装成导航成功。
+     */
+    const focusTask = async (): Promise<string | null> => {
+      const taskId = target.taskId;
+      if (!taskId) return null;
+      let task = useTasksStore
         .getState()
-        .tasks.find((item) => String(item.id) === target.taskId);
-      if (task) {
-        useUiStore.getState().openContext(task);
-      } else {
+        .tasks.find((item) => String(item.id) === taskId);
+      if (!task) {
         logEvent({
           level: "INFO",
           module: "workbench-nav",
           action: "focus-task",
           event: "task-not-in-list",
-          message: target.taskId,
+          message: taskId,
         });
+        try {
+          task = await fetchTask(taskId);
+        } catch (e) {
+          return `无法定位任务 ${taskId}：${errorMessage(e)}`;
+        }
       }
+      useUiStore.getState().openContext(task);
+      return null;
     };
 
     if (target.tab === "home") {
@@ -708,7 +767,6 @@ export default function WorkbenchShell() {
       }
       setAtHome(true);
       ackNav(request.requestId, "succeeded");
-      focusTask();
       return;
     }
 
@@ -729,8 +787,13 @@ export default function WorkbenchShell() {
       }
       setAtHome(false);
       applySub();
+      const taskError = await focusTask();
+      if (taskError) {
+        // 页面已切换，但目标对象没有真实可见：回执失败并给出具体原因。
+        ackNav(request.requestId, "failed", taskError);
+        return;
+      }
       ackNav(request.requestId, "succeeded");
-      focusTask();
     };
 
     const result = setTab(target.tab as Tab, {
@@ -815,22 +878,8 @@ export default function WorkbenchShell() {
     };
   }, []);
 
-  // 旧入口（open_project_workspace_window）仍会广播项目选择：兼容它并落到项目页。
-  useEffect(() => {
-    const un = onProjectWorkspaceProjectSelected((payload) => {
-      const id = normalizeProjectId(payload.projectId);
-      if (!id) return;
-      setSelectedId(id);
-      navAppliedProjectRef.current = true;
-      projectHydratedRef.current = true;
-      setProjectHydrated(true);
-      void setWorkbenchProject(id).catch(() => {});
-      goRoute("workspace");
-    });
-    return () => {
-      void un.then((stop) => stop()).catch(() => {});
-    };
-  }, [goRoute]);
+  // 旧 IPC `open_project_workspace_window` 已在 Rust 侧转换为同一条导航队列请求；
+  // 不再监听 `project-selected`（该事件会绕过草稿门禁直接改路由/项目）。
 
   // 主题/预设/材质跨窗口同步 + 设置键广播（只带键名）。
   useEffect(() => {
@@ -1388,6 +1437,12 @@ export default function WorkbenchShell() {
                     onNotice={showNotice}
                     moduleRequest={moduleRequest}
                   />
+                </RouteSlot>
+              </RouteBoundary>
+
+              <RouteBoundary id="files" label={t("nav.files")}>
+                <RouteSlot id="files" active={route === "files"}>
+                  <FilesWorkspacePanel project={selected} />
                 </RouteSlot>
               </RouteBoundary>
 

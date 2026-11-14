@@ -25,6 +25,8 @@ const bridge = vi.hoisted(() => ({
   shelfOcrCancel: vi.fn(),
   shelfAddText: vi.fn(),
   shelfUpdate: vi.fn(),
+  shelfItemTags: vi.fn(),
+  shelfTagItems: vi.fn(),
 }));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
@@ -98,6 +100,17 @@ beforeEach(() => {
   bridge.shelfRevealItem.mockReset().mockResolvedValue(undefined);
   bridge.shelfCopyPaths.mockReset().mockResolvedValue({ copied: 0, failed: [] });
   bridge.shelfUnlinkTask.mockReset().mockResolvedValue(undefined);
+  bridge.shelfItemTags.mockReset().mockResolvedValue([]);
+  bridge.shelfTagItems.mockReset().mockResolvedValue({
+    tags: [],
+    items: 1,
+    changed: 1,
+    skipped: 0,
+    failed: [],
+    success: true,
+    partial: false,
+    code: null,
+  });
 });
 
 afterEach(() => {

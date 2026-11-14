@@ -21,6 +21,7 @@ import {
   Activity,
   Blocks,
   Clipboard,
+  FolderOpen,
   HardDrive,
   History,
   Inbox,
@@ -58,6 +59,7 @@ export type NavGroup = "core" | "capture" | "planning" | "system";
 export type NavEntryId =
   | "workbench"
   | "workspace"
+  | "files"
   | "tasks"
   | "agents"
   | "apps"
@@ -143,6 +145,22 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     defaults: {
       left: { order: 0.6, visible: true },
       capsule: { order: 7, visible: true },
+    },
+  },
+  {
+    // 文件工作区（多目录分栏文件浏览器）：完整面板独立页面，不占 Ctrl+数字；
+    // 与「资源管理」（系统运行资源监控）完全无关，不提供胶囊入口。
+    id: "files",
+    kind: "page",
+    surfaces: ["left"],
+    labelKey: "nav.files",
+    label: "文件工作区",
+    icon: FolderOpen,
+    tabs: ["files"],
+    group: "core",
+    defaults: {
+      left: { order: 0.7, visible: true },
+      capsule: { order: 0, visible: false },
     },
   },
   {

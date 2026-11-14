@@ -10,7 +10,12 @@ import {
   shelfAddLink,
   shelfAddPaths,
   shelfAddText,
+  shelfBatchLink,
   shelfCheckExists,
+  shelfDuplicateScan,
+  shelfItemTags,
+  shelfRecentTags,
+  shelfTagItems,
   shelfCleanup,
   shelfClear,
   shelfCopyTo,
@@ -23,7 +28,11 @@ import {
   shelfGroupRename,
   shelfList,
   shelfPasteCurrent,
+  shelfPasteScreenshot,
   shelfStats,
+  shelfTrashDelete,
+  shelfTrashPurge,
+  shelfTrashRestore,
   shelfUnlinkTask,
   shelfUpdate,
   type ShelfCleanupReport,
@@ -34,9 +43,16 @@ import {
   type ShelfItem,
   type ShelfKind,
   type ShelfAddReport,
+  type ShelfBatchLinkReport,
+  type ShelfDedupReport,
   type ShelfPasteReport,
+  type ShelfRecentTag,
+  type ShelfTagChangeReport,
   type ShelfOpReport,
   type ShelfStats,
+  type ShelfTrashDeleteReport,
+  type ShelfTrashPurgeReport,
+  type ShelfTrashRestoreReport,
   type ShelfUpdatePatch,
 } from "../lib/bridge";
 import { logEvent, startOperation, type DiagLevel } from "../lib/diagnostics";
@@ -116,7 +132,11 @@ interface ShelfState {
   pasteCurrent: (
     mode: "reference" | "managed",
     groupId?: string | null,
+    /** internal：截图窄入口只接受图片字节。 */
+    source?: "current" | "screenshot",
   ) => Promise<{ report: ShelfPasteReport; operationId: string }>;
+  /** 截图/剪贴板图片专用暂存（只接受图片，不复用文本/文件降级）。 */
+  pasteScreenshot: () => Promise<{ report: ShelfPasteReport; operationId: string }>;
   /**
    * 提交一次「通用拖入」会话（v49）。
    *
@@ -136,6 +156,12 @@ interface ShelfState {
   }>;
   updateItem: (id: string, patch: ShelfUpdatePatch) => Promise<ShelfItem>;
   deleteItems: (ids: string[], includeProtected: boolean) => Promise<ShelfMutationResult>;
+  /** 软删除到回收站（可撤销）：托管副本在保留期内不删除。 */
+  trashItems: (ids: string[], includeProtected: boolean) => Promise<ShelfTrashResult>;
+  /** 撤销一次软删除（按批次恢复条目与关系）。 */
+  restoreTrash: (batchId: string) => Promise<{ report: ShelfTrashRestoreReport; synced: boolean }>;
+  /** 清理回收站（不传 batchId 只清过期批次）。 */
+  purgeTrash: (batchId?: string) => Promise<ShelfTrashPurgeReport>;
   clearShelf: (includeProtected: boolean) => Promise<ShelfMutationResult>;
   runCleanup: (dryRun: boolean, includeProtected: boolean) => Promise<ShelfCleanupResult>;
   verifyExists: (ids: string[]) => Promise<void>;
@@ -153,7 +179,27 @@ interface ShelfState {
   ) => Promise<ShelfOpReport>;
   relocateItem: (id: string, path: string) => Promise<ShelfItem>;
   unlinkTask: (itemId: string, taskId: string) => Promise<void>;
+  /** 批量关联项目/任务：复用关系表，条目级失败以报告返回，成功时清空多选。 */
+  batchLink: (
+    ids: string[],
+    target: "project" | "task",
+    targetId: string,
+  ) => Promise<ShelfBatchLinkReport>;
+  /** 条目标签（只读关系）。 */
+  itemTags: (itemId: string) => Promise<string[]>;
+  /** 批量添加/移除标签：条目级失败以报告返回。 */
+  tagItems: (
+    ids: string[],
+    tags: string[],
+    mode: "add" | "remove",
+  ) => Promise<ShelfTagChangeReport>;
+  /** 最近使用标签（按最后使用时间倒序）。 */
+  recentTags: (limit?: number) => Promise<ShelfRecentTag[]>;
+  /** 重复内容检测：只提示，不合并/删除。 */
+  scanDuplicates: (ids?: string[]) => Promise<ShelfDedupReport>;
   toggleSelect: (id: string) => void;
+  /** 框选/范围选择：整体替换（去重保序）。 */
+  setSelection: (ids: string[]) => void;
   selectAll: () => void;
   clearSelection: () => void;
   setDetail: (id: string | null) => void;
@@ -163,6 +209,12 @@ export interface ShelfMutationResult {
   report: ShelfDeleteReport;
   synced: boolean;
   remainingTotal: number | null;
+}
+
+/** 软删除结果：batchId 非空且 removed>0 时前端应提供「撤销」。 */
+export interface ShelfTrashResult {
+  report: ShelfTrashDeleteReport;
+  synced: boolean;
 }
 
 /**
@@ -731,15 +783,21 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     return { added: report.added.length, failed: report.failed };
   },
 
-  pasteCurrent: async (mode, groupId) => {
+  pasteCurrent: async (mode, groupId, source = "current") => {
     // 诊断只记录类型/计数/稳定码，不记录正文、路径或图片字节。
     const op = startOperation("shelf", "shelf_paste_current", {
-      metadata: { mode, source: "clipboard-current" },
+      metadata: {
+        mode,
+        source: source === "screenshot" ? "clipboard-screenshot" : "clipboard-current",
+      },
     });
     let report: ShelfPasteReport;
     try {
       op.stage("read+persist");
-      report = await shelfPasteCurrent(mode, groupId ?? null);
+      report =
+        source === "screenshot"
+          ? await shelfPasteScreenshot(groupId ?? null)
+          : await shelfPasteCurrent(mode, groupId ?? null);
     } catch (e) {
       op.fail(e);
       throw e;
@@ -798,6 +856,8 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
 
     return { report, operationId: op.id };
   },
+
+  pasteScreenshot: () => get().pasteCurrent("managed", null, "screenshot"),
 
   commitDragPayload: async (operationId, mode, groupId) => {
     // 一条诊断链贯穿「松手 → 落库」：operation_id 用后端的拖入会话 id，
@@ -918,6 +978,30 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     }
   },
 
+  trashItems: async (ids, includeProtected) => {
+    if (get().deletionBusy) throw new Error("暂存架正在处理删除操作");
+    if (get().cleanupBusy) throw new Error("暂存架正在清理，请稍候");
+    set({ deletionBusy: true });
+    try {
+      const report = await shelfTrashDelete(ids, includeProtected);
+      invalidateRecent();
+      const synced = await get().retryShelfSync();
+      return { report, synced };
+    } finally {
+      set({ deletionBusy: false });
+    }
+  },
+
+  restoreTrash: async (batchId) => {
+    const report = await shelfTrashRestore(batchId);
+    invalidateRecent();
+    // 恢复后必须走权威列表同步：条目可能不在当前筛选/分页内，不能只靠本地插入。
+    const synced = await get().retryShelfSync();
+    return { report, synced };
+  },
+
+  purgeTrash: (batchId) => shelfTrashPurge(batchId),
+
   clearShelf: async (includeProtected) => {
     if (get().deletionBusy) throw new Error("暂存架正在处理删除操作");
     if (get().cleanupBusy) throw new Error("暂存架正在清理，请稍候");
@@ -1031,12 +1115,33 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
     await shelfUnlinkTask(itemId, taskId);
   },
 
+  batchLink: async (ids, target, targetId) => {
+    const report = await shelfBatchLink(ids, target, targetId);
+    if (report.success) set({ selectedIds: [] });
+    return report;
+  },
+
+  itemTags: (itemId) => shelfItemTags(itemId),
+
+  tagItems: async (ids, tags, mode) => {
+    const report = await shelfTagItems(ids, tags, mode);
+    if (report.success) set({ selectedIds: [] });
+    return report;
+  },
+
+  recentTags: (limit) => shelfRecentTags(limit),
+
+  scanDuplicates: (ids) => shelfDuplicateScan(ids),
+
   toggleSelect: (id) =>
     set((s) => ({
       selectedIds: s.selectedIds.includes(id)
         ? s.selectedIds.filter((x) => x !== id)
         : [...s.selectedIds, id],
     })),
+
+  setSelection: (ids) =>
+    set({ selectedIds: [...new Set(ids.filter((id) => Boolean(id)))] }),
 
   selectAll: () => set((s) => ({ selectedIds: s.items.map((i) => i.id) })),
 

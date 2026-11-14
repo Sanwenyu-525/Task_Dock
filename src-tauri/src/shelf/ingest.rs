@@ -57,10 +57,18 @@ impl ClipboardIntake {
             ClipboardRead::Content { content, sequence } => (content, sequence),
             ClipboardRead::Skip(reason) => {
                 let busy = reason.contains("占用");
+                // `read_clipboard` 对超限文本返回 Skip，而不是 Empty；不能一律归为
+                // CLIPBOARD_UNREADABLE，否则前端的「内容过大」分支永远走不到。
+                let too_large = reason.contains("上限");
+                let unsupported = reason.contains("不支持");
                 return Self::Empty {
                     reason: reason.to_string(),
                     code: if busy {
                         "CLIPBOARD_BUSY"
+                    } else if too_large {
+                        "CLIPBOARD_CONTENT_TOO_LARGE"
+                    } else if unsupported {
+                        "CLIPBOARD_UNSUPPORTED"
                     } else {
                         "CLIPBOARD_UNREADABLE"
                     },
@@ -176,7 +184,13 @@ pub struct IntakeOutcome {
 }
 
 impl IntakeOutcome {
-    fn empty(kind: &'static str, code: &'static str, reason: String, retryable: bool) -> Self {
+    /// 无内容/不支持时构造带稳定错误码的空结果（截图暂存等窄入口复用）。
+    pub(crate) fn empty(
+        kind: &'static str,
+        code: &'static str,
+        reason: String,
+        retryable: bool,
+    ) -> Self {
         Self {
             content_kind: kind,
             added: Vec::new(),
@@ -217,11 +231,7 @@ pub fn save(
         ClipboardIntake::Files(paths) => {
             save_files(db, root, paths, storage_mode, source_kind, group_id, kind)
         }
-        ClipboardIntake::Image {
-            png,
-            width,
-            height,
-        } => {
+        ClipboardIntake::Image { png, width, height } => {
             let display = if width > 0 && height > 0 {
                 format!("剪贴板图片 {width}×{height}.png")
             } else {
@@ -243,37 +253,36 @@ pub fn save(
         ClipboardIntake::Link(url) => {
             let duplicate = content_duplicate(db, super::KIND_LINK, url.trim());
             match add_link(db, &url, group_id) {
-            Ok(item) => IntakeOutcome {
-                content_kind: kind,
-                added: vec![item],
-                failed: Vec::new(),
-                skipped: 0,
-                duplicates: usize::from(duplicate),
-                failure_code: None,
-                retryable: false,
-            },
-            Err(link_error) => {
-                // 分类器已确认是链接，但校验层可能拒绝超长/非法 URL；
-                // 此时退回文本保存，避免用户主动粘贴直接丢内容。
-                if url.trim().is_empty() {
-                    single_failure(kind, &link_error)
-                } else {
-                    let text_duplicate =
-                        content_duplicate(db, super::KIND_TEXT, url.trim());
-                    match add_text(db, &url, source_kind, group_id) {
-                        Ok(item) => IntakeOutcome {
-                            content_kind: "text",
-                            added: vec![item],
-                            failed: Vec::new(),
-                            skipped: 0,
-                            duplicates: usize::from(text_duplicate),
-                            failure_code: None,
-                            retryable: false,
-                        },
-                        Err(_) => single_failure(kind, &link_error),
+                Ok(item) => IntakeOutcome {
+                    content_kind: kind,
+                    added: vec![item],
+                    failed: Vec::new(),
+                    skipped: 0,
+                    duplicates: usize::from(duplicate),
+                    failure_code: None,
+                    retryable: false,
+                },
+                Err(link_error) => {
+                    // 分类器已确认是链接，但校验层可能拒绝超长/非法 URL；
+                    // 此时退回文本保存，避免用户主动粘贴直接丢内容。
+                    if url.trim().is_empty() {
+                        single_failure(kind, &link_error)
+                    } else {
+                        let text_duplicate = content_duplicate(db, super::KIND_TEXT, url.trim());
+                        match add_text(db, &url, source_kind, group_id) {
+                            Ok(item) => IntakeOutcome {
+                                content_kind: "text",
+                                added: vec![item],
+                                failed: Vec::new(),
+                                skipped: 0,
+                                duplicates: usize::from(text_duplicate),
+                                failure_code: None,
+                                retryable: false,
+                            },
+                            Err(_) => single_failure(kind, &link_error),
+                        }
                     }
                 }
-            }
             }
         }
         ClipboardIntake::Text { text, html } => {
@@ -376,8 +385,22 @@ fn save_files(
         }
     }
 
+    // 全部路径被跳过（空路径/同一批重复/超过上限）时不能返回「无失败也无成功」：
+    // 前端需要一条可解释的原因，而不是泛化的「粘贴失败」。
+    if added.is_empty() && failed.is_empty() && skipped > 0 {
+        failed.push(IntakeFailure {
+            target: String::new(),
+            reason: "没有可保存的有效路径（空路径、同一批重复或超过单次上限）".into(),
+            code: "CLIPBOARD_NO_VALID_ITEMS".into(),
+            category: "validation".into(),
+        });
+    }
     let failure_code = if added.is_empty() && !failed.is_empty() {
-        Some("SHELF_PASTE_FAILED")
+        Some(if failed[0].code == "CLIPBOARD_NO_VALID_ITEMS" {
+            "CLIPBOARD_NO_VALID_ITEMS"
+        } else {
+            "SHELF_PASTE_FAILED"
+        })
     } else {
         None
     };
@@ -574,7 +597,10 @@ mod tests {
         assert_eq!(item.kind, super::super::KIND_IMAGE);
         assert_eq!(item.storage_mode, super::super::MODE_MANAGED);
         assert!(item.original_path.is_none());
-        assert!(tmp.shelf().join(item.managed_path.as_ref().unwrap()).exists());
+        assert!(tmp
+            .shelf()
+            .join(item.managed_path.as_ref().unwrap())
+            .exists());
     }
 
     #[test]
@@ -654,6 +680,32 @@ mod tests {
             ClipboardIntake::Empty { code, .. } => assert_eq!(code, "CLIPBOARD_UNSUPPORTED"),
             other => panic!("unexpected {other:?}"),
         }
+        // 超限文本走 Skip 而不是 Empty，必须仍映射为「内容过大」。
+        match ClipboardIntake::from_read(ClipboardRead::Skip("文本超过采集上限")) {
+            ClipboardIntake::Empty { code, .. } => {
+                assert_eq!(code, "CLIPBOARD_CONTENT_TOO_LARGE")
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_paths_skipped_returns_explainable_failure() {
+        let tmp = TempRoot::new();
+        let db = db();
+        let out = save(
+            &db,
+            &tmp.shelf(),
+            ClipboardIntake::Files(vec![String::new(), "  ".into()]),
+            super::super::MODE_REFERENCE,
+            "clipboard",
+            None,
+        );
+        assert!(out.added.is_empty());
+        assert_eq!(out.skipped, 2);
+        assert_eq!(out.failed.len(), 1);
+        assert_eq!(out.failed[0].code, "CLIPBOARD_NO_VALID_ITEMS");
+        assert_eq!(out.failure_code, Some("CLIPBOARD_NO_VALID_ITEMS"));
     }
 
     #[test]

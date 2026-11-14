@@ -26,15 +26,15 @@ const snap: MenuSnapshot = {
 };
 
 describe("菜单配置结构", () => {
-  it("按规范提供五组、共 13 项", () => {
+  it("按规范提供五组、共 14 项", () => {
     expect(MENU_GROUPS.map((g) => g.label)).toEqual([
       "常用操作",
-      "布局模式",
+      "界面形态",
       "吸附方式",
       "外观与系统",
       "退出操作",
     ]);
-    expect(FLAT_ITEMS).toHaveLength(13);
+    expect(FLAT_ITEMS).toHaveLength(14);
     expect(FLAT_ITEMS.some((it) => it.action === "quick-capture")).toBe(true);
   });
 
@@ -52,6 +52,11 @@ describe("菜单配置结构", () => {
       expect(byAction.get(a)?.radio).toBe("theme");
     }
     expect(byAction.get("autostart")?.toggle).toBe("autostart");
+    // 形态收敛：打开完整工作台是一次性动作，不参与任何勾选组
+    const openWorkbench = byAction.get("open-workbench")!;
+    expect(openWorkbench).toBeTruthy();
+    expect(openWorkbench.radio).toBeUndefined();
+    expect(openWorkbench.toggle).toBeUndefined();
   });
 });
 
@@ -87,7 +92,7 @@ describe("initialActiveIndex", () => {
   });
 
   it("优先第一个勾选项", () => {
-    // compact（布局组）在快照里勾选，位于展平序的第 3 项
+    // compact（界面形态组，兼容项殿后）在快照里勾选，按展平序定位
     expect(initialActiveIndex(snap)).toBe(FLAT_ITEMS.findIndex((it) => it.action === "mode:compact"));
   });
 
@@ -126,9 +131,9 @@ describe("tab 变体结构", () => {
     expect(validateTabMenuConfig()).toEqual([]);
   });
 
-  it("托盘菜单不受影响（仍是五组 13 项）", () => {
+  it("托盘菜单不受影响（仍是五组 14 项）", () => {
     expect(validateMenuConfig()).toEqual([]);
-    expect(flatItemsFor("tray")).toHaveLength(13);
+    expect(flatItemsFor("tray")).toHaveLength(14);
     expect(flatItemsFor("tab")).toHaveLength(3);
   });
 

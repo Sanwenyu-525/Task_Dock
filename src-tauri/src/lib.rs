@@ -18,6 +18,7 @@ pub mod dragdrop;
 mod drag_signal;
 mod drag_watch;
 pub mod error;
+pub mod file_workspace;
 pub mod focus;
 mod fs_safety;
 pub mod global_search;
@@ -1397,6 +1398,13 @@ pub fn run() {
             commands::shelf::shelf_update,
             commands::shelf::shelf_delete,
             commands::shelf::shelf_clear,
+            // 删除撤销（v53 回收站）与外部文件回收站
+            commands::shelf::shelf_trash_delete,
+            commands::shelf::shelf_trash_restore,
+            commands::shelf::shelf_trash_purge,
+            commands::shelf::shelf_trash_count,
+            commands::shelf::shelf_recycle_preview,
+            commands::shelf::shelf_recycle_execute,
             commands::shelf::shelf_cleanup,
             commands::shelf::shelf_check_exists,
             commands::shelf::shelf_open_item,
@@ -1412,6 +1420,14 @@ pub fn run() {
             commands::shelf::shelf_project_links,
             commands::shelf::shelf_link_project,
             commands::shelf::shelf_unlink_project,
+            commands::shelf::shelf_batch_link,
+            commands::shelf::shelf_paste_screenshot,
+            commands::shelf::shelf_item_tags,
+            commands::shelf::shelf_tag_items,
+            commands::shelf::shelf_recent_tags,
+            commands::shelf::shelf_duplicate_scan,
+            commands::shelf::shelf_rules_preview,
+            commands::shelf::shelf_rules_apply,
             commands::shelf::shelf_ocr_item,
             commands::shelf::shelf_ocr_cancel,
             commands::shelf::shelf_move_items,
@@ -1435,6 +1451,20 @@ pub fn run() {
             commands::dragdrop::drag_payload_commit_directory,
             commands::dragdrop::drag_payload_discard,
             commands::dragdrop::drag_report_client_issue,
+            // 文件工作区（多目录文件浏览/操作/缩略图）
+            commands::file_workspace::fs_list_dir,
+            commands::file_workspace::fs_dir_signature,
+            commands::file_workspace::fs_places,
+            commands::file_workspace::fs_create_dir,
+            commands::file_workspace::fs_create_file,
+            commands::file_workspace::fs_rename,
+            commands::file_workspace::fs_copy_paths,
+            commands::file_workspace::fs_move_paths,
+            commands::file_workspace::fs_delete_paths,
+            commands::file_workspace::fs_stat,
+            commands::file_workspace::fs_open,
+            commands::file_workspace::fs_reveal,
+            commands::file_workspace::fs_thumbnail,
             // 一键工作流（v0.9）
             commands::workflows::workflow_list,
             commands::workflows::workflow_get,

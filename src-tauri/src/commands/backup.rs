@@ -87,6 +87,10 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "shelf_items",
     "shelf_task_links",
     "shelf_project_links",
+    // 暂存条目标签（v52）：只存关系，恢复晚于 shelf_items。
+    "shelf_tags",
+    // 暂存回收站（v53）：删除撤销的短期快照，属于本机瞬时状态。
+    "shelf_trash",
     // 暂存架文件操作增强（v0.14）：最近目标目录与未完成的移动日志。
     "shelf_recent_dirs",
     "shelf_file_ops",
@@ -520,6 +524,10 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["workspace_projects", "shelf_items"],
         true
     ),
+    // 暂存条目标签（v52）：挂在 shelf_items 上，恢复顺序在其后。
+    rule!("shelf_tags", "shelf", "all", 456, &["shelf_items"], true),
+    // 暂存回收站（v53）：短期撤销快照，按本机瞬时状态处理（写空 section）。
+    rule!("shelf_trash", "shelf", "all", 457, &["shelf_items"], true),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -540,7 +548,7 @@ pub fn is_local_transient_table(table: &str) -> bool {
     // 指向不存在路径的记录；按本机瞬时状态处理。
     matches!(
         table,
-        "shelf_file_ops" | "mobile_devices" | "sync_changes" | "sync_ops" | "mobile_files"
+        "shelf_file_ops" | "shelf_trash" | "mobile_devices" | "sync_changes" | "sync_ops" | "mobile_files"
     )
 }
 
@@ -801,6 +809,7 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "shelf_items"
         | "shelf_task_links"
         | "shelf_project_links"
+        | "shelf_tags"
         // 最近目标目录与快捷投递目标：用户目录偏好，属于可迁移业务数据
         // （shelf_file_ops 是设备本地瞬时日志，不走此分支，由写循环单独写空 section）
         | "shelf_recent_dirs"

@@ -33,6 +33,7 @@ import CapsuleDock from "./components/capsule/CapsuleDock";
 import DockFormToggle from "./components/capsule/DockFormToggle";
 import WindowResizeGrips from "./components/WindowResizeGrips";
 import WidgetDesktopBridge from "./components/widgets/WidgetDesktopBridge";
+import { useEdgeTabMenuActions } from "./hooks/useEdgeTabMenuActions";
 import { useEdgeSnapStore } from "./store/useEdgeSnapStore";
 import { isCapsuleMode, measureTitlebarHeight } from "./lib/edgeSnap";
 import { resolveWindowMode } from "./lib/windowMode";
@@ -376,6 +377,11 @@ export default function App() {
   // 自定义快捷键：应用内（app_local）按键在前端按配置分发，系统级（system_global）
   // 由 Rust 侧常驻注册；录制期间不触发任何动作，旧全局监听已移除避免重复触发。
   useHotkeysRuntime();
+
+  // 右键菜单动作桥（主窗常驻）：极简标签三项 + 托盘/悬浮栏「打开完整工作台」
+  // 共用同一条 edge-tab-action 转发通道；挂载在 App 保证任意形态/隐藏状态下
+  // 都有唯一监听者（原先挂在 CapsuleDock，托盘动作在非胶囊形态会无人应答）。
+  useEdgeTabMenuActions();
 
   // Escape 关闭优先级：弹层栈里有任何一层时由栈顶消费；
   // 只有栈空（没有任何菜单 / 抽屉 / 对话框）时，Escape 才隐藏窗口。

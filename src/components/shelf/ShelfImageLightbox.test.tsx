@@ -5,7 +5,7 @@
 //! 以及拖拽后的补发 click 不会误触发「点遮罩关闭」。
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ShelfItem } from "../../lib/bridge";
 import { resetOverlayStack } from "../../lib/overlayStack";
 import uiCss from "../../styles-ui.css?raw";
@@ -140,5 +140,79 @@ describe("暂存架灯箱平移光标", () => {
     fireEvent.pointerUp(stage, { pointerId: 2 });
     fireEvent.click(stage);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── 序列浏览 / 失败重试 / 焦点恢复（2026-11-14）──
+
+describe("暂存架灯箱序列与恢复", () => {
+  function item(id: string, name: string): ShelfItem {
+    return { ...ITEM, id, display_name: name };
+  }
+
+  it("左右方向键与按钮按调用方给出的顺序切换，并显示序号", async () => {
+    const a = item("img-a", "一.png");
+    const b = item("img-b", "二.png");
+    const onNavigate = vi.fn();
+    render(
+      <ShelfImageLightbox
+        item={a}
+        images={[a, b]}
+        onNavigate={onNavigate}
+        onClose={() => {}}
+      />,
+    );
+    const dialog = await screen.findByRole("dialog", { name: "图片预览：一.png" });
+    expect(dialog.textContent).toContain("1 / 2");
+
+    fireEvent.keyDown(dialog, { key: "ArrowRight" });
+    expect(onNavigate).toHaveBeenLastCalledWith(1);
+    fireEvent.keyDown(dialog, { key: "ArrowLeft" });
+    expect(onNavigate).toHaveBeenLastCalledWith(-1);
+
+    fireEvent.click(screen.getByRole("button", { name: "下一张" }));
+    expect(onNavigate).toHaveBeenLastCalledWith(1);
+  });
+
+  it("加载失败显示重试与下一张，重试重新读取图片", async () => {
+    bridge.shelfReadImage.mockResolvedValueOnce(null);
+    bridge.shelfReadImage.mockResolvedValueOnce("data:image/png;base64,BBBB");
+    const onNavigate = vi.fn();
+    render(
+      <ShelfImageLightbox
+        item={ITEM}
+        images={[ITEM, { ...ITEM, id: "img-2", display_name: "二.png" }]}
+        onNavigate={onNavigate}
+        onClose={() => {}}
+      />,
+    );
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() =>
+      expect(document.querySelector(".shelf-lightbox-stage img")).toBeTruthy(),
+    );
+    expect(bridge.shelfReadImage).toHaveBeenCalledTimes(2);
+  });
+
+  it("关闭后焦点回到打开灯箱前的按钮", async () => {
+    const trigger = document.createElement("button");
+    document.body.appendChild(trigger);
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    const view = render(<ShelfImageLightbox item={ITEM} onClose={() => {}} />);
+    await screen.findByRole("dialog", { name: "图片预览：截图.png" });
+    view.unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+
+  it("双击在适应窗口与 100% 之间切换", async () => {
+    const { stage } = await renderLightbox();
+    const zoom = () => document.querySelector(".shelf-lightbox-zoom")?.textContent;
+    fireEvent.doubleClick(stage);
+    expect(zoom()).toBe("100%");
+    fireEvent.doubleClick(stage);
+    expect(zoom()).not.toBe("100%");
   });
 });

@@ -27,7 +27,7 @@
 //! 即「待处理收集内容」；暂存条目总数**不计入**未处理徽标。
 
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useUiStore } from "../store/useUiStore";
+import { useUiStore, type Tab } from "../store/useUiStore";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore, attentionCount } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
@@ -40,9 +40,9 @@ import AgentPanel from "./agents/AgentPanel";
 import ActionCenterPanel from "./actions/ActionCenterPanel";
 import ClipboardPanel from "./clipboard/ClipboardPanel";
 import CollectionPanel from "./collection/CollectionPanel";
-import { WIDGET_SOURCES } from "./widgets/liveSources";
 import TabLeaveGuard from "./TabLeaveGuard";
 import ErrorBoundary from "./ErrorBoundary";
+import WorkbenchHandoff from "./workbench/WorkbenchHandoff";
 
 import { Plus, MoreHorizontal, Settings2 } from "lucide-react";
 import { DropdownMenu } from "./ui";
@@ -60,19 +60,27 @@ import { safeTabForHiddenEntry } from "../lib/navVisibility";
 import { useLocale } from "../hooks/useLocale";
 
 import { requestSettingsSectionReveal } from "../lib/settingsSections";
+import type { WorkbenchRoute } from "../lib/workbenchLayout";
 
-const AppsPanel = lazy(() => import("./apps/AppsPanel"));
-const DevWorkbenchPanel = lazy(() => import("./workbench/DevWorkbenchPanel"));
-const WorkspaceProjectsPanel = lazy(() => import("./workspace/WorkspaceProjectsPanel"));
-const WidgetsPanel = lazy(() => import("./widgets/WidgetsPanel"));
-const MobileTransferPanel = lazy(() => import("./mobile/MobileTransferPanel"));
-const WorkflowsPanel = lazy(() => import("./workflows/WorkflowsPanel"));
-const HistoryPanel = lazy(() => import("./history/HistoryPanel"));
-const PlanningCenterPanel = lazy(() => import("./roadmap/PlanningCenterPanel"));
 const SettingsPanel = lazy(() => import("./settings/SettingsPanel"));
-const HelpCenterPanel = lazy(() => import("./help/HelpCenterPanel"));
-const DiagnosticsCenterPanel = lazy(() => import("./diagnostics/DiagnosticsCenterPanel"));
-const ResourceManagementPanel = lazy(() => import("./resource/ResourceManagementPanel"));
+
+// Phase D：这些功能的完整管理界面只存在于唯一大型工作台。主窗口保留导航
+// 位置、徽标与快捷键，但页面退化为兼容入口（摘要 + 打开工作台），不再挂载
+// 第二套完整宿主。任务/Agent/行动/剪贴板/收集与暂存是胶囊快捷面的一部分，
+// 设置是主窗口自身窗口与外观配置的入口，继续保留。
+const WORKBENCH_ONLY_TABS = new Set<Tab>([
+  "workbench",
+  "workspace",
+  "apps",
+  "widgets",
+  "mobile",
+  "workflows",
+  "history",
+  "roadmap",
+  "help",
+  "diagnostics",
+  "resource",
+]);
 
 // 注册中心声明顺序不是展示顺序：左侧入口统一按默认顺序读取，用户排序在渲染时覆盖。
 const LEFT_ENTRIES = entriesForSurface("left");
@@ -404,23 +412,15 @@ export default function FullView() {
         >
           {/* 低频页首次进入时异步加载；fallback 只占位、不做持续动画，避免闪烁。 */}
           <Suspense fallback={<div className="panel-loading" role="status" aria-label={t("nav.loading")} />}>
-            {tab === "workbench" && <DevWorkbenchPanel />}
-            {tab === "workspace" && <WorkspaceProjectsPanel />}
+            {WORKBENCH_ONLY_TABS.has(tab) && (
+              <WorkbenchHandoff tab={tab as WorkbenchRoute} />
+            )}
             {tab === "tasks" && <TasksPanel />}
             {tab === "agents" && <AgentPanel />}
-            {tab === "apps" && <AppsPanel />}
-            {tab === "widgets" && <WidgetsPanel sources={WIDGET_SOURCES} />}
             {tab === "actions" && <ActionCenterPanel />}
             {tab === "clipboard" && <ClipboardPanel />}
-            {tab === "mobile" && <MobileTransferPanel />}
             {/* 收集与暂存：inbox / shelf 两个逻辑 Tab 共用同一组合页 */}
             {(tab === "inbox" || tab === "shelf") && <CollectionPanel />}
-            {tab === "workflows" && <WorkflowsPanel />}
-            {tab === "history" && <HistoryPanel />}
-            {tab === "roadmap" && <PlanningCenterPanel />}
-            {tab === "help" && <HelpCenterPanel />}
-            {tab === "diagnostics" && <DiagnosticsCenterPanel />}
-            {tab === "resource" && <ResourceManagementPanel />}
             {tab === "settings" && <SettingsPanel />}
           </Suspense>
         </ErrorBoundary>
