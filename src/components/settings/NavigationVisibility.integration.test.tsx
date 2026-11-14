@@ -59,7 +59,7 @@ import { useActionsStore } from "../../store/useActionsStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { defaultNavigationLayout } from "../../lib/navVisibility";
 import { resetNavOrderIntents } from "../../lib/navOrderIntent";
-import { allEntryIds } from "../../lib/navigationRegistry";
+import { allEntryIds, navEntry } from "../../lib/navigationRegistry";
 import { registerTabGuard } from "../../lib/tabGuard";
 
 const BASE = {
@@ -71,7 +71,10 @@ const BASE = {
   snap_display_mode: "capsule",
   actions_enabled: true,
 };
-const DEFAULT_LEFT_COUNT = defaultNavigationLayout().left.length;
+// 主窗口完整面板不渲染 workbenchOnly 入口（文件工作区等只接入统一工作台）。
+const DEFAULT_LEFT_COUNT = defaultNavigationLayout().left.filter(
+  (id) => navEntry(id)?.workbenchOnly !== true,
+).length;
 
 /** 后端真实行为：返回完整 Settings（写入的键覆盖，其余保持原值）。 */
 function installBackend() {
@@ -189,7 +192,9 @@ describe("导航显隐 · 主内容区始终有效", () => {
       version: number;
     };
     expect(layout.version).toBe(1);
-    expect(layout.left).toHaveLength(DEFAULT_LEFT_COUNT);
+    // 持久化配置包含全部注册入口（含 workbenchOnly：工作台侧渲染它）；
+    // 渲染层才过滤，故这里用未过滤的默认长度。
+    expect(layout.left).toHaveLength(defaultNavigationLayout().left.length);
     expect(useSettingsStore.getState().settings?.mode).toBe("full");
     expect(useSettingsStore.getState().settings?.theme).toBe("dark");
     expect(useSettingsStore.getState().settings?.material).toBe("solid");
