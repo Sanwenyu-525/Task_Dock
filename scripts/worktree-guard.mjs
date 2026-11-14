@@ -7,8 +7,10 @@
 //!                                           [--delete-branch] [--execute] [--json]
 //!
 //! 定位：
-//!   - 并行开发时把每个任务放进独立 Worktree，避免多个 Agent 同时写入同一工作树；
-//!   - 主工作区（git worktree list 的第一项）承担集成、验收与稳定版本管理；
+//!   - Worktree 是按需隔离手段：只在写入范围/共享资源/Git 状态存在无法协调的冲突时使用，
+//!     不是多 Agent 并行的前置步骤（判定见 AGENTS.md §3.3）；
+//!   - 共享工作区并行的任务不经过本工具，按文件所有权直接在主工作区写入；
+//!   - 主工作区（git worktree list 的第一项）承担最终集成、验收与稳定版本管理；
 //!   - 本工具不做 commit / merge / rebase / push，也不自动清理不安全的 Worktree。
 //!
 //! 安全边界：
@@ -795,7 +797,7 @@ function usage() {
 
 命令：
   status   列出所有 Worktree、分支、HEAD、未提交/未跟踪/冲突、锁定与 ahead/behind
-  create   创建任务 Worktree（默认分支 agent/<task>，默认根 <仓库同级>/<仓库名>-worktrees）
+  create   为已判定需要隔离的任务创建 Worktree（默认分支 agent/<task>，默认根 <仓库同级>/<仓库名>-worktrees）
   check    只读检查待集成提交、合并冲突、与目标工作区未提交文件的重叠
   cleanup  清理任务 Worktree；默认 dry-run，--execute 才执行
 
@@ -823,7 +825,10 @@ function usage() {
   node scripts/worktree-guard.mjs create --task capsule-drag --link-node-modules
   node scripts/worktree-guard.mjs check --task capsule-drag
   node scripts/worktree-guard.mjs cleanup --task capsule-drag
-  node scripts/worktree-guard.mjs cleanup --task capsule-drag --delete-branch --execute`);
+  node scripts/worktree-guard.mjs cleanup --task capsule-drag --delete-branch --execute
+
+说明：create 只在 AGENTS.md §3.3 判定「必须隔离」或记录「建议隔离」理由后执行；
+共享工作区并行的任务不需要创建 Worktree。`);
 }
 
 function isDirectRun() {

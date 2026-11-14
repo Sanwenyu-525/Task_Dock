@@ -115,7 +115,7 @@ task_dock/
 ├── src-tauri/tests/            # 集成测试；ingest_perf / actions_perf / clipboard_perf 为手动压测
 ├── scripts/gen-icons.mjs       # 图标生成器
 ├── scripts/build-guard.mjs     # 构建空间/缓存登记与安全回收（§7）
-├── scripts/worktree-guard.mjs  # 多 Agent Worktree 创建/状态/集成预检/安全清理（§8）
+├── scripts/worktree-guard.mjs  # 按需 Worktree 创建/状态/集成预检/安全清理（§8）
 ├── scripts/make-preview.mjs    # 视觉预览 harness（IPC mock）→ dist/ 与 .preview/
 ├── scripts/serve-preview.mjs   # 视觉走查静态服务（harness 取 .preview/，产物取 dist/）
 ├── scripts/visual-audit.mjs    # Playwright 320/400 视觉走查
@@ -455,15 +455,22 @@ CARGO_PROFILE_DEV_DEBUG=2 cargo build              # bash / Git Bash
 未跟踪文件不计，未提交内容本身不做哈希）。`dirty=true` 的构建不应视为干净快照。
 exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
 
-## 八、多 Agent Worktree 隔离与集成
+## 八、多 Agent 并行协作与 Worktree 隔离
 
-多 Agent 并行时默认**一任务一 Worktree**；共享同一工作树只适用于单 Agent 独占且无并行冲突的
-简单任务。主工作区承担集成、验收与稳定版本管理。工具 `scripts/worktree-guard.mjs`（零依赖
-Node，与 `build-guard.mjs` 同级）负责创建、状态、冲突预检与安全清理，**不执行 commit / merge /
-rebase / push**，所有 Git 写操作仍由任务所有者按授权执行。
+并行协作以根 [AGENTS.md](../AGENTS.md) 第 3 节为准：**共享工作区优先、文件所有权优先、
+Worktree 按需使用、最终统一集成验收**。写入文件集合与共享资源都不冲突的多个任务直接在同一
+工作区并行；Worktree 只在风险评估判定需要隔离时创建（判据见 AGENTS.md §3.3），不是并行开发
+的前置步骤，也不因为「跨模块」「耗时长」或「Agent 数量大于 1」而自动创建。
+
+主工作区承担最终集成、验收与稳定版本管理。工具 `scripts/worktree-guard.mjs`（零依赖 Node，
+与 `build-guard.mjs` 同级）只负责已判定需要隔离的任务的创建、状态、冲突预检与安全清理，
+**不执行 commit / merge / rebase / push**，也不替 Agent 判断是否需要隔离；所有 Git 写操作仍由
+主 Agent 或任务所有者按授权执行。
 
 ### 8.1 目录与分支约定
 
+- 仅对判定需要隔离的任务使用本节约定；共享工作区并行的任务不建 Worktree、不建任务分支，
+  仍在主工作区按文件所有权写入。
 - Worktree 根默认在仓库同级：`<仓库父目录>/<仓库名>-worktrees/`（当前即
   `D:\Develop\task_dock-worktrees\`），一任务一目录，目录名 = 任务名。
 - 任务名只允许小写字母/数字与单个短横线连接，长度 1–48，例如 `capsule-drag`。
@@ -503,7 +510,7 @@ node scripts/worktree-guard.mjs cleanup  --task <name> [--target main] \
    `--link-node-modules`，建立指向主仓库 `node_modules` 的 junction；否则必须在 Worktree 内
    独立 `npm ci`。这样避免两个任务对同一依赖目录做不同版本安装而互相污染。
 4. Rust 缓存：**不要**让每个 Worktree 在自己目录下生成 `src-tauri/target`（不在主仓库报告范围，
-   且每个 5–7 GB）。需要 Rust 构建时，在主仓库 `src-tauri/` 内使用绝对路径：
+   且每个 5–7 GB）。隔离任务需要 Rust 构建时，在主仓库 `src-tauri/` 内使用绝对路径：
 
    ```bash
    CARGO_TARGET_DIR="D:/Develop/task_dock/src-tauri/target-<task>"
@@ -539,16 +546,22 @@ ahead/behind。当前没有任何进程/会话级证据，活跃状态统一显�
    先读双方 diff 再决定，不整文件覆盖、不强制推送。
 6. 合并后重新执行受影响测试；确认无回归后才考虑清理 Worktree。
 
+共享工作区并行的任务不经过 `check`/`merge`：由各任务所有者按精确路径提交（或按授权由主 Agent
+提交），主 Agent 直接在主分支复核文件所有权、公共接口与复测结果。集成判断标准与上面一致。
+
 ### 8.6 冲突与共享文件
 
 - Worktree 隔离**不等于**自动解决冲突：两个 Worktree 改同一模块，合并时仍会冲突。
+- 共享工作区并行时，交集文件只能有一个所有者；发现写入集合出现交集立即停止重复写入，按
+  AGENTS.md §3.2 由主 Agent 重新分配所有权或改为串行，不各自覆盖同一文件。
 - 共享枢纽文件（`src/lib/bridge.ts`、`navigationRegistry.ts`、`featureCatalog.ts`、
   `useUiStore.ts`、`src-tauri/src/lib.rs`、`commands/mod.rs`、`db/mod.rs`）、SQLite 迁移与
   构建缓存仍保持单一所有者；由主 Agent 决定集成顺序。
 - 目标工作区有未提交改动时，`check` 会列出与待集成文件重叠的路径并返回 2；不得用 stash、
   reset 或整文件覆盖清理他人的现场，必须由该工作区所有者先提交或迁移改动。
-- 一个任务未完成、另一个任务需要开始时，新任务从目标分支的稳定提交新建 Worktree，
-  不等待、不 rebase 对方分支；集成时按提交顺序处理。
+- 一个任务未完成、另一个任务需要开始时，先判断新任务与其是否存在文件/资源冲突：不冲突则直接
+  在共享工作区开始（不等待、不 rebase、不覆盖对方未提交改动）；判定需要隔离时再从目标分支的
+  稳定提交新建 Worktree。两条路径都按提交顺序集成。
 
 ### 8.7 安全清理
 
@@ -581,6 +594,43 @@ node scripts/build-guard.mjs precheck            # 现有构建守卫保持兼�
 自动化用例在系统临时目录自建一次性 Git 仓库，不读写本仓库的工作树；真实仓库验收只创建
 本任务自己的测试 Worktree，并在确认干净、已合入后清理。证据与结论见
 `tmp/acceptance/agent-worktree-isolation/report.md`。
+
+### 8.10 共享工作区并行的落地检查
+
+派发与执行阶段按下列清单检查（与 AGENTS.md §3.2–3.5 对应）：
+
+| 阶段 | 检查项 |
+|---|---|
+| 派发前 | 列出各任务预计写入的文件集合，确认无交集；共享枢纽文件只有一个所有者；没有未确认的公共接口变更 |
+| 派发前 | 资源检查：构建输出目录、dev 端口、Cargo target、`node_modules`、测试数据库/隔离实例数据目录、Git 暂存区与分支 |
+| 执行中 | 任务扩大或写入集合变化时重新检查；需要写未授权文件时停止该文件写入并上报，不越界 |
+| 执行中 | 只读检查可并行；写同一输出目录的构建、同一 Cargo target、同一 dev 端口、真实前台/剪贴板/光标操作必须串行或显式隔离 |
+| 集成前 | `git status` 区分本任务与其他任务的改动；按精确路径提交；复核公共接口、TypeScript/Rust 类型与测试结果 |
+| 集成后 | 主 Agent 复测受影响范围；确认未带入他人未提交改动；证据放入各自 `tmp/acceptance/<task>/` |
+
+典型判定：UI 与独立 Rust 模块、不同功能写入不同文件 → 共享工作区；两任务都要改 `bridge.ts`
+→ 唯一所有者协调；两任务都要改数据库迁移 → 统一顺序，必要时隔离；多 Agent 只读检查 → 允许
+并行；并行构建写同一输出目录 → 资源隔离或串行；两任务需要不同 Git 分支 → Worktree。
+
+注意：**文件不重叠不等于运行环境绝对无冲突**；共享工作区下仍按上表管理运行时资源。
+
+### 8.11 任务派发声明模板
+
+主 Agent 每次派发实现任务时向子 Agent 明确下列各项（可直接作为任务书开头）：
+
+| 项 | 内容 |
+|---|---|
+| Agent / 任务标识 | 任务名（小写短横线英文）+ 子 Agent 标识 |
+| 负责模块 | 功能域或目录范围 |
+| 允许写入 | 文件/目录白名单，按实际写入集合收窄 |
+| 禁止写入 | 共享枢纽文件与其他任务的写入范围 |
+| 公共接口 | 需要协调的 IPC 命令、类型、迁移、设置键 |
+| 依赖关系 | 前置任务、接口确认、集成顺序 |
+| 隔离方式 | 共享工作区 / 资源隔离 / Worktree，并写明判据（AGENTS.md §3.3） |
+| 测试与验收 | 负责的命令、通道与证据路径 |
+
+声明只做粗筛：**目录所有权不等于对目录下全部文件的永久独占**；写入集合出现交集时立即按 8.6
+重新协调，交集文件按「唯一所有者」处理。
 
 ## 资源管理与清理
 

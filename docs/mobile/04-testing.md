@@ -31,6 +31,10 @@ Expo 原生边界用 `src/test/mocks/` 替身替换——只换驱动，不为�
 
 纯函数断言（编译真实代码，不重写实现）：
 
+> 适用范围：以下是 2026-11-08 历史专项脚本的复现说明，只覆盖重复规则/搜索匹配/笔记文本，
+> 不是所有移动端纯函数改动的统一入口；其余纯函数按 `apps/mobile/AGENTS.md` §6 执行对应
+> vitest 用例与专项回归。
+
 ```bash
 cd apps/mobile
 npx tsc --ignoreConfig src/domain/recurrence.ts src/domain/taskQuery.ts src/domain/noteText.ts \

@@ -4,7 +4,7 @@
 
 ## D1（2026-11-12）开发效率三特性挂在既有 DevWorkbenchPanel，不新增导航入口
 
-依据：AGENTS.md §8「不制造入口冗余」与总任务书 11.1。P0 已交付 DevWorkbenchPanel（四区域）
+依据：总任务书 11.1「不制造入口冗余」与根 `AGENTS.md` 的最小改动原则。P0 已交付 DevWorkbenchPanel（四区域）
 并注册 left order 0.5。功能①②③ 的 Round 1 UI 全部作为其新区域/组件挂载（DevProjectContext /
 DevHandoffSection / DevAcceptanceSection），胶囊侧只给 TasksLite 加紧凑现场 chip，不新增 Lite
 pane（避免 6 处注册点与 rail-contract 契约扩张，Phase 3 做情境化操作时再统一设计）。

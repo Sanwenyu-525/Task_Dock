@@ -48,6 +48,10 @@
 
 ### 多 Agent Worktree 隔离机制（2026-11-07）
 
+> 适用范围说明：本节只记录 Worktree 工具能力与安全边界的测试证据（2026-11-07）。是否创建
+> Worktree 的当前判定以根 `AGENTS.md` §3.3 为准——共享工作区优先、Worktree 按需使用；本节
+> 不构成「多 Agent 必须创建 Worktree」的要求。
+
 | 检查 | 结果 | 证据 |
 |---|---|---|
 | `node --test scripts/worktree-guard.test.mjs` | **PASS 9/9**（10.4s，exit 0） | 一次性临时 Git 仓库覆盖：Git 登记识别、指定基准创建、重复任务/已存在目录/分支冲突/非法参数拒绝、双 Worktree 未提交隔离、node_modules 同清单 junction 与清单不一致拒绝、merge-tree 冲突/目标未提交重叠/源未提交风险、cleanup 脏/未合入/锁定/缺失/主工作区/当前 cwd 位于待清理目录内拒绝及合入后清理、linked Worktree 内继续创建、分支删除失败返回 5 |
@@ -1145,7 +1149,8 @@ Outlook 附件、截图工具），也不得用受控 OLE 测试源的成功替�
 
 1. **P0 GIT CLSID 写错**（`0000033C` → `00000323`）：`git()` 恒 `None`，所有虚拟文件流读取失败；
 2. P1 谎报 TYMED 时 `ReleaseStgMedium` 触发访问违例；
-3. P1 `FileGroupDescriptorW` 缓冲区大于 `4+620×N` 时附件被旁路格式顶替；
+3. P1 `FileGroupDescriptorW` 缓冲区大于 `4+620×N` 时附件被旁路格式顶替
+   （**2026-11-14 更正**：当时的 `620` 是错误假设，SDK 单条实际为 **592**，见第四轮）；
 4. P1 虚拟文件实际写入总量无上限（只看声明大小）；
 5. P2 短 ASCII 文本被误判为 UTF-16；6. P2 `skipped` 未进入提交报告且重复计数；
 7. P3 `drag_bridge_status` 缺窗口数；8. P3 不支持内容不展示具体原因；9. 测试自身期望修正。
@@ -1177,3 +1182,134 @@ Outlook 附件、截图工具），也不得用受控 OLE 测试源的成功替�
 `cargo check -j1` exit 0（56.10s）；`npx tsc --noEmit` 仅剩 1 个并行 WIP 错误
 （`src/lib/capsuleLayout.test.ts` 未使用变量），拖入相关文件 0 错误。
 备份 ref：`backup/main-pre-universal-drag-20261113-200834`。
+
+## 通用跨应用拖入 · 第三轮专项（2026-11-13 夜）
+
+范围：`FileContents` 多文件索引与 HGLOBAL 回退、前端 pending 会话并发、原生桥注册失败账目、
+后台读取/清理竞争、诊断稳定码。基线 `dbf83ce`。
+
+### 新增测试手段
+
+- **受控 OLE 扩展**（`ole_test_source.rs`）：多文件 HGLOBAL（每个 `lindex` 不同内容）、
+  流/内存混合、同一索引同时提供 ISTREAM+HGLOBAL（验证流优先）、描述符声明多于内容
+  （部分成功）、空 HGLOBAL、打开前取消、**读取中途取消**、HGLOBAL 块大于声明大小（截断）。
+- **安装账目**：`install_slots` 为纯函数，注入注册动作，覆盖全成功/顶层失败/子窗口失败/
+  全部失败/首次失败重试成功/重复安装；真实 `RegisterDragDrop` 仍由隔离实例冒烟与真机覆盖。
+- **取消与清理**：「已放弃会话的后台暂存不再写盘」「流读取可被取消且不残留分片」
+  「流读取中途取消也清理分片」「放弃会话删除目录并标记释放」「上限淘汰优先选择失败会话」
+  「淘汰选择最老读取中会话而不是等待提交的会话」「提交期间目录不会被孤儿清扫删除」。
+- **前端会话表**：两轮交错（两种完成顺序）、注销其一、重复 payload、未知 operationId、
+  超上限淘汰、TTL 过期、大小文件完成时间差、分属不同消费者、显式取消、已释放再 accepted。
+
+### 测试结果（最终源码，隔离 worktree + 独立 target）
+
+| 项 | 命令 | 退出码 | 结果 | 证据 |
+|---|---|---|---|---|
+| Rust dragdrop | `cargo test --lib dragdrop:: --no-run` + 运行测试 exe | 0 | **95 / 95** | `tmp/acceptance/universal-drag/cargo-test-dragdrop-r5.log` |
+| Rust 全量 lib | 同上，全部测试 | 0 | **1760 passed / 0 failed / 8 ignored** | `cargo-test-lib-r5.log` |
+| Rust 编译检查（主树） | `cargo check -j1` | 0 | `Finished dev profile in 25.91s` | `logs/cargo-check-main.log` |
+| 前端拖入定向 | `vitest run fileDrop dragPayload InboxDropPane ShelfWorkspace.drop useShelfStore useDropTargetsStore` | 0 | **218 / 218** | `logs/vitest-drag-r6.log` |
+| 前端拖入回归 | `vitest run dragCursorSession useShelfStore.addPaths DropTargetManager` | 0 | **33 / 33** | `logs/vitest-regression-r6.log` |
+| 类型检查 | `npx tsc --noEmit` | 2 | 仅 1 个**并行 WIP** 错误（`src/lib/capsuleLayout.test.ts` 未使用变量）；本任务文件 0 错误 | `logs/tsc-r6.log` |
+| 生产构建 | `npx vite build` | 0 | `built in 12.78s` | `logs/vite-build-r6.log` |
+
+说明：
+
+1. 全量套件有一次 `commands::restore::tests::corrupt_bundle_is_rejected_without_touching_db`
+   失败（与拖入无关的备份测试）；单独复跑通过、整包复跑通过。日志：
+   `cargo-test-lib-final3.log`（偶发失败）、`restore-single.log`（单跑）、
+   `cargo-test-lib-final4.log` / `cargo-test-lib-r5.log`（复跑通过）。
+2. **测试 exe 清单问题（构建工装限制，非产品缺陷）**：本机当前依赖组合会把 `rfd` 的
+   `TaskDialogIndirect` 链进 `cargo test --lib` 的测试 exe，而测试 exe 没有内嵌清单，
+   Windows 只能加载 System32 的 comctl32 v5（缺该入口点），进程以 `0xC0000139` 退出。
+   解决办法是构建后用 `mt.exe` 给测试 exe 嵌入 comctl32 v6 清单
+   （`tmp/acceptance/universal-drag/comctl6.manifest`）；产品 exe 由 tauri-build 内嵌清单，
+   不受影响。该步骤不修改源码，只作用于测试产物。
+3. 本轮 Rust 测试在隔离 worktree（`D:\Develop\task_dock-worktrees\universal-drag`）+
+   `CARGO_TARGET_DIR=src-tauri/target-universal-drag` 运行：主树并行 WIP 把
+   `comctl32` v6 的 `DefSubclassProc` 静态引入测试 exe，导致主树测试二进制无法启动；
+   按规范不改他人 WIP。
+4. 真机状态不变：`LockApp` 锁屏，物理拖拽/真实 DPI/多显示器/第三方应用
+   （Chrome、Edge、ChatGPT、Outlook）全部 **UNVERIFIED**；ChatGPT 网页图片由用户按报告
+   第十节步骤验证。
+
+### 独立只读审查（2026-11-14）
+
+只读子智能体审查了本轮 diff、源码与 `tauri-runtime-wry`/`tao` 上游实现（未运行构建/测试、
+未写文件）。结论：未发现本轮新引入的 P0/P1；发现一个**既存 P1**——提交期间
+`take_for_commit` 把会话移出注册表后，并发新拖入的孤儿清扫会把正在复制的暂存目录当孤儿
+删除。已修复为 `committing` 集合 + RAII `CommitGuard`（所有返回路径都会解除），并有
+「提交期间目录不会被孤儿清扫删除」回归用例。其余 P2/P3 的逐项处置与无法完全防御的
+残余风险（谎报 ISTREAM 的违约来源、单工作线程同步读取）见
+`tmp/acceptance/universal-drag/report.md` 第三轮「D. 剩余风险」「G. 独立审查」。
+
+## 通用跨应用拖入 · 第四轮协议纠错与 UI 精修（2026-11-14）
+
+范围：`FILEDESCRIPTORW` 592 字节 ABI、跳过无效描述符后的原始 `FileContents.lindex`、
+格式优先级核查、最近暂存非空拖拽视觉、结构化错误反馈。基线 `dbf83ce` + 第三轮未提交改动。
+
+### 新增测试手段
+
+- **独立 ABI 断言**：直接使用 `windows` crate 0.62 的
+  `Win32::UI::Shell::FILEDESCRIPTORW`/`FILEGROUPDESCRIPTORW` 绑定断言
+  `size_of = 592/596`、字段偏移（36/64/68/72）与 `cFileName` 260 WCHAR。
+- **独立固定字节样本**：`virtual_files.rs` 内按 592/596/1188 手工写字节，不复用生产
+  `FILEDESCRIPTORW_LEN`；覆盖单/双/三文件、尾部填充、少一字节截断、4 字节头、
+  数量 0/超限/`u32::MAX`、中文名、非法路径、未知大小、超大声明。
+- **SDK 结构构造的受控 OLE 源**：`ole_test_source::descriptor` 不再复制 620/592 常量，
+  直接零初始化 `FILEDESCRIPTORW` 后按字节读出；测试源与生产解析器不再共享错误假设。
+- **原始索引受控用例**：目录/空名/超限项带诱饵 `FileContents`，验证生产代码只读
+  有效项的原始 `lindex`；另覆盖首个有效项在最后、缺失索引按原始序号报告。
+- **真实 Chromium 视觉 harness**：`tmp/acceptance/universal-drag-ui/` 用生产
+  `styles*.css` + 与组件一致的 DOM 渲染 320/400 宽、浅/深、DPR 1/1.5/2、1/3/10 条、
+  空态与 active/over；`geometry.json` 记录矩形、computedStyle 与 `elementFromPoint`
+  命中，not jsdom 类名断言。
+
+### 测试结果（最终源码）
+
+| 项 | 命令 | 退出码 | 结果 | 证据 |
+|---|---|---|---|---|
+| Rust dragdrop | `cargo test --lib dragdrop:: --no-run`（worktree）+ 运行测试 exe | 0 | **122 / 122**（新增 27） | `tmp/acceptance/universal-drag-protocol/logs/cargo-test-dragdrop-postreview.log` |
+| Rust 全量 lib | 同上，全部测试 | 0 | **1787 passed / 0 failed / 8 ignored** | `logs/cargo-test-lib-postreview.log` |
+| Rust 编译（主树） | `cargo check -j1` | 0 | `Finished dev profile in 39.00s` | `logs/cargo-check-postreview.log` |
+| 前端拖入定向（6 文件） | `npx vitest run fileDrop dragPayload InboxDropPane InboxRecentShelf ShelfWorkspace.drop useShelfStore` | 0 | **219 / 219** | `logs/vitest-drag-postreview-r2.log` |
+| 类型检查 | `npx tsc --noEmit` | 2 | 仅并行 WIP 错误 `src/lib/capsuleLayout.test.ts`；本任务文件 0 错误 | `logs/tsc-final2.log` |
+| 生产构建 | `npx vite build` | 0 | `built in 14.10s` | `logs/vite-build-final.log` |
+| Chromium 视觉 | `node tmp/acceptance/universal-drag-ui/run-evidence.mjs` | 0 | **250/250 checks**，29 张截图 | `tmp/acceptance/universal-drag-ui/geometry.json`、`screenshots/` |
+
+说明：
+
+1. Rust 测试仍在隔离 worktree（`D:\Develop\task_dock-worktrees\universal-drag`）+
+   `CARGO_TARGET_DIR=src-tauri/target-universal-drag` 运行，原因与第三轮相同：主树并行
+   WIP 会把 comctl32 v6 入口点静态链入测试 exe，且共享 target 的 `task-dock.exe` 正被
+   其他会话的进程占用。构建后用 `mt.exe` 给测试 exe 嵌入 comctl32 v6 清单。
+2. 本轮 `cargo check` 主树 exit 0；`tsc` 仅剩 `src/lib/capsuleLayout.test.ts` 的并行 WIP
+   错误，本轮未修改，不通过重置/覆盖他人改动来消除。
+3. 独立验收 C 发现 3 个 P2 与若干 P3，已修复并复验：ANSI-only 描述符明确不支持、
+   损坏载荷落目录卡片不再被 dirBlocked 覆盖、图片读取错误码按原因区分；另修正
+   窄面板计数可访问性、active 态读屏文案、折叠态 `aria-controls`、迟到载荷不清新
+   会话读取态、恶意数量提示收敛、整组截断 skipped 计数、新增 `DRAG_TOO_MANY_ITEMS`。
+   上表为修复后的最终数字。
+3. UI 证据性质：真实 Chromium 渲染的**静态 CSS harness**（生产样式 + 同构 DOM），
+   不是完整应用截图，也不是 Windows 原生 OLE 拖放；before 截图用 `git HEAD` 旧规则
+   独立还原。非空列表在 active/over 下 section 背景透明、无整圈边框，行矩形/底栏/
+   scrollTop 不变；首末行按钮中心 `elementFromPoint` 命中自身。
+4. 真实 Windows 窗口、系统级拖放、DPI/多显示器、第三方应用（ChatGPT/Chrome/Edge/
+   Outlook）仍为 **UNVERIFIED / USER VERIFICATION PENDING**；受控 OLE、jsdom 与
+   Chromium harness 都不能替代。
+
+### 可运行构建与隔离冒烟（2026-11-14）
+
+主树 `cargo build -j1` 的 lib 编译成功，但链接阶段因共享
+`src-tauri/target/debug/task-dock.exe` 正被其他会话进程占用（`os error 5`）未能就地完成；
+未结束他人进程。改用隔离 worktree 构建 debug exe：
+
+- `D:\Develop\task_dock-worktrees\universal-drag`（基线 `dbf83ce` + 第三/四轮 dragdrop 修复）
+  + 本轮最终 `dist`；`CARGO_TARGET_DIR=src-tauri/target-universal-drag cargo build -j1`
+  exit 0，`Finished dev profile in 57.62s`（最终重建）；
+- exe `src-tauri/target-universal-drag/debug/task-dock.exe`，51,668,992 字节，
+  sha256 前缀 `34884fdd6cc08dd6`；
+- 隔离实例（`TASK_DOCK_DATA_DIR` + `WEBVIEW2_USER_DATA_FOLDER`）启动后存活，日志
+  `通用拖入原生接收桥已安装 … windows=7 failed=0 recovered=0 top_level_ok=true`，
+  `logs/app-smoke-final.out.log`；随后停止。
+- 限制：该 exe 不含主工作树其他会话的 Rust WIP，是 debug 验证包，不是正式发布安装包。

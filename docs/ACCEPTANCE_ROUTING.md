@@ -224,10 +224,15 @@
 
 ### 5.4 并行会话约束（Task Dock 特有）
 
+- 并行协作默认共享工作区，按文件所有权与共享资源判定是否冲突（`AGENTS.md` §3.2–3.5）；
+  只有写入范围/共享资源/Git 状态无法协调时才创建 Worktree，判据见 `AGENTS.md` §3.3。
 - 本仓库可能多会话共享同一工作树：所有未提交/未跟踪改动默认属于其他任务，**不还原、不删除、
   不覆盖**。开始与交付前各查一次 `git status`。
-- 禁止 `git reset --hard`、`git checkout -- <path>`、`git restore <path>`、`git clean`、裸
-  `git stash`；需要暂存只用 `git stash push -u -m <唯一标签>`。
+- 禁止 `git reset --hard`、`git checkout -- <path>`、`git restore <path>`、`git clean`。共享工作区
+  默认禁止 stash：不得用无路径限制的 `git stash push`/`push -u` 移走他人修改或未跟踪文件；
+  确需暂存须确认精确路径归属、无其他会话使用并取得授权，仅对该路径执行
+  `git stash push -u -m <唯一标签> -- <path>`，恢复前复核；**唯一标签不等于安全隔离**，归属
+  无法确认即停止并交主 Agent 协调。
 - 不清理他人 `tmp/` 产物、构建缓存、截图与验收报告；发现应清理项只列路径与建议命令。
 - **物理操作同一时间只允许一个会话**：真实鼠标/键盘、抢前台、`corner-lab.ps1`、
   `capture-native-set.ps1` 不得与其他会话并发执行。
@@ -301,7 +306,8 @@ python .agents/skills/taskdock-acceptance/scripts/validate_evidence.py --repo . 
 
 - 任务级产物统一放 `tmp/acceptance/<task-name>/`（短横线英文，一任务一目录）；调试/实验分别用
   `tmp/debug/<task-name>/`、`tmp/experiments/<task-name>/`；`tmp/` 已被 `.gitignore` 忽略。
-- 任务报告写 `tmp/acceptance/<task-name>/report.md`，字段按 [AGENTS.md](../AGENTS.md) 第 10 章。
+- 任务报告写 `tmp/acceptance/<task-name>/report.md`，字段按
+  [AGENTS.md](../AGENTS.md)「文档、验收产物与交付」。
 - 长期证据归档到 `docs/screenshots/`、`docs/performance/results/`、`docs/clipboard/evidence/`，
   并更新对应索引；新增文件带日期，不覆盖历史验收资料。
 - 推翻历史结论时保留旧文件，新增带日期的更正记录。
@@ -330,7 +336,7 @@ python .agents/skills/taskdock-acceptance/scripts/validate_evidence.py --repo . 
 - 用 `dispatchEvent()`/DOM `.click()` 冒充真实交互；用 `page.evaluate` 改状态后宣称通过。
 - 在共享实例或用户数据上做破坏性验收；结束非本会话启动的进程。
 - 清理他人 `tmp/`、构建缓存、证据；执行 `git reset --hard`、`git clean`、`git checkout --`、
-  `git restore`、裸 `git stash`。
+  `git restore`、裸 `git stash`、无路径限制的 `git stash push`（含 `-u`）。
 - 自动 `git commit`/`push`/打标签；把剪贴板正文、密码、令牌、个人路径写入证据。
 - 改全局 DPI/缩放、通知权限、系统主题与材质设置来「凑」通过。
 - 把 `UNVERIFIED`、`NOT_RUN`、`#[ignore]` 结果计为通过。

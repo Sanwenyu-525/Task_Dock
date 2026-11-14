@@ -174,7 +174,7 @@ unsupported { formats, reason, code }
 | 问题 | 根因 | 修复 |
 |---|---|---|
 | 谎报 TYMED 的来源会让拖入回调崩溃（`STATUS_ACCESS_VIOLATION`） | 校验出 `medium.tymed` 不符后仍调用 `ReleaseStgMedium`；该 API 按被谎报的 tymed 释放，本身就会解引用错误指针 | 类型不符时**不释放**、直接拒绝并放弃这个 medium：宁可泄漏一个违约 medium，也不在 `DoDragDrop` 内崩溃 |
-| `FileGroupDescriptorW` 缓冲区比 `4+620×N` 大时被整块放弃 → 附件被同批 HTML/文本旁路顶替 | `read_hglobal` 对超过 cap 的 HGLOBAL 一律返回 `None` | 新增 `read_hglobal_prefix`：只读头部；解析器仍按真实长度报 `Truncated`/`TooMany` |
+| `FileGroupDescriptorW` 缓冲区比 `4+620×N` 大时被整块放弃 → 附件被同批 HTML/文本旁路顶替 | `read_hglobal` 对超过 cap 的 HGLOBAL 一律返回 `None` | 新增 `read_hglobal_prefix`：只读头部；解析器仍按真实长度报 `Truncated`/`TooMany`。**2026-11-14 更正**：此处 `620` 是当时的错误假设，SDK 单条实际为 **592**，见 §12 |
 | 虚拟文件「声明大小」可信，实际写入总量无上限 | 只用描述符声明值校验 | 增加本批**实际写入总量** `MAX_VIRTUAL_TOTAL_BYTES`，逐条扣减；谎报大小无法突破 |
 | 短 ASCII 文本被误判为 UTF-16（`abc\0\0`） | 判据「零字节数 > 总长/4」对短文本不成立 | 改为「偶数长度 + 至少一半高字节为 0」；非法 UTF-8 再尝试 UTF-16LE（无 BOM 的中文 `CF_UNICODETEXT`） |
 | 拖入阶段 `skipped` 未进入提交报告 / 失败被重复计数 | `snapshot` 不含 `skipped`；`skipped += failures.len()` | `StagedOp::skipped()` 进入提交报告；`skipped` 与 `failures` 分开 |
@@ -199,3 +199,131 @@ unsupported { formats, reason, code }
 
 验收时会话仍处于锁屏（`LockApp` 运行），物理拖拽、真实系统 DPI、多显示器均为
 **UNVERIFIED**；结论与阻塞原因见 `tmp/acceptance/universal-drag/report.md` 第二轮章节。
+
+## 11. 第三轮：虚拟文件索引、会话并发与注册失败恢复（2026-11-13 夜）
+
+本轮不重写架构，只修上一轮独立审查发现的边界缺陷。
+
+### 11.1 本轮修复
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| 多虚拟文件来源只支持内存块时，回退读取会失败或串内容 | `obtain_content` 的 ISTREAM 路径带 `lindex=index`，HGLOBAL 回退却走 `read_hglobal`（固定 `lindex=-1`） | 新增 `read_hglobal_index(obj, cf, index, cap)`；流与内存回退**共用同一个 `lindex`**；`FileContents` 的索引就是描述符顺序 |
+| 内存块回退路径把虚拟文件上限从 2GB 悄悄压到 64MB，且错误码不准确 | 复用 `MAX_IMAGE_BYTES` 作为 cap | 新增 `MAX_MEMORY_CONTENT_BYTES`（64MB）与 `DRAG_MEMORY_CONTENT_TOO_LARGE`；文案带实际上限。**内存块无法流式写盘，超过上限明确拒绝，不伪称支持 2GB**；大文件必须由来源提供 `TYMED_ISTREAM` |
+| 来源忽略 TYMED 请求时行为不一致 | 只核对 `medium.tymed != 请求值` 就失败 | 按 `medium.tymed` **实际类型**分派：请求 ISTREAM 却拿到 HGLOBAL 时按内存块读取；拿到谎报类型时不释放、不放行（见 §10.1） |
+| 描述符声明有 N 项、来源只给部分 `FileContents` 时只有笼统「读取失败」 | 索引缺失与读取失败共用一个码 | 新增 `DRAG_VIRTUAL_INDEX_INVALID`（含「第 N 项」，N 是计数不是内容）；能读的照常落盘，缺的逐项报告 |
+| 后台读取与 `discard`/TTL/上限淘汰存在竞争：取消后仍可能写盘并重建暂存目录 | 后台线程不核对会话是否已被释放；`stage::open_part` 会 `ensure_dir` | `StagedOp::consumed` 兼作取消标记；`stage_pending` 每项写盘前核对，取消时回收**所有**未消费的 GIT cookie；`read_stream_to_file` 每 64KB 核对并删 `.part`；收尾再删一次目录 |
+| 会话上限淘汰可能删掉正在写盘的会话 | 只按 `created_at` 选最老 | 优先淘汰 `Ready/Failed` 或已消费的会话，全部仍在读时才淘汰最老 |
+| `enqueue` 投递失败时 job（含流 cookie）被丢弃 | `mpsc::SendError` 被忽略 | 从 `SendError` 取回 job 同步执行，绝不丢内容、不泄漏 GIT 项 |
+| 注册失败无法区分顶层/子窗口，失败窗口可能被当成已接管 | `install` 只返回成功数 | `InstallReport { total, installed, failed, recovered, top_level_ok }`；失败重试一次，仍失败如实计入；部分失败写 `DRAG_NATIVE_BRIDGE_PARTIAL` 诊断；`drag_bridge_status.failedWindows` 暴露失败数 |
+| 重复安装会重复撤销/注册，可能无界保留旧接口 | 无卸载入口 | `uninstall_registered` 幂等：句柄与接口成对保存，**撤销成功才释放**；主窗 `Destroyed` 时调用 `uninstall_native_bridge` |
+| 前端单个全局 `pending` 被第二轮拖入覆盖，两轮都丢 | 单槽变量 | 改为 `Map<operationId, session>`：上限 8（对齐 `MAX_STAGE_OPS`）、TTL 10 分钟（对齐 `STAGE_TTL`）、每会话一个定时器；注销只释放该消费者的会话；重复 payload 只交付一次且不误发 discard；已释放 operationId 去重 |
+| 提交失败的诊断只看到通用 `CONFLICT`/`NOT_FOUND` | `commit` 用自然语言报错 | 错误文本前缀稳定码（`DRAG_OPERATION_EXPIRED` / `DRAG_PAYLOAD_PENDING`），命令层用 `stable_drag_code` 提取为 `error_code`；新增 `DRAG_PAYLOAD_PENDING`（仍在读取，可重试） |
+
+### 11.2 `FileContents` 读取规则（本轮定稿）
+
+1. 先按 `{ cfFormat: FileContents, lindex: i, tymed: TYMED_ISTREAM }` 取流；
+   **2026-11-14 更正**：`i` 必须是**原始描述符序号**，不是跳过无效项后的数组下标；见 §12；
+2. 流成功 → 注册进 GIT，后台 MTA 线程 64KB 分块写盘（单条 ≤2GB、整批 ≤4GB、实际写入总量计费）；
+3. 流不可用 → 按**同一个 `lindex`** 以 `TYMED_HGLOBAL` 回退；成功即按内存块复制
+   （单条 ≤64MB、单次拖入所有内存块合计 ≤128MB）；落盘按描述符声明长度截断，去掉块尾部填充；
+4. 来源返回的 `medium.tymed` 与实际不符：**不释放**该 medium（按谎报类型释放会 AV），拒绝并放弃；
+5. 两条路径都不存在该索引（`DV_E_FORMATETC`/`DV_E_LINDEX`）→ `DRAG_VIRTUAL_INDEX_INVALID`；
+   其它 `GetData` 错误或内容为空 → `DRAG_VIRTUAL_FILE_READ_FAILED`；
+6. 内存块超限 → `DRAG_MEMORY_CONTENT_TOO_LARGE`。
+
+**无法防御的违约来源**：若来源把 HGLOBAL 谎报成 `TYMED_ISTREAM` 且给出非空 `pstm`，校验
+只能通过调用接口（AddRef）完成，而对假指针调用本身就会 AV；Windows 没有可靠的
+「指针是否为接口」API。ISTREAM 分支依赖来源遵守 OLE 契约，列为残余风险。
+
+### 11.3 前端会话表
+
+- `pending: Map<string, PendingDropSession>`，上限 `8`，超限淘汰最老并调用 `dragPayloadDiscard`；
+- 每会话 TTL `10 分钟`，到点未收到 payload → 释放后端暂存；
+- `accepted` 重复到达不覆盖；`payload` 按 operationId 精确交付；已交付的 operationId 记录在**有界**去重表（32），重复 payload 不二次交付、也不 discard（consumer 可能正在提交）；
+- 消费者注销只释放自己的会话；全部退订时释放所有会话；
+- `discardOperation` 同一 operationId 只发一次 IPC，并写一条 DEBUG 诊断（只含 reason 与 operationId）。
+
+### 11.4 注册恢复的平台限制
+
+OLE 没有「取回上一个 `IDropTarget`」的 API，`RevokeDragDrop` 之后无法恢复 wry 的处理器。
+因此注册失败时只能：重试一次、如实计数、保留未撤销成功的接口对象、在状态与诊断里暴露
+`failedWindows`。**这不等于 fail-safe**：失败窗口在本进程内没有拖入处理器，直到下次成功安装。
+安装发生在 WebView 创建之后，隔离实例实测覆盖顶层 + 6 个 WebView 子窗口（`windows=7`）；
+之后由 WebView2 新建的弹窗/DevTools 窗口不在接管范围内（设计边界）。
+
+### 11.5 测试与真机状态
+
+受控 OLE 测试源新增：多文件 HGLOBAL（按索引区分内容）、流/内存混合、同一索引同时提供两种
+表示（验证流优先）、部分索引缺失、空 HGLOBAL、内存超限、HGLOBAL 尾部填充、打开前取消与
+**读取中途取消**；另有安装账目纯函数测试（全成功/顶层失败/子窗口失败/全失败/重试恢复/
+重复安装）、「放弃会话后后台不再写盘」「提交期间目录不被孤儿清扫删除」。
+前端新增 12 个交错/乱序/注销/重复/未知/上限/TTL/慢会话/显式取消/已释放再 accepted 用例。
+
+独立只读审查发现并修复了一个**既存 P1**：`take_for_commit` 把会话移出注册表后，并发新拖入的
+`sweep_orphans` 会把正在复制的暂存目录当孤儿删除。现在提交期间会话 id 进入 `committing`
+集合（RAII `CommitGuard` 保证所有返回路径解除），孤儿清扫将其视为活跃。
+
+真机仍 `ENVIRONMENT BLOCKED`（锁屏），物理拖拽与第三方应用兼容性为 UNVERIFIED。
+结果明细见 `tmp/acceptance/universal-drag/report.md` 第三轮章节。
+
+## 12. 第四轮：FILEDESCRIPTORW 标准长度与原始索引（2026-11-14）
+
+本轮不重写架构，只修协议层两个真实缺陷，并核查格式优先级。基线 `dbf83ce` + 第三轮未提交
+改动；改动仍集中在 `dragdrop` 模块。
+
+### 12.1 修复
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| 合法的 596 字节单文件 `FILEGROUPDESCRIPTORW` 被判「虚拟文件描述符不完整」 | `FILEDESCRIPTORW_LEN = 620`，把并不属于 `FILEDESCRIPTORW` 的 `cAlternateFileName[14]` 算进长度 | 以 `windows` crate 0.62 的 SDK 绑定为准改为 **592**；单文件组 `4+592=596`；多文件步长 592；描述符前缀上限 `4+32×592`；`DragEnter/Over` 计数只读 4 字节头 |
+| 跳过空名/目录/超限描述符后，`FileContents` 读到错位内容 | 解析结果过滤后，`collect_virtual` 用**过滤后数组下标**当 `lindex` | `VirtualFileDesc.original_index` 保留原始序号；`collect_virtual` 用 `desc.original_index` 取流/内存块；失败原因里的「第 N 项」也用原始序号 |
+| 描述符解析失败被误当成「没有虚拟文件」而静默走旁路格式 | 分类只看格式存在性 | 计数头仍决定 `VirtualFiles`；正文损坏时 `collect_virtual` 产出 `DRAG_PAYLOAD_INVALID`（含可读原因），不静默丢弃整个拖入 |
+
+### 12.2 ABI 验证（不依赖生产常量）
+
+- `windows::Win32::UI::Shell::FILEDESCRIPTORW`（`repr(C, packed(1))`）：
+  `size_of = 592`，`FILEGROUPDESCRIPTORW = 596`；
+  `dwFileAttributes` 偏移 **36**、`nFileSizeHigh` **64**、`nFileSizeLow` **68**、
+  `cFileName` **72**、长度 **260 WCHAR**。
+- 独立测试样本按 592/596/1188 手工构造，覆盖：单文件、双文件、三文件、合法尾部填充、
+  少一字节截断、只有 4 字节数量头、数量为零、超上限、`u32::MAX` 恶意数量、
+  中文文件名、非法路径字符、大小未知、超大声明、原始索引跳过。
+- 受控 OLE 源改用 **SDK 结构本身**构造描述符（不再复制生产常量）；源时间接证明
+  596 字节组可被真实 COM 路径读取。
+- 真实世界边界：尾部填充只按声明长度截断；描述符声明大小仍是上界，实际写入总量
+  另受 `MAX_VIRTUAL_TOTAL_BYTES` 约束（§11.2 不变）。
+
+### 12.3 原始索引测试
+
+受控 OLE 新增：目录在第 0 项（带诱饵内容）、`a.txt` 第 1 项、`b.png` 第 2 项；
+断言只落盘 `a.txt`/`b.png`，诱饵内容从未被读；中间超限文件、连续空名/目录、
+首个有效项在最后、缺失索引按原始序号报告、头部声明 2 项但正文截断时
+`DRAG_PAYLOAD_INVALID` 且不静默降级。
+
+### 12.4 格式优先级与回退策略（核查结论）
+
+1. 阶梯不变：真实路径 > 虚拟文件（`FileGroupDescriptorW`+`FileContents`）> 命名 PNG >
+   URL/HTML > 纯文本 > DIB 兜底；同一批同时出现虚拟文件与 PNG/HTML/URL/DIB 时，
+   虚拟文件优先（新增用例钉住）。
+2. 描述符损坏不会静默丢弃：仍按 `VirtualFiles` 受理，失败逐项报告并带稳定码。
+3. **不做「虚拟文件失败→自动存 PNG/DIB」回退**：拖入里的 PNG/DIB 很可能只是同一对象的
+   拖拽预览图，自动保存会违反「不得重复保存同一个逻辑对象」，也会把预览冒充原图。
+   HTML 图片地址同样不自动下载。完全失败时返回 `DRAG_PAYLOAD_INVALID` /
+   `DRAG_VIRTUAL_FILE_READ_FAILED` 等准确码，由用户重试或检查来源。
+4. 本地路径 + 虚拟文件同批时，虚拟文件失败不影响本地路径条目（各自独立处理）。
+5. 只有 ANSI `FileGroupDescriptor`（无 W 版本）时明确返回
+   `DRAG_FORMAT_UNSUPPORTED`（原因含 ANSI），不再让同批 HTML/文本/PNG 静默顶替；
+   本地路径仍优先。条数超限使用独立码 `DRAG_TOO_MANY_ITEMS`，不与字节/像素上限混用。
+
+### 12.5 测试与证据
+
+- `dragdrop::`：**122 passed / 0 failed**（本轮新增 27 条）；
+- 全量 lib：**1787 passed / 0 failed / 8 ignored**；
+- 独立验收后的补充修复：ANSI-only 描述符明确不支持、目录卡片失败不被 `dirBlocked`
+  覆盖、图片读取错误码按原因区分、迟到载荷不清新会话读取态、条数超限独立码等
+  （详见报告 §A6）；
+- 测试 exe 仍需 `mt.exe` 嵌入 comctl32 v6 清单（工装限制，见 `docs/TESTING.md`）；
+- UI 文件数与错误反馈的截图/测试见 `tmp/acceptance/universal-drag-protocol/report.md`。
+- 真机（Explorer/Chrome/Edge/Outlook/ChatGPT 网页图片、DPI、多显示器）仍为
+  **UNVERIFIED / USER VERIFICATION PENDING**，受控 OLE 与 jsdom 不能替代。

@@ -25,8 +25,8 @@
 | # | 功能 | 实现 | 验证 | 本轮变化 |
 |---|---|---|---|---|
 | ① | 开发现场感知 | **implemented(MVP)**：项目登记/当前选择/git 只读探测/worktree 识别/胶囊 chip | partially_verified（自动化全绿；真机未验） | Round 1 交付 |
-| ② | Agent 任务交接包 | **implemented(MVP)**：12 节模板/敏感扫描/版本化保存/复制 | partially_verified（同上） | Round 1 交付 |
-| ③ | 开发验收工作台 | **implemented(MVP)**：追加式验收记录/派生状态/返工提示词与返工任务 | partially_verified（同上） | Round 1 交付 |
+| ② | Agent 任务交接包 | **implemented(MVP)**：12 节模板/敏感扫描/版本化保存/复制/绑定 Agent 会话（v50） | partially_verified（同上） | Round 1 交付；U2-01（2026-11-14） |
+| ③ | 开发验收工作台 | **implemented(MVP)**：追加式验收记录/派生状态/返工提示词与返工任务/Agent 完成轮次人工待验收（v50） | partially_verified（同上） | Round 1 交付；U2-02（2026-11-14） |
 | ④ | Git/Worktree 协调中心 | in_progress(0%)：仅 git 探测的 worktree 识别就位 | unverified | – |
 | ⑤ | 智能问题复现包 | not_started | – | – |
 | ⑥ | 开发环境监控 | not_started | – | – |
@@ -93,8 +93,28 @@
 ## 恢复检查点（下一执行从这里开始）
 
 1. 读本文件 + 主树 `git status`/`git log`（确认是否有并行会话新提交）
-2. 决定 Round 2 工作位置：若主树干净且无并行迹象，可直接用主树 + 新 worktree 二选一
-   （跨模块任务仍建议一任务一 Worktree：`node scripts/worktree-guard.mjs create --task <task>`）
+2. 决定 Round 2 工作位置：文件与资源不冲突时直接在主树共享并行；需要独立分支/稳定基线复现
+   时才按 `AGENTS.md` §3.3 创建 Worktree（`node scripts/worktree-guard.mjs create --task <task>`）
 3. 从 R2-1 开始执行（真机验收可用现有隔离实例配方：记忆 task-dock-cdp-instance-isolation）
 4. Round 2 结束时：更新本文件 + ACCEPTANCE.md + tmp/acceptance/<task>/report-round2.md
 5. 全部八功能收尾时才回收 build-guard 缓存与 worktree（cleanup 默认 dry-run）
+
+## 2026-11-14（主树 · 效率中枢 V2 / U2）—— R2-4、R2-5 已实现
+
+> 本节记录主树交付，不覆盖上面 worktree 分支的历史状态；统一任务矩阵见
+> [../efficiency-hub/TASK_MATRIX.md](../efficiency-hub/TASK_MATRIX.md) §6。
+
+- **R2-4 → U2-01（交接包绑定 Agent 会话）**：迁移 v50 给 `dev_handoff_packs` 加
+  `agent_source_id` / `agent_session_external_id`（弱引用，无外键），保存时校验会话真实存在；
+  读时 LEFT JOIN `agent_sessions` 派生标题与 `available`；版本列表展示「会话：…」与失效标记。
+  前端候选来自 `agent_history_sessions(includeLive=true, limit=20)`，可搜索，不按标题猜身份。
+- **R2-5 → U2-02（Agent 完成轮次 → 人工待验收）**：v50 给 `dev_acceptance_records` 加三元组
+  来源列；新增只读命令 `dev_acceptance_agent_runs`，候选＝本任务 `task_agent_links` ∪ 本任务
+  交接包绑定会话的 `completed` 轮次（`origin='real'`），标注 user/auto/handoff；已登记轮次带
+  结论仍返回。**结论必须人工选 verdict + summary 才 INSERT**；服务端校验来源三元组真实存在；
+  Agent 完成事件仍只通知、不改任务状态、不自动验收。
+- **测试**：Rust `commands::dev_workbench` 21/21、`db::tests::v4*` 5/5（含 v50 升级保留旧行）；
+  Vitest 交接包 22/22、验收 23/23、工作台外壳 25/25。测试 exe 仍需按 `docs/TESTING.md` 的
+  mt.exe 清单工装运行（本机依赖组合的既有限制，非本轮代码）。
+- **未验证**：Windows 真机（Agent 完成后候选出现、登记变已验收、会话删除失效展示）。
+- **未做**：Agent 侧从会话打开交接包；U2-03 真实测试日志引用；失败轮次问题排查入口。

@@ -35,6 +35,7 @@ export const LOGICAL_TABS = Object.freeze([
 /** 仅视觉入口、不分配 Ctrl+数字的 Tab（避免既有快捷键语义漂移）。 */
 export const RAIL_ONLY_TABS = Object.freeze([
   "workbench",
+  "workspace",
   "apps",
   "widgets",
   "mobile",
@@ -46,6 +47,9 @@ export const RAIL_ONLY_TABS = Object.freeze([
 export const RAIL_ENTRIES = Object.freeze([
   // 开发工作台：开发模式主要入口（任务优先布局），位于最前；不占 Ctrl+数字。
   { id: "workbench", label: "工作台", shortcut: "" },
+
+
+  { id: "workspace", label: "工作空间", shortcut: "" },
   { id: "tasks", label: "任务", shortcut: "Ctrl+1" },
   { id: "agents", label: "Agent", shortcut: "Ctrl+2" },
   { id: "apps", label: "应用", shortcut: "" },
