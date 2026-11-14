@@ -84,27 +84,33 @@ export function splitPane(
 ): { tree: SplitNode; newPaneId: string } | null {
   if (paneCount(node) >= MAX_PANES) return null;
   const newLeaf = newPaneNode();
-  const next = (cur: SplitNode, depth: number): SplitNode | null => {
+  // next 返回 null = 深度拒绝（本分支整体不可分割）；changed 区分「找到并分割」
+  // 与「目标不在此分支」——二者混同会导致过深窗格分割时静默假成功。
+  const next = (cur: SplitNode, depth: number): { node: SplitNode; changed: boolean } | null => {
     if (depth > MAX_DEPTH) return null;
     if (cur.type === "pane") {
-      if (cur.paneId !== paneId) return cur;
+      if (cur.paneId !== paneId) return { node: cur, changed: false };
       return {
-        type: "split",
-        id: freshId("split"),
-        direction,
-        ratio: 0.5,
-        first: { type: "pane", paneId: cur.paneId },
-        second: newLeaf,
+        node: {
+          type: "split",
+          id: freshId("split"),
+          direction,
+          ratio: 0.5,
+          first: { type: "pane", paneId: cur.paneId },
+          second: newLeaf,
+        },
+        changed: true,
       };
     }
     const first = next(cur.first, depth + 1);
-    if (first) return { ...cur, first };
+    if (!first) return null;
+    if (first.changed) return { node: { ...cur, first: first.node }, changed: true };
     const second = next(cur.second, depth + 1);
-    if (second) return { ...cur, second };
-    return null;
+    if (!second) return null;
+    return { node: { ...cur, first: first.node, second: second.node }, changed: second.changed };
   };
-  const tree = next(node, 0);
-  return tree ? { tree, newPaneId: newLeaf.paneId } : null;
+  const outcome = next(node, 0);
+  return outcome?.changed ? { tree: outcome.node, newPaneId: newLeaf.paneId } : null;
 }
 
 /**

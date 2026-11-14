@@ -29,10 +29,11 @@ const inflight = new Set<string>();
 type Listener = (state: DirState) => void;
 const listeners = new Map<string, Set<Listener>>();
 
-function notify(path: string): void {
-  const state = cache.get(path);
+function notify(path: string, showHidden: boolean): void {
+  const key = `${showHidden ? "h1" : "h0"}:${path}`;
+  const state = cache.get(key);
   if (!state) return;
-  const set = listeners.get(path);
+  const set = listeners.get(key);
   if (!set) return;
   for (const fn of set) fn(state);
 }
@@ -106,7 +107,7 @@ export function loadDir(path: string, showHidden: boolean, force = false): void 
   const entry = getDirState(path, showHidden);
   entry.loading = true;
   entry.error = null;
-  notify(path);
+  notify(path, showHidden);
   inflight.add(key);
   fsListDir(path, showHidden)
     .then((listing) => {
@@ -128,7 +129,7 @@ export function loadDir(path: string, showHidden: boolean, force = false): void 
       inflight.delete(key);
       const current = getDirState(path, showHidden);
       current.loading = false;
-      notify(path);
+      notify(path, showHidden);
     });
 }
 
@@ -164,7 +165,7 @@ export function reloadIfChanged(path: string, showHidden: boolean): boolean {
       if (!sig.exists || !sig.isDir) {
         const cur = getDirState(path, showHidden);
         cur.error = "DIR_MISSING";
-        notify(path);
+        notify(path, showHidden);
         return;
       }
       if (sig.modifiedMs !== known) {

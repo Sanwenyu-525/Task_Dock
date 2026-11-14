@@ -153,11 +153,6 @@ export interface FilesWorkspaceActions {
 
 export type FilesWorkspaceStore = FilesWorkspaceState & FilesWorkspaceActions;
 
-/** 持久化快照（stateKey 单独承载，不进 store 公开字段）。 */
-interface SnapshotPayload {
-  stateKeyRef: string;
-  stateData: PersistedState;
-}
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -295,14 +290,19 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
         const pane = s.panes[paneId];
         if (!pane) return s;
         if (mode === "replace" && pane.activeTabId) {
+          // 同标签内导航（双击进入/面包屑/上级/路径跳转）：压入历史栈，
+          // 丢弃前进分支（与浏览器语义一致），back/forward 依赖它。
           return {
             panes: {
               ...s.panes,
               [paneId]: {
                 ...pane,
-                tabs: pane.tabs.map((t) =>
-                  t.tabId === pane.activeTabId ? { ...t, path, history: [path], historyIndex: 0 } : t,
-                ),
+                tabs: pane.tabs.map((t) => {
+                  if (t.tabId !== pane.activeTabId) return t;
+                  if (samePath(t.path, path)) return t;
+                  const history = [...t.history.slice(0, t.historyIndex + 1), path].slice(-64);
+                  return { ...t, path, history, historyIndex: history.length - 1 };
+                }),
               },
             },
             activePaneId: paneId,
@@ -360,7 +360,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     refreshPane: (paneId) => {
       const pane = get().panes[paneId];
       const tab = pane?.tabs.find((t) => t.tabId === pane.activeTabId);
-      if (tab?.path) invalidateDirs([tab.path], tab.showHidden);
+      if (tab?.path) invalidateDirs([tab.path]);
     },
 
     closeTab: (paneId, tabId) => {
@@ -515,7 +515,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       const preset = LAYOUT_PRESETS[presetId];
       if (!preset) return;
       const tree = reassignPaneIds(preset.build());
-      set((s) => ({
+      set(() => ({
         tree,
         panes: ensurePaneState({}, tree, (initialPaths ?? []).map(normalizePath)),
         maximizedPaneId: null,

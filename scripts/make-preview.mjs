@@ -932,6 +932,68 @@ const shim = `
     return images.concat(base);
   }
 
+  // ── 文件工作区夹具（内存文件树）─────────────────────────────────────
+  const fwNow = Date.now();
+  const fwSig = new Map();
+  const FW_BS = String.fromCharCode(92);
+  const fwEntry = (name, kind, category, ext, size, hidden = false) => ({
+    name, kind, category, ext, size, hidden, modifiedMs: fwNow - Math.floor(Math.random() * 8.64e7),
+  });
+  const fwTree = new Map();
+  const fwDir = (path, entries) => { fwTree.set(path, entries); fwSig.set(path, fwNow); };
+  fwDir("D:\\\\", [fwEntry("Games", "dir", "folder", ""), fwEntry("Documents", "dir", "folder", "")]);
+  fwDir("D:\\\\Games", [fwEntry("MyGame", "dir", "folder", "")]);
+  fwDir("D:\\\\Games\\\\MyGame", [
+    fwEntry("Source", "dir", "folder", ""), fwEntry("Assets", "dir", "folder", ""),
+    fwEntry("Docs", "dir", "folder", ""), fwEntry("Build", "dir", "folder", ""),
+    fwEntry("MyGame.sln", "file", "data", "sln", 4096),
+    fwEntry("README.md", "file", "text", "md", 1536),
+  ]);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Source", [
+    fwEntry("Core", "dir", "folder", ""), fwEntry("Gameplay", "dir", "folder", ""),
+    fwEntry("UI", "dir", "folder", ""), fwEntry("Systems", "dir", "folder", ""),
+    fwEntry("GameMain.cs", "file", "code", "cs", 18432),
+  ]);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Assets", [
+    fwEntry("Art", "dir", "folder", ""), fwEntry("Scenes", "dir", "folder", ""),
+    fwEntry("Audio", "dir", "folder", ""),
+    fwEntry("char_01.png", "file", "image", "png", 1048576), fwEntry("char_02.png", "file", "image", "png", 1310720),
+    fwEntry("scene_01.jpg", "file", "image", "jpg", 2621440), fwEntry("prop_crystal.png", "file", "image", "png", 524288),
+  ]);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Docs", [
+    fwEntry("设计文档", "dir", "folder", ""), fwEntry("剧情脚本", "dir", "folder", ""),
+    fwEntry("世界观设定.md", "file", "text", "md", 8192), fwEntry("角色表.xlsx", "file", "sheet", "xlsx", 66560),
+  ]);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Build", [
+    fwEntry("Windows", "dir", "folder", ""), fwEntry("Android", "dir", "folder", ""),
+    fwEntry("MyGame.exe", "file", "program", "exe", 82208358),
+  ]);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Source\\\\Core", [fwEntry("Loop.cs", "file", "code", "cs", 8192), fwEntry("Time.cs", "file", "code", "cs", 4096)]);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Source\\\\Gameplay", [fwEntry("Player.cs", "file", "code", "cs", 12288)]);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Source\\\\UI", []);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Source\\\\Systems", []);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Assets\\\\Art", []);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Assets\\\\Scenes", []);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Assets\\\\Audio", []);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Docs\\\\设计文档", []);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Docs\\\\剧情脚本", []);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Build\\\\Windows", []);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Build\\\\Android", []);
+  const fwTouch = (dir) => { fwSig.set(dir, Date.now()); };
+  const fwNorm = (p) => {
+    let s = (p || "").trim();
+    if (!s) return "D:" + FW_BS;
+    s = s.split("/").join(FW_BS);
+    while (s.length > 3 && s.endsWith(FW_BS)) s = s.slice(0, -1);
+    if (/^[a-zA-Z]:$/.test(s)) s += FW_BS;
+    return s;
+  };
+  const fwPlaces = [
+    { name: "主目录", path: "D:\\\\Games", driveKind: "fixed" },
+    { name: "D 盘", path: "D:\\\\", driveKind: "fixed" },
+    { name: "C 盘", path: "C:\\\\", driveKind: "fixed" },
+  ];
+
   async function invoke(cmd, args) {
     await new Promise((r) => setTimeout(r, 30));
     switch (cmd) {
@@ -1136,6 +1198,94 @@ const shim = `
         const list = status === "inbox" ? all.filter((i) => i.status === "inbox") : all;
         return list.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100));
       }
+      // ── 文件工作区（内存版文件树：浏览/新建/重命名/复制/移动/删除真实交互走查；不落盘）。
+      case "fs_list_dir": {
+        const dir = fwNorm(args?.path || "");
+        const node = fwTree.get(dir);
+        if (!node) throw new Error("目录不可访问: " + dir + "（预览夹具未包含该路径）");
+        const entries = node.filter((e) => args?.showHidden === true || !e.hidden);
+        return { path: dir, entries: entries.map((e) => ({ ...e })), truncated: false };
+      }
+      case "fs_dir_signature": {
+        const dir = fwNorm(args?.path || "");
+        return { exists: fwTree.has(dir), isDir: fwTree.has(dir), modifiedMs: fwTree.has(dir) ? fwSig.get(dir) ?? 0 : null };
+      }
+      case "fs_places": return fwPlaces;
+      case "fs_create_dir": {
+        const parent = fwNorm(args?.parent || "");
+        const target = parent + FW_BS + (args?.name || "");
+        fwTouch(parent);
+        fwTree.set(target, []);
+        return target;
+      }
+      case "fs_create_file": {
+        const parent = fwNorm(args?.parent || "");
+        const target = parent + FW_BS + (args?.name || "");
+        fwTouch(parent);
+        fwTree.get(parent).push({ name: args?.name || "", kind: "file", ext: (args?.name || "").split(".").pop()?.toLowerCase() ?? "", size: 0, modifiedMs: Date.now(), hidden: false, category: "other" });
+        return target;
+      }
+      case "fs_rename": {
+        const dir = fwNorm(args?.path || "");
+        const parent = dir.slice(0, dir.lastIndexOf(FW_BS));
+        const oldName = dir.slice(dir.lastIndexOf(FW_BS) + 1);
+        const entry = fwTree.get(parent)?.find((e) => e.name === oldName);
+        if (!entry) throw new Error("路径不存在");
+        entry.name = args?.newName || entry.name;
+        fwTouch(parent);
+        return parent + FW_BS + entry.name;
+      }
+      case "fs_copy_paths":
+      case "fs_move_paths": {
+        const targetDir = fwNorm(args?.targetDir || "");
+        const move = cmd === "fs_move_paths";
+        const entries = [];
+        for (const raw of args?.paths || []) {
+          const src = fwNorm(raw);
+          const parent = src.slice(0, src.lastIndexOf(FW_BS));
+          const name = src.slice(src.lastIndexOf(FW_BS) + 1);
+          const entry = fwTree.get(parent)?.find((e) => e.name === name);
+          if (!entry) { entries.push({ source: src, target: null, status: "failed", reason: "源不存在" }); continue; }
+          fwTouch(targetDir);
+          fwTree.get(targetDir).push({ ...entry, modifiedMs: Date.now() });
+          if (move) {
+            const idx = fwTree.get(parent)?.findIndex((e) => e.name === name) ?? -1;
+            if (idx >= 0) fwTree.get(parent).splice(idx, 1);
+          }
+          entries.push({ source: src, target: targetDir + FW_BS + name, status: "ok", reason: null });
+        }
+        return { attempted: entries.length, ok: entries.filter((e) => e.status === "ok").length, failed: entries.filter((e) => e.status === "failed").length, skipped: 0, entries };
+      }
+      case "fs_delete_paths": {
+        const entries = [];
+        for (const raw of args?.paths || []) {
+          const src = fwNorm(raw);
+          const parent = src.slice(0, src.lastIndexOf(FW_BS));
+          const name = src.slice(src.lastIndexOf(FW_BS) + 1);
+          fwTree.delete(src);
+          const list = fwTree.get(parent);
+          const idx = list?.findIndex((e) => e.name === name) ?? -1;
+          if (idx >= 0) list.splice(idx, 1);
+          fwTouch(parent);
+          entries.push({ source: src, target: null, status: "ok", reason: null });
+        }
+        return { attempted: entries.length, ok: entries.length, failed: 0, skipped: 0, entries };
+      }
+      case "fs_stat": {
+        const src2 = fwNorm(args?.paths?.[0] || "");
+        const parent = src2.slice(0, src2.lastIndexOf(FW_BS));
+        const name = src2.slice(src2.lastIndexOf(FW_BS) + 1);
+        const entry = fwTree.get(parent)?.find((e) => e.name === name);
+        const isDir = fwTree.has(src2);
+        return [{
+          path: src2, exists: isDir || Boolean(entry), kind: isDir ? "dir" : entry ? "file" : "missing",
+          size: entry?.size ?? null, createdMs: entry?.modifiedMs ?? null, modifiedMs: entry?.modifiedMs ?? null,
+          readonly: false, hidden: false, childCount: isDir ? fwTree.get(src2)?.length ?? 0 : null, childTruncated: false,
+        }];
+      }
+      case "fs_open":
+      case "fs_reveal": return undefined;
+      case "fs_thumbnail": return null;
       case "quick_capture_state": return { draft: null, last_type: "task", inbox_count: 3 };
       case "quick_capture_show":
       case "quick_capture_hide": return null;

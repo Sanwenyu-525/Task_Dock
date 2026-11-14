@@ -83,7 +83,8 @@ const WORKBENCH_ONLY_TABS = new Set<Tab>([
 ]);
 
 // 注册中心声明顺序不是展示顺序：左侧入口统一按默认顺序读取，用户排序在渲染时覆盖。
-const LEFT_ENTRIES = entriesForSurface("left");
+// 主窗口完整面板不渲染 workbenchOnly 入口（文件工作区等只接入统一工作台）。
+const LEFT_ENTRIES = entriesForSurface("left").filter((entry) => entry.workbenchOnly !== true);
 
 // 完整悬浮栏（自由位置、未贴边停靠）：提示方向保持原有语义「图标右侧」，
 // 不套用停靠四边朝内映射；形态显式传给纯函数，避免靠 edge 值推断。
@@ -187,7 +188,7 @@ export default function FullView() {
   }, [badgeConsumer, actionFeed, loadActions, actionsPaused]);
 
   const entriesToRender = layout.left
-    .filter((id) => !lockedIds.includes(id))
+    .filter((id) => !lockedIds.includes(id) && navEntry(id)?.workbenchOnly !== true)
     .map((id) => navEntry(id))
     .filter((entry): entry is NavEntry => entry !== undefined);
   // 固定底部入口：锁定系统入口（设置）永远渲染在最底部，不属于滚动列表。
@@ -195,7 +196,9 @@ export default function FullView() {
     .map((id) => navEntry(id))
     .filter((entry): entry is NavEntry => entry !== undefined);
   // 「更多」列出全部被隐藏入口（含当前页），否则当前页隐藏时菜单会凭空消失。
-  const hiddenEntries = LEFT_ENTRIES.filter((entry) => !layout.left.includes(entry.id));
+  const hiddenEntries = LEFT_ENTRIES.filter(
+    (entry) => !layout.left.includes(entry.id) && entry.workbenchOnly !== true,
+  );
 
   // 因窗口高度而被滚动裁掉的入口：与「配置隐藏」合并进同一菜单，
   // 用户不必先发现"轨道可以滚动"才能到达这些页面。

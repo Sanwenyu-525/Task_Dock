@@ -43,7 +43,95 @@ fn unix_ms(t: std::time::SystemTime) -> i64 {
 
 // ── 路径与名称校验 ───────────────────────────────────────────────────────
 
-/// 绝对路径基本校验：存在性由调用方按语义自行决定（列表要求存在，创建目标不要求）。
+/// Windows 路径词法规范化（不访问文件系统，比较与操作共用同一形态）：
+/// - 拒绝设备路径 `\\.\`（文件管理器语义下无意义且危险）；
+/// - 剥离 `\\?\` / `\\?\UNC\` verbatim 前缀（canonicalize 的产物还原为普通路径）；
+/// - `/` 统一为 `\`、合并重复分隔符、去掉尾部 `\`（根除外）；
+/// - 词法解析 `.` 与 `..`（越出根时停在根，不产生 ".." 分量）；
+/// - 盘符统一大写；UNC 保持 `\\server\share\...` 结构（server/share 两段是基底）。
+pub fn normalize_lexical(raw: &Path) -> PathBuf {
+    let s = raw.to_string_lossy().trim().to_string();
+    if s.is_empty() {
+        return PathBuf::new();
+    }
+    // 前缀分类：verbatim UNC / verbatim 盘符 / 普通 UNC / 盘符。
+    let (is_unc, body): (bool, String) = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        (true, rest.to_string())
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        if rest.starts_with(r"\\") {
+            (true, rest[2..].to_string())
+        } else {
+            (false, rest.to_string())
+        }
+    } else if let Some(rest) = s.strip_prefix(r"\\.\") {
+        // 设备路径：保留原样返回（validate_abs_path 拒绝；这里不拼装）。
+        return PathBuf::from(format!(r"\\.\{rest}"));
+    } else if let Some(rest) = s.strip_prefix(r"\\") {
+        (true, rest.to_string())
+    } else {
+        (false, s.clone())
+    };
+    let normalized_body = body.replace('/', "\\");
+    let parts: Vec<&str> = normalized_body.split('\\').collect();
+    if is_unc {
+        // UNC：server 与 share 是根基底，`..` 不可越过。
+        let mut base: Vec<String> = parts.iter().take(2).map(|p| (*p).to_string()).collect();
+        let mut stack: Vec<String> = Vec::new();
+        for part in parts.iter().skip(2) {
+            match *part {
+                "" | "." => {}
+                ".." => {
+                    stack.pop();
+                }
+                other => stack.push(other.to_string()),
+            }
+        }
+        let mut out = String::from(r"\\");
+        out.push_str(&base.remove(0));
+        if let Some(share) = base.pop() {
+            out.push('\\');
+            out.push_str(&share);
+            for seg in &stack {
+                out.push('\\');
+                out.push_str(seg);
+            }
+        }
+        return PathBuf::from(out);
+    }
+    // 盘符路径：第一段若是 `C:` 形态则作为基底（`..` 不可越过盘符根）。
+    let drive_base: Option<String> = parts.first().and_then(|p| {
+        let b = p.as_bytes();
+        if b.len() == 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+            Some(p.to_ascii_uppercase())
+        } else {
+            None
+        }
+    });
+    let mut stack: Vec<String> = Vec::new();
+    for part in parts.iter().skip(if drive_base.is_some() { 1 } else { 0 }) {
+        match *part {
+            "" | "." => {}
+            ".." => {
+                stack.pop(); // 空栈时停：`..` 越出根只停在根，不产生 ".." 分量
+            }
+            other => stack.push(other.to_string()),
+        }
+    }
+    match drive_base {
+        Some(drive) => {
+            if stack.is_empty() {
+                PathBuf::from(format!("{drive}\\"))
+            } else {
+                PathBuf::from(format!("{drive}\\{}", stack.join("\\")))
+            }
+        }
+        None if stack.is_empty() => PathBuf::new(),
+        None => PathBuf::from(stack.join("\\")),
+    }
+}
+
+/// 绝对路径校验 + 词法规范化：所有文件操作与比较统一使用规范化结果，
+/// 使 `C:\a\..\protected` 这类穿越写法在比较与操作前就被解析为真实形态。
 pub fn validate_abs_path(raw: &str) -> AppResult<PathBuf> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -55,11 +143,37 @@ pub fn validate_abs_path(raw: &str) -> AppResult<PathBuf> {
     if trimmed.chars().any(char::is_control) {
         return Err(AppError::Validation("路径含非法控制字符".into()));
     }
-    let p = PathBuf::from(trimmed);
+    if trimmed.starts_with(r"\\.\") || trimmed.starts_with(r"\\??\") {
+        return Err(AppError::Validation("不支持设备路径".into()));
+    }
+    let p = normalize_lexical(Path::new(trimmed));
     if !p.is_absolute() {
         return Err(AppError::Validation("必须是绝对路径".into()));
     }
     Ok(p)
+}
+
+/// 是否为「根」（盘符根 / UNC share 根）：这类路径绝不允许删除。
+fn is_root_path(path: &Path) -> bool {
+    let n = normalize_lexical(path);
+    if n.as_os_str().is_empty() {
+        return true;
+    }
+    match n.parent() {
+        None => true,
+        Some(par) => par == n,
+    }
+}
+
+/// 比较键：词法规范化 + 小写 + 统一去尾分隔符（根 "C:\" → "c:"）。
+/// 边界安全：`C:\AppData` 与 `C:\AppDataBackup` 的键互不为前缀（比较带 `\` 边界）。
+fn path_key(path: &Path) -> String {
+    let mut s = normalize_lexical(path).to_string_lossy().to_ascii_lowercase();
+    while s.len() > 1 && s.ends_with('\\') {
+        s.pop();
+    }
+    // 根 "c:" 与 UNC "\\\\srv\\share" 保持无尾分隔符形态。
+    s
 }
 
 /// 校验「已存在的目录」；不存在/不是目录分别报错（前端按错误类型提示失效目录）。
@@ -106,18 +220,61 @@ pub fn sanitize_name(raw: &str) -> AppResult<String> {
     Ok(name.to_string())
 }
 
-/// 路径是否位于受保护目录之内（应用数据目录）。比较前规范化分隔符与大小写。
+/// 路径是否位于 root 之内（含相等）。词法规范化 + 分量边界比较：
+/// `C:\AppData` 与 `C:\AppDataBackup` 互不匹配；`/`、`..`、大小写、重复分隔符先归一。
 fn is_under(path: &Path, root: &Path) -> bool {
-    let norm = |p: &Path| p.to_string_lossy().to_ascii_lowercase().replace('/', "\\");
-    norm(path).starts_with(&norm(root))
+    let inner = path_key(path);
+    let outer = path_key(root);
+    inner == outer || inner.starts_with(&format!("{outer}\\"))
+}
+
+/// 解析真实路径（junction/symlink 防绕过）：对已存在的最深祖先 canonicalize
+/// （重解析点在此被解析为真实目标），不存在的尾部保持词法形式拼接。
+/// 结果可能带 `\\?\` 前缀——比较统一走 path_key（会剥离）。
+fn real_path(path: &Path) -> PathBuf {
+    if let Ok(real) = fs::canonicalize(path) {
+        return real;
+    }
+    let mut cur = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        match cur.parent() {
+            Some(par) if par != cur => {
+                if let Some(name) = cur.file_name() {
+                    tail.push(name.to_os_string());
+                }
+                cur = par.to_path_buf();
+            }
+            _ => break,
+        }
+    }
+    let mut real = fs::canonicalize(&cur).unwrap_or(cur);
+    for part in tail.into_iter().rev() {
+        real.push(part);
+    }
+    real
 }
 
 /// 确认路径不在任何受保护目录内（删除/移动目标、复制目标等写入侧调用）。
+/// 两道检查：①词法路径（规范化 + 边界）；②真实路径（junction/symlink 指进
+/// 保护目录的绕过写法）。TOCTOU 说明：预检查无法完全消除「检查后目录被换成
+/// junction」的窗口；递归层对重解析点不跟随、深度/总量有界构成第二道防线，
+/// 完全消除需 open-by-handle +FILE_FLAG_OPEN_REPARSE_POINT（后续工作）。
 pub fn ensure_not_protected(path: &Path, protected: &[PathBuf]) -> AppResult<()> {
     for root in protected {
         if is_under(path, root) {
             return Err(AppError::Validation(format!(
                 "不允许操作 TaskDock 数据目录内部: {}",
+                path.display()
+            )));
+        }
+    }
+    let real = real_path(path);
+    for root in protected {
+        // 受保护根本身也可能经链接/短路径给出：同样取真实路径再比较。
+        if is_under(&real, &real_path(root)) {
+            return Err(AppError::Validation(format!(
+                "路径经链接指向受保护目录，拒绝操作: {}",
                 path.display()
             )));
         }
@@ -453,18 +610,48 @@ fn fail_report(source: &Path, reason: String) -> FsEntryReport {
     }
 }
 
+/// 覆盖用临时目标名（同目录、带进程标识，失败清理；不会与真实名冲突）。
+fn sibling_tmp(dst: &Path) -> PathBuf {
+    let name = dst
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    dst.with_file_name(format!(".taskdock-tmp-{}-{name}", std::process::id()))
+}
+
 /// 复制单个文件；目标存在时按策略处理（Rename 由调用侧先解析成唯一名）。
+/// 覆盖策略：先复制到同目录临时名，成功后再替换目标——复制中途失败（占用/
+/// 磁盘满/权限）绝不破坏目标原有数据（P0：先删后复制丢数据缺陷）。
 fn copy_file(src: &Path, dst: &Path, conflict: Conflict) -> Result<(), String> {
     if dst.exists() {
         match conflict {
             Conflict::Skip => return Err("目标已存在".into()),
             Conflict::Rename => return Err("目标已存在（rename 冲突未解析）".into()),
-            Conflict::Overwrite => {
-                fs::remove_file(dst).map_err(|e| format!("覆盖旧文件失败: {e}"))?;
+            Conflict::Overwrite => {}
+        }
+        let tmp = sibling_tmp(dst);
+        let copied = fs::copy(src, &tmp).map(|_| ());
+        match copied {
+            Ok(()) => {
+                let replace = || -> Result<(), std::io::Error> {
+                    fs::remove_file(dst)?;
+                    fs::rename(&tmp, dst)?;
+                    Ok(())
+                };
+                if let Err(e) = replace() {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(format!("替换目标失败（原目标保留）: {e}"));
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                Err(format!("{e}"))
             }
         }
+    } else {
+        fs::copy(src, dst).map(|_| ()).map_err(|e| format!("{e}"))
     }
-    fs::copy(src, dst).map(|_| ()).map_err(|e| format!("{e}"))
 }
 
 /// 递归复制目录：重解析点（符号链接/junction）不跟随；深度与总量有上限。
@@ -509,17 +696,10 @@ fn copy_dir(
     Ok(())
 }
 
-/// 目录是否包含 target（移动目录进自身子树拒绝）。按小写规范化比较。
+/// 目录是否包含 target（移动目录进自身子树拒绝）。词法规范化 + 小写比较。
 fn contains_path(outer: &Path, inner: &Path) -> bool {
-    let norm = |p: &Path| {
-        p.to_string_lossy()
-            .to_ascii_lowercase()
-            .replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_string()
-    };
-    let inner = norm(inner);
-    let outer = norm(outer);
+    let inner = path_key(inner);
+    let outer = path_key(outer);
     inner != outer && inner.starts_with(&format!("{outer}\\"))
 }
 
@@ -585,11 +765,28 @@ pub fn copy_paths(
         } else {
             dir.join(&name)
         };
+        if same_path(src, &dir) {
+            report.push(fail_report(
+                src,
+                "源与目标目录相同".into(),
+            ));
+            continue;
+        }
         if contains_path(src, &dir) {
             report.push(fail_report(
                 src,
                 "不能把目录复制到其自身内部".into(),
             ));
+            continue;
+        }
+        // skip 策略：目标已存在直接跳过并如实报告（不是失败）。
+        if conflict == Conflict::Skip && dir.join(&name).exists() {
+            report.push(FsEntryReport {
+                source: src.to_string_lossy().into_owned(),
+                target: None,
+                status: "skipped",
+                reason: Some("目标已存在（skip 策略）".into()),
+            });
             continue;
         }
         let outcome = if meta.is_dir() {
@@ -614,17 +811,12 @@ pub fn copy_paths(
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
-    let norm = |p: &Path| {
-        p.to_string_lossy()
-            .to_ascii_lowercase()
-            .replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_string()
-    };
-    norm(a) == norm(b)
+    path_key(a) == path_key(b)
 }
 
 /// 同卷优先 rename；跨卷回退「复制 + 删除源」。返回目标路径或失败原因。
+/// 跨卷文件回退用临时名：源删除成功后目标才以完整形态出现——删除源失败时
+/// 回滚临时副本，源与目标都不留半个状态（P0：不可解释数据状态缺陷）。
 fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &mut usize) -> Result<PathBuf, String> {
     if dst.exists() {
         match conflict {
@@ -635,7 +827,9 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
                 if meta.is_dir() {
                     // 目录并入：递归复制后删除源（不删除已有目标内容）。
                     copy_dir(src, &dst, Conflict::Overwrite, depth, budget)?;
-                    delete_tree(src)?;
+                    if let Err(e) = delete_tree(src) {
+                        return Err(format!("内容已并入目标，但删除源失败（源已保留）: {e}"));
+                    }
                     return Ok(dst.to_path_buf());
                 }
                 fs::remove_file(dst).map_err(|e| format!("覆盖旧文件失败: {e}"))?;
@@ -649,13 +843,23 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
             let meta = fs::symlink_metadata(src).map_err(|e| format!("{e}"))?;
             if meta.is_dir() {
                 copy_dir(src, &dst, conflict, depth, budget)?;
-                delete_tree(src)?;
+                if let Err(e) = delete_tree(src) {
+                    // 源保留 + 目标保留已复制部分：结果可解释，逐条报告给用户。
+                    return Err(format!("复制已完成，但删除源失败（源已保留，目标存在已复制副本）: {e}"));
+                }
             } else {
-                fs::copy(src, dst).map_err(|e| format!("{e}"))?;
-                fs::remove_file(src).map_err(|e| {
-                    let _ = fs::remove_file(dst); // 回退失败：目标副本也清掉，不留半个文件
-                    format!("删除源失败（目标副本已回滚）: {e}")
-                })?;
+                let tmp = sibling_tmp(dst);
+                if let Err(e) = fs::copy(src, &tmp).map(|_| ()) {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(format!("{e}"));
+                }
+                if let Err(e) = fs::remove_file(src) {
+                    let _ = fs::remove_file(&tmp); // 源删除失败：目标副本回滚，不留半状态
+                    return Err(format!("复制完成但删除源失败（已回滚目标副本）: {e}"));
+                }
+                if let Err(e) = fs::rename(&tmp, dst) {
+                    return Err(format!("源已删除但目标落位失败（数据在临时文件 {tmp:?}）: {e}"));
+                }
             }
             Ok(dst.to_path_buf())
         }
@@ -675,7 +879,7 @@ fn delete_tree(path: &Path) -> Result<(), String> {
         {
             fs::remove_file(path)
                 .or_else(|_| fs::remove_dir(path))
-                .map_err(|e| format!("{e}"))?;
+                .map_err(|e| format!("删除重解析点 {path:?} 失败: {e}"))?;
             return Ok(());
         }
         if meta.is_dir() {
@@ -769,6 +973,16 @@ pub fn move_paths(
             });
             continue;
         }
+        // skip 策略：目标已存在直接跳过并如实报告（不是失败）。
+        if conflict == Conflict::Skip && dir.join(&name).exists() {
+            report.push(FsEntryReport {
+                source: src.to_string_lossy().into_owned(),
+                target: None,
+                status: "skipped",
+                reason: Some("目标已存在（skip 策略）".into()),
+            });
+            continue;
+        }
         let dst = if conflict == Conflict::Rename && dir.join(&name).exists() {
             unique_target(&dir, &name)
         } else {
@@ -794,24 +1008,16 @@ pub fn move_paths(
 
 /// 回收站删除（SHFileOperationW，FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT）。
 /// 逐条调用以便逐条报告；失败回退 std 删除失败并如实报错（绝不伪造成功）。
+/// **不做 canonicalize**：它会把符号链接/junction 解析为真实目标，删除链接时
+/// 就会误删链接指向的目录（P0 缺陷）。SHFileOperationW 对重解析点删除链接
+/// 本身，正是需要的语义；路径只做词法规范化。
 #[cfg(windows)]
 fn recycle_delete(path: &Path) -> Result<(), String> {
     use windows::core::PCWSTR;
     use windows::Win32::UI::Shell::{SHFileOperationW, FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, SHFILEOPSTRUCTW};
 
-    let abs = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    // canonicalize 在 Windows 返回 `\\?\` verbatim 前缀；SHFileOperationW 不认这种
-    // 形式（返回 124 DE_INVALIDFILES），必须还原为普通绝对路径（UNC 同理）。
-    let display = {
-        let raw = abs.to_string_lossy();
-        if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
-            format!(r"\\{rest}")
-        } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
-            rest.to_string()
-        } else {
-            raw.into_owned()
-        }
-    };
+    let norm = normalize_lexical(path);
+    let display = norm.to_string_lossy().into_owned();
     let mut from: Vec<u16> = display
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -862,15 +1068,22 @@ pub fn delete_paths(
             report.push(fail_report(&src, "路径不存在".into()));
             continue;
         }
-        // 盘符根目录绝不删除（C:\ 这种）：路径分量 ≤1 直接拒绝。
-        if src.components().count() <= 1 {
-            report.push(fail_report(&src, "不允许删除盘符根目录".into()));
+        // 盘符根 / UNC share 根绝不删除。判定必须在任何删除动作之前——
+        // 第一轮用 components().count()<=1 判断，而 `C:\` 的分量数是 2，
+        // 检查形同虚设（当时靠 ACL 失败偶然中止，属 P0 级缺陷）。
+        if is_root_path(&src) {
+            report.push(fail_report(&src, "不允许删除盘符根目录或共享根".into()));
             continue;
         }
         let meta = fs::symlink_metadata(&src).map_err(|e| AppError::Io(e))?;
+        // 重解析点（junction/符号链接）必须优先于 is_dir 判定：symlink_metadata
+        // 对链接 is_dir()==false，直接走 remove_file 会以「拒绝访问」失败
+        // （DeleteFileW 不能删目录重解析点）。删链接本身统一走 delete_tree。
+        let is_reparse = meta.file_type().is_symlink()
+            || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
         let is_dir = meta.is_dir();
         let outcome = if permanent {
-            if is_dir {
+            if is_reparse || is_dir {
                 delete_tree(&src)
             } else {
                 fs::remove_file(&src).map_err(|e| format!("{e}"))
@@ -1063,7 +1276,8 @@ mod tests {
         assert!(sanitize_name("a:b").is_err());
         assert!(sanitize_name("").is_err());
         assert!(sanitize_name("name.").is_err());
-        assert!(sanitize_name("name ").is_err());
+        // 首尾空白按 trim 处理（用户意图是 "name"），不是错误。
+        assert_eq!(sanitize_name("name ").unwrap(), "name");
         assert!(sanitize_name("CON").is_err());
         // 保留名检查看主名（首段）：nul.txt 同样被拒。
         assert!(sanitize_name("nul.txt").is_err());
@@ -1182,9 +1396,20 @@ mod tests {
         let root = temp_root("selfcopy");
         let src_dir = root.join("src");
         fs::create_dir_all(src_dir.join("inner")).unwrap();
+        // 完全相同路径：明确拒绝。
         let report = copy_paths(
             &[src_dir.to_string_lossy().into_owned()],
             &src_dir,
+            Conflict::Rename,
+            &protected(),
+        )
+        .unwrap();
+        assert_eq!(report.failed, 1);
+        assert!(report.entries[0].reason.as_deref().unwrap().contains("相同"));
+        // 复制进自身子树：拒绝（防递归膨胀）。
+        let report = copy_paths(
+            &[src_dir.to_string_lossy().into_owned()],
+            &src_dir.join("inner"),
             Conflict::Rename,
             &protected(),
         )
@@ -1261,8 +1486,17 @@ mod tests {
     #[test]
     fn delete_refuses_drive_root_and_missing() {
         let root = temp_root("delroot");
+        // 根目录拒绝发生在任何删除动作之前（P0：旧实现 components().count()<=1
+        // 判断对 `C:\` 失效，靠 ACL 失败偶然中止；现在确定性地拒绝）。
         let report = delete_paths(&["C:\\".to_string()], true, &protected()).unwrap();
         assert_eq!(report.failed, 1);
+        assert!(report.entries[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("根"),);
+        // 设备路径直接在校验层拒绝。
+        assert!(validate_abs_path(r"\\.\PhysicalDrive0").is_err());
         let report = delete_paths(
             &[root.join("not-there").to_string_lossy().into_owned()],
             true,
@@ -1357,5 +1591,278 @@ mod tests {
         assert_eq!(category_of(false, false, "exe"), "program");
         assert_eq!(category_of(false, false, "md"), "text");
         assert_eq!(category_of(false, false, "xyz"), "other");
+    }
+
+    // ── P0 安全：路径规范化 / 保护边界 / 重解析点 / 占用与回滚 ─────────────
+
+    #[test]
+    fn normalize_lexical_resolves_dots_separators_and_prefixes() {
+        assert_eq!(normalize_lexical(Path::new(r"C:\a\..\b")), PathBuf::from(r"C:\b"));
+        assert_eq!(normalize_lexical(Path::new(r"C:\a\.\b\")), PathBuf::from(r"C:\a\b"));
+        assert_eq!(normalize_lexical(Path::new(r"C:\..")), PathBuf::from(r"C:\"));
+        assert_eq!(normalize_lexical(Path::new(r"c:/x/Y")), PathBuf::from(r"C:\x\Y"));
+        assert_eq!(normalize_lexical(Path::new(r"\\?\C:\a\b")), PathBuf::from(r"C:\a\b"));
+        assert_eq!(
+            normalize_lexical(Path::new(r"\\?\UNC\srv\share\a")),
+            PathBuf::from(r"\\srv\share\a")
+        );
+        assert_eq!(normalize_lexical(Path::new(r"\\srv\share")), PathBuf::from(r"\\srv\share"));
+        assert_eq!(normalize_lexical(Path::new(r"C:\a\..\..\..")), PathBuf::from(r"C:\"));
+    }
+
+    #[test]
+    fn is_under_respects_component_boundary() {
+        let root = temp_root("under");
+        let prot = root.join("appdata");
+        let lookalike = root.join("appdatabackup");
+        assert!(is_under(&prot.join("x"), &prot));
+        assert!(is_under(&prot, &prot));
+        // 前缀相似但分量不同：不在保护内（P0：旧前缀比较会误伤）。
+        assert!(!is_under(&lookalike, &prot));
+        // `..` 穿越先被词法解析：跳出保护目录的不匹配，落入的匹配。
+        assert!(!is_under(&prot.join("..").join("elsewhere"), &prot));
+        assert!(is_under(&root.join("appdata").join("sub").join("..").join("f"), &prot));
+        // 大小写与正斜杠分隔符。
+        let weird = PathBuf::from(prot.to_string_lossy().to_ascii_uppercase().replace('\\', "/"));
+        assert!(is_under(&weird.join("f.txt"), &prot));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn protected_prefix_lookalike_is_deletable_inner_is_not() {
+        let root = temp_root("protedge");
+        let prot = root.join("protected");
+        let lookalike = root.join("protected-backup");
+        fs::create_dir_all(&prot).unwrap();
+        fs::create_dir_all(&lookalike).unwrap();
+        fs::write(lookalike.join("keep.txt"), "x").unwrap();
+        // 相似前缀路径不属于保护目录：允许删除。
+        let report = delete_paths(
+            &[lookalike.join("keep.txt").to_string_lossy().into_owned()],
+            true,
+            &[prot.clone()],
+        )
+        .unwrap();
+        assert_eq!(report.ok, 1);
+        assert!(!lookalike.join("keep.txt").exists());
+        // 保护目录内部：整批拒绝。
+        fs::write(prot.join("inner.txt"), "x").unwrap();
+        let result = delete_paths(
+            &[prot.join("inner.txt").to_string_lossy().into_owned()],
+            true,
+            &[prot.clone()],
+        );
+        assert!(matches!(result, Err(AppError::Validation(_))));
+        assert!(prot.join("inner.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn traversal_into_protected_is_rejected() {
+        let root = temp_root("traversal");
+        let prot = root.join("protected");
+        fs::create_dir_all(prot.join("deep")).unwrap();
+        fs::write(prot.join("deep/secret.txt"), "x").unwrap();
+        fs::create_dir_all(root.join("unrelated")).unwrap();
+        let sneaky = root.join("unrelated").join("..").join("protected").join("deep").join("secret.txt");
+        let result = delete_paths(&[sneaky.to_string_lossy().into_owned()], true, &[prot.clone()]);
+        assert!(matches!(result, Err(AppError::Validation(_))));
+        assert!(prot.join("deep/secret.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn make_junction(link: &Path, target: &Path) -> bool {
+        let _ = fs::remove_dir_all(link);
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn junction_bypass_into_protected_is_rejected() {
+        let root = temp_root("juncbypass");
+        let prot = root.join("protected");
+        fs::create_dir_all(&prot).unwrap();
+        fs::write(prot.join("secret.txt"), "x").unwrap();
+        let link = root.join("junk");
+        if make_junction(&link, &prot) {
+            // 目标目录是 junction（真实路径在保护目录内）：写入侧拒绝。
+            let result = copy_paths(
+                &[root.join("src.txt").to_string_lossy().into_owned()],
+                &link,
+                Conflict::Rename,
+                &[prot.clone()],
+            );
+            assert!(matches!(result, Err(AppError::Validation(_))));
+            let _ = fs::remove_dir(&link);
+        } else {
+            eprintln!("ENVIRONMENT BLOCKED: junction 创建失败，跳过真实路径断言");
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn deleting_junction_keeps_target_both_modes() {
+        let root = temp_root("juncdel");
+        let target = root.join("real-target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("marker.txt"), "keep").unwrap();
+        // 回收站删除（permanent=false，SHFileOperationW）：删链接本身，目标完好。
+        let link = root.join("to-target");
+        if make_junction(&link, &target) {
+            let report = delete_paths(&[link.to_string_lossy().into_owned()], false, &protected()).unwrap();
+            assert_eq!(report.ok, 1, "回收站删除报告: {:?}", report.entries);
+            assert!(!link.exists());
+            assert!(target.join("marker.txt").exists());
+        } else {
+            eprintln!("ENVIRONMENT BLOCKED: junction 创建失败，跳过回收站断言");
+        }
+        // 永久删除：delete_tree 重解析点分支只删链接本身。
+        let link2 = root.join("to-target2");
+        if make_junction(&link2, &target) {
+            let report = delete_paths(&[link2.to_string_lossy().into_owned()], true, &protected()).unwrap();
+            assert_eq!(report.ok, 1, "永久删除报告: {:?}", report.entries);
+            assert!(!link2.exists());
+            assert!(target.join("marker.txt").exists());
+        }
+        assert!(target.join("marker.txt").exists(), "目标目录绝不能被误删");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn overwrite_locked_target_keeps_original_data() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = temp_root("ovlock");
+        let src_dir = root.join("in");
+        fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("new.txt");
+        let dst = root.join("new.txt");
+        fs::write(&src, "new-content").unwrap();
+        fs::write(&dst, "old-content").unwrap();
+        // 独占打开目标（share_mode 0）：真实模拟「覆盖复制中途失败」。
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&dst).unwrap();
+        let report = copy_paths(
+            &[src.to_string_lossy().into_owned()],
+            &root,
+            Conflict::Overwrite,
+            &protected(),
+        )
+        .unwrap();
+        drop(lock);
+        assert_eq!(report.failed, 1, "覆盖失败必须如实报告: {:?}", report.entries);
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "old-content", "目标原数据必须保留");
+        // 解锁后重试成功，且无临时文件残留。
+        let report = copy_paths(
+            &[src.to_string_lossy().into_owned()],
+            &root,
+            Conflict::Overwrite,
+            &protected(),
+        )
+        .unwrap();
+        assert_eq!(report.ok, 1);
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "new-content");
+        let leftovers: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".taskdock-tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "临时文件必须清理: {leftovers:?}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn move_locked_source_fails_without_half_state() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = temp_root("mvlock");
+        let src_dir = root.join("src");
+        let dst_dir = root.join("dst");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        let f = src_dir.join("busy.txt");
+        fs::write(&f, "busy").unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&f).unwrap();
+        let report = move_paths(
+            &[f.to_string_lossy().into_owned()],
+            &dst_dir,
+            Conflict::Rename,
+            &protected(),
+        )
+        .unwrap();
+        drop(lock);
+        assert_eq!(report.failed, 1);
+        assert!(f.exists(), "源必须保留");
+        assert_eq!(fs::read_to_string(&f).unwrap(), "busy");
+        assert!(!dst_dir.join("busy.txt").exists(), "不得留下半个状态");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn copy_partial_success_reports_each_entry() {
+        let root = temp_root("partial");
+        let src_dir = root.join("src");
+        let dst_dir = root.join("dst");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        fs::write(src_dir.join("good.txt"), "g").unwrap();
+        let report = copy_paths(
+            &[
+                src_dir.join("good.txt").to_string_lossy().into_owned(),
+                src_dir.join("missing.txt").to_string_lossy().into_owned(),
+            ],
+            &dst_dir,
+            Conflict::Rename,
+            &protected(),
+        )
+        .unwrap();
+        assert_eq!(report.ok, 1);
+        assert_eq!(report.failed, 1);
+        assert!(dst_dir.join("good.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn copy_depth_limit_keeps_source_intact() {
+        let root = temp_root("deep");
+        let mut cur = root.clone();
+        for i in 0..70 {
+            cur = cur.join(format!("d{i}"));
+        }
+        fs::create_dir_all(&cur).unwrap();
+        fs::write(cur.join("leaf.txt"), "leaf").unwrap();
+        let out = root.join("out");
+        fs::create_dir_all(&out).unwrap();
+        let report = copy_paths(
+            &[root.join("d0").to_string_lossy().into_owned()],
+            &out,
+            Conflict::Rename,
+            &protected(),
+        )
+        .unwrap();
+        assert_eq!(report.failed, 1);
+        assert!(report.entries[0].reason.as_deref().unwrap().contains("中止"));
+        assert!(cur.join("leaf.txt").exists(), "源必须完整保留");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn move_dir_into_own_subtree_rejected() {
+        let root = temp_root("mvsub");
+        let src_dir = root.join("src");
+        fs::create_dir_all(src_dir.join("inner")).unwrap();
+        fs::write(src_dir.join("inner/f.txt"), "f").unwrap();
+        let report = move_paths(
+            &[src_dir.to_string_lossy().into_owned()],
+            &src_dir.join("inner"),
+            Conflict::Rename,
+            &protected(),
+        )
+        .unwrap();
+        assert_eq!(report.failed, 1);
+        assert!(src_dir.join("inner/f.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 }

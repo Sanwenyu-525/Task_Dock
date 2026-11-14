@@ -106,6 +106,11 @@ export interface NavEntry {
   capsuleCategory?: CapsuleCategory;
   /** 胶囊肩部直接入口：不打开轻量面板，直接打开独立专业窗口（如工作空间）。 */
   directCapsule?: boolean;
+  /**
+   * 仅工作台窗口（workspace）可见：主窗口完整面板不渲染该入口（主面板待退役，
+   * 新页面只接入唯一工作台宿主）。navVisibility 配置仍按 ID 保留用户选择。
+   */
+  workbenchOnly?: boolean;
   /** 各界面的默认值：顺序用于首次安装与「恢复默认」，可见用于新入口合并。 */
   defaults: Readonly<Record<NavSurface, { order: number; visible: boolean }>>;
   /**
@@ -150,8 +155,10 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
   {
     // 文件工作区（多目录分栏文件浏览器）：完整面板独立页面，不占 Ctrl+数字；
     // 与「资源管理」（系统运行资源监控）完全无关，不提供胶囊入口。
+    // 仅接入统一工作台（U0 唯一宿主），主窗口完整面板不渲染。
     id: "files",
     kind: "page",
+    workbenchOnly: true,
     surfaces: ["left"],
     labelKey: "nav.files",
     label: "文件工作区",

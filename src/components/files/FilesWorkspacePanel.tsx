@@ -59,7 +59,6 @@ import {
   LAYOUT_PRESETS,
   defaultTree,
   paneIds,
-  reassignPaneIds,
   type SplitDirection,
   type SplitNode,
 } from "../../lib/filesWorkspace/model";
@@ -69,16 +68,14 @@ import {
   getFwClipboard,
   setFwClipboard,
   resolveEffect,
-  subscribeFwDrag,
   type FwDropZone,
 } from "../../lib/filesWorkspace/interactions";
 import {
   bindSettingsStore,
   FILE_WORKSPACE_SETTING_KEY,
   normalizePersisted,
-  type PersistedPane,
 } from "../../lib/filesWorkspace/persist";
-import { dropTargetAt, registerFileDropConsumer, dragPayloadDiscard } from "../../lib/fileDrop";
+import { dropTargetAt, registerFileDropConsumer, discardOperation } from "../../lib/fileDrop";
 import type { DragPayloadView } from "../../lib/dragPayload";
 import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -199,8 +196,8 @@ function SplitWithDivider({
         role="separator"
         aria-orientation={horizontal ? "vertical" : "horizontal"}
         aria-label="调整分栏比例"
-        aria-valuemin={Math.round(minRatio * 100)}
-        aria-valuemax={Math.round((1 - minRatio) * 100)}
+        aria-valuemin={15}
+        aria-valuemax={85}
         aria-valuenow={Math.round(node.ratio * 100)}
         tabIndex={0}
         onPointerDown={beginResize}
@@ -297,7 +294,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     [settingsRevision],
   );
   useEffect(() => {
-    const unsub = useSettingsStore.subscribe((s) => setSettingsRevision((n) => n + 1));
+    const unsub = useSettingsStore.subscribe(() => setSettingsRevision((n) => n + 1));
     return () => unsub();
   }, []);
 
@@ -411,7 +408,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             : null;
       if (!targetDir) return;
       const effect = resolveEffect(payload, targetDir, modifiersRef.current);
-      void applyFileDrop(payload.paths, targetDir, effect);
+      void applyFileDrop(payload.paths, targetDir, effect === "copy" ? "copy" : "move");
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -463,17 +460,17 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         if (payload.kind === "local-files" && payload.paths.length) {
           const dir = hitPaneDir(point);
           if (!dir) {
-            void dragPayloadDiscard(meta.operationId, "files-workspace-no-pane");
+            void discardOperation(meta.operationId, "files-workspace-no-pane");
             showToast(t("fw.error.dropOutside"), { kind: "warning" });
             return;
           }
           // 外部来源恒为复制语义：绝不删用户源文件；消费后释放后端会话。
           void applyFileDrop(payload.paths, dir, "copy").then(() =>
-            dragPayloadDiscard(meta.operationId, "files-workspace-committed"),
+            discardOperation(meta.operationId, "files-workspace-committed"),
           );
           return;
         }
-        void dragPayloadDiscard(meta.operationId, "files-workspace-unsupported-kind");
+        void discardOperation(meta.operationId, "files-workspace-unsupported-kind");
         showToast(t("fw.error.unsupportedDrop", { kind: payload.kind }), { kind: "warning" });
       },
     };

@@ -303,7 +303,6 @@ export default function FileList({
               onPointerDown={onEntryPointerDown}
               onDoubleClick={onEntryActivate}
               onContextMenu={onEntryContextMenu}
-              onDragStartFile={onFileDragStart}
             />
           );
         })}

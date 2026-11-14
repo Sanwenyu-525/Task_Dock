@@ -1914,5 +1914,43 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
   2K/4K 视觉走查、关闭后资源释放与空闲 CPU/内存的完整测量（仅做过开关与进程观察）。
   不能用 jsdom/组件测试替代这些原生结论。
 
+## 文件工作区（多目录分栏，2026-11-14）
+
+工作台内路由 `files`（左侧导航「文件工作区」，`workbenchOnly`——只接入统一工作台宿主，
+主窗口完整面板不渲染）。一个窗口内多分栏浏览真实目录，支持横向/纵向/嵌套分割、
+每分栏独立导航与标签、跨分栏文件复制/移动、布局持久化与模板。
+
+- **后端** `src-tauri/src/file_workspace/`（核心）+ `commands/file_workspace.rs`（命令层）：
+  `fs_list_dir / fs_dir_signature / fs_places / fs_create_dir / fs_create_file / fs_rename /
+  fs_copy_paths / fs_move_paths / fs_delete_paths / fs_stat / fs_open / fs_reveal / fs_thumbnail`。
+  只接受绝对路径；名称经 `sanitize_name`（穿越/保留名/非法字符）；受保护目录（应用数据目录）
+  拒绝写入侧操作；删除默认走回收站（SHFileOperationW FOF_ALLOWUNDO），永久删除单独语义
+  （有界递归 + 重解析点不跟随，深度 64/总量 20 万上限）；目录复制/移动父目录优先去重，
+  同卷 rename 优先、跨卷回退复制+删除；报告逐条 ok/failed/skipped，部分成功如实返回。
+- **缩略图**：Shell `IShellItemImageFactory`（复用 windows 0.62 既有依赖，零新增 crate），
+  并发信号量 4、进程级 LRU 256（键含 mtime+size）、HBITMAP→PNG；失败返回 None 前端回落
+  类型图标（不伪造占位成功）。
+- **前端** `src/components/files/` + `src/lib/filesWorkspace/` + `useFilesWorkspaceStore`：
+  递归分割树（窗格 ≤12、树深 ≤6、每窗格标签 ≤12、比例 0.15–0.85）；目录列表按路径缓存
+  （dirCache，多窗格同目录复用，轮询 `fs_dir_signature` 单次 metadata 变化才重拉，仅可见页轮询）；
+  列表/网格虚拟化渲染（≤8000 条）；应用内拖拽（`interactions.ts` 单例：标签→边缘分栏/中心并入/
+  标签栏插入，文件→中心/文件夹行；Ctrl=复制、Shift=移动、默认同卷移动跨卷复制，释放前恒显示）；
+  外部 OS 拖入经 `fileDrop.ts` 仲裁认领（priority 20 > 暂存架 10），仅接受本地路径并**恒为复制
+  语义**投递到命中分栏。内部复制/剪切刻意不触碰系统剪贴板（不覆盖用户已复制内容）。
+- **持久化**：独立设置键 `file_workspace_layouts`（`ALLOWED_KEYS` 注册 + 结构边界校验：
+  states ≤8 / 模板 ≤20 / ≤256KB；语义归一化在前端 `persist.ts`，损坏整体回默认、单条丢弃）。
+  与 `workbench_layout`（外壳路由/右栏）、`navigation_layout`、`workspace_instances.layout_json`
+  正交，不互相写入。保存分割树 + 各窗格标签路径 + 激活窗格；视图/排序/搜索属会话态不落库；
+  目录失效保留布局并标注不可用。内置模板（通用整理/开发项目/游戏制作/AI 漫剧制作）只恢复
+  布局形状，不内置示例路径；自定义模板保存当前树与标签路径。
+- **Agent/模块接口预留**：`FilesWorkspacePanel.ts` 导出 `openFilesWorkspacePath(path)`（显式
+  打开目录）与 `getFilesWorkspaceContext()`（只暴露活动窗格目录与用户选择；不读取文件夹内容，
+  写入/删除走既有确认 UI）。
+- **测试与验收边界**：Rust 单测 17 条（临时目录，覆盖清洗/列目录/冲突策略/父子去重/自引用
+  拒绝/移动语义/删除/创建重命名/签名/类别）；前端 Vitest 52 条（分割树/路径/持久化/交互效果/
+  store）；导航契约与工作台回归 41 条。预览走查（通道 B，内存 shim 文件树）截图见
+  `tmp/acceptance/files-workspace/shots/`。原生真机（OLE 拖入实际投递、回收站 UI 对话、
+  DPI/多显示器、缩略图真实渲染）**未验证**，预览 shim 不能替代。
+
 
 
