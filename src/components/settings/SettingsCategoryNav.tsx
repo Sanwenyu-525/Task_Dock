@@ -11,12 +11,42 @@
 //! - 窄窗下由 CSS 网格自动降列（3 → 2 → 1），标签允许换行而不是截断，
 //!   因此分类名称始终完整可读。
 
-import { useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useLocale } from "../../hooks/useLocale";
 import {
   SETTINGS_CATEGORIES,
   type SettingsCategoryId,
 } from "../../lib/settingsCategories";
+
+/**
+ * 宽屏左栏布局断点：与 settings-page.css 的 `@media (min-width: …)` 保持一致
+ * （单一事实源——改这里必须同步改 CSS，两处注释互指）。宽屏（≥1080 逻辑像素）下分类呈纵向
+ * 左栏（图标 + 标题 + 描述，对照效果图 13），窄窗保留横向网格 + 吸顶 +
+ * 3→2→1 降列。aria-orientation 必须与视觉布局一致，因此用 matchMedia 感知。
+ */
+const WIDE_LAYOUT_QUERY = "(min-width: 1080px)";
+
+function useWideCategoryLayout(): boolean {
+  const supported =
+    typeof window === "object" && typeof window.matchMedia === "function";
+  const [wide, setWide] = useState(() =>
+    supported ? window.matchMedia(WIDE_LAYOUT_QUERY).matches : false,
+  );
+  useEffect(() => {
+    if (!supported) return;
+    const mql = window.matchMedia(WIDE_LAYOUT_QUERY);
+    const onChange = (event: MediaQueryListEvent) => setWide(event.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [supported]);
+  return wide;
+}
 
 /** 分类 tab 的 DOM id：与内容区 `aria-labelledby` / `aria-controls` 共用。 */
 export function settingsCategoryTabId(id: SettingsCategoryId): string {
@@ -37,6 +67,7 @@ export default function SettingsCategoryNav({
 }) {
   const { t } = useLocale();
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
+  const wide = useWideCategoryLayout();
 
   const activate = useCallback(
     (index: number) => {
@@ -70,7 +101,7 @@ export default function SettingsCategoryNav({
       className="settings-categories"
       role="tablist"
       aria-label={t("settings.category.aria")}
-      aria-orientation="horizontal"
+      aria-orientation={wide ? "vertical" : "horizontal"}
     >
       {SETTINGS_CATEGORIES.map((category, index) => {
         const selected = category.id === active;
@@ -85,6 +116,7 @@ export default function SettingsCategoryNav({
             id={settingsCategoryTabId(category.id)}
             aria-selected={selected}
             aria-controls={settingsCategoryPanelId(category.id)}
+            aria-describedby={`settings-category-desc-${category.id}`}
             tabIndex={selected ? 0 : -1}
             className={`settings-category${selected ? " is-active" : ""}`}
             onClick={() => onSelect(category.id)}
@@ -96,7 +128,20 @@ export default function SettingsCategoryNav({
               className="settings-category-icon"
               aria-hidden="true"
             />
-            <span className="settings-category-label">{t(category.labelKey)}</span>
+            {/* text 包装层：窄窗 display:contents（保持既有 icon+label 磁贴），
+                宽屏左栏展开为「标题 + 描述」两行（描述来自分类元数据）。
+                描述不进可访问名称（name 只含标题，测试按名称精确查询），
+                经 aria-describedby 在聚焦时播报——标准 tab-with-description 模式。 */}
+            <span className="settings-category-text">
+              <span className="settings-category-label">{t(category.labelKey)}</span>
+              <span
+                id={`settings-category-desc-${category.id}`}
+                className="settings-category-desc"
+                aria-hidden="true"
+              >
+                {t(category.descriptionKey)}
+              </span>
+            </span>
           </button>
         );
       })}

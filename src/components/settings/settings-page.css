@@ -1,8 +1,9 @@
 /*
  * 设置页布局（2026-11-14 统一工作台改造）。
- * 只负责页面级页头间距与宽屏内容限宽；分类导航（横向 tablist + 吸顶）、
- * 跳转搜索与 setting-row 的既有样式/交互在 styles.css，不在此重复。
+ * 负责页面级页头间距、宽屏内容限宽与宽屏左栏分类布局；分类磁贴的
+ * 既有样式/吸顶/降列在 styles.css，不在此重复。
  * 文件不带 @layer，每条选择器以 .settings-panel 前缀做作用域隔离。
+ * 顺序约定：窄窗默认规则在前，宽屏 @media 覆盖在后（同特异性靠源序取胜）。
  */
 
 .settings-panel.page-fill {
@@ -29,3 +30,86 @@
   margin-inline: auto;
 }
 
+/* 窄窗（<1120px）默认：描述隐藏、text 包装层不参与布局——磁贴外观与
+   左栏化之前完全一致（icon + label，网格降列见 styles.css）。 */
+.settings-panel .settings-category-text {
+  display: contents;
+}
+.settings-panel .settings-category-desc {
+  display: none;
+}
+
+/* ══ 宽屏左栏分类布局（≥1080px 逻辑像素，对照效果图 13；2026-11-14 P3 精修） ══
+   设计决策：宽屏把一级分类从横向 3×2 网格升级为**左侧分类栏**（图标 +
+   标题 + 描述两行，全部六个分类与各自说明常显），内容列保持在右侧——
+   分类浏览不再占据内容区顶部两行高度，选类成本更低（描述此前只在
+   面板头出现一次）。窄窗（<1080px 逻辑像素）完整保留既有横向网格 + 吸顶 +
+   3→2→1 降列（验收 UI-10 沉淀的窄窗行为不变）。
+   键盘交互不变：roving tabindex 上下左右均可激活（组件两种朝向都处理），
+   aria-orientation 随布局切换（断点与组件 WIDE_LAYOUT_QUERY 互为镜像，
+   改一处必须同步另一处）。
+   滚动语义不变：.settings-category-panel 仍是唯一滚动区（page-scroll），
+   左栏与页头固定，左栏天然常显、无需吸顶。 */
+@media (min-width: 1080px) {
+  .settings-panel.page-fill {
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "head head"
+      "note note"
+      "cats jump"
+      "cats panel";
+    column-gap: 14px;
+    row-gap: 8px;
+  }
+
+  .settings-panel > .settings-page-head {
+    grid-area: head;
+  }
+  /* 数据加载失败横幅（条件渲染）：缺席时该行 auto 高度归零。 */
+  .settings-panel > .setting-note {
+    grid-area: note;
+  }
+  .settings-panel > .settings-jump {
+    grid-area: jump;
+    align-self: start;
+  }
+  .settings-panel > .settings-category-panel {
+    grid-area: panel;
+  }
+
+  /* 左栏：纵向列表替代吸顶网格；分类常显（比吸顶少一次内容遮挡）。 */
+  .settings-panel > .settings-categories {
+    grid-area: cats;
+    position: static;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    align-self: start;
+    align-content: start;
+  }
+  .settings-panel > .settings-categories .settings-category {
+    align-items: flex-start;
+    min-height: 0;
+    padding: 8px 10px;
+    gap: 8px;
+  }
+  .settings-panel > .settings-categories .settings-category-icon {
+    margin-top: 1px;
+  }
+  .settings-panel .settings-category-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: left;
+  }
+  /* 描述只在左栏磁贴显示；窄窗与面板头均维持各自既有规则。 */
+  .settings-panel > .settings-categories .settings-category-desc {
+    display: block;
+  }
+}
