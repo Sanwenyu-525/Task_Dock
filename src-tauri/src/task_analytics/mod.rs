@@ -229,7 +229,7 @@ fn shift_months(base: NaiveDate, delta: i32) -> NaiveDate {
 }
 
 /// 本期窗口 [start, end)（本地日历）。
-fn range_window(kind: RangeKind, today: NaiveDate) -> (NaiveDate, NaiveDate) {
+pub(crate) fn range_window(kind: RangeKind, today: NaiveDate) -> (NaiveDate, NaiveDate) {
     match kind {
         RangeKind::Day => (today, shift_days(today, 1)),
         RangeKind::Week => {

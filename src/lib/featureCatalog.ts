@@ -951,6 +951,36 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     verification: "unverified",
     entryPoints: ["全局搜索弹窗（Ctrl+Shift+F）→ 命令组"],
   },
+  {
+    id: "ux.command-phrases",
+    category: "workflow",
+    title: "句式命令",
+    description: "全局搜索内的确定性短语层：任务域只读查询与单步修改，帧表外零损失回退搜索。",
+    detail:
+      "已交付（2026-11-11）：不接模型、不做多轮——Rust 封闭帧表解析（完成 / 改期 / 优先级 / " +
+      "本周完成 / 逾期 / 今日到期 / Agent 失败），时间复用 nlp.rs 既有确定性解析；候选与查询在数据库侧完成，" +
+      "写意图最多 5 个未完成任务候选，第一次 Enter 只展示差异预览、第二次才落库，Esc 取消确认；" +
+      "执行前复核状态（完成前若任务已完成则不反开），改期/优先级先读全量任务再只写目标字段，" +
+      "不清空描述、提醒与重复规则。整句精确命中任务标题时回退普通搜索；帧表外说法同样回退，" +
+      "由空输入示例与近似命中提示承担可发现性。独立于 commandRegistry 的第二通道（注册表白名单禁止写入，契约不变）。",
+    status: "implemented",
+    priority: "P1",
+    existingFeatures: [
+      "单步写句式：完成 / 改期 / 优先级（两段式确认 + 差异预览）",
+      "只读查询：本周完成汇总、逾期任务、今日到期、失败的 Agent",
+      "候选匹配在数据库侧完成（排除已完成，最多 5 条）；整句标题冲突与帧表外输入回退普通搜索",
+      "执行安全：完成前状态复核；改期/优先级先取全量任务再局部更新",
+    ],
+    missingFeatures: [],
+    dependencies: ["command_phrases.rs（帧表解析）", "nlp.rs（时间解析）", "任务命令与 task_analytics", "useGlobalSearchStore", "overlayStack"],
+    acceptanceCriteria: [
+      "帧表内句式给出候选或查询结果，帧表外与无法解析的时间回退普通搜索且不报错",
+      "写意图必须二次确认，确认时展示将发生的差异",
+      "执行只改目标字段，不清空描述、提醒与重复规则",
+    ],
+    verification: "unverified",
+    entryPoints: ["全局搜索弹窗（Ctrl+Shift+F）→ 输入句式"],
+  },
 
   // ─── 长期生态 ───────────────────────────────────────────────────────
   {

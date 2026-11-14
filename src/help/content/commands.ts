@@ -83,4 +83,87 @@ export const COMMANDS_ARTICLES: readonly HelpArticle[] = [
     relatedFeatureIds: ["core.global-search", "ux.command-palette"],
     relatedRouteIds: ["tasks", "workflows", "settings"],
   },
+  {
+    id: "help.quickstart.command-phrases",
+    categoryId: "quickstart",
+    status: "draft",
+    contentVersion: 1,
+    reviewedForVersion: "v0.11",
+    translations: {
+      "zh-CN": {
+        title: "句式命令：一句话查询或修改任务",
+        summary:
+          "全局搜索输入框支持一组封闭句式：单步完成 / 改期 / 调整优先级，以及本周完成、逾期、今日到期与 Agent 失败查询。写操作需要两次 Enter 确认。",
+        sections: [
+          { type: "heading", text: "支持的句式" },
+          {
+            type: "steps",
+            items: [
+              "完成 交周报（或「把交周报标记完成」）——把未完成任务标记完成。",
+              "把交周报改到明天下午三点（或「交周报 改到 明天」）——时间写法与快速录入一致。",
+              "把交周报的优先级改成高（或「交周报优先级高」）——高 / 中 / 低三档。",
+              "本周完成了什么——本周完成数量、逾期与今日到期汇总，并列出本周完成的任务。",
+              "逾期任务（或「有哪些逾期的」）——列出当前逾期且未完成的任务。",
+              "今天要做什么——列出本地今天到期的未完成任务。",
+              "哪些 Agent 失败了——列出需要介入的失败 Agent 会话，点击可定位。",
+            ],
+          },
+          { type: "heading", text: "两段式确认" },
+          {
+            type: "paragraph",
+            text: "写操作（完成 / 改期 / 优先级）先列出最多 5 个匹配的未完成任务。第一次按 Enter 只进入确认态并展示变化（例如「无截止时间 → 明天 09:00」），第二次按 Enter 才真正写入；Esc 先取消确认、再按一次才关闭弹窗。改期与优先级只写入目标字段，不会清空任务描述、独立提醒或重复规则。",
+          },
+          { type: "heading", text: "识别失败怎么办" },
+          {
+            type: "paragraph",
+            text: "不在句式表内的说法、无法解析的时间、以及整句话恰好等于已有任务标题时，都会按普通搜索处理，不报错、不猜测意图。此时输入框下方会给出可用的句式示例，搜索行为与之前完全一致。",
+          },
+          {
+            type: "note",
+            text: "v1 只做任务域的只读查询与单步修改：不支持多步链式、批量、删除、暂存架或剪贴板写入，也没有撤销。改期或优先级可以再发一条命令改回。",
+          },
+        ],
+      },
+      "en-US": {
+        title: "Command phrases: query or update tasks in one sentence",
+        summary:
+          "The global search box understands a closed set of phrases: one-step complete / reschedule / priority changes, plus this-week completions, overdue tasks, today's tasks and failed agents. Writes require two Enter presses.",
+        sections: [
+          { type: "heading", text: "Supported phrases" },
+          {
+            type: "steps",
+            items: [
+              "完成 交周报 (or 把交周报标记完成) — mark a pending task complete.",
+              "把交周报改到明天下午三点 (or 交周报 改到 明天) — time expressions match quick add.",
+              "把交周报的优先级改成高 (or 交周报优先级高) — high / medium / low.",
+              "本周完成了什么 — this week's completion count, overdue and due-today summary, plus completed tasks.",
+              "逾期任务 (or 有哪些逾期的) — tasks past their due time and still pending.",
+              "今天要做什么 — pending tasks due today (local day).",
+              "哪些 Agent 失败了 — failed agent sessions that need attention; click to locate.",
+            ],
+          },
+          { type: "heading", text: "Two-step confirmation" },
+          {
+            type: "paragraph",
+            text: "Writes (complete / reschedule / priority) first list up to five matching pending tasks. The first Enter only arms the change and shows the diff (for example \"No due date → Tomorrow 09:00\"); the second Enter performs the write. Esc cancels the armed state first and closes the dialog only on the next press. Reschedule and priority only write the target fields; description, standalone reminders and recurrence rules are preserved.",
+          },
+          { type: "heading", text: "When a phrase is not recognized" },
+          {
+            type: "paragraph",
+            text: "Phrases outside the table, unparseable times, and inputs that exactly match an existing task title all fall back to normal search. No error is shown and intent is never guessed. The dialog then shows usable phrase examples and search behaves exactly as before.",
+          },
+          {
+            type: "note",
+            text: "v1 only covers task-domain read-only queries and one-step changes: no multi-step chains, batch operations, deletion, shelf or clipboard writes, and no undo. Reschedule or priority changes can be reverted with another phrase.",
+          },
+        ],
+      },
+    },
+    keywords: {
+      "zh-CN": ["句式命令", "自然语言", "完成", "改期", "优先级", "本周完成", "逾期", "Agent 失败", "全局搜索"],
+      "en-US": ["command phrases", "natural language", "complete", "reschedule", "priority", "completed this week", "overdue", "failed agent", "global search"],
+    },
+    relatedFeatureIds: ["ux.command-phrases", "ux.command-palette", "core.global-search"],
+    relatedRouteIds: ["tasks", "agents"],
+  },
 ];

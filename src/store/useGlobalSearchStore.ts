@@ -33,8 +33,12 @@ import {
 import { requestSettingsSectionReveal } from "../lib/settingsSections";
 import { errorMessage } from "../lib/errors";
 import { t as translate } from "../i18n";
+import { fetchTask, resolveCommandPhrase, type PhraseResolution } from "../lib/bridge";
+import { formatDue } from "../lib/format";
+import { looksLikePhrase, phraseRowCount, priorityLabelKey } from "../lib/commandPhrases";
 import { useUiStore } from "./useUiStore";
 import { useScenarioStore } from "./useScenarioStore";
+import { useTasksStore } from "./useTasksStore";
 import { useWorkflowsStore } from "./useWorkflowsStore";
 
 /** 目标模块消费的一次性定位意图。token 自增支持重复定位同一对象。 */
@@ -52,6 +56,8 @@ export interface GlobalSearchLocateIntent {
 }
 
 const SEARCH_DEBOUNCE_MS = 220;
+/** 句式解析防抖：比数据搜索更短，保证命令反馈跟手；后端解析是纯本地查库。 */
+const PHRASE_DEBOUNCE_MS = 120;
 
 interface GlobalSearchState {
   open: boolean;
@@ -71,6 +77,16 @@ interface GlobalSearchState {
    * flat 键盘序中位于数据结果之前。
    */
   commands: CommandDef[];
+  /**
+   * 句式命令解析结果。null = 帧表未命中/时间不可解析/整句标题冲突，
+   * 一律按普通搜索处理（不提示错误、不改变搜索行为）。
+   */
+  phrase: PhraseResolution | null;
+  phraseLoading: boolean;
+  /** 已用第一次 Enter 武装的候选任务 id；再次 Enter 才真正写入。 */
+  phraseArmed: string | null;
+  /** 写意图执行在途：阻止重复 Enter 造成「完成→反开」这类二次切换。 */
+  phraseExecuting: boolean;
 
   openSearch: () => void;
   closeSearch: () => void;
@@ -87,6 +103,12 @@ interface GlobalSearchState {
   hydrateCommands: () => void;
   /** 执行命令（只允许打开/跳转/草稿/运行类动作，见 commandRegistry 白名单）。 */
   executeCommand: (cmd: CommandDef) => void;
+  /** 解析当前输入；仅 looksLikePhrase 命中时由 setQuery 调度。 */
+  refreshPhrase: () => Promise<void>;
+  /** Escape 先取消二次确认；返回是否消费了这次 Escape。 */
+  disarmPhrase: () => boolean;
+  /** 激活句式区第 index 行：写意图两段式确认，查询项直接跳转。 */
+  activatePhraseRow: (index: number) => void;
   /** 执行结果跳转（记录最近搜索 → 分类分发）。 */
   openResult: (item: GlobalSearchResult) => void;
   /** 目标模块消费定位意图后调用（清除意图）。 */
@@ -100,13 +122,22 @@ interface GlobalSearchState {
 }
 
 let debounceTimer: number | undefined;
+let phraseDebounceTimer: number | undefined;
 let searchSeq = 0;
+let phraseSeq = 0;
 let locateSeq = 0;
 
 function clearDebounce() {
   if (debounceTimer !== undefined) {
     window.clearTimeout(debounceTimer);
     debounceTimer = undefined;
+  }
+}
+
+function clearPhraseDebounce() {
+  if (phraseDebounceTimer !== undefined) {
+    window.clearTimeout(phraseDebounceTimer);
+    phraseDebounceTimer = undefined;
   }
 }
 
@@ -122,16 +153,40 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
   pendingLocate: null,
   notice: null,
   commands: [],
+  phrase: null,
+  phraseLoading: false,
+  phraseArmed: null,
+  phraseExecuting: false,
 
   openSearch: () => {
     clearDebounce();
-    set({ open: true, notice: null, error: null });
+    clearPhraseDebounce();
+    phraseSeq += 1;
+    set({
+      open: true,
+      notice: null,
+      error: null,
+      phrase: null,
+      phraseLoading: false,
+      phraseArmed: null,
+      phraseExecuting: false,
+    });
     get().hydrateCommands();
+    // 输入框内容在关闭后保留：重新打开时按同一套规则重新解析句式。
+    if (looksLikePhrase(get().query)) void get().refreshPhrase();
   },
 
   closeSearch: () => {
     clearDebounce();
-    set({ open: false });
+    clearPhraseDebounce();
+    phraseSeq += 1;
+    set({
+      open: false,
+      phrase: null,
+      phraseLoading: false,
+      phraseArmed: null,
+      phraseExecuting: false,
+    });
   },
 
   toggleSearch: () => {
@@ -140,7 +195,18 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
   },
 
   setQuery: (q) => {
-    set({ query: q, error: null, notice: null });
+    // 输入一变立即作废旧解析并清空行：否则防抖窗口内按 Enter 可能执行
+    // 上一段文本匹配出的候选（对用户是不可解释的误写）。
+    clearPhraseDebounce();
+    phraseSeq += 1;
+    set({
+      query: q,
+      error: null,
+      notice: null,
+      phrase: null,
+      phraseLoading: false,
+      phraseArmed: null,
+    });
     // 命令匹配是纯本地过滤：即时生效，不等数据搜索的防抖窗口。
     get().refreshCommands();
     clearDebounce();
@@ -149,6 +215,12 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
       searchSeq += 1;
       set({ results: null, loading: false });
       return;
+    }
+    if (looksLikePhrase(trimmed)) {
+      phraseDebounceTimer = window.setTimeout(() => {
+        phraseDebounceTimer = undefined;
+        void get().refreshPhrase();
+      }, PHRASE_DEBOUNCE_MS);
     }
     debounceTimer = window.setTimeout(() => {
       debounceTimer = undefined;
@@ -173,7 +245,15 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
         activeCategory === "all" ? null : ([activeCategory] as string[]);
       const res = await globalSearch(trimmed, categories, null);
       if (seq !== searchSeq) return; // 旧响应丢弃
-      set({ results: res, loading: false, activeIndex: 0 });
+      // 句式区已占据选中/武装时，迟到的数据结果不得把选中挪回命令组，
+      // 否则「Enter 确认执行」会变成给另一个候选重新武装。
+      const phraseCount = phraseRowCount(get().phrase);
+      const current = get().activeIndex;
+      set({
+        results: res,
+        loading: false,
+        activeIndex: phraseCount > 0 && current < phraseCount ? current : 0,
+      });
     } catch (e) {
       if (seq !== searchSeq) return;
       // 失败不清空已有结果：显示错误 + 允许重试。
@@ -182,19 +262,162 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
   },
 
   moveActive: (delta) => {
-    // flat 序 = 命令组在前 + 数据结果在后，与弹窗渲染顺序一致；
+    // flat 序 = 句式区在前 + 命令组 + 数据结果，与弹窗渲染顺序一致；
     // 命令组只在「全部」分类下展示（与弹窗 showCommands 同一判定）。
-    const { commands, results, activeIndex, activeCategory } = get();
+    const { commands, results, activeIndex, activeCategory, phrase } = get();
+    const phraseCount = phraseRowCount(phrase);
     const cmdCount = activeCategory === "all" ? commands.length : 0;
     const total =
+      phraseCount +
       cmdCount +
       (results?.groups.reduce((n, g) => n + g.items.length, 0) ?? 0);
     if (total === 0) return;
     const next = (activeIndex + delta + total) % total;
-    set({ activeIndex: next });
+    // 移动选中即离开原候选：取消武装，避免预览行与执行目标错位。
+    set({ activeIndex: next, phraseArmed: null });
   },
 
   setActiveIndex: (i) => set({ activeIndex: i }),
+
+  refreshPhrase: async () => {
+    const trimmed = get().query.trim();
+    if (!trimmed || !looksLikePhrase(trimmed)) return;
+    const seq = ++phraseSeq;
+    set({ phraseLoading: true });
+    try {
+      const res = await resolveCommandPhrase(trimmed);
+      if (seq !== phraseSeq) return; // 输入已变化，旧解析作废
+      set({ phrase: res, phraseLoading: false, phraseArmed: null, activeIndex: 0 });
+    } catch {
+      if (seq !== phraseSeq) return;
+      // 解析失败不阻断搜索：如实提示一次，搜索链路继续工作。
+      set({
+        phrase: null,
+        phraseLoading: false,
+        phraseArmed: null,
+        notice: translate("commandPhrases.notice.parseFailed"),
+      });
+    }
+  },
+
+  disarmPhrase: () => {
+    if (!get().phraseArmed) return false;
+    set({ phraseArmed: null });
+    return true;
+  },
+
+  activatePhraseRow: (index) => {
+    const { phrase, phraseArmed, phraseExecuting } = get();
+    if (!phrase || phraseExecuting) return;
+
+    if (phrase.kind === "query") {
+      const item = phrase.items[index];
+      if (!item) return;
+      get().closeSearch();
+      const ui = useUiStore.getState();
+      if (item.kind === "agent") {
+        // 缺会话标识的失败项仍属于 Agent 域：只切页，不拿 action id 去任务页定位。
+        ui.setTab("agents");
+        if (item.agent) {
+          ui.focusAgent({
+            sourceId: item.agent.sourceId,
+            sessionId: item.agent.sessionId,
+            refId: item.agent.runId,
+          });
+        }
+      } else {
+        ui.setTab("tasks");
+        set({
+          pendingLocate: {
+            category: "tasks",
+            id: item.id,
+            kind: "task",
+            parentId: null,
+            // 句式的整句（如「本周完成了什么」）通常不是任务标题子串；
+            // 用条目标题定位，否则任务页按句过滤后会找不到目标行。
+            keyword: item.title,
+            token: ++locateSeq,
+          },
+        });
+      }
+      return;
+    }
+
+    const candidate = phrase.candidates[index];
+    if (!candidate) return;
+    set({ activeIndex: index });
+    // 两段式：第一次 Enter 只武装并展示差异预览，不做任何写入。
+    if (phraseArmed !== candidate.id) {
+      set({ phraseArmed: candidate.id });
+      return;
+    }
+
+    set({ phraseArmed: null, phraseExecuting: true });
+    void (async () => {
+      try {
+        if (phrase.kind === "complete") {
+          // toggle 是状态翻转：候选解析后任务可能已被其他窗口完成，
+          // 直接 toggle 会把已完成任务反开。执行前复核，只对未完成项翻转。
+          const task = await fetchTask(candidate.id);
+          if (task.status !== "pending") {
+            const message = translate("commandPhrases.notice.alreadyCompleted", {
+              title: candidate.title,
+            });
+            set({ phraseExecuting: false, phraseArmed: null, notice: message });
+            useUiStore.getState().showToast(message, { kind: "warning" });
+            return;
+          }
+          await useTasksStore.getState().toggle(candidate.id);
+          useUiStore.getState().showToast(
+            translate("commandPhrases.notice.completed", { title: candidate.title }),
+            { kind: "success" },
+          );
+        } else if (phrase.kind === "reschedule" && phrase.dueAt) {
+          // update_task 会整字段写入 description/title：先取全量再只改截止时间，
+          // 省略的字段由后端三态语义保持原值（避免清空描述或提醒）。
+          const task = await fetchTask(candidate.id);
+          await useTasksStore.getState().update(candidate.id, {
+            title: task.title,
+            description: task.description,
+            due_at: phrase.dueAt,
+          });
+          useUiStore.getState().showToast(
+            translate("commandPhrases.notice.rescheduled", {
+              title: candidate.title,
+              due: formatDue(phrase.dueAt),
+            }),
+            { kind: "success" },
+          );
+        } else if (phrase.kind === "priority" && phrase.priority != null) {
+          const task = await fetchTask(candidate.id);
+          await useTasksStore.getState().update(candidate.id, {
+            title: task.title,
+            description: task.description,
+            priority: phrase.priority,
+          });
+          useUiStore.getState().showToast(
+            translate("commandPhrases.notice.priorityChanged", {
+              title: candidate.title,
+              priority: translate(priorityLabelKey(phrase.priority)),
+            }),
+            { kind: "success" },
+          );
+        } else {
+          // 后端契约保证写意图带目标值；缺失时不静默关窗，保持可重试。
+          set({ phraseExecuting: false });
+          return;
+        }
+        set({ phraseExecuting: false });
+        get().closeSearch();
+      } catch (e) {
+        const message = translate("commandPhrases.notice.executeFailed", {
+          error: errorMessage(e),
+        });
+        set({ phraseExecuting: false, notice: message });
+        useUiStore.getState().showToast(message, { kind: "error" });
+      }
+    })();
+  },
 
   refreshCommands: () => {
     const { query } = get();
@@ -442,5 +665,7 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
 /** 测试用：重置请求代际与防抖定时器（避免跨用例污染）。 */
 export function resetGlobalSearchTimers() {
   clearDebounce();
+  clearPhraseDebounce();
   searchSeq += 1;
+  phraseSeq += 1;
 }

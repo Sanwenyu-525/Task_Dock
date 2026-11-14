@@ -70,11 +70,11 @@ describe("结构渲染", () => {
     expect(screen.queryByRole("button", { name: /（受阻）/ })).toBeNull();
   });
 
-  it("五个分类区块条目数与目录一致（6 / 12 / 2 / 8 / 5）", () => {
+  it("五个分类区块条目数与目录一致（6 / 13 / 2 / 8 / 5）", () => {
     // core.dev-workbench（开发工作台 P0，2026-11-12 合入）加入核心效率功能分类
     const expected: [label: string, count: number][] = [
       ["核心效率功能", 6],
-      ["工作流与效率增强", 12],
+      ["工作流与效率增强", 13],
       ["信息管理与生活效率", 2],
       ["Agent 扩展", 8],
       ["长期生态", 5],
@@ -198,13 +198,14 @@ describe("筛选与搜索", () => {
     expect(within(cardOf("生活例行事项")).getByText("P2")).toBeTruthy();
   });
 
-  it("目录内搜索「全局搜索」命中统一检索与命令面板两项（2026-11-08 命令面板挂在全局搜索弹窗内）", () => {
+  it("目录内搜索「全局搜索」命中统一检索、命令面板与句式命令三项（均挂在全局搜索弹窗内）", () => {
     const input = screen.getByLabelText("搜索规划功能") as HTMLInputElement;
     fireEvent.input(input, { target: { value: "全局搜索" } });
     const cards = document.querySelectorAll(".roadmap-card");
-    expect(cards).toHaveLength(2);
+    expect(cards).toHaveLength(3);
     expect(cardOf("全局搜索")).toBeTruthy();
     expect(cardOf("全局命令面板")).toBeTruthy();
+    expect(cardOf("句式命令")).toBeTruthy();
   });
 
   it("目录内搜索命中唯一功能", () => {

@@ -873,6 +873,63 @@ export const listTaskLinks = (taskId: string) => invoke<TaskAgentLink[]>("list_t
 export const pendingItemsToTasks = (items: string[]) =>
   invoke<Task[]>("pending_items_to_tasks", { items });
 
+// ── 句式命令（ux.command-phrases）──
+export interface PhraseTaskCandidate {
+  id: string;
+  title: string;
+  dueAt: string | null;
+  priority: number;
+}
+
+/** 写意图只给候选与目标值，真正执行在前端二次确认后进行。 */
+export interface PhraseWrite {
+  target: string;
+  candidates: PhraseTaskCandidate[];
+  dueAt: string | null;
+  dateOnly: boolean;
+  priority: number | null;
+}
+
+export type PhraseQueryKind = "weekCompleted" | "overdue" | "today" | "agentFailures";
+
+export interface PhraseQuerySummary {
+  completed: number;
+  overdue: number;
+  due: number;
+}
+
+export interface PhraseAgentRef {
+  sourceId: string;
+  sessionId: string;
+  runId: string | null;
+}
+
+export interface PhraseQueryItem {
+  id: string;
+  title: string;
+  kind: "task" | "agent";
+  dueAt: string | null;
+  occurredAt: string | null;
+  sourceName: string | null;
+  agent: PhraseAgentRef | null;
+}
+
+export interface PhraseQuery {
+  query: PhraseQueryKind;
+  summary: PhraseQuerySummary | null;
+  items: PhraseQueryItem[];
+}
+
+export type PhraseResolution =
+  | ({ kind: "complete" } & PhraseWrite)
+  | ({ kind: "reschedule" } & PhraseWrite)
+  | ({ kind: "priority" } & PhraseWrite)
+  | ({ kind: "query" } & PhraseQuery);
+
+/** 帧表命中才返回解析结果；未命中/时间不可解析/整句标题冲突均返回 null（回退普通搜索）。 */
+export const resolveCommandPhrase = (input: string) =>
+  invoke<PhraseResolution | null>("resolve_command_phrase", { input });
+
 // ── Agent ──
 export const agentSnapshot = () => invoke<AgentSnapshot>("agent_snapshot");
 /**

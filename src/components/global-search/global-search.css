@@ -422,6 +422,100 @@
     margin-inline-start: auto;
   }
 
+  /* ── 句式命令分组（ux.command-phrases）──
+     与命令组同样使用强调色系，但写意图确认态用内描边强调「即将写入」。
+     仅使用语义 Token；内描边不改变行高，避免 armed 时列表跳动。 */
+  .gs-phrase {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .gs-phrase-summary {
+    font-weight: 400;
+    font-size: 10px;
+    color: var(--text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gs-phrase-row.armed {
+    background: var(--accent-soft-bg, var(--hover-bg));
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+
+  .gs-phrase-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11px;
+    line-height: 1.45;
+    min-width: 0;
+  }
+
+  .gs-phrase-diff {
+    color: var(--text-primary);
+  }
+
+  .gs-phrase-note {
+    color: var(--text-tertiary);
+  }
+
+  .gs-phrase-armed {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .gs-phrase-empty {
+    padding: 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+  }
+
+  /* 帧表未命中时的模板提示：非交互、可换行，不参与 flat 键盘序。 */
+  .gs-phrase-hints {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  .gs-phrase-hint {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--hover-bg);
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+
+  .gs-state.gs-phrase-start {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .gs-phrase-examples {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  /* 命令行/最近搜索已占位时的可发现性条：贴近输入区，不与空态争空间。 */
+  .gs-phrase-examples-bar {
+    justify-content: flex-start;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--divider);
+    background: var(--hover-bg);
+  }
+
   /* reduced-motion：关闭旋转动画以外的持续动画（旋转本身尊重用户偏好则停用） */
   @media (prefers-reduced-motion: reduce) {
     .gs-spin {

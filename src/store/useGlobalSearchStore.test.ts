@@ -9,6 +9,17 @@ const globalSearchMock = vi.fn(
 const navNavigateMock = vi.fn(
   (_id: unknown, _opts?: unknown) => Promise.resolve({ status: "launched" }),
 );
+const resolvePhraseMock = vi.fn((_input: string) => Promise.resolve(null) as Promise<unknown>);
+const fetchTaskMock = vi.fn((_id: string) => Promise.resolve(null) as Promise<unknown>);
+
+vi.mock("../lib/bridge", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/bridge")>();
+  return {
+    ...actual,
+    resolveCommandPhrase: (input: string) => resolvePhraseMock(input),
+    fetchTask: (id: string) => fetchTaskMock(id),
+  };
+});
 
 vi.mock("../lib/globalSearchBridge", () => ({
   GLOBAL_SEARCH_CATEGORIES: [
@@ -39,15 +50,20 @@ vi.mock("../lib/navigation", () => ({
 import { useGlobalSearchStore, resetGlobalSearchTimers } from "./useGlobalSearchStore";
 import { useUiStore } from "./useUiStore";
 import { useScenarioStore } from "./useScenarioStore";
+import { useTasksStore } from "./useTasksStore";
 import { useWorkflowsStore } from "./useWorkflowsStore";
 import { SETTINGS_SECTION_REVEAL_KEY } from "../lib/settingsSections";
 import { buildStaticCommands, type CommandDef } from "../lib/commandRegistry";
-import type { WorkflowRunDetail } from "../lib/bridge";
+import type { Task, TaskInput, WorkflowRunDetail } from "../lib/bridge";
 
 const flush = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// 保存真实任务写入动作：句式用例会替换为 mock，必须在每个用例前还原。
+const realTaskToggle = useTasksStore.getState().toggle;
+const realTaskUpdate = useTasksStore.getState().update;
 
 beforeEach(() => {
   resetGlobalSearchTimers();
+  useTasksStore.setState({ toggle: realTaskToggle, update: realTaskUpdate });
   useGlobalSearchStore.setState({
     open: false,
     query: "",
@@ -60,7 +76,14 @@ beforeEach(() => {
     pendingLocate: null,
     notice: null,
     commands: [],
+    phrase: null,
+    phraseLoading: false,
+    phraseArmed: null,
+    phraseExecuting: false,
   });
+  resolvePhraseMock.mockReset();
+  resolvePhraseMock.mockResolvedValue(null);
+  fetchTaskMock.mockReset();
   useUiStore.setState({ tab: "tasks", agentFocus: null, toasts: [], toast: null });
   // 动态实体数据源：默认「已加载且为空」（不触发 IPC，水合走降级路径）。
   useScenarioStore.setState({ summaries: [], loaded: true, loading: false, enteringId: null, error: null });
@@ -465,5 +488,302 @@ describe("命令面板（全局搜索内的命令能力层）", () => {
     expect(done!.message).toContain("开工场景");
     expect(done!.message).toContain("成功 1 项，未成功 1 项");
     expect(done!.kind).toBe("warning");
+  });
+});
+
+describe("句式命令", () => {
+  function taskFixture(overrides: Partial<Task> = {}): Task {
+    return {
+      id: "t1",
+      title: "交周报",
+      description: "",
+      priority: 2,
+      status: "pending",
+      category: "",
+      tags: [],
+      due_at: null,
+      remind_at: null,
+      advance_minutes: 0,
+      recurrence: null,
+      created_at: "",
+      updated_at: "",
+      completed_at: null,
+      linked_agents: 0,
+      ...overrides,
+    };
+  }
+
+  function writeResolution(
+    kind: "complete" | "reschedule" | "priority",
+    candidateId = "t1",
+    title = "交周报",
+  ) {
+    return {
+      kind,
+      target: title,
+      candidates: [{ id: candidateId, title, dueAt: null, priority: 2 }],
+      dueAt: kind === "reschedule" ? "2026-11-12T01:00:00+00:00" : null,
+      dateOnly: false,
+      priority: kind === "priority" ? 1 : null,
+    };
+  }
+
+  it("只有帧表近似命中的输入才请求解析（含防抖）", async () => {
+    useGlobalSearchStore.getState().setQuery("登录");
+    await flush(160);
+    expect(resolvePhraseMock).not.toHaveBeenCalled();
+
+    useGlobalSearchStore.getState().setQuery("  完成 交周报？ ");
+    expect(resolvePhraseMock).not.toHaveBeenCalled(); // 120ms 防抖窗口内
+    await flush(160);
+    expect(resolvePhraseMock).toHaveBeenCalledTimes(1);
+    expect(resolvePhraseMock).toHaveBeenCalledWith("完成 交周报？");
+
+    useGlobalSearchStore.getState().setQuery("交周报 改到 明天");
+    await flush(160);
+    expect(resolvePhraseMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("旧解析响应不覆盖新输入（seq 防乱序）", async () => {
+    let resolveStale: (v: unknown) => void = () => {};
+    resolvePhraseMock.mockImplementationOnce(() => new Promise((r) => (resolveStale = r)));
+    resolvePhraseMock.mockResolvedValueOnce(writeResolution("complete", "t-new", "新任务"));
+
+    useGlobalSearchStore.getState().setQuery("完成 旧");
+    await flush(150);
+    useGlobalSearchStore.getState().setQuery("完成 新");
+    await flush(150);
+    expect(useGlobalSearchStore.getState().phrase).toMatchObject({
+      kind: "complete",
+      candidates: [{ id: "t-new" }],
+    });
+
+    resolveStale(writeResolution("complete", "t-old", "旧任务"));
+    await flush(20);
+    expect(useGlobalSearchStore.getState().phrase).toMatchObject({
+      candidates: [{ id: "t-new" }],
+    });
+  });
+
+  it("写意图两段式：第一次 Enter 只武装，第二次才落库并关窗", async () => {
+    const toggleMock = vi.fn(async (_id: string) => ({ id: "t1" } as Task));
+    useTasksStore.setState({ toggle: toggleMock });
+    fetchTaskMock.mockResolvedValue(taskFixture());
+    resolvePhraseMock.mockResolvedValue(writeResolution("complete"));
+
+    useGlobalSearchStore.setState({ open: true });
+    useGlobalSearchStore.getState().setQuery("完成 交周报");
+    await flush(150);
+    expect(useGlobalSearchStore.getState().phrase?.kind).toBe("complete");
+
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    expect(useGlobalSearchStore.getState().phraseArmed).toBe("t1");
+    expect(toggleMock).not.toHaveBeenCalled();
+
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    await flush(20);
+    expect(toggleMock).toHaveBeenCalledWith("t1");
+    expect(useGlobalSearchStore.getState().open).toBe(false);
+    expect(useUiStore.getState().toasts.some((t) => t.kind === "success" && t.message.includes("交周报"))).toBe(true);
+  });
+
+  it("数据搜索迟到不重置句式区选中与武装（避免确认目标漂移）", async () => {
+    globalSearchMock.mockResolvedValue({
+      query: "完成 周报",
+      groups: [{ category: "tasks", items: [{ id: "t9" }], has_more: false }],
+      total_returned: 1,
+    });
+    resolvePhraseMock.mockResolvedValue({
+      ...writeResolution("complete"),
+      candidates: [
+        { id: "t1", title: "交周报", dueAt: null, priority: 2 },
+        { id: "t2", title: "周报模板整理", dueAt: null, priority: 2 },
+      ],
+    });
+    useGlobalSearchStore.setState({ open: true });
+    useGlobalSearchStore.getState().setQuery("完成 周报");
+    await flush(150); // 句式先行解析（120ms），数据搜索仍在防抖窗口内
+    useGlobalSearchStore.getState().activatePhraseRow(1);
+    expect(useGlobalSearchStore.getState().phraseArmed).toBe("t2");
+    expect(useGlobalSearchStore.getState().activeIndex).toBe(1);
+
+    await flush(200); // 数据结果到达
+    expect(useGlobalSearchStore.getState().results?.total_returned).toBe(1);
+    expect(useGlobalSearchStore.getState().activeIndex).toBe(1);
+    expect(useGlobalSearchStore.getState().phraseArmed).toBe("t2");
+  });
+
+  it("执行前复核：任务已被完成时不反开、如实提示", async () => {
+    const toggleMock = vi.fn(async (_id: string) => ({ id: "t1" } as Task));
+    useTasksStore.setState({ toggle: toggleMock });
+    fetchTaskMock.mockResolvedValue(taskFixture({ status: "completed", completed_at: "2026-11-11T09:00:00Z" }));
+    resolvePhraseMock.mockResolvedValue(writeResolution("complete"));
+
+    useGlobalSearchStore.setState({ open: true });
+    useGlobalSearchStore.getState().setQuery("完成 交周报");
+    await flush(150);
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    await flush(20);
+
+    expect(toggleMock).not.toHaveBeenCalled();
+    expect(useGlobalSearchStore.getState().open).toBe(true);
+    expect(useGlobalSearchStore.getState().notice).toContain("已完成");
+    expect(useUiStore.getState().toasts.some((t) => t.kind === "warning")).toBe(true);
+  });
+
+  it("Escape 只解除武装，不关弹窗", () => {
+    useGlobalSearchStore.setState({ phraseArmed: "t1" });
+    expect(useGlobalSearchStore.getState().disarmPhrase()).toBe(true);
+    expect(useGlobalSearchStore.getState().phraseArmed).toBeNull();
+    expect(useGlobalSearchStore.getState().disarmPhrase()).toBe(false);
+  });
+
+  it("改期执行先取全量再局部更新，不清空描述/提醒/优先级", async () => {
+    const updateMock = vi.fn(async (_id: string, _input: TaskInput) => ({ id: "t1" } as Task));
+    useTasksStore.setState({ update: updateMock });
+    fetchTaskMock.mockResolvedValue(
+      taskFixture({
+        description: "不能丢的描述",
+        remind_at: "2026-11-11T23:00:00+00:00",
+        advance_minutes: 10,
+      }),
+    );
+    resolvePhraseMock.mockResolvedValue(writeResolution("reschedule"));
+
+    useGlobalSearchStore.getState().setQuery("把交周报改到明天");
+    await flush(150);
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    await flush(20);
+
+    expect(fetchTaskMock).toHaveBeenCalledWith("t1");
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const input = updateMock.mock.calls[0][1];
+    expect(input).toMatchObject({
+      title: "交周报",
+      description: "不能丢的描述",
+      due_at: "2026-11-12T01:00:00+00:00",
+    });
+    expect(input).not.toHaveProperty("priority");
+    expect(input).not.toHaveProperty("remind_at");
+    expect(input).not.toHaveProperty("recurrence");
+  });
+
+  it("零候选仍返回写意图，但激活不执行任何写入", () => {
+    const toggleMock = vi.fn();
+    useTasksStore.setState({ toggle: toggleMock });
+    useGlobalSearchStore.setState({
+      phrase: {
+        kind: "complete",
+        target: "不存在的任务",
+        candidates: [],
+        dueAt: null,
+        dateOnly: false,
+        priority: null,
+      },
+    });
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    expect(toggleMock).not.toHaveBeenCalled();
+    expect(useGlobalSearchStore.getState().phraseArmed).toBeNull();
+  });
+
+  it("查询条目：任务定位 / Agent 会话聚焦，并关闭弹窗", () => {
+    useGlobalSearchStore.setState({
+      open: true,
+      query: "逾期任务",
+      phrase: {
+        kind: "query",
+        query: "overdue",
+        summary: null,
+        items: [
+          {
+            id: "t1", title: "交周报", kind: "task", dueAt: null,
+            occurredAt: null, sourceName: null, agent: null,
+          },
+        ],
+      },
+    });
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    expect(useUiStore.getState().tab).toBe("tasks");
+    expect(useGlobalSearchStore.getState().pendingLocate).toMatchObject({
+      category: "tasks",
+      id: "t1",
+      kind: "task",
+      // 定位关键词取任务标题而不是整句，保证任务页按句过滤后仍能看到目标
+      keyword: "交周报",
+    });
+    expect(useGlobalSearchStore.getState().open).toBe(false);
+
+    useGlobalSearchStore.setState({
+      open: true,
+      phrase: {
+        kind: "query",
+        query: "agentFailures",
+        summary: null,
+        items: [
+          {
+            id: "run1", title: "构建失败", kind: "agent", dueAt: null,
+            occurredAt: "2026-11-11T08:00:00Z", sourceName: "Claude",
+            agent: { sourceId: "src1", sessionId: "sess1", runId: "run1" },
+          },
+        ],
+      },
+    });
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    expect(useUiStore.getState().tab).toBe("agents");
+    expect(useUiStore.getState().agentFocus).toMatchObject({
+      sourceId: "src1",
+      sessionId: "sess1",
+      refId: "run1",
+    });
+
+    // 缺会话标识的失败项：切到 Agent 页，但绝不拿 action id 去任务页定位。
+    useUiStore.setState({ tab: "tasks", agentFocus: null });
+    useGlobalSearchStore.setState({
+      open: true,
+      pendingLocate: null,
+      phrase: {
+        kind: "query",
+        query: "agentFailures",
+        summary: null,
+        items: [
+          {
+            id: "action-1", title: "无会话失败", kind: "agent", dueAt: null,
+            occurredAt: null, sourceName: "Claude", agent: null,
+          },
+        ],
+      },
+    });
+    useGlobalSearchStore.getState().activatePhraseRow(0);
+    expect(useUiStore.getState().tab).toBe("agents");
+    expect(useUiStore.getState().agentFocus).toBeNull();
+    expect(useGlobalSearchStore.getState().pendingLocate).toBeNull();
+  });
+
+  it("moveActive 的 flat 序包含句式行，移动即解除武装", () => {
+    useGlobalSearchStore.getState().refreshCommands();
+    const cmdCount = useGlobalSearchStore.getState().commands.length;
+    useGlobalSearchStore.setState({
+      phrase: {
+        kind: "complete",
+        target: "任务",
+        candidates: [
+          { id: "t1", title: "任务一", dueAt: null, priority: 2 },
+          { id: "t2", title: "任务二", dueAt: null, priority: 2 },
+        ],
+        dueAt: null,
+        dateOnly: false,
+        priority: null,
+      },
+      phraseArmed: "t1",
+      activeIndex: 0,
+    });
+    useGlobalSearchStore.getState().moveActive(1);
+    expect(useGlobalSearchStore.getState().activeIndex).toBe(1);
+    expect(useGlobalSearchStore.getState().phraseArmed).toBeNull();
+    expect(cmdCount).toBeGreaterThan(0);
+    useGlobalSearchStore.getState().moveActive(1);
+    expect(useGlobalSearchStore.getState().activeIndex).toBe(2); // 第一条命令
   });
 });

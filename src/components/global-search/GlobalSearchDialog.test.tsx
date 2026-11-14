@@ -251,6 +251,19 @@ describe("命令面板（与数据结果同弹窗、独立分组）", () => {
     expect(cmdIdx & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("空查询且存在命令/最近搜索时仍展示句式示例（不依赖空态）", () => {
+    useGlobalSearchStore.setState({ open: true, query: "", recent: ["历史搜索词"] });
+    useGlobalSearchStore.getState().refreshCommands();
+    render(<GlobalSearchDialog />);
+    const bar = document.querySelector(".gs-phrase-examples-bar");
+    expect(bar).toBeTruthy();
+    expect(bar!.querySelectorAll(".gs-phrase-hint")).toHaveLength(3);
+    expect(bar!.textContent).toContain("完成 交周报");
+    // 命令组与最近搜索仍在，示例条只是并列补充，不替代任何分组。
+    expect(document.querySelector(".gs-commands")).toBeTruthy();
+    expect(document.querySelector(".gs-recent")).toBeTruthy();
+  });
+
   it("命令组固定置于数据结果之前，且不与数据分组混淆", () => {
     useGlobalSearchStore.setState({
       open: true,

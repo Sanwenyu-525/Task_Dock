@@ -7,6 +7,7 @@ pub mod audio;
 pub mod audit;
 pub mod backup;
 pub mod clipboard;
+pub mod command_phrases;
 pub mod context;
 pub mod diagnostics;
 pub mod data;

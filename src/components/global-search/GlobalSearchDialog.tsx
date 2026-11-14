@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { X, CircleX, Search, Clock, RotateCw } from "lucide-react";
+import { X, CircleX, Search, Clock, RotateCw, Wand2 } from "lucide-react";
 
 import { useOverlayLayer, useFocusTrap } from "../ui/overlay";
 import {
@@ -19,8 +19,15 @@ import {
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useGlobalSearchShortcut } from "../../hooks/useGlobalSearchShortcut";
 import useImeComposition from "../../hooks/useImeComposition";
+import { useLocale } from "../../hooks/useLocale";
+import {
+  PHRASE_EXAMPLES,
+  phraseHints,
+  phraseRowCount,
+} from "../../lib/commandPhrases";
 import { GlobalSearchResults } from "./GlobalSearchResults";
 import { GlobalSearchCommands } from "./GlobalSearchCommands";
+import { GlobalSearchPhrase } from "./GlobalSearchPhrase";
 
 export function GlobalSearchDialog() {
   const open = useGlobalSearchStore((s) => s.open);
@@ -33,6 +40,10 @@ export function GlobalSearchDialog() {
   const recent = useGlobalSearchStore((s) => s.recent);
   const notice = useGlobalSearchStore((s) => s.notice);
   const commands = useGlobalSearchStore((s) => s.commands);
+  const phrase = useGlobalSearchStore((s) => s.phrase);
+  const phraseLoading = useGlobalSearchStore((s) => s.phraseLoading);
+  const phraseArmed = useGlobalSearchStore((s) => s.phraseArmed);
+  const phraseExecuting = useGlobalSearchStore((s) => s.phraseExecuting);
 
   const closeSearch = useGlobalSearchStore((s) => s.closeSearch);
   const setQuery = useGlobalSearchStore((s) => s.setQuery);
@@ -44,14 +55,25 @@ export function GlobalSearchDialog() {
   const executeCommand = useGlobalSearchStore((s) => s.executeCommand);
   const clearRecent = useGlobalSearchStore((s) => s.clearRecent);
   const setNotice = useGlobalSearchStore((s) => s.setNotice);
+  const disarmPhrase = useGlobalSearchStore((s) => s.disarmPhrase);
+  const activatePhraseRow = useGlobalSearchStore((s) => s.activatePhraseRow);
 
   // 应用内快捷键（Ctrl+Shift+F）：挂在常驻组件上，弹窗关闭时也可唤起。
   useGlobalSearchShortcut();
 
+  const { t } = useLocale();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const ime = useImeComposition();
-  useOverlayLayer("dialog", open, closeSearch, rootRef);
+  // Escape 先取消二次确认（不关窗），没有再关弹窗：一次按键只做一件事。
+  useOverlayLayer(
+    "dialog",
+    open,
+    () => {
+      if (!disarmPhrase()) closeSearch();
+    },
+    rootRef,
+  );
   useFocusTrap(open, rootRef, { initial: inputRef });
 
   const flatItems = useMemo(
@@ -59,9 +81,26 @@ export function GlobalSearchDialog() {
     [results],
   );
 
-  // 命令组只在「全部」分类下展示（选择了数据分类 = 明确的数据检索意图）；
-  // 此时键盘 flat 序与 moveActive 一致：命令在前（0..n-1）、数据结果在后。
+  // flat 键盘序 = 句式区 → 命令组 → 数据结果（与 store.moveActive 同一顺序）。
+  // 命令组只在「全部」分类下展示（选择了数据分类 = 明确的数据检索意图）。
+  const phraseCount = phraseRowCount(phrase);
   const showCommands = activeCategory === "all" && commands.length > 0;
+  const cmdOffset = phraseCount;
+  const resultOffset = phraseCount + (showCommands ? commands.length : 0);
+
+  // 帧表近似命中但未解析成功时的模板提示（例：少写空格/用词不在表内）。
+  const hints = useMemo(
+    () => (!phrase && !phraseLoading ? phraseHints(query) : []),
+    [phrase, phraseLoading, query],
+  );
+
+  // 武装行与当前选中行一致时才是「再按 Enter 确认」；把鼠标移到别的候选
+  // 后选中行已变化，此时 Enter 是重新预览该行，不应显示确认文案。
+  const armedHere =
+    phrase !== null &&
+    phrase.kind !== "query" &&
+    phraseArmed !== null &&
+    phrase.candidates[activeIndex]?.id === phraseArmed;
 
   // 打开时聚焦输入框（焦点陷阱 initial 之外兜底）。
   useEffect(() => {
@@ -81,12 +120,16 @@ export function GlobalSearchDialog() {
       moveActive(-1);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (showCommands && activeIndex < commands.length) {
-        const cmd = commands[activeIndex];
+      if (activeIndex < phraseCount) {
+        activatePhraseRow(activeIndex);
+        return;
+      }
+      if (showCommands && activeIndex < resultOffset) {
+        const cmd = commands[activeIndex - cmdOffset];
         if (cmd) executeCommand(cmd);
         return;
       }
-      const item = flatItems[activeIndex - (showCommands ? commands.length : 0)];
+      const item = flatItems[activeIndex - resultOffset];
       if (item) openResult(item);
     }
     // Escape 由 overlayStack 捕获分发，这里不处理。
@@ -94,7 +137,13 @@ export function GlobalSearchDialog() {
 
   const showRecent = !query.trim() && recent.length > 0;
   const showEmpty =
-    !!query.trim() && !loading && !error && flatItems.length === 0 && !showCommands;
+    !!query.trim() &&
+    !loading &&
+    !error &&
+    flatItems.length === 0 &&
+    !showCommands &&
+    !phrase &&
+    hints.length === 0;
 
   return createPortal(
     <div className="ui-dialog-mask gs-mask" ref={rootRef} onKeyDown={onKeyDown}>
@@ -176,13 +225,47 @@ export function GlobalSearchDialog() {
             </div>
           ) : (
             <>
-              {/* 命令分组：独立于八类数据结果，固定置于最前（可辨识视觉见 CSS）。 */}
+              {/* 句式命令：帧表解析结果固定在最前；写意图两段式确认。 */}
+              {phrase ? (
+                <GlobalSearchPhrase
+                  phrase={phrase}
+                  activeIndex={activeIndex}
+                  armedId={phraseArmed}
+                  executing={phraseExecuting}
+                  onActivate={activatePhraseRow}
+                  onHoverIndex={setActiveIndex}
+                />
+              ) : null}
+              {hints.length > 0 ? (
+                <div className="gs-phrase-hints" role="status">
+                  <Wand2 size={12} strokeWidth={2} aria-hidden="true" />
+                  <span>{t("commandPhrases.hint.title")}</span>
+                  {hints.map((key) => (
+                    <span key={key} className="gs-phrase-hint">
+                      {t(key)}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {/* 空查询的可发现性：命令组/最近搜索存在时也要露出示例，
+                  否则示例区只在「什么都没有」的空态下渲染，实际不可见。 */}
+              {!query.trim() && (showCommands || showRecent) ? (
+                <div className="gs-phrase-examples gs-phrase-examples-bar">
+                  <span>{t("commandPhrases.hint.title")}</span>
+                  {PHRASE_EXAMPLES.map((key) => (
+                    <span key={key} className="gs-phrase-hint">
+                      {t(key)}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {/* 命令分组：独立于八类数据结果，紧接句式区（可辨识视觉见 CSS）。 */}
               {showCommands ? (
                 <GlobalSearchCommands
                   commands={commands}
-                  activeIndex={activeIndex}
+                  activeIndex={activeIndex - cmdOffset}
                   onSelect={executeCommand}
-                  onHoverIndex={setActiveIndex}
+                  onHoverIndex={(i) => setActiveIndex(i + cmdOffset)}
                 />
               ) : null}
               {showRecent ? (
@@ -216,13 +299,23 @@ export function GlobalSearchDialog() {
                 <GlobalSearchResults
                   groups={results.groups}
                   keyword={query}
-                  activeIndex={activeIndex}
+                  activeIndex={activeIndex - resultOffset}
                   onSelect={openResult}
-                  onHoverIndex={setActiveIndex}
+                  onHoverIndex={(i) => setActiveIndex(i + resultOffset)}
                 />
               ) : null}
               {!query.trim() && !showCommands && !showRecent ? (
-                <div className="gs-state">输入关键词开始搜索</div>
+                <div className="gs-state gs-phrase-start">
+                  <span>输入关键词开始搜索</span>
+                  <span className="gs-phrase-examples">
+                    <span>{t("commandPhrases.hint.title")}</span>
+                    {PHRASE_EXAMPLES.map((key) => (
+                      <span key={key} className="gs-phrase-hint">
+                        {t(key)}
+                      </span>
+                    ))}
+                  </span>
+                </div>
               ) : null}
             </>
           )}
@@ -243,9 +336,23 @@ export function GlobalSearchDialog() {
         ) : null}
 
         <footer className="gs-foot" aria-hidden="true">
-          <span>↑↓ 选择</span>
-          <span>Enter 打开</span>
-          <span>Esc 关闭</span>
+          {armedHere ? (
+            <>
+              <span>{t("commandPhrases.footer.arm")}</span>
+              <span>{t("commandPhrases.footer.disarm")}</span>
+            </>
+          ) : phrase && phrase.kind !== "query" ? (
+            <>
+              <span>{t("commandPhrases.footer.preview")}</span>
+              <span>Esc 关闭</span>
+            </>
+          ) : (
+            <>
+              <span>↑↓ 选择</span>
+              <span>Enter {phrase ? t("commandPhrases.footer.locate") : "打开"}</span>
+              <span>Esc 关闭</span>
+            </>
+          )}
           <span className="gs-foot-hint">仅本地搜索，不上传任何内容</span>
         </footer>
       </div>

@@ -8,6 +8,7 @@ pub mod audio;
 #[global_allocator]
 static GLOBAL_ALLOCATOR: alloc_stats::TrackingAllocator = alloc_stats::TrackingAllocator;
 pub mod clipboard;
+pub mod command_phrases;
 pub mod commands;
 pub mod context_menu;
 pub mod db;
@@ -938,6 +939,8 @@ pub fn run() {
             commands::tasks::task_reminder_link_clear,
             // 任务统计（tasks.stats-trends）：只读聚合，打开统计子视图时按需调用
             commands::task_analytics::task_analytics,
+            // 句式命令（ux.command-phrases）：确定性帧表解析 + 候选/只读查询
+            commands::command_phrases::resolve_command_phrase,
             // 专注与休息（core.focus-timer）：Rust 侧权威状态机 + 既有 1 秒调度推进
             commands::focus::focus_snapshot,
             commands::focus::focus_history,

@@ -18,6 +18,9 @@
 
 当前计数：共 33 项（核心 12 项）——已实现 14 · 部分实现 16 · 待开发 3 · 受阻 0；已验证 8，未验证 25。
 （2026-11-08 v0.11 第三轮按 `featureCatalog.ts` 同步：新增全局命令面板（implemented·unverified），
+当前计数：共 33 项（核心 12 项）——已实现 15 · 部分实现 15 · 待开发 3 · 受阻 0；已验证 8，未验证 25。
+（2026-11-11 按 `featureCatalog.ts` 同步：新增句式命令 `ux.command-phrases`（implemented·unverified）；
+2026-11-08 v0.11 第三轮按 `featureCatalog.ts` 同步：新增全局命令面板（implemented·unverified），
 场景工作区 / 工作现场恢复补记 v40 窗口几何捕获与恢复；2026-11-06 v0.11 第一轮新增 Agent MCP Server（partial）、
 帮助与教程中心（partial）、首次使用引导（implemented·unverified）；此前 2026-11-05 的"28 项 = 12 + 13 + 3 + 0 / 已验证 8"为上一轮统计。）
 
@@ -34,7 +37,7 @@
 | 智能日程提醒 `core.smart-reminders` | partial | 已有：自然语言创建（含「N 分钟后」相对时间、工作日与每月高级规则）、重复规则引擎（含每 N 月/每月第 N 个星期X/每月最后一个工作日，修复每两个月退化为每月）、任务页快捷提醒与页面级共享时钟倒计时、任务详情/任务卡/任务通知三处延后入口（可撤销、版本约束）、通知操作（查看/稍后/完成）、补触发。**提醒与场景/现场联动（2026-11-08 v41）**：`task_reminder_links` 一任务一关联（场景或工作现场，任务上下文抽屉设置/清除）；提醒触发时通知卡按联动提供「进入场景 / 恢复现场」动作，**只在用户点击时执行，绝不自动启动**；调度器每 tick 一次批量解析（目标已删除则不附加动作），场景/现场删除同事务清理联动、删任务外键级联；新表登记备份（完整/快速均含，恢复逐行还原）。缺口：法定节假日/调休跳过（按设计不接节假日 API）、真机双主题与窄窗走查 |
 | 开发工作台 `core.dev-workbench` | partial | 2026-11-12 已交付：完整模式「工作台」入口（默认可见、不占 Ctrl+数字）与当前任务锚点（显式设置键 `workbench_current_task`，不按标题相似度自动绑定）；四区域任务优先布局（当前任务 / Agent 运行 / 需要处理 / 快速继续），复用 `task_context`、`agent_snapshot`、行动中心 intervention/notification 与 `workspace_restore` 回执；继续工作按「恢复现场 → 定位会话 → 打开上下文」降级并逐项反馈，头部快速记录直接唤起捕获窗。缺口：项目目录 / Git 状态摘要 / 测试与构建结果归集（P1）；帮助教程为 draft，待人工界面核对 |
 
-## 工作流与效率增强（12 项，P1 为主，含 3 项 P2）
+## 工作流与效率增强（13 项，P1 为主，含 3 项 P2）
 
 | 功能 | 状态 | 摘要 |
 |---|---|---|
@@ -49,6 +52,8 @@
 | 剪贴板多类型专用查看器 `ux.clipboard-viewers` | implemented ✅已验证 | HTML 白名单只读阅读器、图片灯箱、文件预览、URL 详情。入口：剪贴板条目详情 |
 | 全局命令面板 `ux.command-palette` | implemented | v0.11 第三轮已交付（2026-11-08）：全局搜索弹窗（Ctrl+Shift+F）内建命令能力层——打开页面/新建任务/创建提醒（草稿类导航）/打开设置分组/进入场景/运行工作流（直接执行+单槽反馈）；静态命令派生自 NAV_ENTRIES 与设置分组元数据，动态场景/工作流打开时水合；动作白名单拦截危险操作（契约测试双重锁定）；命令与数据结果分组区分、键盘优先、i18n 双语、59 用例。不建第二弹窗/第二索引。缺口：独立快捷键、跳转子页高亮、真机双主题/窄窗走查。入口：全局搜索弹窗 → 命令组 |
 | 帮助与教程中心 `ux.help-center` | partial | v0.11 已交付并两轮收口：src/help 注册中心（结构化 TS 正文，零新依赖）+ 8 分类 **26 篇**教程（24 verified / 1 needs_review / 1 draft，2026-11-08 复核 7 篇并按代码更正过时表述、en-US 全覆盖；2026-11-12 新增开发工作台 draft）、第 13 个 rail 入口（不占 Ctrl+数字）；搜索/分类/最近浏览/状态徽标（未实现/受阻/隐藏/停用分别如实提示）/功能跳转/返回来源页/复制步骤；`npm run help:check` 契约校验（19 用例）0 blocker，剩余 warning 仅在途源文件变化触发的人工复核提示（几何合入后消解）；ContextHelpButton 已接入 8 个页面共 9 处。缺口：正文语义漂移无自动检测（契约只校验引用/版本）、mcp-authorization 待在途改动合入后转 verified、开发工作台正文待人工核对、真机双主题与窄窗走查 |
+| 句式命令 `ux.command-phrases` | implemented | 2026-11-11 已交付：全局搜索内的确定性短语层（不接模型、不做多轮）。封闭帧表：完成 / 把X改到<时间> / X优先级高·中·低 / 本周完成了什么 / 逾期任务 / 今天要做什么 / 哪些 Agent 失败了；时间复用 nlp.rs，候选与查询在数据库侧完成（排除已完成、最多 5 条）。写意图两段式确认（第一次 Enter 预览差异、第二次落库，Esc 取消确认）；完成前复核状态防反开，改期/优先级先读全量再局部更新，不清空描述/提醒/重复规则；整句标题冲突与帧表外输入零损失回退搜索。独立于 commandRegistry 的第二通道，注册表白名单契约不变。Rust 12 项 + 前端 36 项定向测试通过；缺口：CDP/真机走查与全量回归见验收报告。入口：全局搜索弹窗 → 输入句式 |
+| 帮助与教程中心 `ux.help-center` | partial | v0.11 已交付并两轮收口：src/help 注册中心（结构化 TS 正文，零新依赖）+ 8 分类 **25 篇**教程（24 verified / 1 needs_review / 0 draft，2026-11-08 复核 7 篇并按代码更正过时表述、en-US 全覆盖）、第 13 个 rail 入口（不占 Ctrl+数字）；搜索/分类/最近浏览/状态徽标（未实现/受阻/隐藏/停用分别如实提示）/功能跳转/返回来源页/复制步骤；`npm run help:check` 契约校验（19 用例）0 blocker，剩余 warning 仅在途源文件变化触发的人工复核提示（几何合入后消解）；ContextHelpButton 已接入 8 个页面共 9 处。缺口：正文语义漂移无自动检测（契约只校验引用/版本）、mcp-authorization 待在途改动合入后转 verified、真机双主题与窄窗走查 |
 | 首次使用引导 `ux.onboarding` | implemented（待真机验证） | v0.11 已交付：三步引导（认识 task_dock → 完成第一个任务 → 按需启用功能），页内卡片形态（非全屏 Modal）、可跳过/返回、Escape 经 overlayStack、键盘可操作、不创建业务数据；localStorage 持久化，升级不自动重播（「有新内容」由帮助中心呈现）；可从**帮助中心与设置页「重新打开引导」**两处重开。缺口：真机双主题/窄窗/DPI 走查 |
 
 ## 信息管理与生活效率（P2，2 项）
@@ -78,6 +83,9 @@
 > **目录已同步（2026-11-08，v0.11 第三轮）**：新增全局命令面板（implemented·unverified，59 用例）；场景工作区与工作现场恢复补记 v40 窗口几何捕获/恢复（真机跨显示器落地未验证）；MCP 真实客户端联调经官方 MCP Inspector 全链路通过（`tmp/acceptance/mcp-inspector-e2e/`）。此前 2026-11-06（规划纠偏）以代码为准修正了场景/工作流/暂存架/MCP/帮助/引导六项过期描述。
 >
 > **目录已同步（2026-11-12，开发工作台 P0）**：新增 `core.dev-workbench`（partial·unverified；按目录契约，partial 不标 verified）：完整模式「工作台」任务优先布局（当前开发任务 / Agent 运行 / 需要处理 / 快速继续），复用 `task_context`、`agent_snapshot`、行动中心 intervention/notification 与 `workspace_restore` 回执；当前任务为显式设置键 `workbench_current_task`，Agent 完成一轮不改任务状态。隔离实例真机验收 16/16（含恢复成功 window-confirmed、完成后任务仍 pending、快速捕获原生显隐与前台返回）与 Dock 7/7（左吸附 58×446 → 展开 404×446 → 收起 → 完整面板 400×560）通过；P1 仍缺 Git 摘要、测试结果归集、项目上下文关联。当前总数统计以 `featureCatalog.ts` 为准（implemented 14 / partial 16 / planned 3 / blocked 0；已验证 8 / 未验证 25）。
+> **目录已同步（2026-11-08，v0.11 第三轮）**：新增全局命令面板（implemented·unverified，59 用例）；场景工作区与工作现场恢复补记 v40 窗口几何捕获/恢复（真机跨显示器落地未验证）；MCP 真实客户端联调经官方 MCP Inspector 全链路通过（`tmp/acceptance/mcp-inspector-e2e/`）。此前 2026-11-06（规划纠偏）以代码为准修正了场景/工作流/暂存架/MCP/帮助/引导六项过期描述。截至 2026-11-08 当前总数统计以 `featureCatalog.ts` 为准（implemented 14 / partial 15 / planned 3 / blocked 0；已验证 8 / 未验证 24）。
+>
+> **目录已同步（2026-11-11）**：新增句式命令 `ux.command-phrases`（implemented·unverified）；定向测试（Rust 12 + 前端 36）通过，CDP/真机与全量回归待执行。当前计数：implemented 15 / partial 15 / planned 3 / blocked 0；已验证 8 / 未验证 25（共 33 项）。
 >
 > 已完成并从规划移除（避免失效条目）：Qoder / WorkBuddy 专用适配器（hooks 接入已实现并真实联调，见 [AGENT_COVERAGE_MATRIX.md](../AGENT_COVERAGE_MATRIX.md)）；Agent 人工介入收件箱（已落地为 Agent 行动中心 `core.agent-action-center`）。
 

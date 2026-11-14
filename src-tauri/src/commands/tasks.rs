@@ -304,7 +304,7 @@ pub fn fetch_task(db: State<'_, Arc<Db>>, id: String) -> AppResult<Task> {
     get_task(&db, &id)
 }
 
-fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Task>> {
+pub(crate) fn list_tasks_inner(db: &Db, filter: TaskFilter) -> AppResult<Vec<Task>> {
     let mut sql = format!("{} WHERE 1=1", TASK_SELECT);
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let mut idx = 1;

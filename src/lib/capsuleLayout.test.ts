@@ -10,7 +10,6 @@ import {
   PANEL_WIDTH_CSS,
   RAIL_SHOULDER_CSS,
   RAIL_LENGTH_CSS,
-  RAIL_SPAN_CSS,
   RAIL_THICKNESS_CSS,
   alongCenterOf,
   capsuleContainerSize,
