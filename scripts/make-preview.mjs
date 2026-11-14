@@ -46,6 +46,12 @@ const shim = `
     nav_prefer_focus: true, nav_allow_launch: true, nav_fallback: true,
     nav_remember_window: true, nav_default_browser: "", nav_workspace_max: 8,
     workbench_current_task: WB_CURRENT ? "t1" : "",
+    // workbench-preview 走查：预选第一个示例项目，直接落到项目工作空间页头。
+    workspace_active_project: "wp1",
+    workbench_layout: {
+      version: 1, route: "workspace", projectId: "wp1",
+      detailOpen: true, navWidth: 224, detailWidth: 320,
+    },
     ingest_queue_capacity: 1024, ingest_batch_size: 100, ingest_coalesce_ms: 250,
     agent_event_retention_days: 14, agent_event_max_rows: 20000, agent_event_archive: true,
     agent_inbox_max_file_bytes: 65536, agent_inbox_max_files: 500, perf_diagnostics_enabled: true,
@@ -837,6 +843,64 @@ const shim = `
     wf2: { run_id: "wfr2", workflow_id: "wf2", status: "failed", total_steps: 3, completed_steps: 2, error: "资源打包超时", started_at: iso(600), started_at_local: new Date(Date.now() - 600 * 60000).toLocaleString(), finished_at: iso(590) },
   };
 
+  // ── 暂存架夹具（2026-11-14 效率升级走查）──
+  // ?shelf=rich 追加多张图片 / 长文件名，用于网格、框选与灯箱序列截图；
+  // 默认仍返回原来的 5 条，不影响其他页面截图。
+  const SHELF_IMAGE =
+    "data:image/svg+xml;charset=utf-8," +
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480">' +
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+        '<stop offset="0" stop-color="#334155"/><stop offset="1" stop-color="#0ea5e9"/></linearGradient></defs>' +
+        '<rect width="640" height="480" fill="url(#g)"/>' +
+        '<circle cx="150" cy="120" r="64" fill="#f8fafc" opacity="0.35"/>' +
+        '<text x="40" y="420" fill="#f8fafc" font-size="34" font-family="Segoe UI">素材预览</text>' +
+        "</svg>",
+    );
+  function shelfFixtureItems() {
+    const base = [
+      { id: "sh1", kind: "file", display_name: "global-card-spec.md", source_kind: "picker", storage_mode: "reference", original_path: "D:\\\\Develop\\\\task_dock\\\\docs\\\\ui-themes\\\\01-design-spec.md", managed_path: null, content: null, byte_size: 18432, file_ext: "md", favorite: false, pinned: true, exists_state: "ok", group_id: "sg1", scene_id: null, note: "", expire_at: null, created_at: iso(30), updated_at: iso(20) },
+      { id: "sh2", kind: "image", display_name: "history-sticky.png", source_kind: "drag", storage_mode: "managed", original_path: "C:\\\\Users\\\\demo\\\\Desktop\\\\history-sticky.png", managed_path: "images/sh2.png", content: null, byte_size: 24680, file_ext: "png", favorite: true, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "", expire_at: null, created_at: iso(120), updated_at: iso(110) },
+      { id: "sh3", kind: "link", display_name: "CSS Color Mix 说明", source_kind: "url", storage_mode: "link", original_path: null, managed_path: null, content: "https://developer.mozilla.org/docs/Web/CSS/color_value/color-mix", byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "材质淡染参考", expire_at: null, created_at: iso(200), updated_at: iso(190) },
+      { id: "sh4", kind: "folder", display_name: "旧版验收截图（已移动）", source_kind: "picker", storage_mode: "reference", original_path: "D:\\\\Archive\\\\old-shots", managed_path: null, content: null, byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "missing", group_id: "sg1", scene_id: null, note: "", expire_at: null, created_at: iso(300), updated_at: iso(290) },
+      { id: "sh5", kind: "text", display_name: "卡片分层职责草稿", source_kind: "manual", storage_mode: "reference", original_path: null, managed_path: null, content: "基础材质 / 方案 D 变体 / 交互变体", byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "", expire_at: null, created_at: iso(420), updated_at: iso(400) },
+    ];
+    if (q.get("shelf") !== "rich") return base;
+    const images = [
+      "AI-角色设定-三视图-长文件名用于检查网格截断-01.png",
+      "场景概念-雨夜霓虹街道-02.png",
+      "道具-机械臂-03.png",
+      "分镜-第一幕-04.png",
+      "材质-金属划痕-05.png",
+      "光照参考-黄昏-06.png",
+      "UI-图标集-07.png",
+      "角色表情-08.png",
+      "背景-森林-09.png",
+      "封面构图-10.png",
+    ].map((name, index) => ({
+      id: "rich-img-" + (index + 1),
+      kind: "image",
+      display_name: name,
+      source_kind: "drag",
+      storage_mode: "managed",
+      original_path: "D:\\\\Materials\\\\AI\\\\" + name,
+      managed_path: "images/rich-" + (index + 1) + ".png",
+      content: null,
+      byte_size: 120000 + index * 8192,
+      file_ext: "png",
+      favorite: index === 2,
+      pinned: false,
+      exists_state: "ok",
+      group_id: null,
+      scene_id: null,
+      note: "",
+      expire_at: null,
+      created_at: iso(600 - index * 10),
+      updated_at: iso(590 - index * 10),
+    }));
+    return images.concat(base);
+  }
+
   async function invoke(cmd, args) {
     await new Promise((r) => setTimeout(r, 30));
     switch (cmd) {
@@ -849,6 +913,23 @@ const shim = `
       case "workspace_set_active_project": return { ok: true };
       case "workbench_take_nav": return null;
       case "workbench_nav_ack": return undefined;
+      // ── 项目工作空间（workspace 路由页头/概览卡）：事项/关联/实例最小夹具 ──
+      case "workspace_instance_get":
+        return { instance: { projectId: args?.projectId ?? "wp1", activeModule: "overview", layoutJson: null, lastOpenedAt: iso(30) } };
+      case "workspace_item_list":
+        return { items: [
+          { id: "wi1", projectId: "wp1", parentId: null, title: "第 1 章 · 苏醒之森", stage: "episode", status: "done", sortOrder: 0, metadataJson: "{}", createdAt: iso(500), updatedAt: iso(60) },
+          { id: "wi2", projectId: "wp1", parentId: null, title: "角色移动系统", stage: "system", status: "in_progress", sortOrder: 1, metadataJson: "{}", createdAt: iso(400), updatedAt: iso(45) },
+          { id: "wi3", projectId: "wp1", parentId: null, title: "交互提示系统", stage: "system", status: "todo", sortOrder: 2, metadataJson: "{}", createdAt: iso(300), updatedAt: iso(120) },
+        ] };
+      case "workspace_task_link_list":
+        return { links: [
+          { projectId: "wp1", taskId: "t1", title: "重构登录模块", status: "pending", priority: 1, dueAt: null, createdAt: iso(200) },
+        ] };
+      case "workspace_item_save":
+      case "workspace_task_link_add":
+      case "workspace_task_unlink":
+        return { ok: true };
       // ── 工作流列表态（对照效果图 05）：真实形状摘要，含最近运行 ──
       case "workflow_list": return WORKBENCH_WORKFLOWS;
       case "workflow_active": return null;
@@ -1027,17 +1108,86 @@ const shim = `
       case "quick_capture_state": return { draft: null, last_type: "task", inbox_count: 3 };
       case "quick_capture_show":
       case "quick_capture_hide": return null;
-      case "shelf_list": return {
-        items: [
-          { id: "sh1", kind: "file", display_name: "global-card-spec.md", source_kind: "picker", storage_mode: "reference", original_path: "D:\\\\Develop\\\\task_dock\\\\docs\\\\ui-themes\\\\01-design-spec.md", managed_path: null, content: null, byte_size: 18432, file_ext: "md", favorite: false, pinned: true, exists_state: "ok", group_id: "sg1", scene_id: null, note: "", expire_at: null, created_at: iso(30), updated_at: iso(20) },
-          { id: "sh2", kind: "image", display_name: "history-sticky.png", source_kind: "drag", storage_mode: "managed", original_path: "C:\\\\Users\\\\demo\\\\Desktop\\\\history-sticky.png", managed_path: "images/sh2.png", content: null, byte_size: 24680, file_ext: "png", favorite: true, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "", expire_at: null, created_at: iso(120), updated_at: iso(110) },
-          { id: "sh3", kind: "link", display_name: "CSS Color Mix 说明", source_kind: "url", storage_mode: "link", original_path: null, managed_path: null, content: "https://developer.mozilla.org/docs/Web/CSS/color_value/color-mix", byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "材质淡染参考", expire_at: null, created_at: iso(200), updated_at: iso(190) },
-          { id: "sh4", kind: "folder", display_name: "旧版验收截图（已移动）", source_kind: "picker", storage_mode: "reference", original_path: "D:\\\\Archive\\\\old-shots", managed_path: null, content: null, byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "missing", group_id: "sg1", scene_id: null, note: "", expire_at: null, created_at: iso(300), updated_at: iso(290) },
-          { id: "sh5", kind: "text", display_name: "卡片分层职责草稿", source_kind: "manual", storage_mode: "reference", original_path: null, managed_path: null, content: "基础材质 / 方案 D 变体 / 交互变体", byte_size: 0, file_ext: null, favorite: false, pinned: false, exists_state: "ok", group_id: null, scene_id: null, note: "", expire_at: null, created_at: iso(420), updated_at: iso(400) },
-        ],
-        total: 5,
-      };
-      case "shelf_stats": return { total: 5, file_count: 1, image_count: 1, folder_count: 1, link_count: 1, text_count: 1, managed_bytes: 24680, disk_bytes: 43112, quota_mb: 2048 };
+      case "shelf_list": {
+        const all = shelfFixtureItems();
+        return { items: all, total: all.length };
+      }
+      case "shelf_stats": {
+        const all = shelfFixtureItems();
+        return {
+          total: all.length,
+          file_count: all.filter((i) => i.kind === "file").length,
+          image_count: all.filter((i) => i.kind === "image").length,
+          folder_count: all.filter((i) => i.kind === "folder").length,
+          link_count: all.filter((i) => i.kind === "link").length,
+          text_count: all.filter((i) => i.kind === "text").length,
+          managed_bytes: 24680,
+          disk_bytes: 43112,
+          quota_mb: 2048,
+        };
+      }
+      case "shelf_read_image": return SHELF_IMAGE;
+      case "shelf_get_item": {
+        const all = shelfFixtureItems();
+        return all.find((i) => i.id === args?.id) ?? all[0];
+      }
+      case "shelf_read_text":
+        return { content: "预览文本：这一条用于检查详情与快速预览的排版。", truncated: false };
+      case "shelf_update": {
+        const all = shelfFixtureItems();
+        const target = all.find((i) => i.id === args?.id) ?? all[0];
+        return { ...target, ...(args?.patch ?? {}), updated_at: iso(0) };
+      }
+      case "shelf_recent_tags": return ["素材", "参考", "AI"];
+      case "shelf_item_tags": return [];
+      case "shelf_project_links": return [];
+      case "shelf_trash_delete":
+        return {
+          batch_id: "preview-batch",
+          removed: (args?.ids ?? []).length,
+          skipped_protected: 0,
+          managed_retained: 0,
+        };
+      case "shelf_trash_restore":
+        return {
+          batch_id: args?.batchId ?? "preview-batch",
+          restored: 1,
+          conflicts: 0,
+          restored_relations: 0,
+        };
+      case "shelf_trash_purge": return { batches: 0, items: 0, freed_bytes: 0, failed_files: 0 };
+      case "shelf_trash_count": return 0;
+      case "shelf_recycle_preview":
+        return {
+          entries: (args?.paths ?? []).map((path, index) => ({
+            path,
+            name: String(path).split(/[\\/]/).filter(Boolean).pop() || "文件",
+            is_dir: false,
+            byte_size: 2048 + index * 512,
+            modified_ms: 1700000000000 + index,
+            status: "ready",
+            reason: null,
+          })),
+          ready: (args?.paths ?? []).length,
+          blocked: 0,
+          has_dirs: false,
+          total_bytes: (args?.paths ?? []).length * 2048,
+        };
+      case "shelf_recycle_execute":
+        return {
+          deleted: (args?.paths ?? []).length,
+          skipped: 0,
+          failed: 0,
+          entries: (args?.paths ?? []).map((path) => ({
+            path,
+            name: String(path).split(/[\\/]/).filter(Boolean).pop() || "文件",
+            status: "ok",
+            reason: null,
+          })),
+        };
+      case "shelf_copy_files":
+      case "shelf_copy_paths":
+        return (args?.ids ?? []).length;
       case "shelf_groups": return [
         { id: "sg1", name: "设计规范", builtin: false, sort_order: 0, item_count: 2 },
         { id: "sg2", name: "截图", builtin: false, sort_order: 1, item_count: 1 },

@@ -30,6 +30,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  Code2,
   Layers,
   ListTodo,
   Pencil,
@@ -230,7 +231,9 @@ export default function DevWorkbenchPanel() {
     <div className="workbench-panel page-fill">
       <header className="wb-head">
         <div>
-          <h2 className="wb-title">{t("nav.workbench")}</h2>
+          <h2 className="wb-title">
+            <Code2 size={16} aria-hidden="true" /> {t("nav.workbench")}
+          </h2>
           <p className="wb-subtitle">{t("workbench.subtitle")}</p>
         </div>
         <div className="wb-head-actions">

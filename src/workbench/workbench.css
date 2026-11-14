@@ -596,6 +596,39 @@ body.wb-resizing {
 .wb-project {
   max-width: 1180px;
 }
+
+/* 项目页头（2026-11-14）：登记名 + 类型/状态徽标 + 真实计数元信息。 */
+.wb-project-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.wb-project-head-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.wb-project-head .wb-project-name {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-project-head .wb-project-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: normal;
+  word-break: break-all;
+}
 .wb-project-empty {
   display: flex;
   align-items: center;
@@ -1271,6 +1304,7 @@ body.wb-resizing {
 .apps-panel .wf-title,
 .settings-panel .wf-title,
 .mobile-transfer-panel .wf-title,
+.workbench-panel .wb-title,
 .diag-center-title {
   display: flex;
   align-items: center;

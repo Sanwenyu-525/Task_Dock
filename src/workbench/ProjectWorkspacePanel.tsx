@@ -631,6 +631,27 @@ export default function ProjectWorkspacePanel({
 
   return (
     <section className="wb-project" aria-label="项目工作空间" aria-busy={ctx.status === "loading"}>
+      {/* 项目页头（2026-11-14，对照效果图 15/AI漫剧/开发工作台）：真实登记信息。 */}
+      <header className="wb-project-head">
+        <div className="wb-project-head-main">
+          <h2 className="wb-project-name">{project.name}</h2>
+          <span className="ws-badge ws-badge-soft">{profile.label}</span>
+          <span className={`ws-badge ws-badge-${project.status === "archived" ? "planned" : "available"}`}>
+            {project.status === "archived" ? "已归档" : "进行中"}
+          </span>
+        </div>
+        <p className="wb-project-meta">
+          事项 {ctx.items.length} · 关联任务 {ctx.links.length}
+          {project.rootPath ? ` · 根目录 ${project.rootPath}` : " · 未设置根目录"}
+        </p>
+        {project.devProjectId && (
+          <div className="wb-context-actions">
+            <button className="ws-btn" onClick={onNavigateWorkbench}>
+              <ArrowUpRight size={12} /> 开发工作台
+            </button>
+          </div>
+        )}
+      </header>
       {project.status === "archived" && (
         <div className="ws-notice" data-tone="info">
           该项目已归档，事项与关联仍可查看；恢复为进行中后可继续日常使用。
