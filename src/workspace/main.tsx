@@ -1,6 +1,9 @@
 import "../styles.css";
 import "../styles-themes.css";
 import "../styles-ui.css";
+// 资源管理页专属样式（2026-11-14 CSS 拆分后唯一入口）：工作台窗口同样承载
+// 资源管理页，缺失会导致该页在 workspace 窗口整页无样式（真机验收实测）。
+import "../styles-resource.css";
 import "./workspace.css";
 import "../workbench/workbench.css";
 import "../components/global-search/global-search.css";
