@@ -11,16 +11,24 @@ import {
 import {
   listTasks,
   shelfCopyPaths,
+  shelfLinkProject,
   shelfLinkTask,
+  shelfOcrCancel,
+  shelfOcrItem,
   shelfOpenItem,
+  shelfProjectLinks,
   shelfReadImage,
   shelfReadText,
   shelfRevealItem,
   shelfTaskLinks,
+  shelfUnlinkProject,
+  workspaceProjectList,
   type ShelfItem,
+  type ShelfProjectLink,
   type ShelfTaskLink,
 } from "../../lib/bridge";
 import { clipboardTime, formatBytes } from "../../lib/clipboardUi";
+import { clipboardCopyText } from "../../lib/bridge";
 import { shelfFileTypeUi } from "../../lib/fileTypeUi";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
@@ -61,6 +69,16 @@ export default function ShelfDetail({
   const [taskOptionsState, setTaskOptionsState] = useState<"loading" | "ready" | "error">("loading");
   const [taskOptionsError, setTaskOptionsError] = useState("");
   const [taskToLink, setTaskToLink] = useState("");
+  const [projectLinks, setProjectLinks] = useState<ShelfProjectLink[]>([]);
+  const [projectOptions, setProjectOptions] = useState<{ id: string; name: string }[]>([]);
+  const [projectState, setProjectState] = useState<"loading" | "ready" | "error">("loading");
+  const [projectError, setProjectError] = useState("");
+  const [projectToLink, setProjectToLink] = useState("");
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrText, setOcrText] = useState("");
+  const [ocrError, setOcrError] = useState("");
+  const [ocrRequest, setOcrRequest] = useState("");
+  const ocrSeq = useRef(0);
   const [noteDraft, setNoteDraft] = useState(item.note);
   const [savingNote, setSavingNote] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -79,8 +97,18 @@ export default function ShelfDetail({
     setNoteDraft(item.note);
     setTextContent(null);
     setTextError(null);
+    setOcrText("");
+    setOcrError("");
+    setOcrBusy(false);
     loadedRef.current = false;
   }, [item.id, item.note]);
+
+  // 切换条目/卸载时取消还在跑的识别；取消只匹配同一 requestId。
+  useEffect(() => {
+    return () => {
+      if (ocrRequest) void shelfOcrCancel(ocrRequest).catch(() => {});
+    };
+  }, [ocrRequest]);
 
   // 进入详情刷新一次存在性（引用失效立即如实呈现）
   useEffect(() => {
@@ -124,8 +152,17 @@ export default function ShelfDetail({
     }
   };
 
+  const reloadProjectLinks = async () => {
+    try {
+      setProjectLinks(await shelfProjectLinks(item.id));
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
+    }
+  };
+
   useEffect(() => {
     void reloadLinks();
+    void reloadProjectLinks();
     let alive = true;
     setTaskOptionsState("loading");
     setTaskOptionsError("");
@@ -141,6 +178,22 @@ export default function ShelfDetail({
         setTaskOptions([]);
         setTaskOptionsError(String(e));
         setTaskOptionsState("error");
+      });
+
+    setProjectState("loading");
+    setProjectError("");
+    setProjectToLink("");
+    workspaceProjectList("active")
+      .then(({ projects }) => {
+        if (!alive) return;
+        setProjectOptions(projects.map((p) => ({ id: p.id, name: p.name })));
+        setProjectState("ready");
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setProjectOptions([]);
+        setProjectError(String(e));
+        setProjectState("error");
       });
     return () => {
       alive = false;
@@ -167,6 +220,76 @@ export default function ShelfDetail({
       await reloadLinks();
     } catch (e) {
       showToast(String(e), { kind: "error" });
+    }
+  };
+
+  const addProjectLink = async () => {
+    if (!projectToLink) return;
+    try {
+      await shelfLinkProject(item.id, projectToLink);
+      setProjectToLink("");
+      await reloadProjectLinks();
+    } catch (e) {
+      showToast(String(e), { kind: "error" });
+    }
+  };
+
+  const projectPlaceholder =
+    projectState === "loading"
+      ? "正在加载项目…"
+      : projectState === "error"
+        ? "项目列表加载失败"
+        : projectOptions.length === 0
+          ? "暂无可关联项目"
+          : "选择项目…";
+
+  const runOcr = async () => {
+    if (ocrBusy) return;
+    const requestId = `shelf-ocr-${item.id}-${++ocrSeq.current}`;
+    setOcrRequest(requestId);
+    setOcrBusy(true);
+    setOcrError("");
+    setOcrText("");
+    try {
+      const report = await shelfOcrItem(item.id, requestId);
+      if (report.status === "ok") {
+        setOcrText(report.text);
+        if (!report.text.trim()) setOcrError("未识别到文字");
+      } else if (report.status === "empty") {
+        setOcrError("未识别到文字");
+      } else if (report.status !== "cancelled") {
+        setOcrError(report.reason || "识别失败，原图未受影响");
+      }
+    } catch (e) {
+      setOcrError(String(e));
+    } finally {
+      setOcrBusy(false);
+    }
+  };
+
+  const cancelOcr = () => {
+    if (!ocrRequest) return;
+    void shelfOcrCancel(ocrRequest).catch(() => {});
+    setOcrBusy(false);
+  };
+
+  const saveOcrText = async () => {
+    const text = ocrText.trim();
+    if (!text) return;
+    try {
+      const created = await useShelfStore.getState().addText(text, null);
+      // 保留与原图相同的项目/任务关联；单项失败不回滚已创建的文本条目。
+      await Promise.allSettled([
+        ...projectLinks.map((l) => shelfLinkProject(created.id, l.project_id)),
+        ...links.map((l) => shelfLinkTask(created.id, l.task_id)),
+      ]);
+      await useShelfStore
+        .getState()
+        .updateItem(created.id, { note: `OCR 自：${item.display_name}` });
+      showToast("已保存为文本条目并保留项目/任务关联", { kind: "success" });
+      setOcrText("");
+    } catch (e) {
+      showToast(`保存 OCR 文本失败：${String(e)}`, { kind: "error" });
     }
   };
 
@@ -238,6 +361,71 @@ export default function ShelfDetail({
         >
           <ShelfDetailThumb id={item.id} name={item.display_name} />
         </button>
+      )}
+
+      {item.kind === "image" && !missing && (
+        <section className="shelf-detail-links" aria-label="图片文字识别">
+          <h4>提取文字</h4>
+          <p className="shelf-detail-hint">
+            使用本机 Windows OCR，不上传图片；原图保持不变，识别结果可另存为文本条目。
+          </p>
+          <div className="shelf-links-add">
+            <button
+              type="button"
+              className="btn sm"
+              disabled={ocrBusy}
+              onClick={() => void runOcr()}
+            >
+              {ocrBusy ? (
+                <Loader2 size={13} className="spin" aria-hidden="true" />
+              ) : (
+                <span aria-hidden="true">文</span>
+              )}
+              {ocrBusy ? "正在识别…" : "识别图片文字"}
+            </button>
+            {ocrBusy && (
+              <button type="button" className="btn sm" onClick={cancelOcr}>
+                取消
+              </button>
+            )}
+          </div>
+          {ocrError && (
+            <p className="shelf-links-status is-error" role="alert">
+              {ocrError}
+            </p>
+          )}
+          {ocrText && (
+            <>
+              <textarea
+                className="shelf-note-input"
+                value={ocrText}
+                readOnly
+                rows={5}
+                aria-label="OCR 识别结果"
+              />
+              <div className="shelf-links-add">
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() =>
+                    void clipboardCopyText(ocrText)
+                      .then(() => showToast("识别文字已复制", { kind: "success" }))
+                      .catch((e) => showToast(String(e), { kind: "error" }))
+                  }
+                >
+                  <Copy size={13} aria-hidden="true" /> 复制文字
+                </button>
+                <button
+                  type="button"
+                  className="btn sm primary"
+                  onClick={() => void saveOcrText()}
+                >
+                  保存为文本条目
+                </button>
+              </div>
+            </>
+          )}
+        </section>
       )}
       {item.kind === "link" && item.content && (
         <div className="shelf-detail-link">
@@ -412,6 +600,60 @@ export default function ShelfDetail({
             className="btn sm"
             disabled={!taskToLink}
             onClick={() => void addLink()}
+          >
+            <Plus size={13} aria-hidden="true" /> 关联
+          </button>
+        </div>
+      </section>
+
+      {/* 项目关联（v51）：直接关联既有工作空间项目，不复制项目/任务 */}
+      <section className="shelf-detail-links" aria-label="项目关联">
+        <h4>关联项目</h4>
+        {projectLinks.length === 0 && <p className="shelf-links-empty">尚未关联项目</p>}
+        <ul className="shelf-links-list">
+          {projectLinks.map((l) => (
+            <li key={l.project_id}>
+              <span className="shelf-links-title" title={l.project_name}>
+                {l.project_name || l.project_id}
+              </span>
+              <button
+                type="button"
+                className="icon-btn sm"
+                aria-label={`解除项目关联 ${l.project_name}`}
+                onClick={() => {
+                  shelfUnlinkProject(item.id, l.project_id)
+                    .then(() => reloadProjectLinks())
+                    .catch((e) => showToast(String(e), { kind: "error" }));
+                }}
+              >
+                <Trash2 size={12} aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+        {projectState === "error" && (
+          <p className="shelf-links-status is-error" role="alert">
+            项目列表加载失败：{projectError}
+          </p>
+        )}
+        <div className="shelf-links-add">
+          <Select
+            value={projectToLink}
+            options={projectOptions.map((p) => ({ value: p.id, label: p.name }))}
+            onChange={setProjectToLink}
+            placeholder={projectPlaceholder}
+            disabled={projectState !== "ready" || projectOptions.length === 0}
+            ariaLabel="选择要关联的项目"
+            size="sm"
+            align="start"
+            menuMinWidth={200}
+            triggerClassName="shelf-task-select"
+          />
+          <button
+            type="button"
+            className="btn sm"
+            disabled={!projectToLink}
+            onClick={() => void addProjectLink()}
           >
             <Plus size={13} aria-hidden="true" /> 关联
           </button>

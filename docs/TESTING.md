@@ -1313,3 +1313,62 @@ Outlook 附件、截图工具），也不得用受控 OLE 测试源的成功替�
   `通用拖入原生接收桥已安装 … windows=7 failed=0 recovered=0 top_level_ok=true`，
   `logs/app-smoke-final.out.log`；随后停止。
 - 限制：该 exe 不含主工作树其他会话的 Rust WIP，是 debug 验证包，不是正式发布安装包。
+
+## 统一内容收集与效率工作流（2026-11-14）
+
+范围：当前剪贴板主动粘贴、胶囊/完整暂存架入口、Ctrl+V 焦点规则、项目关联、
+最近投递、图片 OCR、重复提示、全局收集热键、资源管理器右键发送。
+验收产物：`tmp/acceptance/collect-paste/`。
+
+### 命令与结果
+
+```bash
+cd src-tauri
+cargo check -j1                         # exit 0，39.76s（5 条既有 warning）
+cargo test --lib shelf:: -j1            # 125 passed / 0 failed
+cargo test --lib backup:: -j1           # 26 passed / 0 failed
+cargo test --lib hotkeys:: -j1          # 37 passed / 0 failed
+cargo test --lib dragdrop:: -j1         # 122 passed / 0 failed
+cargo test --lib clipboard:: -j1        # 211 passed / 0 failed / 1 ignored
+cargo test --lib shelf::ingest::tests   # 9 passed
+cargo test --lib shelf::sendto::tests   # 3 passed
+cargo test --lib paste_report_tests     # 3 passed
+```
+
+测试 exe 仍需 `mt.exe` 嵌入 comctl32 v6 清单（与上轮相同）：
+`mt.exe -manifest tmp/acceptance/universal-drag/comctl6.manifest -outputresource:<exe>;#1`。
+
+`cargo test --lib -j1` 全量编译在当前共享工作区 **ENVIRONMENT BLOCKED**：
+其他会话并发占用内存，剩余约 2.1–2.5 GB 时 rustc 报
+`rust-LLVM ERROR: out of memory / STATUS_STACK_BUFFER_OVERRUN`；改用已成功链接的
+测试二进制直接运行又在 audio 用例段 `Segmentation fault`。因此本轮不声称全量 lib
+通过，只报告上述模块级结果。相关日志：`tmp/collect-paste-cargo-lib.log`。
+
+```bash
+npx tsc --noEmit                        # exit 0
+npx vite build                          # exit 0，6.91s（仅 chunk 体积提示）
+npx vitest run <6 个目标文件>            # 143 passed（另有 ShelfWorkspace 单文件 38）
+node tmp/acceptance/collect-paste/run-evidence.mjs        # 326/326 checks
+node tmp/acceptance/collect-paste/run-shelf-toolbar.mjs   # 228/228 checks
+```
+
+### 真实 Chromium 几何证据
+
+- 胶囊：320/360/400 × 浅/深 × 空/1/3/10 条 × DPR 1/1.25/1.5/2；
+  粘贴成功/部分失败/空/占用（延迟）各状态；测量标题行、粘贴/添加/查看全部按钮
+  互不重叠且在行内，已有文件行 top/height 变化 ≤1px，反馈位于列表之后不覆盖文件。
+  产出 `tmp/acceptance/collect-paste/geometry.json` 与 16 张截图。
+- 完整暂存架工具条：600/900/1200 × 浅/深 × 粘贴 idle/busy × 右键发送 off/on；
+  添加/粘贴/搜索/筛选/更多不重叠、全部在工具条内、搜索框保有可用宽度、
+  工具条高度稳定、读取中按钮禁用。产出 `shelf-toolbar-geometry.json`。
+
+### 未验证 / 限制
+
+- 真实 Windows 剪贴板写入/读取（资源管理器复制文件、浏览器复制图片/文本、Outlook
+  附件）未在本轮真机执行；Rust 读取映射用受控 `ClipboardRead` 覆盖，
+  真实剪贴板套件仍为 `#[ignore]`，需 `TD_REAL_CLIPBOARD=1` 手动运行。
+- 主动粘贴不支持虚拟文件（明确返回 `CLIPBOARD_UNSUPPORTED`）；拖入通道仍支持。
+- 资源管理器右键菜单真实显示、多选、长路径、卸载清理未真机验证。
+- 全局热键 `Ctrl+Alt+G` 真实注册与冲突需在设置页/真机确认。
+- 图片 OCR 需要本机 Windows OCR 语言包；自动化只覆盖前端交互与引擎复用，
+  真实识别结果需真机验证。

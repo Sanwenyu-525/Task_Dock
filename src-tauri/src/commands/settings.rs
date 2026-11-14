@@ -5,6 +5,7 @@
 //! 现在逐键校验类型/范围/枚举，未知或非法键直接报校验错误。
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 
@@ -94,6 +95,8 @@ const ALLOWED_KEYS: &[&str] = &[
     "shelf_max_storage_mb",
     // 导航入口布局（v0.12）：完整面板 / 停靠胶囊各自的显隐与排序（版本化 JSON）
     "navigation_layout",
+    // 统一工作台布局（U0）：上次路由 / 项目 / 右栏显隐 / 分栏宽度（版本化 JSON）
+    "workbench_layout",
     // 统一提示音 / 语音播报 / 本地语音缓存（v0.13）
     "audio_sound_enabled",
     "audio_sound_volume",
@@ -130,6 +133,22 @@ const ALLOWED_KEYS: &[&str] = &[
     // 项目工作空间（v49）：当前打开的工作空间项目 ID（workspace_projects.id；空 = 未设置）
     "workspace_active_project",
 ];
+
+/// 跨窗口设置广播的修订号：单调递增，接收方可据此忽略倒序/重复的旧事件。
+static SETTINGS_EVENT_REVISION: AtomicU64 = AtomicU64::new(1);
+
+/// 广播载荷只含键名、来源与修订号，**绝不携带值**（避免令牌/语音包等泄露）。
+fn settings_changed_payload(
+    keys: Vec<String>,
+    origin: &str,
+    revision: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "keys": keys,
+        "origin": origin,
+        "revision": revision,
+    })
+}
 
 fn enum_of(v: &serde_json::Value, key: &str, allowed: &[&str]) -> AppResult<()> {
     let s = v
@@ -418,6 +437,64 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
             }
             Ok(())
         }
+        // 统一工作台布局：只做结构边界校验（语义归一化由前端 `workbenchLayout.ts`
+        // 负责）。拒绝任意 JSON 灌入设置表，也拒绝把宽度写成越界值。
+        "workbench_layout" => {
+            let obj = v
+                .as_object()
+                .ok_or_else(|| AppError::Validation("workbench_layout 必须是 JSON 对象".into()))?;
+            if obj.get("version").and_then(|value| value.as_u64()).is_none() {
+                return Err(AppError::Validation(
+                    "workbench_layout.version 必须是正整数".into(),
+                ));
+            }
+            if let Some(route) = obj.get("route") {
+                let text = route.as_str().ok_or_else(|| {
+                    AppError::Validation("workbench_layout.route 必须是字符串".into())
+                })?;
+                if text.chars().count() > 64 || text.chars().any(char::is_control) {
+                    return Err(AppError::Validation(
+                        "workbench_layout.route 非法".into(),
+                    ));
+                }
+            }
+            if let Some(project) = obj.get("projectId") {
+                if !project.is_null() {
+                    let text = project.as_str().ok_or_else(|| {
+                        AppError::Validation(
+                            "workbench_layout.projectId 必须是字符串或 null".into(),
+                        )
+                    })?;
+                    if text.chars().count() > 64 || text.chars().any(char::is_control) {
+                        return Err(AppError::Validation(
+                            "workbench_layout.projectId 非法".into(),
+                        ));
+                    }
+                }
+            }
+            if let Some(open) = obj.get("detailOpen") {
+                if !open.is_boolean() {
+                    return Err(AppError::Validation(
+                        "workbench_layout.detailOpen 必须是布尔值".into(),
+                    ));
+                }
+            }
+            for key in ["navWidth", "detailWidth"] {
+                if let Some(width) = obj.get(key) {
+                    let value = width.as_u64().ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "workbench_layout.{key} 必须是正整数"
+                        ))
+                    })?;
+                    if !(120..=800).contains(&value) {
+                        return Err(AppError::Validation(format!(
+                            "workbench_layout.{key} 超出范围（120–800）"
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        }
         _ => Err(AppError::Validation(format!(
             "未知设置键: {}（允许: {}）",
             key,
@@ -450,6 +527,7 @@ fn normalize_patch(patch: &mut serde_json::Value) {
 #[tauri::command]
 pub fn update_settings(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     db: State<'_, Arc<Db>>,
     mut patch: serde_json::Value,
 ) -> AppResult<Settings> {
@@ -483,6 +561,14 @@ pub fn update_settings(
             }
         }
     }
+    // 跨窗口同步：两个 WebView 不共享前端 store。只广播**键名**（不含值，
+    // 避免 http_token / 语音包等敏感内容经事件泄露）；接收窗口重新读取权威设置。
+    let changed_keys: Vec<String> = obj.keys().cloned().collect();
+    let revision = SETTINGS_EVENT_REVISION.fetch_add(1, Ordering::SeqCst);
+    let _ = app.emit(
+        "settings-changed",
+        settings_changed_payload(changed_keys, window.label(), revision),
+    );
     // 状态一致性校验（诊断用，不改变保存结果）：写入语句成功并不等于最终持久化正确
     // （事务回滚、并发覆盖、写入后又被旧值盖回都可能发生）。这里对本次 patch 逐键回读，
     // 只记录键名与不一致事实，**绝不记录设置值**（可能含端口/令牌等敏感内容）。
@@ -969,6 +1055,68 @@ mod tests {
         );
         // 默认值：空串 = 未设置当前项目
         assert_eq!(Settings::default().workspace_active_project, "");
+    }
+
+    /// 统一工作台布局：允许键、结构校验与越界拒绝；缺失时默认空对象（前端回退默认）。
+    #[test]
+    fn workbench_layout_is_validated_and_allowlisted() {
+        assert!(ALLOWED_KEYS.contains(&"workbench_layout"));
+        let valid = serde_json::json!({
+            "version": 1,
+            "route": "tasks",
+            "projectId": "p1",
+            "detailOpen": true,
+            "navWidth": 232,
+            "detailWidth": 320
+        });
+        assert!(validate_setting("workbench_layout", &valid).is_ok());
+        // projectId 允许 null（未选择项目）
+        assert!(validate_setting(
+            "workbench_layout",
+            &serde_json::json!({ "version": 1, "route": "home", "projectId": null })
+        )
+        .is_ok());
+        // 非对象 / 缺版本 / 非法路由 / 越界宽度 / 非布尔右栏 一律拒绝
+        assert!(validate_setting("workbench_layout", &serde_json::json!("x")).is_err());
+        assert!(validate_setting("workbench_layout", &serde_json::json!({ "route": "home" })).is_err());
+        assert!(validate_setting(
+            "workbench_layout",
+            &serde_json::json!({ "version": 1, "route": 42 })
+        )
+        .is_err());
+        assert!(validate_setting(
+            "workbench_layout",
+            &serde_json::json!({ "version": 1, "route": "home", "detailOpen": "yes" })
+        )
+        .is_err());
+        assert!(validate_setting(
+            "workbench_layout",
+            &serde_json::json!({ "version": 1, "route": "home", "navWidth": 50 })
+        )
+        .is_err());
+        assert!(validate_setting(
+            "workbench_layout",
+            &serde_json::json!({ "version": 1, "route": "home", "projectId": "bad\u{0007}id" })
+        )
+        .is_err());
+        assert_eq!(Settings::default().workbench_layout, serde_json::Value::Null);
+    }
+
+    /// 设置广播：只含键名/来源/修订号，不携带任何设置值。
+    #[test]
+    fn settings_changed_payload_never_contains_values() {
+        let payload = settings_changed_payload(
+            vec!["theme".to_string(), "http_token".to_string()],
+            "workspace",
+            42,
+        );
+        assert_eq!(payload["keys"][0], "theme");
+        assert_eq!(payload["keys"][1], "http_token");
+        assert_eq!(payload["origin"], "workspace");
+        assert_eq!(payload["revision"], 42);
+        // 值不在载荷里：没有 secret 字符串，也没有 http_token 的值字段。
+        assert!(!payload.to_string().contains("secret-value"));
+        assert_eq!(payload.as_object().map(|o| o.len()), Some(3));
     }
 
     #[test]

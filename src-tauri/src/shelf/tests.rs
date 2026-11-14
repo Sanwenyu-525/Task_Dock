@@ -1529,6 +1529,61 @@ fn task_link_idempotent_and_cascade() {
     let _ = tmp;
 }
 
+// ── 项目关联（v51）─────────────────────────────────────────
+
+#[test]
+fn project_link_idempotent_cascades_and_does_not_copy_content() {
+    let db = Db::open_in_memory().unwrap();
+    let now = now_iso();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO workspace_projects \
+             (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at) \
+             VALUES ('p1','漫剧项目','ai_comic','active','','', '', ?1, ?1)",
+            params![&now],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let item = add_text(&db, "分镜提示词", "manual", None).unwrap();
+    link_project(&db, &item.id, "p1").unwrap();
+    link_project(&db, &item.id, "p1").unwrap();
+    let links = project_links(&db, &item.id).unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].project_name, "漫剧项目");
+    assert!(link_project(&db, &item.id, "missing").is_err());
+
+    // 删除项目只删除关系，不删除暂存条目。
+    db.with_conn(|conn| {
+        conn.execute("DELETE FROM workspace_projects WHERE id='p1'", [])?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(get_item(&db, &item.id).is_ok());
+    assert!(project_links(&db, &item.id).unwrap().is_empty());
+
+    // 删除条目时关系也级联清理（重新建项目验证外键方向）。
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO workspace_projects \
+             (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at) \
+             VALUES ('p2','项目二','general','active','','', '', ?1, ?1)",
+            params![&now],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    link_project(&db, &item.id, "p2").unwrap();
+    delete_items(&db, std::path::Path::new("unused"), &[item.id.clone()], true).unwrap();
+    let remaining: i64 = db
+        .with_read(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM shelf_project_links", [], |r| r.get(0))
+                .map_err(AppError::from)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
 // ── 备份 / 恢复 ─────────────────────────────────────────────
 
 #[test]

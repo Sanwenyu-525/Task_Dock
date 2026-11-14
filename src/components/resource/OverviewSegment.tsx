@@ -4,25 +4,32 @@
 //! 切换分区不会产生额外采样；「可清理量」在磁盘页扫描后同步过来，
 //! 未扫描时明确显示「尚未扫描」，不把 0 当作真实可清理量。
 //!
-//! 信息层级（自上而下）：
-//! 1. 有效性条：当前 / 更新中 / 历史读数 / 失败 —— 数字与「是否可信」一起出现；
-//! 2. 两张主卡：数据目录磁盘、系统物理内存（整机口径，大环形 + 已用/剩余/总量）；
-//! 3. 关注摘要：只根据真实压力等级汇总，没有异常时明确说「未发现高占用」；
-//! 4. 四个紧凑应用指标：应用缓存、可清理量、工作集、CPU（口径各不相同）；
-//! 5. 短时趋势与多卷明细。
+//! 2026-11-14 第二轮布局：
+//! 1. 紧凑有效性条：状态 + 短时间（完整时区在 Tooltip）；
+//! 2. 两张横向主卡：小环 + 已用/剩余，在约 400px 内容区并排；
+//! 3. 单行关注摘要，明细按需展开；
+//! 4. 2×2 应用指标，突出数值；
+//! 5. 紧凑趋势与多卷明细。
 //!
 //! 磁盘与内存使用同一套 `lib/resourceMetrics` 公式与阈值；CPU 不做压力结论。
 //! 跳转使用 `anchors.ts` 的稳定目标，由面板负责滚动与焦点。
 
-import { AlertTriangle, ArrowUpRight, CheckCircle2, HardDrive } from "lucide-react";
+import { useState } from "react";
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  CheckCircle2,
+  ChevronDown,
+  HardDrive,
+} from "lucide-react";
 import type { ResourceSnapshot } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
-import { formatLocalStamp } from "../../lib/format";
 import { computeUsage, formatPercent } from "../../lib/resourceMetrics";
 import {
   FRESHNESS_LABEL,
   type SnapshotFreshness,
 } from "../../lib/resourceFreshness";
+import { resourceStamp } from "../../lib/resourceTime";
 import type { ResourceTrendPoint } from "../../hooks/useResourceTrend";
 import { TREND_CAPACITY, TREND_INTERVAL_MS } from "../../hooks/useResourceTrend";
 import type { CleanupEstimate } from "../settings/ResourceCleanupSection";
@@ -31,7 +38,6 @@ import type { DiskAnchor } from "./anchors";
 import {
   MiniMeter,
   TrendSparkline,
-  USAGE_ANOMALY_DETAIL,
   UsageRing,
   usageStatusKey,
 } from "./charts";
@@ -53,11 +59,6 @@ interface OverviewSegmentProps {
   /** 跳转到内存分区的可回收缓存区块。 */
   onOpenMemory: () => void;
   onRefresh: () => void;
-}
-
-function sampledLabel(iso: string | null | undefined): string | null {
-  const stamp = formatLocalStamp(iso);
-  return stamp ? `${stamp.date} ${stamp.time} ${stamp.zone}` : null;
 }
 
 /** 有效百分比的最小/最大值（null 不参与；不足两个点返回 null）。 */
@@ -87,6 +88,7 @@ export default function OverviewSegment({
   onRefresh,
 }: OverviewSegmentProps) {
   const { t } = useLocale();
+  const [attentionOpen, setAttentionOpen] = useState(false);
   const unavailable = t("settings.resourceCleanup.unavailable");
   const reading = t("resource.reading");
   const pending = freshness === "pending";
@@ -101,8 +103,12 @@ export default function OverviewSegment({
   const memoryUsage = computeUsage(memory?.totalBytes ?? null, memory?.availableBytes ?? null);
 
   const percentText = (percent: number | null) => formatPercent(percent);
+  /**
+   * 紧凑小环只放短数值：读取中用省略号、不可读用「—」，
+   * 完整状态在卡片头部的药丸与 aria-label 中，避免长文案撑破圆环。
+   */
   const ringValue = (percent: number | null) =>
-    pending || noReading ? (pending ? reading : unavailable) : percentText(percent);
+    pending ? "…" : noReading ? null : percentText(percent);
   const ringStatus = (usage: typeof diskUsage) =>
     pending ? reading : noReading ? unavailable : t(usageStatusKey(usage.level, usage.anomaly));
 
@@ -174,7 +180,7 @@ export default function OverviewSegment({
             ? t("resource.overview.cleanableFailedNote")
             : t("resource.overview.cacheUnscanned");
 
-  const sampled = sampledLabel(sampledAt ?? snapshot?.sampledAt);
+  const sampled = resourceStamp(sampledAt ?? snapshot?.sampledAt);
 
   /** 趋势：末端读数优先于环形（采样可能比随页面加载的快照更新）。 */
   const lastTrend = trend.points[trend.points.length - 1] ?? null;
@@ -239,48 +245,32 @@ export default function OverviewSegment({
     });
   }
 
-  const facts = [
+  /** 主卡放「已用 / 剩余 / 总量」三行：英文与长数字也不会被脚注截断。 */
+  const factsFor = (usage: typeof diskUsage) => [
     {
       key: "used",
       label: t("resource.overview.factUsed"),
-      value: diskUsage.usedBytes === null ? unavailable : formatBytes(diskUsage.usedBytes),
+      value: usage.usedBytes === null ? unavailable : formatBytes(usage.usedBytes),
     },
     {
       key: "free",
       label: t("resource.overview.factFree"),
       value:
-        diskUsage.availableBytes === null
+        usage.availableBytes === null
           ? unavailable
-          : formatBytes(diskUsage.availableBytes),
+          : formatBytes(usage.availableBytes),
     },
     {
       key: "total",
       label: t("resource.overview.factTotal"),
-      value:
-        diskUsage.totalBytes === null ? unavailable : formatBytes(diskUsage.totalBytes),
+      value: usage.totalBytes === null ? unavailable : formatBytes(usage.totalBytes),
     },
   ];
-  const memoryFacts = [
-    {
-      key: "used",
-      label: t("resource.overview.factUsed"),
-      value: memoryUsage.usedBytes === null ? unavailable : formatBytes(memoryUsage.usedBytes),
-    },
-    {
-      key: "free",
-      label: t("resource.overview.factFree"),
-      value:
-        memoryUsage.availableBytes === null
-          ? unavailable
-          : formatBytes(memoryUsage.availableBytes),
-    },
-    {
-      key: "total",
-      label: t("resource.overview.factTotal"),
-      value:
-        memoryUsage.totalBytes === null ? unavailable : formatBytes(memoryUsage.totalBytes),
-    },
-  ];
+
+  const diskSubject = disk
+    ? `${disk.volume} · ${t(VOLUME_KIND_KEYS[disk.kind] ?? VOLUME_KIND_KEYS.unknown)}`
+    : t("resource.overview.diskRingTitle");
+  const memorySubject = t("settings.resourceCleanup.systemScope");
 
   return (
     <div className="resource-overview">
@@ -298,122 +288,122 @@ export default function OverviewSegment({
         className={`resource-freshness is-${freshness}`}
         role="status"
         aria-live="polite"
+        data-tip={sampled?.full}
       >
         <span className="resource-freshness-dot" aria-hidden="true" />
         <span className="resource-freshness-label">{t(FRESHNESS_LABEL[freshness])}</span>
         <span className="resource-freshness-time">
           {sampled
-            ? t("settings.resourceCleanup.sampledAt", { time: sampled })
+            ? t("resource.time.updated", { time: sampled.time })
             : t("settings.resourceCleanup.sampledAtUnknown")}
         </span>
       </div>
 
-      {freshness === "updating" && (
-        <p className="setting-note" role="status">
-          {t("resource.updating")}
-        </p>
-      )}
-      {freshness === "pending" && (
-        <p className="setting-note" role="status">
-          {t("settings.resourceCleanup.loadingSnapshot")}
-        </p>
-      )}
-
       <div className="resource-dashboard">
-        <article className="resource-hero-card">
-          <div className="resource-hero-meta">
-            <span className="resource-scope-chip">{t("resource.overview.scopeSystem")}</span>
-            <span className="resource-hero-subject">
-              {disk ? `${disk.volume} · ${t(VOLUME_KIND_KEYS[disk.kind] ?? VOLUME_KIND_KEYS.unknown)}` : t("resource.overview.diskRingTitle")}
-            </span>
-          </div>
-          <UsageRing
-            usedPercent={diskUsage.usedPercent}
-            level={diskUsage.level}
-            title={t("resource.overview.diskRingTitle")}
-            valueText={ringValue(diskUsage.usedPercent)}
-            statusText={ringStatus(diskUsage)}
-            ariaLabel={t("resource.aria.diskRing", {
-              volume: disk?.volume ?? "",
-              percent: percentText(diskUsage.usedPercent) ?? unavailable,
-              level: t(usageStatusKey(diskUsage.level, diskUsage.anomaly)),
-            })}
-            detail={
-              <span>
-                {diskUsage.anomaly
-                  ? t(USAGE_ANOMALY_DETAIL[diskUsage.anomaly])
-                  : t("resource.overview.diskRingNote")}
+        <article className={`resource-hero-card is-${diskUsage.level}`}>
+          <header className="resource-hero-head">
+            <div className="resource-hero-heading">
+              <span className="resource-hero-title">{t("resource.overview.diskRingTitle")}</span>
+              <span className="resource-hero-subject" data-tip={diskSubject}>
+                {diskSubject}
               </span>
-            }
-          />
-          <dl className="resource-hero-facts">
-            {facts.map((fact) => (
-              <div key={fact.key}>
-                <dt>{fact.label}</dt>
-                <dd>{pending || noReading ? (pending ? reading : unavailable) : fact.value}</dd>
-              </div>
-            ))}
-          </dl>
-          <button
-            type="button"
-            className="resource-hero-link"
-            onClick={() => onOpenDisk("volumes")}
-          >
-            <HardDrive size={12} aria-hidden="true" />
-            {t("resource.overview.openVolumes")}
-            <ArrowUpRight size={12} aria-hidden="true" />
-          </button>
+            </div>
+            <span className={`resource-status-pill is-${diskUsage.anomaly ? "unknown" : diskUsage.level}`}>
+              {ringStatus(diskUsage)}
+            </span>
+          </header>
+          <div className="resource-hero-body">
+            <UsageRing
+              compact
+              usedPercent={diskUsage.usedPercent}
+              level={diskUsage.level}
+              title={t("resource.overview.diskRingTitle")}
+              valueText={ringValue(diskUsage.usedPercent)}
+              statusText={ringStatus(diskUsage)}
+              ariaLabel={t("resource.aria.diskRing", {
+                volume: disk?.volume ?? "",
+                percent: percentText(diskUsage.usedPercent) ?? unavailable,
+                level: t(usageStatusKey(diskUsage.level, diskUsage.anomaly)),
+              })}
+            />
+            <dl className="resource-hero-facts">
+              {factsFor(diskUsage).map((fact) => (
+                <div key={fact.key}>
+                  <dt>{fact.label}</dt>
+                  <dd>{pending || noReading ? (pending ? reading : unavailable) : fact.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+          <footer className="resource-hero-foot">
+            <button
+              type="button"
+              className="resource-hero-link"
+              onClick={() => onOpenDisk("volumes")}
+            >
+              <HardDrive size={12} aria-hidden="true" />
+              {t("resource.overview.openVolumes")}
+              <ArrowUpRight size={12} aria-hidden="true" />
+            </button>
+          </footer>
         </article>
 
-        <article className="resource-hero-card">
-          <div className="resource-hero-meta">
-            <span className="resource-scope-chip">{t("resource.overview.scopeSystem")}</span>
-            <span className="resource-hero-subject">
-              {t("settings.resourceCleanup.systemScope")}
-            </span>
-          </div>
-          <UsageRing
-            usedPercent={memoryUsage.usedPercent}
-            level={memoryUsage.level}
-            title={t("resource.overview.memoryRingTitle")}
-            valueText={ringValue(memoryUsage.usedPercent)}
-            statusText={ringStatus(memoryUsage)}
-            ariaLabel={t("resource.aria.memoryRing", {
-              percent: percentText(memoryUsage.usedPercent) ?? unavailable,
-              level: t(usageStatusKey(memoryUsage.level, memoryUsage.anomaly)),
-            })}
-            detail={
-              <span>
-                {memoryUsage.anomaly
-                  ? t(USAGE_ANOMALY_DETAIL[memoryUsage.anomaly])
-                  : t("resource.overview.memoryRingNote")}
+        <article className={`resource-hero-card is-${memoryUsage.level}`}>
+          <header className="resource-hero-head">
+            <div className="resource-hero-heading">
+              <span
+                className="resource-hero-title"
+                data-tip={memorySubject}
+              >
+                {t("resource.overview.memoryRingTitle")}
               </span>
-            }
-          />
-          <dl className="resource-hero-facts">
-            {memoryFacts.map((fact) => (
-              <div key={fact.key}>
-                <dt>{fact.label}</dt>
-                <dd>{pending || noReading ? (pending ? reading : unavailable) : fact.value}</dd>
-              </div>
-            ))}
-          </dl>
-          <button
-            type="button"
-            className="resource-hero-link"
-            onClick={onOpenMemory}
-          >
-            <HardDrive size={12} aria-hidden="true" />
-            {t("resource.overview.openMemory")}
-            <ArrowUpRight size={12} aria-hidden="true" />
-          </button>
+            </div>
+            <span className={`resource-status-pill is-${memoryUsage.anomaly ? "unknown" : memoryUsage.level}`}>
+              {ringStatus(memoryUsage)}
+            </span>
+          </header>
+          <div className="resource-hero-body">
+            <UsageRing
+              compact
+              usedPercent={memoryUsage.usedPercent}
+              level={memoryUsage.level}
+              title={t("resource.overview.memoryRingTitle")}
+              valueText={ringValue(memoryUsage.usedPercent)}
+              statusText={ringStatus(memoryUsage)}
+              ariaLabel={t("resource.aria.memoryRing", {
+                percent: percentText(memoryUsage.usedPercent) ?? unavailable,
+                level: t(usageStatusKey(memoryUsage.level, memoryUsage.anomaly)),
+              })}
+            />
+            <dl className="resource-hero-facts">
+              {factsFor(memoryUsage).map((fact) => (
+                <div key={fact.key}>
+                  <dt>{fact.label}</dt>
+                  <dd>{pending || noReading ? (pending ? reading : unavailable) : fact.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+          <footer className="resource-hero-foot">
+            <button
+              type="button"
+              className="resource-hero-link"
+              onClick={onOpenMemory}
+            >
+              <HardDrive size={12} aria-hidden="true" />
+              {t("resource.overview.openMemory")}
+              <ArrowUpRight size={12} aria-hidden="true" />
+            </button>
+          </footer>
         </article>
       </div>
 
-      {/* 关注摘要：真实等级推导；全部正常时也明确说明，而不是留空。 */}
+      {/* 关注摘要：默认一行，按需展开；名称与状态都来自同一份真实读数。 */}
       {!pending && !noReading && (
         <div
-          className={`resource-attention${attention.length > 0 ? " is-warn" : " is-ok"}`}
+          className={`resource-attention${attention.length > 0 ? " is-warn" : " is-ok"}${
+            attentionOpen ? " is-open" : ""
+          }`}
           role="status"
         >
           {attention.length > 0 ? (
@@ -427,105 +417,148 @@ export default function OverviewSegment({
               : t("resource.overview.attentionNone")}
           </span>
           {attention.length > 0 && (
-            <span className="resource-attention-items">
-              {attention.map((item) => (
-                <span key={item.key} className={`resource-attention-item is-${item.level}`}>
-                  {item.name} · {item.status}
-                </span>
-              ))}
+            <span className="resource-attention-names">
+              {attention
+                .map((item) => item.name)
+                .join(t("resource.overview.attentionSeparator"))}
             </span>
+          )}
+          {attention.length > 0 && (
+            <button
+              type="button"
+              className="resource-attention-toggle"
+              aria-expanded={attentionOpen}
+              aria-label={t("resource.overview.attentionDetailAria")}
+              onClick={() => setAttentionOpen((open) => !open)}
+            >
+              {t(
+                attentionOpen
+                  ? "resource.overview.attentionCollapse"
+                  : "resource.overview.attentionExpand",
+              )}
+              <ChevronDown
+                size={12}
+                className={`resource-attention-chevron${attentionOpen ? " is-open" : ""}`}
+                aria-hidden="true"
+              />
+            </button>
+          )}
+          {attention.length > 0 && attentionOpen && (
+            <ul className="resource-attention-detail">
+              {attention.map((item) => (
+                <li key={item.key}>
+                  <span className={`resource-attention-dot is-${item.level}`} aria-hidden="true" />
+                  <span className="resource-attention-name">{item.name}</span>
+                  <span className={`resource-attention-status is-${item.level}`}>
+                    {item.status}
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       )}
 
-      <div className="resource-metric-strip">
-        <div className="resource-metric">
-          <span className="resource-overview-label">
-            {t("settings.resourceCleanup.applicationCache")}
-          </span>
-          <strong className="resource-metric-value">{cacheValue}</strong>
-          <span className="resource-metric-sub">{cacheSub}</span>
+      <section className="resource-app-metrics" aria-labelledby="resource-app-metrics-title">
+        <div className="resource-section-head">
+          <h3 id="resource-app-metrics-title" data-tip={t("resource.overview.metricsNote")}>
+            {t("resource.overview.metricsTitle")}
+          </h3>
         </div>
+        <div className="resource-metric-strip">
+          <div className="resource-metric">
+            <span className="resource-overview-label">
+              {t("settings.resourceCleanup.applicationCache")}
+            </span>
+            <strong className="resource-metric-value">{cacheValue}</strong>
+            <span className="resource-metric-sub" data-tip={cacheSub}>
+              {cacheSub}
+            </span>
+          </div>
 
-        <button
-          type="button"
-          className="resource-metric resource-metric-action"
-          onClick={() => onOpenDisk("app-cache")}
-          disabled={pending}
-          aria-label={t("resource.overview.cleanableAria")}
-        >
-          <span className="resource-overview-label">{t("resource.overview.cleanable")}</span>
-          <strong className="resource-metric-value">{cleanableValue}</strong>
-          <span className="resource-metric-sub">{cleanableSub}</span>
-          <span className="resource-metric-go" aria-hidden="true">
-            {t("resource.overview.cleanableGo")}
-            <ArrowUpRight size={12} />
-          </span>
-        </button>
+          <button
+            type="button"
+            className="resource-metric resource-metric-action"
+            onClick={() => onOpenDisk("app-cache")}
+            disabled={pending}
+            aria-label={t("resource.overview.cleanableAria")}
+          >
+            <span className="resource-overview-label">{t("resource.overview.cleanable")}</span>
+            <strong className="resource-metric-value">{cleanableValue}</strong>
+            <span className="resource-metric-sub" data-tip={cleanableSub}>
+              {cleanableSub}
+            </span>
+            <span className="resource-metric-go" aria-hidden="true">
+              {t("resource.overview.cleanableGo")}
+              <ArrowUpRight size={12} />
+            </span>
+          </button>
 
-        <div className="resource-metric">
-          <span className="resource-overview-label">{t("resource.overview.appMemory")}</span>
-          <strong className="resource-metric-value">
-            {pending || noReading
-              ? pending
-                ? reading
-                : unavailable
-              : process?.workingSetBytes === null || process?.workingSetBytes === undefined
-                ? unavailable
-                : formatBytes(process.workingSetBytes)}
-          </strong>
-          <span className="resource-metric-sub">
-            {pending || noReading
-              ? pending
-                ? reading
-                : unavailable
-              : process?.privateBytes === null || process?.privateBytes === undefined
-                ? unavailable
-                : t("resource.overview.privateValue", {
-                    bytes: formatBytes(process.privateBytes),
-                  })}
-          </span>
+          <div className="resource-metric">
+            <span className="resource-overview-label">{t("resource.overview.appMemory")}</span>
+            <strong className="resource-metric-value">
+              {pending || noReading
+                ? pending
+                  ? reading
+                  : unavailable
+                : process?.workingSetBytes === null || process?.workingSetBytes === undefined
+                  ? unavailable
+                  : formatBytes(process.workingSetBytes)}
+            </strong>
+            <span className="resource-metric-sub">
+              {pending || noReading
+                ? pending
+                  ? reading
+                  : unavailable
+                : process?.privateBytes === null || process?.privateBytes === undefined
+                  ? unavailable
+                  : t("resource.overview.privateValue", {
+                      bytes: formatBytes(process.privateBytes),
+                    })}
+            </span>
+          </div>
+
+          <div className="resource-metric">
+            <span className="resource-overview-label">
+              {t("settings.resourceCleanup.applicationCpu")}
+            </span>
+            <strong className="resource-metric-value">
+              {pending || noReading
+                ? pending
+                  ? reading
+                  : unavailable
+                : process?.cpuPercent === null || process?.cpuPercent === undefined
+                  ? unavailable
+                  : t("settings.resourceCleanup.cpuValue", {
+                      percent: process.cpuPercent.toFixed(1),
+                    })}
+            </strong>
+            <span className="resource-metric-sub">
+              {pending || noReading
+                ? pending
+                  ? reading
+                  : unavailable
+                : process && process.cpuWindowMs > 0
+                  ? t("settings.resourceCleanup.cpuWindow", {
+                      window: Math.max(1, Math.round(process.cpuWindowMs / 1000)),
+                    })
+                  : t("settings.resourceCleanup.applicationCpuScope")}
+            </span>
+            <MiniMeter
+              percent={pending || noReading ? null : (process?.cpuPercent ?? null)}
+              tone="neutral"
+              ariaLabel={t("settings.resourceCleanup.applicationCpu")}
+            />
+          </div>
         </div>
-
-        <div className="resource-metric">
-          <span className="resource-overview-label">
-            {t("settings.resourceCleanup.applicationCpu")}
-          </span>
-          <strong className="resource-metric-value">
-            {pending || noReading
-              ? pending
-                ? reading
-                : unavailable
-              : process?.cpuPercent === null || process?.cpuPercent === undefined
-                ? unavailable
-                : t("settings.resourceCleanup.cpuValue", {
-                    percent: process.cpuPercent.toFixed(1),
-                  })}
-          </strong>
-          <span className="resource-metric-sub">
-            {pending || noReading
-              ? pending
-                ? reading
-                : unavailable
-              : process && process.cpuWindowMs > 0
-                ? t("settings.resourceCleanup.cpuWindow", {
-                    window: Math.max(1, Math.round(process.cpuWindowMs)),
-                  })
-                : t("settings.resourceCleanup.applicationCpuScope")}
-          </span>
-          <MiniMeter
-            percent={pending || noReading ? null : (process?.cpuPercent ?? null)}
-            tone="neutral"
-            ariaLabel={t("settings.resourceCleanup.applicationCpu")}
-          />
-        </div>
-      </div>
+      </section>
 
       {/* 短时趋势：概览可见时有界采样；只画真实读数，缺失点断线。 */}
-      <div className="resource-trend-section">
-        <div className="resource-cleanup-section-head">
-          <h3 className="resource-cleanup-heading">{t("resource.trend.title")}</h3>
-          <span className="resource-trend-scope">{trendScopeText}</span>
+      <section className="resource-trend-section" aria-labelledby="resource-trend-title">
+        <div className="resource-section-head">
+          <h3 id="resource-trend-title" data-tip={trendScopeText}>
+            {t("resource.trend.title")}
+          </h3>
         </div>
         <div className="resource-trend">
           <TrendSparkline
@@ -554,7 +587,7 @@ export default function OverviewSegment({
             {t("resource.trend.failed")}
           </p>
         )}
-      </div>
+      </section>
 
       {/* 多卷：概览除主盘主卡外，用紧凑卷条并列展示其余卷的只读使用率。 */}
       {disks.length > 1 && (
@@ -591,17 +624,6 @@ export default function OverviewSegment({
           })}
         </div>
       )}
-
-      <div className="resource-overview-footer">
-        <span>
-          {sampled
-            ? t("settings.resourceCleanup.sampledAt", { time: sampled })
-            : t("settings.resourceCleanup.sampledAtUnknown")}
-        </span>
-        <span className="resource-overview-scope-note">
-          {t("resource.overview.scopeNote")}
-        </span>
-      </div>
     </div>
   );
 }

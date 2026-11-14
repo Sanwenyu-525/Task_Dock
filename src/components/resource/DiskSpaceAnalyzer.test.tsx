@@ -75,7 +75,7 @@ describe("DiskSpaceAnalyzer", () => {
     await waitFor(() => expect(mocks.analyze).toHaveBeenCalledWith("C:\\"));
     expect(
       await screen.findByText(
-        'resource.analysis.summary|{"bytes":"1000 B","files":5,"dirs":3,"ms":120}',
+        'resource.analysis.summary|{"bytes":"1000 B","files":5,"dirs":3,"seconds":1}',
       ),
     ).toBeTruthy();
 
@@ -189,7 +189,7 @@ describe("DiskSpaceAnalyzer", () => {
     await waitFor(() => expect(mocks.analyze).toHaveBeenLastCalledWith("D:\\Data"));
     // 结果区显式绑定的就是本次扫描目录。
     expect(
-      await screen.findByText("resource.analysis.resultTime", { exact: false }),
+      await screen.findByText("resource.time.analyzed", { exact: false }),
     ).toBeTruthy();
     expect(document.querySelector(".resource-analysis-scope-path")?.textContent).toBe(
       "D:\\Data",

@@ -460,6 +460,12 @@ export interface Settings {
    * 注册中心默认值，后端只做对象级校验，不参与语义合并。
    */
   navigation_layout?: unknown;
+  /**
+   * 统一工作台布局（U0）：上次路由、项目、右栏显隐与分栏宽度。
+   * 版本化 JSON 对象，结构见 `src/lib/workbenchLayout.ts`；缺失或损坏时前端回退
+   * 默认值，后端只做结构边界校验，不参与语义合并。
+   */
+  workbench_layout?: unknown;
 }
 
 /** 全局任务统计（跨所有筛选视图）。 */
@@ -1038,6 +1044,25 @@ export const listAgentEvents = (
 export const getSettings = () => invoke<Settings>("get_settings");
 export const updateSettings = (patch: Partial<Settings>) =>
   invoke<Settings>("update_settings", { patch });
+
+/**
+ * 设置写入广播（跨窗口同步）：只携带**变更键名**，不携带值。
+ * 收到后各窗口按需重新读取权威设置（两个 WebView 不共享内存 store）。
+ */
+export const onSettingsChanged = (
+  cb: (payload: { keys: string[]; origin?: string; revision?: number }) => void,
+) =>
+  listen<{ keys: string[]; origin?: string; revision?: number }>("settings-changed", (e) => {
+    const keys = Array.isArray(e.payload?.keys)
+      ? e.payload.keys.filter((key): key is string => typeof key === "string")
+      : [];
+    const origin = typeof e.payload?.origin === "string" ? e.payload.origin : undefined;
+    const revision =
+      typeof e.payload?.revision === "number" && Number.isFinite(e.payload.revision)
+        ? e.payload.revision
+        : undefined;
+    cb({ keys, origin, revision });
+  });
 
 // ── 统一音频通知服务：TTS 合成与本地缓存（v0.13）──
 export interface TtsVoiceInfo {
@@ -3249,6 +3274,47 @@ export interface ShelfAddReport {
   failed: ShelfFailedEntry[];
 }
 
+/**
+ * 主动粘贴当前剪贴板的结果协议。
+ *
+ * `success=false` 表示没有产生条目（空/占用/不支持/全部失败），不是 IPC 错误；
+ * `partial=true` 表示有成功也有失败或跳过。`operation_id` 是后端本次粘贴的稳定
+ * 会话标识，前端诊断另用 `startOperation` 的 id 关联，不混用。
+ */
+export interface ShelfPasteReport {
+  operation_id: string;
+  source: "clipboard-current";
+  content_kind: "file" | "files" | "image" | "link" | "text" | "html" | "html-link" | "none";
+  added: ShelfItem[];
+  added_ids: string[];
+  failed: ShelfFailedEntry[];
+  skipped: number;
+  /** 与已有条目同路径/同正文的条数；只提示，不阻止本次保存。 */
+  duplicates: number;
+  success: boolean;
+  partial: boolean;
+  requires_user_action: boolean;
+  code?: string | null;
+  retryable: boolean;
+}
+
+/** 全局收集热键 / 资源管理器「发送到」完成事件：只带计数与稳定码。 */
+export interface ShelfCollectedEvent {
+  operationId: string;
+  source: "clipboard-current" | "sendto";
+  contentKind: string;
+  success: boolean;
+  partial: boolean;
+  added: number;
+  failed: number;
+  skipped: number;
+  duplicates?: number;
+  code?: string | null;
+  retryable: boolean;
+}
+
+export const SHELF_COLLECTED_EVENT = "taskdock://shelf-collected";
+
 export interface ShelfDeleteReport {
   deleted: number;
   skipped: number;
@@ -3349,6 +3415,36 @@ export const shelfAddFromClipboard = (
     storageMode,
     groupId: groupId ?? null,
   });
+
+/**
+ * 主动粘贴当前系统剪贴板（不依赖剪贴板历史是否开启）。
+ * 只读取、不写回系统剪贴板，不模拟按键、不抢其他应用焦点。
+ */
+export const shelfPasteCurrent = (
+  storageMode: ShelfStorageMode,
+  groupId?: string | null,
+) =>
+  invoke<ShelfPasteReport>("shelf_paste_current", {
+    storageMode,
+    groupId: groupId ?? null,
+  });
+
+/** 资源管理器右键「发送到 Task Dock」的 HKCU 动词状态。 */
+export interface ShelfSendToStatus {
+  enabled: boolean;
+  exe: string;
+  command?: string | null;
+  stale: boolean;
+}
+
+export const shelfSendToStatus = () =>
+  invoke<ShelfSendToStatus>("shelf_sendto_status");
+
+export const shelfSendToEnable = () =>
+  invoke<ShelfSendToStatus>("shelf_sendto_enable");
+
+export const shelfSendToDisable = () =>
+  invoke<void>("shelf_sendto_disable");
 
 // ── 通用跨应用拖入（v49）────────────────────────────────────
 
@@ -3470,6 +3566,30 @@ export const shelfTaskLinks = (itemId: string) =>
 export const shelfLinkTask = (itemId: string, taskId: string) =>
   invoke<void>("shelf_link_task", { itemId, taskId });
 
+/** 暂存条目 ↔ 工作空间项目直接关联（只存关系，不复制项目/条目）。 */
+export interface ShelfProjectLink {
+  project_id: string;
+  item_id: string;
+  project_name: string;
+  created_at: string;
+}
+
+export const shelfProjectLinks = (itemId: string) =>
+  invoke<ShelfProjectLink[]>("shelf_project_links", { itemId });
+
+export const shelfLinkProject = (itemId: string, projectId: string) =>
+  invoke<void>("shelf_link_project", { itemId, projectId });
+
+export const shelfUnlinkProject = (itemId: string, projectId: string) =>
+  invoke<void>("shelf_unlink_project", { itemId, projectId });
+
+/** 暂存架图片 OCR：复用剪贴板本地 OCR 引擎，不自动上传、不改动原图。 */
+export const shelfOcrItem = (id: string, requestId: string) =>
+  invoke<ClipboardOcrReport>("shelf_ocr_item", { id, requestId });
+
+export const shelfOcrCancel = (requestId: string) =>
+  invoke<boolean>("shelf_ocr_cancel", { requestId });
+
 // ── 文件操作：移动 / 复制 / 失效重定位 / 最近目标目录 ──────────
 
 export type ShelfConflictStrategy = "skip" | "rename";
@@ -3579,6 +3699,8 @@ export interface ShelfDropTarget {
   conflict: ShelfConflictStrategy;
   /** 读取时探测的目录可用性；false 时前端禁止投递 */
   available: boolean;
+  /** 最近一次成功投递时间；旧后端缺省 */
+  last_used_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -4570,6 +4692,71 @@ export const openProjectWorkspaceWindow = (input?: { projectId?: string | null }
     projectId: input?.projectId ?? null,
   });
 
+// ── 统一工作台（U0）：结构化导航协议 ─────────────────────────────────
+//
+// 「invoke 返回」只代表请求已受理；真实导航结果必须等 `workbench-nav-ack`。
+// 窗口未创建 / 正在创建 / 已存在 / 最小化 都由 Rust 统一收敛为「入队 + 唤醒 +
+// 事件快路径」，工作台挂载后再拉取队列（事件丢失也不会丢导航）。
+
+/** 目标功能 ID：与导航注册中心/Tab 一致；`home` 为工作台首页。 */
+export interface WorkbenchNavTarget {
+  tab: string;
+  projectId?: string | null;
+  taskId?: string | null;
+  objectId?: string | null;
+  /** 合并入口子页（如 collection 的 inbox/shelf/notes）。 */
+  sub?: string | null;
+}
+
+export interface WorkbenchNavRequest {
+  requestId: number;
+  target: WorkbenchNavTarget;
+}
+
+/** 导航回执终态；`pending` 之后工作台还会再发一条最终结果。 */
+export type WorkbenchNavStatus = "succeeded" | "pending" | "cancelled" | "failed";
+
+export interface WorkbenchNavAck {
+  requestId: number;
+  status: WorkbenchNavStatus;
+  error: string | null;
+}
+
+/** 打开/聚焦工作台并请求导航；返回 requestId，调用方必须等待回执。 */
+export const workbenchOpenWindow = (input: {
+  target: WorkbenchNavTarget;
+  projectId?: string | null;
+  /** 调用方在发命令之前生成的请求编号（回执可能先于命令响应到达）。 */
+  requestId: number;
+}) =>
+  invoke<{ requestId: number; created: boolean }>("workbench_open_window", {
+    target: input.target,
+    projectId: input.projectId ?? null,
+    requestId: input.requestId,
+  });
+
+/** 工作台拉取下一条待处理导航（挂载/收到事件/重新聚焦时调用；空队列返回 null）。 */
+export const workbenchTakeNav = () =>
+  invoke<WorkbenchNavRequest | null>("workbench_take_nav");
+
+/** 工作台回传本次导航的真实结果（pending 之后还要回最终结果）。 */
+export const workbenchNavAck = (input: {
+  requestId: number;
+  status: WorkbenchNavStatus;
+  error?: string | null;
+}) =>
+  invoke<void>("workbench_nav_ack", {
+    requestId: input.requestId,
+    status: input.status,
+    error: input.error ?? null,
+  });
+
+export const onWorkbenchNavigate = (cb: (request: WorkbenchNavRequest) => void) =>
+  listen<WorkbenchNavRequest>("workbench-navigate", (e) => cb(e.payload));
+
+export const onWorkbenchNavAck = (cb: (ack: WorkbenchNavAck) => void) =>
+  listen<WorkbenchNavAck>("workbench-nav-ack", (e) => cb(e.payload));
+
 /**
  * 「在开发工作台打开」：返回 `requestId`，**事件送达 ≠ 成功**。
  * 主窗口在解除胶囊停靠、切到开发工作台页后必须回执（见 ack），
@@ -4633,36 +4820,81 @@ export const onProjectWorkspaceOpenDevWorkbenchResult = (
     cb(e.payload),
   );
 
-// ── Android 虚拟屏 MVP（实验）──────────────────────────────────
+// ── Android 屏幕与控制（ADB + scrcpy）──────────────────────────
 //
-// 桌面端只托管 scrcpy 进程：虚拟屏与输入由 scrcpy 独立窗口提供。
+// 桌面端只托管 scrcpy 进程：画面、输入与窗口由 scrcpy 提供。
 // 设备/应用均从本机 adb 实时读取，不落库；会话仅存在于本次运行期。
 
+/** mirror=镜像手机实体屏；virtual=创建独立虚拟屏并启动一个应用。 */
+export type VdMode = "mirror" | "virtual";
+
+export type VdSessionStatus =
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "error"
+  | "disconnected";
+
 export interface VdDevice {
+  /** 本次操作应使用的 transport。 */
   serial: string;
+  /** 物理设备身份（同一手机的多个 ADB transport 会合并）。 */
+  uid: string;
   state: string;
   model: string | null;
   product: string | null;
   device: string | null;
   transport_id: string | null;
+  connection: "usb" | "wifi" | "mdns" | "other";
+  transports: string[];
 }
 
 export interface VdDeviceList {
   devices: VdDevice[];
+  adb_ok: boolean;
   error: string | null;
 }
 
 export interface VdApp {
   package: string;
+  /** scrcpy 解析到的应用名；未知时回退显示包名。 */
+  label: string | null;
+  system: boolean;
+  /** true=确认可启动；false=确认没有启动入口；null=设备无法判定。 */
+  launchable: boolean | null;
+  reason: string | null;
+}
+
+export interface VdAppList {
+  device_uid: string;
+  serial: string;
+  apps: VdApp[];
+  launchable_known: boolean;
+  include_all: boolean;
+  error: string | null;
 }
 
 export interface VdSession {
   id: string;
   pid: number;
   serial: string;
-  package: string;
+  device_uid: string;
+  device_model: string | null;
+  mode: VdMode;
+  package: string | null;
+  app_label: string | null;
+  status: VdSessionStatus;
+  /** process | display | app | video | ready */
+  stage: string;
+  title: string;
   started_at: string;
+  ready_at: string | null;
+  ended_at: string | null;
   alive: boolean;
+  error: string | null;
+  warning: string | null;
+  size: string | null;
 }
 
 export interface VdProbe {
@@ -4670,28 +4902,89 @@ export interface VdProbe {
   adb_version: string | null;
   scrcpy_path: string | null;
   scrcpy_version: string | null;
+  supports_new_display: boolean;
+  supports_ime_local: boolean;
   devices: VdDevice[];
   error: string | null;
 }
 
-/** 工具链与设备一次性探测（页面打开时调用）。 */
+export interface VdFocus {
+  found: boolean;
+  focused: boolean;
+}
+
+export interface VdScreenshot {
+  path: string;
+  width: number;
+  height: number;
+  captured_at: string;
+}
+
+export interface VdDiagnostics {
+  owned_sessions: number;
+  stale_displays: string[];
+  note: string;
+}
+
+export interface VdStartOptions {
+  serial: string;
+  mode: VdMode;
+  /** 仅虚拟屏模式使用。 */
+  packageName?: string | null;
+  /** 仅虚拟屏模式使用，格式 `宽x高/DPI`。 */
+  size?: string | null;
+  /** 默认关闭：不让 scrcpy 自动覆盖电脑/手机剪贴板。 */
+  clipboardSync?: boolean;
+  /** 实验多屏：允许最多两个会话。 */
+  allowMulti?: boolean;
+}
+
+/** 工具链、参数支持与设备一次性探测（页面打开/手动刷新时调用）。 */
 export const vdProbe = () => invoke<VdProbe>("vd_probe");
 
-/** 轻量轮询：只读 ADB 设备状态。 */
+/** 轻量轮询：只读 ADB 设备状态（已按物理设备合并 transport）。 */
 export const vdDevices = () => invoke<VdDeviceList>("vd_devices");
 
-/** 设备上可启动的包名列表（系统 + 第三方）。 */
-export const vdListApps = (serial: string) =>
-  invoke<VdApp[]>("vd_list_apps", { serial });
+/** 设备上具备启动入口的应用；`includeAll` 时附带无入口应用及原因。 */
+export const vdListApps = (serial: string, includeAll = false) =>
+  invoke<VdAppList>("vd_list_apps", { serial, includeAll });
 
-/** 创建虚拟屏并启动应用（scrcpy 独立窗口）。 */
-export const vdStart = (serial: string, packageName: string) =>
-  invoke<VdSession>("vd_start", { serial, package: packageName });
+/** 创建投屏会话；返回后由前端轮询直到 running/error。 */
+export const vdStart = (opts: VdStartOptions) =>
+  invoke<VdSession>("vd_start", {
+    serial: opts.serial,
+    mode: opts.mode,
+    package: opts.packageName ?? null,
+    size: opts.size ?? null,
+    clipboardSync: opts.clipboardSync ?? false,
+    allowMulti: opts.allowMulti ?? false,
+  });
 
-/** 关闭会话；已退出的会话返回 false。 */
+/** 关闭会话；stopping 后由后端后台收尾，不阻塞状态查询。 */
 export const vdStop = (sessionId: string) =>
   invoke<boolean>("vd_stop", { sessionId });
 
-/** 运行中的会话；已退出的会话由后端回收。 */
+/** 会话列表（含刚结束的保留窗口，便于展示失败原因）。 */
 export const vdSessions = () => invoke<VdSession[]>("vd_sessions");
+
+/** 恢复并前置 scrcpy 窗口；只按后端记录的 PID 查找。 */
+export const vdFocus = (sessionId: string) =>
+  invoke<VdFocus>("vd_focus", { sessionId });
+
+/** 截取当前会话窗口（仅用户主动触发）。 */
+export const vdScreenshot = (sessionId: string) =>
+  invoke<VdScreenshot>("vd_screenshot", { sessionId });
+
+/** 把最近一次截图另存到用户选择的绝对路径。 */
+export const vdScreenshotExport = (sessionId: string, targetPath: string) =>
+  invoke<boolean>("vd_screenshot_export", { sessionId, targetPath });
+
+/** 诊断设备侧 scrcpy 虚拟显示残留。 */
+export const vdDiagnostics = (serial: string) =>
+  invoke<VdDiagnostics>("vd_diagnostics", { serial });
+
+/** 重连指定设备的 ADB（仅无本模块会话时允许）。 */
+export const vdReconnect = (serial: string) =>
+  invoke<boolean>("vd_reconnect", { serial });
+
 

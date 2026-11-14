@@ -42,7 +42,7 @@ import { useAgentsStore } from "../../store/useAgentsStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { registerOverlay } from "../../lib/overlayStack";
 import { useEdgeTabMenuActions } from "../../hooks/useEdgeTabMenuActions";
-import { openProjectWorkspaceWindow } from "../../lib/bridge";
+import { openWorkbenchHome } from "../../lib/workbenchNav";
 import { errorMessage } from "../../lib/errors";
 import { logEvent } from "../../lib/diagnostics";
 
@@ -143,8 +143,9 @@ export default function CapsuleDock() {
   }, []);
 
   /**
-   * 直接入口（工作空间独立窗口）：
-   * 打开失败不再 `catch(() => {})`——胶囊通常在折叠态，主窗口 Toast 看不见。
+   * 直接入口（唯一大型工作台）：
+   * 不再只「打开窗口」就当作成功 —— 必须等工作台回执（窗口已就绪/导航已生效）。
+   * 打开失败不再 `catch(() => {})`：胶囊通常在折叠态，主窗口 Toast 看不见。
    * 失败写到按钮自身（红点 + 提示 + aria-live），并进入既有诊断通道。
    */
   const openDirectEntry = useCallback((id: string) => {
@@ -153,8 +154,7 @@ export default function CapsuleDock() {
       directErrorTimer.current = null;
     }
     setDirectError(null);
-    void openProjectWorkspaceWindow({}).catch((e) => {
-      const message = errorMessage(e);
+    const fail = (message: string) => {
       if (!mountedRef.current) return;
       setDirectError({ id, message });
       logEvent({
@@ -167,7 +167,16 @@ export default function CapsuleDock() {
       directErrorTimer.current = window.setTimeout(() => {
         if (mountedRef.current) setDirectError(null);
       }, 8000);
-    });
+    };
+    void openWorkbenchHome()
+      .then((outcome) => {
+        // pending 表示工作台已弹出未保存确认条：不算打开失败，也不宣称已切页。
+        if (outcome.status === "succeeded" || outcome.status === "pending") return;
+        fail(outcome.error ?? "打开工作台失败");
+      })
+      .catch((e) => {
+        fail(errorMessage(e));
+      });
   }, []);
 
   // 收起只切相位，不改分类：`active` 恒有值，「哪个分类」与「面板是否可见」

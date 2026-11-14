@@ -808,3 +808,30 @@ status / reason? / recovery? / residual_source?`。状态取值与 `ShelfOpEntry
   Chrome/ChatGPT 拖入、Outlook 附件、截图工具拖出仍需真机验收，结论以
   `tmp/acceptance/universal-drag/report.md` 为准。
 
+
+### 12.12 统一内容收集：当前剪贴板、项目关联、OCR 与重复提示（2026-11-14）
+
+本轮在既有暂存架上增量接入，不新建第二套项目/任务/存储体系：
+
+- **当前剪贴板粘贴**：`shelf_paste_current` 读取实时系统剪贴板并复用
+  `add_reference/add_managed/add_managed_png/add_link/add_text`。完整协议、格式优先级、
+  虚拟文件限制与 Ctrl+V 焦点规则见 [../DRAG_INPUT.md](../DRAG_INPUT.md) §13。
+- **项目关联（v51）**：新表 `shelf_project_links(project_id, item_id, created_at)`，
+  外键分别指向既有 `workspace_projects` 与 `shelf_items`，删除任一侧级联清理关系，
+  **不复制项目/条目内容**。命令：`shelf_project_links` / `shelf_link_project` /
+  `shelf_unlink_project`；详情页「关联项目」与任务关联并列。
+- **最近投递**：`shelf_drop_targets.last_used_at` 在成功投递后更新（失败不影响结果），
+  完整面板目标卡片显示「最近投递：YYYY-MM-DD」；手动排序 `sort_order` 不变，
+  胶囊展示顺序仍由用户控制。
+- **图片 OCR**：`shelf_ocr_item(id, request_id)` 复用 `clipboard::ocr::OcrService` 的
+  本地 Windows OCR（新增 `recognize_png` 入口），只读取暂存图片字节，不改原图、
+  不上传。结果可复制或「保存为文本条目」；保存时自动复制原图的项目/任务关联，
+  并在新条目备注写 `OCR 自：<原图名>`。识别失败/超时/无语言包不改动原图。
+- **重复提示**：同路径（`original_path COLLATE NOCASE`）或同正文（文本/链接）只计入
+  `duplicates` 并在反馈中提示，**不阻止**用户显式再次保存；同一次操作内的路径重复
+  才跳过（`skipped`）。
+- **备份**：`shelf_project_links` 已登记 `BACKUP_TABLES` 与快速备份分支，恢复顺序
+  晚于 `workspace_projects` 与 `shelf_items`；`last_used_at` 随 `shelf_drop_targets`
+  全量备份。
+- **未完成/限制**：标签体系未单独建表（沿用分组/备注）；可配置收集规则未实现；
+  剪贴板虚拟文件主动粘贴明确不支持；资源管理器右键发送与全局热键需真机验收。

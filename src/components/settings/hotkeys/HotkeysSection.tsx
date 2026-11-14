@@ -37,6 +37,7 @@ import type { HotkeyBindingView, HotkeyState } from "./types";
 type ActionKeyBase =
   | "toggleMainWindow"
   | "openQuickCapture"
+  | "collectToShelf"
   | "quickAddTask"
   | "openClipboard"
   | "switchTabTasks"
@@ -53,6 +54,7 @@ type ActionKeyBase =
 const ACTION_KEY_BASE: Partial<Record<string, ActionKeyBase>> = {
   toggle_main_window: "toggleMainWindow",
   open_quick_capture: "openQuickCapture",
+  collect_to_shelf: "collectToShelf",
   quick_add_task: "quickAddTask",
   open_clipboard: "openClipboard",
   switch_tab_tasks: "switchTabTasks",

@@ -22,7 +22,7 @@ import {
   type ResourceDiskScanReport,
 } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
-import { formatLocalStamp } from "../../lib/format";
+import { resourceStamp } from "../../lib/resourceTime";
 import { localizedErrorMessage } from "../../i18n/errors";
 import { formatPercent, proportionPercent } from "../../lib/resourceMetrics";
 import { useLocale } from "../../hooks/useLocale";
@@ -128,12 +128,12 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
         bytes: formatBytes(report.totalBytes),
         files: report.totalFiles,
         dirs: report.totalDirs,
-        ms: report.elapsedMs,
+        seconds: Math.max(1, Math.round(report.elapsedMs / 1000)),
       })
     : null;
   /** 只展示与当前路径一致的报告；不一致时宁可要求重扫，也不混用旧数据。 */
   const reportMatchesPath = report !== null && report.path === path;
-  const reportTime = report ? formatLocalStamp(report.sampledAt) : null;
+  const reportTime = report ? resourceStamp(report.sampledAt) : null;
 
   return (
     <section
@@ -235,10 +235,8 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
           <div className="resource-analysis-scope" data-tip={report.path}>
             <span className="resource-analysis-scope-path">{report.path}</span>
             {reportTime && (
-              <span className="resource-analysis-scope-time">
-                {t("resource.analysis.resultTime", {
-                  time: `${reportTime.date} ${reportTime.time}`,
-                })}
+              <span className="resource-analysis-scope-time" data-tip={reportTime.full}>
+                {t("resource.time.analyzed", { time: reportTime.time })}
               </span>
             )}
           </div>

@@ -1685,6 +1685,27 @@ CREATE INDEX idx_dev_acceptance_records_agent
   ON dev_acceptance_records(agent_source_id, agent_session_external_id, agent_run_external_id);
 "#,
     ),
+    (
+        51,
+        r#"
+-- v51（统一内容收集）：暂存条目的项目关联与投递目标最近使用时间。
+-- - shelf_project_links：直接关联既有 workspace_projects，不复制项目/任务，
+--   项目或条目删除时级联清理；与 shelf_task_links 正交（可只关联项目或只关联任务）。
+-- - shelf_drop_targets.last_used_at：成功投递后更新，用于展示「最近使用」；
+--   不改变用户手动排序（sort_order 仍是胶囊展示顺序）。
+CREATE TABLE shelf_project_links (
+  project_id TEXT NOT NULL
+    REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL
+    REFERENCES shelf_items(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, item_id)
+);
+CREATE INDEX idx_shelf_project_links_item
+  ON shelf_project_links(item_id);
+ALTER TABLE shelf_drop_targets ADD COLUMN last_used_at TEXT NOT NULL DEFAULT '';
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -2488,6 +2509,12 @@ pub struct Settings {
     /// 完整面板与停靠胶囊各自保存显隐与排序；后端只做结构校验，不参与语义合并。
     #[serde(default)]
     pub navigation_layout: serde_json::Value,
+    // ── 统一工作台布局（U0；缺失时前端回退默认值）──
+    /// 版本化 JSON：`{ version, route, projectId, detailOpen, navWidth, detailWidth }`。
+    /// 与 `navigation_layout`（入口显隐/排序）正交：本键只保存工作台外壳自身的
+    /// 上次路由、右栏显隐与分栏宽度；后端只做结构校验，不参与语义合并。
+    #[serde(default)]
+    pub workbench_layout: serde_json::Value,
     // ── 统一提示音 / 语音播报 / 本地语音缓存（v0.13；全部带默认值，旧库无键可反序列化）──
     /// 提示音总开关（与 TTS 总开关、系统通知显示开关相互独立）
     #[serde(default = "default_true")]

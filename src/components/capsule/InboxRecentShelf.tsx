@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { FolderInput, Loader2, MoreVertical, Plus, Trash2 } from "lucide-react";
+import { ClipboardPaste, FolderInput, Loader2, MoreVertical, Plus, Trash2 } from "lucide-react";
 import {
   clipboardCopyText,
   shelfCopyFiles,
@@ -74,6 +74,12 @@ interface InboxRecentShelfProps {
    */
   onDragOutStart?: () => void;
   onDragOutEnd?: () => void;
+  /**
+   * 粘贴当前系统剪贴板（不是剪贴板历史条目）。由上层持有 busy/结果状态，
+   * 本组件只负责入口按钮与禁用态，避免把两套反馈体系混在一起。
+   */
+  onPasteCurrent?: () => void;
+  pasteBusy?: boolean;
 }
 
 export default function InboxRecentShelf({
@@ -84,6 +90,8 @@ export default function InboxRecentShelf({
   dropHint,
   onDragOutStart,
   onDragOutEnd,
+  onPasteCurrent,
+  pasteBusy = false,
 }: InboxRecentShelfProps) {
   const { t } = useLocale();
   const recent = useShelfStore((s) => s.recent);
@@ -382,6 +390,22 @@ export default function InboxRecentShelf({
           </span>
         )}
         <span className="cap-shelf-recent-gap" />
+        {onPasteCurrent && (
+          <button
+            type="button"
+            className="cap-mini is-icon cap-shelf-paste"
+            aria-label={t("capsule.recentShelf.paste")}
+            data-tip={t("capsule.recentShelf.pasteHint")}
+            disabled={pasteBusy}
+            onClick={onPasteCurrent}
+          >
+            {pasteBusy ? (
+              <Loader2 size={11} className="spin" aria-hidden="true" />
+            ) : (
+              <ClipboardPaste size={12} strokeWidth={2.2} aria-hidden="true" />
+            )}
+          </button>
+        )}
         <button
           type="button"
           className="cap-mini is-icon"

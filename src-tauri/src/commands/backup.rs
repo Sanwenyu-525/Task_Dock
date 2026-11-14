@@ -86,6 +86,7 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "shelf_groups",
     "shelf_items",
     "shelf_task_links",
+    "shelf_project_links",
     // 暂存架文件操作增强（v0.14）：最近目标目录与未完成的移动日志。
     "shelf_recent_dirs",
     "shelf_file_ops",
@@ -509,6 +510,16 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["workspace_projects", "tasks"],
         true
     ),
+    // 暂存条目 ↔ 项目关联（v51）：只存关系，不复制项目/条目内容；
+    // 恢复必须晚于 workspace_projects 与 shelf_items。
+    rule!(
+        "shelf_project_links",
+        "shelf",
+        "all",
+        455,
+        &["workspace_projects", "shelf_items"],
+        true
+    ),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -789,6 +800,7 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "shelf_groups"
         | "shelf_items"
         | "shelf_task_links"
+        | "shelf_project_links"
         // 最近目标目录与快捷投递目标：用户目录偏好，属于可迁移业务数据
         // （shelf_file_ops 是设备本地瞬时日志，不走此分支，由写循环单独写空 section）
         | "shelf_recent_dirs"

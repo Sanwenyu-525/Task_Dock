@@ -31,9 +31,17 @@ const api = vi.hoisted(() => ({
   shelfTaskLinks: vi.fn(async () => []),
   shelfTaskLink: vi.fn(async () => undefined),
   shelfUnlinkTask: vi.fn(async () => undefined),
+  shelfProjectLinks: vi.fn(async () => []),
+  shelfLinkProject: vi.fn(async () => undefined),
+  shelfUnlinkProject: vi.fn(async () => undefined),
+  workspaceProjectList: vi.fn(async () => ({ projects: [] })),
   shelfReadText: vi.fn(async () => ({ content: "正文", truncated: false })),
   shelfReadImage: vi.fn(async () => null),
   shelfDragOut: vi.fn(),
+  shelfPasteCurrent: vi.fn(),
+  shelfSendToStatus: vi.fn(),
+  shelfSendToEnable: vi.fn(),
+  shelfSendToDisable: vi.fn(),
 }));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
@@ -119,6 +127,25 @@ function stats(total = 0) {
   };
 }
 
+function pasteReport(over: Record<string, unknown> = {}) {
+  return {
+    operation_id: "paste-1",
+    source: "clipboard-current",
+    content_kind: "text",
+    added: [],
+    added_ids: [],
+    failed: [],
+    skipped: 0,
+    duplicates: 0,
+    success: true,
+    partial: false,
+    requires_user_action: false,
+    code: null,
+    retryable: false,
+    ...over,
+  };
+}
+
 beforeEach(() => {
   Object.values(api).forEach((fn) => fn.mockReset());
   api.shelfList.mockResolvedValue({ items: [], total: 0 });
@@ -137,6 +164,19 @@ beforeEach(() => {
   }));
   api.shelfCheckExists.mockResolvedValue([]);
   api.shelfDragOut.mockResolvedValue({ effect: "none", count: 0, missing_ids: [] });
+  api.shelfSendToStatus.mockResolvedValue({
+    enabled: false,
+    exe: "C:/TaskDock/task-dock.exe",
+    command: null,
+    stale: false,
+  });
+  api.shelfSendToEnable.mockResolvedValue({
+    enabled: true,
+    exe: "C:/TaskDock/task-dock.exe",
+    command: '"C:/TaskDock/task-dock.exe" --send-to-shelf "%1"',
+    stale: false,
+  });
+  api.shelfSendToDisable.mockResolvedValue(undefined);
   api.getSettings.mockResolvedValue({ shelf_auto_cleanup_enabled: false, shelf_retention_days: 30 });
   api.updateSettings.mockResolvedValue(undefined);
   api.shelfDropTargets.mockResolvedValue([]);
@@ -888,6 +928,143 @@ describe("ShelfWorkspace 工具条与拖出", () => {
     expect(toast).toHaveBeenCalledWith(
       "文件已移动；暂存条目保留，原路径可能已失效，可重新定位或删除",
       expect.objectContaining({ kind: "warning" }),
+    );
+  });
+});
+
+// ── 主动粘贴当前剪贴板（P0）─────────────────────────────────
+
+describe("ShelfWorkspace 主动粘贴当前剪贴板", () => {
+  it("工具条粘贴按钮调用实时剪贴板命令并提示成功", async () => {
+    api.shelfPasteCurrent.mockResolvedValue(
+      pasteReport({ added: [shelfRow("s1")], added_ids: ["s1"] }),
+    );
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    render(<ShelfWorkspace active />);
+    fireEvent.click(await screen.findByRole("button", { name: "粘贴当前剪贴板" }));
+    await waitFor(() =>
+      expect(api.shelfPasteCurrent).toHaveBeenCalledWith("reference", null),
+    );
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("已粘贴 1 项到暂存架", { kind: "success" }),
+    );
+  });
+
+  it("Ctrl+V 在没有编辑焦点时触发粘贴", async () => {
+    api.shelfPasteCurrent.mockResolvedValue(
+      pasteReport({ added: [shelfRow("s1")], added_ids: ["s1"] }),
+    );
+    render(<ShelfWorkspace active />);
+    await screen.findByRole("button", { name: "粘贴当前剪贴板" });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(api.shelfPasteCurrent).toHaveBeenCalledTimes(1));
+  });
+
+  it("搜索框内 Ctrl+V 使用系统粘贴，不进暂存架", async () => {
+    api.shelfPasteCurrent.mockResolvedValue(pasteReport());
+    render(<ShelfWorkspace active />);
+    const search = await screen.findByRole("textbox", { name: "搜索暂存条目" });
+    fireEvent.keyDown(search, { key: "v", ctrlKey: true });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(api.shelfPasteCurrent).not.toHaveBeenCalled();
+  });
+
+  it("部分失败给出计数与首条原因，不冒充全部成功", async () => {
+    api.shelfPasteCurrent.mockResolvedValue(
+      pasteReport({
+        added: [shelfRow("s1")],
+        added_ids: ["s1"],
+        failed: [
+          {
+            path: "C:/Docs/bad.txt",
+            reason: "路径不存在: C:/Docs/bad.txt",
+            code: "NOT_FOUND",
+            category: "not_found",
+          },
+        ],
+        skipped: 1,
+        partial: true,
+        requires_user_action: true,
+      }),
+    );
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    render(<ShelfWorkspace active />);
+    fireEvent.click(await screen.findByRole("button", { name: "粘贴当前剪贴板" }));
+    await waitFor(() => {
+      const call = toast.mock.calls.find(([msg]) =>
+        String(msg).includes("已粘贴 1 项，1 项失败"),
+      );
+      expect(call).toBeTruthy();
+      expect(call?.[1]?.kind).toBe("warning");
+    });
+  });
+
+  it("空剪贴板：明确提示且不产生成功 toast", async () => {
+    api.shelfPasteCurrent.mockResolvedValue(
+      pasteReport({
+        success: false,
+        content_kind: "none",
+        failed: [
+          {
+            path: "",
+            reason: "剪贴板为空",
+            code: "CLIPBOARD_EMPTY",
+            category: "unsupported",
+          },
+        ],
+        code: "CLIPBOARD_EMPTY",
+      }),
+    );
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    render(<ShelfWorkspace active />);
+    fireEvent.click(await screen.findByRole("button", { name: "粘贴当前剪贴板" }));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("剪贴板没有可暂存的内容", {
+        kind: "warning",
+        code: "CLIPBOARD_EMPTY",
+      }),
+    );
+    expect(toast).not.toHaveBeenCalledWith(
+      expect.stringContaining("已粘贴"),
+      expect.anything(),
+    );
+  });
+});
+
+describe("ShelfWorkspace 资源管理器右键发送开关", () => {
+  it("菜单启用后会写入 HKCU 动词并提示成功", async () => {
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    render(<ShelfWorkspace active />);
+    await screen.findByRole("button", { name: "粘贴当前剪贴板" });
+    await openShelfMenu("启用资源管理器右键发送");
+    await waitFor(() => expect(api.shelfSendToEnable).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        "已启用：在资源管理器右键文件/文件夹即可发送到 Task Dock",
+        { kind: "success" },
+      ),
+    );
+  });
+
+  it("已启用时菜单显示停用并可删除注册项", async () => {
+    api.shelfSendToStatus.mockResolvedValue({
+      enabled: true,
+      exe: "C:/TaskDock/task-dock.exe",
+      command: '"C:/TaskDock/task-dock.exe" --send-to-shelf "%1"',
+      stale: false,
+    });
+    const toast = vi.spyOn(useUiStore.getState(), "showToast");
+    render(<ShelfWorkspace active />);
+    await screen.findByRole("button", { name: "粘贴当前剪贴板" });
+    await waitFor(() => expect(api.shelfSendToStatus).toHaveBeenCalled());
+    await openShelfMenu("停用资源管理器右键发送");
+    await waitFor(() => expect(api.shelfSendToDisable).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("已停用资源管理器右键发送", {
+        kind: "success",
+      }),
     );
   });
 });

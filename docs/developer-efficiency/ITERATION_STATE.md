@@ -118,3 +118,42 @@
   mt.exe 清单工装运行（本机依赖组合的既有限制，非本轮代码）。
 - **未验证**：Windows 真机（Agent 完成后候选出现、登记变已验收、会话删除失效展示）。
 - **未做**：Agent 侧从会话打开交接包；U2-03 真实测试日志引用；失败轮次问题排查入口。
+
+## 2026-11-14（主树 · U0：唯一大型完整工作台）
+
+> 本节记录架构收敛；不覆盖上方 worktree 历史。统一矩阵见
+> [../efficiency-hub/TASK_MATRIX.md](../efficiency-hub/TASK_MATRIX.md) §7。
+
+- **窗口职责**：`main` = Quick Surface Host（胶囊/贴边/快速操作/工作台入口），`workspace`
+  = 唯一 Full Workbench Host（全部完整功能页）。没有第三个大型窗口；辅助窗口不变。
+  `workspace` 沿用 v49 label、几何持久化与关闭语义。
+- **外壳**：新增 `src/workbench/WorkbenchShell.tsx`（左栏/顶栏/内容宿主/右栏/错误边界/
+  路由保活/布局持久化）、`WorkbenchHome`（无项目首页）、`WorkbenchContextPane`；
+  旧 `WorkspaceApp` 的项目内容迁入 `ProjectWorkspacePanel`，`WorkspaceApp` 只做组合。
+- **导航协议**：`workbench_open_window` / `workbench_take_nav` / `workbench_nav_ack`
+  （客户端预生成 requestId、入队+事件快路径、拉取去重、四态回执、pending 最终态、
+  12s 超时）；胶囊/主面板 → 工作台不再「打开窗口即成功」。
+- **宿主解绑**：`windowHost.ts` 角色 + `WorkbenchPageActiveContext`；`useMainUiVisible` /
+  `useFullViewVisible` 在工作台内不再依赖主窗口 mode/贴边相位；隐藏但保活的页面暂停
+  消费者刷新；快捷键作用于本窗口。
+- **布局**：新增设置键 `workbench_layout`（路由/项目/右栏/宽度，v1）；后端结构校验，
+  前端逐字段降级、串行写入；`navigation_layout` 与项目 `layout_json` 不变、不清空。
+- **权限**：workspace capability 仍只有 event/dialog/opener；微件显示/隐藏/重置允许
+  main/workspace，快照发布仍仅 main；capability 契约测试锁定不复制主窗口权限。
+- **测试**：新 Vitest 28 项（布局 8、导航协议 6、路由 4、权限 3、首页 3、外壳 4）+ 可见性门控 2 项；
+  合并回归 815 项 / 44 文件通过；`npx tsc --noEmit` exit 0（0 错）；`npm run build` exit 0
+  （`built in 7.02s`）。
+  Rust `cargo check --lib --tests` 通过；测试 exe 定向 **59 passed / 0 failed**
+  （工作台 9、设置 13、微件 11、备份 26）。备份套件曾因并行暂存架任务的
+  `shelf_project_links` 缺快速备份分支失败，其所有者修复后最终树复跑 26/26。
+  构建期间共享 target 内存压力导致两次 `STATUS_STACK_BUFFER_OVERRUN`，
+  `RUST_MIN_STACK=134217728` 重试后成功。
+- **原生冒烟（隔离实例，2026-11-14）**：单工作台目标、创建即导航、已存在窗口导航、
+  无项目使用、右栏、路由持久化、ack 清队、任务栏扩展样式、最大化/恢复、WM_CLOSE 后
+  主窗口存活与重开均通过（1180×760 @125% DPI 单屏；二进制 sha256 与截图见
+  `tmp/acceptance/efficiency-hub-u0/native3/`）。原生阶段发现并修复两处协议缺陷：
+  StrictMode 拉取后丢弃导致请求丢失（take 改 peek-until-ack）、事件丢失后需等聚焦
+  （Rust 页面 ping）。
+- **未完成**：Phase D 主窗口旧完整面板退役（需原生逐页验收后执行）；胶囊四边停靠、
+  多显示器、150%/200% DPI、逐页视觉、草稿确认/取消真机、资源释放与性能未验证。
+

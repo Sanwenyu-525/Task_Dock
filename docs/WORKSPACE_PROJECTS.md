@@ -66,12 +66,13 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 
 | 层 | 入口 | 行为 |
 |---|---|---|
-| 1 胶囊 | 轨道顶部肩部的项目按钮（注册中心 `workspace` 入口，可隐藏） | 直接打开专业窗口，不展开面板、不改变胶囊几何 |
-| 2 完整面板 | 左侧导航「工作空间」页 | 项目列表、创建/切换、打开专业窗口 |
-| 3 专业窗口 | 独立 WebView 窗口 `workspace` | 普通装饰、任务栏可见、可缩放/最大化、非置顶、记忆几何；关闭不影响胶囊 |
+| 1 胶囊 | 轨道顶部肩部的项目按钮（注册中心 `workspace` 入口，可隐藏） | 打开/唤醒唯一大型工作台（U0 起为工作台首页），不展开面板、不改变胶囊几何 |
+| 2 完整面板 | 左侧导航「工作空间」页 | 项目列表、创建/切换、打开统一工作台项目页 |
+| 3 统一工作台 | 独立 WebView 窗口 `workspace` | 普通装饰、任务栏可见、可缩放/最大化、非置顶、记忆几何；承载全部完整功能页（任务/Agent/开发/项目/收集/剪贴板/…/设置）；关闭不影响胶囊 |
 
-专业窗口不是主窗口的放大版：不挂载 `App.tsx`，不启动主窗口的全局轮询、贴边吸附与通知调度；
-能力集由 `capabilities/workspace.json` 隔离。
+统一工作台不是主窗口的放大版：不挂载 `App.tsx`，不启动主窗口的全局轮询、贴边吸附与通知调度；
+能力集由 `capabilities/workspace.json` 隔离。项目模式只是工作台的一个路由：全局导航始终存在，
+中央区域按 Profile 展示项目专业模块（见 [ARCHITECTURE.md](ARCHITECTURE.md)「统一大型工作台」）。
 
 ## 5. 兼容与迁移
 
@@ -79,6 +80,8 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 - 新表全部注册到 `BACKUP_TABLES`；恢复顺序：项目 → 实例 → 事项 → 任务关联。
 - 新设置键：`workspace_active_project`（字符串，空 = 未设置）、
   `workspace_window_rect`（JSON 对象，窗口自管几何，不进入前端 Settings 快照）。
+- U0 新增工作台外壳布局键：`workbench_layout`（版本化 JSON：上次路由/项目/右栏显隐/分栏宽度；
+  缺失或损坏回默认，不迁移、不清空 `navigation_layout` 或项目 `layout_json`）。
 - 旧数据不迁移、不重新归属：没有项目时，任务/收集箱/暂存架/开发工作台按原路径工作。
 - `dev_projects` 与 `workspace_projects` 不是同一张表；开发工作空间只保存
   `dev_project_id` 弱引用，删除任一方向都不级联删除另一方。
@@ -92,6 +95,10 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 - 未执行的原生窗口/DPI/多显示器验收必须标注「未验证」，不能用浏览器预览替代。
 
 ## 6.1 跨窗口「打开开发工作台」协议（P0-A）
+
+> U0 起（2026-11-14）：工作台项目页与开发工作台在同一窗口内，项目页直接写
+> `workbench_current_project` 后走本窗口路由（失败回滚），不再需要跨窗口请求。
+> 下面这套请求/回执协议保留给旧调用方与历史记录；当前前端已无调用方。
 
 代码：`src/lib/mainWindowNavigation.ts`、`src/workspace/devNavRequest.ts`、
 `src-tauri/src/project_workspace_window.rs`、`src/App.tsx`。
@@ -159,3 +166,25 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
   与 Rust（命令归属、活跃项目无副作用、ack 状态、几何收敛）。
 - 原生：Windows 真机上的窗口打开/关闭、DPI、多显示器、胶囊内发起导航、草稿确认/取消、
   关闭专业窗口后回执——本轮**未执行**，报告中标为未验证。
+
+## 9. U0 统一工作台（2026-11-14）
+
+- **唯一宿主**：`workspace` 窗口从「项目专用窗口」升级为唯一大型完整工作台；仍沿用原
+  label、创建命令、`workspace_window_rect` 几何、显示器收敛与关闭语义，没有新增窗口。
+- **项目页迁移**：旧 `WorkspaceApp` 的项目内容（概览卡片、事项、任务关联、项目设置、
+  开发项目/Git/Agent 卡片）迁入 `src/workbench/ProjectWorkspacePanel.tsx`；窗口顶栏、
+  项目列表、创建弹层、主题同步、活跃项目串行写入上移到 `WorkbenchShell`。项目 CRUD
+  仍使用原有 `workspace_project_*` 命令，不复制数据模型。
+- **无项目可用**：首页、任务、Agent、收集与暂存、剪贴板、应用、工作流、诊断、设置等
+  通用功能无需项目；只有项目页与开发项目关联需要项目。
+- **同窗口开发工作台**：项目页「在开发工作台打开」先写 `workbench_current_project`，
+  再在当前窗口切到开发工作台路由；路由失败（保存中）回滚上下文。跨窗口请求/回执协议
+  保留但当前无调用方。
+- **导航回执**：`workbench_open_window` / `workbench_take_nav` / `workbench_nav_ack`
+  采用「客户端预生成 requestId + 入队 + 事件快路径 + 拉取 + 回执」；`pending` 由工作台内
+  草稿确认条收敛为最终结果；12s 无回执按失败提示。
+- **布局**：新增 `workbench_layout`（路由/项目/右栏/宽度），与 `navigation_layout`、
+  `workspace_instances.layout_json` 正交；旧键不迁移、不清空。
+- **未完成**：主窗口完整面板尚未退役（Phase D，需 Windows 真机逐页验收后执行）；
+  原生窗口/DPI/多显示器/任务栏与资源释放未验证。
+

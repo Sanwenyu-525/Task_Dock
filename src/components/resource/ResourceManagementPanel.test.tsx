@@ -821,6 +821,13 @@ describe("ResourceManagementPanel", () => {
     });
     render(<ResourceManagementPanel />);
     await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+    // 快照状态提交后再断言：读取中只能显示「读取中」，不能提前冒充数值。
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll(".resource-ring")[0]?.querySelector(".resource-ring-center strong")
+          ?.textContent,
+      ).toBe("89.3%"),
+    );
 
     const rings = document.querySelectorAll(".resource-ring");
     expect(rings).toHaveLength(2);
@@ -837,6 +844,136 @@ describe("ResourceManagementPanel", () => {
     const circumference = Number(fill.getAttribute("stroke-dasharray"));
     const offset = Number(fill.getAttribute("stroke-dashoffset"));
     expect((1 - offset / circumference) * 100).toBeCloseTo(89.3, 1);
+  });
+
+  it("概览：双主卡 + 紧凑关注摘要，明细按需展开", async () => {
+    mocks.snapshot.mockResolvedValue({
+      ...SNAPSHOT,
+      disks: [
+        { volume: "C:", kind: "fixed", totalBytes: 1000, availableBytes: 50 },
+        { volume: "D:", kind: "fixed", totalBytes: 1000, availableBytes: 80 },
+      ],
+    });
+    render(<ResourceManagementPanel />);
+    await waitFor(() =>
+      expect(document.querySelectorAll(".resource-hero-card")).toHaveLength(2),
+    );
+
+    const overview = document.getElementById("resource-panel-overview") as HTMLElement;
+    const heroes = overview.querySelectorAll(".resource-hero-card");
+    expect(within(heroes[0] as HTMLElement).getByText("resource.overview.diskRingTitle")).toBeTruthy();
+    expect(
+      within(heroes[1] as HTMLElement).getByText("resource.overview.memoryRingTitle"),
+    ).toBeTruthy();
+    // 每张主卡都有小环 + 已用/剩余/总量三行，数字不依赖脚注。
+    expect(heroes[0].querySelectorAll(".resource-ring.is-compact")).toHaveLength(1);
+    expect(heroes[0].querySelectorAll(".resource-hero-facts > div")).toHaveLength(3);
+    expect(heroes[1].querySelectorAll(".resource-hero-facts > div")).toHaveLength(3);
+
+    // 关注摘要默认只有一行，明细不占高度。
+    const attention = overview.querySelector(".resource-attention") as HTMLElement;
+    expect(attention).toBeTruthy();
+    expect(attention.querySelector(".resource-attention-detail")).toBeNull();
+    fireEvent.click(
+      within(attention).getByRole("button", {
+        name: "resource.overview.attentionDetailAria",
+      }),
+    );
+    expect(attention.querySelectorAll(".resource-attention-detail li")).toHaveLength(2);
+    expect(
+      within(attention).getAllByText(/resource\.level\.critical/).length,
+    ).toBeGreaterThan(0);
+    expect(attention.textContent).toContain("C:");
+    expect(attention.textContent).toContain("D:");
+
+    // 页头不再常驻刷新范围与底部安全段落；安全说明收敛为可聚焦徽标。
+    expect(document.querySelector(".resource-scope-line")).toBeNull();
+    expect(document.querySelector(".resource-page-footnote")).toBeNull();
+    expect(
+      document.querySelector(".resource-safety-chip")?.getAttribute("aria-label"),
+    ).toBe("resource.footer.safety");
+    const refresh = screen.getByRole("button", { name: "resource.refresh" });
+    expect(refresh.getAttribute("aria-describedby")).toBe("resource-refresh-scope");
+    expect(document.getElementById("resource-refresh-scope")?.textContent).toBe(
+      "resource.refreshScope.overview",
+    );
+  });
+
+  it("进程排序：按内存重排，展开态跟随进程身份保留", async () => {
+    mocks.processDiagnostics.mockResolvedValue({
+      sampledAt: "2026-11-06T00:00:00.000Z",
+      cpuWindowMs: 200,
+      supported: true,
+      truncated: false,
+      omittedExternal: 0,
+      omittedUnknown: 0,
+      processes: [
+        {
+          pid: 4242,
+          name: "task-dock.exe",
+          association: "self",
+          associationBasis: "self",
+          cpuPercent: 1,
+          workingSetBytes: 1048576,
+          privateBytes: 524288,
+          uptimeSecs: 10,
+          status: "normal",
+        },
+        {
+          pid: 700,
+          name: "cargo.exe",
+          association: "project_dev",
+          associationBasis: "image_path",
+          cpuPercent: 50,
+          workingSetBytes: 100 * 1024 * 1024,
+          privateBytes: 1048576,
+          uptimeSecs: 50,
+          status: "normal",
+        },
+        {
+          pid: 701,
+          name: "node.exe",
+          association: "external_tool",
+          associationBasis: "name_and_path",
+          cpuPercent: 10,
+          workingSetBytes: 300 * 1024 * 1024,
+          privateBytes: 1048576,
+          uptimeSecs: 40,
+          status: "normal",
+        },
+      ],
+    });
+    render(<ResourceManagementPanel />);
+    fireEvent.click(tab("resource.segment.process"));
+    fireEvent.click(
+      screen.getByRole("button", { name: /settings\.resourceCleanup\.processLoad/ }),
+    );
+    await waitFor(() =>
+      expect(document.querySelectorAll(".resource-process-row")).toHaveLength(2),
+    );
+
+    const rowNames = () =>
+      [...document.querySelectorAll(".resource-process-row .resource-process-name")].map(
+        (node) => node.textContent,
+      );
+    expect(rowNames()).toEqual(["cargo.exe", "node.exe"]);
+
+    // 展开 node，再按内存排序：node 内存更大，应排到第一，展开态随行移动。
+    const nodeRow = [...document.querySelectorAll(".resource-process-row")][1] as HTMLElement;
+    fireEvent.click(nodeRow.querySelector(".resource-process-toggle") as HTMLElement);
+    expect(nodeRow.classList.contains("is-open")).toBe(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "resource.process.sortMemoryShort" }),
+    );
+    expect(rowNames()).toEqual(["node.exe", "cargo.exe"]);
+    const rows = [...document.querySelectorAll(".resource-process-row")];
+    expect(rows[0].classList.contains("is-open")).toBe(true);
+    expect(rows[1].classList.contains("is-open")).toBe(false);
+    expect(
+      screen
+        .getByRole("button", { name: "resource.process.sortMemoryShort" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
   });
 
   it("概览：内存不可读时不显示假百分比", async () => {
@@ -940,6 +1077,10 @@ describe("ResourceManagementPanel", () => {
 
     const rows = [...document.querySelectorAll(".resource-process-row")];
     expect(rows).toHaveLength(2);
+    // 默认行不渲染占用条；展开后才显示详情。
+    expect(rows[0].querySelector(".resource-meter-fill")).toBeNull();
+    fireEvent.click(rows[0].querySelector(".resource-process-toggle") as HTMLElement);
+    fireEvent.click(rows[1].querySelector(".resource-process-toggle") as HTMLElement);
     const widthsOf = (row: Element) =>
       [...row.querySelectorAll<HTMLElement>(".resource-meter-fill")].map((node) =>
         Number.parseFloat(node.style.width),
@@ -949,7 +1090,7 @@ describe("ResourceManagementPanel", () => {
     // node: CPU 10%，内存 100/200 = 50%
     expect(widthsOf(rows[1])).toEqual([10, 50]);
     // 口径说明必须存在，避免被误读为系统内存占比
-    expect(screen.getByText("resource.process.relativeNote")).toBeTruthy();
+    expect(screen.getAllByText("resource.process.detailNote").length).toBeGreaterThan(0);
   });
 
   it("页头刷新只刷新当前分区的数据", async () => {

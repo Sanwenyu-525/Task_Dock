@@ -4,8 +4,39 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     emit_build_info();
+    emit_test_manifest();
     tauri_build::build()
 }
+
+/// Rust 测试 exe 不会继承 Tauri 主程序的 manifest。`rfd`（tauri-plugin-dialog
+/// 的 Windows 后端）静态引用 `comctl32!TaskDialogIndirect`，该导出只存在于
+/// Common-Controls v6；缺少 manifest 时测试进程在加载阶段即 0xC0000139
+/// STATUS_ENTRYPOINT_NOT_FOUND（主程序正常）。这里把 manifest 编成 .res 资源，
+/// 只链接到测试目标（`rustc-link-arg-tests`），不改变发布二进制。
+///
+/// 说明：直接用 `/MANIFESTINPUT` 链接参数会被 rustc 的默认 manifest 策略覆盖，
+/// 因此走 rc.exe → .res → 资源链接的路径。
+#[cfg(windows)]
+fn emit_test_manifest() {
+    let rc = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests-manifest.rc");
+    println!("cargo:rerun-if-changed={}", rc.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests.manifest")
+            .display()
+    );
+    if let Err(err) = embed_resource::compile_for_tests(&rc, embed_resource::NONE)
+        .manifest_required()
+    {
+        // 不阻断非测试构建（例如没有 rc.exe 的环境）；测试 exe 若因此仍是旧
+        // 状态，会在运行阶段以明确的 STATUS_ENTRYPOINT_NOT_FOUND 暴露。
+        eprintln!("embed test manifest failed: {err:?}");
+    }
+}
+
+#[cfg(not(windows))]
+fn emit_test_manifest() {}
 
 /// 构建溯源：三处版本号相同（0.5.0）无法区分不同构建，因此在编译期注入
 /// 短 commit 与构建时间，由 `commands::system::performance_diagnostics`

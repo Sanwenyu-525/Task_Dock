@@ -424,10 +424,6 @@ export default function ResourceCleanupSection({
           {t("settings.resourceCleanup.expired")}
         </div>
       )}
-      {preview && usableSelection.length === 0 && !expired && (
-        <div className="setting-note">{t("settings.resourceCleanup.noSelection")}</div>
-      )}
-
       {confirming && preview && !expired && (
         <div className="panel-block resource-cleanup-confirm" role="group" aria-labelledby="resource-cleanup-confirm-title">
           <div className="resource-cleanup-confirm-title" id="resource-cleanup-confirm-title">

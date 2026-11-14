@@ -22,25 +22,39 @@ import { useSettingsStore } from "../store/useSettingsStore";
 import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 import { isCapsuleMode } from "../lib/edgeSnap";
 import { resolveWindowMode } from "../lib/windowMode";
+import { isWorkbenchHost, useWorkbenchPageActive } from "../lib/windowHost";
 
 /** 非 React 调用方（store 模块 / 事件处理器）：主界面当前是否可见。 */
 export function isMainUiVisible(): boolean {
+  // 工作台窗口没有贴边吸附/胶囊相位：页面常驻可见，不能用主窗口的相位判据
+  // （否则工作台里的页面会误判自己处于「胶囊隐藏」而暂停刷新）。
+  if (isWorkbenchHost()) return true;
   return !isCapsuleMode(useEdgeSnapStore.getState().phase);
 }
 
 /** React 侧：主界面（`.dock-app`）当前是否可见（停靠胶囊期为 false）。 */
 export function useMainUiVisible(): boolean {
-  return useEdgeSnapStore((s) => !isCapsuleMode(s.phase));
+  // 两个 store 订阅必须无条件调用（Hooks 规则），再由宿主角色/页面活跃覆盖结果。
+  const quickVisible = useEdgeSnapStore((s) => !isCapsuleMode(s.phase));
+  const pageActive = useWorkbenchPageActive();
+  if (pageActive !== null) return pageActive;
+  return isWorkbenchHost() || quickVisible;
 }
 
 /**
  * 完整面板（FullView 槽位）当前是否可见：mode=full 且主界面未停靠。
  * FullView 内的页面组件常驻挂载（DeferredView 保活），模式切换/停靠期
  * 变为隐藏态 —— 页面级可选刷新以此为消费者判据。
+ *
+ * 工作台窗口：完整功能页常驻于唯一大型宿主，页面可见性与主窗口模式无关。
  */
 export function useFullViewVisible(): boolean {
   const mode = useSettingsStore((s) => resolveWindowMode(s.settings?.mode));
-  return useEdgeSnapStore((s) => mode === "full" && !isCapsuleMode(s.phase));
+  const visible = useEdgeSnapStore((s) => mode === "full" && !isCapsuleMode(s.phase));
+  const pageActive = useWorkbenchPageActive();
+  // 工作台内：只认当前路由是否可见（隐藏页面必须暂停消费者刷新）。
+  if (pageActive !== null) return pageActive;
+  return isWorkbenchHost() || visible;
 }
 
 /**
@@ -52,6 +66,7 @@ export function useFullViewVisible(): boolean {
  * 设置尚未加载时按安全页 `full` 处理（保守放行，不因启动竞态漏刷新）。
  */
 export function isFullViewVisible(): boolean {
+  if (isWorkbenchHost()) return true;
   if (resolveWindowMode(useSettingsStore.getState().settings?.mode) !== "full") return false;
   return !isCapsuleMode(useEdgeSnapStore.getState().phase);
 }

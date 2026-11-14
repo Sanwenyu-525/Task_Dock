@@ -26,6 +26,7 @@ import { encodeQr, qrToSvgPath } from "../../lib/qr";
 import { formatLocalStamp } from "../../lib/format";
 import { localizedErrorMessage } from "../../i18n/errors";
 import { useLocale } from "../../hooks/useLocale";
+import { isWorkbenchHost } from "../../lib/windowHost";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import {
@@ -100,7 +101,8 @@ export default function MobilePairingDialog() {
     close();
     // 手机互传已从设置页提到左侧导航：配对完成后直接落到功能页，而不是设置分组。
     useUiStore.getState().setTab("mobile");
-    void applyMode("full");
+    // 工作台窗口本身就是完整功能宿主：不能借用 applyMode 去改主窗口的形态。
+    if (!isWorkbenchHost()) void applyMode("full");
   }, [close]);
 
   const enableAndPair = useCallback(async () => {

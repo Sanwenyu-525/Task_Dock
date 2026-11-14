@@ -8,9 +8,13 @@
 //!
 //! 数据由资源管理面板持有（内存分区也要用同一份 WebView2 子进程数据），
 //! 本组件只负责呈现、展开/收起与排序。
+//!
+//! 2026-11-14：进程行改为两级信息。默认只显示名称、CPU/内存数值和一行身份；
+//! 占用条、相对占比与归属依据在行内展开。列表不再内部限高滚动，页面只有一
+//! 个滚动容器，滚轮指向始终明确。
 
 import { useEffect, useRef, useState } from "react";
-import { ListTree, RefreshCw } from "lucide-react";
+import { ChevronDown, ListTree, RefreshCw } from "lucide-react";
 import {
   type ResourceProcessAssociation,
   type ResourceProcessBasis,
@@ -21,11 +25,11 @@ import {
   type ResourceSnapshot,
 } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
-import { formatDuration, formatLocalStamp } from "../../lib/format";
+import { formatDuration } from "../../lib/format";
+import { resourceStamp, sampleWindowSeconds } from "../../lib/resourceTime";
 import { formatPercent, relativePercent } from "../../lib/resourceMetrics";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
-import { Select } from "../ui";
 import { MiniMeter } from "./charts";
 
 export interface ProcessDiagnosticsProps {
@@ -72,101 +76,127 @@ function uptimeLabel(seconds: number | null): string | null {
   return formatDuration(seconds * 1000);
 }
 
-function sampledLabel(iso: string | null | undefined): string | null {
-  const stamp = formatLocalStamp(iso);
-  return stamp ? `${stamp.date} ${stamp.time} ${stamp.zone}` : null;
-}
-
-/** 进程行：名称截断、指标等宽；不渲染命令行、路径或任何敏感信息。
- *  CPU 条用接口的整机归一化百分比；内存条只表达「相对当前列表最大值」的长度。 */
-function ProcessLine({ row, maxMemory }: { row: ResourceProcessRow; maxMemory: number }) {
+/** 进程行：默认两级；占用条与归属依据只在展开后出现。 */
+function ProcessLine({
+  row,
+  maxMemory,
+  expanded,
+  onToggle,
+}: {
+  row: ResourceProcessRow;
+  maxMemory: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   const { t } = useLocale();
   const uptime = uptimeLabel(row.uptimeSecs);
   const memoryRelative = relativePercent(row.workingSetBytes, maxMemory);
+  const cpuText =
+    row.cpuPercent === null
+      ? t("settings.resourceCleanup.processUnknownValue")
+      : `${row.cpuPercent.toFixed(1)}%`;
+  const memoryText =
+    row.workingSetBytes === null
+      ? t("settings.resourceCleanup.processUnknownValue")
+      : formatBytes(row.workingSetBytes);
+  const identity = [
+    t("settings.resourceCleanup.processPid", { pid: row.pid }),
+    uptime ? t("settings.resourceCleanup.processUptime", { duration: uptime }) : null,
+    t(STATUS_LABELS[row.status]),
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+
   return (
-    <li className="resource-process-row">
-      <div className="resource-process-main">
-        <span className="resource-process-name" data-tip={row.name}>
-          {row.name}
-        </span>
-        <span className="resource-process-meta">
-          {t("settings.resourceCleanup.processPid", { pid: row.pid })}
-          {uptime ? ` · ${t("settings.resourceCleanup.processUptime", { duration: uptime })}` : ""}
-        </span>
-      </div>
-      <div className="resource-process-metrics">
-        <span>
-          {t("settings.resourceCleanup.processCpu", {
-            value:
-              row.cpuPercent === null
-                ? t("settings.resourceCleanup.processUnknownValue")
-                : `${row.cpuPercent.toFixed(1)}%`,
-          })}
-        </span>
-        <span>
-          {t("settings.resourceCleanup.processMemory", {
-            value:
-              row.workingSetBytes === null
-                ? t("settings.resourceCleanup.processUnknownValue")
-                : formatBytes(row.workingSetBytes),
-          })}
-        </span>
-      </div>
-      <div className="resource-process-tags">
-        <span
-          className="resource-process-chip"
-          data-tip={t(BASIS_LABELS[row.associationBasis])}
-        >
-          {t(ASSOCIATION_LABELS[row.association])}
-        </span>
-        <span className={`resource-process-status status-${row.status}`}>
-          {t(STATUS_LABELS[row.status])}
-        </span>
-      </div>
-      <div className="resource-process-bars">
-        <div className="resource-process-bar">
-          <span className="resource-process-bar-label">
-            {t("settings.resourceCleanup.processCpuLabel")}
+    <li className={`resource-process-row${expanded ? " is-open" : ""}`}>
+      <button
+        type="button"
+        className="resource-process-toggle"
+        aria-expanded={expanded}
+        aria-label={t(
+          expanded ? "resource.process.collapseAria" : "resource.process.expandAria",
+          { name: row.name },
+        )}
+        onClick={onToggle}
+      >
+        <span className="resource-process-line1">
+          <strong className="resource-process-name" data-tip={row.name}>
+            {row.name}
+          </strong>
+          <span className="resource-process-values">
+            <span>
+              <em>{t("settings.resourceCleanup.processCpuLabel")}</em>
+              {cpuText}
+            </span>
+            <span>
+              <em>{t("settings.resourceCleanup.processMemoryLabel")}</em>
+              {memoryText}
+            </span>
           </span>
-          <MiniMeter
-            percent={row.cpuPercent}
-            tone="neutral"
-            ariaLabel={t("resource.aria.processCpu", {
-              name: row.name,
-              percent:
-                row.cpuPercent === null
-                  ? t("settings.resourceCleanup.processUnknownValue")
-                  : `${row.cpuPercent.toFixed(1)}%`,
-            })}
+        </span>
+        <span className="resource-process-line2">
+          <span className="resource-process-chip">{t(ASSOCIATION_LABELS[row.association])}</span>
+          <span className="resource-process-identity" data-tip={identity}>
+            {identity}
+          </span>
+          <ChevronDown
+            size={12}
+            className={`resource-process-chevron${expanded ? " is-open" : ""}`}
+            aria-hidden="true"
           />
-          <span className="resource-process-bar-note">
-            {row.cpuPercent === null
-              ? t("settings.resourceCleanup.processUnknownValue")
-              : `${row.cpuPercent.toFixed(1)}%`}
-          </span>
+        </span>
+      </button>
+      {expanded && (
+        <div className="resource-process-detail">
+          <div className="resource-process-bar">
+            <span className="resource-process-bar-label">
+              {t("settings.resourceCleanup.processCpuLabel")}
+            </span>
+            <MiniMeter
+              percent={row.cpuPercent}
+              tone="neutral"
+              ariaLabel={t("resource.aria.processCpu", {
+                name: row.name,
+                percent: cpuText,
+              })}
+            />
+            <span className="resource-process-bar-note">{cpuText}</span>
+          </div>
+          <div className="resource-process-bar">
+            <span className="resource-process-bar-label">
+              {t("settings.resourceCleanup.processMemoryLabel")}
+            </span>
+            <MiniMeter
+              percent={memoryRelative}
+              tone="neutral"
+              ariaLabel={t("resource.aria.processMemory", {
+                name: row.name,
+                percent:
+                  formatPercent(memoryRelative) ||
+                  t("settings.resourceCleanup.processUnknownValue"),
+              })}
+            />
+            <span className="resource-process-bar-note">
+              {memoryRelative === null
+                ? ""
+                : t("resource.process.memoryRelative", {
+                    percent: formatPercent(memoryRelative) ?? "",
+                  })}
+            </span>
+          </div>
+          <dl className="resource-process-detail-meta">
+            <div>
+              <dt>{t("resource.process.detailBasis")}</dt>
+              <dd>{t(BASIS_LABELS[row.associationBasis])}</dd>
+            </div>
+            <div>
+              <dt>{t("settings.resourceCleanup.processMemoryLabel")}</dt>
+              <dd>{memoryText}</dd>
+            </div>
+          </dl>
+          <p className="resource-process-detail-note">{t("resource.process.detailNote")}</p>
         </div>
-        <div className="resource-process-bar">
-          <span className="resource-process-bar-label">
-            {t("settings.resourceCleanup.processMemoryLabel")}
-          </span>
-          <MiniMeter
-            percent={memoryRelative}
-            tone="neutral"
-            ariaLabel={t("resource.aria.processMemory", {
-              name: row.name,
-              percent:
-                formatPercent(memoryRelative) || t("settings.resourceCleanup.processUnknownValue"),
-            })}
-          />
-          <span className="resource-process-bar-note">
-            {memoryRelative === null
-              ? ""
-              : t("resource.process.memoryRelative", {
-                  percent: formatPercent(memoryRelative) ?? "",
-                })}
-          </span>
-        </div>
-      </div>
+      )}
     </li>
   );
 }
@@ -195,6 +225,8 @@ export default function ProcessDiagnostics({
   const { t } = useLocale();
   const [open, setOpen] = useState(false);
   const [sort, setSort] = useState<SortKey>("cpu");
+  /** 展开态按进程身份记忆：排序变化不丢失，重采样后同一进程仍保持展开。 */
+  const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(() => new Set());
   const prevSignalRef = useRef(refreshSignal);
 
   /** 页头刷新只在列表已展开时生效：未展开不应触发新的进程枚举。 */
@@ -214,6 +246,15 @@ export default function ProcessDiagnostics({
     if (!data) onLoad();
   }
 
+  function toggleRow(key: string) {
+    setExpandedRows((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   const selfRow: ResourceProcessRow | null =
     data?.processes.find((row) => row.association === "self") ?? null;
   const self: ResourceProcessSnapshot | null = selfRow ?? snapshot?.process ?? null;
@@ -226,25 +267,32 @@ export default function ProcessDiagnostics({
     (max, row) => Math.max(max, row.workingSetBytes ?? 0),
     0,
   );
-  const sampled = sampledLabel(selfRow ? data?.sampledAt : snapshot?.sampledAt);
+  const sampled = resourceStamp(selfRow ? data?.sampledAt : snapshot?.sampledAt);
   const selfUptime = self ? uptimeLabel(self.uptimeSecs) : null;
+  const cpuWindow = sampleWindowSeconds(data?.cpuWindowMs);
 
   return (
     <section className="resource-diagnostics" aria-labelledby="resource-diagnostics-title">
-      <div className="resource-cleanup-section-head">
-        <h3 className="resource-cleanup-heading" id="resource-diagnostics-title">
-          {t("settings.resourceCleanup.processTitle")}
-        </h3>
+      <div className="resource-diagnostics-head">
+        <div className="resource-diagnostics-title-row">
+          <h3 className="resource-cleanup-heading" id="resource-diagnostics-title">
+            {t("settings.resourceCleanup.processTitle")}
+          </h3>
+          <span className="resource-diagnostics-note" data-tip={t("settings.resourceCleanup.processDesc")}>
+            {t("settings.resourceCleanup.processDesc")}
+          </span>
+        </div>
         <div className="resource-diagnostics-actions">
           {open && (
             <button
               type="button"
-              className="btn sm"
+              className="btn sm resource-icon-text-btn"
               onClick={onRefresh}
               disabled={loading}
+              aria-label={t("settings.resourceCleanup.processRefresh")}
+              data-tip={t("settings.resourceCleanup.processRefresh")}
             >
-              <RefreshCw size={12} className={loading ? "spin" : undefined} aria-hidden="true" />{" "}
-              {t("settings.resourceCleanup.processRefresh")}
+              <RefreshCw size={12} className={loading ? "spin" : undefined} aria-hidden="true" />
             </button>
           )}
           <button
@@ -262,21 +310,23 @@ export default function ProcessDiagnostics({
           </button>
         </div>
       </div>
-      <p className="setting-note">{t("settings.resourceCleanup.processDesc")}</p>
 
       {self ? (
         <div className="resource-process-self">
           <div className="resource-process-self-head">
-            <span className="resource-process-name" data-tip={self.name}>
+            <strong className="resource-process-name" data-tip={self.name}>
               {self.name}
+            </strong>
+            <span className="resource-process-chip">
+              {t("settings.resourceCleanup.association.self")}
             </span>
-            <span className="resource-process-tags">
-              <span className="resource-process-chip">
-                {t("settings.resourceCleanup.association.self")}
-              </span>
-              <span className={`resource-process-status status-${self.status}`}>
-                {t(STATUS_LABELS[self.status])}
-              </span>
+            <span className={`resource-process-status status-${self.status}`}>
+              {t(STATUS_LABELS[self.status])}
+            </span>
+            <span className="resource-process-sampled" data-tip={sampled?.full}>
+              {sampled
+                ? t("resource.time.updated", { time: sampled.time })
+                : t("settings.resourceCleanup.sampledAtUnknown")}
             </span>
           </div>
           <dl className="resource-process-self-grid">
@@ -305,11 +355,6 @@ export default function ProcessDiagnostics({
               <dd>{selfUptime ?? t("settings.resourceCleanup.processUnknownValue")}</dd>
             </div>
           </dl>
-          <span className="resource-process-sampled">
-            {sampled
-              ? t("settings.resourceCleanup.sampledAt", { time: sampled })
-              : t("settings.resourceCleanup.sampledAtUnknown")}
-          </span>
         </div>
       ) : (
         <p className="setting-note" role="status">
@@ -323,20 +368,32 @@ export default function ProcessDiagnostics({
 
       {open && (
         <div className="resource-process-list-block">
-          <div className="resource-process-sort">
-            <span className="resource-overview-label">
-              {t("resource.process.sortLabel")}
+          <div className="resource-process-list-head">
+            <span className="resource-process-list-count">
+              {t("resource.process.listCount", { count: others.length })}
             </span>
-            <Select
-              ariaLabel={t("resource.process.sortLabel")}
-              size="sm"
-              value={sort}
-              options={[
-                { value: "cpu", label: t("resource.process.sortCpu") },
-                { value: "memory", label: t("resource.process.sortMemory") },
-              ]}
-              onChange={(value) => setSort(value as SortKey)}
-            />
+            <div
+              className="resource-process-sort"
+              role="group"
+              aria-label={t("resource.process.sortGroup")}
+            >
+              <button
+                type="button"
+                className={`resource-sort-btn${sort === "cpu" ? " is-active" : ""}`}
+                aria-pressed={sort === "cpu"}
+                onClick={() => setSort("cpu")}
+              >
+                {t("resource.process.sortCpuShort")}
+              </button>
+              <button
+                type="button"
+                className={`resource-sort-btn${sort === "memory" ? " is-active" : ""}`}
+                aria-pressed={sort === "memory"}
+                onClick={() => setSort("memory")}
+              >
+                {t("resource.process.sortMemoryShort")}
+              </button>
+            </div>
           </div>
           {loading && (
             <p className="setting-note" role="status">
@@ -363,28 +420,26 @@ export default function ProcessDiagnostics({
           )}
           {others.length > 0 && (
             <>
-              <div className="resource-process-list-head">
-                <span className="resource-overview-label">
-                  {t("resource.process.listCount", { count: others.length })}
-                </span>
-                <span className="resource-process-list-note">
-                  {t("resource.process.listNote")}
-                </span>
-              </div>
               <ul
                 className="resource-process-list"
-                tabIndex={0}
                 aria-label={t("resource.process.listAria", { count: others.length })}
               >
-                {others.map((row) => (
-                  <ProcessLine
-                    key={`${row.pid}-${row.name}`}
-                    row={row}
-                    maxMemory={maxMemory}
-                  />
-                ))}
+                {others.map((row) => {
+                  const key = `${row.pid}-${row.name}`;
+                  return (
+                    <ProcessLine
+                      key={key}
+                      row={row}
+                      maxMemory={maxMemory}
+                      expanded={expandedRows.has(key)}
+                      onToggle={() => toggleRow(key)}
+                    />
+                  );
+                })}
               </ul>
-              <p className="setting-note">{t("resource.process.relativeNote")}</p>
+              <p className="setting-note resource-process-list-note">
+                {t("resource.process.listNote")}
+              </p>
             </>
           )}
           {data?.truncated && (
@@ -408,8 +463,8 @@ export default function ProcessDiagnostics({
           )}
           <p className="setting-note">
             {t("settings.resourceCleanup.processSafetyNote")}
-            {data && data.cpuWindowMs > 0
-              ? ` ${t("settings.resourceCleanup.processCpuNote", { window: data.cpuWindowMs })}`
+            {cpuWindow !== null
+              ? ` ${t("settings.resourceCleanup.processCpuNote", { window: cpuWindow })}`
               : ""}
           </p>
         </div>

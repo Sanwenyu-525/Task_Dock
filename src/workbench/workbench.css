@@ -1,0 +1,674 @@
+/*! 统一大型工作台外壳（U0）。只使用语义 Token；不与主窗口的 400×560 面板共用
+    尺寸假设。页面内部仍复用 `styles.css` / `styles-themes.css` 的既有组件样式。 */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  overflow: hidden;
+}
+
+.wb-root {
+  height: 100vh;
+  display: flex;
+  min-width: 0;
+  background: var(--surface-base);
+  color: var(--text-primary);
+}
+
+/* ── 左侧全局导航（唯一注册中心驱动）────────────────────────────────── */
+.wb-nav {
+  width: var(--wb-nav-width, 224px);
+  flex: 0 0 var(--wb-nav-width, 224px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px 8px;
+  gap: 6px;
+  background: var(--surface-raised);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.wb-nav-head {
+  padding: 2px 2px 8px;
+}
+
+.wb-new-task {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  background: var(--accent);
+  color: var(--accent-text-on);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wb-new-task:hover {
+  background: var(--accent-hover);
+}
+.wb-new-task:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.wb-nav-items {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wb-nav-sep {
+  height: 1px;
+  margin: 6px 6px;
+  background: var(--border-subtle);
+}
+
+.wb-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.wb-nav-item:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+.wb-nav-item.active {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.wb-nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.wb-nav-icon {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.wb-nav-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-nav-badge {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text-on);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+.wb-nav-badge.is-subtle {
+  background: var(--text-tertiary);
+}
+
+.wb-nav-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── 分栏拖拽 ───────────────────────────────────────────────────────── */
+.wb-resizer {
+  flex: 0 0 4px;
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.wb-resizer:hover,
+.wb-resizer:focus-visible {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  outline: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wb-resizer {
+    transition: none;
+  }
+}
+body.wb-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* ── 主区域 ────────────────────────────────────────────────────────── */
+.wb-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.wb-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-raised) 92%, transparent);
+}
+
+.wb-topbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.wb-topbar-title h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.wb-topbar-kind,
+.wb-topbar-task {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 32ch;
+}
+.wb-topbar-task {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+}
+.wb-topbar-status {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-topbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wb-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.wb-icon-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+.wb-icon-btn.is-on {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+  color: var(--text-primary);
+}
+.wb-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 注意：不要复用 `.wb-body`——该名称是开发工作台面板内部的既有类
+   （styles.css 中 `flex-direction: column` + padding），外壳复用会让
+   内容区与右栏纵向堆叠。外壳专用名 `wb-workarea`。 */
+.wb-workarea {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+/* 内容宿主：单滚动策略交给页面自身（`.tab-content-*` 已声明 overflow），
+   外壳只负责宽度与高度约束。 */
+.wb-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.wb-content > .tab-content {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 工作台是宽屏宿主：取消主面板 560px 的阅读宽度限制与自动居中。 */
+.wb-route {
+  max-width: none;
+  width: 100%;
+  margin-inline: 0;
+}
+/* `hidden` 属性必须胜过 `.tab-content { display:flex }`（作者样式优先于 UA）。 */
+.wb-route[hidden] {
+  display: none !important;
+}
+
+.tab-content-workspace {
+  padding: 14px 18px;
+}
+
+.wb-home-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
+
+/* ── 右侧上下文栏 ───────────────────────────────────────────────────── */
+.wb-context {
+  flex: 0 0 var(--wb-detail-width, 320px);
+  width: var(--wb-detail-width, 320px);
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 14px 20px;
+  border-left: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-raised) 70%, transparent);
+}
+
+.wb-context-head h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  text-transform: none;
+}
+
+.wb-context-block {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.wb-context-block:last-child {
+  border-bottom: none;
+}
+.wb-context-block h4 {
+  margin: 0 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+.wb-context-project {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.wb-context-project strong {
+  font-size: 13px;
+}
+.wb-context-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 0 0 8px;
+  font-size: 11px;
+}
+.wb-context-facts dt {
+  color: var(--text-tertiary);
+}
+.wb-context-facts dd {
+  margin: 0;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.wb-context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.wb-path {
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-all;
+  margin: 0 0 6px;
+}
+.wb-agent-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.wb-agent-grid > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-base);
+}
+.wb-agent-grid strong {
+  font-size: 15px;
+}
+.wb-agent-grid span {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.wb-muted {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.wb-inline-warn {
+  margin: 6px 0;
+  font-size: 11px;
+  color: var(--status-warning, var(--text-secondary));
+}
+
+/* ── 首页 ──────────────────────────────────────────────────────────── */
+.wb-home {
+  max-width: 1080px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.wb-home-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+.wb-home-head h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+.wb-home-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.wb-home-date {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.wb-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.wb-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wb-stat:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+}
+.wb-stat:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.wb-stat-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.wb-stat strong {
+  font-size: 24px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.wb-stat-foot {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.wb-home-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wb-home-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.wb-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.wb-section-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.wb-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.wb-quick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.wb-quick span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.wb-quick:hover {
+  background: var(--surface-hover);
+}
+.wb-quick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.wb-project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wb-project-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.wb-project-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+}
+.wb-project-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.wb-project-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.wb-project-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* ── 项目工作空间内容 ───────────────────────────────────────────────── */
+.wb-project {
+  max-width: 1180px;
+}
+.wb-project-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+.wb-project-empty h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+/* ── 新建项目弹层 ──────────────────────────────────────────────────── */
+.wb-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wb-create-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.wb-create-form textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+/* ── 启动门 ────────────────────────────────────────────────────────── */
+.wb-boot {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-base);
+  color: var(--text-primary);
+}
+.wb-boot-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 28px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  font-size: 13px;
+  text-align: center;
+}
+.wb-boot-card p {
+  margin: 0;
+}
+
+/* 窄窗：右栏由 JS 自动隐藏；导航保持可读的最小宽度。 */
+@media (max-width: 1080px) {
+  .wb-home {
+    max-width: none;
+  }
+  .wb-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .wb-quick-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 760px) {
+  .wb-nav {
+    width: 56px;
+    flex-basis: 56px;
+    padding-inline: 4px;
+  }
+  .wb-nav-label {
+    display: none;
+  }
+  .wb-nav-item {
+    justify-content: center;
+    padding-inline: 4px;
+  }
+  .wb-new-task span {
+    display: none;
+  }
+}

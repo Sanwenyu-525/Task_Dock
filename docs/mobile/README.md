@@ -22,6 +22,7 @@
 | [10-widget.md](10-widget.md) | 主屏小组件 2×2 / 4×2：快照、点击路由、刷新与主题 | —（手机端专项） |
 | [11-background-sync-design.md](11-background-sync-design.md) | 后台/自动同步方案评估（**仅设计，未实现**） | — |
 | [12-transport-security.md](12-transport-security.md) | 传输安全索引：威胁模型、SPKI 固定、fail-closed、偏差与安全验收矩阵 | `docs/ARCHITECTURE.md` 四、安全设计 / 手机配对章 |
+| [13-android-screen-control.md](13-android-screen-control.md) | 桌面端 Android 屏幕镜像/独立虚拟屏：会话状态机、设备去重、应用选择、截图与诊断 | `docs/ARCHITECTURE.md` 窗口与子进程章 |
 | [prototypes/](prototypes/README.md) | Stitch 页面原型：v2 终版 11 屏 + 33 个导出变体（按页面归组，含画廊 `index.html`） | 设计稿/参考图 |
 | [../MOBILE_STACK.md](../MOBILE_STACK.md) | 选型与共享边界**设计稿**（含未实现能力的规划，不是现状） | 选型报告 |
 | [../../apps/mobile/AGENTS.md](../../apps/mobile/AGENTS.md) | 本目录的开发红线与提交前自检 | 根 `AGENTS.md` |
@@ -158,3 +159,8 @@
   项目卡交互，最终 `tsc` exit 0、vitest 178 例通过，`assembleRelease` exit 0；产物仍是
   debug 签名且 versionCode 21/0.1.6 落后于 app.json 的 24/0.1.7，不能作为正式发布包。
   证据 `tmp/acceptance/mobile-blue-cyan-ui/round2-report.md`。
+- 2026-11-14 桌面端 Android 屏幕与控制：新增 [13-android-screen-control.md](13-android-screen-control.md)。
+  从「Android 虚拟屏（实验）」MVP 升级为双模式（实体屏镜像/独立虚拟屏）会话服务：状态机与
+  scrcpy 日志就绪判定、设备身份去重、可启动应用枚举与应用名记忆、窗口定位、截图、残留诊断、
+  多屏实验开关；关闭不再持有全局锁等待。真机复验状态与限制见该文 §14（本轮无可用 ADB 设备，
+  新增能力未冒充已真机通过）。

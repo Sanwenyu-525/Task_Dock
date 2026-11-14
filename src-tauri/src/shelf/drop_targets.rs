@@ -43,6 +43,8 @@ pub struct DropTarget {
     pub conflict: String,
     /// 仅在读取列表时探测；`false` 时前端禁止投递并标注「目录不可用」。
     pub available: bool,
+    /// 最近一次成功投递时间（空串=从未使用）。只用于展示，不改变手动排序。
+    pub last_used_at: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -58,7 +60,7 @@ pub struct DropTargetPatch {
 }
 
 const COLS: &str = "id, name, path, sort_order, show_in_capsule, op_mode, conflict, \
-                    created_at, updated_at";
+                    created_at, updated_at, last_used_at";
 
 fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DropTarget> {
     Ok(DropTarget {
@@ -71,6 +73,7 @@ fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DropTarget> {
         show_in_capsule: r.get::<_, i64>(4)? != 0,
         op_mode: r.get(5)?,
         conflict: r.get(6)?,
+        last_used_at: r.get(9)?,
         created_at: r.get(7)?,
         updated_at: r.get(8)?,
     })
@@ -314,6 +317,17 @@ pub fn delete(db: &Db, id: &str) -> AppResult<()> {
         }
         Ok(())
     })
+}
+
+/// 成功投递后记录使用时间；失败只影响「最近使用」展示，绝不影响投递结果。
+pub fn touch_used(db: &Db, id: &str) {
+    let _ = db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE shelf_drop_targets SET last_used_at = ?1 WHERE id = ?2",
+            params![now_iso(), id],
+        )?;
+        Ok(())
+    });
 }
 
 /// 上下移动一位。

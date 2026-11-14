@@ -1489,6 +1489,11 @@ mod imp {
 
         let kind = match super::super::engine::classify(&text, &html, image.is_some(), &files) {
             Some(k) => k,
+            // 虚拟文件（Outlook 附件等）只提供描述符 + FileContents，没有可用的
+            // 单索引 HGLOBAL 读取路径。明确告诉用户格式未被支持，而不是误报「空」。
+            None if has_virtual_file_formats() => {
+                return ClipboardRead::Empty("剪贴板只包含虚拟文件格式，暂时无法直接暂存")
+            }
             None => return ClipboardRead::Empty("剪贴板为空或只有无法识别的格式"),
         };
         if matches!(
@@ -1586,6 +1591,18 @@ mod imp {
         }
         let png = format_id("PNG");
         png != 0 && IsClipboardFormatAvailable(png) != 0
+    }
+
+    /// 剪贴板是否只提供了 OLE 虚拟文件格式（描述符/文件内容）。
+    ///
+    /// 这两种格式没有「按 lindex 取单个 HGLOBAL」的公开剪贴板 API；主动粘贴
+    /// 通道明确不支持，不能用「剪贴板为空」掩盖。拖入通道有自己的 IDataObject
+    /// 读取实现，两者互不影响。
+    unsafe fn has_virtual_file_formats() -> bool {
+        let descriptor = format_id("FileGroupDescriptorW");
+        let contents = format_id("FileContents");
+        (descriptor != 0 && IsClipboardFormatAvailable(descriptor) != 0)
+            || (contents != 0 && IsClipboardFormatAvailable(contents) != 0)
     }
 
     /// 快照 + 不可无损恢复格式清单 + 整份快照重建判定。

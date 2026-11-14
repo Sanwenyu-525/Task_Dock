@@ -327,3 +327,78 @@ OLE 没有「取回上一个 `IDropTarget`」的 API，`RevokeDragDrop` 之后�
 - UI 文件数与错误反馈的截图/测试见 `tmp/acceptance/universal-drag-protocol/report.md`。
 - 真机（Explorer/Chrome/Edge/Outlook/ChatGPT 网页图片、DPI、多显示器）仍为
   **UNVERIFIED / USER VERIFICATION PENDING**，受控 OLE 与 jsdom 不能替代。
+
+## 13. 主动粘贴当前剪贴板（v51，2026-11-14）
+
+拖入解决的是「从来源拖过来」；本节解决「已经复制，打开收集箱按 Ctrl+V」。
+两者共享暂存架持久化与错误码，但**输入适配器不同**：粘贴不经过 OLE 拖入会话，
+也不依赖剪贴板历史监听是否开启。
+
+### 13.1 命令与数据流
+
+`commands::shelf::shelf_paste_current(storage_mode?, group_id?)`：
+
+1. 在阻塞线程调用 `clipboard::platform::read_clipboard(true)`，读取**当下**的系统剪贴板
+   （`true` 表示用户主动粘贴时忽略「不进入剪贴板历史」标记，与编辑器 Ctrl+V 同义）；
+2. `shelf::ingest::ClipboardIntake::from_read` 把读取结果映射为与平台无关的输入；
+3. `shelf::ingest::save` 复用 `add_reference` / `add_managed` / `add_managed_png` /
+   `add_link` / `add_text`，不新建第二套存储；
+4. 返回 `ShelfPasteReport`：`operation_id/source/content_kind/added/added_ids/failed/
+   skipped/duplicates/success/partial/requires_user_action/code/retryable`。
+
+空内容、剪贴板被占用、格式不支持、超出上限都以 `success=false` 的结构化报告返回，
+不抛 IPC 错误；只有内部任务异常才 `Err`。
+
+### 13.2 格式优先级与保存语义
+
+沿用 `clipboard::engine::classify`：**文件列表 > 图片字节 > URL > HTML > 文本**。
+
+| 剪贴板内容 | 保存方式 | 说明 |
+|---|---|---|
+| `CF_HDROP` 文件/多文件 | `reference` 或 `managed` 逐条保存 | 单条失败不阻断其他；同一批按路径去重 |
+| 文件夹 | 始终 `reference` | 即使选择托管也不复制目录内容 |
+| PNG / DIB / DIBV5 | `add_managed_png` 独立托管副本 | 真实字节落盘；不依赖剪贴板历史资产 |
+| URL | `add_link` | 只存链接，不下载 |
+| HTML（正文非空） | 安全提取纯文本后 `add_text` | 不保留脚本/样式/属性 |
+| HTML-only + 图片地址 | `add_link` | 明确是链接，不冒充原图 |
+| 纯文本/代码片段 | `add_text` | 保留原始换行与缩进（仅去首尾空白） |
+| 虚拟文件（`FileGroupDescriptorW`/`FileContents`） | **暂不支持主动粘贴** | 剪贴板无可靠的按 `lindex` 单块读取 API；返回 `CLIPBOARD_UNSUPPORTED`，不静默当作空。拖入通道仍完整支持 |
+| 空/无法识别 | `CLIPBOARD_EMPTY` / `CLIPBOARD_UNSUPPORTED` | 明确反馈 |
+
+不做「图片 URL 自动下载」「DIB 预览冒充原图」「虚拟文件失败→自动存 PNG」等降级。
+同一操作内路径去重；与已有条目同路径/同正文时**不阻止**显式重复粘贴，只在
+`duplicates` 中计数并提示（区分「一次按键的重复事件」与「用户明确再次粘贴」）。
+
+### 13.3 Ctrl+V 焦点规则
+
+实现：`src/lib/pasteShortcut.ts`，胶囊「文件」子页与完整暂存架共用。
+
+- 只消费 **Ctrl+V**；`Ctrl+Shift+V`（纯文本粘贴）、`Ctrl+Alt+V`、`Ctrl+Win+V` 放行；
+- `INPUT` / `TEXTAREA` / `SELECT` / `contenteditable`（含祖先/子节点）内不消费；
+- 菜单、对话框、模态等弹层打开时不消费；胶囊自身用于 Esc 的 drawer 层
+  （`blocksAutoHide:false`）不算弹层；
+- `defaultPrevented`、输入法组合（`isComposing`/229）、长按 `repeat`、在途操作
+  （busy）不消费；
+- 组件卸载即移除 window 监听；只在实际消费时 `preventDefault()`。
+
+### 13.4 入口与反馈
+
+- 胶囊「最近暂存」标题行新增剪贴板粘贴图标（22px，与 `+`/「查看全部」同排），
+  带 `aria-label` 与 `data-tip`（含 Ctrl+V）。结构化状态行在**最近暂存之后**
+  渲染，出现/消失不推动已有文件行；成功/空/占用/超限/不支持分别有短标题与稳定码，
+  部分失败可展开原因、可跳诊断。
+- 完整暂存架工具条新增独立粘贴按钮（添加 → 粘贴 → 搜索 → 筛选 → 更多）。
+  「从剪贴板历史添加」仍在添加菜单中，文案与「粘贴当前剪贴板」明确区分。
+- 工具条「⋯」菜单提供资源管理器右键发送开关。
+
+### 13.5 全局收集与系统右键发送
+
+- 系统热键 `collect_to_shelf`（默认 `Ctrl+Alt+G`，可在设置中改）：读取当前剪贴板、
+  引用模式入库，广播 `taskdock://shelf-collected`（只含计数/稳定码）并唤出主窗口。
+- 资源管理器右键「发送到 Task Dock」：HKCU 动词
+  `Software\Classes\*\shell\TaskDockShelf` 与 `Directory\shell\TaskDockShelf`，
+  命令 `<exe> --send-to-shelf "%1"`，`MultiSelectModel=Document`；不加管理员权限、
+  不改文件关联。单实例插件把第二实例 argv 转交现有实例；首实例在暂存架就绪后消费。
+  用户可在暂存架「⋯」菜单启用/停用，停用删除本应用创建的键。
+- 真实 Explorer 菜单、多文件、长路径、被移动后的旧注册项仍需 Windows 真机验收；
+  当前单元测试只覆盖参数解析、命令引用与键名生成，不写用户注册表。

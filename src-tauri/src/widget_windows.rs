@@ -30,6 +30,9 @@ pub const EVENT_BOUNDS: &str = "widget-bounds-changed";
 pub const EVENT_DISMISSED: &str = "widget-window-dismissed";
 
 const MAIN_LABEL: &str = "main";
+/// 唯一大型工作台窗口：微件管理页已迁移到工作台，允许它显示/隐藏/重置桌面微件；
+/// 数据快照发布仍只允许主窗口（唯一数据所有者）。
+const WORKBENCH_LABEL: &str = "workspace";
 /// 独立微件窗口 label 前缀（生命周期探针按它统计当前打开的微件）。
 pub const WINDOW_PREFIX: &str = "widget-";
 const WIDGET_RADIUS: f64 = 16.0;
@@ -178,6 +181,22 @@ fn caller_type(window: &WebviewWindow) -> AppResult<String> {
         .filter(|kind| WIDGET_TYPES.contains(kind))
         .map(|kind| kind.to_string())
         .ok_or_else(|| AppError::Validation("该命令仅限桌面微件窗口调用".to_string()))
+}
+
+fn is_manager_label(label: &str) -> bool {
+    label == MAIN_LABEL || label == WORKBENCH_LABEL
+}
+
+/// 微件显示/隐藏/重置只允许「管理宿主」：主窗口或唯一大型工作台。
+/// 快照发布不走这里（仍用 `assert_main`，保持单一数据所有者）。
+fn assert_manager(window: &WebviewWindow) -> AppResult<()> {
+    if is_manager_label(window.label()) {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "该命令仅限主窗口或工作台窗口调用".to_string(),
+        ))
+    }
 }
 
 fn assert_main(window: &WebviewWindow) -> AppResult<()> {
@@ -701,7 +720,7 @@ fn create_window(app: &AppHandle, kind: &str) -> AppResult<(WebviewWindow, u64)>
     Ok((win, generation))
 }
 
-/// 显示（必要时创建）某类微件的桌面窗口。仅主窗口可调用。
+/// 显示（必要时创建）某类微件的桌面窗口。主窗口或唯一工作台可调用。
 ///
 /// 必须声明为 `async`：同步命令在 IPC 线程（Windows 消息线程）内执行，
 /// `WebviewWindowBuilder::build()` 创建 WebView2 控制器时需要消息循环继续运转，
@@ -712,7 +731,7 @@ pub async fn show_widget_window(
     window: WebviewWindow,
     spec: WidgetWindowSpec,
 ) -> AppResult<WidgetWindowInfo> {
-    assert_main(&window)?;
+    assert_manager(&window)?;
     // 锁必须整段由同步函数持有：`MutexGuard` 不可跨 `.await`，async 命令只做入口校验。
     place_and_show(app, spec)
 }
@@ -787,7 +806,7 @@ pub fn hide_widget_window(
     window: WebviewWindow,
     widget_type: String,
 ) -> AppResult<()> {
-    assert_main(&window)?;
+    assert_manager(&window)?;
     let kind = validate_type(&widget_type)?;
     if let Some(win) = app.get_webview_window(&window_label(kind)) {
         mark_close_reason(kind, "management-hide");
@@ -846,7 +865,7 @@ pub fn reset_widget_position(
     window: WebviewWindow,
     widget_type: String,
 ) -> AppResult<()> {
-    assert_main(&window)?;
+    assert_manager(&window)?;
     let kind = validate_type(&widget_type)?;
     if let Some(win) = app.get_webview_window(&window_label(kind)) {
         let (width, height) = logical_size(&win);
@@ -1055,5 +1074,15 @@ mod tests {
         assert_eq!(label_type("widget-today-tasks"), Some("today-tasks"));
         assert_eq!(label_type("main"), None);
         assert_eq!(label_type("notification"), None);
+    }
+
+    /// 微件管理命令的调用者：主窗口与唯一大型工作台允许，微件/辅助窗口拒绝。
+    #[test]
+    fn widget_manager_labels_are_main_and_workbench_only() {
+        assert!(is_manager_label("main"));
+        assert!(is_manager_label("workspace"));
+        assert!(!is_manager_label("widget-today-tasks"));
+        assert!(!is_manager_label("notification"));
+        assert!(!is_manager_label("capture"));
     }
 }

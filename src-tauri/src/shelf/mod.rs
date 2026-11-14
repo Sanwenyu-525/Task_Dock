@@ -157,6 +157,15 @@ pub struct ShelfTaskLink {
     pub created_at: String,
 }
 
+/// 暂存条目 ↔ 工作空间项目的直接关联（v51）。只存关系，不复制项目/条目。
+#[derive(Debug, Clone, Serialize)]
+pub struct ShelfProjectLink {
+    pub project_id: String,
+    pub item_id: String,
+    pub project_name: String,
+    pub created_at: String,
+}
+
 /// 并发复制闸：阻塞式（spawn_blocking 线程内使用），限制同时落盘的副本数，
 /// 防止批量拖入打满磁盘带宽与线程池。
 pub(crate) struct CopyGate {
@@ -2447,6 +2456,65 @@ pub fn unlink_task(db: &Db, item_id: &str, task_id: &str) -> AppResult<()> {
     })
 }
 
+// ── 项目关联（v51）─────────────────────────────────────────
+
+pub fn project_links(db: &Db, item_id: &str) -> AppResult<Vec<ShelfProjectLink>> {
+    db.with_read(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT l.project_id, l.item_id, COALESCE(p.name, ''), l.created_at \
+             FROM shelf_project_links l LEFT JOIN workspace_projects p ON p.id = l.project_id \
+             WHERE l.item_id = ?1 ORDER BY l.created_at DESC",
+        )?;
+        let rows = stmt.query_map(params![item_id], |r| {
+            Ok(ShelfProjectLink {
+                project_id: r.get(0)?,
+                item_id: r.get(1)?,
+                project_name: r.get(2)?,
+                created_at: r.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    })
+}
+
+/// 关联项目：项目与条目都必须存在；重复关联幂等。
+pub fn link_project(db: &Db, item_id: &str, project_id: &str) -> AppResult<()> {
+    let exists: i64 = db.with_read(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM workspace_projects WHERE id = ?1",
+            params![project_id],
+            |r| r.get(0),
+        )
+        .map_err(AppError::from)
+    })?;
+    if exists == 0 {
+        return Err(AppError::NotFound(format!("项目不存在: {project_id}")));
+    }
+    get_item(db, item_id)?;
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT OR IGNORE INTO shelf_project_links (project_id, item_id, created_at) \
+             VALUES (?1, ?2, ?3)",
+            params![project_id, item_id, now_iso()],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn unlink_project(db: &Db, item_id: &str, project_id: &str) -> AppResult<()> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM shelf_project_links WHERE item_id = ?1 AND project_id = ?2",
+            params![item_id, project_id],
+        )?;
+        Ok(())
+    })
+}
+
 // ── 工具 ────────────────────────────────────────────────────
 
 fn placeholders(n: usize) -> String {
@@ -2622,6 +2690,8 @@ fn wait_for_cleanup_tick(stop: &Arc<(Mutex<bool>, Condvar)>, dur: std::time::Dur
 pub mod drag_out;
 pub mod drop_targets;
 pub mod fsops;
+pub mod ingest;
+pub mod sendto;
 
 #[cfg(test)]
 mod tests;

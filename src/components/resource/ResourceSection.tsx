@@ -45,6 +45,7 @@ export default function ResourceSection({
         aria-expanded={expanded}
         aria-controls={bodyId}
         data-resource-anchor-focus
+        data-tip={typeof description === "string" ? description : undefined}
         onClick={() => onExpandedChange(!expanded)}
       >
         <span className="resource-collapsible-title-row">
@@ -55,15 +56,15 @@ export default function ResourceSection({
           )}
           <span className="resource-collapsible-title">{title}</span>
           {badge && <span className="resource-collapsible-badge">{badge}</span>}
+          {description && (
+            <span className="resource-collapsible-desc">{description}</span>
+          )}
           <ChevronRight
             size={12}
             className={`resource-collapsible-chevron${expanded ? " is-open" : ""}`}
             aria-hidden="true"
           />
         </span>
-        {description && (
-          <span className="resource-collapsible-desc">{description}</span>
-        )}
       </button>
       <div id={bodyId} className="resource-collapsible-body" hidden={!expanded}>
         {children}

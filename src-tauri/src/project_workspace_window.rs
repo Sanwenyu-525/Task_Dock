@@ -9,6 +9,7 @@
 //!   `Settings` 快照）；恢复时收敛到目标显示器工作区，显示器消失时回落到主屏；
 //! - 最大化状态单独记忆：最大化期间不覆盖正常几何，下次打开仍可还原窗口大小。
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -42,6 +43,203 @@ static DEV_WORKBENCH_REQ_ID: AtomicI64 = AtomicI64::new(1);
 /// 分配下一个跨窗口请求序号（单调递增；迟到回执靠它去重）。
 fn next_dev_workbench_request_id() -> i64 {
     DEV_WORKBENCH_REQ_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+// ── 统一工作台导航协议（U0）────────────────────────────────────────────
+//
+// 「打开工作台并导航到某功能」不能只发一个事件就宣称成功：
+// 1. 窗口可能尚未创建（事件没有接收方）；
+// 2. 窗口刚创建时 React 可能还没注册监听（事件被丢弃）；
+// 3. 工作台内有未保存草稿时目标导航可能被门禁拦下。
+//
+// 因此协议是**排队 + 拉取 + 回执**：
+// - Rust 把导航请求放进队列，并（窗口存在时）同时推一条事件作为快路径；
+// - 工作台挂载时、以及收到事件时都调用 `workbench_take_nav` 拉取队列（去重）；
+// - 工作台完成路由（或被门禁拦下）后调用 `workbench_nav_ack` 回传真实状态，
+//   主窗口调用方只认回执，不认「invoke 返回成功」。
+
+pub const EVENT_WORKBENCH_NAVIGATE: &str = "workbench-navigate";
+pub const EVENT_WORKBENCH_NAV_ACK: &str = "workbench-nav-ack";
+
+/// 工作台可路由的稳定功能 ID（与前端 `Tab` + 工作台首页一致）。
+/// 只做白名单校验：未知目标直接拒绝，不允许任意字符串进入窗口路由。
+const WORKBENCH_TABS: &[&str] = &[
+    "home",
+    "workbench",
+    "workspace",
+    "tasks",
+    "agents",
+    "apps",
+    "widgets",
+    "actions",
+    "clipboard",
+    "mobile",
+    "inbox",
+    "shelf",
+    "workflows",
+    "history",
+    "roadmap",
+    "settings",
+    "help",
+    "diagnostics",
+    "resource",
+];
+
+/// 结构化导航目标：功能 + 可选上下文（项目/任务/对象/子页）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchNavTarget {
+    pub tab: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub object_id: Option<String>,
+    #[serde(default)]
+    pub sub: Option<String>,
+}
+
+impl Default for WorkbenchNavTarget {
+    fn default() -> Self {
+        Self {
+            tab: "home".to_string(),
+            project_id: None,
+            task_id: None,
+            object_id: None,
+            sub: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchNavRequest {
+    pub request_id: i64,
+    pub target: WorkbenchNavTarget,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchNavAckEvent {
+    pub request_id: i64,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkbenchOpenResult {
+    pub request_id: i64,
+    pub created: bool,
+}
+
+#[derive(Default)]
+struct WorkbenchNavQueue {
+    /// 待工作台拉取的请求（最多 8 条；连续快速导航按顺序交付）。
+    pending: VecDeque<WorkbenchNavRequest>,
+    last_request_id: i64,
+}
+
+static WORKBENCH_NAV: LazyLock<Mutex<WorkbenchNavQueue>> =
+    LazyLock::new(|| Mutex::new(WorkbenchNavQueue::default()));
+
+const WORKBENCH_NAV_QUEUE_MAX: usize = 8;
+
+fn normalize_optional_field(value: Option<String>, field: &str) -> AppResult<Option<String>> {
+    let Some(raw) = value else { return Ok(None) };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > 128 {
+        return Err(AppError::Validation(format!("{field} 过长")));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(AppError::Validation(format!("{field} 含非法控制字符")));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// 归一化并校验导航目标：未知 tab 直接拒绝（不猜测、不静默改路由）。
+pub fn normalize_workbench_target(
+    target: Option<WorkbenchNavTarget>,
+) -> AppResult<WorkbenchNavTarget> {
+    let mut target = target.unwrap_or_default();
+    let tab = target.tab.trim().to_string();
+    if !WORKBENCH_TABS.contains(&tab.as_str()) {
+        return Err(AppError::Validation(format!(
+            "未知的工作台导航目标: {tab}（允许: {}）",
+            WORKBENCH_TABS.join(", ")
+        )));
+    }
+    target.tab = tab;
+    target.project_id = normalize_optional_field(target.project_id, "projectId")?;
+    target.task_id = normalize_optional_field(target.task_id, "taskId")?;
+    target.object_id = normalize_optional_field(target.object_id, "objectId")?;
+    target.sub = normalize_optional_field(target.sub, "sub")?;
+    Ok(target)
+}
+
+fn enqueue_workbench_nav(
+    target: WorkbenchNavTarget,
+    request_id: Option<i64>,
+) -> AppResult<WorkbenchNavRequest> {
+    let mut queue = WORKBENCH_NAV
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let id = match request_id {
+        Some(id) => {
+            if id <= 0 {
+                return Err(AppError::Validation(
+                    "导航请求编号必须为正整数".to_string(),
+                ));
+            }
+            // 调用方在发命令之前已登记回执：编号必须原样使用，不能改成新号，
+            // 否则早到的回执会因编号不匹配被丢弃（假超时）。
+            queue.last_request_id = queue.last_request_id.max(id);
+            id
+        }
+        None => {
+            queue.last_request_id += 1;
+            queue.last_request_id
+        }
+    };
+    let request = WorkbenchNavRequest {
+        request_id: id,
+        target,
+    };
+    // 队列满时丢弃最旧的未交付请求：新目标优先，旧调用方会按超时失败如实反馈。
+    if queue.pending.len() >= WORKBENCH_NAV_QUEUE_MAX {
+        queue.pending.pop_front();
+    }
+    queue.pending.push_back(request.clone());
+    Ok(request)
+}
+
+fn take_pending_workbench_nav() -> Option<WorkbenchNavRequest> {
+    // 只**读取队首**，不弹出：工作台可能因 StrictMode 双执行/页面重载在拉取后
+    // 立即销毁，弹出的请求会随之丢失。请求只在 `workbench_nav_ack` 回执后移除；
+    // 工作台按 requestId 去重，重复拉取不会重复执行。
+    WORKBENCH_NAV
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .pending
+        .front()
+        .cloned()
+}
+
+/// 回执后移除队列中同号请求：事件快路径已处理的请求不会在窗口重载时被再次执行。
+fn clear_pending_workbench_nav(request_id: i64) {
+    if let Ok(mut queue) = WORKBENCH_NAV.lock() {
+        queue.pending.retain(|req| req.request_id != request_id);
+    }
+}
+
+fn clear_workbench_nav_queue() {
+    if let Ok(mut queue) = WORKBENCH_NAV.lock() {
+        queue.pending.clear();
+    }
 }
 
 const SETTING_RECT: &str = "workspace_window_rect";
@@ -378,12 +576,239 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
             save_geometry(&app, &w, false);
         }
         tauri::WindowEvent::Destroyed => {
+            // 窗口销毁后队列里的请求已无接收方：清空，避免下次打开执行过期导航。
+            clear_workbench_nav_queue();
             if let Some(main) = app.get_webview_window(MAIN_LABEL) {
                 let _ = main.emit(EVENT_WINDOW_CLOSED, ());
             }
         }
         _ => {}
     });
+}
+
+/// 打开/聚焦工作台窗口的内部实现：两个命令共用同一创建与回滚路径。
+///
+/// `nav` 会先进入队列再创建/唤醒窗口：
+/// - 新窗口的 WebView 可能在我们返回之前就开始挂载，因此**先入队**才能被
+///   `workbench_take_nav` 拉到；
+/// - 已存在窗口同时推一条事件作为快路径（事件丢失仍可从队列拉取）。
+fn open_or_focus_workbench(
+    app: &AppHandle,
+    db: &Db,
+    project_id: Option<&str>,
+    nav: Option<WorkbenchNavTarget>,
+    request_id: Option<i64>,
+) -> AppResult<(bool, Option<i64>)> {
+    if let Some(existing) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = existing.unminimize();
+        if !existing.is_visible().unwrap_or(false) {
+            existing.show()?;
+        }
+        let _ = existing.set_focus();
+        // 先提交活跃项目：写失败直接返回，不把导航请求留在队列里（否则调用方
+        // 看到失败、窗口之后却可能被焦点拉取带到目标页）。
+        if let Some(id) = project_id {
+            crate::commands::project_workspace::workspace_set_active_project_impl(
+                db,
+                Some(id.to_string()),
+            )?;
+        }
+        if let Some(target) = nav {
+            let request = enqueue_workbench_nav(target, request_id)?;
+            let request_id = request.request_id;
+            if let Err(error) = existing.emit(EVENT_WORKBENCH_NAVIGATE, request) {
+                // 事件没送出去也没有窗口会来拉取：撤销这次排队并如实报错。
+                clear_pending_workbench_nav(request_id);
+                return Err(AppError::Agent(format!(
+                    "向工作台发送导航请求失败：{error}"
+                )));
+            }
+            // Tauri 事件可能因页面重载/监听尚未注册而丢失（窗口已存在但 WebView
+            // 正在刷新）。直接执行一次页面内 DOM 事件触发工作台立即拉取队列；
+            // eval 失败不影响协议，工作台挂载/聚焦时仍会拉取。
+            let _ = existing.eval(
+                "window.dispatchEvent(new Event('taskdock-workbench-nav-ping'))",
+            );
+            return Ok((false, Some(request_id)));
+        }
+        return Ok((false, None));
+    }
+
+    // 新窗口必须先入队再创建：WebView 可能在 build 返回前就开始挂载并拉取队列。
+    let nav_request = match nav {
+        Some(target) => Some(enqueue_workbench_nav(target, request_id)?),
+        None => None,
+    };
+
+    // 新窗口：UI 启动时会读取 `workspace_active_project` 决定初始项目，因此必须在
+    // WebView 加载之前写活跃值；窗口创建/显示失败则回滚，避免「没打开却已切换」。
+    let previous_active = db
+        .get_setting("workspace_active_project")
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_str().map(str::to_string));
+    if let Some(id) = project_id {
+        if let Err(error) =
+            crate::commands::project_workspace::workspace_set_active_project_impl(
+                db,
+                Some(id.to_string()),
+            )
+        {
+            // 活跃项目没写成：撤销已排队的导航，避免窗口稍后打开时执行过期目标。
+            if let Some(request) = &nav_request {
+                clear_pending_workbench_nav(request.request_id);
+            }
+            return Err(error);
+        }
+    }
+    let rollback_active = |db: &Db, previous: Option<String>| {
+        let _ = crate::commands::project_workspace::workspace_set_active_project_impl(db, previous);
+    };
+    let rollback_nav = |request: &Option<WorkbenchNavRequest>| {
+        if let Some(req) = request {
+            clear_pending_workbench_nav(req.request_id);
+        }
+    };
+
+    let win = match WebviewWindowBuilder::new(
+        app,
+        WINDOW_LABEL,
+        WebviewUrl::App("workspace.html".into()),
+    )
+    .title("Task Dock · 工作台")
+    .decorations(true)
+    .resizable(true)
+    .maximizable(true)
+    .minimizable(true)
+    .closable(true)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .visible(false)
+    .inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
+    .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+    .build()
+    {
+        Ok(win) => win,
+        Err(e) => {
+            rollback_nav(&nav_request);
+            if project_id.is_some() {
+                rollback_active(db, previous_active);
+            }
+            return Err(e.into());
+        }
+    };
+
+    attach_events(app, &win);
+    restore_geometry(app, &win, db);
+    if let Err(e) = win.show() {
+        let _ = win.close();
+        rollback_nav(&nav_request);
+        if project_id.is_some() {
+            rollback_active(db, previous_active);
+        }
+        return Err(e.into());
+    }
+    let _ = win.set_focus();
+
+    Ok((
+        true,
+        nav_request.as_ref().map(|request| request.request_id),
+    ))
+}
+
+/// 打开/聚焦统一工作台并导航到结构化目标。
+///
+/// 只能由主窗口调用（胶囊与主面板都在该窗口内）；工作台窗口自身使用前端路由，
+/// 不需要经由本命令。返回的 `requestId` 只代表**请求已受理**，调用方必须等待
+/// `workbench-nav-ack` 事件才能判断导航是否真的成功。
+#[tauri::command]
+pub async fn workbench_open_window(
+    app: AppHandle,
+    window: WebviewWindow,
+    db: State<'_, Arc<Db>>,
+    target: Option<WorkbenchNavTarget>,
+    project_id: Option<String>,
+    request_id: Option<i64>,
+) -> AppResult<WorkbenchOpenResult> {
+    if window.label() != MAIN_LABEL {
+        return Err(AppError::Validation(
+            "工作台只能由主窗口打开".to_string(),
+        ));
+    }
+    let mut target = normalize_workbench_target(target)?;
+    // 显式 projectId 参数优先（兼容旧调用方），并与 target 内的项目合并为唯一值。
+    let explicit = project_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(id) = explicit {
+        target.project_id = Some(id);
+    }
+    if let Some(id) = target.project_id.as_deref() {
+        // 打开前校验存在性：失败直接报错，不把悬空 ID 写成活跃项目。
+        crate::commands::project_workspace::workspace_project_get_impl(&db, id)?;
+    }
+    let project_id = target.project_id.clone();
+    let (created, request_id) = open_or_focus_workbench(
+        &app,
+        &db,
+        project_id.as_deref(),
+        Some(target),
+        request_id,
+    )?;
+    Ok(WorkbenchOpenResult {
+        request_id: request_id.unwrap_or(0),
+        created,
+    })
+}
+
+/// 工作台拉取下一条待处理导航请求（挂载 / 收到事件 / 重新获得焦点时调用）。
+///
+/// 只允许工作台窗口调用；队列为空返回 `null`（不是错误）。
+#[tauri::command]
+pub fn workbench_take_nav(window: WebviewWindow) -> AppResult<Option<WorkbenchNavRequest>> {
+    if window.label() != WINDOW_LABEL {
+        return Err(AppError::Validation(
+            "只有工作台窗口可以拉取导航请求".to_string(),
+        ));
+    }
+    Ok(take_pending_workbench_nav())
+}
+
+/// 工作台回执：把本次导航的**真实结果**转给主窗口调用方。
+///
+/// `status` 只允许 succeeded / pending / cancelled / failed；`pending` 不是终态，
+/// 用户确认或取消后必须再回一条最终结果。
+#[tauri::command]
+pub fn workbench_nav_ack(
+    app: AppHandle,
+    window: WebviewWindow,
+    request_id: i64,
+    status: String,
+    error: Option<String>,
+) -> AppResult<()> {
+    if window.label() != WINDOW_LABEL {
+        return Err(AppError::Validation(
+            "工作台导航回执只能由工作台窗口发送".to_string(),
+        ));
+    }
+    if request_id <= 0 {
+        return Err(AppError::Validation(
+            "导航请求编号必须为正整数".to_string(),
+        ));
+    }
+    let status = normalize_ack_status(true, false, Some(status.as_str()))?;
+    clear_pending_workbench_nav(request_id);
+    if let Some(main) = app.get_webview_window(MAIN_LABEL) {
+        let _ = main.emit(
+            EVENT_WORKBENCH_NAV_ACK,
+            WorkbenchNavAckEvent {
+                request_id,
+                status,
+                error,
+            },
+        );
+    }
+    Ok(())
 }
 
 /// 打开/聚焦专业窗口。由主窗口胶囊肩部入口或完整面板调用。
@@ -409,82 +834,28 @@ pub async fn open_project_workspace_window(
         crate::commands::project_workspace::workspace_project_get_impl(&db, id)?;
     }
 
-    if let Some(existing) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = existing.unminimize();
-        if !existing.is_visible().unwrap_or(false) {
-            existing.show()?;
-        }
-        let _ = existing.set_focus();
-        if let Some(id) = project_id.clone() {
+    // 旧入口语义是「打开某个工作空间项目」：映射为工作台的项目路由目标，
+    // 让新工作台与旧调用方共享同一条导航协议（而不是只切窗口不切页）。
+    let nav = project_id.as_ref().map(|id| WorkbenchNavTarget {
+        tab: "workspace".to_string(),
+        project_id: Some(id.clone()),
+        ..Default::default()
+    });
+    let (_, request_id) =
+        open_or_focus_workbench(&app, &db, project_id.as_deref(), nav, None)?;
+    if let Some(id) = project_id.clone() {
+        if let Some(existing) = app.get_webview_window(WINDOW_LABEL) {
+            // 兼容旧工作台 UI：它只监听 project-selected；新 UI 会同时消费导航队列。
             let _ = existing.emit(EVENT_PROJECT_SELECTED, ProjectSelectedEvent { project_id: id });
         }
-        // 窗口已存在且已聚焦：此时把「用户明确要打开的项目」记为活跃项目。
-        if let Some(id) = project_id.as_deref() {
-            crate::commands::project_workspace::workspace_set_active_project_impl(
-                &db,
-                Some(id.to_string()),
-            )?;
-        }
-        return Ok(WorkspaceWindowInfo {
-            opened: true,
-            project_id: None,
-        });
     }
-
-    // 新窗口：UI 启动时会读取 `workspace_active_project` 决定初始项目，因此必须在
-    // WebView 加载之前写活跃值；窗口创建/显示失败则回滚，避免「没打开却已切换」。
-    let previous_active = db
-        .get_setting("workspace_active_project")
-        .ok()
-        .flatten()
-        .and_then(|v| v.as_str().map(str::to_string));
-    if let Some(id) = project_id.as_deref() {
-        crate::commands::project_workspace::workspace_set_active_project_impl(
-            &db,
-            Some(id.to_string()),
-        )?;
-    }
-    let rollback_active = |db: &Db, previous: Option<String>| {
-        let _ = crate::commands::project_workspace::workspace_set_active_project_impl(db, previous);
-    };
-
-    let win = match WebviewWindowBuilder::new(&app, WINDOW_LABEL, WebviewUrl::App("workspace.html".into()))
-        .title("Task Dock · 工作空间")
-        .decorations(true)
-        .resizable(true)
-        .maximizable(true)
-        .minimizable(true)
-        .closable(true)
-        .always_on_top(false)
-        .skip_taskbar(false)
-        .visible(false)
-        .inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
-        .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
-        .build()
-    {
-        Ok(win) => win,
-        Err(e) => {
-            if project_id.is_some() {
-                rollback_active(&db, previous_active);
-            }
-            return Err(e.into());
-        }
-    };
-
-    attach_events(&app, &win);
-    restore_geometry(&app, &win, &db);
-    if let Err(e) = win.show() {
-        let _ = win.close();
-        if project_id.is_some() {
-            rollback_active(&db, previous_active);
-        }
-        return Err(e.into());
-    }
-    let _ = win.set_focus();
-
     Ok(WorkspaceWindowInfo {
         opened: true,
-        project_id,
+        project_id: if request_id.is_some() {
+            project_id
+        } else {
+            None
+        },
     })
 }
 
@@ -759,4 +1130,140 @@ mod tests {
         let b = next_dev_workbench_request_id();
         assert!(b > a);
     }
+
+    /// 工作台导航目标：只接受已注册功能 ID，可选上下文去空白、拒绝控制字符。
+    #[test]
+    fn workbench_target_requires_known_tab_and_trims_context() {
+        let target = normalize_workbench_target(Some(WorkbenchNavTarget {
+            tab: " tasks ".into(),
+            project_id: Some("  p1  ".into()),
+            task_id: Some("   ".into()),
+            object_id: None,
+            sub: Some("notes".into()),
+        }))
+        .unwrap();
+        assert_eq!(target.tab, "tasks");
+        assert_eq!(target.project_id.as_deref(), Some("p1"));
+        assert_eq!(target.task_id, None);
+        assert_eq!(target.sub.as_deref(), Some("notes"));
+
+        // 缺省目标 = 工作台首页
+        assert_eq!(normalize_workbench_target(None).unwrap().tab, "home");
+
+        // 未知目标/控制字符/超长 ID 一律拒绝，不静默改写
+        for bad in ["", "tasks/../../etc", "unknown", "TASKS"] {
+            assert!(
+                normalize_workbench_target(Some(WorkbenchNavTarget {
+                    tab: bad.into(),
+                    ..Default::default()
+                }))
+                .is_err(),
+                "tab {bad} 应被拒绝"
+            );
+        }
+        assert!(normalize_workbench_target(Some(WorkbenchNavTarget {
+            tab: "tasks".into(),
+            project_id: Some("p\n1".into()),
+            ..Default::default()
+        }))
+        .is_err());
+        assert!(normalize_workbench_target(Some(WorkbenchNavTarget {
+            tab: "tasks".into(),
+            object_id: Some("x".repeat(129)),
+            ..Default::default()
+        }))
+        .is_err());
+    }
+
+    /// 导航队列按顺序交付；回执会清掉尚未拉取的同号请求（防止窗口重载重复执行）。
+    #[test]
+    fn workbench_nav_queue_delivers_in_order_and_ack_clears_pending() {
+        clear_workbench_nav_queue();
+        let first = enqueue_workbench_nav(
+            WorkbenchNavTarget {
+                tab: "tasks".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let second = enqueue_workbench_nav(
+            WorkbenchNavTarget {
+                tab: "agents".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert!(second.request_id > first.request_id);
+
+        let taken = take_pending_workbench_nav().expect("第一条应可拉取");
+        assert_eq!(taken.request_id, first.request_id);
+        assert_eq!(taken.target.tab, "tasks");
+        // 未回执前重复拉取仍返回同一条（StrictMode 双执行/重载不丢请求）。
+        assert_eq!(
+            take_pending_workbench_nav().map(|req| req.request_id),
+            Some(first.request_id)
+        );
+
+        // 事件快路径已经回执第二条之前，先回执第一条：队首推进到第二条。
+        clear_pending_workbench_nav(first.request_id);
+        assert_eq!(
+            take_pending_workbench_nav().map(|req| req.target.tab),
+            Some("agents".to_string())
+        );
+
+        // 事件快路径已经回执第二条：队列里的它必须被移除，重载时不再执行。
+        clear_pending_workbench_nav(second.request_id);
+        assert!(take_pending_workbench_nav().is_none());
+
+        // 调用方预登记编号必须原样保留（回执可能先于命令响应到达）。
+        let explicit = enqueue_workbench_nav(WorkbenchNavTarget::default(), Some(9001)).unwrap();
+        assert_eq!(explicit.request_id, 9001);
+        assert_eq!(take_pending_workbench_nav().unwrap().request_id, 9001);
+        clear_pending_workbench_nav(9001);
+        assert!(enqueue_workbench_nav(WorkbenchNavTarget::default(), Some(0)).is_err());
+
+        let third = enqueue_workbench_nav(WorkbenchNavTarget::default(), None).unwrap();
+        assert!(third.request_id > 9001);
+        clear_workbench_nav_queue();
+    }
+
+    /// 跨窗口载荷必须是 camelCase，且 ack 的 status 是权威字段。
+    #[test]
+    fn workbench_nav_payloads_are_camel_case() {
+        let request = serde_json::to_string(&WorkbenchNavRequest {
+            request_id: 11,
+            target: WorkbenchNavTarget {
+                tab: "workspace".into(),
+                project_id: Some("p1".into()),
+                task_id: Some("t1".into()),
+                object_id: None,
+                sub: None,
+            },
+        })
+        .unwrap();
+        assert!(request.contains("\"requestId\":11"), "{request}");
+        assert!(request.contains("\"projectId\":\"p1\""), "{request}");
+        assert!(request.contains("\"taskId\":\"t1\""), "{request}");
+
+        let ack = serde_json::to_string(&WorkbenchNavAckEvent {
+            request_id: 11,
+            status: ACK_STATUS_SUCCEEDED.into(),
+            error: None,
+        })
+        .unwrap();
+        assert!(ack.contains("\"requestId\":11"), "{ack}");
+        assert!(ack.contains("\"status\":\"succeeded\""), "{ack}");
+        assert!(ack.contains("\"error\":null"), "{ack}");
+
+        let open = serde_json::to_string(&WorkbenchOpenResult {
+            request_id: 12,
+            created: true,
+        })
+        .unwrap();
+        assert!(open.contains("\"requestId\":12"), "{open}");
+        assert!(open.contains("\"created\":true"), "{open}");
+    }
+
 }

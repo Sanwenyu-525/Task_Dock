@@ -75,6 +75,82 @@ const STARTUP_READY_WARN_MS: u64 = 10_000;
 /// 前端是否已确认首屏就绪（`notify_ui_ready`）。只在启动告警线程里消费。
 pub(crate) static UI_READY: AtomicBool = AtomicBool::new(false);
 
+// ── 资源管理器「发送到」启动参数 ─────────────────────────────
+//
+// 第一实例在 setup 里消费；第二实例由 single-instance 插件把 argv 转交过来。
+// 只接受 `--send-to-shelf` 之后的路径，避免把任意命令行参数当文件。
+static PENDING_SEND_TO: OnceLock<std::sync::Mutex<Vec<String>>> = OnceLock::new();
+
+pub fn queue_send_to(args: &[String]) {
+    let paths = shelf::sendto::paths_from_argv(args);
+    if paths.is_empty() {
+        return;
+    }
+    let queue = PENDING_SEND_TO.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    let Ok(mut pending) = queue.lock() else {
+        return;
+    };
+    for path in paths {
+        if pending.iter().any(|p| p.eq_ignore_ascii_case(&path)) {
+            continue;
+        }
+        pending.push(path);
+        if pending.len() >= shelf::sendto::MAX_SEND_TO_PATHS {
+            break;
+        }
+    }
+}
+
+fn take_pending_send_to() -> Vec<String> {
+    PENDING_SEND_TO
+        .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+        .lock()
+        .map(|mut pending| std::mem::take(&mut *pending))
+        .unwrap_or_default()
+}
+
+/// 把「发送到 Task Dock」的路径写入暂存架（引用模式），并通知前端刷新。
+/// 路径只从启动参数来；不移动/复制来源文件。
+fn process_send_to(app: &AppHandle, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(st) = app.try_state::<Arc<shelf::ShelfState>>() else {
+            tracing::warn!("发送到暂存架失败：暂存架未就绪");
+            return;
+        };
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let outcome = shelf::ingest::save(
+            &st.db,
+            &st.root,
+            shelf::ingest::ClipboardIntake::Files(paths),
+            shelf::MODE_REFERENCE,
+            "manual",
+            None,
+        );
+        let payload = serde_json::json!({
+            "operationId": operation_id,
+            "source": "sendto",
+            "contentKind": outcome.content_kind,
+            "success": !outcome.added.is_empty(),
+            "partial": !outcome.added.is_empty()
+                && (!outcome.failed.is_empty() || outcome.skipped > 0),
+            "added": outcome.added.len(),
+            "failed": outcome.failed.len(),
+            "skipped": outcome.skipped,
+            "duplicates": outcome.duplicates,
+            "code": outcome.failure_code,
+            "retryable": outcome.retryable,
+        });
+        let _ = app.emit(shelf::ingest::EVENT_COLLECTED, payload);
+        if let Some(win) = app.get_webview_window("main") {
+            show_and_focus(&win);
+        }
+    });
+}
+
 // ── 托盘 ────────────────────────────────────────────────────
 
 fn tray_icon_bytes(state: AgentState) -> &'static [u8] {
@@ -358,7 +434,13 @@ pub fn run() {
     tauri::Builder::default()
         // 单实例保护必须最先注册：插件按注册顺序初始化，
         // 第二实例要在其余插件 init 与 setup（建库、绑 47821 端口、注册托盘）之前就被拦下并退出。
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let paths = shelf::sendto::paths_from_argv(&argv);
+            if !paths.is_empty() {
+                tracing::info!(count = paths.len(), "重复启动携带发送到暂存架路径");
+                process_send_to(app, paths);
+                return;
+            }
             tracing::info!("检测到重复启动，已把焦点交给现有实例");
             if let Some(win) = app.get_webview_window("main") {
                 show_and_focus(&win);
@@ -537,6 +619,12 @@ pub fn run() {
             // 自动清理开关默认关闭：关闭时不创建常驻线程，而不是每小时醒来空转。
             shelf_state.apply_auto_cleanup(settings.shelf_auto_cleanup_enabled);
             handle.manage(shelf_state);
+
+            // 第一实例若是被资源管理器「发送到」拉起的，暂存架就绪后立即入库。
+            let pending_send_to = take_pending_send_to();
+            if !pending_send_to.is_empty() {
+                process_send_to(&handle, pending_send_to);
+            }
 
             // 通用跨应用拖入（v49）：暂存区放 app data 下**独立**目录，
             // 不放 shelf 托管目录——否则会被孤儿文件清扫逻辑误判为托管残留。
@@ -1302,6 +1390,10 @@ pub fn run() {
             commands::shelf::shelf_add_link,
             commands::shelf::shelf_add_text,
             commands::shelf::shelf_add_from_clipboard,
+            commands::shelf::shelf_paste_current,
+            commands::shelf::shelf_sendto_status,
+            commands::shelf::shelf_sendto_enable,
+            commands::shelf::shelf_sendto_disable,
             commands::shelf::shelf_update,
             commands::shelf::shelf_delete,
             commands::shelf::shelf_clear,
@@ -1317,6 +1409,11 @@ pub fn run() {
             commands::shelf::shelf_task_links,
             commands::shelf::shelf_link_task,
             commands::shelf::shelf_unlink_task,
+            commands::shelf::shelf_project_links,
+            commands::shelf::shelf_link_project,
+            commands::shelf::shelf_unlink_project,
+            commands::shelf::shelf_ocr_item,
+            commands::shelf::shelf_ocr_cancel,
             commands::shelf::shelf_move_items,
             commands::shelf::shelf_copy_to,
             commands::shelf::shelf_relocate_item,
@@ -1389,15 +1486,24 @@ pub fn run() {
             commands::project_workspace::workspace_task_unlink,
             // 项目工作空间独立窗口（v49）：打开/聚焦、在开发工作台打开（含结果回执）
             project_workspace_window::open_project_workspace_window,
+            // 统一工作台（U0）：结构化目标导航（排队 + 拉取 + 回执）
+            project_workspace_window::workbench_open_window,
+            project_workspace_window::workbench_take_nav,
+            project_workspace_window::workbench_nav_ack,
             project_workspace_window::project_workspace_open_dev_workbench,
             project_workspace_window::project_workspace_open_dev_workbench_ack,
-            // Android 虚拟屏 MVP（实验）：ADB 设备/应用枚举 + scrcpy 进程托管
+            // Android 投屏（ADB + scrcpy）：设备/应用枚举、双模式会话托管、窗口定位与截屏
             commands::virtual_display::vd_probe,
             commands::virtual_display::vd_devices,
             commands::virtual_display::vd_list_apps,
             commands::virtual_display::vd_start,
             commands::virtual_display::vd_stop,
             commands::virtual_display::vd_sessions,
+            commands::virtual_display::vd_focus,
+            commands::virtual_display::vd_screenshot,
+            commands::virtual_display::vd_screenshot_export,
+            commands::virtual_display::vd_diagnostics,
+            commands::virtual_display::vd_reconnect,
         ])
         .build(context)
         .expect("启动 Task Dock 失败")
@@ -1417,6 +1523,9 @@ pub fn run() {
                 if let Some(drag) = app_handle.try_state::<Arc<dragdrop::DragDropState>>() {
                     drag.clear();
                 }
+                // scrcpy 子进程已加入 Job Object；这里再显式优雅关闭一次，
+                // 让虚拟屏在正常退出路径上也由 scrcpy 自行销毁（最多等 1.5s/会话）。
+                commands::virtual_display::shutdown_all();
             }
         });
 }

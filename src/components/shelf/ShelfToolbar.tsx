@@ -1,4 +1,4 @@
-//! 暂存架单行工具条：添加、搜索、筛选、更多。
+//! 暂存架单行工具条：添加、粘贴当前剪贴板、搜索、筛选、更多。
 //!
 //! 原「文件暂存架」标题行与四个头部图标收进本工具条：类型/分组/收藏进筛选
 //! 浮层，投递目标/空间清理/帮助/清空进「⋯」菜单；搜索框始终常驻，保证键盘
@@ -6,8 +6,8 @@
 
 import { useRef, useState } from "react";
 import {
-  ChevronDown, FolderInput, HardDrive, HelpCircle, MoreHorizontal, Plus,
-  SlidersHorizontal, Trash2,
+  ChevronDown, ClipboardPaste, FolderInput, HardDrive, HelpCircle, Loader2,
+  MoreHorizontal, Plus, Send, SlidersHorizontal, Trash2,
 } from "lucide-react";
 import { DropdownMenu, SearchField } from "../ui";
 import type { DropdownMenuItem } from "../ui/DropdownMenu";
@@ -33,12 +33,18 @@ export interface ShelfToolbarProps {
   onClearFilters: () => void;
   onPickFiles: () => void;
   onPickFolder: () => void;
+  /** 粘贴当前系统剪贴板（与 onAddFromClipboard 的历史选择明确不同）。 */
+  onPasteCurrent: () => void;
+  pasteBusy?: boolean;
   onAddLink: () => void;
   onAddText: () => void;
   onAddFromClipboard: () => void;
   onOpenTargets: () => void;
   onOpenCleanup: () => void;
   onClearShelf: () => void;
+  /** 资源管理器右键「发送到 Task Dock」开关（HKCU 动词）。 */
+  sendToEnabled: boolean;
+  onToggleSendTo: () => void;
   helpArticleId: string;
 }
 
@@ -59,12 +65,16 @@ export default function ShelfToolbar({
   onClearFilters,
   onPickFiles,
   onPickFolder,
+  onPasteCurrent,
+  pasteBusy = false,
   onAddLink,
   onAddText,
   onAddFromClipboard,
   onOpenTargets,
   onOpenCleanup,
   onClearShelf,
+  sendToEnabled,
+  onToggleSendTo,
   helpArticleId,
 }: ShelfToolbarProps) {
   const filterAnchor = useRef<HTMLButtonElement | null>(null);
@@ -125,6 +135,14 @@ export default function ShelfToolbar({
       onSelect: onOpenCleanup,
     },
     {
+      key: "sendto",
+      label: sendToEnabled
+        ? "停用资源管理器右键发送"
+        : "启用资源管理器右键发送",
+      icon: <Send size={13} aria-hidden="true" />,
+      onSelect: onToggleSendTo,
+    },
+    {
       key: "help",
       label: "查看帮助",
       icon: <HelpCircle size={13} aria-hidden="true" />,
@@ -180,6 +198,21 @@ export default function ShelfToolbar({
             menuMinWidth={190}
           />
         </div>
+
+        <button
+          type="button"
+          className="icon-btn sm shelf-paste-btn"
+          aria-label="粘贴当前剪贴板"
+          data-tip="粘贴当前内容 (Ctrl+V)"
+          disabled={pasteBusy}
+          onClick={onPasteCurrent}
+        >
+          {pasteBusy ? (
+            <Loader2 size={14} className="spin" aria-hidden="true" />
+          ) : (
+            <ClipboardPaste size={14} aria-hidden="true" />
+          )}
+        </button>
 
         <SearchField
           className="shelf-search"

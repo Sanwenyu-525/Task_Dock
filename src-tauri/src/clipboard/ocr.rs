@@ -392,6 +392,48 @@ impl OcrService {
             return hit;
         }
 
+        let path = match store::image_abs_path(db, root, item_id) {
+            Some(path) => path,
+            None => return OcrReport::unavailable("missing_image", "图片文件不存在"),
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(_) => return OcrReport::unavailable("missing_image", "图片文件无法读取"),
+        };
+        let report = self.recognize_bytes(&bytes, request_id, started);
+
+        if matches!(report.status.as_str(), STATUS_OK | STATUS_EMPTY) {
+            // 期间发生过删除/清空/清理（代数变化）时不写回，避免已删条目“复活”。
+            if !self.cache_put(item_id, &hash, &report, cache_epoch) {
+                tracing::debug!("剪贴板 OCR 结果未写缓存：缓存已失效");
+            }
+        }
+        tracing::debug!(
+            status = report.status,
+            code = report.code,
+            width = report.width,
+            height = report.height,
+            duration_ms = report.duration_ms,
+            cached = report.cached,
+            "剪贴板 OCR"
+        );
+        report
+    }
+
+    /// 对任意 PNG 字节执行一次识别（暂存架图片同样复用）。
+    ///
+    /// 与剪贴板条目识别共用同一套忙闸、取消、解码预算与引擎；不写剪贴板缓存
+    /// （缓存按剪贴板条目 id + 内容哈希组织，暂存条目没有该身份）。
+    pub fn recognize_png(&self, png: &[u8], request_id: &str) -> OcrReport {
+        self.recognize_bytes(png, request_id, Instant::now())
+    }
+
+    fn recognize_bytes(
+        &self,
+        bytes: &[u8],
+        request_id: &str,
+        started: Instant,
+    ) -> OcrReport {
         if self
             .busy
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -412,16 +454,8 @@ impl OcrService {
             });
         }
 
-        let path = match store::image_abs_path(db, root, item_id) {
-            Some(path) => path,
-            None => return OcrReport::unavailable("missing_image", "图片文件不存在"),
-        };
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(_) => return OcrReport::unavailable("missing_image", "图片文件无法读取"),
-        };
         // 解码前闸门：只读 IHDR 宽高，不分配像素缓冲。超限直接拒绝，不启动引擎。
-        let (hdr_w, hdr_h) = match image::png_dimensions(&bytes) {
+        let (hdr_w, hdr_h) = match image::png_dimensions(bytes) {
             Ok(dim) => dim,
             Err(e) => {
                 return OcrReport::error(
@@ -436,11 +470,11 @@ impl OcrService {
                 width = hdr_w,
                 height = hdr_h,
                 estimated_bytes = estimated,
-                "剪贴板 OCR 图片超过解码前预算"
+                "OCR 图片超过解码前预算"
             );
             return OcrReport::too_large(hdr_w, hdr_h, estimated);
         }
-        let (rgba, width, height) = match image::decode_png_rgba(&bytes) {
+        let (rgba, width, height) = match image::decode_png_rgba(bytes) {
             Ok(decoded) => decoded,
             Err(e) => {
                 return OcrReport::error(
@@ -450,13 +484,11 @@ impl OcrService {
                 )
             }
         };
-        drop(bytes);
 
         let (pixels, scaled_w, scaled_h) = scale_for_ocr(rgba, width, height);
-
         let result = recognize_pixels(pixels, scaled_w, scaled_h, &cancel, started);
         let duration_ms = started.elapsed().as_millis() as u64;
-        let report = match result {
+        match result {
             Err(RunError::Cancelled) => OcrReport::cancelled(duration_ms),
             Err(RunError::Timeout) => {
                 OcrReport::error("timeout", "识别超时，请稍后重试或用更小的图片", duration_ms)
@@ -487,24 +519,7 @@ impl OcrService {
                 report.suggested_title = crate::clipboard::engine::title_from_ocr(&report.text);
                 report
             }
-        };
-
-        if matches!(report.status.as_str(), STATUS_OK | STATUS_EMPTY) {
-            // 期间发生过删除/清空/清理（代数变化）时不写回，避免已删条目“复活”。
-            if !self.cache_put(item_id, &hash, &report, cache_epoch) {
-                tracing::debug!("剪贴板 OCR 结果未写缓存：缓存已失效");
-            }
         }
-        tracing::debug!(
-            status = report.status,
-            code = report.code,
-            width = report.width,
-            height = report.height,
-            duration_ms = report.duration_ms,
-            cached = report.cached,
-            "剪贴板 OCR"
-        );
-        report
     }
 
     fn cache_get(&self, item_id: &str, hash: &str) -> Option<OcrReport> {

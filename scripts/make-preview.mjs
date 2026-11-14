@@ -26,6 +26,10 @@ const shim = `
   // 扫描场景：ok（默认，立即返回完整结果）| cancelled | fail。
   // 只影响 harness 的 nav_scan_apps 返回，用于走查取消/错误状态，不参与发布包。
   const SCAN_MODE = q.get("scan") || "ok";
+  // 用户级垃圾扫描场景：ok（默认）| empty | partial（含权限不足/部分失败）|
+  // unavailable | expired（预览已过期）。只影响 resource_junk_preview/execute 夹具，
+  // 用于走查扫描成功/无候选/部分失败/过期状态，不参与发布包。
+  const JUNK_MODE = q.get("junk") || "ok";
   // 开发工作台：?wb=current 预置「当前任务」锚点（t1），用于走查四区域；
   // 默认空锚点，保持其他页面截图与旧行为不变。
   const WB_CURRENT = q.get("wb") === "current";
@@ -566,6 +570,86 @@ const shim = `
       { category: "orphan_thumbnails", status: "success", estimatedBytes: 512, freedBytes: 512, candidates: 1, deletedFiles: 1, skippedFiles: 0, failedFiles: 0 },
     ],
   };
+  // 用户级垃圾清理夹具（只用于走查，不落库、不触碰真实文件）：
+  // 结构对齐 bridge.ts 的 ResourceJunkPreview / ResourceJunkExecutionReport。
+  const junkCategory = (category, candidates, bytes, extra) => Object.assign({
+    category, status: "ready", candidates, estimatedBytes: bytes, protectedFiles: 0, skippedFiles: 0,
+  }, extra || {});
+  const junkOk = {
+    previewId: "junk-mock",
+    createdAt: iso(0),
+    expiresAt: new Date(Date.now() + 300000).toISOString(),
+    minimumAgeHours: 24,
+    categories: [
+      junkCategory("recycle_bin", 3, 1258291),
+      junkCategory("user_temp", 12, 34393293, { protectedFiles: 2, skippedFiles: 1 }),
+      junkCategory("system_temp", 0, 0),
+      junkCategory("crash_dumps", 0, 0),
+    ],
+  };
+  const junkPartial = {
+    previewId: "junk-mock",
+    createdAt: iso(0),
+    expiresAt: new Date(Date.now() + 300000).toISOString(),
+    minimumAgeHours: 24,
+    categories: [
+      junkCategory("recycle_bin", 3, 1258291),
+      junkCategory("user_temp", 0, 0, { status: "unavailable", errorCode: "access_denied", errorMessage: "部分路径无权限读取" }),
+      junkCategory("system_temp", 7, 10485760, { status: "partial", skippedFiles: 4 }),
+      junkCategory("crash_dumps", 0, 0),
+    ],
+  };
+  const junkEmpty = {
+    previewId: "junk-mock",
+    createdAt: iso(0),
+    expiresAt: new Date(Date.now() + 300000).toISOString(),
+    minimumAgeHours: 24,
+    categories: [
+      junkCategory("recycle_bin", 0, 0),
+      junkCategory("user_temp", 0, 0),
+      junkCategory("system_temp", 0, 0),
+      junkCategory("crash_dumps", 0, 0),
+    ],
+  };
+  const junkUnavailable = {
+    previewId: "junk-mock",
+    createdAt: iso(0),
+    expiresAt: new Date(Date.now() + 300000).toISOString(),
+    minimumAgeHours: 24,
+    categories: [
+      junkCategory("recycle_bin", 0, 0, { status: "unavailable", errorCode: "shell_unavailable", errorMessage: "无法读取回收站" }),
+      junkCategory("user_temp", 0, 0, { status: "unavailable", errorCode: "access_denied", errorMessage: "部分路径无权限读取" }),
+      junkCategory("system_temp", 0, 0),
+      junkCategory("crash_dumps", 0, 0),
+    ],
+  };
+  const junkExecuteOk = {
+    jobId: "junkjob-mock",
+    startedAt: iso(0),
+    finishedAt: iso(0),
+    status: "success",
+    totalFreedBytes: 35651584,
+    totalDeletedFiles: 15,
+    categories: [
+      { category: "recycle_bin", status: "success", candidates: 3, estimatedBytes: 1258291, freedBytes: 1258291, deletedFiles: 3, skippedFiles: 0, failedFiles: 0 },
+      { category: "user_temp", status: "success", candidates: 12, estimatedBytes: 34393293, freedBytes: 34393293, deletedFiles: 12, skippedFiles: 1, failedFiles: 0 },
+    ],
+  };
+  const junkExecutePartial = {
+    jobId: "junkjob-mock",
+    startedAt: iso(0),
+    finishedAt: iso(0),
+    status: "partial",
+    totalFreedBytes: 2306867,
+    totalDeletedFiles: 9,
+    categories: [
+      { category: "recycle_bin", status: "success", candidates: 3, estimatedBytes: 1258291, freedBytes: 1258291, deletedFiles: 3, skippedFiles: 0, failedFiles: 0 },
+      { category: "system_temp", status: "partial", candidates: 7, estimatedBytes: 10485760, freedBytes: 1048576, deletedFiles: 6, skippedFiles: 4, failedFiles: 1, errorCode: "locked_file", errorMessage: "部分文件被占用" },
+      { category: "user_temp", status: "failed", candidates: 0, estimatedBytes: 0, freedBytes: 0, deletedFiles: 0, skippedFiles: 0, failedFiles: 0, errorCode: "access_denied", errorMessage: "部分路径无权限读取" },
+    ],
+  };
+  const junkPreviewFor = (mode) => (mode === "empty" ? junkEmpty : mode === "partial" ? junkPartial : mode === "unavailable" ? junkUnavailable : junkOk);
+
   // 「导出给 Agent」面板夹具：覆盖窗口可用 / 已安装 / 未安装与超长名称。
   const agentCap = (supported, evidence, note) => ({ supported, evidence, note });
   const clipboardAgentTargets = [
@@ -778,6 +862,24 @@ const shim = `
       case "resource_cleanup_preview":
         return { ...resourcePreview, previewId: "preview-" + Date.now(), createdAt: iso(0), expiresAt: new Date(Date.now() + 300000).toISOString() };
       case "resource_cleanup_execute": return resourceCleanupReport;
+      case "resource_junk_preview": {
+        const requested = Array.isArray(args && args.categories) ? args.categories : [];
+        const base = junkPreviewFor(JUNK_MODE);
+        const categories = requested.length
+          ? base.categories.filter((c) => requested.indexOf(c.category) >= 0)
+          : base.categories;
+        return Object.assign({}, base, {
+          previewId: "junk-" + Date.now(),
+          expiresAt: JUNK_MODE === "expired"
+            ? new Date(Date.now() - 60000).toISOString()
+            : new Date(Date.now() + 300000).toISOString(),
+          categories,
+          totalCandidates: categories.reduce((a, c) => a + c.candidates, 0),
+          totalEstimatedBytes: categories.reduce((a, c) => a + c.estimatedBytes, 0),
+        });
+      }
+      case "resource_junk_execute":
+        return JUNK_MODE === "partial" ? junkExecutePartial : junkExecuteOk;
       case "list_tasks": {
         const f = args?.filter || {};
         const q2 = (f.search || "").trim();

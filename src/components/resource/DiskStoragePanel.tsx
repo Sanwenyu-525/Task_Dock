@@ -11,7 +11,7 @@ import { useEffect, useRef } from "react";
 import { resourceDiskUsage, type ResourceStorageEntry } from "../../lib/bridge";
 import { useAsyncResource } from "../../lib/asyncResource";
 import { formatBytes } from "../../lib/clipboardUi";
-import { formatLocalStamp } from "../../lib/format";
+import { resourceStamp } from "../../lib/resourceTime";
 import { buildBreakdown, formatPercent } from "../../lib/resourceMetrics";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
@@ -90,7 +90,7 @@ export default function DiskStoragePanel({
       rows: sorted.filter((entry) => entry.kind === group.kind),
     }))
     .filter((group) => group.rows.length > 0);
-  const sampled = rows?.sampledAt ? formatLocalStamp(rows.sampledAt) : null;
+  const sampled = resourceStamp(rows?.sampledAt);
 
   return (
     <section
@@ -145,10 +145,8 @@ export default function DiskStoragePanel({
             <strong>{formatBytes(rows.totalBytes)}</strong>
           </div>
           {sampled && (
-            <p className="resource-storage-sampled">
-              {t("settings.resourceCleanup.sampledAt", {
-                time: `${sampled.date} ${sampled.time}`,
-              })}
+            <p className="resource-storage-sampled" data-tip={sampled.full}>
+              {t("resource.time.updated", { time: sampled.time })}
             </p>
           )}
           <StackedBar

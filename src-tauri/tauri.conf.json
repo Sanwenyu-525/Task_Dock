@@ -100,7 +100,10 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/audio/voice-packs/**"]
+        "scope": [
+          "$APPDATA/audio/voice-packs/**",
+          "$TEMP/task-dock-vd/shots/**"
+        ]
       }
     }
   },

@@ -13,6 +13,7 @@ import { errorMessage, invokeCommand } from "../lib/errors";
 import { useSettingsStore } from "./useSettingsStore";
 import { TAB_ORDER, useUiStore } from "./useUiStore";
 import { resolveWindowMode } from "../lib/windowMode";
+import { isWorkbenchHost } from "../lib/windowHost";
 import type { Tab } from "./useUiStore";
 import {
   acceleratorFromEvent,
@@ -177,6 +178,9 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 function isFullMode(): boolean {
+  // 工作台窗口本身就是完整功能宿主：主窗口的 mode（minimal/compact/full）与它无关。
+  // 不覆盖会让工作台里的 Ctrl+数字/Ctrl+Shift+C 永远被判定为「非完整模式」。
+  if (isWorkbenchHost()) return true;
   return resolveWindowMode(useSettingsStore.getState().settings?.mode) === "full";
 }
 

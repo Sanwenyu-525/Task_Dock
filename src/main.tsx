@@ -11,6 +11,7 @@ import { bootFail, bootStage } from "./boot/bootProtocol";
 import "./styles.css";
 import "./styles-themes.css";
 import "./styles-ui.css";
+import "./styles-resource.css";
 import "./components/global-search/global-search.css";
 
 // 启动协议阶段信号（tmp/acceptance/startup-experience-v1/BOOT_PROTOCOL.md §3）：

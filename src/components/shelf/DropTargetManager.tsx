@@ -380,6 +380,11 @@ function TargetRow({
         >
           {shortPath(target.path)}
         </button>
+        {target.last_used_at && (
+          <span className="shelf-drop-target-recent">
+            最近投递：{target.last_used_at.slice(0, 10)}
+          </span>
+        )}
       </div>
 
       <div className="shelf-drop-target-modes" role="group" aria-label={`「${target.name}」投递方式`}>

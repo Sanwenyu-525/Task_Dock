@@ -6,9 +6,8 @@ import { errorMessage } from "../../lib/errors";
 import {
   workspaceProjectList,
   workspaceProjectSave,
-  workspaceSetActiveProject,
-  openProjectWorkspaceWindow,
 } from "../../lib/bridge";
+import { openWorkbench } from "../../lib/workbenchNav";
 import type { WorkspaceProject } from "../../lib/bridge";
 
 const KIND_LABEL: Record<string, string> = {
@@ -41,10 +40,12 @@ export default function WorkspaceProjectsPanel() {
     setBusy(true);
     try {
       const r = await workspaceProjectSave({ id: null, name: name.trim(), kind: "general", rootPath: null, devProjectId: null, note: null });
-      await workspaceSetActiveProject(r.project.id);
       setName("");
       await refresh();
-      await openProjectWorkspaceWindow({ projectId: r.project.id });
+      const outcome = await openWorkbench({ tab: "workspace", projectId: r.project.id });
+      if (outcome.status !== "succeeded" && outcome.status !== "pending") {
+        setError(outcome.error ?? "打开工作台失败");
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -54,7 +55,10 @@ export default function WorkspaceProjectsPanel() {
 
   const openWindow = useCallback(async (id?: string) => {
     try {
-      await openProjectWorkspaceWindow({ projectId: id ?? null });
+      const outcome = await openWorkbench({ tab: "workspace", projectId: id ?? null });
+      if (outcome.status !== "succeeded" && outcome.status !== "pending") {
+        setError(outcome.error ?? "打开工作台失败");
+      }
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -64,7 +68,7 @@ export default function WorkspaceProjectsPanel() {
     <div className="workspace-projects-panel" style={{ padding: 16 }}>
       <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>{t("nav.workspace")}</h2>
       <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-secondary)" }}>
-        项目工作空间是跨工具的长期工作容器；完整编辑在独立专业窗口中进行。
+        项目工作空间是跨工具的长期工作容器；完整编辑在统一工作台中进行。
       </p>
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <input
@@ -77,7 +81,7 @@ export default function WorkspaceProjectsPanel() {
           <Plus size={12} /> 新建并打开
         </button>
         <button className="btn sm" onClick={() => openWindow()}>
-          打开工作空间窗口
+          打开工作台
         </button>
       </div>
       {error && <div style={{ color: "var(--status-error, #dc2626)", fontSize: 12, marginBottom: 8 }}>{error}</div>}

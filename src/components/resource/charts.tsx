@@ -62,6 +62,8 @@ export interface UsageRingProps {
   ariaLabel: string;
   /** 图表下方的两行辅助信息。 */
   detail?: ReactNode;
+  /** 紧凑变体：只保留小环 + 中心数值，标题/状态由外层卡片头承担。 */
+  compact?: boolean;
 }
 
 export function UsageRing({
@@ -72,11 +74,16 @@ export function UsageRing({
   statusText,
   ariaLabel,
   detail,
+  compact = false,
 }: UsageRingProps) {
   const percent = usedPercent === null ? null : Math.min(100, Math.max(0, usedPercent));
   const offset = percent === null ? RING_CIRCUMFERENCE : RING_CIRCUMFERENCE * (1 - percent / 100);
   return (
-    <figure className={`resource-ring ${LEVEL_CLASS[level]}`} role="img" aria-label={ariaLabel}>
+    <figure
+      className={`resource-ring ${LEVEL_CLASS[level]}${compact ? " is-compact" : ""}`}
+      role="img"
+      aria-label={ariaLabel}
+    >
       <div className="resource-ring-figure">
         <svg viewBox="0 0 120 120" className="resource-ring-svg" aria-hidden="true" focusable="false">
           <circle className="resource-ring-track" cx="60" cy="60" r={RING_RADIUS} />
@@ -97,10 +104,12 @@ export function UsageRing({
           <span>{statusText}</span>
         </div>
       </div>
-      <figcaption className="resource-ring-caption">
-        <span className="resource-ring-title">{title}</span>
-        {detail}
-      </figcaption>
+      {!compact && (
+        <figcaption className="resource-ring-caption">
+          <span className="resource-ring-title">{title}</span>
+          {detail}
+        </figcaption>
+      )}
     </figure>
   );
 }

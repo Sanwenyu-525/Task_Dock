@@ -14,6 +14,7 @@ import NavigationVisibilitySection from "./NavigationVisibilitySection";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { defaultNavigationLayout } from "../../lib/navVisibility";
+import { resetNavOrderIntents } from "../../lib/navOrderIntent";
 import { overlayStack, resetOverlayStack } from "../../lib/overlayStack";
 
 const bridgeMocks = vi.hoisted(() => ({ updateSettings: vi.fn() }));
@@ -91,6 +92,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetOverlayStack();
+  // 排序意图是模块级共享状态（跨界面即时同步用）：用例之间必须重置。
+  resetNavOrderIntents();
   updateSettings.mockReset();
   useSettingsStore.setState({ settings: null, materialInfo: null });
   vi.useRealTimers();

@@ -11,7 +11,7 @@
 //! 不会被「忙碌」标志拦成永久 pending（根因见 `lib/asyncResource`）。
 
 import { useEffect, useRef, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, ShieldCheck } from "lucide-react";
 import {
   resourceMemoryCatalog,
   resourceMemoryRelease,
@@ -167,9 +167,7 @@ export default function MemorySegment({
 
   return (
     <div className="resource-memory">
-      <div className="resource-cleanup-section-head">
-        <h3 className="resource-cleanup-heading">{t("resource.memory.title")}</h3>
-      </div>
+      <h3 className="sr-only">{t("resource.memory.title")}</h3>
 
       {catalog.error && (
         <div className="setting-note resource-cleanup-error" role="alert">
@@ -193,41 +191,43 @@ export default function MemorySegment({
         </div>
       )}
 
-      <UsageBar
-        usedPercent={snapshotPending ? null : usage.usedPercent}
-        level={snapshotPending ? "unknown" : usage.level}
-        label={t("resource.memory.systemUsage")}
-        value={
-          snapshotPending
-            ? reading
-            : `${formatPercent(usage.usedPercent) ?? unavailable} · ${t(
-                usageStatusKey(usage.level, usage.anomaly),
-              )}`
-        }
-        ariaLabel={t("resource.aria.memoryBar", {
-          percent: formatPercent(usage.usedPercent) ?? unavailable,
-          available:
-            usage.availableBytes === null ? unavailable : formatBytes(usage.availableBytes),
-          total: usage.totalBytes === null ? unavailable : formatBytes(usage.totalBytes),
-          level: t(usageStatusKey(usage.level, usage.anomaly)),
-        })}
-        detail={
-          usage.anomaly
-            ? t(USAGE_ANOMALY_DETAIL[usage.anomaly])
-            : usage.totalBytes === null
-              ? unavailable
-              : t("settings.resourceCleanup.memoryValue", {
-                  available:
-                    usage.availableBytes === null
-                      ? unavailable
-                      : formatBytes(usage.availableBytes),
-                  total: formatBytes(usage.totalBytes),
-                })
-        }
-      />
+      <section className="resource-memory-system" aria-label={t("resource.memory.systemUsage")}>
+        <UsageBar
+          usedPercent={snapshotPending ? null : usage.usedPercent}
+          level={snapshotPending ? "unknown" : usage.level}
+          label={t("resource.memory.systemUsage")}
+          value={
+            snapshotPending
+              ? reading
+              : `${formatPercent(usage.usedPercent) ?? unavailable} · ${t(
+                  usageStatusKey(usage.level, usage.anomaly),
+                )}`
+          }
+          ariaLabel={t("resource.aria.memoryBar", {
+            percent: formatPercent(usage.usedPercent) ?? unavailable,
+            available:
+              usage.availableBytes === null ? unavailable : formatBytes(usage.availableBytes),
+            total: usage.totalBytes === null ? unavailable : formatBytes(usage.totalBytes),
+            level: t(usageStatusKey(usage.level, usage.anomaly)),
+          })}
+          detail={
+            usage.anomaly
+              ? t(USAGE_ANOMALY_DETAIL[usage.anomaly])
+              : usage.totalBytes === null
+                ? unavailable
+                : t("settings.resourceCleanup.memoryValue", {
+                    available:
+                      usage.availableBytes === null
+                        ? unavailable
+                        : formatBytes(usage.availableBytes),
+                    total: formatBytes(usage.totalBytes),
+                  })
+          }
+        />
+      </section>
 
       {/* 三个应用内存口径互不互斥：并列展示，不做堆叠图。 */}
-      <div className="resource-metric-strip">
+      <div className="resource-metric-strip resource-memory-metrics">
         <div className="resource-metric">
           <span className="resource-overview-label">{t("resource.memory.workingSet")}</span>
           <strong className="resource-metric-value">
@@ -294,7 +294,10 @@ export default function MemorySegment({
             <strong className="resource-memory-total">{formatBytes(reclaimed)}</strong>
           )}
         </div>
-        <p className="setting-note">{t("resource.memory.reclaimableDesc")}</p>
+        <p className="resource-memory-boundary">
+          <ShieldCheck size={12} aria-hidden="true" />
+          {t("resource.memory.releaseBoundary")}
+        </p>
 
         {catalogPending && (
           <p className="setting-note" role="status">
@@ -342,14 +345,17 @@ export default function MemorySegment({
                 );
               })}
             </ul>
-            <p className="setting-note">{t("resource.memory.reclaimShareNote")}</p>
           </>
         )}
 
         {catalog.data && catalog.data.totalBytes === 0 && (
-          <p className="setting-note" role="status">
-            {t("resource.memory.nothingToRelease")}
-          </p>
+          <div className="resource-memory-empty" role="status">
+            <ShieldCheck size={14} aria-hidden="true" />
+            <div>
+              <strong>{t("resource.memory.nothingToRelease")}</strong>
+              <span>{t("resource.memory.reclaimableDesc")}</span>
+            </div>
+          </div>
         )}
 
         {catalog.data && catalog.data.totalBytes > 0 && (
@@ -405,7 +411,12 @@ export default function MemorySegment({
           </div>
         )}
 
-        <p className="setting-note">{t("resource.memory.safetyNote")}</p>
+        <details className="resource-memory-more">
+          <summary>{t("resource.memory.details")}</summary>
+          <p>{t("resource.memory.reclaimableDesc")}</p>
+          <p>{t("resource.memory.reclaimShareNote")}</p>
+          <p>{t("resource.memory.safetyNote")}</p>
+        </details>
       </section>
     </div>
   );

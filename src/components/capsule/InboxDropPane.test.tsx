@@ -20,6 +20,7 @@ const openShelfItem = vi.fn();
 const copyShelfFiles = vi.fn();
 const copyShelfPaths = vi.fn();
 const addShelfPaths = vi.fn();
+const pasteShelfCurrent = vi.fn();
 const getShelfItem = vi.fn();
 const readShelfText = vi.fn();
 const copyClipboardText = vi.fn();
@@ -89,6 +90,7 @@ vi.mock("../../lib/bridge", () => ({
   shelfCopyFiles: (...a: unknown[]) => copyShelfFiles(...a),
   shelfCopyPaths: (...a: unknown[]) => copyShelfPaths(...a),
   shelfAddPaths: (...a: unknown[]) => addShelfPaths(...a),
+  shelfPasteCurrent: (...a: unknown[]) => pasteShelfCurrent(...a),
   shelfGetItem: (...a: unknown[]) => getShelfItem(...a),
   shelfReadText: (...a: unknown[]) => readShelfText(...a),
   shelfUpdate: (...a: unknown[]) => updateShelfItem(...a),
@@ -134,6 +136,7 @@ import { useShelfStore, __resetShelfRecentCache } from "../../store/useShelfStor
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 import { useUiStore } from "../../store/useUiStore";
 import { __resetFileDrop } from "../../lib/fileDrop";
+import { registerOverlay } from "../../lib/overlayStack";
 import type { ShelfFailedEntry } from "../../lib/bridge";
 
 /** 每个用例都可能改写 DPI/命中函数：统一在 afterEach 复原，避免串味。 */
@@ -217,6 +220,26 @@ function shelfItem(over: Record<string, unknown> = {}) {
   };
 }
 
+/** 主动粘贴当前剪贴板的结构化报告（默认成功但没有条目，用例按需覆盖）。 */
+function pasteReport(over: Record<string, unknown> = {}) {
+  return {
+    operation_id: "paste-1",
+    source: "clipboard-current",
+    content_kind: "text",
+    added: [],
+    added_ids: [],
+    failed: [],
+    skipped: 0,
+    duplicates: 0,
+    success: true,
+    partial: false,
+    requires_user_action: false,
+    code: null,
+    retryable: false,
+    ...over,
+  };
+}
+
 /**
  * 临时替换 store 的 addPaths：按重构后契约直接 mock（原始路径进、
  * `{ added, failed }` 出，failed 已合并预检与后端失败），让用例与
@@ -253,6 +276,7 @@ beforeEach(() => {
   copyShelfFiles.mockReset();
   copyShelfPaths.mockReset();
   addShelfPaths.mockReset();
+  pasteShelfCurrent.mockReset();
   getShelfItem.mockReset();
   readShelfText.mockReset();
   copyClipboardText.mockReset();
@@ -2488,5 +2512,180 @@ describe("InboxDropPane 重试失败项（W4）", () => {
     expect(await screen.findByText("已暂存 1 项")).toBeTruthy();
     expect(screen.queryByText("正在读取拖入内容…")).toBeNull();
     document.elementFromPoint = original;
+  });
+});
+
+// ── 主动粘贴当前剪贴板（P0）─────────────────────────────────
+
+describe("InboxDropPane 主动粘贴当前剪贴板", () => {
+  it("标题行粘贴按钮读取当前剪贴板并刷新最近暂存", async () => {
+    dropTargets.mockResolvedValue([]);
+    pasteShelfCurrent.mockResolvedValue(
+      pasteReport({ added: [shelfItem()], added_ids: ["s1"] }),
+    );
+    render(<InboxDropPane />);
+    const button = await screen.findByRole("button", { name: "粘贴当前剪贴板" });
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(pasteShelfCurrent).toHaveBeenCalledWith("reference", null),
+    );
+    await screen.findByText("已暂存 1 项");
+    // 胶囊的最近暂存是 4 条切片：成功后必须强制刷新，不能停在 5s 软缓存。
+    expect(listRecent.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("Ctrl+V 触发粘贴并 preventDefault", async () => {
+    dropTargets.mockResolvedValue([]);
+    pasteShelfCurrent.mockResolvedValue(
+      pasteReport({ added: [shelfItem()], added_ids: ["s1"] }),
+    );
+    render(<InboxDropPane />);
+    await screen.findByText("最近暂存");
+    const event = new KeyboardEvent("keydown", {
+      key: "v",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(pasteShelfCurrent).toHaveBeenCalledTimes(1));
+    await screen.findByText("已暂存 1 项");
+  });
+
+  it("输入框、textarea、contenteditable 与 Ctrl+Shift+V 不被拦截", async () => {
+    dropTargets.mockResolvedValue([]);
+    pasteShelfCurrent.mockResolvedValue(pasteReport());
+    const { container } = render(<InboxDropPane />);
+    await screen.findByText("最近暂存");
+
+    const input = document.createElement("input");
+    const textarea = document.createElement("textarea");
+    const editable = document.createElement("div");
+    editable.setAttribute("contenteditable", "true");
+    container.appendChild(input);
+    container.appendChild(textarea);
+    container.appendChild(editable);
+
+    fireEvent.keyDown(input, { key: "v", ctrlKey: true });
+    fireEvent.keyDown(textarea, { key: "v", ctrlKey: true });
+    fireEvent.keyDown(editable, { key: "v", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true, shiftKey: true });
+    await flush();
+    expect(pasteShelfCurrent).not.toHaveBeenCalled();
+  });
+
+  it("弹层打开时不消费 Ctrl+V", async () => {
+    dropTargets.mockResolvedValue([]);
+    pasteShelfCurrent.mockResolvedValue(pasteReport());
+    render(<InboxDropPane />);
+    await screen.findByText("最近暂存");
+    const release = registerOverlay({ kind: "menu", onEscape: () => {} });
+    try {
+      fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+      await flush();
+      expect(pasteShelfCurrent).not.toHaveBeenCalled();
+    } finally {
+      release();
+    }
+  });
+
+  it("在途粘贴不会被重复点击或重复按键放大", async () => {
+    dropTargets.mockResolvedValue([]);
+    let resolvePaste: (value: unknown) => void = () => {};
+    pasteShelfCurrent.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePaste = resolve;
+      }),
+    );
+    render(<InboxDropPane />);
+    const button = await screen.findByRole("button", { name: "粘贴当前剪贴板" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(true));
+    expect(pasteShelfCurrent).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolvePaste(pasteReport({ added: [shelfItem()], added_ids: ["s1"] }));
+    });
+    await screen.findByText("已暂存 1 项");
+  });
+
+  it("空剪贴板给出明确文案和稳定码，而不是 0 项成功", async () => {
+    dropTargets.mockResolvedValue([]);
+    pasteShelfCurrent.mockResolvedValue(
+      pasteReport({
+        success: false,
+        content_kind: "none",
+        failed: [
+          {
+            path: "",
+            reason: "剪贴板为空",
+            code: "CLIPBOARD_EMPTY",
+            category: "unsupported",
+          },
+        ],
+        code: "CLIPBOARD_EMPTY",
+      }),
+    );
+    render(<InboxDropPane />);
+    fireEvent.click(await screen.findByRole("button", { name: "粘贴当前剪贴板" }));
+    await screen.findByText("剪贴板没有内容");
+    expect(screen.getByText("CLIPBOARD_EMPTY")).toBeTruthy();
+  });
+
+  it("部分失败展示成功/失败/跳过计数、稳定码与可展开详情", async () => {
+    dropTargets.mockResolvedValue([]);
+    pasteShelfCurrent.mockResolvedValue(
+      pasteReport({
+        added: [shelfItem()],
+        added_ids: ["s1"],
+        failed: [
+          {
+            path: "C:/Docs/bad.txt",
+            reason: "路径不存在: C:/Docs/bad.txt",
+            code: "NOT_FOUND",
+            category: "not_found",
+          },
+        ],
+        skipped: 2,
+        partial: true,
+        requires_user_action: true,
+      }),
+    );
+    render(<InboxDropPane />);
+    fireEvent.click(await screen.findByRole("button", { name: "粘贴当前剪贴板" }));
+    await screen.findByText("部分内容未暂存");
+    expect(screen.getByText("NOT_FOUND")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    expect(screen.getByText(/成功 1 项，失败 1 项，跳过 2 项/)).toBeTruthy();
+    expect(screen.getByText(/bad\.txt/)).toBeTruthy();
+  });
+
+  it("剪贴板被占用时提示可重试，不冒充失败内容", async () => {
+    dropTargets.mockResolvedValue([]);
+    pasteShelfCurrent.mockResolvedValue(
+      pasteReport({
+        success: false,
+        content_kind: "none",
+        failed: [
+          {
+            path: "",
+            reason: "剪贴板被其他程序占用",
+            code: "CLIPBOARD_BUSY",
+            category: "service",
+          },
+        ],
+        code: "CLIPBOARD_BUSY",
+        retryable: true,
+        requires_user_action: true,
+      }),
+    );
+    render(<InboxDropPane />);
+    fireEvent.click(await screen.findByRole("button", { name: "粘贴当前剪贴板" }));
+    await screen.findByText("剪贴板暂时被占用");
+    expect(screen.getByText("CLIPBOARD_BUSY")).toBeTruthy();
   });
 });

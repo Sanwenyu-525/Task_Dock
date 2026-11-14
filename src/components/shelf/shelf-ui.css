@@ -439,3 +439,13 @@
     display: none;
   }
 }
+
+/* 投递目标「最近使用」：只占一行小字，不改变卡片高度体系与操作区。 */
+.shelf-drop-target-recent {
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

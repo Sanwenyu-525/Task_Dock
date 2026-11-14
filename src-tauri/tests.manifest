@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Rust 测试可执行文件的 manifest（仅测试目标，见 build.rs）。
+  rfd 的 TaskDialogIndirect 需要 Common-Controls v6；没有该依赖声明时，
+  测试进程会在加载阶段报 STATUS_ENTRYPOINT_NOT_FOUND。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>

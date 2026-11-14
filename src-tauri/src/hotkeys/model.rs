@@ -91,6 +91,12 @@ pub const ACTIONS: &[ActionDef] = &[
         "系统级：其他程序在前台时也能唤起快速捕获",
         "Ctrl+Shift+Space",
     ),
+    system(
+        "collect_to_shelf",
+        "收集当前剪贴板到暂存架",
+        "系统级：在其他程序复制后，一键读取当前剪贴板并写入暂存架",
+        "Ctrl+Alt+G",
+    ),
     app(
         "quick_add_task",
         "快速添加任务",

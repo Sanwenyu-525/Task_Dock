@@ -58,6 +58,7 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useActionsStore } from "../../store/useActionsStore";
 import { useCaptureStore } from "../../store/useCaptureStore";
 import { defaultNavigationLayout } from "../../lib/navVisibility";
+import { resetNavOrderIntents } from "../../lib/navOrderIntent";
 import { allEntryIds } from "../../lib/navigationRegistry";
 import { registerTabGuard } from "../../lib/tabGuard";
 
@@ -136,6 +137,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   bridge.updateSettings.mockReset();
+  // 排序意图是模块级共享状态：用例之间重置，避免跨用例污染已提交配置。
+  resetNavOrderIntents();
   useSettingsStore.setState({ settings: null, materialInfo: null });
 });
 

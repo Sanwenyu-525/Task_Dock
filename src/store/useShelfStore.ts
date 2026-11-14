@@ -22,6 +22,7 @@ import {
   shelfGroups,
   shelfGroupRename,
   shelfList,
+  shelfPasteCurrent,
   shelfStats,
   shelfUnlinkTask,
   shelfUpdate,
@@ -33,6 +34,7 @@ import {
   type ShelfItem,
   type ShelfKind,
   type ShelfAddReport,
+  type ShelfPasteReport,
   type ShelfOpReport,
   type ShelfStats,
   type ShelfUpdatePatch,
@@ -106,6 +108,15 @@ interface ShelfState {
     mode: "reference" | "managed",
     groupId?: string | null,
   ) => Promise<{ added: number; failed: ShelfFailedEntry[] }>;
+  /**
+   * 主动粘贴**当前系统剪贴板**（与 `addFromClipboard` 的历史条目选择完全不同）。
+   * 返回后端结构化报告 + 本次前端诊断 operationId；空/占用/不支持也正常返回，
+   * 由调用方决定提示形式。
+   */
+  pasteCurrent: (
+    mode: "reference" | "managed",
+    groupId?: string | null,
+  ) => Promise<{ report: ShelfPasteReport; operationId: string }>;
   /**
    * 提交一次「通用拖入」会话（v49）。
    *
@@ -718,6 +729,74 @@ export const useShelfStore = create<ShelfState>((set, get) => ({
       await get().load({ silent: true });
     }
     return { added: report.added.length, failed: report.failed };
+  },
+
+  pasteCurrent: async (mode, groupId) => {
+    // 诊断只记录类型/计数/稳定码，不记录正文、路径或图片字节。
+    const op = startOperation("shelf", "shelf_paste_current", {
+      metadata: { mode, source: "clipboard-current" },
+    });
+    let report: ShelfPasteReport;
+    try {
+      op.stage("read+persist");
+      report = await shelfPasteCurrent(mode, groupId ?? null);
+    } catch (e) {
+      op.fail(e);
+      throw e;
+    }
+
+    if (report.added.length > 0) {
+      set((s) => ({
+        items: sortItems([...report.added, ...s.items]),
+        recent: [...report.added, ...s.recent].slice(0, SHELF_RECENT_LIMIT),
+      }));
+      invalidateRecent();
+      try {
+        await get().refreshMeta();
+        await get().load({ silent: true });
+      } catch {
+        // 收尾刷新失败不改变「已入库」结论；列表会在下次加载时校正。
+      }
+    }
+
+    const meta = {
+      content_kind: report.content_kind,
+      added: report.added.length,
+      failed: report.failed.length,
+      skipped: report.skipped,
+      backend_operation_id: report.operation_id,
+    };
+    if (!report.success) {
+      op.fail(
+        {
+          code: report.code ?? (report.retryable ? "CLIPBOARD_BUSY" : "CLIPBOARD_EMPTY"),
+          category: report.retryable ? "service" : "unsupported",
+        },
+        {
+          severity: "WARN",
+          message: report.retryable
+            ? "当前剪贴板暂时不可读"
+            : "当前剪贴板没有可暂存内容",
+          metadata: meta,
+        },
+      );
+    } else if (report.partial || report.failed.length > 0) {
+      op.fail(
+        {
+          code: report.failed[0]?.code ?? "SHELF_PASTE_PARTIAL",
+          category: "io",
+        },
+        {
+          severity: "WARN",
+          message: `粘贴部分成功：成功 ${report.added.length}、失败 ${report.failed.length}`,
+          metadata: meta,
+        },
+      );
+    } else {
+      op.success({ metadata: meta });
+    }
+
+    return { report, operationId: op.id };
   },
 
   commitDragPayload: async (operationId, mode, groupId) => {

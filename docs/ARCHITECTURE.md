@@ -821,6 +821,53 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   覆盖显隐写入；写库失败丢弃草稿回到后端真实顺序并就地提示。排序列表自身是滚动容器
   （`max-height: clamp(200px, 42vh, 360px)`），滚轮/自动滚动都不滚动设置页本身。
   数据契约不变：仍是 `navigation_layout` version 1，无新设置键、无迁移。
+- 导航排序二轮修复（2026-11-14）：**跨界面即时同步 + 明确的保存失败语义**。上一轮验收发现：
+  设置列表已变化但侧边栏/胶囊仍读已提交配置（合并窗口 + 写库期间不一致）、`flush()` 吞掉
+  写入失败导致显隐/恢复默认继续执行、键盘路径绕过写入忙状态。
+  ①**乐观意图层**（新增 `lib/navOrderIntent.ts`）：拖动/长按只把「尚未落库的顺序」发布到
+  模块级共享层（每界面一份、单调递增 `seq`），`useNavigationLayout()` 把它叠在已提交配置上
+  并订阅版本号 —— 设置列表、`FullView` 侧边栏、`CapsuleRail`、帮助入口在**同一次 React 更新**
+  里看到同一顺序；意图不持久化、只表达顺序（应用时按已提交集合过滤，隐藏项不会复活）、
+  写入成功即清除、失败即回滚，SQLite 仍是唯一事实源。新增 `useCommittedNavigationLayout()`
+  作为草稿基准与回滚目标，避免「从上一份草稿再推一次」。
+  ②**序号裁决过期写入**：收尾只处理「仍然是当前序号」的意图 —— A 的响应晚到不会把界面回退到
+  A，B 失败也不会清掉更新的 C；`persistNavigationLayout` 的读-改-写基准改为「已提交 + 未落库
+  意图」，因此任何导航写入都不会用旧顺序覆盖刚做的调整。
+  ③**失败语义**：`useNavOrderDraft.flush()` 成功 resolve、失败 reject（错误同时就地展示）；
+  显隐切换在 `flush()` 失败时**不执行**（不静默丢排序）；恢复默认是整份覆盖，改为 `discard()`
+  丢弃待保存意图后直接写默认值（不再为一份即将被覆盖的顺序制造可能失败的写入）；卸载时仍用
+  快照落库，失败写 `console.warn` 留痕（不再空 catch）。
+  ④**忙状态分层**：排他写入（显隐/恢复默认）继续置 `busy` 并阻止新的排序、长按、拖拽与
+  `Alt+↑/↓`（`step` 与键盘路径共用同一判定，不再只依赖按钮 disabled）；排序草稿的合并写入
+  **不**设 busy，连续拖动/长按不会被中断。
+  ⑤**调整条滚动**：新增 `lib/revealInScroller.ts` 取代 `scrollIntoView` —— 只找最近的可滚动
+  祖先、只做纵向、只在越界时补最小差额（不居中、不滚动无关容器）；窄窗（≤400px）调整条省略
+  重复的长名称并保留位置数字，手柄命中区从 14×20 提到 16×22；保存失败提示移到列表上方。
+  测试：`lib/navOrderIntent.test.ts`、`lib/revealInScroller.test.ts`、
+  `NavigationVisibility.sync.test.tsx`（即时同步 / 10 次连续移动 / 过期写入 / 失败回滚 /
+  键盘忙状态 / 界面隔离 / 卸载落库）。
+- 导航排序三轮收口（2026-11-14）：**写入结果协议 + flush 收敛 + 切换事务**。二轮之后仍有三条
+  退出路径没有明确语义：
+  ①**写入结果协议**：排序写入从「返回错误字符串」改为显式结果
+  `{ status: "success" | "superseded" | "failed" }`（`NavWriteResult`）。`flush()` 现在同时
+  检查**已经在途**的写入结果 —— 旧实现只 `await`，失败信息留在返回值里没人看，显隐切换会在
+  排序其实没保存时继续执行。当前意图失败 → `flush()` reject（调用方中止依赖操作；意图已按序号
+  回滚并就地提示）；过期意图失败 → 只代表那一笔没落库，不算本次成功也不终止流程，`flush()`
+  继续保存仍然有效的意图，不会误回滚更新的意图。
+  ②**flush 收敛语义**：删除「最多 4 轮就当完成」的上限，改为「目标界面没有待保存意图且没有在途
+  写入」才 resolve；轮次上限（8）只作异常保护，命中时显式失败（`导航排序仍在持续变化…`），绝不
+  静默留下未保存排序。调用方在 `flush()` 前用 busy / 切换事务锁封住新的排序输入，正常 1–2 轮
+  收敛。
+  ③**界面切换事务**：`onSurfaceChange` 先停长按与拖拽、同步置 busy 封住全部排序入口，再
+  `flush()` 旧界面，**成功后才**切到目标界面；失败则留在原界面 + 真实错误（顺序已回滚），可
+  直接重试。`switchTaskRef` 保证同一时刻只有一个事务（连点不会产生第二份快照），事务期间两个
+  界面按钮禁用，结束后若焦点掉到 body 就按稳定界面标识还给对应按钮。
+  ④**卸载 / 恢复默认**：卸载先等在途写入收尾，再决定是否补写（同一份意图不重复提交），在途
+  失败写 `console.warn` 留痕；`mountedRef` 阻止已卸载组件再写状态；恢复默认仍走 `discard()`，
+  在途旧写入被串行链排在默认值之前，不会覆盖默认顺序。
+  测试：`hooks/useNavOrderDraft.test.tsx`（在途失败 / 过期失败 / >4 轮持续输入 / 卸载去重 /
+  卸载失败留痕 / 卸载落库）；`NavigationVisibility.sync.test.tsx` 增补在途失败中止显隐、在途
+  恢复默认、切换事务成功 / 失败 / 重试与输入封锁。
 - 设置页信息架构（2026-11-06，一级分类 + 查找定位）：设置页从「十几个分组纵向堆叠」
   改为**六个一级分类**（通用与外观 / 功能与应用 / 通知与语音 / 数据与资源 / 接入与诊断 /
   帮助与教程），同一时刻只渲染当前分类的分组。
@@ -1734,5 +1781,122 @@ unsupported`，字节与流落到 `data_dir/drag-incoming` 的暂存副本，前
 - 兼容性：`dragDropEnabled` 保持开启（关掉会让资源管理器拖入一起失效）；
   无新增 SQLite 迁移、无新增设置键；暂存目录只在真实 `Drop` 后创建，退出清理 +
   启动 sweep。
+
+## 统一大型工作台（U0，2026-11-14）
+
+### 1. 窗口职责（唯一大型宿主）
+
+| 角色 | 窗口 label | 职责 |
+|---|---|---|
+| Quick Surface Host | `main` | 胶囊/贴边吸附/极简入口/快速任务/快速捕获/剪贴板与收集箱快捷操作/Agent 提示/完整工作台启动入口；**不再新增大型管理页** |
+| Full Workbench Host | `workspace` | 唯一大型完整功能宿主：全局导航、任务、Agent、开发工作台、项目工作空间、收集与暂存、剪贴板、应用、工作流、规划、资源、诊断、设置、手机互传；普通可缩放/最大化/任务栏可见/几何持久化 |
+| Auxiliary | `capture` / `notification` / `context-menu` / `tab-hint` / `widget-*` | 职责与生命周期不变 |
+
+没有第三个大型窗口：`workspace` 沿用 v49 的 label、创建命令、几何键
+`workspace_window_rect`、显示器收敛与关闭语义；`workspace.html` / `src/workspace/main.tsx` 保留。
+`WorkspaceApp` 收敛为「初始化 + 组合 `WorkbenchShell`」的薄入口，旧的项目列表/顶栏 JSX
+不再作为第二套导航外壳存在。
+
+### 2. 单一导航注册中心
+
+工作台左侧导航、主窗口完整面板与胶囊轨道都使用 `src/lib/navigationRegistry.ts`：
+同一稳定 ID、同一 `navigation_layout` 显隐/排序、同一 `locked` 规则（设置固定在底部）。
+工作台没有自己的入口数组；新增功能仍按注册中心流程登记。工作台额外只有「工作台首页」
+（`home`）这一个外壳级目标，它不是业务入口，不占用快捷键。
+
+### 3. 打开/导航协议（排队 + 拉取 + 回执）
+
+代码：`src-tauri/src/project_workspace_window.rs`、`src/lib/workbenchNav.ts`、
+`src/lib/bridge.ts`、`src/workbench/WorkbenchShell.tsx`。
+
+1. 调用方（主窗口内的胶囊/完整面板）在 `invoke` **之前**生成 `requestId` 并登记回执监听
+   （回执可能先于命令响应到达）。
+2. `workbench_open_window`：校验目标 tab 白名单（`home` + 全部逻辑 Tab）、项目存在性；
+   任务窗口已存在则唤醒/显示/聚焦，不存在则创建（`show` 前先写活跃项目，失败回滚）；
+   导航请求**先入队**（最多 8 条）再推 `workbench-navigate` 事件快路径。
+3. 工作台挂载时、收到事件时、窗口重新获得焦点时调用 `workbench_take_nav` 拉队列；
+   `requestId` 去重（事件与拉取可能重复交付）。`take_nav` **只读队首**，请求在
+   `workbench_nav_ack` 后才移除：StrictMode 双执行/页面重载丢弃一次拉取不会丢请求。
+   窗口已存在时 Rust 在事件后额外 `eval` 页面内 `taskdock-workbench-nav-ping`，
+   事件因重载/监听未注册而丢失时工作台仍会立即拉取。
+4. 工作台执行路由：未保存草稿走既有 `setTab` 门禁（`pending` 时在工作台内显示确认条）；
+   确认/取消后回最终结果。项目上下文**只在路由切换成功后提交**：失败/取消不写，
+   提交失败把页面退回原路由。
+5. `workbench_nav_ack` 回传 `succeeded / pending / cancelled / failed` 并清掉队列中同号请求；
+   主窗口调用方只认同号回执，12s 无回执按失败如实提示（不把「事件已发」当成功）。
+6. 旧命令 `open_project_workspace_window` 保留为兼容：映射为「打开工作台并导航到项目页」，
+   仍只允许主窗口调用。
+
+### 4. 宿主角色与页面活跃状态
+
+- `src/lib/windowHost.ts`：`quick / workbench / auxiliary` 角色在窗口入口挂载前设置一次；
+  `useMainUiVisible` / `useFullViewVisible` 在工作台角色下不再读取主窗口的
+  `settings.mode` 与 `useEdgeSnapStore.phase`（工作台没有贴边吸附状态机）。
+- 已访问页面用 `DeferredView` 保活（切页不丢草稿/滚动）；`WorkbenchPageActiveContext`
+  为每个路由提供真实 `active`，隐藏页面经同一对钩子暂停剪贴板实时订阅、资源轮询等
+  「消费者门控」刷新；恢复可见按各页面既有语义补刷。**后台服务本身不因页面隐藏而停止。**
+- 快捷键：`useHotkeysRuntime` 在每个 WebView 内分发 `app_local` 动作到本窗口 store；
+  `isFullMode()` 在工作台角色下恒为真，Ctrl+数字/Ctrl+Shift+C 作用于工作台，
+  不会导航隐藏的主窗口页面。系统级快捷键仍由 Rust 常驻注册（仅窗口切换/快速捕获）。
+- 后台所有权：工作台**不**挂载 `useAudioNotifications`、`WidgetDesktopBridge`、贴边吸附、
+  通知窗口调度；只订阅主题/设置广播与数据事件并按需重读权威数据。桌面微件的唯一数据
+  发布者仍是主窗口 `publish_widget_snapshot`（Rust 仅允许 `main`）。
+
+### 5. 状态所有权
+
+| 类别 | 权威来源 | 说明 |
+|---|---|---|
+| 业务状态 | Rust 命令 + SQLite | 任务/项目/Agent/交接包/验收/文件/工作流/诊断；工作台不持有副本 |
+| 全局工作上下文 | `workspace_active_project`、`workbench_current_project`、`workbench_current_task` | 只由显式选择/导航事务写入；项目选择经 `activeProjectWriter` 串行 latest-wins |
+| 窗口级 UI | 工作台自己的 `useUiStore` + 本地 state | 两个 WebView 内存隔离；草稿、弹层、当前路由互不覆盖 |
+| 持久化布局 | `navigation_layout`、`workbench_layout`、`workspace_instances.layout_json` | 三层正交，见下 |
+
+`settings-changed` 事件只广播**变更键名、来源窗口与单调修订号**（不含值）；主窗口与工作台
+收到后按需重新读取设置，修订号倒序/重复的旧事件被忽略。工作台自身写入
+`workbench_layout` 时主窗口跳过重读（不消费该键）。
+
+### 6. 布局协议（三层）
+
+1. **Quick Surface**：`navigation_layout.capsule`（胶囊入口显隐/排序），语义不变。
+2. **Workbench Shell**：`workbench_layout`（新增，v1）：
+   ```json
+   { "version": 1, "route": "home", "projectId": null,
+     "detailOpen": true, "navWidth": 224, "detailWidth": 320 }
+   ```
+   路由必须是注册中心逻辑 Tab 或 `home`；项目 ID 去空白/限长；宽度钳制
+   （导航 180–320，右栏 260–480）；版本/对象损坏整体回默认；未知字段忽略。
+   后端 `validate_setting` 只做结构边界校验（对象/版本/路由/项目/布尔/宽度范围），
+   语义归一化在 `src/lib/workbenchLayout.ts`，写入经串行链。
+3. **Project Workspace**：`workspace_instances.layout_json`（模块顺序/隐藏/当前模块），
+   沿用 `workspaceProfiles.ts` 解析与 `withActiveModule`；工作台项目页复用同一份。
+
+旧窗口几何 `workspace_window_rect` 不变；多显示器失效仍按既有逻辑收敛到主屏工作区。
+
+### 7. 权限
+
+`src-tauri/capabilities/workspace.json` 仍只授予真实消费者：`core:default`、
+`core:event:default`（跨窗口事件与窗口焦点）、`dialog:default`（备份/语音包/资源/工作流
+文件选择）、`opener:default`（打开项目目录/定位文件）。**没有**复制主窗口的
+notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 IPC 仍由 Rust 校验：
+工作台窗口打开命令只允许 `main`；微件显示/隐藏/重置允许 `main|workspace`，快照发布
+仍只允许 `main`；设置写入从任意窗口都带来源 label 但不是授权依据。
+
+### 8. 迁移状态（诚实口径）
+
+- Phase A（外壳/无项目首页/导航/路由/错误边界/回执/布局）：**已实现**，自动化验证；
+- Phase B/C（全部完整功能页复用既有面板）：**已实现**，页面级组件测试与构建通过；
+  原生 WebView2 下逐页人工验收**未执行**；
+- Phase D（主窗口旧完整面板退役）：**未执行**。主窗口完整面板仍是 400×560 快捷面板，
+  功能入口保留为兼容路径；在 Windows 真机逐项验收前不删除，避免丢失功能；
+- Phase E（开发/游戏/AI 漫剧专业模块）：开发项目页与 Profile 模块已在工作台内复用；
+  游戏/漫剧仍只有事项阶段承载（与旧边界一致）。
+- **原生冒烟（2026-11-14，隔离实例）已通过**：唯一工作台目标、创建即导航、已存在窗口导航、
+  无项目使用、右栏、路由持久化、ack 清队、任务栏扩展样式（`WS_EX_APPWINDOW`、非
+  `WS_EX_TOOLWINDOW`）、最大化/恢复、`WM_CLOSE` 后主窗口存活与重开；1180×760 @125% DPI
+  单屏（CSS 944×608）。证据见 `tmp/acceptance/efficiency-hub-u0/native3/`。
+- **未验证（NOT VERIFIED）**：胶囊四边停靠/吸附形态、多显示器、150%/200% DPI、窗口焦点
+  策略、逐页视觉/键盘走查、未保存草稿确认/取消真机时序、关闭后资源释放与空闲 CPU/内存。
+  不能用 jsdom/组件测试替代这些原生结论。
+
 
 

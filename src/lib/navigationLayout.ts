@@ -4,9 +4,16 @@
 //! `useSettingsStore`），组件通过本文件的 `useNavigationLayout()` 派生读取，
 //! **不另建 zustand 布局状态**，避免出现内存与数据库两份真源。
 //!
+//! 唯一的例外是 `navOrderIntent` 的**乐观意图层**：拖动/长按期间尚未落库的顺序
+//! 以「意图」形式共享给全部消费者（设置列表、侧边栏、胶囊、帮助页），写入完成
+//! 即清除。它不是第二份配置——不持久化、只表达顺序、失败即回滚，事实源仍是
+//! SQLite（见 `navOrderIntent.ts` 的边界说明）。
+//!
 //! 写入约束：
 //! - 读-改-写必须串行化：快速连续点击开关/排序时，后一次写入基于前一次已落库
 //!   的结果，而不是渲染时的旧快照；
+//! - 读-改-写的基准是**有效布局**（已提交 + 未落库意图）：任何导航写入都不会
+//!   用旧顺序覆盖用户刚做的调整；
 //! - 每次写入把 `known` 快照更新为当前注册中心全部入口，保证「刚隐藏的新入口」
 //!   不会被下一次读取按默认值重新补齐；
 //! - 写入失败直接抛错，由设置页就地反馈；内存状态仍是后端值，不会出现开关与
@@ -20,6 +27,7 @@ import {
   navEntry,
   type NavSurface,
 } from "./navigationRegistry";
+import { applyNavOrderIntents, useNavOrderIntentVersion } from "./navOrderIntent";
 import {
   LEGACY_NAV_VISIBILITY_STORAGE_KEY,
   NAV_LAYOUT_SETTING_KEY,
@@ -34,18 +42,46 @@ import {
 } from "./navVisibility";
 import { useSettingsStore } from "../store/useSettingsStore";
 
-/** 从后端设置派生当前布局（缺失/损坏 → 注册中心默认）。 */
+/** 从后端设置派生当前布局（缺失/损坏 → 注册中心默认）。**不含**乐观意图。 */
 export function selectNavigationLayout(settings: unknown): NavLayoutConfig {
   return normalizeNavigationLayout(
     (settings as Record<string, unknown> | null)?.[NAV_LAYOUT_SETTING_KEY],
   ).config;
 }
 
-/** React 侧唯一读取入口：只订阅设置值，不制造第二份状态。 */
+/**
+ * React 侧唯一读取入口：所有导航消费者都读**同一份有效排序**。
+ *
+ * 已提交配置（SQLite）是事实源；未落库的排序意图叠在它上面，因此设置列表移动
+ * 一次，侧边栏 / 胶囊 / 帮助页在同一次 React 更新里一起变化，不需要等待写入、
+ * 不需要重开设置页。写入成功后意图清除，界面无缝落回事实源。
+ */
 export function useNavigationLayout(): NavLayoutConfig {
   const raw = useSettingsStore((s) => s.settings?.[NAV_LAYOUT_SETTING_KEY]);
   const settingsLoaded = useSettingsStore((s) => s.settings !== null);
+  // 订阅乐观意图版本：意图变化必须让本组件（以及所有消费者）重新计算。
+  const intentVersion = useNavOrderIntentVersion();
   // 旧版 localStorage 配置的迁移只在设置加载后触发；失败静默保留旧键，下次再试。
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    void ensureLegacyNavigationMigration().catch(() => {});
+  }, [settingsLoaded]);
+  return useMemo(
+    () => applyNavOrderIntents(normalizeNavigationLayout(raw).config),
+    // intentVersion 只用于建立依赖：意图本身通过模块级共享层读取。
+    [raw, intentVersion],
+  );
+}
+
+/**
+ * 只读**已提交**布局（不含乐观意图）。
+ *
+ * 排序草稿层用它做两件事：以事实源为基准计算下一步顺序、失败时回滚到这个值。
+ * 若这里也用有效布局，`apply` 会从"上一份草稿"再推一次，导致重复位移。
+ */
+export function useCommittedNavigationLayout(): NavLayoutConfig {
+  const raw = useSettingsStore((s) => s.settings?.[NAV_LAYOUT_SETTING_KEY]);
+  const settingsLoaded = useSettingsStore((s) => s.settings !== null);
   useEffect(() => {
     if (!settingsLoaded) return;
     void ensureLegacyNavigationMigration().catch(() => {});
@@ -67,8 +103,13 @@ function enqueueWrite(task: () => Promise<void>): Promise<void> {
 /**
  * 串行化的读-改-写。
  *
- * `mutate` 接收**已归一化**的当前布局，返回目标布局；随后统一补齐版本与
- * `known` 快照。设置尚未加载时拒绝写入，避免用默认值覆盖用户真实配置。
+ * `mutate` 接收**已归一化、且叠加了未落库排序意图**的当前布局，返回目标布局；
+ * 随后统一补齐版本与 `known` 快照。设置尚未加载时拒绝写入，避免用默认值覆盖
+ * 用户真实配置。
+ *
+ * 为什么基准要叠加意图：若这里只读数据库，用户在排序尚未落库时点开关/恢复默认，
+ * 写回的顺序就是旧的，看起来像"刚排好的被冲掉"。以有效布局为基准后，任何导航
+ * 写入都保留用户最新意图；意图的清除与回滚仍由排序草稿层按序号负责。
  */
 export function persistNavigationLayout(
   mutate: (current: NavLayoutConfig) => NavLayoutConfig,
@@ -76,7 +117,7 @@ export function persistNavigationLayout(
   return enqueueWrite(async () => {
     const store = useSettingsStore.getState();
     if (!store.settings) throw new Error("设置尚未加载，请稍后重试");
-    const current = selectNavigationLayout(store.settings);
+    const current = applyNavOrderIntents(selectNavigationLayout(store.settings));
     const next = normalizeNavigationLayout({
       ...mutate(current),
       version: NAV_LAYOUT_VERSION,

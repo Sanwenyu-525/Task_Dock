@@ -42,14 +42,16 @@ import {
   type DragProbe,
 } from "../../lib/dragPayload";
 import { errorMessage, sanitizeForUser } from "../../lib/errors";
-import type { MessageKey } from "../../i18n";
+import { shouldHandleShelfPaste } from "../../lib/pasteShortcut";
+import type { MessageKey, MessageParams } from "../../i18n";
 import { useLocale } from "../../hooks/useLocale";
+import { useShelfCollected } from "../../hooks/useShelfCollected";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
 import { DropdownMenu } from "../ui";
 import DropTargetForm from "../shelf/DropTargetForm";
-import type { ShelfDropReport, ShelfDropTarget } from "../../lib/bridge";
+import type { ShelfDropReport, ShelfDropTarget, ShelfPasteReport, ShelfCollectedEvent } from "../../lib/bridge";
 import { openFullApp } from "./actions";
 import DragStatusNotice, {
   type DragStatusTone,
@@ -93,6 +95,66 @@ function compactDragDetail(raw: unknown, code?: string): string | undefined {
   }
   if (!text || text === code) return undefined;
   return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+}
+
+/** 只展示文件名，不把完整路径塞进胶囊；未知/空目标用中性占位。 */
+function pasteFailureDetail(
+  report: ShelfPasteReport,
+  t: (key: MessageKey, params?: MessageParams) => string,
+): string | undefined {
+  const lines = report.failed.slice(0, 3).map((failure) => {
+    const name = failure.path
+      ? (failure.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "")
+      : "";
+    const reason =
+      compactDragDetail(failure.reason, failure.code ?? undefined) ??
+      t("capsule.inboxDrop.pasteFailedDetail");
+    return `${name || t("capsule.inboxDrop.pasteUnknownItem")}：${reason}`;
+  });
+  if (report.skipped > 0) {
+    lines.push(t("capsule.inboxDrop.pasteSkipped", { count: report.skipped }));
+  }
+  return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
+/** 剪贴板粘贴失败的统一文案：空/占用/超限/不支持/保存失败分别说明。 */
+function pasteFailureCopy(
+  code: string | undefined,
+  t: (key: MessageKey, params?: MessageParams) => string,
+): { tone: DragStatusTone; title: string; detail: string } {
+  if (code === "CLIPBOARD_BUSY") {
+    return {
+      tone: "warn",
+      title: t("capsule.inboxDrop.pasteBusy"),
+      detail: t("capsule.inboxDrop.pasteBusyDetail"),
+    };
+  }
+  if (code === "CLIPBOARD_EMPTY") {
+    return {
+      tone: "warn",
+      title: t("capsule.inboxDrop.pasteEmpty"),
+      detail: t("capsule.inboxDrop.pasteEmptyDetail"),
+    };
+  }
+  if (code === "CLIPBOARD_CONTENT_TOO_LARGE") {
+    return {
+      tone: "error",
+      title: t("capsule.inboxDrop.pasteTooLarge"),
+      detail: t("capsule.inboxDrop.pasteTooLargeDetail"),
+    };
+  }
+  if (code === "CLIPBOARD_UNSUPPORTED" || code === "CLIPBOARD_UNREADABLE") {
+    return {
+      tone: "warn",
+      title: t("capsule.inboxDrop.pasteUnsupported"),
+      detail: t("capsule.inboxDrop.pasteUnsupportedDetail"),
+    };
+  }
+  return {
+    tone: "error",
+    title: t("capsule.inboxDrop.pasteFailed"),
+    detail: t("capsule.inboxDrop.pasteFailedDetail"),
+  };
 }
 
 /**
@@ -271,6 +333,180 @@ export default function InboxDropPane() {
     [],
   );
   const dismissDragNotice = useCallback(() => setDragNotice(null), []);
+
+  /**
+   * 主动粘贴当前剪贴板。
+   *
+   * 与拖入共用结构化状态行，但语义独立：不依赖剪贴板历史、不经过拖入会话。
+   * 同一次操作内 busy 互斥；卸载后不再 setState（`alive` 已在 push 里兜底）。
+   */
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const pasteBusyRef = useRef(false);
+  const pasteCurrent = useCallback(async () => {
+    if (pasteBusyRef.current) return;
+    pasteBusyRef.current = true;
+    setPasteBusy(true);
+    pushDragNotice(
+      {
+        tone: "busy",
+        title: t("capsule.inboxDrop.pasteBusyStatus"),
+      },
+      30_000,
+    );
+    try {
+      const { report, operationId } = await useShelfStore
+        .getState()
+        .pasteCurrent("reference", null);
+      if (report.success) {
+        // 胶囊只取 4 条最近暂存；强制刷新，避免 5s 软缓存展示旧列表。
+        void useShelfStore.getState().loadRecent({ force: true }).catch(() => {});
+        if (report.partial || report.failed.length > 0 || report.skipped > 0) {
+          const detail = pasteFailureDetail(report, t);
+          pushDragNotice({
+            tone: "warn",
+            title: t("capsule.inboxDrop.pastePartial"),
+            detail: [
+              t("capsule.inboxDrop.pastePartialDetail", {
+                added: report.added.length,
+                failed: report.failed.length,
+                skipped: report.skipped,
+              }),
+              report.duplicates > 0
+                ? t("capsule.inboxDrop.pasteDuplicates", {
+                    added: report.added.length,
+                    count: report.duplicates,
+                  })
+                : undefined,
+              detail,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            code: report.failed[0]?.code ?? undefined,
+            operationId,
+          });
+        } else if (report.duplicates > 0) {
+          pushDragNotice(
+            {
+              tone: "info",
+              title: t("capsule.inboxDrop.pasteDuplicates", {
+                added: report.added.length,
+                count: report.duplicates,
+              }),
+            },
+            3_200,
+          );
+        } else {
+          pushDragNotice(
+            {
+              tone: "success",
+              title: t("capsule.inboxDrop.pasteSuccess", {
+                added: report.added.length,
+              }),
+            },
+            3_200,
+          );
+        }
+        return;
+      }
+
+      const code = report.code ?? undefined;
+      const copy = pasteFailureCopy(code, t);
+      const knownClipboardCode =
+        code === "CLIPBOARD_BUSY" ||
+        code === "CLIPBOARD_EMPTY" ||
+        code === "CLIPBOARD_CONTENT_TOO_LARGE" ||
+        code === "CLIPBOARD_UNSUPPORTED" ||
+        code === "CLIPBOARD_UNREADABLE";
+      const extra = knownClipboardCode ? undefined : pasteFailureDetail(report, t);
+      pushDragNotice({
+        tone: copy.tone,
+        title: copy.title,
+        detail: extra ? `${copy.detail}\n${extra}` : copy.detail,
+        code,
+        operationId,
+      });
+    } catch (e) {
+      const code = dragCodeOf(e);
+      pushDragNotice({
+        tone: "error",
+        title: t("capsule.inboxDrop.pasteFailed"),
+        detail:
+          compactDragDetail(errorMessage(e), code) ??
+          t("capsule.inboxDrop.pasteFailedDetail"),
+        code,
+      });
+    } finally {
+      pasteBusyRef.current = false;
+      setPasteBusy(false);
+    }
+  }, [pushDragNotice, t]);
+
+  // 只在「文件」子页挂载期间生效；编辑框/弹层由 shouldHandleShelfPaste 放行。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!shouldHandleShelfPaste(event, { busy: pasteBusyRef.current })) return;
+      event.preventDefault();
+      void pasteCurrent();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pasteCurrent]);
+
+  // 全局收集热键 / 资源管理器「发送到」：后台入库不经过本面板，事件到达后
+  // 复用同一套状态行展示结果（不把正文/路径放进事件或日志）。
+  useShelfCollected(
+    useCallback(
+      (event: ShelfCollectedEvent) => {
+        if (!alive.current) return;
+        if (
+          event.success &&
+          !event.partial &&
+          event.failed === 0 &&
+          event.skipped === 0 &&
+          !(event.duplicates ?? 0)
+        ) {
+          pushDragNotice(
+            {
+              tone: "success",
+              title: t("capsule.inboxDrop.pasteSuccess", { added: event.added }),
+            },
+            3_200,
+          );
+          return;
+        }
+        if (event.success && !event.partial && event.failed === 0 && event.skipped === 0) {
+          pushDragNotice(
+            {
+              tone: "info",
+              title: t("capsule.inboxDrop.pasteDuplicates", {
+                added: event.added,
+                count: event.duplicates ?? 0,
+              }),
+            },
+            3_200,
+          );
+          return;
+        }
+        if (event.success) {
+          pushDragNotice({
+            tone: "warn",
+            title: t("capsule.inboxDrop.pastePartial"),
+            detail: t("capsule.inboxDrop.pastePartialDetail", {
+              added: event.added,
+              failed: event.failed,
+              skipped: event.skipped,
+            }),
+            code: event.code ?? undefined,
+          });
+          return;
+        }
+        const copy = pasteFailureCopy(event.code ?? undefined, t);
+        pushDragNotice({ ...copy, code: event.code ?? undefined });
+      },
+      [pushDragNotice, t],
+    ),
+  );
+
 
   /** 稳定码 → 一句短标题；未知码回退到「读取/投递/暂存失败」，不展示原文。 */
   const dragNoticeTitle = useCallback(
@@ -1231,8 +1467,20 @@ export default function InboxDropPane() {
             </div>
           )}
 
-          {/* 结构化状态行：在文档流内、不覆盖列表/卡片，错误不会自动消失；
-              轻提示（flash）仍保留为 3.2s 单行信息。 */}
+          {/* 结构化状态行：放在最近暂存之后，出现/消失不推动文件列表；
+              错误不会自动消失。轻提示（flash）仍是 3.2s 单行信息。 */}
+          <InboxRecentShelf
+            onNotice={flash}
+            dropZone
+            dropActive={dragActive}
+            dropOver={shelfOver}
+            dropHint={shelfHint}
+            onDragOutStart={beginLocalDrag}
+            onDragOutEnd={endLocalDrag}
+            onPasteCurrent={() => void pasteCurrent()}
+            pasteBusy={pasteBusy}
+          />
+
           {dragNotice && (
             <DragStatusNotice
               key={dragNotice.id}
@@ -1253,18 +1501,6 @@ export default function InboxDropPane() {
               {notice}
             </p>
           )}
-
-          {/* 与投递互补：不用打开完整面板就能看到最近暂存并直接打开/复制。
-              它同时是本面板拖入会话的第二个落点（引用暂存），由上面的消费者统一路由。 */}
-          <InboxRecentShelf
-            onNotice={flash}
-            dropZone
-            dropActive={dragActive}
-            dropOver={shelfOver}
-            dropHint={shelfHint}
-            onDragOutStart={beginLocalDrag}
-            onDragOutEnd={endLocalDrag}
-          />
         </>
       )}
       </div>

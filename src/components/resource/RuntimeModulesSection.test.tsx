@@ -81,15 +81,42 @@ describe("RuntimeModulesSection", () => {
     expect(bridge.lifecycleStatus).toHaveBeenCalledTimes(1);
     const clipboard = document.querySelector('[data-module-id="clipboard"]') as HTMLElement;
     expect(within(clipboard).getByText("lifecycle.state.running")).toBeTruthy();
+    // 后台活动明细按需展开，不再默认堆在行内。
+    fireEvent.click(clipboard.querySelector(".runtime-row-toggle") as HTMLElement);
     expect(within(clipboard).getByText("lifecycle.background.clipboardMonitor")).toBeTruthy();
-    // 共享基础设施明确说明不可单独暂停，且没有暂停按钮
+    // 共享基础设施明确说明不可单独暂停，且没有控制按钮（行展开按钮除外）
     const shared = document.querySelector('[data-module-id="agents"]') as HTMLElement;
     expect(within(shared).getByText("resource.modules.sharedManaged")).toBeTruthy();
-    expect(within(shared).queryByRole("button")).toBeNull();
+    expect(shared.querySelector(".runtime-action button")).toBeNull();
     // 按需模块显示 idle，不造暂停按钮
     const ondemand = document.querySelector('[data-module-id="ocr"]') as HTMLElement;
     expect(within(ondemand).getByText("lifecycle.state.idle")).toBeTruthy();
-    expect(within(ondemand).queryByRole("button")).toBeNull();
+    expect(ondemand.querySelector(".runtime-action button")).toBeNull();
+  });
+
+  it("模块详情按需展开：默认单行，展开后显示作用范围与控制方式", async () => {
+    bridge.lifecycleStatus.mockResolvedValue([
+      status("clipboard", { background: ["clipboard-monitor"] }),
+    ]);
+    render(<RuntimeModulesSection />);
+    await screen.findByText("lifecycle.module.clipboard.label");
+
+    const row = document.querySelector('[data-module-id="clipboard"]') as HTMLElement;
+    expect(row.querySelector(".runtime-row-detail")).toBeNull();
+    const toggle = row.querySelector(".runtime-row-toggle") as HTMLElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(row.querySelector(".runtime-row-detail")).toBeTruthy();
+    expect(within(row).getByText("resource.modules.detailScope")).toBeTruthy();
+    expect(within(row).getByText("resource.modules.detailControl")).toBeTruthy();
+    expect(within(row).getByText("lifecycle.background.clipboardMonitor")).toBeTruthy();
+    expect(within(row).getByText("resource.modules.controlResident")).toBeTruthy();
+
+    // 再次点击折叠，详情不残留。
+    fireEvent.click(toggle);
+    expect(row.querySelector(".runtime-row-detail")).toBeNull();
   });
 
   it("暂停写既有设置键，成功后按真实状态切换按钮", async () => {

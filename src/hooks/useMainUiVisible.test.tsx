@@ -18,17 +18,25 @@ import { useEdgeSnapStore } from "../store/useEdgeSnapStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import {
   isMainUiVisible,
+  isFullViewVisible,
   useFullViewVisible,
   useMainUiVisible,
 } from "./useMainUiVisible";
+import {
+  WorkbenchPageActiveContext,
+  __resetWindowHostForTests,
+  setWindowHostRole,
+} from "../lib/windowHost";
 
 describe("useMainUiVisible / useFullViewVisible", () => {
   beforeEach(() => {
     useEdgeSnapStore.setState({ phase: "free", dockedEdge: null });
     useSettingsStore.setState({ settings: null });
+    __resetWindowHostForTests();
   });
   afterEach(() => {
     cleanup();
+    __resetWindowHostForTests();
   });
 
   it("默认（free 相位、无设置）两个钩子都可见", () => {
@@ -72,5 +80,39 @@ describe("useMainUiVisible / useFullViewVisible", () => {
     );
     const { result } = renderHook(() => useFullViewVisible());
     expect(result.current).toBe(true);
+  });
+
+  it("工作台宿主：主窗口模式/停靠相位不再影响页面可见性", () => {
+    setWindowHostRole("workbench");
+    act(() => {
+      useSettingsStore.setState({ settings: { mode: "minimal" } as never });
+      useEdgeSnapStore.setState({ phase: "docked-hidden" });
+    });
+    expect(isMainUiVisible()).toBe(true);
+    expect(isFullViewVisible()).toBe(true);
+    const main = renderHook(() => useMainUiVisible());
+    expect(main.result.current).toBe(true);
+    const full = renderHook(() => useFullViewVisible());
+    expect(full.result.current).toBe(true);
+  });
+
+  it("工作台内隐藏路由（已访问但被切换走）按页面活跃上下文暂停消费者", () => {
+    setWindowHostRole("workbench");
+    const hidden = renderHook(() => useFullViewVisible(), {
+      wrapper: ({ children }) => (
+        <WorkbenchPageActiveContext.Provider value={false}>
+          {children}
+        </WorkbenchPageActiveContext.Provider>
+      ),
+    });
+    expect(hidden.result.current).toBe(false);
+    const shown = renderHook(() => useMainUiVisible(), {
+      wrapper: ({ children }) => (
+        <WorkbenchPageActiveContext.Provider value={true}>
+          {children}
+        </WorkbenchPageActiveContext.Provider>
+      ),
+    });
+    expect(shown.result.current).toBe(true);
   });
 });

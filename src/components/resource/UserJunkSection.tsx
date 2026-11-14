@@ -394,10 +394,6 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
           {t("resource.junk.expired")}
         </div>
       )}
-      {preview && !expired && usableSelection.length === 0 && (
-        <div className="setting-note">{t("resource.junk.noSelection")}</div>
-      )}
-
       {confirming && preview && !expired && (
         <div
           className="panel-block resource-cleanup-confirm"

@@ -233,14 +233,27 @@ export default function ResourceManagementPanel() {
       <header className="resource-page-head">
         <div className="resource-page-title">
           <h2>{t("resource.title")}</h2>
-          <p>{t("resource.subtitle")}</p>
         </div>
+        <span
+          className="resource-safety-chip"
+          role="note"
+          tabIndex={0}
+          aria-label={t("resource.footer.safety")}
+          data-tip={t("resource.footer.safety")}
+        >
+          <ShieldCheck size={13} aria-hidden="true" />
+          <span className="resource-safety-chip-text">{t("resource.footer.short")}</span>
+        </span>
+        <span id="resource-refresh-scope" className="sr-only">
+          {scopeText}
+        </span>
         <button
           type="button"
           className="btn sm"
           onClick={() => void refreshCurrent()}
           disabled={refreshing}
           aria-label={t("resource.refresh")}
+          aria-describedby="resource-refresh-scope"
           data-tip={`${t("resource.refresh")} · ${scopeText}`}
           data-refresh-scope={segment}
         >
@@ -273,11 +286,8 @@ export default function ResourceManagementPanel() {
         ))}
       </div>
 
-      {/* 刷新作用域：页头按钮只刷新当前分区，并明确不会触发清理扫描。 */}
-      <p className="resource-scope-line" id="resource-refresh-scope">
-        <ShieldCheck size={12} aria-hidden="true" />
-        <span>{scopeText}</span>
-      </p>
+      {/* 刷新作用域通过刷新按钮的 tooltip + aria-describedby 按需展示，
+          不再常驻一行说明，把高度留给主要内容。 */}
 
       {/* 系统快照失败：概览有自己的错误块；其他分区也要明确「读取失败」，
           不能把空数据渲染成「没有卷 / 暂不可用」。 */}
@@ -388,10 +398,6 @@ export default function ResourceManagementPanel() {
           )}
         </div>
       </div>
-
-      <p className="setting-note resource-page-footnote">
-        <HardDrive size={12} aria-hidden="true" /> {t("resource.footer.safety")}
-      </p>
     </div>
   );
 }
@@ -529,6 +535,7 @@ function DiskVolumes({
           id="resource-disk-volumes-title"
           data-resource-anchor-focus
           tabIndex={-1}
+          data-tip={t("resource.volumes.desc")}
         >
           {t("resource.volumes.title")}
         </h3>
@@ -605,9 +612,6 @@ function DiskVolumes({
             );
           })}
         </div>
-      )}
-      {!pending && disks.length > 0 && (
-        <p className="setting-note">{t("resource.volumes.desc")}</p>
       )}
     </div>
   );

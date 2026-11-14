@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::error::{AppError, AppResult};
 
@@ -1142,6 +1142,47 @@ pub fn handle_shortcut(app: &AppHandle, shortcut: &tauri_plugin_global_shortcut:
             crate::quick_capture::toggle(app);
             true
         }
+        Some("collect_to_shelf") => {
+            // 全局热键回调线程不持有剪贴板锁：读取与入库都放独立线程，
+            // 避免阻塞系统热键分发；完成后广播计数（不含正文/路径）并唤出主窗口。
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let Some(st) = app.try_state::<Arc<crate::shelf::ShelfState>>() else {
+                    tracing::warn!("收集剪贴板失败：暂存架未就绪");
+                    return;
+                };
+                let operation_id = uuid::Uuid::new_v4().to_string();
+                let read = crate::clipboard::platform::read_clipboard(true);
+                let intake = crate::shelf::ingest::ClipboardIntake::from_read(read);
+                let outcome = crate::shelf::ingest::save(
+                    &st.db,
+                    &st.root,
+                    intake,
+                    crate::shelf::MODE_REFERENCE,
+                    "clipboard",
+                    None,
+                );
+                let payload = serde_json::json!({
+                    "operationId": operation_id,
+                    "source": "clipboard-current",
+                    "contentKind": outcome.content_kind,
+                    "success": !outcome.added.is_empty(),
+                    "partial": !outcome.added.is_empty()
+                        && (!outcome.failed.is_empty() || outcome.skipped > 0),
+                    "added": outcome.added.len(),
+                    "failed": outcome.failed.len(),
+                    "skipped": outcome.skipped,
+                    "duplicates": outcome.duplicates,
+                    "code": outcome.failure_code,
+                    "retryable": outcome.retryable,
+                });
+                let _ = app.emit(crate::shelf::ingest::EVENT_COLLECTED, payload);
+                if let Some(win) = app.get_webview_window("main") {
+                    crate::show_and_focus(&win);
+                }
+            });
+            true
+        }
         Some(other) => {
             // 系统级动作尚未接执行器：明确告警，绝不伪装成功。
             tracing::warn!(action = other, "系统级快捷键缺少执行器");
@@ -1514,14 +1555,20 @@ mod tests {
     fn set_all_system_enabled_toggles_both_system_actions() {
         let registrar = FakeRegistrar::new();
         let manager = manager(MemStore::new(0), registrar.clone());
+        let system_count = ACTIONS
+            .iter()
+            .filter(|a| a.scope == HotkeyScope::SystemGlobal)
+            .count();
         let outcome = manager.set_all_system_enabled(false).unwrap();
         assert!(outcome.ok);
-        assert_eq!(outcome.results.len(), 2);
+        assert_eq!(outcome.results.len(), system_count);
         assert!(!registrar.is_registered("Ctrl+Alt+T"));
         assert!(!registrar.is_registered("Ctrl+Shift+Space"));
+        assert!(!registrar.is_registered("Ctrl+Alt+G"));
         let outcome = manager.set_all_system_enabled(true).unwrap();
         assert!(outcome.ok);
         assert!(registrar.is_registered("Ctrl+Alt+T"));
+        assert!(registrar.is_registered("Ctrl+Alt+G"));
     }
 
     #[test]
@@ -1692,10 +1739,17 @@ mod tests {
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
         assert!(!report.pending_saved);
         assert_eq!(report.disabled, 0);
-        // 两个系统级默认动作注册成功。
-        assert_eq!(report.applied, 2);
+        // 所有系统级默认动作注册成功（数量随动作清单增长，不硬编码）。
+        assert_eq!(
+            report.applied,
+            ACTIONS
+                .iter()
+                .filter(|a| a.scope == HotkeyScope::SystemGlobal)
+                .count()
+        );
         assert!(registrar.is_registered("Ctrl+Alt+T"));
         assert!(registrar.is_registered("Ctrl+Shift+Space"));
+        assert!(registrar.is_registered("Ctrl+Alt+G"));
         let saved = store.saved.lock().unwrap().clone().unwrap();
         assert!(saved
             .bindings

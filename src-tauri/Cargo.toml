@@ -12,6 +12,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# 测试 exe 的 Common-Controls v6 manifest：把 .rc 编译成 .res 只链接到测试目标
+# （已在 Cargo.lock 的 tauri-build 依赖树中，无新增下载）
+embed-resource = "3"
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
@@ -78,6 +81,9 @@ windows-sys = { version = "0.60", features = [
   "Win32_System_ProcessStatus",
   # Android 虚拟屏 MVP：scrcpy 子进程加入 Job Object，task_dock 退出时一并回收
   "Win32_System_JobObjects",
+  # Android 投屏截屏：PrintWindow 在 windows-sys 0.60 归入 Xps feature
+  # （PW_CLIENTONLY；PW_RENDERFULLCONTENT 来自 WindowsAndMessaging）
+  "Win32_Storage_Xps",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_Graphics_Dwm",
   # 智能剪贴板（v0.5）：剪贴板读写/监听、全局内存、隐藏消息窗口、进程令牌

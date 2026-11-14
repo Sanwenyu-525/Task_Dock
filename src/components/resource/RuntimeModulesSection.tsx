@@ -8,6 +8,9 @@
 //! - task：任务级能力，暂停属于具体运行中的任务（如工作流/专注）；
 //! - shared：共享基础设施，明确说明「停止会丢失什么」，不提供模块级按钮；
 //! - ondemand：纯按需执行，显示状态但不造无效暂停按钮。
+//!
+//! 2026-11-14：默认只显示「图标 + 名称 + 状态 + 一行说明」，运行范围、后台活动
+//! 明细与控制方式放进行内详情；分组仍可折叠，状态仍只来自生命周期 Store。
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -16,6 +19,7 @@ import {
   AppWindow,
   Archive,
   Bell,
+  ChevronDown,
   ChevronRight,
   Clipboard,
   FileText,
@@ -75,6 +79,20 @@ const GROUPS: { id: LifecycleCategory; label: MessageKey }[] = [
   { id: "ondemand", label: "resource.modules.group.ondemand" },
 ];
 
+const CATEGORY_NOTE: Record<LifecycleCategory, MessageKey> = {
+  resident: "resource.modules.category.resident",
+  task: "resource.modules.category.task",
+  shared: "resource.modules.category.shared",
+  ondemand: "resource.modules.category.ondemand",
+};
+
+const CONTROL_LABEL: Record<LifecycleCategory, MessageKey> = {
+  resident: "resource.modules.controlResident",
+  task: "resource.modules.controlTask",
+  shared: "resource.modules.controlShared",
+  ondemand: "resource.modules.controlOndemand",
+};
+
 function stateTone(state: string): string {
   switch (state) {
     case "running":
@@ -125,12 +143,23 @@ export default function RuntimeModulesSection({ active = true }: { active?: bool
   const [collapsed, setCollapsed] = useState<ReadonlySet<LifecycleCategory>>(
     () => new Set<LifecycleCategory>(["ondemand"]),
   );
+  /** 行内详情按模块 ID 记忆：状态刷新或排序不会丢失展开态。 */
+  const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(() => new Set());
 
   function toggleGroup(category: LifecycleCategory) {
     setCollapsed((current) => {
       const next = new Set(current);
       if (next.has(category)) next.delete(category);
       else next.add(category);
+      return next;
+    });
+  }
+
+  function toggleRow(moduleId: string) {
+    setExpandedRows((current) => {
+      const next = new Set(current);
+      if (next.has(moduleId)) next.delete(moduleId);
+      else next.add(moduleId);
       return next;
     });
   }
@@ -164,10 +193,13 @@ export default function RuntimeModulesSection({ active = true }: { active?: bool
   return (
     <section className="runtime-section" aria-labelledby="runtime-section-title">
       <header className="runtime-section-head">
-        <div>
-          <h3 id="runtime-section-title">{t("resource.modules.title")}</h3>
-          <p>{t("resource.modules.desc")}</p>
-        </div>
+        <h3 id="runtime-section-title">{t("resource.modules.title")}</h3>
+        {statuses && (
+          <span className="runtime-section-count">
+            {t("resource.modules.count", { count: statuses.length })}
+          </span>
+        )}
+        <p data-tip={t("resource.modules.desc")}>{t("resource.modules.desc")}</p>
       </header>
 
       {error && (
@@ -237,58 +269,66 @@ export default function RuntimeModulesSection({ active = true }: { active?: bool
                     ? LIFECYCLE_ERROR_LABELS[item.error]
                     : undefined;
                   const unverified = stale && Boolean(statuses);
+                  const rowOpen = expandedRows.has(item.id);
+                  const name = presentation ? t(presentation.label) : item.id;
+                  const scopeText = presentation ? t(presentation.scope) : null;
+                  const backgroundText =
+                    item.background.length > 0
+                      ? item.background
+                          .map((flag) =>
+                            BACKGROUND_LABELS[flag] ? t(BACKGROUND_LABELS[flag]) : flag,
+                          )
+                          .join(" · ")
+                      : t("resource.modules.detailNone");
                   return (
                     <li
                       key={item.id}
                       className={`runtime-row tone-${stateTone(item.state)}${
                         unverified ? " is-unverified" : ""
-                      }`}
+                      }${rowOpen ? " is-open" : ""}`}
                       data-module-id={item.id}
                     >
-                      <span className="runtime-icon" aria-hidden="true">
-                        <Icon size={15} />
-                      </span>
-                      <div className="runtime-main">
-                        <div className="runtime-title">
-                          <strong>
-                            {presentation ? t(presentation.label) : item.id}
-                          </strong>
-                          <span className={`runtime-state tone-${stateTone(item.state)}`}>
-                            <i aria-hidden="true" /> {stateLabel}
-                            {unverified && (
-                              <em className="runtime-state-unverified">
-                                {t("resource.modules.unverified")}
-                              </em>
+                      <button
+                        type="button"
+                        className="runtime-row-toggle"
+                        aria-expanded={rowOpen}
+                        onClick={() => toggleRow(item.id)}
+                      >
+                        <span className="runtime-icon" aria-hidden="true">
+                          <Icon size={15} />
+                        </span>
+                        <span className="runtime-main">
+                          <span className="runtime-title">
+                            <strong data-tip={name}>{name}</strong>
+                            <span className={`runtime-state tone-${stateTone(item.state)}`}>
+                              <i aria-hidden="true" /> {stateLabel}
+                              {unverified && (
+                                <em className="runtime-state-unverified">
+                                  {t("resource.modules.unverified")}
+                                </em>
+                              )}
+                            </span>
+                            {item.background.length > 0 && (
+                              <span
+                                className="runtime-bg-badge on"
+                                data-tip={backgroundText}
+                              >
+                                {t("resource.modules.backgroundOn")}
+                              </span>
                             )}
                           </span>
-                          <span
-                            className={`runtime-bg-badge${item.background.length > 0 ? " on" : ""}`}
-                          >
-                            {t(
-                              item.background.length > 0
-                                ? "resource.modules.backgroundOn"
-                                : "resource.modules.backgroundOff",
-                            )}
-                          </span>
-                        </div>
-                        {presentation && (
-                          <p className="runtime-scope">{t(presentation.scope)}</p>
-                        )}
-                        {item.background.length > 0 && (
-                          <p className="runtime-bg-list">
-                            {item.background
-                              .map((flag) =>
-                                BACKGROUND_LABELS[flag] ? t(BACKGROUND_LABELS[flag]) : flag,
-                              )
-                              .join(" · ")}
-                          </p>
-                        )}
-                        {item.error && (
-                          <p className="runtime-error" role="status">
-                            {errorKey ? t(errorKey) : item.error}
-                          </p>
-                        )}
-                      </div>
+                          {scopeText && (
+                            <span className="runtime-scope" data-tip={scopeText}>
+                              {scopeText}
+                            </span>
+                          )}
+                        </span>
+                        <ChevronDown
+                          size={13}
+                          className={`runtime-row-chevron${rowOpen ? " is-open" : ""}`}
+                          aria-hidden="true"
+                        />
+                      </button>
                       <div className="runtime-action">
                         {item.controllable ? (
                           <ModuleRunControl moduleId={item.id} variant="button" />
@@ -297,11 +337,37 @@ export default function RuntimeModulesSection({ active = true }: { active?: bool
                             {t(
                               item.category === "shared"
                                 ? "resource.modules.sharedManaged"
-                                : "resource.modules.managed",
+                                : item.category === "task"
+                                  ? "resource.modules.taskManaged"
+                                  : "resource.modules.managed",
                             )}
                           </span>
                         )}
                       </div>
+                      {rowOpen && (
+                        <div className="runtime-row-detail">
+                          <dl className="runtime-detail-grid">
+                            <div>
+                              <dt>{t("resource.modules.detailScope")}</dt>
+                              <dd>{scopeText ?? t("resource.modules.detailNone")}</dd>
+                            </div>
+                            <div>
+                              <dt>{t("resource.modules.detailBackground")}</dt>
+                              <dd>{backgroundText}</dd>
+                            </div>
+                            <div>
+                              <dt>{t("resource.modules.detailControl")}</dt>
+                              <dd>{t(CONTROL_LABEL[item.category])}</dd>
+                            </div>
+                          </dl>
+                          <p className="runtime-category-note">{t(CATEGORY_NOTE[item.category])}</p>
+                          {item.error && (
+                            <p className="runtime-error" role="status">
+                              {errorKey ? t(errorKey) : item.error}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </li>
                   );
                 })}

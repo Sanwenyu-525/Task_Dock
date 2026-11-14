@@ -24,16 +24,22 @@ import {
   shelfCopyPaths,
   shelfOpenItem,
   shelfRevealItem,
+  shelfSendToDisable,
+  shelfSendToEnable,
+  shelfSendToStatus,
   updateSettings,
   SHELF_KIND_LABELS,
   type ShelfDragOutResult,
   type ShelfFailedEntry,
   type ShelfItem,
   type ShelfKind,
+  type ShelfPasteReport,
+  type ShelfCollectedEvent,
 } from "../../lib/bridge";
 import { formatBytes } from "../../lib/clipboardUi";
 import { errorMessage } from "../../lib/errors";
 import { isCapsuleMode } from "../../lib/edgeSnap";
+import { shouldHandleShelfPaste } from "../../lib/pasteShortcut";
 import { dropTargetAt, discardOperation, registerFileDropConsumer, type DropPayloadMeta, type DropPoint } from "../../lib/fileDrop";
 import {
   canDropToDirectory,
@@ -42,6 +48,7 @@ import {
   type DragProbe,
 } from "../../lib/dragPayload";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
+import { useShelfCollected } from "../../hooks/useShelfCollected";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useDropTargetsStore } from "../../store/useDropTargetsStore";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
@@ -173,6 +180,7 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const addLink = useShelfStore((s) => s.addLink);
   const addText = useShelfStore((s) => s.addText);
   const addFromClipboard = useShelfStore((s) => s.addFromClipboard);
+  const pasteCurrent = useShelfStore((s) => s.pasteCurrent);
   const updateItem = useShelfStore((s) => s.updateItem);
   const deleteItems = useShelfStore((s) => s.deleteItems);
   const retryShelfSync = useShelfStore((s) => s.retryShelfSync);
@@ -201,6 +209,12 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
   const [dragOver, setDragOver] = useState(false);
   /** 拖入/剪贴板添加的默认策略：引用优先（不偷偷复制占用磁盘），用户可显式切换。 */
   const [copyOnAdd, setCopyOnAdd] = useState(false);
+  /** 主动粘贴当前剪贴板的在途闸：按钮与 Ctrl+V 共用，避免重复入队。 */
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const pasteBusyRef = useRef(false);
+  /** 资源管理器右键发送状态（HKCU 动词，仅展示与开关，不参与文件操作）。 */
+  const [sendToEnabled, setSendToEnabled] = useState(false);
+  const sendToBusyRef = useRef(false);
   const [linkDraft, setLinkDraft] = useState("");
   const [textDraft, setTextDraft] = useState(false);
   const [textValue, setTextValue] = useState("");
@@ -426,6 +440,204 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     },
     [showToast],
   );
+
+  /** 主动粘贴当前剪贴板的完整反馈：成功/部分失败/空/占用/不支持分别说明。 */
+  const reportPaste = useCallback(
+    (report: ShelfPasteReport) => {
+      if (report.success) {
+        const skipped = report.skipped > 0 ? `，跳过 ${report.skipped} 项重复或空路径` : "";
+        const duplicates =
+          report.duplicates > 0
+            ? `，其中 ${report.duplicates} 项与已有条目重复`
+            : "";
+        if (report.failed.length > 0) {
+          const first = report.failed[0];
+          const detail = report.failed
+            .slice(0, 3)
+            .map((f) => `${dropPathName(f.path)}：${addFailureReason(f)}`)
+            .join("；");
+          showToast(
+            `已粘贴 ${report.added.length} 项，${report.failed.length} 项失败：${dropPathName(first.path)} — ${addFailureReason(first)}${skipped}${duplicates}`,
+            {
+              kind: "warning",
+              code: report.failed[0]?.code ?? undefined,
+              detail,
+            },
+          );
+        } else if (report.skipped > 0 || report.duplicates > 0) {
+          showToast(`已粘贴 ${report.added.length} 项${skipped}${duplicates}`, {
+            kind: "info",
+          });
+        } else {
+          showToast(`已粘贴 ${report.added.length} 项到暂存架`, { kind: "success" });
+        }
+        return;
+      }
+      const code = report.code ?? "";
+      if (code === "CLIPBOARD_BUSY") {
+        showToast("剪贴板正被其他程序占用，请稍后重试", {
+          kind: "warning",
+          code,
+        });
+      } else if (code === "CLIPBOARD_EMPTY") {
+        showToast("剪贴板没有可暂存的内容", { kind: "warning", code });
+      } else if (code === "CLIPBOARD_CONTENT_TOO_LARGE") {
+        showToast("剪贴板内容超过大小上限，请改用拖入或先保存为文件", {
+          kind: "error",
+          code,
+        });
+      } else if (code === "CLIPBOARD_UNSUPPORTED" || code === "CLIPBOARD_UNREADABLE") {
+        showToast("当前剪贴板内容暂不支持暂存", { kind: "warning", code });
+      } else {
+        const first = report.failed[0];
+        showToast(
+          first
+            ? `粘贴失败：${addFailureReason(first)}`
+            : "粘贴失败：未能读取或保存当前剪贴板",
+          { kind: "error", code: code || undefined },
+        );
+      }
+    },
+    [showToast],
+  );
+
+  const pasteCurrentClipboard = useCallback(async () => {
+    if (pasteBusyRef.current) return;
+    pasteBusyRef.current = true;
+    setPasteBusy(true);
+    try {
+      const { report } = await pasteCurrent(copyOnAdd ? "managed" : "reference", null);
+      reportPaste(report);
+    } catch (e) {
+      showToast(`粘贴失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      pasteBusyRef.current = false;
+      setPasteBusy(false);
+    }
+  }, [copyOnAdd, pasteCurrent, reportPaste, showToast]);
+
+  useEffect(() => {
+    let alive = true;
+    void shelfSendToStatus()
+      .then((status) => {
+        if (alive) setSendToEnabled(status.enabled);
+      })
+      .catch(() => {
+        // 非 Windows / 注册表不可读：保持关闭展示，不冒充已启用。
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const toggleSendTo = useCallback(async () => {
+    if (sendToBusyRef.current) return;
+    sendToBusyRef.current = true;
+    try {
+      const status = await shelfSendToStatus();
+      if (status.enabled) {
+        await shelfSendToDisable();
+        setSendToEnabled(false);
+        showToast("已停用资源管理器右键发送", { kind: "success" });
+      } else {
+        const next = await shelfSendToEnable();
+        setSendToEnabled(next.enabled);
+        showToast(
+          next.enabled
+            ? "已启用：在资源管理器右键文件/文件夹即可发送到 Task Dock"
+            : "右键菜单已写入，但状态校验未通过，请重启资源管理器后重试",
+          { kind: next.enabled ? "success" : "warning" },
+        );
+      }
+    } catch (e) {
+      showToast(`更新右键发送失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      sendToBusyRef.current = false;
+    }
+  }, [showToast]);
+
+  // 全局热键 / 资源管理器发送到：后台入库完成后刷新并给出计数反馈。
+  useShelfCollected(
+    useCallback(
+      (event: ShelfCollectedEvent) => {
+        const prefix =
+          event.source === "sendto" ? "已从资源管理器暂存" : "已收集当前剪贴板";
+        const skipped = event.skipped > 0 ? `，跳过 ${event.skipped} 项` : "";
+        const duplicates =
+          (event.duplicates ?? 0) > 0
+            ? `，其中 ${event.duplicates} 项与已有条目重复`
+            : "";
+        if (event.success && event.failed === 0) {
+          showToast(`${prefix} ${event.added} 项${skipped}${duplicates}`, {
+            kind: event.skipped > 0 || (event.duplicates ?? 0) > 0 ? "info" : "success",
+          });
+          return;
+        }
+        if (event.success) {
+          showToast(
+            `${prefix} ${event.added} 项，${event.failed} 项失败${skipped}`,
+            { kind: "warning", code: event.code ?? undefined },
+          );
+          return;
+        }
+        if (event.code === "CLIPBOARD_BUSY") {
+          showToast("剪贴板正被其他程序占用，请稍后重试", {
+            kind: "warning",
+            code: event.code,
+          });
+        } else if (event.code === "CLIPBOARD_EMPTY") {
+          showToast("剪贴板没有可暂存的内容", {
+            kind: "warning",
+            code: event.code,
+          });
+        } else {
+          showToast("收集失败：未能读取或保存内容", {
+            kind: "error",
+            code: event.code ?? undefined,
+          });
+        }
+      },
+      [showToast],
+    ),
+  );
+
+  // Ctrl+V 只在暂存架真实可见、无弹出表单/确认框时生效；编辑控件由守卫放行。
+  useEffect(() => {
+    if (!active || !fullViewVisible || capsuleMode || targetsOpen) return;
+    if (
+      linkOpen ||
+      textDraft ||
+      clipOpen ||
+      cleanupOpen ||
+      confirmClear ||
+      confirmDelete ||
+      confirmCleanup ||
+      locateConfirm
+    ) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!shouldHandleShelfPaste(event, { busy: pasteBusyRef.current })) return;
+      event.preventDefault();
+      void pasteCurrentClipboard();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [
+    active,
+    fullViewVisible,
+    capsuleMode,
+    targetsOpen,
+    linkOpen,
+    textDraft,
+    clipOpen,
+    cleanupOpen,
+    confirmClear,
+    confirmDelete,
+    confirmCleanup,
+    locateConfirm,
+    pasteCurrentClipboard,
+  ]);
 
   // ── OS 文件拖入（统一拖放分发，仅本页签真实可见时认领；随卸载释放）──
   // 不用 `onDragDropEvent` 直接订阅：胶囊「文件投递」也在争用同一条 Webview 事件，
@@ -1167,6 +1379,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
         onClearFilters={clearFilters}
         onPickFiles={() => void pickAndAdd(false)}
         onPickFolder={() => void pickAndAdd(true)}
+        onPasteCurrent={() => void pasteCurrentClipboard()}
+        pasteBusy={pasteBusy}
         onAddLink={() => setLinkOpen((value) => !value)}
         onAddText={() => setTextDraft((value) => !value)}
         onAddFromClipboard={() => void toggleClipboardPicker()}
@@ -1184,6 +1398,8 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
           }
         }}
         onClearShelf={() => setConfirmClear(true)}
+        sendToEnabled={sendToEnabled}
+        onToggleSendTo={() => void toggleSendTo()}
         helpArticleId="help.capture.shelf"
       />
 

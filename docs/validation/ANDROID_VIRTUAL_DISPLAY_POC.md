@@ -494,3 +494,39 @@ adb -s <PHONE_IP>:38585 shell input keyevent KEYCODE_HOME
 - 无线调试的 mDNS 传输名会随端口变化，设备列表可能出现同一手机的多条 transport；默认优先直连（serial 不含空格），mDNS 兜底。
 - 锁屏/息屏、实体触控并发、同应用双实例仍未按 §16 补齐；键盘/中文输入已由用户人工确认通过（本机 Windows IME 需切英文，虚拟屏使用本地 IME）。
 
+## 20. 2026-11-14 正式开发落地（双模式与可靠性整改）
+
+在 §19 MVP 基础上完成 P0/P1 能力，正式功能文档见
+[`docs/mobile/13-android-screen-control.md`](../mobile/13-android-screen-control.md)。
+
+### 20.1 主要变化
+
+| 项 | MVP | 本次 |
+|---|---|---|
+| 模式 | 仅独立虚拟屏 | 屏幕镜像 + 独立虚拟屏 |
+| 状态 | 进程存活 + alive | starting/running/stopping/stopped/error/disconnected + stage |
+| 就绪 | 启动 1.5s 后进程仍活 | 解析 scrcpy stderr：New display → Starting app → Texture；25s 超时 |
+| 关闭 | 持锁等待最多 5s | 标记 stopping 后立即返回，后台 WM_CLOSE/强杀 |
+| 设备 | 原始 transport 列表 | 按物理身份合并 USB/直连/mDNS，同一设备选唯一 transport |
+| 应用 | 全部包名 | 可启动应用优先、用户/系统、无入口原因、手动包名、名称记忆 |
+| 并发 | 无上限 | 默认 1；多屏实验最多 2；同设备同模式同应用去重 |
+| Job Object | 分配失败静默 | 分配失败写 warning，UI 可见 |
+| 窗口 | 无 | 定位/前置、客户区截图（仅用户触发） |
+| 诊断 | 无 | 设备侧 scrcpy 虚拟显示残留检测 + 显式确认后的 ADB 重连 |
+
+### 20.2 单元测试阻塞的根因与修复
+
+§19.5 记录的 `cargo test` 启动失败 `0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND` 已定位：
+测试 exe 没有 Tauri 主程序的 manifest，`rfd`（tauri-plugin-dialog 的 Windows 后端）静态引用
+`comctl32.dll!TaskDialogIndirect`，该导出只存在于 Common-Controls v6；加载阶段直接失败。
+`src-tauri/build.rs` 现只对测试目标注入 `tests.manifest`（`/MANIFEST:EMBED` +
+`/MANIFESTINPUT`），不改变发布二进制。修复后的执行结果以本轮验收报告为准。
+
+### 20.3 本轮真机状态
+
+实现完成后本机 `adb devices` 无在线设备（无线调试断开），新增镜像模式、设备去重、应用枚举、
+窗口定位、截图、多屏实验等路径**未在本轮真机复验**；不得用 §19 的虚拟屏 MVP 结论替代。
+真机复验命令与待验证矩阵见新文档 §13/§14，本轮验收报告在
+`tmp/acceptance/android-virtual-display-development/report.md`。
+
+

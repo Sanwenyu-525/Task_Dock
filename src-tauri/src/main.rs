@@ -15,5 +15,7 @@ fn main() {
         // bridge 不可用时对每个请求回明确 JSON-RPC 错误，不挂死、不降级。
         std::process::exit(task_dock_lib::mcp::protocol::run_stdio());
     }
+    // 资源管理器右键「发送到 Task Dock」：先入队，setup 中暂存架就绪后统一消费。
+    task_dock_lib::queue_send_to(&args);
     task_dock_lib::run()
 }

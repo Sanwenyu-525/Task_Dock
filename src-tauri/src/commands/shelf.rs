@@ -47,6 +47,31 @@ pub struct ShelfAddReport {
     pub failed: Vec<ShelfFailedEntry>,
 }
 
+/// 主动粘贴当前剪贴板的结构化结果。
+///
+/// 与 `ShelfAddReport` 分开：粘贴是「来源 → 校验 → 保存」的一次完整操作，
+/// 需要稳定的 operationId、来源/内容类型、跳过数、总失败码与是否需要用户处理。
+/// 空/占用/不支持也走成功返回（`success=false`），让前端拿到可区分的协议字段，
+/// 而不是只能解析错误文案。
+#[derive(Debug, Serialize)]
+pub struct ShelfPasteReport {
+    pub operation_id: String,
+    pub source: String,
+    pub content_kind: String,
+    pub added: Vec<shelf::ShelfItem>,
+    pub added_ids: Vec<String>,
+    pub failed: Vec<ShelfFailedEntry>,
+    pub skipped: usize,
+    /// 与已有条目同路径/同正文的条数；仅提示，不阻止本次保存。
+    pub duplicates: usize,
+    pub success: bool,
+    pub partial: bool,
+    pub requires_user_action: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    pub retryable: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ShelfUpdatePatch {
     pub display_name: Option<String>,
@@ -193,6 +218,98 @@ pub fn shelf_add_text(
 ) -> AppResult<shelf::ShelfItem> {
     let st = rt(&state);
     shelf::add_text(&st.db, &text, "manual", group_id.as_deref())
+}
+
+/// 主动粘贴**当前系统剪贴板**到暂存架。
+///
+/// 与 `shelf_add_from_clipboard` 的关键区别：后者只消费剪贴板历史条目，
+/// 历史监听关闭/暂停时不可用；本命令在用户按键或点击的当下读取实时剪贴板，
+/// 不依赖 `clipboard_items`、不写系统剪贴板、不模拟 Ctrl+V、不抢其他应用焦点。
+///
+/// 内容优先级沿用 `clipboard::engine::classify`：文件 > 图片字节 > URL > HTML > 文本。
+/// 用户主动粘贴时忽略“不进入剪贴板历史”标记（与在编辑器里 Ctrl+V 的语义一致），
+/// 但仍受既有大小、数量、路径与托管配额限制。
+///
+/// 空内容 / 剪贴板被占用 / 格式不支持均以 `success=false` 的结构化报告返回，
+/// 不抛 IPC 错误；只有内部任务失败才返回 `Err`。
+#[tauri::command]
+pub async fn shelf_paste_current(
+    state: State<'_, Arc<ShelfState>>,
+    storage_mode: Option<String>,
+    group_id: Option<String>,
+) -> AppResult<ShelfPasteReport> {
+    let mode = storage_mode.unwrap_or_else(|| shelf::MODE_REFERENCE.into());
+    match mode.as_str() {
+        shelf::MODE_REFERENCE | shelf::MODE_MANAGED => {}
+        other => return Err(AppError::Validation(format!("未知存储模式: {other}"))),
+    }
+    let st = state.inner().clone();
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        // 实时读取与入库都在阻塞线程：OpenClipboard 有约 120ms 重试，
+        // 不能占用 async 运行时工作线程。读取本身已由平台层进程级锁串行化。
+        let read = crate::clipboard::platform::read_clipboard(true);
+        let intake = shelf::ingest::ClipboardIntake::from_read(read);
+        shelf::ingest::save(
+            &st.db,
+            &st.root,
+            intake,
+            &mode,
+            "clipboard",
+            group_id.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("粘贴任务失败: {e}")))?;
+    Ok(paste_report_from(report))
+}
+
+/// 资源管理器右键「发送到 Task Dock」的当前状态（HKCU 动词）。
+#[tauri::command]
+pub fn shelf_sendto_status() -> shelf::sendto::SendToStatus {
+    shelf::sendto::status()
+}
+
+/// 启用右键发送：只写 HKCU，不需要管理员权限，不改文件关联。
+#[tauri::command]
+pub fn shelf_sendto_enable() -> AppResult<shelf::sendto::SendToStatus> {
+    shelf::sendto::enable().map_err(AppError::Validation)
+}
+
+/// 停用右键发送并删除本应用创建的注册表项。
+#[tauri::command]
+pub fn shelf_sendto_disable() -> AppResult<()> {
+    shelf::sendto::disable().map_err(AppError::Validation)
+}
+
+/// 入库结果 → 前端协议：成功/部分成功/总失败与跳过数在这里统一判定。
+fn paste_report_from(report: shelf::ingest::IntakeOutcome) -> ShelfPasteReport {
+    let added_ids = report.added.iter().map(|item| item.id.clone()).collect();
+    let failed: Vec<ShelfFailedEntry> = report
+        .failed
+        .into_iter()
+        .map(|failure| ShelfFailedEntry {
+            path: failure.target,
+            reason: failure.reason,
+            code: Some(failure.code),
+            category: Some(failure.category),
+        })
+        .collect();
+    let success = !report.added.is_empty();
+    ShelfPasteReport {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        source: "clipboard-current".into(),
+        content_kind: report.content_kind.into(),
+        added: report.added,
+        added_ids,
+        partial: success && (!failed.is_empty() || report.skipped > 0),
+        requires_user_action: !failed.is_empty() || report.skipped > 0,
+        success,
+        failed,
+        skipped: report.skipped,
+        duplicates: report.duplicates,
+        code: report.failure_code.map(str::to_string),
+        retryable: report.retryable,
+    }
 }
 
 /// 从剪贴板条目添加到暂存架：复制字节/内容生成**独立副本**。
@@ -645,6 +762,71 @@ pub fn shelf_unlink_task(
     shelf::unlink_task(&rt(&state).db, &item_id, &task_id)
 }
 
+#[tauri::command]
+pub fn shelf_project_links(
+    state: State<'_, Arc<ShelfState>>,
+    item_id: String,
+) -> AppResult<Vec<shelf::ShelfProjectLink>> {
+    shelf::project_links(&rt(&state).db, &item_id)
+}
+
+#[tauri::command]
+pub fn shelf_link_project(
+    state: State<'_, Arc<ShelfState>>,
+    item_id: String,
+    project_id: String,
+) -> AppResult<()> {
+    shelf::link_project(&rt(&state).db, &item_id, &project_id)
+}
+
+#[tauri::command]
+pub fn shelf_unlink_project(
+    state: State<'_, Arc<ShelfState>>,
+    item_id: String,
+    project_id: String,
+) -> AppResult<()> {
+    shelf::unlink_project(&rt(&state).db, &item_id, &project_id)
+}
+
+/// 对暂存架图片执行本地 OCR（复用剪贴板 OCR 引擎，不新增模型/服务）。
+/// 只读取托管副本或引用原图的字节，不改动原图；识别结果由前端决定是否存为文本。
+#[tauri::command]
+pub async fn shelf_ocr_item(
+    app: AppHandle,
+    state: State<'_, Arc<ShelfState>>,
+    id: String,
+    request_id: String,
+) -> AppResult<crate::clipboard::ocr::OcrReport> {
+    let clipboard = app
+        .try_state::<Arc<crate::clipboard::ClipboardRuntime>>()
+        .map(|s| s.inner().clone())
+        .ok_or_else(|| AppError::Unavailable("剪贴板 OCR 服务未就绪".into()))?;
+    let st = state.inner().clone();
+    let request = request_id.trim().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let item = shelf::item(&st.db, &id)?;
+        if item.kind != shelf::KIND_IMAGE {
+            return Err(AppError::Validation("只有图片条目可以提取文字".into()));
+        }
+        let (_item, path) = shelf::resolve_item_file(&st.db, &st.root, &id)?;
+        let bytes = std::fs::read(&path)?;
+        Ok(clipboard.ocr.recognize_png(&bytes, &request))
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("OCR 任务失败: {e}")))?
+}
+
+#[tauri::command]
+pub fn shelf_ocr_cancel(
+    app: AppHandle,
+    request_id: String,
+) -> AppResult<bool> {
+    let clipboard = app
+        .try_state::<Arc<crate::clipboard::ClipboardRuntime>>()
+        .ok_or_else(|| AppError::Unavailable("剪贴板 OCR 服务未就绪".into()))?;
+    Ok(clipboard.ocr.cancel(request_id.trim()))
+}
+
 // ── 文件操作（移动 / 复制 / 重定位） ────────────────────────
 
 /// 移动原文件/文件夹到目标目录；managed、link、text 明确拒绝。
@@ -868,6 +1050,7 @@ pub async fn shelf_drop_to_directory(
     batch_id: Option<String>,
 ) -> AppResult<shelf::fsops::DropReport> {
     let st = state.inner().clone();
+    let st_for_touch = st.clone();
     let batch = sanitize_batch_id(batch_id.as_deref().unwrap_or(""));
     let started = std::time::Instant::now();
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -877,6 +1060,10 @@ pub async fn shelf_drop_to_directory(
     .await
     .map_err(|e| AppError::Agent(format!("文件投递任务失败: {e}")))?;
     if let Ok(report) = &result {
+        if report.success > 0 {
+            // 只更新「最近使用」展示时间；写失败不影响已完成的投递。
+            shelf::drop_targets::touch_used(&st_for_touch.db, &report.target_id);
+        }
         let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         for event in shelf::fsops::drop_diagnostic_events(report, elapsed) {
             // 非阻塞入队；队列满/日志降级只计数，不改变投递结果。
@@ -884,4 +1071,94 @@ pub async fn shelf_drop_to_directory(
         }
     }
     result
+}
+
+#[cfg(test)]
+mod paste_report_tests {
+    use super::*;
+
+    fn item(id: &str) -> shelf::ShelfItem {
+        shelf::ShelfItem {
+            id: id.into(),
+            kind: shelf::KIND_TEXT.into(),
+            display_name: "片段".into(),
+            source_kind: "clipboard".into(),
+            storage_mode: shelf::MODE_REFERENCE.into(),
+            original_path: None,
+            managed_path: None,
+            content: None,
+            byte_size: 2,
+            file_ext: None,
+            favorite: false,
+            pinned: false,
+            exists_state: "ok".into(),
+            group_id: None,
+            scene_id: None,
+            note: String::new(),
+            expire_at: None,
+            created_at: "2026-11-14T00:00:00Z".into(),
+            updated_at: "2026-11-14T00:00:00Z".into(),
+        }
+    }
+
+    fn outcome(added: Vec<shelf::ShelfItem>) -> shelf::ingest::IntakeOutcome {
+        shelf::ingest::IntakeOutcome {
+            content_kind: "text",
+            added,
+            failed: Vec::new(),
+            skipped: 0,
+            duplicates: 0,
+            failure_code: None,
+            retryable: false,
+        }
+    }
+
+    #[test]
+    fn success_has_ids_and_no_partial_flag() {
+        let report = paste_report_from(outcome(vec![item("s1")]));
+        assert!(report.success);
+        assert!(!report.partial);
+        assert!(!report.requires_user_action);
+        assert_eq!(report.added_ids, vec!["s1".to_string()]);
+        assert_eq!(report.source, "clipboard-current");
+        assert!(report.code.is_none());
+    }
+
+    #[test]
+    fn partial_keeps_success_true_and_requires_action() {
+        let mut o = outcome(vec![item("s1")]);
+        o.skipped = 2;
+        o.failed.push(shelf::ingest::IntakeFailure {
+            target: "C:/bad.txt".into(),
+            reason: "路径不存在".into(),
+            code: "NOT_FOUND".into(),
+            category: "not_found".into(),
+        });
+        let report = paste_report_from(o);
+        assert!(report.success);
+        assert!(report.partial);
+        assert!(report.requires_user_action);
+        assert_eq!(report.skipped, 2);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].code.as_deref(), Some("NOT_FOUND"));
+    }
+
+    #[test]
+    fn total_failure_is_not_success_and_keeps_code() {
+        let mut o = outcome(Vec::new());
+        o.failed.push(shelf::ingest::IntakeFailure {
+            target: String::new(),
+            reason: "剪贴板被其他程序占用".into(),
+            code: "CLIPBOARD_BUSY".into(),
+            category: "service".into(),
+        });
+        o.failure_code = Some("CLIPBOARD_BUSY");
+        o.retryable = true;
+        let report = paste_report_from(o);
+        assert!(!report.success);
+        assert!(!report.partial);
+        assert!(report.requires_user_action);
+        assert!(report.retryable);
+        assert_eq!(report.code.as_deref(), Some("CLIPBOARD_BUSY"));
+    }
 }

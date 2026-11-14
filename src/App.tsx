@@ -53,6 +53,7 @@ import {
   onQuickCaptureCreated,
   onReminderFired,
   onReminderSnoozed,
+  onSettingsChanged,
   onSnapFormChanged,
   onThemeChanged,
   undoSnooze,
@@ -200,6 +201,8 @@ export default function App() {
 
   useEffect(() => {
     const scope = createSubscriptionScope();
+    // 跨窗口设置广播的修订号（单调）：倒序/重复的旧事件不覆盖新设置。
+    let lastSettingsRevision = 0;
     // 通知风暴下合并刷新：一批最多触发一次任务/导航刷新（400ms 窗口），
     // 避免每个通知批次都全量拉取任务与导航。
     let taskRefreshTimer: number | null = null;
@@ -304,6 +307,19 @@ export default function App() {
     scope.add(onSnapFormChanged((form) => {
       // 右键菜单已持久化；这里同步偏好，吸附引擎订阅 store 后原地切换形态。
       syncExternal({ snap_display_mode: form === "full" ? "full" : "capsule" });
+    }));
+    // 其他窗口（工作台）写入设置：重新读取权威值，避免两个 WebView 的导航/开关
+    // 长期不一致。事件只带键名，不含值；读取失败保留当前值（不制造半套默认）。
+    // 工作台路由/右栏宽度只属于工作台自己的布局，主窗口不消费，跳过以免每次切页
+    // 都多付一次设置读取。
+    scope.add(onSettingsChanged(({ keys, revision }) => {
+      // 修订号单调递增：倒序/重复的旧事件不覆盖新设置（缺省 revision 的旧后端兼容放行）。
+      if (typeof revision === "number") {
+        if (revision <= lastSettingsRevision) return;
+        lastSettingsRevision = revision;
+      }
+      if (keys.every((key) => key === "workbench_layout")) return;
+      void useSettingsStore.getState().load();
     }));
     scope.add(onProjectWorkspaceOpenDevWorkbench(({ requestId, devProjectId }) => {
       // P0-02 / P0-A：不再「setTab 即成功」。完整事务（唤醒 → 退出胶囊 → 完整模式 →

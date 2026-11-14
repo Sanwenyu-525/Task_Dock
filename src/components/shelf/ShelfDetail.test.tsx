@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ShelfItem } from "../../lib/bridge";
 import { resetOverlayStack } from "../../lib/overlayStack";
@@ -17,6 +17,14 @@ const bridge = vi.hoisted(() => ({
   shelfReadImage: vi.fn(),
   shelfCopyPaths: vi.fn(),
   shelfUnlinkTask: vi.fn(),
+  shelfProjectLinks: vi.fn(),
+  shelfLinkProject: vi.fn(),
+  shelfUnlinkProject: vi.fn(),
+  workspaceProjectList: vi.fn(),
+  shelfOcrItem: vi.fn(),
+  shelfOcrCancel: vi.fn(),
+  shelfAddText: vi.fn(),
+  shelfUpdate: vi.fn(),
 }));
 
 vi.mock("../../lib/bridge", async (importOriginal) => {
@@ -75,6 +83,14 @@ beforeEach(() => {
   bridge.listTasks.mockReset();
   bridge.shelfTaskLinks.mockReset().mockResolvedValue([]);
   bridge.shelfLinkTask.mockReset().mockResolvedValue(undefined);
+  bridge.shelfProjectLinks.mockReset().mockResolvedValue([]);
+  bridge.shelfLinkProject.mockReset().mockResolvedValue(undefined);
+  bridge.shelfUnlinkProject.mockReset().mockResolvedValue(undefined);
+  bridge.workspaceProjectList.mockReset().mockResolvedValue({ projects: [] });
+  bridge.shelfOcrItem.mockReset();
+  bridge.shelfOcrCancel.mockReset().mockResolvedValue(true);
+  bridge.shelfAddText.mockReset();
+  bridge.shelfUpdate.mockReset();
   bridge.shelfCheckExists.mockReset().mockResolvedValue([]);
   bridge.shelfReadText.mockReset().mockResolvedValue({ content: "", truncated: false });
   bridge.shelfReadImage.mockReset().mockResolvedValue({ data_url: "", full: false });
@@ -88,6 +104,11 @@ afterEach(() => {
   cleanup();
 });
 
+function taskLinkButton(): HTMLButtonElement {
+  const section = screen.getByRole("region", { name: "任务关联" });
+  return within(section).getByRole("button", { name: "关联" }) as HTMLButtonElement;
+}
+
 describe("ShelfDetail 任务关联选择器", () => {
   it("加载中显示占位且不可展开", async () => {
     bridge.listTasks.mockReturnValue(new Promise(() => {}));
@@ -96,7 +117,7 @@ describe("ShelfDetail 任务关联选择器", () => {
     const trigger = screen.getByRole("combobox", { name: "选择要关联的任务" }) as HTMLButtonElement;
     expect(trigger.disabled).toBe(true);
     expect(trigger.textContent).toContain("正在加载任务…");
-    expect((screen.getByRole("button", { name: /关联/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(taskLinkButton().disabled).toBe(true);
   });
 
   it("无任务时提示暂无可关联任务", async () => {
@@ -106,7 +127,7 @@ describe("ShelfDetail 任务关联选择器", () => {
     const trigger = (await screen.findByRole("combobox", { name: "选择要关联的任务" })) as HTMLButtonElement;
     expect(trigger.disabled).toBe(true);
     expect(trigger.textContent).toContain("暂无可关联任务");
-    expect((screen.getByRole("button", { name: /关联/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(taskLinkButton().disabled).toBe(true);
   });
 
   it("加载失败时错误可见且不可关联", async () => {
@@ -119,7 +140,7 @@ describe("ShelfDetail 任务关联选择器", () => {
 
     const trigger = screen.getByRole("combobox", { name: "选择要关联的任务" }) as HTMLButtonElement;
     expect(trigger.disabled).toBe(true);
-    expect((screen.getByRole("button", { name: /关联/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(taskLinkButton().disabled).toBe(true);
   });
 
   it("选中任务后调用原有 shelfLinkTask IPC，并在成功后清空选择", async () => {
@@ -132,7 +153,7 @@ describe("ShelfDetail 任务关联选择器", () => {
     await userEvent.click(screen.getByRole("option", { name: "写周报" }));
 
     expect(trigger.textContent).toContain("写周报");
-    const linkButton = screen.getByRole("button", { name: /关联/ }) as HTMLButtonElement;
+    const linkButton = taskLinkButton();
     expect(linkButton.disabled).toBe(false);
     await userEvent.click(linkButton);
 
@@ -141,7 +162,7 @@ describe("ShelfDetail 任务关联选择器", () => {
     // 关联成功后刷新任务链接并清空选择，避免误把同一任务重复提交
     await waitFor(() => expect(bridge.shelfTaskLinks).toHaveBeenCalledWith("item-1"));
     expect(trigger.textContent).toContain("选择任务…");
-    expect((screen.getByRole("button", { name: /关联/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(taskLinkButton().disabled).toBe(true);
   });
 
   it("键盘可展开、导航并选中任务", async () => {
@@ -155,7 +176,7 @@ describe("ShelfDetail 任务关联选择器", () => {
 
     await userEvent.keyboard("{ArrowDown}{Enter}");
     expect(trigger.textContent).toContain("修缺陷");
-    expect((screen.getByRole("button", { name: /关联/ }) as HTMLButtonElement).disabled).toBe(false);
+    expect(taskLinkButton().disabled).toBe(false);
     expect(document.activeElement).toBe(trigger);
   });
 });
@@ -238,6 +259,83 @@ describe("ShelfDetail 文件操作入口", () => {
     expect(screen.queryByRole("button", { name: "移动原文件到…" })).toBeNull();
     expect(screen.queryByRole("button", { name: "复制到…" })).toBeNull();
     expect(onFileOp).not.toHaveBeenCalled();
+  });
+
+  it("项目关联展示名称并可解除，不复制项目内容", async () => {
+    bridge.listTasks.mockResolvedValue([]);
+    bridge.shelfProjectLinks.mockResolvedValue([
+      {
+        project_id: "p1",
+        item_id: ITEM.id,
+        project_name: "漫剧项目",
+        created_at: "2026-11-14T00:00:00Z",
+      },
+    ]);
+    render(<ShelfDetail item={ITEM} onClose={() => {}} />);
+    expect(await screen.findByText("漫剧项目")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "解除项目关联 漫剧项目" }));
+    await waitFor(() =>
+      expect(bridge.shelfUnlinkProject).toHaveBeenCalledWith("item-1", "p1"),
+    );
+  });
+
+  it("图片 OCR 结果可复制/保存为文本，原图不改动", async () => {
+    bridge.listTasks.mockResolvedValue([]);
+    bridge.shelfOcrItem.mockResolvedValue({
+      status: "ok",
+      code: "ok",
+      text: "错误日志 0x80070005",
+      reason: null,
+      durationMs: 12,
+      cached: false,
+      lines: 1,
+      chars: 13,
+      width: 640,
+      height: 480,
+      engine: "windows",
+      suggestedTitle: "错误日志",
+    });
+    const created = {
+      ...ITEM,
+      id: "text-1",
+      kind: "text" as const,
+      display_name: "错误日志 0x80070005",
+      content: "错误日志 0x80070005",
+    };
+    bridge.shelfAddText.mockResolvedValue(created);
+    bridge.shelfUpdate.mockResolvedValue({
+      ...created,
+      note: "OCR 自：截图.png",
+    });
+    const imageItem = {
+      ...ITEM,
+      kind: "image" as const,
+      display_name: "截图.png",
+      file_ext: "png",
+      original_path: "C:/shots/截图.png",
+    };
+    render(<ShelfDetail item={imageItem} onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "识别图片文字" }));
+    await waitFor(() =>
+      expect(bridge.shelfOcrItem).toHaveBeenCalledWith(
+        "item-1",
+        expect.stringContaining("shelf-ocr-item-1"),
+      ),
+    );
+    const textarea = (await screen.findByLabelText("OCR 识别结果")) as HTMLTextAreaElement;
+    expect(textarea.value).toBe("错误日志 0x80070005");
+
+    fireEvent.click(screen.getByRole("button", { name: "保存为文本条目" }));
+    await waitFor(() =>
+      expect(bridge.shelfAddText).toHaveBeenCalledWith("错误日志 0x80070005", null),
+    );
+    await waitFor(() =>
+      expect(bridge.shelfUpdate).toHaveBeenCalledWith(
+        "text-1",
+        expect.objectContaining({ note: "OCR 自：截图.png" }),
+      ),
+    );
   });
 });
 

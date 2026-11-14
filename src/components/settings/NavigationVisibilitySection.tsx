@@ -15,6 +15,9 @@
 //!   本区块只负责写配置，避免两处实现用不同快照各自切页；
 //! - 写入串行化：写库期间开关/恢复按钮一致禁用并显示进行中状态，不存在
 //!   「可点击但被静默丢弃」的操作；保存失败就地提示，界面仍显示后端真实配置。
+//! - 界面切换是**单事务**：先停长按/拖拽、封住排序入口，等旧界面的排序真正
+//!   落库后才切换；保存失败则留在原界面、显示错误（顺序已按序号回滚），可重试。
+//!   同一时刻只允许一个切换事务，快速连点不会产生两份快照。
 //!
 //! 排序交互（2026-11-13 全面优化，状态仍只有 `navigation_layout` 一份真源）：
 //! - **拖拽**：左侧手柄或行内非交互区起拖，其它行平滑让位，靠近边缘自动滚动，
@@ -44,7 +47,12 @@ import {
   type NavEntry,
   type NavSurface,
 } from "../../lib/navigationRegistry";
-import { resetNavigationSurface, setNavigationEntryVisible, useNavigationLayout } from "../../lib/navigationLayout";
+import {
+  resetNavigationSurface,
+  setNavigationEntryVisible,
+  useCommittedNavigationLayout,
+} from "../../lib/navigationLayout";
+import { revealInScroller } from "../../lib/revealInScroller";
 import { useNavOrderDraft } from "../../hooks/useNavOrderDraft";
 import { useNavStepRepeat } from "../../hooks/useNavStepRepeat";
 import { useNavDragSort } from "../../hooks/useNavDragSort";
@@ -59,11 +67,16 @@ export default function NavigationVisibilitySection() {
   const surfaceLabel = (surface: NavSurface) =>
     surface === "left" ? t("nav.surface.left") : t("nav.surface.capsule");
   const settingsReady = useSettingsStore((s) => !!s.settings);
-  const layout = useNavigationLayout();
+  // 排序草稿的基准是**已提交**配置：乐观意图叠加在它上面（见 navOrderIntent），
+  // 这里读事实源才能正确计算下一步与失败回滚。
+  const layout = useCommittedNavigationLayout();
   const tab = useUiStore((s) => s.tab);
 
   const [surface, setSurface] = useState<NavSurface>("left");
   const [pendingId, setPendingId] = useState<string | null>(null);
+  // 界面切换事务进行中：切换属于「读旧界面 → 落库 → 换目标」的原子操作，
+  // 期间与排他写入一样封闭所有排序/显隐入口，避免第二个事务用另一份快照插进来。
+  const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 连续调整态：被选中的入口（稳定 ID），无值时列表下方不显示固定调整条。
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -71,7 +84,26 @@ export default function NavigationVisibilitySection() {
   // 写入期间**全部**配置操作禁用：旧实现只禁用当前行，其它行仍可点击，
   // 但处理函数在 pendingId 非空时直接返回 —— 点击被静默丢弃。
   // 现在「可点击」与「会被执行」严格等价（串行写入链本身已保证读-改-写不覆盖）。
-  const busy = pendingId !== null;
+  //
+  // 注意两种"忙"必须区分：
+  // - **排他写入**（显隐切换 / 恢复默认）用 `busy`：期间禁止新的排序、长按、
+  //   拖拽与键盘调整，因为它们会让两份互不兼容的写入互相覆盖；
+  // - **排序草稿合并写入**不设 busy：连续拖动/长按必须能一直追加意图，
+  //   `useNavOrderDraft` 按序号保证过期响应不覆盖更新的顺序。
+  const busy = pendingId !== null || switching;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  // 切换事务锁：同一时刻只允许一个切换流程（引用在同步阶段就写入，快速连点
+  // 第二个按钮不会创建第二个事务，也不会覆盖第一个请求的目标界面）。
+  const switchTaskRef = useRef<Promise<void> | null>(null);
+  // 事务期间切换按钮被禁用（浏览器会把焦点从被禁用的按钮移到 body）：事务
+  // 结束后若焦点确实掉到 body，按当前界面把焦点还给对应按钮，键盘用户不必
+  // 从头 Tab 一遍。
+  const surfaceTabRefs = useRef<Record<NavSurface, HTMLButtonElement | null>>({
+    left: null,
+    capsule: null,
+  });
+  const hadSwitchingRef = useRef(false);
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const adjustRef = useRef<HTMLDivElement | null>(null);
@@ -100,6 +132,7 @@ export default function NavigationVisibilitySection() {
     move,
     moveTo,
     flush,
+    discard,
   } = useNavOrderDraft(surface, layout[surface], isFixed, onDraftError);
 
   const currentEntryId = leftEntryForTab(tab)?.id;
@@ -117,6 +150,10 @@ export default function NavigationVisibilitySection() {
   /** 一步移动：长按重复、单击、键盘与拖拽共用同一入口。 */
   const step = useCallback(
     (id: string, delta: -1 | 1) => {
+      // 排他写入（显隐 / 恢复默认）期间不接受新的排序意图：按钮已 disabled，
+      // 但长按会话与键盘路径不经过 DOM 禁用态，必须在这里统一收敛，
+      // 否则会出现「界面在动、写库被丢弃」或与显隐写入互相覆盖。
+      if (busyRef.current) return false;
       const activeElement = document.activeElement as HTMLElement | null;
       const action = activeElement?.closest<HTMLElement>("[data-nav-action]")?.dataset.navAction;
       const inSameRow = !!activeElement?.closest(`[data-nav-entry="${id}"]`);
@@ -218,8 +255,9 @@ export default function NavigationVisibilitySection() {
   }, [moveTick, orderIds]);
 
   // 调整条首次出现时保证可见：长列表里它可能刚好落在视口外（操作目标反而不可见）。
-  // 只在进入某个入口的调整态时做一次最小必要滚动，不随每次上移/下移滚动页面，
-  // 更不会为了固定按钮把整个列表反复居中。
+  // 用 `revealInScroller` 而不是 `scrollIntoView`：后者会滚动**所有**祖先容器，
+  // 表现为整个设置页突然跳动（还可能顺带滚动排序列表本身）。这里只在调整条真的
+  // 越出可见区时补最小纵向差额，不居中、不横向滚动；不随每次上移/下移滚动页面。
   useLayoutEffect(() => {
     if (!activeId) {
       adjustScrolledIdRef.current = null;
@@ -227,10 +265,7 @@ export default function NavigationVisibilitySection() {
     }
     if (adjustScrolledIdRef.current === activeId) return;
     adjustScrolledIdRef.current = activeId;
-    const bar = adjustRef.current;
-    if (bar && typeof bar.scrollIntoView === "function") {
-      bar.scrollIntoView({ block: "nearest", inline: "nearest" });
-    }
+    revealInScroller(adjustRef.current);
   }, [activeId]);
 
   // 调整态目标失效（被隐藏 / 切到另一界面 / 恢复默认）时自动收起调整条。
@@ -242,14 +277,40 @@ export default function NavigationVisibilitySection() {
     }
   }, [activeId, orderIds, surface]);
 
+  // 排他写入开始时立刻收尾正在进行的拖拽/长按：它们的意图已无法安全落库。
+  // 只依赖稳定的 stop/cancel（hook 返回值里的对象每次渲染都是新的，不能进依赖）。
+  const stopRepeat = repeat.stop;
+  const cancelDrag = drag.cancel;
+  useEffect(() => {
+    if (!busy) return;
+    stopRepeat();
+    cancelDrag();
+  }, [busy, stopRepeat, cancelDrag]);
+
+  // 切换事务结束时把焦点还给当前界面的切换按钮（见 refs 处的说明）。
+  useEffect(() => {
+    if (switching) {
+      hadSwitchingRef.current = true;
+      return;
+    }
+    if (!hadSwitchingRef.current) return;
+    hadSwitchingRef.current = false;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    surfaceTabRefs.current[surface]?.focus({ preventScroll: true });
+  }, [switching, surface]);
+
   // 隐藏当前所在页的恢复由 `FullView` 统一处理（导航配置变更驱动，唯一实现点）：
   // 这里只负责写入配置，不在局部路径里另做一次切页（旧快照 + 双实现会互相覆盖）。
   async function onToggle(entry: NavEntry, nextVisible: boolean) {
-    if (busy || entry.locked) return;
+    // 用 ref 而不是渲染时的 busy：切换事务在同步阶段就关门，渲染前到达的点击
+    // 也必须被拒绝（可点击与会被执行严格等价）。
+    if (busyRef.current || entry.locked) return;
     setPendingId(entry.id);
     setError(null);
     try {
       // 先把未落库的排序写完，显隐写入才不会用旧顺序覆盖用户刚做的调整。
+      // `flush()` 失败会 reject：此时显隐写入**不执行**，避免静默丢掉排序。
       await flush();
       await setNavigationEntryVisible(surface, entry.id, nextVisible);
     } catch (e) {
@@ -260,12 +321,15 @@ export default function NavigationVisibilitySection() {
   }
 
   async function onReset() {
-    if (busy) return;
+    if (busyRef.current) return;
     setPendingId("__reset__");
     setError(null);
     try {
-      // 恢复默认会重新加入该界面的默认可见入口，当前页不会失去入口，无需切换页面。
-      await flush();
+      // 恢复默认是**整份覆盖**：待保存的顺序会被默认值取代，因此不需要先落库
+      // （否则会为一笔即将被覆盖的顺序制造一次可能失败的写入，还给用户一个
+      // 与最终状态无关的错误）。丢弃意图后仍走同一条串行写链，在途写入
+      // 一定先完成、随后被本次默认值覆盖，不存在交错。
+      discard();
       await resetNavigationSurface(surface);
       setActiveId(null);
       if (listRef.current) listRef.current.scrollTop = 0;
@@ -276,19 +340,41 @@ export default function NavigationVisibilitySection() {
     }
   }
 
-  async function onSurfaceChange(next: NavSurface) {
+  /**
+   * 界面切换事务：停会话 → 封输入 → 落库 → 成功才切换。
+   *
+   * 顺序是刻意的：`flush()` 依赖「旧界面当前没有新意图」才能收敛，所以先停长按/
+   * 拖拽、再用 busy 封住全部排序入口，最后才等待保存。任何一步失败都留在原界面、
+   * 显示真实错误；排序意图已按序号回滚，用户可以直接重试（不会丢操作）。
+   */
+  function onSurfaceChange(next: NavSurface) {
     if (next === surface) return;
-    // 拖拽/长按正在进行的会话属于旧界面，先收尾再切换，避免把 A 的顺序落到 B。
+    if (busyRef.current || switchTaskRef.current) return;
+    // 同步关门：不等下一次渲染，事务期间到达的指针/键盘输入也一律拒绝。
+    busyRef.current = true;
     drag.cancel();
     repeat.stop();
     setActiveId(null);
     setError(null);
-    try {
-      await flush();
-    } catch {
-      // flush 内部已就地反馈失败；切换界面本身不受影响
-    }
-    setSurface(next);
+    setSwitching(true);
+    const task = (async () => {
+      try {
+        await flush();
+      } catch (e) {
+        // 不切换：旧界面的顺序已回滚到已提交状态，错误可见、可重新排序或重试切换。
+        setError(errorMessage(e));
+        return;
+      }
+      setSurface(next);
+      // 目标界面是另一份列表：清掉滚动残留（只动列表自身，不触碰设置页滚动位置）。
+      if (listRef.current) listRef.current.scrollTop = 0;
+    })();
+    switchTaskRef.current = task;
+    const settle = () => {
+      if (switchTaskRef.current === task) switchTaskRef.current = null;
+      setSwitching(false);
+    };
+    void task.then(settle, settle);
   }
 
   /** 行内 Alt+↑ / Alt+↓ 与 Esc 退出调整态（拖拽的 Esc 由拖拽会话自行处理）。 */
@@ -301,6 +387,9 @@ export default function NavigationVisibilitySection() {
       return;
     }
     if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    // 键盘路径不经过 DOM 禁用态：排他写入期间必须与按钮一样被拒绝，
+    // 否则会出现「按键有反应、写库被丢弃」的不一致。
+    if (busyRef.current) return;
     const row = (event.target as HTMLElement).closest<HTMLElement>("[data-nav-entry]");
     const id = row?.dataset.navEntry;
     if (!id || !orderIds.includes(id) || isFixed(id)) return;
@@ -329,6 +418,12 @@ export default function NavigationVisibilitySection() {
             type="button"
             className={`btn sm${surface === value ? " primary" : ""}`}
             aria-pressed={surface === value}
+            // 排他写入或切换事务期间禁用：切界面本身要等旧界面落库，
+            // 期间再发起第二次切换只会产生另一份快照。
+            disabled={busy}
+            ref={(node) => {
+              surfaceTabRefs.current[value] = node;
+            }}
             onClick={() => void onSurfaceChange(value)}
           >
             {surfaceLabel(value)}
@@ -347,6 +442,14 @@ export default function NavigationVisibilitySection() {
             : t("nav.previewEmpty")}
         </span>
       </div>
+
+      {/* 保存失败提示放在列表**上方**：错误若落在区块底部，长列表 + 调整条展开时
+          可能正好在折叠线以下，用户看不到真实的失败原因。 */}
+      {error && (
+        <div className="setting-note nav-visibility-error" role="alert">
+          {t("nav.saveFailed", { error })}
+        </div>
+      )}
 
       <div
         className={`nav-visibility-list${drag.draggingId ? " is-dragging" : ""}`}
@@ -584,7 +687,7 @@ export default function NavigationVisibilitySection() {
           type="button"
           className="btn sm"
           onClick={() => void onReset()}
-          disabled={!settingsReady || pendingId !== null}
+          disabled={!settingsReady || busy}
           aria-label={t("nav.resetAria", { surface: surfaceLabel(surface) })}
         >
           <RotateCcw size={12} /> {t("nav.reset", { surface: surfaceLabel(surface) })}
@@ -599,12 +702,6 @@ export default function NavigationVisibilitySection() {
 
       {surface === "capsule" && visibleEntries.length === 0 && (
         <div className="setting-note">{t("nav.capsuleAllHidden")}</div>
-      )}
-
-      {error && (
-        <div className="setting-note nav-visibility-error" role="alert">
-          {t("nav.saveFailed", { error })}
-        </div>
       )}
 
       {/* 排序结果的无障碍播报：只播报最终位置，长按过程中不逐格朗读。
