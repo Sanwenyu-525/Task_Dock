@@ -299,6 +299,51 @@ export default function OverviewSegment({
         </span>
       </div>
 
+      {/* 四张等权摘要：先给全局结论，再进入磁盘/内存主卡与趋势。
+          每张卡都只用当前快照的真实字段；缺失时显示不可用而不是 0。 */}
+      <div className="resource-summary-grid" aria-label={t("resource.overview.title")}>
+        <article className="resource-summary-card">
+          <span className="resource-summary-label">{t("resource.overview.diskRingTitle")}</span>
+          <strong className="resource-summary-value">
+            {pending ? "…" : noReading ? unavailable : (percentText(diskUsage.usedPercent) ?? unavailable)}
+          </strong>
+          <span className="resource-summary-sub">{disk?.volume ?? "未检测到卷"}</span>
+        </article>
+        <article className="resource-summary-card">
+          <span className="resource-summary-label">{t("resource.overview.memoryRingTitle")}</span>
+          <strong className="resource-summary-value">
+            {pending ? "…" : noReading ? unavailable : (percentText(memoryUsage.usedPercent) ?? unavailable)}
+          </strong>
+          <span className="resource-summary-sub">
+            {typeof memory?.totalBytes === "number"
+              ? formatBytes(memory.totalBytes)
+              : "系统内存不可用"}
+          </span>
+        </article>
+        <article className="resource-summary-card">
+          <span className="resource-summary-label">{t("settings.resourceCleanup.applicationCpu")}</span>
+          <strong className="resource-summary-value">
+            {pending || noReading
+              ? pending
+                ? "…"
+                : unavailable
+              : process?.cpuPercent !== undefined && process?.cpuPercent !== null
+                ? `${process.cpuPercent.toFixed(1)}%`
+                : unavailable}
+          </strong>
+          <span className="resource-summary-sub">Task Dock 当前进程</span>
+        </article>
+        <article className="resource-summary-card">
+          <span className="resource-summary-label">{t("settings.resourceCleanup.applicationCache")}</span>
+          <strong className="resource-summary-value">
+            {pending ? "…" : noReading || cacheUnavailable ? unavailable : cacheValue}
+          </strong>
+          <span className="resource-summary-sub">
+            {cacheIncomplete ? "部分统计，不代表全部缓存" : "应用缓存总量"}
+          </span>
+        </article>
+      </div>
+
       <div className="resource-dashboard">
         <article className={`resource-hero-card is-${diskUsage.level}`}>
           <header className="resource-hero-head">

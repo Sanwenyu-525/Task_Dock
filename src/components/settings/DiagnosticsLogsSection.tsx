@@ -66,6 +66,9 @@ export default function DiagnosticsLogsSection() {
         diagnosticsSummary({ since, anomaliesOnly: true }),
       ]);
       if (seq !== requestSeq.current) return;
+      if (!nextStatus || !nextSummary) {
+        throw new Error("诊断数据不完整：后端未返回状态或摘要");
+      }
       setStatus(nextStatus);
       setSummary(nextSummary);
       setError(null);

@@ -32,7 +32,7 @@ import {
 import { useAsyncResource } from "../../lib/asyncResource";
 import { formatBytes } from "../../lib/clipboardUi";
 import { computeUsage, formatPercent } from "../../lib/resourceMetrics";
-import { pickSnapshotView } from "../../lib/resourceFreshness";
+import { pickSnapshotView, FRESHNESS_LABEL } from "../../lib/resourceFreshness";
 import { useLifecycleStore } from "../../store/useLifecycleStore";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { useResourceTrend } from "../../hooks/useResourceTrend";
@@ -40,6 +40,7 @@ import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
 import ResourceCleanupSection, { type CleanupEstimate } from "../settings/ResourceCleanupSection";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import { WorkbenchPageDetail, WorkbenchDetailFacts } from "../../workbench/pageDetail";
 import ProcessDiagnostics from "./ProcessDiagnostics";
 import DiskSpaceAnalyzer from "./DiskSpaceAnalyzer";
 import DiskStoragePanel from "./DiskStoragePanel";
@@ -405,7 +406,99 @@ export default function ResourceManagementPanel() {
           )}
         </div>
       </div>
+
+      {/* 右栏性能摘要：只在概览分区可见时投送；其他分区保留各自页头上下文，
+          不把「磁盘扫描」或「进程诊断」的局部状态冒充性能总览。 */}
+      {segment === "overview" && (
+        <ResourcePerformanceDetail
+          snapshot={snapshotView.snapshot}
+          freshness={snapshotView.freshness}
+          sampledAt={snapshotView.sampledAt}
+          trendPoints={trend.points.length}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * 右栏性能摘要：只读、与概览同源。缺失字段显示「不可用」，不做趋势外推。
+ * 趋势点数来自当前概览的 10 秒有界采样，必须写明样本数而不是画假曲线。
+ */
+function ResourcePerformanceDetail({
+  snapshot,
+  freshness,
+  sampledAt,
+  trendPoints,
+}: {
+  snapshot: ResourceSnapshot | null;
+  freshness: ReturnType<typeof pickSnapshotView>["freshness"];
+  sampledAt: string | null;
+  trendPoints: number;
+}) {
+  const { t } = useLocale();
+  const disk = snapshot?.disks[0] ?? null;
+  const diskUsage = computeUsage(disk?.totalBytes ?? null, disk?.availableBytes ?? null);
+  const memoryUsage = computeUsage(
+    snapshot?.memory.totalBytes ?? null,
+    snapshot?.memory.availableBytes ?? null,
+  );
+  const process = snapshot?.process;
+  const cache = snapshot?.application.knownCacheBytes;
+  const cacheKnown = snapshot?.application.status !== "unavailable" && cache !== null && cache !== undefined;
+  const stamp = sampledAt ? new Date(sampledAt).toLocaleTimeString("zh-CN", { hour12: false }) : null;
+
+  return (
+    <WorkbenchPageDetail title="性能摘要">
+      <div className="resource-rail-status">
+        <span className={`resource-freshness-dot is-${freshness}`} aria-hidden="true" />
+        <strong>{t(FRESHNESS_LABEL[freshness])}</strong>
+        {stamp && <span>{stamp}</span>}
+      </div>
+      <WorkbenchDetailFacts
+        rows={[
+          {
+            label: "磁盘",
+            value:
+              disk && diskUsage.usedPercent !== null
+                ? `${formatPercent(diskUsage.usedPercent)} · ${disk.volume}`
+                : "不可用",
+          },
+          {
+            label: "内存",
+            value:
+              snapshot?.memory && memoryUsage.usedPercent !== null
+                ? formatPercent(memoryUsage.usedPercent)
+                : "不可用",
+          },
+          {
+            label: "Task Dock CPU",
+            value:
+              process?.cpuPercent !== null && process?.cpuPercent !== undefined
+                ? `${process.cpuPercent.toFixed(1)}%`
+                : "不可用",
+          },
+          {
+            label: "Task Dock 内存",
+            value:
+              process?.workingSetBytes !== null && process?.workingSetBytes !== undefined
+                ? formatBytes(process.workingSetBytes)
+                : "不可用",
+          },
+          {
+            label: "应用缓存",
+            value: cacheKnown ? formatBytes(cache) : "不可用",
+          },
+          {
+            label: "采样点",
+            value: `${trendPoints} / 30`,
+          },
+        ]}
+      />
+      <p className="resource-rail-note">
+        仅在概览可见时每 10 秒采样；切换到其他分区或隐藏页面即停止。历史读数会明确标注，不冒充当前值。
+      </p>
+    </WorkbenchPageDetail>
   );
 }
 

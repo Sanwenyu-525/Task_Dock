@@ -848,6 +848,56 @@ const shim = `
     wf2: { run_id: "wfr2", workflow_id: "wf2", status: "failed", total_steps: 3, completed_steps: 2, error: "资源打包超时", started_at: iso(600), started_at_local: new Date(Date.now() - 600 * 60000).toLocaleString(), finished_at: iso(590) },
   };
 
+  // 诊断中心走查夹具：真实契约形状，避免 harness 对未覆盖命令返回 null 后页面把
+  // null.mode 误报成产品读取失败。只用于 B 通道截图，不代表原生诊断数据。
+  const DIAG_STATUS = {
+    sessionId: "sess-preview-diag",
+    startedAt: iso(360),
+    logDir: "D:\\\\Develop\\\\task_dock\\\\logs",
+    mode: "normal",
+    verboseRemainingMs: 0,
+    files: [
+      { name: "task-dock-2026-11-15.jsonl", bytes: 184320, modifiedAt: iso(12), active: true },
+      { name: "task-dock-2026-11-14.jsonl", bytes: 524288, modifiedAt: iso(1440), active: false },
+    ],
+    totalBytes: 708608,
+    maxFileBytes: 8 * 1024 ** 2,
+    maxTotalBytes: 64 * 1024 ** 2,
+    maxArchiveFiles: 30,
+    written: 1284,
+    dropped: 0,
+    queueFull: 0,
+    aggregated: 36,
+    rotations: 1,
+    failures: 1,
+    skippedLines: 0,
+    degraded: false,
+  };
+  const DIAG_RECORDS = [
+    { timestamp: iso(8), level: "ERROR", module: "workflow", action: "run_step", event: "workflow.step.failed", session_id: "sess-preview-diag", operation_id: "op-wf-2", status: "failed", error_code: "resource_busy", error_category: "environment", duration_ms: 1802, retry_count: 0, message: "资源打包等待工作现场释放超时", source: "rust", count: 1 },
+    { timestamp: iso(22), level: "WARN", module: "agents", action: "dispatch", event: "agent.queue.pressure", session_id: "sess-preview-diag", status: "recovered", error_code: "queue_pressure", duration_ms: 420, retry_count: 1, message: "Agent 事件队列短时积压后恢复", source: "frontend", count: 3 },
+    { timestamp: iso(41), level: "WARN", module: "apps", action: "scan", event: "apps.scan.slow", session_id: "sess-preview-diag", status: "success", duration_ms: 3120, message: "UWP 应用扫描耗时超过 3 秒", source: "rust", count: 1 },
+    { timestamp: iso(75), level: "INFO", module: "workbench", action: "navigate", event: "workbench.route.change", session_id: "sess-preview-diag", status: "success", duration_ms: 38, message: "切换到诊断中心", source: "frontend", count: 1 },
+  ];
+  const DIAG_SUMMARY = {
+    total: 4,
+    errors: 1,
+    warnings: 3,
+    infos: 0,
+    groups: [
+      { module: "workflow", action: "run_step", errorCode: "resource_busy", level: "ERROR", count: 1, firstSeen: iso(8), lastSeen: iso(8), lastStatus: "failed" },
+      { module: "agents", action: "dispatch", errorCode: "queue_pressure", level: "WARN", count: 2, firstSeen: iso(22), lastSeen: iso(22), lastStatus: "recovered" },
+      { module: "apps", action: "scan", level: "WARN", count: 1, firstSeen: iso(41), lastSeen: iso(41), lastStatus: "success" },
+    ],
+    byModule: [{ key: "workflow", count: 1 }, { key: "agents", count: 2 }, { key: "apps", count: 1 }],
+    byCode: [{ key: "resource_busy", count: 1 }, { key: "queue_pressure", count: 2 }],
+    truncated: false,
+    scanned: 1840,
+    skipped: 0,
+    files: 2,
+    generatedAt: iso(0),
+  };
+
   // ── 暂存架夹具（2026-11-14 效率升级走查）──
   // ?shelf=rich 追加多张图片 / 长文件名，用于网格、框选与灯箱序列截图；
   // 默认仍返回原来的 5 条，不影响其他页面截图。
@@ -1032,6 +1082,16 @@ const shim = `
       case "workflow_list": return WORKBENCH_WORKFLOWS;
       case "workflow_active": return null;
       case "workflow_last_run_summary": return WORKBENCH_LAST_RUNS[args?.id] ?? null;
+      // ── 诊断中心：状态/摘要/查询完整夹具，避免 null 破约 ──
+      case "diagnostics_status": return DIAG_STATUS;
+      case "diagnostics_summary": return DIAG_SUMMARY;
+      case "diagnostics_query":
+        return { items: DIAG_RECORDS, matched: DIAG_RECORDS.length, scanned: 1840, truncated: false, files: 2, skipped: 0 };
+      case "diagnostics_set_mode": return { ...DIAG_STATUS, mode: args?.mode ?? "normal" };
+      case "diagnostics_export":
+        return { path: "D:\\\\Develop\\\\task_dock\\\\logs\\\\diagnostics-report.json", bytes: 16400, records: 4, truncated: false, flushed: true, complete: true };
+      case "diagnostics_clear":
+        return { removed: 2, bytes: 708608 };
       // ── 虚拟屏（手机互传页右栏）：数组契约命令必须返回数组，避免 harness null 破约 ──
       case "vd_probe": return { adb_path: null, adb_version: null, scrcpy_path: null, scrcpy_version: null, supports_new_display: false, supports_ime_local: false, devices: [], error: null };
       case "vd_devices": return { devices: [], adb_ok: false, error: null };

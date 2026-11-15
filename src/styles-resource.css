@@ -1903,10 +1903,149 @@ html[lang^="en"] .resource-segment {
 
 /* ── 概览：有效性条 ─────────────────────────────────── */
 .resource-overview {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-flow: row;
+  gap: 9px;
+  min-width: 0;
+}
+
+/* 第三轮：四张等权摘要卡。顶部只给结论，细节留在下方主卡与分区。 */
+.resource-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 7px;
   min-width: 0;
+}
+
+.resource-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow, none);
+}
+
+.resource-summary-label {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-summary-value {
+  color: var(--text-primary);
+  font-size: 22px;
+  line-height: 1.1;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.resource-summary-sub {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 1600 级内容区：主分析（磁盘/内存/趋势）占左侧，辅助信息（关注/应用指标）
+   收在右侧窄列；窄于 1500 时恢复单列，避免卡片被挤成读不出数字。 */
+@media (min-width: 1500px) {
+  .resource-overview {
+    grid-template-columns: minmax(0, 1.65fr) minmax(230px, 0.78fr);
+    grid-auto-flow: row dense;
+    align-items: start;
+  }
+
+  .resource-overview > * {
+    grid-column: 1;
+  }
+
+  .resource-freshness,
+  .resource-summary-grid,
+  .resource-cleanup-error,
+  .resource-volume-strip {
+    grid-column: 1 / -1;
+  }
+
+  .resource-dashboard,
+  .resource-trend-section {
+    grid-column: 1;
+  }
+
+  .resource-attention,
+  .resource-app-metrics {
+    grid-column: 2;
+    align-self: start;
+  }
+
+  .resource-app-metrics .resource-metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .resource-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 侧栏展开的 1180 工作台：内容容器只有 ~600px，按窗口宽度判断会错过。
+   与规划中心一致改成容器查询，四张摘要变 2×2，避免数字和说明被挤断。 */
+@container wb-content (max-width: 780px) {
+  .resource-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 右栏性能摘要：状态点与当前值共用一套语义色，不新造颜色。 */
+.resource-rail-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+
+.resource-rail-status strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.resource-rail-status span:last-child {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.resource-rail-status .resource-freshness-dot.is-live {
+  background: var(--status-success);
+}
+
+.resource-rail-status .resource-freshness-dot.is-updating,
+.resource-rail-status .resource-freshness-dot.is-historical {
+  background: var(--status-waiting);
+}
+
+.resource-rail-status .resource-freshness-dot.is-failed {
+  background: var(--status-error);
+}
+
+.resource-rail-note {
+  margin: 9px 0 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .resource-freshness {

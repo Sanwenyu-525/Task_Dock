@@ -19,7 +19,7 @@ import { classifyArgv } from "./classify.mjs";
 import { concurrencyForClass, createMemorySampler, estimateForClass, formatMb } from "./mem.mjs";
 import { appendBoundedJsonLine, ensureState, newTaskId, paths } from "./state.mjs";
 import { killTree, selfIdentity, waitForGone } from "./proc.mjs";
-import { slotNames } from "./lock.mjs";
+import { reapStaleSlots, slotNames } from "./lock.mjs";
 import {
   acquireAdmission, releaseReservation, setReservationChild, setReservationPhase, startReservationHeartbeat,
 } from "./budget.mjs";
@@ -230,7 +230,6 @@ export async function executeTask({
   writeTask(home, task);
 
   const sampler = createMemorySampler({ intervalMs: cfg.memorySampleMs, env });
-  let memoryWaitSeen = false;
   let lease = null;
   let reservation = null;
   let reservationHeartbeat = null;
@@ -238,6 +237,7 @@ export async function executeTask({
   let lastNoticeAt = 0;
   let lastHousekeepAt = 0;
   let lastReclaimProbeAt = 0;
+  let lastSlotSweepAt = 0;
   let lastWriteAt = Date.now();
   const startWait = Date.now();
   const deadline = waitMs > 0 ? startWait + waitMs : Infinity;
@@ -363,18 +363,34 @@ export async function executeTask({
         if (cleaned.length) err(`清理了 ${cleaned.length} 条残留/过期记录`);
       }
 
-      const tasks = readQueue(home);
-      const elig = evaluateEligibility({ home, task, tasks, cfg, mem, memoryWaitSeen });
-      if (!elig.memory.admit) memoryWaitSeen = true;
+      // 槽位自愈（30s 一次，含进程启动时的首轮）：崩溃进程留下的槽位此前只在「有人来抢」时才回收，
+      // 没人抢就一直挂着（实测 heavy-1 挂 16 分钟、dev-1 挂 2.5 小时）；若留下的是准入临界区
+      // `slots/.admission`，连"抢"这一步都进不去，所有分类的等待者只能等到超时。
+      // 后台扫描只回收「持有者已死 + 子进程已结束」的槽位，绝不终止仍在跑的构建。
+      if (now - lastSlotSweepAt > 30000) {
+        lastSlotSweepAt = now;
+        try {
+          const swept = reapStaleSlots({ home, cfg, log: (m) => err(m), limit: 4 });
+          if (swept.reclaimed.length) {
+            err(`后台扫描：回收槽位 ${swept.reclaimed.map((r) => r.slot).join("、")}` +
+              `（${swept.reclaimed.map((r) => r.reason).join("；")}）`);
+          }
+          for (const b of swept.blocked) err(`后台扫描：槽位 ${b.slot} 暂不回收——${b.reason}`);
+        } catch (e) {
+          err(`后台扫描槽位异常：${e?.message ?? e}`);
+        }
+      }
 
-      // 状态语义：只有"内存与全局预算都够"才算正常排队；任一资源不足都是 waiting_resources，
-      // 否则用户看到 queued 会误以为"只是在排队"，实际是被资源挡住。
-      const nextStatus = (elig.memory.admit && elig.budget.admit) ? "queued" : "waiting_resources";
+      const tasks = readQueue(home);
+      const elig = evaluateEligibility({ home, task, tasks, cfg, mem });
+
+      // 状态语义：只有"全局预算也够"才算正常排队；预算不足是 waiting_resources，
+      // 否则用户看到 queued 会误以为"只是在排队"，实际是被预算挡住。
+      const nextStatus = elig.budget.admit ? "queued" : "waiting_resources";
       const reason = elig.blockers.join("；");
       if (task.status !== nextStatus || reason !== lastReason || now - lastWriteAt > 6000) {
         task.status = nextStatus;
         task.waitReason = reason || null;
-        task.lastMemoryOk = elig.memory.admit;
         task.lastBudgetOk = elig.budget.admit;
         try { writeTask(home, task); } catch { /* 状态写失败不阻断，下轮重试 */ }
         lastWriteAt = now;

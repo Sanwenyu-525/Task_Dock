@@ -282,6 +282,9 @@ export default function DiagnosticsCenterPanel() {
           diagnosticsQuery(listFilter),
         ]);
         if (seq !== requestSeq.current) return;
+        if (!nextStatus || !nextHealth || !nextFacets || !nextPage) {
+          throw new Error("诊断数据不完整：后端未返回状态、摘要或列表");
+        }
         setStatus(nextStatus);
         setHealth(nextHealth);
         setSummary(nextFacets);

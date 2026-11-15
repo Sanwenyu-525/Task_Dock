@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,14 +12,13 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG, loadConfig, configRisks, DANGER_AUTH_ENV } from "./sched/config.mjs";
 import { classifyArgv, classifyCommandLine, splitCommandLine } from "./sched/classify.mjs";
 import { effectivePriority, compareOrder, parsePriority, computeFingerprint, evaluateEligibility } from "./sched/queue.mjs";
-import { evaluateMemoryAdmission, memoryFloorForClass, pressureLevel } from "./sched/mem.mjs";
 import {
   classifyReservation, computeBudget, createReservation, maxEstimateMb, planAdmission, readReservation,
   readReservations, releaseReservation, setReservationChild, sumReserved, writeReservation,
 } from "./sched/budget.mjs";
-import { resolveStateHome } from "./sched/state.mjs";
-import { slotNames, snapshotSlots, cmdlineSignature } from "./sched/lock.mjs";
-import { verifyIdentity } from "./sched/proc.mjs";
+import { resolveStateHome, ensureState, paths } from "./sched/state.mjs";
+import { slotNames, snapshotSlots, cmdlineSignature, reapStaleSlots } from "./sched/lock.mjs";
+import { selfIdentity, verifyIdentity } from "./sched/proc.mjs";
 import { buildSpawnPlan, resolveExecutable, priorityConflict } from "./sched/runner.mjs";
 import { inferWorkspace } from "./sched/devservers.mjs";
 
@@ -161,9 +160,9 @@ test("优先级：运行中的高优先级任务不得把后到的低优先级�
   const home = mkdtempSync(join(tmpdir(), "sched-prioconf-"));
   try {
     const mem = { totalMb: 16000, availMb: 9000 };
-    const eligRunning = evaluateEligibility({ home, task: self, tasks: [runningP1, self], cfg, mem, memoryWaitSeen: false });
+    const eligRunning = evaluateEligibility({ home, task: self, tasks: [runningP1, self], cfg, mem });
     assert.deepEqual(eligRunning.priorityBlockers, [], "running 记录不得进 priorityBlockers");
-    const eligQueued = evaluateEligibility({ home, task: self, tasks: [queuedP1, self], cfg, mem, memoryWaitSeen: false });
+    const eligQueued = evaluateEligibility({ home, task: self, tasks: [queuedP1, self], cfg, mem });
     assert.ok(eligQueued.priorityBlockers.length > 0, "真正在等的高优先级任务仍要排在前面");
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -197,68 +196,21 @@ test("优先级：同级按入队先后，高优先级排在前面", () => {
   assert.ok(compareOrder(p0, a, now, cfg) < 0);
 });
 
-// ---------------------------------------------------------------- 内存准入
-
-test("内存准入：16GB 默认阈值下 3GB 可用内存必须挡住重型任务", () => {
-  const mem = { availMb: 3072, totalMb: 16000, simulated: true, source: "test" };
-  const r = evaluateMemoryAdmission({ cfg, taskClass: "heavy", mem });
-  assert.equal(r.admit, false);
-  assert.equal(r.floorMb, 6144);
-  assert.match(r.reason, /6\.00 GB/);
-  assert.match(r.reason, /模拟/);
-
-  const light = evaluateMemoryAdmission({ cfg, taskClass: "light", mem });
-  assert.equal(light.admit, true, "3GB 仍可跑轻量任务（门槛 2.5GB）");
-});
-
-test("内存准入：恢复后需要多留滞回量才放行", () => {
-  const mem = { availMb: 6500, totalMb: 16000, simulated: true, source: "test" };
-  assert.equal(evaluateMemoryAdmission({ cfg, taskClass: "heavy", mem, memoryWaitSeen: false }).admit, true);
-  const withHysteresis = evaluateMemoryAdmission({ cfg, taskClass: "heavy", mem, memoryWaitSeen: true });
-  assert.equal(withHysteresis.admit, false, "等待过内存的任务恢复时需 6GB+1GB");
-  assert.equal(
-    evaluateMemoryAdmission({ cfg, taskClass: "heavy", mem: { ...mem, availMb: 7500 }, memoryWaitSeen: true }).admit,
-    true,
-  );
-});
-
-test("内存准入：预计峰值也参与下限（未知大任务不能被小门槛放进来）", () => {
-  const mem = { availMb: 4200, totalMb: 16000, simulated: true, source: "test" };
-  const r = evaluateMemoryAdmission({ cfg, taskClass: "medium", mem, estimateOverrideMb: 5000 });
-  assert.equal(r.floorMb, Math.max(cfg.mediumMinAvailMb, 5000));
-  assert.equal(r.admit, false);
-});
-
-test("内存准入：压力等级与分类门槛一致", () => {
-  assert.equal(pressureLevel(cfg, { availMb: 1000 }).level, "critical");
-  assert.equal(pressureLevel(cfg, { availMb: 3000 }).level, "elevated");
-  assert.equal(pressureLevel(cfg, { availMb: 5000 }).level, "moderate");
-  assert.equal(pressureLevel(cfg, { availMb: 9000 }).level, "normal");
-  assert.equal(memoryFloorForClass(cfg, "heavy"), 6144);
-  assert.equal(memoryFloorForClass(cfg, "light"), 2560);
-});
-
-test("内存准入：memoryAdmissionEnabled=false 时约束 A 放行，但默认配置仍拦截", () => {
-  const mem = { availMb: 300, totalMb: 16000, simulated: true, source: "test" };
-  const off = { ...cfg, memoryAdmissionEnabled: false };
-  const r = evaluateMemoryAdmission({ cfg: off, taskClass: "heavy", mem, memoryWaitSeen: true });
-  assert.equal(r.admit, true, "总闸关闭后不得再按可用内存拦截");
-  assert.equal(r.floorMb, 0);
-  assert.equal(r.bypassed, true);
-  assert.equal(r.availMb, 300, "可用内存仍如实回报，只是不参与准入");
-  assert.match(r.reason, /已关闭/);
-  assert.equal(pressureLevel(off, mem).level, "disabled");
-
-  const on = evaluateMemoryAdmission({ cfg, taskClass: "heavy", mem });
-  assert.equal(on.admit, false, "默认（未配置）必须保持开启，新增开关不得默认放宽安全边界");
-  assert.equal(on.bypassed, undefined);
-});
+// ---------------------------------------------------------------- 内存准入（已删除）
+//
+// 2026-11-15 晚：`evaluateMemoryAdmission` / `memoryFloorForClass` / `pressureLevel` 连同
+// `heavyMinAvailMb` / `mediumMinAvailMb` / `lightMinAvailMb` / `hysteresisMb` / `safetyReserveMb`
+// 已整体删除。原先「3GB 挡住重型 / 滞回 / 压力等级」这四组用例随功能一并移除；
+// 现在只剩槽位并发与全局预算两条约束（见下一节）。
 
 // ---------------------------------------------------------------- 全局预算（跨分类）
 //
-// 背景（整改前的真实缺口）：旧实现里「准入 = 本分类槽位有空 + 本任务自己的内存门槛达标」，
+// 背景（2026-11-15 整改前）：旧实现里「准入 = 本分类槽位有空 + 本任务自己的内存门槛达标」，
 // 不同分类各自读同一份 os.freemem 快照各自放行 → Heavy(6000)+Medium(3000) 在 7GB 可用时
-// 双双合格，合计 9000MB 已经超卖。这一组测试锁定新的两重独立约束。
+// 双双合格，合计 9000MB 已经超卖。当时为此加了全局预算约束。
+//
+// 2026-11-15 晚：内存门槛（约束 A）已按用户要求整体删除，现在**只有**槽位并发与全局预算
+// 两条约束；预算仍是防超卖的唯一跨分类闸门，这一组测试继续锁定它。
 
 test("全局预算：上限 = 物理总量 - 系统保留（硬上限，不被任务峰值抬高）", () => {
   const b = computeBudget({ cfg, totalMb: 16005 });
@@ -275,8 +227,6 @@ test("全局预算：上限 = 物理总量 - 系统保留（硬上限，不被�
   assert.equal(tight.reserveBreached, false);
   assert.equal(tight.peakExceedsBudget, true, "6000MB 峰值装不进 1005MB 预算");
   assert.match(tight.warning, /无法准入/);
-  // 夹取/不夹取都不影响约束 A 的分类门槛
-  assert.equal(memoryFloorForClass(cfg, "heavy"), 6144);
 
   assert.equal(maxEstimateMb(cfg), 6000);
   assert.equal(computeBudget({ cfg: { ...cfg, budgetEnabled: false }, totalMb: 16005 }).enabled, false);
@@ -294,7 +244,6 @@ test("全局预算：4/8/16/32GB 设备档位的判定表（安全余量不被�
     { totalMb: 16384, label: "16GB" },
     { totalMb: 32768, label: "32GB" },
   ];
-  const heavyFloor = memoryFloorForClass(cfg, "heavy"); // 约束 A 的分类门槛（6144）
   const rows = [];
   for (const d of devices) {
     const budget = computeBudget({ cfg, totalMb: d.totalMb });
@@ -324,8 +273,6 @@ test("全局预算：4/8/16/32GB 设备档位的判定表（安全余量不被�
     } else {
       assert.equal(heavy.admit, true, `${d.label} 重型任务应准入`);
     }
-    // 约束 A 的分类门槛在任何档位都不变（预算修正不改门槛）
-    assert.equal(memoryFloorForClass(cfg, "heavy"), heavyFloor);
   }
   // 判定表本身留证据，便于报告引用
   assert.equal(rows.map((r) => r.device).join(","), "4GB,8GB,16GB,32GB");
@@ -456,13 +403,9 @@ test("全局预算：跨分类合计超卖必须被拒绝，恰好等于上限�
   assert.equal(off.admit, true);
 });
 
-test("两重约束互不重复扣减：约束 A 只认实时可用内存，不因台账预留而收紧", () => {
+test("全局预算：台账预留在预算侧扣减；内存门槛已删除，不存在重复扣减问题", () => {
   const home = join(tmpRoot, "budget-no-double-count");
   writeReservation(home, createReservation({ taskId: "h-held", taskClass: "heavy", reservedMb: 6000 }));
-
-  const mem = { availMb: 6200, totalMb: 16005, simulated: true, source: "test" };
-  // 若把台账预留也扣进约束 A（6200 - 6000 = 200MB），重型任务会被永久挡住——这正是要避免的重复扣减
-  assert.equal(evaluateMemoryAdmission({ cfg, taskClass: "heavy", mem }).admit, true);
 
   // 约束 B 独立地看到 6000 已预留：预算 10000 时 6000+6000 = 12000 > 10000 → 排队
   const tight = { ...computeBudget({ cfg, totalMb: 16005 }), budgetMb: 10000, enabled: true };
@@ -533,10 +476,10 @@ test("崩溃残留预留：只有证明旧构建已结束才回收，unknown/det
 test("配置：未知字段、非法数值被拒绝而不是静默忽略", () => {
   const repo = mkWorkspace("cfg-repo");
   writeFileSync(join(repo, "build-sched.config.json"), JSON.stringify({
-    heavyMinAvailMb: 1024, unknownKey: 1, pollMs: "abc", logMaxMb: 12.5,
+    estimateHeavyMb: 5000, unknownKey: 1, pollMs: "abc", logMaxMb: 12.5,
   }));
   const { config, problems } = loadConfig({ repoRoot: repo, stateHome: join(tmpRoot, "cfg-home"), env: {} });
-  assert.equal(config.heavyMinAvailMb, 1024);
+  assert.equal(config.estimateHeavyMb, 5000);
   assert.equal(config.logMaxMb, 12.5);
   assert.ok(problems.some((p) => p.includes("unknownKey")));
   assert.ok(problems.some((p) => p.includes("pollMs")));
@@ -544,30 +487,31 @@ test("配置：未知字段、非法数值被拒绝而不是静默忽略", () =>
 
 test("配置：环境变量覆盖优先于仓库配置", () => {
   const repo = mkWorkspace("cfg-env", null);
-  writeFileSync(join(repo, "build-sched.config.json"), JSON.stringify({ heavyMinAvailMb: 1024 }));
+  writeFileSync(join(repo, "build-sched.config.json"), JSON.stringify({ estimateHeavyMb: 5000 }));
   const { config, sources } = loadConfig({
     repoRoot: repo, stateHome: join(tmpRoot, "cfg-env-home"),
-    env: { TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB: "2048" },
+    env: { TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "6000" },
   });
-  assert.equal(config.heavyMinAvailMb, 2048);
+  assert.equal(config.estimateHeavyMb, 6000);
   assert.ok(sources.some((s) => s.kind === "env"));
 });
 
-test("配置风险：关闭内存准入必须作为 P1 暴露，且不改变门槛默认值", () => {
-  const home = join(tmpRoot, "cfg-gate-off");
+test("配置：已删除的内存门槛字段不得重新生效（必须报未知字段）", () => {
+  const home = join(tmpRoot, "cfg-gate-removed");
   mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, "config.json"), JSON.stringify({ memoryAdmissionEnabled: false }));
+  writeFileSync(join(home, "config.json"), JSON.stringify({
+    memoryAdmissionEnabled: false, heavyMinAvailMb: 1, hysteresisMb: 1,
+  }));
   const loaded = loadConfig({ stateHome: home, env: {} });
-  assert.equal(loaded.config.memoryAdmissionEnabled, false);
-  assert.equal(loaded.config.heavyMinAvailMb, DEFAULT_CONFIG.heavyMinAvailMb,
-    "关闭总闸不得顺手改门槛，避免又变成'偷偷调低阈值'");
+  for (const k of ["memoryAdmissionEnabled", "heavyMinAvailMb", "hysteresisMb"]) {
+    assert.ok(loaded.problems.some((p) => p.includes(`未知字段 ${k}`),
+      `字段 ${k} 已随门槛删除，写在配置里必须报未知字段而不是静默生效`));
+    assert.equal(loaded.config[k], undefined, `${k} 不得再出现在有效配置里`);
+  }
   const risks = configRisks({
     config: loaded.config, danger: loaded.danger, sources: loaded.sources, problems: loaded.problems,
   });
-  const hit = risks.find((r) => r.key === "memoryAdmissionEnabled");
-  assert.ok(hit, "关闭约束 A 必须出现在风险清单里（doctor/status 才能审计）");
-  assert.equal(hit.level, "P1");
-  assert.match(String(hit.source), /config\.json/);
+  assert.ok(risks.some((r) => r.key === "unknown" && r.level === "P1"), "未知字段必须是 P1 风险项");
 });
 
 // ---------------------------------------------------------------- 指纹
@@ -618,6 +562,65 @@ test("槽位命名：重型只有 1 个槽位，轻量按配置并行", () => {
   assert.deepEqual(slotNames("heavy", cfg.heavyConcurrency), ["heavy-1"]);
   assert.deepEqual(slotNames("light", cfg.lightConcurrency), ["light-1", "light-2"]);
   assert.deepEqual(snapshotSlots(join(tmpRoot, "no-such-home")), []);
+});
+
+test("槽位自愈：后台扫描只回收「持有者已死 + 子进程已结束」的槽位", () => {
+  const home = join(tmpRoot, "sweep-home");
+  ensureState(home);
+  const slots = paths(home).slots;
+  // 拿一个确定已退出的真实 PID：避免用猜的数字，isPidAlive 对未知错误会按「可能存活」处理
+  const deadPid = spawnSync(process.execPath, ["-e", "0"], { encoding: "utf8" }).pid;
+  const put = (name, owner, ageMs = 120000) => {
+    const dir = join(slots, name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "owner.json"), JSON.stringify(owner));
+    const t = new Date(Date.now() - ageMs);
+    utimesSync(join(dir, "owner.json"), t, t);
+    return dir;
+  };
+
+  const heavy = put("heavy-1", {
+    taskId: "dead-task", pid: deadPid, startTime: new Date().toISOString(),
+    startTimeSource: "uptime", child: null,
+  });
+  const admission = put(".admission", {
+    taskId: "dead-admission", pid: deadPid, startTime: new Date().toISOString(),
+    startTimeSource: "uptime", child: null,
+  });
+  const fresh = put("medium-1", { taskId: "fresh", pid: deadPid, child: null }, 5000);
+  const alive = put("light-1", {
+    taskId: "alive", pid: process.pid, startTime: selfIdentity().startTime,
+    startTimeSource: "uptime", child: null,
+  });
+
+  const swept = reapStaleSlots({ home, cfg, log: () => {} });
+  assert.deepEqual(swept.reclaimed.map((r) => r.slot).sort(), [".admission", "heavy-1"]);
+  assert.equal(existsSync(heavy), false, "持有者已死 + 无子进程 → 必须回收");
+  assert.equal(existsSync(admission), false,
+    "准入临界区 slots/.admission 的崩溃残留同样要回收，否则所有分类的准入都被它卡死");
+  assert.equal(existsSync(fresh), true, "心跳仍新鲜 → 不做取证、不动");
+  assert.equal(existsSync(alive), true, "持有者仍存活 → 不动");
+});
+
+test("槽位自愈：子进程仍存活时不回收（后台扫描绝不终止正在跑的构建）", () => {
+  const home = join(tmpRoot, "sweep-home-2");
+  ensureState(home);
+  const slots = paths(home).slots;
+  const deadPid = spawnSync(process.execPath, ["-e", "0"], { encoding: "utf8" }).pid;
+  const dir = join(slots, "heavy-1");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "owner.json"), JSON.stringify({
+    taskId: "orphan-build", pid: deadPid, startTime: new Date().toISOString(),
+    startTimeSource: "uptime", child: { pid: process.pid, commandLine: "node fake-build.mjs" },
+  }));
+  const t = new Date(Date.now() - 120000);
+  utimesSync(join(dir, "owner.json"), t, t);
+
+  const swept = reapStaleSlots({ home, cfg, log: () => {} });
+  assert.equal(swept.reclaimed.length, 0, "调度进程崩溃但构建子进程仍在跑 → 后台扫描不得回收");
+  assert.ok(swept.blocked.some((b) => b.slot === "heavy-1" && /仍存活/.test(b.reason),
+    "必须给出「子进程仍存活」的阻塞原因，交由竞争路径/doctor 处置"));
+  assert.equal(existsSync(dir), true);
 });
 
 // ---------------------------------------------------------------- 进程启动
@@ -804,23 +807,22 @@ test("配置安全：systemReserveMb 低于推荐基线未授权时 fail-closed 
     "doctor 必须报「安全余量减少 2048 MB」");
 });
 
-test("配置安全：doctor 能抓到 1 MB 门槛、关闭预算与环境变量覆盖", () => {
+test("配置安全：doctor 能抓到 1 MB 预计峰值、关闭预算与环境变量覆盖", () => {
   const home = mkState("cfg-broken", {
-    budgetEnabled: false, heavyMinAvailMb: 1, mediumMinAvailMb: 1, lightMinAvailMb: 1,
-    estimateHeavyMb: 1, estimateMediumMb: 1,
+    budgetEnabled: false, estimateHeavyMb: 1, estimateMediumMb: 1, estimateLightMb: 1,
   });
   const loaded = loadConfig({
     stateHome: home,
-    env: { [DANGER_ENV]: "budget-off", TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB: "1" },
+    env: { [DANGER_ENV]: "budget-off", TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "1" },
   });
   const risks = configRisks({ config: loaded.config, danger: loaded.danger, sources: loaded.sources, problems: loaded.problems });
   const keys = risks.map((r) => r.key);
   assert.ok(keys.includes("budgetEnabled"), "关闭预算必须是风险项");
   assert.ok(risks.some((r) => r.key === "budgetEnabled" && r.level === "P0"));
-  for (const k of ["heavyMinAvailMb", "mediumMinAvailMb", "lightMinAvailMb"]) {
-    assert.ok(risks.some((r) => r.key === k && r.level === "P0"), `${k}=1MB 必须报 P0`);
+  for (const k of ["estimateHeavyMb", "estimateMediumMb", "estimateLightMb"]) {
+    assert.ok(risks.some((r) => r.key === k && r.level === "P1"), `${k}=1MB 必须报 P1`);
   }
-  assert.ok(risks.some((r) => r.key === "env" && r.text.includes("TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB")),
+  assert.ok(risks.some((r) => r.key === "env" && r.text.includes("TASKDOCK_SCHED_ESTIMATE_HEAVY_MB")),
     "环境变量覆盖必须被点名");
   assert.ok(risks.every((r) => r.source), "每条风险都要能说出配置来源");
 });
@@ -853,7 +855,7 @@ test("配置安全：坏 JSON 与未知字段必须被 doctor 报出来，而不
   const badRisks = configRisks({ config: bad.config, danger: bad.danger, sources: bad.sources, problems: bad.problems });
   assert.ok(badRisks.some((r) => r.key === "config" && r.level === "P0"));
 
-  const typoHome = mkState("cfg-typo", { heavyMinAvailMb: 6000, typpoKey: 1 });
+  const typoHome = mkState("cfg-typo", { estimateHeavyMb: 6000, typpoKey: 1 });
   const typo = loadConfig({ stateHome: typoHome, env: {} });
   assert.ok(typo.problems.some((p) => p.includes("未知字段 typpoKey")), "拼错的字段必须被点名");
   const typoRisks = configRisks({ config: typo.config, danger: typo.danger, sources: typo.sources, problems: typo.problems });

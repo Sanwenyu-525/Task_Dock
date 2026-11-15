@@ -303,6 +303,7 @@ describe("微件面板", () => {
     seedTasks();
     const { container } = render(<WidgetsPanel />);
 
+    fireEvent.click(screen.getByRole("button", { name: "「快捷操作」配置" }));
     fireEvent.click(screen.getByRole("button", { name: "停用「快捷操作」" }));
     expect(container.querySelector('[data-widget-id="quick-actions"]')).toBeNull();
     expect(screen.getByText("已启用 3 / 6")).toBeTruthy();
@@ -327,6 +328,8 @@ describe("微件面板", () => {
     fireEvent.click(desktopToggle);
 
     expect(item().desktop.visible).toBe(true);
+    // 停用入口按第二轮 UI 收纳在卡片配置面板内，先打开配置再断言。
+    fireEvent.click(screen.getByRole("button", { name: "「今日任务」配置" }));
     expect(screen.getByRole("button", { name: "停用「今日任务」" })).toBeTruthy();
     // 图标按钮的无障碍名称必须反映当前动作（显示 → 隐藏），避免屏幕阅读器误读。
     const hideToggle = screen.getByRole("button", { name: "在桌面隐藏「今日任务」" });
@@ -591,6 +594,7 @@ describe("微件面板", () => {
     expect(container.querySelector('[data-widget-id="focus-timer"]')).toBeTruthy();
     expect(subscribe).toHaveBeenCalled();
 
+    fireEvent.click(screen.getByRole("button", { name: "「专注倒计时」配置" }));
     fireEvent.click(screen.getByRole("button", { name: "停用「专注倒计时」" }));
 
     expect(container.querySelector('[data-widget-id="focus-timer"]')).toBeNull();

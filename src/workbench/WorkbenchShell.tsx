@@ -48,6 +48,7 @@ import {
   RotateCcw,
   Search,
   Settings2,
+  X as CloseIcon,
 } from "lucide-react";
 
 import DeferredView from "../components/DeferredView";
@@ -69,6 +70,7 @@ import TaskContextDrawer from "../components/context/TaskContextDrawer";
 
 import WorkbenchHome from "./WorkbenchHome";
 import WorkbenchContextPane from "./WorkbenchContextPane";
+import WorkbenchThemeMenu from "./WorkbenchThemeMenu";
 import WorkbenchWindowControls from "./WorkbenchWindowControls";
 import { WorkbenchDetailHostProvider } from "./pageDetail";
 
@@ -83,7 +85,8 @@ import { useAgentsStore } from "../store/useAgentsStore";
 import { useUiStore, type Tab, type TabSwitchResult } from "../store/useUiStore";
 import { useHotkeysRuntime } from "../store/useHotkeysStore";
 import { useGlobalSearchStore } from "../store/useGlobalSearchStore";
-import { useCommittedNavigationLayout, useNavigationLayout } from "../lib/navigationLayout";
+import { useCommittedNavigationLayout, setNavigationEntryVisible } from "../lib/navigationLayout";
+import { safeTabForHiddenEntry } from "../lib/navVisibility";
 import {
   entriesForSurface,
   isEntrySortable,
@@ -978,7 +981,6 @@ export default function WorkbenchShell() {
   useHotkeysRuntime();
 
   // ── 派生数据 ────────────────────────────────────────────────────────
-  const layout = useNavigationLayout();
   // 排序草稿的基准是**已提交**配置（与设置页一致）：乐观意图叠加在它上面，
   // 读事实源才能正确计算下一步与失败回滚。
   const committedLayout = useCommittedNavigationLayout();
@@ -1005,6 +1007,11 @@ export default function WorkbenchShell() {
   const navListRef = useRef<HTMLDivElement | null>(null);
   // 拖拽结束后浏览器补发的 click 不能变成页面跳转（与设置页同一语义）。
   const navDragEndedAtRef = useRef(0);
+  // 隐藏入口：复用设置页同一条 `navigation_layout` 写入链路。一次只处理一个
+  // 入口，避免快速连点时两个「读-改-写」互相覆盖；进入 pending 期间保持 busy，
+  // 用户取消后才释放（取消不得写隐藏配置）。
+  const [hidingId, setHidingId] = useState<string | null>(null);
+  const hidingBusyRef = useRef(false);
   // 排序后的焦点恢复与位置播报都按稳定 ID 处理，不依赖索引。
   const navFocusRef = useRef<string | null>(null);
   const navPendingAnnounceRef = useRef<string | null>(null);
@@ -1014,6 +1021,7 @@ export default function WorkbenchShell() {
     listRef: navListRef,
     orderIds: navOrderIds,
     isFixed: isFixedNavEntry,
+    disabled: hidingId !== null,
     onDrop: (id, toIndex) => {
       navDragEndedAtRef.current = Date.now();
       if (!moveNavEntryTo(id, toIndex)) return;
@@ -1024,6 +1032,93 @@ export default function WorkbenchShell() {
       setNavAnnouncement(t("nav.dragCancelled"));
     },
   });
+
+  // 隐藏动作的提交段：先把仍由本实例拥有的排序意图 flush 到 SQLite，再复用
+  // 设置页唯一的显隐写入函数。顺序意图与显隐是同一条配置，先落顺序可避免
+  // 隐藏写入覆盖刚完成的拖拽结果。
+  const commitHideEntry = useCallback(
+    async (entry: NavEntry) => {
+      setHidingId(entry.id);
+      try {
+        await navDraft.flush();
+        await setNavigationEntryVisible("left", entry.id, false);
+        showToast(t("nav.hiddenToast", { label: navLabel(entry, t) }), { kind: "info" });
+      } catch (error) {
+        showToast(t("nav.hideFailed", { error: errorMessage(error) }), { kind: "error" });
+      } finally {
+        hidingBusyRef.current = false;
+        setHidingId(null);
+      }
+    },
+    [navDraft, showToast, t],
+  );
+
+  /**
+   * 点击 ×：非当前页直接隐藏；当前页先走 `setTab` 门禁离开，只有真正切换成功
+   * （同步 switched 或用户 confirmed）后才写隐藏配置。`setTab` 对同步成功不回调
+   * `onResolve`，因此两个分支必须分别处理且用 `settled` 防重复提交。用户取消时
+   * 只释放忙碌态，不写配置、不改页面，编辑内容仍在。
+   */
+  const requestHideEntry = useCallback(
+    (entry: NavEntry) => {
+      if (hidingBusyRef.current || navDrag.draggingId) return;
+      hidingBusyRef.current = true;
+      setHidingId(entry.id);
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        void commitHideEntry(entry);
+      };
+      const abort = () => {
+        if (settled) return;
+        settled = true;
+        hidingBusyRef.current = false;
+        setHidingId(null);
+      };
+      const isCurrent = !atHome && entry.tabs.includes(tab);
+      if (!isCurrent) {
+        finish();
+        return;
+      }
+      // 用「去掉当前入口后」的有效布局选安全页，避免 safeTab 又选回正在隐藏的
+      // 页面；排序意图优先于已提交顺序，和屏幕上的实际位置保持一致。
+      const effective = {
+        ...committedLayout,
+        left: navOrderIds.filter((id) => id !== entry.id),
+      };
+      const target = safeTabForHiddenEntry(effective, useUiStore.getState().collectionSub);
+      const result = useUiStore.getState().setTab(target, {
+        onResolve: (resolution) => {
+          if (resolution === "confirmed") finish();
+          else abort();
+        },
+      });
+      if (result === "switched") {
+        // 合并入口的「快速笔记」子页没有独立 Tab：切页后恢复 notes，行为与
+        // FullView 隐藏当前入口时一致。
+        if (
+          useUiStore.getState().collectionSub === "notes" &&
+          (target === "inbox" || target === "shelf")
+        ) {
+          setCollectionSub("notes");
+        }
+        finish();
+      } else if (result !== "pending") {
+        // blocked：store 已提示（保存中）；也必须释放忙碌态。
+        abort();
+      }
+    },
+    [
+      atHome,
+      commitHideEntry,
+      committedLayout,
+      navDrag.draggingId,
+      navOrderIds,
+      setCollectionSub,
+      tab,
+    ],
+  );
 
   // 键盘排序（Alt+↑/↓）：React 搬动节点会让焦点落回 body，渲染后按稳定 ID 还原。
   const onNavEntryKeyDown = useCallback(
@@ -1315,9 +1410,10 @@ export default function WorkbenchShell() {
                 const shift = navDrag.shifts.get(entry.id) ?? 0;
                 const translate = dragging ? navDrag.offsetY : shift;
                 return (
-                  <button
+                  <div
                     key={entry.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     className={`wb-nav-item${active ? " active" : ""}${dragging ? " is-dragging" : ""}`}
                     aria-current={active ? "page" : undefined}
                     aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
@@ -1325,26 +1421,24 @@ export default function WorkbenchShell() {
                     data-tip={navDrag.draggingId ? undefined : label}
                     data-nav-entry={entry.id}
                     style={translate !== 0 ? { transform: `translateY(${translate}px)` } : undefined}
-                    onPointerDown={(event) => {
-                      // 触屏：行体位移留给列表纵向滚动，只有手柄可起拖（手柄 touch-action: none）。
-                      if (
-                        event.pointerType === "touch" &&
-                        !(event.target as HTMLElement).closest("[data-nav-grip]")
-                      ) {
-                        return;
-                      }
-                      navDrag.beginDrag(event, entry.id);
-                    }}
                     onClick={() => {
                       // 拖拽松手后的补发 click 不是「打开页面」的意图。
                       if (Date.now() - navDragEndedAtRef.current < NAV_DRAG_CLICK_GUARD_MS) return;
                       openEntry(entry);
                     }}
-                    onKeyDown={(event) => onNavEntryKeyDown(event, entry.id)}
+                    onKeyDown={(event) => {
+                      // 行内的 × 是独立控件：Enter / Space 归它，不再触发整行导航。
+                      if (event.target !== event.currentTarget) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (Date.now() - navDragEndedAtRef.current < NAV_DRAG_CLICK_GUARD_MS) return;
+                        openEntry(entry);
+                        return;
+                      }
+                      onNavEntryKeyDown(event, entry.id);
+                    }}
                   >
-                    <span className="wb-nav-grip" data-nav-grip aria-hidden="true">
-                      <GripVertical size={10} strokeWidth={2} />
-                    </span>
                     <span className="wb-nav-icon">
                       <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
                     </span>
@@ -1354,7 +1448,49 @@ export default function WorkbenchShell() {
                         {count > 99 ? "99+" : count}
                       </em>
                     )}
-                  </button>
+                    {/* 操作区固定占位：只切换透明度，悬停时行宽度不会跳变。拖拽
+                        只从手柄启动，× 的任何事件都不冒泡到行。 */}
+                    <span
+                      className="wb-nav-actions"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <span
+                        className="wb-nav-grip"
+                        data-nav-grip
+                        aria-hidden="true"
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          navDrag.beginDrag(event, entry.id);
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                        }}
+                      >
+                        <GripVertical size={18} strokeWidth={2} />
+                      </span>
+                      <button
+                        type="button"
+                        className="wb-nav-hide"
+                        data-nav-hide
+                        aria-label={t("nav.hideAria", { label })}
+                        disabled={hidingId !== null || navDrag.draggingId !== null}
+                        onPointerDown={(event) => {
+                          // 阻止任何拖拽会话（包括行内指针事件）从 × 区域启动。
+                          event.stopPropagation();
+                        }}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          if (navDrag.draggingId) return;
+                          requestHideEntry(entry);
+                        }}
+                      >
+                        <CloseIcon size={15} strokeWidth={2} aria-hidden="true" />
+                      </button>
+                    </span>
+                  </div>
                 );
               })}
             </Fragment>
@@ -1548,6 +1684,9 @@ export default function WorkbenchShell() {
             >
               <PanelRight size={15} aria-hidden="true" />
             </button>
+            {/* 明暗主题：顶栏即标题栏，切主题不该只能绕到设置页（与主窗口
+                标题栏的「明暗」菜单同一语义，写库走同一设置管道）。 */}
+            <WorkbenchThemeMenu />
           </div>
           <WorkbenchWindowControls />
         </header>

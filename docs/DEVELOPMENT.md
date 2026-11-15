@@ -469,12 +469,12 @@ exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
 多个会话/子智能体/worktree 同时跑 `cargo build`、`npm run build`、`tauri build` 会争同一份
 Cargo target、同一个 `dist/` 和同一块内存。现在所有高资源构建统一经
 `node scripts/build-sched.mjs`（npm 入口 `npm run build` / `npm run tauri` / `npm run test` /
-`npm run cargo -- <子命令>`）：按真实可用内存准入、按 heavy/medium/light 分类排队、
+`npm run cargo -- <子命令>`）：按分类槽位与全局预算排队、按 heavy/medium/light 分类隔离资源、
 槽位目录（`mkdir` 原子性）+ 心跳租约实现跨进程互斥，崩溃后靠身份取证安全回收。
 
-**准入是两重独立约束**（2026-11-15 整改）：① 每分类的实时可用内存门槛（`os.freemem`）；
-② 跨分类**全局预算**（`物理内存 - 系统保留` 对比所有活动任务的预留之和，台账在
-`reservations/`）。两者不重复扣减，任一不足都只是排队。
+**准入约束（2026-11-15 晚起）**：实时可用内存门槛已按用户要求删除（见 `BUILD_SCHEDULER.md` 10.5），
+现在只剩 ① 各分类槽位并发；② 跨分类**全局预算**（`物理内存 - 系统保留` 对比所有活动任务的预留
+之和，台账在 `reservations/`）。可用内存只作展示/复盘，任一不足都只是排队，不是失败。
 
 **全局预算是硬上限，不会被任务峰值抬高**（2026-11-15 第二轮整改）：`budgetMb =
 max(0, totalMb - systemReserveMb)`。8 GB 机器（保留 3072 MB）预算就是 5120 MB，预计峰值

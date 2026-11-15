@@ -17,22 +17,9 @@ export const DEFAULT_CONFIG = {
   heavyConcurrency: 1,
   mediumConcurrency: 1,
   lightConcurrency: 2,
-  // 开发服务器（dev 类）独立槽位：不占一次性构建锁，但受内存准入约束
+  // 开发服务器（dev 类）独立槽位：不占一次性构建锁
   devConcurrency: 2,
-  // 【约束 A 总闸】是否按「实时可用物理内存」拦截准入（默认 true）。
-  // false = 不再读 freemem 判断，只剩「分类槽位并发 + 优先级排队 + 跨分类全局预算」；
-  // 用于可用内存被其他程序长期占住、连 1–2 GB 级检查都排不上的机器。
-  // 关掉后低内存下重型编译同样会被放行，OOM 风险由使用者承担；status/doctor 必须显著记录。
-  memoryAdmissionEnabled: true,
-  // 各分类的准入内存下限（可用物理内存，MB）；仅在 memoryAdmissionEnabled=true 时参与判定
-  heavyMinAvailMb: 6144,
-  mediumMinAvailMb: 4096,
-  lightMinAvailMb: 2560,
-  // 可用内存读数再扣的安全余量（默认 0：与规范给定阈值严格一致，需要更保守时自行调高）
-  safetyReserveMb: 0,
-  // 因内存不足等待过之后，恢复准入需要的额外滞回量
-  hysteresisMb: 1024,
-  // 内存采样与队列重评估间隔
+  // 内存采样与队列重评估间隔（只用于观测：写入 history / status，不参与准入）
   memorySampleMs: 3000,
   pollMs: 1000,
   // 租约心跳与失效判定
@@ -59,11 +46,11 @@ export const DEFAULT_CONFIG = {
   estimateHeavyMb: 6000,
   estimateMediumMb: 3000,
   estimateLightMb: 800,
-  // 跨分类全局预算（见 docs/BUILD_SCHEDULER.md 4.2 约束 B）：
+  // 跨分类全局预算（见 docs/BUILD_SCHEDULER.md 4.2 约束 B，2026-11-15 起是唯一的活动约束）：
   //   budgetMb = max(0, 物理内存总量 - systemReserveMb)   ← 硬上限，**不被**任何任务峰值抬高
-  // 与「实时可用内存门槛」（约束 A，用 os.freemem）互相独立：本轮只看活动任务预留之和，
-  // 不读 freemem，避免同一份资源被扣两次。systemReserveMb 是给操作系统/常驻应用/文件缓存
-  // 留的安全垫（16GB 机器上预算约 12.6GB）；0 = 用满物理内存（仅用于实验）。
+  // 只看活动任务预留之和（不读 freemem，也不看可用内存读数）。
+  // systemReserveMb 是给操作系统/常驻应用/文件缓存留的安全垫（16GB 机器上预算约 12.6GB）；
+  // 0 = 用满物理内存（仅用于实验）。
   // 任务预计峰值大于该预算时会被判为**不可准入**（不是排队），见 budgetWarning()。
   systemReserveMb: 3072,
   // 系统保留的**推荐基线**：低于它意味着安全垫被主动缩小（预算随之变大）。
@@ -75,7 +62,7 @@ export const DEFAULT_CONFIG = {
   //   但会侵占系统保留的安全垫（OOM/卡顿风险），status 会显著告警。
   //   只应在确认机器能承受、且明确知晓风险时临时打开。
   allowReserveBreach: false,
-  // 关掉只保留约束 A（故障回退用，正常情况必须保持 true）
+  // 关掉只保留分类槽位并发 + 优先级排队（故障回退用，正常情况必须保持 true）
   budgetEnabled: true,
   // 崩溃残留预留的回收宽限：持有者已证明退出、且没有登记 childPid 时，再等这么久才回收
   // （登记了 childPid 的按「子进程是否仍存活」判定，与本宽限无关）
@@ -88,7 +75,7 @@ export const DEFAULT_CONFIG = {
 
 // 存在性/开关型字段（不是数值，不参与数值校验）
 const BOOLEAN_KEYS = new Set([
-  "diskPrecheck", "dedupe", "budgetEnabled", "allowReserveBreach", "memoryAdmissionEnabled",
+  "diskPrecheck", "dedupe", "budgetEnabled", "allowReserveBreach",
 ]);
 
 /**
@@ -119,21 +106,17 @@ export function parseDangerTokens(raw) {
   return new Set(tokens);
 }
 
-/** 明显异常的准入值（不是「调优」，而是被改坏）：低于这些值时即使有授权也要报 P0。 */
+/** 明显异常的估算值/系统保留（不是「调优」，而是被改坏）：低于这些值时即使有授权也要报 P0。 */
 export const SANITY_FLOORS = {
-  heavyMinAvailMb: 1024,
-  mediumMinAvailMb: 256,
-  lightMinAvailMb: 128,
   estimateHeavyMb: 2000,
   estimateMediumMb: 600,
   estimateLightMb: 200,
-  hysteresisMb: 16,
   systemReserveMb: 0,
 };
 
 // 允许为 0 表示「不限」的字段
 const ZERO_MEANS_UNLIMITED = new Set([
-  "defaultWaitTimeoutMin", "defaultRunTimeoutMin", "safetyReserveMb", "agingStepMs",
+  "defaultWaitTimeoutMin", "defaultRunTimeoutMin", "agingStepMs",
   "systemReserveMb", "reservationOrphanGraceMs",
 ]);
 // 必须 >= 1 的字段
@@ -227,14 +210,6 @@ export function loadConfig({ repoRoot, stateHome, env = process.env } = {}) {
     appliedEnv.push(name);
   }
   if (appliedEnv.length) sources.push({ kind: "env", names: appliedEnv });
-
-  // 交叉字段一致性：内存滞回量不应大到永不恢复；并发槽位与内存下限的极端组合给出提示性警告
-  if (config.hysteresisMb >= config.heavyMinAvailMb) {
-    problems.push(
-      `hysteresisMb=${config.hysteresisMb} 不小于 heavyMinAvailMb=${config.heavyMinAvailMb}：` +
-      "内存回落后重型任务几乎无法恢复准入，请调小滞回量",
-    );
-  }
 
   // ---------------------------------------------------------------- 危险授权（fail-closed）
   const tokens = parseDangerTokens(env[DANGER_AUTH_ENV]);
@@ -377,13 +352,8 @@ export function configRisks({
       { current: true, baseline: true });
   }
 
-  // ②-1 约束 A（实时可用内存门槛）被显式关闭：这是「拆掉一道安全边界」，必须留痕
-  if (config.memoryAdmissionEnabled === false) {
-    add("P1", "memoryAdmissionEnabled",
-      "实时可用内存准入（约束 A）已被显式关闭：不再按可用内存拦截，只剩分类槽位并发与全局预算；" +
-      "低内存时重型编译仍会启动，OOM/构建被中断的风险由使用者承担",
-      { current: false, baseline: true, reason: "配置显式关闭（无需危险授权，但会记录）" });
-  }
+  // ②-1（2026-11-15 删除）实时可用内存门槛（约束 A）已从调度器移除：
+  // 不再有「内存不足 → 等待」这回事，因此这里也不再需要记录"门槛被关闭"的 P1 风险。
 
   // ③ 允许侵占系统保留
   if (config.allowReserveBreach === true) {
@@ -412,21 +382,15 @@ export function configRisks({
       { current: declaredReserve, baseline: baselineReserve });
   }
 
-  // ⑤ 分类门槛/估算值被改到明显异常（例如 1 MB）：不是调优，是坏配置
+  // ⑤ 预计峰值/系统保留被改到明显异常（例如 1 MB）：不是调优，是坏配置
   for (const [key, floor] of Object.entries(SANITY_FLOORS)) {
     const value = Number(config[key]);
     if (!Number.isFinite(value) || value < floor) {
-      const level = ["heavyMinAvailMb", "mediumMinAvailMb", "lightMinAvailMb", "systemReserveMb"].includes(key) ? "P0" : "P1";
-      add(level, key,
+      add(key === "systemReserveMb" ? "P0" : "P1", key,
         `${key}=${config[key]} 低于安全下限 ${floor}（默认 ${defaults[key] ?? "-"}）：` +
-        "准入几乎失效，重型/中型任务会在内存不足时被放行",
+        "预算台账会按过小的峰值记账，可能导致超卖或侵占系统保留",
         { current: config[key], baseline: defaults[key] ?? floor });
     }
-  }
-  if (Number(config.hysteresisMb) < SANITY_FLOORS.hysteresisMb) {
-    add("P1", "hysteresisMb",
-      `hysteresisMb=${config.hysteresisMb} < ${SANITY_FLOORS.hysteresisMb}：内存刚回落就会立即放行，容易反复抖动`,
-      { current: config.hysteresisMb, baseline: defaults.hysteresisMb });
   }
 
   // ⑥ 环境变量覆盖（高于机器配置，最容易「改了什么却查不到」）

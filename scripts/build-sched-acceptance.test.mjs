@@ -1,11 +1,11 @@
 //! 构建调度器**跨进程行为验收**（node --test）：
-//! 真实起多个调度进程与真实子进程，只用「模拟可用内存」制造极端场景，
+//! 真实起多个调度进程与真实子进程，用「模拟可用内存」设定展示值、用预算/槽位制造极端场景，
 //! 不靠真实耗尽内存压测（会危害开发机）。
 //!
 //! 运行：npm run sched:acceptance   （约 60–90s）
 //!
 //! 覆盖需求第十一条验收项：
-//!   1 跨进程互斥 / 2 跨 Worktree / 3 内存不足与恢复 / 4 异常恢复 /
+//!   1 跨进程互斥 / 2 跨 Worktree / 3 内存不参与准入 / 4 异常恢复 /
 //!   5 排队与运行中取消 / 6 构建去重与输入变化 / 7 轻量并行 / 8 队列公平性 / 9 原有工具链兼容
 
 import test from "node:test";
@@ -282,27 +282,19 @@ test("验收2：两个不同 Worktree 提交重型任务，共享同一全局资
 
 // ---------------------------------------------------------------- 3. 内存不足与恢复
 
-test("验收3：可用内存 3GB 时重型任务等待，恢复到 9GB 后自动继续", async () => {
+test("验收3：可用内存只有 3GB 时重型任务照常准入（内存门槛已于 2026-11-15 删除）", async () => {
   const ctx = setup();
   try {
-    setSimAvail(ctx, 3000);
+    setSimAvail(ctx, 3000); // 旧行为会在这里挡住重型任务；现在只影响展示与 history
     const run = runFake(ctx, { tag: "mem", durationMs: 600, priority: "P0" });
-
-    // 记录是「先落 queued 再判资源」的两步写：这里必须等首轮评估结果（waitReason 非空），
-    // 否则会读到还没评估过的 queued 快照，把「等待原因为空」误判成缺陷
-    const waiting = await waitFor(() => {
-      const rec = findTask(ctx, (t) => t.command?.[2] === "mem");
-      return rec && (rec.status === "waiting_resources" || rec.status === "queued") && rec.waitReason ? rec : null;
-    }, { what: "重型任务进入等待（含等待原因）" });
-
-    assert.equal(startCount(ctx.log, "mem"), 0, "⛔ 内存不足时仍然启动了重型构建");
-    assert.match(String(waiting.waitReason ?? ""), /6\.00 GB/, "等待原因必须明确给出内存缺口");
-    assert.equal(readSlots(ctx).length, 0, "等待期间不得占用重型槽位");
-
-    setSimAvail(ctx, 9000);
     const res = await run.done;
-    assert.equal(res.code, 0, `内存恢复后应能继续执行：${res.stderr}`);
-    assert.equal(startCount(ctx.log, "mem"), 1, "恢复后只应启动一次");
+    assert.equal(res.code, 0, `内存水位不应再阻止重型任务：${res.stderr}`);
+    assert.equal(startCount(ctx.log, "mem"), 1, "重型任务应启动恰好一次");
+    const rec = findTask(ctx, (t) => t.command?.[2] === "mem");
+    assert.equal(rec?.status, "succeeded");
+    assert.doesNotMatch(String(rec?.waitReason ?? ""), /内存/,
+      "等待原因里不得再出现内存不足（门槛已删除）");
+    assert.equal(readSlots(ctx).length, 0, "任务结束后不得残留槽位");
   } finally { cleanup(ctx); }
 });
 
@@ -459,7 +451,7 @@ test("验收6：等价并发构建只执行一次；输入变化后不再复用"
 
 // ---------------------------------------------------------------- 7. 轻量并行
 
-test("验收7：重型运行期间轻量任务可并行；内存不足时轻量也要等", async () => {
+test("验收7：重型运行期间轻量任务可并行（可用内存不再参与准入）", async () => {
   const ctx = setup();
   try {
     const heavy = runFake(ctx, { tag: "big", durationMs: 5000, taskClass: "heavy" });
@@ -469,19 +461,6 @@ test("验收7：重型运行期间轻量任务可并行；内存不足时轻量�
     const rs = await light.done;
     assert.equal(rs.code, 0, `轻量任务应能并行执行：${rs.stderr}`);
 
-    // 内存回落到轻量门槛以下：新的轻量任务必须等待
-    setSimAvail(ctx, 2000);
-    const blockedLight = runFake(ctx, { tag: "small2", durationMs: 500, taskClass: "light" });
-    const waiting = await waitFor(() => {
-      const t = findTask(ctx, (x) => x.command?.[2] === "small2");
-      // 同验收3：必须先等到首轮评估写入 waitReason，否则读到的是未评估的 queued 快照
-      return t && t.status !== "running" && t.waitReason ? t : null;
-    }, { what: "轻量任务进入等待（含等待原因）" });
-    assert.equal(startCount(ctx.log, "small2"), 0, "⛔ 内存不足时轻量任务不应启动");
-    assert.match(String(waiting.waitReason ?? ""), /2\.50 GB/);
-    setSimAvail(ctx, 9000);
-    const rb = await blockedLight.done;
-    assert.equal(rb.code, 0, `内存恢复后轻量任务应继续执行：${rb.stderr.slice(-300)}`);
 
     // 等重型任务自然结束后再看区间（重型还在跑时日志里只有 start 行）
     const rh = await heavy.done;
@@ -600,11 +579,12 @@ test("补充A：嵌套调度不自锁（tauri build → beforeBuildCommand `npm 
 test("验收10：资源等待超时记为调度层失败（exit 3），不被误判为编译错误，子进程未启动", async () => {
   const ctx = setup();
   try {
-    // 模拟可用内存低于轻量门槛（2560MB），任务始终无法准入；--wait-timeout 0.1 分钟 ≈ 6s 超时
-    setSimAvail(ctx, 300);
+    // 预算设为 0：任务永远无法准入（这是现在唯一能造成"资源等待"的约束，内存门槛已删除）；
+    // --wait-timeout 0.1 分钟 ≈ 6s 超时
     const run = runFake(ctx, {
       tag: "wait-timeout", taskClass: "light", durationMs: 500,
       extraArgs: ["--wait-timeout", "0.1"],
+      envExtra: budgetEnv(0),
     });
     const res = await run.done;
 
@@ -631,8 +611,8 @@ test("验收10：资源等待超时记为调度层失败（exit 3），不被误
 
 // ---------------------------------------------------------------- 12. 跨分类全局预算
 //
-// 整改前：准入只看「本分类槽位 + 本任务自己的内存门槛」，不同分类各自读同一份 freemem 快照
-// 各自放行 → 合计超卖。以下用例用**模拟内存**制造"预算只够一个"的极端组合（绝不真实压满内存）。
+// 2026-11-15 晚：实时可用内存门槛已删除，以下用例只能用**预算/槽位**制造"只够一个"的组合
+// （绝不真实压满内存）；`setSimAvail` 现在只影响展示与 history。
 
 const TOTAL_MB_REAL = Math.round(totalmem() / (1024 * 1024));
 
@@ -702,7 +682,7 @@ function assertBudgetInvariant(ctx, expectedBudgetMb, label = "") {
 test("预算1：Heavy 与 Medium 同时申请，预算只够一个时不并行", async () => {
   const ctx = setup();
   try {
-    setSimAvail(ctx, 12000); // 两者都能过"实时可用内存"门槛（heavy 6144 / medium 4096）
+    setSimAvail(ctx, 12000); // 展示值（不再参与准入）
     const env = budgetEnv(8900); // 6000 + 3000 = 9000 > 8900
     const heavy = runFake(ctx, { tag: "b1-heavy", taskClass: "heavy", durationMs: 1200, envExtra: env });
     const medium = runFake(ctx, { tag: "b1-medium", taskClass: "medium", durationMs: 1200, envExtra: env });
@@ -889,10 +869,9 @@ test("预算9：取消与超时都不得漏账（预留必须归还）", async (
     assert.equal(res.code, 4, "取消必须返回调度层退出码 4");
     assert.equal(reservationsOf(ctx).length, 0, "⛔ 取消后预留没有归还（预算泄漏）");
 
-    // (b) 内存不足导致的等待超时
-    setSimAvail(ctx, 1000);
+    // (b) 预算为 0 导致的等待超时（内存门槛已删除，用预算制造"永不满足"的约束）
     const timeout = await runFake(ctx, {
-      tag: "b9-timeout", taskClass: "light", durationMs: 200, envExtra: budgetEnv(9000),
+      tag: "b9-timeout", taskClass: "light", durationMs: 200, envExtra: budgetEnv(0),
       extraArgs: ["--wait-timeout", "0.05"],
     }).done;
     assert.equal(timeout.code, 3);
@@ -938,22 +917,23 @@ test("预算11：多进程争最后一份预算（槽位允许 2 个并发，预
   } finally { cleanup(ctx); }
 });
 
-test("预算12：内存降到危险区时排队，恢复后自动继续（不留预算残留）", async () => {
+test("预算12：预算不足时只在排队、绝不预占预算；退出后台账清空", async () => {
   const ctx = setup();
   try {
-    setSimAvail(ctx, 1000); // 低于轻量门槛 2560 → 约束 A 挡住
-    const run = runFake(ctx, { tag: "b12-light", taskClass: "light", durationMs: 400, envExtra: budgetEnv(9000) });
-    await waitFor(() => {
+    const run = runFake(ctx, {
+      tag: "b12-light", taskClass: "light", durationMs: 400, envExtra: budgetEnv(0),
+      extraArgs: ["--wait-timeout", "0.15"],
+    });
+    const waiting = await waitFor(() => {
       const rec = findTask(ctx, (t) => t.command?.[2] === "b12-light");
       return rec && rec.status === "waiting_resources" ? rec : null;
-    }, { timeoutMs: 3000, what: "内存不足时进入 waiting_resources" });
-    assert.match(String(findTask(ctx, (t) => t.command?.[2] === "b12-light")?.waitReason ?? ""), /内存/);
-    assert.equal(reservationsOf(ctx).length, 0, "内存不足时不得先把预算占住");
+    }, { timeoutMs: 3000, what: "预算不足时进入 waiting_resources" });
+    assert.match(String(waiting.waitReason ?? ""), /预算|装不下/, "等待原因必须指向全局预算");
+    assert.equal(reservationsOf(ctx).length, 0, "预算不足时不得先把预算占住");
 
-    setSimAvail(ctx, 9000);
     const res = await run.done;
-    assert.equal(res.code, 0, `内存恢复后应自动继续：${res.stderr}`);
-    assert.equal(reservationsOf(ctx).length, 0, "任务结束后台账必须清空");
+    assert.equal(res.code, 3, `预算始终不足应等待超时（exit 3）：${res.stderr}`);
+    assert.equal(reservationsOf(ctx).length, 0, "从未启动的任务不得留下预算残留");
   } finally { cleanup(ctx); }
 });
 
@@ -997,7 +977,7 @@ test("验收11：子进程非零退出后，队列记录与历史都能查到明
 test("补充B1：预算 5120MB 下 Heavy（预计 6000MB）判为不可准入——不排队等待、不启动子进程、原因明确", async () => {
   const ctx = setup();
   try {
-    setSimAvail(ctx, 12000); // 约束 A 完全充足（heavy 门槛 6144），唯一挡它的是预算
+    setSimAvail(ctx, 12000); // 展示值；唯一挡它的是预算
     const env = budgetEnv(5120);
     const res = await runFake(ctx, {
       tag: "b13-heavy-infeasible", taskClass: "heavy", durationMs: 300,
@@ -1294,7 +1274,7 @@ test("配置安全1：只改配置文件 budgetEnabled=false，不得绕过全�
   const ctx = setup();
   try {
     writeMachineConfig(ctx, { budgetEnabled: false });
-    setSimAvail(ctx, 9000);      // 两类任务的实时内存门槛都满足
+    setSimAvail(ctx, 9000);      // 展示值（不再参与准入）
     const env = budgetEnv(6000); // 预算恰好只够一个 heavy
     const heavy = runFake(ctx, { tag: "cfgoff-heavy", taskClass: "heavy", durationMs: 1200, envExtra: env });
     const medium = runFake(ctx, { tag: "cfgoff-medium", taskClass: "medium", durationMs: 1200, envExtra: env });
@@ -1352,17 +1332,17 @@ test("配置安全3：systemReserveMb 低于基线未授权 → 有效值回基�
   } finally { cleanup(ctx); }
 });
 
-test("配置安全4：1 MB 门槛 + 关闭预算 → doctor 报 P0 且非 0 退出", () => {
+test("配置安全4：1 MB 预计峰值 + 关闭预算 → doctor 报 P0 且非 0 退出", () => {
   const ctx = setup();
   try {
     writeMachineConfig(ctx, {
-      budgetEnabled: false, heavyMinAvailMb: 1, mediumMinAvailMb: 1, lightMinAvailMb: 1,
-      estimateHeavyMb: 1, estimateMediumMb: 1,
+      budgetEnabled: false,
+      estimateHeavyMb: 1, estimateMediumMb: 1, estimateLightMb: 1,
     });
     const doctor = schedCli(ctx, ["doctor"], { TASKDOCK_SCHED_DANGER_AUTH: "budget-off" });
     assert.equal(doctor.status, 5, "存在 P0 配置风险时 doctor 必须以非 0 退出（EXIT.internal=5）");
     assert.match(doctor.stdout, /P0.*budgetEnabled/);
-    assert.match(doctor.stdout, /P0.*heavyMinAvailMb/);
+    assert.match(doctor.stdout, /P1.*estimateHeavyMb/);
     assert.match(doctor.stdout, /配置来源：/);
   } finally { cleanup(ctx); }
 });
@@ -1370,13 +1350,13 @@ test("配置安全4：1 MB 门槛 + 关闭预算 → doctor 报 P0 且非 0 退�
 test("配置安全5：环境变量覆盖机器配置会被 doctor 点名（含来源与当前值）", () => {
   const ctx = setup();
   try {
-    const doctor = schedCli(ctx, ["doctor"], { TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB: "8192" });
+    const doctor = schedCli(ctx, ["doctor"], { TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "8192" });
     assert.equal(doctor.status, 0, "仅环境覆盖（未削弱安全边界）不应让 doctor 失败");
     assert.match(doctor.stdout, /环境变量覆盖了 \d+ 项配置/);
-    assert.match(doctor.stdout, /TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB/);
-    const cfg = schedJson(ctx, ["config", "--json"], { TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB: "8192" });
-    assert.equal(cfg.effective.heavyMinAvailMb, 8192);
-    assert.ok(cfg.sources.some((s) => s.kind === "env" && (s.names ?? []).includes("TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB")));
+    assert.match(doctor.stdout, /TASKDOCK_SCHED_ESTIMATE_HEAVY_MB/);
+    const cfg = schedJson(ctx, ["config", "--json"], { TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "8192" });
+    assert.equal(cfg.effective.estimateHeavyMb, 8192);
+    assert.ok(cfg.sources.some((s) => s.kind === "env" && (s.names ?? []).includes("TASKDOCK_SCHED_ESTIMATE_HEAVY_MB")));
   } finally { cleanup(ctx); }
 });
 test("配置安全6：任务运行期间修改机器配置——运行中任务沿用准入时预算，后续任务用新配置", async () => {

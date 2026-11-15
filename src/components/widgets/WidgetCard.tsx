@@ -47,6 +47,10 @@ export interface WidgetCardProps {
   draggingId: string | null;
   /** 桌面窗口真实状态（仅内存）；失败时卡片头部可直接重试。 */
   desktopRuntime?: WidgetDesktopRuntime;
+  /** 工作台有右侧详情宿主时，配置表单投送到右栏；测试/窄窗仍用内联表单。 */
+  configInRail?: boolean;
+  onConfigure?: (id: string) => void;
+  selected?: boolean;
   onMoveBy: (id: string, delta: -1 | 1) => void;
   onDisable: (id: string) => void;
   onDesktop: (id: string, visible: boolean) => void;
@@ -68,6 +72,9 @@ export default function WidgetCard({
   dragging,
   draggingId,
   desktopRuntime,
+  configInRail = false,
+  onConfigure,
+  selected = false,
   onMoveBy,
   onDisable,
   onDesktop,
@@ -102,7 +109,7 @@ export default function WidgetCard({
 
   return (
     <section
-      className={`widget-card surface-card widget-size-${item.size} ${dragging ? "dragging" : ""}`}
+      className={`widget-card surface-card widget-size-${item.size} ${dragging ? "dragging" : ""} ${selected ? "is-configured" : ""}`}
       data-widget-id={item.widget_id}
       aria-label={t("widgets.cardAria", { title })}
       onDragOver={(event) => {
@@ -177,17 +184,23 @@ export default function WidgetCard({
           <button
             className="widget-icon-btn"
             aria-label={t("widgets.cardConfigAria", { title })}
-            aria-expanded={configOpen}
-            aria-controls={configId}
-            data-tip={t(configOpen ? "widgets.lessConfig" : "widgets.moreConfig")}
-            onClick={() => setConfigOpen((open) => !open)}
+            aria-expanded={configInRail ? undefined : configOpen}
+            aria-controls={configInRail ? undefined : configId}
+            data-tip={t(configInRail || configOpen ? "widgets.lessConfig" : "widgets.moreConfig")}
+            onClick={() => {
+              if (configInRail) {
+                onConfigure?.(item.widget_id);
+                return;
+              }
+              setConfigOpen((open) => !open);
+            }}
           >
             <SlidersHorizontal size={13} aria-hidden="true" />
           </button>
         </div>
       </header>
 
-      {configOpen && (
+      {!configInRail && configOpen && (
         <div className="widget-card-config" id={configId} role="group" aria-label={t("widgets.cardConfigAria", { title })}>
           <div className="widget-config-row">
             <div className="widget-config-field">

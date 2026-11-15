@@ -145,7 +145,10 @@ html[data-window-maximized="true"] .wb-boot {
   gap: 9px;
   width: 100%;
   min-height: 36px;
-  padding: 7px 10px;
+  /* 行高保持 36px：3 + 28（右侧手柄命中区）+ 3（另含 1px 透明边框）。
+     上下内边距收紧以维持原行高，左侧内边距/间距保持不变（不挤压原导航
+     图标），右侧收紧为固定操作区留出空间，避免悬停时才撑开导致行宽跳变。 */
+  padding: 3px 6px 3px 10px;
   border: 1px solid transparent;
   border-radius: var(--radius-card);
   background: transparent;
@@ -154,7 +157,6 @@ html[data-window-maximized="true"] .wb-boot {
   font-size: 13px;
   text-align: left;
   cursor: pointer;
-  /* 拖拽手柄的绝对定位基准（手柄落在左侧内边距里，不占行内布局）。 */
   position: relative;
   /* 拖拽时其它行平滑让位；只过渡 transform，悬停/选中颜色仍即时响应。 */
   transition: transform 160ms cubic-bezier(0.2, 0, 0, 1);
@@ -211,6 +213,55 @@ html[data-window-maximized="true"] .wb-boot {
 .wb-nav-badge.is-subtle {
   background: color-mix(in srgb, var(--text-tertiary) 15%, transparent);
   color: var(--text-secondary);
+}
+
+/* 行尾独立操作区：手柄 28×28 + 隐藏 24×24。固定占位而不是悬停插入，
+   既保证两个命中区不重叠，也不让 Tab 名称在 hover 时被挤动。 */
+.wb-nav-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 2px;
+  margin-inline-start: 2px;
+}
+
+.wb-nav-hide {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-tertiary);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease,
+    background-color 120ms ease;
+}
+/* 默认低干扰；悬停整行或键盘聚焦（含 Tab 到 ×）时显形。 */
+.wb-nav-item:hover .wb-nav-hide,
+.wb-nav-item:focus-within .wb-nav-hide {
+  opacity: 1;
+}
+.wb-nav-hide:hover {
+  background: var(--menu-danger-hover);
+  color: var(--menu-danger);
+}
+.wb-nav-hide:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* 隐藏请求进行中 / 拖拽进行中：按钮不可点也不闪动。 */
+.wb-nav-hide:disabled {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .wb-nav-foot {
@@ -1316,8 +1367,9 @@ body.wb-resizing {
     justify-content: center;
     padding-inline: 4px;
   }
-  /* 极窄导航只剩图标：没有文字可挤，手柄会让图标偏移，直接隐藏。 */
-  .wb-nav-grip {
+  /* 极窄导航只剩图标：行尾操作区没有横向空间，隐藏手柄与 ×；仍可通过
+     拉宽导航或设置页管理显隐。 */
+  .wb-nav-actions {
     display: none;
   }
   .wb-new-task span {
@@ -1458,33 +1510,41 @@ body.wb-resizing {
 
 /* ── 左侧导航拖拽排序（2026-11-15）──────────────────────────────────────
    视觉保持二维平面：跟手位移 + 其它行让位 + 落点细线，不做缩放/倾斜/3D。
-   手柄常驻 DOM、仅悬停时显形，落在行的左侧内边距里，不挤压文字与数量徽标。 */
+   手柄是行尾固定 28×28 命中区（图标 18px），与 24×24 的 × 分开；默认弱化，
+   悬停/拖拽时增强，不占用 Tab 名称之外的额外悬停宽度。 */
 .wb-nav-grip {
-  position: absolute;
-  inset-block: 7px;
-  inset-inline-start: 1px;
-  width: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-control);
   color: var(--text-tertiary);
-  opacity: 0;
+  opacity: 0.38;
   pointer-events: auto;
   cursor: grab;
   touch-action: none;
+  user-select: none;
   transition:
     opacity 120ms ease,
-    color 120ms ease;
+    color 120ms ease,
+    background-color 120ms ease;
 }
 
 .wb-nav-item:hover .wb-nav-grip,
-.wb-nav-item:focus-visible .wb-nav-grip {
-  opacity: 0.6;
+.wb-nav-item:focus-within .wb-nav-grip {
+  opacity: 0.85;
 }
 
-.wb-nav-item:hover .wb-nav-grip:hover {
+.wb-nav-grip:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent);
   opacity: 1;
+}
+
+.wb-nav-grip:active {
+  cursor: grabbing;
 }
 
 /* 被拖行：轻微浮起（背景 + 柔和阴影），不做缩放与旋转。 */
@@ -1499,8 +1559,9 @@ body.wb-resizing {
 }
 
 .wb-nav-item.is-dragging .wb-nav-grip {
-  opacity: 0.9;
+  opacity: 1;
   color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   cursor: grabbing;
 }
 
@@ -1535,7 +1596,8 @@ body.wb-resizing {
 
 @media (prefers-reduced-motion: reduce) {
   .wb-nav-item,
-  .wb-nav-grip {
+  .wb-nav-grip,
+  .wb-nav-hide {
     transition: none;
   }
   .wb-nav-drop-line {
@@ -2137,6 +2199,12 @@ body.wb-resizing {
   min-width: 0;
   flex: 1 1 auto;
 }
+.wb-ph-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .wb-ph-title {
   display: flex;
   align-items: center;
@@ -2147,6 +2215,14 @@ body.wb-resizing {
   letter-spacing: 0.1px;
   color: var(--text-primary);
   min-width: 0;
+}
+.wb-ph-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .wb-ph-title > span:first-child {
   overflow: hidden;

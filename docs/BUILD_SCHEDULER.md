@@ -5,7 +5,7 @@
 内存。16GB 机器上两个重型构建并行就足以把系统压到卡死。
 
 本调度器提供**一个跨进程、跨 Worktree、跨 AI 会话的全局构建闸门**：
-所有高资源构建走同一个入口，按真实可用内存准入、按分类排队、靠操作系统级原子操作互斥，
+所有高资源构建走同一个入口，按分类槽位与跨分类全局预算排队、靠操作系统级原子操作互斥，
 崩溃后能安全回收。**代码开发仍然完全并行**——被排队的只是构建。
 
 入口：`node scripts/build-sched.mjs`（npm 别名 `npm run sched`），零新增依赖、纯 Node ESM，
@@ -166,11 +166,12 @@ node scripts/build-sched.mjs cargo -- --priority P0 build   # 有 -- 时前面�
 | 5 | 调度器自身错误（配置非法、状态目录不可写等） |
 | 6 | 磁盘 precheck 阻塞（复用 build-guard 的空间阈值） |
 
-判读原则（对应 AGENTS.md「必须区分代码错误、内存不足、超时和调度错误」）：
+判读原则（对应 AGENTS.md「必须区分代码错误、资源不足、超时和调度错误」）：
 
 - `exit=1` + 日志里有编译器/测试错误 → **代码错误**；
-- `exit=3` + `status=failed` 且 `reason` 含「内存不足」→ **资源不足**，不是代码问题；
+- `exit=3` + `status=failed` 且 `reason` 含「预算」→ **资源不足（预算/槽位）**，不是代码问题；
 - `exit=3` + `status=failed` 且 `reason` 含「本机装不下」→ **预算容不下该任务**：等待无意义，需更大内存或显式调 `systemReserveMb`（见 4.2）；
+- `exit=101`（rustc/cargo OOM）→ 内存门槛删除后不再排队，**属于运行期 OOM**：按 10.5 的口径处理（局部检查或减少并发）；
 - `exit=3` 且 `reason` 含「超时」→ **超时**；
 - `exit=5/6` → **调度层/磁盘**问题，先 `doctor`。
 
@@ -215,12 +216,12 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
 
 ### 4.1 任务分类（配置项可调）
 
-| 分类 | 槽位并发（默认） | 启动前可用内存（默认） | 预计峰值（默认） | 典型任务 |
-|---|---|---|---|---|
-| `heavy` | 1 | ≥ 6144 MB | 6000 MB | `cargo build`/`cargo test --all`、`tauri build`、release 构建、Gradle 构建、组合命令 |
-| `medium` | 1 | ≥ 4096 MB | 3000 MB | `vite build`、整工程 `tsc`、`cargo check`、较大范围测试 |
-| `light` | 2 | ≥ 2560 MB | 800 MB | ESLint/Prettier、单模块类型检查、小范围测试、`build-guard precheck` |
-| `dev` | 2 | ≥ 4096 MB | 3000 MB | `tauri dev`、`vite`（常驻，独立槽位，见第 8 节） |
+| 分类 | 槽位并发（默认） | 预计峰值（默认） | 典型任务 |
+|---|---|---|---|
+| `heavy` | 1 | 6000 MB | `cargo build`/`cargo test --all`、`tauri build`、release 构建、Gradle 构建、组合命令 |
+| `medium` | 1 | 3000 MB | `vite build`、整工程 `tsc`、`cargo check`、较大范围测试 |
+| `light` | 2 | 800 MB | ESLint/Prettier、单模块类型检查、小范围测试、`build-guard precheck` |
+| `dev` | 2 | 3000 MB | `tauri dev`、`vite`（常驻，独立槽位，见第 8 节） |
 
 分类由 `scripts/sched/classify.mjs` 依据**命令链**判定，而不是看命令里有没有 "build"：
 
@@ -230,31 +231,11 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
 - 未知命令**保守归 heavy**（宁可多排一次队，也不把高资源任务误判成轻量）；
 - `node -e` 等无法识别的极短脚本归 light（否则每次探测都会被当重型排队）。
 
-### 4.2 内存准入（两重**独立**约束，任一不满足都不启动）
+### 4.2 准入约束：分类槽位 + 全局预算（实时内存门槛已删除）
 
-只靠"每分类各自的槽位 + 各自读一次 `os.freemem()`"是不够的：不同分类可能同时基于同一份
-（3 秒内缓存的）旧快照各自放行——Heavy 看到 7GB 可用就起 6000MB 的构建，Medium 同时看到同一
-份 7GB 又起 3000MB 的构建，两者各自合格而合计 9000MB 已经超卖。因此准入被拆成两个**互不重叠**
-的约束。
-
-> ⚠ 变动前的代码证据（本轮整改前）：`scripts/sched/mem.mjs` `evaluateMemoryAdmission()` 只把
-> `mem.availMb` 与"本任务自己的门槛"比较；`scripts/sched/queue.mjs` `evaluateEligibility()` 只按
-> `slotUsage(home, cfg)` 数**本分类**槽位；`scripts/sched/runner.mjs` 排队循环里各进程持有自己的
-> `createMemorySampler()`（`memorySampleMs`=3s 缓存）。三者叠加起来没有任何"跨分类合计"的判断。
-
-**约束 A：实时可用内存门槛（每分类独立，阈值不下调）**
-
-> 本机可用 `memoryAdmissionEnabled=false` 显式关闭这一条（见 10.3）；关闭后只剩约束 B 与分类槽位
-> 排队，`status` 的门槛列显示"关闭"，`doctor` 记一条 P1 风险。
-
-```
-门槛A = max(分类下限 minAvailMb, 本任务预计峰值) + 滞回量（仅当该任务曾因内存等待过）
-放行A ⇔ (os.freemem() - safetyReserveMb) ≥ 门槛A
-```
-
-`os.freemem()` 在 Windows 上是 `ullAvailPhys`（可用物理内存，含待机列表），**已经包含**所有正在
-运行进程的真实占用，所以这一侧**不再叠加**其他任务的预计峰值——否则等于对同一份资源扣两次，
-16GB 机器上第二个任务会永久起不来。
+> **2026-11-15 晚变更**：按用户要求，「实时可用内存门槛」（原"约束 A"）已从代码、配置、测试整体
+> **删除**（见 10.5）。现在准入只有一条跨分类资源约束——全局预算——外加各分类的槽位并发。
+> 可用内存仍每 3s 采样并写进 `status` / `history`，**仅用于观测与事后复盘，不参与任何准入判断**。
 
 **约束 B：全局构建预算（所有分类共用同一个池）**
 
@@ -276,7 +257,7 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
   `computeBudget` 返回 `reserveBreached=true`、`breachMb`、`warning`，`status` 会显著打印
   "系统保留的安全垫已被侵占 XXX MB"，准入证据（`history.jsonl` 的 `budgetAtStart`）里也保留
   `hardLimitMb` 与 `reserveBreached`，事后可复核"这一跑是突破了边界的"。
-- 这一侧**只**看"活动任务的预留之和"，**不读** `freemem`，因此与约束 A 不重复计算同一份资源。
+- 这一侧**只**看"活动任务的预留之和"，**不读**可用内存读数（后者已被真实占用影响，无法用于承诺）。
 - 预留只在**即将启动前**创建（拿到预算 + 拿到分类槽位是同一个临界区，见 5.7），排队中的任务
   不占预算，不会因为"排队的人很多"把自己饿死。
 
@@ -292,29 +273,25 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
 "不可准入"= 这台机器永远排不上（`infeasible`），不是"再等等"；8 GB 机器上编译类任务仍可用
 `--estimate-mb` 如实声明更小的峰值，或调小 `systemReserveMb`（需自担 OOM 风险）。
 
-**两个约束的分工**
+**只剩一条约束后，"内存不够"不再发生在准入阶段**
 
-| | 约束 A | 约束 B |
-|---|---|---|
-| 回答的问题 | 这台机器**现在**还有没有空间？ | 我一次性批准出去的**峰值承诺**加起来有没有超过总容量？ |
-| 数据源 | `freemem`（动态，已被真实占用影响） | `totalmem - 系统保留`（静态总量） |
-| 粒度 | 每分类各自门槛 | 所有分类共用一个池 |
-| 典型触发 | 内存被 dev server/别的构建吃掉 | Heavy+Medium+2×Dev 这类组合的**合计**超卖 |
+可用内存不足时任务照常启动；如果实际峰值确实超出机器能力，结果会以**子进程失败**（例如
+rustc/cargo `exit 101`、OOM kill）出现在日志与 `history` 里，而不是 `waiting_resources`。
+这是刻意的取舍：16 GB 开发机上可用内存长期只有 1.5–4.5 GB，任何"按可用内存拦截"的门槛都会
+把所有重型任务永久挡住（10.1 的实测就是如此）。槽位并发（重型只有 1 个）与全局预算仍然限制
+同时运行的构建数量，避免多个重型任务叠加。
 
-其余参数：
-- `safetyReserveMb` 默认 0（与需求给的数值严格一致，调优时再抬高）；
-- 滞回 `hysteresisMb` 默认 1024：一旦某任务因内存等待过，恢复判定要在门槛 A 之上再多 1GB；
-- 内存按 `memorySampleMs`（默认 3s）采样，运行期持续记录最低可用内存写进 `history`。
+内存按 `memorySampleMs`（默认 3s）采样，运行期最低可用内存写进 `history` 的 `memDuringRun`，
+供事后复盘 OOM。
 
 **边界情况（实现必须逐条满足）**
 
-1. `freemem` 已含运行中进程占用 → 约束 B 绝不用 `freemem - Σ预计峰值`（那会重复扣减）；
-2. 两个约束各自独立判定，任一不足即排队；`waitReason` 里分别写明是哪一侧不足；
+1. 预算只按台账预留扣减，不读可用内存读数（后者已被真实占用影响，无法用于"承诺"）；
+2. 预算不足即排队；可用内存不足**不再**阻塞（门槛已删除）；`waitReason` 只写预算/槽位/优先级原因；
 3. 预算硬上限：若 `totalMb - systemReserveMb` 小于某分类的预计峰值，**不夹取**——预算保持
    `total - 保留`，该分类任务被判为不可准入（`infeasible`）并给出"需要更大内存或调小
    `systemReserveMb`"的可操作原因。想突破保留边界只能显式开 `allowReserveBreach`（默认关闭，
-   开启后 `status` 显著告警、历史留证）。预算**永不**因任务峰值而自我抬高，也**不改变**约束 A
-   的分类门槛（门槛不下调）；
+   开启后 `status` 显著告警、历史留证）。预算**永不**因任务峰值而自我抬高；
 4. 单个任务的预计峰值 > 预算 → 直接拒绝（不允许"自我放行"），原因写进 `waitReason`；
 5. 预留只为**即将启动**的任务创建，排队任务不占预算；
 6. 崩溃残留的回收条件：持有进程"已证明退出" **且** 记录的子进程"已证明结束"；子进程仍存活
@@ -323,19 +300,20 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
 8. `detached` 且没有 childPid 的残留**不自动回收**（无法证明脱离控制台的子进程已退出）；
 9. 释放预留校验 `(pid, 进程创建时间, nonce)`，PID 被系统复用也不会释放别人的预留；
 10. Dev 常驻服务：经调度器以 `--class dev` 启动的常驻服务占 dev 槽位、**计入**全局预算；
-    `npm run dev` 这类**直接启动**的未纳管实例只能靠约束 A 兜住（其真实占用已体现在 `freemem`），
-    由 `sched dev` 点名，见第 12 节限制 8。
+    `npm run dev` 这类**直接启动**的未纳管实例不受预算/槽位约束，只能靠 `sched dev` 点名发现，
+    见第 12 节限制 8。
 
 ### 4.3 排队与准入循环（每 `pollMs` 一轮）
 
 1. `housekeeping`：归档提交进程已死的残留记录、清理过期终态记录；
-2. 重新计算本任务的有效优先级与内存准入；
-3. 槽位有空位 → 申请（见第 5 节）；槽位被占但"内存与优先级都没问题"→ 按 `reclaimProbeMs` 节流做一次
+2. 重新计算本任务的有效优先级与全局预算；
+3. 槽位有空位 → 申请（见第 5 节）；槽位被占但"预算与优先级都没问题"→ 按 `reclaimProbeMs` 节流做一次
    **持有者是否已死**的取证，能做安全回收就回收；
 4. 拿到槽位后**二次校验优先级**（避免低优先级抢在同刻入队的高优先级前面），有冲突就让出重排；
-5. 内存不足 → 记 `waiting_resources`，把具体原因写进记录的 `waitReason` 并在终端打印（每 15s 复述一次，不静默）。
+5. 预算不足 → 记 `waiting_resources`，把具体原因写进记录的 `waitReason` 并在终端打印（每 15s 复述一次，不静默）；
+   可用内存不足不再阻塞（门槛已删除）。
 
-**跨分类不头阻塞**：重型在等内存时，轻量检查仍可跑，反之亦然——这是 16GB 机器上避免整体停滞的关键。
+**跨分类不头阻塞**：重型在等预算时，轻量检查仍可跑，反之亦然——这是 16GB 机器上避免整体停滞的关键。
 
 ### 4.4 优先级与防饥饿
 
@@ -405,6 +383,25 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
    `failed`（`recoveredBy: slot-reclaim`），使 `queue`/`history` 不再显示幽灵运行中任务。
 
 **绝不按固定时间删锁**：心跳停滞只是"值得做一次取证"的触发条件，不是删除依据。
+
+#### 5.4.1 后台自愈扫描（2026-11-15 新增）
+
+原实现只在**竞争同一个槽位**时才做回收。于是崩溃留下的槽位会一直挂着：本机实测 `heavy-1` 挂了
+16 分钟、`dev-1` 挂了 2.5 小时；更糟的是如果留下的是准入临界区 `slots/.admission`，**所有分类**连
+"抢槽位"这一步都进不去，等待者只能干等到 `--wait-timeout`（默认 20 分钟）超时。
+
+现在每次 `run` 的等待循环里每 ≤30s（含进程启动首轮）调用 `reapStaleSlots()`（`scripts/sched/lock.mjs`），
+扫描 `slots/*` 与 `slots/.admission`，但只做**保守回收**：
+
+| 条件 | 行为 |
+|---|---|
+| 心跳新鲜（< `leaseTtlMs`=45s） | 跳过，连取证都不做（CIM 是 200–400ms 的重操作） |
+| 持有者身份 `unknown` | 不动（fail-closed） |
+| 持有者已死 + 无子进程（或子进程已结束） | 回收（`rename` + 反注册，写 `reclaim-log.jsonl`） |
+| 持有者已死但登记的构建子进程**仍存活** | **不回收、不终止**，报"留待竞争路径或 doctor --reap" |
+| 持有者存活但心跳停滞 > `hungReclaimMs` | 后台扫描**不按挂起回收**；竞争路径/`doctor --reap` 才可处置 |
+
+已有的竞争路径行为不变（它仍会在签名比对通过后终止孤儿构建进程树）。
 
 ### 5.5 Windows 控制台生命周期（实测结论，决定回收边界）
 
@@ -481,8 +478,8 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 - **等待期不阻塞智能体**：提交进程就是等待者本身；等待期间用户/智能体可以继续做别的（读代码、
   写文档、改别的模块）。想要"提交后立刻干别的事"，用 `--wait-timeout 0` + 后台终端，或直接
   `Start-Process` 一个后台任务。
-- **失败可诊断**：每条失败都带 `status/exit/reason` 与日志路径；`waitReason` 写明具体门槛与当前读数
-  （例如 `可用内存 1.98 GB < medium 任务门槛 4.00 GB（分类下限 4.00 GB、预计峰值 2.93 GB、滞回 1.00 GB）`）。
+- **失败可诊断**：每条失败都带 `status/exit/reason` 与日志路径；`waitReason` 写明具体原因与当前读数
+  （例如 `heavy + medium 合计 9000 MB > 全局预算 8900 MB（物理 15.63 GB - 系统保留 3.00 GB）`）。
   从未启动的任务（等待超时/被取消）没有子进程输出，调度器会在收尾时补写一份摘要日志，避免
   `history` 给出的日志路径指向不存在的文件。
 
@@ -502,7 +499,7 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 
 ## 8. 开发服务器与缓存
 
-- 常驻 dev 服务器**不占**一次性构建锁，但用 `dev` 槽位（并发 2）与内存门槛计入压力，
+- 常驻 dev 服务器**不占**一次性构建锁，但用 `dev` 槽位（并发 2）并计入全局预算，
   避免"一边 tauri dev 一边 cargo build release"把内存吃干；
 - `sched dev` 只读盘点：重复 Vite、端口冲突、同工作区多实例、dev 与重型 cargo 并发；
   **不同 Worktree 不允许共用同一 dev 端口**（那是"错误共享不兼容服务"，findings 会点名）；
@@ -529,11 +526,7 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `heavyConcurrency` / `mediumConcurrency` / `lightConcurrency` / `devConcurrency` | 1 / 1 / 2 / 2 | 槽位数 |
-| `memoryAdmissionEnabled` | true | **约束 A 总闸**（2026-11-15 新增）：`false` = 不按实时可用内存准入，只剩槽位并发 + 优先级排队 + 全局预算；`status`/`doctor` 会显著记录，见 10.3 |
-| `heavyMinAvailMb` / `mediumMinAvailMb` / `lightMinAvailMb` | 6144 / 4096 / 2560 | 分类内存下限（MB）；仅在 `memoryAdmissionEnabled=true` 时参与判定 |
-| `safetyReserveMb` | 0 | 额外安全余量 |
-| `hysteresisMb` | 1024 | 内存恢复滞回 |
-| `memorySampleMs` | 3000 | 内存采样间隔 |
+| `memorySampleMs` | 3000 | 内存采样间隔（**仅观测**：写 status / history，不参与准入） |
 | `pollMs` | 1000 | 准入轮询间隔 |
 | `heartbeatMs` / `leaseTtlMs` / `reclaimProbeMs` / `hungReclaimMs` | 3000 / 45000 / 3000 / 180000 | 心跳、租约过期、取证节流、挂起判定 |
 | `cargoJobs` | 2 | cargo 编译并行度（16GB 机器上的保守值） |
@@ -549,10 +542,11 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 | `diskPrecheck` | true | 复用 build-guard 的磁盘预检 |
 | `dedupe` | true | 等价任务合并 |
 
-调优建议（16GB 机器）：内存长期紧张时**只调低分类门槛或并发**，不要关掉准入；确认某类任务实际峰值
-更低时，用 `history` 的 `minAvailMb` 作为依据再调 `estimate*Mb`。
+调优建议（16GB 机器）：**内存不再参与准入**，可用内存只作展示/复盘；真正需要调的是并发槽位与
+`estimate*Mb`（预算台账按它记账）。预算长期紧张时先用 `history` 复核哪些任务的预计峰值明显高于
+实际（`memDuringRun.minAvailMb` 只是参考，不是进程精确峰值），再调 `estimate*Mb`。
 
-### 10.1 2026-11-15 本机覆盖：取消"静态分类下限"，改为按预计峰值准入
+### 10.1 2026-11-15 本机覆盖：取消"静态分类下限"，改为按预计峰值准入（**已被 10.5 取代**）
 
 现象：本机 16 GB 中约 13 GB 被其他程序长期占用，可用长期只有 1–2 GB；而 `light` 类（tsc /
 vitest / `node --test`，实际峰值约 0.8–1 GB）因"分类下限 2560 + 滞回 1024"被要求 3.56 GB，
@@ -623,8 +617,8 @@ vitest / `node --test`，实际峰值约 0.8–1 GB）因"分类下限 2560 + �
 - `history` 的 `budgetAtStart` 带 `budgetEnabled`、`budgetOffAuthorized`、`dangerAuth`、
   `reserveBaselineMb`、`reserveReducedMb`、`configSources`：**事后可判断某次任务是否在关预算/降保留
   的授权下准入**，不会与正常调度混为一谈。
-- 安全下限 `SANITY_FLOORS`：heavy≥1024、medium≥256、light≥128、estimateHeavy≥2000、
-  estimateMedium≥600、estimateLight≥200、hysteresis≥16；低于即 P0。
+- 安全下限 `SANITY_FLOORS`：estimateHeavy≥2000、estimateMedium≥600、estimateLight≥200、
+  systemReserve≥0（低于 0 非法）；低于即 P1/P0（2026-11-15 晚：内存门槛相关下限随功能一并删除）。
 - 未知字段、坏 JSON 也会被 `doctor` 点名（P1/P0），不再静默忽略。
 
 **本机覆盖的事实记录（2026-11-15 第三轮 `status --json` 实测）**：状态目录实际为
@@ -632,7 +626,7 @@ vitest / `node --test`，实际峰值约 0.8–1 GB）因"分类下限 2560 + �
 estimateMediumMb 2400`，`systemReserveMb=3072`、`recommendedSystemReserveMb=3072`。与 10.1 的
 2026-11-15 第二轮快照（1536/1024/256/estimate 2400）不一致，以本节实测为准；10.1 保留为历史记录不改写。
 
-### 10.3 2026-11-15 本机覆盖：关闭约束 A（实时可用内存门槛），保留排队与预算
+### 10.3 2026-11-15 本机覆盖：关闭约束 A（实时可用内存门槛），保留排队与预算（**已被 10.5 取代**）
 
 用户诉求（连续第三轮）：**不要按"当前可用内存"拦人**，但要**保留排队**——1–2 GB 的检查不该因为
 "分类下限 / 固定峰值"被 4–6 GB 的门槛挡住，同时也不希望退化成"谁都能同时起构建"。
@@ -673,18 +667,95 @@ estimateMediumMb 2400`，`systemReserveMb=3072`、`recommendedSystemReserveMb=30
 回退：删除 `config.json`（或把该键改回 `true`）即恢复约束 A，仓库默认行为不受影响。
 单测：`node --test scripts/build-sched.test.mjs` 覆盖"关闭后放行 / 默认仍拦截 / 风险项可见"。
 
+### 10.4 2026-11-15 事故复盘：没有构建在跑，队列却一直等（槽位不自愈）
+
+**现象**：当日 13:26–14:11，多会话同时报"medium 槽位已满（1/1）"并等待到超时（`history` 实测
+wait 896s / 1433s / 1486s 后 `提交进程已退出` / `调度进程已退出`），但 `status` 里**没有任何子进程在跑**。
+
+**根因**（四层叠加）：
+
+1. 单槽位串行被一个超长任务占满：`cargo test -j 1 --lib file_workspace` 跑了 **781s**，
+   并在最低可用 **95 MB** 时 exit 101（rustc/测试 OOM）。这一条就足够让后续 6–8 个 medium 任务排队。
+2. 它挂了以后**槽位不释放**：调度进程 PID 21864 随之消失，`medium-1` 目录留成僵尸；
+   后来者看到的就是"槽位已满"，明明没人在构建。
+3. 回收**只在有人抢同一个槽位时**发生。没人抢就一直挂着：`heavy-1`（13:52 启动的 apk-release，
+   PID 62040 + gradle 48132 在 9 秒内双双死亡）挂了 16 分钟；`dev-1`（08:32 启动的 vite，
+   PID 22024 + 28060 早已消失）挂了 2.5 小时。
+4. 取证失败即 fail-closed：`history` 里留下 `无法确认进程身份（PID 62040 存在，但无法读取创建时间
+   （CIM 查询失败））`——这种"证据不足"会一路卡到超时，没有任何自我恢复路径。
+
+**修复**（`scripts/sched/lock.mjs` / `scripts/sched/runner.mjs` / `scripts/sched/proc.mjs`）：
+
+- `reapStaleSlots()`（5.4.1）：等待循环每 ≤30s 扫描槽位与 `slots/.admission`，只回收
+  "持有者已死 + 子进程已结束"的；子进程仍活着一律不动、不杀；`unknown` 不动；挂起不按回收。
+- `tryReclaim()` 增加 `allowHungReclaim` / `allowChildKill` 两个开关，把"竞争路径可杀、后台扫描不杀"
+  这条边界写进代码，而不是靠调用方自觉。
+- `probeProcess()` 在 CIM 失败或读不到 `StartTime` 时回退 `Get-Process`：能拿到创建时间就仍可排除
+  PID 复用；拿不到仍是 `unknown`。"不存在"的结论永远只由 `isPidAlive()` 给出。
+- `doctor --reap` 在本次事后清理中实际回收了 `dev-1` / `heavy-1` 两具僵尸槽位（4 个 PID 全部确认
+  不存在后才动手）。
+
+**验证**：单测 `node --test scripts/build-sched.test.mjs` **47/47**（新增 2 例：回收/不回收边界，
+含 `.admission`）；跨进程验收 `scripts/build-sched-acceptance.test.mjs` **41/41**（含崩溃恢复、
+孤儿构建进程树回收的原有断言未放宽）。另外用隔离状态目录（`TASKDOCK_BUILD_SCHED_HOME`）做了两次
+真机端到端取证：
+
+- 造一个"持有者已死、无子进程"的 `dev-1` 槽位 → 新任务首轮扫描输出
+  `后台扫描：回收槽位 dev-1（持有者已退出…）`，槽位目录消失；
+- 造一个"持有者已死、但登记的构建子进程仍在运行"的 `dev-1` 槽位 → 输出
+  `后台扫描：槽位 dev-1 暂不回收——…构建子进程 PID … 仍存活…`，槽位保留、子进程未被终止。
+
+### 10.5 2026-11-15 删除实时可用内存门槛（约束 A 整体移除）
+
+**决定**：用户在 10.3 之后再次明确要求"把门槛给我删了"。10.3 的"总闸开关"只是旁路，配置/状态/代码
+里仍留着一整套门槛字段与展示；本次直接**删除**，不留开关。
+
+**删除的东西**：
+
+- `scripts/sched/config.mjs`：删掉 `memoryAdmissionEnabled`、`heavyMinAvailMb`、`mediumMinAvailMb`、
+  `lightMinAvailMb`、`hysteresisMb`、`safetyReserveMb` 六个键（以及对应的 `SANITY_FLOORS`、
+  滞回一致性校验、`configRisks` 的"门槛被关闭/被改小"条目）。写到配置里的这些字段现在会作为
+  **未知字段**被拒绝（P1），不会静默生效——防止门槛以任何形式悄悄回来。
+- `scripts/sched/mem.mjs`：删掉 `evaluateMemoryAdmission()`、`memoryFloorForClass()`、
+  `pressureLevel()`、`isMemoryAdmissionEnabled()`；保留内存采样（写 `status` / `history`）。
+- `scripts/sched/queue.mjs`：`evaluateEligibility()` 只剩槽位、预算、优先级三类阻塞；
+  `statusLabel()` 只看 `lastBudgetOk`。
+- `scripts/sched/runner.mjs`：等待循环不再有"内存不足 → waiting_resources"分支，不再需要
+  `memoryWaitSeen` / `lastMemoryOk`。
+- `scripts/build-sched.mjs`：`status` 去掉"压力"行、门槛列、"内存准入=已关闭"告警；内存行注明
+  "仅展示，不参与准入"；`config`/`doctor` 自动不再出现这些键。
+- 本机状态目录 `config.json`（内容只有 `{"memoryAdmissionEnabled": false}`）**已删除**，状态目录
+  现在没有任何覆盖配置（`配置来源：内置默认值`）。
+
+**保留的东西（用户明确要求保留排队）**：分类槽位并发（heavy/medium 各 1、light/dev 各 2）、
+P0–P3 优先级 + 老化、等价任务去重、跨分类全局预算（本机硬上限 12.63 GB）。
+
+**后果（如实记录）**：可用内存不足不再让任务等待；低内存下重型编译会照常启动，可能以
+`exit 101`（rustc/cargo OOM）失败，或让机器变慢。这是用户的选择；槽位并发与预算仍限制同时
+运行的构建数量。若某次构建 OOM，按 11 节"运行期 OOM"处理（局部检查/降低 `cargoJobs`/等空闲）。
+
+**验证**：单测 `node --test scripts/build-sched.test.mjs` **42/42**（删除 5 组门槛用例，
+新增"已删除字段必须报未知字段"的回归守卫）；跨进程验收
+`node --test scripts/build-sched-acceptance.test.mjs` **41/41**。真机 `sched:status` 输出 6 个槽位
+全 free、无门槛列，`config` 不再列出任何门槛字段。
+
+**回退**：改动未提交（工作区可 `git diff` 复核）；需要恢复时从 git 历史取回上述文件即可，
+本机无需再写任何 `config.json`。
+
 ## 11. 故障处理手册
 
 | 症状 | 处置 |
 |---|---|
-| 一直 `waiting_resources` | `status` 看谁在跑、内存多少；`queue` 看前面有谁。属正常排队，别绕过 |
-| `exit=3` 且 reason 含「内存不足」 | 等内存恢复或降级为局部检查（单模块类型检查/单测试），不要反复重试重任务 |
+| 一直 `waiting_resources` | `status` 看谁在跑、预算/槽位占用；`queue` 看前面有谁。属正常排队，别绕过 |
+| `status` 显示槽位被占、但根本没有构建在跑 | 后台自愈扫描（5.4.1）会在 ≤30s 内回收"持有者已死 + 子进程已结束"的槽位；仍不回收说明子进程或持有者无法证明死亡，用 `doctor` 看原因、`doctor --reap` 处置 |
+| `exit=3` 且 reason 含「预算」 | 等前面的任务释放预算，或减小 `--estimate-mb`/拆小任务；不要顺手关预算或调低保留 |
+| `exit=101` / `memory allocation ... failed`（rustc/cargo） | 内存门槛已删除，这是**运行期 OOM**：改用局部检查（单 crate `cargo check`）、降低 `cargoJobs`，或等机器空闲再跑；不要把它当代码错误 |
 | `exit=3` 且 reason 含「超时」 | 任务太长：拆小（`cargo check` → 单 crate 检查），或用 `--wait-timeout 0` 并放后台 |
 | 任务一直不结束但槽位显示被某 pid 持有 | `status --verbose` 看身份校验；确认那是**活着**的构建就等着；确认已死则 `doctor --reap` |
 | 怀疑被别人的构建拖垮 | `status` + `history` 的 `minAvailMb`；`sched dev` 看常驻服务。**不要**自行杀别人进程 |
 | `doctor` 报 P2「提交进程已退出」 | `doctor --reap`（只清理已证明死亡的残留） |
 | 怀疑磁盘满导致失败 | `npm run guard:report`；调度器 `exit=6` 就是磁盘预检拦住的 |
-| 失败任务给的日志路径是空的/只有几行 `#` 注释 | 这是"从未启动"的任务：收尾时调度器会补写摘要（status/exit/reason/waitMs）。看 `reason` 判断是内存不足还是等待/运行超时 |
+| 失败任务给的日志路径是空的/只有几行 `#` 注释 | 这是"从未启动"的任务：收尾时调度器会补写摘要（status/exit/reason/waitMs）。看 `reason` 判断是预算不足还是等待/运行超时 |
 | 机器极慢时偶发"记录读不到/状态没更新" | Windows 上 `rename` 覆盖被占用文件会返回 `EPERM/EBUSY`；写入已做退避重试（约 2 s）并在耗尽后退化为原地覆盖写，不需要人工干预；若持续出现则用 `doctor` 查是否有进程长期占着 `state/queue` |
 | `cancel` 返回 0 但任务其实还在跑 | 只有"身份取证 + 记录静默 ≥15 s"才会被 CLI 直接收尾；若提交进程真的活着，它会在下一轮轮询按退出码 4 结束。用 `queue`/`history` 复核状态，不要手动删 `state/cancel/` 标记 |
 
@@ -706,10 +777,11 @@ estimateMediumMb 2400`，`systemReserveMb=3072`、`recommendedSystemReserveMb=30
 7. **`scripts/perf/gate-run.sh` 已接入调度器，但"完整跑一遍门禁"仍未在真机验证**：2026-11-15 把
    cargo/前端门禁全部改为经 `run` / `cargo` 子命令排队（`bash -n` 与 `GATE_DRY_RUN=1` 路由核对
    已通过，路由证据见 `tmp/acceptance/taskdock-full-acceptance-20261115/scheduler/`），但本机可用
-   内存长期低于 2.5GB，`cargo clippy`/`cargo test --release` 一律排队到超时，所以"改完之后整串
-   门禁仍然通过"这一点仍是 `NOT TESTED`。`GATE_NO_SCHED=1` 保留为调度器故障时的逃生门。
-8. **未纳管的 dev 服务器不在预算台账里**：`npm run dev`（直接 `vite`）不经调度器，只能靠约束 A
-   兜住（其真实占用已体现在 `freemem`），并由 `sched dev` 点名。需要计入全局预算时用
+   内存长期低于 2.5GB，`cargo clippy`/`cargo test --release` 以前会排队到超时；2026-11-15 晚删除内存
+   门槛后它们会直接开跑并**可能 OOM**（exit 101），所以"改完之后整串门禁仍然通过"这一点仍是
+   `NOT TESTED`。`GATE_NO_SCHED=1` 保留为调度器故障时的逃生门。
+8. **未纳管的 dev 服务器不在预算台账里**：`npm run dev`（直接 `vite`）不经调度器，不受槽位/预算约束，
+   只能靠 `sched dev` 点名发现。需要计入全局预算时用
    `node scripts/build-sched.mjs run --class dev -- npm run tauri dev`（占 dev 槽位 + 计入预算）。
 9. **`apps/mobile` 的构建入口已接入调度器（2026-11-15 第二轮）**：`start` / `android` /
    `prebuild` / `typecheck` / `test` / `build:android` 全部包了

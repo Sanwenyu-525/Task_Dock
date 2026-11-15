@@ -25,7 +25,7 @@ import {
   ensureState, paths, readJson, resolveStateHome, slotDir,
 } from "./sched/state.mjs";
 import {
-  concurrencyForClass, formatMb, isMemoryAdmissionEnabled, memoryFloorForClass, pressureLevel, readMemory,
+  concurrencyForClass, formatMb, readMemory,
 } from "./sched/mem.mjs";
 import { reapOrphanChild, snapshotSlots } from "./sched/lock.mjs";
 import {
@@ -226,7 +226,6 @@ function cmdStatus(argv) {
   const mem = readMemory();
   const slots = snapshotSlots(ctx.state.home, { verify: opts.verbose === true });
   const tasks = readQueue(ctx.state.home).filter((t) => ACTIVE_STATUSES.has(t.status));
-  const pressure = pressureLevel(ctx.cfg, mem);
   const budget = budgetSnapshot({ home: ctx.state.home, cfg: ctx.cfg, totalMb: mem.totalMb });
   const devScan = opts.verbose === true ? scanDevServers({ repoRoot: REPO_ROOT, knownRoots: knownWorktrees() }) : null;
 
@@ -235,7 +234,6 @@ function cmdStatus(argv) {
     stateHome: ctx.state.home,
     stateSource: ctx.state.source,
     memory: { availMb: mem.availMb, totalMb: mem.totalMb, simulated: mem.simulated, source: mem.source },
-    pressure,
     budget,
     slots,
     tasks,
@@ -250,15 +248,7 @@ function cmdStatus(argv) {
 
   console.log(`状态目录：${ctx.state.home}  (来源：${ctx.state.source})`);
   console.log(`内存：可用 ${formatMb(mem.availMb)} / 总计 ${formatMb(mem.totalMb)}` +
-    `${mem.simulated ? "  ⚠ 模拟值" : ""}  〔${mem.source}〕`);
-  console.log(`压力：${pressure.text}`);
-  // 约束 A 被关闭属于"主动拆掉一道安全边界"：必须显著打印，不能只在 config 里悄悄可见
-  const gateOff = !isMemoryAdmissionEnabled(ctx.cfg);
-  if (gateOff) {
-    console.log("  ⚠ 内存准入门槛已关闭（memoryAdmissionEnabled=false）：不按可用内存拦截；" +
-      "分类槽位并发、优先级排队与全局预算仍然生效");
-  }
-  const floorText = (cls) => (gateOff ? "关闭" : formatMb(memoryFloorForClass(ctx.cfg, cls)));
+    `${mem.simulated ? "  ⚠ 模拟值" : ""}  〔${mem.source}〕（仅展示，不参与准入）`);
   console.log(`全局预算：${budget.enabled ? "启用" : "⚠ 已被显式关闭（危险授权生效）"} ` +
     `${formatMb(budget.reservedMb)} / ${formatMb(budget.budgetMb)} 已预留` +
     `（可用余量 ${formatMb(budget.availableMb)}；硬上限 = 物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(budget.reserveMb)}` +
@@ -291,7 +281,7 @@ function cmdStatus(argv) {
     for (let i = 1; i <= n; i++) {
       const name = `${cls}-${i}`;
       const s = bySlot.get(name);
-      if (!s) { console.log(`  ${pad(name, 9)} free      门槛 ${floorText(cls)}`); continue; }
+      if (!s) { console.log(`  ${pad(name, 9)} free`); continue; }
       console.log(`  ${pad(name, 9)} ${pad(s.taskId ?? "?", 16)} pid=${pad(s.pid ?? "?", 7)} ` +
         `心跳 ${pad(s.heartbeatAgeMs === null ? "?" : `${Math.round(s.heartbeatAgeMs / 1000)}s`, 4)}前 ` +
         `${s.label ? s.label : ""}${s.pidAlive === false ? "  ⚠ 持有进程已退出（下次竞争会回收）" : ""}` +
@@ -309,11 +299,11 @@ function cmdStatus(argv) {
   }
   if (tasks.length > 12) console.log(`  …还有 ${tasks.length - 12} 个，见 ${SELF} queue`);
   console.log("");
-  console.log(`策略：重型 并发${ctx.cfg.heavyConcurrency}/门槛${floorText("heavy")} ` +
-    `中型 并发${ctx.cfg.mediumConcurrency}/门槛${floorText("medium")} ` +
-    `轻量 并发${ctx.cfg.lightConcurrency}/门槛${floorText("light")} ` +
-    `dev 并发${ctx.cfg.devConcurrency} 采样${ctx.cfg.memorySampleMs}ms 滞回${formatMb(ctx.cfg.hysteresisMb)} ` +
-    `cargoJobs=${ctx.cfg.cargoJobs}${gateOff ? " 内存准入=已关闭" : ""}`);
+  console.log(`策略：重型 并发${ctx.cfg.heavyConcurrency} ` +
+    `中型 并发${ctx.cfg.mediumConcurrency} ` +
+    `轻量 并发${ctx.cfg.lightConcurrency} ` +
+    `dev 并发${ctx.cfg.devConcurrency} 内存采样${ctx.cfg.memorySampleMs}ms ` +
+    `cargoJobs=${ctx.cfg.cargoJobs}（无内存门槛，不等式约束只剩槽位并发与全局预算）`);
   if (ctx.configProblems.length) {
     console.log("");
     for (const p of ctx.configProblems) console.log(`配置问题：${p}`);
@@ -547,8 +537,8 @@ function cmdDoctor(argv) {
     for (const p of ctx.configProblems) issues.push({ severity: "P1", text: `配置：${p}` });
   } else ok.push("配置校验通过（未知字段/非法数值会被拒绝而不是静默忽略）");
 
-  // 2b) 配置风险：预算被关、保留被下调、门槛被改到 1 MB 级、环境变量覆盖……
-  //     这类「配置被改坏」不会报错，只会让准入静默失效（19:22 那次真实发生过），必须成条列出。
+  // 2b) 配置风险：预算被关、保留被下调、预计峰值被改到 1 MB 级、环境变量覆盖……
+  //     这类「配置被改坏」不会报错，只会让预算静默失效（19:22 那次真实发生过），必须成条列出。
   const cfgRisks = configRisks({
     config: ctx.cfg, danger: ctx.danger, sources: ctx.sources, problems: ctx.configProblems,
     hasActiveReservations: readReservations(home).length > 0,

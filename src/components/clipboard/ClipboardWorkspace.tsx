@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Loader2, Merge, Pause, Pin, Play,
+  AlertTriangle, Clipboard, Copy, Eraser, FolderPlus, Info, Link2, ListChecks, Loader2, Merge, Pause, Pin, Play,
   RefreshCw, Settings as SettingsIcon, Star, Trash2, X,
 } from "lucide-react";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
@@ -280,6 +280,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   /** 状态读取失败：保留旧状态并标记过期，避免把「监听异常」显示成未知/正常 */
   const [statusError, setStatusError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** 批量管理：显式模式，即使 0 选中也保留「全选当前页 / 退出」入口。 */
+  const [batchMode, setBatchMode] = useState(false);
   const [groupName, setGroupName] = useState("");
   const [mergeName, setMergeName] = useState("");
   const [confirm, setConfirm] = useState<{
@@ -1227,6 +1229,27 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
             >
               <Star size={13} />
             </button>
+            <button
+              className={`btn sm ${batchMode ? "primary" : ""}`}
+              aria-pressed={batchMode}
+              aria-label={batchMode ? "退出批量管理" : "进入批量管理"}
+              data-tip="显式勾选、全选当前页并批量复制/分组/删除"
+              onClick={() => {
+                setBatchMode((on) => {
+                  if (on) clearSelection();
+                  return !on;
+                });
+              }}
+            >
+              <ListChecks size={13} aria-hidden="true" /> 批量
+            </button>
+            <button
+              className="btn sm"
+              onClick={goSettings}
+              data-tip="在设置中调整保留天数、数量上限、排除应用；立即清理"
+            >
+              <Eraser size={13} aria-hidden="true" /> 清理规则
+            </button>
           </div>
           <div className="seg-group subtle clip-chips" role="group" aria-label="类型筛选">
             {KIND_CHIPS.map((k) => (
@@ -1374,6 +1397,34 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
             </button>
           </div>
         </WorkbenchPageDetail>
+      )}
+
+      {!detail && section === "items" && batchMode && selectedItems.length === 0 && (
+        <div className="clip-selectbar clip-batchbar">
+          <span>批量管理：勾选条目后复制、分组或删除</span>
+          <button
+            className="btn sm"
+            disabled={!view || view.items.length === 0}
+            onClick={() => {
+              for (const item of view?.items ?? []) {
+                if (!selectedItems.includes(item.id)) toggleItemSelection(item.id);
+              }
+            }}
+          >
+            <ListChecks size={11} aria-hidden="true" /> 全选当前页
+          </button>
+          <button
+            className="icon-btn sm"
+            onClick={() => {
+              setBatchMode(false);
+              clearSelection();
+            }}
+            data-tip="退出批量管理"
+            aria-label="退出批量管理"
+          >
+            <X size={12} />
+          </button>
+        </div>
       )}
 
       {!detail && section === "items" && selectedItems.length > 0 && (

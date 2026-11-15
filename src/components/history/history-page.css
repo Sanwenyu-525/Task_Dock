@@ -22,6 +22,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 搜索范围必须常驻可见：没有后端全文检索，搜索只匹配已加载记录。 */
+.history-panel .history-scope-hint {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
 /* 搜索只过滤已加载记录（无后端全文检索接口），占位文案与统计都如实说明范围。 */
 .history-panel .history-search {
   flex: 1 1 220px;

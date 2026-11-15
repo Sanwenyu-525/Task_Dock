@@ -8,14 +8,19 @@
 //! - 职责划分：本页是工作台（管理已启用微件）；「添加微件」只负责添加，
 //!   不在库中重复展示尺寸/置顶/停用等管理表单。
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { AlertTriangle, Blocks, LayoutGrid, Plus, RotateCcw } from "lucide-react";
+import {
+  AlertTriangle, Blocks, ChevronDown, ChevronUp, EyeOff, LayoutGrid, LocateFixed,
+  Monitor, Plus, RotateCcw, X,
+} from "lucide-react";
 
 import {
   enabledWidgets,
+  MAX_ITEMS_OPTIONS,
   widgetDefinition,
   type WidgetConfig,
+  type WidgetItem,
   type WidgetSize,
 } from "../../lib/widgets/model";
 import type { WidgetSources } from "../../lib/widgets/sources";
@@ -23,10 +28,19 @@ import { useLocale } from "../../hooks/useLocale";
 import { useWidgetsStore } from "../../store/useWidgetsStore";
 import { useUiStore } from "../../store/useUiStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
-import { ConfirmDialog } from "../ui";
+import { WorkbenchPageDetail, useWorkbenchDetailHost } from "../../workbench/pageDetail";
+import { ConfirmDialog, Select, Switch } from "../ui";
 import WidgetCard from "./WidgetCard";
 import WidgetLibrary from "./WidgetLibrary";
 import "./widgets.css";
+
+type WidgetTab = "enabled" | "library" | "layout";
+
+const WIDGET_SIZE_LABELS: Record<WidgetSize, "widgets.size.sm" | "widgets.size.md" | "widgets.size.lg"> = {
+  sm: "widgets.size.sm",
+  md: "widgets.size.md",
+  lg: "widgets.size.lg",
+};
 
 export interface WidgetsPanelProps {
   /** A（专注计时）/ C（效率统计）数据源；未提供时对应微件显示「等待接入」。 */
@@ -50,9 +64,13 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
   const persistError = useWidgetsStore((s) => s.persistError);
   const showToast = useUiStore((s) => s.showToast);
 
-  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [tab, setTab] = useState<WidgetTab>("enabled");
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  /** 右栏配置：只有从卡片「配置」进入时才选中；空态不占右栏。 */
+  const [configuredId, setConfiguredId] = useState<string | null>(null);
+  const detailHost = useWorkbenchDetailHost();
+  const configInRail = detailHost !== null;
   /** 已请求桌面显示、但窗口尚未确认成功的微件（id → 标题）。 */
   const pendingDesktopRef = useRef<Map<string, string>>(new Map());
 
@@ -66,7 +84,7 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
   // 恢复默认（默认含停用项）后同样恢复。手动重开时会保留打开状态（只承载停止操作）。
   const allAdded = widgets.length > 0 && widgets.every((item) => item.enabled);
   useEffect(() => {
-    if (allAdded) setLibraryOpen(false);
+    if (allAdded) setTab((current) => (current === "library" ? "enabled" : current));
   }, [allAdded]);
 
   // 「添加到桌面」的成功提示必须等 desktopRuntime 真正进入 shown；
@@ -85,6 +103,10 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
   }, [desktopRuntime, showToast, t]);
 
   const visible = enabledWidgets(widgets);
+  const configuredWidget = useMemo(
+    () => visible.find((item) => item.widget_id === configuredId) ?? null,
+    [visible, configuredId],
+  );
   const desktopCount = widgets.filter((item) => item.desktop.visible).length;
   // 「配置期望」与「真实已显示」分开统计，不能用配置冒充已创建窗口。
   const desktopShownCount = widgets.filter(
@@ -123,6 +145,8 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
       reportPersistFailure();
       return;
     }
+    // 添加完成后回到「已启用」：用户应立刻看到新卡片，而不是停在库列表。
+    setTab("enabled");
     showToast(t("widgets.addedToast", { title }), { kind: "success" });
   }
 
@@ -144,6 +168,7 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
       reportPersistFailure();
       return;
     }
+    setTab("enabled");
     const phase = useWidgetsStore.getState().desktopRuntime[id]?.phase;
     if (phase === "shown") {
       showToast(t("widgets.addedDesktopToast", { title }), { kind: "success" });
@@ -208,10 +233,10 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
         actions={
           <>
             <button
-              className={`btn sm ${libraryOpen ? "primary" : ""}`}
-              aria-expanded={libraryOpen}
-              aria-controls="widget-library-panel"
-              onClick={() => setLibraryOpen((open) => !open)}
+              className={`btn sm ${tab === "library" ? "primary" : ""}`}
+              aria-expanded={tab === "library"}
+              aria-controls="widget-tab-body"
+              onClick={() => setTab((current) => (current === "library" ? "enabled" : "library"))}
             >
               <Plus size={13} aria-hidden="true" /> {t("widgets.addWidgets")}
             </button>
@@ -228,6 +253,58 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
       />
 
       <div className="page-scroll widgets-body">
+        {/* 大数字摘要：管理页先给四条真实状态，再按 tabs 进入列表/库/布局。
+            失败数来自 desktopRuntime，不能用「配置为显示」冒充已创建窗口。 */}
+        <div className="widgets-stat-grid" aria-label="微件状态摘要">
+          <div className="widgets-stat-card">
+            <span>工作台微件</span>
+            <strong>{visible.length}</strong>
+            <em>共 {widgets.length} 个配置</em>
+          </div>
+          <div className="widgets-stat-card">
+            <span>桌面显示</span>
+            <strong>{desktopCount}</strong>
+            <em>配置为显示到桌面</em>
+          </div>
+          <div className="widgets-stat-card is-success">
+            <span>窗口已创建</span>
+            <strong>{desktopShownCount}</strong>
+            <em>本轮真实运行态</em>
+          </div>
+          <div className={`widgets-stat-card ${desktopFailedCount > 0 ? "is-danger" : ""}`}>
+            <span>创建失败</span>
+            <strong>{desktopFailedCount}</strong>
+            <em>{desktopFailedCount > 0 ? "可在卡片上重试" : "暂无失败"}</em>
+          </div>
+        </div>
+
+        <div className="widgets-tabs" role="tablist" aria-label="微件管理视图">
+          {([
+            ["enabled", "已启用", LayoutGrid],
+            ["library", "微件库", Plus],
+            ["layout", "布局设置", Blocks],
+          ] as const).map(([key, label, Icon]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={tab === key}
+              className={`widgets-tab ${tab === key ? "is-active" : ""}`}
+              onClick={() => setTab(key)}
+            >
+              <Icon size={13} aria-hidden="true" />
+              {label}
+            </button>
+          ))}
+          <span className="widgets-tabs-meta">
+            {tab === "enabled"
+              ? `${visible.length} 个已启用`
+              : tab === "library"
+                ? `${widgets.length - visible.length} 个可添加`
+                : "排序 / 尺寸 / 桌面显示"}
+          </span>
+        </div>
+
         {persistError && (
           <div className="widgets-persist-error" role="alert">
             <AlertTriangle size={13} aria-hidden="true" />
@@ -245,54 +322,153 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
           </div>
         )}
 
-        {libraryOpen && (
-          <div id="widget-library-panel">
-            <WidgetLibrary
-              widgets={widgets}
-              sources={sources}
-              onAdd={onAdd}
-              onAddToDesktop={onAddToDesktop}
-            />
-          </div>
-        )}
-
-        {visible.length > 0 ? (
-          <div className="widgets-grid" aria-label={t("widgets.gridAria")}>
-            {visible.map((item, index) => (
-              <WidgetCard
-                key={item.widget_id}
-                item={item}
-                index={index}
-                total={visible.length}
+        <div id="widget-tab-body" role="tabpanel">
+          {tab === "library" && (
+            <div id="widget-library-panel">
+              <WidgetLibrary
+                widgets={widgets}
                 sources={sources}
-                dragging={draggingId === item.widget_id}
-                draggingId={draggingId}
-                desktopRuntime={desktopRuntime[item.widget_id]}
-                onMoveBy={moveBy}
-                onDisable={(id) => toggle(id, false)}
-                onDesktop={(id, visibleDesktop) => setDesktop(id, { visible: visibleDesktop })}
-                onTopmost={(id, topmost) => setDesktop(id, { topmost })}
-                onSize={onSize}
-                onConfig={onConfig}
-                onResetPosition={resetDesktopPosition}
-                onRetryDesktop={retryDesktop}
-                onDragStart={setDraggingId}
-                onDragEnd={() => setDraggingId(null)}
-                onDropOn={onDropOn}
+                onAdd={onAdd}
+                onAddToDesktop={onAddToDesktop}
               />
+            </div>
+          )}
+
+          {tab === "enabled" &&
+            (visible.length > 0 ? (
+              <div className="widgets-grid" aria-label={t("widgets.gridAria")}>
+                {visible.map((item, index) => (
+                  <WidgetCard
+                    key={item.widget_id}
+                    item={item}
+                    index={index}
+                    total={visible.length}
+                    sources={sources}
+                    dragging={draggingId === item.widget_id}
+                    draggingId={draggingId}
+                    desktopRuntime={desktopRuntime[item.widget_id]}
+                    configInRail={configInRail}
+                    onConfigure={setConfiguredId}
+                    selected={configuredId === item.widget_id}
+                    onMoveBy={moveBy}
+                    onDisable={(id) => toggle(id, false)}
+                    onDesktop={(id, visibleDesktop) => setDesktop(id, { visible: visibleDesktop })}
+                    onTopmost={(id, topmost) => setDesktop(id, { topmost })}
+                    onSize={onSize}
+                    onConfig={onConfig}
+                    onResetPosition={resetDesktopPosition}
+                    onRetryDesktop={retryDesktop}
+                    onDragStart={setDraggingId}
+                    onDragEnd={() => setDraggingId(null)}
+                    onDropOn={onDropOn}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="widgets-empty">
+                <LayoutGrid size={26} aria-hidden="true" />
+                <strong>{t("widgets.emptyTitle")}</strong>
+                <span>{t("widgets.emptyDesc")}</span>
+                <button className="btn sm primary" onClick={() => setTab("library")}>
+                  <Plus size={13} aria-hidden="true" /> {t("widgets.addWidgets")}
+                </button>
+              </div>
             ))}
-          </div>
-        ) : (
-          <div className="widgets-empty">
-            <LayoutGrid size={26} aria-hidden="true" />
-            <strong>{t("widgets.emptyTitle")}</strong>
-            <span>{t("widgets.emptyDesc")}</span>
-            <button className="btn sm primary" onClick={() => setLibraryOpen(true)}>
-              <Plus size={13} aria-hidden="true" /> {t("widgets.addWidgets")}
-            </button>
-          </div>
-        )}
+
+          {tab === "layout" && (
+            <section className="widgets-layout" aria-label="微件布局设置">
+              <div className="widgets-layout-head">
+                <div>
+                  <h3>看板布局</h3>
+                  <p>调整顺序、尺寸与桌面显示；独立桌面窗口由真实运行态确认。</p>
+                </div>
+                <button className="btn sm" onClick={onReset} data-tip={t("widgets.resetLayoutHint")}>
+                  <RotateCcw size={13} aria-hidden="true" /> {t("widgets.resetLayout")}
+                </button>
+              </div>
+              {visible.length === 0 ? (
+                <div className="widgets-empty compact">
+                  <LayoutGrid size={22} aria-hidden="true" />
+                  <strong>{t("widgets.emptyTitle")}</strong>
+                  <button className="btn sm primary" onClick={() => setTab("library")}>
+                    <Plus size={13} aria-hidden="true" /> {t("widgets.addWidgets")}
+                  </button>
+                </div>
+              ) : (
+                <ul className="widgets-layout-list">
+                  {visible.map((item, index) => {
+                    const title = t(widgetDefinition(item.type).titleKey);
+                    const phase = desktopRuntime[item.widget_id]?.phase ?? "hidden";
+                    return (
+                      <li key={item.widget_id} className="widgets-layout-row">
+                        <span className="widgets-layout-index">{index + 1}</span>
+                        <div className="widgets-layout-info">
+                          <strong>{title}</strong>
+                          <span>
+                            {t(WIDGET_SIZE_LABELS[item.size])}
+                            {" · "}
+                            {item.desktop.visible
+                              ? phase === "shown"
+                                ? "桌面已显示"
+                                : phase === "failed"
+                                  ? "桌面创建失败"
+                                  : "等待桌面窗口"
+                              : "仅工作台"}
+                          </span>
+                        </div>
+                        <div className="widgets-layout-actions">
+                          <button
+                            className="widget-icon-btn"
+                            disabled={index === 0}
+                            aria-label={t("widgets.moveUpAria", { title })}
+                            onClick={() => moveBy(item.widget_id, -1)}
+                          >
+                            <ChevronUp size={13} aria-hidden="true" />
+                          </button>
+                          <button
+                            className="widget-icon-btn"
+                            disabled={index === visible.length - 1}
+                            aria-label={t("widgets.moveDownAria", { title })}
+                            onClick={() => moveBy(item.widget_id, 1)}
+                          >
+                            <ChevronDown size={13} aria-hidden="true" />
+                          </button>
+                          <button
+                            className="widget-icon-btn"
+                            aria-label={t("widgets.cardConfigAria", { title })}
+                            data-tip="配置微件"
+                            onClick={() => setConfiguredId(item.widget_id)}
+                          >
+                            <Blocks size={13} aria-hidden="true" />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          )}
+        </div>
       </div>
+
+      {configInRail && configuredWidget && (
+        <WidgetConfigRail
+          item={configuredWidget}
+          index={visible.findIndex((item) => item.widget_id === configuredWidget.widget_id)}
+          total={visible.length}
+          onClose={() => setConfiguredId(null)}
+          onSize={onSize}
+          onConfig={onConfig}
+          onMoveBy={moveBy}
+          onDesktop={setDesktop}
+          onResetPosition={resetDesktopPosition}
+          onDisable={(id) => {
+            toggle(id, false);
+            setConfiguredId(null);
+          }}
+        />
+      )}
 
       <ConfirmDialog
         open={resetConfirmOpen}
@@ -304,5 +480,159 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
         onCancel={() => setResetConfirmOpen(false)}
       />
     </div>
+  );
+}
+
+/**
+ * 右栏微件配置：与卡片内联配置互斥（有宿主时卡片只负责选中，右栏负责表单）。
+ * 不把桌面窗口状态写进本地推测，`desktopRuntime` 的 shown/failed 仍由主页面传入。
+ */
+function WidgetConfigRail({
+  item,
+  index,
+  total,
+  onClose,
+  onSize,
+  onConfig,
+  onMoveBy,
+  onDesktop,
+  onResetPosition,
+  onDisable,
+}: {
+  item: WidgetItem;
+  index: number;
+  total: number;
+  onClose: () => void;
+  onSize: (id: string, size: WidgetSize) => void;
+  onConfig: (id: string, patch: WidgetConfig) => void;
+  onMoveBy: (id: string, delta: -1 | 1) => void;
+  onDesktop: (id: string, patch: { visible?: boolean; topmost?: boolean }) => void;
+  onResetPosition: (id: string) => void;
+  onDisable: (id: string) => void;
+}) {
+  const { t } = useLocale();
+  const def = widgetDefinition(item.type);
+  const title = t(def.titleKey);
+  const sizeOptions = (["sm", "md", "lg"] as WidgetSize[]).map((size) => ({
+    value: size,
+    label: t(WIDGET_SIZE_LABELS[size]),
+  }));
+  const maxItemsOptions = MAX_ITEMS_OPTIONS.map((n) => ({
+    value: String(n),
+    label: t("widgets.maxItems", { n }),
+  }));
+
+  return (
+    <WorkbenchPageDetail
+      title="微件配置"
+      actions={
+        <button className="icon-btn sm" aria-label="关闭微件配置" data-tip="关闭" onClick={onClose}>
+          <X size={13} aria-hidden="true" />
+        </button>
+      }
+    >
+      <div className="widgets-rail-hero">
+        <span className="widgets-rail-index">{index + 1}</span>
+        <div>
+          <strong>{title}</strong>
+          <span>{t(def.descriptionKey)}</span>
+        </div>
+      </div>
+
+      <div className="widgets-rail-form">
+        <label className="widgets-rail-field">
+          <span>{t("widgets.configSize")}</span>
+          <Select
+            value={item.size}
+            options={sizeOptions}
+            onChange={(value) => onSize(item.widget_id, value)}
+            ariaLabel={t("widgets.sizeAria", { title })}
+            size="sm"
+            align="start"
+            triggerClassName="widget-config-select"
+          />
+        </label>
+
+        {item.type === "today-tasks" && (
+          <label className="widgets-rail-field">
+            <span>{t("widgets.maxItemsLabel")}</span>
+            <Select
+              value={String(item.config.maxItems ?? 5)}
+              options={maxItemsOptions}
+              onChange={(value) => onConfig(item.widget_id, { maxItems: Number(value) })}
+              ariaLabel={t("widgets.maxItemsAria", { title })}
+              size="sm"
+              align="start"
+              triggerClassName="widget-config-select"
+            />
+          </label>
+        )}
+
+        <div className="widgets-rail-switch">
+          <Switch
+            label={t("widgets.desktop.showAria", { title })}
+            checked={item.desktop.visible}
+            onChange={(checked) => onDesktop(item.widget_id, { visible: checked })}
+            ariaLabel={t("widgets.desktop.showAria", { title })}
+          />
+          <span>桌面独立窗口使用同一份布局配置</span>
+        </div>
+        <div className="widgets-rail-switch">
+          <Switch
+            label={t("widgets.desktop.topmost")}
+            checked={item.desktop.topmost}
+            disabled={!item.desktop.visible}
+            onChange={(checked) => onDesktop(item.widget_id, { topmost: checked })}
+            ariaLabel={t("widgets.desktop.topmostAria", { title })}
+          />
+          <span>仅在桌面窗口已显示时生效</span>
+        </div>
+      </div>
+
+      <div className="widgets-rail-actions">
+        <button
+          className="widget-icon-btn"
+          disabled={index <= 0}
+          aria-label={t("widgets.moveUpAria", { title })}
+          data-tip={t("widgets.moveUp")}
+          onClick={() => onMoveBy(item.widget_id, -1)}
+        >
+          <ChevronUp size={13} aria-hidden="true" />
+        </button>
+        <button
+          className="widget-icon-btn"
+          disabled={index >= total - 1}
+          aria-label={t("widgets.moveDownAria", { title })}
+          data-tip={t("widgets.moveDown")}
+          onClick={() => onMoveBy(item.widget_id, 1)}
+        >
+          <ChevronDown size={13} aria-hidden="true" />
+        </button>
+        <button
+          className="widget-icon-btn"
+          aria-label={t("widgets.desktop.resetPositionAria", { title })}
+          data-tip={t("widgets.desktop.resetPositionTip")}
+          onClick={() => onResetPosition(item.widget_id)}
+        >
+          <LocateFixed size={13} aria-hidden="true" />
+        </button>
+        <button
+          className="widget-icon-btn"
+          aria-label={t("widgets.desktop.showAria", { title })}
+          data-tip={t(item.desktop.visible ? "widgets.desktop.hideTip" : "widgets.desktop.showTip")}
+          onClick={() => onDesktop(item.widget_id, { visible: !item.desktop.visible })}
+        >
+          <Monitor size={13} aria-hidden="true" />
+        </button>
+      </div>
+
+      <button
+        type="button"
+        className="btn sm danger-ghost widgets-rail-disable"
+        onClick={() => onDisable(item.widget_id)}
+      >
+        <EyeOff size={13} aria-hidden="true" /> {t("widgets.disable")}
+      </button>
+    </WorkbenchPageDetail>
   );
 }

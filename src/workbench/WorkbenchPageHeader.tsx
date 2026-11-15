@@ -24,10 +24,12 @@ export default function WorkbenchPageHeader({ icon: Icon, title, subtitle, meta,
         <Icon size={19} strokeWidth={1.7} />
       </span>
       <div className="wb-ph-main">
-        <h2 className="wb-ph-title">
-          <span>{title}</span>
-          {meta}
-        </h2>
+        <div className="wb-ph-heading">
+          <h2 className="wb-ph-title">
+            <span>{title}</span>
+          </h2>
+          {meta ? <div className="wb-ph-meta">{meta}</div> : null}
+        </div>
         {subtitle ? <p className="wb-ph-sub">{subtitle}</p> : null}
       </div>
       {actions ? <div className="wb-ph-actions">{actions}</div> : null}

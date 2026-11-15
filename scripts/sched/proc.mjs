@@ -40,6 +40,38 @@ export function isPidAlive(pid) {
 }
 
 /**
+ * CIM 失败时的回退取证：只用 `Get-Process` 取存在性 + 创建时间（拿不到命令行）。
+ *
+ * 为什么需要：`verifyIdentity` 依赖 CIM 的 StartTime 来排除 PID 复用。实测出现过
+ * 「PID 存在，但无法读取创建时间（CIM 查询失败）」——此时回收按 fail-closed 拒绝，
+ * 等待者被卡到超时。CIM（WMI）偶发不可用时，`Get-Process` 往往仍然可用。
+ *
+ * 注意：读不到（null）**不等于**已退出，这里只返回 null 交由调用方按 unknown 处理；
+ * 「不存在」的结论永远只由 `isPidAlive()` 给出，避免把权限不足误判成进程已死。
+ */
+function probeViaGetProcess(pid) {
+  const r = runPowerShell(
+    `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; ` +
+    `if ($p) { [pscustomobject]@{ pid = ${pid}; ` +
+    `startTime = $p.StartTime.ToUniversalTime().ToString('o'); name = $p.ProcessName; ` +
+    `workingSet = $p.WorkingSet64 } | ConvertTo-Json -Compress } else { 'null' }`,
+  );
+  if (!r.ok) return null;
+  const text = r.stdout.trim();
+  if (!text || text === "null") return null;
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return null; }
+  return {
+    known: true,
+    alive: true,
+    startTime: parsed.startTime ?? null,
+    commandLine: null,
+    name: parsed.name ?? null,
+    workingSetBytes: typeof parsed.workingSet === "number" ? parsed.workingSet : null,
+  };
+}
+
+/**
  * 查询单个进程的 CIM 详情（带 1s 缓存）。
  * @returns {{known:boolean, alive:boolean, startTime:string|null, commandLine:string|null, name:string|null, workingSetBytes:number|null}}
  */
@@ -59,8 +91,11 @@ export function probeProcess(pid, { fresh = false } = {}) {
     `  } | ConvertTo-Json -Compress } else { 'null' }`,
   );
   if (!r.ok) {
-    psCache.set(pid, { at: Date.now(), value: unknown });
-    return unknown;
+    // CIM 不可用时退回 Get-Process：拿到创建时间就能排除 PID 复用；拿不到仍是 unknown（fail-closed）
+    const fb = probeViaGetProcess(pid);
+    const value = fb ?? unknown;
+    psCache.set(pid, { at: Date.now(), value });
+    return value;
   }
   const text = r.stdout.trim();
   if (text === "null" || text === "") {
@@ -78,6 +113,12 @@ export function probeProcess(pid, { fresh = false } = {}) {
     name: parsed.name ?? null,
     workingSetBytes: typeof parsed.workingSet === "number" ? parsed.workingSet : null,
   };
+  // CIM 给不出创建时间时再补一次 Get-Process：否则 verifyIdentity 只能回 unknown，
+  // 崩溃残留的槽位就会一直卡着（实测过这种情况）
+  if (!value.startTime) {
+    const fb = probeViaGetProcess(pid);
+    if (fb?.startTime) value.startTime = fb.startTime;
+  }
   psCache.set(pid, { at: Date.now(), value });
   return value;
 }

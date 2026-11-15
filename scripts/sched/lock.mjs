@@ -125,9 +125,17 @@ export function reapOrphanChild({ child, taskId, audit, reason }) {
 
 /**
  * 评估并（必要时）回收一个已存在的槽位目录。
+ *
+ * `allowHungReclaim` / `allowChildKill` 供**后台扫描**收紧边界：
+ *   - 竞争路径（默认 true）：持有者存活但心跳停滞超过 hungReclaimMs 时按挂起回收；
+ *     持有者已死但子进程树仍在跑时，比对命令行签名后终止它（这是既有契约）。
+ *   - 后台扫描（false）：只回收「持有者已死 + 子进程已结束」的槽位，绝不主动终止
+ *     任何仍在运行的构建进程，也绝不按"挂起"回收——那些留给竞争路径/doctor --reap。
  * @returns {{reclaimed:boolean, reason:string, detail?:string, blocked?:boolean}}
  */
-function tryReclaim({ dir, name, cfg, taskId, auditPath, log }) {
+function tryReclaim({
+  dir, name, cfg, taskId, auditPath, log, allowHungReclaim = true, allowChildKill = true,
+}) {
   const owner = readJson(join(dir, OWNER_FILE));
   const age = beatAgeMs(dir);
   const record = { at: nowIso(), kind: "reclaim-eval", slot: name, holderTask: owner?.taskId ?? null, beatAgeMs: Math.round(age), by: taskId };
@@ -161,10 +169,27 @@ function tryReclaim({ dir, name, cfg, taskId, auditPath, log }) {
   if (identity.state === "same" && age < cfg.hungReclaimMs) {
     return { reclaimed: false, reason: `槽位 ${name} 由存活进程持有（${holderLabel}），等待其释放` };
   }
+  if (identity.state === "same" && !allowHungReclaim) {
+    return {
+      reclaimed: false, blocked: true,
+      reason: `槽位 ${name} 的持有者仍存活但心跳停滞 ${Math.round(age)}ms（> ${cfg.hungReclaimMs}ms）；` +
+        "后台扫描不按挂起回收，留待竞争路径或 doctor --reap 处置",
+    };
+  }
 
   const why = identity.state === "gone"
     ? `持有者已退出（${identity.detail}）`
     : `持有者存活但心跳停滞 ${Math.round(age)}ms（> ${cfg.hungReclaimMs}ms 挂起阈值）`;
+
+  // 后台扫描的硬边界：只回收"旧构建也已经结束"的槽位。子进程还活着就拒绝回收，
+  // 哪怕命令签名能对上也不杀——被动扫描不该影响任何正在进行的构建。
+  if (!allowChildKill && owner.child && Number.isInteger(owner.child.pid) && isPidAlive(owner.child.pid)) {
+    return {
+      reclaimed: false, blocked: true,
+      reason: `槽位 ${name}：${why}，但登记的构建子进程 PID ${owner.child.pid} 仍存活；` +
+        "后台扫描不终止他人构建，留待竞争路径或 doctor --reap 处置",
+    };
+  }
 
   // 回收前必须确认旧构建进程树已经结束，否则会把「仍在跑的重型构建」和新任务叠在一起
   const orphan = reapOrphanChild({
@@ -188,6 +213,62 @@ function tryReclaim({ dir, name, cfg, taskId, auditPath, log }) {
   appendJsonLine(auditPath, { ...record, kind: "reclaimed", reason: why, orphan: orphan.detail });
   if (log) log(`回收槽位 ${name}：${why}；${orphan.detail}`);
   return { reclaimed: true, reason: why, detail: orphan.detail, holderTask: owner.taskId ?? null };
+}
+
+/** 准入临界区槽位名（与 budget.mjs 的 ADMISSION_SLOT 一致；在此处独立定义，避免循环依赖）。 */
+const ADMISSION_SLOT_NAME = ".admission";
+
+/**
+ * 后台槽位扫描：回收「已经没人持有、却因为没有竞争者而永远不释放」的槽位。
+ *
+ * 背景（2026-11-15 实测）：回收此前只在**竞争同一个槽位**时才发生。于是调度进程崩溃后留下的
+ * 槽位会一直挂着——本机实测 heavy-1 挂了 16 分钟、dev-1 挂了 2.5 小时；如果留下的是准入临界区
+ * `slots/.admission`，**所有分类**的准入都会被它卡住，等待者只能干等到 `--wait-timeout` 超时。
+ *
+ * 保守边界（宁可漏收，不可误收）：
+ *   - 心跳仍新鲜（< leaseTtlMs）→ 不取证直接跳过（避免每轮 CIM，也避免误判刚创建的槽位）；
+ *   - 持有者身份无法确认（identity=unknown）→ 不动（fail-closed）；
+ *   - 子进程仍存活 → 不动（后台扫描绝不终止任何正在运行的构建）；
+ *   - 持有者存活但心跳停滞 → 不按挂起回收（留给竞争路径 / doctor --reap）。
+ */
+export function reapStaleSlots({ home, cfg, log = () => {}, limit = 4 }) {
+  const dir = paths(home).slots;
+  const audit = paths(home).reclaimLog;
+  const reclaimed = [];
+  const blocked = [];
+  let scanned = 0;
+  let names = [];
+  try { names = readdirSync(dir); } catch { return { scanned: 0, reclaimed, blocked }; }
+
+  for (const name of names) {
+    if (name.includes(".reclaim-") || name.includes(".release-")) continue;
+    if (name.startsWith(".") && name !== ADMISSION_SLOT_NAME) continue;
+    const slotPath = join(dir, name);
+    let st;
+    try { st = statSync(slotPath); } catch { continue; }
+    if (!st.isDirectory()) continue;
+    const age = beatAgeMs(slotPath);
+    // 心跳新鲜说明持有者大概率还在正常轮询：这一轮连取证都不做（CIM 是 200–400ms 的重操作）
+    if (!(age > (cfg.leaseTtlMs ?? 45000))) continue;
+    if (scanned >= limit) break;
+    scanned += 1;
+    let r;
+    try {
+      r = tryReclaim({
+        dir: slotPath, name, cfg, taskId: "housekeeping-sweep", auditPath: audit, log,
+        allowHungReclaim: false, allowChildKill: false,
+      });
+    } catch (err) {
+      blocked.push({ slot: name, reason: `扫描异常：${err?.message ?? err}`, blocked: true });
+      continue;
+    }
+    if (r.reclaimed) {
+      reclaimed.push({ slot: name, reason: r.reason, detail: r.detail ?? null, holderTask: r.holderTask ?? null });
+    } else {
+      blocked.push({ slot: name, reason: r.reason, blocked: r.blocked === true });
+    }
+  }
+  return { scanned, reclaimed, blocked };
 }
 
 function isDirEmptyish(dir) {

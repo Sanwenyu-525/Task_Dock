@@ -8,7 +8,10 @@
 //! 业务面板全部用轻量替身；本文件只验证导航排序契约，不重复测各页面自身行为。
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { registerTabGuard } from "../lib/tabGuard";
 
 const bridge = vi.hoisted(() => ({
   workspaceProjectList: vi.fn(),
@@ -125,6 +128,13 @@ function navIds(): string[] {
   return navRows().map((row) => row.dataset.navEntry ?? "");
 }
 
+/** 拖拽只允许从手柄启动：所有拖拽用例必须命中 `[data-nav-grip]`。 */
+function gripOf(row: HTMLElement): HTMLElement {
+  const grip = row.querySelector<HTMLElement>("[data-nav-grip]");
+  if (!grip) throw new Error(`入口 ${row.dataset.navEntry ?? "?"} 没有拖拽手柄`);
+  return grip;
+}
+
 function stubNavGeometry(): void {
   const list = navList();
   Object.defineProperty(list, "scrollTop", { configurable: true, writable: true, value: 0 });
@@ -192,14 +202,14 @@ function dragNavRowBefore(id: string, beforeId: string): void {
   const fromIndex = rows.findIndex((row) => row.dataset.navEntry === id);
   const beforeIndex = rows.findIndex((row) => row.dataset.navEntry === beforeId);
   const toY = beforeIndex * ROW_STEP + 2;
-  const pointerId = startDrag(rows[fromIndex], rowCenterY(fromIndex), toY);
+  const pointerId = startDrag(gripOf(rows[fromIndex]), rowCenterY(fromIndex), toY);
   finishDrag(pointerId, toY);
 }
 
 function dragNavRowToTop(id: string): void {
   const rows = navRows();
   const fromIndex = rows.findIndex((row) => row.dataset.navEntry === id);
-  const pointerId = startDrag(rows[fromIndex], rowCenterY(fromIndex), 2);
+  const pointerId = startDrag(gripOf(rows[fromIndex]), rowCenterY(fromIndex), 2);
   finishDrag(pointerId, 2);
 }
 
@@ -218,7 +228,9 @@ function navWriteCalls(): Array<Record<string, unknown>> {
 }
 
 function savedLeft(): string[] {
-  const layout = useSettingsStore.getState().settings?.navigation_layout;
+  const layout = useSettingsStore.getState().settings?.navigation_layout as
+    | { left: string[] }
+    | undefined;
   return layout?.left ?? [];
 }
 
@@ -226,6 +238,21 @@ async function renderShell(): Promise<void> {
   render(<WorkbenchShell />);
   await screen.findByRole("heading", { name: "工作台首页", level: 2 });
   stubNavGeometry();
+}
+
+async function openTasks(): Promise<void> {
+  const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
+  fireEvent.click(within(nav).getByRole("button", { name: "任务" }));
+  await screen.findByTestId("tasks-panel");
+}
+
+/** 读取 workbench.css 中某个类的基础声明块，用于尺寸/命中区契约断言。 */
+function cssRule(selector: string): string {
+  const css = readFileSync(resolve(process.cwd(), "src/workbench/workbench.css"), "utf8");
+  const start = css.indexOf(`${selector} {`);
+  if (start < 0) return "";
+  const end = css.indexOf("}", start);
+  return end < 0 ? "" : css.slice(start, end);
 }
 
 beforeEach(() => {
@@ -297,7 +324,7 @@ describe("工作台侧栏鼠标拖拽", () => {
     const workspaceIndex = rows.findIndex((row) => row.dataset.navEntry === "workspace");
     const toY = workspaceIndex * ROW_STEP + 2;
 
-    const pointerId = startDrag(rows[filesIndex], rowCenterY(filesIndex), toY);
+    const pointerId = startDrag(gripOf(rows[filesIndex]), rowCenterY(filesIndex), toY);
 
     // 拖拽态：跟手的行、细线落点、相邻行按「行高 + 间距」让位。
     const dragging = list.querySelector<HTMLElement>(".wb-nav-item.is-dragging");
@@ -327,7 +354,7 @@ describe("工作台侧栏鼠标拖拽", () => {
     const before = navIds();
     const pointerId = pointerSeq + 1;
 
-    fireEvent.pointerDown(rows[filesIndex], {
+    fireEvent.pointerDown(gripOf(rows[filesIndex]), {
       pointerId,
       button: 0,
       pointerType: "mouse",
@@ -353,7 +380,7 @@ describe("工作台侧栏鼠标拖拽", () => {
     await renderShell();
     const rows = navRows();
     const filesIndex = rows.findIndex((row) => row.dataset.navEntry === "files");
-    const pointerId = startDrag(rows[filesIndex], rowCenterY(filesIndex), 320);
+    const pointerId = startDrag(gripOf(rows[filesIndex]), rowCenterY(filesIndex), 320);
 
     expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeTruthy();
     // 侧边栏高度只有 900px，1200 在列表外：窗口级 pointerup 必须仍能收尾。
@@ -430,7 +457,7 @@ describe("取消与固定入口", () => {
     const rows = navRows();
     const filesIndex = rows.findIndex((row) => row.dataset.navEntry === "files");
 
-    const pointerId = startDrag(rows[filesIndex], rowCenterY(filesIndex), 2);
+    const pointerId = startDrag(gripOf(rows[filesIndex]), rowCenterY(filesIndex), 2);
     fireEvent.keyDown(document.body, { key: "Escape" });
     finishDrag(pointerId, 2);
 
@@ -648,5 +675,257 @@ describe("显隐与恢复默认不回归", () => {
       defaultNavigationLayout().left.filter((id) => id !== "settings"),
     );
     expect(savedLeft()).toEqual(defaultNavigationLayout().left);
+  });
+});
+
+describe("拖拽手柄放大与命中区", () => {
+  it("手柄图标 18px、命中区 28×28；行高保持 36px，操作区固定占位且手柄在 × 左侧", async () => {
+    await renderShell();
+    const row = navRows()[0];
+    const grip = gripOf(row);
+    expect(grip.querySelector("svg")?.getAttribute("width")).toBe("18");
+    expect(grip.querySelector("svg")?.getAttribute("height")).toBe("18");
+
+    const actions = row.querySelector<HTMLElement>(".wb-nav-actions");
+    expect(actions).toBeTruthy();
+    expect(
+      [...(actions?.querySelectorAll<HTMLElement>("[data-nav-grip], [data-nav-hide]") ?? [])].map(
+        (node) => (node.matches("[data-nav-grip]") ? "grip" : "hide"),
+      ),
+    ).toEqual(["grip", "hide"]);
+
+    const hide = within(row).getByRole("button", { name: /隐藏「.*」导航入口/ });
+    expect(hide.querySelector("svg")?.getAttribute("width")).toBe("15");
+    expect(hide.querySelector("svg")?.getAttribute("height")).toBe("15");
+
+    // CSS 契约：视觉图标 18 / 命中区 28×28（不是只放大图标），行高不变。
+    expect(cssRule(".wb-nav-grip")).toMatch(/width: 28px/);
+    expect(cssRule(".wb-nav-grip")).toMatch(/height: 28px/);
+    expect(cssRule(".wb-nav-grip")).toMatch(/flex: 0 0 28px/);
+    expect(cssRule(".wb-nav-grip")).not.toMatch(/position: absolute/);
+    expect(cssRule(".wb-nav-hide")).toMatch(/width: 24px/);
+    expect(cssRule(".wb-nav-hide")).toMatch(/height: 24px/);
+    expect(cssRule(".wb-nav-item")).toMatch(/min-height: 36px/);
+    expect(cssRule(".wb-nav-actions")).toMatch(/display: inline-flex/);
+  });
+
+  it("拖拽进行中隐藏按钮禁用，取消拖拽后恢复可用", async () => {
+    await renderShell();
+    const filesIndex = navIds().indexOf("files");
+    const filesRow = navRows()[filesIndex];
+    const hide = within(filesRow).getByRole("button", {
+      name: "隐藏「文件工作区」导航入口",
+    }) as HTMLButtonElement;
+
+    const pointerId = startDrag(gripOf(filesRow), rowCenterY(filesIndex), 2);
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeTruthy();
+    expect(hide.disabled).toBe(true);
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    finishDrag(pointerId, 2);
+    await waitFor(() => expect(hide.disabled).toBe(false));
+  });
+
+  it("只有手柄能起拖：行体与 × 的指针位移不进入拖拽，点击手柄不导航", async () => {
+    await renderShell();
+    await openTasks();
+    const filesRow = navList().querySelector<HTMLElement>('[data-nav-entry="files"]');
+    if (!filesRow) throw new Error("文件入口未渲染");
+    const before = navIds();
+
+    // 行体按下并移动：新交互只允许手柄起拖。
+    fireEvent.pointerDown(filesRow, {
+      pointerId: 201,
+      button: 0,
+      pointerType: "mouse",
+      clientX: 80,
+      clientY: rowCenterY(navIds().indexOf("files")),
+    });
+    fireEvent.pointerMove(window, {
+      pointerId: 201,
+      pointerType: "mouse",
+      clientX: 80,
+      clientY: 2,
+    });
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
+    fireEvent.pointerUp(window, { pointerId: 201, pointerType: "mouse" });
+    expect(navIds()).toEqual(before);
+
+    // 点手柄不触发导航（仍在任务页）。
+    fireEvent.click(gripOf(filesRow));
+    expect(screen.getByTestId("tasks-panel")).toBeTruthy();
+
+    // 操作区空白（两个按钮之间的间隙）也不触发整行导航。
+    fireEvent.click(filesRow.querySelector(".wb-nav-actions") as HTMLElement);
+    expect(screen.getByTestId("tasks-panel")).toBeTruthy();
+
+    // × 区域按下移动也不起拖。
+    const hide = within(filesRow).getByRole("button", { name: "隐藏「文件工作区」导航入口" });
+    fireEvent.pointerDown(hide, {
+      pointerId: 202,
+      button: 0,
+      pointerType: "mouse",
+      clientX: 180,
+      clientY: rowCenterY(navIds().indexOf("files")),
+    });
+    fireEvent.pointerMove(window, {
+      pointerId: 202,
+      pointerType: "mouse",
+      clientX: 180,
+      clientY: 2,
+    });
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
+    fireEvent.pointerUp(window, { pointerId: 202, pointerType: "mouse" });
+    expect(navIds()).toEqual(before);
+  });
+});
+
+describe("点击 × 隐藏入口", () => {
+  it("非当前页：立即从侧栏消失、不切页、写入 navigation_layout，隐藏后仍可被路由打开", async () => {
+    await renderShell();
+    await openTasks();
+    const filesRow = navList().querySelector<HTMLElement>('[data-nav-entry="files"]');
+    if (!filesRow) throw new Error("文件入口未渲染");
+    const hide = within(filesRow).getByRole("button", { name: "隐藏「文件工作区」导航入口" });
+    const before = navIds();
+
+    fireEvent.click(hide);
+
+    await waitFor(() => expect(navIds()).not.toContain("files"));
+    // 点击 × 不触发页面切换：仍在任务页。
+    expect(screen.getByTestId("tasks-panel")).toBeTruthy();
+    // 隐藏只移除目标入口，其余入口的相对顺序不变。
+    expect(navIds()).toEqual(before.filter((id) => id !== "files"));
+    await waitFor(() => expect(navWriteCalls()).toHaveLength(1));
+    expect(savedLeft()).not.toContain("files");
+    expect(savedLeft()).toEqual([...navIds(), "settings"]);
+    expect(await screen.findByText(/已隐藏「文件工作区」/)).toBeTruthy();
+
+    // 隐藏 ≠ 删除：逻辑 Tab 仍可被快捷键/通知/深链打开。
+    act(() => useUiStore.getState().setTab("files"));
+    expect(useUiStore.getState().tab).toBe("files");
+  });
+
+  it("固定入口（首页 / 设置 / 更多）没有隐藏按钮；分组标题也没有", async () => {
+    await renderShell();
+    const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
+    for (const button of [
+      within(nav).getByRole("button", { name: "工作台首页" }),
+      within(nav).getByRole("button", { name: "设置" }),
+      within(nav).getByRole("button", { name: "更多功能入口" }),
+    ]) {
+      expect(button.querySelector("[data-nav-hide]")).toBeNull();
+      expect(button.querySelector("[data-nav-grip]")).toBeNull();
+    }
+    expect(
+      document.querySelectorAll(".wb-nav-group [data-nav-hide]"),
+    ).toHaveLength(0);
+    // 每个可排序入口都有独立的 ×，且不与手柄合并。
+    for (const row of navRows()) {
+      expect(row.querySelector("[data-nav-grip]")).toBeTruthy();
+      expect(row.querySelector("[data-nav-hide]")).toBeTruthy();
+    }
+  });
+
+  it("隐藏当前页走未保存门禁：取消不写配置不丢页面，确认后才隐藏并切到安全页", async () => {
+    await renderShell();
+    await openTasks();
+    const tasksRow = navList().querySelector<HTMLElement>('[data-nav-entry="tasks"]');
+    if (!tasksRow) throw new Error("任务入口未渲染");
+    const hide = within(tasksRow).getByRole("button", { name: "隐藏「任务」导航入口" });
+
+    const unregister = registerTabGuard({
+      id: "test-task-editor",
+      label: () => "任务草稿",
+      isDirty: () => true,
+      isBusy: () => false,
+      discard: vi.fn(),
+    });
+    try {
+      fireEvent.click(hide);
+      expect(await screen.findByText(/有未保存的修改/)).toBeTruthy();
+      expect(navIds()).toContain("tasks");
+      expect(useUiStore.getState().tab).toBe("tasks");
+      expect(navWriteCalls()).toHaveLength(0);
+
+      fireEvent.click(screen.getByRole("button", { name: "继续编辑" }));
+      expect(navIds()).toContain("tasks");
+      expect(screen.getByTestId("tasks-panel")).toBeTruthy();
+      expect(navWriteCalls()).toHaveLength(0);
+
+      fireEvent.click(hide);
+      expect(await screen.findByText(/有未保存的修改/)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "放弃修改并切换" }));
+
+      await waitFor(() => expect(navIds()).not.toContain("tasks"));
+      await waitFor(() => expect(savedLeft()).not.toContain("tasks"));
+      expect(useUiStore.getState().tab).toBe("workbench");
+    } finally {
+      unregister();
+    }
+  });
+
+  it("设置页同步：侧栏 × 隐藏后开关为关，重新开启后侧栏入口恢复", async () => {
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    stubNavGeometry();
+    render(<NavigationVisibilitySection />);
+
+    const filesRow = navList().querySelector<HTMLElement>('[data-nav-entry="files"]');
+    if (!filesRow) throw new Error("文件入口未渲染");
+    fireEvent.click(
+      within(filesRow).getByRole("button", { name: "隐藏「文件工作区」导航入口" }),
+    );
+    await waitFor(() => expect(navIds()).not.toContain("files"));
+
+    const toggle = screen.getByRole("switch", { name: "文件工作区导航入口显示" }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(navIds()).toContain("files"));
+    expect(savedLeft()).toContain("files");
+    expect(navIds()).toEqual(
+      defaultNavigationLayout().left.filter((id) => id !== "settings"),
+    );
+  });
+
+  it("重新挂载后隐藏状态从 SQLite 配置保留", async () => {
+    const first = render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    stubNavGeometry();
+    const filesRow = navList().querySelector<HTMLElement>('[data-nav-entry="files"]');
+    if (!filesRow) throw new Error("文件入口未渲染");
+    fireEvent.click(
+      within(filesRow).getByRole("button", { name: "隐藏「文件工作区」导航入口" }),
+    );
+    await waitFor(() => expect(navIds()).not.toContain("files"));
+    first.unmount();
+
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    expect(navIds()).not.toContain("files");
+    expect(savedLeft()).not.toContain("files");
+  });
+
+  it("快速拖拽后立即隐藏：隐藏写入不覆盖排序，迟到写入也不会把已隐藏入口带回来", async () => {
+    await renderShell();
+
+    dragNavRowBefore("files", "workspace");
+    const clipboardRow = navList().querySelector<HTMLElement>('[data-nav-entry="clipboard"]');
+    if (!clipboardRow) throw new Error("剪贴板入口未渲染");
+    fireEvent.click(
+      within(clipboardRow).getByRole("button", { name: "隐藏「剪贴板」导航入口" }),
+    );
+
+    await waitFor(() => expect(savedLeft()).not.toContain("clipboard"), { timeout: 3000 });
+    expect(savedLeft().indexOf("files")).toBe(savedLeft().indexOf("workspace") - 1);
+    const finalOrder = [...navIds(), "settings"];
+    expect(savedLeft()).toEqual(finalOrder);
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 450));
+    });
+    expect(savedLeft()).toEqual(finalOrder);
+    expect(savedLeft()).not.toContain("clipboard");
   });
 });

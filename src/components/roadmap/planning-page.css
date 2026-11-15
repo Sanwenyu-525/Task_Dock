@@ -38,3 +38,266 @@
 .planning-panel .planning-view-bar .planning-view-project {
   margin-left: auto;
 }
+
+/* ── 第三轮：四张核心摘要 / 左侧里程碑 / 右栏本期规划 ── */
+.planning-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.planning-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  box-shadow: var(--card-shadow);
+}
+
+.planning-summary-card.is-success .planning-summary-value {
+  color: var(--status-success);
+}
+
+.planning-summary-card.is-running .planning-summary-value {
+  color: var(--status-waiting);
+}
+
+/* 空项目时「添加功能」不应拉成整行主色条；保持局部操作尺寸。 */
+.planning-panel .planning-overall > .btn {
+  align-self: flex-start;
+  width: auto;
+}
+
+.planning-summary-label {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.planning-summary-value {
+  font-size: 24px;
+  line-height: 1.05;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 1180 带右栏时中央内容只剩 ~620px：四张卡挤在一行会把副标题截断，
+   改为 2×2 等权排列；1600/1366 仍是四列。 */
+@container wb-content (max-width: 780px) {
+  .planning-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.planning-summary-sub {
+  overflow: hidden;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 左栏在项目列表下追加里程碑：与项目列表共用同一滚动区，避免第二条独立滚动。 */
+.planning-side-milestones {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 7px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.planning-side-empty {
+  margin: 0;
+  padding: 2px 4px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.planning-side-add {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.planning-side-add:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
+}
+
+.planning-side-milestone-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.planning-side-milestone {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 6px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface-raised) 55%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.planning-side-milestone:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-raised));
+}
+
+.planning-side-milestone-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.planning-side-milestone-name {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.planning-side-milestone-date,
+.planning-side-milestone-meta {
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-side-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+/* 右栏本期规划：状态/项目名/目标日期 + 事实表 + 进度 + 里程碑摘要。 */
+.planning-rail-project {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.planning-rail-project strong {
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.planning-rail-project span {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+
+.planning-rail-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 8px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.planning-rail-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.planning-rail-progress-head strong {
+  color: var(--accent);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.planning-rail-progress p {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.planning-rail-milestones h4 {
+  margin: 10px 0 5px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.planning-rail-milestones ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.planning-rail-milestones li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border-subtle);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+.planning-rail-milestones li em {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+@container planning (max-width: 620px) {
+  .planning-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+

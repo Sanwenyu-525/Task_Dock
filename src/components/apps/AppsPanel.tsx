@@ -24,11 +24,12 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
-  AlertTriangle, FolderOpen, LayoutGrid, Link2, Loader2, MoreHorizontal, OctagonX, Pencil, Plus,
+  AlertTriangle, ArrowRight, FolderOpen, Info, LayoutGrid, Link2, Loader2, MoreHorizontal, OctagonX, Pencil, Plus,
   Power, RefreshCw, SquareX, Star, Trash2, EyeOff, Eye, X,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import { WorkbenchPageDetail, WorkbenchDetailFacts } from "../../workbench/pageDetail";
 import { useNavigationStore, type RefreshOutcome } from "../../store/useNavigationStore";
 import { errorMessage, normalizeError } from "../../lib/errors";
 import {
@@ -90,6 +91,10 @@ export default function AppsPanel() {
 
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<AppFilter>("all");
+  /** 组合场景：按真实 `category` 过滤；null = 不启用场景。 */
+  const [sceneCategory, setSceneCategory] = useState<string | null>(null);
+  /** 右栏详情只由显式「查看详情」触发，不让 hover/启动抢用户当前上下文。 */
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [runningStates, setRunningStates] = useState<Record<string, string>>({});
   const [statesError, setStatesError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -174,6 +179,41 @@ export default function AppsPanel() {
         (t.target_type === "url" || t.target_type === "directory" || t.target_type === "file"),
     ),
     [targets, removedIds],
+  );
+  /**
+   * 「最近使用」来自后端维护的 `last_used_at`，不按本地点击次数编造。
+   * 只在「全部」视图且无搜索/场景时作为轻量快捷区出现，不重复整张应用网格。
+   */
+  const recentApps = useMemo(
+    () =>
+      apps
+        .filter((t) => !!t.last_used_at)
+        .sort((a, b) => (b.last_used_at ?? "").localeCompare(a.last_used_at ?? ""))
+        .slice(0, 4),
+    [apps],
+  );
+  /**
+   * 「组合场景」是已保存应用按真实 `category` 的分组，不是新造的运行场景，
+   * 也不新增批量启动能力；点击只把网格筛选到该分类，属于可解释的真实操作。
+   */
+  const appScenes = useMemo(() => {
+    const byCategory = new Map<string, NavTarget[]>();
+    for (const app of apps) {
+      const category = app.category?.trim();
+      if (!category) continue;
+      const list = byCategory.get(category) ?? [];
+      list.push(app);
+      byCategory.set(category, list);
+    }
+    return [...byCategory.entries()]
+      .filter(([, list]) => list.length >= 2)
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, 4)
+      .map(([category, list]) => ({ category, count: list.length, first: list[0] }));
+  }, [apps]);
+  const selectedApp = useMemo(
+    () => apps.find((app) => app.id === selectedId) ?? null,
+    [apps, selectedId],
   );
   // 目标集合变化才重新查询运行态（无定时器、无轮询）
   const appIdsKey = apps.map((a) => a.id).join(",");
@@ -263,6 +303,9 @@ export default function AppsPanel() {
         .map((s) => byId.get(s.key))
         .filter((t): t is NavTarget => !!t);
     }
+    if (sceneCategory) {
+      list = list.filter((t) => t.category?.trim() === sceneCategory);
+    }
     if (filter === "favorite") {
       list = sortTargetsForDisplay(list.filter((t) => t.favorite), { favorite: false });
     } else if (filter === "recent") {
@@ -281,7 +324,7 @@ export default function AppsPanel() {
         .map((entry) => entry.app);
     }
     return list;
-  }, [apps, query, filter, runningStates, displayGrid]);
+  }, [apps, query, filter, runningStates, displayGrid, sceneCategory]);
 
   const visibleExtras = useMemo(() => {
     const byId = new Map(extras.map((t) => [t.id, t]));
@@ -579,6 +622,16 @@ export default function AppsPanel() {
   /** 次要操作统一走菜单，避免每个网格堆一排按钮。 */
   function menuItems(t: NavTarget) {
     return [
+      ...(t.target_type === "application"
+        ? [
+            {
+              key: "detail",
+              label: "查看详情",
+              icon: <Info size={12} aria-hidden="true" />,
+              onSelect: () => setSelectedId(t.id),
+            },
+          ]
+        : []),
       {
         key: "edit",
         label: "编辑配置",
@@ -969,6 +1022,18 @@ export default function AppsPanel() {
         </div>
         {/* 搜索与刷新作为一组换行：避免只剩刷新图标单独占一行 */}
         <div className="apps-search-row">
+          {sceneCategory && (
+            <span className="apps-scene-active">
+              场景：{sceneCategory}
+              <button
+                type="button"
+                onClick={() => setSceneCategory(null)}
+                aria-label="清除组合场景筛选"
+              >
+                <X size={11} aria-hidden="true" />
+              </button>
+            </span>
+          )}
           <SearchField
             className="apps-search"
             size="compact"
@@ -991,6 +1056,98 @@ export default function AppsPanel() {
       </div>
 
       <div className="page-scroll apps-body">
+        {/* 组合场景与最近使用都用真实数据：分类来自已保存目标，最近来自 last_used_at。
+            这里只做筛选与再次启动，不新增无后端契约的「批量场景运行」。 */}
+        {targetsLoaded && !noAppsAtAll && filter === "all" && !query.trim() && (
+          <div className={`apps-quick-sections ${appScenes.length === 0 ? "is-single" : ""}`}>
+            {appScenes.length > 0 ? (
+              <section className="apps-scene-section" aria-label="组合场景">
+                <div className="apps-quick-head">
+                  <h3>组合场景</h3>
+                  <span>按应用分类整理，点击筛选当前网格</span>
+                </div>
+                <div className="apps-scene-grid">
+                  {appScenes.map((scene) => (
+                    <button
+                      key={scene.category}
+                      type="button"
+                      className={`apps-scene-card ${sceneCategory === scene.category ? "is-active" : ""}`}
+                      aria-pressed={sceneCategory === scene.category}
+                      onClick={() =>
+                        setSceneCategory((current) =>
+                          current === scene.category ? null : scene.category,
+                        )
+                      }
+                    >
+                      <AppIcon
+                        targetId={scene.first.id}
+                        name={scene.first.display_name}
+                        size={22}
+                        enabled
+                      />
+                      <span className="apps-scene-text">
+                        <strong>{scene.category}</strong>
+                        <em>{scene.count} 个应用</em>
+                      </span>
+                      <ArrowRight size={13} aria-hidden="true" />
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : (
+              <section className="apps-scene-section is-empty" aria-label="组合场景">
+                <div className="apps-quick-head">
+                  <h3>组合场景</h3>
+                  <span>真实分类，不生成演示分组</span>
+                </div>
+                <p className="apps-scene-empty">
+                  同一分类下至少有 2 个应用时才会自动成组；当前 {apps.length} 个应用分属不同分类。
+                </p>
+              </section>
+            )}
+
+            {recentApps.length > 0 && (
+              <section className="apps-recent-section" aria-label="最近使用">
+                <div className="apps-quick-head">
+                  <h3>最近使用</h3>
+                  <span>来自真实启动记录</span>
+                </div>
+                <ul className="apps-recent-list">
+                  {recentApps.map((app) => (
+                    <li key={app.id}>
+                      <button
+                        type="button"
+                        className="apps-recent-item"
+                        onClick={() => void launch(app)}
+                        disabled={launchingIds.has(app.id)}
+                        aria-label={`再次打开 ${app.display_name}`}
+                      >
+                        <AppIcon
+                          targetId={app.id}
+                          name={app.display_name}
+                          size={20}
+                          enabled
+                        />
+                        <span className="apps-recent-name">{app.display_name}</span>
+                        <span className="apps-recent-time">
+                          {app.last_used_at
+                            ? new Date(app.last_used_at).toLocaleDateString("zh-CN")
+                            : ""}
+                        </span>
+                        {launchingIds.has(app.id) ? (
+                          <Loader2 size={12} className="spin" aria-hidden="true" />
+                        ) : (
+                          <ArrowRight size={12} aria-hidden="true" />
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+          </div>
+        )}
+
         {editing && (
           <TargetEditForm
             key={editing.id}
@@ -1082,6 +1239,86 @@ export default function AppsPanel() {
           </section>
         )}
       </div>
+
+      {/* 选中应用的右栏详情：显式从「⋯ → 查看详情」进入；启动仍走真实 Router，
+          路径/运行态/使用次数全部来自 NavTarget 与后端运行态查询。 */}
+      {selectedApp && (
+        <WorkbenchPageDetail
+          title="应用详情"
+          actions={
+            <button
+              type="button"
+              className="icon-btn sm"
+              aria-label="关闭应用详情"
+              data-tip="关闭详情"
+              onClick={() => setSelectedId(null)}
+            >
+              <X size={13} aria-hidden="true" />
+            </button>
+          }
+        >
+          <div className="apps-rail-hero">
+            <AppIcon
+              targetId={selectedApp.id}
+              name={selectedApp.display_name}
+              size={44}
+              enabled={selectedApp.target_type === "application"}
+            />
+            <div className="apps-rail-title">
+              <strong>{selectedApp.display_name}</strong>
+              <span>{selectedApp.category || "未分类"}</span>
+            </div>
+          </div>
+          <WorkbenchDetailFacts
+            rows={[
+              {
+                label: "运行状态",
+                value: isTargetRunning(runningStates, selectedApp.id)
+                  ? stateBadge(runningStates[selectedApp.id])?.label ?? "运行中"
+                  : runningStates[selectedApp.id] === "unavailable"
+                    ? "状态不可用"
+                    : "未运行",
+              },
+              { label: "程序路径", value: selectedApp.exe_path || selectedApp.path || "未配置" },
+              { label: "启动参数", value: selectedApp.launch_args || "无" },
+              { label: "收藏", value: selectedApp.favorite ? "已收藏" : "未收藏" },
+              { label: "使用次数", value: `${selectedApp.use_count} 次` },
+              {
+                label: "最近使用",
+                value: selectedApp.last_used_at
+                  ? selectedApp.last_used_at.replace("T", " ").slice(0, 16)
+                  : "暂无记录",
+              },
+            ]}
+          />
+          <div className="apps-rail-actions">
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={launchingIds.has(selectedApp.id)}
+              onClick={() => void launch(selectedApp)}
+            >
+              {launchingIds.has(selectedApp.id) ? (
+                <Loader2 size={12} className="spin" aria-hidden="true" />
+              ) : (
+                <Power size={12} aria-hidden="true" />
+              )}
+              启动 / 切换
+            </button>
+            {runningStates[selectedApp.id] === "has_window" && (
+              <button
+                type="button"
+                className="btn sm"
+                disabled={closingIds.has(selectedApp.id)}
+                onClick={() => void closeWindows(selectedApp)}
+              >
+                <SquareX size={12} aria-hidden="true" />
+                关闭窗口
+              </button>
+            )}
+          </div>
+        </WorkbenchPageDetail>
+      )}
 
       <ConfirmDialog
         open={!!pendingLeave}

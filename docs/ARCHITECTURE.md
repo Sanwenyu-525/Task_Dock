@@ -1802,6 +1802,12 @@ unsupported`，字节与流落到 `data_dir/drag-incoming` 的暂存副本，前
 `WorkspaceApp` 收敛为「初始化 + 组合 `WorkbenchShell`」的薄入口，旧的项目列表/顶栏 JSX
 不再作为第二套导航外壳存在。
 
+`workspace` 窗口 `decorations(false)`，顶栏本身就是它的标题栏：品牌 + 工作空间选择 +
+搜索 + 快速创建 + 右栏开关 + 明暗主题菜单 + 窗口按钮。其中明暗主题入口
+（`src/workbench/WorkbenchThemeMenu.tsx`，2026-11-15）与主窗口标题栏的「明暗」菜单同一语义，
+写库走 `useSettingsStore.update({ theme })`——Rust 更新成功后广播 `theme-changed`，
+主窗口、右键菜单与胶囊同步应用，不新增第二套主题管道。
+
 ### 2. 单一导航注册中心
 
 工作台左侧导航、主窗口完整面板与胶囊轨道都使用 `src/lib/navigationRegistry.ts`：

@@ -28,6 +28,21 @@ import {
   type NotificationRow,
 } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
+
+/** 右栏时间用本地可读格式；原始 ISO 只保留给接口/日志，不直接暴露给用户。 */
+function formatHistoryTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
 import SearchField from "../ui/SearchField";
 import {
   WorkbenchDetailFacts,
@@ -453,6 +468,9 @@ export default function HistoryPanel() {
             ? `已加载记录中匹配 ${total} 条`
             : tr("history.unread", { unread, total: inboxTotal })}
         </span>
+        <span className="history-scope-hint" data-tip="历史接口暂无全库全文检索；搜索只匹配已加载到前端的记录">
+          搜索仅限已加载
+        </span>
       </div>
 
       {hasNew && (
@@ -576,7 +594,7 @@ export default function HistoryPanel() {
                         )}
                         <WorkbenchDetailFacts
                           rows={[
-                            { label: "发生时间", value: e.iso },
+                            { label: "发生时间", value: formatHistoryTime(e.iso) },
                             { label: "事件来源", value: e.source },
                             {
                               label: "事件类型",

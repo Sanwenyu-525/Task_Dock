@@ -1,4 +1,10 @@
-//! 真实可用物理内存采样与准入判定。
+//! 真实可用物理内存采样（**仅用于观测**：写入 history / status 展示，不参与任何准入判定）。
+//!
+//! 2026-11-15：原先的「实时可用内存门槛」（约束 A：门槛 = max(分类下限, 预计峰值) + 滞回）
+//! 已按用户要求**整体删除**。当前调度器只有两条约束：
+//!   1) 分类槽位并发（heavy/medium 各 1、light/dev 各 2）；
+//!   2) 跨分类全局预算（reservations 台账，见 budget.mjs）。
+//! 可用内存读数保留下来，因为它对事后复盘 OOM 仍然有用。
 //!
 //! 采样：`os.freemem()` 在 Windows 上取 `GlobalMemoryStatusEx().ullAvailPhys`
 //! （可用物理内存，含待机列表），`os.totalmem()` 取 `ullTotalPhys`。
@@ -85,13 +91,6 @@ export function createMemorySampler({ intervalMs, env = process.env, keep = 20 }
   };
 }
 
-export function memoryFloorForClass(cfg, taskClass) {
-  if (taskClass === "heavy") return cfg.heavyMinAvailMb;
-  if (taskClass === "medium") return cfg.mediumMinAvailMb;
-  if (taskClass === "dev") return cfg.mediumMinAvailMb;
-  return cfg.lightMinAvailMb;
-}
-
 export function estimateForClass(cfg, taskClass) {
   if (taskClass === "heavy") return cfg.estimateHeavyMb;
   if (taskClass === "medium") return cfg.estimateMediumMb;
@@ -111,67 +110,3 @@ export function formatMb(mb) {
   return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.round(mb)} MB`;
 }
 
-/** 约束 A 总闸：`false` = 完全不按实时可用内存准入（默认 true）。 */
-export function isMemoryAdmissionEnabled(cfg) {
-  return cfg?.memoryAdmissionEnabled !== false;
-}
-
-/**
- * 准入判定。
- *
- * 只按「当前可用物理内存 + 已占槽位 + 本任务预计峰值」判断，不做任务计数式放行：
- *   - 已运行任务的真实占用**已经体现在可用内存读数里**，因此不重复叠加它们的预计峰值
- *     （否则 16GB 机器上第二、三个任务会被重复扣减而永久无法启动）；
- *   - 预计峰值用于：本任务自身的准入下限（`max(分类下限, 本任务峰值)`）与等待原因解释。
- *   - 曾在内存不足上等待过的任务，恢复时需要多满足 hysteresisMb，避免在阈值附近抖动。
- *
- * @returns {{admit:boolean, reason:string, floorMb:number, availMb:number, deficits:string[]}}
- */
-export function evaluateMemoryAdmission({ cfg, taskClass, mem, memoryWaitSeen = false, estimateOverrideMb = null }) {
-  const effectiveAvail = mem.availMb - cfg.safetyReserveMb;
-  // 总闸关闭：约束 A 直接放行。槽位并发、优先级排队与全局预算（约束 B）仍由别的模块执行，
-  // 所以这里不能顺带把那条路径也放开（否则就是"一个开关拆掉全部安全边界"）。
-  if (!isMemoryAdmissionEnabled(cfg)) {
-    return {
-      admit: true, floorMb: 0, availMb: effectiveAvail, simulated: mem.simulated,
-      deficits: [], bypassed: true,
-      reason: `内存准入门槛已关闭（memoryAdmissionEnabled=false）：可用 ${formatMb(effectiveAvail)}` +
-        " 不参与准入判定，仍受分类槽位与全局预算约束",
-    };
-  }
-  const floor = memoryFloorForClass(cfg, taskClass);
-  const estimate = estimateOverrideMb === null ? estimateForClass(cfg, taskClass) : estimateOverrideMb;
-  const hysteresis = memoryWaitSeen ? cfg.hysteresisMb : 0;
-  const required = Math.max(floor, estimate) + hysteresis;
-  const deficits = [];
-  if (effectiveAvail < required) {
-    deficits.push(
-      `可用内存 ${formatMb(effectiveAvail)} < ${taskClass} 任务门槛 ${formatMb(required)}` +
-      `（分类下限 ${formatMb(floor)}、预计峰值 ${formatMb(estimate)}、滞回 ${formatMb(hysteresis)}）`,
-    );
-  }
-  const ok = deficits.length === 0;
-  const simTag = mem.simulated ? "（模拟值）" : "";
-  return {
-    admit: ok,
-    floorMb: required,
-    availMb: effectiveAvail,
-    simulated: mem.simulated,
-    deficits,
-    reason: ok
-      ? `可用内存 ${formatMb(effectiveAvail)}${simTag} ≥ ${formatMb(required)}`
-      : `内存不足${simTag}：${deficits.join("；")}`,
-  };
-}
-
-/** 全系统压力等级，用于 status 展示与「压力期暂停准入」提示。 */
-export function pressureLevel(cfg, mem) {
-  if (!isMemoryAdmissionEnabled(cfg)) {
-    return { level: "disabled", text: "内存准入已关闭（可用内存仅作展示，不参与准入；排队/槽位/全局预算照常）" };
-  }
-  const avail = mem.availMb;
-  if (avail < cfg.lightMinAvailMb) return { level: "critical", text: "紧张：低于轻量任务门槛，新任务全部等待" };
-  if (avail < cfg.mediumMinAvailMb) return { level: "elevated", text: "偏高：仅可准入轻量任务" };
-  if (avail < cfg.heavyMinAvailMb) return { level: "moderate", text: "中等：可准入轻量/中型，重型等待" };
-  return { level: "normal", text: "正常：重型任务可准入" };
-}

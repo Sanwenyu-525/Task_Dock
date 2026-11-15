@@ -26,6 +26,7 @@ import {
 } from "../../lib/bridge";
 import { usePlanningStore } from "../../store/usePlanningStore";
 import { useUiStore } from "../../store/useUiStore";
+import { WorkbenchPageDetail, WorkbenchDetailFacts } from "../../workbench/pageDetail";
 import { ProjectEditorView } from "./PlanningEditors";
 import { PlanningActivityRow } from "./PlanningFeatureCard";
 import { PlanningProgressBar, findScrollParent } from "./PlanningBits";
@@ -50,6 +51,8 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
   const selectProject = usePlanningStore((s) => s.selectProject);
   const archiveProject = usePlanningStore((s) => s.archiveProject);
   const deleteProject = usePlanningStore((s) => s.deleteProject);
+  const milestones = usePlanningStore((s) => s.milestones);
+  const milestonesLoading = usePlanningStore((s) => s.milestonesLoading);
   const activity = usePlanningStore((s) => s.activity);
   const activityHasMore = usePlanningStore((s) => s.activityHasMore);
   const activityLoading = usePlanningStore((s) => s.activityLoading);
@@ -73,6 +76,18 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
   );
   const archivedProjects = useMemo(() => projects.filter((p) => p.archived), [projects]);
   const activeProjects = useMemo(() => projects.filter((p) => !p.archived), [projects]);
+  /**
+   * 左侧里程碑只展示当前项目的真实记录；不补占位里程碑，也不从功能数量反推。
+   * 宽窗点击后进入里程碑视图；窄窗仍可从工具行的「里程碑」按钮进入。
+   */
+  const activeMilestones = useMemo(
+    () =>
+      milestones
+        .slice()
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .slice(0, 4),
+    [milestones],
+  );
 
   useEffect(() => {
     if (!activeProjectId || loadedForProject !== activeProjectId) return;
@@ -217,6 +232,65 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
             <button className="planning-project-add" onClick={() => openEditor(null)}>
               <Plus size={13} aria-hidden="true" /> 新建项目
             </button>
+
+            {/* 左侧在本期项目下直接列出里程碑，避免「项目总览」与「里程碑」
+                两个视图之间来回切换才能看到时间节点。数据缺失时只给入口。 */}
+            <section className="planning-side-milestones" aria-label="当前项目里程碑">
+              <div className="planning-project-list-head">
+                <span>里程碑</span>
+                <span className="planning-project-list-count">
+                  {activeProject ? milestones.length : 0}
+                </span>
+              </div>
+              {!activeProject ? (
+                <p className="planning-side-empty">先选择一个项目。</p>
+              ) : milestonesLoading && activeMilestones.length === 0 ? (
+                <p className="planning-side-empty">
+                  <Loader2 size={12} className="spin" aria-hidden="true" /> 加载里程碑…
+                </p>
+              ) : activeMilestones.length === 0 ? (
+                <button className="planning-side-add" onClick={onOpenMilestones}>
+                  <Flag size={12} aria-hidden="true" /> 新建首个里程碑
+                </button>
+              ) : (
+                <ul className="planning-side-milestone-list">
+                  {activeMilestones.map((m) => {
+                    const percent =
+                      m.feature_total > 0
+                        ? Math.round((m.feature_completed / m.feature_total) * 100)
+                        : 0;
+                    return (
+                      <li key={m.id}>
+                        <button
+                          className="planning-side-milestone"
+                          onClick={onOpenMilestones}
+                          aria-label={`查看里程碑 ${m.name}`}
+                        >
+                          <span className="planning-side-milestone-top">
+                            <span className="planning-side-milestone-name">{m.name}</span>
+                            <span className="planning-side-milestone-date">
+                              {m.target_date ?? "未设日期"}
+                            </span>
+                          </span>
+                          <span className="planning-side-milestone-meta">
+                            {m.feature_total > 0
+                              ? `${m.feature_completed}/${m.feature_total} 功能 · ${percent}%`
+                              : "尚未关联功能"}
+                          </span>
+                          {m.feature_total > 0 && <PlanningProgressBar value={percent} />}
+                        </button>
+                      </li>
+                    );
+                  })}
+                  {milestones.length > activeMilestones.length && (
+                    <button className="planning-side-more" onClick={onOpenMilestones}>
+                      查看其余 {milestones.length - activeMilestones.length} 个
+                      <ArrowRight size={12} aria-hidden="true" />
+                    </button>
+                  )}
+                </ul>
+              )}
+            </section>
           </aside>
 
           <section className="planning-project-main">
@@ -307,37 +381,37 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
                   </div>
                 </header>
 
-                <div className="planning-stat-grid" aria-label="项目概览">
-                  <div className="planning-stat-card">
-                    <span className="planning-stat-label">功能总数</span>
-                    <strong className="planning-stat-value">{stats.feature_total}</strong>
+                {/* 四张等权摘要：项目级关键决策信息优先，详细分布留在右栏与功能视图。
+                    无真实数据时保留 0，不用演示数字填充。 */}
+                <div className="planning-summary-grid" aria-label="项目概览">
+                  <div className="planning-summary-card">
+                    <span className="planning-summary-label">进行中项目</span>
+                    <strong className="planning-summary-value">{activeProjects.length}</strong>
+                    <span className="planning-summary-sub">共 {projects.length} 个项目</span>
                   </div>
-                  <div className="planning-stat-card tone-success">
-                    <span className="planning-stat-label">已完成</span>
-                    <strong className="planning-stat-value">{stats.feature_completed}</strong>
+                  <div className="planning-summary-card">
+                    <span className="planning-summary-label">功能总数</span>
+                    <strong className="planning-summary-value">{stats.feature_total}</strong>
+                    <span className="planning-summary-sub">
+                      {stats.has_features ? "已登记交付范围" : "尚未添加功能"}
+                    </span>
                   </div>
-                  <div className="planning-stat-card tone-running">
-                    <span className="planning-stat-label">开发中</span>
-                    <strong className="planning-stat-value">{stats.feature_in_progress}</strong>
+                  <div className="planning-summary-card is-success">
+                    <span className="planning-summary-label">已完成</span>
+                    <strong className="planning-summary-value">{stats.feature_completed}</strong>
+                    <span className="planning-summary-sub">
+                      {stats.has_features
+                        ? `${Math.round(stats.progress_percent)}% 完成率`
+                        : "等待第一条功能"}
+                    </span>
                   </div>
-                  <div className="planning-stat-card">
-                    <span className="planning-stat-label">待开发</span>
-                    <strong className="planning-stat-value">{stats.feature_planned}</strong>
+                  <div className="planning-summary-card is-running">
+                    <span className="planning-summary-label">开发中</span>
+                    <strong className="planning-summary-value">{stats.feature_in_progress}</strong>
+                    <span className="planning-summary-sub">
+                      待验收 {stats.feature_review} · 受阻 {stats.feature_blocked}
+                    </span>
                   </div>
-                  <div className="planning-stat-card tone-review">
-                    <span className="planning-stat-label">待验收</span>
-                    <strong className="planning-stat-value">{stats.feature_review}</strong>
-                  </div>
-                  <div className="planning-stat-card tone-danger">
-                    <span className="planning-stat-label">受阻</span>
-                    <strong className="planning-stat-value">{stats.feature_blocked}</strong>
-                  </div>
-                  {stats.feature_paused > 0 && (
-                    <div className="planning-stat-card">
-                      <span className="planning-stat-label">已暂停</span>
-                      <strong className="planning-stat-value">{stats.feature_paused}</strong>
-                    </div>
-                  )}
                 </div>
 
                 <div className="planning-overall">
@@ -409,6 +483,72 @@ export default function ProjectsView({ onOpenFeatures, onOpenMilestones }: Proje
             )}
           </section>
         </div>
+      )}
+
+      {/* 右栏「本期规划」：只读汇总当前项目真实统计、目标日期与里程碑；
+          编辑与功能维护仍在中央内容区，不把整页业务搬进右栏。 */}
+      {activeProject && stats && (
+        <WorkbenchPageDetail
+          title="本期规划"
+          actions={
+            <button className="btn sm subtle" onClick={onOpenMilestones}>
+              里程碑 <ArrowRight size={12} aria-hidden="true" />
+            </button>
+          }
+        >
+          <div className="planning-rail-project">
+            <span className={`planning-project-state s-${activeProject.status}`}>
+              {PLANNING_PROJECT_STATUS_LABELS[activeProject.status]}
+            </span>
+            <strong>{activeProject.name}</strong>
+            {activeProject.target_date ? (
+              <span>目标 {activeProject.target_date}</span>
+            ) : (
+              <span>未设置目标日期</span>
+            )}
+          </div>
+          <WorkbenchDetailFacts
+            rows={[
+              { label: "功能范围", value: `${stats.feature_total} 个功能` },
+              { label: "已完成", value: `${stats.feature_completed} 个` },
+              { label: "开发中", value: `${stats.feature_in_progress} 个` },
+              { label: "待验收", value: `${stats.feature_review} 个` },
+              { label: "受阻", value: `${stats.feature_blocked} 个` },
+              { label: "里程碑", value: `${milestones.length} 个` },
+              {
+                label: "下一节点",
+                value:
+                  activeMilestones.find((m) => m.target_date)?.target_date ??
+                  activeMilestones[0]?.name ??
+                  "尚未创建",
+              },
+            ]}
+          />
+          <div className="planning-rail-progress">
+            <div className="planning-rail-progress-head">
+              <span>整体完成率</span>
+              <strong>{stats.has_features ? `${Math.round(stats.progress_percent)}%` : "—"}</strong>
+            </div>
+            {stats.has_features ? (
+              <PlanningProgressBar value={stats.progress_percent} />
+            ) : (
+              <p>尚未添加功能。先登记交付范围，再拆分开发步骤。</p>
+            )}
+          </div>
+          {activeMilestones.length > 0 && (
+            <div className="planning-rail-milestones">
+              <h4>当前里程碑</h4>
+              <ul>
+                {activeMilestones.slice(0, 3).map((m) => (
+                  <li key={m.id}>
+                    <span>{m.name}</span>
+                    <em>{m.target_date ?? "未设日期"}</em>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </WorkbenchPageDetail>
       )}
 
       <ConfirmDialog
