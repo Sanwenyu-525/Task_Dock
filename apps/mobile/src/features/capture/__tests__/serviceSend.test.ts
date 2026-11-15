@@ -387,6 +387,19 @@ describe("仅重试暂存架（不重新上传文件）", () => {
     expect((await destinationState(asset.id, "shelf"))?.lastError ?? "").toContain("安全校验");
   });
 
+  it("成功但响应缺 shelf_item_id：shelf=failed，不能伪装 done", async () => {
+    const asset = await uploadedAsset();
+    remote.shelf = async (id: string) => remoteFile({ id, shelf_item_id: null });
+
+    const result = await retryShelfImport(asset, "f".repeat(32), null);
+
+    expect(result.state).toBe("failed");
+    expect(result.stopBatch).toBe(false);
+    expect(result.message).toContain("暂存架条目");
+    expect((await destinationState(asset.id, "desktop"))?.state).toBe("done");
+    expect((await destinationState(asset.id, "shelf"))?.state).toBe("failed");
+  });
+
   it("404 not_found：failed，提示记录不存在而不是升级桌面端", async () => {
     const asset = await uploadedAsset();
     remote.shelf = async () => {

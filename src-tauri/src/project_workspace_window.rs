@@ -60,6 +60,10 @@ fn next_dev_workbench_request_id() -> i64 {
 // 2. 最近一次已应用的几何指纹（半径/尺寸/DPI/最大化），参数没变就不重复
 //    调 SetWindowRgn（尺寸拖动时事件密集，避免逐帧重建区域）。
 static WORKBENCH_RADIUS_MILLI: AtomicU32 = AtomicU32::new(18_000);
+/// 角部曲线指数 ×1000：2 = 圆弧（默认，兼容口径），4 = 与 CSS
+/// `corner-shape: superellipse(4)` 对齐的连续圆角。由前端在确认 WebView2 支持后下发；
+/// 未下发时保持 2，绝不单方面把窗口切成超椭圆（会与 CSS 弧错位露白）。
+static WORKBENCH_CORNER_MILLI: AtomicU32 = AtomicU32::new(2_000);
 static WORKBENCH_FRAME_KEY: AtomicU64 = AtomicU64::new(0);
 
 /// 半径合法性：NaN/无穷回落默认预设值，其余夹到 0–40（与 `set_radius` 同口径）。
@@ -75,6 +79,17 @@ fn workbench_radius() -> f64 {
     WORKBENCH_RADIUS_MILLI.load(Ordering::Relaxed) as f64 / 1000.0
 }
 
+/// 角部曲线指数（2 = 圆弧，4 = 连续圆角）；非法值按 2 处理，理由同常量注释。
+fn workbench_corner() -> f64 {
+    let milli = WORKBENCH_CORNER_MILLI.load(Ordering::Relaxed);
+    let exponent = f64::from(milli) / 1000.0;
+    if exponent.is_finite() {
+        exponent.clamp(2.0, 6.0)
+    } else {
+        2.0
+    }
+}
+
 /// 窗口销毁时清空几何指纹（HWND 复用不会命中上一轮的「参数没变」判定）。
 fn reset_workbench_frame_state() {
     WORKBENCH_FRAME_KEY.store(0, Ordering::Relaxed);
@@ -85,19 +100,34 @@ fn effective_workbench_radius(radius: f64, maximized: bool) -> f64 {
     if maximized { 0.0 } else { radius }
 }
 
-/// 几何指纹：同一窗口在半径/尺寸/DPI/最大化状态都没变时返回同一个值。
+/// 几何指纹：同一窗口在半径/尺寸/DPI/最大化状态/角部曲线都没变时返回同一个值。
 fn frame_key(radius: f64, width: u32, height: u32, scale: f64, maximized: bool) -> u64 {
+    frame_key_with_corner(radius, 2.0, width, height, scale, maximized)
+}
+
+/// 带角部曲线的几何指纹。bit61 记录「是否连续圆角」：切换曲线必须重建区域，
+/// 否则会保留上一形态的支撑像素（圆角与超椭圆在角部相差 8–9 物理像素）。
+fn frame_key_with_corner(
+    radius: f64,
+    corner: f64,
+    width: u32,
+    height: u32,
+    scale: f64,
+    maximized: bool,
+) -> u64 {
     let radius_milli = (radius * 1000.0).round().clamp(0.0, 40_000.0) as u64;
     let scale_milli = if scale.is_finite() && scale > 0.0 {
         (scale * 1000.0).round() as u64
     } else {
         1000
     };
+    let squircle = (corner.is_finite() && corner > 2.5) as u64;
     (radius_milli & 0xFFFF)
         | ((width as u64 & 0xFFFF) << 16)
         | ((height as u64 & 0xFFFF) << 32)
         | ((scale_milli & 0xFFF) << 48)
         | ((maximized as u64) << 60)
+        | (squircle << 61)
 }
 
 
@@ -816,15 +846,21 @@ fn save_geometry(app: &AppHandle, win: &WebviewWindow, force: bool) {
 fn sync_workbench_frame(win: &WebviewWindow) -> bool {
     let maximized = win.is_maximized().unwrap_or(false);
     let radius = effective_workbench_radius(workbench_radius(), maximized);
+    let corner = workbench_corner();
     let size = win
         .outer_size()
         .unwrap_or(PhysicalSize { width: 0, height: 0 });
     let scale = win.scale_factor().unwrap_or(1.0);
-    let key = frame_key(radius, size.width, size.height, scale, maximized);
+    let key = frame_key_with_corner(radius, corner, size.width, size.height, scale, maximized);
     if WORKBENCH_FRAME_KEY.load(Ordering::Relaxed) == key {
         return true;
     }
-    let applied = crate::window_shape::apply_with_radius(win, radius);
+    // 最大化时半径归零，指数无意义；非最大化时按前端确认过的曲线指数裁剪。
+    let applied = if maximized {
+        crate::window_shape::apply_with_radius(win, radius)
+    } else {
+        crate::window_shape::apply_with_corner_profile(win, radius, corner)
+    };
     // 失败时清掉指纹：下次事件（尺寸/DPI/显示）必须重试，不能停在旧区域
     WORKBENCH_FRAME_KEY.store(if applied { key } else { 0 }, Ordering::Relaxed);
     applied
@@ -837,6 +873,27 @@ pub fn set_workspace_window_radius(app: AppHandle, radius: f64) -> AppResult<boo
     let clamped = clamp_workbench_radius(radius);
     WORKBENCH_RADIUS_MILLI.store((clamped * 1000.0).round() as u32, Ordering::Relaxed);
     WORKBENCH_FRAME_KEY.store(0, Ordering::Relaxed);
+    let win = app
+        .get_webview_window(WINDOW_LABEL)
+        .ok_or_else(|| AppError::Agent("工作台窗口不存在".into()))?;
+    Ok(sync_workbench_frame(&win))
+}
+
+/// 前端在确认 WebView2 支持 `corner-shape` 后下发角部曲线指数（4 = 连续圆角）。
+/// `corner = None` 表示"保持当前"；传 2 表示明确退回圆弧（能力检测失败时的降级）。
+/// 与半径分开成两个命令，是为了让不支持 `corner-shape` 的运行时只降级曲线，
+/// 半径仍然按预设生效（不会把圆角一起丢掉）。
+#[tauri::command]
+pub fn set_workspace_window_corner(app: AppHandle, corner: Option<f64>) -> AppResult<bool> {
+    if let Some(value) = corner {
+        let exponent = if value.is_finite() {
+            value.clamp(2.0, 6.0)
+        } else {
+            2.0
+        };
+        WORKBENCH_CORNER_MILLI.store((exponent * 1000.0).round() as u32, Ordering::Relaxed);
+        WORKBENCH_FRAME_KEY.store(0, Ordering::Relaxed);
+    }
     let win = app
         .get_webview_window(WINDOW_LABEL)
         .ok_or_else(|| AppError::Agent("工作台窗口不存在".into()))?;

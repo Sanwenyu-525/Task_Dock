@@ -326,7 +326,7 @@ function shelfFailureOf(error: unknown): {
 }
 
 type ShelfImportResult =
-  | { ok: true; shelfId: string | null }
+  | { ok: true; shelfId: string }
   | { ok: false; failure: TransferFailure; message: string };
 
 async function importRemoteToShelf(
@@ -338,6 +338,16 @@ async function importRemoteToShelf(
   try {
     const imported = await client.importToShelf(remote.id, groupId);
     const shelfId = imported.shelf_item_id ?? null;
+    // 桌面端只返回 200 但缺少 shelf_item_id 时不能写 done：手机端无法定位
+    // 托管副本，后续删除隔离/重试会变成假成功。按失败处理，保留上传成功的 desktop。
+    if (!shelfId) {
+      throw new AppError(
+        "validation",
+        "桌面端已接收文件，但未返回暂存架条目 ID；请刷新后重试",
+        undefined,
+        "invalid_response",
+      );
+    }
     await repo.setDestination(asset.id, "shelf", {
       state: "done",
       remoteId: remote.id,
@@ -796,15 +806,24 @@ export async function retryShelfImport(
   try {
     ({ client } = await openFileClient());
     const imported = await client.importToShelf(remoteId, shelfGroupId);
+    const remoteShelfId = imported.shelf_item_id ?? null;
+    if (!remoteShelfId) {
+      throw new AppError(
+        "validation",
+        "桌面端已接收文件，但未返回暂存架条目 ID；请刷新后重试",
+        undefined,
+        "invalid_response",
+      );
+    }
     await repo.setDestination(asset.id, "shelf", {
       state: "done",
       remoteId,
-      remoteShelfId: imported.shelf_item_id ?? null,
+      remoteShelfId,
     });
     return {
       state: "done",
       remoteId,
-      remoteShelfId: imported.shelf_item_id ?? null,
+      remoteShelfId,
       message: "已加入暂存架",
       stopBatch: false,
     };

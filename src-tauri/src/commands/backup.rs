@@ -3339,6 +3339,103 @@ mod tests {
         }
     }
 
+    /// 小说项目（v57 / 创作工作台 A 阶段）：`novel` 不得被备份过滤。
+    /// 完整与快速备份都必须包含项目、窗口实例、写作事项与任务关联；
+    /// 恢复到全新库后类型仍是 novel，计数与布局原样还原。
+    #[test]
+    fn novel_workspace_project_roundtrips_in_full_and_quick_backup() {
+        use crate::commands::project_workspace::{
+            workspace_instance_get_impl, workspace_instance_save_impl, workspace_item_list_impl,
+            workspace_item_save_impl, workspace_project_list_impl, workspace_project_save_impl,
+            workspace_task_link_add_impl, workspace_task_link_list_impl,
+        };
+
+        let db = memdb();
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id,title,description,priority,status,category,tags,advance_minutes,created_at,updated_at)
+                 VALUES ('t-novel','写第一章','',2,'pending','','[]',0,?1,?1)",
+                rusqlite::params![now],
+            )?;
+            Ok::<_, crate::error::AppError>(())
+        })
+        .unwrap();
+
+        let project = workspace_project_save_impl(
+            &db,
+            None,
+            "小说备份".into(),
+            "novel".into(),
+            Some("C:/novel".into()),
+            None,
+            Some("简介".into()),
+        )
+        .unwrap();
+        workspace_instance_save_impl(
+            &db,
+            &project.id,
+            "items".into(),
+            Some(
+                r#"{"version":1,"moduleOrder":["items","overview"],"hiddenModules":[],"activeModule":"items"}"#
+                    .into(),
+            ),
+        )
+        .unwrap();
+        workspace_item_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            None,
+            "第一章".into(),
+            Some("chapter".into()),
+            Some("doing".into()),
+            Some(0),
+            Some(r#"{"words":1200}"#.into()),
+        )
+        .unwrap();
+        workspace_task_link_add_impl(&db, &project.id, "t-novel").unwrap();
+
+        for kind in [BackupKind::Full, BackupKind::Quick] {
+            let (_, read, dir) = write_then_read(&db, kind);
+            for table in [
+                "workspace_projects",
+                "workspace_instances",
+                "workspace_items",
+                "workspace_task_links",
+            ] {
+                assert_eq!(
+                    spilled_rows(&read, table).len(),
+                    1,
+                    "{:?} 备份缺少 novel 项目数据（{}）",
+                    kind,
+                    table
+                );
+            }
+
+            let dst = memdb();
+            import_read(&dst, &read).unwrap();
+            let restored = workspace_project_list_impl(&dst, None).unwrap();
+            assert_eq!(restored.len(), 1, "{:?} 恢复后项目丢失", kind);
+            assert_eq!(restored[0].kind, "novel", "{:?} 恢复后类型必须仍是 novel", kind);
+            assert_eq!(restored[0].name, "小说备份");
+            assert_eq!(restored[0].note, "简介");
+            assert_eq!(restored[0].item_count, 1);
+            assert_eq!(restored[0].task_link_count, 1);
+
+            let instance = workspace_instance_get_impl(&dst, &restored[0].id).unwrap();
+            assert_eq!(instance.active_module, "items", "布局与当前模块必须还原");
+            assert_eq!(workspace_item_list_impl(&dst, &restored[0].id).unwrap().len(), 1);
+            assert_eq!(
+                workspace_task_link_list_impl(&dst, &restored[0].id).unwrap().len(),
+                1,
+                "{:?} 恢复后任务关联丢失",
+                kind
+            );
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
     /// 提醒联动（v41）：完整与快速备份都必须包含 task_reminder_links，
     /// 恢复到全新库后联动与目标名称可还原（label 在读取时重新解析）。
     #[test]

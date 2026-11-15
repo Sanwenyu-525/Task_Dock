@@ -9,13 +9,7 @@ import {
 } from "../../lib/bridge";
 import { openWorkbench } from "../../lib/workbenchNav";
 import type { WorkspaceProject } from "../../lib/bridge";
-
-const KIND_LABEL: Record<string, string> = {
-  development: "开发",
-  game: "游戏",
-  ai_comic: "AI 漫剧",
-  general: "通用",
-};
+import { resolveWorkspaceProfile } from "../../workspace/workspaceProfiles";
 
 export default function WorkspaceProjectsPanel() {
   const { t } = useLocale();
@@ -90,7 +84,7 @@ export default function WorkspaceProjectsPanel() {
           <li key={p.id} style={{ border: "1px solid var(--border, #ddd)", borderRadius: 8, padding: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <strong>{p.name}</strong>
-              <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7 }}>{KIND_LABEL[p.kind] ?? p.kind}</span>
+              <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7 }}>{resolveWorkspaceProfile(p.kind).label}</span>
               <div style={{ fontSize: 11, opacity: 0.7 }}>事项 {p.itemCount} · 关联 {p.taskLinkCount}</div>
             </div>
             <button className="btn sm" onClick={() => openWindow(p.id)}>打开</button>

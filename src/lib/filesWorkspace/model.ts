@@ -159,6 +159,48 @@ export function swapPaneWithSibling(node: SplitNode, paneId: string): SplitNode 
   };
 }
 
+/**
+ * 交换任意两个窗格的位置（叶节点互换，标签/导航状态随窗格 ID 不动）。
+ *
+ * 与 `swapPaneWithSibling` 的差别：这里支持跨层级、任意两区域交换——布局编辑模式
+ * 「把 A 拖到 D 的中心」必须让 A 与 D 互换显示位置，而不是新建窗格搬标签再删旧窗格
+ * （那会产生新窗格、丢失原窗格的活动标签与最大化状态，并触发额外的持久化写入）。
+ * 找不到目标或同一窗格时返回 null：调用方不得据此提示成功。
+ */
+export function swapPanes(node: SplitNode, a: string, b: string): SplitNode | null {
+  if (a === b) return null;
+  if (!hasPane(node, a) || !hasPane(node, b)) return null;
+  const walk = (cur: SplitNode): SplitNode => {
+    if (cur.type === "pane") {
+      if (cur.paneId === a) return { type: "pane", paneId: b };
+      if (cur.paneId === b) return { type: "pane", paneId: a };
+      return cur;
+    }
+    return { ...cur, first: walk(cur.first), second: walk(cur.second) };
+  };
+  return walk(node);
+}
+
+/**
+ * 相邻窗格（关闭区域时标签的默认转移目标）。
+ *
+ * 规则：沿 pane 到根的路径，取最近一层父分割的兄弟子树；pane 在 first 侧时取兄弟子树
+ * 的第一个窗格（视觉上紧随其后），在 second 侧时取最后一个窗格（视觉上紧邻其前）。
+ * 单窗格树返回 null（最后一个区域不可关闭，由 store 拒绝）。
+ */
+export function adjacentPaneId(node: SplitNode, paneId: string): string | null {
+  const path = pathToPane(node, paneId);
+  if (!path || path.length === 0) return null;
+  for (const parent of path) {
+    const inFirst = hasPane(parent.first, paneId);
+    const sibling = inFirst ? parent.second : parent.first;
+    const ids = paneIds(sibling);
+    if (ids.length === 0) continue;
+    return inFirst ? ids[0] : ids[ids.length - 1];
+  }
+  return null;
+}
+
 /** 窗格到根的路径（含自身）；用于渲染定位与分割线归属。 */
 export function pathToPane(node: SplitNode, paneId: string): SplitInner[] | null {
   if (node.type === "pane") return node.paneId === paneId ? [] : null;

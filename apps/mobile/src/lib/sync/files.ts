@@ -11,7 +11,7 @@
 
 import { decodeBase64, encodeBase64 } from "tweetnacl-util";
 
-import { AppError, isAppError, toAppError } from "../errors";
+import { AppError, describeError, isAppError, toAppError } from "../errors";
 
 import { loadConnection } from "../../db/syncConnection";
 
@@ -27,10 +27,18 @@ import {
   isFileCancelled,
 } from "./transferError";
 
-/** 分块请求可能比同步 JSON 慢，但仍需有界；超时后按退避重试。 */
+/** 传输类请求（创建/分块上传/分块下载/完成/删除）保持原有 30s × 3 次语义。 */
 const REQUEST_TIMEOUT_MS = 30_000;
 const RETRY_DELAYS_MS = [600, 1_500, 3_000] as const;
 const MAX_RETRIES = 3;
+
+/**
+ * 列表读取是只读探测：桌面端未运行时必须快速失败，落到页内错误态与重试入口，
+ * 不能跟着传输类请求一起等 30s。独立于 REQUEST_TIMEOUT_MS，不要复用。
+ */
+const LIST_TIMEOUT_MS = 9_000;
+/** 列表读取最多自动重试 1 次；TLS/授权/参数类不可重试错误按分类直接停止。 */
+const LIST_MAX_RETRIES = 1;
 
 export const AAD_FILES_LIST = "taskdock-sync-v1|GET|/v1/files";
 export const AAD_FILE_CREATE = "taskdock-sync-v1|POST|/v1/files";
@@ -89,6 +97,10 @@ export interface FileClientOptions {
   /** deriveSyncKey(token) 的结果；长度必须是 32 */
   syncKey: Uint8Array;
   fetchImpl?: FetchLike;
+  /** 列表读取超时（毫秒）；默认 9s，独立于传输类 30s 超时。 */
+  listTimeoutMs?: number;
+  /** 列表读取自动重试次数（首次尝试之外）；默认 1。 */
+  listMaxRetries?: number;
 }
 
 export interface FileClient {
@@ -104,9 +116,12 @@ export interface FileClient {
   shelfGroups(): Promise<RemoteShelfGroup[]>;
   /** 取消所有在途请求；取消后客户端仍可继续发起新请求（与同步客户端一致） */
   cancel(): void;
+  /** 只取消在途的列表读取；上传/下载等分块请求不受影响。 */
+  cancelList(): void;
 }
 
 interface ActiveOperation {
+  kind: "list" | "transfer";
   cancelled: boolean;
   controller: AbortController | null;
 }
@@ -231,6 +246,103 @@ function parseShelfGroups(value: unknown): RemoteShelfGroup[] {
   });
 }
 
+/** 列表读取失败后的页内错误分类：决定落哪种持久错误态与操作入口。 */
+export type ListErrorKind = "offline" | "repair" | "unpaired";
+
+export interface ListErrorState {
+  kind: ListErrorKind;
+  message: string;
+  /** true = 安全/授权类失败，普通重试无法恢复，必须走「重新配对」。 */
+  needsRepair: boolean;
+}
+
+/** 安全校验类错误码：与 transferError 的分类口径一致，这里只做列表页路由。 */
+const REPAIR_CODES = new Set(["tls_pin_mismatch", "tls_handshake", "insecure_transport"]);
+
+/**
+ * 把列表读取异常收敛成页内错误态。只依赖结构化信号（AppError code/kind、
+ * HTTP 状态码），不匹配中文文案；分类规则仍以 transferError.ts 为准。
+ */
+export function classifyListError(error: unknown): ListErrorState {
+  if (isAppError(error)) {
+    const code = error.code ?? "";
+    if (REPAIR_CODES.has(code)) {
+      return { kind: "repair", needsRepair: true, message: describeError(error) };
+    }
+    if (code === "not_paired") {
+      return { kind: "unpaired", needsRepair: false, message: "尚未配对，请先与桌面端配对" };
+    }
+    if (code === "request_timeout") {
+      return {
+        kind: "offline",
+        needsRepair: false,
+        message: "请求超时（桌面端可能未启动）",
+      };
+    }
+    if (error.kind === "network") {
+      return {
+        kind: "offline",
+        needsRepair: false,
+        message:
+          describeError(error) || "桌面端暂时不可达，请检查电脑是否已启动并处于同一局域网",
+      };
+    }
+    // validation/其他本地错误：不可自动重试，落到离线错误态展示原文。
+    return { kind: "offline", needsRepair: false, message: describeError(error) };
+  }
+  if (error instanceof FileHttpError) {
+    if (error.status === 401 || error.status === 403) {
+      return {
+        kind: "repair",
+        needsRepair: true,
+        message: "设备令牌已失效或已被桌面端撤销，请重新扫码配对",
+      };
+    }
+    return {
+      kind: "offline",
+      needsRepair: false,
+      message: `桌面端响应异常（HTTP ${error.status}），请稍后重试`,
+    };
+  }
+  return {
+    kind: "offline",
+    needsRepair: false,
+    message: describeError(error) || "连接失败，请稍后重试",
+  };
+}
+
+/**
+ * 列表读取并发护栏：记录当前在途列表读取的序号。
+ * 新一次刷新开始后，旧序号的响应/错误必须忽略；dispose 后全部过期。
+ * 只做序号记账，不触碰传输类请求。
+ */
+export interface ListRunTracker {
+  /** 开始一次新的列表读取，返回本次序号。 */
+  begin(): number;
+  /** 该序号是否已过期（被更新的刷新取代或已卸载）。 */
+  stale(run: number): boolean;
+  /** 页面卸载：标记全部序号过期。 */
+  dispose(): void;
+}
+
+export function createListRunTracker(): ListRunTracker {
+  let seq = 0;
+  let disposed = false;
+  return {
+    begin() {
+      seq += 1;
+      return seq;
+    },
+    stale(run: number) {
+      return disposed || run !== seq;
+    },
+    dispose() {
+      disposed = true;
+      seq += 1;
+    },
+  };
+}
+
 export function createFileClient(options: FileClientOptions): FileClient {
   const baseUrl = options.baseUrl.trim().replace(/\/+$/, "");
   if (!baseUrl) throw new AppError("validation", "同步服务地址不能为空");
@@ -238,6 +350,15 @@ export function createFileClient(options: FileClientOptions): FileClient {
   if (options.syncKey.length !== 32) {
     throw new AppError("validation", "文件传输密钥长度错误");
   }
+
+  const listTimeoutMs =
+    Number.isFinite(options.listTimeoutMs) && (options.listTimeoutMs as number) > 0
+      ? (options.listTimeoutMs as number)
+      : LIST_TIMEOUT_MS;
+  const listMaxRetries =
+    Number.isInteger(options.listMaxRetries) && (options.listMaxRetries as number) >= 0
+      ? (options.listMaxRetries as number)
+      : LIST_MAX_RETRIES;
 
   const fetchImpl: FetchLike =
     options.fetchImpl ??
@@ -263,6 +384,7 @@ export function createFileClient(options: FileClientOptions): FileClient {
     path: string,
     aad: string,
     payload: unknown,
+    timeoutMs: number,
   ): Promise<unknown> {
     if (operation.cancelled) throw cancelledError();
 
@@ -272,7 +394,7 @@ export function createFileClient(options: FileClientOptions): FileClient {
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
 
     const init: FetchInitLike = {
       method,
@@ -296,7 +418,12 @@ export function createFileClient(options: FileClientOptions): FileClient {
       if (operation.cancelled) throw cancelledError();
       // 超时是本端计时器触发的 abort，不是用户取消：带上 code 让上层分类为可重试。
       if (timedOut) {
-        throw new AppError("network", "文件请求超时（30s）", error, "request_timeout");
+        throw new AppError(
+          "network",
+          `文件请求超时（${Math.round(timeoutMs / 1_000)}s）`,
+          error,
+          "request_timeout",
+        );
       }
       if (error instanceof FileHttpError) throw error;
       throw toAppError(error, "network");
@@ -306,24 +433,35 @@ export function createFileClient(options: FileClientOptions): FileClient {
     }
   }
 
+  interface RequestConfig {
+    kind: "list" | "transfer";
+    timeoutMs: number;
+    maxRetries: number;
+  }
+
   async function request(
     method: "GET" | "POST",
     path: string,
     aad: string,
     payload: unknown,
+    config: RequestConfig,
   ): Promise<unknown> {
-    const operation: ActiveOperation = { cancelled: false, controller: null };
+    const operation: ActiveOperation = {
+      kind: config.kind,
+      cancelled: false,
+      controller: null,
+    };
     active.add(operation);
     try {
       let lastError: unknown = null;
-      for (let attemptIndex = 0; attemptIndex <= MAX_RETRIES; attemptIndex += 1) {
+      for (let attemptIndex = 0; attemptIndex <= config.maxRetries; attemptIndex += 1) {
         if (operation.cancelled) throw cancelledError();
         try {
-          return await attempt(operation, method, path, aad, payload);
+          return await attempt(operation, method, path, aad, payload, config.timeoutMs);
         } catch (error) {
           lastError = error;
           if (operation.cancelled) throw cancelledError();
-          if (attemptIndex >= MAX_RETRIES || !isRetryable(error)) break;
+          if (attemptIndex >= config.maxRetries || !isRetryable(error)) break;
           const delay =
             RETRY_DELAYS_MS[Math.min(attemptIndex, RETRY_DELAYS_MS.length - 1)];
           await sleep(delay);
@@ -338,8 +476,23 @@ export function createFileClient(options: FileClientOptions): FileClient {
     }
   }
 
+  /** 传输类请求配置：30s × 3 次，大文件传输与取消行为不变。 */
+  const transferConfig: RequestConfig = {
+    kind: "transfer",
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    maxRetries: MAX_RETRIES,
+  };
+  /** 列表读取配置：9s × 1 次，独立快速失败。 */
+  const listConfig: RequestConfig = {
+    kind: "list",
+    timeoutMs: listTimeoutMs,
+    maxRetries: listMaxRetries,
+  };
+
   function list(): Promise<RemoteFile[]> {
-    return request("GET", "/v1/files", AAD_FILES_LIST, undefined).then(parseListPayload);
+    return request("GET", "/v1/files", AAD_FILES_LIST, undefined, listConfig).then(
+      parseListPayload,
+    );
   }
 
   function create(name: string, size: number): Promise<RemoteFile> {
@@ -347,7 +500,7 @@ export function createFileClient(options: FileClientOptions): FileClient {
     if (!Number.isInteger(size) || size <= 0) {
       throw new AppError("validation", "文件大小不合法");
     }
-    return request("POST", "/v1/files", AAD_FILE_CREATE, { name, size }).then(
+    return request("POST", "/v1/files", AAD_FILE_CREATE, { name, size }, transferConfig).then(
       parseFilePayload,
     );
   }
@@ -356,18 +509,18 @@ export function createFileClient(options: FileClientOptions): FileClient {
     const aad = aadFileChunk("POST", id, index);
     return request("POST", `/v1/files/${id}/chunk/${index}`, aad, {
       data: encodeBase64(bytes),
-    }).then(parseFilePayload);
+    }, transferConfig).then(parseFilePayload);
   }
 
   function complete(id: string): Promise<RemoteFile> {
-    return request("POST", `/v1/files/${id}/complete`, aadFileComplete(id), {}).then(
+    return request("POST", `/v1/files/${id}/complete`, aadFileComplete(id), {}, transferConfig).then(
       parseFilePayload,
     );
   }
 
   async function downloadChunk(id: string, index: number): Promise<Uint8Array> {
     const aad = aadFileChunk("GET", id, index);
-    const data = await request("GET", `/v1/files/${id}/chunk/${index}`, aad, undefined);
+    const data = await request("GET", `/v1/files/${id}/chunk/${index}`, aad, undefined, transferConfig);
     if (typeof data !== "object" || data === null || Array.isArray(data)) {
       throw new AppError("validation", "文件分块响应不是对象");
     }
@@ -379,7 +532,7 @@ export function createFileClient(options: FileClientOptions): FileClient {
   }
 
   function remove(id: string): Promise<void> {
-    return request("POST", `/v1/files/${id}/delete`, aadFileDelete(id), {}).then((data) => {
+    return request("POST", `/v1/files/${id}/delete`, aadFileDelete(id), {}, transferConfig).then((data) => {
       if (typeof data !== "object" || data === null || Array.isArray(data)) {
         throw new AppError("validation", "文件删除响应不是对象");
       }
@@ -402,7 +555,7 @@ export function createFileClient(options: FileClientOptions): FileClient {
     try {
       const data = await request("POST", `/v1/files/${id}/shelf`, aadFileShelf(id), {
         group_id: groupId ?? null,
-      });
+      }, transferConfig);
       return parseFilePayload(data);
     } catch (error) {
       if (error instanceof FileHttpError && error.status === 404) {
@@ -422,7 +575,9 @@ export function createFileClient(options: FileClientOptions): FileClient {
   }
 
   function shelfGroups(): Promise<RemoteShelfGroup[]> {
-    return request("GET", "/v1/shelf/groups", AAD_SHELF_GROUPS, undefined).then(parseShelfGroups);
+    return request("GET", "/v1/shelf/groups", AAD_SHELF_GROUPS, undefined, transferConfig).then(
+      parseShelfGroups,
+    );
   }
 
   function cancel(): void {
@@ -433,5 +588,24 @@ export function createFileClient(options: FileClientOptions): FileClient {
     active.clear();
   }
 
-  return { list, create, uploadChunk, complete, downloadChunk, remove, importToShelf, shelfGroups, cancel };
+  function cancelList(): void {
+    for (const operation of active) {
+      if (operation.kind !== "list") continue;
+      operation.cancelled = true;
+      operation.controller?.abort();
+    }
+  }
+
+  return {
+    list,
+    create,
+    uploadChunk,
+    complete,
+    downloadChunk,
+    remove,
+    importToShelf,
+    shelfGroups,
+    cancel,
+    cancelList,
+  };
 }

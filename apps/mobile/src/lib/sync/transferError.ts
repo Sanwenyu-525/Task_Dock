@@ -279,6 +279,10 @@ export function classifyTransferFailure(
         });
       case "not_supported":
         return failure("not_supported", { message: "桌面端不支持该功能" });
+      case "invalid_response":
+        // 服务端返回 2xx 但缺少必要字段（例如 shelf_item_id）：按不可重试的协议
+        // 错误处理，保留原始说明，不能因此把已完成的 desktop 回滚或写成 done。
+        return failure("unknown", { message: describeError(error) });
       case "unknown":
         // 原生/通道未知异常：既不是明确的离线，也不是可判定业务错误。
         // 保持 failed 且不自动重试，避免把安全/协议问题掩盖成「等电脑」。

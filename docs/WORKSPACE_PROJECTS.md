@@ -1,9 +1,11 @@
 # 项目工作空间（Project Workspace）
 
-> 状态：P0 数据模型/窗口/入口 + 第三轮可靠性整改已完成（2026-11-13）。
+> 状态：P0 数据模型/窗口/入口 + 第三轮可靠性整改已完成（2026-11-13）；
+> 创作工作台 A 阶段「小说项目类型接入」已完成（2026-11-15，迁移 v57）。
 > 本文定义概念边界、能力声明、跨窗口/活跃项目一致性规则与当前可用范围；
-> 实现与验收证据见 `tmp/acceptance/project-workspace/report.md`，
-> 统一任务矩阵见 `docs/efficiency-hub/TASK_MATRIX.md`。
+> 实现与验收证据见 `tmp/acceptance/project-workspace/report.md`、
+> `tmp/acceptance/novel-project/report.md`，统一任务矩阵见
+> `docs/efficiency-hub/TASK_MATRIX.md`。
 
 ## 1. 为什么需要独立概念
 
@@ -23,20 +25,21 @@ Task Dock 已有三类容易与「项目」混淆的对象，本功能不替换�
 - 删除工作空间只删除登记与本地元数据，不删除仓库、文件、任务或开发项目。
 - 根目录、关联开发项目、关联任务都是**弱引用**：目标消失时如实显示失效，不静默清理。
 
-## 2. 数据模型（迁移 v49）
+## 2. 数据模型（迁移 v49；v57 扩展类型）
 
 | 表 | 作用 | 关键约束 |
 |---|---|---|
-| `workspace_projects` | 工作空间主记录 | `kind` CHECK 限定 `development / game / ai_comic / general`；`status` 限定 `active / archived`；`root_path` 可空、只登记不写入 |
+| `workspace_projects` | 工作空间主记录 | `kind` CHECK 限定 `development / game / ai_comic / general / novel`（v57 起五值）；`status` 限定 `active / archived`；`root_path` 可空、只登记不写入 |
 | `workspace_instances` | 每个项目一份窗口状态 | `project_id` 主键 + 级联删除；`active_module`、`layout_json`、`last_opened_at` |
 | `workspace_items` | 通用事项/阶段节点（集数、镜头、角色、构建、测试、问题…） | 自引用 `parent_id`；`status` CHECK；`metadata_json` 只存 JSON 对象 |
 | `workspace_task_links` | 项目 ↔ 现有任务的多对多弱关联 | 两端外键级联；只存关联，不复制任务内容 |
+| `shelf_project_links` | 暂存条目 ↔ 项目弱关联（v51） | 两端外键级联；只存关联 |
 
 不做的事：
 
 - 不新增文件托管目录；根目录与产物路径只作引用。
 - 不引入第二套任务系统；任务仍由 `tasks` 管理。
-- 不实现游戏/漫画专用流水线（分镜生成、资源打包、引擎构建）；这些能力在
+- 不实现游戏/漫画/小说专用流水线（分镜生成、资源打包、引擎构建、正文编辑）；这些能力在
   `src/workspace/workspaceProfiles.ts` 中标记为 `planned`/`unavailable`，不得显示为可用。
 
 ## 3. 能力声明与「诚实可用」
@@ -54,11 +57,13 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 3. 未实现的能力必须标记 `planned`，UI 不得给出可点击的假入口；
 4. 外部依赖缺失（Git 不存在、目录失效、视频工具未安装）是运行时降级，不改变静态状态。
 
-**基础 Profile ≠ 完整专业业务闭环。** 当前四种类型的导航标题、首页卡片与能力声明确实不同，
+**基础 Profile ≠ 完整专业业务闭环。** 当前五种类型的导航标题、首页卡片与能力声明确实不同，
 并且 `available` 能力都有真实调用链（项目/事项/任务关联/开发项目/Git/Agent 快照），但：
 
 - 游戏类型没有资源索引、构建/测试登记、引擎跳转；
 - AI 漫剧没有素材/角色库、生成结果导入、版本比较与采用；
+- 小说类型（A 阶段）只有项目/写作事项/任务关联/窗口布局，没有正文编辑器、
+  章节/卷、人物档案、世界观与 AI 创作辅助（后四项登记为 `planned`，不可调用）；
 - `core.layout` 已声明为 `limited`：解析器支持 `moduleOrder`/`hiddenModules`，
   但当前 UI 只有「当前模块」会被写回，没有排序/隐藏编辑入口。
 
@@ -76,8 +81,19 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 
 ## 5. 兼容与迁移
 
-- 迁移只追加在 `MIGRATIONS` 末尾（v49），不修改已发布迁移。
+- 迁移只追加在 `MIGRATIONS` 末尾（v49…v57），不修改已发布迁移。
+- **v57（2026-11-15）**：`workspace_projects.kind` 的 CHECK 扩为五值。SQLite 不能原地改
+  CHECK，必须重建表；该表被 `workspace_instances / workspace_items / workspace_task_links /
+  shelf_project_links` 四张表以 `ON DELETE CASCADE` 引用，迁移器又在事务内执行、事务内不能
+  关闭 `PRAGMA foreign_keys`。因此 v57 在**同一个事务**里：暂存五张表整行到 TEMP 表 →
+  按依赖逆序删除四张依赖表 → 重建父表并复制全部列 → 重建依赖表与索引 →
+  回填数据（事项先 `parent_id=NULL` 插入，再一次性回填父子关系）→
+  用 scoped `PRAGMA foreign_key_check` + `EXCEPT` 逐行比对做迁移自检，任一不满足即
+  CHECK 报错、整体回滚到 v56。迁移前后保留项目 ID/名称/类型/状态/根目录/dev 弱引用/
+  备注/创建更新时间、窗口实例与布局 JSON、事项父子关系与排序、metadata_json、
+  任务关联、暂存关联；不删除旧数据再重建。
 - 新表全部注册到 `BACKUP_TABLES`；恢复顺序：项目 → 实例 → 事项 → 任务关联。
+  备份不按 `kind` 过滤，`novel` 项目与其它四种类型走同一套往返流程。
 - 新设置键：`workspace_active_project`（字符串，空 = 未设置）、
   `workspace_window_rect`（JSON 对象，窗口自管几何，不进入前端 Settings 快照）。
 - U0 新增工作台外壳布局键：`workbench_layout`（版本化 JSON：上次路由/项目/右栏显隐/分栏宽度；
@@ -155,6 +171,7 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 | P1-A | 首渲染项目隔离、写结果隔离、模块保存串行 | 已实现（父组件切换测试） |
 | P1-B | 任务选择器分页与 200 上限提示 | 已实现（hook 测试） |
 | P1-C | Profile/Capability 诚实性审计（`core.layout` 降为 limited） | 已实现（契约测试） |
+| A1 | 小说项目类型接入：v57 迁移、Rust 类型/命令复用、Profile/图标/首页、备份往返 | 已实现（Rust 迁移/命令/备份测试 + Vitest 契约测试；原生窗口未逐项走查） |
 | P1 | 游戏/漫画阶段模板、产物版本与采用状态、工作流 I/O 跟踪 | 未开始 |
 | P1 | 跨项目复盘的统一验收视图、文件缩略图/预览 | 未开始 |
 | P2 | 移动端只读镜像或远程项目视图 | 未开始 |
@@ -163,7 +180,11 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 ## 8. 验证边界
 
 - 自动化：Vitest（导航事务、请求状态机、活跃项目队列、上下文隔离、分页、布局/Profile 契约）
-  与 Rust（命令归属、活跃项目无副作用、ack 状态、几何收敛）。
+  与 Rust（命令归属、活跃项目无副作用、ack 状态、几何收敛）；A 阶段追加
+  `workspaceProfiles.test.ts`（五种 Profile/能力/旧布局）与 Rust
+  `v57_novel_kind_migration_preserves_workspace_rows_and_fk_integrity`、
+  `novel_project_supports_crud_status_instance_items_and_task_links`、
+  `novel_workspace_project_roundtrips_in_full_and_quick_backup`。
 - 原生：Windows 真机上的窗口打开/关闭、DPI、多显示器、胶囊内发起导航、草稿确认/取消、
   关闭专业窗口后回执——本轮**未执行**，报告中标为未验证。
 
@@ -197,4 +218,39 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
   9 个入口原生点击与跳转。1180×760 @125% DPI 单屏。
 - **仍受限**：多显示器（本机 1 屏）、150%/200% DPI、2K/4K 逐页视觉/键盘走查未验证；
   迁移前性能基线未测（当前仅有迁移后采样）。
+
+## 10. 小说项目类型（A 阶段，2026-11-15）
+
+**目标**：在不新增第二套项目/任务/窗口系统的前提下，让「小说」成为第五种专业 Profile，
+为后续正文编辑器、章节/卷、人物设定、世界观与 AI 辅助预留位置。
+
+### 10.1 已实现
+
+| 层 | 内容 |
+|---|---|
+| 数据库 | v57 迁移：`kind` CHECK 五值；事务内暂存 → 按依赖逆序重建 → 回填 → 自检；`PRAGMA foreign_key_check` 0 违例 |
+| Rust | `PROJECT_KINDS` 增加 `novel`；创建/编辑/列表/归档/恢复/设为当前/备注/根目录沿用原命令，没有新增重复 CRUD |
+| TypeScript | `WorkspaceKind` 增加 `"novel"`；`WORKSPACE_PROFILES.novel`（标签「小说」、图标 token `book-open`，映射到 `BookOpen`） |
+| 导航 | 概览 / 写作事项 / 任务关联 / 项目设置（只使用既有模块 ID） |
+| 首页 | 小说项目（基本信息）/ 项目简介 / 写作事项 / 任务关联 / 后续创作功能（只列 planned 能力，纯文本无按钮） |
+| 能力 | available：`core.project` / `core.items` / `core.taskLinks`；limited：`core.layout`；planned：`novel.manuscript` / `novel.characters` / `novel.worldview` / `novel.aiAssist` |
+| 入口 | 统一工作台新建/编辑项目类型、项目列表徽标、项目详情类型、项目切换与独立窗口，全部由 Profile 注册中心派生 |
+| 备份 | `novel` 项目随 `workspace_projects` 等表完整往返，备份不按 `kind` 过滤 |
+
+### 10.2 尚未实现（后续阶段）
+
+- 小说正文编辑器、富文本/Markdown、自动保存与版本历史；
+- 章节/卷管理（当前只用 `workspace_items.stage` 标注，尚未建模章节树与字数统计）；
+- 人物档案与关系、世界观设定集、剧情时间线、伏笔追踪；
+- AI 续写/改写/生成、导出（TXT/Markdown/DOCX/PDF）。
+
+本阶段**没有**为上述功能新建数据库表；`workspace_items` 足以承载「写作事项」，
+下一阶段再评估是否需要独立章节/人物表（仍按 append-only 迁移追加）。
+
+### 10.3 下一阶段建议（B 阶段）
+
+1. 章节数据模型与编辑器：先做单项目内章节树（标题/字数/状态），复用事项父子关系作为过渡；
+2. 人物/世界观条目：同构条目 + 关系表，不引入第二套搜索与第二套任务；
+3. AI 辅助前先定义上下文装配与授权边界（沿用 Agent 管线的有界队列、取消与失败语义）；
+4. 原生窗口逐页走查：新建/编辑/归档/切换/布局保存/备份恢复，并补齐多显示器与 DPI 场景。
 

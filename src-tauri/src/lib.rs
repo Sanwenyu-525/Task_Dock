@@ -1268,6 +1268,8 @@ pub fn run() {
             commands::system::apply_window_radius,
             // 工作台窗口半径（与主窗同一口径，按视觉预设由前端下发）
             project_workspace_window::set_workspace_window_radius,
+            // 工作台角部曲线（连续圆角；前端确认 corner-shape 支持后下发）
+            project_workspace_window::set_workspace_window_corner,
             commands::system::apply_window_capsule,
             commands::system::set_magnetic_drag_config,
             commands::system::drag_loop_active,
@@ -1426,6 +1428,7 @@ pub fn run() {
         commands::clipboard::clipboard_paste_item_states,
             commands::clipboard::clipboard_paste_active,
             commands::clipboard::clipboard_paste_resumable_job,
+            commands::clipboard::clipboard_paste_resumable_jobs,
             commands::clipboard::clipboard_paste_resolve_uncertain,
             commands::clipboard::clipboard_cleanup,
             commands::clipboard::clipboard_status,

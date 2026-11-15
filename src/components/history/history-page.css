@@ -30,6 +30,16 @@
   margin-left: auto;
 }
 
+/* 1180 带右栏 / 960 无右栏时工具栏会换行：搜索独占第二行并铺满，
+   避免只占右侧一小段、左侧留下空白，看起来像两条分散的工具栏。 */
+@container wb-content (max-width: 760px) {
+  .history-panel .history-search {
+    flex: 1 1 100%;
+    max-width: none;
+    margin-left: 0;
+  }
+}
+
 /* 2026-11-15 R2：按效果图把同一天的条目收进一张分组卡，避免每条记录都是
    独立浮卡、时间轴被切得过碎；行间只留 1px 分隔线。 */
 .history-panel .history-day {

@@ -200,3 +200,19 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
   `versionCode=58 / versionName=0.1.10 / lastUpdateTime=2026-11-15 17:26:41`；从手机
   `pm path` 拉取的 base.apk 与构建 APK SHA-256 完全一致。构建与证据见
   `tmp/acceptance/mobile-p0-cross-device/revalidation-vc58/evidence/`。该 APK 构建于 17:24 的工作树快照；18:15 之后其他会话又修改了部分 UI/nav 文件，未重新构建 vc58，故该哈希不能代表 18:28 最终工作树的逐字节重建。
+- 2026-11-15 vc59 Release 交付（第三轮）：`0.1.11 / versionCode 59`，arm64-v8a，
+  `BUILD SUCCESSFUL in 5m 9s`，555 tasks（11 executed / 544 up-to-date）。APK 31,604,153 B，
+  SHA-256 `E40194FEF85A98B80368E3AEF9CD73DB85B4293B55C55BFCB33D2BDCBDD17990`；
+  `aapt2 dump badging` 为 `versionCode='59' versionName='0.1.11'`，minSdk 24 / targetSdk 36；
+  `apksigner` V2 signer `CN=Android Debug`，证书 SHA-256
+  `fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c`；ABI 仅 `arm64-v8a`。
+  已 `adb install -r` 到 vivo V2323A，`versionCode=59 / versionName=0.1.11 /
+  lastUpdateTime=2026-11-15 19:49:51`；从手机拉取的 base.apk 与构建包 SHA-256 完全一致。
+  构建成功参数为 `-Xmx2048m -XX:MaxMetaspaceSize=512m`、`--max-workers=2 --no-daemon`、
+  `-PreactNativeArchitectures=arm64-v8a`；`-Xmx3072m` 曾在 R8 阶段 OOM（`arena.cpp:79`）。
+  原生分享模块、`ShareIntentModule.kt` 与 Manifest filter 已进入该 APK，并在真机验证相册图片分享。
+  **快照漂移**：vc59 构建完成后，其他会话把 `app.json` / `build.gradle` 提升到
+  `0.1.12 / versionCode 60`；当前工作树不再是 vc59 的同一快照，不能把 vc59 哈希当作
+  vc60 构建产物。若要交付 vc60，必须重新 prebuild + Gradle + 安装 + 受影响真机复验。
+  证据目录：`tmp/acceptance/mobile-p0-cross-device/final-round3/`（`build-results.md`、
+  `evidence/apk-release.log`、`taskdock-vc59-release.apk`）。

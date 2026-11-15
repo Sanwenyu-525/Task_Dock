@@ -26,10 +26,12 @@ import {
   clipboardPasteResume,
   clipboardVisibleTargets,
   onClipboardPaste,
+  type PasteItemState,
   type PasteJob,
   type PasteTarget,
 } from "../../lib/bridge";
-import { fileBaseName } from "../../lib/clipboardUi";
+import * as bridgeModule from "../../lib/bridge";
+import { clipboardTime, fileBaseName } from "../../lib/clipboardUi";
 import { errorMessage } from "../../lib/errors";
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { useSettingsStore } from "../../store/useSettingsStore";
@@ -81,7 +83,29 @@ const STATUS_LABELS: Record<string, string> = {
   failed: "已停止",
   paused: "已暂停（可继续）",
   interrupted: "已中断（可继续）",
+  finish_persist_failed: "结果尚未可靠保存",
 };
+
+type ResumableJobsFn = (groupId?: string | null) => Promise<PasteJob[]>;
+
+/**
+ * 桥接函数 `clipboardPasteResumableJobs` 可能尚未由主智能体登记到 bridge.ts，
+ * 这里做特性检测而不是硬依赖导入：导出缺失时退回现有单任务 `clipboardPasteResumableJob` 路径。
+ */
+function resumableJobsFn(): ResumableJobsFn | undefined {
+  return (bridgeModule as unknown as { clipboardPasteResumableJobs?: ResumableJobsFn })
+    .clipboardPasteResumableJobs;
+}
+
+/** 任务是否属于当前面板范围：分组模式按 group_id 匹配，多选模式只匹配未分组（group_id 为空）。 */
+function scopeMatchesJob(j: PasteJob, groupMode: boolean, groupId?: string): boolean {
+  return groupMode ? j.group_id === groupId : j.group_id === "";
+}
+
+/** 历史任务逐项顺序：以数据库持久化行的 position 升序重建，不依赖当前页面选择。 */
+function historyOrderFromRows(rows: PasteItemState[]): string[] {
+  return [...rows].sort((a, b) => a.position - b.position).map((r) => r.item_id);
+}
 
 const PAUSE_REASONS: Record<string, string> = {
   user_switched: "你切换到了其他应用，已自动暂停，不会把按键发到别的软件",
@@ -153,8 +177,13 @@ export default function PastePanel({
   const [showHelp, setShowHelp] = useState(false);
   /** 当前任务的 jobId；用于在 setJob 提交前识别属于本任务的事件（旧任务事件仍被忽略） */
   const jobIdRef = useRef<string | null>(null);
-  /** 逐项状态的展示顺序：多选用传入顺序，分组用组内顺序；固定不变，状态更新不重排 */
+  /** 逐项状态的展示顺序：历史任务由数据库 position 重建；无历史依据时才退回当前选择顺序 */
   const [orderIds, setOrderIds] = useState<string[]>([]);
+  /** 顺序来源：history = 数据库持久化行；current = 当前页面选择兜底 */
+  const [orderSource, setOrderSource] = useState<"current" | "history">("current");
+  const orderSourceRef = useRef<"current" | "history">("current");
+  /** 同范围（分组/多选）内可恢复的历史任务；多于一个时必须由用户明确选择 */
+  const [resumableJobs, setResumableJobs] = useState<PasteJob[]>([]);
   const groupMode = !!groupId;
   /** 只有标题真的被截断时才挂 data-tip，避免悬停任意卡片都弹提示遮挡其他行。 */
   const listRef = useRef<HTMLDivElement>(null);
@@ -202,54 +231,110 @@ export default function PastePanel({
     }
   }
 
+  /**
+   * 载入一个历史/恢复任务：
+   * - 逐项状态以数据库为准，顺序按持久化行 position 升序重建，不依赖当前页面选择；
+   * - 载入后当前选择/分组变化不得再覆盖这套顺序（orderSourceRef 守门）。
+   */
+  async function loadHistoryJob(j: PasteJob, isAlive?: () => boolean) {
+    jobIdRef.current = j.id;
+    setJob(fromJob(j));
+    const rows = await clipboardPasteItemStates(j.id).catch(() => []);
+    if (isAlive && !isAlive()) return;
+    const persisted: Record<string, string> = {};
+    for (const row of rows) persisted[row.item_id] = row.state;
+    if (rows.length > 0) {
+      orderSourceRef.current = "history";
+      setOrderSource("history");
+      setOrderIds(historyOrderFromRows(rows));
+    }
+    setJob((prev) =>
+      prev && prev.id === j.id
+        ? { ...prev, itemStates: { ...persisted, ...prev.itemStates } }
+        : prev,
+    );
+  }
+
+  /** 多任务列表里用户明确选择某个可恢复任务后载入。 */
+  async function onPickResumable(j: PasteJob) {
+    setBusy("refresh");
+    try {
+      setResumableJobs([]);
+      await loadHistoryJob(j);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   useEffect(() => {
     let alive = true;
+    const isAlive = () => alive;
     void loadTargets();
-    if (groupMode) {
-      // 分组模式的逐项顺序来自组内条目；失败不阻塞粘贴，只降级为不展示逐项列表
-      clipboardGroup(groupId!)
-        .then((g) => {
-          if (alive) {
-            setOrderIds(g.items.map((i) => i.id));
-            setOrderError(null);
-          }
-        })
-        .catch((e) => {
-          // 只影响逐项状态的展示顺序；粘贴仍可按后端顺序执行
-          if (alive) setOrderError(errorMessage(e));
-        });
-    } else {
-      setOrderIds(itemIds ?? []);
-    }
+
+    // 兜底顺序：仅在没有历史任务可依据时使用。历史任务载入后顺序由数据库 position 决定，
+    // 后续当前选择/分组变化不得覆盖。
+    const applyFallbackOrder = () => {
+      if (orderSourceRef.current === "history") return;
+      if (groupMode) {
+        clipboardGroup(groupId!)
+          .then((g) => {
+            if (alive && orderSourceRef.current !== "history") {
+              setOrderIds(g.items.map((i) => i.id));
+              setOrderError(null);
+            }
+          })
+          .catch((e) => {
+            // 只影响逐项状态的展示顺序；粘贴仍可按后端顺序执行
+            if (alive) setOrderError(errorMessage(e));
+          });
+      } else {
+        setOrderIds(itemIds ?? []);
+      }
+    };
+    applyFallbackOrder();
+
     // 页面打开时找回任务：先看内存里的活动任务，再回退到数据库里「可继续」的任务。
     // 只用 clipboardPasteActive 的话，切走页面/重启应用后暂停任务就再也找不回来了。
     void (async () => {
       try {
         const activeId = await clipboardPasteActive();
-        let j: PasteJob | null = activeId
+        let active: PasteJob | null = activeId
           ? await clipboardPasteJob(activeId).catch(() => null)
           : null;
-        if (!j) {
-          j = await clipboardPasteResumableJob().catch(() => null);
+        if (active && !scopeMatchesJob(active, groupMode, groupId)) {
+          setOtherJob(fromJob(active));
+          active = null;
         }
-        if (!alive || !j) return;
-        const mine = groupMode ? j.group_id === groupId : j.group_id === "";
-        if (!mine) {
-          setOtherJob(fromJob(j));
+        if (active) {
+          await loadHistoryJob(active, isAlive);
           return;
         }
-        jobIdRef.current = j.id;
-        setJob(fromJob(j));
-        // 逐项状态以数据库为准：事件只覆盖本页面看到的跃迁，历史状态必须查库。
-        const rows = await clipboardPasteItemStates(j.id).catch(() => []);
-        if (!alive || rows.length === 0) return;
-        const persisted: Record<string, string> = {};
-        for (const row of rows) persisted[row.item_id] = row.state;
-        setJob((prev) =>
-          prev && prev.id === j!.id
-            ? { ...prev, itemStates: { ...persisted, ...prev.itemStates } }
-            : prev,
-        );
+
+        const plural = resumableJobsFn();
+        if (plural) {
+          // 多任务列表：同范围任务全部列出，由用户明确选择；不同分组的任务互不混入。
+          const list = await plural(groupMode ? groupId! : null).catch(() => []);
+          if (!alive) return;
+          const mine = list.filter((j) => scopeMatchesJob(j, groupMode, groupId));
+          const others = list.filter((j) => !scopeMatchesJob(j, groupMode, groupId));
+          if (others.length > 0) setOtherJob(fromJob(others[0]));
+          if (mine.length === 0) return;
+          if (mine.length === 1) {
+            // 只有 1 个可恢复任务：保持现有交互，自动载入。
+            await loadHistoryJob(mine[0], isAlive);
+          } else {
+            setResumableJobs(mine);
+          }
+        } else {
+          // 桥接 plural 导出尚未落地：退回现有单任务路径。
+          const j = await clipboardPasteResumableJob().catch(() => null);
+          if (!alive || !j) return;
+          if (!scopeMatchesJob(j, groupMode, groupId)) {
+            setOtherJob(fromJob(j));
+            return;
+          }
+          await loadHistoryJob(j, isAlive);
+        }
       } catch (e) {
         if (alive) showToast(`读取粘贴任务状态失败：${errorMessage(e)}`, { kind: "warning" });
       }
@@ -415,13 +500,15 @@ export default function PastePanel({
     }
   }
 
-  /** 处置结果不确定项：必须由用户明确选择「已收到」或「没收到，重发」。 */
-  async function onResolveUncertain(itemId: string, action: "received" | "resend") {
-    if (!job) return;
+  /**
+   * 处置结果不确定项：必须由用户明确选择「已收到」或「没收到，重发」。
+   * jobId/itemId 都绑定被展示的历史任务与历史条目，不混用当前页面选择。
+   */
+  async function onResolveUncertain(jobId: string, itemId: string, action: "received" | "resend") {
     setBusy("resume");
     try {
-      await clipboardPasteResolveUncertain(job.id, itemId, action);
-      const fresh = await clipboardPasteJob(job.id).catch(() => null);
+      await clipboardPasteResolveUncertain(jobId, itemId, action);
+      const fresh = await clipboardPasteJob(jobId).catch(() => null);
       if (fresh) {
         setJob((prev) =>
           prev && prev.id === fresh.id
@@ -524,6 +611,44 @@ export default function PastePanel({
             <button className="btn sm" onClick={() => onCancel(otherJob)} disabled={busy === "cancel"}>
               取消它
             </button>
+          </div>
+        )}
+
+        {resumableJobs.length > 1 && !job && (
+          <div className="clip-paste-job" role="group" aria-label="可恢复的粘贴任务">
+            <div className="clip-paste-job-head">
+              <span>可恢复的粘贴任务（{resumableJobs.length}）</span>
+            </div>
+            <div className="clip-hint">
+              以下任务此前未完成，请选择要继续查看的一个；不同分组的任务各自独立，不会串条目。
+            </div>
+            {resumableJobs.map((j) => {
+              const groupLabel =
+                j.group_id === ""
+                  ? "所选条目"
+                  : groupName && j.group_id === groupId
+                    ? groupName
+                    : "其他分组";
+              return (
+                <div key={j.id} className="clip-paste-uncertain-row">
+                  <span className="clip-target-text">
+                    <span className="clip-target-title">{j.target_title || "（无标题窗口）"}</span>
+                    <span className="clip-target-meta">
+                      {groupLabel} · 剩余 {j.remaining_items.length} 项 · 不确定{" "}
+                      {j.uncertain_items.length} 项
+                      {j.started_at ? ` · ${clipboardTime(j.started_at)}` : ""}
+                    </span>
+                  </span>
+                  <button
+                    className="btn sm"
+                    onClick={() => void onPickResumable(j)}
+                    disabled={busy === "refresh"}
+                  >
+                    <Play size={11} /> 继续 / 查看
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -649,11 +774,22 @@ export default function PastePanel({
                 请先确认目标应用里是否已收到，再手动重新选择这些条目。
               </div>
             ) : null}
-            {job.message && <div className="clip-paste-message">{job.message}</div>}
+            {job.status === "finish_persist_failed" && (
+              <div className="clip-paste-message" role="status">
+                结果尚未可靠保存：收尾状态写入失败，重启后可能被识别为中断。条目与不确定项仍保留，
+                请确认目标窗口后继续处置，不要把它当作已完成。
+              </div>
+            )}
+            {job.message && job.status !== "finish_persist_failed" && (
+              <div className="clip-paste-message">{job.message}</div>
+            )}
             {orderError && (
               <div className="clip-hint">
                 逐项顺序读取失败，仍会按后端顺序粘贴，但暂时看不到逐项状态：{orderError}
               </div>
+            )}
+            {orderSource === "current" && (
+              <div className="clip-hint">顺序来自当前所选条目；恢复历史任务后将按数据库原始顺序展示。</div>
             )}
             {/* 秒完成任务可能只拿到聚合状态；没有逐项事件时不展示全“待处理”的误导 chip。 */}
             {orderIds.length > 0 &&
@@ -682,14 +818,14 @@ export default function PastePanel({
                       <span>第 {orderIds.indexOf(id) + 1} 项</span>
                       <button
                         className="btn sm"
-                        onClick={() => void onResolveUncertain(id, "received")}
+                        onClick={() => void onResolveUncertain(job.id, id, "received")}
                         disabled={busy === "resume"}
                       >
                         <Check size={11} /> 已收到
                       </button>
                       <button
                         className="btn sm"
-                        onClick={() => void onResolveUncertain(id, "resend")}
+                        onClick={() => void onResolveUncertain(job.id, id, "resend")}
                         disabled={busy === "resume"}
                       >
                         <RefreshCw size={11} /> 没收到，重发

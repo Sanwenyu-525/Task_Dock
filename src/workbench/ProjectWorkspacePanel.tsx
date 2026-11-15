@@ -48,6 +48,7 @@ import {
   type TaskPickerStatus,
 } from "../workspace/useWorkspaceProjectContext";
 import { scopeWorkspaceContext } from "../workspace/workspaceContextScope";
+import { workspaceProfileIcon } from "../workspace/workspaceProfileIcons";
 import {
   CAPABILITY_STATE_LABEL,
   WORKSPACE_CAPABILITIES,
@@ -76,6 +77,7 @@ const STAGE_HINT: Record<WorkspaceKind, string> = {
   development: "阶段（如 api / ui / 联调）",
   game: "阶段（如 关卡 / 系统 / 美术）",
   ai_comic: "阶段（episode 或 shot）",
+  novel: "阶段（如 章节 / 卷 / 人物）",
   general: "阶段（可空）",
 };
 
@@ -433,6 +435,28 @@ export default function ProjectWorkspacePanel({
 
   const cardBody = (card: WorkspaceCard) => {
     const cap = WORKSPACE_CAPABILITIES[card.capability];
+    // 「后续创作功能」是纯说明卡片：只列该类型 planned/unavailable 的能力，
+    // 不带任何动作，因此在 planned 状态下也允许渲染；其余卡片仍受
+    // canInvokeCapability 闸门约束（planned/unavailable 不得给出可点击入口）。
+    if (card.body === "roadmap") {
+      const pending = profile.capabilities
+        .map((id) => WORKSPACE_CAPABILITIES[id])
+        .filter((c) => c.state === "planned" || c.state === "unavailable");
+      return (
+        <>
+          {pending.length === 0 && <div className="ws-empty">本类型暂无登记的计划能力</div>}
+          {pending.map((c) => (
+            <div key={c.id} className="ws-row">
+              <span className="ws-flex">{c.label}</span>
+              <span className="ws-badge">{CAPABILITY_STATE_LABEL[c.state]}</span>
+            </div>
+          ))}
+          <div className="ws-meta">
+            本阶段只接入项目类型与既有事项/任务关联；以上能力尚无适配器，不提供可点击入口。
+          </div>
+        </>
+      );
+    }
     const usable = canInvokeCapability(profile.kind, card.capability);
     if (!usable) {
       return (
@@ -464,6 +488,13 @@ export default function ProjectWorkspacePanel({
               <div className="ws-state" data-tone="error">工作目录不存在（登记仍保留，可重新指定路径）</div>
             )}
           </>
+        );
+      case "note":
+        if (!project) return null;
+        return project.note ? (
+          <div className="ws-meta">{project.note}</div>
+        ) : (
+          <div className="ws-empty">未填写项目简介；可在「项目设置」的备注里补充。</div>
         );
       case "items":
         return (
@@ -623,7 +654,7 @@ export default function ProjectWorkspacePanel({
         <WorkbenchPageHeader
           icon={FolderKanban}
           title="项目工作空间"
-          subtitle="项目只用于组织专业模块（开发 / 游戏 / AI 漫剧 / 通用）"
+          subtitle="项目只用于组织专业模块（开发 / 游戏 / AI 漫剧 / 小说 / 通用）"
         />
         <div className="wb-empty-state">
           <span className="wb-empty-icon" aria-hidden="true">
@@ -631,7 +662,7 @@ export default function ProjectWorkspacePanel({
           </span>
           <h3 className="wb-empty-title">还没有工作空间项目</h3>
           <p className="wb-empty-desc">
-            项目只用于把开发、游戏、AI 漫剧等专业模块组织在一起。任务、Agent、收集与暂存、剪贴板、开发工作台都不需要项目即可使用。
+            项目只用于把开发、游戏、AI 漫剧、小说等专业模块组织在一起。任务、Agent、收集与暂存、剪贴板、开发工作台都不需要项目即可使用。
           </p>
           <div className="wb-empty-actions">
             <button className="ws-btn ws-btn-primary" onClick={onCreateProject}>
@@ -648,7 +679,7 @@ export default function ProjectWorkspacePanel({
       {/* 项目页头（2026-11-15 统一为 WorkbenchPageHeader）：项目名作标题、
           登记信息作副标题、类型与状态作 meta，避免「页面标题 + 项目名」两层大标题。 */}
       <WorkbenchPageHeader
-        icon={FolderKanban}
+        icon={workspaceProfileIcon(profile.icon)}
         title={project.name}
         meta={
           <>

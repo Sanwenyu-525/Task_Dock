@@ -1,7 +1,7 @@
-//! 工作空间 Profile / Capability 注册中心（P1-01，2026-11-13）。
+//! 工作空间 Profile / Capability 注册中心（P1-01，2026-11-13；A 阶段追加 novel，2026-11-15）。
 //!
 //! ## 为什么需要这一层
-//! 上一轮四种工作空间类型只是同一个面板换个徽标：导航、首页、可用动作完全一样。
+//! 上一轮工作空间类型只是同一个面板换个徽标：导航、首页、可用动作完全一样。
 //! 本轮把「类型 → 导航 / 首页卡片 / 专业能力」收敛成**静态声明**，页面只消费声明，
 //! 不再各自 `if (kind === ...)` 拼装。新增一种工作空间 = 在这里加一条 Profile，
 //! 不改窗口状态机、不改项目数据接口。
@@ -14,7 +14,7 @@
 //!    `general`，不抛错、不显示空白页；旧数据库里未来类型的登记仍可打开。
 //!
 //! 本模块是纯数据 + 纯函数（不依赖 React / Tauri / DOM），便于单测锁定
-//! 「能力声明与真实实现一致」「四种类型的导航与首页不同」。
+//! 「能力声明与真实实现一致」「五种类型的导航与首页不同」。
 
 import type { WorkspaceKind } from "../lib/bridge";
 
@@ -38,7 +38,11 @@ export type WorkspaceCapabilityId =
   | "comic.shots"
   | "comic.characters"
   | "comic.assets"
-  | "comic.generate";
+  | "comic.generate"
+  | "novel.manuscript"
+  | "novel.characters"
+  | "novel.worldview"
+  | "novel.aiAssist";
 
 /**
  * 能力实现状态（四态，互斥）：
@@ -205,11 +209,46 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     provider: "本轮明确不提供（生成管线尚未接入工作空间）",
     fallback: "不显示生成按钮；需要生成请在既有创作工具中进行",
   },
+  // 小说专业能力（A 阶段只登记，没有适配器）：全部 planned，禁止可调用。
+  // 下一阶段接入正文/章节编辑器、人物档案、世界观与 AI 辅助后再逐项升级状态。
+  "novel.manuscript": {
+    id: "novel.manuscript",
+    label: "正文与章节",
+    summary: "小说正文编辑、章节/卷管理与自动保存。",
+    state: "planned",
+    provider: "未接入（本阶段只登记项目类型；没有章节/正文数据模型与编辑器）",
+    fallback: "不显示编辑/保存入口；正文与章节管理在下一阶段接入",
+  },
+  "novel.characters": {
+    id: "novel.characters",
+    label: "人物设定",
+    summary: "人物档案、关系与出场章节。",
+    state: "planned",
+    provider: "未接入（没有人物档案表与编辑界面）",
+    fallback: "不显示新建人物入口；人物档案在下一阶段接入",
+  },
+  "novel.worldview": {
+    id: "novel.worldview",
+    label: "世界观设定",
+    summary: "世界观条目、设定集与引用关系。",
+    state: "planned",
+    provider: "未接入（没有设定集数据模型）",
+    fallback: "不显示设定集入口；世界观管理在下一阶段接入",
+  },
+  "novel.aiAssist": {
+    id: "novel.aiAssist",
+    label: "AI 创作辅助",
+    summary: "续写、改写与灵感提示（需要独立授权与上下文管理）。",
+    state: "planned",
+    provider: "未接入（没有小说上下文装配与调用链）",
+    fallback: "不显示生成/续写按钮；AI 辅助在后续阶段单独设计与授权",
+  },
 };
 
 /** 首页卡片形态：决定渲染哪些真实数据，避免每个类型复制一套页面。 */
 export type WorkspaceCardBody =
   | "project"
+  | "note"
   | "items"
   | "links"
   | "devProject"
@@ -220,6 +259,7 @@ export type WorkspaceCardBody =
   | "assets"
   | "progress"
   | "characters"
+  | "roadmap"
   | "generate";
 
 export interface WorkspaceCard {
@@ -239,7 +279,7 @@ export interface WorkspaceProfile {
   kind: WorkspaceKind;
   label: string;
   /** 图标 token，由 UI 映射到 lucide 组件（保持本模块为纯数据）。 */
-  icon: "code" | "gamepad" | "clapperboard" | "layers";
+  icon: "code" | "gamepad" | "clapperboard" | "layers" | "book-open";
   /** 导航布局：顺序即渲染顺序；不同类型标题不同。 */
   modules: WorkspaceModule[];
   /** 旧项目没有布局配置时的默认模块。 */
@@ -278,6 +318,14 @@ const GENERAL_MODULES: WorkspaceModule[] = [
   { id: "items", label: "事项" },
   { id: "links", label: "任务关联" },
   { id: "settings", label: "设置" },
+];
+
+/** 小说项目（A 阶段）：只复用已实现的模块 ID，专业模块在后续阶段接入。 */
+const NOVEL_MODULES: WorkspaceModule[] = [
+  { id: "overview", label: "概览" },
+  { id: "items", label: "写作事项" },
+  { id: "links", label: "任务关联" },
+  { id: "settings", label: "项目设置" },
 ];
 
 export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
@@ -349,6 +397,41 @@ export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
       "comic.generate",
     ],
     recommendedTools: ["用事项阶段 episode / shot 记录剧集与镜头"],
+  },
+  novel: {
+    kind: "novel",
+    label: "小说",
+    icon: "book-open",
+    modules: NOVEL_MODULES,
+    defaultModule: "overview",
+    // 首页只展示真实存在的数据（项目/简介/写作事项/任务关联）；
+    // 「后续创作功能」卡片只列出 planned 能力，不渲染任何编辑/生成入口。
+    homeCards: [
+      { id: "novel-project", title: "小说项目", body: "project", capability: "core.project" },
+      { id: "novel-intro", title: "项目简介", body: "note", capability: "core.project" },
+      { id: "novel-items", title: "写作事项", body: "items", capability: "core.items" },
+      { id: "novel-links", title: "任务关联", body: "links", capability: "core.taskLinks" },
+      {
+        id: "novel-roadmap",
+        title: "后续创作功能",
+        body: "roadmap",
+        capability: "novel.manuscript",
+      },
+    ],
+    capabilities: [
+      "core.project",
+      "core.items",
+      "core.taskLinks",
+      "core.layout",
+      "novel.manuscript",
+      "novel.characters",
+      "novel.worldview",
+      "novel.aiAssist",
+    ],
+    recommendedTools: [
+      "用写作事项记录章节 / 卷 / 线索的推进",
+      "把写作任务关联到既有任务系统（不复制任务）",
+    ],
   },
   general: {
     kind: "general",

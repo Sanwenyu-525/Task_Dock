@@ -151,7 +151,9 @@ Worktree 是**风险评估结果**，不是并行前置步骤：
 
 ### 5.1 构建资源调度（所有会话与子智能体共用）
 - **所有高资源构建必须经统一入口**：`npm run build` / `npm run tauri` / `npm run test` /
-  `npm run cargo -- <子命令>`，或 `node scripts/build-sched.mjs run -- <命令>`。
+  `npm run dev` / `npm run preview` / `npm run cargo -- <子命令>`，或
+  `node scripts/build-sched.mjs run -- <命令>`（`dev`/`preview` 是常驻 dev 服务，占 dev 槽位，
+  第 3 个要排队；端口不归调度器分配）。
   `*-raw` 与直接 `cargo`/`vite`/`gradlew` 只用于调度器自身排障；**不得绕过调度器**规避队列（改了
   `package.json` 绕开同样算绕过）。手机端同理：`npm --prefix apps/mobile run build:android` 已接入
   调度器（重型槽位、`--cwd android`、label `apk-release`），等价写法是

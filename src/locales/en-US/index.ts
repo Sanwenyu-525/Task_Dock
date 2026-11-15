@@ -3166,6 +3166,7 @@ export const enUS: Record<MessageKey, string> = {
   "capsule.recentShelf.locate": "Show in shelf",
 
   // ── Dev workbench (2026-11) ──
+  "workbench.pageTitle": "Dev Workbench",
   "workbench.subtitle": "Current task · Agent status · Items to handle",
   "workbench.currentTask": "Current dev task",
   "workbench.currentTaskEmpty": "No current task",
@@ -3353,6 +3354,7 @@ export const enUS: Record<MessageKey, string> = {
   "devwork.handoff.draftBadge": "Draft (no task)",
   "devwork.handoff.hint":
     "Fill the fixed template; empty sections are left out of the Markdown.",
+  "devwork.handoff.moreSections": "Show the other 8 sections (optional)",
   "devwork.handoff.packTitle": "Pack title",
   "devwork.handoff.untitled": "Untitled handoff pack",
   "devwork.handoff.sec.background": "Project background",

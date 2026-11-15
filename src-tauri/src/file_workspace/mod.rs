@@ -745,6 +745,14 @@ fn fail_report(source: &Path, failure: FsFailure) -> FsEntryReport {
     }
 }
 
+/// 临时文件的**可展示名**：只取文件名，绝不带目录。reason 会进 UI 与诊断日志，
+/// 完整绝对路径（含 Windows 用户目录）对外既无必要也不安全（D-11）。
+fn tmp_display_name(tmp: &Path) -> String {
+    tmp.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "临时文件".to_string())
+}
+
 /// 覆盖用临时目标名（同目录、带进程标识，失败清理；不会与真实名冲突）。
 fn sibling_tmp(dst: &Path) -> PathBuf {
     let name = dst
@@ -1086,10 +1094,7 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
                 if let Err(e) = fs::rename(&tmp, dst) {
                     // 不把临时文件的绝对路径写进 reason：reason 会进 UI 与诊断日志，
                     // 只需让用户知道「文件还在目标目录里的临时名」即可找回。
-                    let tmp_name = tmp
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "临时文件".into());
+                    let tmp_name = tmp_display_name(&tmp);
                     return Err(FsFailure::new(
                         classify_io_error(&e),
                         "cleanup",
@@ -2273,10 +2278,83 @@ mod tests {
             &protected(),
         )
         .unwrap();
-        assert_eq!(report.failed, 1);
+        // 深度超限发生在「已经复制了前 64 层」之后：目标目录已有内容，
+        // 因此按 partial 上报（内容部分落地 + 原因「已中止」），不是 failed。
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.partial, 1, "部分复制必须计入 partial，不能算成功");
         assert!(report.entries[0].reason.as_deref().unwrap().contains("中止"));
+        // D-11：reason 面向用户与诊断日志，不得带出临时根目录/用户目录的绝对路径
+        let reason = report.entries[0].reason.clone().unwrap_or_default();
+        assert!(!reason.contains(&root.to_string_lossy().to_string()), "reason 不得泄露绝对路径");
         assert!(cur.join("leaf.txt").exists(), "源必须完整保留");
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn copy_three_sources_continues_after_bad_item() {
+        // D-10：三源批量中的第二项坏掉，第一/第三项仍必须各自处理，整批不得提前中止。
+        let root = temp_root("d10copy");
+        let src_dir = root.join("src");
+        let dst_dir = root.join("dst");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        fs::write(src_dir.join("good1.txt"), "one").unwrap();
+        fs::write(src_dir.join("good2.txt"), "two").unwrap();
+        let report = copy_paths(
+            &[
+                src_dir.join("good1.txt").to_string_lossy().into_owned(),
+                src_dir.join("missing-middle.txt").to_string_lossy().into_owned(),
+                src_dir.join("good2.txt").to_string_lossy().into_owned(),
+            ],
+            &dst_dir,
+            Conflict::Rename,
+            &protected(),
+        )
+        .unwrap();
+        assert_eq!(report.attempted, 3);
+        assert_eq!(report.ok, 2, "坏条目不得连坐后续条目");
+        assert_eq!(report.failed, 1);
+        assert!(dst_dir.join("good1.txt").exists());
+        assert!(dst_dir.join("good2.txt").exists(), "第二项失败后第三项仍须复制");
+        assert_eq!(fs::read_to_string(dst_dir.join("good2.txt")).unwrap(), "two");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn move_three_sources_continues_after_bad_item() {
+        let root = temp_root("d10move");
+        let src_dir = root.join("src");
+        let dst_dir = root.join("dst");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        fs::write(src_dir.join("m1.txt"), "one").unwrap();
+        fs::write(src_dir.join("m2.txt"), "two").unwrap();
+        let report = move_paths(
+            &[
+                src_dir.join("m1.txt").to_string_lossy().into_owned(),
+                src_dir.join("missing-middle.txt").to_string_lossy().into_owned(),
+                src_dir.join("m2.txt").to_string_lossy().into_owned(),
+            ],
+            &dst_dir,
+            Conflict::Rename,
+            &protected(),
+        )
+        .unwrap();
+        assert_eq!(report.ok, 2, "移动批次同样逐条独立");
+        assert_eq!(report.failed, 1);
+        assert!(dst_dir.join("m1.txt").exists() && dst_dir.join("m2.txt").exists());
+        assert!(!src_dir.join("m1.txt").exists() && !src_dir.join("m2.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn tmp_display_name_never_leaks_directory() {
+        // D-11：失败原因里只允许出现临时文件名，不允许整个 Windows 用户目录。
+        let tmp = Path::new(r"C:\Users\ASUS\AppData\Local\Temp\taskdock\..taskdock-tmp-123-a.txt");
+        assert_eq!(tmp_display_name(tmp), "..taskdock-tmp-123-a.txt");
+        assert!(!tmp_display_name(tmp).contains("Users"));
+        assert!(!tmp_display_name(tmp).contains("\\"));
+        assert_eq!(tmp_display_name(Path::new("C:\\")), "临时文件", "无文件名时用占位词");
     }
 
     #[test]

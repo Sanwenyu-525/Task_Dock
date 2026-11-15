@@ -19,7 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  DEFAULT_CONFIG, configEnvName, loadConfig,
+  DEFAULT_CONFIG, configEnvName, configRisks, describeSources, loadConfig, DANGER_AUTH_ENV, DANGER_TOKENS,
 } from "./sched/config.mjs";
 import {
   ensureState, paths, readJson, resolveStateHome, slotDir,
@@ -119,7 +119,10 @@ function context() {
     process.exit(EXIT.internal);
   }
   const loaded = loadConfig({ repoRoot: REPO_ROOT, stateHome: state.home, env: process.env });
-  return { cwd, state, cfg: loaded.config, sources: loaded.sources, configProblems: loaded.problems };
+  return {
+    cwd, state, cfg: loaded.config, sources: loaded.sources,
+    configProblems: loaded.problems, danger: loaded.danger,
+  };
 }
 
 function warnConfig(problems) {
@@ -236,6 +239,9 @@ function cmdStatus(argv) {
     tasks,
     config: ctx.cfg,
     configProblems: ctx.configProblems,
+    configSources: describeSources(ctx.sources),
+    danger: ctx.danger,
+    configRisks: configRisks({ config: ctx.cfg, danger: ctx.danger, sources: ctx.sources, problems: ctx.configProblems }),
     devServers: devScan ? { findings: devScan.findings, rows: devScan.rows.length } : null,
   };
   if (opts.json) { console.log(JSON.stringify(payload, null, 2)); return EXIT.ok; }
@@ -244,10 +250,23 @@ function cmdStatus(argv) {
   console.log(`内存：可用 ${formatMb(mem.availMb)} / 总计 ${formatMb(mem.totalMb)}` +
     `${mem.simulated ? "  ⚠ 模拟值" : ""}  〔${mem.source}〕`);
   console.log(`压力：${pressure.text}`);
-  console.log(`全局预算：${budget.enabled ? "启用" : "已关闭（只按实时可用内存准入）"} ` +
+  console.log(`全局预算：${budget.enabled ? "启用" : "⚠ 已被显式关闭（危险授权生效）"} ` +
     `${formatMb(budget.reservedMb)} / ${formatMb(budget.budgetMb)} 已预留` +
     `（可用余量 ${formatMb(budget.availableMb)}；硬上限 = 物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(budget.reserveMb)}` +
     ` = ${formatMb(budget.hardLimitMb)}）`);
+  // 危险授权 / 安全余量 / 配置来源：三条都必须显著可见，避免「配置被改了却看不出来」
+  if (!budget.enabled) {
+    console.log(`  ⚠ 预算关闭依据：${DANGER_AUTH_ENV}=${budget.dangerAuth.join(",") || "(缺令牌)"}` +
+      "；本机不再执行跨分类全局预算，history 会标记该任务");
+  }
+  if (Number(budget.reserveReducedMb) > 0) {
+    console.log(`  ⚠ 安全余量被下调：申报 ${formatMb(budget.reserveMb)}，推荐基线 ` +
+      `${formatMb(budget.reserveBaselineMb)}，减少 ${formatMb(budget.reserveReducedMb)}` +
+      `${budget.reserveLowerAuthorized ? "（已获 reserve-lower 授权）" : "（未经授权，有效值已回到基线）"}`);
+  } else {
+    console.log(`  安全余量：系统保留 ${formatMb(budget.reserveMb)}（推荐基线 ${formatMb(budget.reserveBaselineMb)}，未下调）`);
+  }
+  console.log(`  配置来源：${budget.configSources}`);
   // 预算风险一律显式打印：系统保留被侵占、预算装不下最大分类峰值、系统保留 ≥ 物理内存
   if (budget.warning) console.log(`  ${budget.warning}`);
   for (const e of budget.entries) {
@@ -519,6 +538,23 @@ function cmdDoctor(argv) {
     for (const p of ctx.configProblems) issues.push({ severity: "P1", text: `配置：${p}` });
   } else ok.push("配置校验通过（未知字段/非法数值会被拒绝而不是静默忽略）");
 
+  // 2b) 配置风险：预算被关、保留被下调、门槛被改到 1 MB 级、环境变量覆盖……
+  //     这类「配置被改坏」不会报错，只会让准入静默失效（19:22 那次真实发生过），必须成条列出。
+  const cfgRisks = configRisks({
+    config: ctx.cfg, danger: ctx.danger, sources: ctx.sources, problems: ctx.configProblems,
+    hasActiveReservations: readReservations(home).length > 0,
+  });
+  for (const r of cfgRisks) {
+    issues.push({
+      severity: r.level,
+      text: `配置风险[${r.key}] ${r.text}` +
+        `（当前 ${String(r.current ?? "-")} / 基线 ${String(r.baseline ?? "-")}；来源 ${r.source}` +
+        `${r.affectsRunning ? "；影响运行中任务" : ""}）`,
+    });
+  }
+  if (!cfgRisks.length) ok.push(`配置安全边界正常（预算${ctx.cfg.budgetEnabled === false ? "关闭" : "开启"}，` +
+    `系统保留 ${formatMb(ctx.cfg.systemReserveMb)} ≥ 基线 ${formatMb(ctx.cfg.recommendedSystemReserveMb)}）`);
+
   // 3) 槽位卫生
   const slots = snapshotSlots(home, { verify: true });
   for (const s of slots) {
@@ -661,6 +697,7 @@ function cmdDoctor(argv) {
     console.log(JSON.stringify({
       generatedAt: new Date().toISOString(), stateHome: home, ok, issues, actions,
       memory: readMemory(), budget: budgetView, slots, config: ctx.cfg,
+      configSources: describeSources(ctx.sources), danger: ctx.danger, configRisks: cfgRisks,
     }, null, 2));
     return issues.some((i) => i.severity === "P0") ? EXIT.internal : EXIT.ok;
   }
@@ -680,6 +717,7 @@ function cmdDoctor(argv) {
   console.log(`内存：可用 ${formatMb(mem.availMb)} / ${formatMb(mem.totalMb)}${mem.simulated ? "（模拟值）" : ""}`);
   console.log(`全局预算：${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留` +
     `（硬上限 ${formatMb(budgetView.hardLimitMb)} = 物理 ${formatMb(budgetView.totalMb)} - 系统保留 ${formatMb(budgetView.reserveMb)}）`);
+  console.log(`配置来源：${describeSources(ctx.sources)}`);
   return issues.some((i) => i.severity === "P0") ? EXIT.internal : EXIT.ok;
 }
 
@@ -730,6 +768,8 @@ function cmdConfig(argv) {
     console.log(JSON.stringify({
       stateHome: ctx.state.home, sources: ctx.sources, problems: ctx.configProblems,
       effective: ctx.cfg, defaults: opts.all ? DEFAULT_CONFIG : undefined,
+      danger: ctx.danger,
+      configRisks: configRisks({ config: ctx.cfg, danger: ctx.danger, sources: ctx.sources, problems: ctx.configProblems }),
     }, null, 2));
     return EXIT.ok;
   }
@@ -754,6 +794,21 @@ function cmdConfig(argv) {
   if (ctx.configProblems.length) {
     console.log("");
     for (const p of ctx.configProblems) console.log(`问题：${p}`);
+  }
+  if (ctx.danger) {
+    console.log("");
+    console.log(`危险授权（${DANGER_AUTH_ENV}）：${ctx.danger.tokens.length ? ctx.danger.tokens.join(",") : "未设置"}`);
+    if (ctx.danger.budgetOffRequested) {
+      console.log(`  · 配置要求关闭预算：${ctx.danger.budgetOffAuthorized ? "已授权生效" : "未授权，已忽略"}`);
+    }
+    if (ctx.danger.reserveBreachRequested) {
+      console.log(`  · 配置要求 allowReserveBreach：${ctx.danger.reserveBreachAuthorized ? "已授权生效" : "未授权，已关闭"}`);
+    }
+    if (ctx.danger.reserveLowerRequested) {
+      console.log(`  · 配置降低系统保留：${ctx.danger.reserveDeclaredMb} MB（基线 ` +
+        `${ctx.danger.reserveBaselineMb} MB）→ ${ctx.danger.reserveLowerAuthorized ? "已授权生效" : "未授权，有效值回到基线"}`);
+    }
+    for (const b of ctx.danger.blocked) console.log(`  · ${b}`);
   }
   return ctx.configProblems.length ? EXIT.usage : EXIT.ok;
 }

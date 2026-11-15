@@ -367,7 +367,7 @@ impl ClipboardRuntime {
         let self_write = Arc::new(AtomicU32::new(platform::current_sequence()));
         let paste =
             paste::PasteManager::new(db.clone(), root.clone(), app.clone(), self_write.clone());
-        Arc::new(Self {
+        let rt = Arc::new(Self {
             db,
             root,
             app,
@@ -382,7 +382,38 @@ impl ClipboardRuntime {
             maintenance_stop: Arc::new((Mutex::new(false), Condvar::new())),
             maintenance_alive: Arc::new(AtomicUsize::new(0)),
             capture_draining: Arc::new(AtomicUsize::new(0)),
-        })
+        });
+        // 启动恢复在构造阶段无条件执行，与监听开关/暂停状态解耦（见方法注释）。
+        rt.recover_stale_paste_jobs();
+        rt
+    }
+
+    /// 启动阶段收尾上一次进程留下的「运行中」粘贴任务。
+    ///
+    /// 与维护线程/监听开关解耦：无论 `clipboard_enabled`、`clipboard_paused` 如何，
+    /// 运行时构造时都执行一次；不再挂在维护线程被 `enabled && !paused` 门控的清理分支里。
+    /// 只改数据库状态：残留 `running` → `interrupted`，`dispatching` 条目 → `uncertain`
+    /// 并并入历史 uncertain 集合；**绝不自动续发**（不调用 SendInput、不 spawn 粘贴任务）。
+    /// 幂等：第二次执行找不到 `running AND ended_at IS NULL` 的任务，空转返回。
+    ///
+    /// 失败不静默吞掉：打错误日志并并发稳定诊断码事件 `PASTE_JOB_STARTUP_RECOVERY_FAILED`，
+    /// 带错误详情。构造时 `PasteManager` 为全新实例、内存中无活动任务，恢复只动库状态，
+    /// 与 `paste.is_active()` 语义不冲突。
+    pub fn recover_stale_paste_jobs(self: &Arc<Self>) {
+        match store::interrupt_stale_paste_jobs(&self.db) {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("启动收尾粘贴任务失败: {e}");
+                let _ = self.app.emit(
+                    "clipboard-paste-diagnostic",
+                    serde_json::json!({
+                        "severity": "error",
+                        "code": "PASTE_JOB_STARTUP_RECOVERY_FAILED",
+                        "message": e.to_string(),
+                    }),
+                );
+            }
+        }
     }
 
     /// 启动监听与后台维护。监听失败只降级为「不自动记录」，不阻塞应用启动。
@@ -552,7 +583,8 @@ impl ClipboardRuntime {
                         // 粘贴进行中不做清理：删除条目/资产会让正在发送的素材
                         // 在下一项读取时消失，宁可推迟到下一轮。
                         if !runtime.paste.is_active() {
-                            let _ = store::interrupt_stale_paste_jobs(&runtime.db);
+                            // 残留 running 任务的收尾已移到运行时构造阶段
+                            // （`recover_stale_paste_jobs`），不受监听开关/暂停门控。
                             // 与采集入库/清空互斥：入库线程先写资产文件再插库，
                             // 清理若在两步之间扫目录，会把新采集的图片当成孤儿删掉。
                             let _gate = runtime

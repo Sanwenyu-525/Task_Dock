@@ -3149,6 +3149,7 @@ export const zhCN = {
   "capsule.recentShelf.locate": "在暂存架中查看",
 
   // ── 开发工作台（2026-11）──
+  "workbench.pageTitle": "开发工作台",
   "workbench.subtitle": "当前任务 · Agent 状态 · 待处理事项",
   "workbench.currentTask": "当前开发任务",
   "workbench.currentTaskEmpty": "还没有当前任务",
@@ -3335,6 +3336,7 @@ export const zhCN = {
   "devwork.handoff.linkedToTask": "关联当前任务",
   "devwork.handoff.draftBadge": "无任务草稿",
   "devwork.handoff.hint": "按固定模板整理交接信息；留空的节不会写入 Markdown。",
+  "devwork.handoff.moreSections": "展开其余 8 节（可选）",
   "devwork.handoff.packTitle": "交接包标题",
   "devwork.handoff.untitled": "未命名交接包",
   "devwork.handoff.sec.background": "项目背景",

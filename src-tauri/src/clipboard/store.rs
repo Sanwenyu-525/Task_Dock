@@ -2387,40 +2387,69 @@ pub fn finish_paste_job(
     })
 }
 
-/// 最近一个「可以继续」的任务：暂停或进程中断、且仍留有未处理条目。
-/// 页面重新打开、应用重启后都靠它把任务找回来——`active_job` 只覆盖内存里正在跑的任务。
-pub fn latest_resumable_paste_job(db: &Db) -> AppResult<Option<PasteJob>> {
+/// 「可恢复」谓词（第三轮收口重定义）：
+///
+/// 满足任一即可，且状态必须属于 `paused` / `interrupted` / `failed`：
+/// a) 收敛后仍有剩余条目；b) 存在尚未解决的 uncertain 项。
+///
+/// 明确排除：`completed`；`running`（本进程活动任务，不由本查询找回）；
+/// `cancelled`；uncertain 已全部解决；剩余条目在「底层条目已不存在」过滤后为空
+/// 且无 unresolved uncertain 的任务。
+fn job_is_resumable(job: &PasteJob) -> bool {
+    if !matches!(
+        job.status.as_str(),
+        "paused" | "interrupted" | "failed"
+    ) {
+        return false;
+    }
+    !job.remaining_items.is_empty() || !job.uncertain_items.is_empty()
+}
+
+/// 收敛一个任务的剩余队列：只保留 `clipboard_items` 中仍存在的条目。
+fn reconcile_remaining(conn: &Connection, job: &mut PasteJob) {
+    job.remaining_items
+        .retain(|item| get_item_quiet(conn, item).is_some());
+}
+
+/// 全部「可以继续」的任务，按 `started_at DESC`（同刻按 id 倒序）。
+///
+/// 与旧的单值查询不同：旧任务不会被更新的新任务静默覆盖。`group_id` 为 `None`
+/// 时返回全部分组；传入则只返回该分组。返回前每个任务都收敛一次剩余队列。
+pub fn resumable_paste_jobs(
+    db: &Db,
+    group_id: Option<&str>,
+) -> AppResult<Vec<PasteJob>> {
     db.with_conn(|conn| {
-        let id: Option<String> = conn
-            .query_row(
-                "SELECT id FROM clipboard_paste_jobs
-                 WHERE status IN ('paused', 'interrupted')
-                   AND remaining_items NOT IN ('', '[]')
-                 ORDER BY started_at DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match id {
-            Some(id) => {
-                // 顺带收敛崩溃锚点，保证用户看到的数量与数据库一致。
-                let mut job = conn
-                    .query_row(
-                        "SELECT id, group_id, target_title, target_exe, status, total, sent, started_at,
-                                ended_at, message, remaining_items, uncertain_items, restored
-                         FROM clipboard_paste_jobs WHERE id = ?1",
-                        params![id],
-                        row_to_paste_job,
-                    )
-                    .optional()?
-                    .ok_or_else(|| AppError::NotFound("粘贴任务不存在".into()))?;
-                job.remaining_items
-                    .retain(|item| get_item_quiet(conn, item).is_some());
-                Ok(Some(job))
-            }
-            None => Ok(None),
+        let mut sql = String::from(
+            "SELECT id, group_id, target_title, target_exe, status, total, sent, started_at,
+                    ended_at, message, remaining_items, uncertain_items, restored
+             FROM clipboard_paste_jobs
+             WHERE (status IN ('paused', 'interrupted', 'failed')
+                OR uncertain_items NOT IN ('', '[]'))",
+        );
+        let mut args: Vec<Value> = Vec::new();
+        if let Some(group) = group_id {
+            sql.push_str(" AND group_id = ?");
+            args.push(Value::from(group.to_string()));
         }
+        sql.push_str(" ORDER BY started_at DESC, id DESC");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(args), |r| row_to_paste_job(r))?;
+        let mut jobs: Vec<PasteJob> = rows.collect::<Result<Vec<_>, _>>()?;
+        for job in &mut jobs {
+            reconcile_remaining(conn, job);
+        }
+        jobs.retain(|j| job_is_resumable(j));
+        Ok(jobs)
     })
+}
+
+/// 最近一个「可以继续」的任务（兼容旧调用方）。
+///
+/// 内部复用 [`resumable_paste_jobs`] 的新谓词，行为不回退：旧的 paused/interrupted
+/// 有剩余仍会命中，同时覆盖 failed 有剩余、以及只有 unresolved uncertain 的任务。
+pub fn latest_resumable_paste_job(db: &Db) -> AppResult<Option<PasteJob>> {
+    Ok(resumable_paste_jobs(db, None)?.into_iter().next())
 }
 
 fn row_to_paste_job(r: &rusqlite::Row<'_>) -> rusqlite::Result<PasteJob> {
@@ -2659,6 +2688,20 @@ pub fn resolve_uncertain_item(
             "pending",
             Some("用户确认未接收，已排入重发（需再次点击继续）"),
         )?;
+        // 重新进入 pending 属于一次全新尝试，必须清掉上一轮的终态/投递痕迹：
+        // - finished_at 非空会让 UI 误以为本项已完成，也可能让恢复查询误判；
+        // - dispatch_started_at 必须在下一次发送时才重新写；
+        // - key_sent / confirmed / retry_safe 表达「当前尝试」语义：新一轮尚未发按键、
+        //   未确认，因此 key_sent=0、confirmed=0、retry_safe=1。
+        //   历史「上一轮曾发过按键」在现有列模型下不单独保留；如需跨尝试留痕，
+        //   需要新增 attempt 计数列（见第三轮收口回报，本轮不加迁移）。
+        conn.execute(
+            "UPDATE clipboard_paste_items
+             SET finished_at = NULL, dispatch_started_at = NULL,
+                 key_sent = 0, confirmed = 0, retry_safe = 1
+             WHERE job_id = ?1 AND item_id = ?2",
+            params![job_id, item_id],
+        )?;
         Ok(())
     })
 }
@@ -2725,6 +2768,40 @@ pub fn record_paste_step(
             params![sent, serde_json::to_string(remaining)?, "运行中", job_id],
         )?;
         write_paste_item_state(conn, job_id, item_id, state, note)
+    })
+}
+
+/// `InputSent` 专用落库：任务计数（`next_sent = 当前 sent + 1`）、剩余队列剔除本项、
+/// 逐项 `input_sent` 状态必须在**同一个事务**内一致提交。
+///
+/// 事务内断言 sent 恰好递增 1；不一致直接返回错误，不静默写坏计数。Settling 只是
+/// 后续观察阶段，不再回写 sent/remaining。这样即使进程在 InputSent 提交后、
+/// Settling 落库前退出，重启后计数与逐项状态也一致，该项不会既不在 remaining 也不在
+/// sent 里，更不会被重发。
+pub fn record_paste_input_sent_step(
+    db: &Db,
+    job_id: &str,
+    next_sent: i64,
+    remaining: &[String],
+    item_id: &str,
+    note: Option<&str>,
+) -> AppResult<()> {
+    db.with_transaction(|conn| {
+        let current: i64 = conn.query_row(
+            "SELECT sent FROM clipboard_paste_jobs WHERE id = ?1",
+            params![job_id],
+            |r| r.get(0),
+        )?;
+        if next_sent != current + 1 {
+            return Err(AppError::Validation(format!(
+                "InputSent 计数不一致：当前 sent={current}，提交 sent={next_sent}（应恰好 +1）"
+            )));
+        }
+        conn.execute(
+            "UPDATE clipboard_paste_jobs SET sent = ?1, remaining_items = ?2, message = ?3 WHERE id = ?4",
+            params![next_sent, serde_json::to_string(remaining)?, "运行中", job_id],
+        )?;
+        write_paste_item_state(conn, job_id, item_id, "input_sent", note)
     })
 }
 
@@ -5319,5 +5396,612 @@ mod tests {
         drop(holder);
         let row = get_paste_job(&db, &job).unwrap();
         assert_eq!(row.sent, 0);
+    }
+
+    // ── 第三轮收口：启动恢复解耦 / 可恢复列表 / InputSent 计数 / uncertain 语义 ──
+
+    fn seed_job_with_items(
+        db: &Db,
+        root: &Path,
+        s: &Settings,
+        texts: &[&str],
+        group_id: &str,
+    ) -> (Vec<String>, String) {
+        let ids: Vec<String> = texts
+            .iter()
+            .map(|t| record_capture(db, root, &text_payload(t), s).unwrap().item.id)
+            .collect();
+        let job = create_paste_job(db, group_id, "记事本", "notepad.exe", &ids).unwrap();
+        seed_paste_items(db, &job, &ids, 0).unwrap();
+        (ids, job)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn set_job_row(
+        db: &Db,
+        job: &str,
+        status: &str,
+        sent: i64,
+        remaining: &[String],
+        uncertain: &[String],
+        started_at: &str,
+    ) {
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE clipboard_paste_jobs SET status=?1, sent=?2, remaining_items=?3,
+                    uncertain_items=?4, started_at=?5, ended_at=NULL WHERE id=?6",
+                params![
+                    status,
+                    sent,
+                    serde_json::to_string(remaining)?,
+                    serde_json::to_string(uncertain)?,
+                    started_at,
+                    job
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    // ── 3.1 启动恢复：与监听开关/暂停解耦 ──
+
+    #[test]
+    fn startup_recovery_marks_running_jobs_interrupted() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (_ids, job) = seed_job_with_items(&db, &root.0, &s, &["一"], "");
+        // 恢复函数本身不读取 clipboard_enabled / clipboard_paused（签名无 Settings），
+        // 因此启用/停用/暂停重启都会走到同一段收尾。
+        assert_eq!(interrupt_stale_paste_jobs(&db).unwrap(), 1);
+        assert_eq!(get_paste_job(&db, &job).unwrap().status, "interrupted");
+    }
+
+    #[test]
+    fn startup_recovery_merges_dispatching_into_historical_uncertain() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["一", "二"], "");
+        // 历史已有 uncertain：二。
+        finish_paste_job(
+            &db,
+            &job,
+            "failed",
+            0,
+            &ids,
+            std::slice::from_ref(&ids[1]),
+            "历史不确定",
+            false,
+        )
+        .unwrap();
+        // 恢复前把任务拨回 running（模拟上一轮进程退出时仍在运行），保留历史 uncertain。
+        set_job_row(&db, &job, "running", 0, &ids, &[ids[1].clone()], "2026-01-01T00:00:00Z");
+        record_paste_step(&db, &job, 0, &ids, &ids[0], "dispatching", None).unwrap();
+        interrupt_stale_paste_jobs(&db).unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert!(row.uncertain_items.contains(&ids[0]), "崩溃锚点必须并入 uncertain");
+        assert!(
+            row.uncertain_items.contains(&ids[1]),
+            "历史 uncertain 不得被覆盖"
+        );
+    }
+
+    #[test]
+    fn startup_recovery_keeps_input_sent_item_out_of_uncertain() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["一", "二"], "");
+        record_paste_input_sent_step(
+            &db,
+            &job,
+            1,
+            std::slice::from_ref(&ids[1]),
+            &ids[0],
+            None,
+        )
+        .unwrap();
+        interrupt_stale_paste_jobs(&db).unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert!(
+            !row.uncertain_items.contains(&ids[0]),
+            "input_sent 项不得被转成 uncertain"
+        );
+        let item = list_paste_items(&db, &job)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item_id == ids[0])
+            .unwrap();
+        assert_eq!(item.state, "input_sent");
+    }
+
+    #[test]
+    fn startup_recovery_handles_multiple_historical_jobs() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (_i1, j1) = seed_job_with_items(&db, &root.0, &s, &["一"], "");
+        let (_i2, j2) = seed_job_with_items(&db, &root.0, &s, &["二"], "");
+        assert_eq!(interrupt_stale_paste_jobs(&db).unwrap(), 2);
+        assert_eq!(get_paste_job(&db, &j1).unwrap().status, "interrupted");
+        assert_eq!(get_paste_job(&db, &j2).unwrap().status, "interrupted");
+    }
+
+    #[test]
+    fn startup_recovery_is_idempotent() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (_ids, job) = seed_job_with_items(&db, &root.0, &s, &["一"], "");
+        assert_eq!(interrupt_stale_paste_jobs(&db).unwrap(), 1);
+        assert_eq!(interrupt_stale_paste_jobs(&db).unwrap(), 0);
+        assert_eq!(get_paste_job(&db, &job).unwrap().status, "interrupted");
+    }
+
+    #[test]
+    fn startup_recovery_readonly_db_reports_error_without_panic() {
+        let tmp = TempRoot::new();
+        let db_path = tmp.0.join("app.db");
+        let (_ids, job) = {
+            let db = Db::open(&db_path).unwrap();
+            let root = TempRoot::new();
+            let s = settings();
+            seed_job_with_items(&db, &root.0, &s, &["一"], "")
+        };
+        let db = Db::open(&db_path).unwrap();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "query_only", true)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let err = interrupt_stale_paste_jobs(&db).expect_err("只读库必须报错，而不是 panic");
+        assert!(!err.to_string().is_empty());
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "query_only", false)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(row.status, "running", "失败的恢复不得改写原状态");
+    }
+
+    #[test]
+    fn startup_recovery_busy_db_reports_error() {
+        let tmp = TempRoot::new();
+        let db_path = tmp.0.join("app.db");
+        let (_ids, _job) = {
+            let db = Db::open(&db_path).unwrap();
+            let root = TempRoot::new();
+            let s = settings();
+            seed_job_with_items(&db, &root.0, &s, &["一"], "")
+        };
+        let db = Db::open(&db_path).unwrap();
+        db.with_conn(|conn| {
+            conn.busy_timeout(std::time::Duration::from_millis(1))?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let holder = rusqlite::Connection::open(&db_path).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let err = interrupt_stale_paste_jobs(&db).expect_err("持锁写入必须报错");
+        assert!(!err.to_string().is_empty());
+        holder.execute_batch("ROLLBACK;").unwrap();
+        drop(holder);
+    }
+
+    // ── 3.2 可恢复任务列表 ──
+
+    #[test]
+    fn resumable_jobs_lists_candidates_in_started_at_desc_order() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (i1, j1) = seed_job_with_items(&db, &root.0, &s, &["甲"], "");
+        let (i2, j2) = seed_job_with_items(&db, &root.0, &s, &["乙"], "");
+        let (i3, j3) = seed_job_with_items(&db, &root.0, &s, &["丙"], "");
+        set_job_row(&db, &j1, "paused", 0, &i1, &[], "2026-01-01T00:00:01Z");
+        set_job_row(&db, &j2, "failed", 0, &i2, &[], "2026-01-01T00:00:03Z");
+        // j3 只有 unresolved uncertain，剩余为空。
+        set_job_row(&db, &j3, "interrupted", 0, &[], &i3, "2026-01-01T00:00:02Z");
+        let jobs = resumable_paste_jobs(&db, None).unwrap();
+        let order: Vec<String> = jobs.iter().map(|j| j.id.clone()).collect();
+        assert_eq!(order, vec![j2.clone(), j3.clone(), j1.clone()]);
+    }
+
+    #[test]
+    fn resumable_jobs_filters_by_group_id() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ia, ja) = seed_job_with_items(&db, &root.0, &s, &["甲"], "g1");
+        let (ib, jb) = seed_job_with_items(&db, &root.0, &s, &["乙"], "g2");
+        set_job_row(&db, &ja, "paused", 0, &ia, &[], "2026-01-01T00:00:01Z");
+        set_job_row(&db, &jb, "paused", 0, &ib, &[], "2026-01-01T00:00:02Z");
+        let g1 = resumable_paste_jobs(&db, Some("g1")).unwrap();
+        assert_eq!(g1.len(), 1);
+        assert_eq!(g1[0].id, ja);
+    }
+
+    #[test]
+    fn resumable_jobs_excludes_completed_cancelled_and_resolved() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (_ic, jc) = seed_job_with_items(&db, &root.0, &s, &["完成"], "");
+        set_job_row(&db, &jc, "completed", 1, &[], &[], "2026-01-01T00:00:01Z");
+        let (_ix, jx) = seed_job_with_items(&db, &root.0, &s, &["取消"], "");
+        set_job_row(&db, &jx, "cancelled", 0, &[], &[], "2026-01-01T00:00:02Z");
+        let (ir, jr) = seed_job_with_items(&db, &root.0, &s, &["已确认"], "");
+        set_job_row(&db, &jr, "interrupted", 0, &[], &ir, "2026-01-01T00:00:03Z");
+        resolve_uncertain_item(&db, &jr, &ir[0], "received").unwrap();
+        let jobs = resumable_paste_jobs(&db, None).unwrap();
+        assert!(jobs.is_empty());
+    }
+
+    #[test]
+    fn resumable_jobs_keeps_older_job_when_newer_exists() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (io, jo) = seed_job_with_items(&db, &root.0, &s, &["旧"], "");
+        let (in_, jn) = seed_job_with_items(&db, &root.0, &s, &["新"], "");
+        set_job_row(&db, &jo, "paused", 0, &io, &[], "2026-01-01T00:00:01Z");
+        set_job_row(&db, &jn, "paused", 0, &in_, &[], "2026-01-01T00:00:02Z");
+        let jobs = resumable_paste_jobs(&db, None).unwrap();
+        assert_eq!(jobs.len(), 2, "旧任务不得被新任务静默覆盖");
+        assert!(jobs.iter().any(|j| j.id == jo));
+        assert!(jobs.iter().any(|j| j.id == jn));
+    }
+
+    #[test]
+    fn resumable_jobs_filters_deleted_items_from_remaining() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["甲", "乙"], "");
+        set_job_row(&db, &job, "paused", 0, &ids, &[], "2026-01-01T00:00:01Z");
+        delete_items(&db, &root.0, &[ids[0].clone()]).unwrap();
+        let jobs = resumable_paste_jobs(&db, None).unwrap();
+        let row = jobs.iter().find(|j| j.id == job).unwrap();
+        assert_eq!(
+            row.remaining_items,
+            vec![ids[1].clone()],
+            "已删除条目必须被收敛掉"
+        );
+
+        // 唯一剩余条目已被删除、又无 uncertain：任务不得出现在列表里。
+        let (ids2, job2) = seed_job_with_items(&db, &root.0, &s, &["丙"], "");
+        set_job_row(&db, &job2, "paused", 0, &ids2, &[], "2026-01-01T00:00:02Z");
+        delete_items(&db, &root.0, &[ids2[0].clone()]).unwrap();
+        let jobs2 = resumable_paste_jobs(&db, None).unwrap();
+        assert!(jobs2.iter().find(|j| j.id == job2).is_none());
+    }
+
+    #[test]
+    fn latest_resumable_paste_job_compat_returns_newest() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (io, jo) = seed_job_with_items(&db, &root.0, &s, &["旧"], "");
+        let (in_, jn) = seed_job_with_items(&db, &root.0, &s, &["新"], "");
+        set_job_row(&db, &jo, "paused", 0, &io, &[], "2026-01-01T00:00:01Z");
+        set_job_row(&db, &jn, "paused", 0, &in_, &[], "2026-01-01T00:00:02Z");
+        let latest = latest_resumable_paste_job(&db).unwrap().unwrap();
+        assert_eq!(latest.id, jn);
+    }
+
+    // ── 3.4 InputSent 计数时序 ──
+
+    #[test]
+    fn input_sent_step_commits_count_and_remaining_atomically() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["一", "二"], "");
+        record_paste_input_sent_step(
+            &db,
+            &job,
+            1,
+            std::slice::from_ref(&ids[1]),
+            &ids[0],
+            None,
+        )
+        .unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(row.sent, 1);
+        assert_eq!(row.remaining_items, vec![ids[1].clone()]);
+        let item = list_paste_items(&db, &job)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item_id == ids[0])
+            .unwrap();
+        assert_eq!(item.state, "input_sent");
+    }
+
+    #[test]
+    fn input_sent_step_rejects_non_incrementing_sent() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["一", "二"], "");
+        // next_sent=2 而当前 sent=0：不是恰好 +1，必须报错而不是静默写坏计数。
+        let err = record_paste_input_sent_step(
+            &db,
+            &job,
+            2,
+            std::slice::from_ref(&ids[1]),
+            &ids[0],
+            None,
+        )
+        .expect_err("计数不一致必须返回错误");
+        assert!(!err.to_string().is_empty());
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(row.sent, 0);
+        assert_eq!(row.remaining_items, ids);
+    }
+
+    #[test]
+    fn input_sent_crash_reopen_keeps_consistent_state_and_skips_resend() {
+        let tmp = TempRoot::new();
+        let db_path = tmp.0.join("app.db");
+        let (ids, job) = {
+            let db = Db::open(&db_path).unwrap();
+            let root = TempRoot::new();
+            let s = settings();
+            seed_job_with_items(&db, &root.0, &s, &["一", "二"], "")
+        };
+        // 模拟「SendInput 成功 → InputSent 已落库 → Settling 未落库 → 进程退出」。
+        let db = Db::open(&db_path).unwrap();
+        record_paste_input_sent_step(
+            &db,
+            &job,
+            1,
+            std::slice::from_ref(&ids[1]),
+            &ids[0],
+            None,
+        )
+        .unwrap();
+        drop(db);
+        // 重新打开同一数据库文件，不伪造内存状态。
+        let db = Db::open(&db_path).unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(row.sent, 1, "InputSent 提交后 sent 必须已 +1");
+        assert_eq!(
+            row.remaining_items,
+            vec![ids[1].clone()],
+            "已发送项不得留在剩余队列"
+        );
+        assert!(!row.remaining_items.contains(&ids[0]));
+        let item = list_paste_items(&db, &job)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item_id == ids[0])
+            .unwrap();
+        assert_eq!(item.state, "input_sent");
+    }
+
+    #[test]
+    fn settling_step_does_not_advance_count() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["一", "二"], "");
+        record_paste_input_sent_step(
+            &db,
+            &job,
+            1,
+            std::slice::from_ref(&ids[1]),
+            &ids[0],
+            None,
+        )
+        .unwrap();
+        record_paste_step(
+            &db,
+            &job,
+            1,
+            std::slice::from_ref(&ids[1]),
+            &ids[0],
+            "settling",
+            None,
+        )
+        .unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(row.sent, 1, "Settling 观察阶段不得再推进计数");
+        assert_eq!(row.remaining_items, vec![ids[1].clone()]);
+    }
+
+    // ── 3.5 finish 持久化失败：DB 侧现场 ──
+
+    #[test]
+    fn finish_persist_failure_keeps_running_until_startup_recovery() {
+        let tmp = TempRoot::new();
+        let db_path = tmp.0.join("app.db");
+        let (ids, job) = {
+            let db = Db::open(&db_path).unwrap();
+            let root = TempRoot::new();
+            let s = settings();
+            seed_job_with_items(&db, &root.0, &s, &["一"], "")
+        };
+        let db = Db::open(&db_path).unwrap();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "query_only", true)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let err = finish_paste_job(
+            &db,
+            &job,
+            "completed",
+            1,
+            &[],
+            &[],
+            "完成",
+            false,
+        )
+        .expect_err("只读库收尾必须报错");
+        assert!(!err.to_string().is_empty());
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "query_only", false)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(row.status, "running", "持久化失败不得把任务写成完成态");
+        // 重启后由启动恢复识别为 interrupted（与 3.1 串起来，同一数据库文件验证）。
+        assert_eq!(interrupt_stale_paste_jobs(&db).unwrap(), 1);
+        assert_eq!(get_paste_job(&db, &job).unwrap().status, "interrupted");
+        let _ = ids;
+    }
+
+    // ── 3.6 uncertain 安全语义与字段自洽 ──
+
+    #[test]
+    fn resend_clears_terminal_markers_and_resets_per_attempt_flags() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["甲", "乙", "丙"], "");
+        finish_paste_job(
+            &db,
+            &job,
+            "failed",
+            2,
+            std::slice::from_ref(&ids[1]),
+            std::slice::from_ref(&ids[0]),
+            "不确定",
+            false,
+        )
+        .unwrap();
+        // 显式落到 uncertain 终态（写 finished_at/key_sent），并残留上一轮投递时间，
+        // 验证 resend 回 pending 时这些痕迹被清掉。
+        record_paste_item_state(&db, &job, &ids[0], "uncertain", Some("不确定")).unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE clipboard_paste_items SET dispatch_started_at = ?1
+                 WHERE job_id = ?2 AND item_id = ?3",
+                params!["2026-01-01T00:00:00Z", job, ids[0]],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        resolve_uncertain_item(&db, &job, &ids[0], "resend").unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(
+            row.remaining_items,
+            vec![ids[0].clone(), ids[1].clone()],
+            "重发按原始 position 升序排回队列"
+        );
+        let item = list_paste_items(&db, &job)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item_id == ids[0])
+            .unwrap();
+        assert_eq!(item.state, "pending");
+        assert!(item.finished_at.is_none(), "pending 阶段不得残留 finished_at");
+        assert!(
+            item.dispatch_started_at.is_none(),
+            "重新 pending 必须清空 dispatch_started_at"
+        );
+        assert!(!item.key_sent, "新一轮尝试尚未发按键");
+        assert!(!item.confirmed);
+        assert!(item.retry_safe, "新一轮未发按键，可安全重试");
+    }
+
+    #[test]
+    fn received_confirms_and_removes_from_unresolved_set() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["一", "二"], "");
+        finish_paste_job(
+            &db,
+            &job,
+            "failed",
+            1,
+            std::slice::from_ref(&ids[1]),
+            std::slice::from_ref(&ids[0]),
+            "不确定",
+            false,
+        )
+        .unwrap();
+        resolve_uncertain_item(&db, &job, &ids[0], "received").unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert!(row.uncertain_items.is_empty());
+        let item = list_paste_items(&db, &job)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item_id == ids[0])
+            .unwrap();
+        assert_eq!(item.state, "confirmed");
+        assert!(item.confirmed);
+    }
+
+    #[test]
+    fn uncertain_stays_uncertain_across_repeated_recovery() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["一", "二"], "");
+        finish_paste_job(
+            &db,
+            &job,
+            "failed",
+            1,
+            std::slice::from_ref(&ids[1]),
+            std::slice::from_ref(&ids[0]),
+            "不确定",
+            false,
+        )
+        .unwrap();
+        interrupt_stale_paste_jobs(&db).unwrap();
+        interrupt_stale_paste_jobs(&db).unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert!(row.uncertain_items.contains(&ids[0]), "不处置时不得自动移除");
+        let item = list_paste_items(&db, &job)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item_id == ids[0])
+            .unwrap();
+        assert_eq!(item.state, "uncertain", "不确定项绝不自动变 pending");
+    }
+
+    #[test]
+    fn two_uncertain_items_resolved_independently() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let (ids, job) = seed_job_with_items(&db, &root.0, &s, &["甲", "乙", "丙"], "");
+        finish_paste_job(
+            &db,
+            &job,
+            "failed",
+            1,
+            std::slice::from_ref(&ids[2]),
+            &[ids[0].clone(), ids[1].clone()],
+            "两项不确定",
+            false,
+        )
+        .unwrap();
+        // 甲确认已接收；乙明确要求重发。两项处置互不影响。
+        resolve_uncertain_item(&db, &job, &ids[0], "received").unwrap();
+        resolve_uncertain_item(&db, &job, &ids[1], "resend").unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert!(row.uncertain_items.is_empty());
+        assert!(!row.remaining_items.contains(&ids[0]), "confirmed 项不回队列");
+        assert!(row.remaining_items.contains(&ids[1]), "resend 项回队列");
+        let a = list_paste_items(&db, &job)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item_id == ids[0])
+            .unwrap();
+        let b = list_paste_items(&db, &job)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.item_id == ids[1])
+            .unwrap();
+        assert_eq!(a.state, "confirmed");
+        assert_eq!(b.state, "pending");
     }
 }

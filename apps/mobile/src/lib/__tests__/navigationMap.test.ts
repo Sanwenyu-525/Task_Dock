@@ -13,13 +13,13 @@ describe("NAVIGATION_MAP", () => {
     }
   });
 
-  it("任务仍是一级栏；收集箱与笔记改为工具栏下的二级页", () => {
+  it("任务仍是一级栏；收集箱与笔记的主归属在工作区，工具页只保留快捷动作", () => {
     const tasks = NAVIGATION_MAP.find((mapping) => mapping.legacy === "tasks");
     expect(tasks).toMatchObject({ primary: "tasks", via: "tab" });
 
     for (const legacy of ["inbox", "notes"] as const) {
       const mapping = NAVIGATION_MAP.find((item) => item.legacy === legacy);
-      expect(mapping).toMatchObject({ primary: "tools", via: "push" });
+      expect(mapping).toMatchObject({ primary: "workspace", via: "push" });
       expect(mapping?.shortcuts).toContain("home");
     }
   });

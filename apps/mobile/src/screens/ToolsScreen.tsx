@@ -1,26 +1,23 @@
-// 工具页：真实入口（常用工具 / 应用导航 / 快捷操作 / 诊断中心）+ 未接入能力降饱和占位（更多功能）。
+// 工具页：真实入口（常用工具 / 快捷操作）+ 未接入能力中性占位（应用导航 / 更多功能）。
 //
 // 数据边界（见 tmp/acceptance/mobile-ui-unified/01-audit.md 第 2 节）：
-// - 本机真实能力：采集中心、快速笔记、本机素材暂存、文件互传、诊断中心、通知、配对、导入；
-// - 项目空间 / 功能看板在移动端没有数据链路，入口可点，但落地为统一占位页；
-// - 剪贴板、投屏、代码片段 / API 调试等桌面端能力在移动端未实现，只做中性占位，不可点；
+// - 本机真实能力：采集中心、快速笔记、诊断中心、拍照 / 扫码 / 导入、配对；
+// - 项目空间 / 功能看板 / 剪贴板 / 投屏等桌面端能力在移动端未实现，只做中性占位，不可点；
+// - 收集箱、笔记、文件互传、通知、工作区、任务的主归属在工作区 / 我的，本页不再重复目录；
 // - 没有收藏数据与收藏能力，本页不渲染「已收藏」分区，也不伪造收藏项。
 //
 // 搜索只对本页入口名称做本地字符串过滤，不联网、不造假结果。
 import { useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 
-import { EntryRow } from "../components/EntryRow";
 import { FeatureIconPlaceholder } from "../components/FeatureIconPlaceholder";
 import { GlassCard } from "../components/GlassCard";
 import { IconEntry } from "../components/IconEntry";
-import { IconTile } from "../components/IconTile";
-import { PressableScale } from "../components/PressableScale";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { SearchField } from "../components/SearchField";
 import { SectionHeader } from "../components/SectionHeader";
 import type { IconName } from "../components/icons/AppIcon";
-import type { AppNav, RouteKey, TabKey } from "../lib/nav";
+import type { AppNav, RouteKey } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
@@ -29,13 +26,6 @@ interface RealEntry {
   label: string;
   hint?: string;
   onPress: () => void;
-}
-
-/** 可点但落地为未接入占位页：中性底板 + 灰字，与真实入口一眼可分 */
-interface PlaceholderLinkEntry {
-  icon: IconName;
-  label: string;
-  route: RouteKey;
 }
 
 /** 未接入且不可点：纯展示占位 */
@@ -47,6 +37,9 @@ interface PlaceholderEntry {
 export function ToolsScreen({ nav }: { nav: AppNav }) {
   const { tokens } = useTheme();
   const [query, setQuery] = useState("");
+  // 常用工具网格：≤340dp（320dp 窄屏）三列，更宽四列；按实际窗口宽度断点，不按 density 硬编码
+  const { width } = useWindowDimensions();
+  const commonThreeCol = width <= 340;
 
   const match = (label: string) => {
     const keyword = query.trim().toLowerCase();
@@ -54,7 +47,6 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
   };
 
   const push = (route: RouteKey) => () => nav.push(route);
-  const openTab = (tab: TabKey) => () => nav.openTab(tab);
 
   const common: RealEntry[] = [
     {
@@ -64,35 +56,18 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
       onPress: push("capture_home"),
     },
     { icon: "noteNew", label: "快速笔记", hint: "直接新建一条笔记", onPress: push("note_editor") },
-    {
-      icon: "fileStack",
-      label: "本机素材暂存",
-      hint: "本次采集尚未保存的文件",
-      onPress: push("capture_stash"),
-    },
-    { icon: "transfer", label: "文件互传", hint: "与已配对桌面端互传文件", onPress: push("files") },
     { icon: "gauge", label: "诊断中心", hint: "本地自检、冲突与待发操作", onPress: push("diagnostics") },
-    { icon: "bell", label: "通知", hint: "提醒权限、动作与后台限制", onPress: push("notifications") },
   ];
 
-  const navReal: RealEntry[] = [
-    { icon: "workspace", label: "工作区", onPress: openTab("workspace") },
-    { icon: "tasks", label: "任务", onPress: openTab("tasks") },
-    { icon: "inbox", label: "收集箱", onPress: push("inbox") },
-    { icon: "note", label: "笔记", onPress: push("notes") },
-    { icon: "transfer", label: "文件互传", onPress: push("files") },
-  ];
-
-  const navPlaceholder: PlaceholderLinkEntry[] = [
-    { icon: "project", label: "项目空间", route: "project_detail" },
-    { icon: "list", label: "功能看板", route: "feature_board" },
+  const navPlaceholder: PlaceholderEntry[] = [
+    { icon: "project", label: "项目空间" },
+    { icon: "list", label: "功能看板" },
   ];
 
   const quickReal: RealEntry[] = [
     { icon: "camera", label: "拍照上传", onPress: push("capture_camera") },
     { icon: "qr", label: "扫码配对", onPress: push("pairing") },
     { icon: "gallery", label: "相册/文件导入", onPress: push("capture_import") },
-    { icon: "send", label: "文件发送", onPress: push("files") },
   ];
 
   const quickPlaceholder: PlaceholderEntry[] = [
@@ -114,7 +89,6 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
   ];
 
   const filteredCommon = common.filter((item) => match(item.label));
-  const filteredNavReal = navReal.filter((item) => match(item.label));
   const filteredNavPlaceholder = navPlaceholder.filter((item) => match(item.label));
   const filteredQuickReal = quickReal.filter((item) => match(item.label));
   const filteredQuickPlaceholder = quickPlaceholder.filter((item) => match(item.label));
@@ -123,7 +97,6 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
   const nothingMatched =
     searching &&
     filteredCommon.length === 0 &&
-    filteredNavReal.length === 0 &&
     filteredNavPlaceholder.length === 0 &&
     filteredQuickReal.length === 0 &&
     filteredQuickPlaceholder.length === 0 &&
@@ -155,61 +128,29 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
                 <GlassCard style={styles.gridCard}>
                   <View style={styles.grid}>
                     {filteredCommon.map((item) => (
-                      <IconEntry
+                      <View
                         key={item.label}
-                        icon={item.icon}
-                        label={item.label}
-                        onPress={item.onPress}
-                        accessibilityHint={item.hint}
-                      />
+                        style={[styles.cell, commonThreeCol ? styles.cellThird : null]}
+                      >
+                        <IconEntry
+                          icon={item.icon}
+                          label={item.label}
+                          onPress={item.onPress}
+                          accessibilityHint={item.hint}
+                        />
+                      </View>
                     ))}
                   </View>
                 </GlassCard>
               </View>
             ) : null}
 
-            {filteredNavReal.length > 0 || filteredNavPlaceholder.length > 0 ? (
+            {filteredNavPlaceholder.length > 0 ? (
               <View style={styles.group}>
                 <SectionHeader icon="tools" title="应用导航" />
                 <GlassCard style={styles.gridCard}>
                   <View style={styles.grid}>
-                    {filteredNavReal.map((item) => (
-                      <IconEntry
-                        key={item.label}
-                        icon={item.icon}
-                        label={item.label}
-                        onPress={item.onPress}
-                        accessibilityHint={item.hint}
-                      />
-                    ))}
                     {filteredNavPlaceholder.map((item) => (
-                      <PlaceholderLinkCell
-                        key={item.label}
-                        icon={item.icon}
-                        label={item.label}
-                        onPress={push(item.route)}
-                      />
-                    ))}
-                  </View>
-                </GlassCard>
-              </View>
-            ) : null}
-
-            {filteredQuickReal.length > 0 || filteredQuickPlaceholder.length > 0 ? (
-              <View style={styles.group}>
-                <SectionHeader icon="send" title="快捷操作" />
-                <GlassCard style={styles.gridCard}>
-                  <View style={styles.grid}>
-                    {filteredQuickReal.map((item) => (
-                      <IconEntry
-                        key={item.label}
-                        icon={item.icon}
-                        label={item.label}
-                        onPress={item.onPress}
-                        accessibilityHint={item.hint}
-                      />
-                    ))}
-                    {filteredQuickPlaceholder.map((item) => (
                       <View key={item.label} style={styles.cell}>
                         <FeatureIconPlaceholder
                           icon={item.icon}
@@ -223,15 +164,31 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
               </View>
             ) : null}
 
-            {!searching ? (
+            {filteredQuickReal.length > 0 || filteredQuickPlaceholder.length > 0 ? (
               <View style={styles.group}>
-                <GlassCard level="primary" style={styles.diagCard}>
-                  <EntryRow
-                    icon="gauge"
-                    label="诊断中心"
-                    helper="本地数据库自检 · 同步冲突 · 待发操作"
-                    onPress={push("diagnostics")}
-                  />
+                <SectionHeader icon="send" title="快捷操作" />
+                <GlassCard style={styles.gridCard}>
+                  <View style={styles.grid}>
+                    {filteredQuickReal.map((item) => (
+                      <View key={item.label} style={styles.cell}>
+                        <IconEntry
+                          icon={item.icon}
+                          label={item.label}
+                          onPress={item.onPress}
+                          accessibilityHint={item.hint}
+                        />
+                      </View>
+                    ))}
+                    {filteredQuickPlaceholder.map((item) => (
+                      <View key={item.label} style={styles.cell}>
+                        <FeatureIconPlaceholder
+                          icon={item.icon}
+                          label={item.label}
+                          variant="compact"
+                        />
+                      </View>
+                    ))}
+                  </View>
                 </GlassCard>
               </View>
             ) : null}
@@ -265,34 +222,6 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
   );
 }
 
-/** 落地占位页的网格单元：中性底板 + 灰字，保留 44dp 以上热区与按压反馈 */
-function PlaceholderLinkCell({
-  icon,
-  label,
-  onPress,
-}: {
-  icon: IconName;
-  label: string;
-  onPress: () => void;
-}) {
-  const { tokens } = useTheme();
-  return (
-    <PressableScale
-      onPress={onPress}
-      accessibilityLabel={`${label}，移动端尚未接入`}
-      accessibilityRole="button"
-      style={styles.cell}
-      contentStyle={styles.cellContent}
-      scaleTo={0.94}
-    >
-      <IconTile name={icon} size={46} tone="neutral" />
-      <Text numberOfLines={2} style={[styles.cellLabel, { color: tokens.muted }]}>
-        {label}
-      </Text>
-    </PressableScale>
-  );
-}
-
 const styles = StyleSheet.create({
   root: { flex: 1 },
   searchWrap: {
@@ -321,23 +250,8 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     flexShrink: 1,
   },
-  cellContent: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-    paddingVertical: space.sm,
-    minHeight: 84,
-  },
-  cellLabel: {
-    fontSize: font.label,
-    fontWeight: "600",
-    textAlign: "center",
-    lineHeight: 16,
-  },
-  diagCard: {
-    paddingHorizontal: space.md,
-    paddingVertical: space.xxs,
-    borderWidth: 1,
+  cellThird: {
+    flexBasis: "33.333%",
   },
   footnote: {
     fontSize: font.label,

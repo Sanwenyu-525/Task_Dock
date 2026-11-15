@@ -25,6 +25,13 @@
 //! - **收尾**：切界面/改显隐/恢复默认/卸载前处理残留意图，避免「顺序」与其它
 //!   写入互相覆盖。
 //!
+//! 多实例挂载（2026-11-15）：工作台侧栏与设置页可以同时挂载本 Hook，读的是同一
+//! 份意图，但**落库只由发起这次排序的实例负责**（意图里的 `owner`）。其它实例：
+//! - 不调度合并写入（否则同一份意图会被写两次）；
+//! - 卸载时不提交别人的意图（否则设置页关闭会抢在侧栏拖拽结束前清掉意图，
+//!   表现为「拖到一半顺序突然回滚」）。
+//! 所有权随每次移动转移，最后一个移动的实例负责最终落库。
+//!
 //! 串行化仍由 `persistNavigationLayout` 的写入链保证：草稿写入与其它设置写入
 //! 按调用顺序执行，后一次读到的必然是前一次已落库的结果。
 
@@ -36,6 +43,7 @@ import type { NavSurface } from "../lib/navigationRegistry";
 import {
   clearNavOrderIntent,
   dropNavOrderIntent,
+  isNavOrderIntentOwner,
   publishNavOrderIntent,
   readNavOrderIntent,
   useNavOrderIntentVersion,
@@ -105,6 +113,8 @@ export function useNavOrderDraft(
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const surfaceRef = useRef(surface);
+  /** 本实例的写入所有权标记（同一界面多实例挂载时用于仲裁落库）。 */
+  const ownerRef = useRef<symbol>(Symbol("nav-order-draft"));
 
   // 订阅共享意图版本：发布/清除后本组件与所有导航消费者一起重渲染。
   useNavOrderIntentVersion();
@@ -179,6 +189,9 @@ export function useNavOrderDraft(
 
   const schedule = useCallback(() => {
     if (typeof window === "undefined") return;
+    // 多实例仲裁：只有发起这份意图的实例负责落库；另一个挂载点（设置页 /
+    // 工作台侧栏）只订阅同一份意图，不为它重复写库。
+    if (!isNavOrderIntentOwner(surfaceRef.current, ownerRef.current)) return;
     const now = Date.now();
     if (firstPendingAtRef.current === null) firstPendingAtRef.current = now;
     clearTimer();
@@ -190,11 +203,15 @@ export function useNavOrderDraft(
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
       firstPendingAtRef.current = null;
-      const intent = readNavOrderIntent(surfaceRef.current);
+      const targetSurface = surfaceRef.current;
+      const intent = readNavOrderIntent(targetSurface);
       if (!intent) return;
+      // 期间可能已由另一个实例发布更新的意图（所有权转移）：它自己会调度落库，
+      // 这里不能重复写入。
+      if (!isNavOrderIntentOwner(targetSurface, ownerRef.current)) return;
       // 定时器路径无人 await：`startWrite` 内部已捕获失败并就地提示，
       // 不会产生未处理 rejection。
-      void startWrite(surfaceRef.current, intent);
+      void startWrite(targetSurface, intent);
     }, delay);
   }, [clearTimer, startWrite]);
 
@@ -202,7 +219,7 @@ export function useNavOrderDraft(
     (next: string[], targetSurface: NavSurface): boolean => {
       const base = readNavOrderIntent(targetSurface)?.ids ?? committedRef.current;
       if (sameOrder(base, next)) return false;
-      publishNavOrderIntent(targetSurface, next);
+      publishNavOrderIntent(targetSurface, next, ownerRef.current);
       schedule();
       return true;
     },
@@ -283,6 +300,9 @@ export function useNavOrderDraft(
       const targetSurface = surfaceRef.current;
       const pending = inflightRef.current;
       const persistLatest = () => {
+        // 只提交自己拥有的意图：另一个挂载点（设置页 / 侧栏）仍在编辑时，
+        // 本实例卸载不得抢先清掉它的排序。
+        if (!isNavOrderIntentOwner(targetSurface, ownerRef.current)) return;
         const intent = readNavOrderIntent(targetSurface);
         if (!intent) return;
         // 先不清意图：清早了侧边栏会先回旧序再跳到新序（可见闪烁）。

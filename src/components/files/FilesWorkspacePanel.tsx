@@ -36,6 +36,15 @@ import {
   Gamepad2,
   Clapperboard,
   FolderOpen,
+  FolderSearch,
+  Pin,
+  PinOff,
+  Redo2,
+  Undo2,
+  PenLine,
+  Check,
+  AlertTriangle,
+  ChevronDown,
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
@@ -51,6 +60,7 @@ import {
   fsMovePaths,
   fsDeletePaths,
   fsPlaces,
+  fsStat,
   type FsOpReport,
   type FsPlace,
 } from "../../lib/bridge";
@@ -59,6 +69,7 @@ import {
 } from "../../lib/filesWorkspace/dirCache";
 import {
   LAYOUT_PRESETS,
+  MAX_TABS_PER_PANE,
   defaultTree,
   paneIds,
   type SplitDirection,
@@ -84,12 +95,13 @@ import {
 } from "../../lib/filesWorkspace/persist";
 import { dropTargetAt, registerFileDropConsumer, discardOperation } from "../../lib/fileDrop";
 import type { DragPayloadView } from "../../lib/dragPayload";
-import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
+import { useFilesWorkspaceStore, tabTitle } from "../../store/useFilesWorkspaceStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useWorkbenchPageActive } from "../../lib/windowHost";
 import type { WorkspaceProject } from "../../lib/bridge";
-import { parentOf } from "../../lib/filesWorkspace/pathUtils";
+import { parentOf, basename } from "../../lib/filesWorkspace/pathUtils";
+import { pickFolder, validateFolderPath, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
 
 const FilePane = lazy(() => import("./FilePane"));
 
@@ -109,9 +121,11 @@ interface SplitRenderProps {
   dropHintPane: string | null;
   dropHint: FwDropZone | null;
   onHoverZone: (zone: FwDropZone | null) => void;
+  layoutEditMode: boolean;
+  projectRoot: string | null;
 }
 
-function SplitRender({ node, pageActive, maximizedPaneId, dropHintPane, dropHint, onHoverZone }: SplitRenderProps) {
+function SplitRender({ node, pageActive, maximizedPaneId, dropHintPane, dropHint, onHoverZone, layoutEditMode, projectRoot }: SplitRenderProps) {
   const store = useFilesWorkspaceStore;
   if (node.type === "pane") {
     return (
@@ -122,6 +136,8 @@ function SplitRender({ node, pageActive, maximizedPaneId, dropHintPane, dropHint
           pageActive={pageActive}
           onHoverZone={onHoverZone}
           dropHint={dropHintPane === node.paneId ? dropHint : null}
+          layoutEditMode={layoutEditMode}
+          projectRoot={projectRoot}
         />
       </Suspense>
     );
@@ -134,6 +150,8 @@ function SplitRender({ node, pageActive, maximizedPaneId, dropHintPane, dropHint
       dropHintPane={dropHintPane}
       dropHint={dropHint}
       onHoverZone={onHoverZone}
+      layoutEditMode={layoutEditMode}
+      projectRoot={projectRoot}
     />
   );
 }
@@ -145,6 +163,8 @@ function SplitWithDivider({
   dropHintPane,
   dropHint,
   onHoverZone,
+  layoutEditMode,
+  projectRoot,
 }: SplitRenderProps & { node: Extract<SplitNode, { type: "split" }> }) {
   const ref = useRef<HTMLDivElement>(null);
   const store = useFilesWorkspaceStore;
@@ -196,6 +216,8 @@ function SplitWithDivider({
           dropHintPane={dropHintPane}
           dropHint={dropHint}
           onHoverZone={onHoverZone}
+          layoutEditMode={layoutEditMode}
+          projectRoot={projectRoot}
         />
       </div>
       <div
@@ -226,6 +248,8 @@ function SplitWithDivider({
           dropHintPane={dropHintPane}
           dropHint={dropHint}
           onHoverZone={onHoverZone}
+          layoutEditMode={layoutEditMode}
+          projectRoot={projectRoot}
         />
       </div>
     </div>
@@ -234,8 +258,48 @@ function SplitWithDivider({
 
 // ── 主面板 ──────────────────────────────────────────────────────────────
 
+/** 「打开文件夹」的落点语义：当前新标签 / 替换当前目录 / 四方向新分栏。 */
+export type OpenFolderMode = "newTab" | "replace" | "left" | "right" | "top" | "bottom";
+
 interface PanelProps {
   project: WorkspaceProject | null;
+}
+
+/** 目录行（打开文件夹对话框 / 空窗格共用）：整行可点，固定按钮独立可点。 */
+function DirRow({
+  path,
+  name,
+  pinned,
+  onOpen,
+  onPin,
+}: {
+  path: string;
+  name?: string;
+  pinned: boolean;
+  onOpen: () => void;
+  onPin?: () => void;
+}) {
+  const { t } = useLocale();
+  return (
+    <div className="fw-dir-row">
+      <button type="button" className="fw-dir-row-main" title={path} onClick={onOpen}>
+        <FolderOpen size={13} aria-hidden="true" />
+        <span className="fw-dir-row-name">{name || basename(path) || path}</span>
+        <span className="fw-dir-row-path">{path}</span>
+      </button>
+      {onPin && (
+        <button
+          type="button"
+          className="fw-icon-btn fw-dir-row-pin"
+          aria-label={pinned ? t("fw.pane.unpinDir") : t("fw.pane.pinDir")}
+          data-tip={pinned ? t("fw.pane.unpinDir") : t("fw.pane.pinDir")}
+          onClick={onPin}
+        >
+          {pinned ? <PinOff size={12} aria-hidden="true" /> : <Pin size={12} aria-hidden="true" />}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export default function FilesWorkspacePanel({ project }: PanelProps) {
@@ -248,17 +312,29 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const activePaneId = useFilesWorkspaceStore((s) => s.activePaneId);
   const maximizedPaneId = useFilesWorkspaceStore((s) => s.maximizedPaneId);
   const hydrated = useFilesWorkspaceStore((s) => s.hydrated);
+  const layoutEditMode = useFilesWorkspaceStore((s) => s.layoutEditMode);
+  const undoCount = useFilesWorkspaceStore((s) => s.layoutHistory.length);
+  const redoCount = useFilesWorkspaceStore((s) => s.layoutFuture.length);
+  const stashed = useFilesWorkspaceStore((s) => s.stashed);
+  const recentDirs = useFilesWorkspaceStore((s) => s.recentDirs);
+  const pinnedDirs = useFilesWorkspaceStore((s) => s.pinnedDirs);
   const store = useFilesWorkspaceStore;
 
   const [dropHint, setDropHint] = useState<FwDropZone | null>(null);
   const [layoutOpen, setLayoutOpen] = useState(false);
   const layoutBtnRef = useRef<HTMLButtonElement>(null);
-  const [openFolderTarget, setOpenFolderTarget] = useState<string | null>(null);
+  const [openFolder, setOpenFolder] = useState<{ paneId: string; mode: OpenFolderMode } | null>(null);
   const [openFolderPath, setFolderPath] = useState("");
+  const [pickBusy, setPickBusy] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
   const [places, setPlaces] = useState<FsPlace[]>([]);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [templateName, setTemplateName] = useState("");
   const [settingsRevision, setSettingsRevision] = useState(0);
+  /** 应用用户模板前的确认（替换整个工作现场，需明确提示并可先保存）。 */
+  const [templatePending, setTemplatePending] = useState<{ id: string; name: string } | null>(null);
+  /** 关闭其他区域时容量不足：收纳 or 取消（不得静默丢弃）。 */
+  const [closeOthersBlocked, setCloseOthersBlocked] = useState<number | null>(null);
   const hoverZoneRef = useRef<FwDropZone | null>(null);
   const hydrateGenRef = useRef(0);
   /** 已从持久化恢复过（true 后不再被「设置晚到补恢复」覆盖）。 */
@@ -329,18 +405,19 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
 
   // ── 快速位置 ────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!openFolderTarget) return;
+    if (!openFolder) return;
     void fsPlaces()
       .then(setPlaces)
       .catch(() => setPlaces([]));
-  }, [openFolderTarget]);
+  }, [openFolder]);
 
-  // 「打开文件夹」事件（空窗格 / + 按钮）
+  // 「打开文件夹」事件（空窗格 / 标签栏 + / 窗格菜单）
   useEffect(() => {
     const onOpen = (e: Event) => {
       const paneId = (e as CustomEvent<string>).detail;
       setFolderPath("");
-      setOpenFolderTarget(paneId);
+      setPickError(null);
+      setOpenFolder({ paneId, mode: "newTab" });
     };
     window.addEventListener("taskdock-fw-open-folder", onOpen);
     return () => window.removeEventListener("taskdock-fw-open-folder", onOpen);
@@ -395,36 +472,35 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       clearHints();
       if (!zone || !payload) return;
       const s = store.getState();
+      if (payload.kind === "pane") {
+        // 布局编辑模式：区域交换就是两个叶节点换位置——不新建窗格、不搬标签、
+        // 不触发任何文件系统操作（标签仍属于原窗格 ID，导航状态原样保留）。
+        if (zone.type === "pane-swap" && zone.paneId !== payload.fromPaneId) {
+          if (s.swapPanes(payload.fromPaneId, zone.paneId)) {
+            showToast(t("fw.drag.swapped"), { kind: "success" });
+          }
+        }
+        return;
+      }
       if (payload.kind === "tabs") {
         if (zone.type === "edge") {
           // 四方向分栏：左/上 = 前侧插入（树顺序必须与视觉一致，P0）。
           const direction: SplitDirection = zone.edge === "left" || zone.edge === "right" ? "horizontal" : "vertical";
           const side = zone.edge === "left" || zone.edge === "top" ? "before" : "after";
-          if (payload.paneMove) {
-            const newPaneId = s.splitPane(zone.paneId, direction, "", side);
-            if (newPaneId) {
-              for (const tabId of payload.tabIds) s.moveTabToPane(tabId, payload.fromPaneId, newPaneId);
-              if (paneIds(s.tree).includes(payload.fromPaneId)) s.closePane(payload.fromPaneId);
-            }
-          } else {
-            s.extractTabToPane(payload.tabIds[0], payload.fromPaneId, zone.paneId, direction, side);
+          if (!s.extractTabToPane(payload.tabIds[0], payload.fromPaneId, zone.paneId, direction, side)) {
+            showToast(t("fw.drag.failed"), { kind: "warning" });
           }
         } else if (zone.type === "center") {
           if (zone.paneId === payload.fromPaneId) return;
-          if (payload.paneMove) {
-            for (const tabId of payload.tabIds) s.moveTabToPane(tabId, payload.fromPaneId, zone.paneId);
-            s.closePane(payload.fromPaneId);
-          } else {
-            s.moveTabToPane(payload.tabIds[0], payload.fromPaneId, zone.paneId);
-          }
+          s.moveTabToPane(payload.tabIds[0], payload.fromPaneId, zone.paneId);
         } else if (zone.type === "tabbar") {
-          if (zone.paneId === payload.fromPaneId && !payload.paneMove) {
+          if (zone.paneId === payload.fromPaneId) {
             const tabs = s.panes[payload.fromPaneId]?.tabs ?? [];
             const curIdx = tabs.findIndex((x) => x.tabId === payload.tabIds[0]);
             let to = zone.index;
             if (curIdx >= 0 && to > curIdx) to -= 1;
             if (curIdx >= 0 && to !== curIdx) s.reorderTab(payload.fromPaneId, curIdx, to);
-          } else if (zone.paneId !== payload.fromPaneId) {
+          } else {
             s.moveTabToPane(payload.tabIds[0], payload.fromPaneId, zone.paneId, zone.index);
           }
         }
@@ -563,13 +639,29 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       if (inEditor) return;
       if (!hydrated) return;
+      const mod = e.ctrlKey || e.metaKey;
+      // 布局撤销/重做（只回滚布局与标签分配，绝不回滚真实文件操作）。
+      if (mod && (e.key === "z" || e.key === "Z") && !e.shiftKey) {
+        e.preventDefault();
+        if (!store.getState().undoLayout()) showToast(t("fw.layout.nothingToUndo"), { kind: "info" });
+        return;
+      }
+      if (mod && ((e.key === "y" || e.key === "Y") || ((e.key === "z" || e.key === "Z") && e.shiftKey))) {
+        e.preventDefault();
+        if (!store.getState().redoLayout()) showToast(t("fw.layout.nothingToRedo"), { kind: "info" });
+        return;
+      }
+      if (e.key === "Escape" && store.getState().layoutEditMode) {
+        e.preventDefault();
+        store.getState().setLayoutEditMode(false);
+        return;
+      }
       const s = store.getState();
       const paneId = s.activePaneId;
       const pane = s.panes[paneId];
       const tab = pane?.tabs.find((x) => x.tabId === pane?.activeTabId);
       if (!tab) return;
       const selection = s.selection[paneId]?.paths ?? [];
-      const mod = e.ctrlKey || e.metaKey;
       if (mod && (e.key === "a" || e.key === "A")) {
         e.preventDefault();
         // 全选：需要目录列表——由事件桥接给 Pane 太绕；直接用 dirCache 数据。
@@ -685,15 +777,24 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   }, [applyFileDrop, showToast, store, t]);
 
   // ── 布局动作 ────────────────────────────────────────────────────────
-  const applyPreset = (presetId: string) => {
-    const rootPath = project?.rootPath ?? "";
-    store.getState().applyPreset(presetId, rootPath ? [rootPath] : []);
+  /**
+   * 应用布局预设：**保留全部已打开目录**（先收集标签 → 生成目标布局 → 稳定重分配），
+   * 容量不足时阻止并给出明确反馈，绝不截断标签。
+   */
+  const applyLayoutPreset = (presetId: string) => {
+    const result = store.getState().applyLayoutPresetPreservingTabs(presetId);
+    if (!result.ok) {
+      if (result.reason === "capacity") {
+        showToast(t("fw.layout.capacityBlocked", { count: result.overflow }), { kind: "warning" });
+      } else {
+        showToast(t("fw.layout.unknownPreset"), { kind: "error" });
+      }
+      return;
+    }
+    if (!result.unchanged && result.stashedCount > 0) {
+      showToast(t("fw.layout.stashed", { count: result.stashedCount }), { kind: "info" });
+    }
     setLayoutOpen(false);
-  };
-
-  const applyBuiltinTemplate = (presetId: string) => {
-    // 内置模板只恢复布局形状；示例目录不作为真实路径（任务规范 §8.2）。
-    applyPreset(presetId);
   };
 
   const applyCustomTemplate = (templateId: string) => {
@@ -701,32 +802,125 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       templateId,
       persisted.templates.map((tpl) => ({ id: tpl.id, tree: tpl.tree, panes: tpl.panes })),
     );
-    void store
-      .getState()
-      .persistNow()
-      .catch(() => {});
+    void store.getState().persistNow().catch(() => {});
+    setTemplatePending(null);
     setLayoutOpen(false);
+    showToast(t("fw.template.applied"), { kind: "success" });
+  };
+
+  const saveCurrentTemplate = async (name: string) => {
+    await store.getState().saveCurrentAsTemplate(name);
+    setSettingsRevision((n) => n + 1);
   };
 
   const submitSaveTemplate = async () => {
     const name = templateName.trim();
     if (!name) return;
     try {
-      await store.getState().saveCurrentAsTemplate(name);
+      await saveCurrentTemplate(name);
       showToast(t("fw.template.saved", { name }), { kind: "success" });
       setSaveTemplateOpen(false);
       setTemplateName("");
-      setSettingsRevision((n) => n + 1);
     } catch (e) {
       showToast(errorMessage(e), { kind: "error" });
     }
   };
 
-  const submitOpenFolder = () => {
-    const path = openFolderPath.trim();
-    if (!path || !openFolderTarget) return;
-    store.getState().openInPane(openFolderTarget, path, "newTab");
-    setOpenFolderTarget(null);
+  /** 模板确认：先保存当前现场再应用（用户不丢失当前工作区）。 */
+  const saveThenApplyTemplate = async () => {
+    if (!templatePending) return;
+    const name = `${t("fw.template.autoPrefix")} ${new Date().toLocaleString()}`;
+    try {
+      await saveCurrentTemplate(name);
+    } catch (e) {
+      showToast(errorMessage(e), { kind: "error" });
+      return;
+    }
+    applyCustomTemplate(templatePending.id);
+  };
+
+  // ── 打开文件夹（原生选择器 + 多种落点）────────────────────────────────
+  const reportPickFailure = (result: Extract<PickFolderResult, { status: "invalid" }>) => {
+    if (result.reason === "notFound") {
+      setPickError(t("fw.pick.notFound", { path: result.path }));
+    } else if (result.reason === "notDir") {
+      setPickError(t("fw.pick.notDir", { path: result.path }));
+    } else {
+      setPickError(t("fw.pick.unreadable", { path: result.path, error: result.message ?? "" }));
+    }
+  };
+
+  const openFolderAt = (paneId: string, path: string, mode: OpenFolderMode) => {
+    const s = store.getState();
+    s.recordRecentDir(path);
+    if (mode === "replace") {
+      s.openInPane(paneId, path, "replace");
+      return true;
+    }
+    if (mode === "newTab") {
+      const ok = s.openInPane(paneId, path, "newTab");
+      if (!ok) showToast(t("fw.pane.tabLimit", { max: MAX_TABS_PER_PANE }), { kind: "warning" });
+      return ok;
+    }
+    const direction: SplitDirection = mode === "left" || mode === "right" ? "horizontal" : "vertical";
+    const side = mode === "left" || mode === "top" ? "before" : "after";
+    return Boolean(s.splitPane(paneId, direction, path, side));
+  };
+
+  const browseFolder = async (paneId: string, mode: OpenFolderMode) => {
+    if (pickBusy) return;
+    setPickBusy(true);
+    setPickError(null);
+    try {
+      const current =
+        store.getState().panes[paneId]?.tabs.find(
+          (x) => x.tabId === store.getState().panes[paneId]?.activeTabId,
+        )?.path ?? "";
+      const result = await pickFolder({ title: t("fw.dialog.openFolder"), defaultPath: current || project?.rootPath || undefined });
+      if (result.status === "cancelled") return; // 取消：保持当前标签与布局不变
+      if (result.status === "invalid") {
+        reportPickFailure(result);
+        showToast(
+          result.reason === "notFound"
+            ? t("fw.pick.notFound", { path: result.path })
+            : result.reason === "notDir"
+              ? t("fw.pick.notDir", { path: result.path })
+              : t("fw.pick.unreadable", { path: result.path, error: result.message ?? "" }),
+          { kind: "error" },
+        );
+        return;
+      }
+      openFolderAt(paneId, result.path, mode);
+      setOpenFolder(null);
+    } finally {
+      setPickBusy(false);
+    }
+  };
+
+  const submitOpenFolder = async () => {
+    if (!openFolder) return;
+    const typed = openFolderPath.trim();
+    if (!typed) return;
+    const result = await validateFolderPath(typed);
+    if (result.status === "invalid") {
+      reportPickFailure(result);
+      return;
+    }
+    if (result.status !== "ok") return;
+    openFolderAt(openFolder.paneId, result.path, openFolder.mode);
+    setFolderPath("");
+    setPickError(null);
+    setOpenFolder(null);
+  };
+
+  const closeOtherPanes = (keepPaneId: string) => {
+    const result = store.getState().closeOtherPanes(keepPaneId);
+    if (result.status === "closed") return;
+    if (result.reason === "capacity") {
+      setCloseOthersBlocked(result.tabs.length);
+      return;
+    }
+    showToast(t("fw.pane.closeFailed"), { kind: "warning" });
   };
 
   const paneCount = paneIds(tree).length;
@@ -735,9 +929,43 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   void activeDir;
 
   const moreItems = [
+    {
+      key: "editLayout",
+      label: layoutEditMode ? t("fw.layout.exitEdit") : t("fw.layout.edit"),
+      icon: layoutEditMode ? <Check size={13} /> : <PenLine size={13} />,
+      onSelect: () => store.getState().setLayoutEditMode(!layoutEditMode),
+    },
+    {
+      key: "undo",
+      label: t("fw.layout.undo"),
+      icon: <Undo2 size={13} />,
+      disabled: undoCount === 0,
+      onSelect: () => {
+        if (!store.getState().undoLayout()) showToast(t("fw.layout.nothingToUndo"), { kind: "info" });
+      },
+    },
+    {
+      key: "redo",
+      label: t("fw.layout.redo"),
+      icon: <Redo2 size={13} />,
+      disabled: redoCount === 0,
+      onSelect: () => {
+        if (!store.getState().redoLayout()) showToast(t("fw.layout.nothingToRedo"), { kind: "info" });
+      },
+    },
+    {
+      key: "path",
+      label: t("fw.layout.openByPath"),
+      icon: <FolderSearch size={13} />,
+      onSelect: () => {
+        setFolderPath("");
+        setPickError(null);
+        setOpenFolder({ paneId: activePaneId, mode: "newTab" });
+      },
+    },
     { key: "maximize", label: maximizedPaneId ? t("fw.layout.restoreMax") : t("fw.layout.maximize"), icon: maximizedPaneId ? <Minimize2 size={13} /> : <Maximize2 size={13} />, disabled: paneCount <= 1, onSelect: () => store.getState().toggleMaximize(activePaneId) },
-    { key: "closeOthers", label: t("fw.layout.closeOthers"), disabled: paneCount <= 1, onSelect: () => { for (const id of paneIds(tree)) { if (id !== activePaneId) store.getState().closePane(id); } } },
-    { key: "reset", label: t("fw.layout.resetDefault"), onSelect: () => applyPreset("single") },
+    { key: "closeOthers", label: t("fw.layout.closeOthers"), disabled: paneCount <= 1, onSelect: () => closeOtherPanes(activePaneId) },
+    { key: "reset", label: t("fw.layout.resetDefault"), onSelect: () => applyLayoutPreset("single") },
     { key: "refreshAll", label: t("fw.layout.refreshAll"), onSelect: () => invalidateDirs(paneIds(tree).map((id) => panes[id]?.tabs.find((x) => x.tabId === panes[id]?.activeTabId)?.path ?? "").filter(Boolean)) },
   ];
 
@@ -760,17 +988,80 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         </div>
 
         <div className="fw-toolbar-actions">
-          <button
-            type="button"
-            className="btn sm"
-            onClick={() => {
-              setFolderPath("");
-              setOpenFolderTarget(activePaneId);
-            }}
-          >
-            <FolderPlus size={13} aria-hidden="true" />
-            {t("fw.toolbar.addFolder")}
-          </button>
+          {/* 主操作：系统文件夹选择器 → 当前窗格新标签 */}
+          <div className="fw-split-btn">
+            <button
+              type="button"
+              className="btn sm fw-open-btn"
+              disabled={pickBusy}
+              onClick={() => void browseFolder(activePaneId, "newTab")}
+            >
+              <FolderPlus size={13} aria-hidden="true" />
+              {t("fw.toolbar.addFolder")}
+            </button>
+            <DropdownMenu
+              menuLabel={t("fw.toolbar.openMode")}
+              placement="bottom-start"
+              trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                <button
+                  ref={ref}
+                  type="button"
+                  className="btn sm fw-open-caret"
+                  aria-haspopup="menu"
+                  aria-expanded={expanded}
+                  aria-label={t("fw.toolbar.openMode")}
+                  onClick={onClick}
+                  onKeyDown={onKeyDown}
+                >
+                  <ChevronDown size={13} aria-hidden="true" />
+                </button>
+              )}
+              items={[
+                { key: "replace", label: t("fw.openMode.replace"), onSelect: () => void browseFolder(activePaneId, "replace") },
+                { key: "left", label: t("fw.openMode.left"), onSelect: () => void browseFolder(activePaneId, "left") },
+                { key: "right", label: t("fw.openMode.right"), onSelect: () => void browseFolder(activePaneId, "right") },
+                { key: "top", label: t("fw.openMode.top"), onSelect: () => void browseFolder(activePaneId, "top") },
+                { key: "bottom", label: t("fw.openMode.bottom"), onSelect: () => void browseFolder(activePaneId, "bottom") },
+                { key: "sep", label: "" },
+                {
+                  key: "path",
+                  label: t("fw.openMode.byPath"),
+                  onSelect: () => {
+                    setFolderPath("");
+                    setPickError(null);
+                    setOpenFolder({ paneId: activePaneId, mode: "newTab" });
+                  },
+                },
+              ]}
+            />
+          </div>
+
+          <div className="fw-toolbar-group" role="group" aria-label={t("fw.layout.history")}>
+            <button
+              type="button"
+              className="fw-icon-btn"
+              aria-label={t("fw.layout.undo")}
+              data-tip={t("fw.layout.undo")}
+              disabled={undoCount === 0}
+              onClick={() => {
+                if (!store.getState().undoLayout()) showToast(t("fw.layout.nothingToUndo"), { kind: "info" });
+              }}
+            >
+              <Undo2 size={14} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="fw-icon-btn"
+              aria-label={t("fw.layout.redo")}
+              data-tip={t("fw.layout.redo")}
+              disabled={redoCount === 0}
+              onClick={() => {
+                if (!store.getState().redoLayout()) showToast(t("fw.layout.nothingToRedo"), { kind: "info" });
+              }}
+            >
+              <Redo2 size={14} aria-hidden="true" />
+            </button>
+          </div>
 
           <DropdownMenu
             menuLabel={t("fw.layout.menu")}
@@ -782,12 +1073,21 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
               </button>
             )}
             items={[
-              { key: "single", label: t("fw.preset.single"), icon: <Square size={13} />, onSelect: () => applyPreset("single") },
-              { key: "leftRight", label: t("fw.preset.leftRight"), icon: <Columns2 size={13} />, onSelect: () => applyPreset("leftRight") },
-              { key: "topBottom", label: t("fw.preset.topBottom"), icon: <Rows2 size={13} />, onSelect: () => applyPreset("topBottom") },
-              { key: "threeLeft", label: t("fw.preset.three"), icon: <Columns3 size={13} />, onSelect: () => applyPreset("threeLeft") },
-              { key: "quad", label: t("fw.preset.quad"), icon: <LayoutGrid size={13} />, onSelect: () => applyPreset("quad") },
-              { key: "sep", label: "" },
+              { key: "single", label: t("fw.preset.single"), icon: <Square size={13} />, onSelect: () => applyLayoutPreset("single") },
+              { key: "leftRight", label: t("fw.preset.leftRight"), icon: <Columns2 size={13} />, onSelect: () => applyLayoutPreset("leftRight") },
+              { key: "topBottom", label: t("fw.preset.topBottom"), icon: <Rows2 size={13} />, onSelect: () => applyLayoutPreset("topBottom") },
+              { key: "threeLeft", label: t("fw.preset.three"), icon: <Columns3 size={13} />, onSelect: () => applyLayoutPreset("threeLeft") },
+              { key: "quad", label: t("fw.preset.quad"), icon: <LayoutGrid size={13} />, onSelect: () => applyLayoutPreset("quad") },
+              { key: "sep1", label: "" },
+              {
+                key: "edit",
+                label: layoutEditMode ? t("fw.layout.exitEdit") : t("fw.layout.edit"),
+                icon: layoutEditMode ? <Check size={13} /> : <PenLine size={13} />,
+                onSelect: () => store.getState().setLayoutEditMode(!layoutEditMode),
+              },
+              { key: "undoMenu", label: t("fw.layout.undo"), icon: <Undo2 size={13} />, disabled: undoCount === 0, onSelect: () => store.getState().undoLayout() },
+              { key: "redoMenu", label: t("fw.layout.redo"), icon: <Redo2 size={13} />, disabled: redoCount === 0, onSelect: () => store.getState().redoLayout() },
+              { key: "sep2", label: "" },
               { key: "customize", label: t("fw.layout.customizeHint"), description: t("fw.layout.customizeBody"), onSelect: () => setLayoutOpen(true) },
             ]}
           />
@@ -795,7 +1095,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
           <button
             ref={layoutBtnRef}
             type="button"
-            className={`btn sm${layoutOpen ? " is-on" : ""}`}
+            className={`btn sm fw-hide-narrow${layoutOpen ? " is-on" : ""}`}
             aria-haspopup="dialog"
             aria-expanded={layoutOpen}
             onClick={(e) => {
@@ -807,7 +1107,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             {t("fw.toolbar.templates")}
           </button>
 
-          <button type="button" className="btn sm" onClick={() => setSaveTemplateOpen(true)}>
+          <button type="button" className="btn sm fw-hide-narrow" onClick={() => setSaveTemplateOpen(true)}>
             <Save size={13} aria-hidden="true" />
             {t("fw.toolbar.saveLayout")}
           </button>
@@ -825,6 +1125,17 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         </div>
       </header>
 
+      {/* 布局编辑模式：只在编辑期间占用一条窄提示栏，退出即恢复普通浏览 */}
+      {layoutEditMode && (
+        <div className="fw-edit-banner" role="status">
+          <PenLine size={13} aria-hidden="true" />
+          <span>{t("fw.edit.banner")}</span>
+          <button type="button" className="btn sm" onClick={() => store.getState().setLayoutEditMode(false)}>
+            {t("fw.edit.exit")}
+          </button>
+        </div>
+      )}
+
       {/* 主区域：最大化单窗格或完整分割树 */}
       <div className="fw-workarea">
         {maximizedPaneId && panes[maximizedPaneId] ? (
@@ -835,6 +1146,8 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             dropHintPane={dropHint?.paneId ?? null}
             dropHint={dropHint}
             onHoverZone={onHoverZone}
+            layoutEditMode={false}
+            projectRoot={project?.rootPath ?? null}
           />
         ) : (
           <SplitRender
@@ -844,6 +1157,8 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             dropHintPane={dropHint?.paneId ?? null}
             dropHint={dropHint}
             onHoverZone={onHoverZone}
+            layoutEditMode={layoutEditMode}
+            projectRoot={project?.rootPath ?? null}
           />
         )}
       </div>
@@ -860,41 +1175,78 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         <div className="fw-layout-drawer" onPointerDown={(e) => e.stopPropagation()}>
           <div className="fw-drawer-section">
             <h3 className="fw-drawer-title">{t("fw.layout.presets")}</h3>
+            <p className="fw-drawer-hint">{t("fw.layout.presetsHint")}</p>
             <div className="fw-preset-grid">
               {Object.values(LAYOUT_PRESETS).map((preset) => (
-                <button key={preset.id} type="button" className="fw-preset-item" onClick={() => applyPreset(preset.id)}>
+                <button key={preset.id} type="button" className="fw-preset-item" onClick={() => applyLayoutPreset(preset.id)}>
                   {preset.label}
                 </button>
               ))}
             </div>
           </div>
+
           <div className="fw-drawer-section">
-            <h3 className="fw-drawer-title">{t("fw.layout.builtinTemplates")}</h3>
-            <div className="fw-template-list">
-              <button type="button" className="fw-template-item" onClick={() => applyBuiltinTemplate("leftRight")}>
-                <Columns2 size={14} aria-hidden="true" />
-                {t("fw.builtin.general")}
+            <h3 className="fw-drawer-title">{t("fw.layout.editSection")}</h3>
+            <p className="fw-drawer-hint">{t("fw.layout.editHint")}</p>
+            <div className="fw-drawer-actions">
+              <button
+                type="button"
+                className={`btn sm${layoutEditMode ? " primary" : ""}`}
+                onClick={() => store.getState().setLayoutEditMode(!layoutEditMode)}
+              >
+                {layoutEditMode ? <Check size={12} aria-hidden="true" /> : <PenLine size={12} aria-hidden="true" />}
+                {layoutEditMode ? t("fw.layout.exitEdit") : t("fw.layout.edit")}
               </button>
-              <button type="button" className="fw-template-item" onClick={() => applyBuiltinTemplate("quad")}>
-                <FileText size={14} aria-hidden="true" />
-                {t("fw.builtin.dev")}
+              <button type="button" className="btn sm" disabled={undoCount === 0} onClick={() => store.getState().undoLayout()}>
+                <Undo2 size={12} aria-hidden="true" />
+                {t("fw.layout.undo")}
               </button>
-              <button type="button" className="fw-template-item" onClick={() => applyBuiltinTemplate("quad")}>
-                <Gamepad2 size={14} aria-hidden="true" />
-                {t("fw.builtin.game")}
-              </button>
-              <button type="button" className="fw-template-item" onClick={() => applyBuiltinTemplate("quad")}>
-                <Clapperboard size={14} aria-hidden="true" />
-                {t("fw.builtin.comic")}
+              <button type="button" className="btn sm" disabled={redoCount === 0} onClick={() => store.getState().redoLayout()}>
+                <Redo2 size={12} aria-hidden="true" />
+                {t("fw.layout.redo")}
               </button>
             </div>
           </div>
+
+          {stashed.length > 0 && (
+            <div className="fw-drawer-section">
+              <h3 className="fw-drawer-title">
+                {t("fw.layout.stashTitle")} · {stashed.length}
+              </h3>
+              <p className="fw-drawer-hint">{t("fw.layout.stashHint")}</p>
+              <div className="fw-template-list">
+                {stashed.map((item) => (
+                  <button
+                    key={item.tabId}
+                    type="button"
+                    className="fw-template-item"
+                    title={item.path}
+                    onClick={() => {
+                      const ok = store.getState().restoreStashedTab(item.tabId);
+                      if (!ok) showToast(t("fw.layout.stashFull"), { kind: "warning" });
+                    }}
+                  >
+                    <FolderOpen size={13} aria-hidden="true" />
+                    <span className="fw-template-name">{basename(item.path) || item.path}</span>
+                    <span className="fw-stash-restore">{t("fw.layout.stashRestore")}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {persisted.templates.length > 0 && (
             <div className="fw-drawer-section">
               <h3 className="fw-drawer-title">{t("fw.layout.myTemplates")}</h3>
+              <p className="fw-drawer-hint">{t("fw.layout.templatesHint")}</p>
               <div className="fw-template-list">
                 {persisted.templates.map((tpl) => (
-                  <button key={tpl.id} type="button" className="fw-template-item" onClick={() => applyCustomTemplate(tpl.id)}>
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    className="fw-template-item"
+                    onClick={() => setTemplatePending({ id: tpl.id, name: tpl.name })}
+                  >
                     <LayoutGrid size={14} aria-hidden="true" />
                     <span className="fw-template-name">{tpl.name}</span>
                   </button>
@@ -911,52 +1263,158 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         </div>
       </Popover>
 
-      {/* 打开文件夹对话框 */}
+      {/* 打开文件夹对话框：原生选择器为主操作，路径/最近/固定/常用位置为辅 */}
       <Dialog
-        open={openFolderTarget !== null}
-        onClose={() => setOpenFolderTarget(null)}
+        open={openFolder !== null}
+        onClose={() => setOpenFolder(null)}
         title={t("fw.dialog.openFolder")}
         size="sm"
         ariaLabel={t("fw.dialog.openFolder")}
         footer={
           <>
-            <button type="button" className="btn" onClick={() => setOpenFolderTarget(null)}>
+            <button type="button" className="btn" onClick={() => setOpenFolder(null)}>
               {t("common.cancel")}
             </button>
-            <button type="button" className="btn primary" disabled={!openFolderPath.trim()} onClick={submitOpenFolder}>
-              {t("common.confirm")}
+            <button
+              type="button"
+              className="btn primary"
+              disabled={!openFolderPath.trim()}
+              onClick={() => void submitOpenFolder()}
+            >
+              {t("fw.dialog.openByPath")}
             </button>
           </>
         }
       >
-        <label className="fw-dialog-field">
-          <span>{t("fw.dialog.folderPath")}</span>
-          <input
-            className="ws-input"
-            value={openFolderPath}
-            autoFocus
-            placeholder={t("fw.dialog.folderPlaceholder")}
-            onChange={(e) => setFolderPath(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submitOpenFolder();
-            }}
-          />
-        </label>
-        {places.length > 0 && (
-          <div className="fw-places">
-            {places.map((place) => (
+        <div className="fw-open-folder">
+          <div className="fw-open-modes" role="radiogroup" aria-label={t("fw.toolbar.openMode")}>
+            {(
+              [
+                ["newTab", t("fw.openMode.newTab")],
+                ["replace", t("fw.openMode.replace")],
+                ["left", t("fw.openMode.left")],
+                ["right", t("fw.openMode.right")],
+                ["top", t("fw.openMode.top")],
+                ["bottom", t("fw.openMode.bottom")],
+              ] as Array<[OpenFolderMode, string]>
+            ).map(([mode, label]) => (
               <button
-                key={place.path}
+                key={mode}
                 type="button"
-                className="fw-place"
-                onClick={() => setFolderPath(place.path)}
+                role="radio"
+                aria-checked={openFolder?.mode === mode}
+                className={`fw-mode-chip${openFolder?.mode === mode ? " is-on" : ""}`}
+                onClick={() => setOpenFolder((prev) => (prev ? { ...prev, mode } : prev))}
               >
-                <FolderOpen size={13} aria-hidden="true" />
-                <span>{place.name}</span>
+                {label}
               </button>
             ))}
           </div>
-        )}
+
+          <button
+            type="button"
+            className="btn sm primary fw-browse-btn"
+            disabled={pickBusy || !openFolder}
+            onClick={() => openFolder && void browseFolder(openFolder.paneId, openFolder.mode)}
+          >
+            <FolderSearch size={13} aria-hidden="true" />
+            {pickBusy ? t("fw.dialog.browsing") : t("fw.dialog.browse")}
+          </button>
+
+          <label className="fw-dialog-field">
+            <span>{t("fw.dialog.folderPath")}</span>
+            <input
+              className="ws-input"
+              value={openFolderPath}
+              placeholder={t("fw.dialog.folderPlaceholder")}
+              onChange={(e) => {
+                setFolderPath(e.target.value);
+                setPickError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void submitOpenFolder();
+              }}
+            />
+          </label>
+
+          {pickError && (
+            <p className="fw-pick-error" role="alert">
+              <AlertTriangle size={12} aria-hidden="true" />
+              {pickError}
+            </p>
+          )}
+
+          {recentDirs.length > 0 && (
+            <div className="fw-dir-section">
+              <span className="fw-empty-label">{t("fw.pane.recentDirs")}</span>
+              {recentDirs.map((path) => (
+                <DirRow
+                  key={path}
+                  path={path}
+                  pinned={pinnedDirs.some((p) => p.toLowerCase() === path.toLowerCase())}
+                  onOpen={() => {
+                    if (openFolder) openFolderAt(openFolder.paneId, path, openFolder.mode);
+                    setOpenFolder(null);
+                  }}
+                  onPin={() => store.getState().togglePinnedDir(path)}
+                />
+              ))}
+            </div>
+          )}
+
+          {pinnedDirs.length > 0 && (
+            <div className="fw-dir-section">
+              <span className="fw-empty-label">{t("fw.pane.pinnedDirs")}</span>
+              {pinnedDirs.map((path) => (
+                <DirRow
+                  key={path}
+                  path={path}
+                  pinned
+                  onOpen={() => {
+                    if (openFolder) openFolderAt(openFolder.paneId, path, openFolder.mode);
+                    setOpenFolder(null);
+                  }}
+                  onPin={() => store.getState().togglePinnedDir(path)}
+                />
+              ))}
+            </div>
+          )}
+
+          {project?.rootPath && (
+            <div className="fw-dir-section">
+              <span className="fw-empty-label">{t("fw.pane.projectRoot")}</span>
+              <DirRow
+                path={project.rootPath}
+                name={project.name}
+                pinned={pinnedDirs.some((p) => p.toLowerCase() === project.rootPath!.toLowerCase())}
+                onOpen={() => {
+                  if (openFolder) openFolderAt(openFolder.paneId, project.rootPath!, openFolder.mode);
+                  setOpenFolder(null);
+                }}
+                onPin={() => store.getState().togglePinnedDir(project.rootPath!)}
+              />
+            </div>
+          )}
+
+          {places.length > 0 && (
+            <div className="fw-dir-section">
+              <span className="fw-empty-label">{t("fw.dialog.quickPlaces")}</span>
+              {places.map((place) => (
+                <DirRow
+                  key={place.path}
+                  path={place.path}
+                  name={place.name}
+                  pinned={pinnedDirs.some((p) => p.toLowerCase() === place.path.toLowerCase())}
+                  onOpen={() => {
+                    if (openFolder) openFolderAt(openFolder.paneId, place.path, openFolder.mode);
+                    setOpenFolder(null);
+                  }}
+                  onPin={() => store.getState().togglePinnedDir(place.path)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </Dialog>
 
       {/* 保存模板 */}
@@ -1035,6 +1493,68 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         }}
       />
 
+      {/* 应用工作区模板：明确说明会替换当前工作现场，并允许先保存当前状态 */}
+      <Dialog
+        open={templatePending !== null}
+        onClose={() => setTemplatePending(null)}
+        title={t("fw.template.applyTitle", { name: templatePending?.name ?? "" })}
+        size="sm"
+        ariaLabel={t("fw.template.applyTitle", { name: templatePending?.name ?? "" })}
+        footer={
+          <>
+            <button type="button" className="btn" onClick={() => setTemplatePending(null)}>
+              {t("common.cancel")}
+            </button>
+            <button type="button" className="btn" onClick={() => void saveThenApplyTemplate()}>
+              {t("fw.template.saveThenApply")}
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => templatePending && applyCustomTemplate(templatePending.id)}
+            >
+              {t("fw.template.applyConfirm")}
+            </button>
+          </>
+        }
+      >
+        <p>{t("fw.template.applyBody")}</p>
+        <p className="fw-template-hint">{t("fw.template.applyUndoHint")}</p>
+      </Dialog>
+
+      {/* 关闭其他区域容量不足：明确选择收纳或取消（不得静默丢弃） */}
+      <Dialog
+        open={closeOthersBlocked !== null}
+        onClose={() => setCloseOthersBlocked(null)}
+        title={t("fw.dialog.closeOthersBlockedTitle")}
+        size="sm"
+        ariaLabel={t("fw.dialog.closeOthersBlockedTitle")}
+        footer={
+          <>
+            <button type="button" className="btn" onClick={() => setCloseOthersBlocked(null)}>
+              {t("common.cancel")}
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => {
+                const result = store.getState().closeOtherPanes(activePaneId, { mode: "stash" });
+                setCloseOthersBlocked(null);
+                if (result.status === "closed") {
+                  showToast(t("fw.pane.closeStashed", { count: result.stashedTabs }), { kind: "info" });
+                } else {
+                  showToast(t("fw.pane.closeFailed"), { kind: "error" });
+                }
+              }}
+            >
+              {t("fw.dialog.closePaneStash", { count: closeOthersBlocked ?? 0 })}
+            </button>
+          </>
+        }
+      >
+        <p>{t("fw.dialog.closeOthersBlockedBody", { count: closeOthersBlocked ?? 0 })}</p>
+      </Dialog>
+
       {/* 拖拽 ghost（独立订阅组件：每帧位置更新只重渲染自身） */}
       <FwDragGhost />
     </div>
@@ -1047,18 +1567,54 @@ function FwDragGhost() {
   const [st, setSt] = useState(() => getFwDragState());
   useEffect(() => subscribeFwDrag(setSt), []);
   if (!st.payload) return null;
-  const denied = st.payload.kind === "files" && !st.hover;
-  const text =
-    st.payload.kind === "tabs"
-      ? st.payload.paneMove
-        ? t("fw.drag.movePane", { count: st.payload.tabIds.length })
-        : t("fw.drag.mergeTabs", { count: st.payload.tabIds.length })
-      : st.effect === "copy"
-        ? t("fw.drag.copy", { count: st.payload.paths.length })
-        : t("fw.drag.move", { count: st.payload.paths.length });
+  const paneLabel = (paneId: string): string => {
+    const s = useFilesWorkspaceStore.getState();
+    const pane = s.panes[paneId];
+    const tab = pane?.tabs.find((x) => x.tabId === pane.activeTabId);
+    return tab ? tabTitle(tab) : t("fw.drag.emptyPane");
+  };
+  const firstTabLabel = (): string => {
+    if (st.payload?.kind !== "tabs") return "";
+    const s = useFilesWorkspaceStore.getState();
+    const pane = s.panes[st.payload.fromPaneId];
+    const tab = pane?.tabs.find((x) => x.tabId === st.payload?.tabIds[0]);
+    return tab ? tabTitle(tab) : "";
+  };
+
+  let text = "";
+  let denied = false;
+  if (st.payload.kind === "pane") {
+    const target = st.hover?.type === "pane-swap" ? st.hover.paneId : null;
+    denied = !target || target === st.payload.fromPaneId;
+    text = target && !denied
+      ? t("fw.drag.paneSwap", { from: paneLabel(st.payload.fromPaneId), to: paneLabel(target) })
+      : t("fw.drag.paneHint");
+  } else if (st.payload.kind === "tabs") {
+    const zone = st.hover;
+    denied = !zone;
+    if (!zone) {
+      text = t("fw.drag.tabDenied", { name: firstTabLabel() });
+    } else if (zone.type === "edge") {
+      const zoneName =
+        zone.edge === "left" ? t("fw.drag.zoneLeft")
+          : zone.edge === "right" ? t("fw.drag.zoneRight")
+            : zone.edge === "top" ? t("fw.drag.zoneTop")
+              : t("fw.drag.zoneBottom");
+      text = t("fw.drag.tabSplit", { name: firstTabLabel(), zone: zoneName });
+    } else if (zone.type === "tabbar" && zone.paneId === st.payload.fromPaneId) {
+      text = t("fw.drag.tabReorder", { name: firstTabLabel() });
+    } else {
+      text = t("fw.drag.tabMerge", { name: firstTabLabel(), target: paneLabel(zone.paneId) });
+    }
+  } else {
+    denied = !st.hover;
+    text = st.effect === "copy"
+      ? t("fw.drag.copy", { count: st.payload.paths.length })
+      : t("fw.drag.move", { count: st.payload.paths.length });
+  }
   return (
     <div
-      className={`fw-drag-ghost${st.payload.kind === "tabs" ? " is-tabs" : ""}${denied ? " is-denied" : ""}`}
+      className={`fw-drag-ghost${st.payload.kind !== "files" ? " is-tabs" : ""}${denied ? " is-denied" : ""}`}
       style={{ left: st.x, top: st.y }}
       aria-hidden="true"
     >

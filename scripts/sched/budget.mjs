@@ -94,14 +94,27 @@ export function computeBudget({ cfg, totalMb }) {
   const reserveBreached = breachAllowed && breachMb > 0;
   const peakExceedsBudget = peakMb > budgetMb;
   const reserveExhausted = raw <= 0;
+  const meta = cfg.__schedMeta ?? {};
+  const danger = meta.danger ?? null;
+  const baselineReserve = Number.isFinite(Number(danger?.reserveBaselineMb))
+    ? Number(danger.reserveBaselineMb) : Number(cfg.recommendedSystemReserveMb ?? reserve);
+  const reserveReducedMb = Math.max(0, baselineReserve - reserve);
   const warning = budgetWarning({
     reserveExhausted, reserveBreached, peakExceedsBudget,
     reserveMb: reserve, totalMb: total, hardLimitMb, budgetMb, peakEstimateMb: peakMb,
   });
   return {
     enabled: cfg.budgetEnabled !== false,
+    // 关闭预算只可能发生在「显式危险授权」下（loadConfig 已 fail-closed 处理过配置）
+    budgetOffAuthorized: cfg.__budgetOffAuthorized === true,
+    dangerAuth: cfg.__dangerTokens ?? [],
+    configSources: meta.sourcesSummary ?? "内置默认值",
     totalMb: total,
     reserveMb: reserve,
+    // 推荐保留基线 / 实际减少的安全余量：status、doctor、history 都要能看到
+    reserveBaselineMb: baselineReserve,
+    reserveReducedMb,
+    reserveLowerAuthorized: danger?.reserveLowerAuthorized === true,
     rawMb: raw,
     // 安全上限（物理 - 系统保留）：永不因任务峰值而提高
     hardLimitMb,
@@ -142,18 +155,25 @@ export function planAdmission({ budget, entries = [], taskId = null, estimateMb 
   const reservedMb = sumReserved(others);
   const base = {
     budgetMb: budget.budgetMb,
+    budgetEnabled: budget.enabled !== false,
     hardLimitMb: Number.isFinite(Number(budget.hardLimitMb)) ? Number(budget.hardLimitMb) : budget.budgetMb,
     reserveMb: Number.isFinite(Number(budget.reserveMb)) ? Number(budget.reserveMb) : 0,
     reservedMb,
     estimateMb: est,
     availableMb: Math.max(0, budget.budgetMb - reservedMb),
     reserveBreached: budget.reserveBreached === true,
+    reserveBaselineMb: budget.reserveBaselineMb ?? null,
+    reserveReducedMb: budget.reserveReducedMb ?? 0,
+    budgetOffAuthorized: budget.budgetOffAuthorized === true,
+    dangerAuth: budget.dangerAuth ?? [],
+    configSources: budget.configSources ?? null,
     infeasible: false,
   };
   if (!budget.enabled) {
     return {
       ...base, admit: true,
-      reason: `全局预算已关闭（budgetEnabled=false），仅按实时可用内存门槛准入`,
+      reason: `全局预算已被显式关闭（危险授权：${base.dangerAuth.join(",") || "unknown"}），仅按实时可用内存门槛准入；` +
+        "该任务会在 history 标记 budget off",
     };
   }
   if (est > budget.budgetMb) {

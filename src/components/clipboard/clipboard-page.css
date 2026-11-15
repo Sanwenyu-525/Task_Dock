@@ -24,14 +24,28 @@
   color: var(--text-primary);
 }
 
+/* 页面态页头动作只有帮助/暂停/设置三个图标：1180 带右栏（约 666px）
+   也保持右侧一行，避免全局 720px 断点把三个图标折到标题下面。 */
+@container wb-content (min-width: 601px) {
+  .clipboard-page .wb-page-header {
+    flex-wrap: nowrap;
+  }
+  .clipboard-page .wb-ph-actions {
+    width: auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+  }
+}
+
 /* ── 条目卡片网格 ──
-   ≥720px 起按可用宽度自适应 2-3 列（minmax 330px：三列约需 1020px 容器）。
+   ≥560px 起按可用宽度自适应 2-3 列（minmax 300px：1180 带右栏约 666px 排 2 列，
+   1600 约 1070px 排 3 列）。低于 560 保持单列。
    只作用于历史条目列表（.clip-list-grid 由 page 态挂载时附加）；
    分组列表与「加载更多」按钮不在网格内，保持原有单列节奏。 */
-@container clip-page (min-width: 720px) {
+@container clip-page (min-width: 560px) {
   .clipboard-page .clip-list-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
     gap: 8px;
   }
 

@@ -814,17 +814,21 @@ pub(crate) fn run_plan_with(
         // 发送 API 失败时不得让前端看到 InputSent。「已消费」也只在按键发出后成立。
         let sent_at = Instant::now();
         remaining.retain(|r| r != id);
+        // InputSent 落库必须与计数 +1、剩余剔除在同一事务内一致提交：
+        // 这里把 next_sent（= sent+1）交给进度回调，由专用事务函数断言恰好递增 1。
+        // Settling 只是后续观察阶段，不再回写计数。
+        let next_sent = sent + 1;
         set_state(
             &mut states,
             progress,
             id,
             idx,
             ItemState::InputSent,
-            sent,
+            next_sent,
             &remaining,
             None,
         );
-        sent += 1;
+        sent = next_sent;
         set_state(
             &mut states,
             progress,
@@ -1535,6 +1539,25 @@ impl PasteIo for PlatformIo {
     }
 }
 
+/// 收尾事件状态选择（纯函数，便于无 Tauri 句柄的测试断言）。
+///
+/// 持久化失败时禁止广播 `completed`/`paused`/`cancelled` 等正常终态：返回明确表示
+/// 「结果尚未可靠保存」的 `finish_persist_failed` 状态与原因码
+/// `PASTE_JOB_FINISH_PERSIST_FAILED`；成功时原样保留运行结果状态与原因码。
+fn finish_event_status(
+    persist_failed: bool,
+    outcome: &PasteRunOutcome,
+) -> (&'static str, Option<&'static str>) {
+    if persist_failed {
+        (
+            "finish_persist_failed",
+            Some("PASTE_JOB_FINISH_PERSIST_FAILED"),
+        )
+    } else {
+        (outcome.status, outcome.reason_code)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_job(
     db: Arc<Db>,
@@ -1559,16 +1582,28 @@ fn run_job(
     let mut progress = |p: &PasteProgress| -> AppResult<()> {
         // 任务进度与逐项状态在同一个事务里落地：崩溃后不会出现「任务说发了、条目还 pending」。
         // 这里返回 Err 会被 run_plan_with 当成停止信号（发送前那一步尤其关键）。
-        store::record_paste_step(
-            &db,
-            &job_id,
-            p.sent,
-            p.remaining,
-            p.item_id,
-            p.state.as_str(),
-            p.note,
-        )
-        .map_err(|e| {
+        // InputSent 走专用事务：计数 +1、剩余剔除、逐项状态一致提交并断言递增 1。
+        let persist = if p.state == ItemState::InputSent {
+            store::record_paste_input_sent_step(
+                &db,
+                &job_id,
+                p.sent,
+                p.remaining,
+                p.item_id,
+                p.note,
+            )
+        } else {
+            store::record_paste_step(
+                &db,
+                &job_id,
+                p.sent,
+                p.remaining,
+                p.item_id,
+                p.state.as_str(),
+                p.note,
+            )
+        };
+        persist.map_err(|e| {
             tracing::error!(
                 "逐项粘贴状态落库失败 job={} item={} state={}: {e}",
                 job_id,
@@ -1631,6 +1666,7 @@ fn run_job(
     }
 
     // uncertain 在数据库里是「历史累积集合」，不是「本轮集合」：finish 返回合并后的总数。
+    let mut finish_persist_err: Option<String> = None;
     let uncertain_total = match store::finish_paste_job(
         &db,
         &job_id,
@@ -1654,32 +1690,41 @@ fn run_job(
                     "message": e.to_string(),
                 }),
             );
+            finish_persist_err = Some(e.to_string());
             outcome.uncertain.len()
         }
     };
+    // active 槽只是进程内互斥守卫，跟踪当前工作线程；工作线程正在收尾，清槽只释放
+    // 内存互斥、不代表数据库已保存。DB 里任务仍是原状态（通常 running），下次启动
+    // 由 `recover_stale_paste_jobs` 识别为 interrupted。这里清槽不会掩盖持久化失败。
     if let Ok(mut guard) = active.lock() {
         if guard.as_ref().map(|a| a.job_id == job_id).unwrap_or(false) {
             *guard = None;
         }
     }
-    let _ = app.emit(
-        "clipboard-paste",
-        serde_json::json!({
-            "jobId": job_id,
-            "status": outcome.status,
-            "sent": outcome.sent,
-            "total": total,
-            "pending": outcome.remaining.len(),
-            "message": message,
-            "restored": outcome.restored,
-            "userTookOver": outcome.user_took_over,
-            "pauseReason": outcome.pause_reason,
-            "reasonCode": outcome.reason_code,
-            "uncertain": uncertain_total,
-            "confirmed": outcome.confirmed(),
-            "unverified": outcome.unverified(),
-        }),
-    );
+    let persist_failed = finish_persist_err.is_some();
+    let (event_status, event_reason) = finish_event_status(persist_failed, &outcome);
+    let mut event = serde_json::json!({
+        "jobId": job_id,
+        "status": event_status,
+        "sent": outcome.sent,
+        "total": total,
+        "pending": outcome.remaining.len(),
+        "message": message,
+        "restored": outcome.restored,
+        "userTookOver": outcome.user_took_over,
+        "pauseReason": outcome.pause_reason,
+        "reasonCode": event_reason,
+        "uncertain": uncertain_total,
+        "confirmed": outcome.confirmed(),
+        "unverified": outcome.unverified(),
+    });
+    if let Some(detail) = finish_persist_err {
+        // 持久化失败：禁止广播 completed/paused/cancelled 等正常终态。事件保留原始
+        // jobId、真实 sent/total/pending、失败原因码与诊断详情；前端只认失败态。
+        event["diagnostic"] = serde_json::Value::String(detail);
+    }
+    let _ = app.emit("clipboard-paste", event);
     tracing::info!(
         "粘贴任务结束：status={} sent={}/{} skipped={} restored={} unverified={}",
         outcome.status,
@@ -2749,5 +2794,77 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!slot.running(), "线程结束后槽位必须自行清空");
+    }
+
+    /// 3.5：结束状态持久化失败时，事件状态必须关闭成 `finish_persist_failed`，
+    /// 禁止广播 completed/paused/cancelled 等正常终态；成功时原样保留终态。
+    #[test]
+    fn finish_event_status_fails_closed_when_persist_failed() {
+        let outcome = PasteRunOutcome {
+            status: "completed",
+            sent: 1,
+            skipped: 0,
+            remaining: vec![],
+            uncertain: vec!["甲".into()],
+            restored: true,
+            user_took_over: false,
+            pause_reason: None,
+            reason_code: None,
+            notes: vec![],
+            states: vec![],
+        };
+        let (status, reason) = finish_event_status(true, &outcome);
+        assert_eq!(status, "finish_persist_failed");
+        assert_eq!(reason, Some("PASTE_JOB_FINISH_PERSIST_FAILED"));
+        assert!(
+            !["completed", "paused", "cancelled"].contains(&status),
+            "持久化失败不得广播正常终态"
+        );
+        let (status2, reason2) = finish_event_status(false, &outcome);
+        assert_eq!(status2, "completed");
+        assert_eq!(reason2, None);
+    }
+
+    /// 3.4：InputSent 进度必须携带已 +1 的 sent，Settling 不再推进计数。
+    #[test]
+    fn input_sent_progress_carries_incremented_sent_before_settling() {
+        let io = FakeIo::new(2);
+        let p = plan(&["a", "b"], timing());
+        let mut load = loader(&[("a", "text"), ("b", "text")]);
+        let mut seen: Vec<(ItemState, i64)> = Vec::new();
+        let mut progress = |pr: &PasteProgress| -> AppResult<()> {
+            seen.push((pr.state, pr.sent));
+            Ok(())
+        };
+        let outcome = run_plan_with(&io, &p, &AtomicBool::new(false), &mut load, &mut progress);
+        assert_eq!(outcome.status, "completed");
+        let first_input = seen
+            .iter()
+            .find(|(s, _)| *s == ItemState::InputSent)
+            .expect("必须有 InputSent 进度");
+        assert_eq!(first_input.1, 1, "InputSent 进度必须携带已 +1 的 sent");
+        let last_settle = seen
+            .iter()
+            .find(|(s, _)| *s == ItemState::Settling)
+            .expect("必须有 Settling 进度");
+        assert_eq!(last_settle.1, first_input.1, "Settling 不得再推进计数");
+    }
+
+    /// 3.1：崩溃恢复后的续跑计划只来自剩余队列；崩溃锚点/不确定项不进计划，
+    /// FakeIo 发送次数等于剩余项数，不补发任何崩溃/不确定项。
+    #[test]
+    fn resume_after_recovery_only_sends_remaining_items_zero_extra_send() {
+        let io = FakeIo::new(2);
+        let p = plan(&["b"], timing());
+        let mut load = loader(&[("b", "text")]);
+        let outcome = run_plan(&io, &p, &AtomicBool::new(false), &mut load, &mut noop_progress);
+        assert_eq!(outcome.status, "completed");
+        let sends = io
+            .timeline
+            .borrow()
+            .iter()
+            .filter(|t| t.as_str() == "send")
+            .count();
+        assert_eq!(sends, 1, "续跑只发送剩余项，不补发崩溃/不确定项");
     }
 }

@@ -491,11 +491,27 @@ npm --prefix apps/mobile run build:android    # 等价于下面的显式写法�
 node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mobile/android -- gradlew.bat assembleRelease
 ```
 
+**根目录的常驻服务也已纳管**（2026-11-15 第二轮补授权整改）：
+
+| 入口 | 实际执行 | 分类 / 优先级 |
+|---|---|---|
+| `npm run dev` | `run --class dev --priority P2 --label desktop-vite -- vite` | dev / P2 |
+| `npm run preview` | `run --class dev --priority P2 --label desktop-preview -- vite preview` | dev / P2 |
+| `npm run build` | `run --priority P1 --label desktop-build -- npm run build:raw` | medium / P1 |
+| `npm run test` | `run --priority P1 --label desktop-test -- npm run test:raw` | medium / P1 |
+| `npm run tauri -- build` | `run --priority P0 --label tauri -- npm run tauri:raw` | heavy / P0 |
+
+`--class dev` 是**显式声明**：`vite` / `vite preview` 都是"不 Ctrl+C 就不退出"的常驻服务，靠
+分类表推断时 `vite preview` 一度被判成 `light`（会占轻量槽位、可能与另一条轻量任务同时拉起两个
+预览服务抢端口），现在分类表与入口两处都写明 dev。dev 槽位并发 2：第 3 个 dev 服务会排队等前一个
+退出；**端口不归调度器分配**，同默认端口冲突时用 `npm run dev -- --port 5180` 透传参数。
+`dev:raw` / `preview:raw` 只作排障逃生口，**不写进日常命令**。
+
 `apps/mobile` 状态目录解析到同一个 `<git-common-dir>/taskdock-build-sched`（已用
 `git rev-parse --path-format=absolute --git-common-dir` 从 `apps/mobile/android` 实测确认），
-所以手机端构建与桌面端共享同一份槽位与预算台账。带 `:raw` 后缀的脚本（`build:android:raw`、
-`test:raw`、`tauri:raw` 等）是**排障逃生口**：只用于调度器自身故障时定位，不得作为日常推荐命令
-（见 `docs/BUILD_SCHEDULER.md` §3.8 与 §12.9）。
+所以手机端构建与桌面端共享同一份槽位与预算台账。带 `:raw` 后缀的脚本（`dev:raw`、`preview:raw`、
+`build:raw`、`test:raw`、`tauri:raw`、`build:android:raw` 等）是**排障逃生口**：只用于调度器自身
+故障时定位，不得作为日常推荐命令（见 `docs/BUILD_SCHEDULER.md` §3.8 与 §12）。
 
 状态目录 `<git-common-dir>/taskdock-build-sched`（全 worktree 共享，不入库）；
 资源现状 `npm run sched:status|queue|history`，诊断 `npm run sched:doctor`，

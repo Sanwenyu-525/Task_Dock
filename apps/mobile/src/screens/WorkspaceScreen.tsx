@@ -9,21 +9,21 @@
 //
 // 数据边界（重要）：
 // - 手机端目前没有 workspace_projects / workspace_items 的同步链路，
-//   因此「我的项目空间」只作为指向未接入占位页的入口，不填演示项目、版本、成员或百分比。
+//   因此「我的项目空间」只渲染无数据占位面板，不填演示项目、版本、成员或百分比，也不跳转。
 // - 协作动态同理：本机笔记/文件互传活动不会被伪装成团队协作动态。
 import { useState } from "react";
 import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 
 import { EntryRow } from "../components/EntryRow";
+import { FeatureIconPlaceholder } from "../components/FeatureIconPlaceholder";
 import { FileCollectionCard } from "../components/FileCollectionCard";
 import { GlassCard } from "../components/GlassCard";
-import { IconTile } from "../components/IconTile";
-import { PressableScale } from "../components/PressableScale";
+import { ProjectSpacePlaceholder } from "../components/ProjectSpaceCard";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { SectionHeader } from "../components/SectionHeader";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
-import type { AppNav, RouteKey } from "../lib/nav";
+import type { AppNav } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
@@ -34,65 +34,13 @@ const TABS: SegmentOption<WorkspaceTab>[] = [
   { value: "mine", label: "我的工作区" },
 ];
 
-/**
- * 我的工作区入口：前两项已注册到未接入占位页路由，可点；
- * 后两项需要桌面端工作区数据，手机端只保留降饱和占位，不可点。
- */
-const MINE_ENTRIES: ReadonlyArray<{ icon: IconName; label: string; route?: RouteKey }> = [
-  { icon: "scene", label: "场景工作区", route: "scene_workspace" },
-  { icon: "terminal", label: "开发工作台", route: "dev_workbench" },
+/** 我的工作区入口：四项都需要桌面端工作区数据，手机端只保留不可点击的中性占位 */
+const MINE_ENTRIES: ReadonlyArray<{ icon: IconName; label: string }> = [
+  { icon: "scene", label: "场景工作区" },
+  { icon: "terminal", label: "开发工作台" },
   { icon: "site", label: "工作现场" },
   { icon: "workflow", label: "工作流" },
 ];
-
-function MineCell({
-  icon,
-  label,
-  onPress,
-}: {
-  icon: IconName;
-  label: string;
-  onPress?: () => void;
-}) {
-  const { tokens } = useTheme();
-  const enabled = Boolean(onPress);
-  const body = (
-    <>
-      <IconTile name={icon} size={48} tone={enabled ? "primary" : "neutral"} />
-      <Text
-        numberOfLines={1}
-        style={[styles.entryLabel, { color: enabled ? tokens.text : tokens.muted }]}
-      >
-        {label}
-      </Text>
-    </>
-  );
-
-  if (!onPress) {
-    return (
-      <View
-        accessible
-        accessibilityLabel={`${label}，移动端暂未接入`}
-        accessibilityState={{ disabled: true }}
-        style={[styles.entryCell, styles.entryCellInner]}
-      >
-        {body}
-      </View>
-    );
-  }
-
-  return (
-    <PressableScale
-      onPress={onPress}
-      accessibilityLabel={label}
-      style={styles.entryCell}
-      contentStyle={styles.entryCellInner}
-      scaleTo={0.97}
-    >
-      {body}
-    </PressableScale>
-  );
-}
 
 export function WorkspaceScreen({
   nav,
@@ -125,13 +73,8 @@ export function WorkspaceScreen({
           <>
             <View style={styles.group}>
               <SectionHeader icon="project" title="我的项目空间" />
-              {/* 项目数据没有同步链路：入口指向统一未接入占位页，不渲染演示项目/假进度 */}
-              <EntryRow
-                icon="project"
-                label="项目空间"
-                helper="桌面端维护的项目与事项尚未同步到手机"
-                onPress={() => nav.push("project_detail")}
-              />
+              {/* 项目数据没有同步链路：只渲染无数据占位面板，不渲染演示项目/假进度，也不跳转 */}
+              <ProjectSpacePlaceholder />
             </View>
 
             <View style={styles.group}>
@@ -203,17 +146,17 @@ export function WorkspaceScreen({
               <SectionHeader icon="briefcase" title="我的工作区" />
               <View style={styles.entryGrid}>
                 {MINE_ENTRIES.map((entry) => (
-                  <MineCell
-                    key={entry.label}
-                    icon={entry.icon}
-                    label={entry.label}
-                    onPress={entry.route ? () => nav.push(entry.route) : undefined}
-                  />
+                  <View key={entry.label} style={styles.entryCell}>
+                    <FeatureIconPlaceholder
+                      icon={entry.icon}
+                      label={entry.label}
+                      variant="grid"
+                    />
+                  </View>
                 ))}
               </View>
               <Text style={[styles.footnote, { color: tokens.muted }]}>
-                场景工作区、开发工作台先进入未接入占位页；工作现场、工作流需要桌面端工作区数据，
-                手机端暂未接入。
+                场景工作区、开发工作台、工作现场、工作流都需要桌面端工作区数据，手机端暂未接入。
               </Text>
             </View>
           </>
@@ -254,19 +197,6 @@ const styles = StyleSheet.create({
   entryCell: {
     flexBasis: "50%",
     flexGrow: 0,
-  },
-  entryCellInner: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    minHeight: 92,
-    paddingVertical: space.xs,
-    paddingHorizontal: space.xs,
-  },
-  entryLabel: {
-    fontSize: font.meta,
-    fontWeight: "600",
-    textAlign: "center",
   },
   footnote: {
     fontSize: font.label,

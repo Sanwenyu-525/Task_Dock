@@ -1,4 +1,4 @@
-//! 窗口外形（2026-11-01 二轮整改）：主窗**原生圆角区域 + CSS 抗锯齿边缘**，
+﻿//! 窗口外形（2026-11-01 二轮整改）：主窗**原生圆角区域 + CSS 抗锯齿边缘**，
 //! 胶囊与弹窗沿用各自独立的 Win32 区域。
 //!
 //! 本应用是 `decorations:false` + `transparent:true` + `shadow:false` 的无边框窗口。
@@ -58,6 +58,8 @@ struct PendingShape {
     target: ShapeTarget,
     /// 逻辑半径 × 1000；用整数保存，重入还原时不丢精度。
     radius_milli: u32,
+    /// 角部曲线指数 × 1000（2 = 圆弧，4 = 苹果式连续圆角）；整数保存同理。
+    corner_milli: u32,
 }
 
 /// 按 **HWND** 串行化 `SetWindowRgn`：同窗口重入只记录最新请求（保留 target/radius），
@@ -110,6 +112,23 @@ fn radius_milli(logical_radius: f64) -> u32 {
     (r * 1000.0).round() as u32
 }
 
+/// 角部曲线指数 → milli 整数。2 是 WebView2 一直以来的圆弧行为（默认、兼容口径），
+/// 4 是与 CSS `corner-shape: superellipse(4)` 对齐的连续圆角。超出 2–6 或非法值一律
+/// 回退 2：宁可退化成普通圆角，也不写出与 CSS 不一致的区域（会露白/切边）。
+fn corner_milli(exponent: f64) -> u32 {
+    let n = if exponent.is_finite() {
+        exponent.clamp(2.0, 6.0)
+    } else {
+        2.0
+    };
+    (n * 1000.0).round() as u32
+}
+
+/// 指数 milli → 浮点（只保留一位小数精度，避免区域随浮点噪声反复重建）。
+fn corner_exponent(corner_milli_value: u32) -> f64 {
+    f64::from(corner_milli_value) / 1000.0
+}
+
 /// 一次成功应用的区域参数。hwnd/尺寸/DPI/半径任一变化都必须重做。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RegionStamp {
@@ -119,6 +138,9 @@ struct RegionStamp {
     /// 实际写入的物理区域半径（0 = 直角矩形区域）。
     radius: u32,
     scale_milli: u32,
+    /// 角部曲线指数 × 1000（2 = 圆弧，4 = superellipse）。与半径一起决定区域内容，
+    /// 切换预设导致曲线变化时必须重建，否则会留下"圆角 vs 连续圆角"的错位。
+    corner: u32,
 }
 
 /// 一次成功应用的**胶囊**区域参数。胶囊区域不是圆角矩形，半径档位对它是无意义的；
@@ -639,7 +661,21 @@ pub fn apply<R: Runtime>(win: &WebviewWindow<R>) -> bool {
 /// 不读取/不污染主窗口的全局半径状态）。返回是否真正应用成功。
 #[cfg(windows)]
 pub fn apply_with_radius<R: Runtime>(win: &WebviewWindow<R>, logical_radius: f64) -> bool {
-    apply_impl(win, logical_radius, ShapeTarget::Popup)
+    apply_impl(win, logical_radius, ShapeTarget::Popup, 2.0)
+}
+
+/// 用指定半径 + **角部曲线指数**裁剪独立弹窗（工作台连续圆角专用）。
+///
+/// 与 `apply_with_radius` 的唯一区别是角部曲线：`exponent = 2` 完全等价于原圆弧路径，
+/// `exponent = 4` 对应 CSS `corner-shape: superellipse(4)`。调用方必须让 CSS 与这里用
+/// 同一个指数——只在 WebView2 真正支持 `corner-shape` 时才传非 2 值。
+#[cfg(windows)]
+pub fn apply_with_corner_profile<R: Runtime>(
+    win: &WebviewWindow<R>,
+    logical_radius: f64,
+    exponent: f64,
+) -> bool {
+    apply_impl(win, logical_radius, ShapeTarget::Popup, exponent)
 }
 
 #[cfg(windows)]
@@ -647,6 +683,7 @@ fn apply_impl<R: Runtime>(
     win: &WebviewWindow<R>,
     logical_radius: f64,
     target: ShapeTarget,
+    exponent: f64,
 ) -> bool {
     let Ok(handle) = win.hwnd() else {
         return false;
@@ -656,6 +693,7 @@ fn apply_impl<R: Runtime>(
     let mut current = PendingShape {
         target,
         radius_milli: radius_milli(logical_radius),
+        corner_milli: corner_milli(exponent),
     };
 
     {
@@ -676,6 +714,7 @@ fn apply_impl<R: Runtime>(
             hwnd,
             current.radius_milli as f64 / 1000.0,
             current.target,
+            corner_exponent(current.corner_milli),
         );
         let stable = match win.outer_size() {
             Ok(size) => {
@@ -712,7 +751,12 @@ fn apply_impl<R: Runtime>(
     if let Some(next) = leftover {
         let w = win.clone();
         let _ = w.clone().run_on_main_thread(move || {
-            let _ = apply_impl(&w, next.radius_milli as f64 / 1000.0, next.target);
+            let _ = apply_impl(
+                &w,
+                next.radius_milli as f64 / 1000.0,
+                next.target,
+                corner_exponent(next.corner_milli),
+            );
         });
     }
     applied
@@ -731,23 +775,53 @@ fn apply_impl<R: Runtime>(
 /// 125% 下 CSS 22.5px 圆角实测最早着色像素 x = 15/13/11/9/7/3（y=0/1/2/3/5/10），
 /// 与本公式逐行一致（见单测与真机截图）。
 fn css_support_left(y: i32, h: i32, radius: f64) -> i32 {
+    css_support_left_profile(y, h, radius, 2.0)
+}
+
+/// 带角部曲线的版本：`exponent` = 2 时与 CSS `border-radius` 的圆弧逐像素一致，
+/// = 4 时与 CSS `corner-shape: superellipse(4)` 的超椭圆一致（苹果式连续圆角）。
+fn css_support_left_profile(y: i32, h: i32, radius: f64, exponent: f64) -> i32 {
     if radius <= 0.0 || h <= 0 {
         return 0;
     }
-    let top = support_from_edge(y, radius);
+    let top = support_from_edge_profile(y, radius, exponent);
     // 底边圆角：同一行相对底边的距离（最后一行 row=0）。
-    let bottom = support_from_edge(h - 1 - y, radius);
+    let bottom = support_from_edge_profile(h - 1 - y, radius, exponent);
     top.max(bottom)
 }
 
 /// 距最近一条水平边 `row` 行处，圆角圆的支撑起点。
 fn support_from_edge(row: i32, radius: f64) -> i32 {
+    support_from_edge_profile(row, radius, 2.0)
+}
+
+/// 距水平边 `row` 行处的**角部曲线**支撑起点（物理像素）。
+///
+/// 采样口径与 CSS 抗锯齿一致：判定像素 `[x,x+1] × [y,y+1]` 是否与角部曲线内部相交。
+/// - `exponent = 2`：`((r−x−1)/r)^2 + ((r−y−1)/r)^2 ≤ 1`，即圆弧（与旧实现逐像素一致）；
+/// - `exponent = 4`：同一不等式换成四次超椭圆 `u^4 + v^4 ≤ 1`，正是 CSS
+///   `corner-shape: superellipse(4)` 的角部曲线（n 越大角部越"饱满"、与直边过渡越连续）。
+///
+/// 对 x 反解：`u ≤ (1 − v^n)^(1/n)`，`x ≥ r − 1 − r·u`，取最小整数即本行起点。
+fn support_from_edge_profile(row: i32, radius: f64, exponent: f64) -> i32 {
     if row < 0 || (row as f64) >= radius {
         return 0;
     }
     let dy = radius - (row as f64 + 1.0);
-    let dx = (radius * radius - dy * dy).max(0.0).sqrt();
-    // 像素 [x,x+1] 与该行圆弧相交的最小整数 x。
+    let n = if exponent.is_finite() {
+        exponent.clamp(2.0, 6.0)
+    } else {
+        2.0
+    };
+    let dx = if (n - 2.0).abs() < 1e-9 {
+        // 圆弧：保留原开方路径，避免 powf 末位误差改变既有逐像素结果。
+        (radius * radius - dy * dy).max(0.0).sqrt()
+    } else {
+        let v = (dy / radius).abs();
+        let u = (1.0 - v.powf(n)).max(0.0).powf(1.0 / n);
+        radius * u
+    };
+    // 像素 [x,x+1] 与该行曲线相交的最小整数 x。
     let x = (radius - 1.0 - dx).ceil() as i32;
     x.max(0)
 }
@@ -823,6 +897,21 @@ fn support_rect_rgn(
     h: i32,
     radius: f64,
 ) -> Option<windows_sys::Win32::Graphics::Gdi::HRGN> {
+    support_rect_rgn_profile(x0, y0, w, h, radius, 2.0)
+}
+
+/// 带角部曲线的像素支撑区域。`exponent = 2` 与 `support_rect_rgn` 完全等价；
+/// 其他指数用于工作台连续圆角（`corner-shape: superellipse(n)`），逐行支撑点由
+/// `support_from_edge_profile` 计算，其余（DPI、平移、矩形合并）逻辑完全相同。
+#[cfg(windows)]
+fn support_rect_rgn_profile(
+    x0: i32,
+    y0: i32,
+    w: i32,
+    h: i32,
+    radius: f64,
+    exponent: f64,
+) -> Option<windows_sys::Win32::Graphics::Gdi::HRGN> {
     use windows_sys::Win32::Graphics::Gdi::{
         CombineRgn, CreateRectRgn, DeleteObject, RGN_ERROR, RGN_OR,
     };
@@ -842,9 +931,11 @@ fn support_rect_rgn(
         }
         let mut y = 0;
         while y < h {
-            let x = css_support_left(y, h, radius).min(w / 2);
+            let x = css_support_left_profile(y, h, radius, exponent).min(w / 2);
             let mut y_end = y + 1;
-            while y_end < h && css_support_left(y_end, h, radius).min(w / 2) == x {
+            while y_end < h
+                && css_support_left_profile(y_end, h, radius, exponent).min(w / 2) == x
+            {
                 y_end += 1;
             }
             let right = (w - x).max(x + 1);
@@ -885,6 +976,7 @@ fn apply_pass<R: Runtime>(
     hwnd: isize,
     logical_radius: f64,
     target: ShapeTarget,
+    exponent: f64,
 ) -> bool {
     use windows_sys::Win32::Graphics::Gdi::{DeleteObject, SetWindowRgn};
 
@@ -973,6 +1065,7 @@ fn apply_pass<R: Runtime>(
         height: size.height,
         radius: r as u32,
         scale_milli,
+        corner: corner_milli(exponent),
     };
     let stamp_current = {
         let cache = REGIONS.lock().unwrap_or_else(|e| e.into_inner());
@@ -991,7 +1084,8 @@ fn apply_pass<R: Runtime>(
             } else {
                 // 弹窗不再用 CreateRoundRectRgn（GDI 二值硬边会切进 CSS AA 弧，
                 // 四角表现为阶梯锯齿）；与胶囊面板共用同一像素支撑形状。
-                support_rect_rgn(0, 0, w, h, css_phys)
+                // 工作台可额外指定角部指数（连续圆角），其余弹窗仍是圆弧。
+                support_rect_rgn_profile(0, 0, w, h, css_phys, exponent)
             };
             match rgn {
                 None => false,
@@ -1830,6 +1924,16 @@ pub fn apply_with_radius<R: Runtime>(win: &WebviewWindow<R>, _logical_radius: f6
     apply(win)
 }
 
+/// 非 Windows 平台的连续圆角版本（角部曲线只影响 Windows 区域裁剪）。
+#[cfg(not(windows))]
+pub fn apply_with_corner_profile<R: Runtime>(
+    win: &WebviewWindow<R>,
+    _logical_radius: f64,
+    _exponent: f64,
+) -> bool {
+    apply(win)
+}
+
 /// 在主线程上应用窗口外形（Win32 窗口操作必须走主线程），带超时保护。
 pub fn apply_on_main_thread<R: Runtime>(win: &WebviewWindow<R>) -> bool {
     use std::sync::mpsc;
@@ -1975,6 +2079,7 @@ mod tests {
             height: 72,
             radius: 20,
             scale_milli: 1000,
+            corner: 2000,
         });
         let capsule = CapsuleStamp {
             hwnd: 7,
@@ -2054,6 +2159,7 @@ mod tests {
             height: 700,
             radius: 23,
             scale_milli: 1250,
+            corner: 2000,
         };
         assert_ne!(base, RegionStamp { hwnd: 2, ..base });
         assert_ne!(base, RegionStamp { width: 501, ..base });
@@ -2081,6 +2187,7 @@ mod tests {
             height: h,
             radius: r,
             scale_milli,
+            corner: 2000,
         }
     }
 
@@ -2216,10 +2323,12 @@ mod tests {
     const POPUP_16: PendingShape = PendingShape {
         target: ShapeTarget::Popup,
         radius_milli: 16_000,
+        corner_milli: 2_000,
     };
     const MAIN_18: PendingShape = PendingShape {
         target: ShapeTarget::Main,
         radius_milli: 18_000,
+        corner_milli: 2_000,
     };
 
     #[test]
@@ -2266,6 +2375,7 @@ mod tests {
             PendingShape {
                 target: ShapeTarget::Popup,
                 radius_milli: 20_000,
+                corner_milli: 2_000,
             },
         );
         assert_eq!(gate.take(7).unwrap().radius_milli, 20_000);
@@ -2398,6 +2508,7 @@ mod tests {
             height: 700,
             radius: 20,
             scale_milli: 1250,
+            corner: 2000,
         };
         cache.update(stamp);
         cache.set_last_pass_size(5, (300, 700));
@@ -2416,6 +2527,7 @@ mod tests {
             height: 700,
             radius: 20,
             scale_milli: 1250,
+            corner: 2000,
         };
         let mut cache = RegionCache::new();
         cache.update(stamp);

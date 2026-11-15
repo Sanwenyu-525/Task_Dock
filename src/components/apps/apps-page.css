@@ -11,9 +11,9 @@
 
 @container (min-width: 560px) {
   .apps-panel .apps-grid {
-    /* 260px 让 1600/1366 内容区排满 3 列、1180 排 2 列；240px 会在 1600 留出
-       第 4 个空列，三张卡只占左侧 2/3，看起来像没铺满。 */
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    /* 显式 3 列：auto-fill + 260px 在 1600 内容区会生成 4 个隐式列，
+       三张卡只占左侧 3/4，右侧留一条空列。1366 仍三列、1180/960 落两列。 */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   /* 效果图 10 的应用卡是图标在上、名称/状态在下的大卡，不是 52px 行内条目。
@@ -66,5 +66,13 @@
     top: auto;
     bottom: 7px;
     right: 7px;
+  }
+}
+
+/* 1180 内容区约 666px、960 约 754px：三列会把 15px 名称压到 200px 以下，
+   两列保持大卡可读性。1366（约 852px）仍走上面的三列。 */
+@container (min-width: 560px) and (max-width: 799px) {
+  .apps-panel .apps-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

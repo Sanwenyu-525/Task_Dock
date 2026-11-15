@@ -19,8 +19,9 @@ use crate::agents::now_iso;
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
-/// 合法的工作空间类型（与迁移 v49 的 CHECK 约束保持一致）。
-pub const PROJECT_KINDS: &[&str] = &["development", "game", "ai_comic", "general"];
+/// 合法的工作空间类型（与迁移 v57 的 CHECK 约束保持一致；
+/// v57 在 v49 的四类基础上追加 `novel`，历史迁移本身不改）。
+pub const PROJECT_KINDS: &[&str] = &["development", "game", "ai_comic", "general", "novel"];
 /// 项目状态：归档只影响列表展示与默认排序，不删除任何数据。
 pub const PROJECT_STATUSES: &[&str] = &["active", "archived"];
 /// 通用事项状态（与迁移 v49 的 CHECK 约束保持一致）。
@@ -1284,5 +1285,108 @@ mod tests {
         workspace_task_unlink_impl(&db, &project.id, "t1").unwrap();
         assert!(workspace_task_link_list_impl(&db, &project.id).unwrap().is_empty());
         assert!(workspace_task_unlink_impl(&db, &project.id, "t1").is_err());
+    }
+
+    /// novel（创作工作台 A 阶段）：新增的小说类型复用既有项目/实例/事项/任务关联
+    /// 命令，不引入第二套 CRUD；同时锁定「非法类型仍拒绝、其他四种类型不受影响」。
+    #[test]
+    fn novel_project_supports_crud_status_instance_items_and_task_links() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "长篇小说", "novel");
+        assert_eq!(project.kind, "novel");
+        assert_eq!(project.status, "active");
+
+        // 编辑：类型保持 novel，根目录与备注可保存（仍是同一个项目 ID）。
+        let dir = temp_dir("novel");
+        let root = dir.to_string_lossy().to_string();
+        let updated = workspace_project_save_impl(
+            &db,
+            Some(project.id.clone()),
+            "长篇小说（改）".into(),
+            "novel".into(),
+            Some(root.clone()),
+            None,
+            Some("科幻题材".into()),
+        )
+        .unwrap();
+        assert_eq!(updated.id, project.id);
+        assert_eq!(updated.kind, "novel");
+        assert_eq!(updated.name, "长篇小说（改）");
+        assert_eq!(updated.root_path, root);
+        assert_eq!(updated.note, "科幻题材");
+
+        // 设为当前工作空间项目；归档后从 active 列表消失，恢复后回来。
+        workspace_set_active_project_impl(&db, Some(project.id.clone())).unwrap();
+        workspace_project_set_status_impl(&db, &project.id, "archived".into()).unwrap();
+        assert!(workspace_project_list_impl(&db, Some("active".into()))
+            .unwrap()
+            .is_empty());
+        workspace_project_set_status_impl(&db, &project.id, "active".into()).unwrap();
+        assert_eq!(
+            workspace_project_list_impl(&db, Some("active".into()))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // 窗口实例 + 写作事项：复用 workspace_instances / workspace_items。
+        workspace_instance_save_impl(
+            &db,
+            &project.id,
+            "items".into(),
+            Some(
+                r#"{"version":1,"moduleOrder":["items","overview"],"hiddenModules":[],"activeModule":"items"}"#
+                    .into(),
+            ),
+        )
+        .unwrap();
+        let instance = workspace_instance_get_impl(&db, &project.id).unwrap();
+        assert_eq!(instance.active_module, "items");
+
+        let item = workspace_item_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            None,
+            "第一章".into(),
+            Some("chapter".into()),
+            Some("doing".into()),
+            Some(0),
+            Some(r#"{"words":0}"#.into()),
+        )
+        .unwrap();
+        assert_eq!(item.stage, "chapter");
+        assert_eq!(workspace_item_list_impl(&db, &project.id).unwrap().len(), 1);
+
+        // 任务关联：复用既有 tasks 系统，只建弱引用。
+        let now = now_iso();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tasks (id, title, created_at, updated_at) VALUES ('t-novel', '写第一章', ?1, ?1)",
+                params![now],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        workspace_task_link_add_impl(&db, &project.id, "t-novel").unwrap();
+        assert_eq!(workspace_task_link_list_impl(&db, &project.id).unwrap().len(), 1);
+
+        // 项目列表按 novel 返回类型，并带真实计数（不是前端拼的演示数据）。
+        let listed = workspace_project_list_impl(&db, None).unwrap();
+        assert!(listed.iter().any(|p| p.id == project.id
+            && p.kind == "novel"
+            && p.item_count == 1
+            && p.task_link_count == 1));
+
+        // 非法类型仍拒绝；其他四种类型仍可正常创建。
+        assert!(
+            workspace_project_save_impl(&db, None, "非法".into(), "music".into(), None, None, None)
+                .is_err()
+        );
+        for kind in ["development", "game", "ai_comic", "general"] {
+            let p = create_project(&db, kind, kind);
+            assert_eq!(p.kind, kind);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

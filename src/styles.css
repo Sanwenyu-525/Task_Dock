@@ -19466,6 +19466,21 @@ body.nav-reorder-dragging {
   resize: vertical;
 }
 
+.wb-handoff-more {
+  margin-top: 8px;
+}
+
+.wb-handoff-more > summary {
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.wb-handoff-more > summary:hover {
+  color: var(--text-primary);
+}
+
 .wb-handoff-preview-wrap {
   margin-top: 10px;
   min-width: 0;

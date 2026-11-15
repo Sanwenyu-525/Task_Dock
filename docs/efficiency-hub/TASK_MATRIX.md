@@ -37,14 +37,15 @@
 
 | ID | 功能 | 原任务来源 | 对应代码 | 已实现范围 | 尚未实现 | 实现 | 验证 |
 |---|---|---|---|---|---|---|---|
-| PW-1 | 数据模型与命令层 | 工作空间 P0 | v49 迁移、`commands/project_workspace.rs` | 四表、CRUD、事项、任务关联、实例布局、备份登记 | — | implemented | verified（Rust 单测，待本轮复跑） |
+| PW-1 | 数据模型与命令层 | 工作空间 P0 | v49 迁移 + v57（kind 五值）、`commands/project_workspace.rs` | 四表（+`shelf_project_links` 弱关联）、CRUD、事项、任务关联、实例布局、备份登记；v57 事务内重建父表/依赖表并自检外键 | 章节/人物等小说专业表（下一阶段） | implemented | verified（Rust 单测含 v57 迁移与 FK check） |
 | PW-2 | 独立专业窗口 | 工作空间 P0 | `src-tauri/src/project_workspace_window.rs`、`workspace.html` | 单窗口、几何持久化、显示器收敛、关闭不影响胶囊 | 真机 DPI/多显示器验收 | implemented | partially_verified |
 | PW-3 | 三层入口 | 工作空间 P0 | 胶囊肩部 / 完整面板 / 专业窗口 | 三个入口均可打开 | 胶囊入口隐藏后的回流验证 | implemented | partially_verified |
-| PW-4 | Profile/Capability 注册中心 | 工作空间 P1-01 | `src/workspace/workspaceProfiles.ts` | 四类型导航/首页/能力声明、四态、planned/unavailable 无假按钮 | 仅「基础 Profile」：游戏/AI 漫剧无真实业务闭环；布局排序/隐藏无编辑入口（已标 limited） | implemented（基础） | verified（注册中心契约测试） |
+| PW-4 | Profile/Capability 注册中心 | 工作空间 P1-01 | `src/workspace/workspaceProfiles.ts`、`workspaceProfileIcons.ts` | **五类型**导航/首页/能力声明、四态、planned/unavailable 无假按钮、图标 token 有真实映射 | 仅「基础 Profile」：游戏/AI 漫剧/小说无完整专业闭环；布局排序/隐藏无编辑入口（已标 limited） | implemented（基础） | verified（注册中心契约测试） |
 | PW-5 | 页面数据层（代次隔离） | 工作空间 P0-03/P1-02 | `src/workspace/useWorkspaceProjectContext.ts` | 代次、项目归属、写保护、布局解析回退、任务选择器 | 后端分页元数据 | implemented | verified（hook 测试） |
 | PW-6 | 游戏制作闭环 | 工作空间 P1 | 仅事项阶段 | 事项承载关卡/系统阶段 | 资源关联、构建/测试登记、引擎跳转 | not_started | unverified |
 | PW-7 | AI 漫剧闭环 | 工作空间 P1 | 仅事项阶段 | 剧集/镜头用 stage 承载 | 素材/角色库、生成结果导入、版本比较/采用 | not_started | unverified |
 | PW-8 | 跨项目资源与产出物关系 | 工作空间 P2 | 无 | 无 | — | not_started | unverified |
+| PW-9 | 小说项目类型接入（创作工作台 A 阶段） | 2026-11-15 | v57 迁移、`commands/project_workspace.rs`、`src/workspace/workspaceProfiles.ts`、`ProjectWorkspacePanel.tsx`、`WorkbenchShell.tsx`、`commands/backup.rs` | 第五种类型 `novel`：CHECK 五值、Rust `PROJECT_KINDS`、Profile（小说/概览/写作事项/任务关联/项目设置）、首页五卡片（含项目简介与计划能力清单）、图标 `book-open`、创建/编辑/列表/切换/实例/事项/任务关联/备份往返全部复用既有实现 | 正文编辑器、章节/卷、人物档案、世界观、剧情时间线、AI 创作、导出（均为下一阶段；能力已登记 `planned` 且不可调用） | implemented | partially_verified（Rust 迁移/命令/备份测试 + Vitest 五种 Profile 契约；原生窗口与视觉未逐页走查） | 无 | B 阶段：章节模型与编辑器（先建章节树，再评估独立表） |
 
 ## 4. 旧任务编号映射（不丢失追踪）
 
@@ -67,6 +68,8 @@
 4. U5 统一问题复现包（复用诊断，不建第二套日志）。
 5. U4 开发环境监控 MVP（只读登记 + 明确授权执行）。
 6. U8 游戏/AI 漫剧最小闭环（有真实接口才把能力从 planned 提升）。
+7. B 阶段：小说章节模型与编辑器（先做项目内章节树，再评估独立表）；人物/世界观条目；
+   AI 辅助前先定义上下文装配与授权边界。
 
 ## 6. 2026-11-14 第二轮（U2：交接包 ↔ Agent 会话、Agent 结果待验收）
 
@@ -117,4 +120,25 @@ Ctrl+数字语义与旧数据不变；工作台侧栏仍是唯一完整功能入
 - 没有复制 FullView 的 JSX，也没有复制任务/Agent/项目等业务实现；工作台直接复用既有面板。
 - Phase D 是「兼容入口 + 跳转」，不是删除主窗口；快捷面功能未删。
 - 没有宣称多显示器、150%/200% DPI、2K/4K 视觉、资源无泄漏已验收。
+
+## 8. 2026-11-15 创作工作台 A 阶段（小说项目类型）
+
+目标：在既有 Project Workspace 上增加第五种专业 Profile，为正文/章节/人物/世界观/AI
+辅助预留位置；**不新增第二套项目、任务或窗口系统**。
+
+| 层 | 落地内容 | 证据/验证 |
+|---|---|---|
+| 数据库 | 迁移 **v57**：`workspace_projects.kind` CHECK 扩为 `development / game / ai_comic / general / novel`。事务内暂存五张表 → 按依赖逆序删除四张依赖表 → 重建父表（复制全部列）→ 重建依赖表与索引 → 回填（事项两段式 parent_id）→ scoped `PRAGMA foreign_key_check` + `EXCEPT` 逐行自检，任一失败整体回滚 | `v57_novel_kind_migration_preserves_workspace_rows_and_fk_integrity`（4 类历史项目 + 实例 + 多级事项 + 任务关联 + 暂存关联，逐列断言 + 0 外键违例 + 非法类型拒绝 + 级联删除） |
+| Rust | `PROJECT_KINDS` 追加 `novel`；创建/编辑/列表/归档/恢复/设为当前/备注/根目录/事项/任务关联全部复用既有命令 | `novel_project_supports_crud_status_instance_items_and_task_links` |
+| 前端 | `WorkspaceKind` 追加 `"novel"`；`WORKSPACE_PROFILES.novel`（标签「小说」、icon `book-open`→`BookOpen`）；导航 概览/写作事项/任务关联/项目设置；首页 5 卡片（项目/简介/写作事项/任务关联/计划能力清单） | `workspaceProfiles.test.ts`（五 Profile、卡片组合、能力悬空引用、planned 不可调用、旧布局兼容、图标映射） |
+| 能力 | available：`core.project` `core.items` `core.taskLinks`；limited：`core.layout`；planned（不可调用）：`novel.manuscript` `novel.characters` `novel.worldview` `novel.aiAssist` | 同上；计划能力卡片为纯文本，无编辑/保存/生成按钮 |
+| 备份 | 无 kind 过滤；novel 项目随五张表完整往返 | `novel_workspace_project_roundtrips_in_full_and_quick_backup`（Full + Quick，恢复后 kind/实例/事项/关联） |
+| 入口 | 新建/编辑项目类型下拉、项目列表徽标、详情类型、切换/独立窗口均从 Profile 注册中心派生（无重复入口） | 组件测试 + 契约测试 |
+
+明确未做（不冒充）：
+
+- 没有小说正文编辑器、富文本/Markdown、自动保存、版本历史；
+- 没有章节/卷管理、人物档案、世界观、剧情时间线、伏笔追踪、AI 续写/改写、导出；
+- 没有为上述功能提前建表，也没有可点击的假入口；
+- 未执行原生窗口逐页走查（新建/编辑/归档/切换/备份恢复的 UI 层），只做了自动化验证。
 

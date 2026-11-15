@@ -184,14 +184,6 @@ export default function WidgetCard({
           >
             <SlidersHorizontal size={13} aria-hidden="true" />
           </button>
-          <button
-            className="widget-icon-btn"
-            aria-label={t("widgets.disableAria", { title })}
-            data-tip={t("widgets.disableTip")}
-            onClick={() => onDisable(item.widget_id)}
-          >
-            <EyeOff size={13} aria-hidden="true" />
-          </button>
         </div>
       </header>
 
@@ -259,6 +251,15 @@ export default function WidgetCard({
               onClick={() => onResetPosition(item.widget_id)}
             >
               <LocateFixed size={13} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="btn sm danger-ghost"
+              aria-label={t("widgets.disableAria", { title })}
+              data-tip={t("widgets.disableTip")}
+              onClick={() => onDisable(item.widget_id)}
+            >
+              <EyeOff size={13} aria-hidden="true" /> {t("widgets.disable")}
             </button>
           </div>
         </div>

@@ -1049,6 +1049,24 @@ pub fn clipboard_paste_resumable_job(
     store::latest_resumable_paste_job(&rt.db)
 }
 
+/// 全部可继续的粘贴任务（按 `started_at DESC`），可按分组过滤。
+///
+/// 先对候选任务收敛崩溃锚点（`dispatching` → `uncertain`），再按新谓词返回列表；
+/// 旧任务不会被更新的新任务静默覆盖。业务逻辑在 [`store::resumable_paste_jobs`]，
+/// 本命令只取运行时、收敛、转发。
+#[tauri::command]
+pub fn clipboard_paste_resumable_jobs(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    group_id: Option<String>,
+) -> AppResult<Vec<PasteJob>> {
+    let rt = runtime(&state);
+    let candidates = store::resumable_paste_jobs(&rt.db, group_id.as_deref())?;
+    for job in &candidates {
+        store::reconcile_dispatching_items(&rt.db, &job.id)?;
+    }
+    store::resumable_paste_jobs(&rt.db, group_id.as_deref())
+}
+
 #[tauri::command]
 pub fn clipboard_cleanup(state: State<'_, Arc<ClipboardRuntime>>) -> AppResult<CleanupReport> {
     let rt = runtime(&state);

@@ -30,7 +30,20 @@ export interface PersistedState {
   tree: SplitNode;
   panes: PersistedPane[];
   activePaneId: string;
+  /**
+   * 用户显式固定的目录（跨重启保留；与「最近打开」不同，固定项不会被 LRU 淘汰）。
+   * 第三轮新增：目录会话的元数据，与布局无关——改变布局不会清空它。
+   */
+  pinnedDirs?: string[];
+  /** 最近打开目录（LRU，最多 MAX_RECENT_DIRS）。 */
+  recentDirs?: string[];
+  /**
+   * 容量收纳的标签：目标布局装不下时暂存于此，绝不截断。
+   * 与布局一起持久化，重启后仍可恢复。
+   */
+  stashed?: PersistedTab[];
 }
+
 
 export interface PersistedTemplate {
   id: string;
@@ -50,6 +63,13 @@ export interface FilesWorkspacePersisted {
 export const MAX_STATES = 8;
 export const MAX_TEMPLATES = 20;
 export const MAX_RECENT = 8;
+/** 最近打开目录上限（去重后按最近使用排序）。 */
+export const MAX_RECENT_DIRS = 8;
+/** 固定目录上限（防止持久化载荷无界增长）。 */
+export const MAX_PINNED_DIRS = 12;
+/** 收纳标签上限：超过时保留最早的（宁可停用更多布局，也不能丢目录）。 */
+export const MAX_STASHED_TABS = 64;
+
 
 export function defaultPersisted(): FilesWorkspacePersisted {
   return { version: FILE_WORKSPACE_VERSION, states: {}, templates: [], recentTemplates: [] };
@@ -103,6 +123,35 @@ function idsOf(node: SplitNode): string[] {
   return [...idsOf(node.first), ...idsOf(node.second)];
 }
 
+/** 目录列表（去重 + 上限；非法项直接丢弃）。 */
+function normalizeDirs(raw: unknown, max: number): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const item of raw) {
+    const path = sanePath(item);
+    if (!path) continue;
+    if (out.some((p) => p.toLowerCase() === path.toLowerCase())) continue;
+    out.push(path);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function normalizeStashed(raw: unknown): PersistedTab[] {
+  if (!Array.isArray(raw)) return [];
+  const out: PersistedTab[] = [];
+  const seen = new Set<string>();
+  for (const item of raw.slice(0, MAX_STASHED_TABS)) {
+    if (!isRecord(item)) continue;
+    const path = sanePath(item.path);
+    const tabId = typeof item.tabId === "string" && item.tabId.length <= 64 ? item.tabId : null;
+    if (!path || !tabId || seen.has(tabId)) continue;
+    seen.add(tabId);
+    out.push({ tabId, path });
+  }
+  return out;
+}
+
 function normalizeState(raw: unknown): PersistedState | null {
   if (!isRecord(raw)) return null;
   const tree = normalizeTree(raw.tree);
@@ -113,8 +162,16 @@ function normalizeState(raw: unknown): PersistedState | null {
     typeof raw.activePaneId === "string" && ids.includes(raw.activePaneId)
       ? raw.activePaneId
       : ids[0];
-  return { tree, panes, activePaneId };
+  return {
+    tree,
+    panes,
+    activePaneId,
+    pinnedDirs: normalizeDirs(raw.pinnedDirs, MAX_PINNED_DIRS),
+    recentDirs: normalizeDirs(raw.recentDirs, MAX_RECENT_DIRS),
+    stashed: normalizeStashed(raw.stashed),
+  };
 }
+
 
 /**
  * 归一化任意来源的持久化数据。绝不抛错：

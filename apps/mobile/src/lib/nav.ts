@@ -1,41 +1,46 @@
 // 轻量导航契约：本应用不用导航库，栈由 App.tsx 的 Shell 持有；
 // 这里只定义屏幕与容器之间的类型，避免 screens 反向 import App 造成循环依赖。
-export type RouteKey =
-  | "pairing"
-  | "sync"
-  | "files"
-  | "conflict"
-  | "note_editor"
-  | "widget"
-  | "notifications"
+//
+// 路由键同时以运行时常量导出（2026-11-15 工作台入口自定义）：
+// 入口注册表需要「声明的路由确实在路由表里」这条可断言契约，纯类型做不到运行期校验。
+export const ROUTE_KEYS = [
+  "pairing",
+  "sync",
+  "files",
+  "conflict",
+  "note_editor",
+  "widget",
+  "notifications",
   // 统一采集中心（照片 / 语音 / 文件 / 文本），系统分享与快捷方式都进入这里
-  | "capture"
+  "capture",
   // 蓝青专业版导航重构（2026-11-13）：收集箱/笔记/设备/设置不再是底部一级栏，
   // 但页面本身、数据与交互完全保留，改为从「工具」「我的」进入的二级页。
-  | "inbox"
-  | "notes"
-  | "device"
-  | "settings"
+  "inbox",
+  "notes",
+  "device",
+  "settings",
   // 移动采集中心（2026-11-15）：相机 → 处理页（多目的地）→ 本机素材库。
   // 不新增底部 Tab：入口在首页快捷区与工具页「采集与整理」。
-  | "capture_camera"
-  | "capture_scan"
-  | "capture_review"
-  | "capture_stash"
-  | "capture_import"
+  "capture_camera",
+  "capture_scan",
+  "capture_review",
+  "capture_stash",
+  "capture_import",
   // 采集中心入口（状态一：采集）：拍照 / 扫描 / 导入 / 语音 / 一句话
-  | "capture_home"
+  "capture_home",
   // 开发验收专用（无导航入口，长按「我的」页版本号进入），不进正式信息架构
-  | "icon_gallery"
+  "icon_gallery",
   // 2026-11-15 全页面统一：任务详情（真实数据）与诊断中心（真实本地自检）。
-  // 项目详情/功能看板/场景工作区/开发工作台在移动端没有数据链路，
-  // 用统一的「未接入占位页」承载入口，不新造页面与假数据。
-  | "task_detail"
-  | "diagnostics"
-  | "project_detail"
-  | "feature_board"
-  | "scene_workspace"
-  | "dev_workbench";
+  // 项目详情/功能看板/场景工作区/开发工作台等未接入能力不再保留推送路由，
+  // 入口统一降级为不可点击的中性图标占位（FeatureIconPlaceholder），不新造页面与假数据。
+  "task_detail",
+  "diagnostics",
+  // 工作台入口自定义：同一屏幕的两个入口各用一条路由，避免给 push 增加第 5 个参数
+  "entry_manager",
+  "all_features",
+] as const;
+
+export type RouteKey = (typeof ROUTE_KEYS)[number];
 
 /** 采集中心打开时的初始状态：普通采集 / 直接开相机 / 直接录音 / 直接写任务 */
 export type CaptureIntent = "capture" | "camera" | "voice" | "task";

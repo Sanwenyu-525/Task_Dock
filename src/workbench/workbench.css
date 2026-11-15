@@ -105,6 +105,11 @@ html[data-window-maximized="true"] .wb-boot {
   flex-direction: column;
   gap: 1px;
   padding-top: 2px;
+  /* 落点线用「列表内容坐标」定位（top 已含 scrollTop）：相对定位让绝对子元素
+     落在滚动内容上，自动滚动时跟着内容走。 */
+  position: relative;
+  /* 拖到边界继续滚动时不把滚动链传给整个工作台（只有导航列表滚动）。 */
+  overscroll-behavior: contain;
   /* 导航列表不画滚动条（滚轮 / 键盘 / 拖动仍可滚动）：5px 灰 thumb 紧贴
      右侧分栏拖拽条时会并排出现两根竖线，看起来像多了一条分隔线。 */
   scrollbar-width: none;
@@ -136,6 +141,10 @@ html[data-window-maximized="true"] .wb-boot {
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+  /* 拖拽手柄的绝对定位基准（手柄落在左侧内边距里，不占行内布局）。 */
+  position: relative;
+  /* 拖拽时其它行平滑让位；只过渡 transform，悬停/选中颜色仍即时响应。 */
+  transition: transform 160ms cubic-bezier(0.2, 0, 0, 1);
 }
 .wb-nav-item:hover {
   background: var(--surface-hover);
@@ -940,6 +949,18 @@ body.wb-resizing {
 /* ── 项目工作空间内容 ───────────────────────────────────────────────── */
 .wb-project {
   max-width: 1180px;
+  /* workspace.css 的 --ws-* 默认指向浅色纸张 token，嵌入工作台深色主题时
+     若不覆盖，.ws-card 会变成白底 + 浅色文字（2026-11-15 深色实测不可读）。
+     这里把 legacy 工作空间变量映射回当前语义 token；standalone 窗口不受影响。 */
+  --ws-bg: transparent;
+  --ws-surface: var(--surface-raised);
+  --ws-border: var(--border-subtle);
+  --ws-text: var(--text-primary);
+  --ws-muted: var(--text-secondary);
+  --ws-accent: var(--accent);
+  --ws-ok: var(--status-success);
+  --ws-warn: var(--status-warning);
+  --ws-error: var(--status-error);
 }
 
 /* 开发工作台分层构图（2026-11-15 第二轮）：
@@ -962,9 +983,13 @@ body.wb-resizing {
 .wb-dev-grid--primary {
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
 }
+.wb-dev-grid--triple {
+  align-items: start;
+}
 @container wb-content (min-width: 1000px) {
   .wb-dev-grid--triple {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
   }
   /* 待处理 / 快速操作 / 最近待办同一层，工作现场继续满宽独占下一层。 */
   .wb-dev-grid--tools {
@@ -1278,6 +1303,10 @@ body.wb-resizing {
     justify-content: center;
     padding-inline: 4px;
   }
+  /* 极窄导航只剩图标：没有文字可挤，手柄会让图标偏移，直接隐藏。 */
+  .wb-nav-grip {
+    display: none;
+  }
   .wb-new-task span {
     display: none;
   }
@@ -1412,6 +1441,93 @@ body.wb-resizing {
 }
 .wb-nav-group:first-child {
   margin-top: 4px;
+}
+
+/* ── 左侧导航拖拽排序（2026-11-15）──────────────────────────────────────
+   视觉保持二维平面：跟手位移 + 其它行让位 + 落点细线，不做缩放/倾斜/3D。
+   手柄常驻 DOM、仅悬停时显形，落在行的左侧内边距里，不挤压文字与数量徽标。 */
+.wb-nav-grip {
+  position: absolute;
+  inset-block: 7px;
+  inset-inline-start: 1px;
+  width: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  opacity: 0;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease;
+}
+
+.wb-nav-item:hover .wb-nav-grip,
+.wb-nav-item:focus-visible .wb-nav-grip {
+  opacity: 0.6;
+}
+
+.wb-nav-item:hover .wb-nav-grip:hover {
+  color: var(--accent);
+  opacity: 1;
+}
+
+/* 被拖行：轻微浮起（背景 + 柔和阴影），不做缩放与旋转。 */
+.wb-nav-item.is-dragging {
+  z-index: 3;
+  background: var(--surface-raised);
+  border-color: color-mix(in srgb, var(--accent) 26%, transparent);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text-primary);
+  cursor: grabbing;
+  transition: none;
+}
+
+.wb-nav-item.is-dragging .wb-nav-grip {
+  opacity: 0.9;
+  color: var(--accent);
+  cursor: grabbing;
+}
+
+/* 落点：空位里的一条细强调线，明确但不过度（不遮住行文字）。 */
+.wb-nav-drop-line {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  pointer-events: none;
+  z-index: 4;
+  transform: translateY(-1px);
+  animation: wb-nav-drop-line-in 120ms ease-out;
+}
+
+@keyframes wb-nav-drop-line-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 拖拽期间分组标题只是视觉辅助：弱化但不移动，避免与让位中的行抢注意力。 */
+.wb-nav-group.is-dragging {
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-nav-item,
+  .wb-nav-grip {
+    transition: none;
+  }
+  .wb-nav-drop-line {
+    animation: none;
+  }
 }
 
 /* ── 底部状态栏（只渲染真实可得的字段） ───────────────────────────────── */
@@ -2046,7 +2162,7 @@ body.wb-resizing {
   }
   .wb-ph-actions {
     width: 100%;
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 }
 

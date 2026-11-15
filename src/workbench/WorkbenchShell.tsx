@@ -24,10 +24,12 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
@@ -35,6 +37,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
+  GripVertical,
   Inbox,
   Layers,
   LayoutDashboard,
@@ -70,6 +73,8 @@ import WorkbenchWindowControls from "./WorkbenchWindowControls";
 import { WorkbenchDetailHostProvider } from "./pageDetail";
 
 import { useLocale } from "../hooks/useLocale";
+import { useNavDragSort } from "../hooks/useNavDragSort";
+import { useNavOrderDraft } from "../hooks/useNavOrderDraft";
 import { useTasksStore } from "../store/useTasksStore";
 import { useActionsStore, attentionCount } from "../store/useActionsStore";
 import { useCaptureStore } from "../store/useCaptureStore";
@@ -78,9 +83,10 @@ import { useAgentsStore } from "../store/useAgentsStore";
 import { useUiStore, type Tab, type TabSwitchResult } from "../store/useUiStore";
 import { useHotkeysRuntime } from "../store/useHotkeysStore";
 import { useGlobalSearchStore } from "../store/useGlobalSearchStore";
-import { useNavigationLayout } from "../lib/navigationLayout";
+import { useCommittedNavigationLayout, useNavigationLayout } from "../lib/navigationLayout";
 import {
   entriesForSurface,
+  isEntrySortable,
   lockedEntryIds,
   navEntry,
   navLabel,
@@ -144,6 +150,15 @@ const FilesWorkspacePanel = lazy(() => import("../components/files/FilesWorkspac
 
 /** 左侧入口（与主窗口共用注册中心；声明顺序无关于展示顺序）。 */
 const LEFT_ENTRIES = entriesForSurface("left");
+
+/**
+ * 拖拽结束后的 click 守卫窗口（毫秒）。
+ *
+ * 指针拖拽松手后浏览器仍会在原元素上补一个 click；它不是「打开页面」的意图。
+ * 与设置页 `NavigationVisibilitySection` 的 300ms 同量级，留一点余量覆盖
+ * WebView2 在慢帧下的补发延迟。
+ */
+const NAV_DRAG_CLICK_GUARD_MS = 350;
 
 const KIND_OPTIONS = (Object.values(WORKSPACE_PROFILES) as Array<{ kind: WorkspaceKind; label: string }>).map(
   (profile) => ({ value: profile.kind, label: profile.label }),
@@ -964,39 +979,139 @@ export default function WorkbenchShell() {
 
   // ── 派生数据 ────────────────────────────────────────────────────────
   const layout = useNavigationLayout();
+  // 排序草稿的基准是**已提交**配置（与设置页一致）：乐观意图叠加在它上面，
+  // 读事实源才能正确计算下一步与失败回滚。
+  const committedLayout = useCommittedNavigationLayout();
   const lockedIds = lockedEntryIds("left");
   const currentEntry = atHome ? undefined : LEFT_ENTRIES.find((entry) => entry.tabs.includes(tab));
-  const entriesToRender = layout.left
+
+  // 固定入口判定与注册中心同一份元数据：锁定入口（设置）与未知 ID 不参与排序。
+  const isFixedNavEntry = useCallback((id: string) => {
+    const entry = navEntry(id);
+    return !entry || !isEntrySortable(entry, "left");
+  }, []);
+  const onNavOrderError = useCallback(
+    (message: string) => {
+      // 草稿层已把界面回滚到已提交顺序，这里只负责把失败原因说清楚。
+      showToast(t("nav.saveFailed", { error: message }), { kind: "error" });
+    },
+    [showToast, t],
+  );
+  const navDraft = useNavOrderDraft("left", committedLayout.left, isFixedNavEntry, onNavOrderError);
+  const navOrderIds = navDraft.ids;
+  const moveNavEntry = navDraft.move;
+  const moveNavEntryTo = navDraft.moveTo;
+
+  const navListRef = useRef<HTMLDivElement | null>(null);
+  // 拖拽结束后浏览器补发的 click 不能变成页面跳转（与设置页同一语义）。
+  const navDragEndedAtRef = useRef(0);
+  // 排序后的焦点恢复与位置播报都按稳定 ID 处理，不依赖索引。
+  const navFocusRef = useRef<string | null>(null);
+  const navPendingAnnounceRef = useRef<string | null>(null);
+  const [navAnnouncement, setNavAnnouncement] = useState("");
+
+  const navDrag = useNavDragSort({
+    listRef: navListRef,
+    orderIds: navOrderIds,
+    isFixed: isFixedNavEntry,
+    onDrop: (id, toIndex) => {
+      navDragEndedAtRef.current = Date.now();
+      if (!moveNavEntryTo(id, toIndex)) return;
+      navPendingAnnounceRef.current = id;
+    },
+    onCancel: () => {
+      navDragEndedAtRef.current = Date.now();
+      setNavAnnouncement(t("nav.dragCancelled"));
+    },
+  });
+
+  // 键盘排序（Alt+↑/↓）：React 搬动节点会让焦点落回 body，渲染后按稳定 ID 还原。
+  const onNavEntryKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>, id: string) => {
+      if (!event.altKey) return;
+      const delta = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
+      if (delta === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!moveNavEntry(id, delta)) return;
+      navFocusRef.current = id;
+      navPendingAnnounceRef.current = id;
+    },
+    [moveNavEntry],
+  );
+
+  useLayoutEffect(() => {
+    const id = navFocusRef.current;
+    if (!id) return;
+    navFocusRef.current = null;
+    navListRef.current
+      ?.querySelector<HTMLElement>(`[data-nav-entry="${id}"]`)
+      ?.focus({ preventScroll: true });
+  }, [navOrderIds]);
+
+  useEffect(() => {
+    const id = navPendingAnnounceRef.current;
+    if (!id) return;
+    navPendingAnnounceRef.current = null;
+    const index = navOrderIds.indexOf(id);
+    const entry = navEntry(id);
+    if (index < 0 || !entry) return;
+    setNavAnnouncement(
+      t("nav.movedTo", {
+        label: navLabel(entry, t),
+        index: index + 1,
+        total: navOrderIds.length,
+      }),
+    );
+  }, [navOrderIds, t]);
+
+  // 渲染顺序严格来自 `navigation_layout.left`（未落库意图优先）：锁定入口固定在
+  // 底部区域，不进入可拖拽列表。
+  const entriesToRender = navOrderIds
     .filter((id) => !lockedIds.includes(id))
     .map((id) => navEntry(id))
     .filter((entry): entry is NavEntry => entry !== undefined);
   const fixedEntries = lockedIds
     .map((id) => navEntry(id))
     .filter((entry): entry is NavEntry => entry !== undefined);
-  const hiddenEntries = LEFT_ENTRIES.filter((entry) => !layout.left.includes(entry.id));
+  const hiddenEntries = LEFT_ENTRIES.filter((entry) => !navOrderIds.includes(entry.id));
 
-  // 导航分节（统一工作台信息架构，2026-11-14）：core=工作协同；capture/planning=
-  // 自动化与内容；system=项目与系统。用户自定义排序仍生效（分节内保持用户相对
-  // 顺序）；用户跨分节移动入口时它仍归入原分节（显隐/排序配置不受影响）。
+  // 导航分节（2026-11-15）：只把**连续**且同属一个分组的入口归为一段，分段标题
+  // 由入口自身分组推导，不再按静态 group 重新分桶。跨分组拖拽后实际位置即
+  // `navigation_layout.left` 的顺序；必要时允许重复标题（用户排序优先）。
   const navSections = useMemo(() => {
-    const sectionOf = (entry: NavEntry): "core" | "flow" | "system" => {
+    type NavSectionKey = "core" | "flow" | "system";
+    const sectionOf = (entry: NavEntry): NavSectionKey => {
       if (entry.group === "system") return "system";
       if (entry.group === "core") return "core";
       return "flow";
     };
-    const buckets: Record<"core" | "flow" | "system", NavEntry[]> = {
-      core: [],
-      flow: [],
-      system: [],
+    const labels: Record<NavSectionKey, string> = {
+      core: t("nav.group.core"),
+      flow: t("nav.group.flow"),
+      system: t("nav.group.system"),
     };
-    for (const entry of entriesToRender) buckets[sectionOf(entry)].push(entry);
-    return (
-      [
-        { key: "core", label: t("nav.group.core"), items: buckets.core },
-        { key: "flow", label: t("nav.group.flow"), items: buckets.flow },
-        { key: "system", label: t("nav.group.system"), items: buckets.system },
-      ] as Array<{ key: "core" | "flow" | "system"; label: string; items: NavEntry[] }>
-    ).filter((section) => section.items.length > 0);
+    const sections: Array<{
+      key: string;
+      section: NavSectionKey;
+      label: string;
+      items: NavEntry[];
+    }> = [];
+    for (const entry of entriesToRender) {
+      const section = sectionOf(entry);
+      const last = sections[sections.length - 1];
+      if (!last || last.section !== section) {
+        // 标题可能重复出现，React key 用「分组 + 段首入口 ID」保证唯一。
+        sections.push({
+          key: `${section}-${entry.id}`,
+          section,
+          label: labels[section],
+          items: [],
+        });
+      }
+      sections[sections.length - 1].items.push(entry);
+    }
+    return sections;
   }, [entriesToRender, t]);
 
   const counts = {
@@ -1166,7 +1281,7 @@ export default function WorkbenchShell() {
   return (
     <div className={`wb-root${compact ? " is-compact" : ""}`} style={rootStyle}>
       <nav className="wb-nav" aria-label={t("workbench.navAria")}>
-        <div className="wb-nav-items">
+        <div className="wb-nav-items" ref={navListRef}>
           <button
             type="button"
             className={`wb-nav-item${atHome ? " active" : ""}`}
@@ -1177,27 +1292,59 @@ export default function WorkbenchShell() {
             <span>{t("workbench.home")}</span>
           </button>
           <div className="wb-nav-sep" role="presentation" />
+          {navDrag.dropLineTop !== null && (
+            <div
+              className="wb-nav-drop-line"
+              style={{ top: navDrag.dropLineTop }}
+              aria-hidden="true"
+            />
+          )}
           {navSections.map((section) => (
             <Fragment key={section.key}>
-              <div className="wb-nav-group" role="presentation">
+              <div
+                className={`wb-nav-group${navDrag.draggingId ? " is-dragging" : ""}`}
+                role="presentation"
+              >
                 {section.label}
               </div>
               {section.items.map((entry) => {
                 const active = !atHome && entry.tabs.includes(tab);
                 const count = entry.badge ? counts[entry.badge] : 0;
                 const label = navLabel(entry, t);
+                const dragging = navDrag.draggingId === entry.id;
+                const shift = navDrag.shifts.get(entry.id) ?? 0;
+                const translate = dragging ? navDrag.offsetY : shift;
                 return (
                   <button
                     key={entry.id}
                     type="button"
-                    className={`wb-nav-item${active ? " active" : ""}`}
+                    className={`wb-nav-item${active ? " active" : ""}${dragging ? " is-dragging" : ""}`}
                     aria-current={active ? "page" : undefined}
                     aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
-                    data-tip={label}
+                    // 拖拽期间不显示悬停提示：鼠标扫过其它行时 tooltip 会挡住落点线。
+                    data-tip={navDrag.draggingId ? undefined : label}
+                    data-nav-entry={entry.id}
+                    style={translate !== 0 ? { transform: `translateY(${translate}px)` } : undefined}
+                    onPointerDown={(event) => {
+                      // 触屏：行体位移留给列表纵向滚动，只有手柄可起拖（手柄 touch-action: none）。
+                      if (
+                        event.pointerType === "touch" &&
+                        !(event.target as HTMLElement).closest("[data-nav-grip]")
+                      ) {
+                        return;
+                      }
+                      navDrag.beginDrag(event, entry.id);
+                    }}
                     onClick={() => {
+                      // 拖拽松手后的补发 click 不是「打开页面」的意图。
+                      if (Date.now() - navDragEndedAtRef.current < NAV_DRAG_CLICK_GUARD_MS) return;
                       openEntry(entry);
                     }}
+                    onKeyDown={(event) => onNavEntryKeyDown(event, entry.id)}
                   >
+                    <span className="wb-nav-grip" data-nav-grip aria-hidden="true">
+                      <GripVertical size={10} strokeWidth={2} />
+                    </span>
                     <span className="wb-nav-icon">
                       <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
                     </span>
@@ -1213,6 +1360,11 @@ export default function WorkbenchShell() {
             </Fragment>
           ))}
         </div>
+
+        {/* 键盘排序结果播报：只报最终位置，不在每一步都打断读屏。 */}
+        <span className="sr-only" aria-live="polite" aria-atomic="true">
+          {navAnnouncement}
+        </span>
 
         <div className="wb-nav-foot">
           {hiddenEntries.length > 0 && (

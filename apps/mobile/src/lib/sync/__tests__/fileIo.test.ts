@@ -68,6 +68,7 @@ function fakeClient(chunks: Uint8Array[]): FileClient {
       throw new Error("not used");
     },
     cancel(): void {},
+    cancelList(): void {},
   };
 }
 

@@ -15,6 +15,7 @@ import {
 } from "react-native";
 
 import { BrandMark } from "../components/BrandMark";
+import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
 import { HeaderIconButton } from "../components/HeaderIconButton";
 import { IconTile } from "../components/IconTile";
@@ -22,8 +23,9 @@ import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { MetricTile } from "../components/MetricTile";
 import { PressableScale } from "../components/PressableScale";
 import { ProgressBar } from "../components/ProgressBar";
-import { QuickTile } from "../components/QuickTile";
 import { SectionHeader } from "../components/SectionHeader";
+import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { WorkbenchEntryGrid } from "../components/entry/WorkbenchEntryGrid";
 import { listAssets } from "../db/captureAssets";
 import { listCaptures } from "../db/captures";
 import { listNotes } from "../db/notes";
@@ -36,6 +38,19 @@ import {
 } from "../domain/taskQuery";
 import type { Capture, Note, Task } from "../domain/types";
 import { homeGreeting } from "../domain/workspace";
+import {
+  commitEntryMove,
+  commitEntryOrder,
+  commitEntryVisibility,
+  resetEntryLayout,
+  useEntryLayout,
+} from "../lib/entryLayoutStore";
+import {
+  entriesForIds,
+  entryTargetOf,
+  type EntryId,
+  type MobileEntry,
+} from "../lib/entryRegistry";
 import { describeError } from "../lib/errors";
 import type { AppNav } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
@@ -72,6 +87,8 @@ export function HomeScreen({
   const { tokens } = useTheme();
   const { width, fontScale } = useWindowDimensions();
   const narrow = width < 360;
+  // ≤340dp（320dp 窄屏）概览磁贴改两行两列；只改布局比例，不整体缩小字号
+  const statsTwoCol = width <= 340;
   // 320dp 或大字号时品牌块变窄/隐藏，长句改用同义短句，保证一行读完
   const brandSize = fontScale > 1.25 ? 0 : narrow ? 40 : 50;
   const tagline =
@@ -193,15 +210,83 @@ export function HomeScreen({
     [nav],
   );
 
-  const quickEntries = [
-    { key: "capture", icon: "camera" as IconName, label: "采集", onPress: () => nav.push("capture_home") },
-    { key: "create", icon: "add" as IconName, label: "新建任务", onPress: nav.openCreateTask },
-    { key: "workspace", icon: "workspace" as IconName, label: "工作区", onPress: () => nav.openTab("workspace") },
-    { key: "dev", icon: "terminal" as IconName, label: "开发工作台", onPress: () => nav.push("dev_workbench") },
-    { key: "scene", icon: "scene" as IconName, label: "场景工作区", onPress: () => nav.push("scene_workspace") },
-    { key: "tools", icon: "tools" as IconName, label: "工具面板", onPress: () => nav.openTab("tools") },
-    { key: "stash", icon: "folderOpen" as IconName, label: "文件暂存架", badge: stashCount, onPress: () => nav.push("capture_stash") },
-  ];
+  // —— 工作台入口（可自定义）——
+  // 显示哪些入口、什么顺序全部来自 lib/entryLayoutStore（本机 kv 持久化）；
+  // 页面不再自己维护入口数组，长按磁贴进入编辑态，「管理」进独立管理页。
+  const layout = useEntryLayout();
+  const visibleEntries = useMemo(
+    () => entriesForIds(layout.config.visible),
+    [layout.config.visible],
+  );
+  const [editingEntries, setEditingEntries] = useState(false);
+  const [entryDragActive, setEntryDragActive] = useState(false);
+  const [entryToast, setEntryToast] = useState<ToastMessage | null>(null);
+  const entryToastSeq = useRef(0);
+
+  const showEntryToast = useCallback((text: string, tone: ToastTone = "info") => {
+    entryToastSeq.current += 1;
+    setEntryToast({ id: entryToastSeq.current, text, tone });
+  }, []);
+
+  const openEntry = useCallback(
+    (entry: MobileEntry) => {
+      const launch = entryTargetOf(entry);
+      if (!launch) return;
+      if (launch.kind === "route") nav.push(launch.route);
+      else if (launch.kind === "tab") nav.openTab(launch.tab);
+      else nav.openCreateTask();
+    },
+    [nav],
+  );
+
+  const reorderEntries = useCallback(
+    async (nextOrder: EntryId[]) => {
+      try {
+        await commitEntryOrder(nextOrder);
+      } catch (error) {
+        showEntryToast(`顺序未保存：${describeError(error)}`, "danger");
+      }
+    },
+    [showEntryToast],
+  );
+
+  const removeEntry = useCallback(
+    async (entry: MobileEntry) => {
+      try {
+        await commitEntryVisibility(entry.id as EntryId, false);
+        showEntryToast(`已移除「${entry.label}」，仍可在全部功能里找回`);
+        if (visibleEntries.length <= 1) setEditingEntries(false);
+      } catch (error) {
+        showEntryToast(`未保存：${describeError(error)}`, "danger");
+      }
+    },
+    [showEntryToast, visibleEntries.length],
+  );
+
+  const moveEntry = useCallback(
+    async (entry: MobileEntry, delta: number) => {
+      try {
+        await commitEntryMove(entry.id as EntryId, delta);
+      } catch (error) {
+        showEntryToast(`顺序未保存：${describeError(error)}`, "danger");
+      }
+    },
+    [showEntryToast],
+  );
+
+  const restoreDefaultEntries = useCallback(async () => {
+    try {
+      await resetEntryLayout();
+      showEntryToast("已恢复默认布局");
+    } catch (error) {
+      showEntryToast(`恢复失败：${describeError(error)}`, "danger");
+    }
+  }, [showEntryToast]);
+
+  const badgeForEntry = useCallback(
+    (id: string) => (id === "stash" ? stashCount : undefined),
+    [stashCount],
+  );
 
   return (
     <View style={styles.root}>
@@ -231,6 +316,8 @@ export function HomeScreen({
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        // 编辑态拖拽磁贴时先关掉页面滚动，避免手势与滚动争抢
+        scrollEnabled={!entryDragActive}
       >
         {/* 欢迎区：通栏蓝青渐变 + 品牌块，只承担问候与一句话价值主张 */}
         <View
@@ -285,34 +372,42 @@ export function HomeScreen({
             <View style={styles.section}>
               <SectionHeader icon="stats" title="今日概览" />
               <View style={styles.statsRow}>
-                <MetricTile
-                  variant="stat"
-                  icon="pending"
-                  value={counts.pending}
-                  label="待处理任务"
-                  tone="accent"
-                />
-                <MetricTile
-                  variant="stat"
-                  icon="calendar"
-                  value={counts.dueToday}
-                  label="今日到期"
-                  tone="alt"
-                />
-                <MetricTile
-                  variant="stat"
-                  icon="success"
-                  value={counts.completed}
-                  label="已完成"
-                  tone="ok"
-                />
-                <MetricTile
-                  variant="stat"
-                  icon="stats"
-                  value={completionPercent}
-                  label="完成率"
-                  tone="neutral"
-                />
+                <View style={[styles.statCell, statsTwoCol ? styles.statCellHalf : null]}>
+                  <MetricTile
+                    variant="stat"
+                    icon="pending"
+                    value={counts.pending}
+                    label="待处理任务"
+                    tone="accent"
+                  />
+                </View>
+                <View style={[styles.statCell, statsTwoCol ? styles.statCellHalf : null]}>
+                  <MetricTile
+                    variant="stat"
+                    icon="calendar"
+                    value={counts.dueToday}
+                    label="今日到期"
+                    tone="alt"
+                  />
+                </View>
+                <View style={[styles.statCell, statsTwoCol ? styles.statCellHalf : null]}>
+                  <MetricTile
+                    variant="stat"
+                    icon="success"
+                    value={counts.completed}
+                    label="已完成"
+                    tone="ok"
+                  />
+                </View>
+                <View style={[styles.statCell, statsTwoCol ? styles.statCellHalf : null]}>
+                  <MetricTile
+                    variant="stat"
+                    icon="stats"
+                    value={completionPercent}
+                    label="完成率"
+                    tone="neutral"
+                  />
+                </View>
               </View>
             </View>
 
@@ -452,34 +547,78 @@ export function HomeScreen({
               )}
             </View>
 
-            {/* 快捷入口：真实可点入口 + 未接入占位；AI 助手无能力链路，只降饱和占位 */}
+            {/* 快捷入口：入口与顺序由用户配置决定；长按磁贴或点「管理」进入编辑/管理 */}
             <View style={styles.section}>
-              <SectionHeader icon="tools" title="快捷入口" />
-              <View style={styles.quickGrid}>
-                {quickEntries.map((entry) => (
-                  <View key={entry.key} style={[styles.quickCell, { width: narrow ? "50%" : "25%" }]}>
-                    <QuickTile
-                      icon={entry.icon}
-                      label={entry.label}
-                      badge={"badge" in entry ? entry.badge : undefined}
-                      onPress={entry.onPress}
-                    />
+              <SectionHeader
+                icon="tools"
+                title={editingEntries ? "快捷入口 · 编辑中" : "快捷入口"}
+                actionLabel={editingEntries ? "完成" : "管理"}
+                onAction={
+                  editingEntries
+                    ? () => setEditingEntries(false)
+                    : () => nav.push("entry_manager")
+                }
+              />
+              {editingEntries ? (
+                <Text style={[styles.entryHint, { color: tokens.muted }]}>
+                  拖动磁贴调整顺序，点 × 移除；点磁贴可用上移 / 下移 / 移除。改完点右上「完成」。
+                </Text>
+              ) : null}
+              {visibleEntries.length === 0 ? (
+                <GlassCard style={styles.entryEmptyCard}>
+                  <EmptyState
+                    icon="tools"
+                    title="工作台还没有入口"
+                    hint="功能都还在：从「全部功能」里挑几个常用的加回来，或者恢复默认布局。"
+                  />
+                  <View style={styles.entryEmptyActions}>
+                    <PressableScale
+                      onPress={() => nav.push("all_features")}
+                      accessibilityLabel="打开全部功能"
+                      style={styles.entryEmptyActionPress}
+                      contentStyle={[
+                        styles.entryEmptyPrimary,
+                        { backgroundColor: tokens.accentFill },
+                      ]}
+                      scaleTo={0.97}
+                    >
+                      <Text style={[styles.entryEmptyPrimaryLabel, { color: tokens.onAccent }]}>
+                        全部功能
+                      </Text>
+                    </PressableScale>
+                    <PressableScale
+                      onPress={() => void restoreDefaultEntries()}
+                      accessibilityLabel="恢复默认布局"
+                      style={styles.entryEmptyActionPress}
+                      contentStyle={[
+                        styles.entryEmptySecondary,
+                        { backgroundColor: tokens.card, borderColor: tokens.cardBorder },
+                      ]}
+                      scaleTo={0.97}
+                    >
+                      <Text
+                        style={[styles.entryEmptySecondaryLabel, { color: tokens.accentText }]}
+                      >
+                        恢复默认
+                      </Text>
+                    </PressableScale>
                   </View>
-                ))}
-                <View style={[styles.quickCell, { width: narrow ? "50%" : "25%" }]}>
-                  <View
-                    accessible
-                    accessibilityLabel="AI 助手，移动端暂未接入"
-                    accessibilityState={{ disabled: true }}
-                    style={[styles.placeholderTile, { backgroundColor: tokens.accentWash }]}
-                  >
-                    <AppIcon name="sparkles" color={tokens.faint} size={24} />
-                    <Text numberOfLines={1} style={[styles.placeholderLabel, { color: tokens.muted }]}>
-                      AI 助手
-                    </Text>
-                  </View>
-                </View>
-              </View>
+                </GlassCard>
+              ) : (
+                <WorkbenchEntryGrid
+                  entries={visibleEntries}
+                  editing={editingEntries}
+                  columns={narrow ? 2 : 4}
+                  contentWidth={width - space.lg * 2}
+                  badgeFor={badgeForEntry}
+                  onOpen={openEntry}
+                  onLongPress={() => setEditingEntries(true)}
+                  onReorder={(nextOrder) => void reorderEntries(nextOrder)}
+                  onRemove={(entry) => void removeEntry(entry)}
+                  onMove={(entry, delta) => void moveEntry(entry, delta)}
+                  onDragActiveChange={setEntryDragActive}
+                />
+              )}
             </View>
 
             {/* 最近动态：任务 / 笔记 / 采集合并的真实时间线，纯列表行 */}
@@ -525,6 +664,13 @@ export function HomeScreen({
           </>
         )}
       </ScrollView>
+
+      <Toast
+        toast={entryToast}
+        onDismiss={() => setEntryToast(null)}
+        placement="top"
+        topOffset={70}
+      />
     </View>
   );
 }
@@ -603,6 +749,8 @@ const styles = StyleSheet.create({
   },
   retryText: { fontSize: font.body, fontWeight: "700" },
   statsRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, alignItems: "stretch" },
+  statCell: { flexGrow: 0, flexShrink: 1, flexBasis: "25%" },
+  statCellHalf: { flexBasis: "50%" },
   progressPress: {},
   progressCard: {
     padding: space.lg,
@@ -640,18 +788,31 @@ const styles = StyleSheet.create({
   },
   metaText: { fontSize: font.label, fontWeight: "600" },
   emptyText: { fontSize: font.meta, lineHeight: 20, paddingVertical: space.xs },
-  quickGrid: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
-  quickCell: { flexGrow: 0 },
-  placeholderTile: {
-    minHeight: 78,
-    borderRadius: radius.row,
-    paddingHorizontal: space.xs,
-    paddingVertical: space.sm + 2,
-    alignItems: "center",
+  entryHint: { fontSize: font.label, lineHeight: 16 },
+  entryEmptyCard: { paddingVertical: space.xs },
+  entryEmptyActions: {
+    flexDirection: "row",
     justifyContent: "center",
     gap: space.sm,
+    paddingHorizontal: space.lg,
+    paddingBottom: space.md,
   },
-  placeholderLabel: { fontSize: font.label, fontWeight: "700", textAlign: "center" },
+  entryEmptyActionPress: { flexGrow: 0 },
+  entryEmptyPrimary: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: space.lg,
+    borderRadius: 999,
+  },
+  entryEmptyPrimaryLabel: { fontSize: font.body, fontWeight: "600" },
+  entryEmptySecondary: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: space.lg,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  entryEmptySecondaryLabel: { fontSize: font.body, fontWeight: "600" },
   activityList: {},
   divider: { height: StyleSheet.hairlineWidth },
   activityPress: {},

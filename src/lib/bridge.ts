@@ -2096,6 +2096,12 @@ export const clipboardPasteActive = () =>
 export const clipboardPasteResumableJob = () =>
   invoke<PasteJob | null>("clipboard_paste_resumable_job");
 /**
+ * 全部可继续的粘贴任务（按 started_at 倒序，可按分组过滤）。
+ * 与单任务版本并存：旧任务不会被更新的新任务静默覆盖，UI 可让用户显式选择恢复哪一个。
+ */
+export const clipboardPasteResumableJobs = (groupId?: string | null) =>
+  invoke<PasteJob[]>("clipboard_paste_resumable_jobs", { groupId: groupId ?? null });
+/**
  * 显式处置不确定项：`received` = 确认目标已收到，`resend` = 确认没收到并要求重发。
  * 只允许用户触发；不确定项不会自动回到待处理队列，否则会造成重复粘贴。
  */
@@ -4890,7 +4896,7 @@ export const notesList = (opts?: {
     offset: opts?.offset ?? null,
   });
 // ── 项目工作空间（project workspace，v49）────────────────
-export type WorkspaceKind = "development" | "game" | "ai_comic" | "general";
+export type WorkspaceKind = "development" | "game" | "ai_comic" | "general" | "novel";
 export type WorkspaceProjectStatus = "active" | "archived";
 export type WorkspaceItemStatus = "todo" | "doing" | "blocked" | "done" | "archived";
 

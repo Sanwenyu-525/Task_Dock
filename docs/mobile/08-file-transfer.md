@@ -297,3 +297,20 @@ AAD：
   `files.ts` 把 `FileHttpError` 重新包成 `AppError("network")` 导致状态码丢失、
   401 被写成「等待电脑」的根因；旧桌面端 404 走只读能力探测，明确提示升级。
   手机端自动化 39 文件 / 355 例通过，桌面端与真机验收结果见任务报告。
+- 2026-11-15 第三轮收口（vc59 / 0.1.11）：
+  - 暂存架成功必须由桌面返回真实 `shelf_item_id`；200 但缺 id 记 `invalid_response`，
+    `desktop=done`、`shelf=failed`，不再把「没有抛异常」当作入架成功。
+  - 上传/暂存架 Toast 统一按 `SendOutcome` 判定；批量显示「成功 N · 等待 N · 失败 N · 取消 N」，
+    单条失败不再显示「已发送到电脑」。真机撤销设备后实测红色「有失败 / 电脑✖」。
+  - 系统选择器 `content://` 导入改用 `FileHandle` 分块复制到应用私有目录，支持 PDF、
+    JPEG、未知大小、Unicode 文件名；失败删除半成品；数据库只保存 TaskDock 稳定路径。
+  - 系统分享 `ShareIntentModule.kt` 在模块 OnCreate 即复制 URI，优先 Activity resolver，
+    `SecurityException` 区分「发送方未授予 FLAG_GRANT_READ_URI_PERMISSION」与「URI 授权已失效」；
+    adb 仅 `EXTRA_STREAM`、无 ClipData 的 PDF 分享仍会被系统拒绝，不能当作真实文件管理器结论。
+  - 相同 SHA 的素材按 `takeReusableRemote` 复用同一远端文件；若产品要求一素材一远端记录，
+    需要另行定义去重策略；UI 的「已发电脑」仍表示该素材可复用远端，不等于新建了独立文件。
+  - 双向删除隔离：删除 ShelfItem 不影响 mobile_file/inbox 副本；删除 mobile_file 记录不影响
+    ShelfItem/托管副本。删除 ShelfItem 后 `mobile_files.shelf_item_id` 仍可能陈旧，需后续清理。
+  - 取消上传：service 已支持 `isCancelled` 与 `cancelled` 状态，但 `CaptureStashScreen` 忙碌遮罩
+    尚无用户取消入口，真机取消未验收；列为 UI 主线交接项。
+

@@ -53,14 +53,16 @@ npm run sched:config           # 有效配置（含来源）
 
 | npm 入口 | 实际执行 | 分类 |
 |---|---|---|
-| `npm run build` | `run -- npm run build:raw`（`tsc --noEmit && vite build`） | medium |
-| `npm run tauri` | `run -- npm run tauri:raw`（`tauri`，含 `beforeBuildCommand: npm run build`） | heavy |
-| `npm run test` | `run -- npm run test:raw`（`vitest run`） | medium |
+| `npm run dev` | `run --class dev --priority P2 --label desktop-vite -- vite` | dev（占 dev 槽位） |
+| `npm run preview` | `run --class dev --priority P2 --label desktop-preview -- vite preview` | dev（占 dev 槽位） |
+| `npm run build` | `run --priority P1 --label desktop-build -- npm run build:raw`（`tsc --noEmit && vite build`） | medium |
+| `npm run tauri` | `run --priority P0 --label tauri -- npm run tauri:raw`（`tauri`，含 `beforeBuildCommand: npm run build`） | heavy |
+| `npm run test` | `run --priority P1 --label desktop-test -- npm run test:raw`（`vitest run`） | medium |
 | `npm run cargo` | `cargo` 子命令（cwd=`src-tauri/`） | 按子命令判定（`cargo build` heavy / `cargo check` medium） |
-| `npm run dev` / `npm run tauri dev` | **保持原样，不经调度器** | dev 服务器由 `sched dev` 盘点和 dev 槽位统计 |
+| `npm run tauri -- dev`（桌面端开发调试，长驻） | `run --class dev --label tauri-dev -- npx tauri dev` | dev（占 dev 槽位） |
 
 `*-raw` 后缀是"绕过调度器直接执行"的逃生门，只在调度器自身故障排查时使用；
-`build-guard`、`worktree-guard`、`preview`、`icons`、`help:check` 等既有脚本保持原样。
+`build-guard`、`worktree-guard`、`icons`、`help:check` 等既有轻量脚本保持原样。
 
 ## 3. 命令参考
 
@@ -179,22 +181,35 @@ node scripts/build-sched.mjs cargo -- --priority P0 build   # 有 -- 时前面�
 
 | 入口 | 分类 | 是否经调度器 | 说明 |
 |---|---|---|---|
-| `npm run build` → `build:raw`（`tsc --noEmit && vite build`） | medium | ✅ | 单层包装，内层直通，不会双重排队 |
-| `npm run tauri -- build` → `tauri:raw` | heavy | ✅ | 内层 `npm run build` 由 `TASKDOCK_SCHED_TASK_ID` 判定为嵌套直通 |
-| `npm run test` → `test:raw`（`vitest run`） | medium | ✅ | |
+| `npm run dev` → `-- vite`（label `desktop-vite`） | dev | ✅ | 2026-11-15 第二轮纳管（主 Agent 授权）：显式 `--class dev`，占 dev 槽位（并发 2）并计入预算 |
+| `npm run preview` → `-- vite preview`（label `desktop-preview`） | dev | ✅ | 同上；`vite preview` 是常驻静态预览服务，分类表已修正为 dev（`rule vite-preview`） |
+| `npm run build` → `build:raw`（`tsc --noEmit && vite build`） | medium | ✅ | 单层包装，`--priority P1 --label desktop-build`，内层直通，不会双重排队 |
+| `npm run tauri -- build` → `tauri:raw` | heavy | ✅ | `--priority P0 --label tauri`；内层 `npm run build` 由 `TASKDOCK_SCHED_TASK_ID` 判定为嵌套直通 |
+| `npm run test` → `test:raw`（`vitest run`） | medium | ✅ | `--priority P1 --label desktop-test` |
 | `npm run cargo -- <子命令>` | 由 cargo 分类表决定 | ✅ | `build-sched cargo` 子命令，固定 `cwd=src-tauri` |
 | `apps/mobile`：`build:android`（gradlew assembleRelease） | heavy（P0） | ✅ | `--cwd android`，与桌面端共享同一份槽位/预算台账 |
 | `apps/mobile`：`android`（expo run:android）/ `prebuild` | heavy | ✅ | 会拉起 Gradle/Xcode |
 | `apps/mobile`：`typecheck`（tsc --noEmit）/ `test`（vitest run） | medium | ✅ | |
 | `apps/mobile`：`start`（expo start） | dev | ✅ | 占 dev 槽位并计入预算 |
-| `npm run dev` / `npm run preview` / `test:watch` | dev | ❌（豁免） | 长期运行/交互式，经 `sched dev` 盘点；未纳管实例由约束 A 兜住（见 12.8） |
+| `npm run test:watch` | dev（watch） | ❌（豁免） | 交互式长期运行，人工 Ctrl+C 结束；与 `dev` 不同，它没有稳定的"服务身份"可盘点 |
 | `npm run help:check` / `test:scripts` / `icons*` / `guard:*` / `worktree*` / `sched:*` | light | ❌（豁免） | 只读或轻量元数据操作；`sched:*` 再经 `run` 会自锁 |
 
-**`*:raw` 是排障逃生口，不是日常入口**：`build:raw` / `tauri:raw` / `test:raw` /
-`build:android:raw` / `android:raw` / `prebuild:raw` / `typecheck:raw` 只在"调度器自身坏了、
-需要绕过它定位问题"时使用，用之前先 `sched:status` + `sched:doctor`；**任何文档与脚本都不得
-把它们作为推荐命令**（`scripts/build-sched-acceptance.test.mjs` 的「补充C」用例会静态校验
-这条规则，新增高资源入口若既不接调度器、也不进豁免名单，套件会直接失败）。
+**为什么 `dev`/`preview` 要显式 `--class dev`**：`vite` 与 `vite preview` 都是"不 Ctrl+C 就不
+退出"的常驻服务。仅靠分类表推断风险有二：① `vite preview` 早期被判成 `light`（`rule
+vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个预览服务抢 4173 端口；②
+`vite --version` 这类一次性命令确实是 light，若一律靠"命令里有没有 vite"来判会误伤。显式
+`--class dev` 把意图写在入口里，分类表也同步修正（`vite preview` → dev），两层一致。
+
+**`dev`/`preview` 经调度器后的行为差异**（运维须知）：`npm run dev` 现在会**在 dev 槽位里
+排队**——dev 槽位并发 2，第 3 个 dev 服务要等前一个退出；端口冲突仍是操作者责任（调度器不分配
+端口）。想跳过排队只在排障时用 `npm run dev:raw` / `npm run preview:raw`。
+
+**`*:raw` 是排障逃生口，不是日常入口**：`dev:raw` / `preview:raw` / `build:raw` / `tauri:raw` /
+`test:raw` / `build:android:raw` / `android:raw` / `prebuild:raw` / `typecheck:raw` /
+`start:raw` 只在"调度器自身坏了、需要绕过它定位问题"时使用，用之前先 `sched:status` +
+`sched:doctor`；**任何文档与脚本都不得把它们作为推荐命令**（`scripts/build-sched-acceptance.test.mjs`
+的「补充C1/C2/C3/C5」用例会静态校验这条规则：根目录 `dev`/`preview`/`build`/`test`/`tauri`
+必须经调度器且各自有 `:raw`；新增高资源入口若既不接调度器、也不进豁免名单，套件会直接失败）。
 
 ## 4. 资源模型
 
@@ -523,8 +538,9 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 | `logMaxMb` / `historyMaxEntries` / `finishedRetentionMs` | 32 / 500 / 60000 | 日志上限、历史上限、终态记录保留 |
 | `estimateHeavyMb` / `estimateMediumMb` / `estimateLightMb` | 6000 / 3000 / 800 | 预计峰值（dev 类沿用 medium 的 3000） |
 | `systemReserveMb` | 3072 | 全局预算的系统保留：**硬上限** `budgetMb = max(0, totalMb - 本值)`，绝不被任务峰值抬高；0 = 用满物理内存（仅实验用） |
-| `allowReserveBreach` | false | **危险开关**：允许预算突破 `totalMb - systemReserveMb` 抬到最大分类峰值。开启后 `status` 显著告警、`budgetAtStart` 里留 `reserveBreached` 证据。仅在明确知晓 OOM 风险时临时打开 |
-| `budgetEnabled` | true | 跨分类全局预算开关（关掉只保留约束 A，仅用于故障回退，见 11） |
+| `recommendedSystemReserveMb` | 3072 | **推荐保留基线**（2026-11-15 第三轮新增）：`systemReserveMb` 低于它即视为"降低安全余量"。未持危险授权时有效值被 fail-closed 收紧回基线，授权时才生效并在 `status`/`doctor`/`history` 记录减少量 |
+| `allowReserveBreach` | false | **危险开关**：允许预算突破 `totalMb - systemReserveMb` 抬到最大分类峰值。开启后 `status` 显著告警、`budgetAtStart` 里留 `reserveBreached` 证据。仅在明确知晓 OOM 风险时临时打开；未持 `reserve-breach` 危险授权时该值被强制回 false |
+| `budgetEnabled` | true | 跨分类全局预算开关。**配置里写 false 不会生效**：未持 `budget-off` 危险授权时被忽略并强制 true（第三轮 4.1）。仅用于故障回退 |
 | `reservationOrphanGraceMs` | 180000 | 崩溃残留预留"无 childPid"时的回收宽限（有 childPid 时按子进程是否存活判定） |
 | `diskPrecheck` | true | 复用 build-guard 的磁盘预检 |
 | `dedupe` | true | 等价任务合并 |
@@ -576,6 +592,42 @@ vitest / `node --test`，实际峰值约 0.8–1 GB）因"分类下限 2560 + �
   显式声明，不再借用 `estimateMediumMb=2400`。等 `history` 里积累到成功的 `minAvailMb`
   再回调这个值。
 
+### 10.2 危险授权与配置风险（2026-11-15 第三轮）
+
+**为什么有这一层**：2026-11-15 19:22 本机 `config.json` 被外部会话改成
+`budgetEnabled=false` + 各类门槛/估算 1 MB，`status` 一度显示"全局预算：已关闭"，且已有 heavy 任务
+在这套被关闭的门槛下开跑。配置文件一行 `false` 就能静默让整个跨分类预算失效，属于安全边界缺陷，
+因此把"削弱安全边界"的动作统一收进**一个显式、可审计的危险授权**，而不是散落成多个开关。
+
+**唯一入口**：环境变量 `TASKDOCK_SCHED_DANGER_AUTH`，逗号/竖线/空白分隔，大小写不敏感，只认三个令牌：
+
+| 令牌 | 允许的事 | 未持令牌时 |
+|---|---|---|
+| `budget-off` | 真正关闭跨分类全局预算（`budgetEnabled=false`） | 配置里的 `false` 被**忽略**、强制 `true`，并写 problem + P1 风险 |
+| `reserve-breach` | 允许 `allowReserveBreach=true` 突破系统保留 | 强制 `false` |
+| `reserve-lower` | 允许 `systemReserveMb` 低于 `recommendedSystemReserveMb`（含 0） | 有效值**回到 `recommendedSystemReserveMb` 基线**（不写回配置文件） |
+
+要点：
+
+- **只对当前进程/当次任务有效**，不写回任何配置文件；不带该变量的后续任务自动回到安全边界。
+- `status` 新增三行：「⚠ 预算关闭依据 / 安全余量被下调 … 减少 X MB / 配置来源」；`--json` 增加
+  `danger`（`tokens`、`budgetOffRequested/Authorized`、`reserveLowerRequested/Authorized`、
+  `reserveBreachRequested/Authorized`）、`configSources`、`configRisks`。
+- `doctor` 把 `configRisks` 逐条列出（当前值 / 默认或基线值 / 覆盖来源 / 原因 / 是否影响运行中任务）；
+  存在 **P0**（配置不可读、预算被关、门槛低于安全下限）时退出码 **5**（`EXIT.internal`），
+  仅 P1 风险时仍为 0 但会打印。
+- `history` 的 `budgetAtStart` 带 `budgetEnabled`、`budgetOffAuthorized`、`dangerAuth`、
+  `reserveBaselineMb`、`reserveReducedMb`、`configSources`：**事后可判断某次任务是否在关预算/降保留
+  的授权下准入**，不会与正常调度混为一谈。
+- 安全下限 `SANITY_FLOORS`：heavy≥1024、medium≥256、light≥128、estimateHeavy≥2000、
+  estimateMedium≥600、estimateLight≥200、hysteresis≥16；低于即 P0。
+- 未知字段、坏 JSON 也会被 `doctor` 点名（P1/P0），不再静默忽略。
+
+**本机覆盖的事实记录（2026-11-15 第三轮 `status --json` 实测）**：状态目录实际为
+`heavyMinAvailMb 3072 / mediumMinAvailMb 512 / lightMinAvailMb 256 / hysteresisMb 128 /
+estimateMediumMb 2400`，`systemReserveMb=3072`、`recommendedSystemReserveMb=3072`。与 10.1 的
+2026-11-15 第二轮快照（1536/1024/256/estimate 2400）不一致，以本节实测为准；10.1 保留为历史记录不改写。
+
 ## 11. 故障处理手册
 
 | 症状 | 处置 |
@@ -600,8 +652,12 @@ vitest / `node --test`，实际峰值约 0.8–1 GB）因"分类下限 2560 + �
 4. **不做 dev 服务器的自动复用/重启**：`sched dev` 只盘点+报告，动手仍需人/会话决定。
 5. **默认只回收"能证明已死"的东西**：`unknown` 一律 fail-closed，可能出现"需要人工介入才能解锁"的
    情形（`doctor` 会明确指出）。
-6. **`npm run test` 现在会经过调度器**：其他会话若发现测试要排队，请读本文档第 4 节，而不是改回
-   直接 `vitest run`——绕过调度器正是本项目要解决的问题。
+6. **`npm run test` / `npm run dev` / `npm run preview` 现在都会经过调度器**：其他会话若发现测试
+   要排队、或 dev 服务要等另一个 dev 退出，请读本文档第 4 节，而不是改回直接 `vitest run` /
+   `vite`——绕过调度器正是本项目要解决的问题（排障时才有 `*:raw`）。
+7. **`dev`/`preview` 纳管后，端口仍是操作者责任**：调度器分配槽位不分配端口；两个会话各自的
+   `npm run dev` 会先后排队拿到 dev 槽位，但都默认 5173 端口时第二个仍会冲突。改端口用
+   `npm run dev -- --port 5180`（参数透传给脚本体）。
 7. **`scripts/perf/gate-run.sh` 已接入调度器，但"完整跑一遍门禁"仍未在真机验证**：2026-11-15 把
    cargo/前端门禁全部改为经 `run` / `cargo` 子命令排队（`bash -n` 与 `GATE_DRY_RUN=1` 路由核对
    已通过，路由证据见 `tmp/acceptance/taskdock-full-acceptance-20261115/scheduler/`），但本机可用

@@ -13,11 +13,14 @@ export function QuickTile({
   icon,
   label,
   onPress,
+  onLongPress,
   badge,
 }: {
   icon: IconName;
   label: string;
   onPress: () => void;
+  /** 长按进入工作台编辑模式（入口自定义）；不传则无长按行为 */
+  onLongPress?: () => void;
   /** 真实计数徽标（没有计数时不要传） */
   badge?: number;
 }) {
@@ -26,7 +29,9 @@ export function QuickTile({
   return (
     <PressableScale
       onPress={onPress}
+      onLongPress={onLongPress}
       accessibilityLabel={label}
+      accessibilityHint={onLongPress ? "长按进入编辑模式，可调整顺序或移除" : undefined}
       style={styles.press}
       contentStyle={[styles.tile, { backgroundColor: tokens.accentWash }]}
       scaleTo={0.95}

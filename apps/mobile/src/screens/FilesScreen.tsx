@@ -43,9 +43,12 @@ import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
 import { deriveSyncKey } from "../lib/sync/crypto";
 import {
+  classifyListError,
   createFileClient,
+  createListRunTracker,
   isFileCancelled,
   type FileClient,
+  type ListErrorState,
   type RemoteFile,
 } from "../lib/sync/files";
 import {
@@ -243,17 +246,19 @@ export function FilesScreen({ nav }: { nav: Nav }) {
   const [transfer, setTransfer] = useState<TransferState | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   /**
-   * 证书/指纹校验失败不是「刷新一下就好」的网络抖动：继续重试只会重复失败，
-   * 必须把「重新配对」放在错误现场，而不是让用户自己猜着回「我的」。
+   * 列表读取失败后的持久错误态：离线可重试 / 安全授权类需重新配对 / 未配对引导。
+   * 不再把超时或离线降级成一闪而过的 Toast 或空列表。
    */
-  const [listError, setListError] = useState<{
-    message: string;
-    needsRepair: boolean;
-  } | null>(null);
+  const [listError, setListError] = useState<ListErrorState | null>(null);
 
   const toastSeq = useRef(0);
   const mounted = useRef(true);
   const clientRef = useRef<FileClient | null>(null);
+  /**
+   * 列表读取并发护栏：同一时刻只允许一个在途列表请求；新刷新开始后旧序号的
+   * 响应/错误直接忽略，连续点重试不会产生多个并行列表请求。
+   */
+  const listTracker = useRef(createListRunTracker());
   /**
    * 取消意图：client.cancel() 只中止在途请求，分块之间可能恰好没有请求在飞，
    * 下一块会重新发起并继续传输。fileIo 在每块前后检查这个标记。
@@ -273,11 +278,21 @@ export function FilesScreen({ nav }: { nav: Nav }) {
     if (clientRef.current) return clientRef.current;
     const meta = await loadConnection();
     if (!meta) {
-      throw new AppError("validation", "尚未配对，请先与桌面端配对");
+      throw new AppError(
+        "validation",
+        "尚未配对，请先与桌面端配对",
+        undefined,
+        "not_paired",
+      );
     }
     const token = await readToken();
     if (!token) {
-      throw new AppError("validation", "本机配对令牌不可用，请重新配对");
+      throw new AppError(
+        "validation",
+        "本机配对令牌不可用，请重新配对",
+        undefined,
+        "not_paired",
+      );
     }
     const syncKey = await deriveSyncKey(token);
     const client = createFileClient({ baseUrl: meta.baseUrl, token, syncKey });
@@ -288,32 +303,28 @@ export function FilesScreen({ nav }: { nav: Nav }) {
   const refresh = useCallback(
     async (quiet = false) => {
       if (!quiet) setRefreshing(true);
+      const run = listTracker.current.begin();
+      // 新一次刷新先取消上一次在途列表读取；只取消列表，不触碰在途上传/下载。
+      clientRef.current?.cancelList();
       try {
         const client = await ensureClient();
+        if (listTracker.current.stale(run)) return;
         const next = await client.list();
-        if (!mounted.current) return;
+        if (listTracker.current.stale(run)) return;
         setFiles(next);
         setListError(null);
       } catch (error) {
-        if (mounted.current) {
-          const message = `读取文件列表失败：${describeError(error)}`;
-          const needsRepair = error instanceof AppError && error.code === "tls_pin_mismatch";
-          if (needsRepair) {
-            // 指纹不匹配是安全失败，不能降级成普通 Toast 后继续刷新。
-            setListError({ message, needsRepair: true });
-          } else {
-            setListError(null);
-            showToast(message, "danger");
-          }
-        }
+        // 过期请求（被新刷新取代或已卸载）的结果一律忽略，不覆盖当前错误态。
+        if (listTracker.current.stale(run) || !mounted.current) return;
+        setListError(classifyListError(error));
       } finally {
-        if (mounted.current) {
+        if (mounted.current && !listTracker.current.stale(run)) {
           setRefreshing(false);
           setLoading(false);
         }
       }
     },
-    [ensureClient, showToast],
+    [ensureClient],
   );
 
   useEffect(() => {
@@ -334,9 +345,12 @@ export function FilesScreen({ nav }: { nav: Nav }) {
     })();
     return () => {
       mounted.current = false;
+      listTracker.current.dispose();
       // 页面卸载时同样要阻止分块之间继续发起下一块。
       cancelRequested.current = true;
-      clientRef.current?.cancel();
+      // 只取消在途列表读取；在途上传/下载不由页面卸载整体中止，
+      // 后续分块由 cancelRequested 在分块之间检查停止。
+      clientRef.current?.cancelList();
     };
   }, [refresh]);
 
@@ -586,7 +600,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
             <ActivityIndicator color={tokens.accent} />
             <Text style={[styles.hint, { color: tokens.muted }]}>正在读取传输记录…</Text>
           </View>
-        ) : !connection ? (
+        ) : !connection || listError?.kind === "unpaired" ? (
           <EmptyState
             icon="transfer"
             title="尚未配对"
@@ -594,6 +608,38 @@ export function FilesScreen({ nav }: { nav: Nav }) {
             actionLabel="去配对"
             onAction={() => nav.push("pairing")}
           />
+        ) : listError ? (
+          <View style={styles.errorPanel}>
+            <Text style={[styles.errorTitle, { color: tokens.danger }]}>
+              {listError.kind === "repair" ? "文件互传连接校验失败" : "连接失败"}
+            </Text>
+            <Text style={[styles.errorText, { color: tokens.text }]}>{listError.message}</Text>
+            <PressableScale
+              onPress={() => {
+                if (listError.needsRepair) {
+                  nav.push("pairing");
+                } else {
+                  void refresh();
+                }
+              }}
+              accessibilityLabel={listError.needsRepair ? "重新扫码配对" : "重试"}
+              contentStyle={[
+                styles.errorAction,
+                listError.needsRepair
+                  ? { backgroundColor: tokens.dangerFill }
+                  : { backgroundColor: tokens.accentFill },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.errorActionText,
+                  { color: listError.needsRepair ? tokens.onDanger : tokens.onAccent },
+                ]}
+              >
+                {listError.needsRepair ? "重新配对" : "重试"}
+              </Text>
+            </PressableScale>
+          </View>
         ) : (
           <>
             <GlassCard style={styles.dirCard}>
@@ -613,38 +659,6 @@ export function FilesScreen({ nav }: { nav: Nav }) {
                 </Text>
               </PressableScale>
             </GlassCard>
-
-            {listError ? (
-              <GlassCard
-                style={[
-                  styles.errorCard,
-                  { backgroundColor: tokens.card, borderColor: tokens.danger },
-                ]}
-              >
-                <View style={styles.errorMain}>
-                  <Text style={[styles.errorTitle, { color: tokens.danger }]}>
-                    文件互传连接校验失败
-                  </Text>
-                  <Text style={[styles.errorText, { color: tokens.text }]}>
-                    {listError.message}
-                  </Text>
-                </View>
-                {listError.needsRepair ? (
-                  <PressableScale
-                    onPress={() => {
-                      setListError(null);
-                      nav.push("pairing");
-                    }}
-                    accessibilityLabel="重新扫码配对"
-                    contentStyle={[styles.errorAction, { backgroundColor: tokens.dangerFill }]}
-                  >
-                    <Text style={[styles.errorActionText, { color: tokens.onDanger }]}>
-                      重新配对
-                    </Text>
-                  </PressableScale>
-                ) : null}
-              </GlassCard>
-            ) : null}
 
             <SectionHeader title="来自电脑" count={incoming.length} tone="accent" />
             {incoming.length === 0 ? (
@@ -956,16 +970,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  errorCard: {
+  errorPanel: {
     padding: space.md,
-    flexDirection: "row",
-    alignItems: "center",
     gap: space.sm,
-    borderWidth: 1,
-  },
-  errorMain: {
-    flex: 1,
-    gap: 3,
+    alignItems: "center",
   },
   errorTitle: {
     fontSize: font.body,
@@ -974,10 +982,12 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: font.label,
     lineHeight: 17,
+    textAlign: "center",
   },
   errorAction: {
     minHeight: 44,
     minWidth: 88,
+    marginTop: space.xs,
     paddingHorizontal: space.md,
     borderRadius: radius.control,
     alignItems: "center",

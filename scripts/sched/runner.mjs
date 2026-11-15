@@ -24,7 +24,7 @@ import {
   acquireAdmission, releaseReservation, setReservationChild, setReservationPhase, startReservationHeartbeat,
 } from "./budget.mjs";
 import {
-  ACTIVE_STATUSES, PRIORITY_LABEL, clearCancelMarker, computeFingerprint, effectivePriority,
+  ACTIVE_STATUSES, PRIORITY_LABEL, WAITING_STATUSES, clearCancelMarker, computeFingerprint, effectivePriority,
   evaluateEligibility, finalizeOrphanRecord, findRunningEquivalent, housekeeping, isCancelRequested, readQueue, readTask,
   writeTask,
 } from "./queue.mjs";
@@ -60,11 +60,19 @@ export function resolveExecutable(cmd, cwd) {
   const hasSep = cmd.includes("/") || cmd.includes("\\");
   const candidates = [];
   const push = (base) => {
-    candidates.push(base);
-    if (!hasSep) for (const ext of pathExts()) candidates.push(base + ext);
+    if (!hasSep) {
+      // Windows 上「无扩展名的同名文件」通常是 npm 为 bash/PowerShell 生成的 shim
+      // （node_modules/.bin/vite、npm、vitest 等，内容是一段 shell 脚本）。Node 在 Windows 上
+      // 既不能直接 spawn 它、也不会自动补 .cmd，硬塞给 spawn 就是 ENOENT（-4058）。
+      // 所以先试 PATHEXT（.CMD/.BAT/.EXE…），无扩展名留到最后兜底。
+      for (const ext of pathExts()) candidates.push(base + ext);
+      candidates.push(base);
+      return;
+    }
+    candidates.push(isAbsolute(cmd) ? cmd : resolve(cwd, cmd));
   };
   if (hasSep) {
-    push(isAbsolute(cmd) ? cmd : resolve(cwd, cmd));
+    push(cmd);
   } else {
     for (const dir of (process.env.PATH || "").split(delimiter).filter(Boolean)) push(join(dir, cmd));
     push(resolve(cwd, cmd));
@@ -604,11 +612,13 @@ export function runInline({ argv, cwd, shellRaw = false, io = { out: process.std
   return typeof r.status === "number" ? r.status : EXIT.internal;
 }
 
-// 拿到槽位后的优先级复评（只看同分类内是否出现更高有效优先级任务）
+// 拿到槽位后的优先级复评（只看同分类内**还在等**的更高有效优先级任务）。
+// 运行中的任务不算：它已经持有槽位（并发上限由 slotUsage 计入），把它当"在前排队"会让
+// 后到的低优先级任务无限让位（一个 P1 长驻 dev 饿死之后所有 P2 dev）。
 export function priorityConflict(tasks, self, cfg) {
   const now = Date.now();
   const selfEff = effectivePriority(self, now, cfg);
-  const higher = tasks.filter((t) => t.id !== self.id && ACTIVE_STATUSES.has(t.status) &&
+  const higher = tasks.filter((t) => t.id !== self.id && WAITING_STATUSES.has(t.status) &&
     t.taskClass === self.taskClass && effectivePriority(t, now, cfg) < selfEff);
   if (!higher.length) return null;
   return `${higher.length} 个更高优先级任务在等待同一分类（如 ${higher[0].id} ${PRIORITY_LABEL[higher[0].priority] ?? ""}）`;

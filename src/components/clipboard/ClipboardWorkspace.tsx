@@ -15,6 +15,7 @@ import {
   AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Loader2, Merge, Pause, Pin, Play,
   RefreshCw, Settings as SettingsIcon, Star, Trash2, X,
 } from "lucide-react";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import {
   clipboardClearHistory,
   clipboardCopyGroupFiles,
@@ -1094,51 +1095,69 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     : null;
   const railSource = railItem ? clipSource(railItem) : null;
 
+  /** 页头动作在页面态与抽屉态共用；抽屉隐藏帮助入口，关闭按钮只在抽屉出现。 */
+  const headActions = (
+    <>
+      {!isDrawer && <ContextHelpButton articleId="help.clipboard.history" />}
+      <button
+        className={`icon-btn sm ${paused ? "active" : ""}`}
+        data-tip={
+          !enabled
+            ? "剪贴板记录已停用，请在设置中开启"
+            : paused
+              ? "恢复监听"
+              : "暂停记录新的剪贴板内容（停止监听与维护线程，仍可查看历史与粘贴）"
+        }
+        aria-label={paused ? "恢复监听" : "暂停监听"}
+        aria-pressed={paused}
+        aria-busy={pauseBusy}
+        disabled={!enabled || pauseBusy}
+        onClick={togglePause}
+      >
+        {pauseBusy ? (
+          <Loader2 size={13} className="spin" aria-hidden="true" />
+        ) : paused ? (
+          <Play size={13} aria-hidden="true" />
+        ) : (
+          <Pause size={13} aria-hidden="true" />
+        )}
+      </button>
+      <button className="icon-btn sm" data-tip="剪贴板设置" aria-label="剪贴板设置" onClick={goSettings}>
+        <SettingsIcon size={13} />
+      </button>
+      {isDrawer && (
+        <button className="icon-btn sm" data-tip="关闭 (Esc)" aria-label="关闭剪贴板" onClick={onClose ?? closeDrawer}>
+          <X size={14} />
+        </button>
+      )}
+    </>
+  );
+  const headStatus = (
+    <span className={`clip-status tone-${statusTone}`}>
+      <i /> {statusLabel}
+    </span>
+  );
+
   const body = (
     <>
-      <header className="clip-head">
-        <div className="clip-head-title">
-          <Clipboard size={15} />
-          <span>智能剪贴板</span>
-          <span className={`clip-status tone-${statusTone}`}>
-            <i /> {statusLabel}
-          </span>
-        </div>
-        <div className="clip-head-actions">
-          {!isDrawer && <ContextHelpButton articleId="help.clipboard.history" />}
-          <button
-            className={`icon-btn sm ${paused ? "active" : ""}`}
-            data-tip={
-              !enabled
-                ? "剪贴板记录已停用，请在设置中开启"
-                : paused
-                  ? "恢复监听"
-                  : "暂停记录新的剪贴板内容（停止监听与维护线程，仍可查看历史与粘贴）"
-            }
-            aria-label={paused ? "恢复监听" : "暂停监听"}
-            aria-pressed={paused}
-            aria-busy={pauseBusy}
-            disabled={!enabled || pauseBusy}
-            onClick={togglePause}
-          >
-            {pauseBusy ? (
-              <Loader2 size={13} className="spin" aria-hidden="true" />
-            ) : paused ? (
-              <Play size={13} aria-hidden="true" />
-            ) : (
-              <Pause size={13} aria-hidden="true" />
-            )}
-          </button>
-          <button className="icon-btn sm" data-tip="剪贴板设置" aria-label="剪贴板设置" onClick={goSettings}>
-            <SettingsIcon size={13} />
-          </button>
-          {isDrawer && (
-            <button className="icon-btn sm" data-tip="关闭 (Esc)" aria-label="关闭剪贴板" onClick={onClose ?? closeDrawer}>
-              <X size={14} />
-            </button>
-          )}
-        </div>
-      </header>
+      {isDrawer ? (
+        <header className="clip-head">
+          <div className="clip-head-title">
+            <Clipboard size={15} />
+            <span>智能剪贴板</span>
+            {headStatus}
+          </div>
+          <div className="clip-head-actions">{headActions}</div>
+        </header>
+      ) : (
+        <WorkbenchPageHeader
+          icon={Clipboard}
+          title="智能剪贴板"
+          meta={headStatus}
+          subtitle="搜索、预览与复制历史；选中条目可在右侧查看完整内容"
+          actions={<div className="clip-head-actions">{headActions}</div>}
+        />
+      )}
       {statusError && (
         <div className="empty-hint error-text" role="status">
           剪贴板状态读取失败：{statusError}（下方状态可能不是最新）

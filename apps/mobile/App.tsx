@@ -21,6 +21,7 @@ import { CaptureReviewScreen } from "./src/features/capture/CaptureReviewScreen"
 import { CaptureScanScreen } from "./src/features/capture/CaptureScanScreen";
 import { CaptureStashScreen } from "./src/features/capture/CaptureStashScreen";
 import { useWindowInsets } from "./src/lib/insets";
+import { ensureEntryLayoutLoaded } from "./src/lib/entryLayoutStore";
 import { parseWidgetRouteUri, type CaptureIntent, type Route, type RouteKey } from "./src/lib/nav";
 import { offerShare, pullInitialShare, subscribeNativeShareEvents } from "./src/lib/pendingShare";
 import {
@@ -39,6 +40,7 @@ import { CaptureScreen } from "./src/screens/CaptureScreen";
 import { ConflictScreen } from "./src/screens/ConflictScreen";
 import { DeviceScreen } from "./src/screens/DeviceScreen";
 import { DiagnosticScreen } from "./src/screens/DiagnosticScreen";
+import { EntryManagerScreen } from "./src/screens/EntryManagerScreen";
 import { FilesScreen } from "./src/screens/FilesScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
 import { InboxScreen } from "./src/screens/InboxScreen";
@@ -394,48 +396,16 @@ function Shell() {
         );
       case "diagnostics":
         return <DiagnosticScreen nav={nav} onBack={back} version={version} />;
-      // 以下四项在移动端没有数据链路：统一用占位页承载入口，
-      // 不渲染演示项目、假进度、假 Agent 状态（见 01-audit.md 的 C 类判定）。
-      case "project_detail":
-        return (
-          <PlaceholderPage
-            title="项目详情"
-            icon="project"
-            reason="项目空间数据只在桌面端维护，移动端还没有项目同步链路。"
-            from="桌面端 → 工作区 → 项目空间"
-            onBack={back}
-          />
-        );
-      case "feature_board":
-        return (
-          <PlaceholderPage
-            title="功能看板"
-            icon="list"
-            reason="功能与看板数据来自桌面端项目空间，移动端尚未同步。"
-            from="桌面端 → 项目 → 功能看板"
-            onBack={back}
-          />
-        );
-      case "scene_workspace":
-        return (
-          <PlaceholderPage
-            title="场景工作区"
-            icon="scene"
-            reason="场景与工作流配置在桌面端，移动端还没有对应数据通道。"
-            from="桌面端 → 场景工作区"
-            onBack={back}
-          />
-        );
-      case "dev_workbench":
-        return (
-          <PlaceholderPage
-            title="开发工作台"
-            icon="terminal"
-            reason="Agent 运行态与任务交接在桌面端管线里，移动端没有读取通道。"
-            from="桌面端 → 开发工作台"
-            onBack={back}
-          />
-        );
+      // 工作台入口自定义：管理与「全部功能」共用同一个屏幕，按 initialView 区分落点
+      case "entry_manager":
+        return <EntryManagerScreen nav={nav} onBack={back} initialView="layout" />;
+      case "all_features":
+        return <EntryManagerScreen nav={nav} onBack={back} initialView="all" />;
+      default: {
+        // 穷尽检查：新增 RouteKey 却漏了分发时，这里会编译失败而不是打开空白页
+        const exhaustive: never = route.key;
+        return exhaustive;
+      }
     }
   };
 
@@ -543,6 +513,9 @@ export default function App() {
       try {
         installNotificationHandler();
         await openDatabase();
+        // 工作台入口配置：Shell 挂载前先读一次，首帧就是用户配置而不是默认布局。
+        // 读取内部已把「损坏/读失败」收敛成默认布局，这里不会抛异常阻塞启动。
+        await ensureEntryLayoutLoaded();
         // 采集中心开机对账：中断的传输标为可重试、清理过期采集会话与孤儿文件。
         // 失败不阻塞启动（采集是增强能力，数据库本身已可用）。
         void initializeCaptureStore().catch(() => undefined);

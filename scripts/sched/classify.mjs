@@ -147,6 +147,11 @@ function classifyTokens(argv, cwd, depth) {
     if (args.length === 0 || args.includes("dev") || args.includes("serve")) {
       return { taskClass: "dev", reason: "vite dev：长期运行的开发服务器", rule: "vite-dev" };
     }
+    // `vite preview` 是**长期运行**的静态预览服务（不 Ctrl+C 就不退出），按 light 归类会让它
+    // 占轻量槽位、并能与另一条轻量任务同时拉起两个预览服务（抢端口）。归 dev 与 `dev` 一致。
+    if (args.includes("preview")) {
+      return { taskClass: "dev", reason: "vite preview：长期运行的预览服务（与 dev 同槽位约束）", rule: "vite-preview" };
+    }
     return { taskClass: "light", reason: `vite ${args.join(" ")}：非构建子命令`, rule: "vite-other" };
   }
 

@@ -67,8 +67,12 @@
 
 | 字段 | TaskDock 侧 | Relay 侧 | 事实所有权 | 处理建议 |
 |---|---|---|---|---|
-| 项目身份 | `workspace_projects.id TEXT PRIMARY KEY`；`name TEXT`；`kind TEXT CHECK(development\|game\|ai_comic\|general)`；`status TEXT CHECK(active\|archived)`；`root_path TEXT`；`dev_project_id TEXT`；`note TEXT`；`created_at/updated_at TEXT`（`src-tauri/src/db/mod.rs:1611-1621`） | `projects.id TEXT`（UUID）PK；`workspace_id TEXT` NOT NULL；`title TEXT`；`project_type TEXT CHECK(GENERAL\|THESIS\|DEVELOPMENT)`；`archived_at`；`revision NUMERIC`；`created_at/updated_at`（`apps/api/src/infrastructure/database-schema.ts:119-128`）；项目状态 `ProjectStateRow`：`project_id/phase_key/next_action_task_id/revision/created_at/updated_at`（同文件 `:709-716`） | **TaskDock** 写自己的 `workspace_projects`；**Relay** 写自己的 `projects`/`project_states`。两端项目记录互不可写 | R0 只做只读并列展示；如需关联，由用户显式建立 `workspace_projects.id ↔ (workspace_id, project_id)` 弱引用（无外键），禁止按标题相似自动配对 |
+| 项目身份 | `workspace_projects.id TEXT PRIMARY KEY`；`name TEXT`；`kind TEXT CHECK(development\|game\|ai_comic\|general\|novel)`；`status TEXT CHECK(active\|archived)`；`root_path TEXT`；`dev_project_id TEXT`；`note TEXT`；`created_at/updated_at TEXT`（`src-tauri/src/db/mod.rs` 迁移 v49/v57） | `projects.id TEXT`（UUID）PK；`workspace_id TEXT` NOT NULL；`title TEXT`；`project_type TEXT CHECK(GENERAL\|THESIS\|DEVELOPMENT)`；`archived_at`；`revision NUMERIC`；`created_at/updated_at`（`apps/api/src/infrastructure/database-schema.ts:119-128`）；项目状态 `ProjectStateRow`：`project_id/phase_key/next_action_task_id/revision/created_at/updated_at`（同文件 `:709-716`） | **TaskDock** 写自己的 `workspace_projects`；**Relay** 写自己的 `projects`/`project_states`。两端项目记录互不可写 | R0 只做只读并列展示；如需关联，由用户显式建立 `workspace_projects.id ↔ (workspace_id, project_id)` 弱引用（无外键），禁止按标题相似自动配对 |
 | 项目归档/阶段 | TaskDock 无阶段概念；仅 `status=archived` | Relay `projects.archived_at`；`project_states.phase_key`（`schema.ts:711`）；归档冲突码 `PROJECT_ARCHIVED` / `PROJECT_ARCHIVE_BLOCKED`（`application/domain-error.ts:100,115`） | Relay | TaskDock 展示 Relay 归档/阶段为只读标签，不回写 |
+
+> v57（2026-11-15）：`workspace_projects.kind` 的合法取值在原有四类基础上增加 `novel`
+> （小说项目，创作工作台 A 阶段）。Relay 侧 `project_type` 未增加对应值，两端仍只做只读并列，
+> 关联必须由用户显式建立，禁止按标题/类型自动配对。
 
 ### 2.2 任务（Task）
 

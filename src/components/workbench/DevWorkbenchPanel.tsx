@@ -239,7 +239,7 @@ export default function DevWorkbenchPanel() {
           「停止恢复」留在右侧动作区。 */}
       <WorkbenchPageHeader
         icon={Code2}
-        title={t("nav.workbench")}
+        title={t("workbench.pageTitle")}
         subtitle={t("workbench.subtitle")}
         actions={
           <>

@@ -19,7 +19,9 @@
 import { samePath, isSubPath, normalizePath } from "./pathUtils";
 
 export type FwDragPayload =
-  | { kind: "tabs"; tabIds: string[]; fromPaneId: string; paths: string[]; /** 整窗格拖拽（把手）：落点中心=并入标签并关闭源窗格 */ paneMove?: boolean }
+  | { kind: "tabs"; tabIds: string[]; fromPaneId: string; paths: string[] }
+  /** 布局编辑模式：拖动整个区域（落点中心 = 与该区域交换位置，不复制文件）。 */
+  | { kind: "pane"; fromPaneId: string }
   | { kind: "files"; paths: string[]; fromPaneId: string };
 
 export type FwDropZone =
@@ -74,8 +76,10 @@ function signature(): string {
   const p = state.payload;
   const pSig = p
     ? p.kind === "tabs"
-      ? `tabs:${p.fromPaneId}:${p.paneMove ? "m" : "t"}:${p.tabIds.join(",")}`
-      : `files:${p.fromPaneId}:${p.paths.join(",")}`
+      ? `tabs:${p.fromPaneId}:${p.tabIds.join(",")}`
+      : p.kind === "pane"
+        ? `pane:${p.fromPaneId}`
+        : `files:${p.fromPaneId}:${p.paths.join(",")}`
     : "none";
   return `${pSig}|${state.x}|${state.y}|${state.effect}|${zoneSig(state.hover)}|${state.modifiers.ctrlKey ? "c" : ""}${state.modifiers.shiftKey ? "s" : ""}`;
 }
@@ -139,7 +143,8 @@ export function resolveEffect(
   targetDir: string | null,
   modifiers: { ctrlKey?: boolean; shiftKey?: boolean },
 ): FwEffect {
-  if (payload.kind === "tabs") return "tab";
+  // 标签与整区域拖拽都是「结构操作」，永远不产生复制/移动语义。
+  if (payload.kind === "tabs" || payload.kind === "pane") return "tab";
   if (!targetDir) return defaultEffect(payload.paths, payload.paths[0] ?? "");
   if (modifiers.ctrlKey) return "copy";
   if (modifiers.shiftKey) return "move";

@@ -40,6 +40,16 @@ import ScenarioWorkspaceView from "./ScenarioWorkspaceView";
 import { useLocale } from "../../hooks/useLocale";
 import "./workflows-page.css";
 
+/** 运行步骤状态徽标；只用于当前执行卡的只读展示，不参与执行控制。 */
+const STEP_STATUS_LABELS: Record<string, string> = {
+  pending: "待开始",
+  running: "执行中",
+  succeeded: "已完成",
+  skipped: "已跳过",
+  failed: "失败",
+  cancelled: "已取消",
+};
+
 /** 内容区的滚动容器（页面级单一滚动）：向上找第一个 overflow-y 可滚动的祖先。 */
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
   let p = el?.parentElement ?? null;
@@ -507,30 +517,94 @@ export default function WorkflowsPanel() {
         ) : null}
           </div>
 
-        {/* 最近运行（2026-11-14，对照效果图）：lastRuns 真实摘要，含失败原因。 */}
-        {recentRuns.length > 0 ? (
-          <section className="wf-recent" aria-label="最近运行">
-            <h3 className="wf-recent-title">最近运行</h3>
-            <ul className="wf-rowlist">
-              {recentRuns.map(({ wf, run }) => (
-                <li key={run.run_id}>
-                  <button
-                    type="button"
-                    className="wf-recent-row"
-                    onClick={() => openHistory(wf)}
-                    data-tip="查看该工作流的运行历史"
-                  >
-                    <span className="wf-recent-name">{wf.name}</span>
-                    <span className={`wf-run-state kind-${runStatusKind(run.status)}`}>
-                      {WORKFLOW_RUN_STATUS_LABELS[run.status]}
+        {/* 右侧信息带（2026-11-15 R2）：当前执行 / 空态 + 最近运行。
+            对齐效果图「左列表、右当前执行、下方最近运行」的层级；没有活动运行
+            时显示真实空态与创建入口，不伪造运行步骤。 */}
+        <div className="wf-side-col">
+          <section className="wf-current" aria-label="当前执行">
+            <h3 className="wf-recent-title">当前执行</h3>
+            {activeRun ? (
+              <>
+                <div className="wf-current-head">
+                  <strong>{activeWorkflowName}</strong>
+                  <span className={`wf-run-state kind-${activeRun.paused ? "waiting" : "running"}`}>
+                    {activeRun.paused ? "已暂停" : activeRun.cancel_requested ? "取消中" : "运行中"}
+                  </span>
+                </div>
+                <p className="wf-current-meta">
+                  {activeTotal > 0
+                    ? `已完成 ${activeRunDetail?.completed_steps ?? 0}/${activeTotal} 步`
+                    : "正在准备步骤…"}
+                </p>
+                {activeRunDetail?.steps?.length ? (
+                  <ol className="wf-current-steps">
+                    {activeRunDetail.steps.map((step, index) => (
+                      <li key={step.id} className={`wf-current-step is-${step.status}`}>
+                        <span className="wf-current-step-index">{index + 1}</span>
+                        <span className="wf-current-step-name" data-tip={step.detail || undefined}>
+                          {step.detail || step.step_type}
+                        </span>
+                        <span className={`wf-current-step-state is-${step.status}`}>
+                          {STEP_STATUS_LABELS[step.status] ?? step.status}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+                {activeTotal > 0 ? (
+                  <div className="wf-current-progress">
+                    <span className="wf-wf-bar" aria-hidden="true">
+                      <i style={{ width: `${activePct}%` }} />
                     </span>
-                    <span className="wf-recent-meta">{run.started_at_local}</span>
+                    <strong>{activePct}%</strong>
+                  </div>
+                ) : null}
+                <div className="wf-current-actions">
+                  <button type="button" className="btn sm primary" onClick={() => void openActiveRun()}>
+                    查看进度
                   </button>
-                </li>
-              ))}
-            </ul>
+                </div>
+              </>
+            ) : (
+              <div className="wf-current-empty">
+                <p>当前没有运行中的工作流。</p>
+                <p className="wf-hint-text">选择左侧工作流点击「运行」，或从模板创建第一条固定顺序流程。</p>
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => void openEditor(null, WORKFLOW_TEMPLATES[0])}
+                >
+                  <Sparkles size={13} aria-hidden="true" /> 从模板创建
+                </button>
+              </div>
+            )}
           </section>
-        ) : null}
+
+          {/* 最近运行（2026-11-14，对照效果图）：lastRuns 真实摘要，含失败原因。 */}
+          {recentRuns.length > 0 ? (
+            <section className="wf-recent" aria-label="最近运行">
+              <h3 className="wf-recent-title">最近运行</h3>
+              <ul className="wf-rowlist">
+                {recentRuns.map(({ wf, run }) => (
+                  <li key={run.run_id}>
+                    <button
+                      type="button"
+                      className="wf-recent-row"
+                      onClick={() => openHistory(wf)}
+                      data-tip="查看该工作流的运行历史"
+                    >
+                      <span className="wf-recent-name">{wf.name}</span>
+                      <span className={`wf-run-state kind-${runStatusKind(run.status)}`}>
+                        {WORKFLOW_RUN_STATUS_LABELS[run.status]}
+                      </span>
+                      <span className="wf-recent-meta">{run.started_at_local}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </div>
         </div>
       </div>
 

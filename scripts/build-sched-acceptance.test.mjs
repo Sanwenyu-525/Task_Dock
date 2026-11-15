@@ -74,8 +74,17 @@ function setSimAvail(ctx, mb) {
 }
 
 function baseEnv(ctx, extra = {}) {
+  const base = { ...process.env };
+  // 2026-11-15 第二轮：本套件允许被排队执行
+  //   `node scripts/build-sched.mjs run --class light --label sched-acceptance -- node --test …`
+  // 此时环境里带着 runner 注入的嵌套标记，内层 build-sched 见到就「直通执行、不再排队」。
+  // 那会让本套件里每个被测进程都不进队列（断言全部在"没排队"的前提下通过 → 假绿）。
+  // 先剥掉所有 TASKDOCK_SCHED_* 继承值，再由本函数显式写入本用例真正需要的那些。
+  for (const key of Object.keys(base)) {
+    if (key.startsWith("TASKDOCK_SCHED_")) delete base[key];
+  }
   return {
-    ...process.env,
+    ...base,
     TASKDOCK_BUILD_SCHED_HOME: ctx.home,
     TASKDOCK_SCHED_SIM_FILE: ctx.simFile,
     // 测试专用加速参数：不影响生产默认值
@@ -121,18 +130,18 @@ function runFake(ctx, { tag, durationMs = 1000, exitCode = 0, taskClass = "heavy
   return { child, done, pid: child.pid, text: () => stdout };
 }
 
-function schedJson(ctx, args) {
+function schedJson(ctx, args, envExtra = {}) {
   const r = spawnSync(process.execPath, [SCHED, ...args], {
-    cwd: ctx.wsA, env: baseEnv(ctx), encoding: "utf8", timeout: 60000, windowsHide: true,
+    cwd: ctx.wsA, env: baseEnv(ctx, envExtra), encoding: "utf8", timeout: 60000, windowsHide: true,
   });
   if (r.status !== 0) throw new Error(`sched ${args.join(" ")} 失败(${r.status}): ${r.stderr}`);
   return JSON.parse(r.stdout);
 }
 
 /** 跑一条会打印人读文案（不是 JSON）的调度 CLI 子命令。 */
-function schedCli(ctx, args) {
+function schedCli(ctx, args, envExtra = {}) {
   return spawnSync(process.execPath, [SCHED, ...args], {
-    cwd: ctx.wsA, env: baseEnv(ctx), encoding: "utf8", timeout: 60000, windowsHide: true,
+    cwd: ctx.wsA, env: baseEnv(ctx, envExtra), encoding: "utf8", timeout: 60000, windowsHide: true,
   });
 }
 
@@ -784,10 +793,11 @@ test("预算6：崩溃残留预留（崩在 spawn 之前）——宽限期内挡
 
     const run = runFake(ctx, { tag: "b6-light", taskClass: "light", durationMs: 500, envExtra: env });
     // 宽限期内：必须挡在等待里，且不得动残留（否则无法证明旧构建没在跑）
+    // 有界自适应等待：满载机器上固定 2s 会误报（第二轮实测过一次 33/34），但也不能无限等。
     await waitFor(() => {
       const rec = findTask(ctx, (t) => t.command?.[2] === "b6-light");
       return rec && rec.status === "waiting_resources" ? rec : null;
-    }, { timeoutMs: 2000, what: "任务进入 waiting_resources" });
+    }, { timeoutMs: 10000, what: "任务进入 waiting_resources（有界自适应 10s）" });
     assert.match(
       String(findTask(ctx, (t) => t.command?.[2] === "b6-light")?.waitReason ?? ""),
       /全局构建预算不足|准入临界区/,
@@ -1023,7 +1033,11 @@ test("补充B2：同一预算下显式开启 allowReserveBreach 才能让 Heavy 
   const ctx = setup();
   try {
     setSimAvail(ctx, 12000);
-    const env = budgetEnv(5120, { TASKDOCK_SCHED_ALLOW_RESERVE_BREACH: "true" });
+    const env = budgetEnv(5120, {
+      TASKDOCK_SCHED_ALLOW_RESERVE_BREACH: "true",
+      // 第三轮 4.1：开启 allowReserveBreach 本身也是"削弱安全边界"，必须同时持危险授权
+      TASKDOCK_SCHED_DANGER_AUTH: "reserve-breach",
+    });
     const res = await runFake(ctx, {
       tag: "b14-heavy-breach", taskClass: "heavy", durationMs: 800, envExtra: env,
       extraArgs: ["--wait-timeout", "0.3"],
@@ -1036,6 +1050,7 @@ test("补充B2：同一预算下显式开启 allowReserveBreach 才能让 Heavy 
     assert.equal(hist.budgetAtStart.budgetMb, 6000, "突破时预算被抬到最大分类峰值 6000MB");
     assert.equal(hist.budgetAtStart.hardLimitMb, 5120, "硬上限仍是 5120MB（物理-保留），证据里必须区分");
     assert.equal(hist.budgetAtStart.reserveBreached, true, "⛔ 突破保留边界这件事必须可事后复核");
+    assert.ok((hist.budgetAtStart.dangerAuth ?? []).includes("reserve-breach"), "授权令牌必须落进 history");
     assert.equal(reservationsOf(ctx).length, 0, "任务结束后台账必须清空");
 
     // status 必须显著告警（这是"危险开关"的唯一可见性来源）
@@ -1093,6 +1108,10 @@ const SCHED_TOKEN = "scripts/build-sched.mjs run";
 
 /** 必须经调度器的入口：[package.json 所在目录描述, 脚本名, 期望分类, 对应 raw 逃生口, raw 的附加实参] */
 const MUST_ROUTE = [
+  // 2026-11-15 第二轮（主 Agent 授权）：根 `dev`/`preview` 也纳管。
+  // 两者都是 dev 类长期服务，裸 `vite` / `vite preview` 由分类表判 dev（rule vite-dev / vite-preview）。
+  ["root", "dev", "dev", "dev:raw", []],
+  ["root", "preview", "dev", "preview:raw", []],
   ["root", "build", "medium", "build:raw", []],
   ["root", "test", "medium", "test:raw", []],
   // `npm run tauri -- build` 才是真实发布构建入口（裸 `npm run tauri` 只会打印 tauri 用法）
@@ -1110,8 +1129,6 @@ const MUST_ROUTE = [
  * 原则：只有「只读/轻量工具」「常驻 dev 服务」「交互式 watch」「调度器自身 CLI」可以豁免。
  */
 const DIRECT_ALLOWED = new Map([
-  ["dev", "dev 类长期服务（vite），未纳管实例由约束 A + `sched dev` 盘点，见 BUILD_SCHEDULER.md 12.8"],
-  ["preview", "dev 类预览服务，同上"],
   ["test:watch", "交互式 watch：长期运行、人工 Ctrl+C 结束，进队列反而会长期占槽"],
   ["test:scripts", "只读 node --test 单测（light），不产生构建产物"],
   ["help:check", "局部 vitest 用例（light）"],
@@ -1154,13 +1171,10 @@ test("补充C1：所有高资源构建入口都经统一调度器，且都有 :r
     const body = scripts[name];
     assert.ok(body, `${pkg} 缺少脚本 ${name}`);
     assert.ok(body.includes(SCHED_TOKEN), `${pkg} 的 ${name} 未接入调度器：${body}`);
-    // 手机端入口必须带 --priority/--label（在 queue/status 里一眼能认出是哪一段构建）；
-    // 根目录的 build/test/tauri 是上一轮已上线的写法（本轮按主 Agent 授权不改根 package.json），
-    // 它们的标签由分类表给出，这里只要求"确实经调度器"。
-    if (pkg !== "root") {
-      assert.ok(body.includes("--priority"), `${pkg} 的 ${name} 应带 --priority：${body}`);
-      assert.ok(body.includes("--label"), `${pkg} 的 ${name} 应带 --label，便于在 queue/status 里辨认`);
-    }
+    // 每个入口都必须带 --priority/--label（在 queue/status/history 里一眼能认出是哪一段构建）。
+    // 根目录的 dev/preview/build/test/tauri 在 2026-11-15 第二轮已补齐（主 Agent 授权）。
+    assert.ok(body.includes("--priority"), `${pkg} 的 ${name} 应带 --priority：${body}`);
+    assert.ok(body.includes("--label"), `${pkg} 的 ${name} 应带 --label，便于在 queue/status 里辨认：${body}`);
     const raws = scripts[rawName];
     assert.ok(raws, `${pkg} 缺少排障逃生口 ${rawName}（不带派发最后一次机会）`);
     assert.ok(!raws.includes(SCHED_TOKEN), `${rawName} 必须是"不经调度器"的原始命令：${raws}`);
@@ -1214,4 +1228,196 @@ test("补充C4：手机端 APK 入口能正确定位到 android/gradlew.bat（�
   assert.ok(existsSync(join(REPO, "apps", "mobile", "android", "gradlew.bat")), "gradlew.bat 必须存在于 apps/mobile/android");
   // 分类必须落在重型：APK release 会拉起 Gradle/Kotlin 守护进程，按中/轻量放行就是超卖
   assert.equal(classifyArgv(["gradlew.bat", "assembleRelease"], { cwd: join(REPO, "apps", "mobile", "android") }).taskClass, "heavy");
+});
+
+test("补充C5：根目录 5 个开发者入口（dev/preview/build/test/tauri）全部经调度器，各自有 :raw 逃生口", () => {
+  const ROOT_ENTRIES = [
+    ["dev", "dev:raw"],
+    ["preview", "preview:raw"],
+    ["build", "build:raw"],
+    ["test", "test:raw"],
+    ["tauri", "tauri:raw"],
+  ];
+  const labels = [];
+  for (const [name, rawName] of ROOT_ENTRIES) {
+    const body = ROOT_PKG.scripts[name];
+    assert.ok(body, `root 缺少脚本 ${name}`);
+    assert.ok(body.includes(SCHED_TOKEN), `root 的 ${name} 未接入调度器（会绕过资源闸门）：${body}`);
+    assert.match(body, /--priority P[0-9]/, `root 的 ${name} 必须带 --priority：${body}`);
+    const label = (body.match(/--label ([^\s]+)/) || [])[1];
+    assert.ok(label, `root 的 ${name} 必须带 --label：${body}`);
+    labels.push(label);
+    assert.ok(/--\s/.test(body), `root 的 ${name} 缺少 \`--\` 分隔符：${body}`);
+    // 已接入的入口不得同时挂在"允许直跑"豁免名单上（否则两处声明互相矛盾）
+    assert.ok(!DIRECT_ALLOWED.has(name), `root 的 ${name} 已接入调度器，不得再出现在 DIRECT_ALLOWED 豁免名单`);
+    const raw = ROOT_PKG.scripts[rawName];
+    assert.ok(raw, `root 缺少逃生口 ${rawName}（会话排障时就只能绕过调度器）`);
+    assert.ok(!raw.includes(SCHED_TOKEN), `${rawName} 必须是"不经调度器"的原始命令：${raw}`);
+  }
+  // label 必须互不相同，否则 history 里无法复盘"哪一段构建"
+  assert.equal(new Set(labels).size, labels.length, `label 不得重复：${labels.join(" / ")}`);
+  // dev / preview 是 dev 类长期服务：必须显式 --class dev —— `vite preview` 这类命令
+  // 一旦分类表漂移成 light，就会占轻量槽位并与另一条轻量任务抢端口
+  for (const n of ["dev", "preview"]) {
+    assert.match(ROOT_PKG.scripts[n], /--class dev/, `root 的 ${n} 必须显式 --class dev：${ROOT_PKG.scripts[n]}`);
+  }
+});
+
+test("补充C6：本套件在调度任务内运行时必须剥离嵌套标记（否则子进程全部直通，用例假绿）", () => {
+  // 背景：runner 会给子进程注入 TASKDOCK_SCHED_TASK_ID，内层 build-sched 见到它就「直通执行」。
+  // 若有人用 `node scripts/build-sched.mjs run -- node --test <本套件>` 排队跑，
+  // baseEnv 若原样继承该变量，本套件里每一个被测调度进程都不会排队 → 全部断言在"不排队"的
+  // 前提下通过，等于假绿。这里钉住 baseEnv 的剥离行为。
+  const saved = process.env.TASKDOCK_SCHED_TASK_ID;
+  process.env.TASKDOCK_SCHED_TASK_ID = "h-selpstnt-abcdef";
+  try {
+    const env = baseEnv({ home: "H:\\fake-home", simFile: "H:\\fake-sim.json" }, { EXTRA_PROBE: "1" });
+    assert.equal(env.TASKDOCK_SCHED_TASK_ID, undefined, "嵌套标记必须被剥离");
+    assert.equal(env.TASKDOCK_SCHED_NESTED, undefined, "嵌套标记必须被剥离（2）");
+    assert.equal(env.TASKDOCK_BUILD_SCHED_HOME, "H:\\fake-home", "状态目录仍必须是本用例的临时目录");
+    assert.equal(env.TASKDOCK_SCHED_SIM_FILE, "H:\\fake-sim.json", "模拟内存文件仍必须指向本用例");
+    assert.equal(env.EXTRA_PROBE, "1", "extra 参数必须照常合并");
+  } finally {
+    if (saved === undefined) delete process.env.TASKDOCK_SCHED_TASK_ID;
+    else process.env.TASKDOCK_SCHED_TASK_ID = saved;
+  }
+});
+
+// ---------------------------------------------------------------- 配置安全（第三轮 4.1-4.4，跨进程）
+
+function writeMachineConfig(ctx, obj) {
+  mkdirSync(ctx.home, { recursive: true });
+  writeFileSync(join(ctx.home, "config.json"), JSON.stringify(obj, null, 2));
+}
+
+test("配置安全1：只改配置文件 budgetEnabled=false，不得绕过全局预算（跨进程）", async () => {
+  const ctx = setup();
+  try {
+    writeMachineConfig(ctx, { budgetEnabled: false });
+    setSimAvail(ctx, 9000);      // 两类任务的实时内存门槛都满足
+    const env = budgetEnv(6000); // 预算恰好只够一个 heavy
+    const heavy = runFake(ctx, { tag: "cfgoff-heavy", taskClass: "heavy", durationMs: 1200, envExtra: env });
+    const medium = runFake(ctx, { tag: "cfgoff-medium", taskClass: "medium", durationMs: 1200, envExtra: env });
+    const [rh, rm] = await Promise.all([heavy.done, medium.done]);
+    assert.equal(rh.code, 0, `heavy 应成功：${rh.stderr}`);
+    assert.equal(rm.code, 0, `medium 应成功：${rm.stderr}`);
+    assert.equal(maxOverlap(intervals(ctx.log)), 1, "⛔ 配置里的 false 未被授权却仍然生效 = 静默绕过预算");
+    const rows = readHistory(ctx).filter((e) => e.budgetAtStart);
+    assert.ok(rows.length >= 2);
+    for (const e of rows) {
+      assert.equal(e.budgetAtStart.budgetEnabled, true, "history 必须显示这次预算仍然开启");
+      assert.equal(e.budgetAtStart.budgetOffAuthorized, false);
+    }
+  } finally { cleanup(ctx); }
+});
+
+test("配置安全2：带 budget-off 危险授权才真的关闭预算，history 可审计", async () => {
+  const ctx = setup();
+  try {
+    writeMachineConfig(ctx, { budgetEnabled: false });
+    setSimAvail(ctx, 9000);
+    const env = budgetEnv(6000, { TASKDOCK_SCHED_DANGER_AUTH: "budget-off" });
+    const heavy = runFake(ctx, { tag: "cfgoff2-heavy", taskClass: "heavy", durationMs: 1500, envExtra: env });
+    const medium = runFake(ctx, { tag: "cfgoff2-medium", taskClass: "medium", durationMs: 1500, envExtra: env });
+    const [rh, rm] = await Promise.all([heavy.done, medium.done]);
+    assert.equal(rh.code, 0, `heavy 应成功：${rh.stderr}`);
+    assert.equal(rm.code, 0, `medium 应成功：${rm.stderr}`);
+    assert.equal(maxOverlap(intervals(ctx.log)), 2, "授权关闭预算后两类任务应并行（预算是唯一约束）");
+    const rows = readHistory(ctx).filter((e) => e.budgetAtStart);
+    assert.ok(rows.some((e) => e.budgetAtStart.budgetEnabled === false &&
+      e.budgetAtStart.budgetOffAuthorized === true &&
+      (e.budgetAtStart.dangerAuth ?? []).includes("budget-off")),
+      "history 必须记录「这次任务是在预算关闭下准入的」");
+    const status = schedJson(ctx, ["status", "--json"], { TASKDOCK_SCHED_DANGER_AUTH: "budget-off" });
+    assert.equal(status.budget.enabled, false);
+    assert.ok((status.danger.tokens ?? []).includes("budget-off"));
+  } finally { cleanup(ctx); }
+});
+
+test("配置安全3：systemReserveMb 低于基线未授权 → 有效值回基线；授权后才下调并显示减少量", () => {
+  const ctx = setup();
+  try {
+    writeMachineConfig(ctx, { systemReserveMb: 512, recommendedSystemReserveMb: 3072 });
+    const denied = schedJson(ctx, ["status", "--json"]);
+    assert.equal(denied.budget.reserveMb, 3072, "未经授权时有效保留必须回到基线");
+    assert.equal(denied.danger.reserveLowerRequested, true);
+    assert.equal(denied.danger.reserveLowerAuthorized, false);
+    const authorized = schedJson(ctx, ["status", "--json"], { TASKDOCK_SCHED_DANGER_AUTH: "reserve-lower" });
+    assert.equal(authorized.budget.reserveMb, 512);
+    assert.equal(authorized.budget.reserveReducedMb, 2560, "status 必须显示实际减少的安全余量");
+    assert.equal(authorized.budget.hardLimitMb, TOTAL_MB_REAL - 512);
+    const doctor = schedCli(ctx, ["doctor"], { TASKDOCK_SCHED_DANGER_AUTH: "reserve-lower" });
+    assert.match(doctor.stdout, /安全余量减少 2560 MB/, "doctor 必须报出减少量");
+    assert.match(doctor.stdout, /P1.*systemReserveMb/, "降保留至少是 P1 风险");
+  } finally { cleanup(ctx); }
+});
+
+test("配置安全4：1 MB 门槛 + 关闭预算 → doctor 报 P0 且非 0 退出", () => {
+  const ctx = setup();
+  try {
+    writeMachineConfig(ctx, {
+      budgetEnabled: false, heavyMinAvailMb: 1, mediumMinAvailMb: 1, lightMinAvailMb: 1,
+      estimateHeavyMb: 1, estimateMediumMb: 1,
+    });
+    const doctor = schedCli(ctx, ["doctor"], { TASKDOCK_SCHED_DANGER_AUTH: "budget-off" });
+    assert.equal(doctor.status, 5, "存在 P0 配置风险时 doctor 必须以非 0 退出（EXIT.internal=5）");
+    assert.match(doctor.stdout, /P0.*budgetEnabled/);
+    assert.match(doctor.stdout, /P0.*heavyMinAvailMb/);
+    assert.match(doctor.stdout, /配置来源：/);
+  } finally { cleanup(ctx); }
+});
+
+test("配置安全5：环境变量覆盖机器配置会被 doctor 点名（含来源与当前值）", () => {
+  const ctx = setup();
+  try {
+    const doctor = schedCli(ctx, ["doctor"], { TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB: "8192" });
+    assert.equal(doctor.status, 0, "仅环境覆盖（未削弱安全边界）不应让 doctor 失败");
+    assert.match(doctor.stdout, /环境变量覆盖了 \d+ 项配置/);
+    assert.match(doctor.stdout, /TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB/);
+    const cfg = schedJson(ctx, ["config", "--json"], { TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB: "8192" });
+    assert.equal(cfg.effective.heavyMinAvailMb, 8192);
+    assert.ok(cfg.sources.some((s) => s.kind === "env" && (s.names ?? []).includes("TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB")));
+  } finally { cleanup(ctx); }
+});
+test("配置安全6：任务运行期间修改机器配置——运行中任务沿用准入时预算，后续任务用新配置", async () => {
+  const ctx = setup();
+  try {
+    setSimAvail(ctx, 9000);
+    writeMachineConfig(ctx, { systemReserveMb: TOTAL_MB_REAL - 2000 });
+    const first = runFake(ctx, { tag: "cfgmut-1", taskClass: "light", durationMs: 2200 });
+    const running = await waitFor(() => findTask(ctx, (t) => t.command?.[2] === "cfgmut-1" && t.status === "running"),
+      { timeoutMs: 10000, what: "首个轻量任务进入 running" });
+    assert.ok(running);
+    // 运行中改配置：预算从 2000 变 3000
+    writeMachineConfig(ctx, { systemReserveMb: TOTAL_MB_REAL - 3000 });
+    const status = schedJson(ctx, ["status", "--json"]);
+    assert.equal(status.budget.budgetMb, 3000, "配置变化必须立即对后续准入生效");
+    assert.equal(status.budget.reservedMb, 800, "运行中任务的预留仍按准入时的峰值算");
+    const r1 = await first.done;
+    assert.equal(r1.code, 0, `首个任务应成功：${r1.stderr}`);
+    const second = runFake(ctx, { tag: "cfgmut-2", taskClass: "light", durationMs: 300 });
+    const r2 = await second.done;
+    assert.equal(r2.code, 0, `第二个任务应成功：${r2.stderr}`);
+    const rows = readHistory(ctx).filter((e) => e.budgetAtStart);
+    const firstRow = rows.find((e) => e.command?.[2] === "cfgmut-1");
+    const secondRow = rows.find((e) => e.command?.[2] === "cfgmut-2");
+    assert.equal(firstRow?.budgetAtStart?.budgetMb, 2000, "运行中任务不得被改后的配置追溯");
+    assert.equal(secondRow?.budgetAtStart?.budgetMb, 3000, "后续任务必须使用新配置");
+  } finally { cleanup(ctx); }
+});
+test("配置安全7：只配置 allowReserveBreach=true 而不持 reserve-breach 授权——不得突破保留边界", async () => {
+  const ctx = setup();
+  try {
+    setSimAvail(ctx, 12000);
+    writeMachineConfig(ctx, { allowReserveBreach: true });
+    const env = budgetEnv(5120); // 硬上限 5120 < heavy 6000
+    const res = await runFake(ctx, {
+      tag: "cfgbreach-denied", taskClass: "heavy", durationMs: 800, envExtra: env,
+      extraArgs: ["--wait-timeout", "0.3"],
+    }).done;
+    assert.equal(res.code, 3, `未授权时不得准入，必须明确失败而不是偷偷突破：${res.stderr}`);
+    assert.match(res.stderr + res.stdout, /本机装不下|预算|装不下/);
+    assert.equal(startCount(ctx.log, "cfgbreach-denied"), 0, "⛔ 未授权却真的跑了 = 静默侵占安全余量");
+    assert.equal(reservationsOf(ctx).length, 0);
+  } finally { cleanup(ctx); }
 });

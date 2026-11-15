@@ -19,6 +19,15 @@ import { computeBudget, planAdmission, readReservations } from "./budget.mjs";
 
 export const PRIORITY_LABEL = { 0: "P0", 1: "P1", 2: "P2", 3: "P3" };
 export const ACTIVE_STATUSES = new Set(["queued", "waiting_resources", "running"]);
+/**
+ * 「还在等槽位」的状态——只用于**优先级先后**判定。
+ *
+ * 2026-11-15 第二轮缺陷：优先级判定曾用 ACTIVE_STATUSES（含 running），于是**已经在跑**的
+ * 高优先级任务被当成"在等同一分类"，后到的低优先级任务会让出刚拿到的槽位、下一轮又被同一条
+ * 记录顶回去 → 无限让位（一个 P1 长驻 dev 就能把之后所有 P2 dev 永久饿死）。运行中的任务
+ * 已经占有槽位（它体现在 slotUsage/concurrency 里），不能再算作"在前面排队"。
+ */
+export const WAITING_STATUSES = new Set(["queued", "waiting_resources"]);
 
 export function parsePriority(value, fallback = 1) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -163,8 +172,9 @@ export function evaluateEligibility({ home, task, tasks, cfg, mem, memoryWaitSee
   const memoryBlockers = memEval.admit ? [] : [memEval.reason];
   const budgetBlockers = budgetEval.admit ? [] : [budgetEval.reason];
 
-  // 僵尸记录（提交进程已死、心跳早已停更）不参与排序，否则崩溃一次就会永远堵住同分类队列
-  const peers = tasks.filter((t) => t.id !== task.id && ACTIVE_STATUSES.has(t.status) &&
+  // 僵尸记录（提交进程已死、心跳早已停更）不参与排序，否则崩溃一次就会永远堵住同分类队列；
+  // 同样地，**运行中**的任务不参与"谁在前"的比较——它已经拿到槽位，不该把后来者挡在门外
+  const peers = tasks.filter((t) => t.id !== task.id && WAITING_STATUSES.has(t.status) &&
     t.taskClass === task.taskClass && !recordStale(t, cfg, now));
   const better = peers.filter((t) => compareOrder(t, task, now, cfg) < 0);
   const strictlyHigher = better.filter((t) => effectivePriority(t, now, cfg) < effectivePriority(task, now, cfg));

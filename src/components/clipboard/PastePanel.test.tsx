@@ -13,12 +13,17 @@ const bridge = vi.hoisted(() => ({
   clipboardGroup: vi.fn(),
   clipboardPasteActive: vi.fn(),
   clipboardPasteJob: vi.fn(),
+  clipboardPasteItemStates: vi.fn(),
   clipboardPastePrecheck: vi.fn(),
   clipboardPasteGroup: vi.fn(),
   clipboardPasteItems: vi.fn(),
   clipboardPasteCancel: vi.fn(),
   clipboardPasteResume: vi.fn(),
+  clipboardPasteFocusTarget: vi.fn(),
   clipboardFocusTarget: vi.fn(),
+  clipboardPasteResumableJob: vi.fn(),
+  clipboardPasteResumableJobs: vi.fn(),
+  clipboardPasteResolveUncertain: vi.fn(),
   onClipboardPaste: vi.fn(),
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
@@ -84,6 +89,10 @@ beforeEach(() => {
   bridge.clipboardPasteItems.mockResolvedValue(START);
   bridge.clipboardPasteCancel.mockResolvedValue(undefined);
   bridge.clipboardPasteJob.mockResolvedValue(null);
+  bridge.clipboardPasteItemStates.mockResolvedValue([]);
+  bridge.clipboardPasteResumableJob.mockResolvedValue(null);
+  bridge.clipboardPasteResumableJobs.mockResolvedValue([]);
+  bridge.clipboardPasteResolveUncertain.mockResolvedValue(undefined);
   bridge.clipboardFocusTarget.mockResolvedValue(TARGETS[0]);
   bridge.onClipboardPaste.mockImplementation((cb: (event: ClipboardPasteEvent) => void) => {
     pasteHandler = cb;

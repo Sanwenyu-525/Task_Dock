@@ -69,10 +69,131 @@
   gap: 10px;
   min-width: 0;
 }
+.workflows-panel .wf-side-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
 @container wf-body (max-width: 900px) {
   .workflows-panel .wf-main {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* 当前执行卡：有活动运行时列出真实步骤状态；无运行时是真实空态。 */
+.workflows-panel .wf-current {
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+.workflows-panel .wf-current-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.workflows-panel .wf-current-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.workflows-panel .wf-current-meta {
+  margin: 4px 0 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.workflows-panel .wf-current-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.workflows-panel .wf-current-step {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11.5px;
+}
+.workflows-panel .wf-current-step:first-child {
+  border-top: none;
+}
+.workflows-panel .wf-current-step-index {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.workflows-panel .wf-current-step-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.workflows-panel .wf-current-step-state {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+}
+.workflows-panel .wf-current-step-state.is-succeeded {
+  background: var(--status-success-soft, var(--accent-soft));
+  color: var(--status-success);
+}
+.workflows-panel .wf-current-step-state.is-running {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.workflows-panel .wf-current-step-state.is-failed {
+  background: var(--status-error-soft, var(--surface-hover));
+  color: var(--status-error);
+}
+.workflows-panel .wf-current-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.workflows-panel .wf-current-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.workflows-panel .wf-current-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.workflows-panel .wf-current-empty > p {
+  margin: 0;
+}
+.workflows-panel .wf-current-empty .btn {
+  margin-top: 4px;
 }
 
 /* 活动进度条（复用首页 wb-wf-bar 的形态语义，作用域为本页）。 */

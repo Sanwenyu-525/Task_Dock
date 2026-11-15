@@ -5,13 +5,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { DEFAULT_CONFIG, loadConfig } from "./sched/config.mjs";
+import { DEFAULT_CONFIG, loadConfig, configRisks, DANGER_AUTH_ENV } from "./sched/config.mjs";
 import { classifyArgv, classifyCommandLine, splitCommandLine } from "./sched/classify.mjs";
-import { effectivePriority, compareOrder, parsePriority, computeFingerprint } from "./sched/queue.mjs";
+import { effectivePriority, compareOrder, parsePriority, computeFingerprint, evaluateEligibility } from "./sched/queue.mjs";
 import { evaluateMemoryAdmission, memoryFloorForClass, pressureLevel } from "./sched/mem.mjs";
 import {
   classifyReservation, computeBudget, createReservation, maxEstimateMb, planAdmission, readReservation,
@@ -20,7 +20,7 @@ import {
 import { resolveStateHome } from "./sched/state.mjs";
 import { slotNames, snapshotSlots, cmdlineSignature } from "./sched/lock.mjs";
 import { verifyIdentity } from "./sched/proc.mjs";
-import { buildSpawnPlan, resolveExecutable } from "./sched/runner.mjs";
+import { buildSpawnPlan, resolveExecutable, priorityConflict } from "./sched/runner.mjs";
 import { inferWorkspace } from "./sched/devservers.mjs";
 
 const cfg = DEFAULT_CONFIG;
@@ -123,6 +123,51 @@ test("分类：仓库内轻量脚本不被误判为重型", () => {
   assert.equal(classifyArgv(["node", "scripts/worktree-guard.mjs", "status"]).taskClass, "light");
   assert.equal(classifyArgv(["node", "scripts/make-preview.mjs"]).taskClass, "medium");
   assert.equal(classifyArgv(["node", "-e", "console.log(1)"]).taskClass, "light");
+});
+
+test("分类：长期运行的 vite 服务都归 dev（`vite preview` 不得掉进 light）", () => {
+  // dev / preview 都是「不 Ctrl+C 就不退出」的服务：按 light 归类会占轻量槽位、
+  // 还能与另一条轻量任务同时拉起两个预览服务抢端口。
+  assert.equal(classifyArgv(["vite"]).taskClass, "dev");
+  assert.equal(classifyArgv(["vite", "preview"]).taskClass, "dev");
+  assert.equal(classifyArgv(["vite", "--version"]).taskClass, "light", "一次性查询命令仍是 light");
+  assert.equal(classifyArgv(["vite", "build"]).taskClass, "medium", "构建仍归 medium（不得因本次改动被抬重）");
+  assert.equal(classifyArgv(["npm", "run", "preview:raw"], { cwd: process.cwd() }).taskClass, "dev",
+    "`npm run preview:raw` 展开到 vite preview 后也必须是 dev");
+});
+
+test("优先级：运行中的高优先级任务不得把后到的低优先级任务顶死（无限让位）", () => {
+  // 2026-11-15 第二轮缺陷：`priorityConflict` 曾把 running 也算成"在等同一分类"，
+  // 于是 P2 的 `npm run dev` 拿到槽位后又让位、下一轮又被同一个 running 记录顶回去 → 无限让位。
+  // 一个 P1 长驻 dev 就能饿死之后所有 P2 dev。
+  const cfg = { ...DEFAULT_CONFIG, agingStepMs: 0 };
+  const nowIso = new Date().toISOString();
+  const self = { id: "self-dev", status: "queued", taskClass: "dev", priority: 2, enqueuedAt: nowIso, updatedAt: nowIso };
+  const base = { taskClass: "dev", priority: 1, updatedAt: nowIso, enqueuedAt: new Date(Date.now() - 3600e3).toISOString() };
+  const runningP1 = { ...base, id: "run-p1", status: "running" };
+  const queuedP1 = { ...base, id: "queue-p1", status: "queued", enqueuedAt: new Date(Date.now() - 5000).toISOString() };
+  const waitingP0 = { ...base, id: "wait-p0", status: "waiting_resources", priority: 0 };
+  const runningHeavy = { ...base, id: "run-heavy", status: "running", taskClass: "heavy" };
+
+  assert.equal(priorityConflict([runningP1, self], self, cfg), null,
+    "⛔ running 的高优先级任务已经持有槽位，不得再让后来者让位");
+  assert.equal(priorityConflict([runningHeavy, self], self, cfg), null, "跨分类不参与同分类优先级判定");
+  assert.match(priorityConflict([queuedP1, self], self, cfg) ?? "", /更高优先级任务在等待同一分类/,
+    "真正还在排队的高优先级任务仍必须优先（修复没有放宽防插队）");
+  assert.match(priorityConflict([waitingP0, self], self, cfg) ?? "", /更高优先级任务在等待同一分类/,
+    "waiting_resources 也是\"还在等\"，同样要有优先权");
+
+  // 队列评估的解释文案同理（否则 queue 会指着一条 running 记录说"它在前面"）
+  const home = mkdtempSync(join(tmpdir(), "sched-prioconf-"));
+  try {
+    const mem = { totalMb: 16000, availMb: 9000 };
+    const eligRunning = evaluateEligibility({ home, task: self, tasks: [runningP1, self], cfg, mem, memoryWaitSeen: false });
+    assert.deepEqual(eligRunning.priorityBlockers, [], "running 记录不得进 priorityBlockers");
+    const eligQueued = evaluateEligibility({ home, task: self, tasks: [queuedP1, self], cfg, mem, memoryWaitSeen: false });
+    assert.ok(eligQueued.priorityBlockers.length > 0, "真正在等的高优先级任务仍要排在前面");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------- 优先级
@@ -573,8 +618,33 @@ test("开发服务器归属：从命令行绝对路径推断工作区", () => {
   );
 });
 
-// ---------------------------------------------------------------- 身份取证与 PID 复用防护
+// ---------------------------------------------------------------- 可执行解析（Windows shim）
 
+test("可执行解析：PATH 里的无扩展名 shim 不得抢在 .cmd 前面（否则 spawn ENOENT -4058）", () => {
+  // 2026-11-15 第二轮实测：`npm run dev` → `run -- vite` 时调度器选中了 `node_modules/.bin/vite`
+  // （无扩展名 bash shim），Node 在 Windows 上 spawn 它直接报 -4058（ENOENT），
+  // `npm run preview` 同理。这里复刻 node_modules/.bin 的真实形态并断言解析结果。
+  const dir = mkdtempSync(join(tmpdir(), "sched-resolve-"));
+  const saved = process.env.PATH;
+  try {
+    writeFileSync(join(dir, "probe-tool"), "#!/bin/sh\nexec node \"$@\"\n");
+    writeFileSync(join(dir, "probe-tool.cmd"), "@echo off\r\n");
+    process.env.PATH = `${dir}${delimiter}${saved}`;
+    const resolved = resolveExecutable("probe-tool", process.cwd());
+    assert.ok(resolved, "同目录下的 probe-tool 必须能被解析到");
+    assert.match(resolved.path, /\.cmd$/i, `必须优先选 .cmd（实际选中 ${resolved.path}）`);
+    assert.equal(resolved.needsShell, true, ".cmd/.bat 必须走 ComSpec");
+    // 只有无扩展名 shim 时仍能找到它（兜底不丢），由调用方承担 spawn 失败
+    rmSync(join(dir, "probe-tool.cmd"));
+    const fallback = resolveExecutable("probe-tool", process.cwd());
+    assert.ok(fallback, "只剩无扩展名文件时仍应被找到（不因修复而解析失败）");
+  } finally {
+    process.env.PATH = saved;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------- 身份取证与 PID 复用防护
 test("命令行签名：斜杠/引号/大小写归一，剥除可执行文件本体与 cmd 包装前缀", () => {
   assert.equal(
     cmdlineSignature('"C:\\nvm4w\\nodejs\\node.exe" D:\\repo\\fake-build.mjs t1'),
@@ -634,4 +704,125 @@ test("身份取证：「进程在但读不到创建时间」只能是 unknown，
     verifyIdentity({ pid: live, startTime: now }, { probe: probeOf({ known: true, alive: false, startTime: null }) }).state,
     "gone", "进程确实不存在 → gone",
   );
+});
+
+// ---------------------------------------------------------------- 配置安全（第三轮 4.1-4.4）
+
+function mkState(name, configObj) {
+  const dir = join(tmpRoot, name);
+  mkdirSync(dir, { recursive: true });
+  if (configObj) writeFileSync(join(dir, "config.json"), JSON.stringify(configObj, null, 2));
+  return dir;
+}
+
+const DANGER_ENV = "TASKDOCK_SCHED_DANGER_AUTH";
+
+test("配置安全：budgetEnabled=false 没有危险授权时必须被忽略", () => {
+  const home = mkState("cfg-off-noauth", { budgetEnabled: false });
+  const loaded = loadConfig({ stateHome: home, env: {} });
+  assert.equal(loaded.config.budgetEnabled, true, "只凭配置文件不得关闭全局预算");
+  assert.equal(loaded.danger.budgetOffRequested, true);
+  assert.equal(loaded.danger.budgetOffAuthorized, false);
+  assert.ok(loaded.problems.some((p) => p.includes("budget-off"), "必须明说缺哪个授权令牌"));
+  assert.ok(loaded.danger.blocked.length >= 1);
+});
+
+test("配置安全：budget-off 授权生效，且预算证据里能审计到关闭原因", () => {
+  const home = mkState("cfg-off-auth", { budgetEnabled: false });
+  const loaded = loadConfig({ stateHome: home, env: { [DANGER_ENV]: "budget-off" } });
+  assert.equal(loaded.config.budgetEnabled, false);
+  assert.equal(loaded.danger.budgetOffAuthorized, true);
+  const budget = computeBudget({ cfg: loaded.config, totalMb: 16005 });
+  assert.equal(budget.enabled, false);
+  assert.equal(budget.budgetOffAuthorized, true);
+  assert.deepEqual(budget.dangerAuth, ["budget-off"]);
+  const plan = planAdmission({ budget, entries: [], estimateMb: 6000 });
+  assert.equal(plan.admit, true, "授权关闭后不再受预算约束");
+  assert.equal(plan.budgetEnabled, false, "history 的 budgetAtStart 必须能看出这次是关了预算的");
+  assert.match(plan.reason, /危险授权/);
+});
+
+test("配置安全：allowReserveBreach 需要独立授权才生效", () => {
+  const home = mkState("cfg-breach", { allowReserveBreach: true });
+  const denied = loadConfig({ stateHome: home, env: {} });
+  assert.equal(denied.config.allowReserveBreach, false, "未授权时不得侵占系统保留");
+  const allowed = loadConfig({ stateHome: home, env: { [DANGER_ENV]: "reserve-breach" } });
+  assert.equal(allowed.config.allowReserveBreach, true);
+  const budget = computeBudget({ cfg: allowed.config, totalMb: 8192 });
+  assert.equal(budget.hardLimitMb, 5120);
+  assert.equal(budget.budgetMb, 6000);
+  assert.equal(budget.reserveBreached, true);
+  assert.equal(computeBudget({ cfg: denied.config, totalMb: 8192 }).budgetMb, 5120);
+});
+
+test("配置安全：systemReserveMb 低于推荐基线未授权时 fail-closed 回基线", () => {
+  const home = mkState("cfg-reserve-low", { systemReserveMb: 1024, recommendedSystemReserveMb: 3072 });
+  const denied = loadConfig({ stateHome: home, env: {} });
+  assert.equal(denied.config.systemReserveMb, 3072, "有效值必须回到基线，避免安全余量被静默缩小");
+  assert.equal(denied.danger.reserveLowerRequested, true);
+  assert.equal(denied.danger.reserveLowerAuthorized, false);
+  const authorized = loadConfig({ stateHome: home, env: { [DANGER_ENV]: "reserve-lower" } });
+  assert.equal(authorized.config.systemReserveMb, 1024, "授权后保留申报值（不改配置文件）");
+  const budget = computeBudget({ cfg: authorized.config, totalMb: 8192 });
+  assert.equal(budget.reserveReducedMb, 2048, "必须算出实际减少的安全余量");
+  assert.equal(budget.hardLimitMb, 7168);
+  const risks = configRisks({ config: authorized.config, danger: authorized.danger });
+  assert.ok(risks.some((r) => r.key === "systemReserveMb" && r.level === "P1" && r.text.includes("2048")),
+    "doctor 必须报「安全余量减少 2048 MB」");
+});
+
+test("配置安全：doctor 能抓到 1 MB 门槛、关闭预算与环境变量覆盖", () => {
+  const home = mkState("cfg-broken", {
+    budgetEnabled: false, heavyMinAvailMb: 1, mediumMinAvailMb: 1, lightMinAvailMb: 1,
+    estimateHeavyMb: 1, estimateMediumMb: 1,
+  });
+  const loaded = loadConfig({
+    stateHome: home,
+    env: { [DANGER_ENV]: "budget-off", TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB: "1" },
+  });
+  const risks = configRisks({ config: loaded.config, danger: loaded.danger, sources: loaded.sources, problems: loaded.problems });
+  const keys = risks.map((r) => r.key);
+  assert.ok(keys.includes("budgetEnabled"), "关闭预算必须是风险项");
+  assert.ok(risks.some((r) => r.key === "budgetEnabled" && r.level === "P0"));
+  for (const k of ["heavyMinAvailMb", "mediumMinAvailMb", "lightMinAvailMb"]) {
+    assert.ok(risks.some((r) => r.key === k && r.level === "P0"), `${k}=1MB 必须报 P0`);
+  }
+  assert.ok(risks.some((r) => r.key === "env" && r.text.includes("TASKDOCK_SCHED_HEAVY_MIN_AVAIL_MB")),
+    "环境变量覆盖必须被点名");
+  assert.ok(risks.every((r) => r.source), "每条风险都要能说出配置来源");
+});
+
+test("配置安全：4/8/16/32 GB 档位在「预算关闭 + 保留 0」等极端组合下语义稳定", () => {
+  for (const totalMb of [4096, 8192, 16005, 32768]) {
+    const normal = computeBudget({ cfg: DEFAULT_CONFIG, totalMb });
+    assert.equal(normal.budgetMb, totalMb - DEFAULT_CONFIG.systemReserveMb);
+    // systemReserveMb=0 且未授权：有效值必须回到推荐基线（0 不再等于"用满物理内存"）
+    const zeroDeniedHome = mkState(`cfg-zero-denied-${totalMb}`, { systemReserveMb: 0 });
+    const zeroDenied = computeBudget({ cfg: loadConfig({ stateHome: zeroDeniedHome, env: {} }).config, totalMb });
+    assert.equal(zeroDenied.reserveMb, DEFAULT_CONFIG.recommendedSystemReserveMb, "无授权时 0 被 fail-closed 收紧");
+    // 授权 reserve-lower 后才允许 0：同时必须算出「安全余量减少 3072 MB」并保留告警
+    const zeroAuthHome = mkState(`cfg-zero-auth-${totalMb}`, { systemReserveMb: 0 });
+    const zero = computeBudget({ cfg: loadConfig({ stateHome: zeroAuthHome, env: { [DANGER_ENV]: "reserve-lower" } }).config, totalMb });
+    assert.equal(zero.reserveMb, 0);
+    assert.equal(zero.reserveReducedMb, DEFAULT_CONFIG.recommendedSystemReserveMb, "减少的安全余量必须可计算");
+    assert.ok(zero.warning, "systemReserveMb=0 必须继续显式告警");
+    const offHome = mkState(`cfg-off2-${totalMb}`, { budgetEnabled: false });
+    const off = computeBudget({ cfg: loadConfig({ stateHome: offHome, env: {} }).config, totalMb });
+    assert.equal(off.enabled, true, "无授权时配置里的 false 不得生效");
+  }
+});
+test("配置安全：坏 JSON 与未知字段必须被 doctor 报出来，而不是静默忽略", () => {
+  const badHome = join(tmpRoot, "cfg-badjson");
+  mkdirSync(badHome, { recursive: true });
+  writeFileSync(join(badHome, "config.json"), "{ this is not json ");
+  const bad = loadConfig({ stateHome: badHome, env: {} });
+  assert.ok(bad.problems.some((p) => p.includes("读取失败")), "坏 JSON 必须报读取失败");
+  const badRisks = configRisks({ config: bad.config, danger: bad.danger, sources: bad.sources, problems: bad.problems });
+  assert.ok(badRisks.some((r) => r.key === "config" && r.level === "P0"));
+
+  const typoHome = mkState("cfg-typo", { heavyMinAvailMb: 6000, typpoKey: 1 });
+  const typo = loadConfig({ stateHome: typoHome, env: {} });
+  assert.ok(typo.problems.some((p) => p.includes("未知字段 typpoKey")), "拼错的字段必须被点名");
+  const typoRisks = configRisks({ config: typo.config, danger: typo.danger, sources: typo.sources, problems: typo.problems });
+  assert.ok(typoRisks.some((r) => r.key === "unknown" && r.level === "P1"), "未知字段至少 P1");
 });

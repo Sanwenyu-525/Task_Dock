@@ -276,6 +276,9 @@
   gap: 1px;
   margin-left: auto;
 }
+.widget-config-actions .btn {
+  margin-left: 6px;
+}
 
 .widget-card-body {
   min-width: 0;

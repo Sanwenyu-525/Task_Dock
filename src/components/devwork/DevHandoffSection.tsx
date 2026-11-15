@@ -628,7 +628,7 @@ export default function DevHandoffSection() {
       </div>
 
       <div className="wb-handoff-grid">
-        {HANDOFF_SECTIONS.map((s) => (
+        {HANDOFF_SECTIONS.slice(0, 4).map((s) => (
           <label className="field wb-handoff-field" key={s.key}>
             <span>{labels[s.key]}</span>
             <textarea
@@ -640,6 +640,24 @@ export default function DevHandoffSection() {
           </label>
         ))}
       </div>
+
+      {/* 其余 8 节默认折叠：它们仍是完整模板的一部分，但不应把首屏卡片拉到一屏高。 */}
+      <details className="wb-handoff-more">
+        <summary>{t("devwork.handoff.moreSections")}</summary>
+        <div className="wb-handoff-grid">
+          {HANDOFF_SECTIONS.slice(4).map((s) => (
+            <label className="field wb-handoff-field" key={s.key}>
+              <span>{labels[s.key]}</span>
+              <textarea
+                rows={2}
+                value={sections[s.key]}
+                onChange={(e) => onSectionChange(s.key, e.target.value)}
+                aria-label={labels[s.key]}
+              />
+            </label>
+          ))}
+        </div>
+      </details>
 
       {/* 资料选择（Round 2a）：仅有关联任务时显示；只选条目名，不带入正文。
           勾选结果在预览「项目背景」末尾实时生成追加块，不写回编辑态。 */}

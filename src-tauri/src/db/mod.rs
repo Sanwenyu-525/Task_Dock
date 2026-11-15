@@ -1802,6 +1802,252 @@ ALTER TABLE clipboard_paste_items ADD COLUMN dispatch_started_at TEXT;
 CREATE INDEX idx_clip_paste_items_state ON clipboard_paste_items(job_id, state);
 "#,
     ),
+    (
+        57,
+        r#"
+-- v57（创作工作台 A 阶段：小说项目类型）：workspace_projects.kind 的 CHECK
+-- 由四类扩为五类（development / game / ai_comic / general / novel）。
+--
+-- SQLite 不能原地修改 CHECK，必须重建表；而 workspace_projects 被四张表通过外键
+-- 引用：workspace_instances / workspace_items / workspace_task_links /
+-- shelf_project_links，且都是 ON DELETE CASCADE。迁移器在事务内执行，
+-- PRAGMA foreign_keys 在连接上已开启、事务内也不能关闭；直接 DROP 父表会触发
+-- 级联，把项目实例、事项、任务关联和暂存关联一起删掉。因此本迁移在**同一个事务**
+-- 里按下列顺序完成，全程不关闭外键：
+--   1. 五张表（父表 + 四张依赖表）整行暂存到 TEMP 表（同连接同事务，失败随事务回滚）；
+--   2. 按依赖逆序 DROP 四张依赖表（先删引用方），父表此时已无任何外键引用；
+--   3. 新建父表（kind CHECK 五值）并从暂存原样复制全部列，DROP 旧表后 RENAME 回原名；
+--   4. 重建父表两个索引 + 四张依赖表（列/CHECK/外键/级联语义与 v49、v51 完全一致）
+--      与其索引；
+--   5. 回填全部行：项目/实例/任务关联/暂存关联直接复制；事项先以 parent_id=NULL
+--      插入（避免任意行序下自引用外键瞬时违例），再一次性回填 parent_id ——
+--      所有行都已存在，多级父子关系、sort_order、metadata_json 保持不变；
+--   6. 迁移自检：scoped PRAGMA foreign_key_check 必须为 0 行，且五张表与暂存副本
+--      逐行一致（EXCEPT 比对）；任一不满足都让 CHECK 约束报错，整个迁移回滚，
+--      schema 与 user_version 保持在 v56，不会留下半套表或丢行。
+-- 说明：ALTER TABLE RENAME 会同步改写其它对象的引用；此处依赖表已先行删除，
+-- 重命名后重建的依赖表显式指向新的 workspace_projects，不存在悬空引用。
+
+DROP TABLE IF EXISTS temp._v57_stage_workspace_projects;
+DROP TABLE IF EXISTS temp._v57_stage_workspace_instances;
+DROP TABLE IF EXISTS temp._v57_stage_workspace_items;
+DROP TABLE IF EXISTS temp._v57_stage_workspace_task_links;
+DROP TABLE IF EXISTS temp._v57_stage_shelf_project_links;
+DROP TABLE IF EXISTS temp._v57_stage_guard;
+
+CREATE TEMP TABLE _v57_stage_workspace_projects AS
+  SELECT id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at
+  FROM workspace_projects;
+CREATE TEMP TABLE _v57_stage_workspace_instances AS
+  SELECT project_id, active_module, layout_json, last_opened_at
+  FROM workspace_instances;
+CREATE TEMP TABLE _v57_stage_workspace_items AS
+  SELECT id, project_id, parent_id, title, stage, status, sort_order, metadata_json,
+         created_at, updated_at
+  FROM workspace_items;
+CREATE TEMP TABLE _v57_stage_workspace_task_links AS
+  SELECT project_id, task_id, created_at
+  FROM workspace_task_links;
+CREATE TEMP TABLE _v57_stage_shelf_project_links AS
+  SELECT project_id, item_id, created_at
+  FROM shelf_project_links;
+
+-- 先删引用方：父表随后被 DROP 时已没有任何外键指向它，不会触发级联删除。
+DROP TABLE workspace_instances;
+DROP TABLE workspace_items;
+DROP TABLE workspace_task_links;
+DROP TABLE shelf_project_links;
+
+CREATE TABLE workspace_projects_v57 (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL
+    CHECK (kind IN ('development','game','ai_comic','general','novel')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+  root_path TEXT NOT NULL DEFAULT '',
+  dev_project_id TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+INSERT INTO workspace_projects_v57
+  (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+SELECT id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at
+FROM _v57_stage_workspace_projects;
+
+DROP TABLE workspace_projects;
+ALTER TABLE workspace_projects_v57 RENAME TO workspace_projects;
+
+CREATE INDEX idx_workspace_projects_status
+  ON workspace_projects(status, updated_at DESC);
+CREATE INDEX idx_workspace_projects_dev
+  ON workspace_projects(dev_project_id);
+
+-- 依赖表按 v49 / v51 的定义原样重建（列、CHECK、外键、级联与索引不变）。
+CREATE TABLE workspace_instances (
+  project_id TEXT PRIMARY KEY NOT NULL
+    REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  active_module TEXT NOT NULL DEFAULT 'overview',
+  layout_json TEXT NOT NULL DEFAULT '{}',
+  last_opened_at TEXT
+);
+
+INSERT INTO workspace_instances
+  (project_id, active_module, layout_json, last_opened_at)
+SELECT project_id, active_module, layout_json, last_opened_at
+FROM _v57_stage_workspace_instances;
+
+CREATE TABLE workspace_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL
+    REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  parent_id TEXT REFERENCES workspace_items(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'todo'
+    CHECK (status IN ('todo','doing','blocked','done','archived')),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- 两段式回填：先只带 id/其余列插入，parent_id 统一置 NULL；再一次性回填父子关系。
+-- 这样即便暂存行序是「子在前、父在后」也不会触发自引用外键的瞬时违例。
+INSERT INTO workspace_items
+  (id, project_id, parent_id, title, stage, status, sort_order, metadata_json,
+   created_at, updated_at)
+SELECT id, project_id, NULL, title, stage, status, sort_order, metadata_json,
+       created_at, updated_at
+FROM _v57_stage_workspace_items;
+
+UPDATE workspace_items
+SET parent_id = (
+  SELECT s.parent_id FROM _v57_stage_workspace_items s
+  WHERE s.id = workspace_items.id
+)
+WHERE id IN (SELECT id FROM _v57_stage_workspace_items WHERE parent_id IS NOT NULL);
+
+CREATE INDEX idx_workspace_items_project
+  ON workspace_items(project_id, status, sort_order);
+CREATE INDEX idx_workspace_items_parent
+  ON workspace_items(parent_id);
+
+CREATE TABLE workspace_task_links (
+  project_id TEXT NOT NULL
+    REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, task_id)
+);
+
+INSERT INTO workspace_task_links (project_id, task_id, created_at)
+SELECT project_id, task_id, created_at
+FROM _v57_stage_workspace_task_links;
+
+CREATE INDEX idx_workspace_task_links_task
+  ON workspace_task_links(task_id);
+
+CREATE TABLE shelf_project_links (
+  project_id TEXT NOT NULL
+    REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL
+    REFERENCES shelf_items(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, item_id)
+);
+
+INSERT INTO shelf_project_links (project_id, item_id, created_at)
+SELECT project_id, item_id, created_at
+FROM _v57_stage_shelf_project_links;
+
+CREATE INDEX idx_shelf_project_links_item
+  ON shelf_project_links(item_id);
+
+-- 迁移自检（任一不满足即 CHECK 报错并整体回滚，不会提交半套数据）：
+-- - 四张依赖表的外键必须无违例；
+-- - 五张表必须与暂存副本逐行一致（EXCEPT 双向比对覆盖漏行/改行）。
+CREATE TEMP TABLE _v57_stage_guard (
+  fk_violations INTEGER NOT NULL CHECK (fk_violations = 0),
+  project_rows INTEGER NOT NULL CHECK (project_rows = 0),
+  instance_rows INTEGER NOT NULL CHECK (instance_rows = 0),
+  item_rows INTEGER NOT NULL CHECK (item_rows = 0),
+  task_link_rows INTEGER NOT NULL CHECK (task_link_rows = 0),
+  shelf_link_rows INTEGER NOT NULL CHECK (shelf_link_rows = 0)
+);
+
+INSERT INTO _v57_stage_guard
+SELECT
+  (SELECT COUNT(*) FROM pragma_foreign_key_check('workspace_instances'))
+  + (SELECT COUNT(*) FROM pragma_foreign_key_check('workspace_items'))
+  + (SELECT COUNT(*) FROM pragma_foreign_key_check('workspace_task_links'))
+  + (SELECT COUNT(*) FROM pragma_foreign_key_check('shelf_project_links')),
+  (SELECT COUNT(*) FROM (
+    SELECT id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at
+    FROM _v57_stage_workspace_projects
+    EXCEPT
+    SELECT id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at
+    FROM workspace_projects))
+  + (SELECT COUNT(*) FROM (
+    SELECT id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at
+    FROM workspace_projects
+    EXCEPT
+    SELECT id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at
+    FROM _v57_stage_workspace_projects)),
+  (SELECT COUNT(*) FROM (
+    SELECT project_id, active_module, layout_json, last_opened_at
+    FROM _v57_stage_workspace_instances
+    EXCEPT
+    SELECT project_id, active_module, layout_json, last_opened_at
+    FROM workspace_instances))
+  + (SELECT COUNT(*) FROM (
+    SELECT project_id, active_module, layout_json, last_opened_at
+    FROM workspace_instances
+    EXCEPT
+    SELECT project_id, active_module, layout_json, last_opened_at
+    FROM _v57_stage_workspace_instances)),
+  (SELECT COUNT(*) FROM (
+    SELECT id, project_id, parent_id, title, stage, status, sort_order, metadata_json,
+           created_at, updated_at
+    FROM _v57_stage_workspace_items
+    EXCEPT
+    SELECT id, project_id, parent_id, title, stage, status, sort_order, metadata_json,
+           created_at, updated_at
+    FROM workspace_items))
+  + (SELECT COUNT(*) FROM (
+    SELECT id, project_id, parent_id, title, stage, status, sort_order, metadata_json,
+           created_at, updated_at
+    FROM workspace_items
+    EXCEPT
+    SELECT id, project_id, parent_id, title, stage, status, sort_order, metadata_json,
+           created_at, updated_at
+    FROM _v57_stage_workspace_items)),
+  (SELECT COUNT(*) FROM (
+    SELECT project_id, task_id, created_at FROM _v57_stage_workspace_task_links
+    EXCEPT
+    SELECT project_id, task_id, created_at FROM workspace_task_links))
+  + (SELECT COUNT(*) FROM (
+    SELECT project_id, task_id, created_at FROM workspace_task_links
+    EXCEPT
+    SELECT project_id, task_id, created_at FROM _v57_stage_workspace_task_links)),
+  (SELECT COUNT(*) FROM (
+    SELECT project_id, item_id, created_at FROM _v57_stage_shelf_project_links
+    EXCEPT
+    SELECT project_id, item_id, created_at FROM shelf_project_links))
+  + (SELECT COUNT(*) FROM (
+    SELECT project_id, item_id, created_at FROM shelf_project_links
+    EXCEPT
+    SELECT project_id, item_id, created_at FROM _v57_stage_shelf_project_links));
+
+DROP TABLE temp._v57_stage_workspace_projects;
+DROP TABLE temp._v57_stage_workspace_instances;
+DROP TABLE temp._v57_stage_workspace_items;
+DROP TABLE temp._v57_stage_workspace_task_links;
+DROP TABLE temp._v57_stage_shelf_project_links;
+DROP TABLE temp._v57_stage_guard;
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -5938,7 +6184,7 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
         assert_eq!(
             version,
             MIGRATIONS[MIGRATIONS.len() - 1].0,
-            "新库必须迁移到最新版（v49 之后追加了 v50）"
+            "新库必须迁移到最新版（v49 之后继续追加了 v50+）"
         );
 
         db.with_read(|conn| {
@@ -6051,6 +6297,329 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
             Ok::<_, AppError>(())
         })
         .unwrap();
+    }
+
+    /// v57（小说项目类型 A 阶段）：把 `workspace_projects.kind` 的 CHECK 从四类扩为
+    /// 五类必须重建父表，而父表被四张表外键引用（ON DELETE CASCADE）。本测试锁定：
+    /// 1. 四种历史项目的每一列（ID/名称/类型/状态/根目录/dev 弱引用/备注/时间）原样保留；
+    /// 2. 实例、多级父子事项（含 sort_order / metadata_json）、任务关联、暂存关联全部保留；
+    /// 3. 重建后的外键真实生效：`PRAGMA foreign_key_check` 无违例，删除项目仍级联清理；
+    /// 4. `novel` 可写入、可级联，非法类型仍被 CHECK 拒绝。
+    #[test]
+    fn v57_novel_kind_migration_preserves_workspace_rows_and_fk_integrity() {
+        let dir = std::env::temp_dir().join(format!("td-mig57-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let now = "2026-11-15T09:00:00+00:00";
+        let layout_dev = r#"{"version":1,"moduleOrder":["items","overview"],"hiddenModules":[],"activeModule":"items"}"#;
+        let layout_comic = r#"{"version":1,"moduleOrder":["overview","items"],"hiddenModules":["links"],"activeModule":"overview"}"#;
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            // 只应用到 v56（v57 之前最后一条），模拟真实用户库。
+            let idx56 = MIGRATIONS.iter().position(|(v, _)| *v == 56).unwrap();
+            apply_migrations(&conn, 0, &MIGRATIONS[..idx56 + 1]).unwrap();
+
+            conn.execute(
+                "INSERT INTO dev_projects (id, name, root_path, note, created_at, updated_at)
+                 VALUES ('dev-1', '开发登记', 'C:/repo', '', ?1, ?1)",
+                [now],
+            )
+            .unwrap();
+
+            for (id, name, kind) in [
+                ("p-dev", "开发项目", "development"),
+                ("p-game", "游戏项目", "game"),
+                ("p-comic", "漫剧项目", "ai_comic"),
+                ("p-gen", "通用项目", "general"),
+            ] {
+                conn.execute(
+                    "INSERT INTO workspace_projects
+                     (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'active', ?4, NULL, ?5, ?6, ?6)",
+                    rusqlite::params![
+                        id,
+                        name,
+                        kind,
+                        format!("C:/ws/{id}"),
+                        format!("备注-{name}"),
+                        now
+                    ],
+                )
+                .unwrap();
+            }
+            // 归档状态与开发项目弱引用也是迁移必须保留的列。
+            conn.execute(
+                "UPDATE workspace_projects SET status = 'archived', updated_at = ?1 WHERE id = 'p-gen'",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE workspace_projects SET dev_project_id = 'dev-1' WHERE id = 'p-dev'",
+                [],
+            )
+            .unwrap();
+
+            for (pid, module, layout, opened) in [
+                ("p-dev", "items", layout_dev, Some("2026-11-15T08:00:00+00:00")),
+                ("p-game", "overview", "{}", None),
+                ("p-comic", "overview", layout_comic, Some("2026-11-14T20:00:00+00:00")),
+                ("p-gen", "settings", "{}", None),
+            ] {
+                conn.execute(
+                    "INSERT INTO workspace_instances (project_id, active_module, layout_json, last_opened_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![pid, module, layout, opened],
+                )
+                .unwrap();
+            }
+
+            // 多级父子事项：父 → 子 → 孙，含 stage / status / sort_order / metadata_json。
+            for (id, pid, parent, title, stage, status, sort, meta) in [
+                ("i-root", "p-comic", None, "第一集", "episode", "doing", 0, r#"{"episode":1}"#),
+                ("i-child", "p-comic", Some("i-root"), "镜头 1", "shot", "todo", 1, r#"{"shot":1}"#),
+                ("i-grand", "p-comic", Some("i-child"), "镜头 1 细节", "", "done", 2, r#"{"note":"细节"}"#),
+                ("i-gen", "p-gen", None, "通用事项", "", "archived", 3, "{}"),
+            ] {
+                conn.execute(
+                    "INSERT INTO workspace_items
+                     (id, project_id, parent_id, title, stage, status, sort_order, metadata_json,
+                      created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                    rusqlite::params![id, pid, parent, title, stage, status, sort, meta, now],
+                )
+                .unwrap();
+            }
+
+            conn.execute(
+                "INSERT INTO tasks (id, title, created_at, updated_at) VALUES ('t-1', '任务一', ?1, ?1)",
+                [now],
+            )
+            .unwrap();
+            for pid in ["p-dev", "p-comic"] {
+                conn.execute(
+                    "INSERT INTO workspace_task_links (project_id, task_id, created_at)
+                     VALUES (?1, 't-1', ?2)",
+                    rusqlite::params![pid, now],
+                )
+                .unwrap();
+            }
+
+            conn.execute(
+                "INSERT INTO shelf_items
+                 (id, kind, display_name, source_kind, storage_mode, content, created_at, updated_at)
+                 VALUES ('s-1', 'text', '暂存片段', 'manual', 'link', '正文', ?1, ?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO shelf_project_links (project_id, item_id, created_at)
+                 VALUES ('p-gen', 's-1', ?1)",
+                [now],
+            )
+            .unwrap();
+        }
+
+        // 升级到 v57：迁移自检不通过会直接让 Db::open 失败（事务回滚）。
+        let db = Db::open(&path).unwrap();
+        db.with_read(|conn| {
+            let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            assert_eq!(version, MIGRATIONS[MIGRATIONS.len() - 1].0, "必须升级到 v57");
+
+            let fk_violations: i64 = conn
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(fk_violations, 0, "迁移后不得存在外键错误");
+
+            let projects: Vec<(String, String, String, String, String, Option<String>, String, String, String)> =
+                conn.prepare(
+                    "SELECT id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at
+                     FROM workspace_projects ORDER BY id",
+                )
+                .map_err(AppError::from)?
+                .query_map([], |r| {
+                    Ok((
+                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+                        r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?,
+                    ))
+                })
+                .map_err(AppError::from)?
+                .collect::<Result<_, _>>()
+                .map_err(AppError::from)?;
+            assert_eq!(projects.len(), 4, "四个历史项目都必须保留");
+            assert_eq!(
+                projects,
+                vec![
+                    (
+                        String::from("p-comic"),
+                        String::from("漫剧项目"),
+                        String::from("ai_comic"),
+                        String::from("active"),
+                        String::from("C:/ws/p-comic"),
+                        None,
+                        String::from("备注-漫剧项目"),
+                        String::from(now),
+                        String::from(now),
+                    ),
+                    (
+                        String::from("p-dev"),
+                        String::from("开发项目"),
+                        String::from("development"),
+                        String::from("active"),
+                        String::from("C:/ws/p-dev"),
+                        Some(String::from("dev-1")),
+                        String::from("备注-开发项目"),
+                        String::from(now),
+                        String::from(now),
+                    ),
+                    (
+                        String::from("p-game"),
+                        String::from("游戏项目"),
+                        String::from("game"),
+                        String::from("active"),
+                        String::from("C:/ws/p-game"),
+                        None,
+                        String::from("备注-游戏项目"),
+                        String::from(now),
+                        String::from(now),
+                    ),
+                    (
+                        String::from("p-gen"),
+                        String::from("通用项目"),
+                        String::from("general"),
+                        String::from("archived"),
+                        String::from("C:/ws/p-gen"),
+                        None,
+                        String::from("备注-通用项目"),
+                        String::from(now),
+                        String::from(now),
+                    ),
+                ]
+            );
+
+            let instances: Vec<(String, String, String, Option<String>)> = conn
+                .prepare(
+                    "SELECT project_id, active_module, layout_json, last_opened_at
+                     FROM workspace_instances ORDER BY project_id",
+                )
+                .map_err(AppError::from)?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .map_err(AppError::from)?
+                .collect::<Result<_, _>>()
+                .map_err(AppError::from)?;
+            assert_eq!(instances.len(), 4, "四个窗口实例都必须保留");
+            assert_eq!(instances[0].0, "p-comic");
+            assert_eq!(instances[0].1, "overview");
+            assert_eq!(instances[0].2, layout_comic, "布局 JSON 必须原样保留");
+            assert_eq!(instances[0].3.as_deref(), Some("2026-11-14T20:00:00+00:00"));
+            assert_eq!(instances[1].2, layout_dev);
+            assert_eq!(instances[1].1, "items");
+            assert_eq!(instances[3].1, "settings");
+
+            let items: Vec<(String, String, Option<String>, String, String, String, i64, String)> = conn
+                .prepare(
+                    "SELECT id, project_id, parent_id, title, stage, status, sort_order, metadata_json
+                     FROM workspace_items ORDER BY sort_order, id",
+                )
+                .map_err(AppError::from)?
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
+                })
+                .map_err(AppError::from)?
+                .collect::<Result<_, _>>()
+                .map_err(AppError::from)?;
+            assert_eq!(items.len(), 4, "事项不得丢行");
+            assert_eq!(items[0].0, "i-root");
+            assert_eq!(items[1].2.as_deref(), Some("i-root"), "父子关系必须保留");
+            assert_eq!(items[2].2.as_deref(), Some("i-child"), "多级父子关系必须保留");
+            assert_eq!(items[1].5, "todo");
+            assert_eq!(items[2].7, r#"{"note":"细节"}"#, "metadata_json 必须原样保留");
+            assert_eq!(items[3].7, "{}");
+
+            let task_links: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM workspace_task_links WHERE task_id = 't-1'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(task_links, 2, "项目任务关联必须保留");
+            let shelf_links: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM shelf_project_links WHERE project_id = 'p-gen'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(shelf_links, 1, "暂存条目与项目关联必须保留");
+
+            let indexes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
+                     ('idx_workspace_projects_status','idx_workspace_projects_dev',
+                      'idx_workspace_items_project','idx_workspace_items_parent',
+                      'idx_workspace_task_links_task','idx_shelf_project_links_item')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(indexes, 6, "重建后索引必须全部恢复");
+
+            // 五种类型全部合法。
+            for kind in ["development", "game", "ai_comic", "general", "novel"] {
+                conn.execute(
+                    "INSERT INTO workspace_projects
+                     (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+                     VALUES (?1, ?1, ?2, 'active', '', NULL, '', ?3, ?3)",
+                    rusqlite::params![format!("kind-{kind}"), kind, now],
+                )
+                .map_err(AppError::from)?;
+            }
+            // 非法类型仍被 CHECK 拒绝。
+            assert!(conn
+                .execute(
+                    "INSERT INTO workspace_projects
+                     (id, name, kind, status, created_at, updated_at)
+                     VALUES ('kind-music', '非法', 'music', 'active', ?1, ?1)",
+                    [now],
+                )
+                .is_err());
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        // 重建后的外键真实生效：novel 项目删除时级联清理实例与事项。
+        let novel = crate::commands::project_workspace::workspace_project_save_impl(
+            &db,
+            None,
+            "小说项目".into(),
+            "novel".into(),
+            None,
+            None,
+            Some("简介".into()),
+        )
+        .unwrap();
+        crate::commands::project_workspace::workspace_instance_save_impl(
+            &db, &novel.id, "items".into(), Some("{}".into()),
+        )
+        .unwrap();
+        crate::commands::project_workspace::workspace_item_save_impl(
+            &db, None, novel.id.clone(), None, "第一章".into(), None, None, None, None,
+        )
+        .unwrap();
+        crate::commands::project_workspace::workspace_project_delete_impl(&db, &novel.id).unwrap();
+        db.with_read(|conn| {
+            for table in ["workspace_instances", "workspace_items"] {
+                let left: i64 = conn.query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE project_id = ?1"),
+                    rusqlite::params![novel.id],
+                    |r| r.get(0),
+                )?;
+                assert_eq!(left, 0, "{table} 必须随 novel 项目级联删除");
+            }
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// v50（效率中枢 U2）：两张既有表新增 Agent 弱引用列与索引；

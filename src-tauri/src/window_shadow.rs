@@ -47,13 +47,19 @@ mod imp {
     };
 
     /// 阴影外扩（CSS px）：阴影窗口每边比宿主大这么多。
-    const MARGIN_CSS: f64 = 22.0;
-    /// 模糊半径（CSS px）。
-    const BLUR_CSS: f64 = 15.0;
-    /// 阴影峰值不透明度（0–1）：比系统投影略轻，避免"发光"。
-    const PEAK_ALPHA: f32 = 0.20;
+    ///
+    /// 取值必须 ≥ 环境层模糊的 3σ，否则位图边界会把"还没衰减完"的 alpha 截断成
+    /// 一条硬边（这正是上一版阴影看起来"生硬且不够明显"的原因之一：margin 22
+    /// 小于 blur 15 的扩散半径）。
+    const MARGIN_CSS: f64 = 40.0;
+    /// 环境层：大范围、低峰值，负责整体悬浮感。
+    const AMBIENT_BLUR_CSS: f64 = 18.0;
+    const AMBIENT_ALPHA: f32 = 0.17;
+    /// 接触层：贴近边缘、模糊小，负责窗口与桌面的接触感（不是黑色描边）。
+    const CONTACT_BLUR_CSS: f64 = 6.0;
+    const CONTACT_ALPHA: f32 = 0.12;
     /// 阴影垂直偏移（CSS px）：光源在上，投影略向下。
-    const OFFSET_Y_CSS: f64 = 4.0;
+    const OFFSET_Y_CSS: f64 = 5.0;
     /// 阴影颜色（冷灰蓝，与浅蓝主题协调）。
     const SHADOW_R: f32 = 17.0;
     const SHADOW_G: f32 = 26.0;

@@ -24,17 +24,17 @@ export const NAVIGATION_MAP: NavigationMapping[] = [
   },
   {
     legacy: "inbox",
-    primary: "tools",
+    primary: "workspace",
     via: "push",
-    shortcuts: ["home", "workspace"],
-    note: "收集箱移到工具页与首页快捷入口，打开现有 InboxScreen（二级页带返回）",
+    shortcuts: ["home", "profile"],
+    note: "第二轮去重后收集箱的主归属回到「工作区 · 内容管理」；首页最近动态与我的最近内容只是快捷入口",
   },
   {
     legacy: "notes",
-    primary: "tools",
+    primary: "workspace",
     via: "push",
-    shortcuts: ["home", "workspace", "profile"],
-    note: "笔记移到工具页；首页最近内容可直接打开具体笔记",
+    shortcuts: ["home", "profile", "tools"],
+    note: "笔记的主归属同样在「工作区 · 内容管理」；工具页只保留「快速笔记」这一个新建动作，不再列笔记目录",
   },
   {
     legacy: "device",

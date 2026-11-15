@@ -20,7 +20,7 @@ describe("importToLibrary", () => {
     expect(result.uri.startsWith("file://")).toBe(true);
     expect(result.size).toBe(PDF_BYTES.length);
     expect(new File(result.uri).exists).toBe(true);
-    expect(new File(result.uri).digest("SHA-256")).resolves.toBe(
+    await expect(new File(result.uri).digest("SHA-256")).resolves.toBe(
       "986f6b5ad30795980fcb5d772809f55156b6a9b4000e8be6ad633f21c12a6b1e",
     );
   });

@@ -53,6 +53,22 @@ interface Overview {
   stash: number;
 }
 
+/**
+ * 展示层安全解码：只处理明确的百分号编码片段（如 %3A）。
+ * 不含编码片段的标题原样返回；遇到非法转义解码失败时原样保留；解码后过长截断到 48 字符。
+ * 只影响展示，不改数据库原始标题；正常中文 / 英文 / 用户自定义名不受影响。
+ */
+function decodeRecentTitle(raw: string): string {
+  if (!raw || !/%[0-9A-Fa-f]{2}/.test(raw)) return raw;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+  return decoded.length > 48 ? decoded.slice(0, 48) : decoded;
+}
+
 export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }) {
   const { tokens } = useTheme();
   const [connection, setConnection] = useState<PairedConnection | null>(null);
@@ -265,14 +281,16 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                 </Text>
               ) : (
                 <GlassCard style={styles.recentCard}>
-                  {recent.map((item, index) => (
+                  {recent.map((item, index) => {
+                    const title = decodeRecentTitle(item.title);
+                    return (
                     <View key={`${item.kind}-${item.id}`}>
                       {index > 0 ? (
                         <View style={[styles.divider, { backgroundColor: tokens.separator }]} />
                       ) : null}
                       <PressableScale
                         onPress={() => openRecent(item)}
-                        accessibilityLabel={`${item.kind === "note" ? "笔记" : "任务"}：${item.title}`}
+                        accessibilityLabel={`${item.kind === "note" ? "笔记" : "任务"}：${title}`}
                         accessibilityHint={item.kind === "note" ? "打开笔记" : "打开任务详情"}
                         contentStyle={styles.recentRow}
                       >
@@ -283,7 +301,7 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                         />
                         <View style={styles.recentBody}>
                           <Text numberOfLines={1} style={[styles.recentTitle, { color: tokens.text }]}>
-                            {item.title}
+                            {title}
                           </Text>
                           {item.kind === "task" && item.done ? (
                             <Text style={[styles.recentHint, { color: tokens.muted }]}>已完成</Text>
@@ -294,7 +312,8 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                         </Text>
                       </PressableScale>
                     </View>
-                  ))}
+                    );
+                  })}
                 </GlassCard>
               )}
             </View>
@@ -396,17 +415,11 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                     label="偏好设置"
                     onPress={() => nav.push("settings")}
                   />
-                  <IconEntry
-                    icon="bell"
-                    label="通知管理"
-                    onPress={() => nav.push("notifications")}
-                  />
-                  <IconEntry icon="sync" label="数据同步" onPress={() => nav.push("sync")} />
-                  <IconEntry
-                    icon="smartphone"
-                    label="设备管理"
-                    onPress={() => nav.push("device")}
-                  />
+                  {/* 第二轮去重：「数据同步」正式入口在下方独立分区（同步中心），
+                      这里不再放同路由重复项；空出的格子用于未实现的「帮助与反馈」占位。 */}
+                  <View style={styles.cell}>
+                    <FeatureIconPlaceholder icon="info" label="帮助与反馈" variant="compact" />
+                  </View>
                   <View style={styles.cell}>
                     <FeatureIconPlaceholder icon="shield" label="账户与安全" variant="compact" />
                   </View>
@@ -419,8 +432,7 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
 
             <View style={styles.group}>
               <GlassCard style={styles.card}>
-                <EntryRow icon="info" label="帮助与反馈" helper="移动端暂未接入" />
-                <View style={[styles.aboutRow, { borderTopColor: tokens.separator }]}>
+                <View style={styles.aboutRow}>
                   <IconTile name="info" size={36} tone="neutral" />
                   <View style={styles.aboutText}>
                     <Text numberOfLines={1} style={[styles.aboutLabel, { color: tokens.text }]}>

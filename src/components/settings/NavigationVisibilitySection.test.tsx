@@ -13,6 +13,7 @@ import NavigationVisibilitySection from "./NavigationVisibilitySection";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { defaultNavigationLayout } from "../../lib/navVisibility";
+import { entriesForSurface } from "../../lib/navigationRegistry";
 import { resetNavOrderIntents } from "../../lib/navOrderIntent";
 import { __resetLocaleForTests, setLocalePreference } from "../../i18n";
 
@@ -58,7 +59,9 @@ describe("导航自定义区块", () => {
     useUiStore.setState({ tab: "apps" });
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText(/常驻 15 \/ 17 项/)).toBeTruthy();
+    const defaultVisible = defaultNavigationLayout().left.length;
+    const total = entriesForSurface("left").length;
+    expect(screen.getByText(new RegExp(`常驻 ${defaultVisible} / ${total} 项`))).toBeTruthy();
     const appsSwitch = screen.getByRole("switch", {
       name: "应用导航入口显示",
     }) as HTMLInputElement;
@@ -78,7 +81,7 @@ describe("导航自定义区块", () => {
     expect(
       (useSettingsStore.getState().settings?.navigation_layout as { left: string[] }).left,
     ).not.toContain("apps");
-    expect(screen.getByText(/常驻 14 \/ 17 项/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`常驻 ${defaultVisible - 1} / ${total} 项`))).toBeTruthy();
   });
 
   it("「设置」是锁定入口：开关禁用、无排序按钮并标注固定", () => {
@@ -203,7 +206,11 @@ describe("导航自定义区块 · 英文", () => {
     setLocalePreference("en-US");
     render(<NavigationVisibilitySection />);
 
-    expect(screen.getByText("15 of 17 pinned")).toBeTruthy();
+    expect(
+      screen.getByText(
+        `${defaultNavigationLayout().left.length} of ${entriesForSurface("left").length} pinned`,
+      ),
+    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Full panel" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Docked capsule" })).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Show Tasks navigation entry" })).toBeTruthy();
