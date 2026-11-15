@@ -43,6 +43,31 @@ describe("splitTree 基础", () => {
     expect(hasPane(result!.tree, result!.newPaneId)).toBe(true);
   });
 
+  it("side=before 前侧插入：左/上落点的新窗格出现在 first（P0 四方向分栏钉）", () => {
+    const tree = defaultTree();
+    const original = paneIds(tree)[0];
+    const left = splitPane(tree, original, "horizontal", "before");
+    expect(left).not.toBeNull();
+    const leftIds = paneIds(left!.tree);
+    expect(leftIds).toEqual([left!.newPaneId, original]); // 新窗格在左（first）
+    const top = splitPane(tree, original, "vertical", "before");
+    expect(paneIds(top!.tree)).toEqual([top!.newPaneId, original]); // 新窗格在上
+    // after（默认）语义不变：新窗格在右/下。
+    const right = splitPane(tree, original, "horizontal", "after");
+    expect(paneIds(right!.tree)).toEqual([original, right!.newPaneId]);
+  });
+
+  it("side=before 在嵌套树中对深层窗格同样生效", () => {
+    // 四宫格：右下窗格（pane-d）左落点 → 新窗格成为 pane-d 所在 split 的 first。
+    const tree = quadTree();
+    const result = splitPane(tree, "pane-d", "horizontal", "before");
+    expect(paneCount(result!.tree)).toBe(5);
+    const ids = paneIds(result!.tree);
+    const idxD = ids.indexOf("pane-d");
+    expect(idxD).toBeGreaterThan(0);
+    expect(ids[idxD - 1]).toBe(result!.newPaneId);
+  });
+
   it("四宫格树可继续分割（嵌套）", () => {
     const tree = quadTree();
     expect(paneCount(tree)).toBe(4);
@@ -140,10 +165,15 @@ describe("normalizeTree 损坏回退", () => {
 });
 
 describe("reassignPaneIds", () => {
-  it("预置树重映射后无 ID 冲突", () => {
-    const tree = reassignPaneIds(quadTree());
+  it("预置树重映射后无 ID 冲突，映射覆盖全部旧 ID", () => {
+    const { tree, mapping } = reassignPaneIds(quadTree());
     const ids = paneIds(tree);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).not.toEqual(paneIds(quadTree()));
+    // 映射是模板恢复的关键（PersistedPane/activePaneId 都要按它重映射）。
+    expect(mapping.size).toBe(ids.length);
+    for (const oldId of paneIds(quadTree())) {
+      expect(mapping.has(oldId)).toBe(true);
+    }
   });
 });

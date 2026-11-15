@@ -1,5 +1,11 @@
 # 系统分享接收（Android ACTION_SEND text/plain）
 
+> **更正（2026-11-14）**：本轮已把分享接收扩展为 **文本 / 图片 / 文件 / 多选**
+> （`ACTION_SEND` + `ACTION_SEND_MULTIPLE`），落地页由 `ShareScreen` 改为统一采集中心
+> `CaptureScreen`，`src/screens/ShareScreen.tsx` 已删除。本文 §1–§10 保留 2026-11-12
+> 文本-only 的历史规范（用于对照与回退参考），与代码冲突处以
+> [14-capture-and-quick-entry.md](14-capture-and-quick-entry.md) §5 与代码为准。
+
 > 状态：**已实现（2026-11-12）**，`apps/mobile` 独占 Android 侧；构建层验证 + 真机验证情况
 > 见文末「验证状态」。本文是正式规范；任务级证据在 `tmp/acceptance/mobile-feature-dev/`。
 

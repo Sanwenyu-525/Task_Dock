@@ -100,3 +100,72 @@ export interface NewNoteInput {
   pinned?: boolean;
   favorited?: boolean;
 }
+
+/**
+ * 采集附件类型。只影响本机展示与传输，不进入同步载荷：
+ * 收集箱文本仍是唯一同步实体（见 docs/mobile/02-data-model.md §附件）。
+ */
+export type AttachmentKind = "image" | "audio" | "file";
+
+/** 附件归属：收集箱条目 / 笔记 / 任务。转任务时改归属，不复制文件。 */
+export type AttachmentOwner = "capture" | "note" | "task";
+
+/**
+ * 附件送到桌面端的独立生命周期。与文本同步状态严格分开：
+ * - pending：本地已保存，尚未尝试传输（离线/未配对/用户未开启自动传送）
+ * - uploading：正在走文件互传通道
+ * - sent：桌面端已完整接收（有 remote_file_id）
+ * - failed：本次传输失败，可重试（不丢本地文件）
+ * - skipped：用户明确选择不传送
+ */
+export type AttachmentTransferState = "pending" | "uploading" | "sent" | "failed" | "skipped";
+
+export interface Attachment {
+  id: string;
+  ownerEntity: AttachmentOwner;
+  ownerId: string;
+  kind: AttachmentKind;
+  mime: string;
+  /** 展示用文件名（已做路径清洗，绝不含路径分隔符） */
+  name: string;
+  /** 应用私有存储里的 file:// URI；不写进任何同步文本字段 */
+  localUri: string;
+  size: number;
+  /** 图片宽高，非图片为 null */
+  width: number | null;
+  height: number | null;
+  /** 语音时长（毫秒），非语音为 null */
+  durationMs: number | null;
+  /** 语音的人工转写/编辑结果；没有识别结果时保持 null，不伪造 */
+  transcript: string | null;
+  transferState: AttachmentTransferState;
+  transferError: string | null;
+  /** 桌面端文件互传返回的文件 id（32 位十六进制），未送达为 null */
+  remoteFileId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 采集入口来源：仅用于本机展示与排查，不含身份信息。 */
+export type CaptureSource = "manual" | "camera" | "album" | "share" | "voice" | "file";
+
+/**
+ * 采集暂存项：还没决定保存到哪里（收集箱/任务/笔记）的原始内容。
+ * 落库即持久化，应用被杀后下一次打开采集中心可恢复。
+ */
+export interface StashedItem {
+  id: string;
+  kind: AttachmentKind;
+  mime: string;
+  name: string;
+  localUri: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  transcript: string | null;
+  /** 该项自带的说明文字（分享文本、语音转写等） */
+  note: string;
+  source: CaptureSource;
+  createdAt: number;
+}

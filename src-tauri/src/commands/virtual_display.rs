@@ -1109,17 +1109,17 @@ mod tests {
     #[test]
     fn parse_devices_handles_plain_and_mdns_serials() {
         let output = "List of devices attached\n\
-192.168.5.7:38585      device product:PD2323 model:V2323A device:PD2323 transport_id:1\n\
-adb-10CE1P063L0017L-MA7LCw (2)._adb-tls-connect._tcp device transport_id:2\n\
+192.0.2.10:5555      device product:PD2323 model:V2323A device:PD2323 transport_id:1\n\
+adb-TESTSERIAL0001-MA7LCw (2)._adb-tls-connect._tcp device transport_id:2\n\
 emulator-5554          offline\n";
         let devices = parse_devices(output);
         assert_eq!(devices.len(), 3);
-        assert_eq!(devices[0].serial, "192.168.5.7:38585");
+        assert_eq!(devices[0].serial, "192.0.2.10:5555");
         assert_eq!(devices[0].state, "device");
         assert_eq!(devices[0].model.as_deref(), Some("V2323A"));
         assert_eq!(
             devices[1].serial,
-            "adb-10CE1P063L0017L-MA7LCw (2)._adb-tls-connect._tcp"
+            "adb-TESTSERIAL0001-MA7LCw (2)._adb-tls-connect._tcp"
         );
         assert_eq!(devices[2].state, "offline");
     }
@@ -1127,30 +1127,30 @@ emulator-5554          offline\n";
     #[test]
     fn mdns_uid_is_extracted_from_service_name() {
         assert_eq!(
-            mdns_uid("adb-10CE1P063L0017L-MA7LCw (2)._adb-tls-connect._tcp").as_deref(),
-            Some("10CE1P063L0017L")
+            mdns_uid("adb-TESTSERIAL0001-MA7LCw (2)._adb-tls-connect._tcp").as_deref(),
+            Some("TESTSERIAL0001")
         );
-        assert_eq!(mdns_uid("192.168.1.5:5555"), None);
+        assert_eq!(mdns_uid("192.0.2.12:5555"), None);
     }
 
     #[test]
     fn dedupe_merges_same_phone_transports_but_not_same_model() {
         let raw = parse_devices(
             "List of devices attached\n\
-192.168.5.7:38585 device model:V2323A transport_id:1\n\
-adb-10CE1P063L0017L-MA7LCw._adb-tls-connect._tcp device model:V2323A transport_id:2\n\
-192.168.5.8:39001 device model:V2323A transport_id:3\n",
+192.0.2.10:5555 device model:V2323A transport_id:1\n\
+adb-TESTSERIAL0001-MA7LCw._adb-tls-connect._tcp device model:V2323A transport_id:2\n\
+192.0.2.11:5556 device model:V2323A transport_id:3\n",
         );
         let mut uid_map = HashMap::new();
-        uid_map.insert("192.168.5.7:38585".to_string(), "10CE1P063L0017L".to_string());
-        uid_map.insert("192.168.5.8:39001".to_string(), "OTHERDEVICE0001".to_string());
+        uid_map.insert("192.0.2.10:5555".to_string(), "TESTSERIAL0001".to_string());
+        uid_map.insert("192.0.2.11:5556".to_string(), "OTHERDEVICE0001".to_string());
         let devices = dedupe_devices(raw, &uid_map);
         assert_eq!(devices.len(), 2);
         let merged = devices
             .iter()
-            .find(|d| d.uid == "10CE1P063L0017L")
+            .find(|d| d.uid == "TESTSERIAL0001")
             .expect("merged device");
-        assert_eq!(merged.serial, "192.168.5.7:38585");
+        assert_eq!(merged.serial, "192.0.2.10:5555");
         assert_eq!(merged.connection, "wifi");
         assert_eq!(merged.transports.len(), 2);
         // 同型号不同设备不能被合并
@@ -1161,14 +1161,14 @@ adb-10CE1P063L0017L-MA7LCw._adb-tls-connect._tcp device model:V2323A transport_i
     fn dedupe_prefers_usb_over_wireless() {
         let raw = parse_devices(
             "List of devices attached\n\
-192.168.5.7:38585 device model:V2323A transport_id:1\n\
-10CE1P063L0017L device model:V2323A transport_id:2\n",
+192.0.2.10:5555 device model:V2323A transport_id:1\n\
+TESTSERIAL0001 device model:V2323A transport_id:2\n",
         );
         let mut uid_map = HashMap::new();
-        uid_map.insert("192.168.5.7:38585".to_string(), "10CE1P063L0017L".to_string());
+        uid_map.insert("192.0.2.10:5555".to_string(), "TESTSERIAL0001".to_string());
         let devices = dedupe_devices(raw, &uid_map);
         assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].serial, "10CE1P063L0017L");
+        assert_eq!(devices[0].serial, "TESTSERIAL0001");
         assert_eq!(devices[0].connection, "usb");
     }
 

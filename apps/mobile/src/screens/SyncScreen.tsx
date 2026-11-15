@@ -1,5 +1,5 @@
-// 同步中心：已配对连接展示真实状态，可测试连通性、立即同步与解除本机配对。
-// 同步范围：任务、收集箱、笔记（pull + push，加密载荷）；后台同步仍在下一轮。
+// 同步中心：已配对连接展示真实状态，可测试连通性、立即同步、配置前台自动同步与附件传送。
+// 同步范围：任务、收集箱、笔记（pull + push，加密载荷）；采集附件走独立文件互传通道。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -19,6 +19,7 @@ import {
   type ToastPlacement,
   type ToastTone,
 } from "../components/Toast";
+import { countAttachmentsForTransfer } from "../db/attachments";
 import {
   countPendingSyncOps,
   countSyncConflicts,
@@ -36,6 +37,14 @@ import {
 import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
+import {
+  loadAutoSyncSettings,
+  loadSyncStatus,
+  saveAutoSyncSettings,
+  subscribeSyncStatus,
+  type AutoSyncSettings,
+} from "../lib/sync/autoSync";
+import { transferPendingAttachments } from "../lib/sync/attachmentTransfer";
 import { isLegacyConnection } from "../lib/sync/connectionState";
 import { syncNow } from "../lib/sync/engine";
 import { PairingRequestError, pingDesktop, pairingErrorMessage } from "../lib/sync/pairClient";
@@ -71,6 +80,10 @@ export function SyncScreen({ nav }: { nav: Nav }) {
   const [syncing, setSyncing] = useState(false);
   const [lastResult, setLastResult] = useState<SyncLastResult | null>(null);
   const [conflictCount, setConflictCount] = useState(0);
+  const [pendingAttachments, setPendingAttachments] = useState(0);
+  const [autoSettings, setAutoSettings] = useState<AutoSyncSettings | null>(null);
+  const [autoNote, setAutoNote] = useState<string | null>(null);
+  const [transferring, setTransferring] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
   const mounted = useRef(true);
@@ -86,19 +99,26 @@ export function SyncScreen({ nav }: { nav: Nav }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [ops, meta, token, last, conflicts] = await Promise.all([
-        countPendingSyncOps(),
-        loadConnection(),
-        readToken(),
-        loadSyncResult(),
-        countSyncConflicts(),
-      ]);
+      const [ops, meta, token, last, conflicts, attachmentCount, settings, status] =
+        await Promise.all([
+          countPendingSyncOps(),
+          loadConnection(),
+          readToken(),
+          loadSyncResult(),
+          countSyncConflicts(),
+          countAttachmentsForTransfer(),
+          loadAutoSyncSettings(),
+          loadSyncStatus(),
+        ]);
       if (!mounted.current) return;
       setPendingOps(ops);
       setConnection(meta);
       setHasToken(Boolean(token));
       setLastResult(last);
       setConflictCount(conflicts);
+      setPendingAttachments(attachmentCount);
+      setAutoSettings(settings);
+      setAutoNote(status.lastAutoNote);
       // v1 遗留连接（http:// 或缺少 SPKI 指纹）：桌面端已硬切 TLS-only，无法再连通。
       setInvalid(isLegacyConnection(meta));
     } catch (error) {
@@ -111,10 +131,35 @@ export function SyncScreen({ nav }: { nav: Nav }) {
   useEffect(() => {
     mounted.current = true;
     void refresh();
+    // 自动同步/附件传送完成后实时刷新计数，不靠轮询
+    const unsubscribe = subscribeSyncStatus((snapshot) => {
+      if (!mounted.current) return;
+      setPendingOps(snapshot.pendingOps);
+      setPendingAttachments(snapshot.pendingAttachments);
+      setConflictCount(snapshot.conflictCount);
+      setAutoSettings(snapshot.settings);
+      setAutoNote(snapshot.lastAutoNote);
+      if (snapshot.lastResult) setLastResult(snapshot.lastResult);
+    });
     return () => {
       mounted.current = false;
+      unsubscribe();
     };
   }, [refresh]);
+
+  const updateAutoSettings = useCallback(
+    async (patch: Partial<AutoSyncSettings>) => {
+      try {
+        const next = await saveAutoSyncSettings(patch);
+        if (!mounted.current) return;
+        setAutoSettings(next);
+        showToast("同步设置已保存", "success", "bottom");
+      } catch (error) {
+        if (mounted.current) showToast(`保存设置失败：${describeError(error)}`, "danger", "bottom");
+      }
+    },
+    [showToast],
+  );
 
   const paired = Boolean(connection && hasToken) && !invalid;
 
@@ -176,12 +221,46 @@ export function SyncScreen({ nav }: { nav: Nav }) {
         "bottom",
       );
       await refresh();
+      if (autoSettings?.autoTransferAttachments) {
+        const transfer = await transferPendingAttachments().catch(() => null);
+        if (transfer && transfer.sent > 0) {
+          showToast(`同步顺带发送 ${transfer.sent} 个附件到电脑`, "success", "bottom");
+        }
+      }
     } catch (error) {
       if (mounted.current) showToast(`同步失败：${describeError(error)}`, "danger", "bottom");
     } finally {
       if (mounted.current) setSyncing(false);
     }
-  }, [refresh, showToast, syncing]);
+  }, [autoSettings?.autoTransferAttachments, refresh, showToast, syncing]);
+
+  /** 手动发送待传附件：pending/failed 逐条重试，单条失败不影响其他附件 */
+  const sendAttachments = useCallback(async () => {
+    if (transferring) return;
+    setTransferring(true);
+    try {
+      const outcome = await transferPendingAttachments();
+      if (!mounted.current) return;
+      if (outcome.unavailable) {
+        showToast(outcome.message ?? "尚未配对，无法发送附件", "warn", "bottom");
+      } else if (outcome.failed > 0) {
+        showToast(
+          `已发送 ${outcome.sent} 个，${outcome.failed} 个失败：${outcome.errors[0] ?? "未知原因"}`,
+          "danger",
+          "bottom",
+        );
+      } else if (outcome.sent > 0) {
+        showToast(`已发送 ${outcome.sent} 个附件到电脑`, "success", "bottom");
+      } else {
+        showToast("没有待发送的附件", "info", "bottom");
+      }
+      await refresh();
+    } catch (error) {
+      if (mounted.current) showToast(`发送附件失败：${describeError(error)}`, "danger", "bottom");
+    } finally {
+      if (mounted.current) setTransferring(false);
+    }
+  }, [refresh, showToast, transferring]);
 
   const unpair = useCallback(() => {
     if (!connection) return;
@@ -302,12 +381,41 @@ export function SyncScreen({ nav }: { nav: Nav }) {
             <Text style={[styles.tileValue, { color: tokens.accentText }]}>{pendingOps}</Text>
           </View>
           <View style={[styles.tile, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
+            <Text style={[styles.tileLabel, { color: tokens.muted }]}>待传附件</Text>
+            <Text style={[styles.tileValue, { color: tokens.textSoft }]}>{pendingAttachments}</Text>
+          </View>
+          <View style={[styles.tile, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
             <Text style={[styles.tileLabel, { color: tokens.muted }]}>上次接收</Text>
             <Text style={[styles.tileValue, { color: tokens.textSoft }]}>
               {lastResult ? lastResult.applied : "—"}
             </Text>
           </View>
         </View>
+
+        {pendingAttachments > 0 ? (
+          <GlassCard style={styles.attachmentCard}>
+            <Text style={[styles.cardHint, { color: tokens.textSoft }]}>
+              {pendingAttachments} 个采集附件还在本机。照片/录音不会自动上传，除非你手动发送或开启
+              「自动传送附件」。文本内容（收集箱正文）仍会正常同步。
+            </Text>
+            <PressableScale
+              onPress={() => void sendAttachments()}
+              disabled={transferring || !paired}
+              accessibilityLabel="发送待传附件到电脑"
+              contentStyle={[
+                styles.secondaryButton,
+                {
+                  borderColor: tokens.cardBorder,
+                  opacity: transferring || !paired ? 0.5 : 1,
+                },
+              ]}
+            >
+              <Text style={[styles.secondaryText, { color: tokens.accentText }]}>
+                {transferring ? "正在发送附件…" : paired ? "发送待传附件" : "配对后可发送"}
+              </Text>
+            </PressableScale>
+          </GlassCard>
+        ) : null}
 
         {lastResult ? (
           <Text style={[styles.lastResult, { color: tokens.muted }]}>
@@ -343,33 +451,48 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           )}
         </SettingSection>
 
-        <SettingSection icon="settings" title="同步设置" trailing={<Badge label="后台待接入" />}>
+        <SettingSection icon="settings" title="同步设置">
+          <SettingActionRow
+            label="前台自动同步"
+            helper="回到应用、或写完一条内容后自动补齐；最短间隔 5 分钟，失败按 30s→5min 退避"
+            trailing={
+              <ToggleSwitch
+                value={autoSettings?.enabled ?? true}
+                onChange={(value) => void updateAutoSettings({ enabled: value })}
+                accessibilityLabel="前台自动同步"
+              />
+            }
+          />
           <SettingActionRow
             label="仅 Wi-Fi 下同步"
+            helper="无法确认网络类型时按计费网络处理，不自动同步"
             trailing={
               <ToggleSwitch
-                value={false}
-                onChange={() => undefined}
-                disabled
-                accessibilityLabel="仅 Wi-Fi 下同步（规划中）"
+                value={autoSettings?.wifiOnly ?? true}
+                onChange={(value) => void updateAutoSettings({ wifiOnly: value })}
+                accessibilityLabel="仅 Wi-Fi 下同步"
               />
             }
           />
           <SettingActionRow
-            label="后台同步"
-            helper="有待同步内容时运行，不做常驻轮询"
+            label="自动传送附件"
+            helper="照片/录音/文件经已配对的安全连接发到电脑；默认关闭，开启前请确认设备可信"
             trailing={
               <ToggleSwitch
-                value={false}
-                onChange={() => undefined}
-                disabled
-                accessibilityLabel="后台同步（规划中）"
+                value={autoSettings?.autoTransferAttachments ?? false}
+                onChange={(value) => void updateAutoSettings({ autoTransferAttachments: value })}
+                accessibilityLabel="自动传送附件"
               />
             }
           />
+          <SettingRow label="后台同步" value="不支持常驻（Android 限制）" valueTone="muted" />
           <SettingRow label="同步冲突时" value="不自动覆盖，写入冲突页" valueTone="muted" />
           <SettingRow label="同步范围" value="任务 / 收集箱 / 笔记" valueTone="muted" />
         </SettingSection>
+
+        {autoNote ? (
+          <Text style={[styles.lastResult, { color: tokens.muted }]}>上次自动同步：{autoNote}</Text>
+        ) : null}
 
         {paired ? (
           <>
@@ -427,7 +550,8 @@ export function SyncScreen({ nav }: { nav: Nav }) {
 
         <Text style={[styles.footer, { color: tokens.faint }]}>
           同步任务、收集箱与笔记：pull 应用桌面端变更，push 发送本机修改；载荷已用配对令牌
-          派生的密钥加密。后台同步仍在下一轮。
+          派生的密钥加密。自动同步只在前台运行，不承诺 Android 后台常驻；采集附件走独立的
+          文件互传通道，失败可在这里重试。
         </Text>
       </ScrollView>
 
@@ -486,6 +610,17 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     padding: space.md,
     gap: 2,
+  },
+  attachmentCard: {
+    padding: space.md,
+    gap: space.sm,
+  },
+  secondaryButton: {
+    minHeight: 44,
+    borderRadius: radius.control,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
   },
   tileLabel: {
     fontSize: font.label,

@@ -110,6 +110,51 @@ fn take_pending_send_to() -> Vec<String> {
         .unwrap_or_default()
 }
 
+// ── 启动意图 ────────────────────────────────────────────────
+//
+// 三层形态收敛后，**大型完整工作台（workspace 窗口）是唯一的大型主界面**，
+// 主窗口只承担快捷入口与后台宿主。启动入口因此必须先判定意图：
+//
+// - `Normal`：手动启动（含 `npm run tauri dev` 与打包后双击）→ 显示工作台；
+// - `Autostart`：开机自启动（注册表参数 `--autostart`）→ 不弹大窗口、不抢焦点，
+//   保持原有的快捷面板可见性（尊重「后台驻留」意图）；
+// - `SendTo`：资源管理器「发送到」→ 明确要求把文件进暂存并回显，保留主面板。
+//
+// `SendTo` 优先于 `Autostart`：携带文件时用户的意图是「收下这些文件」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupIntent {
+    Normal,
+    Autostart,
+    SendTo,
+}
+
+fn startup_intent_from_args(args: &[String]) -> StartupIntent {
+    if args.iter().any(|arg| arg == "--send-to-shelf") {
+        StartupIntent::SendTo
+    } else if args.iter().any(|arg| arg == "--autostart") {
+        StartupIntent::Autostart
+    } else {
+        StartupIntent::Normal
+    }
+}
+
+/// 普通启动才把大型工作台作为首屏；自启动/发送到不抢占大窗口。
+fn startup_opens_workbench(intent: StartupIntent) -> bool {
+    matches!(intent, StartupIntent::Normal)
+}
+
+/// 主窗口（快捷入口宿主）在启动时是否可见。
+///
+/// 普通启动默认不显示它（否则旧完整面板会先闪一下，再被工作台取代）；
+/// 只有上次退出就停在贴边胶囊态时保留胶囊，快捷入口不断档。
+/// 自启动/发送到保留原有可见性：这是入口本身的明确意图。
+fn startup_shows_quick_surface(intent: StartupIntent, docked_restore: bool) -> bool {
+    match intent {
+        StartupIntent::Normal => docked_restore,
+        StartupIntent::Autostart | StartupIntent::SendTo => true,
+    }
+}
+
 /// 把「发送到 Task Dock」的路径写入暂存架（引用模式），并通知前端刷新。
 /// 路径只从启动参数来；不移动/复制来源文件。
 fn process_send_to(app: &AppHandle, paths: Vec<String>) {
@@ -442,15 +487,17 @@ pub fn run() {
                 process_send_to(app, paths);
                 return;
             }
-            tracing::info!("检测到重复启动，已把焦点交给现有实例");
-            if let Some(win) = app.get_webview_window("main") {
-                show_and_focus(&win);
-            }
+            // 默认界面是大型工作台：重复启动优先聚焦已存在的工作台；已被关闭则
+            // 按同一创建路径重建。只有创建失败才回退主面板（并给出错误提示），
+            // 不再「再次展示旧完整面板」。
+            tracing::info!("检测到重复启动：唤醒大型工作台");
+            project_workspace_window::focus_or_open_workbench_from_second_instance(app);
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec![]),
+            // 自启动入口标记：setup 据此不弹大窗口、不抢焦点（见 StartupIntent）。
+            Some(vec!["--autostart"]),
         ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -809,6 +856,9 @@ pub fn run() {
                     })
                     .map(|s| s.is_valid() && s.edge != "none")
                     .unwrap_or(false);
+            // 启动意图只判定一次：后面的工作台启动与回退都用同一个结果。
+            let startup_intent = startup_intent_from_args(&std::env::args().collect::<Vec<_>>());
+            let show_quick_surface = startup_shows_quick_surface(startup_intent, docked_restore);
             if let Some(win) = handle.get_webview_window("main") {
                 if docked_restore {
                     if let Ok(h) = win.hwnd() {
@@ -859,7 +909,14 @@ pub fn run() {
                         }
                     });
                 }
-                let _ = win.show();
+                // 普通启动：旧完整面板（主窗 full 视图）不再作为首屏，也不先 show
+                // 再被工作台切换——那会闪一下并抢一次焦点。胶囊态例外（见判定函数）。
+                // 自启动/发送到保持原有主面板可见性。
+                if show_quick_surface {
+                    let _ = win.show();
+                } else {
+                    tracing::debug!("普通启动：主窗口保持隐藏，由大型工作台作为首屏");
+                }
             }
 
             // 开机自启动（按设置应用）
@@ -979,6 +1036,36 @@ pub fn run() {
                         tracing::warn!("启动自动备份失败: {}", e);
                     }
                 });
+            }
+
+            // 默认启动：大型完整工作台（workspace 窗口）是唯一的大型主界面。
+            // 位置：DB / 设置 / 托盘 / 快捷键 / 窗口服务全部就绪之后、启动里程碑之前，
+            // 满足「必要状态准备完毕再创建」；窗口隐藏创建，前端首帧就绪（
+            // `workbench_ui_ready`）后才真正显示，避免先露出空白窗口。
+            //
+            // 自启动与「发送到」不抢占大窗口（见 `startup_shows_quick_surface`）：
+            // 前者是后台驻留，后者要的是暂存回显 + 主面板。
+            if startup_opens_workbench(startup_intent) {
+                if let Err(error) = project_workspace_window::open_workbench_on_startup(&handle, &db)
+                {
+                    diagnostics::event(
+                        diagnostics::DiagLevel::Error,
+                        "workbench",
+                        "startup-open",
+                        "failed",
+                    )
+                    .window(project_workspace_window::WINDOW_LABEL)
+                    .status(diagnostics::DiagStatus::Failed)
+                    .message(format!("启动打开大型工作台失败: {error}"))
+                    .from_error(&error)
+                    .emit();
+                    // 失败不能静默退回旧界面：显示主面板并广播明确错误与恢复入口
+                    // （托盘 / 快捷入口「打开完整工作台」会重新尝试创建）。
+                    project_workspace_window::fallback_to_main(
+                        &handle,
+                        &format!("大型工作台打开失败：{error}"),
+                    );
+                }
             }
 
             tracing::info!("Task Dock 启动完成（数据目录: {:?}）", data_dir);
@@ -1520,6 +1607,8 @@ pub fn run() {
             project_workspace_window::workbench_open_window,
             project_workspace_window::workbench_take_nav,
             project_workspace_window::workbench_nav_ack,
+            // 启动揭示：工作台首帧就绪后才显示窗口（手动打开时是 no-op）
+            project_workspace_window::workbench_ui_ready,
             project_workspace_window::project_workspace_open_dev_workbench,
             project_workspace_window::project_workspace_open_dev_workbench_ack,
             // Android 投屏（ADB + scrcpy）：设备/应用枚举、双模式会话托管、窗口定位与截屏
@@ -2082,6 +2171,68 @@ mod tests {
         assert_eq!(
             metadata.get("reason").and_then(|v| v.as_str()),
             Some("frontend_not_ready")
+        );
+    }
+
+    #[test]
+    fn startup_intent_defaults_to_workbench_for_manual_launch() {
+        let args = vec!["task-dock.exe".to_string()];
+        assert_eq!(startup_intent_from_args(&args), StartupIntent::Normal);
+        assert!(
+            startup_opens_workbench(StartupIntent::Normal),
+            "手动启动 / npm run tauri dev 必须首屏大型工作台"
+        );
+        assert!(
+            !startup_shows_quick_surface(StartupIntent::Normal, false),
+            "普通启动不得先展示旧完整面板"
+        );
+    }
+
+    #[test]
+    fn autostart_and_send_to_do_not_steal_the_workbench_screen() {
+        let autostart = vec![
+            "task-dock.exe".to_string(),
+            "--autostart".to_string(),
+        ];
+        assert_eq!(
+            startup_intent_from_args(&autostart),
+            StartupIntent::Autostart
+        );
+        assert!(
+            !startup_opens_workbench(StartupIntent::Autostart),
+            "开机自启动不应弹大窗口抢焦点"
+        );
+        assert!(
+            startup_shows_quick_surface(StartupIntent::Autostart, false),
+            "自启动仍保留原有快捷面板宿主"
+        );
+
+        let send_to = vec![
+            "task-dock.exe".to_string(),
+            "--send-to-shelf".to_string(),
+            "C:\\tmp\\a.txt".to_string(),
+        ];
+        assert_eq!(startup_intent_from_args(&send_to), StartupIntent::SendTo);
+        assert!(!startup_opens_workbench(StartupIntent::SendTo));
+        assert!(startup_shows_quick_surface(StartupIntent::SendTo, false));
+    }
+
+    #[test]
+    fn send_to_wins_over_autostart_when_both_flags_are_present() {
+        let args = vec![
+            "task-dock.exe".to_string(),
+            "--autostart".to_string(),
+            "--send-to-shelf".to_string(),
+            "C:\\tmp\\b.txt".to_string(),
+        ];
+        assert_eq!(startup_intent_from_args(&args), StartupIntent::SendTo);
+    }
+
+    #[test]
+    fn docked_capsule_stays_available_on_manual_startup() {
+        assert!(
+            startup_shows_quick_surface(StartupIntent::Normal, true),
+            "上次停在胶囊态时必须保留快捷入口，而不是只显示工作台"
         );
     }
 }

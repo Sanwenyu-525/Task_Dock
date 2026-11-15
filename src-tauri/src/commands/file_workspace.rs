@@ -22,8 +22,8 @@ fn protected_dirs(app: &AppHandle) -> Vec<PathBuf> {
 }
 
 #[tauri::command]
-pub fn fs_list_dir(path: String, show_hidden: bool) -> AppResult<fw::DirListing> {
-    fw::list_dir(&fw::validate_abs_path(&path)?, show_hidden)
+pub fn fs_list_dir(path: String, show_hidden: bool, offset: Option<usize>) -> AppResult<fw::DirListing> {
+    fw::list_dir(&fw::validate_abs_path(&path)?, show_hidden, offset.unwrap_or(0))
 }
 
 #[tauri::command]

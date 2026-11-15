@@ -73,14 +73,17 @@ export function newPaneNode(): SplitLeaf {
 
 /**
  * 在指定窗格旁分割出下一个新窗格。
- * - direction: horizontal = 新窗格在右侧，vertical = 新窗格在下侧；
- * - 原窗格保持在 first（视觉位置不变），新窗格在 second；
+ * - direction: horizontal = 左右分割，vertical = 上下分割；
+ * - side: "after"（默认）= 新窗格在右/下侧，原窗格保持 first（视觉位置不变）；
+ *   "before" = 新窗格在左/上侧（拖拽落点四方向分栏的关键：左/上落点必须前侧插入，
+ *   不能只改视觉提示而不改变树顺序）；
  * - 超出窗格/深度上限时返回 null（调用方提示，不静默失败）。
  */
 export function splitPane(
   node: SplitNode,
   paneId: string,
   direction: SplitDirection,
+  side: "before" | "after" = "after",
 ): { tree: SplitNode; newPaneId: string } | null {
   if (paneCount(node) >= MAX_PANES) return null;
   const newLeaf = newPaneNode();
@@ -90,14 +93,15 @@ export function splitPane(
     if (depth > MAX_DEPTH) return null;
     if (cur.type === "pane") {
       if (cur.paneId !== paneId) return { node: cur, changed: false };
+      const original: SplitLeaf = { type: "pane", paneId: cur.paneId };
       return {
         node: {
           type: "split",
           id: freshId("split"),
           direction,
           ratio: 0.5,
-          first: { type: "pane", paneId: cur.paneId },
-          second: newLeaf,
+          first: side === "before" ? newLeaf : original,
+          second: side === "before" ? original : newLeaf,
         },
         changed: true,
       };
@@ -276,15 +280,17 @@ export const LAYOUT_PRESETS: Record<
   },
 };
 
-/** 把预置树重映射为全新窗格 ID（避免与当前树的 paneId 冲突）。 */
-export function reassignPaneIds(node: SplitNode): SplitNode {
-  const map = new Map<string, string>();
+/** 把预置/模板树重映射为全新窗格 ID，并返回 旧 paneId → 新 paneId 映射。
+ * 模板恢复必须同时重映射 PersistedPane 与 activePaneId（P0：旧实现用新 ID
+ * 查旧窗格数据，所有标签丢失）。 */
+export function reassignPaneIds(node: SplitNode): { tree: SplitNode; mapping: Map<string, string> } {
+  const mapping = new Map<string, string>();
   const walk = (cur: SplitNode): SplitNode => {
     if (cur.type === "pane") {
-      if (!map.has(cur.paneId)) map.set(cur.paneId, freshId("pane"));
-      return { type: "pane", paneId: map.get(cur.paneId)! };
+      if (!mapping.has(cur.paneId)) mapping.set(cur.paneId, freshId("pane"));
+      return { type: "pane", paneId: mapping.get(cur.paneId)! };
     }
     return { ...cur, first: walk(cur.first), second: walk(cur.second) };
   };
-  return walk(node);
+  return { tree: walk(node), mapping };
 }

@@ -1,8 +1,9 @@
 //! 项目工作空间独立窗口（v49）。
 //!
 //! 与主窗口、桌面微件的边界：
-//! - 单一窗口（label = `workspace`），普通装饰、任务栏可见、可缩放/最大化、
-//!   非置顶；关闭只销毁自身，不影响胶囊/托盘/主窗口；
+//! - 单一窗口（label = `workspace`），**无原生装饰**、任务栏可见、可缩放/最大化、
+//!   非置顶；标题栏由 `WorkbenchShell` 顶栏自绘（拖动区 + 最小化/最大化/关闭），
+//!   关闭只销毁自身，不影响胶囊/托盘/主窗口；
 //! - 不挂载主窗口的 `App.tsx`，只加载 `workspace.html`，不启动贴边吸附、通知调度
 //!   与主窗口轮询；能力集由 `capabilities/workspace.json` 隔离；
 //! - 几何按**物理像素**持久化到内部设置键 `workspace_window_rect`（不进入前端
@@ -10,7 +11,7 @@
 //! - 最大化状态单独记忆：最大化期间不覆盖正常几何，下次打开仍可还原窗口大小。
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,9 @@ use crate::error::{AppError, AppResult};
 
 pub const WINDOW_LABEL: &str = "workspace";
 pub const EVENT_WINDOW_CLOSED: &str = "project-workspace-window-closed";
+/// 启动/重复启动路径打开工作台失败：主窗口据此展示可恢复的错误提示。
+/// 事件已显示主窗口只是兜底，不能让用户以为「启动成功但仍看到旧面板」。
+pub const EVENT_STARTUP_FAILED: &str = "workbench-startup-failed";
 pub const EVENT_OPEN_DEV_WORKBENCH: &str = "project-workspace-open-dev-workbench";
 /// 主窗口 → 工作空间窗口：本次「打开开发工作台」事务的**真实结果**回执。
 /// 事件已发送不等于用户看到了开发工作台（主窗口可能仍在胶囊里），
@@ -418,6 +422,31 @@ const MIN_HEIGHT: f64 = 600.0;
 const EDGE_MARGIN: i32 = 24;
 const SAVE_THROTTLE: Duration = Duration::from_millis(500);
 
+/// 启动揭示超时：窗口在启动时**隐藏创建**，等前端首帧就绪（`workbench_ui_ready`）
+/// 后才 show，避免用户先看到空白窗口。开发态 Vite 冷加载可能 3–6s，因此超时给到
+/// 8s；超时仍强制显示并写诊断，保证应用不会「无窗口、无反馈」。
+const STARTUP_REVEAL_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// 启动揭示待办：仅启动路径置位，由工作台前端的 `workbench_ui_ready` 消费。
+static STARTUP_REVEAL: AtomicBool = AtomicBool::new(false);
+
+/// 待兑现的最大化：几何恢复时为 `maximized=true`，但**必须等窗口可见后再最大化**。
+/// 在隐藏窗口上最大化会让 Windows 把「还原矩形」记成窗口创建时的默认级联位置，
+/// 之后点还原会跳到屏幕中间而不是用户保存的位置（真机复现过 370,130 → 160,130）。
+static STARTUP_MAXIMIZE: AtomicBool = AtomicBool::new(false);
+
+/// 创建/聚焦串行化：启动、快捷入口、托盘与第二实例可能并发到达。
+/// Tauri 对重复 label 会直接报错，这里先串行再二次检查，保证「工作台唯一」。
+static OPEN_LOCK: Mutex<()> = Mutex::new(());
+
+/// 新建窗口后何时显示：手动打开立刻显示（用户已经点了按钮，空白等待不可接受）；
+/// 启动路径等前端首帧就绪后再显示。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenReveal {
+    Immediate,
+    WhenReady,
+}
+
 /// 窗口几何（物理像素）。`maximized` 与正常矩形一起保存，恢复时先还原矩形再最大化。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 struct WorkspaceGeometry {
@@ -643,9 +672,9 @@ fn restore_geometry(app: &AppHandle, win: &WebviewWindow, db: &Db) {
     if let Err(error) = win.set_position(position) {
         tracing::warn!("恢复工作空间窗口位置失败: {error}");
     }
-    if saved.maximized {
-        let _ = win.maximize();
-    }
+    // 最大化不在隐藏窗口上直接调用：见 `STARTUP_MAXIMIZE` 的注释。
+    // 兑现点在 `reveal_workbench`（窗口 show 之后）。
+    STARTUP_MAXIMIZE.store(saved.maximized, Ordering::SeqCst);
 }
 
 fn geometry_from_window(win: &WebviewWindow) -> Option<WorkspaceGeometry> {
@@ -740,6 +769,8 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
             save_geometry(&app, &w, false);
         }
         tauri::WindowEvent::Destroyed => {
+            // 窗口销毁后不再有待兑现的启动揭示（避免 watchdog 对已销毁窗口 show）。
+            STARTUP_REVEAL.store(false, Ordering::SeqCst);
             // 窗口销毁后队列里的请求已无接收方：逐个以 cancelled 收敛，
             // 调用方不会永久停在 pending；同时避免下次打开执行过期导航。
             for request in drain_workbench_nav_requests() {
@@ -758,7 +789,140 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
     });
 }
 
-/// 打开/聚焦工作台窗口的内部实现：两个命令共用同一创建与回滚路径。
+/// 打开计划：工作台标签存在时只能聚焦，不存在时才允许创建。
+///
+/// 这是「工作台唯一」的判定点：启动、手动打开、托盘/胶囊转发与第二实例全部经
+/// `open_or_focus_workbench` 的同一把锁 + 同一条计划，不会出现两个完整工作台。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkbenchOpenPlan {
+    FocusExisting,
+    CreateNew,
+}
+
+fn plan_workbench_open(has_existing_window: bool) -> WorkbenchOpenPlan {
+    if has_existing_window {
+        WorkbenchOpenPlan::FocusExisting
+    } else {
+        WorkbenchOpenPlan::CreateNew
+    }
+}
+
+/// 显示并聚焦工作台（幂等）：已可见时只聚焦，最小化时先还原。
+/// 保存的最大化状态在这里兑现——先 show 再 maximize，保证系统记录的还原矩形
+/// 是用户保存的窗口位置，而不是隐藏创建时的默认位置。
+fn reveal_workbench(win: &WebviewWindow) -> AppResult<()> {
+    let _ = win.unminimize();
+    if !win.is_visible().unwrap_or(false) {
+        win.show()?;
+    }
+    if STARTUP_MAXIMIZE.swap(false, Ordering::SeqCst) {
+        if let Err(error) = win.maximize() {
+            tracing::warn!("恢复工作台最大化状态失败: {error}");
+        }
+    }
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// 启动揭示超时兜底：前端崩溃/白屏时窗口不能永远隐藏。
+fn spawn_startup_reveal_watchdog(app: AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(STARTUP_REVEAL_TIMEOUT);
+        if !STARTUP_REVEAL.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        tracing::warn!(
+            timeout_ms = STARTUP_REVEAL_TIMEOUT.as_millis() as u64,
+            "大型工作台未收到前端就绪信号，已超时强制显示"
+        );
+        crate::diagnostics::event(
+            crate::diagnostics::DiagLevel::Warn,
+            "workbench",
+            "startup-reveal",
+            "timeout",
+        )
+        .window(WINDOW_LABEL)
+        .message("大型工作台前端未在超时内确认就绪，已强制显示窗口")
+        .metadata(
+            "timeoutMs",
+            serde_json::json!(STARTUP_REVEAL_TIMEOUT.as_millis() as u64),
+        )
+        .emit();
+        if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+            if let Err(error) = reveal_workbench(&win) {
+                tracing::warn!("超时后显示工作台失败: {error}");
+            }
+        }
+    });
+}
+
+/// 打开失败时把用户带回可用界面：显示主面板（快捷工具面板职责仍在），
+/// 并广播明确错误文案——绝不静默停在旧界面还宣称启动成功。
+pub(crate) fn fallback_to_main(app: &AppHandle, message: &str) {
+    tracing::warn!(%message, "回退主面板");
+    if let Some(main) = app.get_webview_window(MAIN_LABEL) {
+        crate::show_and_focus(&main);
+        let _ = main.emit(
+            EVENT_STARTUP_FAILED,
+            serde_json::json!({ "message": message }),
+        );
+    }
+}
+
+/// 启动阶段打开大型工作台：依赖（DB/设置/托盘/快捷键）就绪后调用。
+/// 窗口隐藏创建，等前端首帧就绪后再显示；失败由调用方走 `fallback_to_main`。
+pub fn open_workbench_on_startup(app: &AppHandle, db: &Db) -> AppResult<()> {
+    open_or_focus_workbench(app, db, None, None, None, OpenReveal::WhenReady)?;
+    Ok(())
+}
+
+/// 重复启动（第二实例）的唤醒：工作台存在则聚焦，已关闭则重建。
+///
+/// 单实例回调运行在 `WM_COPYDATA` 的同步派发里（第二个实例最多等 10s），
+/// 因此创建窗口投递到主线程消息循环的下一拍，不在 SendMessage 回调里嵌套
+/// 创建 WebView。
+pub fn focus_or_open_workbench_from_second_instance(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        STARTUP_REVEAL.store(false, Ordering::SeqCst);
+        let _ = reveal_workbench(&win);
+        return;
+    }
+    let app_for_main = app.clone();
+    let posted = app.run_on_main_thread(move || {
+        let app = app_for_main;
+        let result = match app.try_state::<Arc<Db>>() {
+            Some(db) => {
+                open_or_focus_workbench(&app, &db, None, None, None, OpenReveal::Immediate)
+                    .map(|_| ())
+            }
+            None => Err(AppError::Unavailable(
+                "数据库尚未就绪，无法打开大型工作台".to_string(),
+            )),
+        };
+        if let Err(error) = result {
+            fallback_to_main(&app, &format!("大型工作台打开失败：{error}"));
+        }
+    });
+    if let Err(error) = posted {
+        fallback_to_main(app, &format!("大型工作台打开失败：{error}"));
+    }
+}
+
+/// 工作台前端首帧就绪：启动路径挂起的显示请求在这里兑现（手动打开时是 no-op）。
+#[tauri::command]
+pub fn workbench_ui_ready(window: WebviewWindow) -> AppResult<()> {
+    if window.label() != WINDOW_LABEL {
+        return Err(AppError::Validation(
+            "只有工作台窗口可以确认首帧就绪".to_string(),
+        ));
+    }
+    if STARTUP_REVEAL.swap(false, Ordering::SeqCst) {
+        reveal_workbench(&window)?;
+    }
+    Ok(())
+}
+
+/// 打开/聚焦工作台窗口的内部实现：启动与手动打开共用同一创建与回滚路径。
 ///
 /// `nav` 会先进入队列再创建/唤醒窗口：
 /// - 新窗口的 WebView 可能在我们返回之前就开始挂载，因此**先入队**才能被
@@ -774,40 +938,58 @@ fn open_or_focus_workbench(
     _project_id: Option<&str>,
     nav: Option<WorkbenchNavTarget>,
     request_id: Option<i64>,
+    reveal: OpenReveal,
 ) -> AppResult<(bool, Option<i64>)> {
-    if let Some(existing) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = existing.unminimize();
-        if !existing.is_visible().unwrap_or(false) {
-            existing.show()?;
-        }
-        let _ = existing.set_focus();
-        if let Some(target) = nav {
-            let (request, evicted) = enqueue_workbench_nav_inner(target, request_id)?;
-            if let Some(stale) = evicted {
-                emit_nav_ack_event(
-                    app,
-                    stale.request_id,
-                    ACK_STATUS_FAILED,
-                    Some("导航队列已满，该请求已被新目标取代".to_string()),
+    // 串行化创建：并发调用都可能先看到「窗口不存在」，Tauri 会拒绝第二个 label。
+    // 拿锁后二次读取，第二个调用者直接走聚焦路径（不会多建一个工作台）。
+    let _guard = OPEN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let existing = app.get_webview_window(WINDOW_LABEL);
+    match plan_workbench_open(existing.is_some()) {
+        WorkbenchOpenPlan::FocusExisting => {
+            let existing = existing.ok_or_else(|| {
+                AppError::Unavailable("工作台窗口状态不一致".to_string())
+            })?;
+            // 已存在即已加载（或正在加载）：启动挂起的揭示直接兑现，避免窗口隐形。
+            STARTUP_REVEAL.store(false, Ordering::SeqCst);
+            // 已有窗口的几何由它自己维护，不能让上一次创建遗留的最大化待办落到它身上。
+            STARTUP_MAXIMIZE.store(false, Ordering::SeqCst);
+            let _ = existing.unminimize();
+            if !existing.is_visible().unwrap_or(false) {
+                existing.show()?;
+            }
+            let _ = existing.set_focus();
+            if let Some(target) = nav {
+                let (request, evicted) = enqueue_workbench_nav_inner(target, request_id)?;
+                if let Some(stale) = evicted {
+                    emit_nav_ack_event(
+                        app,
+                        stale.request_id,
+                        ACK_STATUS_FAILED,
+                        Some("导航队列已满，该请求已被新目标取代".to_string()),
+                    );
+                }
+                let request_id = request.request_id;
+                if let Err(error) = existing.emit(EVENT_WORKBENCH_NAVIGATE, request) {
+                    // 事件没送出去也没有窗口会来拉取：撤销这次排队并如实报错。
+                    clear_pending_workbench_nav(request_id);
+                    return Err(AppError::Agent(format!(
+                        "向工作台发送导航请求失败：{error}"
+                    )));
+                }
+                // Tauri 事件可能因页面重载/监听尚未注册而丢失（窗口已存在但 WebView
+                // 正在刷新）。直接执行一次页面内 DOM 事件触发工作台立即拉取队列；
+                // eval 失败不影响协议，工作台挂载/聚焦时仍会拉取。
+                let _ = existing.eval(
+                    "window.dispatchEvent(new Event('taskdock-workbench-nav-ping'))",
                 );
+                return Ok((false, Some(request_id)));
             }
-            let request_id = request.request_id;
-            if let Err(error) = existing.emit(EVENT_WORKBENCH_NAVIGATE, request) {
-                // 事件没送出去也没有窗口会来拉取：撤销这次排队并如实报错。
-                clear_pending_workbench_nav(request_id);
-                return Err(AppError::Agent(format!(
-                    "向工作台发送导航请求失败：{error}"
-                )));
-            }
-            // Tauri 事件可能因页面重载/监听尚未注册而丢失（窗口已存在但 WebView
-            // 正在刷新）。直接执行一次页面内 DOM 事件触发工作台立即拉取队列；
-            // eval 失败不影响协议，工作台挂载/聚焦时仍会拉取。
-            let _ = existing.eval(
-                "window.dispatchEvent(new Event('taskdock-workbench-nav-ping'))",
-            );
-            return Ok((false, Some(request_id)));
+            return Ok((false, None));
         }
-        return Ok((false, None));
+        WorkbenchOpenPlan::CreateNew => {}
     }
 
     // 新窗口必须先入队再创建：WebView 可能在 build 返回前就开始挂载并拉取队列。
@@ -834,13 +1016,25 @@ fn open_or_focus_workbench(
         }
     };
 
+    // 启动路径的揭示意图必须在 build 前就挂起：WebView 在另一个线程里运行，
+    // 首帧就绪的 IPC 可能早于主线程返回 build，晚置位会让这次就绪信号白丢，
+    // 只能等 8s 兜底才显示窗口。
+    if matches!(reveal, OpenReveal::WhenReady) {
+        STARTUP_REVEAL.store(true, Ordering::SeqCst);
+    }
     let win = match WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
         WebviewUrl::App("workspace.html".into()),
     )
     .title("Task Dock · 工作台")
-    .decorations(true)
+    // 无原生装饰：标题栏由 `WorkbenchShell` 顶栏自绘（品牌/上下文/窗口按钮）。
+    // `shadow(false)` 同时让 tao 走「无阴影无边框窗口」的完整四边/四角
+    // WM_NCHITTEST 分支——只关标题栏但保留 `shadow(true)` 时，tao 只让顶边可
+    // 缩放（见 tao 0.37 的 undecorated_with_shadows 分支），左右下边就不可拖拽缩放。
+    // 最大化时 tao 会把客户区收敛到显示器工作区，不会遮挡任务栏。
+    .decorations(false)
+    .shadow(false)
     .resizable(true)
     .maximizable(true)
     .minimizable(true)
@@ -854,19 +1048,31 @@ fn open_or_focus_workbench(
     {
         Ok(win) => win,
         Err(e) => {
+            if matches!(reveal, OpenReveal::WhenReady) {
+                STARTUP_REVEAL.store(false, Ordering::SeqCst);
+            }
             rollback_nav(&nav_request);
             return Err(e.into());
         }
     };
 
     attach_events(app, &win);
+    // 新窗口从干净状态开始：上一次创建遗留的最大化待办不能带到这里。
+    STARTUP_MAXIMIZE.store(false, Ordering::SeqCst);
     restore_geometry(app, &win, db);
-    if let Err(e) = win.show() {
-        let _ = win.close();
-        rollback_nav(&nav_request);
-        return Err(e.into());
+    match reveal {
+        OpenReveal::Immediate => {
+            if let Err(e) = reveal_workbench(&win) {
+                let _ = win.close();
+                rollback_nav(&nav_request);
+                return Err(e);
+            }
+        }
+        OpenReveal::WhenReady => {
+            // 意图已在 build 前挂起；这里只负责超时兜底，避免前端崩溃后窗口永远隐藏。
+            spawn_startup_reveal_watchdog(app.clone());
+        }
     }
-    let _ = win.set_focus();
 
     Ok((
         true,
@@ -912,6 +1118,7 @@ pub async fn workbench_open_window(
         project_id.as_deref(),
         Some(target),
         request_id,
+        OpenReveal::Immediate,
     )?;
     Ok(WorkbenchOpenResult {
         request_id: request_id.unwrap_or(0),
@@ -1020,8 +1227,14 @@ pub async fn open_project_workspace_window(
         project_id: Some(id.clone()),
         ..Default::default()
     });
-    let (_, request_id) =
-        open_or_focus_workbench(&app, &db, project_id.as_deref(), nav, request_id)?;
+    let (_, request_id) = open_or_focus_workbench(
+        &app,
+        &db,
+        project_id.as_deref(),
+        nav,
+        request_id,
+        OpenReveal::Immediate,
+    )?;
     Ok(WorkspaceWindowInfo {
         opened: true,
         project_id: if request_id.is_some() {
@@ -1174,6 +1387,23 @@ mod tests {
             width: 1920,
             height: 1080,
         }
+    }
+
+    #[test]
+    fn workbench_open_plan_reuses_the_single_workspace_window() {
+        // 唯一性判定：标签已存在只能聚焦，绝不允许再建第二个完整工作台。
+        assert_eq!(
+            plan_workbench_open(true),
+            WorkbenchOpenPlan::FocusExisting
+        );
+        assert_eq!(plan_workbench_open(false), WorkbenchOpenPlan::CreateNew);
+        assert_eq!(WINDOW_LABEL, "workspace", "工作台标签是跨入口共享契约");
+    }
+
+    #[test]
+    fn startup_reveal_is_not_pending_by_default() {
+        // 只有启动路径会挂起显示请求；手动打开/已有窗口必须立即可见。
+        assert!(!STARTUP_REVEAL.load(Ordering::SeqCst));
     }
 
     #[test]

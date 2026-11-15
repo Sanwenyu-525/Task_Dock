@@ -105,6 +105,8 @@ interface FilesWorkspaceState extends FilesWorkspaceData {
   stateKey: string;
   /** 是否已注入过初始状态（避免空树先渲染）。 */
   hydrated: boolean;
+  /** 最近一次持久化写入失败原因（null=无错误；面板显示可见反馈）。 */
+  persistError: string | null;
 }
 
 /** 持久化快照（stateKey 单独承载，不进 store 公开字段）。 */
@@ -120,6 +122,8 @@ export interface FilesWorkspaceActions {
   setStateKey: (stateKey: string) => void;
   snapshot: () => SnapshotPayload;
   persistNow: () => Promise<void>;
+  /** 落盘待写防抖状态（项目切换/卸载前）。 */
+  flushPending: () => Promise<void>;
 
   openInPane: (paneId: string, path: string, mode: "newTab" | "replace") => void;
   openPathInActive: (path: string, mode?: "newTab" | "replace") => void;
@@ -130,9 +134,20 @@ export interface FilesWorkspaceActions {
   duplicateTab: (paneId: string, tabId: string) => void;
   reorderTab: (paneId: string, from: number, to: number) => void;
   moveTabToPane: (tabId: string, fromPaneId: string, toPaneId: string, index?: number) => void;
-  extractTabToPane: (tabId: string, fromPaneId: string, targetPaneId: string, direction: SplitDirection) => boolean;
+  extractTabToPane: (
+    tabId: string,
+    fromPaneId: string,
+    targetPaneId: string,
+    direction: SplitDirection,
+    side?: "before" | "after",
+  ) => boolean;
 
-  splitPane: (paneId: string, direction: SplitDirection, openPath?: string | null) => string | null;
+  splitPane: (
+    paneId: string,
+    direction: SplitDirection,
+    openPath?: string | null,
+    side?: "before" | "after",
+  ) => string | null;
   closePane: (paneId: string) => void;
   swapPane: (paneId: string) => void;
   updateRatio: (splitId: string, ratio: number) => void;
@@ -155,22 +170,46 @@ export type FilesWorkspaceStore = FilesWorkspaceState & FilesWorkspaceActions;
 
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+// create() 之后注入：persistError 只能经 store 实例 setState 更新（模块层函数拿不到 set）。
+let applyPersistError: ((value: string | null) => void) | null = null;
 
 function schedulePersist(get: () => FilesWorkspaceStore): void {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    const snapshot = get().snapshot();
-    void persistFilesWorkspace((current) => {
-      // 重排：把活跃键移到末尾（LRU 语义），再写回。
-      const states = { ...current.states };
-      delete states[snapshot.stateKeyRef];
-      states[snapshot.stateKeyRef] = snapshot.stateData;
-      return { ...current, states };
-    }).catch(() => {
-      // 持久化失败不打断交互；下一次操作会再写（错误在写入链内保留）。
-    });
+    void flushPersist(get)();
   }, 600);
+}
+
+/** 立即执行一次待写快照（返回可等待的写入动作；无待写定时器也为显式写入）。 */
+function flushPersist(get: () => FilesWorkspaceStore): () => Promise<void> {
+  return async () => {
+    const snapshot = get().snapshot();
+    try {
+      await persistFilesWorkspace((current) => {
+        // 重排：把活跃键移到末尾（LRU 语义），再写回。
+        const states = { ...current.states };
+        delete states[snapshot.stateKeyRef];
+        states[snapshot.stateKeyRef] = snapshot.stateData;
+        return { ...current, states };
+      });
+      if (get().persistError !== null) applyPersistError?.(null);
+    } catch (e) {
+      // 持久化失败不打断交互；错误落入 store 供面板可见反馈（P0：不得静默）。
+      applyPersistError?.(e instanceof Error ? e.message : String(e));
+    }
+  };
+}
+
+/**
+ * 项目切换/卸载前同步落盘待写状态（P0 竞态）：旧项目最后 ≤600ms 的编辑
+ * 若不先落盘，切换后 fire 的旧定时器会把新项目状态写进新键，旧编辑永久丢失。
+ */
+function flushPendingPersist(get: () => FilesWorkspaceStore): Promise<void> {
+  if (!persistTimer) return Promise.resolve();
+  clearTimeout(persistTimer);
+  persistTimer = null;
+  return flushPersist(get)();
 }
 
 // snapshot 的持久化负载需要 stateKey，单独承载避免污染 store 公开状态。
@@ -219,15 +258,28 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     selection: {},
     stateKey: "global",
     hydrated: false,
+    persistError: null,
 
     hydrate: (state, stateKey) => {
+      // 项目切换前先落盘旧键的待写编辑（P0 竞态：否则旧定时器会把新状态写进新键）。
+      void flushPendingPersist(get);
       const tree = normalizeTree(state.tree);
       const ids = paneIds(tree);
       const panes: Record<string, PaneState> = {};
+      // 持久化 tabId 直接复用（P0：旧实现 makeTab 重新生成 ID 后再拿旧 activeTabId
+      // 匹配，永不命中 → 激活标签恢复必然失效）。重复 ID 兜底重新生成。
+      const seenTabIds = new Set<string>();
       for (const paneId of ids) {
         const persisted = state.panes.find((p) => p.paneId === paneId);
         if (persisted && persisted.tabs.length > 0) {
-          const tabs = persisted.tabs.slice(0, 12).map((t) => makeTab(t.path));
+          const tabs = persisted.tabs.slice(0, 12).map((t) => {
+            const tab = makeTab(t.path);
+            if (t.tabId && !seenTabIds.has(t.tabId)) {
+              seenTabIds.add(t.tabId);
+              tab.tabId = t.tabId;
+            }
+            return tab;
+          });
           // 恢复：把历史收敛为单条（历史不持久化），路径即当前。
           panes[paneId] = {
             tabs,
@@ -273,15 +325,10 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       };
     },
 
-    persistNow: async () => {
-      const snapshot = get().snapshot();
-      await persistFilesWorkspace((current) => {
-        const states = { ...current.states };
-        delete states[snapshot.stateKeyRef];
-        states[snapshot.stateKeyRef] = snapshot.stateData;
-        return { ...current, states };
-      });
-    },
+    persistNow: () => flushPersist(get)(),
+
+    /** 项目切换/卸载前的显式落盘入口（面板层调用）。 */
+    flushPending: () => flushPendingPersist(get),
 
     openInPane: (paneId, rawPath, mode) => {
       const path = normalizePath(rawPath);
@@ -434,11 +481,11 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       schedulePersist(get);
     },
 
-    extractTabToPane: (tabId, fromPaneId, targetPaneId, direction) => {
+    extractTabToPane: (tabId, fromPaneId, targetPaneId, direction, side = "after") => {
       const s = get();
       const tab = s.panes[fromPaneId]?.tabs.find((t) => t.tabId === tabId);
       if (!tab) return false;
-      const result = splitPaneInTree(s.tree, targetPaneId, direction);
+      const result = splitPaneInTree(s.tree, targetPaneId, direction, side);
       if (!result) return false;
       set((st) => {
         const from = st.panes[fromPaneId];
@@ -456,9 +503,9 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       return true;
     },
 
-    splitPane: (paneId, direction, openPath) => {
+    splitPane: (paneId, direction, openPath, side = "after") => {
       const s = get();
-      const result = splitPaneInTree(s.tree, paneId, direction);
+      const result = splitPaneInTree(s.tree, paneId, direction, side);
       if (!result) return null;
       const path = openPath ?? s.panes[paneId]?.tabs.find((t) => t.tabId === s.panes[paneId]?.activeTabId)?.path ?? "";
       set((st) => {
@@ -514,7 +561,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     applyPreset: (presetId, initialPaths) => {
       const preset = LAYOUT_PRESETS[presetId];
       if (!preset) return;
-      const tree = reassignPaneIds(preset.build());
+      const { tree } = reassignPaneIds(preset.build());
       set(() => ({
         tree,
         panes: ensurePaneState({}, tree, (initialPaths ?? []).map(normalizePath)),
@@ -528,12 +575,26 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     applyTemplate: (templateId, templates) => {
       const template = templates.find((t) => t.id === templateId);
       if (!template) return;
-      const tree = reassignPaneIds(template.tree);
+      // 重映射必须同步覆盖 PersistedPane 与 activePaneId（P0：旧实现拿新 ID 查
+      // 旧窗格数据，所有标签丢失）。tabId 直接复用（与 hydrate 一致）。
+      const { tree, mapping } = reassignPaneIds(template.tree);
       const panes: Record<string, PaneState> = {};
-      for (const paneId of paneIds(tree)) {
-        const persisted = template.panes.find((p) => p.paneId === paneId);
-        const tabs = (persisted?.tabs ?? []).slice(0, 12).map((t) => makeTab(t.path));
-        panes[paneId] = { tabs, activeTabId: tabs[0]?.tabId ?? null };
+      const seenTabIds = new Set<string>();
+      for (const [oldId, newId] of mapping) {
+        const persisted = template.panes.find((p) => p.paneId === oldId);
+        const tabs = (persisted?.tabs ?? []).slice(0, 12).map((t) => {
+          const tab = makeTab(t.path);
+          if (t.tabId && !seenTabIds.has(t.tabId)) {
+            seenTabIds.add(t.tabId);
+            tab.tabId = t.tabId;
+          }
+          return tab;
+        });
+        panes[newId] = {
+          tabs,
+          activeTabId:
+            tabs.find((t) => t.tabId === persisted?.activeTabId)?.tabId ?? tabs[0]?.tabId ?? null,
+        };
       }
       set({ tree, panes, maximizedPaneId: null, selection: {}, activePaneId: paneIds(tree)[0] });
       schedulePersist(get);
@@ -579,5 +640,10 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
 
 // 绑定设置存储访问器（串行写入链需要）。
 bindSettingsStore(() => useSettingsStore.getState());
+
+// persistError 更新通道：写入链（模块层）→ store 实例（面板可见反馈）。
+applyPersistError = (value) => {
+  useFilesWorkspaceStore.setState({ persistError: value });
+};
 
 export { useFilesWorkspaceStore };

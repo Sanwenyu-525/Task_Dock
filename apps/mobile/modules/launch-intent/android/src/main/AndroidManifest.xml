@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 快捷方式跳板：由系统桌面（Launcher）通过显式组件启动，因此 exported=true；
+         无界面、不进最近任务、不处理任何用户数据内容。 -->
+    <application>
+        <activity
+            android:name="dev.taskdock.modules.launchintent.ShortcutActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    </application>
+</manifest>

@@ -21,13 +21,41 @@ beforeEach(async () => {
   await closeDatabase();
 });
 
-describe("迁移 v1→v5", () => {
+describe("迁移 v1→v6", () => {
   it("迁移到最新版本且序列连续", async () => {
     await openDatabase();
     const row = await rawFirst<{ user_version: number }>("PRAGMA user_version");
     expect(row?.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(5);
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(SCHEMA_VERSION).toBe(6);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("v6 新增采集附件与暂存表，且不改变既有同步表", async () => {
+    await openDatabase();
+    const attachmentColumns = (
+      await rawAll<{ name: string }>("PRAGMA table_info(attachments)")
+    ).map((column) => column.name);
+    expect(attachmentColumns).toEqual(
+      expect.arrayContaining([
+        "id", "owner_entity", "owner_id", "kind", "mime", "name", "local_uri",
+        "size", "width", "height", "duration_ms", "transcript", "transfer_state",
+        "transfer_error", "remote_file_id", "created_at", "updated_at", "deleted_at",
+      ]),
+    );
+    const stashColumns = (
+      await rawAll<{ name: string }>("PRAGMA table_info(capture_stash)")
+    ).map((column) => column.name);
+    expect(stashColumns).toEqual(
+      expect.arrayContaining([
+        "id", "kind", "mime", "name", "local_uri", "size", "duration_ms",
+        "transcript", "note", "source", "created_at",
+      ]),
+    );
+    // 附件不进 outbox：同步实体仍然只有 task/note/capture 三类
+    const outboxColumns = (await rawAll<{ name: string }>("PRAGMA table_info(outbox)")).map(
+      (column) => column.name,
+    );
+    expect(outboxColumns).not.toContain("attachment_id");
   });
 
   it("v1 建核心表并保留升级数据：旧任务/收集箱升级后仍在", async () => {

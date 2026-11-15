@@ -18,11 +18,12 @@
 | [06-pairing.md](06-pairing.md) | 配对协议、二维码/深链、令牌存储、安全偏差与验收证据 | `docs/ARCHITECTURE.md` 手机配对章 |
 | [07-sync.md](07-sync.md) | 任务 / 收集箱 / 笔记双向增量同步、载荷加密、冲突处理、真机验收 | `docs/ARCHITECTURE.md` 手机同步章 |
 | [08-file-transfer.md](08-file-transfer.md) | 文件互传 v1：双向分块加密、SAF 接收目录、桌面文件列表与验收 | `docs/ARCHITECTURE.md` 手机文件互传章 |
-| [09-share-receive.md](09-share-receive.md) | 系统分享接收：`ACTION_SEND`、冷/热启动、去重与确认落库 | —（手机端专项） |
+| [09-share-receive.md](09-share-receive.md) | 系统分享接收（2026-11-12 文本-only 规范；已扩展为文本/图片/文件/多选，见 14） | —（手机端专项） |
 | [10-widget.md](10-widget.md) | 主屏小组件 2×2 / 4×2：快照、点击路由、刷新与主题 | —（手机端专项） |
-| [11-background-sync-design.md](11-background-sync-design.md) | 后台/自动同步方案评估（**仅设计，未实现**） | — |
+| [11-background-sync-design.md](11-background-sync-design.md) | 后台/自动同步方案评估（设计；前台自动同步已落地，见 14 §7） | — |
 | [12-transport-security.md](12-transport-security.md) | 传输安全索引：威胁模型、SPKI 固定、fail-closed、偏差与安全验收矩阵 | `docs/ARCHITECTURE.md` 四、安全设计 / 手机配对章 |
 | [13-android-screen-control.md](13-android-screen-control.md) | 桌面端 Android 屏幕镜像/独立虚拟屏：会话状态机、设备去重、应用选择、截图与诊断 | `docs/ARCHITECTURE.md` 窗口与子进程章 |
+| [14-capture-and-quick-entry.md](14-capture-and-quick-entry.md) | 统一采集中心、拍照/相册/文件、语音速记、分享接收增强、系统快捷方式、前台自动同步与附件传送 | —（手机端专项） |
 | [prototypes/](prototypes/README.md) | Stitch 页面原型：v2 终版 11 屏 + 33 个导出变体（按页面归组，含画廊 `index.html`） | 设计稿/参考图 |
 | [../MOBILE_STACK.md](../MOBILE_STACK.md) | 选型与共享边界**设计稿**（含未实现能力的规划，不是现状） | 选型报告 |
 | [../../apps/mobile/AGENTS.md](../../apps/mobile/AGENTS.md) | 本目录的开发红线与提交前自检 | 根 `AGENTS.md` |
@@ -84,9 +85,15 @@
 | `server_rev` / 墓碑日志（收集箱、笔记） | **已建**（v5）；日志保留期清理未实现 |
 | TLS + SPKI 指纹固定 | **已实现并在真机端到端验证**（2026-11-13）：TLS-only、叶证书（`Profile::Leaf`，旧 CA 证书自动轮换）、SPKI 预置指纹、缺指纹 fail-closed 三入口；修复 `SecureHttpModule` 未落地 method/headers/body（曾致配对 405、同步/文件 401）。见 [12-transport-security.md](12-transport-security.md) |
 | 系统分享接收（`ACTION_SEND` text/plain） | **已实现并在真机验证**（2026-11-12，vivo V2323A）：冷启动、运行中 `onNewIntent`、4500 字截断（DB 实测 4000）、确认后落收集箱均 PASS；取消空态与图片分享未执行。见 [09-share-receive.md](09-share-receive.md) |
+| 系统分享接收（图片 / 文件 / 多选，`SEND_MULTIPLE`） | **已实现**（2026-11-14）：流式复制到私有目录、9 项/50MB/200MB 上限、逐项失败隔离、签名去重，落地页为统一采集中心；真机实测结果见 `tmp/acceptance/mobile-efficiency/report.md`。见 [14-capture-and-quick-entry.md](14-capture-and-quick-entry.md) |
+| 统一采集中心（拍照 / 相册 / 文件 / 文本 / 语音） | **已实现**（2026-11-14）：私有目录 + `capture_stash` 暂存、单事务保存到收集箱/任务/笔记、`clientId` 幂等、附件与实体稳定关联；见 14 |
+| 语音速记 | **已实现**（2026-11-14）：本地 AAC 录制、计时、试听、取消清理；**无转写**（界面明示「尚未转写」），不调用云端识别 |
+| 系统快捷方式（长按图标） | **已实现**（2026-11-14）：4 个静态 shortcut + 跳板 Activity，冷/热启动统一入口；磁贴与通知常驻未做 |
+| 前台自动同步 / 待同步计数 / 失败退避 | **已实现**（2026-11-14）：回前台与本地写入后自动同步，单飞 + 8s 防抖 + 5min 最小间隔 + 30s–5min 退避；**仅前台**，后台同步仍未实现 |
+| 采集附件传送（独立生命周期） | **已实现**（2026-11-14）：`transfer_state` pending→uploading→sent/failed/skipped，复用 `/v1/files`；默认不自动传 |
 | 主屏小组件（AppWidgetProvider 2×2 / 4×2） | **已实现**：标准 AOSP 模拟器真实添加 PASS（pin 确认弹窗 → 落桌面 4×2 → 显示真实任务数据，2026-11-13）；**vivo OriginOS 桌面复现阻断**（`requestPinAppWidget` 无系统弹窗、组件面板不列标准 AppWidget），应用内提示已改为带手动兜底路径；vivo 落桌面/点击/刷新未验证。见 [10-widget.md](10-widget.md) |
 | 文件互传（v2） | **已实现并在真机双向验证**（2026-11-13）：桌面→手机 16KB（三方 SHA-256 一致，**手机端本地复核生效**）、手机→桌面 8KB（桌面 inbox 哈希一致）；取消/路径穿越/清理/重复请求由协议级 42/42 覆盖。见 [08-file-transfer.md](08-file-transfer.md) |
-| 后台 / 自动同步、远程推送 | **未实现**（后台方案见 [11-background-sync-design.md](11-background-sync-design.md)，仅设计评估） |
+| 后台 / 自动同步、远程推送 | **前台自动同步已实现（2026-11-14）**；后台任务调度与远程推送仍**未实现**（不改默认承诺，见 [11-background-sync-design.md](11-background-sync-design.md) 与 14 §7） |
 | iOS | 未验证（本机无 macOS/Xcode），本轮只做 Android |
 
 ### 已记录的已知限制
@@ -95,7 +102,8 @@
   见 [04-testing.md](04-testing.md) §6。
 - 提醒使用默认精度排期（约 7.5 分钟窗口），不申请 `SCHEDULE_EXACT_ALARM`。
 - 重复规则按自然日/自然周计算，不支持法定节假日与调休。
-- 任务同步需手动点「立即同步」：无后台/自动同步，失败只做客户端退避重试。
+- 任务同步需手动点「立即同步」：已由 2026-11-14 的前台自动同步缓解（回前台 / 本地写入后
+  自动补齐，仍无后台常驻），见 14 §7。
 - 同步冲突按整条记录处理，没有字段级自动合并；`sync_changes` 日志尚无保留期清理。
 
 ## 变更记录
@@ -164,3 +172,11 @@
   scrcpy 日志就绪判定、设备身份去重、可启动应用枚举与应用名记忆、窗口定位、截图、残留诊断、
   多屏实验开关；关闭不再持有全局锁等待。真机复验状态与限制见该文 §14（本轮无可用 ADB 设备，
   新增能力未冒充已真机通过）。
+- 2026-11-14 移动端效率能力：新增 [14-capture-and-quick-entry.md](14-capture-and-quick-entry.md)。
+  SQLite v6（`attachments` / `capture_stash`，append-only）、统一采集中心（拍照/相册/文件/
+  文本/语音 + 暂存与幂等保存）、语音速记（AAC，本地无转写）、分享接收扩展为
+  文本/图片/文件/多选（流式落私有目录 + 限额 + 逐项失败隔离）、4 个静态快捷方式与跳板
+  Activity、前台自动同步（单飞/防抖/退避/仅 Wi-Fi 默认）与附件独立传送状态机。
+  原 `ShareScreen` 删除，分享与快捷方式统一进入采集中心；`09` 的文本-only 描述以 14 为准，
+  `11` 的「默认不自动」偏差在 14 §7.1 说明。自动化验证与真机/构建状态以
+  `tmp/acceptance/mobile-efficiency/report.md` 为准。

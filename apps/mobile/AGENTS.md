@@ -9,19 +9,25 @@
 > 与代码不符——2026-11-08 起有局域网配对，2026-11-09 起有手动同步与文件互传，
 > 2026-11-12 起传输为 TLS-only（协议 v2）。以下为当前边界；历史描述见 git 历史。
 
-- 业务数据全部在本机 SQLite；网络只限**用户显式发起**的局域网配对、连接测试、
-  手动同步与文件互传（协议 v2，TLS-only + SPKI 指纹固定，见 `docs/mobile/06-pairing.md`）。
-  不得新增后台轮询/自动同步（A3 设计另行归属）。
+- 业务数据全部在本机 SQLite；网络只限**用户已配对**的局域网连接（配对/连接测试由用户显式发起，
+  同步与文件互传可在前台自动触发，见下一条；协议 v2，TLS-only + SPKI 指纹固定，见
+  `docs/mobile/06-pairing.md`、`docs/mobile/14-capture-and-quick-entry.md`）。
+  更正（2026-11-14）：此前本条写「不得新增自动同步」，与用户要求（减少手动步骤）冲突，现改为
+  **允许仅前台的自动同步**：不注册后台任务、不做常驻轮询/网络监听、不申请前台服务；
+  判定链与退避见 `src/lib/sync/autoSync.ts`。后台同步仍归 A3 设计，不得在代码中宣称支持。
 - 所有请求必须走 `src/lib/sync/secureFetch.ts`（本地原生模块 `modules/secure-http/`，
   仅接受 `https://`）；不得引入绕过指纹固定的网络路径，不得恢复明文放行插件。
   已配对连接缺少已钉住的 SPKI 指纹时必须 **fail-closed**（提示重新配对），
   不得退回「首用信任」继续发送设备令牌。
-- 本地 Expo 模块共三个，均由 autolinking 链接、由 `plugins/` 里的 config plugin 写清单：
-  `secure-http`（TLS + 指纹固定）、`share-intent`（ACTION_SEND 接收）、
-  `taskdock-widget`（AppWidgetProvider 2×2 / 4×2）。改原生代码后必须重跑
-  `npx expo prebuild --platform android` 并做 Gradle 编译验证；`android/` 仍不入库。
-- 小组件与分享接收**只允许事件驱动**：小组件 `updatePeriodMillis=0`，不得引入后台轮询、
-  常驻服务或定时刷新；快照只写标题/勾选态/计数/时间戳，绝不写令牌、密钥或同步元数据。
+- 本地 Expo 模块共六个，均由 autolinking 链接、由 `plugins/` 里的 config plugin 写清单：
+  `secure-http`（TLS + 指纹固定）、`share-intent`（ACTION_SEND / SEND_MULTIPLE 接收）、
+  `taskdock-widget`（AppWidgetProvider 2×2 / 4×2）、`voice-recorder`（AAC 录音与本地回放）、
+  `network-state`（计费网络判定，仅前台查询）、`launch-intent`（快捷方式跳板）。
+  改原生代码后必须重跑 `npx expo prebuild --platform android` 并做 Gradle 编译验证；
+  `android/` 仍不入库。
+- 小组件、分享接收、录音与网络判定**只允许事件驱动**：小组件 `updatePeriodMillis=0`，
+  不得引入后台轮询、常驻服务、定时刷新或录音常驻；网络类型只在同步前按需查询一次。
+  快照只写标题/勾选态/计数/时间戳，绝不写令牌、密钥或同步元数据。
 - 桌面端 `http_ingest` 只监听 `127.0.0.1`，不得改成局域网/公网监听，也不得把它当作手机接入点。
 - 不新增依赖（新增必须单独说明理由、体积影响与回退路径并取得同意）。
 

@@ -7,8 +7,9 @@ export type RouteKey =
   | "conflict"
   | "note_editor"
   | "widget"
-  | "share"
   | "notifications"
+  // 统一采集中心（照片 / 语音 / 文件 / 文本），系统分享与快捷方式都进入这里
+  | "capture"
   // 蓝青专业版导航重构（2026-11-13）：收集箱/笔记/设备/设置不再是底部一级栏，
   // 但页面本身、数据与交互完全保留，改为从「工具」「我的」进入的二级页。
   | "inbox"
@@ -18,20 +19,24 @@ export type RouteKey =
   // 开发验收专用（无导航入口，长按「我的」页版本号进入），不进正式信息架构
   | "icon_gallery";
 
+/** 采集中心打开时的初始状态：普通采集 / 直接开相机 / 直接录音 / 直接写任务 */
+export type CaptureIntent = "capture" | "camera" | "voice" | "task";
+
 /** 底部五栏：顺序即 TabBar 渲染顺序（首页 / 任务 / 工作区 / 工具 / 我的） */
 export type TabKey = "home" | "tasks" | "workspace" | "tools" | "profile";
 
 export const TAB_ORDER: TabKey[] = ["home", "tasks", "workspace", "tools", "profile"];
 
-/** 栈内路由；目前只有编辑器需要参数（要打开的笔记 id，缺省=新建） */
+/** 栈内路由；编辑器带笔记 id，采集中心带初始意图 */
 export interface Route {
   key: RouteKey;
   noteId?: string;
+  intent?: CaptureIntent;
 }
 
 /** 下发给屏幕的导航能力：只开 push/back，不让屏幕直接操作栈数组 */
 export interface Nav {
-  push: (key: RouteKey, noteId?: string) => void;
+  push: (key: RouteKey, noteId?: string, intent?: CaptureIntent) => void;
   back: () => void;
 }
 

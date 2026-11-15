@@ -49,6 +49,16 @@ export function ToolsScreen({ nav, inboxCount }: { nav: AppNav; inboxCount: numb
       />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {/* 采集是最高频动作：放在所有分组之上，一次点击直接进采集中心 */}
+        <GlassCard style={[styles.captureCard, { borderColor: tokens.cardBorderStrong }]}>
+          <EntryRow
+            icon="inbox"
+            label="快速采集"
+            helper="拍照、相册、语音、文件、一句话，一次收好"
+            onPress={() => nav.push("capture")}
+          />
+        </GlassCard>
+
         <View style={styles.group}>
           <SectionHeader icon="wrench" title="常用工具" />
           <View style={styles.grid}>
@@ -118,6 +128,7 @@ const styles = StyleSheet.create({
   grid: { flexDirection: "row", flexWrap: "wrap" },
   cell: { flexBasis: "25%" },
   listCard: { paddingHorizontal: space.md, paddingVertical: space.xxs },
+  captureCard: { paddingHorizontal: space.md, paddingVertical: space.xxs, borderWidth: 1 },
   footnote: {
     fontSize: font.label,
     lineHeight: 18,

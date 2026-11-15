@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 录音权限由 config plugin（plugins/withCapturePermissions.js）写入主清单；
+         本模块只声明自己需要它，便于审查看出「哪个模块用了麦克风」。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+</manifest>

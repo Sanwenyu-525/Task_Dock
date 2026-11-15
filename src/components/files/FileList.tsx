@@ -26,6 +26,8 @@ const GRID_GAP = 8;
 
 const thumbCache = new Map<string, string | null>();
 const THUMB_CACHE_MAX = 300;
+/** 队列上限：快速滚动万级网格时丢弃最旧的未执行任务（未发起 IPC，丢弃安全）。 */
+const THUMB_QUEUE_MAX = 500;
 let thumbInflight = 0;
 const thumbQueue: Array<() => void> = [];
 
@@ -74,6 +76,10 @@ function loadThumb(
       });
   };
   thumbQueue.push(job);
+  // 队列超限：丢弃最旧的未执行任务（禁积压；已执行任务由 cancelled 标志兜底）。
+  while (thumbQueue.length > THUMB_QUEUE_MAX) {
+    thumbQueue.shift();
+  }
   pumpThumbQueue();
   return () => {
     cancelled = true;

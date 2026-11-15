@@ -529,4 +529,28 @@ adb -s <PHONE_IP>:38585 shell input keyevent KEYCODE_HOME
 真机复验命令与待验证矩阵见新文档 §13/§14，本轮验收报告在
 `tmp/acceptance/android-virtual-display-development/report.md`。
 
+### 20.4 2026-11-14 晚补验与更正
+
+§20.3 记录的真机不可用状态已变化：当晚 ADB 无线设备恢复在线（mDNS transport），完成命令层
+真机联调与 UI 验收，结论与更正如下。
+
+- **真机联调通过**：`TASK_DOCK_VD_LIVE=1 cargo test --test virtual_display_live` 于 22:38:56–
+  22:39:06 运行，1 passed / 0 failed（8.69s）。覆盖设备在线、可启动应用枚举、非法包名/尺寸
+  拒绝、镜像启动→running→定位→截图→重复启动拦截→关闭回收、虚拟屏启动→running→截图→关闭。
+  截图测试已改为解码 PNG 并校验采样颜色数（镜像 495、虚拟屏 288），不再把空白帧当成功。
+- **§20.2 的 manifest 描述更正**：`build.rs` 实际通过 `embed-resource` 把 `tests.manifest`
+  编成 `.res` 只注入集成测试目标（`rustc-link-arg-tests`）；`cargo test --lib` 产生的单测
+  exe 仍不带清单，需按 `docs/TESTING.md` 用 `mt.exe` 补嵌。本轮单测 exe 补嵌后 13/13 通过
+  （23:37，当前工作树；22:59 旧 exe 同结果）；不是产品二进制的运行时问题。
+- **截图首帧**：虚拟屏刚进入 running 时首帧可能只有背景层，命令层 `vd_screenshot` 增加 3 次
+  有界重试（300ms 间隔）后再返回，已在真机联调中验证能截到应用画面。
+- **横屏**：`1920x1080/384` 继续以 scrcpy 参数层日志与窗口截图取证（2026-11-14 15:54），
+  UI 已提供该选项但未做应用内横屏创建回归。
+- **UI 验收**：隔离实例（独立数据目录 + WebView2 profile + CDP）完成镜像创建→running→
+  截屏弹窗解码→关闭→后端 stopped 的整链路；虚拟屏完成搜索 `settings`→选择系统应用→创建→
+  已就绪→截屏解码→关闭→stopped；真实应用列表（184 项可启动）与 400/320 宽度、深浅色渲染
+  通过。证据与未验证项见本轮验收报告。
+- **仍未验证**：物理触控/键盘/中文输入本轮未重测（沿用 §19 的用户人工确认，不计本轮通过）、
+  双虚拟屏并发、长时稳定性、task_dock 退出回收、原生窗口 320/400 物理缩放与 150% DPI。
+
 

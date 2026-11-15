@@ -1204,7 +1204,7 @@ const shim = `
         const node = fwTree.get(dir);
         if (!node) throw new Error("目录不可访问: " + dir + "（预览夹具未包含该路径）");
         const entries = node.filter((e) => args?.showHidden === true || !e.hidden);
-        return { path: dir, entries: entries.map((e) => ({ ...e })), truncated: false };
+        return { path: dir, entries: entries.map((e) => ({ ...e })), scanned: entries.length, hasMore: false };
       }
       case "fs_dir_signature": {
         const dir = fwNorm(args?.path || "");

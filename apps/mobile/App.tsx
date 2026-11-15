@@ -7,17 +7,22 @@ import { StatusBar } from "expo-status-bar";
 
 import { LaunchOverlay } from "./src/components/LaunchOverlay";
 import { TabBar, type TabKey } from "./src/components/TabBar";
+import launchIntent, { type LaunchAction } from "./modules/launch-intent";
 import { listCaptures } from "./src/db/captures";
+import { markAttachmentsMissingFiles } from "./src/db/attachments";
 import { openDatabase } from "./src/db/database";
 import { getSetting, setSetting } from "./src/db/kv";
 import { useWindowInsets } from "./src/lib/insets";
-import { parseWidgetRouteUri, type Route, type RouteKey } from "./src/lib/nav";
+import { parseWidgetRouteUri, type CaptureIntent, type Route, type RouteKey } from "./src/lib/nav";
 import { offerShare, pullInitialShare, subscribeNativeShareEvents } from "./src/lib/pendingShare";
+import { loadAutoSyncSettings, requestAutoSync, subscribeSyncCompleted } from "./src/lib/sync/autoSync";
+import { transferPendingAttachments } from "./src/lib/sync/attachmentTransfer";
 import { offerPairingUri } from "./src/lib/sync/pendingPairing";
 import { notifyWidgetDataChanged } from "./src/lib/widgetSnapshot";
 import { subscribeReminderActions } from "./src/notifications/actions";
 import { rebuildAllReminders, rescheduleAllReminders } from "./src/notifications/reminderEngine";
 import { ensureReminderCategory, installNotificationHandler } from "./src/notifications/reminders";
+import { CaptureScreen } from "./src/screens/CaptureScreen";
 import { ConflictScreen } from "./src/screens/ConflictScreen";
 import { DeviceScreen } from "./src/screens/DeviceScreen";
 import { FilesScreen } from "./src/screens/FilesScreen";
@@ -30,7 +35,6 @@ import { PairingScreen } from "./src/screens/PairingScreen";
 import { ProfileScreen } from "./src/screens/ProfileScreen";
 import { IconGalleryScreen } from "./src/screens/IconGalleryScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
-import { ShareScreen } from "./src/screens/ShareScreen";
 import { SyncScreen } from "./src/screens/SyncScreen";
 import { TasksScreen } from "./src/screens/TasksScreen";
 import { ToolsScreen } from "./src/screens/ToolsScreen";
@@ -96,11 +100,17 @@ function Shell() {
   /** 推送栈：非空时全屏盖在 Tab 之上（隐藏 TabBar），硬件返回 = pop */
   const [stack, setStack] = useState<Route[]>([]);
 
+  // 自动同步拉到远端改动时，列表必须重查一次；开启「自动传送附件」时顺手把待发送附件送出去。
   useEffect(() => {
-    const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active") setVersion((v) => v + 1);
+    const unsubscribe = subscribeSyncCompleted((result) => {
+      if (result.applied > 0) setVersion((v) => v + 1);
+      void (async () => {
+        const settings = await loadAutoSyncSettings().catch(() => null);
+        if (!settings?.autoTransferAttachments) return;
+        await transferPendingAttachments().catch(() => undefined);
+      })();
     });
-    return () => sub.remove();
+    return unsubscribe;
   }, []);
 
   // 通知上的「完成 / 10 分钟后」会直接改库：处理完让列表重查一次，
@@ -137,15 +147,47 @@ function Shell() {
     };
   }, [version]);
 
-  const push = useCallback((key: RouteKey, noteId?: string) => {
+  const push = useCallback((key: RouteKey, noteId?: string, intent?: CaptureIntent) => {
     setStack((prev) => {
-      // 深链可能在配对页已打开时重复触发：不叠加第二个相同页面，
+      // 深链可能在配对页/采集页已打开时重复触发：不叠加第二个相同页面，
       // 新载荷由 pendingPairing / pendingShare 的订阅者就地更新。
       const topKey = prev[prev.length - 1]?.key;
-      if ((key === "pairing" || key === "share") && topKey === key) return prev;
-      return [...prev, { key, noteId }];
+      if ((key === "pairing" || key === "capture") && topKey === key) return prev;
+      return [...prev, { key, noteId, intent }];
     });
   }, []);
+
+  // 桌面快捷方式（长按图标）：原生跳板把动作写进 SharedPreferences，这里消费一次。
+  // 冷启动（首帧）与热启动（回到前台）都走同一入口；动作过期或非法时返回 null。
+  const consumeLaunchAction = useCallback(() => {
+    if (!launchIntent) return;
+    try {
+      const pending = launchIntent.takePendingAction();
+      if (!pending) return;
+      const intentMap: Record<LaunchAction, CaptureIntent> = {
+        capture: "capture",
+        camera: "camera",
+        voice: "voice",
+        task: "task",
+      };
+      push("capture", undefined, intentMap[pending.action]);
+    } catch {
+      // 原生模块异常时按「没有快捷动作」处理，不影响正常启动
+    }
+  }, [push]);
+
+  // 回到前台：刷新数据 + 消费快捷动作 + 触发一次前台自动同步
+  // （同步内部有最小间隔/退避/单飞，不会因为频繁切换而来回拉取）。
+  useEffect(() => {
+    consumeLaunchAction();
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      setVersion((v) => v + 1);
+      consumeLaunchAction();
+      requestAutoSync("foreground");
+    });
+    return () => sub.remove();
+  }, [consumeLaunchAction]);
 
   // 深链配对：系统相机扫描 taskdock://pair?... 后唤起 App（冷启动与运行中都覆盖）。
   // 小组件点击：taskdock://route/<tab> 直达对应 Tab。载荷只进内存队列，不写日志；
@@ -178,12 +220,13 @@ function Shell() {
     };
   }, [push]);
 
-  // 系统分享（ACTION_SEND text/plain）：冷启动拉取一次 + 运行中订阅原生事件桥接入队。
-  // 载荷只进内存队列，用户在分享页确认保存才落库；返回/取消会清空队列。
+  // 系统分享（文本 / 图片 / 文件 / 多选）：冷启动拉取一次 + 运行中订阅原生事件桥接入队。
+  // 统一进入采集中心（不再有第二套「分享确认页」）：用户在采集页确认后才落库，
+  // 返回/取消会清空队列并删除原生已复制的临时文件。
   useEffect(() => {
-    if (pullInitialShare()) push("share");
+    if (pullInitialShare()) push("capture");
     return subscribeNativeShareEvents((payload) => {
-      if (offerShare(payload)) push("share");
+      if (offerShare(payload)) push("capture");
     });
   }, [push]);
 
@@ -243,8 +286,14 @@ function Shell() {
         );
       case "widget":
         return <WidgetScreen nav={nav} />;
-      case "share":
-        return <ShareScreen nav={nav} onDataChanged={handleDataChanged} />;
+      case "capture":
+        return (
+          <CaptureScreen
+            nav={nav}
+            intent={route.intent}
+            onDataChanged={handleDataChanged}
+          />
+        );
       case "notifications":
         return <NotificationsScreen nav={nav} />;
       case "inbox":
@@ -390,6 +439,8 @@ export default function App() {
           await rebuildAllReminders();
           await setSetting("reminder_actions_version", REMINDER_ACTIONS_VERSION);
         })().catch(() => undefined);
+        // 附件元数据与本机文件对账：文件被清掉时把待传状态改成失败，避免同步页「待传」数字永远不降。
+        void markAttachmentsMissingFiles().catch(() => undefined);
         const stored = await getSetting("theme_mode");
         if (cancelled) return;
         setBoot({ phase: "ready", mode: isThemeMode(stored) ? stored : "system" });

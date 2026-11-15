@@ -123,6 +123,8 @@ vi.mock("./lib/bridge", () => ({
   onThemeChanged: bridgeMock.listener("theme-changed"),
   // 跨窗口设置广播（U0）：外壳只订阅并重读，不在此测试写入路径。
   onSettingsChanged: bridgeMock.listener("settings-changed"),
+  // 大型工作台启动失败提示（启动意图收敛）：外壳只订阅并弹提示，不在此测试打开窗口。
+  onWorkbenchStartupFailed: bridgeMock.listener("workbench-startup-failed"),
   undoSnooze: async () => [0, 0],
 }));
 

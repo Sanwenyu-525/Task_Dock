@@ -1,8 +1,14 @@
 // 收集箱仓储：client_id 唯一索引提供幂等写入（重复提交只落一条）。
+//
+// 附件不在这里插入（见 db/attachments.ts）：需要「文本 + 附件 + 清暂存」原子落库的场景
+// 走 db/captureSave.ts，它复用本文件的 insertCaptureInTx，保持同一事务。
+import type { SQLiteDatabase } from "expo-sqlite";
+
 import type { Capture } from "../domain/types";
 import { AppError } from "../lib/errors";
 import { newId } from "../lib/id";
 
+import { moveAttachmentsOwnerInTx } from "./attachments";
 import { getDatabase } from "./database";
 import { buildTask, insertTaskInTx } from "./tasks";
 
@@ -33,6 +39,59 @@ function mapRow(row: CaptureDbRow): Capture {
   };
 }
 
+/** 校验收集箱正文：空白拒绝，超过 4000 码点拒绝（桌面端同口径）。 */
+export function assertCaptureContent(content: string): string {
+  const text = content.trim();
+  if (!text) throw new AppError("validation", "收集箱内容不能为空");
+  if ([...text].length > MAX_CONTENT) {
+    throw new AppError("validation", `收集箱内容不能超过 ${MAX_CONTENT} 字`);
+  }
+  return text;
+}
+
+/**
+ * 在调用方已开启的事务内插入收集箱条目并登记 outbox。
+ *
+ * 幂等：client_id 唯一索引命中时不写第二行也不写 outbox，返回 existing 并标记 duplicated。
+ * `kind` 固定 text：桌面端 quick_capture 的 kind 白名单只有 task/idea/text/todo/link，
+ * 手机端照片/语音靠 attachments 表达，不把自定义类型推给桌面端。
+ */
+export async function insertCaptureInTx(
+  db: SQLiteDatabase,
+  input: { content: string; clientId: string; createdAt?: number },
+  now: number,
+): Promise<{ capture: Capture; duplicated: boolean }> {
+  const text = assertCaptureContent(input.content);
+  const row: CaptureDbRow = {
+    id: newId("c"),
+    client_id: input.clientId,
+    content: text,
+    kind: "text",
+    created_at: input.createdAt ?? now,
+    rev: 0,
+    server_rev: 0,
+  };
+
+  const inserted = await db.runAsync(
+    `INSERT OR IGNORE INTO captures (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [row.id, row.client_id, row.content, row.kind, row.created_at, row.rev, row.server_rev],
+  );
+  if (inserted.changes === 0) {
+    const existing = await db.getFirstAsync<CaptureDbRow>(
+      `SELECT ${COLUMNS} FROM captures WHERE client_id = ?`,
+      [row.client_id],
+    );
+    return { capture: existing ? mapRow(existing) : mapRow(row), duplicated: true };
+  }
+
+  await db.runAsync(
+    `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [newId("op"), "capture", row.id, 0, JSON.stringify({ type: "create" }), now],
+  );
+  return { capture: mapRow(row), duplicated: false };
+}
+
 export async function listCaptures(): Promise<Capture[]> {
   const db = getDatabase();
   const rows = await db.getAllAsync<CaptureDbRow>(
@@ -52,58 +111,13 @@ export async function addCapture(
   clientId: string = newId("cap"),
 ): Promise<AddCaptureResult> {
   const db = getDatabase();
-  const text = content.trim();
-  if (!text) return { capture: null, duplicated: false };
-  if ([...text].length > MAX_CONTENT) {
-    // 桌面端收集箱上限 4000 字符；超限在本地拦下，避免推上去变成 invalid_patch。
-    throw new AppError("validation", `收集箱内容不能超过 ${MAX_CONTENT} 字`);
-  }
-
-  const now = Date.now();
-  const row: CaptureDbRow = {
-    id: newId("c"),
-    client_id: clientId,
-    content: text,
-    kind: "text",
-    created_at: now,
-    rev: 0,
-    server_rev: 0,
-  };
-
-  // withTransactionAsync 只接受 void 回调，插入结果用外层变量带出
-  let changes = 0;
+  let outcome: { capture: Capture; duplicated: boolean } | null = null;
   await db.withTransactionAsync(async () => {
-    const inserted = await db.runAsync(
-      `INSERT OR IGNORE INTO captures (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        row.id,
-        row.client_id,
-        row.content,
-        row.kind,
-        row.created_at,
-        row.rev,
-        row.server_rev,
-      ],
-    );
-    changes = inserted.changes;
-    if (changes === 0) return;
-
-    await db.runAsync(
-      `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [newId("op"), "capture", row.id, 0, JSON.stringify({ type: "create" }), now],
-    );
+    outcome = await insertCaptureInTx(db, { content, clientId }, Date.now());
   });
-
-  if (changes === 0) {
-    const existing = await db.getFirstAsync<CaptureDbRow>(
-      `SELECT ${COLUMNS} FROM captures WHERE client_id = ?`,
-      [clientId],
-    );
-    return { capture: existing ? mapRow(existing) : null, duplicated: true };
-  }
-
-  return { capture: mapRow(row), duplicated: false };
+  if (!outcome) return { capture: null, duplicated: false };
+  const result: { capture: Capture; duplicated: boolean } = outcome;
+  return { capture: result.capture, duplicated: result.duplicated };
 }
 
 export async function deleteCapture(id: string): Promise<void> {
@@ -142,6 +156,8 @@ export async function promoteCapture(id: string): Promise<string | null> {
 
   await db.withTransactionAsync(async () => {
     await insertTaskInTx(db, task, now);
+    // 附件跟着条目走：只改归属，不复制文件、不重建记录（转任务后原图仍可打开/发送）
+    await moveAttachmentsOwnerInTx(db, { entity: "capture", id }, { entity: "task", id: task.id });
     await db.runAsync(`UPDATE captures SET deleted_at = ?, rev = rev + 1 WHERE id = ?`, [now, id]);
     await db.runAsync(
       `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)

@@ -60,8 +60,11 @@ fn wait_gone(id: &str, timeout: Duration) {
 }
 
 fn capture_with_retry(id: &str) -> vd::VdScreenshot {
-    for attempt in 0..6 {
-        match vd::vd_screenshot(id) {
+    // 虚拟屏刚进入 running 时首帧可能仍是空白背景：等到画面有内容再判定，
+    // 否则「截图成功」只证明拿到一张 PNG，不能证明截到了应用画面。
+    sleep(Duration::from_millis(700));
+    for attempt in 0..8 {
+        match vd::vd_screenshot(id.to_string()) {
             Ok(shot) => {
                 let bytes = std::fs::read(&shot.path).expect("读取截图文件");
                 assert!(
@@ -70,9 +73,19 @@ fn capture_with_retry(id: &str) -> vd::VdScreenshot {
                     shot.path
                 );
                 assert!(shot.width > 0 && shot.height > 0);
-                return shot;
+                let colors = png_distinct_colors(&shot.path);
+                if colors >= 8 {
+                    eprintln!("截图采样颜色数: {colors}");
+                    return shot;
+                }
+                if attempt < 7 {
+                    eprintln!("截图内容为空（采样颜色数 {colors}），600ms 后重试…");
+                    sleep(Duration::from_millis(600));
+                } else {
+                    panic!("截图连续 8 次为空（采样颜色数 {colors}）: {}", shot.path);
+                }
             }
-            Err(err) if attempt < 5 => {
+            Err(err) if attempt < 7 => {
                 eprintln!("截图第 {} 次失败（{}），重试…", attempt + 1, err);
                 sleep(Duration::from_millis(600));
             }
@@ -80,6 +93,27 @@ fn capture_with_retry(id: &str) -> vd::VdScreenshot {
         }
     }
     unreachable!()
+}
+
+/// 解码 PNG 并按步长采样，返回不同颜色数量；用于区分「应用画面」与空白帧。
+fn png_distinct_colors(path: &str) -> usize {
+    use std::collections::HashSet;
+    let file = std::fs::File::open(path).expect("打开截图");
+    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let mut reader = decoder.read_info().expect("PNG 头");
+    let mut buf = vec![0u8; reader.output_buffer_size().expect("截图缓冲区")];
+    let info = reader.next_frame(&mut buf).expect("PNG 帧");
+    let samples = info.color_type.samples();
+    let stride = (info.width as usize * samples).max(1);
+    let mut colors = HashSet::new();
+    for y in (0..info.height as usize).step_by(7) {
+        let row = y * stride;
+        for x in (0..info.width as usize).step_by(11) {
+            let at = row + x * samples;
+            colors.insert(buf[at..at + samples].to_vec());
+        }
+    }
+    colors.len()
 }
 
 #[test]
@@ -154,12 +188,12 @@ fn live_mirror_and_virtual_session_roundtrip() {
     );
     assert!(duplicate.is_err(), "重复启动未被拦截: {duplicate:?}");
 
-    let focus = vd::vd_focus(&mirror.id).expect("定位镜像窗口");
+    let focus = vd::vd_focus(mirror.id.clone()).expect("定位镜像窗口");
     assert!(focus.found, "未找到镜像窗口");
     let shot = capture_with_retry(&mirror.id);
     eprintln!("镜像截图: {} {}x{}", shot.path, shot.width, shot.height);
 
-    assert!(vd::vd_stop(&mirror.id).expect("关闭镜像"));
+    assert!(vd::vd_stop(mirror.id.clone()).expect("关闭镜像"));
     wait_gone(&mirror.id, Duration::from_secs(12));
 
     // 独立虚拟屏：running → 截图 → 关闭。
@@ -183,7 +217,7 @@ fn live_mirror_and_virtual_session_roundtrip() {
     let shot = capture_with_retry(&virtual_session.id);
     eprintln!("虚拟屏截图: {} {}x{}", shot.path, shot.width, shot.height);
 
-    assert!(vd::vd_stop(&virtual_session.id).expect("关闭虚拟屏"));
+    assert!(vd::vd_stop(virtual_session.id.clone()).expect("关闭虚拟屏"));
     wait_gone(&virtual_session.id, Duration::from_secs(12));
     eprintln!("真机联调完成：镜像与虚拟屏均已启动、截图并回收");
 }

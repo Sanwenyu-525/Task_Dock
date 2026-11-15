@@ -40,6 +40,7 @@ import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
 import {
   loadDir,
+  loadMore,
   reloadIfChanged,
   subscribeDir,
   getDirState,
@@ -52,6 +53,7 @@ import {
   startFwDrag,
   subscribeFwDrag,
   updateFwHover,
+  sameZone,
   validateFileDrop,
   getFwDragState,
   getFwClipboard,
@@ -70,6 +72,7 @@ import {
   fsRename,
   shelfAddPaths,
   type FsEntry,
+  type FsOpReport,
   type FsStat,
 } from "../../lib/bridge";
 import { useFilesWorkspaceStore, tabTitle, type FolderTab } from "../../store/useFilesWorkspaceStore";
@@ -182,6 +185,7 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
   const [dialog, setDialog] = useState<PendingOp | null>(null);
   const [dialogInput, setDialogInput] = useState("");
   const [propsData, setPropsData] = useState<FsStat | null>(null);
+  const [deletePermanent, setDeletePermanent] = useState(false);
 
   const tabbarRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLElement>(null);
@@ -217,6 +221,18 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
     store.getState().clearSelection(paneId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirPath]);
+
+  // F2 重命名（面板键盘层派发事件到本窗格）：打开统一重命名对话框。
+  useEffect(() => {
+    const onRename = (e: Event) => {
+      const detail = (e as CustomEvent<{ paneId: string; path: string }>).detail;
+      if (detail.paneId !== paneId) return;
+      setDialog({ kind: "rename", path: detail.path });
+      setDialogInput(detail.path.split(/[\\/]/).filter(Boolean).pop() ?? "");
+    };
+    window.addEventListener("taskdock-fw-rename", onRename);
+    return () => window.removeEventListener("taskdock-fw-rename", onRename);
+  }, [paneId]);
 
   // ── 排序 / 筛选（内存完成，目录恒在前）──────────────────────────────
   const visibleEntries = useMemo(() => {
@@ -278,7 +294,7 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
             return { type: "tabbar", paneId, index };
           }
         }
-        return { type: "center", paneId };
+        return { type: "center", paneId, dir: dirPath };
       }
       // 文件拖拽：目录行优先，其次窗格中心（当前目录）。
       if (!dirPath) return null;
@@ -291,30 +307,29 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
           : null;
       }
       return validateFileDrop(getFwDragState().payload?.paths ?? [], dirPath)
-        ? { type: "center", paneId }
+        ? { type: "center", paneId, dir: dirPath }
         : null;
     },
     [paneId, dirPath],
   );
 
   useEffect(() => {
-    return subscribeFwDrag((state) => {
-      if (!state.payload) {
+    return subscribeFwDrag((fw) => {
+      if (!fw.payload) {
         if (lastZoneRef.current) {
           lastZoneRef.current = null;
           onHoverZone(null);
         }
         return;
       }
-      const zone = computeZone(state.x, state.y, state.payload.kind);
-      if (zone) {
-        lastZoneRef.current = zone;
-        updateFwHover(zone, {});
-        onHoverZone(zone);
-      } else if (lastZoneRef.current) {
-        lastZoneRef.current = null;
-        onHoverZone(null);
-      }
+      // 命中按协调器最新坐标计算；仅变化时上报，杜绝每次移动整树重渲染。
+      const zone = computeZone(fw.x, fw.y, fw.payload.kind);
+      if (sameZone(zone, lastZoneRef.current)) return;
+      lastZoneRef.current = zone;
+      // 订阅回调内更新 hover 是允许的（签名不变时协调器不会再广播）——
+      // 旧实现无条件 emit 造成订阅者→emit→订阅者的无限递归（P0 缺陷）。
+      updateFwHover(zone);
+      onHoverZone(zone);
     });
   }, [computeZone, onHoverZone]);
 
@@ -403,34 +418,38 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
   }, []);
 
   const doCopyTo = useCallback(
-    async (paths: string[], target: string) => {
+    async (paths: string[], target: string): Promise<FsOpReport | null> => {
       try {
         const report = await fsCopyPaths(paths, target, "rename");
         refreshBoth([target, ...paths.map((p) => parentOf(p) ?? "").filter(Boolean)]);
         if (report.failed > 0) {
-          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed }), { kind: "warning" });
+          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed, skipped: report.skipped }), { kind: "warning" });
         } else {
           showToast(t("fw.report.copyOk", { count: report.ok }), { kind: "success" });
         }
+        return report;
       } catch (e) {
         showToast(errorMessage(e), { kind: "error" });
+        return null;
       }
     },
     [refreshBoth, showToast, t],
   );
 
   const doMoveTo = useCallback(
-    async (paths: string[], target: string) => {
+    async (paths: string[], target: string): Promise<FsOpReport | null> => {
       try {
         const report = await fsMovePaths(paths, target, "rename");
         refreshBoth([target, ...paths.map((p) => parentOf(p) ?? "").filter(Boolean)]);
         if (report.failed > 0) {
-          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed }), { kind: "warning" });
+          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed, skipped: report.skipped }), { kind: "warning" });
         } else {
           showToast(t("fw.report.moveOk", { count: report.ok }), { kind: "success" });
         }
+        return report;
       } catch (e) {
         showToast(errorMessage(e), { kind: "error" });
+        return null;
       }
     },
     [refreshBoth, showToast, t],
@@ -600,7 +619,20 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
         key: "delete",
         label: t("fw.menu.delete"),
         danger: true,
-        onSelect: () => setDialog({ kind: "delete" }),
+        onSelect: () => {
+          setDeletePermanent(false);
+          setDialog({ kind: "delete" });
+        },
+      });
+      items.push({
+        key: "deletePermanent",
+        label: t("fw.menu.deletePermanent"),
+        danger: true,
+        onSelect: () => {
+          // 永久删除独立入口 + 独立确认文案（不与回收站语义混用）。
+          setDeletePermanent(true);
+          setDialog({ kind: "delete" });
+        },
       });
       items.push({
         key: "props",
@@ -634,8 +666,14 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
         onSelect: () => {
           const clip = getFwClipboard();
           if (clip && dirPath) {
-            void (clip.mode === "copy" ? doCopyTo(clip.paths, dirPath) : doMoveTo(clip.paths, dirPath)).then(() => {
-              if (clip.mode === "cut") setFwClipboard(null);
+            // 剪切语义（P0）：部分失败只保留未完成项，失败不静默清空。
+            void (clip.mode === "copy" ? doCopyTo(clip.paths, dirPath) : doMoveTo(clip.paths, dirPath)).then((report) => {
+              if (clip.mode === "cut") {
+                const pending = report
+                  ? report.entries.filter((r) => r.status === "failed").map((r) => r.source)
+                  : [...clip.paths];
+                setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
+              }
             });
           }
         },
@@ -789,7 +827,12 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
               onBlur={() => setPathEdit(null)}
             />
           ) : (
-            <button type="button" className="fw-crumbs-inner" onClick={() => setPathEdit(dirPath)} title={dirPath}>
+            <div
+              className="fw-crumbs-inner"
+              role="presentation"
+              onClick={() => setPathEdit(dirPath)}
+              title={dirPath}
+            >
               {crumbs.length <= 4 ? (
                 crumbs.map((seg, i) => (
                   <span key={seg.path} className="fw-crumb-wrap">
@@ -837,7 +880,7 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
                   ))}
                 </>
               )}
-            </button>
+            </div>
           )}
         </div>
 
@@ -984,7 +1027,19 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
           onEntryContextMenu={onEntryContextMenu}
           onBodyPointerDown={onBodyPointerDown}
           onBodyContextMenu={onBodyContextMenu}
-        />
+        >
+          {/* 超限目录翻页续拉（万级目录不再只能看前 8000 项）。 */}
+          {dirState?.hasMore && (
+            <button
+              type="button"
+              className="fw-load-more"
+              disabled={dirState.loading}
+              onClick={() => loadMore(dirPath, showHidden)}
+            >
+              {dirState.loading ? t("nav.loading") : t("fw.status.loadMore")}
+            </button>
+          )}
+        </FileList>
       )}
 
       {/* 状态条 */}
@@ -993,7 +1048,7 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
           {t("fw.status.items", { count: visibleEntries.length })}
           {selectedPaths.length > 0 ? ` · ${t("fw.status.selected", { count: selectedPaths.length })}` : ""}
         </span>
-        {dirState?.truncated && <span className="fw-status-truncated">{t("fw.status.truncated")}</span>}
+        {dirState?.hasMore && <span className="fw-status-truncated">{t("fw.status.truncated")}</span>}
         <span className="fw-pane-grip" data-tip={t("fw.pane.gripTip")} onPointerDown={(e) => beginDragCandidate(e, null, null, true)}>
           <GripVertical size={12} aria-hidden="true" />
         </span>
@@ -1053,18 +1108,24 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
         </label>
       </Dialog>
 
-      {/* 删除确认（回收站语义） */}
+      {/* 删除确认（回收站 / Shift 或菜单永久删除独立确认） */}
       <ConfirmDialog
         open={dialog?.kind === "delete"}
-        title={t("fw.dialog.deleteTitle", { count: menuSelection.length })}
-        detail={t("fw.dialog.deleteBody")}
-        confirmLabel={t("fw.dialog.deleteConfirm")}
+        title={
+          deletePermanent
+            ? t("fw.dialog.deletePermanentTitle", { count: menuSelection.length })
+            : t("fw.dialog.deleteTitle", { count: menuSelection.length })
+        }
+        detail={deletePermanent ? t("fw.dialog.deletePermanentBody") : t("fw.dialog.deleteBody")}
+        confirmLabel={deletePermanent ? t("fw.dialog.deletePermanentConfirm") : t("fw.dialog.deleteConfirm")}
         danger
         onCancel={() => setDialog(null)}
         onConfirm={() => {
           const paths = [...menuSelection];
+          const permanent = deletePermanent;
           setDialog(null);
-          void doDelete(paths, false);
+          setDeletePermanent(false);
+          void doDelete(paths, permanent);
         }}
       />
 

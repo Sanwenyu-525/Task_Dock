@@ -244,8 +244,37 @@ payload 形态（当前实现）：
 - 2026-11-09 配对去重：手机端新增 `kv.device.uid.v1`；桌面端 v46 给 `mobile_devices`
   增加可选 `device_uid`（NULL 兼容旧记录/旧客户端），同 uid 重配对撤销旧授权。
 
+## 11. 采集附件与暂存（schema v6，2026-11-14）
+
+v6 只**追加**两张表，不改已发布迁移与既有列；同步实体仍只有 `task` / `note` / `capture`。
+
+**`attachments`**（采集附件的稳定归属与传送状态）：
+
+| 列 | 说明 |
+|---|---|
+| `id` | `att_` 前缀 |
+| `owner_entity` / `owner_id` | `capture` \| `note` \| `task` + 实体 id；转任务只改归属（`moveAttachmentsOwnerInTx`） |
+| `kind` | `image` \| `audio` \| `file` |
+| `mime` / `name` / `local_uri` | `local_uri` 为私有目录 `file://` URI，不进任何同步载荷 |
+| `size` / `sha256` / `width` / `height` / `duration_ms` | 元信息；`sha256` 供传送核对 |
+| `transcript` | 语音手写要点/将来识别结果；**未识别时为 NULL**，不伪造 |
+| `transfer_state` | `pending` → `uploading` → `sent` \| `failed` \| `skipped` |
+| `transfer_error` / `remote_file_id` | 失败原因与桌面端文件 id（重试幂等依据） |
+| `deleted_at` | 软删；删行同时删私有文件字节 |
+
+**`capture_stash`**（未保存的采集暂存，跨重启恢复）：`id`、`kind`、`mime`、`name`、
+`local_uri`、`size`、`width`、`height`、`duration_ms`、`transcript`、`note`、`source`
+（`manual|camera|album|share|voice|file`）、`created_at`。保存成功时在同一事务内
+`DELETE FROM capture_stash`，因此「业务行 + 附件行 + 暂存清空」要么全成，要么全回滚。
+
+上限：单次 9 项、单件 50MB、合计 200MB（Kotlin 与 JS 同值）。附件**不进 outbox**，
+桌面端通过既有 `/v1/files` 文件互传通道接收（见 [14-capture-and-quick-entry.md](14-capture-and-quick-entry.md) §2.1）。
+
 ## 变更记录
 
+- 2026-11-14 schema v6：追加 `attachments`（附件归属 + 传送状态）与 `capture_stash`
+  （未保存采集暂存），不改已发布迁移与既有列；附件不进 outbox、不改同步实体集合。
+  相关实现与边界见 [14-capture-and-quick-entry.md](14-capture-and-quick-entry.md)。
 - 2026-11-12 outbox `state` 新增 `'conflict'` 守卫态（TEXT 列，无 schema 迁移）：
   push 冲突后保留该记录的 outbox 行并阻断 pull 覆盖，冲突页两条解决路径负责清理；
   同时删除墓碑应用补上 `rev <= server_rev` 比较旧墓碑跳过语义。见

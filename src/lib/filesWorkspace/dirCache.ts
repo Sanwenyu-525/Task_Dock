@@ -16,6 +16,10 @@ export interface DirState {
   showHidden: boolean;
   listing: FsEntry[] | null;
   truncated: boolean;
+  /** 目录还有更多未加载的条目（翻页续拉）。 */
+  hasMore: boolean;
+  /** 已消费的磁盘条目数（含隐藏过滤项；翻页 offset 依据）。 */
+  diskScanned: number | null;
   loading: boolean;
   error: string | null;
   /** 上次加载的目录签名（轮询对比用）。 */
@@ -26,8 +30,25 @@ export interface DirState {
 const MAX_CACHE = 32;
 const cache = new Map<string, DirState>();
 const inflight = new Set<string>();
+/** 每键请求序号：乱序响应只有最新序号允许落地（P0：强制刷新期间旧响应盖新）。 */
+const reqSeq = new Map<string, number>();
 type Listener = (state: DirState) => void;
 const listeners = new Map<string, Set<Listener>>();
+
+function blankState(path: string, showHidden: boolean): DirState {
+  return {
+    path,
+    showHidden,
+    listing: null,
+    truncated: false,
+    hasMore: false,
+    diskScanned: null,
+    loading: false,
+    error: null,
+    signatureModifiedMs: null,
+    fetchedAt: 0,
+  };
+}
 
 function notify(path: string, showHidden: boolean): void {
   const key = `${showHidden ? "h1" : "h0"}:${path}`;
@@ -38,25 +59,24 @@ function notify(path: string, showHidden: boolean): void {
   for (const fn of set) fn(state);
 }
 
-function touch(path: string): void {
+function touch(key: string): void {
   // LRU：先删再插，保持插入序。
-  const existing = cache.get(path);
-  if (existing) cache.delete(path);
-  cache.set(path, existing ?? {
-    path,
-    showHidden: false,
-    listing: null,
-    truncated: false,
-    loading: false,
-    error: null,
-    signatureModifiedMs: null,
-    fetchedAt: 0,
-  });
+  const existing = cache.get(key);
+  if (existing) cache.delete(key);
+  cache.set(key, existing ?? blankState(key.startsWith("h1:") ? key.slice(3) : key.slice(3), key.startsWith("h1:")));
   while (cache.size > MAX_CACHE) {
-    const oldest = cache.keys().next().value;
-    if (oldest === undefined) break;
-    cache.delete(oldest);
-    listeners.delete(oldest);
+    // 订阅中的目录绝不驱逐（驱逐会让活跃视图永远收不到更新，UI 卡死在转圈）。
+    // 先找最旧的无订阅条目；全部都在订阅中时容忍暂时超限（活跃窗格有限）。
+    let victim: string | null = null;
+    for (const candidate of cache.keys()) {
+      if (!listeners.has(candidate)) {
+        victim = candidate;
+        break;
+      }
+    }
+    if (victim === null) break;
+    cache.delete(victim);
+    reqSeq.delete(victim);
   }
 }
 
@@ -64,16 +84,7 @@ export function getDirState(path: string, showHidden: boolean): DirState {
   const key = `${showHidden ? "h1" : "h0"}:${path}`;
   let state = cache.get(key);
   if (!state) {
-    state = {
-      path,
-      showHidden,
-      listing: null,
-      truncated: false,
-      loading: false,
-      error: null,
-      signatureModifiedMs: null,
-      fetchedAt: 0,
-    };
+    state = blankState(path, showHidden);
     cache.set(key, state);
   }
   return state;
@@ -97,7 +108,7 @@ export function subscribeDir(
   };
 }
 
-/** 加载目录列表（并发去重；错误落在状态里，不抛给调用方）。 */
+/** 加载目录列表（并发去重；force 绕过去重但按序号裁决乱序）。 */
 export function loadDir(path: string, showHidden: boolean, force = false): void {
   const key = `${showHidden ? "h1" : "h0"}:${path}`;
   const state = getDirState(path, showHidden);
@@ -109,20 +120,67 @@ export function loadDir(path: string, showHidden: boolean, force = false): void 
   entry.error = null;
   notify(path, showHidden);
   inflight.add(key);
-  fsListDir(path, showHidden)
+  const seq = (reqSeq.get(key) ?? 0) + 1;
+  reqSeq.set(key, seq);
+  fsListDir(path, showHidden, 0)
     .then((listing) => {
+      // 乱序裁决：只有最新一次请求允许落地（P0：旧响应覆盖新响应）。
+      if ((reqSeq.get(key) ?? 0) !== seq) return;
       const current = getDirState(path, showHidden);
       current.listing = listing.entries;
-      current.truncated = listing.truncated;
+      current.truncated = listing.hasMore;
+      current.hasMore = listing.hasMore;
+      current.diskScanned = listing.scanned;
       current.fetchedAt = Date.now();
+      current.error = null;
       // 首次记录签名；后续轮询对比。
       if (current.signatureModifiedMs === null) {
         void refreshSignature(path, showHidden);
       }
     })
     .catch((e) => {
+      if ((reqSeq.get(key) ?? 0) !== seq) return;
       const current = getDirState(path, showHidden);
       current.listing = null;
+      current.hasMore = false;
+      current.diskScanned = null;
+      current.error = e instanceof Error ? e.message : String(e);
+    })
+    .finally(() => {
+      inflight.delete(key);
+      const current = getDirState(path, showHidden);
+      current.loading = false;
+      notify(path, showHidden);
+    });
+}
+
+/** 翻页续拉：把下一页条目追加到缓存列表（超限目录的剩余部分）。 */
+export function loadMore(path: string, showHidden: boolean): void {
+  const key = `${showHidden ? "h1" : "h0"}:${path}`;
+  const state = getDirState(path, showHidden);
+  if (!state.hasMore || state.loading || inflight.has(key)) return;
+  const scannedBefore = state.listing?.length ?? 0;
+  // scannedBefore 是已展示条目数；offset 需要磁盘序（含隐藏过滤项）——
+  // 增量扫描偏移用「当前已消费的磁盘条目数」，由后端 scanned 累计。
+  const consumed = state.diskScanned ?? scannedBefore;
+  inflight.add(key);
+  const seq = (reqSeq.get(key) ?? 0) + 1;
+  reqSeq.set(key, seq);
+  fsListDir(path, showHidden, consumed)
+    .then((listing) => {
+      if ((reqSeq.get(key) ?? 0) !== seq) return;
+      const current = getDirState(path, showHidden);
+      const existing = current.listing ?? [];
+      const names = new Set(existing.map((e) => e.name));
+      current.listing = [...existing, ...listing.entries.filter((e) => !names.has(e.name))];
+      current.hasMore = listing.hasMore;
+      current.truncated = listing.hasMore;
+      current.diskScanned = consumed + listing.scanned;
+      current.fetchedAt = Date.now();
+    })
+    .catch((e) => {
+      if ((reqSeq.get(key) ?? 0) !== seq) return;
+      const current = getDirState(path, showHidden);
       current.error = e instanceof Error ? e.message : String(e);
     })
     .finally(() => {

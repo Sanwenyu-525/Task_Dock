@@ -123,7 +123,7 @@ export function DeviceScreen({
               {loading
                 ? "正在读取连接状态…"
                 : paired
-                  ? `配对设备 ${connection?.serverName ?? "桌面端"} · 同步需手动发起`
+                  ? `配对设备 ${connection?.serverName ?? "桌面端"} · 前台自动同步`
                   : invalid
                     ? legacy
                       ? "桌面端已升级加密传输，请重新配对"
@@ -244,11 +244,11 @@ export function DeviceScreen({
           />
           <SettingActionRow
             label="分享接收"
-            helper="从其他应用分享文本到收集箱"
+            helper="从其他应用分享文本、图片或文件，进入统一采集中心"
             trailing={<Badge label="已接入" tone="active" />}
             chevron
             accessibilityHint="系统分享到 TaskDock"
-            onPress={() => nav.push("share")}
+            onPress={() => nav.push("capture")}
           />
         </SettingSection>
 

@@ -21,7 +21,8 @@ use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
 
-/// 单次列目录上限：超出返回 truncated 标记（前端提示，不做无限分页）。
+/// 单次列目录分页大小：超出返回 has_more 标记（前端「加载更多」续拉，
+/// 万级目录不再只能看到前 8000 项）。
 pub const MAX_LIST_ENTRIES: usize = 8000;
 /// 单批操作（复制/移动/删除）路径数上限：与 shelf::MAX_LOCAL_PATHS 对齐。
 pub const MAX_OP_PATHS: usize = 500;
@@ -307,7 +308,10 @@ pub struct FsEntry {
 pub struct DirListing {
     pub path: String,
     pub entries: Vec<FsEntry>,
-    pub truncated: bool,
+    /// 本轮扫描的磁盘条目数（含被隐藏过滤的项；分页 offset 依据）。
+    pub scanned: usize,
+    /// 目录里还有更多未返回的条目（继续以 offset 翻页）。
+    pub has_more: bool,
 }
 
 /// 按扩展名的展示类别映射（与前端 `--file-tone-*` Token 对齐）。
@@ -337,17 +341,25 @@ pub fn category_of(is_dir: bool, is_link: bool, ext: &str) -> &'static str {
     }
 }
 
-/// 列目录：逐项容错（单项元数据失败跳过并计入 truncated 之外，不整体失败）。
-pub fn list_dir(path: &Path, show_hidden: bool) -> AppResult<DirListing> {
+/// 列目录：逐项容错（单项元数据失败跳过，不整体失败）。
+/// `offset` 按**磁盘原始序**跳过前 N 个条目（隐藏过滤不影响偏移语义），
+/// 前端据此翻页读取超限目录的剩余部分。
+pub fn list_dir(path: &Path, show_hidden: bool, offset: usize) -> AppResult<DirListing> {
     let dir = validate_dir(path)?;
     let mut entries: Vec<FsEntry> = Vec::new();
-    let mut truncated = false;
+    let mut scanned: usize = 0;
+    let mut has_more = false;
     let read = fs::read_dir(&dir).map_err(|e| {
         AppError::Validation(format!("读取目录失败: {}（{e}）", dir.display()))
     })?;
     for item in read {
+        scanned += 1;
+        if scanned <= offset {
+            continue;
+        }
         if entries.len() >= MAX_LIST_ENTRIES {
-            truncated = true;
+            has_more = true;
+            scanned -= 1; // 本条未消费：下一页从它开始
             break;
         }
         let Ok(item) = item else { continue };
@@ -394,7 +406,8 @@ pub fn list_dir(path: &Path, show_hidden: bool) -> AppResult<DirListing> {
     Ok(DirListing {
         path: dir.to_string_lossy().into_owned(),
         entries,
-        truncated,
+        scanned,
+        has_more,
     })
 }
 
@@ -1297,8 +1310,8 @@ mod tests {
         fs::create_dir_all(root.join("sub")).unwrap();
         fs::write(root.join("a.png"), [1, 2, 3]).unwrap();
         fs::write(root.join("b.txt"), "hi").unwrap();
-        let listing = list_dir(&root, true).unwrap();
-        assert_eq!(listing.truncated, false);
+        let listing = list_dir(&root, true, 0).unwrap();
+        assert_eq!(listing.has_more, false);
         let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"sub"));
         assert!(names.contains(&"a.png"));
@@ -1312,15 +1325,47 @@ mod tests {
         let txt = listing.entries.iter().find(|e| e.name == "b.txt").unwrap();
         assert_eq!(txt.category, "text");
         // 隐藏过滤：无隐藏属性时 show_hidden=false 不改变结果。
-        let listing2 = list_dir(&root, false).unwrap();
+        let listing2 = list_dir(&root, false, 0).unwrap();
         assert_eq!(listing2.entries.len(), listing.entries.len());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn list_dir_pagination_beyond_page_limit() {
+        let root = temp_root("pager");
+        // 一页上限由 MAX_LIST_ENTRIES 决定；造一个小的 offset 分页场景验证语义：
+        // 建 5 项，每轮 offset 推进 scanned，直到 has_more=false。
+        for i in 0..5 {
+            fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        let mut offset = 0usize;
+        let mut rounds = 0;
+        let mut seen: Vec<String> = Vec::new();
+        loop {
+            let page = list_dir(&root, true, offset).unwrap();
+            for e in &page.entries {
+                seen.push(e.name.clone());
+            }
+            rounds += 1;
+            offset += page.scanned;
+            if !page.has_more {
+                break;
+            }
+            assert!(rounds < 50, "分页不收敛");
+        }
+        assert_eq!(seen.len(), 5);
+        let mut sorted = seen.clone();
+        sorted.sort();
+        let mut expected: Vec<String> = (0..5).map(|i| format!("f{i}.txt")).collect();
+        expected.sort();
+        assert_eq!(sorted, expected);
         fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn list_dir_missing_fails_not_found() {
         let root = temp_root("missing");
-        let result = list_dir(&root.join("nope"), false);
+        let result = list_dir(&root.join("nope"), false, 0);
         assert!(matches!(result, Err(AppError::NotFound(_))));
         fs::remove_dir_all(&root).unwrap();
     }

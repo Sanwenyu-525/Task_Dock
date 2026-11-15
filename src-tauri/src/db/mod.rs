@@ -2633,6 +2633,12 @@ pub struct Settings {
     /// 窗口几何 `workspace_window_rect` 属于窗口自管内部状态，不进入前端 Settings 快照。
     #[serde(default)]
     pub workspace_active_project: String,
+    // ── 文件工作区布局（U2；缺失时前端回退默认布局）──
+    /// 版本化 JSON：`{ version, states: {global|project:<id>}, templates, recentTemplates }`。
+    /// 与 `workbench_layout`（工作台外壳）/`navigation_layout`（入口显隐排序）正交；
+    /// 结构边界校验在 `commands/settings.rs`，后端只透传，不参与语义合并。
+    #[serde(default)]
+    pub file_workspace_layouts: serde_json::Value,
 }
 
 fn default_theme() -> String {

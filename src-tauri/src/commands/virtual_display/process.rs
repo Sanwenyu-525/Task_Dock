@@ -411,8 +411,32 @@ impl SessionManager {
         if status != STATUS_RUNNING {
             return Err(AppError::Conflict("会话尚未就绪或已结束，无法截图".into()));
         }
-        let (png, width, height) = win::capture_window_png(pid)
-            .map_err(|err| AppError::Unavailable(format!("截取画面失败：{err}")))?;
+        // 虚拟屏首帧可能只渲染出背景层（见 capture_window_png 的颜色采样）。
+        // 用户主动截图时做 3 次有界重试：拿到有内容的帧即返回，仍为空则返回
+        // 最后一帧（不伪造错误，也不额外无限等待）。
+        let mut last: Option<(Vec<u8>, u32, u32)> = None;
+        let mut last_err: Option<String> = None;
+        for attempt in 0..3 {
+            match win::capture_window_png(pid) {
+                Ok((png, width, height, rich)) => {
+                    last = Some((png, width, height));
+                    last_err = None;
+                    if rich {
+                        break;
+                    }
+                }
+                Err(err) => last_err = Some(err),
+            }
+            if attempt < 2 {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        }
+        let (png, width, height) = last.ok_or_else(|| {
+            AppError::Unavailable(format!(
+                "截取画面失败：{}",
+                last_err.unwrap_or_else(|| "未知错误".into())
+            ))
+        })?;
         let dir = std::env::temp_dir().join("task-dock-vd").join("shots");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!(
@@ -1018,7 +1042,7 @@ mod win {
 
     /// 截取 scrcpy 窗口客户区（PW_CLIENTONLY | PW_RENDERFULLCONTENT）。
     /// 返回 (PNG 字节, 宽, 高)；最小化窗口会先恢复再截取。
-    pub fn capture_window_png(pid: u32) -> Result<(Vec<u8>, u32, u32), String> {
+    pub fn capture_window_png(pid: u32) -> Result<(Vec<u8>, u32, u32, bool), String> {
         let Some(hwnd) = find_window(pid) else {
             return Err("未找到 scrcpy 窗口".to_string());
         };
@@ -1094,18 +1118,26 @@ mod win {
                 return Err("读取窗口像素失败".to_string());
             }
 
-            // PrintWindow 不保证 alpha；这里只检查 RGB 是否完全一致（空白/黑屏）。
+            // PrintWindow 不保证 alpha；全同色视为空白/黑屏。
+            // 同时按固定步长采样颜色数：虚拟屏刚就绪时首帧可能只有背景层
+            // （如设置页的灰底+状态栏），调用方据此短暂重试，避免截到空画面。
             let first = [pixels[0], pixels[1], pixels[2]];
             let mut uniform = true;
-            for chunk in pixels.chunks_exact(4) {
-                if chunk[0] != first[0] || chunk[1] != first[1] || chunk[2] != first[2] {
+            let mut colors = std::collections::HashSet::new();
+            for (index, chunk) in pixels.chunks_exact(4).enumerate() {
+                if uniform
+                    && (chunk[0] != first[0] || chunk[1] != first[1] || chunk[2] != first[2])
+                {
                     uniform = false;
-                    break;
+                }
+                if index % 97 == 0 && colors.len() < 8 {
+                    colors.insert([chunk[0], chunk[1], chunk[2]]);
                 }
             }
             if uniform {
                 return Err("窗口画面为空白，截图失败（请先恢复窗口后重试）".to_string());
             }
+            let rich = colors.len() >= 8;
 
             let mut rgba = Vec::with_capacity(pixels.len());
             for chunk in pixels.chunks_exact(4) {
@@ -1123,7 +1155,7 @@ mod win {
                     .write_image_data(&rgba)
                     .map_err(|err| format!("PNG 写入失败：{err}"))?;
             }
-            Ok((png, width as u32, height as u32))
+            Ok((png, width as u32, height as u32, rich))
         }
     }
 
@@ -1194,7 +1226,7 @@ mod tests {
     #[test]
     fn build_args_include_mode_specific_flags() {
         let req = StartRequest {
-            serial: "192.168.1.5:5555".into(),
+            serial: "192.0.2.12:5555".into(),
             device_uid: "UID".into(),
             device_model: Some("V2323A".into()),
             mode: super::super::MODE_VIRTUAL,
@@ -1203,7 +1235,9 @@ mod tests {
             size: Some("1080x1920/384".into()),
             clipboard_sync: false,
             allow_multi: false,
-            scrcpy: PathBuf::from("scrcpy.exe"),
+            // 绝对不存在的路径：相对文件名会被 CreateProcess 沿 PATH 命中本机
+            // WinGet 版 scrcpy，使「不支持时省略 IME 参数」的断言随环境漂移。
+            scrcpy: PathBuf::from(r"C:\__task_dock_test__\missing-scrcpy.exe"),
             warning: None,
             title: "Task Dock · 虚拟屏".into(),
         };
@@ -1217,7 +1251,8 @@ mod tests {
     #[test]
     fn build_args_mirror_has_no_virtual_display_flags() {
         let req = StartRequest {
-            serial: "10CE1P063L0017L".into(),
+            // 测试用占位序列号：不得把真机 serial 写进可提交文件。
+            serial: "TESTSERIAL0001".into(),
             device_uid: "UID".into(),
             device_model: None,
             mode: super::super::MODE_MIRROR,

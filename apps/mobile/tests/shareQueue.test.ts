@@ -19,6 +19,8 @@ function payload(offerId: number, text = `text-${offerId}`): ShareIntentPayload 
     truncated: false,
     originalLength: text.length,
     receivedAt: offerId,
+    items: [],
+    rejected: [],
   };
 }
 

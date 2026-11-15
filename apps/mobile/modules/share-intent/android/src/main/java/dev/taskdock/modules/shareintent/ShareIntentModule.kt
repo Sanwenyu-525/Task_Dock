@@ -1,36 +1,60 @@
-// 系统分享接收（Android ACTION_SEND text/plain）的原生侧。
+// 系统分享接收（Android）：ACTION_SEND / ACTION_SEND_MULTIPLE，文本 + 图片 + 音频 + 文件。
 //
-// 设计要点（与 src/lib/pendingShare.ts 的内存队列配套）：
-// 1. 双通道投递：冷启动由 JS 调 takePendingShare() 拉取（此时 JS 监听器尚未挂上，
-//    事件会丢，所以必须可拉取）；已运行由 OnNewIntent 发 onShareReceived 事件。
-//    两条通道读写同一个待处理槽，先到先得，靠 offerId 在 JS 侧去重。
-// 2. 去重：
-//    - 待处理槽已有同文本 → 重复投递（同一 Intent 重放/双投递）直接忽略；
-//    - OnNewIntent 在 800ms 窗口内重复同一文本 → 判定为系统双投递，忽略第二次
-//      （真实用户在 0.8s 内连续分享两条一模一样的文本可以忽略不计）；
-//    - 初始 Intent 只在首次 takePendingShare() 时解析一次（进程生命周期内闩住），
-//      之后 Activity 因旋转/主题切换重建不会把已消费的分享重新弹出来。
-// 3. 截断策略：超过 4000 个 Unicode 码点（与收集箱上限 MAX_CONTENT 一致）按码点
-//    截断并标记 truncated，让 UI 明示「已截断」，保存时不会再被 addCapture 拒绝。
-// 4. 隐私：本模块不写任何日志；载荷只在内存流转，不落盘、不进剪贴板。
+// 与 src/lib/pendingShare.ts 的契约（v2，向 old 字段兼容）：
+// {
+//   offerId, text, truncated, originalLength, receivedAt,
+//   items:   [{ kind, mime, name, size, path }],   // path = 应用私有目录里的 file:// 绝对路径
+//   rejected:[{ name, reason }]                    // 超限/无权限的单项，UI 需要明示
+// }
+//
+// 设计要点：
+// 1. 双通道投递：冷启动由 JS 调 takePendingShare() 拉取；已运行由 OnNewIntent 发
+//    onShareReceived 事件。两条通道读写同一个待处理槽，先到先得，靠 offerId 去重。
+// 2. 字节必须落到应用私有目录再交给 JS：content:// 授权属于发送方进程，分享结束后
+//    可能立即失效；不复制就会出现「列表里有条目、点开是坏图」。
+// 3. 安全：
+//    - 文件名由外部应用提供，绝不用来拼路径；落盘名固定为 item-N + 白名单扩展名；
+//    - URI 只通过 ContentResolver 流式读取（64KB 缓冲），不整文件读入内存；
+//    - 数量 9、单文件 50MB、合计 200MB 上限，边复制边计数，超限立即中止并删除半成品；
+//    - 没有任何日志输出。
+// 4. 去重：待处理槽已存在同一签名（action+text+URI 列表）时直接忽略，不重复复制；
+//    OnNewIntent 800ms 内的同签名重复投递忽略（系统双投递），见 docs/mobile/09。
+// 5. 取消/失败恢复：JS 消费后如果用户放弃保存，由 JS 删除这些文件（它们是私有目录普通
+//    文件）；模块自身的 clearPendingShare 只清引用，不删已交付文件。
 package dev.taskdock.modules.shareintent
 
 import android.content.Intent
+import android.net.Uri
 import android.os.SystemClock
+import android.provider.OpenableColumns
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.io.File
+import java.io.FileOutputStream
 
 class ShareIntentModule : Module() {
-  private var pendingText: String? = null
-  private var pendingTruncated = false
-  private var pendingOriginalLength = 0
-  private var offerId = 0
+  private data class PendingItem(
+    val kind: String,
+    val mime: String,
+    val name: String,
+    val size: Long,
+    val path: String,
+  )
 
-  /** 冷启动 Intent 只检查一次：之后 Activity 重建（配置变化）不重新投递旧分享 */
+  private data class Offer(
+    val signature: String,
+    val text: String?,
+    val truncated: Boolean,
+    val originalLength: Int,
+    val items: List<PendingItem>,
+    val rejected: List<Map<String, String>>,
+    val offerId: Int,
+  )
+
+  private var pending: Offer? = null
+  private var offerSeq = 0
   private var initialIntentInspected = false
-
-  /** 双投递去重：上一次 onNewIntent 的文本与时刻 */
-  private var lastNewIntentText: String? = null
+  private var lastNewIntentSignature: String? = null
   private var lastNewIntentAtElapsedMs = 0L
 
   override fun definition() = ModuleDefinition {
@@ -38,7 +62,9 @@ class ShareIntentModule : Module() {
     Events(EVENT_SHARE_RECEIVED)
 
     OnNewIntent { intent ->
-      offerFromIntent(intent, fromNewIntent = true)
+      offerFromIntent(intent, fromNewIntent = true)?.let { offer ->
+        sendEvent(EVENT_SHARE_RECEIVED, buildPayload(offer))
+      }
     }
 
     Function("takePendingShare") {
@@ -46,91 +72,288 @@ class ShareIntentModule : Module() {
     }
 
     Function("clearPendingShare") {
-      clearPending()
+      pending = null
     }
   }
 
-  /** JS 启动时拉取：首次调用时解析当前 Activity 的启动 Intent（冷启动分享） */
   private fun takePendingShare(): Map<String, Any?>? {
     if (!initialIntentInspected) {
-      // 只有确实拿到启动 Intent（或已有更新的待处理分享）时才闩住：若此刻 Activity
-      // 尚未就绪（currentActivity 为 null），保持未闩状态，下一次调用再试，
-      // 避免冷启动分享因一次过早的调用被静默丢弃。
-      val intent = if (pendingText == null) appContext.currentActivity?.intent else null
+      val intent = if (pending == null) appContext.currentActivity?.intent else null
       if (intent != null) {
         initialIntentInspected = true
         offerFromIntent(intent, fromNewIntent = false)
-      } else if (pendingText != null) {
+      } else if (pending != null) {
         initialIntentInspected = true
       }
     }
-    val payload = buildPayload(pendingText, pendingTruncated, pendingOriginalLength)
-    clearPending()
-    return payload
+    val offer = pending ?: return null
+    pending = null
+    return buildPayload(offer)
   }
 
-  private fun clearPending() {
-    pendingText = null
-    pendingTruncated = false
-    pendingOriginalLength = 0
-  }
+  private fun buildPayload(offer: Offer): Map<String, Any?> = mapOf(
+    "offerId" to offer.offerId,
+    "text" to offer.text,
+    "truncated" to offer.truncated,
+    "originalLength" to offer.originalLength,
+    "receivedAt" to System.currentTimeMillis(),
+    "items" to offer.items.map { item ->
+      mapOf(
+        "kind" to item.kind,
+        "mime" to item.mime,
+        "name" to item.name,
+        "size" to item.size,
+        "path" to item.path,
+      )
+    },
+    "rejected" to offer.rejected,
+  )
 
-  private fun offerFromIntent(intent: Intent?, fromNewIntent: Boolean) {
-    val text = extractSharedText(intent) ?: return
+  private fun offerFromIntent(intent: Intent?, fromNewIntent: Boolean): Offer? {
+    if (intent == null) return null
+    val action = intent.action
+    if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return null
 
-    // 同一文本已在待处理槽：重复投递，忽略
-    if (pendingText == text) return
+    val type = intent.type ?: ""
+    val text = extractText(intent, type)
+    val uris = extractStreamUris(intent)
+    if (text == null && uris.isEmpty()) return null
+
+    val signature = "$action|$type|${text ?: ""}|${uris.joinToString(",")}"
+    // 同一份内容已在待处理槽：重复投递，忽略（不重复复制文件）
+    if (pending?.signature == signature) return null
 
     if (fromNewIntent) {
       val now = SystemClock.elapsedRealtime()
-      if (text == lastNewIntentText && now - lastNewIntentAtElapsedMs < DOUBLE_DELIVERY_WINDOW_MS) {
-        // 同一分享被系统双投递：忽略第二次
-        return
+      if (signature == lastNewIntentSignature && now - lastNewIntentAtElapsedMs < DOUBLE_DELIVERY_WINDOW_MS) {
+        return null
       }
-      lastNewIntentText = text
+      lastNewIntentSignature = signature
       lastNewIntentAtElapsedMs = now
     }
 
-    val originalLength = text.codePointCount(0, text.length)
-    var effective = text
+    val originalLength = text?.codePointCount(0, text.length) ?: 0
+    var effectiveText = text
     var truncated = false
-    if (originalLength > MAX_TEXT_CODE_POINTS) {
-      effective = truncateByCodePoints(text, MAX_TEXT_CODE_POINTS)
+    if (text != null && originalLength > MAX_TEXT_CODE_POINTS) {
+      effectiveText = truncateByCodePoints(text, MAX_TEXT_CODE_POINTS)
       truncated = true
     }
 
-    offerId += 1
-    pendingText = effective
-    pendingTruncated = truncated
-    pendingOriginalLength = originalLength
+    offerSeq += 1
+    val copied = copyStreams(offerSeq, uris)
+    val offer = Offer(
+      signature = signature,
+      text = effectiveText,
+      truncated = truncated,
+      originalLength = originalLength,
+      items = copied.first,
+      rejected = copied.second,
+      offerId = offerSeq,
+    )
+    pending = offer
+    return offer
+  }
 
-    val payload = buildPayload(effective, truncated, originalLength)
-    if (payload != null) {
-      sendEvent(EVENT_SHARE_RECEIVED, payload)
+  /** 只取 text 类型分享的 EXTRA_TEXT；分享文本时若同时带 STREAM，文本与文件都收下
+   *  （Kotlin 块注释可嵌套，注释里不要出现斜杠星号组合，否则会把后续代码吞进注释） */
+  private fun extractText(intent: Intent, type: String): String? {
+    val raw = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.trim()
+    if (!raw.isNullOrEmpty()) {
+      // 浏览器分享常把标题/描述也塞进 EXTRA_TEXT，保留原文由用户在采集页编辑
+      return raw
+    }
+    if (!type.startsWith("text/")) return null
+    val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)?.trim()
+    return subject?.ifEmpty { null }
+  }
+
+  @Suppress("DEPRECATION")
+  private fun extractStreamUris(intent: Intent): List<Uri> {
+    val fromExtra: List<Uri> = if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
+      intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: emptyList()
+    } else {
+      intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let { listOf(it) } ?: emptyList()
+    }
+    if (fromExtra.isNotEmpty()) return fromExtra
+    // 部分分享方只填 ClipData
+    return intent.clipData?.let { clip ->
+      (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+    } ?: emptyList()
+  }
+
+  private fun copyStreams(offerId: Int, uris: List<Uri>): Pair<List<PendingItem>, List<Map<String, String>>> {
+    val items = mutableListOf<PendingItem>()
+    val rejected = mutableListOf<Map<String, String>>()
+    if (uris.isEmpty()) return items to rejected
+
+    val context = appContext.reactContext ?: return items to rejected
+    val resolver = context.contentResolver
+    val dir = File(context.filesDir, "share-intake/offer-$offerId")
+    var totalBytes = 0L
+
+    for ((index, uri) in uris.withIndex()) {
+      if (items.size >= MAX_ITEMS) {
+        rejected.add(mapOf("name" to "第 ${index + 1} 项", "reason" to "一次最多接收 $MAX_ITEMS 项"))
+        continue
+      }
+      val displayName = queryDisplayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "文件"
+      val declaredSize = querySize(uri)
+      if (declaredSize != null && declaredSize > MAX_ITEM_BYTES) {
+        rejected.add(mapOf("name" to displayName, "reason" to "超过单文件上限 50MB"))
+        continue
+      }
+      if (totalBytes + (declaredSize ?: 0L) > MAX_TOTAL_BYTES) {
+        rejected.add(mapOf("name" to displayName, "reason" to "本次分享合计超过 200MB"))
+        continue
+      }
+
+      val mime = resolver.getType(uri) ?: guessMimeFromName(displayName)
+      val kind = classify(mime)
+      val safeName = safeStorageName(kind, mime, index)
+      if (!dir.exists() && !dir.mkdirs()) {
+        rejected.add(mapOf("name" to displayName, "reason" to "无法创建接收目录"))
+        continue
+      }
+      val target = File(dir, safeName)
+      var copied = 0L
+      var tooLarge = false
+      try {
+        resolver.openInputStream(uri)?.use { input ->
+          FileOutputStream(target).use { output ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+              val read = input.read(buffer)
+              if (read <= 0) break
+              copied += read
+              if (copied > MAX_ITEM_BYTES || totalBytes + copied > MAX_TOTAL_BYTES) {
+                tooLarge = true
+                break
+              }
+              output.write(buffer, 0, read)
+            }
+          }
+        } ?: run {
+          rejected.add(mapOf("name" to displayName, "reason" to "无法读取分享内容"))
+          continue
+        }
+      } catch (_: SecurityException) {
+        target.delete()
+        rejected.add(mapOf("name" to displayName, "reason" to "没有读取该文件的权限"))
+        continue
+      } catch (_: java.io.IOException) {
+        target.delete()
+        rejected.add(mapOf("name" to displayName, "reason" to "复制文件失败"))
+        continue
+      }
+
+      if (tooLarge) {
+        target.delete()
+        rejected.add(mapOf("name" to displayName, "reason" to "超过单文件/合计上限"))
+        continue
+      }
+      if (copied <= 0L || !target.exists()) {
+        target.delete()
+        rejected.add(mapOf("name" to displayName, "reason" to "分享内容为空"))
+        continue
+      }
+
+      totalBytes += copied
+      items.add(
+        PendingItem(
+          kind = kind,
+          mime = mime,
+          name = sanitizeDisplayName(displayName, kind),
+          size = copied,
+          path = target.absolutePath,
+        ),
+      )
+    }
+    return items to rejected
+  }
+
+  private fun queryDisplayName(uri: Uri): String? = try {
+    appContext.reactContext?.contentResolver?.query(
+      uri,
+      arrayOf(OpenableColumns.DISPLAY_NAME),
+      null,
+      null,
+      null,
+    )?.use { cursor ->
+      if (cursor.moveToFirst()) cursor.getString(0) else null
+    }
+  } catch (_: RuntimeException) {
+    null
+  }
+
+  private fun querySize(uri: Uri): Long? = try {
+    appContext.reactContext?.contentResolver?.query(
+      uri,
+      arrayOf(OpenableColumns.SIZE),
+      null,
+      null,
+      null,
+    )?.use { cursor ->
+      if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else null
+    }
+  } catch (_: RuntimeException) {
+    null
+  }
+
+  private fun classify(mime: String): String = when {
+    mime.startsWith("image/") -> "image"
+    mime.startsWith("audio/") -> "audio"
+    else -> "file"
+  }
+
+  /** 落盘名固定 item-N + 白名单扩展名：外部文件名只用于展示，不参与路径拼接 */
+  private fun safeStorageName(kind: String, mime: String, index: Int): String {
+    val ext = when (mime.lowercase()) {
+      "image/jpeg" -> ".jpg"
+      "image/png" -> ".png"
+      "image/webp" -> ".webp"
+      "image/gif" -> ".gif"
+      "image/heic", "image/heif" -> ".heic"
+      "audio/mpeg" -> ".mp3"
+      "audio/mp4", "audio/aac", "audio/m4a" -> ".m4a"
+      "audio/wav", "audio/x-wav" -> ".wav"
+      "application/pdf" -> ".pdf"
+      "text/plain" -> ".txt"
+      else -> if (kind == "image") ".img" else if (kind == "audio") ".aac" else ".bin"
+    }
+    return "item-${index + 1}$ext"
+  }
+
+  private fun guessMimeFromName(name: String): String {
+    val lower = name.lowercase()
+    return when {
+      lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+      lower.endsWith(".png") -> "image/png"
+      lower.endsWith(".webp") -> "image/webp"
+      lower.endsWith(".gif") -> "image/gif"
+      lower.endsWith(".heic") -> "image/heic"
+      lower.endsWith(".pdf") -> "application/pdf"
+      lower.endsWith(".mp3") -> "audio/mpeg"
+      lower.endsWith(".m4a") -> "audio/mp4"
+      lower.endsWith(".wav") -> "audio/wav"
+      lower.endsWith(".txt") -> "text/plain"
+      else -> "application/octet-stream"
     }
   }
 
-  private fun buildPayload(text: String?, truncated: Boolean, originalLength: Int): Map<String, Any?>? {
-    val content = text ?: return null
-    return mapOf(
-      "offerId" to offerId,
-      "text" to content,
-      "truncated" to truncated,
-      "originalLength" to originalLength,
-      "receivedAt" to System.currentTimeMillis(),
-    )
-  }
-
-  /** 只取 text/plain 的 EXTRA_TEXT；图片/文件分享（EXTRA_STREAM）没有文本，返回 null 忽略 */
-  private fun extractSharedText(intent: Intent?): String? {
-    if (intent == null) return null
-    val action = intent.action
-    if (action != Intent.ACTION_SEND) return null
-    val type = intent.type ?: return null
-    if (!type.startsWith("text/")) return null
-    // EXTRA_TEXT 可能是 SpannableString 等 CharSequence 实现，统一转 String
-    val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() ?: return null
-    return text.trim().ifEmpty { null }
+  /** 展示名清洗：去路径、去控制字符、限长；这个值不回写文件系统路径 */
+  private fun sanitizeDisplayName(raw: String, kind: String): String {
+    val base = raw.replace('\\', '/').substringAfterLast('/')
+    val cleaned = base
+      .filterNot { it.code < 0x20 || it.code == 0x7f }
+      .replace(Regex("[<>:\"|?*]"), "_")
+      .trim()
+    val trimmed = if (cleaned.isEmpty()) {
+      if (kind == "image") "分享的图片" else if (kind == "audio") "分享的音频" else "分享的文件"
+    } else {
+      cleaned
+    }
+    return if (trimmed.length > 80) trimmed.take(80) else trimmed
   }
 
   private fun truncateByCodePoints(text: String, maxCodePoints: Int): String {
@@ -151,7 +374,11 @@ class ShareIntentModule : Module() {
     /** 与 src/db/captures.ts 的 MAX_CONTENT（桌面端收集箱上限）一致，按 Unicode 码点计 */
     const val MAX_TEXT_CODE_POINTS = 4000
 
-    /** 同文本 onNewIntent 在该窗口内重复到达视为系统双投递 */
+    const val MAX_ITEMS = 9
+    const val MAX_ITEM_BYTES = 50L * 1024 * 1024
+    const val MAX_TOTAL_BYTES = 200L * 1024 * 1024
+
+    /** 同签名 onNewIntent 在该窗口内重复到达视为系统双投递 */
     const val DOUBLE_DELIVERY_WINDOW_MS = 800L
   }
 }

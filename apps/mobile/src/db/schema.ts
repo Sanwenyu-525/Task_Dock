@@ -139,6 +139,63 @@ UPDATE outbox SET base_rev = COALESCE((SELECT server_rev FROM notes WHERE notes.
  WHERE entity = 'note' AND state = 'pending';
 `;
 
+// v6：统一采集中心的附件与暂存（照片 / 语音 / 文件）——只在本机持久化，
+// 不进同步载荷，因此协议、桌面端 schema 与既有 outbox 契约都不变。
+//
+// 1. attachments 独立于收集箱文本：文本仍走 captures + outbox；附件需要送到桌面端时
+//    复用既有「文件互传」通道（/v1/files），transfer_state 记录独立生命周期
+//    （pending → uploading → sent / failed / skipped）。文本同步成功 ≠ 附件已到桌面端。
+// 2. owner_entity/owner_id 是稳定关联：收集箱条目、笔记、任务都可以挂附件；
+//    收集箱转任务只改 owner_entity/owner_id，不复制文件、不重建记录。
+// 3. capture_stash 是「尚未保存的采集」：拍照/录音/分享先落到这里，
+//    应用被杀后仍可恢复；保存时与业务表在同一事务内转正并清空。
+export const MIGRATION_6 = `
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY NOT NULL,
+  owner_entity TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  mime TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL DEFAULT '',
+  local_uri TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT,
+  width INTEGER,
+  height INTEGER,
+  duration_ms INTEGER,
+  transcript TEXT,
+  transfer_state TEXT NOT NULL DEFAULT 'pending',
+  transfer_error TEXT,
+  remote_file_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachments_owner
+  ON attachments(owner_entity, owner_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_attachments_transfer
+  ON attachments(transfer_state, created_at);
+
+CREATE TABLE IF NOT EXISTS capture_stash (
+  id TEXT PRIMARY KEY NOT NULL,
+  kind TEXT NOT NULL,
+  mime TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL DEFAULT '',
+  local_uri TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  width INTEGER,
+  height INTEGER,
+  duration_ms INTEGER,
+  transcript TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'manual',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_capture_stash_created ON capture_stash(created_at);
+`;
+
 /** 解析顺序即执行顺序；末尾追加新迁移，不要插入或重排。 */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: MIGRATION_1 },
@@ -146,6 +203,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 3, sql: MIGRATION_3 },
   { version: 4, sql: MIGRATION_4 },
   { version: 5, sql: MIGRATION_5 },
+  { version: 6, sql: MIGRATION_6 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

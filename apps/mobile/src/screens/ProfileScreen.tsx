@@ -102,7 +102,7 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
         ? "需要重新配对"
         : "本机模式";
   const deviceNote = paired
-    ? "同步需在同步中心手动发起，不会在后台自动传输"
+    ? "回到应用会自动补齐同步，附件仍需手动或按设置传送"
     : invalid
       ? "桌面端已升级加密传输，请重新配对"
       : "尚未连接桌面端 · 数据只在本机";

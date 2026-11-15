@@ -196,12 +196,17 @@ npx vitest run src/components/mobile/VirtualDisplaySection.test.tsx
 # Rust 单测（src-tauri 内运行；测试 exe 的 Common-Controls v6 manifest 由 build.rs 注入）
 cd src-tauri && cargo test --lib commands::virtual_display -j1
 
+# 真机联调（显式启用；需 adb 设备在线，会真实启动/关闭 scrcpy 窗口）
+cd src-tauri && TASK_DOCK_VD_LIVE=1 cargo test --test virtual_display_live -- --nocapture
+
 # 构建
 cd src-tauri && RUST_MIN_STACK=33554432 CARGO_INCREMENTAL=0 cargo build -j1
 ```
 
 Rust 单测覆盖：ADB 输出解析、mDNS serial 提取、设备去重（USB/直连/mDNS、同型号不合并）、
 包名校验、尺寸校验、模式校验、可启动组件解析、scrcpy 日志信号、参数构造、状态辅助函数。
+真机联调覆盖：工具链/设备探测、可启动应用枚举、非法包名/尺寸拒绝、镜像启动→就绪→定位→
+截图（校验画面非空白）→重复启动拦截→关闭回收、虚拟屏启动→就绪→截图→关闭回收。
 
 真机验收需覆盖：镜像/虚拟屏双模式、鼠标点击与滑动、中英文输入、旋转/缩放、锁屏/解锁、
 关闭窗口、关闭 task_dock、无线 ADB 断开、重复点击、多窗口独立关闭。**jsdom/单测不能替代真机。**
@@ -217,12 +222,19 @@ Rust 单测覆盖：ADB 输出解析、mDNS serial 提取、设备去重（USB/�
 | 其他厂商/机型 | 仅 vivo V2323A / Android 16 验证过 |
 | 应用本地化名称 | 仅 scrcpy 启动过的应用能获得；其余回退包名 |
 | 多屏长时资源 | 未做受控基准 |
-| 横屏虚拟屏 | 参数已支持；本轮无设备，未复验 |
-| 截图 | PrintWindow 对 GPU 画面/受保护窗口可能失败，失败时返回错误而非空图 |
+| 横屏虚拟屏 | `1920x1080/384` 已在 scrcpy 参数层实测（2026-11-14，日志与窗口截图）；应用内该选项未做独立真机回归 |
+| 截图 | PrintWindow 对 GPU 画面/受保护窗口可能失败；刚就绪的首帧可能只有背景层，`vd_screenshot` 有 3 次有界重试，仍为空时返回最后一帧 |
 
 ## 15. 变更记录
 
 - 2026-11-14：从 MVP（单虚拟屏 + 包名列表）升级为双模式会话服务；新增状态机与日志就绪
   判定、设备身份去重、可启动应用枚举、应用名记忆、窗口定位、截图、残留诊断、多屏实验开关；
-  关闭不再持有全局锁等待；Job Object 分配失败显式告警；新增 `tests.manifest` 修复测试 exe
-  的 `STATUS_ENTRYPOINT_NOT_FOUND`。
+  关闭不再持有全局锁等待；Job Object 分配失败显式告警；新增 `tests.manifest` 使集成测试
+  exe 自动带 Common-Controls v6 清单；`cargo test --lib` 产生的单测 exe 仍按
+  [docs/TESTING.md](../TESTING.md) §「测试 exe 清单」用 `mt.exe` 补嵌（Cargo 只对集成测试
+  应用 `rustc-link-arg-tests`，属工装限制，不是产品代码问题）。
+- 2026-11-14（验收补丁）：修复 `virtual_display_live` 未实际编译通过的 `String`/`&str` 调用与
+  截图断言（改为解码 PNG 校验采样颜色数，避免把空白帧当成功）；`build_args` 单测改用绝对
+  不存在的 scrcpy 路径，避免本机 PATH 命中已安装 scrcpy 导致断言随环境漂移；截图命令增加
+  3 次有界重试以跳过虚拟屏首帧背景层。
+

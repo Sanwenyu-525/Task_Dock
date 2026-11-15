@@ -1,0 +1,16 @@
+// 本地 Expo 模块：网络类型/计费判定（仅在同步前按需查询一次，不做常驻监听）。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.taskdock.modules.networkstate'
+version = '0.1.0'
+
+android {
+  namespace "dev.taskdock.modules.networkstate"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}

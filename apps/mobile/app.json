@@ -2,7 +2,7 @@
   "expo": {
     "name": "TaskDock",
     "slug": "taskdock",
-    "version": "0.1.7",
+    "version": "0.1.9",
     "orientation": "portrait",
     "scheme": "taskdock",
     "userInterfaceStyle": "automatic",
@@ -10,7 +10,7 @@
     "icon": "./assets/icon.png",
     "android": {
       "package": "dev.taskdock.mobile",
-      "versionCode": 24,
+      "versionCode": 55,
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-foreground.png",
@@ -22,10 +22,12 @@
       "expo-secure-store",
       "./plugins/withShareTargetActivity.js",
       "./plugins/withTaskDockWidgets.js",
+      "./plugins/withCapturePermissions.js",
+      "./plugins/withShortcuts.js",
       [
         "expo-camera",
         {
-          "cameraPermission": "TaskDock 使用相机扫描桌面端配对二维码；画面只在本机处理，不上传。",
+          "cameraPermission": "TaskDock 使用相机拍照采集与扫描桌面端配对二维码；画面只在本机处理，不上传。",
           "recordAudioAndroid": false
         }
       ],

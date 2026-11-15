@@ -1,0 +1,17 @@
+// 本地 Expo 模块：快捷方式跳板（无界面 Activity + 待处理动作存储）。
+// ShortcutActivity 与 LaunchIntentModule 均在模块 manifest 中声明。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.taskdock.modules.launchintent'
+version = '0.1.0'
+
+android {
+  namespace "dev.taskdock.modules.launchintent"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}

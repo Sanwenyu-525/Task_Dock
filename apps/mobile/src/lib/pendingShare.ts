@@ -6,6 +6,7 @@
 
 import ShareIntentModule from "../../modules/share-intent";
 import type { ShareIntentPayload } from "../../modules/share-intent";
+import { deleteStoredFileQuietly, fileUriFromPath } from "./capture/storage";
 
 type Listener = (payload: ShareIntentPayload) => void;
 
@@ -66,9 +67,21 @@ export function pullInitialShare(): boolean {
   }
 }
 
-/** 用户取消/返回：清空 JS 队列与原生待处理槽，不残留待处理载荷。 */
+/**
+ * 用户取消/返回：清空 JS 队列与原生待处理槽。
+ *
+ * 队列里还没被采集页消费的分享项，其字节已被原生复制进应用私有目录；
+ * 这里必须一并删除，否则每次「分享后又取消」都会留下孤儿文件。
+ * 已被采集页消费的项由采集页自己负责（用户删除该项或保存后归附件所有）。
+ */
 export function discardPendingShare(): void {
+  const dropped = queue;
   queue = [];
+  for (const payload of dropped) {
+    for (const item of payload.items ?? []) {
+      deleteStoredFileQuietly(fileUriFromPath(item.path));
+    }
+  }
   try {
     ShareIntentModule?.clearPendingShare();
   } catch {

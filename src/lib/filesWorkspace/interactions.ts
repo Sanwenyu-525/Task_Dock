@@ -1,11 +1,17 @@
 //! 文件工作区内部拖拽协调（指针式，单例）。
 //!
 //! 两条明确区分的拖拽通道（任务规范 §6.3）：
-//! - `tabs`：文件夹标签/窗格拖拽 → 落点是分栏边缘（创建分栏）或窗格中心（并入标签）；
+//! - `tabs`：文件夹标签/窗格拖拽 → 落点是分栏边缘（四方向创建分栏）或窗格中心（并入标签）；
 //! - `files`：文件多选拖拽 → 落点是窗格中心/文件夹行（复制或移动）。
 //!
 //! 外部 OS 拖入不经过本模块（走 fileDrop.ts 仲裁 + data-drop-target 命中）；
 //! 本模块只服务应用内拖拽，避免与 WebView2 原生拖放边界互相干扰。
+//!
+//! 广播纪律（P0：事件重入与无限递归缺陷）：
+//! - 订阅回调不得直接/间接再次调用 `startFwDrag`/`moveFwDrag`/`updateFwHover`
+//!   的**变更路径**——本模块用「签名变更检测 + 重入延迟一拍」把递归转成迭代；
+//! - 只有状态真正变化（坐标/落点/效果/载荷）才通知订阅者；
+//! - 订阅回调里允许调用 `updateFwHover`（命中计算），签名不变时它不会再次广播。
 //!
 //! 语义（Windows 习惯）：Ctrl=复制、Shift=移动；默认同卷移动、跨卷复制，
 //! 释放前 UI 恒显示当前效果，不得因落点判断错误执行非预期移动。
@@ -18,7 +24,8 @@ export type FwDragPayload =
 
 export type FwDropZone =
   | { type: "edge"; paneId: string; edge: "left" | "right" | "top" | "bottom" }
-  | { type: "center"; paneId: string }
+  /** 窗格中心：dir 是该窗格当前目录（效果计算与合法性校验需要）。 */
+  | { type: "center"; paneId: string; dir: string }
   | { type: "folder"; paneId: string; path: string }
   | { type: "tabbar"; paneId: string; index: number };
 
@@ -30,6 +37,7 @@ interface FwDragState {
   y: number;
   effect: FwEffect;
   hover: FwDropZone | null;
+  modifiers: { ctrlKey: boolean; shiftKey: boolean };
 }
 
 type Listener = (state: FwDragState) => void;
@@ -40,14 +48,73 @@ const state: FwDragState = {
   y: 0,
   effect: "move",
   hover: null,
+  modifiers: { ctrlKey: false, shiftKey: false },
 };
 
 const listeners = new Set<Listener>();
-let rafId = 0;
+let lastSig = "";
+let emitting = false;
+let emitPending = false;
+
+function zoneSig(zone: FwDropZone | null): string {
+  if (!zone) return "-";
+  switch (zone.type) {
+    case "edge":
+      return `e:${zone.paneId}:${zone.edge}`;
+    case "center":
+      return `c:${zone.paneId}:${zone.dir}`;
+    case "folder":
+      return `f:${zone.paneId}:${zone.path}`;
+    case "tabbar":
+      return `t:${zone.paneId}:${zone.index}`;
+  }
+}
+
+function signature(): string {
+  const p = state.payload;
+  const pSig = p
+    ? p.kind === "tabs"
+      ? `tabs:${p.fromPaneId}:${p.paneMove ? "m" : "t"}:${p.tabIds.join(",")}`
+      : `files:${p.fromPaneId}:${p.paths.join(",")}`
+    : "none";
+  return `${pSig}|${state.x}|${state.y}|${state.effect}|${zoneSig(state.hover)}|${state.modifiers.ctrlKey ? "c" : ""}${state.modifiers.shiftKey ? "s" : ""}`;
+}
 
 function emit(): void {
-  const snapshot = { ...state, payload: state.payload ? { ...state.payload } : null };
-  for (const fn of listeners) fn(snapshot);
+  const sig = signature();
+  if (sig === lastSig) return;
+  if (emitting) {
+    emitPending = true;
+    return;
+  }
+  emitting = true;
+  lastSig = sig;
+  try {
+    const snapshot: FwDragState = {
+      ...state,
+      payload: state.payload ? { ...state.payload } : null,
+      modifiers: { ...state.modifiers },
+    };
+    for (const fn of listeners) fn(snapshot);
+  } finally {
+    emitting = false;
+  }
+  if (emitPending) {
+    emitPending = false;
+    emit();
+  }
+}
+
+/** 落点相等判断（组件层避免重复 setState 用）。 */
+export function sameZone(a: FwDropZone | null, b: FwDropZone | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.type !== b.type || a.paneId !== b.paneId) return false;
+  if (a.type === "edge" && b.type === "edge") return a.edge === b.edge;
+  if (a.type === "center" && b.type === "center") return samePath(a.dir, b.dir);
+  if (a.type === "folder" && b.type === "folder") return samePath(a.path, b.path);
+  if (a.type === "tabbar" && b.type === "tabbar") return a.index === b.index;
+  return false;
 }
 
 /** 默认效果：同卷 → 移动，跨卷 → 复制（Windows 习惯）。 */
@@ -66,7 +133,7 @@ export function defaultEffect(paths: string[], targetDir: string): "copy" | "mov
   return driveOf(first) === driveOf(normalizePath(targetDir)) ? "move" : "copy";
 }
 
-/** 解析当前拖拽效果（Ctrl=复制、Shift=移动优先于默认）。 */
+/** 效果解析（坐标/落点/修饰键由协调器持有，组件只读快照）。 */
 export function resolveEffect(
   payload: FwDragPayload,
   targetDir: string | null,
@@ -79,48 +146,73 @@ export function resolveEffect(
   return defaultEffect(payload.paths, targetDir);
 }
 
+function zoneTargetDir(zone: FwDropZone | null): string | null {
+  if (zone?.type === "folder") return zone.path;
+  if (zone?.type === "center") return zone.dir;
+  return null;
+}
+
 /** 开始拖拽（pointerdown 后移动超过阈值时由组件调用）。 */
-export function startFwDrag(payload: FwDragPayload, x: number, y: number): void {
+export function startFwDrag(
+  payload: FwDragPayload,
+  x: number,
+  y: number,
+  modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {},
+): void {
   state.payload = payload;
   state.x = x;
   state.y = y;
-  state.effect = payload.kind === "tabs" ? "tab" : "move";
+  state.modifiers = { ctrlKey: Boolean(modifiers.ctrlKey), shiftKey: Boolean(modifiers.shiftKey) };
   state.hover = null;
+  state.effect = payload.kind === "tabs" ? "tab" : "move";
   emit();
 }
 
-/** 更新悬停落点（由窗格命中层调用）。 */
-export function updateFwHover(zone: FwDropZone | null, modifiers: { ctrlKey?: boolean; shiftKey?: boolean }): void {
+/**
+ * 拖拽中指针移动（组件 window pointermove 唯一入口）。
+ * x/y 传 undefined 时保持原坐标（按键刷新修饰键用）。
+ * P0 缺陷修复：旧实现坐标只在 startFwDrag 写入一次，hover 永远冻结在起点。
+ */
+export function moveFwDrag(
+  x: number | undefined,
+  y: number | undefined,
+  modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {},
+): void {
+  if (!state.payload) return;
+  if (x !== undefined) state.x = x;
+  if (y !== undefined) state.y = y;
+  state.modifiers = { ctrlKey: Boolean(modifiers.ctrlKey), shiftKey: Boolean(modifiers.shiftKey) };
+  state.effect = resolveEffect(state.payload, zoneTargetDir(state.hover), state.modifiers);
+  emit();
+}
+
+/** 更新悬停落点（窗格订阅回调按最新坐标计算后调用；签名不变不广播）。 */
+export function updateFwHover(zone: FwDropZone | null): void {
   if (!state.payload) return;
   state.hover = zone;
-  const targetDir =
-    zone?.type === "folder"
-      ? zone.path
-      : zone?.type === "center"
-        ? null /* 由窗格当前目录判定，组件层传 */
-        : null;
-  state.effect = resolveEffect(state.payload, targetDir, modifiers);
+  state.effect = resolveEffect(state.payload, zoneTargetDir(zone), state.modifiers);
   emit();
 }
 
-/** 结束拖拽并返回落点（组件在 pointerup 时取走 hover，再调用 finish）。 */
-export function consumeFwHover(): FwDropZone | null {
-  const hover = state.hover;
-  return hover;
-}
-
+/** 结束拖拽（pointerup 落点已由组件取走后调用）。 */
 export function finishFwDrag(): void {
-  if (rafId) {
-    cancelAnimationFrame(rafId);
-    rafId = 0;
-  }
   state.payload = null;
   state.hover = null;
   emit();
 }
 
+/** 取消拖拽（Escape / pointercancel / 窗口失焦 / 拖离窗口 / 组件卸载）。 */
+export function cancelFwDrag(): void {
+  if (!state.payload) return;
+  finishFwDrag();
+}
+
 export function getFwDragState(): FwDragState {
-  return { ...state, payload: state.payload ? { ...state.payload } : null };
+  return {
+    ...state,
+    payload: state.payload ? { ...state.payload } : null,
+    modifiers: { ...state.modifiers },
+  };
 }
 
 export function isFwDragging(): boolean {

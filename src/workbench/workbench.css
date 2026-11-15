@@ -236,6 +236,64 @@ body.wb-resizing {
   min-width: 0;
 }
 
+/* ── 自绘标题栏的窗口控制（最小化 / 最大化-还原 / 关闭）──────────────
+   workspace 窗口无原生装饰（decorations(false)），这三个按钮就是系统标题栏
+   的替代：固定在最右侧、与工具栏同高，图标居中、命中区足够大。
+   颜色只走语义 Token，浅色/深色/各视觉预设自动适配；关闭的悬停反馈明确
+   但不刺眼（危险色的低透明底 + 危险色图标）。 */
+.wb-window-controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  align-self: stretch;
+  margin-left: 2px;
+  /* 抵消顶栏 16px 右侧内边距，按钮与窗口右边只留 4px，视觉上贴住标题栏 */
+  margin-right: -12px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.wb-window-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+.wb-window-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+.wb-window-btn:active {
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+}
+.wb-window-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.wb-window-btn.is-close:hover {
+  background: var(--menu-danger-hover);
+  color: var(--menu-danger);
+}
+.wb-window-btn.is-close:active {
+  background: color-mix(in srgb, var(--menu-danger) 22%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .wb-window-btn {
+    transition: none;
+  }
+}
+
 .wb-icon-btn {
   display: inline-flex;
   align-items: center;

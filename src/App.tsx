@@ -57,6 +57,7 @@ import {
   onSettingsChanged,
   onSnapFormChanged,
   onThemeChanged,
+  onWorkbenchStartupFailed,
   undoSnooze,
 } from "./lib/bridge";
 import { useCaptureStore } from "./store/useCaptureStore";
@@ -363,6 +364,14 @@ export default function App() {
       refreshTasks();
       loadAgents();
       loadNavLinks();
+    }));
+    scope.add(onWorkbenchStartupFailed(({ message }) => {
+      // 启动/重复启动打开大型工作台失败：后端已把主面板显示出来兜底，
+      // 这里必须给出明确原因与恢复入口，不能让用户以为「启动成功但仍是旧界面」。
+      useUiStore.getState().showToast(message, {
+        kind: "error",
+        detail: "可从托盘菜单或快捷入口的「打开完整工作台」重试。",
+      });
     }));
     // 卸载/热更新时释放全部监听（Promise 未兑现的会在兑现后立即反订阅）
     return () => {

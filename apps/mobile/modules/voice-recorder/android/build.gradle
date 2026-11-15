@@ -1,0 +1,18 @@
+// 本地 Expo 模块：语音速记（MediaRecorder AAC + 本地回放）。
+// 模板与 secure-http 一致：expo-module-gradle-plugin 接入 expo-modules-core；
+// 只在 Android 构建，无第三方依赖。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.taskdock.modules.voicerecorder'
+version = '0.1.0'
+
+android {
+  namespace "dev.taskdock.modules.voicerecorder"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}

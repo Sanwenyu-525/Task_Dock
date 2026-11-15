@@ -66,6 +66,7 @@ import TaskContextDrawer from "../components/context/TaskContextDrawer";
 
 import WorkbenchHome from "./WorkbenchHome";
 import WorkbenchContextPane from "./WorkbenchContextPane";
+import WorkbenchWindowControls from "./WorkbenchWindowControls";
 
 import { useLocale } from "../hooks/useLocale";
 import { useTasksStore } from "../store/useTasksStore";
@@ -109,6 +110,7 @@ import {
   resourceSnapshot,
   workbenchNavAck,
   workbenchTakeNav,
+  workbenchUiReady,
   workspaceProjectList,
   workspaceProjectSave,
   workspaceSetActiveProject,
@@ -1121,6 +1123,14 @@ export default function WorkbenchShell() {
 
   // ── 启动门：设置 + 路由 hydration 完成前不渲染假页面 ────────────────
   const booted = settingsReady && routeHydrated && projectHydrated;
+  const readySent = useRef(false);
+  useEffect(() => {
+    if (!booted || readySent.current) return;
+    readySent.current = true;
+    // 启动路径的窗口是**隐藏创建**的（避免先看到空白窗口）：这里确认首帧可渲染
+    // 后让后端显示窗口并聚焦。手动打开/已可见时后端是 no-op，可安全重复调用。
+    void workbenchUiReady().catch(() => {});
+  }, [booted]);
   if (!booted) {
     const failed = Boolean(settingsError);
     return (
@@ -1307,7 +1317,10 @@ export default function WorkbenchShell() {
       />
 
       <div className="wb-main">
-        <header className="wb-topbar">
+        {/* 顶栏同时是自绘标题栏：工作台窗口 decorations(false)，这里用 `deep`
+            声明整条顶栏为拖动区；Tauri 的拖动脚本会跳过按钮/带 tabindex 的
+            可交互元素，因此搜索、创建、项目选择与右端窗口按钮都不会丢点击。 */}
+        <header className="wb-topbar" data-tauri-drag-region="deep">
           <div className="wb-topbar-brand">
             <span className="wb-brand-mark" aria-hidden="true">
               <Layers size={13} strokeWidth={2} />
@@ -1421,6 +1434,7 @@ export default function WorkbenchShell() {
               <PanelRight size={15} aria-hidden="true" />
             </button>
           </div>
+          <WorkbenchWindowControls />
         </header>
 
         <div className="wb-workarea">

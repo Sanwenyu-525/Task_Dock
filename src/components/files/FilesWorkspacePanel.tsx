@@ -63,8 +63,13 @@ import {
   type SplitNode,
 } from "../../lib/filesWorkspace/model";
 import {
+  cancelFwDrag,
   finishFwDrag,
   getFwDragState,
+  isFwDragging,
+  moveFwDrag,
+  sameZone,
+  subscribeFwDrag,
   getFwClipboard,
   setFwClipboard,
   resolveEffect,
@@ -244,7 +249,6 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const store = useFilesWorkspaceStore;
 
   const [dropHint, setDropHint] = useState<FwDropZone | null>(null);
-  const [dragGhost, setDragGhost] = useState<{ x: number; y: number; text: string; kind: string } | null>(null);
   const [layoutOpen, setLayoutOpen] = useState(false);
   const layoutBtnRef = useRef<HTMLButtonElement>(null);
   const [openFolderTarget, setOpenFolderTarget] = useState<string | null>(null);
@@ -253,24 +257,29 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [templateName, setTemplateName] = useState("");
   const [settingsRevision, setSettingsRevision] = useState(0);
-  const modifiersRef = useRef({ ctrlKey: false, shiftKey: false });
   const hoverZoneRef = useRef<FwDropZone | null>(null);
   const hydrateGenRef = useRef(0);
+  /** 已从持久化恢复过（true 后不再被「设置晚到补恢复」覆盖）。 */
+  const savedHydratedRef = useRef(false);
+  /** 键盘删除模式：Shift+Delete = 永久删除（独立确认语义）。 */
+  const [deletePermanent, setDeletePermanent] = useState(false);
 
   // ── 项目 hydration（代际令牌防串位）──────────────────────────────────
   useEffect(() => {
     const stateKey = project?.id ? `project:${project.id}` : "global";
     const gen = ++hydrateGenRef.current;
     const persisted = normalizePersisted(
-      (useSettingsStore.getState().settings as Record<string, unknown> | null)?.[
+      (useSettingsStore.getState().settings as unknown as Record<string, unknown> | null)?.[
         FILE_WORKSPACE_SETTING_KEY
       ],
     );
     const saved = persisted.states[stateKey];
     if (saved) {
+      savedHydratedRef.current = true;
       store.getState().hydrate(saved, stateKey);
     } else {
       // 无项目态：单窗格空布局；有项目根目录时第一个窗格打开根目录。
+      // （设置若尚未加载完成，下面的订阅会在设置到达后补一次恢复。）
       const freshTree = defaultTree();
       store.getState().hydrate({ tree: freshTree, panes: [], activePaneId: paneIds(freshTree)[0] }, stateKey);
       if (project?.rootPath) {
@@ -286,7 +295,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   // 模板列表读取：设置变化时刷新（修订号触发）。
   const persisted = useMemo(
     () => normalizePersisted(
-      (useSettingsStore.getState().settings as Record<string, unknown> | null)?.[
+      (useSettingsStore.getState().settings as unknown as Record<string, unknown> | null)?.[
         FILE_WORKSPACE_SETTING_KEY
       ],
     ),
@@ -294,9 +303,27 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     [settingsRevision],
   );
   useEffect(() => {
-    const unsub = useSettingsStore.subscribe(() => setSettingsRevision((n) => n + 1));
+    const unsub = useSettingsStore.subscribe(() => {
+      setSettingsRevision((n) => n + 1);
+      // P0 竞态：settings 异步加载晚于面板挂载时，首次 hydrate 用的是空设置——
+      // 已存布局若不在此补恢复，用户一操作就会被空布局覆盖。
+      if (!savedHydratedRef.current) {
+        const settings = useSettingsStore.getState().settings;
+        if (settings) {
+          const stateKey = store.getState().stateKey;
+          const normalized = normalizePersisted(
+            (settings as unknown as Record<string, unknown> | null)?.[FILE_WORKSPACE_SETTING_KEY],
+          );
+          const saved = normalized.states[stateKey];
+          if (saved) {
+            savedHydratedRef.current = true;
+            store.getState().hydrate(saved, stateKey);
+          }
+        }
+      }
+    });
     return () => unsub();
-  }, []);
+  }, [store]);
 
   // ── 快速位置 ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -317,9 +344,9 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     return () => window.removeEventListener("taskdock-fw-open-folder", onOpen);
   }, []);
 
-  // ── 应用内拖拽：ghost + 修饰键 + pointerup 派发 ─────────────────────
+  // ── 应用内拖拽：坐标/修饰键/落点派发/取消清理 ───────────────────────
   const applyFileDrop = useCallback(
-    async (paths: string[], targetDir: string, effect: "copy" | "move") => {
+    async (paths: string[], targetDir: string, effect: "copy" | "move"): Promise<FsOpReport | null> => {
       try {
         const report: FsOpReport =
           effect === "copy"
@@ -327,99 +354,133 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             : await fsMovePaths(paths, targetDir, "rename");
         invalidateDirs([targetDir, ...paths.map((p) => parentOf(p) ?? "").filter(Boolean)]);
         if (report.failed > 0) {
-          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed }), { kind: "warning" });
+          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed, skipped: report.skipped }), { kind: "warning" });
         } else {
           showToast(effect === "copy" ? t("fw.report.copyOk", { count: report.ok }) : t("fw.report.moveOk", { count: report.ok }), { kind: "success" });
         }
+        return report;
       } catch (e) {
         showToast(errorMessage(e), { kind: "error" });
+        return null;
       }
     },
     [showToast, t],
   );
 
   useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      modifiersRef.current = { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey };
-      const st = getFwDragState();
-      if (!st.payload) return;
-      // ghost 跟随 + 效果即时可见（复制/移动/并入标签）。
-      const effect = resolveEffect(st.payload, st.hover?.type === "folder" ? st.hover.path : null, modifiersRef.current);
-      const text =
-        st.payload.kind === "tabs"
-          ? t("fw.drag.mergeTabs", { count: st.payload.tabIds.length })
-          : effect === "copy"
-            ? t("fw.drag.copy", { count: st.payload.paths.length })
-            : t("fw.drag.move", { count: st.payload.paths.length });
-      setDragGhost({ x: e.clientX, y: e.clientY, text, kind: st.payload.kind });
-    };
-    const onUp = () => {
-      const st = getFwDragState();
-      if (!st.payload) return;
-      const zone = st.hover;
-      const payload = st.payload;
-      const fromPaneId = payload.fromPaneId;
-      finishFwDrag();
-      setDragGhost(null);
+    const clearHints = () => {
       hoverZoneRef.current = null;
       setDropHint(null);
-      if (!zone) return;
+    };
+    const onMove = (e: PointerEvent) => {
+      // 协调器唯一坐标入口（P0：旧实现坐标只在拖拽起点写入，hover 永远冻结）。
+      moveFwDrag(e.clientX, e.clientY, e);
+    };
+    const onUp = () => {
+      if (!isFwDragging()) return;
+      const st = getFwDragState();
+      const zone = st.hover;
+      const payload = st.payload;
+      finishFwDrag();
+      clearHints();
+      if (!zone || !payload) return;
       const s = store.getState();
       if (payload.kind === "tabs") {
-        const directionFor = (edge: "left" | "right" | "top" | "bottom"): SplitDirection =>
-          edge === "left" || edge === "right" ? "horizontal" : "vertical";
         if (zone.type === "edge") {
+          // 四方向分栏：左/上 = 前侧插入（树顺序必须与视觉一致，P0）。
+          const direction: SplitDirection = zone.edge === "left" || zone.edge === "right" ? "horizontal" : "vertical";
+          const side = zone.edge === "left" || zone.edge === "top" ? "before" : "after";
           if (payload.paneMove) {
-            const newPaneId = s.splitPane(zone.paneId, directionFor(zone.edge), null);
+            const newPaneId = s.splitPane(zone.paneId, direction, "", side);
             if (newPaneId) {
-              for (const tabId of payload.tabIds) s.moveTabToPane(tabId, fromPaneId, newPaneId);
-              if (paneIds(s.tree).includes(fromPaneId)) s.closePane(fromPaneId);
+              for (const tabId of payload.tabIds) s.moveTabToPane(tabId, payload.fromPaneId, newPaneId);
+              if (paneIds(s.tree).includes(payload.fromPaneId)) s.closePane(payload.fromPaneId);
             }
           } else {
-            s.extractTabToPane(payload.tabIds[0], fromPaneId, zone.paneId, directionFor(zone.edge));
+            s.extractTabToPane(payload.tabIds[0], payload.fromPaneId, zone.paneId, direction, side);
           }
         } else if (zone.type === "center") {
-          if (zone.paneId === fromPaneId) return;
+          if (zone.paneId === payload.fromPaneId) return;
           if (payload.paneMove) {
-            for (const tabId of payload.tabIds) s.moveTabToPane(tabId, fromPaneId, zone.paneId);
-            s.closePane(fromPaneId);
+            for (const tabId of payload.tabIds) s.moveTabToPane(tabId, payload.fromPaneId, zone.paneId);
+            s.closePane(payload.fromPaneId);
           } else {
-            s.moveTabToPane(payload.tabIds[0], fromPaneId, zone.paneId);
+            s.moveTabToPane(payload.tabIds[0], payload.fromPaneId, zone.paneId);
           }
         } else if (zone.type === "tabbar") {
-          if (zone.paneId === fromPaneId && !payload.paneMove) {
-            const tabs = s.panes[fromPaneId]?.tabs ?? [];
+          if (zone.paneId === payload.fromPaneId && !payload.paneMove) {
+            const tabs = s.panes[payload.fromPaneId]?.tabs ?? [];
             const curIdx = tabs.findIndex((x) => x.tabId === payload.tabIds[0]);
             let to = zone.index;
             if (curIdx >= 0 && to > curIdx) to -= 1;
-            if (curIdx >= 0 && to !== curIdx) s.reorderTab(fromPaneId, curIdx, to);
-          } else if (zone.paneId !== fromPaneId) {
-            s.moveTabToPane(payload.tabIds[0], fromPaneId, zone.paneId, zone.index);
+            if (curIdx >= 0 && to !== curIdx) s.reorderTab(payload.fromPaneId, curIdx, to);
+          } else if (zone.paneId !== payload.fromPaneId) {
+            s.moveTabToPane(payload.tabIds[0], payload.fromPaneId, zone.paneId, zone.index);
           }
         }
         return;
       }
-      // files
+      // files：center 自带 dir（组件层已按最新坐标解析）。
       const targetDir =
         zone.type === "folder"
           ? zone.path
           : zone.type === "center"
-            ? (s.panes[zone.paneId]?.tabs.find((x) => x.tabId === s.panes[zone.paneId]?.activeTabId)?.path ?? null)
+            ? zone.dir
             : null;
       if (!targetDir) return;
-      const effect = resolveEffect(payload, targetDir, modifiersRef.current);
+      const effect = resolveEffect(payload, targetDir, st.modifiers);
       void applyFileDrop(payload.paths, targetDir, effect === "copy" ? "copy" : "move");
+    };
+    // 取消通道：Escape / pointercancel / 窗口失焦 / 指针离开窗口 / 卸载。
+    // 取消绝不执行文件操作（P0：防误移动）。
+    const onCancel = () => {
+      if (!isFwDragging()) return;
+      cancelFwDrag();
+      clearHints();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isFwDragging()) {
+        e.preventDefault();
+        onCancel();
+        return;
+      }
+      // 按住不动按 Ctrl/Shift 也要即时刷新效果（Explorer 语义）。
+      if (isFwDragging() && (e.key === "Control" || e.key === "Shift")) {
+        moveFwDrag(undefined, undefined, e);
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (isFwDragging() && (e.key === "Control" || e.key === "Shift")) {
+        moveFwDrag(undefined, undefined, e);
+      }
+    };
+    const onLeaveDoc = (e: PointerEvent) => {
+      if (!e.relatedTarget) onCancel();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onCancel);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp);
+    document.addEventListener("pointerleave", onLeaveDoc);
     return () => {
+      if (isFwDragging()) cancelFwDrag();
+      clearHints();
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onCancel);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKeyUp);
+      document.removeEventListener("pointerleave", onLeaveDoc);
     };
-  }, [applyFileDrop, store, t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyFileDrop, store]);
 
-  // hover zone 上报（来自各 Pane）。
+  // hover zone 上报（来自各 Pane）：仅变化时 setState（拖拽中每帧 emit 不再牵动整树）。
   const onHoverZone = useCallback((zone: FwDropZone | null) => {
+    if (sameZone(zone, hoverZoneRef.current)) return;
     hoverZoneRef.current = zone;
     setDropHint(zone);
   }, []);
@@ -440,14 +501,16 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       priority: 20,
       claim: () => pageActive,
       onEnter: (point: { x: number; y: number } | null) => {
-        setDropHint(point && hitPaneDir(point) ? { type: "center", paneId: dropTargetAt(point, "data-fw-pane-id") ?? "" } : null);
+        const dir = point ? hitPaneDir(point) : null;
+        onHoverZone(dir && point ? { type: "center", paneId: dropTargetAt(point, "data-fw-pane-id") ?? "", dir } : null);
       },
       onOver: (point: { x: number; y: number } | null) => {
-        setDropHint(point && hitPaneDir(point) ? { type: "center", paneId: dropTargetAt(point, "data-fw-pane-id") ?? "" } : null);
+        const dir = point ? hitPaneDir(point) : null;
+        onHoverZone(dir && point ? { type: "center", paneId: dropTargetAt(point, "data-fw-pane-id") ?? "", dir } : null);
       },
-      onLeave: () => setDropHint(null),
+      onLeave: () => onHoverZone(null),
       onDrop: (paths: string[], point: { x: number; y: number } | null) => {
-        setDropHint(null);
+        onHoverZone(null);
         const dir = hitPaneDir(point);
         if (!dir || paths.length === 0) {
           if (paths.length > 0) showToast(t("fw.error.dropOutside"), { kind: "warning" });
@@ -456,7 +519,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         void applyFileDrop(paths, dir, "copy");
       },
       onPayload: (payload: DragPayloadView, point: { x: number; y: number } | null, meta: { operationId: string }) => {
-        setDropHint(null);
+        onHoverZone(null);
         if (payload.kind === "local-files" && payload.paths.length) {
           const dir = hitPaneDir(point);
           if (!dir) {
@@ -518,9 +581,21 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         void (async () => {
           const clip = getFwClipboard();
           if (!clip) return;
-          await applyFileDrop(clip.paths, tab.path, clip.mode === "copy" ? "copy" : "move");
-          if (clip.mode === "cut") setFwClipboard(null);
+          const report = await applyFileDrop(clip.paths, tab.path, clip.mode === "copy" ? "copy" : "move");
+          if (clip.mode === "cut") {
+            // 剪切语义（P0：失败不得静默清空剪切状态）：部分失败只保留未完成项。
+            const pending = report
+              ? report.entries.filter((r) => r.status === "failed").map((r) => r.source)
+              : [...clip.paths];
+            setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
+          }
         })();
+      } else if (e.shiftKey && e.key === "Delete" && selection.length) {
+        // 永久删除：独立入口 + 独立确认（不得混入回收站语义）。
+        e.preventDefault();
+        deletePathsRef.current = [...selection];
+        setDeletePermanent(true);
+        setDeleteOpen(true);
       } else if (e.key === "Delete" && selection.length) {
         e.preventDefault();
         void fsDeleteWithConfirm();
@@ -550,26 +625,51 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     setDeleteOpen(true);
   }
 
-  // F2 重命名事件 → 转给对应 Pane（简化：直接调用 fsRename 经对话框）。
+  // F2 重命名由 FilePane 直接监听 taskdock-fw-rename 打开对话框（不用
+  // window.prompt：WebView2 禁用脚本对话框时静默返回 null，且不符组件层规范）。
+
+  // 项目切换/卸载前落盘待写状态（P0 竞态：旧定时器晚 fire 会把新状态写进新键）。
   useEffect(() => {
-    const onRename = (e: Event) => {
-      const detail = (e as CustomEvent<{ paneId: string; path: string }>).detail;
-      const name = detail.path.split(/[\\/]/).filter(Boolean).pop() ?? "";
-      const input = window.prompt(t("fw.dialog.newName"), name);
-      if (!input || input.trim() === name) return;
-      void import("../../lib/bridge").then(async ({ fsRename }) => {
-        try {
-          await fsRename(detail.path, input.trim());
-          invalidateDirs([parentOf(detail.path) ?? ""].filter(Boolean));
-          store.getState().clearSelection(detail.paneId);
-        } catch (err) {
-          showToast(errorMessage(err), { kind: "error" });
-        }
-      });
+    const onPageHide = () => {
+      void store.getState().flushPending().catch(() => {});
     };
-    window.addEventListener("taskdock-fw-rename", onRename);
-    return () => window.removeEventListener("taskdock-fw-rename", onRename);
-  }, [showToast, store, t]);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      void store.getState().flushPending().catch(() => {});
+    };
+  }, [store]);
+
+  // 持久化写入失败可见反馈（P0：不得静默吞掉）。
+  useEffect(() => {
+    const unsub = useFilesWorkspaceStore.subscribe((s, prev) => {
+      if (s.persistError && s.persistError !== prev.persistError) {
+        showToast(t("fw.persist.failed", { error: s.persistError }), { kind: "error" });
+      }
+    });
+    return unsub;
+  }, [showToast, t]);
+
+  // 暂存架 → 文件工作区投递接收端（发送侧在暂存架 UI，其他会话所有，不并行重造）：
+  // window.dispatchEvent(new CustomEvent("taskdock-fw-deliver", { detail: { paths, mode } }))
+  // mode 缺省恒为 copy（外部来源绝不删用户源文件）；move 仅在发送端明确声明时执行。
+  useEffect(() => {
+    const onDeliver = (e: Event) => {
+      const detail = (e as CustomEvent<{ paths?: string[]; mode?: "copy" | "move" }>).detail;
+      const paths = Array.isArray(detail?.paths) ? detail.paths : [];
+      if (!paths.length) return;
+      const s = store.getState();
+      const pane = s.panes[s.activePaneId];
+      const dir = pane?.tabs.find((x) => x.tabId === pane.activeTabId)?.path;
+      if (!dir) {
+        showToast(t("fw.error.dropOutside"), { kind: "warning" });
+        return;
+      }
+      void applyFileDrop(paths, dir, detail.mode === "move" ? "move" : "copy");
+    };
+    window.addEventListener("taskdock-fw-deliver", onDeliver);
+    return () => window.removeEventListener("taskdock-fw-deliver", onDeliver);
+  }, [applyFileDrop, showToast, store, t]);
 
   // ── 布局动作 ────────────────────────────────────────────────────────
   const applyPreset = (presetId: string) => {
@@ -880,25 +980,33 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         <p className="fw-template-hint">{t("fw.template.saveHint")}</p>
       </Dialog>
 
-      {/* 键盘 Delete 确认 */}
+      {/* 键盘 Delete 确认（回收站；Shift+Delete = 永久删除独立确认） */}
       <ConfirmDialog
         open={deleteOpen}
-        title={t("fw.dialog.deleteTitle", { count: deletePathsRef.current.length })}
-        detail={t("fw.dialog.deleteBody")}
-        confirmLabel={t("fw.dialog.deleteConfirm")}
+        title={
+          deletePermanent
+            ? t("fw.dialog.deletePermanentTitle", { count: deletePathsRef.current.length })
+            : t("fw.dialog.deleteTitle", { count: deletePathsRef.current.length })
+        }
+        detail={deletePermanent ? t("fw.dialog.deletePermanentBody") : t("fw.dialog.deleteBody")}
+        confirmLabel={deletePermanent ? t("fw.dialog.deletePermanentConfirm") : t("fw.dialog.deleteConfirm")}
         danger
         onCancel={() => setDeleteOpen(false)}
         onConfirm={() => {
           const paths = [...deletePathsRef.current];
+          const permanent = deletePermanent;
           setDeleteOpen(false);
+          setDeletePermanent(false);
           void (async () => {
             try {
-              const report = await fsDeletePaths(paths, false);
+              const report = await fsDeletePaths(paths, permanent);
               invalidateDirs(paths.map((p) => parentOf(p) ?? "").filter(Boolean));
               showToast(
                 report.failed > 0
-                  ? t("fw.report.partial", { ok: report.ok, failed: report.failed })
-                  : t("fw.report.deleteOk", { count: report.ok }),
+                  ? t("fw.report.partial", { ok: report.ok, failed: report.failed, skipped: report.skipped })
+                  : permanent
+                    ? t("fw.report.deletePermanent", { count: report.ok })
+                    : t("fw.report.deleteOk", { count: report.ok }),
                 { kind: report.failed > 0 ? "warning" : "success" },
               );
               store.getState().clearSelection(store.getState().activePaneId);
@@ -909,12 +1017,34 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         }}
       />
 
-      {/* 拖拽 ghost */}
-      {dragGhost && (
-        <div className="fw-drag-ghost" style={{ left: dragGhost.x, top: dragGhost.y }} aria-hidden="true">
-          {dragGhost.text}
-        </div>
-      )}
+      {/* 拖拽 ghost（独立订阅组件：每帧位置更新只重渲染自身） */}
+      <FwDragGhost />
+    </div>
+  );
+}
+
+/** 拖拽 ghost：显示操作类型/数量/允许与否，独立订阅拖拽状态（不牵动面板树）。 */
+function FwDragGhost() {
+  const { t } = useLocale();
+  const [st, setSt] = useState(() => getFwDragState());
+  useEffect(() => subscribeFwDrag(setSt), []);
+  if (!st.payload) return null;
+  const denied = st.payload.kind === "files" && !st.hover;
+  const text =
+    st.payload.kind === "tabs"
+      ? st.payload.paneMove
+        ? t("fw.drag.movePane", { count: st.payload.tabIds.length })
+        : t("fw.drag.mergeTabs", { count: st.payload.tabIds.length })
+      : st.effect === "copy"
+        ? t("fw.drag.copy", { count: st.payload.paths.length })
+        : t("fw.drag.move", { count: st.payload.paths.length });
+  return (
+    <div
+      className={`fw-drag-ghost${st.payload.kind === "tabs" ? " is-tabs" : ""}${denied ? " is-denied" : ""}`}
+      style={{ left: st.x, top: st.y }}
+      aria-hidden="true"
+    >
+      {text}
     </div>
   );
 }

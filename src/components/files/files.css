@@ -417,6 +417,8 @@ body.fw-resizing {
   overflow: auto;
   position: relative;
   outline: none;
+  /* 容器查询锚点：窄分栏时次要列逐级让位（P2：338px 分栏时文件名被固定列压到 0）。 */
+  container-type: inline-size;
 }
 
 .fw-row {
@@ -663,42 +665,43 @@ body.fw-resizing {
 }
 
 /* ── 拖拽视觉 ───────────────────────────────────────────────────────── */
+/* 落点提示用轻量边缘细条（禁止大块半透明遮罩盖住内容，任务规范 §9.3）。 */
 
 .fw-edge-hint {
   position: absolute;
   z-index: 3;
   pointer-events: none;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--accent) 28%, transparent);
-  border: 1.5px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 85%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .fw-edge-left {
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 50%;
+  left: 2px;
+  top: 8px;
+  bottom: 8px;
+  width: 5px;
 }
 
 .fw-edge-right {
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 50%;
+  right: 2px;
+  top: 8px;
+  bottom: 8px;
+  width: 5px;
 }
 
 .fw-edge-top {
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 50%;
+  left: 8px;
+  right: 8px;
+  top: 2px;
+  height: 5px;
 }
 
 .fw-edge-bottom {
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 50%;
+  left: 8px;
+  right: 8px;
+  bottom: 2px;
+  height: 5px;
 }
 
 .fw-center-hint {
@@ -735,6 +738,40 @@ body.fw-resizing {
   pointer-events: none;
   box-shadow: var(--shadow-raised);
   white-space: nowrap;
+}
+
+/* 拒绝落点（自子树/无效目标）：危险色 + 虚线，明确「松手不会执行」。 */
+.fw-drag-ghost.is-denied {
+  border-color: color-mix(in srgb, var(--danger, #e5484d) 70%, transparent);
+  border-style: dashed;
+  color: color-mix(in srgb, var(--danger, #e5484d) 85%, var(--text-primary));
+}
+
+.fw-drag-ghost.is-tabs {
+  font-weight: 600;
+}
+
+/* 超限目录翻页（列表末尾内嵌）。 */
+.fw-load-more {
+  display: block;
+  margin: 6px auto;
+  padding: 4px 14px;
+  font-size: 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.fw-load-more:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.fw-load-more:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* ── 布局抽屉 ───────────────────────────────────────────────────────── */
@@ -911,9 +948,24 @@ body.fw-resizing {
   .fw-searchbox {
     width: 90px;
   }
+}
 
-  .fw-row-time,
+/* 窄分栏（容器查询，按 .fw-body 实际宽度）：次要列逐级隐藏，文件名永不归零。
+   固定列合计约 345px（time 118 + size 76 + type 88 + 图标/间距）。 */
+@container (max-width: 560px) {
   .fw-row-type {
     display: none;
+  }
+}
+
+@container (max-width: 440px) {
+  .fw-row-size {
+    display: none;
+  }
+}
+
+@container (max-width: 360px) {
+  .fw-row-time {
+    flex-basis: 84px;
   }
 }

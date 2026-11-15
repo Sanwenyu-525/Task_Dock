@@ -1952,5 +1952,45 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
   `tmp/acceptance/files-workspace/shots/`。原生真机（OLE 拖入实际投递、回收站 UI 对话、
   DPI/多显示器、缩略图真实渲染）**未验证**，预览 shim 不能替代。
 
+### 第二轮修复与原生验收（2026-11-14）
+
+第一轮缺陷修复 + Windows 原生验收，报告 `tmp/acceptance/files-workspace/round2/report.md`。
+对上文的历史更正：测试条目以本节为准（Rust 29 / 前端 78 / 回归 48）；「原生真机未验证」一行
+自本轮起部分解除——文件 IPC 操作、回收站删除、应用内拖拽分栏、缩略图渲染、持久化闭环已在
+隔离实例（CDP + `TASK_DOCK_DATA_DIR`）真机通过，**OLE 物理拖入、DPI/多显示器物理操作、
+回收站系统对话框语义仍未验证**。
+
+- **路径安全（P0）**：新增词法规范化 `normalize_lexical`（verbatim 前缀剥离、`.`/`..`
+  解析、盘符与 UNC server/share 为不可越过基底）+ `real_path`（canonicalize 最深存在祖先
+  后拼接词法尾部，防 junction/symlink 绕过保护目录）；`is_under` 分量边界比较（拒绝
+  `C:\AppData` 与 `C:\AppDataBackup` 前缀混淆）；根路径拒绝删除/写入；回收站删除只用词法
+  路径（不 canonicalize，防误删符号链接目标）；重解析点删除优先于 `is_dir`（std 对 junction
+  `is_dir()==false` 陷阱）。`list_dir` 改 `offset` 分页（`scanned`/`has_more`），前端
+  dirCache `loadMore` 翻页（>8000 不再截断丢失）。
+- **拖拽（P0）**：`interactions.ts` 重写——订阅回调内 `updateFwHover` 的事件重入以签名检测
+  转迭代收敛（不再无限递归）；坐标只在变化时广播；四方向分栏 side="before"|"after"
+  （左/上必须前侧插入树）；PointerUp/Cancel/Escape/失焦/卸载全清理；文件拖拽 ghost 显示
+  类型/数量/允许与否。组件级 PointerEvent 测试 6 条（jsdom 桩 getBoundingClientRect）。
+- **持久化（P0，原生验收抓出的真 bug）**：`db::Settings` 缺 `file_workspace_layouts` 字段
+  导致 `get_settings` 序列化时**静默丢弃该键**（写入落库成功但读回为空）——布局不恢复，且
+  强杀时的卸载 flushPending 读-改-写以空基线覆盖，把刚保存的模板擦掉。修复：`db/mod.rs`
+  Settings 增加 `#[serde(default)] file_workspace_layouts: serde_json::Value`（与
+  `workbench_layout` 同模式，旧库缺键兼容），前端 `bridge.ts` Settings 补类型。修复后原生
+  闭环验证：保存双标签布局+模板 → SQLite 961 字节落库（旧模板共存，RMW 不再擦除）→ 强杀
+  重启 → 窗格/标签/激活标签/模板全部恢复。另：hydrate 复用持久化 tabId（激活标签跨重启
+  生效）；`applyTemplate` 按 `reassignPaneIds` 映射重绑定标签数据；写入失败 `persistError`
+  可见反馈；项目切换/卸载前 `flushPendingPersist` 串行落盘。
+- **操作反馈（P1）**：复制/移动返回 `FsOpReport` 逐条 ok/failed/skipped；Ctrl+V 剪切粘贴
+  失败项保留在剪贴板（成功项移除）；拖拽协调器带 Ctrl/Shift 修饰键实时重算（按键无
+  pointermove 也刷新）；缩略图队列 >500 丢弃最旧未执行任务（不积压）；窄分栏文件名列挤压
+  修复（CSS container query 按分栏宽度降级列，rowNameWidth 0→333 实测）。
+- **暂存架投递**：只做接收侧（`taskdock-fw-deliver` 事件，mode 缺省恒 copy）；发送侧
+  （他人模块所有权）未重造。
+- **验证状态**：Rust 29/29（db 46/46、settings 13/13、file_workspace 29/29 直调测试 exe——
+  cargo test 每次重链会清掉 mt.exe 嵌入的 comctl6 清单，须嵌后直调）；前端 78/78（7 文件）；
+  导航/工作台回归 48/48；`npm run build` 通过。原生证据：`tmp/acceptance/files-workspace/
+  round2/native/`（persist-a/b/c-results.json、persist-*.png、native-full-results.json）。
+  遗留：跨窗口并发读-改-写同键的竞态（写入链仅窗口内串行）属已知限制，与其他布局键同。
+
 
 

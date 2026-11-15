@@ -468,6 +468,12 @@ export interface Settings {
    * 默认值，后端只做结构边界校验，不参与语义合并。
    */
   workbench_layout?: unknown;
+  /**
+   * 文件工作区布局（U2）：global/项目态布局快照 + 自定义模板 + 最近模板。
+   * 版本化 JSON 对象，结构见 `src/lib/filesWorkspace/persist.ts`；缺失或损坏时
+   * 前端回退默认布局，后端只做结构边界校验，不参与语义合并。
+   */
+  file_workspace_layouts?: unknown;
 }
 
 /** 全局任务统计（跨所有筛选视图）。 */
@@ -5042,6 +5048,19 @@ export const workbenchNavAck = (input: {
 export const onWorkbenchNavigate = (cb: (request: WorkbenchNavRequest) => void) =>
   listen<WorkbenchNavRequest>("workbench-navigate", (e) => cb(e.payload));
 
+/**
+ * 工作台首帧就绪：启动路径的窗口是**隐藏创建**的，收到这个确认后才显示，
+ * 避免用户先看到一个空白窗口。手动打开时后端是 no-op，可安全重复调用。
+ */
+export const workbenchUiReady = () => invoke<void>("workbench_ui_ready");
+
+/**
+ * 启动/重复启动路径打开大型工作台失败：主窗口据此展示可恢复的错误提示
+ * （托盘 / 快捷入口「打开完整工作台」会重新尝试创建）。
+ */
+export const onWorkbenchStartupFailed = (cb: (failure: { message: string }) => void) =>
+  listen<{ message: string }>("workbench-startup-failed", (e) => cb(e.payload));
+
 export const onWorkbenchNavAck = (cb: (ack: WorkbenchNavAck) => void) =>
   listen<WorkbenchNavAck>("workbench-nav-ack", (e) => cb(e.payload));
 
@@ -5291,7 +5310,10 @@ export interface FsEntry {
 export interface FsDirListing {
   path: string;
   entries: FsEntry[];
-  truncated: boolean;
+  /** 本轮扫描的磁盘条目数（含隐藏过滤项；翻页 offset 依据）。 */
+  scanned: number;
+  /** 目录还有更多未返回的条目（继续按 offset 翻页）。 */
+  hasMore: boolean;
 }
 
 export interface FsDirSignature {
@@ -5335,8 +5357,8 @@ export interface FsStat {
   childTruncated: boolean;
 }
 
-export const fsListDir = (path: string, showHidden: boolean) =>
-  invoke<FsDirListing>("fs_list_dir", { path, showHidden });
+export const fsListDir = (path: string, showHidden: boolean, offset = 0) =>
+  invoke<FsDirListing>("fs_list_dir", { path, showHidden, offset });
 
 export const fsDirSignature = (path: string) =>
   invoke<FsDirSignature>("fs_dir_signature", { path });

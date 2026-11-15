@@ -20,7 +20,7 @@
 ```bash
 cd apps/mobile
 npx tsc --noEmit          # exit 0 才算通过
-npm test                  # vitest run（2026-11-12 起）：单测 93 例，exit 0 才算通过
+npm test                  # vitest run：2026-11-14 集成后 27 文件 / 256 例，exit 0 才算通过
 ```
 
 vitest（node 环境，不用 jsdom）覆盖：配对 v2 解析与 TLS 指纹校验、secureFetch 注入链路、
