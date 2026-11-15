@@ -706,26 +706,83 @@ export default function ProjectWorkspacePanel({
       )}
 
       {activeModule === "overview" && (
-        <div className="ws-grid">
-          {profile.homeCards.map((card) => {
-            const cap = WORKSPACE_CAPABILITIES[card.capability];
-            return (
-              <section className="ws-card" key={card.id} aria-label={card.title}>
-                <header className="ws-card-head">
-                  <h3>{card.title}</h3>
-                  <span className={`ws-badge ws-badge-${cap.state}`}>{CAPABILITY_STATE_LABEL[cap.state]}</span>
-                </header>
-                {ctx.status === "loading" && card.body !== "agents" && card.body !== "git" ? (
-                  <div className="ws-state" data-tone="muted">
-                    <Loader2 size={12} className="ws-spin" /> 正在加载…
-                  </div>
-                ) : (
-                  cardBody(card)
-                )}
-              </section>
-            );
-          })}
-        </div>
+        <>
+          <section className="ws-overview" aria-label="项目概览与快捷入口">
+            <div className="ws-overview-stats">
+              <div className="ws-stat">
+                <strong>{ctx.items.length}</strong>
+                <span>事项</span>
+              </div>
+              <div className="ws-stat">
+                <strong>{ctx.items.filter((it) => it.status === "done").length}</strong>
+                <span>已完成</span>
+              </div>
+              <div className="ws-stat">
+                <strong>{ctx.links.length}</strong>
+                <span>关联任务</span>
+              </div>
+              <div className="ws-stat">
+                <strong>
+                  {
+                    ctx.items.filter((it) => {
+                      const status = it.status as string;
+                      return status === "doing" || status === "in_progress";
+                    }).length
+                  }
+                </strong>
+                <span>进行中</span>
+              </div>
+            </div>
+            <div className="ws-overview-actions">
+              <button type="button" className="ws-btn" onClick={() => void switchModule("items")}>
+                <Plus size={12} /> 新增事项
+              </button>
+              <button type="button" className="ws-btn" onClick={() => void switchModule("links")}>
+                <Link2 size={12} /> 关联任务
+              </button>
+              {project?.devProjectId && (
+                <button
+                  type="button"
+                  className="ws-btn ws-btn-primary"
+                  onClick={() => onOpenDevWorkbench(project.devProjectId!)}
+                >
+                  <GitBranch size={12} /> 开发工作台
+                </button>
+              )}
+              {project?.rootPath && project.rootExists && (
+                <button type="button" className="ws-btn" onClick={() => void openFolder(project.rootPath)}>
+                  <FolderOpen size={12} /> 打开目录
+                </button>
+              )}
+            </div>
+            {project && (
+              <p className="ws-overview-meta">
+                创建于 {formatLocalizedDateTime(project.createdAt)} · 最近更新{" "}
+                {formatLocalizedDateTime(project.updatedAt)}
+              </p>
+            )}
+          </section>
+          <div className="ws-grid">
+            {profile.homeCards.map((card) => {
+              const cap = WORKSPACE_CAPABILITIES[card.capability];
+              return (
+                <section className="ws-card" key={card.id} aria-label={card.title}>
+                  <header className="ws-card-head">
+                    <h3>{card.title}</h3>
+                    <span className={`ws-badge ws-badge-${cap.state}`}>{CAPABILITY_STATE_LABEL[cap.state]}</span>
+                  </header>
+                  {ctx.status === "loading" && card.body !== "agents" && card.body !== "git" ? (
+                    <div className="ws-state" data-tone="muted">
+                      <Loader2 size={12} className="ws-spin" /> 正在加载…
+                    </div>
+                  ) : (
+                    cardBody(card)
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        </>
       )}
 
       {activeModule === "items" && (

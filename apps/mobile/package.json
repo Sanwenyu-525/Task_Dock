@@ -4,15 +4,21 @@
   "private": true,
   "main": "index.ts",
   "scripts": {
-    "start": "expo start",
-    "android": "expo run:android",
-    "prebuild": "expo prebuild --platform android",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "start": "node ../../scripts/build-sched.mjs run --class dev --priority P2 --label mobile-start -- npm run start:raw",
+    "start:raw": "expo start",
+    "android": "node ../../scripts/build-sched.mjs run --class heavy --priority P1 --label mobile-run-android -- npm run android:raw",
+    "android:raw": "expo run:android",
+    "prebuild": "node ../../scripts/build-sched.mjs run --class heavy --priority P1 --label mobile-prebuild -- npm run prebuild:raw",
+    "prebuild:raw": "expo prebuild --platform android",
+    "typecheck": "node ../../scripts/build-sched.mjs run --class medium --priority P2 --label mobile-typecheck -- npm run typecheck:raw",
+    "typecheck:raw": "tsc --noEmit",
+    "test": "node ../../scripts/build-sched.mjs run --class medium --priority P2 --label mobile-test -- npm run test:raw",
+    "test:raw": "vitest run",
     "test:watch": "vitest",
     "icons:generate": "node scripts/gen-ui-icons.mjs",
     "icons:check": "node scripts/gen-ui-icons.mjs --check",
-    "build:android": "cd android && gradlew.bat assembleRelease"
+    "build:android": "node ../../scripts/build-sched.mjs run --class heavy --priority P0 --label apk-release --cwd android -- gradlew.bat assembleRelease",
+    "build:android:raw": "cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
     "expo": "~58.0.23",

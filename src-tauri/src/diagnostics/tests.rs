@@ -855,3 +855,19 @@ fn shelf_add_business_result_is_visible_and_privacy_safe() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// 诊断等级不能只按「有失败就 WARN」一刀切：真实 IO 与未知内部错误必须是 ERROR，
+/// 权限/校验/格式不支持/过期这类可预期拒绝保持 WARN。
+#[test]
+fn level_from_category_separates_real_failures_from_expected_rejections() {
+    assert_eq!(DiagLevel::from_category("io").as_str(), "ERROR");
+    assert_eq!(DiagLevel::from_category("integrity").as_str(), "ERROR");
+    assert_eq!(DiagLevel::from_category("unknown").as_str(), "ERROR");
+    for category in ["permission", "validation", "conflict", "not_found", "unsupported", "expired"] {
+        assert_eq!(
+            DiagLevel::from_category(category).as_str(),
+            "WARN",
+            "可预期拒绝 {category} 不应升级为 ERROR"
+        );
+    }
+}

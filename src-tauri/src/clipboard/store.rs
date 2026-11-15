@@ -2280,6 +2280,9 @@ pub struct PasteItemRow {
     pub key_sent: bool,
     pub confirmed: bool,
     pub retry_safe: bool,
+    /// SendInput 的投递时刻（v56）。非空即代表「可能已经产生外部副作用」。
+    #[serde(default)]
+    pub dispatch_started_at: Option<String>,
 }
 
 pub fn create_paste_job(
@@ -2341,6 +2344,9 @@ pub fn update_paste_job(
     })
 }
 
+/// 结束任务。`uncertain` 与本任务历史上已经累积的不确定项**合并**，绝不覆盖：
+/// 续跑时 `run_plan` 只知道自己这一轮的不确定项，直接写回会把上一轮的历史抹掉。
+/// 返回合并后的累计未解决数量，供事件与 UI 使用。
 pub fn finish_paste_job(
     db: &Db,
     id: &str,
@@ -2350,8 +2356,19 @@ pub fn finish_paste_job(
     uncertain: &[String],
     message: &str,
     restored: bool,
-) -> AppResult<()> {
-    db.with_conn(|conn| {
+) -> AppResult<usize> {
+    db.with_transaction(|conn| {
+        let existing: String = conn.query_row(
+            "SELECT uncertain_items FROM clipboard_paste_jobs WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        let mut list: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
+        for item in uncertain {
+            if !list.contains(item) {
+                list.push(item.clone());
+            }
+        }
         conn.execute(
             "UPDATE clipboard_paste_jobs SET status = ?1, sent = ?2, remaining_items = ?3,
                 uncertain_items = ?4, message = ?5, restored = ?6, ended_at = ?7 WHERE id = ?8",
@@ -2359,14 +2376,70 @@ pub fn finish_paste_job(
                 status,
                 sent,
                 serde_json::to_string(remaining)?,
-                serde_json::to_string(uncertain)?,
+                serde_json::to_string(&list)?,
                 message,
                 if restored { 1 } else { 0 },
                 crate::agents::now_iso(),
                 id
             ],
         )?;
-        Ok(())
+        Ok(list.len())
+    })
+}
+
+/// 最近一个「可以继续」的任务：暂停或进程中断、且仍留有未处理条目。
+/// 页面重新打开、应用重启后都靠它把任务找回来——`active_job` 只覆盖内存里正在跑的任务。
+pub fn latest_resumable_paste_job(db: &Db) -> AppResult<Option<PasteJob>> {
+    db.with_conn(|conn| {
+        let id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM clipboard_paste_jobs
+                 WHERE status IN ('paused', 'interrupted')
+                   AND remaining_items NOT IN ('', '[]')
+                 ORDER BY started_at DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match id {
+            Some(id) => {
+                // 顺带收敛崩溃锚点，保证用户看到的数量与数据库一致。
+                let mut job = conn
+                    .query_row(
+                        "SELECT id, group_id, target_title, target_exe, status, total, sent, started_at,
+                                ended_at, message, remaining_items, uncertain_items, restored
+                         FROM clipboard_paste_jobs WHERE id = ?1",
+                        params![id],
+                        row_to_paste_job,
+                    )
+                    .optional()?
+                    .ok_or_else(|| AppError::NotFound("粘贴任务不存在".into()))?;
+                job.remaining_items
+                    .retain(|item| get_item_quiet(conn, item).is_some());
+                Ok(Some(job))
+            }
+            None => Ok(None),
+        }
+    })
+}
+
+fn row_to_paste_job(r: &rusqlite::Row<'_>) -> rusqlite::Result<PasteJob> {
+    let remaining: String = r.get(10)?;
+    let uncertain: String = r.get(11)?;
+    Ok(PasteJob {
+        id: r.get(0)?,
+        group_id: r.get(1)?,
+        target_title: r.get(2)?,
+        target_exe: r.get(3)?,
+        status: r.get(4)?,
+        total: r.get(5)?,
+        sent: r.get(6)?,
+        started_at: r.get(7)?,
+        ended_at: r.get(8)?,
+        message: r.get(9)?,
+        remaining_items: serde_json::from_str(&remaining).unwrap_or_default(),
+        uncertain_items: serde_json::from_str(&uncertain).unwrap_or_default(),
+        restored: r.get::<_, i64>(12)? != 0,
     })
 }
 
@@ -2378,25 +2451,7 @@ pub fn get_paste_job(db: &Db, id: &str) -> AppResult<PasteJob> {
                         ended_at, message, remaining_items, uncertain_items, restored
                  FROM clipboard_paste_jobs WHERE id = ?1",
                 params![id],
-                |r| {
-                    let remaining: String = r.get(10)?;
-                    let uncertain: String = r.get(11)?;
-                    Ok(PasteJob {
-                        id: r.get(0)?,
-                        group_id: r.get(1)?,
-                        target_title: r.get(2)?,
-                        target_exe: r.get(3)?,
-                        status: r.get(4)?,
-                        total: r.get(5)?,
-                        sent: r.get(6)?,
-                        started_at: r.get(7)?,
-                        ended_at: r.get(8)?,
-                        message: r.get(9)?,
-                        remaining_items: serde_json::from_str(&remaining).unwrap_or_default(),
-                        uncertain_items: serde_json::from_str(&uncertain).unwrap_or_default(),
-                        restored: r.get::<_, i64>(12)? != 0,
-                    })
-                },
+                row_to_paste_job,
             )
             .optional()?
             .ok_or_else(|| AppError::NotFound("粘贴任务不存在".into()))?;
@@ -2417,15 +2472,194 @@ fn get_item_quiet(conn: &Connection, id: &str) -> Option<String> {
     .flatten()
 }
 
+/// 应用启动时收尾上一次进程留下的「运行中」任务。
+///
+/// 关键点：处于 `dispatching` 的条目意味着**按键可能已经发出但进程没来得及记录**，
+/// 必须转成 `uncertain`（retry_safe=0）并并入任务的 `uncertain_items`，
+/// 否则续跑时会把它们当待处理项自动重发，造成重复粘贴。
 pub fn interrupt_stale_paste_jobs(db: &Db) -> AppResult<i64> {
-    db.with_conn(|conn| {
-        let n = conn.execute(
-            "UPDATE clipboard_paste_jobs SET status = 'interrupted', ended_at = ?1,
-                message = CASE WHEN message = '' THEN '应用退出或任务中断' ELSE message END
-             WHERE status = 'running' AND ended_at IS NULL",
-            params![crate::agents::now_iso()],
+    db.with_transaction(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM clipboard_paste_jobs WHERE status = 'running' AND ended_at IS NULL",
         )?;
-        Ok(n as i64)
+        let ids: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+
+        let now = crate::agents::now_iso();
+        for id in &ids {
+            let promoted = promote_dispatching_items(conn, id, &now)?;
+            let mut uncertain_json = String::new();
+            if !promoted.is_empty() {
+                uncertain_json = serde_json::to_string(&promoted)?;
+            }
+            if uncertain_json.is_empty() {
+                conn.execute(
+                    "UPDATE clipboard_paste_jobs SET status = 'interrupted', ended_at = ?1,
+                        message = CASE WHEN message = '' THEN '应用退出或任务中断' ELSE message END
+                     WHERE id = ?2",
+                    params![now, id],
+                )?;
+            } else {
+                // 把崩溃锚点并入历史不确定集合，不覆盖用户已经确认过的记录。
+                let existing: String = conn.query_row(
+                    "SELECT uncertain_items FROM clipboard_paste_jobs WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )?;
+                let mut list: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
+                for item in promoted {
+                    if !list.contains(&item) {
+                        list.push(item);
+                    }
+                }
+                conn.execute(
+                    "UPDATE clipboard_paste_jobs SET status = 'interrupted', ended_at = ?1,
+                        uncertain_items = ?2,
+                        message = CASE WHEN message = '' THEN '应用退出或任务中断（按键发送阶段崩溃）' ELSE message END
+                     WHERE id = ?3",
+                    params![now, serde_json::to_string(&list)?, id],
+                )?;
+            }
+        }
+        Ok(ids.len() as i64)
+    })
+}
+
+/// 把 `dispatching` 条目转成 `uncertain`，返回被转换的 item_id。
+/// `dispatching` 是「SendInput 已调用或即将调用」的崩溃锚点：无法证明是否送达，
+/// 只能按最坏情况处理——不自动重发、等用户确认。
+fn promote_dispatching_items(
+    conn: &Connection,
+    job_id: &str,
+    now: &str,
+) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT item_id FROM clipboard_paste_items WHERE job_id = ?1 AND state = 'dispatching'",
+    )?;
+    let items: Vec<String> = stmt
+        .query_map(params![job_id], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    if items.is_empty() {
+        return Ok(items);
+    }
+    conn.execute(
+        "UPDATE clipboard_paste_items
+         SET state = 'uncertain', error_message = ?1, finished_at = ?2, retry_safe = 0
+         WHERE job_id = ?3 AND state = 'dispatching'",
+        params![
+            "发送阶段进程中断：按键可能已发出，结果不确定，不会自动重发",
+            now,
+            job_id
+        ],
+    )?;
+    Ok(items)
+}
+
+/// 续跑前/打开页面时调用：把崩溃锚点收敛成 uncertain 并并入任务集合。
+/// 幂等：没有 `dispatching` 条目时返回历史累计数量。
+pub fn reconcile_dispatching_items(db: &Db, job_id: &str) -> AppResult<usize> {    db.with_transaction(|conn| {
+        let now = crate::agents::now_iso();
+        let promoted = promote_dispatching_items(conn, job_id, &now)?;
+        let existing: String = conn.query_row(
+            "SELECT uncertain_items FROM clipboard_paste_jobs WHERE id = ?1",
+            params![job_id],
+            |r| r.get(0),
+        )?;
+        let mut list: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
+        for item in promoted {
+            if !list.contains(&item) {
+                list.push(item);
+            }
+        }
+        conn.execute(
+            "UPDATE clipboard_paste_jobs SET uncertain_items = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&list)?, job_id],
+        )?;
+        Ok(list.len())
+    })
+}
+
+/// 用户显式处置一个「结果不确定」条目。两种动作，语义完全不同：
+/// - `received`：用户确认目标应用已经收到 → 标记 confirmed，从不确定集合移除；
+/// - `resend`：用户确认没收到、明确要求重发 → 放回待处理队列（按原始 position 排序），
+///   并从不确定集合移除。
+/// 任何情况下都不允许自动把 uncertain 变成 pending——那正是重复粘贴的来源。
+pub fn resolve_uncertain_item(
+    db: &Db,
+    job_id: &str,
+    item_id: &str,
+    action: &str,
+) -> AppResult<()> {
+    if !matches!(action, "received" | "resend") {
+        return Err(AppError::Validation(
+            "action 必须是 received 或 resend".into(),
+        ));
+    }
+    db.with_transaction(|conn| {
+        let existing: String = conn.query_row(
+            "SELECT uncertain_items FROM clipboard_paste_jobs WHERE id = ?1",
+            params![job_id],
+            |r| r.get(0),
+        )?;
+        let mut uncertain: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
+        if !uncertain.iter().any(|id| id == item_id) {
+            return Err(AppError::Validation(
+                "该条目不在不确定集合，不能按不确定项处置".into(),
+            ));
+        }
+        uncertain.retain(|id| id != item_id);
+        conn.execute(
+            "UPDATE clipboard_paste_jobs SET uncertain_items = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&uncertain)?, job_id],
+        )?;
+
+        if action == "received" {
+            write_paste_item_state(
+                conn,
+                job_id,
+                item_id,
+                "confirmed",
+                Some("用户确认目标已接收（不再重发）"),
+            )?;
+            return Ok(());
+        }
+
+        // resend：按原始 position 重新排进 remaining，保持「原始顺序」契约。
+        let remaining_json: String = conn.query_row(
+            "SELECT remaining_items FROM clipboard_paste_jobs WHERE id = ?1",
+            params![job_id],
+            |r| r.get(0),
+        )?;
+        let mut remaining: Vec<String> = serde_json::from_str(&remaining_json).unwrap_or_default();
+        if !remaining.iter().any(|id| id == item_id) {
+            remaining.push(item_id.to_string());
+        }
+        let mut stmt =
+            conn.prepare("SELECT item_id, position FROM clipboard_paste_items WHERE job_id = ?1")?;
+        let positions: Vec<(String, i64)> = stmt
+            .query_map(params![job_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let order: std::collections::HashMap<String, i64> =
+            positions.into_iter().collect();
+        remaining.sort_by_key(|id| order.get(id).copied().unwrap_or(i64::MAX));
+        conn.execute(
+            "UPDATE clipboard_paste_jobs SET remaining_items = ?1, status = 'paused' WHERE id = ?2",
+            params![serde_json::to_string(&remaining)?, job_id],
+        )?;
+        write_paste_item_state(
+            conn,
+            job_id,
+            item_id,
+            "pending",
+            Some("用户确认未接收，已排入重发（需再次点击继续）"),
+        )?;
+        Ok(())
     })
 }
 
@@ -2471,6 +2705,36 @@ pub fn record_paste_item_state(
     state: &str,
     note: Option<&str>,
 ) -> AppResult<()> {
+    db.with_conn(|conn| write_paste_item_state(conn, job_id, item_id, state, note))
+}
+
+/// 一步状态跃迁：任务进度与逐项状态必须落在**同一个事务**里。
+/// 否则崩溃后会看到「任务说已发送 N 项、条目还停在 pending」这种互相矛盾的现场。
+pub fn record_paste_step(
+    db: &Db,
+    job_id: &str,
+    sent: i64,
+    remaining: &[String],
+    item_id: &str,
+    state: &str,
+    note: Option<&str>,
+) -> AppResult<()> {
+    db.with_transaction(|conn| {
+        conn.execute(
+            "UPDATE clipboard_paste_jobs SET sent = ?1, remaining_items = ?2, message = ?3 WHERE id = ?4",
+            params![sent, serde_json::to_string(remaining)?, "运行中", job_id],
+        )?;
+        write_paste_item_state(conn, job_id, item_id, state, note)
+    })
+}
+
+fn write_paste_item_state(
+    conn: &Connection,
+    job_id: &str,
+    item_id: &str,
+    state: &str,
+    note: Option<&str>,
+) -> AppResult<()> {
     let terminal = matches!(
         state,
         "confirmed" | "unverified" | "failed" | "skipped" | "uncertain" | "cancelled"
@@ -2478,6 +2742,7 @@ pub fn record_paste_item_state(
     let started = matches!(
         state,
         "preparing"
+            | "dispatching"
             | "clipboard_written"
             | "input_sent"
             | "settling"
@@ -2492,19 +2757,43 @@ pub fn record_paste_item_state(
         state,
         "input_sent" | "settling" | "confirmed" | "unverified" | "uncertain"
     );
+    // dispatching = 按键正在投递：可能已经送达，绝不能标成可安全重试。
+    let dispatching = state == "dispatching";
     let now = crate::agents::now_iso();
     let started_at = if started { Some(now.clone()) } else { None };
-    let finished_at = if terminal { Some(now) } else { None };
-    db.with_conn(|conn| {
-        let n = conn.execute(
-            "UPDATE clipboard_paste_items
-             SET state = ?3, error_message = ?4,
-                 started_at = COALESCE(started_at, ?5),
-                 finished_at = COALESCE(?6, finished_at),
-                 key_sent = CASE WHEN ?7 THEN 1 ELSE key_sent END,
-                 confirmed = CASE WHEN ?8 THEN 1 ELSE confirmed END,
-                 retry_safe = ?9
-             WHERE job_id = ?1 AND item_id = ?2",
+    let finished_at = if terminal { Some(now.clone()) } else { None };
+    let dispatch_at = if dispatching { Some(now) } else { None };
+    let retry_safe = !key_sent && !dispatching;
+    let confirmed = state == "confirmed";
+    let n = conn.execute(
+        "UPDATE clipboard_paste_items
+         SET state = ?3, error_message = ?4,
+             started_at = COALESCE(started_at, ?5),
+             finished_at = COALESCE(?6, finished_at),
+             key_sent = CASE WHEN ?7 THEN 1 ELSE key_sent END,
+             confirmed = CASE WHEN ?8 THEN 1 ELSE confirmed END,
+             retry_safe = ?9,
+             dispatch_started_at = COALESCE(?10, dispatch_started_at)
+         WHERE job_id = ?1 AND item_id = ?2",
+        params![
+            job_id,
+            item_id,
+            state,
+            note.unwrap_or(""),
+            started_at,
+            finished_at,
+            key_sent,
+            confirmed,
+            retry_safe,
+            dispatch_at
+        ],
+    )?;
+    if n == 0 {
+        conn.execute(
+            "INSERT INTO clipboard_paste_items
+             (job_id, position, item_id, kind, state, error_message,
+              started_at, finished_at, key_sent, confirmed, retry_safe, dispatch_started_at)
+             VALUES (?1, 0, ?2, '', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 job_id,
                 item_id,
@@ -2513,38 +2802,20 @@ pub fn record_paste_item_state(
                 started_at,
                 finished_at,
                 key_sent,
-                state == "confirmed",
-                !key_sent
+                confirmed,
+                retry_safe,
+                dispatch_at
             ],
         )?;
-        if n == 0 {
-            conn.execute(
-                "INSERT INTO clipboard_paste_items
-                 (job_id, position, item_id, kind, state, error_message,
-                  started_at, finished_at, key_sent, confirmed, retry_safe)
-                 VALUES (?1, 0, ?2, '', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    job_id,
-                    item_id,
-                    state,
-                    note.unwrap_or(""),
-                    started_at,
-                    finished_at,
-                    key_sent,
-                    state == "confirmed",
-                    !key_sent
-                ],
-            )?;
-        }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 pub fn list_paste_items(db: &Db, job_id: &str) -> AppResult<Vec<PasteItemRow>> {
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
             "SELECT job_id, position, item_id, kind, state, error_message,
-                    started_at, finished_at, key_sent, confirmed, retry_safe
+                    started_at, finished_at, key_sent, confirmed, retry_safe, dispatch_started_at
              FROM clipboard_paste_items WHERE job_id = ?1 ORDER BY position ASC",
         )?;
         let rows = stmt
@@ -2561,6 +2832,7 @@ pub fn list_paste_items(db: &Db, job_id: &str) -> AppResult<Vec<PasteItemRow>> {
                     key_sent: r.get::<_, i64>(8)? != 0,
                     confirmed: r.get::<_, i64>(9)? != 0,
                     retry_safe: r.get::<_, i64>(10)? != 0,
+                    dispatch_started_at: r.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -3999,7 +4271,14 @@ mod tests {
         assert!(rows[0].finished_at.is_some());
         assert_eq!(rows[1].position, 1);
         assert_eq!(rows[1].state, "uncertain");
-        assert!(!rows[1].key_sent);
+        // uncertain 的定义是「按键可能已经发出、也可能没有」：保守记录 key_sent=1，
+        // 宁可阻止自动重发也不能把可能已送达的条目当没发过。旧断言要求 !key_sent，
+        // 与 v55 的状态机语义矛盾（该断言在本轮统一测试里第一次被真正执行到）。
+        assert!(
+            rows[1].key_sent,
+            "结果不确定的条目必须按「可能已发送」记录，否则会被当安全重试"
+        );
+        assert!(!rows[1].retry_safe, "不确定项不得标为可安全重试");
 
         finish_paste_job(
             &db,
@@ -4020,6 +4299,134 @@ mod tests {
         );
         assert!(job_row.remaining_items.is_empty());
         assert_eq!(job_row.status, "failed");
+    }
+
+    #[test]
+    fn dispatching_items_survive_crash_as_uncertain_and_never_auto_resend() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(&db, &root.0, &text_payload("一"), &s).unwrap();
+        let b = record_capture(&db, &root.0, &text_payload("二"), &s).unwrap();
+        let ids = vec![a.item.id.clone(), b.item.id.clone()];
+        let job = create_paste_job(&db, "", "记事本", "notepad.exe", &ids).unwrap();
+        seed_paste_items(&db, &job, &ids, 0).unwrap();
+
+        // 模拟「SendInput 之后、落库之前进程被杀」：数据库里只有 dispatching 这条锚点。
+        record_paste_step(
+            &db,
+            &job,
+            0,
+            &ids,
+            &a.item.id,
+            "dispatching",
+            Some("Ctrl+V 即将发送"),
+        )
+        .unwrap();
+        let row = &list_paste_items(&db, &job).unwrap()[0];
+        assert_eq!(row.state, "dispatching");
+        assert!(
+            !row.retry_safe,
+            "正在发送的条目绝不能标成可安全重试"
+        );
+        assert!(
+            row.dispatch_started_at.is_some(),
+            "必须记下投递时刻，崩溃后据此判断可能已送达"
+        );
+
+        // 应用重启：运行中任务被收尾，dispatching 项转 uncertain 并进不确定集合。
+        assert_eq!(interrupt_stale_paste_jobs(&db).unwrap(), 1);
+        let job_row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(job_row.status, "interrupted");
+        assert_eq!(job_row.uncertain_items, vec![a.item.id.clone()]);
+        let rows = list_paste_items(&db, &job).unwrap();
+        assert_eq!(rows[0].state, "uncertain");
+        assert!(!rows[0].retry_safe);
+        assert!(
+            job_row.remaining_items.contains(&a.item.id),
+            "剩余队列仍保留该项：是否重发必须由用户显式决定，而不是自动重发"
+        );
+    }
+
+    #[test]
+    fn finish_paste_job_merges_historical_uncertain_instead_of_overwriting() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let first = record_capture(&db, &root.0, &text_payload("一"), &s).unwrap();
+        let second = record_capture(&db, &root.0, &text_payload("二"), &s).unwrap();
+        let ids = vec![first.item.id.clone(), second.item.id.clone()];
+        let job = create_paste_job(&db, "", "记事本", "notepad.exe", &ids).unwrap();
+        seed_paste_items(&db, &job, &ids, 0).unwrap();
+
+        // 第一轮：第 1 项结果不确定。
+        finish_paste_job(
+            &db,
+            &job,
+            "failed",
+            0,
+            std::slice::from_ref(&second.item.id),
+            std::slice::from_ref(&first.item.id),
+            "第 1 项不确定",
+            false,
+        )
+        .unwrap();
+        // 第二轮续跑：只剩第 2 项，本轮没有新的不确定项。
+        let total = finish_paste_job(
+            &db,
+            &job,
+            "completed",
+            1,
+            &[],
+            &[],
+            "续跑完成",
+            false,
+        )
+        .unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(
+            row.uncertain_items,
+            vec![first.item.id.clone()],
+            "续跑不得用空集合覆盖上一轮的不确定项"
+        );
+        assert_eq!(total, 1, "事件与 UI 必须报告累计未解决数量");
+    }
+
+    #[test]
+    fn resolve_uncertain_resend_restores_original_order() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(&db, &root.0, &text_payload("一"), &s).unwrap();
+        let b = record_capture(&db, &root.0, &text_payload("二"), &s).unwrap();
+        let c = record_capture(&db, &root.0, &text_payload("三"), &s).unwrap();
+        let ids = vec![a.item.id.clone(), b.item.id.clone(), c.item.id.clone()];
+        let job = create_paste_job(&db, "", "记事本", "notepad.exe", &ids).unwrap();
+        seed_paste_items(&db, &job, &ids, 0).unwrap();
+        finish_paste_job(
+            &db,
+            &job,
+            "failed",
+            2,
+            std::slice::from_ref(&b.item.id),
+            std::slice::from_ref(&a.item.id),
+            "第 1 项不确定",
+            false,
+        )
+        .unwrap();
+
+        // 用户确认「没收到，重发」：第 1 项回到待处理队列，并且按原始顺序排在前面。
+        resolve_uncertain_item(&db, &job, &a.item.id, "resend").unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert!(row.uncertain_items.is_empty());
+        assert_eq!(row.remaining_items, vec![a.item.id.clone(), b.item.id.clone()]);
+        assert_eq!(row.status, "paused", "重发需要用户再点继续，不自动开跑");
+
+        // 未在不确定集合里的条目不能被当成不确定项处置。
+        assert!(
+            resolve_uncertain_item(&db, &job, &c.item.id, "resend").is_err(),
+            "不在不确定集合的条目必须拒绝处置"
+        );
     }
 
     #[test]

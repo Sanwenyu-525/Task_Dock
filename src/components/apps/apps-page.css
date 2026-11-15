@@ -11,6 +11,8 @@
 
 @container (min-width: 560px) {
   .apps-panel .apps-grid {
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    /* 260px 让 1600/1366 内容区排满 3 列、1180 排 2 列；240px 会在 1600 留出
+       第 4 个空列，三张卡只占左侧 2/3，看起来像没铺满。 */
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   }
 }

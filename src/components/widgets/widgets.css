@@ -90,10 +90,11 @@
   grid-column: span 1;
 }
 
-/* 2 列时 md/lg 都只跨满一行，避免 span 3 撑出隐式列导致横向溢出。 */
+/* 工作台内所有微件同宽铺满网格：尺寸语义只作用于桌面独立窗口，
+   不在这里制造「大卡独占整行」导致内容区右侧大片空白。 */
 .widget-size-md,
 .widget-size-lg {
-  grid-column: span 2;
+  grid-column: span 1;
 }
 
 @container widgets-body (min-width: 900px) {
@@ -102,17 +103,17 @@
   }
 
   .widget-size-lg {
-    grid-column: span 3;
+    grid-column: span 1;
   }
 }
 
 @container widgets-body (min-width: 1200px) {
   .widgets-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .widget-size-lg {
-    grid-column: span 4;
+    grid-column: span 1;
   }
 }
 

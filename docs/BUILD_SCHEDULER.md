@@ -168,8 +168,33 @@ node scripts/build-sched.mjs cargo -- --priority P0 build   # 有 -- 时前面�
 
 - `exit=1` + 日志里有编译器/测试错误 → **代码错误**；
 - `exit=3` + `status=failed` 且 `reason` 含「内存不足」→ **资源不足**，不是代码问题；
+- `exit=3` + `status=failed` 且 `reason` 含「本机装不下」→ **预算容不下该任务**：等待无意义，需更大内存或显式调 `systemReserveMb`（见 4.2）；
 - `exit=3` 且 `reason` 含「超时」→ **超时**；
 - `exit=5/6` → **调度层/磁盘**问题，先 `doctor`。
+
+### 3.8 构建入口清单与 `:raw` 逃生口（2026-11-15 第二轮审计）
+
+审计范围：根 `package.json` 与 `apps/mobile/package.json` 的**全部**脚本。原则是
+"高资源构建一律不得无意绕过调度器"，同时保留一组**明确标注**的轻量/常驻/交互式入口。
+
+| 入口 | 分类 | 是否经调度器 | 说明 |
+|---|---|---|---|
+| `npm run build` → `build:raw`（`tsc --noEmit && vite build`） | medium | ✅ | 单层包装，内层直通，不会双重排队 |
+| `npm run tauri -- build` → `tauri:raw` | heavy | ✅ | 内层 `npm run build` 由 `TASKDOCK_SCHED_TASK_ID` 判定为嵌套直通 |
+| `npm run test` → `test:raw`（`vitest run`） | medium | ✅ | |
+| `npm run cargo -- <子命令>` | 由 cargo 分类表决定 | ✅ | `build-sched cargo` 子命令，固定 `cwd=src-tauri` |
+| `apps/mobile`：`build:android`（gradlew assembleRelease） | heavy（P0） | ✅ | `--cwd android`，与桌面端共享同一份槽位/预算台账 |
+| `apps/mobile`：`android`（expo run:android）/ `prebuild` | heavy | ✅ | 会拉起 Gradle/Xcode |
+| `apps/mobile`：`typecheck`（tsc --noEmit）/ `test`（vitest run） | medium | ✅ | |
+| `apps/mobile`：`start`（expo start） | dev | ✅ | 占 dev 槽位并计入预算 |
+| `npm run dev` / `npm run preview` / `test:watch` | dev | ❌（豁免） | 长期运行/交互式，经 `sched dev` 盘点；未纳管实例由约束 A 兜住（见 12.8） |
+| `npm run help:check` / `test:scripts` / `icons*` / `guard:*` / `worktree*` / `sched:*` | light | ❌（豁免） | 只读或轻量元数据操作；`sched:*` 再经 `run` 会自锁 |
+
+**`*:raw` 是排障逃生口，不是日常入口**：`build:raw` / `tauri:raw` / `test:raw` /
+`build:android:raw` / `android:raw` / `prebuild:raw` / `typecheck:raw` 只在"调度器自身坏了、
+需要绕过它定位问题"时使用，用之前先 `sched:status` + `sched:doctor`；**任何文档与脚本都不得
+把它们作为推荐命令**（`scripts/build-sched-acceptance.test.mjs` 的「补充C」用例会静态校验
+这条规则，新增高资源入口若既不接调度器、也不进豁免名单，套件会直接失败）。
 
 ## 4. 资源模型
 
@@ -216,16 +241,38 @@ node scripts/build-sched.mjs cargo -- --priority P0 build   # 有 -- 时前面�
 **约束 B：全局构建预算（所有分类共用同一个池）**
 
 ```
-预算上限 budgetMb = max(totalMb - systemReserveMb, 最大分类预计峰值)
+预算上限 budgetMb = max(0, totalMb - systemReserveMb)      ← 硬上限，不被任务峰值抬高
 已预留 reservedMb = Σ reservations/*.json 的 reservedMb（phase ∈ queued|starting|running|releasing）
 放行B ⇔ reservedMb + 本任务预计峰值 ≤ budgetMb
 ```
 
 - `totalMb` 是物理内存**总量**（`ullTotalPhys`），不是可用内存；`systemReserveMb` 默认 3072
   （操作系统 + 常驻应用 + 文件缓存的安全垫）。16GB 机器上预算约 **12.6 GB**。
+- **2026-11-15 第二轮修正**：旧公式是 `max(totalMb - systemReserveMb, 最大分类预计峰值)`。
+  它在小内存机器上会把预算抬到 Heavy 峰值——8 GB 机器（保留 3072 MB）真实上限只有 5120 MB，
+  旧公式却给出 6000 MB，等于**静默侵占系统保留的安全垫**，正好破坏了本预算要保护的东西。
+  现在预算**严格等于** `totalMb - systemReserveMb`；装不下的任务由 `planAdmission` 判为
+  `infeasible`（不可准入），原因写明"预计峰值 X > 本机预算 Y（物理 A - 系统保留 B）：本机装不下，
+  不是排队问题"，并出现在 `waitReason` / `queue` / `status` 三处。
+- 突破保留边界只能**显式**打开 `allowReserveBreach`（默认 `false`）：此时预算被抬到最大分类峰值，
+  `computeBudget` 返回 `reserveBreached=true`、`breachMb`、`warning`，`status` 会显著打印
+  "系统保留的安全垫已被侵占 XXX MB"，准入证据（`history.jsonl` 的 `budgetAtStart`）里也保留
+  `hardLimitMb` 与 `reserveBreached`，事后可复核"这一跑是突破了边界的"。
 - 这一侧**只**看"活动任务的预留之和"，**不读** `freemem`，因此与约束 A 不重复计算同一份资源。
 - 预留只在**即将启动前**创建（拿到预算 + 拿到分类槽位是同一个临界区，见 5.7），排队中的任务
   不占预算，不会因为"排队的人很多"把自己饿死。
+
+**设备档位判定表（默认 `systemReserveMb=3072`、重型峰值 6000 MB）**
+
+| 物理内存 | 硬上限（物理-保留） | 重型 6000 MB | 中型 3000 MB | 轻量 800 MB |
+|---|---|---|---|---|
+| 4 GB (4096) | 1.00 GB | **不可准入** | **不可准入** | 准入 |
+| 8 GB (8192) | 5.00 GB | **不可准入** | 准入 | 准入 |
+| 16 GB (16384) | 13.00 GB | 准入 | 准入 | 准入 |
+| 32 GB (32768) | 29.00 GB | 准入 | 准入 | 准入 |
+
+"不可准入"= 这台机器永远排不上（`infeasible`），不是"再等等"；8 GB 机器上编译类任务仍可用
+`--estimate-mb` 如实声明更小的峰值，或调小 `systemReserveMb`（需自担 OOM 风险）。
 
 **两个约束的分工**
 
@@ -245,9 +292,11 @@ node scripts/build-sched.mjs cargo -- --priority P0 build   # 有 -- 时前面�
 
 1. `freemem` 已含运行中进程占用 → 约束 B 绝不用 `freemem - Σ预计峰值`（那会重复扣减）；
 2. 两个约束各自独立判定，任一不足即排队；`waitReason` 里分别写明是哪一侧不足；
-3. 预算夹取：若 `totalMb - systemReserveMb < 最大分类预计峰值`（例如把 `systemReserveMb` 调得
-   过大），预算被**夹到最大峰值**并在配置检查里报问题——否则重型任务永久无法准入。夹取只影响
-   约束 B 的池子，**不改变**约束 A 的分类门槛（门槛不下调）；
+3. 预算硬上限：若 `totalMb - systemReserveMb` 小于某分类的预计峰值，**不夹取**——预算保持
+   `total - 保留`，该分类任务被判为不可准入（`infeasible`）并给出"需要更大内存或调小
+   `systemReserveMb`"的可操作原因。想突破保留边界只能显式开 `allowReserveBreach`（默认关闭，
+   开启后 `status` 显著告警、历史留证）。预算**永不**因任务峰值而自我抬高，也**不改变**约束 A
+   的分类门槛（门槛不下调）；
 4. 单个任务的预计峰值 > 预算 → 直接拒绝（不允许"自我放行"），原因写进 `waitReason`；
 5. 预留只为**即将启动**的任务创建，排队任务不占预算；
 6. 崩溃残留的回收条件：持有进程"已证明退出" **且** 记录的子进程"已证明结束"；子进程仍存活
@@ -473,7 +522,8 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 | `agingStepMs` | 300000 | 老化台阶（5 分钟升一级） |
 | `logMaxMb` / `historyMaxEntries` / `finishedRetentionMs` | 32 / 500 / 60000 | 日志上限、历史上限、终态记录保留 |
 | `estimateHeavyMb` / `estimateMediumMb` / `estimateLightMb` | 6000 / 3000 / 800 | 预计峰值（dev 类沿用 medium 的 3000） |
-| `systemReserveMb` | 3072 | 全局预算的系统保留（`budgetMb = max(totalMb - 本值, 最大预计峰值)`；0 = 用满物理内存） |
+| `systemReserveMb` | 3072 | 全局预算的系统保留：**硬上限** `budgetMb = max(0, totalMb - 本值)`，绝不被任务峰值抬高；0 = 用满物理内存（仅实验用） |
+| `allowReserveBreach` | false | **危险开关**：允许预算突破 `totalMb - systemReserveMb` 抬到最大分类峰值。开启后 `status` 显著告警、`budgetAtStart` 里留 `reserveBreached` 证据。仅在明确知晓 OOM 风险时临时打开 |
 | `budgetEnabled` | true | 跨分类全局预算开关（关掉只保留约束 A，仅用于故障回退，见 11） |
 | `reservationOrphanGraceMs` | 180000 | 崩溃残留预留"无 childPid"时的回收宽限（有 childPid 时按子进程是否存活判定） |
 | `diskPrecheck` | true | 复用 build-guard 的磁盘预检 |
@@ -560,9 +610,13 @@ vitest / `node --test`，实际峰值约 0.8–1 GB）因"分类下限 2560 + �
 8. **未纳管的 dev 服务器不在预算台账里**：`npm run dev`（直接 `vite`）不经调度器，只能靠约束 A
    兜住（其真实占用已体现在 `freemem`），并由 `sched dev` 点名。需要计入全局预算时用
    `node scripts/build-sched.mjs run --class dev -- npm run tauri dev`（占 dev 槽位 + 计入预算）。
-9. **`apps/mobile` 的 `build:android` 仍是直接 Gradle 调用**：它绕开队列，属于已知冲突（本轮只
-   在文档与 `AGENTS.md` 里给出正确的调度写法，未改该 `package.json` —— 改脚本需要真机重跑 APK
-   构建才能证明没坏，本轮内存条件下无法验证）。
+9. **`apps/mobile` 的构建入口已接入调度器（2026-11-15 第二轮）**：`start` / `android` /
+   `prebuild` / `typecheck` / `test` / `build:android` 全部包了
+   `node ../../scripts/build-sched.mjs run --label ... -- <原始命令>`，APK 发布包固定
+   `--class heavy --priority P0 --label apk-release --cwd android`。`*:raw` 保留为排障逃生口。
+   注意：**本轮没有真正构建 APK**（本机可用内存 1–3.6 GB、且存在非分页池泄漏），所以
+   "改完之后 `assembleRelease` 仍能成功"这一点是 `NOT TESTED`／`ENVIRONMENT BLOCKED`，
+   由主 Agent 在资源允许时统一排队验证。
 
 ## 13. 验收证据
 

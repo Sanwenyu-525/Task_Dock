@@ -24,7 +24,7 @@
 | [12-transport-security.md](12-transport-security.md) | 传输安全索引：威胁模型、SPKI 固定、fail-closed、偏差与安全验收矩阵 | `docs/ARCHITECTURE.md` 四、安全设计 / 手机配对章 |
 | [13-android-screen-control.md](13-android-screen-control.md) | 桌面端 Android 屏幕镜像/独立虚拟屏：会话状态机、设备去重、应用选择、截图与诊断 | `docs/ARCHITECTURE.md` 窗口与子进程章 |
 | [14-capture-and-quick-entry.md](14-capture-and-quick-entry.md) | 统一采集中心、拍照/相册/文件、语音速记、分享接收增强、系统快捷方式、前台自动同步与附件传送 | —（手机端专项） |
-| [prototypes/](prototypes/README.md) | Stitch 页面原型：v2 终版 11 屏 + 33 个导出变体（按页面归组，含画廊 `index.html`） | 设计稿/参考图 |
+| [design-refs/](design-refs/README.md) | 移动端视觉参照：用户选定的《开发效率中枢 · 蓝青专业版》概念稿（1122×1402） | 设计稿/参考图 |
 | [../MOBILE_STACK.md](../MOBILE_STACK.md) | 选型与共享边界**设计稿**（含未实现能力的规划，不是现状） | 选型报告 |
 | [../../apps/mobile/AGENTS.md](../../apps/mobile/AGENTS.md) | 本目录的开发红线与提交前自检 | 根 `AGENTS.md` |
 
@@ -180,3 +180,7 @@
   原 `ShareScreen` 删除，分享与快捷方式统一进入采集中心；`09` 的文本-only 描述以 14 为准，
   `11` 的「默认不自动」偏差在 14 §7.1 说明。自动化验证与真机/构建状态以
   `tmp/acceptance/mobile-efficiency/report.md` 为准。
+- 2026-11-15 原型目录移除：按用户要求删除 `docs/mobile/prototypes/`（Stitch v2 终版 11 屏 +
+  33 个导出变体，92 个文件 / 8.1 MB），移动端视觉基准统一为
+  [design-refs/](design-refs/README.md) 的《开发效率中枢 · 蓝青专业版》概念稿。
+  原型内容仅保留在 Git 历史中；本文件与 03/04 的历史条目不再指向该目录。

@@ -119,6 +119,16 @@ impl DiagLevel {
             _ => None,
         }
     }
+
+    /// 按业务错误类别定级：真实 IO 失败与未知内部错误是 ERROR，
+    /// 权限拒绝/格式不支持/校验失败/过期等「可预期拒绝」保持 WARN。
+    /// 只按「有没有失败」一刀切会把这些信息全部压成 WARN，诊断中心就筛不出真正的故障。
+    pub fn from_category(category: &str) -> Self {
+        match category {
+            "io" | "integrity" | "unknown" => Self::Error,
+            _ => Self::Warn,
+        }
+    }
 }
 
 /// 操作生命周期状态（与前端 `status` 一致）。

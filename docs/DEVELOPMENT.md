@@ -474,10 +474,28 @@ Cargo target、同一个 `dist/` 和同一块内存。现在所有高资源构�
 
 **准入是两重独立约束**（2026-11-15 整改）：① 每分类的实时可用内存门槛（`os.freemem`）；
 ② 跨分类**全局预算**（`物理内存 - 系统保留` 对比所有活动任务的预留之和，台账在
-`reservations/`）。两者不重复扣减，任一不足都只是排队。没有 npm 包装的构建（例如 Android
-`gradlew.bat assembleRelease`）必须显式走
-`node scripts/build-sched.mjs run --priority P0 --cwd apps/mobile/android -- gradlew.bat assembleRelease`，
-不要直接 `cd android && gradlew.bat`。
+`reservations/`）。两者不重复扣减，任一不足都只是排队。
+
+**全局预算是硬上限，不会被任务峰值抬高**（2026-11-15 第二轮整改）：`budgetMb =
+max(0, totalMb - systemReserveMb)`。8 GB 机器（保留 3072 MB）预算就是 5120 MB，预计峰值
+6000 MB 的重型任务会被判为**不可准入**（`status`/`queue`/`waitReason` 三处都写明"本机装不下"，
+等待也不会放行），而不是把预算悄悄抬到 6000 MB 去侵占系统保留的安全垫。确需突破只能显式打开
+`allowReserveBreach`（默认关闭，开启后 `status` 显著告警、历史里留 `reserveBreached` 证据）。
+
+**所有构建入口都经调度器**（2026-11-15 第二轮整改）：`apps/mobile/package.json` 的
+`start` / `android` / `prebuild` / `typecheck` / `test` / `build:android` 现在都包了一层
+`node ../../scripts/build-sched.mjs run --label ... --`，其中 APK 发布包固定走重型槽位：
+
+```powershell
+npm --prefix apps/mobile run build:android    # 等价于下面的显式写法（推荐）
+node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mobile/android -- gradlew.bat assembleRelease
+```
+
+`apps/mobile` 状态目录解析到同一个 `<git-common-dir>/taskdock-build-sched`（已用
+`git rev-parse --path-format=absolute --git-common-dir` 从 `apps/mobile/android` 实测确认），
+所以手机端构建与桌面端共享同一份槽位与预算台账。带 `:raw` 后缀的脚本（`build:android:raw`、
+`test:raw`、`tauri:raw` 等）是**排障逃生口**：只用于调度器自身故障时定位，不得作为日常推荐命令
+（见 `docs/BUILD_SCHEDULER.md` §3.8 与 §12.9）。
 
 状态目录 `<git-common-dir>/taskdock-build-sched`（全 worktree 共享，不入库）；
 资源现状 `npm run sched:status|queue|history`，诊断 `npm run sched:doctor`，

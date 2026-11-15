@@ -8301,11 +8301,38 @@ code {
 }
 
 .clip-paste-item.st-preparing,
+.clip-paste-item.st-dispatching,
 .clip-paste-item.st-clipboard_written,
 .clip-paste-item.st-input_sent,
 .clip-paste-item.st-settling {
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+.clip-paste-item.st-uncertain,
+.clip-paste-item.st-unverified {
+  color: var(--status-waiting);
+  background: color-mix(in srgb, var(--status-waiting) 14%, transparent);
+}
+
+/* 结果不确定项的显式处置入口：必须让用户看到「哪一项」以及两种截然不同的动作。 */
+.clip-paste-uncertain {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--status-waiting) 40%, transparent);
+  background: color-mix(in srgb, var(--status-waiting) 8%, transparent);
+}
+
+.clip-paste-uncertain-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  color: var(--text-secondary);
 }
 
 .clip-paste-item.st-confirmed {

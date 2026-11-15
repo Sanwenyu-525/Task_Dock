@@ -35,6 +35,9 @@ pub enum ItemState {
     Pending,
     Preparing,
     ClipboardWritten,
+    /// 按键正在投递：已写入剪贴板、即将/正在调用 SendInput。
+    /// 这一状态必须在按键之前落库——它是「可能已经产生外部副作用」的崩溃锚点。
+    Dispatching,
     InputSent,
     Settling,
     /// 仅在存在可验证的接收信号时使用；当前第三方应用普遍不提供。
@@ -55,6 +58,7 @@ impl ItemState {
             Self::Pending => "pending",
             Self::Preparing => "preparing",
             Self::ClipboardWritten => "clipboard_written",
+            Self::Dispatching => "dispatching",
             Self::InputSent => "input_sent",
             Self::Settling => "settling",
             Self::Confirmed => "confirmed",
@@ -279,12 +283,31 @@ fn inspect_target(io: &dyn PasteIo, target: &TargetWindow) -> Option<TargetIssue
 /// - 只在进入循环前调用一次 `io.focus`（等价于用户点击开始时的那一次主动激活）；
 /// - 循环内只读 `is_foreground`，绝不再次激活窗口；
 /// - 目标不在前台时**暂停**而不是失败：剩余条目原样保留，等用户明确继续。
+/// 测试与只读调用使用的宽容版本：状态回调失败只记录、不阻断。
+#[allow(dead_code)]
 pub(crate) fn run_plan(
     io: &dyn PasteIo,
     plan: &PastePlan,
     cancel: &AtomicBool,
     load: &mut dyn FnMut(&str) -> AppResult<LoadedPayload>,
     progress: &mut dyn FnMut(&PasteProgress),
+) -> PasteRunOutcome {
+    // 测试与只读调用不需要持久化：把不可失败的回调适配成可失败的空实现。
+    let mut tolerant = |p: &PasteProgress| -> AppResult<()> {
+        progress(p);
+        Ok(())
+    };
+    run_plan_with(io, plan, cancel, load, &mut tolerant)
+}
+
+/// 与 `run_plan` 相同，但状态回调可以失败：调用方用它在 SendInput **之前**
+/// 把 `dispatching` 落库。持久化失败必须阻止按键，否则崩溃后无法判断是否已发送。
+pub(crate) fn run_plan_with(
+    io: &dyn PasteIo,
+    plan: &PastePlan,
+    cancel: &AtomicBool,
+    load: &mut dyn FnMut(&str) -> AppResult<LoadedPayload>,
+    progress: &mut dyn FnMut(&PasteProgress) -> AppResult<()>,
 ) -> PasteRunOutcome {
     let snapshot = io.snapshot();
     let baseline = snapshot.payload.clone();
@@ -311,6 +334,9 @@ pub(crate) fn run_plan(
     let mut pause_reason: Option<&'static str> = None;
     let mut reason_code: Option<&'static str> = None;
     let mut uncertain: Vec<String> = Vec::new();
+    // 状态落库失败的记录点：一旦写入失败，下一步可能基于错误现场继续执行，
+    // 所以要在循环顶部与按键之前检查它，必要时安全停下。
+    let persist_error: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
 
     // 唯一一次主动激活。这里是「用户点击开始」对应的动作：之后整个自动循环
     // 只读取前台状态，不再调用 SetForegroundWindow，用户切走不会被抢回来。
@@ -332,7 +358,7 @@ pub(crate) fn run_plan(
     }
 
     let set_state = |states: &mut Vec<(String, ItemState)>,
-                     progress: &mut dyn FnMut(&PasteProgress),
+                     progress: &mut dyn FnMut(&PasteProgress) -> AppResult<()>,
                      id: &str,
                      index: usize,
                      state: ItemState,
@@ -347,10 +373,13 @@ pub(crate) fn run_plan(
         if state.is_terminal()
             || matches!(
                 state,
-                ItemState::ClipboardWritten | ItemState::InputSent | ItemState::Settling
+                ItemState::ClipboardWritten
+                    | ItemState::Dispatching
+                    | ItemState::InputSent
+                    | ItemState::Settling
             )
         {
-            progress(&PasteProgress {
+            let p = PasteProgress {
                 item_id: id,
                 index,
                 state,
@@ -358,7 +387,13 @@ pub(crate) fn run_plan(
                 total: plan.total,
                 remaining,
                 note,
-            });
+            };
+            if let Err(e) = progress(&p) {
+                // 不在这里 break：调用点各不相同，统一由循环顶部/按键前的检查处置。
+                if persist_error.borrow().is_none() {
+                    *persist_error.borrow_mut() = Some(e.to_string());
+                }
+            }
         }
     };
 
@@ -369,6 +404,15 @@ pub(crate) fn run_plan(
         }
         if canceled(cancel) {
             status = "cancelled";
+            break;
+        }
+        if let Some(e) = persist_error.borrow().clone() {
+            status = "failed";
+            reason_code = Some("PASTE_STATE_PERSIST_FAILED");
+            notes.push(format!(
+                "第 {} 项之前的状态未能写入数据库（{e}）：已停止，避免在状态不明的情况下继续发送",
+                idx + 1
+            ));
             break;
         }
         if io.sequence() != last_seq {
@@ -701,6 +745,38 @@ pub(crate) fn run_plan(
             }
             None => {}
         }
+        // 崩溃窗口锚点：先把「正在发送」落库（同事务写任务进度 + 逐项状态 + retry_safe=0），
+        // 再调用 SendInput。这样进程被杀后能凭这条记录判定「可能已送达」。
+        set_state(
+            &mut states,
+            progress,
+            id,
+            idx,
+            ItemState::Dispatching,
+            sent,
+            &remaining,
+            Some("Ctrl+V 即将发送"),
+        );
+        if let Some(e) = persist_error.borrow().clone() {
+            status = "failed";
+            reason_code = Some("PASTE_STATE_PERSIST_FAILED");
+            // 按键还没发出去：条目保持在 clipboard_written（可安全重写剪贴板，不退化成 uncertain）。
+            set_state(
+                &mut states,
+                progress,
+                id,
+                idx,
+                ItemState::ClipboardWritten,
+                sent,
+                &remaining,
+                Some("发送状态未落库，按键未发送"),
+            );
+            notes.push(format!(
+                "第 {} 项发送前无法持久化发送状态（{e}）：按键未发送，条目保留在待处理队列",
+                idx + 1
+            ));
+            break;
+        }
         if let Err(e) = io.send_paste(plan.target.hwnd, plan.target.pid) {
             // 发送 API 失败 ≠ 目标一定没收到：这一项既不能算成功，也不能留在
             // 待处理里被自动重发（可能造成重复粘贴）。转 uncertain，等用户确认。
@@ -805,6 +881,15 @@ pub(crate) fn run_plan(
 
     if status == "completed" && canceled(cancel) {
         status = "cancelled";
+    }
+    // 循环里任何一次状态落库失败，都不能把任务记成「完成」。
+    if status == "completed" && persist_error.borrow().is_some() {
+        let detail = persist_error.borrow().clone().unwrap_or_default();
+        status = "failed";
+        reason_code = Some("PASTE_STATE_PERSIST_FAILED");
+        notes.push(format!(
+            "任务状态未能完整落库（{detail}）：已按停止处理，请查看逐项状态"
+        ));
     }
 
     // 收尾阶段：最后一项写入/按键后仍然给目标留出异步消费窗口，再决定是否恢复。
@@ -1029,9 +1114,16 @@ impl PasteManager {
         target_hwnd: isize,
         expected_pid: Option<u32>,
     ) -> AppResult<PasteStartReport> {
-        let job = store::get_paste_job(&self.db, job_id)?;
+        // 续跑前先把「发送阶段崩溃」的条目收敛成 uncertain：它们可能已经送达，
+        // 既不能当待处理项自动重发，也不能从剩余队列里悄悄留在原地。
+        store::reconcile_dispatching_items(&self.db, job_id)?;
+        let mut job = store::get_paste_job(&self.db, job_id)?;
+        let uncertain = job.uncertain_items.clone();
+        job.remaining_items.retain(|id| !uncertain.contains(id));
         if job.remaining_items.is_empty() {
-            return Err(AppError::Validation("该任务没有剩余项目".into()));
+            return Err(AppError::Validation(
+                "该任务没有剩余项目（不确定项需逐项确认后手动重发）".into(),
+            ));
         }
         let target = self.precheck(target_hwnd, expected_pid)?;
         self.begin(
@@ -1142,7 +1234,7 @@ impl PasteManager {
                         .map(|j| (j.sent, j.remaining_items))
                         .unwrap_or((0, Vec::new()));
                     let message = "粘贴线程异常终止（内部错误）；已发送项数与目标接收情况未知";
-                    let _ = store::finish_paste_job(
+                    if let Err(e) = store::finish_paste_job(
                         &fail_db,
                         &fail_job,
                         "failed",
@@ -1151,7 +1243,9 @@ impl PasteManager {
                         &[],
                         message,
                         false,
-                    );
+                    ) {
+                        tracing::error!("线程 panic 后仍无法保存任务状态 {fail_job}: {e}");
+                    }
                     if let Ok(mut guard) = fail_active.lock() {
                         if guard
                             .as_ref()
@@ -1187,7 +1281,7 @@ impl PasteManager {
                 if guard.as_ref().map(|a| a.job_id == job_id).unwrap_or(false) {
                     *guard = None;
                 }
-                let _ = store::finish_paste_job(
+                if let Err(finish_err) = store::finish_paste_job(
                     &self.db,
                     &job_id,
                     "failed",
@@ -1196,7 +1290,9 @@ impl PasteManager {
                     &[],
                     "无法创建粘贴线程，任务未开始",
                     false,
-                );
+                ) {
+                    tracing::error!("创建线程失败后仍无法保存任务状态 {job_id}: {finish_err}");
+                }
                 return Err(AppError::Io(e));
             }
         }
@@ -1460,17 +1556,28 @@ fn run_job(
             payload,
         })
     };
-    let mut progress = |p: &PasteProgress| {
-        let _ = store::update_paste_job(&db, &job_id, p.sent, p.remaining, "运行中");
-        // 逐项状态落库：任务中断后可以准确知道每一项走到哪一步、是否发过按键。
-        let _ = store::record_paste_item_state(
+    let mut progress = |p: &PasteProgress| -> AppResult<()> {
+        // 任务进度与逐项状态在同一个事务里落地：崩溃后不会出现「任务说发了、条目还 pending」。
+        // 这里返回 Err 会被 run_plan_with 当成停止信号（发送前那一步尤其关键）。
+        store::record_paste_step(
             &db,
             &job_id,
+            p.sent,
+            p.remaining,
             p.item_id,
             p.state.as_str(),
             p.note,
-        );
-        let _ = app.emit(
+        )
+        .map_err(|e| {
+            tracing::error!(
+                "逐项粘贴状态落库失败 job={} item={} state={}: {e}",
+                job_id,
+                p.item_id,
+                p.state.as_str()
+            );
+            e
+        })?;
+        if let Err(e) = app.emit(
             "clipboard-paste",
             serde_json::json!({
                 "jobId": job_id,
@@ -1483,10 +1590,14 @@ fn run_job(
                 "itemState": p.state.as_str(),
                 "message": p.note,
             }),
-        );
+        ) {
+            // UI 事件失败不代表粘贴失败：数据库已经是权威事实，只记日志。
+            tracing::warn!("粘贴进度事件发送失败（已落库）: {e}");
+        }
+        Ok(())
     };
 
-    let outcome = run_plan(&io, &plan, &cancel, &mut load, &mut progress);
+    let outcome = run_plan_with(&io, &plan, &cancel, &mut load, &mut progress);
 
     let mut message = format!(
         "已发送 {}/{} 项粘贴动作；目标应用是否接收无法自动验证",
@@ -1519,7 +1630,8 @@ fn run_job(
         message.push_str(&outcome.notes.join("；"));
     }
 
-    let _ = store::finish_paste_job(
+    // uncertain 在数据库里是「历史累积集合」，不是「本轮集合」：finish 返回合并后的总数。
+    let uncertain_total = match store::finish_paste_job(
         &db,
         &job_id,
         outcome.status,
@@ -1528,7 +1640,23 @@ fn run_job(
         &outcome.uncertain,
         &message,
         outcome.restored,
-    );
+    ) {
+        Ok(total) => total,
+        Err(e) => {
+            // 结束状态保存失败：不能假装任务已经正常收尾。
+            tracing::error!("粘贴任务收尾失败 job={job_id}: {e}");
+            let _ = app.emit(
+                "clipboard-paste-diagnostic",
+                serde_json::json!({
+                    "jobId": job_id,
+                    "severity": "error",
+                    "code": "PASTE_JOB_FINISH_PERSIST_FAILED",
+                    "message": e.to_string(),
+                }),
+            );
+            outcome.uncertain.len()
+        }
+    };
     if let Ok(mut guard) = active.lock() {
         if guard.as_ref().map(|a| a.job_id == job_id).unwrap_or(false) {
             *guard = None;
@@ -1547,7 +1675,7 @@ fn run_job(
             "userTookOver": outcome.user_took_over,
             "pauseReason": outcome.pause_reason,
             "reasonCode": outcome.reason_code,
-            "uncertain": outcome.uncertain.len(),
+            "uncertain": uncertain_total,
             "confirmed": outcome.confirmed(),
             "unverified": outcome.unverified(),
         }),
@@ -2561,6 +2689,44 @@ mod tests {
             !slot.wait(Duration::from_millis(120)),
             "线程未结束时必须返回 false（超时），不得谎报已收尾"
         );
+    }
+
+    /// 发送前必须先把 `dispatching` 落库；这一步失败时**绝不能调用 SendInput**，
+    /// 否则崩溃窗口里没人知道按键到底发出去没有。
+    #[test]
+    fn dispatch_state_persist_failure_aborts_before_send() {
+        let io = FakeIo::new(1);
+        let p = plan(&["a", "b"], timing());
+        let mut load = loader(&[("a", "text"), ("b", "text")]);
+        let mut seen: Vec<(String, ItemState)> = Vec::new();
+        let mut progress = |pr: &PasteProgress| -> AppResult<()> {
+            seen.push((pr.item_id.to_string(), pr.state));
+            if pr.state == ItemState::Dispatching {
+                return Err(AppError::Validation("数据库只读，无法写入发送状态".into()));
+            }
+            Ok(())
+        };
+        let outcome = run_plan_with(&io, &p, &AtomicBool::new(false), &mut load, &mut progress);
+
+        assert_eq!(outcome.status, "failed");
+        assert_eq!(
+            outcome.reason_code,
+            Some("PASTE_STATE_PERSIST_FAILED"),
+            "必须用稳定码说明是持久化失败，而不是粘贴失败"
+        );
+        assert!(
+            io.timeline.borrow().iter().all(|t| t != "send"),
+            "发送状态没落库就发按键会造成无法追溯的重复粘贴"
+        );
+        assert!(seen.iter().any(|(_, st)| *st == ItemState::Dispatching));
+        assert!(
+            outcome
+                .states
+                .iter()
+                .any(|(id, st)| id == "a" && *st == ItemState::ClipboardWritten),
+            "按键没发出去：条目必须留在可安全重试的位置（clipboard_written），不能标 uncertain"
+        );
+        assert!(outcome.uncertain.is_empty(), "没发按键就不存在「结果不确定」");
     }
 
     /// 线程正常结束后自清理槽位：不留下已结束线程的句柄。

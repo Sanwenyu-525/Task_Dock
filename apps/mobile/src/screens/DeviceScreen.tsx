@@ -89,14 +89,25 @@ export function DeviceScreen({
             setUnpairing(true);
             clearConnection()
               .then(async () => {
-                // 与同步页同一套状态：清掉游标/冲突，避免下次配对沿用旧游标。
-                await resetSyncState();
-                if (!mounted.current) return;
-                setConnection(null);
-                setHasToken(false);
-                setPendingOps(0);
-                setConflicts(0);
-                showToast("已解除本机配对", "success");
+                // 令牌已删除；先让 UI 进入未配对，避免 resetSyncState 失败时页面仍显示
+                // 「已配对」而本机实际已没有令牌。游标/冲突清理失败只降级提示，不回滚配对。
+                if (mounted.current) {
+                  setConnection(null);
+                  setHasToken(false);
+                  setPendingOps(0);
+                  setConflicts(0);
+                }
+                try {
+                  await resetSyncState();
+                  if (mounted.current) showToast("已解除本机配对", "success");
+                } catch (error) {
+                  if (mounted.current) {
+                    showToast(
+                      `已解除本机配对，但同步状态清理失败：${describeError(error)}`,
+                      "warn",
+                    );
+                  }
+                }
               })
               .catch((error) => {
                 if (mounted.current) {

@@ -65,12 +65,12 @@ const SIZE_OPTIONS: { value: string; labelKey: MessageKey; hint: string }[] = [
   {
     value: "1080x1920/384",
     labelKey: "virtualDisplay.size.portrait",
-    hint: "1080×1920 / 384",
+    hint: "384 DPI",
   },
   {
     value: "1920x1080/384",
     labelKey: "virtualDisplay.size.landscape",
-    hint: "1920×1080 / 384",
+    hint: "384 DPI",
   },
 ];
 

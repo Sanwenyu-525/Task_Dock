@@ -28,6 +28,7 @@ import {
   type NotificationRow,
 } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
+import SearchField from "../ui/SearchField";
 import {
   WorkbenchDetailFacts,
   WorkbenchPageDetail,
@@ -114,6 +115,8 @@ export default function HistoryPanel() {
   const showToast = useUiStore((s) => s.showToast);
   /** 右栏宿主存在时，展开内容投送到右栏；右栏关闭时保留内联详情作为降级。 */
   const detailHost = useWorkbenchDetailHost();
+  /** 只过滤已加载记录：历史没有后端全文检索接口，不假装搜索全库。 */
+  const [textQuery, setTextQuery] = useState("");
   const agentSnapshot = useAgentsStore((s) => s.snapshot);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [events, setEvents] = useState<AgentEventRow[]>([]);
@@ -268,8 +271,25 @@ export default function HistoryPanel() {
         }))
         .filter((day) => day.entries.length > 0);
     }
+    const q = textQuery.trim().toLocaleLowerCase();
+    if (q) {
+      g = g
+        .map((day) => ({
+          ...day,
+          entries: day.entries.filter((e) => {
+            const title =
+              e.kind === "notification" ? e.notification?.title ?? "" : e.event?.message ?? "";
+            const body =
+              e.kind === "notification"
+                ? e.notification?.body ?? ""
+                : e.event?.session_external_id ?? "";
+            return `${title} ${body} ${e.source}`.toLocaleLowerCase().includes(q);
+          }),
+        }))
+        .filter((day) => day.entries.length > 0);
+    }
     return g;
-  }, [notifications, events, kindFilter]);
+  }, [notifications, events, kindFilter, textQuery]);
 
   const total = groups.reduce((acc, g) => acc + g.entries.length, 0);
   const filtering = sourceFilter !== "all" || timeFilter !== "all" || kindFilter !== "all";
@@ -419,8 +439,19 @@ export default function HistoryPanel() {
             </button>
           ))}
         </div>
+        <SearchField
+          size="compact"
+          className="history-search"
+          value={textQuery}
+          onChange={setTextQuery}
+          placeholder="搜索已加载记录"
+          ariaLabel="搜索已加载的历史记录"
+          clearLabel="清除历史搜索"
+        />
         <span className="history-unread-hint history-toolbar-meta">
-          {tr("history.unread", { unread, total: inboxTotal })}
+          {textQuery
+            ? `已加载记录中匹配 ${total} 条`
+            : tr("history.unread", { unread, total: inboxTotal })}
         </span>
       </div>
 

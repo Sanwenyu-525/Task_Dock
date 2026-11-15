@@ -933,6 +933,13 @@ body.wb-resizing {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+/* 1180 级内容区仍是两列：三张卡时最后一张跨满，避免第三张孤零零占半列。 */
+@container wb-content (max-width: 999px) and (min-width: 621px) {
+  .wb-dev-grid--triple > .wb-card:last-child:nth-child(odd),
+  .wb-dev-grid--tools > .wb-card:last-child:nth-child(3) {
+    grid-column: span 2;
+  }
+}
 @container wb-content (max-width: 620px) {
   .wb-dev-grid,
   .wb-dev-grid--primary,
@@ -1012,6 +1019,61 @@ body.wb-resizing {
    （效果图里每个卡片都参与构图，不存在孤立半列）。 */
 .wb-project .ws-grid > .ws-card:last-child:nth-child(odd) {
   grid-column: span 2;
+}
+
+/* 项目概览带（2026-11-15 R2）：真实计数 + 快捷入口，避免概览页只有三张卡、
+   下半屏整片空白。所有数值来自项目上下文，不伪造阶段进度。 */
+.ws-overview {
+  display: flex;
+  align-items: center;
+  gap: 14px 18px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+.ws-overview-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(64px, auto));
+  gap: 10px 22px;
+  flex: 1 1 340px;
+  min-width: 0;
+}
+.ws-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ws-stat strong {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.ws-stat span {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.ws-overview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ws-overview-meta {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+@container wb-content (max-width: 720px) {
+  .ws-overview-stats {
+    grid-template-columns: repeat(2, minmax(64px, 1fr));
+  }
 }
 
 /* 项目页头（2026-11-14）：登记名 + 类型/状态徽标 + 真实计数元信息。 */

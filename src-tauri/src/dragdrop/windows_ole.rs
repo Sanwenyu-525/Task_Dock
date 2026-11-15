@@ -62,13 +62,25 @@ use crate::dragdrop::virtual_files::{
 };
 use crate::dragdrop::{
     DragDropState, StagedItem, StagedKind, EVENT_ACCEPTED, EVENT_PAYLOAD, EVENT_PROBE,
-    MAX_HTML_BYTES, MAX_IMAGE_BYTES, MAX_ITEMS, MAX_MEMORY_CONTENT_BYTES,
+    MAX_HTML_BYTES, MAX_IMAGE_BYTES, MAX_ITEMS, MAX_LOCAL_PATHS, MAX_MEMORY_CONTENT_BYTES,
     MAX_MEMORY_TOTAL_BYTES, MAX_TEXT_BYTES, MAX_VIRTUAL_FILE_BYTES, MAX_VIRTUAL_TOTAL_BYTES,
     OVER_THROTTLE,
 };
 
-// ── 全局状态 ───────────────────────────────────────────────
+/// 本地路径按 `MAX_LOCAL_PATHS` 截断，返回（保留项, 被丢弃数量）。
+/// 纯函数：真机 OLE 时序不可单测，但「拖 100 个只处理 32 个」这类数量错误必须能被低价单测钉住。
+pub(crate) fn cap_local_paths(paths: &[String]) -> (Vec<StagedItem>, usize) {
+    let kept = paths.len().min(MAX_LOCAL_PATHS);
+    let items = paths
+        .iter()
+        .take(kept)
+        .cloned()
+        .map(|path| StagedItem::LocalPath { path })
+        .collect();
+    (items, paths.len() - kept)
+}
 
+// ── 全局状态 ───────────────────────────────────────────────
 /// 登记成功注册的窗口数（>0 表示原生桥生效）。
 static INSTALLED: AtomicUsize = AtomicUsize::new(0);
 /// 注册失败的窗口数（顶层与子窗口合计）。
@@ -535,20 +547,19 @@ impl IDropTarget_Impl for BridgeTarget_Impl {
 
         match &class {
             Classification::LocalFiles { paths } => {
-                for p in paths.iter().take(MAX_ITEMS) {
-                    items.push(StagedItem::LocalPath { path: p.clone() });
-                }
-                if paths.len() > MAX_ITEMS {
-                    skipped += paths.len() - MAX_ITEMS;
-                }
+                // 本地文件走 MAX_LOCAL_PATHS（500），与暂存架单批上限、docs/DRAG_INPUT.md 一致。
+                // 以前误用 MAX_ITEMS(32)，导致拖 100 个文件只处理前 32 个且前端数量对不上。
+                let (kept, dropped) = cap_local_paths(paths);
+                items.extend(kept);
+                skipped += dropped;
             }
             Classification::Mixed {
                 local_paths,
                 virtual_count,
             } => {
-                for p in local_paths.iter().take(MAX_ITEMS) {
-                    items.push(StagedItem::LocalPath { path: p.clone() });
-                }
+                let (kept, dropped) = cap_local_paths(local_paths);
+                items.extend(kept);
+                skipped += dropped;
                 collect_virtual(
                     obj,
                     *virtual_count,
@@ -2981,3 +2992,32 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    fn paths(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("C:\\tmp\\f{i}.txt")).collect()
+    }
+
+    /// 本地路径上限是 500（与暂存架单批上限、docs/DRAG_INPUT.md 一致），不是 32。
+    #[test]
+    fn local_paths_are_capped_at_500_not_32() {
+        for n in [1usize, 32, 33, 100, 500] {
+            let (items, dropped) = cap_local_paths(&paths(n));
+            assert_eq!(items.len(), n, "{n} 个本地文件不得被截断");
+            assert_eq!(dropped, 0);
+        }
+        let (items, dropped) = cap_local_paths(&paths(501));
+        assert_eq!(items.len(), 500);
+        assert_eq!(dropped, 1, "超过上限必须计入 skipped，不能静默丢弃");
+    }
+
+    /// 虚拟文件仍按 32 限制：修本地文件不能顺手放大虚拟文件上限。
+    #[test]
+    fn virtual_files_keep_the_32_item_cap() {
+        assert_eq!(crate::dragdrop::MAX_ITEMS, 32);
+        assert_eq!(crate::dragdrop::MAX_LOCAL_PATHS, 500);
+    }
+}

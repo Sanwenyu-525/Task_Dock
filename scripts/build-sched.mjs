@@ -34,7 +34,7 @@ import { EXIT, executeTask, runInline } from "./sched/runner.mjs";
 import { scanDevServers } from "./sched/devservers.mjs";
 import { verifyIdentity } from "./sched/proc.mjs";
 import {
-  budgetSnapshot, classifyReservation, defaultProbe, readReservations, reclaimStaleReservations,
+  budgetSnapshot, classifyReservation, computeBudget, defaultProbe, readReservations, reclaimStaleReservations,
 } from "./sched/budget.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -246,8 +246,10 @@ function cmdStatus(argv) {
   console.log(`压力：${pressure.text}`);
   console.log(`全局预算：${budget.enabled ? "启用" : "已关闭（只按实时可用内存准入）"} ` +
     `${formatMb(budget.reservedMb)} / ${formatMb(budget.budgetMb)} 已预留` +
-    `（可用余量 ${formatMb(budget.availableMb)}；物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(budget.reserveMb)}）` +
-    `${budget.clamped ? `  ⚠ 预算被夹到最大分类预计峰值 ${formatMb(budget.clampFloorMb)}` : ""}`);
+    `（可用余量 ${formatMb(budget.availableMb)}；硬上限 = 物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(budget.reserveMb)}` +
+    ` = ${formatMb(budget.hardLimitMb)}）`);
+  // 预算风险一律显式打印：系统保留被侵占、预算装不下最大分类峰值、系统保留 ≥ 物理内存
+  if (budget.warning) console.log(`  ${budget.warning}`);
   for (const e of budget.entries) {
     console.log(`  ${pad(e.taskId, 16)} ${pad(e.taskClass, 6)} ${pad(formatMb(e.reservedMb), 9)} ` +
       `phase=${pad(e.phase ?? "?", 9)} pid=${pad(e.ownerPid ?? "?", 7)} ` +
@@ -331,6 +333,8 @@ function cmdQueue(argv) {
   }
   if (!sorted.length) {
     console.log("队列为空（没有排队或运行中的任务）");
+    const emptyBudget = budgetSnapshot({ home: ctx.state.home, cfg: ctx.cfg, totalMb: readMemory().totalMb });
+    if (emptyBudget.warning) console.log(`⚠ ${emptyBudget.warning}`);
     return EXIT.ok;
   }
   printTable(sorted.slice(0, limit).map((t) => ({
@@ -350,6 +354,13 @@ function cmdQueue(argv) {
     { key: "worktree", title: "工作区" },
     { key: "waiting_reason", title: "等待原因/标签" },
   ]);
+  console.log("");
+  // 队列底部固定给出预算与风险：`waiting_reason` 里已经写明是哪一侧不够，这里再给出"这台机器能不能装下"的结论，
+  // 避免"峰值大于预算"被误读成"再等等就好"。
+  const budgetView = budgetSnapshot({ home: ctx.state.home, cfg: ctx.cfg, totalMb: readMemory().totalMb });
+  console.log(`全局预算：${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留` +
+    `（硬上限 = 物理 ${formatMb(budgetView.totalMb)} - 系统保留 ${formatMb(budgetView.reserveMb)}）`);
+  if (budgetView.warning) console.log(`⚠ ${budgetView.warning}`);
   console.log("");
   console.log("说明：优先级列显示「基础/经老化后的有效优先级」；等待越久有效优先级越高，避免 P3 饥饿。");
   return EXIT.ok;
@@ -542,6 +553,11 @@ function cmdDoctor(argv) {
   const reservations = readReservations(home);
   const budgetView = budgetSnapshot({ home, cfg: ctx.cfg, totalMb: readMemory().totalMb, probe: defaultProbe() });
   ok.push(`全局预算 ${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留（${reservations.length} 条台账）`);
+  // 预算风险（系统保留被侵占 / 预算装不下最大分类峰值 / 系统保留 ≥ 物理内存）必须在诊断里成条列出，
+  // 而不是只在 status 里一行带过：这类问题会让重型任务"永远排队"，容易被误读成"谁占着槽位"。
+  if (budgetView.warning) {
+    issues.push({ severity: budgetView.reserveExhausted ? "P0" : "P2", text: `全局预算：${budgetView.warning}` });
+  }
   const probe = defaultProbe();
   for (const r of budgetView.entries) {
     if (r.state === "owner-alive") {
@@ -663,7 +679,7 @@ function cmdDoctor(argv) {
   const mem = readMemory();
   console.log(`内存：可用 ${formatMb(mem.availMb)} / ${formatMb(mem.totalMb)}${mem.simulated ? "（模拟值）" : ""}`);
   console.log(`全局预算：${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留` +
-    `${budgetView.clamped ? "（已夹到最大分类预计峰值）" : ""}`);
+    `（硬上限 ${formatMb(budgetView.hardLimitMb)} = 物理 ${formatMb(budgetView.totalMb)} - 系统保留 ${formatMb(budgetView.reserveMb)}）`);
   return issues.some((i) => i.severity === "P0") ? EXIT.internal : EXIT.ok;
 }
 

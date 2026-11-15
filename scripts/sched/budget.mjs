@@ -6,8 +6,15 @@
 //!   构建，Medium 同时看到同一份 7GB 又起 3000MB，两个都放行、合计 9000MB。
 //!
 //! 本模块只负责**约束 B**（约束 A 的实时可用内存门槛仍在 mem.mjs，两者互相独立、互不重复扣减）：
-//!   预算上限 budgetMb = max(totalMb - systemReserveMb, 最大分类预计峰值)
+//!   预算上限 budgetMb = max(0, totalMb - systemReserveMb)        ← 硬上限，不被任务峰值抬高
 //!   放行 ⇔ Σ活动任务预留 + 本任务预计峰值 ≤ budgetMb
+//!
+//! 2026-11-15 修正（上一轮遗留的缺陷）：旧公式是 `max(totalMb - systemReserveMb, 最大分类预计峰值)`。
+//! 在 8GB 机器上 `8192 - 3072 = 5120MB < Heavy 预计 6000MB`，旧公式会把预算**抬到 6000MB**，
+//! 于是"系统保留的 3GB 安全垫"被静默侵蚀，正好破坏了本预算要保护的东西。现在：
+//!   - 预算严格等于 `totalMb - systemReserveMb`，单个任务峰值更大时判为**不可准入**并给出原因；
+//!   - 想突破保留边界只能显式打开 `allowReserveBreach`（默认关闭），此时返回值用
+//!     `reserveBreached/breachMb` 明确标注，status 会显著提示风险。
 //! 这里**不读** freemem：freemem 已经反映运行中进程的真实占用，如果再用它减一遍预计峰值，
 //! 同一份资源就被扣了两次，16GB 机器上第二个任务会永久起不来。
 //!
@@ -36,7 +43,7 @@ const nowIso = () => new Date().toISOString();
 
 // ---------------------------------------------------------------- 预算公式
 
-/** 各类里最大的预计峰值：预算不能小于它，否则该分类永远无法准入（夹取下限）。 */
+/** 各类里最大的预计峰值：用于解释「哪一类任务在这台机器上装不下」，**不再**用作预算下限。 */
 export function maxEstimateMb(cfg) {
   return Math.max(
     cfg.estimateHeavyMb, cfg.estimateMediumMb, cfg.estimateLightMb,
@@ -45,26 +52,71 @@ export function maxEstimateMb(cfg) {
   );
 }
 
+/** 生成预算相关的风险/不可准入提示文案（纯函数，status / queue / 文档共用一套说法）。 */
+export function budgetWarning({ reserveExhausted, reserveBreached, peakExceedsBudget, reserveMb, totalMb, hardLimitMb, budgetMb, peakEstimateMb }) {
+  if (reserveExhausted) {
+    return `系统保留 ${formatMb(reserveMb)} ≥ 物理内存 ${formatMb(totalMb)}：全局预算为 0，任何分类都无法准入（请调小 systemReserveMb）`;
+  }
+  if (reserveBreached) {
+    return `⚠ 已显式开启 allowReserveBreach：预算 ${formatMb(budgetMb)} 高于「物理 - 系统保留」硬上限 ${formatMb(hardLimitMb)}，` +
+      `系统保留的 ${formatMb(reserveMb)} 安全垫已被侵占 ${formatMb(budgetMb - hardLimitMb)}，OOM/卡顿风险由使用者承担`;
+  }
+  if (reserveMb <= 0 && totalMb > 0) {
+    // systemReserveMb=0 是"把安全垫整块取消"的显式配置（不是任务峰值抬高预算，但同样是风险）。
+    return `⚠ systemReserveMb=0：预算等于物理内存 ${formatMb(totalMb)}，没有给操作系统/常驻应用留安全垫，并行任务可能把系统打到 OOM`;
+  }
+  if (peakExceedsBudget) {
+    return `本机预算 ${formatMb(budgetMb)}（物理 ${formatMb(totalMb)} - 系统保留 ${formatMb(reserveMb)}）` +
+      ` 小于最大分类预计峰值 ${formatMb(peakEstimateMb)}：该类任务在本机**无法准入**（需要更大物理内存，或显式调小 systemReserveMb）`;
+  }
+  return null;
+}
+
 /**
  * 计算全局预算上限（纯函数，便于单测）。
  *
- * 夹取规则：`totalMb - systemReserveMb` 小于最大分类预计峰值时，预算夹到该峰值并在返回值里
- * 标 `clamped`（由调用方作为配置问题报出）。夹取只是让预算池不至于把重型任务永久挡死，
- * **不降低**任何分类的实时可用内存门槛（约束 A 不受影响）。
+ * 公式：`budgetMb = max(0, totalMb - systemReserveMb)`。
+ * 这是**硬上限**：任何任务的预计峰值都不会把它抬高（旧实现的夹取会把 8GB 机器的预算从 5GB
+ * 抬到 6GB，等于偷偷吃掉系统保留的安全边界）。任务峰值超过它时由 planAdmission 明确拒绝。
+ *
+ * 唯一例外是显式配置 `allowReserveBreach=true`（默认关闭）：预算被抬到「最大分类预计峰值」
+ * 以保证该类任务仍能跑，返回值带 `reserveBreached/breachMb/warning` 供 status 显著提示。
  */
 export function computeBudget({ cfg, totalMb }) {
   const reserve = Number.isFinite(Number(cfg.systemReserveMb)) ? Number(cfg.systemReserveMb) : 0;
   const total = Number.isFinite(Number(totalMb)) ? Number(totalMb) : 0;
   const raw = Math.round(total - reserve);
-  const floor = maxEstimateMb(cfg);
+  const hardLimitMb = Math.max(0, raw);
+  const peakMb = maxEstimateMb(cfg);
+  const breachAllowed = cfg.allowReserveBreach === true;
+  const budgetMb = breachAllowed ? Math.max(hardLimitMb, peakMb) : hardLimitMb;
+  const breachMb = Math.max(0, budgetMb - hardLimitMb);
+  const reserveBreached = breachAllowed && breachMb > 0;
+  const peakExceedsBudget = peakMb > budgetMb;
+  const reserveExhausted = raw <= 0;
+  const warning = budgetWarning({
+    reserveExhausted, reserveBreached, peakExceedsBudget,
+    reserveMb: reserve, totalMb: total, hardLimitMb, budgetMb, peakEstimateMb: peakMb,
+  });
   return {
     enabled: cfg.budgetEnabled !== false,
     totalMb: total,
     reserveMb: reserve,
     rawMb: raw,
-    budgetMb: Math.max(raw, floor),
-    clamped: raw < floor,
-    clampFloorMb: floor,
+    // 安全上限（物理 - 系统保留）：永不因任务峰值而提高
+    hardLimitMb,
+    // 生效预算：只有 allowReserveBreach=true 时才可能高于 hardLimitMb
+    budgetMb,
+    peakEstimateMb: peakMb,
+    breachAllowed,
+    reserveBreached,
+    breachMb,
+    peakExceedsBudget,
+    reserveExhausted,
+    // 兼容上一轮的展示字段：clamped 现在**只**代表"已显式允许突破保留边界"
+    clamped: reserveBreached,
+    clampFloorMb: peakMb,
+    warning,
   };
 }
 
@@ -90,9 +142,13 @@ export function planAdmission({ budget, entries = [], taskId = null, estimateMb 
   const reservedMb = sumReserved(others);
   const base = {
     budgetMb: budget.budgetMb,
+    hardLimitMb: Number.isFinite(Number(budget.hardLimitMb)) ? Number(budget.hardLimitMb) : budget.budgetMb,
+    reserveMb: Number.isFinite(Number(budget.reserveMb)) ? Number(budget.reserveMb) : 0,
     reservedMb,
     estimateMb: est,
     availableMb: Math.max(0, budget.budgetMb - reservedMb),
+    reserveBreached: budget.reserveBreached === true,
+    infeasible: false,
   };
   if (!budget.enabled) {
     return {
@@ -101,13 +157,21 @@ export function planAdmission({ budget, entries = [], taskId = null, estimateMb 
     };
   }
   if (est > budget.budgetMb) {
+    // 单个任务的预计峰值就大于本机预算：不是"排队"，而是"这台机器装不下"。
+    // 旧实现会用夹取把预算抬到峰值来放行，等于侵占系统保留的安全边界——现在明确判为不可准入。
+    const why = budget.reserveExhausted
+      ? `系统保留 ${formatMb(base.reserveMb)} ≥ 物理内存 ${formatMb(budget.totalMb)}，全局预算为 0`
+      : `本机全局预算上限 ${formatMb(budget.budgetMb)}（物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(base.reserveMb)}）`;
     return {
-      ...base, admit: false,
-      reason: `预计峰值 ${formatMb(est)} 超过全局预算上限 ${formatMb(budget.budgetMb)}（不允许自我放行）`,
+      ...base, admit: false, infeasible: true,
+      reason: `任务预计峰值 ${formatMb(est)} > ${why}：本机装不下，不会自我放行（不是排队问题，等待也不会放行）`,
+      hint: `需要更大物理内存，或显式调小 systemReserveMb；` +
+        `allowReserveBreach（默认关闭）可强制抬高预算，但会侵占系统保留的安全边界并在 status 里显著告警`,
     };
   }
   const need = reservedMb + est;
-  const budgetText = `预算 ${formatMb(budget.budgetMb)}（物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(budget.reserveMb)}）`;
+  const budgetText = `预算 ${formatMb(budget.budgetMb)}（物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(base.reserveMb)}）` +
+    `${base.reserveBreached ? `〔⚠ 已突破保留边界 ${formatMb(budget.breachMb ?? 0)}〕` : ""}`;
   if (need <= budget.budgetMb) {
     return {
       ...base, admit: true,
@@ -118,6 +182,8 @@ export function planAdmission({ budget, entries = [], taskId = null, estimateMb 
     ...base, admit: false,
     reason: `全局构建预算不足：已预留 ${formatMb(reservedMb)}（${others.length} 个活动任务）+ 本次预计 ${formatMb(est)}` +
       ` = ${formatMb(need)} > ${budgetText}`,
+    hint: `预算由物理内存减去系统保留决定，不会被任务峰值抬高；` +
+      `单个任务确实需要更多内存时，用 --estimate-mb 如实声明，或等已预留任务结束后重试`,
   };
 }
 

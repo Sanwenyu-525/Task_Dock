@@ -872,8 +872,14 @@ export async function cleanupStagedAfterRun(assetIds: string[]): Promise<number>
     const asset = await repo.getAsset(id);
     if (!asset || asset.state === "saved") continue;
     const destinations = await repo.listDestinations(id);
+    // pending 也必须保留：上传成功但暂存架待重试时，记录/文件一旦删除，
+    // 用户就没有入口再触发 shelf 导入（remoteId 也会随记录丢失）。
     const hasFailure = destinations.some(
-      (item) => item.state === "failed" || item.state === "cancelled" || item.state === "running",
+      (item) =>
+        item.state === "pending" ||
+        item.state === "failed" ||
+        item.state === "cancelled" ||
+        item.state === "running",
     );
     const hasSuccess = destinations.some((item) => item.state === "done");
     if (!hasFailure && hasSuccess) {

@@ -1417,6 +1417,8 @@ pub fn run() {
             commands::clipboard::clipboard_paste_job,
         commands::clipboard::clipboard_paste_item_states,
             commands::clipboard::clipboard_paste_active,
+            commands::clipboard::clipboard_paste_resumable_job,
+            commands::clipboard::clipboard_paste_resolve_uncertain,
             commands::clipboard::clipboard_cleanup,
             commands::clipboard::clipboard_status,
             commands::clipboard::clipboard_agent_targets,

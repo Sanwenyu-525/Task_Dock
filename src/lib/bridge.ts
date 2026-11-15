@@ -2089,6 +2089,21 @@ export const clipboardPasteItemStates = (jobId: string) =>
   invoke<PasteItemState[]>("clipboard_paste_item_states", { jobId });
 export const clipboardPasteActive = () =>
   invoke<string | null>("clipboard_paste_active");
+/**
+ * 最近一个可以继续的粘贴任务（暂停 / 进程中断且仍有剩余条目）。
+ * `clipboardPasteActive` 只反映内存里正在跑的任务，页面切走或应用重启后就查不到了。
+ */
+export const clipboardPasteResumableJob = () =>
+  invoke<PasteJob | null>("clipboard_paste_resumable_job");
+/**
+ * 显式处置不确定项：`received` = 确认目标已收到，`resend` = 确认没收到并要求重发。
+ * 只允许用户触发；不确定项不会自动回到待处理队列，否则会造成重复粘贴。
+ */
+export const clipboardPasteResolveUncertain = (
+  jobId: string,
+  itemId: string,
+  action: "received" | "resend",
+) => invoke<void>("clipboard_paste_resolve_uncertain", { jobId, itemId, action });
 export const clipboardCleanup = () => invoke<CleanupReport>("clipboard_cleanup");
 export const clipboardStatus = () => invoke<ClipboardStatus>("clipboard_status");
 /** 用户显式修复损坏的剪贴板配置；resume=true 时同时恢复自动记录。 */

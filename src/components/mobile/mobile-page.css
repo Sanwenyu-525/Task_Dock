@@ -47,3 +47,26 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* 传输中：在文件行底部显示真实进度条（总进度来自 received_chunks/chunks）。
+   只在手机互传页生效，设置页里的同款文件行保持原高度。 */
+.mobile-transfer-panel .mobile-file-item:has(.mobile-file-progress) {
+  position: relative;
+  padding-bottom: 12px;
+}
+.mobile-transfer-panel .mobile-file-progress {
+  position: absolute;
+  left: 44px;
+  right: 10px;
+  bottom: 5px;
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--border-subtle);
+}
+.mobile-transfer-panel .mobile-file-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-gradient);
+}

@@ -199,22 +199,166 @@ test("内存准入：压力等级与分类门槛一致", () => {
 // 不同分类各自读同一份 os.freemem 快照各自放行 → Heavy(6000)+Medium(3000) 在 7GB 可用时
 // 双双合格，合计 9000MB 已经超卖。这一组测试锁定新的两重独立约束。
 
-test("全局预算：上限 = max(物理总量 - 系统保留, 最大分类峰值)，夹取不降低分类门槛", () => {
+test("全局预算：上限 = 物理总量 - 系统保留（硬上限，不被任务峰值抬高）", () => {
   const b = computeBudget({ cfg, totalMb: 16005 });
   assert.equal(b.budgetMb, 16005 - cfg.systemReserveMb);
-  assert.equal(b.clamped, false, "正常机器上不应触发夹取");
+  assert.equal(b.hardLimitMb, 16005 - cfg.systemReserveMb);
+  assert.equal(b.reserveBreached, false, "未开 allowReserveBreach 时绝不能突破系统保留");
 
-  // 系统保留调得过大时，预算被夹到最大分类峰值，否则重型任务永久无法准入
+  // 系统保留调得过大时：预算**不再**被夹到最大分类峰值（旧公式的缺陷），
+  // 而是如实变成 1005MB 并标记「最大分类峰值装不下」，由 planAdmission 明确拒绝重型任务。
   const tight = computeBudget({ cfg: { ...cfg, systemReserveMb: 15000 }, totalMb: 16005 });
   assert.equal(tight.rawMb, 1005);
-  assert.equal(tight.budgetMb, 6000);
-  assert.equal(tight.clamped, true);
-  // 夹取只影响预算池，约束 A 的分类门槛一个字都没动
+  assert.equal(tight.budgetMb, 1005, "预算必须严格等于 totalMb - systemReserveMb");
+  assert.equal(tight.hardLimitMb, 1005);
+  assert.equal(tight.reserveBreached, false);
+  assert.equal(tight.peakExceedsBudget, true, "6000MB 峰值装不进 1005MB 预算");
+  assert.match(tight.warning, /无法准入/);
+  // 夹取/不夹取都不影响约束 A 的分类门槛
   assert.equal(memoryFloorForClass(cfg, "heavy"), 6144);
 
   assert.equal(maxEstimateMb(cfg), 6000);
   assert.equal(computeBudget({ cfg: { ...cfg, budgetEnabled: false }, totalMb: 16005 }).enabled, false);
-  assert.equal(computeBudget({ cfg: { ...cfg, systemReserveMb: 0 }, totalMb: 16005 }).budgetMb, 16005);
+  const noReserve = computeBudget({ cfg: { ...cfg, systemReserveMb: 0 }, totalMb: 16005 });
+  assert.equal(noReserve.budgetMb, 16005);
+  // 把安全垫整块取消（systemReserveMb=0）也是风险，必须显式提示，而不是悄悄"用满物理内存"
+  assert.match(noReserve.warning, /systemReserveMb=0/);
+  assert.match(noReserve.warning, /没有给操作系统/);
+});
+
+test("全局预算：4/8/16/32GB 设备档位的判定表（安全余量不被静默突破）", () => {
+  const devices = [
+    { totalMb: 4096, label: "4GB" },
+    { totalMb: 8192, label: "8GB" },
+    { totalMb: 16384, label: "16GB" },
+    { totalMb: 32768, label: "32GB" },
+  ];
+  const heavyFloor = memoryFloorForClass(cfg, "heavy"); // 约束 A 的分类门槛（6144）
+  const rows = [];
+  for (const d of devices) {
+    const budget = computeBudget({ cfg, totalMb: d.totalMb });
+    const expected = Math.max(0, d.totalMb - cfg.systemReserveMb);
+    assert.equal(budget.budgetMb, expected, `${d.label} 预算应严格等于 物理-保留`);
+    assert.equal(budget.hardLimitMb, expected, `${d.label} 硬上限不得被抬高`);
+    // 核心不变量：生效预算 + 系统保留 ≤ 物理内存（默认配置下永不侵占安全垫）
+    assert.ok(budget.budgetMb + budget.reserveMb <= d.totalMb,
+      `${d.label} ⛔ 预算 ${budget.budgetMb} + 保留 ${budget.reserveMb} 超过物理 ${d.totalMb}（安全余量被静默突破）`);
+
+    const heavy = planAdmission({ budget, entries: [], taskId: "h", estimateMb: cfg.estimateHeavyMb });
+    const medium = planAdmission({ budget, entries: [], taskId: "m", estimateMb: cfg.estimateMediumMb });
+    rows.push({
+      device: d.label, budgetMb: budget.budgetMb,
+      heavy: heavy.admit ? "准入" : (heavy.infeasible ? "不可准入（峰值>预算）" : "预算不足"),
+      medium: medium.admit ? "准入" : (medium.infeasible ? "不可准入（峰值>预算）" : "预算不足"),
+      warning: budget.warning ?? "",
+    });
+
+    if (d.totalMb < cfg.systemReserveMb + cfg.estimateHeavyMb) {
+      // 4GB / 8GB：重型 6000MB 装不下 → 必须是"不可准入"，并且原因里写清物理与保留
+      assert.equal(heavy.admit, false, `${d.label} 重型任务不得准入`);
+      assert.equal(heavy.infeasible, true, `${d.label} 应判为 infeasible（等待也不会放行）`);
+      assert.match(heavy.reason, /本机装不下|全局预算为 0/);
+      assert.match(heavy.hint, /systemReserveMb/, "可操作建议里必须指明 systemReserveMb 这个旋钮");
+      assert.ok(budget.warning, `${d.label} 必须给出预算风险提示`);
+    } else {
+      assert.equal(heavy.admit, true, `${d.label} 重型任务应准入`);
+    }
+    // 约束 A 的分类门槛在任何档位都不变（预算修正不改门槛）
+    assert.equal(memoryFloorForClass(cfg, "heavy"), heavyFloor);
+  }
+  // 判定表本身留证据，便于报告引用
+  assert.equal(rows.map((r) => r.device).join(","), "4GB,8GB,16GB,32GB");
+  assert.equal(rows[0].budgetMb, 4096 - cfg.systemReserveMb, "4GB 档：4096-3072=1024MB");
+  assert.equal(rows[1].budgetMb, 8192 - cfg.systemReserveMb);
+  assert.equal(rows[1].heavy, "不可准入（峰值>预算）", "8GB 档重型任务必须明确不可准入，而不是排队");
+});
+
+test("全局预算：8GB 机器上 Heavy 6GB 的完整判定（本题 P0 的复现场景）", () => {
+  const budget = computeBudget({ cfg, totalMb: 8192 });
+  assert.equal(budget.reserveMb, 3072);
+  assert.equal(budget.hardLimitMb, 5120, "8GB - 3GB 保留 = 5GB 才是真实上限");
+  assert.equal(budget.budgetMb, 5120, "旧公式会把它抬到 6000MB，这里必须仍是 5120");
+  const plan = planAdmission({ budget, entries: [], taskId: "heavy-1", estimateMb: 6000 });
+  assert.equal(plan.admit, false);
+  assert.equal(plan.infeasible, true);
+  assert.equal(plan.hardLimitMb, 5120);
+  assert.match(plan.reason, /预计峰值 5\.86 GB > 本机全局预算上限 5\.00 GB/);
+  assert.match(plan.reason, /系统保留 3\.00 GB/);
+  assert.match(plan.reason, /不是排队问题/);
+  assert.match(plan.hint, /allowReserveBreach/);
+  // 同一台 8GB 机器上中型/轻量仍然可跑（不能因为重型装不下就整体停摆）
+  assert.equal(planAdmission({ budget, entries: [], taskId: "m-1", estimateMb: 3000 }).admit, true);
+  assert.equal(planAdmission({ budget, entries: [], taskId: "l-1", estimateMb: 800 }).admit, true);
+});
+
+test("全局预算：系统保留 ≥ 物理内存的退化场景（预算为 0，全部不可准入且原因明确）", () => {
+  for (const [totalMb, reserveMb] of [[8192, 8192], [8192, 9000], [4096, 5120]]) {
+    const budget = computeBudget({ cfg: { ...cfg, systemReserveMb: reserveMb }, totalMb });
+    assert.equal(budget.rawMb, totalMb - reserveMb);
+    assert.equal(budget.budgetMb, 0, `保留 ${reserveMb} ≥ 物理 ${totalMb} 时预算必须夹到 0`);
+    assert.equal(budget.hardLimitMb, 0);
+    assert.equal(budget.reserveExhausted, true);
+    assert.match(budget.warning, /系统保留 .* ≥ 物理内存 .*全局预算为 0/);
+    const plan = planAdmission({ budget, entries: [], taskId: "x", estimateMb: 800 });
+    assert.equal(plan.admit, false);
+    assert.equal(plan.infeasible, true);
+    assert.match(plan.reason, /全局预算为 0/);
+  }
+});
+
+test("全局预算：多个任务合计超过预算时必须拒绝（原子预留不超卖）", () => {
+  const budget = computeBudget({ cfg, totalMb: 8192 }); // 5120MB
+  const sitting = [
+    { taskId: "h-1", taskClass: "heavy", reservedMb: 6000 }, // 理论上不该被写进去（峰值>预算）
+  ];
+  // 即使台账里存在一条超过预算的旧预留（例如历史上允许突破时留下的），后来的任务也不会被放行
+  const blocked = planAdmission({ budget, entries: sitting, taskId: "m-1", estimateMb: 3000 });
+  assert.equal(blocked.admit, false);
+  assert.equal(blocked.reservedMb, 6000);
+  assert.match(blocked.reason, /全局构建预算不足/);
+
+  // 正常组合：3000 已预留 + 3000 再来 = 6000 > 5120 → 拒绝；预留 2000 + 3000 = 5000 ≤ 5120 → 放行
+  const ok = planAdmission({ budget, entries: [{ taskId: "m-old", reservedMb: 2000 }], taskId: "m-new", estimateMb: 3000 });
+  assert.equal(ok.admit, true);
+  const no = planAdmission({ budget, entries: [{ taskId: "m-old", reservedMb: 3000 }], taskId: "m-new", estimateMb: 3000 });
+  assert.equal(no.admit, false);
+  // 预算 5120 下：两个 light(800) + medium(3000) = 4600 ≤ 5120 → 第三个 light 会超
+  const three = [{ taskId: "l-1", reservedMb: 800 }, { taskId: "m-1", reservedMb: 3000 }];
+  assert.equal(planAdmission({ budget, entries: three, taskId: "l-2", estimateMb: 800 }).admit, true);
+  assert.equal(planAdmission({ budget, entries: [...three, { taskId: "l-2", reservedMb: 800 }], taskId: "l-3", estimateMb: 800 }).admit, false);
+});
+
+test("全局预算：显式 allowReserveBreach 开关（默认关闭；开启后必须显著标注风险）", () => {
+  const totalMb = 8192;
+  // 默认关闭：口头/配置里没写就是关闭，绝不能悄悄突破
+  const off = computeBudget({ cfg, totalMb });
+  assert.equal(off.breachAllowed, false);
+  assert.equal(off.reserveBreached, false);
+  assert.equal(off.budgetMb, 5120);
+
+  // 显式开启：预算被抬到最大分类峰值 6000，但必须标注"侵占了 880MB 安全垫"
+  const on = computeBudget({ cfg: { ...cfg, allowReserveBreach: true }, totalMb });
+  assert.equal(on.breachAllowed, true);
+  assert.equal(on.budgetMb, 6000);
+  assert.equal(on.hardLimitMb, 5120);
+  assert.equal(on.breachMb, 880);
+  assert.equal(on.reserveBreached, true);
+  assert.equal(on.clamped, true, "兼容字段 clamped 只在显式突破时成立");
+  assert.match(on.warning, /已显式开启 allowReserveBreach/);
+  assert.match(on.warning, /5\.86 GB 高于/);
+  assert.match(on.warning, /安全垫已被侵占 880 MB/);
+
+  // 开启后重型任务可以准入，但 plan 上仍带 reserveBreached 证据
+  const plan = planAdmission({ budget: on, entries: [], taskId: "h-1", estimateMb: 6000 });
+  assert.equal(plan.admit, true);
+  assert.equal(plan.reserveBreached, true);
+  assert.equal(plan.hardLimitMb, 5120);
+
+  // 大机器上开关没有副作用（raw 已经大于峰值）
+  const big = computeBudget({ cfg: { ...cfg, allowReserveBreach: true }, totalMb: 16384 });
+  assert.equal(big.reserveBreached, false);
+  assert.equal(big.budgetMb, 16384 - 3072);
+  assert.equal(big.warning, null);
 });
 
 test("全局预算：跨分类合计超卖必须被拒绝，恰好等于上限才放行", () => {
@@ -240,10 +384,11 @@ test("全局预算：跨分类合计超卖必须被拒绝，恰好等于上限�
   assert.equal(self.reservedMb, 3000);
   assert.equal(self.admit, true);
 
-  // 单任务预计峰值就超过预算 → 直接拒绝，不允许自我放行
+  // 单任务预计峰值就超过预算 → 直接拒绝，不允许自我放行（且明确判为 infeasible，而不是"排队"）
   const huge = planAdmission({ budget: { ...budget, budgetMb: 5000 }, entries: [], taskId: "x", estimateMb: 6000 });
   assert.equal(huge.admit, false);
-  assert.match(huge.reason, /超过全局预算上限/);
+  assert.equal(huge.infeasible, true);
+  assert.match(huge.reason, /本机全局预算上限 4\.88 GB/);
 
   // 预算被显式关闭时只保留约束 A（故障回退路径）
   const off = planAdmission({ budget: { ...budget, enabled: false }, entries: sitting, taskId: "l-2", estimateMb: 800 });
@@ -452,4 +597,41 @@ test("身份取证：记录缺失 PID 判 gone；不存在的 PID 不得判为�
   // 一个高概率未被占用的 PID：无论 CIM 是否能查到，都不得返回 same
   const check = verifyIdentity({ pid: 2147483, startTime: new Date().toISOString() });
   assert.notEqual(check.state, "same", "不存在的 PID 不得被当作原进程（PID 复用防护）");
+});
+
+test("身份取证：「进程在但读不到创建时间」只能是 unknown，不得冤判成 PID 已被复用", () => {
+  // 2026-11-15 第二轮缺陷：旧实现把 startTime=null 一路掉到 gone，于是
+  //   ① 等价任务去重被跳过（同一构建跑两遍）；
+  //   ② 崩溃回收可能把**活着的**构建的槽位/预算判成可回收（并发超卖）。
+  // 这里用注入的 probe 把四种结论都钉住（不需要真实 CIM）。
+  const live = process.pid;
+  const now = new Date().toISOString();
+  const probeOf = (value) => () => value;
+
+  assert.equal(
+    verifyIdentity({ pid: live, startTime: now }, { probe: probeOf({ known: true, alive: true, startTime: now }) }).state,
+    "same", "创建时间完全一致 → same",
+  );
+  assert.equal(
+    verifyIdentity({ pid: live, startTime: now, source: "uptime" },
+      { probe: probeOf({ known: true, alive: true, startTime: new Date(Date.now() - 900).toISOString() }) }).state,
+    "same", "uptime 推导值与 CIM 的亚秒级误差必须在容差内",
+  );
+  assert.equal(
+    verifyIdentity({ pid: live, startTime: "2001-01-01T00:00:00.000Z", source: "uptime" },
+      { probe: probeOf({ known: true, alive: true, startTime: now }) }).state,
+    "gone", "创建时间差很远 → 真的 PID 复用",
+  );
+  const unreadable = verifyIdentity({ pid: live, startTime: now, source: "uptime" },
+    { probe: probeOf({ known: true, alive: true, startTime: null }) });
+  assert.equal(unreadable.state, "unknown", "⛔ 读不到创建时间不能判 gone（旧实现正是这里出错）");
+  assert.match(unreadable.detail, /读不到创建时间/);
+  assert.equal(
+    verifyIdentity({ pid: live, startTime: now }, { probe: probeOf({ known: false, alive: true, startTime: null }) }).state,
+    "unknown", "CIM 查询失败 → unknown",
+  );
+  assert.equal(
+    verifyIdentity({ pid: live, startTime: now }, { probe: probeOf({ known: true, alive: false, startTime: null }) }).state,
+    "gone", "进程确实不存在 → gone",
+  );
 });

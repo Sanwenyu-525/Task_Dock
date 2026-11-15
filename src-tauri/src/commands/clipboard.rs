@@ -1000,6 +1000,19 @@ pub fn clipboard_paste_resume(
     rt.paste.resume(&job_id, target_hwnd, expected_pid)
 }
 
+/// 用户显式处置「结果不确定」条目：`received` 确认已接收，`resend` 明确要求重发。
+/// 不接受自动处置——不确定项自动变待处理就会造成重复粘贴。
+#[tauri::command]
+pub fn clipboard_paste_resolve_uncertain(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    job_id: String,
+    item_id: String,
+    action: String,
+) -> AppResult<()> {
+    let rt = runtime(&state);
+    store::resolve_uncertain_item(&rt.db, &job_id, &item_id, &action)
+}
+
 #[tauri::command]
 pub fn clipboard_paste_job(
     state: State<'_, Arc<ClipboardRuntime>>,
@@ -1020,6 +1033,20 @@ pub fn clipboard_paste_item_states(
 #[tauri::command]
 pub fn clipboard_paste_active(state: State<'_, Arc<ClipboardRuntime>>) -> Option<String> {
     runtime(&state).paste.active_job()
+}
+
+/// 最近一个可继续的任务：页面切走、应用重启后仍能找回暂停/中断的任务。
+/// 顺带把「发送阶段崩溃」的条目收敛成 uncertain，避免续跑时被当成待处理项重发。
+#[tauri::command]
+pub fn clipboard_paste_resumable_job(
+    state: State<'_, Arc<ClipboardRuntime>>,
+) -> AppResult<Option<PasteJob>> {
+    let rt = runtime(&state);
+    let job = store::latest_resumable_paste_job(&rt.db)?;
+    if let Some(job) = &job {
+        store::reconcile_dispatching_items(&rt.db, &job.id)?;
+    }
+    store::latest_resumable_paste_job(&rt.db)
 }
 
 #[tauri::command]

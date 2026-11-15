@@ -17,9 +17,12 @@ import {
   clipboardPasteActive,
   clipboardPasteCancel,
   clipboardPasteGroup,
+  clipboardPasteItemStates,
   clipboardPasteItems,
   clipboardPasteJob,
   clipboardPastePrecheck,
+  clipboardPasteResolveUncertain,
+  clipboardPasteResumableJob,
   clipboardPasteResume,
   clipboardVisibleTargets,
   onClipboardPaste,
@@ -106,6 +109,7 @@ const ITEM_CHIP_LABELS: Record<string, string> = {
   pending: "待处理",
   preparing: "准备中",
   clipboard_written: "已写入",
+  dispatching: "发送中",
   input_sent: "已发送",
   settling: "等待中",
   confirmed: "已确认",
@@ -217,24 +221,39 @@ export default function PastePanel({
     } else {
       setOrderIds(itemIds ?? []);
     }
-    clipboardPasteActive()
-      .then(async (id) => {
-        if (!alive || !id) return;
-        const j = await clipboardPasteJob(id).catch((e) => {
-          if (alive) showToast(`读取当前粘贴任务状态失败：${errorMessage(e)}`, { kind: "warning" });
-          return null;
-        });
+    // 页面打开时找回任务：先看内存里的活动任务，再回退到数据库里「可继续」的任务。
+    // 只用 clipboardPasteActive 的话，切走页面/重启应用后暂停任务就再也找不回来了。
+    void (async () => {
+      try {
+        const activeId = await clipboardPasteActive();
+        let j: PasteJob | null = activeId
+          ? await clipboardPasteJob(activeId).catch(() => null)
+          : null;
+        if (!j) {
+          j = await clipboardPasteResumableJob().catch(() => null);
+        }
         if (!alive || !j) return;
-        // 分组模式按 group_id 匹配；多选模式的后端审计 group_id 为空串
         const mine = groupMode ? j.group_id === groupId : j.group_id === "";
-        if (mine) {
-          jobIdRef.current = j.id;
-          setJob(fromJob(j));
-        } else setOtherJob(fromJob(j));
-      })
-      .catch((e) => {
-        if (alive) showToast(`读取进行中的粘贴任务失败：${errorMessage(e)}`, { kind: "warning" });
-      });
+        if (!mine) {
+          setOtherJob(fromJob(j));
+          return;
+        }
+        jobIdRef.current = j.id;
+        setJob(fromJob(j));
+        // 逐项状态以数据库为准：事件只覆盖本页面看到的跃迁，历史状态必须查库。
+        const rows = await clipboardPasteItemStates(j.id).catch(() => []);
+        if (!alive || rows.length === 0) return;
+        const persisted: Record<string, string> = {};
+        for (const row of rows) persisted[row.item_id] = row.state;
+        setJob((prev) =>
+          prev && prev.id === j!.id
+            ? { ...prev, itemStates: { ...persisted, ...prev.itemStates } }
+            : prev,
+        );
+      } catch (e) {
+        if (alive) showToast(`读取粘贴任务状态失败：${errorMessage(e)}`, { kind: "warning" });
+      }
+    })();
     return () => {
       alive = false;
     };
@@ -391,6 +410,41 @@ export default function PastePanel({
       showToast(`继续粘贴剩余项（${r.total} 项）`, { kind: "info" });
     } catch (e) {
       showToast(`继续失败：${errorMessage(e)}`, { kind: "error" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 处置结果不确定项：必须由用户明确选择「已收到」或「没收到，重发」。 */
+  async function onResolveUncertain(itemId: string, action: "received" | "resend") {
+    if (!job) return;
+    setBusy("resume");
+    try {
+      await clipboardPasteResolveUncertain(job.id, itemId, action);
+      const fresh = await clipboardPasteJob(job.id).catch(() => null);
+      if (fresh) {
+        setJob((prev) =>
+          prev && prev.id === fresh.id
+            ? {
+                ...prev,
+                status: fresh.status,
+                sent: fresh.sent,
+                pending: fresh.remaining_items.length,
+                uncertain: fresh.uncertain_items.length,
+                itemStates: {
+                  ...prev.itemStates,
+                  [itemId]: action === "received" ? "confirmed" : "pending",
+                },
+              }
+            : prev,
+        );
+      }
+      showToast(
+        action === "received" ? "已标记为收到" : "已排入重发，请点击「继续」发送",
+        { kind: "info" },
+      );
+    } catch (e) {
+      showToast(`处置失败：${errorMessage(e)}`, { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -614,6 +668,34 @@ export default function PastePanel({
                     </span>
                   );
                 })}
+              </div>
+            )}
+            {orderIds.some((id) => job.itemStates[id] === "uncertain") && (
+              <div className="clip-paste-uncertain" role="group" aria-label="结果不确定项处置">
+                <div className="clip-hint">
+                  以下项按键可能已发出、也可能没发出，为避免重复粘贴不会自动重发。请按实际结果处置：
+                </div>
+                {orderIds
+                  .filter((id) => job.itemStates[id] === "uncertain")
+                  .map((id) => (
+                    <div key={id} className="clip-paste-uncertain-row">
+                      <span>第 {orderIds.indexOf(id) + 1} 项</span>
+                      <button
+                        className="btn sm"
+                        onClick={() => void onResolveUncertain(id, "received")}
+                        disabled={busy === "resume"}
+                      >
+                        <Check size={11} /> 已收到
+                      </button>
+                      <button
+                        className="btn sm"
+                        onClick={() => void onResolveUncertain(id, "resend")}
+                        disabled={busy === "resume"}
+                      >
+                        <RefreshCw size={11} /> 没收到，重发
+                      </button>
+                    </div>
+                  ))}
               </div>
             )}
             {running && (

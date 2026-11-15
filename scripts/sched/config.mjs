@@ -55,11 +55,17 @@ export const DEFAULT_CONFIG = {
   estimateMediumMb: 3000,
   estimateLightMb: 800,
   // 跨分类全局预算（见 docs/BUILD_SCHEDULER.md 4.2 约束 B）：
-  //   budgetMb = max(物理内存总量 - systemReserveMb, 最大分类预计峰值)
+  //   budgetMb = max(0, 物理内存总量 - systemReserveMb)   ← 硬上限，**不被**任何任务峰值抬高
   // 与「实时可用内存门槛」（约束 A，用 os.freemem）互相独立：本轮只看活动任务预留之和，
   // 不读 freemem，避免同一份资源被扣两次。systemReserveMb 是给操作系统/常驻应用/文件缓存
   // 留的安全垫（16GB 机器上预算约 12.6GB）；0 = 用满物理内存（仅用于实验）。
+  // 任务预计峰值大于该预算时会被判为**不可准入**（不是排队），见 budgetWarning()。
   systemReserveMb: 3072,
+  // 【危险开关，默认关闭】突破「物理内存 - systemReserveMb」这条硬安全边界：
+  //   开启后预算被抬到「最大分类预计峰值」，让超过预算的重型任务也能跑，
+  //   但会侵占系统保留的安全垫（OOM/卡顿风险），status 会显著告警。
+  //   只应在确认机器能承受、且明确知晓风险时临时打开。
+  allowReserveBreach: false,
   // 关掉只保留约束 A（故障回退用，正常情况必须保持 true）
   budgetEnabled: true,
   // 崩溃残留预留的回收宽限：持有者已证明退出、且没有登记 childPid 时，再等这么久才回收
@@ -72,7 +78,7 @@ export const DEFAULT_CONFIG = {
 };
 
 // 存在性/开关型字段（不是数值，不参与数值校验）
-const BOOLEAN_KEYS = new Set(["diskPrecheck", "dedupe", "budgetEnabled"]);
+const BOOLEAN_KEYS = new Set(["diskPrecheck", "dedupe", "budgetEnabled", "allowReserveBreach"]);
 // 允许为 0 表示「不限」的字段
 const ZERO_MEANS_UNLIMITED = new Set([
   "defaultWaitTimeoutMin", "defaultRunTimeoutMin", "safetyReserveMb", "agingStepMs",

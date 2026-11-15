@@ -1485,6 +1485,9 @@ const shim = `
           items_deleted: 0, groups_closed: 0, images_removed: 0, thumbs_removed: 0,
           orphan_files_removed: 0, bytes_freed: 0, retried: false,
         };
+      case "agent_history_sessions":
+        // 走查空态：不伪造历史会话，只让交接包不再拿到 null 而报解析错误。
+        return { items: [], total: 0, next_cursor: null };
       case "task_context": {
         const task = tasks.find((t) => t.id === args?.taskId) || tasks[0];
         return {

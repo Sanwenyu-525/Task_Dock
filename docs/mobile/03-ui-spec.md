@@ -404,8 +404,11 @@ font   = { page: 24, display: 30, hero: 26, stat: 26, section: 17, title: 16, re
 - 2026-11-08 原型落轮：Tab 扩为 4 个（任务/收集箱/笔记/设置，与 DESIGN.md 对齐）；
   新增推送页栈导航与 9 个通用组件；页面 IA 补笔记页与 7 个推送页（对照
   tmp/acceptance/stitch-mobile-prototypes/ 的 v2 原型）。
-- 2026-11-08 原型归档：v2 终版与 33 个导出变体迁入 [prototypes/](prototypes/README.md)；
+- 2026-11-08 原型归档：v2 终版与 33 个导出变体迁入 `prototypes/`（已删除，见下条更正）；
   上条 `tmp/acceptance/stitch-mobile-prototypes/` 为生成期记录，归档后以 `prototypes/` 为准。
+  > 更正（2026-11-15）：按用户要求删除 `docs/mobile/prototypes/`（Stitch 原型），上面两条仅作
+  > 历史记录；移动端视觉基准改为 `docs/mobile/design-refs/reference-blue-cyan-v5.png`
+  > （《开发效率中枢 · 蓝青专业版》，见该目录 README）。
 - 2026-11-08 启动动效：新增 §7.1（原生骨架图 → 三行填充 → 勾选弹入 → 字标上移 → 揭幕），
   含几何同步、640ms 最短展示、减少动态与深色原生图约定。
 - 2026-11-08 真机走查修复（笔记/规划屏批次）：推送页顶栏移出滚动容器（滚动后返回箭头不再
@@ -651,8 +654,10 @@ up-to-date；真机 vc44→vc48，360/320/375/390/430dp、浅/深色、100%/130%
 
 **背景**：第六轮只修了局部权重，用户明确指出整体构图仍与《开发效率中枢 · 蓝青专业版》差距明显。
 本轮先审计参考图与 v6 五页截图，再按「导航 → 首页 → 任务 → 工作区 → 工具/我的」重排 JSX；
-参考图读取成功：`tmp/acceptance/mobile-visual-system-v5/reference/reference-blue-cyan-v5.png`
-（1122×1402），并裁出首页/任务/工作区三块做并排对照。
+参考图读取成功：`docs/mobile/design-refs/reference-blue-cyan-v5.png`
+（1122×1402；原记录为 `tmp/acceptance/mobile-visual-system-v5/reference/reference-blue-cyan-v5.png`，
+2026-11-15 tmp 清理后由用户重新提供并归档到 docs，sha256
+`E123E2B9702B753E92920599B7EE3E0B9F2E31D5D8E0613C4B3BE9313F7B50D9`），并裁出首页/任务/工作区三块做并排对照。
 
 **布局改动**：
 1. `TabBar`：删除浮动圆角卡片、外阴影与滑动胶囊，改一体式贴底栏（主题表面 + 顶部 hairline，
@@ -779,8 +784,15 @@ vc57 验收时仍未通过/未测：文件互传页证书指纹不匹配时只�
 
 **Profile**：仍只有一条「通知」；首页铃铛仍进入同一个 `NotificationsScreen`，不新增第二套入口。
 
-**代码层验证**：`npx tsc --noEmit` exit 0；`npm test` 39 文件 / 382 用例通过；
+**代码层验证**：`npx tsc --noEmit` exit 0；`npm test` 39 文件 / 384 用例通过；
 `icons:check` 102/129。通知业务实现、数据库键、提醒排期算法未改。
 
-**vc58 验收**：构建/安装/截图结果以第十轮报告 `tmp/acceptance/mobile-ui-round10/reports/report.md`
-为准；在构建完成前，本轮不把通知单一化标记为真机通过。
+**vc58 验收**：调度器 heavy 任务 `h-mwhmc75h-17c84b`（label `apk-release-vc58-3g`）
+`BUILD SUCCESSFUL in 9m 8s`，APK `31,552,413 bytes`、sha256
+`394F8E324168B114CF463903FA6BC729DBE084DB5F4AE155AEF000504E39661E`，`versionCode=58` /
+`versionName=0.1.10`，已 `adb install -r` 到 vivo Android 16。真机确认：设置页只剩外观/本地数据/
+关于，无「提醒」区；通知页为唯一管理页，测试通知实际进入系统通知列表；两个提醒动作开关退出重进
+后保持（测试后已恢复用户原来的关闭状态）。首页铃铛进入同一通知页，干净栈返回首页正常。采集页
+header 已无「素材库 N」重复入口，页内「本机素材库」卡仍在，采集暂存页可达；设备详情已
+出现「解除配对」，但确认/真实解绑未执行。文件互传 TLS 错误卡因桌面端不可达、未制造证书不匹配
+场景，标记 NOT TESTED；深色、320/390/430dp、TalkBack 同样未测。

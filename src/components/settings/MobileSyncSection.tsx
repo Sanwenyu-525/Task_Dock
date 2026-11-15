@@ -467,6 +467,10 @@ export default function MobileSyncSection() {
             const imported = Boolean(file.shelf_item_id);
             const failed = Boolean(shelfFailures[file.id]);
             const ext = fileTypeLabel(file.name);
+            const progress =
+              file.status === "pending" && file.chunks > 0
+                ? Math.min(100, Math.round((file.received_chunks / file.chunks) * 100))
+                : null;
             return (
               <div className="mobile-file-item" key={file.id}>
                 <span className={`mobile-file-icon is-${file.direction}`} aria-hidden="true">
@@ -608,6 +612,18 @@ export default function MobileSyncSection() {
                     <Trash2 size={12} />
                   </button>
                 </div>
+                {progress !== null ? (
+                  <span
+                    className="mobile-file-progress"
+                    role="progressbar"
+                    aria-valuenow={progress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-label={fileStatusLabel(file)}
+                  >
+                    <span style={{ width: `${progress}%` }} />
+                  </span>
+                ) : null}
               </div>
             );
           })}

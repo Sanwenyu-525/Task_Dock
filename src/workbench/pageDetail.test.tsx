@@ -7,9 +7,9 @@
 //! 3. 被保活的隐藏页面不投送（切页后右栏不能残留上一页的详情）；
 //! 4. 事实表只渲染有值的行（不伪造「—」占位字段）。
 
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { WorkbenchPageActiveContext } from "../lib/windowHost";
 import {
@@ -17,6 +17,8 @@ import {
   WorkbenchDetailHostProvider,
   WorkbenchPageDetail,
 } from "./pageDetail";
+
+afterEach(cleanup);
 
 function Harness({
   active,

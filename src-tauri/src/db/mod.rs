@@ -1791,6 +1791,17 @@ CREATE TABLE clipboard_paste_items (
 CREATE INDEX idx_clip_paste_items_job ON clipboard_paste_items(job_id, position);
 "#,
     ),
+    (
+        56,
+        r#"
+-- v56（逐项粘贴崩溃窗口）：SendInput 前后是唯一「已经产生外部副作用、却可能来不及落库」的窗口。
+-- 在调用按键之前先把条目落成 dispatching，并记下投递时刻；进程若在这之后崩溃，
+-- 启动/续跑时据此把该条目转成 uncertain（不自动重发），而不是当待处理项再来一遍。
+ALTER TABLE clipboard_paste_items ADD COLUMN dispatch_started_at TEXT;
+
+CREATE INDEX idx_clip_paste_items_state ON clipboard_paste_items(job_id, state);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -3606,6 +3617,91 @@ mod tests {
             Ok::<_, AppError>(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn v56_dispatch_column_upgrades_existing_paste_job_without_losing_state() {
+        // 用**非空库**验证升级：先在 v55 状态写入真实任务与逐项记录，再追加 v56。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        let idx55 = MIGRATIONS.iter().position(|(v, _)| *v == 55).unwrap();
+        apply_migrations(&conn, 0, &MIGRATIONS[..idx55 + 1]).unwrap();
+
+        conn.execute(
+            "INSERT INTO clipboard_paste_jobs
+             (id, group_id, target_title, target_exe, status, total, sent, started_at,
+              ended_at, message, remaining_items, uncertain_items, restored)
+             VALUES ('job1','g','记事本','notepad.exe','paused',3,1,'t',NULL,'',?1,'[]',0)",
+            [r#"["i2","i3"]"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO clipboard_paste_items
+             (job_id, position, item_id, kind, state, error_message,
+              started_at, finished_at, key_sent, confirmed, retry_safe)
+             VALUES ('job1',0,'i1','image','input_sent','', 't', 't', 1, 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO clipboard_paste_items
+             (job_id, position, item_id, kind, state, error_message,
+              started_at, finished_at, key_sent, confirmed, retry_safe)
+             VALUES ('job1',1,'i2','text','pending','', NULL, NULL, 0, 0, 1)",
+            [],
+        )
+        .unwrap();
+
+        apply_migrations(&conn, (idx55 + 1) as i64, &MIGRATIONS[idx55 + 1..]).unwrap();
+
+        // 1) 旧数据仍在，顺序不变
+        let (jobs, items, first_state, retry): (i64, i64, String, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM clipboard_paste_jobs),
+                        (SELECT COUNT(*) FROM clipboard_paste_items),
+                        (SELECT state FROM clipboard_paste_items WHERE item_id='i1'),
+                        (SELECT retry_safe FROM clipboard_paste_items WHERE item_id='i1')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(jobs, 1, "升级不得丢任务");
+        assert_eq!(items, 2, "升级不得丢逐项记录");
+        assert_eq!(first_state, "input_sent");
+        assert_eq!(retry, 0, "已发按键的条目升级后仍然不可安全重试");
+
+        // 2) 新列可为空且能写入投递时刻
+        let dispatch: Option<String> = conn
+            .query_row(
+                "SELECT dispatch_started_at FROM clipboard_paste_items WHERE item_id='i1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(dispatch.is_none(), "历史行默认无投递时刻，不得伪造成已发送");
+        conn.execute(
+            "UPDATE clipboard_paste_items SET dispatch_started_at='2026-11-15T09:00:00Z' WHERE item_id='i1'",
+            [],
+        )
+        .unwrap();
+        let dispatch: Option<String> = conn
+            .query_row(
+                "SELECT dispatch_started_at FROM clipboard_paste_items WHERE item_id='i1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dispatch.as_deref(), Some("2026-11-15T09:00:00Z"));
+
+        // 3) 索引可用于按状态筛选 dispatching
+        let names: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_clip_paste_items_state'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(names, 1);
     }
 
     #[test]

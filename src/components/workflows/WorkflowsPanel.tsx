@@ -304,7 +304,9 @@ export default function WorkflowsPanel() {
           <div className="wf-stat-row">
             <span className="wf-stat-chip">
               工作流 <strong>{workflows.length}</strong>
-              <em>启用 {enabledCount}</em>
+            </span>
+            <span className="wf-stat-chip">
+              启用 <strong>{enabledCount}</strong>
             </span>
             <span className="wf-stat-chip">
               运行中 <strong>{activeRun ? 1 : 0}</strong>
@@ -368,6 +370,8 @@ export default function WorkflowsPanel() {
           </p>
         ) : null}
 
+        <div className="wf-main">
+          <div className="wf-list-col">
         {workflows && workflows.length === 0 ? (
           <EmptyState
             framed
@@ -501,6 +505,7 @@ export default function WorkflowsPanel() {
             })}
           </div>
         ) : null}
+          </div>
 
         {/* 最近运行（2026-11-14，对照效果图）：lastRuns 真实摘要，含失败原因。 */}
         {recentRuns.length > 0 ? (
@@ -526,6 +531,7 @@ export default function WorkflowsPanel() {
             </ul>
           </section>
         ) : null}
+        </div>
       </div>
 
         </>

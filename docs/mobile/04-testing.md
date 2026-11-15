@@ -230,6 +230,8 @@ node tmp/debug/mobile-app-skeleton/ui.mjs key 66           # Enter
   底部 U 形开口（不是竖长 V 形），勾选圆始终描边（不是实心选中）。已按 22dp 重画并复验
   234（任务）/235（收集箱）。末次 APK sha256
   `b82a846f873bb117a8d894310590433e0daaaa602e55d91a3572b6182ff376e6`。
+  > 更正（2026-11-15）：`docs/mobile/prototypes/` 已按用户要求删除，本条引用仅作历史记录；
+  > 图标口径以 `apps/mobile/src/components/icons/` 与 `iconAssets.g.ts` 为准。
 - 2026-11-09 物理机扫码闭环：vivo V2323A / Android 16 上应用内扫码配对成功（`last_ip=192.168.5.7`），
   连接测试后桌面端 `last_seen_at=2026-11-09T04:03:34Z`；App 强停重启后配对保持；扫描线三帧
   `y=1277→1205→1355`。用例 34/40/41 由 ENVIRONMENT BLOCKED/部分改为 PASS；证据

@@ -99,31 +99,45 @@ const UPTIME_TOLERANCE_MS = 2000;
 /**
  * 校验「记录的身份」是否仍是同一个进程。
  * @param {{pid:number, startTime?:string|null, source?:string}} identity
+ * @param {{fresh?:boolean, probe?:Function}} [opts] `probe` 仅用于单测注入（默认走真实 CIM 查询）
  * @returns {{state:'same'|'gone'|'unknown', detail:string}}
+ *
+ * 2026-11-15 修复（第二轮）：原来 `probe.known && probe.alive && probe.startTime === null`
+ * 会一路掉到最后的 `gone`（"PID 已被复用"），而"读不到创建时间"根本**证明不了** PID 被复用。
+ * 这个假阴性会连锁两件事：等价任务去重被跳过（同一构建跑两遍）、崩溃回收把**活着的**构建的
+ * 槽位/预算判成可回收（并发超卖）。现在这种情形返回 `unknown`，由调用方按 fail-closed 处理。
  */
-export function verifyIdentity(identity, opts) {
+export function verifyIdentity(identity, opts = {}) {
+  const probeOf = (pid) => (typeof opts.probe === "function" ? opts.probe(pid, opts) : probeProcess(pid, opts));
   if (!identity || !Number.isInteger(identity.pid)) {
     return { state: "gone", detail: "记录中没有进程身份（pid）" };
   }
   if (!isPidAlive(identity.pid)) return { state: "gone", detail: `PID ${identity.pid} 已不存在` };
   if (!identity.startTime) {
     // 没有记录开始时间：无法排除 PID 复用，保守返回 unknown（不据此回收）
-    const probe = probeProcess(identity.pid, opts);
+    const probe = probeOf(identity.pid);
     return {
       state: "unknown",
       detail: `PID ${identity.pid} 存在，但记录缺少创建时间，无法排除 PID 复用` +
         (probe.known ? `（当前进程 ${probe.name ?? "?"}，开始于 ${probe.startTime ?? "未知"}）` : ""),
     };
   }
-  const probe = probeProcess(identity.pid, opts);
+  const probe = probeOf(identity.pid);
   if (!probe.known) {
     return { state: "unknown", detail: `PID ${identity.pid} 存在，但无法读取创建时间（CIM 查询失败）` };
   }
   if (!probe.alive) return { state: "gone", detail: `PID ${identity.pid} 查询结果为不存在` };
+  // 「进程在、但读不到开始时间」= 证据不足，不是"被复用"
+  if (!probe.startTime) {
+    return {
+      state: "unknown",
+      detail: `PID ${identity.pid} 存在，但读不到创建时间（无法排除 PID 复用），按无法确认存活处理`,
+    };
+  }
   if (probe.startTime === identity.startTime) {
     return { state: "same", detail: `PID ${identity.pid} 仍是创建于 ${identity.startTime} 的原进程` };
   }
-  if (identity.source === "uptime" && probe.startTime) {
+  if (identity.source === "uptime") {
     const a = Date.parse(identity.startTime);
     const b = Date.parse(probe.startTime);
     if (Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= UPTIME_TOLERANCE_MS) {

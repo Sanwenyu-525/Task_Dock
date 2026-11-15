@@ -130,7 +130,15 @@ pub async fn drag_payload_commit_shelf(
 
             let mut builder = diagnostics::event(
                 if has_failure {
-                    DiagLevel::Warn
+                    // 分级按错误类别，而不是「只要失败就 WARN」：
+                    // 真实 IO / 内部未知错误必须能被诊断中心筛出来（ERROR），
+                    // 权限拒绝、格式不支持、过期这类可预期拒绝保持 WARN。
+                    DiagLevel::from_category(
+                        dominant
+                            .as_ref()
+                            .map(|(_, category)| category.as_str())
+                            .unwrap_or("unknown"),
+                    )
                 } else {
                     DiagLevel::Info
                 },
@@ -153,7 +161,12 @@ pub async fn drag_payload_commit_shelf(
                 serde_json::json!(commit_failed + payload_failed),
             )
             .metadata("skipped", serde_json::json!(report.skipped))
-            .metadata("failure_groups", serde_json::json!(codes.len()));
+            .metadata("failure_groups", serde_json::json!(codes.len()))
+            // 部分成功：有成功项也有失败项，UI/统计据此区分「整批失败」与「部分失败」。
+            .metadata(
+                "partial",
+                serde_json::json!(has_failure && !report.added.is_empty()),
+            );
             if payload_failed > 0 {
                 builder = builder.metadata("payload_failures", serde_json::json!(payload_failed));
             }
@@ -171,7 +184,7 @@ pub async fn drag_payload_commit_shelf(
                 .unwrap_or_else(|| e.category().as_str().to_string());
             let _ = diag.record(
                 diagnostics::event(
-                    DiagLevel::Warn,
+                    DiagLevel::from_category(&category),
                     "dragdrop",
                     "commit-shelf",
                     "drag-payload",

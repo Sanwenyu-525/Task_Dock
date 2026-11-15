@@ -16,8 +16,45 @@
 }
 
 .history-panel .history-toolbar-meta {
-  margin-left: auto;
+  margin-left: 0;
   white-space: nowrap;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+}
+
+/* 搜索只过滤已加载记录（无后端全文检索接口），占位文案与统计都如实说明范围。 */
+.history-panel .history-search {
+  flex: 1 1 220px;
+  max-width: 300px;
+  min-width: 160px;
+  margin-left: auto;
+}
+
+/* 2026-11-15 R2：按效果图把同一天的条目收进一张分组卡，避免每条记录都是
+   独立浮卡、时间轴被切得过碎；行间只留 1px 分隔线。 */
+.history-panel .history-day {
+  gap: 8px;
+}
+.history-panel .history-list {
+  gap: 0;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+.history-panel .history-item.surface-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 11px 12px;
+}
+.history-panel .history-item.surface-card:hover {
+  background: var(--surface-hover);
+  transform: none;
+  box-shadow: none;
+}
+.history-panel .history-item + .history-item {
+  box-shadow: inset 0 1px 0 var(--border-subtle);
 }

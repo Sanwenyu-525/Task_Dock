@@ -153,14 +153,19 @@ Worktree 是**风险评估结果**，不是并行前置步骤：
 - **所有高资源构建必须经统一入口**：`npm run build` / `npm run tauri` / `npm run test` /
   `npm run cargo -- <子命令>`，或 `node scripts/build-sched.mjs run -- <命令>`。
   `*-raw` 与直接 `cargo`/`vite`/`gradlew` 只用于调度器自身排障；**不得绕过调度器**规避队列（改了
-  `package.json` 绕开同样算绕过）。仓库里没有 `npm run` 包装的构建必须显式走调度器，例如
-  Android 发布包：
-  `node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mobile/android -- gradlew.bat assembleRelease`
-  （`apps/mobile` 的 `build:android` 脚本是直接 Gradle 调用，**不要**用它代替统一入口）。
+  `package.json` 绕开同样算绕过）。手机端同理：`npm --prefix apps/mobile run build:android` 已接入
+  调度器（重型槽位、`--cwd android`、label `apk-release`），等价写法是
+  `node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mobile/android -- gradlew.bat assembleRelease`；
+  `apps/mobile` 的 `android`/`prebuild`（heavy）、`typecheck`/`test`（medium）、`start`（dev）也都
+  已接入，`*:raw` 只作排障逃生口，不得写进日常推荐命令。
 - 准入门槛是**两重独立约束**，任一不满足都只是排队，不是失败：① 实时可用内存门槛（每分类各自
   的门槛，依据 `os.freemem`）；② 跨分类全局预算（活动任务预留之和不得超过「物理内存 - 系统保留」，
   依据 `reservations/` 台账，与 ① 不重复扣减）。**不要**为了让自己的任务跑起来去关掉
-  `budgetEnabled` 或调低分类门槛——那正是本项目要解决的问题（详见 `docs/BUILD_SCHEDULER.md` 4.2/5.7）。
+  `budgetEnabled`、调低分类门槛或打开 `allowReserveBreach`——那正是本项目要解决的问题（详见
+  `docs/BUILD_SCHEDULER.md` 4.2/5.7）。预算上限是**硬边界**：单个任务预计峰值大于「物理内存 -
+  系统保留」时会被判为**不可准入**（`status`/`queue`/`waitReason` 写明"本机装不下，不是排队问题"），
+  这是正确行为：不得当成失败去改公式，也不得靠等待熬过去；确需更大峰值时如实 `--estimate-mb`
+  或换更大内存的机器。
 - 调度器只管构建，不管代码：**构建互斥不限制正常开发**——多个会话可并行改不冲突的文件；
   无文件冲突时**不强制 Worktree**；构建排队期间可以继续读代码、写文档、改无关模块。
 - 优先局部检查再全量：能单 crate `cargo check` / 单测 / 单模块 `tsc` 就不整包构建，避免重复全量。

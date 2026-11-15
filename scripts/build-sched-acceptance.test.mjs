@@ -18,6 +18,8 @@ import { totalmem, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { classifyArgv } from "./sched/classify.mjs";
+
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHED = join(REPO, "scripts", "build-sched.mjs");
 
@@ -725,7 +727,7 @@ test("预算3：Medium + 两个 Light（3000+800+800 > 3800）", async () => {
   const ctx = setup();
   try {
     setSimAvail(ctx, 12000);
-    // 把重型预计峰值调小，避免"预算夹取"把 3800 抬到 6000（夹取是防重型饿死的保护，不属于本用例）
+    // 把重型预计峰值调小，只为让 3800MB 预算能容纳三个任务；预算本身严格等于 3800（不再被夹取抬高）
     const env = budgetEnv(3800, { TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "3000" });
     const runs = [
       runFake(ctx, { tag: "b3-medium", taskClass: "medium", durationMs: 1200, envExtra: env }),
@@ -971,4 +973,245 @@ test("验收11：子进程非零退出后，队列记录与历史都能查到明
     assert.equal(entry.exitCode, 7);
     assert.match(String(entry.reason ?? ""), /子进程退出码 7/);
   } finally { cleanup(ctx); }
+});
+
+// ------------------------------------------------- 补充B. 预算夹取策略修正（2026-11-15 第二轮）
+//
+// 复现本轮 P0 缺陷：旧公式 `max(totalMb - systemReserveMb, 最大分类预计峰值)` 会在小内存机器上把预算
+// 抬高到 Heavy 峰值（8GB / 3GB 保留 → 5120MB 预算被抬到 6000MB），静默侵占系统保留的安全边界。
+// 现在预算严格等于 `total - 保留`，装不下的任务明确判为不可准入；突破只能是显式开关。
+// 注意：这里用 `budgetEnv(5120)` 模拟"预算只有 5120MB"的机器（真实 totalMb 仍是 15.63GB，
+// 通过把 systemReserveMb 调到 9.98GB 达成），设备档位对应的真实算式在
+// scripts/build-sched.test.mjs 的「4/8/16/32GB 档位判定表」里逐个断言。
+
+test("补充B1：预算 5120MB 下 Heavy（预计 6000MB）判为不可准入——不排队等待、不启动子进程、原因明确", async () => {
+  const ctx = setup();
+  try {
+    setSimAvail(ctx, 12000); // 约束 A 完全充足（heavy 门槛 6144），唯一挡它的是预算
+    const env = budgetEnv(5120);
+    const res = await runFake(ctx, {
+      tag: "b13-heavy-infeasible", taskClass: "heavy", durationMs: 300,
+      envExtra: env, extraArgs: ["--wait-timeout", "0.05"],
+    }).done;
+
+    assert.equal(res.code, 3, "装不下的任务最终是调度层等待超时（3），不是编译失败码");
+    assert.match(String(res.stderr), /本机装不下/, "失败原因必须直说本机装不下");
+    assert.match(String(res.stderr), /系统保留 .*不会自我放行/);
+    assert.match(String(res.stderr), /不是排队问题/, "必须明确区别于普通排队");
+    assert.equal(startCount(ctx.log, "b13-heavy-infeasible"), 0, "⛔ 不可准入的任务绝不能启动子进程");
+    assert.equal(reservationsOf(ctx).length, 0, "被预算拒绝的任务不得留下预留");
+
+    const rec = findTask(ctx, (t) => t.command?.[2] === "b13-heavy-infeasible");
+    assert.ok(rec, "队列记录应落盘");
+    assert.match(String(rec.finishReason ?? ""), /本机装不下/);
+    const hist = readHistory(ctx).find((e) => e.command?.[2] === "b13-heavy-infeasible");
+    assert.ok(hist, "历史里必须有该任务记录");
+    assert.equal(hist.budgetAtStart, null, "从未准入的任务不得写入 budgetAtStart 证据");
+
+    // status 必须把"预算装不下最大分类峰值"这件事显式打出来，而不是只显示一个很小的预算数字
+    const st = spawnSync(process.execPath, [SCHED, "status"], {
+      cwd: ctx.wsA, env: baseEnv(ctx, env), encoding: "utf8", timeout: 60000, windowsHide: true,
+    });
+    assert.equal(st.status, 0, `status 应正常退出：${st.stderr}`);
+    assert.match(st.stdout, /硬上限 = 物理 .* - 系统保留 .* = 5\.00 GB/, "status 必须展示硬上限的推导");
+    assert.match(st.stdout, /小于最大分类预计峰值 5\.86 GB/, "status 必须提示预算装不下重型任务");
+    assert.match(st.stdout, /无法准入/, "提示必须给出结论：该类任务无法准入");
+  } finally { cleanup(ctx); }
+});
+
+test("补充B2：同一预算下显式开启 allowReserveBreach 才能让 Heavy 准入，且必须留下「已突破保留边界」证据", async () => {
+  const ctx = setup();
+  try {
+    setSimAvail(ctx, 12000);
+    const env = budgetEnv(5120, { TASKDOCK_SCHED_ALLOW_RESERVE_BREACH: "true" });
+    const res = await runFake(ctx, {
+      tag: "b14-heavy-breach", taskClass: "heavy", durationMs: 800, envExtra: env,
+      extraArgs: ["--wait-timeout", "0.3"],
+    }).done;
+    assert.equal(res.code, 0, `显式突破保留边界后应能执行：${res.stderr}`);
+    assert.equal(startCount(ctx.log, "b14-heavy-breach"), 1);
+
+    const hist = readHistory(ctx).find((e) => e.command?.[2] === "b14-heavy-breach");
+    assert.ok(hist?.budgetAtStart, "准入证据必须落盘");
+    assert.equal(hist.budgetAtStart.budgetMb, 6000, "突破时预算被抬到最大分类峰值 6000MB");
+    assert.equal(hist.budgetAtStart.hardLimitMb, 5120, "硬上限仍是 5120MB（物理-保留），证据里必须区分");
+    assert.equal(hist.budgetAtStart.reserveBreached, true, "⛔ 突破保留边界这件事必须可事后复核");
+    assert.equal(reservationsOf(ctx).length, 0, "任务结束后台账必须清空");
+
+    // status 必须显著告警（这是"危险开关"的唯一可见性来源）
+    const st = spawnSync(process.execPath, [SCHED, "status"], {
+      cwd: ctx.wsA, env: baseEnv(ctx, env), encoding: "utf8", timeout: 60000, windowsHide: true,
+    });
+    assert.equal(st.status, 0);
+    assert.match(st.stdout, /已显式开启 allowReserveBreach/);
+    assert.match(st.stdout, /安全垫已被侵占/);
+  } finally { cleanup(ctx); }
+});
+
+test("补充B3：预算 5120MB 下 heavy(3000)+medium(2400) 合计 5400 超预算——不并行超卖，light 仍能跑", async () => {
+  const ctx = setup();
+  try {
+    setSimAvail(ctx, 12000);
+    const env = budgetEnv(5120, {
+      TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "3000",
+      TASKDOCK_SCHED_ESTIMATE_MEDIUM_MB: "2400",
+    });
+    const runs = [
+      runFake(ctx, { tag: "b15-heavy", taskClass: "heavy", durationMs: 1000, envExtra: env }),
+      runFake(ctx, { tag: "b15-medium", taskClass: "medium", durationMs: 1000, envExtra: env }),
+      runFake(ctx, { tag: "b15-light1", taskClass: "light", durationMs: 600, envExtra: env }),
+      runFake(ctx, { tag: "b15-light2", taskClass: "light", durationMs: 600, envExtra: env }),
+    ];
+    const results = await Promise.all(runs.map((r) => r.done));
+    for (const r of results) assert.equal(r.code, 0, `任务应成功：${r.stderr}`);
+    const iv = intervals(ctx.log);
+    assert.equal(iv.length, 4, "四个任务都应真正执行过");
+    const heavyIv = iv.find((i) => i.tag === "b15-heavy");
+    const medIv = iv.find((i) => i.tag === "b15-medium");
+    assert.ok(heavyIv && medIv, "两种分类都应留下执行区间");
+    assert.ok(heavyIv.end <= medIv.start || medIv.end <= heavyIv.start,
+      "⛔ 3000+2400=5400 > 5120 预算，heavy 与 medium 不得并行");
+    assert.ok(maxOverlap(iv) <= 3, "预算只允许 heavy/medium 之一 + 两个 light 并行");
+    assertBudgetInvariant(ctx, 5120, "补充B3 ");
+  } finally { cleanup(ctx); }
+});
+
+// ------------------------------------------------- 补充C. 构建入口全覆盖（零资源静态闸门）
+//
+// 本轮 P0 之三：`apps/mobile/package.json` 的 build 脚本曾是 `cd android && gradlew.bat assembleRelease`，
+// 可以完全绕过统一调度器（直接 Gradle 会把 16GB 机器打到 OOM，且不占重型槽位、不计预算）。
+// 这里把"哪个入口必须经调度器、哪个是显式逃生口"写成可执行断言：
+//   - 高资源入口的脚本体必须包含 `scripts/build-sched.mjs run`；
+//   - 每个被包装的入口都必须有一个 `:raw` 逃生口（排障用，不得作为日常推荐命令）；
+//   - 不允许同一个脚手架里出现两层 `build-sched.mjs run`（那会双重排队/自锁）；
+//   - 被包装的原始命令仍然按预期分类（heavy/medium/dev），分类表不被脚本改动破坏。
+// 全部是读文件 + 纯函数分类，不启动任何真实构建。
+
+const ROOT_PKG = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
+const MOBILE_PKG = JSON.parse(readFileSync(join(REPO, "apps", "mobile", "package.json"), "utf8"));
+const SCHED_TOKEN = "scripts/build-sched.mjs run";
+
+/** 必须经调度器的入口：[package.json 所在目录描述, 脚本名, 期望分类, 对应 raw 逃生口, raw 的附加实参] */
+const MUST_ROUTE = [
+  ["root", "build", "medium", "build:raw", []],
+  ["root", "test", "medium", "test:raw", []],
+  // `npm run tauri -- build` 才是真实发布构建入口（裸 `npm run tauri` 只会打印 tauri 用法）
+  ["root", "tauri", "heavy", "tauri:raw", ["build"]],
+  ["apps/mobile", "start", "dev", "start:raw", []],
+  ["apps/mobile", "android", "heavy", "android:raw", []],
+  ["apps/mobile", "prebuild", "heavy", "prebuild:raw", []],
+  ["apps/mobile", "typecheck", "medium", "typecheck:raw", []],
+  ["apps/mobile", "test", "medium", "test:raw", []],
+  ["apps/mobile", "build:android", "heavy", "build:android:raw", []],
+];
+
+/**
+ * 明确允许直接执行（不进队列）的入口，每条都写清理由。
+ * 原则：只有「只读/轻量工具」「常驻 dev 服务」「交互式 watch」「调度器自身 CLI」可以豁免。
+ */
+const DIRECT_ALLOWED = new Map([
+  ["dev", "dev 类长期服务（vite），未纳管实例由约束 A + `sched dev` 盘点，见 BUILD_SCHEDULER.md 12.8"],
+  ["preview", "dev 类预览服务，同上"],
+  ["test:watch", "交互式 watch：长期运行、人工 Ctrl+C 结束，进队列反而会长期占槽"],
+  ["test:scripts", "只读 node --test 单测（light），不产生构建产物"],
+  ["help:check", "局部 vitest 用例（light）"],
+  ["icons", "node 脚本生成静态图标资源（light）"],
+  ["pretauri", "npm 生命周期钩子：tauri 前跑 build-guard precheck（light）"],
+  ["guard:precheck", "build-guard 只读磁盘/缓存预检（light）"],
+  ["guard:report", "build-guard 只读报告（light）"],
+  ["guard:register", "build-guard 台账登记（light）"],
+  ["guard:cleanup", "build-guard 缓存清理（light，需授权）"],
+  ["worktree", "worktree-guard：只读/受控的 git 元数据操作（light）"],
+  ["worktree:status", "同上"],
+  ["worktree:create", "同上（创建隔离工作区，属于 git 操作而非编译）"],
+  ["worktree:check", "同上"],
+  ["worktree:cleanup", "同上（默认 dry-run）"],
+  ["sched", "调度器自身 CLI：再经 run 派发会自锁"],
+  ["sched:status", "同上（只读）"],
+  ["sched:queue", "同上（只读）"],
+  ["sched:history", "同上（只读）"],
+  ["sched:doctor", "同上（默认只读）"],
+  ["sched:config", "同上（只读）"],
+  ["sched:cancel", "同上（只发取消标记）"],
+  ["sched:dev", "同上（只盘点进程）"],
+  ["sched:acceptance", "本套件自身入口：node --test 验收，不能自己调度自己"],
+  ["cargo", "已是调度子命令（`node scripts/build-sched.mjs cargo`），自带排队与分类"],
+  ["icons:generate", "node 脚本生成图标（light，手机端）"],
+  ["icons:check", "node 脚本只读检查图标（light，手机端）"],
+]);
+
+function scriptsOf(pkgDir) {
+  return pkgDir === "root" ? ROOT_PKG.scripts : MOBILE_PKG.scripts;
+}
+
+function pkgCwd(pkgDir) {
+  return pkgDir === "root" ? REPO : join(REPO, "apps", "mobile");
+}
+
+test("补充C1：所有高资源构建入口都经统一调度器，且都有 :raw 排障逃生口", () => {
+  for (const [pkg, name, expectedClass, rawName, rawArgs] of MUST_ROUTE) {
+    const scripts = scriptsOf(pkg);
+    const body = scripts[name];
+    assert.ok(body, `${pkg} 缺少脚本 ${name}`);
+    assert.ok(body.includes(SCHED_TOKEN), `${pkg} 的 ${name} 未接入调度器：${body}`);
+    // 手机端入口必须带 --priority/--label（在 queue/status 里一眼能认出是哪一段构建）；
+    // 根目录的 build/test/tauri 是上一轮已上线的写法（本轮按主 Agent 授权不改根 package.json），
+    // 它们的标签由分类表给出，这里只要求"确实经调度器"。
+    if (pkg !== "root") {
+      assert.ok(body.includes("--priority"), `${pkg} 的 ${name} 应带 --priority：${body}`);
+      assert.ok(body.includes("--label"), `${pkg} 的 ${name} 应带 --label，便于在 queue/status 里辨认`);
+    }
+    const raws = scripts[rawName];
+    assert.ok(raws, `${pkg} 缺少排障逃生口 ${rawName}（不带派发最后一次机会）`);
+    assert.ok(!raws.includes(SCHED_TOKEN), `${rawName} 必须是"不经调度器"的原始命令：${raws}`);
+    const classified = classifyArgv(["npm", "run", rawName, ...rawArgs], { cwd: pkgCwd(pkg) });
+    assert.equal(
+      classified.taskClass, expectedClass,
+      `${rawName} 的真实开销应分类为 ${expectedClass}（实际 ${classified.taskClass}/${classified.rule}：${classified.reason}）`,
+    );
+  }
+});
+
+test("补充C2：任何入口都不得双重排队（同一脚手架里只能有一层 build-sched run）", () => {
+  const all = [
+    ...Object.entries(ROOT_PKG.scripts).map(([k, v]) => ["root", k, v]),
+    ...Object.entries(MOBILE_PKG.scripts).map(([k, v]) => ["apps/mobile", k, v]),
+  ];
+  for (const [pkg, name, body] of all) {
+    const count = body.split(SCHED_TOKEN).length - 1;
+    assert.ok(count <= 1, `${pkg} 的 ${name} 里出现了 ${count} 层调度器调用（会重复占槽/自锁）：${body}`);
+    if (!body.includes(SCHED_TOKEN)) continue;
+    // 被包装的命令必须接在 `--` 之后，否则调度器会把脚本体当成自己的选项
+    assert.ok(/--\s/.test(body), `${pkg} 的 ${name} 缺少 \`--\` 分隔符：${body}`);
+    // 不允许套娃式二次派发
+    assert.ok(!body.includes("build-sched.mjs run -- node scripts/build-sched.mjs"),
+      `${pkg} 的 ${name} 出现了套娃式二次派发`);
+  }
+  // 根目录的 build/test/tauri 都必须只包一层（内层由 npm 脚本直接执行）
+  for (const name of ["build", "test", "tauri"]) {
+    assert.equal(ROOT_PKG.scripts[name].split(SCHED_TOKEN).length - 1, 1, `root ${name} 必须恰好一层调度`);
+  }
+});
+
+test("补充C3：未接入调度器的入口只允许是「轻量/dev/交互式」，且豁免名单是显式的", () => {
+  for (const [pkg, pkgObj] of [["root", ROOT_PKG], ["apps/mobile", MOBILE_PKG]]) {
+    for (const [name, body] of Object.entries(pkgObj.scripts)) {
+      if (body.includes(SCHED_TOKEN)) continue;
+      if (name.endsWith(":raw")) continue;                 // 逃生口，允许
+      if (DIRECT_ALLOWED.has(name)) continue;              // 显式豁免（含理由）
+      // 其余一律视为"未纳管入口"：要么接入调度器，要么在 DIRECT_ALLOWED 里写清理由
+      assert.fail(`${pkg} 的 ${name} 未接入调度器且未在豁免名单里（会绕过资源闸门）：${body}`);
+    }
+  }
+});
+
+test("补充C4：手机端 APK 入口能正确定位到 android/gradlew.bat（不依赖当前目录）", () => {
+  const body = MOBILE_PKG.scripts["build:android"];
+  assert.match(body, /--cwd android/, "必须显式 --cwd android，否则 gradlew 找不到工程目录");
+  assert.match(body, /gradlew\.bat assembleRelease/);
+  assert.match(body, /--priority P0/);
+  assert.match(body, /--label apk-release/);
+  assert.ok(existsSync(join(REPO, "apps", "mobile", "android", "gradlew.bat")), "gradlew.bat 必须存在于 apps/mobile/android");
+  // 分类必须落在重型：APK release 会拉起 Gradle/Kotlin 守护进程，按中/轻量放行就是超卖
+  assert.equal(classifyArgv(["gradlew.bat", "assembleRelease"], { cwd: join(REPO, "apps", "mobile", "android") }).taskClass, "heavy");
 });

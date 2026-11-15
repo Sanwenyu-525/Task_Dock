@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BackupEntry, Settings } from "../../lib/bridge";
+import { NAV_ENTRIES } from "../../lib/navigationRegistry";
 
 vi.mock("../../lib/bridge", () => ({
   auditTestData: vi.fn(),
@@ -458,7 +459,12 @@ describe("设置页分组折叠", () => {
     await waitFor(() => expectExpanded(sectionHead("导航自定义"), true));
     // 数字与 navigationRegistry 默认常驻的 left 入口数一致（帮助与诊断中心默认隐藏）；
     // 再新增常驻入口时需同步更新（2026-11-12：+工作台 → 16 声明 / 14 常驻）。
-    expect(screen.getByText(/常驻 15 \/ 17 项/)).toBeTruthy();
+    // 数字直接由导航注册表推导，避免新增常驻入口后测试与真实 UI 再次漂移。
+    const leftEntries = NAV_ENTRIES.filter((entry) => entry.surfaces.includes("left"));
+    const residentCount = leftEntries.filter((entry) => entry.defaults.left.visible).length;
+    expect(
+      screen.getByText(`常驻 ${residentCount} / ${leftEntries.length} 项`),
+    ).toBeTruthy();
     expect(sessionStorage.getItem("taskdock.settings.reveal.v1")).toBeNull();
     // 定位意图会先切到分组所属分类
     expect(

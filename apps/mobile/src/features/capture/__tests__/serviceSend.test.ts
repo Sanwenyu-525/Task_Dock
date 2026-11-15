@@ -64,9 +64,9 @@ import * as repo from "../../../db/captureAssets";
 import { closeDatabase, openDatabase } from "../../../db/database";
 import { AppError } from "../../../lib/errors";
 import { createCancelledError, FileHttpError } from "../../../lib/sync/transferError";
-import { __resetFs, __seedFile } from "../../../test/mocks/expo-file-system";
+import { __resetFs, __seedFile, fileByUri } from "../../../test/mocks/expo-file-system";
 
-import { retryShelfImport, sendToDesktop } from "../service";
+import { cleanupStagedAfterRun, retryShelfImport, sendToDesktop } from "../service";
 
 const STAGING_DIR = "file:///data/user/0/dev.taskdock.mobile/files/taskdock-captures/staging";
 const SHA = "c".repeat(64);
@@ -114,6 +114,21 @@ async function savedAsset(name = "照片.jpg", sha: string | null = SHA) {
   const fresh = await repo.getAsset(asset.id);
   if (!fresh) throw new Error("asset missing");
   return fresh;
+}
+
+/** 仍处于 staged 的素材：cleanupStagedAfterRun 只处理这个状态。 */
+async function stagedAsset(name = "待清理.jpg") {
+  const bytes = new Uint8Array(32).fill(9);
+  const file = __seedFile(STAGING_DIR, name, bytes);
+  const asset = await repo.createStagedAsset({
+    kind: "photo",
+    source: "camera",
+    name,
+    localPath: file.uri,
+    mime: "image/jpeg",
+    byteSize: bytes.length,
+  });
+  return asset;
 }
 
 async function destinationState(assetId: string, kind: "desktop" | "shelf") {
@@ -428,5 +443,46 @@ describe("重试幂等（不因重试产生重复文件）", () => {
     expect(result.outcomes[0]?.state).toBe("cancelled");
     expect((await destinationState(asset.id, "desktop"))?.state).toBe("cancelled");
     expect(remote.createCalls).toBe(0);
+  });
+});
+
+describe("清理 staged 时必须保留待重试的暂存架记录（P0 生命周期）", () => {
+  it("desktop=done、shelf=pending 时不得删除资产记录和本地文件", async () => {
+    const asset = await stagedAsset();
+    await repo.setDestination(asset.id, "desktop", {
+      state: "done",
+      remoteId: "f".repeat(32),
+      bytesDone: asset.byteSize,
+      bytesTotal: asset.byteSize,
+    });
+    await repo.setDestination(asset.id, "shelf", {
+      state: "pending",
+      remoteId: "f".repeat(32),
+      lastError: "暂存架待重试",
+    });
+
+    const removed = await cleanupStagedAfterRun([asset.id]);
+
+    expect(removed).toBe(0);
+    expect(await repo.getAsset(asset.id)).not.toBeNull();
+    expect(fileByUri(asset.localPath!)?.deleted ?? true).toBe(false);
+    expect((await destinationState(asset.id, "shelf"))?.state).toBe("pending");
+    expect((await destinationState(asset.id, "desktop"))?.remoteId).toBe("f".repeat(32));
+  });
+
+  it("只有 desktop=done、没有待重试目的地时才允许清理", async () => {
+    const asset = await stagedAsset("仅桌面完成.jpg");
+    await repo.setDestination(asset.id, "desktop", {
+      state: "done",
+      remoteId: "f".repeat(32),
+      bytesDone: asset.byteSize,
+      bytesTotal: asset.byteSize,
+    });
+
+    const removed = await cleanupStagedAfterRun([asset.id]);
+
+    expect(removed).toBe(1);
+    expect(await repo.getAsset(asset.id)).toBeNull();
+    expect(fileByUri(asset.localPath!)?.deleted ?? false).toBe(true);
   });
 });
