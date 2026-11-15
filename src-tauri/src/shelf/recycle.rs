@@ -205,7 +205,9 @@ pub fn execute(
             continue;
         }
 
-        match delete_paths(std::slice::from_ref(&candidate.raw), false, protected) {
+        // 复用文件工作区的删除原语（回收站语义只有一份实现）；批量删除的诊断
+        // 由 shelf 自己的 `shelf_delete_paths` 汇总，这里不再传操作 ID。
+        match delete_paths(std::slice::from_ref(&candidate.raw), false, None, protected) {
             Ok(fs_report) => match fs_report.entries.into_iter().next() {
                 Some(entry) if entry.status == "ok" => {
                     report.deleted += 1;

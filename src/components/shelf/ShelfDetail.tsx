@@ -30,6 +30,7 @@ import {
 import { clipboardTime, formatBytes } from "../../lib/clipboardUi";
 import { clipboardCopyText } from "../../lib/bridge";
 import { shelfFileTypeUi } from "../../lib/fileTypeUi";
+import { useLocale } from "../../hooks/useLocale";
 import { useShelfStore } from "../../store/useShelfStore";
 import { useUiStore } from "../../store/useUiStore";
 import { ConfirmDialog } from "../ui/Dialog";
@@ -56,6 +57,7 @@ export default function ShelfDetail({
   onRelocate?: () => void;
 }) {
   const showToast = useUiStore((s) => s.showToast);
+  const { t } = useLocale();
   const updateItem = useShelfStore((s) => s.updateItem);
   const verifyExists = useShelfStore((s) => s.verifyExists);
   const deletionBusy = useShelfStore((s) => s.deletionBusy);
@@ -369,12 +371,15 @@ export default function ShelfDetail({
               : "引用原文件（不复制）",
       ],
       ["大小", formatBytes(item.byte_size)],
-      ["来源", item.source_kind],
+      [
+        "来源",
+        item.origin === "mobile_capture" ? t("mobileCaptureShelf.originLabel") : item.source_kind,
+      ],
       ["添加时间", clipboardTime(item.created_at)],
       ...(item.original_path ? [["路径", item.original_path]] : []),
       ...(item.managed_path ? [["托管位置", item.managed_path]] : []),
     ] as [string, string][],
-    [item],
+    [item, t],
   );
 
   return (
@@ -522,6 +527,10 @@ export default function ShelfDetail({
           </div>
         ))}
       </dl>
+
+      {item.origin === "mobile_capture" && (
+        <p className="shelf-detail-hint">{t("mobileCaptureShelf.detailOriginNote")}</p>
+      )}
 
       {/* 文件操作（链接/文本除外） */}
       {item.kind !== "link" && item.kind !== "text" && (

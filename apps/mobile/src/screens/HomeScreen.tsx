@@ -384,7 +384,7 @@ export function HomeScreen({
                         <Text numberOfLines={1} style={[styles.recentTitle, { color: tokens.text }]}>
                           {entry.title}
                         </Text>
-                        {entry.snippet ? (
+                        {entry.snippet && entry.snippet !== entry.title ? (
                           <Text
                             numberOfLines={1}
                             style={[styles.recentSnippet, { color: tokens.muted }]}
@@ -405,6 +405,7 @@ export function HomeScreen({
 
             <SectionHeader icon="tools" title="快捷入口" />
             <View style={styles.quickRow}>
+              <QuickTile icon="camera" label="采集" onPress={() => nav.push("capture_home")} />
               <QuickTile icon="add" label="新建任务" onPress={nav.openCreateTask} />
               <QuickTile
                 icon="inbox"
@@ -413,7 +414,6 @@ export function HomeScreen({
                 onPress={() => nav.push("inbox")}
               />
               <QuickTile icon="note" label="笔记" onPress={() => nav.push("notes")} />
-              <QuickTile icon="transfer" label="文件互传" onPress={() => nav.push("files")} />
             </View>
 
             {/* AI 助手仍只有说明，不渲染输入框/推荐/发送按钮 */}

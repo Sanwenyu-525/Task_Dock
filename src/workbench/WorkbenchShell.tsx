@@ -67,6 +67,7 @@ import TaskContextDrawer from "../components/context/TaskContextDrawer";
 import WorkbenchHome from "./WorkbenchHome";
 import WorkbenchContextPane from "./WorkbenchContextPane";
 import WorkbenchWindowControls from "./WorkbenchWindowControls";
+import { WorkbenchDetailHostProvider } from "./pageDetail";
 
 import { useLocale } from "../hooks/useLocale";
 import { useTasksStore } from "../store/useTasksStore";
@@ -1026,9 +1027,13 @@ export default function WorkbenchShell() {
   const currentTask = useTasksStore((s) =>
     currentTaskId ? s.tasks.find((task) => String(task.id) === currentTaskId) : undefined,
   );
-  const agentSummary = useAgentsStore((s) => s.snapshot?.live_summary ?? null);
 
   const contextVisible = detailOpen && !compact;
+
+  // 页面级详情栏宿主：右栏关闭或窄窗降级时节点卸载，ref 回调自动回到 null，
+  // 页面据此不再投送详情（不需要每页各写一遍 detailOpen 判断）。用 state 而不是
+  // ref 是为了让宿主变化能触发消费方重渲染 —— portal 只在有真实节点时挂载。
+  const [detailHost, setDetailHost] = useState<HTMLDivElement | null>(null);
 
   // ── 分栏拖拽（指针）与键盘调整 ───────────────────────────────────────
   const beginResize = useCallback(
@@ -1327,24 +1332,28 @@ export default function WorkbenchShell() {
             </span>
             <span className="wb-brand-name">TaskDock</span>
           </div>
-          <div className="wb-topbar-title">
-            <h1 id="wb-page-heading">{routeLabel}</h1>
+          {/* 路由标题只保留可访问名：页面自身已有 `WorkbenchPageHeader` 的大标题，
+              顶栏再显示一次会形成「顶栏标题 / 页面标题 / 卡片标题」三层重复。
+              视觉上顶栏只承担「品牌 + 工作空间 + 全局动作」三件事（对齐效果图）。 */}
+          <h1 id="wb-page-heading" className="sr-only">
+            {routeLabel}
+          </h1>
+          <div className="wb-topbar-context">
+            <Select
+              value={selectedId ?? ""}
+              options={projectOptions}
+              onChange={(value) => selectProject(value || null)}
+              placeholder={t("workbench.noProject")}
+              ariaLabel={t("workbench.projectsTitle")}
+              size="sm"
+              menuMinWidth={240}
+            />
             {selected && (
-              <span className="wb-topbar-kind">
-                {resolveWorkspaceProfile(selected.kind).label}
-              </span>
+              <span className="wb-topbar-kind">{resolveWorkspaceProfile(selected.kind).label}</span>
             )}
             {route === "workbench" && currentTask && (
               <span className="wb-topbar-task" title={currentTask.title}>
                 当前任务：{currentTask.title}
-              </span>
-            )}
-            {agentSummary && (
-              <span className="wb-topbar-status" role="status">
-                {t("workbench.statusAgents", {
-                  running: agentSummary.running ?? 0,
-                  waiting: agentSummary.waiting ?? 0,
-                })}
               </span>
             )}
           </div>
@@ -1405,24 +1414,6 @@ export default function WorkbenchShell() {
                 },
               ]}
             />
-            <Select
-              value={selectedId ?? ""}
-              options={projectOptions}
-              onChange={(value) => selectProject(value || null)}
-              placeholder={t("workbench.noProject")}
-              ariaLabel={t("workbench.projectsTitle")}
-              size="sm"
-              menuMinWidth={240}
-            />
-            <button
-              type="button"
-              className="wb-icon-btn"
-              aria-label={t("workbench.newProject")}
-              data-tip={t("workbench.newProject")}
-              onClick={openCreateProject}
-            >
-              <Plus size={15} aria-hidden="true" />
-            </button>
             <button
               type="button"
               className={`wb-icon-btn${detailOpen ? " is-on" : ""}`}
@@ -1438,6 +1429,7 @@ export default function WorkbenchShell() {
         </header>
 
         <div className="wb-workarea">
+          <WorkbenchDetailHostProvider host={detailHost}>
           <main className="wb-content" aria-labelledby="wb-page-heading">
             <TabLeaveGuard />
             <div className="wb-home-slot wb-route" hidden={route !== "home"}>
@@ -1614,9 +1606,11 @@ export default function WorkbenchShell() {
                 onOpenDevWorkbench={() => void openDevWorkbenchForProject(selected)}
                 onOpenTask={() => goRoute("tasks")}
                 onNotice={showNotice}
+                detailSlot={<div className="wb-detail-slot" ref={setDetailHost} />}
               />
             </>
           )}
+          </WorkbenchDetailHostProvider>
         </div>
 
         <footer className="wb-statusbar" role="contentinfo">

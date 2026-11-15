@@ -17,6 +17,7 @@ import {
   AlertCircle,
   ArrowUpRight,
   CheckCircle2,
+  FolderKanban,
   FolderOpen,
   GitBranch,
   Link2,
@@ -26,6 +27,7 @@ import {
   Trash2,
 } from "lucide-react";
 
+import WorkbenchPageHeader from "./WorkbenchPageHeader";
 import Select from "../components/ui/Select";
 import {
   agentSnapshot,
@@ -617,10 +619,13 @@ export default function ProjectWorkspacePanel({
   if (!project) {
     return (
       <section className="wb-project wb-project-empty" aria-label="项目工作空间">
+        <WorkbenchPageHeader
+          icon={FolderKanban}
+          title="项目工作空间"
+          subtitle="项目只用于组织专业模块（开发 / 游戏 / AI 漫剧 / 通用）"
+        />
         <div className="ws-placeholder">
-          <h2>项目工作空间</h2>
           <p>任务、Agent、收集与暂存、剪贴板、开发工作台都不需要项目即可使用。</p>
-          <p>项目只用于组织专业模块（开发 / 游戏 / AI 漫剧 / 通用）。</p>
           <button className="ws-btn ws-btn-primary" onClick={onCreateProject}>
             <Plus size={12} /> 新建项目
           </button>
@@ -631,27 +636,33 @@ export default function ProjectWorkspacePanel({
 
   return (
     <section className="wb-project" aria-label="项目工作空间" aria-busy={ctx.status === "loading"}>
-      {/* 项目页头（2026-11-14，对照效果图 15/AI漫剧/开发工作台）：真实登记信息。 */}
-      <header className="wb-project-head">
-        <div className="wb-project-head-main">
-          <h2 className="wb-project-name">{project.name}</h2>
-          <span className="ws-badge ws-badge-soft">{profile.label}</span>
-          <span className={`ws-badge ws-badge-${project.status === "archived" ? "planned" : "available"}`}>
-            {project.status === "archived" ? "已归档" : "进行中"}
-          </span>
-        </div>
-        <p className="wb-project-meta">
-          事项 {ctx.items.length} · 关联任务 {ctx.links.length}
-          {project.rootPath ? ` · 根目录 ${project.rootPath}` : " · 未设置根目录"}
-        </p>
-        {project.devProjectId && (
-          <div className="wb-context-actions">
+      {/* 项目页头（2026-11-15 统一为 WorkbenchPageHeader）：项目名作标题、
+          登记信息作副标题、类型与状态作 meta，避免「页面标题 + 项目名」两层大标题。 */}
+      <WorkbenchPageHeader
+        icon={FolderKanban}
+        title={project.name}
+        meta={
+          <>
+            <span className="ws-badge ws-badge-soft">{profile.label}</span>
+            <span className={`ws-badge ws-badge-${project.status === "archived" ? "planned" : "available"}`}>
+              {project.status === "archived" ? "已归档" : "进行中"}
+            </span>
+          </>
+        }
+        subtitle={
+          <>
+            事项 {ctx.items.length} · 关联任务 {ctx.links.length}
+            {project.rootPath ? ` · 根目录 ${project.rootPath}` : " · 未设置根目录"}
+          </>
+        }
+        actions={
+          project.devProjectId ? (
             <button className="ws-btn" onClick={onNavigateWorkbench}>
               <ArrowUpRight size={12} /> 开发工作台
             </button>
-          </div>
-        )}
-      </header>
+          ) : null
+        }
+      />
       {project.status === "archived" && (
         <div className="ws-notice" data-tone="info">
           该项目已归档，事项与关联仍可查看；恢复为进行中后可继续日常使用。

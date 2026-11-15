@@ -103,19 +103,39 @@ export interface PersistedFile {
   size: number;
 }
 
-/** 用句柄分块复制：SAF content:// 或 copy() 不可用时兜底，内存占用与分块大小同阶。 */
-async function copyByHandles(source: File, target: File): Promise<void> {
+/**
+ * 用句柄分块复制：SAF content:// / 未知大小来源的主路径，内存占用与分块大小同阶。
+ *
+ * `limitBytes`（可选）是本次允许写入的最大字节：每写一块累加一次，超限立即抛出，
+ * 不再把剩余内容读完——这就避免了「先落盘 2GB 再判断超限、最后删掉」的写法。
+ */
+async function copyByHandles(source: File, target: File, limitBytes?: number): Promise<number> {
   const CHUNK = 192 * 1024;
   let read: ReturnType<File["open"]> | null = null;
   let write: ReturnType<File["open"]> | null = null;
+  let written = 0;
   try {
     read = source.open(FileMode.ReadOnly);
     write = target.open(FileMode.WriteOnly);
     for (let guard = 0; guard < 1_000_000; guard += 1) {
       const bytes = await read.readBytes(CHUNK);
       if (bytes.length === 0) break;
+      written += bytes.length;
+      if (typeof limitBytes === "number" && written > limitBytes) {
+        throw new AppError(
+          "validation",
+          `单个附件不能超过 ${Math.round(MAX_CAPTURE_ITEM_BYTES / (1024 * 1024))}MB，请换一张/选一个小一点的文件`,
+        );
+      }
       await write.writeBytes(bytes);
+      if (typeof limitBytes === "number" && written > limitBytes) {
+        throw new AppError(
+          "validation",
+          `单个附件不能超过 ${Math.round(MAX_CAPTURE_ITEM_BYTES / (1024 * 1024))}MB，请换一张/选一个小一点的文件`,
+        );
+      }
     }
+    return written;
   } finally {
     try {
       read?.close();
@@ -174,13 +194,30 @@ export async function persistIntoCaptureStore(
   const sourceFile = new File(source.uri);
 
   try {
-    try {
-      await sourceFile.copy(target, { overwrite: true });
-    } catch {
-      // content:// 或不支持 copy 的来源：退回句柄复制
-      if (target.exists) target.delete();
+    // 未知大小（content:// 常见）或 SAF 来源：直接走可计数流式复制，边写边判，
+    // 超过单文件/本次合计上限立即中止并删半成品；不能只靠「先写完再校验」。
+    const needsStream = size <= 0 || source.uri.startsWith("content://");
+    if (needsStream) {
+      const remaining = Math.max(0, MAX_CAPTURE_TOTAL_BYTES - used);
+      const limit = Math.min(MAX_CAPTURE_ITEM_BYTES, remaining);
+      if (remaining <= 0) {
+        throw new AppError(
+          "validation",
+          `本次采集附件合计不能超过 ${Math.round(MAX_CAPTURE_TOTAL_BYTES / (1024 * 1024))}MB，请先保存或移除部分内容`,
+        );
+      }
       target.create({ intermediates: true });
-      await copyByHandles(sourceFile, target);
+      const streamed = await copyByHandles(sourceFile, target, limit);
+      if (streamed <= 0) throw new AppError("storage", "复制后的文件为空，请重新选择");
+    } else {
+      try {
+        await sourceFile.copy(target, { overwrite: true });
+      } catch {
+        // content:// 或不支持 copy 的来源：退回句柄复制
+        if (target.exists) target.delete();
+        target.create({ intermediates: true });
+        await copyByHandles(sourceFile, target, Math.min(MAX_CAPTURE_ITEM_BYTES, Math.max(0, MAX_CAPTURE_TOTAL_BYTES - used)));
+      }
     }
     const written = target.size;
     if (written <= 0) throw new AppError("storage", "复制后的文件为空，请重新选择");

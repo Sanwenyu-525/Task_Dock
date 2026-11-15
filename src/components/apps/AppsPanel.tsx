@@ -26,6 +26,7 @@ import {
   Power, RefreshCw, SquareX, Star, Trash2, EyeOff, Eye, X,
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { useNavigationStore, type RefreshOutcome } from "../../store/useNavigationStore";
 import { errorMessage, normalizeError } from "../../lib/errors";
 import {
@@ -927,28 +928,28 @@ export default function AppsPanel() {
 
   return (
     <div className="apps-panel page-fill">
-      <header className="wf-head-row apps-head">
-        <div>
-          <h2 className="wf-title">
-            <LayoutGrid size={16} aria-hidden="true" /> {tr("apps.title")}
-          </h2>
-          <p className="wf-subtitle">{tr("apps.subtitle")}</p>
-        </div>
-        <div className="wf-head-actions">
-          <button
-            type="button"
-            className="btn"
-            onClick={requestManage}
-            data-tip={tr("apps.manageTip")}
-            aria-label={tr("apps.manage")}
-          >
-            {tr("apps.manage")}
-          </button>
-          <button type="button" className="btn primary" onClick={requestAdd}>
-            <Plus size={13} aria-hidden="true" /> {tr("apps.add")}
-          </button>
-        </div>
-      </header>
+      {/* 页面级页头（2026-11-15 统一）：主要操作进入页头右侧动作区。 */}
+      <WorkbenchPageHeader
+        icon={LayoutGrid}
+        title={tr("apps.title")}
+        subtitle={tr("apps.subtitle")}
+        actions={
+          <>
+            <button
+              type="button"
+              className="btn"
+              onClick={requestManage}
+              data-tip={tr("apps.manageTip")}
+              aria-label={tr("apps.manage")}
+            >
+              {tr("apps.manage")}
+            </button>
+            <button type="button" className="btn primary" onClick={requestAdd}>
+              <Plus size={13} aria-hidden="true" /> {tr("apps.add")}
+            </button>
+          </>
+        }
+      />
 
       <div className="filter-bar primary apps-filter-bar">
         <div className="seg-group subtle" role="group" aria-label={tr("apps.filterAria")}>

@@ -9,6 +9,7 @@ import { Smartphone } from "lucide-react";
 import { useLocale } from "../../hooks/useLocale";
 import MobileSyncSection from "../settings/MobileSyncSection";
 import VirtualDisplaySection from "./VirtualDisplaySection";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import "./mobile-page.css";
 
 export default function MobileTransferPanel() {
@@ -16,14 +17,11 @@ export default function MobileTransferPanel() {
 
   return (
     <div className="mobile-transfer-panel page-fill">
-      <header className="wf-head-row mobile-page-head">
-        <div>
-          <h2 className="wf-title">
-            <Smartphone size={16} aria-hidden="true" /> {t("mobileTransfer.title")}
-          </h2>
-          <p className="wf-subtitle">{t("mobileTransfer.subtitle")}</p>
-        </div>
-      </header>
+      <WorkbenchPageHeader
+        icon={Smartphone}
+        title={t("mobileTransfer.title")}
+        subtitle={t("mobileTransfer.subtitle")}
+      />
       <div className="page-scroll mobile-body">
         <div className="mobile-body-grid">
           <section className="mobile-body-main" aria-label={t("mobileTransfer.title")}>

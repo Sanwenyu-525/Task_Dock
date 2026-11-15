@@ -46,9 +46,34 @@ export function describeItems(items: readonly SummaryItem[]): string {
     parts.push(duration ? `语音 ${duration}` : `语音 ${audios.length} 段`);
   }
   if (files.length > 0) {
-    parts.push(files.length === 1 ? `文件 ${files[0].name || "附件"}` : `文件 ${files.length} 个`);
+    // 单文件才展示文件名；名字取不到可读值时退回数量，不把 document id 当标题。
+    const name = files.length === 1 ? readableFileName(files[0].name) : "";
+    parts.push(name ? `文件 ${name}` : `文件 ${files.length} 个`);
   }
   return parts.join(" · ");
+}
+
+/**
+ * 系统分享给的文件名清洗（纯展示用，不参与落盘命名）。
+ *
+ * 分享方经常只给 content:// 的 document id，投递到 JS 层是 `document%3A1000069262`：
+ * 解码后仍然只是一个不透明 id，把它当标题会得到「文件 document%3A1000069262」这种
+ * 用户看不懂的正文。这里解码合法的百分号编码（`report%20final.pdf` → `report final.pdf`），
+ * 并把「像 id 而不是文件名」的结果判为不可读，由调用方退回数量描述。
+ */
+export function readableFileName(raw: string | undefined): string {
+  const name = (raw ?? "").trim();
+  if (!name) return "";
+  let decoded = name;
+  try {
+    decoded = decodeURIComponent(name);
+  } catch {
+    // 非法百分号编码（单个 % 等）：保留原始串，不做猜测
+    decoded = name;
+  }
+  // `document:1000069262` / `image:1234` 这类 content provider id 没有扩展名且是 pure id
+  if (/^[a-z][a-z0-9+.-]*:\d+$/i.test(decoded)) return "";
+  return decoded;
 }
 
 /**

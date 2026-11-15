@@ -5,14 +5,17 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use tauri::State;
 
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
+use crate::file_workspace as fw;
 use crate::mobile_sync::files::MobileFile;
 use crate::mobile_sync::{
     self, MobileDevice, MobileSyncState, MobileSyncStatus, PairingOffer,
 };
+use crate::shelf::ShelfState;
 
 /// 状态快照：设置页打开时读取，配对弹层打开期间轮询（1s，组件卸载即停止）。
 #[tauri::command]
@@ -120,4 +123,54 @@ pub fn mobile_file_open_inbox(state: State<'_, MobileSyncState>) -> AppResult<()
         .spawn()
         .map_err(|error| AppError::Validation(format!("打开接收目录失败: {error}")))?;
     Ok(())
+}
+
+/// 把已接收的手机文件加入桌面暂存架（托管副本）。
+///
+/// 与手机端「导入暂存架」共用 `files::import_to_shelf_local`：只按传输记录 ID 取文件，
+/// 复制走 `shelf::add_managed_from_with_id` 的配额/磁盘余量/原子改名，重试幂等；
+/// 本机 UI 调用不校验设备归属。
+#[tauri::command]
+pub async fn mobile_file_import_shelf(
+    db: State<'_, Arc<Db>>,
+    state: State<'_, MobileSyncState>,
+    shelf: State<'_, Arc<ShelfState>>,
+    id: String,
+    group_id: Option<String>,
+) -> AppResult<MobileFile> {
+    let db = db.inner().clone();
+    let root = state.files_root().to_path_buf();
+    let shelf_root = shelf.root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        mobile_sync::files::import_to_shelf_local(
+            &db,
+            &root,
+            &shelf_root,
+            &id,
+            group_id.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| AppError::Unavailable(format!("加入暂存架任务失败: {error}")))?
+}
+
+/// 手机互传列表的图片缩略图（PNG data URL；无处理器/失败返回 None）。
+///
+/// 路径只由 `files::resolve_stored_file` 解析，前端不传路径；复用系统缩略图管线
+/// （`fw::thumbnail::thumbnail_png`，已支持 JPEG），不新增解码依赖。
+#[tauri::command]
+pub async fn mobile_file_thumbnail(
+    db: State<'_, Arc<Db>>,
+    state: State<'_, MobileSyncState>,
+    id: String,
+    max_px: u32,
+) -> AppResult<Option<String>> {
+    let path = mobile_sync::files::resolve_stored_file(&db, state.files_root(), &id)?;
+    match fw::thumbnail::thumbnail_png(path, max_px).await {
+        Some(bytes) => Ok(Some(format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        ))),
+        None => Ok(None),
+    }
 }

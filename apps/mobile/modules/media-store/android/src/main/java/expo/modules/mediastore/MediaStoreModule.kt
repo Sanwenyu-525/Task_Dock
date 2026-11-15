@@ -63,10 +63,52 @@ class MediaStoreModule : Module() {
       imageInfo(sourceUri)
     }
 
+    // 系统文件选择器只给 content:// URI 时，用 ContentResolver 读取真实显示名与大小；
+    // 不在 JS 侧用 URI 末段猜名字（vivo 的末段是 `document:10000692`）。
+    AsyncFunction("displayNameAsync") { sourceUri: String ->
+      queryDisplayName(sourceUri)
+    }
+
     // 文档扫描：多页图片合成一个 A4 PDF（页序即传入顺序）。
     AsyncFunction("createPdfAsync") { sourceUris: List<String> ->
       createPdf(sourceUris)
     }
+  }
+
+  // ── 展示名 / MIME / 大小查询 ───────────────────────────────
+
+  /**
+   * 通过 ContentResolver 读取 OpenableColumns 的 DISPLAY_NAME / SIZE。
+   * 失败返回空字符串，由调用方决定兜底名；绝不把 `document:123` 当文件名。
+   */
+  private fun queryDisplayName(sourceUri: String): Map<String, Any> {
+    val uri = Uri.parse(sourceUri)
+    var name = ""
+    var size = 0L
+    try {
+      context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+        null,
+        null,
+        null,
+      )?.use { cursor ->
+        if (cursor.moveToFirst()) {
+          val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+          if (nameIndex >= 0 && !cursor.isNull(nameIndex)) name = cursor.getString(nameIndex) ?: ""
+          val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+          if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) size = cursor.getLong(sizeIndex)
+        }
+      }
+    } catch (_: Exception) {
+      // 权限/已失效的 URI：退回空值，让 JS 用时间戳兜底名。
+    }
+    val mime = try {
+      context.contentResolver.getType(uri) ?: ""
+    } catch (_: Exception) {
+      ""
+    }
+    return mapOf("name" to name, "mime" to mime, "size" to size)
   }
 
   // ── 相册保存 ───────────────────────────────────────────────

@@ -31,6 +31,7 @@ import {
 import { useLocale } from "../../hooks/useLocale";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { useUiStore } from "../../store/useUiStore";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { ConfirmDialog, Select } from "../ui";
 import { errorMessage } from "../../lib/errors";
 import {
@@ -972,64 +973,66 @@ export default function DiagnosticsCenterPanel() {
 
   return (
     <div className="diag-center page-fill">
-      <header className="diag-center-head">
-        <div className="diag-center-head-text">
-          <div className="diag-center-title-row">
-            <h1 className="diag-center-title">
-              <Activity size={15} aria-hidden="true" /> {t("diagnosticsCenter.title")}
-            </h1>
-            <span
-              className={`diag-center-mode${status?.mode === "verbose" ? " is-verbose" : ""}`}
-              data-tip={t("diagnosticsCenter.mode.readonlyHint")}
-            >
-              <span className="diag-center-mode-dot" aria-hidden="true" />
-              <span>
-                {status
-                  ? status.mode === "verbose"
-                    ? t("diagnosticsCenter.overview.modeVerbose")
-                    : t("diagnosticsCenter.overview.modeNormal")
-                  : t("diagnosticsCenter.overview.mode")}
-              </span>
-              {verboseMinutes > 0 && (
-                <span>
-                  {t("diagnosticsCenter.overview.remaining", { minutes: verboseMinutes })}
-                </span>
-              )}
+      {/* 页面级页头（2026-11-15 统一）：模式徽标进入标题 meta 槽，三个动作进右侧
+          动作区；标题级别从 h1 收到 h2 —— 工作台外壳已有唯一的 h1（路由可访问名），
+          页面内再出现 h1 会让标题层级重复。 */}
+      <WorkbenchPageHeader
+        icon={Activity}
+        title={t("diagnosticsCenter.title")}
+        meta={
+          <span
+            className={`diag-center-mode${status?.mode === "verbose" ? " is-verbose" : ""}`}
+            data-tip={t("diagnosticsCenter.mode.readonlyHint")}
+          >
+            <span className="diag-center-mode-dot" aria-hidden="true" />
+            <span>
+              {status
+                ? status.mode === "verbose"
+                  ? t("diagnosticsCenter.overview.modeVerbose")
+                  : t("diagnosticsCenter.overview.modeNormal")
+                : t("diagnosticsCenter.overview.mode")}
             </span>
-          </div>
-          <p className="diag-center-subtitle">{t("diagnosticsCenter.subtitle")}</p>
-        </div>
-        <div className="diag-center-actions">
-          <button
-            type="button"
-            className="btn sm"
-            onClick={onRefresh}
-            disabled={chain ? chain.loading : loading || !fullVisible}
-            aria-label={t("diagnosticsCenter.action.refresh")}
-            data-tip={t("diagnosticsCenter.action.refresh")}
-          >
-            <RefreshCw
-              size={12}
-              className={(chain ? chain.loading : loading) ? "spin" : undefined}
-              aria-hidden="true"
-            />
-            <span>{t("diagnosticsCenter.action.refresh")}</span>
-          </button>
-          <button type="button" className="btn sm" onClick={() => void onCopySummary()}>
-            <Copy size={12} aria-hidden="true" />
-            <span>{t("diagnosticsCenter.action.copySummary")}</span>
-          </button>
-          <button
-            type="button"
-            className="btn sm"
-            onClick={() => void onExport()}
-            disabled={busy.export}
-          >
-            <Download size={12} aria-hidden="true" />
-            <span>{t("diagnosticsCenter.action.export")}</span>
-          </button>
-        </div>
-      </header>
+            {verboseMinutes > 0 && (
+              <span>
+                {t("diagnosticsCenter.overview.remaining", { minutes: verboseMinutes })}
+              </span>
+            )}
+          </span>
+        }
+        subtitle={t("diagnosticsCenter.subtitle")}
+        actions={
+          <>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={onRefresh}
+              disabled={chain ? chain.loading : loading || !fullVisible}
+              aria-label={t("diagnosticsCenter.action.refresh")}
+              data-tip={t("diagnosticsCenter.action.refresh")}
+            >
+              <RefreshCw
+                size={12}
+                className={(chain ? chain.loading : loading) ? "spin" : undefined}
+                aria-hidden="true"
+              />
+              <span>{t("diagnosticsCenter.action.refresh")}</span>
+            </button>
+            <button type="button" className="btn sm" onClick={() => void onCopySummary()}>
+              <Copy size={12} aria-hidden="true" />
+              <span>{t("diagnosticsCenter.action.copySummary")}</span>
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => void onExport()}
+              disabled={busy.export}
+            >
+              <Download size={12} aria-hidden="true" />
+              <span>{t("diagnosticsCenter.action.export")}</span>
+            </button>
+          </>
+        }
+      />
 
       <div className="page-scroll diag-body">
         {loadError && (

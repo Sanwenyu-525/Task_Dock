@@ -13,6 +13,7 @@ import { useLocale } from "../../hooks/useLocale";
 import ContextHelpButton from "../help/ContextHelpButton";
 import FeatureRoadmapPanel from "./FeatureRoadmapPanel";
 import PlanningWorkspace from "./PlanningWorkspace";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 
 type Source = "mine" | "builtin";
 
@@ -21,16 +22,13 @@ export default function PlanningCenterPanel() {
   const { t } = useLocale();
   return (
     <div className="planning-panel page-fill">
-      {/* 页面级页头（2026-11-14 统一工作台适配）；数据源切换保留在下方。 */}
-      <header className="wf-head-row planning-page-head">
-        <div>
-          <h2 className="wf-title">
-            <MapIcon size={16} aria-hidden="true" /> {t("nav.roadmap")}
-          </h2>
-          <p className="wf-subtitle">{t("planning.pageSubtitle")}</p>
-        </div>
-        <ContextHelpButton articleId="help.workflows.planning-center" />
-      </header>
+      {/* 页面级页头（2026-11-15 统一）；数据源切换保留在下方。 */}
+      <WorkbenchPageHeader
+        icon={MapIcon}
+        title={t("nav.roadmap")}
+        subtitle={t("planning.pageSubtitle")}
+        actions={<ContextHelpButton articleId="help.workflows.planning-center" />}
+      />
       <div className="planning-source-switch">
         <div className="seg-group subtle" role="group" aria-label="规划数据来源">
           <button

@@ -123,6 +123,27 @@ export async function imageInfo(sourceUri: string): Promise<NativeImageInfo> {
 }
 
 /**
+ * 读取系统选择器 content:// URI 的真实展示名（OpenableColumns.DISPLAY_NAME）。
+ * 原生不可用或查询失败返回 null，调用方保留既有兜底名。
+ */
+export async function resolveDisplayName(
+  sourceUri: string,
+): Promise<{ name: string; mime: string; size: number } | null> {
+  try {
+    const result = await native().displayNameAsync(sourceUri);
+    const name = String(result?.name ?? "").trim();
+    if (!name) return null;
+    return {
+      name,
+      mime: String(result?.mime ?? ""),
+      size: Number(result?.size) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 多页图片合成 A4 PDF（页序 = 传入顺序）。
  * 生成在应用缓存目录，调用方负责复制进 staging 并删除缓存源文件。
  */

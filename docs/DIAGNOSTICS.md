@@ -79,7 +79,7 @@ IPC 查询参数使用 camelCase（项目参数规范）。
 | `event` | 事件短名：`started` / `success` / `failed` / `cancelled` / `recovered` / `aggregated` / `log` |
 | `session_id` | 一次应用运行的 UUID（由后端生成并写入，前端不能伪造） |
 | `operation_id` | 一次业务操作的 ID，可跨窗口、跨阶段关联（见 §5） |
-| `window_id` | `main` / `context-menu` / `notification` / `capture` / `widget` |
+| `window_id` | `main` / `workspace` / `context-menu` / `notification` / `capture` / `tab-hint` / `widget`；未知入口回退 `main`（兼容浏览器预览/单测，不抛异常） |
 | `component` | 可读上下文（页面名、作用域）；已脱敏 |
 | `stage` | 粗粒度阶段：`ipc` / `render` / `persist` / `sync`… |
 | `status` | 操作生命周期（同 `event` 的取值域） |
@@ -564,3 +564,136 @@ service / timeout / database / unknown`…）→ `ERROR`。`OperationExtras` 新
 前端另有一条 `drag-payload-unhandled`（`module=dragdrop`，`action=dispatch`）：消费者没有
 富通道实现却收到了图片/链接/文本/虚拟文件，此时内容会被释放并记 `failed`，**不会**当作
 成功。
+
+## 24. 统一诊断契约（2026-11-15，唯一定义）
+
+本章是跨前后端的**事件归属与字段契约**；字段物理结构沿用 §3，级别规则沿用 §4/§22，
+隐私规则沿用 §6。本章不另建一套平行结构，只明确「谁记录、记什么、怎么关联、怎么区分
+三态」。
+
+### 24.1 角色分工（谁是权威归属方）
+
+| 层 | 记录范围 | 不记录什么 |
+|---|---|---|
+| Rust 业务层 | 业务操作的**权威结果**：`Ok/Err`、批次报告（`FsOpReport` / `ShelfAddReport` / `DropReport` 等）的汇总与逐条失败；后台任务、数据库、文件、同步、原生拖入的真实结论 | 不重复记录前端已归属的纯 UI 异常 |
+| 前端 UI 层 | 渲染/事件处理器未捕获异常、`invokeCommand` 的 IPC 调用失败、必要交互阶段（`validate → persist → finalize`）、启动看门狗 | 不把业务批次结果当作 IPC 失败重复上报；不从自由文本反推错误码 |
+
+同一故障只允许一个**主要归属事件**：IPC 抛错由 `invokeCommand → logIpcFailure` 记录
+（`stage=ipc`）；业务返回 `Ok(report)` 但内含失败条目时，由业务边界写汇总事件
+（`stage=business`/`persist`）。次级观察（`reportError` / `globalErrors` /
+ErrorBoundary）在 250ms 指纹窗口内只抑制事件本身，被抑制次数经
+`metadata.suppressed_since_last` 带回，不吞真实发生次数（见 §11、§16.7）。
+
+### 24.2 字段契约（复用 §3 既有结构）
+
+| 字段 | 必填 | 归属与规则 |
+|---|---|---|
+| `operation_id` | 可空，链路可关联时必填 | 一次业务操作的关联键；生成规则见 §24.3。带该字段的事件**永不聚合** |
+| `module` | 必填 | 稳定英文小写标识（`[a-z0-9_.-]`）；IPC 失败由 `moduleForCommand` 推导，未知归 `ipc` |
+| `action` | 必填 | 稳定操作标识：命令名 / 业务操作名 / tracing target 末段 |
+| `event` | 必填 | 事件短名；终态必须等于 `status`（§18.1）。批次语义事件：`<action>_completed` / `<action>_partial` / `<action>_failed` |
+| `stage` | 可空 | 粗粒度阶段：`ipc` / `validate` / `render` / `persist` / `sync` / `finalize` / `business`…；失败终态必须能回答「卡在哪一步」 |
+| `status` | 终态必填 | `started` / `success` / `failed` / `cancelled` / `recovered` |
+| `error_code` | 失败时必填（允许 `UNKNOWN_ERROR`） | 唯一来源见 §24.5；形态 `[A-Z0-9_]{3,40}`，非法归一 `UNKNOWN_ERROR` |
+| `error_category` | 失败时建议填 | 取值域复用 `AppError.category`（`validation` / `io` / `database` / `service` / `agent` / `permission` / `not_found` / `conflict` / `timeout` / `unsupported` / `integrity` / `ipc` / `network` / `unavailable` / `unknown`…） |
+| `duration_ms` | 可空 | 单调时钟计算；成功/失败终态与阶段推进可带 |
+| `metadata` | 可空 | 仅白名单 key 标量；规则见 §24.6 |
+
+### 24.3 `operation_id` 生成规则
+
+1. **前端发起的操作**：`startOperation()` 生成。优先 `crypto.randomUUID()`；无 UUID
+   环境回退 `op-<base36 时间戳>-<base36 随机段>`（`src/lib/diagnostics.ts:operationId`）。
+2. **后端发起的批次/会话**：复用业务既有标识作为 `operation_id`，例如拖入会话 id
+   （`drag-<uuid>`）、批次 `batch_id`；前端透传后端返回的 ID，不另起新 ID。
+3. 同一操作的前端阶段事件、IPC 失败事件、后端步骤/汇总事件共享同一 ID；链路查询按
+   `operation_id` 精确匹配（§8）。
+4. 不适合修改公开 IPC 参数的既有命令：不改签名，用 `action = 命令名` + `error_code` +
+   `duration_ms` 关联；需要完整链路时在上层用 `startOperation` 包住并透传 ID。
+
+### 24.4 结果三态：成功 / 部分失败 / 完整失败
+
+诊断数据层必须能把三态区分开，**不能只用一个 boolean**。判定以业务批次报告的计数为准：
+
+| 结论 | `status` | `event` | `level` | 计数元数据 |
+|---|---|---|---|---|
+| 成功（含正常跳过） | `success` | `<action>_completed`（或 `success`） | `INFO` | `total` / `success`（`skipped` 不计失败） |
+| 部分失败（有成功也有失败/partial） | `failed` | `<action>_partial` | 按 §22 级别规则：含 `integrity` → `CRITICAL`；全部预期拒绝 → `WARN`；其余 `ERROR`；默认 `WARN` | `total` / `success` / `skipped` / `failed` / `partial`，`0 < failed < total` |
+| 完整失败（无一成功） | `failed` | `<action>_failed` | 同上级别规则 | `failed = total`，`success = 0`（`partial = 0`） |
+
+可区分性要求：诊断中心/查询必须能同时读到 `event`（后端批次事件优先用 `_partial`
+后缀）、`level` 与计数三元组（`success/failed/total`），部分失败还必须带**专属错误码**
+（如 `SHELF_ADD_PARTIAL_FAILED` / `drop_partial` 对应分组）。前端既有 `op.fail` 路径
+允许 `event=failed`，但不得省略专属错误码或计数元数据；仅 `status=failed` 不足以判断
+是部分还是完整失败。正常跳过（同名策略、已在目标目录内）计入 `skipped`，不是失败。
+取消记 `status=cancelled`、`INFO`，不计入失败数。
+
+### 24.5 `error_code` / `error_category` 唯一来源
+
+1. **错误码唯一来自业务结构字段**，前端只做透传与分类映射，**不得另建平行错误码表**，
+   也不得从 `reason`/`message` 自由文本反推稳定码。现有来源：
+   - Rust `AppError.code` / `AppError.category`（`src-tauri/src/error.rs`）；
+   - 批次条目结构上的结构化字段，例如 `FsEntryReport.code: Option<String>`、
+     `ShelfFailedEntry.code` / `category`（`src-tauri/src/file_workspace/mod.rs`、
+     `src-tauri/src/shelf/`）；`None` 时不序列化，前端不得猜测补码。
+2. 前端归一化（`normalizeError`）只负责：透传后端结构化码、把非结构化旧错误映射到既有
+   `ERROR_CODES`；映射表复用 `src/lib/errors.ts`，不新增第二套。
+3. 纯 UI 定位码（不属于 `AppError` 码表）沿用既有前缀约定：`UI_RENDER_ERROR`、
+   `UI_BOOT_TIMEOUT` / `UI_BOOT_SLOW`、`FILE_DROP_LISTENER_FAILED` 等，仅用于
+   UI/启动/监听层异常；不得伪装成业务失败码。
+4. 后端 `normalize_error_code` 对非 `[A-Z0-9_]{3,40}` 的值归一为 `UNKNOWN_ERROR`；
+   `error_category` 不在允许集合内时归 `unknown`。
+
+### 24.6 可入日志字段与脱敏规则
+
+**允许进入日志**：稳定标识符与计数——`operation_id` / `module` / `action` / `event` /
+`stage` / `status` / `error_code` / `error_category` / `retry_count` / `duration_ms` /
+窗口宿主名 / 枚举来源（`drag` / `watch` / `clipboard-current`…）/ 目标或条目的稳定 ID
+（`target_id` / `entry_id` / `task_id` / `workflow_id`…）/ 计数与大小。
+
+**禁止进入日志**（从源头不写入；后端 `privacy.rs` 为最后一道过滤）：
+
+- 剪贴板正文/图片、Agent 对话正文、提示词、HTTP 请求体与响应体；
+- 密码、Token、API Key、Cookie、凭证；
+- 完整绝对路径、相对路径、文件名、目录结构；
+- 环境变量、设置值（一致性校验只记键名）；
+- 业务对象整体（metadata 中的对象/数组一律丢弃）。
+
+路径类 metadata key（`source` / `target` / `from` / `to`）只接受稳定枚举或 ID；
+值呈现路径形态（盘符 `X:\`、UNC `\\`、POSIX 绝对路径 `/`、含 `\` 或 `/` 的相对路径）时，
+`privacy.rs` 整体替换为占位符 `<路径>`，不依赖主目录段脱敏兜底。新增 metadata 键必须先在
+`ALLOWED_META_KEYS` 登记并说明用途（§6、§13.4）。
+
+### 24.7 窗口宿主标识
+
+`window_id` 按入口 HTML 文件名推断（`src/lib/diagnostics.ts:currentWindowId`），与
+`vite.config.ts` 多页入口及 Rust 窗口创建处一一对应：
+
+| `window_id` | 入口 | 宿主角色（`windowHost.ts`） |
+|---|---|---|
+| `main` | `index.html` | `quick`（胶囊/快捷面） |
+| `workspace` | `workspace.html` | `workbench`（唯一大型完整工作台） |
+| `context-menu` | `context-menu.html` | `auxiliary` |
+| `notification` | `notification.html` | `auxiliary` |
+| `capture` | `capture.html` | `auxiliary` |
+| `tab-hint` | `tab-hint.html` | `auxiliary` |
+| `widget` | `widget.html` | `auxiliary` |
+
+未知入口（浏览器预览、`preview.html`、单元测试）回退 `main`，兼容分支不得抛异常。
+`workspace.html` 必须识别为 `workspace`，不得落入 `main` 兜底。
+
+### 24.8 级别与可预期程度
+
+预期内的可拒绝/可降级情形不得一律记 `ERROR`：
+
+| 情形类别 | 级别 | 示例 |
+|---|---|---|
+| 数据一致性/持久化损坏 | `CRITICAL` | 回读不一致、`DATA_INTEGRITY_ERROR` |
+| 真正内部故障、真实操作失败 | `ERROR` | IPC/IO/数据库/Agent/服务真实失败 |
+| 预期校验拒绝、未找到、冲突、超时、不支持、服务繁忙/正忙 | `WARN` | `VALIDATION_ERROR` / `NOT_FOUND` / `CONFLICT` / `TIMEOUT` / `UNSUPPORTED` / `SERVICE_OVERLOADED` / `DATABASE_BUSY` |
+| 用户取消 | 不记失败 | `AbortError` / 已取消文案，归 `cancelled` 或直接跳过 |
+| 权限问题 | 按业务语义：`PERMISSION_DENIED` → `ERROR`；`PERMISSION_REQUIRED`（需引导开启）→ `WARN` | — |
+
+级别推断优先复用 `AppError.severity` / `error_code` 映射（`src/lib/errors.ts` 码表、
+`diagnostics.ts:fail/logIpcFailure`）；业务汇总可通过 `OperationExtras.severity` 显式覆盖，
+覆盖理由写入事件说明。
+

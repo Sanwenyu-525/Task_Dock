@@ -79,13 +79,17 @@ pub async fn fs_copy_paths(
     paths: Vec<String>,
     target_dir: String,
     conflict: String,
+    operation_id: Option<String>,
 ) -> AppResult<FsOpReport> {
     let target = fw::validate_abs_path(&target_dir)?;
     let conflict = fw::parse_conflict(&conflict)?;
-    fs_blocking!(app, paths, |paths: Vec<String>,
-                              protected: &Vec<PathBuf>| {
-        fw::copy_paths(&paths, &target, conflict, protected)
-    })
+    let started = std::time::Instant::now();
+    let report = fs_blocking!(app, paths, |paths: Vec<String>,
+                                                  protected: &Vec<PathBuf>| {
+        fw::copy_paths(&paths, &target, conflict, operation_id.clone(), protected)
+    })?;
+    emit_op_diagnostics(&report, "workspace_copy", "copy", started.elapsed());
+    Ok(report)
 }
 
 #[tauri::command]
@@ -94,13 +98,17 @@ pub async fn fs_move_paths(
     paths: Vec<String>,
     target_dir: String,
     conflict: String,
+    operation_id: Option<String>,
 ) -> AppResult<FsOpReport> {
     let target = fw::validate_abs_path(&target_dir)?;
     let conflict = fw::parse_conflict(&conflict)?;
-    fs_blocking!(app, paths, |paths: Vec<String>,
-                              protected: &Vec<PathBuf>| {
-        fw::move_paths(&paths, &target, conflict, protected)
-    })
+    let started = std::time::Instant::now();
+    let report = fs_blocking!(app, paths, |paths: Vec<String>,
+                                                  protected: &Vec<PathBuf>| {
+        fw::move_paths(&paths, &target, conflict, operation_id.clone(), protected)
+    })?;
+    emit_op_diagnostics(&report, "workspace_move", "move", started.elapsed());
+    Ok(report)
 }
 
 #[tauri::command]
@@ -108,11 +116,36 @@ pub async fn fs_delete_paths(
     app: AppHandle,
     paths: Vec<String>,
     permanent: bool,
+    operation_id: Option<String>,
 ) -> AppResult<FsOpReport> {
-    fs_blocking!(app, paths, |paths: Vec<String>,
-                              protected: &Vec<PathBuf>| {
-        fw::delete_paths(&paths, permanent, protected)
-    })
+    let started = std::time::Instant::now();
+    let report = fs_blocking!(app, paths, |paths: Vec<String>,
+                                                protected: &Vec<PathBuf>| {
+        fw::delete_paths(&paths, permanent, operation_id.clone(), protected)
+    })?;
+    emit_op_diagnostics(
+        &report,
+        "workspace_delete",
+        if permanent { "permanent" } else { "recycle" },
+        started.elapsed(),
+    );
+    Ok(report)
+}
+
+/// 业务层权威结果写入诊断：成功也记一条 INFO（部分失败必须在诊断中心可见，
+/// 不能只靠 Toast —— `Ok(report)` 对 IPC 是成功，对业务可能是部分失败）。
+///
+/// 计时从进入本命令算起（含阻塞线程排队），只用于定位「慢在哪一步」。
+fn emit_op_diagnostics(
+    report: &FsOpReport,
+    action: &str,
+    mode: &str,
+    elapsed: std::time::Duration,
+) {
+    let duration_ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
+    for event in fw::op_diagnostic_events(report, action, mode, duration_ms) {
+        crate::diagnostics::emit(event);
+    }
 }
 
 #[tauri::command]

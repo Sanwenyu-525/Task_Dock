@@ -27,6 +27,7 @@ import {
   kindLabel,
 } from "../../store/useActionsStore";
 import { useUiStore } from "../../store/useUiStore";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
@@ -296,16 +297,28 @@ export default function ActionCenterPanel() {
 
   return (
     <div className="action-panel page-fill">
-      {/* 页面级页头（2026-11-14 统一工作台适配）；分类计数徽标保留在下方筛选行。
+      {/* 页面级页头（2026-11-15 统一）：刷新与暂停控制进入页头动作区；
+          分类计数徽标保留在下方筛选行。
           本页文案历史上为硬编码中文（i18n 欠账，范围外），页头暂跟随现状。 */}
-      <header className="wf-head-row action-page-head">
-        <div>
-          <h2 className="wf-title">
-            <Zap size={16} aria-hidden="true" /> 行动中心
-          </h2>
-          <p className="wf-subtitle">汇总来自 Agent、任务、工作流的待处理事项</p>
-        </div>
-      </header>
+      <WorkbenchPageHeader
+        icon={Zap}
+        title="行动中心"
+        subtitle="汇总来自 Agent、任务、工作流的待处理事项"
+        actions={
+          <>
+            {/* 聚合暂停：只停前端计数刷新与徽标，Agent 原始事件仍照常入库。 */}
+            <ModuleRunControl moduleId="actions" />
+            <button
+              className="btn sm"
+              onClick={() => load()}
+              data-tip="重新聚合动作"
+              aria-label="重新聚合动作"
+            >
+              <RefreshCw size={12} /> 刷新
+            </button>
+          </>
+        }
+      />
       <div className="filter-bar primary">
         <div className="seg-group subtle" role="group" aria-label="行动分类">
           {(["intervention", "notification", "history"] as ActionCategory[]).map((id) => {
@@ -323,17 +336,6 @@ export default function ActionCenterPanel() {
             );
           })}
         </div>
-        <span className="flex-spacer" />
-        {/* 聚合暂停：只停前端计数刷新与徽标，Agent 原始事件仍照常入库。 */}
-        <ModuleRunControl moduleId="actions" />
-        <button
-          className="btn sm"
-          onClick={() => load()}
-          data-tip="重新聚合动作"
-          aria-label="重新聚合动作"
-        >
-          <RefreshCw size={12} /> 刷新
-        </button>
       </div>
 
       {actionsPaused && feed?.enabled !== false && (

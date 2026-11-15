@@ -32,6 +32,8 @@ pub(crate) mod privacy;
 pub(crate) mod query;
 mod tracing_layer;
 mod writer;
+/// 批量文件操作的诊断事件构造（暂存架投递与文件工作区共用，见模块注释）。
+pub mod batch;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -761,6 +763,14 @@ pub fn emit(event: DiagnosticEvent) {
     if let Some(diag) = GLOBAL.get() {
         diag.record(event);
     }
+}
+
+/// 生成一个操作 ID（前端未传时的后端兜底）。
+///
+/// 与前端 `startOperation()` 的 ID 同格式（UUID v4），保证「前端生成、后端沿用」
+/// 的主路径与「后端补发」的降级路径都能在诊断中心按同一字段关联。
+pub fn new_operation_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// 便捷构造：`diagnostics::event(DiagLevel::Info, "task", "create", "success")`

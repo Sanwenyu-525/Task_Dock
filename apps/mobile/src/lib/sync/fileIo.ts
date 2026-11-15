@@ -74,9 +74,16 @@ const EXTENSION_BY_MIME: Record<string, string> = {
  * expo-file-system 的 `File.name` 只做 `Paths.basename(uri)`，因此这里识别这种
  * 非显示名并回退为「手机文件-时间戳.扩展名」；AOSP 选择器返回的路径式 URI 不受影响。
  */
+export function isOpaqueFileName(raw: string | null | undefined): boolean {
+  const value = (raw ?? "").trim();
+  if (!value) return true;
+  // `document:1000069262`（部分 vivo/第三方文件管理器）与 `%3A` 编码形态都不是显示名
+  return /^document(%3A|:)?\d+$/i.test(value) || /^\d+$/i.test(value);
+}
+
 export function uploadDisplayName(file: FsFile): string {
   const raw = (file.name ?? "").trim();
-  if (raw && !/^document:\d+$/i.test(raw) && !/^\d+$/.test(raw)) return raw;
+  if (!isOpaqueFileName(raw)) return raw;
   const extension = EXTENSION_BY_MIME[file.type] ?? "";
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");

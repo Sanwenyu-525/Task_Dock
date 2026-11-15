@@ -71,6 +71,7 @@ import { errorMessage, normalizeError } from "../../lib/errors";
 import { AGENT_STATE_LABELS, formatDue, formatRelative, priorityLabel } from "../../lib/format";
 import { verificationLabel } from "../../lib/navigation";
 import { useLocale } from "../../hooks/useLocale";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { t as translate } from "../../i18n";
 import DevProjectContext from "../devwork/DevProjectContext";
 import DevHandoffSection from "../devwork/DevHandoffSection";
@@ -229,29 +230,30 @@ export default function DevWorkbenchPanel() {
 
   return (
     <div className="workbench-panel page-fill">
-      <header className="wb-head">
-        <div>
-          <h2 className="wb-title">
-            <Code2 size={16} aria-hidden="true" /> {t("nav.workbench")}
-          </h2>
-          <p className="wb-subtitle">{t("workbench.subtitle")}</p>
-        </div>
-        <div className="wb-head-actions">
-          <button
-            type="button"
-            className="btn sm"
-            onClick={openQuickCapture}
-            data-tip={t("workbench.quickCapture")}
-          >
-            <Zap size={12} aria-hidden="true" /> {t("workbench.quickCapture")}
-          </button>
-          {restoringAny && (
-            <button type="button" className="btn sm" onClick={() => void cancelRestore()}>
-              {t("workbench.stopRestore")}
+      {/* 页面级页头（2026-11-15 统一）：与其它 19 个页面同构；快捷捕获与
+          「停止恢复」留在右侧动作区。 */}
+      <WorkbenchPageHeader
+        icon={Code2}
+        title={t("nav.workbench")}
+        subtitle={t("workbench.subtitle")}
+        actions={
+          <>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={openQuickCapture}
+              data-tip={t("workbench.quickCapture")}
+            >
+              <Zap size={12} aria-hidden="true" /> {t("workbench.quickCapture")}
             </button>
-          )}
-        </div>
-      </header>
+            {restoringAny && (
+              <button type="button" className="btn sm" onClick={() => void cancelRestore()}>
+                {t("workbench.stopRestore")}
+              </button>
+            )}
+          </>
+        }
+      />
       <div className="page-scroll wb-body">
         <CurrentTaskSection
           currentId={currentId}

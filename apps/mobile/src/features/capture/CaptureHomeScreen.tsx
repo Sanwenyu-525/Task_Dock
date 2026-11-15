@@ -52,29 +52,26 @@ function CaptureAction({
       contentStyle={[
         styles.action,
         {
-          backgroundColor: primary ? tokens.accent : tokens.card,
-          borderColor: primary ? tokens.accent : tokens.cardBorder,
+          // 主卡承载白字：必须用 accentFill（accent 只有 4.1:1，12sp 说明文字会掉到门槛下）
+          backgroundColor: primary ? tokens.accentFill : tokens.card,
+          borderColor: primary ? tokens.accentFill : tokens.cardBorder,
         },
       ]}
       scaleTo={0.97}
     >
-      <View
-        style={[
-          styles.actionIcon,
-          { backgroundColor: primary ? "rgba(255,255,255,0.18)" : tokens.accentSoft },
-        ]}
-      >
-        <AppIcon name={icon} color={primary ? "#FFFFFF" : tokens.accentText} size={22} />
+      {/* 主卡不做半透明白底板（色值无处可落 Token）；次级卡保留浅蓝底板维持图标节奏 */}
+      <View style={[styles.actionIcon, primary ? null : { backgroundColor: tokens.accentSoft }]}>
+        <AppIcon name={icon} color={primary ? tokens.onAccent : tokens.accentText} size={primary ? 26 : 22} />
       </View>
       <Text
-        style={[styles.actionLabel, { color: primary ? "#FFFFFF" : tokens.text }]}
+        style={[styles.actionLabel, { color: primary ? tokens.onAccent : tokens.text }]}
         numberOfLines={1}
       >
         {label}
       </Text>
       {hint ? (
         <Text
-          style={[styles.actionHint, { color: primary ? "rgba(255,255,255,0.82)" : tokens.muted }]}
+          style={[styles.actionHint, { color: primary ? tokens.onAccent : tokens.muted }]}
           numberOfLines={1}
         >
           {hint}
@@ -244,7 +241,7 @@ export function CaptureHomeScreen({ nav }: { nav: Nav }) {
               <RowEntry
                 icon="noteNew"
                 label="一句话记录"
-                helper="先写下来，再选择保存到收集箱、任务或笔记"
+                helper="先写下来，再决定保存去向"
                 onPress={() => nav.push("capture", undefined, "capture")}
               />
             </View>
@@ -299,8 +296,15 @@ export function CaptureHomeScreen({ nav }: { nav: Nav }) {
 
               <View style={styles.libraryFoot}>
                 <Text style={[styles.libraryStatus, { color: tokens.muted }]}>
-                  {summary.pending > 0 ? `${summary.pending} 个等待电脑 · ` : ""}
-                  {summary.failed > 0 ? `${summary.failed} 个失败可重试` : "全部已处理"}
+                  {/* 三态互斥：失败 > 等待电脑 > 全部完成。曾经把「N 个等待电脑」和「全部已处理」拼在一行，
+                      读到的是互相矛盾的两种状态。 */}
+                  {summary.failed > 0
+                    ? `${summary.failed} 个失败可重试`
+                    : summary.pending > 0
+                      ? `${summary.pending} 个等待电脑`
+                      : summary.saved > 0
+                        ? "全部已处理"
+                        : "还没有素材"}
                 </Text>
                 <Text style={[styles.libraryLink, { color: tokens.accentText }]}>打开</Text>
               </View>

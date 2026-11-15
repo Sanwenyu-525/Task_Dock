@@ -101,8 +101,12 @@ export function installGlobalErrorHandlers(options: GlobalErrorOptions = {}): vo
       const err = normalizeError(raw ?? detail.message);
       const reservation = reserveReport(err.code, err.message);
       if (!reservation.emit) return;
+      // 与 unhandledrejection 一致：按结构化严重级别分级，预期校验拒绝/超时/冲突等
+      // 归 WARN，只有真正内部故障才记 ERROR/CRITICAL，避免未捕获事件处理器异常一律 ERROR。
+      const level =
+        err.severity === "critical" ? "CRITICAL" : err.severity === "warning" ? "WARN" : "ERROR";
       logEvent({
-        level: "ERROR",
+        level,
         module: "ui",
         action: "uncaught_error",
         event: "failed",

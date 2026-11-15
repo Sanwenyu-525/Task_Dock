@@ -42,6 +42,13 @@ interface Props {
    */
   exiting?: boolean;
   exitHeight?: number;
+  /**
+   * 列表选中态（2026-11-15）：工作台宽屏宿主里单击任务主体 = 选中并让右侧
+   * 详情栏显示该任务详情；双击仍然是打开编辑器。不传则整行保持原有行为，
+   * 主窗口/胶囊等窄宿主不需要选中态。
+   */
+  selected?: boolean;
+  onSelect?: (task: Task) => void;
 }
 
 /** 离场结束后的焦点归属：相邻任务；没有相邻任务就回到列表入口控件。 */
@@ -77,7 +84,7 @@ const MAX_INLINE_TARGETS = 3;
 /** 紧凑模式更窄（320px 也要可用），直列只留 2 个。 */
 const MAX_INLINE_TARGETS_COMPACT = 2;
 
-export default function TaskItem({ task, compact, exiting, exitHeight }: Props) {
+export default function TaskItem({ task, compact, exiting, exitHeight, selected, onSelect }: Props) {
   const toggle = useTasksStore((s) => s.toggle);
   const refreshTasks = useTasksStore((s) => s.refresh);
   const holdForExit = useTasksStore((s) => s.holdForExit);
@@ -301,7 +308,7 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
     <div
       ref={rowRef}
       data-task-id={task.id}
-      className={`task-card task-item priority-${task.priority} ${task.status} ${isLeaving ? "leaving" : ""}`}
+      className={`task-card task-item priority-${task.priority} ${task.status} ${isLeaving ? "leaving" : ""}${selected ? " is-selected" : ""}`}
       // 离场期间同时隔离鼠标与键盘：inert 让内部控件不可聚焦/不可点击，
       // aria-hidden 让读屏器不再朗读正在退场的条目；结束后由列表交还焦点。
       inert={isLeaving || undefined}
@@ -324,8 +331,10 @@ export default function TaskItem({ task, compact, exiting, exitHeight }: Props) 
       </button>
       <div
         className="task-main"
+        onClick={onSelect ? () => onSelect(task) : undefined}
         onDoubleClick={() => openEditor(task)}
         data-tip={compact ? "双击编辑" : undefined}
+        aria-current={selected ? "true" : undefined}
       >
         <div
           className="task-title-row"

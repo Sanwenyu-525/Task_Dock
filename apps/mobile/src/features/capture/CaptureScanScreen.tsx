@@ -23,11 +23,13 @@ import {
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 
+import { AppIcon } from "../../components/icons/AppIcon";
 import * as repo from "../../db/captureAssets";
 import { AppError, describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
 import type { Nav } from "../../lib/nav";
 import { formatBytes } from "../../lib/sync/fileIo";
+import { useTheme } from "../../theme/ThemeProvider";
 import { font, radius, space } from "../../theme/tokens";
 
 import { imageInfo } from "./album";
@@ -45,6 +47,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function CaptureScanScreen({ nav }: { nav: Nav }) {
+  const { tokens } = useTheme();
   const insets = useWindowInsets();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
@@ -227,20 +230,26 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
 
   if (!permission) {
     return (
-      <View style={[styles.root, styles.center]}>
-        <ActivityIndicator color="#FFFFFF" />
-        <Text style={styles.hint}>正在检查相机权限…</Text>
+      <View style={[styles.root, styles.center, { backgroundColor: tokens.ink }]}>
+        <ActivityIndicator color={tokens.onInk} />
+        <Text style={[styles.hint, { color: tokens.inkText }]}>正在检查相机权限…</Text>
       </View>
     );
   }
 
   if (mountError) {
     return (
-      <View style={[styles.root, styles.center, { paddingTop: insets.top }]}>
-        <Text style={styles.permissionTitle}>相机不可用</Text>
-        <Text style={styles.permissionBody}>{mountError}</Text>
-        <Pressable accessibilityRole="button" style={styles.primaryButton} onPress={nav.back}>
-          <Text style={styles.primaryText}>返回</Text>
+      <View
+        style={[styles.root, styles.center, { paddingTop: insets.top, backgroundColor: tokens.ink }]}
+      >
+        <Text style={[styles.permissionTitle, { color: tokens.onInk }]}>相机不可用</Text>
+        <Text style={[styles.permissionBody, { color: tokens.inkText }]}>{mountError}</Text>
+        <Pressable
+          accessibilityRole="button"
+          style={[styles.primaryButton, { backgroundColor: tokens.accentFill }]}
+          onPress={nav.back}
+        >
+          <Text style={[styles.primaryText, { color: tokens.onAccent }]}>返回</Text>
         </Pressable>
       </View>
     );
@@ -248,37 +257,39 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
 
   if (!permission.granted) {
     return (
-      <View style={[styles.root, styles.center, { paddingTop: insets.top }]}>
-        <Text style={styles.permissionTitle}>需要相机权限才能扫描文档</Text>
-        <Text style={styles.permissionBody}>
+      <View
+        style={[styles.root, styles.center, { paddingTop: insets.top, backgroundColor: tokens.ink }]}
+      >
+        <Text style={[styles.permissionTitle, { color: tokens.onInk }]}>需要相机权限才能扫描文档</Text>
+        <Text style={[styles.permissionBody, { color: tokens.inkText }]}>
           TaskDock 只在你按下快门时拍照；扫描页先保存在本机，导出 PDF 前不会上传。
         </Text>
         {permission.canAskAgain ? (
           <Pressable
             accessibilityRole="button"
-            style={styles.primaryButton}
+            style={[styles.primaryButton, { backgroundColor: tokens.accentFill }]}
             onPress={() => void requestPermission()}
           >
-            <Text style={styles.primaryText}>授予相机权限</Text>
+            <Text style={[styles.primaryText, { color: tokens.onAccent }]}>授予相机权限</Text>
           </Pressable>
         ) : (
           <Pressable
             accessibilityRole="button"
-            style={styles.primaryButton}
+            style={[styles.primaryButton, { backgroundColor: tokens.accentFill }]}
             onPress={() => void Linking.openSettings()}
           >
-            <Text style={styles.primaryText}>去系统设置开启</Text>
+            <Text style={[styles.primaryText, { color: tokens.onAccent }]}>去系统设置开启</Text>
           </Pressable>
         )}
         <Pressable accessibilityRole="button" style={styles.linkButton} onPress={nav.back}>
-          <Text style={styles.linkText}>返回</Text>
+          <Text style={[styles.linkText, { color: tokens.inkText }]}>返回</Text>
         </Pressable>
       </View>
     );
   }
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { backgroundColor: tokens.ink }]}>
       {foreground ? (
         <View style={StyleSheet.absoluteFill} {...panResponder.panHandlers}>
           <CameraView
@@ -294,36 +305,61 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
           />
         </View>
       ) : (
-        <View style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: "#000" }]}>
-          <Text style={styles.hint}>相机已暂停</Text>
+        <View
+          style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: tokens.ink }]}
+        >
+          <Text style={[styles.hint, { color: tokens.inkText }]}>相机已暂停</Text>
         </View>
       )}
 
-      <View style={[styles.topBar, { paddingTop: insets.top + space.sm }]}>
+      {/* 取景引导框：只做对齐辅助，不做自动边缘检测与透视校正（这两项后端未实现） */}
+      {foreground ? (
+        <View pointerEvents="none" style={styles.guide}>
+          <View style={[styles.guideCorner, styles.guideTL, { borderColor: tokens.onInkMuted }]} />
+          <View style={[styles.guideCorner, styles.guideTR, { borderColor: tokens.onInkMuted }]} />
+          <View style={[styles.guideCorner, styles.guideBL, { borderColor: tokens.onInkMuted }]} />
+          <View style={[styles.guideCorner, styles.guideBR, { borderColor: tokens.onInkMuted }]} />
+          <Text style={[styles.guideHint, { color: tokens.onInkMuted, backgroundColor: tokens.inkScrim }]}>
+            把页面四角对进框内
+          </Text>
+        </View>
+      ) : null}
+
+      <View
+        style={[styles.topBar, { paddingTop: insets.top + space.sm, backgroundColor: tokens.inkScrim }]}
+      >
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="返回"
-          style={styles.roundButton}
+          style={[styles.roundButton, { backgroundColor: tokens.inkScrim }]}
           onPress={leave}
         >
-          <Text style={styles.roundGlyph}>‹</Text>
+          <AppIcon name="back" color={tokens.onInk} size={22} />
         </Pressable>
         <View style={styles.topPills}>
-          <View style={styles.pill}>
-            <Text style={styles.pillText}>已拍 {pages.length} 页</Text>
+          <View
+            style={[styles.pill, { backgroundColor: tokens.inkScrim, borderColor: tokens.inkBorder }]}
+          >
+            <Text style={[styles.pillText, { color: tokens.onInk }]}>已拍 {pages.length} 页</Text>
           </View>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`手电筒：${torch ? "开启" : "关闭"}`}
-            style={[styles.pill, torch && styles.pillActive]}
+            style={[
+              styles.pill,
+              { backgroundColor: tokens.inkScrim, borderColor: tokens.inkBorder },
+              torch && { backgroundColor: tokens.accentFill, borderColor: tokens.accentFill },
+            ]}
             onPress={() => setTorch((prev) => !prev)}
           >
-            <Text style={styles.pillText}>补光 {torch ? "开" : "关"}</Text>
+            <Text style={[styles.pillText, { color: tokens.onInk }]}>补光 {torch ? "开" : "关"}</Text>
           </Pressable>
         </View>
       </View>
 
-      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + space.md }]}>
+      <View
+        style={[styles.bottomBar, { paddingBottom: insets.bottom + space.md, backgroundColor: tokens.inkScrim }]}
+      >
         {pages.length > 0 ? (
           <ScrollView
             horizontal
@@ -336,28 +372,30 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
                 accessibilityRole="button"
                 accessibilityLabel={`第 ${index + 1} 页，点击编辑`}
                 onPress={() => setEditing(page)}
-                style={styles.thumbButton}
+                style={[styles.thumbButton, { backgroundColor: tokens.ink }]}
               >
                 {page.localPath ? (
                   <Image source={{ uri: page.localPath }} style={styles.thumb} resizeMode="cover" />
                 ) : (
-                  <View style={styles.thumbFallback} />
+                  <View style={[styles.thumbFallback, { backgroundColor: tokens.inkBorder }]} />
                 )}
-                <View style={styles.thumbBadge}>
-                  <Text style={styles.thumbBadgeText}>{index + 1}</Text>
+                <View style={[styles.thumbBadge, { backgroundColor: tokens.inkScrim }]}>
+                  <Text style={[styles.thumbBadgeText, { color: tokens.onInk }]}>{index + 1}</Text>
                 </View>
               </Pressable>
             ))}
           </ScrollView>
         ) : (
-          <Text style={[styles.hint, styles.stripHint]}>
+          <Text style={[styles.hint, styles.stripHint, { color: tokens.inkText }]}>
             对准文档逐页拍摄，页序可在缩略图上调整
           </Text>
         )}
 
         <View style={styles.actionRow}>
           <View style={styles.sideSlot}>
-            <Text style={styles.sideHint}>{pages.length > 0 ? "点缩略图编辑" : "自动对焦"}</Text>
+            <Text style={[styles.sideHint, { color: tokens.inkText }]}>
+              {pages.length > 0 ? "点缩略图编辑" : "自动对焦"}
+            </Text>
           </View>
 
           <Pressable
@@ -366,9 +404,15 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
             accessibilityState={{ disabled: busy || !ready }}
             disabled={busy || !ready}
             onPress={() => void addPage()}
-            style={styles.shutterOuter}
+            style={[styles.shutterOuter, { borderColor: tokens.onInk }]}
           >
-            <View style={[styles.shutterInner, (busy || !ready) && styles.shutterBusy]} />
+            <View
+              style={[
+                styles.shutterInner,
+                { backgroundColor: tokens.onInk },
+                (busy || !ready) && { backgroundColor: tokens.onInkMuted },
+              ]}
+            />
           </Pressable>
 
           <View style={styles.sideSlot}>
@@ -378,16 +422,16 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
                 accessibilityLabel="生成 PDF"
                 disabled={busy}
                 onPress={() => void exportPdf()}
-                style={styles.pdfButton}
+                style={[styles.pdfButton, { backgroundColor: busy ? tokens.muted : tokens.accentFill }]}
               >
                 {busy ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
+                  <ActivityIndicator color={tokens.onAccent} size="small" />
                 ) : (
-                  <Text style={styles.pdfText}>生成 PDF</Text>
+                  <Text style={[styles.pdfText, { color: tokens.onAccent }]}>生成 PDF</Text>
                 )}
               </Pressable>
             ) : (
-              <Text style={styles.sideHint}>无需逐页确认</Text>
+              <Text style={[styles.sideHint, { color: tokens.inkText }]}>无需逐页确认</Text>
             )}
           </View>
         </View>
@@ -428,6 +472,7 @@ function PageEditor({
   onRetake: () => void;
 }) {
   const insets = useWindowInsets();
+  const { tokens } = useTheme();
   const [busy, setBusy] = useState(false);
   const [cropActive, setCropActive] = useState(false);
   const [fraction, setFraction] = useState<CropFraction>(CROP_DEFAULT);
@@ -485,19 +530,19 @@ function PageEditor({
   }, [busy, fraction, onChanged, page]);
 
   return (
-    <View style={styles.editorRoot}>
+    <View style={[styles.editorRoot, { backgroundColor: tokens.ink }]}>
       <View style={[styles.editorTop, { paddingTop: insets.top + space.sm }]}>
         <Pressable accessibilityRole="button" accessibilityLabel="关闭编辑" onPress={onClose}>
-          <Text style={styles.editorClose}>完成</Text>
+          <Text style={[styles.editorClose, { color: tokens.onInk }]}>完成</Text>
         </Pressable>
-        <Text style={styles.editorTitle}>
+        <Text style={[styles.editorTitle, { color: tokens.onInk }]}>
           第 {index + 1}/{count} 页 · {formatBytes(page.byteSize)}
         </Text>
         <View style={{ width: 44 }} />
       </View>
 
       <View
-        style={styles.editorPreview}
+        style={[styles.editorPreview, { backgroundColor: tokens.ink }]}
         onLayout={(event: LayoutChangeEvent) => {
           const { width, height } = event.nativeEvent.layout;
           setLayout({ width, height });
@@ -526,11 +571,11 @@ function PageEditor({
             <ZoomableImage uri={page.localPath} />
           )
         ) : (
-          <Text style={styles.hint}>文件不可用</Text>
+          <Text style={[styles.hint, { color: tokens.inkText }]}>文件不可用</Text>
         )}
         {busy ? (
-          <View style={styles.editorBusy}>
-            <ActivityIndicator color="#FFFFFF" />
+          <View style={[styles.editorBusy, { backgroundColor: tokens.inkScrim }]}>
+            <ActivityIndicator color={tokens.onInk} />
           </View>
         ) : null}
       </View>
@@ -540,21 +585,21 @@ function PageEditor({
           <>
             <Pressable
               accessibilityRole="button"
-              style={[styles.editorButton, styles.editorButtonNeutral]}
+              style={[styles.editorButton, styles.editorButtonNeutral, { backgroundColor: tokens.inkBorder }]}
               onPress={() => {
                 setCropActive(false);
                 setFraction(CROP_DEFAULT);
               }}
             >
-              <Text style={styles.editorButtonText}>取消裁剪</Text>
+              <Text style={[styles.editorButtonText, { color: tokens.onInk }]}>取消裁剪</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              style={[styles.editorButton, styles.editorButtonPrimary]}
+              style={[styles.editorButton, styles.editorButtonPrimary, { backgroundColor: tokens.accentFill }]}
               onPress={() => void applyCrop()}
               disabled={busy}
             >
-              <Text style={styles.editorButtonText}>应用裁剪</Text>
+              <Text style={[styles.editorButtonText, { color: tokens.onInk }]}>应用裁剪</Text>
             </Pressable>
           </>
         ) : (
@@ -562,28 +607,28 @@ function PageEditor({
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ disabled: busy }}
-              style={[styles.editorButton, styles.editorButtonNeutral]}
+              style={[styles.editorButton, styles.editorButtonNeutral, { backgroundColor: tokens.inkBorder }]}
               onPress={() => void rotate()}
               disabled={busy}
             >
-              <Text style={styles.editorButtonText}>旋转 90°</Text>
+              <Text style={[styles.editorButtonText, { color: tokens.onInk }]}>旋转 90°</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              style={[styles.editorButton, styles.editorButtonNeutral]}
+              style={[styles.editorButton, styles.editorButtonNeutral, { backgroundColor: tokens.inkBorder }]}
               onPress={() => setCropActive(true)}
               disabled={busy}
             >
-              <Text style={styles.editorButtonText}>裁剪</Text>
+              <Text style={[styles.editorButtonText, { color: tokens.onInk }]}>裁剪</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ disabled: index <= 0 }}
-              style={[styles.editorButton, styles.editorButtonNeutral, index <= 0 && styles.disabled]}
+              style={[styles.editorButton, styles.editorButtonNeutral, { backgroundColor: tokens.inkBorder }, index <= 0 && styles.disabled]}
               onPress={() => onMove(-1)}
               disabled={index <= 0}
             >
-              <Text style={styles.editorButtonText}>← 前移</Text>
+              <Text style={[styles.editorButtonText, { color: tokens.onInk }]}>← 前移</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -591,20 +636,21 @@ function PageEditor({
               style={[
                 styles.editorButton,
                 styles.editorButtonNeutral,
+                { backgroundColor: tokens.inkBorder },
                 index >= count - 1 && styles.disabled,
               ]}
               onPress={() => onMove(1)}
               disabled={index >= count - 1}
             >
-              <Text style={styles.editorButtonText}>后移 →</Text>
+              <Text style={[styles.editorButtonText, { color: tokens.onInk }]}>后移 →</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              style={[styles.editorButton, styles.editorButtonDanger]}
+              style={[styles.editorButton, styles.editorButtonDanger, { backgroundColor: tokens.dangerFill }]}
               onPress={onRetake}
               disabled={busy}
             >
-              <Text style={styles.editorButtonText}>重拍此页</Text>
+              <Text style={[styles.editorButtonText, { color: tokens.onInk }]}>重拍此页</Text>
             </Pressable>
           </>
         )}
@@ -614,18 +660,38 @@ function PageEditor({
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#000" },
+  root: { flex: 1 },
   center: { alignItems: "center", justifyContent: "center", gap: space.sm, paddingHorizontal: space.xl },
-  hint: { color: "#C7D2E2", fontSize: font.body, textAlign: "center" },
+  hint: { fontSize: font.body, textAlign: "center" },
+  guide: {
+    position: "absolute",
+    left: "9%",
+    right: "9%",
+    top: "18%",
+    bottom: "30%",
+    alignItems: "center",
+  },
+  guideCorner: { position: "absolute", width: 26, height: 26, borderWidth: 2 },
+  guideTL: { left: 0, top: 0, borderRightWidth: 0, borderBottomWidth: 0 },
+  guideTR: { right: 0, top: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
+  guideBL: { left: 0, bottom: 0, borderRightWidth: 0, borderTopWidth: 0 },
+  guideBR: { right: 0, bottom: 0, borderLeftWidth: 0, borderTopWidth: 0 },
+  guideHint: {
+    marginTop: "auto",
+    marginBottom: -30,
+    paddingHorizontal: space.sm,
+    paddingVertical: 3,
+    borderRadius: 999,
+    fontSize: font.label,
+    overflow: "hidden",
+  },
   permissionTitle: {
-    color: "#FFFFFF",
     fontSize: font.title,
     fontWeight: "700",
     textAlign: "center",
     paddingHorizontal: space.xl,
   },
   permissionBody: {
-    color: "#C7D2E2",
     fontSize: font.label,
     lineHeight: 18,
     textAlign: "center",
@@ -633,16 +699,15 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     marginTop: space.md,
-    minHeight: 46,
+    minHeight: 48,
     paddingHorizontal: space.xl,
     borderRadius: radius.row,
-    backgroundColor: "#2E7BE6",
     alignItems: "center",
     justifyContent: "center",
   },
-  primaryText: { color: "#FFFFFF", fontSize: font.body, fontWeight: "700" },
-  linkButton: { minHeight: 40, paddingHorizontal: space.lg, justifyContent: "center" },
-  linkText: { color: "#9FB3C8", fontSize: font.body },
+  primaryText: { fontSize: font.body, fontWeight: "700" },
+  linkButton: { minHeight: 44, paddingHorizontal: space.lg, justifyContent: "center" },
+  linkText: { fontSize: font.body },
   topBar: {
     position: "absolute",
     top: 0,
@@ -654,25 +719,22 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   roundButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(0,0,0,0.42)",
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
   },
-  roundGlyph: { color: "#FFFFFF", fontSize: 26, lineHeight: 28, marginTop: -2 },
   topPills: { flexDirection: "row", gap: space.sm },
   pill: {
-    minHeight: 34,
+    minHeight: 44,
     paddingHorizontal: space.md,
     borderRadius: 999,
-    backgroundColor: "rgba(0,0,0,0.42)",
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
   },
-  pillActive: { backgroundColor: "rgba(46,123,230,0.75)" },
-  pillText: { color: "#FFFFFF", fontSize: font.label, fontWeight: "600" },
+  pillText: { fontSize: font.label, fontWeight: "600" },
   bottomBar: {
     position: "absolute",
     left: 0,
@@ -680,25 +742,23 @@ const styles = StyleSheet.create({
     bottom: 0,
     paddingTop: space.sm,
     gap: space.sm,
-    backgroundColor: "rgba(0,0,0,0.35)",
   },
   strip: { paddingHorizontal: space.lg, gap: space.sm },
   stripHint: { paddingHorizontal: space.lg, fontSize: font.label },
-  thumbButton: { width: 56, height: 72, borderRadius: 8, overflow: "hidden", backgroundColor: "#132033" },
+  thumbButton: { width: 56, height: 72, borderRadius: 8, overflow: "hidden" },
   thumb: { width: "100%", height: "100%" },
-  thumbFallback: { flex: 1, backgroundColor: "#1B2A3D" },
+  thumbFallback: { flex: 1 },
   thumbBadge: {
     position: "absolute",
     left: 4,
     top: 4,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: "rgba(0,0,0,0.65)",
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
-  thumbBadgeText: { color: "#FFFFFF", fontSize: 10.5, fontWeight: "700" },
+  thumbBadgeText: { fontSize: font.label, fontWeight: "700" },
   actionRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -706,38 +766,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
   },
   sideSlot: { width: 92, alignItems: "center" },
-  sideHint: { color: "#9FB3C8", fontSize: 10.5, textAlign: "center" },
+  sideHint: { fontSize: font.label, textAlign: "center" },
   shutterOuter: {
     width: 74,
     height: 74,
     borderRadius: 37,
     borderWidth: 4,
-    borderColor: "rgba(255,255,255,0.85)",
     alignItems: "center",
     justifyContent: "center",
   },
-  shutterInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: "#FFFFFF" },
-  shutterBusy: { backgroundColor: "rgba(255,255,255,0.45)" },
+  shutterInner: { width: 56, height: 56, borderRadius: 28 },
   pdfButton: {
-    minHeight: 40,
+    minHeight: 44,
     minWidth: 88,
     paddingHorizontal: space.sm,
     borderRadius: radius.row,
-    backgroundColor: "#2E7BE6",
     alignItems: "center",
     justifyContent: "center",
   },
-  pdfText: { color: "#FFFFFF", fontSize: font.label, fontWeight: "700" },
-  editorRoot: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "#050B14" },
+  pdfText: { fontSize: font.label, fontWeight: "700" },
+  editorRoot: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
   editorTop: {
     paddingHorizontal: space.lg,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  editorClose: { color: "#8FC0FF", fontSize: font.body, fontWeight: "700" },
-  editorTitle: { color: "#FFFFFF", fontSize: font.label },
-  editorPreview: { flex: 1, margin: space.md, borderRadius: radius.row, overflow: "hidden", backgroundColor: "#0B1420" },
+  editorClose: { fontSize: font.body, fontWeight: "700" },
+  editorTitle: { fontSize: font.label },
+  editorPreview: { flex: 1, margin: space.md, borderRadius: radius.row, overflow: "hidden" },
   editorBusy: {
     position: "absolute",
     top: 0,
@@ -746,7 +803,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.35)",
   },
   editorTools: {
     flexDirection: "row",
@@ -756,15 +812,15 @@ const styles = StyleSheet.create({
     paddingTop: space.sm,
   },
   editorButton: {
-    minHeight: 40,
+    minHeight: 44,
     paddingHorizontal: space.md,
     borderRadius: radius.row,
     alignItems: "center",
     justifyContent: "center",
   },
-  editorButtonNeutral: { backgroundColor: "rgba(255,255,255,0.14)" },
-  editorButtonPrimary: { backgroundColor: "#2E7BE6" },
-  editorButtonDanger: { backgroundColor: "rgba(211,58,58,0.85)" },
-  editorButtonText: { color: "#FFFFFF", fontSize: font.label, fontWeight: "600" },
+  editorButtonNeutral: {},
+  editorButtonPrimary: {},
+  editorButtonDanger: {},
+  editorButtonText: { fontSize: font.label, fontWeight: "600" },
   disabled: { opacity: 0.4 },
 });

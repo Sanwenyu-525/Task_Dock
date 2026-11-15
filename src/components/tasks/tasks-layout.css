@@ -378,3 +378,61 @@
     display: block;
   }
 }
+
+/* ── 宽屏工作台：单一列表容器 + 选中态（2026-11-15，对照效果图 01） ──────
+   效果图的任务列表是「一个卡面 + 行间 hairline」，而这里原先每行各自一张卡，
+   行间还有 5px 缝——行数少时右侧留白被切成一格格白条，行数多时又显得碎。
+   只在工作台宿主（`.wb-route` 是大型工作台的页面槽位）生效，主窗口 / 胶囊
+   的窄面板保持原有卡片式布局，不动已经验收过的紧凑形态。
+   全部颜色/圆角走语义 Token；逐条选择器以 `.wb-route .tasks-panel` 开头做
+   作用域隔离。 */
+.wb-route .tasks-panel > .task-list {
+  gap: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+/* 行不再是独立卡片：去掉卡面、阴影、圆角与 hover 位移，只保留排版。 */
+.wb-route .tasks-panel .task-item {
+  border-radius: 8px;
+  background: none;
+  box-shadow: none;
+  transform: none;
+  padding: 8px 10px;
+}
+
+.wb-route .tasks-panel .task-item:not(.leaving):not(.is-leaving):not(.is-selected):hover {
+  transform: none;
+  box-shadow: none;
+  background: var(--surface-hover);
+}
+
+/* 行间分隔线：最后一行不画，避免与容器底边形成双线。 */
+.wb-route .tasks-panel .task-list > .task-item + .task-item {
+  box-shadow: inset 0 1px 0 var(--border-subtle);
+}
+
+/* 选中态：与效果图一致的低饱和强调底 + 左侧色条，不再叠阴影环。
+   分隔线与色条同时需要在同一元素上生效（否则选中行上方会缺一段 hairline），
+   但首行例外——首行上方是容器内边距，画线会形成双重边框。 */
+.wb-route .tasks-panel .task-item.is-selected {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.wb-route .tasks-panel .task-list > .task-item.is-selected:not(:first-child) {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 1px 0 var(--border-subtle);
+}
+
+/* 选中行悬停：底色保持不变（悬停规则已用 :not(.is-selected) 排除，这里只做兜底）。 */
+.wb-route .tasks-panel .task-item.is-selected:hover {
+  background: var(--accent-soft);
+}
+
+/* 键盘用户：选中行给出明确焦点环（整行可选中不是唯一路径，编辑仍可走按钮）。 */
+.wb-route .tasks-panel .task-item.is-selected:focus-within {
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -1px;
+}

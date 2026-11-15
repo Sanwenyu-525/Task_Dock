@@ -37,9 +37,9 @@ import { ToggleSwitch } from "../components/ToggleSwitch";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import {
   addStashItem,
-  clearStash,
   listStash,
   removeStashItem,
+  removeStashItems,
   stashTotalBytes,
   updateStashItem,
 } from "../db/captureStash";
@@ -391,7 +391,7 @@ export function CaptureScreen({
   }, [destination, nav, recording, stopRecordingSafely, text]);
 
   const confirmDiscard = useCallback(() => {
-    Alert.alert("清空这次采集？", "已拍的照片、录音和文件会从本机删除，无法恢复。", [
+    Alert.alert(`清空列表中的 ${items.length} 项？`, "只删除当前列表里的内容，其他采集会话与已保存附件不受影响。", [
       { text: "保留", style: "cancel" },
       {
         text: "清空",
@@ -400,7 +400,9 @@ export function CaptureScreen({
           void (async () => {
             try {
               if (recording) stopRecordingSafely(true);
-              await clearStash();
+              // 只删当前列表里用户看到的这几项，不整表清空：另一采集会话或系统分享
+              // 中途接入的暂存行不属于本次「清空」范围。
+              await removeStashItems(items.map((item) => item.id));
               replaceItems([]);
               setText("");
               setTranscripts({});
@@ -484,7 +486,9 @@ export function CaptureScreen({
     if (!cameraRef.current || shotBusy || staging) return;
     setShotBusy(true);
     try {
-      const shot = await cameraRef.current.takePictureAsync({ quality: 0.72 });
+      // 采集不再静默降质：0.95 接近原图，上传体积由 50MB 上限兜底；
+      // 需要更小副本时由用户在整理页明确裁剪/压缩，不默认损失原图。
+      const shot = await cameraRef.current.takePictureAsync({ quality: 0.95 });
       if (!shot?.uri) throw new Error("相机没有返回照片");
       const stored = await persistIntoCaptureStore(
         { uri: shot.uri, size: null, type: "image/jpeg", name: "photo.jpg" },

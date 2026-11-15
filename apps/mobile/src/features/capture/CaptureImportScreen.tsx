@@ -1,13 +1,14 @@
 // 相册/系统文件导入：只处理用户在系统选择器里明确选中的文件，不扫描整个相册。
 //
 // 流程：系统选择器 → 复制进应用 library（content:// 不能当永久路径）→ SHA-256 +
-// 缩略图 → capture_assets(saved) → 可在「采集暂存」继续发送电脑或整理。
+// 缩略图 → capture_assets(saved) → 直接进「本机素材库」，可继续发送电脑或整理。
 import { useCallback, useState } from "react";
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
 import { File as FsFile } from "expo-file-system";
 
 import { AppBar } from "../../components/AppBar";
 import { PressableScale } from "../../components/PressableScale";
+import { Toast, TOAST_TOP_PUSH, type ToastMessage } from "../../components/Toast";
 import { describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
 import type { Nav } from "../../lib/nav";
@@ -24,11 +25,14 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
   const [picked, setPicked] = useState<FsFile[]>([]);
+  /** 最近一次选择用的入口：决定落库的 source 语义，不能一律写成相册 */
+  const [picker, setPicker] = useState<"gallery" | "file_picker">("gallery");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ index: number; count: number; name: string } | null>(
     null,
   );
   const [result, setResult] = useState<Result>({ kind: "idle" });
+  const [toast, setToast] = useState<ToastMessage | null>(null);
 
   const pick = useCallback(async (imagesOnly: boolean) => {
     try {
@@ -37,9 +41,10 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
       );
       if (pickedResult.canceled) return;
       setPicked(pickedResult.result);
+      setPicker(imagesOnly ? "gallery" : "file_picker");
       setResult({ kind: "idle" });
     } catch (error) {
-      Alert.alert("无法打开系统选择器", describeError(error));
+      setToast({ id: Date.now(), text: `无法打开系统选择器：${describeError(error)}`, tone: "danger" });
     }
   }, []);
 
@@ -48,28 +53,28 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
     setBusy(true);
     try {
       const outcome = await importLocalFiles(picked, {
-        source: "gallery",
+        source: picker,
         onProgress: (index, count, name) => setProgress({ index: index + 1, count, name }),
       });
       setResult({ kind: "done", created: outcome.created.length, failures: outcome.failures });
       setPicked([]);
       bumpCaptureRevision();
     } catch (error) {
-      Alert.alert("导入失败", describeError(error));
+      setToast({ id: Date.now(), text: describeError(error), tone: "danger" });
     } finally {
       setBusy(false);
       setProgress(null);
     }
-  }, [busy, picked]);
+  }, [busy, picked, picker]);
 
   return (
     <View style={[styles.root, { backgroundColor: tokens.bg }]}>
-      <AppBar title="相册导入" onBack={nav.back} />
+      <AppBar title="导入素材" onBack={nav.back} />
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + space.xl }]}>
         <Text style={[styles.title, { color: tokens.text }]}>从系统相册或文件中选择素材</Text>
         <Text style={[styles.note, { color: tokens.muted }]}>
           只读取你在系统选择器里明确选中的文件；不会申请完整相册权限，也不会自动上传。
-          导入后会复制一份到 TaskDock 本机采集暂存，原文件保持不变。
+          导入后会复制一份到 TaskDock 本机素材库，原文件保持不变。
         </Text>
 
         <View style={styles.actions}>
@@ -93,9 +98,21 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
 
         {picked.length > 0 ? (
           <View style={[styles.card, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
-            <Text style={[styles.cardTitle, { color: tokens.text }]}>
-              已选择 {picked.length} 个文件
-            </Text>
+            <View style={styles.cardHead}>
+              <Text style={[styles.cardTitle, { color: tokens.text }]}>
+                已选择 {picked.length} 个文件
+              </Text>
+              <PressableScale
+                accessibilityLabel="清空已选文件"
+                disabled={busy}
+                onPress={() => setPicked([])}
+                style={styles.clearPress}
+                contentStyle={styles.clearButton}
+                scaleTo={0.9}
+              >
+                <Text style={[styles.clearText, { color: tokens.accentText }]}>清空</Text>
+              </PressableScale>
+            </View>
             {picked.slice(0, 20).map((file, index) => (
               <Text
                 key={`${file.uri}-${index}`}
@@ -147,15 +164,22 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
               </>
             ) : null}
             <PressableScale
-              accessibilityLabel="查看采集暂存"
+              accessibilityLabel="查看本机素材库"
               onPress={() => nav.push("capture_stash")}
               contentStyle={[styles.secondary, { backgroundColor: tokens.accentSoft }]}
             >
-              <Text style={[styles.secondaryText, { color: tokens.accentText }]}>查看采集暂存</Text>
+              <Text style={[styles.secondaryText, { color: tokens.accentText }]}>查看本机素材库</Text>
             </PressableScale>
           </View>
         ) : null}
       </ScrollView>
+      <Toast
+        toast={toast}
+        onDismiss={() => setToast(null)}
+        placement="bottom"
+        topOffset={TOAST_TOP_PUSH}
+        bottomOffset={insets.bottom + space.xl}
+      />
     </View>
   );
 }
@@ -193,5 +217,9 @@ const styles = StyleSheet.create({
     gap: space.xs,
   },
   cardTitle: { fontSize: font.body, fontWeight: "700" },
+  cardHead: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  clearPress: { marginLeft: "auto", minWidth: 44, minHeight: 44, justifyContent: "center" },
+  clearButton: { alignItems: "flex-end", justifyContent: "center", minHeight: 44 },
+  clearText: { fontSize: font.meta, fontWeight: "600" },
   fileLine: { fontSize: font.label, lineHeight: 16 },
 });

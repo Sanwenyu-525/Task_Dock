@@ -422,9 +422,10 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 
 ## 13. 验收证据
 
-跨进程行为验收（需求第 1–9 项 + 补充A「嵌套不自锁」共 11 例全部通过，第 10 项真机构建
+跨进程行为验收（需求第 1–9 项 + 补充A「嵌套不自锁」+ 验收10「等待资源超时层级判定」+
+验收11「子进程失败原因可查询」共 13 例全部通过，第 10 项真机构建
 `ENVIRONMENT BLOCKED`）与真机资源数据见
-[tmp/acceptance/build-scheduler/report.md](../tmp/acceptance/build-scheduler/report.md)；
-自动化测试：`npm run sched:acceptance`（跨进程，约 1 分钟）与 `npm run test:scripts`（含 20 例单测）。
+[tmp/acceptance/build-sched/report.md](../tmp/acceptance/build-sched/report.md)；
+自动化测试：`npm run sched:acceptance`（跨进程，约 1 分钟）与 `npm run test:scripts`（含 22 例单测）。
 验收期间机器长期被其他会话的 dev/cargo 占用，曾出现的时序敏感失败与处置（含两处真实缺陷：
 取消误判、Windows `rename` 写冲突）见报告 §8.2。

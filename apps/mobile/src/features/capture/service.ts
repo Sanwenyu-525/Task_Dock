@@ -14,7 +14,7 @@ import { loadConnection, readToken } from "../../db/syncConnection";
 import { AppError, describeError } from "../../lib/errors";
 import { deriveSyncKey } from "../../lib/sync/crypto";
 import { isLegacyConnection } from "../../lib/sync/connectionState";
-import { uploadDisplayName, uploadLocalFile } from "../../lib/sync/fileIo";
+import { isOpaqueFileName, uploadDisplayName, uploadLocalFile } from "../../lib/sync/fileIo";
 import {
   createFileClient,
   FILE_CANCELLED_MESSAGE,
@@ -24,7 +24,7 @@ import {
   type RemoteShelfGroup,
 } from "../../lib/sync/files";
 
-import { createPdfFromImages, createThumbnail, saveToSystemGallery, transformImage } from "./album";
+import { createPdfFromImages, createThumbnail, resolveDisplayName, saveToSystemGallery, transformImage } from "./album";
 import {
   deleteFileQuietly,
   ensureCaptureDirs,
@@ -404,17 +404,30 @@ export async function importLocalFiles(
   ensureCaptureDirs();
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index];
-    const displayName = uploadDisplayName(file);
+    // 系统选择器给的名字不可信（vivo 会返回 `document:1000069262`）；
+    // 先用 ContentResolver 取真实 DISPLAY_NAME，取不到才用时间戳兜底名。
+    let displayName = uploadDisplayName(file);
+    let resolvedMime = "";
+    let resolvedSize = 0;
+    if (isOpaqueFileName(file.name) && file.uri.startsWith("content://")) {
+      const resolved = await resolveDisplayName(file.uri);
+      if (resolved) {
+        displayName = resolved.name;
+        resolvedMime = resolved.mime;
+        resolvedSize = resolved.size;
+      }
+    }
     options.onProgress?.(index, files.length, displayName);
     if (!file.exists) {
       failures.push(`${displayName}：文件不可读取`);
       continue;
     }
-    if (file.size <= 0) {
+    const declaredSize = file.size > 0 ? file.size : resolvedSize;
+    if (declaredSize <= 0 && file.uri.startsWith("file://")) {
       failures.push(`${displayName}：文件为空`);
       continue;
     }
-    const mime = file.type || "application/octet-stream";
+    const mime = file.type || resolvedMime || "application/octet-stream";
     const ext = extensionOf(file.name || file.uri, extensionFromMime(mime));
     let copied: { uri: string; size: number } | null = null;
     try {

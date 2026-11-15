@@ -31,6 +31,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use crate::db::Db;
 use crate::error::AppError;
 use crate::mobile_sync::files;
+use crate::shelf;
 use crate::mobile_sync::sync::{
     apply_push, decrypt_envelope, derive_key, encrypt_envelope, pull, PushRequest, AAD_PULL,
     AAD_PUSH, MAX_PULL_LIMIT, MAX_PUSH_OPS, SYNC_MAX_BODY,
@@ -519,6 +520,8 @@ enum FileRoute {
     UploadChunk { id: String, index: u64 },
     Complete { id: String },
     Delete { id: String },
+    /// 把本设备已上传完成的文件以托管副本导入桌面暂存架。
+    Shelf { id: String },
 }
 
 enum FileRouteMatch {
@@ -557,6 +560,7 @@ fn parse_file_route(method: &str, path: &str) -> Option<FileRouteMatch> {
             .map(|index| FileRoute::UploadChunk { id: id.to_string(), index }),
         ("POST", [_, "complete"]) => Some(FileRoute::Complete { id: id.to_string() }),
         ("POST", [_, "delete"]) => Some(FileRoute::Delete { id: id.to_string() }),
+        ("POST", [_, "shelf"]) => Some(FileRoute::Shelf { id: id.to_string() }),
         _ => None,
     };
     Some(match route {
@@ -582,6 +586,7 @@ async fn dispatch_file_route(
         }
         FileRoute::Complete { id } => handle_file_complete(req, ctx, peer, id).await,
         FileRoute::Delete { id } => handle_file_delete(req, ctx, peer, id).await,
+        FileRoute::Shelf { id } => handle_file_shelf(req, ctx, peer, id).await,
     }
 }
 
@@ -952,6 +957,124 @@ async fn handle_file_delete(
     }
 }
 
+/// POST /v1/files/{id}/shelf：把本设备已上传完成的文件以托管副本导入桌面暂存架。
+///
+/// 与删除接口同一套鉴权：记录方向/归属/状态由 `files::import_to_shelf` 再校验，
+/// 手机端只能引用传输记录 ID，不能指定任何桌面路径。`group_id` 缺省表示默认分组；
+/// 传入不存在的分组会在复制前失败，不留下条目。
+async fn handle_file_shelf(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+    id: String,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let body = match read_body(req, MAX_BODY).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let key = derive_key(&token_hash);
+    let aad = files::aad_file_shelf(&id);
+    let envelope = match parse_envelope(&body) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let payload = match decrypt_envelope(&key, &aad, &envelope) {
+        Ok(value) => value,
+        Err(reason) => {
+            tracing::warn!("手机暂存架导入载荷解密失败: {reason}");
+            return api_error(StatusCode::BAD_REQUEST, "invalid_request", "文件载荷无效");
+        }
+    };
+    let group_id = match payload.get("group_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else if trimmed.chars().count() > 128 {
+                return api_error(StatusCode::BAD_REQUEST, "invalid_request", "暂存分组不合法");
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Some(_) => {
+            return api_error(StatusCode::BAD_REQUEST, "invalid_request", "暂存分组不合法");
+        }
+    };
+
+    let db = ctx.db.clone();
+    let files_root = ctx.state.files_root().to_path_buf();
+    let shelf_root = ctx.state.data_dir().join("shelf");
+    let device_id = device.id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        files::import_to_shelf(&db, &files_root, &shelf_root, &device_id, &id, group_id.as_deref())
+    })
+    .await;
+    match result {
+        Ok(Ok(file)) => encrypted_response(&key, &aad, json!({ "file": file })),
+        Ok(Err(error)) => file_error(error),
+        Err(join_error) => {
+            tracing::warn!("手机暂存架导入任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "文件处理失败，请重试",
+            )
+        }
+    }
+}
+
+/// GET /v1/shelf/groups：已配对设备读取有效暂存分组（只读，用于手机选择导入位置）。
+///
+/// 只回分组元数据（id/name/builtin），不回条目数/排序/路径；与同步/文件接口
+/// 共用 Bearer 鉴权与加密信封。
+async fn handle_shelf_groups(
+    req: Request<Incoming>,
+    ctx: Arc<ServerCtx>,
+    peer: SocketAddr,
+) -> Response<Full<Bytes>> {
+    let _permit = match acquire_inflight(&ctx).await {
+        Ok(permit) => permit,
+        Err(response) => return response,
+    };
+    let (_device, token_hash) = match authenticate_request(&req, &ctx, peer).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let key = derive_key(&token_hash);
+    let db = ctx.db.clone();
+    let result = tokio::task::spawn_blocking(move || shelf::list_groups(&db)).await;
+    match result {
+        Ok(Ok(groups)) => {
+            // 契约 2.2：只回 id/name/builtin；不下发 item_count（暂存架条目总数）与 sort_order。
+            let payload = json!({
+                "groups": groups
+                    .iter()
+                    .map(|g| json!({ "id": g.id, "name": g.name, "builtin": g.builtin }))
+                    .collect::<Vec<_>>()
+            });
+            encrypted_response(&key, files::AAD_SHELF_GROUPS, payload)
+        }
+        Ok(Err(error)) => file_error(error),
+        Err(join_error) => {
+            tracing::warn!("手机暂存分组读取任务异常: {join_error}");
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "读取暂存分组失败，请重试",
+            )
+        }
+    }
+}
+
 async fn handle_health() -> Response<Full<Bytes>> {
     json_response(
         StatusCode::OK,
@@ -995,6 +1118,7 @@ async fn route(
         ("GET", "/v1/ping") => handle_ping(req, ctx, peer).await,
         ("GET", "/v1/changes") => handle_changes(req, ctx, peer).await,
         ("POST", "/v1/ops") => handle_ops(req, ctx, peer).await,
+        ("GET", "/v1/shelf/groups") => handle_shelf_groups(req, ctx, peer).await,
         ("GET" | "POST", "/v1/health" | "/v1/pair" | "/v1/ping" | "/v1/changes" | "/v1/ops") => {
             let mut resp = api_error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "方法不允许");
             resp.headers_mut()
@@ -1464,5 +1588,133 @@ mod tests {
         .unwrap();
         assert_eq!(request.code, "482913");
         assert_eq!(request.device_uid.len(), 36);
+    }
+
+    #[tokio::test]
+    async fn shelf_endpoint_import_is_owned_encrypted_and_idempotent() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let base = std::env::temp_dir().join(format!(
+            "taskdock-shelf-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let files_root = base.join("mobile_files");
+        let state = MobileSyncState::new(&db, files_root.clone());
+        let port = spawn_server(&db, &state).await;
+
+        let token = device_token_fixture();
+        insert_device(&db, "device-shelf", &token);
+        let token_other = "b".repeat(64);
+        insert_device(&db, "device-shelf-2", &token_other);
+
+        let bytes = vec![7u8; 64];
+        let file = files::create_upload(&db, &files_root, "device-shelf", "photo.bin", 64).unwrap();
+        files::write_chunk(&db, "device-shelf", &file.id, 0, &bytes).unwrap();
+        files::complete_upload(&db, &files_root, "device-shelf", &file.id).unwrap();
+
+        let key = derive_key(&hash_token(&token));
+        let aad = files::aad_file_shelf(&file.id);
+        let envelope = encrypt_envelope(
+            &key,
+            &aad,
+            &json!({ "group_id": Value::Null }),
+        )
+        .unwrap();
+        let body = serde_json::to_string(&envelope).unwrap();
+
+        // 第一次导入：200，响应回传 shelf 三字段。
+        let (status, resp) = tls_request(
+            port,
+            "POST",
+            &format!("/v1/files/{}/shelf", file.id),
+            Some(&token),
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, 200, "{resp}");
+        let data = decrypt_envelope(&key, &aad, &serde_json::from_str(&resp).unwrap()).unwrap();
+        let item_id = data["file"]["shelf_item_id"]
+            .as_str()
+            .expect("响应应带 ShelfItem.id");
+        assert_eq!(item_id, format!("mf-{}", file.id));
+        assert!(data["file"]["shelf_imported_at"].is_string());
+        assert!(data["file"]["device_id"].as_str() == Some("device-shelf"));
+        // 落盘路径绝不下发。
+        assert!(data["file"].get("stored_path").is_none());
+
+        // 幂等：第二次导入返回同一 ShelfItem.id，暂存架仍只有一条。
+        let (status, resp) = tls_request(
+            port,
+            "POST",
+            &format!("/v1/files/{}/shelf", file.id),
+            Some(&token),
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, 200, "{resp}");
+        let again = decrypt_envelope(&key, &aad, &serde_json::from_str(&resp).unwrap()).unwrap();
+        assert_eq!(again["file"]["shelf_item_id"].as_str(), Some(item_id));
+        let item_count: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM shelf_items", [], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(item_count, 1);
+        let origin: Option<String> = db
+            .with_conn(|conn| {
+                Ok(conn.query_row("SELECT origin FROM shelf_items WHERE id = ?1", [item_id], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(origin.as_deref(), Some(files::SHELF_ORIGIN_MOBILE_CAPTURE));
+
+        // 其他设备：404，不泄露存在性，也不建条目。
+        let (status, resp) = tls_request(
+            port,
+            "POST",
+            &format!("/v1/files/{}/shelf", file.id),
+            Some(&token_other),
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, 404, "{resp}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn shelf_groups_endpoint_requires_auth_and_returns_encrypted_list() {
+        let db = Arc::new(crate::db::Db::open_in_memory().unwrap());
+        let state = test_state();
+        let port = spawn_server(&db, &state).await;
+        let token = device_token_fixture();
+        insert_device(&db, "device-groups", &token);
+
+        // 未携带令牌：401。
+        let (status, resp) = tls_request(port, "GET", "/v1/shelf/groups", None, None).await;
+        assert_eq!(status, 401, "{resp}");
+
+        // 已配对设备：200，响应为加密信封，解出分组列表。
+        let (status, resp) = tls_request(port, "GET", "/v1/shelf/groups", Some(&token), None).await;
+        assert_eq!(status, 200, "{resp}");
+        let key = derive_key(&hash_token(&token));
+        let data = decrypt_envelope(
+            &key,
+            files::AAD_SHELF_GROUPS,
+            &serde_json::from_str(&resp).unwrap(),
+        )
+        .unwrap();
+        let groups = data["groups"].as_array().expect("应返回 groups 数组");
+        assert!(!groups.is_empty(), "默认分组应存在");
+        for group in groups {
+            assert!(group["id"].is_string());
+            assert!(group["name"].is_string());
+            assert!(group["builtin"].is_boolean());
+            // 契约 2.2：不下发条目总数与排序字段。
+            assert!(group.get("item_count").is_none());
+            assert!(group.get("sort_order").is_none());
+        }
     }
 }

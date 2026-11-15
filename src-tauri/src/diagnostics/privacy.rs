@@ -40,6 +40,9 @@ const ALLOWED_META_KEYS: &[&str] = &[
     "failure_codes",
     "failure_groups",
     "partial",
+    // 拖入阶段就失败的条数（虚拟文件流读取失败等），与 `failed` 分开计数：
+    // 这些条目从未进入提交，混在一起会掩盖「拖入失败」这一类最常见的症状。
+    "payload_failures",
     "skipped",
     "success",
     "target_id",
@@ -84,6 +87,35 @@ const ALLOWED_META_KEYS: &[&str] = &[
     "window",
     "workflow_id",
 ];
+
+/// 路径形态的 metadata key：只允许稳定标识（来源枚举 / 目标 ID 等）。
+/// 这些 key 一旦出现路径形态的值（盘符 / UNC / POSIX 绝对路径 / 含目录分隔符的相对路径），
+/// 整体替换为占位符——`sanitize_diagnostic` 只隐藏用户主目录段，主目录之外的绝对路径与
+/// 文件名仍会残留，路径类字段不能依赖那一层兜底。
+const PATH_LIKE_META_KEYS: &[&str] = &["source", "target", "from", "to"];
+
+/// 判断字符串是否为路径形态。稳定枚举（`drag` / `clipboard-current` / `watch`）不含分隔符。
+fn looks_like_path(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if t.starts_with("\\\\") || t.starts_with('/') {
+        return true;
+    }
+    let mut chars = t.chars();
+    if let Some(drive) = chars.next() {
+        if drive.is_ascii_alphabetic() {
+            let rest: String = chars.collect();
+            if let Some(after_colon) = rest.strip_prefix(':') {
+                if after_colon.starts_with('\\') || after_colon.starts_with('/') {
+                    return true;
+                }
+            }
+        }
+    }
+    t.contains('\\') || t.contains('/')
+}
 
 /// 敏感 key 片段：即使误加进白名单也必须拒绝（防御性双保险）。
 const FORBIDDEN_KEY_PARTS: &[&str] = &[
@@ -164,7 +196,11 @@ pub fn sanitize_metadata(raw: &Map<String, Value>) -> Option<Map<String, Value>>
                 if text.is_empty() {
                     continue;
                 }
-                Value::String(text)
+                if PATH_LIKE_META_KEYS.contains(&key.as_str()) && looks_like_path(&text) {
+                    Value::String("<路径>".to_string())
+                } else {
+                    Value::String(text)
+                }
             }
             // 对象/数组/null：一律丢弃（业务对象整体序列化是隐私与体积风险的主要来源）。
             _ => continue,
@@ -247,6 +283,33 @@ mod tests {
         let reason = filtered.get("reason").unwrap().as_str().unwrap();
         assert!(!reason.contains("alice"));
         assert!(reason.chars().count() <= MAX_META_CHARS + 1);
+    }
+
+    #[test]
+    fn path_like_values_in_path_keys_are_placeholderized() {
+        let raw = json!({
+            "source": "C:\\Users\\alice\\Desktop\\foo.txt",
+            "target": "D:\\Develop\\task_dock\\src\\lib\\errors.ts",
+            "from": "\\\\server\\share\\dir",
+            "to": "/home/alice/project/file.rs",
+            "route": "settings/general",
+        });
+        let filtered = sanitize_metadata(raw.as_object().unwrap()).unwrap();
+        assert_eq!(filtered.get("source").and_then(|v| v.as_str()), Some("<路径>"));
+        assert_eq!(filtered.get("target").and_then(|v| v.as_str()), Some("<路径>"));
+        assert_eq!(filtered.get("from").and_then(|v| v.as_str()), Some("<路径>"));
+        assert_eq!(filtered.get("to").and_then(|v| v.as_str()), Some("<路径>"));
+        // 非路径 key 里的斜杠不在本规则范围（仍由 sanitize_diagnostic 限长/脱敏）。
+        assert!(filtered.get("route").is_some());
+    }
+
+    #[test]
+    fn path_keys_keep_stable_origin_enums() {
+        let raw = json!({ "source": "drag", "target": "entry-17", "from": "watch" });
+        let filtered = sanitize_metadata(raw.as_object().unwrap()).unwrap();
+        assert_eq!(filtered.get("source").and_then(|v| v.as_str()), Some("drag"));
+        assert_eq!(filtered.get("target").and_then(|v| v.as_str()), Some("entry-17"));
+        assert_eq!(filtered.get("from").and_then(|v| v.as_str()), Some("watch"));
     }
 
     #[test]

@@ -9,13 +9,25 @@ import { LaunchOverlay } from "./src/components/LaunchOverlay";
 import { TabBar, type TabKey } from "./src/components/TabBar";
 import launchIntent, { type LaunchAction } from "./modules/launch-intent";
 import { listCaptures } from "./src/db/captures";
-import { markAttachmentsMissingFiles } from "./src/db/attachments";
+import { markAttachmentsMissingFiles, resetInterruptedUploads } from "./src/db/attachments";
 import { openDatabase } from "./src/db/database";
 import { getSetting, setSetting } from "./src/db/kv";
+import { initializeCaptureStore } from "./src/features/capture/service";
+import { CaptureCameraScreen } from "./src/features/capture/CaptureCameraScreen";
+import { CaptureHomeScreen } from "./src/features/capture/CaptureHomeScreen";
+import { CaptureImportScreen } from "./src/features/capture/CaptureImportScreen";
+import { CaptureReviewScreen } from "./src/features/capture/CaptureReviewScreen";
+import { CaptureScanScreen } from "./src/features/capture/CaptureScanScreen";
+import { CaptureStashScreen } from "./src/features/capture/CaptureStashScreen";
 import { useWindowInsets } from "./src/lib/insets";
 import { parseWidgetRouteUri, type CaptureIntent, type Route, type RouteKey } from "./src/lib/nav";
 import { offerShare, pullInitialShare, subscribeNativeShareEvents } from "./src/lib/pendingShare";
-import { loadAutoSyncSettings, requestAutoSync, subscribeSyncCompleted } from "./src/lib/sync/autoSync";
+import {
+  loadAutoSyncSettings,
+  requestAutoSync,
+  setAutoSyncForeground,
+  subscribeSyncCompleted,
+} from "./src/lib/sync/autoSync";
 import { transferPendingAttachments } from "./src/lib/sync/attachmentTransfer";
 import { offerPairingUri } from "./src/lib/sync/pendingPairing";
 import { notifyWidgetDataChanged } from "./src/lib/widgetSnapshot";
@@ -82,6 +94,20 @@ function ScreenFade({ children }: { children: ReactNode }) {
   }, [opacity, reduceMotion]);
 
   return <Animated.View style={[styles.fill, { opacity }]}>{children}</Animated.View>;
+}
+
+/** 一级页容器：常驻挂载 + 可见性切换，保留页面内的筛选、搜索与滚动位置。 */
+function TabPage({ active, children }: { active: boolean; children: ReactNode }) {
+  return (
+    <View
+      style={[styles.tabPage, active ? null : styles.tabPageHidden]}
+      aria-hidden={!active}
+      importantForAccessibility={active ? "auto" : "no-hide-descendants"}
+      pointerEvents={active ? "auto" : "none"}
+    >
+      <ScreenFade>{children}</ScreenFade>
+    </View>
+  );
 }
 
 function Shell() {
@@ -152,7 +178,20 @@ function Shell() {
       // 深链可能在配对页/采集页已打开时重复触发：不叠加第二个相同页面，
       // 新载荷由 pendingPairing / pendingShare 的订阅者就地更新。
       const topKey = prev[prev.length - 1]?.key;
-      if ((key === "pairing" || key === "capture") && topKey === key) return prev;
+      if ((key === "pairing" || key === "capture") && topKey === key) {
+        // 采集中心已打开：不叠加第二个页面，但也不能吞掉用户这次选择
+        // （长按「拍照」时用户就是要拍照）。更新 intent 并推进序号让屏幕响应。
+        if (key === "capture" && intent) {
+          const next = prev.slice();
+          next[next.length - 1] = {
+            ...next[next.length - 1],
+            intent,
+            intentNonce: (prev[prev.length - 1].intentNonce ?? 0) + 1,
+          };
+          return next;
+        }
+        return prev;
+      }
       return [...prev, { key, noteId, intent }];
     });
   }, []);
@@ -180,13 +219,20 @@ function Shell() {
   // （同步内部有最小间隔/退避/单飞，不会因为频繁切换而来回拉取）。
   useEffect(() => {
     consumeLaunchAction();
+    setAutoSyncForeground(true);
     const sub = AppState.addEventListener("change", (state) => {
-      if (state !== "active") return;
+      const active = state === "active";
+      // 前台上限内才排重试定时器；退后台/被系统收走时立刻取消，不假装能准点后台执行
+      setAutoSyncForeground(active);
+      if (!active) return;
       setVersion((v) => v + 1);
       consumeLaunchAction();
       requestAutoSync("foreground");
     });
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+      setAutoSyncForeground(false);
+    };
   }, [consumeLaunchAction]);
 
   // 深链配对：系统相机扫描 taskdock://pair?... 后唤起 App（冷启动与运行中都覆盖）。
@@ -291,6 +337,7 @@ function Shell() {
           <CaptureScreen
             nav={nav}
             intent={route.intent}
+            intentNonce={route.intentNonce}
             onDataChanged={handleDataChanged}
           />
         );
@@ -314,6 +361,18 @@ function Shell() {
         return <DeviceScreen nav={nav} version={version} onBack={back} />;
       case "settings":
         return <SettingsScreen nav={nav} version={version} onBack={back} />;
+      case "capture_home":
+        return <CaptureHomeScreen nav={nav} />;
+      case "capture_camera":
+        return <CaptureCameraScreen nav={nav} />;
+      case "capture_scan":
+        return <CaptureScanScreen nav={nav} />;
+      case "capture_review":
+        return <CaptureReviewScreen nav={nav} />;
+      case "capture_stash":
+        return <CaptureStashScreen nav={nav} />;
+      case "capture_import":
+        return <CaptureImportScreen nav={nav} />;
       case "icon_gallery":
         return <IconGalleryScreen nav={nav} />;
     }
@@ -337,35 +396,31 @@ function Shell() {
         aria-hidden={Boolean(top)}
         importantForAccessibility={top ? "no-hide-descendants" : "auto"}
       >
-        {tab === "home" ? (
-          <ScreenFade>
+        {/* 五个一级页常驻挂载，切 Tab 只切换可见性（display），不再整页卸载重建：
+            任务页的筛选/搜索、工作区的分段、列表滚动位置在切走再切回后仍然保留。
+            页面用绝对定位叠在同一容器里——五个 flex:1 直接并列会被纵向平分高度。
+            隐藏页同时关闭无障碍子树，否则 TalkBack 仍能聚焦到看不见的列表项。 */}
+        <View style={styles.tabStack}>
+          <TabPage active={tab === "home"}>
             <HomeScreen version={version} nav={nav} inboxCount={inboxCount} />
-          </ScreenFade>
-        ) : null}
-        {tab === "tasks" ? (
-          <ScreenFade>
+          </TabPage>
+          <TabPage active={tab === "tasks"}>
             <TasksScreen
               version={version}
               openCreateSignal={createPending ? createSignal : 0}
               onConsumeCreateSignal={consumeCreateSignal}
             />
-          </ScreenFade>
-        ) : null}
-        {tab === "workspace" ? (
-          <ScreenFade>
+          </TabPage>
+          <TabPage active={tab === "workspace"}>
             <WorkspaceScreen nav={nav} inboxCount={inboxCount} />
-          </ScreenFade>
-        ) : null}
-        {tab === "tools" ? (
-          <ScreenFade>
+          </TabPage>
+          <TabPage active={tab === "tools"}>
             <ToolsScreen nav={nav} inboxCount={inboxCount} />
-          </ScreenFade>
-        ) : null}
-        {tab === "profile" ? (
-          <ScreenFade>
+          </TabPage>
+          <TabPage active={tab === "profile"}>
             <ProfileScreen nav={nav} version={version} />
-          </ScreenFade>
-        ) : null}
+          </TabPage>
+        </View>
       </View>
 
       {/* 推送页：宿主绝对定位盖满根容器（含 TabBar 区域）；ScreenFade 不能直接参与
@@ -426,6 +481,9 @@ export default function App() {
       try {
         installNotificationHandler();
         await openDatabase();
+        // 采集中心开机对账：中断的传输标为可重试、清理过期采集会话与孤儿文件。
+        // 失败不阻塞启动（采集是增强能力，数据库本身已可用）。
+        void initializeCaptureStore().catch(() => undefined);
         // 启动时对账提醒：系统升级/换时区/被系统清理后，排期可能已经丢失。
         // 顺序必须先注册动作按钮，再决定「整体重排」还是「幂等等价对账」。
         // 失败不阻塞启动（通知是增强能力，不是打开应用的前提）。
@@ -440,7 +498,11 @@ export default function App() {
           await setSetting("reminder_actions_version", REMINDER_ACTIONS_VERSION);
         })().catch(() => undefined);
         // 附件元数据与本机文件对账：文件被清掉时把待传状态改成失败，避免同步页「待传」数字永远不降。
-        void markAttachmentsMissingFiles().catch(() => undefined);
+        // 同时把上次进程被杀留下的 uploading 复位为可重试失败（否则永远卡在「正在传输」）。
+        void (async () => {
+          await resetInterruptedUploads().catch(() => undefined);
+          await markAttachmentsMissingFiles().catch(() => undefined);
+        })();
         const stored = await getSetting("theme_mode");
         if (cancelled) return;
         setBoot({ phase: "ready", mode: isThemeMode(stored) ? stored : "system" });
@@ -483,6 +545,10 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   body: { flex: 1 },
   fill: { flex: 1 },
+  // 一级页叠加宿主：常驻的五个页面都绝对填满，只有当前 Tab 参与命中与无障碍
+  tabStack: { flex: 1 },
+  tabPage: { position: "absolute" as const, top: 0, left: 0, right: 0, bottom: 0 },
+  tabPageHidden: { display: "none" as const },
   pushHost: {
     position: "absolute" as const,
     left: 0,

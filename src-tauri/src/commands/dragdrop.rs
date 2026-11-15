@@ -8,6 +8,7 @@
 //! 失败一律写诊断中心（含稳定错误码），因为拖入失败最常见的就是「看起来没反应」，
 //! 没有可观测性就永远查不出根因。日志只记码、类型、计数，不记正文/路径。
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -96,28 +97,70 @@ pub async fn drag_payload_commit_shelf(
     let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     match &result {
         Ok(report) => {
-            let failed = report.failed.len();
-            diagnostics::emit(
-                diagnostics::event(
-                    DiagLevel::Info,
-                    "dragdrop",
-                    "commit-shelf",
-                    "drag-payload",
-                )
-                .status(if failed > 0 {
-                    DiagStatus::Failed
+            // 两类失败都要计入：`failed`（进入提交但失败）与 `failures`
+            // （拖入阶段就没读到内容，例如虚拟文件流读取失败）。旧实现只统计
+            // `failed`，于是「虚拟文件拖入失败」在诊断中心完全没有记录。
+            let commit_failed = report.failed.len();
+            let payload_failed = report.failures.len();
+            let has_failure = commit_failed + payload_failed > 0;
+
+            // 主导错误码：按出现次数取最多的稳定码（并列取字典序小的，结果确定）。
+            let mut codes: BTreeMap<(String, String), usize> = BTreeMap::new();
+            for entry in &report.failed {
+                if let Some(code) = entry.code.as_deref() {
+                    let category = entry
+                        .category
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    *codes.entry((code.to_string(), category)).or_insert(0) += 1;
+                }
+            }
+            for failure in &report.failures {
+                *codes
+                    .entry((
+                        failure.code.clone(),
+                        codes::category(&failure.code).to_string(),
+                    ))
+                    .or_insert(0) += 1;
+            }
+            let dominant = codes
+                .iter()
+                .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(&a.0)))
+                .map(|((code, category), _)| (code.clone(), category.clone()));
+
+            let mut builder = diagnostics::event(
+                if has_failure {
+                    DiagLevel::Warn
                 } else {
-                    DiagStatus::Success
-                })
-                .stage("persist")
-                .operation(&op_id)
-                .duration_ms(elapsed)
-                .metadata("kind", serde_json::json!(report.kind))
-                .metadata("added", serde_json::json!(report.added.len()))
-                .metadata("failed", serde_json::json!(failed))
-                .metadata("skipped", serde_json::json!(report.skipped))
-                .build(),
-            );
+                    DiagLevel::Info
+                },
+                "dragdrop",
+                "commit-shelf",
+                "drag-payload",
+            )
+            .status(if has_failure {
+                DiagStatus::Failed
+            } else {
+                DiagStatus::Success
+            })
+            .stage("persist")
+            .operation(&op_id)
+            .duration_ms(elapsed)
+            .metadata("kind", serde_json::json!(report.kind))
+            .metadata("added", serde_json::json!(report.added.len()))
+            .metadata(
+                "failed",
+                serde_json::json!(commit_failed + payload_failed),
+            )
+            .metadata("skipped", serde_json::json!(report.skipped))
+            .metadata("failure_groups", serde_json::json!(codes.len()));
+            if payload_failed > 0 {
+                builder = builder.metadata("payload_failures", serde_json::json!(payload_failed));
+            }
+            if let Some((code, category)) = dominant {
+                builder = builder.error_code(&code).error_category(&category);
+            }
+            diagnostics::emit(builder.build());
         }
         Err(e) => {
             // 优先用 commit 层写进文本的稳定拖入码（过期/重复/仍在读取），

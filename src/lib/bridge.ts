@@ -3222,6 +3222,8 @@ export interface ShelfItem {
   display_name: string;
   source_kind: ShelfSourceKind;
   storage_mode: ShelfStorageMode;
+  /** 细粒度来源：`"mobile_capture"` = 手机采集导入；null/缺省 = 其他既有来源。 */
+  origin?: string | null;
   /** 引用模式：原文件路径；托管模式：来源路径（可空） */
   original_path: string | null;
   /** 托管文件相对 shelf 目录的路径（files|images/thumbs 前缀） */
@@ -4590,6 +4592,12 @@ export interface MobileFile {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** 上传/发送设备 ID（映射设备名用；旧后端不下发时为 undefined，UI 回落未知设备）。 */
+  device_id?: string;
+  /** 已加入暂存架时的 ShelfItem.id；未导入为 null；重试幂等。 */
+  shelf_item_id: string | null;
+  shelf_imported_at: string | null;
+  shelf_group_id: string | null;
 }
 
 export const mobileFileList = () => invoke<MobileFile[]>("mobile_file_list");
@@ -4604,6 +4612,14 @@ export const mobileFileReveal = (id: string) =>
   invoke<void>("mobile_file_reveal", { id });
 
 export const mobileFileOpenInbox = () => invoke<void>("mobile_file_open_inbox");
+
+/** 把已接收的手机文件以托管副本加入暂存架（幂等；groupId 缺省=默认分组）。 */
+export const mobileFileImportShelf = (id: string, groupId?: string | null) =>
+  invoke<MobileFile>("mobile_file_import_shelf", { id, groupId: groupId ?? null });
+
+/** 图片缩略图 PNG data URL；非图片/不可用返回 null（UI 回落类型图标）。路径只由后端解析，前端不传路径。 */
+export const mobileFileThumbnail = (id: string, maxPx = 128) =>
+  invoke<string | null>("mobile_file_thumbnail", { id, maxPx });
 
 // ── 开发现场 / 任务交接 / 验收工作台（dev workbench Round 1）────────────
 // 与后端 `dev_*` 命令一一对应；参数 camelCase（IPC 约定见 AGENTS.md 第 4 节）。
@@ -5332,15 +5348,23 @@ export interface FsPlace {
 export interface FsEntryReport {
   source: string;
   target: string | null;
-  status: "ok" | "failed" | "skipped";
+  status: "ok" | "failed" | "skipped" | "partial";
   reason: string | null;
+  /** 稳定失败码（`FS_OP_*`）；成功/跳过为空。诊断聚合与界面分类都用它。 */
+  code?: string | null;
+  /** 失败阶段：prepare / transfer / recycle / cleanup。 */
+  stage?: string | null;
 }
 
 export interface FsOpReport {
+  /** 与诊断共享的操作 ID：前端 `startOperation()` 生成，后端原样沿用。 */
+  operationId: string;
   attempted: number;
   ok: number;
   failed: number;
   skipped: number;
+  /** 内容已落地但源未删除等「部分完成」条数。 */
+  partial: number;
   entries: FsEntryReport[];
 }
 
@@ -5374,16 +5398,22 @@ export const fsCreateFile = (parent: string, name: string) =>
 export const fsRename = (path: string, newName: string) =>
   invoke<string>("fs_rename", { path, newName });
 
-/** conflict: skip | rename | overwrite */
-export const fsCopyPaths = (paths: string[], targetDir: string, conflict: string) =>
-  invoke<FsOpReport>("fs_copy_paths", { paths, targetDir, conflict });
+/**
+ * conflict: skip | rename | overwrite
+ *
+ * `operationId` 可选：前端用 `startOperation("file", "workspace_copy").id` 传入，
+ * 后端把同一 ID 写进业务诊断事件——这样「用户看到的那次失败」在诊断中心可以
+ * 精确关联，而不是前后端各记一条互不相认的日志。
+ */
+export const fsCopyPaths = (paths: string[], targetDir: string, conflict: string, operationId?: string) =>
+  invoke<FsOpReport>("fs_copy_paths", { paths, targetDir, conflict, operationId });
 
 /** conflict: skip | rename | overwrite */
-export const fsMovePaths = (paths: string[], targetDir: string, conflict: string) =>
-  invoke<FsOpReport>("fs_move_paths", { paths, targetDir, conflict });
+export const fsMovePaths = (paths: string[], targetDir: string, conflict: string, operationId?: string) =>
+  invoke<FsOpReport>("fs_move_paths", { paths, targetDir, conflict, operationId });
 
-export const fsDeletePaths = (paths: string[], permanent: boolean) =>
-  invoke<FsOpReport>("fs_delete_paths", { paths, permanent });
+export const fsDeletePaths = (paths: string[], permanent: boolean, operationId?: string) =>
+  invoke<FsOpReport>("fs_delete_paths", { paths, permanent, operationId });
 
 export const fsStat = (paths: string[]) => invoke<FsStat[]>("fs_stat", { paths });
 

@@ -21,6 +21,7 @@ import {
 
 import { AppBar } from "../../components/AppBar";
 import { PressableScale } from "../../components/PressableScale";
+import { AppIcon } from "../../components/icons/AppIcon";
 import {
   Toast,
   TOAST_TOP_PUSH,
@@ -30,6 +31,7 @@ import {
 import * as repo from "../../db/captureAssets";
 import { describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
+import { useKeyboardHeight } from "../../lib/keyboard";
 import type { Nav } from "../../lib/nav";
 import { formatBytes } from "../../lib/sync/fileIo";
 import { useTheme } from "../../theme/ThemeProvider";
@@ -86,7 +88,7 @@ function CheckRow({
           },
         ]}
       >
-        {checked ? <Text style={styles.checkGlyph}>✓</Text> : null}
+        {checked ? <AppIcon name="check" color={tokens.onAccent} size={14} /> : null}
       </View>
       <View style={styles.checkMain}>
         <Text style={[styles.checkTitle, { color: tokens.text }]}>{title}</Text>
@@ -101,6 +103,9 @@ function CheckRow({
 export function CaptureReviewScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
+  // Android 16 edge-to-edge 下软键盘不吃 adjustResize：底部「保存」栏必须自己让位，
+  // 否则输入文件名/备注时按钮被键盘整块盖住（与 BottomSheet 共用同一份键盘高度实现）。
+  const keyboardHeight = useKeyboardHeight();
   const [assets, setAssets] = useState<repo.CaptureAsset[]>([]);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -324,10 +329,17 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
       return;
     }
     setBusy(true);
+    // 用户常常改完文件名/备注直接点保存：输入框只在 onEndEditing 提交，先补一次，
+    // 否则改名后的相册副本仍用旧名、备注也不会落库。
+    await commitName();
+    await commitNote();
     const failures: string[] = [];
     let offlineMessage: string | null = null;
     try {
-      let working = assets;
+      const sessionAssets = (
+        await Promise.all(sessionIds.current.map((id) => repo.getAsset(id)))
+      ).filter((asset): asset is repo.CaptureAsset => asset !== null);
+      let working = sessionAssets.length > 0 ? sessionAssets : assets;
       const doneKeys = new Set<string>();
       for (const list of Object.values(destinations)) {
         for (const item of list) {
@@ -439,7 +451,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
       setRunLabel("");
       setProgress(null);
     }
-  }, [assets, availability, busy, choice, destinations, reload, showToast]);
+  }, [assets, availability, busy, choice, commitName, commitNote, destinations, reload, showToast]);
 
   const summary = useMemo(() => {
     const kinds: repo.CaptureDestinationKind[] = ["local", "album", "desktop", "shelf"];
@@ -509,7 +521,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
       />
 
       <View
-        style={styles.preview}
+        style={[styles.preview, { backgroundColor: tokens.ink }]}
         onLayout={(event: LayoutChangeEvent) => {
           const { width, height } = event.nativeEvent.layout;
           setPreviewLayout({ width, height });
@@ -519,7 +531,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
           <Text style={[styles.emptyText, { color: tokens.muted }]}>文件不可用</Text>
         ) : !isImage ? (
           <View style={styles.fileCard}>
-            <Text style={styles.fileCardGlyph}>PDF</Text>
+            <Text style={[styles.fileCardGlyph, { backgroundColor: tokens.dangerFill, color: tokens.onInk }]}>PDF</Text>
             <Text style={[styles.fileCardName, { color: tokens.text }]} numberOfLines={2}>
               {current.name}
             </Text>
@@ -559,9 +571,19 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
               accessibilityLabel="上一张"
               disabled={index === 0}
               onPress={() => setIndex((prev) => Math.max(0, prev - 1))}
-              style={[styles.navArrow, styles.navLeft, index === 0 && styles.navDisabled]}
+              style={[
+                styles.navArrow,
+                styles.navLeft,
+                { backgroundColor: tokens.overlay },
+                index === 0 && styles.navDisabled,
+              ]}
             >
-              <Text style={styles.navGlyph}>‹</Text>
+              <AppIcon
+                name="chevronRight"
+                color={tokens.onAccent}
+                size={22}
+                style={styles.navPrevIcon}
+              />
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -571,10 +593,11 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
               style={[
                 styles.navArrow,
                 styles.navRight,
+                { backgroundColor: tokens.overlay },
                 index >= assets.length - 1 && styles.navDisabled,
               ]}
             >
-              <Text style={styles.navGlyph}>›</Text>
+              <AppIcon name="chevronRight" color={tokens.onAccent} size={22} />
             </Pressable>
           </>
         ) : null}
@@ -625,11 +648,15 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             ) : null}
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel={isImage ? "重拍这一张" : "删除这份文档"}
               style={[styles.toolButton, { backgroundColor: tokens.track }]}
               onPress={retake}
               disabled={busy}
             >
-              <Text style={[styles.toolText, { color: tokens.danger }]}>重拍</Text>
+              {/* PDF 没有「重拍」，同一个入口对文档只能是删除 */}
+              <Text style={[styles.toolText, { color: tokens.danger }]}>
+                {isImage ? "重拍" : "删除"}
+              </Text>
             </Pressable>
           </>
         )}
@@ -850,7 +877,8 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
         style={[
           styles.actionBar,
           {
-            paddingBottom: insets.bottom + space.sm,
+            paddingBottom: (keyboardHeight > 0 ? 0 : insets.bottom) + space.sm,
+            marginBottom: keyboardHeight,
             borderColor: tokens.separator,
             backgroundColor: tokens.bg,
           },
@@ -913,7 +941,6 @@ const styles = StyleSheet.create({
   preview: {
     flex: 1,
     minHeight: 180,
-    backgroundColor: "#0E1A2B",
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
@@ -924,14 +951,14 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: "rgba(0,0,0,0.35)",
     alignItems: "center",
     justifyContent: "center",
   },
   navLeft: { left: space.sm },
   navRight: { right: space.sm },
   navDisabled: { opacity: 0 },
-  navGlyph: { color: "#FFFFFF", fontSize: 30, lineHeight: 32, marginTop: -2 },
+  // 图标集没有 chevron-left：用同一个描边箭头翻转，保持与右侧同一套线宽
+  navPrevIcon: { transform: [{ rotate: "180deg" }] },
   toolRow: {
     flexDirection: "row",
     gap: space.sm,
@@ -946,7 +973,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   toolText: { fontSize: font.label, fontWeight: "600" },
-  scroll: { flexGrow: 0, maxHeight: "46%" },
+  // flexShrink: 键盘弹起时底部保存栏上移 300dp 左右，详情区必须能一起压缩（内部仍可滚动），
+  // 否则总高度超出屏幕，保存栏会被挤出可视区。
+  scroll: { flexGrow: 0, flexShrink: 1, maxHeight: "46%" },
   details: { paddingHorizontal: space.lg, paddingBottom: space.md, gap: space.sm },
   fieldRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
   fieldLabel: { fontSize: font.label, width: 44 },
@@ -985,7 +1014,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  checkGlyph: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
   checkMain: { flex: 1, gap: 1 },
   checkTitle: { fontSize: font.body, fontWeight: "600" },
   checkHint: { fontSize: font.label, lineHeight: 15 },
@@ -1000,7 +1028,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  groupText: { fontSize: 11.5, fontWeight: "600" },
+  groupText: { fontSize: font.label, fontWeight: "600" },
   targetChip: {
     minHeight: 36,
     paddingHorizontal: space.md,
@@ -1026,7 +1054,7 @@ const styles = StyleSheet.create({
   progressRow: { gap: 4 },
   progressTrack: { height: 6, borderRadius: 3, overflow: "hidden", flexDirection: "row" },
   progressFill: { height: "100%", borderRadius: 3 },
-  progressText: { fontSize: 11 },
+  progressText: { fontSize: font.label },
   primaryAction: {
     minHeight: 50,
     borderRadius: radius.row,
@@ -1040,10 +1068,8 @@ const styles = StyleSheet.create({
   headerMeta: { fontSize: font.label },
   fileCard: { alignItems: "center", gap: space.sm, paddingHorizontal: space.xl },
   fileCardGlyph: {
-    color: "#FFFFFF",
     fontSize: 20,
     fontWeight: "800",
-    backgroundColor: "#C93A3A",
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,

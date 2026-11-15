@@ -63,6 +63,40 @@ beforeEach(async () => {
 afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+describe("currentWindowId", () => {
+  /** 用入口 HTML 路径推断窗口标识（与 vite 多页入口一一对应）。 */
+  function windowIdFor(pathname: string): string {
+    vi.stubGlobal("location", { pathname });
+    return diag.currentWindowId();
+  }
+
+  it("唯一大型工作台 workspace.html 记为 workspace，不再误记为 main", () => {
+    expect(windowIdFor("/workspace.html")).toBe("workspace");
+    expect(windowIdFor("/WORKSPACE.html")).toBe("workspace");
+  });
+
+  it("辅助窗口按各自入口归类", () => {
+    expect(windowIdFor("/context-menu.html")).toBe("context-menu");
+    expect(windowIdFor("/notification.html")).toBe("notification");
+    expect(windowIdFor("/capture.html")).toBe("capture");
+    expect(windowIdFor("/tab-hint.html")).toBe("tab-hint");
+    expect(windowIdFor("/widget.html")).toBe("widget");
+  });
+
+  it("主窗口与未知入口回退 main（保持旧兼容）", () => {
+    expect(windowIdFor("/")).toBe("main");
+    expect(windowIdFor("/index.html")).toBe("main");
+    expect(windowIdFor("/preview.html")).toBe("main");
+    expect(windowIdFor("/src/main.tsx")).toBe("main");
+  });
+
+  it("只比较文件名，目录名含 workspace 不误判", () => {
+    expect(windowIdFor("/D:/workspace/index.html")).toBe("main");
+    expect(windowIdFor("/tmp/capture/app.html")).toBe("main");
+  });
 });
 
 describe("moduleForCommand", () => {

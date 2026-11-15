@@ -1307,6 +1307,7 @@ mod paste_report_tests {
             exists_state: "ok".into(),
             group_id: None,
             scene_id: None,
+            origin: None,
             note: String::new(),
             expire_at: None,
             created_at: "2026-11-14T00:00:00Z".into(),

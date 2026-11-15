@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
+use crate::shelf;
 
 /// 传输方向：桌面端提供下载 / 手机上传到桌面端。
 pub const DIRECTION_TO_PHONE: &str = "to_phone";
@@ -55,6 +56,17 @@ pub fn aad_file_delete(id: &str) -> String {
     format!("taskdock-sync-v1|POST|/v1/files/{id}/delete")
 }
 
+/// 导入暂存架：AAD 绑定传输记录 ID，跨文件重放会解密失败。
+pub fn aad_file_shelf(id: &str) -> String {
+    format!("taskdock-sync-v1|POST|/v1/files/{id}/shelf")
+}
+
+/// 暂存分组列表（只读）：手机端在导入前读取有效分组。
+pub const AAD_SHELF_GROUPS: &str = "taskdock-sync-v1|GET|/v1/shelf/groups";
+
+/// 手机采集在暂存架中的细粒度来源（`shelf_items.origin`，桌面端 UI 映射为「移动端采集」）。
+pub const SHELF_ORIGIN_MOBILE_CAPTURE: &str = "mobile_capture";
+
 /// 文件名展示/落盘上限（字符数，保留扩展名）。
 const MAX_NAME_CHARS: usize = 120;
 const SUBDIR_OUTBOX: &str = "outbox";
@@ -76,8 +88,14 @@ pub struct MobileFile {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
-    #[serde(skip_serializing)]
+    /// 已导入暂存架时的 ShelfItem.id；重试据此幂等返回，不重复建条目。
+    pub shelf_item_id: Option<String>,
+    pub shelf_imported_at: Option<String>,
+    pub shelf_group_id: Option<String>,
+    /// 上传设备 ID（安装级随机 UUID，仅供桌面端映射已配对设备名，**不是凭据**；
+    /// 响应本身也在加密信封内）。
     pub device_id: String,
+    /// 落盘路径绝不下发：前端只按记录 ID 操作，路径由后端在服务端解析。
     #[serde(skip_serializing)]
     pub stored_path: String,
 }
@@ -99,12 +117,16 @@ impl MobileFile {
             created_at: row.get(11)?,
             updated_at: row.get(12)?,
             completed_at: row.get(13)?,
+            shelf_item_id: row.get(14)?,
+            shelf_imported_at: row.get(15)?,
+            shelf_group_id: row.get(16)?,
         })
     }
 }
 
 const SELECT_COLUMNS: &str = "id, device_id, direction, name, size, sha256, status, stored_path,
-     chunk_size, chunks, received_chunks, created_at, updated_at, completed_at";
+     chunk_size, chunks, received_chunks, created_at, updated_at, completed_at,
+     shelf_item_id, shelf_imported_at, shelf_group_id";
 
 /// 创建目录结构（幂等）。
 pub fn ensure_dirs(root: &Path) -> AppResult<()> {
@@ -609,6 +631,138 @@ pub fn resolve_stored_file(db: &Db, root: &Path, id: &str) -> AppResult<PathBuf>
     ensure_regular_file_inside(root, Path::new(&row.stored_path))
 }
 
+/// 手机采集导入暂存架：只接受「本设备上传且已完成校验」的文件，按托管副本导入。
+///
+/// 安全与幂等边界：
+/// - 只按传输记录 ID 取文件，绝不接受手机传入的路径；落盘文件必须仍在
+///   `mobile_files` 根目录内且是普通文件（`ensure_regular_file_inside`）；
+/// - 条目 ID 由传输记录稳定派生（`mf-{id}`），重试先查 `shelf_items`，命中就直接补写
+///   传输记录，不会因客户端超时重放而生成多个暂存条目；条目被用户删除后允许重新导入；
+/// - 配额/磁盘余量/原子改名/托管语义全部复用 `shelf::add_managed_from_with_id`；
+/// - 导入成功后桌面收件箱的传输副本保留，两者互相独立。
+pub fn import_to_shelf(
+    db: &Db,
+    files_root: &Path,
+    shelf_root: &Path,
+    device_id: &str,
+    id: &str,
+    group_id: Option<&str>,
+) -> AppResult<MobileFile> {
+    import_to_shelf_inner(db, files_root, shelf_root, Some(device_id), id, group_id)
+}
+
+/// 桌面端本机操作：用户在「手机互传」页手动把已接收文件加入暂存架。
+/// 与手机端点走同一套导入逻辑，只是调用方是本机 UI（不再校验设备归属）。
+pub fn import_to_shelf_local(
+    db: &Db,
+    files_root: &Path,
+    shelf_root: &Path,
+    id: &str,
+    group_id: Option<&str>,
+) -> AppResult<MobileFile> {
+    import_to_shelf_inner(db, files_root, shelf_root, None, id, group_id)
+}
+
+fn import_to_shelf_inner(
+    db: &Db,
+    files_root: &Path,
+    shelf_root: &Path,
+    actor_device: Option<&str>,
+    id: &str,
+    group_id: Option<&str>,
+) -> AppResult<MobileFile> {
+    let row = load_file(db, id)?;
+    if row.direction != DIRECTION_TO_DESKTOP {
+        return Err(AppError::NotFound("传输记录不存在".into()));
+    }
+    if let Some(device) = actor_device {
+        if row.device_id != device {
+            return Err(AppError::NotFound("传输记录不存在".into()));
+        }
+    }
+    if row.status != STATUS_READY {
+        return Err(AppError::Conflict("文件尚未接收完成".into()));
+    }
+
+    let group_id = normalize_group_id(group_id)?;
+
+    // 复制前先校验分组存在，避免未知分组在共享托管内部「复制改名 → 分组校验」顺序下
+    // 留下未登记的孤儿托管副本。`resolve_group_id` 的哨兵值 "none" 在此会被当作普通
+    // id 拒绝——这是期望行为：手机端不应发送桌面端内部哨兵。
+    if let Some(gid) = group_id.as_deref() {
+        let known = shelf::list_groups(db)?.iter().any(|group| group.id == gid);
+        if !known {
+            return Err(AppError::Validation("分组不存在".into()));
+        }
+    }
+
+    let item_id = mobile_shelf_item_id(&row.id);
+    // 已导入且条目仍在：直接回写并返回（重复调用/超时重放都是无副作用的）。
+    if shelf::item_exists(db, &item_id)? {
+        let existing = shelf::item(db, &item_id)?;
+        update_shelf_link(db, id, &item_id, existing.group_id.as_deref())?;
+        return load_file(db, id);
+    }
+
+    // 条目已被用户从暂存架删除：允许重新导入，沿用同一个稳定 ID。
+    let stored = ensure_regular_file_inside(files_root, Path::new(&row.stored_path))?;
+    // source_kind 是既有封闭枚举（manual/picker/drag/clipboard/url），手机导入属于
+    // 用户主动添加，沿用 manual；细粒度来源写在 v54 新增的 origin 列（mobile_capture）。
+    let item = shelf::add_managed_from_with_id(
+        db,
+        shelf_root,
+        &item_id,
+        &stored,
+        Some(&row.name),
+        "manual",
+        group_id.as_deref(),
+        Some(SHELF_ORIGIN_MOBILE_CAPTURE),
+    )?;
+
+    update_shelf_link(db, id, &item.id, item.group_id.as_deref())?;
+    load_file(db, id)
+}
+
+/// 分组入参规整：空串按默认分组处理；超过 128 字符拒绝；未知分组由
+/// `shelf::resolve_group_id` 在建条目前拒绝（不留下半批记录）。
+fn normalize_group_id(group_id: Option<&str>) -> AppResult<Option<String>> {
+    match group_id {
+        None => Ok(None),
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else if trimmed.chars().count() > 128 {
+                Err(AppError::Validation("暂存分组不合法".into()))
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+    }
+}
+
+/// 稳定入口：同一条传输记录最多一个 ShelfItem。
+fn mobile_shelf_item_id(file_id: &str) -> String {
+    format!("mf-{file_id}")
+}
+
+fn update_shelf_link(
+    db: &Db,
+    id: &str,
+    shelf_item_id: &str,
+    shelf_group_id: Option<&str>,
+) -> AppResult<()> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE mobile_files
+                SET shelf_item_id = ?1, shelf_imported_at = ?2, shelf_group_id = ?3
+              WHERE id = ?4",
+            params![shelf_item_id, now_iso(), shelf_group_id, id],
+        )?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,5 +962,260 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    fn shelf_temp_root(tag: &str) -> PathBuf {
+        temp_root(&format!("shelf-{tag}"))
+    }
+
+    /// 递归统计暂存根目录下残留的 `.part` 半成品文件。
+    fn count_part_files(dir: &Path) -> usize {
+        let mut count = 0;
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    count += count_part_files(&path);
+                } else if path.extension().and_then(|v| v.to_str()) == Some("part") {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// 递归统计暂存根目录下的普通文件数（用于断言失败导入未留下托管副本）。
+    fn count_regular_files(dir: &Path) -> usize {
+        let mut count = 0;
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    count += count_regular_files(&path);
+                } else if path.is_file() {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    fn shelf_item_count(db: &Db) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM shelf_items", [], |row| row.get(0))?)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn shelf_import_success_copies_managed_item_and_survives_record_delete() {
+        let db = test_db();
+        let root = temp_root("shelf-success");
+        let shelf_root = shelf_temp_root("success");
+        let bytes = payload(1024);
+        let file = upload(&db, &root, "照片.jpg", &bytes);
+
+        let imported =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap();
+        let item_id = imported.shelf_item_id.clone().expect("应记录 ShelfItem.id");
+        assert_eq!(item_id, format!("mf-{}", file.id));
+        assert!(imported.shelf_imported_at.is_some());
+        // 默认分组也回写，便于桌面回显。
+        assert!(imported.shelf_group_id.is_some());
+
+        let item = shelf::item(&db, &item_id).unwrap();
+        assert_eq!(item.storage_mode, shelf::MODE_MANAGED);
+        assert_eq!(item.source_kind, "manual");
+        assert_eq!(
+            item.origin.as_deref(),
+            Some(SHELF_ORIGIN_MOBILE_CAPTURE)
+        );
+        assert_eq!(item.display_name, "照片.jpg");
+        let managed = shelf_root.join(item.managed_path.as_deref().unwrap());
+        assert_eq!(fs::read(&managed).unwrap(), bytes);
+
+        // 幂等：重复导入只对应一个 ShelfItem。
+        let second =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap();
+        assert_eq!(second.shelf_item_id.as_deref(), Some(item_id.as_str()));
+        assert_eq!(shelf_item_count(&db), 1);
+
+        // 删除传输记录（收件箱副本）不影响暂存架托管副本。
+        delete_file(&db, &root, None, &file.id).unwrap();
+        assert!(shelf::item_exists(&db, &item_id).unwrap());
+        assert!(managed.exists());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shelf_root);
+    }
+
+    #[test]
+    fn shelf_import_rejects_other_device_without_leaking_existence() {
+        let db = test_db();
+        let root = temp_root("shelf-device");
+        let shelf_root = shelf_temp_root("device");
+        let file = upload(&db, &root, "b.bin", &payload(8));
+
+        let err = import_to_shelf(&db, &root, &shelf_root, "device-2", &file.id, None)
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)));
+        assert_eq!(shelf_item_count(&db), 0);
+
+        let row = load_file(&db, &file.id).unwrap();
+        assert!(row.shelf_item_id.is_none());
+        assert!(row.shelf_imported_at.is_none());
+        assert!(row.shelf_group_id.is_none());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shelf_root);
+    }
+
+    #[test]
+    fn shelf_import_rejects_pending_and_to_phone() {
+        let db = test_db();
+        let root = temp_root("shelf-guard");
+        let shelf_root = shelf_temp_root("guard");
+
+        // 未完成的 pending 记录不可导入（409 语义）。
+        let pending = create_upload(&db, &root, "device-1", "a.bin", 8).unwrap();
+        let pending_err =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &pending.id, None)
+                .unwrap_err();
+        assert!(matches!(pending_err, AppError::Conflict(_)));
+
+        // to_phone 方向的记录不可导入。
+        let source = root.join("source.txt");
+        fs::write(&source, b"hello").unwrap();
+        let offers =
+            create_offers(&db, &root, &[source.to_string_lossy().to_string()]).unwrap();
+        let phone = &offers[0];
+        assert_eq!(phone.direction, DIRECTION_TO_PHONE);
+        let phone_err =
+            import_to_shelf(&db, &root, &shelf_root, "", &phone.id, None).unwrap_err();
+        assert!(matches!(phone_err, AppError::NotFound(_)));
+
+        assert_eq!(shelf_item_count(&db), 0);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shelf_root);
+    }
+
+    #[test]
+    fn shelf_import_rejects_path_outside_files_root() {
+        let db = test_db();
+        let root = temp_root("shelf-tamper");
+        let outside = temp_root("shelf-outside");
+        let shelf_root = shelf_temp_root("tamper");
+        let secret = outside.join("secret.jpg");
+        fs::write(&secret, b"secret").unwrap();
+        let file = upload(&db, &root, "a.jpg", &payload(16));
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE mobile_files SET stored_path = ?1 WHERE id = ?2",
+                params![secret.to_string_lossy().to_string(), file.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).is_err()
+        );
+        assert!(shelf::item(&db, &format!("mf-{}", file.id)).is_err());
+        assert_eq!(count_part_files(&shelf_root), 0);
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+        let _ = fs::remove_dir_all(&shelf_root);
+    }
+
+    #[test]
+    fn shelf_reimport_after_item_delete_keeps_same_id() {
+        let db = test_db();
+        let root = temp_root("shelf-reimport");
+        let shelf_root = shelf_temp_root("reimport");
+        let file = upload(&db, &root, "c.bin", &payload(32));
+
+        let first =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap();
+        let item_id = first.shelf_item_id.clone().unwrap();
+
+        // 用户从暂存架删除条目后，允许重新导入，沿用同一个稳定 ID。
+        shelf::delete_items(&db, &shelf_root, &[item_id.clone()], true).unwrap();
+        assert!(!shelf::item_exists(&db, &item_id).unwrap());
+
+        let second =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap();
+        assert_eq!(second.shelf_item_id.as_deref(), Some(item_id.as_str()));
+        assert!(shelf::item_exists(&db, &item_id).unwrap());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shelf_root);
+    }
+
+    #[test]
+    fn shelf_import_quota_failure_leaves_no_item_part_or_link() {
+        let db = test_db();
+        let root = temp_root("shelf-quota");
+        let shelf_root = shelf_temp_root("quota");
+        let file = upload(&db, &root, "d.bin", &payload(64));
+        // 配额置零：任何非空文件都超配额。
+        db.set_setting("shelf_max_storage_mb", serde_json::json!(0))
+            .unwrap();
+
+        let err =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+
+        assert_eq!(shelf_item_count(&db), 0);
+        let row = load_file(&db, &file.id).unwrap();
+        assert!(row.shelf_item_id.is_none());
+        assert!(row.shelf_imported_at.is_none());
+        assert!(row.shelf_group_id.is_none());
+        assert_eq!(count_part_files(&shelf_root), 0);
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shelf_root);
+    }
+
+    #[test]
+    fn shelf_import_rejects_unknown_group_and_writes_known_group() {
+        let db = test_db();
+        let root = temp_root("shelf-group");
+        let shelf_root = shelf_temp_root("group");
+
+        let unknown = upload(&db, &root, "u.bin", &payload(16));
+        let files_before = count_regular_files(&shelf_root);
+        let bad = import_to_shelf(
+            &db,
+            &root,
+            &shelf_root,
+            "device-1",
+            &unknown.id,
+            Some("no-such-group"),
+        )
+        .unwrap_err();
+        assert!(matches!(bad, AppError::Validation(_)));
+        assert!(!shelf::item_exists(&db, &format!("mf-{}", unknown.id)).unwrap());
+        // 未知分组拒绝后不得在 images/files 下留下孤儿托管副本。
+        assert_eq!(count_regular_files(&shelf_root), files_before);
+
+        let group = shelf::group_create(&db, "采集分组").unwrap();
+        let known = upload(&db, &root, "k.bin", &payload(16));
+        let ok = import_to_shelf(
+            &db,
+            &root,
+            &shelf_root,
+            "device-1",
+            &known.id,
+            Some(&group.id),
+        )
+        .unwrap();
+        assert_eq!(ok.shelf_group_id.as_deref(), Some(group.id.as_str()));
+        let item = shelf::item(&db, ok.shelf_item_id.as_ref().unwrap()).unwrap();
+        assert_eq!(item.group_id.as_deref(), Some(group.id.as_str()));
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shelf_root);
     }
 }

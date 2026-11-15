@@ -16,6 +16,7 @@ import {
   Plus,
   Sparkles,
   Trash2,
+  Workflow as WorkflowIcon,
 } from "lucide-react";
 import {
   workflowGet,
@@ -28,6 +29,7 @@ import { createSubscriptionScope } from "../../lib/subscriptions";
 import { onWorkflowRunProgress } from "../../lib/bridge";
 import { useWorkflowsStore } from "../../store/useWorkflowsStore";
 import { errorMessage } from "../../lib/errors";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { ConfirmDialog, EmptyState } from "../ui";
 import { runStatusKind } from "./display";
 import { WORKFLOW_TEMPLATES } from "./templates";
@@ -256,41 +258,43 @@ export default function WorkflowsPanel() {
         <ScenarioWorkspaceView onBack={closePage} />
       ) : (
         <>
-      <header className="wf-head-row">
-        <div>
-          <h2 className="wf-title">{tr("workflows.title")}</h2>
-          <p className="wf-subtitle">{tr("workflows.subtitle")}</p>
-        </div>
-        <div className="wf-head-actions">
-          <button type="button" className="btn" onClick={openScenarios} data-tip="管理可重复进入的场景">
-            <Layers size={14} aria-hidden="true" /> 场景工作区
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => void openEditor(null, null)}
-            data-tip="从空白创建工作流"
-          >
-            <Plus size={14} aria-hidden="true" /> 新建
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => void openEditor(null, WORKFLOW_TEMPLATES[0])}
-            data-tip="套用示例：打开 IDE / 项目 / 文档 / 建任务（目标需自行选择）"
-          >
-            <Sparkles size={14} aria-hidden="true" /> 开发模板
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => void openEditor(null, WORKFLOW_TEMPLATES[1])}
-            data-tip="套用示例：打开办公软件 / 文件 / 网页 / 建提醒（目标需自行选择）"
-          >
-            <Sparkles size={14} aria-hidden="true" /> 办公模板
-          </button>
-        </div>
-      </header>
+      {/* 页面级页头（2026-11-15 统一）：图标 + 标题 + 副标题，四个创建入口收进右侧动作区。 */}
+      <WorkbenchPageHeader
+        icon={WorkflowIcon}
+        title={tr("workflows.title")}
+        subtitle={tr("workflows.subtitle")}
+        actions={
+          <>
+            <button type="button" className="btn" onClick={openScenarios} data-tip="管理可重复进入的场景">
+              <Layers size={14} aria-hidden="true" /> 场景工作区
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void openEditor(null, null)}
+              data-tip="从空白创建工作流"
+            >
+              <Plus size={14} aria-hidden="true" /> 新建
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void openEditor(null, WORKFLOW_TEMPLATES[0])}
+              data-tip="套用示例：打开 IDE / 项目 / 文档 / 建任务（目标需自行选择）"
+            >
+              <Sparkles size={14} aria-hidden="true" /> 开发模板
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void openEditor(null, WORKFLOW_TEMPLATES[1])}
+              data-tip="套用示例：打开办公软件 / 文件 / 网页 / 建提醒（目标需自行选择）"
+            >
+              <Sparkles size={14} aria-hidden="true" /> 办公模板
+            </button>
+          </>
+        }
+      />
 
       <div className="page-scroll wf-body">
         {/* 统计行（2026-11-14，对照效果图「4 统计卡一行」）：只用真实数据源——

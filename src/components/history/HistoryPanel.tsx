@@ -27,6 +27,7 @@ import {
   type NotificationRow,
 } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { createSubscriptionScope } from "../../lib/subscriptions";
 import { ConfirmDialog, EmptyState, Select } from "../ui";
@@ -340,15 +341,34 @@ export default function HistoryPanel() {
 
   return (
     <div className="history-panel page-fill">
-      {/* 页面级页头（2026-11-14 统一工作台适配）：标题与副标题锚定当前页。 */}
-      <header className="wf-head-row history-page-head">
-        <div>
-          <h2 className="wf-title">
-            <History size={16} aria-hidden="true" /> {tr("history.pageTitle")}
-          </h2>
-          <p className="wf-subtitle">{tr("history.pageSubtitle")}</p>
-        </div>
-      </header>
+      {/* 页面级页头（2026-11-15 统一）：图标 + 标题 + 副标题，主要操作移到右侧动作区，
+          与 19 张效果图的页头结构一致；筛选仍在下方工具栏，不与页头混排。 */}
+      <WorkbenchPageHeader
+        icon={History}
+        title={tr("history.pageTitle")}
+        subtitle={tr("history.pageSubtitle")}
+        actions={
+          <>
+            <button
+              className="btn sm"
+              onClick={onMarkAll}
+              disabled={unread === 0}
+              data-tip={tr("history.markAllTip")}
+              aria-label={tr("history.markAll")}
+            >
+              <CheckCheck size={12} /> {tr("history.markAll")}
+            </button>
+            <button
+              className="btn sm"
+              onClick={() => setConfirmClear(true)}
+              data-tip={tr("history.clearTip")}
+              aria-label={tr("history.clear")}
+            >
+              <Trash2 size={12} /> {tr("history.clear")}
+            </button>
+          </>
+        }
+      />
       {/* 过滤工具栏：第一行 = 筛选（时间 → 来源 → 类型，窄窗口时靠后的先换行），
           第二行 = 统计 + 批量操作，两行职责分离互不挤压 */}
       <div className="filter-bar primary">
@@ -394,18 +414,6 @@ export default function HistoryPanel() {
           {tr("history.unread", { unread, total: inboxTotal })}
         </span>
         <span className="flex-spacer" />
-        <button
-          className="btn sm"
-          onClick={onMarkAll}
-          disabled={unread === 0}
-          data-tip={tr("history.markAllTip")}
-          aria-label={tr("history.markAll")}
-        >
-          <CheckCheck size={12} /> {tr("history.markAll")}
-        </button>
-        <button className="btn sm" onClick={() => setConfirmClear(true)} data-tip={tr("history.clearTip")}>
-          <Trash2 size={12} /> {tr("history.clear")}
-        </button>
       </div>
 
       {hasNew && (

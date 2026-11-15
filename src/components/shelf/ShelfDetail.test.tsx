@@ -352,3 +352,26 @@ describe("ShelfDetail 文件操作入口", () => {
   });
 });
 
+describe("ShelfDetail 移动端采集来源标记", () => {
+  it("origin=mobile_capture 时标明来源并说明传输副本与托管副本关系", async () => {
+    bridge.listTasks.mockResolvedValue([]);
+    bridge.workspaceProjectList.mockResolvedValue({ projects: [] });
+    const mobileItem = { ...ITEM, origin: "mobile_capture" as const };
+
+    render(<ShelfDetail item={mobileItem} onClose={() => {}} />);
+
+    expect(await screen.findByText("移动端采集")).toBeTruthy();
+    expect(screen.getByText(/来自手机采集/)).toBeTruthy();
+  });
+
+  it("其他来源不显示移动端采集标记与说明", async () => {
+    bridge.listTasks.mockResolvedValue([]);
+    bridge.workspaceProjectList.mockResolvedValue({ projects: [] });
+    renderDetail();
+
+    await screen.findByText("示例链接");
+    expect(screen.queryByText("移动端采集")).toBeNull();
+    expect(screen.queryByText(/来自手机采集/)).toBeNull();
+  });
+});
+

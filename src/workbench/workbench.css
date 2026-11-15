@@ -194,18 +194,14 @@ body.wb-resizing {
   background: color-mix(in srgb, var(--surface-raised) 92%, transparent);
 }
 
-.wb-topbar-title {
+/* 顶栏只承担「品牌 + 工作空间 + 全局动作」；路由标题由页面页头承担，
+   避免「顶栏标题 / 页面标题 / 卡片标题」三层重复（对齐 19 张效果图）。 */
+.wb-topbar-context {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-}
-.wb-topbar-title h1 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
+  flex: 0 1 auto;
 }
 .wb-topbar-kind,
 .wb-topbar-task {
@@ -220,12 +216,6 @@ body.wb-resizing {
   padding: 2px 7px;
   border-radius: 999px;
   background: var(--surface-hover);
-}
-.wb-topbar-status {
-  font-size: 10.5px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
 }
 
 .wb-topbar-actions {
@@ -389,6 +379,196 @@ body.wb-resizing {
   font-weight: 650;
   color: var(--text-secondary);
   text-transform: none;
+}
+
+/* ── 页面级详情栏（2026-11-15）：页面向外壳投送当前选中对象的详情。 ─────
+   宿主是右栏第一个子节点；页面没有投送内容时保持 `:empty`，通用上下文兜底。
+   全部颜色/圆角/阴影走语义 Token，不另立皮肤。 */
+.wb-detail-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 有页面详情时隐去通用上下文整块：详情是当前页面的主信息，
+   通用上下文只在不适用时（无选择对象 / 页面不提供详情）出现。 */
+.wb-detail-slot:not(:empty) + .wb-context-generic {
+  display: none;
+}
+
+.wb-detail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+.wb-detail-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.wb-detail-card-head h3 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-detail-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.wb-detail-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.wb-detail-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.wb-detail-title > span {
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* 描述块：浅底 + 内边距，和效果图「任务详情」里的正文块同构。 */
+.wb-detail-desc {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--surface-hover);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  max-height: 168px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 事实表：标签列固定节奏，行间 hairline；值允许换行，不撑破右栏。 */
+.wb-detail-facts {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  min-width: 0;
+}
+
+.wb-detail-fact {
+  display: grid;
+  grid-template-columns: minmax(58px, auto) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.wb-detail-fact:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.wb-detail-fact dt {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.wb-detail-fact dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.wb-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wb-detail-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.wb-detail-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 9px;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.wb-detail-empty p {
+  margin: 0;
+  min-width: 0;
+}
+
+.wb-detail-empty-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+/* 进度条（子任务完成度等）：只在有真实分子/分母时渲染。 */
+.wb-detail-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wb-detail-progress-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.wb-detail-progress-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-gradient);
+}
+
+.wb-detail-progress-label {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 
 .wb-context-block {

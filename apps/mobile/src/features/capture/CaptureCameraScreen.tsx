@@ -20,10 +20,12 @@ import {
 } from "react-native";
 import { CameraView, useCameraPermissions, type CameraType, type FlashMode } from "expo-camera";
 
+import { AppIcon } from "../../components/icons/AppIcon";
 import * as repo from "../../db/captureAssets";
 import { AppError, describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
 import type { Nav } from "../../lib/nav";
+import { useTheme } from "../../theme/ThemeProvider";
 import { font, radius, space } from "../../theme/tokens";
 
 import { createStagedAsset } from "../../db/captureAssets";
@@ -44,6 +46,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function CaptureCameraScreen({ nav }: { nav: Nav }) {
+  const { tokens } = useTheme();
   const insets = useWindowInsets();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
@@ -176,20 +179,26 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
 
   if (!permission) {
     return (
-      <View style={[styles.root, styles.center]}>
-        <ActivityIndicator color="#FFFFFF" />
-        <Text style={styles.hint}>正在检查相机权限…</Text>
+      <View style={[styles.root, styles.center, { backgroundColor: tokens.ink }]}>
+        <ActivityIndicator color={tokens.onInk} />
+        <Text style={[styles.hint, { color: tokens.inkText }]}>正在检查相机权限…</Text>
       </View>
     );
   }
 
   if (mountError) {
     return (
-      <View style={[styles.root, styles.center, { paddingTop: insets.top }]}>
-        <Text style={styles.permissionTitle}>相机不可用</Text>
-        <Text style={styles.permissionBody}>{mountError}</Text>
-        <Pressable accessibilityRole="button" style={styles.primaryButton} onPress={nav.back}>
-          <Text style={styles.primaryText}>返回</Text>
+      <View
+        style={[styles.root, styles.center, { paddingTop: insets.top, backgroundColor: tokens.ink }]}
+      >
+        <Text style={[styles.permissionTitle, { color: tokens.onInk }]}>相机不可用</Text>
+        <Text style={[styles.permissionBody, { color: tokens.inkText }]}>{mountError}</Text>
+        <Pressable
+          accessibilityRole="button"
+          style={[styles.primaryButton, { backgroundColor: tokens.accentFill }]}
+          onPress={nav.back}
+        >
+          <Text style={[styles.primaryText, { color: tokens.onAccent }]}>返回</Text>
         </Pressable>
       </View>
     );
@@ -197,37 +206,39 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
 
   if (!permission.granted) {
     return (
-      <View style={[styles.root, styles.center, { paddingTop: insets.top }]}>
-        <Text style={styles.permissionTitle}>需要相机权限才能拍照</Text>
-        <Text style={styles.permissionBody}>
+      <View
+        style={[styles.root, styles.center, { paddingTop: insets.top, backgroundColor: tokens.ink }]}
+      >
+        <Text style={[styles.permissionTitle, { color: tokens.onInk }]}>需要相机权限才能拍照</Text>
+        <Text style={[styles.permissionBody, { color: tokens.inkText }]}>
           TaskDock 只用相机拍摄你主动触发的照片；照片先保存在本机，不会自动上传。
         </Text>
         {permission.canAskAgain ? (
           <Pressable
             accessibilityRole="button"
-            style={styles.primaryButton}
+            style={[styles.primaryButton, { backgroundColor: tokens.accentFill }]}
             onPress={() => void requestPermission()}
           >
-            <Text style={styles.primaryText}>授予相机权限</Text>
+            <Text style={[styles.primaryText, { color: tokens.onAccent }]}>授予相机权限</Text>
           </Pressable>
         ) : (
           <Pressable
             accessibilityRole="button"
-            style={styles.primaryButton}
+            style={[styles.primaryButton, { backgroundColor: tokens.accentFill }]}
             onPress={() => void Linking.openSettings()}
           >
-            <Text style={styles.primaryText}>去系统设置开启</Text>
+            <Text style={[styles.primaryText, { color: tokens.onAccent }]}>去系统设置开启</Text>
           </Pressable>
         )}
         <Pressable accessibilityRole="button" style={styles.linkButton} onPress={nav.back}>
-          <Text style={styles.linkText}>返回</Text>
+          <Text style={[styles.linkText, { color: tokens.inkText }]}>返回</Text>
         </Pressable>
       </View>
     );
   }
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, { backgroundColor: tokens.ink }]}>
       {foreground ? (
         <View style={StyleSheet.absoluteFill} {...panResponder.panHandlers}>
           <CameraView
@@ -243,59 +254,79 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
           />
         </View>
       ) : (
-        <View style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: "#000" }]}>
-          <Text style={styles.hint}>相机已暂停</Text>
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            styles.center,
+            { backgroundColor: tokens.ink },
+          ]}
+        >
+          <Text style={[styles.hint, { color: tokens.inkText }]}>相机已暂停</Text>
         </View>
       )}
 
-      <View style={[styles.topBar, { paddingTop: insets.top + space.sm }]}>
+      <View
+        style={[styles.topBar, { paddingTop: insets.top + space.sm, backgroundColor: tokens.inkScrim }]}
+      >
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="返回"
-          style={styles.roundButton}
+          style={[styles.roundButton, { backgroundColor: tokens.inkScrim }]}
           onPress={() => void discardAndBack()}
         >
-          <Text style={styles.roundGlyph}>‹</Text>
+          <AppIcon name="back" color={tokens.onInk} size={22} />
         </Pressable>
         <View style={styles.topPills}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`闪光灯：${flash === "off" ? "关闭" : flash === "auto" ? "自动" : "开启"}`}
-            style={[styles.pill, flash !== "off" && styles.pillActive]}
+            style={[
+              styles.pill,
+              { backgroundColor: tokens.inkScrim, borderColor: tokens.inkBorder },
+              flash !== "off" && { backgroundColor: tokens.accentFill, borderColor: tokens.accentFill },
+            ]}
             onPress={() =>
               setFlash((prev) => (prev === "off" ? "auto" : prev === "auto" ? "on" : "off"))
             }
           >
-            <Text style={styles.pillText}>
+            <Text style={[styles.pillText, { color: tokens.onInk }]}>
               闪光 {flash === "off" ? "关" : flash === "auto" ? "自动" : "开"}
             </Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`手电筒：${torch ? "开启" : "关闭"}`}
-            style={[styles.pill, torch && styles.pillActive]}
+            style={[
+              styles.pill,
+              { backgroundColor: tokens.inkScrim, borderColor: tokens.inkBorder },
+              torch && { backgroundColor: tokens.accentFill, borderColor: tokens.accentFill },
+            ]}
             onPress={() => setTorch((prev) => !prev)}
           >
-            <Text style={styles.pillText}>手电 {torch ? "开" : "关"}</Text>
+            <Text style={[styles.pillText, { color: tokens.onInk }]}>
+              手电 {torch ? "开" : "关"}
+            </Text>
           </Pressable>
         </View>
       </View>
 
-      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + space.md }]}>
+      <View
+        style={[styles.bottomBar, { paddingBottom: insets.bottom + space.md, backgroundColor: tokens.inkScrim }]}
+      >
         <View style={styles.thumbnailSlot}>
           {staged.length > 0 ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`查看已拍 ${staged.length} 张`}
               onPress={() => nav.push("capture_review")}
-              style={styles.thumbnailButton}
+              style={[styles.thumbnailButton, { borderColor: tokens.onInk, backgroundColor: tokens.ink }]}
             >
               <View style={styles.thumbnailFallback}>
-                <Text style={styles.thumbnailCount}>{staged.length}</Text>
+                <Text style={[styles.thumbnailCount, { color: tokens.onInk }]}>{staged.length}</Text>
               </View>
             </Pressable>
           ) : (
-            <Text style={styles.slotHint}>连续拍摄</Text>
+            <Text style={[styles.slotHint, { color: tokens.onInkMuted }]}>连续拍摄</Text>
           )}
         </View>
 
@@ -305,34 +336,40 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
           accessibilityState={{ disabled: busy || !ready }}
           disabled={busy || !ready}
           onPress={() => void takePhoto()}
-          style={styles.shutterOuter}
+          style={[styles.shutterOuter, { borderColor: tokens.onInk }]}
         >
-          <View style={[styles.shutterInner, (busy || !ready) && styles.shutterBusy]} />
+          <View
+            style={[
+              styles.shutterInner,
+              { backgroundColor: tokens.onInk },
+              (busy || !ready) && { backgroundColor: tokens.onInkMuted },
+            ]}
+          />
         </Pressable>
 
         <View style={styles.rightSlot}>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={facing === "back" ? "切换到前置摄像头" : "切换到后置摄像头"}
-            style={styles.sideButton}
+            style={[styles.sideButton, { backgroundColor: tokens.inkScrim }]}
             onPress={() => {
               setReady(false);
               setFacing((prev) => (prev === "back" ? "front" : "back"));
             }}
           >
-            <Text style={styles.sideGlyph}>⇄</Text>
+            <AppIcon name="transfer" color={tokens.onInk} size={24} />
           </Pressable>
           {staged.length > 0 ? (
             <Pressable
               accessibilityRole="button"
-              style={styles.doneButton}
+              style={[styles.doneButton, { backgroundColor: tokens.accentFill }]}
               onPress={() => nav.push("capture_review")}
             >
-              <Text style={styles.doneText}>完成 {staged.length}</Text>
+              <Text style={[styles.doneText, { color: tokens.onAccent }]}>完成 {staged.length}</Text>
             </Pressable>
           ) : (
             <View style={styles.zoomHint}>
-              <Text style={styles.slotHint}>双指缩放</Text>
+              <Text style={[styles.slotHint, { color: tokens.onInkMuted }]}>双指缩放</Text>
             </View>
           )}
         </View>
@@ -342,18 +379,16 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#000" },
+  root: { flex: 1 },
   center: { alignItems: "center", justifyContent: "center", gap: space.sm },
-  hint: { color: "#C7D2E2", fontSize: font.body },
+  hint: { fontSize: font.body },
   permissionTitle: {
-    color: "#FFFFFF",
     fontSize: font.title,
     fontWeight: "700",
     textAlign: "center",
     paddingHorizontal: space.xl,
   },
   permissionBody: {
-    color: "#B7C7DA",
     fontSize: font.body,
     lineHeight: 20,
     textAlign: "center",
@@ -365,13 +400,12 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: space.xl,
     borderRadius: radius.row,
-    backgroundColor: "#0D66E0",
     alignItems: "center",
     justifyContent: "center",
   },
-  primaryText: { color: "#FFFFFF", fontSize: font.body, fontWeight: "700" },
+  primaryText: { fontSize: font.body, fontWeight: "700" },
   linkButton: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.lg },
-  linkText: { color: "#B7C7DA", fontSize: font.body },
+  linkText: { fontSize: font.body },
   topBar: {
     position: "absolute",
     left: 0,
@@ -381,7 +415,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
-    backgroundColor: "rgba(0,0,0,0.28)",
   },
   roundButton: {
     width: 44,
@@ -389,21 +422,16 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.35)",
   },
-  roundGlyph: { color: "#FFFFFF", fontSize: 30, lineHeight: 32, marginTop: -2 },
   topPills: { flexDirection: "row", gap: space.xs, marginLeft: "auto" },
   pill: {
     paddingHorizontal: space.md,
-    minHeight: 36,
+    minHeight: 44,
     justifyContent: "center",
     borderRadius: 999,
-    backgroundColor: "rgba(0,0,0,0.35)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.28)",
   },
-  pillActive: { backgroundColor: "rgba(22,119,255,0.75)" },
-  pillText: { color: "#FFFFFF", fontSize: 12, fontWeight: "600" },
+  pillText: { fontSize: font.label, fontWeight: "600" },
   bottomBar: {
     position: "absolute",
     left: 0,
@@ -414,7 +442,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    backgroundColor: "rgba(0,0,0,0.30)",
   },
   thumbnailSlot: { width: 78, alignItems: "flex-start" },
   thumbnailButton: {
@@ -422,26 +449,22 @@ const styles = StyleSheet.create({
     height: 52,
     borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: "#FFFFFF",
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#1A2433",
   },
   thumbnailFallback: { alignItems: "center", justifyContent: "center" },
-  thumbnailCount: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
-  slotHint: { color: "rgba(255,255,255,0.72)", fontSize: 11 },
+  thumbnailCount: { fontSize: font.title, fontWeight: "700" },
+  slotHint: { fontSize: font.label },
   shutterOuter: {
     width: 78,
     height: 78,
     borderRadius: 39,
     borderWidth: 4,
-    borderColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
   },
-  shutterInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: "#FFFFFF" },
-  shutterBusy: { backgroundColor: "rgba(255,255,255,0.55)" },
+  shutterInner: { width: 60, height: 60, borderRadius: 30 },
   rightSlot: { width: 78, alignItems: "flex-end", gap: space.xs },
   sideButton: {
     width: 44,
@@ -449,17 +472,14 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.35)",
   },
-  sideGlyph: { color: "#FFFFFF", fontSize: 20, fontWeight: "600" },
   doneButton: {
-    minHeight: 36,
+    minHeight: 44,
     paddingHorizontal: space.sm,
     borderRadius: 999,
-    backgroundColor: "rgba(22,119,255,0.85)",
     alignItems: "center",
     justifyContent: "center",
   },
-  doneText: { color: "#FFFFFF", fontSize: 12, fontWeight: "700" },
+  doneText: { fontSize: font.label, fontWeight: "700" },
   zoomHint: { paddingTop: 4 },
 });

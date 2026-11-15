@@ -1,11 +1,16 @@
 //! 工作台右侧上下文栏（U0）：当前任务 / 项目 / 开发项目 / Agent / 需要处理的
 //! 真实状态。
 //!
-//! 不是每个功能都需要右栏：本组件只承载跨功能共用的上下文，不复制各页面的
-//! 详情视图；没有项目/当前任务时如实降级，不显示假数据。
+//! 2026-11-15：右栏升级为「页面级详情优先、通用上下文兜底」。
+//! 外壳把详情栏宿主节点（`detailSlot`）放在本栏最前面；当前页面若有选中对象，
+//! 由 `pageDetail.tsx` 的 portal 把详情卡投送进去，通用上下文整块由 CSS 相邻
+//! 选择器隐去（`.wb-detail-slot:not(:empty) + .wb-context-generic`）。
+//! 因此本组件仍只负责通用上下文，不复制各页面的详情视图；没有项目/当前任务时
+//! 如实降级，不显示假数据。
 
 import { FolderOpen, GitBranch, Loader2, PlayCircle, Settings2 } from "lucide-react";
 import { openPath as openSystemPath } from "@tauri-apps/plugin-opener";
+import type { ReactNode } from "react";
 
 import AgentIcon from "../components/ui/AgentIcon";
 import { useLocale } from "../hooks/useLocale";
@@ -27,6 +32,8 @@ interface Props {
   onOpenDevWorkbench: () => void;
   onOpenTask: () => void;
   onNotice: (kind: "ok" | "error" | "info", text: string) => void;
+  /** 页面级详情宿主节点：紧邻通用上下文之前，非空时由 CSS 隐去通用块。 */
+  detailSlot?: ReactNode;
 }
 
 export default function WorkbenchContextPane({
@@ -36,6 +43,7 @@ export default function WorkbenchContextPane({
   onOpenDevWorkbench,
   onOpenTask,
   onNotice,
+  detailSlot,
 }: Props) {
   const { t } = useLocale();
   const snapshot = useAgentsStore((s) => s.snapshot);
@@ -65,9 +73,11 @@ export default function WorkbenchContextPane({
 
   return (
     <aside className="wb-context" aria-label={t("workbench.context")}>
-      <header className="wb-context-head">
-        <h3>{t("workbench.context")}</h3>
-      </header>
+      {detailSlot}
+      <div className="wb-context-generic">
+        <header className="wb-context-head">
+          <h3>{t("workbench.context")}</h3>
+        </header>
 
       <section className="wb-context-block" aria-labelledby="wb-context-task">
         <h4 id="wb-context-task">{t("workbench.contextCurrentTask")}</h4>
@@ -238,6 +248,7 @@ export default function WorkbenchContextPane({
           </div>
         )}
       </section>
+      </div>
     </aside>
   );
 }

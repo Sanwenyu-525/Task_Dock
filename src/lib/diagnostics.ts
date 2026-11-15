@@ -74,14 +74,37 @@ async function defaultTransport(events: DiagnosticInput[]): Promise<unknown> {
   return invoke("diagnostics_record", { events });
 }
 
-/** 当前窗口标识：按入口 HTML 推断，避免每个入口手工注册。 */
+/**
+ * 窗口标识 → 入口 HTML（与 `vite.config.ts` 的 `build.rollupOptions.input` 一一对应）。
+ *
+ * 为什么不按包含关系逐个 `includes` 判断：`workspace.html` 曾经落在兜底分支，
+ * 导致唯一大型完整工作台的所有事件都被记成 `main`，诊断中心无法区分「主窗口
+ * 胶囊快捷面」与「工作台」的真实来源（错误归属错误、按窗口筛选失真）。
+ */
+const WINDOW_ENTRIES: ReadonlyArray<readonly [string, string]> = [
+  ["context-menu", "context-menu"],
+  ["notification", "notification"],
+  ["capture", "capture"],
+  ["tab-hint", "tab-hint"],
+  ["widget", "widget"],
+  // 必须排在 `workspace` 之后判断也不会互相包含，这里保持显式表驱动。
+  ["workspace", "workspace"],
+];
+
+/**
+ * 当前窗口标识：按入口 HTML（`/workspace.html` 等）推断，避免每个入口手工注册。
+ *
+ * - 未知入口（浏览器预览、`preview.html`、单元测试）保持向后兼容，回退 `main`；
+ * - 只比较路径最后一段的文件名，避免 `D:\workspace\...` 之类的目录名误判。
+ */
 export function currentWindowId(): string {
   if (typeof location === "undefined") return "main";
   const path = location.pathname.toLowerCase();
-  if (path.includes("context-menu")) return "context-menu";
-  if (path.includes("notification")) return "notification";
-  if (path.includes("capture")) return "capture";
-  if (path.includes("widget")) return "widget";
+  const file = path.slice(path.lastIndexOf("/") + 1);
+  const stem = file.replace(/\.html$/, "");
+  for (const [entry, id] of WINDOW_ENTRIES) {
+    if (stem === entry) return id;
+  }
   return "main";
 }
 

@@ -16,6 +16,15 @@ export type RouteKey =
   | "notes"
   | "device"
   | "settings"
+  // 移动采集中心（2026-11-15）：相机 → 处理页（多目的地）→ 本机素材库。
+  // 不新增底部 Tab：入口在首页快捷区与工具页「采集与整理」。
+  | "capture_camera"
+  | "capture_scan"
+  | "capture_review"
+  | "capture_stash"
+  | "capture_import"
+  // 采集中心入口（状态一：采集）：拍照 / 扫描 / 导入 / 语音 / 一句话
+  | "capture_home"
   // 开发验收专用（无导航入口，长按「我的」页版本号进入），不进正式信息架构
   | "icon_gallery";
 
@@ -32,6 +41,12 @@ export interface Route {
   key: RouteKey;
   noteId?: string;
   intent?: CaptureIntent;
+  /**
+   * 采集意图的非零信号：采集中心已打开时再次收到快捷动作/深链，
+   * 只更新 intent 不会触发 React 状态变化（字符串可能相同），
+   * 用递增序号让屏幕能「重启到用户这次选择的模式」而不是静默忽略。
+   */
+  intentNonce?: number;
 }
 
 /** 下发给屏幕的导航能力：只开 push/back，不让屏幕直接操作栈数组 */

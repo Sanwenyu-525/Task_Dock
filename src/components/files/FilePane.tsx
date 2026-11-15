@@ -38,6 +38,8 @@ import { ConfirmDialog, Dialog } from "../ui/Dialog";
 import FileList from "./FileList";
 import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
+import { isLogged, startOperation } from "../../lib/diagnostics";
+import { showFsOpOutcome } from "./fsOpFeedback";
 import {
   loadDir,
   loadMore,
@@ -419,16 +421,21 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
 
   const doCopyTo = useCallback(
     async (paths: string[], target: string): Promise<FsOpReport | null> => {
+      // 与拖拽路径同一套语义：前端生成 operation_id，Rust 写权威业务结果。
+      const op = startOperation("file", "workspace_copy", {
+        component: "文件工作区",
+        metadata: { count: paths.length },
+      });
       try {
-        const report = await fsCopyPaths(paths, target, "rename");
+        op.stage("ipc");
+        const report = await fsCopyPaths(paths, target, "rename", op.id);
         refreshBoth([target, ...paths.map((p) => parentOf(p) ?? "").filter(Boolean)]);
-        if (report.failed > 0) {
-          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed, skipped: report.skipped }), { kind: "warning" });
-        } else {
-          showToast(t("fw.report.copyOk", { count: report.ok }), { kind: "success" });
-        }
+        showFsOpOutcome({ effect: "copy", report, t, showToast });
         return report;
       } catch (e) {
+        // IPC 抛错已由 `invokeCommand` 记录并 `markLogged`：只有未被归属的错误
+        // 才补一条终态，避免同一故障在诊断中心出现两条记录。
+        if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
         showToast(errorMessage(e), { kind: "error" });
         return null;
       }
@@ -438,16 +445,18 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
 
   const doMoveTo = useCallback(
     async (paths: string[], target: string): Promise<FsOpReport | null> => {
+      const op = startOperation("file", "workspace_move", {
+        component: "文件工作区",
+        metadata: { count: paths.length },
+      });
       try {
-        const report = await fsMovePaths(paths, target, "rename");
+        op.stage("ipc");
+        const report = await fsMovePaths(paths, target, "rename", op.id);
         refreshBoth([target, ...paths.map((p) => parentOf(p) ?? "").filter(Boolean)]);
-        if (report.failed > 0) {
-          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed, skipped: report.skipped }), { kind: "warning" });
-        } else {
-          showToast(t("fw.report.moveOk", { count: report.ok }), { kind: "success" });
-        }
+        showFsOpOutcome({ effect: "move", report, t, showToast });
         return report;
       } catch (e) {
+        if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
         showToast(errorMessage(e), { kind: "error" });
         return null;
       }
@@ -457,21 +466,23 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
 
   const doDelete = useCallback(
     async (paths: string[], permanent: boolean) => {
+      const op = startOperation("file", "workspace_delete", {
+        component: "文件工作区",
+        metadata: { count: paths.length },
+      });
       try {
-        const report = await fsDeletePaths(paths, permanent);
+        op.stage("ipc");
+        const report = await fsDeletePaths(paths, permanent, op.id);
         refreshBoth(paths.map((p) => parentOf(p) ?? "").filter(Boolean));
-        if (report.failed > 0) {
-          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed }), { kind: "warning" });
-        } else {
-          showToast(
-            permanent
-              ? t("fw.report.deletePermanent", { count: report.ok })
-              : t("fw.report.deleteOk", { count: report.ok }),
-            { kind: "success" },
-          );
-        }
+        showFsOpOutcome({
+          effect: permanent ? "deletePermanent" : "deleteRecycle",
+          report,
+          t,
+          showToast,
+        });
         store.getState().clearSelection(paneId);
       } catch (e) {
+        if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
         showToast(errorMessage(e), { kind: "error" });
       }
     },
@@ -669,8 +680,11 @@ export default function FilePane({ paneId, pageActive, onHoverZone, dropHint }: 
             // 剪切语义（P0）：部分失败只保留未完成项，失败不静默清空。
             void (clip.mode === "copy" ? doCopyTo(clip.paths, dirPath) : doMoveTo(clip.paths, dirPath)).then((report) => {
               if (clip.mode === "cut") {
+                // 失败与「部分完成」都视为源仍在：保留在剪切待办。
                 const pending = report
-                  ? report.entries.filter((r) => r.status === "failed").map((r) => r.source)
+                  ? report.entries
+                      .filter((r) => r.status === "failed" || r.status === "partial")
+                      .map((r) => r.source)
                   : [...clip.paths];
                 setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
               }

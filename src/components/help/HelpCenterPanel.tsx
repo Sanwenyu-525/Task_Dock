@@ -4,10 +4,11 @@
 //! 无后台任务：搜索是纯函数、最近浏览只在打开文章时写一次 localStorage。
 
 import { useEffect, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, LifeBuoy } from "lucide-react";
 import { SearchField, StatusBadge } from "../ui";
 import { useLocale } from "../../hooks/useLocale";
 import { useUiStore } from "../../store/useUiStore";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { useNavigationLayout } from "../../lib/navigationLayout";
 import { navEntry, navLabel } from "../../lib/navigationRegistry";
 import {
@@ -81,24 +82,25 @@ export default function HelpCenterPanel() {
 
   return (
     <div className="help-panel page-fill">
-      <header className="help-head">
-        <h2>{t("help.title")}</h2>
-        <p className="help-subtitle">{t("help.subtitle")}</p>
-      </header>
-
-      {helpReturnTab && (
-        <div className="help-badges">
-          <button
-            type="button"
-            className="btn sm"
-            onClick={returnToSource}
-            aria-label={t("help.backToSource")}
-          >
-            <ArrowLeft size={12} aria-hidden="true" style={{ marginRight: 4 }} />
-            {t("help.backToSource")}
-          </button>
-        </div>
-      )}
+      {/* 页面级页头（2026-11-15 统一）：返回来源页按钮进动作区。 */}
+      <WorkbenchPageHeader
+        icon={LifeBuoy}
+        title={t("help.title")}
+        subtitle={t("help.subtitle")}
+        actions={
+          helpReturnTab ? (
+            <button
+              type="button"
+              className="btn sm"
+              onClick={returnToSource}
+              aria-label={t("help.backToSource")}
+            >
+              <ArrowLeft size={12} aria-hidden="true" />
+              {t("help.backToSource")}
+            </button>
+          ) : null
+        }
+      />
 
       <div className="help-toolbar">
         <SearchField

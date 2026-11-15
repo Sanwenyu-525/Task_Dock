@@ -1193,6 +1193,8 @@ pub fn run() {
             commands::mobile_sync::mobile_file_delete,
             commands::mobile_sync::mobile_file_reveal,
             commands::mobile_sync::mobile_file_open_inbox,
+            commands::mobile_sync::mobile_file_import_shelf,
+            commands::mobile_sync::mobile_file_thumbnail,
             // 功能生命周期（只读批量快照；写入仍走 update_settings）
             commands::lifecycle::lifecycle_status,
             // 诊断日志（本地持久化 / 查询 / 摘要 / 导出 / 清理）

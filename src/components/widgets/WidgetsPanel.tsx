@@ -22,6 +22,7 @@ import type { WidgetSources } from "../../lib/widgets/sources";
 import { useLocale } from "../../hooks/useLocale";
 import { useWidgetsStore } from "../../store/useWidgetsStore";
 import { useUiStore } from "../../store/useUiStore";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { ConfirmDialog } from "../ui";
 import WidgetCard from "./WidgetCard";
 import WidgetLibrary from "./WidgetLibrary";
@@ -179,49 +180,52 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
 
   return (
     <div className="widgets-page page-fill">
-      <header className="widgets-head">
-        <div className="widgets-head-title">
-          <Blocks size={18} aria-hidden="true" />
-          <div>
-            <h2>{t("widgets.title")}</h2>
-            <p>{t("widgets.subtitle")}</p>
-          </div>
-        </div>
-        <div className="widgets-head-actions">
-          <span className="widgets-count">
-            {t("widgets.enabledCount", { enabled: visible.length, total: widgets.length })}
-          </span>
-          <span className="widgets-count">
-            {t("widgets.desktopCount", { count: desktopCount })}
-          </span>
-          <span
-            className={`widgets-count ${desktopShownCount !== desktopCount ? "warn" : ""}`}
-            data-tip={
-              desktopFailedCount > 0
-                ? t("widgets.desktop.failedHint", { count: desktopFailedCount })
-                : undefined
-            }
-          >
-            {t("widgets.desktopShownCount", { count: desktopShownCount })}
-          </span>
-          <button
-            className={`btn sm ${libraryOpen ? "primary" : ""}`}
-            aria-expanded={libraryOpen}
-            aria-controls="widget-library-panel"
-            onClick={() => setLibraryOpen((open) => !open)}
-          >
-            <Plus size={13} aria-hidden="true" /> {t("widgets.addWidgets")}
-          </button>
-          <button
-            className="btn sm"
-            onClick={onReset}
-            aria-label={t("widgets.resetLayoutAria")}
-            data-tip={t("widgets.resetLayoutHint")}
-          >
-            <RotateCcw size={13} aria-hidden="true" /> {t("widgets.resetLayout")}
-          </button>
-        </div>
-      </header>
+      {/* 页面级页头（2026-11-15 统一）：三个真实计数进 meta 槽，库/重置进动作区。 */}
+      <WorkbenchPageHeader
+        icon={Blocks}
+        title={t("widgets.title")}
+        subtitle={t("widgets.subtitle")}
+        meta={
+          <>
+            <span className="widgets-count">
+              {t("widgets.enabledCount", { enabled: visible.length, total: widgets.length })}
+            </span>
+            <span className="widgets-count">
+              {t("widgets.desktopCount", { count: desktopCount })}
+            </span>
+            <span
+              className={`widgets-count ${desktopShownCount !== desktopCount ? "warn" : ""}`}
+              data-tip={
+                desktopFailedCount > 0
+                  ? t("widgets.desktop.failedHint", { count: desktopFailedCount })
+                  : undefined
+              }
+            >
+              {t("widgets.desktopShownCount", { count: desktopShownCount })}
+            </span>
+          </>
+        }
+        actions={
+          <>
+            <button
+              className={`btn sm ${libraryOpen ? "primary" : ""}`}
+              aria-expanded={libraryOpen}
+              aria-controls="widget-library-panel"
+              onClick={() => setLibraryOpen((open) => !open)}
+            >
+              <Plus size={13} aria-hidden="true" /> {t("widgets.addWidgets")}
+            </button>
+            <button
+              className="btn sm"
+              onClick={onReset}
+              aria-label={t("widgets.resetLayoutAria")}
+              data-tip={t("widgets.resetLayoutHint")}
+            >
+              <RotateCcw size={13} aria-hidden="true" /> {t("widgets.resetLayout")}
+            </button>
+          </>
+        }
+      />
 
       <div className="page-scroll widgets-body">
         {persistError && (

@@ -2477,10 +2477,12 @@ pub fn drop_code_category(code: &str) -> &'static str {
 }
 
 /// 单次投递最多写几条失败明细（按错误码/阶段聚合）；其余只计入汇总。
-pub const MAX_DROP_FAILURE_EVENTS: usize = 4;
+pub const MAX_DROP_FAILURE_EVENTS: usize = crate::diagnostics::batch::MAX_FAILURE_DETAIL_EVENTS;
 
 /// 把一次投递的业务结果映射为**有界**诊断事件。
 ///
+/// 级别判定、字段集合、明细截断策略由 [`crate::diagnostics::batch`] 统一实现
+/// （与文件工作区共用），这里只做 DropReport → BatchSpec 的映射：
 /// - 汇总事件始终一条：全部成功 = INFO/success；部分失败 = WARN/failed；
 ///   全部失败 = ERROR/failed（命中数据库结构不兼容时即使部分失败也升级为 ERROR）；
 /// - 明细事件按（错误码, 阶段）聚合，最多 [`MAX_DROP_FAILURE_EVENTS`] 条；
@@ -2493,124 +2495,49 @@ pub fn drop_diagnostic_events(
     report: &DropReport,
     duration_ms: u64,
 ) -> Vec<diagnostics::DiagnosticEvent> {
-    use crate::diagnostics::{DiagLevel, DiagStatus};
+    use crate::diagnostics::batch::{self, BatchCounts, BatchSpec};
     use serde_json::Value as Json;
-    use std::collections::BTreeMap;
 
-    let mut groups: BTreeMap<(String, String), i64> = BTreeMap::new();
-    for entry in &report.entries {
-        if entry.status != "failed" && entry.status != "partial" {
-            continue;
-        }
-        let code = entry
-            .code
-            .clone()
-            .unwrap_or_else(|| DROP_CODE_UNKNOWN.to_string());
-        let stage = entry.stage.clone().unwrap_or_else(|| "unknown".to_string());
-        *groups.entry((code, stage)).or_insert(0) += 1;
-    }
+    let failures = batch::aggregate_failures(
+        report
+            .entries
+            .iter()
+            .map(|entry| (entry.status.as_str(), entry.code.as_deref(), entry.stage.as_deref())),
+        DROP_CODE_UNKNOWN,
+    );
 
-    let failure_total = report.failed + report.partial;
-    let has_failure = failure_total > 0;
-    let all_failed =
-        report.failed > 0 && report.success == 0 && report.skipped == 0 && report.partial == 0;
-    let db_schema = groups
-        .keys()
-        .any(|(code, _)| code == DROP_CODE_DB_SCHEMA);
-    // 明确的预期拒绝（校验/不支持/冲突/目标不可用）全量失败时用 WARN，
-    // 真实 IO/权限/数据库故障才升级为 ERROR。
-    let only_expected_rejection = !groups.is_empty()
-        && groups.keys().all(|(code, _)| {
-            matches!(
-                code.as_str(),
-                DROP_CODE_VALIDATION
-                    | DROP_CODE_UNSUPPORTED
-                    | DROP_CODE_CONFLICT
-                    | DROP_CODE_TARGET_UNAVAILABLE
-            )
-        });
-
-    let (level, event, status) = if !has_failure {
-        (DiagLevel::Info, "drop_completed", DiagStatus::Success)
-    } else if db_schema || (all_failed && !only_expected_rejection) {
-        (DiagLevel::Error, "drop_failed", DiagStatus::Failed)
-    } else {
-        (DiagLevel::Warn, "drop_partial", DiagStatus::Failed)
-    };
-
-    let mut summary = diagnostics::event(level, "file", "shelf_drop_to_directory", event)
-        .status(status)
-        .stage("business")
-        .operation(&report.batch_id)
-        .duration_ms(duration_ms)
-        .metadata("total", Json::from(report.total))
-        .metadata("success", Json::from(report.success))
-        .metadata("skipped", Json::from(report.skipped))
-        .metadata("failed", Json::from(report.failed))
-        .metadata("partial", Json::from(report.partial))
-        .metadata("mode", Json::from(report.op.clone()))
-        .metadata("target_id", Json::from(report.target_id.clone()))
-        .metadata("failure_groups", Json::from(groups.len() as u64))
-        .message(format!(
-            "文件投递{}：共 {} 项，成功 {}、跳过 {}、失败 {}、部分完成 {}",
-            if !has_failure {
-                "完成"
-            } else if all_failed {
-                "失败"
-            } else {
-                "部分失败"
-            },
-            report.total,
-            report.success,
-            report.skipped,
-            report.failed,
-            report.partial
-        ))
-        .build();
-    if !groups.is_empty() {
-        let (code, category) = if groups.len() == 1 {
-            let (code, _) = groups.keys().next().expect("非空");
-            (code.clone(), drop_code_category(code))
-        } else {
-            (
-                DROP_CODE_MULTI_FAILURE.to_string(),
-                drop_code_category(DROP_CODE_UNKNOWN),
-            )
-        };
-        summary.error_code = Some(code);
-        summary.error_category = Some(category.to_string());
-    }
-
-    let mut events = vec![summary];
-    let mut grouped: Vec<((String, String), i64)> = groups.into_iter().collect();
-    // 失败多的分组优先，保证被截断时保留最有信息量的分类。
-    grouped.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    for ((code, stage), count) in grouped.into_iter().take(MAX_DROP_FAILURE_EVENTS) {
-        let group_level = if code == DROP_CODE_DB_SCHEMA || (all_failed && !only_expected_rejection)
-        {
-            DiagLevel::Error
-        } else {
-            DiagLevel::Warn
-        };
-        events.push(
-            diagnostics::event(
-                group_level,
-                "file",
-                "shelf_drop_to_directory",
-                "drop_item_failed",
-            )
-            .status(DiagStatus::Failed)
-            .operation(&report.batch_id)
-            .stage(&stage)
-            .error_code(&code)
-            .error_category(drop_code_category(&code))
-            .metadata("count", Json::from(count))
-            .metadata("mode", Json::from(report.op.clone()))
-            .message(format!("文件投递失败 {count} 项（{code}）"))
-            .build(),
-        );
-    }
-    events
+    batch::events(&BatchSpec {
+        module: "file",
+        action: "shelf_drop_to_directory",
+        operation_id: &report.batch_id,
+        counts: BatchCounts {
+            total: report.total,
+            success: report.success,
+            skipped: report.skipped,
+            failed: report.failed,
+            partial: report.partial,
+        },
+        failures,
+        duration_ms,
+        noun: "文件投递",
+        success_event: "drop_completed",
+        failed_event: "drop_failed",
+        partial_event: "drop_partial",
+        detail_event: "drop_item_failed",
+        extra_metadata: vec![
+            ("mode", Json::from(report.op.clone())),
+            ("target_id", Json::from(report.target_id.clone())),
+        ],
+        critical_codes: &[DROP_CODE_DB_SCHEMA],
+        expected_rejection_codes: &[
+            DROP_CODE_VALIDATION,
+            DROP_CODE_UNSUPPORTED,
+            DROP_CODE_CONFLICT,
+            DROP_CODE_TARGET_UNAVAILABLE,
+        ],
+        multi_failure_code: DROP_CODE_MULTI_FAILURE,
+        category_of: drop_code_category,
+    })
 }
 
 /// 校验并去重拖入路径：只接受绝对路径，重复项按大小写不敏感去重。

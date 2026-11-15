@@ -40,12 +40,24 @@
   overflow: auto;
 }
 
-/* 窄内容区：信息栏降级为底部三段横排，避免与暂存架争抢行宽。 */
+/* 窄内容区（<880px，例如 1180px 窗口 + 右栏展开时）：信息栏降级为底部信息带，
+   避免与暂存架争抢行宽。
+   2026-11-15：原先 auto-fit 180px 会在 636px 内容区挤出三张 ~200px 的窄卡，
+   三列又都不满高，整块被推出视口。改为「主区吃满 + 信息带固定上限」的行布局，
+   卡片最小 240px（两列），信息带内部自己滚动，不再吃掉暂存架的高度。 */
 @container wb-content (max-width: 879px) {
+  .collection-split {
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
   .col-rail {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    overflow: visible;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    align-content: start;
+    max-height: 34vh;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding-right: 2px;
   }
 }
 

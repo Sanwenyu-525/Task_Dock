@@ -17,6 +17,7 @@ import {
 } from "../../lib/bridge";
 import { clipboardTime, formatBytes } from "../../lib/clipboardUi";
 import { shelfFileTypeUi } from "../../lib/fileTypeUi";
+import { useLocale } from "../../hooks/useLocale";
 import { useShelfDragOut } from "../../hooks/useShelfDragOut";
 import { DropdownMenu } from "../ui";
 import type { DropdownMenuItem } from "../ui/DropdownMenu";
@@ -96,6 +97,8 @@ export default function ShelfItemCard({
   const type = shelfFileTypeUi(item);
   const Icon = type.icon;
   const missing = item.exists_state === "missing";
+  const { t } = useLocale();
+  const fromMobile = item.origin === "mobile_capture";
   const [fallbackThumb, setFallbackThumb] = useState<string | null>(null);
   const drag = useShelfDragOut({
     enabled: dragEnabled,
@@ -226,6 +229,14 @@ export default function ShelfItemCard({
           <span>{formatBytes(item.byte_size)}</span>
           <span className="shelf-item-meta-sep" aria-hidden="true">·</span>
           <span className="shelf-item-src">{sourceLabel(item)}</span>
+          {fromMobile && (
+            <>
+              <span className="shelf-item-meta-sep" aria-hidden="true">·</span>
+              <span className="shelf-tag origin" data-tip={t("mobileCaptureShelf.originLabel")}>
+                {t("mobileCaptureShelf.originLabel")}
+              </span>
+            </>
+          )}
           <span className="shelf-item-meta-sep" aria-hidden="true">·</span>
           <span className="shelf-item-time">
             <Clock size={11} aria-hidden="true" />

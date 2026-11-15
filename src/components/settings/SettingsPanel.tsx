@@ -45,6 +45,7 @@ import {
   resolveVisualPreset,
 } from "../../lib/theme";
 import { useUiStore } from "../../store/useUiStore";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { errorMessage } from "../../lib/errors";
 import { reportError } from "../../lib/errorReport";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
@@ -705,15 +706,12 @@ export default function SettingsPanel() {
 
   return (
     <div className="settings-panel page-fill">
-      {/* 页面级页头（2026-11-14 统一工作台适配）；分类导航与跳转搜索保持既有交互。 */}
-      <header className="wf-head-row settings-page-head">
-        <div>
-          <h2 className="wf-title">
-            <SettingsIcon size={16} aria-hidden="true" /> {t("nav.settings")}
-          </h2>
-          <p className="wf-subtitle">{t("settings.pageSubtitle")}</p>
-        </div>
-      </header>
+      {/* 页面级页头（2026-11-15 统一）；分类导航与跳转搜索保持既有交互。 */}
+      <WorkbenchPageHeader
+        icon={SettingsIcon}
+        title={t("nav.settings")}
+        subtitle={t("settings.pageSubtitle")}
+      />
       {dataLoadError && (
         <div className="setting-note error-text" role="alert">
           {t("settings.loadError", { error: dataLoadError })}

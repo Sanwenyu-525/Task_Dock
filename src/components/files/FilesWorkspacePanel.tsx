@@ -44,6 +44,8 @@ import Popover from "../ui/Popover";
 import "./files.css";
 import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
+import { isLogged, startOperation } from "../../lib/diagnostics";
+import { showFsOpOutcome } from "./fsOpFeedback";
 import {
   fsCopyPaths,
   fsMovePaths,
@@ -347,19 +349,27 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   // ── 应用内拖拽：坐标/修饰键/落点派发/取消清理 ───────────────────────
   const applyFileDrop = useCallback(
     async (paths: string[], targetDir: string, effect: "copy" | "move"): Promise<FsOpReport | null> => {
+      // 操作 ID 由前端生成、Rust 沿用：`Ok(report)` 里 failed>0 时 IPC 仍是成功，
+      // 只有带着同一个 ID 的业务事件才能让「部分失败」在诊断中心可见且可关联。
+      const op = startOperation("file", effect === "copy" ? "workspace_copy" : "workspace_move", {
+        component: "文件工作区",
+        metadata: { count: paths.length },
+      });
       try {
+        op.stage("ipc");
         const report: FsOpReport =
           effect === "copy"
-            ? await fsCopyPaths(paths, targetDir, "rename")
-            : await fsMovePaths(paths, targetDir, "rename");
+            ? await fsCopyPaths(paths, targetDir, "rename", op.id)
+            : await fsMovePaths(paths, targetDir, "rename", op.id);
         invalidateDirs([targetDir, ...paths.map((p) => parentOf(p) ?? "").filter(Boolean)]);
-        if (report.failed > 0) {
-          showToast(t("fw.report.partial", { ok: report.ok, failed: report.failed, skipped: report.skipped }), { kind: "warning" });
-        } else {
-          showToast(effect === "copy" ? t("fw.report.copyOk", { count: report.ok }) : t("fw.report.moveOk", { count: report.ok }), { kind: "success" });
-        }
+        // 业务终态由 Rust 写入诊断（同一 operation_id）；这里只负责把「失败了
+        // 几项、主要原因是什么、下一步去哪里看」讲清楚，不重复上报同一故障。
+        showFsOpOutcome({ effect, report, t, showToast });
         return report;
       } catch (e) {
+        // IPC 抛错已由 invokeCommand 归属（含命令名/错误码）并 markLogged；
+        // 只有未被归属的错误才补一条终态，不重复上报同一故障。
+        if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
         showToast(errorMessage(e), { kind: "error" });
         return null;
       }
@@ -584,8 +594,11 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
           const report = await applyFileDrop(clip.paths, tab.path, clip.mode === "copy" ? "copy" : "move");
           if (clip.mode === "cut") {
             // 剪切语义（P0：失败不得静默清空剪切状态）：部分失败只保留未完成项。
+            // 失败与「部分完成」都视为源仍在：保留在剪切待办，成功项才移出。
             const pending = report
-              ? report.entries.filter((r) => r.status === "failed").map((r) => r.source)
+              ? report.entries
+                  .filter((r) => r.status === "failed" || r.status === "partial")
+                  .map((r) => r.source)
               : [...clip.paths];
             setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
           }
@@ -998,17 +1011,22 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
           setDeleteOpen(false);
           setDeletePermanent(false);
           void (async () => {
+            // 与拖拽/分栏菜单同一套语义：前端生成 operation_id，Rust 按同一 ID
+            // 写权威业务结果；这里只做结果展示，不重复上报同一故障。
+            const op = startOperation("file", "workspace_delete", {
+              component: "文件工作区",
+              metadata: { count: paths.length, permanent },
+            });
             try {
-              const report = await fsDeletePaths(paths, permanent);
+              op.stage("ipc");
+              const report = await fsDeletePaths(paths, permanent, op.id);
               invalidateDirs(paths.map((p) => parentOf(p) ?? "").filter(Boolean));
-              showToast(
-                report.failed > 0
-                  ? t("fw.report.partial", { ok: report.ok, failed: report.failed, skipped: report.skipped })
-                  : permanent
-                    ? t("fw.report.deletePermanent", { count: report.ok })
-                    : t("fw.report.deleteOk", { count: report.ok }),
-                { kind: report.failed > 0 ? "warning" : "success" },
-              );
+              showFsOpOutcome({
+                effect: permanent ? "deletePermanent" : "deleteRecycle",
+                report,
+                t,
+                showToast,
+              });
               store.getState().clearSelection(store.getState().activePaneId);
             } catch (e) {
               showToast(errorMessage(e), { kind: "error" });

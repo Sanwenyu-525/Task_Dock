@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   Image,
   Modal,
   Pressable,
@@ -19,6 +20,7 @@ import {
 } from "react-native";
 
 import { AppBar } from "../../components/AppBar";
+import { AppIcon } from "../../components/icons/AppIcon";
 import { Chip } from "../../components/Chip";
 import { EmptyState } from "../../components/EmptyState";
 import { PressableScale } from "../../components/PressableScale";
@@ -32,6 +34,7 @@ import * as repo from "../../db/captureAssets";
 import { formatRelative } from "../../domain/taskQuery";
 import { describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
+import { useKeyboardHeight } from "../../lib/keyboard";
 import type { Nav } from "../../lib/nav";
 import { formatBytes, previewLocalFile } from "../../lib/sync/fileIo";
 import { useTheme } from "../../theme/ThemeProvider";
@@ -123,6 +126,11 @@ function DestinationChips({
 export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
+  // 素材详情是自绘底部弹层（Modal 不吃 adjustResize）：键盘弹出时整块上移，
+  // 否则文件名/备注输入框与底部按钮会被键盘盖住。
+  const keyboardHeight = useKeyboardHeight();
+  // 键盘弹出时把详情弹层限制在键盘以上的可视区，避免整块上移后标题/关闭与图片被裁出屏幕。
+  const sheetMaxHeight = keyboardHeight > 0 ? Math.max(240, Dimensions.get("screen").height - keyboardHeight - insets.top - space.xl) : undefined;
   const [assets, setAssets] = useState<repo.CaptureAsset[]>([]);
   const [destinations, setDestinations] = useState<Record<string, repo.CaptureDestination[]>>({});
   const [stagedCount, setStagedCount] = useState(0);
@@ -435,7 +443,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
           <Text style={[styles.bannerText, { color: tokens.accentText }]}>
             有 {stagedCount} 张照片尚未处理，点此继续保存
           </Text>
-          <Text style={[styles.bannerArrow, { color: tokens.accentText }]}>›</Text>
+          <AppIcon name="chevronRight" color={tokens.accentText} size={18} />
         </Pressable>
       ) : null}
 
@@ -504,7 +512,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                       },
                     ]}
                   >
-                    {isSelected ? <Text style={styles.checkGlyph}>✓</Text> : null}
+                    {isSelected ? <AppIcon name="check" color={tokens.onAccent} size={14} /> : null}
                   </View>
                 ) : null}
                 {isImageAsset(asset) && (asset.thumbnailPath || asset.localPath) ? (
@@ -514,7 +522,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                     resizeMode="cover"
                   />
                 ) : (
-                  <View style={[styles.thumb, styles.thumbType, { backgroundColor: tokens.track }]}>
+                  <View style={[styles.thumb, styles.thumbType, { backgroundColor: tokens.track, borderColor: tokens.cardBorder }]}>
                     <Text style={[styles.thumbTypeText, { color: tokens.textSoft }]}>
                       {typeBadge(asset)}
                     </Text>
@@ -526,7 +534,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                       {asset.name}
                     </Text>
                     {asset.favorite ? (
-                      <Text style={[styles.star, { color: tokens.warn }]}>★</Text>
+                      <AppIcon name="star" color={tokens.warn} size={14} />
                     ) : null}
                   </View>
                   <Text style={[styles.cardMeta, { color: tokens.muted }]} numberOfLines={1}>
@@ -551,7 +559,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                     </Text>
                   ) : null}
                 </View>
-                <Text style={[styles.chevron, { color: tokens.faint }]}>›</Text>
+                <AppIcon name="chevronRight" color={tokens.faint} size={18} />
               </Pressable>
             );
           })}
@@ -623,7 +631,12 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
           <View
             style={[
               styles.detailSheet,
-              { backgroundColor: tokens.sheet, paddingBottom: insets.bottom + space.md },
+              {
+                backgroundColor: tokens.sheet,
+                paddingBottom: (keyboardHeight > 0 ? 0 : insets.bottom) + space.md,
+                marginBottom: keyboardHeight,
+                maxHeight: sheetMaxHeight,
+              },
             ]}
           >
             {detail ? (
@@ -645,7 +658,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                   <Pressable onPress={() => void openFile(detail)} accessibilityRole="imagebutton">
                     <Image
                       source={{ uri: detail.thumbnailPath ?? detail.localPath }}
-                      style={styles.detailImage}
+                      style={[styles.detailImage, { backgroundColor: tokens.ink }]}
                       resizeMode="contain"
                     />
                   </Pressable>
@@ -825,7 +838,6 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   bannerText: { flex: 1, fontSize: font.label, fontWeight: "600" },
-  bannerArrow: { fontSize: 20, marginTop: -2 },
   filterRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -850,14 +862,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  checkGlyph: { color: "#FFFFFF", fontSize: 14, fontWeight: "800" },
-  thumb: { width: 56, height: 56, borderRadius: 8, backgroundColor: "#0E1A2B" },
-  thumbType: { alignItems: "center", justifyContent: "center", borderWidth: StyleSheet.hairlineWidth, borderColor: "rgba(120,140,165,0.35)" },
+  thumb: { width: 56, height: 56, borderRadius: 8 },
+  thumbType: { alignItems: "center", justifyContent: "center", borderWidth: StyleSheet.hairlineWidth },
   thumbTypeText: { fontSize: 12, fontWeight: "800", letterSpacing: 0.5 },
   cardMain: { flex: 1, gap: 2, minWidth: 0 },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   cardName: { flexShrink: 1, fontSize: font.body, fontWeight: "600" },
-  star: { fontSize: 13 },
   cardMeta: { fontSize: 11 },
   badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 2 },
   statusRow: { flexDirection: "row", marginTop: 3 },
@@ -873,7 +883,6 @@ const styles = StyleSheet.create({
   destBadge: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999 },
   destBadgeText: { fontSize: 10, fontWeight: "700" },
   cardError: { fontSize: 10.5 },
-  chevron: { fontSize: 22, marginTop: -2 },
   batchBar: {
     position: "absolute",
     left: 0,
@@ -926,7 +935,7 @@ const styles = StyleSheet.create({
   detailTitle: { flex: 1, fontSize: font.title, fontWeight: "700" },
   detailClose: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.sm },
   detailCloseText: { fontSize: font.label, fontWeight: "600" },
-  detailImage: { width: "100%", height: 220, borderRadius: radius.row, backgroundColor: "#0E1A2B" },
+  detailImage: { width: "100%", height: 220, borderRadius: radius.row },
   detailFileCard: {
     width: "100%",
     minHeight: 150,

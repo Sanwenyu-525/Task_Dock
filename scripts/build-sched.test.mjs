@@ -14,7 +14,8 @@ import { classifyArgv, classifyCommandLine, splitCommandLine } from "./sched/cla
 import { effectivePriority, compareOrder, parsePriority, computeFingerprint } from "./sched/queue.mjs";
 import { evaluateMemoryAdmission, memoryFloorForClass, pressureLevel } from "./sched/mem.mjs";
 import { resolveStateHome } from "./sched/state.mjs";
-import { slotNames, snapshotSlots } from "./sched/lock.mjs";
+import { slotNames, snapshotSlots, cmdlineSignature } from "./sched/lock.mjs";
+import { verifyIdentity } from "./sched/proc.mjs";
 import { buildSpawnPlan, resolveExecutable } from "./sched/runner.mjs";
 import { inferWorkspace } from "./sched/devservers.mjs";
 
@@ -287,4 +288,30 @@ test("开发服务器归属：从命令行绝对路径推断工作区", () => {
     null,
     "没有路径线索时不臆断归属",
   );
+});
+
+// ---------------------------------------------------------------- 身份取证与 PID 复用防护
+
+test("命令行签名：斜杠/引号/大小写归一，剥除可执行文件本体与 cmd 包装前缀", () => {
+  assert.equal(
+    cmdlineSignature('"C:\\nvm4w\\nodejs\\node.exe" D:\\repo\\fake-build.mjs t1'),
+    "d:/repo/fake-build.mjs t1",
+  );
+  assert.equal(
+    cmdlineSignature("node D:/repo/fake-build.mjs t1"),
+    "d:/repo/fake-build.mjs t1",
+  );
+  assert.equal(
+    cmdlineSignature('cmd.exe /d /s /c "chcp 65001>nul & npm.cmd run build"'),
+    "npm.cmd run build",
+  );
+  assert.equal(cmdlineSignature(""), "");
+});
+
+test("身份取证：记录缺失 PID 判 gone；不存在的 PID 不得判为同一进程", () => {
+  assert.equal(verifyIdentity({}).state, "gone");
+  assert.equal(verifyIdentity({ pid: null }).state, "gone");
+  // 一个高概率未被占用的 PID：无论 CIM 是否能查到，都不得返回 same
+  const check = verifyIdentity({ pid: 2147483, startTime: new Date().toISOString() });
+  assert.notEqual(check.state, "same", "不存在的 PID 不得被当作原进程（PID 复用防护）");
 });

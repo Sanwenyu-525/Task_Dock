@@ -18,12 +18,29 @@ let queue: ShareIntentPayload[] = [];
 let lastOfferId = 0;
 const listeners = new Set<Listener>();
 
+/** 删除一条尚未被采集页消费的分享载荷的临时字节（原生已复制进私有目录）。 */
+function disposePayload(payload: ShareIntentPayload): void {
+  for (const item of payload.items ?? []) {
+    try {
+      deleteStoredFileQuietly(fileUriFromPath(item.path));
+    } catch {
+      // 单个文件清理失败不能阻止其余载荷出队
+    }
+  }
+}
+
 /** 入队一条分享载荷；重复投递返回 false，不重复通知。 */
 export function offerShare(payload: ShareIntentPayload): boolean {
   if (!Number.isFinite(payload?.offerId) || payload.offerId <= lastOfferId) return false;
   lastOfferId = payload.offerId;
   queue.push(payload);
-  if (queue.length > MAX_QUEUE) queue = queue.slice(queue.length - MAX_QUEUE);
+  if (queue.length > MAX_QUEUE) {
+    const dropped = queue.slice(0, queue.length - MAX_QUEUE);
+    queue = queue.slice(queue.length - MAX_QUEUE);
+    // 被队列上限挤掉的旧载荷永远不会再被消费，必须回收它的临时文件，
+    // 否则「连续分享 20 次」会在私有目录留下 15 份孤儿文件。
+    for (const item of dropped) disposePayload(item);
+  }
   for (const listener of listeners) listener(payload);
   return true;
 }

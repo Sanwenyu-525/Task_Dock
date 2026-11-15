@@ -571,42 +571,162 @@ fn unique_target(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{stem} (dup)"))
 }
 
+// ── 稳定失败分类 ────────────────────────────────────────────────────────
+//
+// 逐条 `reason` 是给人读的中文 / OS 文案，**不可用于聚合与筛选**。诊断中心需要
+// 稳定错误码，因此每个失败在产生点就带上 `FS_OP_*` 码与阶段，前端与 Rust 共用
+// 同一套取值（与暂存架 `SHELF_DROP_*` 同构，不新建第二套日志语义）。
+
+/// 源不存在或已被移动。
+pub const FS_OP_SOURCE_MISSING: &str = "FS_OP_SOURCE_MISSING";
+/// 权限不足（ACL / 只读 / 拒绝访问）。
+pub const FS_OP_ACCESS_DENIED: &str = "FS_OP_ACCESS_DENIED";
+/// 被其他进程占用（共享冲突 / 锁）。
+pub const FS_OP_FILE_BUSY: &str = "FS_OP_FILE_BUSY";
+/// 同名冲突且策略不允许覆盖。
+pub const FS_OP_CONFLICT: &str = "FS_OP_CONFLICT";
+/// 其他 IO 故障（含磁盘满、路径过长、跨卷中断）。
+pub const FS_OP_IO: &str = "FS_OP_IO";
+/// 校验拒绝（自身内部、路径策略、递归上限）。
+pub const FS_OP_VALIDATION: &str = "FS_OP_VALIDATION";
+/// 当前平台 / 不支持的操作。
+pub const FS_OP_UNSUPPORTED: &str = "FS_OP_UNSUPPORTED";
+/// 用户或系统中止（回收站取消），不是内部故障。
+pub const FS_OP_CANCELLED: &str = "FS_OP_CANCELLED";
+/// 未分类。
+pub const FS_OP_UNKNOWN: &str = "FS_OP_UNKNOWN";
+/// 多种错误码并存时汇总使用。
+pub const FS_OP_MULTI_FAILURE: &str = "FS_OP_MULTI_FAILURE";
+
+/// 稳定错误码 → 诊断分类（取值与 `error::ErrorCategory` 的字符串一致）。
+pub fn fs_op_category(code: &str) -> &'static str {
+    match code {
+        FS_OP_SOURCE_MISSING => "not_found",
+        FS_OP_ACCESS_DENIED => "permission",
+        FS_OP_FILE_BUSY | FS_OP_IO => "io",
+        FS_OP_CONFLICT => "conflict",
+        FS_OP_VALIDATION => "validation",
+        FS_OP_UNSUPPORTED => "unsupported",
+        FS_OP_CANCELLED => "cancelled",
+        _ => "unknown",
+    }
+}
+
+/// 由 `std::io::Error` 判定稳定错误码。Windows 的 `raw_os_error` 比 `ErrorKind`
+/// 更精确：5=拒绝访问、32/33=共享冲突、80/183=已存在。
+fn classify_io_error(err: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind;
+    match err.kind() {
+        ErrorKind::NotFound => FS_OP_SOURCE_MISSING,
+        ErrorKind::PermissionDenied => FS_OP_ACCESS_DENIED,
+        ErrorKind::AlreadyExists => FS_OP_CONFLICT,
+        _ => match err.raw_os_error() {
+            Some(2) | Some(3) => FS_OP_SOURCE_MISSING,
+            Some(5) => FS_OP_ACCESS_DENIED,
+            Some(32) | Some(33) => FS_OP_FILE_BUSY,
+            Some(80) | Some(183) => FS_OP_CONFLICT,
+            _ => FS_OP_IO,
+        },
+    }
+}
+
+/// 内部失败：稳定错误码 + 阶段 + 可读原因。
+///
+/// `reason` 只用于界面展示；诊断事件只取 `code` / `stage`，**不写原因文本**
+/// （其中可能包含完整路径）。
+#[derive(Debug, Clone)]
+pub struct FsFailure {
+    pub code: &'static str,
+    /// prepare | transfer | recycle | cleanup
+    pub stage: &'static str,
+    pub reason: String,
+    /// 源已部分处理（如目录已并入目标但删除源失败）：逐条状态记为 partial。
+    pub partial: bool,
+}
+
+impl FsFailure {
+    fn new(code: &'static str, stage: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            code,
+            stage,
+            reason: reason.into(),
+            partial: false,
+        }
+    }
+
+    /// 由 IO 错误构造（原因保留 OS 文案，便于用户判断）。
+    fn io(stage: &'static str, err: &std::io::Error) -> Self {
+        Self::new(classify_io_error(err), stage, err.to_string())
+    }
+
+    /// 由 IO 错误构造并加中文前缀（界面文案与旧实现保持一致）。
+    fn io_ctx(stage: &'static str, what: &str, err: &std::io::Error) -> Self {
+        Self::new(classify_io_error(err), stage, format!("{what}: {err}"))
+    }
+
+    fn mark_partial(mut self) -> Self {
+        self.partial = true;
+        self
+    }
+}
+
 /// 单条操作结果（复制/移动/删除共用）。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct FsEntryReport {
     pub source: String,
     pub target: Option<String>,
-    /// ok | failed | skipped
+    /// ok | failed | skipped | partial
     pub status: &'static str,
     pub reason: Option<String>,
+    /// 稳定失败分类（诊断聚合用；界面仍展示 `reason`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// 失败阶段：prepare / transfer / recycle / cleanup。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct FsOpReport {
+    /// 与前端共享的操作 ID（诊断按此关联；前端未传时后端生成）。
+    pub operation_id: String,
     pub attempted: usize,
     pub ok: usize,
     pub failed: usize,
     pub skipped: usize,
+    /// 「部分完成」条数（内容已落地但源未删除等）。
+    pub partial: usize,
     pub entries: Vec<FsEntryReport>,
 }
 
 impl FsOpReport {
     fn empty() -> Self {
         Self {
+            operation_id: crate::diagnostics::new_operation_id(),
             attempted: 0,
             ok: 0,
             failed: 0,
             skipped: 0,
+            partial: 0,
             entries: Vec::new(),
         }
+    }
+    fn with_operation(mut self, operation_id: Option<String>) -> Self {
+        if let Some(id) = operation_id.map(|id| id.trim().to_string()) {
+            if !id.is_empty() {
+                self.operation_id = id;
+            }
+        }
+        self
     }
     fn push(&mut self, report: FsEntryReport) {
         self.attempted += 1;
         match report.status {
             "ok" => self.ok += 1,
             "failed" => self.failed += 1,
+            "partial" => self.partial += 1,
             _ => self.skipped += 1,
         }
         self.entries.push(report);
@@ -614,12 +734,14 @@ impl FsOpReport {
 }
 
 /// 逐条失败报告（自由函数：FsEntryReport 是数据结构，不带构造语义）。
-fn fail_report(source: &Path, reason: String) -> FsEntryReport {
+fn fail_report(source: &Path, failure: FsFailure) -> FsEntryReport {
     FsEntryReport {
         source: source.to_string_lossy().into_owned(),
         target: None,
-        status: "failed",
-        reason: Some(reason),
+        status: if failure.partial { "partial" } else { "failed" },
+        reason: Some(failure.reason),
+        code: Some(failure.code.to_string()),
+        stage: Some(failure.stage.to_string()),
     }
 }
 
@@ -635,11 +757,23 @@ fn sibling_tmp(dst: &Path) -> PathBuf {
 /// 复制单个文件；目标存在时按策略处理（Rename 由调用侧先解析成唯一名）。
 /// 覆盖策略：先复制到同目录临时名，成功后再替换目标——复制中途失败（占用/
 /// 磁盘满/权限）绝不破坏目标原有数据（P0：先删后复制丢数据缺陷）。
-fn copy_file(src: &Path, dst: &Path, conflict: Conflict) -> Result<(), String> {
+fn copy_file(src: &Path, dst: &Path, conflict: Conflict) -> Result<(), FsFailure> {
     if dst.exists() {
         match conflict {
-            Conflict::Skip => return Err("目标已存在".into()),
-            Conflict::Rename => return Err("目标已存在（rename 冲突未解析）".into()),
+            Conflict::Skip => {
+                return Err(FsFailure::new(
+                    FS_OP_CONFLICT,
+                    "prepare",
+                    "目标已存在",
+                ))
+            }
+            Conflict::Rename => {
+                return Err(FsFailure::new(
+                    FS_OP_CONFLICT,
+                    "prepare",
+                    "目标已存在（rename 冲突未解析）",
+                ))
+            }
             Conflict::Overwrite => {}
         }
         let tmp = sibling_tmp(dst);
@@ -653,17 +787,23 @@ fn copy_file(src: &Path, dst: &Path, conflict: Conflict) -> Result<(), String> {
                 };
                 if let Err(e) = replace() {
                     let _ = fs::remove_file(&tmp);
-                    return Err(format!("替换目标失败（原目标保留）: {e}"));
+                    return Err(FsFailure::io_ctx(
+                        "transfer",
+                        "替换目标失败（原目标保留）",
+                        &e,
+                    ));
                 }
                 Ok(())
             }
             Err(e) => {
                 let _ = fs::remove_file(&tmp);
-                Err(format!("{e}"))
+                Err(FsFailure::io("transfer", &e))
             }
         }
     } else {
-        fs::copy(src, dst).map(|_| ()).map_err(|e| format!("{e}"))
+        fs::copy(src, dst)
+            .map(|_| ())
+            .map_err(|e| FsFailure::io("transfer", &e))
     }
 }
 
@@ -675,16 +815,25 @@ fn copy_dir(
     conflict: Conflict,
     depth: usize,
     budget: &mut usize,
-) -> Result<(), String> {
+) -> Result<(), FsFailure> {
     if depth > MAX_RECURSE_DEPTH {
-        return Err(format!("目录嵌套超过 {MAX_RECURSE_DEPTH} 层，已中止"));
+        return Err(FsFailure::new(
+            FS_OP_VALIDATION,
+            "transfer",
+            format!("目录嵌套超过 {MAX_RECURSE_DEPTH} 层，已中止"),
+        ));
     }
-    fs::create_dir_all(dst).map_err(|e| format!("创建目录失败: {e}"))?;
-    let read = fs::read_dir(src).map_err(|e| format!("读取目录失败: {e}"))?;
+    fs::create_dir_all(dst)
+        .map_err(|e| FsFailure::io_ctx("transfer", "创建目录失败", &e))?;
+    let read = fs::read_dir(src).map_err(|e| FsFailure::io_ctx("transfer", "读取目录失败", &e))?;
     for item in read {
         *budget -= 1;
         if *budget <= 0 {
-            return Err("目录内容超过上限（20 万项），已中止".into());
+            return Err(FsFailure::new(
+                FS_OP_VALIDATION,
+                "transfer",
+                "目录内容超过上限（20 万项），已中止",
+            ));
         }
         let Ok(item) = item else {
             continue;
@@ -696,7 +845,7 @@ fn copy_dir(
         let attrs = item
             .metadata()
             .map(|m| m.file_attributes())
-            .map_err(|e| format!("{e}"))?;
+            .map_err(|e| FsFailure::io("transfer", &e))?;
         if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 || ft.is_symlink() {
             continue;
         }
@@ -721,6 +870,7 @@ pub fn copy_paths(
     paths: &[String],
     target_dir: &Path,
     conflict: Conflict,
+    operation_id: Option<String>,
     protected: &[PathBuf],
 ) -> AppResult<FsOpReport> {
     if paths.len() > MAX_OP_PATHS {
@@ -731,7 +881,7 @@ pub fn copy_paths(
     }
     ensure_not_protected(target_dir, protected)?;
     let dir = validate_dir(target_dir)?;
-    let mut report = FsOpReport::empty();
+    let mut report = FsOpReport::empty().with_operation(operation_id);
     // 父目录优先：先复制父目录时子项随父复制，再单独复制会重复 → 跳过。
     let mut sources: Vec<PathBuf> = paths
         .iter()
@@ -751,11 +901,16 @@ pub fn copy_paths(
                 target: None,
                 status: "skipped",
                 reason: Some("父目录已在本批次中复制".into()),
+                code: None,
+                stage: None,
             });
             continue;
         }
         if !src.exists() {
-            report.push(fail_report(src, "源不存在或已被移动".into()));
+            report.push(fail_report(
+                src,
+                FsFailure::new(FS_OP_SOURCE_MISSING, "prepare", "源不存在或已被移动"),
+            ));
             continue;
         }
         let name = src
@@ -769,6 +924,8 @@ pub fn copy_paths(
                 target: None,
                 status: "skipped",
                 reason: Some("符号链接不复制（避免跟随出目录边界）".into()),
+                code: None,
+                stage: None,
             });
             continue;
         }
@@ -781,14 +938,14 @@ pub fn copy_paths(
         if same_path(src, &dir) {
             report.push(fail_report(
                 src,
-                "源与目标目录相同".into(),
+                FsFailure::new(FS_OP_VALIDATION, "prepare", "源与目标目录相同"),
             ));
             continue;
         }
         if contains_path(src, &dir) {
             report.push(fail_report(
                 src,
-                "不能把目录复制到其自身内部".into(),
+                FsFailure::new(FS_OP_VALIDATION, "prepare", "不能把目录复制到其自身内部"),
             ));
             continue;
         }
@@ -799,9 +956,14 @@ pub fn copy_paths(
                 target: None,
                 status: "skipped",
                 reason: Some("目标已存在（skip 策略）".into()),
+                code: None,
+                stage: None,
             });
             continue;
         }
+        // 目录复制失败时判定「是否已经复制了一部分」：只有目标在此之前不存在、
+        // 且现在已有内容，才算 partial（避免把既有目标内容误判为本次成果）。
+        let dst_preexisting = dst.exists();
         let outcome = if meta.is_dir() {
             copy_dir(src, &dst, conflict, 0, &mut budget)
         } else {
@@ -815,9 +977,23 @@ pub fn copy_paths(
                     target: Some(dst.to_string_lossy().into_owned()),
                     status: "ok",
                     reason: None,
+                    code: None,
+                    stage: None,
                 });
             }
-            Err(reason) => report.push(fail_report(src, reason)),
+            Err(failure) => {
+                let merged_partially = meta.is_dir()
+                    && !dst_preexisting
+                    && fs::read_dir(&dst)
+                        .map(|mut it| it.next().is_some())
+                        .unwrap_or(false);
+                let failure = if merged_partially {
+                    failure.mark_partial()
+                } else {
+                    failure
+                };
+                report.push(fail_report(src, failure));
+            }
         }
     }
     Ok(report)
@@ -830,22 +1006,36 @@ fn same_path(a: &Path, b: &Path) -> bool {
 /// 同卷优先 rename；跨卷回退「复制 + 删除源」。返回目标路径或失败原因。
 /// 跨卷文件回退用临时名：源删除成功后目标才以完整形态出现——删除源失败时
 /// 回滚临时副本，源与目标都不留半个状态（P0：不可解释数据状态缺陷）。
-fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &mut usize) -> Result<PathBuf, String> {
+fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &mut usize) -> Result<PathBuf, FsFailure> {
     if dst.exists() {
         match conflict {
-            Conflict::Skip => return Err("目标已存在".into()),
-            Conflict::Rename => return Err("目标已存在（rename 冲突未解析）".into()),
+            Conflict::Skip => {
+                return Err(FsFailure::new(FS_OP_CONFLICT, "prepare", "目标已存在"))
+            }
+            Conflict::Rename => {
+                return Err(FsFailure::new(
+                    FS_OP_CONFLICT,
+                    "prepare",
+                    "目标已存在（rename 冲突未解析）",
+                ))
+            }
             Conflict::Overwrite => {
-                let meta = fs::symlink_metadata(dst).map_err(|e| format!("{e}"))?;
+                let meta = fs::symlink_metadata(dst).map_err(|e| FsFailure::io("prepare", &e))?;
                 if meta.is_dir() {
                     // 目录并入：递归复制后删除源（不删除已有目标内容）。
                     copy_dir(src, &dst, Conflict::Overwrite, depth, budget)?;
                     if let Err(e) = delete_tree(src) {
-                        return Err(format!("内容已并入目标，但删除源失败（源已保留）: {e}"));
+                        return Err(FsFailure::new(
+                            e.code,
+                            "cleanup",
+                            format!("内容已并入目标，但删除源失败（源已保留）: {}", e.reason),
+                        )
+                        .mark_partial());
                     }
                     return Ok(dst.to_path_buf());
                 }
-                fs::remove_file(dst).map_err(|e| format!("覆盖旧文件失败: {e}"))?;
+                fs::remove_file(dst)
+                    .map_err(|e| FsFailure::io_ctx("prepare", "覆盖旧文件失败", &e))?;
             }
         }
     }
@@ -853,25 +1043,38 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
         Ok(()) => Ok(dst.to_path_buf()),
         Err(_) => {
             // 跨卷或被占用：回退复制 + 删除源。目录复制失败时保留源（不丢数据）。
-            let meta = fs::symlink_metadata(src).map_err(|e| format!("{e}"))?;
+            let meta = fs::symlink_metadata(src).map_err(|e| FsFailure::io("transfer", &e))?;
             if meta.is_dir() {
                 copy_dir(src, &dst, conflict, depth, budget)?;
                 if let Err(e) = delete_tree(src) {
                     // 源保留 + 目标保留已复制部分：结果可解释，逐条报告给用户。
-                    return Err(format!("复制已完成，但删除源失败（源已保留，目标存在已复制副本）: {e}"));
+                    return Err(FsFailure::new(
+                        e.code,
+                        "cleanup",
+                        format!("复制已完成，但删除源失败（源已保留，目标存在已复制副本）: {}", e.reason),
+                    )
+                    .mark_partial());
                 }
             } else {
                 let tmp = sibling_tmp(dst);
                 if let Err(e) = fs::copy(src, &tmp).map(|_| ()) {
                     let _ = fs::remove_file(&tmp);
-                    return Err(format!("{e}"));
+                    return Err(FsFailure::io("transfer", &e));
                 }
                 if let Err(e) = fs::remove_file(src) {
                     let _ = fs::remove_file(&tmp); // 源删除失败：目标副本回滚，不留半状态
-                    return Err(format!("复制完成但删除源失败（已回滚目标副本）: {e}"));
+                    return Err(FsFailure::io_ctx(
+                        "cleanup",
+                        "复制完成但删除源失败（已回滚目标副本）",
+                        &e,
+                    ));
                 }
                 if let Err(e) = fs::rename(&tmp, dst) {
-                    return Err(format!("源已删除但目标落位失败（数据在临时文件 {tmp:?}）: {e}"));
+                    return Err(FsFailure::new(
+                        classify_io_error(&e),
+                        "cleanup",
+                        format!("源已删除但目标落位失败（数据在临时文件 {tmp:?}）: {e}"),
+                    ));
                 }
             }
             Ok(dst.to_path_buf())
@@ -880,34 +1083,48 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
 }
 
 /// 有界递归删除（永久删除）：重解析点不跟随（只删链接本身），深度与总量有上限。
-fn delete_tree(path: &Path) -> Result<(), String> {
-    fn rec(path: &Path, depth: usize, budget: &mut usize) -> Result<(), String> {
+fn delete_tree(path: &Path) -> Result<(), FsFailure> {
+    fn rec(path: &Path, depth: usize, budget: &mut usize) -> Result<(), FsFailure> {
         if depth > MAX_RECURSE_DEPTH {
-            return Err(format!("目录嵌套超过 {MAX_RECURSE_DEPTH} 层，已中止"));
+            return Err(FsFailure::new(
+                FS_OP_VALIDATION,
+                "transfer",
+                format!("目录嵌套超过 {MAX_RECURSE_DEPTH} 层，已中止"),
+            ));
         }
-        let meta = fs::symlink_metadata(path).map_err(|e| format!("{e}"))?;
+        let meta = fs::symlink_metadata(path).map_err(|e| FsFailure::io("transfer", &e))?;
         // 重解析点：直接删链接本身，绝不递归进目标（防环、防越界）。
         if meta.file_type().is_symlink()
             || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
         {
             fs::remove_file(path)
                 .or_else(|_| fs::remove_dir(path))
-                .map_err(|e| format!("删除重解析点 {path:?} 失败: {e}"))?;
+                .map_err(|e| {
+                    FsFailure::new(
+                        classify_io_error(&e),
+                        "transfer",
+                        format!("删除重解析点 {path:?} 失败: {e}"),
+                    )
+                })?;
             return Ok(());
         }
         if meta.is_dir() {
-            let read = fs::read_dir(path).map_err(|e| format!("{e}"))?;
+            let read = fs::read_dir(path).map_err(|e| FsFailure::io("transfer", &e))?;
             for item in read {
                 *budget -= 1;
                 if *budget <= 0 {
-                    return Err("目录内容超过上限（20 万项），已中止".into());
+                    return Err(FsFailure::new(
+                        FS_OP_VALIDATION,
+                        "transfer",
+                        "目录内容超过上限（20 万项），已中止",
+                    ));
                 }
                 let Ok(item) = item else { continue };
                 rec(&item.path(), depth + 1, budget)?;
             }
-            fs::remove_dir(path).map_err(|e| format!("{e}"))?;
+            fs::remove_dir(path).map_err(|e| FsFailure::io("transfer", &e))?;
         } else {
-            fs::remove_file(path).map_err(|e| format!("{e}"))?;
+            fs::remove_file(path).map_err(|e| FsFailure::io("transfer", &e))?;
         }
         Ok(())
     }
@@ -920,6 +1137,7 @@ pub fn move_paths(
     paths: &[String],
     target_dir: &Path,
     conflict: Conflict,
+    operation_id: Option<String>,
     protected: &[PathBuf],
 ) -> AppResult<FsOpReport> {
     if paths.len() > MAX_OP_PATHS {
@@ -930,7 +1148,7 @@ pub fn move_paths(
     }
     ensure_not_protected(target_dir, protected)?;
     let dir = validate_dir(target_dir)?;
-    let mut report = FsOpReport::empty();
+    let mut report = FsOpReport::empty().with_operation(operation_id);
     let mut sources: Vec<PathBuf> = paths
         .iter()
         .map(|p| validate_abs_path(p))
@@ -949,17 +1167,22 @@ pub fn move_paths(
                 target: None,
                 status: "skipped",
                 reason: Some("父目录已在本批次中移动".into()),
+                code: None,
+                stage: None,
             });
             continue;
         }
         if !src.exists() {
-            report.push(fail_report(src, "源不存在或已被移动".into()));
+            report.push(fail_report(
+                src,
+                FsFailure::new(FS_OP_SOURCE_MISSING, "prepare", "源不存在或已被移动"),
+            ));
             continue;
         }
         if contains_path(src, &dir) {
             report.push(fail_report(
                 src,
-                "不能把目录移动到其自身内部".into(),
+                FsFailure::new(FS_OP_VALIDATION, "prepare", "不能把目录移动到其自身内部"),
             ));
             continue;
         }
@@ -974,6 +1197,8 @@ pub fn move_paths(
                 target: None,
                 status: "skipped",
                 reason: Some("符号链接不移动".into()),
+                code: None,
+                stage: None,
             });
             continue;
         }
@@ -983,6 +1208,8 @@ pub fn move_paths(
                 target: None,
                 status: "skipped",
                 reason: Some("源与目标目录相同".into()),
+                code: None,
+                stage: None,
             });
             continue;
         }
@@ -993,6 +1220,8 @@ pub fn move_paths(
                 target: None,
                 status: "skipped",
                 reason: Some("目标已存在（skip 策略）".into()),
+                code: None,
+                stage: None,
             });
             continue;
         }
@@ -1009,9 +1238,11 @@ pub fn move_paths(
                     target: Some(target.to_string_lossy().into_owned()),
                     status: "ok",
                     reason: None,
+                    code: None,
+                    stage: None,
                 });
             }
-            Err(reason) => report.push(fail_report(src, reason)),
+            Err(failure) => report.push(fail_report(src, failure)),
         }
     }
     Ok(report)
@@ -1025,7 +1256,7 @@ pub fn move_paths(
 /// 就会误删链接指向的目录（P0 缺陷）。SHFileOperationW 对重解析点删除链接
 /// 本身，正是需要的语义；路径只做词法规范化。
 #[cfg(windows)]
-fn recycle_delete(path: &Path) -> Result<(), String> {
+fn recycle_delete(path: &Path) -> Result<(), FsFailure> {
     use windows::core::PCWSTR;
     use windows::Win32::UI::Shell::{SHFileOperationW, FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, SHFILEOPSTRUCTW};
 
@@ -1050,21 +1281,34 @@ fn recycle_delete(path: &Path) -> Result<(), String> {
     if code == 0 && !op.fAnyOperationsAborted.as_bool() {
         Ok(())
     } else if op.fAnyOperationsAborted.as_bool() {
-        Err("操作被系统中止".into())
+        Err(FsFailure::new(
+            FS_OP_CANCELLED,
+            "recycle",
+            "操作被系统中止",
+        ))
     } else {
-        Err(format!("回收站删除失败（错误码 {code}）"))
+        Err(FsFailure::new(
+            FS_OP_IO,
+            "recycle",
+            format!("回收站删除失败（错误码 {code}）"),
+        ))
     }
 }
 
 #[cfg(not(windows))]
-fn recycle_delete(_path: &Path) -> Result<(), String> {
-    Err("当前平台不支持回收站删除".into())
+fn recycle_delete(_path: &Path) -> Result<(), FsFailure> {
+    Err(FsFailure::new(
+        FS_OP_UNSUPPORTED,
+        "recycle",
+        "当前平台不支持回收站删除",
+    ))
 }
 
 /// 删除入口：`permanent=false` 走回收站，`permanent=true` 有界递归永久删除。
 pub fn delete_paths(
     paths: &[String],
     permanent: bool,
+    operation_id: Option<String>,
     protected: &[PathBuf],
 ) -> AppResult<FsOpReport> {
     if paths.len() > MAX_OP_PATHS {
@@ -1073,19 +1317,29 @@ pub fn delete_paths(
             MAX_OP_PATHS
         )));
     }
-    let mut report = FsOpReport::empty();
+    let mut report = FsOpReport::empty().with_operation(operation_id);
     for raw in paths {
         let src = validate_abs_path(raw)?;
         ensure_not_protected(&src, protected)?;
         if !src.exists() {
-            report.push(fail_report(&src, "路径不存在".into()));
+            report.push(fail_report(
+                &src,
+                FsFailure::new(FS_OP_SOURCE_MISSING, "prepare", "路径不存在"),
+            ));
             continue;
         }
         // 盘符根 / UNC share 根绝不删除。判定必须在任何删除动作之前——
         // 第一轮用 components().count()<=1 判断，而 `C:\` 的分量数是 2，
         // 检查形同虚设（当时靠 ACL 失败偶然中止，属 P0 级缺陷）。
         if is_root_path(&src) {
-            report.push(fail_report(&src, "不允许删除盘符根目录或共享根".into()));
+            report.push(fail_report(
+                &src,
+                FsFailure::new(
+                    FS_OP_VALIDATION,
+                    "prepare",
+                    "不允许删除盘符根目录或共享根",
+                ),
+            ));
             continue;
         }
         let meta = fs::symlink_metadata(&src).map_err(|e| AppError::Io(e))?;
@@ -1099,7 +1353,7 @@ pub fn delete_paths(
             if is_reparse || is_dir {
                 delete_tree(&src)
             } else {
-                fs::remove_file(&src).map_err(|e| format!("{e}"))
+                fs::remove_file(&src).map_err(|e| FsFailure::io("transfer", &e))
             }
         } else {
             recycle_delete(&src)
@@ -1110,15 +1364,82 @@ pub fn delete_paths(
                 target: None,
                 status: "ok",
                 reason: None,
+                code: None,
+                stage: None,
             }),
-            Err(reason) => report.push(fail_report(&src, reason)),
+            Err(failure) => report.push(fail_report(&src, failure)),
         }
     }
     Ok(report)
 }
 
-// ── 创建 / 重命名 / 属性 ────────────────────────────────────────────────
+// ── 诊断：一次文件操作的权威业务结果 ──────────────────────────────────
 
+/// 把一次文件工作区操作的业务结果映射为**有界**诊断事件。
+///
+/// 与暂存架投递共用 [`crate::diagnostics::batch`] 的级别判定与字段集合，因此
+/// 诊断中心看到的「一次批量文件操作」形状完全一致：
+/// - 汇总一条：全部成功 = INFO/success；部分失败 = WARN/failed；
+///   全部失败 = ERROR/failed；
+/// - 明细按（错误码, 阶段）聚合，最多 4 条；
+/// - 只写计数与稳定错误码，**绝不写路径 / 文件名 / 原始错误文本**；
+/// - `operation_id` 由前端生成（`startOperation`）并经 IPC 传入，前端与后端共用
+///   同一 ID，所以「用户看到的那次失败」在诊断中心可以精确关联，不会因前后端各
+///   记一条而重复膨胀。
+pub fn op_diagnostic_events(
+    report: &FsOpReport,
+    action: &str,
+    mode: &str,
+    duration_ms: u64,
+) -> Vec<crate::diagnostics::DiagnosticEvent> {
+    use crate::diagnostics::batch::{self, BatchCounts, BatchSpec};
+    use serde_json::Value as Json;
+
+    let failures = batch::aggregate_failures(
+        report.entries.iter().map(|entry| {
+            (
+                entry.status,
+                entry.code.as_deref(),
+                entry.stage.as_deref(),
+            )
+        }),
+        FS_OP_UNKNOWN,
+    );
+
+    batch::events(&BatchSpec {
+        module: "file",
+        action,
+        operation_id: &report.operation_id,
+        counts: BatchCounts {
+            total: report.attempted as i64,
+            success: report.ok as i64,
+            skipped: report.skipped as i64,
+            failed: report.failed as i64,
+            partial: report.partial as i64,
+        },
+        failures,
+        duration_ms,
+        noun: "文件操作",
+        success_event: "op_completed",
+        failed_event: "op_failed",
+        partial_event: "op_partial",
+        detail_event: "op_item_failed",
+        extra_metadata: vec![("mode", Json::from(mode.to_string()))],
+        // 文件工作区没有「结构不兼容」这类需要强制 ERROR 的码。
+        critical_codes: &[],
+        // 校验拒绝、同名冲突、用户取消都属于预期结果：全量出现时仍是 WARN。
+        expected_rejection_codes: &[
+            FS_OP_VALIDATION,
+            FS_OP_CONFLICT,
+            FS_OP_UNSUPPORTED,
+            FS_OP_CANCELLED,
+        ],
+        multi_failure_code: FS_OP_MULTI_FAILURE,
+        category_of: fs_op_category,
+    })
+}
+
+// ── 创建 / 重命名 / 属性 ────────────────────────────────────────────────
 /// 新建目录：父目录必须存在；重名失败（不静默改名）。
 pub fn create_dir(parent: &Path, name: &str) -> AppResult<PathBuf> {
     let dir = validate_dir(parent)?;
@@ -1255,6 +1576,34 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::sync::OnceLock;
+
+    /// 旧用例不关心操作 ID：本地薄包装固定传 `None`（后端自行生成）。
+    /// 局部定义优先于 `use super::*` 的全局导入，避免改动 15 处调用点。
+    fn copy_paths(
+        paths: &[String],
+        dir: &Path,
+        conflict: Conflict,
+        protected: &[PathBuf],
+    ) -> AppResult<FsOpReport> {
+        super::copy_paths(paths, dir, conflict, None, protected)
+    }
+
+    fn move_paths(
+        paths: &[String],
+        dir: &Path,
+        conflict: Conflict,
+        protected: &[PathBuf],
+    ) -> AppResult<FsOpReport> {
+        super::move_paths(paths, dir, conflict, None, protected)
+    }
+
+    fn delete_paths(
+        paths: &[String],
+        permanent: bool,
+        protected: &[PathBuf],
+    ) -> AppResult<FsOpReport> {
+        super::delete_paths(paths, permanent, None, protected)
+    }
 
     /// 每个测试独占的临时根目录（编号递增，进程退出由系统清理）。
     fn temp_root(tag: &str) -> PathBuf {

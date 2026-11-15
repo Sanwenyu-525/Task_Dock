@@ -32,6 +32,14 @@ export interface Palette {
   ink: string;
   /** 压在 ink 上的文字：两套主题同一个值（ink 本身就恒暗，跟着主题改会掉到不可读） */
   inkText: string;
+  /** 压在 ink 上的主文字：取景器标题、快门旁的关键操作 */
+  onInk: string;
+  /** 压在 ink 上的次级文字：提示、说明 */
+  onInkMuted: string;
+  /** 恒暗面板上的半透明底板（顶栏、底栏、悬浮按钮） */
+  inkScrim: string;
+  /** 恒暗面板上的描边与分隔线 */
+  inkBorder: string;
   text: string;
   /** 正文次级文本：说明文字用，比 muted 更实，保证 4.5:1 */
   textSoft: string;
@@ -96,6 +104,10 @@ export const palette = (scheme: ColorScheme): Palette =>
         overlay: "rgba(9,20,38,0.46)",
         ink: "#0E1A2B",
         inkText: "#B7C7DA",
+        onInk: "#FFFFFF",
+        onInkMuted: "rgba(255,255,255,0.72)",
+        inkScrim: "rgba(0,0,0,0.34)",
+        inkBorder: "rgba(255,255,255,0.26)",
         text: "#172033",
         textSoft: "#3C4B63",
         muted: "#5E6D82",
@@ -139,6 +151,10 @@ export const palette = (scheme: ColorScheme): Palette =>
         overlay: "rgba(2,6,14,0.66)",
         ink: "#0A1220",
         inkText: "#B7C7DA",
+        onInk: "#FFFFFF",
+        onInkMuted: "rgba(255,255,255,0.72)",
+        inkScrim: "rgba(0,0,0,0.34)",
+        inkBorder: "rgba(255,255,255,0.26)",
         text: "#E9F0FB",
         textSoft: "#C0CDE0",
         muted: "#8FA2BA",

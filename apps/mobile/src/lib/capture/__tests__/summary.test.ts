@@ -44,6 +44,19 @@ describe("describeItems", () => {
   it("没有附件时返回空串（由调用方保证此时有用户文字）", () => {
     expect(describeItems([])).toBe("");
   });
+
+  it("分享来源给的 document id 不能当文件名", () => {
+    expect(describeItems([{ kind: "file", name: "document%3A1000069262" }])).toBe("文件 1 个");
+    expect(describeItems([{ kind: "file", name: "document:1000069262" }])).toBe("文件 1 个");
+  });
+
+  it("合法的百分号编码按可读文件名解码", () => {
+    expect(describeItems([{ kind: "file", name: "report%20final.pdf" }])).toBe(
+      "文件 report final.pdf",
+    );
+    // 非法编码保留原串，不吞掉用户可见的名字
+    expect(describeItems([{ kind: "file", name: "100%完成.pdf" }])).toBe("文件 100%完成.pdf");
+  });
 });
 
 describe("autoCaptureTitle", () => {

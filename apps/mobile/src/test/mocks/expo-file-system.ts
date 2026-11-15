@@ -6,6 +6,22 @@
 // - 测试通过 `__fsTestStore` 读写内存目录与断言 delete/closed 状态。
 // 不允许为了测试改写业务逻辑：业务代码原样运行，只有原生边界被替换。
 
+export const Paths = {
+  document: "file:///data/user/0/dev.taskdock.mobile/files",
+  cache: "file:///data/user/0/dev.taskdock.mobile/cache",
+};
+
+/** 测试辅助：列出内存文件系统里尚未删除的文件 uri（用于断言无半成品残留）。 */
+export function __activeFiles(): string[] {
+  const out: string[] = [];
+  for (const dir of directories.values()) {
+    for (const file of dir.files.values()) {
+      if (!file.deleted) out.push(file.uri);
+    }
+  }
+  return out;
+}
+
 export enum FileMode {
   ReadOnly = "read",
   WriteOnly = "write",
@@ -84,16 +100,27 @@ function mergedBytes(record: FileRecord): Uint8Array {
 
 export class File {
   readonly uri: string;
-  private readonly record: FileRecord | null;
+  private get record(): FileRecord | null {
+    return fileByUri(this.uri) ?? null;
+  }
 
-  constructor(uri: string) {
-    this.uri = uri;
-    this.record = fileByUri(uri) ?? null;
+  constructor(uriOrDirectory: string | { uri: string }, name?: string) {
+    if (name === undefined) {
+      this.uri = String(uriOrDirectory);
+    } else {
+      const dir = typeof uriOrDirectory === "string" ? uriOrDirectory : uriOrDirectory.uri;
+      this.uri = `${dir}/${name}`;
+    }
+
   }
 
   get name(): string {
     const idx = this.uri.lastIndexOf("/");
     return idx >= 0 ? this.uri.slice(idx + 1) : this.uri;
+  }
+
+  get type(): string {
+    return this.record?.mimeType ?? "";
   }
 
   get size(): number {
@@ -102,6 +129,28 @@ export class File {
 
   get exists(): boolean {
     return this.record !== null && !this.record.deleted;
+  }
+
+  create(_options?: { intermediates?: boolean; overwrite?: boolean }): void {
+    const uri = this.uri;
+    const name = this.name;
+    const slash = uri.lastIndexOf("/");
+    const directoryUri = slash >= 0 ? uri.slice(0, slash) : uri;
+    dirRecord(directoryUri).files.set(uri, {
+      uri,
+      name,
+      mimeType: "application/octet-stream",
+      parts: [],
+      size: 0,
+      handleOpen: false,
+      deleted: false,
+      deleteAttempts: 0,
+    });
+  }
+
+  async copy(_target: File, _options?: { overwrite?: boolean }): Promise<void> {
+    // 对齐 SAF：content:// 源不支持 File.copy，调用方应退回句柄复制。
+    throw new Error("copy not supported for this uri");
   }
 
   open(mode: FileMode): FileHandle {
@@ -148,7 +197,18 @@ export class Directory {
 
   constructor(uri: string) {
     this.uri = uri;
-    dirRecord(uri);
+  }
+
+  get exists(): boolean {
+    return directories.has(this.uri);
+  }
+
+  create(_options?: { idempotent?: boolean; intermediates?: boolean }): void {
+    dirRecord(this.uri);
+  }
+
+  delete(): void {
+    directories.delete(this.uri);
   }
 
   createFile(name: string, mimeType: string): File {

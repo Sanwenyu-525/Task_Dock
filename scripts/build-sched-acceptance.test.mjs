@@ -144,6 +144,15 @@ function readSlots(ctx) {
   try { return readdirSync(dir).filter((n) => /^(heavy|medium|light|dev)-\d+$/.test(n)); } catch { return []; }
 }
 
+function readHistory(ctx) {
+  try {
+    return readFileSync(join(ctx.home, "history.jsonl"), "utf8")
+      .split(/\r?\n/).filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch { return []; }
+}
+
 function findTask(ctx, predicate) {
   return readQueue(ctx).find(predicate) ?? null;
 }
@@ -545,8 +554,7 @@ test("验收9：原有工具链经调度器执行仍然正常（build-guard / np
 
 // ------------------------------------------------- 补充A. 嵌套调度（tauri beforeBuildCommand）
 
-test("补充A：嵌套调度不自锁（tauri build → beforeBuildCommand `npm run build` 场景）", async () => {
-  // 外层与外层**同分类**：若内层没有直通而是去排队，它等的正是自己父进程持有的槽位，
+test("补充A：嵌套调度不自锁（tauri build → beforeBuildCommand `npm run build` 场景）", async () => {  // 外层与外层**同分类**：若内层没有直通而是去排队，它等的正是自己父进程持有的槽位，
   // 会一直挂到超时（甚至永久）——这就是必须验证的真实风险，而不是理论问题。
   const ctx = setup();
   try {
@@ -566,5 +574,67 @@ test("补充A：嵌套调度不自锁（tauri build → beforeBuildCommand `npm 
     assert.equal(outer.status, 0, `嵌套调度未自锁但返回值异常（45s 内未完成视为自锁）：${(outer.stderr ?? "").slice(-600)}`);
     assert.match(outer.stderr, /嵌套/, "内层应明确提示为直通执行");
     assert.equal(startCount(ctx.log, "nested"), 1, "内层命令应执行恰好一次");
+  } finally { cleanup(ctx); }
+});
+
+// ---------------------------------------------------------------- 10. 等待超时层级
+
+test("验收10：资源等待超时记为调度层失败（exit 3），不被误判为编译错误，子进程未启动", async () => {
+  const ctx = setup();
+  try {
+    // 模拟可用内存低于轻量门槛（2560MB），任务始终无法准入；--wait-timeout 0.1 分钟 ≈ 6s 超时
+    setSimAvail(ctx, 300);
+    const run = runFake(ctx, {
+      tag: "wait-timeout", taskClass: "light", durationMs: 500,
+      extraArgs: ["--wait-timeout", "0.1"],
+    });
+    const res = await run.done;
+
+    assert.equal(res.code, 3, "等待资源超时必须返回调度层退出码 3，而不是子进程编译失败码");
+    assert.match(res.stderr, /等待资源超时/, "失败原因必须明确是等待资源超时");
+    assert.match(res.stderr, /sched: exit=3\b.*status=failed/, "日志尾行必须标注调度层状态 failed");
+    assert.equal(startCount(ctx.log, "wait-timeout"), 0, "⛔ 未准入任务不应启动子进程");
+
+    const rec = findTask(ctx, (t) => t.command?.[2] === "wait-timeout");
+    assert.ok(rec, "记录应落盘");
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.exitCode, 3);
+    assert.match(String(rec.finishReason ?? ""), /等待资源超时/);
+    assert.equal(rec.child, null, "未启动的任务不得登记子进程");
+
+    const history = readHistory(ctx);
+    const entry = history.find((e) => e.command?.[2] === "wait-timeout");
+    assert.ok(entry, "历史里必须有该任务记录");
+    assert.equal(entry.status, "failed");
+    assert.equal(entry.exitCode, 3);
+    assert.match(String(entry.reason ?? ""), /等待资源超时/);
+  } finally { cleanup(ctx); }
+});
+
+// ---------------------------------------------------------------- 11. 子进程失败原因可查询
+
+test("验收11：子进程非零退出后，队列记录与历史都能查到明确失败原因与日志路径", async () => {
+  const ctx = setup();
+  try {
+    setSimAvail(ctx, 9000);
+    const run = runFake(ctx, { tag: "fail-code", taskClass: "light", durationMs: 200, exitCode: 7 });
+    const res = await run.done;
+
+    assert.equal(res.code, 7, "子进程退出码必须原样透传");
+    const rec = findTask(ctx, (t) => t.command?.[2] === "fail-code");
+    assert.ok(rec, "记录应落盘");
+    assert.equal(rec.status, "failed");
+    assert.equal(rec.exitCode, 7);
+    assert.match(String(rec.finishReason ?? ""), /子进程退出码 7/, "失败原因必须写明退出码");
+    assert.ok(rec.logPath, "必须带回日志相对路径");
+    const logAbs = join(ctx.home, rec.logPath);
+    assert.ok(existsSync(logAbs), "日志文件必须存在");
+
+    const history = readHistory(ctx);
+    const entry = history.find((e) => e.command?.[2] === "fail-code");
+    assert.ok(entry, "历史里必须有该任务记录");
+    assert.equal(entry.status, "failed");
+    assert.equal(entry.exitCode, 7);
+    assert.match(String(entry.reason ?? ""), /子进程退出码 7/);
   } finally { cleanup(ctx); }
 });

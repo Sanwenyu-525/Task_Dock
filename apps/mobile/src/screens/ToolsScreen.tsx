@@ -49,15 +49,44 @@ export function ToolsScreen({ nav, inboxCount }: { nav: AppNav; inboxCount: numb
       />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* 采集是最高频动作：放在所有分组之上，一次点击直接进采集中心 */}
+        {/* 采集是最高频动作：放在所有分组之上，一次点击进采集中心。
+            卡片说明只讲四个快捷入口覆盖不到的部分（语音/一句话/最近素材），
+            否则与下方入口逐字重复，看起来像两套同样的入口。 */}
         <GlassCard style={[styles.captureCard, { borderColor: tokens.cardBorderStrong }]}>
           <EntryRow
-            icon="inbox"
-            label="快速采集"
-            helper="拍照、相册、语音、文件、一句话，一次收好"
-            onPress={() => nav.push("capture")}
+            icon="archive"
+            label="采集中心"
+            helper="语音速记、一句话记录与最近素材都在这里"
+            onPress={() => nav.push("capture_home")}
           />
         </GlassCard>
+
+        <View style={styles.group}>
+          <SectionHeader icon="workspace" title="采集与整理" />
+          <View style={styles.grid}>
+            <IconEntry
+              icon="camera"
+              label="拍照采集"
+              onPress={() => nav.push("capture_camera")}
+            />
+            <IconEntry
+              icon="docScan"
+              label="文档扫描"
+              onPress={() => nav.push("capture_scan")}
+            />
+            <IconEntry
+              icon="gallery"
+              label="相册导入"
+              onPress={() => nav.push("capture_import")}
+            />
+            {/* 素材库是目的地而不是采集动作：排在三个采集方式之后 */}
+            <IconEntry
+              icon="fileStack"
+              label="本机素材库"
+              onPress={() => nav.push("capture_stash")}
+            />
+          </View>
+        </View>
 
         <View style={styles.group}>
           <SectionHeader icon="wrench" title="常用工具" />

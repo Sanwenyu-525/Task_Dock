@@ -81,6 +81,9 @@ pub struct ShelfItem {
     pub exists_state: String,
     pub group_id: Option<String>,
     pub scene_id: Option<String>,
+    /// 细粒度来源（v54）：`mobile_capture` = 手机采集经互传导入；NULL = 历史/其他来源。
+    /// `source_kind` 是封闭枚举（CHECK 约束），这里只标记明确来源，不改旧值语义。
+    pub origin: Option<String>,
     pub note: String,
     pub expire_at: Option<String>,
     pub created_at: String,
@@ -656,7 +659,7 @@ fn disk_free_bytes(path: &Path) -> Option<u64> {
 // ── 行映射与基础查询 ────────────────────────────────────────
 
 const ITEM_COLS: &str = "id, kind, display_name, source_kind, storage_mode, original_path, \
-managed_path, byte_size, file_ext, favorite, pinned, exists_state, group_id, scene_id, note, \
+managed_path, byte_size, file_ext, favorite, pinned, exists_state, group_id, scene_id, origin, note, \
 expire_at, created_at, updated_at";
 
 fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShelfItem> {
@@ -676,10 +679,11 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShelfItem> {
         exists_state: row.get(11)?,
         group_id: row.get(12)?,
         scene_id: row.get(13)?,
-        note: row.get(14)?,
-        expire_at: row.get(15)?,
-        created_at: row.get(16)?,
-        updated_at: row.get(17)?,
+        origin: row.get(14)?,
+        note: row.get(15)?,
+        expire_at: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
     })
 }
 
@@ -689,7 +693,7 @@ pub(crate) fn get_item(db: &Db, id: &str) -> AppResult<ShelfItem> {
     db.with_read(|conn| {
         conn.query_row(&sql, params![id], |row| {
             let mut item = item_from_row(row)?;
-            item.content = row.get(18)?;
+            item.content = row.get(19)?;
             Ok(item)
         })
         .map_err(|_| AppError::NotFound(format!("暂存条目不存在: {id}")))
@@ -706,8 +710,8 @@ fn insert_item(conn: &Connection, item: &ShelfItem) -> AppResult<()> {
         "INSERT INTO shelf_items
            (id, kind, display_name, source_kind, storage_mode, original_path, managed_path,
             content, byte_size, file_ext, favorite, pinned, exists_state, group_id, scene_id,
-            note, expire_at, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+            origin, note, expire_at, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
             item.id,
             item.kind,
@@ -724,6 +728,7 @@ fn insert_item(conn: &Connection, item: &ShelfItem) -> AppResult<()> {
             item.exists_state,
             item.group_id,
             item.scene_id,
+            item.origin,
             item.note,
             item.expire_at,
             item.created_at,
@@ -839,6 +844,7 @@ pub fn add_reference(
         exists_state: "ok".into(),
         group_id: resolve_group_id(db, group_id)?,
         scene_id: None,
+        origin: None,
         note: String::new(),
         expire_at: None,
         created_at: now_iso(),
@@ -869,7 +875,7 @@ pub fn add_managed(
 ) -> AppResult<ShelfItem> {
     let src = require_existing_path(raw_path)?;
     let original = src.to_string_lossy().to_string();
-    add_managed_inner(db, root, &src, Some(original), None, source_kind, group_id)
+    add_managed_inner(db, root, None, &src, Some(original), None, source_kind, group_id, None)
 }
 
 /// 托管一份**没有真实来源路径**的独立副本（虚拟文件、拖入图片字节）。
@@ -885,17 +891,65 @@ pub fn add_managed_from(
     source_kind: &str,
     group_id: Option<&str>,
 ) -> AppResult<ShelfItem> {
-    add_managed_inner(db, root, src, None, display_name, source_kind, group_id)
+    add_managed_inner(db, root, None, src, None, display_name, source_kind, group_id, None)
+}
+
+/// 以调用方指定的条目 ID 导入托管副本（幂等重试用）。
+///
+/// 手机互传的「导入暂存架」必须保证：同一条传输记录最多对应一个 ShelfItem。
+/// 调用方用传输记录 ID 派生稳定条目 ID，重试时先查该 ID 是否已存在；不存在才
+/// 再次复制。除此之外与 [`add_managed_from`] 完全一致（配额/磁盘余量/原子改名）。
+pub fn add_managed_from_with_id(
+    db: &Db,
+    root: &Path,
+    item_id: &str,
+    src: &Path,
+    display_name: Option<&str>,
+    source_kind: &str,
+    group_id: Option<&str>,
+    origin: Option<&str>,
+) -> AppResult<ShelfItem> {
+    let trimmed = item_id.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 128 {
+        return Err(AppError::Validation("暂存条目 ID 不合法".into()));
+    }
+    add_managed_inner(
+        db,
+        root,
+        Some(trimmed),
+        src,
+        None,
+        display_name,
+        source_kind,
+        group_id,
+        origin,
+    )
+}
+
+/// 条目是否仍存在（手机互传按稳定 ID 判断是否已导入，不读取条目内容）。
+pub fn item_exists(db: &Db, id: &str) -> AppResult<bool> {
+    db.with_read(|conn| {
+        conn.query_row(
+            "SELECT 1 FROM shelf_items WHERE id = ?1",
+            params![id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(AppError::from)
+    })
 }
 
 fn add_managed_inner(
     db: &Db,
     root: &Path,
+    item_id: Option<&str>,
     src: &Path,
     original_path: Option<String>,
     display_override: Option<&str>,
     source_kind: &str,
     group_id: Option<&str>,
+    origin: Option<&str>,
 ) -> AppResult<ShelfItem> {
     let meta = std::fs::metadata(src)
         .map_err(|e| AppError::Validation(format!("无法读取文件信息: {}", e)))?;
@@ -949,7 +1003,9 @@ fn add_managed_inner(
         .unwrap_or_else(|| "未命名".into());
     let display_name = validate_add_name(&raw_display)?;
 
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = item_id
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let sub = if kind == KIND_IMAGE {
         "images"
     } else {
@@ -1012,6 +1068,7 @@ fn add_managed_inner(
         exists_state: "ok".into(),
         group_id: resolve_group_id(db, group_id)?,
         scene_id: None,
+        origin: origin.map(str::to_string),
         note: String::new(),
         expire_at: None,
         created_at: now_iso(),
@@ -1053,6 +1110,7 @@ pub fn add_link(db: &Db, raw_url: &str, group_id: Option<&str>) -> AppResult<She
         exists_state: "ok".into(),
         group_id: resolve_group_id(db, group_id)?,
         scene_id: None,
+        origin: None,
         note: String::new(),
         expire_at: None,
         created_at: now_iso(),
@@ -1120,6 +1178,7 @@ pub fn add_text(
         exists_state: "ok".into(),
         group_id: resolve_group_id(db, group_id)?,
         scene_id: None,
+        origin: None,
         note: String::new(),
         expire_at: None,
         created_at: now_iso(),
@@ -2706,6 +2765,7 @@ pub fn add_managed_png(
         exists_state: "ok".into(),
         group_id: resolve_group_id(db, group_id)?,
         scene_id: None,
+        origin: None,
         note: String::new(),
         expire_at: None,
         created_at: now_iso(),

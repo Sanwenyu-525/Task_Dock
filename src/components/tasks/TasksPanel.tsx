@@ -31,6 +31,9 @@ import {
   Sparkles,
   Timer,
   MoreHorizontal,
+  Pencil,
+  Layers,
+  Plus,
 } from "lucide-react";
 import TaskAnalyticsPanel from "./analytics/TaskAnalyticsPanel";
 import FocusWorkspace from "../focus/FocusWorkspace";
@@ -40,6 +43,10 @@ import ContextHelpButton from "../help/ContextHelpButton";
 import ModuleRunControl from "../lifecycle/ModuleRunControl";
 import { useViewsOverflow } from "./useViewsOverflow";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import { WorkbenchPageDetail, WorkbenchDetailFacts } from "../../workbench/pageDetail";
+import { formatLocalizedDateTime } from "../../i18n/format";
+import { priorityLabelKey } from "../../lib/commandPhrases";
+import { describeRecurrence } from "../../lib/format";
 import "./tasks-layout.css";
 
 /** 任务页三种模式：列表是工作台，专注/统计是独立工作视图（与列表互斥）。 */
@@ -80,6 +87,10 @@ export default function TasksPanel() {
   const loadTaskLinks = useNavigationStore((s) => s.loadTaskLinks);
   const editor = useUiStore((s) => s.editor);
   const closeEditor = useUiStore((s) => s.closeEditor);
+  const openTaskEditor = useUiStore((s) => s.openEditor);
+  const openTaskContext = useUiStore((s) => s.openContext);
+  /** 工作台右栏详情选中的任务：单击列表主体设置，双击仍打开编辑器。 */
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   // 列表 / 专注 / 统计共用单一模式状态：同一时刻只渲染一个视图，
   // 避免两个布尔各自为政导致列表工具栏与子视图并存。
   const [mode, setMode] = useState<TasksMode>("list");
@@ -186,6 +197,16 @@ export default function TasksPanel() {
     return out;
   }, [tasks, exitHolds]);
 
+  /**
+   * 右栏详情对象：只在当前列表里真实存在时才有值。
+   * 筛选/搜索把该任务排除后选中态自动失效，避免「右栏还在显示，
+   * 列表里却找不到这一行」的错位；编辑态/子视图下也不投送详情。
+   */
+  const selectedTask = useMemo(
+    () => (selectedTaskId ? displayedTasks.find((task) => task.id === selectedTaskId) ?? null : null),
+    [displayedTasks, selectedTaskId],
+  );
+
   // 日期分段横向滚动（320/360 窄窗）：溢出侧显示边缘渐变；激活项在
   // 外部下钻 / 键盘聚焦 / 语言切换后自动进入可见区。编辑态与子视图不监听。
   const activeView = todayTabActive ? "today" : filter.view ?? "all";
@@ -253,12 +274,58 @@ export default function TasksPanel() {
         </header>
       ) : (
         <>
-          {/* 页面级页头（对齐效果图 01）：标题/副标题常驻，操作仍在下方工具行，
-              不重复按钮；窄内容区由 workbench.css 的容器查询换行。 */}
+          {/* 页面级页头（对齐效果图 01）：标题/副标题 + 右侧「专注模式 / 统计视图 /
+              新建任务」三个页面级动作。列表级的日期筛选与搜索仍留在下方工具栏，
+              页头不放列表内工具，避免两层动作混在一起。 */}
           <WorkbenchPageHeader
             icon={ListChecks}
             title={t("workbench.page.tasks.title")}
             subtitle={t("workbench.page.tasks.subtitle")}
+            actions={
+              <>
+                <button
+                  ref={focusButtonRef}
+                  type="button"
+                  className="btn sm"
+                  data-tip={t("tasks.focus")}
+                  aria-label={t("tasks.focus")}
+                  onClick={() => {
+                    returnFocusRef.current = "focus";
+                    setMode("focus");
+                  }}
+                >
+                  <Timer size={12} aria-hidden="true" />
+                  {t("tasks.modeTitle.focus")}
+                </button>
+                <button
+                  ref={analyticsButtonRef}
+                  type="button"
+                  className="btn sm"
+                  data-tip={t("tasks.analytics")}
+                  aria-label={t("tasks.analytics")}
+                  onClick={() => {
+                    returnFocusRef.current = "analytics";
+                    setMode("analytics");
+                  }}
+                >
+                  <BarChart3 size={12} aria-hidden="true" />
+                  {t("tasks.modeTitle.analytics")}
+                </button>
+                <button
+                  type="button"
+                  className="btn sm primary"
+                  onClick={(event) => {
+                    // 复用页内快速添加入口：不新开一个「新建对话框」，
+                    // 一键把焦点送到输入框（键盘 / 鼠标同一条路径）。
+                    const root = event.currentTarget.closest(".tasks-panel");
+                    root?.querySelector<HTMLInputElement>(".quick-add-input")?.focus();
+                  }}
+                >
+                  <Plus size={12} aria-hidden="true" />
+                  {t("workbench.newTask")}
+                </button>
+              </>
+            }
           />
           <div className="tasks-head">
           {/* 全局概览（跨筛选视图）：三张卡都可点击下钻到对应列表 */}
@@ -366,34 +433,6 @@ export default function TasksPanel() {
               {/* 提醒调度暂停：只暂停到期提醒触发，任务数据与共享调度循环不受影响。 */}
               <ModuleRunControl moduleId="reminders" />
               <ContextHelpButton articleId="help.tasks.create-reminders" />
-              <button
-                ref={focusButtonRef}
-                type="button"
-                className="icon-btn sm"
-                data-tip={t("tasks.focus")}
-                aria-label={t("tasks.focus")}
-                aria-pressed={false}
-                onClick={() => {
-                  returnFocusRef.current = "focus";
-                  setMode("focus");
-                }}
-              >
-                <Timer size={13} aria-hidden="true" />
-              </button>
-              <button
-                ref={analyticsButtonRef}
-                type="button"
-                className="icon-btn sm"
-                data-tip={t("tasks.analytics")}
-                aria-label={t("tasks.analytics")}
-                aria-pressed={false}
-                onClick={() => {
-                  returnFocusRef.current = "analytics";
-                  setMode("analytics");
-                }}
-              >
-                <BarChart3 size={13} aria-hidden="true" />
-              </button>
               <DropdownMenu
                 trigger={({ ref, expanded, onClick, onKeyDown }) => (
                   <button
@@ -567,10 +606,106 @@ export default function TasksPanel() {
                 task={task}
                 exiting={!!hold}
                 exitHeight={hold?.height}
+                selected={selectedTaskId === task.id}
+                onSelect={(next) => setSelectedTaskId(next.id)}
               />
             );
           })}
         </div>
+      )}
+
+      {/* 页面级详情栏：选中任务时向工作台右栏投送详情；未选中时不投送，
+          外壳自动回退到通用上下文（不显示空壳卡片）。 */}
+      {mode === "list" && selectedTask && (
+        <WorkbenchPageDetail
+          title={t("workbench.detail.tasks.title")}
+          actions={
+            <button
+              type="button"
+              className="icon-btn sm"
+              data-tip={t("workbench.detail.tasks.edit")}
+              aria-label={t("workbench.detail.tasks.edit")}
+              onClick={() => openTaskEditor(selectedTask)}
+            >
+              <Pencil size={13} aria-hidden="true" />
+            </button>
+          }
+        >
+          <p className="wb-detail-title">
+            <span>{selectedTask.title}</span>
+          </p>
+          {selectedTask.description && (
+            <p className="wb-detail-desc">{selectedTask.description}</p>
+          )}
+          <WorkbenchDetailFacts
+            rows={[
+              {
+                label: t("workbench.detail.tasks.priority"),
+                value: t(priorityLabelKey(selectedTask.priority)),
+              },
+              {
+                label: t("workbench.detail.tasks.status"),
+                value:
+                  selectedTask.status === "completed"
+                    ? t("workbench.taskStatusCompleted")
+                    : t("workbench.taskStatusPending"),
+              },
+              {
+                label: t("workbench.detail.tasks.due"),
+                value: selectedTask.due_at
+                  ? formatLocalizedDateTime(selectedTask.due_at)
+                  : t("workbench.taskNoDue"),
+              },
+              selectedTask.next_remind_at
+                ? {
+                    label: t("workbench.detail.tasks.remind"),
+                    value: formatLocalizedDateTime(selectedTask.next_remind_at),
+                  }
+                : null,
+              selectedTask.recurrence
+                ? {
+                    label: t("workbench.detail.tasks.recurrence"),
+                    value: describeRecurrence(selectedTask.recurrence),
+                  }
+                : null,
+              selectedTask.category
+                ? { label: t("workbench.detail.tasks.category"), value: selectedTask.category }
+                : null,
+              selectedTask.tags.length > 0
+                ? {
+                    label: t("workbench.detail.tasks.tags"),
+                    value: selectedTask.tags.map((tag) => `#${tag}`).join(" "),
+                  }
+                : null,
+              selectedTask.linked_agents > 0
+                ? {
+                    label: t("workbench.detail.tasks.linkedAgents"),
+                    value: selectedTask.linked_agents,
+                  }
+                : null,
+              {
+                label: t("workbench.detail.tasks.created"),
+                value: formatLocalizedDateTime(selectedTask.created_at),
+              },
+            ]}
+          />
+          <div className="wb-detail-actions">
+            <button
+              type="button"
+              className="btn sm primary"
+              onClick={() => openTaskEditor(selectedTask)}
+            >
+              <Pencil size={12} aria-hidden="true" /> {t("workbench.detail.tasks.edit")}
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => openTaskContext(selectedTask)}
+            >
+              <Layers size={12} aria-hidden="true" /> {t("workbench.context")}
+            </button>
+          </div>
+        </WorkbenchPageDetail>
       )}
     </div>
   );

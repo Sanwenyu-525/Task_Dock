@@ -172,12 +172,43 @@ export async function removeStashItem(id: string): Promise<void> {
   deleteStoredFileQuietly(row?.local_uri);
 }
 
-/** 清空暂存（用户取消 / 保存完成后调用）。 */
+/**
+ * 清空暂存（**只用于测试/本地数据重置**，业务界面不得调用）。
+ *
+ * 采集页的「清空这次采集」必须走 `removeStashItems(ids)`：暂存表是全局的，
+ * 另一个采集会话或系统分享中途接入的内容可能同时存在，整表清空会直接丢用户内容。
+ */
 export async function clearStash(): Promise<void> {
   const db = getDatabase();
   const rows = await db.getAllAsync<{ local_uri: string }>("SELECT local_uri FROM capture_stash");
   await db.runAsync("DELETE FROM capture_stash");
   for (const row of rows) deleteStoredFileQuietly(row.local_uri);
+}
+
+/**
+ * 按明确的 id 集合删除暂存项（含私有存储字节）。
+ * 只删除用户当前看到并确认的那几项，其他会话的暂存行保持不动。
+ */
+export async function removeStashItems(ids: readonly string[]): Promise<number> {
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (unique.length === 0) return 0;
+  const db = getDatabase();
+  let removed = 0;
+  for (let offset = 0; offset < unique.length; offset += 50) {
+    const chunk = unique.slice(offset, offset + 50);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await db.getAllAsync<{ local_uri: string }>(
+      `SELECT local_uri FROM capture_stash WHERE id IN (${placeholders})`,
+      chunk,
+    );
+    const result = await db.runAsync(
+      `DELETE FROM capture_stash WHERE id IN (${placeholders})`,
+      chunk,
+    );
+    removed += result.changes;
+    for (const row of rows) deleteStoredFileQuietly(row.local_uri);
+  }
+  return removed;
 }
 
 /**

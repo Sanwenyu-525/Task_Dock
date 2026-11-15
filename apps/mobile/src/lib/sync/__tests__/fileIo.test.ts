@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { AppError } from "../../errors";
 import { FILE_CANCELLED_MESSAGE, type FileClient, type RemoteFile } from "../files";
-import { downloadRemoteFile } from "../fileIo";
+import { downloadRemoteFile, isOpaqueFileName, uploadDisplayName } from "../fileIo";
 
 import {
   FileMode,
@@ -191,5 +191,26 @@ describe("downloadRemoteFile SHA-256 复核", () => {
     handle.close();
     expect(() => seeded.delete()).not.toThrow();
     expect(new FsFile(seeded.uri).exists).toBe(false);
+  });
+});
+
+describe("uploadDisplayName / isOpaqueFileName", () => {
+  function fake(name: string, uri = `content://media/external/file/${name}`, type = "image/jpeg") {
+    return { name, uri, type, size: 10, exists: true } as unknown as Parameters<typeof uploadDisplayName>[0];
+  }
+
+  it("识别 vivo 风格的非显示名", () => {
+    expect(isOpaqueFileName("document:1000069262")).toBe(true);
+    expect(isOpaqueFileName("document%3A1000069262")).toBe(true);
+    expect(isOpaqueFileName("1000069262")).toBe(true);
+    expect(isOpaqueFileName(" IMG_20261115.jpg ")).toBe(false);
+    expect(isOpaqueFileName("")).toBe(true);
+  });
+
+  it("非显示名回退为时间戳名，真实文件名原样保留", () => {
+    const fallback = uploadDisplayName(fake("document:1000069262"));
+    expect(fallback.startsWith("手机文件-")).toBe(true);
+    expect(fallback.endsWith(".jpg")).toBe(true);
+    expect(uploadDisplayName(fake("IMG_0001.jpg"))).toBe("IMG_0001.jpg");
   });
 });
