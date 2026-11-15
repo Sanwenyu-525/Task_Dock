@@ -14,7 +14,8 @@ import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { atomicWriteJson, appendBoundedJsonLine, paths, readJson, readJsonDir, sha256 } from "./state.mjs";
 import { verifyIdentity } from "./proc.mjs";
-import { evaluateMemoryAdmission } from "./mem.mjs";
+import { evaluateMemoryAdmission, estimateForClass } from "./mem.mjs";
+import { computeBudget, planAdmission, readReservations } from "./budget.mjs";
 
 export const PRIORITY_LABEL = { 0: "P0", 1: "P1", 2: "P2", 3: "P3" };
 export const ACTIVE_STATUSES = new Set(["queued", "waiting_resources", "running"]);
@@ -133,24 +134,34 @@ export function slotHolderTaskIds(home) {
 }
 
 /**
- * 判断本任务是否可以开始，并把阻塞原因分成三类，供调度循环区别处理：
+ * 判断本任务是否可以开始，并把阻塞原因分成四类，供调度循环区别处理：
  *   - slotFull：本分类槽位被占（可能是**已经死掉的会话留下的陈旧槽位**，需要定期取证回收，
  *     所以不能只凭目录存在就永久拒绝，否则崩溃后就永远排不上）；
- *   - priorityBlockers：同分类内存在更高/更早的任务在等（心跳过期的僵尸记录不算）；
- *   - memory：内存不足。
+ *   - memory：实时可用内存门槛不足（约束 A，见 docs/BUILD_SCHEDULER.md 4.2）；
+ *   - budget：全局构建预算不足（约束 B，所有分类共用一个池）；与 A 互相独立、不重复扣减；
+ *   - priorityBlockers：同分类内存在更高/更早的任务在等（心跳过期的僵尸记录不算）。
  * 跨分类不做头阻塞（重型在等内存时轻量仍可跑），这是 16GB 机器上避免整体停滞的关键。
+ *
+ * 注意：这里只做**只读评估**（不回收、不写台账），权威判定在 acquireAdmission 的临界区里重做一次。
  */
 export function evaluateEligibility({ home, task, tasks, cfg, mem, memoryWaitSeen }) {
   const now = Date.now();
+  const estimateMb = Number.isFinite(task.estimateMb) ? task.estimateMb : null;
   const memEval = evaluateMemoryAdmission({
-    cfg, taskClass: task.taskClass, mem, memoryWaitSeen,
-    estimateOverrideMb: Number.isFinite(task.estimateMb) ? task.estimateMb : null,
+    cfg, taskClass: task.taskClass, mem, memoryWaitSeen, estimateOverrideMb: estimateMb,
+  });
+  const budgetEval = planAdmission({
+    budget: computeBudget({ cfg, totalMb: mem.totalMb }),
+    entries: readReservations(home),
+    taskId: task.id,
+    estimateMb: estimateMb ?? estimateForClass(cfg, task.taskClass),
   });
   const usage = slotUsage(home, cfg);
   const concurrency = cfg[`${task.taskClass}Concurrency`] ?? 1;
   const slotFull = usage[task.taskClass] >= concurrency;
   const slotBlockers = slotFull ? [`${task.taskClass} 槽位已满（${usage[task.taskClass]}/${concurrency}）`] : [];
   const memoryBlockers = memEval.admit ? [] : [memEval.reason];
+  const budgetBlockers = budgetEval.admit ? [] : [budgetEval.reason];
 
   // 僵尸记录（提交进程已死、心跳早已停更）不参与排序，否则崩溃一次就会永远堵住同分类队列
   const peers = tasks.filter((t) => t.id !== task.id && ACTIVE_STATUSES.has(t.status) &&
@@ -165,17 +176,21 @@ export function evaluateEligibility({ home, task, tasks, cfg, mem, memoryWaitSee
     priorityBlockers.push(`同分类同优先级需排队（前面有 ${samePriorityAhead.length} 个，最早 ${samePriorityAhead[0].id}）`);
   }
 
-  const blockers = [...slotBlockers, ...memoryBlockers, ...priorityBlockers];
+  const blockers = [...slotBlockers, ...memoryBlockers, ...budgetBlockers, ...priorityBlockers];
   return {
     eligible: blockers.length === 0,
     blockers,
     slotFull,
     slotBlockers,
     memoryBlockers,
+    budgetBlockers,
     priorityBlockers,
-    // 槽位被占、内存与优先级都没问题：值得定期做一次「持有者是否已死」的回收取证
-    slotOnlyBlocked: slotFull && memoryBlockers.length === 0,
+    // 槽位被占、内存/预算与优先级都没问题：值得定期做一次「持有者是否已死」的回收取证
+    slotOnlyBlocked: slotFull && memoryBlockers.length === 0 && budgetBlockers.length === 0,
+    // 预算被占住也可能是崩溃残留的预留：值得定期去台账做一次回收取证（否则残留会永久堵住准入）
+    budgetBlocked: budgetBlockers.length > 0,
     memory: memEval,
+    budget: budgetEval,
     usage,
     waitingAhead: better.length,
   };
@@ -183,8 +198,9 @@ export function evaluateEligibility({ home, task, tasks, cfg, mem, memoryWaitSee
 
 export function statusLabel(task, nowMs, cfg) {
   if (task.status === "running") return "running";
-  const memOk = task.lastMemoryOk !== false;
-  return memOk ? "queued" : "waiting_resources";
+  // 内存（约束 A）与全局预算（约束 B）任一不足，都属于"资源不足"而不是普通排队
+  const resOk = task.lastMemoryOk !== false && task.lastBudgetOk !== false;
+  return resOk ? "queued" : "waiting_resources";
 }
 
 /**

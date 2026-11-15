@@ -18,9 +18,14 @@
 }
 
 /* 宽屏两栏：主列（配对/设备/传输）+ 右列（虚拟屏与扩展能力）。
-   窄内容区退化为单列纵向堆叠（与旧版一致）。 */
+   2026-11-15：宽窄判断由 @media（视口）改为容器查询（内容区实际宽度）。
+   原写法在 1180 窗口下视口 1180 > 1080 仍判为两栏，但内容区只有约 620px，
+   右列被压到 ~230px，虚拟屏区块的分辨率行换行后被裁掉。改容器查询后，
+   内容区 <760px 直接回落单列，右列拿到整行宽度。 */
 .mobile-transfer-panel .mobile-body {
   min-height: 0;
+  container-type: inline-size;
+  container-name: mobile-body;
 }
 .mobile-transfer-panel .mobile-body-grid {
   display: grid;
@@ -37,7 +42,7 @@
   gap: 10px;
 }
 
-@media (max-width: 1080px) {
+@container mobile-body (max-width: 760px) {
   .mobile-transfer-panel .mobile-body-grid {
     grid-template-columns: minmax(0, 1fr);
   }

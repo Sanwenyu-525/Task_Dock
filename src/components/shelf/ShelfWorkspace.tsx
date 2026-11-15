@@ -43,7 +43,7 @@ import {
   type ShelfCollectedEvent,
   type ShelfRecyclePreview,
 } from "../../lib/bridge";
-import { formatBytes } from "../../lib/clipboardUi";
+import { clipboardTime, formatBytes } from "../../lib/clipboardUi";
 import { errorMessage } from "../../lib/errors";
 import { isCapsuleMode } from "../../lib/edgeSnap";
 import { shouldHandleShelfPaste } from "../../lib/pasteShortcut";
@@ -81,6 +81,23 @@ import DropTargetManager from "./DropTargetManager";
 import { deliverToTarget, deliverOperationToTarget } from "./shelfDeliver";
 import { shelfDeleteFeedback } from "./shelfDeleteFeedback";
 import { shelfCleanupFeedback } from "./shelfCleanupFeedback";
+import { WorkbenchDetailFacts, WorkbenchPageDetail } from "../../workbench/pageDetail";
+
+/** 来源展示：右栏事实表复用条目卡的同一套中文语义。 */
+function shelfSourceLabel(kind: string): string {
+  switch (kind) {
+    case "drag":
+      return "拖入";
+    case "picker":
+      return "选择器";
+    case "clipboard":
+      return "剪贴板";
+    case "url":
+      return "链接";
+    default:
+      return "手动";
+  }
+}
 
 /** 有真实文件/文件夹语义的条目（link/text 不参与移动与复制）。 */
 function isPhysicalItem(item: ShelfItem): boolean {
@@ -2084,8 +2101,68 @@ export default function ShelfWorkspace({ active }: { active: boolean }) {
     }
   };
 
+  /** 右栏详情对象：当前焦点条目（点卡片空白/键盘单选即更新），列表与多选保持原位。 */
+  const focusedItem = focusId ? (items.find((item) => item.id === focusId) ?? null) : null;
+
   return (
     <div className={`shelf-workspace ${dragOver ? "drag-over" : ""}`}>
+      {!targetsOpen && focusedItem && (
+        <WorkbenchPageDetail
+          title="文件详情"
+          actions={
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => setDetail(focusedItem.id)}
+            >
+              打开详情
+            </button>
+          }
+        >
+          <p className="wb-detail-title">
+            <span>{focusedItem.display_name}</span>
+          </p>
+          {focusedItem.note && <p className="wb-detail-desc">{focusedItem.note}</p>}
+          <WorkbenchDetailFacts
+            rows={[
+              { label: "类型", value: SHELF_KIND_LABELS[focusedItem.kind] ?? focusedItem.kind },
+              { label: "大小", value: formatBytes(focusedItem.byte_size) },
+              { label: "来源", value: shelfSourceLabel(focusedItem.source_kind) },
+              {
+                label: "存储位置",
+                value:
+                  focusedItem.storage_mode === "managed"
+                    ? `托管副本${focusedItem.managed_path ? ` · ${focusedItem.managed_path}` : ""}`
+                    : `原文件引用${focusedItem.original_path ? ` · ${focusedItem.original_path}` : ""}`,
+              },
+              { label: "创建时间", value: clipboardTime(focusedItem.created_at) },
+              {
+                label: "整理状态",
+                value: [
+                  focusedItem.pinned ? "已置顶" : null,
+                  focusedItem.favorite ? "已收藏" : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "未整理",
+              },
+            ]}
+          />
+          <div className="wb-detail-actions">
+            <button
+              type="button"
+              className="btn sm"
+              disabled={!isPhysicalItem(focusedItem)}
+              onClick={() =>
+                void shelfRevealItem(focusedItem.id).catch((e) =>
+                  showToast(`定位失败：${errorMessage(e)}`, { kind: "error" }),
+                )
+              }
+            >
+              在资源管理器定位
+            </button>
+          </div>
+        </WorkbenchPageDetail>
+      )}
       {targetsOpen ? (
         /* 目标管理是独立内容视图：暂存架工具栏/筛选/列表/空态都不再挂载。
            拖入由 ShelfWorkspace 的消费者统一路由：命中目标卡片即投递，

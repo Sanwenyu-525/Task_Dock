@@ -73,9 +73,21 @@ const DEFAULTS = {
   route: "home" as WorkbenchRoute,
   projectId: null as string | null,
   detailOpen: true,
-  navWidth: 224,
-  detailWidth: 320,
+  // 对照四张大型工作台效果图：左导航约 200px、右栏约 300px，
+  // 把剩余宽度留给中央内容区（1180 窗口下中央 ≈ 660px，与效果图比例一致）。
+  navWidth: 200,
+  detailWidth: 304,
 };
+
+/**
+ * 工作台外壳默认值（只含分栏与显隐，不含主题/导航排序等其它设置）。
+ * 设置页的「恢复工作台默认布局」与测试共用同一份数字，避免两处漂移。
+ */
+export const WORKBENCH_DEFAULT_CHROME = {
+  detailOpen: DEFAULTS.detailOpen,
+  navWidth: DEFAULTS.navWidth,
+  detailWidth: DEFAULTS.detailWidth,
+} as const;
 
 export function defaultWorkbenchLayout(): WorkbenchLayout {
   return { version: WORKBENCH_LAYOUT_VERSION, ...DEFAULTS };
@@ -257,6 +269,18 @@ export function setWorkbenchNavWidth(navWidth: number): Promise<void> {
 
 export function setWorkbenchDetailWidth(detailWidth: number): Promise<void> {
   return persistWorkbenchLayout((current) => ({ ...current, detailWidth }));
+}
+
+/**
+ * 恢复工作台外壳默认布局：**只**重置导航宽度、详情栏宽度与详情栏开关。
+ * 主题、材质、导航排序/显隐、当前路由与当前项目都不在重置范围内——
+ * 用户调整的是分栏手感，不应把产品配置一并抹掉。
+ */
+export function resetWorkbenchChromeLayout(): Promise<void> {
+  return persistWorkbenchLayout((current) => ({
+    ...current,
+    ...WORKBENCH_DEFAULT_CHROME,
+  }));
 }
 
 /** 旧版没有该键时视为「未写入」（与损坏区分，供迁移判断）。 */

@@ -1,13 +1,13 @@
-// 设置页：主题三态用带预览的分段控件，通知权限用颜色+文案区分状态。
-// 权限文案来自 getPermissionLabel()（数据层只暴露展示文案，这里按前缀映射色调）。
+// 设置页：主题三态、减少动态说明、本地数据与关于。
+// 通知权限/测试通知/提醒动作的唯一管理界面是「我的 → 通知」NotificationsScreen；
+// 本页不重复放同一套权限控制，只保留「已排期提醒」这类本机数据读数。
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import appConfig from "../../app.json";
 import { BackButton } from "../components/BackButton";
 import { GlassCard } from "../components/GlassCard";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
-import { SettingActionRow } from "../components/SettingActionRow";
 import { MetricTile } from "../components/MetricTile";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
@@ -17,31 +17,16 @@ import { SCHEMA_VERSION } from "../db/schema";
 import { loadConnection, type PairedConnection } from "../db/syncConnection";
 import { countPendingOutbox, listTasks } from "../db/tasks";
 import { describeError } from "../lib/errors";
-import type { Nav } from "../lib/nav";
 import { isLegacyConnection } from "../lib/sync/connectionState";
-import {
-  ensurePermission,
-  getPermissionLabel,
-  sendTestNotification,
-} from "../notifications/reminders";
 import { useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
-import { font, palette, radius, space, type ThemeMode } from "../theme/tokens";
+import { font, palette, space, type ThemeMode } from "../theme/tokens";
 
 const MODES: SegmentOption<ThemeMode>[] = [
   { value: "system", label: "跟随系统" },
   { value: "light", label: "浅色" },
   { value: "dark", label: "深色" },
 ];
-
-type PermissionTone = "ok" | "warn" | "danger";
-
-/** 数据层只给「已允许 / 未授权 / 已拒绝（需在系统设置中开启）」三种文案 */
-function permissionTone(label: string): PermissionTone {
-  if (label.startsWith("已允许")) return "ok";
-  if (label.includes("拒绝")) return "danger";
-  return "warn";
-}
 
 function Section({
   icon,
@@ -115,11 +100,9 @@ function ThemePreview({ mode }: { mode: ThemeMode }) {
 }
 
 export function SettingsScreen({
-  nav,
   version = 0,
   onBack,
 }: {
-  nav: Nav;
   version?: number;
   /** 从「我的」进入时的返回；一级栏时代不传 */
   onBack?: () => void;
@@ -130,7 +113,6 @@ export function SettingsScreen({
   const [pendingOps, setPendingOps] = useState(0);
   const [scheduledReminders, setScheduledReminders] = useState(0);
   const [syncConnection, setSyncConnection] = useState<PairedConnection | null>(null);
-  const [permissionLabel, setPermissionLabel] = useState("读取中…");
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastSeq = useRef(0);
 
@@ -142,10 +124,9 @@ export function SettingsScreen({
 
   const refresh = useCallback(async () => {
     try {
-      const [tasks, captures, label, connection, pending, schedules] = await Promise.all([
+      const [tasks, captures, connection, pending, schedules] = await Promise.all([
         listTasks(),
         listCaptures(),
-        getPermissionLabel(),
         // 连接元数据读取失败不应把整页汇总拖失败：按未配对展示。
         loadConnection().catch(() => null),
         // 摘要区不能因为一条统计失败就整页降级
@@ -161,7 +142,6 @@ export function SettingsScreen({
       setScheduledReminders(
         schedules.filter((entry) => entry.occurrenceAt >= Date.now()).length,
       );
-      setPermissionLabel(label);
       setSyncConnection(connection);
     } catch (error) {
       showToast(`读取设置失败：${describeError(error)}`, "danger");
@@ -171,29 +151,6 @@ export function SettingsScreen({
   useEffect(() => {
     void refresh();
   }, [refresh, version]);
-
-  const requestPermission = useCallback(async () => {
-    const granted = await ensurePermission();
-    showToast(
-      granted ? "通知权限已开启" : "仍未获得权限，可在系统设置中手动开启",
-      granted ? "success" : "warn",
-    );
-    await refresh();
-  }, [refresh, showToast]);
-
-  const testNotification = useCallback(async () => {
-    const sent = await sendTestNotification();
-    showToast(
-      sent ? "已发送测试通知，稍后应看到系统提示" : "通知权限未开启，无法发送",
-      sent ? "success" : "warn",
-    );
-    await refresh();
-  }, [refresh, showToast]);
-
-  const tone = permissionTone(permissionLabel);
-  const toneColor = tone === "ok" ? tokens.ok : tone === "danger" ? tokens.danger : tokens.warn;
-  const toneBg =
-    tone === "ok" ? tokens.okSoft : tone === "danger" ? tokens.dangerSoft : tokens.warnSoft;
 
   return (
     <View style={styles.container}>
@@ -263,58 +220,6 @@ export function SettingsScreen({
                 : "系统开启「减少动态效果」时，本应用会自动改用直接呈现"}
             </Text>
           </View>
-        </Section>
-
-        <Section icon="bell" title="提醒">
-          <View style={styles.permissionRow}>
-            <Text style={[styles.lineLabel, { color: tokens.muted }]}>系统通知权限</Text>
-            <View style={[styles.statusPill, { backgroundColor: toneBg }]}>
-              <View style={[styles.statusDot, { backgroundColor: toneColor }]} />
-              <Text style={[styles.statusText, { color: toneColor }]}>{permissionLabel}</Text>
-            </View>
-          </View>
-
-          {tone === "warn" ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="请求通知权限"
-              accessibilityHint="请求系统通知权限，用于任务提醒"
-              onPress={() => void requestPermission()}
-              style={({ pressed }) => [
-                styles.primaryButton,
-                { backgroundColor: tokens.accentFill, opacity: pressed ? 0.8 : 1 },
-              ]}
-            >
-              <Text style={[styles.primaryText, { color: tokens.onAccent }]}>开启通知权限</Text>
-            </Pressable>
-          ) : null}
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="发送测试通知"
-            onPress={() => void testNotification()}
-            style={({ pressed }) => [
-              styles.ghostButton,
-              // 原型的次按钮是蓝色描边；cardBorder 在浅色下几乎看不见，弱化了可点性
-              { borderColor: tokens.accent, opacity: pressed ? 0.7 : 1 },
-            ]}
-          >
-            <Text style={[styles.ghostText, { color: tokens.accentText }]}>发送测试通知</Text>
-          </Pressable>
-          {tone === "danger" ? (
-            <Text style={[styles.hint, { color: tokens.danger }]}>
-              系统已不再弹出授权框：请到「设置 → 应用 → TaskDock → 通知」手动开启。
-            </Text>
-          ) : null}
-          <Text style={[styles.hint, { color: tokens.muted }]}>
-            提醒使用系统本地通知，不依赖桌面端；权限关闭时任务照常保存，只是到点不提醒。
-          </Text>
-          <SettingActionRow
-            label="通知与后台"
-            helper="权限、提醒动作与 vivo 后台限制"
-            chevron
-            onPress={() => nav.push("notifications")}
-          />
         </Section>
 
         <Section icon="database" title="本地数据">
@@ -436,39 +341,6 @@ const styles = StyleSheet.create({
   },
   noteDot: { width: 5, height: 5, borderRadius: 3, marginTop: 6 },
   note: { flex: 1, fontSize: font.label, lineHeight: 16 },
-  permissionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: space.sm,
-  },
-  statusPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: space.sm,
-    paddingVertical: 4,
-    borderRadius: radius.chip,
-    flexShrink: 1,
-  },
-  statusDot: { width: 5, height: 5, borderRadius: 3 },
-  statusText: { flexShrink: 1, fontSize: font.label, fontWeight: "600" },
-  primaryButton: {
-    marginTop: space.xs,
-    minHeight: 48,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.control,
-  },
-  primaryText: { fontSize: font.title, fontWeight: "600" },
-  ghostButton: {
-    minHeight: 48,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.control,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  ghostText: { fontSize: font.title, fontWeight: "600" },
   line: {
     flexDirection: "row",
     justifyContent: "space-between",

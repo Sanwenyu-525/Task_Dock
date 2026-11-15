@@ -31,8 +31,11 @@ npm run build
 # 诊断日志中的 IPC failed 不应当作“注册缺失”直接改代码。
 
 # 单元测试（前端 vitest / 后端 cargo test）
+# 两个入口都经构建调度器（多会话并行时必须排队，见 7.8 与 docs/BUILD_SCHEDULER.md）
 npm test
-cd src-tauri && cargo test
+npm run cargo -- test
+# 不要用 `cd src-tauri && cargo test` 或 `npx vitest run` 绕过：那会绕开内存准入与全局预算，
+# 和别人的重型构建撞在一起。排障时才用 `test:raw` / GATE_NO_SCHED 这类逃生门，且要写明原因。
 
 # 生成应用图标（scripts/gen-icons.mjs，零依赖 PNG/ICO 编码）
 npm run icons
@@ -237,14 +240,20 @@ task_dock/
 
 ### 性能测试（需手动运行，不进入 CI）
 
+所有性能测试都是重型任务，**必须经统一调度入口**（否则会和别人的构建抢内存、也会让
+"性能结论"失真）；`--release` 构建尤其如此：
+
 ```bash
-cd src-tauri
-cargo test --release --test ingest_perf --no-run
-TD_PERF_A_SECS=180 cargo test --release --test ingest_perf scenario_a -- --ignored --nocapture
-cargo test --release --test ingest_perf scenario_b scenario_c scenario_d scenario_baseline -- --ignored --nocapture
-cargo test --release --test actions_perf -- --ignored --nocapture
-cargo test --release --test clipboard_perf -- --ignored --nocapture
+npm run cargo -- test --release --test ingest_perf --no-run
+TD_PERF_A_SECS=180 npm run cargo -- test --release --test ingest_perf scenario_a -- --ignored --nocapture
+npm run cargo -- test --release --test ingest_perf scenario_b scenario_c scenario_d scenario_baseline -- --ignored --nocapture
+npm run cargo -- test --release --test actions_perf -- --ignored --nocapture
+npm run cargo -- test --release --test clipboard_perf -- --ignored --nocapture
 ```
+
+`npm run cargo --` 会自动 `cwd=src-tauri/`（遵守 `rust-toolchain.toml`）并排队；一次跑多条时
+用 `node scripts/build-sched.mjs cargo -- --priority P2 test --release --test ingest_perf ...`
+显式声明优先级。门禁脚本 `scripts/perf/gate-run.sh` 同样已接入调度器。
 
 前端渲染采样（需先构建并生成预览 harness）：
 
@@ -462,6 +471,13 @@ Cargo target、同一个 `dist/` 和同一块内存。现在所有高资源构�
 `node scripts/build-sched.mjs`（npm 入口 `npm run build` / `npm run tauri` / `npm run test` /
 `npm run cargo -- <子命令>`）：按真实可用内存准入、按 heavy/medium/light 分类排队、
 槽位目录（`mkdir` 原子性）+ 心跳租约实现跨进程互斥，崩溃后靠身份取证安全回收。
+
+**准入是两重独立约束**（2026-11-15 整改）：① 每分类的实时可用内存门槛（`os.freemem`）；
+② 跨分类**全局预算**（`物理内存 - 系统保留` 对比所有活动任务的预留之和，台账在
+`reservations/`）。两者不重复扣减，任一不足都只是排队。没有 npm 包装的构建（例如 Android
+`gradlew.bat assembleRelease`）必须显式走
+`node scripts/build-sched.mjs run --priority P0 --cwd apps/mobile/android -- gradlew.bat assembleRelease`，
+不要直接 `cd android && gradlew.bat`。
 
 状态目录 `<git-common-dir>/taskdock-build-sched`（全 worktree 共享，不入库）；
 资源现状 `npm run sched:status|queue|history`，诊断 `npm run sched:doctor`，

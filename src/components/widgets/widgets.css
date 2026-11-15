@@ -67,9 +67,19 @@
 
 /* ── 网格与尺寸 ───────────────────────────────────────────── */
 
+/* 2026-11-15：栅格改为按**内容区宽度**分档（容器查询），不再按窗口宽度。
+   原因：窗口 1180 时左导航 + 右详情栏占掉约 500px，内容区只剩 ~660px，
+   而原来的 @media (min-width:1180px) 会误判为宽屏并排 4 列（min 200px = 800px），
+   结果第 4 列被裁、右侧留下大片空白（用户截图即此现象）。
+   现在 660px → 2 列（铺满），900px+ → 3 列，1200px+ → 4 列。 */
+.widgets-body {
+  container-type: inline-size;
+  container-name: widgets-body;
+}
+
 .widgets-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(200px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   /* 卡片按内容自然高度排列，不为了填满行高而拉伸内容。 */
   align-items: start;
@@ -80,30 +90,25 @@
   grid-column: span 1;
 }
 
-.widget-size-md {
+/* 2 列时 md/lg 都只跨满一行，避免 span 3 撑出隐式列导致横向溢出。 */
+.widget-size-md,
+.widget-size-lg {
   grid-column: span 2;
 }
 
-.widget-size-lg {
-  grid-column: span 3;
-}
-
-@media (max-width: 900px) {
+@container widgets-body (min-width: 900px) {
   .widgets-grid {
-    grid-template-columns: repeat(2, minmax(190px, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .widget-size-md,
   .widget-size-lg {
-    grid-column: span 2;
+    grid-column: span 3;
   }
 }
 
-/* 宽窗：4 列让两个 md 卡片并排，避免默认布局在任何宽度下都只能单列。
-   窄窗仍按上面两档回落，md/lg 不跨出可用列宽。 */
-@media (min-width: 1180px) {
+@container widgets-body (min-width: 1200px) {
   .widgets-grid {
-    grid-template-columns: repeat(4, minmax(200px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .widget-size-lg {
@@ -111,7 +116,7 @@
   }
 }
 
-@media (max-width: 620px) {
+@container widgets-body (max-width: 560px) {
   .widgets-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -122,6 +127,9 @@
     grid-column: span 1;
   }
 }
+
+/* 旧的三档 @media 已由上面的容器查询替代（2026-11-15）：媒体查询看的是窗口
+   宽度，在「左导航 + 右详情栏」吃掉约 500px 后必然误判，故删除而不是叠加覆盖。 */
 
 /* ── 卡片 ─────────────────────────────────────────────────── */
 

@@ -12,7 +12,7 @@ use crate::clipboard::agent_bridge::{self, AgentTargetsSnapshot, ExportPackage};
 use crate::clipboard::export;
 use crate::clipboard::paste::{self, PasteStartReport};
 use crate::clipboard::platform::{self, ClipboardPayload, TargetWindow};
-use crate::clipboard::store::{self, ClipboardFilter, ClipboardTaskLink, PasteJob};
+use crate::clipboard::store::{self, ClipboardFilter, ClipboardTaskLink, PasteItemRow, PasteJob};
 use crate::clipboard::{
     engine, ocr::OcrReport, CleanupReport, ClearReport, ClipboardGroup, ClipboardGroupItemPosition,
     ClipboardGroupPage, ClipboardItem, ClipboardRuntime, ClipboardStats, ClipboardView, CopyReport,
@@ -1006,6 +1006,15 @@ pub fn clipboard_paste_job(
     job_id: String,
 ) -> AppResult<PasteJob> {
     store::get_paste_job(&runtime(&state).db, &job_id)
+}
+
+/// 逐项状态：任务中断/暂停后，前端与验收脚本据此定位「第几项卡在哪一步」。
+#[tauri::command]
+pub fn clipboard_paste_item_states(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    job_id: String,
+) -> AppResult<Vec<PasteItemRow>> {
+    store::list_paste_items(&runtime(&state).db, &job_id)
 }
 
 #[tauri::command]

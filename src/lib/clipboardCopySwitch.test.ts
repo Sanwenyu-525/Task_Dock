@@ -314,6 +314,7 @@ function jobOf(over: Partial<PasteJob> = {}): PasteJob {
     ended_at: "2026-11-07T00:00:01Z",
     message: "已发送 1/1 项粘贴动作；目标应用是否接收无法自动验证（1 项未确认，0 项有接收信号）。已恢复粘贴前的剪贴板内容",
     remaining_items: [],
+    uncertain_items: [],
     restored: true,
     ...over,
   };

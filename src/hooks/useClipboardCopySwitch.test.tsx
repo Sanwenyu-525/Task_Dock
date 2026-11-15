@@ -78,6 +78,7 @@ function pasteJob(over: Partial<PasteJob> = {}): PasteJob {
     ended_at: null,
     message: "",
     remaining_items: ["ci1"],
+    uncertain_items: [],
     restored: false,
     ...over,
   };

@@ -6,6 +6,8 @@
 // - 测试通过 `__fsTestStore` 读写内存目录与断言 delete/closed 状态。
 // 不允许为了测试改写业务逻辑：业务代码原样运行，只有原生边界被替换。
 
+import { createHash } from "node:crypto";
+
 export const Paths = {
   document: "file:///data/user/0/dev.taskdock.mobile/files",
   cache: "file:///data/user/0/dev.taskdock.mobile/cache",
@@ -68,13 +70,18 @@ export function __resetFs(): void {
 }
 
 /** 测试辅助：把一个源文件放进内存目录（模拟手机本地已有文件）。 */
-export function __seedFile(directoryUri: string, name: string, bytes: Uint8Array): File {
+export function __seedFile(
+  directoryUri: string,
+  name: string,
+  bytes: Uint8Array,
+  mimeType: string = "application/octet-stream",
+): File {
   const record = dirRecord(directoryUri);
   const uri = `${directoryUri}/${name}`;
   record.files.set(uri, {
     uri,
     name,
-    mimeType: "application/octet-stream",
+    mimeType,
     parts: [bytes],
     size: bytes.length,
     handleOpen: false,
@@ -148,9 +155,60 @@ export class File {
     });
   }
 
-  async copy(_target: File, _options?: { overwrite?: boolean }): Promise<void> {
-    // 对齐 SAF：content:// 源不支持 File.copy，调用方应退回句柄复制。
-    throw new Error("copy not supported for this uri");
+  async copy(target: File, options?: { overwrite?: boolean }): Promise<void> {
+    // 对齐 SAF：content:// 源不支持 File.copy，调用方应退回句柄复制；
+    // file:// 源则按真实 API 复制字节，供导入流程测试使用。
+    if (!this.record || this.record.deleted) throw new Error(`file not found: ${this.uri}`);
+    if (this.uri.startsWith("content://")) {
+      throw new Error("copy not supported for this uri");
+    }
+    if (target.exists && !options?.overwrite) {
+      throw new Error(`target exists: ${target.uri}`);
+    }
+    const slash = target.uri.lastIndexOf("/");
+    const directoryUri = slash >= 0 ? target.uri.slice(0, slash) : target.uri;
+    dirRecord(directoryUri).files.set(target.uri, {
+      uri: target.uri,
+      name: target.name,
+      mimeType: this.record.mimeType,
+      parts: this.record.parts.map((part) => part.slice()),
+      size: this.record.size,
+      handleOpen: false,
+      deleted: false,
+      deleteAttempts: 0,
+    });
+  }
+
+  /**
+   * 同分区移动（real API 语义）：把本记录挂到目标 URI 下，源 URI 不再存在。
+   * 由 `moveToLibrary` / 保存失败回滚使用；跨目录移动只改 map 归属，不复制字节。
+   */
+  async move(target: File, options?: { overwrite?: boolean }): Promise<void> {
+    if (!this.record || this.record.deleted) throw new Error(`file not found: ${this.uri}`);
+    if (this.record.handleOpen) throw new Error("cannot move file with open handle");
+    if (target.exists && !options?.overwrite) throw new Error(`target exists: ${target.uri}`);
+    const source = this.record;
+    const targetName = target.name;
+    const slash = target.uri.lastIndexOf("/");
+    const directoryUri = slash >= 0 ? target.uri.slice(0, slash) : target.uri;
+    const destination = dirRecord(directoryUri);
+    destination.files.set(target.uri, {
+      ...source,
+      uri: target.uri,
+      name: targetName,
+      parts: source.parts.map((part) => part.slice()),
+    });
+    this.record.deleted = true;
+    this.record.parts = [];
+  }
+
+  /** 内容摘要：用 node:crypto 计算真实 SHA-256，业务侧 `sha256OfFile` 原样运行。 */
+  async digest(algorithm: string): Promise<string> {
+    if (!this.record || this.record.deleted) throw new Error(`file not found: ${this.uri}`);
+    if (algorithm.toUpperCase().replace("-", "") !== "SHA256") {
+      throw new Error(`unsupported digest: ${algorithm}`);
+    }
+    return createHash("sha256").update(Buffer.from(mergedBytes(this.record))).digest("hex");
   }
 
   open(mode: FileMode): FileHandle {
@@ -195,8 +253,10 @@ export class File {
 export class Directory {
   readonly uri: string;
 
-  constructor(uri: string) {
-    this.uri = uri;
+  /** 对齐 real API：`new Directory(parent, "a", "b")` 逐级拼接路径。 */
+  constructor(uri: string | Directory, ...names: string[]) {
+    const base = typeof uri === "string" ? uri : uri.uri;
+    this.uri = names.length === 0 ? base : [base.replace(/\/+$/, ""), ...names].join("/");
   }
 
   get exists(): boolean {

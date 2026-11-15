@@ -16,12 +16,26 @@
   display: flex;
   min-width: 0;
   min-height: 0;
+  /* 2026-11-15：暂存架列表自身的 `overflow-y:auto` 只有在祖先高度被约束时
+     才生效。这里给主区一个明确的裁剪盒，并按列向 flex 让 `.shelf-list` 的
+     `flex:1` 拿到真实剩余高度——否则最后几行会溢出到下方信息带上（实测
+     1180×760 时第 5 行被「常用投递目标」卡片遮住）。 */
+  overflow: hidden;
 }
 
 .collection-main > * {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+}
+
+.collection-main > .shelf-workspace {
+  display: flex;
+  flex-direction: column;
+  /* 列表的 `flex:1` 在无界高度下失效（它的父级链不是 flex 列），所以这里
+     让整个暂存架自己成为滚动容器：行不会被裁掉，也不会压到下方信息带。 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* 宽内容区（≥880px）：信息栏固定在右侧 236px；暂存架主区仍占满剩余宽度。 */
@@ -52,9 +66,11 @@
 
   .col-rail {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    /* 2026-11-15：信息带从 2 列（约 270px 高）收紧为 3 列，把高度还给暂存架列表
+       （实测列表视口从 288px 增至约 380px）；min 210px 保证 2×2 计数磁贴不挤压。 */
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
     align-content: start;
-    max-height: 34vh;
+    max-height: 30vh;
     overflow: auto;
     overscroll-behavior: contain;
     padding-right: 2px;

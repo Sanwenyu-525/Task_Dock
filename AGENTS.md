@@ -152,21 +152,30 @@ Worktree 是**风险评估结果**，不是并行前置步骤：
 ### 5.1 构建资源调度（所有会话与子智能体共用）
 - **所有高资源构建必须经统一入口**：`npm run build` / `npm run tauri` / `npm run test` /
   `npm run cargo -- <子命令>`，或 `node scripts/build-sched.mjs run -- <命令>`。
-  `*-raw` 与直接 `cargo`/`vite` 只用于调度器自身排障；**不得绕过调度器**规避队列（改了
-  `package.json` 绕开同样算绕过）。
+  `*-raw` 与直接 `cargo`/`vite`/`gradlew` 只用于调度器自身排障；**不得绕过调度器**规避队列（改了
+  `package.json` 绕开同样算绕过）。仓库里没有 `npm run` 包装的构建必须显式走调度器，例如
+  Android 发布包：
+  `node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mobile/android -- gradlew.bat assembleRelease`
+  （`apps/mobile` 的 `build:android` 脚本是直接 Gradle 调用，**不要**用它代替统一入口）。
+- 准入门槛是**两重独立约束**，任一不满足都只是排队，不是失败：① 实时可用内存门槛（每分类各自
+  的门槛，依据 `os.freemem`）；② 跨分类全局预算（活动任务预留之和不得超过「物理内存 - 系统保留」，
+  依据 `reservations/` 台账，与 ① 不重复扣减）。**不要**为了让自己的任务跑起来去关掉
+  `budgetEnabled` 或调低分类门槛——那正是本项目要解决的问题（详见 `docs/BUILD_SCHEDULER.md` 4.2/5.7）。
 - 调度器只管构建，不管代码：**构建互斥不限制正常开发**——多个会话可并行改不冲突的文件；
   无文件冲突时**不强制 Worktree**；构建排队期间可以继续读代码、写文档、改无关模块。
 - 优先局部检查再全量：能单 crate `cargo check` / 单测 / 单模块 `tsc` 就不整包构建，避免重复全量。
-- 失败先判层级再改代码：**代码错误（子进程码）/ 内存不足（exit 3 + reason 含内存）/ 超时
+- 失败先判层级再改代码：**代码错误（子进程码）/ 内存或预算不足（exit 3 + reason 含内存/预算）/ 超时
   （exit 3）/ 调度或磁盘错误（exit 5/6）**分别处理，不能把"没抢到内存"当成代码缺陷，
   也不能为了跑通就降门槛或并发绕过准入。
 - 不清理其他会话的构建缓存/target/隔离目录，不终止未经授权的他人进程（含 dev 服务器）；
-  疑似陈旧锁用 `npm run sched:doctor`（默认只读），`--reap` 前先确认回收对象已被证明死亡。
+  疑似陈旧锁或预算台账残留用 `npm run sched:doctor`（默认只读），`--reap` 前先确认回收对象
+  已被证明死亡（`unknown` 身份一律不动）。
 - 最终验收必须针对**正确代码状态**执行（自己的改动已落盘、`git status` 无他人未提交改动被带入）；
   子智能体与主智能体适用同一套资源规则，派发时应把本小节原文一并交代。
 - 用法、配置、退出码、锁与回收原理、Windows 控制台生命周期见
-  [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md)；资源现状用 `npm run sched:status`、
-  `npm run sched:queue`、`npm run sched:history` 查。
+  [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md)；资源现状用 `npm run sched:status`（含全局
+  预算占用）、`npm run sched:queue`、`npm run sched:history` 查。工程门禁
+  `scripts/perf/gate-run.sh` 已接入调度器，`GATE_DRY_RUN=1` 可零资源核对路由。
 
 ### 5.2 磁盘、命令与证据
 - 构建前检查磁盘与缓存（`npm run tauri` 自动执行 `build-guard precheck`），空间不足先停止并

@@ -395,11 +395,16 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             (item) => item.destination === "desktop" && item.state === "done" && item.remoteId,
           );
           if (choice.desktopTarget === "shelf" && desktopDone && remote?.remoteId) {
-            try {
-              await retryShelfImport(asset, remote.remoteId, choice.shelfGroupId);
+            const retry = await retryShelfImport(asset, remote.remoteId, choice.shelfGroupId);
+            if (retry.stopBatch) {
+              failures.push(retry.message);
+              break;
+            }
+            if (retry.state === "pending") offlineMessage = retry.message;
+            else if (retry.state === "failed" || retry.state === "cancelled") {
+              failures.push(retry.message);
+            } else {
               doneKeys.add(`${asset.id}:shelf`);
-            } catch (error) {
-              failures.push(describeError(error));
             }
             continue;
           }
@@ -411,6 +416,11 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
           });
           if (result.offline) {
             offlineMessage = result.message ?? "电脑端不可用";
+            break;
+          }
+          if (result.stopBatch) {
+            // 授权/安全类失败：继续发下一张只会重复失败，停止整批并展示真实原因。
+            if (result.message) failures.push(result.message);
             break;
           }
           for (const outcome of result.outcomes) {

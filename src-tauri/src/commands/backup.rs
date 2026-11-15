@@ -72,6 +72,8 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "clipboard_group_items",
     "clipboard_task_links",
     "clipboard_paste_jobs",
+    // 逐项粘贴状态（v55）：任务 → 每项的状态机事实，恢复时晚于 jobs。
+    "clipboard_paste_items",
     "workspace_snapshots",
     "workspace_snapshot_items",
     "action_acks",
@@ -264,6 +266,14 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         "recent",
         200,
         &["clipboard_groups"],
+        true
+    ),
+    rule!(
+        "clipboard_paste_items",
+        "clipboard",
+        "recent",
+        205,
+        &["clipboard_paste_jobs"],
         true
     ),
     rule!(
@@ -793,6 +803,10 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         ),
         "clipboard_paste_jobs" => format!(
             "SELECT * FROM clipboard_paste_jobs WHERE id IN (SELECT id FROM clipboard_paste_jobs ORDER BY started_at DESC, id DESC LIMIT {}) ORDER BY rowid",
+            QUICK_CLIPBOARD_PASTE_LIMIT
+        ),
+        "clipboard_paste_items" => format!(
+            "SELECT * FROM clipboard_paste_items WHERE job_id IN (SELECT id FROM clipboard_paste_jobs ORDER BY started_at DESC, id DESC LIMIT {}) ORDER BY rowid",
             QUICK_CLIPBOARD_PASTE_LIMIT
         ),
         "workspace_snapshots"
@@ -1766,6 +1780,7 @@ fn write_bundle_inner(
                     ("navigation_log", QUICK_NAV_LOG_LIMIT),
                     ("clipboard_items", QUICK_CLIPBOARD_ITEM_LIMIT),
                     ("clipboard_paste_jobs", QUICK_CLIPBOARD_PASTE_LIMIT),
+                    ("clipboard_paste_items", QUICK_CLIPBOARD_PASTE_LIMIT),
                 ] {
                     let total = *totals.get(table).unwrap_or(&0);
                     if total > limit {

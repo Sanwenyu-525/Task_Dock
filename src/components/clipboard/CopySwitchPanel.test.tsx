@@ -131,6 +131,7 @@ function pasteJob(over: Partial<PasteJob> = {}): PasteJob {
     ended_at: "2026-11-07T00:00:01Z",
     message: PASTE_MESSAGE,
     remaining_items: [],
+    uncertain_items: [],
     restored: true,
     ...over,
   };

@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Loader2, Merge, Pause, Play,
+  AlertTriangle, Clipboard, Copy, FolderPlus, Info, Link2, Loader2, Merge, Pause, Pin, Play,
   RefreshCw, Settings as SettingsIcon, Star, Trash2, X,
 } from "lucide-react";
 import {
@@ -38,7 +38,7 @@ import {
   type DeleteReport,
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
-import { formatBytes, groupDeleteFeedback, objectHint } from "../../lib/clipboardUi";
+import { clipSource, clipboardTime, formatBytes, groupDeleteFeedback, kindLabel, objectHint } from "../../lib/clipboardUi";
 import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
@@ -54,6 +54,8 @@ import ClipboardGroupCard from "./ClipboardGroupCard";
 import ClipboardGroupDetail from "./ClipboardGroupDetail";
 import ClipboardItemCard from "./ClipboardItemCard";
 import ClipboardItemDetail from "./ClipboardItemDetail";
+import { ClipboardThumb } from "./Media";
+import { WorkbenchDetailFacts, WorkbenchPageDetail } from "../../workbench/pageDetail";
 import CopySwitchPanel from "./CopySwitchPanel";
 import ImageLightbox from "./ImageLightbox";
 import PastePanel from "./PastePanel";
@@ -147,6 +149,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const clearSelection = useClipboardStore((s) => s.clearSelection);
 
   const [detail, setDetailState] = useState<ClipboardDetail | null>(null);
+  /** 选中条目的右栏预览：列表保持原位，详情在 WorkbenchPageDetail 中只读展示。 */
+  const [previewId, setPreviewId] = useState<string | null>(null);
   /** 详情打开前的列表滚动位置；返回列表时按同一筛选恢复（不恢复旧筛选的位置）。 */
   const savedListScrollRef = useRef<{ top: number; filterKey: string } | null>(null);
   const restoreListScrollRef = useRef<{ top: number; filterKey: string } | null>(null);
@@ -1059,6 +1063,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               onCopySwitch={() => setDetail({ kind: "copy-switch", item })}
               onToggle={(flag) => void onToggleItem(item, flag)}
               onDetail={() => setDetail({ kind: "item", id: item.id })}
+              onPreview={isDrawer ? undefined : () => setPreviewId(item.id)}
               onDelete={() => onDeleteItem(item)}
               onLink={() => void onLink("item", item.id)}
               onOpenImage={() => openSingleImage(item)}
@@ -1082,6 +1087,12 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const previewItem = preview
     ? preview.items.find((i) => i.id === preview.itemId) ?? preview.items[0]
     : null;
+
+  /** 右栏预览对象：只从当前已加载列表里取，翻页/筛选变化后自然失效，不保留旧详情。 */
+  const railItem = previewId
+    ? (view?.items.find((i) => i.id === previewId) ?? null)
+    : null;
+  const railSource = railItem ? clipSource(railItem) : null;
 
   const body = (
     <>
@@ -1271,6 +1282,80 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           renderList()
         )}
       </div>
+
+      {/* 右栏：所选内容预览。中央列表始终保留；完整详情仍由「详情」按钮进入，
+          不改变原有详情页的编辑/跳转能力。 */}
+      {!detail && railItem && (
+        <WorkbenchPageDetail
+          title="所选内容预览"
+          actions={
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => setDetail({ kind: "item", id: railItem.id })}
+            >
+              完整详情
+            </button>
+          }
+        >
+          <div className="clip-rail-head">
+            {railItem.kind === "image" ? (
+              <ClipboardThumb
+                itemId={railItem.id}
+                hasThumb={railItem.has_thumb}
+                size={64}
+                openLabel="查看大图"
+                onOpen={() => setDetail({ kind: "item", id: railItem.id })}
+              />
+            ) : (
+              <span className={`clip-rail-kind kind-${railItem.kind}`}>
+                {kindLabel(railItem.kind)}
+              </span>
+            )}
+            {(railItem.pinned || railItem.favorite) && (
+              <span className="clip-rail-flags">
+                {railItem.pinned && (
+                  <em data-tip="已置顶">
+                    <Pin size={11} aria-hidden="true" />
+                  </em>
+                )}
+                {railItem.favorite && (
+                  <em className="favorite" data-tip="已收藏">
+                    <Star size={11} aria-hidden="true" />
+                  </em>
+                )}
+              </span>
+            )}
+          </div>
+          {railItem.title && <p className="wb-detail-title"><span>{railItem.title}</span></p>}
+          {railItem.preview && <p className="wb-detail-desc">{railItem.preview}</p>}
+          <WorkbenchDetailFacts
+            rows={[
+              {
+                label: "来源",
+                value: railSource
+                  ? `${railSource.app}${railSource.window ? ` · ${railSource.window}` : ""}`
+                  : railItem.source_title || "未知来源",
+              },
+              { label: "类型", value: kindLabel(railItem.kind) },
+              { label: "记录时间", value: clipboardTime(railItem.last_seen_at) },
+              { label: "使用次数", value: `${railItem.copy_count}` },
+              {
+                label: "整理状态",
+                value: [
+                  railItem.pinned ? "已置顶" : null,
+                  railItem.favorite ? "已收藏" : null,
+                ].filter(Boolean).join(" · ") || "未整理",
+              },
+            ]}
+          />
+          <div className="wb-detail-actions">
+            <button type="button" className="btn sm primary" onClick={() => void onCopyItem(railItem)}>
+              <Copy size={11} aria-hidden="true" /> 复制
+            </button>
+          </div>
+        </WorkbenchPageDetail>
+      )}
 
       {!detail && section === "items" && selectedItems.length > 0 && (
         <div className="clip-selectbar">

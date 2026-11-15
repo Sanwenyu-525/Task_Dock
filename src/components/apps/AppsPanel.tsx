@@ -8,6 +8,8 @@
 //! - 只展示普通应用（`target_type === "application"`）与网址/文件夹分区；
 //!   Agent 会话归 Agent 模块，不在此重复建设。
 //! - 启动/聚焦完全复用 `navNavigate` + 后端 Router，不新增扫描或窗口激活实现。
+
+import "./apps-page.css";
 //! - 「运行中」筛选来自后端 `nav_target_running_states` 的真实窗口/进程快照
 //!   （打开页面或启动成功后按需查询一次，不轮询）；查询失败如实提示，不用
 //!   `use_count` / `last_used_at` 推断运行态。

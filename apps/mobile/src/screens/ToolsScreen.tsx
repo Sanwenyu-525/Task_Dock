@@ -1,18 +1,16 @@
-// 工具页（第七轮布局）：现有移动端工具的统一入口 + 未移植桌面能力的图标占位。
-// 不是桌面工具面板的复制：能用的一律连现有页面，不能用的只占位。
+// 工具页（第九轮职责收口）：只保留「能直接执行的效率工具 + 采集中心 + 开发工具」。
 //
-// 三组不再使用同一种浅蓝容器：
-// - 常用工具：无边框网格，真实入口的渐变底板最醒目；
-// - 效率工具：一张白色列表卡（快速笔记可直接用，其余为禁用行）；
-// - 开发工具：无容器中性网格，整组视觉权重最低。
-// 数据与跳转语义完全沿用旧实现。
+// 这一轮删掉的三类重复入口（都已在别处有唯一主归属）：
+// - 采集与整理网格（拍照/扫描/导入/素材库）：采集中心内部已完整提供，工具页不再复制；
+// - 常用工具网格（收集箱/笔记/文件互传/同步中心）：分别归工作区与「我的」；
+// - 右上角通知铃铛：通知的唯一主入口在「我的」，首页保留全局快捷入口。
+//
+// 三组仍用不同视觉权重：采集主卡 > 效率工具白卡 > 开发工具中性网格。
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { EntryRow } from "../components/EntryRow";
 import { FeatureIconPlaceholder } from "../components/FeatureIconPlaceholder";
 import { GlassCard } from "../components/GlassCard";
-import { HeaderIconButton } from "../components/HeaderIconButton";
-import { IconEntry } from "../components/IconEntry";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { SectionHeader } from "../components/SectionHeader";
 import type { AppNav } from "../lib/nav";
@@ -32,75 +30,26 @@ const EFFICIENCY_TOOLS = [
   { icon: "workflow", label: "工作流" },
 ] as const;
 
-export function ToolsScreen({ nav, inboxCount }: { nav: AppNav; inboxCount: number }) {
+export function ToolsScreen({ nav }: { nav: AppNav }) {
   const { tokens } = useTheme();
 
   return (
     <View style={styles.root}>
-      <ScreenHeader
-        title="工具"
-        right={
-          <HeaderIconButton
-            icon="bell"
-            accessibilityLabel="通知"
-            onPress={() => nav.push("notifications")}
-          />
-        }
-      />
+      <ScreenHeader title="工具" />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* 采集是最高频动作：放在所有分组之上，一次点击进采集中心。
-            卡片说明只讲四个快捷入口覆盖不到的部分（语音/一句话/最近素材），
-            否则与下方入口逐字重复，看起来像两套同样的入口。 */}
-        <GlassCard style={[styles.captureCard, { borderColor: tokens.cardBorderStrong }]}>
-          <EntryRow
-            icon="archive"
-            label="采集中心"
-            helper="语音速记、一句话记录与最近素材都在这里"
-            onPress={() => nav.push("capture_home")}
-          />
-        </GlassCard>
-
         <View style={styles.group}>
-          <SectionHeader icon="workspace" title="采集与整理" />
-          <View style={styles.grid}>
-            <IconEntry
-              icon="camera"
-              label="拍照采集"
-              onPress={() => nav.push("capture_camera")}
+          <SectionHeader icon="camera" title="采集" />
+          {/* 采集是最高频动作：一次点击进采集中心，具体方式（拍照/扫描/导入/语音/素材库）
+              都在里面，不再在工具页重复铺一层子入口。 */}
+          <GlassCard style={[styles.captureCard, { borderColor: tokens.cardBorderStrong }]}>
+            <EntryRow
+              icon="archive"
+              label="采集中心"
+              helper="拍照、扫描、导入、语音速记与最近素材"
+              onPress={() => nav.push("capture_home")}
             />
-            <IconEntry
-              icon="docScan"
-              label="文档扫描"
-              onPress={() => nav.push("capture_scan")}
-            />
-            <IconEntry
-              icon="gallery"
-              label="相册导入"
-              onPress={() => nav.push("capture_import")}
-            />
-            {/* 素材库是目的地而不是采集动作：排在三个采集方式之后 */}
-            <IconEntry
-              icon="fileStack"
-              label="本机素材库"
-              onPress={() => nav.push("capture_stash")}
-            />
-          </View>
-        </View>
-
-        <View style={styles.group}>
-          <SectionHeader icon="wrench" title="常用工具" />
-          <View style={styles.grid}>
-            <IconEntry
-              icon="inbox"
-              label="收集箱"
-              badge={inboxCount}
-              onPress={() => nav.push("inbox")}
-            />
-            <IconEntry icon="note" label="笔记" onPress={() => nav.push("notes")} />
-            <IconEntry icon="transfer" label="文件互传" onPress={() => nav.push("files")} />
-            <IconEntry icon="sync" label="同步中心" onPress={() => nav.push("sync")} />
-          </View>
+          </GlassCard>
         </View>
 
         <View style={styles.group}>
@@ -154,7 +103,7 @@ const styles = StyleSheet.create({
   },
   /** 模块内标题与内容 12dp；模块之间 20dp */
   group: { gap: space.md },
-  grid: { flexDirection: "row", flexWrap: "wrap" },
+  grid: { flexDirection: "row", flexWrap: "wrap", rowGap: space.xs },
   cell: { flexBasis: "25%" },
   listCard: { paddingHorizontal: space.md, paddingVertical: space.xxs },
   captureCard: { paddingHorizontal: space.md, paddingVertical: space.xxs, borderWidth: 1 },

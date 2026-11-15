@@ -1,0 +1,23 @@
+/*
+ * 历史记录「页面态」布局（2026-11-15 视觉对齐）。
+ *
+ * 背景：原来筛选与未读统计分属两条 `.filter-bar`，第二行只剩一句「N 条未读 / 共 M」，
+ * 下方接着时间轴，视觉上悬空且把工具栏撑成两段。合并为一条工具栏后，筛选在左、
+ * 统计靠右同排；可用宽度不足时统计随筛选组一起换行，仍贴住右边缘。
+ *
+ * 作用域统一 `.history-panel`，颜色 / 间距沿用既有语义 Token，不新增皮肤。
+ */
+
+.history-panel .filter-bar.history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-panel .history-toolbar-meta {
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}

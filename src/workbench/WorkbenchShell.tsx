@@ -1170,22 +1170,6 @@ export default function WorkbenchShell() {
   return (
     <div className={`wb-root${compact ? " is-compact" : ""}`} style={rootStyle}>
       <nav className="wb-nav" aria-label={t("workbench.navAria")}>
-        <div className="wb-nav-head">
-          <button
-            type="button"
-            className="wb-new-task"
-            data-tip={t("nav.newTaskTip")}
-            aria-label={t("workbench.newTask")}
-            onClick={() => {
-              goRoute("tasks");
-              bumpQuickAdd();
-            }}
-          >
-            <Plus size={14} aria-hidden="true" />
-            <span>{t("workbench.newTask")}</span>
-          </button>
-        </div>
-
         <div className="wb-nav-items">
           <button
             type="button"
@@ -1220,13 +1204,13 @@ export default function WorkbenchShell() {
                   >
                     <span className="wb-nav-icon">
                       <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
-                      {count > 0 && (
-                        <em className={`wb-nav-badge${entry.badge === "pending" ? " is-subtle" : ""}`}>
-                          {count > 99 ? "99+" : count}
-                        </em>
-                      )}
                     </span>
                     <span className="wb-nav-label">{label}</span>
+                    {count > 0 && (
+                      <em className={`wb-nav-badge${entry.badge === "pending" ? " is-subtle" : ""}`}>
+                        {count > 99 ? "99+" : count}
+                      </em>
+                    )}
                   </button>
                 );
               })}
@@ -1348,9 +1332,6 @@ export default function WorkbenchShell() {
               size="sm"
               menuMinWidth={240}
             />
-            {selected && (
-              <span className="wb-topbar-kind">{resolveWorkspaceProfile(selected.kind).label}</span>
-            )}
             {route === "workbench" && currentTask && (
               <span className="wb-topbar-task" title={currentTask.title}>
                 当前任务：{currentTask.title}
@@ -1432,24 +1413,26 @@ export default function WorkbenchShell() {
           <WorkbenchDetailHostProvider host={detailHost}>
           <main className="wb-content" aria-labelledby="wb-page-heading">
             <TabLeaveGuard />
-            <div className="wb-home-slot wb-route" hidden={route !== "home"}>
-              <WorkbenchHome
-                projects={projects}
-                projectsLoading={projectsLoading}
-                onNavigate={(next) => {
-                  openCreateProjectIfNeeded(next);
-                }}
-                onSelectProjectAndOpen={(id) => {
-                  selectProject(id);
-                  goRoute("workspace");
-                }}
-                onCreateProject={openCreateProject}
-                onQuickAddTask={() => {
-                  goRoute("tasks");
-                  bumpQuickAdd();
-                }}
-              />
-            </div>
+            <WorkbenchPageActiveContext.Provider value={route === "home"}>
+              <div className="wb-home-slot wb-route" hidden={route !== "home"}>
+                <WorkbenchHome
+                  projects={projects}
+                  projectsLoading={projectsLoading}
+                  onNavigate={(next) => {
+                    openCreateProjectIfNeeded(next);
+                  }}
+                  onSelectProjectAndOpen={(id) => {
+                    selectProject(id);
+                    goRoute("workspace");
+                  }}
+                  onCreateProject={openCreateProject}
+                  onQuickAddTask={() => {
+                    goRoute("tasks");
+                    bumpQuickAdd();
+                  }}
+                />
+              </div>
+            </WorkbenchPageActiveContext.Provider>
 
             <Suspense
               fallback={

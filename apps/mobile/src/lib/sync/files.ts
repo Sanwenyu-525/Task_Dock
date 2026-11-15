@@ -16,9 +16,16 @@ import { AppError, isAppError, toAppError } from "../errors";
 import { loadConnection } from "../../db/syncConnection";
 
 import { decryptEnvelope, encryptEnvelope } from "./crypto";
-import type { FetchLike, FetchInitLike } from "./client";
+import type { FetchLike, FetchInitLike, HttpResponseLike } from "./client";
 import { normalizeTlsFingerprint } from "./pairing";
 import { createLazyPinnedFetch } from "./secureFetch";
+import {
+  createCancelledError,
+  FileHttpError,
+  FILE_CANCELLED_MESSAGE,
+  isAutoRetryableTransferFailure,
+  isFileCancelled,
+} from "./transferError";
 
 /** 分块请求可能比同步 JSON 慢，但仍需有界；超时后按退避重试。 */
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -104,36 +111,34 @@ interface ActiveOperation {
   controller: AbortController | null;
 }
 
-class FileHttpError extends Error {
-  readonly status: number;
-
-  constructor(status: number) {
-    super(`文件请求失败：HTTP ${status}`);
-    this.name = "FileHttpError";
-    this.status = status;
-  }
-}
-
-export const FILE_CANCELLED_MESSAGE = "文件传输已取消";
-
 function cancelledError(): AppError {
-  return new AppError("network", FILE_CANCELLED_MESSAGE);
+  return createCancelledError();
 }
 
-export function isFileCancelled(error: unknown): boolean {
-  return (
-    error instanceof AppError &&
-    error.kind === "network" &&
-    error.message === FILE_CANCELLED_MESSAGE
-  );
+/** 取消语义、HTTP 错误类型与分类统一放在 transferError.ts，这里只保留兼容导出。 */
+export { FILE_CANCELLED_MESSAGE, isFileCancelled };
+export { FileHttpError, isFileHttpError } from "./transferError";
+
+/**
+ * 从错误响应里取桌面端业务码（`{"error":"unauthorized","message":"..."}`）。
+ *
+ * 错误响应是明文 JSON（与成功响应的加密信封不同），只取 `error` 字段；
+ * 解析失败/非 JSON 不影响分类——HTTP 状态码本身就是可靠信号。
+ */
+async function readErrorCode(response: HttpResponseLike): Promise<string | null> {
+  try {
+    const body = await response.json();
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
+    const code = (body as Record<string, unknown>).error;
+    return typeof code === "string" && code.trim() && code.length <= 64 ? code : null;
+  } catch {
+    return null;
+  }
 }
 
 function isRetryable(error: unknown): boolean {
-  if (error instanceof FileHttpError) {
-    return error.status === 408 || error.status === 429 || error.status >= 500;
-  }
-  if (isAppError(error)) return error.kind === "network";
-  return false;
+  // 自动重试规则只在 transferError 维护；这里不再保留第二份状态码白名单。
+  return isAutoRetryableTransferFailure(error);
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -284,12 +289,15 @@ export function createFileClient(options: FileClientOptions): FileClient {
 
     try {
       const response = await fetchImpl(`${baseUrl}${path}`, init);
-      if (!response.ok) throw new FileHttpError(response.status);
+      if (!response.ok) throw new FileHttpError(response.status, await readErrorCode(response));
       const body = await response.json();
       return decryptEnvelope(options.syncKey, aad, body);
     } catch (error) {
       if (operation.cancelled) throw cancelledError();
-      if (timedOut) throw new AppError("network", "文件请求超时（30s）", error);
+      // 超时是本端计时器触发的 abort，不是用户取消：带上 code 让上层分类为可重试。
+      if (timedOut) {
+        throw new AppError("network", "文件请求超时（30s）", error, "request_timeout");
+      }
       if (error instanceof FileHttpError) throw error;
       throw toAppError(error, "network");
     } finally {
@@ -321,7 +329,9 @@ export function createFileClient(options: FileClientOptions): FileClient {
           await sleep(delay);
         }
       }
-      if (isAppError(lastError)) throw lastError;
+      // 保留 HTTP 层错误对象：状态码/业务码是上层分类的唯一可靠依据，
+      // 包成 AppError("network") 会让 401/404 全部退化成「电脑不可达」。
+      if (isAppError(lastError) || lastError instanceof FileHttpError) throw lastError;
       throw toAppError(lastError, "network");
     } finally {
       active.delete(operation);
@@ -379,10 +389,36 @@ export function createFileClient(options: FileClientOptions): FileClient {
     });
   }
 
-  function importToShelf(id: string, groupId?: string | null): Promise<RemoteFile> {
-    return request("POST", `/v1/files/${id}/shelf`, aadFileShelf(id), {
-      group_id: groupId ?? null,
-    }).then(parseFilePayload);
+  /**
+   * 导入暂存架。
+   *
+   * 404 有二义性：旧桌面端根本没有该路由，或传输记录已被删除/不属于本设备。
+   * 只有错误路径才多用一次只读探测（GET /v1/shelf/groups）：
+   * - 探测也 404 → 明确是「版本不支持」，上层提示升级而不是「记录不存在」；
+   * - 探测给出 401/403/TLS → 用更具体的原因覆盖 404（授权问题优先暴露）；
+   * - 探测成功 → 说明接口存在，404 就是记录本身的问题。
+   */
+  async function importToShelf(id: string, groupId?: string | null): Promise<RemoteFile> {
+    try {
+      const data = await request("POST", `/v1/files/${id}/shelf`, aadFileShelf(id), {
+        group_id: groupId ?? null,
+      });
+      return parseFilePayload(data);
+    } catch (error) {
+      if (error instanceof FileHttpError && error.status === 404) {
+        try {
+          await shelfGroups();
+        } catch (probeError) {
+          if (probeError instanceof FileHttpError && probeError.status === 404) {
+            throw new FileHttpError(404, "not_supported");
+          }
+          throw probeError;
+        }
+        // 分组接口存在且可访问：说明暂存架能力可用，原始 404 不是版本问题。
+        throw new FileHttpError(404, "not_found");
+      }
+      throw error;
+    }
   }
 
   function shelfGroups(): Promise<RemoteShelfGroup[]> {

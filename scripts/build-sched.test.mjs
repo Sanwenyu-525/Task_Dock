@@ -13,6 +13,10 @@ import { DEFAULT_CONFIG, loadConfig } from "./sched/config.mjs";
 import { classifyArgv, classifyCommandLine, splitCommandLine } from "./sched/classify.mjs";
 import { effectivePriority, compareOrder, parsePriority, computeFingerprint } from "./sched/queue.mjs";
 import { evaluateMemoryAdmission, memoryFloorForClass, pressureLevel } from "./sched/mem.mjs";
+import {
+  classifyReservation, computeBudget, createReservation, maxEstimateMb, planAdmission, readReservation,
+  readReservations, releaseReservation, setReservationChild, sumReserved, writeReservation,
+} from "./sched/budget.mjs";
 import { resolveStateHome } from "./sched/state.mjs";
 import { slotNames, snapshotSlots, cmdlineSignature } from "./sched/lock.mjs";
 import { verifyIdentity } from "./sched/proc.mjs";
@@ -85,6 +89,7 @@ test("分类：npm 脚本按 package.json 脚本体展开，不靠名字里的 b
     "release": "cargo build --release",
     "lint": "eslint src",
     "watch": "vite",
+    "serve": "tauri",
   });
   assert.equal(classifyArgv(["npm", "run", "build"], { cwd: ws }).taskClass, "medium");
   assert.equal(classifyArgv(["npm", "run", "release"], { cwd: ws }).taskClass, "heavy");
@@ -93,6 +98,10 @@ test("分类：npm 脚本按 package.json 脚本体展开，不靠名字里的 b
   assert.equal(classifyArgv(["npm", "run", "build:inner"], { cwd: ws }).taskClass, "medium",
     "脚本互相调用时按最深一层的实际命令判定");
   assert.equal(classifyArgv(["npm", "run", "build"], { cwd: ws }).rule.startsWith("npm-script"), true);
+  assert.equal(classifyArgv(["npm", "run", "serve", "dev"], { cwd: ws }).taskClass, "dev",
+    "脚本名之后的实参要接回脚本体：npm run serve dev 不能退化成 serve");
+  assert.equal(classifyArgv(["npm", "run", "serve", "--", "dev"], { cwd: ws }).taskClass, "dev",
+    "带 -- 分隔符的透传实参同样生效");
 });
 
 test("分类：未识别命令按保守策略归为重型（不允许误判为轻量）", () => {
@@ -182,6 +191,135 @@ test("内存准入：压力等级与分类门槛一致", () => {
   assert.equal(pressureLevel(cfg, { availMb: 9000 }).level, "normal");
   assert.equal(memoryFloorForClass(cfg, "heavy"), 6144);
   assert.equal(memoryFloorForClass(cfg, "light"), 2560);
+});
+
+// ---------------------------------------------------------------- 全局预算（跨分类）
+//
+// 背景（整改前的真实缺口）：旧实现里「准入 = 本分类槽位有空 + 本任务自己的内存门槛达标」，
+// 不同分类各自读同一份 os.freemem 快照各自放行 → Heavy(6000)+Medium(3000) 在 7GB 可用时
+// 双双合格，合计 9000MB 已经超卖。这一组测试锁定新的两重独立约束。
+
+test("全局预算：上限 = max(物理总量 - 系统保留, 最大分类峰值)，夹取不降低分类门槛", () => {
+  const b = computeBudget({ cfg, totalMb: 16005 });
+  assert.equal(b.budgetMb, 16005 - cfg.systemReserveMb);
+  assert.equal(b.clamped, false, "正常机器上不应触发夹取");
+
+  // 系统保留调得过大时，预算被夹到最大分类峰值，否则重型任务永久无法准入
+  const tight = computeBudget({ cfg: { ...cfg, systemReserveMb: 15000 }, totalMb: 16005 });
+  assert.equal(tight.rawMb, 1005);
+  assert.equal(tight.budgetMb, 6000);
+  assert.equal(tight.clamped, true);
+  // 夹取只影响预算池，约束 A 的分类门槛一个字都没动
+  assert.equal(memoryFloorForClass(cfg, "heavy"), 6144);
+
+  assert.equal(maxEstimateMb(cfg), 6000);
+  assert.equal(computeBudget({ cfg: { ...cfg, budgetEnabled: false }, totalMb: 16005 }).enabled, false);
+  assert.equal(computeBudget({ cfg: { ...cfg, systemReserveMb: 0 }, totalMb: 16005 }).budgetMb, 16005);
+});
+
+test("全局预算：跨分类合计超卖必须被拒绝，恰好等于上限才放行", () => {
+  const budget = { ...computeBudget({ cfg, totalMb: 16005 }), budgetMb: 9000, reservedMb: 0 };
+  const sitting = [
+    { taskId: "h-1", taskClass: "heavy", reservedMb: 6000 },
+    { taskId: "m-1", taskClass: "medium", reservedMb: 3000 },
+  ];
+
+  // Heavy 已预留 6000，再来一个 Medium(3000)：6000+3000 = 9000 ≤ 9000 → 恰好可放行
+  const exact = planAdmission({ budget, entries: [sitting[0]], taskId: "m-2", estimateMb: 3000 });
+  assert.equal(exact.admit, true, "恰好等于预算上限应当放行");
+  assert.equal(exact.reservedMb, 6000);
+
+  // 已有 6000+3000，再来 Light(800)：9800 > 9000 → 拒绝（这正是旧实现会放过的超卖组合）
+  const over = planAdmission({ budget, entries: sitting, taskId: "l-1", estimateMb: 800 });
+  assert.equal(over.admit, false);
+  assert.match(over.reason, /全局构建预算不足/);
+  assert.match(over.reason, /已预留 8\.79 GB/);
+
+  // 自身旧预留不计入（重入而不是"另一个任务"，否则自己会和自己抢预算）
+  const self = planAdmission({ budget, entries: sitting, taskId: "h-1", estimateMb: 6000 });
+  assert.equal(self.reservedMb, 3000);
+  assert.equal(self.admit, true);
+
+  // 单任务预计峰值就超过预算 → 直接拒绝，不允许自我放行
+  const huge = planAdmission({ budget: { ...budget, budgetMb: 5000 }, entries: [], taskId: "x", estimateMb: 6000 });
+  assert.equal(huge.admit, false);
+  assert.match(huge.reason, /超过全局预算上限/);
+
+  // 预算被显式关闭时只保留约束 A（故障回退路径）
+  const off = planAdmission({ budget: { ...budget, enabled: false }, entries: sitting, taskId: "l-2", estimateMb: 800 });
+  assert.equal(off.admit, true);
+});
+
+test("两重约束互不重复扣减：约束 A 只认实时可用内存，不因台账预留而收紧", () => {
+  const home = join(tmpRoot, "budget-no-double-count");
+  writeReservation(home, createReservation({ taskId: "h-held", taskClass: "heavy", reservedMb: 6000 }));
+
+  const mem = { availMb: 6200, totalMb: 16005, simulated: true, source: "test" };
+  // 若把台账预留也扣进约束 A（6200 - 6000 = 200MB），重型任务会被永久挡住——这正是要避免的重复扣减
+  assert.equal(evaluateMemoryAdmission({ cfg, taskClass: "heavy", mem }).admit, true);
+
+  // 约束 B 独立地看到 6000 已预留：预算 10000 时 6000+6000 = 12000 > 10000 → 排队
+  const tight = { ...computeBudget({ cfg, totalMb: 16005 }), budgetMb: 10000, enabled: true };
+  const plan = planAdmission({ budget: tight, entries: readReservations(home), taskId: "h-new", estimateMb: 6000 });
+  assert.equal(plan.reservedMb, 6000);
+  assert.equal(plan.admit, false);
+  assert.equal(sumReserved(readReservations(home)), 6000);
+});
+
+test("预留台账：写入/读取正常，释放必须校验身份（PID/nonce 不符时拒绝删除）", () => {
+  const home = join(tmpRoot, "budget-ledger");
+  const entry = createReservation({ taskId: "h-led", taskClass: "heavy", reservedMb: 6000, detached: false });
+  writeReservation(home, entry);
+
+  assert.equal(readReservations(home).length, 1);
+  assert.equal(readReservation(home, "h-led").nonce, entry.nonce);
+  assert.equal(readReservation(home, "h-led").phase, "queued");
+
+  setReservationChild(home, entry, { pid: 4321, commandLine: '"C:\\nvm4w\\nodejs\\node.exe" D:\\x\\fake.mjs t1', startTime: "s" });
+  const stored = readReservation(home, "h-led");
+  assert.equal(stored.childPid, 4321);
+  assert.equal(stored.childCmdSignature, "d:/x/fake.mjs t1");
+  assert.match(stored.childCmdLine, /fake\.mjs/, "原始命令行要留给 doctor --reap 做签名取证");
+
+  // 别的进程凭据（PID 复用 / nonce 不符）不得删除
+  for (const fake of [{ ...entry, nonce: "deadbeef" }, { ...entry, ownerPid: entry.ownerPid + 1 }]) {
+    const r = releaseReservation({ home, entry: fake });
+    assert.equal(r.ok, false);
+    assert.equal(readReservations(home).length, 1, "拒绝删除后预留必须仍在（否则预算会被错误归还）");
+  }
+
+  assert.equal(releaseReservation({ home, entry: readReservation(home, "h-led") }).ok, true);
+  assert.equal(readReservations(home).length, 0);
+  // 幂等：已不存在的预留再释放一次不算错误
+  assert.equal(releaseReservation({ home, entry }).ok, true);
+});
+
+test("崩溃残留预留：只有证明旧构建已结束才回收，unknown/detached/子进程存活一律 fail-closed", () => {
+  const now = Date.parse("2026-01-01T00:00:00.000Z");
+  const mk = (over = {}) => ({
+    taskId: "h-crash", taskClass: "heavy", reservedMb: 6000, ownerPid: 4242,
+    ownerStartTime: "2026-01-01T00:00:00.000Z", ownerStartTimeSource: "uptime", nonce: "n",
+    childPid: null, detached: false,
+    heartbeatAt: new Date(now - 200000).toISOString(), createdAt: new Date(now - 260000).toISOString(),
+    ...over,
+  });
+  const probe = (o = {}) => ({
+    ownerAlive: () => o.ownerAlive ?? false,
+    childAlive: () => o.childAlive ?? false,
+    verify: () => ({ state: o.identity ?? "gone", detail: "测试用证据" }),
+    hasLiveChildOf: () => ({ known: o.kidsKnown ?? true, alive: o.kidsAlive ?? false, detail: "测试用子进程证据" }),
+  });
+  const c = (entry, o = {}) => classifyReservation(entry, { cfg, now, probe: probe(o) });
+
+  assert.equal(c(mk(), { ownerAlive: true }).state, "owner-alive", "持有者还活着就不动");
+  assert.equal(c(mk(), { identity: "unknown" }).reclaimable, false, "身份 unknown 必须 fail-closed");
+  assert.equal(c(mk({ childPid: 999 }), { childAlive: true }).state, "child-alive", "旧构建可能还在跑");
+  assert.equal(c(mk({ childPid: 999 }), { childAlive: false }).state, "owner-gone-child-gone");
+  assert.equal(c(mk({ detached: true })).reclaimable, false, "detached 孤儿不自动回收（需 doctor --reap）");
+  assert.equal(c(mk({ heartbeatAt: new Date(now - 1000).toISOString() })).state, "grace", "未登记 childPid 时要等宽限");
+  assert.equal(c(mk(), { kidsKnown: false }).state, "unknown-children");
+  assert.equal(c(mk(), { kidsAlive: true }).state, "child-alive");
+  assert.equal(c(mk()).reclaimable, true, "持有者已死 + 无 childPid + 宽限已过 + 无存活子进程 → 可回收");
 });
 
 // ---------------------------------------------------------------- 配置

@@ -18970,7 +18970,7 @@ body.nav-reorder-dragging {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
   background: var(--surface-raised);
-  padding: 10px 12px 12px;
+  padding: 14px 16px 15px;
   min-width: 0;
 }
 
@@ -18979,7 +18979,7 @@ body.nav-reorder-dragging {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .wb-section-title {
@@ -18987,8 +18987,8 @@ body.nav-reorder-dragging {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 650;
   color: var(--text-primary);
   white-space: nowrap;
 }
@@ -19194,7 +19194,7 @@ body.nav-reorder-dragging {
 
 .wb-links {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 8px 14px;
   margin-top: 10px;
   padding-top: 8px;

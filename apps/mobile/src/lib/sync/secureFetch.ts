@@ -14,7 +14,7 @@
 
 import { requireNativeModule } from "expo-modules-core";
 
-import { AppError, toAppError } from "../errors";
+import { AppError, describeError, toAppError } from "../errors";
 
 import type { FetchInitLike, FetchLike, HttpResponseLike } from "./client";
 import { normalizeTlsFingerprint } from "./pairing";
@@ -69,9 +69,14 @@ function headerRecord(headers?: Record<string, string>): Record<string, string> 
 }
 
 /** Expo 原生 Promise 拒绝把 `promise.reject(code, ...)` 的 code 挂在 error.code 上。 */
+function nativeErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : null;
+}
+
 function isPinMismatch(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  return (error as { code?: unknown }).code === "E_PIN_MISMATCH";
+  return nativeErrorCode(error) === "E_PIN_MISMATCH";
 }
 
 /**
@@ -94,10 +99,12 @@ export function createSecureFetch(
       throw new AppError(
         "validation",
         "桌面端连接必须使用 HTTPS（v2 协议），请升级桌面端并重新扫码配对",
+        undefined,
+        "insecure_transport",
       );
     }
     if (init.signal?.aborted) {
-      throw new AppError("network", "请求已取消");
+      throw new AppError("network", "请求已取消", undefined, "cancelled");
     }
 
     const requestId = nextRequestId;
@@ -122,9 +129,13 @@ export function createSecureFetch(
       };
     } catch (error) {
       if (init.signal?.aborted) {
-        throw new AppError("network", "请求已取消");
+        throw new AppError("network", "请求已取消", undefined, "cancelled");
       }
       if (error instanceof AppError) throw error;
+      const nativeCode = nativeErrorCode(error);
+      if (nativeCode === "E_CANCELLED") {
+        throw new AppError("network", "请求已取消", undefined, "cancelled");
+      }
       // 原生层把「证书/指纹不匹配」单独编码：给可操作提示，不把证书细节带进异常链。
       // 连接本身已失败（安全语义成立），这里只改善用户能否理解原因。
       if (isPinMismatch(error)) {
@@ -132,11 +143,51 @@ export function createSecureFetch(
           "validation",
           "桌面端证书指纹不匹配（可能存在中间人），请重新扫码配对",
           error,
+          "tls_pin_mismatch",
         );
       }
-      // 原生层拒绝（握手失败/超时）统一收敛为 network/validation，
-      // 不把证书字节、URL 参数等细节带进异常链。
-      throw toAppError(error, "network");
+      // TLS 层握手失败（证书链/协议不兼容）与「电脑没开」不是一回事：
+      // 原生层单独编码，禁止被上层降级成「离线待重试」。
+      if (nativeCode === "E_TLS_HANDSHAKE") {
+        throw new AppError(
+          "network",
+          "与桌面端的 TLS 握手失败，未发送任何数据；请确认桌面端证书与配对状态",
+          error,
+          "tls_handshake",
+        );
+      }
+      if (nativeCode === "E_INSECURE_URL") {
+        throw new AppError(
+          "validation",
+          "安全通道拒绝了非 HTTPS 请求，请重新扫码配对",
+          error,
+          "insecure_transport",
+        );
+      }
+      if (nativeCode === "E_REQUEST_TIMEOUT") {
+        throw new AppError(
+          "network",
+          "请求超时，未收到桌面端响应",
+          error,
+          "request_timeout",
+        );
+      }
+      if (nativeCode === "E_NETWORK") {
+        // 只有原生层明确判定为连接/DNS/拒绝类异常才进入 offline。
+        throw new AppError(
+          "network",
+          describeError(error) || "安全通道连接失败",
+          error,
+          "offline",
+        );
+      }
+      // 未知原生异常不能伪装成「电脑没开」：保留 unknown，禁止自动重试。
+      throw new AppError(
+        "validation",
+        describeError(error) || "安全通道未知错误",
+        error,
+        "unknown",
+      );
     } finally {
       init.signal?.removeEventListener("abort", onAbort);
     }

@@ -92,7 +92,9 @@ function classifyTokens(argv, cwd, depth) {
     if (sub === "run" || sub === "run-script") {
       const name = args[1];
       if (!name) return { taskClass: "light", reason: `${cmd} run 未指定脚本名（会直接报错）`, rule: "npm-run-noscript" };
-      return classifyNpmScript(name, cwd, depth, cmd);
+      // `npm run <script> <参数...>`：脚本名之后的实参会透传给脚本体执行（例如 tauri:raw dev），
+      // 分类必须把这段参数接回脚本体，否则 `tauri dev` 会退化成 `tauri` 被当成未识别。
+      return classifyNpmScript(name, cwd, depth, cmd, args.slice(2));
     }
     if (sub === "test" || sub === "t") {
       return classifyNpmScript("test", cwd, depth, cmd);
@@ -194,7 +196,7 @@ function classifyTokens(argv, cwd, depth) {
   );
 }
 
-function classifyNpmScript(name, cwd, depth, pkgCmd) {
+function classifyNpmScript(name, cwd, depth, pkgCmd, extraArgs = []) {
   const scripts = packageScripts(cwd);
   if (!scripts) {
     return { taskClass: "medium", reason: `${pkgCmd} run ${name}：读不到 package.json，按中型处理`, rule: "npm-script-unknown-pkg" };
@@ -209,6 +211,11 @@ function classifyNpmScript(name, cwd, depth, pkgCmd) {
   const parts = splitCommandLine(body);
   if (parts.length === 0) {
     return { taskClass: "light", reason: `脚本 ${name} 为空`, rule: "npm-script-empty" };
+  }
+  // 透传实参只接在脚本体最后一段命令上（npm 把参数追加给脚本的最终命令）
+  const passedArgs = extraArgs.filter((a) => a !== "--");
+  if (passedArgs.length) {
+    parts[parts.length - 1] = `${parts[parts.length - 1]} ${passedArgs.join(" ")}`;
   }
   let best = null;
   for (const part of parts) {

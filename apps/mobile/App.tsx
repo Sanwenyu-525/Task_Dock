@@ -248,9 +248,10 @@ function Shell() {
       }
       const tab = parseWidgetRouteUri(url);
       if (!tab) return;
-      // 收集箱在新导航里是「工具」栏的二级页：先切栏再推入，不能直接当 Tab
+      // 收集箱的主归属是工作区，但它是二级页不是 Tab：先切到工作区再推入，
+      // 这样返回时会落在收集箱所在的页面（第九轮入口收口后工具栏不再列收集箱）。
       if (tab === "inbox") {
-        setTab("tools");
+        setTab("workspace");
         push("inbox");
         return;
       }
@@ -360,7 +361,7 @@ function Shell() {
       case "device":
         return <DeviceScreen nav={nav} version={version} onBack={back} />;
       case "settings":
-        return <SettingsScreen nav={nav} version={version} onBack={back} />;
+        return <SettingsScreen version={version} onBack={back} />;
       case "capture_home":
         return <CaptureHomeScreen nav={nav} />;
       case "capture_camera":
@@ -415,7 +416,7 @@ function Shell() {
             <WorkspaceScreen nav={nav} inboxCount={inboxCount} />
           </TabPage>
           <TabPage active={tab === "tools"}>
-            <ToolsScreen nav={nav} inboxCount={inboxCount} />
+            <ToolsScreen nav={nav} />
           </TabPage>
           <TabPage active={tab === "profile"}>
             <ProfileScreen nav={nav} version={version} />

@@ -1,9 +1,9 @@
 //! 历史条目卡片：类型/预览/来源/时间 + 复制、收藏、置顶、详情、删除、关联。
 
-import { useLayoutEffect, useRef } from "react";
+import { useState, useLayoutEffect, useRef } from "react";
 import {
   ArrowUpRight, CheckSquare, Code2, Copy, Files, Globe, Image as ImageIcon,
-  Link2, Maximize2, Pin, Square, Star, Trash2, Type,
+  Link2, Maximize2, MoreHorizontal, Pin, Square, Star, Trash2, Type,
 } from "lucide-react";
 import type { ClipboardItem } from "../../lib/bridge";
 import { clipSource, clipboardTime, fileBaseName, formatBytes, kindLabel } from "../../lib/clipboardUi";
@@ -28,6 +28,7 @@ export default function ClipboardItemCard({
   onCopySwitch,
   onToggle,
   onDetail,
+  onPreview,
   onDelete,
   onLink,
   onOpenImage,
@@ -45,6 +46,8 @@ export default function ClipboardItemCard({
   onCopySwitch?: () => void;
   onToggle: (flag: "favorite" | "pinned") => void;
   onDetail: () => void;
+  /** 点卡片主体：在右栏显示所选内容预览（页面态）；不传时退回完整详情。 */
+  onPreview?: () => void;
   onDelete: () => void;
   onLink: () => void;
   /** 图片条目：点缩略图直接看大图（不传则缩略图只是展示） */
@@ -59,6 +62,9 @@ export default function ClipboardItemCard({
   const headline = item.title || "";
   const showPreview = item.preview !== "" || !headline;
   const cardRef = useRef<HTMLElement>(null);
+  /** 辅助动作（置顶/收藏/详情/删除）收纳在「更多」里：默认收起，点开才展开，
+     减少条目行上同时出现的图标数量；置顶/收藏状态仍由标题行的角标提示。 */
+  const [moreOpen, setMoreOpen] = useState(false);
 
   // 收拢动画需要卡片自身的真实高度；只对被删除的卡片测量一次，不常驻、不轮询。
   useLayoutEffect(() => {
@@ -71,9 +77,9 @@ export default function ClipboardItemCard({
       ref={cardRef}
       data-clip-id={item.id}
       className={`clip-item ${selected ? "selected" : ""} ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
-      onClick={locked ? undefined : onDetail}
+      onClick={locked ? undefined : (onPreview ?? onDetail)}
       onKeyDown={(e) => {
-        if (e.key === "Enter" && !locked) onDetail();
+        if (e.key === "Enter" && !locked) (onPreview ?? onDetail)();
       }}
       tabIndex={locked ? -1 : 0}
       role="button"
@@ -206,6 +212,23 @@ export default function ClipboardItemCard({
             <ArrowUpRight size={12} />
           </button>
         )}
+        {/* 辅助动作收纳（2026-11-15）：置顶/收藏/详情/删除默认收起，由「更多」按钮展开。
+            按钮本身先拦截冒泡，避免点开菜单同时打开详情。 */}
+        <button
+          type="button"
+          className={`icon-btn sm clip-more-btn ${moreOpen ? "is-open" : ""}`}
+          data-tip={moreOpen ? "收起更多操作" : "更多操作"}
+          aria-label={moreOpen ? "收起更多操作" : "更多操作"}
+          aria-expanded={moreOpen}
+          onClick={(e) => {
+            e.stopPropagation();
+            setMoreOpen((v) => !v);
+          }}
+          disabled={locked}
+        >
+          <MoreHorizontal size={12} />
+        </button>
+        <div className={`clip-actions-more ${moreOpen ? "is-open" : ""}`} onClick={stop}>
         <button
           className={`icon-btn sm ${item.pinned ? "active" : ""}`}
           data-tip={item.pinned ? "取消置顶" : "置顶"}
@@ -238,6 +261,7 @@ export default function ClipboardItemCard({
         >
           <Trash2 size={12} />
         </button>
+        </div>
       </div>
     </article>
   );

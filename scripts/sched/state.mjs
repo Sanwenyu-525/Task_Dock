@@ -21,12 +21,13 @@ export const STATE_DIR_NAME = "taskdock-build-sched";
 // 状态目录布局（写在这里便于 status/doctor 输出与排障）：
 //   lock/                    准入互斥（当前未使用；槽位租约即互斥原语）
 //   slots/<class>-<n>/       资源槽位租约；heavy-1 即「全局构建互斥锁」
+//   reservations/<taskId>.json  跨分类全局预算预留台账（活跃任务，见 budget.mjs）
 //   queue/<taskId>.json      任务记录（仅由提交它的进程写入）
 //   queue/cancel/<taskId>    取消标记（任何进程可创建，持有者轮询后协作取消）
 //   logs/<taskId>.log        每个任务的标准输出/错误原文
 //   history.jsonl            已完成任务记录（有界）
 //   reclaim-log.jsonl        租约回收审计（谁回收、为什么）
-export const SUBDIRS = ["slots", "queue", "cancel", "logs"];
+export const SUBDIRS = ["slots", "queue", "cancel", "logs", "reservations"];
 
 function gitCommonDir(cwd) {
   try {
@@ -71,6 +72,7 @@ export function paths(home) {
   return {
     home,
     slots: join(home, "slots"),
+    reservations: join(home, "reservations"),
     queue: join(home, "queue"),
     cancel: join(home, "cancel"),
     logs: join(home, "logs"),

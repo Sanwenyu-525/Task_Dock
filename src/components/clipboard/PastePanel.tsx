@@ -47,6 +47,10 @@ interface JobState {
   itemState?: string;
   confirmed?: number;
   unverified?: number;
+  /** 结果不确定（按键可能已发出）的条目数：不自动重发 */
+  uncertain?: number;
+  pauseReason?: string | null;
+  reasonCode?: string | null;
   /** 会话内累计的逐项状态（itemId → 状态）；后端不持久化，恢复任务后重新累计 */
   itemStates: Record<string, string>;
 }
@@ -62,6 +66,7 @@ function fromJob(j: PasteJob): JobState {
     message: j.message,
     restored: j.restored,
     targetTitle: j.target_title,
+    uncertain: j.uncertain_items.length,
     itemStates: {},
   };
 }
@@ -71,6 +76,15 @@ const STATUS_LABELS: Record<string, string> = {
   completed: "已完成",
   cancelled: "已取消",
   failed: "已停止",
+  paused: "已暂停（可继续）",
+  interrupted: "已中断（可继续）",
+};
+
+const PAUSE_REASONS: Record<string, string> = {
+  user_switched: "你切换到了其他应用，已自动暂停，不会把按键发到别的软件",
+  target_closed: "目标窗口已关闭",
+  hwnd_reused: "目标窗口句柄已被其他窗口复用",
+  focus_denied: "系统焦点保护拒绝了激活",
 };
 
 const ITEM_STATE_LABELS: Record<string, string> = {
@@ -82,6 +96,8 @@ const ITEM_STATE_LABELS: Record<string, string> = {
   confirmed: "已确认接收",
   unverified: "未确认（无接收信号）",
   failed: "失败",
+  skipped: "已跳过（内容不可用）",
+  uncertain: "结果不确定（不会自动重发）",
   cancelled: "已取消",
 };
 
@@ -95,6 +111,8 @@ const ITEM_CHIP_LABELS: Record<string, string> = {
   confirmed: "已确认",
   unverified: "未确认",
   failed: "失败",
+  skipped: "已跳过",
+  uncertain: "不确定",
   cancelled: "已取消",
 };
 
@@ -252,6 +270,9 @@ export default function PastePanel({
           itemState: e.itemState ?? base.itemState,
           confirmed: e.confirmed ?? base.confirmed,
           unverified: e.unverified ?? base.unverified,
+          uncertain: e.uncertain ?? base.uncertain,
+          pauseReason: e.pauseReason ?? base.pauseReason,
+          reasonCode: e.reasonCode ?? base.reasonCode,
           itemStates:
             e.itemId && e.itemState
               ? { ...base.itemStates, [e.itemId]: e.itemState }
@@ -561,6 +582,19 @@ export default function PastePanel({
             >
               <div style={{ width: `${progress}%` }} />
             </div>
+            {(job.pauseReason || job.status === "paused") && (
+              <div className="clip-paste-message" role="status">
+                {PAUSE_REASONS[job.pauseReason ?? ""] ??
+                  "粘贴已暂停：目标窗口不在前台，剩余条目已保留"}
+                {job.pending > 0 ? `（剩余 ${job.pending} 项，继续时会重新确认目标窗口）` : ""}
+              </div>
+            )}
+            {job.uncertain && job.uncertain > 0 ? (
+              <div className="clip-paste-message" role="status">
+                {job.uncertain} 项结果不确定（按键可能已发出）。为避免重复粘贴不会自动重发，
+                请先确认目标应用里是否已收到，再手动重新选择这些条目。
+              </div>
+            ) : null}
             {job.message && <div className="clip-paste-message">{job.message}</div>}
             {orderError && (
               <div className="clip-hint">

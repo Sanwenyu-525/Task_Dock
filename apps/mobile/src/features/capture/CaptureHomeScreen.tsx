@@ -149,22 +149,7 @@ export function CaptureHomeScreen({ nav }: { nav: Nav }) {
 
   return (
     <View style={[styles.root, { backgroundColor: tokens.bg }]}>
-      <AppBar
-        title="采集"
-        onBack={nav.back}
-        right={
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="打开本机素材库"
-            onPress={() => nav.push("capture_stash")}
-            style={styles.headerButton}
-          >
-            <Text style={[styles.headerText, { color: tokens.accentText }]}>
-              {summary.saved > 0 ? `素材库 ${summary.saved}` : "素材库"}
-            </Text>
-          </Pressable>
-        }
-      />
+      <AppBar title="采集" onBack={nav.back} />
 
       <ScrollView
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + space.xxl }]}
@@ -214,17 +199,13 @@ export function CaptureHomeScreen({ nav }: { nav: Nav }) {
 
             <Text style={[styles.sectionLabel, { color: tokens.muted }]}>从系统导入</Text>
             <View style={[styles.card, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
+              {/* 第九轮：原先「从相册选择」「从文件导入」两行都跳到同一个导入页，而导入页本身
+                  就提供相册/文件两种选择器；两行等于同一目的地的重复入口。合并为一行，
+                  由导入页决定具体来源，避免「从文件导入」实际先弹出相册的错位。 */}
               <RowEntry
                 icon="gallery"
-                label="从相册选择"
-                helper="只读取你选中的照片，不扫描整个相册"
-                onPress={() => nav.push("capture_import")}
-              />
-              <View style={[styles.divider, { backgroundColor: tokens.separator }]} />
-              <RowEntry
-                icon="folder"
-                label="从文件导入"
-                helper="PDF / 图片 / 其他文件，先复制进本机再处理"
+                label="导入素材"
+                helper="相册照片或任意文件，先复制进本机素材库再处理"
                 onPress={() => nav.push("capture_import")}
               />
             </View>
@@ -398,6 +379,4 @@ const styles = StyleSheet.create({
   libraryStatus: { fontSize: font.label },
   libraryLink: { fontSize: font.label, fontWeight: "600" },
   footnote: { fontSize: font.label, lineHeight: 17, paddingHorizontal: space.xxs },
-  headerButton: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.xxs },
-  headerText: { fontSize: font.label, fontWeight: "600" },
 });

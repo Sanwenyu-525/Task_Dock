@@ -14,6 +14,7 @@ import ContextHelpButton from "../help/ContextHelpButton";
 import FeatureRoadmapPanel from "./FeatureRoadmapPanel";
 import PlanningWorkspace from "./PlanningWorkspace";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import "./planning-page.css";
 
 type Source = "mine" | "builtin";
 
@@ -30,6 +31,7 @@ export default function PlanningCenterPanel() {
         actions={<ContextHelpButton articleId="help.workflows.planning-center" />}
       />
       <div className="planning-source-switch">
+        <span className="planning-source-label">数据来源</span>
         <div className="seg-group subtle" role="group" aria-label="规划数据来源">
           <button
             className={`seg-btn ${source === "mine" ? "active" : ""}`}

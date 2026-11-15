@@ -1,6 +1,7 @@
 // 分享队列的文件所有权（P0）：
 // 1. 被队列上限挤掉的载荷必须回收临时文件（否则连续分享留下孤儿）；
-// 2. 已被采集页消费（转入资产库）的文件，不能因清空队列被误删。
+// 2. 已被采集页消费（转入资产库）的文件，不能因清空队列被误删；
+// 3. 单个文件清理失败不能阻断同批其它文件的回收。
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { ShareIntentPayload } from "../modules/share-intent";
@@ -10,11 +11,9 @@ import { __activeFiles, __resetFs, __seedFile } from "../src/test/mocks/expo-fil
 const SHARE_DIR_URI = "file:///data/user/0/dev.taskdock.mobile/files/share";
 const SHARE_DIR_PATH = "/data/user/0/dev.taskdock.mobile/files/share";
 
-let counter = 0;
 function payloadWithFile(offerId: number): ShareIntentPayload {
   const name = `share-${offerId}.jpg`;
   __seedFile(SHARE_DIR_URI, name, new Uint8Array(32));
-  counter += 1;
   return {
     offerId,
     text: null,
@@ -39,6 +38,7 @@ beforeEach(() => {
   discardPendingShare();
 });
 
+// lastOfferId 是模块级单调量：各用例使用递增且不重叠的 offerId 区间。
 describe("pendingShare 文件回收", () => {
   it("队列溢出时删除被挤掉载荷的临时文件", () => {
     for (let index = 0; index < 7; index += 1) {
@@ -70,5 +70,43 @@ describe("pendingShare 文件回收", () => {
     expect(active).toContain(`${SHARE_DIR_URI}/share-9101.jpg`);
     expect(active).not.toContain(`${SHARE_DIR_URI}/share-9102.jpg`);
     expect(active).not.toContain(`${SHARE_DIR_URI}/share-9103.jpg`);
+  });
+
+  it("单个文件清理失败不阻断剩余项目", () => {
+    const name = "share-9201.jpg";
+    __seedFile(SHARE_DIR_URI, name, new Uint8Array(32));
+    const mixed: ShareIntentPayload = {
+      offerId: 9201,
+      text: null,
+      truncated: false,
+      originalLength: 0,
+      receivedAt: Date.now(),
+      items: [
+        {
+          kind: "image",
+          mime: "image/jpeg",
+          name: "already-gone.jpg",
+          size: 32,
+          // 文件已被系统回收：delete 会抛错，但不能影响后面那条
+          path: `${SHARE_DIR_PATH}/already-gone.jpg`,
+        },
+        {
+          kind: "image",
+          mime: "image/jpeg",
+          name,
+          size: 32,
+          path: `${SHARE_DIR_PATH}/${name}`,
+        },
+      ],
+      rejected: [],
+    };
+    offerShare(mixed);
+    offerShare(payloadWithFile(9202));
+
+    discardPendingShare();
+
+    const active = __activeFiles();
+    expect(active).not.toContain(`${SHARE_DIR_URI}/${name}`);
+    expect(active).not.toContain(`${SHARE_DIR_URI}/share-9202.jpg`);
   });
 });

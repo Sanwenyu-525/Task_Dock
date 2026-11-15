@@ -11,10 +11,43 @@
 # 环境变量：
 #   CARGO_TARGET_DIR  隔离的 cargo 产物目录（默认 src-tauri/target-gate）
 #   GATE_SKIP_PERF=1  跳过 release 性能测试（默认跑）
+#   GATE_DRY_RUN=1    只打印每条门禁真正会被执行的命令行，不执行（用于核对调度接入，零资源）
+#   GATE_NO_SCHED=1   逃生门：不经调度器（仅在调度器自身故障时用于排障，会绕过内存准入与队列）
+#
+# 2026-11-15 变更：所有高资源门禁统一经 `scripts/build-sched.mjs`（AGENTS.md §5.1）。
+#   cargo 步改走 `cargo` 子命令（自动 cwd=src-tauri/，因此不再用 --manifest-path 从仓库根执行）；
+#   tsc / vitest 强制过 `npm run build` / `npm run test`（它们本身已接调度器，内层自动直通）。
+#   注意退出码语义：0=通过；3=资源等待/运行超时；4=被取消；5=调度器错误；6=磁盘预检阻塞。
+#   只有「子进程自己的退出码」才代表代码失败，判定时请读日志尾部的 `sched:` 行。
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT" || exit 1
+
+SCHED_CLI="$REPO_ROOT/scripts/build-sched.mjs"
+GATE_MODE="sched"
+[ "${GATE_NO_SCHED:-0}" = "1" ] && GATE_MODE="raw"
+GATE_DRY_RUN="${GATE_DRY_RUN:-0}"
+
+# 经调度器执行一条普通门禁命令；GATE_NO_SCHED=1 时退化为直接执行（排障用）
+run_sched() {
+  local name="$1" priority="$2"; shift 2
+  if [ "$GATE_MODE" = "raw" ]; then
+    run_gate "$name" "$@"
+    return
+  fi
+  run_gate "$name" node "$SCHED_CLI" run --priority "$priority" -- "$@"
+}
+
+# cargo 门禁：走 cargo 子命令（自动 cwd=src-tauri/，遵守 rust-toolchain.toml）
+run_sched_cargo() {
+  local name="$1" priority="$2"; shift 2
+  if [ "$GATE_MODE" = "raw" ]; then
+    run_gate "$name" cargo --manifest-path "$CARGO_MANIFEST" "$@"
+    return
+  fi
+  run_gate "$name" node "$SCHED_CLI" cargo -- --priority "$priority" "$@"
+}
 
 OUT_DIR="${1:-docs/clipboard/evidence}"
 STAMP="$(date +%Y%m%d-%H%M)"
@@ -36,6 +69,15 @@ run_gate() {
   local start end rc
   start="$(date '+%Y-%m-%d %H:%M:%S')"
   printf '\n=== [%s] %s\n' "$name" "$*" | tee -a "$log"
+  if [ "$GATE_DRY_RUN" = "1" ]; then
+    printf '[dry-run] 未执行（调度接入核对）\n' | tee -a "$log"
+    rc=0
+    end="$(date '+%Y-%m-%d %H:%M:%S')"
+    printf 'exit_code=dry-run\n' >>"$log"
+    printf '%s|%s|%s|%s|%s|%s\n' "$name" "$*" "$start" "$end" "dry-run" "$log" >>"$OUT_DIR/gate-index-${STAMP}.tsv"
+    ROWS+=("$(printf '| %s | `%s` | %s | %s | %s | `%s` |' "$name" "$*" "$start" "$end" "dry-run" "$log")")
+    return 0
+  fi
   "$@" >"$log" 2>&1
   rc=$?
   end="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -55,27 +97,32 @@ printf '=== 环境 ===\n'
   printf 'Git HEAD: %s\n' "$(git rev-parse HEAD)"
   printf '工作区: %s\n' "$(git status --porcelain | wc -l) 个条目"
   printf 'CARGO_TARGET_DIR: %s\n' "$CARGO_TARGET_DIR"
+  printf '调度模式: %s（sched=经 build-sched 队列；raw=GATE_NO_SCHED 逃生门）\n' "$GATE_MODE"
+  printf 'dry-run: %s\n' "$GATE_DRY_RUN"
   printf 'cargo: %s\n' "$(cargo --version 2>&1)"
   printf 'rustc: %s\n' "$(rustc --version 2>&1)"
   printf 'node: %s\n' "$(node --version 2>&1)"
 } | tee "$OUT_DIR/gate-env-${STAMP}.log"
 
-run_gate fmt cargo fmt --manifest-path "$CARGO_MANIFEST" --all -- --check
-run_gate clippy cargo clippy --manifest-path "$CARGO_MANIFEST" --all-targets --all-features -- -D warnings
-run_gate test-all cargo test --manifest-path "$CARGO_MANIFEST" --all-targets --no-fail-fast
-run_gate clipboard-lib cargo test --manifest-path "$CARGO_MANIFEST" --lib clipboard::
-run_gate tsc npx tsc --noEmit
-run_gate vitest npx vitest run
-run_gate npm-build npm run build
+run_sched_cargo fmt P2 fmt --all -- --check
+run_sched_cargo clippy P2 clippy --all-targets --all-features -- -D warnings
+run_sched_cargo test-all P2 test --all-targets --no-fail-fast
+run_sched_cargo clipboard-lib P2 test --lib clipboard::
+# 前端：直接调 npm 入口（它们本身已接调度器；内层命令会自动直通，不会重复排队）
+run_gate tsc npm run build
+run_gate vitest npm run test
 
 if [ "${GATE_SKIP_PERF:-0}" != "1" ]; then
-  run_gate perf-clipboard cargo test --manifest-path "$CARGO_MANIFEST" --release --test clipboard_perf -- --ignored --nocapture
+  run_sched_cargo perf-clipboard P2 test --release --test clipboard_perf -- --ignored --nocapture
 fi
 
 {
   printf '# 工程门禁原始记录\n\n'
-  printf '生成时间: %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S')"
-  printf 'Git HEAD: %s\n\n' "$(git rev-parse HEAD)"
+  printf '生成时间: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+  printf 'Git HEAD: %s\n' "$(git rev-parse HEAD)"
+  printf '调度模式: %s / dry-run: %s\n\n' "$GATE_MODE" "$GATE_DRY_RUN"
+  printf '退出码语义：0=通过；3=资源等待或运行超时；4=被取消；5=调度器错误；6=磁盘预检阻塞。\n'
+  printf '只有子进程自己的退出码才代表代码失败——判定时读日志尾部的 `sched:` 行。\n\n'
   printf '| 门禁 | 命令 | 开始 | 结束 | Exit | 原始输出 |\n|---|---|---|---|---|---|\n'
   printf '%s\n' "${ROWS[@]}"
 } >"$OUT_DIR/gates-${STAMP}.md"

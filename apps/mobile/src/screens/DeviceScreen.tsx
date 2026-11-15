@@ -1,11 +1,16 @@
-// 设备页：配对、同步、文件互传与冲突的统一入口。
+// 设备页：连接状态、配对与同步的唯一设备上下文。
 //
 // 这些是操作而不是偏好，所以从「设置 → 手机与同步」提到一级 Tab：
-// - 已配对时先看到连接状态与待发送/冲突数量，再进同步中心或文件互传；
+// - 已配对时先看到连接状态与待发送/冲突数量，再进同步中心；
 // - 未配对时只留一个明确的「配对新设备」主操作，不把空页堆满不可用入口；
 // - 设置页只保留外观/提醒/本地数据/关于，避免同一个功能有两套入口。
+//
+// 第九轮：设备页不再做成第二个功能目录——
+// 文件互传（工作区文件集合）、处理冲突（我的 → 处理冲突 / 同步页内）、
+// 主屏小组件（我的 → 主屏小组件）、分享接收（采集中心）都已从本页移除；
+// 只保留与「当前这台设备」直接相关的状态、同步与配对。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Badge } from "../components/Badge";
 import { BackButton } from "../components/BackButton";
@@ -15,8 +20,9 @@ import { SettingActionRow } from "../components/SettingActionRow";
 import { SettingSection } from "../components/SettingSection";
 import { StatusPill } from "../components/StatusPill";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
-import { countSyncConflicts } from "../db/sync";
+import { countSyncConflicts, resetSyncState } from "../db/sync";
 import {
+  clearConnection,
   loadConnection,
   readToken,
   type PairedConnection,
@@ -58,6 +64,7 @@ export function DeviceScreen({
   const [conflicts, setConflicts] = useState(0);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [unpairing, setUnpairing] = useState(false);
 
   const mounted = useRef(true);
   const toastSeq = useRef(0);
@@ -67,6 +74,43 @@ export function DeviceScreen({
     setToast({ id: toastSeq.current, text, tone });
   }, []);
   const dismissToast = useCallback(() => setToast(null), []);
+
+  const unpair = useCallback(() => {
+    if (!connection) return;
+    Alert.alert(
+      "解除配对",
+      `将删除本机保存的「${connection.serverName}」令牌。桌面端仍需在左侧导航「手机互传」撤销该设备，否则它会留在桌面端列表里。`,
+      [
+        { text: "取消", style: "cancel" },
+        {
+          text: "解除",
+          style: "destructive",
+          onPress: () => {
+            setUnpairing(true);
+            clearConnection()
+              .then(async () => {
+                // 与同步页同一套状态：清掉游标/冲突，避免下次配对沿用旧游标。
+                await resetSyncState();
+                if (!mounted.current) return;
+                setConnection(null);
+                setHasToken(false);
+                setPendingOps(0);
+                setConflicts(0);
+                showToast("已解除本机配对", "success");
+              })
+              .catch((error) => {
+                if (mounted.current) {
+                  showToast(`解除配对失败：${describeError(error)}`, "danger");
+                }
+              })
+              .finally(() => {
+                if (mounted.current) setUnpairing(false);
+              });
+          },
+        },
+      ],
+    );
+  }, [connection, showToast]);
 
   const refresh = useCallback(async () => {
     try {
@@ -157,6 +201,11 @@ export function DeviceScreen({
                   ? `上次连接 ${formatStamp(connection.lastSeenAt)}`
                   : "还没有成功连接记录"}
               </Text>
+              {paired ? (
+                <Text style={[styles.statusLine, { color: tokens.muted }]}>
+                  待发送 {pendingOps} 条{conflicts > 0 ? ` · 冲突 ${conflicts} 条` : ""}
+                </Text>
+              ) : null}
             </View>
           ) : (
             <Text style={[styles.statusHint, { color: tokens.textSoft }]}>
@@ -177,80 +226,34 @@ export function DeviceScreen({
           ) : null}
         </GlassCard>
 
-        <SettingSection icon="sync" title="同步与传输">
-          <SettingActionRow
-            label="同步中心"
-            helper={
-              paired
-                ? `待发送 ${pendingOps} 条${conflicts > 0 ? ` · 冲突 ${conflicts} 条` : ""}`
-                : "配对后查看连接、立即同步与解除配对"
-            }
-            trailing={
-              paired ? (
-                <Badge label="已配对" tone="active" />
-              ) : invalid ? (
-                <Badge label="需重新配对" tone="unimplemented" />
-              ) : undefined
-            }
-            chevron
-            accessibilityHint="打开同步中心，测试连接或立即同步"
-            onPress={() => nav.push("sync")}
-          />
-          <SettingActionRow
-            label="文件互传"
-            helper="与电脑双向传输文件，分块加密，只走局域网"
-            chevron
-            accessibilityHint="打开文件互传页，上传或下载文件"
-            onPress={() => nav.push("files")}
-          />
-          <SettingActionRow
-            label="处理冲突"
-            helper="两端都改过同一条记录时，在这里选择保留哪一端"
-            trailing={
-              conflicts > 0 ? <StatusPill label={`${conflicts} 条`} tone="danger" /> : undefined
-            }
-            chevron
-            accessibilityHint="查看同步冲突并选择保留哪一端"
-            onPress={() => nav.push("conflict")}
-          />
-        </SettingSection>
+        {/* 未配对时上面已有主操作按钮，这里再放一行同样的「配对新设备」就是页内重复；
+            因此整段只在已配对时渲染（换设备/重新配对），避免留下一个只有标题的空分组。 */}
+        {paired ? (
+          <SettingSection icon="link" title="连接与更多">
+            <SettingActionRow
+              label="配对新设备"
+              helper={`当前：${connection?.serverName ?? "桌面端"}`}
+              trailing={<Badge label="已配对" tone="active" />}
+              chevron
+              accessibilityHint="打开配对页，扫描二维码或手动输入配对码"
+              onPress={() => nav.push("pairing")}
+            />
+          </SettingSection>
+        ) : null}
 
-        <SettingSection icon="link" title="连接与更多">
-          <SettingActionRow
-            label="配对新设备"
-            helper={
-              connection
-                ? `已配对：${connection.serverName}`
-                : "扫码或输入 6 位码，与桌面端建立连接"
-            }
-            trailing={
-              paired ? (
-                <Badge label="已配对" tone="active" />
-              ) : invalid ? (
-                <Badge label="需重新配对" tone="unimplemented" />
-              ) : undefined
-            }
-            chevron
-            accessibilityHint="打开配对页，扫描二维码或手动输入配对码"
-            onPress={() => nav.push("pairing")}
-          />
-          <SettingActionRow
-            label="主屏小组件"
-            helper="把今天的任务放到桌面"
-            trailing={<Badge label="已接入" tone="active" />}
-            chevron
-            accessibilityHint="桌面小组件配置"
-            onPress={() => nav.push("widget")}
-          />
-          <SettingActionRow
-            label="分享接收"
-            helper="从其他应用分享文本、图片或文件，进入统一采集中心"
-            trailing={<Badge label="已接入" tone="active" />}
-            chevron
-            accessibilityHint="系统分享到 TaskDock"
-            onPress={() => nav.push("capture")}
-          />
-        </SettingSection>
+        {paired ? (
+          <PressableScale
+            onPress={unpair}
+            accessibilityLabel="解除本机配对"
+            accessibilityHint="清除本机保存的配对令牌，桌面端仍需单独撤销设备"
+            disabled={unpairing}
+            contentStyle={styles.unpair}
+          >
+            <Text style={[styles.unpairText, { color: tokens.danger }]}>
+              {unpairing ? "正在解除…" : "解除配对"}
+            </Text>
+          </PressableScale>
+        ) : null}
 
         <Text style={[styles.footer, { color: tokens.faint }]}>
           文件与同步只在局域网内传输，不经过云端。
@@ -333,6 +336,15 @@ const styles = StyleSheet.create({
   primaryText: {
     fontSize: font.title,
     fontWeight: "700",
+  },
+  unpair: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  unpairText: {
+    fontSize: font.meta,
+    fontWeight: "600",
   },
   footer: {
     marginTop: space.xs,

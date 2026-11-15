@@ -170,6 +170,85 @@ AAD：
 
 证据与命令见 `tmp/acceptance/mobile-file-transfer/`。
 
+## 9. 采集资产导入暂存架与失败分类（2026-11-15）
+
+手机采集资产（`capture_assets` + `capture_destinations`）上传完成后可直接导入桌面暂存架；
+**传输记录与暂存架托管副本是两个生命周期**，任一侧删除都不影响另一侧。
+
+### 9.1 新增端点
+
+| 方法 | 路径 | 请求 data | 响应 data | 失败语义 |
+|---|---|---|---|---|
+| GET | `/v1/shelf/groups` | — | `{ groups: [{ id, name, builtin }] }` | 401 未授权；404 路由不存在（旧桌面端） |
+| POST | `/v1/files/{id}/shelf` | `{ group_id?: string \| null }` | `{ file }`（含 `shelf_item_id` / `shelf_imported_at` / `shelf_group_id`） | 400 分组非法；401 未授权；404 记录不存在/不属于本设备/路由不存在；409 记录未完成或方向不符；429 并发过多 |
+
+AAD：
+- 分组列表：`taskdock-sync-v1|GET|/v1/shelf/groups`
+- 导入暂存架：`taskdock-sync-v1|POST|/v1/files/{id}/shelf`
+
+`group_id` 缺省、`null` 或空串 = 默认分组；不存在的分组在复制**之前**失败（400），
+不会留下空分组或半成品条目。
+
+### 9.2 生命周期隔离（桌面端）
+
+- 导入以 `mf-{mobile_file_id}` 作为稳定 `shelf_items.id`：重复导入返回同一条，被删后可重新导入。
+- 导入成功后复制**独立托管副本**：删除 `mobile_files` 记录不会删除暂存条目；
+  删除暂存条目也不会删除 `mobile_files` 的 `inbox` 副本。
+- 导入失败不删除上传记录，记录保持 `ready`，手机端可重试导入（不必重新上传）。
+- 暂存架配额不足时导入整体失败，不留下条目、分块或链接字段。
+
+### 9.3 版本不兼容（旧桌面端）
+
+旧桌面端没有上述两条路由，统一返回 404。手机端只在**收到 404 时**多用一次只读探测
+（`GET /v1/shelf/groups`）：
+
+| 探测结果 | 归因 | 手机端表现 |
+|---|---|---|
+| 也 404 | 桌面端版本过低 | `not_supported`：`desktop=done`、`shelf=failed`，提示升级桌面端 |
+| 401/403 | 授权问题 | 用授权错误覆盖 404，停止整批并提示重新配对 |
+| TLS/握手失败 | 安全失败 | 保留 TLS 错误，fail-closed，绝不降级为离线 |
+| 成功 | 接口存在，404 是记录本身的问题 | `not_found`：`shelf=failed`，提示远端记录不存在，可重新发送后再导入 |
+
+上传结果不会因为「不支持暂存架」被回滚，也不会被伪报成整体成功。
+
+### 9.4 移动端统一失败分类（`src/lib/sync/transferError.ts`）
+
+分类只依据 **HTTP 状态码 + 错误体业务码 + 原生错误码**，不匹配任何中文文案。
+
+| 输入 | kind | 目的地状态 | 自动重试 | 整批中止 |
+|---|---|---|---|---|
+| 401 | auth | failed | 否 | 是 |
+| 403 | forbidden | failed | 否 | 是 |
+| 404 + 分组探测 404、405、501 | not_supported | shelf、groups 端点 failed 但不中止；list、create 端点中止 | 否 | 视端点 |
+| 404 + 分组探测成功 | not_found | shelf=failed（desktop 已 done） | 否 | 否 |
+| 408 | timeout | pending | 是 | 否 |
+| 409 | conflict | pending（等待用户手动重试） | 否 | 否 |
+| 429 | rate_limited | pending | 是 | 否 |
+| 500 / 502 / 503 / 504 | server | pending | 是 | 否 |
+| 其它 5xx | server | pending（等待手动重试） | 否 | 否 |
+| 其它 4xx | invalid_request | failed | 否 | 是 |
+| 原生 `E_PIN_MISMATCH` / `E_TLS_HANDSHAKE` | tls | failed（fail-closed） | 否 | 是 |
+| 非 https / `E_INSECURE_URL` | insecure | failed | 否 | 是 |
+| 原生 `E_REQUEST_TIMEOUT` / 30s 超时 | timeout | pending | 是 | 否 |
+| 原生 `E_NETWORK`（连接被拒/DNS/断网） | offline | pending（`offline=true`） | 是 | 否 |
+| 原生 `E_UNKNOWN` / 未知异常 | unknown | failed | 否 | 否 |
+| 用户取消 | cancelled | cancelled | 否 | 否 |
+
+分块请求最多 4 次尝试（首次 + 3 次），退避 600 / 1500 / 3000 ms；
+只有 408、429、500/502/503/504、明确网络连接失败会重试；409 保留 pending 但不自动重复。
+`files.ts` 的自动重试判定只调用 `transferError.ts` 的 `isAutoRetryableTransferFailure()`，
+不再维护第二份状态码白名单。
+
+### 9.5 重试幂等
+
+- 分块只接受「下一块」或「上一块重写」，超时重发不会写坏文件。
+- `complete` 对已 `ready` 的记录直接返回原记录（重复调用无副作用）。
+- 同一文件重发时，手机端先 `list` 再按 `sha256 + size` 复用已 `ready` 的远端记录，
+  不再 `create` 第二条；文件名被桌面端清洗过也不影响匹配。
+  **取舍**：同一内容重复发送不会在桌面 `inbox` 产生第二份副本（幂等优先）。
+- 目前**没有真正的断点续传**：中断后从第一块重新开始；桌面端启动清理 `tmp/` 半成品。
+  手机端把可恢复的失败记为 `pending`，用户可手动重试。
+
 ## 变更记录
 
 - 2026-11-09 首版：双向分块传输、v45 `mobile_files`、桌面设置页文件列表、
@@ -202,3 +281,9 @@ AAD：
   （原生 DigestInputStream 不可行的根因：响应体是加密信封密文，明文只在 JS 解密后存在；
   expo-crypto 无流式 API）。新增 `sha256.test.ts`（NIST 向量 + node:crypto 交叉）与
   `fileIo.test.ts`（匹配/不匹配删除/大写归一/取消回归）。
+- 2026-11-15 采集资产 → 桌面暂存架：新增 `POST /v1/files/{id}/shelf` 与
+  `GET /v1/shelf/groups`（§9），冻结「上传成功 ≠ 暂存架导入成功」的双目的地状态；
+  统一传输错误分类（401/403/404/408/409/429/5xx/TLS/离线/取消），修复
+  `files.ts` 把 `FileHttpError` 重新包成 `AppError("network")` 导致状态码丢失、
+  401 被写成「等待电脑」的根因；旧桌面端 404 走只读能力探测，明确提示升级。
+  手机端自动化 39 文件 / 355 例通过，桌面端与真机验收结果见任务报告。

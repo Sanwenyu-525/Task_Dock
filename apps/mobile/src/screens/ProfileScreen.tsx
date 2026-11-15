@@ -1,9 +1,11 @@
-// 我的：应用信息 → 设备状态 → 设备入口 → 个人功能 → 设置与偏好。
+// 我的：应用信息 → 设备与连接 → 通知与偏好。
 // 设备状态只表达「配对/需重新配对/本机模式」，不把已配对说成已自动同步。
 //
-// 第三轮口径：上一版把 6 个设备入口平铺成一张长菜单，页面像功能清单。现在按使用频率分层：
-// 4 个高频入口（同步中心 / 文件互传 / 配对新设备 / 设备详情）+ 2 个次要入口收在同一张卡的
-// 底部链接行（处理冲突 / 主屏小组件），两者都保持真实可达。
+// 第九轮职责收口：我的 = 设备、连接与系统管理。
+// - 设备与连接：同步中心（含待发送/冲突读数）、配对新设备、设备详情；
+// - 通知与偏好：通知（权限/提醒动作）、设置、本机数据；
+// - 笔记/收集箱的主归属在工作区，文件互传的主归属在工作区文件集合，
+//   因此这里不再保留它们的普通目录入口；配对异常等上下文操作放在对应功能页内。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -163,15 +165,8 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                 <EntryRow
                   icon="sync"
                   label="同步中心"
-                  helper="手动拉取/发送变更，查看待同步数量"
+                  helper="手动同步、查看待发送数量与解除配对"
                   onPress={() => nav.push("sync")}
-                />
-                <EntryRow
-                  icon="transfer"
-                  label="文件互传"
-                  helper="局域网内收发文件（TLS + 指纹固定）"
-                  divider
-                  onPress={() => nav.push("files")}
                 />
                 <EntryRow
                   icon="smartphone"
@@ -183,7 +178,7 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                 <EntryRow
                   icon="desktop"
                   label="设备详情"
-                  helper="完整连接信息与解除配对"
+                  helper="连接地址、上次连接时间与当前动作"
                   divider
                   onPress={() => nav.push("device")}
                 />
@@ -222,37 +217,21 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
             </View>
 
             <View style={styles.group}>
-              <SectionHeader icon="profile" title="个人功能" />
+              <SectionHeader icon="bell" title="通知与偏好" />
               <GlassCard style={styles.card}>
-                <EntryRow
-                  icon="note"
-                  label="笔记"
-                  onPress={() => nav.push("notes")}
-                  trailingText={`${summary.notes} 条`}
-                />
-                <EntryRow
-                  icon="inbox"
-                  label="收集箱"
-                  divider
-                  onPress={() => nav.push("inbox")}
-                  trailingText={`${summary.captures} 条`}
-                />
+                {/* 通知的唯一主入口：权限、提醒动作与后台限制都在这一页；首页保留全局铃铛快捷入口，
+                    工具页与设置页不再各放一个同样的跳转。 */}
                 <EntryRow
                   icon="bell"
                   label="通知"
-                  divider
+                  helper="提醒权限、提醒动作与后台限制"
                   onPress={() => nav.push("notifications")}
                 />
-              </GlassCard>
-            </View>
-
-            <View style={styles.group}>
-              <SectionHeader icon="settings" title="设置与偏好" />
-              <GlassCard style={styles.card}>
                 <EntryRow
                   icon="settings"
                   label="设置"
-                  helper={`主题（${THEME_LABEL[mode]}）、通知提醒、本地数据与关于`}
+                  helper={`主题（${THEME_LABEL[mode]}）、本地数据与关于`}
+                  divider
                   onPress={() => nav.push("settings")}
                 />
                 <View style={[styles.summaryRow, { borderTopColor: tokens.separator }]}>

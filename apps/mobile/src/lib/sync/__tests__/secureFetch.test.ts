@@ -2,12 +2,17 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { AppError } from "../../errors";
+import { classifyTransferFailure } from "../transferError";
 import {
   createLazyPinnedFetch,
   createSecureFetch,
   lastObservedServerFingerprint,
   type SecureHttpNative,
 } from "../secureFetch";
+
+function nativeFailure(code: string): Error {
+  return Object.assign(new Error(`native ${code}`), { code });
+}
 
 function fakeNative(overrides: Partial<SecureHttpNative> = {}): SecureHttpNative & {
   requests: Array<Record<string, unknown>>;
@@ -114,6 +119,50 @@ describe("createSecureFetch", () => {
     const sent = native.requests[0] as { headers: Record<string, string>; body: string };
     expect(sent.headers).toEqual({ Authorization: "Bearer abc", "Content-Type": "application/json" });
     expect(sent.body).toBe("{}");
+  });
+
+  it.each([
+    ["E_PIN_MISMATCH", "validation", "tls_pin_mismatch", "tls"],
+    ["E_TLS_HANDSHAKE", "network", "tls_handshake", "tls"],
+    ["E_REQUEST_TIMEOUT", "network", "request_timeout", "timeout"],
+    ["E_NETWORK", "network", "offline", "offline"],
+    ["E_CANCELLED", "network", "cancelled", "cancelled"],
+    ["E_INSECURE_URL", "validation", "insecure_transport", "insecure"],
+    ["E_UNKNOWN", "validation", "unknown", "unknown"],
+  ] as const)(
+    "原生 %s 映射为稳定的 JS 错误码与传输分类",
+    async (nativeCode, kind, code, transferKind) => {
+      const native = fakeNative({
+        request: async () => {
+          throw nativeFailure(nativeCode);
+        },
+      });
+      let caught: unknown;
+      try {
+        await createSecureFetch({}, native)("https://host/x", {});
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toMatchObject({ kind, code });
+      const failure = classifyTransferFailure(caught);
+      expect(failure.kind).toBe(transferKind);
+      if (nativeCode === "E_UNKNOWN") {
+        expect(failure.pending).toBe(false);
+        expect(failure.retryable).toBe(false);
+      }
+    },
+  );
+
+  it("未知原生异常不会伪装成可重试离线", async () => {
+    const native = fakeNative({
+      request: async () => {
+        throw new Error("unexpected native failure");
+      },
+    });
+    await expect(createSecureFetch({}, native)("https://host/x", {})).rejects.toMatchObject({
+      kind: "validation",
+      code: "unknown",
+    });
   });
 });
 

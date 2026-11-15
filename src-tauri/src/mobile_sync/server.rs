@@ -1670,13 +1670,18 @@ mod tests {
             .unwrap();
         assert_eq!(origin.as_deref(), Some(files::SHELF_ORIGIN_MOBILE_CAPTURE));
 
-        // 其他设备：404，不泄露存在性，也不建条目。
+        // 其他设备：用其他设备的密钥加密，服务端解密后按归属返回 404，不泄露存在性，也不建条目。
+        let key_other = derive_key(&hash_token(&token_other));
+        let body_other = serde_json::to_string(
+            &encrypt_envelope(&key_other, &aad, &json!({ "group_id": Value::Null })).unwrap(),
+        )
+        .unwrap();
         let (status, resp) = tls_request(
             port,
             "POST",
             &format!("/v1/files/{}/shelf", file.id),
             Some(&token_other),
-            Some(&body),
+            Some(&body_other),
         )
         .await;
         assert_eq!(status, 404, "{resp}");

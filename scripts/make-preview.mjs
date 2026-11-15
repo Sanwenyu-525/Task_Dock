@@ -33,6 +33,9 @@ const shim = `
   // 开发工作台：?wb=current 预置「当前任务」锚点（t1），用于走查四区域；
   // 默认空锚点，保持其他页面截图与旧行为不变。
   const WB_CURRENT = q.get("wb") === "current";
+  // 项目工作空间空态走查：?projects=empty 时项目列表返回空，用于核对空态布局
+  // （页头置顶 + 空态四件套居中），不改变其他页面夹具。
+  const PROJECTS_EMPTY = q.get("projects") === "empty";
   const now = new Date();
   const iso = (minAgo) => new Date(now.getTime() - minAgo * 60000).toISOString();
 
@@ -47,10 +50,12 @@ const shim = `
     nav_remember_window: true, nav_default_browser: "", nav_workspace_max: 8,
     workbench_current_task: WB_CURRENT ? "t1" : "",
     // workbench-preview 走查：预选第一个示例项目，直接落到项目工作空间页头。
-    workspace_active_project: "wp1",
+    workspace_active_project: PROJECTS_EMPTY ? "" : "wp1",
     workbench_layout: {
       version: 1, route: "workspace", projectId: "wp1",
-      detailOpen: true, navWidth: 224, detailWidth: 320,
+      // 2026-11-15：与 workbenchLayout 的新默认（200 / 304）保持一致，
+      // 否则走查图会固化成旧的 224 / 320，掩盖比例改动。
+      detailOpen: true, navWidth: 200, detailWidth: 304,
     },
     ingest_queue_capacity: 1024, ingest_batch_size: 100, ingest_coalesce_ms: 250,
     agent_event_retention_days: 14, agent_event_max_rows: 20000, agent_event_archive: true,
@@ -1000,7 +1005,7 @@ const shim = `
       case "get_settings": return settings;
       case "update_settings": return { ...settings, ...(args?.patch || {}) };
       // ── 统一工作台外壳（workspace.html）走查：Shell 启动门 + 首页/状态栏最小数据 ──
-      case "workspace_project_list": return { projects: WORKBENCH_PROJECTS };
+      case "workspace_project_list": return { projects: PROJECTS_EMPTY ? [] : WORKBENCH_PROJECTS };
       case "dev_project_list": return { projects: [] };
       case "workspace_project_save": return { project: WORKBENCH_PROJECTS[0] };
       case "workspace_set_active_project": return { ok: true };

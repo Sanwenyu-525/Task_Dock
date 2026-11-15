@@ -42,6 +42,10 @@ pub enum ItemState {
     /// 动作已发送，但没有可靠证据表明目标已接收。
     Unverified,
     Failed,
+    /// 内容确实不可用（读取失败/文件已删除），本项不发送也不进待处理队列。
+    Skipped,
+    /// 按键可能已经发出、也可能没有：不能自动重发，必须用户确认后才能再试。
+    Uncertain,
     Cancelled,
 }
 
@@ -56,6 +60,8 @@ impl ItemState {
             Self::Confirmed => "confirmed",
             Self::Unverified => "unverified",
             Self::Failed => "failed",
+            Self::Skipped => "skipped",
+            Self::Uncertain => "uncertain",
             Self::Cancelled => "cancelled",
         }
     }
@@ -63,7 +69,21 @@ impl ItemState {
     fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Confirmed | Self::Unverified | Self::Failed | Self::Cancelled
+            Self::Confirmed
+                | Self::Unverified
+                | Self::Failed
+                | Self::Skipped
+                | Self::Uncertain
+                | Self::Cancelled
+        )
+    }
+
+    /// 这一项是否会占用「待处理」队列：只有确认/未确认/跳过/不确定/取消 不再重发。
+    #[allow(dead_code)]
+    fn consumed(self) -> bool {
+        matches!(
+            self,
+            Self::Confirmed | Self::Unverified | Self::Skipped | Self::Uncertain | Self::Cancelled
         )
     }
 }
@@ -118,7 +138,11 @@ pub(crate) trait PasteIo {
     /// 必须区分「内容不同」与「暂时读不到」：后者不能当成用户接管。
     fn clipboard_match(&self, expected: &ClipboardPayload) -> ClipboardMatch;
     fn snapshot(&self) -> Snapshot;
-    fn target_alive(&self, hwnd: isize) -> bool;
+    fn target_pid(&self, hwnd: isize) -> Option<u32>;
+    /// 目标当前是否处于前台。运行期只读取，绝不主动激活（SetForegroundWindow 只在
+    /// 用户点击开始时执行一次）。
+    fn is_foreground(&self, hwnd: isize) -> bool;
+    /// 用户点击「开始」时主动把目标置前一次；自动循环中不得再次调用。
     fn focus(&self, hwnd: isize, pid: u32, cancel: &AtomicBool) -> AppResult<()>;
     fn write_guarded(
         &self,
@@ -163,8 +187,14 @@ pub(crate) struct PasteRunOutcome {
     pub sent: i64,
     pub skipped: i64,
     pub remaining: Vec<String>,
+    /// 按键可能已发出但结果不可证明的条目：不自动重发，必须用户确认。
+    pub uncertain: Vec<String>,
     pub restored: bool,
     pub user_took_over: bool,
+    /// 暂停原因：user_switched / target_closed / hwnd_reused / focus_denied。
+    pub pause_reason: Option<&'static str>,
+    /// 失败原因码（与诊断契约的 error_code 同形），供前端与诊断区分场景。
+    pub reason_code: Option<&'static str>,
     pub notes: Vec<String>,
     pub states: Vec<(String, ItemState)>,
 }
@@ -224,7 +254,31 @@ fn match_settled(
     ClipboardMatch::Unavailable
 }
 
+/// 目标窗口的运行期状态。四种情况必须分开处理，不能统一归成「聚焦失败」：
+/// 用户切走要暂停并可继续；窗口关闭/句柄复用必须停止；权限或焦点保护要给出可操作提示。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetIssue {
+    Closed,
+    Reused,
+    NotForeground,
+}
+
+fn inspect_target(io: &dyn PasteIo, target: &TargetWindow) -> Option<TargetIssue> {
+    match io.target_pid(target.hwnd) {
+        None => Some(TargetIssue::Closed),
+        // HWND 会被系统复用：句柄还在但换了进程，绝不能再往里发按键。
+        Some(pid) if pid != target.pid => Some(TargetIssue::Reused),
+        Some(_) if !io.is_foreground(target.hwnd) => Some(TargetIssue::NotForeground),
+        Some(_) => None,
+    }
+}
+
 /// 纯状态机：不访问数据库、不直接调用 Win32，测试可完整构造竞态。
+///
+/// 前台策略（本函数的核心约束）：
+/// - 只在进入循环前调用一次 `io.focus`（等价于用户点击开始时的那一次主动激活）；
+/// - 循环内只读 `is_foreground`，绝不再次激活窗口；
+/// - 目标不在前台时**暂停**而不是失败：剩余条目原样保留，等用户明确继续。
 pub(crate) fn run_plan(
     io: &dyn PasteIo,
     plan: &PastePlan,
@@ -254,6 +308,28 @@ pub(crate) fn run_plan(
     let mut user_took_over = false;
     let mut wrote_any = false;
     let mut last_kind: Option<String> = None;
+    let mut pause_reason: Option<&'static str> = None;
+    let mut reason_code: Option<&'static str> = None;
+    let mut uncertain: Vec<String> = Vec::new();
+
+    // 唯一一次主动激活。这里是「用户点击开始」对应的动作：之后整个自动循环
+    // 只读取前台状态，不再调用 SetForegroundWindow，用户切走不会被抢回来。
+    if let Err(e) = io.focus(plan.target.hwnd, plan.target.pid, cancel) {
+        if canceled(cancel) {
+            status = "cancelled";
+            reason_code = Some("USER_CANCELLED");
+            notes.push("用户取消，尚未写入任何内容".into());
+        } else {
+            status = "failed";
+            let code = match inspect_target(io, &plan.target) {
+                Some(TargetIssue::Closed) => "TARGET_CLOSED",
+                Some(TargetIssue::Reused) => "TARGET_HWND_REUSED",
+                _ => "FOCUS_DENIED",
+            };
+            reason_code = Some(code);
+            notes.push(format!("无法把目标窗口切到前台（{code}）：{e}"));
+        }
+    }
 
     let set_state = |states: &mut Vec<(String, ItemState)>,
                      progress: &mut dyn FnMut(&PasteProgress),
@@ -287,6 +363,10 @@ pub(crate) fn run_plan(
     };
 
     for (idx, id) in plan.item_ids.iter().enumerate() {
+        // 启动前置失败（无法置前/已取消）时一次都不进入写入阶段。
+        if status != "completed" {
+            break;
+        }
         if canceled(cancel) {
             status = "cancelled";
             break;
@@ -324,10 +404,34 @@ pub(crate) fn run_plan(
                 }
             }
         }
-        if !io.target_alive(plan.target.hwnd) {
-            status = "failed";
-            notes.push("目标窗口已关闭".into());
-            break;
+        match inspect_target(io, &plan.target) {
+            Some(TargetIssue::Closed) => {
+                status = "failed";
+                reason_code = Some("TARGET_CLOSED");
+                notes.push(format!("第 {} 项前目标窗口已关闭，剩余条目已保留", idx + 1));
+                break;
+            }
+            Some(TargetIssue::Reused) => {
+                status = "failed";
+                reason_code = Some("TARGET_HWND_REUSED");
+                notes.push(format!(
+                    "第 {} 项前目标句柄已被其他窗口复用（进程身份不符），已停止发送",
+                    idx + 1
+                ));
+                break;
+            }
+            Some(TargetIssue::NotForeground) => {
+                // 用户切到别的应用：立即暂停，绝不把按键发到他当前正在用的软件。
+                status = "paused";
+                pause_reason = Some("user_switched");
+                reason_code = Some("PASTE_PAUSED_USER_SWITCHED");
+                notes.push(format!(
+                    "第 {} 项前检测到目标窗口不在前台（用户已切换应用），粘贴已暂停，剩余条目全部保留",
+                    idx + 1
+                ));
+                break;
+            }
+            None => {}
         }
 
         set_state(
@@ -355,48 +459,31 @@ pub(crate) fn run_plan(
             Err(e) => {
                 skipped += 1;
                 remaining.retain(|r| r != id);
-                notes.push(format!("第 {} 项已跳过：{e}", idx + 1));
+                notes.push(format!("第 {} 项已跳过（内容不可用）：{e}", idx + 1));
                 set_state(
                     &mut states,
                     progress,
                     id,
                     idx,
-                    ItemState::Failed,
+                    ItemState::Skipped,
                     sent,
                     &remaining,
-                    Some("内容不可用，已跳过"),
+                    Some("内容不可用，未发送"),
                 );
                 continue;
             }
         };
 
-        if let Err(e) = io.focus(plan.target.hwnd, plan.target.pid, cancel) {
-            if canceled(cancel) {
-                status = "cancelled";
-                set_state(
-                    &mut states,
-                    progress,
-                    id,
-                    idx,
-                    ItemState::Cancelled,
-                    sent,
-                    &remaining,
-                    Some("用户取消"),
-                );
-            } else {
-                status = "failed";
-                notes.push(format!("第 {} 项前失去焦点：{e}", idx + 1));
-                set_state(
-                    &mut states,
-                    progress,
-                    id,
-                    idx,
-                    ItemState::Failed,
-                    sent,
-                    &remaining,
-                    Some("无法聚焦目标窗口"),
-                );
-            }
+        // 读取（尤其图片解码）可能耗时较久：写入剪贴板前再确认一次前台。
+        // 这里只读状态，不激活窗口；用户已切走就暂停，避免污染他的剪贴板。
+        if !io.is_foreground(plan.target.hwnd) {
+            status = "paused";
+            pause_reason = Some("user_switched");
+            reason_code = Some("PASTE_PAUSED_USER_SWITCHED");
+            notes.push(format!(
+                "第 {} 项读取后目标已不在前台，已暂停（本项未写入剪贴板）",
+                idx + 1
+            ));
             break;
         }
 
@@ -489,9 +576,8 @@ pub(crate) fn run_plan(
                         break;
                     }
                 }
-                // 写入成功即视为「已消费本项」：即使后续按键失败，恢复任务时也不重发，
-                // 避免目标已收到内容却再次粘贴造成重复。
-                remaining.retain(|r| r != id);
+                // 注意：这里**不**把本项从 remaining 移除。剪贴板已写入但按键还没发，
+                // 用户随后切走或取消时本项仍应留在待处理队列（重写剪贴板不会造成重复粘贴）。
                 set_state(
                     &mut states,
                     progress,
@@ -573,26 +659,85 @@ pub(crate) fn run_plan(
             }
         }
 
+        // 按键前最后一道门：进程身份 + 前台。两者都只读，绝不激活窗口。
+        match inspect_target(io, &plan.target) {
+            Some(TargetIssue::Closed) => {
+                status = "failed";
+                reason_code = Some("TARGET_CLOSED");
+                notes.push(format!(
+                    "第 {} 项按键前目标窗口已关闭（内容已写入剪贴板，未发送按键，条目保留）",
+                    idx + 1
+                ));
+                break;
+            }
+            Some(TargetIssue::Reused) => {
+                status = "failed";
+                reason_code = Some("TARGET_HWND_REUSED");
+                notes.push(format!(
+                    "第 {} 项按键前目标句柄已被其他窗口复用，未发送按键，条目保留",
+                    idx + 1
+                ));
+                break;
+            }
+            Some(TargetIssue::NotForeground) => {
+                status = "paused";
+                pause_reason = Some("user_switched");
+                reason_code = Some("PASTE_PAUSED_USER_SWITCHED");
+                set_state(
+                    &mut states,
+                    progress,
+                    id,
+                    idx,
+                    ItemState::ClipboardWritten,
+                    sent,
+                    &remaining,
+                    Some("目标已不在前台，按键未发送"),
+                );
+                notes.push(format!(
+                    "第 {} 项已写入剪贴板但目标不在前台，已暂停（按键未发送，未影响你当前的应用）",
+                    idx + 1
+                ));
+                break;
+            }
+            None => {}
+        }
         if let Err(e) = io.send_paste(plan.target.hwnd, plan.target.pid) {
+            // 发送 API 失败 ≠ 目标一定没收到：这一项既不能算成功，也不能留在
+            // 待处理里被自动重发（可能造成重复粘贴）。转 uncertain，等用户确认。
+            if !io.is_foreground(plan.target.hwnd) {
+                status = "paused";
+                pause_reason = Some("user_switched");
+                reason_code = Some("PASTE_PAUSED_USER_SWITCHED");
+                notes.push(format!(
+                    "第 {} 项发送瞬间目标已不在前台，已暂停（按键可能未发送）",
+                    idx + 1
+                ));
+                break;
+            }
             status = "failed";
-            notes.push(format!(
-                "第 {} 项按键发送失败：{e}（内容已写入剪贴板，不会自动重发）",
-                idx + 1
-            ));
+            reason_code = Some("PASTE_KEY_SEND_FAILED");
+            uncertain.push(id.clone());
+            remaining.retain(|r| r != id);
             set_state(
                 &mut states,
                 progress,
                 id,
                 idx,
-                ItemState::Failed,
+                ItemState::Uncertain,
                 sent,
                 &remaining,
-                Some("按键未发送，条目已从待处理中移除"),
+                Some("Ctrl+V 发送失败，结果不确定，不会自动重发"),
             );
+            notes.push(format!(
+                "第 {} 项按键发送失败：{e}（内容已写入剪贴板，结果不确定，不会自动重发）",
+                idx + 1
+            ));
             break;
         }
         // 只有 send_paste 真实返回成功后才标记「按键已发送」：
-        // 发送 API 失败时不得让前端看到 InputSent。
+        // 发送 API 失败时不得让前端看到 InputSent。「已消费」也只在按键发出后成立。
+        let sent_at = Instant::now();
+        remaining.retain(|r| r != id);
         set_state(
             &mut states,
             progress,
@@ -614,11 +759,24 @@ pub(crate) fn run_plan(
             &remaining,
             None,
         );
-        // 观察窗口分段可取消：取消请求最坏 100ms 内生效（此前整段睡满最多 900ms）。
-        // 按键已发出，取消后仍走下方统一分支如实标记 Unverified，不改变语义。
-        sleep_cancelable(io, plan.timing.settle_for(&kind), cancel);
+        // 等待窗口 = max(观察窗口 settle, 距下一次按键的剩余间隔)。
+        // 旧实现先睡 settle（interval/2）再睡一整段 interval，单项实际成本约
+        // 1.5×interval（文字 525ms/图片 1800ms 即由此而来）；两项本来就重叠，
+        // 取并集后按键间隔仍满足 interval、两次写入之间仍满足 settle，不做任何
+        // 低于安全下限的压缩。最后一项没有「下一次按键」，只保留 settle，
+        // 由循环外的 finishing 阶段继续兜住目标异步消费。
+        let settle = plan.timing.settle_for(&kind);
+        let has_next = idx + 1 < plan.item_ids.len();
+        let gap_left = if has_next {
+            plan.timing
+                .interval_for(&kind)
+                .saturating_sub(sent_at.elapsed().as_millis() as u64)
+        } else {
+            0
+        };
+        let waited = sleep_cancelable(io, settle.max(gap_left), cancel);
         last_kind = Some(kind.clone());
-        if canceled(cancel) {
+        if !waited || canceled(cancel) {
             status = "cancelled";
             // 按键已经发出，不能谎称失败；如实标记为未确认。
             set_state(
@@ -643,13 +801,6 @@ pub(crate) fn run_plan(
             &remaining,
             Some("没有可验证的接收信号"),
         );
-
-        if idx + 1 < plan.item_ids.len()
-            && !sleep_cancelable(io, plan.timing.interval_for(&kind), cancel)
-        {
-            status = "cancelled";
-            break;
-        }
     }
 
     if status == "completed" && canceled(cancel) {
@@ -696,8 +847,11 @@ pub(crate) fn run_plan(
         sent,
         skipped,
         remaining,
+        uncertain,
         restored,
         user_took_over,
+        pause_reason,
+        reason_code,
         notes,
         states,
     }
@@ -907,6 +1061,8 @@ impl PasteManager {
         let (job_id, total, sent) = match &resume {
             Some((id, total, sent)) => {
                 store::reset_paste_job(&self.db, id, *sent, &item_ids)?;
+                // 历史任务可能没有逐项记录：按当前剩余顺序补登，已有行不动。
+                store::seed_paste_items(&self.db, id, &item_ids, *total - item_ids.len() as i64)?;
                 (id.clone(), *total, *sent)
             }
             None => {
@@ -917,6 +1073,7 @@ impl PasteManager {
                     &target.exe_path,
                     &item_ids,
                 )?;
+                store::seed_paste_items(&self.db, &id, &item_ids, 0)?;
                 (id, item_ids.len() as i64, 0)
             }
         };
@@ -986,7 +1143,14 @@ impl PasteManager {
                         .unwrap_or((0, Vec::new()));
                     let message = "粘贴线程异常终止（内部错误）；已发送项数与目标接收情况未知";
                     let _ = store::finish_paste_job(
-                        &fail_db, &fail_job, "failed", sent, &remaining, message, false,
+                        &fail_db,
+                        &fail_job,
+                        "failed",
+                        sent,
+                        &remaining,
+                        &[],
+                        message,
+                        false,
                     );
                     if let Ok(mut guard) = fail_active.lock() {
                         if guard
@@ -1029,6 +1193,7 @@ impl PasteManager {
                     "failed",
                     sent,
                     &item_ids,
+                    &[],
                     "无法创建粘贴线程，任务未开始",
                     false,
                 );
@@ -1211,8 +1376,12 @@ impl PasteIo for PlatformIo {
         platform::snapshot()
     }
 
-    fn target_alive(&self, hwnd: isize) -> bool {
-        platform::window_pid(hwnd).is_some()
+    fn target_pid(&self, hwnd: isize) -> Option<u32> {
+        platform::window_pid(hwnd)
+    }
+
+    fn is_foreground(&self, hwnd: isize) -> bool {
+        platform::is_foreground(hwnd)
     }
 
     fn focus(&self, hwnd: isize, pid: u32, cancel: &AtomicBool) -> AppResult<()> {
@@ -1293,6 +1462,14 @@ fn run_job(
     };
     let mut progress = |p: &PasteProgress| {
         let _ = store::update_paste_job(&db, &job_id, p.sent, p.remaining, "运行中");
+        // 逐项状态落库：任务中断后可以准确知道每一项走到哪一步、是否发过按键。
+        let _ = store::record_paste_item_state(
+            &db,
+            &job_id,
+            p.item_id,
+            p.state.as_str(),
+            p.note,
+        );
         let _ = app.emit(
             "clipboard-paste",
             serde_json::json!({
@@ -1327,8 +1504,15 @@ fn run_job(
     }
     match outcome.status {
         "cancelled" => message.push_str("；用户已取消"),
+        "paused" => message.push_str("；已暂停，剩余条目可继续"),
         "failed" => message.push_str("；任务已停止"),
         _ => {}
+    }
+    if !outcome.uncertain.is_empty() {
+        message.push_str(&format!(
+            "；{} 项结果不确定（按键可能已发送），不会自动重发",
+            outcome.uncertain.len()
+        ));
     }
     if !outcome.notes.is_empty() {
         message.push('。');
@@ -1341,6 +1525,7 @@ fn run_job(
         outcome.status,
         outcome.sent,
         &outcome.remaining,
+        &outcome.uncertain,
         &message,
         outcome.restored,
     );
@@ -1360,6 +1545,9 @@ fn run_job(
             "message": message,
             "restored": outcome.restored,
             "userTookOver": outcome.user_took_over,
+            "pauseReason": outcome.pause_reason,
+            "reasonCode": outcome.reason_code,
+            "uncertain": outcome.uncertain.len(),
             "confirmed": outcome.confirmed(),
             "unverified": outcome.unverified(),
         }),
@@ -1386,6 +1574,10 @@ mod tests {
         snap_seq: u32,
         current: RefCell<Option<ClipboardPayload>>,
         target_alive: Cell<bool>,
+        foreground: Cell<bool>,
+        pid_override: Cell<Option<u32>>,
+        focus_calls: Cell<u32>,
+        drop_foreground_after_writes: Cell<usize>,
         focus_error: RefCell<Option<String>>,
         send_fails: Cell<bool>,
         force_sequence_changed: Cell<bool>,
@@ -1427,6 +1619,10 @@ mod tests {
                 snap_seq: seq,
                 current: RefCell::new(Some(baseline_payload())),
                 target_alive: Cell::new(true),
+                foreground: Cell::new(true),
+                pid_override: Cell::new(None),
+                focus_calls: Cell::new(0),
+                drop_foreground_after_writes: Cell::new(0),
                 focus_error: RefCell::new(None),
                 send_fails: Cell::new(false),
                 force_sequence_changed: Cell::new(false),
@@ -1481,11 +1677,23 @@ mod tests {
             }
         }
 
-        fn target_alive(&self, _hwnd: isize) -> bool {
-            self.target_alive.get()
+        fn target_pid(&self, _hwnd: isize) -> Option<u32> {
+            if let Some(pid) = self.pid_override.get() {
+                return Some(pid);
+            }
+            if self.target_alive.get() {
+                Some(4242)
+            } else {
+                None
+            }
+        }
+
+        fn is_foreground(&self, _hwnd: isize) -> bool {
+            self.foreground.get()
         }
 
         fn focus(&self, _hwnd: isize, _pid: u32, _cancel: &AtomicBool) -> AppResult<()> {
+            self.focus_calls.set(self.focus_calls.get() + 1);
             match self.focus_error.borrow().as_deref() {
                 Some(e) => Err(AppError::Validation(e.into())),
                 None => Ok(()),
@@ -1525,6 +1733,10 @@ mod tests {
             self.seq.set(self.seq.get() + 1);
             *self.current.borrow_mut() = Some(payload.clone());
             self.applied.set(self.applied.get() + 1);
+            if self.drop_foreground_after_writes.get() == self.applied.get() {
+                // 模拟写入完成后、按键发出前用户切到了别的应用
+                self.foreground.set(false);
+            }
             // 返回 CloseClipboard 后立刻读到的序列号；后续增长模拟延迟渲染
             let final_seq = self.seq.get();
             if self.takeover_before_send_after_writes.get() == self.applied.get() {
@@ -1545,6 +1757,9 @@ mod tests {
 
         fn send_paste(&self, _hwnd: isize, _pid: u32) -> AppResult<()> {
             self.timeline.borrow_mut().push("send".into());
+            if !self.foreground.get() {
+                return Err(AppError::Validation("目标已失去前台".into()));
+            }
             if self.send_fails.get() {
                 return Err(AppError::Validation("按键被拦截".into()));
             }
@@ -1682,7 +1897,12 @@ mod tests {
             image_window > text_window,
             "图片的观察窗口应比文本长：image={image_window}ms text={text_window}ms"
         );
-        assert_eq!(image_window, 600 + 1200, "图片 settle+interval 总和不变");
+        // 等待窗口取 settle 与 interval 的并集（旧实现两者相加，单项成本约 1.5×interval）。
+        assert_eq!(image_window, 1200, "图片窗口 = max(settle 600, interval 1200)");
+        assert!(
+            text_window >= 350,
+            "文本窗口仍不得低于 interval 350ms，不允许压到不可靠的固定 100ms"
+        );
         let timeline = io.timeline.borrow();
         let last_write = timeline
             .iter()
@@ -1816,8 +2036,10 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let outcome = run_plan(&io, &p, &cancel, &mut load, &mut noop_progress);
         assert_eq!(outcome.status, "failed");
+        assert_eq!(outcome.reason_code, Some("FOCUS_DENIED"));
         assert_eq!(outcome.remaining, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(io.applied.get(), 0);
+        assert_eq!(io.focus_calls.get(), 1, "启动时只主动激活一次");
     }
 
     #[test]
@@ -1847,7 +2069,7 @@ mod tests {
     }
 
     #[test]
-    fn send_failure_removes_written_item_to_prevent_duplicate_paste() {
+    fn send_failure_marks_item_uncertain_and_never_auto_resends() {
         let io = FakeIo::new(1);
         io.send_fails.set(true);
         let p = plan(&["a", "b"], timing());
@@ -1855,10 +2077,110 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let outcome = run_plan(&io, &p, &cancel, &mut load, &mut noop_progress);
         assert_eq!(outcome.status, "failed");
-        assert_eq!(outcome.sent, 0);
-        assert_eq!(outcome.remaining, vec!["b".to_string()]);
+        assert_eq!(outcome.reason_code, Some("PASTE_KEY_SEND_FAILED"));
+        assert_eq!(outcome.sent, 0, "发送 API 失败不能计入已发送");
+        assert_eq!(outcome.uncertain, vec!["a".to_string()]);
+        assert_eq!(
+            outcome.remaining,
+            vec!["b".to_string()],
+            "未处理项保留；不确定项单列，不能混回待处理队列被自动重发"
+        );
         assert_eq!(io.applied.get(), 1);
         assert!(outcome.restored, "写入过剪贴板时仍应尝试恢复");
+        assert_eq!(
+            outcome
+                .states
+                .iter()
+                .find(|(id, _)| id == "a")
+                .map(|(_, s)| *s),
+            Some(ItemState::Uncertain),
+            "按键发送失败必须标记 uncertain，不能谎称成功也不能谎称完全失败"
+        );
+    }
+
+    #[test]
+    fn user_switch_pauses_without_stealing_foreground() {
+        let io = FakeIo::new(1);
+        let p = plan(&["a", "b", "c", "d"], timing());
+        let mut load = loader(&[
+            ("a", KIND_TEXT),
+            ("b", KIND_TEXT),
+            ("c", KIND_TEXT),
+            ("d", KIND_TEXT),
+        ]);
+        let cancel = AtomicBool::new(false);
+        let mut progress = |pr: &PasteProgress| {
+            if pr.item_id == "b" && pr.state == ItemState::Settling {
+                io.foreground.set(false);
+            }
+        };
+        let outcome = run_plan(&io, &p, &cancel, &mut load, &mut progress);
+        assert_eq!(outcome.status, "paused");
+        assert_eq!(outcome.pause_reason, Some("user_switched"));
+        assert_eq!(outcome.reason_code, Some("PASTE_PAUSED_USER_SWITCHED"));
+        assert_eq!(outcome.sent, 2);
+        assert_eq!(
+            outcome.remaining,
+            vec!["c".to_string(), "d".to_string()],
+            "暂停必须保留全部未处理项"
+        );
+        assert_eq!(
+            io.focus_calls.get(),
+            1,
+            "整个自动循环只允许一次主动激活（用户点开始那一次）"
+        );
+        assert_eq!(io.applied.get(), 2, "用户切走后不得再写入剪贴板");
+    }
+
+    #[test]
+    fn foreground_loss_between_write_and_key_keeps_item_for_resume() {
+        let io = FakeIo::new(1);
+        io.drop_foreground_after_writes.set(1);
+        let p = plan(&["a", "b"], timing());
+        let mut load = loader(&[("a", KIND_TEXT), ("b", KIND_TEXT)]);
+        let cancel = AtomicBool::new(false);
+        let outcome = run_plan(&io, &p, &cancel, &mut load, &mut noop_progress);
+        assert_eq!(outcome.status, "paused");
+        assert_eq!(outcome.sent, 0, "按键未发出，不得计入已发送");
+        assert_eq!(
+            outcome.remaining,
+            vec!["a".to_string(), "b".to_string()],
+            "已写剪贴板但未发按键的条目仍在待处理队列，继续时会重写同一内容"
+        );
+        assert!(outcome.uncertain.is_empty(), "未发按键不属于结果不确定");
+        assert_eq!(io.applied.get(), 1);
+    }
+
+    #[test]
+    fn hwnd_reuse_stops_with_distinct_reason_code() {
+        let io = FakeIo::new(1);
+        io.pid_override.set(Some(9999));
+        let p = plan(&["a"], timing());
+        let mut load = loader(&[("a", KIND_TEXT)]);
+        let cancel = AtomicBool::new(false);
+        let outcome = run_plan(&io, &p, &cancel, &mut load, &mut noop_progress);
+        assert_eq!(outcome.status, "failed");
+        assert_eq!(outcome.reason_code, Some("TARGET_HWND_REUSED"));
+        assert_eq!(io.writes.borrow().len(), 0, "身份不符时绝不写入剪贴板");
+    }
+
+    #[test]
+    fn unavailable_item_is_recorded_as_skipped_state() {
+        let io = FakeIo::new(1);
+        let p = plan(&["a", "missing"], timing());
+        let mut load = loader(&[("a", KIND_TEXT)]);
+        let cancel = AtomicBool::new(false);
+        let outcome = run_plan(&io, &p, &cancel, &mut load, &mut noop_progress);
+        assert_eq!(
+            outcome
+                .states
+                .iter()
+                .find(|(id, _)| id == "missing")
+                .map(|(_, s)| *s),
+            Some(ItemState::Skipped),
+            "读取失败必须留下 skipped 记录，不能静默消失"
+        );
+        assert!(outcome.notes.iter().any(|n| n.contains("已跳过")));
     }
 
     #[test]

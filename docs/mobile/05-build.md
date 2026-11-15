@@ -43,15 +43,18 @@ Playwright + Chromium。环境准备只需 `npx playwright install chromium`，*
 `iconMap.json` 的 `overrides` 用于少量业务图标的同语言微调；生成物首行的 `ICON_MAP_HASH`
 由契约测试校验，改映射后必须重跑生成器。
 
-Release 构建（验收用）：
+Release 构建（验收用，必须经统一构建调度器）：
 
-```bash
-cd apps/mobile/android
-"D:/Develop/mobile-stack-tools/gradle-9.4.1/bin/gradle.bat" assembleRelease \
-  -g D:/Develop/mobile-stack-tools/gradle-home \
-  -I D:/Develop/mobile-stack-tools/rn-mirrors.gradle
+```powershell
+Set-Location -LiteralPath "D:\Develop\task_dock"
+node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mobile/android --wait-timeout 20 -- `
+  "D:\Develop\mobile-stack-tools\gradle-9.4.1\bin\gradle.bat" assembleRelease `
+  -g "D:\Develop\mobile-stack-tools\gradle-home" `
+  -I "D:\Develop\mobile-stack-tools\rn-mirrors.gradle" `
+  -PreactNativeArchitectures=arm64-v8a --no-daemon --console=plain
 ```
 
+高资源构建不得直接调用 Gradle 绕过调度器；下面的裸命令只用于调度器自身排障，不作为验收入口。
 `-g` 指共享 Gradle Home（复用缓存），`-I` 是 Maven 镜像初始化脚本——本机不加镜像会在
 仓库 TLS 握手阶段失败。没有这套工具链时用 wrapper：
 
@@ -74,8 +77,8 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
 
 | 位置 | 字段 | 角色 |
 |---|---|---|
-| `app.json` | `expo.version` | **唯一事实源**（当前 `0.1.7`） |
-| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `24`） |
+| `app.json` | `expo.version` | **唯一事实源**（当前 `0.1.10`） |
+| `app.json` | `expo.android.versionCode` | **唯一事实源**（当前 `58`） |
 | `android/app/build.gradle` | `versionName` / `versionCode` | 生成物，prebuild 写入；不要当作源 |
 | `src/screens/SettingsScreen.tsx` | 「关于 → 版本」 | 直接读 `app.json`，无需手改 |
 

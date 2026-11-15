@@ -278,9 +278,12 @@ export class Lease {
 /**
  * 非阻塞竞争一个命名槽位：能拿到就返回租约，拿不到立刻返回原因（由调用方继续排队）。
  * 阻塞式等待不适合本调度器——等待期间必须持续做优先级复评与取消检查。
+ *
+ * `noReclaim: true` 表示本轮不做"持有者是否已死"的取证（调用方按 reclaimProbeMs 自己节流，
+ * 取证要查系统进程，不能每轮都做）。用于准入临界区的合并申请路径。
  * @returns {{lease:Lease} | {held:true, reason:string, blocked?:boolean}}
  */
-export function tryAcquireSlot({ home, name, taskId, taskClass, cfg, label, log }) {
+export function tryAcquireSlot({ home, name, taskId, taskClass, cfg, label, log, noReclaim = false }) {
   const dir = slotDir(home, name);
   const p = paths(home);
   let reclaimedInfo = null;
@@ -300,6 +303,9 @@ export function tryAcquireSlot({ home, name, taskId, taskClass, cfg, label, log 
   }
 
   if (!created) {
+    if (noReclaim) {
+      return { held: true, reason: `槽位 ${name} 已被占用（本轮未做持有者取证）` };
+    }
     const evalResult = tryReclaim({ dir, name, cfg, taskId, auditPath: p.reclaimLog, log });
     if (!evalResult.reclaimed) {
       return { held: true, blocked: evalResult.blocked === true, reason: evalResult.reason };

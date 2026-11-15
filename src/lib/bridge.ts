@@ -726,6 +726,8 @@ export interface PasteJob {
   ended_at: string | null;
   message: string;
   remaining_items: string[];
+  /** 按键可能已发出、结果不可证明的条目：不会被自动重发 */
+  uncertain_items: string[];
   restored: boolean;
 }
 
@@ -798,6 +800,25 @@ export interface ClipboardPasteEvent {
   userTookOver?: boolean;
   confirmed?: number;
   unverified?: number;
+  /** paused 时的原因：user_switched / target_closed / hwnd_reused / focus_denied */
+  pauseReason?: string | null;
+  reasonCode?: string | null;
+  uncertain?: number;
+}
+
+/** 逐项状态行（数据库持久化事实，任务中断后仍可查询） */
+export interface PasteItemState {
+  job_id: string;
+  position: number;
+  item_id: string;
+  kind: string;
+  state: string;
+  error_message: string;
+  started_at: string | null;
+  finished_at: string | null;
+  key_sent: boolean;
+  confirmed: boolean;
+  retry_safe: boolean;
 }
 
 export interface ClipboardProbe {
@@ -2064,6 +2085,8 @@ export const clipboardFocusTarget = (hwnd: number, expectedPid?: number) =>
   invoke<PasteTarget>("clipboard_focus_target", { hwnd, expectedPid });
 export const clipboardPasteJob = (jobId: string) =>
   invoke<PasteJob>("clipboard_paste_job", { jobId });
+export const clipboardPasteItemStates = (jobId: string) =>
+  invoke<PasteItemState[]>("clipboard_paste_item_states", { jobId });
 export const clipboardPasteActive = () =>
   invoke<string | null>("clipboard_paste_active");
 export const clipboardCleanup = () => invoke<CleanupReport>("clipboard_cleanup");

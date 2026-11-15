@@ -2260,7 +2260,26 @@ pub struct PasteJob {
     pub ended_at: Option<String>,
     pub message: String,
     pub remaining_items: Vec<String>,
+    /// 按键可能已经发出但无法证明的条目：不进入待处理队列，不会被自动重发。
+    #[serde(default)]
+    pub uncertain_items: Vec<String>,
     pub restored: bool,
+}
+
+/// 单个条目的持久化状态。用户可以看到「第几项、什么类型、走到哪一步、是否发过按键」。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasteItemRow {
+    pub job_id: String,
+    pub position: i64,
+    pub item_id: String,
+    pub kind: String,
+    pub state: String,
+    pub error_message: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub key_sent: bool,
+    pub confirmed: bool,
+    pub retry_safe: bool,
 }
 
 pub fn create_paste_job(
@@ -2328,17 +2347,19 @@ pub fn finish_paste_job(
     status: &str,
     sent: i64,
     remaining: &[String],
+    uncertain: &[String],
     message: &str,
     restored: bool,
 ) -> AppResult<()> {
     db.with_conn(|conn| {
         conn.execute(
             "UPDATE clipboard_paste_jobs SET status = ?1, sent = ?2, remaining_items = ?3,
-                message = ?4, restored = ?5, ended_at = ?6 WHERE id = ?7",
+                uncertain_items = ?4, message = ?5, restored = ?6, ended_at = ?7 WHERE id = ?8",
             params![
                 status,
                 sent,
                 serde_json::to_string(remaining)?,
+                serde_json::to_string(uncertain)?,
                 message,
                 if restored { 1 } else { 0 },
                 crate::agents::now_iso(),
@@ -2354,11 +2375,12 @@ pub fn get_paste_job(db: &Db, id: &str) -> AppResult<PasteJob> {
         let mut job = conn
             .query_row(
                 "SELECT id, group_id, target_title, target_exe, status, total, sent, started_at,
-                        ended_at, message, remaining_items, restored
+                        ended_at, message, remaining_items, uncertain_items, restored
                  FROM clipboard_paste_jobs WHERE id = ?1",
                 params![id],
                 |r| {
                     let remaining: String = r.get(10)?;
+                    let uncertain: String = r.get(11)?;
                     Ok(PasteJob {
                         id: r.get(0)?,
                         group_id: r.get(1)?,
@@ -2371,7 +2393,8 @@ pub fn get_paste_job(db: &Db, id: &str) -> AppResult<PasteJob> {
                         ended_at: r.get(8)?,
                         message: r.get(9)?,
                         remaining_items: serde_json::from_str(&remaining).unwrap_or_default(),
-                        restored: r.get::<_, i64>(11)? != 0,
+                        uncertain_items: serde_json::from_str(&uncertain).unwrap_or_default(),
+                        restored: r.get::<_, i64>(12)? != 0,
                     })
                 },
             )
@@ -2403,6 +2426,145 @@ pub fn interrupt_stale_paste_jobs(db: &Db) -> AppResult<i64> {
             params![crate::agents::now_iso()],
         )?;
         Ok(n as i64)
+    })
+}
+
+// ── 逐项状态 ──────────────────────────────────────────────
+
+/// 建立任务时登记逐项记录。`position_offset` 用于续跑的历史任务：
+/// 新任务从 0 开始，续跑任务按原始顺序偏移，保持「第几项」可追溯。
+pub fn seed_paste_items(
+    db: &Db,
+    job_id: &str,
+    item_ids: &[String],
+    position_offset: i64,
+) -> AppResult<()> {
+    db.with_conn(|conn| {
+        for (idx, id) in item_ids.iter().enumerate() {
+            let kind: String = conn
+                .query_row(
+                    "SELECT kind FROM clipboard_items WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or_default();
+            conn.execute(
+                "INSERT OR IGNORE INTO clipboard_paste_items
+                 (job_id, position, item_id, kind, state, error_message,
+                  started_at, finished_at, key_sent, confirmed, retry_safe)
+                 VALUES (?1, ?2, ?3, ?4, 'pending', '', NULL, NULL, 0, 0, 1)",
+                params![job_id, position_offset + idx as i64, id, kind],
+            )?;
+        }
+        Ok(())
+    })
+}
+
+/// 记录一次状态跃迁。已经开始过的条目不会被后续跃迁覆盖开始时间；
+/// 终态写完成时间。`retry_safe` 只在「没发过按键」时为真——发过按键的条目
+/// 重试就可能造成重复粘贴，必须由用户显式确认。
+pub fn record_paste_item_state(
+    db: &Db,
+    job_id: &str,
+    item_id: &str,
+    state: &str,
+    note: Option<&str>,
+) -> AppResult<()> {
+    let terminal = matches!(
+        state,
+        "confirmed" | "unverified" | "failed" | "skipped" | "uncertain" | "cancelled"
+    );
+    let started = matches!(
+        state,
+        "preparing"
+            | "clipboard_written"
+            | "input_sent"
+            | "settling"
+            | "confirmed"
+            | "unverified"
+            | "failed"
+            | "skipped"
+            | "uncertain"
+            | "cancelled"
+    );
+    let key_sent = matches!(
+        state,
+        "input_sent" | "settling" | "confirmed" | "unverified" | "uncertain"
+    );
+    let now = crate::agents::now_iso();
+    let started_at = if started { Some(now.clone()) } else { None };
+    let finished_at = if terminal { Some(now) } else { None };
+    db.with_conn(|conn| {
+        let n = conn.execute(
+            "UPDATE clipboard_paste_items
+             SET state = ?3, error_message = ?4,
+                 started_at = COALESCE(started_at, ?5),
+                 finished_at = COALESCE(?6, finished_at),
+                 key_sent = CASE WHEN ?7 THEN 1 ELSE key_sent END,
+                 confirmed = CASE WHEN ?8 THEN 1 ELSE confirmed END,
+                 retry_safe = ?9
+             WHERE job_id = ?1 AND item_id = ?2",
+            params![
+                job_id,
+                item_id,
+                state,
+                note.unwrap_or(""),
+                started_at,
+                finished_at,
+                key_sent,
+                state == "confirmed",
+                !key_sent
+            ],
+        )?;
+        if n == 0 {
+            conn.execute(
+                "INSERT INTO clipboard_paste_items
+                 (job_id, position, item_id, kind, state, error_message,
+                  started_at, finished_at, key_sent, confirmed, retry_safe)
+                 VALUES (?1, 0, ?2, '', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    job_id,
+                    item_id,
+                    state,
+                    note.unwrap_or(""),
+                    started_at,
+                    finished_at,
+                    key_sent,
+                    state == "confirmed",
+                    !key_sent
+                ],
+            )?;
+        }
+        Ok(())
+    })
+}
+
+pub fn list_paste_items(db: &Db, job_id: &str) -> AppResult<Vec<PasteItemRow>> {
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT job_id, position, item_id, kind, state, error_message,
+                    started_at, finished_at, key_sent, confirmed, retry_safe
+             FROM clipboard_paste_items WHERE job_id = ?1 ORDER BY position ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![job_id], |r| {
+                Ok(PasteItemRow {
+                    job_id: r.get(0)?,
+                    position: r.get(1)?,
+                    item_id: r.get(2)?,
+                    kind: r.get(3)?,
+                    state: r.get(4)?,
+                    error_message: r.get(5)?,
+                    started_at: r.get(6)?,
+                    finished_at: r.get(7)?,
+                    key_sent: r.get::<_, i64>(8)? != 0,
+                    confirmed: r.get::<_, i64>(9)? != 0,
+                    retry_safe: r.get::<_, i64>(10)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     })
 }
 
@@ -3811,6 +3973,53 @@ mod tests {
         assert_eq!(interrupt_stale_paste_jobs(&db).unwrap(), 1);
         let row = get_paste_job(&db, &job).unwrap();
         assert_eq!(row.status, "interrupted");
+    }
+
+    #[test]
+    fn paste_job_records_per_item_state_and_uncertain_bucket() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let a = record_capture(&db, &root.0, &text_payload("一"), &s).unwrap();
+        let b = record_capture(&db, &root.0, &text_payload("二"), &s).unwrap();
+        let ids = vec![a.item.id.clone(), b.item.id.clone()];
+        let job = create_paste_job(&db, "", "记事本", "notepad.exe", &ids).unwrap();
+        seed_paste_items(&db, &job, &ids, 0).unwrap();
+        record_paste_item_state(&db, &job, &a.item.id, "preparing", None).unwrap();
+        record_paste_item_state(&db, &job, &a.item.id, "input_sent", None).unwrap();
+        record_paste_item_state(&db, &job, &a.item.id, "unverified", Some("无接收信号")).unwrap();
+        record_paste_item_state(&db, &job, &b.item.id, "uncertain", Some("按键发送失败"))
+            .unwrap();
+        let rows = list_paste_items(&db, &job).unwrap();
+        assert_eq!(rows.len(), 2, "每个条目都要有独立状态行");
+        assert_eq!(rows[0].position, 0, "原始顺序必须保留");
+        assert_eq!(rows[0].state, "unverified");
+        assert!(rows[0].key_sent, "发过按键的条目必须记录 key_sent");
+        assert!(!rows[0].retry_safe, "发过按键的条目不得标为可安全重试");
+        assert!(rows[0].finished_at.is_some());
+        assert_eq!(rows[1].position, 1);
+        assert_eq!(rows[1].state, "uncertain");
+        assert!(!rows[1].key_sent);
+
+        finish_paste_job(
+            &db,
+            &job,
+            "failed",
+            1,
+            &[],
+            std::slice::from_ref(&b.item.id),
+            "1 项结果不确定",
+            false,
+        )
+        .unwrap();
+        let job_row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(
+            job_row.uncertain_items,
+            vec![b.item.id.clone()],
+            "不确定项单列保存，resume 不会自动重发"
+        );
+        assert!(job_row.remaining_items.is_empty());
+        assert_eq!(job_row.status, "failed");
     }
 
     #[test]

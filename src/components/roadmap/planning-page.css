@@ -1,0 +1,40 @@
+/*
+ * 规划中心「页面态」层级（2026-11-15 视觉对齐）。
+ *
+ * 背景：页面上并存两级切换——一级是数据来源（我的项目 / 内置路线图），
+ * 二级是工作区内的视图 Tab（项目总览 / 功能列表 / 功能看板 / 里程碑）。
+ * 两级都是同款药丸分段，宽度也接近，用户分不清自己在哪一层。
+ * 处理：一级补一枚「数据来源」说明标签、作为目录级切换；二级视图条加一层
+ * 容器底（边框 + 抬升面 + 圆角），成为内容级工具栏，层级一眼可分。
+ *
+ * 作用域统一 .planning-panel，颜色 / 圆角沿用既有语义 Token。
+ */
+
+.planning-panel .planning-source-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.planning-panel .planning-source-label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* 二级视图条：容器化，与一级目录切换形成「目录 / 内容」两层 */
+.planning-panel .planning-view-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+
+/* 视图条右侧的「当前项目」选择器：与左端 Tab 拉开距离，靠右对齐 */
+.planning-panel .planning-view-bar .planning-view-project {
+  margin-left: auto;
+}

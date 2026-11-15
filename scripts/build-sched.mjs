@@ -33,6 +33,9 @@ import {
 import { EXIT, executeTask, runInline } from "./sched/runner.mjs";
 import { scanDevServers } from "./sched/devservers.mjs";
 import { verifyIdentity } from "./sched/proc.mjs";
+import {
+  budgetSnapshot, classifyReservation, defaultProbe, readReservations, reclaimStaleReservations,
+} from "./sched/budget.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SELF = "node scripts/build-sched.mjs";
@@ -219,6 +222,7 @@ function cmdStatus(argv) {
   const slots = snapshotSlots(ctx.state.home, { verify: opts.verbose === true });
   const tasks = readQueue(ctx.state.home).filter((t) => ACTIVE_STATUSES.has(t.status));
   const pressure = pressureLevel(ctx.cfg, mem);
+  const budget = budgetSnapshot({ home: ctx.state.home, cfg: ctx.cfg, totalMb: mem.totalMb });
   const devScan = opts.verbose === true ? scanDevServers({ repoRoot: REPO_ROOT, knownRoots: knownWorktrees() }) : null;
 
   const payload = {
@@ -227,6 +231,7 @@ function cmdStatus(argv) {
     stateSource: ctx.state.source,
     memory: { availMb: mem.availMb, totalMb: mem.totalMb, simulated: mem.simulated, source: mem.source },
     pressure,
+    budget,
     slots,
     tasks,
     config: ctx.cfg,
@@ -239,6 +244,15 @@ function cmdStatus(argv) {
   console.log(`内存：可用 ${formatMb(mem.availMb)} / 总计 ${formatMb(mem.totalMb)}` +
     `${mem.simulated ? "  ⚠ 模拟值" : ""}  〔${mem.source}〕`);
   console.log(`压力：${pressure.text}`);
+  console.log(`全局预算：${budget.enabled ? "启用" : "已关闭（只按实时可用内存准入）"} ` +
+    `${formatMb(budget.reservedMb)} / ${formatMb(budget.budgetMb)} 已预留` +
+    `（可用余量 ${formatMb(budget.availableMb)}；物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(budget.reserveMb)}）` +
+    `${budget.clamped ? `  ⚠ 预算被夹到最大分类预计峰值 ${formatMb(budget.clampFloorMb)}` : ""}`);
+  for (const e of budget.entries) {
+    console.log(`  ${pad(e.taskId, 16)} ${pad(e.taskClass, 6)} ${pad(formatMb(e.reservedMb), 9)} ` +
+      `phase=${pad(e.phase ?? "?", 9)} pid=${pad(e.ownerPid ?? "?", 7)} ` +
+      `${e.state && e.state !== "owner-alive" ? `⚠ ${e.state}` : ""}`);
+  }
   console.log("");
   console.log("槽位：");
   const bySlot = new Map(slots.map((s) => [s.slot, s]));
@@ -524,6 +538,28 @@ function cmdDoctor(argv) {
   }
   if (tasks.length && !staleQueued.length) ok.push(`队列记录 ${tasks.length} 条，无孤儿`);
 
+  // 5b) 全局预算台账（预留与活动任务应当一一对应：多出来的就是崩溃残留）
+  const reservations = readReservations(home);
+  const budgetView = budgetSnapshot({ home, cfg: ctx.cfg, totalMb: readMemory().totalMb, probe: defaultProbe() });
+  ok.push(`全局预算 ${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留（${reservations.length} 条台账）`);
+  const probe = defaultProbe();
+  for (const r of budgetView.entries) {
+    if (r.state === "owner-alive") {
+      const taskRec = tasks.find((t) => t.id === r.taskId);
+      if (taskRec && ACTIVE_STATUSES.has(taskRec.status)) continue; // 正常在跑
+      issues.push({
+        severity: "P2",
+        text: `预留 ${r.taskId}（${formatMb(r.reservedMb)}）的持有进程仍存活但队列里没有对应活跃任务` +
+          `（phase=${r.phase}，pid=${r.ownerPid}）`,
+      });
+      continue;
+    }
+    issues.push({
+      severity: "P1",
+      text: `预留 ${r.taskId}（${formatMb(r.reservedMb)}）无法自动回收：${r.state}——${r.note}`,
+    });
+  }
+
   // 6) 体积
   const logBytes = dirBytes(paths(home).logs);
   const histLines = readHistoryLines(paths(home).history).length;
@@ -570,6 +606,32 @@ function cmdDoctor(argv) {
       try { rmSync(l, { recursive: true, force: true, maxRetries: 3 }); actions.push(`删除残留目录 ${l}`); }
       catch (err) { actions.push(`删除 ${l} 失败：${err?.code ?? err}`); }
     }
+
+    // 预留台账：先按"证明已死"的规则处置能处置的；只有「持有者已死 + 子进程仍存活」的条目
+    // 才用命令行签名取证终止子进程（绝不触碰持有者仍活着的任务）。
+    const ledgerProbe = defaultProbe();
+    const auditPath = paths(home).reclaimLog;
+    for (const entry of readReservations(home)) {
+      if (!Number.isInteger(entry.childPid)) continue;
+      const verdict = classifyReservation(entry, { cfg: ctx.cfg, probe: ledgerProbe });
+      if (verdict.reclaimable || verdict.state === "owner-alive") continue;
+      const reap = reapOrphanChild({
+        child: { pid: entry.childPid, commandLine: entry.childCmdLine ?? entry.childCmdSignature },
+        taskId: entry.taskId, audit: auditPath, reason: `doctor --reap 处置预留 ${entry.taskId} 的构建子进程`,
+      });
+      actions.push(reap.ok
+        ? `终止预留 ${entry.taskId} 的旧构建子进程：${reap.detail}`
+        : `拒绝终止预留 ${entry.taskId} 的子进程：${reap.detail}`);
+    }
+    const sweep = reclaimStaleReservations({
+      home, cfg: ctx.cfg, probe: ledgerProbe, audit: auditPath, log: (m) => actions.push(m),
+    });
+    if (sweep.removed.length) {
+      actions.push(`回收崩溃残留预留 ${sweep.removed.length} 条：` +
+        sweep.removed.map((r) => `${r.taskId}(${formatMb(r.reservedMb)})`).join("、"));
+    }
+    for (const b of sweep.blocked) actions.push(`保留预留 ${b.taskId}（${formatMb(b.reservedMb)}）：${b.detail}`);
+
     const cleaned = housekeeping({ home, tasks: readQueue(home), cfg: ctx.cfg, log: (m) => actions.push(m) });
     if (cleaned.length) actions.push(`归档/清理队列记录 ${cleaned.length} 条`);
     // 过期终态记录同样清掉
@@ -582,7 +644,7 @@ function cmdDoctor(argv) {
   if (opts.json) {
     console.log(JSON.stringify({
       generatedAt: new Date().toISOString(), stateHome: home, ok, issues, actions,
-      memory: readMemory(), slots, config: ctx.cfg,
+      memory: readMemory(), budget: budgetView, slots, config: ctx.cfg,
     }, null, 2));
     return issues.some((i) => i.severity === "P0") ? EXIT.internal : EXIT.ok;
   }
@@ -600,6 +662,8 @@ function cmdDoctor(argv) {
   }
   const mem = readMemory();
   console.log(`内存：可用 ${formatMb(mem.availMb)} / ${formatMb(mem.totalMb)}${mem.simulated ? "（模拟值）" : ""}`);
+  console.log(`全局预算：${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留` +
+    `${budgetView.clamped ? "（已夹到最大分类预计峰值）" : ""}`);
   return issues.some((i) => i.severity === "P0") ? EXIT.internal : EXIT.ok;
 }
 

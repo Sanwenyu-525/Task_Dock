@@ -190,18 +190,74 @@ node scripts/build-sched.mjs cargo -- --priority P0 build   # 有 -- 时前面�
 - 未知命令**保守归 heavy**（宁可多排一次队，也不把高资源任务误判成轻量）；
 - `node -e` 等无法识别的极短脚本归 light（否则每次探测都会被当重型排队）。
 
-### 4.2 内存准入
+### 4.2 内存准入（两重**独立**约束，任一不满足都不启动）
+
+只靠"每分类各自的槽位 + 各自读一次 `os.freemem()`"是不够的：不同分类可能同时基于同一份
+（3 秒内缓存的）旧快照各自放行——Heavy 看到 7GB 可用就起 6000MB 的构建，Medium 同时看到同一
+份 7GB 又起 3000MB 的构建，两者各自合格而合计 9000MB 已经超卖。因此准入被拆成两个**互不重叠**
+的约束。
+
+> ⚠ 变动前的代码证据（本轮整改前）：`scripts/sched/mem.mjs` `evaluateMemoryAdmission()` 只把
+> `mem.availMb` 与"本任务自己的门槛"比较；`scripts/sched/queue.mjs` `evaluateEligibility()` 只按
+> `slotUsage(home, cfg)` 数**本分类**槽位；`scripts/sched/runner.mjs` 排队循环里各进程持有自己的
+> `createMemorySampler()`（`memorySampleMs`=3s 缓存）。三者叠加起来没有任何"跨分类合计"的判断。
+
+**约束 A：实时可用内存门槛（每分类独立，阈值不下调）**
 
 ```
-门槛 = max(分类下限, 预计峰值 + safetyReserveMb)  (+ 滞回量，仅当该任务曾因内存等待过)
+门槛A = max(分类下限 minAvailMb, 本任务预计峰值) + 滞回量（仅当该任务曾因内存等待过）
+放行A ⇔ (os.freemem() - safetyReserveMb) ≥ 门槛A
 ```
 
-- 数据源是 `os.freemem()`，在 Windows 上等于 `ullAvailPhys`（**可用**物理内存，不是"空闲"），
-  已运行任务占用天然算在里面，因此**不重复叠加**预计峰值——否则 16GB 机器上第二个任务永远起不来；
-- `safetyReserveMb` 默认 0（先与需求给的数值严格一致，调优时再抬高）；
-- 滞回 `hysteresisMb` 默认 1024：一旦某任务因内存等待过，恢复判定要在门槛之上再多 1GB 才放行，
-  避免"刚过线就起跑、立刻又被压下去"的抖动；
+`os.freemem()` 在 Windows 上是 `ullAvailPhys`（可用物理内存，含待机列表），**已经包含**所有正在
+运行进程的真实占用，所以这一侧**不再叠加**其他任务的预计峰值——否则等于对同一份资源扣两次，
+16GB 机器上第二个任务会永久起不来。
+
+**约束 B：全局构建预算（所有分类共用同一个池）**
+
+```
+预算上限 budgetMb = max(totalMb - systemReserveMb, 最大分类预计峰值)
+已预留 reservedMb = Σ reservations/*.json 的 reservedMb（phase ∈ queued|starting|running|releasing）
+放行B ⇔ reservedMb + 本任务预计峰值 ≤ budgetMb
+```
+
+- `totalMb` 是物理内存**总量**（`ullTotalPhys`），不是可用内存；`systemReserveMb` 默认 3072
+  （操作系统 + 常驻应用 + 文件缓存的安全垫）。16GB 机器上预算约 **12.6 GB**。
+- 这一侧**只**看"活动任务的预留之和"，**不读** `freemem`，因此与约束 A 不重复计算同一份资源。
+- 预留只在**即将启动前**创建（拿到预算 + 拿到分类槽位是同一个临界区，见 5.7），排队中的任务
+  不占预算，不会因为"排队的人很多"把自己饿死。
+
+**两个约束的分工**
+
+| | 约束 A | 约束 B |
+|---|---|---|
+| 回答的问题 | 这台机器**现在**还有没有空间？ | 我一次性批准出去的**峰值承诺**加起来有没有超过总容量？ |
+| 数据源 | `freemem`（动态，已被真实占用影响） | `totalmem - 系统保留`（静态总量） |
+| 粒度 | 每分类各自门槛 | 所有分类共用一个池 |
+| 典型触发 | 内存被 dev server/别的构建吃掉 | Heavy+Medium+2×Dev 这类组合的**合计**超卖 |
+
+其余参数：
+- `safetyReserveMb` 默认 0（与需求给的数值严格一致，调优时再抬高）；
+- 滞回 `hysteresisMb` 默认 1024：一旦某任务因内存等待过，恢复判定要在门槛 A 之上再多 1GB；
 - 内存按 `memorySampleMs`（默认 3s）采样，运行期持续记录最低可用内存写进 `history`。
+
+**边界情况（实现必须逐条满足）**
+
+1. `freemem` 已含运行中进程占用 → 约束 B 绝不用 `freemem - Σ预计峰值`（那会重复扣减）；
+2. 两个约束各自独立判定，任一不足即排队；`waitReason` 里分别写明是哪一侧不足；
+3. 预算夹取：若 `totalMb - systemReserveMb < 最大分类预计峰值`（例如把 `systemReserveMb` 调得
+   过大），预算被**夹到最大峰值**并在配置检查里报问题——否则重型任务永久无法准入。夹取只影响
+   约束 B 的池子，**不改变**约束 A 的分类门槛（门槛不下调）；
+4. 单个任务的预计峰值 > 预算 → 直接拒绝（不允许"自我放行"），原因写进 `waitReason`；
+5. 预留只为**即将启动**的任务创建，排队任务不占预算；
+6. 崩溃残留的回收条件：持有进程"已证明退出" **且** 记录的子进程"已证明结束"；子进程仍存活
+   或身份 `unknown` → fail-closed 继续占用预算（由 `doctor --reap` 用命令行签名取证处置）；
+7. 预留与槽位在同一个临界区完成（5.7）：预算不足不会先占槽位卡住别人；槽位拿不到会回滚预留；
+8. `detached` 且没有 childPid 的残留**不自动回收**（无法证明脱离控制台的子进程已退出）；
+9. 释放预留校验 `(pid, 进程创建时间, nonce)`，PID 被系统复用也不会释放别人的预留；
+10. Dev 常驻服务：经调度器以 `--class dev` 启动的常驻服务占 dev 槽位、**计入**全局预算；
+    `npm run dev` 这类**直接启动**的未纳管实例只能靠约束 A 兜住（其真实占用已体现在 `freemem`），
+    由 `sched dev` 点名，见第 12 节限制 8。
 
 ### 4.3 排队与准入循环（每 `pollMs` 一轮）
 
@@ -228,12 +284,13 @@ node scripts/build-sched.mjs cargo -- --priority P0 build   # 有 -- 时前面�
 **同分类内**才比较优先级，跨分类互不影响。
 
 ## 5. 跨进程互斥原理
-
 ### 5.1 状态目录
 
 ```
 <git-common-dir>/taskdock-build-sched/
 ├── slots/heavy-1/{owner.json,heartbeat}
+├── slots/.admission/{owner.json,heartbeat}   准入临界区（毫秒级持有，见 5.7）
+├── reservations/<taskId>.json                全局预算预留台账（活跃任务，见 5.7）
 ├── queue/<taskId>.json
 ├── cancel/<taskId>
 ├── logs/<taskId>.log
@@ -306,6 +363,41 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 `TASKDOCK_SCHED_TASK_ID`，检测到自己**已在某个调度任务内部**时，内层命令**直通执行**
 （输出直连终端、退出码原样返回、不再排队），外层任务的资源账已经覆盖它。
 
+### 5.7 准入原子性：预算预留与分类槽位在同一临界区
+
+「先占槽位、再发现预算不够」会卡死槽位；「先查预算、再慢慢抢槽位」会让两个进程都以为自己拿到了
+最后一份预算。因此准入是一次**跨进程原子事务**，临界区就是 `slots/.admission`（同样是 `mkdir`
+原子性 + 租约，复用 5.2 那套机制，不另造锁体系）：
+
+```
+① mkdir slots/.admission ── 拿不到 → 本轮放弃，下一 pollMs 再试（非阻塞，不等待阻塞式锁）
+② 回收崩溃残留预留（只做便宜的存活性判断；证明不了就不动，fail-closed）
+③ 读 reservations/*.json 求和 reservedMb，按 4.2 约束 B 判定
+④ 预算不足 → 立刻退出临界区，**不碰槽位**
+⑤ 写 reservations/<taskId>.json（写入失败 → 退出，不碰槽位）
+⑥ 逐个 mkdir slots/<class>-<n>；拿到 → 提交；拿不到 → 回滚 ⑤ 的预留
+⑦ 释放临界区
+```
+
+`reservations/<taskId>.json` 字段：
+
+| 字段 | 含义 |
+|---|---|
+| `taskId` / `taskClass` / `reservedMb` | 谁、哪一类、占了多少预算 |
+| `ownerPid` / `ownerStartTime` / `ownerStartTimeSource` | 提交进程身份（PID 复用防护） |
+| `nonce` | 释放/回滚时的所有权凭据 |
+| `childPid` / `childCmdSignature` | 真实构建子进程身份（命令行签名用于取证比对） |
+| `detached` | 子进程是否脱离控制台（决定崩溃后能否自动回收） |
+| `heartbeatAt` / `createdAt` / `phase` | 心跳、创建时间、`queued\|starting\|running\|releasing` |
+
+- **释放**：校验 `(ownerPid, ownerStartTime, nonce)` 全部相符才删文件——PID 复用不会释放别人的预留；
+- **崩溃回收**：持有进程必须"已证明退出"，且 `childPid` 已不存在，才回收。`childPid` 尚未登记
+  （崩在 spawn 与登记之间）时，额外要求 `detached !== true` 且没有该进程的存活子进程，并等待
+  `reservationOrphanGraceMs`（默认 180s）；任一条不满足就**继续占用**，把原因写进 `doctor`；
+- **不做的事**：不按固定时间删预留、不因为心跳停滞就假定持有者已死、不自动处置 `detached`
+  的孤儿（这些交给 `doctor --reap` 的签名取证）；
+- 台账在 `.git` 公共目录下，**多 Worktree / 多会话共享同一份**，无中央守护进程。
+
 ## 6. 队列与状态机
 
 状态：`queued` → `waiting_resources` → `running` → `succeeded` / `failed` / `cancelled`。
@@ -359,7 +451,7 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 | `scripts/build-guard.mjs`（磁盘/缓存守卫） | **复用**：`run` 前跑同一套 `precheck` 阈值（exit 2 → 调度器 exit 6）；缓存回收仍由它的 `cleanup` 负责 |
 | `scripts/worktree-guard.mjs` | 不变。它管"目录与冲突"，本调度器管"算力与内存"，互不替代 |
 | `scripts/watch-dev-processes.ps1` | 不变（观察/窄条件终止）。`sched dev` 是它的只读替代视图，不做终止 |
-| `scripts/perf/gate-run.sh` | 不变。它串行跑多步，每步自身仍应经过调度器；`cargo` 步建议改用 `npm run cargo --` |
+| `scripts/perf/gate-run.sh` | **已接入（2026-11-15）**：所有门禁步经 `run`/`cargo` 子命令排队；cargo 步改用 `cargo` 子命令（`cwd=src-tauri/`，不再用 `--manifest-path`）。`GATE_DRY_RUN=1` 零资源核对路由，`GATE_NO_SCHED=1` 仅在调度器故障时排障用 |
 | `AGENTS.md` §3.4/§5 | 已增补"高资源构建统一入口"与"子智能体同规则"，细节指向本文档 |
 
 ## 10. 配置
@@ -380,12 +472,59 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 | `defaultWaitTimeoutMin` / `defaultRunTimeoutMin` | 20 / 0 | 默认等待/运行上限 |
 | `agingStepMs` | 300000 | 老化台阶（5 分钟升一级） |
 | `logMaxMb` / `historyMaxEntries` / `finishedRetentionMs` | 32 / 500 / 60000 | 日志上限、历史上限、终态记录保留 |
-| `estimateHeavyMb` / `estimateMediumMb` / `estimateLightMb` | 6000 / 3000 / 800 | 预计峰值 |
+| `estimateHeavyMb` / `estimateMediumMb` / `estimateLightMb` | 6000 / 3000 / 800 | 预计峰值（dev 类沿用 medium 的 3000） |
+| `systemReserveMb` | 3072 | 全局预算的系统保留（`budgetMb = max(totalMb - 本值, 最大预计峰值)`；0 = 用满物理内存） |
+| `budgetEnabled` | true | 跨分类全局预算开关（关掉只保留约束 A，仅用于故障回退，见 11） |
+| `reservationOrphanGraceMs` | 180000 | 崩溃残留预留"无 childPid"时的回收宽限（有 childPid 时按子进程是否存活判定） |
 | `diskPrecheck` | true | 复用 build-guard 的磁盘预检 |
 | `dedupe` | true | 等价任务合并 |
 
 调优建议（16GB 机器）：内存长期紧张时**只调低分类门槛或并发**，不要关掉准入；确认某类任务实际峰值
 更低时，用 `history` 的 `minAvailMb` 作为依据再调 `estimate*Mb`。
+
+### 10.1 2026-11-15 本机覆盖：取消"静态分类下限"，改为按预计峰值准入
+
+现象：本机 16 GB 中约 13 GB 被其他程序长期占用，可用长期只有 1–2 GB；而 `light` 类（tsc /
+vitest / `node --test`，实际峰值约 0.8–1 GB）因"分类下限 2560 + 滞回 1024"被要求 3.56 GB，
+连只需要 1–2 GB 的检查也无法启动。
+
+处置（**本机覆盖，写入状态目录 `config.json`，不入库**；仓库默认值不变）：
+
+```json
+{ "heavyMinAvailMb": 3072, "mediumMinAvailMb": 1536,
+  "lightMinAvailMb": 1024, "hysteresisMb": 256, "estimateMediumMb": 2400 }
+```
+
+效果（约束 A 的实际门槛 = `max(分类下限, 预计峰值) + 滞回`）：
+
+| 类 | 旧门槛 | 新门槛 | 说明 |
+|---|---|---|---|
+| light | 3.56 GB | **1.28 GB** | 只做 fs 只读/单测，1.3 GB 空闲即可跑 |
+| medium | 5.00 GB | **2.66 GB** | `vite build`/`cargo check`，按 2.34 GB 峰值 + 256 MB 余量 |
+| heavy | 7.00 GB | **6.26 GB** | 完整编译/打包，仍按 6000 MB 峰值 |
+
+**没有关闭准入**：静态下限被压到接近零（1–3 GB），但每个任务仍按自己的预计峰值准入，且约束 B
+（全局预算 12.63 GB）不变。这样"1–2 GB 的检查"能跑，"6 GB 的编译"不会在 1 GB 空闲时被放进来把
+机器打到 OOM。若某类任务实测峰值更低，用 `history` 的 `minAvailMb` 作依据再调 `estimate*Mb`；
+个别任务可用 `--estimate-mb` 单独指定。
+
+副作用与回退：本机 `config.json` 删除即回到仓库默认（门槛 6144/4096/2560、滞回 1024、
+`estimateMediumMb` 3000）。改动后 `node --test scripts/build-sched.test.mjs` **27/27 通过**。
+
+**同日实测补充（重要，别把上限当成"没有门槛"）**：
+
+| 任务 | 实测 | 结论 |
+|---|---|---|
+| `tsc --noEmit`（`--estimate-mb 1200`，P0，空闲 1.3–1.5 GB） | **exit 0，24 s 通过** | 1–2 GB 级检查在低压下确实能跑，这就是本次调低门槛的目的 |
+| `vitest run` 4 文件（light，空闲 ~1 GB） | **exit 0，63 测试通过，37 s** | 同上 |
+| `cargo check --tests`（estimate 2400，空闲 3.07 GB 时准入） | **exit 101**：`memory allocation of 2097152 bytes failed` + `STATUS_STACK_BUFFER_OVERRUN` | **不是代码错误，是 rustc 被 OOM 打断**。本仓库 `cargo check --tests` 实测峰值 > 3 GB |
+
+由此定的口径（本机）：
+- 静态下限压到近零只对"小于 2 GB 的检查"有意义；**编译类任务仍必须按自己的真实峰值准入**，
+  否则就是把 OOM 当成"构建失败"来浪费 10 分钟。
+- `cargo check` / `cargo check --tests` 本机实测需要 **≥5 GB 空闲**，用 `--estimate-mb 5200`
+  显式声明，不再借用 `estimateMediumMb=2400`。等 `history` 里积累到成功的 `minAvailMb`
+  再回调这个值。
 
 ## 11. 故障处理手册
 
@@ -413,12 +552,17 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
    情形（`doctor` 会明确指出）。
 6. **`npm run test` 现在会经过调度器**：其他会话若发现测试要排队，请读本文档第 4 节，而不是改回
    直接 `vitest run`——绕过调度器正是本项目要解决的问题。
-7. **`scripts/perf/gate-run.sh` 没有改造**：它是产出 `docs/clipboard/evidence/` 证据的脚本，用
-   `--manifest-path` 从仓库根调 cargo。改造它需要在真机上重跑 clippy/test 才能证明没坏，而当前
-   机器可用内存长期低于 2.5 GB（门禁类任务一律排队），无法完成验证，因此只给出迁移建议而不动它：
-   把其中每条 `run_gate` 改成 `node scripts/build-sched.mjs run --priority P2 -- <命令>`，
-   cargo 三条改用 `node scripts/build-sched.mjs cargo -- <参数>`（自动 `cwd=src-tauri/`，
-   不再需要 `--manifest-path`）。见验收报告遗留项 R2。
+7. **`scripts/perf/gate-run.sh` 已接入调度器，但"完整跑一遍门禁"仍未在真机验证**：2026-11-15 把
+   cargo/前端门禁全部改为经 `run` / `cargo` 子命令排队（`bash -n` 与 `GATE_DRY_RUN=1` 路由核对
+   已通过，路由证据见 `tmp/acceptance/taskdock-full-acceptance-20261115/scheduler/`），但本机可用
+   内存长期低于 2.5GB，`cargo clippy`/`cargo test --release` 一律排队到超时，所以"改完之后整串
+   门禁仍然通过"这一点仍是 `NOT TESTED`。`GATE_NO_SCHED=1` 保留为调度器故障时的逃生门。
+8. **未纳管的 dev 服务器不在预算台账里**：`npm run dev`（直接 `vite`）不经调度器，只能靠约束 A
+   兜住（其真实占用已体现在 `freemem`），并由 `sched dev` 点名。需要计入全局预算时用
+   `node scripts/build-sched.mjs run --class dev -- npm run tauri dev`（占 dev 槽位 + 计入预算）。
+9. **`apps/mobile` 的 `build:android` 仍是直接 Gradle 调用**：它绕开队列，属于已知冲突（本轮只
+   在文档与 `AGENTS.md` 里给出正确的调度写法，未改该 `package.json` —— 改脚本需要真机重跑 APK
+   构建才能证明没坏，本轮内存条件下无法验证）。
 
 ## 13. 验收证据
 

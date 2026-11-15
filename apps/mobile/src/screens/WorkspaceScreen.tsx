@@ -1,20 +1,23 @@
 // 工作区（第七轮布局）：项目空间 / 我的工作区。
-// 顺序：Header → 分段 → 我的项目空间 → 常用工具 → 协作动态 → 文件集合。
+// 顺序：Header → 分段 → 我的项目空间 → 内容管理 → 协作动态 → 文件集合。
+//
+// 第九轮职责收口：工作区只保留「工作内容与资源」——
+// - 内容管理：收集箱 + 笔记（唯一的主归属；首页可保留快捷入口）；
+// - 文件集合：文件互传 + 文件暂存架 + 项目资源（文件互传只在这一处出现，
+//   不再同时放在常用工具网格里）；
+// - 同步中心属于设备与系统管理，已移出工作区，主入口在「我的」。
 //
 // 数据边界（重要）：
 // - 手机端目前没有 workspace_projects / workspace_items 的同步链路，
 //   因此「我的项目空间」只渲染紧凑占位，不填演示项目、版本、成员或百分比。
 // - 协作动态同理：本机笔记/文件互传活动不会被伪装成团队协作动态。
-// - 真实可用的只有移动端已有能力：收集箱、笔记、文件互传、同步中心。
-//
-// 第七轮视觉：不再用整块浅蓝容器包住真实工具；常用工具直接以渐变图标底板网格
-// 落在页面底上，真实入口比项目/协作占位更醒目。占位改成虚线空状态，不再是大白卡。
 import { useState } from "react";
 import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 
 import { FeatureIconPlaceholder } from "../components/FeatureIconPlaceholder";
+import { EntryRow } from "../components/EntryRow";
 import { FileCollectionCard } from "../components/FileCollectionCard";
-import { IconEntry } from "../components/IconEntry";
+import { GlassCard } from "../components/GlassCard";
 import { AppIcon } from "../components/icons/AppIcon";
 import { ProjectSpacePlaceholder } from "../components/ProjectSpaceCard";
 import { ScreenHeader } from "../components/ScreenHeader";
@@ -74,24 +77,25 @@ export function WorkspaceScreen({
             </View>
 
             <View style={styles.group}>
-              {/* 没有用户自定义置顶配置，标题不能用「置顶工具」暗示可排序；
-                  四项是固定常用入口，编辑按钮也就不展示。 */}
-              <SectionHeader icon="wrench" title="常用工具" />
-              <View style={styles.toolGrid}>
-                <IconEntry
+              <SectionHeader icon="folderOpen" title="内容管理" />
+              {/* 收集箱与笔记的唯一主归属在这里；首页只保留快捷入口，工具/我的不再重复目录。
+                  两项用一张白卡而不是 25% 网格，避免四项网格只剩两格时右侧留出半排空白。 */}
+              <GlassCard style={styles.listCard}>
+                <EntryRow
                   icon="inbox"
                   label="收集箱"
-                  badge={inboxCount}
+                  helper="桌面端与系统分享收进来的速记，待整理"
+                  trailingText={inboxCount > 0 ? `${inboxCount} 条` : undefined}
                   onPress={() => nav.push("inbox")}
                 />
-                <IconEntry icon="note" label="笔记" onPress={() => nav.push("notes")} />
-                <IconEntry
-                  icon="transfer"
-                  label="文件互传"
-                  onPress={() => nav.push("files")}
+                <EntryRow
+                  icon="note"
+                  label="笔记"
+                  helper="本机笔记，可与电脑双向同步"
+                  divider
+                  onPress={() => nav.push("notes")}
                 />
-                <IconEntry icon="sync" label="同步中心" onPress={() => nav.push("sync")} />
-              </View>
+              </GlassCard>
             </View>
 
             <View style={styles.group}>
@@ -169,10 +173,7 @@ const styles = StyleSheet.create({
   },
   /** 模块内：标题与内容 12dp（模块之间由 content 的 20dp 负责） */
   group: { gap: space.md },
-  toolGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-  },
+  listCard: { paddingHorizontal: space.md, paddingVertical: space.xxs },
   activityPlaceholder: {
     minHeight: 32,
     flexDirection: "row",

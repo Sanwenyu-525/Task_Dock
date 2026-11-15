@@ -284,10 +284,14 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
             `${target === "shelf" ? "发送到暂存架" : "发送到电脑"} ${i + 1}/${list.length}`,
           );
           if (target === "shelf" && desktop?.state === "done" && desktop.remoteId) {
-            try {
-              await retryShelfImport(asset, desktop.remoteId, null);
-            } catch (error) {
-              failures.push(describeError(error));
+            const retry = await retryShelfImport(asset, desktop.remoteId, null);
+            if (retry.stopBatch) {
+              failures.push(retry.message);
+              break;
+            }
+            if (retry.state === "pending") offline = retry.message;
+            else if (retry.state === "failed" || retry.state === "cancelled") {
+              failures.push(retry.message);
             }
             continue;
           }
@@ -298,6 +302,11 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
           });
           if (result.offline) {
             offline = result.message ?? "电脑端暂时不可达，已保留为待发送";
+            break;
+          }
+          if (result.stopBatch) {
+            // 授权/安全类失败：停止整批，不把令牌失效伪装成「离线待发送」。
+            if (result.message) failures.push(result.message);
             break;
           }
           for (const outcome of result.outcomes) {
@@ -326,25 +335,35 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
       try {
         if (kind === "album") {
           await saveToAlbum(asset);
+          showToast("已保存到相册", "success");
         } else if (kind === "desktop") {
           const result = await sendToDesktop([asset], { target: "inbox", onProgress: setProgress });
           if (result.offline) showToast(result.message ?? "电脑端不可达", "warn");
+          else if (result.stopBatch) showToast(result.message ?? "发送失败", "danger");
+          else showToast("已发送到电脑", "success");
         } else if (kind === "shelf") {
           const desktop = (destinations[asset.id] ?? []).find(
             (item) => item.destination === "desktop" && item.state === "done" && item.remoteId,
           );
           if (desktop?.remoteId) {
-            await retryShelfImport(asset, desktop.remoteId, null);
+            const retry = await retryShelfImport(asset, desktop.remoteId, null);
+            if (retry.state === "pending") showToast(retry.message, "warn");
+            else if (retry.state === "failed" || retry.state === "cancelled") {
+              showToast(retry.message, retry.state === "failed" ? "danger" : "warn");
+            } else {
+              showToast("已加入暂存架", "success");
+            }
           } else {
             const result = await sendToDesktop([asset], {
               target: "shelf",
               onProgress: setProgress,
             });
             if (result.offline) showToast(result.message ?? "电脑端不可达", "warn");
+            else if (result.stopBatch) showToast(result.message ?? "发送失败", "danger");
+            else showToast("已加入暂存架", "success");
           }
         }
         await load();
-        showToast("已重试", "success");
       } catch (error) {
         showToast(describeError(error), "danger");
       } finally {

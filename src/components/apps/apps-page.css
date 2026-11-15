@@ -1,0 +1,16 @@
+/*
+ * 应用中心「页面态」栅格（2026-11-15 视觉对齐）。
+ *
+ * 背景：`.apps-grid` 在 ≥560px 容器时用 `minmax(150px, 1fr)`，1180 窗口下内容区约 620px
+ * 会排成 4 列、每列约 150px，应用名被压到只剩「Visua…」「窗口已…」，卡片里的收藏和
+ * 更多按钮也挤在同一行。把最小列宽提到 240px 后同一宽度只排 3 列（每列约 200px），
+ * 名称与状态可读，行内控件不再互相挤压。
+ *
+ * 只在 ≥560px 的容器档位生效，保留窄窗原有的 1 / 2 / 3 列降级行为；作用域 .apps-panel。
+ */
+
+@container (min-width: 560px) {
+  .apps-panel .apps-grid {
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  }
+}

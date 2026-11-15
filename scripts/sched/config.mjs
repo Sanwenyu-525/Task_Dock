@@ -54,6 +54,17 @@ export const DEFAULT_CONFIG = {
   estimateHeavyMb: 6000,
   estimateMediumMb: 3000,
   estimateLightMb: 800,
+  // 跨分类全局预算（见 docs/BUILD_SCHEDULER.md 4.2 约束 B）：
+  //   budgetMb = max(物理内存总量 - systemReserveMb, 最大分类预计峰值)
+  // 与「实时可用内存门槛」（约束 A，用 os.freemem）互相独立：本轮只看活动任务预留之和，
+  // 不读 freemem，避免同一份资源被扣两次。systemReserveMb 是给操作系统/常驻应用/文件缓存
+  // 留的安全垫（16GB 机器上预算约 12.6GB）；0 = 用满物理内存（仅用于实验）。
+  systemReserveMb: 3072,
+  // 关掉只保留约束 A（故障回退用，正常情况必须保持 true）
+  budgetEnabled: true,
+  // 崩溃残留预留的回收宽限：持有者已证明退出、且没有登记 childPid 时，再等这么久才回收
+  // （登记了 childPid 的按「子进程是否仍存活」判定，与本宽限无关）
+  reservationOrphanGraceMs: 180000,
   // 重型任务启动前执行一次既有的 scripts/build-guard.mjs precheck（磁盘/缓存）
   diskPrecheck: true,
   // 等价任务去重（只附加到正在运行的等价任务，从不复用已结束的结果）
@@ -61,9 +72,12 @@ export const DEFAULT_CONFIG = {
 };
 
 // 存在性/开关型字段（不是数值，不参与数值校验）
-const BOOLEAN_KEYS = new Set(["diskPrecheck", "dedupe"]);
+const BOOLEAN_KEYS = new Set(["diskPrecheck", "dedupe", "budgetEnabled"]);
 // 允许为 0 表示「不限」的字段
-const ZERO_MEANS_UNLIMITED = new Set(["defaultWaitTimeoutMin", "defaultRunTimeoutMin", "safetyReserveMb", "agingStepMs"]);
+const ZERO_MEANS_UNLIMITED = new Set([
+  "defaultWaitTimeoutMin", "defaultRunTimeoutMin", "safetyReserveMb", "agingStepMs",
+  "systemReserveMb", "reservationOrphanGraceMs",
+]);
 // 必须 >= 1 的字段
 const MIN_ONE_KEYS = new Set([
   "heavyConcurrency", "mediumConcurrency", "lightConcurrency", "devConcurrency",

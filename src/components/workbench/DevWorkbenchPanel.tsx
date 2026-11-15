@@ -72,6 +72,7 @@ import { AGENT_STATE_LABELS, formatDue, formatRelative, priorityLabel } from "..
 import { verificationLabel } from "../../lib/navigation";
 import { useLocale } from "../../hooks/useLocale";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import { WorkbenchDetailFacts, WorkbenchPageDetail } from "../../workbench/pageDetail";
 import { t as translate } from "../../i18n";
 import DevProjectContext from "../devwork/DevProjectContext";
 import DevHandoffSection from "../devwork/DevHandoffSection";
@@ -194,6 +195,10 @@ export default function DevWorkbenchPanel() {
     [restores],
   );
 
+  /** 当前任务的现场快照：由区域 A 的 task_context 读取结果上报，供满宽「工作现场」
+      复用；不为了这块区域再发一次 IPC。 */
+  const [workSnaps, setWorkSnaps] = useState<SnapshotSummary[]>([]);
+
   const restoreSnapshot = useCallback(
     async (snap: SnapshotSummary) => {
       if (restoresRef.current[snap.id]?.phase === "running") return;
@@ -255,30 +260,69 @@ export default function DevWorkbenchPanel() {
         }
       />
       <div className="page-scroll wb-body">
-        <CurrentTaskSection
-          currentId={currentId}
-          onClear={clearCurrent}
-          onPick={setCurrent}
-          restores={restores}
-          onRestore={restoreSnapshot}
-          refreshTick={refreshTick}
-          restoringAny={restoringAny}
-        />
-        {/* 开发现场（Round 1）：当前项目 + 只读 Git 摘要，紧随当前任务之后 */}
-        <DevProjectContext />
-        <div className="wb-grid">
-          <AgentSummarySection />
-          <AttentionSection currentId={currentId} />
+        <div className="wb-dev-stack">
+          {/* 第一层：当前开发任务 + 项目 / Git 上下文（任务优先） */}
+          <div className="wb-dev-grid wb-dev-grid--primary">
+            <CurrentTaskSection
+              currentId={currentId}
+              onClear={clearCurrent}
+              onPick={setCurrent}
+              restores={restores}
+              onRestore={restoreSnapshot}
+              refreshTick={refreshTick}
+              restoringAny={restoringAny}
+              onSnapshots={setWorkSnaps}
+            />
+            <DevProjectContext />
+          </div>
+
+          {/* 第二层：Agent 运行、交接包、验收工作台。宽屏三列，窄内容区两列。 */}
+          <div className="wb-dev-grid wb-dev-grid--triple">
+            <AgentSummarySection />
+            <DevHandoffSection />
+            <DevAcceptanceSection />
+          </div>
+
+          {/* 第三层：待处理事项、快速操作、最近待办并排；宽屏三列，窄内容区单列。 */}
+          <div className="wb-dev-grid wb-dev-grid--tools">
+            <AttentionSection currentId={currentId} />
+            <section className="wb-card" aria-label={t("workbench.quickActionsAria")}>
+              <div className="wb-section-head">
+                <h3 className="wb-section-title">
+                  <Zap size={13} aria-hidden="true" /> {t("workbench.quickActions")}
+                </h3>
+              </div>
+              <p className="endpoint-hint">{t("workbench.quickActionsHint")}</p>
+              <div className="wb-quick-grid">
+                <button type="button" className="btn sm" onClick={openQuickCapture}>
+                  {t("workbench.quickCapture")}
+                </button>
+                <button type="button" className="btn sm" onClick={() => setTabSafe("tasks")}>
+                  {t("nav.tasks")}
+                </button>
+                <button type="button" className="btn sm" onClick={() => setTabSafe("agents")}>
+                  {t("nav.agents")}
+                </button>
+              </div>
+            </section>
+            <RecentSection
+              excludeId={currentId}
+              restores={restores}
+              onRestore={restoreSnapshot}
+              refreshTick={refreshTick}
+            />
+          </div>
+
+          {/* 第四层：工作现场满宽（不是双列里的一格）。数据来自区域 A 已读取的快照。
+              放在最后，保证它是页面底部独立、完整宽度的工作区域。 */}
+          <WorkSiteSection
+            currentId={currentId}
+            snaps={workSnaps}
+            restores={restores}
+            onRestore={restoreSnapshot}
+            restoringAny={restoringAny}
+          />
         </div>
-        {/* 任务交接包 / 验收工作台（Round 1）：围绕当前任务的两块工作区 */}
-        <DevHandoffSection />
-        <DevAcceptanceSection />
-        <RecentSection
-          excludeId={currentId}
-          restores={restores}
-          onRestore={restoreSnapshot}
-          refreshTick={refreshTick}
-        />
       </div>
     </div>
   );
@@ -294,6 +338,7 @@ function CurrentTaskSection({
   onRestore,
   refreshTick,
   restoringAny,
+  onSnapshots,
 }: {
   currentId: string | null;
   onClear: () => void;
@@ -302,6 +347,8 @@ function CurrentTaskSection({
   onRestore: (snap: SnapshotSummary) => Promise<void>;
   refreshTick: number;
   restoringAny: boolean;
+  /** 把 task_context 已读取的现场快照上报给满宽「工作现场」，避免重复 IPC。 */
+  onSnapshots: (snaps: SnapshotSummary[]) => void;
 }) {
   const { t } = useLocale();
   const showToast = useUiStore((s) => s.showToast);
@@ -326,7 +373,8 @@ function CurrentTaskSection({
     setError(null);
     setLink(null);
     setConfirmDone(false);
-  }, [currentId]);
+    onSnapshots([]);
+  }, [currentId, onSnapshots]);
 
   const refresh = useCallback(async () => {
     if (!currentId) return;
@@ -335,13 +383,18 @@ function CurrentTaskSection({
       setCtx(c);
       setStale(false);
       setError(null);
+      onSnapshots(c.snapshots);
     } catch (e) {
       // 读侧校验：任务不存在（已删除）时不静默清空设置，如实展示失效状态
       const msg = errorMessage(e);
-      if (isTaskMissingError(e)) setStale(true);
-      else setError(msg);
+      if (isTaskMissingError(e)) {
+        setStale(true);
+        onSnapshots([]);
+      } else {
+        setError(msg);
+      }
     }
-  }, [currentId]);
+  }, [currentId, onSnapshots]);
 
   useEffect(() => {
     if (!currentId) return;
@@ -561,7 +614,8 @@ function CurrentTaskSection({
             )}
           </div>
 
-          {/* 关联摘要：Agent 会话 + 工作现场（复用 task_context 聚合，不二次查询） */}
+          {/* 关联摘要：只保留关联 Agent；工作现场在页面底部满宽区块渲染，
+              避免同一份快照在「当前任务」和「工作现场」出现两次。 */}
           <div className="wb-links">
             <div className="wb-links-col">
               <div className="wb-links-title">
@@ -597,42 +651,49 @@ function CurrentTaskSection({
                 </div>
               ))}
             </div>
-            <div className="wb-links-col">
-              <div className="wb-links-title">
-                <Save size={12} aria-hidden="true" />
-                {t("workbench.snapshots")}
-                <em className="badge subtle">{snaps.length}</em>
-              </div>
-              {snaps.length === 0 && (
-                <div className="endpoint-hint">{t("workbench.noSnapshots")}</div>
-              )}
-              {snaps.slice(0, 3).map((s) => (
-                <div className="wb-row" key={s.id}>
-                  <span className="wb-row-main">
-                    <span className="wb-row-title" title={s.name}>
-                      {s.name}
-                    </span>
-                    <span className="wb-row-sub">
-                      {t("workbench.snapshotItems", { count: s.item_count })}
-                      {s.last_restored_at
-                        ? ` · ${t("workbench.restore")} ${formatRelative(s.last_restored_at)}`
-                        : ""}
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    className="btn sm"
-                    disabled={restoringAny}
-                    onClick={() => void onRestore(s)}
-                  >
-                    {restores[s.id]?.phase === "running"
-                      ? t("workbench.restoreRunning")
-                      : t("workbench.restore")}
-                  </button>
-                </div>
-              ))}
-            </div>
           </div>
+
+          {/* 右栏详情：当前任务上下文。中央保留任务操作与关联 Agent，
+              右栏只补「状态 / 到这个任务为止」的事实，不复制按钮组。 */}
+          <WorkbenchPageDetail
+            title={t("workbench.currentTask")}
+            actions={
+              <button type="button" className="btn sm" onClick={() => openContext(task)}>
+                {t("workbench.openContext")}
+              </button>
+            }
+          >
+            <p className="wb-detail-title">
+              <span>{task.title}</span>
+            </p>
+            {task.description && <p className="wb-detail-desc">{task.description}</p>}
+            <WorkbenchDetailFacts
+              rows={[
+                {
+                  label: t("workbench.contextTaskStatus"),
+                  value:
+                    task.status === "completed"
+                      ? t("workbench.statusCompleted")
+                      : t("workbench.statusPending"),
+                },
+                { label: t("workbench.contextPriority"), value: priorityLabel(task.priority) },
+                task.due_at
+                  ? { label: t("workbench.contextDue"), value: formatDue(task.due_at) }
+                  : null,
+                task.category
+                  ? { label: t("workbench.taskCategory"), value: task.category }
+                  : null,
+                {
+                  label: t("workbench.linkedAgents"),
+                  value: `${ctx?.agents.length ?? 0}`,
+                },
+                {
+                  label: t("workbench.snapshots"),
+                  value: `${snaps.length}`,
+                },
+              ]}
+            />
+          </WorkbenchPageDetail>
         </>
       )}
     </section>
@@ -960,6 +1021,95 @@ function AttentionSection({ currentId }: { currentId: string | null }) {
           )}
         </button>
       ))}
+    </section>
+  );
+}
+
+/* ══ 工作现场（满宽） ═════════════════════════════════════════════ */
+
+/**
+ * 当前任务已保存的窗口组合。数据由区域 A 的 `task_context` 一次读取后上报，
+ * 本区块不再单独 IPC；恢复走与区域 A 相同的 `workspace_restore` 与回执状态。
+ */
+function WorkSiteSection({
+  currentId,
+  snaps,
+  restores,
+  onRestore,
+  restoringAny,
+}: {
+  currentId: string | null;
+  snaps: SnapshotSummary[];
+  restores: Record<string, RestoreState>;
+  onRestore: (snap: SnapshotSummary) => Promise<void>;
+  restoringAny: boolean;
+}) {
+  const { t } = useLocale();
+  const latest = latestSnapshot(snaps);
+
+  return (
+    <section className="wb-card wb-worksite" aria-label={t("workbench.snapshots")}>
+      <div className="wb-section-head">
+        <h3 className="wb-section-title">
+          <Save size={13} aria-hidden="true" /> {t("workbench.snapshots")}
+          {snaps.length > 0 && <em className="badge subtle">{snaps.length}</em>}
+        </h3>
+        <span className="flex-spacer" />
+        {latest && (
+          <button
+            type="button"
+            className="btn primary sm"
+            disabled={restoringAny}
+            onClick={() => void onRestore(latest)}
+          >
+            {restores[latest.id]?.phase === "running"
+              ? t("workbench.restoreRunning")
+              : t("workbench.workSiteRestoreLatest")}
+          </button>
+        )}
+      </div>
+      <p className="endpoint-hint">{t("workbench.workSiteHint")}</p>
+      {!currentId ? (
+        <div className="endpoint-hint">{t("workbench.workSiteNoTask")}</div>
+      ) : snaps.length === 0 ? (
+        <div className="endpoint-hint">{t("workbench.workSiteEmpty")}</div>
+      ) : (
+        <div className="wb-worksite-grid">
+          {snaps.map((snap) => {
+            const state = restores[snap.id];
+            return (
+              <div className="wb-worksite-card" key={snap.id}>
+                <div className="wb-worksite-top">
+                  <span className="wb-worksite-name" title={snap.name}>
+                    {snap.name}
+                  </span>
+                  {state?.phase === "running" && (
+                    <span className="wb-status-chip is-running">
+                      {t("workbench.restoreRunning")}
+                    </span>
+                  )}
+                </div>
+                <span className="wb-worksite-meta">
+                  {t("workbench.snapshotItems", { count: snap.item_count })}
+                  {snap.last_restored_at
+                    ? ` · ${t("workbench.restore")} ${formatRelative(snap.last_restored_at)}`
+                    : ` · ${t("workbench.workSiteNeverRestored")}`}
+                </span>
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={restoringAny}
+                  onClick={() => void onRestore(snap)}
+                >
+                  {state?.phase === "running"
+                    ? t("workbench.restoreRunning")
+                    : t("workbench.restore")}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }

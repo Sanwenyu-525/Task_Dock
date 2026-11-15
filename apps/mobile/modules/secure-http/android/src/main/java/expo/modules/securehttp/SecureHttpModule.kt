@@ -3,7 +3,11 @@ package expo.modules.securehttp
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.net.NoRouteToHostException
+import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
@@ -16,6 +20,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
 import javax.net.ssl.X509TrustManager
 
 import expo.modules.kotlin.Promise
@@ -134,7 +140,14 @@ class SecureHttpModule : Module() {
           } else {
             // 证书/指纹错误常被 HttpsURLConnection 包在 SSLHandshakeException 里：
             // 沿 cause 链判定，否则「指纹不匹配」会被误报成普通网络错误。
-            val code = if (isCertificateFailure(error)) "E_PIN_MISMATCH" else "E_NETWORK"
+            val code = when {
+              isCertificateFailure(error) -> "E_PIN_MISMATCH"
+              isHandshakeFailure(error) -> "E_TLS_HANDSHAKE"
+              isTimeoutFailure(error) -> "E_REQUEST_TIMEOUT"
+              isSslFailure(error) -> "E_TLS_HANDSHAKE"
+              isOfflineFailure(error) -> "E_NETWORK"
+              else -> "E_UNKNOWN"
+            }
             // 错误消息只含原因摘要，不含 URL 查询参数、证书或指纹原文。
             promise.reject(code, error.message ?: error.javaClass.simpleName, error)
           }
@@ -211,11 +224,40 @@ class SecureHttpModule : Module() {
   }
 
   /** 沿 cause 链判定证书类失败（TLS 层常把 CertificateException 再包一层）。 */
-  private fun isCertificateFailure(error: Throwable?): Boolean {
+  private fun isCertificateFailure(error: Throwable?): Boolean =
+    hasCause<CertificateException>(error)
+
+  /**
+   * TLS 握手失败（协议不兼容/证书链不被接受等），但不含明确的指纹不匹配。
+   *
+   * 为什么单独编码：手机端必须能区分「电脑没开机」与「安全通道握手失败」，
+   * 后者是 fail-closed 的安全失败，绝不能被当成普通离线而无限重试。
+   */
+  private fun isHandshakeFailure(error: Throwable?): Boolean =
+    hasCause<SSLHandshakeException>(error)
+
+  /** 读/连接超时：明确的可重试网络错误，但不能笼统归成 offline。 */
+  private fun isTimeoutFailure(error: Throwable?): Boolean =
+    hasCause<SocketTimeoutException>(error)
+
+  /** 其余 SSLException（协议/证书链问题）同样按安全失败处理，禁止降级成 offline。 */
+  private fun isSslFailure(error: Throwable?): Boolean =
+    hasCause<SSLException>(error)
+
+  /**
+   * 只有明确的连接/DNS/拒绝类异常才归为离线。
+   * 泛化的 IOException 不能证明是网络问题，落到 E_UNKNOWN 更安全。
+   */
+  private fun isOfflineFailure(error: Throwable?): Boolean =
+    hasCause<UnknownHostException>(error) ||
+      hasCause<NoRouteToHostException>(error) ||
+      hasCause<SocketException>(error)
+
+  private inline fun <reified T : Throwable> hasCause(error: Throwable?): Boolean {
     var current = error
     var depth = 0
     while (current != null && depth < MAX_CAUSE_DEPTH) {
-      if (current is CertificateException) return true
+      if (current is T) return true
       current = current.cause
       depth += 1
     }

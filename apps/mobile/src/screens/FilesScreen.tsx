@@ -242,6 +242,14 @@ export function FilesScreen({ nav }: { nav: Nav }) {
   const [downloaded, setDownloaded] = useState<Record<string, string>>({});
   const [transfer, setTransfer] = useState<TransferState | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  /**
+   * 证书/指纹校验失败不是「刷新一下就好」的网络抖动：继续重试只会重复失败，
+   * 必须把「重新配对」放在错误现场，而不是让用户自己猜着回「我的」。
+   */
+  const [listError, setListError] = useState<{
+    message: string;
+    needsRepair: boolean;
+  } | null>(null);
 
   const toastSeq = useRef(0);
   const mounted = useRef(true);
@@ -285,9 +293,18 @@ export function FilesScreen({ nav }: { nav: Nav }) {
         const next = await client.list();
         if (!mounted.current) return;
         setFiles(next);
+        setListError(null);
       } catch (error) {
         if (mounted.current) {
-          showToast(`读取文件列表失败：${describeError(error)}`, "danger");
+          const message = `读取文件列表失败：${describeError(error)}`;
+          const needsRepair = error instanceof AppError && error.code === "tls_pin_mismatch";
+          if (needsRepair) {
+            // 指纹不匹配是安全失败，不能降级成普通 Toast 后继续刷新。
+            setListError({ message, needsRepair: true });
+          } else {
+            setListError(null);
+            showToast(message, "danger");
+          }
         }
       } finally {
         if (mounted.current) {
@@ -596,6 +613,38 @@ export function FilesScreen({ nav }: { nav: Nav }) {
                 </Text>
               </PressableScale>
             </GlassCard>
+
+            {listError ? (
+              <GlassCard
+                style={[
+                  styles.errorCard,
+                  { backgroundColor: tokens.card, borderColor: tokens.danger },
+                ]}
+              >
+                <View style={styles.errorMain}>
+                  <Text style={[styles.errorTitle, { color: tokens.danger }]}>
+                    文件互传连接校验失败
+                  </Text>
+                  <Text style={[styles.errorText, { color: tokens.text }]}>
+                    {listError.message}
+                  </Text>
+                </View>
+                {listError.needsRepair ? (
+                  <PressableScale
+                    onPress={() => {
+                      setListError(null);
+                      nav.push("pairing");
+                    }}
+                    accessibilityLabel="重新扫码配对"
+                    contentStyle={[styles.errorAction, { backgroundColor: tokens.dangerFill }]}
+                  >
+                    <Text style={[styles.errorActionText, { color: tokens.onDanger }]}>
+                      重新配对
+                    </Text>
+                  </PressableScale>
+                ) : null}
+              </GlassCard>
+            ) : null}
 
             <SectionHeader title="来自电脑" count={incoming.length} tone="accent" />
             {incoming.length === 0 ? (
@@ -906,6 +955,37 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: "center",
     justifyContent: "center",
+  },
+  errorCard: {
+    padding: space.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    borderWidth: 1,
+  },
+  errorMain: {
+    flex: 1,
+    gap: 3,
+  },
+  errorTitle: {
+    fontSize: font.body,
+    fontWeight: "700",
+  },
+  errorText: {
+    fontSize: font.label,
+    lineHeight: 17,
+  },
+  errorAction: {
+    minHeight: 44,
+    minWidth: 88,
+    paddingHorizontal: space.md,
+    borderRadius: radius.control,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  errorActionText: {
+    fontSize: font.meta,
+    fontWeight: "700",
   },
   footer: {
     marginTop: space.lg,

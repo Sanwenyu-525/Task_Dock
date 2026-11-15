@@ -64,7 +64,12 @@
     row-gap: 8px;
   }
 
-  .settings-panel > .settings-page-head {
+  /* 2026-11-15：页头统一换成公共 <WorkbenchPageHeader>（类名 wb-page-header），
+     旧的 .settings-page-head 已不再渲染。若不补这条，页头会按自动放置落进
+     "head" 区域的左半格（232px 宽），与右列搜索框基线错开、下方留出空档。
+     两个类名同时保留：旧类名兜底，新类名生效。 */
+  .settings-panel > .settings-page-head,
+  .settings-panel > .wb-page-header {
     grid-area: head;
   }
   /* 数据加载失败横幅（条件渲染）：缺席时该行 auto 高度归零。 */

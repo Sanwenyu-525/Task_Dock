@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, CheckCheck, Trash2, ChevronRight, ChevronDown, History, Inbox } from "lucide-react";
+import "./history-page.css";
 import AgentIcon from "../ui/AgentIcon";
 import {
   clearNotifications,
@@ -27,6 +28,11 @@ import {
   type NotificationRow,
 } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
+import {
+  WorkbenchDetailFacts,
+  WorkbenchPageDetail,
+  useWorkbenchDetailHost,
+} from "../../workbench/pageDetail";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { createSubscriptionScope } from "../../lib/subscriptions";
@@ -106,6 +112,8 @@ function mergeRefresh<T extends { id: string }>(
 export default function HistoryPanel() {
   const { t: tr } = useLocale();
   const showToast = useUiStore((s) => s.showToast);
+  /** 右栏宿主存在时，展开内容投送到右栏；右栏关闭时保留内联详情作为降级。 */
+  const detailHost = useWorkbenchDetailHost();
   const agentSnapshot = useAgentsStore((s) => s.snapshot);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [events, setEvents] = useState<AgentEventRow[]>([]);
@@ -371,7 +379,10 @@ export default function HistoryPanel() {
       />
       {/* 过滤工具栏：第一行 = 筛选（时间 → 来源 → 类型，窄窗口时靠后的先换行），
           第二行 = 统计 + 批量操作，两行职责分离互不挤压 */}
-      <div className="filter-bar primary">
+      {/* 过滤工具栏（2026-11-15 合并）：原来「筛选」与「未读统计」分两条 filter-bar，
+          第二行只剩一句统计，视觉上悬空。现在合成一条工具栏，统计靠右同排，
+          窄窗口时随筛选组一起换行，不再单独占一行。 */}
+      <div className="filter-bar primary history-toolbar">
         <div className="seg-group subtle" role="group" aria-label={tr("history.rangeAria")}>
           {TIME_FILTERS.map((t) => (
             <button
@@ -408,12 +419,9 @@ export default function HistoryPanel() {
             </button>
           ))}
         </div>
-      </div>
-      <div className="filter-bar secondary">
-        <span className="history-unread-hint">
+        <span className="history-unread-hint history-toolbar-meta">
           {tr("history.unread", { unread, total: inboxTotal })}
         </span>
-        <span className="flex-spacer" />
       </div>
 
       {hasNew && (
@@ -480,7 +488,7 @@ export default function HistoryPanel() {
                     {e.kind === "notification" && e.notification?.body && !open && (
                       <div className="history-body">{e.notification.body}</div>
                     )}
-                    {open && (
+                    {open && !detailHost && (
                       <div className="history-detail">
                         {e.kind === "notification" ? (
                           <>
@@ -511,6 +519,70 @@ export default function HistoryPanel() {
                           </>
                         )}
                       </div>
+                    )}
+                    {open && detailHost && (
+                      <WorkbenchPageDetail
+                        title="事件详情"
+                        actions={
+                          <button
+                            type="button"
+                            className="btn sm"
+                            onClick={() => setDetailKey(null)}
+                          >
+                            收起
+                          </button>
+                        }
+                      >
+                        <p className="wb-detail-title">
+                          <span>
+                            {e.kind === "notification"
+                              ? e.notification?.title || "（无标题通知）"
+                              : e.event?.message || e.event?.session_external_id || "（无消息内容）"}
+                          </span>
+                        </p>
+                        {e.kind === "notification" && e.notification?.body && (
+                          <p className="wb-detail-desc">{e.notification.body}</p>
+                        )}
+                        <WorkbenchDetailFacts
+                          rows={[
+                            { label: "发生时间", value: e.iso },
+                            { label: "事件来源", value: e.source },
+                            {
+                              label: "事件类型",
+                              value:
+                                e.kind === "event"
+                                  ? `Agent · ${AGENT_STATE_LABELS[e.event?.state ?? ""] ?? e.event?.state ?? "事件"}`
+                                  : NOTIFICATION_KIND_LABELS[e.source] ?? e.source,
+                            },
+                            e.kind === "notification" && e.notification?.ref_type
+                              ? {
+                                  label: "关联对象",
+                                  value: `${e.notification.ref_type} · ${e.notification.ref_id}`,
+                                }
+                              : null,
+                            e.kind === "event" && e.event?.session_external_id
+                              ? { label: "关联会话", value: e.event.session_external_id }
+                              : null,
+                            e.count > 1
+                              ? { label: "聚合记录", value: `${e.count} 条连续相同记录` }
+                              : null,
+                          ]}
+                        />
+                        {e.kind === "event" && (
+                          <div className="wb-detail-actions">
+                            <button
+                              type="button"
+                              className="btn sm"
+                              onClick={() => {
+                                setDetailKey(null);
+                                void useUiStore.getState().setTab("agents");
+                              }}
+                            >
+                              前往 Agent 管理
+                            </button>
+                          </div>
+                        )}
+                      </WorkbenchPageDetail>
                     )}
                   </div>
                 );

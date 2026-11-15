@@ -1763,6 +1763,34 @@ ALTER TABLE mobile_files ADD COLUMN shelf_group_id TEXT;
 ALTER TABLE shelf_items ADD COLUMN origin TEXT;
 "#,
     ),
+    (
+        55,
+        r#"
+-- v55（逐项粘贴可靠性）：把「哪一项走到哪一步」变成可查询的持久事实，
+-- 并单列「按键可能已发出、结果不可证明」的条目，避免恢复任务时自动重发造成重复粘贴。
+-- - uncertain_items：JSON 数组；这些条目不会被 resume 自动重发，必须用户显式确认；
+-- - clipboard_paste_items：每个条目的原始顺序、内容 ID、类型、状态、错误原因、
+--   起止时间、是否发过按键、是否确认接收、是否可以安全重试。
+ALTER TABLE clipboard_paste_jobs ADD COLUMN uncertain_items TEXT NOT NULL DEFAULT '[]';
+
+CREATE TABLE clipboard_paste_items (
+  job_id TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  item_id TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'pending',
+  error_message TEXT NOT NULL DEFAULT '',
+  started_at TEXT,
+  finished_at TEXT,
+  key_sent INTEGER NOT NULL DEFAULT 0,
+  confirmed INTEGER NOT NULL DEFAULT 0,
+  retry_safe INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (job_id, item_id)
+);
+
+CREATE INDEX idx_clip_paste_items_job ON clipboard_paste_items(job_id, position);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

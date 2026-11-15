@@ -46,6 +46,7 @@ import {
 } from "../../lib/theme";
 import { useUiStore } from "../../store/useUiStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import { resetWorkbenchChromeLayout } from "../../lib/workbenchLayout";
 import { errorMessage } from "../../lib/errors";
 import { reportError } from "../../lib/errorReport";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
@@ -872,6 +873,34 @@ export default function SettingsPanel() {
           />
         </div>
         <LanguageSetting />
+        {/* 工作台分栏默认值：解决「代码里的 DEFAULTS 改不动用户已保存宽度」。
+            只重置导航宽度 / 详情栏宽度 / 详情栏开关，主题与导航排序不受影响。 */}
+        <div className="setting-row">
+          <span>{t("settings.appearance.workbenchLayout")}</span>
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => {
+              void resetWorkbenchChromeLayout()
+                .then(() =>
+                  showToast(t("settings.appearance.workbenchLayoutResetDone"), { kind: "success" }),
+                )
+                .catch((e) =>
+                  showToast(
+                    t("settings.appearance.workbenchLayoutResetFailed", {
+                      error: errorMessage(e),
+                    }),
+                    { kind: "error" },
+                  ),
+                );
+            }}
+          >
+            {t("settings.appearance.workbenchLayoutReset")}
+          </button>
+        </div>
+        <div className="setting-note">
+          {t("settings.appearance.workbenchLayoutNote")}
+        </div>
         <div className="setting-note">
           {settings.material === "glass" ? (
             materialInfo?.materialError ? (

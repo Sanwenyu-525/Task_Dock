@@ -40,6 +40,7 @@ import {
   type WorkspaceTaskLink,
 } from "../lib/bridge";
 import { errorMessage } from "../lib/errors";
+import { formatLocalizedDateTime } from "../i18n/format";
 import {
   useWorkspaceDevContext,
   useWorkspaceProjectContext,
@@ -624,11 +625,19 @@ export default function ProjectWorkspacePanel({
           title="项目工作空间"
           subtitle="项目只用于组织专业模块（开发 / 游戏 / AI 漫剧 / 通用）"
         />
-        <div className="ws-placeholder">
-          <p>任务、Agent、收集与暂存、剪贴板、开发工作台都不需要项目即可使用。</p>
-          <button className="ws-btn ws-btn-primary" onClick={onCreateProject}>
-            <Plus size={12} /> 新建项目
-          </button>
+        <div className="wb-empty-state">
+          <span className="wb-empty-icon" aria-hidden="true">
+            <FolderKanban size={24} />
+          </span>
+          <h3 className="wb-empty-title">还没有工作空间项目</h3>
+          <p className="wb-empty-desc">
+            项目只用于把开发、游戏、AI 漫剧等专业模块组织在一起。任务、Agent、收集与暂存、剪贴板、开发工作台都不需要项目即可使用。
+          </p>
+          <div className="wb-empty-actions">
+            <button className="ws-btn ws-btn-primary" onClick={onCreateProject}>
+              <Plus size={12} /> 新建项目
+            </button>
+          </div>
         </div>
       </section>
     );

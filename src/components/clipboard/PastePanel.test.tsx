@@ -61,6 +61,7 @@ const COMPLETED_JOB: PasteJob = {
   ended_at: "2026-11-04T00:00:01Z",
   message: "已发送 3/3 项粘贴动作；目标应用是否接收无法自动验证（未确认 3 项）",
   remaining_items: [],
+  uncertain_items: [],
   restored: true,
 };
 

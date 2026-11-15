@@ -19,7 +19,10 @@ import { classifyArgv } from "./classify.mjs";
 import { concurrencyForClass, createMemorySampler, estimateForClass, formatMb } from "./mem.mjs";
 import { appendBoundedJsonLine, ensureState, newTaskId, paths } from "./state.mjs";
 import { killTree, selfIdentity, waitForGone } from "./proc.mjs";
-import { slotNames, tryAcquireSlot } from "./lock.mjs";
+import { slotNames } from "./lock.mjs";
+import {
+  acquireAdmission, releaseReservation, setReservationChild, setReservationPhase, startReservationHeartbeat,
+} from "./budget.mjs";
 import {
   ACTIVE_STATUSES, PRIORITY_LABEL, clearCancelMarker, computeFingerprint, effectivePriority,
   evaluateEligibility, finalizeOrphanRecord, findRunningEquivalent, housekeeping, isCancelRequested, readQueue, readTask,
@@ -221,6 +224,8 @@ export async function executeTask({
   const sampler = createMemorySampler({ intervalMs: cfg.memorySampleMs, env });
   let memoryWaitSeen = false;
   let lease = null;
+  let reservation = null;
+  let reservationHeartbeat = null;
   let released = false;
   let lastNoticeAt = 0;
   let lastHousekeepAt = 0;
@@ -239,12 +244,24 @@ export async function executeTask({
     }
   };
 
+  // 预留（全局预算）与槽位（分类互斥）是两份账：任何一条退出路径都必须两份都释放，
+  // 否则崩溃/取消一次就会永久占掉一份预算（后来者只能看到一个"莫名其妙"的预算不足）。
+  const releaseReservationEntry = (reason) => {
+    if (reservationHeartbeat) { reservationHeartbeat.stop(); reservationHeartbeat = null; }
+    if (!reservation) return;
+    setReservationPhase(home, reservation, "releasing");
+    const r = releaseReservation({ home, entry: reservation, reason, log: (m) => err(m) });
+    if (!r.ok) err(`预留释放异常：${r.detail}`);
+    reservation = null;
+  };
+
   const onSignal = (sig) => {
-    err(`收到 ${sig}：终止本任务子进程树并释放槽位后退出`);
+    err(`收到 ${sig}：终止本任务子进程树并释放槽位/预留后退出`);
     if (task.child?.pid) {
       killTree(task.child.pid);
       waitForGone(task.child.pid, 3000);
     }
+    releaseReservationEntry(`信号 ${sig}`);
     releaseLease();
     process.exit(sig === "SIGINT" ? 130 : 143);
   };
@@ -290,6 +307,11 @@ export async function executeTask({
         worktree: t.worktree, command: t.command, cwd: t.cwd,
         logPath: t.logPath, fingerprint: t.fingerprint?.hash ?? null,
         estimateMb: t.estimateMb,
+        // 全局预算证据：准入那一刻的预算上限/已预留/本次预计，事后可复核"有没有超卖"
+        budgetAtStart: t.budgetAtStart ?? null,
+        reservation: reservation
+          ? { taskId: reservation.taskId, reservedMb: reservation.reservedMb, phase: reservation.phase }
+          : null,
         memDuringRun: memDuringRun ?? null,
         memDuringWait,
         child: t.child ?? null,
@@ -297,6 +319,7 @@ export async function executeTask({
     } catch (e) { err(`写历史失败：${e?.message ?? e}`); }
 
     clearCancelMarker(home, t.id);
+    releaseReservationEntry("任务结束");
     releaseLease();
 
     err(`任务结束：status=${status} exit=${exitCode ?? "null"} id=${t.id}` +
@@ -336,12 +359,15 @@ export async function executeTask({
       const elig = evaluateEligibility({ home, task, tasks, cfg, mem, memoryWaitSeen });
       if (!elig.memory.admit) memoryWaitSeen = true;
 
-      const nextStatus = elig.memory.admit ? "queued" : "waiting_resources";
+      // 状态语义：只有"内存与全局预算都够"才算正常排队；任一资源不足都是 waiting_resources，
+      // 否则用户看到 queued 会误以为"只是在排队"，实际是被资源挡住。
+      const nextStatus = (elig.memory.admit && elig.budget.admit) ? "queued" : "waiting_resources";
       const reason = elig.blockers.join("；");
       if (task.status !== nextStatus || reason !== lastReason || now - lastWriteAt > 6000) {
         task.status = nextStatus;
         task.waitReason = reason || null;
         task.lastMemoryOk = elig.memory.admit;
+        task.lastBudgetOk = elig.budget.admit;
         try { writeTask(home, task); } catch { /* 状态写失败不阻断，下轮重试 */ }
         lastWriteAt = now;
       }
@@ -349,8 +375,9 @@ export async function executeTask({
 
       // 注意：槽位目录存在 ≠ 一定有人在跑。崩溃会话留下的陈旧槽位只能靠「身份取证 + 回收」解决，
       // 而取证要查系统进程（较慢），因此按 reclaimProbeMs 节流，不能每轮都做，也不能永不做。
-      const slotFree = !elig.slotFull;
-      const worthProbing = elig.slotOnlyBlocked && now - lastReclaimProbeAt >= cfg.reclaimProbeMs;
+      // 预算侧同理：预算被"崩溃残留的预留"占住时也必须定期去台账取证，否则残留会永久堵住准入。
+      const worthProbing = (elig.slotOnlyBlocked || elig.budgetBlocked) &&
+        now - lastReclaimProbeAt >= cfg.reclaimProbeMs;
       if (elig.eligible || worthProbing) {
         if (elig.eligible && cfg.dedupe && fingerprint) {
           const again = findRunningEquivalent(readQueue(home), fingerprint);
@@ -359,31 +386,49 @@ export async function executeTask({
             return await attachToRunning({ running: again, home, cfg, io, tee, taskId });
           }
         }
-        if (worthProbing && !elig.eligible) lastReclaimProbeAt = now;
-        for (const slot of slotNames(taskClass, concurrency)) {
-          const got = tryAcquireSlot({
-            home, name: slot, taskId, taskClass, cfg, label: task.label, log: (m) => err(m),
-          });
-          if (got.lease) {
-            lease = got.lease;
-            released = false;
-            if (got.reclaimed?.holderTask) {
-              const finalized = finalizeOrphanRecord({
-                home, taskId: got.reclaimed.holderTask, cfg,
-                reason: `调度进程异常退出，槽位被回收（${got.reclaimed.reason}）`,
-              });
-              if (finalized) err(`已把崩溃遗留任务 ${got.reclaimed.holderTask} 归档为 failed`);
-            }
-            break;
+        if (worthProbing) lastReclaimProbeAt = now;
+
+        // 原子准入：预算预留 + 分类槽位在同一个跨进程临界区完成（docs 5.7）。
+        // 不允许"先占槽位再发现预算不够"（会白占槽位），也不允许"先查预算再慢慢抢槽位"
+        // （两个进程会以为自己都拿到了最后一份预算）。
+        const acquired = acquireAdmission({
+          home, taskId, taskClass,
+          estimateMb: task.estimateMb,
+          label: task.label,
+          cfg, totalMb: mem.totalMb,
+          slotNames: slotNames(taskClass, concurrency),
+          detached: detachChild,
+          log: (m) => err(m),
+          allowSlotReclaim: elig.eligible || worthProbing,
+        });
+        if (acquired.plan) task.lastBudgetPlan = { ...acquired.plan, at: nowIso() };
+        if (acquired.ok) {
+          // 只记录"真正准入那一刻"的预算证据：它才是可复核"有没有超卖"的样本
+          task.budgetAtStart = { ...acquired.plan, at: nowIso() };
+          lease = acquired.lease;
+          reservation = acquired.reservation;
+          released = false;
+          reservationHeartbeat = startReservationHeartbeat(home, reservation, cfg.heartbeatMs);
+          if (acquired.ledgerReclaimed?.length) {
+            err(`回收了 ${acquired.ledgerReclaimed.length} 条崩溃残留预留（预算已归还）`);
           }
-          lastReason = got.reason;
-          if (got.blocked) break; // 无法取证/无法终止时不要空转抢槽位
+          if (acquired.reclaimed?.holderTask) {
+            const finalized = finalizeOrphanRecord({
+              home, taskId: acquired.reclaimed.holderTask, cfg,
+              reason: `调度进程异常退出，槽位被回收（${acquired.reclaimed.reason}）`,
+            });
+            if (finalized) err(`已把崩溃遗留任务 ${acquired.reclaimed.holderTask} 归档为 failed`);
+          }
+        } else {
+          lastReason = acquired.reason;
         }
+
         if (lease) {
           // 拿到槽位后二次校验优先级：避免低优先级抢在同时入队的高优先级前面
           const conflict = priorityConflict(readQueue(home), task, cfg);
           if (conflict) {
             err(`让出槽位：${conflict}`);
+            releaseReservationEntry("让出槽位给更高优先级任务");
             lease.release();
             lease = null;
             await sleep(cfg.pollMs);
@@ -391,7 +436,6 @@ export async function executeTask({
           }
           break; // 进入执行
         }
-        void slotFree;
       }
 
       if (now - lastNoticeAt > 15000) {
@@ -409,6 +453,7 @@ export async function executeTask({
     task.waitReason = null;
     writeTask(home, task);
     lease.setPhase("running");
+    setReservationPhase(home, reservation, "starting");
 
     if (cfg.diskPrecheck && taskClass === "heavy" && existsSync(precheckPath)) {
       const pc = spawnSync(process.execPath, [precheckPath, "precheck"], {
@@ -464,6 +509,8 @@ export async function executeTask({
     task.child = childRecord;
     writeTask(home, task);
     lease.setChild(childRecord);
+    setReservationChild(home, reservation, childRecord);
+    setReservationPhase(home, reservation, "running");
 
     const memDuringRun = { minAvailMb: null, samples: 0 };
     const outcome = await waitForChild(child, {
@@ -528,6 +575,8 @@ export async function executeTask({
   } finally {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
+    // 兜底：正常路径已在 finish() 里释放过；这里保证任何异常/提前 return 都不漏账
+    releaseReservationEntry("调度器退出");
     releaseLease();
   }
 }

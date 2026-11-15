@@ -81,6 +81,34 @@
   }
 }
 
+/* ── 辅助动作收纳（2026-11-15，第二轮） ──
+   条目右侧原有「复制 / 复制到窗口 / 置顶 / 收藏 / 详情 / 删除」六个图标等权并排。
+   现在复制类留在主组常驻，其余四项收进「更多」按钮下拉的浮层：
+   默认不显示（不占宽度、不进 Tab 序），点「更多」后展开；置顶/收藏的状态仍由
+   标题行角标显示，不会因为收起而看不出。展开状态由按钮的 aria-expanded 同步。 */
+.clipboard-page .clip-item > .clip-actions > .clip-more-btn {
+  margin-left: 4px;
+}
+
+.clipboard-page .clip-item > .clip-actions > .clip-more-btn.is-open {
+  color: var(--text-primary);
+  background: var(--surface-sunken, var(--surface-base));
+}
+
+.clipboard-page .clip-item > .clip-actions > .clip-actions-more {
+  position: relative;
+  display: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+  padding-left: 4px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.clipboard-page .clip-item > .clip-actions > .clip-actions-more.is-open {
+  display: flex;
+}
+
 /* ── 详情宽屏排版 ──
    ≥1120px 时详情内容改为网格：所有面板先统一单列网格化
    （与原纵向 flex 等效，对分组详情 / 逐项粘贴 / 复制切换三个共用了
@@ -111,4 +139,36 @@
     grid-column: 2;
     grid-row: 1 / span 12;
   }
+}
+
+/* 右栏所选内容预览（2026-11-15 第二轮）：列表保持原位，详情只读投送到外壳右栏。 */
+.clip-rail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.clip-rail-kind {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.clip-rail-flags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--accent);
+}
+.clip-rail-flags em {
+  display: inline-flex;
+  color: var(--text-tertiary);
+}
+.clip-rail-flags em.favorite {
+  color: var(--status-waiting);
 }
