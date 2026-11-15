@@ -243,11 +243,11 @@ function TaskRowBase({
               </Animated.View>
             </Pressable>
 
-            {/* 行主体：打开编辑；长按动作表 */}
+            {/* 行主体：打开任务详情；长按动作表 */}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`任务：${task.title}${task.priority > 0 ? `，${PRIORITY_LABEL[task.priority]}` : ""}${done ? "，已完成" : ""}`}
-              accessibilityHint="轻点编辑任务，长按打开更多操作，向左滑动可删除"
+              accessibilityHint="轻点查看任务详情，长按打开更多操作，向左滑动可删除"
               accessibilityActions={[{ name: "longpress", label: "打开任务操作" }]}
               onAccessibilityAction={(event) => {
                 if (event.nativeEvent.actionName === "longpress") onOpenActions(task);

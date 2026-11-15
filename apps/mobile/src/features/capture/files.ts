@@ -13,6 +13,7 @@ import { Directory, File, Paths } from "expo-file-system";
 import { describeError } from "../../lib/errors";
 import { AppError } from "../../lib/errors";
 import { newId } from "../../lib/id";
+import { copySourceUriToFile } from "../../lib/capture/storage";
 
 const ROOT_DIR = "taskdock-captures";
 const STAGING_DIR = "staging";
@@ -158,16 +159,11 @@ export async function importToLibrary(
   extension: string,
 ): Promise<{ uri: string; size: number }> {
   ensureCaptureDirs();
-  const source = new File(sourceUri);
-  if (!source.exists) {
-    throw new AppError("validation", "所选文件不可读取，请重新选择");
-  }
   const target = new File(libraryDirectory(), libraryFileName(extension));
-  await source.copy(target, { overwrite: false });
-  if (!target.exists || target.size <= 0) {
-    throw new AppError("storage", "复制文件失败，请检查存储空间后重试");
-  }
-  return { uri: target.uri, size: target.size };
+  // content:// 的 exists/size 不可靠，不能先 File.exists 再 copy；统一走 SAF 句柄
+  // 分块复制（storage.ts 的现有机制），支持未知大小、Unicode 文件名和 PDF。
+  const size = await copySourceUriToFile(sourceUri, target);
+  return { uri: target.uri, size };
 }
 
 export async function sha256OfFile(uri: string): Promise<string> {

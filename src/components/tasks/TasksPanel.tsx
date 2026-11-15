@@ -329,7 +329,7 @@ export default function TasksPanel() {
           />
           <div className="tasks-head">
           {/* 全局概览（跨筛选视图）：三张卡都可点击下钻到对应列表 */}
-          <div className="tasks-overview tasks-overview--compact">
+          <div className="tasks-overview tasks-overview--stats">
             <div
               className="overview-card is-clickable"
               data-tip={t("tasks.overview.pendingTip")}
@@ -378,6 +378,22 @@ export default function TasksPanel() {
             >
               <span className="overview-value">{stats?.overdue ?? "–"}</span>
               <span className="overview-label">{t("tasks.overview.overdue")}</span>
+            </div>
+            <div
+              className="overview-card is-clickable"
+              data-tip={t("tasks.overview.completedTodayTip")}
+              role="button"
+              tabIndex={0}
+              onClick={() => setFilter({ view: "all", status: "completed" })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setFilter({ view: "all", status: "completed" });
+                }
+              }}
+            >
+              <span className="overview-value">{stats?.completed_today ?? "–"}</span>
+              <span className="overview-label">{t("tasks.overview.completedToday")}</span>
             </div>
           </div>
 

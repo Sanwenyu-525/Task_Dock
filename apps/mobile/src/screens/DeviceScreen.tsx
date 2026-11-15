@@ -1,22 +1,16 @@
-// 设备页：连接状态、配对与同步的唯一设备上下文。
+// 设备页：当前这台设备的连接状态与配对上下文。
 //
-// 这些是操作而不是偏好，所以从「设置 → 手机与同步」提到一级 Tab：
-// - 已配对时先看到连接状态与待发送/冲突数量，再进同步中心；
-// - 未配对时只留一个明确的「配对新设备」主操作，不把空页堆满不可用入口；
-// - 设置页只保留外观/提醒/本地数据/关于，避免同一个功能有两套入口。
-//
-// 第九轮：设备页不再做成第二个功能目录——
-// 文件互传（工作区文件集合）、处理冲突（我的 → 处理冲突 / 同步页内）、
-// 主屏小组件（我的 → 主屏小组件）、分享接收（采集中心）都已从本页移除；
-// 只保留与「当前这台设备」直接相关的状态、同步与配对。
+// 归属收口（第九轮 IA）：同步中心归「我的」、文件互传归「工作区」，本页不再重复这两个目录入口；
+// - 已配对时先看到连接状态与待发送/冲突数量；未配对状态卡上只留「配对新设备」主操作；
+// - 配对是真实 TLS 链路；投屏属于桌面端能力，移动端只做降饱和占位。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { Badge } from "../components/Badge";
-import { BackButton } from "../components/BackButton";
+import { AppBar } from "../components/AppBar";
+import { EntryRow } from "../components/EntryRow";
+import { FeatureIconPlaceholder } from "../components/FeatureIconPlaceholder";
 import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
-import { SettingActionRow } from "../components/SettingActionRow";
 import { SettingSection } from "../components/SettingSection";
 import { StatusPill } from "../components/StatusPill";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
@@ -29,6 +23,7 @@ import {
 } from "../db/syncConnection";
 import { countPendingOutbox } from "../db/tasks";
 import { describeError } from "../lib/errors";
+import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
 import { isLegacyConnection } from "../lib/sync/connectionState";
 import { useTheme } from "../theme/ThemeProvider";
@@ -58,6 +53,7 @@ export function DeviceScreen({
   onBack?: () => void;
 }) {
   const { tokens } = useTheme();
+  const insets = useWindowInsets();
   const [connection, setConnection] = useState<PairedConnection | null>(null);
   const [hasToken, setHasToken] = useState(false);
   const [pendingOps, setPendingOps] = useState(0);
@@ -164,31 +160,25 @@ export function DeviceScreen({
         ? "需重新配对"
         : "本机模式";
   const statusTone = paired ? "ok" : invalid ? "danger" : "neutral";
+  const statusDesc = loading
+    ? "正在读取连接状态…"
+    : paired
+      ? `配对设备 ${connection?.serverName ?? "桌面端"} · 前台自动同步`
+      : invalid
+        ? legacy
+          ? "桌面端已升级加密传输，请重新配对"
+          : "配对信息需要重新确认"
+        : "尚未连接桌面端 · 数据只在本机";
 
   return (
-    <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.headerRow}>
-          {onBack ? <BackButton onPress={onBack} /> : null}
-          <View style={styles.titleBlock}>
-            <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
-              设备
-            </Text>
-            <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
-              {loading
-                ? "正在读取连接状态…"
-                : paired
-                  ? `配对设备 ${connection?.serverName ?? "桌面端"} · 前台自动同步`
-                  : invalid
-                    ? legacy
-                      ? "桌面端已升级加密传输，请重新配对"
-                      : "配对信息需要重新确认"
-                    : "尚未连接桌面端 · 数据只在本机"}
-            </Text>
-          </View>
-        </View>
+    <View style={[styles.container, { backgroundColor: tokens.bg }]}>
+      <AppBar title="设备" onBack={onBack ?? nav.back} />
 
-        <GlassCard style={styles.statusCard}>
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + space.xxl }]}
+        showsVerticalScrollIndicator={false}
+      >
+        <GlassCard level="primary" style={styles.statusCard}>
           <View style={styles.statusTop}>
             <View style={styles.statusMain}>
               <Text style={[styles.statusEyebrow, { color: tokens.muted }]}>连接状态</Text>
@@ -201,6 +191,10 @@ export function DeviceScreen({
               tone={statusTone}
             />
           </View>
+
+          <Text numberOfLines={2} style={[styles.statusDesc, { color: tokens.textSoft }]}>
+            {statusDesc}
+          </Text>
 
           {connection ? (
             <View style={styles.statusMeta}>
@@ -237,20 +231,39 @@ export function DeviceScreen({
           ) : null}
         </GlassCard>
 
-        {/* 未配对时上面已有主操作按钮，这里再放一行同样的「配对新设备」就是页内重复；
-            因此整段只在已配对时渲染（换设备/重新配对），避免留下一个只有标题的空分组。 */}
-        {paired ? (
-          <SettingSection icon="link" title="连接与更多">
-            <SettingActionRow
-              label="配对新设备"
-              helper={`当前：${connection?.serverName ?? "桌面端"}`}
-              trailing={<Badge label="已配对" tone="active" />}
-              chevron
-              accessibilityHint="打开配对页，扫描二维码或手动输入配对码"
-              onPress={() => nav.push("pairing")}
-            />
+        {/* 同步中心归属「我的」、文件互传归属「工作区」，本页不再重复这两个目录入口；
+            这里只放与当前这台设备直接相关的配对/换设备，以及同步异常上下文的冲突处理。 */}
+        {paired || conflicts > 0 ? (
+          <SettingSection icon="link" title="配对与设备">
+            {paired ? (
+              <EntryRow
+                icon="qr"
+                label="配对新设备"
+                helper={`当前：${connection?.serverName ?? "桌面端"} · 扫码或输入 6 位配对码`}
+                onPress={() => nav.push("pairing")}
+              />
+            ) : null}
+            {conflicts > 0 ? (
+              <EntryRow
+                icon="warning"
+                label="处理冲突"
+                helper={`${conflicts} 条冲突待处理`}
+                divider
+                onPress={() => nav.push("conflict")}
+              />
+            ) : null}
           </SettingSection>
         ) : null}
+
+        {/* 投屏是桌面端能力，移动端没有对应链路：只降饱和占位，不可点、不挂箭头与数字 */}
+        <GlassCard style={styles.placeholderCard}>
+          <FeatureIconPlaceholder
+            icon="desktop"
+            label="投屏"
+            hint="桌面端能力，移动端未接入"
+            variant="inline"
+          />
+        </GlassCard>
 
         {paired ? (
           <PressableScale
@@ -282,28 +295,9 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: space.lg,
-    paddingTop: space.sm,
-    paddingBottom: 44,
+    paddingTop: space.md,
+    paddingBottom: space.xxl,
     gap: space.md,
-  },
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: space.sm,
-  },
-  titleBlock: {
-    flex: 1,
-    gap: 1,
-    marginBottom: space.xs,
-  },
-  title: {
-    fontSize: font.page,
-    fontWeight: "800",
-    letterSpacing: -0.5,
-    lineHeight: font.page + 7,
-  },
-  subtitle: {
-    fontSize: font.meta,
   },
   statusCard: {
     padding: space.md + 2,
@@ -327,6 +321,10 @@ const styles = StyleSheet.create({
     fontSize: font.title,
     fontWeight: "700",
   },
+  statusDesc: {
+    fontSize: font.meta,
+    lineHeight: 18,
+  },
   statusMeta: {
     gap: 2,
   },
@@ -347,6 +345,10 @@ const styles = StyleSheet.create({
   primaryText: {
     fontSize: font.title,
     fontWeight: "700",
+  },
+  placeholderCard: {
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs,
   },
   unpair: {
     minHeight: 44,

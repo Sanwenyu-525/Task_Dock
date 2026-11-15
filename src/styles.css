@@ -25,6 +25,10 @@
   /* 边框 */
   --border-subtle: rgba(15, 23, 42, 0.08);
   --border-strong: rgba(15, 23, 42, 0.16);
+  /* 顶层窗口外轮廓（窗口级 1px 细线，不用于页面内分隔）：
+     比 --border-subtle 略强，保证在浅色壁纸/浅色应用背景上仍能看出窗口边界，
+     且保持冷灰蓝而非中性黑——与浅蓝主题一致。 */
+  --window-border: rgba(90, 115, 165, 0.20);
   /* 文本 */
   --text-primary: #1a2333;
   --text-secondary: #5b6779;
@@ -151,6 +155,7 @@
   --glass-tint: rgba(18, 23, 34, 0.66);
   --border-subtle: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.16);
+  --window-border: rgba(148, 170, 210, 0.18);
   --text-primary: #e6eaf2;
   --text-secondary: #9aa5b8;
   --text-tertiary: #6b7688;
@@ -343,7 +348,7 @@ code {
   display: flex;
   flex-direction: column;
   background: var(--surface-base);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--window-border);
   border-radius: var(--radius-window);
   overflow: hidden;
 }

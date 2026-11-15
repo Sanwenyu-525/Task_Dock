@@ -189,3 +189,14 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
   直接 `adb install -r` 成功（仍临时把 `start_confirmation_activity` 置 0，安装后恢复 1）。
   最终 APK 0.1.6/vc21 sha256 `3cdd309d…`，30,859,837 B（arm64-v8a，非 debuggable）；
   vc20 为文案修正前的中间产物，不作为交付件。
+- 2026-11-15 vc58 Release 交付：`0.1.10 / versionCode 58`，arm64-v8a，Release，
+  `BUILD SUCCESSFUL in 9m 8s`，555 actionable tasks（337 executed / 190 from cache /
+  28 up-to-date），exit 0。APK 31,552,413 B，
+  SHA-256 `394F8E324168B114CF463903FA6BC729DBE084DB5F4AE155AEF000504E39661E`；
+  `aapt2 dump badging` 为 `versionCode='58' versionName='0.1.10'`，minSdk 24 / targetSdk 36；
+  `apksigner verify` 通过（v2 true，v1/v3 false），证书 SHA-256
+  `fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c`；
+  `zipalign -c -v 4` 通过。已用 `adb install -r` 安装到 vivo V2323A，手机
+  `versionCode=58 / versionName=0.1.10 / lastUpdateTime=2026-11-15 17:26:41`；从手机
+  `pm path` 拉取的 base.apk 与构建 APK SHA-256 完全一致。构建与证据见
+  `tmp/acceptance/mobile-p0-cross-device/revalidation-vc58/evidence/`。该 APK 构建于 17:24 的工作树快照；18:15 之后其他会话又修改了部分 UI/nav 文件，未重新构建 vc58，故该哈希不能代表 18:28 最终工作树的逐字节重建。

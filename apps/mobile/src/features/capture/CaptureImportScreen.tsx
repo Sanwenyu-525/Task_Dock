@@ -131,7 +131,7 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
               accessibilityLabel="导入到本机暂存"
               onPress={() => void runImport()}
               disabled={busy}
-              contentStyle={[styles.primary, { backgroundColor: busy ? tokens.muted : tokens.accentFill }]}
+              contentStyle={[styles.primary, { backgroundColor: busy ? tokens.track : tokens.accentFill }]}
             >
               {busy ? <ActivityIndicator color={tokens.onAccent} size="small" /> : null}
               <Text style={[styles.primaryText, { color: tokens.onAccent }]}>
@@ -188,7 +188,7 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   content: { padding: space.lg, gap: space.md },
   title: { fontSize: font.title, fontWeight: "700" },
-  note: { fontSize: font.label, lineHeight: 17 },
+  note: { fontSize: font.meta, lineHeight: 18 },
   actions: { flexDirection: "row", gap: space.sm },
   primary: {
     minHeight: 48,

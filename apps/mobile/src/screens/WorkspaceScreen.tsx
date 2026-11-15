@@ -3,27 +3,27 @@
 //
 // 第九轮职责收口：工作区只保留「工作内容与资源」——
 // - 内容管理：收集箱 + 笔记（唯一的主归属；首页可保留快捷入口）；
-// - 文件集合：文件互传 + 文件暂存架 + 项目资源（文件互传只在这一处出现，
+// - 文件集合：文件互传 + 本机素材暂存 + 项目资源（文件互传只在这一处出现，
 //   不再同时放在常用工具网格里）；
 // - 同步中心属于设备与系统管理，已移出工作区，主入口在「我的」。
 //
 // 数据边界（重要）：
 // - 手机端目前没有 workspace_projects / workspace_items 的同步链路，
-//   因此「我的项目空间」只渲染紧凑占位，不填演示项目、版本、成员或百分比。
+//   因此「我的项目空间」只作为指向未接入占位页的入口，不填演示项目、版本、成员或百分比。
 // - 协作动态同理：本机笔记/文件互传活动不会被伪装成团队协作动态。
 import { useState } from "react";
 import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 
-import { FeatureIconPlaceholder } from "../components/FeatureIconPlaceholder";
 import { EntryRow } from "../components/EntryRow";
 import { FileCollectionCard } from "../components/FileCollectionCard";
 import { GlassCard } from "../components/GlassCard";
-import { AppIcon } from "../components/icons/AppIcon";
-import { ProjectSpacePlaceholder } from "../components/ProjectSpaceCard";
+import { IconTile } from "../components/IconTile";
+import { PressableScale } from "../components/PressableScale";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { SectionHeader } from "../components/SectionHeader";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
-import type { AppNav } from "../lib/nav";
+import { AppIcon, type IconName } from "../components/icons/AppIcon";
+import type { AppNav, RouteKey } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
@@ -34,13 +34,65 @@ const TABS: SegmentOption<WorkspaceTab>[] = [
   { value: "mine", label: "我的工作区" },
 ];
 
-/** 我的工作区：桌面端独立能力，手机端只有图标占位（不渲染无数据的空详情页） */
-const MINE_ENTRIES = [
-  { icon: "scene", label: "场景工作区" },
-  { icon: "terminal", label: "开发工作台" },
+/**
+ * 我的工作区入口：前两项已注册到未接入占位页路由，可点；
+ * 后两项需要桌面端工作区数据，手机端只保留降饱和占位，不可点。
+ */
+const MINE_ENTRIES: ReadonlyArray<{ icon: IconName; label: string; route?: RouteKey }> = [
+  { icon: "scene", label: "场景工作区", route: "scene_workspace" },
+  { icon: "terminal", label: "开发工作台", route: "dev_workbench" },
   { icon: "site", label: "工作现场" },
   { icon: "workflow", label: "工作流" },
-] as const;
+];
+
+function MineCell({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  onPress?: () => void;
+}) {
+  const { tokens } = useTheme();
+  const enabled = Boolean(onPress);
+  const body = (
+    <>
+      <IconTile name={icon} size={48} tone={enabled ? "primary" : "neutral"} />
+      <Text
+        numberOfLines={1}
+        style={[styles.entryLabel, { color: enabled ? tokens.text : tokens.muted }]}
+      >
+        {label}
+      </Text>
+    </>
+  );
+
+  if (!onPress) {
+    return (
+      <View
+        accessible
+        accessibilityLabel={`${label}，移动端暂未接入`}
+        accessibilityState={{ disabled: true }}
+        style={[styles.entryCell, styles.entryCellInner]}
+      >
+        {body}
+      </View>
+    );
+  }
+
+  return (
+    <PressableScale
+      onPress={onPress}
+      accessibilityLabel={label}
+      style={styles.entryCell}
+      contentStyle={styles.entryCellInner}
+      scaleTo={0.97}
+    >
+      {body}
+    </PressableScale>
+  );
+}
 
 export function WorkspaceScreen({
   nav,
@@ -73,7 +125,13 @@ export function WorkspaceScreen({
           <>
             <View style={styles.group}>
               <SectionHeader icon="project" title="我的项目空间" />
-              <ProjectSpacePlaceholder />
+              {/* 项目数据没有同步链路：入口指向统一未接入占位页，不渲染演示项目/假进度 */}
+              <EntryRow
+                icon="project"
+                label="项目空间"
+                helper="桌面端维护的项目与事项尚未同步到手机"
+                onPress={() => nav.push("project_detail")}
+              />
             </View>
 
             <View style={styles.group}>
@@ -126,8 +184,10 @@ export function WorkspaceScreen({
                 />
                 <FileCollectionCard
                   icon="fileStack"
-                  label="文件暂存架"
+                  label="本机素材暂存"
+                  caption="本机采集素材"
                   layout={stackFiles ? "row" : "column"}
+                  onPress={() => nav.push("capture_stash")}
                 />
                 <FileCollectionCard
                   icon="package"
@@ -143,17 +203,17 @@ export function WorkspaceScreen({
               <SectionHeader icon="briefcase" title="我的工作区" />
               <View style={styles.entryGrid}>
                 {MINE_ENTRIES.map((entry) => (
-                  <View key={entry.label} style={styles.entryCell}>
-                    <FeatureIconPlaceholder
-                      icon={entry.icon}
-                      label={entry.label}
-                      variant="grid"
-                    />
-                  </View>
+                  <MineCell
+                    key={entry.label}
+                    icon={entry.icon}
+                    label={entry.label}
+                    onPress={entry.route ? () => nav.push(entry.route) : undefined}
+                  />
                 ))}
               </View>
               <Text style={[styles.footnote, { color: tokens.muted }]}>
-                这四项需要桌面端的工作区数据，手机端暂只保留入口图标。
+                场景工作区、开发工作台先进入未接入占位页；工作现场、工作流需要桌面端工作区数据，
+                手机端暂未接入。
               </Text>
             </View>
           </>
@@ -194,6 +254,19 @@ const styles = StyleSheet.create({
   entryCell: {
     flexBasis: "50%",
     flexGrow: 0,
+  },
+  entryCellInner: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    minHeight: 92,
+    paddingVertical: space.xs,
+    paddingHorizontal: space.xs,
+  },
+  entryLabel: {
+    fontSize: font.meta,
+    fontWeight: "600",
+    textAlign: "center",
   },
   footnote: {
     fontSize: font.label,

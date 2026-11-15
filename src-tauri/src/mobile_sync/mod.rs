@@ -820,7 +820,30 @@ pub(crate) fn pick_lan_ip(candidates: &[String]) -> Option<String> {
 /// Windows 实现：iphlpapi `GetAdaptersAddresses`（跳过 anycast/multicast/DNS 列表），
 /// 遍历适配器链表与其单播地址链表；回环/隧道/虚拟网卡地址交给 [`pick_lan_ip`] 按地址段过滤。
 #[cfg(windows)]
+fn ipv4_from_sockaddr_in(
+    sockaddr: &windows_sys::Win32::Networking::WinSock::SOCKADDR_IN,
+) -> Option<Ipv4Addr> {
+    use windows_sys::Win32::Networking::WinSock::AF_INET;
+
+    if sockaddr.sin_family != AF_INET as u16 {
+        return None;
+    }
+    // SOCKADDR_IN 的前两个字节是 sin_port；IPv4 地址在 sin_addr 联合体里。
+    // 直接按 in_addr 的字节视图取值，不依赖 SOCKADDR.sa_data 的固定偏移，也不做
+    // 主机/网络字节序猜测：s_b1..s_b4 就是网络序的四个地址字节。
+    let addr = unsafe { sockaddr.sin_addr.S_un.S_un_b };
+    let ip = Ipv4Addr::new(addr.s_b1, addr.s_b2, addr.s_b3, addr.s_b4);
+    // 0.0.0.0 是“未指定地址”，不能作为二维码 host；回环/链路本地交给 pick_lan_ip。
+    if ip.is_unspecified() {
+        None
+    } else {
+        Some(ip)
+    }
+}
+
+#[cfg(windows)]
 fn enumerate_ipv4_candidates() -> Vec<String> {
+    use std::mem::size_of;
     use std::ptr::null_mut;
 
     use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
@@ -829,7 +852,7 @@ fn enumerate_ipv4_candidates() -> Vec<String> {
         GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
     };
     use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
-    use windows_sys::Win32::Networking::WinSock::{AF_INET, SOCKADDR};
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
 
     const FAMILY: u32 = AF_INET as u32;
     const FLAGS: u32 =
@@ -843,7 +866,10 @@ fn enumerate_ipv4_candidates() -> Vec<String> {
     if probe != ERROR_BUFFER_OVERFLOW || size == 0 {
         return Vec::new();
     }
-    let mut buffer = vec![0u8; size as usize];
+    // 不能用 Vec<u8>：IP_ADAPTER_ADDRESSES_LH 含指针字段，缓冲区必须至少按指针宽度
+    // 对齐。按 u64 分配后再 cast，避免 UB/未对齐读取；多出来的尾部字节不影响 API。
+    let words = (size as usize + size_of::<u64>() - 1) / size_of::<u64>();
+    let mut buffer = vec![0u64; words];
     let result = unsafe {
         GetAdaptersAddresses(
             FAMILY,
@@ -868,17 +894,11 @@ fn enumerate_ipv4_candidates() -> Vec<String> {
                 let entry = unsafe { &*unicast };
                 let sockaddr = entry.Address.lpSockaddr;
                 if !sockaddr.is_null()
-                    && entry.Address.iSockaddrLength as usize >= std::mem::size_of::<SOCKADDR>()
+                    && entry.Address.iSockaddrLength as usize >= size_of::<SOCKADDR_IN>()
                 {
-                    let raw = unsafe { &*sockaddr };
-                    if raw.sa_family == AF_INET {
-                        let octets: [u8; 4] = [
-                            raw.sa_data[0] as u8,
-                            raw.sa_data[1] as u8,
-                            raw.sa_data[2] as u8,
-                            raw.sa_data[3] as u8,
-                        ];
-                        out.push(Ipv4Addr::from(octets).to_string());
+                    let sin = unsafe { &*(sockaddr.cast::<SOCKADDR_IN>()) };
+                    if let Some(ip) = ipv4_from_sockaddr_in(sin) {
+                        out.push(ip.to_string());
                     }
                 }
                 unicast = entry.Next;
@@ -1153,6 +1173,92 @@ mod tests {
 
     fn ips(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[cfg(windows)]
+    fn sockaddr_in_from_octets(octets: [u8; 4]) -> windows_sys::Win32::Networking::WinSock::SOCKADDR_IN {
+        use windows_sys::Win32::Networking::WinSock::{AF_INET, IN_ADDR_0_0, SOCKADDR_IN};
+
+        let mut sin: SOCKADDR_IN = unsafe { std::mem::zeroed() };
+        sin.sin_family = AF_INET as u16;
+        unsafe {
+            sin.sin_addr.S_un.S_un_b = IN_ADDR_0_0 {
+                s_b1: octets[0],
+                s_b2: octets[1],
+                s_b3: octets[2],
+                s_b4: octets[3],
+            };
+        }
+        sin
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_sockaddr_in_reads_address_not_port_bytes() {
+        // SOCKADDR_IN 的前两字节是端口；必须从 sin_addr 读地址，否则 192.168.5.6
+        // 会被读成 0.0.192.168（上一轮真实设备二维码异常的直接根因）。
+        assert_eq!(
+            std::mem::size_of::<windows_sys::Win32::Networking::WinSock::SOCKADDR_IN>(),
+            16
+        );
+        for (octets, expected) in [
+            ([192, 168, 5, 6], "192.168.5.6"),
+            ([10, 0, 0, 8], "10.0.0.8"),
+            ([172, 20, 1, 7], "172.20.1.7"),
+        ] {
+            assert_eq!(
+                ipv4_from_sockaddr_in(&sockaddr_in_from_octets(octets))
+                    .map(|ip| ip.to_string())
+                    .as_deref(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_sockaddr_in_rejects_unspecified_and_non_ipv4() {
+        assert_eq!(
+            ipv4_from_sockaddr_in(&sockaddr_in_from_octets([0, 0, 0, 0])),
+            None
+        );
+        let mut sin = sockaddr_in_from_octets([192, 168, 5, 6]);
+        sin.sin_family = 23; // AF_INET6，不是 IPv4
+        assert_eq!(ipv4_from_sockaddr_in(&sin), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_sockaddr_in_candidates_feed_pick_lan_ip() {
+        let candidates: Vec<String> = [
+            sockaddr_in_from_octets([198, 18, 0, 1]), // TUN fake-ip
+            sockaddr_in_from_octets([100, 64, 3, 9]), // CGNAT
+            sockaddr_in_from_octets([192, 168, 5, 1]), // 网关样地址
+            sockaddr_in_from_octets([192, 168, 5, 6]), // 真实 WLAN 主机
+            sockaddr_in_from_octets([172, 20, 1, 7]),
+        ]
+        .iter()
+        .filter_map(ipv4_from_sockaddr_in)
+        .map(|ip| ip.to_string())
+        .collect();
+
+        assert_eq!(pick_lan_ip(&candidates).as_deref(), Some("192.168.5.6"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_sockaddr_in_no_valid_ipv4_yields_none() {
+        let candidates: Vec<String> = [
+            sockaddr_in_from_octets([0, 0, 0, 0]),
+            sockaddr_in_from_octets([198, 18, 0, 1]),
+            sockaddr_in_from_octets([127, 0, 0, 1]),
+        ]
+        .iter()
+        .filter_map(ipv4_from_sockaddr_in)
+        .map(|ip| ip.to_string())
+        .collect();
+
+        assert_eq!(pick_lan_ip(&candidates), None);
     }
 
     #[test]

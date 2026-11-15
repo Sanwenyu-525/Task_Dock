@@ -43,6 +43,7 @@ pub mod task_analytics;
 pub mod user_preferences;
 mod widget_windows;
 mod window_cursor;
+mod window_shadow;
 mod window_shape;
 mod winproc;
 pub mod workflows;
@@ -433,6 +434,11 @@ fn restore_window(app: &AppHandle, db: &Db) {
             window_shape::apply(&win_for_shape);
         }
     });
+
+    // 原生悬浮阴影：DWM 不会为带 SetWindowRgn 区域的无边框窗口绘制投影
+    // （实测见 tmp/acceptance/window-appearance-20261115/probe），改由伴生分层
+    // 窗口绘制窗口外阴影，胶囊/圆角轮廓都能正确投影。
+    window_shadow::attach(&win);
 
     // 右键菜单收起（含兜底）：主窗夺焦 = 用户点击了菜单外区域，延迟收起；
     // 右键重开时 show 会取消该未决关闭。即使弹窗 set_focus 在受限前台策略下
@@ -1260,6 +1266,8 @@ pub fn run() {
             commands::system::performance_diagnostics,
             commands::system::apply_window_material,
             commands::system::apply_window_radius,
+            // 工作台窗口半径（与主窗同一口径，按视觉预设由前端下发）
+            project_workspace_window::set_workspace_window_radius,
             commands::system::apply_window_capsule,
             commands::system::set_magnetic_drag_config,
             commands::system::drag_loop_active,

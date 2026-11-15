@@ -13,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import ErrorBoundary from "../components/ErrorBoundary";
 import { initLocale } from "../i18n";
 import { setWindowHostRole } from "../lib/windowHost";
+import { initWorkbenchWindowFrame } from "../workbench/windowFrame";
 import WorkspaceApp from "./WorkspaceApp";
 
 // 宿主角色必须在挂载前确定：业务页面（useFullViewVisible 等）据此判断自己
@@ -30,6 +31,11 @@ try {
   // 提示损坏/存储被拒：保持 index.html 默认值，设置加载后会覆盖。
 }
 initLocale();
+
+// 窗口级圆角/边框：CSS 弧与 Win32 区域同源（读当前预设的 --radius-window
+// 下发给 Rust），并同步最大化状态。首帧前注册，启动门与外壳共用同一规则。
+const stopWindowFrame = initWorkbenchWindowFrame();
+window.addEventListener("pagehide", stopWindowFrame, { once: true });
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

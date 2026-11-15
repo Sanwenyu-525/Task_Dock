@@ -1,7 +1,10 @@
-// 任务页（第七轮布局）：主状态分段 → 次级日期筛选 → 分组列表。
+// 任务页（A 组重构）：范围分段 → 状态分段 → 日期筛选 → 分组列表。
 // 分组不是「标题 + 一堆独立白卡」，而是「浅色分组条 + 连续白卡行」，
 // 更接近参考图的开发任务管理视觉；交互契约不变：
-// 勾选完成/恢复、轻点行主体编辑、长按动作表、向左滑动删除；编辑与新建共用 TaskEditorSheet。
+// 勾选完成/恢复、轻点行主体进任务详情、长按动作表、向左滑动删除；编辑与新建共用 TaskEditorSheet。
+//
+// 数据边界：移动端只有本机任务，「项目任务 / 团队任务」没有数据链路，分段保留为降饱和禁用占位，
+// 不切换、不造假列表；卡片不显示负责人（无对应字段）。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -47,6 +50,7 @@ import type {
   TaskStatusFilter,
 } from "../domain/types";
 import { describeError } from "../lib/errors";
+import type { AppNav } from "../lib/nav";
 import { shouldConsumeCreateSignal } from "../lib/nav";
 import { notifyWidgetDataChanged } from "../lib/widgetSnapshot";
 import { rescheduleAllReminders, SNOOZE_SETTING_KEY } from "../notifications/reminderEngine";
@@ -56,6 +60,15 @@ import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
 import { buildTaskSections, flattenSections, type SectionKey, type TaskListRow } from "./taskGroups";
+
+/** 任务范围：只有「我的任务」有本机数据；项目/团队分段是禁用占位，不切换、不造假列表 */
+type TaskScope = "mine" | "project" | "team";
+
+const SCOPE_OPTIONS: SegmentOption<TaskScope>[] = [
+  { value: "mine", label: "我的任务" },
+  { value: "project", label: "项目任务", disabled: true },
+  { value: "team", label: "团队任务", disabled: true },
+];
 
 /** 主筛选只放状态：日期范围是次级筛选，两者正交，不再混在同一个胶囊组里 */
 const PERIOD_FILTERS: { key: TaskPeriodFilter; label: string }[] = [
@@ -114,10 +127,13 @@ function actionSubtitle(task: Task, now: number): string {
 
 export function TasksScreen({
   version = 0,
+  nav,
   openCreateSignal = 0,
   onConsumeCreateSignal,
 }: {
   version?: number;
+  /** Shell 注入的导航对象；用于轻点行主体进入任务详情 */
+  nav?: AppNav;
   /** 首页/工作区快捷入口发出的「打开新建」信号；0 = 无信号 */
   openCreateSignal?: number;
   /** 消费后由 Shell 立刻归零，避免页面卸载重挂时再次打开弹层 */
@@ -128,6 +144,7 @@ export function TasksScreen({
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+  const [scope, setScope] = useState<TaskScope>("mine");
   const [statusFilter, setStatusFilter] = useState<TaskStatusFilter>("all");
   const [periodFilter, setPeriodFilter] = useState<TaskPeriodFilter>("any");
   const [query, setQuery] = useState("");
@@ -411,11 +428,13 @@ export function TasksScreen({
     setEditorOpen(true);
   }, []);
 
-  /** 轻点任务主体：打开同一个编辑弹层，不新增第二套详情页 */
-  const openEditor = useCallback((task: Task) => {
-    setEditorState({ mode: "edit", task });
-    setEditorOpen(true);
-  }, []);
+  /** 轻点任务主体：进入任务详情页；编辑入口在详情页或长按动作表，列表不再直接开编辑弹层 */
+  const openDetail = useCallback(
+    (task: Task) => {
+      nav?.push("task_detail", undefined, undefined, task.id);
+    },
+    [nav],
+  );
 
   // 首页「新建任务」快捷入口：切到任务栏后直接打开同一个 TaskEditorSheet。
   // 打开一次就通知 Shell 归零；否则页面切走再切回（组件重挂载）会重复消费旧信号。
@@ -450,13 +469,13 @@ export function TasksScreen({
           entranceIndex={item.entranceIndex}
           last={item.position === "last" || item.position === "only"}
           onToggle={handleToggle}
-          onOpenEditor={openEditor}
+          onOpenEditor={openDetail}
           onOpenActions={handleOpenActions}
           onDelete={handleDelete}
         />
       );
     },
-    [collapsed, handleDelete, handleOpenActions, handleToggle, now, openEditor, toggleSection],
+    [collapsed, handleDelete, handleOpenActions, handleToggle, now, openDetail, toggleSection],
   );
 
   const keyExtractor = useCallback(
@@ -492,6 +511,16 @@ export function TasksScreen({
 
   const listHeader = (
     <View style={styles.header}>
+      {/* 范围分段：项目/团队无数据链路，禁用占位不切换 */}
+      <SegmentedControl
+        options={SCOPE_OPTIONS}
+        value={scope}
+        onChange={setScope}
+        accessibilityLabel="任务范围"
+        emphasis="soft"
+        size="compact"
+      />
+
       <SegmentedControl
         options={statusOptions}
         value={statusFilter}

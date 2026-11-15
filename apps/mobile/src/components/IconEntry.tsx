@@ -1,6 +1,6 @@
 // 可点击的图标入口（四列网格单元）：图标底板 + 一行名称，热区 ≥ 44dp。
 // 仅用于「真的有行为」的入口；未实现能力一律用 FeatureIconPlaceholder。
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View, useWindowDimensions } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
@@ -24,13 +24,17 @@ export function IconEntry({
   badge?: number;
 }) {
   const { tokens } = useTheme();
+  // 大字号下四列放不下「本机素材暂存」这类长标签：降为两列，避免半词截断。
+  // Android 的 font_scale 是 float32（1.3 实为 1.29999995），不能用 >= 1.3。
+  const { fontScale } = useWindowDimensions();
+  const wide = fontScale > 1.25;
 
   return (
     <PressableScale
       onPress={onPress}
       accessibilityLabel={label}
       accessibilityHint={accessibilityHint}
-      style={styles.press}
+      style={[styles.press, wide ? styles.pressWide : null]}
       contentStyle={styles.content}
       scaleTo={0.94}
     >
@@ -56,6 +60,9 @@ const styles = StyleSheet.create({
     flexBasis: "25%",
     flexGrow: 0,
     flexShrink: 1,
+  },
+  pressWide: {
+    flexBasis: "50%",
   },
   content: {
     alignItems: "center",

@@ -46,7 +46,8 @@ import {
 } from "../../lib/theme";
 import { useUiStore } from "../../store/useUiStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
-import { resetWorkbenchChromeLayout } from "../../lib/workbenchLayout";
+import { WorkbenchPageDetail, WorkbenchDetailFacts } from "../../workbench/pageDetail";
+import { resetWorkbenchChromeLayout, useWorkbenchLayout } from "../../lib/workbenchLayout";
 import { errorMessage } from "../../lib/errors";
 import { reportError } from "../../lib/errorReport";
 import { useEdgeSnapStore } from "../../store/useEdgeSnapStore";
@@ -157,6 +158,9 @@ export default function SettingsPanel() {
   const update = useSettingsStore((s) => s.update);
   const materialInfo = useSettingsStore((s) => s.materialInfo);
   const reapplyFromSystem = useSettingsStore((s) => s.reapplyFromSystem);
+  // 右栏「当前配置」只读摘要：布局值来自同一份 workbench_layout，
+  // 不在设置页另存一份宽度，避免与外壳拖拽后的值漂移。
+  const workbenchLayout = useWorkbenchLayout();
   const showToast = useUiStore((s) => s.showToast);
   const setTab = useUiStore((s) => s.setTab);
   const setHelpReturnTab = useUiStore((s) => s.setHelpReturnTab);
@@ -686,6 +690,21 @@ export default function SettingsPanel() {
   // 不再维护第二份索引；候选顺序 = 分类顺序 + 分类内页面顺序。
   const activeCategory = settingsCategory(category) ?? SETTINGS_CATEGORIES[0];
   const activeCategorySectionCount = sectionsForCategory(category).length;
+  const presetId = resolveVisualPreset(settings.visual_preset);
+  const presetLabel =
+    presetId === "frosted"
+      ? t("settings.preset.frosted.name")
+      : t("settings.preset.dreamGradient.name");
+  const themeLabel =
+    settings.theme === "dark"
+      ? t("settings.appearance.theme.dark")
+      : settings.theme === "light"
+        ? t("settings.appearance.theme.light")
+        : t("settings.appearance.theme.system");
+  const materialLabel =
+    settings.material === "solid"
+      ? t("settings.appearance.material.solid")
+      : t("settings.appearance.material.glass");
   const searchOptions = useMemo(
     () =>
       SETTINGS_SECTION_META.map((meta) => {
@@ -1899,6 +1918,42 @@ export default function SettingsPanel() {
           </>
         )}
       </div>
+
+      {/* 右栏当前配置摘要（对齐效果图 13）：只读展示当前生效的外观与布局，
+          具体修改仍在中央分组，避免右栏再长出一套表单。 */}
+      <WorkbenchPageDetail title={t("settings.currentConfig.title")}>
+        <WorkbenchDetailFacts
+          rows={[
+            {
+              label: t("settings.currentConfig.category"),
+              value: t(activeCategory.labelKey),
+            },
+            {
+              label: t("settings.currentConfig.theme"),
+              value: themeLabel,
+            },
+            {
+              label: t("settings.currentConfig.preset"),
+              value: presetLabel,
+            },
+            {
+              label: t("settings.currentConfig.material"),
+              value: materialLabel,
+            },
+            {
+              label: t("settings.currentConfig.layout"),
+              value: t("settings.currentConfig.layoutValue", {
+                nav: workbenchLayout.navWidth,
+                detail: workbenchLayout.detailWidth,
+                state: workbenchLayout.detailOpen
+                  ? t("settings.currentConfig.open")
+                  : t("settings.currentConfig.closed"),
+              }),
+            },
+          ]}
+        />
+        <div className="setting-note">{t("settings.currentConfig.hint")}</div>
+      </WorkbenchPageDetail>
 
       {/* 危险操作统一确认框：深浅主题一致、危险标识、执行中禁用重复提交 */}
       <ConfirmDialog

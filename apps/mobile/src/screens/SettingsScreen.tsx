@@ -1,15 +1,16 @@
 // 设置页：主题三态、减少动态说明、本地数据与关于。
 // 通知权限/测试通知/提醒动作的唯一管理界面是「我的 → 通知」NotificationsScreen；
 // 本页不重复放同一套权限控制，只保留「已排期提醒」这类本机数据读数。
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import appConfig from "../../app.json";
-import { BackButton } from "../components/BackButton";
+import { AppBar } from "../components/AppBar";
 import { GlassCard } from "../components/GlassCard";
+import { SettingRow } from "../components/SettingRow";
+import { SettingSection } from "../components/SettingSection";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { MetricTile } from "../components/MetricTile";
-import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { listCaptures } from "../db/captures";
 import { listReminderSchedules } from "../db/reminderSchedule";
@@ -27,43 +28,6 @@ const MODES: SegmentOption<ThemeMode>[] = [
   { value: "light", label: "浅色" },
   { value: "dark", label: "深色" },
 ];
-
-function Section({
-  icon,
-  title,
-  children,
-}: {
-  icon: IconName;
-  title: string;
-  children: ReactNode;
-}) {
-  const { tokens } = useTheme();
-  return (
-    <GlassCard style={styles.section}>
-      <View style={styles.sectionHead}>
-        <View style={[styles.sectionIcon, { backgroundColor: tokens.accentSoft }]}>
-          <AppIcon name={icon} size={14} color={tokens.accent} />
-        </View>
-        <Text accessibilityRole="header" style={[styles.sectionTitle, { color: tokens.text }]}>
-          {title}
-        </Text>
-        {/* 节标题右侧拉一条 hairline 收尾：与任务分组头同一套「标题 + 细线」节奏 */}
-        <View style={[styles.sectionRule, { backgroundColor: tokens.separator }]} />
-      </View>
-      {children}
-    </GlassCard>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  const { tokens } = useTheme();
-  return (
-    <View style={styles.line}>
-      <Text style={[styles.lineLabel, { color: tokens.muted }]}>{label}</Text>
-      <Text style={[styles.lineValue, { color: tokens.text }]}>{value}</Text>
-    </View>
-  );
-}
 
 /** 主题预览：直接取对应模式的真实调色板，避免「预览色」和实际界面是两套值 */
 function ThemePreview({ mode }: { mode: ThemeMode }) {
@@ -154,22 +118,16 @@ export function SettingsScreen({
 
   return (
     <View style={styles.container}>
+      <AppBar title="设置" onBack={onBack ?? (() => undefined)} />
+
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.headerRow}>
-          {onBack ? <BackButton onPress={onBack} /> : null}
-          <View style={styles.titleBlock}>
-            <Text accessibilityRole="header" style={[styles.title, { color: tokens.text }]}>
-              设置
-            </Text>
-            <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
-              {syncConnection && isLegacyConnection(syncConnection)
-                ? `需重新配对 ${syncConnection.serverName} · 桌面端已升级加密传输`
-                : syncConnection
-                  ? `已配对 ${syncConnection.serverName} · 任务/笔记/收集箱可手动同步`
-                  : "未连接桌面端 · 数据仅在本机"}
-            </Text>
-          </View>
-        </View>
+        <Text numberOfLines={1} style={[styles.subtitle, { color: tokens.muted }]}>
+          {syncConnection && isLegacyConnection(syncConnection)
+            ? `需重新配对 ${syncConnection.serverName} · 桌面端已升级加密传输`
+            : syncConnection
+              ? `已配对 ${syncConnection.serverName} · 任务/笔记/收集箱可手动同步`
+              : "未连接桌面端 · 数据仅在本机"}
+        </Text>
 
         {/* 与首页效率概览同一形态：一张卡三段，不再各占一张白卡 */}
         <GlassCard style={styles.tiles}>
@@ -188,7 +146,7 @@ export function SettingsScreen({
           </View>
         </GlassCard>
 
-        <Section icon="sparkles" title="外观">
+        <SettingSection icon="sparkles" title="外观">
           <SegmentedControl
             options={MODES}
             value={mode}
@@ -220,24 +178,24 @@ export function SettingsScreen({
                 : "系统开启「减少动态效果」时，本应用会自动改用直接呈现"}
             </Text>
           </View>
-        </Section>
+        </SettingSection>
 
-        <Section icon="database" title="本地数据">
+        <SettingSection icon="database" title="本地数据">
           {/* 对齐原型：这一节给真实的本地数据读数，而不是一段泛化说明 */}
-          <InfoRow label="数据库" value={`SQLite v${SCHEMA_VERSION} · WAL`} />
-          <InfoRow label="已排期提醒" value={`${scheduledReminders} 条`} />
-          <InfoRow label="本地待发操作" value={`${pendingOps} 条`} />
+          <SettingRow label="数据库" value={`SQLite v${SCHEMA_VERSION} · WAL`} />
+          <SettingRow label="已排期提醒" value={`${scheduledReminders} 条`} />
+          <SettingRow label="本地待发操作" value={`${pendingOps} 条`} />
           <Text style={[styles.hint, { color: tokens.muted }]}>
             写操作先落本机并记入队列；同步会消费任务、笔记与收集箱操作。
           </Text>
-        </Section>
+        </SettingSection>
 
-        <Section icon="info" title="关于">
+        <SettingSection icon="info" title="关于">
           {/* 版本号直接读 app.json，避免每轮发版后忘记同步这里的文案 */}
-          <InfoRow label="版本" value={appConfig.expo.version} />
-          <InfoRow label="后端" value="本地 SQLite" />
-          <InfoRow label="数据范围" value="只在本机" />
-        </Section>
+          <SettingRow label="版本" value={appConfig.expo.version} />
+          <SettingRow label="后端" value="本地 SQLite" />
+          <SettingRow label="数据范围" value="只在本机" />
+        </SettingSection>
       </ScrollView>
 
       <Toast toast={toast} onDismiss={dismissToast} placement="top" />
@@ -250,16 +208,8 @@ const styles = StyleSheet.create({
   content: {
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
-    paddingBottom: 44,
+    paddingBottom: space.xxl,
     gap: space.md,
-  },
-  headerRow: { flexDirection: "row", alignItems: "flex-start", gap: space.sm },
-  titleBlock: { flex: 1, gap: 1, marginBottom: space.xs },
-  title: {
-    fontSize: font.page,
-    fontWeight: "800",
-    letterSpacing: -0.5,
-    lineHeight: font.page + 7,
   },
   subtitle: { fontSize: font.meta },
   tiles: {
@@ -272,28 +222,6 @@ const styles = StyleSheet.create({
   tileDivider: {
     width: StyleSheet.hairlineWidth,
     marginVertical: space.sm,
-  },
-  section: {
-    padding: space.md + 2,
-    gap: space.sm,
-  },
-  sectionHead: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.sm,
-  },
-  sectionIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sectionTitle: { fontSize: font.title, fontWeight: "700" },
-  sectionRule: {
-    flex: 1,
-    height: StyleSheet.hairlineWidth,
-    marginLeft: space.xs,
   },
   segment: {
     alignItems: "center",
@@ -341,20 +269,5 @@ const styles = StyleSheet.create({
   },
   noteDot: { width: 5, height: 5, borderRadius: 3, marginTop: 6 },
   note: { flex: 1, fontSize: font.label, lineHeight: 16 },
-  line: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: space.md,
-    minHeight: 26,
-  },
-  lineLabel: { fontSize: font.body },
-  lineValue: {
-    fontSize: font.body,
-    fontWeight: "600",
-    fontVariant: ["tabular-nums"],
-    textAlign: "right",
-    flexShrink: 1,
-  },
   hint: { fontSize: font.label, lineHeight: 16 },
 });

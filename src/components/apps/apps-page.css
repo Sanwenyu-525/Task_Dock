@@ -15,4 +15,56 @@
        第 4 个空列，三张卡只占左侧 2/3，看起来像没铺满。 */
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   }
+
+  /* 效果图 10 的应用卡是图标在上、名称/状态在下的大卡，不是 52px 行内条目。
+     这里只改页面态卡片的视觉结构，拖拽/启动/收藏/更多/删除的 DOM 与事件不变。 */
+  .apps-panel .apps-tile {
+    min-height: 118px;
+  }
+
+  .apps-panel .apps-tile-main {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 9px;
+    padding: 18px 76px 14px 15px;
+  }
+
+  .apps-panel .apps-tile-text {
+    gap: 5px;
+    align-items: flex-start;
+    min-width: 0;
+  }
+
+  .apps-panel .apps-tile-name {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  /* 图标随卡片一起放大到 36px；20px 的旧容器会把 36px 图标裁掉。 */
+  .apps-panel .apps-tile-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+  }
+
+  .apps-panel .apps-tile-state {
+    font-size: 10.5px;
+  }
+
+  /* 收藏/关闭/更多收进右上角；删除保持 hover-only，放到右下角避免与三点菜单
+     的 22px 热区重叠。 */
+  .apps-panel .apps-tile-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    padding: 0;
+  }
+
+  .apps-panel .apps-tile > .apps-tile-del {
+    top: auto;
+    bottom: 7px;
+    right: 7px;
+  }
 }

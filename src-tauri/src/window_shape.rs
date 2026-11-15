@@ -945,7 +945,12 @@ fn apply_pass<R: Runtime>(
             // 停靠形态（胶囊/极简标签）去掉窗口边框：深色系统主题下 Windows 11
             // 的 1px 白色系统边框会从翼片半透明尖端透出，见 `set_borderless_frame`。
             set_borderless_frame(hwnd, true);
-            return apply_capsule_pass(hwnd, w, h, scale, cap, dragging);
+            let ok = apply_capsule_pass(hwnd, w, h, scale, cap, dragging);
+            // 胶囊/极简轮廓变了，伴生阴影必须按新区域重画（拖拽中由窗口过程跟随）。
+            if !dragging {
+                crate::window_shadow::sync(hwnd);
+            }
+            return ok;
         }
         // 完整窗（含停靠完整面板）恢复进入停靠前记录的边框位，保留原生缩放。
         set_borderless_frame(hwnd, false);
@@ -1026,6 +1031,11 @@ fn apply_pass<R: Runtime>(
         // 弹窗与主窗同一契约：区域成功必须 DONOTROUND，否则 DWM 会按整窗矩形
         // 叠加 8 DIP 系统弧与边框/投影，与 CSS 16px 弧形成双圆角/月牙缝。
         apply_dwm(hwnd, dwm_rounded_for_popup(ok));
+    }
+    // 区域是阴影形状的唯一来源：写完区域后让伴生阴影窗口按新形状重绘。
+    // 拖拽中不重绘（逐帧模糊会掉帧），松手后窗口过程/`flush_deferred` 会补齐。
+    if !dragging {
+        crate::window_shadow::sync(hwnd);
     }
     ok
 }

@@ -11,7 +11,7 @@
 //! - 最大化状态单独记忆：最大化期间不覆盖正常几何，下次打开仍可还原窗口大小。
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -47,6 +47,59 @@ static DEV_WORKBENCH_REQ_ID: AtomicI64 = AtomicI64::new(1);
 fn next_dev_workbench_request_id() -> i64 {
     DEV_WORKBENCH_REQ_ID.fetch_add(1, Ordering::SeqCst)
 }
+
+// ── 工作台窗口外形（独立于主窗/胶囊的状态）──────────────────────────────
+//
+// 与 `window_shape` 的关系：区域算法、DPI 换算、缓存与回读全部复用
+// `apply_with_radius`（ShapeTarget::Popup），**不读也不写**主窗的全局半径、
+// 胶囊参数与 blank 状态；`window_shape` 的区域缓存按 hwnd 隔离，工作台
+// 销毁时用 `forget_window(hwnd)` 清掉自己那一份，不会命中复用句柄的旧缓存。
+//
+// 本模块只额外维护两样工作台专属状态：
+// 1. 逻辑半径（由前端按视觉预设下发，与 CSS `--radius-window` 同源）；
+// 2. 最近一次已应用的几何指纹（半径/尺寸/DPI/最大化），参数没变就不重复
+//    调 SetWindowRgn（尺寸拖动时事件密集，避免逐帧重建区域）。
+static WORKBENCH_RADIUS_MILLI: AtomicU32 = AtomicU32::new(18_000);
+static WORKBENCH_FRAME_KEY: AtomicU64 = AtomicU64::new(0);
+
+/// 半径合法性：NaN/无穷回落默认预设值，其余夹到 0–40（与 `set_radius` 同口径）。
+fn clamp_workbench_radius(radius: f64) -> f64 {
+    if radius.is_finite() {
+        radius.clamp(0.0, 40.0)
+    } else {
+        18.0
+    }
+}
+
+fn workbench_radius() -> f64 {
+    WORKBENCH_RADIUS_MILLI.load(Ordering::Relaxed) as f64 / 1000.0
+}
+
+/// 窗口销毁时清空几何指纹（HWND 复用不会命中上一轮的「参数没变」判定）。
+fn reset_workbench_frame_state() {
+    WORKBENCH_FRAME_KEY.store(0, Ordering::Relaxed);
+}
+
+/// 有效半径：最大化时 0（窗口必须铺满显示器工作区，圆角会在屏幕边缘留缝隙）。
+fn effective_workbench_radius(radius: f64, maximized: bool) -> f64 {
+    if maximized { 0.0 } else { radius }
+}
+
+/// 几何指纹：同一窗口在半径/尺寸/DPI/最大化状态都没变时返回同一个值。
+fn frame_key(radius: f64, width: u32, height: u32, scale: f64, maximized: bool) -> u64 {
+    let radius_milli = (radius * 1000.0).round().clamp(0.0, 40_000.0) as u64;
+    let scale_milli = if scale.is_finite() && scale > 0.0 {
+        (scale * 1000.0).round() as u64
+    } else {
+        1000
+    };
+    (radius_milli & 0xFFFF)
+        | ((width as u64 & 0xFFFF) << 16)
+        | ((height as u64 & 0xFFFF) << 32)
+        | ((scale_milli & 0xFFF) << 48)
+        | ((maximized as u64) << 60)
+}
+
 
 // ── 统一工作台导航协议（U0）────────────────────────────────────────────
 //
@@ -757,6 +810,39 @@ fn save_geometry(app: &AppHandle, win: &WebviewWindow, force: bool) {
     }
 }
 
+/// 工作台窗口外轮廓：普通态按当前预设半径（Win32 区域 + CSS 弧同源），
+/// 最大化取直角——最大化窗口必须铺满显示器工作区，圆角会在屏幕边缘留缝隙。
+/// 参数没变时直接返回，避免尺寸拖动中逐帧重建设置区域。
+fn sync_workbench_frame(win: &WebviewWindow) -> bool {
+    let maximized = win.is_maximized().unwrap_or(false);
+    let radius = effective_workbench_radius(workbench_radius(), maximized);
+    let size = win
+        .outer_size()
+        .unwrap_or(PhysicalSize { width: 0, height: 0 });
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let key = frame_key(radius, size.width, size.height, scale, maximized);
+    if WORKBENCH_FRAME_KEY.load(Ordering::Relaxed) == key {
+        return true;
+    }
+    let applied = crate::window_shape::apply_with_radius(win, radius);
+    // 失败时清掉指纹：下次事件（尺寸/DPI/显示）必须重试，不能停在旧区域
+    WORKBENCH_FRAME_KEY.store(if applied { key } else { 0 }, Ordering::Relaxed);
+    applied
+}
+
+/// 前端按视觉预设下发工作台窗口半径（与主窗 `apply_window_radius` 同一口径）。
+/// 返回 Win32 区域是否真正应用成功；失败时 CSS 弧仍在，前端不做阻断。
+#[tauri::command]
+pub fn set_workspace_window_radius(app: AppHandle, radius: f64) -> AppResult<bool> {
+    let clamped = clamp_workbench_radius(radius);
+    WORKBENCH_RADIUS_MILLI.store((clamped * 1000.0).round() as u32, Ordering::Relaxed);
+    WORKBENCH_FRAME_KEY.store(0, Ordering::Relaxed);
+    let win = app
+        .get_webview_window(WINDOW_LABEL)
+        .ok_or_else(|| AppError::Agent("工作台窗口不存在".into()))?;
+    Ok(sync_workbench_frame(&win))
+}
+
 fn attach_events(app: &AppHandle, win: &WebviewWindow) {
     let app = app.clone();
     let w = win.clone();
@@ -767,8 +853,18 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
         }
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
             save_geometry(&app, &w, false);
+            // 尺寸/DPI/最大化状态变化后按新的物理像素重算区域，否则区域会停在
+            // 旧尺寸上把内容裁掉（主窗同样契约，见 `window_shape::apply`）。
+            let _ = sync_workbench_frame(&w);
         }
         tauri::WindowEvent::Destroyed => {
+            // 工作台专属状态必须随窗口销毁一起清掉：否则下次创建（或句柄被系统
+            // 复用时）会命中旧几何指纹/旧区域缓存，新窗口停在上一轮的裁剪形状上。
+            reset_workbench_frame_state();
+            if let Ok(h) = w.hwnd() {
+                crate::window_shape::forget_window(h.0 as isize);
+                crate::window_shadow::detach(h.0 as isize);
+            }
             // 窗口销毁后不再有待兑现的启动揭示（避免 watchdog 对已销毁窗口 show）。
             STARTUP_REVEAL.store(false, Ordering::SeqCst);
             // 窗口销毁后队列里的请求已无接收方：逐个以 cancelled 收敛，
@@ -1033,6 +1129,11 @@ fn open_or_focus_workbench(
     // WM_NCHITTEST 分支——只关标题栏但保留 `shadow(true)` 时，tao 只让顶边可
     // 缩放（见 tao 0.37 的 undecorated_with_shadows 分支），左右下边就不可拖拽缩放。
     // 最大化时 tao 会把客户区收敛到显示器工作区，不会遮挡任务栏。
+    //
+    // `transparent(true)`：窗口圆角由 `window_shape::apply_with_radius` 的 Win32
+    // 区域裁剪 + `workbench.css` 的 CSS 弧共同定义，四角外侧那片像素必须真正透明，
+    // 否则会留下不透明的直角方块（正是修复前「方形直角」的直接来源）。
+    .transparent(true)
     .decorations(false)
     .shadow(false)
     .resizable(true)
@@ -1057,6 +1158,11 @@ fn open_or_focus_workbench(
     };
 
     attach_events(app, &win);
+    // 与主窗、微件、右键菜单同一条外观链路：Win32 区域裁剪出窗口圆角，
+    // 前端 `.wb-root` 只负责同半径的可见弧与 1px 边框（不再各写一套）。
+    let _ = sync_workbench_frame(&win);
+    // 原生外部阴影（DWM 不给带区域的无边框窗口画投影，见 window_shadow 模块注释）。
+    crate::window_shadow::attach(&win);
     // 新窗口从干净状态开始：上一次创建遗留的最大化待办不能带到这里。
     STARTUP_MAXIMIZE.store(false, Ordering::SeqCst);
     restore_geometry(app, &win, db);
@@ -1920,6 +2026,63 @@ mod tests {
         .unwrap();
         assert!(open.contains("\"requestId\":12"), "{open}");
         assert!(open.contains("\"created\":true"), "{open}");
+    }
+
+    // ── 工作台窗口外形（纯函数，不依赖 Win32）─────────────────────────────
+
+    #[test]
+    fn workbench_radius_clamps_and_falls_back() {
+        // 与 `window_shape::set_radius` 同口径：0–40，NaN/无穷回落默认预设值。
+        assert_eq!(clamp_workbench_radius(18.0), 18.0);
+        assert_eq!(clamp_workbench_radius(-4.0), 0.0, "负半径等价直角");
+        assert_eq!(clamp_workbench_radius(64.0), 40.0);
+        assert_eq!(clamp_workbench_radius(f64::NAN), 18.0);
+        assert_eq!(clamp_workbench_radius(f64::INFINITY), 18.0);
+    }
+
+    #[test]
+    fn maximized_workbench_uses_square_frame() {
+        // 最大化必须铺满工作区：任何预设半径在这里都收敛成 0（直角）。
+        assert_eq!(effective_workbench_radius(18.0, true), 0.0);
+        assert_eq!(effective_workbench_radius(20.0, true), 0.0);
+        // 还原后立即回到预设半径，不残留最大化期间的直角区域。
+        assert_eq!(effective_workbench_radius(18.0, false), 18.0);
+        assert_eq!(effective_workbench_radius(20.0, false), 20.0);
+    }
+
+    #[test]
+    fn frame_key_is_stable_only_for_identical_geometry() {
+        let base = frame_key(18.0, 1280, 820, 1.25, false);
+        assert_eq!(base, frame_key(18.0, 1280, 820, 1.25, false), "参数相同不重复应用");
+        assert_ne!(base, frame_key(18.0, 1280, 820, 1.25, true), "最大化状态必须重建");
+        assert_ne!(base, frame_key(20.0, 1280, 820, 1.25, false), "预设半径变化必须重建");
+        assert_ne!(base, frame_key(18.0, 944, 608, 1.25, false), "尺寸变化必须重建");
+        assert_ne!(base, frame_key(18.0, 1280, 820, 1.5, false), "DPI 变化必须重建");
+    }
+
+    #[test]
+    fn frame_key_separates_radius_from_size_and_scale_bits() {
+        // 位域互不重叠：半径上限 40px（40000 milli）只占低 16 位，缩放 12 位
+        // （≤4095，含 100%/125%/150%/200%/300%），最大化占 1 位；常见尺寸/缩放
+        // 不会与半径碰撞，也不会因为高位溢出退化成恒等。
+        for width in [240u32, 944, 1280, 1920, 3440] {
+            for height in [96u32, 608, 820, 1040, 1440] {
+                for scale in [1.0f64, 1.25, 1.5, 2.0] {
+                    let square = frame_key(0.0, width, height, scale, true);
+                    let rounded = frame_key(18.0, width, height, scale, false);
+                    assert_ne!(square, rounded, "{width}x{height}@{scale}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn destroyed_window_resets_frame_state() {
+        // 销毁清理：指纹归零后，同一个句柄被系统复用也不会误判「参数没变」。
+        let key = frame_key(18.0, 1280, 820, 1.25, false);
+        WORKBENCH_FRAME_KEY.store(key, Ordering::Relaxed);
+        reset_workbench_frame_state();
+        assert_eq!(WORKBENCH_FRAME_KEY.load(Ordering::Relaxed), 0);
     }
 
 }

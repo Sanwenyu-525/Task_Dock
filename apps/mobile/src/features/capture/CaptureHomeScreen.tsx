@@ -9,7 +9,9 @@ import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { AppBar } from "../../components/AppBar";
+import { EntryRow } from "../../components/EntryRow";
 import { PressableScale } from "../../components/PressableScale";
+import { SectionHeader } from "../../components/SectionHeader";
 import * as repo from "../../db/captureAssets";
 import { useWindowInsets } from "../../lib/insets";
 import type { Nav } from "../../lib/nav";
@@ -81,43 +83,6 @@ function CaptureAction({
   );
 }
 
-function RowEntry({
-  icon,
-  label,
-  helper,
-  onPress,
-}: {
-  icon: IconName;
-  label: string;
-  helper: string;
-  onPress: () => void;
-}) {
-  const { tokens } = useTheme();
-  return (
-    <PressableScale
-      onPress={onPress}
-      accessibilityLabel={label}
-      accessibilityHint={helper}
-      style={styles.rowPress}
-      contentStyle={styles.row}
-      scaleTo={0.98}
-    >
-      <View style={[styles.rowIcon, { backgroundColor: tokens.accentSoft }]}>
-        <AppIcon name={icon} color={tokens.accentText} size={18} />
-      </View>
-      <View style={styles.rowText}>
-        <Text style={[styles.rowLabel, { color: tokens.text }]} numberOfLines={1}>
-          {label}
-        </Text>
-        <Text style={[styles.rowHelper, { color: tokens.muted }]} numberOfLines={1}>
-          {helper}
-        </Text>
-      </View>
-      <AppIcon name="chevronRight" color={tokens.faint} size={16} />
-    </PressableScale>
-  );
-}
-
 export function CaptureHomeScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
@@ -156,7 +121,10 @@ export function CaptureHomeScreen({ nav }: { nav: Nav }) {
         showsVerticalScrollIndicator={false}
       >
         {loading ? (
-          <ActivityIndicator color={tokens.accent} style={styles.loading} />
+          <View style={styles.loading}>
+            <ActivityIndicator color={tokens.accent} />
+            <Text style={[styles.loadingHint, { color: tokens.muted }]}>正在读取本机素材…</Text>
+          </View>
         ) : (
           <>
             {summary.staged > 0 ? (
@@ -197,12 +165,12 @@ export function CaptureHomeScreen({ nav }: { nav: Nav }) {
               />
             </View>
 
-            <Text style={[styles.sectionLabel, { color: tokens.muted }]}>从系统导入</Text>
+            <SectionHeader icon="gallery" title="从系统导入" />
             <View style={[styles.card, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
               {/* 第九轮：原先「从相册选择」「从文件导入」两行都跳到同一个导入页，而导入页本身
                   就提供相册/文件两种选择器；两行等于同一目的地的重复入口。合并为一行，
                   由导入页决定具体来源，避免「从文件导入」实际先弹出相册的错位。 */}
-              <RowEntry
+              <EntryRow
                 icon="gallery"
                 label="导入素材"
                 helper="相册照片或任意文件，先复制进本机素材库再处理"
@@ -210,19 +178,19 @@ export function CaptureHomeScreen({ nav }: { nav: Nav }) {
               />
             </View>
 
-            <Text style={[styles.sectionLabel, { color: tokens.muted }]}>快速记录</Text>
+            <SectionHeader icon="mic" title="快速记录" />
             <View style={[styles.card, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
-              <RowEntry
+              <EntryRow
                 icon="mic"
                 label="语音速记"
                 helper="录制后可直接试听，再决定保存到哪里"
                 onPress={() => nav.push("capture", undefined, "voice")}
               />
-              <View style={[styles.divider, { backgroundColor: tokens.separator }]} />
-              <RowEntry
+              <EntryRow
                 icon="noteNew"
                 label="一句话记录"
                 helper="先写下来，再决定保存去向"
+                divider
                 onPress={() => nav.push("capture", undefined, "capture")}
               />
             </View>
@@ -304,7 +272,8 @@ export function CaptureHomeScreen({ nav }: { nav: Nav }) {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   content: { paddingHorizontal: space.lg, paddingTop: space.md, gap: space.md },
-  loading: { marginTop: space.xl },
+  loading: { alignItems: "center", gap: space.sm, paddingVertical: space.xl },
+  loadingHint: { fontSize: font.meta },
   banner: {
     flexDirection: "row",
     alignItems: "center",
@@ -320,7 +289,7 @@ const styles = StyleSheet.create({
   primaryRow: { flexDirection: "row", gap: space.md },
   actionPress: { flex: 1 },
   action: {
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.card,
     paddingHorizontal: space.md,
     paddingVertical: space.md,
@@ -329,40 +298,20 @@ const styles = StyleSheet.create({
   actionIcon: {
     width: 40,
     height: 40,
-    borderRadius: radius.control,
+    borderRadius: radius.iconTile,
     alignItems: "center",
     justifyContent: "center",
   },
   actionLabel: { fontSize: font.body, fontWeight: "700", marginTop: space.xxs },
   actionHint: { fontSize: font.label },
-  sectionLabel: {
-    fontSize: font.label,
-    fontWeight: "600",
-    marginTop: space.sm,
-    paddingHorizontal: space.xxs,
+  card: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.card,
+    paddingHorizontal: space.md,
   },
-  card: { borderWidth: 1, borderRadius: radius.card, paddingHorizontal: space.md },
   rowPress: {},
-  row: {
-    minHeight: 56,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.md,
-    paddingVertical: space.xs,
-  },
-  rowIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: radius.tile,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  rowText: { flex: 1, gap: 1 },
-  rowLabel: { fontSize: font.body, fontWeight: "600" },
-  rowHelper: { fontSize: font.label },
-  divider: { height: StyleSheet.hairlineWidth },
   library: {
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderRadius: radius.card,
     padding: space.md,
     gap: space.sm,

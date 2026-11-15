@@ -10,6 +10,8 @@ import { font, radius, space } from "../theme/tokens";
 export interface SegmentOption<T extends string> {
   value: T;
   label: string;
+  /** 未接入的分段：占位但不可选中（不切换、不响应点击，读屏标记 disabled） */
+  disabled?: boolean;
 }
 
 export function SegmentedControl<T extends string>({
@@ -101,18 +103,23 @@ export function SegmentedControl<T extends string>({
         />
       ) : null}
       {options.map((option) => {
-        const selected = option.value === value;
+        const disabled = option.disabled === true;
+        const selected = !disabled && option.value === value;
         return (
           <Pressable
             key={option.value}
             accessibilityRole="radio"
-            accessibilityLabel={option.label}
-            accessibilityState={{ checked: selected }}
-            onPress={() => onChange(option.value)}
+            accessibilityLabel={disabled ? `${option.label}，移动端暂未接入` : option.label}
+            accessibilityState={{ checked: selected, disabled }}
+            disabled={disabled}
+            onPress={() => {
+              if (disabled) return;
+              onChange(option.value);
+            }}
             style={({ pressed }) => [
               styles.segment,
               compact ? styles.segmentCompact : null,
-              { opacity: pressed ? 0.7 : 1 },
+              { opacity: disabled ? 1 : pressed ? 0.7 : 1 },
             ]}
           >
             {renderSegment ? (
@@ -124,11 +131,13 @@ export function SegmentedControl<T extends string>({
                   styles.label,
                   compact ? styles.labelCompact : null,
                   {
-                    color: selected
-                      ? emphasis === "accent"
-                        ? tokens.onAccent
-                        : tokens.accent
-                      : tokens.muted,
+                    color: disabled
+                      ? tokens.faint
+                      : selected
+                        ? emphasis === "accent"
+                          ? tokens.onAccent
+                          : tokens.accent
+                        : tokens.muted,
                   },
                   selected ? styles.labelActive : null,
                 ]}

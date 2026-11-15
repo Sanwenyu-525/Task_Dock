@@ -23,6 +23,56 @@
   flex-shrink: 0;
 }
 
+/* 任务概览大卡（2026-11-15 对齐效果图 01）：四张等宽统计卡，
+   数值 24px、标签 11px，卡片高度 80px；窄窗自动降为 2 列。
+   概览是页面第一视觉层，列表仍是主体。 */
+.tasks-panel .tasks-overview--stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.tasks-panel .tasks-overview--stats .overview-card {
+  flex: none;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  min-height: 80px;
+  padding: 13px 16px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.tasks-panel .tasks-overview--stats .overview-value {
+  font-size: 24px;
+  line-height: 1.05;
+}
+
+.tasks-panel .tasks-overview--stats .overview-label {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 概览大卡占据整行，快速添加落到第二行；避免 280px 的旧摘要列把四张卡挤碎。 */
+@media (min-width: 480px) {
+  .tasks-panel .tasks-head:has(> .tasks-overview--stats) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tasks-panel .tasks-head > .tasks-overview--stats {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .tasks-panel .tasks-head:has(> .tasks-overview--stats) > .quick-add {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
 /* 紧凑统计摘要（2026-11-14）：三卡压成一行纯文本摘要 —— 去卡面边框/底色，
    只留「数值 + 标签」chip，hover 才出现底色（可下钻 affordance 由 styles.css
    的 .is-clickable:hover / .warn:hover 继续）。仍保留下钻点击与 warn 语义，

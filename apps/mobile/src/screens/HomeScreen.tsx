@@ -1,14 +1,10 @@
-// 首页 / 工作台（第七轮布局）：欢迎区 → 今日专注 → 三张独立统计磁贴 →
-// 无卡片的最近内容列表 → 浅蓝快捷磁贴 → AI 占位说明。
-// 所有数字来自手机本地库（tasks/notes/captures）；没有进度字段的任务不推算百分比。
+// 首页 / 工作台（A 组重构）：品牌区 → 欢迎区 → 今日概览 → 当前进度 → 待处理任务 →
+// 快捷入口 → 最近动态。
 //
-// 与参考图对齐的关键结构：
-// - 欢迎区不再是一张白卡，而是通栏浅蓝渐变 + 右侧品牌块；
-// - 今日专注把「模块标题」收进卡片内部，避免标题与卡内「当前专注」重复；
-// - 效率概览从一张卡三段改成三张独立磁贴；
-// - 最近内容不再套白色大卡，列表行直接落在页面底上；
-// - 快捷入口改成四张浅蓝磁贴，不再是一整块浅蓝容器。
-import { useCallback, useEffect, useRef, useState } from "react";
+// 数据边界：所有数字来自本机 tasks / notes / captures / capture_assets 表；
+// 移动端没有项目、看板、Agent、进度百分比字段，因此不显示「进行中项目」、
+// 不推算任务进度，完成率只表达「已完成 / 全部任务」的真实比例。
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
@@ -22,54 +18,71 @@ import { BrandMark } from "../components/BrandMark";
 import { GlassCard } from "../components/GlassCard";
 import { HeaderIconButton } from "../components/HeaderIconButton";
 import { IconTile } from "../components/IconTile";
-import { AppIcon } from "../components/icons/AppIcon";
+import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { MetricTile } from "../components/MetricTile";
 import { PressableScale } from "../components/PressableScale";
+import { ProgressBar } from "../components/ProgressBar";
 import { QuickTile } from "../components/QuickTile";
-import { ScreenHeader } from "../components/ScreenHeader";
 import { SectionHeader } from "../components/SectionHeader";
+import { listAssets } from "../db/captureAssets";
 import { listCaptures } from "../db/captures";
 import { listNotes } from "../db/notes";
 import { listTasks } from "../db/tasks";
-import { countTasks, formatDue, formatRelative } from "../domain/taskQuery";
-import type { Capture, Note, Task } from "../domain/types";
 import {
-  buildRecentEntries,
-  homeGreeting,
-  pickFocusTask,
-  type RecentEntry,
-} from "../domain/workspace";
+  countTasks,
+  formatDue,
+  formatRelative,
+  sortTasks,
+} from "../domain/taskQuery";
+import type { Capture, Note, Task } from "../domain/types";
+import { homeGreeting } from "../domain/workspace";
 import { describeError } from "../lib/errors";
 import type { AppNav } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
-/** 卡片内只显示一字标签，完整程度由任务页承担；避免把注意力从任务标题上拉走 */
+/** 卡片内只显示一字优先级标签，完整语义由任务页承担 */
 const PRIORITY_SHORT: Record<number, string> = { 1: "低", 2: "中", 3: "高" };
+
+type ActivityKind = "task" | "note" | "capture";
+
+interface ActivityEntry {
+  id: string;
+  kind: ActivityKind;
+  title: string;
+  snippet: string;
+  at: number;
+}
+
+const ACTIVITY_ICON: Record<ActivityKind, IconName> = {
+  task: "tasks",
+  note: "note",
+  capture: "inbox",
+};
 
 export function HomeScreen({
   version,
   nav,
-  inboxCount,
 }: {
   version: number;
   nav: AppNav;
-  inboxCount: number;
+  /** 收集箱徽标计数：主归属在工作区，首页不再铺收集箱磁贴；保留入参契约不破坏 Shell 接线 */
+  inboxCount?: number;
 }) {
   const { tokens } = useTheme();
-  // 窄屏保留一枚品牌块（右侧不再发空）；大字号时彻底隐藏，把宽度让给问候语。
   const { width, fontScale } = useWindowDimensions();
-  const narrowWelcome = width < 360;
-  const brandSize = fontScale > 1.25 ? 0 : narrowWelcome ? 40 : 50;
-  // 320dp 或 130% 以上字号时品牌块会隐藏/变窄，长句在部分系统字体上会孤字换行；
-  // 这两种情况都用同义短句，保证一行读完。
-  const shortTagline = narrowWelcome || fontScale > 1.25;
-  const tagline = shortTagline
-    ? "专注重要的事，高效推进。"
-    : "专注重要的事，高效推进每一个任务。";
+  const narrow = width < 360;
+  // 320dp 或大字号时品牌块变窄/隐藏，长句改用同义短句，保证一行读完
+  const brandSize = fontScale > 1.25 ? 0 : narrow ? 40 : 50;
+  const tagline =
+    narrow || fontScale > 1.25
+      ? "专注重要的事，高效推进。"
+      : "专注重要的事，高效推进每一个任务。";
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [captures, setCaptures] = useState<Capture[]>([]);
+  const [stashCount, setStashCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -88,15 +101,17 @@ export function HomeScreen({
   const refresh = useCallback(async () => {
     const request = ++requestSeq.current;
     try {
-      const [nextTasks, nextNotes, nextCaptures] = await Promise.all([
+      const [nextTasks, nextNotes, nextCaptures, nextAssets] = await Promise.all([
         listTasks(),
         listNotes(),
         listCaptures(),
+        listAssets("saved"),
       ]);
       if (!mounted.current || request !== requestSeq.current) return;
       setTasks(nextTasks);
       setNotes(nextNotes);
       setCaptures(nextCaptures);
+      setStashCount(nextAssets.length);
       setError(null);
     } catch (reason) {
       if (!mounted.current || request !== requestSeq.current) return;
@@ -117,15 +132,55 @@ export function HomeScreen({
     return () => clearInterval(timer);
   }, []);
 
-  const counts = countTasks(tasks, now);
-  const focus = pickFocusTask(tasks, now);
-  const recent = buildRecentEntries(notes, captures, 3);
-  const overdueFocus = focus?.dueAt != null && focus.dueAt < now;
+  const counts = useMemo(() => countTasks(tasks, now), [tasks, now]);
+  const completionRatio =
+    counts.total > 0 ? Math.max(0, Math.min(1, counts.completed / counts.total)) : 0;
+  const completionPercent = Math.round(completionRatio * 100);
 
-  const openRecent = useCallback(
-    (entry: RecentEntry) => {
+  const pendingTop3 = useMemo(
+    () => sortTasks(tasks.filter((task) => task.status === "pending")).slice(0, 3),
+    [tasks],
+  );
+
+  /** 最近动态：任务 / 笔记 / 采集记录按更新时间合并，取前 5 条；不混入文件互传等其它实体 */
+  const activity = useMemo<ActivityEntry[]>(() => {
+    const taskEntries: ActivityEntry[] = tasks.map((task) => ({
+      id: task.id,
+      kind: "task",
+      title: task.title.trim() || "未命名任务",
+      snippet: task.description.trim().replace(/\s+/g, " ").slice(0, 60),
+      at: task.updatedAt,
+    }));
+    const noteEntries: ActivityEntry[] = notes.map((note) => {
+      const body = note.body.trim();
+      return {
+        id: note.id,
+        kind: "note",
+        title: note.title.trim() || body.split("\n")[0]?.slice(0, 24) || "无标题笔记",
+        snippet: body.replace(/\s+/g, " ").slice(0, 60),
+        at: note.updatedAt,
+      };
+    });
+    const captureEntries: ActivityEntry[] = captures.map((capture) => ({
+      id: capture.id,
+      kind: "capture",
+      title: capture.content.split("\n")[0]?.slice(0, 24) || "速记",
+      snippet: capture.content.replace(/\s+/g, " ").slice(0, 60),
+      at: capture.createdAt,
+    }));
+    return [...taskEntries, ...noteEntries, ...captureEntries]
+      .sort((a, b) => b.at - a.at)
+      .slice(0, 5);
+  }, [tasks, notes, captures]);
+
+  const openActivity = useCallback(
+    (entry: ActivityEntry) => {
+      if (entry.kind === "task") {
+        nav.push("task_detail", undefined, undefined, entry.id);
+        return;
+      }
       if (entry.kind === "note") {
-        nav.push("note_editor", entry.id.replace(/^note-/, ""));
+        nav.push("note_editor", entry.id);
         return;
       }
       nav.push("inbox");
@@ -133,18 +188,45 @@ export function HomeScreen({
     [nav],
   );
 
+  const openTaskDetail = useCallback(
+    (task: Task) => nav.push("task_detail", undefined, undefined, task.id),
+    [nav],
+  );
+
+  const quickEntries = [
+    { key: "capture", icon: "camera" as IconName, label: "采集", onPress: () => nav.push("capture_home") },
+    { key: "create", icon: "add" as IconName, label: "新建任务", onPress: nav.openCreateTask },
+    { key: "workspace", icon: "workspace" as IconName, label: "工作区", onPress: () => nav.openTab("workspace") },
+    { key: "dev", icon: "terminal" as IconName, label: "开发工作台", onPress: () => nav.push("dev_workbench") },
+    { key: "scene", icon: "scene" as IconName, label: "场景工作区", onPress: () => nav.push("scene_workspace") },
+    { key: "tools", icon: "tools" as IconName, label: "工具面板", onPress: () => nav.openTab("tools") },
+    { key: "stash", icon: "folderOpen" as IconName, label: "文件暂存架", badge: stashCount, onPress: () => nav.push("capture_stash") },
+  ];
+
   return (
     <View style={styles.root}>
-      <ScreenHeader
-        title="工作台"
-        right={
-          <HeaderIconButton
-            icon="bell"
-            accessibilityLabel="通知"
-            onPress={() => nav.push("notifications")}
-          />
-        }
-      />
+      {/* 品牌区：BrandMark + 名称 + 搜索 + 通知铃铛 */}
+      <View style={styles.header}>
+        <BrandMark size={36} />
+        <View style={styles.headerTitle}>
+          <Text numberOfLines={1} style={[styles.headerTitleText, { color: tokens.text }]}>
+            工作台
+          </Text>
+          <Text numberOfLines={1} style={[styles.headerSub, { color: tokens.muted }]}>
+            任务 · 采集 · 笔记
+          </Text>
+        </View>
+        <HeaderIconButton
+          icon="search"
+          accessibilityLabel="搜索任务"
+          onPress={() => nav.openTab("tasks")}
+        />
+        <HeaderIconButton
+          icon="bell"
+          accessibilityLabel="通知"
+          onPress={() => nav.push("notifications")}
+        />
+      </View>
 
       <ScrollView
         contentContainerStyle={styles.content}
@@ -199,234 +281,246 @@ export function HomeScreen({
           </GlassCard>
         ) : (
           <>
-            {/* 今日专注：模块标题收进卡片，任务标题是整页第一视觉焦点 */}
-            {focus ? (
-              <PressableScale
-                onPress={() => nav.openTab("tasks")}
-                accessibilityLabel={`今日专注：${focus.title}`}
-                accessibilityHint="打开任务页处理"
-                style={styles.focusPress}
-              >
-                <GlassCard level="primary" style={styles.focusCard}>
-                  <View style={styles.focusHeader}>
-                    <AppIcon name="focus" color={tokens.accent} size={20} />
-                    <Text style={[styles.focusKicker, { color: tokens.text }]}>今日专注</Text>
-                    <View style={[styles.focusStatus, { backgroundColor: tokens.accentSoft }]}>
-                      <View style={[styles.statusDot, { backgroundColor: tokens.accent }]} />
-                      <Text style={[styles.focusStatusText, { color: tokens.accentText }]}>
-                        待处理
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.focusMain}>
-                    <View style={styles.focusBody}>
-                      <Text numberOfLines={2} style={[styles.focusTitle, { color: tokens.text }]}>
-                        {focus.title}
-                      </Text>
-
-                      {focus.priority > 0 || focus.dueAt != null || focus.category ? (
-                        <View style={styles.metaRow}>
-                          {focus.priority > 0 ? (
-                            <View
-                              style={[
-                                styles.metaChip,
-                                {
-                                  backgroundColor:
-                                    focus.priority >= 3 ? tokens.dangerSoft : tokens.warnSoft,
-                                },
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.metaText,
-                                  {
-                                    color:
-                                      focus.priority >= 3 ? tokens.danger : tokens.warn,
-                                  },
-                                ]}
-                              >
-                                {PRIORITY_SHORT[focus.priority]}
-                              </Text>
-                            </View>
-                          ) : null}
-                          {focus.category ? (
-                            <View style={[styles.metaChip, { backgroundColor: tokens.accentSoft }]}>
-                              <AppIcon name="tag" color={tokens.accentText} size={12} />
-                              <Text
-                                numberOfLines={1}
-                                style={[styles.metaText, { color: tokens.accentText }]}
-                              >
-                                {focus.category}
-                              </Text>
-                            </View>
-                          ) : null}
-                          {focus.dueAt != null ? (
-                            <View
-                              style={[
-                                styles.metaChip,
-                                {
-                                  backgroundColor: overdueFocus
-                                    ? tokens.warnSoft
-                                    : tokens.accentSoft,
-                                },
-                              ]}
-                            >
-                              <AppIcon
-                                name="clock"
-                                color={overdueFocus ? tokens.warn : tokens.accentText}
-                                size={12}
-                              />
-                              <Text
-                                style={[
-                                  styles.metaText,
-                                  { color: overdueFocus ? tokens.warn : tokens.accentText },
-                                ]}
-                              >
-                                {formatDue(focus.dueAt, now)}
-                              </Text>
-                            </View>
-                          ) : null}
-                        </View>
-                      ) : null}
-                    </View>
-
-                    <View style={[styles.focusAction, { backgroundColor: tokens.accentFill }]}>
-                      <AppIcon name="chevronRight" color={tokens.onAccent} size={20} />
-                    </View>
-                  </View>
-                </GlassCard>
-              </PressableScale>
-            ) : (
-              <GlassCard level="primary" style={styles.focusCard}>
-                <View style={styles.focusHeader}>
-                  <AppIcon name="focus" color={tokens.accent} size={20} />
-                  <Text style={[styles.focusKicker, { color: tokens.text }]}>今日专注</Text>
-                </View>
-                <View style={styles.emptyFocus}>
-                  <Text style={[styles.focusTitle, { color: tokens.text }]}>还没有待办任务</Text>
-                  <Text style={[styles.focusHint, { color: tokens.muted }]}>
-                    先记下今天最重要的一件事，专注就有了落点。
-                  </Text>
-                  <PressableScale
-                    onPress={nav.openCreateTask}
-                    accessibilityLabel="新建任务"
-                    style={styles.retryPress}
-                    contentStyle={[styles.retry, { backgroundColor: tokens.accentFill }]}
-                  >
-                    <Text style={[styles.retryText, { color: tokens.onAccent }]}>新建任务</Text>
-                  </PressableScale>
-                </View>
-              </GlassCard>
-            )}
-
-            <SectionHeader
-              icon="stats"
-              title="效率概览"
-              actionLabel="查看详情"
-              onAction={() => nav.openTab("tasks")}
-            />
-            {/* 三张独立磁贴：等高、等间距，图标只做语义提示，不使用大面积鲜艳背景 */}
-            <View style={styles.statsRow}>
-              <MetricTile
-                variant="stat"
-                icon="pending"
-                value={counts.pending}
-                label="待办任务"
-                tone="accent"
-              />
-              <MetricTile
-                variant="stat"
-                icon="calendar"
-                value={counts.dueToday}
-                label="今日到期"
-                tone="alt"
-              />
-              <MetricTile
-                variant="stat"
-                icon="success"
-                value={counts.completed}
-                label="已完成"
-                tone="ok"
-              />
+            {/* 今日概览：待处理 / 今日到期 / 已完成 / 完成率，全部来自 tasks 表真实计数 */}
+            <View style={styles.section}>
+              <SectionHeader icon="stats" title="今日概览" />
+              <View style={styles.statsRow}>
+                <MetricTile
+                  variant="stat"
+                  icon="pending"
+                  value={counts.pending}
+                  label="待处理任务"
+                  tone="accent"
+                />
+                <MetricTile
+                  variant="stat"
+                  icon="calendar"
+                  value={counts.dueToday}
+                  label="今日到期"
+                  tone="alt"
+                />
+                <MetricTile
+                  variant="stat"
+                  icon="success"
+                  value={counts.completed}
+                  label="已完成"
+                  tone="ok"
+                />
+                <MetricTile
+                  variant="stat"
+                  icon="stats"
+                  value={completionPercent}
+                  label="完成率"
+                  tone="neutral"
+                />
+              </View>
             </View>
 
-            <SectionHeader
-              icon="note"
-              title="最近内容"
-              actionLabel="更多"
-              onAction={() => nav.push("notes")}
-            />
-            {recent.length === 0 ? (
-              <Text style={[styles.emptyText, { color: tokens.muted }]}>
-                还没有笔记或速记。写下第一条后，这里会显示最近更新的内容。
+            {/* 当前进度：真实完成率进度条；整卡进任务页，不进入任何项目空间 */}
+            <PressableScale
+              onPress={() => nav.openTab("tasks")}
+              accessibilityLabel={`今日任务完成度 ${completionPercent}%，查看全部任务`}
+              accessibilityHint="打开任务页"
+              style={styles.progressPress}
+              contentStyle={styles.progressCard}
+            >
+              <View style={styles.progressHeader}>
+                <AppIcon name="stats" color={tokens.accent} size={20} />
+                <Text style={[styles.progressTitle, { color: tokens.text }]}>当前进度</Text>
+                <View style={styles.progressAction}>
+                  <Text style={[styles.progressActionText, { color: tokens.accentText }]}>
+                    查看全部
+                  </Text>
+                  <AppIcon name="chevronRight" color={tokens.accent} size={14} />
+                </View>
+              </View>
+              <ProgressBar value={completionRatio} label={`${completionPercent}%`} />
+              <Text style={[styles.progressHint, { color: tokens.muted }]}>
+                今日任务完成度 · 共 {counts.total} 项，已完成 {counts.completed} 项
               </Text>
-            ) : (
-              <View style={styles.recentList}>
-                {recent.map((entry, index) => (
-                  <View key={entry.id}>
-                    {index > 0 ? (
-                      <View style={[styles.divider, { backgroundColor: tokens.separator }]} />
-                    ) : null}
-                    <PressableScale
-                      onPress={() => openRecent(entry)}
-                      accessibilityLabel={`${entry.kind === "note" ? "笔记" : "速记"}：${entry.title}`}
-                      accessibilityHint={entry.kind === "note" ? "打开笔记" : "打开收集箱"}
-                      style={styles.recentPress}
-                      contentStyle={styles.recentRow}
-                    >
-                      <IconTile
-                        name={entry.kind === "note" ? "note" : "inbox"}
-                        size={36}
-                        iconSize={18}
-                      />
-                      <View style={styles.recentBody}>
-                        <Text numberOfLines={1} style={[styles.recentTitle, { color: tokens.text }]}>
-                          {entry.title}
-                        </Text>
-                        {entry.snippet && entry.snippet !== entry.title ? (
-                          <Text
-                            numberOfLines={1}
-                            style={[styles.recentSnippet, { color: tokens.muted }]}
-                          >
-                            {entry.snippet}
-                          </Text>
+            </PressableScale>
+
+            {/* 待处理任务：前 3 条真实未完成任务，轻点进详情；右侧查看全部回任务页 */}
+            <View style={styles.section}>
+              <SectionHeader
+                icon="tasks"
+                title={counts.pending > 0 ? `待处理任务 · ${counts.pending}` : "待处理任务"}
+                actionLabel="查看全部"
+                onAction={() => nav.openTab("tasks")}
+              />
+              {pendingTop3.length === 0 ? (
+                <Text style={[styles.emptyText, { color: tokens.muted }]}>
+                  手上的事都处理完了，先歇一会儿。
+                </Text>
+              ) : (
+                <GlassCard style={styles.listCard}>
+                  {pendingTop3.map((task, index) => {
+                    const overdue = task.dueAt != null && task.dueAt < now;
+                    const due = formatDue(task.dueAt, now);
+                    return (
+                      <View key={task.id}>
+                        {index > 0 ? (
+                          <View style={[styles.divider, { backgroundColor: tokens.separator }]} />
                         ) : null}
+                        <PressableScale
+                          onPress={() => openTaskDetail(task)}
+                          accessibilityLabel={`任务：${task.title}`}
+                          accessibilityHint="轻点查看任务详情"
+                          style={styles.pendingPress}
+                          contentStyle={styles.pendingRow}
+                        >
+                          <View style={styles.pendingMain}>
+                            <Text
+                              numberOfLines={2}
+                              style={[styles.pendingTitle, { color: tokens.text }]}
+                            >
+                              {task.title}
+                            </Text>
+                            <View style={styles.metaRow}>
+                              {task.priority > 0 ? (
+                                <View
+                                  style={[
+                                    styles.metaChip,
+                                    {
+                                      backgroundColor:
+                                        task.priority >= 3 ? tokens.dangerSoft : tokens.warnSoft,
+                                    },
+                                  ]}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.metaText,
+                                      {
+                                        color:
+                                          task.priority >= 3 ? tokens.danger : tokens.warn,
+                                      },
+                                    ]}
+                                  >
+                                    {PRIORITY_SHORT[task.priority]}
+                                  </Text>
+                                </View>
+                              ) : null}
+                              {task.category ? (
+                                <View
+                                  style={[
+                                    styles.metaChip,
+                                    { backgroundColor: tokens.accentSoft },
+                                  ]}
+                                >
+                                  <Text
+                                    numberOfLines={1}
+                                    style={[styles.metaText, { color: tokens.accentText }]}
+                                  >
+                                    {task.category}
+                                  </Text>
+                                </View>
+                              ) : null}
+                              {due ? (
+                                <View
+                                  style={[
+                                    styles.metaChip,
+                                    {
+                                      backgroundColor: overdue
+                                        ? tokens.warnSoft
+                                        : tokens.accentSoft,
+                                    },
+                                  ]}
+                                >
+                                  <AppIcon
+                                    name="clock"
+                                    color={overdue ? tokens.warn : tokens.accentText}
+                                    size={12}
+                                  />
+                                  <Text
+                                    style={[
+                                      styles.metaText,
+                                      { color: overdue ? tokens.warn : tokens.accentText },
+                                    ]}
+                                  >
+                                    {due}
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          </View>
+                          <AppIcon name="chevronRight" color={tokens.faint} size={16} />
+                        </PressableScale>
                       </View>
-                      <Text style={[styles.recentTime, { color: tokens.muted }]}>
-                        {formatRelative(entry.at, now)}
-                      </Text>
-                    </PressableScale>
+                    );
+                  })}
+                </GlassCard>
+              )}
+            </View>
+
+            {/* 快捷入口：真实可点入口 + 未接入占位；AI 助手无能力链路，只降饱和占位 */}
+            <View style={styles.section}>
+              <SectionHeader icon="tools" title="快捷入口" />
+              <View style={styles.quickGrid}>
+                {quickEntries.map((entry) => (
+                  <View key={entry.key} style={[styles.quickCell, { width: narrow ? "50%" : "25%" }]}>
+                    <QuickTile
+                      icon={entry.icon}
+                      label={entry.label}
+                      badge={"badge" in entry ? entry.badge : undefined}
+                      onPress={entry.onPress}
+                    />
                   </View>
                 ))}
-                <View style={[styles.listEnd, { backgroundColor: tokens.separator }]} />
+                <View style={[styles.quickCell, { width: narrow ? "50%" : "25%" }]}>
+                  <View
+                    accessible
+                    accessibilityLabel="AI 助手，移动端暂未接入"
+                    accessibilityState={{ disabled: true }}
+                    style={[styles.placeholderTile, { backgroundColor: tokens.accentWash }]}
+                  >
+                    <AppIcon name="sparkles" color={tokens.faint} size={24} />
+                    <Text numberOfLines={1} style={[styles.placeholderLabel, { color: tokens.muted }]}>
+                      AI 助手
+                    </Text>
+                  </View>
+                </View>
               </View>
-            )}
-
-            <SectionHeader icon="tools" title="快捷入口" />
-            <View style={styles.quickRow}>
-              <QuickTile icon="camera" label="采集" onPress={() => nav.push("capture_home")} />
-              <QuickTile icon="add" label="新建任务" onPress={nav.openCreateTask} />
-              <QuickTile
-                icon="inbox"
-                label="收集箱"
-                badge={inboxCount}
-                onPress={() => nav.push("inbox")}
-              />
-              <QuickTile icon="note" label="笔记" onPress={() => nav.push("notes")} />
             </View>
 
-            {/* AI 助手仍只有说明，不渲染输入框/推荐/发送按钮 */}
-            <View
-              accessible
-              accessibilityLabel="AI 助手，移动端暂未接入"
-              accessibilityState={{ disabled: true }}
-              style={styles.aiNote}
-            >
-              <AppIcon name="sparkles" color={tokens.faint} size={16} />
-              <Text style={[styles.aiText, { color: tokens.muted }]}>
-                AI 助手 · 移动端暂未接入
-              </Text>
+            {/* 最近动态：任务 / 笔记 / 采集合并的真实时间线，纯列表行 */}
+            <View style={styles.section}>
+              <SectionHeader icon="activity" title="最近动态" />
+              {activity.length === 0 ? (
+                <Text style={[styles.emptyText, { color: tokens.muted }]}>
+                  还没有任务、笔记或速记；写下第一条后，这里会显示最近更新的内容。
+                </Text>
+              ) : (
+                <View style={styles.activityList}>
+                  {activity.map((entry, index) => (
+                    <View key={`${entry.kind}-${entry.id}`}>
+                      {index > 0 ? (
+                        <View style={[styles.divider, { backgroundColor: tokens.separator }]} />
+                      ) : null}
+                      <PressableScale
+                        onPress={() => openActivity(entry)}
+                        accessibilityLabel={`${entry.kind === "task" ? "任务" : entry.kind === "note" ? "笔记" : "速记"}：${entry.title}`}
+                        style={styles.activityPress}
+                        contentStyle={styles.activityRow}
+                      >
+                        <IconTile name={ACTIVITY_ICON[entry.kind]} size={36} />
+                        <View style={styles.activityBody}>
+                          <Text numberOfLines={1} style={[styles.activityTitle, { color: tokens.text }]}>
+                            {entry.title}
+                          </Text>
+                          {entry.snippet ? (
+                            <Text numberOfLines={1} style={[styles.activitySnippet, { color: tokens.muted }]}>
+                              {entry.snippet}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <Text style={[styles.activityTime, { color: tokens.muted }]}>
+                          {formatRelative(entry.at, now)}
+                        </Text>
+                      </PressableScale>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
           </>
         )}
@@ -437,12 +531,28 @@ export function HomeScreen({
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  header: {
+    minHeight: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    paddingHorizontal: space.lg,
+  },
+  headerTitle: { flex: 1, gap: 1 },
+  headerTitleText: {
+    fontSize: font.page,
+    fontWeight: "800",
+    letterSpacing: -0.4,
+    lineHeight: font.page + 6,
+  },
+  headerSub: { fontSize: font.meta, lineHeight: 16 },
   content: {
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
     paddingBottom: space.xxl,
     gap: space.lg,
   },
+  section: { gap: space.md },
   hero: {
     // 通栏：抵消页面左右内边距，让浅蓝渐变贴住屏幕两侧
     marginHorizontal: -space.lg,
@@ -460,7 +570,7 @@ const styles = StyleSheet.create({
     top: -64,
     width: 190,
     height: 190,
-    borderRadius: 95,
+    borderRadius: radius.chip,
     opacity: 0.7,
   },
   heroOrbSmall: {
@@ -469,14 +579,14 @@ const styles = StyleSheet.create({
     bottom: -48,
     width: 108,
     height: 108,
-    borderRadius: 54,
+    borderRadius: radius.chip,
   },
   heroText: { flex: 1, gap: 6 },
   greeting: {
     fontSize: font.hero,
     fontWeight: "800",
     letterSpacing: -0.6,
-    lineHeight: 34,
+    lineHeight: font.hero + 8,
   },
   tagline: { fontSize: font.meta, lineHeight: 19 },
   heroBrand: { alignSelf: "center" },
@@ -492,27 +602,33 @@ const styles = StyleSheet.create({
     borderRadius: radius.chip,
   },
   retryText: { fontSize: font.body, fontWeight: "700" },
-  focusPress: {},
-  focusCard: {
+  statsRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, alignItems: "stretch" },
+  progressPress: {},
+  progressCard: {
     padding: space.lg,
     gap: space.sm + 2,
   },
-  focusHeader: { flexDirection: "row", alignItems: "center", gap: space.sm },
-  focusKicker: { fontSize: font.section - 1, fontWeight: "700", letterSpacing: -0.2 },
-  focusStatus: {
+  progressHeader: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  progressTitle: { fontSize: font.section, fontWeight: "700", letterSpacing: -0.2 },
+  progressAction: {
     marginLeft: "auto",
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    paddingHorizontal: space.sm,
-    paddingVertical: 3,
-    borderRadius: radius.chip,
+    gap: 2,
   },
-  statusDot: { width: 5, height: 5, borderRadius: 3 },
-  focusStatusText: { fontSize: font.label, fontWeight: "700" },
-  focusMain: { flexDirection: "row", alignItems: "center", gap: space.md },
-  focusBody: { flex: 1, gap: space.sm },
-  focusTitle: { fontSize: 21, fontWeight: "700", lineHeight: 29, letterSpacing: -0.2 },
+  progressActionText: { fontSize: font.meta, fontWeight: "600" },
+  progressHint: { fontSize: font.label, lineHeight: 17 },
+  listCard: { paddingHorizontal: space.md, paddingVertical: space.xxs },
+  pendingPress: {},
+  pendingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+    minHeight: 58,
+    paddingVertical: space.sm + 2,
+  },
+  pendingMain: { flex: 1, gap: 3 },
+  pendingTitle: { fontSize: font.title, fontWeight: "600", lineHeight: 22 },
   metaRow: { flexDirection: "row", alignItems: "center", gap: space.xs, flexWrap: "wrap" },
   metaChip: {
     flexDirection: "row",
@@ -523,39 +639,31 @@ const styles = StyleSheet.create({
     borderRadius: radius.chip,
   },
   metaText: { fontSize: font.label, fontWeight: "600" },
-  focusAction: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  emptyText: { fontSize: font.meta, lineHeight: 20, paddingVertical: space.xs },
+  quickGrid: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  quickCell: { flexGrow: 0 },
+  placeholderTile: {
+    minHeight: 78,
+    borderRadius: radius.row,
+    paddingHorizontal: space.xs,
+    paddingVertical: space.sm + 2,
     alignItems: "center",
     justifyContent: "center",
+    gap: space.sm,
   },
-  focusHint: { flexShrink: 1, fontSize: font.label, lineHeight: 17 },
-  emptyFocus: { alignItems: "flex-start", gap: space.sm },
-  statsRow: { flexDirection: "row", gap: space.sm, alignItems: "stretch" },
-  emptyText: { fontSize: font.meta, lineHeight: 20, paddingVertical: space.xs },
-  recentList: {},
+  placeholderLabel: { fontSize: font.label, fontWeight: "700", textAlign: "center" },
+  activityList: {},
   divider: { height: StyleSheet.hairlineWidth },
-  listEnd: { height: StyleSheet.hairlineWidth },
-  recentPress: {},
-  recentRow: {
+  activityPress: {},
+  activityRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: space.md,
     minHeight: 58,
     paddingVertical: space.sm + 2,
   },
-  recentBody: { flex: 1, gap: 2 },
-  recentTitle: { fontSize: font.body, fontWeight: "600" },
-  recentSnippet: { fontSize: font.label },
-  recentTime: { fontSize: font.label, flexShrink: 0 },
-  quickRow: { flexDirection: "row", gap: space.sm },
-  aiNote: {
-    minHeight: 24,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 2,
-  },
-  aiText: { fontSize: font.label },
+  activityBody: { flex: 1, gap: 2 },
+  activityTitle: { fontSize: font.body, fontWeight: "600" },
+  activitySnippet: { fontSize: font.label },
+  activityTime: { fontSize: font.label, flexShrink: 0 },
 });

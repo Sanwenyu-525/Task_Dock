@@ -6,6 +6,7 @@ import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 
 import { LaunchOverlay } from "./src/components/LaunchOverlay";
+import { PlaceholderPage } from "./src/components/PlaceholderPage";
 import { TabBar, type TabKey } from "./src/components/TabBar";
 import launchIntent, { type LaunchAction } from "./modules/launch-intent";
 import { listCaptures } from "./src/db/captures";
@@ -37,6 +38,7 @@ import { ensureReminderCategory, installNotificationHandler } from "./src/notifi
 import { CaptureScreen } from "./src/screens/CaptureScreen";
 import { ConflictScreen } from "./src/screens/ConflictScreen";
 import { DeviceScreen } from "./src/screens/DeviceScreen";
+import { DiagnosticScreen } from "./src/screens/DiagnosticScreen";
 import { FilesScreen } from "./src/screens/FilesScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
 import { InboxScreen } from "./src/screens/InboxScreen";
@@ -48,6 +50,7 @@ import { ProfileScreen } from "./src/screens/ProfileScreen";
 import { IconGalleryScreen } from "./src/screens/IconGalleryScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
 import { SyncScreen } from "./src/screens/SyncScreen";
+import { TaskDetailScreen } from "./src/screens/TaskDetailScreen";
 import { TasksScreen } from "./src/screens/TasksScreen";
 import { ToolsScreen } from "./src/screens/ToolsScreen";
 import { WidgetScreen } from "./src/screens/WidgetScreen";
@@ -173,7 +176,7 @@ function Shell() {
     };
   }, [version]);
 
-  const push = useCallback((key: RouteKey, noteId?: string, intent?: CaptureIntent) => {
+  const push = useCallback((key: RouteKey, noteId?: string, intent?: CaptureIntent, taskId?: string) => {
     setStack((prev) => {
       // 深链可能在配对页/采集页已打开时重复触发：不叠加第二个相同页面，
       // 新载荷由 pendingPairing / pendingShare 的订阅者就地更新。
@@ -192,7 +195,7 @@ function Shell() {
         }
         return prev;
       }
-      return [...prev, { key, noteId, intent }];
+      return [...prev, { key, noteId, intent, taskId }];
     });
   }, []);
 
@@ -376,6 +379,63 @@ function Shell() {
         return <CaptureImportScreen nav={nav} />;
       case "icon_gallery":
         return <IconGalleryScreen nav={nav} />;
+      // 任务详情：真实任务数据；拿不到 id 时不渲染空壳，直接给可返回的说明页。
+      case "task_detail":
+        return route.taskId ? (
+          <TaskDetailScreen taskId={route.taskId} nav={nav} onDataChanged={handleDataChanged} />
+        ) : (
+          <PlaceholderPage
+            title="任务详情"
+            icon="tasks"
+            reason="这条任务缺少有效的任务 id，无法打开详情。"
+            from="返回任务列表重新选择"
+            onBack={back}
+          />
+        );
+      case "diagnostics":
+        return <DiagnosticScreen nav={nav} onBack={back} version={version} />;
+      // 以下四项在移动端没有数据链路：统一用占位页承载入口，
+      // 不渲染演示项目、假进度、假 Agent 状态（见 01-audit.md 的 C 类判定）。
+      case "project_detail":
+        return (
+          <PlaceholderPage
+            title="项目详情"
+            icon="project"
+            reason="项目空间数据只在桌面端维护，移动端还没有项目同步链路。"
+            from="桌面端 → 工作区 → 项目空间"
+            onBack={back}
+          />
+        );
+      case "feature_board":
+        return (
+          <PlaceholderPage
+            title="功能看板"
+            icon="list"
+            reason="功能与看板数据来自桌面端项目空间，移动端尚未同步。"
+            from="桌面端 → 项目 → 功能看板"
+            onBack={back}
+          />
+        );
+      case "scene_workspace":
+        return (
+          <PlaceholderPage
+            title="场景工作区"
+            icon="scene"
+            reason="场景与工作流配置在桌面端，移动端还没有对应数据通道。"
+            from="桌面端 → 场景工作区"
+            onBack={back}
+          />
+        );
+      case "dev_workbench":
+        return (
+          <PlaceholderPage
+            title="开发工作台"
+            icon="terminal"
+            reason="Agent 运行态与任务交接在桌面端管线里，移动端没有读取通道。"
+            from="桌面端 → 开发工作台"
+            onBack={back}
+          />
+        );
     }
   };
 
@@ -408,6 +468,7 @@ function Shell() {
           <TabPage active={tab === "tasks"}>
             <TasksScreen
               version={version}
+              nav={nav}
               openCreateSignal={createPending ? createSignal : 0}
               onConsumeCreateSignal={consumeCreateSignal}
             />

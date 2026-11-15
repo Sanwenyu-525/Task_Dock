@@ -5195,4 +5195,129 @@ mod tests {
             assert_eq!(groups.iter().find(|x| x.id == g.id).unwrap().image_count, 3);
         }
     }
+
+    // ── SQLite 故障注入：关键状态落库失败时必须返回错误，且不得留下半个现场 ──
+
+    #[test]
+    fn readonly_db_rejects_paste_step_and_keeps_previous_state() {
+        let tmp = TempRoot::new();
+        let db_path = tmp.0.join("app.db");
+        let (job, item) = {
+            let db = Db::open(&db_path).unwrap();
+            let root = TempRoot::new();
+            let s = settings();
+            let a = record_capture(&db, &root.0, &text_payload("一"), &s).unwrap();
+            let b = record_capture(&db, &root.0, &text_payload("二"), &s).unwrap();
+            let ids = vec![a.item.id.clone(), b.item.id.clone()];
+            let job = create_paste_job(&db, "", "记事本", "notepad.exe", &ids).unwrap();
+            (job, a.item.id.clone())
+        };
+        let db = Db::open(&db_path).unwrap();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "query_only", true)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        // 模拟「只读库上执行 dispatching 落库」：必须拿到 Err，而不是静默成功。
+        let err = record_paste_step(
+            &db,
+            &job,
+            1,
+            &[],
+            &item,
+            "dispatching",
+            Some("写入应失败"),
+        )
+        .expect_err("只读库必须报错");
+        assert!(
+            !err.to_string().is_empty(),
+            "错误必须带可读原因，便于诊断中心定位"
+        );
+
+        // 只读解除后读回：任务进度与逐项状态都保持原样，没有被写坏。
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "query_only", false)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(row.sent, 0, "失败的那一步不得计入已发送");
+        assert_eq!(row.remaining_items.len(), 2);
+        assert!(
+            list_paste_items(&db, &job).unwrap().is_empty(),
+            "写失败时不得留下半条逐项记录"
+        );
+    }
+
+    #[test]
+    fn full_disk_simulation_returns_error_instead_of_fake_progress() {
+        let tmp = TempRoot::new();
+        let db_path = tmp.0.join("app.db");
+        let (job, item) = {
+            let db = Db::open(&db_path).unwrap();
+            let root = TempRoot::new();
+            let s = settings();
+            let a = record_capture(&db, &root.0, &text_payload("一"), &s).unwrap();
+            let ids = vec![a.item.id.clone()];
+            let job = create_paste_job(&db, "", "记事本", "notepad.exe", &ids).unwrap();
+            (job, a.item.id.clone())
+        };
+        let db = Db::open(&db_path).unwrap();
+        // 磁盘空间不足的等价模拟：把 max_page_count 压到当前页数，再写入必然 SQLITE_FULL。
+        let pages: i64 = db
+            .with_read(|conn| conn.query_row("PRAGMA page_count", [], |r| r.get(0)).map_err(AppError::from))
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.pragma_update(None, "max_page_count", pages)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        // 写一条足够大的 note，确保需要新页 → 触发 SQLITE_FULL 分支。
+        let big = "x".repeat(200_000);
+        let err = record_paste_step(&db, &job, 1, &[], &item, "dispatching", Some(&big))
+            .expect_err("空间不足必须报错");
+        let text = err.to_string();
+        assert!(
+            text.to_lowercase().contains("full")
+                || text.contains("空间")
+                || text.contains("disk"),
+            "错误信息应能看出是空间问题，实际：{text}"
+        );
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(row.sent, 0, "写入失败时任务进度不得前进");
+    }
+
+    #[test]
+    fn busy_database_surfaces_error_and_does_not_claim_sent() {
+        let tmp = TempRoot::new();
+        let db_path = tmp.0.join("app.db");
+        let (job, item) = {
+            let db = Db::open(&db_path).unwrap();
+            let root = TempRoot::new();
+            let s = settings();
+            let a = record_capture(&db, &root.0, &text_payload("一"), &s).unwrap();
+            let ids = vec![a.item.id.clone()];
+            let job = create_paste_job(&db, "", "记事本", "notepad.exe", &ids).unwrap();
+            (job, a.item.id.clone())
+        };
+        let db = Db::open(&db_path).unwrap();
+        // 总线立刻报 BUSY，不要让测试卡在默认 busy_timeout 上。
+        db.with_conn(|conn| {
+            conn.busy_timeout(std::time::Duration::from_millis(1))?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        // 另一个连接持写锁：本连接的写入会 BUSY/超时，必须冒泡成 Err。
+        let holder = rusqlite::Connection::open(&db_path).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        let err = record_paste_step(&db, &job, 1, &[], &item, "dispatching", Some("锁竞争"))
+            .expect_err("持锁写入必须报错");
+        assert!(!err.to_string().is_empty());
+        holder.execute_batch("ROLLBACK;").unwrap();
+        drop(holder);
+        let row = get_paste_job(&db, &job).unwrap();
+        assert_eq!(row.sent, 0);
+    }
 }

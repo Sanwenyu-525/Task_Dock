@@ -229,7 +229,7 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: {
-    paddingBottom: 48,
+    paddingBottom: space.xxl,
     paddingHorizontal: space.lg,
     gap: space.md,
   },

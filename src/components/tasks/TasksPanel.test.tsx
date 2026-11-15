@@ -552,12 +552,12 @@ describe("窄口径下钻空态", () => {
 });
 
 describe("任务页统计概览", () => {
-  it("三卡只保留「数值 + 标签」，不重复绘制图标", () => {
+  it("四张统计卡只保留「数值 + 标签」，不重复绘制图标", () => {
     seedTasks();
     render(<TasksPanel />);
 
     const cards = document.querySelectorAll(".overview-card");
-    expect(cards).toHaveLength(3);
+    expect(cards).toHaveLength(4);
     cards.forEach((card) => {
       // 图标与标签语义重复，卡内不再绘制 svg
       expect(card.querySelector("svg")).toBeNull();
@@ -572,7 +572,7 @@ describe("任务页统计概览", () => {
     });
   });
 
-  it("三张统计卡都可点击下钻到对应筛选（待完成 / 今日到期 / 逾期）", () => {
+  it("四张统计卡都可点击下钻到对应筛选（待完成 / 今日到期 / 逾期 / 今日完成）", () => {
     seedTasks();
     render(<TasksPanel />);
     const cards = document.querySelectorAll<HTMLElement>(".overview-card");
@@ -591,6 +591,9 @@ describe("任务页统计概览", () => {
 
     fireEvent.click(cards[2]);
     expect(useTasksStore.getState().filter).toMatchObject({ view: "overdue" });
+
+    fireEvent.click(cards[3]);
+    expect(useTasksStore.getState().filter).toMatchObject({ view: "all", status: "completed" });
 
     // 键盘契约：Enter 同样可激活
     fireEvent.keyDown(cards[0], { key: "Enter" });

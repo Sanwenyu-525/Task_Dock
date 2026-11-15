@@ -350,11 +350,12 @@ export default function WorkbenchShell() {
 
   // 窄窗自动收起右栏（不改变用户偏好；宽窗恢复时按配置显示）。
   // 1180×760 默认窗口在 125% DPI 下是 944×608 CSS px：三栏在这里只剩
-  // ~392px 主内容，任务页筛选行会被挤到换行/横向滚动。阈值取 1000：
-  // 默认尺寸下优先保证主内容宽度，右栏由顶栏按钮按需展开；窗口放大后
-  // 自动按用户偏好恢复三栏。
+  // ~392px 主内容，任务页筛选行会被挤到换行/横向滚动。阈值取 1100：
+  // 原生 1280×820@125%（1024 CSS）也必须收起右栏——1000 的旧阈值会让
+  // 200 导航 + 320 详情 + 主内容最小宽度超出视口，右栏被裁到屏幕外
+  // （2026-11-15 原生窗口验收发现）。窗口放大后自动按用户偏好恢复三栏。
   useEffect(() => {
-    const measure = () => setCompact(window.innerWidth < 1000);
+    const measure = () => setCompact(window.innerWidth < 1100);
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
@@ -1023,11 +1024,6 @@ export default function WorkbenchShell() {
     [projects, t],
   );
 
-  const currentTaskId = useSettingsStore((s) => s.settings?.workbench_current_task ?? "");
-  const currentTask = useTasksStore((s) =>
-    currentTaskId ? s.tasks.find((task) => String(task.id) === currentTaskId) : undefined,
-  );
-
   const contextVisible = detailOpen && !compact;
 
   // 页面级详情栏宿主：右栏关闭或窄窗降级时节点卸载，ref 回调自动回到 null，
@@ -1332,11 +1328,6 @@ export default function WorkbenchShell() {
               size="sm"
               menuMinWidth={240}
             />
-            {route === "workbench" && currentTask && (
-              <span className="wb-topbar-task" title={currentTask.title}>
-                当前任务：{currentTask.title}
-              </span>
-            )}
           </div>
           <div className="wb-topbar-actions">
             <button

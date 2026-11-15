@@ -5,18 +5,41 @@ html,
 body,
 #root {
   height: 100%;
+  /* 窗口级圆角由 Win32 区域裁剪负责，四角外侧必须是真正的透明像素：
+     这里不能再用不透明底色，否则圆角外会留下直角方块。 */
+  background: transparent;
 }
 
 body {
   margin: 0;
-  background: var(--surface-base);
   color: var(--text-primary);
   font-family: var(--font-sans, system-ui, sans-serif);
   overflow: hidden;
 }
 
+/* 顶层窗口框：工作台外壳与启动门共用同一套窗口级圆角/边框，
+   页面内部容器不再各自画窗口轮廓。半径与 Rust 区域裁剪同源（见
+   `src/workbench/windowFrame.ts` → `set_workspace_window_radius`）。 */
+.wb-root,
+.wb-boot {
+  box-sizing: border-box;
+  height: 100%;
+  /* 半径沿用视觉预设的窗口级 Token（与主窗 apply_window_radius 同一来源），
+     不新增第三套圆角规范；原生区域按同一逻辑半径裁剪。 */
+  border-radius: var(--radius-window);
+  border: 1px solid var(--window-border);
+  /* 裁掉贴边内容（侧栏、滚动区、底部状态栏），避免从圆角处露出直角 */
+  overflow: hidden;
+}
+
+/* 最大化：按 Windows 原生直角铺满工作区，圆角/边框会在屏幕边缘留缝隙 */
+html[data-window-maximized="true"] .wb-root,
+html[data-window-maximized="true"] .wb-boot {
+  border-radius: 0;
+  border-width: 0;
+}
+
 .wb-root {
-  height: 100vh;
   display: grid;
   /* 对照效果图的窗口构图：顶栏横跨整窗，左导航在顶栏之下，底部状态栏通栏。
      `.wb-main` 用 display:contents 把顶栏 / 工作区 / 状态栏提升为根网格项，
@@ -82,6 +105,14 @@ body {
   flex-direction: column;
   gap: 1px;
   padding-top: 2px;
+  /* 导航列表不画滚动条（滚轮 / 键盘 / 拖动仍可滚动）：5px 灰 thumb 紧贴
+     右侧分栏拖拽条时会并排出现两根竖线，看起来像多了一条分隔线。 */
+  scrollbar-width: none;
+}
+/* 旧内核兜底：支持标准 scrollbar-width 的 Chromium 会忽略下面的伪元素规则 */
+.wb-nav-items::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .wb-nav-sep {
@@ -173,23 +204,38 @@ body {
 }
 
 /* ── 分栏拖拽 ───────────────────────────────────────────────────────── */
+/* 命中带仍是 4px（好抓），但可见的只有正中 1px 细线：整根 4px 实条在浅色
+   导航旁过深过粗，会被误读成一条分界线而不是拖拽把手。 */
 .wb-resizer {
+  position: relative;
   flex: 0 0 4px;
   width: 4px;
   cursor: col-resize;
+  background: transparent;
+}
+.wb-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 50%;
+  width: 1px;
+  transform: translateX(-50%);
   background: transparent;
   transition: background 120ms ease;
 }
 .wb-resizer-nav {
   grid-area: res;
 }
-.wb-resizer:hover,
+.wb-resizer:hover::after {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.wb-resizer:focus-visible::after {
+  background: color-mix(in srgb, var(--accent) 38%, transparent);
+}
 .wb-resizer:focus-visible {
-  background: color-mix(in srgb, var(--accent) 45%, transparent);
   outline: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  .wb-resizer {
+  .wb-resizer::after {
     transition: none;
   }
 }
@@ -225,22 +271,14 @@ body.wb-resizing {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 0 1 210px;
-  max-width: 240px;
+  flex: 0 0 210px;
+  max-width: 210px;
 }
-.wb-topbar-kind,
-.wb-topbar-task {
-  font-size: 11px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 32ch;
-}
-.wb-topbar-task {
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--surface-hover);
+/* 上下文容器只放工作空间选择器；让选择器占满容器，避免被顶栏动作挤成
+   一截截断文本（对齐效果图：顶栏只有一个稳定的工作空间下拉）。 */
+.wb-topbar-context > .ui-select-trigger {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .wb-topbar-actions {
@@ -1192,7 +1230,7 @@ body.wb-resizing {
 
 /* ── 启动门 ────────────────────────────────────────────────────────── */
 .wb-boot {
-  height: 100vh;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;

@@ -335,6 +335,8 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
     await commitNote();
     const failures: string[] = [];
     let offlineMessage: string | null = null;
+    let pendingMessage: string | null = null;
+    let stopMessage: string | null = null;
     try {
       const sessionAssets = (
         await Promise.all(sessionIds.current.map((id) => repo.getAsset(id)))
@@ -397,14 +399,17 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
           if (choice.desktopTarget === "shelf" && desktopDone && remote?.remoteId) {
             const retry = await retryShelfImport(asset, remote.remoteId, choice.shelfGroupId);
             if (retry.stopBatch) {
+              stopMessage = retry.message;
               failures.push(retry.message);
               break;
             }
-            if (retry.state === "pending") offlineMessage = retry.message;
+            if (retry.state === "pending") pendingMessage = retry.message;
             else if (retry.state === "failed" || retry.state === "cancelled") {
               failures.push(retry.message);
-            } else {
+            } else if (retry.remoteShelfId) {
               doneKeys.add(`${asset.id}:shelf`);
+            } else {
+              failures.push("电脑端已接收，但未返回暂存架条目 ID；请刷新核对");
             }
             continue;
           }
@@ -420,15 +425,24 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
           }
           if (result.stopBatch) {
             // 授权/安全类失败：继续发下一张只会重复失败，停止整批并展示真实原因。
+            stopMessage = result.message ?? "授权或安全校验失败，已停止本批发送";
             if (result.message) failures.push(result.message);
             break;
           }
           for (const outcome of result.outcomes) {
             if (outcome.state === "done") {
               doneKeys.add(`${asset.id}:desktop`);
-              if (choice.desktopTarget === "shelf") doneKeys.add(`${asset.id}:shelf`);
-            } else if (outcome.message) {
-              failures.push(outcome.message);
+              if (choice.desktopTarget === "inbox") {
+                continue;
+              }
+              if (outcome.shelfId) doneKeys.add(`${asset.id}:shelf`);
+              else failures.push("电脑端已接收，但未返回暂存架条目 ID；请刷新核对");
+            } else if (outcome.state === "pending") {
+              pendingMessage = outcome.message ?? "已保留为待发送";
+            } else if (outcome.state === "cancelled") {
+              pendingMessage = outcome.message ?? "已取消发送";
+            } else {
+              failures.push(outcome.message ?? "发送失败，请重试");
             }
           }
         }
@@ -447,10 +461,10 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
       await reload();
       bumpCaptureRevision();
 
-      if (offlineMessage) {
-        showToast(offlineMessage, "warn");
-      } else if (failures.length > 0) {
-        showToast(failures[0], "danger");
+      if (failures.length > 0 || stopMessage) {
+        showToast(failures[0] ?? stopMessage ?? "发送失败，请重试", "danger");
+      } else if (offlineMessage || pendingMessage) {
+        showToast(offlineMessage ?? pendingMessage ?? "电脑端不可用", "warn");
       } else {
         showToast(`已完成 ${total} 张素材的所选目的地`, "success");
       }

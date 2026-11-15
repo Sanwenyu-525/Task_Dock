@@ -325,22 +325,27 @@ function shelfFailureOf(error: unknown): {
   };
 }
 
+type ShelfImportResult =
+  | { ok: true; shelfId: string | null }
+  | { ok: false; failure: TransferFailure; message: string };
+
 async function importRemoteToShelf(
   client: FileClient,
   asset: repo.CaptureAsset,
   remote: RemoteFile,
   groupId: string | null,
-): Promise<TransferFailure | null> {
+): Promise<ShelfImportResult> {
   try {
     const imported = await client.importToShelf(remote.id, groupId);
+    const shelfId = imported.shelf_item_id ?? null;
     await repo.setDestination(asset.id, "shelf", {
       state: "done",
       remoteId: remote.id,
-      remoteShelfId: imported.shelf_item_id ?? null,
+      remoteShelfId: shelfId,
       bytesDone: asset.byteSize,
       bytesTotal: asset.byteSize,
     });
-    return null;
+    return { ok: true, shelfId };
   } catch (error) {
     const { failure, message, state } = shelfFailureOf(error);
     await repo.setDestination(asset.id, "shelf", {
@@ -348,7 +353,7 @@ async function importRemoteToShelf(
       remoteId: remote.id,
       lastError: message,
     });
-    return { ...failure, message };
+    return { ok: false, failure: { ...failure, message }, message };
   }
 }
 
@@ -487,15 +492,21 @@ export async function sendToDesktop(
         });
 
         if (options.target === "shelf") {
-          const shelfFailure = await importRemoteToShelf(
+          const shelfImport = await importRemoteToShelf(
             activeClient,
             asset,
             remote,
             options.shelfGroupId ?? null,
           );
-          if (!shelfFailure) {
-            outcomes.push({ assetId: asset.id, state: "done", remoteId: remote.id });
+          if (shelfImport.ok) {
+            outcomes.push({
+              assetId: asset.id,
+              state: "done",
+              remoteId: remote.id,
+              shelfId: shelfImport.shelfId ?? undefined,
+            });
           } else {
+            const shelfFailure = shelfImport.failure;
             // 上传已成功：桌面目的地保持 done，暂存架单独 pending/failed（UI 必须分开显示）。
             const shelfState =
               shelfFailure.kind === "cancelled"
@@ -507,7 +518,7 @@ export async function sendToDesktop(
               assetId: asset.id,
               state: shelfState,
               remoteId: remote.id,
-              message: shelfFailure.message ?? transferFailureMessage(shelfFailure),
+              message: shelfImport.message ?? transferFailureMessage(shelfFailure),
             });
             if (shelfFailure.stopsBatch) {
               await markFrom(index + 1, shelfFailure);

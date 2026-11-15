@@ -428,7 +428,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     minHeight: 44,
     justifyContent: "center",
-    borderRadius: 999,
+    borderRadius: radius.chip,
     borderWidth: StyleSheet.hairlineWidth,
   },
   pillText: { fontSize: font.label, fontWeight: "600" },
@@ -476,7 +476,7 @@ const styles = StyleSheet.create({
   doneButton: {
     minHeight: 44,
     paddingHorizontal: space.sm,
-    borderRadius: 999,
+    borderRadius: radius.chip,
     alignItems: "center",
     justifyContent: "center",
   },

@@ -1131,6 +1131,10 @@ const shim = `
       // v0.7 历史页改用分页命令：shim 返回同一批 fixture 包装成页对象
       case "notification_page": return { items: notifications, has_more: false, filtered_total: notifications.length };
       case "notification_inbox_stats": return { unread: notifications.filter((n) => !n.is_read).length, total: notifications.length };
+      // 验收工作台的规划关联查询：harness 没有规划夹具时明确返回空数组，
+      // 让「未关联 / 暂无规划功能」空态可见，而不是把 {} 当可迭代对象报错。
+      case "planning_list_features": return [];
+      case "planning_list_agent_feature_links": return [];
       case "list_agent_events": return { items: events, has_more: false, filtered_total: events.length };
       case "actions_feed": {
         // 按分类返回真实子集：intervention 不含 running/reminder，notification 只含提醒；

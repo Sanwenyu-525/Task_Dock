@@ -913,11 +913,25 @@ pub fn copy_paths(
             ));
             continue;
         }
-        let name = src
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .ok_or_else(|| AppError::Validation("源路径缺少文件名".into()))?;
-        let meta = fs::symlink_metadata(src).map_err(|e| AppError::Io(e))?;
+        // 单条目的命名/元数据错误不得整批中止：源可能被其他程序并发删除或替换，
+        // 一个坏条目只应该失败它自己（否则批量复制/移动时，第一个坏源就让整批不动）。
+        let name = match src.file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => {
+                report.push(fail_report(
+                    src,
+                    FsFailure::new(FS_OP_VALIDATION, "prepare", "源路径缺少文件名"),
+                ));
+                continue;
+            }
+        };
+        let meta = match fs::symlink_metadata(src) {
+            Ok(meta) => meta,
+            Err(e) => {
+                report.push(fail_report(src, FsFailure::io("prepare", &e)));
+                continue;
+            }
+        };
         if meta.file_type().is_symlink() {
             report.push(FsEntryReport {
                 source: src.to_string_lossy().into_owned(),
@@ -1070,10 +1084,16 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
                     ));
                 }
                 if let Err(e) = fs::rename(&tmp, dst) {
+                    // 不把临时文件的绝对路径写进 reason：reason 会进 UI 与诊断日志，
+                    // 只需让用户知道「文件还在目标目录里的临时名」即可找回。
+                    let tmp_name = tmp
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "临时文件".into());
                     return Err(FsFailure::new(
                         classify_io_error(&e),
                         "cleanup",
-                        format!("源已删除但目标落位失败（数据在临时文件 {tmp:?}）: {e}"),
+                        format!("源已删除但目标落位失败（数据保留在目标目录内的临时文件「{tmp_name}」）: {e}"),
                     ));
                 }
             }
@@ -1186,11 +1206,25 @@ pub fn move_paths(
             ));
             continue;
         }
-        let name = src
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .ok_or_else(|| AppError::Validation("源路径缺少文件名".into()))?;
-        let meta = fs::symlink_metadata(src).map_err(|e| AppError::Io(e))?;
+        // 单条目的命名/元数据错误不得整批中止：源可能被其他程序并发删除或替换，
+        // 一个坏条目只应该失败它自己（否则批量复制/移动时，第一个坏源就让整批不动）。
+        let name = match src.file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => {
+                report.push(fail_report(
+                    src,
+                    FsFailure::new(FS_OP_VALIDATION, "prepare", "源路径缺少文件名"),
+                ));
+                continue;
+            }
+        };
+        let meta = match fs::symlink_metadata(src) {
+            Ok(meta) => meta,
+            Err(e) => {
+                report.push(fail_report(src, FsFailure::io("prepare", &e)));
+                continue;
+            }
+        };
         if meta.file_type().is_symlink() {
             report.push(FsEntryReport {
                 source: src.to_string_lossy().into_owned(),
@@ -2222,15 +2256,18 @@ mod tests {
     fn copy_depth_limit_keeps_source_intact() {
         let root = temp_root("deep");
         let mut cur = root.clone();
+        // 用单字符目录名：70 层 × 2 字符仍在 MAX_PATH(260) 内。
+        // 旧夹具用 `d{i}`（4 字符/层 ≈ 290 字符），在 Windows 上先撞到路径长度限制，
+        // 被测的「深度上限」永远不会触发，断言必然失败。
         for i in 0..70 {
-            cur = cur.join(format!("d{i}"));
+            cur = cur.join(((b'a' + (i % 26) as u8) as char).to_string());
         }
         fs::create_dir_all(&cur).unwrap();
         fs::write(cur.join("leaf.txt"), "leaf").unwrap();
         let out = root.join("out");
         fs::create_dir_all(&out).unwrap();
         let report = copy_paths(
-            &[root.join("d0").to_string_lossy().into_owned()],
+            &[root.join("a").to_string_lossy().into_owned()],
             &out,
             Conflict::Rename,
             &protected(),

@@ -26,7 +26,16 @@ export type RouteKey =
   // 采集中心入口（状态一：采集）：拍照 / 扫描 / 导入 / 语音 / 一句话
   | "capture_home"
   // 开发验收专用（无导航入口，长按「我的」页版本号进入），不进正式信息架构
-  | "icon_gallery";
+  | "icon_gallery"
+  // 2026-11-15 全页面统一：任务详情（真实数据）与诊断中心（真实本地自检）。
+  // 项目详情/功能看板/场景工作区/开发工作台在移动端没有数据链路，
+  // 用统一的「未接入占位页」承载入口，不新造页面与假数据。
+  | "task_detail"
+  | "diagnostics"
+  | "project_detail"
+  | "feature_board"
+  | "scene_workspace"
+  | "dev_workbench";
 
 /** 采集中心打开时的初始状态：普通采集 / 直接开相机 / 直接录音 / 直接写任务 */
 export type CaptureIntent = "capture" | "camera" | "voice" | "task";
@@ -40,6 +49,8 @@ export const TAB_ORDER: TabKey[] = ["home", "tasks", "workspace", "tools", "prof
 export interface Route {
   key: RouteKey;
   noteId?: string;
+  /** 任务详情页的任务 id（只在这一个路由使用） */
+  taskId?: string;
   intent?: CaptureIntent;
   /**
    * 采集意图的非零信号：采集中心已打开时再次收到快捷动作/深链，
@@ -51,7 +62,11 @@ export interface Route {
 
 /** 下发给屏幕的导航能力：只开 push/back，不让屏幕直接操作栈数组 */
 export interface Nav {
-  push: (key: RouteKey, noteId?: string, intent?: CaptureIntent) => void;
+  /**
+   * 第 4 个参数只为任务详情服务：沿用既有三参签名不动，避免改动十余处历史调用。
+   * 新页面统一 `nav.push("task_detail", undefined, undefined, task.id)`。
+   */
+  push: (key: RouteKey, noteId?: string, intent?: CaptureIntent, taskId?: string) => void;
   back: () => void;
 }
 

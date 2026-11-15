@@ -633,3 +633,18 @@ Token 定义在 `src/styles-themes.css`，命名沿用 v0.5 的语义变量（`-
 
 接入清单（2026-11-09）：任务、Agent、应用、微件、行动、剪贴板（既有 `.clip-body` 模式）、
 收集与暂存（收集箱 / 暂存架 / 笔记）、工作流、历史、规划中心、帮助、诊断中心、资源管理、设置。
+
+---
+
+## 16. 工作台左导航滚动条与分栏拖拽条（2026-11-15）
+
+- **导航列表不画滚动条**：`.wb-nav-items` 用 `scrollbar-width: none`（附
+  `::-webkit-scrollbar { width: 0 }` 兜底），滚轮 / 触控板 / 键盘聚焦仍可到达溢出项，与
+  第 15 节「隐藏视觉、保留滚动能力」同一口径。原因：5px 灰 thumb 紧贴右侧分栏拖拽条时会
+  并排出现两根竖线，被误读成多出来的一条分隔线。
+- **分栏拖拽条只显 1px 细线**：`.wb-resizer` 保持 4px 命中带（`role="separator"`、键盘
+  方向键调节不变），可见部分由 `::after` 画正中 1px：hover 用
+  `color-mix(in srgb, var(--accent) 30%, transparent)`，`focus-visible` 用 38%，不再整条
+  4px 铺 accent 45% 的实条（在浅色导航旁过深过粗，把拖拽把手看成硬分界线）。
+- **作用域**：`.wb-resizer` 同时服务左导航与右上下文栏，两条分栏共用同一细线口径；不改
+  导航 `border-right` 的 1px `--border-subtle`，分隔感由它承担。

@@ -485,6 +485,8 @@ fn logical_size(win: &WebviewWindow) -> (f64, f64) {
 fn apply_shape(win: &WebviewWindow) {
     // 圆角按窗口独立缓存，不读取/污染主窗口全局半径。
     crate::window_shape::apply_with_radius(win, WIDGET_RADIUS);
+    // 伴生原生阴影（幂等）：区域是阴影形状来源，先写区域再挂阴影。
+    crate::window_shadow::attach(win);
 }
 
 fn emit_to_main<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {

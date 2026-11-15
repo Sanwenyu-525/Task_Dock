@@ -607,6 +607,8 @@ pub fn init(app: &AppHandle) {
         if let Ok(h) = win.hwnd() {
             MENU_HWND.store(h.0 as isize, Ordering::Relaxed);
         }
+        // 原生外部阴影：菜单区域（MENU_RADIUS 圆角）是阴影形状来源。
+        crate::window_shadow::attach(&win);
         let w = win.clone();
         win.on_window_event(move |event| match event {
             tauri::WindowEvent::Focused(false) => schedule_blur_close(w.app_handle()),

@@ -813,7 +813,7 @@ export default function AppsPanel() {
           <AppIcon
             targetId={t.id}
             name={t.display_name}
-            size={20}
+            size={36}
             enabled={t.target_type === "application"}
             className="apps-tile-avatar"
           />

@@ -157,8 +157,8 @@ describe("任务页列表模式结构", () => {
       "viewbar",
       "filterbar",
     ]);
-    // 概览使用紧凑变体，仍是三张可下钻的卡
-    expect(head.querySelector(".tasks-overview--compact")).toBeTruthy();
+    // 概览使用四张大卡，仍是可下钻的真实统计
+    expect(head.querySelector(".tasks-overview--stats")).toBeTruthy();
 
     const list = panel.querySelector<HTMLElement>(".task-list")!;
     expect(list).toBeTruthy();
@@ -170,7 +170,7 @@ describe("任务页列表模式结构", () => {
     }
   });
 
-  it("工具行单行契约：日期分段 + 5 个入口；搜索/状态/排序各只有一层 flex 容器", async () => {
+  it("工具行单行契约：日期分段 + 3 个工具入口；专注/统计在页头；搜索/状态/排序各只有一层 flex 容器", async () => {
     // 守的契约：窄窗只允许日期分段横向滚动，工具图标不能折到第二行；
     // 搜索行不再被额外的 wrapper / flex-spacer 拆成多行。
     seedTasks();
@@ -187,13 +187,11 @@ describe("任务页列表模式结构", () => {
     const actions = viewbar.querySelector<HTMLElement>(".tasks-actions")!;
     expect(actions.getAttribute("role")).toBe("group");
     const buttons = Array.from(actions.querySelectorAll<HTMLButtonElement>(":scope > button"));
-    expect(buttons).toHaveLength(5);
-    // 顺序与可访问名：提醒调度 / 帮助 / 专注 / 统计 / 更多
+    expect(buttons).toHaveLength(3);
+    // 顺序与可访问名：提醒调度 / 帮助 / 更多；专注与统计已上移到页面级页头
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
       "暂停提醒调度",
       "查看帮助：创建任务与自然语言提醒",
-      "专注与休息",
-      "任务统计",
       "更多操作",
     ]);
     for (const button of buttons) {

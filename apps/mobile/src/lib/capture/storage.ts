@@ -151,6 +151,63 @@ async function copyByHandles(source: File, target: File, limitBytes?: number): P
 }
 
 /**
+ * 把一个来源 URI 复制到调用方指定的目标文件。
+ *
+ * 仅供需要自己管理目录的调用方复用（例如采集素材库）；复制语义和
+ * persistIntoCaptureStore 相同：content:// / 未知大小走句柄分块，file:// 先尝试原生
+ * copy，失败再退回句柄；失败删除半成品，绝不把 content:// 写进数据库。
+ */
+export async function copySourceUriToFile(
+  sourceUri: string,
+  target: File,
+  options: { expectedSize?: number; limitBytes?: number } = {},
+): Promise<number> {
+  const sourceFile = new File(sourceUri);
+  let declaredSize =
+    typeof options.expectedSize === "number" && options.expectedSize > 0
+      ? options.expectedSize
+      : 0;
+  if (declaredSize === 0 && !sourceUri.startsWith("content://")) {
+    try {
+      declaredSize = Math.max(0, sourceFile.size);
+    } catch {
+      declaredSize = 0;
+    }
+  }
+
+  try {
+    if (sourceUri.startsWith("content://") || declaredSize <= 0) {
+      target.create({ intermediates: true });
+      await copyByHandles(sourceFile, target, options.limitBytes);
+    } else {
+      try {
+        await sourceFile.copy(target, { overwrite: true });
+      } catch {
+        // 某些 SAF provider 声明了 size 但 File.copy 仍不可用；目标可能已留下半成品。
+        if (target.exists) target.delete();
+        target.create({ intermediates: true });
+        await copyByHandles(sourceFile, target, options.limitBytes);
+      }
+    }
+
+    const written = target.size;
+    if (written <= 0) throw new AppError("storage", "复制后的文件为空，请重新选择");
+    if (declaredSize > 0 && written < declaredSize) {
+      throw new AppError("storage", "复制文件不完整，请重试");
+    }
+    return written;
+  } catch (error) {
+    try {
+      if (target.exists) target.delete();
+    } catch {
+      // 清理失败不能覆盖原始错误
+    }
+    if (error instanceof AppError) throw error;
+    throw new AppError("storage", "复制文件失败，请检查存储空间后重试", error);
+  }
+}
+
+/**
  * 把来源字节复制进私有存储。
  *
  * - 先校验大小上限：超限直接拒绝，不产生半成品；

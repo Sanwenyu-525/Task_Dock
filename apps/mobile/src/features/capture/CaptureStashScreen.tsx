@@ -7,7 +7,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Dimensions,
   Image,
   Modal,
@@ -21,9 +20,17 @@ import {
 
 import { AppBar } from "../../components/AppBar";
 import { AppIcon } from "../../components/icons/AppIcon";
-import { Chip } from "../../components/Chip";
+import { BottomSheet } from "../../components/BottomSheet";
+import {
+  BULK_ACTION_BAR_HEIGHT,
+  BulkActionBar,
+  type BulkAction,
+} from "../../components/BulkActionBar";
 import { EmptyState } from "../../components/EmptyState";
-import { PressableScale } from "../../components/PressableScale";
+import { FileTypeIcon, fileTypeOf } from "../../components/FileTypeIcon";
+import { ImageLightbox, type LightboxImage } from "../../components/ImageLightbox";
+import { SearchField } from "../../components/SearchField";
+import { SegmentedControl, type SegmentOption } from "../../components/SegmentedControl";
 import {
   Toast,
   TOAST_TOP_PUSH,
@@ -49,17 +56,35 @@ import {
   saveToAlbum,
   sendToDesktop,
   type PairingAvailability,
+  type SendOutcome,
   type SendProgress,
 } from "./service";
+import {
+  feedbackForOutcome,
+  feedbackForSendResult,
+  feedbackForShelfRetry,
+} from "./sendFeedback";
 
-type Filter = "all" | "unsent" | "favorite" | "failed";
+type TypeFilter = "all" | "image" | "doc" | "other";
 
-const FILTERS: Array<{ value: Filter; label: string }> = [
+const TYPE_OPTIONS: Array<SegmentOption<TypeFilter>> = [
   { value: "all", label: "全部" },
-  { value: "unsent", label: "未发送" },
-  { value: "favorite", label: "收藏" },
-  { value: "failed", label: "有失败" },
+  { value: "image", label: "图片" },
+  { value: "doc", label: "文档" },
+  { value: "other", label: "其他" },
 ];
+
+/** 文档类扩展名（表格/演示/文本/Markdown/代码/压缩包）归入「文档」筛选。 */
+const DOC_KINDS = new Set([
+  "doc",
+  "sheet",
+  "slide",
+  "text",
+  "markdown",
+  "code",
+  "pdf",
+  "archive",
+]);
 
 function destinationTone(state: repo.CaptureDestinationState, tokens: ReturnType<typeof useTheme>["tokens"]) {
   if (state === "done") return tokens.ok;
@@ -79,12 +104,13 @@ function statusTone(
   return tokens.muted;
 }
 
-/** 非图片素材（扫描 PDF / 音频 / 文件）没有位图缩略图，用类型角标代替空白方块。 */
-function typeBadge(asset: repo.CaptureAsset): string {
-  if (asset.mime === "application/pdf") return "PDF";
-  if (asset.mime.startsWith("audio/")) return "音频";
-  if (asset.kind === "scan") return "扫描";
-  return "文件";
+function classifyAsset(asset: repo.CaptureAsset): Exclude<TypeFilter, "all"> {
+  if (asset.mime.startsWith("image/")) return "image";
+  if (asset.mime === "application/pdf") return "doc";
+  if (asset.mime.startsWith("text/")) return "doc";
+  if (asset.kind === "scan") return "doc";
+  if (DOC_KINDS.has(fileTypeOf(asset.name))) return "doc";
+  return "other";
 }
 
 function isImageAsset(asset: repo.CaptureAsset): boolean {
@@ -108,17 +134,24 @@ function DestinationChips({
   if (shown.length === 0) return null;
   return (
     <View style={styles.badgeRow}>
-      {shown.map((item) => (
-        <View
-          key={item.destination}
-          style={[styles.destBadge, { backgroundColor: `${destinationTone(item.state, tokens)}1F` }]}
-        >
-          <Text style={[styles.destBadgeText, { color: destinationTone(item.state, tokens) }]}>
-            {labels[item.destination]}
-            {item.state === "done" ? " ✓" : item.state === "failed" ? " !" : ""}
-          </Text>
-        </View>
-      ))}
+      {shown.map((item) => {
+        const toneColor = destinationTone(item.state, tokens);
+        return (
+          <View
+            key={item.destination}
+            style={[styles.destBadge, { backgroundColor: `${toneColor}1F` }]}
+          >
+            <Text style={[styles.destBadgeText, { color: toneColor }]}>
+              {labels[item.destination]}
+            </Text>
+            {item.state === "done" ? (
+              <AppIcon name="check" color={toneColor} size={12} />
+            ) : item.state === "failed" ? (
+              <AppIcon name="error" color={toneColor} size={12} />
+            ) : null}
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -135,7 +168,8 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const [destinations, setDestinations] = useState<Record<string, repo.CaptureDestination[]>>({});
   const [stagedCount, setStagedCount] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<Filter>("all");
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<repo.CaptureAsset | null>(null);
@@ -147,6 +181,8 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const [progress, setProgress] = useState<SendProgress | null>(null);
   const [availability, setAvailability] = useState<PairingAvailability | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
+  const [lightbox, setLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null);
   const toastSeq = useRef(0);
 
   const showToast = useCallback((text: string, tone: ToastTone = "info") => {
@@ -187,18 +223,21 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   }, [detail?.id, detail?.name, detail?.note, destinations]);
 
   const visible = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
     return assets.filter((asset) => {
-      const items = destinations[asset.id] ?? [];
-      const failed = items.some((item) => item.state === "failed" || item.state === "cancelled");
-      const sent = items.some(
-        (item) => item.destination === "desktop" && item.state === "done",
-      );
-      if (filter === "favorite") return asset.favorite;
-      if (filter === "failed") return failed;
-      if (filter === "unsent") return !sent;
+      if (typeFilter !== "all" && classifyAsset(asset) !== typeFilter) return false;
+      if (keyword) {
+        const haystack = `${asset.name} ${asset.note}`.toLowerCase();
+        if (!haystack.includes(keyword)) return false;
+      }
       return true;
     });
-  }, [assets, destinations, filter]);
+  }, [assets, query, typeFilter]);
+
+  const imagePool = useMemo(
+    () => assets.filter((asset) => isImageAsset(asset) && (asset.thumbnailPath || asset.localPath)),
+    [assets],
+  );
 
   const toggleSelection = useCallback((id: string) => {
     setSelected((prev) => {
@@ -225,38 +264,40 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
     );
   }, [visible]);
 
-  const deleteSelected = useCallback(
+  const openLightbox = useCallback((asset: repo.CaptureAsset) => {
+    const images: LightboxImage[] = imagePool.map((item) => ({
+      uri: item.thumbnailPath ?? item.localPath ?? "",
+      name: item.name,
+    }));
+    const index = imagePool.findIndex((item) => item.id === asset.id);
+    setLightbox({ images, index: index >= 0 ? index : 0 });
+  }, [imagePool]);
+
+  const requestDelete = useCallback(
     (ids: string[]) => {
       if (ids.length === 0 || busy) return;
-      Alert.alert(
-        `删除 ${ids.length} 个本机素材？`,
-        "只删除 TaskDock 本机副本与记录；系统相册里的照片、电脑上已接收的文件和暂存架托管副本都不会被删除。",
-        [
-          { text: "取消", style: "cancel" },
-          {
-            text: "删除",
-            style: "destructive",
-            onPress: () => {
-              void (async () => {
-                setBusy(true);
-                try {
-                  for (const id of ids) {
-                    const paths = await repo.deleteAsset(id);
-                    for (const path of paths) deleteFileQuietly(path);
-                  }
-                  exitSelection();
-                  if (detail && ids.includes(detail.id)) setDetail(null);
-                  await load();
-                  bumpCaptureRevision();
-                  showToast(`已删除 ${ids.length} 个本机素材`, "success");
-                } finally {
-                  setBusy(false);
-                }
-              })();
-            },
-          },
-        ],
-      );
+      setConfirmIds(ids);
+    },
+    [busy],
+  );
+
+  const runDelete = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0 || busy) return;
+      setBusy(true);
+      try {
+        for (const id of ids) {
+          const paths = await repo.deleteAsset(id);
+          for (const path of paths) deleteFileQuietly(path);
+        }
+        exitSelection();
+        if (detail && ids.includes(detail.id)) setDetail(null);
+        await load();
+        bumpCaptureRevision();
+        showToast(`已删除 ${ids.length} 个本机素材`, "success");
+      } finally {
+        setBusy(false);
+      }
     },
     [busy, detail, exitSelection, load, showToast],
   );
@@ -269,8 +310,9 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         return;
       }
       setBusy(true);
-      const failures: string[] = [];
-      let offline: string | null = null;
+      const outcomes: SendOutcome[] = [];
+      let offlineMessage: string | null = null;
+      let stopMessage: string | null = null;
       try {
         const list = assets.filter((asset) => ids.includes(asset.id));
         for (let i = 0; i < list.length; i += 1) {
@@ -278,20 +320,39 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
           const items = destinations[asset.id] ?? [];
           const desktop = items.find((item) => item.destination === "desktop");
           const shelf = items.find((item) => item.destination === "shelf");
-          if (target === "inbox" && desktop?.state === "done") continue;
-          if (target === "shelf" && shelf?.state === "done") continue;
+          if (target === "inbox" && desktop?.state === "done") {
+            outcomes.push({ assetId: asset.id, state: "done", remoteId: desktop.remoteId ?? undefined });
+            continue;
+          }
+          if (target === "shelf" && shelf?.state === "done") {
+            // done 但没有真实 shelf_item_id 不能算成功，也不能让用户误以为已入架。
+            outcomes.push({
+              assetId: asset.id,
+              state: shelf.remoteShelfId ? "done" : "failed",
+              remoteId: shelf.remoteId ?? undefined,
+              shelfId: shelf.remoteShelfId ?? undefined,
+              message: shelf.remoteShelfId ? undefined : "已有暂存架记录，但缺少条目 ID，请刷新核对",
+            });
+            continue;
+          }
           setBusyLabel(
             `${target === "shelf" ? "发送到暂存架" : "发送到电脑"} ${i + 1}/${list.length}`,
           );
           if (target === "shelf" && desktop?.state === "done" && desktop.remoteId) {
             const retry = await retryShelfImport(asset, desktop.remoteId, null);
+            outcomes.push({
+              assetId: asset.id,
+              state: retry.state,
+              remoteId: desktop.remoteId,
+              shelfId: retry.remoteShelfId ?? undefined,
+              message: retry.message,
+            });
             if (retry.stopBatch) {
-              failures.push(retry.message);
+              stopMessage = retry.message;
+              for (let j = i + 1; j < list.length; j += 1) {
+                outcomes.push({ assetId: list[j].id, state: "failed", message: retry.message });
+              }
               break;
-            }
-            if (retry.state === "pending") offline = retry.message;
-            else if (retry.state === "failed" || retry.state === "cancelled") {
-              failures.push(retry.message);
             }
             continue;
           }
@@ -300,23 +361,38 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
             onProgress: setProgress,
             batch: { index: i, count: list.length },
           });
+          outcomes.push(...result.outcomes);
           if (result.offline) {
-            offline = result.message ?? "电脑端暂时不可达，已保留为待发送";
+            offlineMessage = result.message ?? "电脑端暂时不可达，已保留为待发送";
+            for (let j = i + 1; j < list.length; j += 1) {
+              outcomes.push({
+                assetId: list[j].id,
+                state: "pending",
+                message: offlineMessage,
+              });
+            }
             break;
           }
           if (result.stopBatch) {
             // 授权/安全类失败：停止整批，不把令牌失效伪装成「离线待发送」。
-            if (result.message) failures.push(result.message);
+            stopMessage = result.message ?? "授权或安全校验失败，已停止本批发送";
+            for (let j = i + 1; j < list.length; j += 1) {
+              outcomes.push({ assetId: list[j].id, state: "failed", message: stopMessage });
+            }
             break;
-          }
-          for (const outcome of result.outcomes) {
-            if (outcome.state !== "done" && outcome.message) failures.push(outcome.message);
           }
         }
         await load();
-        if (offline) showToast(offline, "warn");
-        else if (failures.length > 0) showToast(failures[0], "danger");
-        else showToast("发送完成", "success");
+        const feedback = feedbackForSendResult(
+          {
+            outcomes,
+            offline: Boolean(offlineMessage),
+            message: offlineMessage ?? stopMessage ?? undefined,
+            stopBatch: Boolean(stopMessage),
+          },
+          target,
+        );
+        showToast(feedback.message, feedback.tone);
         exitSelection();
       } finally {
         setBusy(false);
@@ -338,29 +414,29 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
           showToast("已保存到相册", "success");
         } else if (kind === "desktop") {
           const result = await sendToDesktop([asset], { target: "inbox", onProgress: setProgress });
-          if (result.offline) showToast(result.message ?? "电脑端不可达", "warn");
-          else if (result.stopBatch) showToast(result.message ?? "发送失败", "danger");
-          else showToast("已发送到电脑", "success");
+          const feedback =
+            !result.stopBatch && !result.offline && result.outcomes.length === 1
+              ? feedbackForOutcome(result.outcomes[0], "inbox")
+              : feedbackForSendResult(result, "inbox");
+          showToast(feedback.message, feedback.tone);
         } else if (kind === "shelf") {
           const desktop = (destinations[asset.id] ?? []).find(
             (item) => item.destination === "desktop" && item.state === "done" && item.remoteId,
           );
           if (desktop?.remoteId) {
             const retry = await retryShelfImport(asset, desktop.remoteId, null);
-            if (retry.state === "pending") showToast(retry.message, "warn");
-            else if (retry.state === "failed" || retry.state === "cancelled") {
-              showToast(retry.message, retry.state === "failed" ? "danger" : "warn");
-            } else {
-              showToast("已加入暂存架", "success");
-            }
+            const feedback = feedbackForShelfRetry(retry);
+            showToast(feedback.message, feedback.tone);
           } else {
             const result = await sendToDesktop([asset], {
               target: "shelf",
               onProgress: setProgress,
             });
-            if (result.offline) showToast(result.message ?? "电脑端不可达", "warn");
-            else if (result.stopBatch) showToast(result.message ?? "发送失败", "danger");
-            else showToast("已加入暂存架", "success");
+            const feedback =
+              !result.stopBatch && !result.offline && result.outcomes.length === 1
+                ? feedbackForOutcome(result.outcomes[0], "shelf")
+                : feedbackForSendResult(result, "shelf");
+            showToast(feedback.message, feedback.tone);
           }
         }
         await load();
@@ -399,6 +475,31 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
 
   const now = Date.now();
   const selectedIds = [...selected];
+
+  const bulkActions: BulkAction[] = [
+    {
+      key: "inbox",
+      label: "发电脑",
+      icon: "send",
+      disabled: busy,
+      onPress: () => void sendAssets(selectedIds, "inbox"),
+    },
+    {
+      key: "shelf",
+      label: "暂存架",
+      icon: "folder",
+      disabled: busy,
+      onPress: () => void sendAssets(selectedIds, "shelf"),
+    },
+    {
+      key: "delete",
+      label: "删除",
+      icon: "delete",
+      tone: "danger",
+      disabled: busy,
+      onPress: () => requestDelete(selectedIds),
+    },
+  ];
 
   if (loading) {
     return (
@@ -453,6 +554,26 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         }
       />
 
+      <View style={styles.searchRow}>
+        <SearchField
+          value={query}
+          onChangeText={setQuery}
+          placeholder="搜索文件名、备注"
+          accessibilityLabel="搜索本机素材"
+        />
+      </View>
+
+      <View style={styles.filterRow}>
+        <SegmentedControl
+          options={TYPE_OPTIONS}
+          value={typeFilter}
+          onChange={setTypeFilter}
+          accessibilityLabel="按类型筛选素材"
+          emphasis="soft"
+          size="compact"
+        />
+      </View>
+
       {stagedCount > 0 ? (
         <Pressable
           accessibilityRole="button"
@@ -466,42 +587,35 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         </Pressable>
       ) : null}
 
-      <View style={styles.filterRow}>
-        {FILTERS.map((item) => (
-          <Chip
-            key={item.value}
-            label={item.label}
-            active={filter === item.value}
-            onPress={() => setFilter(item.value)}
-          />
-        ))}
-      </View>
-
       {visible.length === 0 ? (
         <View style={styles.center}>
           <EmptyState
+            icon="gallery"
             title={assets.length === 0 ? "还没有本机采集素材" : "没有符合筛选的素材"}
             hint={
               assets.length === 0
-                ? "拍照或从相册导入后会出现在这里；没有电脑时也可以先保存到本机。"
-                : "切换筛选条件，或回到相机继续采集。"
+                ? "拍照或从相册/文件导入后会出现在这里；没有电脑时也可以先保存到本机。"
+                : "切换类型筛选或搜索关键词，或回到采集中心继续采集。"
             }
+            actionLabel={assets.length === 0 ? "去采集" : undefined}
+            onAction={assets.length === 0 ? () => nav.push("capture_home") : undefined}
           />
-          <PressableScale
-            accessibilityLabel="去拍照"
-            onPress={() => nav.push("capture_camera")}
-            contentStyle={[styles.cta, { backgroundColor: tokens.accentFill }]}
-          >
-            <Text style={[styles.ctaText, { color: tokens.onAccent }]}>去拍照</Text>
-          </PressableScale>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.list,
+            { paddingBottom: selecting ? BULK_ACTION_BAR_HEIGHT + insets.bottom + space.lg : 30 },
+          ]}
+          showsVerticalScrollIndicator={false}
+        >
           {visible.map((asset) => {
             const items = destinations[asset.id] ?? [];
             const isSelected = selected.has(asset.id);
             const status = captureStatusOf(asset, items);
             const statusColor = statusTone(status.tone, tokens);
+            const thumbUri = asset.thumbnailPath ?? asset.localPath;
+            const showThumb = isImageAsset(asset) && Boolean(thumbUri);
             return (
               <Pressable
                 key={asset.id}
@@ -534,17 +648,22 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                     {isSelected ? <AppIcon name="check" color={tokens.onAccent} size={14} /> : null}
                   </View>
                 ) : null}
-                {isImageAsset(asset) && (asset.thumbnailPath || asset.localPath) ? (
-                  <Image
-                    source={{ uri: asset.thumbnailPath ?? asset.localPath ?? undefined }}
-                    style={styles.thumb}
-                    resizeMode="cover"
-                  />
+                {showThumb ? (
+                  <Pressable
+                    accessibilityRole="imagebutton"
+                    accessibilityLabel={`查看图片 ${asset.name}`}
+                    onPress={() => openLightbox(asset)}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Image
+                      source={{ uri: thumbUri ?? undefined }}
+                      style={styles.thumb}
+                      resizeMode="cover"
+                    />
+                  </Pressable>
                 ) : (
-                  <View style={[styles.thumb, styles.thumbType, { backgroundColor: tokens.track, borderColor: tokens.cardBorder }]}>
-                    <Text style={[styles.thumbTypeText, { color: tokens.textSoft }]}>
-                      {typeBadge(asset)}
-                    </Text>
+                  <View style={[styles.typeBoard, { backgroundColor: tokens.tileBase, borderColor: tokens.tileBorder }]}>
+                    <FileTypeIcon kind={fileTypeOf(asset.name)} size={22} />
                   </View>
                 )}
                 <View style={styles.cardMain}>
@@ -582,48 +701,18 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
               </Pressable>
             );
           })}
+          <Text style={[styles.boundary, { color: tokens.faint }]}>
+            素材保存在本机应用私有目录，卸载应用会被系统清理；不等于系统相册，也不等于电脑上的桌面暂存架。
+          </Text>
         </ScrollView>
       )}
 
       {selecting && selected.size > 0 ? (
-        <View
-          style={[
-            styles.batchBar,
-            {
-              backgroundColor: tokens.bg,
-              borderColor: tokens.separator,
-              paddingBottom: insets.bottom + space.sm,
-            },
-          ]}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="发送到电脑收件箱"
-            disabled={busy}
-            onPress={() => void sendAssets(selectedIds, "inbox")}
-            style={[styles.batchButton, { backgroundColor: tokens.accentFill }]}
-          >
-            <Text style={[styles.batchText, { color: tokens.onAccent }]}>发到收件箱</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="发送到桌面暂存架"
-            disabled={busy}
-            onPress={() => void sendAssets(selectedIds, "shelf")}
-            style={[styles.batchButton, { backgroundColor: tokens.accentSoft }]}
-          >
-            <Text style={[styles.batchText, { color: tokens.accentText }]}>发到暂存架</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="删除所选"
-            disabled={busy}
-            onPress={() => deleteSelected(selectedIds)}
-            style={[styles.batchDelete, { borderColor: tokens.danger }]}
-          >
-            <Text style={[styles.batchDeleteText, { color: tokens.danger }]}>删除</Text>
-          </Pressable>
-        </View>
+        <BulkActionBar
+          selectedCount={selected.size}
+          actions={bulkActions}
+          onCancel={exitSelection}
+        />
       ) : null}
 
       {busy ? (
@@ -639,6 +728,53 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
           </View>
         </View>
       ) : null}
+
+      <BottomSheet
+        visible={confirmIds !== null}
+        onRequestClose={() => setConfirmIds(null)}
+        accessibilityLabel="删除本机素材确认"
+      >
+        <Text numberOfLines={2} style={[styles.confirmTitle, { color: tokens.text }]}>
+          {confirmIds && confirmIds.length > 0 ? `删除 ${confirmIds.length} 个本机素材？` : "删除本机素材？"}
+        </Text>
+        <Text numberOfLines={3} style={[styles.confirmHint, { color: tokens.muted }]}>
+          只删除 TaskDock 本机副本与记录；系统相册里的照片、电脑上已接收的文件和暂存架托管副本都不会被删除。
+        </Text>
+        <View style={styles.confirmActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="取消删除"
+            onPress={() => setConfirmIds(null)}
+            style={({ pressed }) => [
+              styles.confirmButton,
+              styles.confirmCancel,
+              { backgroundColor: tokens.track, opacity: pressed ? 0.7 : 1 },
+            ]}
+          >
+            <Text style={[styles.confirmCancelText, { color: tokens.textSoft }]}>取消</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="确认删除"
+            disabled={busy}
+            onPress={() => {
+              const ids = confirmIds ?? [];
+              setConfirmIds(null);
+              void runDelete(ids);
+            }}
+            style={({ pressed }) => [
+              styles.confirmButton,
+              styles.confirmDelete,
+              {
+                backgroundColor: tokens.dangerSoft,
+                opacity: busy ? 0.4 : pressed ? 0.7 : 1,
+              },
+            ]}
+          >
+            <Text style={[styles.confirmDeleteText, { color: tokens.danger }]}>删除</Text>
+          </Pressable>
+        </View>
+      </BottomSheet>
 
       <Modal
         visible={detail !== null}
@@ -674,7 +810,11 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                   </Pressable>
                 </View>
                 {detail.localPath && isImageAsset(detail) ? (
-                  <Pressable onPress={() => void openFile(detail)} accessibilityRole="imagebutton">
+                  <Pressable
+                    onPress={() => openLightbox(detail)}
+                    accessibilityRole="imagebutton"
+                    accessibilityLabel="在灯箱中查看图片"
+                  >
                     <Image
                       source={{ uri: detail.thumbnailPath ?? detail.localPath }}
                       style={[styles.detailImage, { backgroundColor: tokens.ink }]}
@@ -688,9 +828,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                     accessibilityLabel="用其他应用打开"
                     style={[styles.detailFileCard, { backgroundColor: tokens.track }]}
                   >
-                    <Text style={[styles.detailFileGlyph, { color: tokens.text }]}>
-                      {typeBadge(detail)}
-                    </Text>
+                    <FileTypeIcon kind={fileTypeOf(detail.name)} size={32} />
                     <Text style={[styles.detailFileName, { color: tokens.textSoft }]} numberOfLines={2}>
                       {detail.name}
                     </Text>
@@ -749,7 +887,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                   </Pressable>
                   <Pressable
                     accessibilityRole="button"
-                    onPress={() => deleteSelected([detail.id])}
+                    onPress={() => requestDelete([detail.id])}
                     style={[styles.smallButton, { backgroundColor: tokens.dangerSoft }]}
                   >
                     <Text style={[styles.smallButtonText, { color: tokens.danger }]}>删除本机</Text>
@@ -829,12 +967,19 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         </View>
       </Modal>
 
+      <ImageLightbox
+        visible={lightbox !== null}
+        images={lightbox?.images ?? []}
+        initialIndex={lightbox?.index ?? 0}
+        onClose={() => setLightbox(null)}
+      />
+
       <Toast
         toast={toast}
         onDismiss={() => setToast(null)}
         placement="bottom"
         topOffset={TOAST_TOP_PUSH}
-        bottomOffset={insets.bottom + (selecting ? 88 : 24)}
+        bottomOffset={insets.bottom + (selecting ? BULK_ACTION_BAR_HEIGHT + space.sm : space.lg)}
       />
     </View>
   );
@@ -846,9 +991,17 @@ const styles = StyleSheet.create({
   headerActions: { flexDirection: "row", alignItems: "center", gap: space.xs },
   headerButton: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.sm },
   headerText: { fontSize: font.label, fontWeight: "600" },
+  searchRow: {
+    paddingHorizontal: space.lg,
+    paddingTop: space.sm,
+  },
+  filterRow: {
+    paddingHorizontal: space.lg,
+    paddingVertical: space.sm,
+  },
   banner: {
     marginHorizontal: space.lg,
-    marginTop: space.sm,
+    marginTop: space.xs,
     padding: space.sm,
     borderRadius: radius.row,
     borderWidth: StyleSheet.hairlineWidth,
@@ -857,73 +1010,63 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   bannerText: { flex: 1, fontSize: font.label, fontWeight: "600" },
-  filterRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: space.xs,
-    paddingHorizontal: space.lg,
-    paddingVertical: space.sm,
-  },
-  list: { paddingHorizontal: space.lg, paddingBottom: 120, gap: space.sm },
+  list: { paddingHorizontal: space.lg, gap: space.sm },
   card: {
     flexDirection: "row",
     alignItems: "center",
-    gap: space.sm,
-    padding: space.sm,
+    gap: space.md,
+    padding: space.md,
     borderRadius: radius.row,
     borderWidth: StyleSheet.hairlineWidth,
   },
   checkbox: {
     width: 22,
     height: 22,
-    borderRadius: 6,
+    borderRadius: radius.control,
     borderWidth: 1.5,
     alignItems: "center",
     justifyContent: "center",
   },
-  thumb: { width: 56, height: 56, borderRadius: 8 },
-  thumbType: { alignItems: "center", justifyContent: "center", borderWidth: StyleSheet.hairlineWidth },
-  thumbTypeText: { fontSize: 12, fontWeight: "800", letterSpacing: 0.5 },
-  cardMain: { flex: 1, gap: 2, minWidth: 0 },
-  nameRow: { flexDirection: "row", alignItems: "center", gap: 4 },
-  cardName: { flexShrink: 1, fontSize: font.body, fontWeight: "600" },
-  cardMeta: { fontSize: 11 },
-  badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 2 },
-  statusRow: { flexDirection: "row", marginTop: 3 },
-  statusBadge: {
-    minHeight: 20,
-    paddingHorizontal: 7,
-    borderRadius: 999,
+  thumb: { width: 56, height: 56, borderRadius: radius.control },
+  typeBoard: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.iconTile,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
   },
-  statusText: { fontSize: 10.5, fontWeight: "700" },
-  destBadge: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999 },
-  destBadgeText: { fontSize: 10, fontWeight: "700" },
-  cardError: { fontSize: 10.5 },
-  batchBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    flexDirection: "row",
-    gap: space.sm,
-    paddingHorizontal: space.lg,
-    paddingTop: space.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  batchButton: { flex: 1, minHeight: 46, borderRadius: radius.row, alignItems: "center", justifyContent: "center" },
-  batchText: { fontSize: font.label, fontWeight: "700" },
-  batchDelete: {
-    minHeight: 46,
-    paddingHorizontal: space.md,
-    borderRadius: radius.row,
-    borderWidth: 1,
+  cardMain: { flex: 1, gap: space.xxs, minWidth: 0 },
+  nameRow: { flexDirection: "row", alignItems: "center", gap: space.xs },
+  cardName: { flexShrink: 1, fontSize: font.title, fontWeight: "600" },
+  cardMeta: { fontSize: font.meta },
+  badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: space.xs, marginTop: space.xxs },
+  statusRow: { flexDirection: "row", marginTop: space.xs },
+  statusBadge: {
+    minHeight: 20,
+    paddingHorizontal: space.sm,
+    borderRadius: radius.chip,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
   },
-  batchDeleteText: { fontSize: font.label, fontWeight: "700" },
+  statusText: { fontSize: font.label, fontWeight: "700" },
+  destBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xxs,
+    paddingHorizontal: space.xs,
+    paddingVertical: space.xxs,
+    borderRadius: radius.chip,
+  },
+  destBadgeText: { fontSize: font.label, fontWeight: "700" },
+  cardError: { fontSize: font.label },
+  boundary: {
+    paddingTop: space.md,
+    paddingHorizontal: space.xs,
+    fontSize: font.label,
+    lineHeight: 16,
+  },
   busyOverlay: {
     position: "absolute",
     left: 0,
@@ -942,6 +1085,14 @@ const styles = StyleSheet.create({
   },
   busyText: { fontSize: font.body, fontWeight: "600", textAlign: "center" },
   busyMeta: { fontSize: font.label },
+  confirmTitle: { fontSize: font.title, fontWeight: "700", lineHeight: 22 },
+  confirmHint: { fontSize: font.meta, lineHeight: 20, marginTop: space.xs },
+  confirmActions: { flexDirection: "row", gap: space.sm, marginTop: space.md },
+  confirmButton: { flex: 1, minHeight: 46, borderRadius: radius.row, alignItems: "center", justifyContent: "center" },
+  confirmCancel: {},
+  confirmCancelText: { fontSize: font.body, fontWeight: "700" },
+  confirmDelete: {},
+  confirmDeleteText: { fontSize: font.body, fontWeight: "700" },
   modalMask: { flex: 1, justifyContent: "flex-end" },
   detailSheet: {
     maxHeight: "88%",
@@ -964,7 +1115,6 @@ const styles = StyleSheet.create({
     gap: space.xs,
     padding: space.md,
   },
-  detailFileGlyph: { fontSize: 22, fontWeight: "800", letterSpacing: 1 },
   detailFileName: { fontSize: font.body, fontWeight: "600", textAlign: "center" },
   detailFileHint: { fontSize: font.label },
   detailMeta: { fontSize: font.label, lineHeight: 16, marginTop: space.sm },
@@ -974,7 +1124,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.row,
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: space.md,
-    marginTop: 4,
+    marginTop: space.xs,
     fontSize: font.body,
   },
   noteInput: {
@@ -983,7 +1133,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
-    marginTop: 4,
+    marginTop: space.xs,
     fontSize: font.body,
     textAlignVertical: "top",
   },
@@ -991,20 +1141,18 @@ const styles = StyleSheet.create({
   smallButton: { minHeight: 40, paddingHorizontal: space.md, borderRadius: radius.row, alignItems: "center", justifyContent: "center" },
   smallButtonText: { fontSize: font.label, fontWeight: "700" },
   sectionTitle: { fontSize: font.label, fontWeight: "700", marginTop: space.md, marginBottom: space.xs },
-  destRow: { flexDirection: "row", alignItems: "center", gap: space.sm, paddingVertical: 6 },
-  destMain: { flex: 1, gap: 2 },
+  destRow: { flexDirection: "row", alignItems: "center", gap: space.sm, paddingVertical: space.xs },
+  destMain: { flex: 1, gap: space.xxs },
   destTitle: { fontSize: font.label, fontWeight: "600" },
-  destError: { fontSize: 10.5, lineHeight: 14 },
+  destError: { fontSize: font.label, lineHeight: 14 },
   retryButton: {
     minHeight: 34,
     paddingHorizontal: space.sm,
-    borderRadius: 999,
+    borderRadius: radius.chip,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
-  retryText: { fontSize: 11, fontWeight: "700" },
-  detailFoot: { fontSize: 10.5, lineHeight: 14, marginTop: space.md },
-  cta: { minHeight: 46, paddingHorizontal: space.xl, borderRadius: radius.row, alignItems: "center", justifyContent: "center" },
-  ctaText: { fontSize: font.body, fontWeight: "700" },
+  retryText: { fontSize: font.label, fontWeight: "700" },
+  detailFoot: { fontSize: font.label, lineHeight: 14, marginTop: space.md },
 });

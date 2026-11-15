@@ -408,7 +408,8 @@ font   = { page: 24, display: 30, hero: 26, stat: 26, section: 17, title: 16, re
   上条 `tmp/acceptance/stitch-mobile-prototypes/` 为生成期记录，归档后以 `prototypes/` 为准。
   > 更正（2026-11-15）：按用户要求删除 `docs/mobile/prototypes/`（Stitch 原型），上面两条仅作
   > 历史记录；移动端视觉基准改为 `docs/mobile/design-refs/reference-blue-cyan-v5.png`
-  > （《开发效率中枢 · 蓝青专业版》，见该目录 README）。
+  > （《开发效率中枢 · 蓝青专业版》，见该目录 README）。同目录另有 6 张后续概念稿
+  > （首页/任务/工具/我的单屏 + 两张 12 屏总览），清单与哈希见 `design-refs/README.md`。
 - 2026-11-08 启动动效：新增 §7.1（原生骨架图 → 三行填充 → 勾选弹入 → 字标上移 → 揭幕），
   含几何同步、640ms 最短展示、减少动态与深色原生图约定。
 - 2026-11-08 真机走查修复（笔记/规划屏批次）：推送页顶栏移出滚动容器（滚动后返回箭头不再
@@ -794,5 +795,43 @@ vc57 验收时仍未通过/未测：文件互传页证书指纹不匹配时只�
 关于，无「提醒」区；通知页为唯一管理页，测试通知实际进入系统通知列表；两个提醒动作开关退出重进
 后保持（测试后已恢复用户原来的关闭状态）。首页铃铛进入同一通知页，干净栈返回首页正常。采集页
 header 已无「素材库 N」重复入口，页内「本机素材库」卡仍在，采集暂存页可达；设备详情已
-出现「解除配对」，但确认/真实解绑未执行。文件互传 TLS 错误卡因桌面端不可达、未制造证书不匹配
-场景，标记 NOT TESTED；深色、320/390/430dp、TalkBack 同样未测。
+出现「解除配对」，补测确认弹窗文案与取消返回正确（取消后仍已配对/待发送 1 条），真实解除未执行。
+深色主题在设置页/通知页正常并已恢复浅色；设置页与通知页在 320/390/430dp 无横向溢出，测后恢复
+1080×2400。文件互传正常路径已加载（桌面端点可达、无 TLS 错误卡）；TLS 错误卡/重配对因未制造
+真实证书不匹配仍 BLOCKED；采集卡片点击进入「快速采集」而非「采集暂存」，直达闭环 PARTIAL。
+TalkBack、640dp、采集/设备尺寸、分享/深链 vc58 回归未测。
+
+---
+
+## 2026-11-15 第十一轮：移动端全页面体系统一（设计系统冻结 + 页面补全）
+
+**范围**：只做移动端前端 UI/交互与导航一致性，不改后端业务、通信协议、数据持久化。
+审计与设计系统冻结稿：`tmp/acceptance/mobile-ui-unified/01-audit.md`、`02-design-system.md`
+（后者是本轮唯一的视觉口径来源，页面不得再自造数值）。
+
+**审计硬结论**：移动端同步实体只有 `task / capture / note`（`src/lib/sync/protocol.ts`），
+SQLite 没有 projects/features/scenes/agent/监控表，任务也没有 projectId 字段。因此项目详情、
+功能看板、场景工作区、开发工作台、CPU/内存/磁盘/构建记录都是 C 类（未实现）：本轮**只做统一的
+未接入占位页 + 入口**，不新增表/协议/接口，不渲染演示项目、假进度、假 Agent 状态、假监控读数。
+诊断中心是例外——它建在真实的本机 SQLite 自检（`db/diagnostics.ts`）、`sync_conflicts`、
+`attachments` 传输状态、`outbox`、`reminder_schedule` 与配对状态上。
+
+**新增路由（25 条闭合）**：`task_detail`、`diagnostics`、`project_detail`、`feature_board`、
+`scene_workspace`、`dev_workbench`。静态核对：定义 25 / App 分发 25 / 入口引用 25，无未定义、
+无死链（脚本 `tmp/acceptance/mobile-ui-unified/route-audit.mjs`）。
+
+**设计系统冻结**：颜色/字阶/间距/圆角/阴影/图标尺寸档位只用 `src/theme/tokens.ts`，页面禁止
+字面量；新增 `ProgressBar`、`PlaceholderPage`、`BulkActionBar`、`ImageLightbox`；
+`SegmentedControl` 增加 `disabled` 选项（承载「项目任务 / 团队任务」等未接入分段）；
+`IconEntry` 在 `fontScale > 1.25` 时降为两列，避免长标签半词截断；
+`TaskRow` 行主体语义从「轻点编辑」改为「轻点查看详情」，无障碍提示同步更新。
+
+**页面变化**：首页补今日概览 / 整体进度 / 待处理任务 / 最近动态 / 暂存架入口（全部本机真实数据）；
+任务中心改「我的任务 / 项目任务 / 团队任务」范围分段（后两段禁用）+ 轻点进详情；
+新增任务详情（真实字段 + 附件 + 完成/编辑/删除）；工具页重组为常用 / 应用导航 / 快捷操作 /
+诊断入口 / 更多未接入；我的补工作概览 / 最近内容 / 帮助占位 / 关于；工作区项目空间改为可点占位页；
+新增诊断中心；设备页删除与「我的」「工作区」重复的同步中心、文件互传目录行，保留状态卡、
+配对、解除配对与投屏降饱和占位。
+
+**验证**：以 `tmp/acceptance/mobile-ui-unified/report.md` 为准（typecheck / vitest / APK
+真机截图逐项标注；构建一律走 `npm run build:android` 调度器入口，不绕过准入）。

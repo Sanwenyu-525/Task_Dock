@@ -23,6 +23,7 @@
 //    文件）；模块自身的 clearPendingShare 只清引用，不删已交付文件。
 package dev.taskdock.modules.shareintent
 
+import android.content.ContentResolver
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
@@ -60,6 +61,17 @@ class ShareIntentModule : Module() {
   override fun definition() = ModuleDefinition {
     Name(MODULE_NAME)
     Events(EVENT_SHARE_RECEIVED)
+
+    // 冷启动分享：在 Expo 模块创建时就复制，而不是等 JS 调用 takePendingShare。
+    // 分享 URI 的临时授权属于接收 Activity；越早复制越不会因 JS 启动慢/Activity 生命周期
+    // 变化而遇到 SecurityException（真机曾出现“没有读取该文件的权限”）。
+    OnCreate {
+      val intent = appContext.currentActivity?.intent
+      if (intent != null && (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE)) {
+        initialIntentInspected = true
+        offerFromIntent(intent, fromNewIntent = false)
+      }
+    }
 
     OnNewIntent { intent ->
       offerFromIntent(intent, fromNewIntent = true)?.let { offer ->
@@ -141,7 +153,7 @@ class ShareIntentModule : Module() {
     }
 
     offerSeq += 1
-    val copied = copyStreams(offerSeq, uris)
+    val copied = copyStreams(offerSeq, uris, intent.flags)
     val offer = Offer(
       signature = signature,
       text = effectiveText,
@@ -182,13 +194,18 @@ class ShareIntentModule : Module() {
     } ?: emptyList()
   }
 
-  private fun copyStreams(offerId: Int, uris: List<Uri>): Pair<List<PendingItem>, List<Map<String, String>>> {
+  private fun copyStreams(
+    offerId: Int,
+    uris: List<Uri>,
+    grantFlags: Int,
+  ): Pair<List<PendingItem>, List<Map<String, String>>> {
     val items = mutableListOf<PendingItem>()
     val rejected = mutableListOf<Map<String, String>>()
     if (uris.isEmpty()) return items to rejected
 
-    val context = appContext.reactContext ?: return items to rejected
+    val context = appContext.currentActivity ?: appContext.reactContext ?: return items to rejected
     val resolver = context.contentResolver
+    val hasReadGrant = (grantFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0
     val dir = File(context.filesDir, "share-intake/offer-$offerId")
     var totalBytes = 0L
 
@@ -208,7 +225,11 @@ class ShareIntentModule : Module() {
         continue
       }
 
-      val mime = resolver.getType(uri) ?: guessMimeFromName(displayName)
+      val mime = try {
+        resolver.getType(uri)
+      } catch (_: SecurityException) {
+        null
+      } ?: guessMimeFromName(displayName)
       val kind = classify(mime)
       val safeName = safeStorageName(kind, mime, index)
       if (!dir.exists() && !dir.mkdirs()) {
@@ -239,7 +260,16 @@ class ShareIntentModule : Module() {
         }
       } catch (_: SecurityException) {
         target.delete()
-        rejected.add(mapOf("name" to displayName, "reason" to "没有读取该文件的权限"))
+        rejected.add(
+          mapOf(
+            "name" to displayName,
+            "reason" to if (hasReadGrant) {
+              "没有读取该文件的权限（URI 授权已失效）"
+            } else {
+              "分享方未授予读取权限（缺少 FLAG_GRANT_READ_URI_PERMISSION），请从系统分享面板重新分享"
+            },
+          ),
+        )
         continue
       } catch (_: java.io.IOException) {
         target.delete()
@@ -272,8 +302,11 @@ class ShareIntentModule : Module() {
     return items to rejected
   }
 
+  private fun contentResolver(): ContentResolver? =
+    appContext.currentActivity?.contentResolver ?: appContext.reactContext?.contentResolver
+
   private fun queryDisplayName(uri: Uri): String? = try {
-    appContext.reactContext?.contentResolver?.query(
+    contentResolver()?.query(
       uri,
       arrayOf(OpenableColumns.DISPLAY_NAME),
       null,
@@ -287,7 +320,7 @@ class ShareIntentModule : Module() {
   }
 
   private fun querySize(uri: Uri): Long? = try {
-    appContext.reactContext?.contentResolver?.query(
+    contentResolver()?.query(
       uri,
       arrayOf(OpenableColumns.SIZE),
       null,

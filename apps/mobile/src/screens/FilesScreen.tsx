@@ -140,7 +140,7 @@ function SectionHeader({
         <AppIcon
           name={tone === "accent" ? "download" : "upload"}
           color={tone === "accent" ? tokens.accent : tokens.ok}
-          size={14}
+          size={18}
         />
       </View>
       <Text accessibilityRole="header" style={[styles.sectionTitle, { color: tokens.text }]}>
@@ -557,7 +557,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
             disabled={refreshing}
             contentStyle={styles.refresh}
           >
-            <Text style={[styles.refreshText, { color: refreshing ? tokens.muted : tokens.accent }]}>
+            <Text style={[styles.refreshText, { color: refreshing ? tokens.muted : tokens.accentText }]}>
               {refreshing ? "刷新中" : "刷新"}
             </Text>
           </PressableScale>
@@ -757,12 +757,12 @@ export function FilesScreen({ nav }: { nav: Nav }) {
                 accessibilityRole="progressbar"
                 accessibilityLabel={`${transfer.kind === "upload" ? "上传" : "下载"}进度`}
                 accessibilityValue={{ min: 0, max: 100, now: percent }}
-                style={[styles.progressTrack, { backgroundColor: tokens.separator }]}
+                style={[styles.progressTrack, { backgroundColor: tokens.track }]}
               >
                 <View
                   style={[
                     styles.progressFill,
-                    { backgroundColor: tokens.accent, width: `${percent}%` },
+                    { backgroundColor: tokens.accentFill, width: `${percent}%` },
                   ]}
                 />
               </View>
@@ -876,12 +876,12 @@ const styles = StyleSheet.create({
   sectionIcon: {
     width: 24,
     height: 24,
-    borderRadius: 8,
+    borderRadius: radius.tile,
     alignItems: "center",
     justifyContent: "center",
   },
   sectionTitle: {
-    fontSize: font.body,
+    fontSize: font.section,
     fontWeight: "700",
   },
   sectionCount: {
@@ -917,7 +917,7 @@ const styles = StyleSheet.create({
   fileTile: {
     width: 38,
     height: 38,
-    borderRadius: 11,
+    borderRadius: radius.tile,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1025,13 +1025,13 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   progressTrack: {
-    height: 6,
-    borderRadius: 3,
+    height: 8,
+    borderRadius: radius.chip,
     overflow: "hidden",
   },
   progressFill: {
     height: "100%",
-    borderRadius: 3,
+    borderRadius: radius.chip,
   },
   dockFoot: {
     flexDirection: "row",
