@@ -108,7 +108,8 @@ export interface AutoSyncDecision {
  * 纯判定：什么时候允许自动同步。
  *
  * 「无本地变更」不是跳过理由：桌面端可能改了任务/笔记，前台恢复需要 pull 一次；
- * 只有「刚刚成功同步过」才跳过（最小间隔）。
+ * 但「刚成功同步过」只应节流「纯拉取」，不能节流「本地有待推送的写入」——
+ * 否则保存一条任务后 5 分钟内都不会上传，与「写完就同步」的目标冲突。
  */
 export function decideAutoSync(input: AutoSyncDecisionInput): AutoSyncDecision {
   if (!input.settings.enabled) return { run: false, reason: "disabled" };
@@ -120,7 +121,11 @@ export function decideAutoSync(input: AutoSyncDecisionInput): AutoSyncDecision {
   }
   if (input.syncing) return { run: false, reason: "in_flight" };
   if (input.nextAttemptAt > input.now) return { run: false, reason: "backoff" };
-  if (input.lastSuccessAt > 0 && input.now - input.lastSuccessAt < AUTO_SYNC_MIN_INTERVAL_MS) {
+  if (
+    input.lastSuccessAt > 0 &&
+    input.now - input.lastSuccessAt < AUTO_SYNC_MIN_INTERVAL_MS &&
+    !input.hasPendingLocalChanges
+  ) {
     return { run: false, reason: "too_soon" };
   }
   return { run: true, reason: "ok" };
@@ -260,7 +265,10 @@ export async function loadSyncStatus(): Promise<SyncStatusSnapshot> {
 // ── 调度 ──────────────────────────────────────────────────────────────
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let runInFlight: Promise<AutoSyncOutcome> | null = null;
+/** 应用是否在前台：只有前台才允许排重试定时器（Android 不保证后台准点执行） */
+let foreground = false;
 
 export interface AutoSyncOutcome {
   ran: boolean;
@@ -269,11 +277,57 @@ export interface AutoSyncOutcome {
   error?: string;
 }
 
-/** 取消所有待执行的自动同步（解除配对、关闭开关时调用）。 */
+function clearRetryTimer(): void {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+}
+
+/** 取消所有待执行的自动同步（解除配对、关闭开关、退到后台时调用）。 */
 export function cancelAutoSync(): void {
   if (debounceTimer) {
     clearTimeout(debounceTimer);
     debounceTimer = null;
+  }
+  clearRetryTimer();
+}
+
+/**
+ * 前台状态变化：退后台取消待执行的重试；回前台按持久化的 next_attempt_at 重新排。
+ *
+ * 这是「失败退避到期真的会重试」的落点：只写 next_attempt_at 不会自己触发，
+ * 必须有一个在前台存活、可取消的定时器把时间带到下一次请求。
+ */
+export function setAutoSyncForeground(active: boolean): void {
+  foreground = active;
+  if (!active) {
+    clearRetryTimer();
+    return;
+  }
+  void scheduleRetryIfDue();
+}
+
+async function scheduleRetryIfDue(): Promise<void> {
+  clearRetryTimer();
+  if (!foreground) return;
+  try {
+    const [settings, state] = await Promise.all([loadAutoSyncSettings(), readAutoSyncState()]);
+    if (!settings.enabled) return;
+    if (state.nextAttemptAt <= 0) return;
+    const delay = state.nextAttemptAt - Date.now();
+    if (delay <= 0) {
+      // 退避时间已过（例如进程重启后回到前台）：直接走一次请求，仍受防抖/单飞/退避约束
+      requestAutoSync("retry");
+      return;
+    }
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (!foreground) return;
+      void runAutoSync("retry");
+    }, Math.min(delay, AUTO_SYNC_BACKOFF_MS[AUTO_SYNC_BACKOFF_MS.length - 1]));
+  } catch {
+    // 读设置失败不排重试，避免无依据的网络请求
   }
 }
 
@@ -344,6 +398,7 @@ async function executeAutoSync(reason: AutoSyncReason): Promise<AutoSyncOutcome>
 
     const result = await syncNow();
     const now = Date.now();
+    clearRetryTimer();
     await Promise.all([
       setSetting(KEY_LAST_SUCCESS, String(now)),
       setSetting(KEY_FAILURES, "0"),
@@ -368,9 +423,13 @@ async function executeAutoSync(reason: AutoSyncReason): Promise<AutoSyncOutcome>
     const next = Date.now() + backoffForFailure(failures);
     await setSetting(KEY_FAILURES, String(failures)).catch(() => undefined);
     await setSetting(KEY_NEXT_ATTEMPT, String(next)).catch(() => undefined);
-    lastAutoNote = `自动同步失败（${reason}）：${message}；${Math.round(
-      backoffForFailure(failures) / 1000,
-    )} 秒后重试`;
+    // 文案必须与实际行为一致：前台有定时器时才是「X 秒后重试」；否则只能说「下次满足条件」
+    lastAutoNote = foreground
+      ? `自动同步失败（${reason}）：${message}；${Math.round(
+          backoffForFailure(failures) / 1000,
+        )} 秒后重试`
+      : `自动同步失败（${reason}）：${message}；下次满足条件时重试`;
+    void scheduleRetryIfDue();
     outcome = { ran: true, reason: "ok", error: message };
     return outcome;
   } finally {

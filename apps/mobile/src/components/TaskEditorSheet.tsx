@@ -19,6 +19,7 @@ import { font, radius, space } from "../theme/tokens";
 
 import { BottomSheet } from "./BottomSheet";
 import { Chip } from "./Chip";
+import { AttachmentStrip } from "./AttachmentStrip";
 
 type DueKey = "none" | "today" | "tomorrow" | "weekend" | "keep";
 /**
@@ -407,6 +408,12 @@ export function TaskEditorSheet({
             },
           ]}
         />
+
+        {/* 采集中心创建的任务带附件：编辑弹层是最自然的查看/试听/打开入口，
+            不能让附件只留在数据库里没有入口 */}
+        {mode === "edit" && task ? (
+          <AttachmentStrip ownerEntity="task" ownerId={task.id} />
+        ) : null}
 
         <Text style={[styles.section, { color: tokens.muted }]}>优先级</Text>
         <View style={styles.row}>

@@ -339,6 +339,10 @@ body.wb-resizing {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* 页面内容宽度的容器查询上下文：页头/页内分栏按真实内容宽自适应，
+     而不是按窗口外框尺寸猜测（125% DPI 下两者并不等价）。 */
+  container-type: inline-size;
+  container-name: wb-content;
 }
 
 .wb-content > .tab-content {
@@ -1349,6 +1353,75 @@ body.wb-resizing {
 .wb-activity-meta {
   font-size: 10.5px;
   color: var(--text-tertiary);
+}
+
+/* ── 页面级页头（2026-11-15 统一）：图标块 + 标题/副标题 + 右侧动作。
+   19 张效果图的共同结构；各页面只传内容，不复制尺寸与间距。 ── */
+.wb-page-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 2px 2px 12px;
+  min-width: 0;
+}
+.wb-ph-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--border-subtle);
+}
+.wb-ph-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.wb-ph-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+  color: var(--text-primary);
+  min-width: 0;
+}
+.wb-ph-title > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-ph-sub {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+.wb-ph-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+/* 窄内容区（工作台默认 1180×760 且右栏展开时约 600px）：动作区换到下一行，
+   标题与图标保持一行，不允许把内容挤出容器。 */
+@container wb-content (max-width: 720px) {
+  .wb-page-header {
+    flex-wrap: wrap;
+  }
+  .wb-ph-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 /* 首页 v2 响应式：auto-fit 按容器宽度自适应列数，无需视口断点。 */

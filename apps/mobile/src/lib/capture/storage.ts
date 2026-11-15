@@ -14,13 +14,13 @@ import { Directory, File, FileMode, Paths } from "expo-file-system";
 import type { AttachmentKind } from "../../domain/types";
 import { AppError } from "../errors";
 import { newId } from "../id";
+import {
+  MAX_CAPTURE_ITEM_BYTES,
+  MAX_CAPTURE_ITEMS,
+  MAX_CAPTURE_TOTAL_BYTES,
+} from "./limits";
 
-/** 单次采集最多保留的附件数量（与 UI 上限一致） */
-export const MAX_CAPTURE_ITEMS = 9;
-/** 单个附件上限：采集附件不是文件互传的替代品 */
-export const MAX_CAPTURE_ITEM_BYTES = 50 * 1024 * 1024;
-/** 单次采集附件总上限 */
-export const MAX_CAPTURE_TOTAL_BYTES = 200 * 1024 * 1024;
+export { MAX_CAPTURE_ITEM_BYTES, MAX_CAPTURE_ITEMS, MAX_CAPTURE_TOTAL_BYTES };
 
 const DIR_NAME = "capture";
 
@@ -184,6 +184,20 @@ export async function persistIntoCaptureStore(
     }
     const written = target.size;
     if (written <= 0) throw new AppError("storage", "复制后的文件为空，请重新选择");
+    // 来源声明的 size 不可信（content:// 常缺省、甚至小于真实字节）：以落盘后的真实字节为准。
+    // 超限必须在删除半成品后失败，否则会留下无业务引用的完整大文件。
+    if (written > MAX_CAPTURE_ITEM_BYTES) {
+      throw new AppError(
+        "validation",
+        `单个附件不能超过 ${Math.round(MAX_CAPTURE_ITEM_BYTES / (1024 * 1024))}MB，请换一张/选一个小一点的文件`,
+      );
+    }
+    if (used + written > MAX_CAPTURE_TOTAL_BYTES) {
+      throw new AppError(
+        "validation",
+        `本次采集附件合计不能超过 ${Math.round(MAX_CAPTURE_TOTAL_BYTES / (1024 * 1024))}MB，请先保存或移除部分内容`,
+      );
+    }
     if (size > 0 && written < size) {
       throw new AppError("storage", "复制文件不完整，请重试");
     }
@@ -191,7 +205,8 @@ export async function persistIntoCaptureStore(
       localUri: target.uri,
       name: displayName || storageName,
       mime,
-      size: size > 0 ? size : written,
+      // 以真实字节记账，UI 合计/数据库守卫才能和磁盘一致
+      size: written,
     };
   } catch (error) {
     try {

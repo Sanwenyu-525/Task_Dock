@@ -24,6 +24,7 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 | Rust / Tauri / IPC / 数据库 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 对应章节 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | 移动端（Android） | [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md) + [docs/mobile/](docs/mobile/) |
 | 多 Agent 并行 / Worktree | 本文件第 3 节 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第八章 |
+| 构建、并发构建排队、内存/资源 | 本文件 5.1 + [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md) |
 | 构建产物、缓存、磁盘 | 本文件第 5 节 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第七章 |
 | 测试、验收、真机、性能 | [docs/TESTING.md](docs/TESTING.md)、[docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md)、`docs/PERFORMANCE_*.md` |
 | UI/UX、视觉 | 本文件第 6 节 + [docs/ui-themes/](docs/ui-themes/) + [docs/AGENT_SKILL_ROUTING.md](docs/AGENT_SKILL_ROUTING.md) |
@@ -100,6 +101,8 @@ Worktree 是**风险评估结果**，不是并行前置步骤：
 - 不设固定 Subagent 上限：按独立性、依赖、实际能力与 CPU/内存/磁盘余量决定，紧密耦合部分
   串行；不超过执行器或额度限制，遇阻塞收敛报告、不重试放大；不为凑数量制造冲突。
 - **文件不重叠不等于运行环境无冲突**（Git 见 3.1），派发前检查：
+  - **跨会话并发构建**：由 `scripts/build-sched.mjs` 统一闸门（本文件 5.1），派发时不要另造
+    锁/信号量；只需在写声明里要求"构建走标准入口"，不必为构建互斥而串行化整个任务。
   - **前端**：同一时刻只允许一个构建写同一输出目录（`dist/`、`.preview/`）；不并发改同一
     `node_modules`；dev 端口单实例或显式改端口；只读检查与单测可并行。
   - **Rust/Tauri**：不并发争用同一 Cargo target；隔离时用绝对路径 `CARGO_TARGET_DIR` 指向
@@ -145,6 +148,27 @@ Worktree 是**风险评估结果**，不是并行前置步骤：
    范围、迁移方式与旧数据/旧备份处理结果。
 
 ## 5. 构建、测试与验收
+
+### 5.1 构建资源调度（所有会话与子智能体共用）
+- **所有高资源构建必须经统一入口**：`npm run build` / `npm run tauri` / `npm run test` /
+  `npm run cargo -- <子命令>`，或 `node scripts/build-sched.mjs run -- <命令>`。
+  `*-raw` 与直接 `cargo`/`vite` 只用于调度器自身排障；**不得绕过调度器**规避队列（改了
+  `package.json` 绕开同样算绕过）。
+- 调度器只管构建，不管代码：**构建互斥不限制正常开发**——多个会话可并行改不冲突的文件；
+  无文件冲突时**不强制 Worktree**；构建排队期间可以继续读代码、写文档、改无关模块。
+- 优先局部检查再全量：能单 crate `cargo check` / 单测 / 单模块 `tsc` 就不整包构建，避免重复全量。
+- 失败先判层级再改代码：**代码错误（子进程码）/ 内存不足（exit 3 + reason 含内存）/ 超时
+  （exit 3）/ 调度或磁盘错误（exit 5/6）**分别处理，不能把"没抢到内存"当成代码缺陷，
+  也不能为了跑通就降门槛或并发绕过准入。
+- 不清理其他会话的构建缓存/target/隔离目录，不终止未经授权的他人进程（含 dev 服务器）；
+  疑似陈旧锁用 `npm run sched:doctor`（默认只读），`--reap` 前先确认回收对象已被证明死亡。
+- 最终验收必须针对**正确代码状态**执行（自己的改动已落盘、`git status` 无他人未提交改动被带入）；
+  子智能体与主智能体适用同一套资源规则，派发时应把本小节原文一并交代。
+- 用法、配置、退出码、锁与回收原理、Windows 控制台生命周期见
+  [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md)；资源现状用 `npm run sched:status`、
+  `npm run sched:queue`、`npm run sched:history` 查。
+
+### 5.2 磁盘、命令与证据
 - 构建前检查磁盘与缓存（`npm run tauri` 自动执行 `build-guard precheck`），空间不足先停止并
   `report`；缓存复用、隔离与回收按 3.4 与 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第七章
   执行；不清理他人目录、发布产物、用户数据或验收证据，无法确认归属即跳过。

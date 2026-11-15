@@ -196,6 +196,70 @@ CREATE TABLE IF NOT EXISTS capture_stash (
 CREATE INDEX IF NOT EXISTS idx_capture_stash_created ON capture_stash(created_at);
 `;
 
+// v7：采集提交幂等登记（收集箱/任务/笔记三向共用）。
+//
+// 为什么需要：v6 只有收集箱用 captures.client_id 防重；任务与笔记路径重复提交
+// （双击保存、进程被杀后重试、DB 已提交但 UI 响应丢失）会各生成一条新记录。
+// 这里用 client_id 主键登记「这次提交最终落在哪个实体上」，提交命中直接返回真实 id；
+// 与业务行、附件行、删除暂存行在同一事务内写入，失败整体回滚，不会出现半登记。
+export const MIGRATION_7 = `
+CREATE TABLE IF NOT EXISTS capture_commits (
+  client_id TEXT PRIMARY KEY NOT NULL,
+  destination TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+`;
+
+// v8：移动采集中心的持久素材库与多目的地状态（append-only，不改 v6/v7）。
+//
+// 为什么另立一张表而不是复用 capture_stash / attachments：
+// - capture_stash 是「尚未确认保存的采集会话」，保存成功后按 id 删除；它不能承载
+//   应用重启后仍要在「本机素材库」里看到、预览、再次发送的长期素材。
+// - attachments 是「已归属到收集箱/任务/笔记」的附件，owner 外键是业务实体；
+//   采集素材在归属前也必须独立存在，且同一素材有 4 个互相独立的目的地状态。
+// - `capture_destinations` 每个目的地一行：一个失败不回滚其他已完成的结果。
+export const MIGRATION_8 = `
+CREATE TABLE IF NOT EXISTS capture_assets (
+  id TEXT PRIMARY KEY NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('photo','scan','audio','file')),
+  source TEXT NOT NULL,
+  name TEXT NOT NULL,
+  local_path TEXT,
+  mime TEXT NOT NULL,
+  byte_size INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT,
+  width INTEGER,
+  height INTEGER,
+  duration_ms INTEGER,
+  thumbnail_path TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  favorite INTEGER NOT NULL DEFAULT 0,
+  project_id TEXT,
+  state TEXT NOT NULL CHECK (state IN ('staged','saved')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_capture_assets_created ON capture_assets(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_capture_assets_state ON capture_assets(state);
+
+CREATE TABLE IF NOT EXISTS capture_destinations (
+  asset_id TEXT NOT NULL REFERENCES capture_assets(id) ON DELETE CASCADE,
+  destination TEXT NOT NULL CHECK (destination IN ('local','album','desktop','shelf')),
+  state TEXT NOT NULL CHECK (state IN ('pending','running','done','failed','cancelled')),
+  remote_id TEXT,
+  remote_shelf_id TEXT,
+  album_uri TEXT,
+  bytes_done INTEGER NOT NULL DEFAULT 0,
+  bytes_total INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  last_error TEXT,
+  PRIMARY KEY (asset_id, destination)
+);
+CREATE INDEX IF NOT EXISTS idx_capture_destinations_state ON capture_destinations(state);
+`;
+
 /** 解析顺序即执行顺序；末尾追加新迁移，不要插入或重排。 */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: MIGRATION_1 },
@@ -204,6 +268,8 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 4, sql: MIGRATION_4 },
   { version: 5, sql: MIGRATION_5 },
   { version: 6, sql: MIGRATION_6 },
+  { version: 7, sql: MIGRATION_7 },
+  { version: 8, sql: MIGRATION_8 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

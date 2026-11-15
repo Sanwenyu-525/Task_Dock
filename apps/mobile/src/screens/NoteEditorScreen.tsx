@@ -16,6 +16,7 @@ import {
 
 import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { AppBar } from "../components/AppBar";
+import { AttachmentStrip } from "../components/AttachmentStrip";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import {
   Toast,
@@ -353,6 +354,13 @@ export function NoteEditorScreen({
         </View>
       </View>
 
+      {note ? (
+        <View style={styles.attachmentArea}>
+          {/* 笔记附件跟随笔记 id：改正文、重新打开都不会丢；原始文件与正文分开保存 */}
+          <AttachmentStrip ownerEntity="note" ownerId={note.id} />
+        </View>
+      ) : null}
+
       {/* 底部工具栏：键盘收起时让开手势条（insets.bottom），键盘弹出时由容器 padding 顶上去 */}
       <View
         style={[
@@ -485,6 +493,7 @@ function ToolButton({
 }
 
 const styles = StyleSheet.create({
+  attachmentArea: { paddingHorizontal: space.lg, paddingBottom: space.sm },
   container: {
     flex: 1,
   },

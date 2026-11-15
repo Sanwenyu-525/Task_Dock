@@ -262,3 +262,11 @@ JS 侧（`src/screens/CaptureScreen.tsx` voice 模式）：运行时申请 `RECO
 - 2026-11-14 第二轮（真机验收后）：修复录音文件误删、录音未进统一附件目录、
   `file://` 百分号编码导致试听失败、展示名被落盘规则改写、附件缺失无对账五个缺陷；
   补齐 `pathFromFileUri` 与对账函数，测试 27 文件 / 256 例；详见 §9.1。
+- 2026-11-15 第三轮（专项验收整改）：暂存只删本次 id、9 项/50MB/200MB 配额与真实字节校验、
+  文字草稿（kv `capture.draft`）、v7 `capture_commits` 保存幂等、按附件 id 精确发送、
+  收集箱/任务/笔记附件条（计数/缩略图/全屏预览/试听/系统预览/删除）、待推送绕过 5 分钟门槛、
+  前台可取消退避定时器、`uploading` 启动复位、采集页热启动 `intentNonce`。
+  真机已验证草稿恢复、camera/task 快捷动作、三类附件入口与 PDF 打开、语音录制/试听；
+  系统分享、相册批量、大文件边界、双端同步仍未验证。测试 29 文件 / 283 例；详见
+  `tmp/acceptance/mobile-efficiency-remediation-20261115/report.md`。
+

@@ -61,6 +61,12 @@ function fakeClient(chunks: Uint8Array[]): FileClient {
     async remove() {
       throw new Error("not used");
     },
+    async importToShelf() {
+      throw new Error("not used");
+    },
+    async shelfGroups() {
+      throw new Error("not used");
+    },
     cancel(): void {},
   };
 }

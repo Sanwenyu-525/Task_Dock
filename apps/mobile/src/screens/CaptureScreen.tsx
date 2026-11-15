@@ -35,12 +35,19 @@ import { SegmentedControl } from "../components/SegmentedControl";
 import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
 import { ToggleSwitch } from "../components/ToggleSwitch";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
-import { addStashItem, clearStash, listStash, removeStashItem, updateStashItem } from "../db/captureStash";
+import {
+  addStashItem,
+  clearStash,
+  listStash,
+  removeStashItem,
+  stashTotalBytes,
+  updateStashItem,
+} from "../db/captureStash";
 import { saveCapture, type SaveDestination } from "../db/captureSave";
 import { loadConnection } from "../db/syncConnection";
 import { notifyLocalChange } from "../lib/sync/localChange";
 import { requestAutoSync } from "../lib/sync/autoSync";
-import { transferPendingAttachments } from "../lib/sync/attachmentTransfer";
+import { transferAttachmentsByIds } from "../lib/sync/attachmentTransfer";
 import {
   MAX_CAPTURE_ITEMS,
   deleteStoredFileQuietly,
@@ -48,6 +55,8 @@ import {
   pathFromFileUri,
   persistIntoCaptureStore,
 } from "../lib/capture/storage";
+import { describeQuotaRejection, planCaptureBatch } from "../lib/capture/limits";
+import { clearCaptureDraft, loadCaptureDraft, saveCaptureDraft } from "../lib/capture/draft";
 import { formatBytes, formatDuration } from "../lib/capture/summary";
 import { describeError } from "../lib/errors";
 import { newId } from "../lib/id";
@@ -97,15 +106,19 @@ export function CaptureScreen({
   nav,
   onDataChanged,
   intent = "capture",
+  intentNonce,
 }: {
   nav: Nav;
   onDataChanged: () => void;
   intent?: CaptureIntent;
+  /** 采集中心已打开时收到新快捷动作：序号变化代表用户重新选择了模式 */
+  intentNonce?: number;
 }) {
   const { tokens } = useTheme();
   const [permission, requestPermission] = useCameraPermissions();
   /** 采集会话幂等键：整屏生命周期内复用，重复点保存不会落两条收集箱记录 */
   const sessionId = useRef(newId("cap"));
+  const appliedIntentNonce = useRef(intentNonce ?? 0);
   const [mode, setMode] = useState<Mode>(
     intent === "camera" ? "camera" : intent === "voice" ? "voice" : "compose",
   );
@@ -137,49 +150,159 @@ export function CaptureScreen({
     setToast({ id: toastSeq.current, text: message, tone });
   }, []);
 
+  // 采集中心已打开时再次收到快捷动作（热启动）：切到用户这次选择的模式。
+  // 不能只依赖首次挂载的 intent，也不能因为「页面已存在」就静默忽略。
+  useEffect(() => {
+    if (intentNonce === undefined) return;
+    if (intentNonce === appliedIntentNonce.current) return;
+    appliedIntentNonce.current = intentNonce;
+    setMode(intent === "camera" ? "camera" : intent === "voice" ? "voice" : "compose");
+    if (intent === "task") setDestination("task");
+    setResult(null);
+  }, [intent, intentNonce]);
+
+  // 暂存项的可信计数：批量导入连续 await 期间 React state 不会及时更新，
+  // 只读 state 会把 7 项 + 5 张全部入库再隐藏。ref 与 state 同步推进，
+  // 数据库还有一层 addStashItem 守卫（并发点击也守得住）。
+  const itemsRef = useRef<StashedItem[]>([]);
+  const replaceItems = useCallback((next: StashedItem[]) => {
+    itemsRef.current = next;
+    setItems(next);
+  }, []);
+  const pushItem = useCallback((item: StashedItem) => {
+    itemsRef.current = [...itemsRef.current, item];
+    setItems(itemsRef.current);
+  }, []);
+
+  /** 把一批来源文件按配额加入本次采集；返回成功数量，失败逐项提示。 */
+  const stageFiles = useCallback(
+    async (
+      files: readonly { uri: string; size: number | null; type?: string | null; name?: string | null }[],
+      kindOf: (file: { type?: string | null }) => StashedItem["kind"],
+      source: CaptureSource,
+      extra: (stored: { size: number }) => {
+        width?: number | null;
+        height?: number | null;
+        durationMs?: number | null;
+      } = () => ({}),
+    ): Promise<number> => {
+      const current = itemsRef.current;
+      const plan = planCaptureBatch({
+        itemCount: current.length,
+        usedBytes: stashTotalBytes(current),
+        candidates: files.map((file) => ({ size: file.size, name: file.name ?? "" })),
+      });
+      for (const rejection of plan.rejected) {
+        setRejected((prev) => [
+          ...prev,
+          `${rejection.name || "文件"}：${describeQuotaRejection(rejection.reason)}`,
+        ]);
+      }
+      let added = 0;
+      for (const accept of plan.accepted) {
+        const file = files[accept.index];
+        let stored: Awaited<ReturnType<typeof persistIntoCaptureStore>> | null = null;
+        try {
+          stored = await persistIntoCaptureStore(
+            { uri: file.uri, size: file.size, type: file.type, name: file.name ?? null },
+            { kind: kindOf(file), usedBytes: stashTotalBytes(itemsRef.current) },
+          );
+          const staged = await addStashItem({
+            kind: kindOf(file),
+            mime: stored.mime,
+            name: stored.name,
+            localUri: stored.localUri,
+            size: stored.size,
+            source,
+            ...extra(stored),
+          });
+          pushItem(staged);
+          added += 1;
+        } catch (error) {
+          // 落库失败时清掉刚复制出的私有文件，避免留下无业务引用的孤儿；
+          // 配额失败发生在复制之前，persistIntoCaptureStore 内部已自清半成品。
+          if (stored?.localUri) deleteStoredFileQuietly(stored.localUri);
+          setRejected((prev) => [...prev, `${file.name ?? "文件"}：${describeError(error)}`]);
+        }
+      }
+      if (plan.rejected.length > 0 || added < plan.accepted.length) {
+        showToast(
+          `${added} 项已加入，${plan.rejected.length + (plan.accepted.length - added)} 项未加入`,
+          "warn",
+        );
+      }
+      return added;
+    },
+    [pushItem, showToast],
+  );
+
   // ── 暂存恢复 + 分享载荷接入 ───────────────────────────────────────────
   const stagePayload = useCallback(
     async (payload: ShareIntentPayload): Promise<number> => {
       const reasons = (payload.rejected ?? []).map((item) => `${item.name}：${item.reason}`);
-      if (reasons.length > 0) setRejected((prev) => [...prev, ...reasons]);
+      const incoming = (payload.items ?? []).map((item) => ({
+        ...item,
+        localUri: fileUriFromPath(item.path),
+      }));
+      const plan = planCaptureBatch({
+        itemCount: itemsRef.current.length,
+        usedBytes: stashTotalBytes(itemsRef.current),
+        candidates: incoming.map((item) => ({ size: item.size, name: item.name })),
+      });
+      // 未接收的分享副本必须清掉：原生已把它们复制进私有目录，留在磁盘就是无引用文件
+      for (const rejection of plan.rejected) {
+        const item = incoming[rejection.index];
+        deleteStoredFileQuietly(item.localUri);
+        reasons.push(`${item.name || "文件"}：${describeQuotaRejection(rejection.reason)}`);
+      }
       let added = 0;
-      for (const item of payload.items ?? []) {
-        const localUri = fileUriFromPath(item.path);
+      for (const accept of plan.accepted) {
+        const item = incoming[accept.index];
         try {
           const staged = await addStashItem({
             kind: item.kind,
             mime: item.mime,
             name: item.name,
-            localUri,
+            localUri: item.localUri,
             size: item.size,
             source: "share",
           });
-          setItems((prev) => (prev.length >= MAX_CAPTURE_ITEMS ? prev : [...prev, staged]));
+          pushItem(staged);
           added += 1;
         } catch (error) {
-          deleteStoredFileQuietly(localUri);
-          showToast(`接入分享项失败：${describeError(error)}`, "danger");
+          deleteStoredFileQuietly(item.localUri);
+          reasons.push(`${item.name || "文件"}：${describeError(error)}`);
         }
       }
+      if (reasons.length > 0) setRejected((prev) => [...prev, ...reasons]);
       if (payload.text) setText((prev) => (prev.trim() ? `${prev}\n${payload.text}` : payload.text ?? ""));
       return added;
     },
-    [showToast],
+    [pushItem],
   );
 
   useEffect(() => {
     let active = true;
     void (async () => {
       try {
-        const [stashed, connection] = await Promise.all([listStash(), loadConnection()]);
+        const [stashed, connection, draft] = await Promise.all([
+          listStash(),
+          loadConnection(),
+          loadCaptureDraft(),
+        ]);
         if (!active) return;
-        setItems(stashed);
+        replaceItems(stashed);
         setTranscripts(
           Object.fromEntries(
             stashed.filter((item) => item.transcript).map((item) => [item.id, item.transcript ?? ""]),
           ),
         );
         setPaired(Boolean(connection));
+        // 草稿先于分享载荷恢复：分享文本只能追加在用户已有输入之后，不能覆盖
+        if (draft) {
+          setText(draft.text);
+          if (intent !== "task") setDestination(draft.destination);
+        }
         const payload = consumePendingShare();
         if (payload) await stagePayload(payload);
       } catch (error) {
@@ -191,7 +314,7 @@ export function CaptureScreen({
     return () => {
       active = false;
     };
-  }, [showToast, stagePayload]);
+  }, [intent, replaceItems, showToast, stagePayload]);
 
   // 运行中又收到系统分享：直接追加到当前采集，不新开页面、不丢已有输入
   useEffect(
@@ -202,6 +325,16 @@ export function CaptureScreen({
       }),
     [stagePayload],
   );
+
+  // 草稿防抖落盘：每敲一个字就写 SQLite 会产生高频写；700ms 合并一次，
+  // 离开页面/保存时另有显式落盘（见 leave/handleSave），短时间 killed 也最多丢最后 0.7s。
+  useEffect(() => {
+    if (!loaded) return;
+    const timer = setTimeout(() => {
+      void saveCaptureDraft({ text, destination }).catch(() => undefined);
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [destination, loaded, text]);
 
   // ── 录音计时（仅在录音期间存在定时器，离开即清理）─────────────────────
   useEffect(() => {
@@ -251,13 +384,11 @@ export function CaptureScreen({
 
   const leave = useCallback(() => {
     if (recording) stopRecordingSafely(true);
-    if (!dirty) {
-      nav.back();
-      return;
-    }
+    // 离开前把当前文字落成草稿：附件已在暂存表，文字不能只活在组件 state 里
+    void saveCaptureDraft({ text, destination }).catch(() => undefined);
     // 暂存项已落库，退出不是丢弃：保留在暂存区，下次进入可以继续
     nav.back();
-  }, [dirty, nav, recording, stopRecordingSafely]);
+  }, [destination, nav, recording, stopRecordingSafely, text]);
 
   const confirmDiscard = useCallback(() => {
     Alert.alert("清空这次采集？", "已拍的照片、录音和文件会从本机删除，无法恢复。", [
@@ -270,9 +401,10 @@ export function CaptureScreen({
             try {
               if (recording) stopRecordingSafely(true);
               await clearStash();
-              setItems([]);
+              replaceItems([]);
               setText("");
               setTranscripts({});
+              await clearCaptureDraft();
               showToast("已清空本次采集", "info");
             } catch (error) {
               showToast(`清空失败：${describeError(error)}`, "danger");
@@ -312,9 +444,18 @@ export function CaptureScreen({
       source: CaptureSource,
       extra: { width?: number | null; height?: number | null; durationMs?: number | null } = {},
     ) => {
-      if (items.length >= MAX_CAPTURE_ITEMS) {
+      // 单件也走同一配额判定：itemsRef 是同步推进的计数，不读可能过期的 state
+      const plan = planCaptureBatch({
+        itemCount: itemsRef.current.length,
+        usedBytes: stashTotalBytes(itemsRef.current),
+        candidates: [{ size: file.size, name: file.name }],
+      });
+      if (plan.accepted.length === 0) {
+        const rejection = plan.rejected[0];
         deleteStoredFileQuietly(file.localUri);
-        showToast(`一次最多 ${MAX_CAPTURE_ITEMS} 项，请先保存或删除部分内容`, "warn");
+        const reason = rejection ? describeQuotaRejection(rejection.reason) : "超出本次采集上限";
+        setRejected((prev) => [...prev, `${file.name || "文件"}：${reason}`]);
+        showToast(reason, "warn");
         return;
       }
       try {
@@ -329,13 +470,14 @@ export function CaptureScreen({
           height: extra.height ?? null,
           durationMs: extra.durationMs ?? null,
         });
-        setItems((prev) => [...prev, staged]);
+        pushItem(staged);
+        showToast("已加入本次采集", "success");
       } catch (error) {
         deleteStoredFileQuietly(file.localUri);
         showToast(`加入采集失败：${describeError(error)}`, "danger");
       }
     },
-    [items.length, showToast],
+    [pushItem, showToast],
   );
 
   const takePhoto = useCallback(async () => {
@@ -346,12 +488,11 @@ export function CaptureScreen({
       if (!shot?.uri) throw new Error("相机没有返回照片");
       const stored = await persistIntoCaptureStore(
         { uri: shot.uri, size: null, type: "image/jpeg", name: "photo.jpg" },
-        { kind: "image", name: "photo.jpg" },
+        { kind: "image", name: "photo.jpg", usedBytes: stashTotalBytes(itemsRef.current) },
       );
       // 相机把原图写在缓存目录：复制进私有存储后再删缓存，避免缓存越积越大
       deleteStoredFileQuietly(shot.uri);
       await stagePersisted(stored, "image", "camera", { width: shot.width, height: shot.height });
-      showToast("已加入本次采集", "success");
     } catch (error) {
       showToast(`拍照失败：${describeError(error)}`, "danger");
     } finally {
@@ -366,25 +507,28 @@ export function CaptureScreen({
       const picked = await File.pickFileAsync({ multipleFiles: true, mimeTypes: ["image/*"] });
       if (picked.canceled || !picked.result) return;
       const files = Array.isArray(picked.result) ? picked.result : [picked.result];
-      let used = items.reduce((sum, item) => sum + item.size, 0);
-      for (const file of files) {
-        if (items.length >= MAX_CAPTURE_ITEMS) {
-          showToast(`一次最多 ${MAX_CAPTURE_ITEMS} 张，已忽略其余图片`, "warn");
-          break;
-        }
-        const stored = await persistIntoCaptureStore(
-          { uri: file.uri, size: file.size, type: file.type, name: file.uri.split("/").pop() },
-          { kind: "image", usedBytes: used },
-        );
-        used += stored.size;
-        await stagePersisted(stored, "image", "album");
+      // 真实剩余名额由 itemsRef + 数据库计数决定；超出的图片不会先入库再被隐藏
+      const capacity = MAX_CAPTURE_ITEMS - itemsRef.current.length;
+      if (capacity <= 0) {
+        showToast(`一次最多 ${MAX_CAPTURE_ITEMS} 项，请先保存或删除部分内容`, "warn");
+        return;
       }
+      await stageFiles(
+        files.map((file) => ({
+          uri: file.uri,
+          size: file.size,
+          type: file.type,
+          name: file.uri.split("/").pop() ?? null,
+        })),
+        () => "image",
+        "album",
+      );
     } catch (error) {
       showToast(`选择图片失败：${describeError(error)}`, "danger");
     } finally {
       setStaging(false);
     }
-  }, [items, showToast, stagePersisted, staging]);
+  }, [showToast, stageFiles, staging]);
 
   const pickFiles = useCallback(async () => {
     if (staging) return;
@@ -393,30 +537,31 @@ export function CaptureScreen({
       const picked = await File.pickFileAsync({ multipleFiles: true, mimeTypes: ["*/*"] });
       if (picked.canceled || !picked.result) return;
       const files = Array.isArray(picked.result) ? picked.result : [picked.result];
-      let used = items.reduce((sum, item) => sum + item.size, 0);
-      for (const file of files) {
-        if (items.length >= MAX_CAPTURE_ITEMS) {
-          showToast(`一次最多 ${MAX_CAPTURE_ITEMS} 项，已忽略其余文件`, "warn");
-          break;
-        }
-        const kind = file.type?.startsWith("image/")
-          ? "image"
-          : file.type?.startsWith("audio/")
-            ? "audio"
-            : "file";
-        const stored = await persistIntoCaptureStore(
-          { uri: file.uri, size: file.size, type: file.type, name: file.uri.split("/").pop() },
-          { kind, usedBytes: used },
-        );
-        used += stored.size;
-        await stagePersisted(stored, kind, "file");
+      if (MAX_CAPTURE_ITEMS - itemsRef.current.length <= 0) {
+        showToast(`一次最多 ${MAX_CAPTURE_ITEMS} 项，请先保存或删除部分内容`, "warn");
+        return;
       }
+      await stageFiles(
+        files.map((file) => ({
+          uri: file.uri,
+          size: file.size,
+          type: file.type,
+          name: file.uri.split("/").pop() ?? null,
+        })),
+        (file) =>
+          file.type?.startsWith("image/")
+            ? "image"
+            : file.type?.startsWith("audio/")
+              ? "audio"
+              : "file",
+        "file",
+      );
     } catch (error) {
       showToast(`选择文件失败：${describeError(error)}`, "danger");
     } finally {
       setStaging(false);
     }
-  }, [items, showToast, stagePersisted, staging]);
+  }, [showToast, stageFiles, staging]);
 
   const startRecording = useCallback(async () => {
     if (recording) return;
@@ -510,7 +655,7 @@ export function CaptureScreen({
           setPlayingId(null);
         }
         await removeStashItem(item.id);
-        setItems((prev) => prev.filter((row) => row.id !== item.id));
+        replaceItems(itemsRef.current.filter((row) => row.id !== item.id));
         setTranscripts((prev) => {
           const next = { ...prev };
           delete next[item.id];
@@ -575,27 +720,38 @@ export function CaptureScreen({
           : destination === "task"
             ? "已创建任务"
             : "已保存为笔记";
-      if (items.length > 0) message += ` · ${items.length} 个附件留在本机`;
+      if (items.length > 0) {
+        // 文本与附件生命周期不同：文本走同步（可能还没上传成功），附件留在本机等待传送
+        message += ` · ${items.length} 个附件留在本机（文字同步与附件传送分开显示）`;
+      }
       if (saved.duplicated) message = "这条内容已经保存过，没有重复创建记录";
 
-      if (sendToDesktop && items.length > 0) {
-        const outcome = await transferPendingAttachments();
+      if (sendToDesktop && saved.attachmentIds.length > 0) {
+        // 只发送「本次保存」产生的附件 id：历史积压交给同步页/后台批量，
+        // 否则刚拍的两张会排在 10 个历史附件后面，用户以为没发出去。
+        const outcome = await transferAttachmentsByIds(saved.attachmentIds);
         if (outcome.unavailable) {
           message += `；发送到电脑需要先配对：${outcome.message ?? "尚未配对"}`;
         } else {
-          if (outcome.sent > 0) message += `；已发送 ${outcome.sent} 个附件到电脑`;
-          if (outcome.failed > 0) message += `；${outcome.failed} 个发送失败，可在同步页重试`;
+          if (outcome.sent > 0) message += `；已发送 ${outcome.sent} 个本次附件到电脑`;
+          if (outcome.failed > 0) {
+            message += `；${outcome.failed} 个发送失败：${outcome.errors.slice(0, 2).join("；")}`;
+          }
+          if (outcome.handledIds.length < saved.attachmentIds.length) {
+            message += `；${saved.attachmentIds.length - outcome.handledIds.length} 个未处理，可在同步页重试`;
+          }
         }
       } else if (items.length > 0) {
         message += "；附件不会自动上传，需要时在同步页开启或手动发送";
       }
 
       setResult(message);
-      setItems([]);
+      replaceItems([]);
       setText("");
       setTranscripts({});
       setRejected([]);
       setSendToDesktop(false);
+      await clearCaptureDraft().catch(() => undefined);
       sessionId.current = newId("cap");
       notifyLocalChange();
       requestAutoSync("manual_after_save");

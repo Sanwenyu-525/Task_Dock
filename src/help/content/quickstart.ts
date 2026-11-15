@@ -10,17 +10,17 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
     id: "help.quickstart.panel",
     categoryId: "quickstart",
     status: "verified",
-    contentVersion: 2,
+    contentVersion: 3,
     reviewedForVersion: "v0.11",
     translations: {
       "zh-CN": {
-        title: "完整面板导览：导航、新建任务与徽标",
+        title: "快捷工具面板导览：导航、新建任务与徽标",
         summary:
-          "认识快捷工具面板左侧导航、顶部新建任务按钮与徽标数字的含义。",
+          "认识快捷工具面板左侧导航、顶部新建任务按钮与徽标数字的含义；完整管理功能在唯一的大型工作台。",
         sections: [
           {
             type: "paragraph",
-            text: "完整面板是 task_dock 的主工作区：左侧是垂直导航栏，右侧是当前页面内容。窗口可以贴边吸附成胶囊，也可以恢复为完整面板自由摆放。",
+            text: "快捷工具面板（主窗口的完整形态）是 task_dock 的快速操作入口：左侧是垂直导航栏，右侧是当前页面内容。需要项目管理、文件工作区、资源分析等复杂操作时，用导航里的「工作台」或「在完整工作台中打开」进入唯一的大型工作台；窗口本身仍可贴边吸附成胶囊。",
           },
           { type: "heading", text: "左侧导航" },
           {
@@ -48,13 +48,13 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
         ],
       },
       "en-US": {
-        title: "Full panel tour: navigation, new task and badges",
+        title: "Quick tool panel tour: navigation, new task and badges",
         summary:
-          "Get to know the 12 entries in the full-mode left navigation, the New task button and what the badge numbers mean.",
+          "Get to know the quick tool panel's left navigation, the New task button and what the badge numbers mean. Full management lives in the single workbench.",
         sections: [
           {
             type: "paragraph",
-            text: "The full panel is the main Task Dock workspace: a vertical navigation rail on the left and the current page on the right. The window can snap to a screen edge as a capsule or be restored as a free-floating full panel.",
+            text: "The quick tool panel (the main window's full form) is Task Dock's quick-action surface: a vertical navigation rail on the left and the current page on the right. For projects, the files workspace or resource analysis, open the single workbench from the Workbench entry or \"Open in the full workbench\". The window can still snap to a screen edge as a capsule.",
           },
           { type: "heading", text: "Left navigation" },
           {
@@ -98,7 +98,7 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
     translations: {
       "zh-CN": {
         title: "胶囊与贴边吸附：收纳与恢复",
-        summary: "把窗口贴到屏幕边缘自动收纳成胶囊，拖离即可恢复完整面板；两种形态可切换。",
+        summary: "把窗口贴到屏幕边缘自动收纳成胶囊，拖离即可恢复快捷工具面板；两种形态可切换。",
         sections: [
           {
             type: "paragraph",
@@ -109,14 +109,14 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
             type: "steps",
             items: [
               "胶囊形态：停靠后只保留一条分类轨道与悬浮胶囊，节省屏幕空间。",
-              "完整面板形态：停靠后保留完整面板，贴边对齐，适合固定在屏幕一角。",
+              "快捷工具面板形态：停靠后保留完整面板，贴边对齐，适合固定在屏幕一角。",
               "切换形态：右键点击窗口标题栏或胶囊，选择「显示形态」；也可在设置中修改默认形态。",
             ],
           },
-          { type: "heading", text: "恢复完整面板" },
+          { type: "heading", text: "恢复快捷工具面板" },
           {
             type: "paragraph",
-            text: "把胶囊从边缘拖离（按住胶囊或轨道拖动），窗口会恢复为自由位置的完整面板。拖离时窗口会锚定到光标位置，方便一步到位。",
+            text: "把胶囊从边缘拖离（按住胶囊或轨道拖动），窗口会恢复为自由位置的快捷工具面板。拖离时窗口会锚定到光标位置，方便一步到位。",
           },
           {
             type: "note",
@@ -131,7 +131,7 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
       "en-US": {
         title: "Capsule and edge snapping: dock and restore",
         summary:
-          "Snap the window to a screen edge to collapse it into a capsule; drag it away to restore the full panel.",
+          "Snap the window to a screen edge to collapse it into a capsule; drag it away to restore the quick tool panel.",
         sections: [
           {
             type: "paragraph",
@@ -146,10 +146,10 @@ export const QUICKSTART_ARTICLES: readonly HelpArticle[] = [
               "Switch shapes: right-click the title bar or the capsule and choose the display shape, or change the default in Settings.",
             ],
           },
-          { type: "heading", text: "Restore the full panel" },
+          { type: "heading", text: "Restore the quick tool panel" },
           {
             type: "paragraph",
-            text: "Drag the capsule away from the edge; the window returns to a free-floating full panel anchored to your cursor.",
+            text: "Drag the capsule away from the edge; the window returns to a free-floating quick tool panel anchored to your cursor.",
           },
           {
             type: "note",

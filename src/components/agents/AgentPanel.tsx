@@ -15,6 +15,7 @@ import {
   Activity, Eye, EyeOff, CircleSlash, MonitorUp, BarChart3, ArrowLeft, Loader2,
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import CollapsibleSection from "../ui/CollapsibleSection";
 import EmptyState from "../ui/EmptyState";
 import SearchField from "../ui/SearchField";
@@ -847,6 +848,13 @@ export default function AgentPanel() {
 
   return (
     <div className="agents-panel page-fill">
+      {/* 页面级页头（对齐效果图 02）：图标 + 标题 + 副标题；动作仍在工具行，
+          避免两套「关联 Agent / 刷新」按钮。 */}
+      <WorkbenchPageHeader
+        icon={AgentIcon}
+        title={tr("workbench.page.agents.title")}
+        subtitle={tr("workbench.page.agents.subtitle")}
+      />
       {snapshotError && (
         // 保留旧快照但明确标记可能过期；持续故障不依赖一次性 Toast
         <div className="empty-hint error-text" role="status">

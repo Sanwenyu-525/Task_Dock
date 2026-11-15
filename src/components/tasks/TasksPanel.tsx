@@ -39,6 +39,7 @@ import type { MessageKey } from "../../i18n";
 import ContextHelpButton from "../help/ContextHelpButton";
 import ModuleRunControl from "../lifecycle/ModuleRunControl";
 import { useViewsOverflow } from "./useViewsOverflow";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import "./tasks-layout.css";
 
 /** 任务页三种模式：列表是工作台，专注/统计是独立工作视图（与列表互斥）。 */
@@ -251,7 +252,15 @@ export default function TasksPanel() {
           <span className="flex-spacer" />
         </header>
       ) : (
-        <div className="tasks-head">
+        <>
+          {/* 页面级页头（对齐效果图 01）：标题/副标题常驻，操作仍在下方工具行，
+              不重复按钮；窄内容区由 workbench.css 的容器查询换行。 */}
+          <WorkbenchPageHeader
+            icon={ListChecks}
+            title={t("workbench.page.tasks.title")}
+            subtitle={t("workbench.page.tasks.subtitle")}
+          />
+          <div className="tasks-head">
           {/* 全局概览（跨筛选视图）：三张卡都可点击下钻到对应列表 */}
           <div className="tasks-overview tasks-overview--compact">
             <div
@@ -457,7 +466,8 @@ export default function TasksPanel() {
           {quickReminderOpen && (
             <QuickReminder open onClose={() => setQuickReminderOpen(false)} />
           )}
-        </div>
+          </div>
+        </>
       )}
 
       {/* 提醒摘要默认折叠成一行；展开后才渲染条目（共享时钟仍只在可见时订阅）。

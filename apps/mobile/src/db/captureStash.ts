@@ -5,11 +5,22 @@
 // - 暂存项不是业务数据，不进 outbox、不参与同步、不显示在收集箱；
 // - 保存时由 db/captureSave.ts 在同一事务里转正（写 attachments）并删除暂存行；
 // - 删除暂存行必须同时删除私有存储里的字节，避免留下孤儿文件。
+import type { SQLiteDatabase } from "expo-sqlite";
+
 import type { CaptureSource, StashedItem } from "../domain/types";
+import {
+  MAX_CAPTURE_ITEM_BYTES,
+  MAX_CAPTURE_ITEMS,
+  MAX_CAPTURE_TOTAL_BYTES,
+  stashTotalBytes,
+} from "../lib/capture/limits";
 import { deleteStoredFileQuietly } from "../lib/capture/storage";
+import { AppError } from "../lib/errors";
 import { newId } from "../lib/id";
 
 import { getDatabase } from "./database";
+
+export { stashTotalBytes };
 
 interface StashDbRow {
   id: string;
@@ -72,6 +83,28 @@ export interface NewStashItem {
 /** 写入一条暂存项；返回落库后的对象（id 与时间由本层生成）。 */
 export async function addStashItem(input: NewStashItem): Promise<StashedItem> {
   const db = getDatabase();
+  // 数据库层守卫：即使 UI 预检漏算或两次并发导入同时通过预检，也不能写入超限数据。
+  // 上限与 lib/capture/limits.ts、原生分享 Kotlin 三处同源。
+  const usage = await db.getFirstAsync<{ n: number; bytes: number }>(
+    "SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM capture_stash",
+  );
+  const count = usage?.n ?? 0;
+  const bytes = usage?.bytes ?? 0;
+  if (count >= MAX_CAPTURE_ITEMS) {
+    throw new AppError("validation", `一次最多 ${MAX_CAPTURE_ITEMS} 项，请先保存或删除部分内容`);
+  }
+  if (input.size > MAX_CAPTURE_ITEM_BYTES) {
+    throw new AppError(
+      "validation",
+      `单个附件不能超过 ${Math.round(MAX_CAPTURE_ITEM_BYTES / (1024 * 1024))}MB`,
+    );
+  }
+  if (bytes + input.size > MAX_CAPTURE_TOTAL_BYTES) {
+    throw new AppError(
+      "validation",
+      `本次采集附件合计不能超过 ${Math.round(MAX_CAPTURE_TOTAL_BYTES / (1024 * 1024))}MB，请先保存或移除部分内容`,
+    );
+  }
   const now = Date.now();
   const item: StashedItem = {
     id: newId("st"),
@@ -147,7 +180,35 @@ export async function clearStash(): Promise<void> {
   for (const row of rows) deleteStoredFileQuietly(row.local_uri);
 }
 
-/** 暂存合计字节：UI 与上限判定共用，避免两处各算一遍。 */
-export function stashTotalBytes(items: readonly StashedItem[]): number {
-  return items.reduce((sum, item) => sum + (Number.isFinite(item.size) ? item.size : 0), 0);
+/**
+ * 只删除本次成功保存的暂存行（调用方已在事务内）。
+ *
+ * 绝不能用 `DELETE FROM capture_stash`：暂存表是全局的，另一个采集会话（或系统分享
+ * 中途接入的内容）可能同时存在，整表清空会直接丢用户内容。这里按 id 精确删除，
+ * 且文件字节已被附件行持有，不删文件。
+ */
+export async function deleteStashItemsInTx(
+  db: SQLiteDatabase,
+  ids: readonly string[],
+): Promise<number> {
+  if (ids.length === 0) return 0;
+  let changes = 0;
+  // SQLite 单条语句参数有上限，按 50 个一组删除（采集上限 9，正常只有一批）
+  for (let offset = 0; offset < ids.length; offset += 50) {
+    const chunk = ids.slice(offset, offset + 50);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const result = await db.runAsync(
+      `DELETE FROM capture_stash WHERE id IN (${placeholders})`,
+      chunk,
+    );
+    changes += result.changes;
+  }
+  return changes;
+}
+
+/** 当前暂存项数量（UI 预检/并发导入时读取真实值，不依赖 React state）。 */
+export async function countStashItems(): Promise<number> {
+  const db = getDatabase();
+  const row = await db.getFirstAsync<{ n: number }>("SELECT COUNT(*) AS n FROM capture_stash");
+  return row?.n ?? 0;
 }

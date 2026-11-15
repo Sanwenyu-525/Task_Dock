@@ -455,6 +455,19 @@ CARGO_PROFILE_DEV_DEBUG=2 cargo build              # bash / Git Bash
 未跟踪文件不计，未提交内容本身不做哈希）。`dirty=true` 的构建不应视为干净快照。
 exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
 
+### 7.8 构建资源调度（多会话并发构建闸门，2026-11-15）
+
+多个会话/子智能体/worktree 同时跑 `cargo build`、`npm run build`、`tauri build` 会争同一份
+Cargo target、同一个 `dist/` 和同一块内存。现在所有高资源构建统一经
+`node scripts/build-sched.mjs`（npm 入口 `npm run build` / `npm run tauri` / `npm run test` /
+`npm run cargo -- <子命令>`）：按真实可用内存准入、按 heavy/medium/light 分类排队、
+槽位目录（`mkdir` 原子性）+ 心跳租约实现跨进程互斥，崩溃后靠身份取证安全回收。
+
+状态目录 `<git-common-dir>/taskdock-build-sched`（全 worktree 共享，不入库）；
+资源现状 `npm run sched:status|queue|history`，诊断 `npm run sched:doctor`，
+开发服务器盘点 `npm run sched:dev`。用法、配置、退出码（0/子进程码/3/4/5/6）、锁与回收原理见
+[docs/BUILD_SCHEDULER.md](BUILD_SCHEDULER.md)；行为规范见 `AGENTS.md` §5.1。
+
 ## 八、多 Agent 并行协作与 Worktree 隔离
 
 并行协作以根 [AGENTS.md](../AGENTS.md) 第 3 节为准：**共享工作区优先、文件所有权优先、

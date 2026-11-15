@@ -1745,6 +1745,24 @@ CREATE INDEX idx_shelf_trash_batch ON shelf_trash(batch_id);
 CREATE INDEX idx_shelf_trash_deleted ON shelf_trash(deleted_at);
 "#,
     ),
+    (
+        54,
+        r#"
+-- v54（手机采集 → 桌面暂存架桥接）：手机上传完成后，可由手机或桌面把这一个
+-- 已完成的传输记录以「托管副本」导入暂存架。桥接只在既有 mobile_files 上加导入
+-- 结果列，文件本体仍是收件箱里的传输副本 + shelf 下的托管副本，两者互相独立：
+-- - shelf_item_id：成功导入后的 ShelfItem.id，重复导入据此幂等返回，不重复建条目；
+-- - shelf_imported_at：导入成功时间（RFC3339）；
+-- - shelf_group_id：实际落入的暂存分组（默认分组也记录，便于桌面回显）。
+-- 删除传输记录不会删除 ShelfItem；删除 ShelfItem 也不删除传输副本。
+ALTER TABLE mobile_files ADD COLUMN shelf_item_id TEXT;
+ALTER TABLE mobile_files ADD COLUMN shelf_imported_at TEXT;
+ALTER TABLE mobile_files ADD COLUMN shelf_group_id TEXT;
+-- shelf_items.origin：细粒度来源标记（追加列，不改 source_kind 的 CHECK 枚举）。
+-- mobile_capture = 手机采集经互传导入；NULL = 历史条目或其他来源，保持原语义。
+ALTER TABLE shelf_items ADD COLUMN origin TEXT;
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。

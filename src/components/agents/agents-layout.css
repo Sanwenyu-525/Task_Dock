@@ -12,22 +12,11 @@
   gap: 6px;
 }
 
-/* 统计卡一行密度（对照效果图「4 统计卡一行」）：值与标签同行，高度对齐
-   任务页紧凑概览卡；零值语义（.muted）与状态色沿用 styles.css，不在此重复。 */
+/* 统计卡（对照效果图 02「4 统计卡一行」）：恢复卡面与数值层级，
+   与任务页/资源页的统计卡同一语义 Token；零值语义（.muted）与状态色
+   沿用 styles.css，不在此重复。 */
 .agents-panel .agent-summary {
-  gap: 6px;
-}
-
-.agents-panel .summary-card {
-  flex-direction: row;
-  align-items: center;
-  gap: 7px;
-  padding: 3px 9px;
-}
-
-.agents-panel .summary-card .summary-value {
-  font-size: 14px;
-  flex-shrink: 0;
+  gap: 8px;
 }
 
 /* 工具行：分区切换 + 状态筛选 + 搜索同行，刷新 / 帮助靠右；窄窗沿用

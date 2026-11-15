@@ -1,0 +1,17 @@
+// 本地 Expo 模块：Android 媒体库写入 + 图片缩略图/旋转/裁剪。
+// 无第三方依赖；所有文件操作只在原生侧完成，不把大图读进 JS 内存。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.mediastore'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.mediastore"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}

@@ -1,0 +1,430 @@
+# 构建资源调度器（build-sched）使用与原理
+
+多会话/AI 并行开发时，真正会互相伤害的不是代码，而是**构建**：`cargo build`、`tauri build`、
+`npm run build`、Gradle、整包测试同时起跑，会争同一份 Cargo target、同一个 `dist/`、同一块
+内存。16GB 机器上两个重型构建并行就足以把系统压到卡死。
+
+本调度器提供**一个跨进程、跨 Worktree、跨 AI 会话的全局构建闸门**：
+所有高资源构建走同一个入口，按真实可用内存准入、按分类排队、靠操作系统级原子操作互斥，
+崩溃后能安全回收。**代码开发仍然完全并行**——被排队的只是构建。
+
+入口：`node scripts/build-sched.mjs`（npm 别名 `npm run sched`），零新增依赖、纯 Node ESM，
+复用既有的 [build-guard.mjs](../scripts/build-guard.mjs)（磁盘/缓存守卫）。
+
+---
+
+## 1. 为什么不是「写进 AGENTS.md 就够了」
+
+AGENTS.md 只是行为规范：它约束**愿意遵守的**会话。真实事故来自三类动作：
+
+1. 另一个会话（甚至另一个工具）并不知道规范存在，直接 `cargo build`；
+2. 会话知道规范，但"我先跑一次再看"——两个会话同时这么想就撞上了；
+3. 会话崩溃/被关掉，锁或半成品留在原地，后续所有人被卡死或被误导。
+
+所以真正的互斥必须落在**文件系统的原子操作**上，而不是文档。AGENTS.md 里那一条的作用是
+"让标准入口成为默认路径"（见第 9 节），强制协调由本调度器负责。
+
+## 2. 快速开始
+
+```powershell
+# 看现在能不能跑、别人在跑什么
+npm run sched:status           # 槽位 + 内存 + 排队
+npm run sched:queue            # 队列（按有效优先级）
+
+# 提交一个构建（必须用 -- 把真实命令隔开）
+node scripts/build-sched.mjs run -- npm run build:raw
+node scripts/build-sched.mjs run --priority P0 --label "verify-fix" -- cargo build
+node scripts/build-sched.mjs run --class light -- npm run lint
+
+# cargo 走专门子命令：自动切到 src-tauri/（遵守 rust-toolchain.toml 固定的 MSVC 工具链）
+npm run cargo -- test --lib clipboard::
+node scripts/build-sched.mjs cargo -- --priority P0 test --lib clipboard::
+
+# 运维
+npm run sched:history          # 退出码 / 等待时长 / 运行期最低可用内存
+npm run sched:doctor           # 自诊断（只读）
+node scripts/build-sched.mjs doctor --reap   # 才会真正回收槽位/清理残留
+node scripts/build-sched.mjs cancel --id l-mwh7jtaw-12b733
+npm run sched:dev              # 开发服务器/端口盘点（只读）
+npm run sched:config           # 有效配置（含来源）
+```
+
+`package.json` 已把标准入口接到调度器上，AI 会话通常不需要记原始命令行：
+
+| npm 入口 | 实际执行 | 分类 |
+|---|---|---|
+| `npm run build` | `run -- npm run build:raw`（`tsc --noEmit && vite build`） | medium |
+| `npm run tauri` | `run -- npm run tauri:raw`（`tauri`，含 `beforeBuildCommand: npm run build`） | heavy |
+| `npm run test` | `run -- npm run test:raw`（`vitest run`） | medium |
+| `npm run cargo` | `cargo` 子命令（cwd=`src-tauri/`） | 按子命令判定（`cargo build` heavy / `cargo check` medium） |
+| `npm run dev` / `npm run tauri dev` | **保持原样，不经调度器** | dev 服务器由 `sched dev` 盘点和 dev 槽位统计 |
+
+`*-raw` 后缀是"绕过调度器直接执行"的逃生门，只在调度器自身故障排查时使用；
+`build-guard`、`worktree-guard`、`preview`、`icons`、`help:check` 等既有脚本保持原样。
+
+## 3. 命令参考
+
+### 3.1 `run`
+
+```
+node scripts/build-sched.mjs run [选项] -- <命令> [参数...]
+```
+
+| 选项 | 说明 |
+|---|---|
+| `--priority P0..P3` | 优先级，默认 P1（见 4.4） |
+| `--class light\|medium\|heavy\|dev` | 显式覆盖自动分类（只在该分类确实合适时用） |
+| `--label <文字>` | 在 `queue`/`status` 中显示的任务名（建议写清用途，便于他人看懂） |
+| `--wait-timeout <分>` | 排队等待上限，默认取 `defaultWaitTimeoutMin`（20 分钟），`0` = 不限 |
+| `--run-timeout <分>` | 运行上限，默认 `0`（不限）；超时会终止**本任务自己的**子进程树 |
+| `--estimate-mb <N>` | 覆盖预计峰值，仅影响准入下限与解释文案 |
+| `--cwd <路径>` | 执行目录（默认当前目录） |
+| `--no-dedupe` | 关闭等价任务合并 |
+| `--no-tee` | 子进程输出只写日志，不转发终端（日志更干净） |
+| `--detach-child` | 子进程脱离本进程控制台（仅用于构造"父进程死了构建还在跑"的验收场景，见 5.5） |
+| `--shell-raw` | 允许含引号/换行的参数交给 `cmd.exe` 原样解析（慎用） |
+
+行为要点：
+- **非交互**：不读 stdin、不弹窗，适合任何自动化/AI 会话；
+- 子进程的环境变量、工作目录、`argv` 原样传递，**退出码原样返回**；
+- stdout/stderr 双写：转发到终端（`--no-tee` 可关）+ 落到 `state/logs/<taskId>.log`（超限截断，不无限增长）；
+- 日志尾部固定有一行机器可读结论：`sched: exit=0 status=succeeded class=medium reason=-`。
+
+### 3.2 `status` / `queue` / `history`
+
+```powershell
+node scripts/build-sched.mjs status              # 人读
+node scripts/build-sched.mjs status --json       # 程序读（槽位、内存、队列、配置摘要）
+node scripts/build-sched.mjs status --verbose    # 额外做持有者身份校验 + dev 盘点（较慢）
+node scripts/build-sched.mjs history --limit 20
+```
+
+`history` 每条含 `status`、`exitCode`、`waitMs`、`runMs`、`minAvailMb`（**运行期间最低可用内存**，
+这是排查"构建是不是把机器压干了"的第一手数据）、`reason`、`worktree`。
+
+### 3.3 `cancel`
+
+```powershell
+node scripts/build-sched.mjs cancel <任务ID或前缀>              # 默认最多等 15 s 让持有者收尾
+node scripts/build-sched.mjs cancel <任务ID或前缀> --wait 3     # 只等 3 s
+```
+
+取消用**标记文件**（`state/cancel/<taskId>`）而不是改别人的记录：写别人的 JSON 会和持有者
+的写操作打架。持有者在轮询里看到标记后终止自己的**子进程树**并退出码 4；排队中的任务下一轮
+轮询直接按取消退出，不会再启动构建。
+
+CLI 自己的退出码：任务已到终态（多为 `cancelled`）→ 0；持有者在 `--wait` 内没有响应 → 3
+（请求已持久化，持有者下轮仍会处理）。
+
+**防止误判死进程**：CLI 不会因为一次探活失败就把任务写成 `cancelled`。只有同时满足
+「身份取证判定提交进程已退出」**且**「该记录 ≥15 s 没有任何更新」才直接替它收尾；等待过程中
+还会再取证一次（≥6 s 无更新才收尾）。否则只保留取消请求——真活着但被误判的提交进程会照常
+按 4 退出，不会被"假取消"（历史缺陷：单次探活把活着的提交进程的任务标成 cancelled，它随后
+覆盖回 running 继续跑，导致取消被静默吞掉）。
+
+### 3.4 `doctor`
+
+```powershell
+node scripts/build-sched.mjs doctor          # 只读诊断（状态目录、配置、槽位、日志、dev 冲突）
+node scripts/build-sched.mjs doctor --reap   # 执行回收：陈旧槽位、提交进程已死的残留记录
+```
+
+默认**只诊断不动手**：不删文件、不杀进程。加 `--reap` 才会回收，且回收仍受第 5 节的证据约束。
+
+### 3.5 `dev`
+
+```powershell
+node scripts/build-sched.mjs dev             # 人读
+node scripts/build-sched.mjs dev --json
+```
+
+盘点 Tauri Dev / Vite / esbuild / cargo 等常驻进程：所属工作区、端口、父链，并报四类 findings：
+`port-shared`（端口被非预期进程占用）、`duplicate-vite`（同工作区重复启动）、
+`dev-cargo-concurrent`（dev 期间跑重型 cargo）、`cross-worktree-port`（不同 Worktree 抢同一端口）。
+**只读**：发现重复只报告，不替你杀进程。
+
+### 3.6 `cargo`
+
+```powershell
+npm run cargo -- test --lib mobile_sync::          # 无 -- 时参数全部原样给 cargo
+node scripts/build-sched.mjs cargo -- --priority P0 build   # 有 -- 时前面是调度选项
+```
+
+固定 `cwd = src-tauri/`：`AGENTS.md` 与 `docs/DEVELOPMENT.md` 都要求 cargo 在 `src-tauri/` 内运行
+（从仓库根用 `--manifest-path` 会绕开 `rust-toolchain.toml` 固定的 MSVC 工具链）。
+
+### 3.7 退出码
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | 子进程成功 |
+| 其它数字 | **子进程自己的退出码原样透传**（代码失败的诊断信息与直接执行时完全一致） |
+| 3 | 等待资源超时 / 运行超时 |
+| 4 | 被取消（`cancel`） |
+| 5 | 调度器自身错误（配置非法、状态目录不可写等） |
+| 6 | 磁盘 precheck 阻塞（复用 build-guard 的空间阈值） |
+
+判读原则（对应 AGENTS.md「必须区分代码错误、内存不足、超时和调度错误」）：
+
+- `exit=1` + 日志里有编译器/测试错误 → **代码错误**；
+- `exit=3` + `status=failed` 且 `reason` 含「内存不足」→ **资源不足**，不是代码问题；
+- `exit=3` 且 `reason` 含「超时」→ **超时**；
+- `exit=5/6` → **调度层/磁盘**问题，先 `doctor`。
+
+## 4. 资源模型
+
+### 4.1 任务分类（配置项可调）
+
+| 分类 | 槽位并发（默认） | 启动前可用内存（默认） | 预计峰值（默认） | 典型任务 |
+|---|---|---|---|---|
+| `heavy` | 1 | ≥ 6144 MB | 6000 MB | `cargo build`/`cargo test --all`、`tauri build`、release 构建、Gradle 构建、组合命令 |
+| `medium` | 1 | ≥ 4096 MB | 3000 MB | `vite build`、整工程 `tsc`、`cargo check`、较大范围测试 |
+| `light` | 2 | ≥ 2560 MB | 800 MB | ESLint/Prettier、单模块类型检查、小范围测试、`build-guard precheck` |
+| `dev` | 2 | ≥ 4096 MB | 3000 MB | `tauri dev`、`vite`（常驻，独立槽位，见第 8 节） |
+
+分类由 `scripts/sched/classify.mjs` 依据**命令链**判定，而不是看命令里有没有 "build"：
+
+- npm 脚本会被展开（`npm run build:` → `tsc … && vite build`）并递归解析（≤3 层），组合命令取最高档；
+- `cargo` 子命令按名字判定（`build`/`install`/`test` 重型，`check`/`clippy` 中型）；
+- `tauri build` 重型，`tauri dev` 属 dev；
+- 未知命令**保守归 heavy**（宁可多排一次队，也不把高资源任务误判成轻量）；
+- `node -e` 等无法识别的极短脚本归 light（否则每次探测都会被当重型排队）。
+
+### 4.2 内存准入
+
+```
+门槛 = max(分类下限, 预计峰值 + safetyReserveMb)  (+ 滞回量，仅当该任务曾因内存等待过)
+```
+
+- 数据源是 `os.freemem()`，在 Windows 上等于 `ullAvailPhys`（**可用**物理内存，不是"空闲"），
+  已运行任务占用天然算在里面，因此**不重复叠加**预计峰值——否则 16GB 机器上第二个任务永远起不来；
+- `safetyReserveMb` 默认 0（先与需求给的数值严格一致，调优时再抬高）；
+- 滞回 `hysteresisMb` 默认 1024：一旦某任务因内存等待过，恢复判定要在门槛之上再多 1GB 才放行，
+  避免"刚过线就起跑、立刻又被压下去"的抖动；
+- 内存按 `memorySampleMs`（默认 3s）采样，运行期持续记录最低可用内存写进 `history`。
+
+### 4.3 排队与准入循环（每 `pollMs` 一轮）
+
+1. `housekeeping`：归档提交进程已死的残留记录、清理过期终态记录；
+2. 重新计算本任务的有效优先级与内存准入；
+3. 槽位有空位 → 申请（见第 5 节）；槽位被占但"内存与优先级都没问题"→ 按 `reclaimProbeMs` 节流做一次
+   **持有者是否已死**的取证，能做安全回收就回收；
+4. 拿到槽位后**二次校验优先级**（避免低优先级抢在同刻入队的高优先级前面），有冲突就让出重排；
+5. 内存不足 → 记 `waiting_resources`，把具体原因写进记录的 `waitReason` 并在终端打印（每 15s 复述一次，不静默）。
+
+**跨分类不头阻塞**：重型在等内存时，轻量检查仍可跑，反之亦然——这是 16GB 机器上避免整体停滞的关键。
+
+### 4.4 优先级与防饥饿
+
+| 级别 | 语义 |
+|---|---|
+| P0 | 阻塞当前开发的关键验证（同时只应该有 1 个） |
+| P1 | 常规构建（默认） |
+| P2 | 集成测试 |
+| P3 | 非紧急全量检查 |
+
+排序键 = (有效优先级, 入队时间)。有效优先级 = `max(0, 基础优先级 - ⌊等待时长 / agingStepMs⌋)`，
+默认每 5 分钟自动提升一级：P3 等待 15 分钟后就与 P0 同级，并凭"更早入队"先跑。
+**同分类内**才比较优先级，跨分类互不影响。
+
+## 5. 跨进程互斥原理
+
+### 5.1 状态目录
+
+```
+<git-common-dir>/taskdock-build-sched/
+├── slots/heavy-1/{owner.json,heartbeat}
+├── queue/<taskId>.json
+├── cancel/<taskId>
+├── logs/<taskId>.log
+├── history.jsonl
+├── reclaim-log.jsonl
+└── config.json             (可选)
+```
+
+落点由 `git rev-parse --path-format=absolute --git-common-dir` 决定，实测在主干
+（`D:/Develop/task_dock`）与任意 linked worktree 下**都返回同一个** `D:/Develop/task_dock/.git`，
+所以不同 Worktree 天然竞争同一批槽位。放在 `.git/` 下的另一个好处：不受 `git clean`、
+`git checkout`、切分支影响，也不会被误提交。`TASKDOCK_BUILD_SCHED_HOME` 可整体覆盖（验收测试
+与隔离实验用）。
+
+### 5.2 互斥原语：`mkdir` + 租约
+
+- 申请槽位 = `mkdir slots/heavy-1`。NTFS 上 `mkdir` 对已存在目录返回 `EEXIST`，是**原子**的，
+  没有"先检查再创建"的竞态（不依赖任何 sleep）；
+- **槽位目录本身就是锁**：它从取到槽位那一刻存在，覆盖到子进程结束、退出码回填、槽位释放为止，
+  不是"启动前打个标记就删"；
+- 目录里 `owner.json` 记录持有者：`taskId`、`pid`、进程创建时间、nonce、开始时间、label、
+  以及**子进程**的 pid/命令行/近似创建时间；`heartbeat` 每 3s 刷新一次（独立文件，写入代价极小）。
+
+### 5.3 为什么不用「PID 是否存在」判定锁有效性
+
+Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"。因此身份 = **(pid, 进程创建时间, 心跳)**：
+
+- 进程不存在 → `gone`（可回收）；
+- 存在但创建时间对得上 → `same`（**绝不回收**）；
+- 无法取证（CIM 查询失败、记录缺创建时间）→ `unknown` → **fail-closed**：不回收，报出原因等人工/`doctor` 介入；
+- 创建时间用 `process.uptime()` 反推（不查 PowerShell，省掉每次提交约 1 秒），比对时给 2s 容差。
+
+### 5.4 安全回收契约（崩溃恢复的全部规则）
+
+回收一个**非空槽位**必须同时满足：
+
+1. **持有者已证明退出**（`gone`，或 `unknown` 但心跳停滞超过 `hungReclaimMs`=180s 的"挂起"判定）；
+2. **它记录的子进程先被处置**：用命令行签名比对确认是调度器自己 spawn 的那个构建进程（
+   去引号、统一斜杠、转小写、剥掉 `cmd.exe`/`chcp` 包装前缀后，与记录双向包含即视为同一目标），
+   匹配才 `taskkill /T /F` 终止进程树；**任何一条证据缺失或对不上就拒绝终止**——宁可卡住等人介入，
+   也绝不误杀其他会话的进程；
+3. **回收动作本身只有一个赢家**：`rename(slotDir, «slotDir».reclaim-<nonce>)` 成功后立刻反注册，
+   输的一方看到 `ENOENT` 就放弃，不会出现"两人同时回收同一把锁、各自以为自己独占"；
+4. 回收过程写 `reclaim-log.jsonl`（谁、为什么、动了哪个 pid、结果），并把崩溃遗留的任务记录归档为
+   `failed`（`recoveredBy: slot-reclaim`），使 `queue`/`history` 不再显示幽灵运行中任务。
+
+**绝不按固定时间删锁**：心跳停滞只是"值得做一次取证"的触发条件，不是删除依据。
+
+### 5.5 Windows 控制台生命周期（实测结论，决定回收边界）
+
+用探针实测（`node` 父进程 `Start-Process` 隐藏窗口启动子进程，杀父进程后观察子进程）：
+
+| 子进程方式 | 父进程被强杀后 | 说明 |
+|---|---|---|
+| 常规 spawn（共享控制台） | **子进程随之退出** | 控制台关闭时同控制台进程收到 close 事件并被终止 |
+| `detached: true` | **子进程继续运行** | 独立进程组/控制台 |
+
+因此：
+
+- 调度器崩溃/被杀时，常规构建子进程通常**跟着一起死**——危险窗口比想象中短；
+- 真正需要孤儿回收的是**脱离控制台的守护型构建**（Gradle daemon、Tauri 应用、被工具自行
+  `detach` 的进程，以及 `--detach-child` 构造的场景）；
+- 这也解释了验收 4 为什么必须用 `--detach-child`：否则"父进程死了旧构建还在跑"这个前提在
+  Windows 上根本构造不出来，测到的会是"子进程也死了"。
+
+### 5.6 嵌套调用直通（避免自锁）
+
+`src-tauri/tauri.conf.json` 的 `beforeBuildCommand` 是 `npm run build`，而 `npm run tauri`
+本身已进调度器。内层若再排队，就会"自己等自己"直到超时。因此调度器在环境变量里标记
+`TASKDOCK_SCHED_TASK_ID`，检测到自己**已在某个调度任务内部**时，内层命令**直通执行**
+（输出直连终端、退出码原样返回、不再排队），外层任务的资源账已经覆盖它。
+
+## 6. 队列与状态机
+
+状态：`queued` → `waiting_resources` → `running` → `succeeded` / `failed` / `cancelled`。
+
+- **跨进程并发安全**：每条记录一个 JSON 文件，写入走 `tmp + fsync + rename` 原子替换；
+  多个进程只写自己的记录，**不写别人的**；历史是 append-only 的 `jsonl`，超 2×上限时压缩（不无限增长）。
+  Windows 上 `rename` 覆盖"正被其他进程打开"的文件会返回 `EPERM/EBUSY`（杀软、索引、
+  另一个调度进程在同时读这条记录都会触发），因此替换做了退避重试（累计约 2 s），仍失败则退化为
+  原地覆盖写——宁可短暂失去原子性，也不让状态写不进去（读方本来就把半写文件当"记录不存在"，
+  下一轮轮询会重写）。
+- **提交进程退出不留永久任务**：任一轮 `housekeeping` 会发现"心跳过期（> leaseTtl）且进程已退出"的
+  活跃记录，排队中的归档 `cancelled`，运行中的（且槽位已不再由它持有）归档 `failed`；
+  `doctor --reap` 可立即清理。
+- **等待期不阻塞智能体**：提交进程就是等待者本身；等待期间用户/智能体可以继续做别的（读代码、
+  写文档、改别的模块）。想要"提交后立刻干别的事"，用 `--wait-timeout 0` + 后台终端，或直接
+  `Start-Process` 一个后台任务。
+- **失败可诊断**：每条失败都带 `status/exit/reason` 与日志路径；`waitReason` 写明具体门槛与当前读数
+  （例如 `可用内存 1.98 GB < medium 任务门槛 4.00 GB（分类下限 4.00 GB、预计峰值 2.93 GB、滞回 1.00 GB）`）。
+  从未启动的任务（等待超时/被取消）没有子进程输出，调度器会在收尾时补写一份摘要日志，避免
+  `history` 给出的日志路径指向不存在的文件。
+
+## 7. 去重（结果共享）的边界
+
+等价判定 = 以下全部逐字节/逐项相同：命令 argv、工作区绝对路径（小写）、相关环境变量
+（`CARGO_TARGET_DIR`、`CARGO_BUILD_JOBS`、`RUSTFLAGS`、`NODE_ENV`、`CI` 等）、
+`package.json`/`package-lock.json`/`Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml`/`vite.config.ts`/
+`tsconfig.json`/`build-sched.config.json` 的内容哈希、`git HEAD`、`git status`（含未跟踪文件）内容哈希、
+`cargo`/`rustc`/`node` 版本。
+
+**只附加到"正在运行、且提交进程仍存活"的等价任务**，且共享其真实退出码与日志路径；
+**从不复用已结束的历史结果**——"构建产物是否仍然有效"无法证明，宁可不复用。
+
+因此：两个会话同时提交 `npm run build` 只跑一次；一旦任一方改了源码/依赖/参数/工具链，
+指纹立刻不同，各自执行。`--no-dedupe` 可强制不复用。
+
+## 8. 开发服务器与缓存
+
+- 常驻 dev 服务器**不占**一次性构建锁，但用 `dev` 槽位（并发 2）与内存门槛计入压力，
+  避免"一边 tauri dev 一边 cargo build release"把内存吃干；
+- `sched dev` 只读盘点：重复 Vite、端口冲突、同工作区多实例、dev 与重型 cargo 并发；
+  **不同 Worktree 不允许共用同一 dev 端口**（那是"错误共享不兼容服务"，findings 会点名）；
+- Cargo target 目录策略不变：共享 target 靠文件锁串行（本来就安全），隔离时用绝对路径
+  `CARGO_TARGET_DIR` 指向 `src-tauri/target-<task>` 并 `build-guard register`，**不要**
+  为"让构建干净"随手 `cargo clean`（`build-guard` 的归属标记就是为防误删他人缓存）；
+- sccache：本次**未评估/未启用**（未实测收益，且要先保证互斥与准入生效），见验收报告"下一阶段优化"。
+
+## 9. 与既有工具的关系
+
+| 既有设施 | 关系 |
+|---|---|
+| `scripts/build-guard.mjs`（磁盘/缓存守卫） | **复用**：`run` 前跑同一套 `precheck` 阈值（exit 2 → 调度器 exit 6）；缓存回收仍由它的 `cleanup` 负责 |
+| `scripts/worktree-guard.mjs` | 不变。它管"目录与冲突"，本调度器管"算力与内存"，互不替代 |
+| `scripts/watch-dev-processes.ps1` | 不变（观察/窄条件终止）。`sched dev` 是它的只读替代视图，不做终止 |
+| `scripts/perf/gate-run.sh` | 不变。它串行跑多步，每步自身仍应经过调度器；`cargo` 步建议改用 `npm run cargo --` |
+| `AGENTS.md` §3.4/§5 | 已增补"高资源构建统一入口"与"子智能体同规则"，细节指向本文档 |
+
+## 10. 配置
+
+优先级（后者覆盖前者）：内置默认值 → 仓库根 `build-sched.config.json` → 状态目录 `config.json`
+→ 环境变量 `TASKDOCK_SCHED_<UPPER_SNAKE>`。未知字段与非法数值会被**拒绝并报错**（不静默忽略）。
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `heavyConcurrency` / `mediumConcurrency` / `lightConcurrency` / `devConcurrency` | 1 / 1 / 2 / 2 | 槽位数 |
+| `heavyMinAvailMb` / `mediumMinAvailMb` / `lightMinAvailMb` | 6144 / 4096 / 2560 | 分类内存下限（MB） |
+| `safetyReserveMb` | 0 | 额外安全余量 |
+| `hysteresisMb` | 1024 | 内存恢复滞回 |
+| `memorySampleMs` | 3000 | 内存采样间隔 |
+| `pollMs` | 1000 | 准入轮询间隔 |
+| `heartbeatMs` / `leaseTtlMs` / `reclaimProbeMs` / `hungReclaimMs` | 3000 / 45000 / 3000 / 180000 | 心跳、租约过期、取证节流、挂起判定 |
+| `cargoJobs` | 2 | cargo 编译并行度（16GB 机器上的保守值） |
+| `defaultWaitTimeoutMin` / `defaultRunTimeoutMin` | 20 / 0 | 默认等待/运行上限 |
+| `agingStepMs` | 300000 | 老化台阶（5 分钟升一级） |
+| `logMaxMb` / `historyMaxEntries` / `finishedRetentionMs` | 32 / 500 / 60000 | 日志上限、历史上限、终态记录保留 |
+| `estimateHeavyMb` / `estimateMediumMb` / `estimateLightMb` | 6000 / 3000 / 800 | 预计峰值 |
+| `diskPrecheck` | true | 复用 build-guard 的磁盘预检 |
+| `dedupe` | true | 等价任务合并 |
+
+调优建议（16GB 机器）：内存长期紧张时**只调低分类门槛或并发**，不要关掉准入；确认某类任务实际峰值
+更低时，用 `history` 的 `minAvailMb` 作为依据再调 `estimate*Mb`。
+
+## 11. 故障处理手册
+
+| 症状 | 处置 |
+|---|---|
+| 一直 `waiting_resources` | `status` 看谁在跑、内存多少；`queue` 看前面有谁。属正常排队，别绕过 |
+| `exit=3` 且 reason 含「内存不足」 | 等内存恢复或降级为局部检查（单模块类型检查/单测试），不要反复重试重任务 |
+| `exit=3` 且 reason 含「超时」 | 任务太长：拆小（`cargo check` → 单 crate 检查），或用 `--wait-timeout 0` 并放后台 |
+| 任务一直不结束但槽位显示被某 pid 持有 | `status --verbose` 看身份校验；确认那是**活着**的构建就等着；确认已死则 `doctor --reap` |
+| 怀疑被别人的构建拖垮 | `status` + `history` 的 `minAvailMb`；`sched dev` 看常驻服务。**不要**自行杀别人进程 |
+| `doctor` 报 P2「提交进程已退出」 | `doctor --reap`（只清理已证明死亡的残留） |
+| 怀疑磁盘满导致失败 | `npm run guard:report`；调度器 `exit=6` 就是磁盘预检拦住的 |
+| 失败任务给的日志路径是空的/只有几行 `#` 注释 | 这是"从未启动"的任务：收尾时调度器会补写摘要（status/exit/reason/waitMs）。看 `reason` 判断是内存不足还是等待/运行超时 |
+| 机器极慢时偶发"记录读不到/状态没更新" | Windows 上 `rename` 覆盖被占用文件会返回 `EPERM/EBUSY`；写入已做退避重试（约 2 s）并在耗尽后退化为原地覆盖写，不需要人工干预；若持续出现则用 `doctor` 查是否有进程长期占着 `state/queue` |
+| `cancel` 返回 0 但任务其实还在跑 | 只有"身份取证 + 记录静默 ≥15 s"才会被 CLI 直接收尾；若提交进程真的活着，它会在下一轮轮询按退出码 4 结束。用 `queue`/`history` 复核状态，不要手动删 `state/cancel/` 标记 |
+
+## 12. 已知限制（有意不做的事）
+
+1. **不做常驻服务/守护进程**：没有中央队列服务，谁提交谁等待，所以"提交后进程退出"的任务不会被执行
+   ——这是刻意取舍（低资源占用、无单点故障），需要长任务时用后台终端。
+2. **不跨机器**：槽位活在本地 `.git` 目录，多机并行不在覆盖范围。
+3. **不替代真正的构建缓存**：去重只共享"正在跑的同一次构建"，不做产物缓存（sccache/增量策略未评估）。
+4. **不做 dev 服务器的自动复用/重启**：`sched dev` 只盘点+报告，动手仍需人/会话决定。
+5. **默认只回收"能证明已死"的东西**：`unknown` 一律 fail-closed，可能出现"需要人工介入才能解锁"的
+   情形（`doctor` 会明确指出）。
+6. **`npm run test` 现在会经过调度器**：其他会话若发现测试要排队，请读本文档第 4 节，而不是改回
+   直接 `vitest run`——绕过调度器正是本项目要解决的问题。
+7. **`scripts/perf/gate-run.sh` 没有改造**：它是产出 `docs/clipboard/evidence/` 证据的脚本，用
+   `--manifest-path` 从仓库根调 cargo。改造它需要在真机上重跑 clippy/test 才能证明没坏，而当前
+   机器可用内存长期低于 2.5 GB（门禁类任务一律排队），无法完成验证，因此只给出迁移建议而不动它：
+   把其中每条 `run_gate` 改成 `node scripts/build-sched.mjs run --priority P2 -- <命令>`，
+   cargo 三条改用 `node scripts/build-sched.mjs cargo -- <参数>`（自动 `cwd=src-tauri/`，
+   不再需要 `--manifest-path`）。见验收报告遗留项 R2。
+
+## 13. 验收证据
+
+跨进程行为验收（需求第 1–9 项 + 补充A「嵌套不自锁」共 11 例全部通过，第 10 项真机构建
+`ENVIRONMENT BLOCKED`）与真机资源数据见
+[tmp/acceptance/build-scheduler/report.md](../tmp/acceptance/build-scheduler/report.md)；
+自动化测试：`npm run sched:acceptance`（跨进程，约 1 分钟）与 `npm run test:scripts`（含 20 例单测）。
+验收期间机器长期被其他会话的 dev/cargo 占用，曾出现的时序敏感失败与处置（含两处真实缺陷：
+取消误判、Windows `rename` 写冲突）见报告 §8.2。

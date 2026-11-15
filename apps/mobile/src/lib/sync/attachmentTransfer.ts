@@ -9,8 +9,13 @@
 // - 每个附件单独状态：pending → uploading → sent / failed；失败保留本地文件可重试。
 import { File } from "expo-file-system";
 
-import { listAttachmentsForTransfer, setAttachmentTransferState } from "../../db/attachments";
+import {
+  getAttachmentsByIds,
+  listAttachmentsForTransfer,
+  setAttachmentTransferState,
+} from "../../db/attachments";
 import { loadConnection, readToken } from "../../db/syncConnection";
+import type { Attachment } from "../../domain/types";
 import { AppError, describeError } from "../errors";
 
 import { deriveSyncKey } from "./crypto";
@@ -29,60 +34,85 @@ export interface AttachmentTransferOutcome {
   unavailable: boolean;
   message?: string;
   errors: string[];
+  /** 实际处理过的附件 id（调用方可按 id 展示逐项结果） */
+  handledIds: string[];
+  /** 本批中已成功送达的附件 id */
+  sentIds: string[];
 }
 
 export function emptyTransferOutcome(): AttachmentTransferOutcome {
-  return { sent: 0, failed: 0, unavailable: false, errors: [] };
+  return { sent: 0, failed: 0, unavailable: false, errors: [], handledIds: [], sentIds: [] };
 }
 
-/**
- * 发送待传送附件（pending + failed）。逐条串行，单条失败不影响后续。
- * 未配对/缺指纹/令牌不可用时不做任何请求，返回 unavailable 让 UI 解释原因。
- */
-export async function transferPendingAttachments(
-  options: { limit?: number } = {},
-): Promise<AttachmentTransferOutcome> {
-  const limit = Math.max(1, Math.min(options.limit ?? TRANSFER_BATCH_LIMIT, 20));
-  const outcome = emptyTransferOutcome();
+interface TransferTarget {
+  items: Attachment[];
+}
 
+/** 读连接元数据并做 fail-closed 判定；不具备条件时直接返回原因。 */
+async function resolveTransport(outcome: AttachmentTransferOutcome): Promise<{
+  ready: false;
+  outcome: AttachmentTransferOutcome;
+} | {
+  ready: true;
+  baseUrl: string;
+  token: string;
+  pin: string;
+}> {
   const [connection, token] = await Promise.all([loadConnection(), readToken()]);
   if (!connection) {
-    return { ...outcome, unavailable: true, message: "尚未配对桌面端" };
+    return { ready: false, outcome: { ...outcome, unavailable: true, message: "尚未配对桌面端" } };
   }
   if (!token) {
-    return { ...outcome, unavailable: true, message: "本机配对令牌不可用，请重新配对" };
+    return {
+      ready: false,
+      outcome: { ...outcome, unavailable: true, message: "本机配对令牌不可用，请重新配对" },
+    };
   }
   const pin = normalizeTlsFingerprint(connection.tlsFingerprint);
   if (!pin) {
     // v1 遗留连接 / 元数据损坏：与同步一致 fail-closed，不发送任何字节
-    return { ...outcome, unavailable: true, message: "缺少桌面端 TLS 指纹，请重新扫码配对" };
+    return {
+      ready: false,
+      outcome: { ...outcome, unavailable: true, message: "缺少桌面端 TLS 指纹，请重新扫码配对" },
+    };
   }
+  return { ready: true, baseUrl: connection.baseUrl, token, pin };
+}
 
-  const items = await listAttachmentsForTransfer(limit);
-  if (items.length === 0) return outcome;
+/** 串行传输给定附件；单条失败不影响后续。 */
+async function transferAttachments(target: TransferTarget): Promise<AttachmentTransferOutcome> {
+  let outcome = emptyTransferOutcome();
+  if (target.items.length === 0) return outcome;
+
+  const transport = await resolveTransport(outcome);
+  if (!transport.ready) return transport.outcome;
 
   const client = createFileClient({
-    baseUrl: connection.baseUrl,
-    token,
-    syncKey: await deriveSyncKey(token),
+    baseUrl: transport.baseUrl,
+    token: transport.token,
+    syncKey: await deriveSyncKey(transport.token),
   });
 
   try {
-    for (const item of items) {
+    for (const item of target.items) {
+      if (item.transferState === "sent") continue;
       await setAttachmentTransferState(item.id, "uploading");
       try {
         const file = new File(item.localUri);
         if (!file.exists) {
-          throw new AppError("storage", "本地附件已不存在，无法发送");
+          throw new AppError("storage", "本机文件已缺失，请重新采集");
         }
         const remote = await uploadLocalFile(client, file, () => undefined);
         await setAttachmentTransferState(item.id, "sent", { remoteFileId: remote.id });
         outcome.sent += 1;
+        outcome.sentIds.push(item.id);
       } catch (error) {
         const message = describeError(error);
         await setAttachmentTransferState(item.id, "failed", { error: message });
         outcome.failed += 1;
         outcome.errors.push(`${item.name || item.kind}：${message}`);
+      } finally {
+        outcome.handledIds.push(item.id);
       }
     }
   } finally {
@@ -91,4 +121,35 @@ export async function transferPendingAttachments(
   }
 
   return outcome;
+}
+
+/**
+ * 发送「本次采集」的附件：按显式 id 精确选择，绝不读取全局时间队列。
+ *
+ * 这是「保存并发送到电脑」的唯一入口：用户刚拍的两张照片必须优先于历史积压的
+ * 10 个待传附件；历史积压留给后台批量与同步页。
+ */
+export async function transferAttachmentsByIds(
+  ids: readonly string[],
+  options: { limit?: number } = {},
+): Promise<AttachmentTransferOutcome> {
+  const limit = Math.max(1, Math.min(options.limit ?? ids.length, 20));
+  const items = await getAttachmentsByIds(ids.slice(0, limit));
+  return transferAttachments({ items });
+}
+
+/**
+ * 发送待传送附件（pending + failed，按时间取最早一批）。同步页/自动传送用。
+ * 未配对/缺指纹/令牌不可用时不做任何请求，返回 unavailable 让 UI 解释原因。
+ */
+export async function transferPendingAttachments(
+  options: { limit?: number } = {},
+): Promise<AttachmentTransferOutcome> {
+  const limit = Math.max(1, Math.min(options.limit ?? TRANSFER_BATCH_LIMIT, 20));
+  const outcome = emptyTransferOutcome();
+  // 先做传输条件预检，避免把「未配对」误显示成 0 个失败
+  const transport = await resolveTransport(outcome);
+  if (!transport.ready) return transport.outcome;
+  const items = await listAttachmentsForTransfer(limit);
+  return transferAttachments({ items });
 }

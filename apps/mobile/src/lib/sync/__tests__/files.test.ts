@@ -63,13 +63,17 @@ function aadOf(method: string, path: string): string {
   if (path === "/v1/files") {
     return method === "GET" ? AAD_FILES_LIST : "taskdock-sync-v1|POST|/v1/files";
   }
-  const match = /\/v1\/files\/([0-9a-f]{32})(\/chunk\/(\d+)|\/complete|\/delete)?/.exec(path);
+  if (path === "/v1/shelf/groups") {
+    return "taskdock-sync-v1|GET|/v1/shelf/groups";
+  }
+  const match = /\/v1\/files\/([0-9a-f]{32})(\/chunk\/(\d+)|\/complete|\/delete|\/shelf)?/.exec(path);
   if (!match) return "unknown";
   if (match[2]?.startsWith("/chunk")) {
     return `taskdock-sync-v1|${method}|/v1/files/${match[1]}/chunk/${match[3]}`;
   }
   if (match[2] === "/complete") return `taskdock-sync-v1|POST|/v1/files/${match[1]}/complete`;
   if (match[2] === "/delete") return `taskdock-sync-v1|POST|/v1/files/${match[1]}/delete`;
+  if (match[2] === "/shelf") return `taskdock-sync-v1|POST|/v1/files/${match[1]}/shelf`;
   return "unknown";
 }
 
@@ -151,6 +155,45 @@ describe("createFileClient（注入 fetchImpl）", () => {
     client.cancel();
     await assertion;
     expect(attempts).toBeLessThanOrEqual(2);
+  });
+
+  it("importToShelf 走独立 AAD 并透传分组、回传 shelf_item_id", async () => {
+    const shelfId = `mf-${"f".repeat(32)}`;
+    const { client, calls } = await clientWith(async (method, path, data) => {
+      expect(method).toBe("POST");
+      expect(path).toBe(`/v1/files/${"f".repeat(32)}/shelf`);
+      // 分组 ID 原样加密进载荷；null = 桌面默认分组。
+      return {
+        file: fileRecord({
+          direction: "to_desktop",
+          shelf_item_id: shelfId,
+          shelf_group_id: (data as { group_id: string | null }).group_id,
+        }),
+      };
+    });
+
+    const withDefault = await client.importToShelf("f".repeat(32), null);
+    expect(withDefault.shelf_item_id).toBe(shelfId);
+    expect(calls[0].data).toEqual({ group_id: null });
+
+    const withGroup = await client.importToShelf("f".repeat(32), "group-1");
+    expect(withGroup.shelf_group_id).toBe("group-1");
+    expect(calls[1].data).toEqual({ group_id: "group-1" });
+  });
+
+  it("shelfGroups 只解析 id/name/builtin，不把桌面内部字段带进 UI", async () => {
+    const { client, calls } = await clientWith(async (method, path) => {
+      expect(method).toBe("GET");
+      expect(path).toBe("/v1/shelf/groups");
+      return {
+        groups: [
+          { id: "g1", name: "项目素材", builtin: false, sort_order: 2, item_count: 5 },
+        ],
+      };
+    });
+    const groups = await client.shelfGroups();
+    expect(groups).toEqual([{ id: "g1", name: "项目素材", builtin: false }]);
+    expect(calls[0].data).toBeUndefined();
   });
 });
 

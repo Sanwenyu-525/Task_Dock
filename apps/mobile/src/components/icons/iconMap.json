@@ -97,6 +97,10 @@
     "fileMarkdown": "file-pen-line",
     "fileApk": "package",
     "fileGeneric": "file",
+    "camera": "camera",
+    "gallery": "images",
+    "mic": "mic",
+    "docScan": "file-scan",
     "bold": "bold",
     "hash": "hash"
   },

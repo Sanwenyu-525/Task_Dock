@@ -147,19 +147,24 @@ function throwIfCancelled(isCancelled?: () => boolean): void {
 /**
  * 手机 → 电脑：按服务端返回的 chunk_size 顺序读取并上传。
  * 任一步失败都尝试删除桌面端的半成品记录；删除失败不覆盖原始错误。
+ *
+ * `nameOverride` 用于采集资产：本地存储名是随机化的（防重名/防路径问题），
+ * 但用户看到并发送到电脑的应是原文件名。
  */
 export async function uploadLocalFile(
   client: FileClient,
   file: FsFile,
   onProgress: (done: number, total: number) => void,
   isCancelled?: () => boolean,
+  nameOverride?: string,
 ): Promise<RemoteFile> {
   const size = file.size;
   if (!Number.isFinite(size) || size <= 0) {
     throw new AppError("validation", "无法读取文件大小，请重新选择");
   }
 
-  const created = await client.create(uploadDisplayName(file), size);
+  const remoteName = nameOverride?.trim() || uploadDisplayName(file);
+  const created = await client.create(remoteName, size);
   let handle: Handle | null = null;
   try {
     handle = file.open(FileMode.ReadOnly);

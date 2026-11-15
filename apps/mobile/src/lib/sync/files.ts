@@ -40,12 +40,19 @@ export function aadFileDelete(id: string): string {
   return `taskdock-sync-v1|POST|/v1/files/${id}/delete`;
 }
 
+/** 导入暂存架：与服务端 files::aad_file_shelf 完全一致（跨文件重放会解密失败）。 */
+export function aadFileShelf(id: string): string {
+  return `taskdock-sync-v1|POST|/v1/files/${id}/shelf`;
+}
+
+/** 与服务端 files::AAD_SHELF_GROUPS 一致。 */
+export const AAD_SHELF_GROUPS = "taskdock-sync-v1|GET|/v1/shelf/groups";
+
 export type RemoteFileDirection = "to_phone" | "to_desktop";
 export type RemoteFileStatus = "pending" | "ready" | "failed";
 
 export interface RemoteFile {
-  id: string;
-  direction: RemoteFileDirection;
+  id: string;  direction: RemoteFileDirection;
   name: string;
   size: number;
   sha256: string;
@@ -56,6 +63,17 @@ export interface RemoteFile {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** v51 桌面端：导入暂存架后的条目 ID；老桌面端不返回该字段（null）。 */
+  shelf_item_id?: string | null;
+  shelf_imported_at?: string | null;
+  shelf_group_id?: string | null;
+}
+
+/** 桌面暂存分组（只读）：手机端只用来展示与回传 id。 */
+export interface RemoteShelfGroup {
+  id: string;
+  name: string;
+  builtin: boolean;
 }
 
 export interface FileClientOptions {
@@ -73,6 +91,10 @@ export interface FileClient {
   complete(id: string): Promise<RemoteFile>;
   downloadChunk(id: string, index: number): Promise<Uint8Array>;
   remove(id: string): Promise<void>;
+  /** 把已完成的手机上传以托管副本导入桌面暂存架（v51；老桌面端返回 404）。 */
+  importToShelf(id: string, groupId?: string | null): Promise<RemoteFile>;
+  /** 桌面端有效暂存分组（老桌面端 404 时调用方退回默认分组）。 */
+  shelfGroups(): Promise<RemoteShelfGroup[]>;
   /** 取消所有在途请求；取消后客户端仍可继续发起新请求（与同步客户端一致） */
   cancel(): void;
 }
@@ -155,6 +177,10 @@ function parseRemoteFile(value: unknown): RemoteFile {
     created_at: record.created_at,
     updated_at: record.updated_at,
     completed_at: typeof record.completed_at === "string" ? record.completed_at : null,
+    shelf_item_id: typeof record.shelf_item_id === "string" ? record.shelf_item_id : null,
+    shelf_imported_at:
+      typeof record.shelf_imported_at === "string" ? record.shelf_imported_at : null,
+    shelf_group_id: typeof record.shelf_group_id === "string" ? record.shelf_group_id : null,
   };
 }
 
@@ -174,6 +200,30 @@ function parseListPayload(value: unknown): RemoteFile[] {
     throw new AppError("validation", "文件列表响应缺少 files");
   }
   return files.map(parseRemoteFile);
+}
+
+function parseShelfGroups(value: unknown): RemoteShelfGroup[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new AppError("validation", "暂存分组响应不是对象");
+  }
+  const groups = (value as Record<string, unknown>).groups;
+  if (!Array.isArray(groups)) {
+    throw new AppError("validation", "暂存分组响应缺少 groups");
+  }
+  return groups.map((entry) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new AppError("validation", "暂存分组成员不是对象");
+    }
+    const record = entry as Record<string, unknown>;
+    if (typeof record.id !== "string" || !record.id || typeof record.name !== "string") {
+      throw new AppError("validation", "暂存分组成员字段不完整");
+    }
+    return {
+      id: record.id,
+      name: record.name,
+      builtin: record.builtin === true,
+    };
+  });
 }
 
 export function createFileClient(options: FileClientOptions): FileClient {
@@ -329,6 +379,16 @@ export function createFileClient(options: FileClientOptions): FileClient {
     });
   }
 
+  function importToShelf(id: string, groupId?: string | null): Promise<RemoteFile> {
+    return request("POST", `/v1/files/${id}/shelf`, aadFileShelf(id), {
+      group_id: groupId ?? null,
+    }).then(parseFilePayload);
+  }
+
+  function shelfGroups(): Promise<RemoteShelfGroup[]> {
+    return request("GET", "/v1/shelf/groups", AAD_SHELF_GROUPS, undefined).then(parseShelfGroups);
+  }
+
   function cancel(): void {
     for (const operation of active) {
       operation.cancelled = true;
@@ -337,5 +397,5 @@ export function createFileClient(options: FileClientOptions): FileClient {
     active.clear();
   }
 
-  return { list, create, uploadChunk, complete, downloadChunk, remove, cancel };
+  return { list, create, uploadChunk, complete, downloadChunk, remove, importToShelf, shelfGroups, cancel };
 }

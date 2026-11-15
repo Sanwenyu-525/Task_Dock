@@ -1914,6 +1914,22 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
   2K/4K 视觉走查、关闭后资源释放与空闲 CPU/内存的完整测量（仅做过开关与进程观察）。
   不能用 jsdom/组件测试替代这些原生结论。
 
+## 工作台页面级页头与内容宽容器（2026-11-15）
+
+- **统一页头**：`src/workbench/WorkbenchPageHeader.tsx`（图标块 + 标题/副标题 + 动作区）。
+  19 张效果图的共同结构；页面只传内容，尺寸/间距/换行由 `.wb-page-header` 统一。
+  已接入 `tasks` / `agents` / `resource` / `collection`；其余路由保留既有页头，
+  未强行一次性替换（避免无收益的回归面）。
+- **内容宽容器**：`.wb-content` 声明 `container-type: inline-size; container-name: wb-content`。
+  页头动作区与页内分栏按**真实内容宽度**自适应（1180×760 @125% 时内容宽约 600 CSS px，
+  与窗口外框 944 不等价），不使用视口断点。
+- **收集与暂存页内分栏**：文件暂存子页为「暂存架主区 + 右侧信息栏」（≥880px 内容宽）；
+  窄内容区信息栏降级为底部三段横排，避免挤压暂存架行宽。信息栏只读
+  `useShelfStore.stats` / `useDropTargetsStore.targets`，分类瓦片直接写回既有筛选 Store，
+  **不新增第二套筛选状态**；统计缺失时退回「已加载项」口径并在文案注明。
+- 该组件与 `.wb-content` 容器查询属公共 Shell 资产：页面不得自行复制页头尺寸或另建容器查询。
+  验收证据见 `tmp/acceptance/workbench-final-20261115/`。
+
 ## 文件工作区（多目录分栏，2026-11-14）
 
 工作台内路由 `files`（左侧导航「文件工作区」，`workbenchOnly`——只接入统一工作台宿主，

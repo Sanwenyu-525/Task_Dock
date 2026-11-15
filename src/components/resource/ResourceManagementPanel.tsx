@@ -39,6 +39,7 @@ import { useResourceTrend } from "../../hooks/useResourceTrend";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
 import ResourceCleanupSection, { type CleanupEstimate } from "../settings/ResourceCleanupSection";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import ProcessDiagnostics from "./ProcessDiagnostics";
 import DiskSpaceAnalyzer from "./DiskSpaceAnalyzer";
 import DiskStoragePanel from "./DiskStoragePanel";
@@ -230,41 +231,47 @@ export default function ResourceManagementPanel() {
 
   return (
     <div className="resource-page page-fill" ref={pageRef}>
-      <header className="resource-page-head">
-        <div className="resource-page-title">
-          <h2>{t("resource.title")}</h2>
-        </div>
-        <span
-          className="resource-safety-chip"
-          role="note"
-          tabIndex={0}
-          aria-label={t("resource.footer.safety")}
-          data-tip={t("resource.footer.safety")}
-        >
-          <ShieldCheck size={13} aria-hidden="true" />
-          <span className="resource-safety-chip-text">{t("resource.footer.short")}</span>
-        </span>
-        <span id="resource-refresh-scope" className="sr-only">
-          {scopeText}
-        </span>
-        <button
-          type="button"
-          className="btn sm"
-          onClick={() => void refreshCurrent()}
-          disabled={refreshing}
-          aria-label={t("resource.refresh")}
-          aria-describedby="resource-refresh-scope"
-          data-tip={`${t("resource.refresh")} · ${scopeText}`}
-          data-refresh-scope={segment}
-        >
-          <RefreshCw
-            size={13}
-            className={refreshing ? "spin" : undefined}
-            aria-hidden="true"
-          />{" "}
-          {t(refreshing ? "settings.resourceCleanup.refreshing" : "resource.refresh")}
-        </button>
-      </header>
+      {/* 页面级页头（对齐效果图 07）：图标 + 标题 + 副标题；安全徽标与刷新
+          作为页头动作区，`.resource-page-head` 仍是「唯一刷新入口」的容器。 */}
+      <WorkbenchPageHeader
+        icon={HardDrive}
+        title={t("resource.title")}
+        subtitle={t("workbench.page.resource.subtitle")}
+        actions={
+          <div className="resource-page-head">
+            <span
+              className="resource-safety-chip"
+              role="note"
+              tabIndex={0}
+              aria-label={t("resource.footer.safety")}
+              data-tip={t("resource.footer.safety")}
+            >
+              <ShieldCheck size={13} aria-hidden="true" />
+              <span className="resource-safety-chip-text">{t("resource.footer.short")}</span>
+            </span>
+            <span id="resource-refresh-scope" className="sr-only">
+              {scopeText}
+            </span>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => void refreshCurrent()}
+              disabled={refreshing}
+              aria-label={t("resource.refresh")}
+              aria-describedby="resource-refresh-scope"
+              data-tip={`${t("resource.refresh")} · ${scopeText}`}
+              data-refresh-scope={segment}
+            >
+              <RefreshCw
+                size={13}
+                className={refreshing ? "spin" : undefined}
+                aria-hidden="true"
+              />{" "}
+              {t(refreshing ? "settings.resourceCleanup.refreshing" : "resource.refresh")}
+            </button>
+          </div>
+        }
+      />
 
       <div className="resource-segments" role="tablist" aria-label={t("resource.segments.aria")}>
         {SEGMENTS.map((id) => (

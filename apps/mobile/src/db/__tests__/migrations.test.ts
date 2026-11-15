@@ -21,13 +21,75 @@ beforeEach(async () => {
   await closeDatabase();
 });
 
-describe("迁移 v1→v6", () => {
+describe("迁移 v1→v8", () => {
   it("迁移到最新版本且序列连续", async () => {
     await openDatabase();
     const row = await rawFirst<{ user_version: number }>("PRAGMA user_version");
     expect(row?.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(6);
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(SCHEMA_VERSION).toBe(8);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it("v7 新增采集提交幂等登记表，主键是 client_id", async () => {
+    await openDatabase();
+    const columns = (
+      await rawAll<{ name: string; pk: number }>("PRAGMA table_info(capture_commits)")
+    );
+    expect(columns.map((column) => column.name)).toEqual([
+      "client_id",
+      "destination",
+      "entity_id",
+      "created_at",
+    ]);
+    expect(columns.find((column) => column.name === "client_id")?.pk).toBe(1);
+    // 同一 client_id 第二次写入被主键拒绝（INSERT OR IGNORE 命中）
+    await rawRun(
+      "INSERT INTO capture_commits (client_id, destination, entity_id, created_at) VALUES ('dup', 'task', 't1', 1)",
+    );
+    await rawRun(
+      "INSERT OR IGNORE INTO capture_commits (client_id, destination, entity_id, created_at) VALUES ('dup', 'task', 't2', 2)",
+    );
+    const row = await rawFirst<{ entity_id: string }>(
+      "SELECT entity_id FROM capture_commits WHERE client_id = 'dup'",
+    );
+    expect(row?.entity_id).toBe("t1");
+  });
+
+  it("v8 新增采集素材库与多目的地状态表，且与 v6/v7 表共存", async () => {
+    await openDatabase();
+    const assetColumns = (
+      await rawAll<{ name: string }>("PRAGMA table_info(capture_assets)")
+    ).map((column) => column.name);
+    expect(assetColumns).toEqual([
+      "id", "kind", "source", "name", "local_path", "mime", "byte_size", "sha256",
+      "width", "height", "duration_ms", "thumbnail_path", "note", "favorite",
+      "project_id", "state", "created_at", "updated_at", "last_error",
+    ]);
+    const destinationColumns = (
+      await rawAll<{ name: string; pk: number }>("PRAGMA table_info(capture_destinations)")
+    );
+    expect(destinationColumns.map((column) => column.name)).toEqual([
+      "asset_id", "destination", "state", "remote_id", "remote_shelf_id", "album_uri",
+      "bytes_done", "bytes_total", "updated_at", "last_error",
+    ]);
+    // 复合主键 = (asset_id, destination)：同一素材同一目的地只有一行
+    expect(destinationColumns.filter((column) => column.pk > 0).map((column) => column.name))
+      .toEqual(["asset_id", "destination"]);
+    // 删除素材级联清掉目的地记录，但不影响 v6 的 attachments / capture_stash
+    await rawRun(
+      `INSERT INTO capture_assets (id, kind, source, name, mime, state, created_at, updated_at)
+       VALUES ('a-cascade', 'photo', 'camera', 'p.jpg', 'image/jpeg', 'saved', 1, 1)`,
+    );
+    await rawRun(
+      `INSERT INTO capture_destinations (asset_id, destination, state, updated_at)
+       VALUES ('a-cascade', 'local', 'done', 1)`,
+    );
+    await rawRun("DELETE FROM capture_assets WHERE id = 'a-cascade'");
+    const left = await rawAll<{ asset_id: string }>(
+      "SELECT asset_id FROM capture_destinations WHERE asset_id = 'a-cascade'",
+    );
+    expect(left).toEqual([]);
+    expect((await rawAll<{ name: string }>("PRAGMA table_info(attachments)")).length).toBeGreaterThan(0);
   });
 
   it("v6 新增采集附件与暂存表，且不改变既有同步表", async () => {

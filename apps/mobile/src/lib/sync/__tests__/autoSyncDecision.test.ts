@@ -73,6 +73,33 @@ describe("decideAutoSync", () => {
       decideAutoSync(input({ lastSuccessAt: 1_000_000 - AUTO_SYNC_MIN_INTERVAL_MS })).run,
     ).toBe(true);
   });
+
+  it("P1-01：上次成功后 1 分钟新增任务/笔记时，待推送变更绕过最小间隔", () => {
+    const justSynced = input({
+      lastSuccessAt: 1_000_000 - 60_000,
+      hasPendingLocalChanges: true,
+    });
+    expect(decideAutoSync(justSynced)).toEqual({ run: true, reason: "ok" });
+  });
+
+  it("P1-01：有本地变更也不能绕过退避与单飞（防止失败后立刻重试风暴）", () => {
+    expect(
+      decideAutoSync(
+        input({ lastSuccessAt: 1_000_000 - 60_000, hasPendingLocalChanges: true, nextAttemptAt: 1_000_001 }),
+      ).reason,
+    ).toBe("backoff");
+    expect(
+      decideAutoSync(
+        input({ lastSuccessAt: 1_000_000 - 60_000, hasPendingLocalChanges: true, syncing: true }),
+      ).reason,
+    ).toBe("in_flight");
+  });
+
+  it("P1-01：无本地变更又刚同步过时仍节流（避免前台来回切换频繁拉取）", () => {
+    expect(
+      decideAutoSync(input({ lastSuccessAt: 1_000_000 - 60_000, hasPendingLocalChanges: false })).reason,
+    ).toBe("too_soon");
+  });
 });
 
 describe("backoffForFailure", () => {

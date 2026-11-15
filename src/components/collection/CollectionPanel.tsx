@@ -11,12 +11,17 @@
 //! - 子页身份 = 既有 Tab id（inbox / shelf），setTab(inbox|shelf) 会同步子页状态，
 //!   Ctrl+5 / Ctrl+6 与旧调用方语义不变。
 
+import { Inbox } from "lucide-react";
+
 import { useUiStore } from "../../store/useUiStore";
 import CaptureInboxPanel from "../inbox/CaptureInboxPanel";
 import ShelfPanel from "../shelf/ShelfPanel";
 import NotesPanel from "../notes/NotesPanel";
 import ModuleRunControl from "../lifecycle/ModuleRunControl";
+import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import CollectionRail from "./CollectionRail";
 import { useLocale } from "../../hooks/useLocale";
+import "./collection-page.css";
 
 export default function CollectionPanel() {
   const { t } = useLocale();
@@ -26,8 +31,13 @@ export default function CollectionPanel() {
 
   return (
     <div className="collection-panel page-fill">
+      <WorkbenchPageHeader
+        icon={Inbox}
+        title={t("collection.title")}
+        subtitle={t("workbench.page.collection.subtitle")}
+      />
       <div className="collection-head">
-        <span className="collection-title">{t("collection.title")}</span>
+        {/* 标题已由页面级页头承载；这里只保留子页签与模块控制，避免重复标题。 */}
         <div className="seg-group" role="tablist" aria-label={t("collection.subTabs")}>
           <button
             type="button"
@@ -67,10 +77,17 @@ export default function CollectionPanel() {
         )}
       </div>
       <div className="collection-body">
-        {sub === "inbox" ? (
+        {sub === "shelf" ? (
+          /* 文件暂存：主区（暂存架）+ 右侧信息栏。窄内容区由容器查询折叠为
+             单列（信息栏落到列表下方），不挤压暂存架行宽。 */
+          <div className="collection-split">
+            <div className="collection-main">
+              <ShelfPanel />
+            </div>
+            <CollectionRail />
+          </div>
+        ) : sub === "inbox" ? (
           <CaptureInboxPanel />
-        ) : sub === "shelf" ? (
-          <ShelfPanel />
         ) : (
           <NotesPanel />
         )}

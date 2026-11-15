@@ -11,6 +11,7 @@ import { font, space } from "../theme/tokens";
 
 import { ClampedText } from "./ClampedText";
 import { GlassCard } from "./GlassCard";
+import { AttachmentStrip } from "./AttachmentStrip";
 
 const STAGGER_LIMIT = 8;
 
@@ -107,6 +108,8 @@ function CaptureCardBase({
       <GlassCard style={styles.card}>
         {/* 长速记最多 5 行：一条超长文本不该把整屏占满，需要时再展开 */}
         <ClampedText maxLines={5} text={capture.content} style={[styles.content, { color: tokens.text }]} />
+        {/* 照片/录音/文件：卡片里直接给出缩略与打开入口，不让用户「只看到一条文字」 */}
+        <AttachmentStrip ownerEntity="capture" ownerId={capture.id} />
         <View style={styles.footer}>
           <Text style={[styles.time, { color: tokens.muted }]}>
             {formatRelative(capture.createdAt, now)}

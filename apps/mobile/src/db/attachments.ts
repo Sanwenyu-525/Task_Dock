@@ -214,6 +214,42 @@ export async function markAttachmentsMissingFiles(): Promise<number> {
   return missing.length;
 }
 
+/** 按 id 精确读取附件（显式「发送本次附件」用它，避免按全局时间队列误取历史文件）。 */
+export async function getAttachmentsByIds(ids: readonly string[]): Promise<Attachment[]> {
+  if (ids.length === 0) return [];
+  const db = getDatabase();
+  const out: Attachment[] = [];
+  for (let offset = 0; offset < ids.length; offset += 50) {
+    const chunk = ids.slice(offset, offset + 50);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const rows = await db.getAllAsync<AttachmentDbRow>(
+      `SELECT ${COLUMNS} FROM attachments
+        WHERE deleted_at IS NULL AND id IN (${placeholders})
+        ORDER BY created_at ASC`,
+      chunk,
+    );
+    out.push(...rows.map(mapRow));
+  }
+  return out;
+}
+
+/**
+ * 启动对账：上次进程在 uploading 状态被杀，重启后不能永远卡在「正在传输」。
+ *
+ * 不直接回到 pending：远端可能已收到一份，自动重传会制造重复文件；标成 failed +
+ * 明确原因，让同步页显示「可重试」，由用户或显式发送再决定。
+ */
+export async function resetInterruptedUploads(): Promise<number> {
+  const db = getDatabase();
+  const result = await db.runAsync(
+    `UPDATE attachments
+        SET transfer_state = 'failed', transfer_error = '上次传输中断，可重试', updated_at = ?
+      WHERE deleted_at IS NULL AND transfer_state = 'uploading'`,
+    [Date.now()],
+  );
+  return result.changes;
+}
+
 export async function countAttachmentsForTransfer(): Promise<number> {  const db = getDatabase();
   const row = await db.getFirstAsync<{ n: number }>(
     `SELECT COUNT(*) AS n FROM attachments

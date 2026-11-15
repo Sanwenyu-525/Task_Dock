@@ -184,7 +184,7 @@ export const PERSONALIZE_ARTICLES: readonly HelpArticle[] = [
           },
           {
             type: "tip",
-            text: "停靠胶囊的轨道图标与完整面板侧栏是两份独立配置，可分别调整。",
+            text: "停靠胶囊的轨道图标与快捷工具面板侧栏是两份独立配置，可分别调整。",
           },
         ],
       },
@@ -209,7 +209,7 @@ export const PERSONALIZE_ARTICLES: readonly HelpArticle[] = [
           },
           {
             type: "tip",
-            text: "The docked capsule rail and the full-panel rail are two independent configurations.",
+            text: "The docked capsule rail and the quick tool panel rail are two independent configurations.",
           },
         ],
       },
