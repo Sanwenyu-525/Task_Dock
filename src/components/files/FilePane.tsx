@@ -1102,7 +1102,7 @@ export default function FilePane({
               onClick={() => setPathEdit(dirPath)}
               title={dirPath}
             >
-              {crumbs.length <= 4 ? (
+              {crumbs.length <= 3 ? (
                 crumbs.map((seg, i) => (
                   <span key={seg.path} className="fw-crumb-wrap">
                     {i > 0 && <ChevronRight size={11} aria-hidden="true" className="fw-crumb-sep" />}

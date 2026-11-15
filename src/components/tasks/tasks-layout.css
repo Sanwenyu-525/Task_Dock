@@ -56,6 +56,40 @@
   white-space: nowrap;
 }
 
+/* 主窗 400×560：318px 内容宽下四张 145px 大卡会折成 2×2、吃掉 170px，
+   任务列表只剩一行。这里在窄窗把统计压成一行四格紧凑卡（≥361px 四列，
+   ≤360px 回两列），统计仍是参考层，列表重新成为主角。工作台 ≥900px 不受影响。 */
+@media (max-width: 560px) {
+  .tasks-panel .tasks-overview--stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .tasks-panel .tasks-overview--stats .overview-card {
+    min-height: 56px;
+    padding: 8px 10px;
+    gap: 2px;
+    border-radius: var(--radius-control);
+  }
+
+  .tasks-panel .tasks-overview--stats .overview-value {
+    font-size: 18px;
+  }
+
+  .tasks-panel .tasks-overview--stats .overview-label {
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 360px) {
+  .tasks-panel .tasks-overview--stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* 概览大卡占据整行，快速添加落到第二行；避免 280px 的旧摘要列把四张卡挤碎。 */
 @media (min-width: 480px) {
   .tasks-panel .tasks-head:has(> .tasks-overview--stats) {
@@ -209,6 +243,15 @@
   flex: 0 0 auto;
 }
 
+/* 日期视图与状态筛选都是分段控件，选中态必须一致：
+   统一使用 subtle/accent 语义，避免一个白底、一个蓝底的两套选中样式。 */
+.tasks-panel .tasks-views .seg-btn.active {
+  background: var(--pill-soft-active-face);
+  color: var(--accent);
+  box-shadow: var(--pill-active-shadow);
+  font-weight: 600;
+}
+
 /* 搜索 + 状态 + 排序同一行：搜索吃掉剩余宽度，其余控件不被压扁。 */
 .tasks-panel .tasks-filterbar {
   display: flex;
@@ -232,11 +275,21 @@
   max-width: 84px;
 }
 
-/* 极窄窗（320px 级别）：收紧状态按钮与排序宽度。
-   320 窗口的可用内容宽度实测只有 ~274px，搜索框与「未完成/已完成/全部状态」
-   + 排序挤在同一行时搜索只剩 32px（等于不可用）。这里让搜索独占一行、
-   状态与排序落到第二行 —— 属于固定头内的合理收纳，不是工具图标溢出换行。 */
-@media (max-width: 380px) {
+@media (max-width: 360px) {
+  /* 320 窗宽下 5 个日期标签 + 3 个工具按钮差 32px，原设计靠横向滚动藏起
+     「逾期」。把日期分段的内边距从 8px 收到 4px，5 个标签全部露出，
+     不再需要滚动或渐隐遮罩。 */
+  .tasks-panel .tasks-viewbar .seg-btn {
+    padding: 3px 4px;
+    font-size: 10.5px;
+    letter-spacing: 0;
+  }
+}
+
+/* 窄窗（≤480px，含主窗 400 与 320）：400 窗口里搜索只剩 80px，已不可用。
+   让搜索独占一行、状态与排序落到第二行 —— 属于固定头内的合理收纳，
+   不是工具图标溢出换行；工作台 ≥900px 不受影响。 */
+@media (max-width: 480px) {
   .tasks-panel .tasks-filterbar {
     flex-wrap: wrap;
     row-gap: 4px;

@@ -176,7 +176,7 @@
   --file-tone-code: #5eead4;
   --file-tone-data: #7dd3fc;
   --file-tone-program: #94a3b8;
-  --file-tone-folder: #fbbf24;
+  --file-tone-folder: #d9ab54;
   --file-tone-link: var(--accent);
   --file-tone-text: var(--text-secondary);
   --file-tone-other: var(--text-secondary);
@@ -513,7 +513,7 @@ code {
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   border-color: var(--border-strong);
   color: var(--text-primary);
   background: var(--surface-hover);
@@ -525,7 +525,7 @@ code {
   color: var(--accent-text-on);
 }
 
-.btn.primary:hover {
+.btn.primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
   color: var(--accent-text-on);
@@ -536,7 +536,7 @@ code {
   border-color: color-mix(in srgb, var(--status-error) 40%, transparent);
 }
 
-.btn.danger:hover {
+.btn.danger:hover:not(:disabled) {
   background: var(--status-error);
   border-color: var(--status-error);
   color: #fff;
@@ -1500,6 +1500,20 @@ code {
   border-radius: var(--radius-card);
   background: var(--surface-raised);
   padding: 22px 14px;
+}
+
+/* 主窗迁移说明卡在页面里垂直居中：此前贴顶、下方留 290px 空区，
+   看起来像内容没加载完。说明卡不是列表，居中后页面重心才稳定。 */
+.handoff-scroll {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.handoff-scroll .empty-state.is-handoff {
+  width: 100%;
+  max-width: 380px;
 }
 
 .empty-action {

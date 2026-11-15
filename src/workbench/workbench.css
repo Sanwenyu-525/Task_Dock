@@ -2299,6 +2299,16 @@ body.wb-resizing {
     flex-wrap: wrap;
     gap: 10px;
   }
+  /* 40px 图标 + 10px gap 之后，标题列必须能收缩到 0，否则它的
+     auto 基准宽会把标题挤到第二行、动作区挤到第三行（149px 高页头）。 */
+  .wb-ph-main {
+    flex: 1 1 0;
+  }
+  .wb-ph-sub {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .wb-ph-actions {
     width: 100%;
     justify-content: flex-start;

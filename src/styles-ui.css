@@ -671,8 +671,8 @@
   color: var(--menu-text);
   background: var(--menu-face);
   border-radius: 8px;
-  box-shadow: var(--menu-shadow);
-  border: 1px solid var(--menu-border);
+  box-shadow: var(--elev-2);
+  border: 1px solid var(--border-strong);
   pointer-events: none;
   /* 最多两行，超出省略：长路径/长名称不再把浮层撑成大字块遮住相邻内容 */
   display: -webkit-box;

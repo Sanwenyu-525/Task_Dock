@@ -45,7 +45,7 @@ export default function WorkbenchHandoff({ tab }: Props) {
 
   return (
     <div className="page-fill">
-      <div className="page-scroll">
+      <div className="page-scroll handoff-scroll">
         <div className="empty-state is-handoff" data-testid={`workbench-handoff-${tab}`}>
           <div className="empty-icon">
             <Icon size={22} strokeWidth={1.7} aria-hidden="true" />

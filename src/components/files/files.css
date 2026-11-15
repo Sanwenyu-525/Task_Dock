@@ -156,7 +156,7 @@ html[data-theme="light"] .fw-root {
   content: "";
   position: absolute;
   border-radius: 2px;
-  background: var(--border-subtle);
+  background: color-mix(in srgb, var(--border-strong) 62%, transparent);
   transition: background 120ms ease;
 }
 
@@ -205,6 +205,9 @@ body.fw-resizing {
   background: var(--surface-raised);
   overflow: hidden;
   position: relative;
+  /* 分栏可以窄到 350px 左右；工具栏与文件行都按窗格宽度而不是视口宽度收敛。 */
+  container-type: inline-size;
+  container-name: fw-pane;
 }
 
 .fw-pane.is-active {
@@ -412,6 +415,8 @@ body.fw-resizing {
   align-items: center;
   gap: 2px;
   min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
 }
 
 .fw-crumb {
@@ -423,11 +428,19 @@ body.fw-resizing {
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fw-crumb:hover {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.fw-crumb-wrap:last-child {
+  /* 当前目录名不能被压成单个字符；窄分栏里只让中间层级省略。 */
+  flex: 0 0 auto;
 }
 
 .fw-crumb-sep {
@@ -544,6 +557,9 @@ body.fw-resizing {
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
   text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fw-row-size {
@@ -1121,18 +1137,22 @@ body.fw-resizing {
 }
 
 .fw-open-modes {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
 }
 
 .fw-mode-chip {
-  padding: 3px 9px;
+  padding: 4px 8px;
   border-radius: 999px;
   border: 1px solid var(--fw-border-subtle);
   background: transparent;
   color: var(--text-secondary);
   font-size: 11px;
+  text-align: center;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -1363,6 +1383,48 @@ body.fw-resizing {
 
 @container (max-width: 360px) {
   .fw-row-time {
-    flex-basis: 84px;
+    flex-basis: 96px;
+    font-size: 10.5px;
+  }
+}
+
+/* 窄窗格：工具栏不能把所有控件硬塞进一行，否则面包屑会被挤成 0 宽。
+   第一行保留「导航按钮 + 路径 + 视图/排序」，搜索框整行落到第二行。 */
+@container fw-pane (max-width: 460px) {
+  .fw-pane-toolbar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .fw-searchbox {
+    order: 10;
+    flex: 1 1 100%;
+    width: auto;
+  }
+  .fw-crumbs {
+    flex: 1 1 0;
+    min-width: 72px;
+  }
+  /* 折叠路径时（>3 段）只保留最后两级：先隐藏根段、首分隔符和省略号，
+     避免根段被压成空框、只留下「[]>[]>…」的残片。
+     2–3 段走的是 .fw-crumb-wrap 分支，根段是第一个 wrap 而不是裸 .fw-crumb；
+     窄分栏里同样隐藏根段与其后紧邻的分隔符，只留当前目录名。 */
+  .fw-crumbs-inner > .fw-crumb:first-child,
+  .fw-crumbs-inner > .fw-crumb-sep:first-of-type,
+  .fw-crumbs-inner > .fw-crumb-wrap:first-child,
+  .fw-crumbs-inner > .fw-crumb-wrap:first-child + .fw-crumb-wrap .fw-crumb-sep,
+  .fw-crumb-ellipsis {
+    display: none;
+  }
+}
+
+/* 极窄分栏（约 350px 双栏）里「父级 > 当前」仍放不下，父级会被压成「ta…」。
+   这时只保留当前目录，用前置省略号表示还有上层路径，比截断成两个字更可读。 */
+@container fw-pane (max-width: 380px) {
+  .fw-crumbs-inner > .fw-crumb-wrap:nth-last-child(2) {
+    display: none;
+  }
+
+  .fw-crumb-ellipsis {
+    display: inline;
   }
 }

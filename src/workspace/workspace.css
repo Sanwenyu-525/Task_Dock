@@ -1,8 +1,11 @@
 :root {
-  --ws-bg: var(--c-paper);
-  --ws-surface: color-mix(in srgb, var(--c-paper) 92%, transparent);
-  --ws-border: color-mix(in srgb, var(--c-ink) 12%, transparent);
-  --ws-text: var(--c-ink);
+  /* 旧 workspace 变量曾用 --c-paper（恒为白色）做表面，导致深色主题下的
+     项目输入框、按钮仍是白底。这里改为语义 Token，让 workspace 与全局
+     2D 主题共用同一套明暗表面。 */
+  --ws-bg: var(--surface-base);
+  --ws-surface: var(--surface-raised);
+  --ws-border: var(--border-subtle);
+  --ws-text: var(--text-primary);
   --ws-muted: var(--text-secondary);
   --ws-accent: var(--accent, #4f46e5);
   --ws-ok: var(--status-success, #15803d);
@@ -77,7 +80,7 @@
   border: 1px solid var(--ws-border);
   background: var(--ws-surface);
   color: var(--ws-text);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   font-size: 13px;
   box-sizing: border-box;
 }

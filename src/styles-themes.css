@@ -3353,13 +3353,13 @@ textarea:focus {
     box-shadow 0.16s ease;
 }
 
-.btn:hover {
+.btn:hover:not(:disabled) {
   box-shadow: var(--control-shadow-hover);
 }
 
-.btn:active {
+.btn:active:not(:disabled) {
   box-shadow: var(--control-shadow-press);
-  background: color-mix(in srgb, var(--text-primary) 6%, var(--surface-raised));
+  background: color-mix(in srgb, var(--text-primary) 6%, var(--surface-overlay));
 }
 
 .btn.primary {
@@ -3368,15 +3368,26 @@ textarea:focus {
   box-shadow: none;
 }
 
-.btn.primary:hover {
+.btn.primary:hover:not(:disabled) {
   background: var(--accent-hover);
   border-color: transparent;
   color: var(--accent-text-on);
   box-shadow: none;
 }
 
-.btn.primary:active {
+.btn.primary:active:not(:disabled) {
   background: var(--accent-hover);
+  box-shadow: none;
+}
+
+/* 禁用态必须在 theme 层再声明一次：`.btn.primary` 的底色也在这个层里，
+   base 层的 `.btn:disabled` 会在层叠顺序上被它盖住（与选择器权重无关）。 */
+.btn:disabled,
+.btn.primary:disabled {
+  opacity: 1;
+  color: var(--text-tertiary);
+  background: var(--inset-face);
+  border-color: var(--border-subtle);
   box-shadow: none;
 }
 
@@ -3388,7 +3399,7 @@ textarea:focus {
   box-shadow: none;
 }
 
-.icon-btn:active {
+.icon-btn:active:not(:disabled) {
   background: var(--border-subtle);
   box-shadow: none;
 }
@@ -3623,10 +3634,22 @@ textarea:focus {
   box-shadow: none;
 }
 
-/* ── 主窗口页面滚动条：只隐藏视觉，保留滚动能力（2026-11-04） ──
-   styles.css 中的页面滚动规则位于 @layer base，本文件处于 @layer theme；
-   按 CSS 层叠层规则，base 层即使特异性更高也压不过 theme 层，因此覆盖必须
-   写在这里。仅作用于页面级滚动容器，不改 overflow、不动滚动逻辑。 */
+/* 完整面板底部为「收缩为胶囊」悬浮按钮预留 34px 安全带。
+   规则必须写在 theme 层：tab-content 的既有 padding 也在这一层，
+   base 层的同选择器压不过它。 */
+.dock-window.mode-full .tab-content {
+  padding-bottom: 34px;
+}
+
+/* ── 页面级滚动条：透明轨道 + 6px 细 thumb（2026-11-04 曾整体隐藏，
+   2026-11-15 恢复为可见细轨——资源/工作流页底部内容被裁时，没有滚动条
+   就没有任何「还能往下滚」的提示。只改外观，不改 overflow 与滚动逻辑。 */
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 @layer theme {
   .tab-content,
   .compact-view,
@@ -3636,8 +3659,9 @@ textarea:focus {
   .workflows-panel,
   .planning-project-list,
   .page-scroll {
-    scrollbar-width: none;
-    -ms-overflow-style: none;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--text-tertiary) 35%, transparent)
+      transparent;
   }
 
   .tab-content::-webkit-scrollbar,
@@ -3648,9 +3672,51 @@ textarea:focus {
   .workflows-panel::-webkit-scrollbar,
   .planning-project-list::-webkit-scrollbar,
   .page-scroll::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-    display: none;
+    width: 6px;
+    height: 6px;
+    display: block;
+  }
+
+  .tab-content::-webkit-scrollbar-track,
+  .compact-view::-webkit-scrollbar-track,
+  .clip-body::-webkit-scrollbar-track,
+  .context-body::-webkit-scrollbar-track,
+  .shelf-list::-webkit-scrollbar-track,
+  .workflows-panel::-webkit-scrollbar-track,
+  .planning-project-list::-webkit-scrollbar-track,
+  .page-scroll::-webkit-scrollbar-track,
+  .tab-content::-webkit-scrollbar-corner,
+  .compact-view::-webkit-scrollbar-corner,
+  .clip-body::-webkit-scrollbar-corner,
+  .context-body::-webkit-scrollbar-corner,
+  .shelf-list::-webkit-scrollbar-corner,
+  .workflows-panel::-webkit-scrollbar-corner,
+  .planning-project-list::-webkit-scrollbar-corner,
+  .page-scroll::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  .tab-content::-webkit-scrollbar-thumb,
+  .compact-view::-webkit-scrollbar-thumb,
+  .clip-body::-webkit-scrollbar-thumb,
+  .context-body::-webkit-scrollbar-thumb,
+  .shelf-list::-webkit-scrollbar-thumb,
+  .workflows-panel::-webkit-scrollbar-thumb,
+  .planning-project-list::-webkit-scrollbar-thumb,
+  .page-scroll::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--text-tertiary) 35%, transparent);
+  }
+
+  .tab-content::-webkit-scrollbar-thumb:hover,
+  .compact-view::-webkit-scrollbar-thumb:hover,
+  .clip-body::-webkit-scrollbar-thumb:hover,
+  .context-body::-webkit-scrollbar-thumb:hover,
+  .shelf-list::-webkit-scrollbar-thumb:hover,
+  .workflows-panel::-webkit-scrollbar-thumb:hover,
+  .planning-project-list::-webkit-scrollbar-thumb:hover,
+  .page-scroll::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--text-tertiary) 55%, transparent);
   }
 }
 
