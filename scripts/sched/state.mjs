@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export const STATE_DIR_NAME = "taskdock-build-sched";
 
@@ -29,17 +29,55 @@ export const STATE_DIR_NAME = "taskdock-build-sched";
 //   reclaim-log.jsonl        租约回收审计（谁回收、为什么）
 export const SUBDIRS = ["slots", "queue", "cancel", "logs", "reservations"];
 
-function gitCommonDir(cwd) {
+function gitCommonDirFromFs(cwd) {
+  let dir = resolve(cwd);
+  while (true) {
+    const dotGit = join(dir, ".git");
+    if (existsSync(dotGit)) {
+      let st;
+      try { st = statSync(dotGit); } catch { return null; }
+      if (st.isDirectory()) return dotGit;
+      if (st.isFile()) {
+        let text;
+        try { text = readFileSync(dotGit, "utf8"); } catch { return null; }
+        const m = /^gitdir:\s*(.+)$/mi.exec(text);
+        if (!m) return null;
+        const gitDir = resolve(dir, m[1].trim());
+        if (!existsSync(gitDir)) return null;
+        // linked worktree：<gitdir>/commondir 指向主仓库的 .git，必须与主工作区共享状态。
+        const commonFile = join(gitDir, "commondir");
+        if (existsSync(commonFile)) {
+          try {
+            const rel = readFileSync(commonFile, "utf8").trim();
+            const common = resolve(gitDir, rel);
+            if (rel && existsSync(common)) return common;
+          } catch { /* 退回单 worktree 的 gitdir */ }
+        }
+        return gitDir;
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function gitCommonDir(cwd, env) {
   try {
     const r = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-      cwd, encoding: "utf8", timeout: 15000, windowsHide: true,
+      cwd, env, encoding: "utf8", timeout: 15000, windowsHide: true,
     });
-    if (r.status !== 0) return null;
-    const line = (r.stdout || "").split(/\r?\n/).map((s) => s.trim()).find(Boolean);
-    if (!line) return null;
-    const abs = isAbsolute(line) ? line : resolve(cwd, line);
-    return existsSync(abs) ? abs : null;
-  } catch { return null; }
+    if (r.status === 0) {
+      const line = (r.stdout || "").split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+      if (line) {
+        const abs = isAbsolute(line) ? line : resolve(cwd, line);
+        if (existsSync(abs)) return abs;
+      }
+    }
+  } catch { /* 走文件系统探测 */ }
+  // Git 不在 PATH（很常见的被裁剪 shell / 服务环境）时，不能静默退回 tmpdir：
+  // 那会让同一仓库的不同进程使用不同锁与预算台账。直接读取 .git 指针即可恢复同一状态目录。
+  return gitCommonDirFromFs(cwd);
 }
 
 /**
@@ -54,7 +92,7 @@ export function resolveStateHome({ cwd = process.cwd(), env = process.env } = {}
     }
     return { home: resolve(override), source: "env:TASKDOCK_BUILD_SCHED_HOME", gitCommonDir: null };
   }
-  const common = gitCommonDir(cwd);
+  const common = gitCommonDir(cwd, env);
   if (common) {
     return { home: join(common, STATE_DIR_NAME), source: "git-common-dir", gitCommonDir: common };
   }

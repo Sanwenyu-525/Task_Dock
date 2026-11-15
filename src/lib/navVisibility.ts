@@ -33,6 +33,7 @@ import {
   entriesForSurface,
   leftEntryForTab,
   navEntry,
+  type NavGroup,
   type NavSurface,
 } from "./navigationRegistry";
 import type { Tab } from "../store/useUiStore";
@@ -49,6 +50,12 @@ export interface NavLayoutConfig {
   left: string[];
   /** 胶囊可见入口 ID，顺序即排序。 */
   capsule: string[];
+  /**
+   * 左侧入口的分组归属（稳定 ID → 分组）。跨组拖拽后入口会归入落点所在分组，
+   * 与 `left` 顺序一起写入同一份 `navigation_layout`，避免侧栏标题重复。
+   * 缺省时按注册中心 `group` 回退；隐藏入口的归属也保留，重新显示不会丢。
+   */
+  leftGroups?: Record<string, NavGroup>;
   /** 写入时注册中心已有的入口快照（区分用户隐藏与新增入口）。 */
   known: { left: string[]; capsule: string[] };
 }
@@ -67,12 +74,106 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const NAV_GROUP_VALUES: readonly NavGroup[] = ["core", "capture", "planning", "system"];
+
+export function isNavGroup(value: unknown): value is NavGroup {
+  return typeof value === "string" && (NAV_GROUP_VALUES as readonly string[]).includes(value);
+}
+
+/** 注册中心默认的左侧入口分组归属（含隐藏入口，供恢复显示时回退）。 */
+export function defaultLeftGroups(): Record<string, NavGroup> {
+  const groups: Record<string, NavGroup> = {};
+  for (const entry of entriesForSurface("left")) groups[entry.id] = entry.group;
+  return groups;
+}
+
+/** 单个左侧入口的当前分组：优先用户归属，其次注册中心默认。 */
+export function leftGroupFor(
+  id: string,
+  groups?: Readonly<Record<string, NavGroup>>,
+): NavGroup {
+  return groups?.[id] ?? navEntry(id)?.group ?? "core";
+}
+
+/**
+ * 把左侧顺序收敛成「每个分组最多连续出现一段」。
+ *
+ * 跨组拖拽时入口会跟随落点邻居归组；历史上的旧配置若已经出现重复的
+ * 视觉分组段（工作协同 / 自动化与内容 / 项目与系统），则把后一段并入前一段
+ * （只改分组归属，不改任何顺序、不丢入口）。
+ * 因而侧栏不会反复出现同一个分组标题，排序仍然是用户保存的真实顺序。
+ */
+export function reconcileLeftGroups(
+  order: readonly string[],
+  groups?: Readonly<Record<string, NavGroup>>,
+  movedId?: string,
+): Record<string, NavGroup> {
+  const resolved: Record<string, NavGroup> = { ...defaultLeftGroups(), ...groups };
+
+  if (movedId && order.includes(movedId)) {
+    const index = order.indexOf(movedId);
+    const current = leftGroupFor(movedId, resolved);
+    const prev = index > 0 ? leftGroupFor(order[index - 1], resolved) : undefined;
+    const next = index < order.length - 1 ? leftGroupFor(order[index + 1], resolved) : undefined;
+    let target = current;
+    if (prev && next) {
+      if (prev === next) target = prev;
+      // 落在两段交界处：优先保留入口原分组；否则采用上方分组。
+      else if (prev !== current && next !== current) target = prev;
+    } else if (prev || next) {
+      target = (prev ?? next) as NavGroup;
+    }
+    resolved[movedId] = target;
+  }
+
+  type Run = { group: NavGroup; ids: string[] };
+  type VisibleSection = "core" | "flow" | "system";
+  // 与 WorkbenchShell.navSections 的可见标题保持一致：capture/planning 同为「自动化与内容」。
+  const visibleSectionOf = (group: NavGroup): VisibleSection =>
+    group === "system" ? "system" : group === "core" ? "core" : "flow";
+  const runs: Run[] = [];
+  for (const id of order) {
+    const group = leftGroupFor(id, resolved);
+    const last = runs[runs.length - 1];
+    if (last && last.group === group) last.ids.push(id);
+    else runs.push({ group, ids: [id] });
+  }
+
+  const merged: Run[] = [];
+  const seenSections = new Set<VisibleSection>();
+  let lastSection: VisibleSection | null = null;
+  for (const run of runs) {
+    const section = visibleSectionOf(run.group);
+    if (lastSection === section) {
+      // 同一可见分组的相邻子段（capture 紧接 planning）保留各自归属；标题只出现一次。
+      merged.push({ group: run.group, ids: [...run.ids] });
+      continue;
+    }
+    if (seenSections.has(section) && merged.length > 0) {
+      // 同一标题被其他分组隔开：整段并入上一段，只改归属，不改变左侧顺序。
+      merged[merged.length - 1].ids.push(...run.ids);
+      lastSection = visibleSectionOf(merged[merged.length - 1].group);
+      continue;
+    }
+    merged.push({ group: run.group, ids: [...run.ids] });
+    seenSections.add(section);
+    lastSection = section;
+  }
+
+  const result: Record<string, NavGroup> = { ...resolved };
+  for (const run of merged) {
+    for (const id of run.ids) result[id] = run.group;
+  }
+  return result;
+}
+
 /** 注册中心默认：默认可见入口按默认顺序，known 为当前全部入口。 */
 export function defaultNavigationLayout(): NavLayoutConfig {
   return {
     version: NAV_LAYOUT_VERSION,
     left: defaultVisibleIds("left"),
     capsule: defaultVisibleIds("capsule"),
+    leftGroups: defaultLeftGroups(),
     known: { left: allEntryIds("left"), capsule: allEntryIds("capsule") },
   };
 }
@@ -206,6 +307,17 @@ function knownIds(value: unknown, surface: NavSurface): Set<string> {
   return set;
 }
 
+/** 只接受已知左侧入口 ID + 合法分组值；缺省/损坏项按注册中心默认回退。 */
+function sanitizeLeftGroups(value: unknown): Record<string, NavGroup> | undefined {
+  if (!isRecord(value)) return undefined;
+  const allowed = new Set(allEntryIds("left"));
+  const groups: Record<string, NavGroup> = {};
+  for (const [id, group] of Object.entries(value)) {
+    if (allowed.has(id) && isNavGroup(group)) groups[id] = group;
+  }
+  return Object.keys(groups).length > 0 ? groups : undefined;
+}
+
 /**
  * 归一化任意来源的布局配置。
  *
@@ -278,6 +390,7 @@ export function normalizeNavigationLayout(raw: unknown): NavLayoutNormalization 
       version: NAV_LAYOUT_VERSION,
       left: visible.left,
       capsule: visible.capsule,
+      leftGroups: reconcileLeftGroups(visible.left, sanitizeLeftGroups(raw.leftGroups)),
       known: { left: allEntryIds("left"), capsule: allEntryIds("capsule") },
     },
     migrated,

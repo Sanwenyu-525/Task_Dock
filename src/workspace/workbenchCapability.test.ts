@@ -34,14 +34,25 @@ describe("workspace capability", () => {
     expect(workspace.permissions).toContain("opener:default"); // 打开项目目录/定位文件
   });
 
-  it("不复制主窗口的通知/开机自启/全局快捷键/窗口几何权限", () => {
+  it("窗口手势只授予自绘标题栏的拖动/缩放，不授予改位置/改尺寸", () => {
+    // 工作台 decorations(false)：顶栏拖动与四角缩放都由前端发起原生手势，
+    // 其余几何仍由 Rust 记忆矩形 + 显示器收敛决定（前端不得直接改）。
+    expect(workspace.permissions).toContain("core:window:allow-start-dragging");
+    expect(workspace.permissions).toContain("core:window:allow-start-resize-dragging");
+    for (const forbidden of [
+      "core:window:allow-set-position",
+      "core:window:allow-set-size",
+    ]) {
+      expect(workspace.permissions, `${forbidden} 不应授予工作台`).not.toContain(forbidden);
+      expect(main.permissions, `${forbidden} 应只属于主窗口`).toContain(forbidden);
+    }
+  });
+
+  it("不复制主窗口的通知/开机自启/全局快捷键权限", () => {
     for (const forbidden of [
       "notification:default",
       "autostart:default",
       "global-shortcut:default",
-      "core:window:allow-set-position",
-      "core:window:allow-set-size",
-      "core:window:allow-start-dragging",
     ]) {
       expect(workspace.permissions, `${forbidden} 不应授予工作台`).not.toContain(forbidden);
       expect(main.permissions, `${forbidden} 应只属于主窗口`).toContain(forbidden);

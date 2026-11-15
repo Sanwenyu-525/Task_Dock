@@ -76,8 +76,7 @@ pub fn corner_at(cursor: (i32, i32), rect: (i32, i32, i32, i32), grip: i32) -> O
 /// 指针在本窗口角热区内时把光标设为对应双向箭头，返回是否改写。
 ///
 /// 只在 `WM_EXITSIZEMOVE`（延后一拍）与 `WM_SETCURSOR`（HTCLIENT）调用；
-/// 停靠胶囊态不参与（前端不渲染四角手柄，区域也不是整窗矩形）。
-///
+/// 停靠胶囊态不参与（前端不渲染四角手柄，区域也不是整窗矩形）。///
 /// 先做 `WindowFromPoint` 归属校验：主窗区域是圆角二值裁剪，角点最外侧 1–3px
 /// 属于**下层窗口**（见 `window_shape.rs`）。那段像素上的光标应由下层窗口决定，
 /// 这里不得越权改写——热区判定与真实命中区因此保持一致。
@@ -86,11 +85,15 @@ pub fn restore_at_corner(hwnd: isize) -> bool {
     use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetAncestor, GetCursorPos, GetWindowRect, LoadCursorW, SetCursor, WindowFromPoint, GA_ROOT,
-        IDC_SIZENESW, IDC_SIZENWSE,
+        GetAncestor, GetCursorPos, GetWindowRect, IsZoomed, LoadCursorW, SetCursor, WindowFromPoint,
+        GA_ROOT, IDC_SIZENESW, IDC_SIZENWSE,
     };
 
-    if hwnd == 0 || crate::window_shape::is_capsule_mode(hwnd) {
+    // 最大化窗口的边框在屏幕外、无法拖拽改变尺寸：四角不得显示缩放光标。
+    if hwnd == 0
+        || crate::window_shape::is_capsule_mode(hwnd)
+        || unsafe { IsZoomed(hwnd as HWND) } != 0
+    {
         return false;
     }
     unsafe {
@@ -129,6 +132,129 @@ pub fn restore_at_corner(hwnd: isize) -> bool {
         SetCursor(handle);
         true
     }
+}
+
+/// 独立窗口（工作台）的角热区光标恢复钩子（2026-11-15）。
+///
+/// 主窗的 `WM_SETCURSOR` / `WM_EXITSIZEMOVE` 由 `magnetic.rs` 的子类化顺带处理；
+/// 工作台窗口没有磁力层，也没有自己的窗口过程，斜角缩放退出后同样会停在默认
+/// 箭头（根因同上）。这里挂一个**只做光标恢复**的最小窗口过程：
+/// - 不改几何、不做吸附、不拦截任何业务消息；
+/// - `WM_EXITSIZEMOVE` 延后一拍投递自定义消息再 `SetCursor`（循环退出后 Windows
+///   还会重设一次光标，当场恢复会被覆盖）；
+/// - `WM_SETCURSOR` 只在 HTCLIENT 且指针确实落在角热区时改写；
+/// - `WM_NCDESTROY` 还原原窗口过程并摘除表项（窗口关闭/重建不留悬挂函数指针）。
+#[cfg(windows)]
+mod watch {
+    use super::restore_at_corner;
+    use std::sync::Mutex;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, DefWindowProcW, PostMessageW, SetWindowLongPtrW, GWLP_WNDPROC, HTCLIENT,
+        WM_APP, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SETCURSOR, WNDPROC,
+    };
+
+    /// 延后一拍的角光标恢复（与磁力层的 `WM_CURSOR_CORNER` 同一理由）。
+    const WM_CURSOR_CORNER: u32 = WM_APP + 0x62;
+
+    /// (hwnd, 原窗口过程)；工作台窗口生命周期内至多一个表项。
+    static WATCHES: Mutex<Vec<(isize, isize)>> = Mutex::new(Vec::new());
+
+    fn old_proc(hwnd: isize) -> isize {
+        let list = WATCHES.lock().unwrap_or_else(|e| e.into_inner());
+        list.iter()
+            .find(|(h, _)| *h == hwnd)
+            .map(|(_, old)| *old)
+            .unwrap_or(0)
+    }
+
+    fn call_old(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        let old = old_proc(hwnd as isize);
+        if old == 0 {
+            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+        }
+        let proc: WNDPROC = unsafe { std::mem::transmute(old) };
+        unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) }
+    }
+
+    unsafe extern "system" fn watch_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            WM_EXITSIZEMOVE => {
+                // 不在模态循环内改光标：循环返回后系统还会重设一次。
+                PostMessageW(hwnd, WM_CURSOR_CORNER, 0, 0);
+            }
+            WM_CURSOR_CORNER => {
+                restore_at_corner(hwnd as isize);
+                return 0;
+            }
+            WM_SETCURSOR if (lparam as usize & 0xFFFF) as u32 == HTCLIENT => {
+                // LOWORD(lParam) 才是命中测试值；wParam 是窗口句柄。
+                if restore_at_corner(hwnd as isize) {
+                    return 1;
+                }
+            }
+            WM_NCDESTROY => {
+                // 先摘表项 + 还原原过程，再把销毁消息转给它。
+                let removed = {
+                    let mut list = WATCHES.lock().unwrap_or_else(|e| e.into_inner());
+                    let index = list.iter().position(|(h, _)| *h == hwnd as isize);
+                    index.map(|index| list.remove(index).1)
+                };
+                match removed {
+                    Some(old) => {
+                        let proc: WNDPROC = unsafe { std::mem::transmute(old) };
+                        unsafe {
+                            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, old);
+                            return CallWindowProcW(proc, hwnd, msg, wparam, lparam);
+                        }
+                    }
+                    None => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+                }
+            }
+            _ => {}
+        }
+        call_old(hwnd, msg, wparam, lparam)
+    }
+
+    /// 安装（必须在窗口所属线程调用）。幂等：同一 HWND 只装一次。
+    pub fn install(hwnd: isize) -> bool {
+        if hwnd == 0 {
+            return false;
+        }
+        let mut list = WATCHES.lock().unwrap_or_else(|e| e.into_inner());
+        if list.iter().any(|(h, _)| *h == hwnd) {
+            return true;
+        }
+        let old = unsafe {
+            SetWindowLongPtrW(
+                hwnd as HWND,
+                GWLP_WNDPROC,
+                watch_proc as *const () as usize as isize,
+            )
+        };
+        if old == 0 {
+            tracing::warn!(hwnd, "角缩放光标钩子安装失败（SetWindowLongPtrW 返回 0）");
+            return false;
+        }
+        list.push((hwnd, old));
+        true
+    }
+}
+
+/// 在工作台窗口上安装角热区光标恢复钩子。非 Windows 直接返回 false。
+#[cfg(windows)]
+pub fn install(hwnd: isize) -> bool {
+    watch::install(hwnd)
+}
+
+#[cfg(not(windows))]
+pub fn install(_hwnd: isize) -> bool {
+    false
 }
 
 #[cfg(test)]

@@ -873,6 +873,24 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   测试：`hooks/useNavOrderDraft.test.tsx`（在途失败 / 过期失败 / >4 轮持续输入 / 卸载去重 /
   卸载失败留痕 / 卸载落库）；`NavigationVisibility.sync.test.tsx` 增补在途失败中止显隐、在途
   恢复默认、切换事务成功 / 失败 / 重试与输入封锁。
+- 导航分组归属与行内操作列（2026-11-15）：跨组拖拽后不再按入口静态 `group` 重新分桶，
+  侧栏标题和真实顺序共用同一份归属。
+  ①**数据契约**：`NavLayoutConfig` 新增可选 `leftGroups: Record<entryId, NavGroup>`，仍写入
+  `navigation_layout` 同一份 version 1 配置，不新增设置键、Store、localStorage 或迁移；
+  缺省字段按注册中心 `group` 回退，隐藏入口的归属也保留。
+  ②**收敛规则**：`reconcileLeftGroups(order, groups, movedId)` 先按落点前后邻居决定被拖入口
+  归属，再把重复的可见分组段（工作协同 / 自动化与内容 / 项目与系统）并入前一段；只改归属，
+  不改 `left` 顺序、不丢入口。`normalizeNavigationLayout` 与恢复默认使用同一函数，
+  手工改库产生的重复标题也会被清洗。
+  ③**写入链路**：`useNavOrderDraft` 的乐观草稿和写入同时携带顺序与 `leftGroups`；
+  `navOrderIntent` 与设置页排序共用这份归属，因此侧栏和设置页不会各自推导出不同标题。
+  ④**视觉结构**：普通行固定五列 `26px 20px minmax(0,1fr) auto 24px`，行首 26×28 的
+  `GripVertical` 15px 手柄（默认低对比灰、无默认背景，悬停强调色、仅拖拽时轻背景），
+  行尾 24×24 的 ×（默认 opacity 0，行 hover/focus-within 显示）；固定首页/设置保留空轨道，
+  保证功能图标和 Tab 名称对齐且 200px 导航不横向溢出。
+  测试：`WorkbenchShell.dragSort.test.tsx`（26 项，含跨组标题/尺寸/网格/隐藏/保存失败）、
+  `navVisibility.test.ts`（37 项，含重复标题段收敛）、`useNavOrderDraft.test.tsx`（6 项）、
+  `navOrderIntent.test.ts`（11 项）。
 - 设置页信息架构（2026-11-06，一级分类 + 查找定位）：设置页从「十几个分组纵向堆叠」
   改为**六个一级分类**（通用与外观 / 功能与应用 / 通知与语音 / 数据与资源 / 接入与诊断 /
   帮助与教程），同一时刻只渲染当前分类的分组。
@@ -1803,10 +1821,33 @@ unsupported`，字节与流落到 `data_dir/drag-incoming` 的暂存副本，前
 不再作为第二套导航外壳存在。
 
 `workspace` 窗口 `decorations(false)`，顶栏本身就是它的标题栏：品牌 + 工作空间选择 +
-搜索 + 快速创建 + 右栏开关 + 明暗主题菜单 + 窗口按钮。其中明暗主题入口
-（`src/workbench/WorkbenchThemeMenu.tsx`，2026-11-15）与主窗口标题栏的「明暗」菜单同一语义，
-写库走 `useSettingsStore.update({ theme })`——Rust 更新成功后广播 `theme-changed`，
-主窗口、右键菜单与胶囊同步应用，不新增第二套主题管道。
+搜索 + 快速创建 + 右栏开关 + 明暗主题菜单 + 视觉主题（预设）菜单 + 窗口按钮。两个外观入口
+（`src/workbench/WorkbenchThemeMenu.tsx` / `src/workbench/WorkbenchPresetMenu.tsx`，2026-11-15）
+与主窗口标题栏的同名菜单同一语义：明暗写 `useSettingsStore.update({ theme })`、预设写
+`update({ visual_preset })`——Rust 更新成功后分别广播 `theme-changed` /
+`visual-preset-changed`，主窗口、右键菜单与胶囊同步应用，不新增第二套主题/预设管道。
+预设切换会改 `--radius-window`（柔光玻璃 20 / 梦幻渐变 18），工作台圆角由
+`windowFrame` 观察 `data-preset` 后重算并下发 Win32 区域，与主窗同一份窗口外形逻辑。
+
+顶栏整条是 `data-tauri-drag-region="deep"` 的拖动区（Tauri 的 deep 语义：子树任意后代可拖，
+按钮/输入等可交互元素与 `="false"` 子树阻断）。悬停显示 `grab`、按住拖动期间 `grabbing`，
+复用主窗口的 `src/lib/dragCursorSession.ts` 会话机制（`.ui-drag-surface` / `.ui-drag-session`）；
+会话以 `deepRegion: true` 镜像 `drag.js` 的命中规则，否则「只有事件 target 自身声明才起拖」
+会让 deep 顶栏能拖却不变光标。原生相位来自 `drag_watch::install`（本窗口 label，
+`WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE` → `window-drag`），与微件窗口共用同一机制：系统模态
+移动循环期间 WebView2 收不到 `pointerup`，只有原生 `end` 才能松手即复位 grabbing；安装时机
+与 `window_cursor` 相同，经 `run_on_main_thread` 在窗口创建后完成。窗口按钮簇声明
+`data-tauri-drag-region="false"` 且 CSS `cursor: default`，不继承拖动区的抓取手型。
+
+窗口外形仍由 Win32 `SetWindowRgn` 与 `.wb-root` 的 CSS 弧共同定义（见
+`src/workbench/windowFrame.ts`）。区域裁剪同时裁掉了原生 4×4 像素的四角缩放热区，
+因此工作台挂载主窗口同一份 `src/components/WindowResizeGrips.tsx` 四角补偿层
+（2026-11-15，12px 热区 + `startResizeDragging`），斜向拖拽四角可正常缩放；
+`capabilities/workspace.json` 相应只增 `core:window:allow-start-resize-dragging`
+（仍不授予改位置/改尺寸）。工作台没有磁力层窗口过程，松手后的光标回退由
+`window_cursor::install` 挂的最小钩子在 `WM_EXITSIZEMOVE` / `WM_SETCURSOR` 补一次
+`SetCursor`，最大化时四角热区由 CSS 撤掉，不显示不可用的缩放光标。
+热区边长与 Rust `window_cursor::GRIP_CSS` 是跨端契约，改动需两端同步。
 
 ### 2. 单一导航注册中心
 

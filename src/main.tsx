@@ -10,8 +10,13 @@ import { initLocale } from "./i18n";
 import { bootFail, bootStage } from "./boot/bootProtocol";
 import "./styles.css";
 import "./styles-themes.css";
+import "./styles-flat.css";
 import "./styles-ui.css";
 import "./styles-resource.css";
+// 主窗与工作台共用同一套页面页头（WorkbenchPageHeader → .wb-page-header/.wb-ph-*）。
+// 这份样式原先只在 workspace 入口导入，主窗缺少它时页头退化为默认文档流：
+// 图标缩成 19px、动作区整行下沉、标题与按钮错位（2026-11-15 真机截图实测）。
+import "./workbench/workbench.css";
 import "./components/global-search/global-search.css";
 
 // 启动协议阶段信号（tmp/acceptance/startup-experience-v1/BOOT_PROTOCOL.md §3）：

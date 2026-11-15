@@ -33,6 +33,7 @@ import {
   NAV_LAYOUT_SETTING_KEY,
   NAV_LAYOUT_VERSION,
   applyLegacyHiddenEntries,
+  defaultLeftGroups,
   defaultNavigationLayout,
   insertEntryByDefaultOrder,
   moveEntryInList,
@@ -169,6 +170,7 @@ export function moveNavigationEntry(
 export function resetNavigationSurface(surface: NavSurface): Promise<void> {
   return persistNavigationLayout((current) => ({
     ...current,
+    ...(surface === "left" ? { leftGroups: defaultLeftGroups() } : {}),
     [surface]: defaultVisibleIds(surface),
   }));
 }

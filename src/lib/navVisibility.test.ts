@@ -10,14 +10,17 @@ import {
   LEGACY_NAV_VISIBILITY_STORAGE_KEY,
   NAV_LAYOUT_VERSION,
   applyLegacyHiddenEntries,
+  defaultLeftGroups,
   defaultNavigationLayout,
   insertEntryByDefaultOrder,
   isEntryVisible,
   isTabHidden,
+  leftGroupFor,
   moveEntryInList,
   moveEntryToIndex,
   normalizeNavigationLayout,
   readLegacyHiddenEntryIds,
+  reconcileLeftGroups,
   safeTabForHiddenEntry,
 } from "./navVisibility";
 import { allEntryIds, defaultVisibleIds } from "./navigationRegistry";
@@ -217,6 +220,82 @@ describe("导航布局配置", () => {
     expect(safeTabForHiddenEntry(onlyCollection)).toBe("inbox");
     // 任务仍可见时优先任务，与子页无关
     expect(safeTabForHiddenEntry(base, "shelf")).toBe("tasks");
+  });
+});
+
+// ── 分组归属与标题连续性（2026-11-15）─────────────────────────────
+// 跨组拖拽只改入口归属，不改 left 顺序；重复的可见标题段必须并入前一段，
+// 保证侧栏标题「工作协同 / 自动化与内容 / 项目与系统」不会反复出现。
+describe("左侧分组归属与标题连续性", () => {
+  const sectionOf = (group: ReturnType<typeof leftGroupFor>): string =>
+    group === "system" ? "system" : group === "core" ? "core" : "flow";
+  const visibleSections = (
+    order: readonly string[],
+    groups: Parameters<typeof leftGroupFor>[1],
+  ): string[] => {
+    const sections: string[] = [];
+    for (const id of order) {
+      const section = sectionOf(leftGroupFor(id, groups));
+      if (sections[sections.length - 1] !== section) sections.push(section);
+    }
+    return sections;
+  };
+
+  it("默认归属覆盖全部左侧入口，并保留 capture / planning 子分组语义", () => {
+    const groups = defaultLeftGroups();
+    expect(Object.keys(groups).sort()).toEqual([...ALL_LEFT].sort());
+    expect(groups.actions).toBe("capture");
+    expect(groups.history).toBe("planning");
+    expect(groups.workbench).toBe("core");
+    expect(groups.settings).toBe("system");
+    const reconciled = reconcileLeftGroups(defaultNavigationLayout().left, groups);
+    expect(reconciled.actions).toBe("capture");
+    expect(reconciled.history).toBe("planning");
+  });
+
+  it("历史跨组拖到顶部：归入落点分组，左侧顺序原样保留", () => {
+    const base = defaultNavigationLayout();
+    const order = ["history", ...base.left.filter((id) => id !== "history")];
+    const before = [...order];
+    const groups = reconcileLeftGroups(order, base.leftGroups, "history");
+    expect(groups.history).toBe("core");
+    expect(order).toEqual(before);
+    expect(visibleSections(order, groups)).toEqual(["core", "flow", "system"]);
+    expect(Object.keys(groups).sort()).toEqual([...ALL_LEFT].sort());
+  });
+
+  it("旧配置里被隔开的重复标题段并入前一段，顺序不变", () => {
+    const base = defaultNavigationLayout();
+    const order = ["actions", "workbench", "history", "settings"];
+    const groups = reconcileLeftGroups(order, base.leftGroups);
+    // actions 是 flow，workbench 是 core；history 的 planning 段与 actions 的 flow 段
+    // 标题相同且被 core 隔开，因此整段并入上一段 core，不再重复渲染标题。
+    expect(groups.history).toBe("core");
+    expect(visibleSections(order, groups)).toEqual(["flow", "core", "system"]);
+  });
+
+  it("归一化会清洗手工产生的重复标题段，并提供完整分组映射", () => {
+    const base = defaultNavigationLayout();
+    const raw = {
+      ...base,
+      left: ["actions", "workbench", "history", "settings"],
+      leftGroups: {
+        ...base.leftGroups,
+        actions: "capture",
+        workbench: "core",
+        history: "planning",
+        settings: "system",
+      },
+    };
+    const result = normalizeNavigationLayout(raw);
+    expect(result.config.left).toEqual(raw.left);
+    expect(result.config.leftGroups?.history).toBe("core");
+    expect(visibleSections(result.config.left, result.config.leftGroups)).toEqual([
+      "flow",
+      "core",
+      "system",
+    ]);
+    expect(Object.keys(result.config.leftGroups ?? {}).sort()).toEqual([...ALL_LEFT].sort());
   });
 });
 

@@ -22,6 +22,7 @@ import {
 import {
   Columns2,
   FolderPlus,
+  FolderTree,
   LayoutGrid,
   LayoutPanelTop,
   Maximize2,
@@ -1017,6 +1018,9 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       {/* 顶部工具栏（不重复 Shell 既有功能） */}
       <header className="fw-toolbar">
         <div className="fw-toolbar-title">
+          <span className="fw-toolbar-glyph" aria-hidden="true">
+            <FolderTree size={18} strokeWidth={1.75} />
+          </span>
           <span className="fw-toolbar-name">{t("fw.title")}</span>
           {project && (
             <span className="fw-toolbar-project" data-tip={project.rootPath || undefined}>

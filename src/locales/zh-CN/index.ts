@@ -880,6 +880,8 @@ export const zhCN = {
   "workbench.windowClose": "关闭工作台",
   "workbench.themeMenu": "明暗主题（当前：{theme}）",
   "workbench.themeFailed": "切换主题失败：{error}",
+  "workbench.presetMenu": "视觉主题（当前：{preset}）",
+  "workbench.presetFailed": "切换视觉主题失败：{error}",
   "workbench.quick": "快捷入口",
   "workbench.projectsTitle": "工作空间项目",
   "workbench.noProjects": "还没有工作空间项目；任务、Agent、收集与暂存等通用功能不需要项目。",

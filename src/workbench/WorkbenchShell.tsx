@@ -56,6 +56,7 @@ import ErrorBoundary from "../components/ErrorBoundary";
 import TabLeaveGuard from "../components/TabLeaveGuard";
 import Toast from "../components/Toast";
 import TooltipLayer from "../components/ui/TooltipLayer";
+import WindowResizeGrips from "../components/WindowResizeGrips";
 import { Dialog, DropdownMenu, Select } from "../components/ui";
 import TasksPanel from "../components/tasks/TasksPanel";
 import AgentPanel from "../components/agents/AgentPanel";
@@ -67,10 +68,12 @@ import { WIDGET_SOURCES } from "../components/widgets/liveSources";
 import { GlobalSearchDialog } from "../components/global-search/GlobalSearchDialog";
 import MobilePairingDialog from "../components/mobile/MobilePairingDialog";
 import TaskContextDrawer from "../components/context/TaskContextDrawer";
+import { attachDragCursorSession } from "../lib/dragCursorSession";
 
 import WorkbenchHome from "./WorkbenchHome";
 import WorkbenchContextPane from "./WorkbenchContextPane";
 import WorkbenchThemeMenu from "./WorkbenchThemeMenu";
+import WorkbenchPresetMenu from "./WorkbenchPresetMenu";
 import WorkbenchWindowControls from "./WorkbenchWindowControls";
 import { WorkbenchDetailHostProvider } from "./pageDetail";
 
@@ -173,14 +176,17 @@ type ProjectModuleRequest = { token: number; module: "overview" | "items" | "lin
 function RouteBoundary({
   id,
   label,
+  resetKey,
   children,
 }: {
   id: string;
   label?: string;
+  /** 页面重新进入时变化 → 自动清除旧错误并重试一次（不跨页面残留）。 */
+  resetKey?: unknown;
   children: ReactNode;
 }) {
   return (
-    <ErrorBoundary scope={`工作台/${id}`} variant="compact" resetKey={id} label={label}>
+    <ErrorBoundary scope={`工作台/${id}`} variant="compact" resetKey={resetKey ?? id} label={label}>
       {children}
     </ErrorBoundary>
   );
@@ -190,21 +196,31 @@ function RouteBoundary({
  * 功能槽位：复用主面板的 `.tab-content-*` 页面骨架（页面内部滚动/贴顶筛选等
  * 依赖这些类），但去掉主窗口的 560px 阅读宽度限制（工作台是宽屏宿主）。
  * DeferredView 保证首次访问前不挂载、访问后保活（切页不丢草稿与滚动位置）。
+ *
+ * 错误边界必须**在槽位内部**：它一旦接替渲染，就会替换掉外层 `hidden`
+ * 槽位节点；若边界放在槽位外，失败页会一直留在 `.wb-content` 里与后续
+ * 页面纵向堆叠（多个页面同时「暂时无法显示」）。放在内部后，隐藏槽位
+ * 仍然持有失败态，切页时随 `hidden` 一起消失；重新进入页面时
+ * `resetKey` 变化会自动重试一次。
  */
 function RouteSlot({
   id,
   active,
+  label,
   children,
 }: {
   id: string;
   active: boolean;
+  label: string;
   children: ReactNode;
 }) {
   return (
     <DeferredView active={active}>
       <WorkbenchPageActiveContext.Provider value={active}>
         <div className={`tab-content tab-content-${id} wb-route`} hidden={!active}>
-          {children}
+          <RouteBoundary id={id} label={label} resetKey={active}>
+            {children}
+          </RouteBoundary>
         </div>
       </WorkbenchPageActiveContext.Provider>
     </DeferredView>
@@ -977,9 +993,19 @@ export default function WorkbenchShell() {
     };
   }, []);
 
+  // 顶栏是 `data-tauri-drag-region="deep"` 的整条拖动区：挂主窗同一套拖拽光标
+  // 会话（悬停 grab、按住拖动期间 grabbing）。原生 `window-drag` 相位由 Rust
+  // `drag_watch` 发到本窗口，松手即复位，不依赖用户在指针上再动一次。
+  const topbarRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const node = topbarRef.current;
+    if (!node) return;
+    const session = attachDragCursorSession(node, { deepRegion: true });
+    return () => session.dispose();
+  }, []);
+
   // 应用内快捷键：与主窗口同一运行时，但分发到本窗口 store（Ctrl+数字/Ctrl+K）。
   useHotkeysRuntime();
-
   // ── 派生数据 ────────────────────────────────────────────────────────
   // 排序草稿的基准是**已提交**配置（与设置页一致）：乐观意图叠加在它上面，
   // 读事实源才能正确计算下一步与失败回滚。
@@ -999,8 +1025,15 @@ export default function WorkbenchShell() {
     },
     [showToast, t],
   );
-  const navDraft = useNavOrderDraft("left", committedLayout.left, isFixedNavEntry, onNavOrderError);
+  const navDraft = useNavOrderDraft(
+    "left",
+    committedLayout.left,
+    isFixedNavEntry,
+    onNavOrderError,
+    committedLayout.leftGroups,
+  );
   const navOrderIds = navDraft.ids;
+  const leftGroups = navDraft.leftGroups;
   const moveNavEntry = navDraft.move;
   const moveNavEntryTo = navDraft.moveTo;
 
@@ -1171,14 +1204,15 @@ export default function WorkbenchShell() {
     .filter((entry): entry is NavEntry => entry !== undefined);
   const hiddenEntries = LEFT_ENTRIES.filter((entry) => !navOrderIds.includes(entry.id));
 
-  // 导航分节（2026-11-15）：只把**连续**且同属一个分组的入口归为一段，分段标题
-  // 由入口自身分组推导，不再按静态 group 重新分桶。跨分组拖拽后实际位置即
-  // `navigation_layout.left` 的顺序；必要时允许重复标题（用户排序优先）。
+  // 导航分节：只把连续且同属一个分组的入口归为一段。分组归属来自
+  // `navigation_layout.leftGroups`（跨组拖拽时与顺序一起落库）；缺省按注册中心
+  // 分组回退。因此跨组后入口真正归入落点分组，侧栏不会反复出现同一个标题。
   const navSections = useMemo(() => {
     type NavSectionKey = "core" | "flow" | "system";
     const sectionOf = (entry: NavEntry): NavSectionKey => {
-      if (entry.group === "system") return "system";
-      if (entry.group === "core") return "core";
+      const group = leftGroups?.[entry.id] ?? entry.group;
+      if (group === "system") return "system";
+      if (group === "core") return "core";
       return "flow";
     };
     const labels: Record<NavSectionKey, string> = {
@@ -1196,7 +1230,7 @@ export default function WorkbenchShell() {
       const section = sectionOf(entry);
       const last = sections[sections.length - 1];
       if (!last || last.section !== section) {
-        // 标题可能重复出现，React key 用「分组 + 段首入口 ID」保证唯一。
+        // 标题最多出现一次；段首入口 ID 仍用于稳定 key。
         sections.push({
           key: `${section}-${entry.id}`,
           section,
@@ -1207,7 +1241,7 @@ export default function WorkbenchShell() {
       sections[sections.length - 1].items.push(entry);
     }
     return sections;
-  }, [entriesToRender, t]);
+  }, [entriesToRender, leftGroups, t]);
 
   const counts = {
     intervention: actionsEnabled ? actionFeed?.counts.intervention ?? 0 : 0,
@@ -1383,8 +1417,10 @@ export default function WorkbenchShell() {
             aria-current={atHome ? "page" : undefined}
             onClick={() => goRoute("home")}
           >
-            <LayoutDashboard size={18} strokeWidth={1.75} aria-hidden="true" />
-            <span>{t("workbench.home")}</span>
+            <span className="wb-nav-icon">
+              <LayoutDashboard size={18} strokeWidth={1.75} aria-hidden="true" />
+            </span>
+            <span className="wb-nav-label">{t("workbench.home")}</span>
           </button>
           <div className="wb-nav-sep" role="presentation" />
           {navDrag.dropLineTop !== null && (
@@ -1414,11 +1450,9 @@ export default function WorkbenchShell() {
                     key={entry.id}
                     role="button"
                     tabIndex={0}
-                    className={`wb-nav-item${active ? " active" : ""}${dragging ? " is-dragging" : ""}`}
+                    className={`wb-nav-item has-grip${active ? " active" : ""}${dragging ? " is-dragging" : ""}`}
                     aria-current={active ? "page" : undefined}
                     aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
-                    // 拖拽期间不显示悬停提示：鼠标扫过其它行时 tooltip 会挡住落点线。
-                    data-tip={navDrag.draggingId ? undefined : label}
                     data-nav-entry={entry.id}
                     style={translate !== 0 ? { transform: `translateY(${translate}px)` } : undefined}
                     onClick={() => {
@@ -1439,6 +1473,21 @@ export default function WorkbenchShell() {
                       onNavEntryKeyDown(event, entry.id);
                     }}
                   >
+                    <span
+                      className="wb-nav-grip"
+                      data-nav-grip
+                      aria-hidden="true"
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        navDrag.beginDrag(event, entry.id);
+                      }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                      }}
+                    >
+                      <GripVertical size={15} strokeWidth={2} />
+                    </span>
                     <span className="wb-nav-icon">
                       <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
                     </span>
@@ -1448,28 +1497,13 @@ export default function WorkbenchShell() {
                         {count > 99 ? "99+" : count}
                       </em>
                     )}
-                    {/* 操作区固定占位：只切换透明度，悬停时行宽度不会跳变。拖拽
-                        只从手柄启动，× 的任何事件都不冒泡到行。 */}
+                    {/* 行尾操作区固定占位：只切换透明度，悬停时行宽度不会跳变。
+                        拖拽只从左侧手柄启动，× 的任何事件都不冒泡到行。 */}
                     <span
                       className="wb-nav-actions"
                       onPointerDown={(event) => event.stopPropagation()}
                       onClick={(event) => event.stopPropagation()}
                     >
-                      <span
-                        className="wb-nav-grip"
-                        data-nav-grip
-                        aria-hidden="true"
-                        onPointerDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          navDrag.beginDrag(event, entry.id);
-                        }}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                        }}
-                      >
-                        <GripVertical size={18} strokeWidth={2} />
-                      </span>
                       <button
                         type="button"
                         className="wb-nav-hide"
@@ -1506,7 +1540,7 @@ export default function WorkbenchShell() {
           {hiddenEntries.length > 0 && (
             <DropdownMenu
               menuLabel={t("nav.hiddenMenu")}
-              placement="bottom-start"
+              placement="right-end"
               trigger={({ ref, expanded, onClick, onKeyDown }) => (
                 <button
                   ref={ref}
@@ -1555,12 +1589,13 @@ export default function WorkbenchShell() {
                 className={`wb-nav-item${active ? " active" : ""}`}
                 aria-current={active ? "page" : undefined}
                 aria-label={label}
-                data-tip={label}
                 onClick={() => {
                   openEntry(entry);
                 }}
               >
-                <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
+                <span className="wb-nav-icon">
+                  <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
+                </span>
                 <span className="wb-nav-label">{label}</span>
               </button>
             );
@@ -1593,7 +1628,11 @@ export default function WorkbenchShell() {
         {/* 顶栏同时是自绘标题栏：工作台窗口 decorations(false)，这里用 `deep`
             声明整条顶栏为拖动区；Tauri 的拖动脚本会跳过按钮/带 tabindex 的
             可交互元素，因此搜索、创建、项目选择与右端窗口按钮都不会丢点击。 */}
-        <header className="wb-topbar" data-tauri-drag-region="deep">
+        <header
+          ref={topbarRef}
+          className="wb-topbar ui-drag-surface ui-drag-session"
+          data-tauri-drag-region="deep"
+        >
           <div className="wb-topbar-brand">
             <span className="wb-brand-mark" aria-hidden="true">
               <Layers size={13} strokeWidth={2} />
@@ -1687,6 +1726,9 @@ export default function WorkbenchShell() {
             {/* 明暗主题：顶栏即标题栏，切主题不该只能绕到设置页（与主窗口
                 标题栏的「明暗」菜单同一语义，写库走同一设置管道）。 */}
             <WorkbenchThemeMenu />
+            {/* 视觉主题（柔光玻璃 / 梦幻渐变）：与明暗正交，改的是
+                `visual_preset`；工作台圆角随预设变化由 windowFrame 重算。 */}
+            <WorkbenchPresetMenu />
           </div>
           <WorkbenchWindowControls />
         </header>
@@ -1721,8 +1763,7 @@ export default function WorkbenchShell() {
                 <div className="panel-loading" role="status" aria-label={t("nav.loading")} />
               }
             >
-              <RouteBoundary id="workspace" label={t("nav.workspace")}>
-                <RouteSlot id="workspace" active={route === "workspace"}>
+              <RouteSlot label={t("nav.workspace")} id="workspace" active={route === "workspace"}>
                   <ProjectWorkspacePanel
                     project={selected}
                     devProjects={devProjects}
@@ -1736,109 +1777,74 @@ export default function WorkbenchShell() {
                     moduleRequest={moduleRequest}
                   />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="files" label={t("nav.files")}>
-                <RouteSlot id="files" active={route === "files"}>
+              <RouteSlot label={t("nav.files")} id="files" active={route === "files"}>
                   <FilesWorkspacePanel project={selected} />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="workbench" label={t("nav.workbench")}>
-                <RouteSlot id="workbench" active={route === "workbench"}>
+              <RouteSlot label={t("nav.workbench")} id="workbench" active={route === "workbench"}>
                   <DevWorkbenchPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="tasks" label={t("nav.tasks")}>
-                <RouteSlot id="tasks" active={route === "tasks"}>
+              <RouteSlot label={t("nav.tasks")} id="tasks" active={route === "tasks"}>
                   <TasksPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="agents" label={t("nav.agents")}>
-                <RouteSlot id="agents" active={route === "agents"}>
+              <RouteSlot label={t("nav.agents")} id="agents" active={route === "agents"}>
                   <AgentPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="actions" label={t("nav.actions")}>
-                <RouteSlot id="actions" active={route === "actions"}>
+              <RouteSlot label={t("nav.actions")} id="actions" active={route === "actions"}>
                   <ActionCenterPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="clipboard" label={t("nav.clipboard")}>
-                <RouteSlot id="clipboard" active={route === "clipboard"}>
+              <RouteSlot label={t("nav.clipboard")} id="clipboard" active={route === "clipboard"}>
                   <ClipboardPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="collection" label={t("nav.collection")}>
-                <RouteSlot id={tab === "shelf" ? "shelf" : "inbox"} active={route === "inbox" || route === "shelf"}>
+              <RouteSlot label={t("nav.collection")} id={tab === "shelf" ? "shelf" : "inbox"} active={route === "inbox" || route === "shelf"}>
                   <CollectionPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="apps" label={t("nav.apps")}>
-                <RouteSlot id="apps" active={route === "apps"}>
+              <RouteSlot label={t("nav.apps")} id="apps" active={route === "apps"}>
                   <AppsPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="widgets" label={t("nav.widgets")}>
-                <RouteSlot id="widgets" active={route === "widgets"}>
+              <RouteSlot label={t("nav.widgets")} id="widgets" active={route === "widgets"}>
                   <WidgetsPanel sources={WIDGET_SOURCES} />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="mobile" label={t("nav.mobile")}>
-                <RouteSlot id="mobile" active={route === "mobile"}>
+              <RouteSlot label={t("nav.mobile")} id="mobile" active={route === "mobile"}>
                   <MobileTransferPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="workflows" label={t("nav.workflows")}>
-                <RouteSlot id="workflows" active={route === "workflows"}>
+              <RouteSlot label={t("nav.workflows")} id="workflows" active={route === "workflows"}>
                   <WorkflowsPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="history" label={t("nav.history")}>
-                <RouteSlot id="history" active={route === "history"}>
+              <RouteSlot label={t("nav.history")} id="history" active={route === "history"}>
                   <HistoryPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="roadmap" label={t("nav.roadmap")}>
-                <RouteSlot id="roadmap" active={route === "roadmap"}>
+              <RouteSlot label={t("nav.roadmap")} id="roadmap" active={route === "roadmap"}>
                   <PlanningCenterPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="help" label={t("nav.help")}>
-                <RouteSlot id="help" active={route === "help"}>
+              <RouteSlot label={t("nav.help")} id="help" active={route === "help"}>
                   <HelpCenterPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="diagnostics" label={t("nav.diagnostics")}>
-                <RouteSlot id="diagnostics" active={route === "diagnostics"}>
+              <RouteSlot label={t("nav.diagnostics")} id="diagnostics" active={route === "diagnostics"}>
                   <DiagnosticsCenterPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="resource" label={t("nav.resource")}>
-                <RouteSlot id="resource" active={route === "resource"}>
+              <RouteSlot label={t("nav.resource")} id="resource" active={route === "resource"}>
                   <ResourceManagementPanel />
                 </RouteSlot>
-              </RouteBoundary>
 
-              <RouteBoundary id="settings" label={t("nav.settings")}>
-                <RouteSlot id="settings" active={route === "settings"}>
+              <RouteSlot label={t("nav.settings")} id="settings" active={route === "settings"}>
                   <SettingsPanel />
                 </RouteSlot>
-              </RouteBoundary>
             </Suspense>
           </main>
 
@@ -1896,6 +1902,12 @@ export default function WorkbenchShell() {
           )}
         </footer>
       </div>
+
+      {/* 四角缩放命中层：workspace 窗口与主窗同样用 SetWindowRgn 裁圆角，
+          原生 4×4 角热区恰好落在被裁掉的像素上，不补这层四角就无法斜向缩放。
+          复用主窗口同一组件与同一 12px 热区（跨端契约见 styles-themes.css
+          与 Rust `window_cursor::GRIP_CSS`），不新增第二套手势实现。 */}
+      <WindowResizeGrips />
 
       <GlobalSearchDialog />
       <MobilePairingDialog />

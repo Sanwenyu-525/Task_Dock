@@ -558,6 +558,14 @@ test("状态目录：同一仓库的不同 Worktree 解析到同一个全局位�
   assert.throws(() => resolveStateHome({ cwd: ".", env: { TASKDOCK_BUILD_SCHED_HOME: "relative/path" } }));
 });
 
+test("状态目录：Git 不在 PATH 时仍通过 .git 定位，不静默退回 tmpdir", () => {
+  const repo = join(tmpRoot, "fake-git-repo");
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  const r = resolveStateHome({ cwd: repo, env: { PATH: "" } });
+  assert.equal(r.source, "git-common-dir");
+  assert.equal(r.home, join(repo, ".git", "taskdock-build-sched"));
+});
+
 test("槽位命名：重型只有 1 个槽位，轻量按配置并行", () => {
   assert.deepEqual(slotNames("heavy", cfg.heavyConcurrency), ["heavy-1"]);
   assert.deepEqual(slotNames("light", cfg.lightConcurrency), ["light-1", "light-2"]);

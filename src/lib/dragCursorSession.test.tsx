@@ -483,3 +483,61 @@ describe("attachDragCursorSession", () => {
     session.dispose();
   });
 });
+
+describe("attachDragCursorSession · deep 拖动区（工作台顶栏）", () => {
+  function mountDeepRoot() {
+    const root = document.createElement("div");
+    root.className = "ui-drag-session";
+    root.setAttribute("data-tauri-drag-region", "deep");
+    root.innerHTML = `
+      <span class="surface">TaskDock</span>
+      <button type="button" class="action">搜索</button>
+      <input class="field" />
+      <span class="blocked" data-tauri-drag-region="false"><span class="blocked-child">停靠区</span></span>
+    `;
+    document.body.appendChild(root);
+    return root;
+  }
+
+  function part(root: HTMLElement, selector: string) {
+    return root.querySelector(selector) as HTMLElement;
+  }
+
+  it("deep 区域内的普通后代按下即起拖，按住期间 grabbing", () => {
+    const root = mountDeepRoot();
+    const session = attachDragCursorSession(root, { deepRegion: true });
+
+    press(part(root, ".surface"));
+    expect(dragging(root)).toBe(true);
+    expect(__activeDragSessionCount()).toBe(1);
+
+    release(document.body);
+    expect(dragging(root)).toBe(false);
+    session.dispose();
+  });
+
+  it("可交互元素与 data-tauri-drag-region=false 子树不起拖（与 drag.js 同一判定）", () => {
+    const root = mountDeepRoot();
+    const session = attachDragCursorSession(root, { deepRegion: true });
+
+    press(part(root, ".action"));
+    expect(dragging(root)).toBe(false);
+    press(part(root, ".field"));
+    expect(dragging(root)).toBe(false);
+    press(part(root, ".blocked-child"));
+    expect(dragging(root)).toBe(false);
+    expect(__activeDragSessionCount()).toBe(0);
+
+    session.dispose();
+  });
+
+  it("默认语义仍只认事件 target 自身的属性（deep 后代不误判）", () => {
+    const root = mountDeepRoot();
+    const session = attachDragCursorSession(root);
+
+    press(part(root, ".surface"));
+    expect(dragging(root)).toBe(false);
+
+    session.dispose();
+  });
+});

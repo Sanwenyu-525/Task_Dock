@@ -1217,6 +1217,36 @@ fn open_or_focus_workbench(
     };
 
     attach_events(app, &win);
+    // 四角缩放（2026-11-15）：区域裁剪把原生角热区裁掉后，前端
+    // `WindowResizeGrips` 的 12px 命中层负责接住手势；缩放循环退出时系统会把
+    // 光标重设成默认箭头，指针静止时不再有 WM_SETCURSOR，CSS cursor 无法重新
+    // 生效（与主窗同一根因）。挂最小窗口过程补一次 SetCursor，不改几何。
+    //
+    // 本函数可能运行在异步命令线程（`workbench_open_window` 是 async），
+    // 窗口过程有线程归属，必须与 `window_shadow::attach` 同一模式回到主线程安装。
+    #[cfg(windows)]
+    {
+        let win_for_hook = win.clone();
+        let app_for_hook = app.clone();
+        if let Err(e) = win.run_on_main_thread(move || match win_for_hook.hwnd() {
+            Ok(handle) => {
+                let hwnd = handle.0 as isize;
+                if !crate::window_cursor::install(hwnd) {
+                    tracing::warn!("工作台四角缩放松手光标恢复未安装");
+                }
+                // 顶栏 `data-tauri-drag-region="deep"` 的拖拽光标会话需要原生相位：
+                // 系统模态移动循环期间 WebView2 收不到 pointerup，只有
+                // WM_EXITSIZEMOVE 才能及时撤掉 grabbing。与微件窗口共用 drag_watch
+                // （只发 window-drag 相位，不改几何、不碰光标）。
+                if !crate::drag_watch::install(&app_for_hook, hwnd, WINDOW_LABEL) {
+                    tracing::warn!("工作台拖拽相位监视未安装，grabbing 只能等指针移动复位");
+                }
+            }
+            Err(e) => tracing::warn!("无法获取工作台句柄，窗口钩子未安装: {e}"),
+        }) {
+            tracing::warn!("工作台窗口钩子调度失败: {e}");
+        }
+    }
     // 与主窗、微件、右键菜单同一条外观链路：Win32 区域裁剪出窗口圆角，
     // 前端 `.wb-root` 只负责同半径的可见弧与 1px 边框（不再各写一套）。
     let _ = sync_workbench_frame(&win);

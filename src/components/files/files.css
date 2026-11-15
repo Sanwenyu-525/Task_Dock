@@ -64,10 +64,24 @@ html[data-theme="light"] .fw-root {
 }
 
 .fw-toolbar-name {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 650;
   color: var(--text-primary);
   white-space: nowrap;
+}
+
+/* 文件工作区是「工作台内的工作区」，没有整页大页头；用一个 32px 图标块
+   与工作台其他页的页头图标语言保持一致，而不是裸文字标题。 */
+.fw-toolbar-glyph {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--border-subtle);
 }
 
 .fw-toolbar-project {
@@ -194,7 +208,7 @@ body.fw-resizing {
 }
 
 .fw-pane.is-active {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--fw-border-strong));
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--fw-border-strong));
 }
 
 /* 布局编辑模式：区域边框轻微强调 + 顶部细把手（普通模式没有整窗格拖拽）。 */

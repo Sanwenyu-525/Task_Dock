@@ -108,6 +108,48 @@ function parsePhase(payload: unknown): "start" | "end" | null {
   return value === "start" || value === "end" ? value : null;
 }
 
+/** 与 Tauri `drag.js` 同一组可交互元素：默认阻断窗口拖动。 */
+const CLICKABLE_TAGS = new Set(["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "LABEL", "SUMMARY"]);
+const INTERACTIVE_ROLES = new Set([
+  "button",
+  "link",
+  "menuitem",
+  "tab",
+  "checkbox",
+  "radio",
+  "switch",
+  "option",
+]);
+
+function isClickableElement(el: HTMLElement): boolean {
+  if (CLICKABLE_TAGS.has(el.tagName)) return true;
+  if (el.hasAttribute("contenteditable") && el.getAttribute("contenteditable") !== "false") {
+    return true;
+  }
+  if (el.hasAttribute("tabindex") && el.getAttribute("tabindex") !== "-1") return true;
+  const role = el.getAttribute("role");
+  return role !== null && INTERACTIVE_ROLES.has(role);
+}
+
+/**
+ * `data-tauri-drag-region="deep"` 起手判定，逐条对齐 Tauri `drag.js` 的
+ * `isDragRegion`（只走到会话根 `root`，不把外层无关容器的声明算进来）：
+ * 可交互元素未声明即阻断；`"false"` 阻断；`deep` 命中子树任意后代；
+ * 裸属性只认直接命中它自身的元素。
+ */
+function isDeepDragRegion(path: EventTarget[], root: HTMLElement): boolean {
+  for (const node of path) {
+    if (!(node instanceof HTMLElement)) continue;
+    const attr = node.getAttribute("data-tauri-drag-region");
+    if (isClickableElement(node) && attr === null) return false;
+    if (attr === "false") return false;
+    if (attr === "deep") return true;
+    if (attr === "" || attr === "true") return node === path[0];
+    if (node === root) break;
+  }
+  return false;
+}
+
 /** 原生移动循环是否仍在运行；查询失败时保守返回 false（不绑定，走指针兜底）。 */
 async function isNativeLoopRunning(generation: number): Promise<boolean> {
   try {
@@ -181,6 +223,15 @@ export interface DragCursorSessionOptions {
    * React 重渲染会用 className 覆盖掉直接改的 DOM 类，二者需保持一致。
    */
   onActiveChange?: (active: boolean) => void;
+
+  /**
+   * 按 `data-tauri-drag-region="deep"` 的语义判定起手（默认只看事件 target 自身）。
+   *
+   * Tauri `drag.js` 的 deep 规则：子树内任意后代都可拖；可交互元素（按钮/输入/
+   * 带 tabindex/交互 role）自身未声明时阻断；`"false"` 阻断。工作台顶栏整条
+   * 声明为 `deep`，用默认语义会「能拖但光标不变」。
+   */
+  deepRegion?: boolean;
 }
 
 export interface DragCursorSessionHandle {
@@ -191,9 +242,10 @@ export interface DragCursorSessionHandle {
 /**
  * 在 `root` 上挂一个拖拽光标会话。
  *
- * 起拖条件与 Tauri 的 drag.js 完全一致：**事件 target 自身**带
+ * 默认起拖条件与 Tauri 的 drag.js 一致：**事件 target 自身**带
  * `data-tauri-drag-region`（父级属性不向下传递），因此按钮、输入框、
- * 列表项这些后代元素不会被误判成拖拽手柄。
+ * 列表项这些后代元素不会被误判成拖拽手柄。传 `deepRegion: true` 时按
+ * `="deep"` 语义走完整后代判定（工作台顶栏整条可拖）。
  */
 export function attachDragCursorSession(
   root: HTMLElement,
@@ -277,7 +329,11 @@ export function attachDragCursorSession(
     if (event.button !== 0) return; // 右键/中键不是窗口拖拽
     const target = event.target;
     if (!(target instanceof Element) || !root.contains(target)) return;
-    if (!target.hasAttribute("data-tauri-drag-region")) return;
+    if (options.deepRegion) {
+      if (!isDeepDragRegion(event.composedPath(), root)) return;
+    } else if (!target.hasAttribute("data-tauri-drag-region")) {
+      return;
+    }
     start();
   };
 
@@ -313,6 +369,7 @@ export function useDragRegion<T extends HTMLElement>(
     if (!node) return;
     const session = attachDragCursorSession(node, {
       onActiveChange: (active) => optionsRef.current.onActiveChange?.(active),
+      deepRegion: optionsRef.current.deepRegion,
     });
     return () => session.dispose();
   }, []);

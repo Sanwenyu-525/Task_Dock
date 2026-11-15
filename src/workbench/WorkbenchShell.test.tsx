@@ -148,6 +148,34 @@ describe("WorkbenchShell", () => {
     expect(screen.getByText("新建任务", { selector: ".wb-quick-tile span" })).toBeTruthy();
   });
 
+  it("渲染四角缩放热区：Win32 圆角裁剪后斜向缩放仍可用", async () => {
+    const { container } = render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    // 工作台窗口 decorations(false) + SetWindowRgn 圆角裁剪，原生 4×4 角热区
+    // 落在被裁掉的像素上；四个 12px 命中层必须随外壳一起渲染。
+    expect(container.querySelectorAll(".resize-grip")).toHaveLength(4);
+    for (const corner of ["tl", "tr", "bl", "br"]) {
+      expect(container.querySelector(`.grip-${corner}`)).toBeTruthy();
+    }
+  });
+
+  it("顶栏是可拖区：deep 拖动语义 + 抓取手型类 + 视觉主题入口", async () => {
+    const { container } = render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    const header = container.querySelector("header.wb-topbar");
+    expect(header).toBeTruthy();
+    expect(header!.getAttribute("data-tauri-drag-region")).toBe("deep");
+    // `.ui-drag-surface` = 悬停 grab；`.ui-drag-session.is-dragging` = 拖动中 grabbing
+    // （与主窗口标题栏、胶囊轨道同一套样式语义）。
+    expect(header!.className).toContain("ui-drag-surface");
+    expect(header!.className).toContain("ui-drag-session");
+    expect(
+      screen.getByRole("button", { name: "视觉主题（当前：柔光玻璃）" }),
+    ).toBeTruthy();
+  });
+
   it("点击侧栏切换到任务页并持久化工作台路由", async () => {
     render(<WorkbenchShell />);
     await screen.findByRole("heading", { name: "工作台首页", level: 2 });

@@ -34,7 +34,7 @@ export interface DropdownMenuProps {
   items: ReadonlyArray<DropdownMenuItem>;
   menuLabel?: string;
   /** bottom/top = 相对触发器水平居中；start/end 对齐左右缘 */
-  placement?: "bottom" | "bottom-start" | "bottom-end" | "top" | "top-start" | "top-end";
+  placement?: "bottom" | "bottom-start" | "bottom-end" | "top" | "top-start" | "top-end" | "right-start" | "right-end";
   matchWidth?: boolean;
   /** 菜单目标最小宽度（px）：按最长选项文本 + 图标 + 勾选标记 + 内边距声明，
    *  内容更宽时仍会自然增长，绝不截断选项 */

@@ -1,0 +1,553 @@
+/*! Task Dock v0.8 — 统一 2D 扁平设计 Token 层
+    ────────────────────────────────────────────────────────────────
+    本文件只做一件事：用**语义 Token**把 v0.7 的「立体材质层」整体替换为
+    统一的二维视觉语言。不写任何组件选择器，不覆盖布局，不引入第二套颜色。
+
+    为什么单独一层：
+    - v0.6/v0.7 的预设定值分散在 styles-themes.css 的四个大块里，且被
+      `[data-glass-render]` / `[data-material]` 多属性选择器再次覆盖；
+      逐块改值会遗漏，也无法保证「后加的一条规则」不把扁平值压回去。
+    - 这里用 `@layer flat`（声明在 menu 之后）只声明 `:root` 级自定义属性。
+      CSS 自定义属性同样参与层叠，但不会影响任何组件的布局/选择器权重；
+      因此既能一次性替换全站表面，又不会产生 `!important` 或通配符覆盖。
+
+    视觉口径（现代桌面 2D）：
+    - 层级靠「底色 + 1px 低对比边框 + 柔和投影」表达，不再靠顶部高光、
+      内阴影、侧壁厚度、镜面反射等伪造三维的手法；
+    - 圆角按尺寸分档：控件 10 / 卡片 12 / 面板 14 / 窗口 18–20 / 胶囊 999；
+    - 阴影只服务浮层与卡片层级，单层柔光、低峰值、无明显黑边；
+    - 图标、箭头、按钮、卡片不允许出现透视、旋转、凸起、凹陷、按压位移。
+
+    兼容：仅覆盖 Token 取值，不改 Token 名称。所有既有 `var(--x)` 消费点
+    自动生效；需要单独处理的结构性 3D（hover 位移、品牌球高光）在
+    styles.css / styles-themes.css 中定点修正，不在此文件用选择器硬压。
+   ──────────────────────────────────────────────────────────────── */
+
+@layer base, theme, ui, menu, flat;
+
+@layer flat {
+  /* ── 0. 尺寸 / 圆角 / 阴影刻度（与预设无关，四态共用） ─────────── */
+  :root {
+    /* 圆角：按元素体量分 5 档 + 胶囊。禁止再写裸 px 的新圆角。 */
+    --radius-xs: 6px; /* 标签、徽标、微型按钮 */
+    --radius-sm: 8px; /* 图标按钮、紧凑输入 */
+    --radius-md: 10px; /* 标准按钮、输入框、分段控件 */
+    --radius-lg: 12px; /* 普通卡片、列表行 */
+    --radius-xl: 14px; /* 面板、抽屉、工具容器 */
+    --radius-2xl: 18px; /* 大型容器、模态内容 */
+    --radius-pill: 999px;
+    /* 既有语义别名 → 统一刻度（组件无需改写） */
+    --radius-card: var(--radius-lg);
+    --radius-control: var(--radius-md);
+    --menu-radius: var(--radius-lg);
+
+    /* 投影：单层、低对比、均匀扩散。卡片靠 1px 环 + 投影表达层级，不靠厚度。 */
+    --elev-1: 0 1px 2px rgba(17, 20, 37, 0.05); /* 贴地控件 */
+    --elev-2: 0 1px 2px rgba(17, 20, 37, 0.04), 0 8px 20px -14px rgba(17, 20, 37, 0.16); /* 卡片 */
+    --elev-3: 0 2px 6px -3px rgba(17, 20, 37, 0.08), 0 16px 36px -20px rgba(17, 20, 37, 0.26); /* 浮层 */
+    --elev-4: 0 4px 12px -6px rgba(17, 20, 37, 0.10), 0 28px 64px -32px rgba(17, 20, 37, 0.34); /* 模态 */
+
+    /* 图标尺寸档：12/14/16/18/24。导航 18，标题栏 14，行内 14，微标 12。 */
+    --icon-xs: 12px;
+    --icon-sm: 14px;
+    --icon-md: 16px;
+    --icon-lg: 18px;
+    --icon-xl: 24px;
+
+    /* 字号档：正文 13，辅助 12，弱说明 11；页面标题 22/18。 */
+    --text-xs: 11px;
+    --text-sm: 12px;
+    --text-md: 13px;
+    --text-lg: 15px;
+    --text-xl: 18px;
+    --text-2xl: 22px;
+  }
+
+  /* ── 1. 梦幻渐变 · 浅色（默认，保证首帧不闪） ─────────────────── */
+  :root,
+  :root[data-preset="dream-gradient"] {
+    --c-paper: rgb(255, 255, 255);
+    --c-night: rgb(0, 0, 0);
+    --c-ink: rgb(35, 40, 64);
+    --c-accent: rgb(99, 102, 241);
+    --c-accent-deep: rgb(79, 70, 229);
+    --c-danger: rgb(220, 38, 38);
+
+    --surface-base: #f4f4fb;
+    --surface-raised: #fbfbff;
+    --surface-overlay: #ffffff;
+    --clip-detail-face: #ffffff;
+    --surface-hover: rgba(99, 102, 241, 0.07);
+    --glass-tint: rgba(250, 250, 255, 0.92);
+
+    --border-subtle: rgba(28, 32, 58, 0.09);
+    --border-strong: rgba(28, 32, 58, 0.17);
+    --window-border: rgba(86, 94, 132, 0.22);
+    --divider: rgba(28, 32, 58, 0.08);
+    --badge-ring: #ffffff;
+
+    --text-primary: #1d2136;
+    --text-secondary: #5c6479;
+    --text-tertiary: #8b91a4;
+    --accent: #6366f1;
+    --accent-hover: #4f46e5;
+    --accent-soft: rgba(99, 102, 241, 0.10);
+    --accent-text-on: #ffffff;
+    --accent-gradient: linear-gradient(135deg, #6366f1 0%, #6366f1 100%);
+    --icon-accent: #5b5ee8;
+    --icon-violet: #7c5ce6;
+    --icon-warn: #b45309;
+
+    /* 窗口：只保留一层极淡的垂直色温，无放射光斑、无高光带 */
+    --window-fill: linear-gradient(180deg, #fafaff 0%, #f4f5fc 52%, #eff1fa 100%);
+    --window-edge: 0 0 0 1px var(--window-border);
+    --header-wash: none;
+    --decor: radial-gradient(120% 80% at 8% -18%, rgba(120, 122, 245, 0.07), transparent 66%);
+    --decor-opacity: 0.9;
+    --shell-wall: none;
+
+    --shadow-overlay: var(--elev-3);
+    --shadow-raised: var(--elev-1);
+
+    /* 卡片：实色面 + 1px 环 + 单层柔影；hover 只加深阴影，不位移 */
+    --card-face: rgba(255, 255, 255, 0.92);
+    --card-shadow: 0 0 0 1px var(--border-subtle), var(--elev-2);
+    --card-shadow-hover: 0 0 0 1px var(--border-strong), 0 2px 6px -4px rgba(17, 20, 37, 0.08),
+      0 14px 32px -22px rgba(17, 20, 37, 0.24);
+    --task-flow: none;
+
+    /* 控件：白面 + 细边；没有内高光、没有凸起 */
+    --control-face: #ffffff;
+    --control-shadow: 0 0 0 1px var(--border-subtle);
+    --control-shadow-hover: 0 0 0 1px var(--border-strong);
+    --control-shadow-press: 0 0 0 1px var(--accent-soft);
+    --control-shadow-focus: 0 0 0 1px var(--accent), 0 0 0 5px var(--accent-soft);
+    --inset-face: rgba(24, 30, 52, 0.035);
+    --inset-shadow: none;
+    --inset-shadow-sm: none;
+    --inset-shadow-hover: none;
+    --inset-shadow-focus: 0 0 0 1px var(--accent), 0 0 0 5px var(--accent-soft);
+
+    --pill-face: rgba(24, 30, 52, 0.06);
+    --pill-active-face: #ffffff;
+    --pill-active-shadow: 0 0 0 1px var(--border-subtle), 0 1px 2px rgba(17, 20, 37, 0.05);
+    --pill-active-text: var(--text-primary);
+    --pill-soft-active-face: rgba(255, 255, 255, 0.84);
+
+    /* 导航轨：整块浅色底，选中态只换底色，不做浮起药丸 */
+    --rail-w: 62px;
+    --rail-bg: #fbfbff;
+    --rail-divider: var(--border-subtle);
+    --rail-hover-face: rgba(24, 30, 52, 0.045);
+    --rail-active-face: var(--accent-soft);
+    --rail-active-text: #4f46e5;
+    --rail-active-shadow: none;
+    --rail-active-bar: var(--accent);
+    --rail-add-face: transparent;
+    --rail-add-border: var(--border-subtle);
+    --rail-add-shadow: none;
+
+    /* 弹层：实面 + 细边 + 柔和浮起；不做玻璃高光与内反射 */
+    --menu-face: #ffffff;
+    --menu-border: var(--border-subtle);
+    --menu-shadow: 0 0 0 1px var(--border-subtle), var(--elev-3);
+    --menu-ring: none;
+    --menu-edge: none;
+    --menu-highlight: none;
+    --menu-hover: var(--surface-hover);
+    --menu-active-face: var(--accent-soft);
+    --menu-active-text: #4f46e5;
+    --menu-text: var(--text-primary);
+    --menu-text-dim: var(--text-tertiary);
+    --menu-danger: #b91c1c;
+    --menu-danger-hover: rgba(220, 38, 38, 0.10);
+    --dialog-face: #ffffff;
+    --dialog-shadow: 0 0 0 1px var(--border-subtle), var(--elev-4);
+    --dialog-scrim: rgba(20, 24, 44, 0.34);
+
+    /* 品牌标记：扁平双色圆，取消镜面高光与球体投影 */
+    --orb-gradient: linear-gradient(135deg, #6366f1 0%, #7c5ce6 100%);
+    --orb-face: #ffffff;
+    --orb-shadow: 0 0 0 1px rgba(99, 102, 241, 0.18);
+    --orb-spec: transparent;
+    --orb-cool-tone: #6366f1;
+    --orb-warm-tone: #7c5ce6;
+
+    /* 剪贴板卡片：实面 + 环 + 柔影，禁用方向性反射 */
+    --clip-card-face: #ffffff;
+    --clip-card-sheen: none;
+    --clip-card-edge: var(--border-subtle);
+    --clip-card-shadow: 0 0 0 1px var(--border-subtle), var(--elev-2);
+    --clip-card-shadow-hover: 0 0 0 1px var(--border-strong), 0 12px 28px -20px rgba(17, 20, 37, 0.22);
+    --clip-card-shadow-press: 0 0 0 1px var(--accent-soft);
+    --clip-chip-shadow: 0 0 0 1px var(--border-subtle);
+    --clip-chip-sheen: none;
+    --clip-icon-shadow-hover: none;
+    --clip-thumb-edge: var(--border-subtle);
+    --clip-thumb-shadow: none;
+    --clip-lightbox-scrim: rgba(12, 15, 28, 0.86);
+
+    /* 停靠 / 胶囊：翼片与功能面板都改为同一块扁平面，取消厚度与折射 */
+    --capsule-face: #fbfbff;
+    --wing-near: #e7e9f7;
+    --wing-mid: #e7e9f7;
+    --wing-far: #e7e9f7;
+    --wing-spec: 0;
+    --wing-haze: transparent;
+    --wing-shade: 0;
+    --wing-rim-a: 0;
+    --wing-rim-b: 0.10;
+    --wing-divider: var(--border-subtle);
+    --wing-hover: rgba(99, 102, 241, 0.10);
+    --wing-active: rgba(99, 102, 241, 0.10);
+    --wing-active-inner: transparent;
+    --wing-icon: var(--text-secondary);
+    --wing-collapse: var(--text-secondary);
+    --wing-badge: var(--accent);
+    --wing-badge-ring: #ffffff;
+    --wing-panel-face: #ffffff;
+    --wing-panel-base: #ffffff;
+    --wing-panel-border: var(--border-subtle);
+    --wing-panel-inner: none;
+    --wing-panel-edge: var(--border-subtle);
+    --wing-panel-shadow: 0 0 0 1px var(--border-subtle), var(--elev-3);
+    --cap-orb-face: var(--accent);
+    --cap-orb-glyph: #ffffff;
+    --cap-orb-inner: none;
+    --cap-orb-quiet: #ecebfb;
+    --cap-orb-quiet-glyph: #4f46e5;
+    --cap-orb-quiet-inner: none;
+    --cap-panel-ring: 0 0 0 1px var(--border-subtle);
+    --cap-panel-inner: none;
+    --cap-panel-shadow: var(--elev-3);
+    --cap-panel-base: #ffffff;
+    --cap-card-face: #ffffff;
+    --cap-card-face-hover: #fafaff;
+    --cap-card-shadow: 0 0 0 1px var(--border-subtle), var(--elev-1);
+    --cap-tab-face: transparent;
+    --cap-tab-face-hover: rgba(24, 30, 52, 0.05);
+    --cap-tab-ring: var(--border-strong);
+    --cap-tab-ring-hover: var(--accent);
+    --cap-tab-edge: transparent;
+    --cap-tab-edge-hover: transparent;
+    --cap-tab-focus: var(--accent);
+    --cap-ind-hot: rgba(99, 102, 241, 0.42);
+    --cap-ind-active: var(--accent);
+    --cap-chip-face: #f5f5fb;
+    --cap-chip-face-hover: #ffffff;
+    --cap-seg-face: rgba(24, 30, 52, 0.06);
+    --cap-seg-active: #ffffff;
+    --cap-tile-face: #f7f7fd;
+    --cap-tile-ring: 0 0 0 1px var(--border-subtle);
+    --cap-tile-shadow: none;
+    --cap-divider: var(--border-subtle);
+    --cap-track: rgba(24, 30, 52, 0.08);
+    --cap-accent-soft: var(--accent-soft);
+    --cap-shadow-soft: 0 1px 2px rgba(17, 20, 37, 0.06);
+
+    --snap-capsule-face: #ffffff;
+    --snap-capsule-border: var(--border-subtle);
+    --snap-capsule-text: var(--text-secondary);
+    --snap-capsule-num: var(--text-primary);
+    --snap-hint-band: var(--accent);
+    --snap-feedback-bg: var(--surface-raised);
+    --snap-feedback-border: var(--border-subtle);
+    --snap-feedback-text: var(--accent);
+    --snap-dock-line: var(--accent);
+    --snap-alert-ring-failed: rgba(220, 38, 38, 0.45);
+    --snap-alert-ring-waiting: rgba(234, 112, 24, 0.45);
+
+    /* 状态色 / 类型色沿用 v0.6 的可读性取值，不做另一套 */
+    --status-running: #1d4ed8;
+    --status-waiting: #c2410c;
+    --status-success: #15803d;
+    --status-error: #b91c1c;
+    --status-disconnected: #5b6577;
+    --p0: #b91c1c;
+    --p1: #c2410c;
+    --p2: #1d4ed8;
+    --p3: #5b6577;
+  }
+
+  /* ── 2. 梦幻渐变 · 深色 ─────────────────────────────────────── */
+  :root[data-preset="dream-gradient"][data-theme="dark"],
+  :root[data-theme="dark"] {
+    --c-paper: rgb(255, 255, 255);
+    --c-night: rgb(0, 0, 0);
+    --c-ink: rgb(232, 234, 245);
+    --c-accent: rgb(129, 140, 248);
+    --c-accent-deep: rgb(99, 102, 241);
+    --c-danger: rgb(248, 113, 113);
+
+    --surface-base: #161622;
+    --surface-raised: #1d1d2b;
+    --surface-overlay: #242434;
+    --clip-detail-face: #242434;
+    --surface-hover: rgba(255, 255, 255, 0.06);
+    --glass-tint: rgba(22, 22, 34, 0.92);
+
+    --border-subtle: rgba(255, 255, 255, 0.09);
+    --border-strong: rgba(255, 255, 255, 0.17);
+    --window-border: rgba(190, 195, 225, 0.20);
+    --divider: rgba(255, 255, 255, 0.08);
+    --badge-ring: #1d1d2b;
+
+    --text-primary: #ecebf5;
+    --text-secondary: #a9a9bd;
+    --text-tertiary: #82829a;
+    --accent: #9ba0ff;
+    --accent-hover: #b3b7ff;
+    --accent-soft: rgba(129, 140, 248, 0.15);
+    --accent-text-on: #14141f;
+    --accent-gradient: linear-gradient(135deg, #9ba0ff 0%, #9ba0ff 100%);
+    --icon-accent: #a5a8ff;
+    --icon-violet: #c4b5fd;
+    --icon-warn: #fb923c;
+
+    --window-fill: linear-gradient(180deg, #1a1a27 0%, #161622 54%, #141420 100%);
+    --window-edge: 0 0 0 1px var(--window-border);
+    --header-wash: none;
+    --decor: radial-gradient(120% 80% at 8% -18%, rgba(129, 140, 248, 0.10), transparent 66%);
+    --decor-opacity: 0.85;
+    --shell-wall: none;
+
+    --shadow-overlay: 0 12px 32px -20px rgba(0, 0, 0, 0.55);
+    --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.26);
+    --elev-1: 0 1px 2px rgba(0, 0, 0, 0.22);
+    --elev-2: 0 6px 18px -14px rgba(0, 0, 0, 0.55);
+    --elev-3: 0 14px 36px -22px rgba(0, 0, 0, 0.62);
+    --elev-4: 0 22px 56px -30px rgba(0, 0, 0, 0.68);
+
+    --card-face: rgba(255, 255, 255, 0.05);
+    --card-shadow: 0 0 0 1px var(--border-subtle), 0 1px 2px rgba(0, 0, 0, 0.24),
+      0 12px 28px -22px rgba(0, 0, 0, 0.6);
+    --card-shadow-hover: 0 0 0 1px var(--border-strong), 0 2px 8px -4px rgba(0, 0, 0, 0.34),
+      0 18px 36px -24px rgba(0, 0, 0, 0.72);
+    --task-flow: none;
+
+    --control-face: rgba(255, 255, 255, 0.06);
+    --control-shadow: 0 0 0 1px var(--border-subtle);
+    --control-shadow-hover: 0 0 0 1px var(--border-strong);
+    --control-shadow-press: 0 0 0 1px var(--accent-soft);
+    --control-shadow-focus: 0 0 0 1px var(--accent), 0 0 0 5px var(--accent-soft);
+    --inset-face: rgba(0, 0, 0, 0.22);
+    --inset-shadow: none;
+    --inset-shadow-sm: none;
+    --inset-shadow-hover: none;
+    --inset-shadow-focus: 0 0 0 1px var(--accent), 0 0 0 5px var(--accent-soft);
+
+    --pill-face: rgba(255, 255, 255, 0.06);
+    --pill-active-face: rgba(255, 255, 255, 0.14);
+    --pill-active-shadow: 0 0 0 1px var(--border-strong);
+    --pill-active-text: var(--text-primary);
+    --pill-soft-active-face: rgba(255, 255, 255, 0.10);
+
+    --rail-w: 62px;
+    --rail-bg: #1d1d2b;
+    --rail-divider: var(--border-subtle);
+    --rail-hover-face: rgba(255, 255, 255, 0.05);
+    --rail-active-face: var(--accent-soft);
+    --rail-active-text: #c7caff;
+    --rail-active-shadow: none;
+    --rail-active-bar: var(--accent);
+    --rail-add-face: transparent;
+    --rail-add-border: var(--border-subtle);
+    --rail-add-shadow: none;
+
+    --menu-face: #232333;
+    --menu-border: var(--border-subtle);
+    --menu-shadow: 0 0 0 1px var(--border-subtle), var(--elev-3);
+    --menu-ring: none;
+    --menu-edge: none;
+    --menu-highlight: none;
+    --menu-hover: rgba(255, 255, 255, 0.06);
+    --menu-active-face: var(--accent-soft);
+    --menu-active-text: #c7caff;
+    --menu-text: var(--text-primary);
+    --menu-text-dim: var(--text-tertiary);
+    --menu-danger: #f87171;
+    --menu-danger-hover: rgba(248, 113, 113, 0.12);
+    --dialog-face: #242434;
+    --dialog-shadow: 0 0 0 1px var(--border-subtle), var(--elev-4);
+    --dialog-scrim: rgba(4, 6, 14, 0.58);
+
+    --orb-gradient: linear-gradient(135deg, #8f93ff 0%, #a78bfa 100%);
+    --orb-face: transparent;
+    --orb-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
+    --orb-spec: transparent;
+    --orb-cool-tone: #8f93ff;
+    --orb-warm-tone: #a78bfa;
+
+    --clip-card-face: #222232;
+    --clip-card-sheen: none;
+    --clip-card-edge: var(--border-subtle);
+    --clip-card-shadow: 0 0 0 1px var(--border-subtle), var(--elev-2);
+    --clip-card-shadow-hover: 0 0 0 1px var(--border-strong), 0 14px 30px -22px rgba(0, 0, 0, 0.7);
+    --clip-card-shadow-press: 0 0 0 1px var(--accent-soft);
+    --clip-chip-shadow: 0 0 0 1px var(--border-subtle);
+    --clip-chip-sheen: none;
+    --clip-icon-shadow-hover: none;
+    --clip-thumb-edge: var(--border-subtle);
+    --clip-thumb-shadow: none;
+    --clip-lightbox-scrim: rgba(2, 4, 10, 0.90);
+
+    --capsule-face: #1d1d2b;
+    --wing-near: #2a2a3c;
+    --wing-mid: #2a2a3c;
+    --wing-far: #2a2a3c;
+    --wing-spec: 0;
+    --wing-haze: transparent;
+    --wing-shade: 0;
+    --wing-rim-a: 0;
+    --wing-rim-b: 0.12;
+    --wing-divider: var(--border-subtle);
+    --wing-hover: rgba(255, 255, 255, 0.07);
+    --wing-active: rgba(255, 255, 255, 0.07);
+    --wing-active-inner: transparent;
+    --wing-icon: var(--text-secondary);
+    --wing-collapse: var(--text-secondary);
+    --wing-badge: var(--accent);
+    --wing-badge-ring: #1d1d2b;
+    --wing-panel-face: #232333;
+    --wing-panel-base: #232333;
+    --wing-panel-border: var(--border-subtle);
+    --wing-panel-inner: none;
+    --wing-panel-edge: var(--border-subtle);
+    --wing-panel-shadow: 0 0 0 1px var(--border-subtle), var(--elev-3);
+    --cap-orb-face: var(--accent);
+    --cap-orb-glyph: #14141f;
+    --cap-orb-inner: none;
+    --cap-orb-quiet: rgba(255, 255, 255, 0.08);
+    --cap-orb-quiet-glyph: #c7caff;
+    --cap-orb-quiet-inner: none;
+    --cap-panel-ring: 0 0 0 1px var(--border-subtle);
+    --cap-panel-inner: none;
+    --cap-panel-shadow: var(--elev-3);
+    --cap-panel-base: #232333;
+    --cap-card-face: #262636;
+    --cap-card-face-hover: #2b2b3d;
+    --cap-card-shadow: 0 0 0 1px var(--border-subtle), var(--elev-1);
+    --cap-tab-face: transparent;
+    --cap-tab-face-hover: rgba(255, 255, 255, 0.06);
+    --cap-tab-ring: var(--border-strong);
+    --cap-tab-ring-hover: var(--accent);
+    --cap-tab-edge: transparent;
+    --cap-tab-edge-hover: transparent;
+    --cap-tab-focus: var(--accent);
+    --cap-ind-hot: rgba(255, 255, 255, 0.22);
+    --cap-ind-active: var(--accent);
+    --cap-chip-face: rgba(255, 255, 255, 0.06);
+    --cap-chip-face-hover: rgba(255, 255, 255, 0.10);
+    --cap-seg-face: rgba(255, 255, 255, 0.06);
+    --cap-seg-active: rgba(255, 255, 255, 0.14);
+    --cap-tile-face: rgba(255, 255, 255, 0.05);
+    --cap-tile-ring: 0 0 0 1px var(--border-subtle);
+    --cap-tile-shadow: none;
+    --cap-divider: var(--border-subtle);
+    --cap-track: rgba(255, 255, 255, 0.08);
+    --cap-accent-soft: var(--accent-soft);
+    --cap-shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3);
+
+    --snap-capsule-face: #232333;
+    --snap-capsule-border: var(--border-subtle);
+    --snap-capsule-text: var(--text-secondary);
+    --snap-capsule-num: var(--text-primary);
+    --snap-hint-band: var(--accent);
+    --snap-feedback-bg: var(--surface-raised);
+    --snap-feedback-border: var(--border-subtle);
+    --snap-feedback-text: var(--accent);
+    --snap-dock-line: var(--accent);
+    --snap-alert-ring-failed: rgba(248, 113, 113, 0.45);
+    --snap-alert-ring-waiting: rgba(251, 146, 60, 0.45);
+
+    --status-running: #60a5fa;
+    --status-waiting: #fb923c;
+    --status-success: #4ade80;
+    --status-error: #f87171;
+    --status-disconnected: #82829a;
+    --p0: #f87171;
+    --p1: #fb923c;
+    --p2: #60a5fa;
+    --p3: #82829a;
+  }
+
+  /* ── 3. 柔光玻璃 · 浅色（冷调，圆角保持 20px 窗口） ─────────── */
+  :root[data-preset="frosted"]:not([data-theme="dark"]) {
+    --radius-window: 20px;
+    --surface-base: #f1f5fa;
+    --surface-raised: #f9fbfe;
+    --surface-overlay: #ffffff;
+    --clip-detail-face: #ffffff;
+    --surface-hover: rgba(71, 92, 132, 0.07);
+    --window-fill: linear-gradient(180deg, #f9fbfe 0%, #f2f6fb 54%, #edf2f9 100%);
+    --decor: radial-gradient(120% 80% at 10% -18%, rgba(120, 160, 220, 0.09), transparent 66%);
+    --window-border: rgba(70, 96, 136, 0.22);
+    --rail-bg: #f9fbfe;
+    --card-face: rgba(255, 255, 255, 0.94);
+    --card-shadow: 0 0 0 1px var(--border-subtle), var(--elev-2);
+    --card-shadow-hover: 0 0 0 1px var(--border-strong), 0 2px 6px -4px rgba(24, 40, 64, 0.08),
+      0 14px 32px -22px rgba(24, 40, 64, 0.22);
+    --control-face: #ffffff;
+    --pill-active-face: #ffffff;
+    --menu-face: #ffffff;
+    --dialog-face: #ffffff;
+    --capsule-face: #f9fbfe;
+    --wing-near: #e4eaf4;
+    --wing-mid: #e4eaf4;
+    --wing-far: #e4eaf4;
+    --wing-panel-face: #ffffff;
+    --wing-panel-base: #ffffff;
+    --clip-card-face: #ffffff;
+    --clip-card-sheen: none;
+    --cap-panel-base: #ffffff;
+    --cap-card-face: #ffffff;
+    --cap-card-face-hover: #f7fafe;
+    --cap-panel-face: #ffffff;
+    --accent: #4f46e5;
+    --accent-hover: #4338ca;
+    --accent-soft: rgba(79, 70, 229, 0.09);
+    --rail-active-text: #4f46e5;
+    --menu-active-text: #4f46e5;
+    --orb-gradient: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+  }
+
+  /* ── 4. 柔光玻璃 · 深色 ─────────────────────────────────────── */
+  :root[data-preset="frosted"][data-theme="dark"] {
+    --radius-window: 20px;
+    --surface-base: #151a23;
+    --surface-raised: #1b212c;
+    --surface-overlay: #222936;
+    --clip-detail-face: #222936;
+    --surface-hover: rgba(255, 255, 255, 0.06);
+    --window-fill: linear-gradient(180deg, #1a202b 0%, #151a23 54%, #121720 100%);
+    --decor: radial-gradient(120% 80% at 8% -18%, rgba(96, 136, 200, 0.10), transparent 66%);
+    --window-border: rgba(180, 198, 226, 0.20);
+    --rail-bg: #1b212c;
+    --card-face: rgba(255, 255, 255, 0.05);
+    --card-shadow: 0 0 0 1px var(--border-subtle), 0 1px 2px rgba(0, 0, 0, 0.24),
+      0 12px 28px -22px rgba(0, 0, 0, 0.6);
+    --card-shadow-hover: 0 0 0 1px var(--border-strong), 0 18px 36px -24px rgba(0, 0, 0, 0.72);
+    --control-face: rgba(255, 255, 255, 0.06);
+    --pill-active-face: rgba(255, 255, 255, 0.14);
+    --menu-face: #222936;
+    --dialog-face: #232b38;
+    --capsule-face: #1b212c;
+    --wing-near: #272e3b;
+    --wing-mid: #272e3b;
+    --wing-far: #272e3b;
+    --wing-panel-face: #222936;
+    --wing-panel-base: #222936;
+    --clip-card-face: #212834;
+    --clip-card-sheen: none;
+    --cap-panel-base: #222936;
+    --cap-card-face: #252b38;
+    --cap-card-face-hover: #2a3140;
+    --cap-panel-face: #222936;
+    --accent: #a5b0ff;
+    --accent-hover: #c0c7ff;
+    --accent-soft: rgba(122, 140, 255, 0.15);
+    --rail-active-text: #ccd2ff;
+    --menu-active-text: #ccd2ff;
+    --orb-gradient: linear-gradient(135deg, #7c8cff 0%, #9aa6ff 100%);
+  }
+}

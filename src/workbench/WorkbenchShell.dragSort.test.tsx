@@ -234,6 +234,13 @@ function savedLeft(): string[] {
   return layout?.left ?? [];
 }
 
+function savedLeftGroups(): Record<string, string> | undefined {
+  const layout = useSettingsStore.getState().settings?.navigation_layout as
+    | { leftGroups?: Record<string, string> }
+    | undefined;
+  return layout?.leftGroups;
+}
+
 async function renderShell(): Promise<void> {
   render(<WorkbenchShell />);
   await screen.findByRole("heading", { name: "工作台首页", level: 2 });
@@ -395,23 +402,25 @@ describe("工作台侧栏鼠标拖拽", () => {
 });
 
 describe("跨分组排序", () => {
-  it("把「历史」拖到顶部后位置严格跟随 navigation_layout.left，标题按连续分组分段（允许重复）", async () => {
+  it("把「历史」拖到顶部后归入落点分组，顺序与分组一起持久化，标题不再重复", async () => {
     await renderShell();
 
     dragNavRowToTop("history");
 
     expect(navIds()[0]).toBe("history");
     expect(navIds()[1]).toBe("workbench");
-    // 分段标题按「连续入口的静态分组」生成：历史(planning) 单独一段，
-    // 随后回到 core，再回到 flow，最后 system——允许「自动化与内容」重复出现。
+    // 历史原本属于 planning(flow)，拖到 core 段顶部后归入 core；侧栏每个
+    // 分组标题只出现一次，不能为了消除重复而改变用户排序。
     expect(
       [...document.querySelectorAll<HTMLElement>(".wb-nav-group")].map((node) => node.textContent),
-    ).toEqual(["自动化与内容", "工作协同", "自动化与内容", "项目与系统"]);
+    ).toEqual(["工作协同", "自动化与内容", "项目与系统"]);
 
     await waitFor(() => expect(navWriteCalls()).toHaveLength(1));
     expect(savedLeft()[0]).toBe("history");
     // 成员集合不变：排序不增删入口。
     expect(new Set(savedLeft())).toEqual(new Set(defaultNavigationLayout().left));
+    // 分组归属与排序写在同一份 navigation_layout。
+    expect(savedLeftGroups()?.history).toBe("core");
   });
 });
 
@@ -679,33 +688,49 @@ describe("显隐与恢复默认不回归", () => {
 });
 
 describe("拖拽手柄放大与命中区", () => {
-  it("手柄图标 18px、命中区 28×28；行高保持 36px，操作区固定占位且手柄在 × 左侧", async () => {
+  it("手柄图标 15px、命中区 26×28；手柄位于 Tab 左侧、× 位于最右侧，固定列网格保持行高 36px", async () => {
     await renderShell();
     const row = navRows()[0];
     const grip = gripOf(row);
-    expect(grip.querySelector("svg")?.getAttribute("width")).toBe("18");
-    expect(grip.querySelector("svg")?.getAttribute("height")).toBe("18");
+    expect(grip.querySelector("svg")?.getAttribute("width")).toBe("15");
+    expect(grip.querySelector("svg")?.getAttribute("height")).toBe("15");
+    // 导航 Tab 不再挂 hover tooltip。
+    expect(row.hasAttribute("data-tip")).toBe(false);
 
     const actions = row.querySelector<HTMLElement>(".wb-nav-actions");
     expect(actions).toBeTruthy();
+    expect(actions?.querySelector("[data-nav-grip]")).toBeNull();
     expect(
-      [...(actions?.querySelectorAll<HTMLElement>("[data-nav-grip], [data-nav-hide]") ?? [])].map(
-        (node) => (node.matches("[data-nav-grip]") ? "grip" : "hide"),
+      [...row.querySelectorAll<HTMLElement>("[data-nav-grip], .wb-nav-icon, .wb-nav-label, [data-nav-hide]")].map(
+        (node) =>
+          node.matches("[data-nav-grip]")
+            ? "grip"
+            : node.matches("[data-nav-hide]")
+              ? "hide"
+              : node.classList.contains("wb-nav-icon")
+                ? "icon"
+                : "label",
       ),
-    ).toEqual(["grip", "hide"]);
+    ).toEqual(["grip", "icon", "label", "hide"]);
 
     const hide = within(row).getByRole("button", { name: /隐藏「.*」导航入口/ });
     expect(hide.querySelector("svg")?.getAttribute("width")).toBe("15");
     expect(hide.querySelector("svg")?.getAttribute("height")).toBe("15");
 
-    // CSS 契约：视觉图标 18 / 命中区 28×28（不是只放大图标），行高不变。
-    expect(cssRule(".wb-nav-grip")).toMatch(/width: 28px/);
+    // CSS 契约：15px 图标 / 26×28 命中区；默认低对比灰、无背景；行高不变。
+    expect(cssRule(".wb-nav-grip")).toMatch(/width: 26px/);
     expect(cssRule(".wb-nav-grip")).toMatch(/height: 28px/);
-    expect(cssRule(".wb-nav-grip")).toMatch(/flex: 0 0 28px/);
+    expect(cssRule(".wb-nav-grip")).toMatch(/background: transparent/);
+    expect(cssRule(".wb-nav-grip")).toMatch(/opacity: 0\.55/);
     expect(cssRule(".wb-nav-grip")).not.toMatch(/position: absolute/);
     expect(cssRule(".wb-nav-hide")).toMatch(/width: 24px/);
     expect(cssRule(".wb-nav-hide")).toMatch(/height: 24px/);
+    expect(cssRule(".wb-nav-hide")).toMatch(/opacity: 0;/);
     expect(cssRule(".wb-nav-item")).toMatch(/min-height: 36px/);
+    expect(cssRule(".wb-nav-item")).toMatch(
+      /grid-template-columns: 26px 20px minmax\(0, 1fr\) auto 24px/,
+    );
+    expect(row.classList.contains("has-grip")).toBe(true);
     expect(cssRule(".wb-nav-actions")).toMatch(/display: inline-flex/);
   });
 
@@ -817,6 +842,10 @@ describe("点击 × 隐藏入口", () => {
       expect(button.querySelector("[data-nav-hide]")).toBeNull();
       expect(button.querySelector("[data-nav-grip]")).toBeNull();
     }
+    // 固定设置 Tab 也移除了 hover tooltip；「更多」是菜单入口，不属于 Tab。
+    expect(
+      within(nav).getByRole("button", { name: "设置" }).hasAttribute("data-tip"),
+    ).toBe(false);
     expect(
       document.querySelectorAll(".wb-nav-group [data-nav-hide]"),
     ).toHaveLength(0);

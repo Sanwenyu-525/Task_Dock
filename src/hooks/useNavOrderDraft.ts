@@ -38,8 +38,8 @@
 import { useCallback, useEffect, useRef } from "react";
 import { persistNavigationLayout } from "../lib/navigationLayout";
 import { errorMessage } from "../lib/errors";
-import { moveEntryInList, moveEntryToIndex } from "../lib/navVisibility";
-import type { NavSurface } from "../lib/navigationRegistry";
+import { moveEntryInList, moveEntryToIndex, reconcileLeftGroups } from "../lib/navVisibility";
+import type { NavGroup, NavSurface } from "../lib/navigationRegistry";
 import {
   clearNavOrderIntent,
   dropNavOrderIntent,
@@ -84,6 +84,8 @@ const FLUSH_UNSETTLED_MESSAGE = "导航排序仍在持续变化，未能在限�
 export interface NavOrderDraft {
   /** 当前生效顺序（未落库意图优先，否则为已提交顺序）。 */
   ids: string[];
+  /** 左侧当前生效的分组归属（与 `ids` 同一份意图；胶囊为 undefined）。 */
+  leftGroups?: Readonly<Record<string, NavGroup>>;
   /** 存在未落库的本地顺序。 */
   dirty: boolean;
   /** 上移/下移一格；返回 false 表示已到边界（调用方据此停止连续移动）。 */
@@ -113,9 +115,12 @@ export function useNavOrderDraft(
   committed: readonly string[],
   isFixed: (id: string) => boolean,
   onError: (message: string) => void,
+  committedGroups?: Readonly<Record<string, NavGroup>>,
 ): NavOrderDraft {
   const committedRef = useRef(committed);
   committedRef.current = committed;
+  const committedGroupsRef = useRef(committedGroups);
+  committedGroupsRef.current = committedGroups;
   const fixedRef = useRef(isFixed);
   fixedRef.current = isFixed;
   const onErrorRef = useRef(onError);
@@ -162,6 +167,9 @@ export function useNavOrderDraft(
       try {
         await persistNavigationLayout((current) => ({
           ...current,
+          ...(targetSurface === "left" && intent.leftGroups
+            ? { leftGroups: intent.leftGroups }
+            : {}),
           [targetSurface]: intent.ids,
         }));
         const stillCurrent = clearNavOrderIntent(targetSurface, intent.seq);
@@ -224,10 +232,20 @@ export function useNavOrderDraft(
   }, [clearTimer, startWrite]);
 
   const apply = useCallback(
-    (next: string[], targetSurface: NavSurface): boolean => {
+    (next: string[], targetSurface: NavSurface, movedId?: string): boolean => {
       const base = readNavOrderIntent(targetSurface)?.ids ?? committedRef.current;
       if (sameOrder(base, next)) return false;
-      publishNavOrderIntent(targetSurface, next, ownerRef.current);
+      // 分组归属与顺序同一份乐观快照：跨组落点立即改变标题分段，
+      // 不等到 SQLite 写入完成才重排，也不会在侧栏短暂出现重复标题。
+      const leftGroups =
+        targetSurface === "left"
+          ? reconcileLeftGroups(
+              next,
+              readNavOrderIntent("left")?.leftGroups ?? committedGroupsRef.current,
+              movedId,
+            )
+          : undefined;
+      publishNavOrderIntent(targetSurface, next, ownerRef.current, leftGroups);
       schedule();
       return true;
     },
@@ -237,7 +255,7 @@ export function useNavOrderDraft(
   const move = useCallback(
     (id: string, delta: -1 | 1) => {
       const base = readNavOrderIntent(surface)?.ids ?? committedRef.current;
-      return apply(moveEntryInList(base, id, delta, fixedRef.current), surface);
+      return apply(moveEntryInList(base, id, delta, fixedRef.current), surface, id);
     },
     [apply, surface],
   );
@@ -245,7 +263,7 @@ export function useNavOrderDraft(
   const moveTo = useCallback(
     (id: string, toIndex: number) => {
       const base = readNavOrderIntent(surface)?.ids ?? committedRef.current;
-      return apply(moveEntryToIndex(base, id, toIndex, fixedRef.current), surface);
+      return apply(moveEntryToIndex(base, id, toIndex, fixedRef.current), surface, id);
     },
     [apply, surface],
   );
@@ -325,6 +343,9 @@ export function useNavOrderDraft(
         // 先不清意图：清早了侧边栏会先回旧序再跳到新序（可见闪烁）。
         void persistNavigationLayout((current) => ({
           ...current,
+          ...(targetSurface === "left" && intent.leftGroups
+            ? { leftGroups: intent.leftGroups }
+            : {}),
           [targetSurface]: intent.ids,
         }))
           .then(() => {
@@ -371,6 +392,8 @@ export function useNavOrderDraft(
   const intent = readNavOrderIntent(surface);
   return {
     ids: intent?.ids ?? (committed as string[]),
+    leftGroups:
+      surface === "left" ? (intent?.leftGroups ?? committedGroupsRef.current) : undefined,
     dirty: intent !== null,
     move,
     moveTo,

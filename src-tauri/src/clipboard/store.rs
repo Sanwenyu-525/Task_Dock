@@ -2369,17 +2369,35 @@ pub fn finish_paste_job(
                 list.push(item.clone());
             }
         }
+
+        // 防御性一致性：任务级 uncertain 集合是权威「未解决」清单，逐项状态必须与它一致。
+        // 正常的 run_plan 已在发送失败时写过 uncertain；这里再兜底一次，覆盖旧库/异常收尾，
+        // 并把这些条目从 remaining 剔除，确保续跑绝不自动重发。
+        let mut remaining_list = remaining.to_vec();
+        remaining_list.retain(|item| !list.contains(item));
+        let now = crate::agents::now_iso();
+        for item in &list {
+            conn.execute(
+                "UPDATE clipboard_paste_items
+                 SET state = 'uncertain', key_sent = 1, confirmed = 0, retry_safe = 0,
+                     finished_at = COALESCE(finished_at, ?1),
+                     dispatch_started_at = COALESCE(dispatch_started_at, ?1)
+                 WHERE job_id = ?2 AND item_id = ?3",
+                params![now, id, item],
+            )?;
+        }
+
         conn.execute(
             "UPDATE clipboard_paste_jobs SET status = ?1, sent = ?2, remaining_items = ?3,
                 uncertain_items = ?4, message = ?5, restored = ?6, ended_at = ?7 WHERE id = ?8",
             params![
                 status,
                 sent,
-                serde_json::to_string(remaining)?,
+                serde_json::to_string(&remaining_list)?,
                 serde_json::to_string(&list)?,
                 message,
                 if restored { 1 } else { 0 },
-                crate::agents::now_iso(),
+                now,
                 id
             ],
         )?;

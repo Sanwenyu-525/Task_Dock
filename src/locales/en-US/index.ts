@@ -899,6 +899,8 @@ export const enUS: Record<MessageKey, string> = {
   "workbench.windowClose": "Close workbench",
   "workbench.themeMenu": "Color theme (current: {theme})",
   "workbench.themeFailed": "Could not switch theme: {error}",
+  "workbench.presetMenu": "Visual theme (current: {preset})",
+  "workbench.presetFailed": "Could not switch visual theme: {error}",
   "workbench.quick": "Quick links",
   "workbench.projectsTitle": "Workspace projects",
   "workbench.noProjects": "No workspace projects yet; tasks, Agents, capture and shelf do not require a project.",

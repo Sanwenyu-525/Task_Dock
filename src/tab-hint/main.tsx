@@ -15,6 +15,7 @@ import ErrorBoundary from "../components/ErrorBoundary";
 import { installGlobalErrorHandlers } from "../lib/globalErrors";
 import { initLocale } from "../i18n";
 import "../styles-themes.css";
+import "../styles-flat.css";
 import "./styles-tab-hint.css";
 
 initLocale();

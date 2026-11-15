@@ -10,6 +10,7 @@ import TooltipLayer from "../components/ui/TooltipLayer";
 import { installGlobalErrorHandlers } from "../lib/globalErrors";
 import { initLocale } from "../i18n";
 import "../styles-themes.css";
+import "../styles-flat.css";
 // 悬停提示沿用主窗同一套 .ui-tooltip / .ui-popover 基元，不另写一套提示样式。
 import "../styles-ui.css";
 import "./styles-notifications.css";

@@ -133,7 +133,13 @@ export default function NavigationVisibilitySection() {
     moveTo,
     flush,
     discard,
-  } = useNavOrderDraft(surface, layout[surface], isFixed, onDraftError);
+  } = useNavOrderDraft(
+    surface,
+    layout[surface],
+    isFixed,
+    onDraftError,
+    surface === "left" ? layout.leftGroups : undefined,
+  );
 
   const currentEntryId = leftEntryForTab(tab)?.id;
   const surfaceEntries = entriesForSurface(surface);

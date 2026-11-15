@@ -1,13 +1,13 @@
-//! 微件窗口的拖拽相位监视（**只做相位通知**，不引入磁吸状态机）。
+//! 独立窗口（微件 / 工作台）的拖拽相位监视（**只做相位通知**，不引入磁吸状态机）。
 //!
-//! 主窗靠 `magnetic.rs` 的子类化顺便发出拖拽相位；微件窗口是独立窗口，
+//! 主窗靠 `magnetic.rs` 的子类化顺便发出拖拽相位；微件与工作台窗口都是独立窗口，
 //! 没有磁力层，因此单独挂一个只关心 `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`
 //! 的轻量窗口过程：
 //!
 //! - **不动几何、不碰光标**：窗口位置/尺寸完全由系统移动循环与前端决定；
 //! - **不重复安装**：每个 HWND 只装一次（`install` 幂等），主窗不走这里；
 //! - **不留句柄泄露**：`WM_NCDESTROY` 时还原原窗口过程并摘除表项；
-//! - 与主窗共用 `drag_signal` 协议：事件只 emit 给**该微件窗口**，不广播。
+//! - 与主窗共用 `drag_signal` 协议：事件只 emit 给**该窗口**，不广播。
 //!
 //! 非 Windows 平台是 no-op（`install` 返回 false），前端退回指针事件兜底。
 
@@ -108,7 +108,7 @@ mod win {
                         %label,
                         phase = ?event.phase,
                         generation = event.generation,
-                        "微件 window-drag 相位发出"
+                        "独立窗口 window-drag 相位发出"
                     );
                     let _ = app.emit_to(&label, DRAG_EVENT, event);
                 }
@@ -140,7 +140,7 @@ mod win {
         }
     }
 
-    /// 在微件窗口上安装相位监视（必须在该窗口所属线程调用）。幂等。
+    /// 在独立窗口上安装相位监视（必须在该窗口所属线程调用）。幂等。
     pub fn install(app: &AppHandle, hwnd: isize, label: &str) -> bool {
         if hwnd == 0 {
             return false;
@@ -150,10 +150,10 @@ mod win {
             return true;
         }
         let old = unsafe {
-            SetWindowLongPtrW(hwnd as HWND, GWLP_WNDPROC, watch_proc as usize as isize)
+            SetWindowLongPtrW(hwnd as HWND, GWLP_WNDPROC, watch_proc as *const () as usize as isize)
         };
         if old == 0 {
-            tracing::warn!(hwnd, "微件拖拽相位监视安装失败（SetWindowLongPtrW 返回 0）");
+            tracing::warn!(hwnd, "拖拽相位监视安装失败（SetWindowLongPtrW 返回 0）");
             return false;
         }
         list.push((
@@ -163,9 +163,9 @@ mod win {
         true
     }
 
-    /// 指定标签的微件窗口上，该代次的移动循环此刻是否仍在运行。
+    /// 指定标签的独立窗口上，该代次的移动循环此刻是否仍在运行。
     ///
-    /// 按**标签**而不是 hwnd 查找：前端只能拿到自己的窗口标签，且标签在微件
+    /// 按**标签**而不是 hwnd 查找：前端只能拿到自己的窗口标签，且标签在窗口
     /// 生命周期内唯一；WATCHES 仍按 hwnd 存表项（窗口过程天然以 hwnd 为键）。
     pub fn loop_active(label: &str, generation: u64) -> bool {
         let list = WATCHES.lock().unwrap_or_else(|e| e.into_inner());
@@ -175,7 +175,7 @@ mod win {
     }
 }
 
-/// 在微件窗口上安装拖拽相位监视。非 Windows 直接返回 false（前端退回指针兜底）。
+/// 在独立窗口上安装拖拽相位监视。非 Windows 直接返回 false（前端退回指针兜底）。
 #[cfg(windows)]
 pub fn install(app: &AppHandle, hwnd: isize, label: &str) -> bool {
     win::install(app, hwnd, label)
@@ -186,7 +186,7 @@ pub fn install(_app: &AppHandle, _hwnd: isize, _label: &str) -> bool {
     false
 }
 
-/// 指定标签的微件窗口上，该代次的移动循环此刻是否仍在运行。
+/// 指定标签的独立窗口上，该代次的移动循环此刻是否仍在运行。
 #[cfg(windows)]
 pub fn loop_active(label: &str, generation: u64) -> bool {
     win::loop_active(label, generation)

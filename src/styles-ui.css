@@ -1580,3 +1580,33 @@
 .shelf-lightbox-stage.is-dragging img {
   cursor: grabbing;
 }
+
+/* ════════════════════════════════════════════════════════════════
+   v0.8 图标统一（2026-11-15）：全项目图标都是 lucide 线性图标，但历史代码里
+   strokeWidth 散落着 1.4 / 1.5 / 1.6 / 1.7 / 1.72 / 1.8 / 1.9 / 2 / 2.2 /
+   2.4 / 2.5 / 2.6 / 3 十余个取值，同一屏里粗细不一致。这里按**渲染尺寸**
+   给三档光学描边，作为唯一事实源（CSS 覆盖 SVG 的 presentation attribute）：
+     ≤13px  → 1.9（小图标加粗，保证可辨）
+     14–20px → 1.75（正文/导航主档）
+     ≥22px  → 1.6（大图标减细，避免视觉过重）
+   例外：stroke-width="0" 的实心图标（星标等）保持实心；非 .lucide 的
+   品牌/示意图 SVG 不受影响。 */
+@layer ui {
+  svg.lucide:not([stroke-width="0"]) {
+    stroke-width: 1.75;
+  }
+  :is(svg.lucide[width="11"], svg.lucide[width="12"], svg.lucide[width="13"]) {
+    stroke-width: 1.9;
+  }
+  :is(
+    svg.lucide[width="22"],
+    svg.lucide[width="24"],
+    svg.lucide[width="26"],
+    svg.lucide[width="28"],
+    svg.lucide[width="30"],
+    svg.lucide[width="32"],
+    svg.lucide[width="34"]
+  ) {
+    stroke-width: 1.6;
+  }
+}

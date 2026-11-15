@@ -19,13 +19,15 @@
 
 import { useSyncExternalStore } from "react";
 import { insertEntryByDefaultOrder, normalizeNavigationLayout, type NavLayoutConfig } from "./navVisibility";
-import type { NavSurface } from "./navigationRegistry";
+import type { NavGroup, NavSurface } from "./navigationRegistry";
 
 export interface NavOrderIntent {
   /** 单调递增序号：用于判定「这个意图是否仍然是最新意图」。 */
   seq: number;
   /** 意图中的可见入口顺序（应用时按已提交集合过滤）。 */
   ids: string[];
+  /** 左侧排序的入口分组归属（与顺序同一份乐观快照，落库后清除）。 */
+  leftGroups?: Record<string, NavGroup>;
 }
 
 const intents: Record<NavSurface, NavOrderIntent | null> = { left: null, capsule: null };
@@ -72,9 +74,14 @@ export function publishNavOrderIntent(
   surface: NavSurface,
   ids: readonly string[],
   owner: symbol | null = null,
+  leftGroups?: Record<string, NavGroup>,
 ): number {
   seqCounter += 1;
-  intents[surface] = { seq: seqCounter, ids: [...ids] };
+  intents[surface] = {
+    seq: seqCounter,
+    ids: [...ids],
+    ...(leftGroups ? { leftGroups } : {}),
+  };
   intentOwners[surface] = owner;
   notify();
   return seqCounter;
@@ -162,6 +169,7 @@ export function applyNavOrderIntents(config: NavLayoutConfig): NavLayoutConfig {
   return normalizeNavigationLayout({
     ...config,
     left: left ? applyNavOrderIntent(config.left, left.ids, "left") : config.left,
+    leftGroups: left?.leftGroups ?? config.leftGroups,
     capsule: capsule ? applyNavOrderIntent(config.capsule, capsule.ids, "capsule") : config.capsule,
   }).config;
 }
