@@ -24,7 +24,9 @@ import {
 import {
   ensureState, paths, readJson, resolveStateHome, slotDir,
 } from "./sched/state.mjs";
-import { concurrencyForClass, formatMb, memoryFloorForClass, pressureLevel, readMemory } from "./sched/mem.mjs";
+import {
+  concurrencyForClass, formatMb, isMemoryAdmissionEnabled, memoryFloorForClass, pressureLevel, readMemory,
+} from "./sched/mem.mjs";
 import { reapOrphanChild, snapshotSlots } from "./sched/lock.mjs";
 import {
   ACTIVE_STATUSES, PRIORITY_LABEL, clearCancelMarker, compareOrder, effectivePriority,
@@ -250,6 +252,13 @@ function cmdStatus(argv) {
   console.log(`内存：可用 ${formatMb(mem.availMb)} / 总计 ${formatMb(mem.totalMb)}` +
     `${mem.simulated ? "  ⚠ 模拟值" : ""}  〔${mem.source}〕`);
   console.log(`压力：${pressure.text}`);
+  // 约束 A 被关闭属于"主动拆掉一道安全边界"：必须显著打印，不能只在 config 里悄悄可见
+  const gateOff = !isMemoryAdmissionEnabled(ctx.cfg);
+  if (gateOff) {
+    console.log("  ⚠ 内存准入门槛已关闭（memoryAdmissionEnabled=false）：不按可用内存拦截；" +
+      "分类槽位并发、优先级排队与全局预算仍然生效");
+  }
+  const floorText = (cls) => (gateOff ? "关闭" : formatMb(memoryFloorForClass(ctx.cfg, cls)));
   console.log(`全局预算：${budget.enabled ? "启用" : "⚠ 已被显式关闭（危险授权生效）"} ` +
     `${formatMb(budget.reservedMb)} / ${formatMb(budget.budgetMb)} 已预留` +
     `（可用余量 ${formatMb(budget.availableMb)}；硬上限 = 物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(budget.reserveMb)}` +
@@ -282,7 +291,7 @@ function cmdStatus(argv) {
     for (let i = 1; i <= n; i++) {
       const name = `${cls}-${i}`;
       const s = bySlot.get(name);
-      if (!s) { console.log(`  ${pad(name, 9)} free      门槛 ${formatMb(memoryFloorForClass(ctx.cfg, cls))}`); continue; }
+      if (!s) { console.log(`  ${pad(name, 9)} free      门槛 ${floorText(cls)}`); continue; }
       console.log(`  ${pad(name, 9)} ${pad(s.taskId ?? "?", 16)} pid=${pad(s.pid ?? "?", 7)} ` +
         `心跳 ${pad(s.heartbeatAgeMs === null ? "?" : `${Math.round(s.heartbeatAgeMs / 1000)}s`, 4)}前 ` +
         `${s.label ? s.label : ""}${s.pidAlive === false ? "  ⚠ 持有进程已退出（下次竞争会回收）" : ""}` +
@@ -300,11 +309,11 @@ function cmdStatus(argv) {
   }
   if (tasks.length > 12) console.log(`  …还有 ${tasks.length - 12} 个，见 ${SELF} queue`);
   console.log("");
-  console.log(`策略：重型 并发${ctx.cfg.heavyConcurrency}/门槛${formatMb(ctx.cfg.heavyMinAvailMb)} ` +
-    `中型 并发${ctx.cfg.mediumConcurrency}/门槛${formatMb(ctx.cfg.mediumMinAvailMb)} ` +
-    `轻量 并发${ctx.cfg.lightConcurrency}/门槛${formatMb(ctx.cfg.lightMinAvailMb)} ` +
+  console.log(`策略：重型 并发${ctx.cfg.heavyConcurrency}/门槛${floorText("heavy")} ` +
+    `中型 并发${ctx.cfg.mediumConcurrency}/门槛${floorText("medium")} ` +
+    `轻量 并发${ctx.cfg.lightConcurrency}/门槛${floorText("light")} ` +
     `dev 并发${ctx.cfg.devConcurrency} 采样${ctx.cfg.memorySampleMs}ms 滞回${formatMb(ctx.cfg.hysteresisMb)} ` +
-    `cargoJobs=${ctx.cfg.cargoJobs}`);
+    `cargoJobs=${ctx.cfg.cargoJobs}${gateOff ? " 内存准入=已关闭" : ""}`);
   if (ctx.configProblems.length) {
     console.log("");
     for (const p of ctx.configProblems) console.log(`配置问题：${p}`);

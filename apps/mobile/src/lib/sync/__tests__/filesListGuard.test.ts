@@ -234,6 +234,18 @@ describe("请求级隔离：列表取消不波及其余传输", () => {
   });
 });
 
+describe("只读分组探测：并入列表快速失败轨", () => {
+  it("shelfGroups 挂起时按列表超时快速失败，不沿用传输轨 30s × 3", async () => {
+    const { client } = await harness(async () => new Promise(() => undefined), {
+      listTimeoutMs: 20,
+      listMaxRetries: 1,
+    });
+
+    const error = await client.shelfGroups().catch((e) => e);
+    expect(error).toMatchObject({ kind: "network", code: "request_timeout" });
+  });
+});
+
 describe("并发护栏：连续重试不产生多个并行列表请求", () => {
   it("旧列表被新刷新取代：旧请求取消，新列表正常完成", async () => {
     const firstDeferred = deferred<HttpResponseLike>();

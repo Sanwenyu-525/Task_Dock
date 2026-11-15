@@ -238,6 +238,22 @@ test("内存准入：压力等级与分类门槛一致", () => {
   assert.equal(memoryFloorForClass(cfg, "light"), 2560);
 });
 
+test("内存准入：memoryAdmissionEnabled=false 时约束 A 放行，但默认配置仍拦截", () => {
+  const mem = { availMb: 300, totalMb: 16000, simulated: true, source: "test" };
+  const off = { ...cfg, memoryAdmissionEnabled: false };
+  const r = evaluateMemoryAdmission({ cfg: off, taskClass: "heavy", mem, memoryWaitSeen: true });
+  assert.equal(r.admit, true, "总闸关闭后不得再按可用内存拦截");
+  assert.equal(r.floorMb, 0);
+  assert.equal(r.bypassed, true);
+  assert.equal(r.availMb, 300, "可用内存仍如实回报，只是不参与准入");
+  assert.match(r.reason, /已关闭/);
+  assert.equal(pressureLevel(off, mem).level, "disabled");
+
+  const on = evaluateMemoryAdmission({ cfg, taskClass: "heavy", mem });
+  assert.equal(on.admit, false, "默认（未配置）必须保持开启，新增开关不得默认放宽安全边界");
+  assert.equal(on.bypassed, undefined);
+});
+
 // ---------------------------------------------------------------- 全局预算（跨分类）
 //
 // 背景（整改前的真实缺口）：旧实现里「准入 = 本分类槽位有空 + 本任务自己的内存门槛达标」，
@@ -535,6 +551,23 @@ test("配置：环境变量覆盖优先于仓库配置", () => {
   });
   assert.equal(config.heavyMinAvailMb, 2048);
   assert.ok(sources.some((s) => s.kind === "env"));
+});
+
+test("配置风险：关闭内存准入必须作为 P1 暴露，且不改变门槛默认值", () => {
+  const home = join(tmpRoot, "cfg-gate-off");
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, "config.json"), JSON.stringify({ memoryAdmissionEnabled: false }));
+  const loaded = loadConfig({ stateHome: home, env: {} });
+  assert.equal(loaded.config.memoryAdmissionEnabled, false);
+  assert.equal(loaded.config.heavyMinAvailMb, DEFAULT_CONFIG.heavyMinAvailMb,
+    "关闭总闸不得顺手改门槛，避免又变成'偷偷调低阈值'");
+  const risks = configRisks({
+    config: loaded.config, danger: loaded.danger, sources: loaded.sources, problems: loaded.problems,
+  });
+  const hit = risks.find((r) => r.key === "memoryAdmissionEnabled");
+  assert.ok(hit, "关闭约束 A 必须出现在风险清单里（doctor/status 才能审计）");
+  assert.equal(hit.level, "P1");
+  assert.match(String(hit.source), /config\.json/);
 });
 
 // ---------------------------------------------------------------- 指纹

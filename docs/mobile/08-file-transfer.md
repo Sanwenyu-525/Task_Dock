@@ -314,3 +314,19 @@ AAD：
   - 取消上传：service 已支持 `isCancelled` 与 `cancelled` 状态，但 `CaptureStashScreen` 忙碌遮罩
     尚无用户取消入口，真机取消未验收；列为 UI 主线交接项。
 
+
+- 2026-11-15 第四轮收口（0.1.13 / vc61，源码基线 e5cb764 之上）：
+  - 取消上传统一使用 `TransferCancelToken`（`features/capture/cancel.ts`）：UI 忙碌面板的「取消上传」
+    同时置位业务令牌并调用当前 `FileClient.cancel()`，中止在途 HTTP；每个分块前后、`complete` 前、
+    上传返回后、暂存架导入前/中都会检查。取消只写 `cancelled`，不删除本机文件；已经返回 `ready`
+    的当前文件不因取消被清理或改写成 cancelled，只停止后续条目。
+  - 批量取消语义：当前项按真实竞态记 `done` 或 `cancelled`，未启动的后续项写 `cancelled` 或
+    明确未执行；暂存架导入取消时 `desktop` 保持 `done`、`shelf=cancelled`，重新尝试复用 remoteId
+    只导入暂存架，不重传文件。
+  - 桌面 `shelf::delete_matching` 在删除事务内同步清空 `mobile_files.shelf_item_id /
+    shelf_imported_at / shelf_group_id`；传输记录与 inbox 文件不删除，受保护/幸存条目不清理。
+  - 手机 `GET /v1/files` 对账：只有响应中**明确存在** `shelf_item_id=null` 时才把本地
+    `shelf=done` 修正为 `failed` 并清空过期 `remoteShelfId`；字段缺失（旧桌面端）不解释为删除。
+    保留 `desktop=done`，现有重试入口用同一 remoteId 重新导入。
+  - 相同 SHA 的复用语义仍保留：手机五条素材可能只对应一个桌面 ready 文件；验收必须按
+    `remoteId + SHA-256` 区分「复用」与「独立上传」，不能按 UI 行数推断桌面文件数。

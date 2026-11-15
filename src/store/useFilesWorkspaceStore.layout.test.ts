@@ -14,7 +14,7 @@ import {
   type FilesWorkspacePersisted,
 } from "../lib/filesWorkspace/persist";
 import { normalizePath } from "../lib/filesWorkspace/pathUtils";
-import { useFilesWorkspaceStore, type FolderTab } from "./useFilesWorkspaceStore";
+import { useFilesWorkspaceStore } from "./useFilesWorkspaceStore";
 
 const memSettings: { settings: Record<string, unknown>; update: (patch: Record<string, unknown>) => Promise<void> } = {
   settings: {},
@@ -50,11 +50,6 @@ function tabIdSet(): Set<string> {
 
 function sortedIds(set: Set<string>): string[] {
   return [...set].sort();
-}
-
-function allTabs(): FolderTab[] {
-  const s = state();
-  return paneIds(s.tree).flatMap((paneId) => s.panes[paneId]?.tabs ?? []);
 }
 
 /** 以指定布局与每窗格标签数注入状态（tabId 稳定为 tab-<pane>-<n>）。 */
@@ -204,7 +199,7 @@ describe("P0 布局转换保留目录会话", () => {
     expect(sortedIds(tabIdSet())).toEqual(before);
   });
 
-  it("容量上限：收纳空间不足时阻止本次布局转换（不截断）", () => {
+  it("容量上限：48 标签四宫格 ↔ 单栏往返，收纳标签在扩容时自动放回", () => {
     seedLayout(LAYOUT_PRESETS.quad.build(), [
       { path: "D:\\a", extra: 11 },
       { path: "D:\\b", extra: 11 },
@@ -218,7 +213,60 @@ describe("P0 布局转换保留目录会话", () => {
     expect(state().stashed).toHaveLength(0);
     expect(tabIdSet().size).toBe(48);
   });
+
+  it("容量上限：收纳容量不足时阻止本次布局转换（状态与标签集合完全不变）", () => {
+    // 12 个区域各 12 个标签（144）→ 单区域 12 + 收纳 132 > 64：必须阻止而不是截断。
+    const paneIdList = Array.from({ length: 12 }, (_, i) => `pane-${i}`);
+    const tree = (function build(ids: string[]): SplitNode {
+      if (ids.length === 1) return { type: "pane", paneId: ids[0] };
+      const mid = Math.floor(ids.length / 2);
+      return {
+        type: "split",
+        id: `split-${ids.length}`,
+        direction: "horizontal",
+        ratio: 0.5,
+        first: build(ids.slice(0, mid)),
+        second: build(ids.slice(mid)),
+      };
+    })(paneIdList);
+    const panes = paneIdList.map((paneId, index) => ({
+      paneId,
+      tabs: Array.from({ length: MAX_TABS_PER_PANE }, (_, n) => ({
+        tabId: `wide-${index}-${n}`,
+        path: `D:\\wide${index}\\sub${n}`,
+      })),
+      activeTabId: `wide-${index}-0`,
+    }));
+    state().hydrate({ tree, panes, activePaneId: paneIdList[0] }, "global");
+    const before = sortedIds(tabIdSet());
+    const beforeTree = state().tree;
+    const result = state().applyLayoutPresetPreservingTabs("single");
+    expect(result).toMatchObject({ ok: false, reason: "capacity", tabCount: 144 });
+    expect(state().tree).toEqual(beforeTree);
+    expect(sortedIds(tabIdSet())).toEqual(before);
+  });
 });
+
+  it("撤销 / 重做跨「单栏收纳」：标签不重复、不丢失", () => {
+    seedLayout(LAYOUT_PRESETS.quad.build(), [
+      { path: "D:\\a", extra: 3 },
+      { path: "D:\\b", extra: 3 },
+      { path: "D:\\c", extra: 3 },
+      { path: "D:\\d", extra: 3 },
+    ]);
+    const before = sortedIds(tabIdSet());
+    expect(state().applyLayoutPresetPreservingTabs("single").ok).toBe(true);
+    expect(state().stashed).toHaveLength(4);
+    expect(state().undoLayout()).toBe(true);
+    expect(state().redoLayout()).toBe(true);
+    // 重做回到单栏 + 4 个收纳；全部 16 个标签 ID 唯一且齐全（不因收纳快照重复安置）。
+    const all = [
+      ...paneIds(state().tree).flatMap((id) => state().panes[id].tabs.map((t) => t.tabId)),
+      ...state().stashed.map((t) => t.tabId),
+    ];
+    expect(all).toHaveLength(16);
+    expect(sortedIds(new Set(all))).toEqual(before);
+  });
 
 describe("P0 关闭区域不静默丢标签", () => {
   it("空区域直接关闭", () => {
@@ -254,7 +302,7 @@ describe("P0 关闭区域不静默丢标签", () => {
     expect(result.status).toBe("blocked");
     if (result.status === "blocked") {
       expect(result.reason).toBe("capacity");
-      expect(result.tabs).toHaveLength(2); // 11 + 4 → 12 容量，剩 2 个装不下
+      expect(result.tabs).toHaveLength(3); // 11 + 4 → 12 容量，剩 3 个装不下
     }
     // 阻止时状态完全不变。
     expect(paneIds(state().tree)).toEqual(ids);
@@ -268,8 +316,8 @@ describe("P0 关闭区域不静默丢标签", () => {
     ]);
     const before = sortedIds(tabIdSet());
     const result = state().closePane(ids[1], { mode: "stash" });
-    expect(result).toMatchObject({ status: "closed", stashedTabs: 2 });
-    expect(state().stashed).toHaveLength(2);
+    expect(result).toMatchObject({ status: "closed", stashedTabs: 3 });
+    expect(state().stashed).toHaveLength(3);
     expect(sortedIds(tabIdSet())).toEqual(before);
   });
 
@@ -338,7 +386,7 @@ describe("P1 布局撤销 / 重做", () => {
   });
 
   it("比例调整：一次拖动只产生一条历史（撤销回到拖动前）", () => {
-    const ids = seedLayout(LAYOUT_PRESETS.leftRight.build(), [{ path: "D:\\a" }, { path: "D:\\b" }]);
+    seedLayout(LAYOUT_PRESETS.leftRight.build(), [{ path: "D:\\a" }, { path: "D:\\b" }]);
     const root = state().tree;
     if (root.type !== "split") throw new Error("expect split");
     const splitId = root.id;
@@ -463,7 +511,7 @@ describe("P1 布局持久化与恢复", () => {
     state().hydrate(saved, "global");
     const pane = state().panes[paneIds(state().tree)[0]];
     expect(pane.activeTabId).toBe("tab-0-3");
-    expect(state().stashed.length).toBe(saved.stashed.length);
+    expect(state().stashed.length).toBe(saved.stashed?.length ?? 0);
     expect(state().pinnedDirs).toEqual(["D:\\pinned"]);
     expect(state().recentDirs).toEqual(["D:\\recent"]);
   });

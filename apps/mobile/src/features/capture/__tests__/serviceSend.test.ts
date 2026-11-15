@@ -13,6 +13,7 @@ const remote = vi.hoisted(() => ({
   groups: (async () => []) as () => Promise<unknown[]>,
   createCalls: 0,
   uploadCalls: 0,
+  removeCalls: 0,
   cancelCalls: 0,
 }));
 
@@ -30,7 +31,10 @@ vi.mock("../../../lib/sync/files", async (importOriginal) => {
     },
     complete: (id: string) => remote.complete(id),
     downloadChunk: async () => new Uint8Array(0),
-    remove: async () => undefined,
+    remove: async () => {
+      remote.removeCalls += 1;
+      return undefined;
+    },
     importToShelf: (id: string, groupId?: string | null) => remote.shelf(id, groupId),
     shelfGroups: () => remote.groups(),
     cancel: () => {
@@ -66,7 +70,13 @@ import { AppError } from "../../../lib/errors";
 import { createCancelledError, FileHttpError } from "../../../lib/sync/transferError";
 import { __resetFs, __seedFile, fileByUri } from "../../../test/mocks/expo-file-system";
 
-import { cleanupStagedAfterRun, retryShelfImport, sendToDesktop } from "../service";
+import { createTransferCancelToken } from "../cancel";
+import {
+  cleanupStagedAfterRun,
+  reconcileShelfDestinations,
+  retryShelfImport,
+  sendToDesktop,
+} from "../service";
 
 const STAGING_DIR = "file:///data/user/0/dev.taskdock.mobile/files/taskdock-captures/staging";
 const SHA = "c".repeat(64);
@@ -142,6 +152,7 @@ beforeEach(async () => {
   __resetFs();
   remote.createCalls = 0;
   remote.uploadCalls = 0;
+  remote.removeCalls = 0;
   remote.cancelCalls = 0;
   remote.list = async () => [];
   remote.groups = async () => [{ id: "g-default", name: "默认分组", builtin: true }];
@@ -456,6 +467,163 @@ describe("重试幂等（不因重试产生重复文件）", () => {
     expect(result.outcomes[0]?.state).toBe("cancelled");
     expect((await destinationState(asset.id, "desktop"))?.state).toBe("cancelled");
     expect(remote.createCalls).toBe(0);
+  });
+});
+
+describe("取消令牌接入传输层（P0-01 第四轮）", () => {
+  it("上传前取消：不创建远端记录，写 cancelled", async () => {
+    const asset = await savedAsset();
+    const token = createTransferCancelToken();
+    token.cancel();
+
+    const result = await sendToDesktop([asset], { target: "inbox", cancelToken: token });
+
+    expect(remote.createCalls).toBe(0);
+    expect(remote.uploadCalls).toBe(0);
+    expect(result.outcomes[0]?.state).toBe("cancelled");
+    expect((await destinationState(asset.id, "desktop"))?.state).toBe("cancelled");
+  });
+
+  it("第一个分块上传中取消：停止并清理未完成远端记录", async () => {
+    const asset = await savedAsset();
+    const token = createTransferCancelToken();
+    // 真实 FileClient.cancel() 会 abort 在途请求；这里用“分块回调里置位”模拟
+    // 同一个取消窗口，断言业务层不会再发 complete，并清理半成品。
+    remote.uploadChunk = async () => {
+      token.cancel();
+      return remoteFile({ status: "pending", sha256: "", completed_at: null });
+    };
+
+    const result = await sendToDesktop([asset], { target: "inbox", cancelToken: token });
+
+    expect(remote.createCalls).toBe(1);
+    expect(remote.uploadCalls).toBe(1);
+    expect(remote.removeCalls).toBe(1);
+    expect(result.outcomes[0]?.state).toBe("cancelled");
+    expect((await destinationState(asset.id, "desktop"))?.state).toBe("cancelled");
+    expect(remote.cancelCalls).toBeGreaterThan(0);
+  });
+
+  it("五文件第二项取消：第三至第五项不发请求并写 cancelled", async () => {
+    const assets = await Promise.all([
+      savedAsset("一.jpg"),
+      savedAsset("二.jpg"),
+      savedAsset("三.jpg"),
+      savedAsset("四.jpg"),
+      savedAsset("五.jpg"),
+    ]);
+    const token = createTransferCancelToken();
+    remote.uploadChunk = async () => {
+      // 第一项正常完成；第二项在分块请求返回时取消，随后不应再 complete。
+      if (remote.uploadCalls === 2) token.cancel();
+      return remoteFile({ status: "pending", sha256: "", completed_at: null });
+    };
+
+    const result = await sendToDesktop(assets, { target: "inbox", cancelToken: token });
+
+    expect(remote.createCalls).toBe(2);
+    expect(remote.uploadCalls).toBe(2);
+    expect(result.outcomes).toHaveLength(5);
+    expect(result.outcomes[0]?.state).toBe("done");
+    expect(result.outcomes.slice(1).every((outcome) => outcome.state === "cancelled")).toBe(true);
+    expect((await destinationState(assets[0].id, "desktop"))?.state).toBe("done");
+    for (const asset of assets.slice(1)) {
+      expect((await destinationState(asset.id, "desktop"))?.state).toBe("cancelled");
+    }
+  });
+
+  it("upload 已完成但暂存架导入前取消：desktop=done、shelf=cancelled、不重传", async () => {
+    const asset = await savedAsset();
+    const token = createTransferCancelToken();
+    remote.complete = async (id: string) => {
+      token.cancel();
+      return remoteFile({ id });
+    };
+
+    const result = await sendToDesktop([asset], {
+      target: "shelf",
+      cancelToken: token,
+    });
+
+    expect((await destinationState(asset.id, "desktop"))?.state).toBe("done");
+    expect((await destinationState(asset.id, "shelf"))?.state).toBe("cancelled");
+    expect(result.outcomes[0]?.state).toBe("cancelled");
+    expect(remote.createCalls).toBe(1);
+  });
+
+  it("暂存架导入中取消：desktop 保持 done、shelf=cancelled、只重试导入", async () => {
+    const asset = await savedAsset();
+    const token = createTransferCancelToken();
+    remote.shelf = async () => {
+      token.cancel();
+      throw createCancelledError();
+    };
+
+    const result = await sendToDesktop([asset], {
+      target: "shelf",
+      cancelToken: token,
+    });
+
+    expect((await destinationState(asset.id, "desktop"))?.state).toBe("done");
+    expect((await destinationState(asset.id, "shelf"))?.state).toBe("cancelled");
+    expect(result.outcomes[0]?.state).toBe("cancelled");
+  });
+});
+
+describe("暂存架远端状态对账（P0-02）", () => {
+  async function uploadedShelfAsset() {
+    const asset = await savedAsset();
+    await repo.setDestination(asset.id, "desktop", {
+      state: "done",
+      remoteId: "f".repeat(32),
+      bytesDone: asset.byteSize,
+      bytesTotal: asset.byteSize,
+    });
+    await repo.setDestination(asset.id, "shelf", {
+      state: "done",
+      remoteId: "f".repeat(32),
+      remoteShelfId: "mf-old",
+    });
+    return asset;
+  }
+
+  it("远端明确 shelf_item_id=null：保留 desktop done，清空过期引用并标 failed", async () => {
+    const asset = await uploadedShelfAsset();
+    remote.list = async () => [remoteFile({ shelf_item_id: null })];
+
+    const result = await reconcileShelfDestinations();
+
+    expect(result.stale).toBe(1);
+    expect((await destinationState(asset.id, "desktop"))?.state).toBe("done");
+    const shelf = await destinationState(asset.id, "shelf");
+    expect(shelf?.state).toBe("failed");
+    expect(shelf?.remoteShelfId).toBeNull();
+    expect(shelf?.lastError ?? "").toContain("重新导入");
+  });
+
+  it("老桌面端字段缺失：不把缺失当删除", async () => {
+    const asset = await uploadedShelfAsset();
+    const { shelf_item_id: _omit, ...oldRemote } = remoteFile();
+    remote.list = async () => [oldRemote];
+
+    const result = await reconcileShelfDestinations();
+
+    expect(result.stale).toBe(0);
+    expect((await destinationState(asset.id, "shelf"))?.state).toBe("done");
+    expect((await destinationState(asset.id, "shelf"))?.remoteShelfId).toBe("mf-old");
+  });
+
+  it("远端 shelf id 变化：更新本地引用，仍为 done", async () => {
+    const asset = await uploadedShelfAsset();
+    remote.list = async () => [remoteFile({ shelf_item_id: "mf-new" })];
+
+    const result = await reconcileShelfDestinations();
+
+    expect(result.updated).toBe(1);
+    const shelf = await destinationState(asset.id, "shelf");
+    expect(shelf?.state).toBe("done");
+    expect(shelf?.remoteShelfId).toBe("mf-new");
+    expect(shelf?.remoteId).toBe("f".repeat(32));
   });
 });
 

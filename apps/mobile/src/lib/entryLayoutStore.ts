@@ -117,7 +117,10 @@ export function ensureEntryLayoutLoaded(): Promise<void> {
       try {
         await saveEntryLayout(snapshot.config);
         persisted = snapshot.config;
-        setState({ corrupt: false, migrated: false, dropped: 0, source: "settings" });
+        // 只更新来源：corrupt / migrated / dropped 保留到本次会话结束，
+        // 让管理页能把「已恢复默认 / 已升级 / 已清理失效入口」如实告诉用户一次。
+        // 下一次启动读到的已经是修好的配置，这些标记自然为 false。
+        setState({ source: "settings" });
       } catch {
         // 修复写失败：本次仍用安全配置，下次启动会再试
       }

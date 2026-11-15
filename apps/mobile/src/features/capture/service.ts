@@ -25,12 +25,14 @@ import {
 } from "../../lib/sync/files";
 import {
   classifyTransferFailure,
+  createCancelledError,
   reusableRemoteKey,
   transferFailureMessage,
   type TransferFailure,
 } from "../../lib/sync/transferError";
 
 import { createPdfFromImages, createThumbnail, resolveDisplayName, saveToSystemGallery, transformImage } from "./album";
+import type { TransferCancelToken } from "./cancel";
 import {
   deleteFileQuietly,
   ensureCaptureDirs,
@@ -390,13 +392,18 @@ export async function sendToDesktop(
     target: DesktopTarget;
     shelfGroupId?: string | null;
     onProgress?: (progress: SendProgress) => void;
+    /** 旧调用点兼容：页面应优先传 cancelToken，才能中止在途 HTTP 请求。 */
     isCancelled?: () => boolean;
+    /** UI 取消令牌：传 after openFileClient 即绑定 FileClient.cancel()。 */
+    cancelToken?: TransferCancelToken;
     /** 批量中的位置：逐条调用时仍能显示「第 2/5 张」而不是 1/1。 */
     batch?: { index: number; count: number };
   },
 ): Promise<SendResult> {
   if (assets.length === 0) return { outcomes: [], offline: false };
   const outcomes: SendOutcome[] = [];
+  const cancelled = () =>
+    options.cancelToken?.isCancelled() === true || options.isCancelled?.() === true;
 
   /** 把从 from 起的素材统一标记为同一个结果（批量终止时使用）。 */
   async function markFrom(from: number, failure: TransferFailure): Promise<void> {
@@ -416,6 +423,43 @@ export async function sendToDesktop(
     }
   }
 
+  /** 取消后把尚未启动的条目写成 cancelled；已经完成的 desktop/shelf 不回滚。 */
+  async function markCancelledFrom(from: number): Promise<void> {
+    const message = FILE_CANCELLED_MESSAGE;
+    for (let index = from; index < assets.length; index += 1) {
+      const asset = assets[index];
+      const destinations = await repo.listDestinations(asset.id);
+      const desktop = destinations.find((item) => item.destination === "desktop");
+      const shelf = destinations.find((item) => item.destination === "shelf");
+      if (options.target === "inbox" && desktop?.state === "done") {
+        outcomes.push({ assetId: asset.id, state: "done", remoteId: desktop.remoteId ?? undefined });
+        continue;
+      }
+      if (options.target === "shelf" && shelf?.state === "done" && shelf.remoteShelfId) {
+        outcomes.push({
+          assetId: asset.id,
+          state: "done",
+          remoteId: shelf.remoteId ?? undefined,
+          shelfId: shelf.remoteShelfId,
+        });
+        continue;
+      }
+      if (!desktop || desktop.state !== "done") {
+        await repo.setDestination(asset.id, "desktop", { state: "cancelled", lastError: message });
+      }
+      if (options.target === "shelf" && (!shelf || shelf.state !== "done")) {
+        await repo.setDestination(asset.id, "shelf", { state: "cancelled", lastError: message });
+      }
+      outcomes.push({ assetId: asset.id, state: "cancelled", message });
+    }
+  }
+
+  // 用户在上传预检前就取消：不发起任何网络请求。
+  if (cancelled()) {
+    await markCancelledFrom(0);
+    return { outcomes, offline: false, message: FILE_CANCELLED_MESSAGE };
+  }
+
   // 未配对/令牌失效不是「电脑暂时离线」：直接标 failed 并给出配对原因，
   // 不能提示「等待电脑连接」，否则用户会以为稍后自动重试就能成功。
   const availability = await captureAvailability();
@@ -432,12 +476,23 @@ export async function sendToDesktop(
   }
 
   let client: FileClient | null = null;
+  let unbindCancel = () => {};
   let reuse: RemoteReuseIndex = { byHash: new Map(), byName: new Map() };
   try {
     ({ client } = await openFileClient());
+    unbindCancel = options.cancelToken?.onCancel(() => client?.cancel()) ?? (() => {});
+    if (cancelled()) {
+      client.cancel();
+      throw createCancelledError();
+    }
     reuse = buildReuseIndex(await client.list());
   } catch (error) {
     client?.cancel();
+    unbindCancel();
+    if (cancelled()) {
+      await markCancelledFrom(0);
+      return { outcomes, offline: false, message: FILE_CANCELLED_MESSAGE };
+    }
     const failure = classifyTransferFailure(error, { endpoint: "list" });
     await markFrom(0, failure);
     return {
@@ -452,10 +507,9 @@ export async function sendToDesktop(
   try {
     for (let index = 0; index < assets.length; index += 1) {
       const asset = assets[index];
-      if (options.isCancelled?.()) {
-        await repo.setDestination(asset.id, "desktop", { state: "cancelled" });
-        outcomes.push({ assetId: asset.id, state: "cancelled" });
-        continue;
+      if (cancelled()) {
+        await markCancelledFrom(index);
+        return { outcomes, offline: false, message: FILE_CANCELLED_MESSAGE };
       }
       const source = asset.localPath;
       if (!source || !fileExists(source)) {
@@ -477,8 +531,9 @@ export async function sendToDesktop(
       });
       try {
         // 幂等复用：上次已完整上传（可能应用在写库前被杀）就不重复上传。
+        const reusable = await takeReusableRemote(reuse, asset);
         const remote =
-          (await takeReusableRemote(reuse, asset)) ??
+          reusable ??
           (await uploadLocalFile(
             activeClient,
             new FsFile(source),
@@ -491,9 +546,43 @@ export async function sendToDesktop(
                 total,
               });
             },
-            options.isCancelled,
+            cancelled,
             asset.name,
           ));
+
+        // 最后一个分块与 complete 之间的取消竞争：如果上传已经返回 ready，
+        // 说明桌面端已完整接收，不能把已完成的文件清掉或写成 cancelled；
+        // 只停止后续条目（shelf 目标则把尚未开始的暂存架导入写成 cancelled）。
+        if (cancelled()) {
+          await repo.setDestination(asset.id, "desktop", {
+            state: "done",
+            remoteId: remote.id,
+            bytesDone: asset.byteSize,
+            bytesTotal: asset.byteSize,
+          });
+          if (options.target === "shelf") {
+            await repo.setDestination(asset.id, "shelf", {
+              state: "cancelled",
+              remoteId: remote.id,
+              lastError: FILE_CANCELLED_MESSAGE,
+            });
+            outcomes.push({
+              assetId: asset.id,
+              state: "cancelled",
+              remoteId: remote.id,
+              message: "文件已上传到电脑，已取消加入暂存架",
+            });
+          } else {
+            outcomes.push({ assetId: asset.id, state: "done", remoteId: remote.id });
+          }
+          await markCancelledFrom(index + 1);
+          return {
+            outcomes,
+            offline: false,
+            message: FILE_CANCELLED_MESSAGE,
+          };
+        }
+
         await repo.setDestination(asset.id, "desktop", {
           state: "done",
           remoteId: remote.id,
@@ -517,7 +606,7 @@ export async function sendToDesktop(
             });
           } else {
             const shelfFailure = shelfImport.failure;
-            // 上传已成功：桌面目的地保持 done，暂存架单独 pending/failed（UI 必须分开显示）。
+            // 上传已成功：桌面目的地保持 done，暂存架单独 pending/failed/cancelled。
             const shelfState =
               shelfFailure.kind === "cancelled"
                 ? "cancelled"
@@ -530,6 +619,10 @@ export async function sendToDesktop(
               remoteId: remote.id,
               message: shelfImport.message ?? transferFailureMessage(shelfFailure),
             });
+            if (shelfFailure.kind === "cancelled") {
+              await markCancelledFrom(index + 1);
+              return { outcomes, offline: false, message: FILE_CANCELLED_MESSAGE };
+            }
             if (shelfFailure.stopsBatch) {
               await markFrom(index + 1, shelfFailure);
               return {
@@ -544,13 +637,22 @@ export async function sendToDesktop(
           outcomes.push({ assetId: asset.id, state: "done", remoteId: remote.id });
         }
       } catch (error) {
-        if (isFileCancelled(error)) {
+        if (cancelled() || isFileCancelled(error)) {
+          // uploadLocalFile 在取消时已尝试删除本轮未完成的远端记录；
+          // 这里只写本地状态，并停止整批后续条目的网络请求。
           await repo.setDestination(asset.id, "desktop", {
             state: "cancelled",
             lastError: FILE_CANCELLED_MESSAGE,
           });
-          outcomes.push({ assetId: asset.id, state: "cancelled" });
-          continue;
+          if (options.target === "shelf") {
+            await repo.setDestination(asset.id, "shelf", {
+              state: "cancelled",
+              lastError: FILE_CANCELLED_MESSAGE,
+            });
+          }
+          outcomes.push({ assetId: asset.id, state: "cancelled", message: FILE_CANCELLED_MESSAGE });
+          await markCancelledFrom(index + 1);
+          return { outcomes, offline: false, message: FILE_CANCELLED_MESSAGE };
         }
         const failure = classifyTransferFailure(error, { endpoint: "upload" });
         const message = transferFailureMessage(failure);
@@ -568,6 +670,7 @@ export async function sendToDesktop(
       }
     }
   } finally {
+    unbindCancel();
     activeClient.cancel();
   }
   return { outcomes, offline: false };
@@ -773,11 +876,74 @@ export interface ShelfImportRetryResult {
   stopBatch: boolean;
 }
 
+/**
+ * 用 GET /v1/files 对账手机本地暂存架状态。
+ *
+ * 只处理「本地 shelf=done 且 remoteId 对应桌面端记录、桌面端明确返回
+ * shelf_item_id=null」的条目；字段缺失视为旧桌面端，不误判为用户删除。
+ * 修正时保留 desktop=done，只清空过期的 remoteShelfId 并把 shelf 标为 failed，
+ * 让现有重试入口复用 remoteId 重新导入（不重新上传文件）。
+ */
+export interface ShelfReconcileResult {
+  checked: number;
+  stale: number;
+  updated: number;
+}
+
+export async function reconcileShelfDestinations(): Promise<ShelfReconcileResult> {
+  const availability = await captureAvailability();
+  if (!availability.paired) return { checked: 0, stale: 0, updated: 0 };
+  let client: FileClient | null = null;
+  try {
+    ({ client } = await openFileClient());
+    const remoteFiles = await client.list();
+    const byId = new Map(remoteFiles.map((file) => [file.id, file]));
+    const destinations = await repo.listAllDestinations();
+    let checked = 0;
+    let stale = 0;
+    let updated = 0;
+    for (const destination of destinations) {
+      if (destination.destination !== "shelf" || destination.state !== "done") continue;
+      if (!destination.remoteId) continue;
+      const remote = byId.get(destination.remoteId);
+      if (!remote) continue; // 列表可能按设备/方向过滤；缺失不等于暂存架删除。
+      if (!("shelf_item_id" in remote)) continue; // 老桌面端字段缺失，不能当成 null。
+      checked += 1;
+      if (remote.shelf_item_id === null) {
+        await repo.setDestination(destination.assetId, "shelf", {
+          state: "failed",
+          remoteId: destination.remoteId,
+          remoteShelfId: null,
+          clearRemoteShelfId: true,
+          lastError: "该条目已从桌面暂存架删除，可重新导入",
+        });
+        stale += 1;
+        continue;
+      }
+      if (
+        typeof remote.shelf_item_id === "string" &&
+        remote.shelf_item_id !== destination.remoteShelfId
+      ) {
+        await repo.setDestination(destination.assetId, "shelf", {
+          state: "done",
+          remoteId: destination.remoteId,
+          remoteShelfId: remote.shelf_item_id,
+        });
+        updated += 1;
+      }
+    }
+    return { checked, stale, updated };
+  } finally {
+    client?.cancel();
+  }
+}
+
 /** 只重试暂存架：桌面端已有 remote id 时不再重传文件。 */
 export async function retryShelfImport(
   asset: repo.CaptureAsset,
   remoteId: string,
   shelfGroupId: string | null,
+  cancelToken?: TransferCancelToken,
 ): Promise<ShelfImportRetryResult> {
   // 未配对/旧连接不是「桌面端暂时离线」：直接 failed 并停止整批。
   const availability = await captureAvailability();
@@ -803,8 +969,14 @@ export async function retryShelfImport(
     };
   }
   let client: FileClient | null = null;
+  let unbindCancel = () => {};
   try {
     ({ client } = await openFileClient());
+    unbindCancel = cancelToken?.onCancel(() => client?.cancel()) ?? (() => {});
+    if (cancelToken?.isCancelled()) {
+      client.cancel();
+      throw createCancelledError();
+    }
     const imported = await client.importToShelf(remoteId, shelfGroupId);
     const remoteShelfId = imported.shelf_item_id ?? null;
     if (!remoteShelfId) {
@@ -829,6 +1001,26 @@ export async function retryShelfImport(
     };
   } catch (error) {
     const { failure, message, state } = shelfFailureOf(error);
+    if (cancelToken?.isCancelled() || failure.kind === "cancelled") {
+      await repo.setDestination(asset.id, "shelf", {
+        state: "cancelled",
+        remoteId,
+        lastError: FILE_CANCELLED_MESSAGE,
+      });
+      return {
+        state: "cancelled",
+        remoteId,
+        failure: {
+          kind: "cancelled",
+          pending: false,
+          retryable: true,
+          stopsBatch: false,
+          message: FILE_CANCELLED_MESSAGE,
+        },
+        message: FILE_CANCELLED_MESSAGE,
+        stopBatch: false,
+      };
+    }
     await repo.setDestination(asset.id, "shelf", {
       state,
       remoteId,
@@ -842,6 +1034,7 @@ export async function retryShelfImport(
       stopBatch: failure.stopsBatch,
     };
   } finally {
+    unbindCancel();
     client?.cancel();
   }
 }

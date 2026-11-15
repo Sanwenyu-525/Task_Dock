@@ -32,9 +32,6 @@ import {
   Save,
   Square,
   Columns3,
-  FileText,
-  Gamepad2,
-  Clapperboard,
   FolderOpen,
   FolderSearch,
   Pin,
@@ -573,14 +570,34 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
 
   // ── 外部 OS 拖入（fileDrop 仲裁认领）────────────────────────────────
   useEffect(() => {
-    const hitPaneDir = (point: { x: number; y: number } | null): string | null => {
+    /** 命中窗格：返回窗格 ID 与其当前目录（空窗格 dir 为 null）。 */
+    const hitPane = (point: { x: number; y: number } | null): { paneId: string; dir: string | null } | null => {
       if (!point) return null;
       const paneId = dropTargetAt(point, "data-fw-pane-id");
       if (!paneId) return null;
       const s = store.getState();
       const pane = s.panes[paneId];
-      const dir = pane?.tabs.find((x) => x.tabId === pane.activeTabId)?.path;
-      return dir ?? null;
+      const dir = pane?.tabs.find((x) => x.tabId === pane.activeTabId)?.path ?? null;
+      return { paneId, dir };
+    };
+    const hitPaneDir = (point: { x: number; y: number } | null): string | null => hitPane(point)?.dir ?? null;
+    /**
+     * 空窗格 + 单个目录 = 「拖入文件夹打开它」；空窗格 + 文件 = 无效（没有目标目录）。
+     * 两种语义按 §4.4 区分，绝不把目录当文件复制。
+     */
+    const openFolderIntoEmptyPane = async (hit: { paneId: string; dir: string | null }, path: string): Promise<boolean> => {
+      if (hit.dir) return false;
+      try {
+        const [stat] = await fsStat([path]);
+        if (!stat || stat.kind !== "dir") return false;
+        const s = store.getState();
+        if ((s.panes[hit.paneId]?.tabs.length ?? 0) > 0) return false;
+        s.openInPane(hit.paneId, stat.path, "newTab");
+        s.recordRecentDir(stat.path);
+        return true;
+      } catch {
+        return false;
+      }
     };
     const consumer = {
       id: "files-workspace",
@@ -597,24 +614,46 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       onLeave: () => onHoverZone(null),
       onDrop: (paths: string[], point: { x: number; y: number } | null) => {
         onHoverZone(null);
-        const dir = hitPaneDir(point);
-        if (!dir || paths.length === 0) {
+        const hit = hitPane(point);
+        if (!hit || paths.length === 0) {
           if (paths.length > 0) showToast(t("fw.error.dropOutside"), { kind: "warning" });
           return;
         }
-        void applyFileDrop(paths, dir, "copy");
+        if (!hit.dir) {
+          if (paths.length === 1) {
+            void openFolderIntoEmptyPane(hit, paths[0]).then((ok) => {
+              if (!ok) showToast(t("fw.error.dropOutside"), { kind: "warning" });
+            });
+          } else {
+            showToast(t("fw.error.dropOutside"), { kind: "warning" });
+          }
+          return;
+        }
+        void applyFileDrop(paths, hit.dir, "copy");
       },
       onPayload: (payload: DragPayloadView, point: { x: number; y: number } | null, meta: { operationId: string }) => {
         onHoverZone(null);
         if (payload.kind === "local-files" && payload.paths.length) {
-          const dir = hitPaneDir(point);
-          if (!dir) {
+          const hit = hitPane(point);
+          if (!hit) {
             void discardOperation(meta.operationId, "files-workspace-no-pane");
             showToast(t("fw.error.dropOutside"), { kind: "warning" });
             return;
           }
+          if (!hit.dir) {
+            if (payload.paths.length === 1) {
+              void openFolderIntoEmptyPane(hit, payload.paths[0]).then((ok) => {
+                if (!ok) showToast(t("fw.error.dropOutside"), { kind: "warning" });
+                void discardOperation(meta.operationId, "files-workspace-opened-folder");
+              });
+            } else {
+              void discardOperation(meta.operationId, "files-workspace-empty-pane-files");
+              showToast(t("fw.error.dropOutside"), { kind: "warning" });
+            }
+            return;
+          }
           // 外部来源恒为复制语义：绝不删用户源文件；消费后释放后端会话。
-          void applyFileDrop(payload.paths, dir, "copy").then(() =>
+          void applyFileDrop(payload.paths, hit.dir, "copy").then(() =>
             discardOperation(meta.operationId, "files-workspace-committed"),
           );
           return;
@@ -1574,10 +1613,11 @@ function FwDragGhost() {
     return tab ? tabTitle(tab) : t("fw.drag.emptyPane");
   };
   const firstTabLabel = (): string => {
-    if (st.payload?.kind !== "tabs") return "";
+    const payload = st.payload;
+    if (payload?.kind !== "tabs") return "";
     const s = useFilesWorkspaceStore.getState();
-    const pane = s.panes[st.payload.fromPaneId];
-    const tab = pane?.tabs.find((x) => x.tabId === st.payload?.tabIds[0]);
+    const pane = s.panes[payload.fromPaneId];
+    const tab = pane?.tabs.find((x) => x.tabId === payload.tabIds[0]);
     return tab ? tabTitle(tab) : "";
   };
 

@@ -26,18 +26,18 @@ export interface NavOrderIntent {
   seq: number;
   /** 意图中的可见入口顺序（应用时按已提交集合过滤）。 */
   ids: string[];
-  /**
-   * 发布该意图的草稿实例（写入仲裁）。
-   *
-   * 工作台侧栏与设置页可能同时挂载排序草稿：意图必须共享（同一份顺序），
-   * 但落库只能由**发起这次排序的实例**负责，否则会出现同一份意图各写一次，
-   * 或某个实例卸载时抢先清掉另一个实例仍在进行的拖拽。为 null 表示无所有者
-   * （直接调用发布函数的测试/工具路径）。
-   */
-  owner: symbol | null;
 }
 
 const intents: Record<NavSurface, NavOrderIntent | null> = { left: null, capsule: null };
+/**
+ * 各界面当前意图的写入所有者（写入仲裁，不进入意图快照）。
+ *
+ * 工作台侧栏与设置页可能同时挂载排序草稿：意图必须共享（同一份顺序），
+ * 但落库只能由**发起这次排序的实例**负责，否则会出现同一份意图各写一次，
+ * 或某个实例卸载时抢先清掉另一个实例仍在进行的拖拽。
+ * 所有者与意图同生命周期：发布时写入，意图被清除/丢弃/重置时一并释放。
+ */
+const intentOwners: Record<NavSurface, symbol | null> = { left: null, capsule: null };
 const listeners = new Set<() => void>();
 let version = 0;
 let seqCounter = 0;
@@ -74,7 +74,8 @@ export function publishNavOrderIntent(
   owner: symbol | null = null,
 ): number {
   seqCounter += 1;
-  intents[surface] = { seq: seqCounter, ids: [...ids], owner };
+  intents[surface] = { seq: seqCounter, ids: [...ids] };
+  intentOwners[surface] = owner;
   notify();
   return seqCounter;
 }
@@ -87,7 +88,7 @@ export function publishNavOrderIntent(
  * - 意图被清除（写入成功/失败回滚/显式丢弃）后自然不再有所有者。
  */
 export function isNavOrderIntentOwner(surface: NavSurface, owner: symbol): boolean {
-  return intents[surface]?.owner === owner;
+  return intentOwners[surface] === owner;
 }
 
 /**
@@ -101,6 +102,7 @@ export function clearNavOrderIntent(surface: NavSurface, seq: number): boolean {
   const current = intents[surface];
   if (!current || current.seq !== seq) return false;
   intents[surface] = null;
+  intentOwners[surface] = null;
   notify();
   return true;
 }
@@ -110,6 +112,7 @@ export function dropNavOrderIntent(surface: NavSurface): NavOrderIntent | null {
   const current = intents[surface];
   if (!current) return null;
   intents[surface] = null;
+  intentOwners[surface] = null;
   notify();
   return current;
 }
@@ -118,6 +121,8 @@ export function dropNavOrderIntent(surface: NavSurface): NavOrderIntent | null {
 export function resetNavOrderIntents(): void {
   intents.left = null;
   intents.capsule = null;
+  intentOwners.left = null;
+  intentOwners.capsule = null;
   listeners.clear();
   // `seqCounter` 刻意不回退：过期写入的收尾回调可能晚于用例切换到达，
   // 若序号被重置，它会误清掉下一例新发布的意图（生产语义同样依赖单调序号）。

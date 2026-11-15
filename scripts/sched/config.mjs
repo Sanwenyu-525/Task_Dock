@@ -19,7 +19,12 @@ export const DEFAULT_CONFIG = {
   lightConcurrency: 2,
   // 开发服务器（dev 类）独立槽位：不占一次性构建锁，但受内存准入约束
   devConcurrency: 2,
-  // 各分类的准入内存下限（可用物理内存，MB）
+  // 【约束 A 总闸】是否按「实时可用物理内存」拦截准入（默认 true）。
+  // false = 不再读 freemem 判断，只剩「分类槽位并发 + 优先级排队 + 跨分类全局预算」；
+  // 用于可用内存被其他程序长期占住、连 1–2 GB 级检查都排不上的机器。
+  // 关掉后低内存下重型编译同样会被放行，OOM 风险由使用者承担；status/doctor 必须显著记录。
+  memoryAdmissionEnabled: true,
+  // 各分类的准入内存下限（可用物理内存，MB）；仅在 memoryAdmissionEnabled=true 时参与判定
   heavyMinAvailMb: 6144,
   mediumMinAvailMb: 4096,
   lightMinAvailMb: 2560,
@@ -82,7 +87,9 @@ export const DEFAULT_CONFIG = {
 };
 
 // 存在性/开关型字段（不是数值，不参与数值校验）
-const BOOLEAN_KEYS = new Set(["diskPrecheck", "dedupe", "budgetEnabled", "allowReserveBreach"]);
+const BOOLEAN_KEYS = new Set([
+  "diskPrecheck", "dedupe", "budgetEnabled", "allowReserveBreach", "memoryAdmissionEnabled",
+]);
 
 /**
  * 危险操作统一授权：**一个**环境变量，多个逗号分隔的令牌。
@@ -368,6 +375,14 @@ export function configRisks({
     add("P1", "budgetEnabled",
       `配置曾要求关闭全局预算，但缺少 ${DANGER_AUTH_ENV}="${DANGER_TOKENS.BUDGET_OFF}"，已按 fail-closed 忽略`,
       { current: true, baseline: true });
+  }
+
+  // ②-1 约束 A（实时可用内存门槛）被显式关闭：这是「拆掉一道安全边界」，必须留痕
+  if (config.memoryAdmissionEnabled === false) {
+    add("P1", "memoryAdmissionEnabled",
+      "实时可用内存准入（约束 A）已被显式关闭：不再按可用内存拦截，只剩分类槽位并发与全局预算；" +
+      "低内存时重型编译仍会启动，OOM/构建被中断的风险由使用者承担",
+      { current: false, baseline: true, reason: "配置显式关闭（无需危险授权，但会记录）" });
   }
 
   // ③ 允许侵占系统保留

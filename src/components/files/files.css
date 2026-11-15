@@ -1,12 +1,41 @@
-/*! 文件工作区（多目录分栏）样式。只消费语义 Token（--surface/--border/--text/
-    --accent/--file-tone-*），不硬编码颜色；独立文件避免触碰共享 styles.css。 */
+/*! 文件工作区（多目录分栏）样式。组件规则只消费语义 Token（--surface/--border/--text/
+    --accent/--file-tone-*），不写零散硬编码颜色；独立文件避免触碰共享 styles.css。 */
 
+/* Flat 2D 表面标度：只在文件工作区内生效，不改共享主题 Token。
+   原因：某些主题的 `--card-face` 与 `--window-fill` 是渐变，`--surface-raised`
+   直接继承 `--card-face`，只改组件背景仍会残留上亮下暗的立体卡片效果。
+   这里用一组作用域内的纯色 Token（唯一允许写具体色值的定义处）收敛工作区表面，
+   其余组件仍引用语义 Token；其他页面继续走既有主题。 */
 .fw-root {
+  --fw-surface-base: #101320;
+  --fw-surface-raised: #171b28;
+  --fw-surface-overlay: #1e2333;
+  --fw-border-subtle: rgba(255, 255, 255, 0.08);
+  --fw-border-strong: rgba(255, 255, 255, 0.16);
+
+  /* 作用域内替换语义 Token，让所有子组件（按钮/标签/面包屑）统一平面化。 */
+  --surface-base: var(--fw-surface-base);
+  --surface-raised: var(--fw-surface-raised);
+  --surface-overlay: var(--fw-surface-overlay);
+  --border-subtle: var(--fw-border-subtle);
+  --border-strong: var(--fw-border-strong);
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.22);
+
   height: 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--surface-base);
+  background: var(--fw-surface-base);
+  color: var(--text-primary);
+}
+
+html[data-theme="light"] .fw-root {
+  --fw-surface-base: #f2f4f8;
+  --fw-surface-raised: #ffffff;
+  --fw-surface-overlay: #f7f8fb;
+  --fw-border-subtle: rgba(17, 24, 39, 0.08);
+  --fw-border-strong: rgba(17, 24, 39, 0.16);
+  --shadow-raised: 0 1px 2px rgba(17, 24, 39, 0.06);
 }
 
 .fw-root-boot {
@@ -165,7 +194,38 @@ body.fw-resizing {
 }
 
 .fw-pane.is-active {
-  border-color: var(--border-strong);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--fw-border-strong));
+}
+
+/* 布局编辑模式：区域边框轻微强调 + 顶部细把手（普通模式没有整窗格拖拽）。 */
+.fw-pane.is-edit {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--fw-border-strong));
+  border-style: dashed;
+}
+
+.fw-edit-handle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 18px;
+  cursor: grab;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-bottom: 1px solid var(--fw-border-subtle);
+  user-select: none;
+  touch-action: none;
+}
+
+.fw-edit-handle:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.fw-edit-handle:active {
+  cursor: grabbing;
 }
 
 .fw-pane-loading {
@@ -650,68 +710,112 @@ body.fw-resizing {
   color: var(--status-waiting, var(--text-tertiary));
 }
 
-.fw-pane-grip {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  color: var(--text-tertiary);
-  cursor: grab;
-  opacity: 0.6;
-}
+/* ── 拖拽视觉（Flat 2D）──────────────────────────────────────────── */
+/* 细边框 + 半透明方向区 + 小标签；方向区最多 38%，不遮挡目录内容。
+   取代旧的 5px 紫色粗条与整块中心遮罩（任务规范 §6.1）。 */
 
-.fw-pane-grip:hover {
-  opacity: 1;
-  color: var(--accent);
-}
-
-/* ── 拖拽视觉 ───────────────────────────────────────────────────────── */
-/* 落点提示用轻量边缘细条（禁止大块半透明遮罩盖住内容，任务规范 §9.3）。 */
-
-.fw-edge-hint {
+.fw-drop-preview {
   position: absolute;
+  inset: 0;
   z-index: 3;
   pointer-events: none;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--accent) 85%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: calc(var(--radius-card) - 1px);
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
-.fw-edge-left {
-  left: 2px;
-  top: 8px;
-  bottom: 8px;
-  width: 5px;
-}
-
-.fw-edge-right {
-  right: 2px;
-  top: 8px;
-  bottom: 8px;
-  width: 5px;
-}
-
-.fw-edge-top {
-  left: 8px;
-  right: 8px;
-  top: 2px;
-  height: 5px;
-}
-
-.fw-edge-bottom {
-  left: 8px;
-  right: 8px;
-  bottom: 2px;
-  height: 5px;
-}
-
-.fw-center-hint {
+.fw-drop-shade {
   position: absolute;
-  inset: 3px;
-  z-index: 2;
-  pointer-events: none;
-  border-radius: var(--radius-card);
-  border: 1.5px dashed var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.fw-drop-left .fw-drop-shade {
+  left: 2px;
+  top: 2px;
+  bottom: 2px;
+  width: 38%;
+}
+
+.fw-drop-right .fw-drop-shade {
+  right: 2px;
+  top: 2px;
+  bottom: 2px;
+  width: 38%;
+}
+
+.fw-drop-top .fw-drop-shade {
+  left: 2px;
+  right: 2px;
+  top: 2px;
+  height: 38%;
+}
+
+.fw-drop-bottom .fw-drop-shade {
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
+  height: 38%;
+}
+
+.fw-drop-label {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--fw-border-subtle);
+  background: var(--fw-surface-overlay);
+  color: var(--text-primary);
+  font-size: 11px;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.fw-drop-left .fw-drop-label {
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.fw-drop-right .fw-drop-label {
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.fw-drop-top .fw-drop-label {
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.fw-drop-bottom .fw-drop-label {
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.fw-drop-center {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.fw-drop-center .fw-drop-label {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.fw-drop-swap {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.fw-drop-swap .fw-drop-label {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .fw-tabbar-hint {
@@ -860,6 +964,317 @@ body.fw-resizing {
   padding-top: 10px;
 }
 
+/* ── 工具栏细节：主操作 + 打开方式（分割按钮）────────────────────────── */
+
+.fw-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px;
+  border-left: 1px solid var(--fw-border-subtle);
+  border-right: 1px solid var(--fw-border-subtle);
+}
+
+.fw-split-btn {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.fw-split-btn .fw-open-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.fw-open-caret {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding-left: 5px;
+  padding-right: 5px;
+  border-left: none;
+}
+
+/* 布局编辑提示条：只在编辑模式出现，退出即收起（不长期占空间）。 */
+.fw-edit-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--fw-surface-raised));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.fw-edit-banner span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 空窗格（提高信息密度，主操作仍是浏览文件夹）────────────────────── */
+
+.fw-empty-pane {
+  gap: 8px;
+  padding: 16px 14px;
+  overflow: auto;
+}
+
+.fw-empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.fw-empty-hint {
+  margin: 0;
+  max-width: 320px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.fw-empty-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.fw-empty-group {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fw-empty-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+}
+
+.fw-empty-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.fw-empty-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--fw-border-subtle);
+  background: var(--fw-surface-overlay);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.fw-empty-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--text-primary);
+}
+
+.fw-empty-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-empty-drop {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  opacity: 0.85;
+}
+
+/* ── 打开文件夹对话框：模式 chips + 目录行 ─────────────────────────── */
+
+.fw-open-folder {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fw-open-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.fw-mode-chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--fw-border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.fw-mode-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.fw-mode-chip.is-on {
+  border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.fw-browse-btn {
+  align-self: flex-start;
+}
+
+.fw-pick-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--danger, #e5484d) 40%, transparent);
+  background: color-mix(in srgb, var(--danger, #e5484d) 8%, transparent);
+  color: color-mix(in srgb, var(--danger, #e5484d) 75%, var(--text-primary));
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.fw-dir-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.fw-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fw-dir-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fw-dir-row-main:hover {
+  background: var(--fw-surface-overlay);
+  border-color: var(--fw-border-subtle);
+  color: var(--text-primary);
+}
+
+.fw-dir-row-name {
+  flex: 0 0 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.fw-dir-row-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.fw-dir-row-pin {
+  flex: 0 0 auto;
+}
+
+.fw-drawer-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.fw-drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.fw-stash-restore {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+/* 关闭区域确认：列出将被关闭/收纳的目录（绝不静默丢弃）。 */
+.fw-close-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.fw-close-prompt p {
+  margin: 0;
+}
+
+.fw-close-warn {
+  color: color-mix(in srgb, var(--danger, #e5484d) 75%, var(--text-primary));
+}
+
+.fw-tab-list {
+  margin: 0;
+  padding: 6px 10px;
+  max-height: 180px;
+  overflow: auto;
+  border-radius: 6px;
+  border: 1px solid var(--fw-border-subtle);
+  background: var(--fw-surface-overlay);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.fw-tab-list li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 窄窗：工具栏次要操作收进「更多」（媒体查询按窗口宽度）。 */
+@media (max-width: 980px) {
+  .fw-hide-narrow {
+    display: none;
+  }
+}
+
+
 /* ── 对话框辅助 ─────────────────────────────────────────────────────── */
 
 .fw-dialog-field {
@@ -872,38 +1287,6 @@ body.fw-resizing {
 
 .fw-dialog-field span {
   color: var(--text-secondary);
-}
-
-.fw-places {
-  margin-top: 10px;
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 4px;
-}
-
-.fw-place {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: var(--radius-control);
-  border: 1px solid var(--border-subtle);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-  min-width: 0;
-}
-
-.fw-place span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.fw-place:hover {
-  border-color: var(--accent);
-  color: var(--text-primary);
 }
 
 .fw-template-hint {

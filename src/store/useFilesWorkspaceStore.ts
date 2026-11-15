@@ -384,14 +384,20 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     const current = get();
     // 撤销/重做绝不能删掉「快照之后才打开的目录」：快照里没有的标签按原区域优先
     // 放回，装不下就进可恢复收纳；不静默丢弃是这套状态机的硬约束。
-    const known = new Set<string>(
-      Object.values(snapshot.panes).flatMap((pane) => pane.tabs.map((t) => t.tabId)),
-    );
+    const known = new Set<string>([
+      ...Object.values(snapshot.panes).flatMap((pane) => pane.tabs.map((t) => t.tabId)),
+      // 收纳标签也属于「快照里已有的目录」：漏掉它们会把重做后的同一批标签当成新标签，
+      // 造成同一 tabId 同时出现在区域与收纳里（重复/错位）。
+      ...snapshot.stashed.map((t) => t.tabId),
+    ]);
     const orphans: Array<{ paneId: string; tab: FolderTab }> = [];
     for (const id of paneIds(current.tree)) {
       for (const tab of current.panes[id]?.tabs ?? []) {
         if (!known.has(tab.tabId)) orphans.push({ paneId: id, tab });
       }
+    }
+    for (const tab of current.stashed) {
+      if (!known.has(tab.tabId)) orphans.push({ paneId: "", tab });
     }
     const panes: Record<string, PaneState> = {};
     const ids = paneIds(snapshot.tree);
@@ -947,25 +953,38 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
         activePaneId: s.activePaneId,
         activeTabId,
       });
+      // 收纳标签借布局扩容的机会放回（目录不长期滞留在收纳里）：
+      // 先在目标槽位剩余容量中按视觉顺序安置，仍放不下的继续保留在收纳中。
+      const slots = plan.slots.map((slot) => ({ ...slot, tabs: [...slot.tabs] }));
+      const keptStash: FolderTab[] = [];
+      for (const tab of s.stashed) {
+        const slot = slots.find((candidate) => candidate.tabs.length < MAX_TABS_PER_PANE);
+        if (slot) {
+          slot.tabs.push(tab);
+          slot.activeTabId = slot.activeTabId ?? tab.tabId;
+        } else {
+          keptStash.push(tab);
+        }
+      }
+      const nextStash = mergeStashed(keptStash, plan.stashed);
       // 容量保护：收纳总量超过上限时**阻止**本次布局转换（绝不截断、绝不丢标签）。
-      const room = MAX_STASHED_TABS - s.stashed.length;
-      if (plan.stashed.length > room) {
+      if (nextStash.length > MAX_STASHED_TABS) {
         return {
           ok: false,
           reason: "capacity",
           tabCount: totalTabs,
-          overflow: plan.stashed.length - room,
+          overflow: nextStash.length - MAX_STASHED_TABS,
         };
       }
       const panes: Record<string, PaneState> = {};
-      for (const slot of plan.slots) {
+      for (const slot of slots) {
         panes[slot.paneId] = { tabs: slot.tabs, activeTabId: slot.activeTabId };
       }
       recordHistory("preset", presetId);
       set({
         tree,
         panes,
-        stashed: mergeStashed(s.stashed, plan.stashed),
+        stashed: nextStash,
         activePaneId: plan.activePaneId,
         maximizedPaneId: null,
         selection: {},

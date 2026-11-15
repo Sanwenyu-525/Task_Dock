@@ -83,6 +83,9 @@ mod imp {
         defer_rebuild: bool,
         mask: Vec<f32>,
         tmp: Vec<f32>,
+        /// 环境层（大模糊）与接触层（小模糊）的模糊结果，合成时才乘峰值 alpha。
+        ambient: Vec<f32>,
+        contact: Vec<f32>,
     }
 
     // 句柄与位图指针只在 UI 线程内使用（attach/sync 均来自主线程与窗口过程）。
@@ -237,6 +240,28 @@ mod imp {
         }
     }
 
+    /// 三次盒式模糊 ≈ 高斯（把 `src` 模糊到 `dst`，`tmp` 为中转）。
+    fn blur3(src: &[f32], tmp: &mut [f32], dst: &mut [f32], w: usize, h: usize, pass: usize) {
+        dst.copy_from_slice(src);
+        for _ in 0..3 {
+            blur_h(dst, tmp, w, h, pass);
+            blur_v(tmp, dst, w, h, pass);
+        }
+    }
+
+    /// 阴影诊断开关：`TASK_DOCK_SHADOW_DEBUG=1` 时把位图尺寸、峰值 alpha、
+    /// 边缘衰减采样打到日志，用于回答"阴影为什么看不出来"（不开启时零开销）。
+    fn debug_on() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| {
+            matches!(
+                std::env::var("TASK_DOCK_SHADOW_DEBUG").as_deref(),
+                Ok("1") | Ok("on")
+            )
+        })
+    }
+
+
     fn build_bitmap(state: &mut State, win_w: i32, win_h: i32, hrgn: Option<isize>) -> bool {
         let margin = state.margin;
         let w = win_w + margin * 2;
@@ -281,35 +306,63 @@ mod imp {
             }
         }
 
-        // 3) 三次盒式模糊 ≈ 高斯
-        let blur_px = ((BLUR_CSS * state.scale).round() as usize).max(1);
-        let pass = (blur_px / 2).max(1);
-        for _ in 0..3 {
-            blur_h(&state.mask, &mut state.tmp, w as usize, h as usize, pass);
-            blur_v(&state.tmp, &mut state.mask, w as usize, h as usize, pass);
-        }
+        // 3) 两层模糊：环境层（大扩散，负责悬浮感）+ 接触层（小扩散，负责贴边层次）。
+        //    分开模糊再合成，才能同时得到"远处的柔和衰减"和"近处的清晰轮廓"；
+        //    单层大模糊会让近边缘被抹平（上一版峰值只有 0.20、边缘只剩 ~0.10，
+        //    在亮桌面上几乎看不出投影）。
+        state.ambient.clear();
+        state.ambient.resize(total, 0.0);
+        state.contact.clear();
+        state.contact.resize(total, 0.0);
+        let amb_pass = (((AMBIENT_BLUR_CSS * state.scale).round() as usize) / 2).max(1);
+        let con_pass = (((CONTACT_BLUR_CSS * state.scale).round() as usize) / 2).max(1);
+        blur3(
+            &state.mask,
+            &mut state.tmp,
+            &mut state.ambient,
+            w as usize,
+            h as usize,
+            amb_pass,
+        );
+        blur3(
+            &state.mask,
+            &mut state.tmp,
+            &mut state.contact,
+            w as usize,
+            h as usize,
+            con_pass,
+        );
 
-        // 4) 写预乘 alpha 的 BGRA
-        let offset_y = (OFFSET_Y_CSS * state.scale).round() as i32;
+        // 4) 合成并写预乘 alpha 的 BGRA（垂直偏移在窗口定位时施加，见 sync_state）
         unsafe {
             let out = std::slice::from_raw_parts_mut(state.bits, total * 4);
-            for y in 0..h {
-                let sy = y - offset_y;
-                for x in 0..w {
-                    let dst_idx = (y as usize) * (w as usize) + x as usize;
-                    let a = if sy >= 0 && sy < h {
-                        let src_idx = (sy as usize) * (w as usize) + x as usize;
-                        (state.mask[src_idx] * PEAK_ALPHA).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    let p = dst_idx * 4;
-                    out[p] = (SHADOW_B * a) as u8;
-                    out[p + 1] = (SHADOW_G * a) as u8;
-                    out[p + 2] = (SHADOW_R * a) as u8;
-                    out[p + 3] = (a * 255.0) as u8;
-                }
+            for i in 0..total {
+                let a = (state.ambient[i] * AMBIENT_ALPHA + state.contact[i] * CONTACT_ALPHA)
+                    .clamp(0.0, 1.0);
+                let p = i * 4;
+                out[p] = (SHADOW_B * a) as u8;
+                out[p + 1] = (SHADOW_G * a) as u8;
+                out[p + 2] = (SHADOW_R * a) as u8;
+                out[p + 3] = (a * 255.0) as u8;
             }
+        }
+
+        if debug_on() {
+            // 沿"窗口左边外 0/4/10/20/34 px"采一行，报告衰减曲线：这比"看起来有阴影"
+            // 可复核，也能区分"位图边界截断"与"峰值太低"两种不同毛病。
+            let cy = ((h / 2) as usize).min(h as usize - 1);
+            let inside_x = (margin as usize).min(w as usize - 1);
+            let mut samples = String::new();
+            for d in [0usize, 4, 10, 20, 34] {
+                let x = inside_x.saturating_sub(d);
+                let a = state.ambient[cy * w as usize + x] * AMBIENT_ALPHA
+                    + state.contact[cy * w as usize + x] * CONTACT_ALPHA;
+                samples.push_str(&format!("{d}px:{:.3} ", a));
+            }
+            eprintln!(
+                "[shadow] bitmap {}x{} margin={}px amb_pass={} con_pass={} edge_alpha(outside) {}",
+                w, h, margin, amb_pass, con_pass, samples
+            );
         }
         true
     }
@@ -398,7 +451,8 @@ mod imp {
             }
 
             let x = rect.left - state.margin;
-            let y = rect.top - state.margin - (OFFSET_Y_CSS * state.scale).round() as i32;
+            // 光源在窗口上方：整张阴影位图整体下移 offset，上边缘因此更"贴身"、下边缘更"落空"。
+            let y = rect.top - state.margin + (OFFSET_Y_CSS * state.scale).round() as i32;
             let w = win_w + state.margin * 2;
             let h = win_h + state.margin * 2;
 
@@ -411,7 +465,7 @@ mod imp {
             let dst_pt = POINT { x, y };
             let src_pt = POINT { x: 0, y: 0 };
             let size = SIZE { cx: w, cy: h };
-            UpdateLayeredWindow(
+            let layered = UpdateLayeredWindow(
                 state.shadow as _,
                 std::ptr::null_mut(),
                 &dst_pt,
@@ -422,6 +476,12 @@ mod imp {
                 &blend,
                 ULW_ALPHA,
             );
+            if debug_on() {
+                eprintln!(
+                    "[shadow] UpdateLayeredWindow={} pos={},{} size={}x{} host={},{} {}x{} margin={} topmost_owner={}",
+                    layered, x, y, w, h, rect.left, rect.top, win_w, win_h, state.margin, (GetWindowLongPtrW(owner_hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST) != 0
+                );
+            }
 
             // 置顶状态跟随宿主，并保证阴影紧贴宿主下方（不抢焦点、不拦输入）
             let owner_ex = GetWindowLongPtrW(owner_hwnd, GWL_EXSTYLE) as u32;
@@ -579,6 +639,8 @@ mod imp {
                 defer_rebuild: false,
                 mask: Vec::new(),
                 tmp: Vec::new(),
+                ambient: Vec::new(),
+                contact: Vec::new(),
             };
             sync_state(&mut state, owner);
             registry()

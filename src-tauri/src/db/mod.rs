@@ -6479,7 +6479,7 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
                         String::from("game"),
                         String::from("active"),
                         String::from("C:/ws/p-game"),
-                        None,
+                        Option::<String>::None,
                         String::from("备注-游戏项目"),
                         String::from(now),
                         String::from(now),
@@ -6490,7 +6490,7 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
                         String::from("general"),
                         String::from("archived"),
                         String::from("C:/ws/p-gen"),
-                        None,
+                        Option::<String>::None,
                         String::from("备注-通用项目"),
                         String::from(now),
                         String::from(now),
@@ -6562,7 +6562,13 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
                 .map_err(AppError::from)?;
             assert_eq!(indexes, 6, "重建后索引必须全部恢复");
 
-            // 五种类型全部合法。
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        // 五种类型全部合法；非法类型仍被 CHECK 拒绝。
+        // 读连接带 query_only，写入必须走写连接。
+        db.with_conn(|conn| {
             for kind in ["development", "game", "ai_comic", "general", "novel"] {
                 conn.execute(
                     "INSERT INTO workspace_projects
@@ -6572,7 +6578,6 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
                 )
                 .map_err(AppError::from)?;
             }
-            // 非法类型仍被 CHECK 拒绝。
             assert!(conn
                 .execute(
                     "INSERT INTO workspace_projects

@@ -244,6 +244,9 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
 
 **约束 A：实时可用内存门槛（每分类独立，阈值不下调）**
 
+> 本机可用 `memoryAdmissionEnabled=false` 显式关闭这一条（见 10.3）；关闭后只剩约束 B 与分类槽位
+> 排队，`status` 的门槛列显示"关闭"，`doctor` 记一条 P1 风险。
+
 ```
 门槛A = max(分类下限 minAvailMb, 本任务预计峰值) + 滞回量（仅当该任务曾因内存等待过）
 放行A ⇔ (os.freemem() - safetyReserveMb) ≥ 门槛A
@@ -526,7 +529,8 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `heavyConcurrency` / `mediumConcurrency` / `lightConcurrency` / `devConcurrency` | 1 / 1 / 2 / 2 | 槽位数 |
-| `heavyMinAvailMb` / `mediumMinAvailMb` / `lightMinAvailMb` | 6144 / 4096 / 2560 | 分类内存下限（MB） |
+| `memoryAdmissionEnabled` | true | **约束 A 总闸**（2026-11-15 新增）：`false` = 不按实时可用内存准入，只剩槽位并发 + 优先级排队 + 全局预算；`status`/`doctor` 会显著记录，见 10.3 |
+| `heavyMinAvailMb` / `mediumMinAvailMb` / `lightMinAvailMb` | 6144 / 4096 / 2560 | 分类内存下限（MB）；仅在 `memoryAdmissionEnabled=true` 时参与判定 |
 | `safetyReserveMb` | 0 | 额外安全余量 |
 | `hysteresisMb` | 1024 | 内存恢复滞回 |
 | `memorySampleMs` | 3000 | 内存采样间隔 |
@@ -627,6 +631,47 @@ vitest / `node --test`，实际峰值约 0.8–1 GB）因"分类下限 2560 + �
 `heavyMinAvailMb 3072 / mediumMinAvailMb 512 / lightMinAvailMb 256 / hysteresisMb 128 /
 estimateMediumMb 2400`，`systemReserveMb=3072`、`recommendedSystemReserveMb=3072`。与 10.1 的
 2026-11-15 第二轮快照（1536/1024/256/estimate 2400）不一致，以本节实测为准；10.1 保留为历史记录不改写。
+
+### 10.3 2026-11-15 本机覆盖：关闭约束 A（实时可用内存门槛），保留排队与预算
+
+用户诉求（连续第三轮）：**不要按"当前可用内存"拦人**，但要**保留排队**——1–2 GB 的检查不该因为
+"分类下限 / 固定峰值"被 4–6 GB 的门槛挡住，同时也不希望退化成"谁都能同时起构建"。
+
+为什么前两轮"删门槛"没生效（事实记录，避免再次误判）：
+
+- 10.1 的覆盖只压低了**分类下限**，而实际门槛是 `max(分类下限, 预计峰值) + 滞回`；
+  `estimateHeavyMb=6000` 从未被改，所以 heavy 门槛一直 ≈ 6 GB（本轮 `status` 实测 5.98 GB）。
+- 机器覆盖文件 `config.json` 在 10.2 之后**仍然存在**（创建 19:21:40、改写 19:31:56），
+  "删掉文件"这一步没有落到当前状态目录上；即使删掉，也只会回到仓库默认（门槛更高）。
+
+本轮处置（新增**一等公民开关**，不再靠改阈值糊弄）：
+
+- `scripts/sched/config.mjs` 新增布尔字段 `memoryAdmissionEnabled`（默认 `true`，仓库默认不变）。
+- `scripts/sched/mem.mjs` `evaluateMemoryAdmission()` 在该字段为 `false` 时直接放行，
+  返回 `bypassed: true`、`floorMb: 0`，原因写明"内存准入门槛已关闭"。
+- **仍然生效的**：分类槽位并发（heavy/medium/light/dev）、优先级 + 老化排队、
+  跨分类全局预算（`totalMb - systemReserveMb`，本机 12.63 GB）。
+- `pressureLevel()` 在该字段为 `false` 时返回 `level="disabled"`，`status` 的"压力"行不再
+  声称"新任务全部等待"；`status` 额外打印一行 ⚠ 与 `内存准入=已关闭`；槽位/策略的门槛列显示
+  "关闭"；`configRisks()` 记一条 **P1**（`memoryAdmissionEnabled`），`doctor` 会列出。
+
+本机 `config.json` 现在**只有这一个键**（10.1/10.2 记录的阈值覆盖已一并移除，避免"看起来像偷偷
+调低阈值"）：
+
+```json
+{ "memoryAdmissionEnabled": false }
+```
+
+风险与依据（不掩盖）：
+
+- 约束 A 存在的理由见 10.1 的实测：`cargo check --tests` 在 3.07 GB 空闲时 **exit 101
+  （rustc OOM）**。关闭后这类任务在低内存下会直接开跑，可能得到"内存分配失败"的假失败，
+  或拖慢系统；本机 16 GB 中长期被其他程序占住 10 GB 以上。
+- 因此口径仍是：**编译类任务建议照实声明 `--estimate-mb`**（如 5200），让全局预算的预留台账
+  与等待原因保持真实；`history` 里的 `budgetAtStart` 仍能看出是否在关闭状态下准入。
+
+回退：删除 `config.json`（或把该键改回 `true`）即恢复约束 A，仓库默认行为不受影响。
+单测：`node --test scripts/build-sched.test.mjs` 覆盖"关闭后放行 / 默认仍拦截 / 风险项可见"。
 
 ## 11. 故障处理手册
 

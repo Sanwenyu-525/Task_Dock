@@ -2010,5 +2010,54 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
   round2/native/`（persist-a/b/c-results.json、persist-*.png、native-full-results.json）。
   遗留：跨窗口并发读-改-写同键的竞态（写入链仅窗口内串行）属已知限制，与其他布局键同。
 
+### 第三轮：目录会话与布局解耦 / 原生目录选择 / 布局编辑模式 / Flat 2D（2026-11-15）
+
+第二轮解决了持久化与拖拽仲裁，但用户真机暴露了更高层缺陷：`applyPreset()` 重建布局树
+（新窗格 ID、重建窗格状态、清空标签）导致**换布局就丢已打开目录**；「打开文件夹」只能手输
+路径；整窗格把手拖拽与文件/标签拖拽争抢命中区；关闭区域会静默丢弃标签；布局操作不可撤销；
+文件工作区沿用全局 `--card-face` 渐变，与统一工作台的 2D 方向冲突。报告
+`tmp/acceptance/files-workspace/round3/report.md`。核心原则：**目录属于用户的工作内容，布局
+只是组织方式；任何非显式关闭标签的布局操作都不得让已打开目录消失。**
+
+- **职责边界**：目录会话 = 标签（tabId/path/导航历史/激活/排序显示/视图）+ 收纳 + 固定/最近
+  目录；布局 = 分割树（方向/比例/窗格位置）+ 标签到窗格分配 + 活动区域 + 最大化 + 编辑模式。
+  布局操作只允许「重排」标签，不创建/销毁目录会话；标签仅在显式关闭标签/关闭区域并选择丢弃
+  时才消失。
+- **布局转换** `src/lib/filesWorkspace/layoutTransfer.ts`：收集全部标签 → 生成目标树
+  （`reassignPaneIds`）→ 稳定分配。区域变少（N≤M）按源窗格合并 `floor(i*N/M)`；区域变多
+  （N>M）按标签视觉展平 `floor(j*N/max(T,N))`；超出每窗格 12 先向仍有空间的区域溢出，仍放
+  不下进收纳（上限 64，超限 `ok:false,reason:"capacity"` 阻止，不截断）；扩容时收纳标签按
+  视觉顺序自动放回空位。`sameLayoutShape` 比较结构+方向+比例（忽略 split id），点击当前预设
+  返回 `unchanged`，不重建树、不打断最大化与分割线拖动。
+- **关闭区域**：`closePane(paneId,{mode})`：`transfer`（默认）先把标签转移到相邻区域及其余
+  区域，容量不足返回 `blocked/capacity` + 待安置标签且**状态不变**（分配在副本上完成）；
+  `stash` 把装不下的放回收纳；`discard` 才丢弃并逐条返回；最后区域 `lastPane` 拒绝。
+  `closeOtherPanes` 同一语义。空区域直接关闭。
+- **布局撤销/重做**：历史快照含 tree/panes/activePaneId/maximized/stashed，上限 20；同
+  kind+key 600ms 内合并（一次比例拖动只产生一条）；撤销/重做只恢复布局与标签分配，不记录
+  文件系统操作；快照之后新开的标签在撤销时按原区域优先放回，装不下进收纳（不丢目录）。
+- **原生目录选择** `folderPicker.ts`：`@tauri-apps/plugin-dialog` 的 `open({directory:true,
+  multiple:false,title,defaultPath})`；`cancelled` 不改变任何状态；选中路径用 `fsStat([path])`
+  （bridge 该命令收数组、返回数组）区分 `notFound/notDir/unreadable/error`，失败只提示不清空
+  页面。打开方式 `newTab`（默认）/`replace`/左/右/上/下分栏；空窗格提供浏览、手输路径、
+  最近、固定、项目根，外部拖入目录打开为标签、拖入文件才走文件投递。
+- **布局编辑模式**：`layoutEditMode` 由布局菜单进入/退出（Esc 退出）。普通模式无整窗格把手，
+  标签/文件拖拽语义不变；编辑模式只显示区域顶部把手（`FwDragPayload.pane`），拖到另一区域
+  中心触发 `pane-swap`（解决为 `swapPanes` 叶节点互换，保留两侧标签/激活/导航，不产生新窗格、
+  不触碰文件系统），方向键微调最近一层分割比例。落点预览改为细边框 + 半透明方向区 + 小标签
+  （最多 38%），方向键与 Esc 可取消；空区域不再出现「移动整个窗格（0 个标签）」。
+- **Flat 2D**：`.fw-root` 内定义 `--fw-surface-base/raised/overlay`、`--fw-border-*` 纯色
+  标度并覆盖 `--surface-*`/`--border-*`/`--shadow-raised`（深色 `#101320/#171b28/#1e2333`，
+  `html[data-theme="light"]` 覆盖浅色），使 `--surface-raised` 不再继承全局 `--card-face`
+  渐变；不改共享主题 Token（其他 UI 会话所有权）。移除 grip/粗紫边/整窗格移动提示，新增空态
+  分组、打开方式 chips、目录行、抽屉说明/收纳恢复、关闭区域对话等样式。
+- **预设 vs 模板**：预设只改区域排列（保留目录）；模板恢复完整现场（树/标签/分配/激活/比例），
+  应用前明确提示并允许先保存当前；抽屉移除 4 个误导性「内置模板」入口（只保留用户模板）。
+- **持久化**：`file_workspace_layouts` 的 `states[key]` 增加 `stashed`/`pinnedDirs`/
+  `recentDirs`；hydrate 复用持久化 tabId、恢复收纳与固定/最近、清空布局历史与编辑模式。
+  项目键隔离、失效路径保留标签的语义不变。
+- **验证状态**：见第三轮报告（命令/退出码/证据路径以报告为准）。未执行项（无 Windows 原生
+  选择器真实点击、视觉截图对照等）在报告中标 `NOT VERIFIED`，不以预览 shim 推断通过。
+
 
 

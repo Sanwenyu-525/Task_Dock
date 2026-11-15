@@ -173,6 +173,7 @@ export async function uploadLocalFile(
   const remoteName = nameOverride?.trim() || uploadDisplayName(file);
   const created = await client.create(remoteName, size);
   let handle: Handle | null = null;
+  let completeStarted = false;
   try {
     handle = file.open(FileMode.ReadOnly);
     for (let index = 0; index < created.chunks; index += 1) {
@@ -186,13 +187,34 @@ export async function uploadLocalFile(
       throwIfCancelled(isCancelled);
       onProgress(index + 1, created.chunks);
     }
+    completeStarted = true;
+    return await client.complete(created.id);
   } catch (error) {
+    // 取消/超时可能正好发生在 complete 返回前后：先查一次列表，若桌面端已经
+    // 完整接收（ready），保留远端文件并把它当作成功返回，绝不能把已完成文件删掉。
+    // 列表也失败时无法证明远端状态，宁可不删（残余 pending 由桌面启动清理），
+    // 也不冒误删风险。
+    let completed: RemoteFile | null = null;
+    if (completeStarted && isCancelled?.()) {
+      try {
+        completed =
+          (await client.list()).find(
+            (file) => file.id === created.id && file.status === "ready",
+          ) ?? null;
+      } catch {
+        completed = null;
+      }
+    }
+    if (completed) return completed;
+    if (completeStarted && isCancelled?.()) {
+      // 无法确认 ready 时不清理，避免把已完成文件误删；桌面端会清理半成品。
+      throw error;
+    }
     await client.remove(created.id).catch(() => undefined);
     throw error;
   } finally {
     handle?.close();
   }
-  return client.complete(created.id);
 }
 
 /**

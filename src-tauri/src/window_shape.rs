@@ -654,7 +654,7 @@ pub fn radius() -> f64 {
 /// 按当前半径应用主窗外形（CSS 轮廓模式或旧区域模式）。返回是否真正应用成功。
 #[cfg(windows)]
 pub fn apply<R: Runtime>(win: &WebviewWindow<R>) -> bool {
-    apply_impl(win, radius(), ShapeTarget::Main)
+    apply_impl(win, radius(), ShapeTarget::Main, 2.0)
 }
 
 /// 用**指定**逻辑半径裁剪独立弹窗（弹窗使用自己的 CSS 圆角，
@@ -791,6 +791,9 @@ fn css_support_left_profile(y: i32, h: i32, radius: f64, exponent: f64) -> i32 {
 }
 
 /// 距最近一条水平边 `row` 行处，圆角圆的支撑起点。
+/// 距最近一条水平边 `row` 行处，圆弧的支撑起点（`exponent = 2` 的快捷方式）。
+/// 生产路径统一走 `support_from_edge_profile`；这里保留给既有测试与文档口径。
+#[allow(dead_code)]
 fn support_from_edge(row: i32, radius: f64) -> i32 {
     support_from_edge_profile(row, radius, 2.0)
 }
@@ -2121,6 +2124,91 @@ mod tests {
         assert_eq!(css_support_left(0, h, 18.0), 12);
         assert_eq!(css_support_left(0, h, 0.0), 0, "直角窗口全宽");
         assert_eq!(css_support_left(0, 0, r), 0, "退化高度不越界");
+    }
+
+    // ── 苹果式连续圆角（corner-shape: superellipse(n)）────────────────────
+
+    /// 指数 2 必须与既有圆弧路径**逐像素相同**：这是"不改动其他窗口行为"的硬约束，
+    /// 任何差异都会让主窗/右键菜单的既有区域悄然变化。
+    #[test]
+    fn corner_profile_two_matches_legacy_circle_exactly() {
+        for r in [12.0f64, 18.0, 22.5, 25.0, 27.5, 40.0] {
+            for h in [96i32, 560, 760] {
+                for y in 0..(r as i32) + 2 {
+                    assert_eq!(
+                        css_support_left_profile(y, h, r, 2.0),
+                        css_support_left(y, h, r),
+                        "r={r} y={y}"
+                    );
+                    assert_eq!(
+                        support_from_edge_profile(y, r, 2.0),
+                        support_from_edge(y, r),
+                        "r={r} y={y} 单边支撑"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 超椭圆支撑点的解析值：`x = ceil(r − 1 − r·(1 − v^n)^(1/n))`，v = 1 − (row+1)/r。
+    /// n=4 / r=25 的首行为 9（圆弧是 17）：四角在同半径下更"饱满"，与 CSS
+    /// `corner-shape: superellipse(4)` 把直边延伸进角部的视觉一致。
+    #[test]
+    fn continuous_corner_support_matches_superellipse_math() {
+        let r = 25.0f64;
+        let h = 560;
+        // 解析值：ceil(24 − 25·(1 − v^4)^0.25)
+        assert_eq!(support_from_edge_profile(0, r, 4.0), 9);
+        assert_eq!(support_from_edge_profile(10, r, 4.0), 0, "深行已转直边");
+        assert_eq!(css_support_left_profile(0, h, r, 2.0), 17, "圆弧口径不变");
+        // 同一行的支撑必须单调收窄，且超椭圆整段都比圆弧更靠外（角更饱满）。
+        let mut prev = support_from_edge_profile(0, r, 4.0);
+        for y in 1..r as i32 {
+            let x4 = support_from_edge_profile(y, r, 4.0);
+            let x2 = support_from_edge_profile(y, r, 2.0);
+            assert!(x4 <= prev, "y={y} 超椭圆支撑必须单调收窄");
+            assert!(x4 <= x2, "y={y} 超椭圆 {x4} 不应比圆弧 {x2} 更靠内");
+            prev = x4;
+        }
+        // 超椭圆仍满足"到半径行即直边"，且不会被裁成负数。
+        for r in [12.0f64, 22.5, 27.5, 40.0] {
+            let n2 = support_from_edge_profile(r as i32, r, 2.0);
+            let n4 = support_from_edge_profile(r as i32, r, 4.0);
+            assert_eq!((n2, n4), (0, 0), "r={r} 半径行必须转直边");
+        }
+    }
+
+    /// 区域探针在超椭圆下依然成立：`(1,1)` 在区域外（证明裁掉了角部），
+    /// `(r,r)` 在区域内（证明没有把内容裁光）。`region_is_current` 依赖这两点。
+    #[test]
+    fn continuous_corner_keeps_region_probes_valid() {
+        let h = 760;
+        for r in [18.0f64, 22.5, 25.0, 27.5] {
+            let first4 = support_from_edge_profile(0, r, 4.0);
+            let first2 = support_from_edge_profile(0, r, 2.0);
+            // 首行起点 > 1 ⇒ (1,1) 必在区域外；起点 < r ⇒ (r,r) 必在区域内。
+            assert!(first4 > 1, "r={r} 首行 {first4} 必须切掉 (1,1)");
+            assert!(first4 < r as i32, "r={r} 首行 {first4} 不应超过半径行");
+            assert!(first2 > 1);
+            assert_eq!(
+                css_support_left_profile(r as i32, h, r, 4.0),
+                0,
+                "r={r} 半径行转直边 ⇒ (r,r) 在区域内"
+            );
+        }
+    }
+
+    /// 指数非法/越界必须收敛到合法区间，避免写出与 CSS 不一致的区域。
+    #[test]
+    fn corner_exponent_is_clamped_and_falls_back() {
+        assert_eq!(corner_milli(4.0), 4_000);
+        assert_eq!(corner_milli(2.0), 2_000);
+        assert_eq!(corner_milli(1.0), 2_000, "低于圆弧的指数无意义，回退 2");
+        assert_eq!(corner_milli(9.0), 6_000, "上限 6 防止数值退化");
+        assert_eq!(corner_milli(f64::NAN), 2_000);
+        // 非有限值（含无穷）一律回退圆弧：无穷指数没有对应的 CSS 曲线可对齐。
+        assert_eq!(corner_milli(f64::INFINITY), 2_000);
+        assert_eq!(corner_exponent(4_000), 4.0);
     }
 
     /// 右键菜单弹窗（CSS 16px）在 100/125/150/200% 下的区域几何：

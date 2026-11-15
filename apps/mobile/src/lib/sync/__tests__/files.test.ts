@@ -99,6 +99,8 @@ describe("createFileClient（注入 fetchImpl）", () => {
     const list = await client.list();
     expect(list).toHaveLength(1);
     expect(list[0].name).toBe("a.txt");
+    // 老桌面端不返回 v51 字段：解析结果必须保持“字段缺失”，不能变成显式 null。
+    expect("shelf_item_id" in list[0]).toBe(false);
 
     const created = await client.create("hello.txt", 10);
     expect(created.chunks).toBe(2);
@@ -155,6 +157,24 @@ describe("createFileClient（注入 fetchImpl）", () => {
     client.cancel();
     await assertion;
     expect(attempts).toBeLessThanOrEqual(2);
+  });
+
+  it("新桌面端显式 shelf_item_id=null 与字段缺失语义可区分", async () => {
+    const key = await deriveSyncKey(TOKEN);
+    const fetchImpl: FetchLike = async (url, init) => {
+      const path = url.replace(/^https?:\/\/[^/]+/, "");
+      const aad = aadOf(init.method ?? "GET", path);
+      return jsonResponse(
+        200,
+        encryptEnvelope(key, aad, {
+          files: [fileRecord({ shelf_item_id: null, shelf_imported_at: null, shelf_group_id: null })],
+        }),
+      );
+    };
+    const client = createFileClient({ baseUrl: "https://host", token: TOKEN, syncKey: key, fetchImpl });
+    const list = await client.list();
+    expect("shelf_item_id" in list[0]).toBe(true);
+    expect(list[0].shelf_item_id).toBeNull();
   });
 
   it("importToShelf 走独立 AAD 并透传分组、回传 shelf_item_id", async () => {

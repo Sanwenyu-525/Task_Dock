@@ -1140,14 +1140,94 @@ mod tests {
             import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap();
         let item_id = first.shelf_item_id.clone().unwrap();
 
-        // 用户从暂存架删除条目后，允许重新导入，沿用同一个稳定 ID。
+        // 用户从暂存架删除条目后，mobile_files 的引用必须同步清空，否则手机端
+        // 会继续显示「已入架」；传输记录和 inbox 文件仍保留，供重新导入。
         shelf::delete_items(&db, &shelf_root, &[item_id.clone()], true).unwrap();
         assert!(!shelf::item_exists(&db, &item_id).unwrap());
+        let after_delete = load_file(&db, &file.id).unwrap();
+        assert!(after_delete.shelf_item_id.is_none());
+        assert!(after_delete.shelf_imported_at.is_none());
+        assert!(after_delete.shelf_group_id.is_none());
+        assert!(PathBuf::from(&after_delete.stored_path).exists());
 
         let second =
             import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap();
         assert_eq!(second.shelf_item_id.as_deref(), Some(item_id.as_str()));
         assert!(shelf::item_exists(&db, &item_id).unwrap());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shelf_root);
+    }
+
+    #[test]
+    fn shelf_protected_item_delete_keeps_mobile_refs() {
+        let db = test_db();
+        let root = temp_root("shelf-protected");
+        let shelf_root = shelf_temp_root("protected");
+        let file = upload(&db, &root, "p.bin", &payload(24));
+        let imported =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap();
+        let item_id = imported.shelf_item_id.unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE shelf_items SET favorite = 1 WHERE id = ?1",
+                params![&item_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let report = shelf::delete_items(&db, &shelf_root, &[item_id.clone()], false).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.skipped, 1);
+        assert!(shelf::item_exists(&db, &item_id).unwrap());
+        let row = load_file(&db, &file.id).unwrap();
+        assert_eq!(row.shelf_item_id.as_deref(), Some(item_id.as_str()));
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shelf_root);
+    }
+
+    #[test]
+    fn shelf_batch_delete_and_clear_only_clear_deleted_refs() {
+        let db = test_db();
+        let root = temp_root("shelf-batch-delete");
+        let shelf_root = shelf_temp_root("batch-delete");
+        let first = upload(&db, &root, "a.bin", &payload(32));
+        let second = upload(&db, &root, "b.bin", &payload(48));
+        let first_import =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &first.id, None).unwrap();
+        let second_import =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &second.id, None).unwrap();
+        let first_item = first_import.shelf_item_id.unwrap();
+        let second_item = second_import.shelf_item_id.unwrap();
+
+        // 批量删除两个条目：两条 mobile_files 引用都清空，但文件/记录保留。
+        shelf::delete_items(
+            &db,
+            &shelf_root,
+            &[first_item.clone(), second_item.clone()],
+            true,
+        )
+        .unwrap();
+        for id in [&first.id, &second.id] {
+            let row = load_file(&db, id).unwrap();
+            assert!(row.shelf_item_id.is_none());
+            assert!(row.shelf_imported_at.is_none());
+            assert!(row.shelf_group_id.is_none());
+            assert!(PathBuf::from(&row.stored_path).exists());
+        }
+
+        // 重新导入一个后清空暂存架：只清实际删除的条目，记录仍保留。
+        let reimport =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &first.id, None).unwrap();
+        assert_eq!(reimport.shelf_item_id.as_deref(), Some(first_item.as_str()));
+        shelf::clear(&db, &shelf_root, true).unwrap();
+        let row = load_file(&db, &first.id).unwrap();
+        assert!(row.shelf_item_id.is_none());
+        assert!(row.shelf_imported_at.is_none());
+        assert!(row.shelf_group_id.is_none());
+        assert!(PathBuf::from(&row.stored_path).exists());
 
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&shelf_root);

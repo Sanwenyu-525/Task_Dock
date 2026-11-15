@@ -13,6 +13,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
   type MouseEvent as ReactMouseEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import {
   ArrowLeft,
@@ -53,7 +54,7 @@ import {
 import { formatSize, CATEGORY_LABEL } from "../../lib/filesWorkspace/fileMeta";
 import { basename, breadcrumbSegments, joinPath, normalizePath, parentOf } from "../../lib/filesWorkspace/pathUtils";
 import { pickFolder, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
-import { MAX_TABS_PER_PANE } from "../../lib/filesWorkspace/model";
+import { MAX_TABS_PER_PANE, pathToPane } from "../../lib/filesWorkspace/model";
 import {
   isFwDragging,
   startFwDrag,
@@ -174,8 +175,59 @@ function FreeMenu({
 }
 
 /**
+ * 布局编辑模式的区域把手：拖动交换位置（指针），方向键微调最近一层分割比例（键盘）。
+ * 只在编辑模式渲染——普通浏览模式没有整窗格拖拽，杜绝“移动整个窗格（0 个标签）”。
+ */
+function EditHandle({
+  paneId,
+  onPointerDown,
+}: {
+  paneId: string;
+  onPointerDown: (e: ReactPointerEvent) => void;
+}) {
+  const { t } = useLocale();
+  const nudge = (direction: "left" | "right" | "up" | "down") => {
+    const path = pathToPane(useFilesWorkspaceStore.getState().tree, paneId);
+    if (!path || path.length === 0) return;
+    const horizontal = direction === "left" || direction === "right";
+    const split = [...path].reverse().find((node) => node.direction === (horizontal ? "horizontal" : "vertical"));
+    if (!split) return;
+    const delta = direction === "left" || direction === "up" ? -0.02 : 0.02;
+    const next = Math.min(0.85, Math.max(0.15, split.ratio + delta));
+    useFilesWorkspaceStore.getState().updateRatio(split.id, next);
+  };
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const map = {
+      ArrowLeft: "left",
+      ArrowRight: "right",
+      ArrowUp: "up",
+      ArrowDown: "down",
+    } as const;
+    const direction = map[e.key as keyof typeof map];
+    if (!direction) return;
+    e.preventDefault();
+    nudge(direction);
+  };
+  return (
+    <div
+      className="fw-edit-handle"
+      role="button"
+      tabIndex={0}
+      aria-label={t("fw.edit.dragTip")}
+      data-tip={t("fw.edit.dragTip")}
+      onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
+    >
+      <GripVertical size={13} aria-hidden="true" />
+      <span>{t("fw.edit.dragShort")}</span>
+    </div>
+  );
+}
+
+/**
  * 拖拽落点预览：细边框 + 半透明方向区域 + 小标签，替代原先 5px 紫色粗条。
- * 预览只表达「松手会发生什么」，不遮挡目录内容（区域最多覆盖 42% 且半透明）。
+ * 预览只表达「松手会发生什么」，不遮挡目录内容（方向区最多 38% 且半透明）。
  */
 function DropPreview({ zone }: { zone: FwDropZone }) {
   const { t } = useLocale();
@@ -390,15 +442,19 @@ export default function FilePane({
       }
       // 文件拖拽：目录行优先，其次窗格中心（当前目录）。
       if (!dirPath) return null;
+      const dragPaths = (): string[] => {
+        const p = getFwDragState().payload;
+        return p && p.kind === "files" ? p.paths : [];
+      };
       const under = document.elementFromPoint(x, y);
       const row = under?.closest<HTMLElement>("[data-fw-path]");
       if (row?.dataset.fwKind === "dir") {
         const target = row.dataset.fwPath ?? "";
-        return validateFileDrop(getFwDragState().payload?.paths ?? [], target)
+        return validateFileDrop(dragPaths(), target)
           ? { type: "folder", paneId, path: target }
           : null;
       }
-      return validateFileDrop(getFwDragState().payload?.paths ?? [], dirPath)
+      return validateFileDrop(dragPaths(), dirPath)
         ? { type: "center", paneId, dir: dirPath }
         : null;
     },
@@ -874,7 +930,7 @@ export default function FilePane({
       <button
         key={path}
         type="button"
-        className="fw-dir-chip"
+        className="fw-empty-chip"
         onClick={() => openIntoPane(path, "newTab")}
         title={path}
       >
@@ -893,17 +949,10 @@ export default function FilePane({
         data-fw-pane-id={paneId}
         aria-label={t("fw.pane.blankAria")}
       >
-        <div className="fw-pane-tabbar" ref={tabbarRef} />
         {layoutEditMode && (
-          <div
-            className="fw-edit-handle"
-            data-tip={t("fw.edit.dragTip")}
-            onPointerDown={(e) => beginDragCandidate(e, null, null, true)}
-          >
-            <GripVertical size={13} aria-hidden="true" />
-            <span>{t("fw.edit.dragShort")}</span>
-          </div>
+          <EditHandle paneId={paneId} onPointerDown={(e) => beginDragCandidate(e, null, null, true)} />
         )}
+        <div className="fw-pane-tabbar" ref={tabbarRef} />
         <div className="fw-empty-pane">
           <span className="fw-empty-icon" aria-hidden="true">
             <FolderOpen size={26} strokeWidth={1.4} />
@@ -963,14 +1012,7 @@ export default function FilePane({
     >
       {/* 布局编辑模式：顶部简洁拖动把手（普通模式不出现，避免与文件/标签拖拽争抢） */}
       {layoutEditMode && (
-        <div
-          className="fw-edit-handle"
-          data-tip={t("fw.edit.dragTip")}
-          onPointerDown={(e) => beginDragCandidate(e, null, null, true)}
-        >
-          <GripVertical size={13} aria-hidden="true" />
-          <span>{t("fw.edit.dragShort")}</span>
-        </div>
+        <EditHandle paneId={paneId} onPointerDown={(e) => beginDragCandidate(e, null, null, true)} />
       )}
       {/* 标签栏 */}
       <div className="fw-pane-tabbar" ref={tabbarRef} role="tablist" aria-label={t("fw.tabs.aria")}>

@@ -93,6 +93,8 @@ fn workbench_corner() -> f64 {
 /// 窗口销毁时清空几何指纹（HWND 复用不会命中上一轮的「参数没变」判定）。
 fn reset_workbench_frame_state() {
     WORKBENCH_FRAME_KEY.store(0, Ordering::Relaxed);
+    // 曲线回落圆弧：新窗口在收到前端能力检测结果前按圆弧裁剪，绝不单方面超椭圆。
+    WORKBENCH_CORNER_MILLI.store(2_000, Ordering::Relaxed);
 }
 
 /// 有效半径：最大化时 0（窗口必须铺满显示器工作区，圆角会在屏幕边缘留缝隙）。
@@ -2138,8 +2140,53 @@ mod tests {
         // 销毁清理：指纹归零后，同一个句柄被系统复用也不会误判「参数没变」。
         let key = frame_key(18.0, 1280, 820, 1.25, false);
         WORKBENCH_FRAME_KEY.store(key, Ordering::Relaxed);
+        WORKBENCH_CORNER_MILLI.store(4_000, Ordering::Relaxed);
         reset_workbench_frame_state();
         assert_eq!(WORKBENCH_FRAME_KEY.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            WORKBENCH_CORNER_MILLI.load(Ordering::Relaxed),
+            2_000,
+            "新窗口必须先回到圆弧，等前端确认 corner-shape 支持后再切超椭圆"
+        );
+    }
+
+    #[test]
+    fn frame_key_separates_circle_from_continuous_corner() {
+        // 角部曲线必须进入指纹：否则切换预设（圆弧 ↔ 连续圆角）时缓存命中，
+        // 窗口会保留上一形态的角部支撑像素（实测两者相差 8–9 物理像素）。
+        let circle = frame_key_with_corner(22.0, 2.0, 1280, 820, 1.25, false);
+        let squircle = frame_key_with_corner(22.0, 4.0, 1280, 820, 1.25, false);
+        assert_ne!(circle, squircle, "曲线变化必须重建区域");
+        assert_eq!(
+            circle,
+            frame_key(22.0, 1280, 820, 1.25, false),
+            "不传曲线时沿用圆弧指纹，保证既有调用方语义不变"
+        );
+        assert_eq!(
+            squircle,
+            frame_key_with_corner(22.0, 4.0004, 1280, 820, 1.25, false),
+            "浮点噪声不应触发重建"
+        );
+    }
+
+    #[test]
+    fn workbench_corner_clamps_to_supported_range() {
+        for (input, expected) in [
+            (4.0, 4.0),
+            (2.0, 2.0),
+            (1.0, 2.0),
+            (9.0, 6.0),
+            (f64::NAN, 2.0),
+            (f64::INFINITY, 6.0),
+        ] {
+            WORKBENCH_CORNER_MILLI.store((input * 1000.0) as u32, Ordering::Relaxed);
+            let got = workbench_corner();
+            assert!(
+                (got - expected).abs() < 0.011,
+                "corner {input} 期望 ~{expected}，实得 {got}"
+            );
+        }
+        WORKBENCH_CORNER_MILLI.store(2_000, Ordering::Relaxed);
     }
 
 }

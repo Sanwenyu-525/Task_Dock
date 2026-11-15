@@ -38,6 +38,7 @@ import { useTheme } from "../../theme/ThemeProvider";
 import { font, radius, space } from "../../theme/tokens";
 
 import { captureAvailability, cleanupStagedAfterRun, listShelfGroups, retryShelfImport, saveToAlbum, saveToLocal, sendToDesktop, transformStagedAsset, type DestinationChoice, type PairingAvailability, type SendProgress } from "./service";
+import { createTransferCancelToken, type TransferCancelToken } from "./cancel";
 import { deleteFileQuietly } from "./files";
 import { bumpCaptureRevision } from "./revision";
 import {
@@ -122,6 +123,9 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
   const [busy, setBusy] = useState(false);
   const [runLabel, setRunLabel] = useState("");
   const [progress, setProgress] = useState<SendProgress | null>(null);
+  const [cancelable, setCancelable] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const cancelTokenRef = useRef<TransferCancelToken | null>(null);
   const [destinations, setDestinations] = useState<Record<string, repo.CaptureDestination[]>>({});
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -136,6 +140,12 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
     toastSeq.current += 1;
     setToast({ id: toastSeq.current, text, tone, placement: "bottom" });
   }, []);
+
+  const requestCancelTransfer = useCallback(() => {
+    if (!cancelTokenRef.current || cancelling) return;
+    cancelTokenRef.current.cancel();
+    setCancelling(true);
+  }, [cancelling]);
 
   const current = assets[index] ?? null;
   // 扫描 PDF 不是位图：不显示缩放/裁剪工具，预览位置给文件卡片。
@@ -329,6 +339,11 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
       return;
     }
     setBusy(true);
+    // 取消只针对桌面传输；本机/相册已经保存成功的结果不因取消而回滚。
+    const token = choice.desktop ? createTransferCancelToken() : null;
+    cancelTokenRef.current = token;
+    setCancelable(Boolean(token));
+    setCancelling(false);
     // 用户常常改完文件名/备注直接点保存：输入框只在 onEndEditing 提交，先补一次，
     // 否则改名后的相册副本仍用旧名、备注也不会落库。
     await commitName();
@@ -349,6 +364,25 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
         }
       }
       const total = working.length;
+
+      // 取消后：未开始的 desktop/shelf 写 cancelled；已经 done 的目的地保持 done。
+      const markCancelFrom = async (from: number) => {
+        for (let j = from; j < total; j += 1) {
+          const item = working[j];
+          if (!doneKeys.has(`${item.id}:desktop`)) {
+            await repo.setDestination(item.id, "desktop", {
+              state: "cancelled",
+              lastError: "文件传输已取消",
+            });
+          }
+          if (choice.desktopTarget === "shelf" && !doneKeys.has(`${item.id}:shelf`)) {
+            await repo.setDestination(item.id, "shelf", {
+              state: "cancelled",
+              lastError: "文件传输已取消",
+            });
+          }
+        }
+      };
 
       if (choice.local) {
         for (let i = 0; i < total; i += 1) {
@@ -383,6 +417,11 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
 
       if (choice.desktop) {
         for (let i = 0; i < total; i += 1) {
+          if (token?.isCancelled()) {
+            await markCancelFrom(i);
+            pendingMessage = "文件传输已取消";
+            break;
+          }
           const asset = working[i];
           const shelfDone = doneKeys.has(`${asset.id}:shelf`);
           const desktopDone = doneKeys.has(`${asset.id}:desktop`);
@@ -397,14 +436,24 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             (item) => item.destination === "desktop" && item.state === "done" && item.remoteId,
           );
           if (choice.desktopTarget === "shelf" && desktopDone && remote?.remoteId) {
-            const retry = await retryShelfImport(asset, remote.remoteId, choice.shelfGroupId);
+            const retry = await retryShelfImport(
+              asset,
+              remote.remoteId,
+              choice.shelfGroupId,
+              token ?? undefined,
+            );
+            if (retry.state === "cancelled") {
+              pendingMessage = retry.message;
+              await markCancelFrom(i + 1);
+              break;
+            }
             if (retry.stopBatch) {
               stopMessage = retry.message;
               failures.push(retry.message);
               break;
             }
             if (retry.state === "pending") pendingMessage = retry.message;
-            else if (retry.state === "failed" || retry.state === "cancelled") {
+            else if (retry.state === "failed") {
               failures.push(retry.message);
             } else if (retry.remoteShelfId) {
               doneKeys.add(`${asset.id}:shelf`);
@@ -418,7 +467,24 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             shelfGroupId: choice.shelfGroupId,
             onProgress: setProgress,
             batch: { index: i, count: total },
+            cancelToken: token ?? undefined,
           });
+          if (token?.isCancelled()) {
+            await markCancelFrom(i + 1);
+            pendingMessage = result.message ?? "文件传输已取消";
+            for (const outcome of result.outcomes) {
+              if (outcome.state === "done") {
+                doneKeys.add(`${asset.id}:desktop`);
+                if (choice.desktopTarget === "inbox") continue;
+                if (outcome.shelfId) doneKeys.add(`${asset.id}:shelf`);
+              } else if (outcome.state === "cancelled") {
+                pendingMessage = outcome.message ?? "文件传输已取消";
+              } else if (outcome.state === "failed") {
+                failures.push(outcome.message ?? "发送失败，请重试");
+              }
+            }
+            break;
+          }
           if (result.offline) {
             offlineMessage = result.message ?? "电脑端不可用";
             break;
@@ -471,6 +537,9 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
     } catch (error) {
       showToast(describeError(error), "danger");
     } finally {
+      cancelTokenRef.current = null;
+      setCancelable(false);
+      setCancelling(false);
       setBusy(false);
       setRunLabel("");
       setProgress(null);
@@ -934,6 +1003,27 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             </Text>
           </View>
         ) : null}
+        {cancelable ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={cancelling ? "正在取消上传" : "取消上传"}
+            accessibilityState={{ disabled: cancelling }}
+            disabled={cancelling}
+            onPress={requestCancelTransfer}
+            style={({ pressed }) => [
+              styles.cancelAction,
+              {
+                borderColor: tokens.accent,
+                backgroundColor: tokens.track,
+                opacity: cancelling ? 0.65 : pressed ? 0.75 : 1,
+              },
+            ]}
+          >
+            <Text style={[styles.cancelActionText, { color: tokens.accentText }]}>
+              {cancelling ? "正在取消…" : "取消上传"}
+            </Text>
+          </Pressable>
+        ) : null}
         <PressableScale
           accessibilityLabel="保存到所选位置"
           accessibilityState={{ disabled: busy || assets.length === 0 }}
@@ -1079,6 +1169,14 @@ const styles = StyleSheet.create({
   progressTrack: { height: 6, borderRadius: 3, overflow: "hidden", flexDirection: "row" },
   progressFill: { height: "100%", borderRadius: 3 },
   progressText: { fontSize: font.label },
+  cancelAction: {
+    minHeight: 36,
+    borderRadius: radius.row,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cancelActionText: { fontSize: font.label, fontWeight: "600" },
   primaryAction: {
     minHeight: 50,
     borderRadius: radius.row,

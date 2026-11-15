@@ -97,7 +97,7 @@ function stubRects(): void {
   });
 }
 
-async function renderPane(): Promise<{ zones: Array<FwDropZone | null> }> {
+async function renderPane(options: { layoutEditMode?: boolean } = {}): Promise<{ zones: Array<FwDropZone | null> }> {
   const zones: Array<FwDropZone | null> = [];
   render(
     <FilePane
@@ -106,6 +106,8 @@ async function renderPane(): Promise<{ zones: Array<FwDropZone | null> }> {
       pageActive
       onHoverZone={(zone) => zones.push(zone)}
       dropHint={null}
+      layoutEditMode={options.layoutEditMode ?? false}
+      projectRoot={null}
     />,
   );
   await waitFor(() => expect(screen.getByText("a.txt")).toBeTruthy());
@@ -139,42 +141,60 @@ describe("FilePane 拖拽起点（PointerEvent 组件链）", () => {
     expect(getFwDragState().payload).toBeNull();
   });
 
-  it("标签 pointerdown + 移动 → tabs 会话；把手 → 整窗格 paneMove", async () => {
+  it("标签 pointerdown + 移动 → tabs 会话；普通模式不再有整窗格把手", async () => {
     stubRects();
     await renderPane();
     const tab = screen.getByRole("tab").closest("[data-fw-tab]")!;
     fireEvent.pointerDown(tab, { button: 0, clientX: 50, clientY: 15, pointerId: 1 });
     fireEvent.pointerMove(window, { clientX: 70, clientY: 15, pointerId: 1 });
-    let st = getFwDragState();
+    const st = getFwDragState();
     expect(st.payload?.kind).toBe("tabs");
     if (st.payload?.kind === "tabs") {
       expect(st.payload.tabIds).toEqual(["t1"]);
-      expect(st.payload.paneMove).toBeFalsy();
     }
+    // 普通浏览模式的常量结构保证：不存在旧把手 / 不会出现“移动整个窗格（0 个标签）”。
+    expect(document.querySelector(".fw-pane-grip")).toBeNull();
+    expect(document.querySelector(".fw-edit-handle")).toBeNull();
     cancelFwDrag();
-    // 状态条把手：整窗格拖拽。
-    const grip = document.querySelector(".fw-pane-grip")!;
-    fireEvent.pointerDown(grip, { button: 0, clientX: 30, clientY: 590, pointerId: 2 });
-    fireEvent.pointerMove(window, { clientX: 55, clientY: 590, pointerId: 2 });
-    st = getFwDragState();
-    expect(st.payload?.kind).toBe("tabs");
-    if (st.payload?.kind === "tabs") {
-      expect(st.payload.paneMove).toBe(true);
-      expect(st.payload.tabIds).toEqual(["t1"]);
-    }
   });
 
-  it("tabs 拖拽命中窗格边缘 → edge zone（四方向分栏的落点来源）", async () => {
+  it("布局编辑模式：顶部细把手拖拽 → pane 会话（不是 tabs，不搬标签）", async () => {
+    stubRects();
+    const { zones } = await renderPane({ layoutEditMode: true });
+    const handle = document.querySelector(".fw-edit-handle")!;
+    expect(handle).toBeTruthy();
+    fireEvent.pointerDown(handle, { button: 0, clientX: 400, clientY: 40, pointerId: 7 });
+    fireEvent.pointerMove(window, { clientX: 430, clientY: 60, pointerId: 7 });
+    const st = getFwDragState();
+    expect(st.payload).toEqual({ kind: "pane", fromPaneId: "pane-1" });
+    act(() => moveFwDrag(500, 300, {}));
+    // 区域拖拽的落点只有「与目标区域交换」，绝不命中文件/标签语义。
+    expect(zones.at(-1)).toEqual({ type: "pane-swap", paneId: "pane-1" });
+    cancelFwDrag();
+  });
+
+  it("布局编辑模式下标签拖拽被禁用（避免与区域拖拽争夺命中）", async () => {
+    stubRects();
+    await renderPane({ layoutEditMode: true });
+    const tab = screen.getByRole("tab").closest("[data-fw-tab]")!;
+    fireEvent.pointerDown(tab, { button: 0, clientX: 50, clientY: 15, pointerId: 1 });
+    fireEvent.pointerMove(window, { clientX: 80, clientY: 15, pointerId: 1 });
+    expect(getFwDragState().payload).toBeNull();
+  });
+
+  it("tabs 拖拽命中窗格边缘 → edge zone；标签栏优先于顶边", async () => {
     stubRects();
     const { zones } = await renderPane();
     const tab = screen.getByRole("tab").closest("[data-fw-tab]")!;
     fireEvent.pointerDown(tab, { button: 0, clientX: 400, clientY: 300, pointerId: 1 });
     fireEvent.pointerMove(window, { clientX: 420, clientY: 300, pointerId: 1 });
-    act(() => moveFwDrag(12, 300, {})); // 左边缘（≤26px）
+    act(() => moveFwDrag(12, 300, {})); // 左边缘（≤40px 兜底带）
     expect(zones.at(-1)).toEqual({ type: "edge", paneId: "pane-1", edge: "left" });
     act(() => moveFwDrag(790, 300, {})); // 右边缘
     expect(zones.at(-1)).toEqual({ type: "edge", paneId: "pane-1", edge: "right" });
-    act(() => moveFwDrag(400, 8, {})); // 顶边缘（标签栏高度内）
+    act(() => moveFwDrag(400, 8, {})); // y=8 在标签栏内 → 并入标签栏，不能抢成上分栏
+    expect(zones.at(-1)?.type).toBe("tabbar");
+    act(() => moveFwDrag(400, 40, {})); // 标签栏下方 → 上边缘分栏
     expect(zones.at(-1)).toEqual({ type: "edge", paneId: "pane-1", edge: "top" });
     act(() => moveFwDrag(400, 592, {})); // 底边缘
     expect(zones.at(-1)).toEqual({ type: "edge", paneId: "pane-1", edge: "bottom" });

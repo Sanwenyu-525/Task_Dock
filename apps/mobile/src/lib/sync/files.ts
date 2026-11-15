@@ -197,10 +197,28 @@ function parseRemoteFile(value: unknown): RemoteFile {
     created_at: record.created_at,
     updated_at: record.updated_at,
     completed_at: typeof record.completed_at === "string" ? record.completed_at : null,
-    shelf_item_id: typeof record.shelf_item_id === "string" ? record.shelf_item_id : null,
-    shelf_imported_at:
-      typeof record.shelf_imported_at === "string" ? record.shelf_imported_at : null,
-    shelf_group_id: typeof record.shelf_group_id === "string" ? record.shelf_group_id : null,
+    // v51 字段的三种语义必须区分：
+    // - 字段缺失：老桌面端，不能据此认为用户删除了暂存架条目；
+    // - 显式 null：新桌面端明确表示当前没有有效 shelf 引用（删除/未导入）；
+    // - 字符串：真实 ShelfItem.id。
+    ...(Object.prototype.hasOwnProperty.call(record, "shelf_item_id")
+      ? {
+          shelf_item_id:
+            typeof record.shelf_item_id === "string" ? record.shelf_item_id : null,
+        }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, "shelf_imported_at")
+      ? {
+          shelf_imported_at:
+            typeof record.shelf_imported_at === "string" ? record.shelf_imported_at : null,
+        }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(record, "shelf_group_id")
+      ? {
+          shelf_group_id:
+            typeof record.shelf_group_id === "string" ? record.shelf_group_id : null,
+        }
+      : {}),
   };
 }
 
@@ -482,7 +500,7 @@ export function createFileClient(options: FileClientOptions): FileClient {
     timeoutMs: REQUEST_TIMEOUT_MS,
     maxRetries: MAX_RETRIES,
   };
-  /** 列表读取配置：9s × 1 次，独立快速失败。 */
+  /** 列表读取与只读分组探测配置：9s × 1 次，独立快速失败。 */
   const listConfig: RequestConfig = {
     kind: "list",
     timeoutMs: listTimeoutMs,
@@ -574,8 +592,10 @@ export function createFileClient(options: FileClientOptions): FileClient {
     }
   }
 
+  // 只读分组探测与列表同轨：桌面端离线时快速失败，不跟着传输类请求等 30s × 3。
+  // 写操作（importToShelf 的 POST）仍走 transferConfig。
   function shelfGroups(): Promise<RemoteShelfGroup[]> {
-    return request("GET", "/v1/shelf/groups", AAD_SHELF_GROUPS, undefined, transferConfig).then(
+    return request("GET", "/v1/shelf/groups", AAD_SHELF_GROUPS, undefined, listConfig).then(
       parseShelfGroups,
     );
   }

@@ -111,6 +111,11 @@ export function formatMb(mb) {
   return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.round(mb)} MB`;
 }
 
+/** 约束 A 总闸：`false` = 完全不按实时可用内存准入（默认 true）。 */
+export function isMemoryAdmissionEnabled(cfg) {
+  return cfg?.memoryAdmissionEnabled !== false;
+}
+
 /**
  * 准入判定。
  *
@@ -123,11 +128,21 @@ export function formatMb(mb) {
  * @returns {{admit:boolean, reason:string, floorMb:number, availMb:number, deficits:string[]}}
  */
 export function evaluateMemoryAdmission({ cfg, taskClass, mem, memoryWaitSeen = false, estimateOverrideMb = null }) {
+  const effectiveAvail = mem.availMb - cfg.safetyReserveMb;
+  // 总闸关闭：约束 A 直接放行。槽位并发、优先级排队与全局预算（约束 B）仍由别的模块执行，
+  // 所以这里不能顺带把那条路径也放开（否则就是"一个开关拆掉全部安全边界"）。
+  if (!isMemoryAdmissionEnabled(cfg)) {
+    return {
+      admit: true, floorMb: 0, availMb: effectiveAvail, simulated: mem.simulated,
+      deficits: [], bypassed: true,
+      reason: `内存准入门槛已关闭（memoryAdmissionEnabled=false）：可用 ${formatMb(effectiveAvail)}` +
+        " 不参与准入判定，仍受分类槽位与全局预算约束",
+    };
+  }
   const floor = memoryFloorForClass(cfg, taskClass);
   const estimate = estimateOverrideMb === null ? estimateForClass(cfg, taskClass) : estimateOverrideMb;
   const hysteresis = memoryWaitSeen ? cfg.hysteresisMb : 0;
   const required = Math.max(floor, estimate) + hysteresis;
-  const effectiveAvail = mem.availMb - cfg.safetyReserveMb;
   const deficits = [];
   if (effectiveAvail < required) {
     deficits.push(
@@ -151,6 +166,9 @@ export function evaluateMemoryAdmission({ cfg, taskClass, mem, memoryWaitSeen = 
 
 /** 全系统压力等级，用于 status 展示与「压力期暂停准入」提示。 */
 export function pressureLevel(cfg, mem) {
+  if (!isMemoryAdmissionEnabled(cfg)) {
+    return { level: "disabled", text: "内存准入已关闭（可用内存仅作展示，不参与准入；排队/槽位/全局预算照常）" };
+  }
   const avail = mem.availMb;
   if (avail < cfg.lightMinAvailMb) return { level: "critical", text: "紧张：低于轻量任务门槛，新任务全部等待" };
   if (avail < cfg.mediumMinAvailMb) return { level: "elevated", text: "偏高：仅可准入轻量任务" };

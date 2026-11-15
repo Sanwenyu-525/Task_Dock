@@ -739,7 +739,9 @@ export function FilesScreen({ nav }: { nav: Nav }) {
         )}
       </ScrollView>
 
-      {connection && !loading ? (
+      {/* 列表错误态（离线 / 校验失败 / 未配对）下不展示上传按钮：避免点了才走失败 Toast，
+          错误面板已提供重试或重新配对入口；传输进行中不受影响。 */}
+      {connection && !loading && !listError ? (
         <View
           style={[
             styles.dock,

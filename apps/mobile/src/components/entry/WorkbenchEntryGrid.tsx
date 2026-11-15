@@ -60,7 +60,7 @@ export function WorkbenchEntryGrid({
   const gap = space.sm;
   const [measuredWidth, setMeasuredWidth] = useState(0);
   const width = measuredWidth > 0 ? measuredWidth : Math.max(0, contentWidth);
-  const cols = Math.max(1, Math.min(columns, entries.length || columns));
+  const cols = Math.max(1, Math.floor(columns));
   const cellWidth = width > 0 ? (width - gap * (cols - 1)) / cols : 0;
 
   const [dragging, setDragging] = useState<{ index: number; target: number } | null>(null);
@@ -186,6 +186,7 @@ export function WorkbenchEntryGrid({
                   onUpdateDrag={updateDrag}
                   onEndDrag={endDrag}
                   onRemove={() => onRemove(entry)}
+                  onActivate={() => setSheetIndex(index)}
                   shadowStyle={floatingShadow(scheme)}
                 />
               ) : (
@@ -232,6 +233,7 @@ function EditableTile({
   onUpdateDrag,
   onEndDrag,
   onRemove,
+  onActivate,
   shadowStyle,
 }: {
   entry: MobileEntry;
@@ -243,6 +245,8 @@ function EditableTile({
   onUpdateDrag: (index: number, dx: number, dy: number) => void;
   onEndDrag: (index: number, dx: number, dy: number, cancelled?: boolean) => void;
   onRemove: () => void;
+  /** 读屏激活（TalkBack 双击）：打开上移/下移/移除动作表 */
+  onActivate: () => void;
   shadowStyle: object;
 }) {
   const { tokens } = useTheme();
@@ -270,6 +274,11 @@ function EditableTile({
       accessibilityRole="button"
       accessibilityLabel={`${entry.label}，正在编辑，按住可拖动排序`}
       accessibilityHint="点按打开上移、下移与移除选项"
+      // 读屏用户无法拖动：把「点按」暴露成 activate 动作，直接打开动作表
+      accessibilityActions={[{ name: "activate", label: "打开入口操作" }]}
+      onAccessibilityAction={(event) => {
+        if (event.nativeEvent.actionName === "activate") onActivate();
+      }}
       style={[
         styles.surface,
         active ? [{ zIndex: 8, opacity: 0.96 }, shadowStyle] : null,

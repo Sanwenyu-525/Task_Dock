@@ -64,6 +64,14 @@ export const NAV_ORDER_MAX_COALESCE_MS = 1000;
  */
 const NAV_ORDER_FLUSH_MAX_ROUNDS = 8;
 
+/**
+ * 非所有者的 `flush()` 轮询参数：只等待所有者实例落库，不重复写同一份意图。
+ * 所有者合并窗口最长 1000ms（后台标签页的 timer 可能被节流），因此等待预算
+ * 取 12×100ms；超时仍报「未收敛」，与持续输入同一类失败，绝不假装保存成功。
+ */
+const NAV_ORDER_FLUSH_WAIT_MS = 100;
+const NAV_ORDER_FLUSH_WAIT_ROUNDS = 12;
+
 /** 单次写入的结果：调用方据此区分「已落库」「被更新意图取代」「当前意图失败」。 */
 type NavWriteResult =
   | { status: "success"; seq: number }
@@ -257,6 +265,15 @@ export function useNavOrderDraft(
       }
       const intent = readNavOrderIntent(surfaceRef.current);
       if (!intent) return;
+      // 多实例仲裁：意图由另一个挂载实例发布时，落库是它的责任。这里只等待
+      // 它完成，绝不重复写同一份顺序（否则一次排序会落两次库）。
+      if (!isNavOrderIntentOwner(surfaceRef.current, ownerRef.current)) {
+        if (round >= NAV_ORDER_FLUSH_WAIT_ROUNDS) {
+          throw new Error(FLUSH_UNSETTLED_MESSAGE);
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, NAV_ORDER_FLUSH_WAIT_MS));
+        continue;
+      }
       // 只有「意图仍在持续变化」才会走到上限：显式失败而不是假装成功。
       if (round >= NAV_ORDER_FLUSH_MAX_ROUNDS) {
         throw new Error(FLUSH_UNSETTLED_MESSAGE);

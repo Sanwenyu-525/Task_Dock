@@ -48,10 +48,12 @@ import { useTheme } from "../../theme/ThemeProvider";
 import { font, radius, space } from "../../theme/tokens";
 
 import { deleteFileQuietly } from "./files";
+import { createTransferCancelToken, type TransferCancelToken } from "./cancel";
 import { bumpCaptureRevision, subscribeCaptureRevision } from "./revision";
 import { captureStatusOf, type CaptureStatusTone } from "./status";
 import {
   captureAvailability,
+  reconcileShelfDestinations,
   retryShelfImport,
   saveToAlbum,
   sendToDesktop,
@@ -179,6 +181,10 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState("");
   const [progress, setProgress] = useState<SendProgress | null>(null);
+  const [cancelable, setCancelable] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const cancelTokenRef = useRef<TransferCancelToken | null>(null);
+  const staleNoticeRef = useRef(0);
   const [availability, setAvailability] = useState<PairingAvailability | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
@@ -190,12 +196,28 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
     setToast({ id: toastSeq.current, text, tone, placement: "bottom" });
   }, []);
 
+  const requestCancelTransfer = useCallback(() => {
+    if (!cancelTokenRef.current || cancelling) return;
+    cancelTokenRef.current.cancel();
+    setCancelling(true);
+  }, [cancelling]);
+
   const load = useCallback(async () => {
-    const [list, allDestinations, staged, pair] = await Promise.all([
+    const pair = await captureAvailability();
+    // 对账只修正「桌面端明确返回 shelf_item_id=null」的过期引用；
+    // 老桌面端缺字段、电脑离线/授权失败都不改本地状态，避免把不可达当成已删除。
+    let staleShelfRefs = 0;
+    if (pair.paired) {
+      try {
+        staleShelfRefs = (await reconcileShelfDestinations()).stale;
+      } catch {
+        // 对账是补充一致性检查，不阻断素材列表展示；下一次刷新会再试。
+      }
+    }
+    const [list, allDestinations, staged] = await Promise.all([
       repo.listAssets("saved"),
       repo.listAllDestinations(),
       repo.listStagedAssets(),
-      captureAvailability(),
     ]);
     const grouped: Record<string, repo.CaptureDestination[]> = {};
     for (const item of allDestinations) {
@@ -206,7 +228,16 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
     setStagedCount(staged.length);
     setAvailability(pair);
     setLoading(false);
-  }, []);
+    if (staleShelfRefs > 0 && staleNoticeRef.current !== staleShelfRefs) {
+      staleNoticeRef.current = staleShelfRefs;
+      showToast(
+        `${staleShelfRefs} 个条目已不在桌面暂存架中；电脑上的文件仍保留，可重新导入`,
+        "warn",
+      );
+    } else if (staleShelfRefs === 0) {
+      staleNoticeRef.current = 0;
+    }
+  }, [showToast]);
 
   useEffect(() => {
     void load();
@@ -310,6 +341,10 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         return;
       }
       setBusy(true);
+      const token = createTransferCancelToken();
+      cancelTokenRef.current = token;
+      setCancelable(true);
+      setCancelling(false);
       const outcomes: SendOutcome[] = [];
       let offlineMessage: string | null = null;
       let stopMessage: string | null = null;
@@ -335,11 +370,28 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
             });
             continue;
           }
+          if (token.isCancelled()) {
+            // 用户取消后不再发起任何新请求；本机文件不动，未完成的目的地写 cancelled。
+            if (desktop?.state !== "done") {
+              await repo.setDestination(asset.id, "desktop", {
+                state: "cancelled",
+                lastError: "文件传输已取消",
+              });
+            }
+            if (target === "shelf" && shelf?.state !== "done") {
+              await repo.setDestination(asset.id, "shelf", {
+                state: "cancelled",
+                lastError: "文件传输已取消",
+              });
+            }
+            outcomes.push({ assetId: asset.id, state: "cancelled", message: "文件传输已取消" });
+            continue;
+          }
           setBusyLabel(
             `${target === "shelf" ? "发送到暂存架" : "发送到电脑"} ${i + 1}/${list.length}`,
           );
           if (target === "shelf" && desktop?.state === "done" && desktop.remoteId) {
-            const retry = await retryShelfImport(asset, desktop.remoteId, null);
+            const retry = await retryShelfImport(asset, desktop.remoteId, null, token);
             outcomes.push({
               assetId: asset.id,
               state: retry.state,
@@ -347,10 +399,40 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
               shelfId: retry.remoteShelfId ?? undefined,
               message: retry.message,
             });
+            if (retry.state === "cancelled") {
+              // 暂存架取消不删除已经完成的 desktop 文件；停止后续条目。
+              for (let j = i + 1; j < list.length; j += 1) {
+                const next = list[j];
+                const nextItems = destinations[next.id] ?? [];
+                const nextDesktop = nextItems.find((item) => item.destination === "desktop");
+                const nextShelf = nextItems.find((item) => item.destination === "shelf");
+                if (nextDesktop?.state !== "done") {
+                  await repo.setDestination(next.id, "desktop", {
+                    state: "cancelled",
+                    lastError: "文件传输已取消",
+                  });
+                }
+                if (target === "shelf" && nextShelf?.state !== "done") {
+                  await repo.setDestination(next.id, "shelf", {
+                    state: "cancelled",
+                    lastError: "文件传输已取消",
+                  });
+                }
+                outcomes.push({ assetId: next.id, state: "cancelled", message: "文件传输已取消" });
+              }
+              break;
+            }
             if (retry.stopBatch) {
               stopMessage = retry.message;
               for (let j = i + 1; j < list.length; j += 1) {
-                outcomes.push({ assetId: list[j].id, state: "failed", message: retry.message });
+                const next = list[j];
+                if (target === "shelf") {
+                  await repo.setDestination(next.id, "shelf", {
+                    state: "failed",
+                    lastError: retry.message,
+                  });
+                }
+                outcomes.push({ assetId: next.id, state: "failed", message: retry.message });
               }
               break;
             }
@@ -360,13 +442,34 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
             target,
             onProgress: setProgress,
             batch: { index: i, count: list.length },
+            cancelToken: token,
           });
           outcomes.push(...result.outcomes);
+          if (token.isCancelled()) {
+            // sendToDesktop 已把当前条目和内存中的后续条目写好；继续循环只会
+            // 在顶部走 cancelled 分支，不再产生网络请求。
+            continue;
+          }
           if (result.offline) {
             offlineMessage = result.message ?? "电脑端暂时不可达，已保留为待发送";
             for (let j = i + 1; j < list.length; j += 1) {
+              const next = list[j];
+              const nextItems = destinations[next.id] ?? [];
+              const nextDesktop = nextItems.find((item) => item.destination === "desktop");
+              if (nextDesktop?.state !== "done") {
+                await repo.setDestination(next.id, "desktop", {
+                  state: "pending",
+                  lastError: offlineMessage,
+                });
+              }
+              if (target === "shelf") {
+                await repo.setDestination(next.id, "shelf", {
+                  state: "pending",
+                  lastError: offlineMessage,
+                });
+              }
               outcomes.push({
-                assetId: list[j].id,
+                assetId: next.id,
                 state: "pending",
                 message: offlineMessage,
               });
@@ -377,7 +480,22 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
             // 授权/安全类失败：停止整批，不把令牌失效伪装成「离线待发送」。
             stopMessage = result.message ?? "授权或安全校验失败，已停止本批发送";
             for (let j = i + 1; j < list.length; j += 1) {
-              outcomes.push({ assetId: list[j].id, state: "failed", message: stopMessage });
+              const next = list[j];
+              const nextItems = destinations[next.id] ?? [];
+              const nextDesktop = nextItems.find((item) => item.destination === "desktop");
+              if (nextDesktop?.state !== "done") {
+                await repo.setDestination(next.id, "desktop", {
+                  state: "failed",
+                  lastError: stopMessage,
+                });
+              }
+              if (target === "shelf") {
+                await repo.setDestination(next.id, "shelf", {
+                  state: "failed",
+                  lastError: stopMessage,
+                });
+              }
+              outcomes.push({ assetId: next.id, state: "failed", message: stopMessage });
             }
             break;
           }
@@ -395,6 +513,9 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         showToast(feedback.message, feedback.tone);
         exitSelection();
       } finally {
+        cancelTokenRef.current = null;
+        setCancelable(false);
+        setCancelling(false);
         setBusy(false);
         setBusyLabel("");
         setProgress(null);
@@ -413,24 +534,37 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
           await saveToAlbum(asset);
           showToast("已保存到相册", "success");
         } else if (kind === "desktop") {
-          const result = await sendToDesktop([asset], { target: "inbox", onProgress: setProgress });
+          const token = createTransferCancelToken();
+          cancelTokenRef.current = token;
+          setCancelable(true);
+          setCancelling(false);
+          const result = await sendToDesktop([asset], {
+            target: "inbox",
+            onProgress: setProgress,
+            cancelToken: token,
+          });
           const feedback =
             !result.stopBatch && !result.offline && result.outcomes.length === 1
               ? feedbackForOutcome(result.outcomes[0], "inbox")
               : feedbackForSendResult(result, "inbox");
           showToast(feedback.message, feedback.tone);
         } else if (kind === "shelf") {
+          const token = createTransferCancelToken();
+          cancelTokenRef.current = token;
+          setCancelable(true);
+          setCancelling(false);
           const desktop = (destinations[asset.id] ?? []).find(
             (item) => item.destination === "desktop" && item.state === "done" && item.remoteId,
           );
           if (desktop?.remoteId) {
-            const retry = await retryShelfImport(asset, desktop.remoteId, null);
+            const retry = await retryShelfImport(asset, desktop.remoteId, null, token);
             const feedback = feedbackForShelfRetry(retry);
             showToast(feedback.message, feedback.tone);
           } else {
             const result = await sendToDesktop([asset], {
               target: "shelf",
               onProgress: setProgress,
+              cancelToken: token,
             });
             const feedback =
               !result.stopBatch && !result.offline && result.outcomes.length === 1
@@ -443,6 +577,9 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
       } catch (error) {
         showToast(describeError(error), "danger");
       } finally {
+        cancelTokenRef.current = null;
+        setCancelable(false);
+        setCancelling(false);
         setBusy(false);
         setBusyLabel("");
         setProgress(null);
@@ -724,6 +861,27 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
               <Text style={[styles.busyMeta, { color: tokens.muted }]}>
                 {progress.index + 1}/{progress.count} · {progress.done}/{progress.total} 块
               </Text>
+            ) : null}
+            {cancelable ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={cancelling ? "正在取消上传" : "取消上传"}
+                accessibilityState={{ disabled: cancelling }}
+                disabled={cancelling}
+                onPress={requestCancelTransfer}
+                style={({ pressed }) => [
+                  styles.busyCancel,
+                  {
+                    borderColor: tokens.accent,
+                    backgroundColor: tokens.track,
+                    opacity: cancelling ? 0.65 : pressed ? 0.75 : 1,
+                  },
+                ]}
+              >
+                <Text style={[styles.busyCancelText, { color: tokens.accentText }]}>
+                  {cancelling ? "正在取消…" : "取消上传"}
+                </Text>
+              </Pressable>
             ) : null}
           </View>
         </View>
@@ -1085,6 +1243,17 @@ const styles = StyleSheet.create({
   },
   busyText: { fontSize: font.body, fontWeight: "600", textAlign: "center" },
   busyMeta: { fontSize: font.label },
+  busyCancel: {
+    minHeight: 38,
+    minWidth: 128,
+    paddingHorizontal: space.lg,
+    borderRadius: radius.row,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: space.xs,
+  },
+  busyCancelText: { fontSize: font.label, fontWeight: "600" },
   confirmTitle: { fontSize: font.title, fontWeight: "700", lineHeight: 22 },
   confirmHint: { fontSize: font.meta, lineHeight: 20, marginTop: space.xs },
   confirmActions: { flexDirection: "row", gap: space.sm, marginTop: space.md },

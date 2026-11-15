@@ -2,13 +2,18 @@
 //
 // 背景：workspace 窗口 `decorations(false)` + `shadow(false)`，窗口外形由
 // Win32 区域裁剪（Rust `window_shape`）+ `.wb-root` 的 CSS 弧共同定义。
-// 两者必须使用**同一个逻辑半径**，否则原生区域会切进 CSS 抗锯齿弧（硬边）
-// 或留下比可见弧更大的透明角（阴影/桌面从缝里透出）。
+// 两者必须使用**同一个逻辑半径与同一条角部曲线**，否则原生区域会切进 CSS
+// 抗锯齿弧（硬边）或留下比可见弧更大的透明角（阴影/桌面从缝里透出）。
 //
 // 半径来源与主窗口一致：视觉预设的 `--radius-window`（styles-themes.css：
 // 梦幻渐变 18px / 液态玻璃 20px），由前端读出后经 IPC 下发给 Rust
 // （`set_workspace_window_radius`），与主窗 `apply_window_radius` 同一口径，
 // 不新增第三套圆角规范。
+//
+// 第二轮：苹果式连续圆角（`corner-shape: superellipse(4)`）。
+// - WebView2 支持时：CSS 用超椭圆、Rust 用同指数裁剪，并把名义半径 +4px 补偿
+//   超椭圆在同半径下"更方"的观感（18→22 / 20→24，与 CSS 用同一个计算值）；
+// - 不支持时：指数回落 2、补偿回落 0，视觉与第一轮圆弧完全一致（不引入不一致）。
 //
 // 另外把「是否最大化」写到 <html data-window-maximized>：最大化按 Windows
 // 原生直角铺满工作区，圆角会在屏幕边缘留缝隙。
@@ -17,6 +22,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const RADIUS_TOKEN = "--radius-window";
 const FALLBACK_RADIUS = 18;
+/** 超椭圆指数（4 = 苹果式连续圆角；2 是圆弧）。 */
+export const CONTINUOUS_CORNER_EXPONENT = 4;
+/** 超椭圆的名义半径补偿（CSS px）：同半径下超椭圆看起来更"方"，补回圆润度。 */
+export const CONTINUOUS_CORNER_EXTRA = 4;
 
 /** 读取当前预设的窗口圆角（CSS px）；取不到时用默认预设值。 */
 export function readWindowRadiusCss(): number {
@@ -25,6 +34,35 @@ export function readWindowRadiusCss(): number {
     .trim();
   const value = Number.parseFloat(raw);
   return Number.isFinite(value) && value >= 0 ? value : FALLBACK_RADIUS;
+}
+
+/** 当前 WebView2 是否支持 `corner-shape: superellipse()`（能力检测，不猜版本号）。 */
+export function supportsContinuousCorners(): boolean {
+  try {
+    const api = typeof CSS !== "undefined" ? CSS : undefined;
+    return Boolean(api?.supports?.("corner-shape", "superellipse(4)"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 圆角方案：CSS 的半径（含补偿）与 Rust 的指数/半径必须来自同一处计算。
+ * `radius` 是最终 CSS px；`exponent` 2/4；`extra` 只用于写 `--wb-corner-extra`。
+ */
+export function windowCornerPlan(
+  baseRadius: number,
+  squircleSupported: boolean,
+): { radius: number; exponent: number; extra: number; squircle: boolean } {
+  const base = Number.isFinite(baseRadius) && baseRadius >= 0 ? baseRadius : FALLBACK_RADIUS;
+  const squircle = squircleSupported;
+  const extra = squircle ? CONTINUOUS_CORNER_EXTRA : 0;
+  return {
+    radius: base + extra,
+    exponent: squircle ? CONTINUOUS_CORNER_EXPONENT : 2,
+    extra,
+    squircle,
+  };
 }
 
 function currentWindow(): ReturnType<typeof getCurrentWindow> | null {
@@ -46,6 +84,37 @@ function pushRadius(radius: number): void {
   }
 }
 
+function pushCorner(exponent: number): void {
+  try {
+    void invoke("set_workspace_window_corner", { corner: exponent }).catch(() => {
+      // 同上：CSS 侧仍按已生效的 capability 结果渲染
+    });
+  } catch {
+    // 同上
+  }
+}
+
+/**
+ * 把方案写到 DOM：`--wb-corner-extra` 让 CSS 的 `border-radius` 与下发给 Rust 的
+ * 半径是同一个值；`data-window-corner` 只控制是否启用 `corner-shape`。
+ */
+function applyCornerPlan(plan: ReturnType<typeof windowCornerPlan>): void {
+  const root = document.documentElement;
+  root.style.setProperty("--wb-corner-extra", `${plan.extra}px`);
+  root.dataset.windowCorner = plan.squircle ? "squircle" : "circle";
+}
+
+/**
+ * 半径与曲线的同步顺序：先落曲线（此时半径可能还是默认值），再落半径。
+ * 最后一次 IPC 一定同时携带最终半径与最终曲线，避免停在「旧半径 + 新曲线」的中间态。
+ */
+function pushWindowShape(): void {
+  const plan = windowCornerPlan(readWindowRadiusCss(), supportsContinuousCorners());
+  applyCornerPlan(plan);
+  pushCorner(plan.exponent);
+  pushRadius(plan.radius);
+}
+
 function markMaximized(win: ReturnType<typeof getCurrentWindow>): void {
   void win
     .isMaximized()
@@ -63,15 +132,18 @@ export function initWorkbenchWindowFrame(): () => void {
   const win = currentWindow();
   const disposers: Array<() => void> = [];
 
-  // 1) 半径：初始一次 + 预设/主题变化后重算（预设切换会改 --radius-window）
-  let lastRadius = readWindowRadiusCss();
-  pushRadius(lastRadius);
+  // 1) 半径 + 曲线：初始一次 + 预设/主题变化后重算（预设切换会改 --radius-window）
+  pushWindowShape();
   if (typeof MutationObserver === "function") {
+    let lastKey = "";
     const observer = new MutationObserver(() => {
-      const radius = readWindowRadiusCss();
-      if (radius === lastRadius) return;
-      lastRadius = radius;
-      pushRadius(radius);
+      const plan = windowCornerPlan(readWindowRadiusCss(), supportsContinuousCorners());
+      const key = `${plan.radius}/${plan.exponent}`;
+      if (key === lastKey) return;
+      lastKey = key;
+      applyCornerPlan(plan);
+      pushCorner(plan.exponent);
+      pushRadius(plan.radius);
     });
     observer.observe(document.documentElement, {
       attributes: true,

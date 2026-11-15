@@ -1635,6 +1635,16 @@ fn delete_matching(
                     skipped += survivors.len() as i64;
                     batch_pending.retain(|p| !survivors.contains(&p.id));
                 }
+                // 删除成功（含收集后复核仍被删）的条目，必须在同一事务里清掉
+                // mobile_files 的暂存架引用；否则手机端会一直显示「已入架」，
+                // 而桌面上该 ShelfItem 已不存在。被保护/幸存的行不进入这里。
+                if !batch_pending.is_empty() {
+                    let ids = batch_pending
+                        .iter()
+                        .map(|item| item.id.clone())
+                        .collect::<Vec<_>>();
+                    clear_mobile_file_shelf_refs(&tx, &ids)?;
+                }
                 pending.extend(batch_pending);
             }
         } else {
@@ -1682,6 +1692,10 @@ fn delete_matching(
             let before = pending.len();
             pending.retain(|p| !remaining.contains(&p.id));
             skipped += (before - pending.len()) as i64;
+            if !pending.is_empty() {
+                let ids = pending.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+                clear_mobile_file_shelf_refs(&tx, &ids)?;
+            }
         }
 
         tx.commit()?;
@@ -1696,7 +1710,33 @@ fn delete_matching(
     })
 }
 
-/// 删除 Task Dock 拥有的文件（托管主文件 + 缩略图），canonical 边界复核。
+/// 清除已永久删除 ShelfItem 对应的手机传输引用。
+///
+/// 只清 `mobile_files` 的三个展示字段，不删除传输记录、inbox 文件或托管副本；
+/// 对收藏/置顶/场景保护而幸存的行不调用本函数。
+fn clear_mobile_file_shelf_refs(
+    tx: &rusqlite::Transaction<'_>,
+    item_ids: &[String],
+) -> rusqlite::Result<()> {
+    for batch in item_ids.chunks(500) {
+        if batch.is_empty() {
+            continue;
+        }
+        let ph = placeholders(batch.len());
+        tx.execute(
+            &format!(
+                "UPDATE mobile_files
+                    SET shelf_item_id = NULL,
+                        shelf_imported_at = NULL,
+                        shelf_group_id = NULL
+                  WHERE shelf_item_id IN ({ph})"
+            ),
+            params_from_iter(batch.iter()),
+        )?;
+    }
+    Ok(())
+}
+
 /// 文件删除失败只计数不谎报；数据库行已删，残留文件由下次清理的孤儿扫描兜底。
 fn remove_owned_files(root: &Path, pending: &[PendingFile]) -> (i64, i64) {
     let mut freed = 0i64;

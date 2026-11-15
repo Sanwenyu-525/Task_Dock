@@ -343,6 +343,8 @@ export interface DestinationPatch {
   state: CaptureDestinationState;
   remoteId?: string | null;
   remoteShelfId?: string | null;
+  /** 明确清空远端暂存架引用；默认 false 时保留旧值（COALESCE 语义）。 */
+  clearRemoteShelfId?: boolean;
   albumUri?: string | null;
   bytesDone?: number;
   bytesTotal?: number;
@@ -365,7 +367,8 @@ async function upsertDestinationInTx(
      ON CONFLICT(asset_id, destination) DO UPDATE SET
        state = excluded.state,
        remote_id = COALESCE(excluded.remote_id, capture_destinations.remote_id),
-       remote_shelf_id = COALESCE(excluded.remote_shelf_id, capture_destinations.remote_shelf_id),
+       remote_shelf_id = CASE WHEN ?11 THEN NULL
+         ELSE COALESCE(excluded.remote_shelf_id, capture_destinations.remote_shelf_id) END,
        album_uri = COALESCE(excluded.album_uri, capture_destinations.album_uri),
        bytes_done = excluded.bytes_done,
        bytes_total = excluded.bytes_total,
@@ -382,6 +385,7 @@ async function upsertDestinationInTx(
       patch.bytesTotal ?? 0,
       now,
       patch.lastError ?? null,
+      patch.clearRemoteShelfId ? 1 : 0,
     ],
   );
 }

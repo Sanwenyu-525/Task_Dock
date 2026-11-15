@@ -25,11 +25,24 @@ body {
   box-sizing: border-box;
   height: 100%;
   /* 半径沿用视觉预设的窗口级 Token（与主窗 apply_window_radius 同一来源），
-     不新增第三套圆角规范；原生区域按同一逻辑半径裁剪。 */
-  border-radius: var(--radius-window);
+     不新增第三套圆角规范；`--wb-corner-extra` 由 windowFrame.ts 在确认
+     `corner-shape` 支持后写入（连续圆角需要略大的名义半径才等效圆润），
+     原生区域按**同一个计算值**裁剪。 */
+  border-radius: calc(var(--radius-window) + var(--wb-corner-extra, 0px));
   border: 1px solid var(--window-border);
   /* 裁掉贴边内容（侧栏、滚动区、底部状态栏），避免从圆角处露出直角 */
   overflow: hidden;
+}
+
+/* 苹果式连续圆角：只在 WebView2 真正支持 `corner-shape` 时启用。
+   `data-window-corner` 由 windowFrame.ts 的能力检测统一写入（同一判定只做一次），
+   Rust 侧同指数裁剪（`set_workspace_window_corner`）。不支持时整块规则不生效，
+   视觉回到第一轮的圆弧，不会出现 CSS 与原生区域错位。 */
+@supports (corner-shape: superellipse(4)) {
+  html[data-window-corner="squircle"] .wb-root,
+  html[data-window-corner="squircle"] .wb-boot {
+    corner-shape: superellipse(4);
+  }
 }
 
 /* 最大化：按 Windows 原生直角铺满工作区，圆角/边框会在屏幕边缘留缝隙 */
@@ -1476,7 +1489,7 @@ body.wb-resizing {
 
 /* 被拖行：轻微浮起（背景 + 柔和阴影），不做缩放与旋转。 */
 .wb-nav-item.is-dragging {
-  z-index: 3;
+  z-index: var(--z-content);
   background: var(--surface-raised);
   border-color: color-mix(in srgb, var(--accent) 26%, transparent);
   box-shadow: var(--shadow-overlay);
@@ -1501,7 +1514,7 @@ body.wb-resizing {
   background: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
   pointer-events: none;
-  z-index: 4;
+  z-index: var(--z-sticky);
   transform: translateY(-1px);
   animation: wb-nav-drop-line-in 120ms ease-out;
 }

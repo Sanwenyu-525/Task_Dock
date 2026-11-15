@@ -319,6 +319,52 @@ describe("工作台侧栏鼠标拖拽", () => {
     await waitFor(() => expect(navWriteCalls()).toHaveLength(1));
     expect(savedLeft()).toEqual([...navIds(), "settings"]);
   });
+
+  it("位移未超过 5px 阈值时不进入拖拽：没有落点线，也不写库", async () => {
+    await renderShell();
+    const rows = navRows();
+    const filesIndex = rows.findIndex((row) => row.dataset.navEntry === "files");
+    const before = navIds();
+    const pointerId = pointerSeq + 1;
+
+    fireEvent.pointerDown(rows[filesIndex], {
+      pointerId,
+      button: 0,
+      pointerType: "mouse",
+      clientX: 24,
+      clientY: rowCenterY(filesIndex),
+    });
+    // 4px：两个轴都未达到 5px 阈值，仍是点击而不是拖拽。
+    fireEvent.pointerMove(window, {
+      pointerId,
+      pointerType: "mouse",
+      clientX: 26,
+      clientY: rowCenterY(filesIndex) + 4,
+    });
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
+    expect(navList().querySelector(".wb-nav-drop-line")).toBeNull();
+
+    fireEvent.pointerUp(window, { pointerId, pointerType: "mouse" });
+    expect(navIds()).toEqual(before);
+    expect(navWriteCalls()).toHaveLength(0);
+  });
+
+  it("指针移出侧边栏后在窗口外松手：拖拽正常结束并按松手位置落位", async () => {
+    await renderShell();
+    const rows = navRows();
+    const filesIndex = rows.findIndex((row) => row.dataset.navEntry === "files");
+    const pointerId = startDrag(rows[filesIndex], rowCenterY(filesIndex), 320);
+
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeTruthy();
+    // 侧边栏高度只有 900px，1200 在列表外：窗口级 pointerup 必须仍能收尾。
+    finishDrag(pointerId, 1200);
+
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
+    expect(navList().querySelector(".wb-nav-drop-line")).toBeNull();
+    expect(navIds().at(-1)).toBe("files");
+    await waitFor(() => expect(navWriteCalls()).toHaveLength(1));
+    expect(savedLeft()).toEqual([...navIds(), "settings"]);
+  });
 });
 
 describe("跨分组排序", () => {
@@ -559,6 +605,26 @@ describe("设置页与大型工作台同步", () => {
     expect(navIds()[0]).toBe("clipboard");
     await waitFor(() => expect(navWriteCalls()).toHaveLength(1));
     expect(savedLeft()).toEqual([...navIds(), "settings"]);
+  });
+
+  it("设置页切显隐时不重复写侧栏拥有的排序意图", async () => {
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+    stubNavGeometry();
+    render(<NavigationVisibilitySection />);
+
+    // 侧栏先拖拽：意图的所有者是侧栏实例，落库由它负责。
+    dragNavRowBefore("files", "workspace");
+    fireEvent.click(screen.getByRole("switch", { name: "Agent导航入口显示" }));
+
+    await waitFor(() => expect(navIds()).not.toContain("agents"), { timeout: 3000 });
+    const orders = navWriteCalls()
+      .map((patch) => (patch.navigation_layout as { left?: string[] })?.left)
+      .filter((left): left is string[] => Array.isArray(left));
+
+    // 侧栏顺序只落一次（此时仍含 agents）；显隐写入是另一份且已不含 agents。
+    expect(orders.filter((left) => left.includes("agents"))).toHaveLength(1);
+    expect(orders.at(-1)?.includes("agents")).toBe(false);
   });
 });
 

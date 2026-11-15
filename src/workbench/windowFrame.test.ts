@@ -11,7 +11,7 @@
 //!    `sync_workbench_frame`），避免屏边缝隙与 1px 亮边。
 import { describe, expect, it, beforeEach } from "vitest";
 import workbenchCss from "./workbench.css?raw";
-import { readWindowRadiusCss } from "./windowFrame";
+import { readWindowRadiusCss, windowCornerPlan } from "./windowFrame";
 
 const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -39,12 +39,28 @@ const declarations = (body: string): Map<string, string> => {
 describe("workbench 窗口框", () => {
   it("外壳使用预设圆角 Token 与 1px 细边框", () => {
     const decls = declarations(bodyOf(".wb-root, .wb-boot"));
-    expect(decls.get("border-radius")).toBe("var(--radius-window)");
+    // 半径 = 预设 Token + 连续圆角补偿；两端同源（补偿由 windowFrame.ts 计算并下发）
+    expect(decls.get("border-radius")).toBe(
+      "calc(var(--radius-window) + var(--wb-corner-extra, 0px))",
+    );
     expect(decls.get("border")).toBe("1px solid var(--window-border)");
     expect(decls.get("overflow")).toBe("hidden");
     expect(decls.get("box-sizing")).toBe("border-box");
     // 不写死半径：写死就意味着一套预设被固定成第三套规范
     expect(bodyOf(".wb-root, .wb-boot")).not.toMatch(/border-radius:\s*\d/);
+    // 不支持 corner-shape 的环境下补偿必须为 0，半径与第一轮完全一致
+    expect(decls.get("border-radius")).toContain("var(--wb-corner-extra, 0px)");
+  });
+
+  it("连续圆角由能力检测开关控制，未支持时不启用 corner-shape", () => {
+    const squircle = bodyOf(
+      'html[data-window-corner="squircle"] .wb-root, html[data-window-corner="squircle"] .wb-boot',
+    );
+    expect(squircle).toContain("corner-shape: superellipse(4)");
+    // 规则必须在 @supports 内：避免"检测通过但 CSS 引擎不支持"时残留半套曲线
+    expect(stripComments(workbenchCss)).toContain("@supports (corner-shape: superellipse(4))");
+    // 不能把 corner-shape 直接写进基础窗口框（那会在不支持的运行时丢掉整条声明以外的一切）
+    expect(bodyOf(".wb-root, .wb-boot")).not.toContain("corner-shape");
   });
 
   it("html/body/#root 透明，圆角外侧不留直角方块", () => {
@@ -59,6 +75,28 @@ describe("workbench 窗口框", () => {
     );
     expect(decls.get("border-radius")).toBe("0");
     expect(decls.get("border-width")).toBe("0");
+  });
+});
+
+describe("windowCornerPlan", () => {
+  it("支持 corner-shape 时用超椭圆并补偿名义半径", () => {
+    const plan = windowCornerPlan(18, true);
+    expect(plan).toEqual({ radius: 22, exponent: 4, extra: 4, squircle: true });
+    expect(windowCornerPlan(20, true).radius).toBe(24);
+  });
+
+  it("不支持时指数回落 2、半径不动，与第一轮圆弧完全一致", () => {
+    expect(windowCornerPlan(18, false)).toEqual({
+      radius: 18,
+      exponent: 2,
+      extra: 0,
+      squircle: false,
+    });
+  });
+
+  it("非法基础半径回落到默认预设值", () => {
+    expect(windowCornerPlan(Number.NaN, false).radius).toBe(18);
+    expect(windowCornerPlan(-3, false).radius).toBe(18);
   });
 });
 

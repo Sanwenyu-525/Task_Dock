@@ -29,7 +29,9 @@ export type FwDropZone =
   /** 窗格中心：dir 是该窗格当前目录（效果计算与合法性校验需要）。 */
   | { type: "center"; paneId: string; dir: string }
   | { type: "folder"; paneId: string; path: string }
-  | { type: "tabbar"; paneId: string; index: number };
+  | { type: "tabbar"; paneId: string; index: number }
+  /** 布局编辑模式：另一区域中心 = 交换两个区域（只换叶节点位置，不动标签）。 */
+  | { type: "pane-swap"; paneId: string };
 
 export type FwEffect = "copy" | "move" | "tab";
 
@@ -69,6 +71,8 @@ function zoneSig(zone: FwDropZone | null): string {
       return `f:${zone.paneId}:${zone.path}`;
     case "tabbar":
       return `t:${zone.paneId}:${zone.index}`;
+    case "pane-swap":
+      return `s:${zone.paneId}`;
   }
 }
 
@@ -118,6 +122,7 @@ export function sameZone(a: FwDropZone | null, b: FwDropZone | null): boolean {
   if (a.type === "center" && b.type === "center") return samePath(a.dir, b.dir);
   if (a.type === "folder" && b.type === "folder") return samePath(a.path, b.path);
   if (a.type === "tabbar" && b.type === "tabbar") return a.index === b.index;
+  if (a.type === "pane-swap" && b.type === "pane-swap") return true;
   return false;
 }
 
@@ -169,7 +174,7 @@ export function startFwDrag(
   state.y = y;
   state.modifiers = { ctrlKey: Boolean(modifiers.ctrlKey), shiftKey: Boolean(modifiers.shiftKey) };
   state.hover = null;
-  state.effect = payload.kind === "tabs" ? "tab" : "move";
+  state.effect = payload.kind === "tabs" || payload.kind === "pane" ? "tab" : "move";
   emit();
 }
 
