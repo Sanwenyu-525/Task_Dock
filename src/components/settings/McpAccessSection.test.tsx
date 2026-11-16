@@ -15,6 +15,14 @@ const mocks = vi.hoisted(() => ({
   rotateToken: vi.fn(),
   auditList: vi.fn(),
   snippet: vi.fn(),
+  hint: vi.fn(),
+  capabilities: vi.fn(),
+  grantCapability: vi.fn(),
+  revokeCapability: vi.fn(),
+  workspaceRoots: vi.fn(),
+  grantRoot: vi.fn(),
+  revokeRoot: vi.fn(),
+  diagnostics: vi.fn(),
   projects: vi.fn(),
 }));
 
@@ -29,6 +37,14 @@ vi.mock("../../lib/bridge", () => ({
   agentMcpRotateToken: mocks.rotateToken,
   agentMcpAuditList: mocks.auditList,
   agentMcpConfigSnippet: mocks.snippet,
+  agentMcpConfigHint: mocks.hint,
+  agentMcpCapabilities: mocks.capabilities,
+  agentMcpGrantCapability: mocks.grantCapability,
+  agentMcpRevokeCapability: mocks.revokeCapability,
+  agentMcpWorkspaceRoots: mocks.workspaceRoots,
+  agentMcpGrantWorkspaceRoot: mocks.grantRoot,
+  agentMcpRevokeWorkspaceRoot: mocks.revokeRoot,
+  agentMcpDiagnostics: mocks.diagnostics,
   planningListProjects: mocks.projects,
 }));
 
@@ -41,7 +57,15 @@ vi.mock("../../hooks/useLocale", () => ({
 
 import McpAccessSection from "./McpAccessSection";
 
-const STATUS = { enabled: false, running: true, port: 4400, agent_count: 1, started_at: "now" };
+const STATUS = {
+  enabled: false,
+  running: true,
+  port: 4400,
+  agent_count: 1,
+  active_agent_count: 1,
+  started_at: "now",
+  last_call: null,
+};
 const PROJECT = {
   id: "project-1", name: "Project One", description: "", status: "planning", archived: false,
   target_date: null, sort_order: 0, created_at: "now", updated_at: "now", stats: {},
@@ -62,6 +86,27 @@ beforeEach(() => {
   mocks.rotateToken.mockReset().mockResolvedValue({ ...AGENT, token: "rotated-secret" });
   mocks.auditList.mockReset().mockResolvedValue({ items: [], total: 0, offset: 0, limit: 20 });
   mocks.snippet.mockReset().mockResolvedValue("{\"token\":\"secret-once\"}");
+  mocks.hint.mockReset().mockResolvedValue("写入项目根目录的 .mcp.json");
+  mocks.capabilities.mockReset().mockResolvedValue([]);
+  mocks.grantCapability.mockReset().mockImplementation(async (_id, capability) => [
+    { capability, resourceId: "", createdAt: "now" },
+  ]);
+  mocks.revokeCapability.mockReset().mockResolvedValue([]);
+  mocks.workspaceRoots.mockReset().mockResolvedValue([]);
+  mocks.grantRoot.mockReset().mockImplementation(async (_id, rootPath) => [
+    { id: "root-1", rootPath, createdAt: "now" },
+  ]);
+  mocks.revokeRoot.mockReset().mockResolvedValue([]);
+  mocks.diagnostics.mockReset().mockResolvedValue({
+    generatedAt: "now",
+    overall: "degraded",
+    toolCount: 38,
+    originalToolCount: 18,
+    steps: [
+      { id: "setting_enabled", label: "服务开关", status: "ok", detail: "enabled" },
+      { id: "bridge_http", label: "本机通信", status: "failed", detail: "连接被拒绝", hint: "检查端口" },
+    ],
+  });
   mocks.projects.mockReset().mockResolvedValue([PROJECT]);
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -157,5 +202,74 @@ describe("McpAccessSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "settings.mcpAccess.refresh" }));
     await waitFor(() => expect(mocks.status).toHaveBeenCalledTimes(2));
     expect(screen.getByRole("status").textContent).toContain("settings.mcpAccess.status.running");
+  });
+
+  it("runs real diagnostics and shows every step with its own status", async () => {
+    render(<McpAccessSection />);
+    await screen.findByRole("heading", { name: "Codex" });
+    fireEvent.click(screen.getByRole("button", { name: "settings.mcpAccess.diagnostics.run" }));
+    await waitFor(() => expect(mocks.diagnostics).toHaveBeenCalledWith(AGENT.id));
+    expect(
+      (await screen.findByText(/settings.mcpAccess.diagnostics.overall.degraded/)).textContent,
+    ).toContain("settings.mcpAccess.diagnostics.toolCount");
+    expect(screen.getByText("服务开关")).toBeTruthy();
+    expect(screen.getByText(/连接被拒绝/)).toBeTruthy();
+    expect(screen.getByText("检查端口")).toBeTruthy();
+  });
+
+  it("grants and revokes resource capabilities without touching project scope", async () => {
+    render(<McpAccessSection />);
+    await screen.findByRole("heading", { name: "Codex" });
+    fireEvent.click(screen.getByRole("button", { name: "settings.mcpAccess.agents.manage" }));
+    await waitFor(() => expect(mocks.capabilities).toHaveBeenCalledWith(AGENT.id));
+
+    const tasksRead = await screen.findByLabelText("settings.mcpAccess.capabilities.tasksRead");
+    fireEvent.click(tasksRead);
+    await waitFor(() => expect(mocks.grantCapability).toHaveBeenCalledWith(AGENT.id, "tasks.read", ""));
+    await waitFor(() => expect((tasksRead as HTMLInputElement).checked).toBe(true));
+
+    fireEvent.click(tasksRead);
+    await waitFor(() => expect(mocks.revokeCapability).toHaveBeenCalledWith(AGENT.id, "tasks.read", ""));
+    expect(mocks.setScope).not.toHaveBeenCalled();
+  });
+
+  it("adds and removes workspace roots with explicit confirmation of the path", async () => {
+    render(<McpAccessSection />);
+    await screen.findByRole("heading", { name: "Codex" });
+    fireEvent.click(screen.getByRole("button", { name: "settings.mcpAccess.agents.manage" }));
+    await waitFor(() => expect(mocks.workspaceRoots).toHaveBeenCalledWith(AGENT.id));
+
+    fireEvent.change(screen.getByPlaceholderText("settings.mcpAccess.workspace.placeholder"), {
+      target: { value: "D:\\Projects\\task_dock" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "settings.mcpAccess.workspace.add" }));
+    await waitFor(() =>
+      expect(mocks.grantRoot).toHaveBeenCalledWith(AGENT.id, "D:\\Projects\\task_dock"),
+    );
+    expect(await screen.findByText("D:\\Projects\\task_dock")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "settings.mcpAccess.workspace.remove" }));
+    await waitFor(() => expect(mocks.revokeRoot).toHaveBeenCalledWith(AGENT.id, "root-1"));
+  });
+
+  it("filters identities by name or agent id and reports empty results", async () => {
+    mocks.list.mockResolvedValueOnce([
+      AGENT,
+      { ...AGENT, id: "identity-2", agent_id: "cursor", display_name: "Cursor desktop" },
+    ]);
+    render(<McpAccessSection />);
+    await screen.findByRole("heading", { name: "Cursor desktop" });
+    fireEvent.change(screen.getByLabelText("settings.mcpAccess.agents.search"), {
+      target: { value: "codex" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Cursor desktop" })).toBeNull(),
+    );
+    expect(screen.getByRole("heading", { name: "Codex" })).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("settings.mcpAccess.agents.search"), {
+      target: { value: "missing" },
+    });
+    expect(await screen.findByText("settings.mcpAccess.noIdentities")).toBeTruthy();
   });
 });

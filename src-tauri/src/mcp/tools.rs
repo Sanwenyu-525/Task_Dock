@@ -1,4 +1,11 @@
-//! MCP 工具集语义实现（18 个）+ 审计与 request_id 幂等封装。
+//! MCP 工具集语义实现。
+//!
+//! 结构（2026-11 扩展后）：
+//! - 本文件保留原始 18 个规划工具的**唯一实现**与调度、审计、幂等封装；
+//! - 任务 / 笔记 / 工作流 / 文件工作区的工具分别在 `task_tools.rs`、
+//!   `note_tools.rs`、`workflow_tools.rs`、`workspace_tools.rs`，通过
+//!   [`tool_defs`] 注册、通过 [`call`] 分发，**不复制**授权与审计逻辑；
+//! - 所有写工具仍走同一事务：业务写入 + 审计 + planning-changed 广播同事务提交。
 //!
 //! 分层约束：
 //! - 所有实体读写都走 `commands/planning.rs` 的 `*_impl`（同一校验、同一事务、
@@ -53,7 +60,7 @@ impl From<AppError> for ToolError {
     }
 }
 
-fn schema(props: Value, required: &[&str]) -> Value {
+pub(crate) fn schema(props: Value, required: &[&str]) -> Value {
     let mut s = json!({ "type": "object", "properties": props, "additionalProperties": false });
     if !required.is_empty() {
         s["required"] = json!(required);
@@ -75,7 +82,8 @@ const DATE_DESC: &str = "目标日期 YYYY-MM-DD；null 表示清除";
 
 pub fn tool_defs() -> &'static [ToolDef] {
     static DEFS: std::sync::OnceLock<Vec<ToolDef>> = std::sync::OnceLock::new();
-    DEFS.get_or_init(|| vec![
+    DEFS.get_or_init(|| {
+        let mut defs = vec![
         ToolDef {
             name: "taskdock_list_projects",
             description: "列出 Task Dock 规划中心的用户项目（含统计与 revision）。不含 Task Dock 内置路线图。",
@@ -311,17 +319,23 @@ pub fn tool_defs() -> &'static [ToolDef] {
             ),
             write: true,
         },
-    ])
+        ];
+        defs.extend(crate::mcp::task_tools::defs());
+        defs.extend(crate::mcp::note_tools::defs());
+        defs.extend(crate::mcp::workflow_tools::defs());
+        defs.extend(crate::mcp::workspace_tools::defs());
+        defs
+    })
     .as_slice()
 }
 
 // ── 参数读取辅助 ─────────────────────────────────────────────────────
 
-fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }
 
-fn require_str(args: &Value, key: &str) -> Result<String, ToolError> {
+pub(crate) fn require_str(args: &Value, key: &str) -> Result<String, ToolError> {
     let v = arg_str(args, key)
         .ok_or_else(|| ToolError::Failed(AppError::Validation(format!("缺少参数 {key}"))))?;
     let v = v.trim();
@@ -447,6 +461,13 @@ fn authorize_replay(
             ctx.agent.scope.as_str()
         )));
     }
+    // 资源扩展写工具：重放时按当前能力重新校验，不信任旧审计结论。
+    if crate::mcp::task_tools::authorize_replay(ctx, conn, name, args)? {
+        return Ok(());
+    }
+    if crate::mcp::note_tools::authorize_replay(ctx, conn, name, args)? {
+        return Ok(());
+    }
     let project_id = match name {
         "taskdock_create_project" => {
             if replay.entity_type != "project" || replay.entity_id.is_empty() {
@@ -553,14 +574,14 @@ fn project_of_step(conn: &rusqlite::Connection, step_id: &str) -> AppResult<(Str
 
 // ── 工具实现 ─────────────────────────────────────────────────────────
 
-struct CallOutcome {
-    value: Value,
-    changed: Option<PlanningChanged>,
-    entity_type: &'static str,
-    entity_id: String,
+pub(crate) struct CallOutcome {
+    pub(crate) value: Value,
+    pub(crate) changed: Option<PlanningChanged>,
+    pub(crate) entity_type: &'static str,
+    pub(crate) entity_id: String,
 }
 
-fn outcome(
+pub(crate) fn outcome(
     value: Value,
     entity_type: &'static str,
     entity_id: String,
@@ -1091,9 +1112,33 @@ fn call(
                 }),
             ))
         }
-        other => Err(ToolError::Failed(AppError::Validation(format!(
-            "未知工具: {other}"
-        )))),
+        other => {
+            // 资源扩展工具：授权、版本校验与业务写入在各子模块内完成，
+            // 但审计、幂等、事务与事件广播仍由本文件统一处理。
+            if let Some(outcome) =
+                crate::mcp::task_tools::call(ctx, other, args, write_conn)?
+            {
+                return Ok(outcome);
+            }
+            if let Some(outcome) =
+                crate::mcp::note_tools::call(ctx, other, args, write_conn)?
+            {
+                return Ok(outcome);
+            }
+            if let Some(outcome) =
+                crate::mcp::workflow_tools::call(ctx, other, args, write_conn)?
+            {
+                return Ok(outcome);
+            }
+            if let Some(outcome) =
+                crate::mcp::workspace_tools::call(ctx, other, args, write_conn)?
+            {
+                return Ok(outcome);
+            }
+            Err(ToolError::Failed(AppError::Validation(format!(
+                "未知工具: {other}"
+            ))))
+        },
     }
 }
 

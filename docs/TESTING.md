@@ -1375,3 +1375,26 @@ node tmp/acceptance/collect-paste/run-shelf-toolbar.mjs   # 228/228 checks
 - 全局热键 `Ctrl+Alt+G` 真实注册与冲突需在设置页/真机确认。
 - 图片 OCR 需要本机 Windows OCR 语言包；自动化只覆盖前端交互与引擎复用，
   真实识别结果需真机验证。
+
+## MCP 资源能力扩展测试记录（2026-11-16）
+
+执行环境：Windows 本地工作区 `D:\Develop\task_dock`，共享工作树；以下均为当次真实输出。
+
+| 检查 | 命令（工作目录） | 结果 | 时间 | 日志 |
+|---|---|---|---|---|
+| Rust 编译 | `npm run cargo -- check`（仓库根，`src-tauri/` 内执行） | **exit 0**（12 warnings，既有/无关） | 2026-11-16 | `.git/taskdock-build-sched/logs/m-mwj5zlll-47bfab.log` |
+| MCP 单测 | `npm run cargo -- test --lib mcp::` | **51 passed / 0 failed**（9.50s） | 2026-11-16 | `.git/taskdock-build-sched/logs/m-mwj6ah3k-d40fea.log` |
+| MCP 设置页 | `npm run test -- src/components/settings/McpAccessSection.test.tsx` | **11 passed / 0 failed** | 2026-11-16 | `.git/taskdock-build-sched/logs/l-mwj6h8js-c2efdd.log` |
+| 规划 store 回归 | `npm run test -- src/store/usePlanningStore.test.ts` | **16 passed / 0 failed** | 2026-11-16 | `.git/taskdock-build-sched/logs/l-mwj6hwub-71532f.log` |
+| TypeScript | `npm run typecheck`（仓库根） | **失败：1 个错误，位于范围外文件** `src/components/clipboard/ClipboardPanel.test.tsx(140,16) TS6133`（其他任务在途改动，未修改）；本次 MCP 文件未被报告错误 | 2026-11-16 | 终端输出 |
+
+本轮 MCP 单测覆盖：协议 `jsonrpc`/params 校验与通知不回包、配置严格 JSON/TOML 转义、能力默认拒绝与解锁、
+任务写全局能力 + `expected_updated_at` 冲突、笔记归属与精确授权、工作区根越界（含 `..`）、审计 prune
+三段边界、能力授权参数校验、原始工具名存在性与工具数 ≥18、原有 scope/项目隔离/幂等/并发/审计/Token 轮换。
+
+未执行（不得记为通过）：
+- `src-tauri/tests/mcp_e2e.rs` 全量子进程链路（本轮尚未运行；历史记录不等于当次通过）。
+- Claude Code / Codex CLI / Cursor / Trae / MCP Inspector 真实客户端联调：本机安装状态未确认，记 `ENVIRONMENT BLOCKED`。
+- 桌面端真实窗口/窄窗/键盘/屏幕阅读器验收；jsdom 结果不能替代。
+- 长时间运行、异常中断恢复、多 Agent 高并发、响应时间/内存/连接回收等性能数据：均未采集。
+- `npm run typecheck` 整体未通过（范围外文件错误），集成静态检查结论为“证据不足”，不冒充通过。

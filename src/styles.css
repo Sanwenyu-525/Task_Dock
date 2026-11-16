@@ -6040,8 +6040,27 @@ code {
 .clip-item > .clip-item-top {
   grid-area: top;
 }
+/* 条目卡片的主预览入口是真实按钮：既占 `main` 区域，也清掉按钮默认外观，
+   只保留语义与焦点环。这样键盘 Enter/Space 只触发「打开预览」，
+   不会再叠加一次卡片级 click。 */
 .clip-item > .clip-item-main {
   grid-area: main;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.clip-item > .clip-item-main:disabled {
+  cursor: default;
+}
+.clip-item > .clip-item-main:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .clip-item > .clip-actions {
   grid-area: actions;
@@ -6158,27 +6177,6 @@ code {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-/* 条目卡片的主预览入口是真实按钮：清掉按钮默认外观，只保留语义与焦点环。
-   这样键盘 Enter/Space 只触发「打开预览」，不会再叠加一次卡片级 click。 */
-.clip-item > .clip-item-main {
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  border-radius: 6px;
-}
-.clip-item > .clip-item-main:disabled {
-  cursor: default;
-}
-.clip-item > .clip-item-main:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 
 .clip-item-top {

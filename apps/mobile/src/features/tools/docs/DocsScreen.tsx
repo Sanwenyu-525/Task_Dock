@@ -25,6 +25,8 @@ import {
   type ResourceStorage,
   type ToolResource,
 } from "../../../db/toolResources";
+import { listTasks } from "../../../db/tasks";
+import { listNotes } from "../../../db/notes";
 import { recordToolUse } from "../../../db/toolUsage";
 import { describeError } from "../../../lib/errors";
 import { pickLocalFiles } from "../../../lib/sync/fileIo";
@@ -66,20 +68,52 @@ export function DocsScreen({ onBack }: { onBack: () => void }) {
     category: "",
     note: "",
     storage: "online" as ResourceStorage,
+    linkedKind: null as "task" | "note" | null,
+    linkedId: null as string | null,
   });
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  /** 已有关联对象的标题：只用于详情展示，不写进资源表 */
+  const [linkTitles, setLinkTitles] = useState<Record<string, string>>({});
+  const [linkOptions, setLinkOptions] = useState<{
+    tasks: { id: string; title: string }[];
+    notes: { id: string; title: string }[];
+  }>({ tasks: [], notes: [] });
 
   useEffect(() => {
     void recordToolUse(TOOL_ID);
     void reload();
+    void loadLinkOptions();
   }, []);
+
+  async function loadLinkOptions() {
+    try {
+      const [tasks, notes] = await Promise.all([listTasks(), listNotes()]);
+      const taskOptions = tasks
+        .filter((task) => task.status !== "completed")
+        .slice(0, 40)
+        .map((task) => ({ id: task.id, title: task.title || "未命名任务" }));
+      const noteOptions = notes
+        .slice(0, 40)
+        .map((note) => ({ id: note.id, title: note.title || "未命名笔记" }));
+      setLinkOptions({ tasks: taskOptions, notes: noteOptions });
+      setLinkTitles(
+        Object.fromEntries([
+          ...taskOptions.map((item) => [`task:${item.id}`, item.title] as const),
+          ...noteOptions.map((item) => [`note:${item.id}`, item.title] as const),
+        ]),
+      );
+    } catch {
+      // 关联是可选信息：读取任务/笔记失败不阻塞资料页本身
+    }
+  }
 
   useEffect(() => {
     const draft = takeLinkDraft();
     if (!draft) return;
     setEditing(null);
-    setForm({ title: draft.title ?? "", url: draft.url, category: "", note: "", storage: "online" });
+    setForm({ title: draft.title ?? "", url: draft.url, category: "", note: "", storage: "online", linkedKind: null, linkedId: null });
     setEditOpen(true);
   }, []);
 
@@ -116,8 +150,18 @@ export function DocsScreen({ onBack }: { onBack: () => void }) {
             category: resource.category,
             note: resource.note,
             storage: resource.storage,
+            linkedKind: (resource.linkedKind === "task" || resource.linkedKind === "note" ? resource.linkedKind : null),
+            linkedId: resource.linkedId,
           }
-        : { title: "", url: "", category: "", note: "", storage: "online" },
+        : {
+            title: "",
+            url: "",
+            category: "",
+            note: "",
+            storage: "online",
+            linkedKind: null,
+            linkedId: null,
+          },
     );
     setEditOpen(true);
   };
@@ -167,6 +211,8 @@ export function DocsScreen({ onBack }: { onBack: () => void }) {
           category: form.category.trim(),
           note: form.note.trim(),
           storage: form.storage,
+          linkedKind: form.linkedKind,
+          linkedId: form.linkedId,
         });
       } else {
         await createResource({
@@ -176,6 +222,8 @@ export function DocsScreen({ onBack }: { onBack: () => void }) {
           category: form.category.trim(),
           note: form.note.trim(),
           storage: form.storage,
+          linkedKind: form.linkedKind,
+          linkedId: form.linkedId,
         });
       }
       setEditOpen(false);
@@ -331,6 +379,12 @@ export function DocsScreen({ onBack }: { onBack: () => void }) {
                     {item.note}
                   </Text>
                 ) : null}
+                {item.linkedKind && item.linkedId ? (
+                  <Text style={[styles.rowLink, { color: tokens.accentText }]} numberOfLines={1}>
+                    关联{item.linkedKind === "task" ? "任务" : "笔记"}：
+                    {linkTitles[`${item.linkedKind}:${item.linkedId}`] ?? item.linkedId}
+                  </Text>
+                ) : null}
               </View>
               <AppIcon name="chevronRight" size={18} color={tokens.muted} />
             </Pressable>
@@ -387,6 +441,17 @@ export function DocsScreen({ onBack }: { onBack: () => void }) {
           </View>
           <ToolField label="分类" value={form.category} onChangeText={(category) => setForm((current) => ({ ...current, category }))} placeholder="例如 接口 / 设计 / 部署" maxLength={40} />
           <ToolField label="备注" value={form.note} onChangeText={(note) => setForm((current) => ({ ...current, note }))} placeholder="可选" multiline minHeight={72} maxLength={500} />
+          <View style={styles.linkRow}>
+            <View style={styles.linkText}>
+              <Text style={[styles.linkLabel, { color: tokens.textSoft }]}>关联任务 / 笔记</Text>
+              <Text style={[styles.linkValue, { color: tokens.muted }]} numberOfLines={1}>
+                {form.linkedKind && form.linkedId
+                  ? `${form.linkedKind === "task" ? "任务" : "笔记"}：${linkTitles[`${form.linkedKind}:${form.linkedId}`] ?? form.linkedId}`
+                  : "未关联（可选）"}
+              </Text>
+            </View>
+            <ToolButton compact label="选择" icon="link" onPress={() => setLinkOpen(true)} />
+          </View>
           {formError ? <ToolNote text={formError} tone="warn" /> : null}
           <View style={styles.actionRow}>
             <ToolButton label={saving ? "保存中…" : "保存"} tone="primary" icon="check" disabled={saving} onPress={() => void submit()} />
@@ -395,8 +460,72 @@ export function DocsScreen({ onBack }: { onBack: () => void }) {
         </View>
       </BottomSheet>
 
-      <BottomSheet visible={preview !== null} onRequestClose={() => setPreview(null)} accessibilityLabel="文档预览" maxHeightRatio={0.9}>
+      <BottomSheet visible={linkOpen} onRequestClose={() => setLinkOpen(false)} accessibilityLabel="关联任务或笔记" maxHeightRatio={0.85}>
         <View style={styles.sheetBody}>
+          <Text style={[styles.sheetTitle, { color: tokens.text }]}>关联任务或笔记</Text>
+          <Text style={[styles.sheetHint, { color: tokens.muted }]}>
+            只保存本地 id，不复制任务/笔记内容，也不参与同步。
+          </Text>
+          <ToolButton
+            compact
+            label="不关联"
+            icon="unlink"
+            onPress={() => {
+              setForm((current) => ({ ...current, linkedKind: null, linkedId: null }));
+              setLinkOpen(false);
+            }}
+          />
+          {linkOptions.tasks.length === 0 && linkOptions.notes.length === 0 ? (
+            <ToolNote text="本机还没有未完成任务或笔记，可先去创建。" />
+          ) : (
+            <ScrollView style={styles.linkList} keyboardShouldPersistTaps="handled">
+              {linkOptions.tasks.length > 0 ? (
+                <Text style={[styles.linkGroup, { color: tokens.muted }]}>未完成任务</Text>
+              ) : null}
+              {linkOptions.tasks.map((task) => (
+                <Pressable
+                  key={`task:${task.id}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`关联任务 ${task.title}`}
+                  onPress={() => {
+                    setForm((current) => ({ ...current, linkedKind: "task", linkedId: task.id }));
+                    setLinkOpen(false);
+                  }}
+                  style={({ pressed }) => [styles.linkOption, { borderColor: tokens.separator, opacity: pressed ? 0.65 : 1 }]}
+                >
+                  <AppIcon name="tasks" size={16} color={tokens.accent} />
+                  <Text style={[styles.linkOptionText, { color: tokens.text }]} numberOfLines={1}>
+                    {task.title}
+                  </Text>
+                </Pressable>
+              ))}
+              {linkOptions.notes.length > 0 ? (
+                <Text style={[styles.linkGroup, { color: tokens.muted }]}>笔记</Text>
+              ) : null}
+              {linkOptions.notes.map((note) => (
+                <Pressable
+                  key={`note:${note.id}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`关联笔记 ${note.title}`}
+                  onPress={() => {
+                    setForm((current) => ({ ...current, linkedKind: "note", linkedId: note.id }));
+                    setLinkOpen(false);
+                  }}
+                  style={({ pressed }) => [styles.linkOption, { borderColor: tokens.separator, opacity: pressed ? 0.65 : 1 }]}
+                >
+                  <AppIcon name="note" size={16} color={tokens.accent} />
+                  <Text style={[styles.linkOptionText, { color: tokens.text }]} numberOfLines={1}>
+                    {note.title}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          <ToolButton label="关闭" onPress={() => setLinkOpen(false)} />
+        </View>
+      </BottomSheet>
+
+      <BottomSheet visible={preview !== null} onRequestClose={() => setPreview(null)} accessibilityLabel="文档预览" maxHeightRatio={0.9}>        <View style={styles.sheetBody}>
           <Text style={[styles.sheetTitle, { color: tokens.text }]} numberOfLines={2}>
             {preview?.title}
           </Text>
@@ -472,6 +601,7 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: font.meta, fontWeight: "600", flexShrink: 1 },
   rowMeta: { fontSize: font.label },
   rowNote: { fontSize: font.label, lineHeight: 17 },
+  rowLink: { fontSize: font.label, lineHeight: 17 },
   hint: { fontSize: font.meta, textAlign: "center", paddingVertical: space.xl },
   actionRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
   storageRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space.sm },
@@ -480,4 +610,18 @@ const styles = StyleSheet.create({
   sheetHint: { fontSize: font.label, lineHeight: 18 },
   previewBox: { maxHeight: 360, borderRadius: radius.control, borderWidth: StyleSheet.hairlineWidth, padding: space.md },
   previewLine: { fontSize: font.meta, lineHeight: 21 },
+  linkRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  linkText: { flex: 1, gap: 2, minWidth: 0 },
+  linkLabel: { fontSize: font.label, fontWeight: "600" },
+  linkValue: { fontSize: font.label },
+  linkList: { maxHeight: 320 },
+  linkGroup: { fontSize: font.label, fontWeight: "700", paddingTop: space.sm, paddingBottom: space.xs },
+  linkOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    minHeight: 44,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  linkOptionText: { flex: 1, fontSize: font.meta },
 });

@@ -125,6 +125,18 @@ function makeView(count = 3): ClipboardView {
   };
 }
 
+/**
+ * 2026-11-16：删除/置顶/收藏/详情收进「更多操作」菜单。
+ * 这些辅助动作不再是卡片行内的独立按钮，测试必须先展开菜单——
+ * 这本身就是本轮「减少误触、动作分级」的验收点，不能靠隐藏按钮绕过。
+ */
+type TestUser = ReturnType<typeof userEvent.setup>;
+
+async function openCardMenu(user: TestUser, index = 0) {
+  await user.click(screen.getAllByRole("button", { name: "更多操作" })[index]);
+  return screen.getByRole("menu");
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   resetClipboardRequestState();
@@ -239,7 +251,7 @@ describe("剪贴板主页面", () => {
     render(<ClipboardPanel />);
     await waitFor(() => expect(bridge.clipboardView).toHaveBeenCalled());
 
-    await user.click(screen.getByRole("button", { name: "只看收藏" }));
+    await user.click(screen.getByRole("button", { name: "仅看收藏" }));
 
     await waitFor(() =>
       expect(bridge.clipboardView).toHaveBeenLastCalledWith(
@@ -386,7 +398,8 @@ describe("剪贴板主页面", () => {
     const callsBefore = bridge.clipboardView.mock.calls.length;
     const exitCallbacks = holdExitTimers();
 
-    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
     // 提交离场态后再断言：并发跑全量套件时 React 调度可能落后于真实 190ms 计时器。
@@ -408,7 +421,8 @@ describe("剪贴板主页面", () => {
     await screen.findByText("第 0 条剪贴板预览");
 
     bridge.clipboardDeleteItems.mockRejectedValueOnce(new Error("数据库被占用"));
-    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
 
@@ -498,7 +512,8 @@ describe("操作反馈与离场", () => {
     await screen.findByText("第 0 条剪贴板预览");
     const exitCallbacks = holdExitTimers();
 
-    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
     // 提交离场态：全量并发跑测试时 React 调度可能晚于 190ms 真实计时器，
@@ -529,7 +544,8 @@ describe("操作反馈与离场", () => {
 
     const exitCallbacks = holdExitTimers();
     const user = userEvent.setup();
-    await user.click(screen.getAllByRole("button", { name: "删除" })[1]);
+    await openCardMenu(user, 1);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = screen.getByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(within(dialog).getByRole("button", { name: "删除" }));
     await flushExitCommit();
@@ -580,7 +596,8 @@ describe("操作反馈与离场", () => {
     render(<ClipboardPanel />);
     await screen.findByText("第 0 条剪贴板预览");
 
-    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
     await waitFor(() => expect(bridge.clipboardDeleteItems).toHaveBeenCalledTimes(1));
@@ -588,7 +605,7 @@ describe("操作反馈与离场", () => {
     const card = document.querySelector<HTMLElement>('[data-clip-id="ci0"]')!;
     expect(card.classList.contains("pending")).toBe(true);
     expect(card.getAttribute("aria-busy")).toBe("true");
-    const delBtn = within(card).getByRole("button", { name: "删除" }) as HTMLButtonElement;
+    const delBtn = within(card).getByRole("button", { name: "更多操作" }) as HTMLButtonElement;
     const copyBtn = within(card).getByRole("button", { name: "复制" }) as HTMLButtonElement;
     expect(delBtn.disabled).toBe(true);
     expect(copyBtn.disabled).toBe(true);
@@ -607,7 +624,8 @@ describe("操作反馈与离场", () => {
     render(<ClipboardPanel />);
     await screen.findByText("第 0 条剪贴板预览");
 
-    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
 
@@ -628,7 +646,8 @@ describe("操作反馈与离场", () => {
       await screen.findByText("第 0 条剪贴板预览");
       const callsBefore = bridge.clipboardView.mock.calls.length;
 
-      await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+      await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
       const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
       await user.click(await within(dialog).findByRole("button", { name: "删除" }));
       await waitFor(() => expect(bridge.clipboardDeleteItems).toHaveBeenCalledWith(["ci0"]));
@@ -649,7 +668,8 @@ describe("操作反馈与离场", () => {
     render(<ClipboardPanel />);
     await screen.findByText("第 0 条剪贴板预览");
 
-    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
     await waitFor(() => expect(useClipboardStore.getState().exiting["ci0"]).toBeTruthy());
@@ -669,7 +689,8 @@ describe("操作反馈与离场", () => {
 
     const first = document.querySelector<HTMLElement>('[data-clip-id="ci0"]')!;
     first.focus();
-    await user.click(within(first).getByRole("button", { name: "删除" }));
+    await user.click(within(first).getByRole("button", { name: "更多操作" }));
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     // 删除成功后服务端不再返回 ci0
     bridge.clipboardView.mockResolvedValue(viewOfItems([makeItem(1), makeItem(2)]));
@@ -677,7 +698,11 @@ describe("操作反馈与离场", () => {
 
     await waitFor(() => expect(useClipboardStore.getState().exiting).toEqual({}));
     await waitFor(() => expect(cards().map((c) => c.dataset.clipId)).toEqual(["ci1", "ci2"]));
-    expect((document.activeElement as HTMLElement).dataset.clipId).toBe("ci1");
+    // 焦点落在相邻卡片的**主预览按钮**上（卡片根节点不再是可聚焦的假按钮），
+    // 用 closest 判断它属于哪张卡，而不是要求 activeElement 自己带 data-clip-id。
+    const active = document.activeElement as HTMLElement;
+    expect(active.closest("[data-clip-id]")?.getAttribute("data-clip-id")).toBe("ci1");
+    expect(active.classList.contains("clip-item-main")).toBe(true);
   });
 
   it("只看收藏里取消收藏：图标就地翻转，说的是退出筛选而不是删除", async () => {
@@ -696,13 +721,17 @@ describe("操作反馈与离场", () => {
     render(<ClipboardPanel />);
 
     const card = (await screen.findByText("第 0 条剪贴板预览")).closest<HTMLElement>("[data-clip-id]")!;
-    await user.click(within(card).getByRole("button", { name: "取消收藏" }));
+    await user.click(within(card).getByRole("button", { name: "更多操作" }));
+    await user.click(screen.getByRole("menuitem", { name: /取消收藏/ }));
 
     await waitFor(() => expect(bridge.clipboardToggleItem).toHaveBeenCalledWith("cif", "favorite"));
     await waitFor(() =>
       expect(useClipboardStore.getState().view?.items.find((i) => i.id === "cif")?.favorite).toBe(false),
     );
-    expect(within(card).getByRole("button", { name: "收藏" })).toBeTruthy();
+    // 菜单项文案随之翻转（仍是同一个菜单入口，不是新按钮）
+    await user.click(within(card).getByRole("button", { name: "更多操作" }));
+    expect(screen.getByRole("menuitem", { name: /^收藏$/ })).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("success"));
     expect(useUiStore.getState().toast?.message).toContain("退出「只看收藏」列表");
     expect(useUiStore.getState().toast?.message).toContain("内容仍保留在历史中");
@@ -771,7 +800,8 @@ describe("操作反馈与离场", () => {
     render(<ClipboardWorkspace variant="drawer" active onClose={vi.fn()} />);
     await screen.findByText("第 0 条剪贴板预览");
 
-    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     const exitCallbacks = holdExitTimers();
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
@@ -789,7 +819,8 @@ describe("操作反馈与离场", () => {
     const { unmount } = render(<ClipboardWorkspace variant="drawer" active onClose={vi.fn()} />);
     await screen.findByText("第 0 条剪贴板预览");
 
-    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
     await waitFor(() => expect(useClipboardStore.getState().exiting["ci0"]).toBeTruthy());
@@ -813,7 +844,8 @@ describe("操作反馈与离场", () => {
     render(<ClipboardPanel />);
     await screen.findByText("第 0 条剪贴板预览");
 
-    await user.click(screen.getAllByRole("button", { name: "删除" })[0]);
+    await openCardMenu(user, 0);
+    await user.click(screen.getByRole("menuitem", { name: /删除这条历史/ }));
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });
     await user.click(await within(dialog).findByRole("button", { name: "删除" }));
     await waitFor(() => expect(removingCard()?.dataset.clipId).toBe("ci0"));
@@ -821,7 +853,8 @@ describe("操作反馈与离场", () => {
     const card = removingCard()!;
     // aria-hidden 的子树里不允许残留可聚焦元素：inert + 全部内部控件禁用
     expect(card.hasAttribute("inert")).toBe(true);
-    expect(card.getAttribute("tabindex")).toBe("-1");
+    // 卡片根节点不再是 role=button，也没有 tabIndex；inert 本身就把它移出 tab 序列。
+    expect(card.hasAttribute("tabindex")).toBe(false);
     for (const btn of card.querySelectorAll<HTMLButtonElement>("button")) {
       expect(btn.disabled).toBe(true);
     }
@@ -839,9 +872,10 @@ describe("操作反馈与离场", () => {
     );
     await user.click(
       within(document.querySelector<HTMLElement>('[data-clip-id="ci2"]')!).getByRole("button", {
-        name: "置顶",
+        name: "更多操作",
       }),
     );
+    await user.click(screen.getByRole("menuitem", { name: /^置顶$/ }));
 
     await waitFor(() =>
       expect(cards().map((c) => c.dataset.clipId)).toEqual(["ci2", "ci0", "ci1"]),

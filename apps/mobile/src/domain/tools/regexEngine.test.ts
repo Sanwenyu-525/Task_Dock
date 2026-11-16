@@ -311,6 +311,111 @@ describe("expandReplacement", () => {
   });
 });
 
+describe("与原生 RegExp 差分对比", () => {
+  interface DiffCase {
+    pattern: string;
+    text: string;
+    flags: RegexFlags;
+  }
+
+  const DIFF_CASES: DiffCase[] = [
+    // 普通匹配
+    { pattern: "abc", text: "xabc yabc", flags: NO_FLAGS },
+    // leftmost-first 语义守恒
+    { pattern: "a|ab", text: "ab", flags: NO_FLAGS },
+    { pattern: "(a|ab)c", text: "abc", flags: NO_FLAGS },
+    // 缺陷 1：交替分支 + 重复量词必须整体贪心匹配
+    { pattern: "(a|b)+", text: "abab", flags: NO_FLAGS },
+    { pattern: "(a|b)+", text: "ab", flags: NO_FLAGS },
+    { pattern: "(a|b)+", text: "aba", flags: NO_FLAGS },
+    // 缺陷 2：重复量词内的捕获组取内层贪婪结果
+    { pattern: "(a+)+$", text: "aaaa", flags: NO_FLAGS },
+    { pattern: "(a+)+", text: "aaaa", flags: NO_FLAGS },
+    // 既有已核对通过的模式
+    { pattern: "a(b)c", text: "abc", flags: NO_FLAGS },
+    { pattern: "(a)(b)?c", text: "ac", flags: NO_FLAGS },
+    { pattern: "(a)(b)?c", text: "abc", flags: NO_FLAGS },
+    { pattern: "x*", text: "bbb", flags: NO_FLAGS },
+    { pattern: "a*", text: "bbb", flags: NO_FLAGS },
+    { pattern: "[a-c]+", text: "abxabc", flags: NO_FLAGS },
+    { pattern: "[^a]+", text: "bacb", flags: NO_FLAGS },
+    { pattern: "a{2,3}", text: "aaaa", flags: NO_FLAGS },
+    { pattern: "a{2}", text: "aaa", flags: NO_FLAGS },
+    { pattern: "^abc$", text: "abc", flags: NO_FLAGS },
+    { pattern: "\\d+", text: "a12b34", flags: NO_FLAGS },
+    { pattern: "\\w+", text: "a_1!", flags: NO_FLAGS },
+    { pattern: "a.c", text: "axc", flags: NO_FLAGS },
+    { pattern: "(?:ab)+", text: "abab", flags: NO_FLAGS },
+    { pattern: "(a(b)c)", text: "abc", flags: NO_FLAGS },
+    { pattern: "(a)(b)|(c)", text: "ac", flags: NO_FLAGS },
+    { pattern: "a$", text: "ba", flags: NO_FLAGS },
+    { pattern: "a{0,2}", text: "aaaa", flags: NO_FLAGS },
+    { pattern: "\\s+", text: "a b  c", flags: NO_FLAGS },
+    { pattern: "a+b*", text: "aaabbb", flags: NO_FLAGS },
+    { pattern: "(a|b)*c", text: "ababc", flags: NO_FLAGS },
+    { pattern: "(ab|a)+", text: "abab", flags: NO_FLAGS },
+    { pattern: "((a)(b))", text: "ab", flags: NO_FLAGS },
+    // 三个 flag 各自生效
+    { pattern: "Ab", text: "ab", flags: { ignoreCase: true, multiline: false, dotAll: false } },
+    { pattern: "^b", text: "a\nb", flags: { ignoreCase: false, multiline: true, dotAll: false } },
+    { pattern: "a$", text: "a\nb", flags: { ignoreCase: false, multiline: true, dotAll: false } },
+    { pattern: ".", text: "a\nb", flags: { ignoreCase: false, multiline: false, dotAll: true } },
+    { pattern: ".", text: "a\nb", flags: NO_FLAGS },
+  ];
+
+  function nativeMatches(pattern: string, text: string, flags: RegexFlags): RegexMatch[] {
+    const flagStr =
+      (flags.ignoreCase ? "i" : "") + (flags.multiline ? "m" : "") + (flags.dotAll ? "s" : "");
+    const re = new RegExp(pattern, `g${flagStr}`);
+    const out: RegexMatch[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      out.push({
+        start: m.index,
+        end: m.index + m[0].length,
+        text: m[0],
+        groups: m.slice(1).map((g) => (g === undefined ? null : g)),
+      });
+      // 零长度匹配手动推进，避免原生 g 模式死循环
+      if (m[0].length === 0) re.lastIndex += 1;
+    }
+    return out;
+  }
+
+  it.each(DIFF_CASES)(
+    "$pattern 对 $text 与原生 RegExp 一致",
+    ({ pattern, text, flags }) => {
+      const mine = compile(pattern, flags).matchAll(text, 600);
+      expect(mine).toEqual(nativeMatches(pattern, text, flags));
+    },
+  );
+});
+
+describe("缺陷回归：贪婪量词与重复组捕获", () => {
+  it("(a|b)+ 对 abab 整体匹配，组为最后一次迭代的 b", () => {
+    const matches = compile("(a|b)+").matchAll("abab", 10);
+    expect(matches).toEqual([
+      { start: 0, end: 4, text: "abab", groups: ["b"] },
+    ]);
+  });
+
+  it("(a+)+$ 对 aaaa 整体匹配，组为内层贪婪吃满的 aaaa", () => {
+    const matches = compile("(a+)+$").matchAll("aaaa", 10);
+    expect(matches).toEqual([
+      { start: 0, end: 4, text: "aaaa", groups: ["aaaa"] },
+    ]);
+  });
+
+  it("守恒：a|ab 仍只匹配 a，(a|ab)c 整体匹配且组为 ab", () => {
+    expect(compile("a|ab").matchAll("ab", 10)).toEqual([
+      { start: 0, end: 1, text: "a", groups: [] },
+    ]);
+    expect(compile("(a|ab)c").matchAll("abc", 10)).toEqual([
+      { start: 0, end: 3, text: "abc", groups: ["ab"] },
+    ]);
+  });
+});
+
 describe("性能证明：灾难性模式线性时间", () => {
   it("(a+)+$ 对 4900 个 a 加感叹号不回溯爆炸", () => {
     const result = compileRegex("(a+)+$", NO_FLAGS);

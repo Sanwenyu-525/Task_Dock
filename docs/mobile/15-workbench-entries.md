@@ -187,3 +187,43 @@ kv 键：`workbench_entries`（移动端专属；桌面端是 settings 表的 `n
   （容器 18×18）。原 `handleIcon`/`gripIcon` 旋转样式删除；无障碍标签、`hitSlop` 与
   拖拽几何（78 高、18×18 手柄）不变。入口 7 文件 / 114 例与 `tsc --noEmit` 通过；
   vc64 管理页已截图确认 6 点（`62-grip-manager.png`），网格编辑态手柄截图待补。
+
+## 10. 开发者工具入口（2026-11-16 第十一轮）
+
+本轮把工具页 10 个灰色占位替换为 11 个有真实页面的开发者工具，并全部登记进同一份入口注册表：
+
+| 入口 id | 标签 | order | 默认可见 | 路由 |
+|---|---|---|---|---|
+| `tool.snippet` | 代码片段 | 301 | 否 | `tool_snippets` |
+| `tool.json` | JSON 格式化 | 302 | 否 | `tool_json` |
+| `tool.timestamp` | 时间戳转换 | 303 | 否 | `tool_timestamp` |
+| `tool.text` | 文本编解码 | 304 | 否 | `tool_text_codec` |
+| `tool.regex` | 正则测试 | 305 | 否 | `tool_regex` |
+| `tool.diff` | 代码对比 | 306 | 否 | `tool_diff` |
+| `tool.image-compress` | 图片压缩 | 307 | 否 | `tool_image_compress` |
+| `tool.color-picker` | 取色器 | 308 | 否 | `tool_color_picker` |
+| `tool.api` | API 调试 | 309 | 否 | `tool_api` |
+| `tool.docs` | 项目资料 | 310 | 否 | `tool_docs` |
+| `tool.github` | GitHub 入口 | 311 | 否 | `tool_github` |
+
+约束与行为：
+
+- 新增 `dev` 分类（`CATEGORY_LABELS.dev = "开发者工具"`，位于 `task` 与 `device` 之间）；
+- **全部 `defaultVisible: false`**：不因升级自动塞进工作台，用户可在管理页或工具页星标加入；
+- 工具页星标直接调用 `commitEntryVisibility`，与管理页共用同一份配置、写队列与回滚逻辑，
+  没有第二套收藏/入口机制；星标只是快捷方式，不改变注册表语义；
+- 11 个入口都是 `availability: "available"` 且有真实页面；未完成能力（API 真实发送）
+  仍以入口内「发送禁用 + 原因」呈现，不把入口标成不可用，因为编辑/历史/导入是真实可用的；
+- 工具页「最近使用」来自 `tools.recent.v1`（上限 12，`recordToolUse` 写入，工具页常驻时
+  通过 `subscribeRecentTools` 刷新），不是首页入口配置，不会影响 `workbench_entries`；
+- API 调试的网络阻塞与评审记录见 [16-dev-tools-network-review.md](16-dev-tools-network-review.md)。
+
+自动化验证：`src/lib/__tests__/entryRegistry.test.ts` 继续校验 id/order 唯一、图标存在、
+分类有标签、可用入口有落点；`src/db/__tests__` 新增工具数据层 8 例。全量结果见验收报告。
+
+## 11. 变更记录（续）
+
+- 2026-11-16（第十一轮）：新增 11 个开发者工具入口与 `dev` 分类，全部默认隐藏；
+  工具页改为真实入口 + 最近使用 + 星标加入工作台；管理页无需改代码即可显示新分类；
+  入口注册表测试与全量 vitest 通过。真机验收与构建结果见
+  `tmp/acceptance/mobile-dev-tools/report.md`。

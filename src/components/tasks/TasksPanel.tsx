@@ -17,6 +17,7 @@ import ActiveReminders from "./ActiveReminders";
 import TaskItem from "./TaskItem";
 import TaskEditorView from "./TaskEditorView";
 import { useTasksStore } from "../../store/useTasksStore";
+import { ensurePlanningSync } from "../../store/usePlanningStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
@@ -241,6 +242,12 @@ export default function TasksPanel() {
 
   // 卸载时取消可能还在排队的焦点归还帧，不留悬空回调。
   useEffect(() => () => cancelAnimationFrame(focusReturnRaf.current), []);
+
+  // 任务面板单独打开时也注册全局 planning-changed 监听：MCP 写任务/笔记后
+  // 对应 store 会按事件刷新，不依赖规划中心是否曾经加载。
+  useEffect(() => {
+    ensurePlanningSync();
+  }, []);
 
   // Escape 关闭子视图：捕获阶段优先处理，避免冒泡到窗口级「隐藏到托盘」。
   // 只在子视图注册，列表模式下不拦截 Escape（搜索框自己处理）。

@@ -55,6 +55,7 @@ async function snippet(title: string, language = "typescript") {
     language,
     content: `const ${title} = 1;`,
     tags: ["demo", "task"],
+    note: "测试备注",
     favorite: false,
     pinned: false,
   });
@@ -69,6 +70,7 @@ describe("代码片段仓储", () => {
     const list = await listSnippets();
     expect(list.map((item) => item.title)).toEqual(["beta", "alpha"]);
     expect(list[1].tags).toEqual(["demo", "task"]);
+    expect(list[1].note).toBe("测试备注");
     expect(await listSnippetLanguages()).toEqual(
       expect.arrayContaining([
         { language: "sql", count: 1 },

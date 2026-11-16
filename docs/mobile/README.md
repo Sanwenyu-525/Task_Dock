@@ -25,6 +25,7 @@
 | [13-android-screen-control.md](13-android-screen-control.md) | 桌面端 Android 屏幕镜像/独立虚拟屏：会话状态机、设备去重、应用选择、截图与诊断 | `docs/ARCHITECTURE.md` 窗口与子进程章 |
 | [14-capture-and-quick-entry.md](14-capture-and-quick-entry.md) | 统一采集中心、拍照/相册/文件、语音速记、分享接收增强、系统快捷方式、前台自动同步与附件传送 | —（手机端专项） |
 | [15-workbench-entries.md](15-workbench-entries.md) | 工作台入口自定义：注册表、`workbench_entries` 配置、迁移与合并规则、管理页/全部功能页、两端隔离 | —（手机端专项） |
+| [16-dev-tools-network-review.md](16-dev-tools-network-review.md) | 开发者工具与 API 调试网络边界：威胁模型、禁止复用 `secure-http` 的理由、发送阻塞与准入清单 | —（手机端专项） |
 | [design-refs/](design-refs/README.md) | 移动端视觉参照：用户选定的《开发效率中枢 · 蓝青专业版》概念稿（1122×1402） | 设计稿/参考图 |
 | [../MOBILE_STACK.md](../MOBILE_STACK.md) | 选型与共享边界**设计稿**（含未实现能力的规划，不是现状） | 选型报告 |
 | [../../apps/mobile/AGENTS.md](../../apps/mobile/AGENTS.md) | 本目录的开发红线与提交前自检 | 根 `AGENTS.md` |
@@ -185,3 +186,10 @@
   33 个导出变体，92 个文件 / 8.1 MB），移动端视觉基准统一为
   [design-refs/](design-refs/README.md) 的《开发效率中枢 · 蓝青专业版》概念稿。
   原型内容仅保留在 Git 历史中；本文件与 03/04 的历史条目不再指向该目录。
+- 2026-11-16 开发者效率工具：工具页 10 个占位替换为 11 个真实入口（代码片段 / JSON /
+  时间戳 / 文本编解码 / 正则 / 代码对比 / 图片压缩 / 取色器 / API 调试 / 项目资料 /
+  GitHub 入口），SQLite v9 新增 `snippets` / `tool_requests` / `tool_resources`；
+  入口全部默认隐藏并接入 `dev` 分类与工作台星标；系统分享新增按内容类型的快捷处理。
+  API 调试真实发送**未批准**，只交付离线请求工作台，见
+  [16-dev-tools-network-review.md](16-dev-tools-network-review.md)。构建与真机结果以
+  `tmp/acceptance/mobile-dev-tools/report.md` 为准。

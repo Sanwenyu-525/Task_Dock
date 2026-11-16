@@ -405,7 +405,7 @@ export function RegexScreen({ onBack }: { onBack: () => void }) {
 
           <View style={styles.actionRow}>
             <ToolButton label="复制结果" icon="copy" onPress={() => void copyMatches()} />
-            <ToolButton label="分享" icon="share" onPress={() => void shareOutcome(outcome, replacement, text, showToast)} />
+            <ToolButton label="分享" icon="share" onPress={() => void shareOutcome(outcome, replacement, showToast)} />
           </View>
         </ToolSection>
       ) : null}
@@ -416,7 +416,6 @@ export function RegexScreen({ onBack }: { onBack: () => void }) {
 async function shareOutcome(
   outcome: Outcome,
   replacement: string,
-  text: string,
   showToast: (message: string, tone?: "info" | "success" | "danger" | "warn") => void,
 ): Promise<void> {
   try {

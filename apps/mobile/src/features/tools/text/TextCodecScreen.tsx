@@ -9,7 +9,6 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { AppIcon } from "../../../components/icons/AppIcon";
 import { SegmentedControl } from "../../../components/SegmentedControl";
-import { Chip } from "../../../components/Chip";
 import { useToast } from "../../../feedback/ToastProvider";
 import {
   MAX_CODEC_CHARS,

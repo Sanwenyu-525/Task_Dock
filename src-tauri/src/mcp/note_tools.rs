@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use crate::commands::tasks::get_task_in_conn;
 use crate::error::AppError;
 use crate::mcp::permissions::{self, Capability};
-use crate::mcp::tools::{arg_str, outcome, require_str, schema, CallOutcome, ToolCtx, ToolDef, ToolError};
+use crate::mcp::tools::{outcome, require_str, schema, CallOutcome, ToolCtx, ToolDef, ToolError};
 use crate::mcp::PlanningChanged;
 use crate::notes::store::{
     create_in_conn, get_in_conn, list, set_task_link_in_conn, update_in_conn, CreateNoteInput,
@@ -151,6 +151,12 @@ fn ensure_note_read(ctx: &ToolCtx, note_id: &str) -> Result<(), ToolError> {
 }
 
 fn ensure_note_write(ctx: &ToolCtx, conn: &Connection, note_id: &str) -> Result<(), ToolError> {
+    if !ctx.agent.scope.can_write() {
+        return Err(ToolError::Authz(format!(
+            "scope={} 不允许写笔记（需要 project_rw 且具备 notes.write）",
+            ctx.agent.scope.as_str()
+        )));
+    }
     let ok = permissions::can_write_note(conn, &ctx.agent.row_id, note_id)
         .map_err(ToolError::Failed)?;
     if ok {
@@ -163,6 +169,12 @@ fn ensure_note_write(ctx: &ToolCtx, conn: &Connection, note_id: &str) -> Result<
 }
 
 fn ensure_note_create(ctx: &ToolCtx, conn: &Connection) -> Result<(), ToolError> {
+    if !ctx.agent.scope.can_write() {
+        return Err(ToolError::Authz(format!(
+            "scope={} 不允许创建笔记（需要 project_rw 且具备 notes.write）",
+            ctx.agent.scope.as_str()
+        )));
+    }
     let ok = permissions::can_create_note(conn, &ctx.agent.row_id).map_err(ToolError::Failed)?;
     if ok {
         Ok(())
@@ -173,15 +185,38 @@ fn ensure_note_create(ctx: &ToolCtx, conn: &Connection) -> Result<(), ToolError>
     }
 }
 
-fn ensure_task_read_for_link(ctx: &ToolCtx, task_id: &str) -> Result<(), ToolError> {
-    let ok = ctx
-        .db
-        .with_read(|conn| {
-            if permissions::has_global(conn, &ctx.agent.row_id, Capability::TasksRead)? {
-                return Ok(true);
-            }
-            permissions::has(conn, &ctx.agent.row_id, Capability::TasksRead, task_id)
-        })
+pub(crate) fn authorize_replay(
+    ctx: &ToolCtx,
+    conn: &Connection,
+    name: &str,
+    args: &Value,
+) -> Result<bool, ToolError> {
+    match name {
+        "taskdock_create_note" => {
+            ensure_note_create(ctx, conn)?;
+            Ok(true)
+        }
+        "taskdock_update_note" | "taskdock_link_note_task" => {
+            let note_id = require_str(args, "note_id")?;
+            ensure_note_write(ctx, conn, &note_id)?;
+            Ok(true)
+        }
+        "taskdock_add_task_progress" => {
+            let task_id = require_str(args, "task_id")?;
+            ensure_note_create(ctx, conn)?;
+            ensure_task_read_for_link(ctx, conn, &task_id)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn ensure_task_read_for_link(
+    ctx: &ToolCtx,
+    conn: &Connection,
+    task_id: &str,
+) -> Result<(), ToolError> {
+    let ok = crate::mcp::task_tools::has_task_read(conn, &ctx.agent.row_id, task_id)
         .map_err(ToolError::Failed)?;
     if ok {
         Ok(())
@@ -315,7 +350,7 @@ pub(crate) fn call(
                 .unwrap_or(None)
                 .filter(|s| !s.is_empty());
             if let Some(task_id) = task_id.as_deref() {
-                ensure_task_read_for_link(ctx, task_id)?;
+                ensure_task_read_for_link(ctx, conn, task_id)?;
                 get_task_in_conn(conn, task_id).map_err(ToolError::Failed)?;
             }
             let note = set_task_link_in_conn(conn, &note_id, task_id).map_err(ToolError::Failed)?;
@@ -337,7 +372,7 @@ pub(crate) fn call(
                 .ok_or_else(|| ToolError::Failed(AppError::Validation("缺少写事务".into())))?;
             let task_id = require_str(args, "task_id")?;
             ensure_note_create(ctx, conn)?;
-            ensure_task_read_for_link(ctx, &task_id)?;
+            ensure_task_read_for_link(ctx, conn, &task_id)?;
             let task = get_task_in_conn(conn, &task_id).map_err(ToolError::Failed)?;
             let message = require_str(args, "message")?;
             let title = string_arg(args, "title")

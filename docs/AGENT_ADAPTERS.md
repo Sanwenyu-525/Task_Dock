@@ -340,3 +340,56 @@ ZCode 的用户配置 `~/.zcode/cli/config.json` 支持配置式 hooks，Task Do
   因此审计正文保留期/存储增长仍需后续确定。
 - bridge 生命周期由设置更新通知驱动，活动监听异常退出或启动失败时每秒轻量检查/重试；成功监听、关闭释放与进程退出路径在代码中实现，但本轮没有完成真实 MCP 客户端联调、故障重试演练或残留子进程验收。
   未在具体客户端中实测的配置/连接步骤标记为未验证。
+
+## 八、MCP 资源能力扩展（2026-11-16）
+
+### 8.1 工具面
+
+在保留原始 18 个规划工具名称与参数不变的前提下，新增 23 个 `taskdock_*` 工具，按领域拆分模块，
+全部经过 `tools::call` 的统一 scope / 能力授权 / 审计 / 幂等路径：
+
+| 领域 | 工具 | 读写 | 关键约束 |
+|---|---|---|---|
+| 任务（6） | `taskdock_list_tasks`、`get_task`、`task_stats`、`list_due_tasks` | 读 | `tasks.read` 全局能力；复用 `commands::tasks` 的 `list_tasks_inner` / `get_task_in_conn` / `task_stats_inner` |
+| 任务（6） | `taskdock_create_task`、`update_task` | 写 | `tasks.write` 全局；更新强制 `expected_updated_at`；未传字段回填当前值，不清空；不开放完成/删除/批量 |
+| 笔记（7） | `taskdock_list_notes`、`get_note`、`search_notes` | 读 | 列表/搜索需 `notes.read` 全局；单条读需 `can_read_note`（创建者或精确授权） |
+| 笔记（7） | `create_note`、`update_note`、`link_note_task`、`add_task_progress` | 写 | `notes.write` / `can_create_note` / `can_write_note`；更新强制 `expected_revision`；创建后登记归属；进度以「任务关联笔记」承载 |
+| 工作流（5） | `list_workflows`、`get_workflow`、`list_workflow_runs`、`check_workflow`、`preview_workflow` | 只读 | `workflows.read`；check 调 `workflows::validate_step`；preview 标注风险与 `executionSupportedByMcp=false`；本轮不提供执行 |
+| 文件工作区（5） | `list_workspace_roots`、`list_workspace_dir`、`stat_workspace_path`、`search_workspace_files`、`read_workspace_text` | 只读 | 三层边界：`workspace.read` 全局 + `mcp_workspace_roots` + canonicalize 组件级 starts_with；拒绝 UNC/网络路径、敏感目录与密钥文件名；读上限 1 MiB；搜索有深度/条目/耗时上限 |
+
+### 8.2 权限模型
+
+- `scope` 与资源能力正交：`project_rw` **不等于**任务/笔记/工作流/工作区写权限；能力默认全部为空，
+  需在设置页逐项授予。`disabled` 身份任何工具都拒绝；`readonly` 仍不能写。
+- 能力白名单：`tasks.read|tasks.write|notes.read|notes.write|workflows.read|workspace.read`；
+  `resource_id` 为空串表示全局，非空时按任务/笔记/工作流 id 精确匹配。授权登记时校验资源真实存在。
+- 笔记归属独立于 `notes` 表（`mcp_note_ownership`）：Agent 创建的笔记默认为其私有，其他 Agent
+  需精确读授权；不修改用户笔记表结构，用户自己的笔记不受 MCP 归属影响。
+- 文件工作区根目录存 canonical 路径（Windows 可能带 `\\?\` 前缀），比较时按路径组件而非字符串前缀；
+  软链接/Junction 先 canonicalize，越界即拒绝。工作区根被移除后下一次调用立即拒绝。
+- 写工具统一要求并发令牌：规划用 `expected_revision`，任务用 `expected_updated_at`，笔记用
+  `expected_revision`；创建/追加/关联类工具除外（见 `tools.rs` 例外表）。
+
+### 8.3 审计与诊断
+
+- `mcp_audit_log` 继续只存摘要，`result_json` 支持幂等重放。新增 `prune(metadata_days, payload_days)`：
+  先清空超出载荷窗口的记录载荷（保留行），再删除同时超出两个窗口的行；约束 `payload_days <= metadata_days`
+  且各自 1–3650 天，保证仍在重试窗口内的 `requestId` 不会被再次执行。当前没有自动调度，只提供命令入口。
+- `mcp_diagnostics` 返回 7 步真实探测：设置开关、bridge 运行态、transport 文件、真实 HTTP initialize、
+  工具注册表、数据库 quick_check、可选身份。状态四态 `ok|failed|not_run|unverified`；失败给 hint。
+  诊断不伪造连接成功：未运行/未授权时如实返回失败或无法验证。
+- 设置页状态行区分 `enabled` 与 `running`，展示实际端口、有效身份数、最近调用（动作/授权/成败）；
+  配置片段与「配置位置说明」分离，Cursor/Trae 片段为严格 JSON，Codex 使用可转义 TOML basic string。
+
+### 8.4 验证状态（2026-11-16）
+
+- 已执行：`npm run cargo -- test --lib mcp::` → **51 passed / 0 failed**（日志
+  `.git/taskdock-build-sched/logs/m-mwj6ah3k-d40fea.log`）；`McpAccessSection.test.tsx` vitest 11 passed
+  （日志 `l-mwj6h8js-c2efdd.log`）；`npm run cargo -- check` exit 0。
+- 未执行：Claude Code / Codex CLI / Cursor / Trae / MCP Inspector 真实联调（本机是否安装未知，
+  记 `ENVIRONMENT BLOCKED`）；长时间稳定性、异常恢复、多 Agent 高并发、性能采样；桌面窗口真机走查
+  （大/窄窗、键盘、屏幕阅读器）。不得用单测结果替代上述结论。
+- 复现方式：安装客户端后，按设置页生成的片段写入对应配置文件，先调用只读工具
+  `taskdock_list_workspace_roots` 或 `taskdock_list_tasks`，再验证未授权写工具返回 `-32001`，
+  撤销 Token 后下一次调用立即失败。
+

@@ -125,15 +125,22 @@ fn ensure_read_global(ctx: &ToolCtx) -> Result<(), ToolError> {
     }
 }
 
+/// 连接级任务读取判定（写事务内使用，避免再次进入 `Db::with_read` 造成自锁）。
+pub(crate) fn has_task_read(
+    conn: &Connection,
+    agent_row_id: &str,
+    task_id: &str,
+) -> Result<bool, AppError> {
+    if permissions::has_global(conn, agent_row_id, Capability::TasksRead)? {
+        return Ok(true);
+    }
+    permissions::has(conn, agent_row_id, Capability::TasksRead, task_id)
+}
+
 fn ensure_read_one(ctx: &ToolCtx, task_id: &str) -> Result<(), ToolError> {
     let allowed = ctx
         .db
-        .with_read(|conn| {
-            if permissions::has_global(conn, &ctx.agent.row_id, Capability::TasksRead)? {
-                return Ok(true);
-            }
-            permissions::has(conn, &ctx.agent.row_id, Capability::TasksRead, task_id)
-        })
+        .with_read(|conn| has_task_read(conn, &ctx.agent.row_id, task_id))
         .map_err(ToolError::Failed)?;
     if allowed {
         Ok(())
@@ -145,6 +152,12 @@ fn ensure_read_one(ctx: &ToolCtx, task_id: &str) -> Result<(), ToolError> {
 }
 
 fn ensure_write_one(ctx: &ToolCtx, conn: &Connection, task_id: &str) -> Result<(), ToolError> {
+    if !ctx.agent.scope.can_write() {
+        return Err(ToolError::Authz(format!(
+            "scope={} 不允许写任务（需要 project_rw 且具备 tasks.write）",
+            ctx.agent.scope.as_str()
+        )));
+    }
     let allowed = permissions::has_global(conn, &ctx.agent.row_id, Capability::TasksWrite)
         .map_err(ToolError::Failed)?
         || permissions::has(conn, &ctx.agent.row_id, Capability::TasksWrite, task_id)
@@ -159,6 +172,12 @@ fn ensure_write_one(ctx: &ToolCtx, conn: &Connection, task_id: &str) -> Result<(
 }
 
 fn ensure_write_global(ctx: &ToolCtx, conn: &Connection) -> Result<(), ToolError> {
+    if !ctx.agent.scope.can_write() {
+        return Err(ToolError::Authz(format!(
+            "scope={} 不允许写任务（需要 project_rw 且具备 tasks.write）",
+            ctx.agent.scope.as_str()
+        )));
+    }
     let ok = permissions::has_global(conn, &ctx.agent.row_id, Capability::TasksWrite)
         .map_err(ToolError::Failed)?;
     if ok {
@@ -167,6 +186,27 @@ fn ensure_write_global(ctx: &ToolCtx, conn: &Connection) -> Result<(), ToolError
         Err(ToolError::Authz(
             "未授权 tasks.write 能力（创建任务需要全局写授权）".into(),
         ))
+    }
+}
+
+/// 幂等重放授权：返回 true 表示该工具由本模块负责。
+pub(crate) fn authorize_replay(
+    ctx: &ToolCtx,
+    conn: &Connection,
+    name: &str,
+    args: &Value,
+) -> Result<bool, ToolError> {
+    match name {
+        "taskdock_create_task" => {
+            ensure_write_global(ctx, conn)?;
+            Ok(true)
+        }
+        "taskdock_update_task" => {
+            let id = require_str(args, "task_id")?;
+            ensure_write_one(ctx, conn, &id)?;
+            Ok(true)
+        }
+        _ => Ok(false),
     }
 }
 

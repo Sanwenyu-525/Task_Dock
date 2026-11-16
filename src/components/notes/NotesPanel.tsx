@@ -17,6 +17,7 @@ import {
 import { useLocale } from "../../hooks/useLocale";
 import { formatLocalizedRelative } from "../../i18n/format";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
+import { ensurePlanningSync } from "../../store/usePlanningStore";
 import {
   useNotesStore,
   type NoteSummary,
@@ -60,6 +61,11 @@ export default function NotesPanel() {
     void loadTemplates();
     void loadLinkOptions();
   }, [load, loadTemplates, loadLinkOptions]);
+
+  // 笔记面板独立打开时注册全局 planning-changed 监听，MCP 写笔记后按事件刷新。
+  useEffect(() => {
+    ensurePlanningSync();
+  }, []);
 
   // 全局搜索定位（category=notes）：清掉搜索/筛选保证目标可见，再选中并滚动高亮。
   // 意图由 useGlobalSearchStore 一次性下发，消费后必须清除。

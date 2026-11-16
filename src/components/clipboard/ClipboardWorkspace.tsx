@@ -31,7 +31,6 @@ import {
   clipboardItem,
   clipboardLinkTask,
   clipboardMergeGroups,
-  clipboardOpenLocalPath,
   clipboardOpenUrl,
   clipboardRevealLocalPath,
   clipboardStatus,
@@ -479,8 +478,16 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   /** 焦点在被删卡片上时，先记下相邻行的 id，供离场结束后接管焦点。 */
   function captureFocusAnchor(ids: string[]): string | null {
     const active = document.activeElement;
-    if (!(active instanceof HTMLElement)) return null;
-    const card = active.closest<HTMLElement>("[data-clip-id]");
+    let card =
+      active instanceof HTMLElement ? active.closest<HTMLElement>("[data-clip-id]") : null;
+    // 「更多操作」菜单渲染在 portal 里：触发删除时焦点已不在卡片内。
+    // 单条删除按目标 id 反查卡片，否则键盘用户确认后会掉回 body。
+    if (!card && ids.length === 1) {
+      card =
+        Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-clip-id]") ?? []).find(
+          (el) => el.dataset.clipId === ids[0],
+        ) ?? null;
+    }
     if (!card) return null;
     const gone = new Set(ids);
     const rows = Array.from(
@@ -502,7 +509,14 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         if (anchorId) {
           const selector = `[data-clip-id="${CSS.escape(anchorId)}"]`;
           const el = listRef.current?.querySelector<HTMLElement>(selector);
-          (el ?? searchRef.current)?.focus();
+          // 卡片根节点不再是按钮（也不再吃键盘事件），焦点必须落到卡内真实入口：
+          // 条目的主预览按钮，分组则退回第一个可用动作按钮，最后才是搜索框。
+          const main = el?.querySelector<HTMLElement>(".clip-item-main");
+          if (main && main.tagName === "BUTTON") {
+            main.focus();
+          } else {
+            (el?.querySelector<HTMLElement>("button:not([disabled])") ?? searchRef.current)?.focus();
+          }
         }
         after?.();
       },
@@ -807,15 +821,6 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       showToast("已在浏览器中打开链接", { kind: "success" });
     } catch (e) {
       showToast(`打开链接失败：${errorMessage(e)}`, { kind: "error" });
-    }
-  }
-
-  /** 文件条目：用系统关联程序打开（后端校验绝对路径且必须存在）。 */
-  async function onOpenLocalFile(path: string) {
-    try {
-      await clipboardOpenLocalPath(path);
-    } catch (e) {
-      showToast(`打开文件失败：${errorMessage(e)}`, { kind: "error" });
     }
   }
 

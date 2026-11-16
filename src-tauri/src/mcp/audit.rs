@@ -7,6 +7,13 @@
 //! 幂等键（v37 部分唯一索引）：`UNIQUE(agent_row_id, action, request_id)
 //! WHERE request_id <> '' AND success = 1`。该索引作为事务幂等流程的最后约束；
 //! 读工具 request_id 恒存 ''，可重复审计。
+//!
+//! 保留策略（两段式，区分「安全审计元数据」与「幂等重放载荷」）：
+//! - 元数据（谁、何时、哪个工具、成功/拒绝）保留 `metadata_days`；
+//! - 幂等载荷 `result_json` 只保留 `payload_days`，到期先清空载荷，**不删行**；
+//! - 删除行必须同时满足「超出元数据保留期」且「超出幂等窗口」，因此仍在
+//!   重试窗口内的 requestId 永远不会被清理，不会被重复执行。
+//! - 清理只由用户显式触发（`mcp_audit_prune`），不在启动时静默执行。
 
 use rusqlite::Connection;
 use serde::Serialize;
@@ -106,8 +113,7 @@ pub fn list_page(conn: &Connection, offset: u32, limit: u32) -> AppResult<AuditP
     })
 }
 
-pub fn write(conn: &Connection, e: &AuditEntry<'_>) -> AppResult<()> {
-    conn.execute(
+pub fn write(conn: &Connection, e: &AuditEntry<'_>) -> AppResult<()> {    conn.execute(
         "INSERT INTO mcp_audit_log
            (id, agent_row_id, agent_id, action, entity_type, entity_id, request_id,
             success, authz, detail, result_json, created_at)
@@ -154,4 +160,99 @@ pub fn find_replay_entry(
         },
     ))
     .map_err(crate::error::AppError::from)
+}
+
+/// 最近一次调用摘要（UI 状态卡用；不含参数、载荷与凭据）。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LastCall {
+    pub action: String,
+    pub agent_id: String,
+    pub created_at: String,
+    pub success: bool,
+    pub authorized: bool,
+}
+
+pub fn last_call(conn: &Connection) -> AppResult<Option<LastCall>> {
+    rusqlite::OptionalExtension::optional(conn.query_row(
+        "SELECT action, agent_id, created_at, success, authz FROM mcp_audit_log
+         ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        [],
+        |r| {
+            Ok(LastCall {
+                action: r.get(0)?,
+                agent_id: r.get(1)?,
+                created_at: r.get(2)?,
+                success: r.get::<_, i64>(3)? != 0,
+                authorized: r.get::<_, i64>(4)? != 0,
+            })
+        },
+    ))
+    .map_err(crate::error::AppError::from)
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneReport {
+    /// 删除的审计行数（超出元数据保留期）
+    pub deleted_rows: i64,
+    /// 清空幂等载荷的行数（超出重放窗口但仍在元数据保留期）
+    pub cleared_payloads: i64,
+    /// 清理后仍可用于幂等重放的行数
+    pub replayable_rows: i64,
+    pub metadata_cutoff: String,
+    pub payload_cutoff: String,
+}
+
+/// 两段式清理。`payload_days` 必须 ≤ `metadata_days`；否则拒绝执行，
+/// 避免「先删元数据、后清载荷」导致窗口语义自相矛盾。
+pub fn prune(
+    conn: &Connection,
+    metadata_days: i64,
+    payload_days: i64,
+) -> AppResult<PruneReport> {
+    use chrono::{Duration, Utc};
+    if !(7..=3650).contains(&metadata_days) {
+        return Err(crate::error::AppError::Validation(
+            "审计元数据保留天数必须在 7..=3650".into(),
+        ));
+    }
+    if !(1..=3650).contains(&payload_days) || payload_days > metadata_days {
+        return Err(crate::error::AppError::Validation(
+            "幂等载荷保留天数必须在 1..=3650 且不大于元数据保留天数".into(),
+        ));
+    }
+    let now = Utc::now();
+    let fmt = |dt: chrono::DateTime<Utc>| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let payload_cutoff = fmt(now - Duration::days(payload_days));
+    let metadata_cutoff = fmt(now - Duration::days(metadata_days));
+
+    // 先清载荷：仍在重放窗口内的记录不动；超出窗口的清空 result_json，
+    // 但保留行本身用于安全审计与统计。
+    let cleared_payloads = conn.execute(
+        "UPDATE mcp_audit_log SET result_json = ''
+         WHERE result_json <> '' AND created_at < ?1",
+        rusqlite::params![payload_cutoff],
+    )? as i64;
+
+    // 再删行：必须同时早于元数据保留期；由于 metadata_cutoff ≤ payload_cutoff，
+    // 不会误删仍处于幂等窗口的记录。
+    let deleted_rows = conn.execute(
+        "DELETE FROM mcp_audit_log WHERE created_at < ?1 AND created_at < ?2",
+        rusqlite::params![metadata_cutoff, payload_cutoff],
+    )? as i64;
+
+    let replayable_rows: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM mcp_audit_log WHERE result_json <> ''",
+        [],
+        |r| r.get(0),
+    )?;
+
+    Ok(PruneReport {
+        deleted_rows,
+        cleared_payloads,
+        replayable_rows,
+        metadata_cutoff,
+        payload_cutoff,
+    })
 }

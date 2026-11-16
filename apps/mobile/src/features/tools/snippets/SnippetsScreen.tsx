@@ -174,6 +174,7 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
       language: snippet.language,
       content: snippet.content,
       tags: [...snippet.tags],
+      note: snippet.note,
       favorite: snippet.favorite,
       pinned: snippet.pinned,
     };
@@ -228,6 +229,7 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
           language: payload.language,
           content: payload.content,
           tags: payload.tags,
+          note: payload.note,
           favorite: payload.favorite,
           pinned: payload.pinned,
         });
@@ -365,6 +367,15 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
             onChangeText={(text) => patchDraft({ tags: normalizeTags(text) })}
             placeholder="用逗号分隔，例如 android, sql"
             hint="最多 12 个标签；搜索会同时匹配标题、正文与标签"
+          />
+          <ToolField
+            label="备注（可选）"
+            value={draft.note}
+            onChangeText={(note) => patchDraft({ note })}
+            placeholder="例如 来源、使用场景、注意事项"
+            multiline
+            minHeight={64}
+            maxLength={300}
           />
         </ToolSection>
 

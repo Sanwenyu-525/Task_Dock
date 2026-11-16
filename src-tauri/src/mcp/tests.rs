@@ -120,27 +120,51 @@ fn proj_input(name: &str) -> ProjectInput {
 #[test]
 fn tool_defs_are_complete_and_unique() {
     let defs = crate::mcp::tools::tool_defs();
-    assert_eq!(defs.len(), 18, "应为 18 个工具");
+    assert!(defs.len() >= 18, "原始 18 个工具不得减少");
+    for original in [
+        "taskdock_list_projects",
+        "taskdock_get_project",
+        "taskdock_update_project",
+        "taskdock_create_feature",
+        "taskdock_get_feature",
+        "taskdock_add_step",
+        "taskdock_submit_for_review",
+    ] {
+        assert!(
+            defs.iter().any(|d| d.name == original),
+            "缺少既有工具 {original}"
+        );
+    }
     let mut names: Vec<_> = defs.iter().map(|d| d.name).collect();
     let total = names.len();
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), total, "工具名不得重复");
     assert!(defs.iter().all(|d| d.input_schema["type"] == "object"));
-    // 写工具必须都要求 expected_revision；例外见模块注释（追加/关联/创建）
+    // 写工具必须要求乐观并发令牌；例外为「创建 / 追加 / 关联」类工具，
+    // 或使用 updated_at 作为并发令牌（任务）。
     let no_revision_required = [
         "taskdock_create_project",
         "taskdock_create_feature",
         "taskdock_add_progress_note",
         "taskdock_link_agent_session",
         "taskdock_unlink_agent_session",
+        "taskdock_create_task",
+        "taskdock_create_note",
+        "taskdock_link_note_task",
+        "taskdock_add_task_progress",
     ];
     for d in defs.iter().filter(|d| d.write) {
-        let req = d.input_schema["required"].as_array().unwrap();
+        // 无必填参数的写入工具（如创建笔记）可以省略 required 键，视为空集合。
+        let req = d.input_schema["required"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         let has_rev = req.iter().any(|v| v == "expected_revision");
+        let has_updated = req.iter().any(|v| v == "expected_updated_at");
         assert!(
-            has_rev || no_revision_required.contains(&d.name),
-            "{} 缺少 expected_revision 要求",
+            has_rev || has_updated || no_revision_required.contains(&d.name),
+            "{} 缺少并发令牌要求",
             d.name
         );
     }
@@ -152,7 +176,7 @@ fn tools_list_over_protocol_exposes_all() {
     let resp =
         crate::mcp::protocol::handle_request_value(&payload, &|_, _| unreachable!()).unwrap();
     let tools = resp["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 18);
+    assert!(tools.len() >= 18);
     assert!(tools
         .iter()
         .any(|t| t["name"] == "taskdock_submit_for_review"));
@@ -1325,4 +1349,204 @@ fn audit_page_is_bounded_and_excludes_operation_payloads() {
         .with_read(|conn| crate::mcp::audit::list_page(conn, 0, u32::MAX))
         .unwrap();
     assert_eq!(clamped.limit, 100);
+}
+
+// ── 资源能力授权（任务 / 笔记 / 工作流 / 文件工作区）────────────────
+
+#[test]
+fn task_tools_are_denied_by_default_and_unlocked_by_capability() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "tasks-cap", "project_rw");
+    let ctx = ctx_for(&db, &agent);
+
+    // 默认最小权限：没有 capabilities 时列表直接拒绝（不是空列表）。
+    let denied = rpc_err(&ctx, "taskdock_list_tasks", json!({}));
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+
+    crate::mcp::permissions::grant(&db, &agent.row_id, "tasks.read", "").unwrap();
+    let list = call_ok(&ctx, "taskdock_list_tasks", json!({ "limit": 5 }));
+    assert!(list.as_array().is_some());
+
+    // 撤销后下一次调用立即拒绝，无需重启服务。
+    crate::mcp::permissions::revoke(&db, &agent.row_id, "tasks.read", "").unwrap();
+    let denied_again = rpc_err(&ctx, "taskdock_list_tasks", json!({}));
+    assert_eq!(denied_again.code, crate::mcp::protocol::ERR_FORBIDDEN);
+}
+
+#[test]
+fn task_write_requires_global_capability_and_rejects_stale_version() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "tasks-write", "project_rw");
+    crate::mcp::permissions::grant(&db, &agent.row_id, "tasks.read", "").unwrap();
+    crate::mcp::permissions::grant(&db, &agent.row_id, "tasks.write", "").unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    let created = call_ok(
+        &ctx,
+        "taskdock_create_task",
+        json!({ "title": "MCP 创建的任务", "description": "由 Agent 写入" }),
+    );
+    let task_id = created["id"].as_str().unwrap();
+    let updated_at = created["updated_at"].as_str().unwrap();
+
+    let conflict = tool_err(
+        &ctx,
+        "taskdock_update_task",
+        json!({
+            "task_id": task_id,
+            "expected_updated_at": "2000-01-01T00:00:00.000Z",
+            "title": "覆盖标题"
+        }),
+    );
+    assert!(
+        conflict.user_message().contains("已被其他操作更新"),
+        "应明确返回冲突，而不是静默覆盖: {}",
+        conflict.user_message()
+    );
+
+    let updated = call_ok(
+        &ctx,
+        "taskdock_update_task",
+        json!({
+            "task_id": task_id,
+            "expected_updated_at": updated_at,
+            "title": "MCP 更新后的任务"
+        }),
+    );
+    assert_eq!(updated["title"], "MCP 更新后的任务");
+    // 未传 description：保留原值，不得清空
+    assert_eq!(updated["description"], "由 Agent 写入");
+    assert_eq!(updated["status"], "pending");
+}
+
+#[test]
+fn notes_are_owned_by_creator_and_private_to_other_agents() {
+    let db = memdb();
+    let (agent_a, _) = make_agent(&db, "notes-a", "project_rw");
+    let (agent_b, _) = make_agent(&db, "notes-b", "project_rw");
+    crate::mcp::permissions::grant(&db, &agent_a.row_id, "notes.write", "").unwrap();
+    let ctx_a = ctx_for(&db, &agent_a);
+    let ctx_b = ctx_for(&db, &agent_b);
+
+    let created = call_ok(
+        &ctx_a,
+        "taskdock_create_note",
+        json!({ "title": "开发笔记", "content": "分析结论：复用服务层。" }),
+    );
+    let note_id = created["id"].as_str().unwrap();
+
+    let read_back = call_ok(&ctx_a, "taskdock_get_note", json!({ "note_id": note_id }));
+    assert_eq!(read_back["content"], "分析结论：复用服务层。");
+
+    // 另一个 Agent 默认不可读：这是私人笔记边界，不是“空结果”。
+    let denied = rpc_err(&ctx_b, "taskdock_get_note", json!({ "note_id": note_id }));
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+
+    // 精确授权后 B 可以读，但不因一次授权获得全部笔记列表能力。
+    crate::mcp::permissions::grant(&db, &agent_b.row_id, "notes.read", note_id).unwrap();
+    let shared = call_ok(&ctx_b, "taskdock_get_note", json!({ "note_id": note_id }));
+    assert_eq!(shared["id"], note_id);
+    let list_denied = rpc_err(&ctx_b, "taskdock_list_notes", json!({}));
+    assert_eq!(list_denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+}
+
+#[test]
+fn workspace_read_is_confined_to_granted_root() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "workspace", "project_rw");
+    crate::mcp::permissions::grant(&db, &agent.row_id, "workspace.read", "").unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    let base = std::env::temp_dir().join(format!("taskdock-mcp-ws-{}", uuid::Uuid::new_v4()));
+    let root = base.join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("inside.txt"), "hello workspace").unwrap();
+    let outside = base.join("outside.txt");
+    std::fs::write(&outside, "secret").unwrap();
+
+    // 未授权根目录前，任何路径都拒绝。
+    let denied = rpc_err(
+        &ctx,
+        "taskdock_read_workspace_text",
+        json!({ "path": root.join("inside.txt").to_string_lossy() }),
+    );
+    assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN);
+
+    crate::mcp::permissions::grant_root(&db, &agent.row_id, &root.to_string_lossy()).unwrap();
+    let read = call_ok(
+        &ctx,
+        "taskdock_read_workspace_text",
+        json!({ "path": root.join("inside.txt").to_string_lossy() }),
+    );
+    assert_eq!(read["content"], "hello workspace");
+
+    // 越界路径（含 `..` 穿越与同级文件）必须拒绝。
+    for path in [
+        outside.to_string_lossy().to_string(),
+        root.join("..").join("outside.txt").to_string_lossy().to_string(),
+    ] {
+        let denied = rpc_err(
+            &ctx,
+            "taskdock_read_workspace_text",
+            json!({ "path": path }),
+        );
+        assert_eq!(denied.code, crate::mcp::protocol::ERR_FORBIDDEN, "越界路径必须拒绝: {path}");
+    }
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn audit_prune_clears_payload_before_metadata_and_keeps_retry_window() {
+    let db = memdb();
+    let created = auth::create_agent(&db, "audit-prune", "审计清理").unwrap();
+    let now = chrono::Utc::now();
+    let stamp = |days: i64| {
+        (now - chrono::Duration::days(days))
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string()
+    };
+    db.with_conn(|conn| {
+        for (id, days, result, request) in [
+            ("old-payload", 10i64, "{}", "req-old"),
+            ("fresh", 3, "{}", "req-fresh"),
+            ("very-old", 40, "", ""),
+        ] {
+            conn.execute(
+                "INSERT INTO mcp_audit_log
+                   (id, agent_row_id, agent_id, action, entity_type, entity_id, request_id,
+                    success, authz, detail, result_json, created_at)
+                 VALUES (?1, ?2, 'audit-prune', 'taskdock_update_project', 'project', '',
+                         ?3, 1, 1, 'ok', ?4, ?5)",
+                rusqlite::params![id, created.info.id, request, result, stamp(days)],
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    let report = db
+        .with_conn(|conn| crate::mcp::audit::prune(conn, 30, 7))
+        .unwrap();
+    assert_eq!(report.deleted_rows, 1, "只删除超出元数据保留期的行");
+    assert_eq!(report.cleared_payloads, 1, "只清空超出幂等窗口的载荷");
+    assert_eq!(report.replayable_rows, 1, "窗口内记录必须仍可重放");
+
+    // 参数边界：载荷窗口不得大于元数据窗口。
+    let invalid = db.with_conn(|conn| crate::mcp::audit::prune(conn, 7, 30));
+    assert!(invalid.is_err());
+}
+
+#[test]
+fn capability_grant_requires_known_capability_and_existing_resource() {
+    let db = memdb();
+    let (agent, _) = make_agent(&db, "caps-validate", "project_rw");
+    assert!(crate::mcp::permissions::grant(&db, &agent.row_id, "root.everything", "").is_err());
+    assert!(
+        crate::mcp::permissions::grant(&db, &agent.row_id, "tasks.read", "missing-task").is_err(),
+        "不存在的资源 id 不得登记授权"
+    );
+    let caps = crate::mcp::permissions::grant(&db, &agent.row_id, "tasks.read", "").unwrap();
+    assert_eq!(caps.len(), 1);
+    assert_eq!(caps[0].resource_id, "");
 }

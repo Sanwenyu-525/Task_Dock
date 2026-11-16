@@ -24,7 +24,7 @@ import {
 import { recordToolUse } from "../../../db/toolUsage";
 import { describeError } from "../../../lib/errors";
 import { useTheme } from "../../../theme/ThemeProvider";
-import { font, radius, space } from "../../../theme/tokens";
+import { font, space } from "../../../theme/tokens";
 import { readClipboard, shareOutText, writeClipboard } from "../shared/nativeTools";
 import { ToolButton, ToolField, ToolNote, ToolScreen, ToolSection } from "../shared/ToolUI";
 

@@ -59,6 +59,12 @@ pub enum TransportFailure {
 
 // ── stdio 侧最小 HTTP 客户端（同步；与 hook_cli.rs post_event 同模式）──
 
+/// HTTP 头部值必须是非空可见 ASCII：token 来自环境变量/传输文件，
+/// 含 CR/LF 或控制字符时拼接头部会造成注入，必须在使用前拒绝。
+fn header_safe_token(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|b| (0x21..=0x7e).contains(&b))
+}
+
 fn http1_request(
     addr: SocketAddr,
     bridge_token: &str,
@@ -120,6 +126,12 @@ pub fn post_json(body: &str) -> Result<String, TransportFailure> {
                 "未配置 agent token（请在 MCP 客户端 env 设置 {}）",
                 crate::mcp::AGENT_TOKEN_ENV
             ),
+        });
+    }
+    if !header_safe_token(&agent_token) || !header_safe_token(&cfg.token) {
+        return Err(TransportFailure::Rejected {
+            code: 400,
+            detail: "MCP 凭据含换行或不可见字符，已拒绝发送请求头".into(),
         });
     }
     let addr = SocketAddr::from(([127, 0, 0, 1], cfg.port));
@@ -619,4 +631,18 @@ fn make_emitter(app: &tauri::AppHandle) -> ChangeEmitter {
     Arc::new(move |changed: PlanningChanged| {
         let _ = tauri::Emitter::emit(&app, PLANNING_CHANGED_EVENT, &changed);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::header_safe_token;
+
+    #[test]
+    fn header_tokens_reject_control_characters() {
+        assert!(header_safe_token("tdm_abc123"));
+        assert!(!header_safe_token(""));
+        assert!(!header_safe_token("token\r\nX-Injected: 1"));
+        assert!(!header_safe_token("token\n"));
+        assert!(!header_safe_token("token with space"));
+    }
 }

@@ -8,6 +8,8 @@
 //! - 失败保留旧数据并置 error（面板显示重试入口），不拿空列表冒充现状。
 
 import { create } from "zustand";
+import { useNotesStore } from "./useNotesStore";
+import { useTasksStore } from "./useTasksStore";
 import {
   planningActivityPage,
   planningAddNote,
@@ -562,6 +564,14 @@ function flushPlanningSync(): void {
   const active = usePlanningStore.getState().activeProjectId;
   if (active && events.some((e) => e.projectId === active)) {
     void refreshActiveProject();
+  }
+  // 任务/笔记的 MCP 写入走同一广播：按领域刷新对应 store（去抖后每批一次），
+  // 不整页重载、不新增轮询。组件未打开时也只是一次轻量列表查询。
+  if (events.some((e) => e.kind === "task")) {
+    void useTasksStore.getState().refresh();
+  }
+  if (events.some((e) => e.kind === "note")) {
+    void useNotesStore.getState().load({ silent: true });
   }
 }
 

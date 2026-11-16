@@ -45,7 +45,6 @@ export async function sendToolFileToDesktop(options: {
 
   const file = new File(options.uri);
   if (!file.exists) throw new AppError("storage", "文件不存在，无法发送");
-  const size = Number(file.size ?? 0);
 
   try {
     const remote = await uploadLocalFile(

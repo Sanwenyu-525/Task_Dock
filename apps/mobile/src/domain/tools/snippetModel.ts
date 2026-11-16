@@ -11,6 +11,8 @@ export interface Snippet {
   language: string;
   content: string;
   tags: string[];
+  /** 可选备注：说明用途/来源，不参与复制正文 */
+  note: string;
   favorite: boolean;
   pinned: boolean;
   createdAt: number;
@@ -24,6 +26,7 @@ export interface SnippetDraft {
   language: string;
   content: string;
   tags: string[];
+  note: string;
   favorite: boolean;
   pinned: boolean;
 }
@@ -89,6 +92,7 @@ export function matchesSnippetQuery(snippet: Snippet, query: string): boolean {
     languageLabel(snippet.language),
     snippet.language,
     snippet.tags.join(" "),
+    snippet.note,
   ]
     .join("\n")
     .toLowerCase();
@@ -151,7 +155,7 @@ export function snippetSummary(snippet: Snippet, max = 80): string {
 
 /** 新建片段的默认草稿。 */
 export function emptySnippetDraft(): SnippetDraft {
-  return { title: "", language: "text", content: "", tags: [], favorite: false, pinned: false };
+  return { title: "", language: "text", content: "", tags: [], note: "", favorite: false, pinned: false };
 }
 
 /** 草稿是否可保存：正文非空即可（标题允许自动生成）。 */

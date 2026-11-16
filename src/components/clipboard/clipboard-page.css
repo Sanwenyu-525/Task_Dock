@@ -57,7 +57,8 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 10px;
-  align-items: stretch;
+  /* 不强行拉齐行高：图片卡与短文字卡不必等高，否则短卡会被撑出一片空白。 */
+  align-items: start;
 }
 
 .clipboard-page .clip-list-grid.clip-density-compact {
@@ -112,7 +113,6 @@
     "actions actions";
   gap: 6px;
   padding: 10px 12px 8px;
-  height: 100%;
 }
 
 /* 有缩略图（紧凑态 / 无大图）：缩略图只占正文行，顶行不被挤窄。 */
@@ -246,7 +246,7 @@
   align-items: center;
   justify-content: center;
   width: 100%;
-  height: clamp(150px, 15cqi, 240px);
+  height: clamp(160px, 18cqi, 240px);
   padding: 0;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
@@ -294,7 +294,6 @@
   align-items: stretch;
   gap: 6px;
   padding: 10px 12px 8px;
-  height: 100%;
 }
 
 .clipboard-page .clip-group-card.density-comfort > .clip-check,

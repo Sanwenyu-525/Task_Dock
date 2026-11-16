@@ -3122,14 +3122,65 @@ export interface McpAgentInfo {
   granted_project_ids: string[];
 }
 
+export interface McpLastCall {
+  action: string;
+  agentId: string;
+  createdAt: string;
+  success: boolean;
+  authorized: boolean;
+}
+
 export interface McpStatus {
   /** 设置开关（mcp_server_enabled） */
   enabled: boolean;
-  /** bridge 是否在监听 */
+  /** bridge 是否在监听（实际运行状态，不等于开关） */
   running: boolean;
   port: number | null;
   agent_count: number;
+  /** 未撤销的 Agent 数 */
+  active_agent_count: number;
   started_at: string | null;
+  /** 最近一次工具调用；无调用为 null */
+  last_call: McpLastCall | null;
+}
+
+export type McpCapability =
+  | "tasks.read"
+  | "tasks.write"
+  | "notes.read"
+  | "notes.write"
+  | "workflows.read"
+  | "workspace.read";
+
+export interface McpCapabilityGrant {
+  capability: McpCapability;
+  /** 空串表示全局能力 */
+  resourceId: string;
+  createdAt: string;
+}
+
+export interface McpWorkspaceRoot {
+  id: string;
+  rootPath: string;
+  createdAt: string;
+}
+
+export type McpDiagnosticStatus = "ok" | "failed" | "not_run" | "unverified";
+
+export interface McpDiagnosticStep {
+  id: string;
+  label: string;
+  status: McpDiagnosticStatus;
+  detail: string;
+  hint?: string;
+}
+
+export interface McpDiagnosticsReport {
+  generatedAt: string;
+  overall: "ok" | "degraded" | "failed" | "not_run";
+  steps: McpDiagnosticStep[];
+  toolCount: number;
+  originalToolCount: number;
 }
 
 /** mcp_agent_create 返回：token 明文仅此一次。 */
@@ -3173,10 +3224,50 @@ export const agentMcpAuditList = (offset: number, limit: number) =>
   invoke<McpAuditPage>("mcp_audit_list", { offset, limit });
 export const agentMcpConfigSnippet = (client: McpConfigClient, agentToken: string) =>
   invoke<string>("mcp_config_snippet", { input: { client, agentToken } });
+export const agentMcpConfigHint = (client: McpConfigClient) =>
+  invoke<string>("mcp_config_hint", { client });
+export const agentMcpCapabilities = (id: string) =>
+  invoke<McpCapabilityGrant[]>("mcp_agent_capabilities", { id });
+export const agentMcpGrantCapability = (
+  id: string,
+  capability: McpCapability,
+  resourceId = "",
+) =>
+  invoke<McpCapabilityGrant[]>("mcp_agent_grant_capability", {
+    id,
+    capability,
+    resourceId,
+  });
+export const agentMcpRevokeCapability = (
+  id: string,
+  capability: McpCapability,
+  resourceId = "",
+) =>
+  invoke<McpCapabilityGrant[]>("mcp_agent_revoke_capability", {
+    id,
+    capability,
+    resourceId,
+  });
+export const agentMcpWorkspaceRoots = (id: string) =>
+  invoke<McpWorkspaceRoot[]>("mcp_workspace_roots", { id });
+export const agentMcpGrantWorkspaceRoot = (id: string, path: string) =>
+  invoke<McpWorkspaceRoot[]>("mcp_workspace_grant_root", { id, path });
+export const agentMcpRevokeWorkspaceRoot = (id: string, rootId: string) =>
+  invoke<McpWorkspaceRoot[]>("mcp_workspace_revoke_root", { id, rootId });
+export const agentMcpAuditPrune = (metadataDays?: number, payloadDays?: number) =>
+  invoke<{
+    deletedRows: number;
+    clearedPayloads: number;
+    replayableRows: number;
+    metadataCutoff: string;
+    payloadCutoff: string;
+  }>("mcp_audit_prune", { metadataDays, payloadDays });
+export const agentMcpDiagnostics = (agentId?: string) =>
+  invoke<McpDiagnosticsReport>("mcp_diagnostics", { agentId });
 
 /** MCP 写入成功后主进程广播（v37）：payload camelCase。 */
 export interface PlanningChangedEvent {
-  kind: "project" | "feature" | "step" | "milestone" | "activity";
+  kind: "project" | "feature" | "step" | "milestone" | "activity" | "task" | "note";
   projectId?: string;
   featureId?: string;
   revision?: number;

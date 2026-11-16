@@ -16,6 +16,7 @@ interface SnippetRow {
   language: string;
   content: string;
   tags: string;
+  note: string;
   favorite: number;
   pinned: number;
   created_at: number;
@@ -24,7 +25,7 @@ interface SnippetRow {
   deleted_at: number | null;
 }
 
-const COLUMNS = `id, title, language, content, tags, favorite, pinned, created_at, updated_at, last_used_at, deleted_at`;
+const COLUMNS = `id, title, language, content, tags, note, favorite, pinned, created_at, updated_at, last_used_at, deleted_at`;
 
 function mapRow(row: SnippetRow): Snippet {
   return {
@@ -33,6 +34,7 @@ function mapRow(row: SnippetRow): Snippet {
     language: row.language,
     content: row.content,
     tags: normalizeTags(row.tags ?? ""),
+    note: row.note ?? "",
     favorite: row.favorite !== 0,
     pinned: row.pinned !== 0,
     createdAt: row.created_at,
@@ -76,13 +78,14 @@ export async function createSnippet(draft: SnippetDraft): Promise<Snippet> {
   const id = newId("snip");
   const tags = normalizeTags(draft.tags);
   await db.runAsync(
-    `INSERT INTO snippets (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO snippets (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       draft.title,
       draft.language,
       draft.content,
       tags.join(","),
+      draft.note ?? "",
       draft.favorite ? 1 : 0,
       draft.pinned ? 1 : 0,
       now,
@@ -97,6 +100,7 @@ export async function createSnippet(draft: SnippetDraft): Promise<Snippet> {
     language: draft.language,
     content: draft.content,
     tags,
+    note: draft.note ?? "",
     favorite: draft.favorite,
     pinned: draft.pinned,
     createdAt: now,
@@ -111,6 +115,7 @@ export interface SnippetPatch {
   language?: string | null;
   content?: string | null;
   tags?: string[] | null;
+  note?: string | null;
   favorite?: boolean | null;
   pinned?: boolean | null;
 }
@@ -132,6 +137,7 @@ export async function updateSnippet(id: string, patch: SnippetPatch): Promise<Sn
   if (patch.language !== undefined) set("language", patch.language === null ? "text" : patch.language);
   if (patch.content !== undefined) set("content", patch.content === null ? "" : patch.content);
   if (patch.tags !== undefined) set("tags", normalizeTags(patch.tags ?? []).join(","));
+  if (patch.note !== undefined) set("note", patch.note === null ? "" : patch.note.trim());
   if (patch.favorite !== undefined) set("favorite", (patch.favorite ?? false) ? 1 : 0);
   if (patch.pinned !== undefined) set("pinned", (patch.pinned ?? false) ? 1 : 0);
 

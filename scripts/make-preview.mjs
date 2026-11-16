@@ -684,7 +684,7 @@ const shim = `
   // ── 智能剪贴板夹具（v0.6 视觉走查：抽屉展开态）──
   const clipboardItems = [
     { id: "ci1", kind: "text", text: "POST /api/session/start 返回 202，已进入队列。", html: "", preview: "POST /api/session/start 返回 202…", title: "接口返回：POST /api/session/sta…", title_source: "auto", has_image: false, has_thumb: false, byte_size: 168, source_app: "Code.exe", source_title: "session.rs - task-dock", image_width: null, image_height: null, file_paths: [], favorite: true, pinned: false, copy_count: 2, created_at: iso(12), last_seen_at: iso(12), sensitive: false },
-    { id: "ci2", kind: "link", text: "https://tauri.app/", html: "", preview: "https://tauri.app/", title: "tauri.app", title_source: "auto", has_image: false, has_thumb: false, byte_size: 21, source_app: "msedge.exe", source_title: "Tauri", image_width: null, image_height: null, file_paths: [], favorite: false, pinned: true, copy_count: 1, created_at: iso(26), last_seen_at: iso(26), sensitive: false },
+    { id: "ci2", kind: "url", text: "https://tauri.app/", html: "", preview: "https://tauri.app/", title: "tauri.app", title_source: "auto", has_image: false, has_thumb: false, byte_size: 21, source_app: "msedge.exe", source_title: "Tauri", image_width: null, image_height: null, file_paths: [], favorite: false, pinned: true, copy_count: 1, created_at: iso(26), last_seen_at: iso(26), sensitive: false },
     { id: "ci3", kind: "html", text: "", html: "<p>周报要点</p>", preview: "周报要点", title: "周报要点", title_source: "manual", has_image: false, has_thumb: false, byte_size: 92, source_app: "WINWORD.EXE", source_title: "周报.docx", image_width: null, image_height: null, file_paths: [], favorite: false, pinned: false, copy_count: 1, created_at: iso(48), last_seen_at: iso(48), sensitive: false },
     { id: "ci4", kind: "image", text: "", html: "", preview: "截图 1280×720", title: "截图 1280×720", title_source: "auto", has_image: true, has_thumb: true, byte_size: 24576, source_app: "SnippingTool.exe", source_title: "截屏", image_width: 1280, image_height: 720, file_paths: [], favorite: false, pinned: false, copy_count: 1, created_at: iso(64), last_seen_at: iso(64), sensitive: false },
     { id: "ci5", kind: "files", text: "", html: "", preview: "3 个文件", title: "README.md 等 3 个文件", title_source: "auto", has_image: false, has_thumb: false, byte_size: 0, source_app: "Explorer.exe", source_title: "资源管理器", image_width: null, image_height: null, file_paths: ["D:\\Develop\\task_dock\\README.md", "D:\\Develop\\task_dock\\docs\\ARCHITECTURE.md", "D:\\Develop\\task_dock\\package.json"], favorite: false, pinned: false, copy_count: 1, created_at: iso(90), last_seen_at: iso(90), sensitive: false },
@@ -713,12 +713,12 @@ const shim = `
     title: "",
   });
   const clipUrl1 = clipExtra({
-    id: "ci11", kind: "link", app: "chrome.exe", win: "GitHub Actions - Google Chrome", ago: 12,
+    id: "ci11", kind: "url", app: "chrome.exe", win: "GitHub Actions - Google Chrome", ago: 12,
     preview: "https://docs.github.com/zh/actions/using-workflows/workflow-syntax-for-github-actions",
     title: "GitHub Actions 工作流语法",
   });
   const clipUrl2 = clipExtra({
-    id: "ci12", kind: "link", app: "chrome.exe", win: "Figma - Google Chrome", ago: 13,
+    id: "ci12", kind: "url", app: "chrome.exe", win: "Figma - Google Chrome", ago: 13,
     preview: "https://www.figma.com/file/abcdef/Design-System?node-id=12%3A3456",
     title: "Design System – Figma",
   });
@@ -737,6 +737,80 @@ const shim = `
     preview: "单条复制：仅一条内容，还不足以成立自动分组，作为候选等待下一条连续复制。",
     title: "单条复制候选",
   });
+  // ── 2026-11-16 大卡片走查夹具 ──
+  // 覆盖 contain 的两个极端比例（长截图 / 超宽图）与多类型文件清单，
+  // 以及足够长的正文（舒适态 6 行截断是否真的收敛）。
+  const clipImgTall = clipExtra({
+    id: "ci16", kind: "image", preview: "长截图 900×1600", title: "长截图 900×1600",
+    w: 900, h: 1600, app: "SnippingTool.exe", win: "截屏", ago: 6, bytes: 182000,
+  });
+  const clipImgWide = clipExtra({
+    id: "ci17", kind: "image", preview: "超宽图 2560×1080", title: "超宽图 2560×1080",
+    w: 2560, h: 1080, app: "SnippingTool.exe", win: "截屏", ago: 7, bytes: 320000,
+  });
+  const clipLongText3 = clipExtra({
+    id: "ci19", kind: "text", app: "WINWORD.EXE", win: "验收报告.md", ago: 10,
+    title: "验收报告：本轮改动的边界与结论",
+    preview: [
+      "一、响应式：查询容器移到 .workspace-split-frame，修复容器查询自引用；窄窗改为上下分区，分隔条不再占位。",
+      "二、卡片：舒适态单卡至少 300px，图片预览 160–240px，正文 3–6 行；紧凑态 240px 起，列表态单列。",
+      "三、事件：卡片根节点不再是按钮，主预览改真实按钮，Enter 只触发一次；辅助动作统一进菜单。",
+      "四、性能：640px 预览按可视区懒加载，48 条 LRU；192px 缩略图兜底；删除与清空同步失效缓存。",
+      "五、待验：Windows 真机剪贴板链路、125%/150% DPI、超宽窗口列数上限仍以真实截图为准。",
+      "六、结论：前端单测与类型检查通过；集中构建与截图证据见 tmp/acceptance/clipboard-workbench-responsive。",
+    ].join("\\n"),
+  });
+  const clipFilesMany = clipExtra({
+    id: "ci18", kind: "files", app: "explorer.exe", win: "发布包", ago: 15, bytes: 0,
+    preview: "6 个文件", title: "taskdock-0.5.0-x64.zip 等 6 个文件",
+    files: [
+      "C:\\Users\\preview\\Downloads\\taskdock-0.5.0-x64.zip",
+      "C:\\Users\\preview\\Downloads\\发布说明-v0.5.md",
+      "C:\\Users\\preview\\Downloads\\签名校验清单.csv",
+      "C:\\Users\\preview\\Downloads\\安装包截图.png",
+      "C:\\Users\\preview\\Downloads\\回归录屏.mp4",
+      "C:\\Users\\preview\\Downloads\\build-2026-11-16.log",
+    ],
+  });
+  // 640px 预览规格占位图（真实链路由后端生成并缓存 PNG）。按条目的真实宽高
+  // 绘制，走查时能验证「宽图适应卡片、长截图保留比例、不裁切」。
+  const clipPreviewDataUrl = (w, h, label) => {
+    const W = Math.max(1, w || 1440);
+    const H = Math.max(1, h || 900);
+    const bar = Math.round(H * 0.075);
+    const side = Math.round(W * 0.24);
+    // 这段代码位于外层模板字符串内：不能用反引号/模板插值，统一用字符串拼接，
+    // 否则生成 shim 时会直接 SyntaxError（2026-11-16 修正）。
+    const rows = Array.from({ length: 7 }, (_, i) => {
+      const y = Math.round(bar + H * 0.16 + i * H * 0.085);
+      return '<rect x="' + Math.round(W * 0.31) + '" y="' + y +
+        '" width="' + Math.round(W * (0.5 - i * 0.045)) +
+        '" height="' + Math.round(Math.max(4, H * 0.022)) +
+        '" rx="' + Math.round(Math.max(2, H * 0.006)) + '" fill="#b9c3d2"/>';
+    }).join("");
+    const bars = Array.from({ length: 5 }, (_, i) => {
+      const bh = Math.round(H * (0.1 + i * 0.035));
+      return '<rect x="' + Math.round(W * (0.33 + i * 0.09)) +
+        '" y="' + Math.round(H * 0.78 - bh) + '" width="' + Math.round(W * 0.05) +
+        '" height="' + bh + '" rx="4" fill="#8fa3bf"/>';
+    }).join("");
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + W + '" height="' + H +
+      '" viewBox="0 0 ' + W + ' ' + H + '">' +
+      '<rect width="' + W + '" height="' + H + '" fill="#eef1f6"/>' +
+      '<rect width="' + W + '" height="' + bar + '" fill="#2b3444"/>' +
+      '<circle cx="' + Math.round(W * 0.022) + '" cy="' + Math.round(bar / 2) + '" r="' + Math.round(Math.max(3, H * 0.012)) + '" fill="#f2777a"/>' +
+      '<circle cx="' + Math.round(W * 0.042) + '" cy="' + Math.round(bar / 2) + '" r="' + Math.round(Math.max(3, H * 0.012)) + '" fill="#f2c56b"/>' +
+      '<circle cx="' + Math.round(W * 0.062) + '" cy="' + Math.round(bar / 2) + '" r="' + Math.round(Math.max(3, H * 0.012)) + '" fill="#7fc98a"/>' +
+      '<rect x="0" y="' + bar + '" width="' + side + '" height="' + (H - bar) + '" fill="#e2e7ef"/>' +
+      '<rect x="' + Math.round(W * 0.04) + '" y="' + Math.round(bar + H * 0.08) + '" width="' + Math.round(side * 0.66) + '" height="' + Math.round(H * 0.03) + '" rx="4" fill="#9fabbe"/>' +
+      '<rect x="' + Math.round(W * 0.28) + '" y="' + Math.round(bar + H * 0.08) + '" width="' + Math.round(W * 0.6) + '" height="' + Math.round(H * 0.04) + '" rx="4" fill="#cfd7e3"/>' +
+      rows + bars +
+      '<rect x="' + Math.round(W * 0.31) + '" y="' + Math.round(H * 0.84) + '" width="' + Math.round(W * 0.38) + '" height="' + Math.round(H * 0.09) + '" rx="6" fill="#ffffff" stroke="#d5dce7"/>' +
+      '<text x="' + Math.round(W * 0.33) + '" y="' + Math.round(H * 0.895) + '" font-family="Segoe UI, sans-serif" font-size="' + Math.round(Math.max(10, H * 0.032)) + '" fill="#5b6b82">' + label + '</text>' +
+      '</svg>';
+    return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  };
+
   // 灯箱走查夹具：7 图组验证箭头/序号，57 图组验证跨单页 50 张后的分页追加。
   const clipMany = Array.from({ length: 57 }, (_, idx) => {
     const w = 1600;
@@ -763,7 +837,7 @@ const shim = `
   });
   const clipGroups = (items, o) => clipGroup({ ...o, items, counts: clipCounts(items) });
 
-  clipboardItems.push(clipImg1, clipImg2, clipImg3, clipLongText1, clipLongText2, clipUrl1, clipUrl2, clipFiles1, clipFiles2, clipSingle);
+  clipboardItems.push(clipImg1, clipImg2, clipImg3, clipImgTall, clipImgWide, clipLongText1, clipLongText2, clipLongText3, clipUrl1, clipUrl2, clipFiles1, clipFiles2, clipFilesMany, clipSingle);
 
   const clipboardGroups = [
     clipGroups([clipImg1, clipImg2, clipImg3], { id: "cg-img", name: "连续截图 · 调试过程", ago: 3, preview: "截图 1920×1080", covers: [clipImg1, clipImg2, clipImg3], status: "collecting" }),
@@ -1510,6 +1584,14 @@ const shim = `
       case "clipboard_thumb":
         // 走查截图缩略图用：给一张占位图（真实链路由后端按 item 返回 PNG data URL）
         return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='76'><rect width='120' height='76' fill='%2361789a'/><rect x='8' y='8' width='104' height='60' fill='%23dce6f5'/></svg>";
+      // 工作台大卡片的 640px 预览规格（真实链路：后端按需生成 PNG 并落盘缓存）。
+      // 必须按条目的真实宽高返回，否则走查无法判断宽图/长截图的 contain 是否生效。
+      case "clipboard_preview": {
+        const it = clipboardItems.find((i) => i.id === args?.itemId);
+        const w = it?.image_width || 1440;
+        const h = it?.image_height || 900;
+        return clipPreviewDataUrl(w, h, w + " × " + h + " · 预览 " + Math.min(640, Math.max(w, h)) + "px");
+      }
       case "clipboard_link_snapshot":
         return { id: "csl-new", snapshot_id: args?.snapshotId, target_type: args?.targetType, target_id: args?.targetId, created_at: iso(0), label: "预览素材", kind: "text" };
       case "clipboard_unlink_snapshot": return null;

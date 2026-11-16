@@ -58,7 +58,7 @@ pub fn config_hint(client: &str) -> AppResult<&'static str> {
         "codex" => Ok("追加到 ~/.codex/config.toml（Windows 为 %USERPROFILE%\\.codex\\config.toml）。"),
         "cursor" => Ok("写入 ~/.cursor/mcp.json（全局）或项目内 .cursor/mcp.json。"),
         "trae" => Ok("在 Trae 设置 → MCP → 手动添加 JSON 中粘贴。"),
-        "generic" => Ok("任何接受 mcpServers JSON 的 MCP 客户端均可使用。"),
+        "generic" => Ok("任何接受标准 MCP 服务端配置的客户端均可使用。"),
         other => Err(AppError::Validation(format!(
             "未知客户端: {other}（允许 {}）",
             CLIENTS.join(" | ")

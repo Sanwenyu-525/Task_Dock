@@ -216,7 +216,7 @@ export default function ClipboardGroupCard({
             {/* 尺寸只属于单图组；多图组的首图尺寸不能冒充整组尺寸 */}
             {family === "image" && group.image_count === 1 && coverSize && ` · ${coverSize}`}
             {/* 自动/手动分组都显式标出：自动分组是后端行为，用户需要能分辨。 */}
-            {` · ${groupModeLabel(group.mode)}`}
+            {` · ${groupModeLabel(group.mode)}分组`}
           </span>
         </div>
       </div>

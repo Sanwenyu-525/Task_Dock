@@ -36,7 +36,7 @@ describe("迁移 v1→v9", () => {
       (column) => column.name,
     );
     expect(snippetColumns).toEqual([
-      "id", "title", "language", "content", "tags", "favorite", "pinned",
+      "id", "title", "language", "content", "tags", "note", "favorite", "pinned",
       "created_at", "updated_at", "last_used_at", "deleted_at",
     ]);
     const requestColumns = (await rawAll<{ name: string }>("PRAGMA table_info(tool_requests)")).map(

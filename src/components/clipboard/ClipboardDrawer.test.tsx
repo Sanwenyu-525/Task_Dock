@@ -247,11 +247,13 @@ describe("ClipboardDrawer", () => {
     const { container } = render(<ClipboardDrawer />);
     await screen.findAllByText("监听中");
 
+    // 删除已收进「更多操作」菜单：确认框的返回焦点应落回同一个菜单触发器
     const trigger = container.querySelectorAll<HTMLElement>(
-      '.clip-actions button[aria-label="删除"]',
+      '.clip-actions button[aria-label="更多操作"]',
     )[0];
     trigger.focus();
     fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("menuitem", { name: /删除这条历史/ }));
 
     // 确认框走统一的 Dialog 基元：有独立可访问名，与抽屉本身区分得开
     const dialog = await screen.findByRole("dialog", { name: "删除这条剪贴板历史？" });

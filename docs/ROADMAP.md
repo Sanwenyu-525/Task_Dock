@@ -84,7 +84,7 @@
 
 | 功能 | 状态 | 摘要 |
 |---|---|---|
-| Agent MCP Server `agent.mcp-server` | partial | stdio JSON-RPC + loopback bridge、scope 与逐项目授权、mcp_audit_log 审计、18 个规划工具、expected_revision 乐观并发、Agent 不可置 completed。缺口：设置页连接测试、真实客户端长期联调、审计保留期、任务/笔记/工作流扩展工具 |
+| Agent MCP Server `agent.mcp-server` | partial | stdio JSON-RPC + loopback bridge、scope 与逐项目授权、mcp_audit_log 审计、原始 18 个规划工具 + 23 个任务/笔记/工作流/工作区工具、能力授权与工作区根边界、7 步连接诊断、审计保留策略、expected_revision/expected_updated_at 乐观并发、Agent 不可置 completed。2026-11-16：mcp 单测 51 passed，设置页 vitest 11 passed。缺口：真实客户端联调（本机未安装 → ENVIRONMENT BLOCKED）、长时间/性能数据、桌面 UI 真机走查、工作流执行与文件写入本轮不开放 |
 | Codex App Server 深度接入 `agent.codex-app-server` | partial | 已有 hooks 7 事件 + codex resume。缺口：app-server stdio JSON-RPC（线程恢复、中断回合、完整对话事件）、App/CLI 来源区分 |
 | Claude Code 专用适配器 `agent.claude-code-adapter` | implemented | 官方 Hooks 安装/卸载、多文件事务、二进制能力线索。真实会话未触发 → unverified |
 | Cursor 专用适配器 `agent.cursor-adapter` | implemented | 用户级 hooks.json、camelCase 事件映射。真实会话未触发 → unverified |

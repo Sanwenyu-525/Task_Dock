@@ -231,8 +231,8 @@ export default function ClipboardItemCard({
         onClick={openMain}
         disabled={locked}
         aria-label={`${kindLabel(item.kind)}：${headline || item.preview || "空内容"}${
-          openMain ? "，打开预览" : ""
-        }`}
+          src.app ? `；来源 ${src.app}${src.window ? ` · ${src.window}` : ""}` : ""
+        }${openMain ? "，打开预览" : ""}`}
       >
         <span className="clip-preview">
           <span className="clip-preview-body">

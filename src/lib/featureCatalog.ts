@@ -1154,28 +1154,37 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "MCP 最小子集 initialize / tools/list / tools/call，不引入 SDK）→ 127.0.0.1 HTTP loopback bridge" +
       "（独立端口与 token，256KB 体积上限、20s 超时、连接/在途并发上限，日志不含请求体与凭据）→ 规划服务层 → SQLite。" +
       "身份存 SHA-256（明文仅创建时返回一次）；scope = disabled / readonly / project_rw + 逐项目授权，撤销即时生效；" +
-      "每次调用写 mcp_audit_log，写工具 requestId 幂等（重复返回原结果）。18 个规划读写工具全部复用 planning 服务层，" +
+      "每次调用写 mcp_audit_log，写工具 requestId 幂等（重复返回原结果）。原始 18 个规划读写工具全部复用 planning 服务层，" +
       "强制 expected_revision 乐观并发（冲突明确返回）；update_feature 拒绝置 completed，submit_for_review 只置 review。" +
       "写入成功 emit planning-changed，前端去抖合并 + 代际守卫局部刷新，无新增轮询。设置键 mcp_server_enabled 默认关闭。" +
       "设置 → Agent 接入 → MCP 已提供开关、身份/凭据、授权项目、配置片段与分页审计查询。" +
-      "测试：mcp 单测 29 个 + tests/mcp_e2e.rs 3 个（真实子进程握手→发现→读→拒绝→授权写→幂等→冲突→审计→重连→不可用降级）；" +
-      "其中 feature_completed_is_user_only_and_submit_for_review_flow 已拆为 A–F 并通过（planned 冲突 / 超长回滚 / 合法提交 / " +
-      "completed 拒绝 / 过期 revision / 无残留；生产代码未改，2026-11-06）。" +
+      "2026-11-16 扩展：新增任务 6 / 笔记 7 / 工作流 5（只读+预览）/ 文件工作区 5（只读）共 23 个 taskdock_* 工具，" +
+      "复用 commands::tasks 与 notes::store 的 _in_conn/_tx 服务函数，不复制业务 SQL；能力授权（tasks/notes/workflows/workspace 的 read/write）" +
+      "与项目 scope 分离，默认无能力；笔记按创建者归属，其他 Agent 需精确授权；工作区根目录 + canonicalize 组件级路径边界，" +
+      "拒绝网络路径/敏感目录/过大与二进制读取；工作流只做 check/preview，不提供执行（执行须在 UI 内确认）。" +
+      "审计新增 last_call、保留策略 prune（元数据 7–3650 天、幂等载荷 1–3650 天且不短于载荷窗口）；" +
+      "设置页新增 7 步真实连接诊断（开关/bridge 运行态/传输文件/真实 HTTP 探测/工具注册表/数据库/身份）、能力与工作区管理与 Agent 搜索。" +
+      "测试：本轮 mcp 单测 51 passed / 0 failed（2026-11-16，日志 m-mwj6ah3k-d40fea.log），McpAccessSection vitest 11 passed；" +
+      "真实客户端联调、长时间稳定性与真机 UI 走查仍未执行（ENVIRONMENT BLOCKED / 未执行）。" +
       "内置路线图（featureCatalog.ts）与用户项目（planning_*）是两个数据源，MCP 工具不能写内置目录。",
     status: "partial",
     priority: "P1",
     existingFeatures: [
       "stdio MCP 子命令 + loopback bridge（按设置开关启停，关闭即释放）",
       "agent 身份 / scope / 逐项目授权 / 撤销即时生效 / 审计与幂等",
-      "18 个规划读写工具 + 乐观并发控制 + 防越权（completed 不可由 Agent 判定）",
-      "设置 → Agent 接入 → MCP：开关、身份创建（明文仅一次）、轮换、撤销、scope、逐项目授权与撤权、四家客户端配置片段、分页审计查询",
-      "planning-changed 事件 → 前端局部刷新（去抖 + 代际守卫，无轮询）",
+      "原始 18 个规划读写工具 + 23 个任务/笔记/工作流/工作区工具（taskdock_*）",
+      "资源能力授权（tasks/notes/workflows/workspace）+ 笔记归属 + 工作区根目录路径边界",
+      "乐观并发控制 + 防越权（completed 不可由 Agent 判定；任务用 expected_updated_at、笔记用 expected_revision）",
+      "设置 → Agent 接入 → MCP：开关、身份创建（明文仅一次）、轮换、撤销、scope、逐项目授权与撤权、五家客户端配置片段与位置说明、分页审计查询、7 步连接诊断、能力/工作区管理、Agent 搜索",
+      "planning-changed 事件 → 前端局部刷新（去抖 + 代际守卫，无轮询；task/note kind 分别刷新对应 store）",
+      "审计保留策略：区分安全元数据与幂等结果载荷，先清载荷后删元数据",
     ],
     missingFeatures: [
-      "设置页连接测试：无法发起一次经 bridge 鉴权的 initialize / tools/list 探测（当前只显示端口与运行状态）",
-      "真实 MCP 客户端端到端联调（本机未安装 Claude Code / Codex CLI / Cursor / Trae 客户端，未执行）",
-      "审计保留期与容量策略：mcp_audit_log 无清理，result_json 随备份全量保存",
-      "任务 / 笔记 / 工作流等扩展工具（复用同一套权限与审计）",
+      "真实 MCP 客户端端到端联调（本机未安装 Claude Code / Codex CLI / Cursor / Trae 客户端，未执行；MCP Inspector 未确认安装）",
+      "长时间运行稳定性、异常中断恢复、多 Agent 高并发与性能数据（均未采集）",
+      "桌面端 MCP 设置页真实窗口/窄窗/键盘/屏幕阅读器验收（jsdom 测试不能替代）",
+      "工作流执行与文件写入/移动/重命名：本轮明确不开放，执行需 UI 内确认",
+      "审计清理尚无调度入口，只能由命令手动触发",
     ],
     dependencies: ["planning_* 服务层与 v37/v38 迁移", "http_ingest 的 hyper + Bearer 既有模式"],
     acceptanceCriteria: [

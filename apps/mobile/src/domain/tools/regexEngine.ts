@@ -667,6 +667,11 @@ class Builder {
       this.states[body.end].epsilon = [exit];
       bodies.push({ start: entry, end: exit });
     }
+    if (bodies.length === 0) {
+      // {0}：量词体一次都不重复，push 直通 pop
+      this.states[push].epsilon = [pop];
+      return { start: push, end: pop };
+    }
     for (let i = 0; i < bodies.length - 1; i += 1) {
       this.states[bodies[i].end].epsilon.push(bodies[i + 1].start);
     }
@@ -751,8 +756,6 @@ class Runner {
         continue;
       }
 
-      // 线程按状态 id 排序，保证同位置接受线程取程序顺序第一
-      clist.sort((a, b) => a.state - b.state);
       for (const thread of clist) {
         if (!this.states[thread.state].accept) continue;
         const better =
@@ -769,21 +772,18 @@ class Runner {
             ends: thread.ends,
           };
         }
-        break;
       }
 
       if (pos >= text.length) break;
 
       const code = text.charCodeAt(pos);
       const nlist: Thread[] = [];
-      const nseen = new Set<number>();
 
       for (const thread of clist) {
         const st = this.states[thread.state];
         if (st.match === null || st.match.type === "anchor") continue;
         if (st.charNext < 0) continue;
         if (!this.matchChar(st.match, code)) continue;
-        if (nseen.has(st.charNext)) continue;
         const reached = this.closure(
           st.charNext,
           thread.starts,
@@ -796,7 +796,6 @@ class Runner {
         for (const r of reached) {
           const existing = nlist.find((t) => t.state === r.state);
           if (existing === undefined) {
-            nseen.add(r.state);
             nlist.push(r);
           } else {
             this.mergeCaps(existing, r);
@@ -804,9 +803,23 @@ class Runner {
         }
       }
 
+      // 每个位置都补一条从起点重新播种的线程：顶部交替的左分支中断后，
+      // 右分支仍能在后续位置重新发起匹配（与原生逐位置重试一致），
+      // 单遍复杂度仍为 O(输入长度 × NFA 状态数)。
+      const nextPos = pos + 1;
+      const freshCaps = emptyCaps();
+      const seeded = this.closure(this.startState, freshCaps, freshCaps, nextPos, 0, [], nextPos);
+      for (const r of seeded) {
+        const existing = nlist.find((t) => t.state === r.state);
+        if (existing === undefined) {
+          nlist.push(r);
+        } else {
+          this.mergeCaps(existing, r);
+        }
+      }
+
       clist = nlist;
-      if (clist.length === 0) continue; // 线程已死：交给空线程分支在下一位置重新播种
-      pos += 1;
+      pos = nextPos;
     }
 
     if (best === null) return null;

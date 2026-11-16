@@ -215,7 +215,8 @@ describe("ClipboardGroupCard 预览", () => {
     expect(
       screen.getByText("会议纪要：确认交付节奏与验收范围，下周一同步给客户。"),
     ).toBeTruthy();
-    expect(screen.getByText("2 段文本")).toBeTruthy();
+    // 类型数量与分组模式合并在一行：自动/手动分组必须可分辨（2026-11-16）
+    expect(screen.getByText(/2 段文本 · 自动分组/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /查看分组第/ })).toBeNull();
   });
 
@@ -229,7 +230,7 @@ describe("ClipboardGroupCard 预览", () => {
       }),
     );
     expect(screen.getByText("季度报告.docx、预算.xlsx 等 3 个文件")).toBeTruthy();
-    expect(screen.getByText("3 个文件")).toBeTruthy();
+    expect(screen.getByText(/3 个文件 · 自动分组/)).toBeTruthy();
   });
 
   it("混合组用代表封面 + 文本摘要 + 各类型数量", () => {
@@ -244,7 +245,7 @@ describe("ClipboardGroupCard 预览", () => {
       }),
     );
     expect(screen.getByText("登录流程说明：先取令牌，再跳转回调。")).toBeTruthy();
-    expect(screen.getByText("2 张截图 · 1 段文本 · 1 个链接")).toBeTruthy();
+    expect(screen.getByText(/2 张截图 · 1 段文本 · 1 个链接 · 自动分组/)).toBeTruthy();
     expect(screen.getAllByRole("button", { name: /查看分组第/ })).toHaveLength(2);
   });
 
@@ -275,7 +276,7 @@ describe("ClipboardGroupCard 预览", () => {
     renderCard(legacy);
     // 1 图 + 1 文本 → 混合；不臆造链接/文件数量。
     expect(screen.getByText("旧记录摘要")).toBeTruthy();
-    expect(screen.getByText("1 张截图 · 1 段文本")).toBeTruthy();
+    expect(screen.getByText(/1 张截图 · 1 段文本 · 自动分组/)).toBeTruthy();
   });
 
   it("删除请求在途时冻结操作并标记忙碌", () => {
