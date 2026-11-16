@@ -24,16 +24,15 @@ import { CaptureImportScreen } from "./src/features/capture/CaptureImportScreen"
 import { CaptureReviewScreen } from "./src/features/capture/CaptureReviewScreen";
 import { CaptureScanScreen } from "./src/features/capture/CaptureScanScreen";
 import { CaptureStashScreen } from "./src/features/capture/CaptureStashScreen";
-import { ApiScreen } from "./src/features/tools/api/ApiScreen";
-import { DiffScreen } from "./src/features/tools/diff/DiffScreen";
+import { ColorPickerScreen } from "./src/features/tools/image/ColorPickerScreen";
 import { DocsScreen } from "./src/features/tools/docs/DocsScreen";
 import { GithubScreen } from "./src/features/tools/github/GithubScreen";
-import { ColorPickerScreen } from "./src/features/tools/image/ColorPickerScreen";
 import { ImageCompressScreen } from "./src/features/tools/image/ImageCompressScreen";
 import { JsonScreen } from "./src/features/tools/json/JsonScreen";
-import { RegexScreen } from "./src/features/tools/regex/RegexScreen";
+import { ResourcesScreen } from "./src/features/tools/resources/ResourcesScreen";
 import { SnippetsScreen } from "./src/features/tools/snippets/SnippetsScreen";
 import { TextCodecScreen } from "./src/features/tools/text/TextCodecScreen";
+import { TextToolsScreen } from "./src/features/tools/text/TextToolsScreen";
 import { TimestampScreen } from "./src/features/tools/timestamp/TimestampScreen";
 import { useWindowInsets } from "./src/lib/insets";
 import { ensureEntryLayoutLoaded } from "./src/lib/entryLayoutStore";
@@ -102,13 +101,12 @@ const PUSH_BOTTOM_BAR_HEIGHT: Partial<Record<RouteKey, number>> = {
   tool_json: 88,
   tool_timestamp: 88,
   tool_text_codec: 88,
-  tool_regex: 88,
-  tool_diff: 88,
   tool_image_compress: 96,
   tool_color_picker: 88,
-  tool_api: 88,
   tool_docs: 88,
   tool_github: 88,
+  tool_text: 88,
+  tool_resources: 88,
 };
 
 // 原生启动图一直保留到 JS 第一帧：LaunchOverlay 在布局完成后主动隐藏。
@@ -452,20 +450,18 @@ function Shell() {
         return <TimestampScreen onBack={back} />;
       case "tool_text_codec":
         return <TextCodecScreen onBack={back} />;
-      case "tool_regex":
-        return <RegexScreen onBack={back} />;
-      case "tool_diff":
-        return <DiffScreen onBack={back} />;
       case "tool_image_compress":
         return <ImageCompressScreen nav={nav} onBack={back} />;
       case "tool_color_picker":
         return <ColorPickerScreen nav={nav} onBack={back} />;
-      case "tool_api":
-        return <ApiScreen onBack={back} />;
       case "tool_docs":
         return <DocsScreen onBack={back} />;
       case "tool_github":
         return <GithubScreen onBack={back} />;
+      case "tool_text":
+        return <TextToolsScreen nav={nav} onBack={back} />;
+      case "tool_resources":
+        return <ResourcesScreen nav={nav} onBack={back} />;
       case "icon_gallery":
         return <IconGalleryScreen nav={nav} />;
       // 任务详情：真实任务数据；拿不到 id 时不渲染空壳，直接给可返回的说明页。

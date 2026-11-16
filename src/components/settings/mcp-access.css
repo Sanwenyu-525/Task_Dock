@@ -1,0 +1,46 @@
+/* MCP 设置分区：只做局部布局与可读性，不改变设置页整体节奏。
+   长 token / 路径 / 配置片段必须换行或滚动，不能在窄窗撑出横向滚动。 */
+
+.mcp-access code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.mcp-access textarea {
+  width: 100%;
+  min-height: 150px;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.mcp-access input {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.mcp-access label {
+  display: block;
+  margin-block: 4px;
+}
+
+/* 大窗口自动多列利用宽度，窄窗回落单列；卡片最小宽度用 min() 防止 320px 溢出。 */
+.mcp-access .mcp-agent-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+  align-items: start;
+}
+
+.mcp-access .mcp-agent-list article {
+  min-width: 0;
+}
+
+.mcp-access ul {
+  margin-block: 4px;
+  padding-inline-start: 18px;
+}
+
+.mcp-access .setting-note {
+  overflow-wrap: anywhere;
+}

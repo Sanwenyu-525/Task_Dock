@@ -1010,6 +1010,8 @@ export const zhCN = {
   "virtualDisplay.session.navNotReady": "会话就绪后才能发送导航键",
   "virtualDisplay.session.navUnavailable": "尚未从 scrcpy 日志确认虚拟屏 Display ID；为避免误控手机实体屏，导航键已禁用。可先定位窗口并用 scrcpy 快捷键。",
   "virtualDisplay.session.navUnavailableShort": "Display ID 未确认",
+  "virtualDisplay.session.recentsUnsupported": "Android 的「最近任务」键由系统默认显示器处理，无法保证只作用于虚拟屏；已禁用。请在镜像会话使用，或聚焦 scrcpy 窗口使用快捷键。",
+  "virtualDisplay.session.recentsUnsupportedShort": "最近任务仅支持实体屏",
   "virtualDisplay.screenshot.title": "窗口截图",
   "virtualDisplay.screenshot.saveShelf": "保存到暂存架",
   "virtualDisplay.screenshot.saveAs": "另存为…",

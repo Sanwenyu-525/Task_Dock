@@ -44,7 +44,6 @@ import {
 import {
   GripVertical,
   Inbox,
-  Layers,
   LayoutDashboard,
   ListTodo,
   MoreHorizontal,
@@ -56,6 +55,9 @@ import {
   X as CloseIcon,
 } from "lucide-react";
 
+// TaskDock 应用图标：与 `src-tauri/icons` 同一套 01-flat-2d 资源。
+// 顶栏品牌位直接展示产品图标，不再用通用线性图标冒充品牌标识。
+import appMark from "../../assets/branding/icons/01-flat-2d/128x128.png";
 import DeferredView from "../components/DeferredView";
 import ErrorBoundary from "../components/ErrorBoundary";
 import TabLeaveGuard from "../components/TabLeaveGuard";
@@ -1132,6 +1134,9 @@ export default function WorkbenchShell() {
   // 注意：`booted` 之前组件先渲染加载卡片，顶栏尚未挂载；这里按与 `booted` 相同的
   // 三份状态做依赖，等顶栏真正出现后再挂会话。若退回 `[]`，首挂 ref 为空且永不重跑。
   const topbarRef = useRef<HTMLElement | null>(null);
+  // 顶栏搜索字段同时是全局搜索下拉层的锚点：弹层挂在字段正下方，
+  // 不再从页面中央弹出模态框（锚点由 Popover 负责定位/翻转/边界收敛）。
+  const searchAnchorRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (!settingsReady || !routeHydrated || !projectHydrated) return;
     const node = topbarRef.current;
@@ -1484,7 +1489,10 @@ export default function WorkbenchShell() {
     );
   }, [detailOpen]);
 
-  const searchOpen = useGlobalSearchStore((s) => s.openSearch);
+  // 搜索下拉层是「字段下方展开的常驻层」而非模态框：再次点击字段即收起，
+  // 快捷键 Ctrl+Shift+F 复用同一 toggle 语义（与主窗口一致）。
+  const searchIsOpen = useGlobalSearchStore((s) => s.open);
+  const toggleSearch = useGlobalSearchStore((s) => s.toggleSearch);
 
   // ── 底部状态栏（一次性真实数据；失败/非 Tauri 环境只隐藏对应项，不显示假值） ──
   // sessions 字段在旧快照/部分 mock 里可能缺失：可选链降级为「不显示」。
@@ -1813,8 +1821,11 @@ export default function WorkbenchShell() {
           data-tauri-drag-region="deep"
         >
           <div className="wb-topbar-brand">
+            {/* 品牌位显示 TaskDock 应用图标（与安装包/任务栏/通知同一素材），
+                替代原来的通用 Layers 线性图标；图标本身已含透明圆角与留白，
+                因此容器不再铺强调色底。 */}
             <span className="wb-brand-mark" aria-hidden="true">
-              <Layers size={13} strokeWidth={2} />
+              <img src={appMark} alt="" width={27} height={27} draggable={false} />
             </span>
             <span className="wb-brand-name">TaskDock</span>
           </div>
@@ -1837,11 +1848,14 @@ export default function WorkbenchShell() {
           </div>
           <div className="wb-topbar-actions">
             <button
+              ref={searchAnchorRef}
               type="button"
-              className="wb-search-field"
+              className={`wb-search-field${searchIsOpen ? " is-open" : ""}`}
               aria-label={t("workbench.search")}
+              aria-haspopup="dialog"
+              aria-expanded={searchIsOpen}
               data-tip={`${t("workbench.search")} (Ctrl+Shift+F)`}
-              onClick={searchOpen}
+              onClick={toggleSearch}
             >
               <Search size={13} aria-hidden="true" />
               <span className="wb-search-ph">{t("workbench.searchPlaceholder")}</span>
@@ -2101,7 +2115,7 @@ export default function WorkbenchShell() {
           与 Rust `window_cursor::GRIP_CSS`），不新增第二套手势实现。 */}
       <WindowResizeGrips />
 
-      <GlobalSearchDialog />
+      <GlobalSearchDialog anchorRef={searchAnchorRef} />
       <MobilePairingDialog />
       <TaskContextDrawer />
       <ClipboardDrawer />

@@ -130,7 +130,7 @@ describe("workspaceSplit.css 容器查询契约", () => {
     expect(splitCss).toContain("@container workspace-split (max-width: 559px)");
     const block = splitCss.slice(splitCss.indexOf("@container workspace-split (max-width: 559px)"));
     expect(block).toMatch(/\.workspace-split:not\(\.is-single\)\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
-    expect(block).toMatch(/grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)/);
+    expect(block).toMatch(/grid-template-rows:\s*minmax\(0,\s*42%\)\s+minmax\(0,\s*1fr\)/);
     expect(block).toMatch(/\.workspace-split__sidebar\s*\{[\s\S]*?max-height:\s*42%/);
     expect(block).toMatch(/\.workspace-split__resizer\s*\{[\s\S]*?display:\s*none/);
   });

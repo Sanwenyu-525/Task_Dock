@@ -4,7 +4,7 @@
 //! 小说人物模块（B2）前端测试：列表渲染、归档只读、保存失败可见。
 //! 只 mock 本目录 IPC 包装层，不 mock React/DOM。
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -117,6 +117,36 @@ describe("CharactersPanel", () => {
     });
     expect(await screen.findByText(/挚友/)).toBeTruthy();
     expect(await screen.findByText("第一章")).toBeTruthy();
+  });
+
+  it("空列表点击新建人物即可填写并保存首条人物", async () => {
+    const newChar = { ...charA, id: "cnew", name: "新人物" };
+    api.novelCharacterList
+      .mockResolvedValueOnce({ characters: [] })
+      .mockResolvedValue({ characters: [newChar] });
+    api.novelCharacterSave.mockResolvedValue({ character: newChar });
+    const onNotice = vi.fn();
+    render(<CharactersPanel {...base} archived={false} onNotice={onNotice} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/暂无人物/)).toBeTruthy();
+    });
+    screen.getByRole("button", { name: "新建人物" }).click();
+
+    const nameInput = await screen.findByLabelText("姓名");
+    fireEvent.change(nameInput, { target: { value: "新人物" } });
+    screen.getByRole("button", { name: "保存人物" }).click();
+
+    await waitFor(() => {
+      expect(api.novelCharacterSave).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({ name: "新人物" }),
+        null,
+      );
+    });
+    await waitFor(() => {
+      expect(onNotice).toHaveBeenCalledWith("ok", expect.stringContaining("新人物"));
+    });
   });
 
   it("归档项目：新建/保存/删除入口全部置灰并展示只读原因", async () => {

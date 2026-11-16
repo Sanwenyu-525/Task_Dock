@@ -35,6 +35,7 @@ import {
 import { localizedErrorMessage } from "../../i18n/errors";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
+import "./mcp-access.css";
 
 const SCOPES: readonly McpAgentScope[] = ["disabled", "readonly", "project_rw"];
 const CLIENTS: readonly McpConfigClient[] = ["claude-code", "codex", "cursor", "trae", "generic"];
@@ -395,7 +396,7 @@ export default function McpAccessSection() {
   });
 
   return (
-    <section aria-labelledby="mcp-access-title" className="settings-section">
+    <section aria-labelledby="mcp-access-title" className="settings-section mcp-access">
       <header className="settings-section-header">
         <div>
           <h3 id="mcp-access-title">{t("settings.mcpAccess.title")}</h3>
@@ -524,6 +525,7 @@ export default function McpAccessSection() {
           <input value={agentQuery} onChange={(event) => setAgentQuery(event.target.value)} type="search" />
         </label>
         {loading ? <p>{t("settings.mcpAccess.status.loading")}</p> : filteredAgents.length === 0 ? <p>{t("settings.mcpAccess.noIdentities")}</p> : null}
+        <div className="mcp-agent-list">
         {filteredAgents.map((agent) => {
           const agentCaps = capabilities[agent.id];
           const agentRoots = roots[agent.id];
@@ -626,6 +628,7 @@ export default function McpAccessSection() {
             </article>
           );
         })}
+        </div>
       </div>
 
       {pendingAction && (

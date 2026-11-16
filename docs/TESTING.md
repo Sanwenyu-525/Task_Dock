@@ -1382,7 +1382,7 @@ node tmp/acceptance/collect-paste/run-shelf-toolbar.mjs   # 228/228 checks
 
 | 检查 | 命令（工作目录） | 结果 | 时间 | 日志 |
 |---|---|---|---|---|
-| Rust 编译 | `npm run cargo -- check`（仓库根，`src-tauri/` 内执行） | **exit 0**（12 warnings，既有/无关） | 2026-11-16 | `.git/taskdock-build-sched/logs/m-mwj5zlll-47bfab.log` |
+| Rust 编译 | `npm run cargo -- check`（仓库根，`src-tauri/` 内执行） | **exit 0**（12 warnings，既有/无关）；最终树在低内存下用 `CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1` 重跑亦 **exit 0**（5m00s） | 2026-11-16 | `.git/taskdock-build-sched/logs/m-mwj5zlll-47bfab.log`、`m-mwj77h71-7e0b2f.log` |
 | MCP 单测 | `npm run cargo -- test --lib mcp::` | **51 passed / 0 failed**（9.50s） | 2026-11-16 | `.git/taskdock-build-sched/logs/m-mwj6ah3k-d40fea.log` |
 | MCP 设置页 | `npm run test -- src/components/settings/McpAccessSection.test.tsx` | **11 passed / 0 failed** | 2026-11-16 | `.git/taskdock-build-sched/logs/l-mwj6h8js-c2efdd.log` |
 | 规划 store 回归 | `npm run test -- src/store/usePlanningStore.test.ts` | **16 passed / 0 failed** | 2026-11-16 | `.git/taskdock-build-sched/logs/l-mwj6hwub-71532f.log` |
@@ -1393,8 +1393,9 @@ node tmp/acceptance/collect-paste/run-shelf-toolbar.mjs   # 228/228 checks
 三段边界、能力授权参数校验、原始工具名存在性与工具数 ≥18、原有 scope/项目隔离/幂等/并发/审计/Token 轮换。
 
 未执行（不得记为通过）：
-- `src-tauri/tests/mcp_e2e.rs` 全量子进程链路（本轮尚未运行；历史记录不等于当次通过）。
-- Claude Code / Codex CLI / Cursor / Trae / MCP Inspector 真实客户端联调：本机安装状态未确认，记 `ENVIRONMENT BLOCKED`。
+- `src-tauri/tests/mcp_e2e.rs` 全量子进程链路：本轮尝试运行，因其他会话实例占用 `target\debug\task-dock.exe`，无法替换文件（os error 5）而阻断；历史记录不等于当次通过。
+- 真实客户端：Claude Code 2.1.186 已安装但未登录（`Not logged in`）；Codex CLI 0.169.0-alpha.11.1 已安装，仅执行只读 `mcp list`；Cursor/Trae 未安装；MCP Inspector 未确认。完整连接/读写/重连均未执行，记 `ENVIRONMENT BLOCKED` / 未执行。
 - 桌面端真实窗口/窄窗/键盘/屏幕阅读器验收；jsdom 结果不能替代。
 - 长时间运行、异常中断恢复、多 Agent 高并发、响应时间/内存/连接回收等性能数据：均未采集。
+- `bridge.rs` 新增的 `header_tokens_reject_control_characters` 未取得执行结果：本机可用物理内存降至 0.6–1.7 GB 时，针对性测试与 `cargo check` 多次 `rustc-LLVM ERROR: out of memory`（`m-mwj6sxij-2a6254.log`、`m-mwj6we95-738b85.log`、`m-mwj72ady-e61801.log`）；降低 debug 信息、关闭增量、单 job 后 `cargo check` 最终 exit 0；测试二进制也能编译，但以同一低内存配置启动时 `STATUS_ENTRYPOINT_NOT_FOUND`（0xc0000139，`m-mwj7etf7-66fa0e.log`），未进入断言，不能记作通过。
 - `npm run typecheck` 整体未通过（范围外文件错误），集成静态检查结论为“证据不足”，不冒充通过。

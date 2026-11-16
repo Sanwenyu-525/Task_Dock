@@ -1297,10 +1297,8 @@ export function CaptureScreen({
                       </>
                     ) : (
                       <>
-                        <ShareQuickButton icon="snippet" label="代码片段" onPress={() => openSharedTextTool("tool_snippets", "snippet")} />
+                        <ShareQuickButton icon="snippet" label="常用片段" onPress={() => openSharedTextTool("tool_snippets", "snippet")} />
                         <ShareQuickButton icon="json" label="JSON 格式化" onPress={() => openSharedTextTool("tool_json", "text")} />
-                        <ShareQuickButton icon="regex" label="正则测试" onPress={() => openSharedTextTool("tool_regex", "text")} />
-                        <ShareQuickButton icon="workflow" label="代码对比" onPress={() => openSharedTextTool("tool_diff", "text")} />
                         <ShareQuickButton icon="fileText" label="文本编解码" onPress={() => openSharedTextTool("tool_text_codec", "text")} />
                       </>
                     )}

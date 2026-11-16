@@ -4,7 +4,7 @@
 //! 漫剧剧集与剧本模块（C1）前端测试：列表渲染、选中编辑、归档只读、保存失败可见。
 //! 只 mock 本目录 IPC 包装层，不 mock React/DOM。
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -86,6 +86,35 @@ describe("EpisodesPanel", () => {
     });
     expect(screen.getByDisplayValue("第一场剧本正文。")).toBeTruthy();
     expect(screen.getByText("黑发少年")).toBeTruthy();
+  });
+
+  it("空列表点击新建剧集即可填写并保存首集", async () => {
+    const newEpisode = { ...episodeA, id: "enew", title: "新剧集", episodeNo: 1 };
+    api.comicEpisodeList
+      .mockResolvedValueOnce({ episodes: [] })
+      .mockResolvedValue({ episodes: [newEpisode] });
+    api.comicCharacterList.mockResolvedValue({ characters: [] });
+    api.comicEpisodeSave.mockResolvedValue({ episode: newEpisode });
+    const onNotice = vi.fn();
+    render(<EpisodesPanel {...base} archived={false} onNotice={onNotice} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/暂无剧集/)).toBeTruthy();
+    });
+    screen.getByRole("button", { name: "新建剧集" }).click();
+
+    const titleInput = await screen.findByLabelText("剧集标题");
+    fireEvent.change(titleInput, { target: { value: "新剧集" } });
+    screen.getByRole("button", { name: "保存剧集" }).click();
+
+    await waitFor(() => {
+      expect(api.comicEpisodeSave).toHaveBeenCalledWith(
+        expect.objectContaining({ id: null, title: "新剧集" }),
+      );
+    });
+    await waitFor(() => {
+      expect(onNotice).toHaveBeenCalledWith("ok", expect.stringContaining("新剧集"));
+    });
   });
 
   it("归档项目：新建入口置灰并展示只读原因", async () => {

@@ -342,7 +342,10 @@ function SplitWithDivider({
     setRatioMenu(null);
   };
 
-  const firstStyle = horizontal ? { width: `${node.ratio * 100}%` } : { height: `${node.ratio * 100}%` };
+  // 比例按整块容器计：先去一半 16px 分割线，保证 50% 时两侧等宽、分割线居中。
+  const firstStyle = horizontal
+    ? { width: `calc(${node.ratio * 100}% - 8px)` }
+    : { height: `calc(${node.ratio * 100}% - 8px)` };
   const menuPosition = ratioMenu
     ? {
         left: Math.min(ratioMenu.x, Math.max(8, window.innerWidth - 176)),

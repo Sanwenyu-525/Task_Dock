@@ -28,7 +28,8 @@ import { font, space } from "../../../theme/tokens";
 import { readClipboard, shareOutText, writeClipboard } from "../shared/nativeTools";
 import { ToolButton, ToolField, ToolNote, ToolScreen, ToolSection } from "../shared/ToolUI";
 
-const TOOL_ID = "tool.timestamp";
+// 最近使用记录归到父入口「文本处理」（时间戳已并入聚合页）。
+const TOOL_ID = "tool.text";
 
 type Mode = "epoch" | "date";
 

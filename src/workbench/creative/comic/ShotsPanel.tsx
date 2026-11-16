@@ -65,6 +65,7 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<ShotDraft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -124,6 +125,7 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
   }, [loadShots, activeEpisodeId]);
 
   function selectShot(shot: ComicShot) {
+    setCreating(false);
     setSelectedId(shot.id);
     setDraft({
       shotNo: shot.shotNo > 0 ? String(shot.shotNo) : "",
@@ -142,11 +144,16 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
     setDeleteArmed(false);
   }
 
-  function startNew() {
+  function resetDetail(openForCreate: boolean) {
     setSelectedId(null);
+    setCreating(openForCreate);
     setDraft(EMPTY_DRAFT);
     setSaveError(null);
     setDeleteArmed(false);
+  }
+
+  function startNew() {
+    resetDetail(true);
   }
 
   function toggleCharacter(characterId: string) {
@@ -224,7 +231,7 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
     try {
       await comicShotDelete(selectedId);
       onNotice("ok", "镜头已删除");
-      startNew();
+      resetDetail(false);
       await loadShots(activeEpisodeId);
     } catch (error) {
       onNotice("error", `删除镜头失败：${errorText(error)}`);
@@ -262,6 +269,7 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
     scenes.find((scene) => scene.id === sceneId)?.name ?? "未指定场景";
 
   const selected = shots.find((shot) => shot.id === selectedId) ?? null;
+  const editorOpen = creating || selected !== null;
 
   return (
     <div className="comic-layout">
@@ -332,11 +340,11 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
       <div className="comic-pane comic-pane-detail">
         {archived && <ArchivedBanner />}
 
-        {!selected && !loading && (
+        {!editorOpen && !loading && (
           <p className="ws-empty">从左侧选择镜头，或为当前剧集加一个镜头。</p>
         )}
 
-        {selected && (
+        {editorOpen && (
           <div className="comic-form">
             <div className="ws-grid">
               <Field label="镜头编号" htmlFor="comic-shot-no" hint="留空自动顺延">
@@ -491,7 +499,7 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
               <button
                 type="button"
                 className={`ws-btn ws-btn-danger${deleteArmed ? " is-armed" : ""}`}
-                disabled={archived || saving}
+                disabled={archived || saving || !selectedId}
                 onClick={() => void removeShot()}
               >
                 {deleteArmed ? "再次点击确认删除" : "删除镜头"}

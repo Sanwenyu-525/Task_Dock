@@ -117,6 +117,16 @@ function isImageAsset(asset: repo.CaptureAsset): boolean {
   return asset.mime.startsWith("image/");
 }
 
+function groupDestinations(
+  items: repo.CaptureDestination[],
+): Record<string, repo.CaptureDestination[]> {
+  const grouped: Record<string, repo.CaptureDestination[]> = {};
+  for (const item of items) {
+    (grouped[item.assetId] ??= []).push(item);
+  }
+  return grouped;
+}
+
 function AssetStatusStrip({
   statusLabel,
   statusColor,
@@ -182,6 +192,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const [destinations, setDestinations] = useState<Record<string, repo.CaptureDestination[]>>({});
   const [stagedCount, setStagedCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [selecting, setSelecting] = useState(false);
@@ -197,6 +208,15 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const [cancelling, setCancelling] = useState(false);
   const cancelTokenRef = useRef<TransferCancelToken | null>(null);
   const staleNoticeRef = useRef(0);
+  // 本地首屏与后台对账彻底解耦：seq 丢弃旧结果，mountedRef 防止卸载后 setState，
+  // reconcileInFlight 保证同一时刻最多一个远程对账请求。
+  const loadSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+  const loadedRef = useRef(false);
+  const availabilityRef = useRef<PairingAvailability | null>(null);
+  const reconcileInFlightRef = useRef(false);
+  const reconcilePendingRef = useRef(false);
+  const backgroundReconcileRef = useRef<(pair: PairingAvailability, seq: number) => void>(() => undefined);
   const [availability, setAvailability] = useState<PairingAvailability | null>(null);
   const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
   const [lightbox, setLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null);
@@ -213,42 +233,100 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
     setCancelling(true);
   }, [cancelling]);
 
-  const load = useCallback(async () => {
-    const pair = await captureAvailability();
-    // 对账只修正「桌面端明确返回 shelf_item_id=null」的过期引用；
-    // 老桌面端缺字段、电脑离线/授权失败都不改本地状态，避免把不可达当成已删除。
-    let staleShelfRefs = 0;
-    if (pair.paired) {
-      try {
-        staleShelfRefs = (await reconcileShelfDestinations()).stale;
-      } catch {
-        // 对账是补充一致性检查，不阻断素材列表展示；下一次刷新会再试。
+  const refreshDestinations = useCallback(async (seq: number) => {
+    const allDestinations = await repo.listAllDestinations();
+    if (!mountedRef.current || seq !== loadSeqRef.current) return;
+    setDestinations(groupDestinations(allDestinations));
+  }, []);
+
+  // 远程对账只在本地首屏已经展示后发生；失败不改变本地列表与 loading。
+  // 单飞 + pending：并发 revision 最多补充一次对账，不产生请求风暴。
+  const backgroundReconcile = useCallback(
+    async (pair: PairingAvailability, seq: number) => {
+      if (!mountedRef.current || !pair.paired) return;
+      if (reconcileInFlightRef.current) {
+        reconcilePendingRef.current = true;
+        return;
       }
+      reconcileInFlightRef.current = true;
+      let succeeded = false;
+      try {
+        const result = await reconcileShelfDestinations();
+        succeeded = true;
+        if (!mountedRef.current || seq !== loadSeqRef.current) return;
+        await refreshDestinations(seq);
+        if (result.stale > 0 && staleNoticeRef.current !== result.stale) {
+          staleNoticeRef.current = result.stale;
+          showToast(
+            `${result.stale} 个条目已不在桌面暂存架中；电脑上的文件仍保留，可重新导入`,
+            "warn",
+          );
+        } else if (result.stale === 0) {
+          staleNoticeRef.current = 0;
+        }
+      } catch {
+        // 电脑离线/授权失败：保持本地已展示数据，下一次刷新再试。
+      } finally {
+        reconcileInFlightRef.current = false;
+        if (succeeded && reconcilePendingRef.current) {
+          reconcilePendingRef.current = false;
+          const latestSeq = loadSeqRef.current;
+          const latestPair = availabilityRef.current;
+          if (mountedRef.current && latestSeq !== seq && latestPair?.paired) {
+            backgroundReconcileRef.current(latestPair, latestSeq);
+          }
+        } else {
+          reconcilePendingRef.current = false;
+        }
+      }
+    },
+    [refreshDestinations, showToast],
+  );
+
+  useEffect(() => {
+    backgroundReconcileRef.current = (pair, seq) => {
+      void backgroundReconcile(pair, seq);
+    };
+  }, [backgroundReconcile]);
+
+  const load = useCallback(async () => {
+    const seq = loadSeqRef.current + 1;
+    loadSeqRef.current = seq;
+    if (!loadedRef.current) setLoading(true);
+    setLoadError(null);
+    try {
+      // Local First：本地 SQLite 读取与配对状态并行，远程对账绝不进入这一段。
+      const [pair, list, allDestinations, staged] = await Promise.all([
+        captureAvailability(),
+        repo.listAssets("saved"),
+        repo.listAllDestinations(),
+        repo.listStagedAssets(),
+      ]);
+      if (!mountedRef.current || seq !== loadSeqRef.current) return;
+      loadedRef.current = true;
+      availabilityRef.current = pair;
+      setAssets(list);
+      setDestinations(groupDestinations(allDestinations));
+      setStagedCount(staged.length);
+      setAvailability(pair);
+      setLoading(false);
+      if (pair.paired) {
+        backgroundReconcileRef.current(pair, seq);
+      }
+    } catch (error) {
+      if (!mountedRef.current || seq !== loadSeqRef.current) return;
+      setLoading(false);
+      // 本地读取失败必须明确报错，不能伪装成「还没有本机素材」。
+      setLoadError(describeError(error));
     }
-    const [list, allDestinations, staged] = await Promise.all([
-      repo.listAssets("saved"),
-      repo.listAllDestinations(),
-      repo.listStagedAssets(),
-    ]);
-    const grouped: Record<string, repo.CaptureDestination[]> = {};
-    for (const item of allDestinations) {
-      (grouped[item.assetId] ??= []).push(item);
-    }
-    setAssets(list);
-    setDestinations(grouped);
-    setStagedCount(staged.length);
-    setAvailability(pair);
-    setLoading(false);
-    if (staleShelfRefs > 0 && staleNoticeRef.current !== staleShelfRefs) {
-      staleNoticeRef.current = staleShelfRefs;
-      showToast(
-        `${staleShelfRefs} 个条目已不在桌面暂存架中；电脑上的文件仍保留，可重新导入`,
-        "warn",
-      );
-    } else if (staleShelfRefs === 0) {
-      staleNoticeRef.current = 0;
-    }
-  }, [showToast]);
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     void load();
@@ -698,6 +776,23 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
     );
   }
 
+  if (loadError && assets.length === 0) {
+    return (
+      <View style={[styles.root, { backgroundColor: tokens.bg }]}>
+        <AppBar title="采集暂存" onBack={nav.back} />
+        <View style={styles.center}>
+          <EmptyState
+            icon="warning"
+            title="本机素材读取失败"
+            hint={loadError}
+            actionLabel="重试"
+            onAction={() => void load()}
+          />
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.root, { backgroundColor: tokens.bg }]}>
       <AppBar
@@ -742,6 +837,27 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
           </View>
         }
       />
+
+      {loadError ? (
+        <View
+          style={[
+            styles.loadErrorNotice,
+            { backgroundColor: tokens.dangerSoft, borderColor: tokens.cardBorder },
+          ]}
+        >
+          <Text style={[styles.loadErrorText, { color: tokens.danger }]} numberOfLines={3}>
+            本机数据刷新失败：{loadError}。当前显示上次成功加载的数据。
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="重试读取本机素材"
+            onPress={() => void load()}
+            style={styles.loadErrorRetry}
+          >
+            <Text style={[styles.loadErrorRetryText, { color: tokens.accentText }]}>重试</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       <View style={styles.searchRow}>
         <SearchField
@@ -1201,6 +1317,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
   },
+  loadErrorNotice: {
+    marginHorizontal: space.lg,
+    marginTop: space.sm,
+    padding: space.sm,
+    borderRadius: radius.row,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+  },
+  loadErrorText: { flex: 1, fontSize: font.label, lineHeight: 16 },
+  loadErrorRetry: {
+    minHeight: 40,
+    justifyContent: "center",
+    paddingHorizontal: space.sm,
+  },
+  loadErrorRetryText: { fontSize: font.label, fontWeight: "700" },
   filterRow: {
     paddingHorizontal: space.lg,
     paddingVertical: space.sm,

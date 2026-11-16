@@ -771,6 +771,32 @@ fn parse_appmeta(stdout: &str, icon_dir: &Path) -> HashMap<String, AppMetaEntry>
     out
 }
 
+/// `adb pull SRC_DIR DEST_DIR` 在 DEST_DIR 已存在时会把 SRC_DIR 作为子目录放入
+/// （DEST_DIR/taskdock-appmeta/*.png），而解析器只查找 DEST_DIR/<package>.png。
+/// 这里把该层扁平化，避免真实设备上“有图标文件但 UI 全部回退占位”的静默缺陷。
+fn flatten_appmeta_icons(icon_dir: &Path) -> std::io::Result<usize> {
+    let nested = icon_dir.join("taskdock-appmeta");
+    if !nested.is_dir() {
+        return Ok(0);
+    }
+    let mut moved = 0usize;
+    for entry in std::fs::read_dir(&nested)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let dest = icon_dir.join(entry.file_name());
+        if dest.exists() {
+            std::fs::remove_file(&dest)?;
+        }
+        std::fs::rename(&path, &dest)?;
+        moved += 1;
+    }
+    let _ = std::fs::remove_dir_all(&nested);
+    Ok(moved)
+}
+
 fn fetch_app_meta(
     adb: &Path,
     serial: &str,
@@ -804,7 +830,13 @@ fn fetch_app_meta(
     );
     // 某些设备可能禁止 /data/local/tmp 读回；名称仍可用，图标降级为占位。
     if let Ok(output) = pull {
-        if !output.status.success() {
+        if output.status.success() {
+            if let Err(err) = flatten_appmeta_icons(&icon_dir) {
+                eprintln!("扁平化应用图标缓存失败：{err}");
+                let _ = std::fs::remove_dir_all(&icon_dir);
+                std::fs::create_dir_all(&icon_dir).ok();
+            }
+        } else {
             let _ = std::fs::remove_dir_all(&icon_dir);
             std::fs::create_dir_all(&icon_dir).ok();
         }
@@ -1202,6 +1234,45 @@ pub fn vd_stop(session_id: String) -> AppResult<bool> {
     process::manager().stop(&session_id)
 }
 
+/// 校验导航动作并解析唯一目标显示；任何无法确认的目标都拒绝，绝不回退默认屏。
+fn resolve_nav_target(
+    action: &str,
+    mode: &str,
+    display_id: Option<u32>,
+) -> AppResult<(&'static str, u32)> {
+    let key = match action {
+        "back" => "KEYCODE_BACK",
+        "home" => "KEYCODE_HOME",
+        "recents" => "KEYCODE_APP_SWITCH",
+        _ => {
+            return Err(AppError::Validation(
+                "不支持的导航操作（仅 back/home/recents）".into(),
+            ))
+        }
+    };
+    let display_id = display_id.ok_or_else(|| {
+        AppError::Unavailable(
+            "尚未从 scrcpy 日志确认虚拟屏 Display ID，已拒绝发送导航键；请先定位 scrcpy 窗口并使用其快捷键"
+                .into(),
+        )
+    })?;
+    if mode == MODE_VIRTUAL && display_id == 0 {
+        return Err(AppError::Conflict(
+            "虚拟屏未获取到独立 Display ID，已拒绝作用于手机实体屏".into(),
+        ));
+    }
+    // Android 16 / vivo 实测：KEYCODE_APP_SWITCH 由系统默认显示器处理，
+    // `input -d <virtual>` 仍会把最近任务切到实体屏。这里必须显式拒绝，
+    // 而不是返回成功却控制错屏幕。
+    if action == "recents" && mode == MODE_VIRTUAL && display_id > 0 {
+        return Err(AppError::Unavailable(
+            "Android 的「最近任务」键由系统默认显示器处理，无法保证只作用于虚拟屏；已拒绝发送。请在镜像会话使用，或聚焦 scrcpy 窗口使用快捷键。"
+                .into(),
+        ));
+    }
+    Ok((key, display_id))
+}
+
 /// 向会话绑定的显示目标发送 Android 导航键。
 ///
 /// 虚拟屏优先使用 scrcpy 日志中确认的 Display ID；未确认时拒绝发送，
@@ -1215,27 +1286,7 @@ pub fn vd_nav(session_id: String, action: String) -> AppResult<VdNav> {
         ));
     }
     let action = action.trim().to_ascii_lowercase();
-    let key = match action.as_str() {
-        "back" => "KEYCODE_BACK",
-        "home" => "KEYCODE_HOME",
-        "recents" => "KEYCODE_APP_SWITCH",
-        _ => {
-            return Err(AppError::Validation(
-                "不支持的导航操作（仅 back/home/recents）".into(),
-            ))
-        }
-    };
-    let display_id = session.display_id.ok_or_else(|| {
-        AppError::Unavailable(
-            "尚未从 scrcpy 日志确认虚拟屏 Display ID，已拒绝发送导航键；请先定位 scrcpy 窗口并使用其快捷键"
-                .into(),
-        )
-    })?;
-    if session.mode == MODE_VIRTUAL && display_id == 0 {
-        return Err(AppError::Conflict(
-            "虚拟屏未获取到独立 Display ID，已拒绝作用于手机实体屏".into(),
-        ));
-    }
+    let (key, display_id) = resolve_nav_target(&action, &session.mode, session.display_id)?;
     let adb = find_adb().ok_or_else(|| AppError::Unavailable("未找到 adb".into()))?;
     let display = display_id.to_string();
     adb_shell(
@@ -1478,5 +1529,39 @@ not-a-package\t坏包名\t0\t0\t\n";
         assert!(user.icon.is_none());
         assert!(!apps.contains_key("not-a-package"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn appmeta_icons_are_flattened_from_nested_adb_pull_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "taskdock-appmeta-flatten-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let icons = root.join("icons");
+        let nested = icons.join("taskdock-appmeta");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("com.android.settings.png"), b"png-one").unwrap();
+        std::fs::write(nested.join("com.quark.browser.png"), b"png-two").unwrap();
+        let moved = flatten_appmeta_icons(&icons).expect("flatten nested icons");
+        assert_eq!(moved, 2);
+        assert!(icons.join("com.android.settings.png").is_file());
+        assert!(icons.join("com.quark.browser.png").is_file());
+        assert!(!nested.exists());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn virtual_recents_is_rejected_without_weakening_home_or_mirror() {
+        assert!(resolve_nav_target("recents", MODE_VIRTUAL, Some(74)).is_err());
+        assert!(resolve_nav_target("home", MODE_VIRTUAL, Some(74)).is_ok());
+        assert!(resolve_nav_target("back", MODE_VIRTUAL, Some(74)).is_ok());
+        assert!(resolve_nav_target("recents", MODE_MIRROR, Some(0)).is_ok());
+        assert!(resolve_nav_target("home", MODE_VIRTUAL, None).is_err());
+        assert!(resolve_nav_target("recents", MODE_VIRTUAL, Some(0)).is_err());
+        assert!(resolve_nav_target("unknown", MODE_VIRTUAL, Some(74)).is_err());
     }
 }

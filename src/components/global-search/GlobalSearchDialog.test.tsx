@@ -423,3 +423,56 @@ describe("命令面板（与数据结果同弹窗、独立分组）", () => {
     expect(useUiStore.getState().tab).toBe("workflows");
   });
 });
+
+describe("下拉形态（工作台顶栏锚点）", () => {
+  /** 锚点挂到 body：Popover 需要真实元素测量/定位，jsdom 下 rect 为 0 也能工作。 */
+  function mountAnchor() {
+    const anchor = document.createElement("button");
+    anchor.textContent = "搜索";
+    document.body.appendChild(anchor);
+    return { current: anchor };
+  }
+
+  it("传入锚点时渲染锚定下拉层：无遮罩、输入框直接获得焦点", () => {
+    openWithResults();
+    const anchorRef = mountAnchor();
+    render(<GlobalSearchDialog anchorRef={anchorRef} />);
+    // 下拉形态不再有居中模态遮罩，面板挂在 .ui-popover 外壳内。
+    expect(document.querySelector(".gs-mask")).toBeNull();
+    expect(document.querySelector(".gs-dropdown-panel")).toBeTruthy();
+    expect(document.querySelector(".ui-popover-host")).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "全局搜索" })).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "搜索关键词" }));
+  });
+
+  it("Escape 一次收起下拉层（menu 层，不残留半截状态）", () => {
+    openWithResults();
+    const anchorRef = mountAnchor();
+    render(<GlobalSearchDialog anchorRef={anchorRef} />);
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    expect(useGlobalSearchStore.getState().open).toBe(false);
+  });
+
+  it("收起后焦点归还锚点字段（键盘用户不掉到 body）", async () => {
+    openWithResults();
+    const anchorRef = mountAnchor();
+    render(<GlobalSearchDialog anchorRef={anchorRef} />);
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "搜索关键词" }));
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(anchorRef.current));
+  });
+
+  it("点击层外收起；点击层内不收起", () => {
+    openWithResults();
+    const anchorRef = mountAnchor();
+    render(<GlobalSearchDialog anchorRef={anchorRef} />);
+    fireEvent.pointerDown(document.querySelector(".gs-dropdown-panel")!);
+    expect(useGlobalSearchStore.getState().open).toBe(true);
+    fireEvent.pointerDown(document.body);
+    expect(useGlobalSearchStore.getState().open).toBe(false);
+  });
+});

@@ -25,6 +25,19 @@ export const ENTRY_LAYOUT_SETTING_KEY = "workbench_entries";
 /** 配置结构版本：改结构必须 +1，并在 normalizeEntryLayout 里给出迁移分支 */
 export const ENTRY_LAYOUT_VERSION = 1;
 
+/**
+ * 已下架入口 → 保留入口的迁移别名（2026-11-16 工具产品整改）。
+ *
+ * - JSON / 时间戳并入「文本处理」，GitHub 并入「资料与链接」；
+ * - 只迁移用户已放进工作台的显示项，不改数据库、不改稳定 id；
+ * - API 调试 / 正则 / 代码对比没有替代入口，按失效项安全丢弃并在管理页计入 dropped。
+ */
+export const LEGACY_ENTRY_ALIASES: Readonly<Record<string, string>> = {
+  "tool.json": "tool.text",
+  "tool.timestamp": "tool.text",
+  "tool.github": "tool.docs",
+};
+
 export interface EntryLayoutConfig {
   version: number;
   /** 工作台已显示的入口 ID，数组顺序就是排列顺序 */
@@ -84,7 +97,7 @@ export function normalizeEntryLayout(raw: unknown): EntryLayoutNormalization {
   }
 
   const declaredVersion = typeof raw.version === "number" ? raw.version : 0;
-  const migrated = declaredVersion !== ENTRY_LAYOUT_VERSION;
+  let migrated = declaredVersion !== ENTRY_LAYOUT_VERSION;
 
   const available = new Set<string>(availableEntryIds());
   const seen = new Set<string>();
@@ -96,11 +109,16 @@ export function normalizeEntryLayout(raw: unknown): EntryLayoutNormalization {
       dropped += 1;
       continue;
     }
-    if (!available.has(item) || seen.has(item)) {
-      dropped += 1;
+    // 产品整改后的旧入口：先映射到保留入口，再按当前可用集合校验。
+    // 别名命中但不重复时不计 dropped；UI 可据 migrated 提示「已按新结构迁移」。
+    const alias = LEGACY_ENTRY_ALIASES[item];
+    const id = alias ?? item;
+    if (alias) migrated = true;
+    if (!available.has(id) || seen.has(id)) {
+      if (!alias) dropped += 1;
       continue;
     }
-    seen.add(item);
+    seen.add(id);
   }
   let visible = [...seen] as EntryId[];
 

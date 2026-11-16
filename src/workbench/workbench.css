@@ -1489,10 +1489,21 @@ body.wb-resizing {
   justify-content: center;
   width: 27px;
   height: 27px;
+  flex: none;
   border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: var(--accent-text-on);
+  overflow: hidden;
+  /* 图标自带底色与透明圆角，容器不再铺强调色，避免与产品图标双层底色冲突 */
+  background: transparent;
+  color: inherit;
   box-shadow: none;
+}
+.wb-brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
 }
 .wb-brand-name {
   font-size: 15px;
@@ -1530,6 +1541,12 @@ body.wb-resizing {
 .wb-search-field:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+/* 下拉层展开时字段保持「已激活」：清楚指示面板归属哪个控件。 */
+.wb-search-field.is-open {
+  border-color: var(--accent);
+  background: var(--surface-raised);
+  color: var(--text-primary);
 }
 .wb-search-ph {
   flex: 1 1 auto;

@@ -8,9 +8,9 @@ import {
 } from "../responsiveLayout";
 
 describe("responsiveLayout", () => {
-  it("320/360dp 工具网格分别为三列/四列，断点只影响结构", () => {
-    expect(gridColumnsForWidth(320)).toBe(3);
-    expect(gridColumnsForWidth(340)).toBe(3);
+  it("320/340dp 工具网格为两列，常规手机为四列，断点只影响结构", () => {
+    expect(gridColumnsForWidth(320)).toBe(2);
+    expect(gridColumnsForWidth(340)).toBe(2);
     expect(gridColumnsForWidth(341)).toBe(4);
     expect(gridColumnsForWidth(390)).toBe(4);
   });

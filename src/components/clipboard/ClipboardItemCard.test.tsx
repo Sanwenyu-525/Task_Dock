@@ -290,6 +290,20 @@ describe("ClipboardItemCard 密度呈现", () => {
     expect(card.querySelector(".clip-item-main button")).toBeNull();
   });
 
+  it("舒适竖图：is-tall 让长截图获得更高的预览舞台", () => {
+    const { card } = renderCard(
+      { kind: "image", has_thumb: true, image_width: 900, image_height: 1600 },
+      "comfort",
+    );
+    expect(card.classList.contains("is-hero")).toBe(true);
+    expect(card.classList.contains("is-tall")).toBe(true);
+    const wide = renderCard(
+      { kind: "image", has_thumb: true, image_width: 2560, image_height: 1080 },
+      "comfort",
+    );
+    expect(wide.card.classList.contains("is-tall")).toBe(false);
+  });
+
   it("紧凑图片：is-card + is-thumb，使用 64px 缩略图，不请求大图", () => {
     const { card } = renderCard({ kind: "image", has_thumb: true }, "compact");
     expect(card.classList.contains("is-card")).toBe(true);
@@ -415,10 +429,12 @@ describe("clipboard-page.css 大卡片契约", () => {
     expect(actions).toMatch(/opacity:\s*1/);
   });
 
-  it("大图预览高度随容器宽度在 150–240px 之间，且完整展示不裁切", () => {
+  it("大图预览高度随容器宽度在 160–240px 之间，竖图单独加高，且完整展示不裁切", () => {
     const hero = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero > .clip-hero");
-    expect(hero).toMatch(/height:\s*clamp\(150px,\s*15cqi,\s*240px\)/);
+    expect(hero).toMatch(/height:\s*clamp\(160px,\s*18cqi,\s*240px\)/);
     expect(hero).toMatch(/cursor:\s*zoom-in/);
+    const tall = ruleBody(pageCss, ".clipboard-page .clip-item.is-hero.is-tall > .clip-hero");
+    expect(tall).toMatch(/height:\s*clamp\(230px,\s*78cqi,\s*340px\)/);
     const img = ruleBody(pageCss, ".clipboard-page .clip-hero-img");
     expect(img).toMatch(/object-fit:\s*contain/);
     expect(img).toMatch(/max-width:\s*100%/);

@@ -6,9 +6,9 @@ export const LARGE_FONT_SCALE = 1.25;
 /** 四项统计 2×2 的断点：低于 480dp 时 4 格一行必然被 gap 挤成 3+1，统一改 2×2。 */
 export const STATS_TWO_COL_BREAKPOINT = 480;
 
-/** 工具页四组网格统一：320dp 三列，其余四列（同一屏内所有分区必须一致）。 */
-export function gridColumnsForWidth(width: number): 3 | 4 {
-  return width <= NARROW_WIDTH_DP ? 3 : 4;
+/** 工具页网格统一：320dp 两列（四项分区不会挤成 3+1），其余四列。 */
+export function gridColumnsForWidth(width: number): 2 | 4 {
+  return width <= NARROW_WIDTH_DP ? 2 : 4;
 }
 
 /** 工作区文件集合：窄屏或大字号时改纵向整行，避免三列每格过窄。 */

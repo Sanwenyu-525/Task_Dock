@@ -893,7 +893,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     priority: "P1",
     existingFeatures: [
       "统一命令 global_search：单只读连接一次查询任务/剪贴板/收集箱/暂存架/应用/Agent/现场/规划中心八类数据（v0.9）",
-      "Ctrl+Shift+F 应用内快捷键 + 居中搜索弹窗（overlayStack dialog 层、焦点陷阱、防抖 220ms、乱序防护）",
+      "Ctrl+Shift+F 应用内快捷键 + 工作台顶栏锚定下拉层（ui/Popover menu 层）/ 主窗居中弹窗（dialog 层、焦点陷阱）；防抖 220ms、乱序防护",
       "分类筛选（全部/任务/剪贴板/收集箱/文件暂存/应用/Agent/工作现场/规划中心）",
       "确定性排序：匹配等级（精确>前缀>包含>元数据）→ 待办/置顶优先 → 时间新优先",
       "结果跳转：任务滚动高亮、剪贴板条目详情、收集箱定位、暂存架详情、应用 navNavigate、Agent focusAgent、现场开上下文抽屉并展开快照、规划中心定位功能/里程碑/项目",
@@ -911,7 +911,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "大数据量下有查询限制且不阻塞界面",
     ],
     verification: "unverified",
-    entryPoints: ["全局 Ctrl+Shift+F 搜索弹窗"],
+    entryPoints: ["全局 Ctrl+Shift+F 搜索（工作台顶栏下拉 / 主窗居中弹窗）"],
   },
 
   // ─── 信息管理与生活效率（P2）───────────────────────────────────────

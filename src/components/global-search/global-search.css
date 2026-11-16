@@ -22,6 +22,22 @@
     gap: 0;
   }
 
+  /* 锚定下拉形态（工作台顶栏搜索字段）：与模态共用 .gs-panel 内部结构，
+     只去掉遮罩与居中定位——外壳交给 ui/Popover 负责锚定、翻转与边界收敛。
+     可用高度由基元写入的 --popover-max-h 约束，长结果在面板内滚动。 */
+  .gs-popover {
+    padding: 0;
+    background: var(--dialog-face);
+    overflow: hidden;
+    max-width: min(560px, calc(100vw - 24px));
+  }
+
+  /* 下拉面板：宽度比字段更宽以保证结果标题/片段可读，但仍随窗口收敛。 */
+  .gs-dropdown-panel {
+    width: min(560px, calc(100vw - 32px));
+    max-height: min(var(--popover-max-h, 560px), 520px);
+  }
+
   /* 输入行 */
   .gs-input-row {
     display: flex;
@@ -46,6 +62,9 @@
     color: var(--text-primary);
     font-size: var(--input-font-size-lg);
     line-height: var(--input-line-height);
+    /* 下拉外壳是 ui-popover（user-select: none）：输入内容必须仍可选中/复制。 */
+    -webkit-user-select: text;
+    user-select: text;
   }
 
   .gs-input::placeholder {

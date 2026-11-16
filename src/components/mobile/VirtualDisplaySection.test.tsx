@@ -488,7 +488,32 @@ describe("VirtualDisplaySection", () => {
     expect(navMock).toHaveBeenCalledWith("session-1", "back");
     await user.click(screen.getByRole("button", { name: "Home" }));
     expect(navMock).toHaveBeenCalledWith("session-1", "home");
-    await user.click(screen.getByRole("button", { name: "最近任务" }));
+    // Android 16/vivo 实测 APP_SWITCH 会落到实体屏；虚拟屏必须显式禁用，不能假成功。
+    const recents = screen.getByRole("button", { name: "最近任务" }) as HTMLButtonElement;
+    expect(recents.disabled).toBe(true);
+    expect(screen.getByText("最近任务仅支持实体屏")).toBeTruthy();
+    await user.click(recents);
+    expect(navMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("镜像会话的最近任务仍可发送到实体屏", async () => {
+    sessionsMock.mockResolvedValue([
+      session({
+        status: "running",
+        stage: "ready",
+        mode: "mirror",
+        package: null,
+        app_label: null,
+        display_id: 0,
+      }),
+    ]);
+    const user = userEvent.setup();
+    render(<VirtualDisplaySection />);
+
+    await screen.findByText("V2323A · 手机屏幕");
+    const recents = screen.getByRole("button", { name: "最近任务" }) as HTMLButtonElement;
+    expect(recents.disabled).toBe(false);
+    await user.click(recents);
     expect(navMock).toHaveBeenCalledWith("session-1", "recents");
   });
 

@@ -183,7 +183,9 @@ body.workspace-split-resizing {
 @container workspace-split (max-width: 559px) {
   .workspace-split:not(.is-single) {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
+    /* 轨道显式封顶：`auto` 会被侧栏的 scrollHeight（本页约 364px）撑满，
+       主区只剩两百多像素；改用 42% 轨道后侧栏内部滚动、主区稳定拿到剩余高度。 */
+    grid-template-rows: minmax(0, 42%) minmax(0, 1fr);
   }
   .workspace-split__sidebar {
     max-height: 42%;

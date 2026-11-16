@@ -105,6 +105,14 @@ export default function SessionList({
               : session.status !== "running"
                 ? t("virtualDisplay.session.navNotReady")
                 : undefined;
+            // Android 16/vivo 实测：APP_SWITCH 由系统默认显示器处理，虚拟屏发送会切到实体屏。
+            // 宁可标记为不支持，也不能向用户返回“成功”却操作错屏幕。
+            const recentsUnsupported =
+              session.mode === "virtual" && (session.display_id ?? 0) > 0;
+            const recentsDisabled = navDisabled || recentsUnsupported;
+            const recentsTip = recentsUnsupported
+              ? t("virtualDisplay.session.recentsUnsupported")
+              : navTip;
             const modeLabel = t(
               session.mode === "mirror"
                 ? "virtualDisplay.mode.mirror"
@@ -211,13 +219,17 @@ export default function SessionList({
                         type="button"
                         className="btn sm vd-nav-btn"
                         onClick={() => onNavigate(session, "recents")}
-                        disabled={navDisabled}
-                        data-tip={navTip}
+                        disabled={recentsDisabled}
+                        data-tip={recentsTip}
                       >
                         <List size={12} />
                         {t("virtualDisplay.session.recents")}
                       </button>
-                      {navUnavailable ? (
+                      {recentsUnsupported ? (
+                        <span className="vd-nav-note">
+                          {t("virtualDisplay.session.recentsUnsupportedShort")}
+                        </span>
+                      ) : navUnavailable ? (
                         <span className="vd-nav-note">
                           {t("virtualDisplay.session.navUnavailableShort")}
                         </span>

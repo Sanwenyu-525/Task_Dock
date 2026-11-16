@@ -1,8 +1,9 @@
-// 代码片段：列表（搜索 / 语言筛选 / 收藏筛选 / 回收站）+ 详情编辑。
+// 常用片段：列表（搜索 / 语言筛选 / 收藏筛选 / 回收站）+ 只读详情 + 次级编辑。
 //
 // 产品取舍（手机优先）：
-// - 列表行右侧直接「复制」，长代码也只需一次点击；进入详情才做编辑；
-// - 搜索同时匹配标题 / 正文 / 标签（多关键词 AND），语言与收藏是独立筛选；
+// - 点列表行先查看全文，复制 / 分享 / 发送 / 编辑都放在详情里；编辑不再抢占首要动作；
+// - 内容不限于代码，命令、配置、回复模板与普通文本同样适用；
+// - 搜索同时匹配标题 / 正文 / 备注 / 标签（多关键词 AND），语言与收藏是独立筛选；
 // - 删除是软删除，回收站可恢复；确认弹层不依赖原生 Alert；
 // - 跨设备只提供两条真实路径：导出文本文件（系统下载目录 / 系统分享）与发送到电脑
 //   （文件互传 TLS 通道）。界面明确写「本机保存」，不会把本机保存说成已同步。
@@ -11,6 +12,7 @@ import { BackHandler, FlatList, Pressable, ScrollView, StyleSheet, Text, View } 
 
 import { ActionSheet, type SheetAction } from "../../../components/ActionSheet";
 import { AppBar } from "../../../components/AppBar";
+import { BottomSheet } from "../../../components/BottomSheet";
 import { Chip } from "../../../components/Chip";
 import { AppIcon } from "../../../components/icons/AppIcon";
 import { SearchField } from "../../../components/SearchField";
@@ -56,7 +58,15 @@ import {
 import { saveTextFileToDownloads } from "../shared/saveOutput";
 import { sendToolFileToDesktop } from "../shared/sendToDesktop";
 import { takeSnippetDraft } from "../shareIntake";
-import { ToolButton, ToolField, ToolNote, ToolScreen, ToolSection, ToolTextArea } from "../shared/ToolUI";
+import {
+  MONO_FONT,
+  ToolButton,
+  ToolField,
+  ToolNote,
+  ToolScreen,
+  ToolSection,
+  ToolTextArea,
+} from "../shared/ToolUI";
 
 const TOOL_ID = "tool.snippet";
 
@@ -81,6 +91,7 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
   const [trashOpen, setTrashOpen] = useState(false);
 
   const [editor, setEditor] = useState<EditorState>({ kind: "closed" });
+  const [viewing, setViewing] = useState<Snippet | null>(null);
   const [saving, setSaving] = useState(false);
   const [rowAction, setRowAction] = useState<Snippet | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Snippet | null>(null);
@@ -191,7 +202,7 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
     try {
       await writeClipboard(content);
       if (snippetId) await touchSnippetUse(snippetId);
-      showToast("代码已复制到剪贴板", "success");
+      showToast("已复制到剪贴板", "success");
       if (snippetId) void reload();
     } catch (error) {
       showToast(describeError(error), "danger");
@@ -273,7 +284,7 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
 
   const shareSnippet = async (snippet: Snippet) => {
     try {
-      await shareOutText(snippet.content, snippet.title || "代码片段");
+      await shareOutText(snippet.content, snippet.title || "常用片段");
     } catch (error) {
       showToast(describeError(error), "danger");
     }
@@ -381,10 +392,10 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
 
         <ToolSection>
           <ToolTextArea
-            label="代码 / 命令"
+            label="内容 / 命令 / 代码"
             value={draft.content}
             onChangeText={(content) => patchDraft({ content })}
-            placeholder="在此粘贴或输入代码…"
+            placeholder="粘贴或输入要复用的文本、命令、配置或代码…"
             height={340}
             mono
             actions={
@@ -490,7 +501,7 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
   // ── 列表页 ────────────────────────────────────────────────
   const rowActions: SheetAction[] = rowAction
     ? [
-        { key: "copy", label: "复制代码", icon: "copy" },
+        { key: "copy", label: "复制内容", icon: "copy" },
         { key: "edit", label: "编辑", icon: "edit" },
         { key: "share", label: "系统分享", icon: "share" },
         { key: "export", label: "导出文本文件", icon: "download" },
@@ -504,12 +515,12 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
   return (
     <View style={[styles.root, { backgroundColor: tokens.bg }]}>
       <AppBar
-        title="代码片段"
+        title="常用片段"
         onBack={onBack}
         right={
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="新建代码片段"
+            accessibilityLabel="新建常用片段"
             onPress={openCreate}
             hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
             style={({ pressed }) => [styles.headerAction, { opacity: pressed ? 0.6 : 1 }]}
@@ -523,8 +534,8 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
         <SearchField
           value={query}
           onChangeText={setQuery}
-          placeholder="搜索标题、正文、语言或标签"
-          accessibilityLabel="搜索代码片段"
+          placeholder="搜索标题、正文、备注、语言或标签"
+          accessibilityLabel="搜索常用片段"
         />
       </View>
 
@@ -642,7 +653,7 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
             <ToolNote
               text={
                 snippets.length === 0
-                  ? "还没有片段。点右上角 + 新建，或从系统分享里选择「保存为代码片段」。"
+                  ? "还没有常用片段。点右上角 + 新建，或从系统分享里选择「保存为常用片段」。"
                   : "没有匹配的片段，换个关键词或清除筛选。"
               }
             />
@@ -651,9 +662,9 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
             <View style={[styles.row, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`打开片段 ${item.title || "未命名片段"}`}
-                accessibilityHint="长按可复制、分享、导出、发送或删除"
-                onPress={() => openEdit(item)}
+                accessibilityLabel={`查看片段 ${item.title || "未命名片段"}`}
+                accessibilityHint="点按查看全文；长按可复制、分享、导出、发送或删除"
+                onPress={() => setViewing(item)}
                 onLongPress={() => setRowAction(item)}
                 delayLongPress={350}
                 style={({ pressed }) => [styles.rowBody, { opacity: pressed ? 0.75 : 1 }]}
@@ -675,7 +686,7 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
               </Pressable>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="复制代码"
+                accessibilityLabel="复制内容"
                 onPress={() => void copyText(item.content, item.id)}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 style={({ pressed }) => [styles.copyButton, { opacity: pressed ? 0.6 : 1 }]}
@@ -686,6 +697,72 @@ export function SnippetsScreen({ onBack }: { onBack: () => void }) {
           )}
         />
       )}
+
+      {/* 查看优先：点行进入只读详情，编辑只从详情或长按菜单进入。 */}
+      <BottomSheet
+        visible={viewing !== null}
+        onRequestClose={() => setViewing(null)}
+        maxHeightRatio={0.82}
+        accessibilityLabel="常用片段详情"
+      >
+        {viewing ? (
+          <View style={styles.sheetBody}>
+            <Text style={[styles.viewTitle, { color: tokens.text }]} numberOfLines={2}>
+              {viewing.title || "未命名片段"}
+            </Text>
+            <Text style={[styles.viewMeta, { color: tokens.muted }]}>
+              {languageLabel(viewing.language)}
+              {viewing.tags.length > 0 ? ` · #${viewing.tags.join(" #")}` : ""} · {formatDateTime(viewing.updatedAt)}
+            </Text>
+            {viewing.note ? <ToolNote text={`备注：${viewing.note}`} /> : null}
+            <ScrollView
+              style={[styles.viewScroll, { borderColor: tokens.cardBorder }]}
+              contentContainerStyle={styles.viewScrollContent}
+              showsVerticalScrollIndicator
+            >
+              <Text selectable style={[styles.viewText, { color: tokens.text }]}>
+                {viewing.content}
+              </Text>
+            </ScrollView>
+            <View style={styles.actionRow}>
+              <ToolButton
+                label="复制"
+                tone="primary"
+                icon="copy"
+                style={styles.sheetPrimary}
+                onPress={() => void copyText(viewing.content, viewing.id)}
+              />
+              <ToolButton label="分享" icon="share" onPress={() => void shareSnippet(viewing)} />
+            </View>
+            <View style={styles.actionRow}>
+              <ToolButton
+                label={sendState ? "发送中…" : "发送到电脑"}
+                icon="send"
+                disabled={sendState !== null}
+                onPress={() => void sendSnippet(viewing)}
+              />
+              <ToolButton
+                label="编辑"
+                icon="edit"
+                onPress={() => {
+                  const target = viewing;
+                  setViewing(null);
+                  openEdit(target);
+                }}
+              />
+            </View>
+            <View style={styles.actionRow}>
+              <ToolButton label="导出文本" icon="download" onPress={() => void exportSnippet(viewing)} />
+              <ToolButton label="关闭" onPress={() => setViewing(null)} />
+            </View>
+            {sendState ? (
+              <Text style={[styles.progressText, { color: tokens.textSoft }]}>
+                {sendState.label} · {Math.round(sendState.value * 100)}%
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+      </BottomSheet>
 
       <ActionSheet
         visible={rowAction !== null}
@@ -777,4 +854,19 @@ const styles = StyleSheet.create({
   },
   inlineActionText: { fontSize: font.label, fontWeight: "600" },
   progressText: { fontSize: font.label, paddingHorizontal: space.lg },
+  sheetBody: { gap: space.sm, paddingHorizontal: space.lg, paddingBottom: space.md },
+  viewTitle: { fontSize: font.section, fontWeight: "700" },
+  viewMeta: { fontSize: font.label },
+  viewScroll: {
+    maxHeight: 260,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.row,
+  },
+  viewScrollContent: { padding: space.md },
+  viewText: {
+    fontFamily: MONO_FONT,
+    fontSize: font.body,
+    lineHeight: 21,
+  },
+  sheetPrimary: { flex: 1 },
 });

@@ -11,7 +11,9 @@ Task Dock 的统一本地检索层：一个搜索入口查找分散在各模块�
 ## 1. 架构
 
 ```
-GlobalSearchDialog（常挂载，open 控制渲染；overlayStack "dialog" 层）
+GlobalSearchDialog（常挂载，open 控制渲染）
+  ├─ 工作台顶栏：锚定搜索字段的下拉层（ui/Popover，overlayStack "menu" 层）  ← 2026-11-16
+  └─ 主窗口：居中模态弹窗（overlayStack "dialog" 层 + 焦点陷阱）
   └─ useGlobalSearchStore（防抖 220ms → seq 乱序防护 → globalSearchBridge）
         └─ invoke("global_search", { query, categories?, limitPerCategory? })
               └─ commands::global_search（spawn_blocking，不阻塞主线程）
@@ -150,5 +152,21 @@ SQL 全部参数绑定；LIKE 模式转义 `\ % _` + `ESCAPE '\'`（对齐 `clip
 - Rust：`src-tauri/src/global_search/mod.rs` 模块内 15 个用例（转义/等级/全类命中/Agent 隔离/
   排序/limit+1/空查询/特殊字符/超长/非法分类/同名异 ID/Unicode/失效标注/万级基准）。
 - 前端：`src/store/useGlobalSearchStore.test.ts`（防抖/乱序/失败保旧/分类/四类跳转分发/最近搜索）、
-  `src/components/global-search/GlobalSearchDialog.test.tsx`（渲染/键盘循环/Enter/Escape 弹层/最近搜索/点击）。
+  `src/components/global-search/GlobalSearchDialog.test.tsx`（渲染/键盘循环/Enter/Escape 弹层/最近搜索/点击；
+  2026-11-16 起含 3 个下拉形态用例：无遮罩+输入框聚焦、Escape 一次收起、层外点击收起）。
 - 验收资料：`tmp/acceptance/global-search/`。
+
+## 13. 变更记录
+
+### 2026-11-16：工作台搜索入口由居中弹窗改为顶栏下拉层
+
+- 工作台（`workspace` 窗口）顶栏搜索字段点击后，面板锚定在字段下方展开（`ui/Popover`，
+  `placement=bottom-start`，6px 间距）：**无遮罩、不锁 Tab 焦点、点击层外或 Escape 一次收起**，
+  不再是页面中央的模态框。
+- `GlobalSearchDialog` 增加可选 `anchorRef`：传入即下拉形态，缺省仍为居中模态——主窗口只有快捷键、
+  没有可见搜索字段，保留原形态；两种形态共用同一份面板内容与 store，不做第二套搜索实现。
+- 焦点：打开时聚焦输入框（不用 `ui/Popover` 的自动归还，避免 StrictMode 首次挂载的 effect 重放
+  把焦点抢回触发按钮）；关闭后若焦点落在 body 则归还顶栏字段。
+- 下拉面板宽 560px（随窗口收敛），高度受基元 `--popover-max-h` 约束（上限 520px），
+  长结果在面板内滚动，分组头保持 sticky。
+

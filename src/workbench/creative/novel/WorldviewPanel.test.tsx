@@ -3,7 +3,7 @@
  */
 //! 小说世界观模块（B2）前端测试：列表与类型筛选、归档只读、章节引用展示。
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -101,6 +101,36 @@ describe("WorldviewPanel", () => {
     });
     expect(await screen.findByText("北部强权")).toBeTruthy();
     expect(await screen.findByText("第一章")).toBeTruthy();
+  });
+
+  it("空列表点击新建设定即可填写并保存首条设定", async () => {
+    const newEntry = { ...kingdom, id: "wnew", name: "新设定" };
+    api.novelWorldviewList
+      .mockResolvedValueOnce({ entries: [] })
+      .mockResolvedValue({ entries: [newEntry] });
+    api.novelWorldviewSave.mockResolvedValue({ entry: newEntry });
+    const onNotice = vi.fn();
+    render(<WorldviewPanel {...base} archived={false} onNotice={onNotice} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/暂无设定/)).toBeTruthy();
+    });
+    screen.getByRole("button", { name: "新建设定" }).click();
+
+    const nameInput = await screen.findByLabelText("名称");
+    fireEvent.change(nameInput, { target: { value: "新设定" } });
+    screen.getByRole("button", { name: "保存设定" }).click();
+
+    await waitFor(() => {
+      expect(api.novelWorldviewSave).toHaveBeenCalledWith(
+        "p1",
+        expect.objectContaining({ name: "新设定" }),
+        null,
+      );
+    });
+    await waitFor(() => {
+      expect(onNotice).toHaveBeenCalledWith("ok", expect.stringContaining("新设定"));
+    });
   });
 
   it("点击类型筛选会按类型向后端请求", async () => {

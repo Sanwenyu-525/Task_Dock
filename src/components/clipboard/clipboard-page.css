@@ -11,11 +11,20 @@
  * 抽屉态不建立容器，即使类名意外复用也不会命中 @container 规则。
  *
  * 2026-11-16 设计目标（大型工作台）：
- * - 卡片不再「越小越多」：舒适态单卡至少 300px，图片占据 150–240px 高的
+ * - 卡片不再「越小越多」：舒适态单卡至少 300px，图片占据 160–240px（竖图更高）的
  *   独立预览区，正文 3–6 行；列数由可用宽度算出，超宽时封顶 4 列；
  * - 紧凑态 240px 起，保留缩略图但压缩正文；列表态单列密排，适合文字/文件；
  * - 卡片高度由网格行拉伸，底部动作行贴底 —— 悬停/菜单展开都不会让卡片跳高。
  */
+
+/* 主窗口的 .tab-content 仍沿用旧的可读性上限（560px），那是给纯文字 Tab 的；
+   剪贴板是内容型工作台，必须吃掉可用宽度，否则 1600 窗口也只有一列卡片。
+   只覆盖剪贴板自己的 tab 类，不改其他模块的正文测量宽度。 */
+.tab-content-clipboard {
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
+}
 
 /* ── 容器：以列表 / 详情实际可用宽度响应 ── */
 .clipboard-page .clip-body {
@@ -235,7 +244,8 @@
 /* ════════════════════════════════════════════════════════════════
    三、大图预览（640px 预览规格，按可视区懒加载）
    ────────────────────────────────────────────────────────────────
-   - 固定高度区间 150–240px（按容器宽度取 15cqi），窗口越大图片越大；
+   - 固定高度区间 160–240px（按容器宽度取 18cqi），窗口越大图片越大；
+   - 竖图（高宽比 > 1.2）单独放宽到 230–340px，长截图不缩成一条窄带；
    - `object-fit: contain` 完整展示：宽图适应卡片宽度，长截图保留比例，
      不做裁切；极淡的中性底色把图片边界与卡片底分开；
    - 不用原图：后端按需生成 640px 预览并缓存，失败回退缩略图。
@@ -258,6 +268,13 @@
 .clipboard-page .clip-item.is-hero > .clip-hero:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* 竖图（长截图 / 手机截图）不能被塞进 160–240px 的固定舞台：
+   那样 900×1600 只会显示成约 90px 宽的窄条，等于没有预览。
+   只对高宽比 > 1.2 的图片加高，宽图仍保持上面的矮舞台。 */
+.clipboard-page .clip-item.is-hero.is-tall > .clip-hero {
+  height: clamp(230px, 78cqi, 340px);
 }
 
 .clipboard-page .clip-hero-img {
@@ -508,6 +525,10 @@
 .clip-rail-hero-media .clip-hero:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+/* 右栏同样按比例：竖图给 220–320px，避免 294px 宽的检查器里只剩窄条。 */
+.clip-rail-hero-media.is-tall .clip-hero {
+  height: clamp(220px, 34vh, 320px);
 }
 .clip-rail-hero-media .clip-hero-img {
   max-width: 100%;

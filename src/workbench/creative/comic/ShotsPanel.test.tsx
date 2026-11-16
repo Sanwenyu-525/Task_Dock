@@ -4,7 +4,7 @@
 //! 漫剧分镜模块（C2）前端测试：镜头列表渲染、选中编辑、归档只读、保存失败可见。
 //! 只 mock 本目录 IPC 包装层，不 mock React/DOM。
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -117,6 +117,34 @@ describe("ShotsPanel", () => {
     });
     expect(screen.getByDisplayValue("开场台词")).toBeTruthy();
     expect(screen.getByDisplayValue("中景")).toBeTruthy();
+  });
+
+  it("空集点击加镜头即可填写并保存首条镜头", async () => {
+    const newShot = { ...shotA, id: "hnew", shotNo: 1, description: "新镜头" };
+    api.comicShotList
+      .mockResolvedValueOnce({ shots: [] })
+      .mockResolvedValue({ shots: [newShot] });
+    api.comicShotSave.mockResolvedValue({ shot: newShot });
+    const onNotice = vi.fn();
+    render(<ShotsPanel {...base} archived={false} onNotice={onNotice} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/本集暂无镜头/)).toBeTruthy();
+    });
+    screen.getByRole("button", { name: "加镜头" }).click();
+
+    const descInput = await screen.findByLabelText("镜头描述");
+    fireEvent.change(descInput, { target: { value: "新镜头" } });
+    screen.getByRole("button", { name: "保存镜头" }).click();
+
+    await waitFor(() => {
+      expect(api.comicShotSave).toHaveBeenCalledWith(
+        expect.objectContaining({ id: null, episodeId: "e1", description: "新镜头" }),
+      );
+    });
+    await waitFor(() => {
+      expect(onNotice).toHaveBeenCalledWith("ok", expect.stringContaining("已新建镜头"));
+    });
   });
 
   it("归档项目：加镜头入口置灰并展示只读原因", async () => {

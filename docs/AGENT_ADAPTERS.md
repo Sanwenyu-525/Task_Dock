@@ -385,7 +385,14 @@ ZCode 的用户配置 `~/.zcode/cli/config.json` 支持配置式 hooks，Task Do
 
 - 已执行：`npm run cargo -- test --lib mcp::` → **51 passed / 0 failed**（日志
   `.git/taskdock-build-sched/logs/m-mwj6ah3k-d40fea.log`）；`McpAccessSection.test.tsx` vitest 11 passed
-  （日志 `l-mwj6h8js-c2efdd.log`）；`npm run cargo -- check` exit 0。
+  （日志 `l-mwj6h8js-c2efdd.log`、重跑 `l-mwj6xxpz-4d99c7.log`）；`npm run cargo -- check` 曾有 exit 0
+  （`m-mwj5zlll-47bfab.log`）。
+- 环境限制与复测：完成 `bridge.rs` 头部校验后，本机可用物理内存一度降至 0.6–1.7 GB，
+  针对性单测与 `cargo check` 出现 `rustc-LLVM ERROR: out of memory`（`m-mwj6sxij-2a6254.log`、
+  `m-mwj72ady-e61801.log`）。随后以 `CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0
+  CARGO_BUILD_JOBS=1` 重跑 `cargo check` **exit 0**（5m00s，`m-mwj77h71-7e0b2f.log`）；
+  `mcp::bridge::tests` 测试函数本身仍未执行：测试二进制可编译，但低内存配置下启动报
+  `STATUS_ENTRYPOINT_NOT_FOUND`（0xc0000139），未进入断言，不写作已通过。
 - 未执行：Claude Code / Codex CLI / Cursor / Trae / MCP Inspector 真实联调（本机是否安装未知，
   记 `ENVIRONMENT BLOCKED`）；长时间稳定性、异常恢复、多 Agent 高并发、性能采样；桌面窗口真机走查
   （大/窄窗、键盘、屏幕阅读器）。不得用单测结果替代上述结论。

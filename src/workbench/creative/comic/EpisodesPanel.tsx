@@ -50,6 +50,7 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<EpisodeDraft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -82,6 +83,7 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
   }, [loadAll]);
 
   function selectEpisode(episode: ComicEpisode) {
+    setCreating(false);
     setSelectedId(episode.id);
     setDraft({
       title: episode.title,
@@ -96,11 +98,16 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
     setDeleteArmed(false);
   }
 
-  function startNew() {
+  function resetDetail(openForCreate: boolean) {
     setSelectedId(null);
+    setCreating(openForCreate);
     setDraft(EMPTY_DRAFT);
     setSaveError(null);
     setDeleteArmed(false);
+  }
+
+  function startNew() {
+    resetDetail(true);
   }
 
   function toggleCharacter(characterId: string) {
@@ -159,7 +166,7 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
     try {
       await comicEpisodeDelete(selectedId);
       onNotice("ok", "剧集已删除");
-      startNew();
+      resetDetail(false);
       await loadAll();
     } catch (error) {
       onNotice("error", `删除剧集失败：${errorText(error)}`);
@@ -193,6 +200,7 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
   }
 
   const selected = episodes.find((episode) => episode.id === selectedId) ?? null;
+  const editorOpen = creating || selected !== null;
 
   return (
     <div className="comic-layout">
@@ -257,11 +265,11 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
       <div className="comic-pane comic-pane-detail">
         {archived && <ArchivedBanner />}
 
-        {!selected && !loading && (
+        {!editorOpen && !loading && (
           <p className="ws-empty">从左侧选择剧集，或新建剧集与剧本。</p>
         )}
 
-        {selected && (
+        {editorOpen && (
           <div className="comic-form">
             <div className="ws-grid">
               <Field label="剧集标题" htmlFor="comic-ep-title">
@@ -370,7 +378,7 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
               <button
                 type="button"
                 className={`ws-btn ws-btn-danger${deleteArmed ? " is-armed" : ""}`}
-                disabled={archived || saving}
+                disabled={archived || saving || !selectedId}
                 onClick={() => void removeEpisode()}
               >
                 {deleteArmed ? "再次点击确认删除" : "删除剧集"}

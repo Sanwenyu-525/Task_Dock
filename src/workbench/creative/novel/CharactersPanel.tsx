@@ -54,6 +54,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
   const [search, setSearch] = useState("");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<CharacterDraft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -106,6 +107,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
   }, [loadCharacters, search]);
 
   function selectCharacter(character: NovelCharacter) {
+    setCreating(false);
     setSelectedId(character.id);
     setDraft({
       name: character.name,
@@ -124,8 +126,9 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
     void loadRelations(character.id);
   }
 
-  function startNew() {
+  function resetDetail(openForCreate: boolean) {
     setSelectedId(null);
+    setCreating(openForCreate);
     setDraft(EMPTY_DRAFT);
     setRelations([]);
     setSaveError(null);
@@ -134,7 +137,12 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
     setRelationDesc("");
   }
 
+  function startNew() {
+    resetDetail(true);
+  }
+
   const selected = characters.find((character) => character.id === selectedId) ?? null;
+  const editorOpen = creating || selected !== null;
 
   async function saveCharacter() {
     if (archived || saving) return;
@@ -167,7 +175,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
     try {
       await novelCharacterDelete(selectedId);
       onNotice("ok", "人物已删除");
-      startNew();
+      resetDetail(false);
       await loadCharacters();
     } catch (error) {
       onNotice("error", `删除人物失败：${errorText(error)}`);
@@ -275,11 +283,11 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
       <div className="novel-pane novel-pane-detail">
         {archived && <ArchivedBanner />}
 
-        {!selected && !loading && (
+        {!editorOpen && !loading && (
           <p className="novel-empty-hint">从左侧选择人物，或新建人物档案。</p>
         )}
 
-        {selected && (
+        {editorOpen && (
           <>
             <div className="novel-form">
               <Field label="姓名" htmlFor="novel-char-name">
@@ -397,7 +405,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
                 <button
                   type="button"
                   className={`novel-btn-ghost${deleteArmed ? " is-danger" : ""}`}
-                  disabled={archived || saving}
+                  disabled={archived || saving || !selectedId}
                   onClick={() => void removeCharacter()}
                 >
                   {deleteArmed ? "再次点击确认删除" : "删除人物"}
@@ -405,7 +413,9 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
               </div>
             </div>
 
-            <section className="novel-section" aria-label="人物关系">
+            {selectedId && (
+              <>
+                <section className="novel-section" aria-label="人物关系">
               <h3 className="novel-section-title">人物关系</h3>
               {relations.length === 0 ? (
                 <p className="novel-empty-hint">暂无关系记录。</p>
@@ -472,15 +482,17 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
                   </button>
                 </div>
               )}
-            </section>
+                </section>
 
-            <RefSection
-              projectId={projectId}
-              entityType="character"
-              entityId={selectedId}
-              disabled={archived}
-              onNotice={onNotice}
-            />
+                <RefSection
+                  projectId={projectId}
+                  entityType="character"
+                  entityId={selectedId}
+                  disabled={archived}
+                  onNotice={onNotice}
+                />
+              </>
+            )}
           </>
         )}
       </div>

@@ -1029,6 +1029,8 @@ export const enUS: Record<MessageKey, string> = {
   "virtualDisplay.session.navNotReady": "Navigation is available after the session is running",
   "virtualDisplay.session.navUnavailable": "The virtual display ID is not confirmed from scrcpy logs yet. Navigation is disabled to avoid controlling the phone's physical display; focus the scrcpy window and use its shortcuts for now.",
   "virtualDisplay.session.navUnavailableShort": "Display ID unconfirmed",
+  "virtualDisplay.session.recentsUnsupported": "Android's Recents key is handled by the system default display, so it cannot be guaranteed to target only the virtual display. It is disabled here; use it in a mirror session or focus the scrcpy window and use its shortcuts.",
+  "virtualDisplay.session.recentsUnsupportedShort": "Recents is available on the physical display only",
   "virtualDisplay.screenshot.title": "Window screenshot",
   "virtualDisplay.screenshot.saveShelf": "Save to shelf",
   "virtualDisplay.screenshot.saveAs": "Save as…",

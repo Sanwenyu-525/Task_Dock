@@ -1,15 +1,12 @@
-// 工具页：真实入口（常用 / 开发者工具 / 快捷操作）+ 中性占位（应用导航）。
+// 工具页（2026-11-16 产品整改后）。
 //
-// 本轮改造（2026-11-16）：
-// - 移除 10 个「开发中」灰色占位，换成 11 个真实工具入口（都有页面与真实链路）；
-// - 新增「最近使用」：从 db/toolUsage 读取，工具页常驻时通过订阅自动刷新；
-// - 每个开发者工具右上角星标可直接加入/移出工作台，复用 entryLayoutStore，
-//   不新建第二套收藏/入口管理机制；默认不把工具塞进首页，由用户决定；
-// - 搜索覆盖常用、开发者工具、快捷操作与占位，一处过滤。
+// 结构按「移动场景价值」而不是「技术分类」组织：
+// 最近使用 → 常用操作 → 图片与素材 → 资料与内容 → 高级工具。
+// API 调试 / 正则 / 代码对比已从普通工具体系下架；搜索、最近使用与星标只认新目录，
+// 旧入口不会借最近使用记录重新出现。
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { Keyboard, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 
-import { FeatureIconPlaceholder } from "../components/FeatureIconPlaceholder";
 import { GlassCard } from "../components/GlassCard";
 import { IconEntry } from "../components/IconEntry";
 import { ScreenHeader } from "../components/ScreenHeader";
@@ -27,17 +24,26 @@ import { listRecentTools, subscribeRecentTools, type RecentToolUse } from "../db
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
-interface RealEntry {
+interface ShortcutEntry {
   icon: IconName;
   label: string;
-  hint?: string;
-  onPress: () => void;
+  hint: string;
+  route: RouteKey;
 }
 
-interface PlaceholderEntry {
-  icon: IconName;
-  label: string;
-}
+/** 常用操作：全部是已有真实页面，不再放「开发中」占位。 */
+const COMMON_ACTIONS: ShortcutEntry[] = [
+  { icon: "archive", label: "采集中心", hint: "拍照、扫描、导入与本机素材", route: "capture_home" },
+  { icon: "noteNew", label: "快速笔记", hint: "直接新建一条笔记", route: "note_editor" },
+  { icon: "transfer", label: "文件互传", hint: "与已配对电脑互传文件", route: "files" },
+  { icon: "qr", label: "扫码配对", hint: "扫描桌面端二维码或输入配对码", route: "pairing" },
+];
+
+/** 图片与素材的辅助动作：与图片压缩 / 取色器同区展示。 */
+const IMAGE_SHORTCUTS: ShortcutEntry[] = [
+  { icon: "fileStack", label: "本机素材库", hint: "本机采集素材（不是桌面暂存架）", route: "capture_stash" },
+  { icon: "upload", label: "文件导入", hint: "从系统文件选择器导入", route: "capture_import" },
+];
 
 export function ToolsScreen({ nav }: { nav: AppNav }) {
   const { tokens } = useTheme();
@@ -47,7 +53,7 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
   const [recent, setRecent] = useState<RecentToolUse[]>([]);
   const { width } = useWindowDimensions();
   const columns = gridColumnsForWidth(width);
-  const cellStyle = columns === 3 ? styles.cellThird : styles.cellQuarter;
+  const cellStyle = columns === 2 ? styles.cellHalf : styles.cellQuarter;
 
   const loadRecent = useCallback(() => {
     void listRecentTools()
@@ -65,29 +71,12 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
     return keyword.length === 0 || `${label} ${hint}`.toLowerCase().includes(keyword);
   };
 
-  const push = (route: RouteKey) => () => nav.push(route);
-
-  const common: RealEntry[] = [
-    { icon: "archive", label: "采集中心", hint: "拍照、扫描、导入与本机素材", onPress: push("capture_home") },
-    { icon: "noteNew", label: "快速笔记", hint: "直接新建一条笔记", onPress: push("note_editor") },
-    { icon: "gauge", label: "诊断中心", hint: "本地自检、冲突与待发操作", onPress: push("diagnostics") },
-  ];
-
-  const navPlaceholder: PlaceholderEntry[] = [
-    { icon: "project", label: "项目空间" },
-    { icon: "list", label: "功能看板" },
-  ];
-
-  const quickReal: RealEntry[] = [
-    { icon: "camera", label: "拍照上传", onPress: push("capture_camera") },
-    { icon: "qr", label: "扫码配对", onPress: push("pairing") },
-    { icon: "gallery", label: "相册/文件导入", onPress: push("capture_import") },
-  ];
-
-  const quickPlaceholder: PlaceholderEntry[] = [
-    { icon: "clipboard", label: "剪贴板" },
-    { icon: "smartphone", label: "投屏" },
-  ];
+  // 修复真机验收发现的问题：进入工具页前先收起键盘，避免底层搜索框继续持有焦点、
+  // 把用户在工具输入框里的第一次键入吸到搜索框。
+  const openRoute = (route: RouteKey) => {
+    Keyboard.dismiss();
+    nav.push(route);
+  };
 
   const recentTools = useMemo(
     () =>
@@ -98,21 +87,20 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
     [recent],
   );
 
-  const filteredCommon = common.filter((item) => match(item.label, item.hint));
-  const filteredNav = navPlaceholder.filter((item) => match(item.label));
-  const filteredQuick = quickReal.filter((item) => match(item.label, item.hint));
-  const filteredQuickPlaceholder = quickPlaceholder.filter((item) => match(item.label));
+  const filteredCommon = COMMON_ACTIONS.filter((item) => match(item.label, item.hint));
+  const filteredImageShortcuts = IMAGE_SHORTCUTS.filter((item) => match(item.label, item.hint));
   const filteredRecent = recentTools.filter((tool) => match(tool.title, tool.description));
   const filteredTools = DEV_TOOLS.filter((tool) => match(tool.title, tool.description));
   const searching = query.trim().length > 0;
   const nothingMatched =
     searching &&
     filteredCommon.length === 0 &&
-    filteredNav.length === 0 &&
-    filteredQuick.length === 0 &&
-    filteredQuickPlaceholder.length === 0 &&
+    filteredImageShortcuts.length === 0 &&
     filteredRecent.length === 0 &&
     filteredTools.length === 0;
+
+  const toolsFor = (category: ToolDefinition["category"]) =>
+    filteredTools.filter((tool) => tool.category === category);
 
   const toggleWorkbench = async (tool: ToolDefinition) => {
     const visible = config.visible.includes(tool.id as EntryId);
@@ -131,7 +119,7 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
         <IconEntry
           icon={tool.icon}
           label={tool.title}
-          onPress={() => nav.push(tool.route)}
+          onPress={() => openRoute(tool.route)}
           accessibilityHint={tool.description}
         />
         <Pressable
@@ -148,9 +136,40 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
     );
   };
 
+  const renderShortcut = (item: ShortcutEntry) => (
+    <View key={item.label} style={[styles.cell, cellStyle]}>
+      <IconEntry
+        icon={item.icon}
+        label={item.label}
+        onPress={() => openRoute(item.route)}
+        accessibilityHint={item.hint}
+      />
+    </View>
+  );
+
+  const renderSection = (
+    categoryId: ToolDefinition["category"],
+    shortcuts: ShortcutEntry[] = [],
+  ) => {
+    const category = TOOL_CATEGORIES.find((item) => item.id === categoryId);
+    const tools = toolsFor(categoryId);
+    if (!category || (tools.length === 0 && shortcuts.length === 0)) return null;
+    return (
+      <View key={categoryId} style={styles.group}>
+        <SectionHeader icon={category.icon} title={category.label} />
+        <GlassCard style={styles.gridCard}>
+          <View style={styles.grid}>
+            {tools.map(renderToolTile)}
+            {shortcuts.map(renderShortcut)}
+          </View>
+        </GlassCard>
+      </View>
+    );
+  };
+
   return (
     <View style={styles.root}>
-      <ScreenHeader title="工具" subtitle="采集、笔记与开发者效率工具" />
+      <ScreenHeader title="工具" subtitle="采集、素材与跨设备效率工具" />
       <View style={styles.searchWrap}>
         <SearchField
           value={query}
@@ -160,7 +179,11 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
         />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
         {nothingMatched ? (
           <Text style={[styles.emptyText, { color: tokens.muted }]}>没有匹配的工具，换个关键词试试。</Text>
         ) : (
@@ -174,7 +197,7 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
                       key={tool.id}
                       accessibilityRole="button"
                       accessibilityLabel={`打开最近使用的 ${tool.title}`}
-                      onPress={() => nav.push(tool.route)}
+                      onPress={() => openRoute(tool.route)}
                       style={({ pressed }) => [
                         styles.recentChip,
                         {
@@ -196,93 +219,35 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
 
             {filteredCommon.length > 0 ? (
               <View style={styles.group}>
-                <SectionHeader icon="zap" title="常用工具" />
+                <SectionHeader icon="zap" title="常用操作" />
                 <GlassCard style={styles.gridCard}>
-                  <View style={styles.grid}>
-                    {filteredCommon.map((item) => (
-                      <View key={item.label} style={[styles.cell, cellStyle]}>
-                        <IconEntry
-                          icon={item.icon}
-                          label={item.label}
-                          onPress={item.onPress}
-                          accessibilityHint={item.hint}
-                        />
-                      </View>
-                    ))}
-                  </View>
+                  <View style={styles.grid}>{filteredCommon.map(renderShortcut)}</View>
                 </GlassCard>
               </View>
             ) : null}
 
-            {filteredTools.length > 0 ? (
+            {renderSection("image", filteredImageShortcuts)}
+
+            {renderSection("content")}
+
+            {renderSection("advanced")}
+
+            {filteredTools.some((tool) => tool.category === "advanced") ? (
               <View style={styles.group}>
-                <SectionHeader
-                  icon="wrench"
-                  title="开发者工具"
-                  actionLabel="管理入口"
-                  onAction={() => nav.push("entry_manager")}
-                />
-                <GlassCard style={styles.gridCard}>
-                  {TOOL_CATEGORIES.map((category) => {
-                    const tools = filteredTools.filter((tool) => tool.category === category.id);
-                    if (tools.length === 0) return null;
-                    return (
-                      <View key={category.id} style={styles.categoryBlock}>
-                        <Text style={[styles.categoryLabel, { color: tokens.muted }]}>{category.label}</Text>
-                        <View style={styles.grid}>{tools.map(renderToolTile)}</View>
-                      </View>
-                    );
-                  })}
-                </GlassCard>
-                <Text style={[styles.tileHint, { color: tokens.muted }]}>
-                  星标表示已加入工作台；默认不占用首页，可在「管理入口」里调整顺序与显隐。
+                <Text style={[styles.footnote, { color: tokens.muted }]}>
+                  高级工具为低频输入型能力，默认不占首页。星标可加入工作台；排序与显隐在「管理入口」调整。
                 </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="管理工作台入口"
+                  onPress={() => openRoute("entry_manager")}
+                  style={({ pressed }) => [styles.manageLink, { opacity: pressed ? 0.6 : 1 }]}
+                >
+                  <AppIcon name="settings" size={16} color={tokens.accent} />
+                  <Text style={[styles.manageText, { color: tokens.accent }]}>管理入口</Text>
+                </Pressable>
               </View>
             ) : null}
-
-            {filteredNav.length > 0 ? (
-              <View style={styles.group}>
-                <SectionHeader icon="tools" title="应用导航" />
-                <GlassCard style={styles.gridCard}>
-                  <View style={styles.grid}>
-                    {filteredNav.map((item) => (
-                      <View key={item.label} style={[styles.cell, cellStyle]}>
-                        <FeatureIconPlaceholder icon={item.icon} label={item.label} variant="compact" />
-                      </View>
-                    ))}
-                  </View>
-                </GlassCard>
-              </View>
-            ) : null}
-
-            {filteredQuick.length > 0 || filteredQuickPlaceholder.length > 0 ? (
-              <View style={styles.group}>
-                <SectionHeader icon="send" title="快捷操作" />
-                <GlassCard style={styles.gridCard}>
-                  <View style={styles.grid}>
-                    {filteredQuick.map((item) => (
-                      <View key={item.label} style={[styles.cell, cellStyle]}>
-                        <IconEntry
-                          icon={item.icon}
-                          label={item.label}
-                          onPress={item.onPress}
-                          accessibilityHint={item.hint}
-                        />
-                      </View>
-                    ))}
-                    {filteredQuickPlaceholder.map((item) => (
-                      <View key={item.label} style={[styles.cell, cellStyle]}>
-                        <FeatureIconPlaceholder icon={item.icon} label={item.label} variant="compact" />
-                      </View>
-                    ))}
-                  </View>
-                </GlassCard>
-              </View>
-            ) : null}
-
-            <Text style={[styles.footnote, { color: tokens.muted }]}>
-              灰色图标是桌面端已有、移动端尚未接入的能力；开发者工具都有真实页面与离线处理链路。
-            </Text>
           </>
         )}
       </ScrollView>
@@ -299,10 +264,8 @@ const styles = StyleSheet.create({
   grid: { flexDirection: "row", flexWrap: "wrap", rowGap: space.xs },
   cell: { flexGrow: 0, flexShrink: 1 },
   cellQuarter: { flexBasis: "25%" },
-  cellThird: { flexBasis: "33.333%" },
+  cellHalf: { flexBasis: "50%" },
   starButton: { position: "absolute", top: 0, right: 0, width: 32, height: 32, alignItems: "center", justifyContent: "center" },
-  categoryBlock: { gap: 2, paddingTop: space.xs },
-  categoryLabel: { fontSize: font.label, fontWeight: "600", paddingHorizontal: space.xs },
   recentRow: { gap: space.sm },
   recentChip: {
     flexDirection: "row",
@@ -314,7 +277,8 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   recentLabel: { fontSize: font.meta, fontWeight: "600" },
-  tileHint: { fontSize: font.label, lineHeight: 17, paddingHorizontal: space.xs },
   footnote: { fontSize: font.label, lineHeight: 18, paddingHorizontal: space.xs },
+  manageLink: { flexDirection: "row", alignItems: "center", gap: space.xs, minHeight: 44, paddingHorizontal: space.xs },
+  manageText: { fontSize: font.meta, fontWeight: "600" },
   emptyText: { fontSize: font.meta, lineHeight: 20, paddingVertical: space.xl, textAlign: "center" },
 });

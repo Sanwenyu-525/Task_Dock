@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ENTRY_LAYOUT_VERSION,
+  LEGACY_ENTRY_ALIASES,
   defaultEntryLayout,
   insertEntryByDefaultOrder,
   isEntryVisible,
@@ -153,6 +154,56 @@ describe("版本迁移", () => {
   it("当前版本不标记迁移", () => {
     const result = snapshot({ version: ENTRY_LAYOUT_VERSION, visible: ["files"], known: ["files"] });
     expect(result.migrated).toBe(false);
+  });
+});
+
+describe("已下架工具入口的安全迁移", () => {
+  it("JSON / 时间戳合并到「文本处理」，GitHub 合并到「资料与链接」", () => {
+    const result = snapshot({
+      version: ENTRY_LAYOUT_VERSION,
+      visible: ["files", "tool.json", "tool.timestamp", "tool.github"],
+      known: availableEntryIds(),
+    });
+    expect(result.config.visible).toEqual(["files", "tool.text", "tool.docs"]);
+    expect(result.migrated).toBe(true);
+    expect(result.dropped).toBe(0);
+  });
+
+  it("API / 正则 / 代码对比没有替代入口：安全丢弃并计入 dropped", () => {
+    const result = snapshot({
+      version: ENTRY_LAYOUT_VERSION,
+      visible: ["tool.api", "tool.regex", "tool.diff", "tool.text"],
+      known: availableEntryIds(),
+    });
+    expect(result.config.visible).toEqual(["tool.text"]);
+    expect(result.dropped).toBe(3);
+  });
+
+  it("别名迁移幂等：迁移后的配置再次归一化不再产生 dropped 或迁移标记", () => {
+    const first = snapshot({
+      version: ENTRY_LAYOUT_VERSION,
+      visible: ["tool.json", "tool.github"],
+      known: availableEntryIds(),
+    });
+    expect(first.migrated).toBe(true);
+    const second = snapshot({
+      version: first.config.version,
+      visible: first.config.visible,
+      known: first.config.known,
+    });
+    expect(second.migrated).toBe(false);
+    expect(second.dropped).toBe(0);
+    expect(second.config.visible).toEqual(first.config.visible);
+  });
+
+  it("别名表只指向当前可用入口，且目标稳定 id 未改名", () => {
+    const available = new Set<string>(availableEntryIds());
+    for (const target of Object.values(LEGACY_ENTRY_ALIASES)) {
+      expect(available.has(target)).toBe(true);
+    }
+    expect(LEGACY_ENTRY_ALIASES["tool.json"]).toBe("tool.text");
+    expect(LEGACY_ENTRY_ALIASES["tool.timestamp"]).toBe("tool.text");
+    expect(LEGACY_ENTRY_ALIASES["tool.github"]).toBe("tool.docs");
   });
 });
 

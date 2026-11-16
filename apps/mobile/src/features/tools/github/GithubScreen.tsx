@@ -31,7 +31,8 @@ import { shareOutText, writeClipboard } from "../shared/nativeTools";
 import { takeLinkDraft } from "../shareIntake";
 import { ToolButton, ToolField, ToolNote, ToolTextArea } from "../shared/ToolUI";
 
-const TOOL_ID = "tool.github";
+// 最近使用记录归到父入口「资料与链接」：GitHub 不再独立占工具页入口。
+const TOOL_ID = "tool.docs";
 
 interface RepoInfo {
   base: string;

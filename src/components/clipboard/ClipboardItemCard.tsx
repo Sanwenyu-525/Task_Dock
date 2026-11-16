@@ -107,6 +107,9 @@ export default function ClipboardItemCard({
   const isCard = density === "comfort" || density === "compact";
   const hasHero = isImage && density === "comfort";
   const hasThumb = isImage && !hasHero;
+  // 竖图（长截图 / 手机截图）在固定 160–240px 的舞台里会被缩成一条窄带，
+  // 无法直接识别内容；给舒适卡一个更高舞台，宽图仍保持矮卡，避免无谓拉高。
+  const isTallImage = hasHero && (item.image_height ?? 0) > (item.image_width ?? 0) * 1.2;
   // 大图只在进入视口后才请求 640px 预览；离场/删除中的卡片不需要。
   const heroEnabled = viewportVisible && !locked && item.has_thumb;
   const link = item.kind === "url" ? linkSummary(item.preview) : null;
@@ -175,7 +178,7 @@ export default function ClipboardItemCard({
       data-clip-id={item.id}
       className={`clip-item ${isCard ? "is-card" : "is-row"} ${hasHero ? "is-hero" : ""} ${
         hasThumb ? "is-thumb" : ""
-      } ${selected ? "selected" : ""} ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
+      } ${isTallImage ? "is-tall" : ""} ${selected ? "selected" : ""} ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
       // 离场期间整棵子树不可交互：不能只靠 pointer-events，Tab 仍能把焦点
       // 送进 aria-hidden 的元素（无障碍违规）；inert 把内部控件全部隔离。
       inert={removing || undefined}

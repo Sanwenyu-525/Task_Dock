@@ -42,6 +42,7 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
   const [search, setSearch] = useState("");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<WorldviewDraft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -74,6 +75,7 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
   }, [loadEntries]);
 
   function selectEntry(entry: NovelWorldviewEntry) {
+    setCreating(false);
     setSelectedId(entry.id);
     setDraft({
       kind: entry.kind,
@@ -85,14 +87,20 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
     setDeleteArmed(false);
   }
 
-  function startNew() {
+  function resetDetail(openForCreate: boolean) {
     setSelectedId(null);
+    setCreating(openForCreate);
     setDraft(EMPTY_DRAFT);
     setSaveError(null);
     setDeleteArmed(false);
   }
 
+  function startNew() {
+    resetDetail(true);
+  }
+
   const selected = entries.find((entry) => entry.id === selectedId) ?? null;
+  const editorOpen = creating || selected !== null;
 
   async function saveEntry() {
     if (archived || saving) return;
@@ -125,7 +133,7 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
     try {
       await novelWorldviewDelete(selectedId);
       onNotice("ok", "设定已删除");
-      startNew();
+      resetDetail(false);
       await loadEntries();
     } catch (error) {
       onNotice("error", `删除设定失败：${errorText(error)}`);
@@ -199,11 +207,11 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
       <div className="novel-pane novel-pane-detail">
         {archived && <ArchivedBanner />}
 
-        {!selected && !loading && (
+        {!editorOpen && !loading && (
           <p className="novel-empty-hint">从左侧选择设定，或新建设定。</p>
         )}
 
-        {selected && (
+        {editorOpen && (
           <>
             <div className="novel-form">
               <Field label="类型">
@@ -261,7 +269,7 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
                 <button
                   type="button"
                   className={`novel-btn-ghost${deleteArmed ? " is-danger" : ""}`}
-                  disabled={archived || saving}
+                  disabled={archived || saving || !selectedId}
                   onClick={() => void removeEntry()}
                 >
                   {deleteArmed ? "再次点击确认删除" : "删除设定"}
@@ -269,13 +277,15 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
               </div>
             </div>
 
-            <RefSection
-              projectId={projectId}
-              entityType="worldview"
-              entityId={selectedId}
-              disabled={archived}
-              onNotice={onNotice}
-            />
+            {selectedId && (
+              <RefSection
+                projectId={projectId}
+                entityType="worldview"
+                entityId={selectedId}
+                disabled={archived}
+                onNotice={onNotice}
+              />
+            )}
           </>
         )}
       </div>

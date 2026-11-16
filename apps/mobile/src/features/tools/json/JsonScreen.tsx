@@ -54,7 +54,9 @@ import { saveTextFileToDownloads } from "../shared/saveOutput";
 import { takeTextDraft } from "../shareIntake";
 import { ToolButton, ToolField, ToolNote, ToolSection, ToolTextArea } from "../shared/ToolUI";
 
-const TOOL_ID = "tool.json";
+// 最近使用记录归到父入口「文本处理」：JSON 已降级为聚合页内的低频能力，
+// 不能以已下架 id 出现在工具页最近使用里。
+const TOOL_ID = "tool.text";
 const RESULT_SCROLL_MAX = 420;
 
 type ResultKind = "pretty" | "min" | "tree";

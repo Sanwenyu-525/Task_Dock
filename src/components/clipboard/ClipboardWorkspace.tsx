@@ -62,7 +62,11 @@ import ClipboardGroupDetail from "./ClipboardGroupDetail";
 import ClipboardItemCard from "./ClipboardItemCard";
 import ClipboardItemDetail from "./ClipboardItemDetail";
 import { ClipboardHeroImage, clearClipboardMediaCache, forgetClipboardMedia } from "./Media";
-import { WorkbenchDetailFacts, WorkbenchPageDetail } from "../../workbench/pageDetail";
+import {
+  WorkbenchDetailFacts,
+  WorkbenchPageDetail,
+  useWorkbenchDetailHost,
+} from "../../workbench/pageDetail";
 import CopySwitchPanel from "./CopySwitchPanel";
 import ImageLightbox from "./ImageLightbox";
 import PastePanel from "./PastePanel";
@@ -158,6 +162,9 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const clearSelection = useClipboardStore((s) => s.clearSelection);
 
   const [detail, setDetailState] = useState<ClipboardDetail | null>(null);
+  /** 主窗口 Tab 没有工作台外壳的右栏宿主；此时卡片主体回退到完整详情，避免「点了没反应」。 */
+  const detailHost = useWorkbenchDetailHost();
+  const hasRailHost = !!detailHost;
   /** 选中条目的右栏预览：列表保持原位，详情在 WorkbenchPageDetail 中只读展示。 */
   const [previewId, setPreviewId] = useState<string | null>(null);
   /**
@@ -1167,7 +1174,13 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               onCopySwitch={() => setDetail({ kind: "copy-switch", item })}
               onToggle={(flag) => void onToggleItem(item, flag)}
               onDetail={() => setDetail({ kind: "item", id: item.id })}
-              onPreview={isDrawer ? undefined : () => setPreviewId(item.id)}
+              onPreview={
+                isDrawer
+                  ? undefined
+                  : hasRailHost
+                    ? () => setPreviewId(item.id)
+                    : () => setDetail({ kind: "item", id: item.id })
+              }
               onDelete={() => onDeleteItem(item)}
               onLink={() => void onLink("item", item.id)}
               onOpenImage={() => openSingleImage(item)}
@@ -1538,7 +1551,13 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
             )}
           </div>
           {railItem.kind === "image" && (
-            <div className="clip-rail-hero-media">
+            <div
+              className={`clip-rail-hero-media ${
+                railItem.image_height && railItem.image_width && railItem.image_height > railItem.image_width * 1.2
+                  ? "is-tall"
+                  : ""
+              }`}
+            >
               <ClipboardHeroImage
                 itemId={railItem.id}
                 hasThumb={railItem.has_thumb}
