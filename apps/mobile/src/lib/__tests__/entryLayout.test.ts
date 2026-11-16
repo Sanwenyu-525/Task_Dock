@@ -57,14 +57,15 @@ describe("首次安装与损坏兜底", () => {
 });
 
 describe("逐项校验", () => {
-  it("未知 id、暂不可用 id 与重复项都被丢弃并计数", () => {
+  it("未知 id、暂不可用 id、重复项与非字符串项都被丢弃并计数", () => {
     const result = snapshot({
       version: ENTRY_LAYOUT_VERSION,
       visible: ["capture", "ghost", "dev-workbench", "capture", 7],
       known: availableEntryIds(),
     });
     expect(result.config.visible).toEqual(["capture"]);
-    expect(result.dropped).toBe(3);
+    // ghost(1) + dev-workbench(1) + 重复 capture(1) + 数字 7(1)
+    expect(result.dropped).toBe(4);
     expect(result.source).toBe("settings");
   });
 
@@ -151,6 +152,99 @@ describe("版本迁移", () => {
 
   it("当前版本不标记迁移", () => {
     const result = snapshot({ version: ENTRY_LAYOUT_VERSION, visible: ["files"], known: ["files"] });
+    expect(result.migrated).toBe(false);
+  });
+});
+
+describe("边界输入与 dropped 统计", () => {
+  it("非字符串项逐项过滤：null / 数字 / 布尔 / 对象 / 嵌套数组都计入 dropped", () => {
+    const result = snapshot({
+      version: ENTRY_LAYOUT_VERSION,
+      visible: ["capture", null, 7, false, { id: "capture" }, ["stash"]],
+      known: availableEntryIds(),
+    });
+    expect(result.config.visible).toEqual(["capture"]);
+    expect(result.dropped).toBe(5);
+  });
+
+  it("重复出现的有效 id 只保留第一次，其余全部计数", () => {
+    const result = snapshot({
+      version: ENTRY_LAYOUT_VERSION,
+      visible: ["capture", "capture", "capture"],
+      known: availableEntryIds(),
+    });
+    expect(result.config.visible).toEqual(["capture"]);
+    expect(result.dropped).toBe(2);
+  });
+
+  it("未知 id 与暂不可用 id 混合时分别计数，可用项保持原顺序", () => {
+    const result = snapshot({
+      version: ENTRY_LAYOUT_VERSION,
+      visible: ["tools", "cast", "capture", "ghost", "dev-workbench"],
+      known: availableEntryIds(),
+    });
+    expect(result.config.visible).toEqual(["tools", "capture"]);
+    expect(result.dropped).toBe(3);
+  });
+
+  it.each([null, "capture", 42, { 0: "capture" }])(
+    "visible 不是数组 → 安全回默认且不虚报 dropped：%s",
+    (visible) => {
+      const result = snapshot({ version: ENTRY_LAYOUT_VERSION, visible, known: availableEntryIds() });
+      expect(result.source).toBe("default");
+      expect(result.config.visible).toEqual(DEFAULT_VISIBLE);
+      expect(result.dropped).toBe(0);
+    },
+  );
+
+  it("空数组 + 缺 known：保持空工作台，不补回默认项", () => {
+    const result = snapshot({ version: ENTRY_LAYOUT_VERSION, visible: [] });
+    expect(result.source).toBe("settings");
+    expect(result.config.visible).toEqual([]);
+  });
+
+  it("空数组 + 空 known 快照：按「新增功能」规则补回默认可见项", () => {
+    // known 为空意味着「写入时还不知道任何入口」，现有默认可见项都算新功能；
+    // 这是数据异常下的保守选择，正常写入不会产生这种组合。
+    const result = snapshot({ version: ENTRY_LAYOUT_VERSION, visible: [], known: [] });
+    expect(result.config.visible).toEqual(DEFAULT_VISIBLE);
+  });
+
+  it("known 不完整：只补默认可见的缺失项，默认隐藏项不冒出来", () => {
+    const known = availableEntryIds().filter(
+      (id) => id !== "create-task" && id !== "files",
+    );
+    const result = snapshot({ version: ENTRY_LAYOUT_VERSION, visible: ["capture"], known });
+    expect(result.config.visible).toContain("create-task");
+    expect(result.config.visible).not.toContain("files");
+  });
+
+  it("known 里的未知/暂不可用项被忽略，最终收敛为全部可用入口", () => {
+    const result = snapshot({
+      version: ENTRY_LAYOUT_VERSION,
+      visible: ["capture"],
+      known: ["capture", "ghost", "cast"],
+    });
+    expect(result.config.known).toEqual(availableEntryIds());
+    expect(result.config.known).not.toContain("ghost");
+    expect(result.config.known).not.toContain("cast");
+  });
+
+  it("旧版本结构（无 version + 无 known + 含失效项）迁移后保留可用项", () => {
+    const result = snapshot({ visible: ["tools", "ghost", "stash"] });
+    expect(result.migrated).toBe(true);
+    expect(result.config.visible).toEqual(["tools", "stash"]);
+    expect(result.dropped).toBe(1);
+    expect(result.config.version).toBe(ENTRY_LAYOUT_VERSION);
+  });
+
+  it("合法配置的 dropped 恒为 0", () => {
+    const result = snapshot({
+      version: ENTRY_LAYOUT_VERSION,
+      visible: ["files", "capture"],
+      known: availableEntryIds(),
+    });
+    expect(result.dropped).toBe(0);
     expect(result.migrated).toBe(false);
   });
 });

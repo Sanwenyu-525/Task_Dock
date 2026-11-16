@@ -13,7 +13,7 @@ import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
 import { SettingSection } from "../components/SettingSection";
 import { StatusPill } from "../components/StatusPill";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { countSyncConflicts, resetSyncState } from "../db/sync";
 import {
   clearConnection,
@@ -59,17 +59,11 @@ export function DeviceScreen({
   const [pendingOps, setPendingOps] = useState(0);
   const [conflicts, setConflicts] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
   const [unpairing, setUnpairing] = useState(false);
 
   const mounted = useRef(true);
-  const toastSeq = useRef(0);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   const unpair = useCallback(() => {
     if (!connection) return;
@@ -283,8 +277,6 @@ export function DeviceScreen({
           文件与同步只在局域网内传输，不经过云端。
         </Text>
       </ScrollView>
-
-      <Toast toast={toast} onDismiss={dismissToast} placement="top" />
     </View>
   );
 }

@@ -22,6 +22,16 @@ export default defineConfig({
       // 否则 hooks 在 react-dom 的 dispatcher 为空时抛 "Invalid hook call"。
       // 只影响单测解析，不改变 App 的 Expo 依赖树。
       react: fileURLToPath(new URL("../../node_modules/react", import.meta.url)),
+      // 只别名 `react` 不够：组件以 automatic JSX 编译后会 import `react/jsx-runtime`，
+      // 该子路径不会命中上面的 "react" 条目，会落到 apps/mobile 自带的 React（19.3.0），
+      // 与页面测试使用的根目录 React（19.3.1）形成两份实例——表现就是
+      // "Cannot read properties of null (reading 'useState')"。子路径一并指到同一份。
+      "react/jsx-runtime": fileURLToPath(
+        new URL("../../node_modules/react/jsx-runtime.js", import.meta.url),
+      ),
+      "react/jsx-dev-runtime": fileURLToPath(
+        new URL("../../node_modules/react/jsx-dev-runtime.js", import.meta.url),
+      ),
     },
   },
   test: {

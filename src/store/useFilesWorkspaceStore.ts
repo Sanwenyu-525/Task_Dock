@@ -56,6 +56,19 @@ import { useSettingsStore } from "./useSettingsStore";
 
 export type ViewMode = "list" | "grid";
 export type SortField = "name" | "modified" | "type" | "size";
+export type FileFilter =
+  | "all"
+  | "folder"
+  | "image"
+  | "video"
+  | "audio"
+  | "doc"
+  | "sheet"
+  | "slide"
+  | "code"
+  | "archive"
+  | "large"
+  | "recent";
 
 export interface FolderTab {
   tabId: string;
@@ -69,6 +82,8 @@ export interface FolderTab {
   sortAsc: boolean;
   /** 当前目录内筛选（空 = 不筛选）。 */
   search: string;
+  /** 文件类型快速筛选；每个标签独立（持久化随 panes 一起保存）。 */
+  filter?: FileFilter;
   showHidden: boolean;
 }
 
@@ -1007,8 +1022,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
             continue;
           }
           changed = true;
-          const anchor =
-            current.anchor && kept.some((p) => samePath(p, current.anchor))
+          const anchor = current.anchor && kept.some((p) => samePath(p, current.anchor!))
               ? current.anchor
               : (kept[0] ?? null);
           selection[paneId] = { paths: kept, anchor };

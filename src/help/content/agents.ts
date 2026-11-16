@@ -91,6 +91,7 @@ export const AGENTS_ARTICLES: readonly HelpArticle[] = [
       "agent.cursor-adapter",
       "agent.gemini-cli",
       "agent.zcode-integration",
+      "agent.codex-app-server",
       "agent.work-time-stats",
     ],
     relatedRouteIds: ["agents", "actions", "history"],

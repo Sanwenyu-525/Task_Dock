@@ -8,7 +8,7 @@ import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
-import { Toast, TOAST_TOP_PUSH, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import {
   listSyncConflicts,
   resolveConflictWithLocal,
@@ -80,13 +80,9 @@ export function ConflictScreen({ nav }: { nav: Nav }) {
   const [conflicts, setConflicts] = useState<SyncConflictRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    setToast({ id: Date.now(), text, tone });
-  }, []);
+  const { showToast } = useToast();
   // 稳定的 dismiss 引用：内联函数会让 Toast 的 effect 每次重渲染都重置 2.4s 计时
-  const dismissToast = useCallback(() => setToast(null), []);
 
   const load = useCallback(async () => {
     try {
@@ -222,8 +218,6 @@ export function ConflictScreen({ nav }: { nav: Nav }) {
           </Text>
         </GlassCard>
       </ScrollView>
-
-      <Toast toast={toast} onDismiss={dismissToast} placement="top" topOffset={TOAST_TOP_PUSH} />
     </View>
   );
 }

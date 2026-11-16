@@ -180,7 +180,7 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 | P1-B | 任务选择器分页与 200 上限提示 | 已实现（hook 测试） |
 | P1-C | Profile/Capability 诚实性审计（`core.layout` 降为 limited） | 已实现（契约测试） |
 | A1 | 小说项目类型接入：v57 迁移、Rust 类型/命令复用、Profile/图标/首页、备份往返 | 已实现（2026-11-16 复跑：Rust 3/3、Vitest 16/16、`tsc --noEmit` 通过；原生窗口未逐项走查） |
-| B1 | 小说正文与章节：v58 卷/章表、章节 CRUD/自动保存/字数、正文模块 UI、备份往返 | 已实现（2026-11-16：Rust 5/5、Vitest 16+4、`tsc --noEmit` 通过；原生窗口未逐页走查） |
+| B1 | 小说正文与章节：v58 卷/章表、章节 CRUD/自动保存/字数、正文模块 UI、备份往返 | 已实现（2026-11-16 第一轮：Rust 5/5、Vitest 16+4；同日第二轮：串行保存/离开守卫/归档只读/后端 kind+status 门禁，前端 26/26） |
 | P1 | 游戏/漫画阶段模板、产物版本与采用状态、工作流 I/O 跟踪 | 未开始 |
 | P1 | 跨项目复盘的统一验收视图、文件缩略图/预览 | 未开始 |
 | P2 | 移动端只读镜像或远程项目视图 | 未开始 |
@@ -295,7 +295,30 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
   展示本章与全书字数、保存状态；归档项目只读。全部使用现有 `ws-*` 语义 Token。
 - 概览新增「开始写作」按钮（真实模块跳转），不产生假入口。
 
-### 11.3 明确未做
+### 11.3 第二轮保存与约束修复（2026-11-16）
+
+- **单章节串行保存**：`NovelManuscriptPanel` 用 `savePromiseRef` 保证同一章同时只有一个
+  `novel_chapter_save_content` 在途；保存完成后比较最新草稿，若仍不同则自动补交最新版本。
+  `savedRef` 只在成功且仍属同一项目/同一章时推进，旧请求不会回写新状态；失败保留草稿、
+  显示“保存失败，可重试”，重试按钮显式触发同一 `flush`。
+- **离开前落盘协议**：正文面板通过 `registerFlush` 向 `ProjectWorkspacePanel` 注册异步
+  `flush`；切换模块先 await，失败则取消切换。`ProjectWorkspacePanel` 再通过
+  `registerProjectLeaveGuard` 向 `WorkbenchShell` 注册项目守卫；顶栏选择器与首页项目入口
+  都走异步 `selectProject`，保存失败不换项目、不卸载面板。首页仅在守卫通过后才进入工作台。
+- **卸载**：cleanup 不再发裸 IPC，而是调用同一个 `flush`（串行、补交最新草稿、失败经
+  `onNotice` 报告）。窗口被强杀/应用关闭无法等待异步 IPC，本轮不改全局关闭协议，
+  该限制保留（见验收报告）。
+- **归档只读**：`archived` 时新建卷/章、卷章重命名、上下移、删除、正文输入全部禁用，
+  事件处理函数仍有防御检查；正在重命名时归档会立即关闭输入框。章节标题仍可点击以阅读
+  其他章。归档瞬间的脏稿保留在 textarea 并显示“项目已归档，正文未保存”，恢复进行中后
+  可重试保存。
+- **后端门禁**：`ensure_novel_project(conn, project_id, require_active)` 统一校验
+  `kind = novel`；写入（卷/章保存、正文保存、删除）还要求 `status = active`，读取允许归档。
+  只带章节/卷 ID 的命令先解析所属项目再校验，避免先读正文再拒绝；未新增 v59。
+- **自动化**：`NovelManuscriptPanel.test.tsx` 扩到 10 个并发/离开/归档用例；Rust 新增
+  `novel_commands_enforce_kind_and_archived_read_only` 并补充 8 MiB 上限断言。
+
+### 11.4 明确未做
 
 - Markdown/富文本、版本历史/撤销快照、导入导出、全文搜索、拼写检查；
 - 人物档案、世界观、剧情时间线、伏笔追踪、AI 续写/改写；

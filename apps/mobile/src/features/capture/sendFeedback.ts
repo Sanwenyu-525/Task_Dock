@@ -3,7 +3,7 @@
 // 背景：sendToDesktop() 的 offline/stopBatch 只描述“传输层是否中断”，不能代表业务
 // 成功；单条重试曾经只要 offline=false、stopBatch=false 就显示“已发送到电脑”，导致
 // outcome=failed 却弹成功。本文件把决策抽成纯函数，页面与测试共用同一套规则。
-import type { ToastTone } from "../../components/Toast";
+import type { ToastTone } from "../../feedback/toastQueue";
 
 import type { SendOutcome, SendResult, ShelfImportRetryResult } from "./service";
 

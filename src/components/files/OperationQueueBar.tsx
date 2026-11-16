@@ -10,13 +10,13 @@ import {
   type QueueEffect,
 } from "../../lib/filesWorkspace/operationQueue";
 
-const EFFECT_KEY: Record<QueueEffect, string> = {
+const EFFECT_KEY = {
   copy: "fw.queue.copy",
   move: "fw.queue.move",
   delete: "fw.queue.delete",
   deletePermanent: "fw.queue.deletePermanent",
   rename: "fw.queue.rename",
-};
+} as const satisfies Record<QueueEffect, string>;
 
 export default function OperationQueueBar() {
   const { t } = useLocale();

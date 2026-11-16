@@ -79,8 +79,7 @@ export function normalizeEntryLayout(raw: unknown): EntryLayoutNormalization {
   if (!isRecord(raw)) {
     return { config: fallback, migrated: false, dropped: 0, source: "default" };
   }
-  const rawVisible = asStringArray(raw.visible);
-  if (rawVisible === null) {
+  if (!Array.isArray(raw.visible)) {
     return { config: fallback, migrated: false, dropped: 0, source: "default" };
   }
 
@@ -89,13 +88,19 @@ export function normalizeEntryLayout(raw: unknown): EntryLayoutNormalization {
 
   const available = new Set<string>(availableEntryIds());
   const seen = new Set<string>();
+  // 非字符串项（数字 / null / 嵌套对象）同样是「无效项」，必须计入 dropped，
+  // 否则管理页会把「3 个坏数据」说成「只清理了 1 个」。
   let dropped = 0;
-  for (const id of rawVisible) {
-    if (!available.has(id) || seen.has(id)) {
+  for (const item of raw.visible as unknown[]) {
+    if (typeof item !== "string") {
       dropped += 1;
       continue;
     }
-    seen.add(id);
+    if (!available.has(item) || seen.has(item)) {
+      dropped += 1;
+      continue;
+    }
+    seen.add(item);
   }
   let visible = [...seen] as EntryId[];
 

@@ -28,12 +28,8 @@ import { TaskEditorSheet } from "../components/TaskEditorSheet";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { TaskRow } from "../components/TaskRow";
 import { type IconName } from "../components/icons/AppIcon";
-import {
-  Toast,
-  type ToastMessage,
-  type ToastPlacement,
-  type ToastTone,
-} from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
+import type { ToastPlacement } from "../feedback/toastQueue";
 import { getSetting } from "../db/kv";
 import { createTask, deleteTask, listTasks, toggleTask, updateTask } from "../db/tasks";
 import {
@@ -159,19 +155,10 @@ export function TasksScreen({
   const [editorOpen, setEditorOpen] = useState(false);
   const [actionTask, setActionTask] = useState<Task | null>(null);
   const [actionOpen, setActionOpen] = useState(false);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
   const refreshSeq = useRef(0);
   const mounted = useRef(true);
 
-  const showToast = useCallback(
-    (text: string, tone: ToastTone = "info", placement?: ToastPlacement) => {
-      toastSeq.current += 1;
-      setToast({ id: toastSeq.current, text, tone, placement });
-    },
-    [],
-  );
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   const animateLayout = useCallback(() => {
     if (reduceMotion) return;
@@ -609,13 +596,6 @@ export function TasksScreen({
           removeClippedSubviews
         />
       )}
-
-      <Toast
-        toast={toast}
-        onDismiss={dismissToast}
-        placement="top"
-        bottomOffset={space.lg + 32}
-      />
 
       <ActionSheet
         visible={actionOpen}

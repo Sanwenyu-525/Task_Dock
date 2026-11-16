@@ -11,13 +11,14 @@
 //!
 //! 本模块不依赖 Tauri/前端类型，纯 std + windows，便于单测（临时目录）。
 
+pub mod preview;
 pub mod thumbnail;
 
 use std::fs;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
 
@@ -1520,6 +1521,330 @@ pub fn rename(path: &Path, new_name: &str) -> AppResult<PathBuf> {
     Ok(target)
 }
 
+/// 批量重命名条目（前端预览后提交；后端逐项校验并返回真实逐项结果）。
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRenameItem {
+    pub path: String,
+    pub new_name: String,
+}
+
+// ── 只读内容哈希（文件夹对比的显式用户操作；不在打开目录时后台扫描）────────
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FsHashEntry {
+    pub path: String,
+    pub size: Option<u64>,
+    pub hash: Option<String>,
+    pub error: Option<String>,
+}
+
+/// 文本预览（只读、按需读取前 N 字节；不把大文件整读进内存）。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FsTextPreview {
+    pub path: String,
+    pub size: u64,
+    pub truncated: bool,
+    pub content: String,
+}
+
+pub fn read_text_preview(path: &Path, max_bytes: usize) -> AppResult<FsTextPreview> {
+    use std::io::Read as _;
+    let meta = fs::metadata(path).map_err(|e| AppError::NotFound(format!("文件不可读: {e}")))?;
+    if !meta.is_file() {
+        return Err(AppError::Validation("仅支持预览单个文件".into()));
+    }
+    let cap = max_bytes.clamp(16 * 1024, 2 * 1024 * 1024);
+    let mut file = fs::File::open(path).map_err(|e| AppError::Io(e))?;
+    let mut buffer = Vec::with_capacity(cap + 1);
+    file.by_ref()
+        .take((cap + 1) as u64)
+        .read_to_end(&mut buffer)
+        .map_err(|e| AppError::Io(e))?;
+    if buffer.iter().any(|byte| *byte == 0) {
+        return Err(AppError::Validation("二进制文件不支持文本预览".into()));
+    }
+    let truncated = buffer.len() > cap;
+    if truncated {
+        buffer.truncate(cap);
+    }
+    // 非 UTF-8 文本按 lossy 展示；不假装是原始字节完全一致。
+    Ok(FsTextPreview {
+        path: path.to_string_lossy().into_owned(),
+        size: meta.len(),
+        truncated,
+        content: String::from_utf8_lossy(&buffer).into_owned(),
+    })
+}
+
+pub fn hash_files(paths: &[String], protected: &[PathBuf]) -> Vec<FsHashEntry> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut out = Vec::with_capacity(paths.len());
+    for raw in paths.iter().take(MAX_OP_PATHS) {
+        let path = match validate_abs_path(raw) {
+            Ok(path) => path,
+            Err(e) => {
+                out.push(FsHashEntry {
+                    path: raw.clone(),
+                    size: None,
+                    hash: None,
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+        if let Err(e) = ensure_not_protected(&path, protected) {
+            out.push(FsHashEntry {
+                path: raw.clone(),
+                size: None,
+                hash: None,
+                error: Some(e.to_string()),
+            });
+            continue;
+        }
+        let meta = match fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                out.push(FsHashEntry {
+                    path: raw.clone(),
+                    size: None,
+                    hash: None,
+                    error: Some(format!("读取属性失败: {e}")),
+                });
+                continue;
+            }
+        };
+        if !meta.is_file() {
+            out.push(FsHashEntry {
+                path: raw.clone(),
+                size: None,
+                hash: None,
+                error: Some("仅支持对文件计算哈希".into()),
+            });
+            continue;
+        }
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(e) => {
+                out.push(FsHashEntry {
+                    path: raw.clone(),
+                    size: Some(meta.len()),
+                    hash: None,
+                    error: Some(format!("打开文件失败: {e}")),
+                });
+                continue;
+            }
+        };
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        let mut error = None;
+        loop {
+            match file.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(&buffer[..n]),
+                Err(e) => {
+                    error = Some(format!("读取失败: {e}"));
+                    break;
+                }
+            }
+        }
+        out.push(FsHashEntry {
+            path: raw.clone(),
+            size: Some(meta.len()),
+            hash: if error.is_some() {
+                None
+            } else {
+                Some(format!("{:x}", hasher.finalize()))
+            },
+            error,
+        });
+    }
+    out
+}
+
+/// 批量重命名：任一非法名称/重复目标/已存在目标都不会被静默覆盖。
+///
+/// 不做事务性全量回滚：逐项真实执行并返回 ok/failed/skipped，失败项保留原因。
+/// 目标与其他待重命名项互换属于冲突（不临时改名的两阶段方案），避免半途名称丢失。
+pub fn batch_rename(
+    items: &[BatchRenameItem],
+    protected: &[PathBuf],
+    operation_id: Option<String>,
+) -> FsOpReport {
+    let mut report = FsOpReport::empty().with_operation(operation_id);
+    if items.len() > MAX_OP_PATHS {
+        report.push(FsEntryReport {
+            source: String::new(),
+            target: None,
+            status: "failed",
+            reason: Some(format!("批量重命名超过 {MAX_OP_PATHS} 项上限")),
+            code: Some("validation".into()),
+            stage: Some("prepare".into()),
+        });
+        return report;
+    }
+
+    struct Prepared {
+        index: usize,
+        source: PathBuf,
+        target: PathBuf,
+        failure: Option<AppError>,
+        unchanged: bool,
+    }
+
+    let mut prepared: Vec<Prepared> = Vec::with_capacity(items.len());
+    let mut target_keys: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    for (index, item) in items.iter().enumerate() {
+        let source = match validate_abs_path(&item.path) {
+            Ok(path) => path,
+            Err(e) => {
+                prepared.push(Prepared {
+                    index,
+                    source: PathBuf::new(),
+                    target: PathBuf::new(),
+                    failure: Some(e),
+                    unchanged: false,
+                });
+                continue;
+            }
+        };
+        if let Err(e) = ensure_not_protected(&source, protected) {
+            prepared.push(Prepared {
+                index,
+                source,
+                target: PathBuf::new(),
+                failure: Some(e),
+                unchanged: false,
+            });
+            continue;
+        }
+        let name = match sanitize_name(&item.new_name) {
+            Ok(name) => name,
+            Err(e) => {
+                prepared.push(Prepared {
+                    index,
+                    source,
+                    target: PathBuf::new(),
+                    failure: Some(e),
+                    unchanged: false,
+                });
+                continue;
+            }
+        };
+        let parent = match source.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => {
+                prepared.push(Prepared {
+                    index,
+                    source,
+                    target: PathBuf::new(),
+                    failure: Some(AppError::Validation("路径没有父目录".into())),
+                    unchanged: false,
+                });
+                continue;
+            }
+        };
+        let target = parent.join(&name);
+        let unchanged = path_key(&source) == path_key(&target);
+        if !unchanged {
+            target_keys.entry(path_key(&target)).or_default().push(index);
+        }
+        prepared.push(Prepared {
+            index,
+            source,
+            target,
+            failure: None,
+            unchanged,
+        });
+    }
+
+    // 重复目标必须在执行前整体判失败，避免“第一项成功、第二项冲突”的假部分成功。
+    let mut duplicate_targets: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for indexes in target_keys.values().filter(|indexes| indexes.len() > 1) {
+        duplicate_targets.extend(indexes.iter().copied());
+    }
+    let source_keys: std::collections::HashSet<String> = prepared
+        .iter()
+        .filter(|item| item.failure.is_none())
+        .map(|item| path_key(&item.source))
+        .collect();
+
+    for item in prepared {
+        if let Some(failure) = item.failure {
+            report.push(FsEntryReport {
+                source: items[item.index].path.clone(),
+                target: None,
+                status: "failed",
+                reason: Some(failure.to_string()),
+                code: Some(failure.code().to_string()),
+                stage: Some("prepare".into()),
+            });
+            continue;
+        }
+        if duplicate_targets.contains(&item.index) {
+            report.push(FsEntryReport {
+                source: item.source.to_string_lossy().into_owned(),
+                target: Some(item.target.to_string_lossy().into_owned()),
+                status: "failed",
+                reason: Some("批量内存在重复目标名称，已拒绝整组执行".into()),
+                code: Some("conflict".into()),
+                stage: Some("prepare".into()),
+            });
+            continue;
+        }
+        if item.unchanged {
+            report.push(FsEntryReport {
+                source: item.source.to_string_lossy().into_owned(),
+                target: Some(item.target.to_string_lossy().into_owned()),
+                status: "skipped",
+                reason: Some("名称未变化".into()),
+                code: None,
+                stage: None,
+            });
+            continue;
+        }
+        if item.target.exists() {
+            // 目标若是本批另一个源，同样视为冲突：直接改名会破坏该源，暂不支持互换。
+            let reason = if source_keys.contains(&path_key(&item.target)) {
+                "目标名称与本批其他源文件互换；请分步重命名".to_string()
+            } else {
+                format!("目标已存在同名条目: {}", item.target.to_string_lossy())
+            };
+            report.push(FsEntryReport {
+                source: item.source.to_string_lossy().into_owned(),
+                target: Some(item.target.to_string_lossy().into_owned()),
+                status: "failed",
+                reason: Some(reason),
+                code: Some("conflict".into()),
+                stage: Some("prepare".into()),
+            });
+            continue;
+        }
+        match rename(&item.source, &items[item.index].new_name) {
+            Ok(target) => report.push(FsEntryReport {
+                source: item.source.to_string_lossy().into_owned(),
+                target: Some(target.to_string_lossy().into_owned()),
+                status: "ok",
+                reason: None,
+                code: None,
+                stage: None,
+            }),
+            Err(e) => report.push(FsEntryReport {
+                source: item.source.to_string_lossy().into_owned(),
+                target: Some(item.target.to_string_lossy().into_owned()),
+                status: "failed",
+                reason: Some(e.to_string()),
+                code: Some(e.code().to_string()),
+                stage: Some("rename".into()),
+            }),
+        }
+    }
+    report
+}
+
 /// 条目属性（查看用；目录子项计数有上限，超出标 truncated）。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -2372,6 +2697,101 @@ mod tests {
         .unwrap();
         assert_eq!(report.failed, 1);
         assert!(src_dir.join("inner/f.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn batch_rename_success_and_partial_failure_are_reported() {
+        let root = temp_root("batchrn");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), "a").unwrap();
+        fs::write(root.join("b.txt"), "b").unwrap();
+        let report = batch_rename(
+            &[
+                BatchRenameItem {
+                    path: root.join("a.txt").to_string_lossy().into_owned(),
+                    new_name: "001.txt".into(),
+                },
+                BatchRenameItem {
+                    path: root.join("b.txt").to_string_lossy().into_owned(),
+                    new_name: "bad/name.txt".into(),
+                },
+            ],
+            &protected(),
+            None,
+        );
+        assert_eq!(report.ok, 1);
+        assert_eq!(report.failed, 1);
+        assert!(root.join("001.txt").exists());
+        assert!(root.join("b.txt").exists(), "失败项不能被静默删除或覆盖");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn batch_rename_duplicate_targets_are_all_rejected_before_write() {
+        let root = temp_root("batchdup");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), "a").unwrap();
+        fs::write(root.join("b.txt"), "b").unwrap();
+        let report = batch_rename(
+            &[
+                BatchRenameItem {
+                    path: root.join("a.txt").to_string_lossy().into_owned(),
+                    new_name: "same.txt".into(),
+                },
+                BatchRenameItem {
+                    path: root.join("b.txt").to_string_lossy().into_owned(),
+                    new_name: "same.txt".into(),
+                },
+            ],
+            &protected(),
+            None,
+        );
+        assert_eq!(report.ok, 0);
+        assert_eq!(report.failed, 2, "整组重复目标必须在执行前拒绝");
+        assert!(root.join("a.txt").exists() && root.join("b.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn batch_rename_existing_target_is_conflict_without_overwrite() {
+        let root = temp_root("batchconf");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), "a").unwrap();
+        fs::write(root.join("target.txt"), "keep").unwrap();
+        let report = batch_rename(
+            &[BatchRenameItem {
+                path: root.join("a.txt").to_string_lossy().into_owned(),
+                new_name: "target.txt".into(),
+            }],
+            &protected(),
+            None,
+        );
+        assert_eq!(report.ok, 0);
+        assert_eq!(report.failed, 1);
+        assert_eq!(fs::read_to_string(root.join("target.txt")).unwrap(), "keep");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn hash_files_distinguishes_content_and_rejects_directory() {
+        let root = temp_root("hash");
+        fs::create_dir_all(root.join("d")).unwrap();
+        fs::write(root.join("same1.txt"), "same").unwrap();
+        fs::write(root.join("same2.txt"), "same").unwrap();
+        fs::write(root.join("diff.txt"), "different").unwrap();
+        let entries = hash_files(
+            &[
+                root.join("same1.txt").to_string_lossy().into_owned(),
+                root.join("same2.txt").to_string_lossy().into_owned(),
+                root.join("diff.txt").to_string_lossy().into_owned(),
+                root.join("d").to_string_lossy().into_owned(),
+            ],
+            &protected(),
+        );
+        assert_eq!(entries[0].hash, entries[1].hash);
+        assert_ne!(entries[0].hash, entries[2].hash);
+        assert!(entries[3].error.is_some(), "目录不参与文件哈希");
         fs::remove_dir_all(&root).unwrap();
     }
 }

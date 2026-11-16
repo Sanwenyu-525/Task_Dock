@@ -24,7 +24,7 @@ import { MetricTile } from "../components/MetricTile";
 import { PressableScale } from "../components/PressableScale";
 import { ProgressBar } from "../components/ProgressBar";
 import { SectionHeader } from "../components/SectionHeader";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { WorkbenchEntryGrid } from "../components/entry/WorkbenchEntryGrid";
 import { listAssets } from "../db/captureAssets";
 import { listCaptures } from "../db/captures";
@@ -220,13 +220,8 @@ export function HomeScreen({
   );
   const [editingEntries, setEditingEntries] = useState(false);
   const [entryDragActive, setEntryDragActive] = useState(false);
-  const [entryToast, setEntryToast] = useState<ToastMessage | null>(null);
-  const entryToastSeq = useRef(0);
 
-  const showEntryToast = useCallback((text: string, tone: ToastTone = "info") => {
-    entryToastSeq.current += 1;
-    setEntryToast({ id: entryToastSeq.current, text, tone });
-  }, []);
+  const { showToast: showEntryToast } = useToast();
 
   const openEntry = useCallback(
     (entry: MobileEntry) => {
@@ -664,13 +659,6 @@ export function HomeScreen({
           </>
         )}
       </ScrollView>
-
-      <Toast
-        toast={entryToast}
-        onDismiss={() => setEntryToast(null)}
-        placement="top"
-        topOffset={70}
-      />
     </View>
   );
 }

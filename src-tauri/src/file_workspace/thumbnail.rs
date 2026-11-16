@@ -64,6 +64,18 @@ fn cache_key(path: &Path, mtime_ms: Option<i64>, size: Option<u64>) -> String {
     )
 }
 
+/// 大图预览：不走 256px 缩略图缓存，单次按需解码到指定尺寸（上限 1400），
+/// 避免把大图缓存进 LRU；用户关闭预览后不保留内存。
+pub async fn preview_png(path: PathBuf, max_px: u32) -> Option<Vec<u8>> {
+    if !path.is_file() {
+        return None;
+    }
+    let max_px = max_px.clamp(64, 1400);
+    tokio::task::spawn_blocking(move || shell_thumbnail(&path, max_px))
+        .await
+        .ok()?
+}
+
 /// 取缩略图（PNG 字节）；无处理器或失败返回 None。带缓存与并发上限。
 pub async fn thumbnail_png(path: PathBuf, max_px: u32) -> Option<Vec<u8>> {
     let max_px = max_px.clamp(32, MAX_THUMB_PX);

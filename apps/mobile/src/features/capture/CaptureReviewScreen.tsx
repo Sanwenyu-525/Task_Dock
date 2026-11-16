@@ -22,12 +22,7 @@ import {
 import { AppBar } from "../../components/AppBar";
 import { PressableScale } from "../../components/PressableScale";
 import { AppIcon } from "../../components/icons/AppIcon";
-import {
-  Toast,
-  TOAST_TOP_PUSH,
-  type ToastMessage,
-  type ToastTone,
-} from "../../components/Toast";
+import { useToast } from "../../feedback/ToastProvider";
 import * as repo from "../../db/captureAssets";
 import { describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
@@ -127,19 +122,14 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
   const [cancelling, setCancelling] = useState(false);
   const cancelTokenRef = useRef<TransferCancelToken | null>(null);
   const [destinations, setDestinations] = useState<Record<string, repo.CaptureDestination[]>>({});
-  const [toast, setToast] = useState<ToastMessage | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [cropActive, setCropActive] = useState(false);
   const [cropFraction, setCropFraction] = useState<CropFraction>(CROP_DEFAULT);
   const [previewLayout, setPreviewLayout] = useState({ width: 0, height: 0 });
   const sessionIds = useRef<string[]>([]);
-  const toastSeq = useRef(0);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone, placement: "bottom" });
-  }, []);
+  const { showToast } = useToast();
 
   const requestCancelTransfer = useCallback(() => {
     if (!cancelTokenRef.current || cancelling) return;
@@ -1043,8 +1033,6 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
           未勾选的目的地不会执行；失败的项目保留本机文件，可再次点击重试。
         </Text>
       </View>
-
-      <Toast toast={toast} onDismiss={() => setToast(null)} placement="bottom" topOffset={TOAST_TOP_PUSH} bottomOffset={insets.bottom + 96} />
     </View>
   );
 }

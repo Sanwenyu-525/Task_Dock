@@ -1,6 +1,6 @@
 // 笔记列表：搜索 → 筛选 → 置顶/全部笔记两组（同一 FlatList 内用分组头切分）。
 // 页头只表达配对状态（已配对 / 仅本机），不把「已配对」说成「已连接」或「已同步」。
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -19,7 +19,7 @@ import { NoteCard } from "../components/NoteCard";
 import { PressableScale } from "../components/PressableScale";
 import { SearchField } from "../components/SearchField";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { listNotes } from "../db/notes";
 import { loadConnection } from "../db/syncConnection";
 import { isLegacyConnection } from "../lib/sync/connectionState";
@@ -68,14 +68,8 @@ export function NotesScreen({
   const [filter, setFilter] = useState<NoteFilter>("all");
   const [query, setQuery] = useState("");
   const [now, setNow] = useState(() => Date.now());
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   const refresh = useCallback(async () => {
     try {
@@ -169,87 +163,87 @@ export function NotesScreen({
 
   return (
     <View style={styles.container}>
+      {/* 标题、返回、搜索与筛选固定在列表外：加载中/滚动时都不会消失。 */}
+      <View style={styles.header}>
+        <View style={styles.titleRow}>
+          {onBack ? <BackButton onPress={onBack} /> : null}
+          <View style={styles.titleBlock}>
+            <Text accessibilityRole="header" style={[styles.screenTitle, { color: tokens.text }]}>
+              笔记
+            </Text>
+            <Text style={[styles.subtitle, { color: tokens.muted }]}>
+              {searching
+                ? `找到 ${visible.length} 篇 · 共 ${notes.length} 篇`
+                : `${notes.length} 篇 · ${paired ? "已配对" : "仅本机"}`}
+            </Text>
+          </View>
+        </View>
+
+        <SearchField
+          value={query}
+          onChangeText={setQuery}
+          placeholder="搜索笔记"
+          accessibilityLabel="搜索笔记"
+        />
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          accessibilityLabel="笔记筛选"
+          style={styles.filterScroll}
+          contentContainerStyle={styles.filterRow}
+        >
+          {FILTERS.map((item) => (
+            <Chip
+              key={item.key}
+              label={item.label}
+              active={filter === item.key}
+              accessibilityLabel={`筛选 ${item.label}`}
+              onPress={() => setFilter(item.key)}
+            />
+          ))}
+        </ScrollView>
+      </View>
+
       {loading ? (
         <ActivityIndicator style={styles.loading} color={tokens.accent} />
       ) : (
         <FlatList
-        data={rows}
-        keyExtractor={keyExtractor}
-        renderItem={renderRow}
-        ListHeaderComponent={
-          <View style={styles.header}>
-            <View style={styles.titleRow}>
-              {onBack ? <BackButton onPress={onBack} /> : null}
-              <View style={styles.titleBlock}>
-                <Text accessibilityRole="header" style={[styles.screenTitle, { color: tokens.text }]}>
-                  笔记
-                </Text>
-                <Text style={[styles.subtitle, { color: tokens.muted }]}>
-                  {searching
-                    ? `找到 ${visible.length} 篇 · 共 ${notes.length} 篇`
-                    : `${notes.length} 篇 · ${paired ? "已配对" : "仅本机"}`}
-                </Text>
-              </View>
-            </View>
-
-            <SearchField
-              value={query}
-              onChangeText={setQuery}
-              placeholder="搜索笔记"
-              accessibilityLabel="搜索笔记"
+          data={rows}
+          keyExtractor={keyExtractor}
+          renderItem={renderRow}
+          ListEmptyComponent={
+            <EmptyState
+              icon="note"
+              title={emptyCopy.title}
+              hint={emptyCopy.hint}
+              actionLabel={searching ? "清除搜索" : "新建笔记"}
+              onAction={searching ? () => setQuery("") : () => openEditor(null)}
             />
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              accessibilityLabel="笔记筛选"
-              style={styles.filterScroll}
-              contentContainerStyle={styles.filterRow}
-            >
-              {FILTERS.map((item) => (
-                <Chip
-                  key={item.key}
-                  label={item.label}
-                  active={filter === item.key}
-                  accessibilityLabel={`筛选 ${item.label}`}
-                  onPress={() => setFilter(item.key)}
-                />
-              ))}
-            </ScrollView>
-          </View>
-        }
-        ListEmptyComponent={
-          <EmptyState
-            icon="note"
-            title={emptyCopy.title}
-            hint={emptyCopy.hint}
-            actionLabel={searching ? "清除搜索" : "新建笔记"}
-            onAction={searching ? () => setQuery("") : () => openEditor(null)}
-          />
-        }
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-        initialNumToRender={12}
-        maxToRenderPerBatch={10}
-        windowSize={7}
+          }
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={7}
         />
       )}
 
-      <PressableScale
-        onPress={() => openEditor(null)}
-        accessibilityLabel="新建笔记"
-        accessibilityHint="打开笔记编辑页"
-        style={[styles.fab, { bottom: space.lg + insets.bottom }]}
-        contentStyle={[
-          styles.fabInner,
-          { backgroundColor: tokens.accentFill },
-          floatingShadow(scheme),
-        ]}
-      >
-        <AppIcon name="add" color={tokens.onAccent} size={26} />
-      </PressableScale>
-
-      <Toast toast={toast} onDismiss={dismissToast} placement="top" />
+      {loading ? null : (
+        <PressableScale
+          onPress={() => openEditor(null)}
+          accessibilityLabel="新建笔记"
+          accessibilityHint="打开笔记编辑页"
+          style={[styles.fab, { bottom: space.lg + insets.bottom }]}
+          contentStyle={[
+            styles.fabInner,
+            { backgroundColor: tokens.accentFill },
+            floatingShadow(scheme),
+          ]}
+        >
+          <AppIcon name="add" color={tokens.onAccent} size={26} />
+        </PressableScale>
+      )}
     </View>
   );
 }
@@ -259,6 +253,7 @@ const styles = StyleSheet.create({
   loading: { marginTop: space.xl },
   header: {
     paddingTop: space.sm,
+    paddingHorizontal: space.lg,
     gap: space.md,
     paddingBottom: space.xs,
   },
@@ -287,6 +282,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: space.lg,
+    paddingTop: space.xs,
     paddingBottom: 96,
   },
   fab: {

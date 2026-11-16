@@ -23,19 +23,16 @@
 //! ## start 也必须证明「属于谁」
 //! 只比较结束代次还不够：旧拖拽的 **start** 也可能迟到。若此时用户已经开始
 //! 新会话 B，无条件 `bind(start.generation)` 会把旧代次写给 B，随后旧 end 就把
-//! B 清掉——鼠标仍按着、抓手指针却消失。原生事件本身不携带前端会话身份，
-//! 因此用两个确定性条件建立关联（不依赖延时或轮询）：
+//! B 清掉——鼠标仍按着、抓手指针却消失。
 //!
-//! 1. **会话快照**：只绑定「收到 start 那一刻已存在」的会话。查询期间才创建的
-//!    会话不会被旧 start 认领；
-//! 2. **原生实时确认**：向原生查询该代次的移动循环**此刻是否仍在运行**
-//!    （`drag_loop_active`）。系统模态循环期间 WebView2 收不到指针事件，所以
-//!    循环活跃时存在的会话只可能是它的发起者；循环已退出则说明这条 start 属于
-//!    已经结束的拖拽，绝不绑定。
+//! 原生事件本身不携带前端会话身份，但**按下这一刻系统移动循环还没开始**，主线程
+//! 仍受理 IPC：前端在 `pointerdown` 里先 `arm_drag_session(token)`，窗口过程在
+//! `WM_ENTERSIZEMOVE` 取走该 hwnd 的身份，并原样附在 start/end 载荷上。token 是
+//! 精确身份：迟到的旧事件带旧 token，不会认领新会话；前端也不需要再在模态循环
+//! 里做一次 `drag_loop_active` IPC 往返。
 //!
-//! 查询是每次原生起拖一次的 IPC 往返（不是轮询）。若结果在 end 之后才回来，
-//! 说明这次拖拽的循环已经结束：直接收尾快照里的会话，而不是留下一个永远等不到
-//! `pointerup` 的 grab。查询不可用时宁可不绑定，交给指针事件兜底。
+//! 没有 token 的载荷（旧协议/降级）仍按「会话快照 + 原生实时确认」的代次路径
+//! 关联（`drag_loop_active`）；查询只在这条兜底路径上发生。
 //!
 //! 重复的结束信号是幂等的（会话已结束后不再是活动会话，遍历不到）。
 //!
@@ -65,21 +62,29 @@ const START_CHURN_MS = 120;
 
 /**
  * 原生拖拽相位事件名（窗口级 emit，只发给发出它的那个窗口）。
- * 载荷：`{ phase: "start" | "end", generation: number }`。
+ * 载荷：`{ phase: "start" | "end", generation: number, token?: string }`。
  */
 export const NATIVE_DRAG_EVENT = "window-drag";
 
 /**
- * 原生查询：指定代次的系统移动循环**此刻**是否仍在运行。
+ * 按下时预置会话身份：必须在 `startDragging` 之前执行（模态循环内主线程不再
+ * 受理 IPC）。窗口过程会把 token 原样附在随后的 start/end 相位上。
+ */
+export const NATIVE_DRAG_ARM = "arm_drag_session";
+
+/**
+ * 原生查询（仅无 token 载荷的兜底）：指定代次的系统移动循环**此刻**是否仍在运行。
  *
- * `start` / `end` 只携带代次，不携带前端会话身份；这是把 start 关联到正确
- * 会话的唯一实时事实。命令必须异步执行（`commands::system::drag_loop_active`），
- * 否则会被模态移动循环所在的主线程排队，永远只能看到「已结束」。
+ * 正常路径已由 `token` 精确关联，不再依赖这条查询；保留它是为了兼容没有携带
+ * token 的旧载荷（例如非预期窗口类型）。命令必须异步执行
+ * （`commands::system::drag_loop_active`），否则会被模态移动循环所在的主线程排队。
  */
 export const NATIVE_DRAG_QUERY = "drag_loop_active";
 
 /** 一次进行中的拖拽会话。 */
 interface LiveSession {
+  /** 按下时预置、随原生相位回传的会话身份。 */
+  token: string;
   /** 绑定到的原生移动循环代次；`null` = 尚未收到 start（非原生拖拽路径）。 */
   generation: number | null;
   ended: boolean;
@@ -94,7 +99,22 @@ const activeSessions = new Set<LiveSession>();
 /** 已确认结束的最大代次：迟到的关联结果不得再绑定到已结束的循环。 */
 let highestEndedGeneration = 0;
 
+let sessionSeq = 0;
+
 let bridgeInstalled = false;
+
+/** 生成一次按下的会话身份：base36 时间戳 + 序号 + 随机后缀（≤64，字符集受限）。 */
+function newSessionToken(): string {
+  sessionSeq = (sessionSeq + 1) % 0xffff;
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return `d${Date.now().toString(36)}${sessionSeq.toString(36)}-${suffix}`;
+}
+
+function parseToken(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const value = (payload as { token?: unknown }).token;
+  return typeof value === "string" && value.length > 0 && value.length <= 64 ? value : null;
+}
 
 function parseGeneration(payload: unknown): number | null {
   if (typeof payload !== "object" || payload === null) return null;
@@ -198,6 +218,28 @@ function endMatchingSessions(generation: number): void {
 }
 
 /**
+ * 带 token 的 start：只认领同一次按下的会话。
+ *
+ * token 由前端在 `pointerdown` 预置、窗口过程在 `WM_ENTERSIZEMOVE` 取走并回传，
+ * 因此不需要查询循环是否仍活跃——迟到的旧 start 带的是旧 token，匹配不到新会话。
+ */
+function bindTokenStart(token: string, generation: number): void {
+  for (const session of activeSessions) {
+    if (session.ended || session.token !== token) continue;
+    session.generation = generation;
+    return;
+  }
+}
+
+/** 带 token 的 end：只结束同一次按下的会话；重复/迟到事件天然无匹配。 */
+function endTokenSession(token: string): void {
+  for (const session of [...activeSessions]) {
+    if (session.ended || session.token !== token) continue;
+    session.end();
+  }
+}
+
+/**
  * 安装原生拖拽相位桥：每个 webview 入口调用一次（主窗 `main.tsx`、微件 `widgets/main.tsx`）。
  * 浏览器预览没有 Tauri 运行时，直接跳过；重复调用是 no-op。
  */
@@ -207,10 +249,17 @@ export function installNativeDragBridge(): void {
   void listen(NATIVE_DRAG_EVENT, (event) => {
     const generation = parseGeneration(event.payload);
     const phase = parsePhase(event.payload);
+    const token = parseToken(event.payload);
     // 协议不完整的事件不猜语义：宁可交给指针事件兜底，也不误清新会话。
     if (generation === null || phase === null) return;
-    if (phase === "start") associateStart(generation);
-    else endMatchingSessions(generation);
+    if (phase === "start") {
+      if (token) bindTokenStart(token, generation);
+      else associateStart(generation);
+    } else {
+      highestEndedGeneration = Math.max(highestEndedGeneration, generation);
+      if (token) endTokenSession(token);
+      else endMatchingSessions(generation);
+    }
   }).catch(() => {
     // 事件系统不可用（例如集成环境未注入）：保留指针事件兜底路径
     bridgeInstalled = false;
@@ -283,6 +332,7 @@ export function attachDragCursorSession(
     stopCurrent(); // 上一条会话若因事件缺失未收尾，先清掉再开新的
 
     const session: LiveSession = {
+      token: newSessionToken(),
       generation: null,
       ended: false,
       teardown: null,
@@ -291,6 +341,13 @@ export function attachDragCursorSession(
     current = session;
     activeSessions.add(session);
     setActive(true);
+
+    // 必须在 Tauri `drag.js` 的 `startDragging` 之前预置身份：pointerdown 先于
+    // mousedown，此刻系统移动循环尚未开始，主线程仍受理 IPC。失败不阻塞光标：
+    // 原生事件没有 token 时，桥接层会退回代次/指针兜底。
+    if (isTauri()) {
+      void invoke(NATIVE_DRAG_ARM, { token: session.token }).catch(() => {});
+    }
 
     const startedAt = Date.now();
     const inStartChurn = () => Date.now() - startedAt < START_CHURN_MS;

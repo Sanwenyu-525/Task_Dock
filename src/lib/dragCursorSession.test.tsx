@@ -16,8 +16,9 @@ const native = vi.hoisted(() => {
    */
   const loop = { generation: 0, active: false };
   const queries: number[] = [];
+  const armed: string[] = [];
   const state = { failQueries: false };
-  return { handlers, loop, queries, state };
+  return { handlers, loop, queries, armed, state };
 });
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -31,7 +32,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 // `drag_loop_active` 是前端关联 start 与本地会话的唯一原生查询。
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
-  invoke: (command: string, args?: { generation?: number }) => {
+  invoke: (command: string, args?: { generation?: number; token?: string }) => {
+    if (command === "arm_drag_session") {
+      native.armed.push(args?.token ?? "");
+      return Promise.resolve();
+    }
     if (command !== "drag_loop_active") {
       return Promise.reject(new Error(`unexpected command: ${command}`));
     }
@@ -88,11 +93,15 @@ function move(target: EventTarget, buttons: number) {
   target.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, buttons }));
 }
 
-/** 模拟原生窗口过程发出的相位事件（窗口级 emit 的载荷）。 */
-function nativePhase(phase: "start" | "end", generation: number) {
+/** 模拟原生窗口过程发出的相位事件（窗口级 emit 的载荷，token 可选）。 */
+function nativePhase(phase: "start" | "end", generation: number, token?: string) {
   const handler = native.handlers.get(NATIVE_DRAG_EVENT);
   expect(handler).toBeTruthy();
-  handler!({ event: NATIVE_DRAG_EVENT, id: 1, payload: { phase, generation } });
+  handler!({
+    event: NATIVE_DRAG_EVENT,
+    id: 1,
+    payload: { phase, generation, ...(token ? { token } : {}) },
+  });
 }
 
 /** 模拟原生移动循环的实时状态（`WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`）。 */
@@ -122,6 +131,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   native.queries.length = 0;
+  native.armed.length = 0;
   native.state.failQueries = false;
   nativeLoop(0, false);
   __resetDragBridgeStateForTests();
@@ -188,6 +198,78 @@ describe("attachDragCursorSession", () => {
     nativePhase("end", 1);
     expect(dragging(root)).toBe(false);
     expect(__activeDragSessionCount()).toBe(0);
+
+    session.dispose();
+  });
+
+  it("按下时预置 token，原生 start/end 带同一 token 即精确配位（不查询循环）", () => {
+    const root = mountRoot();
+    const session = attachDragCursorSession(root);
+
+    press(surfaceOf(root));
+    expect(native.armed).toHaveLength(1);
+    const token = native.armed[0];
+    expect(token.length).toBeGreaterThan(0);
+
+    nativePhase("start", 11, token);
+    expect(dragging(root)).toBe(true);
+    expect(native.queries).toEqual([]); // 正常路径不再依赖模态循环里的 IPC 查询
+
+    nativePhase("end", 11, token);
+    expect(dragging(root)).toBe(false);
+    expect(__activeDragSessionCount()).toBe(0);
+
+    session.dispose();
+  });
+
+  it("token 隔离跨会话：旧 token 的迟到 end 不影响新按下的会话", () => {
+    const root = mountRoot();
+    const session = attachDragCursorSession(root);
+
+    // 会话 A 正常结束
+    press(surfaceOf(root));
+    const tokenA = native.armed[0];
+    nativePhase("start", 1, tokenA);
+    nativePhase("end", 1, tokenA);
+    expect(dragging(root)).toBe(false);
+
+    // 会话 B 已经按下，A 的旧 end 此刻才送达（携带旧 token）
+    press(surfaceOf(root));
+    expect(native.armed).toHaveLength(2);
+    const tokenB = native.armed[1];
+    expect(tokenB).not.toBe(tokenA);
+    nativePhase("end", 1, tokenA);
+    expect(dragging(root)).toBe(true);
+    expect(__activeDragSessionCount()).toBe(1);
+
+    // B 自己的 start/end 才能结束它
+    nativePhase("start", 2, tokenB);
+    nativePhase("end", 2, tokenB);
+    expect(dragging(root)).toBe(false);
+    expect(__activeDragSessionCount()).toBe(0);
+
+    session.dispose();
+  });
+
+  it("旧 start 带旧 token 迟到时也不会认领新会话", () => {
+    const root = mountRoot();
+    const session = attachDragCursorSession(root);
+
+    press(surfaceOf(root));
+    const tokenA = native.armed[0];
+    release(document.body);
+    expect(dragging(root)).toBe(false);
+
+    press(surfaceOf(root)); // 会话 B，按住
+    const tokenB = native.armed[1];
+    nativePhase("start", 1, tokenA); // A 的 start 迟到，带旧 token
+    expect(dragging(root)).toBe(true);
+    nativePhase("end", 1, tokenA);
+    expect(dragging(root)).toBe(true); // 不误伤 B
+
+    nativePhase("start", 2, tokenB);
+    nativePhase("end", 2, tokenB);
+    expect(dragging(root)).toBe(false);
 
     session.dispose();
   });

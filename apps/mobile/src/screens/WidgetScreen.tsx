@@ -2,7 +2,7 @@
 // 变化后经 src/lib/widgetSnapshot 推送快照并刷新已添加的原生小组件实例。
 // 预览与原生小组件共用同一份真实快照数据（无假数据）；尺寸在系统小组件选择器
 // 添加时选择（2×2 / 4×2），此处的尺寸偏好决定预览形状。
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { AppBar } from "../components/AppBar";
@@ -11,10 +11,9 @@ import { Chip } from "../components/Chip";
 import { PressableScale } from "../components/PressableScale";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { SettingSection } from "../components/SettingSection";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { requestPinWidget, taskDockWidgetAvailable } from "../../modules/taskdock-widget";
 import { getSetting, setSetting } from "../db/kv";
-import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
 import {
   DEFAULT_WIDGET_PREFS,
@@ -58,17 +57,10 @@ const CONTENT_TITLES: Record<WidgetContent, string> = {
 
 export function WidgetScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
-  const insets = useWindowInsets();
   const [prefs, setPrefs] = useState<WidgetPrefs>(DEFAULT_WIDGET_PREFS);
   const [snapshot, setSnapshot] = useState<WidgetSnapshot | null>(null);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -234,12 +226,6 @@ export function WidgetScreen({ nav }: { nav: Nav }) {
       </ScrollView>
 
       {/* 唯一操作在页面底部主按钮：提示留在底部、抬到手势条上方 */}
-      <Toast
-        toast={toast}
-        onDismiss={dismissToast}
-        placement="bottom"
-        bottomOffset={space.lg + insets.bottom}
-      />
     </View>
   );
 }

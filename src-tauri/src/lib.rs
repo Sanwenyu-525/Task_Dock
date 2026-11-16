@@ -519,6 +519,11 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 快速预览媒体协议：只服务命令注册的短期 token，支持视频 Range；
+        // 不扩大 tauri.conf.json 的 assetProtocol 全盘 scope。
+        .register_uri_scheme_protocol("taskdock-preview", |_ctx, request| {
+            file_workspace::preview::handle_preview_uri(&request)
+        })
         .setup(|app| {
             // 数据目录最先确定：诊断日志、数据库、备份与恢复都依赖它。
             // 测试/便携模式（TASK_DOCK_DATA_DIR）下同时隔离全部本地状态。
@@ -1273,6 +1278,7 @@ pub fn run() {
             commands::system::apply_window_capsule,
             commands::system::set_magnetic_drag_config,
             commands::system::drag_loop_active,
+            commands::system::arm_drag_session,
             commands::system::set_magnetic_dock,
             commands::system::set_undock_anchor,
             commands::system::take_undock_anchor_applied,
@@ -1561,6 +1567,11 @@ pub fn run() {
             commands::file_workspace::fs_create_dir,
             commands::file_workspace::fs_create_file,
             commands::file_workspace::fs_rename,
+            commands::file_workspace::fs_batch_rename,
+            commands::file_workspace::fs_hash_files,
+            commands::file_workspace::fs_preview_image,
+            commands::file_workspace::fs_read_text,
+            commands::file_workspace::fs_preview_media_url,
             commands::file_workspace::fs_copy_paths,
             commands::file_workspace::fs_move_paths,
             commands::file_workspace::fs_delete_paths,

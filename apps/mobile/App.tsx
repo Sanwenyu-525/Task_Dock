@@ -8,6 +8,9 @@ import { StatusBar } from "expo-status-bar";
 import { LaunchOverlay } from "./src/components/LaunchOverlay";
 import { PlaceholderPage } from "./src/components/PlaceholderPage";
 import { TabBar, type TabKey } from "./src/components/TabBar";
+import { ToastHost } from "./src/components/ToastHost";
+import { APP_BAR_HEIGHT } from "./src/components/AppBar";
+import { ToastProvider, ToastScope, useToast } from "./src/feedback/ToastProvider";
 import launchIntent, { type LaunchAction } from "./modules/launch-intent";
 import { listCaptures } from "./src/db/captures";
 import { markAttachmentsMissingFiles, resetInterruptedUploads } from "./src/db/attachments";
@@ -71,6 +74,20 @@ function isThemeMode(value: string | null): value is ThemeMode {
  */
 const REMINDER_ACTIONS_VERSION = "1";
 
+/** 二级页固定底部操作区高度：只在这里登记，页面不再各自传 bottomOffset。 */
+const PUSH_BOTTOM_BAR_HEIGHT: Partial<Record<RouteKey, number>> = {
+  files: 116,
+  note_editor: 64,
+  task_detail: 84,
+  capture: 96,
+  capture_camera: 96,
+  capture_scan: 96,
+  capture_stash: 96,
+  capture_review: 96,
+  sync: 0,
+  conflict: 0,
+};
+
 // 原生启动图一直保留到 JS 第一帧：LaunchOverlay 在布局完成后主动隐藏。
 // 开库失败时也要显式隐藏，否则错误页会被原生图永久盖住。
 // 退出动画设为 0：JS 首帧与原生图同构（同一张骨架、同一 80dp），硬切不可见；
@@ -102,7 +119,15 @@ function ScreenFade({ children }: { children: ReactNode }) {
 }
 
 /** 一级页容器：常驻挂载 + 可见性切换，保留页面内的筛选、搜索与滚动位置。 */
-function TabPage({ active, children }: { active: boolean; children: ReactNode }) {
+function TabPage({
+  active,
+  scope,
+  children,
+}: {
+  active: boolean;
+  scope: string;
+  children: ReactNode;
+}) {
   return (
     <View
       style={[styles.tabPage, active ? null : styles.tabPageHidden]}
@@ -110,7 +135,9 @@ function TabPage({ active, children }: { active: boolean; children: ReactNode })
       importantForAccessibility={active ? "auto" : "no-hide-descendants"}
       pointerEvents={active ? "auto" : "none"}
     >
-      <ScreenFade>{children}</ScreenFade>
+      <ScreenFade>
+        <ToastScope scope={scope}>{children}</ToastScope>
+      </ScreenFade>
     </View>
   );
 }
@@ -118,6 +145,7 @@ function TabPage({ active, children }: { active: boolean; children: ReactNode })
 function Shell() {
   const { tokens, scheme } = useTheme();
   const insets = useWindowInsets();
+  const { setActiveScope } = useToast();
   // 蓝青专业版：默认进入「首页」，任务仍是独立一级栏
   const [tab, setTab] = useState<TabKey>("home");
   /** 数据版本号：前台恢复、收集箱转任务后自增，驱动列表重查 */
@@ -317,6 +345,17 @@ function Shell() {
   }, [stackDepth]);
 
   const top = stack[stack.length - 1] ?? null;
+  const activeScope = top ? `push:${top.key}` : `tab:${tab}`;
+  useEffect(() => {
+    setActiveScope(activeScope);
+  }, [activeScope, setActiveScope]);
+
+  // Toast 统一锚点：顶部避开状态栏 + 标题栏（一级 ScreenHeader / 二级 AppBar 同为 56dp）；
+  // 底部避开键盘（Host 内实时处理）/ TabBar / 二级页固定操作区 / 手势区。
+  const toastTopOffset = insets.top + APP_BAR_HEIGHT + space.sm;
+  const toastBottomOffset = top
+    ? insets.bottom + (PUSH_BOTTOM_BAR_HEIGHT[top.key] ?? space.md)
+    : insets.bottom + 66;
 
   const renderRoute = (route: Route): ReactNode => {
     switch (route.key) {
@@ -432,10 +471,10 @@ function Shell() {
             页面用绝对定位叠在同一容器里——五个 flex:1 直接并列会被纵向平分高度。
             隐藏页同时关闭无障碍子树，否则 TalkBack 仍能聚焦到看不见的列表项。 */}
         <View style={styles.tabStack}>
-          <TabPage active={tab === "home"}>
+          <TabPage active={tab === "home"} scope="tab:home">
             <HomeScreen version={version} nav={nav} inboxCount={inboxCount} />
           </TabPage>
-          <TabPage active={tab === "tasks"}>
+          <TabPage active={tab === "tasks"} scope="tab:tasks">
             <TasksScreen
               version={version}
               nav={nav}
@@ -443,13 +482,13 @@ function Shell() {
               onConsumeCreateSignal={consumeCreateSignal}
             />
           </TabPage>
-          <TabPage active={tab === "workspace"}>
+          <TabPage active={tab === "workspace"} scope="tab:workspace">
             <WorkspaceScreen nav={nav} inboxCount={inboxCount} />
           </TabPage>
-          <TabPage active={tab === "tools"}>
+          <TabPage active={tab === "tools"} scope="tab:tools">
             <ToolsScreen nav={nav} />
           </TabPage>
-          <TabPage active={tab === "profile"}>
+          <TabPage active={tab === "profile"} scope="tab:profile">
             <ProfileScreen nav={nav} version={version} />
           </TabPage>
         </View>
@@ -468,14 +507,19 @@ function Shell() {
           accessibilityViewIsModal
         >
           <ScreenFade key={`${top.key}-${top.noteId ?? "new"}`}>
-            <View style={[styles.pushPage, { backgroundColor: tokens.bg }]}>
-              {renderRoute(top)}
-            </View>
+            <ToastScope scope={`push:${top.key}`}>
+              <View style={[styles.pushPage, { backgroundColor: tokens.bg }]}>
+                {renderRoute(top)}
+              </View>
+            </ToastScope>
           </ScreenFade>
         </View>
       ) : null}
 
       {top ? null : <TabBar active={tab} onChange={setTab} bottomInset={insets.bottom} />}
+
+      {/* 全局唯一 ToastHost：位于所有一级页、二级页与 TabBar 之上，切页不销毁。 */}
+      <ToastHost topOffset={toastTopOffset} bottomOffset={toastBottomOffset} />
     </View>
   );
 }
@@ -564,11 +608,13 @@ export default function App() {
 
   return (
     <MotionProvider>
-      {boot.phase === "ready" ? (
-        <ThemeProvider initialMode={boot.mode}>
-          <Shell />
-        </ThemeProvider>
-      ) : null}
+      <ToastProvider>
+        {boot.phase === "ready" ? (
+          <ThemeProvider initialMode={boot.mode}>
+            <Shell />
+          </ThemeProvider>
+        ) : null}
+      </ToastProvider>
       {launchDone ? null : (
         <LaunchOverlay ready={boot.phase === "ready"} onDone={finishLaunch} />
       )}

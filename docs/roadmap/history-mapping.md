@@ -40,6 +40,17 @@
 | 12 | 最多三个 Subagent 并行开发 | 历史聊天摘要 + **当前用户明确要求** | 正式技术文档 `AGENTS.md` §3 | 开发协作规范，非产品功能 | 归入现有规范 |
 | 13 | 多轮代码验收及修复提示词 | 历史聊天摘要 | 当前仓库 `.agents/skills/taskdock-acceptance` / `taskdock-remediation-prompt` | 开发流程规范，非产品功能 | 归入现有流程 |
 | 14 | Agent 与应用的统一管理 | 历史聊天摘要 | 当前源代码 `agents` 行动中心 + 导航「应用」 | `core.agent-action-center` + 导航「应用」 | 归入现有功能 |
+| 15 | 统一大型工作台 / 专业工作台入口 | 历史聊天摘要 + **当前用户明确要求（2026-11-16）** | 当前源代码 `src/workbench/WorkbenchShell.tsx`、`workbenchLayout.ts`、20 路由；`tmp/acceptance/workbench-final-20261115/` | `workbench.unified` | 独立保留（产品宿主，不并入开发工作台） |
+| 16 | 专业项目工作空间（五种项目类型） | 历史聊天摘要 + **当前用户明确要求** | 正式技术文档 `docs/WORKSPACE_PROJECTS.md` + 当前源代码 `src/workspace/workspaceProfiles.ts` + v49/v57/v58 迁移 | `workbench.projects` | 独立保留（项目容器，不并入专业工作台） |
+| 17 | 单窗口多目录文件工作区 | 历史聊天摘要 + **当前用户明确要求** | 当前源代码 `src/components/files/` + 布局树测试 + 验收报告 | `workbench.files` | 独立保留（文件系统工作区，不并入文件暂存架） |
+| 18 | 智能剪贴板本体（采集/分组/粘贴/隐私） | 历史聊天摘要 | 当前源代码 `clipboard/platform.rs` + 五轮 GUI 验收 `docs/clipboard/` + README §4 | `capture.clipboard` | 独立保留（查看器作为子能力） |
+| 19 | 应用发现 / 应用中心 / 快捷启动 | 历史聊天摘要 | 当前源代码 launcher 模块 + README §3 + 导航「应用」 | `core.app-launcher` | 独立保留（补齐原 §4 边界） |
+| 20 | 内置 Agent：目标推进与任务接续 | 历史聊天摘要 + **当前用户明确要求** | 现状证据仅行动中心/MCP/开发工作台；无执行循环代码 | `agent.builtin` | 独立保留（planned，不以现有能力冒充） |
+| 21 | Relay Agent 中转与协作 | 历史聊天摘要 | 仅有预研 `docs/RELAY_INTEGRATION.md`（2026-11-14），无服务端/协议/连接器 | `agent.relay` | 独立保留（planned） |
+| 22 | 移动端伴随应用（配对/同步/互传/采集） | 历史聊天摘要 | 正式技术文档 `docs/mobile/README.md` + `apps/mobile/` + 物理机证据 2026-11-09/13/14 | `mobile.companion` | 独立保留（跨设备能力集合） |
+| 23 | Android 屏幕镜像与独立虚拟屏 | 历史聊天摘要 | 正式技术文档 `docs/mobile/13-android-screen-control.md` + `vd_*` 命令 + 2026-11-13/14 实现记录 | `mobile.virtual-display` | 独立保留（不并入伴随应用） |
+| 24 | 资源管理 / 诊断中心 / 备份恢复 | 历史聊天摘要 | `docs/RESOURCE_CLEANUP.md`、`docs/DIAGNOSTICS.md`、`docs/PERFORMANCE_FINAL_ACCEPTANCE.md` + 当前源代码 | `system.resources`、`system.diagnostics`、`system.backup` | 拆为三个独立 ID（不同生命周期与安全边界） |
+| 25 | 小说 / 游戏 / AI 漫剧专业工作台 | 历史聊天摘要 + **当前用户明确要求** | `docs/WORKSPACE_PROJECTS.md` + `workspaceProfiles.ts` 能力四态 + v58 小说迁移 | `create.novel`、`create.game`、`create.ai-comic` | 拆为三个 ID（不同制作流程与缺口） |
 
 > 表中「自动化测试」只表示存在对应测试文件与用例，不代表真机行为已验证；真机状态以各功能
 > `verification` 字段与验收报告为准。
@@ -70,6 +81,13 @@
 | 任务智能提醒 | 生活例行事项 | 独立 | 同一数据层，视图与打卡语义不同（`core.life-routines`） |
 | 帮助中心 | 首次使用引导 | 独立 | 常驻查阅 vs 一次性流程；互相提供入口 |
 | 资源清理 | 开发构建缓存清理 | 独立 | 前者面向用户数据目录；后者是仓库构建治理（`scripts/build-guard.mjs`） |
+| 统一大型工作台 | 开发工作台 | 独立 | 前者是 20 路由的统一宿主与模块协议；后者是「当前开发任务」的专注视图，不是同一功能 |
+| 专业项目工作空间 | 小说/游戏/AI 漫剧工作台 | 独立 | 前者是项目容器与上下文（类型、事项、阶段、关联、窗口状态）；后者是各类型的专业制作流程 |
+| 智能剪贴板 | 剪贴板多类型查看器 | 父子关系（不合并） | 查看器是采集本体的专项呈现层；`ux.clipboard-viewers` 保留用于查看器验收 |
+| 移动端伴随应用 | Android 虚拟屏 | 独立 | 前者是跨设备数据协作；后者是运行期设备控制会话，权限与生命周期不同 |
+| 诊断中心 | 资源管理与智能清理 | 独立 | 前者是可观测性（日志/异常/操作链）；后者是用户数据清理与配额治理 |
+| 备份与恢复 | 资源清理 | 独立 | 备份是数据安全与可恢复性契约；清理是磁盘回收，二者不可互替 |
+| Relay Agent 集成 | Agent MCP Server | 独立 | MCP 是外部客户端读写规划数据的工具协议；Relay 是运行期 Agent 间消息中转与任务交接 |
 
 ## 3. 明确暂缓 / 取消
 
@@ -85,10 +103,12 @@
 | 节假日 / 调休 API | 取消（按设计） | 不接第三方节假日接口，工作日仅自然周语义 | `core.smart-reminders` |
 | 任意脚本执行工作流 | 取消（按设计） | 只保留白名单动作，不引入脚本引擎 | `core.one-click-workflow` |
 
-## 4. 已交付但未登记为目录条目的子系统（边界说明，本轮不扩张）
+## 4. 已交付但未登记为目录条目的子系统（边界说明）
 
-以下能力已在产品中交付并有独立入口，但 `featureCatalog.ts` 未为其建立独立条目。本轮按
-「不以功能数量作为进步指标」的原则**不新增条目**，只在验收报告登记为目录覆盖边界，留待产品决策：
+### 4.1 2026-11-06 判定（保留原文，作为历史决策）
+
+以下能力已在产品中交付并有独立入口，但 `featureCatalog.ts` 未为其建立独立条目。当时按
+「不以功能数量作为进步指标」的原则**不新增条目**，只在验收报告登记为目录覆盖边界：
 
 - 产品规划中心本体（`planning_*`，导航 `roadmap`）
 - 悬浮胶囊 / 磁吸 / 贴边吸附（`src-tauri/src/window*`、胶囊组件）
@@ -98,6 +118,28 @@
 
 > 判断依据：这些子系统由各自模块文档（`docs/clipboard/`、`docs/shelf/`、`docs/workflows/` 等）
 > 与导航矩阵 `APP_NAVIGATION_MATRIX.md` 维护，重复登记会形成第二份清单。
+
+### 4.2 更正（2026-11-16，路线图数据治理）
+
+上述判定中的三类已被本轮审计推翻——它们已达「独立产品能力」体量，且在多份文档/验收报告
+中被当作独立对象讨论，不登记会让路线图系统性漏报：
+
+- **应用发现 / 应用中心 / 快捷启动** → 新登记 `core.app-launcher`（partial，P0）。
+- **剪贴板历史本体** → 新登记 `capture.clipboard`（implemented，P0）；`ux.clipboard-viewers` 保留为子能力。
+- **备份 / 恢复与资源清理** → 拆为 `system.backup`、`system.resources` 两个 ID（不同生命周期与安全边界）；
+  同批新增 `system.diagnostics`。
+
+仍然**不新增**条目的边界（维持 2026-11-06 结论）：
+
+- **产品规划中心本体**：用户项目是独立数据源与产品入口，不是 Task Dock 内置能力；其设计由
+  `docs/roadmap/planning-center.md` 维护，路线图只登记内置目录（`FeatureRoadmapPanel`）。
+- **悬浮胶囊 / 磁吸 / 贴边吸附**：属窗口外壳与交互基座，被统一工作台、快速捕获、专注计时等
+  多条功能共用，单独立项会与宿主条目重复。
+- **构建资源调度器**（`scripts/build-sched.mjs`）：开发基础设施，不是用户功能。
+- **任务 CRUD 本体**：产品底座，被提醒、规划、工作台等复用，不单独立项。
+- **移动端 UI 专属小工具**：归属 `mobile.companion`，不按单个页面拆分。
+
+> 更正保留原判定与日期，不删除历史结论；当前规则以本节 4.2 为准。
 
 ## 5. 维护规则
 

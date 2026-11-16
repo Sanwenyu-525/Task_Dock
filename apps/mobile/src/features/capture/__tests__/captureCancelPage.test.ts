@@ -155,16 +155,9 @@ vi.mock("../../../components/SegmentedControl", async () => {
     SegmentedControl: () => React.createElement("div", null),
   };
 });
-vi.mock("../../../components/Toast", async () => {
-  const React = await import("react");
-  return {
-    TOAST_TOP_PUSH: 0,
-    Toast: (props: Record<string, unknown>) => {
-      const toast = props.toast as { text?: string } | null;
-      return toast?.text ? React.createElement("div", null, toast.text) : null;
-    },
-  };
-});
+vi.mock("../../../feedback/ToastProvider", () => ({
+  useToast: () => ({ showToast: () => undefined }),
+}));
 vi.mock("../../../components/icons/AppIcon", async () => {
   const React = await import("react");
   return { AppIcon: () => React.createElement("span", null) };

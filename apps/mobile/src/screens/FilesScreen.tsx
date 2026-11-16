@@ -29,13 +29,7 @@ import { FileTypeIcon, fileTypeOf } from "../components/FileTypeIcon";
 import { GlassCard } from "../components/GlassCard";
 import { AppIcon } from "../components/icons/AppIcon";
 import { PressableScale } from "../components/PressableScale";
-import {
-  Toast,
-  TOAST_TOP_PUSH,
-  type ToastMessage,
-  type ToastPlacement,
-  type ToastTone,
-} from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { getSetting, setSetting } from "../db/kv";
 import { loadConnection, readToken, type PairedConnection } from "../db/syncConnection";
 import { AppError, describeError } from "../lib/errors";
@@ -244,14 +238,12 @@ export function FilesScreen({ nav }: { nav: Nav }) {
   const [saveDir, setSaveDir] = useState<string | null>(null);
   const [downloaded, setDownloaded] = useState<Record<string, string>>({});
   const [transfer, setTransfer] = useState<TransferState | null>(null);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
   /**
    * 列表读取失败后的持久错误态：离线可重试 / 安全授权类需重新配对 / 未配对引导。
    * 不再把超时或离线降级成一闪而过的 Toast 或空列表。
    */
   const [listError, setListError] = useState<ListErrorState | null>(null);
 
-  const toastSeq = useRef(0);
   const mounted = useRef(true);
   const clientRef = useRef<FileClient | null>(null);
   /**
@@ -265,14 +257,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
    */
   const cancelRequested = useRef(false);
 
-  const showToast = useCallback(
-    (text: string, tone: ToastTone = "info", placement?: ToastPlacement) => {
-      toastSeq.current += 1;
-      setToast({ id: toastSeq.current, text, tone, placement });
-    },
-    [],
-  );
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   const ensureClient = useCallback(async (): Promise<FileClient> => {
     if (clientRef.current) return clientRef.current;
@@ -560,7 +545,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
       : 0;
 
   return (
-    <View style={[styles.root, { backgroundColor: tokens.bg, paddingTop: insets.top }]}>
+    <View style={[styles.root, { backgroundColor: tokens.bg }]}>
       <AppBar
         title="文件互传"
         onBack={() => nav.back()}
@@ -808,14 +793,6 @@ export function FilesScreen({ nav }: { nav: Nav }) {
           )}
         </View>
       ) : null}
-
-      <Toast
-        toast={toast}
-        onDismiss={dismissToast}
-        placement="top"
-        topOffset={TOAST_TOP_PUSH}
-        bottomOffset={insets.bottom + 116}
-      />
     </View>
   );
 }

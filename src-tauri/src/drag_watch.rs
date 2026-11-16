@@ -36,6 +36,8 @@ mod win {
         generation: u64,
         /// 该窗口的系统移动循环当前是否仍在运行（供前端关联 start 归属）。
         active: bool,
+        /// 各代次的前端会话身份；保留最近若干代，迟到的投递消息仍能带对 token。
+        tokens: Vec<(u64, Option<String>)>,
     }
 
     /// 微件窗口数量很少（按类型各一个），线性表足够，避免引入哈希表依赖。
@@ -74,7 +76,13 @@ mod win {
                 let generation = with_watch(hwnd as isize, |watch| {
                     watch.generation += 1;
                     watch.active = true;
-                    watch.generation
+                    // 前端在 pointerdown 预置的身份：与主窗同一契约，见 drag_signal。
+                    let token = crate::drag_signal::take_token(hwnd as isize);
+                    let generation = watch.generation;
+                    watch.tokens.retain(|(gen, _)| gen.saturating_add(8) > generation);
+                    watch.tokens.retain(|(gen, _)| *gen != generation);
+                    watch.tokens.push((generation, token));
+                    generation
                 });
                 if let Some(generation) = generation {
                     // 开始信号：延后一拍，避免在进入模态循环的当下执行宿主代码。
@@ -93,21 +101,31 @@ mod win {
             }
             WM_WIDGET_DRAG => {
                 let generation = wparam as u64;
+                // 先在锁内取出 token 并清理已结束的代次，再在锁外 emit
+                // （不持锁调用外部代码）。
+                let target = with_watch(hwnd as isize, |watch| {
+                    let token = watch
+                        .tokens
+                        .iter()
+                        .find(|(gen, _)| *gen == generation)
+                        .and_then(|(_, token)| token.clone());
+                    if lparam == 0 {
+                        watch.tokens.retain(|(gen, _)| *gen != generation);
+                    }
+                    (watch.app.clone(), watch.label.clone(), token)
+                });
                 let event = if lparam == 1 {
                     DragEvent::start(generation)
                 } else {
                     DragEvent::end(generation)
                 };
-                // 只发给本微件窗口：窗口级 emit 不会与其他窗口/主窗串台。
-                // 先在锁内取出目标，再在锁外 emit（不持锁调用外部代码）。
-                let target = with_watch(hwnd as isize, |watch| {
-                    (watch.app.clone(), watch.label.clone())
-                });
-                if let Some((app, label)) = target {
+                if let Some((app, label, token)) = target {
+                    let event = event.with_token(token);
                     tracing::debug!(
                         %label,
                         phase = ?event.phase,
                         generation = event.generation,
+                        token = event.token.as_deref().unwrap_or(""),
                         "独立窗口 window-drag 相位发出"
                     );
                     let _ = app.emit_to(&label, DRAG_EVENT, event);
@@ -158,7 +176,14 @@ mod win {
         }
         list.push((
             hwnd,
-            Watch { old, app: app.clone(), label: label.to_string(), generation: 0, active: false },
+            Watch {
+                old,
+                app: app.clone(),
+                label: label.to_string(),
+                generation: 0,
+                active: false,
+                tokens: Vec::new(),
+            },
         ));
         true
     }

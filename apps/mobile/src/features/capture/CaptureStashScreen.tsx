@@ -31,12 +31,7 @@ import { FileTypeIcon, fileTypeOf } from "../../components/FileTypeIcon";
 import { ImageLightbox, type LightboxImage } from "../../components/ImageLightbox";
 import { SearchField } from "../../components/SearchField";
 import { SegmentedControl, type SegmentOption } from "../../components/SegmentedControl";
-import {
-  Toast,
-  TOAST_TOP_PUSH,
-  type ToastMessage,
-  type ToastTone,
-} from "../../components/Toast";
+import { useToast } from "../../feedback/ToastProvider";
 import * as repo from "../../db/captureAssets";
 import { formatRelative } from "../../domain/taskQuery";
 import { describeError } from "../../lib/errors";
@@ -186,15 +181,10 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const cancelTokenRef = useRef<TransferCancelToken | null>(null);
   const staleNoticeRef = useRef(0);
   const [availability, setAvailability] = useState<PairingAvailability | null>(null);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
   const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
   const [lightbox, setLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null);
-  const toastSeq = useRef(0);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone, placement: "bottom" });
-  }, []);
+  const { showToast } = useToast();
 
   const requestCancelTransfer = useCallback(() => {
     if (!cancelTokenRef.current || cancelling) return;
@@ -1130,14 +1120,6 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         images={lightbox?.images ?? []}
         initialIndex={lightbox?.index ?? 0}
         onClose={() => setLightbox(null)}
-      />
-
-      <Toast
-        toast={toast}
-        onDismiss={() => setToast(null)}
-        placement="bottom"
-        topOffset={TOAST_TOP_PUSH}
-        bottomOffset={insets.bottom + (selecting ? BULK_ACTION_BAR_HEIGHT + space.sm : space.lg)}
       />
     </View>
   );

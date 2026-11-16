@@ -231,44 +231,43 @@ describe("NovelManuscriptPanel · 串行保存", () => {
 });
 
 describe("NovelManuscriptPanel · 离开与卸载", () => {
-  it("切换模块：等待保存完成才允许离开；失败则保留原页面", async () => {
-    const moduleNotice = vi.fn();
-    function ModuleHarness() {
-      const [module, setModule] = useState<"manuscript" | "overview">("manuscript");
-      const flushRef = useRef<(() => Promise<boolean>) | null>(null);
-      return (
-        <>
-          <button
-            type="button"
-            onClick={() => {
-              void (async () => {
-                const flush = flushRef.current;
-                if (flush && !(await flush())) return;
-                setModule("overview");
-              })();
+  const moduleNotice = vi.fn();
+  function ModuleHarness() {
+    const [module, setModule] = useState<"manuscript" | "overview">("manuscript");
+    const flushRef = useRef<(() => Promise<boolean>) | null>(null);
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => {
+            void (async () => {
+              const flush = flushRef.current;
+              if (flush && !(await flush())) return;
+              setModule("overview");
+            })();
+          }}
+        >
+          切换模块
+        </button>
+        <span data-testid="module">{module}</span>
+        {module === "manuscript" && (
+          <NovelManuscriptPanel
+            projectId="p1"
+            archived={false}
+            onNotice={moduleNotice}
+            registerFlush={(flush) => {
+              flushRef.current = flush;
             }}
-          >
-            切换模块
-          </button>
-          <span data-testid="module">{module}</span>
-          {module === "manuscript" && (
-            <NovelManuscriptPanel
-              projectId="p1"
-              archived={false}
-              onNotice={moduleNotice}
-              registerFlush={(flush) => {
-                flushRef.current = flush;
-              }}
-            />
-          )}
-        </>
-      );
-    }
+          />
+        )}
+      </>
+    );
+  }
 
-    // 成功：在途期间仍停留在正文；resolve 后才进入 overview。
+  it("切换模块保存成功：等待落盘后才允许导航", async () => {
     const d = deferred<ReturnType<typeof saveResult>>();
     api.novelChapterSaveContent.mockReturnValue(d.promise);
-    const success = render(<ModuleHarness />);
+    render(<ModuleHarness />);
     const textarea = (await screen.findByLabelText("第一章正文")) as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "离开前正文" } });
     fireEvent.click(screen.getByRole("button", { name: "切换模块" }));
@@ -279,19 +278,17 @@ describe("NovelManuscriptPanel · 离开与卸载", () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(screen.getByTestId("module").textContent).toBe("overview"));
-    success.unmount();
+  });
 
-    // 失败：禁止导航，正文与草稿仍在。
-    cleanup();
+  it("切换模块保存失败：禁止导航并保留草稿", async () => {
     api.novelChapterSaveContent.mockRejectedValue(new Error("保存失败"));
-    const failed = render(<ModuleHarness />);
-    const textarea2 = (await screen.findByLabelText("第一章正文")) as HTMLTextAreaElement;
-    fireEvent.change(textarea2, { target: { value: "失败后保留" } });
+    render(<ModuleHarness />);
+    const textarea = (await screen.findByLabelText("第一章正文")) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "失败后保留" } });
     fireEvent.click(screen.getByRole("button", { name: "切换模块" }));
     await waitFor(() => expect(api.novelChapterSaveContent).toHaveBeenCalledWith("c1", "失败后保留"));
     expect(screen.getByTestId("module").textContent).toBe("manuscript");
-    expect(textarea2.value).toBe("失败后保留");
-    failed.unmount();
+    expect(textarea.value).toBe("失败后保留");
   });
 
   it("切换项目：旧项目保存完成后才换项目，不串正文", async () => {

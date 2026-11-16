@@ -5515,6 +5515,43 @@ export const fsCreateFile = (parent: string, name: string) =>
 export const fsRename = (path: string, newName: string) =>
   invoke<string>("fs_rename", { path, newName });
 
+export interface FsBatchRenameItem {
+  path: string;
+  newName: string;
+}
+
+/** 批量重命名：后端逐项校验/执行，返回真实 ok/failed/skipped 与失败原因。 */
+export const fsBatchRename = (items: FsBatchRenameItem[], operationId?: string) =>
+  invoke<FsOpReport>("fs_batch_rename", { items, operationId });
+
+export interface FsHashEntry {
+  path: string;
+  size: number | null;
+  hash: string | null;
+  error: string | null;
+}
+
+export const fsHashFiles = (paths: string[]) => invoke<FsHashEntry[]>("fs_hash_files", { paths });
+
+export interface FsTextPreview {
+  path: string;
+  size: number;
+  truncated: boolean;
+  content: string;
+}
+
+/** 大图预览（按需解码，不写 256px 缩略图缓存）。 */
+export const fsPreviewImage = (path: string) =>
+  invoke<string | null>("fs_preview_image", { path });
+
+/** 文本/代码只读预览（最多 2 MiB，二进制拒绝）。 */
+export const fsReadText = (path: string, maxBytes?: number) =>
+  invoke<FsTextPreview>("fs_read_text", { path, maxBytes });
+
+/** 视频/音频预览 URL（短期 token + 自定义协议，支持 Range）。 */
+export const fsPreviewMediaUrl = (path: string) =>
+  invoke<string>("fs_preview_media_url", { path });
+
 /**
  * conflict: skip | rename | overwrite
  *

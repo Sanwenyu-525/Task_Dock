@@ -70,7 +70,7 @@ describe("帮助中心 · 分类浏览", () => {
     ]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy();
     }
-    expect(screen.getByText("完整面板导览：导航、新建任务与徽标")).toBeTruthy();
+    expect(screen.getByText("快捷工具面板导览：导航、新建任务与徽标")).toBeTruthy();
   });
 
   it("切换分类显示对应文章；空分类显示空态", async () => {
@@ -84,10 +84,10 @@ describe("帮助中心 · 分类浏览", () => {
   it("打开文章显示正文、状态徽标与元信息；返回恢复列表", async () => {
     const user = userEvent.setup();
     render(<HelpCenterPanel />);
-    await user.click(screen.getByText("完整面板导览：导航、新建任务与徽标"));
+    await user.click(screen.getByText("快捷工具面板导览：导航、新建任务与徽标"));
     // 正文要点与元信息（适用版本 / 复制按钮在含步骤文章出现）
     expect(screen.getByText("左侧导航")).toBeTruthy();
-    expect(screen.getByText("已核对")).toBeTruthy();
+    expect(screen.getAllByText("已核对").length).toBeGreaterThan(0);
     expect(screen.getByText(/适用 v0\.11/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "复制操作步骤" })).toBeTruthy();
     // 返回上一级
@@ -98,7 +98,7 @@ describe("帮助中心 · 分类浏览", () => {
   it("打开文章写入最近浏览；最近使用区块可清空", async () => {
     const user = userEvent.setup();
     render(<HelpCenterPanel />);
-    await user.click(screen.getByText("完整面板导览：导航、新建任务与徽标"));
+    await user.click(screen.getByText("快捷工具面板导览：导航、新建任务与徽标"));
     await user.click(screen.getByRole("button", { name: "返回教程列表" }));
     expect(readRecentArticleIds()).toEqual(["help.quickstart.panel"]);
     expect(screen.getByText("最近使用")).toBeTruthy();
@@ -131,7 +131,7 @@ describe("帮助中心 · 搜索", () => {
     await user.click(screen.getByRole("button", { name: "返回教程列表" }));
     // 「返回上一级」回到打开前的上下文：仍是同一份搜索结果，不丢查询
     expect(screen.getByText("2 篇教程")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "快速入门" })).toBeNull();
+    expect(screen.getByRole("button", { name: "快速入门" })).toBeTruthy();
   });
 });
 
@@ -188,7 +188,7 @@ describe("帮助中心 · 翻译状态与语言", () => {
       // zh-only 文章在英文界面仍显示中文标题（回退）+ 徽标，不伪称国际化完成
       fireEvent.click(screen.getByRole("button", { name: "Tasks & reminders" }));
       fireEvent.click(screen.getByText("创建任务与自然语言提醒"));
-      expect(screen.getByText("This guide is not available in English yet")).toBeTruthy();
+      expect(screen.getAllByText("This guide is not available in English yet").length).toBeGreaterThan(0);
       expect(screen.getByText("用自然语言创建")).toBeTruthy();
     } finally {
       zhOnlyMode.current = false;
@@ -198,7 +198,7 @@ describe("帮助中心 · 翻译状态与语言", () => {
   it("en-US 下有英文版的文章正常显示英文正文且无缺失徽标", () => {
     setLocalePreference("en-US");
     render(<HelpCenterPanel />);
-    fireEvent.click(screen.getByText("Full panel tour: navigation, new task and badges"));
+    fireEvent.click(screen.getByText("Quick tool panel tour: navigation, new task and badges"));
     expect(screen.queryByText("This guide is not available in English yet")).toBeNull();
     expect(screen.queryByText("该教程暂无英文版")).toBeNull();
     expect(screen.getByText("Left navigation")).toBeTruthy();
@@ -221,7 +221,7 @@ describe("帮助中心 · 一次性意图与引导入口", () => {
       helpOpenRequest: { token: 1, articleId: "help.clipboard.history" },
     });
     render(<HelpCenterPanel />);
-    expect(screen.getByText("剪贴板历史：查找、收藏与复用")).toBeTruthy();
+    expect(screen.getAllByText("剪贴板历史：查找、收藏与复用").length).toBeGreaterThan(0);
     expect(useUiStore.getState().helpOpenRequest).toBeNull();
     // 意图文章进入最近浏览
     expect(readRecentArticleIds()).toContain("help.clipboard.history");

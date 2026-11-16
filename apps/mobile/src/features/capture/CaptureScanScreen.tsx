@@ -240,7 +240,7 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
   if (mountError) {
     return (
       <View
-        style={[styles.root, styles.center, { paddingTop: insets.top, backgroundColor: tokens.ink }]}
+        style={[styles.root, styles.center, { paddingTop: space.sm, backgroundColor: tokens.ink }]}
       >
         <Text style={[styles.permissionTitle, { color: tokens.onInk }]}>相机不可用</Text>
         <Text style={[styles.permissionBody, { color: tokens.inkText }]}>{mountError}</Text>
@@ -258,7 +258,7 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
   if (!permission.granted) {
     return (
       <View
-        style={[styles.root, styles.center, { paddingTop: insets.top, backgroundColor: tokens.ink }]}
+        style={[styles.root, styles.center, { paddingTop: space.sm, backgroundColor: tokens.ink }]}
       >
         <Text style={[styles.permissionTitle, { color: tokens.onInk }]}>需要相机权限才能扫描文档</Text>
         <Text style={[styles.permissionBody, { color: tokens.inkText }]}>
@@ -326,7 +326,7 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
       ) : null}
 
       <View
-        style={[styles.topBar, { paddingTop: insets.top + space.sm, backgroundColor: tokens.inkScrim }]}
+        style={[styles.topBar, { paddingTop: space.sm, backgroundColor: tokens.inkScrim }]}
       >
         <Pressable
           accessibilityRole="button"
@@ -531,7 +531,7 @@ function PageEditor({
 
   return (
     <View style={[styles.editorRoot, { backgroundColor: tokens.ink }]}>
-      <View style={[styles.editorTop, { paddingTop: insets.top + space.sm }]}>
+      <View style={[styles.editorTop, { paddingTop: space.sm }]}>
         <Pressable accessibilityRole="button" accessibilityLabel="关闭编辑" onPress={onClose}>
           <Text style={[styles.editorClose, { color: tokens.onInk }]}>完成</Text>
         </Pressable>

@@ -610,6 +610,38 @@ static DRAG_HOOK: Mutex<Option<Box<dyn Fn(crate::drag_signal::DragEvent) + Send 
 #[cfg(windows)]
 static DRAG_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// 各代次对应的前端会话身份（见 `drag_signal` 模块文档）。
+///
+/// 保留最近若干代：结束相位是**投递消息**，可能在下一轮 `WM_ENTERSIZEMOVE`
+/// 之后才处理；按代次查表才能让迟到的 end 仍带着自己那次按下的 token。
+#[cfg(windows)]
+static DRAG_TOKENS: Mutex<Vec<(u64, Option<String>)>> = Mutex::new(Vec::new());
+
+/// 记下本次循环的 token；只保留最近 8 代，避免线性表无界增长。
+#[cfg(windows)]
+fn remember_drag_token(generation: u64, token: Option<String>) {
+    let mut list = DRAG_TOKENS.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|(gen, _)| gen.saturating_add(8) > generation);
+    list.retain(|(gen, _)| *gen != generation);
+    list.push((generation, token));
+}
+
+/// 取指定代次的 token（不消费；start 与 end 都要读取）。
+#[cfg(windows)]
+fn drag_token(generation: u64) -> Option<String> {
+    let list = DRAG_TOKENS.lock().unwrap_or_else(|e| e.into_inner());
+    list.iter()
+        .find(|(gen, _)| *gen == generation)
+        .and_then(|(_, token)| token.clone())
+}
+
+/// 一轮拖拽收尾后释放代次表项。
+#[cfg(windows)]
+fn forget_drag_token(generation: u64) {
+    let mut list = DRAG_TOKENS.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|(gen, _)| *gen != generation);
+}
+
 /// 系统移动/缩放循环当前是否仍在运行（与磁吸开关无关）。
 ///
 /// 前端在收到 `start` 时用它确认「这条开始信号对应的循环此刻是否仍活跃」，
@@ -1072,6 +1104,12 @@ mod win {
         // 开始信号同样与磁力开关无关（关闭吸附后拖拽光标仍要工作）。
         if msg == WM_ENTERSIZEMOVE {
             let generation = DRAG_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+            // 前端在 pointerdown 预置的会话身份：这是把 start 精确归属到某次
+            // 按下的确定性依据（查询在模态循环内可能根本受理不到）。
+            remember_drag_token(
+                generation,
+                crate::drag_signal::take_token(hwnd as isize),
+            );
             // 先置位再发信号：前端收到 start 后立即查询时必须看到「仍在运行」，
             // 否则每次正常拖拽都会被误判成迟到的旧消息。
             DRAG_LOOP_ACTIVE.store(true, Ordering::Release);
@@ -1087,11 +1125,22 @@ mod win {
             WM_DRAG_PHASE => {
                 let generation = wparam as u64;
                 if lparam == 1 {
-                    notify_drag(crate::drag_signal::DragEvent::start(generation));
+                    notify_drag(
+                        crate::drag_signal::DragEvent::start(generation)
+                            .with_token(drag_token(generation)),
+                    );
                 } else if should_accept_end() {
                     // 前端还会按代次匹配兜底；这里先挡掉「新循环已开始」的迟到信号，
                     // 避免把上一轮的结束事件送到前端。
-                    notify_drag(crate::drag_signal::DragEvent::end(generation));
+                    // token 按代次查表，即使本轮 ENTERSIZEMOVE 已经写了新代次，
+                    // 这条迟到的 end 仍会带回它自己那次按下的身份。
+                    notify_drag(
+                        crate::drag_signal::DragEvent::end(generation)
+                            .with_token(drag_token(generation)),
+                    );
+                    forget_drag_token(generation);
+                } else {
+                    forget_drag_token(generation);
                 }
                 return 0;
             }
@@ -1503,8 +1552,8 @@ mod win {
             assert_eq!(
                 events,
                 vec![
-                    DragEvent { phase: DragPhase::Start, generation: 7 },
-                    DragEvent { phase: DragPhase::End, generation: 7 },
+                    DragEvent { phase: DragPhase::Start, generation: 7, token: None },
+                    DragEvent { phase: DragPhase::End, generation: 7, token: None },
                 ]
             );
         }

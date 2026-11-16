@@ -46,7 +46,7 @@ export function QuickTile({
           </View>
         ) : null}
       </View>
-      <Text numberOfLines={1} style={[styles.label, { color: tokens.text }]}>
+      <Text numberOfLines={2} style={[styles.label, { color: tokens.text }]}>
         {label}
       </Text>
     </PressableScale>
@@ -61,10 +61,11 @@ const styles = StyleSheet.create({
     minHeight: 78,
     borderRadius: radius.row,
     paddingHorizontal: space.xs,
-    paddingVertical: space.sm + 2,
+    paddingVertical: space.sm,
     alignItems: "center",
     justifyContent: "center",
-    gap: space.sm,
+    // 两行标签要挤进 78 的磁贴高度：图标 24 + 间距 6 + 两行 28 + 上下内边距 16 = 74
+    gap: 6,
   },
   badge: {
     position: "absolute",
@@ -85,5 +86,6 @@ const styles = StyleSheet.create({
     fontSize: font.label,
     fontWeight: "700",
     textAlign: "center",
+    lineHeight: 14,
   },
 });

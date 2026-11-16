@@ -150,6 +150,7 @@ export function commitEntryLayout(
   const task = writeChain.then(async () => {
     await ensureEntryLayoutLoaded();
 
+    const before = state;
     const current = state.config;
     const next = normalizeEntryLayout({
       version: ENTRY_LAYOUT_VERSION,
@@ -165,7 +166,9 @@ export function commitEntryLayout(
       persisted = next;
       return next;
     } catch (error) {
-      setState({ config: persisted ?? current });
+      // 回滚到提交前的整份快照：只回滚 config 会让 source/corrupt 停在「已保存」
+      // 的假状态，界面会以为这次修改成功落盘了。
+      setState(persisted ? { ...before, config: persisted } : before);
       throw error;
     }
   });

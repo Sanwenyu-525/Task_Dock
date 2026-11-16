@@ -35,6 +35,8 @@ import {
   Columns3,
   FolderOpen,
   FolderSearch,
+  Search,
+  Files,
   Pin,
   PinOff,
   Redo2,
@@ -45,10 +47,6 @@ import {
   ChevronDown,
   Copy,
   Move,
-  Send,
-  ClipboardCopy,
-  ExternalLink,
-  GitCompare,
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
@@ -120,9 +118,13 @@ import {
   finishQueueOperation,
   startQueueOperation,
 } from "../../lib/filesWorkspace/operationQueue";
-import { copyText } from "../../lib/clipboard";
 
 import OperationQueueBar from "./OperationQueueBar";
+import BatchRenameDialog, { type BatchRenameRequest } from "./BatchRenameDialog";
+import FolderCompareDialog, { type CompareRequest } from "./FolderCompareDialog";
+import QuickPreviewDialog, { type PreviewRequest } from "./QuickPreviewDialog";
+import WorkspaceSearchDialog from "./WorkspaceSearchDialog";
+import DuplicateFinderDialog from "./DuplicateFinderDialog";
 const FilePane = lazy(() => import("./FilePane"));
 
 /** 最小窗格尺寸（CSS px）：分割比例按容器实测换算钳制。 */
@@ -542,6 +544,14 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   } | null>(null);
   /** F5/F6 多窗格时优先复用上次目标（会话内）。 */
   const lastTransferTargetRef = useRef<string | null>(null);
+  /** 批量重命名：预览/冲突拦截/后端逐项执行。 */
+  const [batchRenameRequest, setBatchRenameRequest] = useState<BatchRenameRequest | null>(null);
+  /** 文件夹对比：来源目录 + 其他窗格目标；哈希只在对话框内显式触发。 */
+  const [compareRequest, setCompareRequest] = useState<CompareRequest | null>(null);
+  /** 快速预览：同一目录的文件列表随请求携带，左右方向键切换。 */
+  const [previewRequest, setPreviewRequest] = useState<PreviewRequest | null>(null);
+  const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false);
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
 
   const paneTargets = useMemo<TransferTarget[]>(() => {
     const ids = paneIds(tree);
@@ -560,6 +570,11 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       })
       .filter((item): item is TransferTarget => Boolean(item));
   }, [tree, panes, activePaneId]);
+
+  const searchSources = useMemo(
+    () => paneTargets.map((target) => ({ paneId: target.paneId, label: target.label, path: target.dir })),
+    [paneTargets],
+  );
 
   // ── 项目 hydration（代际令牌防串位）──────────────────────────────────
   useEffect(() => {
@@ -662,6 +677,65 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     return () => window.removeEventListener("taskdock-fw-request-transfer", onRequest);
   }, [store]);
 
+  // 批量重命名：FilePane 右键/选中上下文只派发请求，对话框由面板统一持有。
+  useEffect(() => {
+    const onBatch = (e: Event) => {
+      const detail = (e as CustomEvent<BatchRenameRequest>).detail;
+      if (!detail?.paths || detail.paths.length < 2) return;
+      setBatchRenameRequest({ paneId: detail.paneId, paths: [...detail.paths] });
+    };
+    window.addEventListener("taskdock-fw-batch-rename", onBatch);
+    return () => window.removeEventListener("taskdock-fw-batch-rename", onBatch);
+  }, []);
+
+  // 文件夹对比：来源取当前目录（单选目录时取该目录），目标只列其他已打开窗格。
+  useEffect(() => {
+    const onCompare = (e: Event) => {
+      const detail = (e as CustomEvent<{ paneId: string; paths: string[] }>).detail;
+      if (!detail?.paneId) return;
+      void (async () => {
+        const s = store.getState();
+        const pane = s.panes[detail.paneId];
+        const tab = pane?.tabs.find((item) => item.tabId === pane.activeTabId);
+        if (!tab) return;
+        let sourceDir = tab.path;
+        let sourceLabel = tabTitle(tab);
+        if (detail.paths?.length === 1) {
+          try {
+            const [stat] = await fsStat([detail.paths[0]]);
+            if (stat?.exists && stat.kind === "dir") {
+              sourceDir = stat.path;
+              sourceLabel = basename(stat.path);
+            }
+          } catch {
+            // 选择项已失效时回退到当前目录，不阻断对比入口。
+          }
+        }
+        const targets = paneTargets.filter(
+          (item) => item.paneId !== detail.paneId && item.dir.toLocaleLowerCase() !== sourceDir.toLocaleLowerCase(),
+        );
+        if (!targets.length) {
+          showToast(t("fw.compare.noTarget"), { kind: "warning" });
+          return;
+        }
+        setCompareRequest({ sourceDir, sourceLabel, targets });
+      })();
+    };
+    window.addEventListener("taskdock-fw-compare", onCompare);
+    return () => window.removeEventListener("taskdock-fw-compare", onCompare);
+  }, [paneTargets, showToast, store, t]);
+
+  // 快速预览：FilePane 携带当前目录的可见文件列表，方向键可安全切换。
+  useEffect(() => {
+    const onPreview = (e: Event) => {
+      const detail = (e as CustomEvent<PreviewRequest>).detail;
+      if (!detail?.path || !detail.entries?.length) return;
+      setPreviewRequest(detail);
+    };
+    window.addEventListener("taskdock-fw-preview", onPreview);
+    return () => window.removeEventListener("taskdock-fw-preview", onPreview);
+  }, []);
+
   // ── 应用内拖拽/快速传输共用的真实文件操作 ────────────────────────────
   const applyFileDrop = useCallback(
     async (
@@ -732,6 +806,45 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       }
     },
     [applyFileDrop, showToast],
+  );
+
+  const revealSearchHit = useCallback(
+    (paneId: string, dirPath: string, filePath: string) => {
+      const s = store.getState();
+      s.setActivePane(paneId);
+      const opened = s.openInPane(paneId, dirPath, "replace");
+      if (opened) s.setSelection(paneId, [filePath]);
+      else showToast(t("fw.search.revealFailed"), { kind: "error" });
+    },
+    [showToast, store, t],
+  );
+
+  /** 重复文件对话框的删除出口：沿用回收站安全流程，逐项结果由 Rust 报告。 */
+  const deleteDuplicatePaths = useCallback(
+    async (paths: string[]) => {
+      const dirs = [...new Set(paths.map((path) => parentOf(path)).filter(Boolean))] as string[];
+      const op = startOperation("file", "workspace_delete_duplicates", {
+        component: "文件工作区",
+        metadata: { count: paths.length },
+      });
+      startQueueOperation({ id: op.id, effect: "delete", total: paths.length });
+      try {
+        op.stage("ipc");
+        const report = await fsDeletePaths(paths, false, op.id);
+        invalidateDirs(dirs);
+        finishQueueOperation(op.id, report);
+        if (report.failed > 0) {
+          showToast(t("fw.duplicates.deletePartial", { ok: report.ok, failed: report.failed }), { kind: "error" });
+        } else {
+          showToast(t("fw.duplicates.deleted", { count: report.ok }), { kind: "success" });
+        }
+      } catch (e) {
+        if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
+        finishQueueOperation(op.id, null, errorMessage(e));
+        showToast(errorMessage(e), { kind: "error" });
+      }
+    },
+    [showToast, store, t],
   );
 
   /** F5/F6 与快速按钮共用：两窗格直接另一个；多窗格优先上次目标；否则弹选择器。 */
@@ -998,6 +1111,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       if (inEditor) return;
       if (!hydrated) return;
+      if (previewRequest) return; // 预览打开时方向键/Escape 归预览对话框，不触发文件操作
       const mod = e.ctrlKey || e.metaKey;
       // 布局撤销/重做（只回滚布局与标签分配，绝不回滚真实文件操作）。
       if (mod && (e.key === "z" || e.key === "Z") && !e.shiftKey) {
@@ -1132,7 +1246,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageActive, hydrated, activePaneId, requestTransfer, quickTransfer]);
+  }, [pageActive, hydrated, activePaneId, requestTransfer, quickTransfer, previewRequest]);
 
   // Delete 的确认语义（键盘触发时复用 ConfirmDialog）。
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -1380,6 +1494,8 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     },
     { key: "maximize", label: maximizedPaneId ? t("fw.layout.restoreMax") : t("fw.layout.maximize"), icon: maximizedPaneId ? <Minimize2 size={13} /> : <Maximize2 size={13} />, disabled: paneCount <= 1, onSelect: () => store.getState().toggleMaximize(activePaneId) },
     { key: "closeOthers", label: t("fw.layout.closeOthers"), disabled: paneCount <= 1, onSelect: () => closeOtherPanes(activePaneId) },
+    { key: "workspaceSearch", label: t("fw.search.workspace"), icon: <Search size={13} />, onSelect: () => setWorkspaceSearchOpen(true) },
+    { key: "duplicates", label: t("fw.duplicates.find"), icon: <Files size={13} />, onSelect: () => setDuplicateOpen(true) },
     { key: "reset", label: t("fw.layout.resetDefault"), onSelect: () => applyLayoutPreset("single") },
     { key: "refreshAll", label: t("fw.layout.refreshAll"), onSelect: () => invalidateDirs(paneIds(tree).map((id) => panes[id]?.tabs.find((x) => x.tabId === panes[id]?.activeTabId)?.path ?? "").filter(Boolean)) },
   ];
@@ -2115,6 +2231,26 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         )}
       </Dialog>
 
+      <BatchRenameDialog request={batchRenameRequest} onClose={() => setBatchRenameRequest(null)} />
+      <FolderCompareDialog
+        request={compareRequest}
+        onClose={() => setCompareRequest(null)}
+        onCopy={(paths, targetDir) => applyFileDrop(paths, targetDir, "copy", "rename")}
+      />
+      <QuickPreviewDialog request={previewRequest} onClose={() => setPreviewRequest(null)} />
+      <WorkspaceSearchDialog
+        open={workspaceSearchOpen}
+        sources={searchSources}
+        onClose={() => setWorkspaceSearchOpen(false)}
+        onReveal={revealSearchHit}
+      />
+      <DuplicateFinderDialog
+        open={duplicateOpen}
+        sources={searchSources}
+        onClose={() => setDuplicateOpen(false)}
+        onReveal={revealSearchHit}
+        onDelete={deleteDuplicatePaths}
+      />
       <OperationQueueBar />
       <FwDragGhost />
     </div>

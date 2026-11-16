@@ -78,7 +78,7 @@ export const CLIPBOARD_ARTICLES: readonly HelpArticle[] = [
       "zh-CN": ["剪贴板", "历史", "收藏", "置顶", "HTML 预览", "逐项粘贴", "搜索", "复制并切换", "粘贴到目标窗口", "窗口切换"],
       "en-US": ["clipboard", "history", "favorite", "pin", "HTML preview", "paste one by one", "search", "copy and switch", "paste to window", "window switch"],
     },
-    relatedFeatureIds: ["ux.clipboard-viewers", "core.global-search"],
+    relatedFeatureIds: ["capture.clipboard", "ux.clipboard-viewers", "core.global-search"],
     relatedRouteIds: ["clipboard"],
   },
   {

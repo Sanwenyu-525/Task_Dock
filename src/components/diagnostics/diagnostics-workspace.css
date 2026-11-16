@@ -1,0 +1,95 @@
+@layer base, theme, ui, menu;
+
+@layer ui {
+  /* R5：诊断中心从「健康概览 + 三列筛选 + 行内列表」提升为
+     左侧筛选栏 + 右侧健康概览与事件列表。
+     仅改网格编排，请求/分页/清理/导出与错误语义完全沿用原实现。 */
+
+  .diag-center .diag-body {
+    display: grid;
+    grid-template-columns: 228px minmax(0, 1fr);
+    align-items: start;
+    gap: 10px 12px;
+    padding-right: 4px;
+  }
+
+  .diag-center .diag-body > * {
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .diag-center .diag-body > .diag-center-filters {
+    grid-column: 1;
+    grid-row: 1 / span 12;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: calc(100vh - 180px);
+    overflow: auto;
+    padding-right: 2px;
+  }
+
+  .diag-center .diag-body.is-chain {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .diag-center .diag-body.is-chain > * {
+    grid-column: 1;
+  }
+
+  /* 侧栏里的筛选字段纵向排列：范围/级别/模块/关键词各自成行，
+     按钮在底部，避免在 228px 内挤成两列窄输入框。 */
+  .diag-body .diag-center-filters .diag-center-filter-grid,
+  .diag-body .diag-center-filters .diag-center-advanced .diag-center-filter-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .diag-body .diag-center-filters .diag-center-filter-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .diag-body .diag-center-filters .diag-center-advanced-toggle {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .diag-body .diag-center-filters .diag-center-input,
+  .diag-body .diag-center-filters .ui-select-trigger {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .diag-center .diag-body > .diag-center-list,
+  .diag-center .diag-body > .diag-center-chain {
+    min-height: 0;
+  }
+
+  @container wb-content (max-width: 900px) {
+    .diag-center .diag-body {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .diag-center .diag-body > *,
+    .diag-center .diag-body > .diag-center-filters {
+      grid-column: 1;
+      grid-row: auto;
+      position: static;
+      max-height: none;
+      overflow: visible;
+    }
+
+    .diag-body .diag-center-filters .diag-center-filter-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @container wb-content (max-width: 620px) {
+    .diag-body .diag-center-filters .diag-center-filter-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+}

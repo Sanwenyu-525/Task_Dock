@@ -1,7 +1,7 @@
 // 设置页：主题三态、减少动态说明、本地数据与关于。
 // 通知权限/测试通知/提醒动作的唯一管理界面是「我的 → 通知」NotificationsScreen；
 // 本页不重复放同一套权限控制，只保留「已排期提醒」这类本机数据读数。
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
 import appConfig from "../../app.json";
@@ -11,7 +11,7 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingSection } from "../components/SettingSection";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
 import { MetricTile } from "../components/MetricTile";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { listCaptures } from "../db/captures";
 import { listReminderSchedules } from "../db/reminderSchedule";
 import { SCHEMA_VERSION } from "../db/schema";
@@ -77,14 +77,8 @@ export function SettingsScreen({
   const [pendingOps, setPendingOps] = useState(0);
   const [scheduledReminders, setScheduledReminders] = useState(0);
   const [syncConnection, setSyncConnection] = useState<PairedConnection | null>(null);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   const refresh = useCallback(async () => {
     try {
@@ -197,8 +191,6 @@ export function SettingsScreen({
           <SettingRow label="数据范围" value="只在本机" />
         </SettingSection>
       </ScrollView>
-
-      <Toast toast={toast} onDismiss={dismissToast} placement="top" />
     </View>
   );
 }

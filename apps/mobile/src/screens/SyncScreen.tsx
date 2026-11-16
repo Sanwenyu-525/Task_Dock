@@ -12,13 +12,8 @@ import { SettingActionRow } from "../components/SettingActionRow";
 import { SettingRow } from "../components/SettingRow";
 import { SettingSection } from "../components/SettingSection";
 import { ToggleSwitch } from "../components/ToggleSwitch";
-import {
-  Toast,
-  TOAST_TOP_PUSH,
-  type ToastMessage,
-  type ToastPlacement,
-  type ToastTone,
-} from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
+import type { ToastPlacement } from "../feedback/toastQueue";
 import { countAttachmentsForTransfer } from "../db/attachments";
 import {
   countPendingSyncOps,
@@ -84,18 +79,9 @@ export function SyncScreen({ nav }: { nav: Nav }) {
   const [autoSettings, setAutoSettings] = useState<AutoSyncSettings | null>(null);
   const [autoNote, setAutoNote] = useState<string | null>(null);
   const [transferring, setTransferring] = useState(false);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
   const mounted = useRef(true);
 
-  const showToast = useCallback(
-    (text: string, tone: ToastTone = "info", placement?: ToastPlacement) => {
-      toastSeq.current += 1;
-      setToast({ id: toastSeq.current, text, tone, placement });
-    },
-    [],
-  );
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   const refresh = useCallback(async () => {
     try {
@@ -554,14 +540,6 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           文件互传通道，失败可在这里重试。
         </Text>
       </ScrollView>
-
-      <Toast
-        toast={toast}
-        onDismiss={dismissToast}
-        placement="top"
-        topOffset={TOAST_TOP_PUSH}
-        bottomOffset={space.lg + insets.bottom}
-      />
     </View>
   );
 }

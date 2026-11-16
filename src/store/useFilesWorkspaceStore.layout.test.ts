@@ -403,6 +403,33 @@ describe("P1 布局撤销 / 重做", () => {
     expect(after.ratio).toBeCloseTo(0.5, 3);
   });
 
+  it("指针拖动事务：多帧预览只形成一条撤销，取消则完全回滚", () => {
+    seedLayout(LAYOUT_PRESETS.leftRight.build(), [{ path: "D:\\a" }, { path: "D:\\b" }]);
+    const root = state().tree;
+    if (root.type !== "split") throw new Error("expect split");
+    const splitId = root.id;
+
+    state().beginRatioResize(splitId);
+    state().previewRatio(splitId, 0.3);
+    state().previewRatio(splitId, 0.34);
+    state().previewRatio(splitId, 0.42);
+    state().commitRatioResize();
+    expect(state().layoutHistory).toHaveLength(1);
+    state().undoLayout();
+    let after = state().tree;
+    if (after.type !== "split") throw new Error("expect split");
+    expect(after.ratio).toBeCloseTo(0.5, 3);
+
+    state().beginRatioResize(splitId);
+    state().previewRatio(splitId, 0.2);
+    expect((state().tree as { ratio: number }).ratio).toBeCloseTo(0.2, 3);
+    state().cancelRatioResize();
+    after = state().tree;
+    if (after.type !== "split") throw new Error("expect split");
+    expect(after.ratio).toBeCloseTo(0.5, 3);
+    expect(state().layoutHistory).toHaveLength(0);
+  });
+
   it("标签跨区域移动 → 撤销回到原区域", () => {
     const ids = seedLayout(LAYOUT_PRESETS.leftRight.build(), [
       { path: "D:\\a", extra: 1 },

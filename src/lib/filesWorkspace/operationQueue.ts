@@ -46,22 +46,20 @@ export function startQueueOperation(input: {
 }): void {
   const existing = entries.find((entry) => entry.id === input.id);
   if (existing) return;
-  entries = [
-    ...entries,
-    {
-      id: input.id,
-      effect: input.effect,
-      total: input.total,
-      startedAt: Date.now(),
-      finishedAt: null,
-      status: "running",
-      ok: 0,
-      failed: 0,
-      skipped: 0,
-      partial: 0,
-      error: null,
-    },
-  ].slice(-MAX_ENTRIES);
+  const entry: FileQueueEntry = {
+    id: input.id,
+    effect: input.effect,
+    total: input.total,
+    startedAt: Date.now(),
+    finishedAt: null,
+    status: "running",
+    ok: 0,
+    failed: 0,
+    skipped: 0,
+    partial: 0,
+    error: null,
+  };
+  entries = [...entries, entry].slice(-MAX_ENTRIES);
   emit();
 }
 

@@ -28,6 +28,7 @@ import {
 } from "../../store/useActionsStore";
 import { useUiStore } from "../../store/useUiStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
@@ -41,6 +42,7 @@ import { formatRelative } from "../../lib/format";
 import { EXIT_MS, prefersReducedMotion } from "../../lib/motion";
 import { Checkbox, EmptyState, Select } from "../ui";
 import ModuleRunControl from "../lifecycle/ModuleRunControl";
+import "./actions-workspace.css";
 
 const KIND_FILTERS: Record<ActionCategory, { id: ActionKind | "all"; label: string }[]> = {
   intervention: [
@@ -319,24 +321,118 @@ export default function ActionCenterPanel() {
           </>
         }
       />
-      <div className="filter-bar primary">
-        <div className="seg-group subtle" role="group" aria-label="行动分类">
-          {(["intervention", "notification", "history"] as ActionCategory[]).map((id) => {
-            const badge = categoryCount(feed, id);
-            return (
-              <button
-                key={id}
-                className={`seg-btn ${category === id ? "active" : ""}`}
-                onClick={() => switchCategory(id)}
-                aria-pressed={category === id}
-              >
-                {CATEGORY_LABELS[id]}
-                {id !== "history" && badge > 0 && <em className="badge">{badge}</em>}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <WorkspaceSplit
+        id="actions-center"
+        sidebarLabel="行动分类与筛选"
+        defaultWidth={232}
+        minWidth={208}
+        maxWidth={310}
+        sidebar={
+          <aside className="action-rail">
+            <div className="workspace-rail-head">
+              <span className="workspace-rail-eyebrow">ACTIONS</span>
+              <h2>行动分类</h2>
+            </div>
+            {feed?.enabled !== false && (
+              <>
+            <div className="action-rail-nav" role="group" aria-label="行动分类">
+              {(["intervention", "notification", "history"] as ActionCategory[]).map((id) => {
+                const badge = categoryCount(feed, id);
+                return (
+                  <button
+                    key={id}
+                    className={`action-rail-item ${category === id ? "is-active" : ""}`}
+                    onClick={() => switchCategory(id)}
+                    aria-pressed={category === id}
+                  >
+                    <span>{CATEGORY_LABELS[id]}</span>
+                    {id !== "history" && badge > 0 && <em>{badge}</em>}
+                  </button>
+                );
+              })}
+            </div>
+
+            <section className="action-rail-section" aria-label="类型筛选">
+              <p className="action-rail-label">类型</p>
+              <div className="action-rail-nav">
+                {KIND_FILTERS[category].map((k) => (
+                  <button
+                    key={k.id}
+                    className={`action-rail-item ${(filter.kind ?? "all") === k.id ? "is-active" : ""}`}
+                    onClick={() => setFilter({ kind: k.id === "all" ? undefined : k.id })}
+                  >
+                    <span>{k.label}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="action-rail-section" aria-label="来源与任务筛选">
+              <p className="action-rail-label">范围</p>
+              {category !== "notification" && (
+                <Select
+                  size="sm"
+                  block
+                  ariaLabel="优先级筛选"
+                  value={filter.priority === undefined ? "" : String(filter.priority)}
+                  options={[
+                    { value: "", label: "全部优先级" },
+                    ...PRIORITY_LABELS.map((label, p) => ({ value: String(p), label })),
+                  ]}
+                  onChange={(v) =>
+                    setFilter({
+                      priority: v === "" ? undefined : Number(v),
+                    })
+                  }
+                />
+              )}
+              <Select
+                size="sm"
+                block
+                ariaLabel="来源筛选"
+                value={filter.source_id ?? ""}
+                options={[
+                  { value: "", label: "全部来源" },
+                  ...(feed?.coverage ?? []).map((c) => ({ value: c.source_id, label: c.display_name })),
+                ]}
+                onChange={(v) => setFilter({ source_id: v || undefined })}
+              />
+              <Select
+                size="sm"
+                block
+                ariaLabel="任务筛选"
+                value={filter.task_id ?? ""}
+                options={[
+                  { value: "", label: "全部任务" },
+                  ...taskOptions.map((t) => ({ value: t.id, label: t.title })),
+                ]}
+                onChange={(v) => setFilter({ task_id: v || undefined })}
+              />
+              {category === "intervention" && (
+                <label className="check-inline">
+                  <Checkbox
+                    checked={filter.include_acked ?? false}
+                    ariaLabel="显示已确认"
+                    onChange={(v) => setFilter({ include_acked: v })}
+                  />
+                  显示已确认
+                </label>
+              )}
+            </section>
+
+            {counts && (
+              <div className="action-rail-counts" role="status">
+                <span className="pending">需介入 {categoryCount(feed, "intervention")}</span>
+                <span>通知 {categoryCount(feed, "notification")}</span>
+                <span className="muted">历史 {categoryCount(feed, "history")}</span>
+              </div>
+            )}
+              </>
+            )}
+          </aside>
+        }
+      >
+        <div className="action-main">
 
       {actionsPaused && feed?.enabled !== false && (
         <div className="empty-hint action-paused-hint" role="status">
@@ -354,84 +450,6 @@ export default function ActionCenterPanel() {
         </div>
       ) : (
         <>
-          <div className="filter-bar secondary">
-            <div className="seg-group subtle action-kind-filter" role="group" aria-label="类型筛选">
-              {KIND_FILTERS[category].map((k) => (
-                <button
-                  key={k.id}
-                  className={`seg-btn ${(filter.kind ?? "all") === k.id ? "active" : ""}`}
-                  onClick={() => setFilter({ kind: k.id === "all" ? undefined : k.id })}
-                >
-                  {k.label}
-                </button>
-              ))}
-            </div>
-            <span className="flex-spacer" />
-            {category !== "notification" && (
-              <Select
-                className="sort-select"
-                size="sm"
-                ariaLabel="优先级筛选"
-                value={filter.priority === undefined ? "" : String(filter.priority)}
-                options={[
-                  { value: "", label: "全部优先级" },
-                  ...PRIORITY_LABELS.map((label, p) => ({ value: String(p), label })),
-                ]}
-                onChange={(v) =>
-                  setFilter({
-                    priority: v === "" ? undefined : Number(v),
-                  })
-                }
-              />
-            )}
-          </div>
-          <div className="filter-bar secondary">
-            <Select
-              className="sort-select"
-              size="sm"
-              ariaLabel="来源筛选"
-              value={filter.source_id ?? ""}
-              options={[
-                { value: "", label: "全部来源" },
-                ...(feed?.coverage ?? []).map((c) => ({ value: c.source_id, label: c.display_name })),
-              ]}
-              onChange={(v) => setFilter({ source_id: v || undefined })}
-            />
-            <Select
-              className="sort-select"
-              size="sm"
-              ariaLabel="任务筛选"
-              value={filter.task_id ?? ""}
-              options={[
-                { value: "", label: "全部任务" },
-                ...taskOptions.map((t) => ({ value: t.id, label: t.title })),
-              ]}
-              onChange={(v) => setFilter({ task_id: v || undefined })}
-            />
-            <span className="flex-spacer" />
-            {category === "intervention" && (
-              <label className="check-inline">
-                <Checkbox
-                  checked={filter.include_acked ?? false}
-                  ariaLabel="显示已确认"
-                  onChange={(v) => setFilter({ include_acked: v })}
-                />
-                显示已确认
-              </label>
-            )}
-          </div>
-
-          {counts && (
-            <div className="action-summary" role="status">
-              {/* 首屏只留 3 个可行动计数（UI-16）；「当前筛选/已加载」下沉到列表脚注。
-                  分类徽标已经表达各自总量，这里不重复「需关注」总数。 */}
-              <span className="pending">需介入 {counts.intervention}</span>
-              <span>通知 {counts.notification}</span>
-              <span className="muted">历史 {counts.history}</span>
-            </div>
-          )}
-
-          {/* 监控覆盖度：未接入/未验证必须显式说明 */}
           {(feed?.coverage.length ?? 0) > 0 && (
             <div className={`coverage-strip ${coverageIssues.length > 0 ? "warn" : ""}`}>
               <button
@@ -582,6 +600,8 @@ export default function ActionCenterPanel() {
           </div>
           </>
       )}
+        </div>
+      </WorkspaceSplit>
     </div>
   );
 }

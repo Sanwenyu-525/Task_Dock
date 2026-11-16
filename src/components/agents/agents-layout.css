@@ -34,3 +34,95 @@
 .agents-panel .session-state.state-running {
   font-weight: 600;
 }
+
+/* R5：Agent 控制中心 = 左侧分区/状态/搜索导航 + 主区会话树或统计/接入。
+   会话抽屉、实时轮次分页、历史搜索与接入向导全部复用既有实现。 */
+.agents-panel > .workspace-split {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.agents-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.agents-panel .agent-summary-rail {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.agents-panel .agent-summary-rail .summary-card {
+  padding: 7px 8px;
+  min-height: 54px;
+}
+
+.agents-rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agents-rail-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 31px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.agents-rail-item:hover {
+  border-color: var(--border-subtle);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.agents-rail-item.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.agents-rail-search {
+  flex: 0 0 auto;
+  width: 100%;
+  height: 30px;
+  min-height: 30px;
+  align-self: stretch;
+}
+
+.agents-rail-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.agent-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.agents-panel .agent-main > .page-scroll,
+.agents-panel .agent-main > .agents-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+@container wb-content (max-width: 760px) {
+  .agents-panel .agent-summary-rail {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}

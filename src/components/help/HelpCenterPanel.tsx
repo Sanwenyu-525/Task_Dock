@@ -109,11 +109,6 @@ export default function HelpCenterPanel() {
           ariaLabel={t("help.searchAria")}
           clearLabel={t("help.searchClear")}
         />
-        <span className="help-toolbar-count" role="status">
-          {normalizedQuery
-            ? t("help.searchResultCount", { count: searchResults.length })
-            : `${t(HELP_CATEGORY_LABEL_KEYS[categoryId])} · ${categoryArticles.length}`}
-        </span>
         <ReopenOnboardingButton />
       </div>
 
@@ -130,6 +125,7 @@ export default function HelpCenterPanel() {
                 type="button"
                 className={`help-cat${categoryId === id && !normalizedQuery ? " active" : ""}`}
                 aria-pressed={categoryId === id && !normalizedQuery}
+                aria-label={t(HELP_CATEGORY_LABEL_KEYS[id])}
                 onClick={() => {
                   setCategoryId(id);
                   setQuery("");
@@ -278,7 +274,11 @@ export default function HelpCenterPanel() {
           ) : (
             <div className="help-reader-empty">
               <BookOpen size={26} aria-hidden="true" />
-              <strong>{t("help.emptyCategory")}</strong>
+              <strong>
+                {locale === "en-US"
+                  ? "Choose a guide to start reading"
+                  : "选择一篇教程开始阅读"}
+              </strong>
               <span>{t("help.subtitle")}</span>
             </div>
           )}

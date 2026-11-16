@@ -23,13 +23,7 @@ import { GlassCard } from "../components/GlassCard";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { PressableScale } from "../components/PressableScale";
 import { TaskEditorSheet } from "../components/TaskEditorSheet";
-import {
-  Toast,
-  TOAST_TOP_PUSH,
-  type ToastMessage,
-  type ToastPlacement,
-  type ToastTone,
-} from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { getSetting } from "../db/kv";
 import { deleteTask, getTask, toggleTask, updateTask } from "../db/tasks";
 import { formatDue } from "../domain/taskQuery";
@@ -77,18 +71,9 @@ export function TaskDetailScreen({
   const [editorOpen, setEditorOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
   const mounted = useRef(true);
 
-  const showToast = useCallback(
-    (text: string, tone: ToastTone = "info", placement?: ToastPlacement) => {
-      toastSeq.current += 1;
-      setToast({ id: toastSeq.current, text, tone, placement });
-    },
-    [],
-  );
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   useEffect(() => {
     mounted.current = true;
@@ -448,14 +433,6 @@ export function TaskDetailScreen({
         task={task}
         onClose={() => setEditorOpen(false)}
         onSubmit={handleEditSubmit}
-      />
-
-      <Toast
-        toast={toast}
-        onDismiss={dismissToast}
-        placement="top"
-        topOffset={TOAST_TOP_PUSH}
-        bottomOffset={insets.bottom + space.lg}
       />
     </View>
   );

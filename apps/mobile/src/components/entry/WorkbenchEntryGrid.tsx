@@ -302,7 +302,8 @@ function EditableTile({
         accessibilityRole="button"
         accessibilityLabel={`从工作台移除${entry.label}`}
         onPress={onRemove}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        // 视觉 22×22，命中区扩到 46×46（≥ 44 的最小可点尺寸）
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         style={({ pressed }) => [
           styles.remove,
           { backgroundColor: tokens.dangerSoft, opacity: busy && !active ? 0.7 : 1 },

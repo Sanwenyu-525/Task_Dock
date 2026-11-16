@@ -142,7 +142,7 @@ describe("目录结构契约", () => {
     expect(new Set(titles).size).toBe(titles.length);
   });
 
-  it("五个分类均有条目且元数据齐全", () => {
+  it("七个分类均有条目且元数据齐全", () => {
     for (const c of CATEGORY_ORDER) {
       expect(CATEGORY_META[c].label.length).toBeGreaterThan(0);
       expect(CATEGORY_META[c].description.length).toBeGreaterThan(0);
@@ -152,11 +152,19 @@ describe("目录结构契约", () => {
     expect(groups.reduce((n, g) => n + g.items.length, 0)).toBe(FEATURE_CATALOG.length);
   });
 
-  it("五个展示分区条目数为 core 6 / workflow 13 / info 2 / agent 8 / ecosystem 5", () => {
+  it("七个展示分区条目数为 core 8 / workbench 6 / workflow 13 / info 2 / agent 10 / ecosystem 5 / system 5", () => {
     const counts = Object.fromEntries(
       featuresByCategory().map((g) => [g.category, g.items.length]),
     );
-    expect(counts).toEqual({ core: 6, workflow: 13, info: 2, agent: 8, ecosystem: 5 });
+    expect(counts).toEqual({
+      core: 8,
+      workbench: 6,
+      workflow: 13,
+      info: 2,
+      agent: 10,
+      ecosystem: 5,
+      system: 5,
+    });
   });
 
   it("每项必备字段非空", () => {
@@ -181,6 +189,9 @@ describe("目录结构契约", () => {
       if (f.status === "partial") {
         expect(f.existingFeatures.length, `${f.id}`).toBeGreaterThan(0);
         expect(f.missingFeatures.length, `${f.id}`).toBeGreaterThan(0);
+        // 部分实现必须给出真实可用入口：没有入口的能力应登记为 planned，
+        // 不能以「partial」表示「只有数据层/设计稿」。
+        expect(f.entryPoints?.length, `${f.id} 部分实现须给出入口`).toBeGreaterThan(0);
       }
       if (f.status === "planned") {
         expect(f.missingFeatures.length, `${f.id} 待开发须登记剩余工作`).toBeGreaterThan(0);
@@ -209,10 +220,59 @@ describe("目录结构契约", () => {
   });
 });
 
+describe("2026-11-16 路线图补登", () => {
+  /** 本轮补登的 15 项（ID → 分类 / 状态 / 优先级），锁定真实代码证据对应的结论 */
+  const EXPECTED: Array<[string, string, FeatureStatus, string]> = [
+    ["workbench.unified", "workbench", "implemented", "P0"],
+    ["workbench.projects", "workbench", "partial", "P0"],
+    ["workbench.files", "workbench", "implemented", "P0"],
+    ["create.novel", "workbench", "partial", "P1"],
+    ["create.game", "workbench", "partial", "P1"],
+    ["create.ai-comic", "workbench", "partial", "P1"],
+    ["capture.clipboard", "core", "implemented", "P0"],
+    ["core.app-launcher", "core", "partial", "P0"],
+    ["agent.builtin", "agent", "planned", "P1"],
+    ["agent.relay", "agent", "planned", "P1"],
+    ["mobile.companion", "system", "partial", "P1"],
+    ["mobile.virtual-display", "system", "implemented", "P1"],
+    ["system.resources", "system", "implemented", "P1"],
+    ["system.diagnostics", "system", "implemented", "P2"],
+    ["system.backup", "system", "implemented", "P1"],
+  ];
+
+  it("补登条目全部存在，分类/状态/优先级与代码证据一致", () => {
+    for (const [id, category, status, priority] of EXPECTED) {
+      const f = getFeatureById(id);
+      expect(f, `${id} 未登记`).toBeTruthy();
+      expect(f!.title.trim().length, `${id} title`).toBeGreaterThan(0);
+      expect(f!.description.trim().length, `${id} description`).toBeGreaterThan(0);
+      expect(f!.detail.trim().length, `${id} detail`).toBeGreaterThan(0);
+      expect(f!.category, `${id} category`).toBe(category);
+      expect(f!.status, `${id} status`).toBe(status);
+      expect(f!.priority, `${id} priority`).toBe(priority);
+      expect(f!.dependencies.length, `${id} dependencies`).toBeGreaterThan(0);
+      expect(f!.acceptanceCriteria.length, `${id} acceptanceCriteria`).toBeGreaterThan(0);
+      if (status !== "planned") {
+        expect(f!.entryPoints?.length, `${id} entryPoints`).toBeGreaterThan(0);
+      }
+    }
+    expect(EXPECTED).toHaveLength(15);
+  });
+
+  it("新增条目没有重复登记既有能力：标题与核心 12 项不重叠", () => {
+    const newIds = EXPECTED.map(([id]) => id);
+    expect(newIds.some((id) => (CORE_FEATURE_IDS as readonly string[]).includes(id))).toBe(false);
+    // 统一工作台不是开发工作台；项目工作空间不是小说/游戏/漫剧工作台；剪贴板本体不是查看器。
+    expect(getFeatureById("workbench.unified")!.title).not.toBe(getFeatureById("core.dev-workbench")!.title);
+    expect(getFeatureById("workbench.projects")!.title).not.toBe(getFeatureById("create.novel")!.title);
+    expect(getFeatureById("capture.clipboard")!.id).not.toBe(getFeatureById("ux.clipboard-viewers")!.id);
+  });
+});
+
 describe("统计摘要", () => {
-  it("全目录状态计数与验收基线一致（34 = 15 + 16 + 3 + 0）", () => {
+  it("全目录状态计数与验收基线一致（49 = 22 + 22 + 5 + 0）", () => {
     const s = featureCatalogSummary();
-    expect(s.total).toBe(34);
+    expect(s.total).toBe(49);
     // coreTotal 是 CORE_FEATURE_IDS 锁定的 12 项核心功能，与目录总数无关
     expect(s.coreTotal).toBe(12);
     // v0.10（2026-11-04 七项功能验收整改）：专注与休息、快速笔记、Agent 工作时间统计、
@@ -225,9 +285,12 @@ describe("统计摘要", () => {
     // 2026-11-08 v0.11 第三轮：新增 ux.command-palette（implemented，unverified）。
     // 2026-11-12：新增 core.dev-workbench（partial，P0 闭环已实现，P1 上下文能力与真机验收未做）。
     // 2026-11-11：新增 ux.command-phrases（implemented，unverified，CDP 走查待执行）。
-    expect(s.implemented).toBe(15);
-    expect(s.partial).toBe(16);
-    expect(s.planned).toBe(3);
+    // 2026-11-16 路线图数据治理：按真实代码补登 15 项（统一工作台/项目工作空间/文件工作区/
+    // 小说/游戏/漫剧/智能剪贴板/应用启动/内置 Agent/Relay/移动端/虚拟屏/资源/诊断/备份），
+    // 新增「工作台与专业创作」「设备、系统与数据」两个分区；帮助教程计数由 25 更正为 27。
+    expect(s.implemented).toBe(22);
+    expect(s.partial).toBe(22);
+    expect(s.planned).toBe(5);
     expect(s.blocked).toBe(0);
     // 状态计数之和必须等于总功能数
     expect(s.implemented + s.partial + s.planned + s.blocked).toBe(s.total);
@@ -236,8 +299,10 @@ describe("统计摘要", () => {
     // 自动化测试已具备但真机未走查，保持 unverified
     // core.dev-workbench 仍是 partial（P1 项目/Git/测试归集未做），按契约保持 unverified；
     // 其已实现的 P0 闭环另有隔离实例真机证据（见 tmp/acceptance/dev-workbench-p0/）。
-    expect(s.verified).toBe(8);
-    expect(s.unverified).toBe(26);
+    // 2026-11-16 新增 verified 2 项：智能剪贴板（五轮 GUI 联合验收 + 真机剪贴板证据）、
+    // 备份与恢复（P1-04 PASS：真机 78.44MB 全量恢复 14.28s，边界见条目 detail）。
+    expect(s.verified).toBe(10);
+    expect(s.unverified).toBe(39);
     expect(s.verified + s.unverified).toBe(s.total);
   });
 

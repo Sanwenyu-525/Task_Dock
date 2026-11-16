@@ -13,6 +13,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 
@@ -33,6 +34,8 @@ import { listCaptures } from "../db/captures";
 import { listNotes } from "../db/notes";
 import { listReminderSchedules } from "../db/reminderSchedule";
 import { countPendingSyncOps, countSyncConflicts } from "../db/sync";
+import { decodeRecentTitle } from "../lib/recentTitle";
+import { shouldUseNarrowStats } from "../lib/responsiveLayout";
 import { loadConnection, readToken, type PairedConnection } from "../db/syncConnection";
 import { listTasks } from "../db/tasks";
 import { describeError } from "../lib/errors";
@@ -53,24 +56,10 @@ interface Overview {
   stash: number;
 }
 
-/**
- * 展示层安全解码：只处理明确的百分号编码片段（如 %3A）。
- * 不含编码片段的标题原样返回；遇到非法转义解码失败时原样保留；解码后过长截断到 48 字符。
- * 只影响展示，不改数据库原始标题；正常中文 / 英文 / 用户自定义名不受影响。
- */
-function decodeRecentTitle(raw: string): string {
-  if (!raw || !/%[0-9A-Fa-f]{2}/.test(raw)) return raw;
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-  return decoded.length > 48 ? decoded.slice(0, 48) : decoded;
-}
-
 export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }) {
   const { tokens } = useTheme();
+  // 320dp 窄屏四项统计改为 2×2；不缩小字号，靠结构避免标签截断。
+  const narrowStats = shouldUseNarrowStats(useWindowDimensions().width);
   const [connection, setConnection] = useState<PairedConnection | null>(null);
   const [hasToken, setHasToken] = useState(false);
   const [conflicts, setConflicts] = useState(0);
@@ -245,31 +234,64 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
             <View style={styles.group}>
               <SectionHeader icon="stats" title="工作概览" />
               <GlassCard style={styles.tilesCard}>
-                <View style={styles.tilesRow}>
-                  <MetricTile
-                    variant="column"
-                    icon="tasks"
-                    label="待办任务"
-                    value={overview.pending}
-                    tone="accent"
-                  />
-                  <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
-                  <MetricTile variant="column" icon="note" label="笔记" value={overview.notes} />
-                  <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
-                  <MetricTile
-                    variant="column"
-                    icon="inbox"
-                    label="收集箱"
-                    value={overview.captures}
-                  />
-                  <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
-                  <MetricTile
-                    variant="column"
-                    icon="fileStack"
-                    label="本机素材"
-                    value={overview.stash}
-                  />
-                </View>
+                {narrowStats ? (
+                  <View style={styles.tilesGrid}>
+                    <View style={styles.tileHalf}>
+                      <MetricTile
+                        variant="column"
+                        icon="tasks"
+                        label="待办任务"
+                        value={overview.pending}
+                        tone="accent"
+                      />
+                    </View>
+                    <View style={styles.tileHalf}>
+                      <MetricTile variant="column" icon="note" label="笔记" value={overview.notes} />
+                    </View>
+                    <View style={styles.tileHalf}>
+                      <MetricTile
+                        variant="column"
+                        icon="inbox"
+                        label="收集箱"
+                        value={overview.captures}
+                      />
+                    </View>
+                    <View style={styles.tileHalf}>
+                      <MetricTile
+                        variant="column"
+                        icon="fileStack"
+                        label="本机素材"
+                        value={overview.stash}
+                      />
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.tilesRow}>
+                    <MetricTile
+                      variant="column"
+                      icon="tasks"
+                      label="待办任务"
+                      value={overview.pending}
+                      tone="accent"
+                    />
+                    <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
+                    <MetricTile variant="column" icon="note" label="笔记" value={overview.notes} />
+                    <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
+                    <MetricTile
+                      variant="column"
+                      icon="inbox"
+                      label="收集箱"
+                      value={overview.captures}
+                    />
+                    <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
+                    <MetricTile
+                      variant="column"
+                      icon="fileStack"
+                      label="本机素材"
+                      value={overview.stash}
+                    />
+                  </View>
+                )}
               </GlassCard>
             </View>
 
@@ -491,6 +513,15 @@ const styles = StyleSheet.create({
   tilesRow: {
     flexDirection: "row",
     alignItems: "stretch",
+  },
+  tilesGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    rowGap: space.xs,
+  },
+  tileHalf: {
+    flexBasis: "50%",
+    flexGrow: 0,
   },
   tileDivider: {
     width: StyleSheet.hairlineWidth,

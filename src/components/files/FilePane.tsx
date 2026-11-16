@@ -41,6 +41,7 @@ import {
   ExternalLink,
   GitCompare,
   ListChecks,
+  Filter,
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
@@ -90,7 +91,7 @@ import {
   type FsOpReport,
   type FsStat,
 } from "../../lib/bridge";
-import { useFilesWorkspaceStore, tabTitle, type FolderTab } from "../../store/useFilesWorkspaceStore";
+import { useFilesWorkspaceStore, tabTitle, type FileFilter, type FolderTab } from "../../store/useFilesWorkspaceStore";
 import { useUiStore } from "../../store/useUiStore";
 
 const POLL_INTERVAL_MS = 4000;
@@ -326,6 +327,7 @@ export default function FilePane({
   const [pathEdit, setPathEdit] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry | null } | null>(null);
   const [dialog, setDialog] = useState<PendingOp | null>(null);
+  const [filterOpen, setFilterOpen] = useState(false);
   const [dialogInput, setDialogInput] = useState("");
   const [propsData, setPropsData] = useState<FsStat | null>(null);
   const [deletePermanent, setDeletePermanent] = useState(false);
@@ -404,7 +406,16 @@ export default function FilePane({
     if (!dirState?.listing) return [];
     const entries = dirState.listing;
     const search = tab?.search.trim().toLowerCase();
-    const filtered = search ? entries.filter((e) => e.name.toLowerCase().includes(search)) : entries;
+    const filter = tab?.filter ?? "all";
+    const now = Date.now();
+    const filtered = entries.filter((entry) => {
+      const bySearch = !search || entry.name.toLowerCase().includes(search);
+      if (!bySearch) return false;
+      if (filter === "all") return true;
+      if (filter === "large") return entry.kind === "file" && (entry.size ?? 0) >= 50 * 1024 * 1024;
+      if (filter === "recent") return (entry.modifiedMs ?? 0) >= now - 7 * 24 * 60 * 60 * 1000;
+      return entry.category === filter;
+    });
     const field = tab?.sortField ?? "name";
     const asc = tab?.sortAsc ?? true;
     return [...filtered].sort((a, b) => {
@@ -418,7 +429,7 @@ export default function FilePane({
       else cmp = (a.ext || "~").localeCompare(b.ext || "~") || a.name.localeCompare(b.name, "zh-CN");
       return asc ? cmp : -cmp;
     });
-  }, [dirState?.listing, tab?.search, tab?.sortField, tab?.sortAsc]);
+  }, [dirState?.listing, tab?.search, tab?.filter, tab?.sortField, tab?.sortAsc]);
 
   const selectedSet = useMemo(() => new Set(selection?.paths ?? []), [selection?.paths]);
   const selectedPaths = useMemo(
@@ -757,7 +768,14 @@ export default function FilePane({
   const previewSelected = (paths = selectedPaths) => {
     if (paths.length !== 1) return;
     window.dispatchEvent(
-      new CustomEvent("taskdock-fw-preview", { detail: { paneId, path: paths[0] } }),
+      new CustomEvent("taskdock-fw-preview", {
+        detail: {
+          paneId,
+          path: paths[0],
+          dir: dirPath,
+          entries: visibleEntries.map((entry) => ({ ...entry })),
+        },
+      }),
     );
   };
 
@@ -1275,6 +1293,17 @@ export default function FilePane({
           )}
         </div>
 
+        <button
+          type="button"
+          className={`fw-icon-btn${(tab.filter ?? "all") !== "all" ? " is-on" : ""}`}
+          aria-label={t("fw.filter.toggle")}
+          aria-expanded={filterOpen}
+          data-tip={t("fw.filter.toggle")}
+          onClick={() => setFilterOpen((value) => !value)}
+        >
+          <Filter size={13} aria-hidden="true" />
+        </button>
+
         <div className="fw-searchbox">
           <Search size={12} aria-hidden="true" />
           <input
@@ -1396,6 +1425,23 @@ export default function FilePane({
           />
         </div>
       </div>
+
+      {filterOpen && (
+        <div className="fw-filter-bar" role="toolbar" aria-label={t("fw.filter.aria")}>
+          {(["all", "folder", "image", "video", "audio", "doc", "sheet", "slide", "code", "archive", "large", "recent"] as FileFilter[]).map(
+            (filter) => (
+              <button
+                key={filter}
+                type="button"
+                className={`fw-filter-chip${(tab.filter ?? "all") === filter ? " is-active" : ""}`}
+                onClick={() => store.getState().patchTab(paneId, tab.tabId, { filter })}
+              >
+                {t(`fw.filter.${filter}`)}
+              </button>
+            ),
+          )}
+        </div>
+      )}
 
       {/* 选中上下文操作区：高频操作按选择出现，常驻工具栏保持收敛 */}
       {selectedPaths.length > 0 && (

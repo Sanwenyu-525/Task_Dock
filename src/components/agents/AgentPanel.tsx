@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 import CollapsibleSection from "../ui/CollapsibleSection";
 import EmptyState from "../ui/EmptyState";
 import SearchField from "../ui/SearchField";
@@ -864,100 +865,112 @@ export default function AgentPanel() {
           </button>
         </div>
       )}
-      {/* ══ 状态摘要（监控分区）：一行紧凑统计卡，为会话列表让出高度 ══ */}
-      {section === "monitor" && (
-        <div className="agent-summary">
-          <div className={`summary-card s-running ${summary.running ? "" : "muted"}`} data-tip={tr("agent.ui.runningTip")}>
-            <span className="summary-value">{summary.running}</span>
-            <span className="summary-label">{tr("agent.ui.running")}</span>
-          </div>
-          <div className={`summary-card s-waiting ${summary.waiting ? "" : "muted"}`} data-tip={tr("agent.ui.waitingTip")}>
-            <span className="summary-value">{summary.waiting}</span>
-            <span className="summary-label">{tr("agent.ui.waiting")}</span>
-          </div>
-          <div className={`summary-card s-error ${summary.failed ? "" : "muted"}`} data-tip={tr("agent.ui.failedTip")}>
-            <span className="summary-value">{summary.failed}</span>
-            <span className="summary-label">{tr("agent.ui.failed")}</span>
-          </div>
-          <div className="summary-card muted" data-tip={tr("agent.ui.sourcesTip")}>
-            <span className="summary-value">{connectedSources}</span>
-            <span className="summary-label">{tr("agent.ui.sources")}</span>
-          </div>
-        </div>
-      )}
-
-      {/* ══ 工具行：分区切换 +（监控）状态筛选与搜索；刷新 / 帮助靠右 ══ */}
-      <div className="filter-bar agents-tool-row">
-        <div className="seg-group agents-section-switch" role="tablist" aria-label={tr("agent.ui.sectionAria")}>
-          <button
-            className={`seg-btn ${section === "monitor" ? "active" : ""}`}
-            role="tab"
-            aria-selected={section === "monitor"}
-            onClick={() => setSection("monitor")}
-          >
-            <Activity size={12} /> {tr("agent.ui.monitor")}
-          </button>
-          <button
-            className={`seg-btn ${section === "stats" ? "active" : ""}`}
-            role="tab"
-            aria-selected={section === "stats"}
-            onClick={() => setSection("stats")}
-          >
-            <BarChart3 size={12} /> {tr("agent.ui.stats")}
-          </button>
-          <button
-            className={`seg-btn ${section === "onboard" ? "active" : ""}`}
-            role="tab"
-            aria-selected={section === "onboard"}
-            onClick={() => setSection("onboard")}
-          >
-            <PlugZap size={12} /> {tr("agent.ui.onboard")}
-          </button>
-        </div>
-        {section === "monitor" && (
-          <>
-            <div className="seg-group subtle" role="group" aria-label={tr("agent.ui.filterAria")}>
-              {MONITOR_FILTERS.map((f) => (
-                <button
-                  key={f.id}
-                  className={`seg-btn ${monitorFilter === f.id ? "active" : ""}`}
-                  onClick={() => setMonitorFilter(f.id)}
-                >
-                  {tr(f.labelKey)}
-                </button>
-              ))}
+      <WorkspaceSplit
+        id="agents-center"
+        sidebarLabel={tr("agent.ui.sectionAria")}
+        defaultWidth={232}
+        minWidth={208}
+        maxWidth={320}
+        sidebar={
+          <aside className="agents-rail">
+            <div className="workspace-rail-head">
+              <span className="workspace-rail-eyebrow">AGENTS</span>
+              <h2>{tr("agent.ui.monitor")}</h2>
             </div>
-            <SearchField
-              className="agents-search"
-              ariaLabel={tr("agent.ui.searchAria")}
-              placeholder={tr("agent.ui.searchPlaceholder")}
-              value={monitorQuery}
-              onChange={setMonitorQuery}
-              inputRef={monitorSearchRef}
-              clearLabel={tr("agent.ui.clearSearch")}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  // stopPropagation：别让 Escape 冒泡到窗口级「隐藏到托盘」
-                  e.stopPropagation();
-                  setMonitorQuery("");
-                }
-              }}
-            />
-          </>
-        )}
-        <span className="flex-spacer" />
-        {section === "monitor" && (
-          <button
-            className="btn sm"
-            onClick={load}
-            data-tip={tr("agent.ui.refreshTip")}
-            aria-label={tr("agent.ui.refresh")}
-          >
-            <RefreshCw size={12} /> {tr("agent.ui.refresh")}
-          </button>
-        )}
-        <ContextHelpButton articleId="help.agents.hooks-onboarding" />
-      </div>
+
+            {section === "monitor" && (
+              <div className="agent-summary agent-summary-rail">
+                <div className={`summary-card s-running ${summary.running ? "" : "muted"}`} data-tip={tr("agent.ui.runningTip")}>
+                  <span className="summary-value">{summary.running}</span>
+                  <span className="summary-label">{tr("agent.ui.running")}</span>
+                </div>
+                <div className={`summary-card s-waiting ${summary.waiting ? "" : "muted"}`} data-tip={tr("agent.ui.waitingTip")}>
+                  <span className="summary-value">{summary.waiting}</span>
+                  <span className="summary-label">{tr("agent.ui.waiting")}</span>
+                </div>
+                <div className={`summary-card s-error ${summary.failed ? "" : "muted"}`} data-tip={tr("agent.ui.failedTip")}>
+                  <span className="summary-value">{summary.failed}</span>
+                  <span className="summary-label">{tr("agent.ui.failed")}</span>
+                </div>
+                <div className="summary-card muted" data-tip={tr("agent.ui.sourcesTip")}>
+                  <span className="summary-value">{connectedSources}</span>
+                  <span className="summary-label">{tr("agent.ui.sources")}</span>
+                </div>
+              </div>
+            )}
+
+            <div className="agents-rail-nav" role="tablist" aria-label={tr("agent.ui.sectionAria")}>
+              <button
+                className={`agents-rail-item ${section === "monitor" ? "is-active" : ""}`}
+                role="tab"
+                aria-selected={section === "monitor"}
+                onClick={() => setSection("monitor")}
+              >
+                <Activity size={12} /> {tr("agent.ui.monitor")}
+              </button>
+              <button
+                className={`agents-rail-item ${section === "stats" ? "is-active" : ""}`}
+                role="tab"
+                aria-selected={section === "stats"}
+                onClick={() => setSection("stats")}
+              >
+                <BarChart3 size={12} /> {tr("agent.ui.stats")}
+              </button>
+              <button
+                className={`agents-rail-item ${section === "onboard" ? "is-active" : ""}`}
+                role="tab"
+                aria-selected={section === "onboard"}
+                onClick={() => setSection("onboard")}
+              >
+                <PlugZap size={12} /> {tr("agent.ui.onboard")}
+              </button>
+            </div>
+
+            {section === "monitor" && (
+              <>
+                <div className="agents-rail-nav" role="group" aria-label={tr("agent.ui.filterAria")}>
+                  {MONITOR_FILTERS.map((f) => (
+                    <button
+                      key={f.id}
+                      className={`agents-rail-item ${monitorFilter === f.id ? "is-active" : ""}`}
+                      onClick={() => setMonitorFilter(f.id)}
+                    >
+                      {tr(f.labelKey)}
+                    </button>
+                  ))}
+                </div>
+                <SearchField
+                  className="agents-search agents-rail-search"
+                  ariaLabel={tr("agent.ui.searchAria")}
+                  placeholder={tr("agent.ui.searchPlaceholder")}
+                  value={monitorQuery}
+                  onChange={setMonitorQuery}
+                  inputRef={monitorSearchRef}
+                  clearLabel={tr("agent.ui.clearSearch")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      setMonitorQuery("");
+                    }
+                  }}
+                />
+                <div className="agents-rail-actions">
+                  <button
+                    className="btn sm"
+                    onClick={load}
+                    data-tip={tr("agent.ui.refreshTip")}
+                    aria-label={tr("agent.ui.refresh")}
+                  >
+                    <RefreshCw size={12} /> {tr("agent.ui.refresh")}
+                  </button>
+                  <ContextHelpButton articleId="help.agents.hooks-onboarding" />
+                </div>
+              </>
+            )}
+          </aside>
+        }
+      >
+        <div className="agent-main">
 
       {/* ══ 历史搜索结果（后端分页；与 Agent 名称过滤互不替代）══ */}
       {section === "monitor" && (
@@ -1178,6 +1191,8 @@ export default function AgentPanel() {
         </>
       )}
 
+        </div>
+      </WorkspaceSplit>
     </div>
   );
 }

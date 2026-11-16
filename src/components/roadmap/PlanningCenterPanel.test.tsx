@@ -208,12 +208,15 @@ describe("数据源与视图导航", () => {
     expect(screen.getByRole("tab", { name: "里程碑" })).toBeTruthy();
   });
 
-  it("切到内置路线图后渲染 Task Dock 既有目录，31 项入口保留", async () => {
+  it("切到内置路线图后渲染 Task Dock 既有目录与七个分区", async () => {
     const user = userEvent.setup();
     bridge.planningListProjects.mockResolvedValue([]);
     render(<PlanningCenterPanel />);
     await user.click(screen.getByRole("button", { name: "内置路线图" }));
     expect(screen.getByText("核心效率功能")).toBeTruthy();
+    // 新增分区必须在真实面板可见（不能只改数据、页面无法展示）
+    expect(screen.getByText("工作台与专业创作")).toBeTruthy();
+    expect(screen.getByText("设备、系统与数据")).toBeTruthy();
     expect(screen.getByText(/已实现 \d+/)).toBeTruthy();
     expect(screen.queryByText(/创建你的第一个项目/)).toBeNull();
   });

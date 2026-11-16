@@ -3,12 +3,13 @@
 //! 目的：锁定本次回归核对的关键契约，防止并行会话更新统计时发生静默漂移：
 //! - CORE_FEATURE_IDS 恰好 12 项，ID、标题、顺序固定；
 //! - 12 项核心 P0=5 / P1=5 / P2=2；全局搜索固定 P1；核心项状态集合固定；
-//! - 目录 31 项，状态 implemented=13 / partial=15 / planned=3 / blocked=0
-//!   （2026-11-06 规划纠偏：场景 / 工作流 / MCP / 帮助四项按代码证据修正描述，数量不变）；
+//! - 目录 49 项，状态 implemented=22 / partial=22 / planned=5 / blocked=0
+//!   （2026-11-06 规划纠偏：场景 / 工作流 / MCP / 帮助四项按代码证据修正描述，数量不变；
+//!   2026-11-16 数据治理：按真实代码补登 15 项并新增两个分区，计数同步）
 //! - Gemini CLI 为 implemented + unverified（真实会话未联调，不登记为受阻）。
 //!
 //! 本文件只校验数据，不渲染面板；面板交互由既有
-//! src/components/roadmap/FeatureRoadmapPanel.test.tsx（16 用例）覆盖。
+//! src/components/roadmap/FeatureRoadmapPanel.test.tsx 覆盖。
 
 import { describe, expect, it } from "vitest";
 import {
@@ -142,8 +143,8 @@ describe("12 项核心功能精确契约", () => {
 });
 
 describe("全目录统计契约", () => {
-  it("目录总数 34，状态计数 implemented=15 / partial=16 / planned=3 / blocked=0", () => {
-    expect(FEATURE_CATALOG).toHaveLength(34);
+  it("目录总数 49，状态计数 implemented=22 / partial=22 / planned=5 / blocked=0", () => {
+    expect(FEATURE_CATALOG).toHaveLength(49);
     const counts: Record<FeatureStatus, number> = {
       implemented: 0,
       partial: 0,
@@ -155,7 +156,8 @@ describe("全目录统计契约", () => {
     // 第三轮新增 ux.command-palette（implemented，2026-11-08）；
     // core.dev-workbench（partial）随开发工作台 P0 合入（2026-11-12），契约计数同步
     // 2026-11-11 新增 ux.command-phrases（implemented）
-    expect(counts).toEqual({ implemented: 15, partial: 16, planned: 3, blocked: 0 });
+    // 2026-11-16 按真实代码补登 15 项：新增分区 workbench 6 / system 5，core +2，agent +2
+    expect(counts).toEqual({ implemented: 22, partial: 22, planned: 5, blocked: 0 });
   });
 
   it("摘要函数与目录实际计数一致（total / coreTotal / 状态 / 验证）", () => {

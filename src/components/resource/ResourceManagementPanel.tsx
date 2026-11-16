@@ -40,6 +40,8 @@ import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
 import ResourceCleanupSection, { type CleanupEstimate } from "../settings/ResourceCleanupSection";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import WorkspaceSplit from "../../workbench/WorkspaceSplit";
+import "./resource-workspace.css";
 import { WorkbenchPageDetail, WorkbenchDetailFacts } from "../../workbench/pageDetail";
 import ProcessDiagnostics from "./ProcessDiagnostics";
 import DiskSpaceAnalyzer from "./DiskSpaceAnalyzer";
@@ -274,25 +276,48 @@ export default function ResourceManagementPanel() {
         }
       />
 
-      <div className="resource-segments" role="tablist" aria-label={t("resource.segments.aria")}>
-        {SEGMENTS.map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            id={`resource-tab-${id}`}
-            data-resource-segment={id}
-            aria-selected={segment === id}
-            aria-controls={`resource-panel-${id}`}
-            tabIndex={segment === id ? 0 : -1}
-            className={`resource-segment${segment === id ? " active" : ""}`}
-            onClick={() => selectSegment(id)}
-            onKeyDown={onTabKeyDown}
-          >
-            {t(SEGMENT_LABELS[id])}
-          </button>
-        ))}
-      </div>
+      <WorkspaceSplit
+        id="resource-management"
+        sidebarLabel={t("resource.segments.aria")}
+        defaultWidth={212}
+        minWidth={196}
+        maxWidth={288}
+        sidebar={
+          <aside className="resource-rail">
+            <div className="workspace-rail-head">
+              <span className="workspace-rail-eyebrow">RESOURCE</span>
+              <h2>{t("resource.segments.aria")}</h2>
+            </div>
+            <div
+              className="resource-segments resource-segments-vertical"
+              role="tablist"
+              aria-label={t("resource.segments.aria")}
+              aria-orientation="vertical"
+            >
+              {SEGMENTS.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  id={`resource-tab-${id}`}
+                  data-resource-segment={id}
+                  aria-selected={segment === id}
+                  aria-controls={`resource-panel-${id}`}
+                  tabIndex={segment === id ? 0 : -1}
+                  className={`resource-segment${segment === id ? " active" : ""}`}
+                  onClick={() => selectSegment(id)}
+                  onKeyDown={onTabKeyDown}
+                >
+                  {t(SEGMENT_LABELS[id])}
+                </button>
+              ))}
+            </div>
+            <p className="resource-rail-note">
+              概览每 10 秒采样、最多 30 点；切换到其他分区或隐藏页面即停止，不用旧读数冒充当前值。
+            </p>
+          </aside>
+        }
+      >
 
       {/* 刷新作用域通过刷新按钮的 tooltip + aria-describedby 按需展示，
           不再常驻一行说明，把高度留给主要内容。 */}
@@ -406,6 +431,8 @@ export default function ResourceManagementPanel() {
           )}
         </div>
       </div>
+
+      </WorkspaceSplit>
 
       {/* 右栏性能摘要：只在概览分区可见时投送；其他分区保留各自页头上下文，
           不把「磁盘扫描」或「进程诊断」的局部状态冒充性能总览。 */}

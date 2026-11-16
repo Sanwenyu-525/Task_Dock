@@ -771,6 +771,10 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "过期清理可配置且清理前有确认",
     ],
     verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「收集与暂存」→「暂存架」",
+      "外部文件 / 文件夹 / 图片 / 链接拖入暂存架",
+    ],
   },
   {
     id: "core.one-click-workflow",
@@ -895,6 +899,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "大数据量下有查询限制且不阻塞界面",
     ],
     verification: "unverified",
+    entryPoints: ["全局 Ctrl+Shift+F 搜索弹窗"],
   },
 
   // ─── 信息管理与生活效率（P2）───────────────────────────────────────
@@ -954,6 +959,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "延后处理有记录、可追溯",
     ],
     verification: "unverified",
+    entryPoints: ["任务页新建重复任务（以重复规则承载）", "任务卡完成 / 延后（现有任务操作）"],
   },
 
   // ─── Agent 扩展 ─────────────────────────────────────────────────────
@@ -982,6 +988,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "hooks 链路不受影响（两通道可并存）",
     ],
     verification: "unverified",
+    entryPoints: ["设置 → Agent 接入 → Codex 会话钩子", "Agent 会话详情「恢复会话」（codex resume）"],
   },
   {
     id: "agent.claude-code-adapter",
@@ -1349,18 +1356,19 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     description: "可随功能演进校验失效的内置教程：搜索、分类、功能关联与状态提示。",
     detail:
       "已交付（v0.11，2026-11-08 第二轮收口）：src/help 教程注册中心（结构化 TS 正文，heading/paragraph/steps/tip/note/callout，零新依赖）" +
-      "+ 8 分类 25 篇教程（24 verified / 1 needs_review / 0 draft），全部 zh 正文、en-US 全覆盖" +
+      "+ 8 分类 28 篇教程（24 verified / 1 needs_review / 3 draft），全部 zh 正文、en-US 全覆盖" +
       "（缺失时明确显示「暂无英文版」徽标并回退中文的回退 UI 由测试 fixture 保留验证），不伪称国际化完成；完整模式第 13 个 rail 入口（help，不占 Ctrl+数字）；" +
       "搜索（标题/关键词/正文）、分类浏览、最近浏览（上限 8）、文章头显示适用版本/最近更新/翻译状态；" +
       "相关功能跳转对 planned / blocked / hidden / 停用分别给出状态提示而非死链接；复制操作步骤；" +
       "npm run help:check 契约校验（19 用例 = registry-contract 13 + health 6，覆盖 featureId / routeId / 正文完整性 / " +
       "en 结构平行 / 核心功能覆盖 / 内容版本 / 操作契约版本），引用失效即报错；0 blocker。" +
       "ContextHelpButton（? 弹出轻量说明）已接入 8 个业务页面共 9 处；帮助中心与设置页均可重新打开首次引导。" +
-      "剩余 warning 仅「在途源文件变化触发的人工复核提示」（几何恢复合入后消解，mcp-authorization 届时转 verified）。",
+      "剩余 warning 仅「在途源文件变化触发的人工复核提示」（mcp-authorization 届时转 verified）；" +
+      "2026-11-16 复核：教程实际为 28 篇，其中 3 篇 draft（句式命令、开发工作台、能力导览）待人工界面核对。",
     status: "partial",
     priority: "P1",
     existingFeatures: [
-      "8 分类 25 篇教程（24 verified / 1 needs_review）+ 搜索 / 分类 / 最近浏览（上限 8）",
+      "8 分类 28 篇教程（24 verified / 1 needs_review / 3 draft）+ 搜索 / 分类 / 最近浏览（上限 8）",
       "en-US 正文全覆盖；状态徽标：功能未实现 / 受阻 / 导航隐藏 / 停用 / 翻译缺失分别如实提示",
       "help:check 契约校验阻断引用失效（featureId / routeId / 翻译 / 版本 / 操作契约），当前 0 blocker",
       "第 13 个 rail 入口 + 从教程跳转实际功能 + 返回来源页面",
@@ -1369,7 +1377,8 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     ],
     missingFeatures: [
       "教程正文语义漂移无自动检测：契约层只校验引用/版本，不校验语义（2026-11-08 已人工复核 7 篇并按代码更正，如暂存架「剪贴板添加默认复制」过时表述）",
-      "mcp-authorization 待几何改动合入后转 verified（sensitive 契约源 db/mod.rs 在途变化期间保持 needs_review）",
+      "2 篇 draft 待人工界面核对：句式命令（help.quickstart.command-phrases）、开发工作台（help.tasks.dev-workbench）",
+      "mcp-authorization 待相关契约源稳定后转 verified（当前保持 needs_review）",
       "真实 WebView2 / 真机双主题与窄窗走查（现有证据为 A 自动化 + B 隔离预览）",
     ],
     dependencies: ["featureCatalog.ts（功能元数据事实源）", "navigationRegistry.ts（入口寻址）", "overlayStack 弹层栈"],
@@ -1573,6 +1582,224 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     dependencies: ["跨平台开发与验收环境"],
     acceptanceCriteria: ["核心流程在目标平台可用", "平台差异如实标注不降级为假实现"],
     verification: "unverified",
+  },
+
+  // ─── 设备、系统与数据 ────────────────────────────────────────────────
+  {
+    id: "mobile.companion",
+    category: "system",
+    title: "移动端伴随应用",
+    description: "Android 伴随端：配对、任务/收集箱/笔记增量同步、文件互传、统一采集与主屏入口。",
+    detail:
+      "桌面端与手机端不是 UI 复制关系：手机端以本地 SQLite 为主，通过用户显式发起的局域网配对与桌面端同步，" +
+      "并保留手机独有能力（系统分享接收、拍照/相册采集、语音速记、主屏小组件、快捷方式）。" +
+      "已实现：扫码/深链配对（TLS-only + 叶证书 SPKI 指纹固定、缺指纹 fail-closed、设备列表与撤销）、" +
+      "任务/收集箱/笔记双向增量同步（载荷加密、rev + outbox、字段级自动合并、冲突页、墓碑）、" +
+      "文件互传 v1（双向分块加密、SAF 接收目录）、统一采集中心、系统分享（文本/图片/文件/多选）、" +
+      "主屏小组件与工作台入口自定义、移动端本地任务/提醒/笔记/设置。" +
+      "物理机证据（vivo V2323A，2026-11-09 / 11-13 / 11-14）覆盖配对、双向同步、文件互传、分享接收与采集；" +
+      "但整体仍登记为 partial：后台自动同步只有设计（前台自动同步已落地），" +
+      "没有 workspace_projects 项目空间同步与跨设备工作接续，没有 iOS 端，收集箱/笔记墓碑日志保留期清理未实现。",
+    status: "partial",
+    priority: "P1",
+    existingFeatures: [
+      "配对与连接：应用内扫码/深链、SPKI 指纹固定、TLS-only、连接测试、桌面设备列表与撤销、强停重启后配对保持",
+      "任务同步：手动 pull/push、载荷加密、rev/outbox、冲突页与字段级自动合并、墓碑",
+      "收集箱与笔记同步：笔记整篇双向、收集箱仅 inbox（handled 为墓碑）",
+      "文件互传 v1：双向分块加密、SAF 接收目录、打开预览与删除清理",
+      "统一采集中心：拍照/相册/文件/文本/语音速记，单事务保存到收集箱/任务/笔记，clientId 幂等，附件与实体稳定关联",
+      "系统分享接收：text/图片/文件/多选，流式复制、上限与逐项失败隔离、签名去重",
+      "主屏小组件 2×2 / 4×2、系统快捷方式、工作台入口自定义（两端隔离）",
+      "移动端本地任务/重复任务/提醒/笔记/设置；SQLite 迁移与 outbox 同事务",
+    ],
+    missingFeatures: [
+      "后台/自动同步仅完成设计（前台自动同步已落地），无 WorkManager 定期同步与系统级保活",
+      "没有 workspace_projects / 专业工作台项目同步，跨设备工作接续未实现",
+      "iOS 端未规划、未实现",
+      "收集箱/笔记墓碑日志保留期清理未实现",
+      "TLS v2 真机复验在无连接设备时未执行；部分厂商后台限制与图片分享取消空态未覆盖",
+    ],
+    dependencies: [
+      "TLS + SPKI 传输层（协议 v2，fail-closed）",
+      "桌面端 mobile_sync / 文件互传服务与设备身份表",
+      "apps/mobile SQLite（v5）与 outbox 机制",
+    ],
+    acceptanceCriteria: [
+      "配对后强停重启仍保持，撤销后立即拒绝访问",
+      "双向同步在冲突时可解释，不静默覆盖任一端",
+      "文件互传内容哈希一致，断线可续",
+      "采集/分享落库幂等，重复提交不产生重复条目",
+      "后台同步接入后不重复拉取、不无限轮询",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「手机」",
+      "Android 应用（配对后使用）",
+    ],
+  },
+  {
+    id: "mobile.virtual-display",
+    category: "system",
+    title: "Android 屏幕镜像与独立虚拟屏",
+    description: "桌面端通过 ADB/scrcpy 启停镜像与独立虚拟屏会话，让不同 Agent 使用各自的手机工作界面。",
+    detail:
+      "2026-11-13 完成技术预研，2026-11-14 已交付实现：UI 在手机页「屏幕控制」，" +
+      "命令层提供 vd_probe / vd_devices / vd_list_apps / vd_start / vd_stop / vd_sessions / vd_focus / " +
+      "vd_screenshot / vd_screenshot_export / vd_diagnostics / vd_reconnect；" +
+      "两种模式：mirror（与手机实体屏同画面）与 virtual（--new-display + --start-app，手机可继续使用自己的应用）。" +
+      "会话有完整状态机（starting/running/stopping/stopped/error/disconnected）与阶段（process→display→app→video→ready），" +
+      "不允许仅凭 PID 判成功；25s 无视频流转 error 并回收；停止先 WM_CLOSE，5s 有界等待后强杀，Job Object 兜底。" +
+      "多屏实验默认关闭，开启后最多 2 个会话，同一设备+模式+应用只允许一个活动会话；" +
+      "截图按用户点击触发，残留虚拟屏可诊断并重连清理。明确不做：自研编码/WebRTC、MediaProjection 冒充、root/刷机、自动装 APK、嵌入 Tauri 窗口、云端远控。",
+    status: "implemented",
+    priority: "P1",
+    existingFeatures: [
+      "屏幕镜像（mirror）与独立虚拟屏（virtual）共用同一 SessionManager，不另建投屏服务",
+      "设备探测、去重与工具链定位（TASK_DOCK_ADB / TASK_DOCK_SCRCPY → PATH → 常见路径）",
+      "会话状态机与阶段推进：启动超时、早退、断连、主动关闭分别给出可读状态",
+      "应用选择与启动入口校验（cmd package query-activities）",
+      "窗口定位（按会话 PID 找 scrcpy 顶层窗口并前置）、PrintWindow 截图、截图存暂存架/另存",
+      "残留虚拟屏诊断（dumpsys display）与重连 ADB 清理",
+      "多屏实验（默认关闭，开启后最多 2 个会话，每个会话独立关闭）",
+      "运行期身份只存内存（serial/package/session 不写 SQLite、不新增设置键）；与自有 TLS 配对身份分离",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "adb / scrcpy 外部工具链（缺失时 fail-closed 并给出安装提示）",
+      "Windows 进程与 Job Object 回收能力",
+      "Android 设备的开发者选项与 USB 调试授权",
+    ],
+    acceptanceCriteria: [
+      "启动 25s 内无视频流必须转 error 并回收，不显示假成功",
+      "关闭只回收本进程创建的 scrcpy，不影响用户手动启动的实例",
+      "强杀 Task Dock 后 Job Object 回收全部会话",
+      "虚拟屏应用未启动时明确警告而不是宣称 ready",
+      "同一设备+模式+应用不会出现两个活动会话",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「手机」→「屏幕控制」",
+      "会话列表中的定位 / 截图 / 诊断 / 关闭",
+    ],
+  },
+  {
+    id: "system.resources",
+    category: "system",
+    title: "资源管理与智能清理",
+    description: "诚实的资源占用视图与可证明安全的清理：应用缓存、孤儿文件、用户级系统垃圾与进程诊断。",
+    detail:
+      "资源管理与系统资源监控分开：这里管理 Task Dock 自身的文件资源、可证明归属的缓存/孤儿文件，以及用户显式选择的系统垃圾，" +
+      "不做常驻监控、不替代任务管理器。实现要点：预览只读、执行只接受服务端 previewId（5 分钟、一次性消费、最多 32 个）；" +
+      "后端对每个候选重新校验根目录归属、文件身份、大小、修改时间与年龄，占用中或已变化的文件跳过；" +
+      "应用缓存清理与用户级磁盘清理是两套独立能力，类别、扫描根、预览记录与作业闸都不共享；" +
+      "与暂存架 producer/maintenance 互斥，Agent spool、备份恢复与其他无法证明可安全删除的文件不纳入扫描。" +
+      "另有应用自身 CPU/内存/运行时长、系统内存、磁盘概览、只读进程诊断与可测量的应用内存缓存释放；所有采样由进入页面或手动刷新触发。",
+    status: "implemented",
+    priority: "P1",
+    existingFeatures: [
+      "应用缓存清理：TTS 缓存、超过 24h 的暂存架原子写入残留、确认无引用的剪贴板/暂存架缩略图（扫描/预览/清理）",
+      "用户级磁盘清理：回收站、用户/系统临时文件、崩溃转储；默认不勾选，扫描只读，执行需二次确认",
+      "安全删除：单次消费预览、根目录归属复核、文件身份/大小/时间/年龄复核、占用中跳过、父目录重命名防护、并发作业闸",
+      "与暂存架维护互斥（producer/maintenance），不清理无法证明归属的目录",
+      "资源占用分析：自身 CPU/内存/运行时长、系统内存、所在磁盘概览、应用数据占用分布",
+      "只读进程诊断与可测量的应用内存缓存释放；非 Windows 平台如实提示不支持",
+      "清理结果按类别报告保留项、失败原因与实际释放量；回收站清空按前后文件系统口径测量，失败显示「无法复核」",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "resource_cleanup 服务层（previewId / 作业闸 / 归属分级）",
+      "fs_safety 与 audio/cache、shelf 维护互斥",
+      "Windows Shell（回收站清空）与进程采样",
+    ],
+    acceptanceCriteria: [
+      "未预览或预览过期时不能执行清理",
+      "执行时文件已变化/被占用则跳过并如实报告，不按预览结果盲删",
+      "应用缓存与用户级垃圾的删除范围互不扩大",
+      "不清理 Agent spool、备份恢复等无法证明归属的文件",
+      "清理失败不静默，保留可复核原因",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「资源」",
+      "设置 → 数据与资源 → 资源管理",
+    ],
+  },
+  {
+    id: "system.diagnostics",
+    category: "system",
+    title: "诊断中心",
+    description: "脱敏诊断日志的异常聚合、操作链追踪、报告导出与清理，用于故障定位而非业务审计。",
+    detail:
+      "诊断日志绝不进入 SQLite，也不替代任何业务记录：清理诊断日志不影响任务、Agent 事件、剪贴板、工作流回执、备份与文件投递恢复记录。" +
+      "链路：前端有界队列批量 IPC + Rust tracing Layer → 统一 DiagnosticEvent → 有界队列（1024）→ 单写线程 → JSONL 轮转/保留 + 指纹窗口聚合；" +
+      "诊断中心是薄视图，查询/摘要/导出/清理全部复用 diagnostics* 命令，页面只在可见时请求一次，不做后台轮询。" +
+      "两种查询模式：异常列表（最低 WARN）与按 operationId 的操作链（DEBUG/INFO 全量事件按时间升序）；读取失败显示失败原因并可重试，不把失败当空态。" +
+      "清理需二次确认，CONFLICT/TIMEOUT 原样展示、不自动重试。入口默认隐藏在导航自定义中，可由用户显式开启。",
+    status: "implemented",
+    priority: "P2",
+    existingFeatures: [
+      "统一 DiagnosticEvent 字段与脱敏规则（不记录正文、路径、密钥）",
+      "有界队列 + 单写线程 + JSONL 轮转/保留，异常按指纹窗口聚合",
+      "诊断中心页面：异常列表、按 operationId 的操作链、级别/时间筛选、分页",
+      "摘要统计、脱敏报告导出、打开日志目录、二次确认清理",
+      "失败可解释（读取失败/冲突/超时分别展示），页面隐藏时丢弃在途响应",
+      "设置页「诊断与日志」分级与详细日志开关",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "diagnostics 写入层与本地 JSONL 目录",
+      "bridge.ts diagnostics* 命令与事件队列",
+    ],
+    acceptanceCriteria: [
+      "关闭详细日志后不再写 DEBUG/INFO，但 WARN/ERROR 仍可定位",
+      "操作链查询只按 operationId，不混入列表筛选条件",
+      "导出报告不含正文、路径或密钥",
+      "清理不影响任何业务表与备份",
+      "读取失败不显示为空列表",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「诊断中心」（默认隐藏，可在导航自定义开启）",
+      "设置 → 诊断与日志",
+    ],
+  },
+  {
+    id: "system.backup",
+    category: "system",
+    title: "备份与恢复",
+    description: "完整/快速备份、原子导出与可续跑恢复，覆盖业务表、设置、剪贴板图片与暂存文件。",
+    detail:
+      "备份基于流式 JSONL bundle + 完整性校验：完整备份覆盖 BACKUP_TABLES 登记的业务表（含 Clipboard / Shelf / Notes / Focus / Workflows / Planning）、设置、" +
+      "剪贴板图片与暂存文件；快速备份按约定裁剪。用户偏好（语言、微件布局、应用网格排序）写入 preferences.json 随备份迁移，" +
+      "旧备份缺字段时保留本机值而不是清空。恢复有状态机：异常退出可续跑或回滚，恢复点/manifest 版本参与兼容判断。" +
+      "性能验收 P1-04 为 PASS（有边界）：100k 夹具 61.9MB 往返、真机 78.44MB 全量恢复 14.28s、25 表一致、21 个恢复故障测试；" +
+      "多 GB 包、恢复非常量内存未测。",
+    status: "implemented",
+    priority: "P1",
+    existingFeatures: [
+      "完整 / 快速备份与导出；业务表、设置、剪贴板图片与暂存文件纳入同一 bundle",
+      "恢复状态机：失败可续跑或回滚，异常退出的中间态可识别",
+      "备份 manifest / 版本兼容校验与 BACKUP_TABLES 表清单",
+      "用户偏好随 preferences.json 迁移，旧备份缺字段保留本机值",
+      "恢复故障测试 21 项；100k 夹具 61.9MB 往返与真机 78.44MB 全量恢复 14.28s、25 表一致",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "BACKUP_TABLES 登记与迁移版本",
+      "数据目录隔离（TASK_DOCK_DATA_DIR）与磁盘空间预检",
+      "恢复状态机与备份 manifest 格式",
+    ],
+    acceptanceCriteria: [
+      "完整/快速备份均可导出并在另一实例恢复",
+      "恢复中断后可续跑或回滚，不留下半恢复状态",
+      "旧版本备份恢复后缺失字段保留本机值",
+      "敏感信息不进入备份 header 或可提交文件",
+    ],
+    verification: "verified",
+    entryPoints: [
+      "设置 → 数据与资源 → 备份与恢复",
+      "托盘 / 设置中的快速备份入口",
+    ],
   },
 ];
 

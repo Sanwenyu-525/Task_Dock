@@ -245,7 +245,7 @@ export const TROUBLESHOOTING_ARTICLES: readonly HelpArticle[] = [
       "zh-CN": ["备份", "恢复", "数据", "manifest", "隔离实例", "清单", "快速备份"],
       "en-US": ["backup", "restore", "data", "manifest", "isolated instance", "quick backup"],
     },
-    relatedFeatureIds: [],
+    relatedFeatureIds: ["system.backup"],
     relatedRouteIds: ["settings"],
   },
   {

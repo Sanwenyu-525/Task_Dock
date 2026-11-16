@@ -44,6 +44,12 @@
   文章总量 26 篇：24 verified / 1 needs_review / 1 draft（2026-11-12 新增
   `help.tasks.dev-workbench`，正文按工作台源码编写、待人工界面核对）。
 
+> 更正（2026-11-16，路线图数据治理）：按 `src/help/content/*.ts` 实测为 **28 篇**：
+> 24 verified / 1 needs_review / 3 draft（draft 为 `help.quickstart.command-phrases`、
+> `help.tasks.dev-workbench` 与 `help.quickstart.capabilities-tour`；needs_review 为
+> `help.agents.mcp-authorization`）。
+> 上段 26 篇为 2026-11-12 的历史状态，保留不改；当前计数以本更正与 `featureCatalog.ts` 为准。
+
 ### 2.3 结构化 section
 
 ```ts

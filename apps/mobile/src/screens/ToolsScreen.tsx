@@ -18,6 +18,7 @@ import { SearchField } from "../components/SearchField";
 import { SectionHeader } from "../components/SectionHeader";
 import type { IconName } from "../components/icons/AppIcon";
 import type { AppNav, RouteKey } from "../lib/nav";
+import { gridColumnsForWidth } from "../lib/responsiveLayout";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
 
@@ -37,9 +38,10 @@ interface PlaceholderEntry {
 export function ToolsScreen({ nav }: { nav: AppNav }) {
   const { tokens } = useTheme();
   const [query, setQuery] = useState("");
-  // 常用工具网格：≤340dp（320dp 窄屏）三列，更宽四列；按实际窗口宽度断点，不按 density 硬编码
+  // 全页统一网格：320dp 窄屏三列，其余四列；所有分区共用同一断点与同一种 cell。
   const { width } = useWindowDimensions();
-  const commonThreeCol = width <= 340;
+  const columns = gridColumnsForWidth(width);
+  const threeCol = columns === 3;
 
   const match = (label: string) => {
     const keyword = query.trim().toLowerCase();
@@ -130,7 +132,7 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
                     {filteredCommon.map((item) => (
                       <View
                         key={item.label}
-                        style={[styles.cell, commonThreeCol ? styles.cellThird : null]}
+                        style={[styles.cell, threeCol ? styles.cellThird : null]}
                       >
                         <IconEntry
                           icon={item.icon}
@@ -151,7 +153,7 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
                 <GlassCard style={styles.gridCard}>
                   <View style={styles.grid}>
                     {filteredNavPlaceholder.map((item) => (
-                      <View key={item.label} style={styles.cell}>
+                      <View key={item.label} style={[styles.cell, threeCol ? styles.cellThird : null]}>
                         <FeatureIconPlaceholder
                           icon={item.icon}
                           label={item.label}
@@ -170,7 +172,7 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
                 <GlassCard style={styles.gridCard}>
                   <View style={styles.grid}>
                     {filteredQuickReal.map((item) => (
-                      <View key={item.label} style={styles.cell}>
+                      <View key={item.label} style={[styles.cell, threeCol ? styles.cellThird : null]}>
                         <IconEntry
                           icon={item.icon}
                           label={item.label}
@@ -180,7 +182,7 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
                       </View>
                     ))}
                     {filteredQuickPlaceholder.map((item) => (
-                      <View key={item.label} style={styles.cell}>
+                      <View key={item.label} style={[styles.cell, threeCol ? styles.cellThird : null]}>
                         <FeatureIconPlaceholder
                           icon={item.icon}
                           label={item.label}
@@ -199,7 +201,7 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
                 <GlassCard style={styles.gridCard}>
                   <View style={styles.grid}>
                     {filteredMore.map((item) => (
-                      <View key={item.label} style={styles.cell}>
+                      <View key={item.label} style={[styles.cell, threeCol ? styles.cellThird : null]}>
                         <FeatureIconPlaceholder
                           icon={item.icon}
                           label={item.label}

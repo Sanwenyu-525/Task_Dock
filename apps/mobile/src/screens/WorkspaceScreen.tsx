@@ -17,6 +17,7 @@ import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-n
 import { EntryRow } from "../components/EntryRow";
 import { FeatureIconPlaceholder } from "../components/FeatureIconPlaceholder";
 import { FileCollectionCard } from "../components/FileCollectionCard";
+import { shouldStackFileCards } from "../lib/responsiveLayout";
 import { GlassCard } from "../components/GlassCard";
 import { ProjectSpacePlaceholder } from "../components/ProjectSpaceCard";
 import { ScreenHeader } from "../components/ScreenHeader";
@@ -51,8 +52,9 @@ export function WorkspaceScreen({
 }) {
   const { tokens } = useTheme();
   // Android 的 font_scale 是 float32：1.3 实际为 1.29999995，不能用 >= 1.3
-  const { fontScale } = useWindowDimensions();
-  const stackFiles = fontScale > 1.25;
+  const { fontScale, width } = useWindowDimensions();
+  // 320dp 三列卡片每格仅约 90dp，文件名会挤成竖排；窄屏或大字号改为纵向整行卡片。
+  const stackFiles = shouldStackFileCards(width, fontScale);
   const [tab, setTab] = useState<WorkspaceTab>("projects");
 
   return (

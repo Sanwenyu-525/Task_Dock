@@ -1305,3 +1305,131 @@
   }
 }
 
+
+/* R5：微件管理 = 左侧视图/桌面预览导航 + 主区大数字摘要与卡片 + 外壳配置。
+   只改布局；启用、排序、尺寸、桌面窗口与配置写入仍走既有 Store/IPC。 */
+.widgets-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.widgets-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.widgets-rail .widgets-tabs-vertical {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.widgets-rail .widgets-tab {
+  width: 100%;
+  min-height: 31px;
+  justify-content: flex-start;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  font-size: 11.5px;
+}
+
+.widgets-rail .widgets-tab:hover {
+  border-color: var(--border-subtle);
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.widgets-rail .widgets-tab.is-active {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.widgets-rail .widgets-tabs-meta {
+  margin: 4px 0 0;
+  padding: 0 9px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.widgets-rail-label {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.widgets-rail-preview {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.widgets-rail-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.widgets-rail-preview-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 62%, transparent);
+}
+
+.widgets-rail-preview-list li span {
+  font-size: 11px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widgets-rail-preview-list li em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.widgets-rail-preview-list li em.is-shown {
+  color: var(--status-success);
+}
+
+.widgets-rail-preview-list li em.is-failed {
+  color: var(--status-error);
+}
+
+.widgets-rail-empty {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.widgets-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 2px 10px;
+}

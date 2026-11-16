@@ -45,7 +45,7 @@
 | PW-6 | 游戏制作闭环 | 工作空间 P1 | 仅事项阶段 | 事项承载关卡/系统阶段 | 资源关联、构建/测试登记、引擎跳转 | not_started | unverified |
 | PW-7 | AI 漫剧闭环 | 工作空间 P1 | 仅事项阶段 | 剧集/镜头用 stage 承载 | 素材/角色库、生成结果导入、版本比较/采用 | not_started | unverified |
 | PW-8 | 跨项目资源与产出物关系 | 工作空间 P2 | 无 | 无 | — | not_started | unverified |
-| PW-10 | 小说正文与章节（创作工作台 B1） | 2026-11-16 | v58 迁移、`commands/project_workspace.rs`、`commands/backup.rs`、`src/workspace/workspaceProfiles.ts`、`src/lib/bridge.ts`、`NovelManuscriptPanel.tsx`、`ProjectWorkspacePanel.tsx`、`workspace.css` | v58 卷/章两表三索引；8 个卷/章命令（列表/读取/保存/正文保存/删除）；`manuscript` 模块与 `novel.manuscript` available；卷→章树 + 纯文本编辑器（0.9s 防抖自动保存、失焦/切换/卸载落盘、保存失败阻止切章、实时字数、归档只读） | 富文本/Markdown、版本历史、导入导出、全文搜索；人物/世界观/剧情/伏笔/AI；跨卷拖拽移动 | implemented | partially_verified（Rust 5/5、Vitest 16+4、`tsc --noEmit` 通过；原生窗口未逐页走查） | 无 | 原生走查：新建卷/章、自动保存、切换章节、归档只读、备份恢复 |
+| PW-10 | 小说正文与章节（创作工作台 B1） | 2026-11-16 | v58 迁移、`commands/project_workspace.rs`、`commands/backup.rs`、`src/workspace/workspaceProfiles.ts`、`src/lib/bridge.ts`、`NovelManuscriptPanel.tsx`、`ProjectWorkspacePanel.tsx`、`workspace.css` | v58 卷/章两表三索引；8 个卷/章命令（列表/读取/保存/正文保存/删除）；`manuscript` 模块与 `novel.manuscript` available；卷→章树 + 纯文本编辑器（单章节串行保存、0.9s 防抖、模块/项目离开前 async flush、保存失败阻止离开并保留草稿、实时字数、归档全入口只读、Rust kind/status 门禁） | 富文本/Markdown、版本历史、导入导出、全文搜索；人物/世界观/剧情/伏笔/AI；跨卷拖拽移动；应用关闭握手 | implemented | partially_verified（前端 26/26 通过；Rust 用例已落盘但本轮共享工作树被其他模块编译错误阻塞，已在隔离 worktree 复跑 6/6；原生窗口未逐页走查） | 无 | 原生走查：新建卷/章、自动保存、切换章节、归档只读、备份恢复 |
 
 ## 4. 旧任务编号映射（不丢失追踪）
 
@@ -169,4 +169,16 @@ Ctrl+数字语义与旧数据不变；工作台侧栏仍是唯一完整功能入
   （`l-mwimq139-37c86e.log`）；合并复跑两文件 **20 passed**
   （`l-mwimskcj-3034f9.log`）；
   `tsc --noEmit` 退出码 0（`m-mwimqbau-683566.log`，组件最终改动后复跑）。
+
+### 9.1 2026-11-16 B1 第二轮：正文安全、离开守卫与后端门禁
+
+| 层 | 落地内容 | 证据/验证 |
+|---|---|---|
+| 前端保存 | `savePromiseRef` 单章节唯一在途请求；`flush` 串行等待，成功后比较草稿并补交最新版本；`savedRef` 不被旧请求回写；失败保留草稿、显示错误与重试按钮 | 组件测试：A/B 并发（B 晚发、A 后完成）最终落 B；连续输入只补交最后一版 |
+| 离开守卫 | `NovelManuscriptPanel.registerFlush` → `ProjectWorkspacePanel` 切模块前 await；`registerProjectLeaveGuard` → `WorkbenchShell.selectProject` 切项目前 await；失败取消导航/切换，保留原稿；首页入口等待守卫后再进工作台 | 组件测试用父级协议 harness 验证成功等待、失败不导航、项目不串线；真实壳层集成测试未执行（未验证） |
+| 卸载 | cleanup 统一走 `flush`；保存成功后即使组件已卸载也推进 `savedRef`，避免卸载循环重复写库；失败经 `onNotice` 报告 | 组件测试：无脏稿 0 次写库、有脏稿 flush、失败不静默 |
+| 归档 | 新建卷/章、卷章重命名/排序/删除、正文输入全部 disabled + 事件防御；归档瞬间保留草稿并显示“项目已归档，正文未保存”；恢复后可重试 | 组件测试：全部入口 disabled；编辑中归档草稿不丢 |
+| Rust 门禁 | `ensure_novel_project` 校验 kind；所有小说写入再校验 status=active；只带章节/卷 ID 的命令先解析 owner；读允许归档；未新增 v59 | `novel_commands_enforce_kind_and_archived_read_only`（新增）与 8 MiB 断言；隔离 worktree `cargo test --lib novel` 6/6 通过（共享工作树被其他模块编译错误阻塞） |
+
+已知限制：Tauri `CloseRequested` 仍未 `prevent_close`，应用关闭/强杀时 cleanup 会发起保存但无法等待完成，本轮未改全局关闭协议。
 

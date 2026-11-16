@@ -52,6 +52,7 @@ import {
 } from "../../lib/bridge";
 import { setClientVerboseMode } from "../../lib/diagnostics";
 import type { MessageKey } from "../../i18n";
+import "./diagnostics-workspace.css";
 
 const PAGE_SIZE = 30;
 const CHAIN_LIMIT = 200;
@@ -1037,7 +1038,7 @@ export default function DiagnosticsCenterPanel() {
         }
       />
 
-      <div className="page-scroll diag-body">
+      <div className={`page-scroll diag-body${chain ? " is-chain" : ""}`}>
         {loadError && (
           <div className="diag-center-state is-error" role="alert">
             <AlertTriangle size={13} aria-hidden="true" />

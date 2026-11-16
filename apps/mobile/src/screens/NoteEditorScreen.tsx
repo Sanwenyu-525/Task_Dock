@@ -18,13 +18,7 @@ import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { AppBar } from "../components/AppBar";
 import { AttachmentStrip } from "../components/AttachmentStrip";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
-import {
-  Toast,
-  TOAST_TOP_PUSH,
-  type ToastMessage,
-  type ToastPlacement,
-  type ToastTone,
-} from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { createNote, deleteNote, getNote, updateNote } from "../db/notes";
 import { countChars, insertSnippet, wrapSelection } from "../domain/noteText";
 import type { Note } from "../domain/types";
@@ -34,9 +28,6 @@ import { useKeyboardHeight } from "../lib/keyboard";
 import type { Nav } from "../lib/nav";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, space } from "../theme/tokens";
-
-/** 底部工具栏高度：paddingTop 4 + 按钮 44 + paddingBottom 8（安全区另加） */
-const TOOLBAR_HEIGHT = space.xs + 44 + space.sm;
 
 interface Selection {
   start: number;
@@ -66,19 +57,10 @@ export function NoteEditorScreen({
   /** 程序化改文后把光标放回计算位置：只在下一帧前生效，避免干扰手动输入 */
   const [forcedSelection, setForcedSelection] = useState<Selection | null>(null);
   const [actionOpen, setActionOpen] = useState(false);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
   /** 保存去重：返回/硬件返回/再按返回可能连发，同一次编辑只落一次库 */
   const savingRef = useRef(false);
 
-  const showToast = useCallback(
-    (text: string, tone: ToastTone = "info", placement?: ToastPlacement) => {
-      toastSeq.current += 1;
-      setToast({ id: toastSeq.current, text, tone, placement });
-    },
-    [],
-  );
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -376,19 +358,6 @@ export function NoteEditorScreen({
         <ToolButton icon="hash" accessibilityLabel="插入标签" onPress={insertTag} />
         <ToolButton icon="share" accessibilityLabel="分享笔记" onPress={() => void handleShare()} />
       </View>
-
-      <Toast
-        toast={toast}
-        onDismiss={dismissToast}
-        placement="top"
-        topOffset={TOAST_TOP_PUSH}
-        // 工具行触发的提示落在工具栏上方；键盘弹起时工具栏被容器顶到键盘上沿
-        bottomOffset={
-          keyboardHeight > 0
-            ? keyboardHeight + TOOLBAR_HEIGHT + space.sm
-            : TOOLBAR_HEIGHT + insets.bottom + space.sm
-        }
-      />
 
       <ActionSheet
         visible={actionOpen}

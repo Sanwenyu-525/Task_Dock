@@ -1,6 +1,6 @@
 // 通知与后台：本地通知能力是真实的（权限/测试通知/提醒动作开关），
 // 远程推送未实现、后台同步属规划——两节明确标注，不给可用的假开关。
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { AppBar } from "../components/AppBar";
@@ -11,7 +11,7 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingSection } from "../components/SettingSection";
 import { StatusPill, type StatusTone } from "../components/StatusPill";
 import { ToggleSwitch } from "../components/ToggleSwitch";
-import { Toast, TOAST_TOP_PUSH, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { getSetting, setSetting } from "../db/kv";
 import { describeError } from "../lib/errors";
 import type { Nav } from "../lib/nav";
@@ -40,14 +40,8 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
   const [permissionLabel, setPermissionLabel] = useState("读取中…");
   const [dismissOnComplete, setDismissOnComplete] = useState(true);
   const [snoozeEnabled, setSnoozeEnabled] = useState(true);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   const refresh = useCallback(async () => {
     try {
@@ -220,8 +214,6 @@ export function NotificationsScreen({ nav }: { nav: Nav }) {
           本机提醒使用系统本地通知；跨网络推送是另一套通道。
         </Text>
       </ScrollView>
-
-      <Toast toast={toast} onDismiss={dismissToast} placement="top" topOffset={TOAST_TOP_PUSH} />
     </View>
   );
 }

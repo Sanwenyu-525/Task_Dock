@@ -19,7 +19,7 @@ import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
 import { SearchField } from "../components/SearchField";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { addCapture, deleteCapture, listCaptures, promoteCapture } from "../db/captures";
 import { loadConnection } from "../db/syncConnection";
 import { isLegacyConnection } from "../lib/sync/connectionState";
@@ -54,15 +54,9 @@ export function InboxScreen({
   const [loading, setLoading] = useState(true);
   const [focused, setFocused] = useState(false);
   const [exiting, setExiting] = useState<Record<string, boolean>>({});
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
   const inputRef = useRef<ComponentRef<typeof TextInput> | null>(null);
 
-  const showToast = useCallback((message: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text: message, tone });
-  }, []);
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   const refresh = useCallback(async () => {
     try {
@@ -281,8 +275,6 @@ export function InboxScreen({
           }
         />
       )}
-
-      <Toast toast={toast} onDismiss={dismissToast} placement="top" />
     </View>
   );
 }

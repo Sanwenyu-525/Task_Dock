@@ -8,7 +8,7 @@ import { File as FsFile } from "expo-file-system";
 
 import { AppBar } from "../../components/AppBar";
 import { PressableScale } from "../../components/PressableScale";
-import { Toast, TOAST_TOP_PUSH, type ToastMessage } from "../../components/Toast";
+import { useToast } from "../../feedback/ToastProvider";
 import { describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
 import type { Nav } from "../../lib/nav";
@@ -32,7 +32,7 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
     null,
   );
   const [result, setResult] = useState<Result>({ kind: "idle" });
-  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const { showToast } = useToast();
 
   const pick = useCallback(async (imagesOnly: boolean) => {
     try {
@@ -44,9 +44,9 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
       setPicker(imagesOnly ? "gallery" : "file_picker");
       setResult({ kind: "idle" });
     } catch (error) {
-      setToast({ id: Date.now(), text: `无法打开系统选择器：${describeError(error)}`, tone: "danger" });
+      showToast(`无法打开系统选择器：${describeError(error)}`, "danger");
     }
-  }, []);
+  }, [showToast]);
 
   const runImport = useCallback(async () => {
     if (busy || picked.length === 0) return;
@@ -60,12 +60,12 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
       setPicked([]);
       bumpCaptureRevision();
     } catch (error) {
-      setToast({ id: Date.now(), text: describeError(error), tone: "danger" });
+      showToast(describeError(error), "danger");
     } finally {
       setBusy(false);
       setProgress(null);
     }
-  }, [busy, picked, picker]);
+  }, [busy, picked, picker, showToast]);
 
   return (
     <View style={[styles.root, { backgroundColor: tokens.bg }]}>
@@ -173,13 +173,6 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
           </View>
         ) : null}
       </ScrollView>
-      <Toast
-        toast={toast}
-        onDismiss={() => setToast(null)}
-        placement="bottom"
-        topOffset={TOAST_TOP_PUSH}
-        bottomOffset={insets.bottom + space.xl}
-      />
     </View>
   );
 }

@@ -27,7 +27,7 @@ import { Badge } from "../components/Badge";
 import { GlassCard } from "../components/GlassCard";
 import { AppIcon } from "../components/icons/AppIcon";
 import { PressableScale } from "../components/PressableScale";
-import { Toast, TOAST_TOP_PUSH, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { loadConnection, loadOrCreateDeviceUid, saveConnection } from "../db/syncConnection";
 import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
@@ -74,8 +74,6 @@ export function PairingScreen({ nav }: { nav: Nav }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<SuccessState | null>(null);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
   const lastInvalidScan = useRef(0);
   /** 0 = 取景框顶部，1 = 底部；在框内上下往返（位移走 native driver）。 */
   const scanProgress = useRef(new Animated.Value(0.5)).current;
@@ -117,11 +115,7 @@ export function PairingScreen({ nav }: { nav: Nav }) {
     outputRange: [-52, 52],
   });
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   // 已配对过：预填上次桌面地址，方便换码重配；不覆盖正在输入的内容。
   useEffect(() => {
@@ -591,8 +585,6 @@ export function PairingScreen({ nav }: { nav: Nav }) {
           桌面端路径：左侧导航「手机互传」或标题栏手机图标
         </Text>
       </ScrollView>
-
-      <Toast toast={toast} onDismiss={dismissToast} placement="top" topOffset={TOAST_TOP_PUSH} />
     </View>
   );
 }

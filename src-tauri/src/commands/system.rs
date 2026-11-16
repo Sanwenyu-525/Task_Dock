@@ -339,6 +339,23 @@ pub async fn drag_loop_active(window: tauri::Window, generation: u64) -> bool {
     active
 }
 
+/// 前端在拖拽按下时预置的会话身份（见 `drag_signal` 模块文档）。
+///
+/// 必须在 `pointerdown` 里、早于 Tauri `drag.js` 的 `start_dragging` 调用：
+/// 系统模态移动循环一旦开始，主线程不再受理新的 IPC，窗口过程也就取不到身份。
+/// 同步命令是有意为之：它只需要在循环开始**之前**完成一次注册表写入。
+#[tauri::command]
+pub fn arm_drag_session(window: tauri::Window, token: String) {
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        crate::drag_signal::arm_token(hwnd.0 as isize, token);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, token);
+    }
+}
+
 /// 停靠位（物理像素，**齐平位置**）：`edge=null` 表示当前未停靠。
 ///
 /// 阻力只对"已停靠且位置已知"的窗口生效；前端在停靠事务提交成功后调用，

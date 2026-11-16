@@ -14,6 +14,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import type { ReactNode } from "react";
 
@@ -27,7 +28,7 @@ import { PressableScale } from "../components/PressableScale";
 import { SearchField } from "../components/SearchField";
 import { SectionHeader } from "../components/SectionHeader";
 import { SegmentedControl } from "../components/SegmentedControl";
-import { TOAST_TOP_PUSH, Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { moveEntryByIndex, mergeEntryOrder } from "../lib/entryLayout";
 import {
@@ -79,20 +80,18 @@ export function EntryManagerScreen({
 }) {
   const { tokens } = useTheme();
   const layout = useEntryLayout();
+  // 720×1600 / 320dp 窄屏：图标 36 + 简介两行会把名称挤成省略号。
+  // 这里只调整信息层级（收起简介、收紧间距），不缩小字号、不改行高基线。
+  const { width } = useWindowDimensions();
+  const compact = width < 360;
 
   const [view, setView] = useState<ManagerView>(initialView);
   const [query, setQuery] = useState("");
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<EntryId[]>([]);
   const [dragActive, setDragActive] = useState(false);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
 
-  const showToast = useCallback((text: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text, tone });
-  }, []);
-  const dismissToast = useCallback(() => setToast(null), []);
+  const { showToast } = useToast();
 
   /** 读取配置时发现的问题只在进入时提示一次，修好之后不再常驻一条警告 */
   const noticeRef = useRef<string | null>(null);
@@ -273,11 +272,17 @@ export function EntryManagerScreen({
         showToast(`「${entry.label}」移动端暂不可用：${entry.reason ?? "没有可用入口"}`, "warn");
         return;
       }
-      if (launch.kind === "route") nav.push(launch.route);
-      else if (launch.kind === "tab") nav.openTab(launch.tab);
+      if (launch.kind === "route") {
+        nav.push(launch.route);
+        return;
+      }
+      // 管理页是压在 Tab 之上的二级页：切 Tab / 打开新建任务面板之前必须先退回，
+      // 否则页面仍被管理页盖住，用户看到的是「点了没反应」。
+      onBack();
+      if (launch.kind === "tab") nav.openTab(launch.tab);
       else nav.openCreateTask();
     },
-    [nav, showToast],
+    [nav, onBack, showToast],
   );
 
   // —— 搜索 ——
@@ -358,7 +363,13 @@ export function EntryManagerScreen({
     status: RowStatus,
     options: { onPress?: () => void; trailing?: ReactNode } = {},
   ) => (
-    <EntryManageRow entry={entry} status={status} onPress={options.onPress} trailing={options.trailing} />
+    <EntryManageRow
+      entry={entry}
+      status={status}
+      compact={compact}
+      onPress={options.onPress}
+      trailing={options.trailing}
+    />
   );
 
   const statusOf = (entry: MobileEntry): RowStatus =>
@@ -751,8 +762,6 @@ export function EntryManagerScreen({
         }}
         onRequestClose={() => setEntrySheetId(null)}
       />
-
-      <Toast toast={toast} onDismiss={dismissToast} placement="top" topOffset={TOAST_TOP_PUSH} />
     </View>
   );
 }
@@ -761,15 +770,21 @@ export function EntryManagerScreen({
 function EntryManageRow({
   entry,
   status,
+  compact,
   onPress,
   trailing,
 }: {
   entry: MobileEntry;
   status: RowStatus;
+  compact: boolean;
   onPress?: () => void;
   trailing?: ReactNode;
 }) {
   const { tokens } = useTheme();
+  // 窄屏：可用行的简介收起（名称优先），暂不可用行保留一行原因——
+  // 「为什么不能用」比简介更重要，不能一起藏掉。
+  const showHelper = !compact || status === "unavailable";
+  const helperLines = compact ? 1 : 2;
 
   return (
     <PressableScale
@@ -782,7 +797,7 @@ function EntryManageRow({
       }
       accessibilityHint={entry.description}
       style={styles.rowPress}
-      contentStyle={styles.row}
+      contentStyle={compact ? [styles.row, styles.rowCompact] : styles.row}
       scaleTo={0.99}
     >
       <IconTile
@@ -800,9 +815,14 @@ function EntryManageRow({
         >
           {entry.label}
         </Text>
-        <Text numberOfLines={2} style={[styles.rowHelper, { color: tokens.muted }]}>
-          {status === "unavailable" ? entry.reason ?? entry.description : entry.description}
-        </Text>
+        {showHelper ? (
+          <Text
+            numberOfLines={helperLines}
+            style={[styles.rowHelper, { color: tokens.muted }]}
+          >
+            {status === "unavailable" ? entry.reason ?? entry.description : entry.description}
+          </Text>
+        ) : null}
       </View>
       {trailing}
     </PressableScale>
@@ -849,6 +869,8 @@ function DragHandle({
       accessibilityRole="button"
       accessibilityLabel={`拖动调整${entry.label}的顺序`}
       accessibilityHint="按住上下拖动，或用行内动作表上移下移"
+      // 手柄本体只有 22×40：向外扩一点命中区，避免拇指抓不住（不影响行内滚动）
+      hitSlop={{ top: 8, bottom: 8, left: 4, right: 6 }}
       style={[styles.handle, { backgroundColor: tokens.track, borderColor: tokens.cardBorder }]}
     >
       <AppIcon name="more" color={tokens.muted} size={12} style={styles.handleIcon} />
@@ -888,6 +910,8 @@ const styles = StyleSheet.create({
     gap: space.md,
     paddingVertical: space.sm,
   },
+  // 窄屏收紧图标与文字之间的间距，把宽度让给功能名称（不缩字号）
+  rowCompact: { gap: space.sm },
   rowText: { flex: 1, gap: 2 },
   rowLabel: { fontSize: font.body, fontWeight: "600" },
   rowHelper: { fontSize: font.label, lineHeight: 16 },

@@ -63,6 +63,7 @@ pub fn fs_rename(app: AppHandle, path: String, new_name: String) -> AppResult<St
 }
 
 /// 阻塞文件操作统一放阻塞线程（复制大目录不卡 async runtime）。
+/// 宏必须定义在使用点之前；受保护目录在进入阻塞线程前解析一次。
 macro_rules! fs_blocking {
     ($app:expr, $paths:expr, $body:expr) => {{
         let protected = protected_dirs(&$app);
@@ -71,6 +72,40 @@ macro_rules! fs_blocking {
             .await
             .map_err(|e| AppError::Agent(format!("文件操作任务失败: {e}")))?
     }};
+}
+
+/// 批量重命名（阻塞线程执行；逐项结果 + 真实部分失败，不静默覆盖）。
+#[tauri::command]
+pub async fn fs_batch_rename(
+    app: AppHandle,
+    items: Vec<fw::BatchRenameItem>,
+    operation_id: Option<String>,
+) -> AppResult<FsOpReport> {
+    let started = std::time::Instant::now();
+    let report = fs_blocking!(
+        app,
+        items,
+        |items: Vec<fw::BatchRenameItem>, protected: &Vec<PathBuf>| {
+            fw::batch_rename(&items, protected, operation_id.clone())
+        }
+    )?;
+    emit_op_diagnostics(&report, "workspace_batch_rename", "rename", started.elapsed());
+    Ok(report)
+}
+
+/// 只读 SHA-256（用户显式触发文件夹对比时调用；不打开目录即扫描）。
+#[tauri::command]
+pub async fn fs_hash_files(app: AppHandle, paths: Vec<String>) -> AppResult<Vec<fw::FsHashEntry>> {
+    if paths.len() > fw::MAX_OP_PATHS {
+        return Err(AppError::Validation(format!(
+            "单批最多 {} 项",
+            fw::MAX_OP_PATHS
+        )));
+    }
+    let result = fs_blocking!(app, paths, |paths: Vec<String>, protected: &Vec<PathBuf>| {
+        fw::hash_files(&paths, protected)
+    })?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -201,4 +236,34 @@ pub async fn fs_thumbnail(path: String, max_px: u32) -> AppResult<Option<String>
         ))),
         None => Ok(None),
     }
+}
+
+/// 大图快速预览（不写 256px LRU 缓存，单张按需解码）。
+#[tauri::command]
+pub async fn fs_preview_image(app: AppHandle, path: String) -> AppResult<Option<String>> {
+    let path = fw::validate_abs_path(&path)?;
+    fw::ensure_not_protected(&path, &protected_dirs(&app))?;
+    match fw::thumbnail::preview_png(path, 1400).await {
+        Some(bytes) => Ok(Some(format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        ))),
+        None => Ok(None),
+    }
+}
+
+/// 文本/代码只读预览（前 512 KiB，最多 2 MiB；二进制拒绝）。
+#[tauri::command]
+pub fn fs_read_text(app: AppHandle, path: String, max_bytes: Option<usize>) -> AppResult<fw::FsTextPreview> {
+    let path = fw::validate_abs_path(&path)?;
+    fw::ensure_not_protected(&path, &protected_dirs(&app))?;
+    fw::read_text_preview(&path, max_bytes.unwrap_or(512 * 1024))
+}
+
+/// 视频/音频快速预览 URL：短期 token + 自定义协议，支持 Range；不扩大 asset 协议范围。
+#[tauri::command]
+pub fn fs_preview_media_url(app: AppHandle, path: String) -> AppResult<String> {
+    let path = fw::validate_abs_path(&path)?;
+    fw::ensure_not_protected(&path, &protected_dirs(&app))?;
+    fw::preview::register_media_url(&path)
 }

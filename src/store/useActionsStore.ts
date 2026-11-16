@@ -255,11 +255,14 @@ export function categoryCount(feed: ActionFeed | null, category: ActionCategory)
   const c = feed.counts;
   switch (category) {
     case "intervention":
-      return c.intervention;
+      // 聚合字段缺失时按构成项回退，避免旧载荷/预览桩让计数显示为空。
+      return Number.isFinite(c.intervention)
+        ? c.intervention
+        : (c.failed ?? 0) + (c.authorization ?? 0) + (c.waiting_input ?? 0);
     case "notification":
-      return c.notification;
+      return Number.isFinite(c.notification) ? c.notification : 0;
     case "history":
-      return c.history;
+      return Number.isFinite(c.history) ? c.history : 0;
   }
 }
 

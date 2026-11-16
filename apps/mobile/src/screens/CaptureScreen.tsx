@@ -32,7 +32,7 @@ import { Badge } from "../components/Badge";
 import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
 import { SegmentedControl } from "../components/SegmentedControl";
-import { Toast, type ToastMessage, type ToastTone } from "../components/Toast";
+import { useToast } from "../feedback/ToastProvider";
 import { ToggleSwitch } from "../components/ToggleSwitch";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import {
@@ -135,8 +135,6 @@ export function CaptureScreen({
   const [result, setResult] = useState<string | null>(null);
   /** 记录因超限/权限被拒绝的分享项，必须显示给用户，不能静默吞掉 */
   const [rejected, setRejected] = useState<string[]>([]);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
-  const toastSeq = useRef(0);
   const [recording, setRecording] = useState(false);
   const [recordStartedAt, setRecordStartedAt] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -145,10 +143,7 @@ export function CaptureScreen({
   const cameraRef = useRef<CameraView>(null);
   const [transcripts, setTranscripts] = useState<Record<string, string>>({});
 
-  const showToast = useCallback((message: string, tone: ToastTone = "info") => {
-    toastSeq.current += 1;
-    setToast({ id: toastSeq.current, text: message, tone });
-  }, []);
+  const { showToast } = useToast();
 
   // 采集中心已打开时再次收到快捷动作（热启动）：切到用户这次选择的模式。
   // 不能只依赖首次挂载的 intent，也不能因为「页面已存在」就静默忽略。
@@ -1185,13 +1180,6 @@ export function CaptureScreen({
           </PressableScale>
         </View>
       ) : null}
-
-      <Toast
-        toast={toast}
-        onDismiss={() => setToast(null)}
-        placement="bottom"
-        bottomOffset={mode === "compose" ? 132 : space.lg}
-      />
     </View>
   );
 }

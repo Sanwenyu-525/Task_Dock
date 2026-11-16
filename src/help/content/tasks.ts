@@ -106,7 +106,7 @@ export const TASKS_ARTICLES: readonly HelpArticle[] = [
       "zh-CN": ["任务", "提醒", "自然语言", "重复", "倒计时", "延后", "撤销", "提前提醒"],
       "en-US": ["task", "reminder", "natural language", "repeat", "countdown", "snooze", "undo", "lead time"],
     },
-    relatedFeatureIds: ["core.smart-reminders"],
+    relatedFeatureIds: ["core.smart-reminders", "core.life-routines"],
     relatedRouteIds: ["tasks"],
   },
   {

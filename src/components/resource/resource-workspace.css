@@ -1,0 +1,80 @@
+@layer base, theme, ui, menu;
+
+@layer ui {
+  /* R5：资源管理从「横向分区 tabs + 长页面」提升为
+     左侧分区导航 + 主资源分析区 + 外壳性能摘要。
+     采样生命周期完全沿用页面既有闸门，本文件只负责布局。 */
+
+  .resource-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+  }
+
+  .resource-rail .resource-segments,
+  .resource-rail .resource-segments-vertical {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 2px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    overflow: visible;
+  }
+
+  .resource-rail .resource-segment {
+    flex: 0 0 auto;
+    width: 100%;
+    min-height: 31px;
+    justify-content: flex-start;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    text-align: left;
+    font-size: 11.5px;
+  }
+
+  .resource-rail .resource-segment:hover {
+    border-color: var(--border-subtle);
+    background: var(--surface-hover);
+    color: var(--text-primary);
+  }
+
+  .resource-rail .resource-segment.active {
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--border-subtle));
+    background: var(--accent-soft);
+    color: var(--text-primary);
+  }
+
+  .resource-rail-note {
+    margin: 0;
+    padding: 9px 2px 0;
+    border-top: 1px solid var(--border-subtle);
+    font-size: 10.5px;
+    line-height: 1.55;
+    color: var(--text-tertiary);
+  }
+
+  .resource-page > .workspace-split {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .resource-page-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 0 2px 8px;
+  }
+
+  @container wb-content (max-width: 820px) {
+    .resource-page-body {
+      padding-bottom: 4px;
+    }
+  }
+}

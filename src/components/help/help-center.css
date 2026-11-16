@@ -471,7 +471,7 @@
     max-width: 260px;
   }
 
-  @container help-panel (max-width: 1050px) {
+  @container help-panel (max-width: 900px) {
     .help-workspace {
       grid-template-columns: 200px minmax(0, 1fr);
     }

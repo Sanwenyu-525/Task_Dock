@@ -512,7 +512,7 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     百分比）；项目进度 = 已完成功能/总功能（无功能显示空态，不显示 0%）；功能状态
     与进度相互独立，不由完成率推断。功能状态变化与步骤勾选在后端同一事务写入
     `planning_activity`（status_change / step_done / note 三类显式区分）。
-  - 「内置路线图」：Task Dock 自身 31 项功能规划（`lib/featureCatalog.ts` 静态目录）
+  - 「内置路线图」：Task Dock 自身 49 项功能规划 / 7 个展示分区（`lib/featureCatalog.ts` 静态目录）
     经 `FeatureRoadmapPanel` 原样只读展示，不入库、不被用户项目编辑覆盖。
 - 任务编辑交互（2026-11-04，模态清理第二批）：原 `TaskEditor.tsx`（`modal-mask` + Dialog）
   删除，改为 `src/components/tasks/TaskEditorView.tsx` 的**页面内编辑态**；`TasksPanel.tsx`
@@ -1953,6 +1953,9 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
   游戏/漫剧仍只有事项阶段承载（与旧边界一致）；小说（B1，2026-11-16）已接入
   v57 类型 + v58 `novel_volumes`/`novel_chapters`、`manuscript` 模块与纯文本正文自动保存，
   并纳入备份往返；人物、世界观、AI 辅助与富文本/版本历史/导出仍未实现（`planned` 或未登记）。
+  B1 第二轮（2026-11-16）为正文增加单章节串行保存与离开前 async flush 协议：模块切换由
+  `ProjectWorkspacePanel` 守卫、项目切换由 `WorkbenchShell` 守卫，保存失败取消离开；
+  小说专用命令在 Rust 层强制 `kind=novel`，写入再要求 `status=active`，归档项目只读可查看。
 - **原生冒烟（2026-11-14，隔离实例）已通过**：唯一工作台目标、创建即导航、已存在窗口导航、
   无项目使用、路由持久化、ack 清队、任务栏扩展样式（`WS_EX_APPWINDOW`、非
   `WS_EX_TOOLWINDOW`）、最大化/恢复、`WM_CLOSE` 后主窗口存活与重开；1180×760 @125% DPI

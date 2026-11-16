@@ -189,7 +189,7 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
   if (mountError) {
     return (
       <View
-        style={[styles.root, styles.center, { paddingTop: insets.top, backgroundColor: tokens.ink }]}
+        style={[styles.root, styles.center, { paddingTop: space.sm, backgroundColor: tokens.ink }]}
       >
         <Text style={[styles.permissionTitle, { color: tokens.onInk }]}>相机不可用</Text>
         <Text style={[styles.permissionBody, { color: tokens.inkText }]}>{mountError}</Text>
@@ -207,7 +207,7 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
   if (!permission.granted) {
     return (
       <View
-        style={[styles.root, styles.center, { paddingTop: insets.top, backgroundColor: tokens.ink }]}
+        style={[styles.root, styles.center, { paddingTop: space.sm, backgroundColor: tokens.ink }]}
       >
         <Text style={[styles.permissionTitle, { color: tokens.onInk }]}>需要相机权限才能拍照</Text>
         <Text style={[styles.permissionBody, { color: tokens.inkText }]}>
@@ -266,7 +266,7 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
       )}
 
       <View
-        style={[styles.topBar, { paddingTop: insets.top + space.sm, backgroundColor: tokens.inkScrim }]}
+        style={[styles.topBar, { paddingTop: space.sm, backgroundColor: tokens.inkScrim }]}
       >
         <Pressable
           accessibilityRole="button"

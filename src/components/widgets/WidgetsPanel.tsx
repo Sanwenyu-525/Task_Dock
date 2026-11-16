@@ -28,6 +28,7 @@ import { useLocale } from "../../hooks/useLocale";
 import { useWidgetsStore } from "../../store/useWidgetsStore";
 import { useUiStore } from "../../store/useUiStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 import { WorkbenchPageDetail, useWorkbenchDetailHost } from "../../workbench/pageDetail";
 import { ConfirmDialog, Select, Switch } from "../ui";
 import WidgetCard from "./WidgetCard";
@@ -252,7 +253,79 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
         }
       />
 
-      <div className="page-scroll widgets-body">
+      <div className="widgets-body">
+        <WorkspaceSplit
+          id="widgets-management"
+          sidebarLabel="微件管理视图"
+          defaultWidth={224}
+          minWidth={204}
+          maxWidth={300}
+          sidebar={
+            <aside className="widgets-rail">
+              <div className="workspace-rail-head">
+                <span className="workspace-rail-eyebrow">WIDGETS</span>
+                <h2>微件管理</h2>
+              </div>
+              <div className="widgets-tabs widgets-tabs-vertical" role="tablist" aria-label="微件管理视图" aria-orientation="vertical">
+                {([
+                  ["enabled", "已启用", LayoutGrid],
+                  ["library", "微件库", Plus],
+                  ["layout", "布局设置", Blocks],
+                ] as const).map(([key, label, Icon]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="tab"
+                    aria-selected={tab === key}
+                    className={`widgets-tab ${tab === key ? "is-active" : ""}`}
+                    onClick={() => setTab(key)}
+                  >
+                    <Icon size={13} aria-hidden="true" />
+                    {label}
+                  </button>
+                ))}
+                <span className="widgets-tabs-meta">
+                  {tab === "enabled"
+                    ? `${visible.length} 个已启用`
+                    : tab === "library"
+                      ? `${widgets.length - visible.length} 个可添加`
+                      : "排序 / 尺寸 / 桌面显示"}
+                </span>
+              </div>
+
+              <section className="widgets-rail-preview" aria-label="桌面预览">
+                <p className="widgets-rail-label">桌面预览</p>
+                {visible.length === 0 ? (
+                  <p className="widgets-rail-empty">尚未启用微件。</p>
+                ) : (
+                  <ul className="widgets-rail-preview-list">
+                    {visible.slice(0, 6).map((item) => {
+                      const phase = desktopRuntime[item.widget_id]?.phase ?? "hidden";
+                      return (
+                        <li key={item.widget_id}>
+                          <span>{t(widgetDefinition(item.type).titleKey)}</span>
+                          <em className={`is-${phase}`}>
+                            {item.desktop.visible
+                              ? phase === "shown"
+                                ? "桌面已显示"
+                                : phase === "failed"
+                                  ? "创建失败"
+                                  : "等待创建"
+                              : "仅工作台"}
+                          </em>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+                {visible.length > 6 && (
+                  <p className="widgets-rail-empty">另有 {visible.length - 6} 个已启用微件。</p>
+                )}
+              </section>
+            </aside>
+          }
+        >
+          <div className="page-scroll widgets-main">
         {/* 大数字摘要：管理页先给四条真实状态，再按 tabs 进入列表/库/布局。
             失败数来自 desktopRuntime，不能用「配置为显示」冒充已创建窗口。 */}
         <div className="widgets-stat-grid" aria-label="微件状态摘要">
@@ -276,33 +349,6 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
             <strong>{desktopFailedCount}</strong>
             <em>{desktopFailedCount > 0 ? "可在卡片上重试" : "暂无失败"}</em>
           </div>
-        </div>
-
-        <div className="widgets-tabs" role="tablist" aria-label="微件管理视图">
-          {([
-            ["enabled", "已启用", LayoutGrid],
-            ["library", "微件库", Plus],
-            ["layout", "布局设置", Blocks],
-          ] as const).map(([key, label, Icon]) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={tab === key}
-              className={`widgets-tab ${tab === key ? "is-active" : ""}`}
-              onClick={() => setTab(key)}
-            >
-              <Icon size={13} aria-hidden="true" />
-              {label}
-            </button>
-          ))}
-          <span className="widgets-tabs-meta">
-            {tab === "enabled"
-              ? `${visible.length} 个已启用`
-              : tab === "library"
-                ? `${widgets.length - visible.length} 个可添加`
-                : "排序 / 尺寸 / 桌面显示"}
-          </span>
         </div>
 
         {persistError && (
@@ -450,8 +496,9 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
             </section>
           )}
         </div>
+          </div>
+        </WorkspaceSplit>
       </div>
-
       {configInRail && configuredWidget && (
         <WidgetConfigRail
           item={configuredWidget}
