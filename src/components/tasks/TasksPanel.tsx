@@ -332,7 +332,11 @@ export default function TasksPanel() {
   if (editor.open) {
     return (
       <div className="tasks-panel task-editor-page page-fill">
-        <TaskEditorView task={editor.task} onClose={closeEditor} />
+        <TaskEditorView
+          task={editor.task}
+          defaultCategory={editor.defaultCategory}
+          onClose={closeEditor}
+        />
       </div>
     );
   }

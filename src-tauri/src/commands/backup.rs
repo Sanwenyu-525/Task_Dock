@@ -327,6 +327,26 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     ),
     rule!("action_acks", "action", "all", 240, &[], true),
     rule!("application_settings", "settings", "all", 250, &[], false),
+    // 生活效率系统 v1（2026-11-16）：商品主数据 → 事件 → 事件明细 → 票据关联。
+    // 关联表与主表一起备份/恢复，恢复后校验关联一致性；票据只存引用，不含图片字节。
+    rule!("life_items", "life", "all", 251, &[], false),
+    rule!("life_events", "life", "all", 252, &[], false),
+    rule!(
+        "life_event_items",
+        "life",
+        "all",
+        253,
+        &["life_events", "life_items"],
+        false
+    ),
+    rule!(
+        "life_document_links",
+        "life",
+        "all",
+        254,
+        &["life_events", "life_items"],
+        false
+    ),
     // 规划中心（v0.7）：用户项目数据，快速备份也全量保存（用户规划不截断）。
     // 依赖序：项目 → 里程碑 → 功能 → 步骤/历史。
     rule!("planning_projects", "planning", "all", 260, &[], true),
@@ -4177,6 +4197,71 @@ mod tests {
         assert_eq!(read2.counts["agent_events"], 300);
         std::fs::remove_dir_all(dir1).ok();
         std::fs::remove_dir_all(dir2).ok();
+    }
+
+    #[test]
+    fn life_tables_and_document_links_survive_backup_restore() {
+        let src = memdb();
+        seed_minimal(&src);
+        src.with_conn(|c| {
+            c.execute(
+                "INSERT INTO life_items (id,name,normalized_name,category,aliases,note,created_at,updated_at) \
+                 VALUES ('li-1','大米','大米','粮油','[]','普通袋装','2026-09-01T00:00:00Z','2026-11-03T00:00:00Z')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO life_events (id,event_type,title,description,occurred_at,merchant,source,created_at,updated_at) \
+                 VALUES ('le-1','purchase','大米','','2026-11-03T00:00:00Z','某超市','manual','2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO life_event_items (id,event_id,item_id,item_name_snapshot,quantity_value,quantity_unit,total_price_minor,currency,created_at,updated_at) \
+                 VALUES ('lei-1','le-1','li-1','大米','5','kg',4800,'CNY','2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO life_document_links (id,owner_type,owner_id,document_ref,document_source,document_name,mime,byte_size,transfer_state,created_at,updated_at) \
+                 VALUES ('ld-1','event','le-1','asset-1','capture_asset','大米小票.jpg','image/jpeg',1024,'metadata_only','2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
+                [],
+            )?;
+            Ok::<_, crate::error::AppError>(())
+        })
+        .unwrap();
+
+        let dir = temp_dir("life-backup");
+        let bundle = dir.join("backup.json");
+        write_bundle(&src, BackupSources::default(), &bundle, BackupKind::Full).unwrap();
+        let read = read_bundle(&bundle, &dir.join("staging")).unwrap();
+        assert_eq!(read.counts["life_items"], 1);
+        assert_eq!(read.counts["life_events"], 1);
+        assert_eq!(read.counts["life_event_items"], 1);
+        assert_eq!(read.counts["life_document_links"], 1);
+
+        let dst = memdb();
+        import_read(&dst, &read).unwrap();
+        dst.with_conn(|c| {
+            let occurred_at: String = c.query_row(
+                "SELECT occurred_at FROM life_events WHERE id = 'le-1'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(occurred_at, "2026-11-03T00:00:00Z", "实际购买日期不能被创建时间替代");
+            let total: i64 = c.query_row(
+                "SELECT total_price_minor FROM life_event_items WHERE id = 'lei-1'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(total, 4800);
+            let link: (String, String) = c.query_row(
+                "SELECT owner_id, transfer_state FROM life_document_links WHERE id = 'ld-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!(link, ("le-1".to_string(), "metadata_only".to_string()));
+            Ok::<_, crate::error::AppError>(())
+        })
+        .unwrap();
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

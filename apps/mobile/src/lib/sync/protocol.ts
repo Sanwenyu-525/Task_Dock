@@ -5,7 +5,14 @@
 // 本文件不发起任何网络请求，也不依赖 React Native / SQLite，可在任意环境单测。
 import { AppError } from "../errors";
 
-export type SyncEntity = "task" | "capture" | "note";
+export type SyncEntity =
+  | "task"
+  | "capture"
+  | "note"
+  | "life_item"
+  | "life_event"
+  | "life_event_item"
+  | "life_document_link";
 
 /** pull 返回的单条变更；deleted 为 true 时表示墓碑，fields 可能只有标识字段 */
 export interface Change {
@@ -73,7 +80,15 @@ const CONFLICT_REASONS: readonly ConflictReason[] = [
   "unknown",
 ];
 
-const SYNC_ENTITIES: readonly SyncEntity[] = ["task", "capture", "note"];
+const SYNC_ENTITIES: readonly SyncEntity[] = [
+  "task",
+  "capture",
+  "note",
+  "life_item",
+  "life_event",
+  "life_event_item",
+  "life_document_link",
+];
 
 function isSyncEntity(value: unknown): value is SyncEntity {
   return typeof value === "string" && (SYNC_ENTITIES as readonly string[]).includes(value);

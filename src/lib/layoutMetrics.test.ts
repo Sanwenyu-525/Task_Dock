@@ -9,6 +9,8 @@
 import { describe, expect, it } from "vitest";
 import appCss from "../styles.css?raw";
 import rustSource from "../../src-tauri/src/window_layout.rs?raw";
+import systemSource from "../../src-tauri/src/commands/system.rs?raw";
+import tauriConfRaw from "../../src-tauri/tauri.conf.json?raw";
 import workbenchCss from "../workbench/workbench.css?raw";
 import {
   WINDOW_METRICS,
@@ -82,6 +84,33 @@ describe("窗口尺寸规范三处一致", () => {
   });
 });
 
+describe("主窗形态最小尺寸与启动配置同源", () => {
+  // 主窗是最容易「改了一半」的地方：Rust 常量、mode_min_size、tauri.conf 的启动
+  // minWidth/minHeight 三处必须同时改，否则从完整面板切极简会被启动值卡住。
+  it("极简下限 264×112 在 Rust 常量、mode_min_size、tauri.conf 三处一致", () => {
+    expect(rustConst(rustSource, "MAIN_MINIMAL_MIN_WIDTH")).toBe(264);
+    expect(rustConst(rustSource, "MAIN_MINIMAL_MIN_HEIGHT")).toBe(112);
+    expect(systemSource).toContain("crate::window_layout::MAIN_MINIMAL_MIN_WIDTH");
+    expect(systemSource).toContain("crate::window_layout::MAIN_MINIMAL_MIN_HEIGHT");
+
+    const conf = JSON.parse(tauriConfRaw) as {
+      app: { windows: Array<{ label?: string; minWidth?: number; minHeight?: number }> };
+    };
+    const main = conf.app.windows.find((win) => win.label === "main") ?? conf.app.windows[0];
+    expect(main?.minWidth, "tauri.conf 的启动最小宽度必须跟随极简下限").toBe(264);
+    expect(main?.minHeight, "tauri.conf 的启动最小高度必须跟随极简下限").toBe(112);
+  });
+
+  it("完整/紧凑下限保持 340 档，且由 mode_min_size 引用", () => {
+    expect(rustConst(rustSource, "MAIN_COMPACT_MIN_WIDTH")).toBe(340);
+    expect(rustConst(rustSource, "MAIN_COMPACT_MIN_HEIGHT")).toBe(280);
+    expect(rustConst(rustSource, "MAIN_FULL_MIN_WIDTH")).toBe(340);
+    expect(rustConst(rustSource, "MAIN_FULL_MIN_HEIGHT")).toBe(340);
+    expect(systemSource).toContain("crate::window_layout::MAIN_FULL_MIN_WIDTH");
+    expect(systemSource).toContain("crate::window_layout::MAIN_COMPACT_MIN_WIDTH");
+  });
+});
+
 describe("窗口档位判定", () => {
   it("按窗口 DIP 宽度分档（960 最小窗口落在 compact 档）", () => {
     expect(windowTier(1920)).toBe("full");
@@ -89,7 +118,7 @@ describe("窗口档位判定", () => {
     expect(windowTier(1099)).toBe("compact");
     expect(windowTier(1200)).toBe("full");
     expect(windowTier(960)).toBe("compact");
-    expect(windowTier(900)).toBe("narrow");
+    expect(windowTier(900)).toBe("compact");
     expect(windowTier(899)).toBe("narrow");
     expect(windowTier(780)).toBe("narrow");
     expect(windowTier(779)).toBe("cramped");

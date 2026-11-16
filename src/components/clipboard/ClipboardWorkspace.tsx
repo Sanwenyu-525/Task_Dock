@@ -624,7 +624,16 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   useEffect(() => {
     if (!uiActive) return;
     void load();
-  }, [uiActive, filters.kind, filters.favorite, filters.search, load]);
+  }, [
+    uiActive,
+    filters.kind,
+    filters.favorite,
+    filters.search,
+    filters.sourceApp,
+    filters.recentDays,
+    filters.sort,
+    load,
+  ]);
 
   // 搜索防抖：输入框即时回显，筛选条件延迟落库
   useEffect(() => {

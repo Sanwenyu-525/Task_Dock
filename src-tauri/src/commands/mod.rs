@@ -26,6 +26,7 @@ pub mod focus;
 pub mod global_search;
 pub mod hotkeys;
 pub mod lifecycle;
+pub mod life;
 pub mod mobile_sync;
 pub mod navigation;
 pub mod notes;

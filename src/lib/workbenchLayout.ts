@@ -31,6 +31,8 @@ export const WORKBENCH_ROUTES = [
   "workspace",
   "files",
   "tasks",
+  "life",
+  "life",
   "agents",
   "apps",
   "widgets",

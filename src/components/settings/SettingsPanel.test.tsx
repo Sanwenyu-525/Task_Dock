@@ -185,6 +185,8 @@ const BASE_SETTINGS: Settings = {
   nav_fallback: true,
   nav_remember_window: true,
   nav_default_browser: "",
+  // 生活效率系统：默认货币，空 = 未配置（不自动假设人民币）
+  life_default_currency: "",
   nav_workspace_max: 5,
   workspace_enabled: true,
   actions_enabled: true,

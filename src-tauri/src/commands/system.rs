@@ -34,12 +34,28 @@ fn mode_size(mode: &str) -> (f64, f64) {
 }
 
 /// 显示模式对应的最小尺寸（必须先放宽/收紧最小尺寸再 set_size，
-/// 否则极简模式 280×140 会被常驻 minWidth=320 钳制）。
+/// 否则极简模式 280×140 会被常驻 minWidth 钳制）。
+///
+/// 极简下限 264×112 不是拍脑袋：2026-11-16 在真实渲染里把窗口压到 240×96 时，
+/// 标题栏 5 个控件与「待办数 / 下次到期 / Agent 状态 / 工作台按钮」会把
+/// 「待办」挤成竖排两行、按钮被裁切；264×112 是核心控件完整可读的下限
+/// （260×120 / 272×128 均通过），再小就只能靠隐藏控件换取空间，而极简态
+/// 的定位是「一眼看清 + 一键进入」，不删控件。常量集中在 `window_layout`，
+/// 与 `tauri.conf.json` 的启动最小尺寸同一份口径。
 fn mode_min_size(mode: &str) -> (f64, f64) {
     match mode {
-        "minimal" => (240.0, 96.0),
-        "compact" => (340.0, 280.0),
-        _ => (340.0, 340.0),
+        "minimal" => (
+            crate::window_layout::MAIN_MINIMAL_MIN_WIDTH,
+            crate::window_layout::MAIN_MINIMAL_MIN_HEIGHT,
+        ),
+        "compact" => (
+            crate::window_layout::MAIN_COMPACT_MIN_WIDTH,
+            crate::window_layout::MAIN_COMPACT_MIN_HEIGHT,
+        ),
+        _ => (
+            crate::window_layout::MAIN_FULL_MIN_WIDTH,
+            crate::window_layout::MAIN_FULL_MIN_HEIGHT,
+        ),
     }
 }
 

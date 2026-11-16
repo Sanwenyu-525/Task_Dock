@@ -7,6 +7,7 @@ export type Tab =
   | "workspace"
   | "files"
   | "tasks"
+  | "life"
   | "agents"
   | "apps"
   | "widgets"
@@ -57,6 +58,7 @@ export const RAIL_ORDER: readonly Tab[] = [
   "workspace",
   "files",
   "tasks",
+  "life",
   "agents",
   "apps",
   "widgets",
@@ -155,15 +157,19 @@ export const useUiStore = create<{
    */
   collectionSub: "inbox" | "shelf" | "notes";
   setCollectionSub: (sub: "inbox" | "shelf" | "notes") => void;
-  editor: { open: boolean; task: Task | null };
-  openEditor: (task?: Task) => void;
+  editor: { open: boolean; task: Task | null; defaultCategory?: string };
+  /**
+   * 打开任务编辑器。`defaultCategory` 只用于新建任务时的分类预选
+   * （生活页「新增待办」传「生活」），已有任务编辑不受影响。
+   */
+  openEditor: (task?: Task, defaultCategory?: string) => void;
   /**
    * 只写入编辑器状态，**不做导航**：供「导航成功之后」的 after 回调使用。
    * 需要跨页打开编辑器时用 `openEditor`（内部仍走 setTab 门禁）；已经自行
    * 完成导航事务的调用方（如胶囊 `openTaskEditor`）用本方法，避免二次导航
    * 覆盖待确认导航绑定的 after，导致编辑意图丢失。
    */
-  openEditorNow: (task?: Task | null) => void;
+  openEditorNow: (task?: Task | null, defaultCategory?: string) => void;
   closeEditor: () => void;
   /** 任务工作区批量启动弹窗（v0.4） */
   workspace: { open: boolean; task: Task | null };
@@ -329,8 +335,12 @@ export const useUiStore = create<{
   // 编辑态由任务面板（TasksPanel）在页面内承载：从其他页（如小组件）打开时切回任务页，
   // 否则编辑表单没有宿主。
   // 同样经过 setTab 门禁：其他页有未保存草稿时不能静默切走并卸载它。
-  openEditor: (task) => get().setTab("tasks", { after: () => get().openEditorNow(task) }),
-  openEditorNow: (task) => set({ editor: { open: true, task: task ?? null } }),
+  openEditor: (task, defaultCategory) =>
+    get().setTab("tasks", {
+      after: () => get().openEditorNow(task, defaultCategory),
+    }),
+  openEditorNow: (task, defaultCategory) =>
+    set({ editor: { open: true, task: task ?? null, defaultCategory } }),
   closeEditor: () => set({ editor: { open: false, task: null } }),
   workspace: { open: false, task: null },
   openWorkspace: (task) => set({ workspace: { open: true, task } }),

@@ -34,6 +34,8 @@ export const ROUTE_KEYS = [
   // 项目详情/功能看板/场景工作区/开发工作台等未接入能力不再保留推送路由，
   // 入口统一降级为不可点击的中性图标占位（FeatureIconPlaceholder），不新造页面与假数据。
   "task_detail",
+  // 生活效率系统（2026-11-16）：购买记录、生活待办、票据资料。
+  "life",
   "diagnostics",
   // 工作台入口自定义：同一屏幕的两个入口各用一条路由，避免给 push 增加第 5 个参数
   "entry_manager",

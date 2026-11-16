@@ -199,5 +199,10 @@
   工具页 IA 改为最近使用 / 常用操作 / 图片与素材 / 资料与内容 / 高级工具；旧工作台配置
   按 `LEGACY_ENTRY_ALIASES` 安全迁移，不改稳定 id、不删数据库。详见
   [15-workbench-entries.md](15-workbench-entries.md) §12，验收与构建状态见
-  `tmp/acceptance/mobile-tools-product-remediation/report.md`（本轮构建因磁盘阈值
-  ENVIRONMENT BLOCKED，未产出新 APK）。
+  `tmp/acceptance/mobile-tools-product-remediation/report.md`。同日清理已登记构建缓存
+  19.40GB 后，Release APK 构建成功（arm64-v8a，versionCode 66），已 `install -r` 到
+  vivo V2323A（未清数据）；工具页五段 IA、文本处理、资料与链接、片段只读详情与图片压缩
+  高级参数折叠已真机截图。该 APK 来自共享工作区、不是集成快照。物理真机取色/压缩端到端受
+  设备并发占用未完成，后改用独立 Android 15 x86_64 模拟器（960×1920/480 = 320dp）补验：
+  取色 `#C8C6A0`、压缩 `111.5KB → 39.5KB` 并落盘 40,476B JPEG、原图保留，暗色/大字体/
+  搜索焦点回归通过；320dp 取色器底部按钮截断列为 P3。详见验收报告。

@@ -66,6 +66,7 @@ import TooltipLayer from "../components/ui/TooltipLayer";
 import WindowResizeGrips from "../components/WindowResizeGrips";
 import { Dialog, DropdownMenu, Select } from "../components/ui";
 import TasksPanel from "../components/tasks/TasksPanel";
+import LifePanel from "../components/life/LifePanel";
 import AgentPanel from "../components/agents/AgentPanel";
 import ActionCenterPanel from "../components/actions/ActionCenterPanel";
 import ClipboardPanel from "../components/clipboard/ClipboardPanel";
@@ -2022,6 +2023,10 @@ export default function WorkbenchShell() {
 
               <RouteSlot label={t("nav.tasks")} id="tasks" active={route === "tasks"}>
                   <TasksPanel />
+                </RouteSlot>
+
+              <RouteSlot label={t("nav.life")} id="life" active={route === "life"}>
+                  <LifePanel />
                 </RouteSlot>
 
               <RouteSlot label={t("nav.agents")} id="agents" active={route === "agents"}>

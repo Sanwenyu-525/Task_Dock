@@ -272,7 +272,7 @@ export function PairingScreen({ nav }: { nav: Nav }) {
 
         <GlassCard style={styles.steps}>
           <View style={styles.stepsBody}>
-            {/* 连接线在两节点之间，不占节点容器宽度；节点三等分整条轨道。 */}
+            {/* 连接线在两节点之间，不占节点容器宽度；首尾节点贴住轨道两端，中间节点居中。 */}
             <View
               style={[
                 styles.stepLine,
@@ -291,7 +291,13 @@ export function PairingScreen({ nav }: { nav: Nav }) {
               const completed = success ? index <= stepIndex : index < stepIndex;
               const current = !success && index === stepIndex;
               return (
-                <View key={label} style={styles.stepCol}>
+                <View
+                  key={label}
+                  style={[
+                    styles.stepCol,
+                    index === 0 ? styles.stepColStart : index === 2 ? styles.stepColEnd : null,
+                  ]}
+                >
                   <View
                     style={[
                       styles.stepDot,
@@ -634,7 +640,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
     paddingVertical: space.md,
   },
-  // 轨道：三个等宽节点 + 两条绝对定位连接线，连线不再挤占节点容器宽度。
+  // 轨道：中间节点三等分居中，首尾节点贴住轨道两端，文字与圆圈更靠近卡片边缘。
   stepsBody: {
     position: "relative",
     flexDirection: "row",
@@ -647,6 +653,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: space.xs,
     zIndex: 1,
+  },
+  stepColStart: {
+    alignItems: "flex-start",
+  },
+  stepColEnd: {
+    alignItems: "flex-end",
   },
   stepDot: {
     width: 24,
@@ -677,14 +689,14 @@ const styles = StyleSheet.create({
     borderRadius: 1,
     zIndex: 0,
   },
-  // 节点中心分别在 16.67% / 50% / 83.33%，线段从一个中心连到下一个中心。
+  // 首尾节点圆心距轨道两端 12dp（圆点半径），中间节点圆心在 50%；线段从左圆心连到右圆心。
   stepLineFirst: {
-    left: "16.67%",
-    width: "33.33%",
+    left: 12,
+    right: "50%",
   },
   stepLineSecond: {
     left: "50%",
-    width: "33.33%",
+    right: 12,
   },
   segment: {
     flexDirection: "row",

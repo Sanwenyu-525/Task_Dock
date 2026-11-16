@@ -712,7 +712,9 @@
   border-bottom: 0;
 }
 
-.vd-app-row:hover:not(:disabled) {
+/* 仅老的扁平行列表 `.vd-app-list` 直系行需要行内 hover；卡片内的行由
+   `.vd-app-item` 整卡负责，避免收藏区漏出未着色的一条硬边。 */
+.vd-app-list > .vd-app-row:hover:not(:disabled) {
   background: var(--surface-hover);
 }
 
@@ -1620,12 +1622,7 @@
   border-radius: 8px;
   background: var(--surface-raised);
   overflow: hidden;
-}
-
-.vd-app-item.is-selected {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+  transition: background-color 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
 }
 
 .vd-app-item.is-compact {
@@ -1633,9 +1630,35 @@
   background: var(--inset-face);
 }
 
+.vd-app-item.is-selected {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
 .vd-app-item.is-compact.is-selected {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
   background: var(--accent-soft);
+}
+
+/* 整卡 hover：主区与右侧收藏按钮同属一张卡，悬停任意一处整卡一起提亮并抬起阴影，
+   不再出现只填充名称区、收藏区留一条硬边的半矩形（同 `.apps-tile` 的整卡交互）。
+   必须写在 `.is-compact` 之后，否则紧凑卡会把这里的底色/描边压回未悬停值。 */
+.vd-app-item:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  box-shadow: var(--card-shadow-hover);
+}
+
+/* 已选中卡片悬停：保留强调色填充与描边，只补抬起阴影。
+   必须在这里重申底色/描边——`.vd-app-item` + `.is-selected` 与 `:hover` 同为
+   两段类选择器，谁后写谁能胜出，否则选中态会被 hover 的常规底色冲掉。 */
+.vd-app-item.is-selected:hover {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+  box-shadow:
+    var(--card-shadow-hover),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .vd-app-row {
@@ -1655,10 +1678,8 @@
   padding-block: 5px;
 }
 
-.vd-app-row:hover:not(:disabled) {
-  background: var(--surface-hover);
-}
-
+/* 行本身不再吃 hover 填充：悬停反馈由外层 `.vd-app-item` 整卡统一承担，
+   否则收藏按钮所在区域会漏出一条未着色的硬边。 */
 .vd-app-row.is-selected {
   background: transparent;
   box-shadow: none;

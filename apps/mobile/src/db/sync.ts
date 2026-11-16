@@ -13,6 +13,15 @@ import { buildPatchPayload } from "../lib/sync/protocol";
 
 import { getDatabase } from "./database";
 import { getSetting, setSetting } from "./kv";
+import {
+  applyLifeChange,
+  buildLifePatch,
+  isLifeEntity,
+  isLifeLocalDeleted,
+  prepareLifeLocalResolution,
+  resetLifeSyncState,
+  softDeleteLifeLocalCopy,
+} from "./lifeSync";
 import { newId } from "../lib/id";
 
 const CURSOR_KEY = "sync.cursor.v1";
@@ -92,8 +101,10 @@ export async function resetSyncState(): Promise<void> {
     await db.runAsync("UPDATE captures SET server_rev = 0 WHERE server_rev <> 0");
     await db.runAsync(
       `UPDATE outbox SET base_rev = 0
-        WHERE entity IN ('task', 'note', 'capture') AND base_rev <> 0`,
+        WHERE entity IN ('task', 'note', 'capture', 'life_item', 'life_event',
+                         'life_event_item', 'life_document_link') AND base_rev <> 0`,
     );
+    await resetLifeSyncState(db);
   });
   await setSetting(CURSOR_KEY, "");
   await db.runAsync("DELETE FROM kv WHERE key = ?", [LAST_RESULT_KEY]);
@@ -403,8 +414,22 @@ export async function applyPullChanges(changes: readonly Change[]): Promise<Pull
   let deleted = 0;
   let skipped = 0;
 
+  // 外键顺序：生活实体必须 item → event → event_item → link 应用；
+  // 其他实体保持原有 seq 顺序。Array#sort 是稳定的，同实体内部不会打乱。
+  const lifeRank: Record<string, number> = {
+    life_item: 0,
+    life_event: 1,
+    life_event_item: 2,
+    life_document_link: 3,
+  };
+  const ordered = [...changes].sort((left, right) => {
+    const leftRank = lifeRank[left.entity] ?? 4;
+    const rightRank = lifeRank[right.entity] ?? 4;
+    return leftRank - rightRank;
+  });
+
   await db.withTransactionAsync(async () => {
-    for (const change of changes) {
+    for (const change of ordered) {
       let outcome: ApplyOutcome;
       switch (change.entity) {
         case "task":
@@ -415,6 +440,12 @@ export async function applyPullChanges(changes: readonly Change[]): Promise<Pull
           break;
         case "capture":
           outcome = await applyCaptureChange(db, change);
+          break;
+        case "life_item":
+        case "life_event":
+        case "life_event_item":
+        case "life_document_link":
+          outcome = await applyLifeChange(db, change);
           break;
         default:
           outcome = "skipped";
@@ -447,7 +478,12 @@ interface PendingGroup {
 }
 
 function isSyncEntity(value: string): value is SyncEntity {
-  return value === "task" || value === "note" || value === "capture";
+  return (
+    value === "task" ||
+    value === "note" ||
+    value === "capture" ||
+    isLifeEntity(value)
+  );
 }
 
 /**
@@ -460,7 +496,9 @@ export async function buildPendingOps(): Promise<PendingOp[]> {
   const rows = await db.getAllAsync<OutboxRow>(
     `SELECT op_id, entity, target_id, base_rev, payload, created_at
        FROM outbox
-      WHERE entity IN ('task', 'note', 'capture') AND state IN ('pending', 'failed')
+      WHERE entity IN ('task', 'note', 'capture', 'life_item', 'life_event',
+                       'life_event_item', 'life_document_link')
+        AND state IN ('pending', 'failed')
       ORDER BY created_at ASC, rowid ASC`,
   );
 
@@ -572,6 +610,13 @@ export async function buildPendingOps(): Promise<PendingOp[]> {
           createdAt: note.created_at,
         }),
       );
+      continue;
+    }
+
+    if (isLifeEntity(group.entity)) {
+      const patch = await buildLifePatch(db, group.entity, group.targetId);
+      if (!patch) continue;
+      push(patch);
       continue;
     }
 
@@ -704,12 +749,14 @@ export async function countSyncConflicts(): Promise<number> {
   return row?.n ?? 0;
 }
 
-/** 统计本轮可发送的操作（任务 / 笔记 / 收集箱）。 */
+/** 统计本轮可发送的操作（任务 / 笔记 / 收集箱 / 生活记录）。 */
 export async function countPendingSyncOps(): Promise<number> {
   const db = getDatabase();
   const row = await db.getFirstAsync<{ n: number }>(
     `SELECT COUNT(*) AS n FROM outbox
-      WHERE entity IN ('task', 'note', 'capture') AND state IN ('pending', 'failed')`,
+      WHERE entity IN ('task', 'note', 'capture', 'life_item', 'life_event',
+                       'life_event_item', 'life_document_link')
+        AND state IN ('pending', 'failed')`,
   );
   return row?.n ?? 0;
 }
@@ -725,11 +772,23 @@ function parseServerRecord(raw: string | null): Change | null {
 }
 
 function conflictEntity(value: string): SyncEntity | null {
-  return value === "task" || value === "note" || value === "capture" ? value : null;
+  if (
+    value === "task" ||
+    value === "note" ||
+    value === "capture" ||
+    isLifeEntity(value)
+  ) {
+    return value;
+  }
+  return null;
 }
 
 /** 桌面端没有该记录时，「采用桌面端」等价于软删除本地副本。 */
 async function softDeleteLocalCopy(entity: SyncEntity, id: string): Promise<void> {
+  if (isLifeEntity(entity)) {
+    await softDeleteLifeLocalCopy(entity, id);
+    return;
+  }
   const db = getDatabase();
   const now = Date.now();
   switch (entity) {
@@ -779,6 +838,7 @@ export async function resolveConflictWithServer(conflict: SyncConflictRow): Prom
 }
 
 async function isLocalDeleted(entity: SyncEntity, id: string): Promise<boolean> {
+  if (isLifeEntity(entity)) return isLifeLocalDeleted(entity, id);
   const db = getDatabase();
   const table = entity === "task" ? "tasks" : entity === "note" ? "notes" : "captures";
   const row = await db.getFirstAsync<{ deleted_at: number | null }>(
@@ -806,13 +866,17 @@ export async function resolveConflictWithLocal(conflict: SyncConflictRow): Promi
   const baseRev = Math.max(change?.rev ?? 0, 0);
   const now = Date.now();
   const deleted = await isLocalDeleted(entity, conflict.target_id);
-  const table = entity === "task" ? "tasks" : entity === "note" ? "notes" : "captures";
 
   await db.withTransactionAsync(async () => {
-    await db.runAsync(`UPDATE ${table} SET server_rev = ? WHERE id = ?`, [
-      baseRev,
-      conflict.target_id,
-    ]);
+    if (isLifeEntity(entity)) {
+      await prepareLifeLocalResolution(db, entity, conflict.target_id, baseRev);
+    } else {
+      const table = entity === "task" ? "tasks" : entity === "note" ? "notes" : "captures";
+      await db.runAsync(`UPDATE ${table} SET server_rev = ? WHERE id = ?`, [
+        baseRev,
+        conflict.target_id,
+      ]);
+    }
     // 清掉冲突守卫行：本机版本重新入队后，由下一次 push 正常判定。
     await db.runAsync(
       "DELETE FROM outbox WHERE entity = ? AND target_id = ? AND state = 'conflict'",

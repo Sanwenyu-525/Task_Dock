@@ -17,17 +17,18 @@
 | 设备发现与授权状态 | 已实现 | `adb devices -l`，合并同一物理设备的多条 transport |
 | 屏幕镜像（实体屏） | 已实现 | scrcpy 默认显示；电脑与手机共享同一画面 |
 | 独立虚拟屏 | 已实现 | `--new-display=1080x1920/384 --start-app=<pkg>` |
-| 应用选择 | 已实现 | 默认列可启动应用；名称/包名实时搜索；用户/系统标识；无入口行禁用并说明原因 |
+| 应用选择 | 已实现 | 默认只列可启动应用；真实应用名/包名实时搜索；用户/系统标识；无入口行禁用并说明原因 |
 | 手动包名 | 已实现（默认隐藏） | 字符集与长度前后端双校验；非法时禁用创建 |
+| 应用名称 | 已实现（真实元数据） | 通过设备侧 PackageManager 元数据批量获取；`vd_list_apps(includeAll=false)` 的 189 个可启动应用均有非空 label |
+| 应用图标 | 已实现（真实图标） | 设备侧图标经 `adb pull` 拉取并按包名缓存为 PNG data URL；不可取时回退 AppWindow 占位 |
 | 会话状态机 | 已实现 | starting / running / stopping / stopped / error / disconnected |
 | 就绪判定 | 已实现 | 解析 scrcpy stdout/stderr：New display → Starting app → Texture |
 | 关闭与回收 | 已实现 | WM_CLOSE → 5s 有界等待 → 强杀；Job Object 兜底 |
 | 多屏实验 | 已实现（默认关闭） | 高级选项开启后最多 2 个会话；每个会话独立关闭 |
 | 窗口定位 | 已实现 | 按会话 PID 找 scrcpy 顶层窗口，恢复最小化并前置 |
 | 截图 | 已实现 | PrintWindow 客户区 → PNG；有效性与启发式警告分离；可存暂存架/另存 |
+| 截图暂存 | 已实现 | 预览确认图片加载后才可保存；暂存架 managed item 与源会话对应 |
 | 残留诊断 | 已实现（检测） | `dumpsys display` 识别 `virtual:com.android.shell`；仅在检测到残留时提供重连 |
-| 本地化应用名 | 部分实现 | scrcpy 启动日志中的名称会被记住；未启动过的应用回退「未知应用」+ 包名 |
-| 应用图标 | 未实现 | 后端没有图标提取能力；统一使用 AppWindow 图标，不会出现破图 |
 
 明确不做：自研编码/WebRTC、MediaProjection 冒充虚拟屏、root/刷机、自动安装 APK、自动开启
 无线调试/开发者选项、`SetParent` 嵌入 Tauri 窗口、云端远控。
@@ -184,15 +185,31 @@ scrcpy），需用户确认。
 - 枚举：`pm list packages -3` + `-s` 区分用户/系统；`cmd package query-activities --brief`
   获取具备 LAUNCHER 入口的包（Android 版本不支持时回退为全部，并标记「无法判定」）。
 - 默认只显示可启动应用；「显示无启动入口的应用」会附加原因并禁用选择。
-- 搜索按应用名与包名实时过滤；无结果/加载/错误都有明确状态。
-- 应用名：scrcpy 启动日志 `Starting app "设置" [pkg]` 中的名称会被记住并用于会话与后续列表；
-  未解析到名称时主信息显示「未知应用」，包名作为辅助信息，不伪造本地化名称。
-- 应用图标：后端没有图标提取能力，统一使用 AppWindow 图标；不会请求不存在的图片资源，
-  因此不会出现破图。真实图标列为后续能力，不在本轮伪造。
+- **应用元数据（2026-11-16 Round2）**：后端通过设备侧 `CLASSPATH=... app_process` 的
+  PackageManager 查询批量获取应用 label 与 icon；图标由 `adb pull` 拉回，按包名扁平化缓存为
+  `%TEMP%\task-dock-vd\appmeta\<设备UID>\icons\<package>.png`，前端以 data URL 渲染。
+  缓存按设备 UID 隔离；设备切换、mDNS transport 轮换或应用刷新不会把上一台设备的结果混入。
+- 缓存目录可能因 `adb pull` 目标已存在而被嵌套为 `icons/taskdock-appmeta/*.png`；
+  `flatten_appmeta_icons()` 在每次拉取后把该层文件移动到 `icons/` 根，避免「有图标文件但全部
+  回退占位」的静默缺陷。
+- 实测（vivo V2323A / Android 16）：`vd_list_apps(includeAll=false)` 返回 189 个可启动应用，
+  189 个 label、189 个 icon；`includeAll=true` 返回 573 个应用，573 个 label、189 个 icon，
+  其余 384 个无可启动入口。样本：`com.android.settings` → 设置（iconLen 6902）、
+  `com.android.chrome` → Chrome（7114）、`com.quark.browser` → 夸克（4178）、
+  `dev.taskdock.mobile` → TaskDock（17146）。
+- 搜索按应用名与包名实时过滤，大小写不敏感；支持中文名（设置/夸克）、英文名（Chrome）、
+  完整包名与包名片段（`settings`）；无结果、加载、错误都有明确状态。
+- 应用主名称作为主信息，包名作为辅助信息；无法解析 label 时回退「未知应用」+ 包名，
+  不伪造本地化名称；图标失败回退 AppWindow，不让单个失败拖垮列表。
 - 手动输入包名默认隐藏，展开后前后端都做字符集校验（ASCII 字母数字、`.`、`_`，不以 `-`
   开头，长度 ≤255）。
 - 列表缓存 60s，按 transport + 设备身份约束；设备切换/transport 轮换时前端递增请求序号并
   丢弃迟到响应，不显示上一台设备的应用。
+- **已知启动延迟**：缓存过期后 `vd_start` 仍会同步刷新全量 appmeta（约 189 个应用、408 个图标），
+  真机曾出现 UI 点击到 running 约 21s；后端 scrcpy 实际就绪约 2.07s。该问题已记录在
+  §14，当前构建未改成异步/快速缓存路径。
+- 默认展示结构：不展开完整应用列表，只显示已选/最近使用/收藏与「浏览全部应用（189）」；
+  搜索或浏览全部时才展开完整列表。
 
 ## 10. 窗口、截图与诊断
 
@@ -210,6 +227,12 @@ scrcpy），需用户确认。
 - 保存：暂存架（`shelfAddPaths(..., "managed")`）或系统「另存为」对话框
   （`vd_screenshot_export` 复制到用户选择路径）。
 - 截图只在用户点击时产生，没有后台周期截图、自动上传或画面写日志。
+- **2026-11-16 真机证据**：虚拟屏 Settings 会话截图 `722×1284`，来源 `V2323A · 设置`；
+  `img.complete=true`、`naturalWidth=722`、`naturalHeight=1284`；保存为暂存架 managed item
+  `...\shelf\images\96536435-52a7-432c-8a14-add189ec871e.png`（169019 bytes）；PIL 读回
+  mean≈247.6/247.7/248.7、std≈21.2/19.7/19.1，非空白。`vd_screenshot_export` 另存为
+  722×1284 成功；源文件/目标目录不存在的错误应归因为目标目录错误，而不是导出链路缺陷。
+  原生「另存为」系统对话框本身尚未点击验证（见 §14）。
 
 ## 11. 安全与隐私
 
@@ -236,11 +259,20 @@ scrcpy），需用户确认。
   4. 正在运行的投屏（计数/上限、会话卡、定位/截图/关闭）与默认折叠的高级设置/诊断。
 - 会话卡片标题：`设备 · 手机屏幕` / `设备 · 应用名`；无应用名时回退 `设备 · 独立虚拟屏`。
   UUID、PID、完整包名不进标题；包名只作为辅助事实。
-- 应用选择：搜索名称/包名实时过滤、统一 AppWindow 图标、用户/系统标签、无入口行禁用并显示
-  原因、设备切换清空搜索并丢弃迟到响应；手动包名默认隐藏。
+- 应用选择：搜索名称/包名实时过滤、真实图标（失败回退 AppWindow）、用户/系统标签、
+  无入口行禁用并显示原因、设备切换清空搜索并丢弃迟到响应；手动包名默认隐藏。
+  默认不展开完整列表，只显示已选/最近使用/收藏与「浏览全部应用（189）」。
 - 截图预览弹层显示来源会话、时间、尺寸与质量警告；提供加入暂存架/另存为/放弃。
-- 响应式：容器查询 `mobile-body` 760/560/420 三档，另有视口回退；窄窗两列改单列、会话操作
-  换行、关闭按钮 min-width 76px、按钮最小高度 28px；弹层不超出视口。
+- 响应式：以 `.mobile-body` 的**容器查询**为主，760/560/420 三档并按实际内容宽度收敛；
+  2026-11-16 Round2 真机 WebView 实测内容宽度 320/360/400/480/600/768/900/1024/1280
+  均无横向溢出；768 起双列，1280 时 workbench 内容上限 1180px，应用网格 3 列（约 218px/列）。
+  窄窗两列改单列、会话操作换行、关闭按钮 min-width 76px、按钮最小高度 28px；弹层不超出视口。
+  高度 1280×600/720/900 与 400×600 已验证页面级不横向溢出；400×600 启动配置需在
+  `.mobile-body` 内部滚动，不是页面级滚动。
+- 会话导航：返回、Home、最近任务均绑定当前 session ID。虚拟屏的 `recents` 由前端禁用，
+  后端返回 `SERVICE_UNAVAILABLE`；Home/Back 按 Display ID 隔离。镜像模式 Recents 作用于
+  Display 0。
+- 多屏实验开启时，副标题仍写「默认最多 1 个…」，文案与头部 `0/2` 不一致（P3，见 §14）。
 - 视觉只用语义 Token（`--radius-card`、`--surface-raised`、`--border-subtle`、`--shadow-raised`、
   `--status-*` 等），无硬编码颜色/裸 `z-index`；尊重 `prefers-reduced-motion`。
 - 文案在 `zh-CN` / `en-US` 同步维护，键集合一致；本轮新增/修改键已逐项核对。
@@ -252,16 +284,21 @@ scrcpy），需用户确认。
 工作目录：`D:\Develop\task_dock`
 
 ```powershell
-# 前端类型与单测
+# 前端类型与定向单测
 node --max-old-space-size=3072 ./node_modules/typescript/bin/tsc --noEmit
 npx vitest run src/components/mobile/VirtualDisplaySection.test.tsx src/components/mobile/MobileTransferPanel.test.tsx
 
-# Rust 单测（cargo 在 src-tauri/ 内运行）
-npm run cargo -- test --lib commands::virtual_display -j1
+# Rust 单测：必须经调度器并在 src-tauri/ 内运行
+node scripts/build-sched.mjs cargo --priority P1 --label vd-rust-test -- test --lib commands::virtual_display
+
+# cargo test --lib 的测试 exe 需要 Common-Controls v6 manifest（工装限制，不是产品代码问题）
+# 编译完成后用 mt.exe 嵌入并直接运行测试二进制：
+mt.exe -manifest src-tauri/tests.manifest -outputresource:<target>/debug/deps/task_dock_lib-*.exe;#1
+# 例：Rust 25 例通过的命令见本轮报告 §10.2 / §14 证据
 
 # 真机联调（显式启用；需 adb 设备在线，会真实启动/关闭 scrcpy 窗口）
 $env:TASK_DOCK_VD_LIVE = "1"
-npm run cargo -- test --test virtual_display_live -- --nocapture
+node scripts/build-sched.mjs cargo --priority P1 --label vd-live -- test --test virtual_display_live -- --nocapture
 
 # 构建
 npm run build
@@ -289,18 +326,30 @@ Rust 单测覆盖：ADB 输出解析、mDNS serial 提取、设备去重（USB/�
 
 | 项 | 状态 |
 |---|---|
-| 应用真实图标 | 未实现：后端无图标提取，统一 AppWindow 图标 |
+| 启动配置缓存刷新延迟 | 缓存过期后 `vd_start` 同步刷新全量 appmeta，真机 UI 到 running 曾约 21.2s（后端 scrcpy 就绪约 2.07s）；当前构建未修复，见 §9 与验收报告 P1 |
+| 页面切换后的配置保持 | 文件互传↔屏幕控制切换会重新挂载组件；后端会话保持 running，但前端 `allowMulti`、投屏模式与已选应用会重置（P2，组件卸载不停止 scrcpy 是正确行为） |
+| 多屏副标题 | 开启多屏实验后头部为 `0/2`，副标题仍写「默认最多 1 个…」（P3 文案不一致） |
+| `recents` 错误语义 | 虚拟屏 Recents 返回 `SERVICE_UNAVAILABLE` 且 `retryable=true`；不可重试能力标为可重试（P2 语义瑕疵） |
+| 原生「另存为…」对话框 | 后端 `vd_screenshot_export` 已实测成功；UI 按钮的原生系统文件对话框尚未实际点击（P3 证据不足） |
+| Windows 系统 DPI | 仅在当前 125% 缩放环境实测；100%/150%/200% 未逐个切换验证（不能等效推断） |
+| 页面缩放 | 浏览器 80%/100%/125%/150% 的布局矩阵未执行（P3 证据不足） |
+| 1440/1920 内容宽度 | 侧栏 + 上下文栏上限使 1920 物理窗口的 `.mobile-body` 为 1386px；1440/1920 **内容宽度**未单独制造，当前 workbench 上限 1180px，1920 超宽空余由上下文栏占用；不能声称 1440/1920 内容密度已验收 |
+| 原生完整窗口截图 | Tauri 主窗口在特殊 HWND/前台锁状态下 PrintWindow 只截到细条；可靠证据为同一实例的真实 WebView CDP 页面截图；完整原生窗口截图证据不足 |
+| 窗口定位前台 | `vd_focus` 返回 `found=true, focused=false`，toast 提示系统未允许切换前台；属 OS 前台锁，非确定代码缺陷 |
+| 设备断开恢复 | 未主动断开共享真机；断线后的状态恢复未验证（不伪造） |
+| 文件互传联动 | 仅完成页面视觉回归；真实上传/下载/配对/暂存箱联动未执行 |
+| 应用真实图标 | 已实现并从真机缓存 408 个 PNG；但 384 个无可启动入口应用无图标，回退占位，这是能力边界不是破图 |
 | 英文界面的后端自由文本 | 会话 `error/warning` 为中文技术文案；命令错误可本地化，会话详情不翻译 |
 | 长时稳定性 / 内存增长 | 未验证（PoC 只做短时观察） |
 | 锁屏/息屏下虚拟屏行为 | 未验证（需用户配合解锁） |
 | 物理触控与电脑操作并发 | 用户此前人工补测过同时触控；本轮未重复 |
 | 同应用双实例 | 证据不足（Android 任务复用行为因应用而异） |
 | 其他厂商/机型 | 仅 vivo V2323A / Android 16 验证过 |
-| 应用本地化名称 | 仅 scrcpy 启动过的应用能获得；其余显示「未知应用」+ 包名 |
 | 多屏长时资源 | 未做受控基准 |
 | 横屏虚拟屏 | `1920x1080/384` 已在 scrcpy 参数层实测（2026-11-14，日志与窗口截图）；应用内该选项未做独立真机回归 |
 | 截图 | PrintWindow 对 GPU 画面/受保护窗口可能失败；刚就绪的首帧可能只有背景层，`vd_screenshot` 有 3 次有界重试；纯色/低信息量只给警告，无法保证“画面一定是应用内容” |
 | 无线 ADB transport 轮换 | 已按 UID 保持选择；端口变化时仍需真机确认 UI 选择与 `vd_start` serial 一致 |
+| 设备切换/清空应用列表 | 前端按请求代次丢弃迟到响应已有单测；本轮未用两台真机做 UI 级设备切换复验 |
 
 ## 15. 变更记录
 
@@ -336,3 +385,16 @@ Rust 单测覆盖：ADB 输出解析、mDNS serial 提取、设备去重（USB/�
   - **测试**：前端 20 例（17+3），Rust 新增启动失败/日志脱敏/无窗口截图/线程失败等单测；
     `virtual_display_live` 扩展双虚拟屏并发与单独关闭断言。
   - **文档**：本节与 §1–§14 按代码现状改写；未验证项与英文自由文本限制保留在 §14。
+- 2026-11-16（Round2 真机验收补充）：
+  - **真实应用元数据**：`fetch_app_meta` 从设备侧 PackageManager 获取 label/icon；修复
+    `adb pull` 嵌套目录导致图标全部回退的缺陷（`flatten_appmeta_icons`）。真机 189 个可启动
+    应用 189 label/189 icon，573 个全部应用 573 label/189 icon。
+  - **应用选择器**：默认只显示最近使用/收藏与「浏览全部应用（189）」，不默认展开 189 行；
+    搜索实测中文名、英文名、完整包名、包名片段、无结果与手动包名校验均通过。
+  - **导航隔离**：会话级返回/Home/最近任务按钮；虚拟屏 Recents 前后端禁用，Home/Back 按
+    Display ID 隔离；镜像 Recents 返回 Display 0。详见验收报告。
+  - **响应式与截图**：真实 WebView 内容宽度 320–1280 矩阵无横向溢出；高度 600/720/900
+    与 400×600 内部滚动已验证；虚拟屏截图 722×1284 存暂存架与导出均成功。
+  - **未修复项**：启动前 appmeta 缓存刷新延迟、页面切换后配置重置、多屏副标题文案、
+    Recents 错误语义；系统 DPI/页面缩放/1440/1920 内容宽度与原生另存为对话框仍未验证。
+  - **文档**：§1、§9、§10、§12、§14 按真机证据更新；没有把未验证项写成通过。

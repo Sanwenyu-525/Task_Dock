@@ -1047,6 +1047,26 @@ export default function SettingsPanel() {
           />
         </div>
         <div className="setting-note">{t("settings.features.actionsNote")}</div>
+        <div className="setting-row">
+          <span>{t("settings.features.lifeCurrency")}</span>
+          <Select
+            ariaLabel={t("settings.features.lifeCurrency")}
+            size="sm"
+            triggerClassName="settings-select-trigger"
+            value={settings.life_default_currency}
+            options={[
+              { value: "", label: t("settings.features.lifeCurrency.unset") },
+              { value: "CNY", label: "CNY 人民币" },
+              { value: "USD", label: "USD 美元" },
+              { value: "EUR", label: "EUR 欧元" },
+              { value: "JPY", label: "JPY 日元" },
+              { value: "GBP", label: "GBP 英镑" },
+              { value: "HKD", label: "HKD 港币" },
+            ]}
+            onChange={(v) => update({ life_default_currency: v })}
+          />
+        </div>
+        <div className="setting-note">{t("settings.features.lifeCurrencyNote")}</div>
         <div className="setting-note">{t("settings.features.clipboardNote")}</div>
       </Section>
           </>

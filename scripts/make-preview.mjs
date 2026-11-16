@@ -1553,7 +1553,7 @@ const shim = `
         const filtered = clipboardItems.filter((i) => {
           if (kind !== "all" && i.kind !== kind) return false;
           if (favorite && !i.favorite) return false;
-          if (sourceApp && i.source_app !== sourceApp) return false;
+          if (sourceApp && i.source_app.toLowerCase() !== sourceApp.toLowerCase()) return false;
           if (cutoff > 0) {
             const seen = Date.parse(i.last_seen_at || i.created_at || "");
             if (!Number.isFinite(seen) || seen < cutoff) return false;
@@ -1585,12 +1585,15 @@ const shim = `
         for (const item of clipboardItems) {
           const app = (item.source_app || "").trim();
           if (!app) continue;
-          counts.set(app, (counts.get(app) || 0) + 1);
+          const key = app.toLowerCase();
+          const current = counts.get(key);
+          if (current) current.count += 1;
+          else counts.set(key, { app, count: 1 });
         }
-        return [...counts.entries()]
-          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        return [...counts.values()]
+          .sort((a, b) => b.count - a.count || a.app.localeCompare(b.app))
           .slice(0, Math.max(1, Math.min(50, args?.limit ?? 12)))
-          .map(([app, count]) => ({ app, count }));
+          .map(({ app, count }) => ({ app, count }));
       }
       case "clipboard_stats": return { ...clipboardStats, items: clipboardItems.length, groups: clipboardGroups.length };
       case "clipboard_item": return clipboardItems.find((i) => i.id === args?.itemId) ?? clipboardItems[0];

@@ -20,11 +20,25 @@ import {
 } from "react-native";
 
 import { AppBar } from "../../components/AppBar";
+import { BottomSheet } from "../../components/BottomSheet";
 import { PressableScale } from "../../components/PressableScale";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { useToast } from "../../feedback/ToastProvider";
 import { useToastBottomAnchor } from "../../feedback/ToastLayoutProvider";
 import * as repo from "../../db/captureAssets";
+import {
+  createDocumentLink,
+  createPurchase,
+  createReceiptEvent,
+  listRecentPurchases,
+  loadDefaultCurrency,
+} from "../../db/life";
+import {
+  formatLifeDate,
+  formatMoneyMinor,
+  parseLifeDateInput,
+  type LifeRecentPurchase,
+} from "../../domain/life";
 import { AppError, describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
 import { useKeyboardHeight } from "../../lib/keyboard";
@@ -125,6 +139,18 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
   const [destinations, setDestinations] = useState<Record<string, repo.CaptureDestination[]>>({});
   const [nameDraft, setNameDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
+  // 生活票据：不改变原有「保存到」的多目的地语义，只在用户显式打开这个面板时写生活库。
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [receiptMode, setReceiptMode] = useState<"plain" | "link" | "create">("plain");
+  const [receiptName, setReceiptName] = useState("");
+  const [receiptDate, setReceiptDate] = useState(formatLifeDate(Date.now()));
+  const [receiptPurchaseName, setReceiptPurchaseName] = useState("");
+  const [receiptTotal, setReceiptTotal] = useState("");
+  const [receiptCurrency, setReceiptCurrency] = useState("");
+  const [receiptNote, setReceiptNote] = useState("");
+  const [recentPurchases, setRecentPurchases] = useState<LifeRecentPurchase[]>([]);
+  const [receiptBusy, setReceiptBusy] = useState(false);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
   const [cropActive, setCropActive] = useState(false);
   const [cropFraction, setCropFraction] = useState<CropFraction>(CROP_DEFAULT);
   const [previewLayout, setPreviewLayout] = useState({ width: 0, height: 0 });
@@ -300,6 +326,127 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
       },
     ]);
   }, [busy, current, nav, reload]);
+
+  const openReceiptSheet = useCallback(() => {
+    if (!current) return;
+    setReceiptMode("plain");
+    setReceiptName(current.name);
+    setReceiptDate(formatLifeDate(Date.now()));
+    setReceiptPurchaseName(current.name.replace(/\.[a-z0-9]{1,6}$/i, ""));
+    setReceiptTotal("");
+    setReceiptCurrency("");
+    setReceiptNote("");
+    setReceiptError(null);
+    setRecentPurchases([]);
+    setReceiptOpen(true);
+    void (async () => {
+      try {
+        const [purchases, currency] = await Promise.all([
+          listRecentPurchases(10),
+          loadDefaultCurrency(),
+        ]);
+        setRecentPurchases(purchases);
+        setReceiptCurrency(currency);
+      } catch (error) {
+        setReceiptError(`读取最近购买记录失败：${describeError(error)}`);
+      }
+    })();
+  }, [current]);
+
+  const ensureReceiptAsset = useCallback(async (): Promise<repo.CaptureAsset> => {
+    if (!current) throw new AppError("validation", "没有可保存的采集素材");
+    const saved = await saveToLocal(current);
+    if (!saved.localPath) {
+      throw new AppError("storage", "素材已保存，但本机文件路径缺失，无法建立票据关联");
+    }
+    return saved;
+  }, [current]);
+
+  const saveReceipt = useCallback(
+    async (linkedPurchase?: LifeRecentPurchase) => {
+      if (!current || receiptBusy) return;
+      setReceiptBusy(true);
+      setReceiptError(null);
+      try {
+        const occurredAt = parseLifeDateInput(receiptDate);
+        if (occurredAt === null) throw new Error("日期格式不正确，请使用 YYYY-MM-DD");
+        const asset = await ensureReceiptAsset();
+        const documentName = receiptName.trim() || asset.name;
+        if (receiptMode === "plain") {
+          await createReceiptEvent({
+            name: documentName,
+            assetId: asset.id,
+            mime: asset.mime,
+            byteSize: asset.byteSize,
+            occurredAt,
+            note: receiptNote.trim() || undefined,
+          });
+          showToast("已保存为生活票据，可在生活页继续关联购买记录", "success");
+        } else if (receiptMode === "link") {
+          if (!linkedPurchase) throw new Error("请选择一条要关联的购买记录");
+          await createDocumentLink({
+            ownerType: "event",
+            ownerId: linkedPurchase.eventId,
+            documentRef: asset.id,
+            documentSource: "capture_asset",
+            documentName,
+            mime: asset.mime,
+            byteSize: asset.byteSize,
+            transferState: "local",
+          });
+          showToast(
+            `票据已关联到 ${formatLifeDate(linkedPurchase.occurredAt)} 的购买记录`,
+            "success",
+          );
+        } else {
+          const purchaseName = receiptPurchaseName.trim();
+          if (!purchaseName) throw new Error("请填写购买商品名称");
+          if (receiptTotal.trim() && !receiptCurrency.trim()) {
+            throw new Error("请选择货币：未配置默认货币时不自动假设人民币");
+          }
+          const created = await createPurchase({
+            name: purchaseName,
+            occurredAt,
+            totalPrice: receiptTotal.trim() || null,
+            currency: receiptCurrency.trim() || null,
+            note: receiptNote.trim() || null,
+          });
+          await createDocumentLink({
+            ownerType: "event",
+            ownerId: created.eventId,
+            documentRef: asset.id,
+            documentSource: "capture_asset",
+            documentName,
+            mime: asset.mime,
+            byteSize: asset.byteSize,
+            transferState: "local",
+          });
+          showToast("已创建购买记录并关联票据", "success");
+        }
+        setReceiptOpen(false);
+        await reload();
+        bumpCaptureRevision();
+      } catch (error) {
+        setReceiptError(describeError(error));
+      } finally {
+        setReceiptBusy(false);
+      }
+    },
+    [
+      current,
+      ensureReceiptAsset,
+      receiptBusy,
+      receiptCurrency,
+      receiptDate,
+      receiptMode,
+      receiptName,
+      receiptNote,
+      receiptPurchaseName,
+      receiptTotal,
+      reload,
+      showToast,
+    ],
+  );
 
   const desktopSelected = choice.desktop;
   const canDesktop = availability?.paired === true;
@@ -1043,6 +1190,26 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             </Text>
           </Pressable>
         ) : null}
+        <View style={styles.receiptEntryRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="保存为生活票据"
+            disabled={busy}
+            onPress={openReceiptSheet}
+            style={({ pressed }) => [
+              styles.receiptEntry,
+              { borderColor: tokens.cardBorder, opacity: busy ? 0.55 : pressed ? 0.75 : 1 },
+            ]}
+          >
+            <AppIcon name="fileImage" color={tokens.accentText} size={17} />
+            <Text style={[styles.receiptEntryText, { color: tokens.accentText }]}>
+              保存为生活票据
+            </Text>
+          </Pressable>
+          <Text style={[styles.receiptEntryHint, { color: tokens.muted }]}>
+            可选：关联购买记录或新建购买记录
+          </Text>
+        </View>
         <PressableScale
           accessibilityLabel="保存到所选位置"
           accessibilityState={{ disabled: busy || assets.length === 0 }}
@@ -1062,6 +1229,240 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
           未勾选的目的地不会执行；失败的项目保留本机文件，可再次点击重试。
         </Text>
       </View>
+
+      <BottomSheet
+        visible={receiptOpen}
+        onRequestClose={() => {
+          if (!receiptBusy) setReceiptOpen(false);
+        }}
+        keyboardAware
+        maxHeightRatio={0.88}
+        accessibilityLabel="保存为生活票据"
+      >
+        <View style={styles.sheetHeader}>
+          <Text style={[styles.sheetTitle, { color: tokens.text }]}>保存为生活票据</Text>
+          <Text style={[styles.sheetHint, { color: tokens.muted }]}>
+            只引用本机素材，不复制图片字节；删除关联不会删除原图。
+          </Text>
+        </View>
+
+        <View style={styles.modeRow}>
+          {(
+            [
+              ["plain", "仅保存票据"],
+              ["link", "关联已有"],
+              ["create", "新建购买"],
+            ] as const
+          ).map(([mode, label]) => {
+            const selected = receiptMode === mode;
+            return (
+              <Pressable
+                key={mode}
+                accessibilityRole="radio"
+                accessibilityState={{ selected }}
+                onPress={() => {
+                  setReceiptMode(mode);
+                  setReceiptError(null);
+                }}
+                style={[
+                  styles.modeChip,
+                  {
+                    borderColor: selected ? tokens.accentFill : tokens.cardBorder,
+                    backgroundColor: selected ? tokens.accentSoft : tokens.card,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.modeText,
+                    { color: selected ? tokens.accentText : tokens.textSoft },
+                  ]}
+                >
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={styles.fieldRow}>
+          <Text style={[styles.fieldLabel, { color: tokens.muted }]}>票据名称</Text>
+          <TextInput
+            value={receiptName}
+            onChangeText={setReceiptName}
+            style={[
+              styles.input,
+              { color: tokens.text, backgroundColor: tokens.card, borderColor: tokens.cardBorder },
+            ]}
+            placeholder={current.name}
+            placeholderTextColor={tokens.faint}
+            accessibilityLabel="票据名称"
+          />
+        </View>
+        <View style={styles.fieldRow}>
+          <Text style={[styles.fieldLabel, { color: tokens.muted }]}>日期</Text>
+          <TextInput
+            value={receiptDate}
+            onChangeText={setReceiptDate}
+            style={[
+              styles.input,
+              { color: tokens.text, backgroundColor: tokens.card, borderColor: tokens.cardBorder },
+            ]}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor={tokens.faint}
+            accessibilityLabel="票据日期，格式年-月-日"
+          />
+        </View>
+
+        {receiptMode === "plain" ? (
+          <Text style={[styles.receiptHint, { color: tokens.muted }]}>
+            只保存原始文件为一笔生活票据；之后可在生活页的票据资料里关联购买记录。
+          </Text>
+        ) : null}
+
+        {receiptMode === "link" ? (
+          <View style={styles.purchaseList}>
+            <Text style={[styles.sheetHint, { color: tokens.muted }]}>
+              选择一条购买记录，票据会直接关联到它。
+            </Text>
+            {recentPurchases.length === 0 ? (
+              <Text style={[styles.receiptHint, { color: tokens.muted }]}>
+                暂无购买记录；可切换到「新建购买」。
+              </Text>
+            ) : (
+              recentPurchases.map((purchase) => (
+                <Pressable
+                  key={purchase.eventId}
+                  accessibilityRole="button"
+                  accessibilityLabel={`关联到 ${formatLifeDate(purchase.occurredAt)} 的购买记录`}
+                  disabled={receiptBusy}
+                  onPress={() => void saveReceipt(purchase)}
+                  style={({ pressed }) => [
+                    styles.purchaseRow,
+                    {
+                      borderColor: tokens.cardBorder,
+                      opacity: receiptBusy ? 0.6 : pressed ? 0.75 : 1,
+                    },
+                  ]}
+                >
+                  <View style={styles.purchaseMain}>
+                    <Text style={[styles.purchaseTitle, { color: tokens.text }]} numberOfLines={1}>
+                      {purchase.itemNames.join("、") || purchase.title}
+                    </Text>
+                    <Text style={[styles.purchaseMeta, { color: tokens.muted }]}>
+                      {formatLifeDate(purchase.occurredAt)}
+                      {purchase.merchant ? ` · ${purchase.merchant}` : ""}
+                      {purchase.totalPriceMinor !== null
+                        ? ` · ${formatMoneyMinor(purchase.totalPriceMinor, purchase.currency)}`
+                        : ""}
+                    </Text>
+                  </View>
+                  <AppIcon name="chevronRight" color={tokens.muted} size={16} />
+                </Pressable>
+              ))
+            )}
+          </View>
+        ) : null}
+
+        {receiptMode === "create" ? (
+          <View style={styles.purchaseList}>
+            <View style={styles.fieldRow}>
+              <Text style={[styles.fieldLabel, { color: tokens.muted }]}>商品名称</Text>
+              <TextInput
+                value={receiptPurchaseName}
+                onChangeText={setReceiptPurchaseName}
+                style={[
+                  styles.input,
+                  {
+                    color: tokens.text,
+                    backgroundColor: tokens.card,
+                    borderColor: tokens.cardBorder,
+                  },
+                ]}
+                placeholder="例如 大米"
+                placeholderTextColor={tokens.faint}
+                accessibilityLabel="购买商品名称"
+              />
+            </View>
+            <View style={styles.fieldRow}>
+              <Text style={[styles.fieldLabel, { color: tokens.muted }]}>金额</Text>
+              <TextInput
+                value={receiptTotal}
+                onChangeText={setReceiptTotal}
+                keyboardType="decimal-pad"
+                style={[
+                  styles.input,
+                  {
+                    color: tokens.text,
+                    backgroundColor: tokens.card,
+                    borderColor: tokens.cardBorder,
+                  },
+                ]}
+                placeholder="选填，例如 48.00"
+                placeholderTextColor={tokens.faint}
+                accessibilityLabel="购买金额"
+              />
+            </View>
+            <View style={styles.groupRow}>
+              <Text style={[styles.groupLabel, { color: tokens.muted }]}>货币</Text>
+              {["CNY", "USD", "EUR", "JPY", "GBP", "HKD"].map((code) => {
+                const selected = receiptCurrency === code;
+                return (
+                  <Pressable
+                    key={code}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                    onPress={() => setReceiptCurrency(code)}
+                    style={[
+                      styles.groupChip,
+                      {
+                        borderColor: selected ? tokens.accentFill : tokens.cardBorder,
+                        backgroundColor: selected ? tokens.accentSoft : tokens.card,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.groupText,
+                        { color: selected ? tokens.accentText : tokens.textSoft },
+                      ]}
+                    >
+                      {code}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={[styles.receiptHint, { color: tokens.faint }]}>
+              未配置默认货币时不会自动按人民币记账；金额为空也可保存商品名称。
+            </Text>
+          </View>
+        ) : null}
+
+        {receiptError ? (
+          <Text accessibilityRole="alert" style={[styles.receiptError, { color: tokens.danger }]}>
+            {receiptError}
+          </Text>
+        ) : null}
+
+        {receiptMode !== "link" ? (
+          <PressableScale
+            accessibilityLabel={receiptMode === "plain" ? "仅保存票据" : "创建购买记录并关联票据"}
+            accessibilityState={{ disabled: receiptBusy }}
+            disabled={receiptBusy}
+            onPress={() => void saveReceipt()}
+            contentStyle={[
+              styles.primaryAction,
+              { backgroundColor: receiptBusy ? tokens.muted : tokens.accentFill },
+            ]}
+          >
+            {receiptBusy ? <ActivityIndicator color={tokens.onAccent} size="small" /> : null}
+            <Text style={[styles.primaryActionText, { color: tokens.onAccent }]}>
+              {receiptMode === "plain" ? "保存票据" : "创建并关联"}
+            </Text>
+          </PressableScale>
+        ) : null}
+      </BottomSheet>
     </View>
   );
 }
@@ -1226,4 +1627,43 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   secondaryText: { fontSize: font.body, fontWeight: "600" },
+  receiptEntryRow: { gap: 2, marginBottom: space.xs },
+  receiptEntry: {
+    minHeight: 40,
+    borderRadius: radius.row,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.xs,
+  },
+  receiptEntryText: { fontSize: font.label, fontWeight: "700" },
+  receiptEntryHint: { fontSize: 10.5, textAlign: "center" },
+  sheetHeader: { gap: 2, marginBottom: space.sm },
+  sheetTitle: { fontSize: font.section, fontWeight: "700" },
+  sheetHint: { fontSize: font.label, lineHeight: 17 },
+  modeRow: { flexDirection: "row", gap: space.xs, marginBottom: space.sm },
+  modeChip: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: radius.control,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modeText: { fontSize: font.label, fontWeight: "700" },
+  receiptHint: { fontSize: font.label, lineHeight: 17 },
+  purchaseList: { gap: space.xs, marginTop: space.sm },
+  purchaseRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    padding: space.sm,
+    borderRadius: radius.row,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  purchaseMain: { flex: 1, gap: 2 },
+  purchaseTitle: { fontSize: font.body, fontWeight: "600" },
+  purchaseMeta: { fontSize: font.label },
+  receiptError: { fontSize: font.label, lineHeight: 18, marginTop: space.xs },
 });

@@ -70,6 +70,7 @@ const SettingsPanel = lazy(() => import("./settings/SettingsPanel"));
 // 设置是主窗口自身窗口与外观配置的入口，继续保留。
 const WORKBENCH_ONLY_TABS = new Set<Tab>([
   "workbench",
+  "life",
   "workspace",
   "apps",
   "widgets",

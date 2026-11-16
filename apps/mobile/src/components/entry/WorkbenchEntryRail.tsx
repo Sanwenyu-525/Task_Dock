@@ -10,9 +10,17 @@
 //   不需要 FlatList 的窗口复用与额外测量；为它引入虚拟列表反而多一层布局开销。
 //
 // 编辑态：磁贴右上 × 直接移除；点磁贴弹动作表（前移 / 后移 / 移除）；
-// 右下角六点手柄左右拖动排序（松手落位）。拖拽手柄是唯一启动拖拽的区域，
-// 磁贴本身仍可用来滚动轨道——否则长轨道里的后半段入口在编辑态无法触达。
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
+// 按住磁贴任意位置左右拖动排序（按住约 220ms 后启动，短划仍是滚轨道）。
+// 拖动过程中相邻磁贴会实时让位，松手落位。
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentRef,
+  type ReactNode,
+} from "react";
 import {
   Animated,
   PanResponder,
@@ -35,8 +43,10 @@ import { radius, space } from "../../theme/tokens";
 
 import { ActionSheet, type SheetAction } from "../ActionSheet";
 import { QuickTile } from "../QuickTile";
-import { GripDots } from "./GripDots";
 import { AppIcon, type IconName } from "../icons/AppIcon";
+
+/** 编辑态按住多久后允许拖动（短划优先让轨道滚动，避免整块磁贴抢走横向手势） */
+const DRAG_HOLD_MS = 220;
 
 /**
  * 上一次的横向滚动位置（进程内存，不写库、不绑定入口配置）。
@@ -256,8 +266,15 @@ export function WorkbenchEntryRail({
 
             {entries.map((entry, index) => {
               const active = dragging?.index === index;
+              // 拖动中：目标区间内的邻居实时让出/补上 step，松手后再提交顺序
+              const shift = dragging ? railShiftFor(dragging, index, metrics.step) : 0;
               return (
-                <View key={entry.id} style={{ width: metrics.tileWidth }}>
+                <RailCell
+                  key={entry.id}
+                  width={metrics.tileWidth}
+                  shift={shift}
+                  raised={active}
+                >
                   {editing ? (
                     <EditableRailTile
                       entry={entry}
@@ -286,7 +303,7 @@ export function WorkbenchEntryRail({
                       onLongPress={onLongPress}
                     />
                   )}
-                </View>
+                </RailCell>
               );
             })}
           </View>
@@ -314,10 +331,57 @@ export function WorkbenchEntryRail({
 }
 
 /**
+ * 拖动中的邻居位移：被拖磁贴跨过的每个位置都让出一个 step，形成实时换位。
+ * 只做视觉位移，真正顺序仍在松手时一次性提交。
+ */
+function railShiftFor(
+  drag: { index: number; target: number },
+  index: number,
+  step: number,
+): number {
+  if (index === drag.index || drag.target === drag.index) return 0;
+  if (drag.index < drag.target && index > drag.index && index <= drag.target) return -step;
+  if (drag.index > drag.target && index >= drag.target && index < drag.index) return step;
+  return 0;
+}
+
+/** 单个磁贴槽位：邻居让位用弹簧过渡，被拖磁贴本身不参与让位（它跟着手指走） */
+function RailCell({
+  width,
+  shift,
+  raised,
+  children,
+}: {
+  width: number;
+  shift: number;
+  raised: boolean;
+  children: ReactNode;
+}) {
+  const anim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.spring(anim, {
+      toValue: shift,
+      speed: 18,
+      bounciness: 0,
+      useNativeDriver: true,
+    }).start();
+  }, [anim, shift]);
+
+  return (
+    <Animated.View
+      style={{ width, zIndex: raised ? 9 : 0, transform: [{ translateX: anim }] }}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
+/**
  * 编辑态磁贴。
  *
- * 触摸分工：整块磁贴（覆盖层）点按 = 打开动作表；右下角手柄按住拖动 = 排序；
- * 右上角 × = 直接移除。只有手柄接 PanResponder，磁贴区域留给轨道滚动。
+ * 触摸分工：整块磁贴点按 = 打开动作表；按住约 220ms 后整块磁贴都可拖动排序；
+ * 短划仍交给轨道 ScrollView 滚动。右上角 × 直接移除。
  */
 function EditableRailTile({
   entry,
@@ -350,24 +414,60 @@ function EditableRailTile({
   shadowStyle: object;
 }) {
   const { tokens } = useTheme();
+  // 按住计时：只有按住超过 DRAG_HOLD_MS 才允许 PanResponder 接管，
+  // 这样短划磁贴仍是滚轨道，整块磁贴都能拖，但不会把横向滚动吃掉。
+  const holdRef = useRef(false);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearHold = useCallback(() => {
+    if (holdTimer.current) {
+      clearTimeout(holdTimer.current);
+      holdTimer.current = null;
+    }
+    holdRef.current = false;
+  }, []);
+
+  const armHold = useCallback(() => {
+    clearHold();
+    holdTimer.current = setTimeout(() => {
+      holdRef.current = true;
+      holdTimer.current = null;
+    }, DRAG_HOLD_MS);
+  }, [clearHold]);
+
+  useEffect(() => clearHold, [clearHold]);
 
   const responder = useMemo(
     () =>
       PanResponder.create({
-        // 手柄按下即接管：先于轨道 ScrollView 拿到手势，避免拖磁贴变成滚轨道
-        onStartShouldSetPanResponderCapture: () => true,
-        onMoveShouldSetPanResponderCapture: () => true,
+        // 起手不抢触摸：轻点仍走 Pressable，短划仍走轨道 ScrollView
+        onStartShouldSetPanResponderCapture: () => false,
+        // 按住到时间后整块磁贴接管拖拽
+        onMoveShouldSetPanResponderCapture: () => holdRef.current,
         onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: () => onBeginDrag(index),
+        onPanResponderGrant: () => {
+          holdRef.current = false;
+          onBeginDrag(index);
+        },
         onPanResponderMove: (_event, gesture) => onUpdateDrag(index, gesture.dx),
-        onPanResponderRelease: (_event, gesture) => onEndDrag(index, gesture.dx),
-        onPanResponderTerminate: () => onEndDrag(index, 0, true),
+        onPanResponderRelease: (_event, gesture) => {
+          clearHold();
+          onEndDrag(index, gesture.dx);
+        },
+        onPanResponderTerminate: () => {
+          clearHold();
+          onEndDrag(index, 0, true);
+        },
       }),
-    [index, onBeginDrag, onEndDrag, onUpdateDrag],
+    [index, onBeginDrag, onEndDrag, onUpdateDrag, clearHold],
   );
 
   return (
     <Animated.View
+      {...responder.panHandlers}
+      onTouchStart={armHold}
+      onTouchEnd={clearHold}
+      onTouchCancel={clearHold}
       style={[
         styles.surface,
         { width, height },
@@ -402,7 +502,7 @@ function EditableRailTile({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${entry.label}，正在编辑`}
-        accessibilityHint="点按打开前移、后移与移除选项"
+        accessibilityHint="点按打开前移、后移与移除选项；按住磁贴拖动排序"
         accessibilityActions={[{ name: "activate", label: "打开入口操作" }]}
         onAccessibilityAction={(event) => {
           if (event.nativeEvent.actionName === "activate") onActivate();
@@ -424,17 +524,6 @@ function EditableRailTile({
       >
         <AppIcon name="close" color={tokens.danger} size={12} />
       </Pressable>
-
-      {/* 拖动手柄：六点 + 浅底，明确「这里可以抓」；也是横幅轨道里唯一启动拖拽的区域 */}
-      <View
-        {...responder.panHandlers}
-        accessible={false}
-        importantForAccessibility="no-hide-descendants"
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        style={[styles.grip, { backgroundColor: tokens.track }]}
-      >
-        <GripDots color={tokens.muted} dot={2.5} gap={2} />
-      </View>
     </Animated.View>
   );
 }
@@ -474,16 +563,6 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  grip: {
-    position: "absolute",
-    bottom: 4,
-    right: 4,
-    width: 18,
-    height: 18,
-    borderRadius: 9,
     alignItems: "center",
     justifyContent: "center",
   },

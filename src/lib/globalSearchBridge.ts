@@ -44,6 +44,8 @@ export const GLOBAL_SEARCH_CATEGORIES = [
   "workspace",
   "planning",
   "notes",
+  // 生活效率系统 v1：商品购买历史、生活事件、票据。
+  "life",
 ] as const;
 export type GlobalSearchCategory = (typeof GLOBAL_SEARCH_CATEGORIES)[number];
 export type GlobalSearchCategoryFilter = GlobalSearchCategory | "all";
@@ -59,11 +61,15 @@ export const GLOBAL_SEARCH_CATEGORY_LABELS: Record<GlobalSearchCategoryFilter, s
   workspace: "工作现场",
   planning: "规划中心",
   notes: "笔记",
+  life: "生活",
 };
 
 /** 分类内子类型的中文展示（未列出的 kind 原样显示）。 */
 export const GLOBAL_SEARCH_KIND_LABELS: Record<string, string> = {
   task: "任务",
+  life_item: "商品",
+  life_event: "生活记录",
+  life_receipt: "票据",
   session: "会话",
   run: "轮次",
   snapshot: "现场",

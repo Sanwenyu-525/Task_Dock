@@ -58,6 +58,7 @@ import { EntryManagerScreen } from "./src/screens/EntryManagerScreen";
 import { FilesScreen } from "./src/screens/FilesScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
 import { InboxScreen } from "./src/screens/InboxScreen";
+import { LifeScreen } from "./src/screens/LifeScreen";
 import { NoteEditorScreen } from "./src/screens/NoteEditorScreen";
 import { NotesScreen } from "./src/screens/NotesScreen";
 import { NotificationsScreen } from "./src/screens/NotificationsScreen";
@@ -477,6 +478,8 @@ function Shell() {
             onBack={back}
           />
         );
+      case "life":
+        return <LifeScreen nav={nav} />;
       case "diagnostics":
         return <DiagnosticScreen nav={nav} onBack={back} version={version} />;
       // 工作台入口自定义：管理与「全部功能」共用同一个屏幕，按 initialView 区分落点

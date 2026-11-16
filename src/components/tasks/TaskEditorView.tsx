@@ -86,11 +86,13 @@ function errText(e: unknown): string {
 export interface TaskEditorViewProps {
   /** 编辑的既有任务；null = 新建。 */
   task: Task | null;
+  /** 新建时的分类预选（生活页「新增待办」传「生活」）；已有任务忽略。 */
+  defaultCategory?: string;
   /** 返回列表（取消、保存成功或删除成功后由调用方收起编辑态）。 */
   onClose: () => void;
 }
 
-export default function TaskEditorView({ task, onClose }: TaskEditorViewProps) {
+export default function TaskEditorView({ task, defaultCategory, onClose }: TaskEditorViewProps) {
   const create = useTasksStore((s) => s.create);
   const update = useTasksStore((s) => s.update);
   const remove = useTasksStore((s) => s.remove);
@@ -107,7 +109,7 @@ export default function TaskEditorView({ task, onClose }: TaskEditorViewProps) {
     title: task?.title ?? "",
     description: task?.description ?? "",
     priority: task?.priority ?? 2,
-    category: task?.category ?? "",
+    category: task?.category ?? defaultCategory ?? "",
     tagsText: (task?.tags ?? []).join(", "),
     due: toLocalInputValue(task?.due_at),
     remind: toLocalInputValue(task?.remind_at),

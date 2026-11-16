@@ -404,6 +404,8 @@ export interface Settings {
   nav_fallback: boolean;
   nav_remember_window: boolean;
   nav_default_browser: string;
+  /** 生活记录默认货币（空 = 未配置，填写金额时必须让用户显式选择）。 */
+  life_default_currency: string;
   nav_workspace_max: number;
   /** 开发工作台（2026-11）：当前关注的开发任务 ID（tasks.id 字符串；空 = 未设置）。 */
   workbench_current_task: string;

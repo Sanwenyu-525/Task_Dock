@@ -32,6 +32,7 @@ import {
   ListTodo,
   Map as MapIcon,
   Settings as SettingsIcon,
+  ShoppingBasket,
   Smartphone,
   Workflow,
 } from "lucide-react";
@@ -61,6 +62,7 @@ export type NavEntryId =
   | "workspace"
   | "files"
   | "tasks"
+  | "life"
   | "agents"
   | "apps"
   | "widgets"
@@ -185,6 +187,24 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     defaults: {
       left: { order: 1, visible: true },
       capsule: { order: 2, visible: true },
+    },
+  },
+  {
+    id: "life",
+    kind: "page",
+    // 生活是完整工作台页面：主窗口导航保留位置与显隐配置，页面宿主唯一在
+    // WorkbenchShell（不创建第二套大型窗口系统）。
+    surfaces: ["left"],
+    labelKey: "nav.life",
+    label: "生活",
+    icon: ShoppingBasket,
+    tabs: ["life"],
+    group: "core",
+    workbenchOnly: true,
+    defaults: {
+      // 不默认强制所有用户显示生活模块：首次安装隐藏，从功能管理显式开启。
+      left: { order: 2.5, visible: false },
+      capsule: { order: 0, visible: false },
     },
   },
   {

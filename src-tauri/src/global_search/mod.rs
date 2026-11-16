@@ -19,7 +19,7 @@ use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
 /// 支持的搜索分类（前端分类筛选与后端一一对应）。
-pub const CATEGORIES: [&str; 9] = [
+pub const CATEGORIES: [&str; 10] = [
     "tasks",
     "clipboard",
     "capture",
@@ -29,6 +29,8 @@ pub const CATEGORIES: [&str; 9] = [
     "workspace",
     "planning",
     "notes",
+    // 生活效率系统 v1：商品购买历史、生活事件、票据。
+    "life",
 ];
 
 /// 每类默认返回条数（任务书性能要求）。
@@ -904,6 +906,213 @@ fn search_notes(conn: &Connection, q: &str, limit: i64) -> AppResult<Vec<Candida
 
 // ── 入口 ────────────────────────────────────────────────────
 
+/// 生活效率系统 v1：商品（含最近购买/次数）、生活事件、票据名称。
+///
+/// 只查有效记录（`deleted_at IS NULL`），参数化 LIKE 并限制每类条数；
+/// 结果携带稳定 target_id，供前端打开生活详情。
+fn search_life(
+    conn: &Connection,
+    q: &str,
+    pat: &str,
+    limit: i64,
+) -> AppResult<Vec<Candidate>> {
+    let mut out: Vec<Candidate> = Vec::new();
+    let short_date = |iso: &str| -> String { iso.chars().take(10).collect() };
+
+    // 商品：名称 / 归一化名 / 别名 命中；最近购买来自真实事件。
+    {
+        let mut stmt = conn.prepare(
+            "SELECT i.id, i.name, i.note, i.category,
+                    (SELECT COUNT(*) FROM life_event_items ei
+                       JOIN life_events e ON e.id = ei.event_id
+                       WHERE ei.item_id = i.id AND e.event_type = 'purchase'
+                         AND e.deleted_at IS NULL) AS cnt,
+                    (SELECT MAX(e.occurred_at) FROM life_event_items ei
+                       JOIN life_events e ON e.id = ei.event_id
+                       WHERE ei.item_id = i.id AND e.event_type = 'purchase'
+                         AND e.deleted_at IS NULL) AS last_at
+             FROM life_items i
+             WHERE i.deleted_at IS NULL
+               AND (i.name LIKE ?1 ESCAPE '\\' OR i.normalized_name LIKE ?1 ESCAPE '\\'
+                    OR i.aliases LIKE ?1 ESCAPE '\\')
+             ORDER BY (last_at IS NOT NULL) DESC, last_at DESC, i.name ASC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pat, limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, name, note, category, count, last_at) = row?;
+            let subtitle = match last_at.as_deref() {
+                Some(value) if count > 0 => {
+                    format!("最近购买 {} · 共 {} 次", short_date(value), count)
+                }
+                _ => "尚无购买记录".to_string(),
+            };
+            let snippet = if note.trim().is_empty() {
+                category.trim().to_string()
+            } else {
+                note.trim().to_string()
+            };
+            let rank = rank_match(q, &name, &snippet);
+            out.push((
+                rank,
+                GlobalSearchResult {
+                    id: id.clone(),
+                    category: "life".into(),
+                    kind: "life_item".into(),
+                    title: truncate(&name, TITLE_MAX_CHARS),
+                    subtitle,
+                    snippet: truncate(&snippet, SNIPPET_MAX_CHARS),
+                    occurred_at: last_at,
+                    status: None,
+                    priority: None,
+                    target_id: Some(id),
+                    parent_id: None,
+                },
+            ));
+        }
+    }
+
+    // 生活事件：标题 / 描述 / 商家。
+    {
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.event_type, e.title, e.description, e.occurred_at, e.merchant,
+                    (SELECT GROUP_CONCAT(ei.item_name_snapshot, '、')
+                       FROM life_event_items ei WHERE ei.event_id = e.id)
+             FROM life_events e
+             WHERE e.deleted_at IS NULL
+               AND (e.title LIKE ?1 ESCAPE '\\' OR e.description LIKE ?1 ESCAPE '\\'
+                    OR e.merchant LIKE ?1 ESCAPE '\\')
+             ORDER BY e.occurred_at DESC, e.created_at DESC, e.id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pat, limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, event_type, title, description, occurred_at, merchant, names) = row?;
+            let kind_label = match event_type.as_str() {
+                "purchase" => "购买",
+                "maintenance" => "维护",
+                _ => "生活",
+            };
+            let mut subtitle = format!("{} · {}", kind_label, short_date(&occurred_at));
+            if !merchant.trim().is_empty() {
+                subtitle.push_str(" · ");
+                subtitle.push_str(merchant.trim());
+            }
+            let body = names
+                .unwrap_or_default()
+                .split('、')
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("、");
+            let snippet = if body.is_empty() {
+                description.trim().to_string()
+            } else {
+                body
+            };
+            let display_title = if title.trim().is_empty() {
+                "生活记录".to_string()
+            } else {
+                title.trim().to_string()
+            };
+            let rank = rank_match(q, &display_title, &snippet);
+            out.push((
+                rank,
+                GlobalSearchResult {
+                    id: id.clone(),
+                    category: "life".into(),
+                    kind: "life_event".into(),
+                    title: truncate(&display_title, TITLE_MAX_CHARS),
+                    subtitle,
+                    snippet: truncate(&snippet, SNIPPET_MAX_CHARS),
+                    occurred_at: Some(occurred_at),
+                    status: None,
+                    priority: None,
+                    target_id: Some(id),
+                    parent_id: None,
+                },
+            ));
+        }
+    }
+
+    // 票据：按票据名称/引用查询；返回关联的生活记录 target_id。
+    {
+        let mut stmt = conn.prepare(
+            "SELECT l.id, l.document_name, l.owner_type, l.owner_id, l.transfer_state,
+                    l.created_at,
+                    (SELECT e.title FROM life_events e
+                       WHERE e.id = l.owner_id AND e.deleted_at IS NULL)
+             FROM life_document_links l
+             WHERE l.deleted_at IS NULL
+               AND (l.document_name LIKE ?1 ESCAPE '\\' OR l.document_ref LIKE ?1 ESCAPE '\\')
+             ORDER BY l.created_at DESC, l.id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pat, limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, name, owner_type, owner_id, transfer_state, created_at, event_title) = row?;
+            let display_name = if name.trim().is_empty() {
+                "生活票据".to_string()
+            } else {
+                name.trim().to_string()
+            };
+            let owner_label = match event_title.as_deref() {
+                Some(title) if !title.trim().is_empty() => title.trim().to_string(),
+                _ if owner_type == "item" => "关联商品".to_string(),
+                _ => "关联记录".to_string(),
+            };
+            let subtitle = format!("票据 · 关联 {}", owner_label);
+            let rank = rank_match(q, &display_name, &owner_label);
+            out.push((
+                rank,
+                GlobalSearchResult {
+                    id: id.clone(),
+                    category: "life".into(),
+                    kind: "life_receipt".into(),
+                    title: truncate(&display_name, TITLE_MAX_CHARS),
+                    subtitle,
+                    snippet: String::new(),
+                    occurred_at: Some(created_at),
+                    status: Some(transfer_state),
+                    priority: None,
+                    target_id: Some(owner_id),
+                    parent_id: Some(id),
+                },
+            ));
+        }
+    }
+
+    Ok(out)
+}
+
 /// 执行统一搜索。`categories` 为空/None 表示全部分类；非法分类名返回 Validation 错误。
 /// 全程单只读连接（`with_read`），不写任何表。
 pub fn run_search(
@@ -968,6 +1177,9 @@ pub fn run_search(
         }
         if want("notes") {
             push("notes", search_notes(conn, &query, sql_limit))?;
+        }
+        if want("life") {
+            push("life", search_life(conn, &query, &pat, sql_limit))?;
         }
         Ok(())
     })?;
@@ -1357,6 +1569,59 @@ mod tests {
         let item = &rs.groups[0].items[0];
         assert_eq!(item.status.as_deref(), Some("missing"));
         assert!(item.subtitle.contains("已失效"), "引用失效必须如实标注");
+    }
+
+    #[test]
+    fn search_hits_life_items_events_and_receipts_with_stable_target_ids() {
+        let (_dir, db) = temp_db("life");
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO life_items (id,name,normalized_name,category,aliases,note,created_at,updated_at) \
+                 VALUES ('li1','大米','大米','粮油','[\"东北大米\"]','常买袋装','2026-09-01T00:00:00Z','2026-11-03T00:00:00Z')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO life_events (id,event_type,title,description,occurred_at,merchant,source,created_at,updated_at) \
+                 VALUES ('le1','purchase','大米','普通袋装','2026-11-03T00:00:00Z','某超市','manual','2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO life_event_items (id,event_id,item_id,item_name_snapshot,quantity_value,quantity_unit,total_price_minor,currency,created_at,updated_at) \
+                 VALUES ('lei1','le1','li1','大米','5','kg',4800,'CNY','2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO life_document_links (id,owner_type,owner_id,document_ref,document_source,document_name,mime,byte_size,transfer_state,created_at,updated_at) \
+                 VALUES ('ld1','event','le1','asset-1','capture_asset','大米小票.jpg','image/jpeg',1024,'local','2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
+                [],
+            )?;
+            // 已删除商品不得继续出现在结果中。
+            c.execute(
+                "INSERT INTO life_items (id,name,normalized_name,category,aliases,note,created_at,updated_at,deleted_at) \
+                 VALUES ('li-dead','大米旧称','大米旧称','','[]','','2026-09-01T00:00:00Z','2026-09-01T00:00:00Z','2026-09-02T00:00:00Z')",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let rs = run_search(&db, "大米", &["life".into()], 0).unwrap();
+        assert_eq!(rs.groups.len(), 1);
+        let items = &rs.groups[0].items;
+        assert!(items.iter().any(|i| i.kind == "life_item" && i.target_id.as_deref() == Some("li1")));
+        assert!(items.iter().any(|i| i.kind == "life_event" && i.target_id.as_deref() == Some("le1")));
+        assert!(items.iter().any(|i| i.kind == "life_receipt" && i.target_id.as_deref() == Some("le1")));
+        assert!(
+            items.iter().all(|i| i.id != "li-dead" && i.target_id.as_deref() != Some("li-dead")),
+            "软删除商品不得返回"
+        );
+
+        // 票据名称单独命中，仍带 owner 稳定 ID 与 link 作为 parent_id。
+        let receipt = run_search(&db, "大米小票", &["life".into()], 0).unwrap();
+        let hit = receipt.groups[0].items.iter().find(|i| i.kind == "life_receipt").unwrap();
+        assert_eq!(hit.target_id.as_deref(), Some("le1"));
+        assert_eq!(hit.parent_id.as_deref(), Some("ld1"));
+        assert_eq!(hit.status.as_deref(), Some("local"));
     }
 
     /// 万级数据基准（任务书 §8）：10k 任务 + 10k 收集箱 + 2k 剪贴板 + 1k 暂存架，

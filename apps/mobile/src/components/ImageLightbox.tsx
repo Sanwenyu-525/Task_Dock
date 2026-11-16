@@ -4,16 +4,18 @@
 // - 恒暗 ink 底，图片 contain；顶部关闭按钮 44dp（onInk），底部页码 onInkMuted；
 // - 只用 RN 自带 FlatList 横向分页，不引入手势/缩放第三方库；
 // - 点背景关闭；系统开启减少动态效果时不做额外动画。
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ElementRef } from "react";
 import {
   Dimensions,
   FlatList,
   Image,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
+  type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
@@ -47,7 +49,12 @@ export function ImageLightbox({
   const insets = useWindowInsets();
   const reduceMotion = useReduceMotion();
   const listRef = useRef<FlatList<LightboxImage>>(null);
+  const zoomRef = useRef<ElementRef<typeof ScrollView>>(null);
   const [index, setIndex] = useState(initialIndex);
+  // 不引入手势库：用「放大 / 还原」按钮 + 双向可平移的大画布实现原图查看。
+  // 放大时暂停横向翻页，避免两套手势争抢；还原后可继续左右滑动。
+  const [zoomed, setZoomed] = useState(false);
+  const [viewport, setViewport] = useState({ width: SCREEN_WIDTH, height: 0 });
 
   const safeIndex = Math.min(Math.max(initialIndex, 0), Math.max(images.length - 1, 0));
 
@@ -55,6 +62,7 @@ export function ImageLightbox({
   useEffect(() => {
     if (!visible) return;
     setIndex(safeIndex);
+    setZoomed(false);
     listRef.current?.scrollToOffset({
       offset: safeIndex * SCREEN_WIDTH,
       animated: false,
@@ -66,9 +74,27 @@ export function ImageLightbox({
   const onMomentumScrollEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const next = Math.round(event.nativeEvent.contentOffset.x / SCREEN_WIDTH);
     setIndex(Math.min(Math.max(next, 0), images.length - 1));
+    setZoomed(false);
   };
 
   const current = images[index];
+  const zoomScale = 2.5;
+  const zoomedWidth = viewport.width * zoomScale;
+  const zoomedHeight = Math.max(1, viewport.height) * zoomScale;
+
+  const toggleZoom = () => {
+    const next = !zoomed;
+    setZoomed(next);
+    if (next) {
+      requestAnimationFrame(() => {
+        zoomRef.current?.scrollTo({
+          x: (zoomedWidth - viewport.width) / 2,
+          y: (zoomedHeight - viewport.height) / 2,
+          animated: false,
+        });
+      });
+    }
+  };
 
   return (
     <Modal
@@ -79,37 +105,63 @@ export function ImageLightbox({
       navigationBarTranslucent
       onRequestClose={onClose}
     >
-      <View style={[styles.root, { backgroundColor: tokens.ink }]}>
-        <FlatList
-          ref={listRef}
-          data={images}
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          initialScrollIndex={safeIndex}
-          keyExtractor={(item, itemIndex) => `${item.uri}-${itemIndex}`}
-          getItemLayout={(_, itemIndex) => ({
-            length: SCREEN_WIDTH,
-            offset: SCREEN_WIDTH * itemIndex,
-            index: itemIndex,
-          })}
-          onMomentumScrollEnd={onMomentumScrollEnd}
-          renderItem={({ item }) => (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={item.name ?? "查看图片"}
-              onPress={onClose}
-              style={styles.page}
-            >
-              <Image
-                source={{ uri: item.uri }}
-                resizeMode="contain"
-                style={styles.image}
-                accessibilityIgnoresInvertColors
-              />
-            </Pressable>
-          )}
-        />
+      <View
+        style={[styles.root, { backgroundColor: tokens.ink }]}
+        onLayout={(event: LayoutChangeEvent) => {
+          const { width, height } = event.nativeEvent.layout;
+          setViewport({ width, height });
+        }}
+      >
+        {zoomed ? (
+          <ScrollView
+            ref={zoomRef}
+            style={styles.zoomScroll}
+            contentContainerStyle={{ width: zoomedWidth, height: zoomedHeight }}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={false}
+            maximumZoomScale={1}
+          >
+            <Image
+              source={{ uri: current?.uri ?? "" }}
+              resizeMode="contain"
+              style={{ width: zoomedWidth, height: zoomedHeight }}
+              accessibilityIgnoresInvertColors
+              accessibilityLabel={current?.name ?? "放大的票据原图"}
+            />
+          </ScrollView>
+        ) : (
+          <FlatList
+            ref={listRef}
+            data={images}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            initialScrollIndex={safeIndex}
+            keyExtractor={(item, itemIndex) => `${item.uri}-${itemIndex}`}
+            getItemLayout={(_, itemIndex) => ({
+              length: SCREEN_WIDTH,
+              offset: SCREEN_WIDTH * itemIndex,
+              index: itemIndex,
+            })}
+            onMomentumScrollEnd={onMomentumScrollEnd}
+            renderItem={({ item }) => (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={item.name ?? "查看图片"}
+                onPress={onClose}
+                style={styles.page}
+              >
+                <Image
+                  source={{ uri: item.uri }}
+                  resizeMode="contain"
+                  style={styles.image}
+                  accessibilityIgnoresInvertColors
+                />
+              </Pressable>
+            )}
+          />
+        )}
 
         <View
           style={[
@@ -117,6 +169,20 @@ export function ImageLightbox({
             { paddingTop: insets.top + space.sm, paddingHorizontal: space.md },
           ]}
         >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={zoomed ? "还原图片大小" : "放大图片"}
+            onPress={toggleZoom}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            style={({ pressed }) => [
+              styles.zoomButton,
+              { backgroundColor: tokens.inkScrim, opacity: pressed ? 0.6 : 1 },
+            ]}
+          >
+            <Text style={[styles.zoomText, { color: tokens.onInk }]}>
+              {zoomed ? "还原" : "放大"}
+            </Text>
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="关闭图片"
@@ -157,14 +223,25 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   image: { width: "100%", height: "100%" },
+  zoomScroll: { flex: 1 },
   topBar: {
     position: "absolute",
     top: 0,
     left: 0,
     right: 0,
     flexDirection: "row",
-    justifyContent: "flex-end",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
+  zoomButton: {
+    minHeight: 34,
+    minWidth: 58,
+    paddingHorizontal: space.md,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  zoomText: { fontSize: font.label, fontWeight: "700" },
   close: {
     width: 44,
     height: 44,

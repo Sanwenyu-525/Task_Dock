@@ -15,11 +15,10 @@
 //!    接管，也不能让窗口开不出来）。
 //!
 //! 这里只回答「窗口多大」，不回答「内容怎么排」——内容响应式见
-//! `docs/ui-responsive-layout.md`（按内容容器宽度响应）。
+//! `docs/window-size-spec.md`（按内容容器宽度响应）。
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
-use tauri::{LogicalSize, Manager, Runtime, WebviewWindow};
+use tauri::{LogicalSize, Runtime, WebviewWindow};
 
 /// 大型完整工作台默认打开尺寸（DIP）。
 pub const WORKBENCH_DEFAULT_WIDTH: f64 = 1200.0;
@@ -28,14 +27,34 @@ pub const WORKBENCH_DEFAULT_HEIGHT: f64 = 760.0;
 /// 与「导航 200 + 主内容」两栏在该宽度下均有可用空间。
 pub const WORKBENCH_MIN_WIDTH: f64 = 960.0;
 pub const WORKBENCH_MIN_HEIGHT: f64 = 600.0;
-/// 屏幕可用区不足时的布局下限（DIP）：低于此值即使降级也无意义，直接等于可用区。
+/// 屏幕可用区不足时的布局下限（DIP）。
+///
+/// 只作规范口径（`docs/window-size-spec.md` §3 与前端 `WINDOW_METRICS.workbench.floor`
+/// 对齐用），**不作为窗口硬下限**：可用区本身小于它时（640×480 远程桌面），
+/// 取下限会让窗口大于屏幕、反而开不出来，这种情况交给内容响应式接管。
+#[allow(dead_code)]
 pub const WORKBENCH_FLOOR_WIDTH: f64 = 720.0;
+#[allow(dead_code)]
 pub const WORKBENCH_FLOOR_HEIGHT: f64 = 480.0;
 /// 窗口与工作区边缘的安全留白（DIP）：避免最大化/贴边时被任务栏或圆角裁切。
 pub const WORK_AREA_MARGIN: f64 = 12.0;
 
-/// 显示器信息复查的最小间隔：拖动跨屏时 `Moved` 事件密集，重算最小尺寸必须节流。
-const MONITOR_RECHECK_MIN_INTERVAL: Duration = Duration::from_millis(150);
+// ── 主窗口（`main`）的形态最小尺寸（DIP）────────────────────────────
+//
+// 与工作台不是同一套：主窗是 400px 级的快速面板，最小尺寸由**核心控件**决定，
+// 不套用 960×600。极简下限见 `commands::system::mode_min_size` 的注释
+// （240×96 实测会把「待办」挤成竖排、按钮被裁）；三个形态各自独立，
+// 模式切换时先写最小尺寸再写目标尺寸，从完整面板切极简不会被旧下限卡住。
+
+/// 极简（minimal）：标题栏 5 个控件 + 一行核心状态的最小可读尺寸。
+pub const MAIN_MINIMAL_MIN_WIDTH: f64 = 264.0;
+pub const MAIN_MINIMAL_MIN_HEIGHT: f64 = 112.0;
+/// 紧凑（compact）：侧轨 + 任务列表的最小尺寸。
+pub const MAIN_COMPACT_MIN_WIDTH: f64 = 340.0;
+pub const MAIN_COMPACT_MIN_HEIGHT: f64 = 280.0;
+/// 完整（full）：侧轨 + 内容区的最小尺寸。
+pub const MAIN_FULL_MIN_WIDTH: f64 = 340.0;
+pub const MAIN_FULL_MIN_HEIGHT: f64 = 340.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SizePlan {
@@ -88,10 +107,10 @@ pub fn plan_for_area(area: Option<(f64, f64)>) -> WindowPlan {
     let usable_w = (area_w - WORK_AREA_MARGIN * 2.0).max(320.0);
     let usable_h = (area_h - WORK_AREA_MARGIN * 2.0).max(240.0);
 
-    // 2) 最小尺寸：标准值 → 可用区 → 布局下限，三级收敛。
-    //    可用 1000 → 960；可用 800 → 800；可用 600 → 600（低于下限时以可用区为准）。
-    let min_w = clamp_floor(WORKBENCH_MIN_WIDTH, WORKBENCH_FLOOR_WIDTH, usable_w);
-    let min_h = clamp_floor(WORKBENCH_MIN_HEIGHT, WORKBENCH_FLOOR_HEIGHT, usable_h);
+    // 2) 最小尺寸：标准值优先，可用区不足时跟随可用区（可能低于布局下限
+    //    `WORKBENCH_FLOOR_*`，此时仍以可用区为准，保证窗口开得出来）。
+    let min_w = clamp_floor(WORKBENCH_MIN_WIDTH, usable_w);
+    let min_h = clamp_floor(WORKBENCH_MIN_HEIGHT, usable_h);
 
     // 3) 默认尺寸：目标值收敛进可用区，但不小于最小尺寸。
     let default_w = WORKBENCH_DEFAULT_WIDTH.min(usable_w).max(min_w);
@@ -103,13 +122,15 @@ pub fn plan_for_area(area: Option<(f64, f64)>) -> WindowPlan {
     }
 }
 
-/// `standard` 在 `usable` 之内就取标准值；不足时取可用区，但不低于 `floor`
-/// （除非可用区本身已经小于 floor，此时可用区优先，保证窗口开得出来）。
-fn clamp_floor(standard: f64, floor: f64, usable: f64) -> f64 {
+/// `standard` 在 `usable` 之内就取标准值，否则取可用区。
+///
+/// 不把 `WORKBENCH_FLOOR_*` 作为硬下限：可用区本身小于下限时（如 640×480 远程桌面），
+/// 取下限会让窗口大于屏幕、反而开不出来；这种情况交给内容响应式接管。
+fn clamp_floor(standard: f64, usable: f64) -> f64 {
     if usable >= standard {
         standard
     } else {
-        usable.max(usable.min(floor))
+        usable
     }
 }
 
@@ -193,10 +214,14 @@ pub fn watch_monitor_changes<R: Runtime>(win: &WebviewWindow<R>) {
         scale_milli: i64,
     }
 
-    let state: Mutex<(Option<Signature>, Instant)> =
-        Mutex::new((None, Instant::now() - MONITOR_RECHECK_MIN_INTERVAL));
-    let win = win.clone();
+    // 只保留「上次已应用的显示器签名」：同一显示器内拖动不会重复应用。
+    // 不做时间节流——签名比较已经把应用次数限制为「每次真正跨屏一次」，
+    // 而时间节流会在跨屏后立刻停手时丢掉最后一次应用（窗口停在旧约束上）。
+    let state: Mutex<Option<Signature>> = Mutex::new(None);
+    let target = win.clone();
 
+    // 监听器里持有的是 `target`（窗口句柄克隆），`win` 只作为注册时的借用方：
+    // 直接把 `win` move 进闭包会与 `on_window_event(&self)` 的借用冲突（E0505）。
     win.on_window_event(move |event| {
         if !matches!(
             event,
@@ -205,11 +230,11 @@ pub fn watch_monitor_changes<R: Runtime>(win: &WebviewWindow<R>) {
             return;
         }
         // 最大化/最小化期间窗口矩形由系统决定，不在这里改约束。
-        if win.is_maximized().unwrap_or(false) || win.is_minimized().unwrap_or(false) {
+        if target.is_maximized().unwrap_or(false) || target.is_minimized().unwrap_or(false) {
             return;
         }
 
-        let signature = win.current_monitor().ok().flatten().map(|monitor| {
+        let signature = target.current_monitor().ok().flatten().map(|monitor| {
             let area = monitor.work_area();
             Signature {
                 x: area.position.x,
@@ -222,20 +247,14 @@ pub fn watch_monitor_changes<R: Runtime>(win: &WebviewWindow<R>) {
         let Ok(mut guard) = state.lock() else {
             return;
         };
-        if signature.is_some() && guard.0 == signature {
+        if signature.is_some() && *guard == signature {
             return;
         }
-        if guard.1.elapsed() < MONITOR_RECHECK_MIN_INTERVAL {
-            // 节流窗口内先记下签名：等下一次事件（或稳定后的移动）再应用。
-            guard.0 = signature;
-            return;
-        }
-        guard.0 = signature;
-        guard.1 = Instant::now();
+        *guard = signature;
         drop(guard);
-        apply_window_metrics(&win);
+        apply_window_metrics(&target);
         tracing::info!(
-            label = win.label(),
+            label = target.label(),
             "显示器变化：窗口最小尺寸与可用区约束已重算"
         );
     });

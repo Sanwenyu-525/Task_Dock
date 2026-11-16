@@ -1126,6 +1126,20 @@ pub fn run() {
             commands::tasks::task_reminder_link_get,
             commands::tasks::task_reminder_link_set,
             commands::tasks::task_reminder_link_clear,
+            // 生活效率系统 v1（2026-11-16）：生活记录 / 购买历史 / 票据关联。
+            // 生活待办不新增命令，复用 tasks / 任务编辑器。
+            commands::life::life_items_list,
+            commands::life::life_item_history,
+            commands::life::life_events_recent,
+            commands::life::life_event_detail,
+            commands::life::life_event_create,
+            commands::life::life_event_update,
+            commands::life::life_event_delete,
+            commands::life::life_overview,
+            commands::life::life_quick_query,
+            commands::life::life_document_link_create,
+            commands::life::life_document_link_delete,
+            commands::life::life_document_links_list,
             // 任务统计（tasks.stats-trends）：只读聚合，打开统计子视图时按需调用
             commands::task_analytics::task_analytics,
             // 句式命令（ux.command-phrases）：确定性帧表解析 + 候选/只读查询

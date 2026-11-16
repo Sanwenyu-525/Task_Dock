@@ -561,11 +561,6 @@ export function HomeScreen({
                     : () => nav.push("entry_manager")
                 }
               />
-              {editingEntries ? (
-                <Text style={[styles.entryHint, { color: tokens.muted }]}>
-                  按住磁贴右下角手柄左右拖动排序；点磁贴可用前移 / 后移 / 移除；点 × 直接移除。改完点右上「完成」。
-                </Text>
-              ) : null}
               {visibleEntries.length === 0 ? (
                 <GlassCard style={styles.entryEmptyCard}>
                   <EmptyState
@@ -621,6 +616,12 @@ export function HomeScreen({
                   onDragActiveChange={setEntryDragActive}
                 />
               )}
+              {/* 编辑提示放在轨道下方：进入编辑态时轨道位置保持不变，磁贴不会被文案顶下去 */}
+              {editingEntries && visibleEntries.length > 0 ? (
+                <Text style={[styles.entryHint, { color: tokens.muted }]}>
+                  按住磁贴左右拖动排序；点磁贴可用前移 / 后移 / 移除；点 × 直接移除。改完点右上「完成」。
+                </Text>
+              ) : null}
             </View>
 
             {/* 最近动态：任务 / 笔记 / 采集合并的真实时间线，纯列表行 */}

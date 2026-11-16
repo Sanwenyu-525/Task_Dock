@@ -265,7 +265,7 @@ fn item_filters(filter: &ClipboardFilter) -> (String, Vec<Value>) {
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        sql.push_str(" AND i.source_app = ?");
+        sql.push_str(" AND i.source_app = ? COLLATE NOCASE");
         args.push(Value::Text(source.into()));
     }
     if let Some(days) = filter.recent_days.filter(|d| *d > 0) {
@@ -334,6 +334,9 @@ pub fn count_items(db: &Db, filter: &ClipboardFilter) -> AppResult<i64> {
 
 /// 来源应用筛选的可选项：按条目数降序，排除空来源。
 ///
+/// Windows 进程标识大小写不稳定（`explorer.exe` / `Explorer.exe`），这里按
+/// `LOWER(TRIM(source_app))` 聚合，取一个原始拼写作为展示键；筛选端用
+/// `COLLATE NOCASE` 精确匹配，避免下拉出现两个同名来源。
 /// 这是 `source_app` 的小型聚合查询（最多 50 项），不把整库历史拉到前端；
 /// 当前没有 `source_app` 索引，但剪贴板上限为 5000 条，分组聚合成本可控。
 #[derive(Debug, Clone, Serialize)]
@@ -347,9 +350,9 @@ pub fn list_source_apps(db: &Db, limit: i64) -> AppResult<Vec<ClipboardSourceOpt
     let limit = limit.clamp(1, 50);
     db.with_conn(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT i.source_app, COUNT(*) AS n FROM clipboard_items i
+            "SELECT MIN(TRIM(i.source_app)) AS app, COUNT(*) AS n FROM clipboard_items i
              WHERE TRIM(i.source_app) <> ''
-             GROUP BY i.source_app ORDER BY n DESC, i.source_app ASC LIMIT ?1",
+             GROUP BY LOWER(TRIM(i.source_app)) ORDER BY n DESC, app ASC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit], |r| {
             Ok(ClipboardSourceOption {
@@ -3618,6 +3621,77 @@ mod tests {
         assert_eq!(b.item.copy_count, 2);
         let items = list_items(&db, &ClipboardFilter::default()).unwrap();
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn filters_by_source_recent_window_and_usage_sort() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let old = record_capture(&db, &root.0, &text_payload("旧但常用"), &s).unwrap();
+        let chrome = record_capture(&db, &root.0, &url_payload("https://example.com/a"), &s).unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "UPDATE clipboard_items SET last_seen_at = ?1 WHERE id = ?2",
+                params!["2020-01-01T00:00:00Z", old.item.id],
+            )?;
+            c.execute(
+                "UPDATE clipboard_items SET last_seen_at = ?1 WHERE id = ?2",
+                params![crate::agents::now_iso(), chrome.item.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        bump_copy(&db, &old.item.id).unwrap();
+        bump_copy(&db, &old.item.id).unwrap();
+
+        let source_filter = ClipboardFilter {
+            source_app: Some("chrome.exe".into()),
+            ..Default::default()
+        };
+        let hits = list_items(&db, &source_filter).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, chrome.item.id);
+        assert_eq!(count_items(&db, &source_filter).unwrap(), 1);
+
+        let recent = ClipboardFilter {
+            recent_days: Some(7),
+            ..Default::default()
+        };
+        let hits = list_items(&db, &recent).unwrap();
+        assert_eq!(hits.len(), 1, "2020 年的旧条目必须被时间窗口排除");
+        assert_eq!(hits[0].id, chrome.item.id);
+
+        let most_used = ClipboardFilter {
+            sort: Some("most_used".into()),
+            ..Default::default()
+        };
+        let hits = list_items(&db, &most_used).unwrap();
+        assert_eq!(hits[0].id, old.item.id, "使用次数排序应把旧但常用条目放前");
+        assert_eq!(hits[1].id, chrome.item.id);
+    }
+
+    #[test]
+    fn source_options_merge_case_and_filter_matches_nocase() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let s = settings();
+        let mut upper = text_payload("大小写来源");
+        upper.source_app = "NOTEPAD.EXE".into();
+        let item = record_capture(&db, &root.0, &upper, &s).unwrap();
+
+        let filter = ClipboardFilter {
+            source_app: Some("notepad.exe".into()),
+            ..Default::default()
+        };
+        let hits = list_items(&db, &filter).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, item.item.id);
+
+        let sources = list_source_apps(&db, 8).unwrap();
+        assert_eq!(sources.len(), 1, "大小写不同的同一进程只保留一个来源项");
+        assert_eq!(sources[0].count, 1);
+        assert_eq!(sources[0].app.to_lowercase(), "notepad.exe");
     }
 
     #[test]

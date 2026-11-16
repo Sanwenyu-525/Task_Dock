@@ -120,6 +120,17 @@ export const MOBILE_ENTRIES = [
     order: 50,
   },
   {
+    id: "life",
+    label: "生活",
+    icon: "fileImage",
+    description: "购买记录、生活待办与票据资料",
+    category: "task",
+    availability: "available",
+    launch: { kind: "route", route: "life" },
+    defaultVisible: true,
+    order: 55,
+  },
+  {
     id: "tasks",
     label: "任务",
     icon: "tasks",

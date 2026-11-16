@@ -1,10 +1,11 @@
-// 迁移测试：v1→v5 全序列在真实 SQLite（node:sqlite 内存库）上执行，
+// 迁移测试：v1→v11 全序列在真实 SQLite（node:sqlite 内存库）上执行，
 // 验证 schema 演进与既有数据保留。业务代码（schema.ts + database.ts）原样运行。
 import { beforeEach, describe, expect, it } from "vitest";
+import * as SQLite from "expo-sqlite";
 import type { SQLiteBindValue } from "expo-sqlite";
 
 import { closeDatabase, getDatabase, openDatabase } from "../database";
-import { MIGRATIONS, SCHEMA_VERSION } from "../schema";
+import { MIGRATIONS, MIGRATION_11, SCHEMA_VERSION } from "../schema";
 
 type Bind = SQLiteBindValue[];
 
@@ -21,13 +22,130 @@ beforeEach(async () => {
   await closeDatabase();
 });
 
-describe("迁移 v1→v9", () => {
+describe("迁移 v1→v11", () => {
   it("迁移到最新版本且序列连续", async () => {
     await openDatabase();
     const row = await rawFirst<{ user_version: number }>("PRAGMA user_version");
     expect(row?.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(9);
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(SCHEMA_VERSION).toBe(11);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    ]);
+  });
+
+  it("v10 新增生活四表与查询索引，v11 补充票据远端引用列", async () => {
+    await openDatabase();
+    const itemColumns = (await rawAll<{ name: string }>("PRAGMA table_info(life_items)")).map(
+      (column) => column.name,
+    );
+    expect(itemColumns).toEqual([
+      "id", "name", "normalized_name", "category", "aliases", "note",
+      "created_at", "updated_at", "deleted_at", "rev", "server_rev",
+    ]);
+    const eventColumns = (await rawAll<{ name: string }>("PRAGMA table_info(life_events)")).map(
+      (column) => column.name,
+    );
+    expect(eventColumns).toEqual([
+      "id", "event_type", "title", "description", "occurred_at", "merchant", "source",
+      "created_at", "updated_at", "deleted_at", "rev", "server_rev",
+    ]);
+    const eventItemColumns = (
+      await rawAll<{ name: string }>("PRAGMA table_info(life_event_items)")
+    ).map((column) => column.name);
+    expect(eventItemColumns).toEqual([
+      "id", "event_id", "item_id", "item_name_snapshot", "quantity_value",
+      "quantity_unit", "unit_price_minor", "total_price_minor", "currency", "note",
+      "created_at", "updated_at", "rev", "server_rev",
+    ]);
+    const linkColumns = (
+      await rawAll<{ name: string }>("PRAGMA table_info(life_document_links)")
+    ).map((column) => column.name);
+    expect(linkColumns).toEqual([
+      "id", "owner_type", "owner_id", "document_ref", "document_source",
+      "document_name", "mime", "byte_size", "remote_ref", "remote_source",
+      "transfer_state", "created_at",
+      "updated_at", "deleted_at", "rev", "server_rev",
+    ]);
+    const indexes = (
+      await rawAll<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name LIKE 'life_%'",
+      )
+    ).map((index) => index.name);
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        "idx_life_items_normalized",
+        "idx_life_items_name",
+        "idx_life_events_occurred",
+        "idx_life_events_deleted",
+        "idx_life_event_items_item",
+        "idx_life_event_items_event",
+        "idx_life_document_links_owner",
+        "idx_life_document_links_owner_id",
+      ]),
+    );
+
+    // CHECK 约束必须真的生效，避免页面写入非法类型/来源/状态。
+    await expect(
+      rawRun(
+        `INSERT INTO life_events (id, event_type, occurred_at, created_at, updated_at)
+         VALUES ('bad-event', 'shopping', 1, 1, 1)`,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      rawRun(
+        `INSERT INTO life_document_links (id, owner_type, owner_id, document_ref, document_source, created_at, updated_at)
+         VALUES ('bad-link', 'task', 't1', 'a1', 'capture_asset', 1, 1)`,
+      ),
+    ).rejects.toThrow();
+    // 旧 outbox 表仍然可用，生活实体通过既有 outbox 复用，不新增第二套队列。
+    expect((await rawAll<{ name: string }>("PRAGMA table_info(outbox)")).map((c) => c.name))
+      .toContain("op_id");
+  });
+
+  it("已升级到 v10 的旧库追加 v11 只加列，票据关联数据不丢", async () => {
+    // 模拟开发设备/旧用户已经跑过 v10：只执行 1..10，自行写入一个旧结构关联，
+    // 再执行 v11，验证远程引用列出现且本机来源字段保持原值。
+    await closeDatabase();
+    const legacy = await SQLite.openDatabaseAsync("legacy-life");
+    try {
+      for (const migration of MIGRATIONS.filter((entry) => entry.version <= 10)) {
+        await legacy.execAsync(migration.sql);
+      }
+      await legacy.execAsync("PRAGMA user_version = 10");
+      await legacy.runAsync(
+        `INSERT INTO life_events (id, event_type, title, occurred_at, created_at, updated_at)
+         VALUES ('event-legacy', 'purchase', '大米', 100, 100, 100)`,
+      );
+      await legacy.runAsync(
+        `INSERT INTO life_document_links
+           (id, owner_type, owner_id, document_ref, document_source, document_name, mime,
+            byte_size, transfer_state, created_at, updated_at)
+         VALUES ('link-legacy', 'event', 'event-legacy', 'asset-legacy', 'capture_asset',
+                 '旧小票.jpg', 'image/jpeg', 1024, 'local', 100, 100)`,
+      );
+      await legacy.execAsync(MIGRATION_11);
+      await legacy.execAsync("PRAGMA user_version = 11");
+
+      const row = await legacy.getFirstAsync<{
+        document_ref: string;
+        document_source: string;
+        remote_ref: string | null;
+        remote_source: string | null;
+        transfer_state: string;
+      }>(
+        `SELECT document_ref, document_source, remote_ref, remote_source, transfer_state
+           FROM life_document_links WHERE id = 'link-legacy'`,
+      );
+      expect(row).toEqual({
+        document_ref: "asset-legacy",
+        document_source: "capture_asset",
+        remote_ref: null,
+        remote_source: null,
+        transfer_state: "local",
+      });
+    } finally {
+      await legacy.closeAsync();
+    }
   });
 
   it("v9 新增开发者工具表：片段 / 请求 / 资源，且带查询索引", async () => {

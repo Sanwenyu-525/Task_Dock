@@ -325,6 +325,101 @@ CREATE TABLE IF NOT EXISTS tool_resources (
 CREATE INDEX IF NOT EXISTS idx_tool_resources_list ON tool_resources(kind, deleted_at, favorite DESC, updated_at DESC);
 `;
 
+// v10：生活效率系统第一阶段（2026-11-16）。append-only，不改 v1–v9。
+//
+// 表名、字段语义与桌面端迁移 65 对齐；手机端额外保留 rev/server_rev 同步元数据。
+// 与桌面端的差异只有时间表示：手机统一 INTEGER epoch ms，桌面端是 RFC3339 字符串，
+// 同步协议下发 ms，因此跨端只在 sync 层转换。
+// 金额一律最小货币单位整数；quantity_value 是规范十进制字符串，支持小数。
+export const MIGRATION_10 = `
+CREATE TABLE IF NOT EXISTS life_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT '',
+  aliases TEXT NOT NULL DEFAULT '[]',
+  note TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER,
+  rev INTEGER NOT NULL DEFAULT 0,
+  server_rev INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_life_items_normalized
+  ON life_items(normalized_name) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_life_items_name ON life_items(name);
+
+CREATE TABLE IF NOT EXISTS life_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  event_type TEXT NOT NULL DEFAULT 'purchase'
+    CHECK (event_type IN ('purchase','maintenance','general')),
+  title TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  occurred_at INTEGER NOT NULL,
+  merchant TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','capture')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER,
+  rev INTEGER NOT NULL DEFAULT 0,
+  server_rev INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_life_events_occurred
+  ON life_events(event_type, occurred_at DESC, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_life_events_deleted ON life_events(deleted_at);
+
+CREATE TABLE IF NOT EXISTS life_event_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  event_id TEXT NOT NULL REFERENCES life_events(id) ON DELETE CASCADE,
+  item_id TEXT REFERENCES life_items(id) ON DELETE SET NULL,
+  item_name_snapshot TEXT NOT NULL,
+  quantity_value TEXT,
+  quantity_unit TEXT NOT NULL DEFAULT '',
+  unit_price_minor INTEGER,
+  total_price_minor INTEGER,
+  currency TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  rev INTEGER NOT NULL DEFAULT 0,
+  server_rev INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_life_event_items_item ON life_event_items(item_id);
+CREATE INDEX IF NOT EXISTS idx_life_event_items_event ON life_event_items(event_id);
+
+CREATE TABLE IF NOT EXISTS life_document_links (
+  id TEXT PRIMARY KEY NOT NULL,
+  owner_type TEXT NOT NULL CHECK (owner_type IN ('event','item')),
+  owner_id TEXT NOT NULL,
+  document_ref TEXT NOT NULL,
+  document_source TEXT NOT NULL
+    CHECK (document_source IN ('capture_asset','shelf_item','attachment','file')),
+  document_name TEXT NOT NULL DEFAULT '',
+  mime TEXT NOT NULL DEFAULT '',
+  byte_size INTEGER,
+  transfer_state TEXT NOT NULL DEFAULT 'local'
+    CHECK (transfer_state IN ('local','metadata_only','transferred','missing')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER,
+  rev INTEGER NOT NULL DEFAULT 0,
+  server_rev INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_life_document_links_owner
+  ON life_document_links(owner_type, owner_id, document_ref, document_source)
+  WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_life_document_links_owner_id
+  ON life_document_links(owner_id);
+`;
+
+// v11：票据实际传输到桌面后保存远端稳定引用；本机来源 document_ref 保持不变。
+// 只加列、不动 v10 已创建的约束，兼容已经升级到 v10 的开发设备。
+export const MIGRATION_11 = `
+ALTER TABLE life_document_links ADD COLUMN remote_ref TEXT;
+ALTER TABLE life_document_links ADD COLUMN remote_source TEXT
+  CHECK (remote_source IN ('shelf_item','file'));
+`;
+
 /** 解析顺序即执行顺序；末尾追加新迁移，不要插入或重排。 */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: MIGRATION_1 },
@@ -336,6 +431,8 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 7, sql: MIGRATION_7 },
   { version: 8, sql: MIGRATION_8 },
   { version: 9, sql: MIGRATION_9 },
+  { version: 10, sql: MIGRATION_10 },
+  { version: 11, sql: MIGRATION_11 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

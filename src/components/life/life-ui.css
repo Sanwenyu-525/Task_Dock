@@ -1,0 +1,767 @@
+/* 生活页布局：只使用语义 Token，不写死颜色/圆角/阴影。
+   宽窗口双栏，中窄窗口自动降为单栏；所有列表可滚动，不横向溢出。 */
+
+.life-panel {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  height: 100%;
+  padding: 14px 16px 16px;
+  overflow: hidden;
+  color: var(--text-primary);
+}
+
+.life-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 16px;
+  flex: none;
+}
+
+.life-head-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  min-width: 0;
+  flex: 1 1 320px;
+}
+
+.life-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+}
+
+.life-title-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.life-title h1 {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.25;
+  letter-spacing: 0.2px;
+}
+
+.life-title p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.life-search {
+  flex: 1 1 220px;
+  max-width: 340px;
+  min-width: 180px;
+}
+
+.life-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: none;
+}
+
+.life-actions .btn {
+  white-space: nowrap;
+}
+
+.life-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+  gap: 8px;
+  flex: none;
+}
+
+.life-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.life-stat span {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.life-stat strong {
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.life-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(310px, 1fr);
+  gap: 10px;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.life-main,
+.life-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.life-section,
+.life-items,
+.life-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+}
+
+.life-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.life-section-head h2,
+.life-section-head h3 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.life-muted {
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  line-height: 1.45;
+  min-width: 0;
+}
+
+.life-section-head .life-muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 0 4px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.life-empty p {
+  margin: 0;
+}
+
+.life-loading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 12px 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.life-event-list,
+.life-task-list,
+.life-receipt-list,
+.life-item-list,
+.life-history-list,
+.life-detail-items,
+.life-shelf-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.life-event-row,
+.life-item-row,
+.life-receipt-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.life-event-row:hover,
+.life-item-row:hover,
+.life-receipt-row:hover,
+.life-task-check:hover {
+  background: var(--surface-hover);
+}
+
+.life-event-date,
+.life-history-date {
+  flex: none;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.life-history-date {
+  min-width: 76px;
+}
+
+.life-event-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.life-event-title,
+.life-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-event-amount,
+.life-item-price,
+.life-history-amount {
+  flex: none;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.life-event-amount {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-task-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 4px;
+  border-radius: var(--radius-control);
+}
+
+.life-task-list li.is-done .life-task-title {
+  text-decoration: line-through;
+  color: var(--text-tertiary);
+}
+
+.life-task-check {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.life-task-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-task-time {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-receipt-row {
+  padding: 6px;
+  color: var(--text-secondary);
+}
+
+.life-receipt-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+
+.life-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  background: var(--surface-base);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-chip.local {
+  color: var(--status-success);
+}
+
+.life-chip.missing {
+  color: var(--status-error);
+}
+
+.life-chip.link {
+  cursor: pointer;
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.life-item-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name price"
+    "meta price";
+  gap: 1px 8px;
+  align-items: center;
+  padding: 7px 6px;
+}
+
+.life-item-name {
+  grid-area: name;
+}
+
+.life-item-meta {
+  grid-area: meta;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-item-price {
+  grid-area: price;
+}
+
+.life-detail {
+  gap: 10px;
+}
+
+.life-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.life-detail-head h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.life-detail-head p {
+  margin: 2px 0 0;
+}
+
+.life-detail-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 6px;
+}
+
+.life-detail-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  min-width: 0;
+}
+
+.life-detail-stats span {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.life-detail-stats strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.life-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.life-detail-items li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+
+.life-detail-items li:last-child {
+  border-bottom: 0;
+}
+
+.life-detail-item-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.life-detail-item-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-history-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+
+.life-history-list li:last-child {
+  border-bottom: 0;
+}
+
+.life-history-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.life-history-qty {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-history-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.life-history-actions {
+  display: flex;
+  gap: 2px;
+  position: absolute;
+  top: 6px;
+  right: 0;
+}
+
+.life-history-list li {
+  position: relative;
+  padding-right: 56px;
+}
+
+.life-detail-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.life-detail-links h3 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.life-link-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.life-link-open {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-link-open:hover {
+  border-color: var(--border-strong);
+}
+
+.life-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-base);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.life-banner.error {
+  border-color: color-mix(in srgb, var(--status-error) 30%, transparent);
+  color: var(--status-error);
+}
+
+.life-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.life-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.life-field > span {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.life-field-row {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.life-field-row.three .life-field:nth-child(1) {
+  flex: 0.8 1 0;
+}
+
+.life-textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+
+.life-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--status-waiting);
+}
+
+.life-shelf-list {
+  max-height: 320px;
+  overflow: auto;
+  gap: 2px;
+}
+
+.life-shelf-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 6px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.life-shelf-list label:hover {
+  background: var(--surface-hover);
+}
+
+.life-shelf-list label span:nth-of-type(1) {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.life-preview-busy {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: var(--z-toast);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-raised);
+  font-size: 12px;
+}
+
+/* 中窄窗口：双栏保持但压缩右侧；窄窗口切单栏并由外层滚动。 */
+@container (max-width: 1080px) {
+  .life-body {
+    grid-template-columns: minmax(0, 1.15fr) minmax(270px, 0.85fr);
+  }
+
+  .life-search {
+    max-width: 260px;
+  }
+}
+
+@container (max-width: 860px) {
+  .life-panel {
+    overflow: auto;
+    height: auto;
+    min-height: 100%;
+  }
+
+  .life-body {
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .life-main,
+  .life-side {
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .life-side {
+    order: -1;
+  }
+}
+
+@container (max-width: 560px) {
+  .life-panel {
+    padding: 12px 12px 14px;
+  }
+
+  .life-head-main {
+    flex-basis: 100%;
+  }
+
+  .life-search {
+    max-width: none;
+    flex-basis: 100%;
+  }
+
+  .life-actions {
+    width: 100%;
+  }
+
+  .life-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .life-field-row {
+    flex-direction: column;
+  }
+
+  .life-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .life-event-row {
+    flex-wrap: wrap;
+  }
+
+  .life-event-amount {
+    max-width: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .life-event-row,
+  .life-item-row,
+  .life-task-check {
+    transition: none;
+  }
+}

@@ -535,6 +535,58 @@ describe("重试幂等（不因重试产生重复文件）", () => {
     expect((await destinationState(second.id, "desktop"))?.lastError ?? "").toContain("重新扫码配对");
   });
 
+  it("五文件第三项 401：前两项 done、第三项起停止且第四/第五项不发请求", async () => {
+    const assets = await Promise.all([
+      savedAsset("A.pdf"), savedAsset("B.pdf"), savedAsset("C.pdf"), savedAsset("D.pdf"), savedAsset("E.pdf"),
+    ]);
+    let attempts = 0;
+    remote.create = async (name: string, size: number) => {
+      attempts += 1;
+      if (attempts === 3) throw new FileHttpError(401, "unauthorized");
+      return remoteFile({ name, size, status: "pending", sha256: "", chunks: 1, chunk_size: size, received_chunks: 0, completed_at: null });
+    };
+
+    const result = await sendToDesktop(assets, { target: "inbox" });
+
+    expect(remote.createCalls).toBe(3);
+    expect(remote.uploadCalls).toBe(2);
+    expect(result.stopBatch).toBe(true);
+    expect(result.outcomes).toHaveLength(5);
+    expect(result.outcomes.slice(0, 2).every((outcome) => outcome.state === "done")).toBe(true);
+    expect(result.outcomes.slice(2).every((outcome) => outcome.state === "failed")).toBe(true);
+    expect((await destinationState(assets[0].id, "desktop"))?.state).toBe("done");
+    expect((await destinationState(assets[1].id, "desktop"))?.state).toBe("done");
+    expect((await destinationState(assets[2].id, "desktop"))?.state).toBe("failed");
+    expect((await destinationState(assets[3].id, "desktop"))?.state).toBe("failed");
+    expect((await destinationState(assets[4].id, "desktop"))?.state).toBe("failed");
+    expect((await destinationState(assets[2].id, "desktop"))?.lastError ?? "").toContain("重新扫码配对");
+  });
+
+  it("五文件第三项 TLS 失败：前两项 done、第三项起停止且不降级明文", async () => {
+    const assets = await Promise.all([
+      savedAsset("A2.pdf"), savedAsset("B2.pdf"), savedAsset("C2.pdf"), savedAsset("D2.pdf"), savedAsset("E2.pdf"),
+    ]);
+    let attempts = 0;
+    remote.create = async (name: string, size: number) => {
+      attempts += 1;
+      if (attempts === 3) throw new AppError("validation", "证书指纹不匹配", undefined, "tls_pin_mismatch");
+      return remoteFile({ name, size, status: "pending", sha256: "", chunks: 1, chunk_size: size, received_chunks: 0, completed_at: null });
+    };
+
+    const result = await sendToDesktop(assets, { target: "inbox" });
+
+    expect(remote.createCalls).toBe(3);
+    expect(remote.uploadCalls).toBe(2);
+    expect(result.stopBatch).toBe(true);
+    expect(result.outcomes).toHaveLength(5);
+    expect(result.outcomes.slice(0, 2).every((outcome) => outcome.state === "done")).toBe(true);
+    expect(result.outcomes.slice(2).every((outcome) => outcome.state === "failed")).toBe(true);
+    const third = await destinationState(assets[2].id, "desktop");
+    expect(third?.state).toBe("failed");
+    expect(third?.lastError ?? "").not.toContain("等待电脑");
+    expect(third?.lastError ?? "").toContain("证书");
+  });
+
   it("用户取消：cancelled，不写 done", async () => {
     const asset = await savedAsset();
 

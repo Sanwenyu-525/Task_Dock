@@ -2093,6 +2093,10 @@ CREATE INDEX idx_novel_chapters_volume
     // MCP 资源能力授权（任务 / 笔记 / 工作流 / 文件工作区）。DDL 在 mcp/schema.rs，
     // 本文件只登记迁移号，避免与其他领域并发修改同一段 SQL。
     crate::mcp::schema::MIGRATION_64,
+    // 生活效率系统 v1（2026-11-16）：四张 life_* 表 + 同步触发器。
+    crate::commands::life::MIGRATION_65,
+    // 生活票据：补充桌面端实际收到原图的 remote_ref / remote_source。
+    crate::commands::life::MIGRATION_66,
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -2798,6 +2802,12 @@ pub struct Settings {
     /// 默认浏览器 app_key（空 = 系统默认浏览器）
     #[serde(default)]
     pub nav_default_browser: String,
+    /// 生活记录默认货币（ISO 4217 三位代码；空 = 未配置）。
+    ///
+    /// 只用于「金额已填写但用户没选货币」时补齐；空值时必须让用户显式选择，
+    /// 绝不默认假设人民币（任务书 5.1）。
+    #[serde(default)]
+    pub life_default_currency: String,
     /// 工作区批量启动数量上限
     #[serde(default = "default_workspace_max")]
     pub nav_workspace_max: u32,

@@ -12,9 +12,15 @@
 //! - 删除走墓碑（tasks 没有软删除列），手机端收到后只删本地副本；
 //! - op_id 幂等，重复提交只 ack。
 //!
-//! 同步实体：任务（task）、笔记（note）、收集箱（capture）。桌面端 notes 的正文列叫
-//! `content`，协议与手机端叫 `body`；收集箱的 handled/converted 状态在 pull 时映射为墓碑，
-//! 手机端只保留 inbox 条目。
+//! 同步实体：任务（task）、笔记（note）、收集箱（capture），以及生活效率系统 v1 的
+//! 四个实体（life_item / life_event / life_event_item / life_document_link）。
+//! 桌面端 notes 的正文列叫 `content`，协议与手机端叫 `body`；收集箱的
+//! handled/converted 状态在 pull 时映射为墓碑，手机端只保留 inbox 条目。
+
+// 生活效率同步适配层与协议实现同属 mobile_sync；文件当前位于 mobile_sync 根下，
+// 用显式 path 指向，避免为了编译去移动其他任务的未提交文件。
+#[path = "life_sync.rs"]
+mod life_sync;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -195,6 +201,12 @@ pub fn pull(db: &Db, since: i64, limit: usize) -> AppResult<PullPage> {
                 "task" => load_task_change(conn, &id, seq)?,
                 "note" => load_note_change(conn, &id, seq)?,
                 "capture" => load_capture_change(conn, &id, seq)?,
+                "life_item" => life_sync::load_life_item_change(conn, &id, seq)?,
+                "life_event" => life_sync::load_life_event_change(conn, &id, seq)?,
+                "life_event_item" => life_sync::load_life_event_item_change(conn, &id, seq)?,
+                "life_document_link" => {
+                    life_sync::load_life_document_link_change(conn, &id, seq)?
+                }
                 // 未知实体（未来扩展）跳过但推进游标，避免阻塞已知实体同步。
                 _ => continue,
             };
@@ -231,7 +243,13 @@ pub fn apply_push(db: &Db, device_id: &str, ops: &[SyncOp]) -> AppResult<PushRes
         let mut ack = Vec::new();
         let mut conflicts = Vec::new();
 
-        for op in ops {
+        // 生活实体存在外键依赖：商品 → 事件 → 事件明细 → 票据关联。
+        // 批次内按依赖序应用（稳定排序，不影响任务/笔记/收集箱的相对顺序），
+        // 避免「明细先到、事件后到」触发外键失败。
+        let mut ordered: Vec<&SyncOp> = ops.iter().collect();
+        ordered.sort_by_key(|op| life_sync::entity_order(&op.entity));
+
+        for op in ordered {
             if op.op_id.trim().is_empty() {
                 conflicts.push(conflict(op, "invalid_patch", None));
                 continue;
@@ -245,6 +263,10 @@ pub fn apply_push(db: &Db, device_id: &str, ops: &[SyncOp]) -> AppResult<PushRes
                 "task" => apply_task_op(&tx, device_id, op, &mut ack, &mut conflicts),
                 "note" => apply_note_op(&tx, device_id, op, &mut ack, &mut conflicts),
                 "capture" => apply_capture_op(&tx, device_id, op, &mut ack, &mut conflicts),
+                "life_item" => life_sync::apply_life_item_op(&tx, device_id, op, &mut ack, &mut conflicts),
+                "life_event" => life_sync::apply_life_event_op(&tx, device_id, op, &mut ack, &mut conflicts),
+                "life_event_item" => life_sync::apply_life_event_item_op(&tx, device_id, op, &mut ack, &mut conflicts),
+                "life_document_link" => life_sync::apply_life_document_link_op(&tx, device_id, op, &mut ack, &mut conflicts),
                 _ => {
                     conflicts.push(conflict(op, "invalid_patch", None));
                     Ok(())

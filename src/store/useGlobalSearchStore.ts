@@ -572,6 +572,13 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
         set({ pendingLocate: intent });
         break;
       }
+      case "life": {
+        // 生活页是唯一工作台宿主：由 WorkbenchShell 渲染 LifePanel，
+        // pendingLocate 携带商品/事件/票据的稳定目标 id，由 LifePanel 消费。
+        ui.setTab("life");
+        set({ pendingLocate: intent });
+        break;
+      }
       case "apps": {
         // 已保存导航目标：走既有 navNavigate（不绕过目标可信配置）；
         // focus_or_launch 语义 = 已有运行窗口优先聚焦，否则启动。

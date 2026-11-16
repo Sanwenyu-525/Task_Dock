@@ -59,6 +59,7 @@ const ALLOWED_KEYS: &[&str] = &[
     "nav_fallback",
     "nav_remember_window",
     "nav_default_browser",
+    "life_default_currency",
     "nav_workspace_max",
     // 本地结构化状态（窗口记忆：类名+标题，不含 HWND）
     "nav_window_memory",
@@ -339,6 +340,22 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
                 .ok_or_else(|| AppError::Validation("nav_default_browser 必须是字符串".into()))?;
             if s.chars().count() > 512 {
                 return Err(AppError::Validation("nav_default_browser 过长".into()));
+            }
+            Ok(())
+        }
+        // 生活记录默认货币：空（未配置）或三位 ISO 4217 字母代码。
+        // 金额已填但货币为空时由命令层读取；空值必须让用户显式选择。
+        "life_default_currency" => {
+            let s = v.as_str().ok_or_else(|| {
+                AppError::Validation("life_default_currency 必须是字符串".into())
+            })?;
+            let trimmed = s.trim();
+            if !trimmed.is_empty()
+                && (trimmed.len() != 3 || !trimmed.chars().all(|c| c.is_ascii_alphabetic()))
+            {
+                return Err(AppError::Validation(
+                    "life_default_currency 必须是三位字母代码（如 CNY），或留空".into(),
+                ));
             }
             Ok(())
         }

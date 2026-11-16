@@ -216,3 +216,14 @@ adb pull <设备路径> tmp/.../pulled.apk && sha256sum tmp/.../pulled.apk   # �
   vc60 构建产物。若要交付 vc60，必须重新 prebuild + Gradle + 安装 + 受影响真机复验。
   证据目录：`tmp/acceptance/mobile-p0-cross-device/final-round3/`（`build-results.md`、
   `evidence/apk-release.log`、`taskdock-vc59-release.apk`）。
+- 2026-11-16 vc66 Release（快捷入口横向轨道验收用）：`0.1.18 / versionCode 66`，**仅 x86_64**
+  （模拟器 ABI；本轮未构建 arm64-v8a，故未安装到 vivo 真机）。构建经
+  `node scripts/build-sched.mjs` 排队（任务 `h-mwjara6g-1763c3`），`BUILD SUCCESSFUL in 3m39s`；
+  参数 `GRADLE_OPTS=-Xmx1536m -XX:MaxMetaspaceSize=384m`、`NODE_OPTIONS=--max-old-space-size=3072`、
+  `--max-workers=1`。APK 33,495,990 B，SHA-256
+  `E05151E102E01B8478DE21CFD74EF72065EFE363343C11EFF8886D80DC599D83`；`aapt2 dump badging` 为
+  `versionCode='66' versionName='0.1.18'`、`native-code: 'x86_64'`。已 `adb install` 到
+  `emulator-5554`（1080×2400 / density 480 = 360dp）并由 `tmp/acceptance/mobile-entry-rail/`
+  截图验收。**快照漂移**：该构建之后其他会话已把 `app.json` 提到 `0.1.19 / versionCode 67`，
+  且共享工作区含他人未完成改动，因此 vc66 哈希只代表构建当时的 JS/Rust 混合工作树，
+  不能当作后续 vc67 或集成快照的产物。

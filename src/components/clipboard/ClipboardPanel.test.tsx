@@ -271,7 +271,7 @@ describe("剪贴板主页面", () => {
     await waitFor(() => expect(bridge.clipboardView).toHaveBeenCalled());
 
     await user.click(screen.getByRole("button", { name: "最近记录" }));
-    await user.click(screen.getByRole("menuitem", { name: /使用最多/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /使用最多/ }));
 
     await waitFor(() =>
       expect(bridge.clipboardView).toHaveBeenLastCalledWith(
@@ -296,7 +296,7 @@ describe("剪贴板主页面", () => {
     );
 
     await user.click(screen.getByRole("button", { name: /全部来源/ }));
-    await user.click(screen.getByRole("menuitem", { name: /Chrome/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /Chrome/ }));
     await waitFor(() =>
       expect(bridge.clipboardView).toHaveBeenLastCalledWith(
         expect.objectContaining({ sourceApp: "chrome.exe", recentDays: 7 }),
