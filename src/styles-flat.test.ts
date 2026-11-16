@@ -132,6 +132,36 @@ describe("旧材质组件的实际选择器", () => {
     const capsuleSearch = singleBody(ui, ".ui-search.ui-search--capsule");
     expect(capsuleSearch).not.toMatch(/\binset\b/);
   });
+
+  it("胶囊入口与工具分段不再用顶部内高光伪造凸起", () => {
+    for (const selector of [
+      ".snap-capsule",
+      ".snap-capsule:hover",
+      ".cap-btn:hover",
+      ".cap-btn.is-active",
+      ".cap-seg",
+      '.cap-seg-btn[aria-selected="true"]',
+    ]) {
+      for (const body of bodiesOf(appCss, selector)) {
+        expect(body, `${selector} 仍有内高光/内阴影`).not.toMatch(/\binset\b/);
+      }
+    }
+    expect(singleBody(appCss, ".snap-capsule:hover")).not.toContain("filter: brightness");
+  });
+
+  it("空状态插画已改为平面语义表面，不再有高光球体/气泡/云影", () => {
+    const orb = singleBody(themesCss, ".empty-orb");
+    expect(orb).toContain("background: var(--surface-raised)");
+    expect(orb).toContain("border: 1px solid var(--border-subtle)");
+    expect(orb).toContain("box-shadow: none");
+    expect(orb).not.toMatch(/radial-gradient|linear-gradient|\binset\b/);
+    for (const selector of [".empty-bubble", ".empty-spark", ".empty-cloud"]) {
+      expect(singleBody(themesCss, selector)).toContain("display: none");
+    }
+    expect(singleBody(themesCss, ':root[data-theme="dark"] .empty-orb')).not.toMatch(
+      /radial-gradient|linear-gradient|\binset\b/,
+    );
+  });
 });
 
 describe("窗口外围阴影", () => {

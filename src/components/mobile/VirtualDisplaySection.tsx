@@ -1,33 +1,24 @@
 //! Android 屏幕与控制（ADB + scrcpy）。
 //!
-//! 两种模式共用同一个 scrcpy 会话服务：
-//! - 屏幕镜像：显示手机实体屏，电脑与手机共享画面；
-//! - 独立虚拟屏：在手机上创建第二显示并启动指定应用。
+//! 页面内（手机互传 → 屏幕控制）的投屏控制面板：
+//! - 第一层：设备连接与工具链状态；
+//! - 第二层：双模式选择与启动配置；
+//! - 第三层：正在运行的投屏会话；
+//! - 第四层：高级设置与诊断（默认折叠）。
 //!
 //! 本组件只做设备/模式/应用选择与会话状态展示；画面、输入法与键鼠全部由
 //! scrcpy 独立窗口提供。所有按钮都连接真实后端命令，没有占位操作。
+//! 卸载不会停止 scrcpy 会话；重新进入页面会重新读取后端真实状态。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import {
-  AppWindow,
-  Camera,
-  ChevronRight,
-  CircleAlert,
-  Image as ImageIcon,
+  CheckCircle2,
   Loader2,
-  LocateFixed,
   Monitor,
-  MonitorSmartphone,
   Play,
-  RefreshCw,
   ShieldAlert,
   Smartphone,
-  Square,
-  Stethoscope,
-  Usb,
-  Wifi,
 } from "lucide-react";
 
 import {
@@ -51,113 +42,48 @@ import {
   type VdProbe,
   type VdScreenshot,
   type VdSession,
-  type VdSessionStatus,
 } from "../../lib/bridge";
+import { copyText } from "../../lib/clipboard";
+import { localizedErrorMessage } from "../../i18n/errors";
 import { useLocale } from "../../hooks/useLocale";
-import type { MessageKey } from "../../i18n/messages";
-import { CollapsibleSection, Combobox, Dialog, Select, StatusBadge, Switch } from "../ui";
-import { ConfirmDialog } from "../ui/Dialog";
 import { useUiStore } from "../../store/useUiStore";
+import { ConfirmDialog } from "../ui";
+import DeviceTools from "./virtual-display/device-tools";
+import ModePicker from "./virtual-display/mode-picker";
+import AppPicker from "./virtual-display/app-picker";
+import SessionList from "./virtual-display/session-list";
+import AdvancedSection from "./virtual-display/advanced-section";
+import ScreenshotPreview from "./virtual-display/screenshot-preview";
+import {
+  connectionLabelKey,
+  deviceLabel,
+  deviceStateKey,
+  isActiveSession,
+  isValidPackageName,
+  launchStageKey,
+  type Translate,
+} from "./virtual-display/format";
 import "./virtual-display.css";
 
 const DEFAULT_SIZE = "1080x1920/384";
-const SIZE_OPTIONS: { value: string; labelKey: MessageKey; hint: string }[] = [
-  {
-    value: "1080x1920/384",
-    labelKey: "virtualDisplay.size.portrait",
-    hint: "384 DPI",
-  },
-  {
-    value: "1920x1080/384",
-    labelKey: "virtualDisplay.size.landscape",
-    hint: "384 DPI",
-  },
-];
 
 function toMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return typeof err === "string" ? err : "操作失败";
-}
-
-/** 从 `adb version` / `scrcpy --version` 首行提取版本号，避免长行截断。 */
-function shortVersion(raw: string | null): string | null {
-  if (!raw) return null;
-  const match = raw.match(/\d+(?:\.\d+)+/);
-  return match ? match[0] : raw;
-}
-
-function formatDuration(startedAt: string, now: number): string | null {
-  const start = Date.parse(startedAt);
-  if (!Number.isFinite(start) || now < start) return null;
-  const total = Math.floor((now - start) / 1000);
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  }
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function deviceStateKey(state: string): MessageKey {
-  if (state === "device") return "virtualDisplay.state.device";
-  if (state === "unauthorized") return "virtualDisplay.state.unauthorized";
-  if (state === "offline") return "virtualDisplay.state.offline";
-  if (state === "authorizing") return "virtualDisplay.state.authorizing";
-  if (state === "connecting") return "virtualDisplay.state.connecting";
-  return "virtualDisplay.state.unknown";
-}
-
-function deviceTone(state: string): "success" | "warning" | "danger" | "neutral" {
-  if (state === "device") return "success";
-  if (state === "unauthorized" || state === "offline") return "danger";
-  if (state === "authorizing" || state === "connecting") return "warning";
-  return "neutral";
-}
-
-function sessionStatusKey(status: VdSessionStatus): MessageKey {
-  return `virtualDisplay.session.${status}`;
-}
-
-function stageKey(stage: string): MessageKey | null {
-  if (stage === "process") return "virtualDisplay.session.stage.process";
-  if (stage === "display") return "virtualDisplay.session.stage.display";
-  if (stage === "app") return "virtualDisplay.session.stage.app";
-  if (stage === "video") return "virtualDisplay.session.stage.video";
-  if (stage === "ready") return "virtualDisplay.session.stage.ready";
-  return null;
-}
-
-function isActiveSession(session: VdSession): boolean {
-  return (
-    session.status === "starting" ||
-    session.status === "running" ||
-    session.status === "stopping"
-  );
-}
-
-function sessionTitle(session: VdSession, mirrorLabel: string, virtualLabel: string): string {
-  if (session.mode === "mirror") return mirrorLabel;
-  return session.app_label ?? session.package ?? virtualLabel;
-}
-
-function connectionLabelKey(connection: VdDevice["connection"]): MessageKey {
-  if (connection === "usb") return "virtualDisplay.connection.usb";
-  if (connection === "wifi") return "virtualDisplay.connection.wifi";
-  if (connection === "mdns") return "virtualDisplay.connection.mdns";
-  return "virtualDisplay.connection.other";
+  return localizedErrorMessage(err);
 }
 
 export default function VirtualDisplaySection() {
   const { t } = useLocale();
+  const tr = t as Translate;
   const showToast = useUiStore((s) => s.showToast);
 
+  const [initializing, setInitializing] = useState(true);
   const [probe, setProbe] = useState<VdProbe | null>(null);
   const [probeBusy, setProbeBusy] = useState(false);
   const [devices, setDevices] = useState<VdDevice[]>([]);
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [adbOk, setAdbOk] = useState(true);
   const [serial, setSerial] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   const selectedUidRef = useRef("");
 
   const [apps, setApps] = useState<VdApp[]>([]);
@@ -169,7 +95,7 @@ export default function VirtualDisplaySection() {
   const [appsError, setAppsError] = useState<string | null>(null);
   const [includeAll, setIncludeAll] = useState(false);
 
-  const [mode, setMode] = useState<VdMode>("virtual");
+  const [mode, setMode] = useState<VdMode>("mirror");
   const [packageName, setPackageName] = useState("");
   const [manual, setManual] = useState(false);
   const [manualPackage, setManualPackage] = useState("");
@@ -180,11 +106,15 @@ export default function VirtualDisplaySection() {
   const [sessions, setSessions] = useState<VdSession[]>([]);
   const [busy, setBusy] = useState(false);
   const [closingId, setClosingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [refreshBusy, setRefreshBusy] = useState(false);
 
-  const [shot, setShot] = useState<{ sessionId: string; data: VdScreenshot } | null>(null);
+  const [capturingId, setCapturingId] = useState<string | null>(null);
+  const [shot, setShot] = useState<{
+    sessionId: string;
+    session: VdSession;
+    data: VdScreenshot;
+  } | null>(null);
   const [shotBusy, setShotBusy] = useState(false);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -196,21 +126,32 @@ export default function VirtualDisplaySection() {
   const mountedRef = useRef(true);
   const devicesInFlight = useRef(false);
   const sessionsInFlight = useRef(false);
+  const sessionsSignature = useRef("");
   const appSeq = useRef(0);
+  const previousUid = useRef("");
 
-  const refreshProbe = useCallback(async () => {
+  // 刷新函数放到 ref：interval / visibilitychange 始终调用最新实现，
+  // 同时避免把稳定回调写进依赖数组导致定时器反复重建。
+  const refreshProbe = useRef<() => Promise<void>>(async () => {});
+  const refreshDevices = useRef<() => Promise<void>>(async () => {});
+  const refreshSessions = useRef<() => Promise<void>>(async () => {});
+  const loadApps = useRef(
+    async (_serial: string, _uid: string, _includeAll: boolean): Promise<void> => {},
+  );
+
+  refreshProbe.current = async () => {
     setProbeBusy(true);
     try {
       const next = await vdProbe();
       if (mountedRef.current) setProbe(next);
     } catch (err) {
-      if (mountedRef.current) setError(toMessage(err));
+      if (mountedRef.current) showToast(toMessage(err), { kind: "error" });
     } finally {
       if (mountedRef.current) setProbeBusy(false);
     }
-  }, []);
+  };
 
-  const refreshDevices = useCallback(async () => {
+  refreshDevices.current = async () => {
     if (devicesInFlight.current) return;
     devicesInFlight.current = true;
     try {
@@ -227,9 +168,12 @@ export default function VirtualDisplaySection() {
           selectedUidRef.current = stillThere.uid;
           return stillThere.serial;
         }
-        // transport 轮换（mDNS 端口变化）时按物理设备身份保持选择。
+        // transport 轮换（mDNS 端口变化）时按物理设备身份保持选择，避免选错手机。
         const byUid = list.devices.find((device) => device.uid === selectedUidRef.current);
-        if (byUid) return byUid.serial;
+        if (byUid) {
+          selectedUidRef.current = byUid.uid;
+          return byUid.serial;
+        }
         const online = list.devices.filter((device) => device.state === "device");
         const preferred = online[0] ?? list.devices[0];
         selectedUidRef.current = preferred?.uid ?? "";
@@ -240,20 +184,121 @@ export default function VirtualDisplaySection() {
     } finally {
       devicesInFlight.current = false;
     }
-  }, []);
+  };
 
-  const refreshSessions = useCallback(async () => {
+  refreshSessions.current = async () => {
     if (sessionsInFlight.current) return;
     sessionsInFlight.current = true;
     try {
       const list = await vdSessions();
-      if (mountedRef.current) setSessions(list);
+      if (!mountedRef.current) return;
+      // 只更新可观察字段，避免相同数据每秒触发重排/闪烁。
+      const signature = list
+        .map(
+          (session) =>
+            `${session.id}:${session.status}:${session.stage}:${session.app_label ?? ""}:${
+              session.error ?? ""
+            }:${session.warning ?? ""}:${session.alive}:${session.package ?? ""}`,
+        )
+        .join("|");
+      if (signature !== sessionsSignature.current) {
+        sessionsSignature.current = signature;
+        setSessions(list);
+      }
     } catch {
-      // 轮询失败不覆盖已有状态：下一轮会重试。
+      // 轮询失败不覆盖已有状态：下一轮会重试，避免闪成空列表。
     } finally {
       sessionsInFlight.current = false;
     }
+  };
+
+  loadApps.current = async (
+    targetSerial: string,
+    targetUid: string,
+    wantAll: boolean,
+  ) => {
+    if (!targetSerial) {
+      setApps([]);
+      setAppsError(null);
+      setAppListMeta(null);
+      return;
+    }
+    const seq = ++appSeq.current;
+    setAppsLoading(true);
+    setAppsError(null);
+    try {
+      const list: VdAppList = await vdListApps(targetSerial, wantAll);
+      if (!mountedRef.current || seq !== appSeq.current) return;
+      // 设备切换/transport 轮换后丢弃过期响应，避免显示上一台设备的应用。
+      if (list.serial !== targetSerial) return;
+      if (targetUid && list.device_uid !== targetUid) return;
+      setApps(list.apps);
+      setAppListMeta({ uid: list.device_uid, launchableKnown: list.launchable_known });
+      setPackageName((current) =>
+        current && list.apps.some((app) => app.package === current) ? current : "",
+      );
+    } catch (err) {
+      if (seq === appSeq.current) setAppsError(toMessage(err));
+    } finally {
+      if (seq === appSeq.current) setAppsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    mountedRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      await Promise.allSettled([
+        refreshProbe.current(),
+        refreshDevices.current(),
+        refreshSessions.current(),
+      ]);
+      if (!cancelled && mountedRef.current) setInitializing(false);
+    })();
+    return () => {
+      cancelled = true;
+      mountedRef.current = false;
+      appSeq.current += 1;
+    };
   }, []);
+
+  // 运行中/启动中时加快轮询；页面隐藏时暂停，避免后台无意义请求。
+  const fastPoll = sessions.some(
+    (session) => session.status === "starting" || session.status === "stopping",
+  );
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => {
+        if (document.hidden) return;
+        void refreshDevices.current();
+        void refreshSessions.current();
+        setNow(Date.now());
+      },
+      fastPoll ? 1000 : 3000,
+    );
+    const onVisible = () => {
+      if (document.hidden) return;
+      // 页面切回/窗口恢复时立即同步真实状态，避免最多 3 秒的过期展示。
+      void refreshDevices.current();
+      void refreshSessions.current();
+      setNow(Date.now());
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [fastPoll]);
+
+  // 工具链缺失时低频重试：用户可能在页面打开期间安装/改 PATH。
+  const toolchainMissing = probe !== null && (!probe.adb_path || !probe.scrcpy_path);
+  useEffect(() => {
+    if (!toolchainMissing) return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refreshProbe.current();
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [toolchainMissing]);
 
   const selectedDevice = useMemo(
     () =>
@@ -264,118 +309,39 @@ export default function VirtualDisplaySection() {
   );
   const selectedUid = selectedDevice?.uid ?? "";
 
-  const loadApps = useCallback(
-    async (targetSerial: string, targetUid: string, wantAll: boolean) => {
-      if (!targetSerial) {
-        setApps([]);
-        setAppsError(null);
-        setAppListMeta(null);
-        return;
-      }
-      const seq = ++appSeq.current;
-      setAppsLoading(true);
-      setAppsError(null);
-      try {
-        const list: VdAppList = await vdListApps(targetSerial, wantAll);
-        if (!mountedRef.current || seq !== appSeq.current) return;
-        // 设备切换/transport 轮换后丢弃过期响应，避免显示上一台设备的应用。
-        if (list.serial !== targetSerial) return;
-        if (targetUid && list.device_uid !== targetUid) return;
-        setApps(list.apps);
-        setAppListMeta({ uid: list.device_uid, launchableKnown: list.launchable_known });
-        setPackageName((current) =>
-          current && list.apps.some((app) => app.package === current) ? current : "",
-        );
-      } catch (err) {
-        if (seq === appSeq.current) setAppsError(toMessage(err));
-      } finally {
-        if (seq === appSeq.current) setAppsLoading(false);
-      }
-    },
-    [],
-  );
-
   useEffect(() => {
-    mountedRef.current = true;
-    void refreshProbe();
-    void refreshDevices();
-    void refreshSessions();
-    return () => {
-      mountedRef.current = false;
-      appSeq.current += 1;
-    };
-  }, [refreshDevices, refreshProbe, refreshSessions]);
-
-  // 运行中/启动中时加快轮询；页面隐藏时暂停，避免后台无意义请求。
-  const fastPoll = sessions.some(
-    (session) => session.status === "starting" || session.status === "stopping",
-  );
-  useEffect(() => {
-    const timer = window.setInterval(
-      () => {
-        if (document.hidden) return;
-        void refreshDevices();
-        void refreshSessions();
-        setNow(Date.now());
-      },
-      fastPoll ? 1000 : 3000,
-    );
-    return () => window.clearInterval(timer);
-  }, [fastPoll, refreshDevices, refreshSessions]);
-
-  // 工具链缺失时低频重试：用户可能在页面打开期间安装/改路径。
-  const toolchainMissing = probe !== null && (!probe.adb_path || !probe.scrcpy_path);
-  useEffect(() => {
-    if (!toolchainMissing) return;
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void refreshProbe();
-    }, 30_000);
-    return () => window.clearInterval(timer);
-  }, [toolchainMissing, refreshProbe]);
-
-  useEffect(() => {
-    void loadApps(serial, selectedUid, includeAll);
-  }, [serial, selectedUid, includeAll, loadApps]);
+    void loadApps.current(serial, selectedUid, includeAll);
+  }, [serial, selectedUid, includeAll]);
 
   useEffect(() => {
     if (selectedDevice) selectedUidRef.current = selectedDevice.uid;
   }, [selectedDevice]);
 
-  const deviceOptions = useMemo(
-    () =>
-      devices.map((device) => ({
-        value: device.serial,
-        label: device.model ?? device.serial,
-        hint: t(connectionLabelKey(device.connection)),
-      })),
-    [devices, t],
-  );
-
-  const appOptions = useMemo(
-    () =>
-      apps.map((app) => ({
-        value: app.package,
-        label: app.label ?? app.package,
-        hint:
-          app.launchable === false
-            ? (app.reason ?? t("virtualDisplay.noLaunchable"))
-            : app.label
-              ? `${app.package} · ${t(
-                  app.system ? "virtualDisplay.systemApp" : "virtualDisplay.userApp",
-                )}`
-              : t(app.system ? "virtualDisplay.systemApp" : "virtualDisplay.userApp"),
-        disabled: app.launchable === false,
-      })),
-    [apps, t],
-  );
+  // 设备切换后清空上一台手机的包名与手动输入，避免把 A 的包名带到 B。
+  useEffect(() => {
+    if (previousUid.current && previousUid.current !== selectedUid) {
+      setPackageName("");
+      setManualPackage("");
+      setManual(false);
+      setStartError(null);
+      setDiag(null);
+    }
+    previousUid.current = selectedUid;
+  }, [selectedUid]);
 
   const sizeOptions = useMemo(
-    () =>
-      SIZE_OPTIONS.map((option) => ({
-        value: option.value,
-        label: t(option.labelKey),
-        hint: option.hint,
-      })),
+    () => [
+      {
+        value: "1080x1920/384",
+        label: t("virtualDisplay.size.portrait"),
+        hint: "384 DPI",
+      },
+      {
+        value: "1920x1080/384",
+        label: t("virtualDisplay.size.landscape"),
+        hint: "384 DPI",
+      },
+    ],
     [t],
   );
 
@@ -383,44 +349,119 @@ export default function VirtualDisplaySection() {
   const sessionLimit = allowMulti ? 2 : 1;
   const limitReached = activeSessions.length >= sessionLimit;
   const online = selectedDevice?.state === "device";
-  const toolchainReady = Boolean(probe?.adb_path && probe?.scrcpy_path);
+  const toolchainReady = Boolean(probe?.adb_path && probe?.scrcpy_path) && adbOk;
   const virtualSupported = probe?.supports_new_display === true;
   const chosenPackage = (manual ? manualPackage : packageName).trim();
-  const canCreate =
-    !busy &&
-    !limitReached &&
-    online &&
-    toolchainReady &&
-    (mode === "mirror" || (virtualSupported && Boolean(chosenPackage)));
+  const manualInvalid =
+    manual && manualPackage.trim().length > 0 && !isValidPackageName(manualPackage.trim());
 
-  const refreshAll = useCallback(async () => {
-    setRefreshBusy(true);
-    setError(null);
-    try {
-      await Promise.all([refreshProbe(), refreshDevices()]);
-      await loadApps(serial, selectedUid, includeAll);
-      await refreshSessions();
-    } finally {
-      window.setTimeout(() => {
-        if (mountedRef.current) setRefreshBusy(false);
-      }, 400);
+  const launchSession = useMemo(
+    () =>
+      sessions.find(
+        (session) =>
+          isActiveSession(session) &&
+          session.serial === serial &&
+          session.mode === mode &&
+          (mode === "mirror" || session.package === chosenPackage),
+      ) ?? null,
+    [chosenPackage, mode, serial, sessions],
+  );
+  const lastFailed = sessions.some(
+    (session) =>
+      session.serial === serial &&
+      session.mode === mode &&
+      (session.status === "error" || session.status === "disconnected") &&
+      (mode === "mirror" || session.package === chosenPackage),
+  );
+
+  const blockReason = useMemo((): string | null => {
+    if (!selectedDevice) return t("virtualDisplay.start.blockedDevice");
+    if (!online) return t(deviceStateKey(selectedDevice.state));
+    if (!toolchainReady) {
+      return !probe?.adb_path
+        ? t("virtualDisplay.adbMissing")
+        : t("virtualDisplay.scrcpyMissing");
     }
-  }, [includeAll, loadApps, refreshDevices, refreshProbe, refreshSessions, selectedUid, serial]);
+    if (mode === "virtual" && !virtualSupported) {
+      return t("virtualDisplay.versionUnsupported");
+    }
+    if (mode === "virtual" && !chosenPackage) return t("virtualDisplay.start.blockedApp");
+    if (mode === "virtual" && manualInvalid) {
+      return t("virtualDisplay.app.manualInvalid");
+    }
+    if (launchSession?.status === "stopping") {
+      return t("virtualDisplay.session.stopping");
+    }
+    if (limitReached) return t("virtualDisplay.limitReached");
+    if (launchSession) return t("virtualDisplay.start.duplicate");
+    return null;
+  }, [
+    chosenPackage,
+    launchSession,
+    limitReached,
+    manualInvalid,
+    mode,
+    online,
+    probe,
+    selectedDevice,
+    t,
+    toolchainReady,
+    virtualSupported,
+  ]);
+
+  const canStart = !busy && blockReason === null;
+
+  const startPhase = busy
+    ? t("virtualDisplay.start.checking")
+    : launchSession?.status === "starting"
+      ? t(launchStageKey(launchSession.stage))
+      : launchSession?.status === "running"
+        ? t("virtualDisplay.start.ready")
+        : null;
+
+  const startLabel = busy
+    ? t("virtualDisplay.start.checking")
+    : launchSession?.status === "starting"
+      ? t(launchStageKey(launchSession.stage))
+      : launchSession?.status === "running"
+        ? t("virtualDisplay.start.ready")
+        : launchSession?.status === "stopping"
+          ? t("virtualDisplay.session.stopping")
+          : lastFailed
+            ? t("virtualDisplay.start.retry")
+            : t(
+                mode === "mirror"
+                  ? "virtualDisplay.start.mirror"
+                  : "virtualDisplay.start.virtual",
+              );
+
+  const refreshAll = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await Promise.all([refreshProbe.current(), refreshDevices.current()]);
+      await loadApps.current(serial, selectedUid, includeAll);
+      await refreshSessions.current();
+      setNow(Date.now());
+    } finally {
+      if (mountedRef.current) setRefreshing(false);
+    }
+  };
 
   const create = async () => {
-    if (!canCreate || !serial) return;
+    if (!canStart || !serial) return;
     if (mode === "virtual") {
       if (!chosenPackage) {
-        setError(t("virtualDisplay.app"));
+        setStartError(t("virtualDisplay.start.blockedApp"));
         return;
       }
-      if (!/^[A-Za-z0-9_][A-Za-z0-9._]*$/.test(chosenPackage)) {
-        setError(t("virtualDisplay.manualInputHint"));
+      if (!isValidPackageName(chosenPackage)) {
+        setStartError(t("virtualDisplay.app.manualInvalid"));
         return;
       }
     }
     setBusy(true);
-    setError(null);
+    setStartError(null);
     try {
       const created = await vdStart({
         serial,
@@ -435,9 +476,11 @@ export default function VirtualDisplaySection() {
         ...previous.filter((session) => session.id !== created.id),
         created,
       ]);
-      await refreshSessions();
+      sessionsSignature.current = "";
+      await refreshSessions.current();
+      setNow(Date.now());
     } catch (err) {
-      if (mountedRef.current) setError(toMessage(err));
+      if (mountedRef.current) setStartError(toMessage(err));
     } finally {
       if (mountedRef.current) setBusy(false);
     }
@@ -446,12 +489,21 @@ export default function VirtualDisplaySection() {
   const closeSession = async (session: VdSession) => {
     if (closingId) return;
     setClosingId(session.id);
-    setError(null);
+    // 立即显示「关闭中」，不等待下一次轮询；后端会在空闲时完成真实收尾。
+    setSessions((previous) =>
+      previous.map((item) =>
+        item.id === session.id ? { ...item, status: "stopping" as const } : item,
+      ),
+    );
+    sessionsSignature.current = "";
     try {
       await vdStop(session.id);
-      await refreshSessions();
+      await refreshSessions.current();
     } catch (err) {
-      setError(`${t("virtualDisplay.session.closeFailed")}：${toMessage(err)}`);
+      showToast(`${t("virtualDisplay.session.closeFailed")}：${toMessage(err)}`, {
+        kind: "error",
+      });
+      await refreshSessions.current();
     } finally {
       if (mountedRef.current) setClosingId(null);
     }
@@ -471,17 +523,21 @@ export default function VirtualDisplaySection() {
   };
 
   const captureSession = async (session: VdSession) => {
-    if (shotBusy) return;
-    setShotBusy(true);
+    if (capturingId || shotBusy) return;
+    setCapturingId(session.id);
     try {
       const data = await vdScreenshot(session.id);
-      if (mountedRef.current) setShot({ sessionId: session.id, data });
+      if (!mountedRef.current) return;
+      if (!data.path || data.width <= 0 || data.height <= 0) {
+        throw new Error(t("virtualDisplay.screenshot.unreadable"));
+      }
+      setShot({ sessionId: session.id, session, data });
     } catch (err) {
       showToast(`${t("virtualDisplay.screenshot.failed")}：${toMessage(err)}`, {
         kind: "error",
       });
     } finally {
-      if (mountedRef.current) setShotBusy(false);
+      if (mountedRef.current) setCapturingId(null);
     }
   };
 
@@ -504,7 +560,7 @@ export default function VirtualDisplaySection() {
     setShotBusy(true);
     try {
       const chosen = await saveFileDialog({
-        defaultPath: `task-dock-screen-${shot.sessionId.slice(0, 8)}.png`,
+        defaultPath: `task-dock-screen-${shot.session.mode}-${Date.now()}.png`,
         filters: [{ name: "PNG", extensions: ["png"] }],
       });
       if (!chosen) return;
@@ -541,7 +597,8 @@ export default function VirtualDisplaySection() {
         setReconnectOpen(false);
         setDiag(null);
       }
-      await refreshDevices();
+      await refreshDevices.current();
+      await refreshSessions.current();
     } catch (err) {
       showToast(toMessage(err), { kind: "error" });
     } finally {
@@ -549,552 +606,263 @@ export default function VirtualDisplaySection() {
     }
   };
 
-  const modeLabel = t(
-    mode === "mirror" ? "virtualDisplay.mode.mirror" : "virtualDisplay.mode.virtual",
-  );
-  const deviceName =
-    selectedDevice?.model ?? selectedDevice?.serial ?? t("virtualDisplay.noDevice");
+  const copyValue = async (value: string) => {
+    try {
+      const ok = await copyText(value);
+      if (!ok) {
+        showToast(t("virtualDisplay.advanced.copyFailed"), { kind: "error" });
+        return;
+      }
+      showToast(t("virtualDisplay.advanced.copied"), { kind: "success" });
+    } catch (err) {
+      showToast(toMessage(err), { kind: "error" });
+    }
+  };
 
   return (
-    <CollapsibleSection
-      id="virtual-display"
-      className="settings-collapsible"
-      icon={<MonitorSmartphone size={13} />}
-      title={t("virtualDisplay.title")}
-      description={t("virtualDisplay.subtitle")}
-      defaultExpanded
-    >
-      <div className="virtual-display">
-        <div className="vd-device-card">
-          <span
-            className={`vd-device-icon${online ? " is-online" : ""}`}
-            aria-hidden="true"
-          >
-            <Smartphone size={16} />
-          </span>
-          <div className="vd-device-main">
-            <div className="vd-device-name" data-tip={selectedDevice?.model ?? undefined}>
-              {deviceName}
-            </div>
-            <div className="vd-device-meta">
-              {selectedDevice ? (
-                <>
-                  <span
-                    className={`vd-status-dot is-${selectedDevice.state}`}
-                    aria-hidden="true"
-                  />
-                  <span>{t(deviceStateKey(selectedDevice.state))}</span>
-                  <span className="vd-meta-sep">·</span>
-                  <span className="vd-conn-icon" aria-hidden="true">
-                    {selectedDevice.connection === "usb" ? (
-                      <Usb size={11} />
-                    ) : (
-                      <Wifi size={11} />
-                    )}
-                  </span>
-                  <span>{t(connectionLabelKey(selectedDevice.connection))}</span>
-                  {selectedDevice.transports.length > 1 ? (
-                    <>
-                      <span className="vd-meta-sep">·</span>
-                      <span>
-                        {t("virtualDisplay.transports", {
-                          count: selectedDevice.transports.length,
-                        })}
-                      </span>
-                    </>
-                  ) : null}
-                </>
-              ) : (
-                <span className="vd-device-hint">{t("virtualDisplay.noDeviceHint")}</span>
-              )}
-            </div>
-          </div>
-          {selectedDevice ? (
-            <StatusBadge tone={deviceTone(selectedDevice.state)} size="sm">
-              {t(deviceStateKey(selectedDevice.state))}
-            </StatusBadge>
-          ) : null}
-          <button
-            className="icon-btn sm"
-            data-tip={t("virtualDisplay.refresh")}
-            aria-label={t("virtualDisplay.refresh")}
-            onClick={() => void refreshAll()}
-            disabled={refreshBusy}
-          >
-            <RefreshCw size={12} className={refreshBusy ? "spin" : undefined} />
-          </button>
-        </div>
-
-        {devices.length > 1 ? (
-          <div className="setting-row vd-device-row">
-            <span>{t("virtualDisplay.deviceList")}</span>
-            <div className="vd-control">
-              <Select
-                value={serial}
-                options={deviceOptions}
-                onChange={(value) => setSerial(value)}
-                placeholder={t("virtualDisplay.noDevice")}
-                ariaLabel={t("virtualDisplay.deviceList")}
-                size="sm"
-                block
-              />
-            </div>
+    <div className="virtual-display">
+      <div className="vd-panel">
+        {initializing ? (
+          <div className="vd-initializing" role="status">
+            <Loader2 size={14} className="spin" aria-hidden="true" />
+            {t("virtualDisplay.loading")}
           </div>
         ) : null}
 
-        <div className="vd-toolchain-row">
-          <code className={`vd-tool${probe?.adb_path ? "" : " is-missing"}`}>
-            adb {shortVersion(probe?.adb_version ?? null) ?? t("virtualDisplay.missing")}
-          </code>
-          <code className={`vd-tool${probe?.scrcpy_path ? "" : " is-missing"}`}>
-            scrcpy {shortVersion(probe?.scrcpy_version ?? null) ?? t("virtualDisplay.missing")}
-          </code>
-          <button
-            className="icon-btn sm"
-            data-tip={t("virtualDisplay.recheck")}
-            aria-label={t("virtualDisplay.recheck")}
-            onClick={() => void refreshProbe()}
-            disabled={probeBusy}
-          >
-            <RefreshCw size={11} className={probeBusy ? "spin" : undefined} />
-          </button>
-        </div>
-
-        {probe && !probe.adb_path ? (
-          <div className="setting-note vd-note-warn">{t("virtualDisplay.adbMissing")}</div>
-        ) : null}
-        {probe && !probe.scrcpy_path ? (
-          <div className="setting-note vd-note-warn">{t("virtualDisplay.scrcpyMissing")}</div>
-        ) : null}
-        {probe && probe.scrcpy_path && !probe.supports_new_display ? (
-          <div className="setting-note vd-note-warn">
-            {t("virtualDisplay.versionUnsupported")}
-          </div>
-        ) : null}
-        {!adbOk ? <div className="setting-note vd-note-warn">{t("virtualDisplay.adbMissing")}</div> : null}
-        {deviceError ? <div className="setting-note vd-note-warn">{deviceError}</div> : null}
-
-        <div className="vd-mode-block">
-          <div className="vd-seg" role="group" aria-label={t("virtualDisplay.mode.label")}>
-            <button
-              type="button"
-              className={`vd-seg-btn${mode === "mirror" ? " is-active" : ""}`}
-              aria-pressed={mode === "mirror"}
-              onClick={() => setMode("mirror")}
-              disabled={busy}
-            >
-              <Monitor size={12} />
-              {t("virtualDisplay.mode.mirror")}
-            </button>
-            <button
-              type="button"
-              className={`vd-seg-btn${mode === "virtual" ? " is-active" : ""}`}
-              aria-pressed={mode === "virtual"}
-              onClick={() => setMode("virtual")}
-              disabled={busy || (probe !== null && !virtualSupported)}
-            >
-              <AppWindow size={12} />
-              {t("virtualDisplay.mode.virtual")}
-            </button>
-          </div>
-          <div className="vd-mode-note">
-            {t(
-              mode === "mirror"
-                ? "virtualDisplay.mode.mirrorDesc"
-                : "virtualDisplay.mode.virtualDesc",
-            )}
-          </div>
-          {activeSessions.length > 0 ? (
-            <div className="vd-inline-note">{t("virtualDisplay.mode.activeNote")}</div>
-          ) : null}
-        </div>
-
-        {mode === "virtual" ? (
-          <div className="vd-form">
-            <div className="setting-row">
-              <span>{t("virtualDisplay.app")}</span>
-              <div className="vd-control">
-                {manual ? (
-                  <input
-                    className="vd-input"
-                    type="text"
-                    value={manualPackage}
-                    placeholder={t("virtualDisplay.packagePlaceholder")}
-                    aria-label={t("virtualDisplay.packagePlaceholder")}
-                    spellCheck={false}
-                    autoComplete="off"
-                    onChange={(event) => setManualPackage(event.target.value)}
-                    disabled={busy}
-                  />
-                ) : (
-                  <Combobox
-                    value={packageName}
-                    options={appOptions}
-                    onChange={(value) => setPackageName(value)}
-                    placeholder={
-                      appsLoading
-                        ? "…"
-                        : serial
-                          ? t("virtualDisplay.app")
-                          : t("virtualDisplay.noDevice")
-                    }
-                    searchPlaceholder={t("virtualDisplay.searchApp")}
-                    emptyText={t("virtualDisplay.noApps")}
-                    ariaLabel={t("virtualDisplay.app")}
-                    size="sm"
-                    disabled={!serial || appsLoading}
-                  />
-                )}
-              </div>
-            </div>
-            <div className="vd-form-links">
-              <button
-                type="button"
-                className="vd-link"
-                onClick={() => setManual((value) => !value)}
-              >
-                {t(manual ? "virtualDisplay.app" : "virtualDisplay.manualInput")}
-              </button>
-              {appListMeta?.launchableKnown ? (
-                <button
-                  type="button"
-                  className="vd-link"
-                  onClick={() => setIncludeAll((value) => !value)}
-                >
-                  {t(
-                    includeAll
-                      ? "virtualDisplay.hideAllApps"
-                      : "virtualDisplay.showAllApps",
-                  )}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="vd-link"
-                onClick={() => void loadApps(serial, selectedUid, includeAll)}
-                disabled={!serial || appsLoading}
-              >
-                {t("virtualDisplay.refreshApps")}
-              </button>
-            </div>
-            <div className="setting-note">
-              {t(
-                manual
-                  ? "virtualDisplay.manualInputHint"
-                  : "virtualDisplay.appHint",
-              )}
-            </div>
-            {appsError ? (
-              <div className="setting-note vd-note-warn" role="alert">
-                {appsError}
-              </div>
-            ) : null}
-
-            <div className="setting-row">
-              <span>{t("virtualDisplay.size")}</span>
-              <div className="vd-control">
-                <Select
-                  value={size}
-                  options={sizeOptions}
-                  onChange={(value) => setSize(value)}
-                  ariaLabel={t("virtualDisplay.size")}
-                  size="sm"
-                  block
-                />
-              </div>
-            </div>
-            <div className="vd-inline-note">{t("virtualDisplay.sizeHint")}</div>
-
-            <div className="setting-row">
-              <span>{t("virtualDisplay.clipboard")}</span>
-              <Switch
-                checked={clipboardSync}
-                onChange={setClipboardSync}
-                ariaLabel={t("virtualDisplay.clipboard")}
-              />
-            </div>
-            <div className="vd-inline-note">{t("virtualDisplay.clipboardHint")}</div>
-          </div>
-        ) : null}
-
-        <div className="vd-create-row">
-          <button
-            className="btn sm vd-create"
-            onClick={() => void create()}
-            disabled={!canCreate}
-          >
-            {busy ? <Loader2 size={12} className="spin" /> : <Play size={12} />}
-            {mode === "mirror"
-              ? t("virtualDisplay.createMirror")
-              : t("virtualDisplay.create")}
-          </button>
-          <span className="vd-create-mode">{modeLabel}</span>
-          {limitReached ? (
-            <span className="vd-inline-note">{t("virtualDisplay.limitReached")}</span>
-          ) : null}
-        </div>
-
-        {error ? (
-          <div className="setting-note vd-note-error" role="alert">
-            {error}
-          </div>
-        ) : null}
-
-        <div className="vd-sessions">
-          <div className="vd-sessions-head">
-            <span className="vd-sessions-title">{t("virtualDisplay.sessions")}</span>
-            <span className="vd-count">{activeSessions.length}</span>
-          </div>
-          {sessions.length === 0 ? (
-            <div className="setting-note">{t("virtualDisplay.noSessions")}</div>
-          ) : (
-            sessions.map((session) => {
-              const title = sessionTitle(
-                session,
-                t("virtualDisplay.mode.mirror"),
-                t("virtualDisplay.mode.virtual"),
-              );
-              const active = isActiveSession(session);
-              const duration =
-                session.status === "running"
-                  ? formatDuration(session.started_at, now)
-                  : null;
-              const stage = stageKey(session.stage);
-              const statusLabel = t(sessionStatusKey(session.status));
-              return (
-                <div
-                  className={`vd-session is-${session.status}`}
-                  key={session.id}
-                  data-status={session.status}
-                >
-                  <span className="vd-session-icon" aria-hidden="true">
-                    {session.mode === "mirror" ? <Monitor size={14} /> : <AppWindow size={14} />}
-                  </span>
-                  <div className="vd-session-main">
-                    <div className="vd-session-title-row">
-                      <span className="vd-session-title" data-tip={title}>
-                        {title}
-                      </span>
-                      <span className={`vd-session-mode is-${session.mode}`}>
-                        {t(
-                          session.mode === "mirror"
-                            ? "virtualDisplay.mode.mirror"
-                            : "virtualDisplay.mode.virtual",
-                        )}
-                      </span>
-                    </div>
-                    <div className="vd-session-meta">
-                      <span
-                        className={`vd-status-dot is-${session.status}`}
-                        aria-hidden="true"
-                      />
-                      <span>{statusLabel}</span>
-                      {active && stage ? (
-                        <>
-                          <span className="vd-meta-sep">·</span>
-                          <span>{t(stage)}</span>
-                        </>
-                      ) : null}
-                      {duration ? (
-                        <>
-                          <span className="vd-meta-sep">·</span>
-                          <span>
-                            {t("virtualDisplay.session.duration", { duration })}
-                          </span>
-                        </>
-                      ) : null}
-                      {session.device_model ? (
-                        <>
-                          <span className="vd-meta-sep">·</span>
-                          <span className="vd-session-device">{session.device_model}</span>
-                        </>
-                      ) : null}
-                    </div>
-                    {session.package && session.app_label ? (
-                      <div className="vd-session-sub" data-tip={session.package}>
-                        {session.package}
-                      </div>
-                    ) : null}
-                    {session.error ? (
-                      <div className="vd-session-error" role="alert">
-                        <CircleAlert size={11} /> {session.error}
-                      </div>
-                    ) : null}
-                    {session.warning ? (
-                      <div className="vd-session-warning">
-                        <ShieldAlert size={11} /> {session.warning}
-                      </div>
-                    ) : null}
-                  </div>
-                  {active ? (
-                    <div className="vd-session-actions">
-                      <button
-                        className="icon-btn sm"
-                        data-tip={t("virtualDisplay.session.focus")}
-                        aria-label={`${t("virtualDisplay.session.focus")} ${title}`}
-                        onClick={() => void focusSession(session)}
-                        disabled={session.status === "stopping"}
-                      >
-                        <LocateFixed size={13} />
-                      </button>
-                      <button
-                        className="icon-btn sm"
-                        data-tip={t("virtualDisplay.session.screenshot")}
-                        aria-label={`${t("virtualDisplay.session.screenshot")} ${title}`}
-                        onClick={() => void captureSession(session)}
-                        disabled={session.status !== "running" || shotBusy}
-                      >
-                        <Camera size={13} />
-                      </button>
-                      <button
-                        className="btn sm danger-ghost"
-                        onClick={() => void closeSession(session)}
-                        disabled={session.status === "stopping" || closingId === session.id}
-                      >
-                        {session.status === "stopping" ? (
-                          <Loader2 size={12} className="spin" />
-                        ) : (
-                          <Square size={12} />
-                        )}
-                        {session.status === "stopping"
-                          ? t("virtualDisplay.session.stopping")
-                          : t("virtualDisplay.session.close")}
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        <div className="vd-advanced">
-          <button
-            type="button"
-            className="vd-advanced-toggle"
-            aria-expanded={advancedOpen}
-            onClick={() => setAdvancedOpen((value) => !value)}
-          >
-            <ChevronRight
-              size={12}
-              className={advancedOpen ? "is-open" : undefined}
-              aria-hidden="true"
-            />
-            {t("virtualDisplay.advanced")}
-          </button>
-          {advancedOpen ? (
-            <div className="vd-advanced-body">
-              <div className="setting-row">
-                <span>{t("virtualDisplay.multi")}</span>
-                <Switch
-                  checked={allowMulti}
-                  onChange={setAllowMulti}
-                  ariaLabel={t("virtualDisplay.multi")}
-                />
-              </div>
-              <div className="vd-inline-note">{t("virtualDisplay.multiHint")}</div>
-              <div className="setting-row">
-                <span>{t("virtualDisplay.diagnostics")}</span>
-                <div className="btn-row">
-                  <button
-                    className="btn sm"
-                    onClick={() => void runDiagnostics()}
-                    disabled={!serial || diagBusy}
-                  >
-                    {diagBusy ? (
-                      <Loader2 size={12} className="spin" />
-                    ) : (
-                      <Stethoscope size={12} />
-                    )}
-                    {diagBusy
-                      ? t("virtualDisplay.diagnosticsRunning")
-                      : t("virtualDisplay.diagnostics")}
-                  </button>
-                  {diag && diag.stale_displays.length > 0 ? (
-                    <button
-                      className="btn sm"
-                      onClick={() => setReconnectOpen(true)}
-                      disabled={reconnectBusy}
-                    >
-                      {t("virtualDisplay.reconnect")}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              {diag ? (
-                <div
-                  className={`setting-note${
-                    diag.stale_displays.length ? " vd-note-warn" : ""
-                  }`}
-                >
-                  {diag.note}
-                  {diag.stale_displays.length ? (
-                    <ul className="vd-diag-list">
-                      {diag.stale_displays.map((line) => (
-                        <li key={line}>{line}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="setting-note vd-safety">{t("virtualDisplay.safetyNote")}</div>
-
-        {shot ? (
-          <Dialog
-            open
-            onClose={() => setShot(null)}
-            title={t("virtualDisplay.screenshot.title")}
-            size="lg"
-            footer={
-              <div className="btn-row vd-shot-actions">
-                <button
-                  className="btn sm"
-                  onClick={() => void saveShotToShelf()}
-                  disabled={shotBusy}
-                >
-                  <ImageIcon size={12} /> {t("virtualDisplay.screenshot.saveShelf")}
-                </button>
-                <button
-                  className="btn sm"
-                  onClick={() => void saveShotAs()}
-                  disabled={shotBusy}
-                >
-                  {t("virtualDisplay.screenshot.saveAs")}
-                </button>
-                <button className="btn sm" onClick={() => setShot(null)}>
-                  {t("virtualDisplay.screenshot.discard")}
-                </button>
-              </div>
-            }
-          >
-            <div className="vd-shot-wrap">
-              <img
-                className="vd-shot-image"
-                src={convertFileSrc(shot.data.path)}
-                alt={t("virtualDisplay.screenshot.title")}
-              />
-            </div>
-            <div className="setting-note">
-              {t("virtualDisplay.screenshot.privacy")}
-            </div>
-          </Dialog>
-        ) : null}
-
-        <ConfirmDialog
-          open={reconnectOpen}
-          title={t("virtualDisplay.reconnectTitle")}
-          detail={t("virtualDisplay.reconnectConfirm")}
-          confirmLabel={t("virtualDisplay.reconnect")}
-          danger
-          busy={reconnectBusy}
-          onConfirm={() => void reconnect()}
-          onCancel={() => setReconnectOpen(false)}
+        <DeviceTools
+          devices={devices}
+          selected={selectedDevice}
+          serial={serial}
+          adbOk={adbOk}
+          deviceError={deviceError}
+          probe={probe}
+          probeBusy={probeBusy}
+          refreshing={refreshing}
+          loading={initializing}
+          t={tr}
+          onSelect={setSerial}
+          onRefresh={() => void refreshAll()}
+          onRecheck={() => void refreshProbe.current()}
         />
+
+        <ModePicker
+          mode={mode}
+          busy={busy}
+          virtualSupported={virtualSupported}
+          activeCount={activeSessions.length}
+          t={tr}
+          onModeChange={(next) => {
+            setMode(next);
+            setStartError(null);
+          }}
+        />
+
+        <section className="vd-block vd-config" aria-label={t("virtualDisplay.config.title")}>
+          <div className="vd-block-head">
+            <h3 className="vd-block-title">{t("virtualDisplay.config.title")}</h3>
+            <span className="vd-block-note">
+              {t(
+                mode === "mirror"
+                  ? "virtualDisplay.config.mirrorNote"
+                  : "virtualDisplay.config.virtualNote",
+              )}
+            </span>
+          </div>
+
+          <div className="vd-config-device">
+            <span className="vd-config-device-icon" aria-hidden="true">
+              <Smartphone size={14} />
+            </span>
+            <div className="vd-config-device-main">
+              <span className="vd-config-device-name">
+                {selectedDevice
+                  ? deviceLabel(selectedDevice, tr)
+                  : t("virtualDisplay.noDevice")}
+              </span>
+              {selectedDevice ? (
+                <span className="vd-config-device-meta">
+                  {t(connectionLabelKey(selectedDevice.connection))} ·{" "}
+                  {t(deviceStateKey(selectedDevice.state))}
+                </span>
+              ) : (
+                <span className="vd-config-device-meta">
+                  {t("virtualDisplay.noDeviceHint")}
+                </span>
+              )}
+            </div>
+            {selectedDevice ? (
+              <span
+                className={`vd-status-dot is-${selectedDevice.state}`}
+                aria-hidden="true"
+              />
+            ) : null}
+          </div>
+
+          {mode === "virtual" ? (
+            <>
+              <AppPicker
+                apps={apps}
+                loading={appsLoading}
+                error={appsError}
+                launchableKnown={appListMeta?.launchableKnown ?? false}
+                includeAll={includeAll}
+                deviceUid={selectedUid}
+                selectedPackage={packageName}
+                manual={manual}
+                manualPackage={manualPackage}
+                manualError={manualInvalid ? t("virtualDisplay.app.manualInvalid") : null}
+                disabled={busy}
+                t={tr}
+                onSelect={setPackageName}
+                onManualChange={setManualPackage}
+                onToggleManual={(open) => {
+                  setManual(open);
+                  setStartError(null);
+                }}
+                onToggleIncludeAll={() => setIncludeAll((value) => !value)}
+                onRefresh={() => void loadApps.current(serial, selectedUid, includeAll)}
+              />
+
+              <div className="vd-size-field">
+                <div className="vd-field-head">
+                  <span className="vd-field-label">{t("virtualDisplay.config.size")}</span>
+                  <span className="vd-field-count">384 DPI</span>
+                </div>
+                <div
+                  className="vd-size-seg"
+                  role="group"
+                  aria-label={t("virtualDisplay.config.size")}
+                >
+                  {sizeOptions.map((option) => (
+                    <button
+                      type="button"
+                      key={option.value}
+                      className={`vd-size-btn${
+                        size === option.value ? " is-selected" : ""
+                      }`}
+                      aria-pressed={size === option.value}
+                      onClick={() => setSize(option.value)}
+                      disabled={busy}
+                    >
+                      {option.value.startsWith("1920") ? (
+                        <Monitor size={14} aria-hidden="true" />
+                      ) : (
+                        <Smartphone size={14} aria-hidden="true" />
+                      )}
+                      <span>{option.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="vd-hint">{t("virtualDisplay.config.sizeHint")}</div>
+              </div>
+            </>
+          ) : null}
+
+          <div className="vd-start-row">
+            <button
+              type="button"
+              className="btn primary vd-start-btn"
+              onClick={() => void create()}
+              disabled={!canStart}
+            >
+              {busy || launchSession?.status === "starting" ? (
+                <Loader2 size={13} className="spin" />
+              ) : launchSession?.status === "running" ? (
+                <CheckCircle2 size={13} />
+              ) : (
+                <Play size={13} />
+              )}
+              {startLabel}
+            </button>
+            <div className="vd-start-meta">
+              {startPhase ? (
+                <span className="vd-start-phase" role="status">
+                  {startPhase}
+                </span>
+              ) : null}
+              {blockReason ? (
+                <span className="vd-start-blocked" data-tip={blockReason}>
+                  {blockReason}
+                </span>
+              ) : (
+                <span className="vd-start-ready">
+                  {t("virtualDisplay.start.readyHint")}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {startError ? (
+            <div className="vd-alert is-error" role="alert">
+              <ShieldAlert size={13} aria-hidden="true" />
+              <div className="vd-alert-body">
+                <strong>{t("virtualDisplay.start.failed")}</strong>
+                <span>{startError}</span>
+              </div>
+            </div>
+          ) : null}
+        </section>
+
+        <SessionList
+          sessions={sessions}
+          activeCount={activeSessions.length}
+          limit={sessionLimit}
+          currentDevice={selectedDevice}
+          now={now}
+          closingId={closingId}
+          capturingId={capturingId}
+          t={tr}
+          onFocus={(session) => void focusSession(session)}
+          onCapture={(session) => void captureSession(session)}
+          onClose={(session) => void closeSession(session)}
+        />
+
+        <AdvancedSection
+          open={advancedOpen}
+          onToggle={() => setAdvancedOpen((value) => !value)}
+          allowMulti={allowMulti}
+          onAllowMultiChange={setAllowMulti}
+          clipboardSync={clipboardSync}
+          onClipboardChange={setClipboardSync}
+          size={size}
+          onSizeChange={setSize}
+          sizeOptions={sizeOptions}
+          probe={probe}
+          selectedDevice={selectedDevice}
+          diag={diag}
+          diagBusy={diagBusy}
+          reconnectBusy={reconnectBusy}
+          t={tr}
+          onRunDiagnostics={() => void runDiagnostics()}
+          onReconnect={() => setReconnectOpen(true)}
+          onCopy={(value) => void copyValue(value)}
+        />
+
+        <div className="vd-safety-note">{t("virtualDisplay.safetyNote")}</div>
       </div>
-    </CollapsibleSection>
+
+      {shot ? (
+        <ScreenshotPreview
+          session={shot.session}
+          shot={shot.data}
+          busy={shotBusy}
+          t={tr}
+          onSaveShelf={() => void saveShotToShelf()}
+          onSaveAs={() => void saveShotAs()}
+          onDiscard={() => setShot(null)}
+        />
+      ) : null}
+
+      <ConfirmDialog
+        open={reconnectOpen}
+        title={t("virtualDisplay.reconnectTitle")}
+        detail={t("virtualDisplay.reconnectConfirm")}
+        confirmLabel={t("virtualDisplay.reconnect")}
+        danger
+        busy={reconnectBusy}
+        onConfirm={() => void reconnect()}
+        onCancel={() => setReconnectOpen(false)}
+      />
+    </div>
   );
 }

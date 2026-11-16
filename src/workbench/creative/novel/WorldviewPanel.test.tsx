@@ -111,7 +111,7 @@ describe("WorldviewPanel", () => {
     screen.getByRole("tab", { name: "物品道具" }).click();
 
     await waitFor(() => {
-      expect(api.novelWorldviewList).toHaveBeenCalledWith("p1", "item");
+      expect(api.novelWorldviewList).toHaveBeenCalledWith("p1", "item", null);
     });
   });
 

@@ -5340,6 +5340,8 @@ export interface VdSession {
   alive: boolean;
   error: string | null;
   warning: string | null;
+  /** 子进程是否确认纳入 Windows Job Object（false 时 stop 无法保证收尾）。 */
+  job_assigned: boolean;
   size: string | null;
 }
 
@@ -5364,6 +5366,8 @@ export interface VdScreenshot {
   width: number;
   height: number;
   captured_at: string;
+  /** 启发式质量警告（纯色/低色彩变化/窗口不可见等），不影响文件本身可读。 */
+  warning: string | null;
 }
 
 export interface VdDiagnostics {

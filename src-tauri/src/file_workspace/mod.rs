@@ -836,7 +836,6 @@ fn copy_file(src: &Path, dst: &Path, conflict: Conflict) -> Result<(), FsFailure
 fn copy_dir(
     src: &Path,
     dst: &Path,
-    conflict: Conflict,
     depth: usize,
     budget: &mut usize,
 ) -> Result<(), FsFailure> {
@@ -874,7 +873,7 @@ fn copy_dir(
             continue;
         }
         if ft.is_dir() {
-            copy_dir(&child_src, &child_dst, Conflict::Overwrite, depth + 1, budget)?;
+            copy_dir(&child_src, &child_dst, depth + 1, budget)?;
         } else {
             copy_file(&child_src, &child_dst, Conflict::Overwrite)?;
         }
@@ -1003,7 +1002,7 @@ pub fn copy_paths(
         // 且现在已有内容，才算 partial（避免把既有目标内容误判为本次成果）。
         let dst_preexisting = dst.exists();
         let outcome = if meta.is_dir() {
-            copy_dir(src, &dst, conflict, 0, &mut budget)
+            copy_dir(src, &dst, 0, &mut budget)
         } else {
             copy_file(src, &dst, conflict)
         };
@@ -1061,7 +1060,7 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
                 let meta = fs::symlink_metadata(dst).map_err(|e| FsFailure::io("prepare", &e))?;
                 if meta.is_dir() {
                     // 目录并入：递归复制后删除源（不删除已有目标内容）。
-                    copy_dir(src, &dst, Conflict::Overwrite, depth, budget)?;
+                    copy_dir(src, &dst, depth, budget)?;
                     if let Err(e) = delete_tree(src) {
                         return Err(FsFailure::new(
                             e.code,
@@ -1083,7 +1082,7 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
             // 跨卷或被占用：回退复制 + 删除源。目录复制失败时保留源（不丢数据）。
             let meta = fs::symlink_metadata(src).map_err(|e| FsFailure::io("transfer", &e))?;
             if meta.is_dir() {
-                copy_dir(src, &dst, conflict, depth, budget)?;
+                copy_dir(src, &dst, depth, budget)?;
                 if let Err(e) = delete_tree(src) {
                     // 源保留 + 目标保留已复制部分：结果可解释，逐条报告给用户。
                     return Err(FsFailure::new(

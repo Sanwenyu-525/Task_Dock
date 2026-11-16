@@ -439,15 +439,40 @@ const CHARACTER_SELECT: &str = "
            faction, status, notes, tags, sort_order, created_at, updated_at
     FROM novel_characters";
 
-pub fn novel_character_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<NovelCharacter>> {
+fn like_pattern(raw: &str) -> String {
+    let escaped = raw
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+pub fn novel_character_list_impl(
+    db: &Db,
+    project_id: &str,
+    query: Option<&str>,
+) -> AppResult<Vec<NovelCharacter>> {
     db.with_read(|conn| {
         ensure_novel_project(conn, project_id, false)?;
-        let mut stmt = conn.prepare(&format!(
+        let keyword = query.map(|q| q.trim().to_string()).filter(|q| !q.is_empty());
+        let mut sql = format!(
             "{CHARACTER_SELECT} WHERE project_id = ?1
              ORDER BY sort_order, created_at, id
              LIMIT {LIST_LIMIT}"
-        ))?;
-        let rows = stmt.query_map(params![project_id], row_to_character)?;
+        );
+        let mut values: Vec<String> = vec![project_id.to_string()];
+        if let Some(keyword) = &keyword {
+            values.push(like_pattern(keyword));
+            sql = format!(
+                "{CHARACTER_SELECT} WHERE project_id = ?1
+                 AND (name LIKE ?2 ESCAPE '\\' OR aliases LIKE ?2 ESCAPE '\\'
+                      OR tags LIKE ?2 ESCAPE '\\')
+                 ORDER BY sort_order, created_at, id
+                 LIMIT {LIST_LIMIT}"
+            );
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values), row_to_character)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row.map_err(AppError::from)?);
@@ -816,6 +841,7 @@ pub fn novel_worldview_list_impl(
     db: &Db,
     project_id: &str,
     kind: Option<&str>,
+    query: Option<&str>,
 ) -> AppResult<Vec<NovelWorldviewEntry>> {
     db.with_read(|conn| {
         ensure_novel_project(conn, project_id, false)?;
@@ -823,22 +849,31 @@ pub fn novel_worldview_list_impl(
             Some(value) => Some(validate_enum(value, "设定类型", WORLDVIEW_KINDS)?),
             None => None,
         };
-        let (sql, values): (String, Vec<String>) = match &kind {
-            Some(kind) => (
-                format!(
-                    "{WORLDVIEW_SELECT} WHERE project_id = ?1 AND kind = ?2
-                     ORDER BY sort_order, created_at, id LIMIT {LIST_LIMIT}"
-                ),
-                vec![project_id.to_string(), kind.clone()],
-            ),
-            None => (
-                format!(
-                    "{WORLDVIEW_SELECT} WHERE project_id = ?1
-                     ORDER BY sort_order, created_at, id LIMIT {LIST_LIMIT}"
-                ),
-                vec![project_id.to_string()],
-            ),
-        };
+        let keyword = query.map(|q| q.trim().to_string()).filter(|q| !q.is_empty());
+        let mut sql = format!(
+            "{WORLDVIEW_SELECT} WHERE project_id = ?1
+             ORDER BY sort_order, created_at, id LIMIT {LIST_LIMIT}"
+        );
+        let mut values: Vec<String> = vec![project_id.to_string()];
+        if let Some(kind) = &kind {
+            values.push(kind.clone());
+            sql = format!(
+                "{WORLDVIEW_SELECT} WHERE project_id = ?1 AND kind = ?2
+                 ORDER BY sort_order, created_at, id LIMIT {LIST_LIMIT}"
+            );
+        }
+        if let Some(keyword) = &keyword {
+            values.push(like_pattern(keyword));
+            let idx = values.len();
+            sql = format!(
+                "{WORLDVIEW_SELECT} WHERE project_id = ?1
+                 {kind_clause} AND (name LIKE ?{idx} ESCAPE '\\' OR description LIKE ?{idx} ESCAPE '\\'
+                      OR tags LIKE ?{idx} ESCAPE '\\')
+                 ORDER BY sort_order, created_at, id LIMIT {LIST_LIMIT}",
+                kind_clause = kind.is_some().then_some("AND kind = ?2").unwrap_or_default(),
+                idx = idx
+            );
+        }
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(values), row_to_worldview)?;
         let mut out = Vec::new();
@@ -1127,9 +1162,10 @@ pub fn novel_entity_ref_delete_impl(db: &Db, id: &str) -> AppResult<()> {
 pub fn novel_character_list(
     db: State<'_, Arc<Db>>,
     project_id: String,
+    query: Option<String>,
 ) -> AppResult<NovelCharactersList> {
     Ok(NovelCharactersList {
-        characters: novel_character_list_impl(&db, &project_id)?,
+        characters: novel_character_list_impl(&db, &project_id, query.as_deref())?,
     })
 }
 
@@ -1232,9 +1268,10 @@ pub fn novel_worldview_list(
     db: State<'_, Arc<Db>>,
     project_id: String,
     kind: Option<String>,
+    query: Option<String>,
 ) -> AppResult<NovelWorldviewList> {
     Ok(NovelWorldviewList {
-        entries: novel_worldview_list_impl(&db, &project_id, kind.as_deref())?,
+        entries: novel_worldview_list_impl(&db, &project_id, kind.as_deref(), query.as_deref())?,
     })
 }
 
@@ -1427,9 +1464,9 @@ mod tests {
         assert_eq!(updated.tags, vec!["主角"]);
 
         // 项目隔离：B 项目列表看不到 A 的人物。
-        let list_b = novel_character_list_impl(&db, &b.id).unwrap();
+        let list_b = novel_character_list_impl(&db, &b.id, None).unwrap();
         assert!(list_b.is_empty());
-        let list_a = novel_character_list_impl(&db, &a.id).unwrap();
+        let list_a = novel_character_list_impl(&db, &a.id, None).unwrap();
         assert_eq!(list_a.len(), 1);
 
         // 跨项目写入被拒绝。
@@ -1450,6 +1487,30 @@ mod tests {
             None,
         );
         assert!(cross.is_err());
+    }
+
+    #[test]
+    fn list_is_limited_and_server_search_filters() {
+        let db = memdb();
+        let a = novel_project(&db, "小说 A");
+
+        for i in 0..505 {
+            save_character(&db, &a.id, &format!("角色{i}"), &[]);
+        }
+        save_character(&db, &a.id, "林雷·主角", &["主角"]);
+
+        // 列表限量 200，避免把整本书读进内存。
+        let all = novel_character_list_impl(&db, &a.id, None).unwrap();
+        assert_eq!(all.len(), LIST_LIMIT as usize);
+
+        // 服务端按姓名检索：500+ 条量级下仍能命中目标条目。
+        let found = novel_character_list_impl(&db, &a.id, Some("林雷")).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "林雷·主角");
+
+        // 标签关键词同样可检索。
+        let by_tag = novel_character_list_impl(&db, &a.id, Some("主角")).unwrap();
+        assert_eq!(by_tag.len(), 1);
     }
 
     #[test]
@@ -1535,17 +1596,17 @@ mod tests {
         )
         .unwrap();
 
-        let all = novel_worldview_list_impl(&db, &a.id, None).unwrap();
+        let all = novel_worldview_list_impl(&db, &a.id, None, None).unwrap();
         assert_eq!(all.len(), 2);
-        let factions = novel_worldview_list_impl(&db, &a.id, Some("faction")).unwrap();
+        let factions = novel_worldview_list_impl(&db, &a.id, Some("faction"), None).unwrap();
         assert_eq!(factions.len(), 1);
         assert_eq!(factions[0].id, kingdom.id);
-        let items = novel_worldview_list_impl(&db, &a.id, Some("item")).unwrap();
+        let items = novel_worldview_list_impl(&db, &a.id, Some("item"), None).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].tags, vec!["武器", "传说"]);
 
         // 非法类型拒绝。
-        assert!(novel_worldview_list_impl(&db, &a.id, Some("planet")).is_err());
+        assert!(novel_worldview_list_impl(&db, &a.id, Some("planet"), None).is_err());
 
         // 更新描述。
         let updated = novel_worldview_save_impl(
@@ -1689,8 +1750,8 @@ mod tests {
         workspace_project_set_status_impl(&db, &a.id, "archived".into()).unwrap();
 
         // 归档后读取仍允许。
-        assert!(novel_character_list_impl(&db, &a.id).is_ok());
-        assert!(novel_worldview_list_impl(&db, &a.id, None).is_ok());
+        assert!(novel_character_list_impl(&db, &a.id, None).is_ok());
+        assert!(novel_worldview_list_impl(&db, &a.id, None, None).is_ok());
         assert!(novel_entity_ref_list_impl(&db, &a.id, None, None).is_ok());
 
         // 归档后所有写入拒绝。
@@ -1814,7 +1875,7 @@ mod tests {
             assert_eq!(restored_project.len(), 1);
             let pid = restored_project[0].id.clone();
 
-            let characters = novel_character_list_impl(&dst, &pid).unwrap();
+            let characters = novel_character_list_impl(&dst, &pid, None).unwrap();
             assert_eq!(characters.len(), 2, "{:?} 恢复后人物丢失", kind);
             let restored_hero = characters.iter().find(|c| c.name == "林雷").unwrap();
             assert_eq!(restored_hero.tags, vec!["主角"]);
@@ -1825,7 +1886,7 @@ mod tests {
             assert_eq!(relations[0].description, "挚友");
             let _ = rel.id;
 
-            let entries = novel_worldview_list_impl(&dst, &pid, None).unwrap();
+            let entries = novel_worldview_list_impl(&dst, &pid, None, None).unwrap();
             assert_eq!(entries.len(), 1, "{:?} 恢复后设定丢失", kind);
             assert_eq!(entries[0].name, "艾尔王国");
             assert_eq!(entries[0].description, "北部强权");

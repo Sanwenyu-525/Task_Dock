@@ -6,7 +6,7 @@
 // 布局约定：白卡 + 顶部 hairline + 底部安全区；动作按钮 44dp 热区，图标 18 + 文字 12。
 // 出现时调用方要给列表内容区补 paddingBottom = BULK_ACTION_BAR_HEIGHT + insets.bottom，
 // 避免最后一行被操作栏盖住。
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
 
 import { useWindowInsets } from "../lib/insets";
 import { useTheme } from "../theme/ThemeProvider";
@@ -30,11 +30,14 @@ export function BulkActionBar({
   selectedCount,
   actions,
   onCancel,
+  onLayout,
 }: {
   selectedCount: number;
   actions: BulkAction[];
   /** 可选：左侧退出多选的取消按钮（44dp 热区）；不传则不渲染 */
   onCancel?: () => void;
+  /** 可选：供页面把批量栏实际高度注册给全局 Toast 锚点。 */
+  onLayout?: (event: LayoutChangeEvent) => void;
 }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
@@ -43,6 +46,7 @@ export function BulkActionBar({
     <View
       accessibilityRole="toolbar"
       accessibilityLabel="批量操作"
+      onLayout={onLayout}
       style={[
         styles.bar,
         {

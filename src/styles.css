@@ -9363,21 +9363,16 @@ code {
   border-radius: 999px;
   background: var(--snap-capsule-face);
   color: var(--snap-capsule-text);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    var(--shadow-raised);
+  box-shadow: var(--shadow-raised);
   cursor: pointer;
   font-size: 10px;
   line-height: 1;
-  transition: filter 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 .snap-capsule:hover,
 .snap-capsule:focus-visible {
-  filter: brightness(1.06);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    var(--shadow-raised),
-    0 0 0 2px var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--snap-capsule-border));
+  box-shadow: var(--shadow-raised), 0 0 0 2px var(--accent-soft);
 }
 .capsule-v {
   flex-direction: column;
@@ -9906,20 +9901,17 @@ code {
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
 }
-/* 悬停与选中共用同一构造（淡色面 + 顶部内高光），只差强度：
-   此前悬停只有 9% 填充、没有任何内高光，浅色翼片上几乎看不见，
-   看起来就像「只有 Agent（常亮球）与当前选中项有激活反馈」。 */
+/* 悬停与选中共用同一套表面语义，只差底色强度；不再用内高光模拟凸起。 */
 .cap-btn:hover {
   background: var(--wing-hover);
   color: var(--text-primary);
-  box-shadow: inset 0 1px 0 var(--wing-active-inner);
 }
 .cap-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-/* 选中态：柔和玻璃光斑 + 图标提色，不是一整块圆角底色 */
+/* 选中态：柔和色面 + 图标提色，平面层级由底色承担。 */
 .cap-btn.is-active {
   background: var(--wing-active);
   color: var(--rail-active-text, var(--accent));
-  box-shadow: inset 0 1px 0 var(--wing-active-inner);
+  box-shadow: none;
 }
 /* 分类项悬停指示块（用户口中的「白色梯形 / 翼片」）：
    贴屏幕**内侧**的翼片边缘，与按钮同排、高度小于命中区，只由分类按钮自身
@@ -10578,7 +10570,7 @@ code {
 .cap-iconbtn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .cap-iconbtn[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 
-/* 分段筛选（全部 / 今日 / 逾期 …）：容器内凹，选中项是白色凸起药丸 */
+/* 分段筛选（全部 / 今日 / 逾期 …）：平面容器 + 平面选中药丸。 */
 .cap-seg {
   flex: 0 0 auto;
   display: flex;
@@ -10588,7 +10580,7 @@ code {
   margin-bottom: 9px;
   border-radius: 12px;
   background: var(--cap-seg-face);
-  box-shadow: inset 0 1px 2px -1px color-mix(in srgb, var(--c-night) 8%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-subtle) 72%, transparent);
 }
 .cap-seg-btn {
   flex: 1 1 0;
@@ -10611,9 +10603,7 @@ code {
   background: var(--cap-seg-active);
   color: var(--accent);
   font-weight: 650;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 1px 3px -1px color-mix(in srgb, var(--c-accent) 26%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-subtle) 64%, transparent);
 }
 .cap-seg-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 

@@ -159,7 +159,7 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
   `main` 上更晚的提交都不会进入产物。
 - **磁盘与缓存**：桌面构建 `CARGO_TARGET_DIR=<主仓库>/src-tauri/target-integration`（绝对路径，
   与主工作区 target 分开）；构建前复用 `build-guard precheck`，创建后 `build-guard register`
-  标记归属；构建结束按 build-guard 规则回收。
+  标记归属；构建结束按 build-guard 规则人工回收（记录里的 `targetDir` 就是回收对象）。
 - **调度**：一律经 `scripts/build-sched.mjs run`（label `integration-<构建ID>`），与其他会话共享
   全局并发与槽位，不另造锁；`build.json` 记录 `schedulerTaskId`（若日志可解析）与日志路径。
 - **复用**：复用键 = `快照提交 | 平台 | 配置`；只复用 `status=succeeded`、`dirty=false`、有平台

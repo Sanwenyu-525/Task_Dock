@@ -20,6 +20,7 @@ import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
 import { SearchField } from "../components/SearchField";
 import { useToast } from "../feedback/ToastProvider";
+import { useToastTopAnchor } from "../feedback/ToastLayoutProvider";
 import { addCapture, deleteCapture, listCaptures, promoteCapture } from "../db/captures";
 import { loadConnection } from "../db/syncConnection";
 import { isLegacyConnection } from "../lib/sync/connectionState";
@@ -57,6 +58,7 @@ export function InboxScreen({
   const inputRef = useRef<ComponentRef<typeof TextInput> | null>(null);
 
   const { showToast } = useToast();
+  const topAnchor = useToastTopAnchor();
 
   const refresh = useCallback(async () => {
     try {
@@ -168,7 +170,7 @@ export function InboxScreen({
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={styles.header} onLayout={topAnchor.onLayout}>
         <View style={styles.titleRow}>
           {onBack ? <BackButton onPress={onBack} /> : null}
           <View style={styles.titleBlock}>

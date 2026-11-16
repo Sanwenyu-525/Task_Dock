@@ -178,8 +178,9 @@
     /* 全宽检查器不再使用窄栏的纵向拉伸；字段改为两列网格，避免每个
        detail 行被 flex:1 拉成 220px 高而产生大片空白。 */
     .diag-center .diag-center-inspector .diag-center-details {
-      display: grid;
+      display: grid !important;
       grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
       gap: 8px 14px;
     }
 

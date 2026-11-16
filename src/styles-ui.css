@@ -578,11 +578,12 @@
   padding: 0;
 }
 
-/* 分隔线项：真实的一条分界线，不是空白可点行；不参与 hover/焦点 */
+/* 分隔线项：真实的一条分界线，不是空白可点行；不参与 hover/焦点。
+   上下只留 1px 呼吸位（加 .ui-menu 的 1px gap 共 2px），紧贴相邻选项。 */
 .ui-menu-sep {
   flex: none;
   height: 1px;
-  margin: 3px 2px;
+  margin: 1px 2px;
   background: var(--divider);
   pointer-events: none;
 }

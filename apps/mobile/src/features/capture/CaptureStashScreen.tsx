@@ -32,6 +32,7 @@ import { ImageLightbox, type LightboxImage } from "../../components/ImageLightbo
 import { SearchField } from "../../components/SearchField";
 import { SegmentedControl, type SegmentOption } from "../../components/SegmentedControl";
 import { useToast } from "../../feedback/ToastProvider";
+import { useToastBottomAnchor } from "../../feedback/ToastLayoutProvider";
 import * as repo from "../../db/captureAssets";
 import { formatRelative } from "../../domain/taskQuery";
 import { describeError } from "../../lib/errors";
@@ -185,6 +186,8 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const [lightbox, setLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null);
 
   const { showToast } = useToast();
+  // 批量操作栏只在多选且已选中时出现：出现时把实际高度交给 Toast，避免底部提示压住动作。
+  const bulkAnchor = useToastBottomAnchor(Boolean(selecting && selected.size > 0), false);
 
   const requestCancelTransfer = useCallback(() => {
     if (!cancelTokenRef.current || cancelling) return;
@@ -839,6 +842,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
           selectedCount={selected.size}
           actions={bulkActions}
           onCancel={exitSelection}
+          onLayout={bulkAnchor.onLayout}
         />
       ) : null}
 

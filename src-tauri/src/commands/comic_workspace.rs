@@ -2010,13 +2010,13 @@ mod tests {
         let project = create_comic_project(db, "测试漫剧");
         let ep1 = comic_episode_save_impl(
             db, None, project.id.clone(), Some(1), "第一集".into(),
-            "开场简介".into(), "第一场剧本正文。".into(), "scripting", 30,
+            "开场简介".into(), "第一场剧本正文。".into(), "scripting".to_string(), 30,
             None, None,
         )
         .unwrap();
         let ep2 = comic_episode_save_impl(
             db, None, project.id.clone(), Some(2), "第二集".into(),
-            "中段简介".into(), "第二场剧本正文。".into(), "draft", 10,
+            "中段简介".into(), "第二场剧本正文。".into(), "draft".to_string(), 10,
             None, None,
         )
         .unwrap();
@@ -2055,7 +2055,7 @@ mod tests {
                     Some(s1.id.clone()),
                     format!("{label}-镜头{i}台词"),
                     "中景".into(), "固定机位".into(), Some(3.5),
-                    "todo", None, format!("{label}-镜头{i}备注"), None,
+                    "todo".to_string(), None, format!("{label}-镜头{i}备注"), None,
                 )
                 .unwrap();
                 shots.push(shot);
@@ -2064,13 +2064,13 @@ mod tests {
 
         let v1 = comic_media_import_impl(
             db, None, project.id.clone(), Some(shots[0].id.clone()), None, None,
-            "C:/fixtures/shot-a1-v1.png".into(), "image", Some("v1".into()),
+            "C:/fixtures/shot-a1-v1.png".into(), "image".to_string(), Some("v1".into()),
             Some("初稿构图".into()),
         )
         .unwrap();
         let v2 = comic_media_import_impl(
             db, None, project.id.clone(), Some(shots[0].id.clone()), None, None,
-            "C:/fixtures/shot-a1-v2.png".into(), "image", Some("v2".into()),
+            "C:/fixtures/shot-a1-v2.png".into(), "image".to_string(), Some("v2".into()),
             Some("调整后".into()),
         )
         .unwrap();
@@ -2160,7 +2160,7 @@ mod tests {
             "第一集（修订）".into(),
             "修订简介".into(),
             "修订后的剧本正文。".into(),
-            "storyboard",
+            "storyboard".to_string(),
             55,
             Some(vec![fx.characters[0].id.clone()]),
             None,
@@ -2170,7 +2170,7 @@ mod tests {
         let got = comic_episode_get_impl(&db, &fx.episodes[0].id).unwrap();
         assert_eq!(got.script, "修订后的剧本正文。");
         assert_eq!(got.progress, 55);
-        assert_eq!(got.character_ids, vec![fx.characters[0].id]);
+        assert_eq!(got.character_ids, vec![fx.characters[0].id.clone()]);
 
         // 采用唯一：v2 采用后，v1 回到候选；同镜头不能有第二个 adopted。
         comic_media_adopt_impl(&db, &fx.versions[1].id).unwrap();
@@ -2199,12 +2199,12 @@ mod tests {
         let comic = create_comic_project(&db, "漫剧");
         let ep = comic_episode_save_impl(
             &db, None, comic.id.clone(), None, "第一集".into(),
-            "".into(), "剧本".into(), "draft", 0, None, None,
+            "".into(), "剧本".into(), "draft".to_string(), 0, None, None,
         )
         .unwrap();
         let shot = comic_shot_save_impl(
             &db, None, comic.id.clone(), ep.id.clone(), None, "镜头".into(),
-            None, None, "".into(), "".into(), "".into(), None, "todo", None, "".into(), None,
+            None, None, "".into(), "".into(), "".into(), None, "todo".to_string(), None, "".into(), None,
         )
         .unwrap();
 
@@ -2217,7 +2217,7 @@ mod tests {
             assert!(comic_episode_list_impl(&db, &p.id).is_err(), "{kind} 不应读剧集");
             assert!(comic_episode_save_impl(
                 &db, None, p.id.clone(), None, "偷渡集".into(), "".into(), "".into(),
-                "draft", 0, None, None,
+                "draft".to_string(), 0, None, None,
             ).is_err(), "{kind} 不应写剧集");
             assert!(comic_shot_list_impl(&db, &p.id, None).is_err(), "{kind} 不应读镜头");
             assert!(comic_character_list_impl(&db, &p.id).is_err(), "{kind} 不应读角色");
@@ -2231,12 +2231,12 @@ mod tests {
         assert_eq!(comic_shot_list_impl(&db, &comic.id, None).unwrap().len(), 1);
         assert!(comic_episode_save_impl(
             &db, Some(ep.id.clone()), comic.id.clone(), None, "改名".into(), "".into(), "".into(),
-            "draft", 0, None, None,
+            "draft".to_string(), 0, None, None,
         ).is_err());
         assert!(comic_episode_delete_impl(&db, &ep.id).is_err());
         assert!(comic_shot_save_impl(
             &db, Some(shot.id.clone()), comic.id.clone(), ep.id.clone(), None, "改名".into(),
-            None, None, "".into(), "".into(), "".into(), None, "todo", None, "".into(), None,
+            None, None, "".into(), "".into(), "".into(), None, "todo".to_string(), None, "".into(), None,
         ).is_err());
         assert!(comic_shot_delete_impl(&db, &shot.id).is_err());
         assert!(comic_character_save_impl(
@@ -2244,7 +2244,7 @@ mod tests {
         ).is_err());
         assert!(comic_media_import_impl(
             &db, None, comic.id.clone(), Some(shot.id.clone()), None, None,
-            "C:/x.png".into(), "image", None, None,
+            "C:/x.png".into(), "image".to_string(), None, None,
         ).is_err());
 
         // 恢复 active 后可写。
@@ -2269,7 +2269,7 @@ mod tests {
         // 引用路径为不存在的位置：读侧必须返回 file_exists=false，而不是报错/崩溃。
         let missing = comic_media_import_impl(
             &db, None, fx.project.id.clone(), Some(fx.shots[0].id.clone()), None, None,
-            "C:/definitely/not/existing/shot-missing.png".into(), "image",
+            "C:/definitely/not/existing/shot-missing.png".into(), "image".to_string(),
             Some("缺失版本".into()), None,
         )
         .unwrap();

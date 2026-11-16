@@ -1,6 +1,6 @@
 // 应用入口：先打开数据库并读取主题偏好，再挂载界面。
 // 启动失败必须显式报错，不能进一个「看起来空数据」的界面。
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Animated, AppState, BackHandler, Linking, StyleSheet, Text, View, useColorScheme } from "react-native";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
@@ -11,6 +11,7 @@ import { TabBar, type TabKey } from "./src/components/TabBar";
 import { ToastHost } from "./src/components/ToastHost";
 import { APP_BAR_HEIGHT } from "./src/components/AppBar";
 import { ToastProvider, ToastScope, useToast } from "./src/feedback/ToastProvider";
+import { ToastLayoutProvider } from "./src/feedback/ToastLayoutProvider";
 import launchIntent, { type LaunchAction } from "./modules/launch-intent";
 import { listCaptures } from "./src/db/captures";
 import { markAttachmentsMissingFiles, resetInterruptedUploads } from "./src/db/attachments";
@@ -145,7 +146,7 @@ function TabPage({
 function Shell() {
   const { tokens, scheme } = useTheme();
   const insets = useWindowInsets();
-  const { setActiveScope } = useToast();
+  const { setActiveScope, syncActiveScope } = useToast();
   // 蓝青专业版：默认进入「首页」，任务仍是独立一级栏
   const [tab, setTab] = useState<TabKey>("home");
   /** 数据版本号：前台恢复、收集箱转任务后自增，驱动列表重查 */
@@ -346,13 +347,16 @@ function Shell() {
 
   const top = stack[stack.length - 1] ?? null;
   const activeScope = top ? `push:${top.key}` : `tab:${tab}`;
-  useEffect(() => {
+  // 在 render 阶段只同步 scope ref，保证新页面子树挂载/effect 中触发的提示
+  // 不会因为 setActiveScope 的 effect 晚一拍而被当成隐藏页消息丢掉。
+  syncActiveScope(activeScope);
+  // setActiveScope 负责清掉旧页排队消息（保留新页与 global 消息、当前条），每个 scope 一次。
+  useLayoutEffect(() => {
     setActiveScope(activeScope);
   }, [activeScope, setActiveScope]);
 
-  // Toast 统一锚点：顶部避开状态栏 + 标题栏（一级 ScreenHeader / 二级 AppBar 同为 56dp）；
-  // 底部避开键盘（Host 内实时处理）/ TabBar / 二级页固定操作区 / 手势区。
-  const toastTopOffset = insets.top + APP_BAR_HEIGHT + space.sm;
+  // Toast 默认底部避让：顶部锚点由页面实测（ToastLayoutProvider），
+  // 这里只登记没有页面锚点时的 TabBar / 二级页固定操作区 + 手势区。
   const toastBottomOffset = top
     ? insets.bottom + (PUSH_BOTTOM_BAR_HEIGHT[top.key] ?? space.md)
     : insets.bottom + 66;
@@ -449,7 +453,8 @@ function Shell() {
   };
 
   return (
-    <View style={[styles.root, { backgroundColor: tokens.bg, paddingTop: insets.top }]}>
+    <ToastLayoutProvider activeScope={activeScope}>
+      <View style={[styles.root, { backgroundColor: tokens.bg, paddingTop: insets.top }]}>
       <StatusBar style={scheme === "dark" ? "light" : "dark"} />
       {/* 推送页打开时底层 Tab 页仍挂载（返回要保留滚动位置），但它被完全盖住：
           无障碍树里必须一起隐藏，否则 TalkBack 能聚焦到看不见的筛选条/列表项。
@@ -519,8 +524,13 @@ function Shell() {
       {top ? null : <TabBar active={tab} onChange={setTab} bottomInset={insets.bottom} />}
 
       {/* 全局唯一 ToastHost：位于所有一级页、二级页与 TabBar 之上，切页不销毁。 */}
-      <ToastHost topOffset={toastTopOffset} bottomOffset={toastBottomOffset} />
-    </View>
+      <ToastHost
+        safeTop={insets.top}
+        defaultHeaderHeight={APP_BAR_HEIGHT}
+        defaultBottomOffset={toastBottomOffset}
+      />
+      </View>
+    </ToastLayoutProvider>
   );
 }
 

@@ -17,6 +17,7 @@ import { ScreenHeader } from "../components/ScreenHeader";
 import { SearchField } from "../components/SearchField";
 import { SectionHeader } from "../components/SectionHeader";
 import type { IconName } from "../components/icons/AppIcon";
+import { useToastTopAnchor } from "../feedback/ToastLayoutProvider";
 import type { AppNav, RouteKey } from "../lib/nav";
 import { gridColumnsForWidth } from "../lib/responsiveLayout";
 import { useTheme } from "../theme/ThemeProvider";
@@ -38,6 +39,7 @@ interface PlaceholderEntry {
 export function ToolsScreen({ nav }: { nav: AppNav }) {
   const { tokens } = useTheme();
   const [query, setQuery] = useState("");
+  const topAnchor = useToastTopAnchor();
   // 全页统一网格：320dp 窄屏三列，其余四列；所有分区共用同一断点与同一种 cell。
   const { width } = useWindowDimensions();
   const columns = gridColumnsForWidth(width);
@@ -106,15 +108,17 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
 
   return (
     <View style={styles.root}>
-      <ScreenHeader title="工具" subtitle="采集、笔记与本机工具集合" />
+      <View onLayout={topAnchor.onLayout}>
+        <ScreenHeader title="工具" subtitle="采集、笔记与本机工具集合" />
 
-      <View style={styles.searchWrap}>
-        <SearchField
-          value={query}
-          onChangeText={setQuery}
-          placeholder="搜索工具名称"
-          accessibilityLabel="搜索工具"
-        />
+        <View style={styles.searchWrap}>
+          <SearchField
+            value={query}
+            onChangeText={setQuery}
+            placeholder="搜索工具名称"
+            accessibilityLabel="搜索工具"
+          />
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>

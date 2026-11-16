@@ -128,7 +128,7 @@ const MAX_NOTE_CHARS: usize = 2000;
 const MAX_PATH_CHARS: usize = 4096;
 const MAX_TEXT_CHARS: usize = 500;
 const MAX_EVIDENCE_CHARS: usize = 1000;
-const MAX_LIST_ROWS: i64 = 200;
+const MAX_LIST_ROWS: i64 = 500;
 
 // ── 返回模型 ────────────────────────────────────────────────────────────
 

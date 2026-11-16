@@ -24,6 +24,7 @@ import {
 import { CameraView, useCameraPermissions } from "expo-camera";
 
 import { AppIcon } from "../../components/icons/AppIcon";
+import { useToastTopAnchor } from "../../feedback/ToastLayoutProvider";
 import * as repo from "../../db/captureAssets";
 import { AppError, describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
@@ -49,6 +50,7 @@ function clamp(value: number, min: number, max: number): number {
 export function CaptureScanScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
+  const topAnchor = useToastTopAnchor();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
   const [ready, setReady] = useState(false);
@@ -327,6 +329,7 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
 
       <View
         style={[styles.topBar, { paddingTop: space.sm, backgroundColor: tokens.inkScrim }]}
+        onLayout={topAnchor.onLayout}
       >
         <Pressable
           accessibilityRole="button"

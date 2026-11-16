@@ -1,7 +1,7 @@
 //! 世界观设定模块（A2/A3/A4）：地点 / 势力 / 事件 / 道具 / 能力规则 / 自定义，
 //! 类型、名称、标签可查询筛选；设定可关联章节，解绑不删设定或章节。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Select, type SelectOption } from "../../../components/ui";
 import type { CreativeModuleProps } from "../types";
 import {
@@ -53,7 +53,11 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
     const token = ++seqRef.current;
     setLoading(true);
     try {
-      const result = await novelWorldviewList(projectId, kindFilter || null);
+      const result = await novelWorldviewList(
+        projectId,
+        kindFilter || null,
+        search.trim() || null,
+      );
       if (token !== seqRef.current) return;
       setEntries(result.entries ?? []);
       setLoadError(null);
@@ -63,7 +67,7 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
     } finally {
       if (token === seqRef.current) setLoading(false);
     }
-  }, [projectId, kindFilter]);
+  }, [projectId, kindFilter, search]);
 
   useEffect(() => {
     void loadEntries();
@@ -88,16 +92,7 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
     setDeleteArmed(false);
   }
 
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return entries;
-    return entries.filter(
-      (entry) =>
-        entry.name.toLowerCase().includes(query) ||
-        entry.description.toLowerCase().includes(query) ||
-        entry.tags.some((tag) => tag.toLowerCase().includes(query)),
-    );
-  }, [entries, search]);
+  const selected = entries.find((entry) => entry.id === selectedId) ?? null;
 
   async function saveEntry() {
     if (archived || saving) return;
@@ -140,8 +135,6 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
     }
   }
 
-  const selected = entries.find((entry) => entry.id === selectedId) ?? null;
-
   return (
     <div className="novel-layout">
       <aside className="novel-pane novel-pane-list" aria-label="世界观列表">
@@ -182,7 +175,7 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
         {loading && !loadError && <p className="novel-empty-hint">加载中…</p>}
 
         <ul className="novel-list">
-          {filtered.map((entry) => (
+          {entries.map((entry) => (
             <li key={entry.id}>
               <button
                 type="button"
@@ -197,7 +190,7 @@ export function WorldviewPanel({ projectId, archived, onNotice }: CreativeModule
               </button>
             </li>
           ))}
-          {!loading && filtered.length === 0 && !loadError && (
+          {!loading && entries.length === 0 && !loadError && (
             <li className="novel-empty-hint">暂无设定，点击「新建设定」开始。</li>
           )}
         </ul>

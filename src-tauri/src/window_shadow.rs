@@ -51,10 +51,13 @@ mod imp {
     /// 取值必须 ≥ 环境层模糊的 3σ，否则位图边界会把"还没衰减完"的 alpha 截断成
     /// 一条硬边（这正是上一版阴影看起来"生硬且不够明显"的原因之一：margin 22
     /// 小于 blur 15 的扩散半径）。
-    const MARGIN_CSS: f64 = 40.0;
+    /// 2026-11-16 阴影终调（真机 A/B/C 对比后取 C「悬浮明显」）：
+    /// 白底实测扩散 左/右 31px、上 25px、下 37px（125% DPI 物理像素），
+    /// 较旧版 18/18/12/24 明显更宽；位图边缘 alpha 已衰减到 ≤2/255。
+    const MARGIN_CSS: f64 = 56.0;
     /// 环境层：大范围、低峰值，负责整体悬浮感。
-    const AMBIENT_BLUR_CSS: f64 = 18.0;
-    const AMBIENT_ALPHA: f32 = 0.17;
+    const AMBIENT_BLUR_CSS: f64 = 28.0;
+    const AMBIENT_ALPHA: f32 = 0.22;
     /// 接触层：贴近边缘、模糊小，负责窗口与桌面的接触感（不是黑色描边）。
     const CONTACT_BLUR_CSS: f64 = 6.0;
     const CONTACT_ALPHA: f32 = 0.12;
@@ -745,9 +748,9 @@ mod imp {
         #[test]
         fn defaults_are_the_shipping_values() {
             let p = parse_params(|_| None);
-            assert_eq!(p.margin, 40.0);
-            assert_eq!(p.ambient_blur, 18.0);
-            assert!((p.ambient_alpha - 0.17).abs() < 1e-6);
+            assert_eq!(p.margin, 56.0);
+            assert_eq!(p.ambient_blur, 28.0);
+            assert!((p.ambient_alpha - 0.22).abs() < 1e-6);
             assert_eq!(p.contact_blur, 6.0);
             assert!((p.contact_alpha - 0.12).abs() < 1e-6);
             assert_eq!(p.offset_y, 5.0);

@@ -20,6 +20,7 @@ import { PressableScale } from "../components/PressableScale";
 import { SearchField } from "../components/SearchField";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { useToast } from "../feedback/ToastProvider";
+import { useToastTopAnchor } from "../feedback/ToastLayoutProvider";
 import { listNotes } from "../db/notes";
 import { loadConnection } from "../db/syncConnection";
 import { isLegacyConnection } from "../lib/sync/connectionState";
@@ -70,6 +71,7 @@ export function NotesScreen({
   const [now, setNow] = useState(() => Date.now());
 
   const { showToast } = useToast();
+  const topAnchor = useToastTopAnchor();
 
   const refresh = useCallback(async () => {
     try {
@@ -169,7 +171,7 @@ export function NotesScreen({
   return (
     <View style={styles.container}>
       {/* 标题、返回、搜索与筛选固定在列表外：加载中/滚动时都不会消失。 */}
-      <View style={styles.header}>
+      <View style={styles.header} onLayout={topAnchor.onLayout}>
         <View style={styles.titleRow}>
           {onBack ? <BackButton onPress={onBack} /> : null}
           <View style={styles.titleBlock}>

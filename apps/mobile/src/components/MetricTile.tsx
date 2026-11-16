@@ -21,6 +21,7 @@ export function MetricTile({
   tone = "neutral",
   variant = "card",
   statLayout = "stack",
+  columnLayout = "stack",
   style,
 }: {
   value: number;
@@ -31,6 +32,8 @@ export function MetricTile({
   variant?: "card" | "column" | "stat";
   /** stat 变体的图标与数字排布：row = 数字在图标右侧，stack = 图标上方（窄卡片回退用） */
   statLayout?: "row" | "stack";
+  /** column 变体的排布：row = 图标左侧、数字与标签在右侧，stack = 图标在上 */
+  columnLayout?: "row" | "stack";
   style?: StyleProp<ViewStyle>;
 }) {
   const { tokens } = useTheme();
@@ -102,15 +105,42 @@ export function MetricTile({
     );
   }
 
+  const isColumnRow = variant === "column" && columnLayout === "row";
   const inner = (
-    <View style={[styles.inner, variant === "column" ? styles.innerColumn : null]}>
-      {icon ? <AppIcon name={icon} color={iconColor} size={18} style={styles.icon} /> : null}
-      <Text numberOfLines={1} style={[styles.value, { color }]}>
-        {value}
-      </Text>
-      <Text numberOfLines={1} style={[styles.label, { color: tokens.muted }]}>
-        {label}
-      </Text>
+    <View
+      style={[
+        styles.inner,
+        variant === "column" ? styles.innerColumn : null,
+        isColumnRow ? styles.innerColumnRow : null,
+      ]}
+    >
+      {icon ? (
+        <AppIcon
+          name={icon}
+          color={iconColor}
+          size={18}
+          style={isColumnRow ? styles.iconInline : styles.icon}
+        />
+      ) : null}
+      {isColumnRow ? (
+        <View style={styles.columnText}>
+          <Text numberOfLines={1} style={[styles.value, styles.valueInline, { color }]}>
+            {value}
+          </Text>
+          <Text numberOfLines={1} style={[styles.label, { color: tokens.muted }]}>
+            {label}
+          </Text>
+        </View>
+      ) : (
+        <>
+          <Text numberOfLines={1} style={[styles.value, { color }]}>
+            {value}
+          </Text>
+          <Text numberOfLines={1} style={[styles.label, { color: tokens.muted }]}>
+            {label}
+          </Text>
+        </>
+      )}
     </View>
   );
 
@@ -180,8 +210,26 @@ const styles = StyleSheet.create({
     paddingVertical: space.sm,
     gap: 1,
   },
+  // 图标在左、数字与标签在右：2×2/四列都靠横排省一行高度，图标与文字块垂直居中
+  innerColumnRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    paddingHorizontal: space.sm + 2,
+    paddingVertical: space.sm,
+  },
+  columnText: {
+    flexShrink: 1,
+    gap: 1,
+  },
+  iconInline: {
+    marginBottom: 0,
+  },
   icon: {
     marginBottom: 3,
+  },
+  valueInline: {
+    lineHeight: font.stat + 3,
   },
   label: {
     flexShrink: 1,

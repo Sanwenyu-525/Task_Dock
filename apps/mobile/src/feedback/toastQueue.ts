@@ -32,7 +32,8 @@ export type ToastAction =
   | { type: "enqueue"; item: ToastItem; now?: number }
   | { type: "dismiss"; id: number }
   | { type: "clear" }
-  | { type: "clearQueue" };
+  | { type: "clearQueue" }
+  | { type: "scopeChange"; scope: string };
 
 /** 自动消失时长：成功更短，错误给足阅读时间。 */
 export const TOAST_DURATION_MS: Record<ToastTone, number> = {
@@ -60,8 +61,21 @@ export function createToastState(): ToastState {
   return { current: null, queue: [] };
 }
 
-function sameMessage(a: ToastItem, b: Pick<ToastItem, "text" | "tone">): boolean {
-  return a.text === b.text && a.tone === b.tone;
+/**
+ * 消息身份：文案、tone、来源 scope、显示位置四项都一致才允许合并。
+ * placement / scope 未传时按 Host 的默认语义归一化（top / global），避免
+ * 「同文案不同页面/不同位置」被错误合并，也避免新消息继承旧消息的位置。
+ */
+export function sameToastMessage(
+  a: Pick<ToastItem, "text" | "tone" | "placement" | "scope">,
+  b: Pick<ToastItem, "text" | "tone" | "placement" | "scope">,
+): boolean {
+  return (
+    a.text === b.text &&
+    a.tone === b.tone &&
+    (a.scope ?? "global") === (b.scope ?? "global") &&
+    (a.placement ?? "top") === (b.placement ?? "top")
+  );
 }
 
 function recent(item: ToastItem, now: number): boolean {
@@ -83,7 +97,11 @@ export function toastReducer(
       const incoming = action.item;
       const at = action.now ?? now;
       // 与当前或排队中的同文案同类型合并：当前条只重置计时，排队条只更新时间。
-      if (state.current && sameMessage(state.current, incoming) && recent(state.current, at)) {
+      if (
+        state.current &&
+        sameToastMessage(state.current, incoming) &&
+        recent(state.current, at)
+      ) {
         return {
           ...state,
           current: {
@@ -93,7 +111,9 @@ export function toastReducer(
           },
         };
       }
-      const queued = state.queue.find((item) => sameMessage(item, incoming) && recent(item, at));
+      const queued = state.queue.find(
+        (item) => sameToastMessage(item, incoming) && recent(item, at),
+      );
       if (queued) {
         return {
           ...state,
@@ -130,6 +150,16 @@ export function toastReducer(
     case "clearQueue":
       // 切换页面时只丢掉旧页面尚未展示的排队消息；已经在读的当前条允许播完。
       return { current: state.current, queue: [] };
+    case "scopeChange": {
+      // 保留新页面自己的消息（可能在 scope 同步前刚入队）与 app 级 global 消息；
+      // 旧页面排队消息丢弃，当前条仍允许播完。
+      const nextQueue = state.queue.filter((item) => {
+        const scope = item.scope ?? "global";
+        return scope === action.scope || scope === "global";
+      });
+      if (nextQueue.length === state.queue.length) return state;
+      return { current: state.current, queue: nextQueue };
+    }
     default:
       return state;
   }

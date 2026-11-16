@@ -17,6 +17,8 @@
   --file-tone-audio: #e879f9;
   --file-tone-text: #9aa9bd;
   --file-tone-other: #8b95a5;
+  /* 压缩包独立黄色：全局 archive Token 与文件夹琥珀过近，局部覆盖保证类别可辨认。 */
+  --file-tone-archive: #facc15;
 
   height: 100%;
   min-width: 0;
@@ -31,6 +33,7 @@ html[data-theme="light"] .fw-root {
   --file-tone-audio: #a21caf;
   --file-tone-text: #52627a;
   --file-tone-other: #64748b;
+  --file-tone-archive: #ca8a04;
 }
 
 .fw-root-boot {

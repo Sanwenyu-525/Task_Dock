@@ -29,6 +29,7 @@ import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { TaskRow } from "../components/TaskRow";
 import { type IconName } from "../components/icons/AppIcon";
 import { useToast } from "../feedback/ToastProvider";
+import { useToastPagePlacement } from "../feedback/ToastLayoutProvider";
 import type { ToastPlacement } from "../feedback/toastQueue";
 import { getSetting } from "../db/kv";
 import { createTask, deleteTask, listTasks, toggleTask, updateTask } from "../db/tasks";
@@ -159,6 +160,8 @@ export function TasksScreen({
   const mounted = useRef(true);
 
   const { showToast } = useToast();
+  // 任务页顶部筛选区在列表内随内容滚动；默认把 Toast 放到底部，避免遮挡分段/日期筛选。
+  useToastPagePlacement("bottom");
 
   const animateLayout = useCallback(() => {
     if (reduceMotion) return;
@@ -248,7 +251,7 @@ export function TasksScreen({
   );
 
   const handleToggle = useCallback(
-    async (task: Task, placement: ToastPlacement = "top") => {
+    async (task: Task, placement: ToastPlacement = "bottom") => {
       try {
         const outcome = await toggleTask(task.id);
         if (outcome.advanced) {
@@ -274,7 +277,7 @@ export function TasksScreen({
   );
 
   const handleDelete = useCallback(
-    async (task: Task, placement: ToastPlacement = "top") => {
+    async (task: Task, placement: ToastPlacement = "bottom") => {
       try {
         await deleteTask(task.id);
         await cancelReminder(task.id);

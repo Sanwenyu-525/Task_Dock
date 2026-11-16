@@ -329,8 +329,8 @@ function cmdTask(sub, argv) {
 
   if (sub === "add") {
     if (!id) throw new Fail("用法：task add --id <slug> --owner <agent> --module <模块> --paths <a,b>", EXIT.usage);
-    if (existsSync(taskFile(paths, id))) throw new Fail(`任务已存在：${id}（用 task update 修改）`, EXIT.rejected);
     if (!TASK_RE.test(id) || id.length > MAX_TASK_ID) throw new Fail(`任务标识非法：${id}`, EXIT.usage);
+    if (existsSync(taskFile(paths, id))) throw new Fail(`任务已存在：${id}（用 task update 修改）`, EXIT.rejected);
     const task = {
       id,
       module: str(args, "module", "(未声明模块)"),
@@ -944,7 +944,7 @@ function cmdSnapshotCreate(argv) {
   const paths = statePaths(ctx);
   ensureDirs(paths);
 
-  const selectedIds = list(args.tasks);
+  const selectedIds = [...new Set(list(args.tasks))];
   const allReady = flag(args, "allReady");
   if (selectedIds.length === 0 && !allReady) {
     throw new Fail("用法：snapshot create --tasks a,b,c（或 --all-ready）[--base <提交>] [--check static|none]", EXIT.usage);
@@ -1533,6 +1533,10 @@ function cmdBuild(argv) {
     if (head !== snap.commit) throw new Fail(`构建提交与快照不一致：${head} ≠ ${snap.commit}`, EXIT.rejected);
     assertClean(wt, "集成构建工作区（切换后）");
 
+    if (cfg.needsNodeModules && !override) {
+      ensureNodeModulesLink(ctx, wt, snap.commit);
+      if (cfg.needsMobileNodeModules) ensureNodeModulesLink(ctx, wt, snap.commit, "apps/mobile");
+    }
     const requiredPaths = [wt];
     for (const relPath of cfg.requires ?? []) requiredPaths.push(join(wt, relPath));
     for (const p of requiredPaths) {
@@ -1540,15 +1544,11 @@ function cmdBuild(argv) {
         throw new Fail(
           `缺少构建必需的非入库目录：${p}\n` +
           (platform === "android"
-            ? "移动端需在集成工作区内生成 apps/mobile/android（npx expo prebuild --platform android），该目录不入库。"
+            ? "移动端需在集成构建工作区内生成 apps/mobile/android（npx expo prebuild --platform android），该目录不入库；依赖链接已先建立。"
             : "确认路径是否存在，或改在具备该输入的工作区构建。"),
           EXIT.rejected,
         );
       }
-    }
-    if (cfg.needsNodeModules && !override) {
-      ensureNodeModulesLink(ctx, wt, snap.commit);
-      if (cfg.needsMobileNodeModules) ensureNodeModulesLink(ctx, wt, snap.commit, "apps/mobile");
     }
     if (cfg.needsTarget) {
       mkdirSync(targetDir, { recursive: true });

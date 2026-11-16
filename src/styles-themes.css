@@ -2796,116 +2796,47 @@ textarea:focus {
 .empty-art {
   position: relative;
   width: 168px;
-  height: 118px;
-  margin-bottom: 8px;
+  height: 92px;
+  margin-bottom: 4px;
   flex-shrink: 0;
 }
 
-/* 主气泡：内高光 + 柔和外发光，不用 backdrop-filter（性能与降级都更稳） */
+/* 2D 空状态：一块语义表面 + 图标，不再用高光球体、漂浮气泡和底部云影。 */
 .empty-orb {
   position: absolute;
   left: 50%;
-  top: 20px;
+  top: 14px;
   transform: translateX(-50%);
-  width: 62px;
-  height: 62px;
-  border-radius: 50%;
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
+  border: 1px solid var(--border-subtle);
   display: grid;
   place-items: center;
   color: var(--accent);
-  background:
-    radial-gradient(circle at 50% 118%, color-mix(in srgb, var(--c-paper) 90%, transparent), transparent 62%),
-    radial-gradient(circle at 34% 24%, color-mix(in srgb, var(--c-paper) 98%, transparent), rgba(214, 222, 255, 0.52) 62%, rgba(186, 196, 255, 0.36) 100%);
-  box-shadow:
-    inset 0 1px 1px color-mix(in srgb, var(--c-paper) 95%, transparent),
-    inset 0 -6px 12px -8px rgba(120, 130, 240, 0.45),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 70%, transparent),
-    0 12px 26px -14px rgba(99, 102, 241, 0.65);
+  background: var(--surface-raised);
+  box-shadow: none;
 }
 
 .empty-orb::after {
-  content: "";
-  position: absolute;
-  top: 9px;
-  left: 13px;
-  width: 18px;
-  height: 10px;
-  border-radius: 50%;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--c-paper) 95%, transparent), transparent);
-  transform: rotate(-18deg);
-  opacity: 0.85;
+  content: none;
 }
 
 .empty-orb svg {
   position: relative;
-  opacity: 0.92;
+  opacity: 1;
 }
 
-.empty-bubble {
-  position: absolute;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle at 30% 24%,
-    color-mix(in srgb, var(--c-paper) 100%, transparent),
-    rgba(214, 222, 255, 0.5) 58%,
-    rgba(186, 196, 255, 0.34) 100%
-  );
-  box-shadow:
-    inset 0 1px 1px color-mix(in srgb, var(--c-paper) 95%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 55%, transparent),
-    0 8px 16px -10px rgba(99, 102, 241, 0.7);
-}
-
-.empty-bubble.b1 { width: 34px; height: 34px; left: 6px; top: 30px; }
-.empty-bubble.b2 { width: 20px; height: 20px; right: 18px; top: 8px; }
-.empty-bubble.b3 { width: 13px; height: 13px; right: 6px; bottom: 26px; }
-.empty-bubble.b4 { width: 24px; height: 24px; left: 20px; bottom: 18px; opacity: 0.85; }
-
-.empty-spark {
-  position: absolute;
-  color: var(--accent);
-  opacity: 0.6;
-}
-
-.empty-spark.s1 { left: 60px; top: 4px; }
-.empty-spark.s2 { right: 34px; top: 60px; opacity: 0.45; }
-
+.empty-bubble,
+.empty-spark,
 .empty-cloud {
-  position: absolute;
-  left: 50%;
-  bottom: 2px;
-  transform: translateX(-50%);
-  width: 150px;
-  height: 38px;
-  border-radius: 50%;
-  background: radial-gradient(
-    ellipse at 50% 58%,
-    color-mix(in srgb, var(--c-paper) 85%, transparent),
-    color-mix(in srgb, var(--c-paper) 22%, transparent) 68%,
-    transparent 100%
-  );
+  display: none;
 }
 
-:root[data-theme="dark"] .empty-orb,
-:root[data-theme="dark"] .empty-bubble {
-  background: radial-gradient(
-    circle at 32% 24%,
-    color-mix(in srgb, var(--c-paper) 45%, transparent),
-    color-mix(in srgb, var(--c-paper) 10%, transparent) 58%,
-    rgba(130, 150, 255, 0.12) 100%
-  );
-  box-shadow:
-    inset 0 1px 1px color-mix(in srgb, var(--c-paper) 40%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--c-paper) 14%, transparent),
-    0 10px 22px -14px color-mix(in srgb, var(--c-night) 90%, transparent);
-}
-
-:root[data-theme="dark"] .empty-cloud {
-  background: radial-gradient(
-    ellipse at 50% 58%,
-    color-mix(in srgb, var(--c-paper) 14%, transparent),
-    transparent 74%
-  );
+/* 深色主题沿用同一块语义表面，不恢复球体渐变。 */
+:root[data-theme="dark"] .empty-orb {
+  background: var(--surface-raised);
+  box-shadow: none;
 }
 
 .empty-title {

@@ -374,7 +374,7 @@ export function HomeScreen({
                   <MetricTile
                     variant="stat"
                     statLayout={statLayout}
-                    icon="pending"
+                    icon="pendingTasks"
                     value={counts.pending}
                     label="待处理任务"
                     tone="accent"

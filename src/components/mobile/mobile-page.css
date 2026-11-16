@@ -1,12 +1,132 @@
 /*
- * 手机互传页布局（2026-11-14 统一工作台改造）。
- * 只负责页面骨架与宽屏两栏；MobileSyncSection / VirtualDisplaySection 内部
- * 样式在 styles.css / virtual-display.css，不在此重复。文件不带 @layer，
- * 每条选择器以 .mobile-transfer-panel 前缀做作用域隔离。
+ * 手机互传页布局（2026-11-16 R6 功能区重构）。
+ * 页头 + 二级切换固定，内容区滚动；文件互传与屏幕控制各自渲染在自己的 pane 内。
+ * MobileSyncSection / VirtualDisplaySection 的内部样式分别在 styles.css /
+ * virtual-display.css，不在此重复。文件不带 @layer，每条选择器以
+ * .mobile-transfer-panel 前缀做作用域隔离。
  */
 
 .mobile-transfer-panel.page-fill {
   gap: 10px;
+}
+
+/* 2026-11-16 R6：页面级分区切换（文件互传 / 屏幕控制）。
+   页头与切换条固定，内容区滚动；切换只挂载当前 pane。 */
+.mobile-transfer-panel .mobile-pane-nav {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.mobile-transfer-panel .mobile-pane-tabs {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 3px;
+  max-width: 100%;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--inset-face);
+}
+
+.mobile-transfer-panel .mobile-pane-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    box-shadow 0.15s ease,
+    color 0.15s ease;
+}
+
+.mobile-transfer-panel .mobile-pane-tab:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.mobile-transfer-panel .mobile-pane-tab.is-active {
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  box-shadow: var(--control-shadow);
+}
+
+.mobile-transfer-panel .mobile-pane-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mobile-transfer-panel .mobile-pane-tab-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  background: var(--surface-raised);
+  color: var(--text-tertiary);
+}
+
+.mobile-transfer-panel .mobile-pane-tab.is-active .mobile-pane-tab-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.mobile-transfer-panel .mobile-pane-tab-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.mobile-transfer-panel .mobile-pane-tab-title {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.mobile-transfer-panel .mobile-pane-tab.is-active .mobile-pane-tab-title {
+  color: var(--text-primary);
+}
+
+.mobile-transfer-panel .mobile-pane-tab-hint {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-transfer-panel .mobile-pane-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+@media (max-width: 520px) {
+  .mobile-transfer-panel .mobile-pane-tabs {
+    display: flex;
+    width: 100%;
+  }
+
+  .mobile-transfer-panel .mobile-pane-tab {
+    flex: 1 1 0;
+    padding: 6px 8px;
+  }
+
+  .mobile-transfer-panel .mobile-pane-tab-hint {
+    display: none;
+  }
 }
 
 /* 页面级页头：图标 + 标题 + 副标题（复用 wf-head-row 的既有排版语义）。
@@ -68,13 +188,6 @@
   font-size: 10.5px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
-}
-.mobile-transfer-panel .mobile-body-tools {
-  min-width: 0;
-  padding: 12px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  background: var(--surface-raised);
 }
 .mobile-transfer-panel .mobile-file-main {
   border: none;

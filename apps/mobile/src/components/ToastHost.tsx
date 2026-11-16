@@ -5,8 +5,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useToast, useToastState } from "../feedback/ToastProvider";
+import { useActiveToastLayout } from "../feedback/ToastLayoutProvider";
+import {
+  resolveToastBottomOffset,
+  resolveToastTopOffset,
+} from "../feedback/toastLayout";
 import { toastTransition } from "../feedback/toastLifecycle";
-import type { ToastItem, ToastPlacement } from "../feedback/toastQueue";
+import type { ToastItem } from "../feedback/toastQueue";
 import { duration, easeOut, useReduceMotion } from "../theme/MotionProvider";
 import { useTheme } from "../theme/ThemeProvider";
 import { cardShadow } from "../theme/shadows";
@@ -23,21 +28,23 @@ const TONE_ICON: Record<ToastItem["tone"], IconName> = {
 };
 
 export function ToastHost({
-  topOffset,
-  bottomOffset,
-  defaultPlacement = "top",
+  safeTop,
+  defaultHeaderHeight,
+  defaultBottomOffset,
 }: {
-  /** 距屏幕顶部的锚点（已含状态栏与标题栏高度），由 Shell 统一计算。 */
-  topOffset: number;
-  /** 距屏幕底部的锚点（已含 TabBar / 固定操作区 / 安全区），由 Shell 统一计算。 */
-  bottomOffset: number;
-  defaultPlacement?: ToastPlacement;
+  /** 状态栏安全区，由 Shell 只计算一次。 */
+  safeTop: number;
+  /** 没有页面锚点时的统一标题栏高度（ScreenHeader / AppBar 均为 56dp）。 */
+  defaultHeaderHeight: number;
+  /** 没有页面底部锚点时的默认底部避让值（含 TabBar / 登记操作区 / 手势区）。 */
+  defaultBottomOffset: number;
 }) {
   const { tokens, scheme } = useTheme();
   const reduceMotion = useReduceMotion();
   const keyboardHeight = useKeyboardHeight();
   const state = useToastState();
   const { dismissToast } = useToast();
+  const pageLayout = useActiveToastLayout();
   const current = state.current;
 
   const [visible, setVisible] = useState<ToastItem | null>(current);
@@ -109,8 +116,19 @@ export function ToastHost({
 
   if (!visible) return null;
 
-  const atTop = (visible.placement ?? defaultPlacement) === "top";
-  const bottom = keyboardHeight > 0 ? keyboardHeight + space.sm : bottomOffset;
+  const atTop = (visible.placement ?? pageLayout.defaultPlacement ?? "top") === "top";
+  const topOffset = resolveToastTopOffset({
+    safeTop,
+    layout: pageLayout,
+    defaultHeaderHeight,
+    gap: space.sm,
+  });
+  const bottom = resolveToastBottomOffset({
+    keyboardHeight,
+    layout: pageLayout,
+    defaultBottomOffset,
+    gap: space.sm,
+  });
   const toneColor =
     visible.tone === "danger"
       ? tokens.danger
@@ -132,7 +150,6 @@ export function ToastHost({
     <View pointerEvents="box-none" style={styles.host} accessibilityElementsHidden={false}>
       <Animated.View
         pointerEvents="box-none"
-        accessibilityRole="alert"
         style={[
           styles.card,
           atTop ? { top: topOffset } : { bottom },
@@ -158,6 +175,8 @@ export function ToastHost({
         </View>
         <Text
           numberOfLines={3}
+          ellipsizeMode="tail"
+          accessibilityRole={visible.tone === "danger" ? "alert" : "text"}
           accessibilityLiveRegion={visible.tone === "danger" ? "assertive" : "polite"}
           accessibilityLabel={visible.text}
           style={[styles.text, { color: tokens.text }]}

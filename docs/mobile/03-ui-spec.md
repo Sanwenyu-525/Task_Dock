@@ -124,7 +124,7 @@ font   = { page: 24, display: 30, hero: 26, stat: 26, section: 17, title: 16, re
 | `SwipeRow` | 滑删容器 | 红底圆角/内缩见 §3；卡片表面色由 `surface` 传入，必须不透明；`radii` / `borderEdges` 只给分组列表用：首行顶部直角、末行底部 `radius.row`，行与行之间只保留一条 hairline |
 | `TaskRow` | 任务行 | 标题 16/600，最多两行；**三个热区互不重叠**：左侧 44dp 勾选区只切换完成/恢复、行主体轻点打开 `TaskEditorSheet`、任意区域长按开动作表、左滑删除；优先级/分类/截止/逾期/重复/标签用 12sp 胶囊（优先级只显示「高/中/低」一字，完整语义进无障碍文案；分类 accentSoft，截止 accentSoft + 时钟，逾期 warnSoft）；完成态淡青底 + 白勾 + 标题删除线，标签退回中性色；行内不再放右侧箭头，减少与分组箭头重复。交互路由由 `src/domain/taskRowAction.ts` 定义并有回归测试 |
 | `TaskGroupHeader` | 分组条 | 与任务行拼成一个连续分组卡：46dp 浅色条（待办 `accentWash`、完成 `okSoft`、逾期提示 `warnSoft`）+ 24dp 实色圆底语义图标 + 15/700 标题 + 白底计数胶囊 + 可选提示胶囊 + 折叠箭头；折叠时四角收圆并去掉底边，展开时只圆顶部 |
-| `MetricTile` | 统计磁贴 | `variant="stat"` 是四张独立磁贴：30dp 语义色图标底板 + 26sp/800 数字 + 12sp 标签，等高、等间距；`statLayout="row"` 时数字排在图标右侧同一行（首页两列且字号 ≤1.15 时启用），`stack` 保留图标在上，避免窄格/大字号截断数字；`variant="column"` 仍用于设置页摘要（一张卡三段）；0 值图标/数字退回中性色；只接收真实统计值 |
+| `MetricTile` | 统计磁贴 | `variant="stat"` 是四张独立磁贴：30dp 语义色图标底板 + 26sp/800 数字 + 12sp 标签，等高、等间距；`statLayout="row"` 时数字排在图标右侧同一行（首页两列且字号 ≤1.15 时启用），`stack` 保留图标在上，避免窄格/大字号截断数字；`variant="column"` 用于设置页摘要（一张卡三段），默认图标在上，`columnLayout="row"` 时图标在左、数字与标签在右（我的·工作概览启用）；0 值图标/数字退回中性色；只接收真实统计值 |
 | `TabBar` | 底部导航 | **一体式贴底栏**：主题表面 + 顶部 hairline，无外框、无圆角、无 `barShadow`、无滑动胶囊；5 个一级栏等宽（首页 / 任务 / 工作区 / 工具 / 我的），图标 22dp，选中 = `accent` 图标 + `accentText` 文字，未选中 `muted`；项高 ≥52dp，底部安全区由 `bottomInset` 衔接 |
 | `ScreenHeader` | 一级页顶栏 | 56dp，标题 `font.page` + 右侧 44dp 图标插槽；不参与内容滚动；第七轮起不再画贯穿全屏的底部分割线 |
 | `BackButton` | 二级页返回 | 44dp 命中区，`AppIcon name="back"`（22dp），仅在 `onBack` 传入时渲染 |
@@ -871,4 +871,14 @@ SQLite 没有 projects/features/scenes/agent/监控表，任务也没有 project
 - **验证**：`tsc --noEmit` 与移动端 vitest 见 `tmp/acceptance/mobile-capture-picker-row/report.md`
   及 `tmp/acceptance/mobile-layout-followup/report.md`；真机视觉复核状态以这两份报告为准，
   本轮未以代码推断替代真机结论。
+
+### 2026-11-16 追加：待处理图标与「我的」工作概览
+
+- **待处理图标**：`pending` 原本直接映射 lucide `circle`，首页「待处理任务」只剩一个空心圆。
+  新增语义 `pendingTasks → list-todo`（`iconMap.json` + 重新生成 `iconAssets.g.ts`，其余 102 枚
+  位图逐字节不变），首页该磁贴改用 `pendingTasks`；`pending` 保留给状态语义。
+- **我的·工作概览**：四项统计传 `columnLayout="row"`，图标在左、数字与标签在右，2×2 与
+  宽屏四列一致；设置页/诊断页的 `column` 变体仍为默认 `stack`，不受影响。
+- **验证**：`icons:check` 通过（103 图标 / 130 变体，仅新增 `pendingTasks`）；typecheck 与
+  vitest 结果见 `tmp/acceptance/mobile-profile-icons/report.md`。
 

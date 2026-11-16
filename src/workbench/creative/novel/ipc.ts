@@ -18,9 +18,10 @@ import type {
 
 // ── 人物 ─────────────────────────────────────────────────────────────
 
-export function novelCharacterList(projectId: string) {
+export function novelCharacterList(projectId: string, query?: string | null) {
   return creativeInvoke<{ characters: NovelCharacter[] }>("novel_character_list", {
     projectId,
+    query: query ?? null,
   });
 }
 
@@ -93,10 +94,15 @@ export function novelCharacterRelationDelete(id: string) {
 
 // ── 世界观设定 ────────────────────────────────────────────────────────
 
-export function novelWorldviewList(projectId: string, kind?: WorldviewKind | null) {
+export function novelWorldviewList(
+  projectId: string,
+  kind?: WorldviewKind | null,
+  query?: string | null,
+) {
   return creativeInvoke<{ entries: NovelWorldviewEntry[] }>("novel_worldview_list", {
     projectId,
     kind: kind ?? null,
+    query: query ?? null,
   });
 }
 

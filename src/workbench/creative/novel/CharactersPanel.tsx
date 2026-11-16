@@ -3,7 +3,7 @@
 //! 约束：不自行反查项目；切项目由壳层换 key 重挂；异步回调做代次校验；
 //! 归档态所有写入口置灰并说明原因；失败可见 + 可重试；正文保存机制不受影响。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Select, type SelectOption } from "../../../components/ui";
 import type { CreativeModuleProps } from "../types";
 import {
@@ -67,21 +67,24 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
 
   const seqRef = useRef(0);
 
-  const loadCharacters = useCallback(async () => {
-    const token = ++seqRef.current;
-    setLoading(true);
-    try {
-      const result = await novelCharacterList(projectId);
-      if (token !== seqRef.current) return;
-      setCharacters(result.characters ?? []);
-      setLoadError(null);
-    } catch (error) {
-      if (token !== seqRef.current) return;
-      setLoadError(errorText(error));
-    } finally {
-      if (token === seqRef.current) setLoading(false);
-    }
-  }, [projectId]);
+  const loadCharacters = useCallback(
+    async (keyword?: string | null) => {
+      const token = ++seqRef.current;
+      setLoading(true);
+      try {
+        const result = await novelCharacterList(projectId, keyword ?? null);
+        if (token !== seqRef.current) return;
+        setCharacters(result.characters ?? []);
+        setLoadError(null);
+      } catch (error) {
+        if (token !== seqRef.current) return;
+        setLoadError(errorText(error));
+      } finally {
+        if (token === seqRef.current) setLoading(false);
+      }
+    },
+    [projectId],
+  );
 
   const loadRelations = useCallback(
     async (characterId: string) => {
@@ -99,8 +102,8 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
   );
 
   useEffect(() => {
-    void loadCharacters();
-  }, [loadCharacters]);
+    void loadCharacters(search.trim() || null);
+  }, [loadCharacters, search]);
 
   function selectCharacter(character: NovelCharacter) {
     setSelectedId(character.id);
@@ -131,16 +134,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
     setRelationDesc("");
   }
 
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return characters;
-    return characters.filter(
-      (character) =>
-        character.name.toLowerCase().includes(query) ||
-        character.aliases.toLowerCase().includes(query) ||
-        character.tags.some((tag) => tag.toLowerCase().includes(query)),
-    );
-  }, [characters, search]);
+  const selected = characters.find((character) => character.id === selectedId) ?? null;
 
   async function saveCharacter() {
     if (archived || saving) return;
@@ -231,8 +225,6 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
     .filter((character) => character.id !== selectedId)
     .map((character) => ({ value: character.id, label: character.name }));
 
-  const selected = characters.find((character) => character.id === selectedId) ?? null;
-
   return (
     <div className="novel-layout">
       <aside className="novel-pane novel-pane-list" aria-label="人物列表">
@@ -259,7 +251,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
         {loading && !loadError && <p className="novel-empty-hint">加载中…</p>}
 
         <ul className="novel-list">
-          {filtered.map((character) => (
+          {characters.map((character) => (
             <li key={character.id}>
               <button
                 type="button"
@@ -274,7 +266,7 @@ export function CharactersPanel({ projectId, archived, onNotice }: CreativeModul
               </button>
             </li>
           ))}
-          {!loading && filtered.length === 0 && !loadError && (
+          {!loading && characters.length === 0 && !loadError && (
             <li className="novel-empty-hint">暂无人物，点击「新建人物」开始。</li>
           )}
         </ul>

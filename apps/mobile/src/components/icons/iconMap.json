@@ -44,6 +44,7 @@
     "error": "circle-x",
     "success": "circle-check",
     "pending": "circle",
+    "pendingTasks": "list-todo",
     "link": "link",
     "unlink": "unlink",
     "cloudOff": "cloud-off",

@@ -287,7 +287,8 @@ describe("统计摘要", () => {
     // 2026-11-11：新增 ux.command-phrases（implemented，unverified，CDP 走查待执行）。
     // 2026-11-16 路线图数据治理：按真实代码补登 15 项（统一工作台/项目工作空间/文件工作区/
     // 小说/游戏/漫剧/智能剪贴板/应用启动/内置 Agent/Relay/移动端/虚拟屏/资源/诊断/备份），
-    // 新增「工作台与专业创作」「设备、系统与数据」两个分区；帮助教程计数由 25 更正为 27。
+    // 新增「工作台与专业创作」「设备、系统与数据」两个分区；帮助教程计数由 25 更正为 27，
+    // 补充「能力导览」后为 28 篇（24 verified / 1 needs_review / 3 draft）。
     expect(s.implemented).toBe(22);
     expect(s.partial).toBe(22);
     expect(s.planned).toBe(5);

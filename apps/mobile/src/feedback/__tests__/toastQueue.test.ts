@@ -12,12 +12,19 @@ import {
 } from "../toastQueue";
 
 let seq = 0;
-function item(text: string, tone: ToastTone = "info", now = 1000): ToastItem {
+function item(
+  text: string,
+  tone: ToastTone = "info",
+  now = 1000,
+  extra: Pick<Partial<ToastItem>, "scope" | "placement"> = {},
+): ToastItem {
   seq += 1;
   return {
     id: seq,
     text,
     tone,
+    placement: extra.placement,
+    scope: extra.scope,
     durationMs: TOAST_DURATION_MS[tone],
     priority: tone === "danger" ? 3 : tone === "warn" ? 2 : 1,
     createdAt: now,
@@ -42,15 +49,66 @@ describe("toastQueue", () => {
   });
 
   it("同文案同类型在 1.5s 内合并，只重置计时不重播动画", () => {
-    const first = item("已保存", "success", 1000);
+    const first = item("已保存", "success", 1000, {
+      scope: "tab:notes",
+      placement: "top",
+    });
     let state = add(createToastState(), first);
     state = toastReducer(
       state,
-      { type: "enqueue", item: item("已保存", "success", 1000 + TOAST_DEDUPE_MS - 1), now: 1000 + TOAST_DEDUPE_MS - 1 },
+      {
+        type: "enqueue",
+        item: item("已保存", "success", 1000 + TOAST_DEDUPE_MS - 1, {
+          scope: "tab:notes",
+          placement: "top",
+        }),
+        now: 1000 + TOAST_DEDUPE_MS - 1,
+      },
     );
     expect(state.queue).toHaveLength(0);
     expect(state.current?.id).toBe(first.id);
     expect(state.current?.rev).toBe(1);
+  });
+
+  it("同文案同类型但不同位置不合并：新消息保留自己的底部位置", () => {
+    const first = item("已保存", "success", 1000, {
+      scope: "tab:notes",
+      placement: "top",
+    });
+    let state = add(createToastState(), first);
+    state = toastReducer(state, {
+      type: "enqueue",
+      item: item("已保存", "success", 1100, {
+        scope: "tab:notes",
+        placement: "bottom",
+      }),
+      now: 1100,
+    });
+    expect(state.current?.placement).toBe("top");
+    expect(state.queue).toHaveLength(1);
+    expect(state.queue[0].placement).toBe("bottom");
+
+    state = toastReducer(state, { type: "dismiss", id: state.current!.id });
+    expect(state.current?.placement).toBe("bottom");
+  });
+
+  it("同文案同类型但不同 scope 不合并，队列不串台", () => {
+    const first = item("已保存", "success", 1000, {
+      scope: "tab:notes",
+      placement: "top",
+    });
+    let state = add(createToastState(), first);
+    state = toastReducer(state, {
+      type: "enqueue",
+      item: item("已保存", "success", 1100, {
+        scope: "tab:tasks",
+        placement: "top",
+      }),
+      now: 1100,
+    });
+    expect(state.current?.scope).toBe("tab:notes");
+    expect(state.queue).toHaveLength(1);
+    expect(state.queue[0].scope).toBe("tab:tasks");
   });
 
   it("超过合并窗口的相同文案仍作为新消息排队", () => {
@@ -141,6 +199,28 @@ describe("toastQueue", () => {
     state = toastReducer(state, { type: "clearQueue" });
     expect(state.current?.text).toBe("正在显示");
     expect(state.queue).toHaveLength(0);
+  });
+
+  it("scopeChange 只保留新页面与 global 排队消息，旧页消息不串台", () => {
+    let state = add(createToastState(), item("旧页当前", "info", 1000, { scope: "tab:home" }));
+    state = toastReducer(state, {
+      type: "enqueue",
+      item: item("旧页排队", "success", 1100, { scope: "tab:home" }),
+      now: 1100,
+    });
+    state = toastReducer(state, {
+      type: "enqueue",
+      item: item("新页排队", "success", 1200, { scope: "tab:tasks" }),
+      now: 1200,
+    });
+    state = toastReducer(state, {
+      type: "enqueue",
+      item: item("全局提示", "info", 1300, { scope: "global" }),
+      now: 1300,
+    });
+    state = toastReducer(state, { type: "scopeChange", scope: "tab:tasks" });
+    expect(state.current?.text).toBe("旧页当前");
+    expect(state.queue.map((entry) => entry.text)).toEqual(["新页排队", "全局提示"]);
   });
 
   it("四种 tone 的阅读时长符合产品口径", () => {

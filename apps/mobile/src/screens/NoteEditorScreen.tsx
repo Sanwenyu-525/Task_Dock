@@ -19,6 +19,7 @@ import { AppBar } from "../components/AppBar";
 import { AttachmentStrip } from "../components/AttachmentStrip";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { useToast } from "../feedback/ToastProvider";
+import { useToastBottomAnchor } from "../feedback/ToastLayoutProvider";
 import { createNote, deleteNote, getNote, updateNote } from "../db/notes";
 import { countChars, insertSnippet, wrapSelection } from "../domain/noteText";
 import type { Note } from "../domain/types";
@@ -61,6 +62,8 @@ export function NoteEditorScreen({
   const savingRef = useRef(false);
 
   const { showToast } = useToast();
+  // 底部格式工具栏随键盘整体上移；Toast 必须同时避开键盘和工具栏。
+  const bottomAnchor = useToastBottomAnchor(true, true);
 
   useEffect(() => {
     let cancelled = false;
@@ -352,6 +355,7 @@ export function NoteEditorScreen({
             paddingBottom: keyboardHeight > 0 ? 8 : 8 + insets.bottom,
           },
         ]}
+        onLayout={bottomAnchor.onLayout}
       >
         <ToolButton icon="bold" accessibilityLabel="加粗标记" onPress={wrapBold} />
         <ToolButton icon="list" accessibilityLabel="插入列表项" onPress={insertList} />

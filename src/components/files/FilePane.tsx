@@ -11,6 +11,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
   type MouseEvent as ReactMouseEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -62,6 +63,7 @@ import {
 } from "../../lib/filesWorkspace/dirCache";
 import { formatSize, CATEGORY_LABEL } from "../../lib/filesWorkspace/fileMeta";
 import { basename, breadcrumbSegments, joinPath, normalizePath, parentOf } from "../../lib/filesWorkspace/pathUtils";
+import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
 import { pickFolder, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
 import { MAX_TABS_PER_PANE, pathToPane } from "../../lib/filesWorkspace/model";
 import {
@@ -240,6 +242,8 @@ function EditHandle({
  */
 function DropPreview({ zone }: { zone: FwDropZone }) {
   const { t } = useLocale();
+  // 拖拽过程中 Ctrl/Shift 变化不改变落点，但会改变语义；订阅快照让标签即时刷新。
+  const drag = useSyncExternalStore(subscribeFwDrag, getFwDragState);
   if (zone.type === "edge") {
     const label =
       zone.edge === "left"
@@ -267,18 +271,26 @@ function DropPreview({ zone }: { zone: FwDropZone }) {
     );
   }
   if (zone.type === "center") {
-    const st = getFwDragState();
+    const st = drag;
     if (st.payload?.kind === "files") {
+      const accepted = filterTransferablePaths(st.payload.paths, zone.dir);
+      if (!accepted.length) {
+        return (
+          <div className="fw-drop-preview fw-drop-center is-invalid" aria-hidden="true">
+            <span className="fw-drop-label">{t("fw.quick.alreadyHere")}</span>
+          </div>
+        );
+      }
       return (
         <div className="fw-drop-preview fw-drop-center" aria-hidden="true">
           <span className="fw-drop-label">
             {st.effect === "copy"
               ? t("fw.drag.copyHereCount", {
-                  count: st.payload.paths.length,
+                  count: accepted.length,
                   target: basename(zone.dir),
                 })
               : t("fw.drag.moveHereCount", {
-                  count: st.payload.paths.length,
+                  count: accepted.length,
                   target: basename(zone.dir),
                 })}
           </span>
@@ -342,6 +354,8 @@ export default function FilePane({
   const tabbarRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLElement>(null);
   const dragCandidate = useRef<{ x: number; y: number; entry: FsEntry | null; tabId: string | null; paneDrag: boolean } | null>(null);
+  /** Ctrl 点击已选项的取消选择延迟到 pointerup；若随后形成拖拽则保留整组选择。 */
+  const pendingCtrlToggle = useRef<string | null>(null);
   const lastZoneRef = useRef<FwDropZone | null>(null);
 
   const tab: FolderTab | null = pane?.tabs.find((x) => x.tabId === pane.activeTabId) ?? null;
@@ -545,6 +559,7 @@ export default function FilePane({
     paneDrag = false,
   ) => {
     if (e.button !== 0) return;
+    pendingCtrlToggle.current = null;
     // 布局编辑模式只允许「拖动整个区域」，文件与标签拖拽全部暂停，避免争抢命中区域。
     if (layoutEditMode && !paneDrag) return;
     dragCandidate.current = { x: e.clientX, y: e.clientY, entry, tabId, paneDrag };
@@ -556,6 +571,7 @@ export default function FilePane({
       if (!cand || isFwDragging()) return;
       if (Math.hypot(e.clientX - cand.x, e.clientY - cand.y) < DRAG_THRESHOLD_PX) return;
       dragCandidate.current = null;
+      pendingCtrlToggle.current = null;
       if (cand.paneDrag) {
         startFwDrag({ kind: "pane", fromPaneId: paneId }, e.clientX, e.clientY, e);
       } else if (cand.tabId) {
@@ -567,7 +583,14 @@ export default function FilePane({
       }
     };
     const onUp = () => {
+      const pending = pendingCtrlToggle.current;
+      pendingCtrlToggle.current = null;
       dragCandidate.current = null;
+      if (pending) {
+        const current = store.getState().selection[paneId]?.paths ?? [];
+        const next = current.filter((p) => p !== pending);
+        store.getState().setSelection(paneId, next, next[0] ?? null);
+      }
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -587,8 +610,12 @@ export default function FilePane({
     const stored = store.getState().selection[paneId]?.paths ?? [];
     const current = stored.length > 0 ? stored : selectedPaths;
     if (e.ctrlKey || e.metaKey) {
-      const next = current.includes(path) ? current.filter((p) => p !== path) : [...current, path];
-      store.getState().setSelection(paneId, next, path);
+      if (current.includes(path)) {
+        // 已选项的 Ctrl 点击先不取消：若用户拖动则整组参与；真正点击（pointerup）时才移除。
+        pendingCtrlToggle.current = path;
+        return;
+      }
+      store.getState().setSelection(paneId, [...current, path], path);
     } else if (e.shiftKey && current.length > 0) {
       const anchor = selection?.anchor ?? current[0];
       const aIdx = visibleEntries.findIndex((x) => joinPath(dirPath, x.name) === anchor);

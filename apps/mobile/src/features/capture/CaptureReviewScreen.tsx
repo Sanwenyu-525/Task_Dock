@@ -23,6 +23,7 @@ import { AppBar } from "../../components/AppBar";
 import { PressableScale } from "../../components/PressableScale";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { useToast } from "../../feedback/ToastProvider";
+import { useToastBottomAnchor } from "../../feedback/ToastLayoutProvider";
 import * as repo from "../../db/captureAssets";
 import { describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
@@ -130,6 +131,8 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
   const sessionIds = useRef<string[]>([]);
 
   const { showToast } = useToast();
+  // 底部保存操作区会随键盘上移；登记实际高度让底部提示同时避开键盘与操作区。
+  const bottomAnchor = useToastBottomAnchor(true, true);
 
   const requestCancelTransfer = useCallback(() => {
     if (!cancelTokenRef.current || cancelling) return;
@@ -967,6 +970,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             backgroundColor: tokens.bg,
           },
         ]}
+        onLayout={bottomAnchor.onLayout}
       >
         {busy && progress ? (
           <View style={styles.progressRow}>

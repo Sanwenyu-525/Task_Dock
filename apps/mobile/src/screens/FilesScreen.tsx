@@ -30,6 +30,7 @@ import { GlassCard } from "../components/GlassCard";
 import { AppIcon } from "../components/icons/AppIcon";
 import { PressableScale } from "../components/PressableScale";
 import { useToast } from "../feedback/ToastProvider";
+import { useToastBottomAnchor } from "../feedback/ToastLayoutProvider";
 import { getSetting, setSetting } from "../db/kv";
 import { loadConnection, readToken, type PairedConnection } from "../db/syncConnection";
 import { AppError, describeError } from "../lib/errors";
@@ -258,6 +259,9 @@ export function FilesScreen({ nav }: { nav: Nav }) {
   const cancelRequested = useRef(false);
 
   const { showToast } = useToast();
+  // 底部发送/进度操作区实际测量；错误态隐藏 dock 时同步撤销锚点。
+  const dockVisible = Boolean(connection && !loading && !listError);
+  const bottomAnchor = useToastBottomAnchor(dockVisible, false);
 
   const ensureClient = useCallback(async (): Promise<FileClient> => {
     if (clientRef.current) return clientRef.current;
@@ -736,6 +740,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
               paddingBottom: insets.bottom + space.md,
             },
           ]}
+          onLayout={bottomAnchor.onLayout}
         >
           {transfer ? (
             <>
