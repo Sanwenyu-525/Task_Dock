@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { AppError } from "../../errors";
 import { FILE_CANCELLED_MESSAGE, type FileClient, type RemoteFile } from "../files";
-import { downloadRemoteFile, isOpaqueFileName, uploadDisplayName } from "../fileIo";
+import { downloadRemoteFile, isOpaqueFileName, uploadDisplayName, uploadLocalFile } from "../fileIo";
 
 import {
   FileMode,
@@ -80,8 +80,141 @@ function splitBytes(data: Uint8Array, chunkSize: number): Uint8Array[] {
   return chunks;
 }
 
+function uploadClient(options: {
+  list?: () => Promise<RemoteFile[]>;
+  completeError?: Error;
+  uploadError?: Error;
+}) {
+  const created = remoteFile({
+    direction: "to_desktop",
+    size: 10,
+    chunk_size: 8,
+    chunks: 2,
+    status: "pending",
+  });
+  const calls = { list: 0, complete: 0, remove: 0, upload: 0 };
+  const client: FileClient = {
+    async list() {
+      calls.list += 1;
+      if (options.list) return options.list();
+      throw new Error("list not configured");
+    },
+    async create() {
+      return created;
+    },
+    async uploadChunk() {
+      calls.upload += 1;
+      if (options.uploadError) throw options.uploadError;
+      return created;
+    },
+    async complete() {
+      calls.complete += 1;
+      throw options.completeError ?? new Error("complete response lost");
+    },
+    async downloadChunk() {
+      throw new Error("not used");
+    },
+    async remove() {
+      calls.remove += 1;
+    },
+    async importToShelf() {
+      throw new Error("not used");
+    },
+    async shelfGroups() {
+      throw new Error("not used");
+    },
+    cancel() {},
+    cancelList() {},
+  };
+  return { client, created, calls };
+}
+
 beforeEach(() => {
   __resetFs();
+});
+
+describe("uploadLocalFile complete 竞争与清理边界", () => {
+  const payload = new Uint8Array(10).fill(7);
+  const uploadFile = (name: string) =>
+    __seedFile(DIR, name, payload) as unknown as Parameters<typeof uploadLocalFile>[1];
+
+  it("complete 响应丢失但列表确认 ready：返回成功，不删除完整文件", async () => {
+    const helper = uploadClient({
+      completeError: new Error("timeout after server complete"),
+      list: async () => [
+        remoteFile({
+          id: "f".repeat(32),
+          direction: "to_desktop",
+          status: "ready",
+          completed_at: "2026-11-16T00:00:00Z",
+        }),
+      ],
+    });
+    const file = uploadFile("complete-ready.bin");
+    const remote = await uploadLocalFile(helper.client, file, () => undefined);
+    expect(remote.status).toBe("ready");
+    expect(helper.calls.complete).toBe(1);
+    expect(helper.calls.list).toBe(1);
+    expect(helper.calls.remove).toBe(0);
+  });
+
+  it("complete 失败且列表也失败：unknown 保留远端记录，不删除", async () => {
+    const helper = uploadClient({
+      completeError: new Error("timeout"),
+      list: async () => {
+        throw new Error("list also failed");
+      },
+    });
+    const file = uploadFile("complete-unknown.bin");
+    await expect(uploadLocalFile(helper.client, file, () => undefined)).rejects.toThrow("timeout");
+    expect(helper.calls.list).toBe(1);
+    expect(helper.calls.remove).toBe(0);
+  });
+
+  it("complete 失败且列表仍为 pending：保持 pending 待对账，不冒险删除", async () => {
+    const helper = uploadClient({
+      completeError: new Error("connection reset"),
+      list: async () => [
+        remoteFile({
+          id: "f".repeat(32),
+          direction: "to_desktop",
+          status: "pending",
+          received_chunks: 2,
+          completed_at: null,
+        }),
+      ],
+    });
+    const file = uploadFile("complete-pending.bin");
+    await expect(uploadLocalFile(helper.client, file, () => undefined)).rejects.toThrow(
+      "connection reset",
+    );
+    expect(helper.calls.list).toBe(1);
+    expect(helper.calls.remove).toBe(0);
+  });
+
+  it("complete 尚未发起时分块失败：安全删除本轮创建的半成品", async () => {
+    const helper = uploadClient({ uploadError: new Error("chunk rejected") });
+    const file = uploadFile("chunk-fail.bin");
+    await expect(uploadLocalFile(helper.client, file, () => undefined)).rejects.toThrow(
+      "chunk rejected",
+    );
+    expect(helper.calls.complete).toBe(0);
+    expect(helper.calls.remove).toBe(1);
+  });
+
+  it("用户在分块后取消：complete 未发起，删除半成品并抛取消语义", async () => {
+    const helper = uploadClient({});
+    const file = uploadFile("cancel-before-complete.bin");
+    let checks = 0;
+    await expect(
+      uploadLocalFile(helper.client, file, () => undefined, () => {
+        checks += 1;
+        return checks >= 2; // 第一块上传后取消
+      }),
+    ).rejects.toMatchObject({ kind: "network" });
+    expect(helper.calls.complete).toBe(0);
+    expect(helper.calls.remove).toBe(1);
+  });
 });
 
 describe("downloadRemoteFile SHA-256 复核", () => {

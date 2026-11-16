@@ -215,6 +215,12 @@ pub struct ClipboardFilter {
     pub favorite: bool,
     pub group_id: Option<String>,
     pub task_id: Option<String>,
+    /// 精确匹配 `source_app`（保留原始进程标识，展示名由前端换算）。
+    pub source_app: Option<String>,
+    /// 最近 N 天；0/None 表示不限。用 `last_seen_at` 判定，不扫描正文。
+    pub recent_days: Option<i64>,
+    /// `recent`（默认，按采集/最近记录时间）或 `most_used`（按使用次数）。
+    pub sort: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -253,6 +259,22 @@ fn item_filters(filter: &ClipboardFilter) -> (String, Vec<Value>) {
     if filter.favorite {
         sql.push_str(" AND i.favorite = 1");
     }
+    if let Some(source) = filter
+        .source_app
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        sql.push_str(" AND i.source_app = ?");
+        args.push(Value::Text(source.into()));
+    }
+    if let Some(days) = filter.recent_days.filter(|d| *d > 0) {
+        // `last_seen_at` 统一为 RFC3339；边界用与写入相同的时间格式，
+        // 避免 SQLite 的 `datetime('now')`（空格分隔）与存储格式不可比。
+        let cutoff = (Utc::now() - Duration::days(days.min(3650))).to_rfc3339();
+        sql.push_str(" AND i.last_seen_at >= ?");
+        args.push(Value::Text(cutoff));
+    }
     if let Some(q) = filter
         .search
         .as_deref()
@@ -279,8 +301,14 @@ fn item_filters(filter: &ClipboardFilter) -> (String, Vec<Value>) {
 
 pub fn list_items(db: &Db, filter: &ClipboardFilter) -> AppResult<Vec<ClipboardItem>> {
     let (where_sql, mut args) = item_filters(filter);
+    let order = if filter.sort.as_deref() == Some("most_used") {
+        // 置顶永远优先；其余按使用次数，同次数再用最近记录稳定排序。
+        "i.pinned DESC, i.copy_count DESC, i.last_seen_at DESC"
+    } else {
+        "i.pinned DESC, i.last_seen_at DESC"
+    };
     let sql = format!(
-        "SELECT {ITEM_FIELDS} FROM clipboard_items i{where_sql} ORDER BY i.pinned DESC, i.last_seen_at DESC LIMIT ? OFFSET ?"
+        "SELECT {ITEM_FIELDS} FROM clipboard_items i{where_sql} ORDER BY {order} LIMIT ? OFFSET ?"
     );
     args.push(Value::Integer(filter.limit.unwrap_or(80).clamp(1, 200)));
     args.push(Value::Integer(filter.offset.unwrap_or(0).max(0)));
@@ -301,6 +329,39 @@ pub fn count_items(db: &Db, filter: &ClipboardFilter) -> AppResult<i64> {
     db.with_conn(|conn| {
         let n: i64 = conn.query_row(&sql, params_from_iter(args.iter()), |r| r.get(0))?;
         Ok(n)
+    })
+}
+
+/// 来源应用筛选的可选项：按条目数降序，排除空来源。
+///
+/// 这是 `source_app` 的小型聚合查询（最多 50 项），不把整库历史拉到前端；
+/// 当前没有 `source_app` 索引，但剪贴板上限为 5000 条，分组聚合成本可控。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardSourceOption {
+    pub app: String,
+    pub count: i64,
+}
+
+pub fn list_source_apps(db: &Db, limit: i64) -> AppResult<Vec<ClipboardSourceOption>> {
+    let limit = limit.clamp(1, 50);
+    db.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT i.source_app, COUNT(*) AS n FROM clipboard_items i
+             WHERE TRIM(i.source_app) <> ''
+             GROUP BY i.source_app ORDER BY n DESC, i.source_app ASC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| {
+            Ok(ClipboardSourceOption {
+                app: r.get(0)?,
+                count: r.get(1)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     })
 }
 

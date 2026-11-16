@@ -1,16 +1,16 @@
-// 拖拽落点数学（P1）：真机上最容易出现「拖到右下角没反应」「松手后跳到第一格」
+// 拖拽落点数学（P1）：真机上最容易出现「拖到最后一个没反应」「松手后跳到最前面」
 // 这类错乱，全部源于位移到下标换算的边界。这里穷举边界，而不是上真机撞运气。
 import { describe, expect, it } from "vitest";
 
 import {
   clampIndex,
-  gridDropIndex,
   isTapGesture,
   listDropIndex,
+  railDropIndex,
   settleReorder,
 } from "../entryReorder";
 
-const METRICS = { columns: 4, columnStep: 100, rowStep: 100 };
+const STEP = 100;
 
 describe("clampIndex", () => {
   it("收敛到合法范围", () => {
@@ -22,48 +22,33 @@ describe("clampIndex", () => {
   });
 });
 
-describe("gridDropIndex", () => {
-  it("原地不动就是原下标", () => {
-    expect(gridDropIndex(3, 0, 0, METRICS, 8)).toBe(3);
+describe("railDropIndex", () => {
+  it("原地不动就是原下标（纵向抖动不参与换位）", () => {
+    expect(railDropIndex(3, 0, STEP, 8)).toBe(3);
   });
 
-  it("横向一格 / 纵向一行按步进换算", () => {
-    expect(gridDropIndex(0, 100, 0, METRICS, 8)).toBe(1);
-    expect(gridDropIndex(0, 0, 100, METRICS, 8)).toBe(4);
-    expect(gridDropIndex(0, 100, 100, METRICS, 8)).toBe(5);
+  it("横向一格按步进换算", () => {
+    expect(railDropIndex(0, STEP, STEP, 8)).toBe(1);
+    expect(railDropIndex(4, -STEP, STEP, 8)).toBe(3);
+    expect(railDropIndex(0, 3 * STEP, STEP, 8)).toBe(3);
   });
 
-  it("不足半格不换格，过半格才换", () => {
-    expect(gridDropIndex(0, 49, 0, METRICS, 8)).toBe(0);
-    expect(gridDropIndex(0, 51, 0, METRICS, 8)).toBe(1);
+  it("不足半格不换位，过半格才换位", () => {
+    expect(railDropIndex(0, 49, STEP, 8)).toBe(0);
+    expect(railDropIndex(0, 51, STEP, 8)).toBe(1);
   });
 
-  it("超出右边界被夹在行尾，不会跨到下一行", () => {
-    expect(gridDropIndex(1, 400, 0, METRICS, 8)).toBe(3);
+  it("首尾越界都收敛，不会算出负数或超出末端", () => {
+    expect(railDropIndex(1, 4000, STEP, 8)).toBe(7);
+    expect(railDropIndex(7, -4000, STEP, 8)).toBe(0);
+    expect(railDropIndex(2, 50, STEP, 3)).toBe(3 - 1);
   });
 
-  it("拖到右下空白处收敛到最后一个入口", () => {
-    // 5 个入口、4 列：最后一行只有 1 个，拖到 (1,2) 的空格等于放到最后
-    expect(gridDropIndex(0, 300, 200, METRICS, 5)).toBe(4);
-  });
-
-  it("向左/向上越界收敛到 0", () => {
-    expect(gridDropIndex(2, -300, 0, METRICS, 8)).toBe(0);
-    expect(gridDropIndex(5, 0, -200, METRICS, 8)).toBe(1);
-  });
-
-  it("窄屏两列仍然正确", () => {
-    const narrow = { columns: 2, columnStep: 150, rowStep: 100 };
-    expect(gridDropIndex(0, 150, 0, narrow, 6)).toBe(1);
-    expect(gridDropIndex(0, 0, 100, narrow, 6)).toBe(2);
-    expect(gridDropIndex(0, 150, 100, narrow, 6)).toBe(3);
-  });
-
-  it("异常输入不会算出负数或超界", () => {
-    // 非有限位移按 0 处理（宁可不动，也不要跳到别处）
-    expect(gridDropIndex(0, Number.NaN, Number.POSITIVE_INFINITY, METRICS, 5)).toBe(0);
-    expect(gridDropIndex(0, Number.NaN, Number.NaN, METRICS, 5)).toBe(0);
-    expect(gridDropIndex(0, 0, 0, { columns: 4, columnStep: 0, rowStep: 0 }, 5)).toBe(0);
+  it("空列表与异常输入安全", () => {
+    expect(railDropIndex(0, 100, STEP, 0)).toBe(0);
+    expect(railDropIndex(0, Number.NaN, STEP, 5)).toBe(0);
+    expect(railDropIndex(2, 100, 0, 5)).toBe(3);
+    expect(railDropIndex(-1, 0, STEP, 5)).toBe(0);
   });
 });
 

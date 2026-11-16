@@ -153,7 +153,8 @@ function throwIfCancelled(isCancelled?: () => boolean): void {
 
 /**
  * 手机 → 电脑：按服务端返回的 chunk_size 顺序读取并上传。
- * 任一步失败都尝试删除桌面端的半成品记录；删除失败不覆盖原始错误。
+ * 分块阶段的失败会尝试删除桌面端半成品；complete 已发起后的失败只做列表对账，
+ * 无法确认状态时保留远端记录，避免误删已 ready 的文件。
  *
  * `nameOverride` 用于采集资产：本地存储名是随机化的（防重名/防路径问题），
  * 但用户看到并发送到电脑的应是原文件名。
@@ -190,12 +191,13 @@ export async function uploadLocalFile(
     completeStarted = true;
     return await client.complete(created.id);
   } catch (error) {
-    // 取消/超时可能正好发生在 complete 返回前后：先查一次列表，若桌面端已经
-    // 完整接收（ready），保留远端文件并把它当作成功返回，绝不能把已完成文件删掉。
-    // 列表也失败时无法证明远端状态，宁可不删（残余 pending 由桌面启动清理），
-    // 也不冒误删风险。
+    // complete 返回前后是唯一无法只靠本地状态判断的阶段：
+    // 服务端可能已经把文件落成 ready，只是响应丢失/超时。此时无论用户是否点了取消，
+    // 都必须先读一次列表核对；绝不能按“失败”直接删远端记录。
+    // 列表也失败时保持远端 pending 不动（桌面端启动清理 + 有界 pending 上限兜底），
+    // 宁可留一条可对账记录，也不能误删已经完整的文件。
     let completed: RemoteFile | null = null;
-    if (completeStarted && isCancelled?.()) {
+    if (completeStarted) {
       try {
         completed =
           (await client.list()).find(
@@ -206,10 +208,11 @@ export async function uploadLocalFile(
       }
     }
     if (completed) return completed;
-    if (completeStarted && isCancelled?.()) {
-      // 无法确认 ready 时不清理，避免把已完成文件误删；桌面端会清理半成品。
+    if (completeStarted) {
+      // unknown：没有证据表明远端是 pending/ready/failed，不执行删除。
       throw error;
     }
+    // complete 尚未发起（分块/读文件失败），删除本轮创建的半成品是安全的。
     await client.remove(created.id).catch(() => undefined);
     throw error;
   } finally {

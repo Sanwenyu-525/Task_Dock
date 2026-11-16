@@ -188,7 +188,9 @@ body.workspace-split-resizing {
     grid-template-rows: minmax(0, 42%) minmax(0, 1fr);
   }
   .workspace-split__sidebar {
-    max-height: 42%;
+    /* 高度由上面的 42% 轨道控制；不要再写百分比 max-height（会二次压缩
+       到轨道的 42%，筛选项被裁掉）。 */
+    max-height: none;
     padding: 10px 10px 12px;
     border-right: none;
     border-bottom: 1px solid var(--border-subtle);

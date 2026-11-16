@@ -898,6 +898,8 @@ export const enUS: Record<MessageKey, string> = {
   "workbench.windowRestore": "Restore",
   "workbench.windowClose": "Close workbench",
   "workbench.titlebarTools": "Title bar tools",
+  "workbench.toolbarMore": "More tools",
+  "workbench.toolbarMoreAria": "More title bar tools (theme, visual preset, pin)",
   "workbench.pinWindow": "Pin window",
   "workbench.unpinWindow": "Unpin window",
   "workbench.pinFailed": "Could not toggle always-on-top: {error}",

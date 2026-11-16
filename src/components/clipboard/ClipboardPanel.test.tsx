@@ -15,6 +15,7 @@ import userEvent from "@testing-library/user-event";
 
 const bridge = vi.hoisted(() => ({
   clipboardView: vi.fn(),
+  clipboardSources: vi.fn(),
   clipboardStatus: vi.fn(),
   onClipboardChanged: vi.fn(),
   clipboardCopyItem: vi.fn(),
@@ -141,6 +142,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetClipboardRequestState();
   bridge.clipboardView.mockResolvedValue(makeView());
+  bridge.clipboardSources.mockResolvedValue([
+    { app: "chrome.exe", count: 2 },
+    { app: "notepad.exe", count: 1 },
+  ]);
   bridge.clipboardStatus.mockResolvedValue({
     enabled: true,
     paused: false,
@@ -258,6 +263,58 @@ describe("剪贴板主页面", () => {
         expect.objectContaining({ favorite: true }),
       ),
     );
+  });
+
+  it("使用次数排序会以 sort=most_used 重新拉取，并保留置顶优先", async () => {
+    const user = userEvent.setup();
+    render(<ClipboardPanel />);
+    await waitFor(() => expect(bridge.clipboardView).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "最近记录" }));
+    await user.click(screen.getByRole("menuitem", { name: /使用最多/ }));
+
+    await waitFor(() =>
+      expect(bridge.clipboardView).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sort: "most_used" }),
+      ),
+    );
+    expect(useClipboardStore.getState().filters.sort).toBe("most_used");
+    expect(screen.getByRole("button", { name: /使用最多/ })).toBeTruthy();
+  });
+
+  it("时间范围与来源应用按真实字段下发，重置会一次清空所有条件", async () => {
+    const user = userEvent.setup();
+    render(<ClipboardPanel />);
+    await waitFor(() => expect(bridge.clipboardView).toHaveBeenCalled());
+    await screen.findByRole("button", { name: /全部来源/ });
+
+    await user.click(screen.getByRole("button", { name: "7 天" }));
+    await waitFor(() =>
+      expect(bridge.clipboardView).toHaveBeenLastCalledWith(
+        expect.objectContaining({ recentDays: 7 }),
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: /全部来源/ }));
+    await user.click(screen.getByRole("menuitem", { name: /Chrome/ }));
+    await waitFor(() =>
+      expect(bridge.clipboardView).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sourceApp: "chrome.exe", recentDays: 7 }),
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: "图片" }));
+    await user.click(screen.getByRole("button", { name: "重置筛选" }));
+
+    await waitFor(() =>
+      expect(bridge.clipboardView).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "all", favorite: false }),
+      ),
+    );
+    const filters = useClipboardStore.getState().filters;
+    expect(filters).toMatchObject({ kind: "all", search: "", favorite: false, sort: "recent" });
+    expect(filters.sourceApp).toBeUndefined();
+    expect(filters.recentDays).toBeUndefined();
   });
 
   it("搜索输入防抖后按关键词重新拉取", async () => {

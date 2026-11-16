@@ -25,7 +25,7 @@ import { AppIcon } from "../../components/icons/AppIcon";
 import { useToast } from "../../feedback/ToastProvider";
 import { useToastBottomAnchor } from "../../feedback/ToastLayoutProvider";
 import * as repo from "../../db/captureAssets";
-import { describeError } from "../../lib/errors";
+import { AppError, describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
 import { useKeyboardHeight } from "../../lib/keyboard";
 import type { Nav } from "../../lib/nav";
@@ -175,6 +175,9 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
         setIndex(0);
         await loadDestinations(sessionIds.current);
         setAvailability(await captureAvailability());
+      } catch (error) {
+        // 首屏读取失败必须让用户看到原因；否则 loading 结束后只剩空列表，像是素材被清空。
+        if (active) showToast(`读取采集暂存失败：${describeError(error)}`, "danger");
       } finally {
         if (active) setLoading(false);
       }
@@ -182,7 +185,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
     return () => {
       active = false;
     };
-  }, [loadDestinations]);
+  }, [loadDestinations, showToast]);
 
   useEffect(() => {
     setNameDraft(current?.name ?? "");
@@ -279,15 +282,19 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
         style: "destructive",
         onPress: () => {
           void (async () => {
-            const paths = await repo.deleteAsset(current.id);
-            for (const path of paths) deleteFileQuietly(path);
-            sessionIds.current = sessionIds.current.filter((id) => id !== current.id);
-            bumpCaptureRevision();
-            if (sessionIds.current.length === 0) {
-              nav.back();
-              return;
+            try {
+              const paths = await repo.deleteAsset(current.id);
+              for (const path of paths) deleteFileQuietly(path);
+              sessionIds.current = sessionIds.current.filter((id) => id !== current.id);
+              bumpCaptureRevision();
+              if (sessionIds.current.length === 0) {
+                nav.back();
+                return;
+              }
+              await reload();
+            } catch (error) {
+              showToast(`删除采集素材失败：${describeError(error)}`, "danger");
             }
-            await reload();
           })();
         },
       },
@@ -337,15 +344,24 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
     cancelTokenRef.current = token;
     setCancelable(Boolean(token));
     setCancelling(false);
-    // 用户常常改完文件名/备注直接点保存：输入框只在 onEndEditing 提交，先补一次，
-    // 否则改名后的相册副本仍用旧名、备注也不会落库。
-    await commitName();
-    await commitNote();
-    const failures: string[] = [];
-    let offlineMessage: string | null = null;
-    let pendingMessage: string | null = null;
-    let stopMessage: string | null = null;
     try {
+      // 用户常常改完文件名/备注直接点保存：输入框只在 onEndEditing 提交，先补一次，
+      // 否则改名后的相册副本仍用旧名、备注也不会落库。
+      // 这两步也必须在本 try 内：数据库/刷新失败时若留在 try 外，busy 永远不会释放。
+      try {
+        await commitName();
+      } catch (error) {
+        throw new AppError("storage", `文件名保存失败：${describeError(error)}`, error);
+      }
+      try {
+        await commitNote();
+      } catch (error) {
+        throw new AppError("storage", `备注保存失败：${describeError(error)}`, error);
+      }
+      const failures: string[] = [];
+      let offlineMessage: string | null = null;
+      let pendingMessage: string | null = null;
+      let stopMessage: string | null = null;
       const sessionAssets = (
         await Promise.all(sessionIds.current.map((id) => repo.getAsset(id)))
       ).filter((asset): asset is repo.CaptureAsset => asset !== null);
@@ -759,7 +775,11 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
           <TextInput
             value={nameDraft}
             onChangeText={setNameDraft}
-            onEndEditing={() => void commitName()}
+            onEndEditing={() => {
+              void commitName().catch((error) => {
+                showToast(`文件名保存失败：${describeError(error)}`, "danger");
+              });
+            }}
             style={[styles.input, { color: tokens.text, backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}
             underlineColorAndroid="transparent"
             accessibilityLabel="文件名"
@@ -772,7 +792,11 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
         <TextInput
           value={noteDraft}
           onChangeText={setNoteDraft}
-          onEndEditing={() => void commitNote()}
+          onEndEditing={() => {
+            void commitNote().catch((error) => {
+              showToast(`备注保存失败：${describeError(error)}`, "danger");
+            });
+          }}
           placeholder="备注（只保存在本机素材记录里）"
           placeholderTextColor={tokens.faint}
           style={[styles.noteInput, { color: tokens.text, backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}

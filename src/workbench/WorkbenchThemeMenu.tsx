@@ -7,49 +7,17 @@
 //!
 //! 不造第二套主题管道：写库仍走 `useSettingsStore.update`（Rust 侧更新成功后
 //! 广播 `theme-changed`，主窗口、右键菜单与胶囊同步应用）；写入失败不静默，
-//! 用工作台自己的 Toast 报出真实原因。
+//! 用工作台自己的 Toast 报出真实原因。菜单项的构造与「更多」收纳菜单共用
+//! `workbenchTitlebarItems.tsx`（2026-11-16）。
 
-import { Monitor, Moon, Sun } from "lucide-react";
-import { DropdownMenu, type DropdownMenuItem } from "../components/ui";
+import { DropdownMenu } from "../components/ui";
 import { useLocale } from "../hooks/useLocale";
-import { useSettingsStore } from "../store/useSettingsStore";
-import { useUiStore } from "../store/useUiStore";
-import { errorMessage } from "../lib/errors";
-
-/** 与主窗口标题栏、右键菜单同一组取值与顺序（`id` 即 `settings.theme`）。 */
-const THEMES = [
-  { id: "light", icon: Sun, labelKey: "settings.appearance.theme.light" },
-  { id: "dark", icon: Moon, labelKey: "settings.appearance.theme.dark" },
-  { id: "system", icon: Monitor, labelKey: "settings.appearance.theme.system" },
-] as const;
+import { useThemeMenuItems } from "./workbenchTitlebarItems";
 
 export default function WorkbenchThemeMenu() {
   const { t } = useLocale();
-  const theme = useSettingsStore((s) => s.settings?.theme ?? "system");
-  const update = useSettingsStore((s) => s.update);
-
-  // 损坏 / 未知取值不能让菜单显示「无选中项」：落回跟随系统（与主窗口同一兜底）。
-  const current = THEMES.find((item) => item.id === theme) ?? THEMES[2];
-  const CurrentIcon = current.icon;
-  const label = t("workbench.themeMenu", { theme: t(current.labelKey) });
-
-  const items: DropdownMenuItem[] = THEMES.map((item) => ({
-    key: item.id,
-    label: t(item.labelKey),
-    icon: <item.icon size={14} aria-hidden="true" />,
-    radio: true,
-    checked: current.id === item.id,
-    onSelect: () => {
-      void update({ theme: item.id }).catch((error: unknown) => {
-        useUiStore
-          .getState()
-          .showToast(t("workbench.themeFailed", { error: errorMessage(error) }), {
-            kind: "error",
-            code: "workbench.themeFailed",
-          });
-      });
-    },
-  }));
+  const { items, currentLabel, CurrentIcon } = useThemeMenuItems();
+  const label = t("workbench.themeMenu", { theme: currentLabel });
 
   return (
     <DropdownMenu

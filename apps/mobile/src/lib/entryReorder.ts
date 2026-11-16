@@ -1,20 +1,10 @@
 // 拖拽落点计算：只做几何数学，不碰手势与视图。
 //
-// 为什么单独抽出来：真机上「拖到哪一格」是最容易错乱的环节（行数算错、最后一格
+// 为什么单独抽出来：真机上「拖到第几个」是最容易错乱的环节（步进算错、最后一格
 // 落不下、越界后索引变成 -1）。把「位移 → 目标下标」变成纯函数后，可以穷举边界，
-// 手势层只负责把 dx/dy 喂进来，出错时能立刻分清是数学错还是手势错。
+// 手势层只负责把 dx 喂进来，出错时能立刻分清是数学错还是手势错。
 //
 // 约束：纯函数，不得 import react / react-native。
-
-/** 网格步进：gridDropIndex 只需要「相邻两格原点的距离」，不需要单元格尺寸 */
-export interface GridDropMetrics {
-  /** 每行列数（工作台 4 列，窄屏 2 列） */
-  columns: number;
-  /** 列步进 = 单元格宽度 + 列间距 */
-  columnStep: number;
-  /** 行步进 = 单元格高度 + 行间距 */
-  rowStep: number;
-}
 
 /** 把任意下标收敛到 [0, count-1]；非有限值按 0 处理 */
 export function clampIndex(index: number, count: number): number {
@@ -23,36 +13,28 @@ export function clampIndex(index: number, count: number): number {
 }
 
 /**
- * 网格内拖拽的目标下标。
+ * 单行横向轨道内拖拽的目标下标（首页快捷入口，2026-11-16）。
  *
- * 算法：把「起点格 + 位移/步进」四舍五入成行列，再换算回线性下标。
- * 最后一行的空格子会被收敛到 count-1（拖到右下空白处等于「放到最后」）。
+ * 轨道永远一行，所以只有横向位移参与计算；纵向位移忽略——
+ * 手指上下抖动不该把入口挪到别处（旧网格正是用 dy 换行，才需要行步进）。
+ *
+ * 算法：位移 / 步进四舍五入成「跨过几个磁贴」，再夹到 [0, count-1]。
+ * 最后一格之后一律收敛到最后，不会算出越界下标。
  */
-export function gridDropIndex(
+export function railDropIndex(
   fromIndex: number,
   dx: number,
-  dy: number,
-  metrics: GridDropMetrics,
+  step: number,
   count: number,
 ): number {
   if (count <= 0) return 0;
-  const columns = Math.max(1, Math.floor(metrics.columns));
-  const columnStep = metrics.columnStep > 0 ? metrics.columnStep : 1;
-  const rowStep = metrics.rowStep > 0 ? metrics.rowStep : 1;
   const from = clampIndex(fromIndex, count);
-
-  const startColumn = from % columns;
-  const startRow = Math.floor(from / columns);
-  const columnShift = Number.isFinite(dx) ? Math.round(dx / columnStep) : 0;
-  const rowShift = Number.isFinite(dy) ? Math.round(dy / rowStep) : 0;
-
-  const targetColumn = Math.min(
-    Math.max(startColumn + columnShift, 0),
-    columns - 1,
-  );
-  const targetRow = Math.max(0, startRow + rowShift);
-
-  return clampIndex(targetRow * columns + targetColumn, count);
+  // 步进缺失/非法时不要把像素当步数：整次位移只算一格，
+  // 否则 dx=100、step=0 会被当成 100 格直接跳到列表尽头。
+  const stride =
+    step > 0 ? step : Number.isFinite(dx) ? Math.max(Math.abs(dx), 1) : 1;
+  const shift = Number.isFinite(dx) ? Math.round(dx / stride) : 0;
+  return clampIndex(from + shift, count);
 }
 
 /** 竖向列表内拖拽的目标下标（管理页「已显示」列表） */

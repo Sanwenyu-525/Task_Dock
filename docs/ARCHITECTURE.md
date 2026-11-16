@@ -1889,6 +1889,28 @@ CSS `grabbing` 只表达前端会话态，技术边界见本章 1023–1033 节�
 `SetCursor`，最大化时四角热区由 CSS 撤掉，不显示不可用的缩放光标。
 热区边长与 Rust `window_cursor::GRIP_CSS` 是跨端契约，改动需两端同步。
 
+**窗口尺寸规范（2026-11-16）**：`workspace` 默认 **1200×760 DIP**、最小 **960×600 DIP**，
+由 `src-tauri/src/window_layout.rs` 统一计算（创建、恢复几何、跨屏/改缩放重算同一入口）。
+三条硬约束：
+
+1. **DIP 与物理像素不混用**：最小尺寸、默认尺寸、`set_min_size` 全部用 `LogicalSize`；
+   已保存的物理矩形只在 `clamp_into_area` 边界按 `scale_factor` 换算再比较。
+   修改前的缺陷正是把 880×600 DIP 的最小值直接套在物理矩形上，125%/150% 缩放下
+   实际最小只剩 704/587 DIP。
+2. **按显示器工作区（已扣任务栏）降级**：可用宽/高不足 960×600 时，最小尺寸跟随可用区，
+   但不低于 720×480 的布局下限；低于下限则以可用区为准，保证小屏/远程桌面仍能打开。
+   默认尺寸同时收敛进可用区，绝不超出屏幕。
+3. **跨屏重算**：监听 `Moved` / `ScaleFactorChanged`，以「工作区矩形 + 缩放比」为签名判断
+   是否真的换了显示器（同一屏内移动不重算，150ms 节流）；最大化/最小化期间不改约束。
+
+顶栏按**窗口宽度档位**分配空间（`src/lib/layoutMetrics.ts`：1100 / 900 / 780）：
+`full` 全量内联 → `compact` 隐藏快捷键提示/品牌名/创建文案并收起右栏 →
+`narrow` 外观工具组（明暗/视觉主题/置顶）收进「更多」菜单 → `cramped` 顶栏换行、
+项目选择器独占第二行。图标与窗口按钮恒为 `flex: 0 0 auto`，功能不删除、写入管道不变
+（`workbenchTitlebarItems.tsx` / `useWorkbenchPin.ts` 与内联入口共用）。完整规范见
+[window-size-spec.md](window-size-spec.md)；内容响应式仍按容器宽度（
+[ui-responsive-layout.md](ui-responsive-layout.md)），两者边界不得混用。
+
 ### 2. 单一导航注册中心
 
 工作台左侧导航、主窗口完整面板与胶囊轨道都使用 `src/lib/navigationRegistry.ts`：

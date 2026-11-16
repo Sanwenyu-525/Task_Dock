@@ -154,6 +154,22 @@ describe("ClipboardDrawer", () => {
     expect(screen.getByRole("button", { name: "恢复监听" })).toBeTruthy();
   });
 
+  it("状态查询未返回前显示「正在检查」，不提前显示监听中", async () => {
+    useClipboardStore.setState({ view: viewWith(2, 2) });
+    bridge.clipboardStatus.mockImplementation(() => new Promise(() => {}));
+    render(<ClipboardDrawer />);
+    expect((await screen.findAllByText("正在检查运行状态…")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("监听中")).toBeNull();
+  });
+
+  it("状态查询失败显示「运行状态未知」，不冒充监听正常", async () => {
+    useClipboardStore.setState({ view: viewWith(2, 2) });
+    bridge.clipboardStatus.mockRejectedValue(new Error("status unavailable"));
+    render(<ClipboardDrawer />);
+    expect((await screen.findAllByText("运行状态未知")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("监听中")).toBeNull();
+  });
+
   it("读取失败时显示错误并可重试", async () => {
     useClipboardStore.setState({ view: null, error: "数据库暂时不可用" });
     render(<ClipboardDrawer />);

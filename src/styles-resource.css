@@ -1955,9 +1955,12 @@ html[lang^="en"] .resource-segment {
   white-space: nowrap;
 }
 
-/* 1600 级内容区：主分析（磁盘/内存/趋势）占左侧，辅助信息（关注/应用指标）
-   收在右侧窄列；窄于 1500 时恢复单列，避免卡片被挤成读不出数字。 */
-@media (min-width: 1500px) {
+/* 宽内容区：主分析（磁盘/内存/趋势）占左侧，辅助信息（关注/应用指标）
+   收在右侧窄列；内容宽不足时恢复单列，避免卡片被挤成读不出数字。
+   2026-11-16：原为 `@media (min-width: 1500px)`（按窗口宽，1500 窗口时内容区
+   实际只有约 1296px）。改为按**内容容器**判断后，导航展开/右栏开合都不会
+   在内容不足时强行分两栏；阈值 1300 与原窗口 1500 的等效内容宽一致。 */
+@container wb-content (min-width: 1300px) {
   .resource-overview {
     grid-template-columns: minmax(0, 1.65fr) minmax(230px, 0.78fr);
     grid-auto-flow: row dense;

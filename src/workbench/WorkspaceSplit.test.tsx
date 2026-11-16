@@ -131,7 +131,9 @@ describe("workspaceSplit.css 容器查询契约", () => {
     const block = splitCss.slice(splitCss.indexOf("@container workspace-split (max-width: 559px)"));
     expect(block).toMatch(/\.workspace-split:not\(\.is-single\)\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
     expect(block).toMatch(/grid-template-rows:\s*minmax\(0,\s*42%\)\s+minmax\(0,\s*1fr\)/);
-    expect(block).toMatch(/\.workspace-split__sidebar\s*\{[\s\S]*?max-height:\s*42%/);
+    // 轨道已经封顶，侧栏不能再写 max-height:42%（会二次压缩到轨道的 42%，裁掉筛选项）。
+    expect(block).not.toMatch(/max-height:\s*42%/);
+    expect(block).toMatch(/\.workspace-split__sidebar\s*\{[\s\S]*?max-height:\s*none/);
     expect(block).toMatch(/\.workspace-split__resizer\s*\{[\s\S]*?display:\s*none/);
   });
 

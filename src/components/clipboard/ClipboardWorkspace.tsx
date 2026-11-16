@@ -12,8 +12,9 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Clipboard, Copy, Eraser, Filter, FolderPlus, Info, Link2, ListChecks,
-  Loader2, Merge, Pause, Pin, Play, RefreshCw, Settings as SettingsIcon, Star, Trash2, X,
+  AlertTriangle, ArrowUpDown, Clipboard, Copy, Eraser, Filter, FolderPlus, Info, Link2,
+  ListChecks, Loader2, Merge, Pause, Pin, Play, RefreshCw, RotateCcw, Settings as SettingsIcon,
+  Star, Trash2, X,
 } from "lucide-react";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import WorkspaceSplit from "../../workbench/WorkspaceSplit";
@@ -36,14 +37,16 @@ import {
   clipboardStatus,
   clipboardToggleGroup,
   clipboardToggleItem,
+  clipboardSources,
   type ClipboardGroup,
   type ClipboardItem,
+  type ClipboardSourceOption,
   type ClipboardStatus,
   type CopyReport,
   type DeleteReport,
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
-import { clipSource, clipboardTime, fileBaseName, formatBytes, groupDeleteFeedback, kindLabel, objectHint } from "../../lib/clipboardUi";
+import { clipSource, clipboardTime, fileBaseName, fileDirName, formatBytes, groupDeleteFeedback, kindLabel, objectHint, sourceAppName } from "../../lib/clipboardUi";
 import { fileTypeFromName } from "../../lib/fileTypeUi";
 import { CLIPBOARD_DENSITY_OPTIONS } from "../../lib/clipboardDensity";
 import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
@@ -55,6 +58,7 @@ import { useUiStore } from "../../store/useUiStore";
 import { useMainUiVisible } from "../../hooks/useMainUiVisible";
 import { useFocusTrap, useOverlayLayer } from "../ui/overlay";
 import { ConfirmDialog } from "../ui/Dialog";
+import DropdownMenu from "../ui/DropdownMenu";
 import EmptyState from "../ui/EmptyState";
 import SearchField from "../ui/SearchField";
 import ClipboardGroupCard from "./ClipboardGroupCard";
@@ -83,6 +87,19 @@ const KIND_CHIPS: { id: string; label: string }[] = [
   { id: "html", label: "富文本" },
   { id: "image", label: "图片" },
   { id: "files", label: "文件" },
+];
+
+/** 时间范围筛选：0 表示不限；后端按 last_seen_at 截断，不扫描正文。 */
+const TIME_RANGES: { days: number; label: string }[] = [
+  { days: 0, label: "全部时间" },
+  { days: 1, label: "24 小时" },
+  { days: 7, label: "7 天" },
+  { days: 30, label: "30 天" },
+];
+
+const SORT_OPTIONS: { id: "recent" | "most_used"; label: string; hint: string }[] = [
+  { id: "recent", label: "最近记录", hint: "按采集时间，置顶条目仍优先" },
+  { id: "most_used", label: "使用最多", hint: "按复制次数，置顶条目仍优先" },
 ];
 
 /**
@@ -326,6 +343,23 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
    * 收纳后主区用满宽度，筛选入口仍在工具栏（不会「窄窗直接消失」）。
    */
   const [filtersOpen, setFiltersOpen] = useState(true);
+  /** 来源应用选项（后端聚合，最多 8 项）；预览/测试环境不可用时静默降级为无来源菜单。 */
+  const [sourceOptions, setSourceOptions] = useState<ClipboardSourceOption[]>([]);
+  useEffect(() => {
+    if (isDrawer || !filtersOpen || section !== "items") return;
+    if (typeof clipboardSources !== "function") return;
+    let alive = true;
+    void clipboardSources(8)
+      .then((rows) => {
+        if (alive) setSourceOptions(rows);
+      })
+      .catch(() => {
+        // 来源筛选是增强项：查询失败不影响主列表与现有筛选。
+      });
+    return () => {
+      alive = false;
+    };
+  }, [isDrawer, filtersOpen, section, view?.total_items]);
   const [groupName, setGroupName] = useState("");
   const [mergeName, setMergeName] = useState("");
   const [confirm, setConfirm] = useState<{
@@ -336,7 +370,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     run: () => void | Promise<void>;
   } | null>(null);
   /** 列表滚动状态的归属键：筛选或「历史/分组」视图一变，旧锚点与旧位置一律作废。 */
-  const listFilterKey = `${section}|${filters.kind}|${filters.favorite ? "1" : "0"}|${filters.search.trim()}`;
+  const listFilterKey = `${section}|${filters.kind}|${filters.favorite ? "1" : "0"}|${filters.search.trim()}|${filters.sourceApp ?? ""}|${filters.recentDays ?? 0}|${filters.sort ?? "recent"}`;
   const drawerRef = useRef<HTMLElement>(null);
 
   // 删除反馈链：执行中（等后端确认）→ 目标卡片离场 → 离场结束再静默补位。
@@ -1072,7 +1106,28 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     if (isDrawer) closeDrawer();
   }
 
-  const filterActive = filters.kind !== "all" || filters.favorite || filters.search.trim() !== "";
+  const filterActive =
+    filters.kind !== "all" ||
+    filters.favorite ||
+    filters.search.trim() !== "" ||
+    Boolean(filters.sourceApp) ||
+    Boolean(filters.recentDays);
+  const sortMode = filters.sort ?? "recent";
+  const canResetFilters = filterActive || sortMode !== "recent";
+
+  /** 条件重置：搜索框、类型、收藏、来源、时间、排序一次归零。 */
+  function resetFilters() {
+    useClipboardStore.getState().setSearchText("");
+    setFilters({
+      kind: "all",
+      search: "",
+      favorite: false,
+      sourceApp: undefined,
+      recentDays: undefined,
+      sort: "recent",
+    });
+  }
+
   /** 清空入口的可用性：条目与分组都为空时没有可清空的内容。 */
   const historyCount = (stats?.items ?? 0) + (stats?.groups ?? 0);
   /** 所选里是否至少有一条文件/图片；纯文字选区不能「复制为文件」。 */
@@ -1338,6 +1393,36 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               ariaLabel="搜索剪贴板历史"
               clearLabel="清除搜索"
             />
+            {section === "items" && (
+              <DropdownMenu
+                menuLabel="剪贴板排序"
+                menuMinWidth={190}
+                placement="bottom-start"
+                items={SORT_OPTIONS.map((option) => ({
+                  key: option.id,
+                  label: option.label,
+                  description: option.hint,
+                  radio: true,
+                  checked: sortMode === option.id,
+                  onSelect: () => setFilters({ sort: option.id }),
+                }))}
+                trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                  <button
+                    ref={ref}
+                    type="button"
+                    className={`btn sm clip-sort-btn ${expanded ? "is-open" : ""}`}
+                    aria-haspopup="menu"
+                    aria-expanded={expanded}
+                    data-tip="切换「最近记录 / 使用最多」；置顶条目始终优先"
+                    onClick={onClick}
+                    onKeyDown={onKeyDown}
+                  >
+                    <ArrowUpDown size={12} aria-hidden="true" />
+                    {sortMode === "most_used" ? "使用最多" : "最近记录"}
+                  </button>
+                )}
+              />
+            )}
             {isDrawer && (
               // 抽屉没有左侧导航，收藏筛选只能留在工具条；页面态由导航区承担，
               // 不再出现「顶部一个星标 + 侧栏一个仅看收藏」的重复入口。
@@ -1455,6 +1540,65 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                   </button>
                 ))}
               </div>
+              {section === "items" && (
+                <>
+                  <div className="clip-side-group" role="group" aria-label="记录时间">
+                    <span className="clip-side-label">记录时间</span>
+                    {TIME_RANGES.map((range) => (
+                      <button
+                        key={range.days}
+                        type="button"
+                        className={`clip-side-type ${(filters.recentDays ?? 0) === range.days ? "active" : ""}`}
+                        aria-pressed={(filters.recentDays ?? 0) === range.days}
+                        onClick={() => setFilters({ recentDays: range.days || undefined })}
+                      >
+                        {range.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="clip-side-group clip-side-source-group" role="group" aria-label="来源应用筛选">
+                    <span className="clip-side-label">来源应用</span>
+                    <DropdownMenu
+                      menuLabel="来源应用筛选"
+                      menuMinWidth={220}
+                      placement="bottom-start"
+                      items={[
+                        {
+                          key: "__all__",
+                          label: "全部来源",
+                          description: "不限制来源进程",
+                          radio: true,
+                          checked: !filters.sourceApp,
+                          onSelect: () => setFilters({ sourceApp: undefined }),
+                        },
+                        ...sourceOptions.map((source) => ({
+                          key: source.app,
+                          label: `${sourceAppName(source.app)}（${source.count}）`,
+                          description: sourceAppName(source.app) !== source.app ? source.app : undefined,
+                          radio: true,
+                          checked: filters.sourceApp === source.app,
+                          onSelect: () => setFilters({ sourceApp: source.app }),
+                        })),
+                      ]}
+                      trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                        <button
+                          ref={ref}
+                          type="button"
+                          className={`clip-side-source ${expanded ? "is-open" : ""}`}
+                          aria-haspopup="menu"
+                          aria-expanded={expanded}
+                          title={filters.sourceApp ? sourceAppName(filters.sourceApp) : "全部来源"}
+                          onClick={onClick}
+                          onKeyDown={onKeyDown}
+                        >
+                          <span>{filters.sourceApp ? sourceAppName(filters.sourceApp) : "全部来源"}</span>
+                          <em>{sourceOptions.length > 0 ? `${sourceOptions.length} 个` : "可选"}</em>
+                        </button>
+                      )}
+                    />
+                  </div>
+                </>
+              )}
               <button
                 type="button"
                 className={`clip-side-favorite ${filters.favorite ? "active" : ""}`}
@@ -1463,6 +1607,16 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               >
                 <Star size={12} aria-hidden="true" />
                 {filters.favorite ? "仅看收藏（已开启）" : "仅看收藏"}
+              </button>
+              <button
+                type="button"
+                className="clip-filter-reset"
+                disabled={!canResetFilters}
+                onClick={resetFilters}
+                data-tip="清除搜索、类型、收藏、来源、时间范围并恢复最近记录排序"
+              >
+                <RotateCcw size={12} aria-hidden="true" />
+                重置筛选
               </button>
               <p className="clip-side-hint">
                 {section === "items"
@@ -1591,6 +1745,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                     <span className="clip-rail-file-text">
                       <span className="clip-rail-file-name">{fileBaseName(path)}</span>
                       <span className="clip-rail-file-meta">{type.label}</span>
+                      <span className="clip-rail-file-path" data-tip={path}>{fileDirName(path)}</span>
                     </span>
                   </div>
                 );

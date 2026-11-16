@@ -13,31 +13,13 @@
 //
 // 持久化：工作台窗口几何由 Rust 侧持久化，alwaysOnTop 目前没有对应设置键；
 // 本轮只做运行期状态，重开工作台回到窗口创建时的 `always_on_top(false)`。
-import { useEffect, useMemo, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+//
+// 2026-11-16：状态与写入抽到 `useWorkbenchPin`，顶栏窄窗的「更多」菜单复用同一份，
+// 避免出现两个置顶入口各自维护状态。本组件对外 API（含 `window` 注入点）不变。
 import { Pin, PinOff } from "lucide-react";
-import { useLocale } from "../hooks/useLocale";
-import { errorMessage } from "../lib/errors";
-import { useUiStore } from "../store/useUiStore";
+import { useWorkbenchPin, type WorkbenchPinHandle } from "./useWorkbenchPin";
 
-/** 只声明本组件真正使用的方法，便于单测注入替身。 */
-export interface WorkbenchPinHandle {
-  isAlwaysOnTop: () => Promise<boolean>;
-  setAlwaysOnTop: (value: boolean) => Promise<void>;
-  /** 可选：Tauri 2 的窗口焦点事件，用于切回窗口时校准状态。 */
-  onFocusChanged?: (
-    handler: (event: { payload: boolean }) => void,
-  ) => Promise<() => void>;
-}
-
-function currentWorkbenchWindow(): WorkbenchPinHandle | null {
-  try {
-    return getCurrentWindow() as unknown as WorkbenchPinHandle;
-  } catch {
-    // 浏览器预览/单测：@tauri-apps/api 会抛「不在 Tauri 环境」。
-    return null;
-  }
-}
+export type { WorkbenchPinHandle };
 
 export default function WorkbenchPinButton({
   window: injected,
@@ -45,76 +27,15 @@ export default function WorkbenchPinButton({
   /** 测试注入点；不传时取当前 WebView 窗口。 */
   window?: WorkbenchPinHandle | null;
 }) {
-  const { t } = useLocale();
-  const win = useMemo<WorkbenchPinHandle | null>(
-    () => (injected !== undefined ? injected : currentWorkbenchWindow()),
-    [injected],
-  );
-  const [pinned, setPinned] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!win) return;
-    let disposed = false;
-    let stop: (() => void) | null = null;
-    const sync = () => {
-      void win
-        .isAlwaysOnTop()
-        .then((value) => {
-          if (!disposed) setPinned(value);
-        })
-        .catch(() => {});
-    };
-    // 先查询再订阅：窗口创建后可能已被其他路径置顶（或恢复），不能假设初始为 false。
-    sync();
-    if (win.onFocusChanged) {
-      void win
-        .onFocusChanged((event) => {
-          // 只关心「重新拿到焦点」；失焦时无需重复查询。
-          if (event.payload) sync();
-        })
-        .then((unlisten) => {
-          if (disposed) unlisten();
-          else stop = unlisten;
-        })
-        .catch(() => {});
-    }
-    return () => {
-      disposed = true;
-      stop?.();
-    };
-  }, [win]);
-
-  const toggle = async () => {
-    if (!win || busy) return;
-    const next = !pinned;
-    setBusy(true);
-    try {
-      await win.setAlwaysOnTop(next);
-      // 以窗口真实状态收尾；部分平台会拒绝或延迟应用置顶。
-      setPinned(await win.isAlwaysOnTop());
-    } catch (error: unknown) {
-      useUiStore.getState().showToast(
-        t("workbench.pinFailed", { error: errorMessage(error) }),
-        { kind: "error", code: "workbench.pinFailed" },
-      );
-      try {
-        setPinned(await win.isAlwaysOnTop());
-      } catch {
-        // 回读也失败时保留上一次已知状态，至少不制造新的假激活态。
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { pinned, busy, toggle, label } = useWorkbenchPin(injected);
 
   return (
     <button
       type="button"
       className={`wb-icon-btn wb-pin-btn${pinned ? " is-on" : ""}`}
-      aria-label={t(pinned ? "workbench.unpinWindow" : "workbench.pinWindow")}
+      aria-label={label}
       aria-pressed={pinned}
-      data-tip={t(pinned ? "workbench.unpinWindow" : "workbench.pinWindow")}
+      data-tip={label}
       data-tauri-drag-region="false"
       aria-busy={busy || undefined}
       onClick={() => void toggle()}

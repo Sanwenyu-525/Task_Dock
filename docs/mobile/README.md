@@ -193,3 +193,11 @@
   API 调试真实发送**未批准**，只交付离线请求工作台，见
   [16-dev-tools-network-review.md](16-dev-tools-network-review.md)。构建与真机结果以
   `tmp/acceptance/mobile-dev-tools/report.md` 为准。
+- 2026-11-16 工具产品整改：按「手机优先做更快/更方便/电脑不方便时也能完成的事」精简为
+  5 个入口——常用片段、图片压缩、取色器、资料与链接、文本处理；API 调试 / 正则 /
+  代码对比撤下普通入口，JSON / 时间戳 / 编解码并入文本处理，GitHub 并入资料与链接。
+  工具页 IA 改为最近使用 / 常用操作 / 图片与素材 / 资料与内容 / 高级工具；旧工作台配置
+  按 `LEGACY_ENTRY_ALIASES` 安全迁移，不改稳定 id、不删数据库。详见
+  [15-workbench-entries.md](15-workbench-entries.md) §12，验收与构建状态见
+  `tmp/acceptance/mobile-tools-product-remediation/report.md`（本轮构建因磁盘阈值
+  ENVIRONMENT BLOCKED，未产出新 APK）。

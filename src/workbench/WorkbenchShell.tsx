@@ -82,6 +82,7 @@ import WorkbenchContextPane from "./WorkbenchContextPane";
 import WorkbenchThemeMenu from "./WorkbenchThemeMenu";
 import WorkbenchPresetMenu from "./WorkbenchPresetMenu";
 import WorkbenchPinButton from "./WorkbenchPinButton";
+import WorkbenchToolbarMore from "./WorkbenchToolbarMore";
 import WorkbenchWindowControls from "./WorkbenchWindowControls";
 import { WorkbenchDetailHostProvider } from "./pageDetail";
 
@@ -124,6 +125,9 @@ import {
   useWorkbenchLayoutReady,
   type WorkbenchRoute,
 } from "../lib/workbenchLayout";
+// 窗口档位唯一事实源：外壳只按窗口宽度决定「顶栏工具收纳 / 右栏显隐」，
+// 页面内部按内容容器宽度响应（见 docs/ui-responsive-layout.md）。
+import { shouldCollapseWorkbenchDetail } from "../lib/layoutMetrics";
 import {
   devProjectList,
   fetchTask,
@@ -431,7 +435,7 @@ export default function WorkbenchShell() {
   // 200 导航 + 320 详情 + 主内容最小宽度超出视口，右栏被裁到屏幕外
   // （2026-11-15 原生窗口验收发现）。窗口放大后自动按用户偏好恢复三栏。
   useEffect(() => {
-    const measure = () => setCompact(window.innerWidth < 1100);
+    const measure = () => setCompact(shouldCollapseWorkbenchDetail(window.innerWidth));
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
@@ -1136,7 +1140,13 @@ export default function WorkbenchShell() {
   const topbarRef = useRef<HTMLElement | null>(null);
   // 顶栏搜索字段同时是全局搜索下拉层的锚点：弹层挂在字段正下方，
   // 不再从页面中央弹出模态框（锚点由 Popover 负责定位/翻转/边界收敛）。
-  const searchAnchorRef = useRef<HTMLButtonElement | null>(null);
+  const searchAnchorRef = useRef<HTMLDivElement | null>(null);
+  // 关闭后焦点回到字段里的触发按钮：锚点容器本身不可聚焦。
+  const searchTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // 搜索输入行由 GlobalSearchDialog portal 进字段本体（输入框只有这一处，
+  // 面板里不再重复）。节点常驻，避免打开瞬间「先挂面板再搬家」重挂输入框、
+  // 把刚拿到的焦点丢掉。
+  const [searchInputHost, setSearchInputHost] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!settingsReady || !routeHydrated || !projectHydrated) return;
     const node = topbarRef.current;
@@ -1847,20 +1857,33 @@ export default function WorkbenchShell() {
             />
           </div>
           <div className="wb-topbar-actions">
-            <button
+            {/* 字段是下拉层的锚点容器：关闭态显示占位/快捷键（按钮），打开态
+                由 GlobalSearchDialog 把输入行 portal 进来，本身变成可输入的搜索框——
+                面板里不再有第二个输入框。 */}
+            <div
               ref={searchAnchorRef}
-              type="button"
               className={`wb-search-field${searchIsOpen ? " is-open" : ""}`}
-              aria-label={t("workbench.search")}
-              aria-haspopup="dialog"
-              aria-expanded={searchIsOpen}
-              data-tip={`${t("workbench.search")} (Ctrl+Shift+F)`}
-              onClick={toggleSearch}
+              role="search"
+              /* 字段边缘（1px 边框）本身不是交互元素：显式退出顶栏拖拽热区，
+                 避免点边框时变成拖窗口。 */
+              data-tauri-drag-region="false"
             >
-              <Search size={13} aria-hidden="true" />
-              <span className="wb-search-ph">{t("workbench.searchPlaceholder")}</span>
-              <kbd className="wb-search-kbd">{t("workbench.searchHint")}</kbd>
-            </button>
+              <div className="wb-search-inline" ref={setSearchInputHost} />
+              <button
+                ref={searchTriggerRef}
+                type="button"
+                className="wb-search-trigger"
+                aria-label={t("workbench.search")}
+                aria-haspopup="dialog"
+                aria-expanded={searchIsOpen}
+                data-tip={`${t("workbench.search")} (Ctrl+Shift+F)`}
+                onClick={toggleSearch}
+              >
+                <Search size={13} aria-hidden="true" />
+                <span className="wb-search-ph">{t("workbench.searchPlaceholder")}</span>
+                <kbd className="wb-search-kbd">{t("workbench.searchHint")}</kbd>
+              </button>
+            </div>
             <DropdownMenu
               menuLabel={t("workbench.createAria")}
               placement="bottom-end"
@@ -1926,13 +1949,18 @@ export default function WorkbenchShell() {
             aria-label={t("workbench.titlebarTools")}
             data-tauri-drag-region="false"
           >
-            {/* 明暗主题：顶栏即标题栏，切主题不该只能绕到设置页（与主窗口
-                标题栏的「明暗」菜单同一语义，写库走同一设置管道）。 */}
-            <WorkbenchThemeMenu />
-            {/* 视觉主题（柔光玻璃 / 梦幻渐变）：与明暗正交，改的是
-                `visual_preset`；工作台圆角随预设变化由 windowFrame 重算。 */}
-            <WorkbenchPresetMenu />
-            <WorkbenchPinButton />
+            {/* 外观工具组：宽窗口内联显示；窄窗口（<900 DIP）由 CSS 档位整体
+                换成右侧的「更多」菜单，功能与写入管道不变。 */}
+            <div className="wb-toolbar-appearance">
+              {/* 明暗主题：顶栏即标题栏，切主题不该只能绕到设置页（与主窗口
+                  标题栏的「明暗」菜单同一语义，写库走同一设置管道）。 */}
+              <WorkbenchThemeMenu />
+              {/* 视觉主题（柔光玻璃 / 梦幻渐变）：与明暗正交，改的是
+                  `visual_preset`；工作台圆角随预设变化由 windowFrame 重算。 */}
+              <WorkbenchPresetMenu />
+              <WorkbenchPinButton />
+            </div>
+            <WorkbenchToolbarMore />
           </div>
           <WorkbenchWindowControls />
         </header>
@@ -2115,7 +2143,11 @@ export default function WorkbenchShell() {
           与 Rust `window_cursor::GRIP_CSS`），不新增第二套手势实现。 */}
       <WindowResizeGrips />
 
-      <GlobalSearchDialog anchorRef={searchAnchorRef} />
+      <GlobalSearchDialog
+        anchorRef={searchAnchorRef}
+        inputHost={searchInputHost}
+        returnFocusRef={searchTriggerRef}
+      />
       <MobilePairingDialog />
       <TaskContextDrawer />
       <ClipboardDrawer />

@@ -640,8 +640,19 @@ export interface ClipboardFilter {
   favorite?: boolean;
   groupId?: string;
   taskId?: string;
+  /** 精确匹配来源进程（如 chrome.exe）；展示名由 UI 换算。 */
+  sourceApp?: string;
+  /** 最近 N 天；不传/0 表示不限。 */
+  recentDays?: number;
+  /** recent（默认）| most_used */
+  sort?: "recent" | "most_used";
   limit?: number;
   offset?: number;
+}
+
+export interface ClipboardSourceOption {
+  app: string;
+  count: number;
 }
 
 export interface CopyReport {
@@ -1925,10 +1936,15 @@ export const clipboardView = (filter?: ClipboardFilter) =>
       favorite: filter?.favorite ?? false,
       groupId: filter?.groupId ?? null,
       taskId: filter?.taskId ?? null,
+      sourceApp: filter?.sourceApp ?? null,
+      recentDays: filter?.recentDays ?? null,
+      sort: filter?.sort ?? null,
       limit: filter?.limit ?? null,
       offset: filter?.offset ?? null,
     },
   });
+export const clipboardSources = (limit = 12) =>
+  invoke<ClipboardSourceOption[]>("clipboard_sources", { limit });
 export const clipboardItem = (itemId: string) =>
   invoke<ClipboardItem>("clipboard_item", { itemId });
 export const clipboardGroup = (groupId: string) =>

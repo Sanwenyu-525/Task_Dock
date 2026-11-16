@@ -44,6 +44,7 @@ pub mod task_analytics;
 pub mod user_preferences;
 mod widget_windows;
 mod window_cursor;
+mod window_layout;
 mod window_shadow;
 mod window_shape;
 mod winproc;
@@ -1400,6 +1401,7 @@ pub fn run() {
             commands::clipboard::clipboard_group_page,
             commands::clipboard::clipboard_group_item_position,
             commands::clipboard::clipboard_stats,
+            commands::clipboard::clipboard_sources,
             commands::clipboard::clipboard_thumb,
             commands::clipboard::clipboard_preview,
             commands::clipboard::clipboard_image,

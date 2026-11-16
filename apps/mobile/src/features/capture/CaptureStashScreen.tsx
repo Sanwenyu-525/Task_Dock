@@ -37,7 +37,7 @@ import { useToast } from "../../feedback/ToastProvider";
 import { useToastBottomAnchor } from "../../feedback/ToastLayoutProvider";
 import * as repo from "../../db/captureAssets";
 import { formatRelative } from "../../domain/taskQuery";
-import { describeError } from "../../lib/errors";
+import { AppError, describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
 import { useKeyboardHeight } from "../../lib/keyboard";
 import type { Nav } from "../../lib/nav";
@@ -456,6 +456,14 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         await load();
         bumpCaptureRevision();
         showToast(`已删除 ${ids.length} 个本机素材`, "success");
+      } catch (error) {
+        // 删除是逐条进行的：失败前已删除的条目保留删除结果，但绝不能把整批显示成功。
+        showToast(`删除本机素材失败：${describeError(error)}`, "danger");
+        try {
+          await load();
+        } catch {
+          // 刷新失败已由页面错误态/下一次手动刷新处理；这里不能再抛未处理 Promise。
+        }
       } finally {
         setBusy(false);
       }
@@ -642,6 +650,9 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         );
         showToast(feedback.message, feedback.tone);
         exitSelection();
+      } catch (error) {
+        // 页面级兜底：sendToDesktop/repo.load 自身失败时也必须让用户看到原因并释放 busy。
+        showToast(`发送未完成：${describeError(error)}`, "danger");
       } finally {
         cancelTokenRef.current = null;
         setCancelable(false);
@@ -719,14 +730,56 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   );
 
   const saveDetail = useCallback(async () => {
-    if (!detail) return;
+    if (!detail || busy) return;
     const name = nameDraft.trim();
-    if (name && name !== detail.name) await repo.renameAsset(detail.id, name);
-    if (noteDraft !== detail.note) await repo.updateAssetNote(detail.id, noteDraft);
-    await load();
-    bumpCaptureRevision();
-    showToast("已保存修改", "success");
-  }, [detail, load, nameDraft, noteDraft, showToast]);
+    let nameSaved = false;
+    setBusy(true);
+    setBusyLabel("保存修改…");
+    try {
+      if (name && name !== detail.name) {
+        try {
+          await repo.renameAsset(detail.id, name);
+          nameSaved = true;
+        } catch (error) {
+          throw new AppError("storage", `文件名保存失败：${describeError(error)}`, error);
+        }
+      }
+      if (noteDraft !== detail.note) {
+        try {
+          await repo.updateAssetNote(detail.id, noteDraft);
+        } catch (error) {
+          throw new AppError(
+            "storage",
+            `${nameSaved ? "文件名已保存，但" : ""}备注保存失败：${describeError(error)}`,
+            error,
+          );
+        }
+      }
+      try {
+        await load();
+      } catch (error) {
+        throw new AppError("storage", `修改已写入，但刷新素材列表失败：${describeError(error)}`, error);
+      }
+      bumpCaptureRevision();
+      setDetail((prev) =>
+        prev ? { ...prev, name: name || prev.name, note: noteDraft } : prev,
+      );
+      showToast("已保存修改", "success");
+    } catch (error) {
+      showToast(describeError(error), "danger");
+      if (nameSaved) {
+        setDetail((prev) => (prev ? { ...prev, name } : prev));
+      }
+      try {
+        await load();
+      } catch {
+        // 刷新失败已经在上面的错误提示里体现；这里不再抛第二个未处理异常。
+      }
+    } finally {
+      setBusy(false);
+      setBusyLabel("");
+    }
+  }, [busy, detail, load, nameDraft, noteDraft, showToast]);
 
   const openFile = useCallback(
     async (asset: repo.CaptureAsset) => {
@@ -1203,10 +1256,14 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                     accessibilityRole="button"
                     onPress={() => {
                       void (async () => {
-                        await repo.setAssetFavorite(detail.id, !detail.favorite);
-                        await load();
-                        bumpCaptureRevision();
-                        setDetail({ ...detail, favorite: !detail.favorite });
+                        try {
+                          await repo.setAssetFavorite(detail.id, !detail.favorite);
+                          await load();
+                          bumpCaptureRevision();
+                          setDetail({ ...detail, favorite: !detail.favorite });
+                        } catch (error) {
+                          showToast(`更新收藏状态失败：${describeError(error)}`, "danger");
+                        }
                       })();
                     }}
                     style={[styles.smallButton, { backgroundColor: tokens.track }]}

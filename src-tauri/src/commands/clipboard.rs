@@ -47,6 +47,14 @@ pub fn clipboard_view(
 }
 
 #[tauri::command]
+pub fn clipboard_sources(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    limit: Option<i64>,
+) -> AppResult<Vec<store::ClipboardSourceOption>> {
+    store::list_source_apps(&runtime(&state).db, limit.unwrap_or(12))
+}
+
+#[tauri::command]
 pub fn clipboard_item(
     state: State<'_, Arc<ClipboardRuntime>>,
     item_id: String,

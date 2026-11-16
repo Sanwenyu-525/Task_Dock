@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import type { ClipboardItem } from "../../lib/bridge";
 import {
-  clipSource, clipboardTime, fileBaseName, formatBytes, kindLabel, linkSummary,
+  clipSource, clipboardTime, fileBaseName, fileDirName, formatBytes, kindLabel, linkSummary,
 } from "../../lib/clipboardUi";
 import { fileTypeFromName } from "../../lib/fileTypeUi";
 import type { ClipboardDensity } from "../../lib/clipboardDensity";
@@ -115,6 +115,7 @@ export default function ClipboardItemCard({
   const link = item.kind === "url" ? linkSummary(item.preview) : null;
   const files = item.file_paths;
   const fileRows = files.slice(0, fileRowsForDensity(density));
+  const firstFileDir = files[0] ? fileDirName(files[0]) : "";
   const openMain = locked ? undefined : (onPreview ?? onDetail);
 
   const moreItems = [
@@ -298,6 +299,11 @@ export default function ClipboardItemCard({
               <span className="clip-file-row clip-file-more">
                 <Files size={12} aria-hidden="true" />
                 还有 {files.length - fileRows.length} 个文件
+              </span>
+            )}
+            {firstFileDir && (
+              <span className="clip-file-note clip-file-dir" data-tip={firstFileDir}>
+                来源目录 {firstFileDir}
               </span>
             )}
             <span className="clip-file-note">仅记录路径，删除历史不会删除本地文件</span>

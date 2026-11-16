@@ -475,4 +475,28 @@ describe("下拉形态（工作台顶栏锚点）", () => {
     fireEvent.pointerDown(document.body);
     expect(useGlobalSearchStore.getState().open).toBe(false);
   });
+
+  it("提供输入宿主时：输入框搬进顶栏字段，面板不再重复搜索框", () => {
+    openWithResults();
+    const anchorRef = mountAnchor();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    render(<GlobalSearchDialog anchorRef={anchorRef} inputHost={host} />);
+    const input = screen.getByRole("textbox", { name: "搜索关键词" });
+    expect(host.contains(input)).toBe(true);
+    // 面板里不再有第二份输入行
+    expect(document.querySelector(".gs-dropdown-panel .gs-input-row")).toBeNull();
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("输入行在字段里时 ↑↓ 仍走同一套键盘处理（事件不从弹层冒泡）", () => {
+    openWithResults();
+    const anchorRef = mountAnchor();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    render(<GlobalSearchDialog anchorRef={anchorRef} inputHost={host} />);
+    const before = useGlobalSearchStore.getState().activeIndex;
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "搜索关键词" }), { key: "ArrowDown" });
+    expect(useGlobalSearchStore.getState().activeIndex).toBe(before + 1);
+  });
 });

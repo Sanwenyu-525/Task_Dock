@@ -15,6 +15,9 @@ export function QuickTile({
   onPress,
   onLongPress,
   badge,
+  width,
+  height,
+  labelLineHeight,
 }: {
   icon: IconName;
   label: string;
@@ -23,6 +26,15 @@ export function QuickTile({
   onLongPress?: () => void;
   /** 真实计数徽标（没有计数时不要传） */
   badge?: number;
+  /**
+   * 固定宽度：首页横向轨道由 lib/entryRail 统一算出磁贴宽度传进来。
+   * 不传时保持原来的「占满父容器一格」（flex:1）行为。
+   */
+  width?: number;
+  /** 固定高度：轨道高度只跟字体缩放有关，与入口数量无关 */
+  height?: number;
+  /** 名称行高：字体放大时显式抬高，避免两行标签被裁掉半行 */
+  labelLineHeight?: number;
 }) {
   const { tokens } = useTheme();
 
@@ -32,8 +44,16 @@ export function QuickTile({
       onLongPress={onLongPress}
       accessibilityLabel={label}
       accessibilityHint={onLongPress ? "长按进入编辑模式，可调整顺序或移除" : undefined}
-      style={styles.press}
-      contentStyle={[styles.tile, { backgroundColor: tokens.accentWash }]}
+      style={
+        width != null
+          ? { width, flexGrow: 0, flexShrink: 0, flexBasis: "auto" }
+          : styles.press
+      }
+      contentStyle={[
+        styles.tile,
+        { backgroundColor: tokens.accentWash },
+        height != null ? { height } : null,
+      ]}
       scaleTo={0.95}
     >
       <View>
@@ -46,7 +66,14 @@ export function QuickTile({
           </View>
         ) : null}
       </View>
-      <Text numberOfLines={2} style={[styles.label, { color: tokens.text }]}>
+      <Text
+        numberOfLines={2}
+        style={[
+          styles.label,
+          { color: tokens.text },
+          labelLineHeight != null ? { lineHeight: labelLineHeight } : null,
+        ]}
+      >
         {label}
       </Text>
     </PressableScale>

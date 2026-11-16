@@ -36,6 +36,13 @@ export function fileBaseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+/** 文件所在目录（用于卡片/右栏的路径摘要）；统一显示为 / 分隔，超长由 CSS 省略。 */
+export function fileDirName(path: string): string {
+  const parts = path.split(/[\\/]/);
+  parts.pop();
+  return parts.join("/");
+}
+
 export function groupStatusLabel(status: string): string {
   if (status === "collecting") return "收集中";
   if (status === "closed") return "已结束";

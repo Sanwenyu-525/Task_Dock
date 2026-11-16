@@ -164,6 +164,22 @@
   --layout-page-pad: 14px;
   /* 列表内图片预览的最大高度：宽屏用上限，窄屏用下限。 */
   --layout-media-max-h: 240px;
+  /* ── 窗口几何（DIP，2026-11-16）────────────────────────────────
+     与 `src-tauri/src/window_layout.rs`、`src/lib/layoutMetrics.ts` 三处一一对应，
+     `layoutMetrics.test.ts` 会校验三者一致。用途只有两个：
+     1) 文档/测试的机器可读事实源；2) 极少数需要按窗口下限预留空间的布局。
+     **禁止**把它当成断点塞进 `@media`（CSS 变量在媒体查询里不生效）。 */
+  --layout-window-default-w: 1200px;
+  --layout-window-default-h: 760px;
+  --layout-window-min-w: 960px;
+  --layout-window-min-h: 600px;
+  --layout-window-floor-w: 720px;
+  --layout-window-floor-h: 480px;
+  /* 顶栏空间分配（窗口 chrome 专用；页面内容不要引用） */
+  --layout-topbar-height: 56px;
+  --layout-topbar-context-w: 210px;
+  --layout-topbar-context-min: 150px;
+  --layout-search-min: 132px;
   color-scheme: light;
 }
 
@@ -6642,6 +6658,13 @@ code {
   font-size: 9px;
   color: var(--text-tertiary);
   opacity: 0.78;
+}
+
+/* 路径摘要：只占一行，超长省略；完整路径放在 data-tip。 */
+.clip-file-dir {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .clip-actions {

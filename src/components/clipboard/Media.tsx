@@ -416,8 +416,9 @@ export function ClipboardHeroImage({
   label?: string;
 }) {
   const preview = usePreviewImage(itemId, enabled);
-  // 预览缺失/失败时才请求 192px 缩略图兜底；成功路径不重复发起缩略图 IPC。
-  const thumb = useThumbnail(itemId, hasThumb && enabled && preview.state !== "loading");
+  // 只有预览失败/缺失时才请求 192px 缩略图兜底；预览成功路径不重复发起缩略图 IPC。
+  const needThumbFallback = preview.state !== "loading" && !preview.url;
+  const thumb = useThumbnail(itemId, hasThumb && enabled && needThumbFallback);
   const src = preview.state === "ready" ? preview.url : thumb;
   const loading = preview.state === "loading" && !thumb;
   const body = src ? (

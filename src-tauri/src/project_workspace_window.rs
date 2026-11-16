@@ -26,6 +26,7 @@ use crate::commands::settings::is_rect_mostly_visible;
 use crate::commands::settings::WindowRect;
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
+use crate::window_layout;
 
 pub const WINDOW_LABEL: &str = "workspace";
 pub const EVENT_WINDOW_CLOSED: &str = "project-workspace-window-closed";
@@ -500,12 +501,10 @@ fn emit_nav_ack_event(
 
 const SETTING_RECT: &str = "workspace_window_rect";
 const MAIN_LABEL: &str = "main";
-const DEFAULT_WIDTH: f64 = 1180.0;
-const DEFAULT_HEIGHT: f64 = 760.0;
-const MIN_WIDTH: f64 = 880.0;
-const MIN_HEIGHT: f64 = 600.0;
-const EDGE_MARGIN: i32 = 24;
 const SAVE_THROTTLE: Duration = Duration::from_millis(500);
+// 窗口尺寸/最小尺寸/屏幕降级统一由 `window_layout` 给出（唯一事实源）：
+// 1180×760 的旧默认与 880×600 的旧最小尺寸在 125% DPI 下实际只剩 704/480 DIP，
+// 是顶栏控件挤压与三栏重叠的根因。这里不再保留第二份数字。
 
 /// 启动揭示超时：窗口在启动时**隐藏创建**，等前端首帧就绪（`workbench_ui_ready`）
 /// 后才 show，避免用户先看到空白窗口。开发态 Vite 冷加载可能 3–6s，因此超时给到
@@ -714,11 +713,27 @@ fn visible_area(rect: &WorkspaceGeometry, monitor: &tauri::Monitor) -> f64 {
 }
 
 /// 把保存几何收敛进工作区：尺寸不超过工作区（留边），位置不越界。
-fn clamp_into_area(area: WorkArea, rect: WorkspaceGeometry) -> (PhysicalSize<u32>, PhysicalPosition<i32>) {
-    let max_w = (area.width - EDGE_MARGIN * 2).max(MIN_WIDTH as i32);
-    let max_h = (area.height - EDGE_MARGIN * 2).max(MIN_HEIGHT as i32);
-    let w = (rect.w as i32).clamp(MIN_WIDTH as i32, max_w);
-    let h = (rect.h as i32).clamp(MIN_HEIGHT as i32, max_h);
+///
+/// `area` 与 `rect` 是**物理像素**，最小尺寸是 DIP：必须先用 `scale` 把最小尺寸
+/// 换算成物理像素再比较，否则 125%/150% 缩放下窗口会被恢复到小于最小尺寸
+/// （历史缺陷：880 DIP 的最小值套在物理矩形上，实际只等于 704 DIP@125%）。
+fn clamp_into_area(
+    area: WorkArea,
+    rect: WorkspaceGeometry,
+    scale: f64,
+) -> (PhysicalSize<u32>, PhysicalPosition<i32>) {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let plan = window_layout::plan_for_area(Some((
+        area.width as f64 / scale,
+        area.height as f64 / scale,
+    )));
+    let margin = (window_layout::WORK_AREA_MARGIN * scale).round() as i32;
+    let max_w = (area.width - margin * 2).max(1);
+    let max_h = (area.height - margin * 2).max(1);
+    let min_w = ((plan.min.width * scale).round() as i32).min(max_w);
+    let min_h = ((plan.min.height * scale).round() as i32).min(max_h);
+    let w = (rect.w as i32).clamp(min_w.max(1), max_w);
+    let h = (rect.h as i32).clamp(min_h.max(1), max_h);
     let max_x = area.x + (area.width - w).max(0);
     let max_y = area.y + (area.height - h).max(0);
     let x = rect.x.clamp(area.x, max_x);
@@ -727,9 +742,15 @@ fn clamp_into_area(area: WorkArea, rect: WorkspaceGeometry) -> (PhysicalSize<u32
 }
 
 fn restore_geometry(app: &AppHandle, win: &WebviewWindow, db: &Db) {
+    let scale = win.scale_factor().unwrap_or(1.0);
     let Some(saved) = read_geometry(db) else {
-        // 首次打开：默认尺寸居中（仅在没有保存几何时执行，避免覆盖用户摆放）。
-        let _ = win.set_size(PhysicalSize::new(DEFAULT_WIDTH as u32, DEFAULT_HEIGHT as u32));
+        // 首次打开：按**当前显示器工作区**给出默认尺寸（DIP），再居中。
+        // 旧实现按物理像素写 1180×760：125% 缩放下实际是 944×608 DIP，
+        // 首次打开就低于最小尺寸，窗口被系统钳制后位置还会偏离中心。
+        let plan = window_layout::plan_for_window(win);
+        if let Err(error) = win.set_size(plan.default_logical()) {
+            tracing::warn!("首次打开设置工作台默认尺寸失败: {error}");
+        }
         let _ = win.center();
         return;
     };
@@ -742,15 +763,16 @@ fn restore_geometry(app: &AppHandle, win: &WebviewWindow, db: &Db) {
         saved
     } else {
         // 完全屏外：保持尺寸但放到主屏工作区左上角（不把窗口丢到用户找不到的位置）。
+        let margin = (window_layout::WORK_AREA_MARGIN * scale).round() as i32;
         WorkspaceGeometry {
-            x: area.x + EDGE_MARGIN,
-            y: area.y + EDGE_MARGIN,
+            x: area.x + margin,
+            y: area.y + margin,
             w: saved.w,
             h: saved.h,
             maximized: saved.maximized,
         }
     };
-    let (size, position) = clamp_into_area(area, target);
+    let (size, position) = clamp_into_area(area, target, scale);
     if let Err(error) = win.set_size(size) {
         tracing::warn!("恢复工作空间窗口尺寸失败: {error}");
     }
@@ -1180,6 +1202,14 @@ fn open_or_focus_workbench(
     if matches!(reveal, OpenReveal::WhenReady) {
         STARTUP_REVEAL.store(true, Ordering::SeqCst);
     }
+    // 窗口尺寸规范：默认 1200×760 DIP、最小 960×600 DIP；显示器可用区不足时
+    // 由 `window_layout` 动态降级（小屏仍能打开，布局交给响应式接管）。
+    let plan = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| window_layout::plan_for_monitor(&monitor))
+        .unwrap_or_else(|| window_layout::plan_for_area(None));
     let win = match WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
@@ -1205,8 +1235,8 @@ fn open_or_focus_workbench(
     .always_on_top(false)
     .skip_taskbar(false)
     .visible(false)
-    .inner_size(DEFAULT_WIDTH, DEFAULT_HEIGHT)
-    .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+    .inner_size(plan.default.width, plan.default.height)
+    .min_inner_size(plan.min.width, plan.min.height)
     .build()
     {
         Ok(win) => win,
@@ -1258,6 +1288,10 @@ fn open_or_focus_workbench(
     // 新窗口从干净状态开始：上一次创建遗留的最大化待办不能带到这里。
     STARTUP_MAXIMIZE.store(false, Ordering::SeqCst);
     restore_geometry(app, &win, db);
+    // 恢复几何之后再落一次最小尺寸：保存值可能来自更小 DPI 的显示器，
+    // 这里以当前显示器可用区为准收敛，并把「跨屏/改缩放」的重算挂上。
+    window_layout::apply_window_metrics(&win);
+    window_layout::watch_monitor_changes(&win);
     match reveal {
         OpenReveal::Immediate => {
             if let Err(e) = reveal_workbench(&win) {
@@ -1615,6 +1649,7 @@ mod tests {
                 h: 2000,
                 maximized: false,
             },
+            1.0,
         );
         assert!(size.width as i32 <= area().width);
         assert!(size.height as i32 <= area().height);
@@ -1633,11 +1668,51 @@ mod tests {
             h: 700,
             maximized: false,
         };
-        let (size, pos) = clamp_into_area(area(), rect);
+        let (size, pos) = clamp_into_area(area(), rect, 1.0);
         assert_eq!(size.width, 1000);
         assert_eq!(size.height, 700);
         assert_eq!(pos.x, -1800);
         assert_eq!(pos.y, 100);
+    }
+
+    #[test]
+    fn clamp_geometry_applies_min_size_in_dip_at_scale() {
+        // 125% 缩放：保存的 1000×700 物理 = 800×560 DIP，低于 960×600 DIP 最小尺寸。
+        // 必须放大到 1200×750 物理（= 960×600 DIP），不能把 1000×700 原样恢复。
+        let rect = WorkspaceGeometry {
+            x: 10,
+            y: 10,
+            w: 1000,
+            h: 700,
+            maximized: false,
+        };
+        let (size, _pos) = clamp_into_area(area(), rect, 1.25);
+        assert_eq!(size.width, 1200);
+        assert_eq!(size.height, 750);
+    }
+
+    #[test]
+    fn clamp_geometry_respects_small_work_area_at_scale() {
+        // 800×600 工作区（少量像素的远程桌面）：最小尺寸必须降到可用区，
+        // 而不是把 960×600 的 DIP 最小值强行塞进去。
+        let small = WorkArea {
+            x: 0,
+            y: 0,
+            width: 1024,
+            height: 768,
+        };
+        let rect = WorkspaceGeometry {
+            x: 0,
+            y: 0,
+            w: 4000,
+            h: 3000,
+            maximized: false,
+        };
+        let (size, pos) = clamp_into_area(small, rect, 1.0);
+        assert!(size.width <= 1024);
+        assert!(size.height <= 768);
+        assert!(pos.x + size.width as i32 <= 1024);
+        assert!(pos.y + size.height as i32 <= 768);
     }
 
     #[test]

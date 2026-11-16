@@ -725,12 +725,12 @@ const shim = `
   const clipFiles1 = clipExtra({
     id: "ci13", kind: "files", app: "explorer.exe", win: "下载", ago: 16,
     preview: "3 个文件", title: "季度报告.docx 等 3 个文件",
-    files: ["C:\\Users\\preview\\Downloads\\季度报告.docx", "C:\\Users\\preview\\Downloads\\预算.xlsx", "C:\\Users\\preview\\Downloads\\立项说明.pdf"],
+    files: ["C:/Users/preview/Downloads/季度报告.docx", "C:/Users/preview/Downloads/预算.xlsx", "C:/Users/preview/Downloads/立项说明.pdf"],
   });
   const clipFiles2 = clipExtra({
     id: "ci14", kind: "files", app: "explorer.exe", win: "下载", ago: 17,
     preview: "2 个文件", title: "评审记录.md 等 2 个文件",
-    files: ["C:\\Users\\preview\\Downloads\\评审记录.md", "C:\\Users\\preview\\Downloads\\截图清单.txt"],
+    files: ["C:/Users/preview/Downloads/评审记录.md", "C:/Users/preview/Downloads/截图清单.txt"],
   });
   const clipSingle = clipExtra({
     id: "ci15", kind: "text", app: "notepad.exe", win: "无标题 - 记事本", ago: 22,
@@ -751,6 +751,14 @@ const shim = `
   const clipLongText3 = clipExtra({
     id: "ci19", kind: "text", app: "WINWORD.EXE", win: "验收报告.md", ago: 10,
     title: "验收报告：本轮改动的边界与结论",
+    text: [
+      "一、响应式：查询容器移到 .workspace-split-frame，修复容器查询自引用；窄窗改为上下分区，分隔条不再占位。",
+      "二、卡片：舒适态单卡至少 300px，图片预览 160–240px，正文 3–6 行；紧凑态 240px 起，列表态单列。",
+      "三、事件：卡片根节点不再是按钮，主预览改真实按钮，Enter 只触发一次；辅助动作统一进菜单。",
+      "四、性能：640px 预览按可视区懒加载，48 条 LRU；192px 缩略图兜底；删除与清空同步失效缓存。",
+      "五、待验：Windows 真机剪贴板链路、125%/150% DPI、超宽窗口列数上限仍以真实截图为准。",
+      "六、结论：前端单测与类型检查通过；集中构建与截图证据见 tmp/acceptance/clipboard-workbench-responsive。",
+    ].join("\\n"),
     preview: [
       "一、响应式：查询容器移到 .workspace-split-frame，修复容器查询自引用；窄窗改为上下分区，分隔条不再占位。",
       "二、卡片：舒适态单卡至少 300px，图片预览 160–240px，正文 3–6 行；紧凑态 240px 起，列表态单列。",
@@ -764,12 +772,12 @@ const shim = `
     id: "ci18", kind: "files", app: "explorer.exe", win: "发布包", ago: 15, bytes: 0,
     preview: "6 个文件", title: "taskdock-0.5.0-x64.zip 等 6 个文件",
     files: [
-      "C:\\Users\\preview\\Downloads\\taskdock-0.5.0-x64.zip",
-      "C:\\Users\\preview\\Downloads\\发布说明-v0.5.md",
-      "C:\\Users\\preview\\Downloads\\签名校验清单.csv",
-      "C:\\Users\\preview\\Downloads\\安装包截图.png",
-      "C:\\Users\\preview\\Downloads\\回归录屏.mp4",
-      "C:\\Users\\preview\\Downloads\\build-2026-11-16.log",
+      "C:/Users/preview/Downloads/taskdock-0.5.0-x64.zip",
+      "C:/Users/preview/Downloads/发布说明-v0.5.md",
+      "C:/Users/preview/Downloads/签名校验清单.csv",
+      "C:/Users/preview/Downloads/安装包截图.png",
+      "C:/Users/preview/Downloads/回归录屏.mp4",
+      "C:/Users/preview/Downloads/build-2026-11-16.log",
     ],
   });
   // 640px 预览规格占位图（真实链路由后端生成并缓存 PNG）。按条目的真实宽高
@@ -1539,14 +1547,29 @@ const shim = `
         const kind = f.kind || "all";
         const favorite = f.favorite === true;
         const search = (f.search || "").trim().toLowerCase();
+        const sourceApp = (f.sourceApp || "").trim();
+        const recentDays = Number(f.recentDays || 0);
+        const cutoff = recentDays > 0 ? Date.now() - recentDays * 86400000 : 0;
         const filtered = clipboardItems.filter((i) => {
           if (kind !== "all" && i.kind !== kind) return false;
           if (favorite && !i.favorite) return false;
+          if (sourceApp && i.source_app !== sourceApp) return false;
+          if (cutoff > 0) {
+            const seen = Date.parse(i.last_seen_at || i.created_at || "");
+            if (!Number.isFinite(seen) || seen < cutoff) return false;
+          }
           if (!search) return true;
           const hay = [i.title, i.preview, i.text, i.source_app, i.source_title]
             .filter(Boolean).join(" ").toLowerCase();
           return hay.includes(search);
         });
+        if (f.sort === "most_used") {
+          filtered.sort((a, b) => {
+            if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+            if (a.copy_count !== b.copy_count) return (b.copy_count || 0) - (a.copy_count || 0);
+            return Date.parse(b.last_seen_at || "") - Date.parse(a.last_seen_at || "");
+          });
+        }
         const offset = Math.max(0, f.offset ?? 0);
         const limit = Math.max(1, f.limit ?? 200);
         return {
@@ -1556,6 +1579,18 @@ const shim = `
           stats: { ...clipboardStats, items: clipboardItems.length, groups: clipboardGroups.length },
           total_items: filtered.length,
         };
+      }
+      case "clipboard_sources": {
+        const counts = new Map();
+        for (const item of clipboardItems) {
+          const app = (item.source_app || "").trim();
+          if (!app) continue;
+          counts.set(app, (counts.get(app) || 0) + 1);
+        }
+        return [...counts.entries()]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, Math.max(1, Math.min(50, args?.limit ?? 12)))
+          .map(([app, count]) => ({ app, count }));
       }
       case "clipboard_stats": return { ...clipboardStats, items: clipboardItems.length, groups: clipboardGroups.length };
       case "clipboard_item": return clipboardItems.find((i) => i.id === args?.itemId) ?? clipboardItems[0];

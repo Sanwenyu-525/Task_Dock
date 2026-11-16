@@ -32,6 +32,14 @@ const page = vi.hoisted(() => ({
   sentOptions: null as Record<string, unknown> | null,
   resolveSend: null as ((value: unknown) => void) | null,
   sendCalls: 0,
+  toasts: [] as string[],
+  renameError: null as Error | null,
+  noteError: null as Error | null,
+  reloadError: null as Error | null,
+  renameCalls: 0,
+  noteCalls: 0,
+  deleteError: null as Error | null,
+  deleteCalls: 0,
 }));
 
 vi.mock("react-native", async () => {
@@ -49,6 +57,17 @@ vi.mock("react-native", async () => {
   };
   const host = (tag: string) => (props: Record<string, unknown>) =>
     React.createElement(tag, clean(props), props.children as React.ReactNode);
+  const TextInput = (props: Record<string, unknown>) =>
+    React.createElement("input", {
+      ...clean(props),
+      value: props.value as string | undefined,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
+        (props.onChangeText as ((value: string) => void) | undefined)?.(event.target.value);
+      },
+      onBlur: () => {
+        (props.onEndEditing as (() => void) | undefined)?.();
+      },
+    });
   const Pressable = (props: Record<string, unknown>) =>
     React.createElement(
       "button",
@@ -62,7 +81,7 @@ vi.mock("react-native", async () => {
   return {
     View: host("div"),
     Text: host("span"),
-    TextInput: host("input"),
+    TextInput,
     ScrollView: host("div"),
     Image: host("img"),
     Pressable,
@@ -174,7 +193,9 @@ vi.mock("../../../components/SegmentedControl", async () => {
 vi.mock("../../../feedback/ToastProvider", () => {
   // 必须返回稳定引用：页面 load 的 useCallback 依赖 showToast，若每次 render 都新建函数，
   // Effect 会反复触发 load 并造成页面级测试超时。
-  const showToast = () => undefined;
+  const showToast = (message: string) => {
+    page.toasts.push(message);
+  };
   return { useToast: () => ({ showToast }), useToastScope: () => "global" };
 });
 vi.mock("../../../components/icons/AppIcon", async () => {
@@ -216,11 +237,25 @@ vi.mock("../../../db/captureAssets", async () => {
     listStagedAssets: async () => page.stagedAssets,
     listAllDestinations: async () => [],
     listDestinations: async () => [],
-    getAsset: async () => asset,
+    getAsset: async () => {
+      if (page.reloadError) throw page.reloadError;
+      return asset;
+    },
     setDestination: vi.fn(async () => undefined),
-    renameAsset: vi.fn(async () => undefined),
-    updateAssetNote: vi.fn(async () => undefined),
-    deleteAsset: vi.fn(async () => []),
+    renameAsset: vi.fn(async () => {
+      page.renameCalls += 1;
+      if (page.renameError) throw page.renameError;
+    }),
+    updateAssetNote: vi.fn(async () => {
+      page.noteCalls += 1;
+      if (page.noteError) throw page.noteError;
+    }),
+    setAssetFavorite: vi.fn(async () => undefined),
+    deleteAsset: vi.fn(async () => {
+      page.deleteCalls += 1;
+      if (page.deleteError) throw page.deleteError;
+      return [];
+    }),
   };
 });
 
@@ -261,6 +296,20 @@ import { CaptureReviewScreen } from "../CaptureReviewScreen";
 
 const nav = { back: vi.fn(), push: vi.fn() } as never;
 
+function resetPage() {
+  page.sentOptions = null;
+  page.resolveSend = null;
+  page.sendCalls = 0;
+  page.toasts = [];
+  page.renameError = null;
+  page.noteError = null;
+  page.reloadError = null;
+  page.renameCalls = 0;
+  page.noteCalls = 0;
+  page.deleteError = null;
+  page.deleteCalls = 0;
+}
+
 function anyButton(container: HTMLElement, text: string): HTMLButtonElement {
   const found = [...container.querySelectorAll("button")].find((item) =>
     item.textContent?.includes(text),
@@ -277,12 +326,47 @@ async function flush() {
   });
 }
 
+async function changeInput(host: HTMLElement, label: string, value: string) {
+  const input = host.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement | null;
+  if (!input) throw new Error(`input not found: ${label}`);
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  if (!setter) throw new Error("value setter unavailable");
+  await act(async () => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await flush();
+}
+
+async function mountReview() {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  await act(async () => {
+    root.render(React.createElement(CaptureReviewScreen, { nav }));
+  });
+  await flush();
+  return { host, root };
+}
+
+async function mountStash() {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  await act(async () => {
+    root.render(React.createElement(CaptureStashScreen, { nav }));
+  });
+  await flush();
+  return { host, root };
+}
+
 describe("CaptureStashScreen 取消上传接线", () => {
   beforeEach(() => {
     page.stagedAssets = [];
-    page.sentOptions = null;
-    page.resolveSend = null;
-    page.sendCalls = 0;
+    resetPage();
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   });
   afterEach(() => {
@@ -336,9 +420,7 @@ describe("CaptureStashScreen 取消上传接线", () => {
 describe("CaptureReviewScreen 取消上传接线", () => {
   beforeEach(() => {
     page.stagedAssets = [page.asset];
-    page.sentOptions = null;
-    page.resolveSend = null;
-    page.sendCalls = 0;
+    resetPage();
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   });
   afterEach(() => {
@@ -377,6 +459,161 @@ describe("CaptureReviewScreen 取消上传接线", () => {
       page.resolveSend?.({ outcomes: [{ assetId: page.asset.id, state: "cancelled" }], offline: false });
     });
     await flush();
+    root.unmount();
+    host.remove();
+  });
+});
+
+describe("CaptureReviewScreen 保存前置失败恢复（P1）", () => {
+  beforeEach(() => {
+    page.stagedAssets = [page.asset];
+    resetPage();
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("SQLite 改名失败：显示明确错误、释放 busy、不发送、不删本机素材", async () => {
+    page.renameError = new Error("database is locked");
+    const { host, root } = await mountReview();
+    await act(async () => {
+      anyButton(host, "发送到电脑").click();
+    });
+    await flush();
+    await changeInput(host, "文件名", "新的文件名.pdf");
+    await act(async () => {
+      anyButton(host, "保存到所选位置").click();
+    });
+    await flush();
+
+    expect(page.renameCalls).toBe(1);
+    expect(page.noteCalls).toBe(0);
+    expect(page.sendCalls).toBe(0);
+    expect(page.deleteCalls).toBe(0);
+    expect(page.toasts.join("\n")).toContain("文件名保存失败");
+    expect(page.toasts.join("\n")).toContain("database is locked");
+    expect(anyButton(host, "保存到所选位置")).toBeTruthy();
+    root.unmount();
+    host.remove();
+  });
+
+  it("备注写入失败：提示明确错误、不误报上传成功、释放 busy", async () => {
+    page.noteError = new Error("attempt to write a readonly database");
+    const { host, root } = await mountReview();
+    await act(async () => {
+      anyButton(host, "发送到电脑").click();
+    });
+    await flush();
+    await changeInput(host, "备注", "这条备注写不进去");
+    await act(async () => {
+      anyButton(host, "保存到所选位置").click();
+    });
+    await flush();
+
+    expect(page.noteCalls).toBe(1);
+    expect(page.sendCalls).toBe(0);
+    expect(page.toasts.join("\n")).toContain("备注保存失败");
+    expect(page.toasts.join("\n")).not.toContain("已完成");
+    expect(anyButton(host, "保存到所选位置")).toBeTruthy();
+    root.unmount();
+    host.remove();
+  });
+
+  it("改名成功但 reload 失败：提示刷新失败、可再次保存、素材仍在", async () => {
+    page.reloadError = new Error("refresh failed");
+    const { host, root } = await mountReview();
+    await act(async () => {
+      anyButton(host, "发送到电脑").click();
+    });
+    await flush();
+    await changeInput(host, "文件名", "已改名但刷新失败.pdf");
+    await act(async () => {
+      anyButton(host, "保存到所选位置").click();
+    });
+    await flush();
+
+    expect(page.renameCalls).toBe(1);
+    expect(page.sendCalls).toBe(0);
+    expect(page.deleteCalls).toBe(0);
+    expect(page.toasts.join("\n")).toContain("文件名保存失败");
+    expect(page.toasts.join("\n")).toContain("refresh failed");
+    expect(page.stagedAssets).toHaveLength(1);
+    expect(anyButton(host, "保存到所选位置")).toBeTruthy();
+    root.unmount();
+    host.remove();
+  });
+
+  it("失败后再次保存：busy 已释放，重试能继续发送且只发一次", async () => {
+    page.renameError = new Error("temporary write failure");
+    const { host, root } = await mountReview();
+    await act(async () => {
+      anyButton(host, "发送到电脑").click();
+    });
+    await flush();
+    await changeInput(host, "文件名", "重试后成功.pdf");
+
+    await act(async () => {
+      anyButton(host, "保存到所选位置").click();
+    });
+    await flush();
+    expect(page.sendCalls).toBe(0);
+
+    page.renameError = null;
+    await act(async () => {
+      anyButton(host, "保存到所选位置").click();
+    });
+    await flush();
+    expect(page.renameCalls).toBe(2);
+    expect(page.sendCalls).toBe(1);
+
+    await act(async () => {
+      page.resolveSend?.({
+        outcomes: [
+          {
+            assetId: page.asset.id,
+            state: "done",
+            remoteId: "f".repeat(32),
+            shelfId: "mf-" + "f".repeat(32),
+          },
+        ],
+        offline: false,
+      });
+    });
+    await flush();
+    expect(page.toasts.join("\n")).toContain("已完成");
+    root.unmount();
+    host.remove();
+  });
+});
+
+describe("CaptureStashScreen 静默失败兜底", () => {
+  beforeEach(() => {
+    resetPage();
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("详情保存改名失败：显示错误且释放 busy", async () => {
+    page.renameError = new Error("disk I/O error");
+    const { host, root } = await mountStash();
+    await act(async () => {
+      host.querySelector('button[aria-label="报告.pdf"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flush();
+    await changeInput(host, "文件名", "详情改名失败.pdf");
+    await act(async () => {
+      anyButton(host, "保存修改").click();
+    });
+    await flush();
+
+    expect(page.renameCalls).toBe(1);
+    expect(page.toasts.join("\n")).toContain("文件名保存失败");
+    expect(page.toasts.join("\n")).toContain("disk I/O error");
     root.unmount();
     host.remove();
   });

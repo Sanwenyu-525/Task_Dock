@@ -14,6 +14,7 @@ import {
   clipboardView,
   onClipboardChanged,
   type ClipboardGroup,
+  type ClipboardFilter,
   type ClipboardItem,
   type ClipboardStatus,
   type ClipboardView,
@@ -77,10 +78,18 @@ export function clipboardMonitorState(
   return "notRunning";
 }
 
+export type ClipboardSort = "recent" | "most_used";
+
 export interface ClipboardFilters {
   kind: string;
   search: string;
   favorite: boolean;
+  /** 来源进程精确筛选；空/未定义表示全部来源。 */
+  sourceApp?: string;
+  /** 最近 N 天；空/0 表示不限时间。 */
+  recentDays?: number;
+  /** 默认最近记录；most_used 按使用次数。 */
+  sort?: ClipboardSort;
 }
 
 /**
@@ -170,13 +179,19 @@ function mergeItems(current: ClipboardView["items"], next: ClipboardView["items"
 }
 
 function queryView(f: ClipboardFilters, limit: number, offset: number) {
-  return clipboardView({
+  const filter: ClipboardFilter = {
     kind: f.kind,
     search: f.search.trim() || undefined,
     favorite: f.favorite,
     limit,
     offset,
-  });
+  };
+  // 只发送真正生效的扩展条件：默认值不进入 IPC，保持既有调用契约与
+  // 轻量视图的请求形状不变。
+  if (f.sourceApp) filter.sourceApp = f.sourceApp;
+  if (f.recentDays && f.recentDays > 0) filter.recentDays = f.recentDays;
+  if (f.sort === "most_used") filter.sort = "most_used";
+  return clipboardView(filter);
 }
 
 /** 把仍在离场的行按删除前的位置插回服务端结果；同一代际才钉回。 */
@@ -325,7 +340,7 @@ export const useClipboardStore = create<{
   setLiteLive: (active: boolean) => void;
 }>((set, get) => ({
   view: null,
-  filters: { kind: "all", search: "", favorite: false },
+  filters: { kind: "all", search: "", favorite: false, sort: "recent" },
   section: "items",
   density: readClipboardDensity(),
   searchText: "",

@@ -335,6 +335,7 @@ describe("ClipboardItemCard 密度呈现", () => {
       expect(names.length, `${density} 文件行数`).toBe(rows);
       expect(card.textContent).toContain(more);
       expect(card.textContent).toContain("仅记录路径，删除历史不会删除本地文件");
+      expect(card.textContent).toContain("来源目录 C:/Users/demo/Documents/2026");
       // 每个文件名都有类型名，长路径完整值进 data-tip
       expect(card.querySelector(".clip-file-kind")?.textContent?.trim()).not.toBe("");
       expect(card.querySelector(".clip-file-name")?.getAttribute("data-tip")).toContain("C:/Users/demo");

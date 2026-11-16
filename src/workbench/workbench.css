@@ -1456,8 +1456,11 @@ body.wb-resizing {
   margin: 0;
 }
 
-/* 窄窗：右栏由 JS 自动隐藏；导航保持可读的最小宽度。 */
-@media (max-width: 1080px) {
+/* 首页栅格按**内容容器**宽度降列（2026-11-16）：原来写成 `@media (max-width:1080px)`
+   看的是窗口宽度，但导航展开（320）与右栏（304）会吃掉同一个窗口里 220px 以上内容宽：
+   1200 窗口 + 宽导航 + 右栏时内容只剩约 570px，四列统计与三列快捷入口必然挤压。
+   改为容器查询后，列数只跟真实可用宽度走。 */
+@container wb-content (max-width: 900px) {
   .wb-home {
     max-width: none;
   }
@@ -1521,32 +1524,99 @@ body.wb-resizing {
   min-width: 150px;
   display: flex;
   align-items: center;
-  gap: 8px;
   height: 32px;
-  padding: 0 11px;
+  /* 内边距由触发按钮/输入行各自负责：打开后字段本体就是输入框的容器。 */
+  padding: 0;
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
   color: var(--text-tertiary);
   font: inherit;
   font-size: 12px;
-  cursor: pointer;
-  text-align: left;
+  overflow: hidden;
 }
 .wb-search-field:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
   color: var(--text-secondary);
   background: var(--surface-raised);
 }
-.wb-search-field:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
 /* 下拉层展开时字段保持「已激活」：清楚指示面板归属哪个控件。 */
 .wb-search-field.is-open {
   border-color: var(--accent);
   background: var(--surface-raised);
   color: var(--text-primary);
+}
+/* 焦点只在最外圈画一道：字段自身的 1px 边框在聚焦时让位（透明），
+   否则与外圈 outline 形成两个嵌套边框。outline 内收 1px 正好压在原边框位置，
+   视觉上是一圈 2px 强调色描边，而不是「大圈 + 小圈」。 */
+.wb-search-field:focus-within {
+  border-color: transparent;
+}
+.wb-search-field:has(:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+/* 关闭态：字段里的触发按钮（图标 + 占位 + 快捷键）。 */
+.wb-search-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 11px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+/* 焦点框由外层字段统一画，按钮自身不再叠一圈。 */
+.wb-search-trigger:focus-visible {
+  outline: none;
+}
+/* 打开态：输入行由 GlobalSearchDialog portal 到这里，字段本身成为搜索框。 */
+.wb-search-inline {
+  display: none;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.wb-search-field.is-open .wb-search-trigger {
+  display: none;
+}
+.wb-search-field.is-open .wb-search-inline {
+  display: flex;
+}
+/* 输入行沿用全局搜索的输入行结构（同一份 JSX），只去掉面板首行的留白与分隔线，
+   融进 32px 胶囊；控件尺寸按顶栏收紧。 */
+.wb-search-inline .gs-input-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 11px;
+  gap: 6px;
+  border-bottom: 0;
+}
+.wb-search-inline .gs-input {
+  font-size: 12.5px;
+  line-height: 18px;
+}
+/* 输入框不再带自己的聚焦环：全局 `input[type="text"]:focus` 会给它画 1px 描边 +
+   5px 光晕，与字段外圈叠成两个边框。顶栏字段只保留最外一圈。 */
+.wb-search-inline .gs-input:focus,
+.wb-search-inline .gs-input:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+.wb-search-inline .gs-input-icon {
+  width: 13px;
+  height: 13px;
+}
+.wb-search-inline .gs-iconbtn {
+  width: 22px;
+  height: 22px;
 }
 .wb-search-ph {
   flex: 1 1 auto;
@@ -1566,20 +1636,9 @@ body.wb-resizing {
   color: var(--text-tertiary);
 }
 
-@container wb-topbar (max-width: 1080px) {
-  .wb-search-kbd {
-    display: none;
-  }
-}
-@container wb-topbar (max-width: 760px) {
-  .wb-topbar-context {
-    flex-basis: 150px;
-    max-width: 170px;
-  }
-  .wb-search-field {
-    flex-basis: 220px;
-  }
-}
+/* 顶栏宽度分配统一在文件末尾「窗口档位与顶栏空间分配（2026-11-16）」一节：
+   顶栏横跨整窗，用窗口宽度档位而不是容器查询（这里删掉了旧的
+   `@container wb-topbar (max-width: 1080px/760px)` 两块，避免两套阈值并存）。 */
 
 .wb-create-btn {
   display: inline-flex;
@@ -2411,4 +2470,178 @@ body.wb-resizing {
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   窗口档位与顶栏空间分配（2026-11-16）
+   ───────────────────────────────────────────────────────────────────
+   事实源：
+   - 原生尺寸：`src-tauri/src/window_layout.rs`（默认 1200×760、最小 960×600 DIP）；
+   - 前端档位：`src/lib/layoutMetrics.ts`（1100 / 900 / 780）；
+   - 这里的媒体查询是**窗口 chrome**（顶栏横跨整窗、与窗口等宽），
+     页面内容仍然按容器宽度响应（`@container wb-content`），不要混用。
+
+   分配原则（不变量）：
+   1. 图标按钮与窗口控制永不被 flex 压缩（`flex: 0 0 auto`）；
+   2. 品牌名 → 搜索快捷键 → 创建文案 → 外观工具组 依优先级依次退出；
+   3. 项目选择器可以收缩但保留最小宽度；极窄档位改为独占第二行，
+      而不是把它压成几条截断文字；
+   4. 任何退出都以「收进更多菜单 / 保持可点」为前提，不隐藏功能。
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 基础分配：固定命中区 + 明确最小宽度 */
+.wb-topbar {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.wb-topbar-brand {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.wb-brand-mark,
+.wb-brand-name {
+  flex: none;
+}
+.wb-topbar-context {
+  /* 可收缩但保留 150px：低于它项目名只剩省略号，选择器失去意义 */
+  flex: 0 1 var(--layout-topbar-context-w, 210px);
+  min-width: var(--layout-topbar-context-min, 150px);
+  max-width: var(--layout-topbar-context-w, 210px);
+}
+.wb-topbar-actions {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.wb-search-field {
+  /* 搜索是第二主控件：可缩到 132px（图标 + 半句占位），再窄就换档位 */
+  flex: 1 1 320px;
+  min-width: var(--layout-search-min, 132px);
+}
+.wb-search-trigger,
+.wb-search-ph {
+  min-width: 0;
+}
+.wb-create-btn,
+.wb-icon-btn,
+.wb-window-btn,
+.wb-window-controls,
+.wb-titlebar-tools {
+  flex: 0 0 auto;
+}
+.wb-titlebar-tools {
+  min-width: 0;
+}
+.wb-toolbar-appearance {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 「更多」只在窄档位出现；宽度不足时它是外观工具的唯一入口 */
+.wb-toolbar-more {
+  display: none;
+}
+
+/* 档位 2（<1100）：收起右栏（JS）、隐藏快捷键提示、品牌名与创建文案 */
+@media (max-width: 1099px) {
+  .wb-search-kbd,
+  .wb-brand-name,
+  .wb-create-btn span {
+    display: none;
+  }
+  .wb-create-btn {
+    padding: 0 9px;
+  }
+  .wb-topbar-context {
+    flex-basis: 190px;
+    max-width: 190px;
+  }
+  .wb-titlebar-tools {
+    padding-right: 6px;
+    margin-right: 6px;
+  }
+}
+
+/* 档位 3（<900）：外观工具收进「更多」；搜索进一步收缩，项目选择器让位 */
+@media (max-width: 899px) {
+  .wb-toolbar-appearance {
+    display: none;
+  }
+  .wb-toolbar-more {
+    display: inline-flex;
+  }
+  .wb-topbar-context {
+    flex-basis: 170px;
+    max-width: 170px;
+    min-width: 140px;
+  }
+  .wb-search-field {
+    flex-basis: 200px;
+  }
+  .wb-topbar {
+    gap: 8px;
+  }
+}
+
+/* 档位 4（<780）：顶栏换行，项目选择器独占第二行（只在小屏降级窗口出现） */
+@media (max-width: 779px) {
+  .wb-topbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding-block: 6px;
+  }
+  .wb-topbar-context {
+    order: 5;
+    flex: 1 1 100%;
+    max-width: none;
+    min-width: 0;
+  }
+  .wb-search-field {
+    flex-basis: 160px;
+  }
+}
+
+/* ── 左侧导航：图标尺寸与命中区不随宽度变化 ───────────────────────── */
+.wb-nav-icon {
+  flex: 0 0 auto;
+  min-width: 20px;
+  width: 20px;
+  height: 20px;
+}
+/* lucide 图标有 size 属性；这里兜底禁止 flex 把 svg 压扁（只缩小不消失） */
+.wb-nav-icon > svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+.wb-nav-item {
+  min-height: 36px;
+}
+/* 导航文字宽度只由可用宽度决定：超长省略，不换行、不压图标 */
+.wb-nav-label {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+/* 导航列宽来自用户设置（180–320），窗口变窄时只压缩内容区，
+   不回写用户的导航宽度；根网格模板在 §.wb-root（第 64 行）只有一份，
+   这里不再复制，避免两处模板漂移。 */
+
+/* ── 主内容区：网格/弹性子项的最小尺寸护栏 ───────────────────────── */
+.wb-workarea,
+.wb-content,
+.wb-route {
+  min-width: 0;
+}
+/* 页面根节点不能把外层网格撑破（默认 min-width:auto 的经典溢出） */
+.wb-route > * {
+  min-width: 0;
+  max-width: 100%;
+}
+/* 内容区里的媒体不撑破卡片：只限最大宽度，不改已有高度语义 */
+.wb-route :is(img, video, canvas) {
+  max-width: 100%;
+}
+/* 长路径/URL 不撑破网格（页面若已自行处理，这里是统一兜底） */
+.wb-route :is(pre, code) {
+  overflow-wrap: anywhere;
 }

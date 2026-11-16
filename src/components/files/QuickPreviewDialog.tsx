@@ -200,7 +200,9 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
 
   const canOpen = kind === "unsupported" || error !== null;
   const ext = current ? extOf(current.name) : "";
-  const codeLike = current?.category === "code" || ["ts", "tsx", "js", "jsx", "css", "html", "rs", "py", "json", "toml", "yaml", "yml", "xml"].includes(ext);
+  const codeLike =
+    current?.category === "code" ||
+    ["ts", "tsx", "js", "jsx", "css", "html", "rs", "py", "json", "toml", "yaml", "yml", "xml", "md", "markdown", "txt", "log"].includes(ext);
 
   return (
     <Dialog

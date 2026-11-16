@@ -153,7 +153,8 @@ SQL 全部参数绑定；LIKE 模式转义 `\ % _` + `ESCAPE '\'`（对齐 `clip
   排序/limit+1/空查询/特殊字符/超长/非法分类/同名异 ID/Unicode/失效标注/万级基准）。
 - 前端：`src/store/useGlobalSearchStore.test.ts`（防抖/乱序/失败保旧/分类/四类跳转分发/最近搜索）、
   `src/components/global-search/GlobalSearchDialog.test.tsx`（渲染/键盘循环/Enter/Escape 弹层/最近搜索/点击；
-  2026-11-16 起含 3 个下拉形态用例：无遮罩+输入框聚焦、Escape 一次收起、层外点击收起）。
+  2026-11-16 起含 5 个下拉形态用例：无遮罩+输入框聚焦、Escape 一次收起、层外点击收起、
+  输入行 portal 到顶栏字段且面板不重复输入框、字段内输入的 ↑↓ 仍走同一键盘处理）。
 - 验收资料：`tmp/acceptance/global-search/`。
 
 ## 13. 变更记录
@@ -165,8 +166,12 @@ SQL 全部参数绑定；LIKE 模式转义 `\ % _` + `ESCAPE '\'`（对齐 `clip
   不再是页面中央的模态框。
 - `GlobalSearchDialog` 增加可选 `anchorRef`：传入即下拉形态，缺省仍为居中模态——主窗口只有快捷键、
   没有可见搜索字段，保留原形态；两种形态共用同一份面板内容与 store，不做第二套搜索实现。
-- 焦点：打开时聚焦输入框（不用 `ui/Popover` 的自动归还，避免 StrictMode 首次挂载的 effect 重放
-  把焦点抢回触发按钮）；关闭后若焦点落在 body 则归还顶栏字段。
+- **输入框只有一处**：下拉形态下字段本体就是搜索框——`GlobalSearchDialog` 把输入行 portal 进顶栏
+  字段（`inputHost`），面板从分类行开始，不再重复一个搜索框；关闭态该字段恢复成「占位 + 快捷键」按钮。
+- 焦点：打开时聚焦顶栏字段里的输入框（不用 `ui/Popover` 的自动归还，避免 StrictMode 首次挂载的
+  effect 重放把焦点抢回触发按钮）；关闭后若焦点落在 body 则归还字段里的触发按钮（`returnFocusRef`）。
+- 聚焦描边只有一圈：字段内层 1px 边框在聚焦时透明，外圈 `outline` 内收 1px 压在原边框位置；
+  字段内输入框去掉全局 `input[type="text"]:focus` 的 1px 描边 + 5px 光晕，避免「大圈套小圈」。
 - 下拉面板宽 560px（随窗口收敛），高度受基元 `--popover-max-h` 约束（上限 520px），
   长结果在面板内滚动，分组头保持 sticky。
 

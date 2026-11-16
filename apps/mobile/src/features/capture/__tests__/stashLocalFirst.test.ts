@@ -63,7 +63,17 @@ vi.mock("react-native", async () => {
   const clean = (props: Record<string, unknown>) => {
     const next: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(props)) {
-      if (key === "children" || key === "style" || key === "contentStyle") continue;
+      if (
+        key === "children" ||
+        key === "style" ||
+        key === "contentStyle" ||
+        key === "contentContainerStyle" ||
+        key === "hitSlop" ||
+        key === "resizeMode" ||
+        key === "showsVerticalScrollIndicator"
+      ) {
+        continue;
+      }
       if (key === "accessibilityLabel") next["aria-label"] = value;
       else if (key === "accessibilityRole" || key === "accessibilityState") continue;
       else if (key === "numberOfLines" || key.startsWith("on")) continue;
@@ -75,10 +85,11 @@ vi.mock("react-native", async () => {
     React.createElement(tag, clean(props), props.children as React.ReactNode);
   const Pressable = (props: Record<string, unknown>) =>
     React.createElement(
-      "button",
+      "div",
       {
         ...clean(props),
-        disabled: Boolean(props.disabled),
+        role: "button",
+        "aria-disabled": Boolean(props.disabled),
         onClick: props.onPress as (() => void) | undefined,
       },
       props.children as React.ReactNode,
@@ -130,9 +141,10 @@ vi.mock("../../../components/PressableScale", async () => {
   return {
     PressableScale: (props: Record<string, unknown>) =>
       React.createElement(
-        "button",
+        "div",
         {
-          disabled: Boolean(props.disabled),
+          role: "button",
+          "aria-disabled": Boolean(props.disabled),
           "aria-label": props.accessibilityLabel,
           onClick: props.onPress as (() => void) | undefined,
         },
@@ -374,7 +386,9 @@ describe("CaptureStashScreen Local First", () => {
       expect(host.textContent).toContain(`素材-${String(index).padStart(2, "0")}.jpg`);
     }
 
-    root.unmount();
+    await act(async () => {
+      root.unmount();
+    });
     host.remove();
   });
 
@@ -388,7 +402,9 @@ describe("CaptureStashScreen Local First", () => {
     expect(host.textContent).not.toContain("本机素材读取失败");
     expect(page.deleteCalls).toBe(0);
 
-    root.unmount();
+    await act(async () => {
+      root.unmount();
+    });
     host.remove();
   });
 
@@ -402,9 +418,11 @@ describe("CaptureStashScreen Local First", () => {
     page.reconcileDeferred = makeDeferred();
     const { host, root } = await renderPage();
 
-    for (let index = 0; index < 3; index += 1) {
-      page.revisionListeners.slice().forEach((listener) => listener());
-    }
+    await act(async () => {
+      for (let index = 0; index < 3; index += 1) {
+        page.revisionListeners.slice().forEach((listener) => listener());
+      }
+    });
     await flush();
 
     expect(host.textContent).toContain("run4-01.jpg");
@@ -420,7 +438,9 @@ describe("CaptureStashScreen Local First", () => {
     expect(host.textContent).toContain("run4-01.jpg");
     expect(page.reconcileCalls).toBeLessThanOrEqual(2);
 
-    root.unmount();
+    await act(async () => {
+      root.unmount();
+    });
     host.remove();
   });
 
@@ -443,7 +463,9 @@ describe("CaptureStashScreen Local First", () => {
     const second = await renderPage();
     expect(second.host.textContent).toContain("素材-01.jpg");
     expect(second.host.textContent).not.toContain("本机素材读取失败");
-    second.root.unmount();
+    await act(async () => {
+      second.root.unmount();
+    });
     second.host.remove();
   });
 
@@ -456,7 +478,9 @@ describe("CaptureStashScreen Local First", () => {
     expect(host.textContent).not.toContain("还没有本机采集素材");
     expect(page.reconcileCalls).toBe(0);
 
-    root.unmount();
+    await act(async () => {
+      root.unmount();
+    });
     host.remove();
   });
 });

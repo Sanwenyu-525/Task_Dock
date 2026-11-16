@@ -40,6 +40,10 @@ const MAX_INPUT_BYTES = 50 * 1024 * 1024;
 
 type Format = "jpeg" | "png" | "webp";
 
+function formatLabel(format: Format): string {
+  return format === "jpeg" ? "JPEG" : format === "webp" ? "WebP" : "PNG";
+}
+
 interface SourceImage {
   id: string;
   uri: string;
@@ -65,6 +69,8 @@ export function ImageCompressScreen({ nav, onBack }: { nav: AppNav; onBack: () =
   const [items, setItems] = useState<CompressItem[]>([]);
   const [quality, setQuality] = useState(80);
   const [maxDim, setMaxDim] = useState(1600);
+  // 默认收起高级参数：主流程保持「选图 → 压缩 → 保存 / 发送」，需要精细控制再展开。
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [format, setFormat] = useState<Format>("jpeg");
 
   const [running, setRunning] = useState(false);
@@ -404,7 +410,26 @@ export function ImageCompressScreen({ nav, onBack }: { nav: AppNav; onBack: () =
         </ToolSection>
 
         <ToolSection title="压缩参数">
-          <View style={styles.optionBlock}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={optionsOpen ? "收起高级参数" : "展开高级参数"}
+            onPress={() => setOptionsOpen((value) => !value)}
+            style={({ pressed }) => [
+              styles.optionsToggle,
+              { backgroundColor: tokens.card, borderColor: tokens.cardBorder, opacity: pressed ? 0.7 : 1 },
+            ]}
+          >
+            <View style={styles.optionsText}>
+              <Text style={[styles.optionLabel, { color: tokens.text }]}>高级参数</Text>
+              <Text style={[styles.optionsSummary, { color: tokens.muted }]} numberOfLines={1}>
+                质量 {quality} · {maxDim > 0 ? `最长边 ${maxDim}` : "原始尺寸"} · {formatLabel(format)}
+              </Text>
+            </View>
+            <AppIcon name={optionsOpen ? "chevronUp" : "chevronDown"} size={18} color={tokens.muted} />
+          </Pressable>
+          {optionsOpen ? (
+            <>
+              <View style={styles.optionBlock}>
             <Text style={[styles.optionLabel, { color: tokens.textSoft }]}>质量</Text>
             <View style={styles.chipRow}>
               {[90, 80, 70, 60, 50].map((value) => (
@@ -456,6 +481,8 @@ export function ImageCompressScreen({ nav, onBack }: { nav: AppNav; onBack: () =
               ))}
             </View>
           </View>
+            </>
+          ) : null}
           <ToolNote text="透明图片转 JPEG 会合成白底；PNG 不压缩画质但体积通常最大。重编码会移除 EXIF（含 GPS 位置），这是默认且唯一行为。" />
         </ToolSection>
 
@@ -683,6 +710,17 @@ const styles = StyleSheet.create({
   sourceMeta: { fontSize: 10 },
   sourceRemove: { position: "absolute", top: 2, right: 2, width: 24, height: 24, alignItems: "center", justifyContent: "center" },
   stats: { fontSize: font.label },
+  optionsToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    minHeight: 52,
+    paddingHorizontal: space.md,
+    borderRadius: radius.control,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  optionsText: { flex: 1, gap: 2, minWidth: 0 },
+  optionsSummary: { fontSize: font.label },
   optionBlock: { gap: space.xs },
   optionLabel: { fontSize: font.label, fontWeight: "600" },
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },

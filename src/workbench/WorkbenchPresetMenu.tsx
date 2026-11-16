@@ -4,43 +4,17 @@
 //! （柔光玻璃 / 梦幻渐变）。写库仍走 `useSettingsStore.update`，Rust 成功后广播
 //! `visual-preset-changed`：主窗口、右键菜单等同步应用；工作台自身的圆角变化由
 //! `windowFrame` 观察 `data-preset` 后重算并下发 Win32 区域（`--radius-window`
-//! 随预设不同），不新增第二套预设管道。
+//! 随预设不同），不新增第二套预设管道。菜单项在 `workbenchTitlebarItems.tsx`
+//! 与「更多」收纳菜单共用（2026-11-16）。
 
-import { Palette } from "lucide-react";
-import { DropdownMenu, type DropdownMenuItem } from "../components/ui";
+import { DropdownMenu } from "../components/ui";
 import { useLocale } from "../hooks/useLocale";
-import { PRESET_LABELS, VISUAL_PRESETS, resolveVisualPreset } from "../lib/theme";
-import { errorMessage } from "../lib/errors";
-import { useSettingsStore } from "../store/useSettingsStore";
-import { useUiStore } from "../store/useUiStore";
+import { PRESET_ICON, usePresetMenuItems } from "./workbenchTitlebarItems";
 
 export default function WorkbenchPresetMenu() {
   const { t } = useLocale();
-  const preset = resolveVisualPreset(useSettingsStore((s) => s.settings?.visual_preset));
-  const update = useSettingsStore((s) => s.update);
-
-  const label = t("workbench.presetMenu", { preset: PRESET_LABELS[preset].name });
-
-  // 与主窗口标题栏同一组选项、同一文案与色卡（`preset-swatch swatch-*`），
-  // 顺序即设置页顺序；checked 只认当前值，未知值已由 resolveVisualPreset 兜底。
-  const items: DropdownMenuItem[] = VISUAL_PRESETS.map((id) => ({
-    key: id,
-    label: PRESET_LABELS[id].name,
-    description: PRESET_LABELS[id].tagline,
-    icon: <span className={`preset-swatch swatch-${id}`} aria-hidden="true" />,
-    radio: true,
-    checked: preset === id,
-    onSelect: () => {
-      void update({ visual_preset: id }).catch((error: unknown) => {
-        useUiStore
-          .getState()
-          .showToast(t("workbench.presetFailed", { error: errorMessage(error) }), {
-            kind: "error",
-            code: "workbench.presetFailed",
-          });
-      });
-    },
-  }));
+  const { items, currentName } = usePresetMenuItems();
+  const label = t("workbench.presetMenu", { preset: currentName });
 
   return (
     <DropdownMenu
@@ -59,7 +33,7 @@ export default function WorkbenchPresetMenu() {
           onClick={onClick}
           onKeyDown={onKeyDown}
         >
-          <Palette size={15} aria-hidden="true" />
+          <PRESET_ICON size={15} aria-hidden="true" />
         </button>
       )}
     />

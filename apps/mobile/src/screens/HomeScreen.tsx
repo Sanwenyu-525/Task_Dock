@@ -25,7 +25,7 @@ import { PressableScale } from "../components/PressableScale";
 import { ProgressBar } from "../components/ProgressBar";
 import { SectionHeader } from "../components/SectionHeader";
 import { useToast } from "../feedback/ToastProvider";
-import { WorkbenchEntryGrid } from "../components/entry/WorkbenchEntryGrid";
+import { WorkbenchEntryRail } from "../components/entry/WorkbenchEntryRail";
 import { listAssets } from "../db/captureAssets";
 import { listCaptures } from "../db/captures";
 import { listNotes } from "../db/notes";
@@ -563,7 +563,7 @@ export function HomeScreen({
               />
               {editingEntries ? (
                 <Text style={[styles.entryHint, { color: tokens.muted }]}>
-                  拖动磁贴调整顺序，点 × 移除；点磁贴可用上移 / 下移 / 移除。改完点右上「完成」。
+                  按住磁贴右下角手柄左右拖动排序；点磁贴可用前移 / 后移 / 移除；点 × 直接移除。改完点右上「完成」。
                 </Text>
               ) : null}
               {visibleEntries.length === 0 ? (
@@ -607,11 +607,11 @@ export function HomeScreen({
                   </View>
                 </GlassCard>
               ) : (
-                <WorkbenchEntryGrid
+                <WorkbenchEntryRail
                   entries={visibleEntries}
                   editing={editingEntries}
-                  columns={narrow ? 2 : 4}
-                  contentWidth={width - space.lg * 2}
+                  // 通栏宽度：轨道自己再按左右内边距算磁贴尺寸，首帧就用窗口宽度兜底
+                  contentWidth={width}
                   badgeFor={badgeForEntry}
                   onOpen={openEntry}
                   onLongPress={() => setEditingEntries(true)}

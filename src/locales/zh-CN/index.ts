@@ -879,6 +879,8 @@ export const zhCN = {
   "workbench.windowRestore": "还原",
   "workbench.windowClose": "关闭工作台",
   "workbench.titlebarTools": "标题栏工具",
+  "workbench.toolbarMore": "更多工具",
+  "workbench.toolbarMoreAria": "更多标题栏工具（明暗、视觉主题、置顶）",
   "workbench.pinWindow": "置顶窗口",
   "workbench.unpinWindow": "取消置顶",
   "workbench.pinFailed": "切换置顶失败：{error}",

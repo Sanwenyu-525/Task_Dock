@@ -424,6 +424,85 @@ describe("仅重试暂存架（不重新上传文件）", () => {
   });
 });
 
+describe("五文件混合结果（3 成功 / 1 上传失败 / 1 暂存架失败）", () => {
+  it("五项独立落库：前三 done、第四 desktop failed、第五 desktop done + shelf failed", async () => {
+    const assets = await Promise.all(
+      ["A", "B", "C", "D", "E"].map((tag) =>
+        savedAsset(`${tag}.pdf`, `${tag}`.repeat(64).slice(0, 64)),
+      ),
+    );
+    const ids = new Map<string, string>();
+    remote.create = async (name: string, size: number) => {
+      if (name.startsWith("D.")) throw new FileHttpError(400, "upload_rejected");
+      const id = `${name.charCodeAt(0)}`.repeat(32).slice(0, 32);
+      ids.set(name, id);
+      return remoteFile({
+        id,
+        name,
+        size,
+        status: "pending",
+        sha256: "",
+        chunks: 1,
+        chunk_size: size,
+        received_chunks: 0,
+        completed_at: null,
+      });
+    };
+    remote.uploadChunk = async (id: string) =>
+      remoteFile({
+        id,
+        direction: "to_desktop",
+        status: "pending",
+        sha256: "",
+        received_chunks: 1,
+        completed_at: null,
+      });
+    remote.complete = async (id: string) =>
+      remoteFile({
+        id,
+        direction: "to_desktop",
+        status: "ready",
+        completed_at: "2026-11-16T00:00:00Z",
+      });
+    remote.shelf = async (id: string, groupId?: string | null) => {
+      if (id === ids.get("E.pdf")) {
+        throw new FileHttpError(400, "shelf_rejected");
+      }
+      return remoteFile({
+        id,
+        shelf_item_id: `mf-${id}`,
+        shelf_group_id: groupId ?? "g-default",
+      });
+    };
+
+    const result = await sendToDesktop(assets, { target: "shelf", shelfGroupId: "g-default" });
+
+    expect(result.stopBatch ?? false).toBe(false);
+    expect(result.outcomes).toHaveLength(5);
+    expect(result.outcomes.slice(0, 3).map((item) => item.state)).toEqual([
+      "done",
+      "done",
+      "done",
+    ]);
+    expect(result.outcomes[3]?.state).toBe("failed");
+    expect(result.outcomes[4]?.state).toBe("failed");
+    expect(result.outcomes[4]?.remoteId).toBe(ids.get("E.pdf"));
+
+    expect((await destinationState(assets[0].id, "desktop"))?.state).toBe("done");
+    expect((await destinationState(assets[1].id, "desktop"))?.state).toBe("done");
+    expect((await destinationState(assets[2].id, "desktop"))?.state).toBe("done");
+    expect((await destinationState(assets[3].id, "desktop"))?.state).toBe("failed");
+    expect((await destinationState(assets[4].id, "desktop"))?.state).toBe("done");
+    expect((await destinationState(assets[4].id, "shelf"))?.state).toBe("failed");
+    expect((await destinationState(assets[4].id, "shelf"))?.remoteId).toBe(ids.get("E.pdf"));
+
+    // D 没有进入分块/complete；A-C 和 E 各上传一次，E 暂存架失败不触发重传。
+    expect(remote.createCalls).toBe(5);
+    expect(remote.uploadCalls).toBe(4);
+    expect(remote.removeCalls).toBe(0);
+  });
+});
+
 describe("重试幂等（不因重试产生重复文件）", () => {
   it("远端已有同 SHA-256 的 ready 记录时跳过上传，直接复用 file id", async () => {
     const asset = await savedAsset();

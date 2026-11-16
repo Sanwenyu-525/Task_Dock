@@ -109,12 +109,12 @@ kv 键：`workbench_entries`（移动端专属；桌面端是 settings 表的 `n
 
 | 界面 | 入口 | 行为 |
 |---|---|---|
-| 工作台（`HomeScreen`） | 默认首页 | 按 `visible` 渲染 `WorkbenchEntryGrid`；`SectionHeader` 右侧「管理」；长按磁贴进入编辑态；空态给「全部功能 / 恢复默认」 |
-| 编辑态（`WorkbenchEntryGrid`） | 长按磁贴 | 磁贴抖动 + 右上角 × + 右下角拖动手柄；轻点开动作表（上移/下移/移除）；拖拽改为「松手落格」；右上角「完成」退出 |
-| 入口管理页（`EntryManagerScreen`, 路由 `entry_manager`） | 工作台「管理」 | SegmentedControl「布局管理 / 全部功能」；已显示（拖动手柄 + ×）/ 未显示（+）/ 暂不可用（原因 + Badge）；搜索；批量模式 + BulkActionBar；恢复默认；Toast 反馈 |
+| 工作台（`HomeScreen`） | 默认首页 | 按 `visible` 渲染 `WorkbenchEntryRail`（2026-11-16 起为单行横向轨道，见 §12；改造前是 `WorkbenchEntryGrid` 的固定列网格）；`SectionHeader` 右侧「管理」；长按磁贴进入编辑态；空态给「全部功能 / 恢复默认」 |
+| 编辑态（`WorkbenchEntryRail`） | 长按磁贴 | 磁贴右上角 × + 右下角拖动手柄（左右拖动排序）；轻点磁贴开动作表（前移/后移/移除）；拖拽为「松手落位」；右上角「完成」退出 |
+| 入口管理页（`EntryManagerScreen`, 路由 `entry_manager`） | 工作台「管理」 | SegmentedControl「布局管理 / 全部功能」；已显示（拖动手柄 + ×）/ 未显示（+）/ 暂不可用（原因 + Badge）；搜索；批量模式 + BulkActionBar；恢复默认；Toast 反馈。仍为纵向列表，不改成横向 |
 | 全部功能页（`EntryManagerScreen`, 路由 `all_features`） | 管理页页签、工作台空态 | 按分类分组展示全部入口，区分三态，可点开可用入口，暂不可用点开只提示原因 |
 
-拖拽不抢页面滚动：编辑态时工作台 `ScrollView` 关闭滚动（`entryDragActive`），
+拖拽不抢页面滚动：编辑态拖动磁贴手柄时工作台 `ScrollView` 关闭滚动（`entryDragActive`），
 松手后恢复；管理页列表只在手柄上启动拖拽，行本身仍可滚动。
 
 ## 6. 新增一个移动端功能入口（检查清单）
@@ -143,7 +143,8 @@ kv 键：`workbench_entries`（移动端专属；桌面端是 settings 表的 `n
 |---|---|
 | `src/lib/__tests__/entryRegistry.test.ts` | id/order 唯一、可用性字段契约、路由与图标存在、默认布局、既有入口一个不少 |
 | `src/lib/__tests__/entryLayout.test.ts` | 损坏兜底、空数组合法、逐项校验、known 合并、版本迁移、增删排序、幂等 |
-| `src/lib/__tests__/entryReorder.test.ts` | 网格落格/列表换位/轻点判定的边界与异常输入 |
+| `src/lib/__tests__/entryReorder.test.ts` | 横向轨道落位 / 列表换位 / 轻点判定的边界与异常输入 |
+| `src/lib/__tests__/entryRail.test.ts` | 320/360/393/420/800dp 等宽度与 1~24 个入口的单行/溢出判定、磁贴宽高上下限、字体缩放、末尾完整可见、偏移收敛 |
 | `src/db/__tests__/entryLayout.test.ts` | 真实 SQLite 往返、损坏恢复、旧版本迁移、已删除入口清理、读失败标记 |
 | `src/lib/__tests__/entryLayoutStore.test.ts` | 单飞加载、串行写不互相覆盖、重启一致性、恢复默认 |
 | `src/lib/__tests__/entryLayoutStoreWriteFailure.test.ts` | 写盘失败注入：回滚到最近成功、失败不残留 settings、连续失败不污染、失败后仍可写、慢写串行 |
@@ -188,7 +189,10 @@ kv 键：`workbench_entries`（移动端专属；桌面端是 settings 表的 `n
   拖拽几何（78 高、18×18 手柄）不变。入口 7 文件 / 114 例与 `tsc --noEmit` 通过；
   vc64 管理页已截图确认 6 点（`62-grip-manager.png`），网格编辑态手柄截图待补。
 
-## 10. 开发者工具入口（2026-11-16 第十一轮）
+## 10. 开发者工具入口（2026-11-16 第十一轮，历史状态）
+
+> 本节记录的是第十一轮的 11 个开发者工具入口；同日产品整改后已被 §12 取代。
+> 历史事实保留，但**当前实现以 §12 为准**。
 
 本轮把工具页 10 个灰色占位替换为 11 个有真实页面的开发者工具，并全部登记进同一份入口注册表：
 
@@ -227,3 +231,150 @@ kv 键：`workbench_entries`（移动端专属；桌面端是 settings 表的 `n
   工具页改为真实入口 + 最近使用 + 星标加入工作台；管理页无需改代码即可显示新分类；
   入口注册表测试与全量 vitest 通过。真机验收与构建结果见
   `tmp/acceptance/mobile-dev-tools/report.md`。
+
+## 12. 工具产品整改（2026-11-16 第十二轮，现行）
+
+产品判断：手机上「也能做」不等于值得做。输入型、重编辑型工具（API 调试、正则、代码对比）
+退出普通工具体系；JSON / 时间戳 / 编解码合并为低频「文本处理」；代码片段改为查看优先的
+「常用片段」；GitHub 并入「资料与链接」。**稳定 id 不改名，旧配置安全迁移，数据库不删表。**
+
+### 12.1 现行入口（5 个，全部默认隐藏）
+
+| 入口 id | 标签 | order | 路由 | 定位 |
+|---|---|---|---|---|
+| `tool.snippet` | 常用片段 | 301 | `tool_snippets` | 查看 / 搜索 / 复制 / 分享优先，编辑在详情里 |
+| `tool.image-compress` | 图片压缩 | 302 | `tool_image_compress` | 高优先级，真正重编码，不改扩展名伪装 |
+| `tool.color-picker` | 取色器 | 303 | `tool_color_picker` | 读取真实像素，输出 HEX / RGB / HSL |
+| `tool.docs` | 资料与链接 | 304 | `tool_resources` | 聚合项目资料与 GitHub 链接，只保存链接 |
+| `tool.text` | 文本处理 | 305 | `tool_text` | 高级工具，聚合 JSON / 时间戳 / 编解码 |
+
+`CATEGORY_LABELS.dev = "效率工具"`。已撤下且不再注册路由的 id：`tool.api`、`tool.regex`、
+`tool.diff`；它们没有替代入口，旧配置中的这些项按失效项丢弃并计入 `dropped`。
+
+### 12.2 旧配置迁移（不改稳定 id、不破坏历史）
+
+`LEGACY_ENTRY_ALIASES`（`src/lib/entryLayout.ts`）：
+
+| 旧 id | 新 id | 说明 |
+|---|---|---|
+| `tool.json` | `tool.text` | JSON 降级为文本处理内能力 |
+| `tool.timestamp` | `tool.text` | 时间戳并入文本处理 |
+| `tool.github` | `tool.docs` | GitHub 并入资料与链接 |
+
+读取时先映射别名再校验可用性；别名命中不计 `dropped`，并令 `migrated=true`。
+若旧配置同时含 `tool.json` 与 `tool.text`，去重后只剩 `tool.text`，顺序按首次出现保留。
+API / 正则 / 代码对比仍按失效项清理（无别名），不会出现空白磁贴或死路由。
+
+### 12.3 工具页信息架构（现行）
+
+顺序：最近使用 → 常用操作（采集中心 / 快速笔记 / 文件互传 / 扫码配对）→ 图片与素材
+（图片压缩、取色器、本机素材库、文件导入）→ 资料与内容（常用片段、资料与链接）→
+高级工具（文本处理，低视觉优先级）。项目空间 / 功能看板 / 剪贴板 / 投屏占位已从工具页移除。
+
+- 搜索只覆盖上表 5 个工具与真实快捷动作，不返回已撤下功能；
+- 最近使用读取 `tools.recent.v1` 后用 `toolById` 过滤，旧 `tool.json` / `tool.api` 等记录自动消失；
+- 从聚合页进入子页面时，子页面把最近使用记录归到父 id（文本处理 / 资料与链接）；
+- 星标仍直接调用 `commitEntryVisibility`，与管理页共用同一份配置与写队列；
+- 320–340dp 用 2 列，其余 4 列（`gridColumnsForWidth`），四个分区不会出现 3+1 挤压。
+
+### 12.4 验收与构建
+
+自动化：入口 / 迁移 / 响应式 / 目录契约测试见
+`src/lib/__tests__/entryLayout.test.ts`、`entryRegistry.test.ts`、`responsiveLayout.test.ts`、
+`src/features/tools/__tests__/toolCatalog.test.ts`。构建与真机结果以
+`tmp/acceptance/mobile-tools-product-remediation/report.md` 为准（未写「通过」前不得视为已验证）。
+
+## 13. 首页快捷入口横向轨道（2026-11-16 第十三轮，现行）
+
+> 更正（2026-11-16）：§5 描述的「`WorkbenchEntryGrid` 固定列数网格」已被本节取代。
+> 网格的 `flexWrap` 会在入口超过列数（窄屏 2 / 其余 4）时换行，320dp 窄屏下 4 个入口就是
+> 两行，组件高度随入口数量增长。本节为当前实现；§5 的历史表述保留，不再作为现状。
+
+### 13.1 问题与目标
+
+改造前：`HomeScreen` 传 `columns={narrow ? 2 : 4}`，`WorkbenchEntryGrid` 用
+`flexDirection: row + flexWrap: wrap`，单元格宽度 = `(内容宽 - gap×(列数-1)) / 列数`。
+后果：入口 > 4 必然第二行；< 360dp 时 4 个入口排成 2×2；大屏上第 5 个入口明明放得下也被
+强行换行；快捷入口区域的高度被入口数量牵着走，把「最近动态」不断挤出首屏。
+
+目标：**任何数量都单行**。超出可用宽度才横向滚动；能完整放下时不产生无意义滑动。
+
+### 13.2 结构（纯函数 + 视图两层）
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| 几何 | `src/lib/entryRail.ts` | `railMetrics(可视宽度, 入口数, fontScale)` → 磁贴宽/高、步进、内容宽、是否溢出、最大偏移、完整可见数；`entryTileHeight` / `entryTileLineHeight` / `railMinTileWidth` / `clampRailOffset` |
+| 落位 | `src/lib/entryReorder.ts` | `railDropIndex(from, dx, step, count)`（只看横向位移；原 `gridDropIndex` 随网格删除） |
+| 视图 | `src/components/entry/WorkbenchEntryRail.tsx` | 横向 `ScrollView`、吸附、位置恢复、编辑态磁贴与手柄拖拽、动作表 |
+| 磁贴 | `src/components/QuickTile.tsx` | 新增可选 `width` / `height` / `labelLineHeight`；不传时保持原 `flex:1` 行为 |
+
+配置、注册表、持久化、导航全部沿用原有链路，**本轮没有新增第二套入口配置**：
+`useEntryLayout()`（`lib/entryLayoutStore.ts`）→ `entriesForIds(layout.config.visible)`
+→ 轨道按数组顺序渲染 → `entryTargetOf` 执行原来的 route / tab / createTask。
+
+### 13.3 几何规则（可复算）
+
+- 轨道可视宽度 = 实测宽度（`onLayout`），首帧用窗口宽度兜底——两帧都是单行，不会先出两行再变一行；
+- 可视内容区 = 可视宽度 − 左右各 `space.lg`（16dp）内边距；
+- 基准宽度 = 按「4 个并排」算：`(内容区 − 8×3) / 4`（4 只是基准除数，不是显示上限）；
+- 溢出时（数量 > 4）从基准宽度再让出 `space.sm`（8dp），让第 5 个入口露出边缘作为滑动提示；
+- 磁贴宽度夹在 `[60, 104]`，字体缩放 ≥ 1.25 时下限抬到 72；
+- 是否滚动只由「内容宽 + 内边距 > 可视宽度」决定，与入口数量阈值无关。
+
+实测几何（fontScale = 1，内边距 16dp/侧）：
+
+| 可视宽度 | 入口数 | 磁贴宽 | 内容宽 | 是否滚动 | 最大偏移 | 首屏完整可见 |
+|---|---|---|---|---|---|---|
+| 320dp | 4 | 66 | 288 | 否 | 0 | 4 |
+| 320dp | 5 | 60 | 332 | 是 | 44 | 4 |
+| 360dp | 4 | 76 | 328 | 否 | 0 | 4 |
+| 360dp | 5 | 68 | 372 | 是 | 44 | 4 |
+| 393dp | 8 | 76 | 664 | 是 | 303 | 4 |
+| 420dp | 8 | 83 | 720 | 是 | 332 | 4 |
+| 800dp | 6 | 104 | 664 | 否 | 0 | 6 |
+| 800dp | 8 | 104 | 888 | 是 | 120 | 6 |
+
+高度：`max(78, 上下内边距 16 + 图标 24 + 图标间距 6 + 行高×2)`；行高 = `round(12×1.2×fontScale)`。
+fontScale 1 → 78；1.3 → 84；2 → 104。**入口数量不参与高度计算**。
+
+### 13.4 交互
+
+- 滚动：`ScrollView horizontal`（平台原生惯性、边缘停止、与首页纵向滚动方向锁），
+  `showsHorizontalScrollIndicator={false}`；1~4 个且放得下时不启用吸附；
+- 吸附：`snapToInterval = 磁贴宽 + 8`、`snapToAlignment="start"`、`decelerationRate="fast"`；
+  不启用 `disableIntervalMomentum`，快速连续滑动可以一次跨多个入口；
+- 末尾：内容尾部保留 16dp 内边距，滚到底时最后一个入口完整可见（`railMetrics` 单测守护）；
+- 位置恢复：上次偏移存在模块内存（`rememberedRailOffset`，不写库、不绑定配置）；
+  回到首页时恢复到该位置；入口减少 / 屏幕变宽导致越界时用 `clampRailOffset` 收敛；
+- 编辑态：磁贴右上 × 直接移除；点磁贴弹「前移 / 后移 / 移除」动作表（读屏用户的替代路径）；
+  只有右下角六点手柄接 `PanResponder`（`onStartShouldSetPanResponderCapture`），
+  拖动时松手按 `railDropIndex` 落位；磁贴本体不接管手势，长轨道里后半段入口仍可滑到。
+
+### 13.5 与既有入口自定义的兼容
+
+| 能力 | 现状 |
+|---|---|
+| 显示 / 隐藏 | `commitEntryVisibility` → 轨道按 `visible` 重排，移除项不占位；全部隐藏仍走原空态（全部功能 / 恢复默认） |
+| 自定义排序 | 轨道顺序 = `visible` 数组顺序；首页拖拽/动作表与管理页拖拽都写同一份配置（`commitEntryOrder` 串行写队列） |
+| 持久化 | kv `workbench_entries` 未变；schema、迁移别名、`known` 合并规则未改 |
+| 导航 | `entryTargetOf` 未改；route / tab / createTask 三种落点行为不变 |
+| 管理页 | 仍为纵向列表 + 行拖拽（`settleReorder`），未强制改成横向 |
+| 数量边界 | 空配置 → 空态；1 个 → 单行不滚；4→5、10→2、快速连改 → 由 `visible` 重算，位置越界自动收敛 |
+
+### 13.6 全局一致性审计
+
+| 区域 | 是否同语义 | 处理 |
+|---|---|---|
+| 工具页「常用操作 / 最近使用」 | 否：整页工具目录的一部分，需要纵向浏览与搜索 | 不改（`ToolsScreen` 的最近使用本来就是横向 chip 条） |
+| 工作区「我的工作区」宫格 | 否：占位能力清单，不是可配置的轻量入口 | 不改 |
+| 采集页分享动作、表单动作行 | 否：一次操作的动作按钮组，不是入口集合 | 不改 |
+| 任务 / 笔记 / 诊断日志 / 文件列表 | 否：按顺序阅读的长列表 | 不改 |
+
+结论：只有首页「快捷入口」是「可配置的轻量入口集合」，复用范围限定在该组件，没有把卡片列表批量改成横向。
+
+### 13.7 自动化
+
+`src/lib/__tests__/entryRail.test.ts` 覆盖 280/320/360/393/412/420/430/600/800/1024dp ×
+1/2/3/4/5/6/8/10/16/24 个入口：单行、溢出判定、磁贴宽上下限、末尾完整可见、空配置、
+异常输入、字体缩放高度与最小宽度、偏移收敛。`entryReorder.test.ts` 改为 `railDropIndex`。
+运行结果见 `tmp/acceptance/mobile-entry-rail/report.md`（未执行前不得视为已验证）。
