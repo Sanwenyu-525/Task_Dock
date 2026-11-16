@@ -2048,6 +2048,40 @@ DROP TABLE temp._v57_stage_shelf_project_links;
 DROP TABLE temp._v57_stage_guard;
 "#,
     ),
+    (
+        58,
+        r#"
+-- 小说卷/章（v58）：卷 → 章两级，正文为纯文本；不引入第二套项目/任务系统。
+-- 关系：workspace_projects 删除级联卷/章；删除卷级联其章节；章节允许 volume_id
+-- 为 NULL（未分卷草稿）；卷与章的项目归属由命令层校验。
+CREATE TABLE novel_volumes (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_novel_volumes_project
+  ON novel_volumes(project_id, sort_order, created_at);
+
+CREATE TABLE novel_chapters (
+  id TEXT PRIMARY KEY NOT NULL,
+  project_id TEXT NOT NULL REFERENCES workspace_projects(id) ON DELETE CASCADE,
+  volume_id TEXT REFERENCES novel_volumes(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  word_count INTEGER NOT NULL DEFAULT 0 CHECK (word_count >= 0),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_novel_chapters_project
+  ON novel_chapters(project_id, volume_id, sort_order, created_at);
+CREATE INDEX idx_novel_chapters_volume
+  ON novel_chapters(volume_id);
+"#,
+    ),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -6425,7 +6459,7 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
         let db = Db::open(&path).unwrap();
         db.with_read(|conn| {
             let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            assert_eq!(version, MIGRATIONS[MIGRATIONS.len() - 1].0, "必须升级到 v57");
+            assert_eq!(version, MIGRATIONS[MIGRATIONS.len() - 1].0, "必须升级到最新版（v57 五类型 + v58 卷/章）");
 
             let fk_violations: i64 = conn
                 .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
@@ -6619,6 +6653,162 @@ CREATE INDEX idx_shelf_file_ops_created ON shelf_file_ops(created_at);
                 )?;
                 assert_eq!(left, 0, "{table} 必须随 novel 项目级联删除");
             }
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v58（B1）：新增小说卷/章两表与索引；升级只加表，不动任何既有行。
+    /// 同时锁定：章节 volume_id 可为 NULL（未分卷）；删除项目级联清理卷/章；
+    /// 删除卷级联清理其章节；升级后无外键违例。
+    #[test]
+    fn v58_novel_chapter_tables_preserve_existing_rows_and_cascade() {
+        let dir = std::env::temp_dir().join(format!("td-mig58-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let now = "2026-11-16T10:00:00+00:00";
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            // 只应用到 v57（v58 之前最后一条），模拟升级前的真实用户库。
+            let idx57 = MIGRATIONS.iter().position(|(v, _)| *v == 57).unwrap();
+            apply_migrations(&conn, 0, &MIGRATIONS[..idx57 + 1]).unwrap();
+
+            conn.execute(
+                "INSERT INTO workspace_projects
+                 (id, name, kind, status, root_path, dev_project_id, note, created_at, updated_at)
+                 VALUES ('p-novel', '长篇小说', 'novel', 'active', 'C:/novel', NULL, '简介', ?1, ?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO workspace_instances (project_id, active_module, layout_json, last_opened_at)
+                 VALUES ('p-novel', 'items', '{\"version\":1}', ?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO workspace_items
+                 (id, project_id, parent_id, title, stage, status, sort_order, metadata_json,
+                  created_at, updated_at)
+                 VALUES ('i-1', 'p-novel', NULL, '第一章提纲', 'chapter', 'doing', 0, '{}', ?1, ?1)",
+                [now],
+            )
+            .unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        db.with_read(|conn| {
+            let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            assert_eq!(
+                version,
+                MIGRATIONS[MIGRATIONS.len() - 1].0,
+                "必须升级到最新版（v58）"
+            );
+
+            let tables: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+                     AND name IN ('novel_volumes','novel_chapters')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(tables, 2, "v58 必须创建卷、章两张表");
+
+            let indexes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
+                     ('idx_novel_volumes_project','idx_novel_chapters_project',
+                      'idx_novel_chapters_volume')",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(AppError::from)?;
+            assert_eq!(indexes, 3, "v58 索引必须全部创建");
+
+            let volumes: i64 = conn
+                .query_row("SELECT COUNT(*) FROM novel_volumes", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            let chapters: i64 = conn
+                .query_row("SELECT COUNT(*) FROM novel_chapters", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!((volumes, chapters), (0, 0), "升级不得预置演示数据");
+
+            let project: (String, String, String) = conn.query_row(
+                "SELECT name, kind, note FROM workspace_projects WHERE id = 'p-novel'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            assert_eq!(project, ("长篇小说".into(), "novel".into(), "简介".into()));
+            let items: i64 = conn
+                .query_row("SELECT COUNT(*) FROM workspace_items", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(items, 1, "既有事项不得因 v58 丢行");
+            let instances: i64 = conn
+                .query_row("SELECT COUNT(*) FROM workspace_instances", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(instances, 1, "既有窗口实例不得因 v58 丢行");
+
+            let fk: i64 = conn
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+                .map_err(AppError::from)?;
+            assert_eq!(fk, 0, "升级后不得存在外键错误");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        // 卷 → 章（含未分卷草稿）可写入；删除卷/项目按外键级联。
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO novel_volumes (id, project_id, title, sort_order, created_at, updated_at)
+                 VALUES ('v-1', 'p-novel', '第一卷', 0, ?1, ?1)",
+                [now],
+            )?;
+            conn.execute(
+                "INSERT INTO novel_chapters
+                 (id, project_id, volume_id, title, content, word_count, sort_order, created_at, updated_at)
+                 VALUES ('c-1', 'p-novel', 'v-1', '第一章', '正文', 2, 0, ?1, ?1)",
+                [now],
+            )?;
+            conn.execute(
+                "INSERT INTO novel_chapters
+                 (id, project_id, volume_id, title, content, word_count, sort_order, created_at, updated_at)
+                 VALUES ('c-2', 'p-novel', NULL, '未分卷', '', 0, 0, ?1, ?1)",
+                [now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM novel_volumes WHERE id = 'v-1'", [])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        db.with_read(|conn| {
+            let left: i64 = conn
+                .query_row("SELECT COUNT(*) FROM novel_chapters", [], |r| r.get(0))?;
+            assert_eq!(left, 1, "删除卷必须级联删除其章节，未分卷章节保留");
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM workspace_projects WHERE id = 'p-novel'", [])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        db.with_read(|conn| {
+            let left: i64 = conn
+                .query_row("SELECT COUNT(*) FROM novel_chapters", [], |r| r.get(0))?;
+            assert_eq!(left, 0, "删除项目必须级联清理剩余章节");
+            let fk: i64 =
+                conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+            assert_eq!(fk, 0, "级联删除后不得留下外键违例");
             Ok::<_, AppError>(())
         })
         .unwrap();

@@ -363,7 +363,11 @@ describe("P1 布局撤销 / 重做", () => {
     expect(sortedIds(tabIdSet())).toEqual(["tab-0-0"]);
     expect(state().redoLayout()).toBe(true);
     expect(paneIds(state().tree)).toHaveLength(2);
-    expect(sortedIds(tabIdSet())).toEqual(["tab-0-0"]);
+    // 重做恢复「分割时复制出的新标签」：布局与标签分配一起回来，不是只剩空窗格。
+    const restoredPane = paneIds(state().tree)[1];
+    expect(state().panes[restoredPane].tabs).toHaveLength(1);
+    expect(state().panes[restoredPane].tabs[0].path).toBe("D:\\a");
+    expect(sortedIds(tabIdSet())).toHaveLength(2);
   });
 
   it("关闭区域 → 撤销恢复标签与区域", () => {

@@ -19,7 +19,7 @@
 import type { WorkspaceKind } from "../lib/bridge";
 
 /** 工作空间模块 ID：页面路由单位，Profile 决定顺序与标题。 */
-export type WorkspaceModuleId = "overview" | "items" | "links" | "settings";
+export type WorkspaceModuleId = "overview" | "manuscript" | "items" | "links" | "settings";
 
 /** 稳定能力 ID（跨版本不可改名；新增能力只能追加）。 */
 export type WorkspaceCapabilityId =
@@ -214,10 +214,12 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
   "novel.manuscript": {
     id: "novel.manuscript",
     label: "正文与章节",
-    summary: "小说正文编辑、章节/卷管理与自动保存。",
-    state: "planned",
-    provider: "未接入（本阶段只登记项目类型；没有章节/正文数据模型与编辑器）",
-    fallback: "不显示编辑/保存入口；正文与章节管理在下一阶段接入",
+    summary: "卷 → 章两级章节树、纯文本正文编辑、自动保存与字数统计。",
+    state: "available",
+    provider: "novel_volumes / novel_chapters（v58）+ 内置纯文本编辑器",
+    condition: "小说项目；单章正文上限 8 MiB",
+    fallback: "仅支持纯文本；Markdown/富文本、版本历史与导出尚未接入",
+    action: { kind: "module", target: "manuscript" },
   },
   "novel.characters": {
     id: "novel.characters",
@@ -320,9 +322,10 @@ const GENERAL_MODULES: WorkspaceModule[] = [
   { id: "settings", label: "设置" },
 ];
 
-/** 小说项目（A 阶段）：只复用已实现的模块 ID，专业模块在后续阶段接入。 */
+/** 小说项目（B1）：在既有模块之外增加独立「正文」模块（卷 → 章两级）。 */
 const NOVEL_MODULES: WorkspaceModule[] = [
   { id: "overview", label: "概览" },
+  { id: "manuscript", label: "正文" },
   { id: "items", label: "写作事项" },
   { id: "links", label: "任务关联" },
   { id: "settings", label: "项目设置" },
@@ -415,7 +418,9 @@ export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
         id: "novel-roadmap",
         title: "后续创作功能",
         body: "roadmap",
-        capability: "novel.manuscript",
+        // 该卡片只列 planned/unavailable 能力：用一个人物设定能力作徽标来源，
+        // 避免把已可用的「正文与章节」标成「计划中」。
+        capability: "novel.characters",
       },
     ],
     capabilities: [
@@ -429,6 +434,7 @@ export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
       "novel.aiAssist",
     ],
     recommendedTools: [
+      "在「正文」里按卷 / 章写作，正文自动保存到本地数据库",
       "用写作事项记录章节 / 卷 / 线索的推进",
       "把写作任务关联到既有任务系统（不复制任务）",
     ],
@@ -509,7 +515,13 @@ export function defaultLayout(profile: WorkspaceProfile): WorkspaceLayoutConfig 
 }
 
 function isModuleId(value: unknown): value is WorkspaceModuleId {
-  return value === "overview" || value === "items" || value === "links" || value === "settings";
+  return (
+    value === "overview" ||
+    value === "manuscript" ||
+    value === "items" ||
+    value === "links" ||
+    value === "settings"
+  );
 }
 
 /**

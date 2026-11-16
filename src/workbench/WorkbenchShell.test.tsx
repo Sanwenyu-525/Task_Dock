@@ -176,6 +176,23 @@ describe("WorkbenchShell", () => {
     ).toBeTruthy();
   });
 
+  it("顶栏按下进入 is-dragging（grabbing 语义），松开立即复位", async () => {
+    const { container } = render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    const header = container.querySelector("header.wb-topbar") as HTMLElement;
+    const brand = header.querySelector(".wb-brand-name") as HTMLElement;
+    brand.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, button: 0, buttons: 1, composed: true }),
+    );
+    expect(header.classList.contains("is-dragging")).toBe(true);
+
+    document.dispatchEvent(
+      new PointerEvent("pointerup", { bubbles: true, button: 0, buttons: 0, composed: true }),
+    );
+    expect(header.classList.contains("is-dragging")).toBe(false);
+  });
+
   it("点击侧栏切换到任务页并持久化工作台路由", async () => {
     render(<WorkbenchShell />);
     await screen.findByRole("heading", { name: "工作台首页", level: 2 });

@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { useUiStore } from "../../store/useUiStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 import { WorkbenchPageDetail, WorkbenchDetailFacts } from "../../workbench/pageDetail";
 import { useNavigationStore, type RefreshOutcome } from "../../store/useNavigationStore";
 import { errorMessage, normalizeError } from "../../lib/errors";
@@ -1006,7 +1007,16 @@ export default function AppsPanel() {
         }
       />
 
-      <div className="filter-bar primary apps-filter-bar">
+      <WorkspaceSplit
+        id="apps"
+        sidebarLabel={tr("apps.filterAria")}
+        sidebar={
+          <div className="apps-filter-pane">
+            <div className="workspace-rail-head">
+              <span className="workspace-rail-eyebrow">应用管理</span>
+              <h2>分类与筛选</h2>
+            </div>
+            <div className="filter-bar primary apps-filter-bar">
         <div className="seg-group subtle" role="group" aria-label={tr("apps.filterAria")}>
           {FILTERS.map((f) => (
             <button
@@ -1053,9 +1063,11 @@ export default function AppsPanel() {
             <RefreshCw size={13} aria-hidden="true" />
           </button>
         </div>
-      </div>
-
-      <div className="page-scroll apps-body">
+            </div>
+          </div>
+        }
+      >
+        <div className="page-scroll apps-body">
         {/* 组合场景与最近使用都用真实数据：分类来自已保存目标，最近来自 last_used_at。
             这里只做筛选与再次启动，不新增无后端契约的「批量场景运行」。 */}
         {targetsLoaded && !noAppsAtAll && filter === "all" && !query.trim() && (
@@ -1238,7 +1250,8 @@ export default function AppsPanel() {
             <div className="apps-extra-list">{visibleExtras.map(renderExtraRow)}</div>
           </section>
         )}
-      </div>
+        </div>
+      </WorkspaceSplit>
 
       {/* 选中应用的右栏详情：显式从「⋯ → 查看详情」进入；启动仍走真实 Router，
           路径/运行态/使用次数全部来自 NavTarget 与后端运行态查询。 */}

@@ -996,13 +996,16 @@ export default function WorkbenchShell() {
   // 顶栏是 `data-tauri-drag-region="deep"` 的整条拖动区：挂主窗同一套拖拽光标
   // 会话（悬停 grab、按住拖动期间 grabbing）。原生 `window-drag` 相位由 Rust
   // `drag_watch` 发到本窗口，松手即复位，不依赖用户在指针上再动一次。
+  // 注意：`booted` 之前组件先渲染加载卡片，顶栏尚未挂载；这里按与 `booted` 相同的
+  // 三份状态做依赖，等顶栏真正出现后再挂会话。若退回 `[]`，首挂 ref 为空且永不重跑。
   const topbarRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
+    if (!settingsReady || !routeHydrated || !projectHydrated) return;
     const node = topbarRef.current;
     if (!node) return;
     const session = attachDragCursorSession(node, { deepRegion: true });
     return () => session.dispose();
-  }, []);
+  }, [settingsReady, routeHydrated, projectHydrated]);
 
   // 应用内快捷键：与主窗口同一运行时，但分发到本窗口 store（Ctrl+数字/Ctrl+K）。
   useHotkeysRuntime();

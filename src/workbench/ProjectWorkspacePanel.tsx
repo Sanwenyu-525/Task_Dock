@@ -16,6 +16,7 @@ import { openPath as openSystemPath } from "@tauri-apps/plugin-opener";
 import {
   AlertCircle,
   ArrowUpRight,
+  BookOpen,
   CheckCircle2,
   FolderKanban,
   FolderOpen,
@@ -28,6 +29,7 @@ import {
 } from "lucide-react";
 
 import WorkbenchPageHeader from "./WorkbenchPageHeader";
+import NovelManuscriptPanel from "./NovelManuscriptPanel";
 import Select from "../components/ui/Select";
 import {
   agentSnapshot,
@@ -771,6 +773,15 @@ export default function ProjectWorkspacePanel({
               <button type="button" className="ws-btn" onClick={() => void switchModule("links")}>
                 <Link2 size={12} /> 关联任务
               </button>
+              {profile.kind === "novel" && (
+                <button
+                  type="button"
+                  className="ws-btn ws-btn-primary"
+                  onClick={() => void switchModule("manuscript")}
+                >
+                  <BookOpen size={12} /> 开始写作
+                </button>
+              )}
               {project?.devProjectId && (
                 <button
                   type="button"
@@ -869,6 +880,15 @@ export default function ProjectWorkspacePanel({
             )}
           </div>
         </div>
+      )}
+
+      {activeModule === "manuscript" && project && (
+        <NovelManuscriptPanel
+          key={project.id}
+          projectId={project.id}
+          archived={project.status === "archived"}
+          onNotice={onNotice}
+        />
       )}
 
       {activeModule === "links" && (

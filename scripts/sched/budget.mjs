@@ -207,6 +207,48 @@ export function planAdmission({ budget, entries = [], taskId = null, estimateMb 
   };
 }
 
+// ---------------------------------------------------------------- 全局构建并发上限
+
+/** 计入「全局构建并发」的分类：dev 是常驻服务，按既有契约不占一次性构建名额。 */
+export const BUILD_CLASSES = ["heavy", "medium", "light"];
+
+/**
+ * 约束 C：全局构建并发上限（纯函数）。
+ *
+ * 为什么用「活动预留条数」当计数：排队中的任务**不写预留**（预留只在即将启动时创建），
+ * 所以 `reservations/*.json` 里的非 dev 条目 = 当前真正在跑或正在启动的构建数。这份台账只在
+ * `.admission` 临界区内「读取 → 判定 → 写预留」，与预算判定共用同一把跨进程锁（文档 5.7），
+ * 因此两个进程不可能同时认为「还剩最后一个名额」。名额释放不需要额外动作：任务收尾时删除
+ * 预留（releaseReservation）就等于自动归还名额；崩溃残留由既有的 reclaimStaleReservations 回收。
+ *
+ * dev 不计入：常驻 dev 服务按既有设计不占一次性构建锁，由 devConcurrency 单独限流；
+ * 它仍计入全局预算（内存），两套账互不替代。
+ *
+ * @returns {{admit:boolean, cap:number|null, active:number, activeTaskIds:string[], scope:string, reason:string|null}}
+ */
+export function planGlobalConcurrency({ cfg, entries = [], taskId = null }) {
+  const rawCap = Number(cfg?.globalConcurrency);
+  const cap = Number.isFinite(rawCap) && rawCap > 0 ? Math.floor(rawCap) : null;
+  // 同一 taskId 的旧记录是重入，不算别人；phase=releasing 也计入（宁可少放行一个，也不超发名额）
+  const active = entries.filter((e) => e && e.taskId !== taskId && BUILD_CLASSES.includes(e.taskClass));
+  const base = {
+    cap,
+    active: active.length,
+    activeTaskIds: active.slice(0, 8).map((e) => e.taskId),
+    scope: "heavy/medium/light（dev 常驻服务不计入）",
+  };
+  if (cap === null) return { ...base, admit: true, reason: null };
+  if (active.length < cap) return { ...base, admit: true, reason: null };
+  const who = active.slice(0, 4).map((e) => `${e.taskId}(${e.taskClass})`).join("、");
+  return {
+    ...base,
+    admit: false,
+    reason: `全局构建并发已满（${active.length}/${cap}）：正在运行 ${who}` +
+      `${active.length > 4 ? ` 等 ${active.length} 个` : ""}；` +
+      "任一构建结束会自动释放名额，按优先级排队即可（不是本机装不下）",
+  };
+}
+
 // ---------------------------------------------------------------- 预留台账读写
 
 function safeTaskId(taskId) {
@@ -509,6 +551,16 @@ export function acquireAdmission({
       return { ok: false, held: true, budget, plan, reason: plan.reason, ledgerBlocked: reclaimed.blocked };
     }
 
+    // ③-2 约束 C：全局构建并发上限。判定与预算在**同一个临界区**完成，
+    // 因此不会出现「两个进程各自看到还剩 1 个名额」的超发；这里拒绝时还没写预留，回滚为空操作。
+    const capPlan = planGlobalConcurrency({ cfg, entries: reclaimed.entries, taskId });
+    if (!capPlan.admit) {
+      return {
+        ok: false, held: true, budget, plan, cap: capPlan,
+        reason: capPlan.reason, ledgerBlocked: reclaimed.blocked,
+      };
+    }
+
     // ④ 先写预留（写不进去就拒绝，绝不去占槽位）
     reservation = createReservation({ taskId, taskClass, reservedMb: plan.estimateMb, label, detached });
     try {
@@ -529,7 +581,7 @@ export function acquireAdmission({
       });
       if (got.lease) {
         return {
-          ok: true, lease: got.lease, slot: name, reservation, budget, plan,
+          ok: true, lease: got.lease, slot: name, reservation, budget, plan, cap: capPlan,
           reclaimed: got.reclaimed ?? null, ledgerReclaimed: reclaimed.removed,
           ledgerBlocked: reclaimed.blocked,
         };
@@ -573,5 +625,7 @@ export function budgetSnapshot({ home, cfg, totalMb, probe = null }) {
   return {
     ...budget, reservedMb, availableMb: Math.max(0, budget.budgetMb - reservedMb),
     entries: rows, count: rows.length,
+    // 约束 C 的只读视图（status/queue 用）：cap=null 表示未启用上限
+    global: planGlobalConcurrency({ cfg, entries }),
   };
 }

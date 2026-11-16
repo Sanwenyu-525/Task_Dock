@@ -191,7 +191,9 @@ export function swapPanes(node: SplitNode, a: string, b: string): SplitNode | nu
 export function adjacentPaneId(node: SplitNode, paneId: string): string | null {
   const path = pathToPane(node, paneId);
   if (!path || path.length === 0) return null;
-  for (const parent of path) {
+  // pathToPane 返回根 → 叶；必须从**最近一层父分割**开始找兄弟，
+  // 否则四宫格关闭 A 会跳到最外层兄弟子树的 C，而不是同列紧邻的 B。
+  for (const parent of [...path].reverse()) {
     const inFirst = hasPane(parent.first, paneId);
     const sibling = inFirst ? parent.second : parent.first;
     const ids = paneIds(sibling);

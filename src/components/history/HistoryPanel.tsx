@@ -28,6 +28,7 @@ import {
   type NotificationRow,
 } from "../../lib/bridge";
 import { useUiStore } from "../../store/useUiStore";
+import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 
 /** 右栏时间用本地可读格式；原始 ISO 只保留给接口/日志，不直接暴露给用户。 */
 function formatHistoryTime(iso: string): string {
@@ -417,7 +418,16 @@ export default function HistoryPanel() {
       {/* 过滤工具栏（2026-11-15 合并）：原来「筛选」与「未读统计」分两条 filter-bar，
           第二行只剩一句统计，视觉上悬空。现在合成一条工具栏，统计靠右同排，
           窄窗口时随筛选组一起换行，不再单独占一行。 */}
-      <div className="filter-bar primary history-toolbar">
+      <WorkspaceSplit
+        id="history"
+        sidebarLabel={tr("history.rangeAria")}
+        sidebar={
+          <div className="history-filter-pane">
+            <div className="workspace-rail-head">
+              <span className="workspace-rail-eyebrow">事件追踪</span>
+              <h2>筛选与范围</h2>
+            </div>
+            <div className="filter-bar primary history-toolbar">
         <div className="seg-group subtle" role="group" aria-label={tr("history.rangeAria")}>
           {TIME_FILTERS.map((t) => (
             <button
@@ -471,7 +481,10 @@ export default function HistoryPanel() {
         <span className="history-scope-hint" data-tip="历史接口暂无全库全文检索；搜索只匹配已加载到前端的记录">
           搜索仅限已加载
         </span>
-      </div>
+            </div>
+          </div>
+        }
+      >
 
       {hasNew && (
         <div className="history-new-banner">
@@ -666,6 +679,7 @@ export default function HistoryPanel() {
           </div>
         )}
         </div>
+      </WorkspaceSplit>
 
       <ConfirmDialog
         open={confirmClear}

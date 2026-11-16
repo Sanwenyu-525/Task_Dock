@@ -99,6 +99,40 @@ pub struct WorkspaceTaskLink {
     pub created_at: String,
 }
 
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NovelVolume {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 章节列表项：不含正文，避免打开项目时把整本正文全部读入内存。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NovelChapterSummary {
+    pub id: String,
+    pub project_id: String,
+    pub volume_id: Option<String>,
+    pub title: String,
+    /// 非空白字符数，由正文保存时更新。
+    pub word_count: i64,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NovelChapter {
+    #[serde(flatten)]
+    pub summary: NovelChapterSummary,
+    pub content: String,
+}
+
 // ── 命令响应包装 ─────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -141,6 +175,31 @@ pub struct WorkspaceOk {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceActiveProject {
     pub project_id: String,
+}
+
+#[derive(Serialize)]
+pub struct NovelVolumeList {
+    pub volumes: Vec<NovelVolume>,
+}
+
+#[derive(Serialize)]
+pub struct NovelVolumeSaved {
+    pub volume: NovelVolume,
+}
+
+#[derive(Serialize)]
+pub struct NovelChapterList {
+    pub chapters: Vec<NovelChapterSummary>,
+}
+
+#[derive(Serialize)]
+pub struct NovelChapterSaved {
+    pub chapter: NovelChapterSummary,
+}
+
+#[derive(Serialize)]
+pub struct NovelChapterGot {
+    pub chapter: NovelChapter,
 }
 
 // ── 行映射与公共校验 ─────────────────────────────────────────────────
@@ -817,6 +876,393 @@ pub fn workspace_task_unlink_impl(
     Ok(())
 }
 
+// ── 小说卷/章（B1，v58）─────────────────────────────────────────────
+//
+// 设计边界：卷 → 章两级；正文是纯文本，按章存储；不复制任务系统，不建第二套
+// 项目容器。章节的 volume_id 允许为空（未分卷草稿），卷/章都必须属于同一项目；
+// 删除卷会级联删除其章节，删除项目会级联删除卷与章（由 v58 外键保证）。
+
+const MAX_NOVEL_TITLE_CHARS: usize = 240;
+/// 单章正文上限：8 MiB。纯文本按字节计，避免 `String` 复制导致的内存放大。
+const MAX_CHAPTER_CONTENT_BYTES: usize = 8 * 1024 * 1024;
+
+fn row_to_volume(row: &rusqlite::Row<'_>) -> rusqlite::Result<NovelVolume> {
+    Ok(NovelVolume {
+        id: row.get("id")?,
+        project_id: row.get("project_id")?,
+        title: row.get("title")?,
+        sort_order: row.get("sort_order")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+fn row_to_chapter_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<NovelChapterSummary> {
+    Ok(NovelChapterSummary {
+        id: row.get("id")?,
+        project_id: row.get("project_id")?,
+        volume_id: row.get("volume_id")?,
+        title: row.get("title")?,
+        word_count: row.get("word_count")?,
+        sort_order: row.get("sort_order")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+fn read_volume(conn: &Connection, id: &str) -> AppResult<NovelVolume> {
+    conn.query_row(
+        "SELECT id, project_id, title, sort_order, created_at, updated_at
+         FROM novel_volumes WHERE id = ?1",
+        params![id],
+        row_to_volume,
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound("卷不存在或已被删除".into()))
+}
+
+fn read_chapter_summary(conn: &Connection, id: &str) -> AppResult<NovelChapterSummary> {
+    conn.query_row(
+        "SELECT id, project_id, volume_id, title, word_count, sort_order, created_at, updated_at
+         FROM novel_chapters WHERE id = ?1",
+        params![id],
+        row_to_chapter_summary,
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound("章节不存在或已被删除".into()))
+}
+
+fn read_chapter(conn: &Connection, id: &str) -> AppResult<NovelChapter> {
+    conn.query_row(
+        "SELECT id, project_id, volume_id, title, content, word_count, sort_order,
+                created_at, updated_at
+         FROM novel_chapters WHERE id = ?1",
+        params![id],
+        |row| {
+            let summary = row_to_chapter_summary(row)?;
+            Ok(NovelChapter {
+                summary,
+                content: row.get("content")?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound("章节不存在或已被删除".into()))
+}
+
+/// 卷必须存在且属于同一项目；None 表示未分卷，直接通过。
+fn ensure_volume_belongs(
+    conn: &Connection,
+    project_id: &str,
+    volume_id: Option<&str>,
+) -> AppResult<()> {
+    let Some(volume_id) = volume_id else {
+        return Ok(());
+    };
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT id, project_id FROM novel_volumes WHERE id = ?1",
+            params![volume_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((_, owner)) = row else {
+        return Err(AppError::Validation("所属卷不存在".into()));
+    };
+    if owner != project_id {
+        return Err(AppError::Validation("所属卷不属于当前项目".into()));
+    }
+    Ok(())
+}
+
+fn validate_sort_order(value: i64) -> AppResult<i64> {
+    if !(-1_000_000..=1_000_000).contains(&value) {
+        return Err(AppError::Validation("排序值超出范围".into()));
+    }
+    Ok(value)
+}
+
+fn next_volume_sort(conn: &Connection, project_id: &str) -> AppResult<i64> {
+    let max: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM novel_volumes WHERE project_id = ?1",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    Ok(max.saturating_add(1))
+}
+
+fn next_chapter_sort(
+    conn: &Connection,
+    project_id: &str,
+    volume_id: Option<&str>,
+) -> AppResult<i64> {
+    let max: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM novel_chapters
+         WHERE project_id = ?1 AND volume_id IS ?2",
+        params![project_id, volume_id],
+        |row| row.get(0),
+    )?;
+    Ok(max.saturating_add(1))
+}
+
+/// 正文只做大小与控制字符校验，**不去首尾空白**：缩进与空行属于作者内容。
+fn validate_chapter_body(raw: &str) -> AppResult<String> {
+    if raw.len() > MAX_CHAPTER_CONTENT_BYTES {
+        return Err(AppError::Validation(format!(
+            "正文超过 {} MiB 上限",
+            MAX_CHAPTER_CONTENT_BYTES / (1024 * 1024)
+        )));
+    }
+    if raw.contains('\0') {
+        return Err(AppError::Validation("正文含非法控制字符".into()));
+    }
+    Ok(raw.to_string())
+}
+
+/// 字数：非空白字符数（中文按字、英文按字符），与编辑器展示口径一致。
+fn count_chapter_words(raw: &str) -> i64 {
+    raw.chars().filter(|c| !c.is_whitespace()).count() as i64
+}
+
+pub fn novel_volume_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<NovelVolume>> {
+    db.with_read(|conn| {
+        ensure_project_exists(conn, project_id)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, title, sort_order, created_at, updated_at
+             FROM novel_volumes WHERE project_id = ?1
+             ORDER BY sort_order, created_at, id",
+        )?;
+        let rows = stmt.query_map(params![project_id], row_to_volume)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(AppError::from)?);
+        }
+        Ok(out)
+    })
+}
+
+pub fn novel_volume_save_impl(
+    db: &Db,
+    id: Option<String>,
+    project_id: String,
+    title: String,
+    sort_order: Option<i64>,
+) -> AppResult<NovelVolume> {
+    let title = validate_text(&title, "卷标题", MAX_NOVEL_TITLE_CHARS, false)?;
+    let project_id = project_id.trim().to_string();
+    if project_id.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    let id = id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let saved_id = db.with_conn(|conn| {
+        ensure_project_exists(conn, &project_id)?;
+        let now = now_iso();
+        match id {
+            None => {
+                let order = match sort_order {
+                    Some(value) => validate_sort_order(value)?,
+                    None => next_volume_sort(conn, &project_id)?,
+                };
+                let id = uuid::Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO novel_volumes
+                     (id, project_id, title, sort_order, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                    params![id, project_id, title, order, now],
+                )?;
+                Ok::<String, AppError>(id)
+            }
+            Some(id) => {
+                let existing: Option<(String, i64)> = conn
+                    .query_row(
+                        "SELECT project_id, sort_order FROM novel_volumes WHERE id = ?1",
+                        params![id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                let Some((owner, current_order)) = existing else {
+                    return Err(AppError::NotFound("卷不存在或已被删除".into()));
+                };
+                if owner != project_id {
+                    return Err(AppError::Validation("卷不属于当前项目".into()));
+                }
+                let order = match sort_order {
+                    Some(value) => validate_sort_order(value)?,
+                    None => current_order,
+                };
+                conn.execute(
+                    "UPDATE novel_volumes
+                     SET title = ?2, sort_order = ?3, updated_at = ?4
+                     WHERE id = ?1 AND project_id = ?5",
+                    params![id, title, order, now, project_id],
+                )?;
+                Ok::<String, AppError>(id)
+            }
+        }
+    })?;
+    db.with_read(|conn| read_volume(conn, &saved_id))
+}
+
+pub fn novel_volume_delete_impl(db: &Db, id: &str) -> AppResult<()> {
+    db.with_conn(|conn| {
+        let exists: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM novel_volumes WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(AppError::NotFound("卷不存在或已被删除".into()));
+        }
+        // 章节由 v58 外键 ON DELETE CASCADE 一并删除。
+        conn.execute("DELETE FROM novel_volumes WHERE id = ?1", params![id])?;
+        Ok(())
+    })
+}
+
+pub fn novel_chapter_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<NovelChapterSummary>> {
+    db.with_read(|conn| {
+        ensure_project_exists(conn, project_id)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, volume_id, title, word_count, sort_order,
+                    created_at, updated_at
+             FROM novel_chapters WHERE project_id = ?1
+             ORDER BY sort_order, created_at, id",
+        )?;
+        let rows = stmt.query_map(params![project_id], row_to_chapter_summary)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(AppError::from)?);
+        }
+        Ok(out)
+    })
+}
+
+pub fn novel_chapter_get_impl(db: &Db, id: &str) -> AppResult<NovelChapter> {
+    db.with_read(|conn| read_chapter(conn, id))
+}
+
+/// 保存章节元信息（新建/改名/移动到卷/调整顺序），正文保持不变。
+pub fn novel_chapter_save_impl(
+    db: &Db,
+    id: Option<String>,
+    project_id: String,
+    volume_id: Option<String>,
+    title: String,
+    sort_order: Option<i64>,
+) -> AppResult<NovelChapterSummary> {
+    let title = validate_text(&title, "章节标题", MAX_NOVEL_TITLE_CHARS, false)?;
+    let project_id = project_id.trim().to_string();
+    if project_id.is_empty() {
+        return Err(AppError::Validation("项目 ID 不能为空".into()));
+    }
+    let volume_id = normalize_optional_id(volume_id, "所属卷")?;
+    let id = id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let saved_id = db.with_conn(|conn| {
+        ensure_project_exists(conn, &project_id)?;
+        ensure_volume_belongs(conn, &project_id, volume_id.as_deref())?;
+        let now = now_iso();
+        match id {
+            None => {
+                let order = match sort_order {
+                    Some(value) => validate_sort_order(value)?,
+                    None => next_chapter_sort(conn, &project_id, volume_id.as_deref())?,
+                };
+                let id = uuid::Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO novel_chapters
+                     (id, project_id, volume_id, title, content, word_count, sort_order,
+                      created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, '', 0, ?5, ?6, ?6)",
+                    params![id, project_id, volume_id, title, order, now],
+                )?;
+                Ok::<String, AppError>(id)
+            }
+            Some(id) => {
+                let existing: Option<(String, i64)> = conn
+                    .query_row(
+                        "SELECT project_id, sort_order FROM novel_chapters WHERE id = ?1",
+                        params![id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                let Some((owner, current_order)) = existing else {
+                    return Err(AppError::NotFound("章节不存在或已被删除".into()));
+                };
+                if owner != project_id {
+                    return Err(AppError::Validation("章节不属于当前项目".into()));
+                }
+                let order = match sort_order {
+                    Some(value) => validate_sort_order(value)?,
+                    None => current_order,
+                };
+                conn.execute(
+                    "UPDATE novel_chapters
+                     SET volume_id = ?2, title = ?3, sort_order = ?4, updated_at = ?5
+                     WHERE id = ?1 AND project_id = ?6",
+                    params![id, volume_id, title, order, now, project_id],
+                )?;
+                Ok::<String, AppError>(id)
+            }
+        }
+    })?;
+    db.with_read(|conn| read_chapter_summary(conn, &saved_id))
+}
+
+/// 正文自动保存：只更新 content / word_count / updated_at。
+pub fn novel_chapter_save_content_impl(
+    db: &Db,
+    id: &str,
+    content: String,
+) -> AppResult<NovelChapterSummary> {
+    let content = validate_chapter_body(&content)?;
+    let word_count = count_chapter_words(&content);
+    db.with_conn(|conn| {
+        let exists: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM novel_chapters WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(AppError::NotFound("章节不存在或已被删除".into()));
+        }
+        conn.execute(
+            "UPDATE novel_chapters
+             SET content = ?2, word_count = ?3, updated_at = ?4
+             WHERE id = ?1",
+            params![id, content, word_count, now_iso()],
+        )?;
+        Ok(())
+    })?;
+    db.with_read(|conn| read_chapter_summary(conn, id))
+}
+
+pub fn novel_chapter_delete_impl(db: &Db, id: &str) -> AppResult<()> {
+    db.with_conn(|conn| {
+        let exists: Option<String> = conn
+            .query_row(
+                "SELECT project_id FROM novel_chapters WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(AppError::NotFound("章节不存在或已被删除".into()));
+        }
+        conn.execute("DELETE FROM novel_chapters WHERE id = ?1", params![id])?;
+        Ok(())
+    })
+}
+
 // ── Tauri 命令 ──────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -973,6 +1419,95 @@ pub fn workspace_task_unlink(
     task_id: String,
 ) -> AppResult<WorkspaceOk> {
     workspace_task_unlink_impl(&db, &project_id, &task_id)?;
+    Ok(WorkspaceOk { ok: true })
+}
+
+// ── 小说卷/章命令（B1，v58）────────────────────────────────────────
+
+#[tauri::command]
+pub fn novel_volume_list(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+) -> AppResult<NovelVolumeList> {
+    Ok(NovelVolumeList {
+        volumes: novel_volume_list_impl(&db, &project_id)?,
+    })
+}
+
+#[tauri::command]
+pub fn novel_volume_save(
+    db: State<'_, Arc<Db>>,
+    id: Option<String>,
+    project_id: String,
+    title: String,
+    sort_order: Option<i64>,
+) -> AppResult<NovelVolumeSaved> {
+    Ok(NovelVolumeSaved {
+        volume: novel_volume_save_impl(&db, id, project_id, title, sort_order)?,
+    })
+}
+
+#[tauri::command]
+pub fn novel_volume_delete(db: State<'_, Arc<Db>>, id: String) -> AppResult<WorkspaceOk> {
+    novel_volume_delete_impl(&db, &id)?;
+    Ok(WorkspaceOk { ok: true })
+}
+
+#[tauri::command]
+pub fn novel_chapter_list(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+) -> AppResult<NovelChapterList> {
+    Ok(NovelChapterList {
+        chapters: novel_chapter_list_impl(&db, &project_id)?,
+    })
+}
+
+#[tauri::command]
+pub fn novel_chapter_get(
+    db: State<'_, Arc<Db>>,
+    id: String,
+) -> AppResult<NovelChapterGot> {
+    Ok(NovelChapterGot {
+        chapter: novel_chapter_get_impl(&db, &id)?,
+    })
+}
+
+#[tauri::command]
+pub fn novel_chapter_save(
+    db: State<'_, Arc<Db>>,
+    id: Option<String>,
+    project_id: String,
+    volume_id: Option<String>,
+    title: String,
+    sort_order: Option<i64>,
+) -> AppResult<NovelChapterSaved> {
+    Ok(NovelChapterSaved {
+        chapter: novel_chapter_save_impl(
+            &db,
+            id,
+            project_id,
+            volume_id,
+            title,
+            sort_order,
+        )?,
+    })
+}
+
+#[tauri::command]
+pub fn novel_chapter_save_content(
+    db: State<'_, Arc<Db>>,
+    id: String,
+    content: String,
+) -> AppResult<NovelChapterSaved> {
+    Ok(NovelChapterSaved {
+        chapter: novel_chapter_save_content_impl(&db, &id, content)?,
+    })
+}
+
+#[tauri::command]
+pub fn novel_chapter_delete(db: State<'_, Arc<Db>>, id: String) -> AppResult<WorkspaceOk> {
+    novel_chapter_delete_impl(&db, &id)?;
     Ok(WorkspaceOk { ok: true })
 }
 
@@ -1388,5 +1923,105 @@ mod tests {
             assert_eq!(p.kind, kind);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// B1（v58）：卷 → 章两级、正文原文保存、字数统计、项目隔离与级联删除。
+    #[test]
+    fn novel_chapters_support_volumes_content_autosave_and_cascade() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "长篇", "novel");
+        let other = create_project(&db, "另一本", "novel");
+
+        // 卷：新建自动排在末尾；重命名/排序可保存。
+        let v1 = novel_volume_save_impl(&db, None, project.id.clone(), "第一卷".into(), None).unwrap();
+        assert_eq!(v1.sort_order, 0);
+        let v2 = novel_volume_save_impl(&db, None, project.id.clone(), "第二卷".into(), None).unwrap();
+        assert_eq!(v2.sort_order, 1);
+        let renamed = novel_volume_save_impl(
+            &db,
+            Some(v1.id.clone()),
+            project.id.clone(),
+            "卷一（改）".into(),
+            Some(5),
+        )
+        .unwrap();
+        assert_eq!(renamed.title, "卷一（改）");
+        assert_eq!(renamed.sort_order, 5);
+        assert_eq!(novel_volume_list_impl(&db, &project.id).unwrap().len(), 2);
+
+        // 章：可挂在卷下，也可未分卷；列表不含正文。
+        let c1 = novel_chapter_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            Some(v2.id.clone()),
+            "第一章".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(c1.volume_id.as_deref(), Some(v2.id.as_str()));
+        assert_eq!(c1.word_count, 0);
+        let c2 = novel_chapter_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            None,
+            "未分卷草稿".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(c2.volume_id, None);
+        assert_eq!(novel_chapter_list_impl(&db, &project.id).unwrap().len(), 2);
+
+        // 正文：保留首尾空白与换行，字数按非空白字符；读取与写入一致。
+        let raw = "  第一章\n开局。\n\n  结尾  ";
+        let saved =
+            novel_chapter_save_content_impl(&db, &c1.id, raw.to_string()).unwrap();
+        assert_eq!(saved.word_count, 8); // 第一章开局。结尾 = 8 个非空白字符
+        let got = novel_chapter_get_impl(&db, &c1.id).unwrap();
+        assert_eq!(got.content, raw);
+        assert_eq!(got.summary.word_count, 8);
+
+        // 元信息更新（改名 + 移到另一卷）不覆盖正文。
+        let moved = novel_chapter_save_impl(
+            &db,
+            Some(c1.id.clone()),
+            project.id.clone(),
+            Some(v1.id.clone()),
+            "第一章（改）".into(),
+            Some(3),
+        )
+        .unwrap();
+        assert_eq!(moved.title, "第一章（改）");
+        assert_eq!(moved.volume_id.as_deref(), Some(v1.id.as_str()));
+        assert_eq!(novel_chapter_get_impl(&db, &c1.id).unwrap().content, raw);
+
+        // 跨项目引用卷必须拒绝；另一项目看不到本项目的卷/章。
+        assert!(novel_chapter_save_impl(
+            &db,
+            None,
+            other.id.clone(),
+            Some(v1.id.clone()),
+            "越界".into(),
+            None,
+        )
+        .is_err());
+        assert!(novel_volume_list_impl(&db, &other.id).unwrap().is_empty());
+        assert!(novel_chapter_list_impl(&db, &other.id).unwrap().is_empty());
+
+        // 删除卷级联删除其章节；删除项目级联删除剩余卷/章，且无外键违例。
+        novel_volume_delete_impl(&db, &v1.id).unwrap();
+        assert!(novel_chapter_get_impl(&db, &c1.id).is_err());
+        assert_eq!(novel_chapter_list_impl(&db, &project.id).unwrap().len(), 1);
+        workspace_project_delete_impl(&db, &project.id).unwrap();
+        assert!(novel_volume_list_impl(&db, &project.id).is_err());
+        let violations: i64 = db
+            .with_read(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
     }
 }

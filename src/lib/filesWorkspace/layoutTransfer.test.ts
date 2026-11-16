@@ -114,10 +114,25 @@ describe("planTabTransfer：目录集合恒定", () => {
       { paneId: "p1", tabs: [tab("a1", "D:\\a"), tab("a2", "D:\\b")], activeTabId: "a2" },
       { paneId: "p2", tabs: [tab("b1", "D:\\c")], activeTabId: "b1" },
     ];
-    const plan = planTabTransfer(sources, ["t1", "t2"], { activePaneId: "p1", activeTabId: "a2" });
+    // 两个源窗格合并到唯一目标区域：标签按源顺序串联，激活标签必须是用户
+    // 转换前正在看的 a2，不能被后一个源窗格的 b1 覆盖。
+    const plan = planTabTransfer(sources, ["t1"], { activePaneId: "p1", activeTabId: "a2" });
     expect(plan.slots[0].tabs.map((t) => t.tabId)).toEqual(["a1", "a2", "b1"]);
     expect(plan.slots[0].activeTabId).toBe("a2");
-    expect(plan.slots[1].activeTabId).toBeNull();
+    expect(plan.activePaneId).toBe("t1");
+    expect(plan.stashed).toHaveLength(0);
+  });
+
+  it("多源 → 多槽：源窗格按比例分配，激活标签跟随其所在槽位", () => {
+    const sources = [
+      { paneId: "p1", tabs: [tab("a1", "D:\\a"), tab("a2", "D:\\b")], activeTabId: "a2" },
+      { paneId: "p2", tabs: [tab("b1", "D:\\c")], activeTabId: "b1" },
+    ];
+    const plan = planTabTransfer(sources, ["t1", "t2"], { activePaneId: "p1", activeTabId: "a2" });
+    expect(plan.slots.map((s) => s.tabs.map((t) => t.tabId))).toEqual([["a1", "a2"], ["b1"]]);
+    expect(plan.slots[0].activeTabId).toBe("a2");
+    expect(plan.slots[1].activeTabId).toBe("b1");
+    expect(plan.activePaneId).toBe("t1");
   });
 
   it("容量上限：单区域装不下时，多余标签进入可恢复收纳而不是被截断", () => {

@@ -273,6 +273,10 @@ function cmdStatus(argv) {
       `phase=${pad(e.phase ?? "?", 9)} pid=${pad(e.ownerPid ?? "?", 7)} ` +
       `${e.state && e.state !== "owner-alive" ? `⚠ ${e.state}` : ""}`);
   }
+  const globalView = budget.global;
+  console.log(`全局构建并发：${globalView?.cap ? `${globalView.active}/${globalView.cap} 个构建在跑` : "上限未启用"}` +
+    `${globalView?.cap ? "（heavy/medium/light 合计；dev 常驻服务由 dev 槽位独立管理、不计入）" : ""}` +
+    `${globalView?.cap && globalView.active >= globalView.cap ? "  ⚠ 已满，后续构建将排队" : ""}`);
   console.log("");
   console.log("槽位：");
   const bySlot = new Map(slots.map((s) => [s.slot, s]));
@@ -299,11 +303,12 @@ function cmdStatus(argv) {
   }
   if (tasks.length > 12) console.log(`  …还有 ${tasks.length - 12} 个，见 ${SELF} queue`);
   console.log("");
-  console.log(`策略：重型 并发${ctx.cfg.heavyConcurrency} ` +
+  console.log(`策略：全局构建并发${ctx.cfg.globalConcurrency}（heavy/medium/light 合计，dev 不计入） ` +
+    `重型 并发${ctx.cfg.heavyConcurrency} ` +
     `中型 并发${ctx.cfg.mediumConcurrency} ` +
     `轻量 并发${ctx.cfg.lightConcurrency} ` +
     `dev 并发${ctx.cfg.devConcurrency} 内存采样${ctx.cfg.memorySampleMs}ms ` +
-    `cargoJobs=${ctx.cfg.cargoJobs}（无内存门槛，不等式约束只剩槽位并发与全局预算）`);
+    `cargoJobs=${ctx.cfg.cargoJobs}（无内存门槛，不等式约束 = 全局并发 + 槽位并发 + 全局预算）`);
   if (ctx.configProblems.length) {
     console.log("");
     for (const p of ctx.configProblems) console.log(`配置问题：${p}`);
@@ -378,6 +383,9 @@ function cmdQueue(argv) {
   const budgetView = budgetSnapshot({ home: ctx.state.home, cfg: ctx.cfg, totalMb: readMemory().totalMb });
   console.log(`全局预算：${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留` +
     `（硬上限 = 物理 ${formatMb(budgetView.totalMb)} - 系统保留 ${formatMb(budgetView.reserveMb)}）`);
+  const globalView = budgetView.global;
+  console.log(`全局构建并发：${globalView?.cap ? `${globalView.active}/${globalView.cap} 个构建在跑` : "上限未启用"}` +
+    `${globalView?.cap ? "（heavy/medium/light 合计；dev 不计入）" : ""}`);
   if (budgetView.warning) console.log(`⚠ ${budgetView.warning}`);
   console.log("");
   console.log("说明：优先级列显示「基础/经老化后的有效优先级」；等待越久有效优先级越高，避免 P3 饥饿。");
@@ -588,6 +596,10 @@ function cmdDoctor(argv) {
   const reservations = readReservations(home);
   const budgetView = budgetSnapshot({ home, cfg: ctx.cfg, totalMb: readMemory().totalMb, probe: defaultProbe() });
   ok.push(`全局预算 ${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留（${reservations.length} 条台账）`);
+  if (budgetView.global?.cap) {
+    ok.push(`全局构建并发 ${budgetView.global.active}/${budgetView.global.cap}` +
+      "（heavy/medium/light 合计；dev 常驻服务不计入）");
+  }
   // 预算风险（系统保留被侵占 / 预算装不下最大分类峰值 / 系统保留 ≥ 物理内存）必须在诊断里成条列出，
   // 而不是只在 status 里一行带过：这类问题会让重型任务"永远排队"，容易被误读成"谁占着槽位"。
   if (budgetView.warning) {
@@ -716,6 +728,8 @@ function cmdDoctor(argv) {
   console.log(`内存：可用 ${formatMb(mem.availMb)} / ${formatMb(mem.totalMb)}${mem.simulated ? "（模拟值）" : ""}`);
   console.log(`全局预算：${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留` +
     `（硬上限 ${formatMb(budgetView.hardLimitMb)} = 物理 ${formatMb(budgetView.totalMb)} - 系统保留 ${formatMb(budgetView.reserveMb)}）`);
+  console.log(`全局构建并发：${budgetView.global?.cap ? `${budgetView.global.active}/${budgetView.global.cap} 个构建在跑` : "上限未启用"}` +
+    `${budgetView.global?.cap ? "（heavy/medium/light 合计；dev 不计入）" : ""}`);
   console.log(`配置来源：${describeSources(ctx.sources)}`);
   return issues.some((i) => i.severity === "P0") ? EXIT.internal : EXIT.ok;
 }

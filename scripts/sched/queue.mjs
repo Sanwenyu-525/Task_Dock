@@ -15,7 +15,7 @@ import { join, resolve } from "node:path";
 import { atomicWriteJson, appendBoundedJsonLine, paths, readJson, readJsonDir, sha256 } from "./state.mjs";
 import { verifyIdentity } from "./proc.mjs";
 import { estimateForClass } from "./mem.mjs";
-import { computeBudget, planAdmission, readReservations } from "./budget.mjs";
+import { computeBudget, planAdmission, planGlobalConcurrency, readReservations } from "./budget.mjs";
 
 export const PRIORITY_LABEL = { 0: "P0", 1: "P1", 2: "P2", 3: "P3" };
 export const ACTIVE_STATUSES = new Set(["queued", "waiting_resources", "running"]);
@@ -143,10 +143,11 @@ export function slotHolderTaskIds(home) {
 }
 
 /**
- * 判断本任务是否可以开始，并把阻塞原因分成三类，供调度循环区别处理：
+ * 判断本任务是否可以开始，并把阻塞原因分成四类，供调度循环区别处理：
  *   - slotFull：本分类槽位被占（可能是**已经死掉的会话留下的陈旧槽位**，需要定期取证回收，
  *     所以不能只凭目录存在就永久拒绝，否则崩溃后就永远排不上）；
  *   - budget：全局构建预算不足（约束 B，所有分类共用一个池）；
+ *   - globalCap：全局构建并发已满（约束 C，heavy/medium/light 合计；等任一构建结束自动释放名额）；
  *   - priorityBlockers：同分类内存在更高/更早的任务在等（心跳过期的僵尸记录不算）。
  * 跨分类不做头阻塞（重型在等预算时轻量仍可跑），这是 16GB 机器上避免整体停滞的关键。
  * 2026-11-15 起不再有「实时可用内存门槛」（约束 A）：可用内存只作展示，不阻塞任何任务。
@@ -156,17 +157,21 @@ export function slotHolderTaskIds(home) {
 export function evaluateEligibility({ home, task, tasks, cfg, mem }) {
   const now = Date.now();
   const estimateMb = Number.isFinite(task.estimateMb) ? task.estimateMb : null;
+  // 预留台账只读一次：预算（约束 B）与全局并发（约束 C）必须看同一份快照，否则两处结论会打架
+  const entries = readReservations(home);
   const budgetEval = planAdmission({
     budget: computeBudget({ cfg, totalMb: mem.totalMb }),
-    entries: readReservations(home),
+    entries,
     taskId: task.id,
     estimateMb: estimateMb ?? estimateForClass(cfg, task.taskClass),
   });
+  const capEval = planGlobalConcurrency({ cfg, entries, taskId: task.id });
   const usage = slotUsage(home, cfg);
   const concurrency = cfg[`${task.taskClass}Concurrency`] ?? 1;
   const slotFull = usage[task.taskClass] >= concurrency;
   const slotBlockers = slotFull ? [`${task.taskClass} 槽位已满（${usage[task.taskClass]}/${concurrency}）`] : [];
   const budgetBlockers = budgetEval.admit ? [] : [budgetEval.reason];
+  const capBlockers = capEval.admit ? [] : [capEval.reason];
 
   // 僵尸记录（提交进程已死、心跳早已停更）不参与排序，否则崩溃一次就会永远堵住同分类队列；
   // 同样地，**运行中**的任务不参与"谁在前"的比较——它已经拿到槽位，不该把后来者挡在门外
@@ -182,19 +187,23 @@ export function evaluateEligibility({ home, task, tasks, cfg, mem }) {
     priorityBlockers.push(`同分类同优先级需排队（前面有 ${samePriorityAhead.length} 个，最早 ${samePriorityAhead[0].id}）`);
   }
 
-  const blockers = [...slotBlockers, ...budgetBlockers, ...priorityBlockers];
+  const blockers = [...slotBlockers, ...budgetBlockers, ...capBlockers, ...priorityBlockers];
   return {
     eligible: blockers.length === 0,
     blockers,
     slotFull,
     slotBlockers,
     budgetBlockers,
+    capBlockers,
     priorityBlockers,
-    // 槽位被占、预算与优先级都没问题：值得定期做一次「持有者是否已死」的回收取证
-    slotOnlyBlocked: slotFull && budgetBlockers.length === 0,
+    // 槽位被占、预算/并发与优先级都没问题：值得定期做一次「持有者是否已死」的回收取证
+    slotOnlyBlocked: slotFull && budgetBlockers.length === 0 && capBlockers.length === 0,
     // 预算被占住也可能是崩溃残留的预留：值得定期去台账做一次回收取证（否则残留会永久堵住准入）
     budgetBlocked: budgetBlockers.length > 0,
+    // 并发名额被占住同样可能是崩溃残留的预留（预留随任务收尾删除），必须定期去台账取证
+    capBlocked: capBlockers.length > 0,
     budget: budgetEval,
+    cap: capEval,
     usage,
     waitingAhead: better.length,
   };

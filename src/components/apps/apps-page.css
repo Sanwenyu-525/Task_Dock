@@ -302,3 +302,57 @@
   }
 }
 
+/* ── 大型工作台：左侧分类/筛选栏（2026-11-16）────────────────────────
+   把原来横跨整页的筛选条收进独立导航区，主区获得稳定的应用网格宽度。
+   只调整组织方式，不改变筛选、搜索、刷新与场景选择的任何行为。 */
+.apps-filter-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.apps-filter-pane .filter-bar.primary.apps-filter-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.apps-filter-pane .apps-filter-bar .seg-group {
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.apps-filter-pane .apps-filter-bar .seg-btn {
+  flex: 1 1 calc(50% - 4px);
+  min-width: 0;
+}
+
+.apps-filter-pane .apps-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+
+.apps-filter-pane .apps-search {
+  flex: 1 1 100%;
+  width: 100%;
+}
+
+.apps-filter-pane .apps-scene-active {
+  flex: 1 1 100%;
+  max-width: 100%;
+}
+
+.workspace-split__main .apps-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+

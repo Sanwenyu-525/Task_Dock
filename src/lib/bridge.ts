@@ -5029,6 +5029,79 @@ export const workspaceTaskLinkAdd = (projectId: string, taskId: string) =>
 export const workspaceTaskUnlink = (projectId: string, taskId: string) =>
   invoke<{ ok: true }>("workspace_task_unlink", { projectId, taskId });
 
+// ── 小说卷/章（B1，v58）────────────────────────────────
+// 章节列表只返回元信息（不含正文），打开具体章节时才读取正文，避免整本正文
+// 一次性进入渲染层。字数由 Rust 按「非空白字符」统计。
+export interface NovelVolume {
+  id: string;
+  projectId: string;
+  title: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NovelChapterSummary {
+  id: string;
+  projectId: string;
+  volumeId: string | null;
+  title: string;
+  wordCount: number;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NovelChapter extends NovelChapterSummary {
+  content: string;
+}
+
+export const novelVolumeList = (projectId: string) =>
+  invoke<{ volumes: NovelVolume[] }>("novel_volume_list", { projectId });
+
+export const novelVolumeSave = (input: {
+  id?: string | null;
+  projectId: string;
+  title: string;
+  sortOrder?: number | null;
+}) =>
+  invoke<{ volume: NovelVolume }>("novel_volume_save", {
+    id: input.id ?? null,
+    projectId: input.projectId,
+    title: input.title,
+    sortOrder: input.sortOrder ?? null,
+  });
+
+export const novelVolumeDelete = (id: string) =>
+  invoke<{ ok: true }>("novel_volume_delete", { id });
+
+export const novelChapterList = (projectId: string) =>
+  invoke<{ chapters: NovelChapterSummary[] }>("novel_chapter_list", { projectId });
+
+export const novelChapterGet = (id: string) =>
+  invoke<{ chapter: NovelChapter }>("novel_chapter_get", { id });
+
+export const novelChapterSave = (input: {
+  id?: string | null;
+  projectId: string;
+  volumeId?: string | null;
+  title: string;
+  sortOrder?: number | null;
+}) =>
+  invoke<{ chapter: NovelChapterSummary }>("novel_chapter_save", {
+    id: input.id ?? null,
+    projectId: input.projectId,
+    volumeId: input.volumeId ?? null,
+    title: input.title,
+    sortOrder: input.sortOrder ?? null,
+  });
+
+export const novelChapterSaveContent = (id: string, content: string) =>
+  invoke<{ chapter: NovelChapterSummary }>("novel_chapter_save_content", { id, content });
+
+export const novelChapterDelete = (id: string) =>
+  invoke<{ ok: true }>("novel_chapter_delete", { id });
+
 /**
  * 旧 IPC 兼容入口：只把请求适配为统一工作台导航并返回 requestId。
  * `opened=true` 不代表导航已生效；需要最终结果时用返回的 requestId 等待

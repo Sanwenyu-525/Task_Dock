@@ -123,7 +123,12 @@ export function planTabTransfer<T extends TransferTabLike>(
       }
       slots[destination].tabs.push(tab);
       if (source.activeTabId && tab.tabId === source.activeTabId) {
-        preferredActive[destination] = tab.tabId;
+        // 只有当它是「转换前的全局激活标签」或该槽位尚未记录时才能占用激活位：
+        // 否则多个源窗格合并进同一槽位时，最后一个源窗格的 activeTab 会覆盖用户
+        // 当前正在看的目录（回归：四宫格 C 合并到右栏后激活标签变成了 D 的标签）。
+        if (tab.tabId === options.activeTabId || preferredActive[destination] === null) {
+          preferredActive[destination] = tab.tabId;
+        }
       }
     }
   }

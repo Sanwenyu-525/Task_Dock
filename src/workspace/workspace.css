@@ -180,6 +180,122 @@
 .ws-form-actions { display: flex; gap: 6px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
 .ws-subhead { margin: 14px 0 6px; font-size: 13px; }
 
+/* ── 小说正文（B1，v58）：卷 → 章树 + 纯文本编辑器 ───────────────────── */
+.ws-novel {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.ws-novel-tree {
+  border: 1px solid var(--ws-border);
+  border-radius: 10px;
+  background: var(--ws-surface);
+  padding: 8px;
+  max-height: 64vh;
+  overflow: auto;
+}
+.ws-novel-toolbar { display: flex; gap: 6px; margin-bottom: 8px; }
+.ws-novel-volume { margin-bottom: 10px; }
+.ws-novel-volume:last-of-type { margin-bottom: 4px; }
+.ws-novel-volume-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  border-bottom: 1px solid var(--ws-border);
+}
+.ws-novel-volume-title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ws-text);
+  font: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-novel-volume-title:disabled { cursor: default; color: var(--ws-muted); }
+.ws-novel-chapter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 2px 2px 10px;
+  border-radius: 6px;
+}
+.ws-novel-chapter.is-active { background: color-mix(in srgb, var(--ws-accent) 12%, transparent); }
+.ws-novel-chapter-title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ws-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 0;
+}
+.ws-novel-chapter-title:hover { color: var(--ws-accent); }
+.ws-novel-count { font-size: 10px; color: var(--ws-muted); white-space: nowrap; }
+.ws-novel-actions { display: flex; gap: 2px; }
+.ws-novel-add { margin: 4px 0 4px 10px; }
+.ws-novel-empty {
+  font-size: 11px;
+  color: var(--ws-muted);
+  padding: 6px 10px;
+  line-height: 1.5;
+}
+.ws-novel-editor {
+  border: 1px solid var(--ws-border);
+  border-radius: 10px;
+  background: var(--ws-surface);
+  padding: 12px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ws-novel-editor-head { display: flex; align-items: flex-start; gap: 8px; }
+.ws-novel-editor-title { font-size: 15px; }
+.ws-novel-save { font-size: 11px; color: var(--ws-muted); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ws-novel-save[data-tone="saved"] { color: var(--ws-ok); }
+.ws-novel-save[data-tone="error"] { color: var(--ws-error); }
+.ws-novel-save[data-tone="saving"] { color: var(--ws-accent); }
+.ws-novel-textarea {
+  width: 100%;
+  min-height: 52vh;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--ws-border);
+  border-radius: 8px;
+  background: var(--ws-bg);
+  color: var(--ws-text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.75;
+}
+.ws-novel-textarea:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ws-accent) 55%, transparent);
+  outline-offset: 1px;
+}
+.ws-novel-editor-empty { padding: 32px 12px; text-align: center; color: var(--ws-muted); }
+.ws-novel-editor-empty h3 { margin: 0 0 6px; font-size: 14px; color: var(--ws-text); }
+.ws-novel-editor-empty p { margin: 0; font-size: 12px; line-height: 1.6; }
+@media (max-width: 800px) {
+  .ws-novel { grid-template-columns: 1fr; }
+  .ws-novel-tree { max-height: 40vh; }
+}
+
 .ws-project-head { display: flex; align-items: center; gap: 6px; }
 .ws-project-head strong { font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 

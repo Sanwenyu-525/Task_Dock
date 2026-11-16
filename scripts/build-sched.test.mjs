@@ -13,8 +13,8 @@ import { DEFAULT_CONFIG, loadConfig, configRisks, DANGER_AUTH_ENV } from "./sche
 import { classifyArgv, classifyCommandLine, splitCommandLine } from "./sched/classify.mjs";
 import { effectivePriority, compareOrder, parsePriority, computeFingerprint, evaluateEligibility } from "./sched/queue.mjs";
 import {
-  classifyReservation, computeBudget, createReservation, maxEstimateMb, planAdmission, readReservation,
-  readReservations, releaseReservation, setReservationChild, sumReserved, writeReservation,
+  classifyReservation, computeBudget, createReservation, maxEstimateMb, planAdmission, planGlobalConcurrency,
+  readReservation, readReservations, releaseReservation, setReservationChild, sumReserved, writeReservation,
 } from "./sched/budget.mjs";
 import { resolveStateHome, ensureState, paths } from "./sched/state.mjs";
 import { slotNames, snapshotSlots, cmdlineSignature, reapStaleSlots } from "./sched/lock.mjs";
@@ -334,6 +334,79 @@ test("全局预算：多个任务合计超过预算时必须拒绝（原子预�
   const three = [{ taskId: "l-1", reservedMb: 800 }, { taskId: "m-1", reservedMb: 3000 }];
   assert.equal(planAdmission({ budget, entries: three, taskId: "l-2", estimateMb: 800 }).admit, true);
   assert.equal(planAdmission({ budget, entries: [...three, { taskId: "l-2", reservedMb: 800 }], taskId: "l-3", estimateMb: 800 }).admit, false);
+});
+
+test("全局并发：上限 3 统计 heavy/medium/light 合计，dev 不占名额，重入不把自己算成占用者", () => {
+  const entries = [
+    { taskId: "h-1", taskClass: "heavy" },
+    { taskId: "m-1", taskClass: "medium" },
+    { taskId: "l-1", taskClass: "light" },
+  ];
+  const full = planGlobalConcurrency({ cfg, entries, taskId: "l-2" });
+  assert.equal(full.cap, 3, "默认上限是 3");
+  assert.equal(full.active, 3);
+  assert.equal(full.admit, false);
+  assert.match(full.reason, /全局构建并发已满（3\/3）/);
+  assert.match(full.reason, /自动释放名额/, "必须说明名额会自动释放，避免被误读成机器装不下");
+  assert.match(full.scope, /dev/);
+
+  assert.equal(planGlobalConcurrency({ cfg, entries: entries.slice(0, 2), taskId: "l-2" }).admit, true);
+
+  // dev 常驻服务（2 个）不占构建名额：与既有「dev 不占一次性构建锁」的契约一致
+  const withDev = planGlobalConcurrency({
+    cfg,
+    entries: [...entries, { taskId: "d-1", taskClass: "dev" }, { taskId: "d-2", taskClass: "dev" }],
+    taskId: "l-2",
+  });
+  assert.equal(withDev.active, 3, "dev 不计入 active");
+  assert.equal(withDev.admit, false);
+
+  // 台账里已有自己（重入）：不能把自己算成占用者，否则会永远拒绝自己
+  const self = planGlobalConcurrency({ cfg, entries, taskId: "h-1" });
+  assert.equal(self.active, 2);
+  assert.equal(self.admit, true);
+
+  // 上限可配置；缺省/非法只在测试或特殊构造里出现（配置校验会拦住 < 1）
+  assert.equal(planGlobalConcurrency({ cfg: { ...cfg, globalConcurrency: 5 }, entries, taskId: "l-2" }).admit, true);
+  assert.equal(planGlobalConcurrency({ cfg: { globalConcurrency: null }, entries, taskId: "l-2" }).cap, null);
+});
+
+test("全局并发：globalConcurrency 必须 >= 1，非法值被拒绝且环境变量可覆盖", () => {
+  const home = join(tmpRoot, "cfg-global-cap");
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, "config.json"), JSON.stringify({ globalConcurrency: 0 }));
+  const bad = loadConfig({ stateHome: home, env: {} });
+  assert.ok(bad.problems.some((p) => /globalConcurrency 必须 >= 1/.test(p)), `应报非法值：${bad.problems}`);
+  assert.equal(bad.config.globalConcurrency, cfg.globalConcurrency, "非法值被拒绝后沿用默认");
+  const overridden = loadConfig({ stateHome: home, env: { TASKDOCK_SCHED_GLOBAL_CONCURRENCY: "2" } });
+  assert.equal(overridden.config.globalConcurrency, 2);
+});
+
+test("全局并发：3 个构建在跑时，第 4 个的等待原因是「全局构建并发已满」而不是预算不足", () => {
+  const home = join(tmpRoot, "elig-global-cap");
+  ensureState(home);
+  const now = new Date().toISOString();
+  const mk = (taskId, taskClass, reservedMb) => ({
+    taskId, taskClass, reservedMb, label: null, ownerPid: process.pid,
+    ownerStartTime: now, ownerStartTimeSource: "test", nonce: taskId,
+    childPid: null, detached: false, phase: "running", createdAt: now, heartbeatAt: now,
+  });
+  writeReservation(home, mk("h-1", "heavy", 6000));
+  writeReservation(home, mk("m-1", "medium", 3000));
+  writeReservation(home, mk("l-1", "light", 800));
+
+  const task = { id: "l-new", taskClass: "light", priority: 1, status: "queued", enqueuedAt: now, updatedAt: now };
+  const elig = evaluateEligibility({ home, task, tasks: [task], cfg, mem: { totalMb: 16384 } });
+  assert.equal(elig.eligible, false);
+  assert.equal(elig.capBlocked, true);
+  assert.equal(elig.budgetBlockers.length, 0, "预算充足（6000+3000+800+800 远小于 13GB）");
+  assert.ok(elig.blockers.some((b) => /全局构建并发已满（3\/3）/.test(b)), `等待原因应写明并发已满：${elig.blockers}`);
+
+  // 释放一个名额（等价于某个构建结束）后必须立刻可准入
+  rmSync(join(paths(home).reservations, "h-1.json"), { force: true });
+  const after = evaluateEligibility({ home, task, tasks: [task], cfg, mem: { totalMb: 16384 } });
+  assert.equal(after.capBlocked, false);
+  assert.equal(after.eligible, true);
 });
 
 test("全局预算：显式 allowReserveBreach 开关（默认关闭；开启后必须显著标注风险）", () => {

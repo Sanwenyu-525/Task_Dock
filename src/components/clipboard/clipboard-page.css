@@ -186,3 +186,130 @@
 .clip-rail-flags em.favorite {
   color: var(--status-waiting);
 }
+
+/* ── 大型工作台：左侧内容导航（2026-11-16）──────────────────────────
+   历史/分组、类型与收藏从横向药丸提升为独立导航区；中央网格保留完整宽度，
+   搜索与批量动作仍在其中，不因侧栏而隐藏。 */
+.clip-filter-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.clip-side-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.clip-side-sections button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.clip-side-sections button:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.clip-side-sections button.active {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.clip-side-sections button span {
+  flex: 1 1 auto;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.clip-side-sections button em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.clip-side-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.clip-side-label {
+  grid-column: 1 / -1;
+  margin: 0 2px 3px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.clip-side-type {
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.clip-side-type:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.clip-side-type.active {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.clip-side-favorite {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.clip-side-favorite.active {
+  border-color: color-mix(in srgb, var(--status-waiting) 30%, var(--border-subtle));
+  color: var(--status-waiting);
+  background: color-mix(in srgb, var(--status-waiting) 8%, transparent);
+}
+
+.clip-side-hint {
+  margin: 2px 2px 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.workspace-split__main .clip-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+

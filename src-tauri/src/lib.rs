@@ -1617,6 +1617,15 @@ pub fn run() {
             commands::project_workspace::workspace_task_link_list,
             commands::project_workspace::workspace_task_link_add,
             commands::project_workspace::workspace_task_unlink,
+            // 小说卷/章（B1，v58）：两级章节树与正文自动保存
+            commands::project_workspace::novel_volume_list,
+            commands::project_workspace::novel_volume_save,
+            commands::project_workspace::novel_volume_delete,
+            commands::project_workspace::novel_chapter_list,
+            commands::project_workspace::novel_chapter_get,
+            commands::project_workspace::novel_chapter_save,
+            commands::project_workspace::novel_chapter_save_content,
+            commands::project_workspace::novel_chapter_delete,
             // 项目工作空间独立窗口（v49）：打开/聚焦、在开发工作台打开（含结果回执）
             project_workspace_window::open_project_workspace_window,
             // 统一工作台（U0）：结构化目标导航（排队 + 拉取 + 回执）

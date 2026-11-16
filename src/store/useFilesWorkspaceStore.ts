@@ -89,6 +89,12 @@ export interface LayoutSnapshot {
   activePaneId: string;
   maximizedPaneId: string | null;
   stashed: FolderTab[];
+  /**
+   * 由这次布局操作「顺带创建」的标签 ID（目前只有 splitPane 会复制当前目录）。
+   * 撤销这一步时必须同时丢弃它们，否则 restoreSnapshot 会把它们当成「快照之后
+   * 新打开的目录」救援回来，导致撤销后多出一个重复标签。
+   */
+  createdTabIds?: string[];
 }
 
 /** 关闭区域的结果：容量不足时必须阻止（不得静默丢标签）。 */
@@ -360,8 +366,8 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     stashed: s.stashed,
   });
 
-  /** 记录一次布局变更（同 kind+key 的连续操作合并；新变更清空重做栈）。 */
-  const recordHistory = (kind: string, key = ""): void => {
+  /** 记录一次布局变更（同 kind+key 的连续操作合并；新变更清空重做栈）。返回本次可撤销的起始快照。 */
+  const recordHistory = (kind: string, key = ""): LayoutSnapshot | null => {
     const s = get();
     const now = Date.now();
     if (
@@ -371,19 +377,28 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       now - historyCoalesce.at <= HISTORY_COALESCE_MS
     ) {
       historyCoalesce.at = now;
-      return;
+      return s.layoutHistory[s.layoutHistory.length - 1] ?? null;
     }
     historyCoalesce = { kind, key, at: now };
+    const snapshot = snapshotLayout(s);
     set({
-      layoutHistory: [...s.layoutHistory, snapshotLayout(s)].slice(-MAX_LAYOUT_HISTORY),
+      layoutHistory: [...s.layoutHistory, snapshot].slice(-MAX_LAYOUT_HISTORY),
       layoutFuture: [],
     });
+    return snapshot;
   };
 
-  const restoreSnapshot = (snapshot: LayoutSnapshot, history: LayoutSnapshot[], future: LayoutSnapshot[]) => {
+  const restoreSnapshot = (
+    snapshot: LayoutSnapshot,
+    history: LayoutSnapshot[],
+    future: LayoutSnapshot[],
+    dropCreatedTabIds?: ReadonlySet<string>,
+  ) => {
     const current = get();
     // 撤销/重做绝不能删掉「快照之后才打开的目录」：快照里没有的标签按原区域优先
     // 放回，装不下就进可恢复收纳；不静默丢弃是这套状态机的硬约束。
+    // 例外：由被撤销的 split 操作「顺带创建」的复制标签必须随撤销一起消失，
+    // 否则撤销分割会留下一个重复目录（createdTabIds 只由 splitPane 写入）。
     const known = new Set<string>([
       ...Object.values(snapshot.panes).flatMap((pane) => pane.tabs.map((t) => t.tabId)),
       // 收纳标签也属于「快照里已有的目录」：漏掉它们会把重做后的同一批标签当成新标签，
@@ -393,10 +408,12 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     const orphans: Array<{ paneId: string; tab: FolderTab }> = [];
     for (const id of paneIds(current.tree)) {
       for (const tab of current.panes[id]?.tabs ?? []) {
+        if (dropCreatedTabIds?.has(tab.tabId)) continue;
         if (!known.has(tab.tabId)) orphans.push({ paneId: id, tab });
       }
     }
     for (const tab of current.stashed) {
+      if (dropCreatedTabIds?.has(tab.tabId)) continue;
       if (!known.has(tab.tabId)) orphans.push({ paneId: "", tab });
     }
     const panes: Record<string, PaneState> = {};
@@ -867,16 +884,21 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
         openPath ??
         s.panes[paneId]?.tabs.find((t) => t.tabId === s.panes[paneId]?.activeTabId)?.path ??
         "";
-      recordHistory("split", paneId);
+      const history = recordHistory("split", paneId);
+      let createdTabId: string | null = null;
       set((st) => {
         const panes = ensurePaneState(st.panes, result.tree);
         const newPane = panes[result.newPaneId];
         if (newPane && newPane.tabs.length === 0 && path) {
           const tab = makeTab(path);
+          createdTabId = tab.tabId;
           panes[result.newPaneId] = { tabs: [tab], activeTabId: tab.tabId };
         }
         return { tree: result.tree, panes, activePaneId: result.newPaneId, maximizedPaneId: null };
       });
+      if (createdTabId && history) {
+        history.createdTabIds = [...(history.createdTabIds ?? []), createdTabId];
+      }
       schedulePersist(get);
       return result.newPaneId;
     },
@@ -1071,6 +1093,7 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
         prev,
         s.layoutHistory.slice(0, -1),
         [...s.layoutFuture, snapshotLayout(s)].slice(-MAX_LAYOUT_HISTORY),
+        new Set(prev.createdTabIds ?? []),
       );
       return true;
     },

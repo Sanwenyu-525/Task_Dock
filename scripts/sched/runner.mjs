@@ -317,6 +317,8 @@ export async function executeTask({
         estimateMb: t.estimateMb,
         // 全局预算证据：准入那一刻的预算上限/已预留/本次预计，事后可复核"有没有超卖"
         budgetAtStart: t.budgetAtStart ?? null,
+        // 全局并发证据：准入那一刻在跑的构建数与上限（约束 C）
+        globalAtStart: t.globalAtStart ?? null,
         reservation: reservation
           ? { taskId: reservation.taskId, reservedMb: reservation.reservedMb, phase: reservation.phase }
           : null,
@@ -400,7 +402,8 @@ export async function executeTask({
       // 注意：槽位目录存在 ≠ 一定有人在跑。崩溃会话留下的陈旧槽位只能靠「身份取证 + 回收」解决，
       // 而取证要查系统进程（较慢），因此按 reclaimProbeMs 节流，不能每轮都做，也不能永不做。
       // 预算侧同理：预算被"崩溃残留的预留"占住时也必须定期去台账取证，否则残留会永久堵住准入。
-      const worthProbing = (elig.slotOnlyBlocked || elig.budgetBlocked) &&
+      // 全局并发名额（约束 C）同样由预留台账计数：残留预留也会永久占掉一个名额，必须一并取证。
+      const worthProbing = (elig.slotOnlyBlocked || elig.budgetBlocked || elig.capBlocked) &&
         now - lastReclaimProbeAt >= cfg.reclaimProbeMs;
       if (elig.eligible || worthProbing) {
         if (elig.eligible && cfg.dedupe && fingerprint) {
@@ -429,6 +432,10 @@ export async function executeTask({
         if (acquired.ok) {
           // 只记录"真正准入那一刻"的预算证据：它才是可复核"有没有超卖"的样本
           task.budgetAtStart = { ...acquired.plan, at: nowIso() };
+          // 约束 C 证据：准入那一刻全局在跑的构建数（含本次）/ 上限；用于事后复核"有没有放出第 4 个"
+          task.globalAtStart = acquired.cap
+            ? { active: (acquired.cap.active ?? 0) + 1, cap: acquired.cap.cap ?? null, at: nowIso() }
+            : null;
           lease = acquired.lease;
           reservation = acquired.reservation;
           released = false;

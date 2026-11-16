@@ -80,3 +80,57 @@
 .history-panel .history-item + .history-item {
   box-shadow: inset 0 1px 0 var(--border-subtle);
 }
+
+/* ── 大型工作台：左侧筛选栏（2026-11-16）────────────────────────────
+   时间范围、来源、类型与搜索进入独立区域，时间轴保留完整主区宽度；
+   搜索范围提示不再和筛选按钮争抢同一行。 */
+.history-filter-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.history-filter-pane .filter-bar.primary.history-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.history-filter-pane .history-toolbar .seg-group {
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.history-filter-pane .history-toolbar .seg-btn {
+  flex: 1 1 calc(33.333% - 4px);
+  min-width: 0;
+}
+
+.history-filter-pane .history-toolbar .sort-select,
+.history-filter-pane .history-toolbar .history-search {
+  width: 100%;
+  max-width: none;
+  flex: 1 1 100%;
+  margin-left: 0;
+}
+
+.history-filter-pane .history-toolbar .history-toolbar-meta,
+.history-filter-pane .history-toolbar .history-scope-hint {
+  display: block;
+  width: 100%;
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.workspace-split__main .history-timeline {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+

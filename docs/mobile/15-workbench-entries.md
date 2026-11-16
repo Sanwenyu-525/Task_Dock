@@ -159,6 +159,11 @@ kv 键：`workbench_entries`（移动端专属；桌面端是 settings 表的 `n
 - 2026-11-15（真机验收）：release APK（versionCode 61 / 0.1.13）装在物理机
   `192.168.5.7:41789` 上逐项验证——隐藏后冷启动仍只显示两枚磁贴、搜索加回并可跳转「文件互传」、
   管理页与编辑态两种拖拽顺序在冷启动后保持、全部隐藏后空状态（全部功能 / 恢复默认）可用、
-  暂不可用不可添加且点击只提示不跳转、批量添加与移除、自动保存提示。受限项：真机「旧配置升级」
-  无法复现（release 不可注入旧 JSON、无旧版包，迁移仅单测覆盖）、两端隔离缺桌面端运行时对照。
+  暂不可用不可添加且点击只提示不跳转、批量添加与移除、自动保存提示。
   证据：`tmp/acceptance/mobile-entry-customization/report.md` §10 与同目录 `shots/`。
+- 2026-11-16（两端隔离取证）：移动端连续做「拖动换位 + 移除两项」并冷启动后，桌面端
+  `application_settings.navigation_layout` 的 bytes / sha256 / updated_at 与改前完全一致；
+  移动端配置位于 app 私有目录（`/data/data/dev.taskdock.mobile/`，release 包不可 `run-as`），
+  桌面端在 `%APPDATA%\com.taskdock.desktop\task-dock.db`，两端键名 `workbench_entries` /
+  `navigation_layout` 互不引用（桌面端对 `workbench_entries` 引用 0 处）。
+  反方向（改桌面端后验移动端）未执行，避免写入用户真实配置，详见报告 §10 隔离取证。

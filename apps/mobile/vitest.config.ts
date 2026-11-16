@@ -18,6 +18,10 @@ export default defineConfig({
       "expo-modules-core": mock("expo-modules-core"),
       "expo-notifications": mock("expo-notifications"),
       "expo-file-system": mock("expo-file-system"),
+      // 页面级 jsdom 测试用仓库根的 react-dom；它必须与同一个 React 实例配对，
+      // 否则 hooks 在 react-dom 的 dispatcher 为空时抛 "Invalid hook call"。
+      // 只影响单测解析，不改变 App 的 Expo 依赖树。
+      react: fileURLToPath(new URL("../../node_modules/react", import.meta.url)),
     },
   },
   test: {

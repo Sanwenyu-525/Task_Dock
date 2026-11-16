@@ -965,6 +965,59 @@ test("验收11：子进程非零退出后，队列记录与历史都能查到明
   } finally { cleanup(ctx); }
 });
 
+// ------------------------------------------------- 验收12. 全局构建并发上限（2026-11-16）
+
+test("验收12：全局构建并发上限 3——第 4 个构建排队，任一结束即自动释放名额", async () => {
+  const ctx = setup();
+  try {
+    // 轻量槽位放宽到 4，确保唯一挡人的是「全局构建并发上限」而不是分类槽位；
+    // --estimate-mb 300 让全局预算在任何物理内存档位都不会成为干扰因素（本用例只验证并发锁）。
+    const env = { TASKDOCK_SCHED_LIGHT_CONCURRENCY: "4", TASKDOCK_SCHED_GLOBAL_CONCURRENCY: "3" };
+    const extraArgs = ["--estimate-mb", "300"];
+    const tags = ["cap-a", "cap-b", "cap-c"];
+    const first = tags.map((tag) => runFake(ctx, {
+      tag, durationMs: 1800, taskClass: "light", envExtra: env, extraArgs,
+    }));
+    await waitFor(() => tags.every((tag) => startCount(ctx.log, tag) === 1), {
+      what: "前 3 个构建全部启动",
+    });
+
+    const fourth = runFake(ctx, {
+      tag: "cap-d", durationMs: 600, taskClass: "light", envExtra: env, extraArgs,
+    });
+    const queued = await waitFor(() => {
+      const t = findTask(ctx, (x) => x.command?.[2] === "cap-d");
+      return t && t.status !== "running" && t.waitReason ? t : null;
+    }, { what: "第 4 个构建进入排队" });
+    assert.match(String(queued.waitReason), /全局构建并发已满（3\/3）/, "排队原因必须写明全局名额已满");
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(startCount(ctx.log, "cap-d"), 0, "⛔ 名额已满时第 4 个构建不得启动");
+
+    const results = await Promise.all([...first, fourth].map((r) => r.done));
+    for (const r of results) assert.equal(r.code, 0, `任务应成功：${r.stderr?.slice(-300)}`);
+
+    const iv = intervals(ctx.log);
+    assert.equal(iv.length, 4, "四个任务都应真正执行过");
+    assert.equal(maxOverlap(iv), 3, "⛔ 任意时刻最多 3 个构建：全局并发上限被突破");
+    const d = iv.find((x) => x.tag === "cap-d");
+    const abc = iv.filter((x) => tags.includes(x.tag));
+    assert.ok(d && abc.length === 3, "区间缺失，无法判定并发与自动释放");
+    assert.ok(d.start >= Math.min(...abc.map((x) => x.end)),
+      "第 4 个必须在有构建结束后才启动（名额由任务收尾自动释放，不需要人工解锁）");
+
+    assert.equal(readSlots(ctx).length, 0, "全部结束后不得残留槽位");
+    assert.equal(reservationsOf(ctx).length, 0, "全部结束后名额台账必须清空（否则名额会泄漏）");
+
+    // 准入证据：每个任务都记录"准入那一刻在跑的构建数"，且永不超过上限
+    for (const e of readHistory(ctx).filter((x) => tags.includes(x.command?.[2]) || x.command?.[2] === "cap-d")) {
+      assert.ok(e.globalAtStart, `历史缺少 globalAtStart 证据：${e.id}`);
+      assert.equal(e.globalAtStart.cap, 3);
+      assert.ok(e.globalAtStart.active <= 3,
+        `⛔ 任务 ${e.id} 准入时并发 ${e.globalAtStart.active} 超过上限 3`);
+    }
+  } finally { cleanup(ctx); }
+});
+
 // ------------------------------------------------- 补充B. 预算夹取策略修正（2026-11-15 第二轮）
 //
 // 复现本轮 P0 缺陷：旧公式 `max(totalMb - systemReserveMb, 最大分类预计峰值)` 会在小内存机器上把预算

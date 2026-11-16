@@ -45,7 +45,7 @@
 | PW-6 | 游戏制作闭环 | 工作空间 P1 | 仅事项阶段 | 事项承载关卡/系统阶段 | 资源关联、构建/测试登记、引擎跳转 | not_started | unverified |
 | PW-7 | AI 漫剧闭环 | 工作空间 P1 | 仅事项阶段 | 剧集/镜头用 stage 承载 | 素材/角色库、生成结果导入、版本比较/采用 | not_started | unverified |
 | PW-8 | 跨项目资源与产出物关系 | 工作空间 P2 | 无 | 无 | — | not_started | unverified |
-| PW-9 | 小说项目类型接入（创作工作台 A 阶段） | 2026-11-15 | v57 迁移、`commands/project_workspace.rs`、`src/workspace/workspaceProfiles.ts`、`ProjectWorkspacePanel.tsx`、`WorkbenchShell.tsx`、`commands/backup.rs` | 第五种类型 `novel`：CHECK 五值、Rust `PROJECT_KINDS`、Profile（小说/概览/写作事项/任务关联/项目设置）、首页五卡片（含项目简介与计划能力清单）、图标 `book-open`、创建/编辑/列表/切换/实例/事项/任务关联/备份往返全部复用既有实现 | 正文编辑器、章节/卷、人物档案、世界观、剧情时间线、AI 创作、导出（均为下一阶段；能力已登记 `planned` 且不可调用） | implemented | partially_verified（Rust 迁移/命令/备份测试 + Vitest 五种 Profile 契约；原生窗口与视觉未逐页走查） | 无 | B 阶段：章节模型与编辑器（先建章节树，再评估独立表） |
+| PW-9 | 小说项目类型接入（创作工作台 A 阶段） | 2026-11-15 | v57 迁移、`commands/project_workspace.rs`、`src/workspace/workspaceProfiles.ts`、`ProjectWorkspacePanel.tsx`、`WorkbenchShell.tsx`、`commands/backup.rs` | 第五种类型 `novel`：CHECK 五值、Rust `PROJECT_KINDS`、Profile（小说/概览/写作事项/任务关联/项目设置）、首页五卡片（含项目简介与计划能力清单）、图标 `book-open`、创建/编辑/列表/切换/实例/事项/任务关联/备份往返全部复用既有实现 | 正文编辑器、章节/卷、人物档案、世界观、剧情时间线、AI 创作、导出（均为下一阶段；能力已登记 `planned` 且不可调用） | implemented | partially_verified（2026-11-16 复跑：Rust 3/3、Vitest 16/16、`tsc --noEmit` 通过；原生窗口与视觉未逐页走查） | 无 | B 阶段：章节模型与编辑器（先建章节树，再评估独立表） |
 
 ## 4. 旧任务编号映射（不丢失追踪）
 
@@ -141,4 +141,6 @@ Ctrl+数字语义与旧数据不变；工作台侧栏仍是唯一完整功能入
 - 没有章节/卷管理、人物档案、世界观、剧情时间线、伏笔追踪、AI 续写/改写、导出；
 - 没有为上述功能提前建表，也没有可点击的假入口；
 - 未执行原生窗口逐页走查（新建/编辑/归档/切换/备份恢复的 UI 层），只做了自动化验证。
+- 2026-11-16 复跑：Rust `cargo test --lib novel` 3 passed / 0 failed；
+  `vitest run src/workspace/workspaceProfiles.test.ts` 16 passed；`tsc --noEmit` 退出码 0。
 

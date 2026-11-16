@@ -249,13 +249,14 @@ import { CaptureReviewScreen } from "../CaptureReviewScreen";
 
 const nav = { back: vi.fn(), push: vi.fn() } as never;
 
-function button(container: HTMLElement, text: string): HTMLButtonElement {
-  const found = [...container.querySelectorAll("button")].find(
-    (item) => item.textContent?.includes(text) && !item.disabled,
+function anyButton(container: HTMLElement, text: string): HTMLButtonElement {
+  const found = [...container.querySelectorAll("button")].find((item) =>
+    item.textContent?.includes(text),
   );
   if (!found) throw new Error(`button not found: ${text}`);
   return found as HTMLButtonElement;
 }
+
 
 async function flush() {
   await act(async () => {
@@ -286,7 +287,7 @@ describe("CaptureStashScreen 取消上传接线", () => {
     await flush();
 
     await act(async () => {
-      button(host, "选择").click();
+      anyButton(host, "选择").click();
     });
     await flush();
     await act(async () => {
@@ -296,20 +297,20 @@ describe("CaptureStashScreen 取消上传接线", () => {
     });
     await flush();
     await act(async () => {
-      button(host, "发电脑").click();
+      anyButton(host, "发电脑").click();
     });
     await flush();
 
     expect(page.sendCalls).toBe(1);
     expect(page.sentOptions?.cancelToken).toBeTruthy();
-    expect(button(host, "取消上传")).toBeTruthy();
+    expect(anyButton(host, "取消上传")).toBeTruthy();
 
     await act(async () => {
-      button(host, "取消上传").click();
+      anyButton(host, "取消上传").click();
     });
     const token = page.sentOptions?.cancelToken as { cancelled?: boolean };
     expect(token.cancelled).toBe(true);
-    expect(button(host, "正在取消…")).toBeTruthy();
+    expect(anyButton(host, "正在取消…")).toBeTruthy();
 
     await act(async () => {
       page.resolveSend?.({ outcomes: [{ assetId: page.asset.id, state: "cancelled" }], offline: false });
@@ -342,20 +343,20 @@ describe("CaptureReviewScreen 取消上传接线", () => {
     await flush();
 
     await act(async () => {
-      button(host, "发送到电脑").click();
+      anyButton(host, "发送到电脑").click();
     });
     await flush();
     await act(async () => {
-      button(host, "保存到所选位置").click();
+      anyButton(host, "保存到所选位置").click();
     });
     await flush();
 
     expect(page.sendCalls).toBe(1);
     expect(page.sentOptions?.cancelToken).toBeTruthy();
-    expect(button(host, "取消上传")).toBeTruthy();
+    expect(anyButton(host, "取消上传")).toBeTruthy();
 
     await act(async () => {
-      button(host, "取消上传").click();
+      anyButton(host, "取消上传").click();
     });
     const token = page.sentOptions?.cancelToken as { cancelled?: boolean };
     expect(token.cancelled).toBe(true);

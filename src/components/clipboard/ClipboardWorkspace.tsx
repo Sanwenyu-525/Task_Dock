@@ -16,6 +16,7 @@ import {
   RefreshCw, Settings as SettingsIcon, Star, Trash2, X,
 } from "lucide-react";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 import {
   clipboardClearHistory,
   clipboardCopyGroupFiles,
@@ -1251,45 +1252,85 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               <Eraser size={13} aria-hidden="true" /> 清理规则
             </button>
           </div>
-          <div className="seg-group subtle clip-chips" role="group" aria-label="类型筛选">
-            {KIND_CHIPS.map((k) => (
-              <button
-                key={k.id}
-                className={`seg-btn ${filters.kind === k.id ? "active" : ""}`}
-                aria-pressed={filters.kind === k.id}
-                onClick={() => setFilters({ kind: k.id })}
-              >
-                {k.label}
-              </button>
-            ))}
-          </div>
-          <div className="clip-tabs" role="tablist" aria-label="剪贴板视图">
-            <button
-              role="tab"
-              aria-selected={section === "items"}
-              className={section === "items" ? "active" : ""}
-              onClick={() => {
-                setSection("items");
-                clearSelection();
-              }}
-            >
-              历史 <em>{view?.total_items ?? 0}</em>
-            </button>
-            <button
-              role="tab"
-              aria-selected={section === "groups"}
-              className={section === "groups" ? "active" : ""}
-              onClick={() => {
-                setSection("groups");
-                clearSelection();
-              }}
-            >
-              分组 <em>{view?.groups.length ?? 0}</em>
-            </button>
-          </div>
         </>
       )}
 
+      <WorkspaceSplit
+        id="clipboard"
+        sidebarLabel="剪贴板导航"
+        sidebar={
+          !detail && !isDrawer ? (
+            <div className="clip-filter-pane">
+              <div className="workspace-rail-head">
+                <span className="workspace-rail-eyebrow">剪贴板</span>
+                <h2>内容导航</h2>
+              </div>
+              <div className="clip-side-sections" role="tablist" aria-label="剪贴板视图">
+                <button
+                  role="tab"
+                  aria-selected={section === "items"}
+                  className={section === "items" ? "active" : ""}
+                  onClick={() => {
+                    setSection("items");
+                    clearSelection();
+                  }}
+                >
+                  <span>历史</span>
+                  <em>{view?.total_items ?? 0}</em>
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={section === "groups"}
+                  className={section === "groups" ? "active" : ""}
+                  onClick={() => {
+                    setSection("groups");
+                    clearSelection();
+                  }}
+                >
+                  <span>分组</span>
+                  <em>{view?.groups.length ?? 0}</em>
+                </button>
+              </div>
+              <div className="clip-side-group" role="group" aria-label="类型筛选">
+                <span className="clip-side-label">内容类型</span>
+                <button
+                  type="button"
+                  className={`clip-side-type ${filters.kind === "all" ? "active" : ""}`}
+                  aria-pressed={filters.kind === "all"}
+                  onClick={() => setFilters({ kind: "all" })}
+                >
+                  全部
+                </button>
+                {KIND_CHIPS.map((k) => (
+                  <button
+                    key={k.id}
+                    type="button"
+                    className={`clip-side-type ${filters.kind === k.id ? "active" : ""}`}
+                    aria-pressed={filters.kind === k.id}
+                    onClick={() => setFilters({ kind: k.id })}
+                  >
+                    {k.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className={`clip-side-favorite ${filters.favorite ? "active" : ""}`}
+                aria-pressed={filters.favorite}
+                onClick={() => setFilters({ favorite: !filters.favorite })}
+              >
+                <Star size={12} aria-hidden="true" />
+                {filters.favorite ? "仅看收藏（已开启）" : "仅看收藏"}
+              </button>
+              <p className="clip-side-hint">
+                {section === "items"
+                  ? `当前加载 ${view?.items.length ?? 0} / ${view?.total_items ?? 0} 条`
+                  : `当前 ${view?.groups.length ?? 0} 个分组`}
+              </p>
+            </div>
+          ) : null
+        }
+      >
       <div className="clip-body" ref={scrollRef} onScroll={recordScrollAnchor}>
         {detail?.kind === "item" ? (
           <ClipboardItemDetail
@@ -1324,6 +1365,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           renderList()
         )}
       </div>
+      </WorkspaceSplit>
 
       {/* 右栏：所选内容预览。中央列表始终保留；完整详情仍由「详情」按钮进入，
           不改变原有详情页的编辑/跳转能力。 */}

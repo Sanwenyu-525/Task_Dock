@@ -19,6 +19,10 @@ export const DEFAULT_CONFIG = {
   lightConcurrency: 2,
   // 开发服务器（dev 类）独立槽位：不占一次性构建锁
   devConcurrency: 2,
+  // 跨分类全局构建并发上限（约束 C，2026-11-16）：heavy/medium/light 合计**同时运行**的构建
+  // 不得超过该值；第 N+1 个构建进队列，任一构建结束即自动释放名额（租约/预留随任务收尾删除）。
+  // dev 常驻服务由 devConcurrency 独立管理、**不计入**该上限（沿用「dev 不占一次性构建锁」的契约）。
+  globalConcurrency: 3,
   // 内存采样与队列重评估间隔（只用于观测：写入 history / status，不参与准入）
   memorySampleMs: 3000,
   pollMs: 1000,
@@ -121,7 +125,7 @@ const ZERO_MEANS_UNLIMITED = new Set([
 ]);
 // 必须 >= 1 的字段
 const MIN_ONE_KEYS = new Set([
-  "heavyConcurrency", "mediumConcurrency", "lightConcurrency", "devConcurrency",
+  "heavyConcurrency", "mediumConcurrency", "lightConcurrency", "devConcurrency", "globalConcurrency",
   "memorySampleMs", "pollMs", "heartbeatMs", "historyMaxEntries", "finishedRetentionMs",
 ]);
 

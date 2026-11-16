@@ -171,7 +171,7 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 | P1-A | 首渲染项目隔离、写结果隔离、模块保存串行 | 已实现（父组件切换测试） |
 | P1-B | 任务选择器分页与 200 上限提示 | 已实现（hook 测试） |
 | P1-C | Profile/Capability 诚实性审计（`core.layout` 降为 limited） | 已实现（契约测试） |
-| A1 | 小说项目类型接入：v57 迁移、Rust 类型/命令复用、Profile/图标/首页、备份往返 | 已实现（Rust 迁移/命令/备份测试 + Vitest 契约测试；原生窗口未逐项走查） |
+| A1 | 小说项目类型接入：v57 迁移、Rust 类型/命令复用、Profile/图标/首页、备份往返 | 已实现（2026-11-16 复跑：Rust 3/3、Vitest 16/16、`tsc --noEmit` 通过；原生窗口未逐项走查） |
 | P1 | 游戏/漫画阶段模板、产物版本与采用状态、工作流 I/O 跟踪 | 未开始 |
 | P1 | 跨项目复盘的统一验收视图、文件缩略图/预览 | 未开始 |
 | P2 | 移动端只读镜像或远程项目视图 | 未开始 |
@@ -185,6 +185,9 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
   `v57_novel_kind_migration_preserves_workspace_rows_and_fk_integrity`、
   `novel_project_supports_crud_status_instance_items_and_task_links`、
   `novel_workspace_project_roundtrips_in_full_and_quick_backup`。
+  2026-11-16 复跑结果：上述 3 个 Rust 测试 3 passed / 0 failed；
+  `vitest run src/workspace/workspaceProfiles.test.ts` 16 passed；
+  `tsc --noEmit` 退出码 0。证据见 `tmp/acceptance/novel-project/report.md`。
 - 原生：Windows 真机上的窗口打开/关闭、DPI、多显示器、胶囊内发起导航、草稿确认/取消、
   关闭专业窗口后回执——本轮**未执行**，报告中标为未验证。
 

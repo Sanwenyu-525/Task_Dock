@@ -44,12 +44,14 @@ describe("Profile 注册中心", () => {
     expect(WORKSPACE_PROFILES.ai_comic.modules.map((m) => m.label)).toContain("剧集与镜头");
     expect(WORKSPACE_PROFILES.novel.modules.map((m) => m.label)).toEqual([
       "概览",
+      "正文",
       "写作事项",
       "任务关联",
       "项目设置",
     ]);
     expect(WORKSPACE_PROFILES.novel.modules.map((m) => m.id)).toEqual([
       "overview",
+      "manuscript",
       "items",
       "links",
       "settings",
@@ -110,13 +112,14 @@ describe("Profile 注册中心", () => {
     expect(WORKSPACE_CAPABILITIES["comic.generate"].state).toBe("unavailable");
     expect(WORKSPACE_CAPABILITIES["comic.shots"].state).toBe("limited");
 
-    // 小说专业能力只登记、不实现：全部 planned，且没有任何动作入口。
-    for (const id of [
-      "novel.manuscript",
-      "novel.characters",
-      "novel.worldview",
-      "novel.aiAssist",
-    ] as const) {
+    // 小说专业能力：B1 已接入「正文与章节」；人物/世界观/AI 仍只登记、不实现。
+    const manuscript = WORKSPACE_CAPABILITIES["novel.manuscript"];
+    expect(manuscript.state).toBe("available");
+    expect(manuscript.provider).toContain("novel_volumes");
+    expect(manuscript.provider).toContain("novel_chapters");
+    expect(manuscript.action).toEqual({ kind: "module", target: "manuscript" });
+    expect(manuscript.fallback).toBeTruthy();
+    for (const id of ["novel.characters", "novel.worldview", "novel.aiAssist"] as const) {
       expect(WORKSPACE_CAPABILITIES[id].state).toBe("planned");
       expect(WORKSPACE_CAPABILITIES[id].action).toBeUndefined();
       expect(WORKSPACE_CAPABILITIES[id].fallback).toBeTruthy();
@@ -124,8 +127,11 @@ describe("Profile 注册中心", () => {
 
     expect(canInvokeCapability("game", "game.build")).toBe(false);
     expect(canInvokeCapability("ai_comic", "comic.generate")).toBe(false);
-    expect(canInvokeCapability("novel", "novel.manuscript")).toBe(false);
+    // B1：正文与章节已真实可用（模块 + v58 表 + 自动保存）
+    expect(canInvokeCapability("novel", "novel.manuscript")).toBe(true);
+    // 其余小说专业能力仍不得调用
     expect(canInvokeCapability("novel", "novel.characters")).toBe(false);
+    expect(canInvokeCapability("novel", "novel.worldview")).toBe(false);
     expect(canInvokeCapability("novel", "novel.aiAssist")).toBe(false);
     // 跨类型不得调用
     expect(canInvokeCapability("game", "dev.git")).toBe(false);
@@ -136,12 +142,18 @@ describe("Profile 注册中心", () => {
     expect(canInvokeCapability("novel", "core.layout")).toBe(true); // limited 允许入口
   });
 
-  it("小说 Profile 的可用能力只有既有四项核心能力", () => {
+  it("小说 Profile 的可用能力包含正文与既有四项核心能力", () => {
     const available = capabilitiesFor("novel")
       .filter((c) => c.state === "available" || c.state === "limited")
       .map((c) => c.id)
       .sort();
-    expect(available).toEqual(["core.items", "core.layout", "core.project", "core.taskLinks"]);
+    expect(available).toEqual([
+      "core.items",
+      "core.layout",
+      "core.project",
+      "core.taskLinks",
+      "novel.manuscript",
+    ]);
   });
 
   it("原有四种 Profile 的声明未被小说类型改变", () => {
@@ -202,8 +214,14 @@ describe("布局解析与模块顺序", () => {
       expect(legacy.layout).toEqual(defaultLayout(profile));
       expect(legacy.repaired).toBe(false);
     }
-    // 小说默认布局来自自己的 Profile（概览起步）
-    expect(defaultLayout(novel).moduleOrder).toEqual(["overview", "items", "links", "settings"]);
+    // 小说默认布局来自自己的 Profile（概览起步，正文紧随其后）
+    expect(defaultLayout(novel).moduleOrder).toEqual([
+      "overview",
+      "manuscript",
+      "items",
+      "links",
+      "settings",
+    ]);
     expect(defaultLayout(novel).activeModule).toBe("overview");
   });
 
@@ -279,13 +297,14 @@ describe("布局解析与模块顺序", () => {
     expect(resolveModuleOrder(novel, legacy).map((m) => m.id)).toEqual([
       "items",
       "overview",
+      "manuscript",
       "links",
       "settings",
     ]);
     // 旧配置里隐藏的模块继续隐藏，不因新增类型被重新显示
     expect(
       resolveModuleOrder(novel, { ...legacy, hiddenModules: ["links"] }).map((m) => m.id),
-    ).toEqual(["items", "overview", "settings"]);
+    ).toEqual(["items", "overview", "manuscript", "settings"]);
     // 旧布局本身是合法 v1，不标记 repaired
     expect(parseWorkspaceLayout(JSON.stringify(legacy), novel).repaired).toBe(false);
   });

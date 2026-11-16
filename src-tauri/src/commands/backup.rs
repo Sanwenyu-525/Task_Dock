@@ -143,6 +143,9 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "workspace_instances",
     "workspace_items",
     "workspace_task_links",
+    // 小说卷/章（v58）：卷 → 章；章正文是用户创作内容，快速备份也全量保存。
+    "novel_volumes",
+    "novel_chapters",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -516,6 +519,24 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["workspace_projects"],
         true
     ),
+    // 小说卷/章（v58）：用户创作内容（标题 + 正文），快速备份全量保存。
+    // 恢复顺序：项目 → 卷 → 章；章节的 volume_id 可为空（未分卷）。
+    rule!(
+        "novel_volumes",
+        "core",
+        "all",
+        447,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "novel_chapters",
+        "core",
+        "all",
+        448,
+        &["workspace_projects", "novel_volumes"],
+        true
+    ),
     rule!(
         "workspace_task_links",
         "core",
@@ -861,6 +882,9 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "workspace_instances"
         | "workspace_items"
         | "workspace_task_links"
+        // 小说卷/章（v58）：用户创作内容，快速备份也必须全量保存（不截断正文）。
+        | "novel_volumes"
+        | "novel_chapters"
         | "voice_bindings" => format!("SELECT * FROM {} ORDER BY rowid", table),
         // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
         "workflow_runs" => format!(
@@ -3345,6 +3369,8 @@ mod tests {
     #[test]
     fn novel_workspace_project_roundtrips_in_full_and_quick_backup() {
         use crate::commands::project_workspace::{
+            novel_chapter_get_impl, novel_chapter_list_impl, novel_chapter_save_content_impl,
+            novel_chapter_save_impl, novel_volume_list_impl, novel_volume_save_impl,
             workspace_instance_get_impl, workspace_instance_save_impl, workspace_item_list_impl,
             workspace_item_save_impl, workspace_project_list_impl, workspace_project_save_impl,
             workspace_task_link_add_impl, workspace_task_link_list_impl,
@@ -3396,6 +3422,27 @@ mod tests {
         .unwrap();
         workspace_task_link_add_impl(&db, &project.id, "t-novel").unwrap();
 
+        // B1（v58）：卷/章与正文也必须随备份完整往返。
+        let volume = novel_volume_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "第一卷".into(),
+            None,
+        )
+        .unwrap();
+        let chapter = novel_chapter_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            Some(volume.id.clone()),
+            "第一章".into(),
+            None,
+        )
+        .unwrap();
+        let raw = "第一章正文\n第二段。";
+        novel_chapter_save_content_impl(&db, &chapter.id, raw.to_string()).unwrap();
+
         for kind in [BackupKind::Full, BackupKind::Quick] {
             let (_, read, dir) = write_then_read(&db, kind);
             for table in [
@@ -3403,10 +3450,13 @@ mod tests {
                 "workspace_instances",
                 "workspace_items",
                 "workspace_task_links",
+                "novel_volumes",
+                "novel_chapters",
             ] {
+                let expected = 1;
                 assert_eq!(
                     spilled_rows(&read, table).len(),
-                    1,
+                    expected,
                     "{:?} 备份缺少 novel 项目数据（{}）",
                     kind,
                     table
@@ -3432,6 +3482,23 @@ mod tests {
                 "{:?} 恢复后任务关联丢失",
                 kind
             );
+
+            // B1：卷/章 meta 与正文逐字还原（恢复顺序必须卷先于章）。
+            let restored_volumes = novel_volume_list_impl(&dst, &restored[0].id).unwrap();
+            assert_eq!(restored_volumes.len(), 1, "{:?} 恢复后卷丢失", kind);
+            assert_eq!(restored_volumes[0].title, "第一卷");
+            let restored_chapters = novel_chapter_list_impl(&dst, &restored[0].id).unwrap();
+            assert_eq!(restored_chapters.len(), 1, "{:?} 恢复后章节丢失", kind);
+            assert_eq!(restored_chapters[0].title, "第一章");
+            assert_eq!(
+                restored_chapters[0].volume_id.as_deref(),
+                Some(restored_volumes[0].id.as_str()),
+                "{:?} 恢复后章节与卷的关系丢失",
+                kind
+            );
+            let restored_chapter = novel_chapter_get_impl(&dst, &restored_chapters[0].id).unwrap();
+            assert_eq!(restored_chapter.content, raw, "{:?} 恢复后正文不得改变", kind);
+            assert_eq!(restored_chapter.summary.word_count, 9, "{:?} 字数必须还原", kind);
             std::fs::remove_dir_all(dir).ok();
         }
     }
