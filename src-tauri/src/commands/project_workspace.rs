@@ -356,6 +356,47 @@ fn ensure_project_exists(conn: &Connection, project_id: &str) -> AppResult<()> {
     }
 }
 
+/// 小说专用命令的统一类型/状态门禁：
+/// - 只有 `kind = novel` 的项目可读写小说卷/章；
+/// - `require_active` 为 true 时（所有写入）还要求 `status = active`；
+///   读取允许归档项目，保证归档后正文仍可查看。
+fn ensure_novel_project(
+    conn: &Connection,
+    project_id: &str,
+    require_active: bool,
+) -> AppResult<()> {
+    let (kind, status): (String, String) = conn
+        .query_row(
+            "SELECT kind, status FROM workspace_projects WHERE id = ?1",
+            params![project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::NotFound(format!("工作空间项目不存在: {project_id}")))?;
+    if kind != "novel" {
+        return Err(AppError::Validation(
+            "该操作仅对小说项目开放".to_string(),
+        ));
+    }
+    if require_active && status != "active" {
+        return Err(AppError::Validation(
+            "项目已归档，正文与章节只读；恢复为进行中后才能修改".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// 仅按章节 ID 操作时，先取所属项目再做类型/状态检查，避免先读出正文再拒绝。
+fn chapter_project_id(conn: &Connection, id: &str) -> AppResult<String> {
+    conn.query_row(
+        "SELECT project_id FROM novel_chapters WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| AppError::NotFound("章节不存在或已被删除".into()))
+}
+
 fn read_project(conn: &Connection, id: &str) -> AppResult<WorkspaceProject> {
     conn.query_row(
         "SELECT p.id, p.name, p.kind, p.status, p.root_path, p.dev_project_id,
@@ -1026,7 +1067,7 @@ fn count_chapter_words(raw: &str) -> i64 {
 
 pub fn novel_volume_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<NovelVolume>> {
     db.with_read(|conn| {
-        ensure_project_exists(conn, project_id)?;
+        ensure_novel_project(conn, project_id, false)?;
         let mut stmt = conn.prepare(
             "SELECT id, project_id, title, sort_order, created_at, updated_at
              FROM novel_volumes WHERE project_id = ?1
@@ -1058,7 +1099,7 @@ pub fn novel_volume_save_impl(
         .filter(|s| !s.is_empty());
 
     let saved_id = db.with_conn(|conn| {
-        ensure_project_exists(conn, &project_id)?;
+        ensure_novel_project(conn, &project_id, true)?;
         let now = now_iso();
         match id {
             None => {
@@ -1108,16 +1149,17 @@ pub fn novel_volume_save_impl(
 
 pub fn novel_volume_delete_impl(db: &Db, id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
-        let exists: Option<String> = conn
+        let owner: Option<String> = conn
             .query_row(
                 "SELECT project_id FROM novel_volumes WHERE id = ?1",
                 params![id],
                 |row| row.get(0),
             )
             .optional()?;
-        if exists.is_none() {
+        let Some(owner) = owner else {
             return Err(AppError::NotFound("卷不存在或已被删除".into()));
-        }
+        };
+        ensure_novel_project(conn, &owner, true)?;
         // 章节由 v58 外键 ON DELETE CASCADE 一并删除。
         conn.execute("DELETE FROM novel_volumes WHERE id = ?1", params![id])?;
         Ok(())
@@ -1126,7 +1168,7 @@ pub fn novel_volume_delete_impl(db: &Db, id: &str) -> AppResult<()> {
 
 pub fn novel_chapter_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<NovelChapterSummary>> {
     db.with_read(|conn| {
-        ensure_project_exists(conn, project_id)?;
+        ensure_novel_project(conn, project_id, false)?;
         let mut stmt = conn.prepare(
             "SELECT id, project_id, volume_id, title, word_count, sort_order,
                     created_at, updated_at
@@ -1143,7 +1185,11 @@ pub fn novel_chapter_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<Novel
 }
 
 pub fn novel_chapter_get_impl(db: &Db, id: &str) -> AppResult<NovelChapter> {
-    db.with_read(|conn| read_chapter(conn, id))
+    db.with_read(|conn| {
+        let project_id = chapter_project_id(conn, id)?;
+        ensure_novel_project(conn, &project_id, false)?;
+        read_chapter(conn, id)
+    })
 }
 
 /// 保存章节元信息（新建/改名/移动到卷/调整顺序），正文保持不变。
@@ -1166,7 +1212,7 @@ pub fn novel_chapter_save_impl(
         .filter(|s| !s.is_empty());
 
     let saved_id = db.with_conn(|conn| {
-        ensure_project_exists(conn, &project_id)?;
+        ensure_novel_project(conn, &project_id, true)?;
         ensure_volume_belongs(conn, &project_id, volume_id.as_deref())?;
         let now = now_iso();
         match id {
@@ -1225,16 +1271,8 @@ pub fn novel_chapter_save_content_impl(
     let content = validate_chapter_body(&content)?;
     let word_count = count_chapter_words(&content);
     db.with_conn(|conn| {
-        let exists: Option<String> = conn
-            .query_row(
-                "SELECT project_id FROM novel_chapters WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if exists.is_none() {
-            return Err(AppError::NotFound("章节不存在或已被删除".into()));
-        }
+        let project_id = chapter_project_id(conn, id)?;
+        ensure_novel_project(conn, &project_id, true)?;
         conn.execute(
             "UPDATE novel_chapters
              SET content = ?2, word_count = ?3, updated_at = ?4
@@ -1248,16 +1286,8 @@ pub fn novel_chapter_save_content_impl(
 
 pub fn novel_chapter_delete_impl(db: &Db, id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
-        let exists: Option<String> = conn
-            .query_row(
-                "SELECT project_id FROM novel_chapters WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if exists.is_none() {
-            return Err(AppError::NotFound("章节不存在或已被删除".into()));
-        }
+        let project_id = chapter_project_id(conn, id)?;
+        ensure_novel_project(conn, &project_id, true)?;
         conn.execute("DELETE FROM novel_chapters WHERE id = ?1", params![id])?;
         Ok(())
     })
@@ -1982,6 +2012,11 @@ mod tests {
         assert_eq!(got.content, raw);
         assert_eq!(got.summary.word_count, 8);
 
+        // 8 MiB 上限：超出即拒绝，且不清空既有正文。
+        let too_long = "a".repeat(MAX_CHAPTER_CONTENT_BYTES + 1);
+        assert!(novel_chapter_save_content_impl(&db, &c2.id, too_long).is_err());
+        assert_eq!(novel_chapter_get_impl(&db, &c2.id).unwrap().content, "");
+
         // 元信息更新（改名 + 移到另一卷）不覆盖正文。
         let moved = novel_chapter_save_impl(
             &db,
@@ -2015,6 +2050,136 @@ mod tests {
         assert_eq!(novel_chapter_list_impl(&db, &project.id).unwrap().len(), 1);
         workspace_project_delete_impl(&db, &project.id).unwrap();
         assert!(novel_volume_list_impl(&db, &project.id).is_err());
+        let violations: i64 = db
+            .with_read(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+    }
+
+    /// B1 第二轮：小说专用命令必须校验项目类型与状态；归档只读但可读。
+    #[test]
+    fn novel_commands_enforce_kind_and_archived_read_only() {
+        let db = Db::open_in_memory().unwrap();
+        let novel = create_project(&db, "小说", "novel");
+        let v1 = novel_volume_save_impl(
+            &db,
+            None,
+            novel.id.clone(),
+            "第一卷".into(),
+            None,
+        )
+        .unwrap();
+        let c1 = novel_chapter_save_impl(
+            &db,
+            None,
+            novel.id.clone(),
+            Some(v1.id.clone()),
+            "第一章".into(),
+            None,
+        )
+        .unwrap();
+        novel_chapter_save_content_impl(&db, &c1.id, "可读正文".into()).unwrap();
+
+        // 非小说项目：读写一律拒绝（不能借小说命令读到/写入任何卷章数据）。
+        for kind in ["game", "development", "general", "ai_comic"] {
+            let p = create_project(&db, kind, kind);
+            assert!(
+                novel_volume_list_impl(&db, &p.id).is_err(),
+                "{kind} 不应读取小说卷"
+            );
+            assert!(
+                novel_chapter_list_impl(&db, &p.id).is_err(),
+                "{kind} 不应读取小说章"
+            );
+            assert!(
+                novel_volume_save_impl(
+                    &db,
+                    None,
+                    p.id.clone(),
+                    "偷渡卷".into(),
+                    None
+                )
+                .is_err(),
+                "{kind} 不应新建小说卷"
+            );
+            assert!(
+                novel_chapter_save_impl(
+                    &db,
+                    None,
+                    p.id.clone(),
+                    None,
+                    "偷渡章".into(),
+                    None
+                )
+                .is_err(),
+                "{kind} 不应新建小说章"
+            );
+        }
+
+        // 直接构造一条挂在 general 项目下的“历史脏数据”，get 必须在读取正文前拒绝。
+        let general = create_project(&db, "通用", "general");
+        let now = now_iso();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO novel_chapters
+                 (id, project_id, volume_id, title, content, word_count, sort_order,
+                  created_at, updated_at)
+                 VALUES ('legacy-general', ?1, NULL, '旧章', '不应读出', 4, 0, ?2, ?2)",
+                params![general.id, now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        assert!(novel_chapter_get_impl(&db, "legacy-general").is_err());
+        assert!(novel_chapter_save_content_impl(&db, "legacy-general", "改写".into()).is_err());
+        assert!(novel_chapter_delete_impl(&db, "legacy-general").is_err());
+
+        // 归档：读取允许，所有写入拒绝。
+        workspace_project_set_status_impl(&db, &novel.id, "archived".into()).unwrap();
+        assert_eq!(novel_volume_list_impl(&db, &novel.id).unwrap().len(), 1);
+        assert_eq!(novel_chapter_list_impl(&db, &novel.id).unwrap().len(), 1);
+        assert_eq!(
+            novel_chapter_get_impl(&db, &c1.id).unwrap().content,
+            "可读正文"
+        );
+        assert!(novel_volume_save_impl(
+            &db,
+            Some(v1.id.clone()),
+            novel.id.clone(),
+            "改名".into(),
+            None
+        )
+        .is_err());
+        assert!(novel_volume_delete_impl(&db, &v1.id).is_err());
+        assert!(novel_chapter_save_impl(
+            &db,
+            Some(c1.id.clone()),
+            novel.id.clone(),
+            Some(v1.id.clone()),
+            "改名".into(),
+            None
+        )
+        .is_err());
+        assert!(novel_chapter_save_content_impl(&db, &c1.id, "归档改写".into()).is_err());
+        assert!(novel_chapter_delete_impl(&db, &c1.id).is_err());
+        assert_eq!(
+            novel_chapter_get_impl(&db, &c1.id).unwrap().content,
+            "可读正文"
+        );
+
+        // 恢复 active 后可正常编辑。
+        workspace_project_set_status_impl(&db, &novel.id, "active".into()).unwrap();
+        novel_chapter_save_content_impl(&db, &c1.id, "恢复后正文".into()).unwrap();
+        assert_eq!(
+            novel_chapter_get_impl(&db, &c1.id).unwrap().content,
+            "恢复后正文"
+        );
+        novel_volume_delete_impl(&db, &v1.id).unwrap();
+        assert!(novel_chapter_get_impl(&db, &c1.id).is_err());
         let violations: i64 = db
             .with_read(|conn| {
                 Ok(conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {

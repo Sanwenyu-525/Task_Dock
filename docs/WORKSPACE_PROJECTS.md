@@ -25,7 +25,7 @@ Task Dock 已有三类容易与「项目」混淆的对象，本功能不替换�
 - 删除工作空间只删除登记与本地元数据，不删除仓库、文件、任务或开发项目。
 - 根目录、关联开发项目、关联任务都是**弱引用**：目标消失时如实显示失效，不静默清理。
 
-## 2. 数据模型（迁移 v49；v57 扩展类型）
+## 2. 数据模型（迁移 v49；v57 扩展类型，v58 增加小说卷/章）
 
 | 表 | 作用 | 关键约束 |
 |---|---|---|
@@ -34,13 +34,16 @@ Task Dock 已有三类容易与「项目」混淆的对象，本功能不替换�
 | `workspace_items` | 通用事项/阶段节点（集数、镜头、角色、构建、测试、问题…） | 自引用 `parent_id`；`status` CHECK；`metadata_json` 只存 JSON 对象 |
 | `workspace_task_links` | 项目 ↔ 现有任务的多对多弱关联 | 两端外键级联；只存关联，不复制任务内容 |
 | `shelf_project_links` | 暂存条目 ↔ 项目弱关联（v51） | 两端外键级联；只存关联 |
+| `novel_volumes` | 小说卷（B1，v58） | `project_id` 级联删除；`sort_order` 控制卷内顺序 |
+| `novel_chapters` | 小说章与正文（B1，v58） | `project_id`、`volume_id`（可空=未分卷）均级联；正文为 `TEXT`，`word_count` 由保存时更新 |
 
 不做的事：
 
 - 不新增文件托管目录；根目录与产物路径只作引用。
 - 不引入第二套任务系统；任务仍由 `tasks` 管理。
-- 不实现游戏/漫画/小说专用流水线（分镜生成、资源打包、引擎构建、正文编辑）；这些能力在
-  `src/workspace/workspaceProfiles.ts` 中标记为 `planned`/`unavailable`，不得显示为可用。
+- 不实现游戏/漫画专用流水线（分镜生成、资源打包、引擎构建）；小说只实现**纯文本**
+  正文与卷→章树（B1），不实现富文本/Markdown、版本历史、人物/世界观与 AI 生成；这些能力
+  仍标记为 `planned`/`unavailable`，不得显示为可用。
 
 ## 3. 能力声明与「诚实可用」
 
@@ -62,8 +65,9 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 
 - 游戏类型没有资源索引、构建/测试登记、引擎跳转；
 - AI 漫剧没有素材/角色库、生成结果导入、版本比较与采用；
-- 小说类型（A 阶段）只有项目/写作事项/任务关联/窗口布局，没有正文编辑器、
-  章节/卷、人物档案、世界观与 AI 创作辅助（后四项登记为 `planned`，不可调用）；
+- 小说类型（B1，2026-11-16）已有纯文本正文与卷→章树（`novel.manuscript` available）；
+  仍没有人物档案、世界观、AI 创作辅助（这三项登记为 `planned`，不可调用），
+  也没有 Markdown/富文本、版本历史与导出；
 - `core.layout` 已声明为 `limited`：解析器支持 `moduleOrder`/`hiddenModules`，
   但当前 UI 只有「当前模块」会被写回，没有排序/隐藏编辑入口。
 
@@ -81,7 +85,10 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 
 ## 5. 兼容与迁移
 
-- 迁移只追加在 `MIGRATIONS` 末尾（v49…v57），不修改已发布迁移。
+- 迁移只追加在 `MIGRATIONS` 末尾（v49…v58），不修改已发布迁移。
+- **v58（2026-11-16，B1）**：只新增 `novel_volumes` / `novel_chapters` 两表与三个索引
+  （卷/章项目级联、章节可空 `volume_id`、`volume_id` 级联），不改任何既有表与行；
+  旧库升级后既有项目、实例、事项、关联与布局 JSON 原样保留。
 - **v57（2026-11-15）**：`workspace_projects.kind` 的 CHECK 扩为五值。SQLite 不能原地改
   CHECK，必须重建表；该表被 `workspace_instances / workspace_items / workspace_task_links /
   shelf_project_links` 四张表以 `ON DELETE CASCADE` 引用，迁移器又在事务内执行、事务内不能
@@ -92,8 +99,9 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
   CHECK 报错、整体回滚到 v56。迁移前后保留项目 ID/名称/类型/状态/根目录/dev 弱引用/
   备注/创建更新时间、窗口实例与布局 JSON、事项父子关系与排序、metadata_json、
   任务关联、暂存关联；不删除旧数据再重建。
-- 新表全部注册到 `BACKUP_TABLES`；恢复顺序：项目 → 实例 → 事项 → 任务关联。
-  备份不按 `kind` 过滤，`novel` 项目与其它四种类型走同一套往返流程。
+- 新表全部注册到 `BACKUP_TABLES`；恢复顺序：项目 → 实例 → 事项 → 任务关联；
+  小说按 项目 → 卷 → 章 插入（v58，章节的 `volume_id` 可为空）。
+  备份不按 `kind` 过滤，`novel` 项目与其它四种类型走同一套往返流程，正文原文全量保存。
 - 新设置键：`workspace_active_project`（字符串，空 = 未设置）、
   `workspace_window_rect`（JSON 对象，窗口自管几何，不进入前端 Settings 快照）。
 - U0 新增工作台外壳布局键：`workbench_layout`（版本化 JSON：上次路由/项目/右栏显隐/分栏宽度；
@@ -172,6 +180,7 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 | P1-B | 任务选择器分页与 200 上限提示 | 已实现（hook 测试） |
 | P1-C | Profile/Capability 诚实性审计（`core.layout` 降为 limited） | 已实现（契约测试） |
 | A1 | 小说项目类型接入：v57 迁移、Rust 类型/命令复用、Profile/图标/首页、备份往返 | 已实现（2026-11-16 复跑：Rust 3/3、Vitest 16/16、`tsc --noEmit` 通过；原生窗口未逐项走查） |
+| B1 | 小说正文与章节：v58 卷/章表、章节 CRUD/自动保存/字数、正文模块 UI、备份往返 | 已实现（2026-11-16：Rust 5/5、Vitest 16+4、`tsc --noEmit` 通过；原生窗口未逐页走查） |
 | P1 | 游戏/漫画阶段模板、产物版本与采用状态、工作流 I/O 跟踪 | 未开始 |
 | P1 | 跨项目复盘的统一验收视图、文件缩略图/预览 | 未开始 |
 | P2 | 移动端只读镜像或远程项目视图 | 未开始 |
@@ -242,8 +251,10 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 
 ### 10.2 尚未实现（后续阶段）
 
-- 小说正文编辑器、富文本/Markdown、自动保存与版本历史；
-- 章节/卷管理（当前只用 `workspace_items.stage` 标注，尚未建模章节树与字数统计）；
+- 小说正文编辑器、富文本/Markdown、自动保存与版本历史（纯文本 + 自动保存已由 B1 实现，
+  见 §11；富文本与版本历史仍未实现）；
+- 章节/卷管理（A 阶段只用 `workspace_items.stage` 标注；B1 已建模卷→章树与字数统计，
+  见 §11）；
 - 人物档案与关系、世界观设定集、剧情时间线、伏笔追踪；
 - AI 续写/改写/生成、导出（TXT/Markdown/DOCX/PDF）。
 
@@ -256,4 +267,38 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 2. 人物/世界观条目：同构条目 + 关系表，不引入第二套搜索与第二套任务；
 3. AI 辅助前先定义上下文装配与授权边界（沿用 Agent 管线的有界队列、取消与失败语义）；
 4. 原生窗口逐页走查：新建/编辑/归档/切换/布局保存/备份恢复，并补齐多显示器与 DPI 场景。
+
+## 11. 小说正文与章节（B1，2026-11-16）
+
+**目标**：在既有 Project Workspace 与 novel Profile 上接入「卷 → 章」两级章节树和纯文本
+正文编辑器；不新建项目/任务/窗口系统，不复制 CRUD。
+
+### 11.1 数据与命令
+
+- 迁移 **v58**：`novel_volumes`（id/project_id/title/sort_order/时间）与
+  `novel_chapters`（id/project_id/volume_id/title/content/word_count/sort_order/时间）。
+  `project_id` 与 `volume_id` 均 `ON DELETE CASCADE`；`volume_id` 为 NULL 表示未分卷。
+- Rust 命令（`commands/project_workspace.rs`，IPC 包装 + `lib.rs` 注册）：
+  `novel_volume_list/save/delete`、`novel_chapter_list/get/save/save_content/delete`。
+  列表只返回章节元信息，正文按章按需读取；正文保存只更新 content/word_count/updated_at。
+- 校验：标题 240 字符、正文 8 MiB 且不裁剪首尾空白（缩进/空行属于作者内容）、
+  卷与章必须属于同一项目；字数 = 非空白字符数。
+
+### 11.2 前端
+
+- `WorkspaceModuleId` 增加 `manuscript`；`novel` Profile 导航为
+  概览 / **正文** / 写作事项 / 任务关联 / 项目设置；旧布局缺少 `manuscript` 时自动补齐。
+- `novel.manuscript` 从 `planned` 提升为 `available`，`provider` 指向 v58 表与内置纯文本
+  编辑器，`action` 指向 `manuscript` 模块；人物/世界观/AI 仍为 `planned` 且不可调用。
+- `NovelManuscriptPanel`：左栏卷→章树（新建/重命名/上下移/两步删除确认，未分卷桶），
+  右栏 textarea；停止输入约 0.9 秒自动保存，失焦、切换章节/项目与卸载时立即落盘；
+  展示本章与全书字数、保存状态；归档项目只读。全部使用现有 `ws-*` 语义 Token。
+- 概览新增「开始写作」按钮（真实模块跳转），不产生假入口。
+
+### 11.3 明确未做
+
+- Markdown/富文本、版本历史/撤销快照、导入导出、全文搜索、拼写检查；
+- 人物档案、世界观、剧情时间线、伏笔追踪、AI 续写/改写；
+- 跨卷拖拽移动（B1 只支持同卷内上下移与新建时指定卷）；
+- 原生窗口逐页走查（自动化与组件测试已覆盖树读取、正文回填、失焦保存与归档只读）。
 

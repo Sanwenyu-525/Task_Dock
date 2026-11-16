@@ -43,6 +43,7 @@ import ContextHelpButton from "../help/ContextHelpButton";
 import ModuleRunControl from "../lifecycle/ModuleRunControl";
 import { useViewsOverflow } from "./useViewsOverflow";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import "./tasks-workspace.css";
 import { WorkbenchPageDetail, WorkbenchDetailFacts } from "../../workbench/pageDetail";
 import { formatLocalizedDateTime } from "../../i18n/format";
 import { priorityLabelKey } from "../../lib/commandPhrases";
@@ -253,7 +254,7 @@ export default function TasksPanel() {
   const ModeIcon = analytics ? BarChart3 : Timer;
   return (
     <div
-      className={`tasks-panel ${subview ? "tasks-subview" : ""} page-fill`}
+      className={`tasks-panel ${subview ? "tasks-subview" : ""} ${mode === "list" ? "tasks-workspace-layout" : ""} page-fill`}
       data-task-mode={mode}
     >
       {subview ? (

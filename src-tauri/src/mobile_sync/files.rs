@@ -128,6 +128,15 @@ const SELECT_COLUMNS: &str = "id, device_id, direction, name, size, sha256, stat
      chunk_size, chunks, received_chunks, created_at, updated_at, completed_at,
      shelf_item_id, shelf_imported_at, shelf_group_id";
 
+/// 悬空引用清理：只清 `mobile_files` 的暂存架关联字段，保留传输记录与 inbox 文件。
+/// 用于历史数据（含本修复上线前已删除的 ShelfItem）与列表读取前的兜底对账。
+const CLEAR_DANGLING_SHELF_REFS_SQL: &str = "UPDATE mobile_files
+        SET shelf_item_id = NULL, shelf_imported_at = NULL, shelf_group_id = NULL
+      WHERE shelf_item_id IS NOT NULL
+        AND NOT EXISTS (
+            SELECT 1 FROM shelf_items WHERE shelf_items.id = mobile_files.shelf_item_id
+        )";
+
 /// 创建目录结构（幂等）。
 pub fn ensure_dirs(root: &Path) -> AppResult<()> {
     for sub in [SUBDIR_OUTBOX, SUBDIR_INBOX, SUBDIR_TMP] {
@@ -304,9 +313,20 @@ fn load_file(db: &Db, id: &str) -> AppResult<MobileFile> {
     })
 }
 
+/// 清理历史遗留的悬空暂存架引用：`shelf_item_id` 指向的条目已被删除
+/// （包括本修复上线前删除的条目）。只清 `mobile_files` 的引用字段，
+/// 保留传输记录与 inbox 文件；返回清理行数，便于测试与诊断。
+pub fn clear_dangling_shelf_refs(db: &Db) -> AppResult<usize> {
+    db.with_conn(|conn| {
+        let cleared = conn.execute(CLEAR_DANGLING_SHELF_REFS_SQL, [])?;
+        Ok(cleared)
+    })
+}
+
 /// 桌面端 UI：全部记录（最近 100 条）。
 pub fn list_all(db: &Db) -> AppResult<Vec<MobileFile>> {
     db.with_conn(|conn| {
+        conn.execute(CLEAR_DANGLING_SHELF_REFS_SQL, [])?;
         let mut statement = conn.prepare(&format!(
             "SELECT {SELECT_COLUMNS} FROM mobile_files ORDER BY created_at DESC LIMIT 100"
         ))?;
@@ -318,6 +338,9 @@ pub fn list_all(db: &Db) -> AppResult<Vec<MobileFile>> {
 /// 手机端：所有可下载的 `to_phone` 文件 + 本机上传的 `to_desktop` 记录。
 pub fn list_for_device(db: &Db, device_id: &str) -> AppResult<Vec<MobileFile>> {
     db.with_conn(|conn| {
+        // 旧版本删除暂存架条目时只删了 shelf_items，mobile_files 可能残留悬空引用；
+        // 列表是手机端对账的唯一入口，返回前先收敛，避免把已删除的条目当成“仍已入架”。
+        conn.execute(CLEAR_DANGLING_SHELF_REFS_SQL, [])?;
         let mut statement = conn.prepare(&format!(
             "SELECT {SELECT_COLUMNS} FROM mobile_files
              WHERE (direction = ?1 AND status = ?2)
@@ -1154,6 +1177,38 @@ mod tests {
             import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap();
         assert_eq!(second.shelf_item_id.as_deref(), Some(item_id.as_str()));
         assert!(shelf::item_exists(&db, &item_id).unwrap());
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&shelf_root);
+    }
+
+    #[test]
+    fn shelf_list_clears_legacy_dangling_refs_and_keeps_file() {
+        let db = test_db();
+        let root = temp_root("shelf-dangling");
+        let shelf_root = shelf_temp_root("dangling");
+        let file = upload(&db, &root, "dangling.bin", &payload(40));
+        let sha_before = sha256_file(&PathBuf::from(&file.stored_path)).unwrap();
+        let imported =
+            import_to_shelf(&db, &root, &shelf_root, "device-1", &file.id, None).unwrap();
+        let item_id = imported.shelf_item_id.clone().unwrap();
+
+        // 模拟修复上线前的旧实现：只删 shelf_items 行，mobile_files 引用残留。
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM shelf_items WHERE id = ?1", params![&item_id])?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(load_file(&db, &file.id).unwrap().shelf_item_id.is_some());
+
+        let listed = list_for_device(&db, "device-1").unwrap();
+        let row = listed.iter().find(|entry| entry.id == file.id).unwrap();
+        assert!(row.shelf_item_id.is_none());
+        assert!(row.shelf_imported_at.is_none());
+        assert!(row.shelf_group_id.is_none());
+        assert_eq!(row.status, STATUS_READY);
+        assert!(PathBuf::from(&row.stored_path).exists());
+        assert_eq!(sha256_file(&PathBuf::from(&row.stored_path)).unwrap(), sha_before);
 
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&shelf_root);

@@ -146,7 +146,7 @@ const ListRow = memo(function ListRow({
   return (
     <div
       className={`fw-row${selected ? " is-selected" : ""}${active && selected ? " is-active" : ""}${isDropTarget ? " is-drop-folder" : ""}`}
-      style={{ height: LIST_ROW_H, color: entry.kind === "dir" ? toneVar(visual.tone) : undefined }}
+      style={{ height: LIST_ROW_H }}
       data-fw-path={path}
       data-fw-kind={entry.kind}
       role="option"
@@ -155,7 +155,7 @@ const ListRow = memo(function ListRow({
       onDoubleClick={() => onDoubleClick(entry)}
       onContextMenu={(e) => onContextMenu(e, entry)}
     >
-      <span className="fw-row-icon" aria-hidden="true">
+      <span className="fw-row-icon" aria-hidden="true" style={{ color: toneVar(visual.tone) }}>
         <Icon size={15} strokeWidth={1.6} />
       </span>
       <span className="fw-row-name" title={entry.name}>

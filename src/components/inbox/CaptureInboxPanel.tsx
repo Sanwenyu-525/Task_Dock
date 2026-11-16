@@ -35,6 +35,12 @@ import type { CaptureItem, CaptureKind } from "../../lib/bridge";
 import { quickCaptureShow } from "../../lib/bridge";
 import { EmptyState, StatusBadge } from "../ui";
 import type { IconComponent } from "../ui/AgentIcon";
+import WorkspaceSplit from "../../workbench/WorkspaceSplit";
+import {
+  WorkbenchDetailFacts,
+  WorkbenchPageDetail,
+  useWorkbenchDetailHost,
+} from "../../workbench/pageDetail";
 
 const KIND_LABELS: Record<CaptureKind, string> = {
   task: "任务",
@@ -107,6 +113,10 @@ export default function CaptureInboxPanel() {
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [kindFilter, setKindFilter] = useState<CaptureKind | "all">("all");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const detailHost = useWorkbenchDetailHost();
+  const detailInRail = detailHost !== null;
 
   // 进入收集箱即拉取；筛选切换由 store 内部重新 load，避免两条刷新路径。
   useEffect(() => {
@@ -264,6 +274,34 @@ export default function CaptureInboxPanel() {
 
   const showLoading = loading && items.length === 0;
   const showEmpty = !showLoading && !error && items.length === 0;
+
+  const kindCounts = useMemo(() => {
+    const counts: Record<CaptureKind | "all", number> = {
+      all: items.length,
+      task: 0,
+      idea: 0,
+      text: 0,
+      todo: 0,
+      link: 0,
+    };
+    for (const item of items) counts[item.kind] += 1;
+    return counts;
+  }, [items]);
+
+  const visibleItems = useMemo(
+    () => (kindFilter === "all" ? items : items.filter((item) => item.kind === kindFilter)),
+    [items, kindFilter],
+  );
+  const selectedItem =
+    visibleItems.find((item) => item.id === selectedId) ??
+    (selectedId ? items.find((item) => item.id === selectedId) ?? null : null);
+  const selectedBusy = selectedItem ? busyId === selectedItem.id : false;
+  const selectedCanProcess = selectedItem?.status === "inbox";
+
+  function selectKind(next: CaptureKind | "all") {
+    setKindFilter(next);
+    setSelectedId(null);
+  }
 
   return (
     <div className="inbox-panel page-fill">

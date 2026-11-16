@@ -19,8 +19,19 @@ export type FeatureStatus = "implemented" | "partial" | "planned" | "blocked";
 export type FeaturePriority = "P0" | "P1" | "P2";
 export type FeatureVerification = "verified" | "unverified";
 
-/** 五个展示分区：核心效率 / 工作流与效率增强 / 信息管理与生活效率 / Agent 扩展 / 长期生态 */
-export type FeatureCategory = "core" | "workflow" | "info" | "agent" | "ecosystem";
+/**
+ * 七个展示分区：核心效率 / 工作台与专业创作 / 工作流与效率增强 /
+ * 信息管理与生活效率 / Agent 扩展 / 长期生态 / 设备、系统与数据。
+ * 新增分区必须同时登记 CATEGORY_META 与 CATEGORY_ORDER，并被目录测试锁定。
+ */
+export type FeatureCategory =
+  | "core"
+  | "workbench"
+  | "workflow"
+  | "info"
+  | "agent"
+  | "ecosystem"
+  | "system";
 
 export interface FeatureEntry {
   /** 稳定唯一 ID；12 项核心功能登记在 CORE_FEATURE_IDS 中受测试锁定 */
@@ -53,18 +64,28 @@ export const CATEGORY_META: Record<
   { label: string; description: string }
 > = {
   core: { label: "核心效率功能", description: "P0：日常使用的核心闭环" },
+  workbench: {
+    label: "工作台与专业创作",
+    description: "P0–P1：统一宿主、项目容器与专业创作能力",
+  },
   workflow: { label: "工作流与效率增强", description: "P1：把重复操作变成一次点击" },
   info: { label: "信息管理与生活效率", description: "P2：信息收纳与生活事项" },
   agent: { label: "Agent 扩展", description: "更多 Agent 接入与执行洞察" },
   ecosystem: { label: "长期生态", description: "跨平台、插件、同步等长期方向" },
+  system: {
+    label: "设备、系统与数据",
+    description: "P1–P2：跨设备协作、本机资源、诊断与数据安全",
+  },
 };
 
 export const CATEGORY_ORDER: readonly FeatureCategory[] = [
   "core",
+  "workbench",
   "workflow",
   "info",
   "agent",
   "ecosystem",
+  "system",
 ] as const;
 
 export const STATUS_META: Record<
@@ -334,7 +355,384 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     ],
   },
 
-  // ─── 工作流与效率增强（P1）─────────────────────────────────────────
+  {
+    id: "capture.clipboard",
+    category: "core",
+    title: "智能剪贴板",
+    description: "采集文本、图片、文件与网址，自动分组历史，支持整组复制、逐项粘贴与 Agent 交接包。",
+    detail:
+      "剪贴板是本产品的高频核心能力，但此前目录只登记了「多类型查看器」这一个子能力，整体缺席。" +
+      "本轮按代码与五轮验收证据补登为独立条目：三线程采集（平台层唯一入口 + 有界队列，丢弃计数）、" +
+      "按内容哈希去重、来源应用/窗口/时间/大小、自动分组（默认 45s，可配 5–600s）、" +
+      "历史检索与分页、整组富文本/文件复制、选择目标窗口后逐项粘贴（队列进度/取消/失败停止并报告）、" +
+      "本机 OCR、任务关联与 Agent 导入包。图片落盘为独立资源，列表不传输二进制。" +
+      "隐私侧：采集总开关、敏感标记与高置信特征过滤、来源未知时保守凭据模式、配置异常 fail-closed，" +
+      "日志与事件不记录正文、完整图片、路径或密钥。已知边界：敏感过滤是启发式防线而非防泄漏产品；" +
+      "采集仅在 Task Dock 运行时生效；分组与保留按本地配额执行，收藏条目不自动清理。",
+    status: "implemented",
+    priority: "P0",
+    existingFeatures: [
+      "采集纯文本、URL、HTML 富文本、截图/图片、文件列表（含多文件）与混合内容；内容哈希去重，重复复制只更新时间与使用次数",
+      "来源信息：类型、时间、大小、来源应用与窗口标题、识别方式、预览；图片独立落盘",
+      "自动分组：连续截图在默认 45s 窗口（5–600s 可配）归入同组，文字条目按发生顺序插入；支持重命名、重排、拆分、合并",
+      "历史管理：正文/来源/文件名搜索、类型与收藏筛选、分页加载",
+      "查看器：HTML 白名单只读阅读器、图片灯箱（缩放/平移/双击/另存为）、文件预览、URL 详情",
+      "整组富文本或文件一键复制；选择目标窗口后逐项粘贴，带队列进度与取消，失败停止并报告；胶囊截图组复用同一状态机",
+      "本机 Windows.Media.Ocr 按需识别图片文字，超时/像素/内存上限，缓存随条目清理失效",
+      "条目或分组关联任务；导出 Markdown + 图片 + manifest 的本地 Agent 导入包，由用户自行交付，不自动发送",
+      "隐私保护：总开关、系统/应用敏感标记、高置信特征过滤、保守凭据模式、配置异常 fail-closed，日志不含正文/图片/路径/密钥",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "剪贴板平台层（Win32 + 三线程有界队列）与图片资源目录",
+      "Win32 前台窗口身份（来源应用/窗口标题，仅运行期）",
+      "暂存架拖放与 copy switch 目标窗口链路",
+    ],
+    acceptanceCriteria: [
+      "五类内容均可采集且去重后不丢历史",
+      "自动分组窗口可配置，分组重排/拆分/合并后顺序正确",
+      "逐项粘贴在失败时停止并保留可恢复状态，不重复粘贴",
+      "重启后历史与图片可读，条目删除后图片资源随之回收",
+      "敏感配置异常时停止采集而不是明文落库",
+    ],
+    verification: "verified",
+    entryPoints: [
+      "完整工作台左侧导航「剪贴板」",
+      "胶囊剪贴板面板与截图组",
+      "条目详情内的任务关联与 Agent 导出",
+    ],
+  },
+  {
+    id: "core.app-launcher",
+    category: "core",
+    title: "应用启动与窗口切换",
+    description: "扫描本机应用、登记导航目标，按四级导航启动软件并尽量唤醒原窗口、工作区或会话。",
+    detail:
+      "Task Dock 的启动器本体此前只在 README 与导航矩阵中维护，路线图缺席。" +
+      "已实现：从开始菜单、卸载注册表、常见安装路径与 UWP 目录发现应用并合并去重，读取真实图标；" +
+      "胶囊应用网格支持拖动/Alt+方向键排序与连续添加；导航目标可登记应用、文件、目录、网页与 Agent 会话；" +
+      "四级导航按「启动软件 → 唤醒已有窗口 → 打开工作区/目录 → 恢复会话」逐级尝试，只在目标 Agent 有公开接口时启用，" +
+      "否则如实降级并标注；工作现场快照可批量启动一组目标并逐项反馈。" +
+      "登记为 partial 的原因是可验证边界而非入口缺失：L3 仅对提供 CLI 目录参数的 Agent 尝试且未逐项核验帮助文本，" +
+      "L4 目前以 Codex 为主要验证对象，多窗口应用无法精确锁定原实例，未登记应用不进入应用搜索。",
+    status: "partial",
+    priority: "P0",
+    existingFeatures: [
+      "本机应用扫描：开始菜单 / 卸载注册表 / 常见安装路径 / UWP 目录合并去重，读取真实图标",
+      "胶囊应用网格：拖动或 Alt+左右方向键排序、顺序本机持久化、连续添加与自动触发扫描",
+      "导航目标：应用、文件、目录、网页、Agent 会话；收藏项优先出现在胶囊「应用」面板",
+      "四级导航：启动软件 → 唤醒已有窗口 → 打开工作区/目录 → 恢复会话，逐级按真实接口能力降级并标注",
+      "批量启动：工作现场快照保存一组导航目标，按序启动并逐项反馈成功/跳过/失败，可取消未执行项",
+    ],
+    missingFeatures: [
+      "L3「打开工作区」仅对提供 CLI 目录参数的 Agent（Trae / Qoder 等）尝试，属约定推断，未逐项核验帮助文本",
+      "L4「恢复会话」以 Codex 为主要验证对象（codex resume），其他 Agent 仅按运行时探测动态启用",
+      "同一应用多窗口时只能唤醒其中一个窗口，无法精确锁定原实例",
+      "未登记应用不参与应用搜索与统一网格",
+    ],
+    dependencies: [
+      "统一导航 nav_navigate 链路",
+      "Win32 窗口身份匹配（HWND/PID 仅运行期）",
+      "Agent 适配器的会话恢复能力声明",
+    ],
+    acceptanceCriteria: [
+      "扫描结果去重且图标真实，不出现占位图",
+      "四级导航每一级的结果可解释，缺接口时如实降级而不是报成功",
+      "批量启动逐项反馈并可取消未执行项",
+      "多窗口应用不误唤醒无关进程",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "胶囊「应用」面板与网格",
+      "完整工作台左侧导航「应用」",
+      "工作现场恢复中的批量启动",
+    ],
+  },
+
+  // ─── 工作台与专业创作 ────────────────────────────────────────────────
+  {
+    id: "workbench.unified",
+    category: "workbench",
+    title: "统一大型工作台",
+    description: "胶囊、快捷工具面板与独立大型工作台三层形态，统一承载全部完整功能页与专业模块。",
+    detail:
+      "U0（2026-11-14）已把完整功能页迁到唯一的大型工作台窗口（workspace.html），" +
+      "与胶囊常驻入口、快捷键工具面板（CompactView）形成三层职责，极简悬浮（MinimalView）保留：" +
+      "胶囊负责唤起与状态，工具面板负责短流程，大型工作台负责完整页面。" +
+      "统一导航直接复用 navigationRegistry 与 navVisibility，不维护第二份入口清单；" +
+      "工作台外壳布局用版本化协议 workbench_layout 恢复上次路由、当前项目、右栏显隐与分栏宽度；" +
+      "模块启停由 ModuleRunControl + useLifecycleStore 串行管理，意图写回 SQLite 设置，胶囊/设置/资源管理共享同一份状态；" +
+      "专业模块接入协议为「tabs 注册 → 工作台路由；workspaceProfiles 声明类型/模块/能力；仅工作台可见的页面标 workbenchOnly」。" +
+      "注意：本条目是产品架构，不等于某个具体开发工作台（后者见 core.dev-workbench）。" +
+      "2026-11-15 的 20 路由验收矩阵结论为部分通过（Windows 原生通道未执行），因此验证状态保持 unverified。",
+    status: "implemented",
+    priority: "P0",
+    existingFeatures: [
+      "三层形态：胶囊常驻入口 / 快捷工具面板（CompactView）/ 独立大型工作台（workspace.html）；极简悬浮（MinimalView）保留",
+      "唯一大型工作台窗口承载 20 条路由（工作台首页 + 19 个逻辑页），普通装饰、任务栏可见、可缩放并记忆几何",
+      "统一导航：左侧导航与胶囊共用 navigationRegistry + navVisibility 配置，不另建入口数组",
+      "跨页面状态恢复：workbench_layout 版本化协议恢复上次路由、当前项目、右栏显隐与分栏宽度，非法字段逐项回默认",
+      "模块状态管理：ModuleRunControl + useLifecycleStore 串行暂停/恢复，意图写回 SQLite 设置，多入口同步",
+      "专业模块接入协议：tabs 注册 → 工作台路由；workspaceProfiles 声明类型/模块/能力；仅工作台页面用 workbenchOnly 标记",
+      "每个路由有独立 RouteBoundary，单页异常不拖垮外壳；关闭工作台不影响胶囊",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "workspace.html 独立窗口与工作台路由契约（workbenchRoutes）",
+      "navigationRegistry / navVisibility 统一入口清单",
+      "workbench_layout 设置键（ALLOWED_KEYS 已登记）",
+    ],
+    acceptanceCriteria: [
+      "三层形态职责可区分：胶囊不展开完整页，工具面板不承载长流程",
+      "20 条路由均可从工作台导航到达并正确渲染",
+      "关闭重开工作台后恢复上次路由、项目、右栏状态与分栏宽度",
+      "单个页面异常不影响其他路由与窗口外壳",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "胶囊轨道「工作台」入口",
+      "托盘 / 右键菜单「完整模式」",
+      "独立工作台窗口（workspace.html）",
+    ],
+  },
+  {
+    id: "workbench.projects",
+    category: "workbench",
+    title: "专业项目工作空间",
+    description: "跨工具的长期工作容器：五种项目类型、事项与阶段、任务/文件关联、项目状态恢复。",
+    detail:
+      "项目工作空间不是任务、场景或现场快照的替代品：它是以弱引用串联这些对象的长期容器，" +
+      "不移动、不删除、不复制外部文件（v49 数据模型，v57 扩展五种类型，v58 增加小说卷/章）。" +
+      "已实现项目 CRUD/归档/删除、事项与阶段树、任务弱关联、暂存条目弱关联、开发型复用 dev_projects 的 Git 只读摘要与 Agent 快照、" +
+      "每个项目独立窗口状态（active_module / layout_json / last_opened_at）以及胶囊/导航/工作台三层入口。" +
+      "类型差异由 workspaceProfiles 静态声明驱动：导航标题、首页卡片、能力四态（available/limited/planned/unavailable）不同，" +
+      "未接入的能力不渲染可点击入口；未知类型回落 general。" +
+      "登记为 partial 的真实缺口：core.layout 只写回「上次所在模块」，模块排序/隐藏无编辑入口；" +
+      "项目级笔记、Agent 会话与产物关联尚未接入；游戏/漫剧的专业资源与构建流程、小说人物/世界观/AI 辅助均在各自条目中待补；" +
+      "没有项目进度/健康度字段，首页不画进度；没有跨设备项目同步与项目级交接包。",
+    status: "partial",
+    priority: "P0",
+    existingFeatures: [
+      "项目实体 CRUD / 归档 / 删除：kind 限定 development / game / ai_comic / general / novel；root_path 只登记不写入；删除不删外部文件、任务或开发项目",
+      "事项与阶段树：workspace_items 自引用 parent_id、状态轮转与 metadata，承载集数、镜头、角色、构建、测试、问题等阶段",
+      "任务弱关联（workspace_task_links）与暂存条目弱关联（shelf_project_links），只建引用，不复制内容",
+      "开发型复用 dev_projects：Git 只读摘要、Agent 快照、验收入口跳转，不建第二套开发工作台",
+      "每项目独立窗口状态 workspace_instances（active_module / layout_json / last_opened_at），三种入口可打开同一项目页",
+      "能力声明注册中心 workspaceProfiles：四态能力、首页卡片、推荐工具；未接入能力不渲染可点击入口",
+      "项目、事项、任务关联、暂存关联均进入备份表清单",
+    ],
+    missingFeatures: [
+      "core.layout 只有「上次所在模块」会被写回，模块排序与隐藏尚无编辑入口",
+      "项目级笔记、Agent 会话与产物关联未接入（当前只有任务、暂存、开发项目弱引用）",
+      "项目进度/健康度字段缺失，首页无法显示项目进度条",
+      "游戏/漫剧的资源索引、构建登记、角色/素材库与生成流程仍待各自工作台补齐",
+      "跨设备/移动端项目同步与项目级交接包未实现",
+      "多显示器/DPI 与项目切换并发的真机走查未执行",
+    ],
+    dependencies: [
+      "workspace_* 迁移 v49 / v57 / v58（已发布不可修改）",
+      "统一大型工作台窗口与 workbenchLayout 路由",
+      "dev_projects、agents AgentHub 快照、shelf_project_links",
+    ],
+    acceptanceCriteria: [
+      "五种类型的导航标题、首页卡片与可用动作确实不同",
+      "删除项目只删除登记与本地元数据，不删除仓库、文件、任务或开发项目",
+      "重启后恢复每个项目的当前模块",
+      "未接入能力没有可点击的假入口，边界文案与能力状态一致",
+      "归档/恢复/删除后项目列表与工作台状态一致",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「工作空间」",
+      "胶囊轨道项目按钮（打开/唤醒工作台项目页）",
+      "统一工作台内的项目模块",
+    ],
+  },
+  {
+    id: "workbench.files",
+    category: "workbench",
+    title: "多目录文件工作区",
+    description: "单窗口多目录、可嵌套分栏的文件工作台，面向跨目录整理、批量搬运与项目资料查看。",
+    detail:
+      "文件工作区是独立于「文件暂存架」的常驻工作台：暂存架负责跨会话收纳，文件工作区负责对真实目录做多窗格浏览与操作。" +
+      "分割树模型为递归结构：窗格 ≤ 12、树深 ≤ 6、每窗格标签 ≤ 12，超限归一化裁剪而不白屏；" +
+      "支持横向/纵向分栏、四方向新分栏、布局持久化与恢复（设置晚到会补恢复，避免空布局覆盖已存布局）。" +
+      "文件操作走真实文件系统：复制/移动（F5/F6 与右键「复制到/移动到」）、重命名、新建、粘贴、回收站删除与永久删除（独立确认）、" +
+      "隐藏文件开关；同窗格/跨窗格拖拽与外部 OS 拖入共用 fileDrop 仲裁，外部来源默认复制、不删源文件；" +
+      "同名冲突整批只弹一次并统一策略，冲突检测失败时中止而不是静默改名覆盖。" +
+      "边界：不做 Windows 资源管理器的替代品（不接管 Shell 命名空间/文件关联），页面级页头与缩略图、真实拖拽和回收站尚未完成原生真机验收。",
+    status: "implemented",
+    priority: "P0",
+    existingFeatures: [
+      "单窗口多目录：递归分割树，横向/纵向分栏，最多 12 窗格、树深 6，每窗格最多 12 标签",
+      "自由打开目录：原生选择器 / 手输路径 / 最近 / 固定 / 项目根，落点支持新标签、替换当前目录与四方向新分栏",
+      "布局保存与恢复：树形、标签、视图、排序与搜索状态持久化；设置晚到补恢复，损坏/超限安全回退",
+      "标签管理与窗格交换/拖动排序，窗格间导航状态互不影响",
+      "文件操作：复制/移动、重命名（F2）、新建、粘贴、删除（回收站/永久删除独立确认）、隐藏文件",
+      "拖拽移动/复制：同窗格与跨窗格、外部 OS 拖入（复制语义，不删源文件），取消通道覆盖 Esc/失焦/离开窗口",
+      "批量冲突处理：整批一次决策并统一策略；冲突检测失败中止，不静默覆盖",
+      "文件类型差异化：类型图标、图片/视频缩略图（并发 ≤3、有界缓存）、列表/网格视图",
+      "批量选择、全选、搜索与排序（目录优先），空态/加载态/读取失败分别呈现",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "文件系统命令（列目录、复制/移动、回收站、重命名）",
+      "fileDrop 仲裁（priority 20 > 暂存架 10）",
+      "settings store 与布局持久化协议",
+    ],
+    acceptanceCriteria: [
+      "分栏/标签超限时归一化而不白屏",
+      "跨窗格拖拽只执行一次操作，取消不产生文件变更",
+      "同名冲突按选定策略统一应用，失败可解释",
+      "重启后恢复布局与各窗格目录/标签",
+      "外部拖入默认复制，不删除用户源文件",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "统一工作台左侧导航「文件工作区」（workbenchOnly）",
+      "其他模块 / Agent 通过 openFilesWorkspacePath 显式打开目录",
+    ],
+  },
+  {
+    id: "create.novel",
+    category: "workbench",
+    title: "小说创作工作台",
+    description: "小说项目内的卷→章树、纯文本正文编辑、自动保存与字数统计，向人物/世界观/AI 辅助演进。",
+    detail:
+      "B1（2026-11-15/16，迁移 v58）已把小说从「只有项目类型」推进到可用编辑器：" +
+      "node novel_volumes / novel_chapters 两级结构，章节可挂在卷下或作为未分卷章节；" +
+      "内置纯文本编辑器支持新建/重命名/删除章节、自动保存、字数统计，单章正文上限 8 MiB；" +
+      "项目还复用工作空间的概览、写作事项、任务关联与项目设置模块。" +
+      "这是真实可用的基础编辑能力，不是完整专业创作闭环：人物档案、世界观、大纲、版本历史、导入导出、全文搜索与 AI 辅助均未接入，" +
+      "对应能力在 workspaceProfiles 中登记为 planned，UI 不渲染生成/续写按钮。" +
+      "B1 验收报告结论为部分通过：自动化与预览通道通过，原生窗口长篇输入走查未执行。",
+    status: "partial",
+    priority: "P1",
+    existingFeatures: [
+      "小说项目类型（v57）与独立「正文」模块：概览 / 正文 / 写作事项 / 任务关联 / 项目设置",
+      "卷→章树：卷与章的增删改、排序、未分卷章节归属",
+      "章节正文纯文本编辑、自动保存与字数统计；单章 8 MiB 上限，保存失败可重试",
+      "小说卷/章数据进入备份表清单，恢复后正文与结构保留",
+      "首页只展示真实数据，planned 能力（人物/世界观/AI 辅助）不渲染可点击入口",
+    ],
+    missingFeatures: [
+      "人物档案、关系与出场章节（novel.characters 仍为 planned）",
+      "世界观设定集与引用关系（novel.worldview 仍为 planned）",
+      "AI 创作辅助：续写、改写、灵感提示（需独立授权与上下文装配，novel.aiAssist 仍为 planned）",
+      "大纲/章节梗概与结构视图",
+      "版本记录、历史对比与撤销",
+      "Markdown/富文本、导入导出（TXT/Word）与全文搜索",
+      "长篇连续写作的原生真机走查与性能基线",
+    ],
+    dependencies: [
+      "迁移 v58（novel_volumes / novel_chapters）与 workspace_projects novel kind",
+      "workspaceProfiles 能力注册表与备份表清单",
+      "后续人物/世界观需要新表与迁移（append-only）",
+    ],
+    acceptanceCriteria: [
+      "创建卷/章并保存正文，重启后结构、正文与字数一致",
+      "超过 8 MiB 时给出可解释错误且不丢已有正文",
+      "删除章节/卷只影响本项目数据，不影响其他项目",
+      "未接入的 AI/人物/世界观能力不出现可点击的假入口",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "工作空间 → 新建「小说」项目 →「正文」模块",
+      "完整工作台左侧导航「工作空间」",
+    ],
+  },
+  {
+    id: "create.game",
+    category: "workbench",
+    title: "游戏开发工作台",
+    description: "游戏项目类型、制作事项/阶段与任务关联；资源、构建与引擎流程仍待接入。",
+    detail:
+      "游戏项目已具备真实容器能力：kind=game 的专用导航（概览 / 制作事项 / 任务关联 / 设置）与首页卡片，" +
+      "以 workspace_items.stage 承载关卡、系统、美术等制作阶段，事项树、状态轮转与任务弱关联均复用工作空间层。" +
+      "尚未接入的能力在 workspaceProfiles 中如实登记：game.assets（资源关联）与 game.build（构建与测试）为 planned，" +
+      "UI 不显示可点击的构建按钮，避免假成功。当前没有游戏设计文档、角色/场景库、引擎跳转、构建产物登记、测试计划与缺陷跟踪，" +
+      "也没有面向游戏项目的 Agent 上下文装配。",
+    status: "partial",
+    priority: "P1",
+    existingFeatures: [
+      "游戏项目类型与专用导航/首页（概览 / 制作事项 / 任务关联 / 设置）",
+      "制作事项：用事项阶段字段记录关卡、系统、美术等制作阶段，支持事项树、状态轮转与排序",
+      "任务弱关联：关联既有任务，不复制任务内容",
+      "项目归档 / 删除 / 恢复与备份；删除不触碰外部资源目录",
+      "未接入的资源关联与构建能力不渲染可点击入口",
+    ],
+    missingFeatures: [
+      "游戏设计文档（GDD）与模板",
+      "角色、场景、关卡与资源库/导入适配器",
+      "构建与测试流水线（Unity / Unreal / 自研脚本）及结果回传",
+      "版本与构建产物登记、引擎跳转",
+      "测试计划、缺陷跟踪与验收入口",
+      "游戏项目上下文装配与 Agent 协作",
+    ],
+    dependencies: [
+      "workspace_items.stage（已具备）",
+      "资源索引与构建适配器（未接入）",
+      "项目工作空间的类型 Profile 与备份表清单",
+    ],
+    acceptanceCriteria: [
+      "创建游戏项目后可记录关卡/系统制作阶段并关联任务",
+      "未接入构建/资源能力时没有可点击的假入口",
+      "接入构建后能回传成功/失败与产物路径，失败可解释",
+      "删除项目不影响仓库与美术资源",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "工作空间 → 新建「游戏」项目",
+      "完整工作台左侧导航「工作空间」",
+    ],
+  },
+  {
+    id: "create.ai-comic",
+    category: "workbench",
+    title: "AI 漫剧工作台",
+    description: "漫剧项目类型、剧集/镜头事项与任务关联；剧本、分镜元数据、素材与生成流程仍待接入。",
+    detail:
+      "AI 漫剧目前是「项目入口 + 基础数据结构」，不是完整制作流水线：" +
+      "kind=ai_comic 的专用导航为概览 / 剧集与镜头 / 任务关联 / 设置；" +
+      "comic.episodes 与 comic.shots 为 limited —— 剧集与镜头用事项阶段承载，没有独立剧集表、分镜画幅/时长/台词等元数据，" +
+      "镜头顺序仅按 sortOrder 线性展示；comic.characters 与 comic.assets 为 planned，comic.generate 为 unavailable，" +
+      "首页明确标注计划中且不渲染上传/生成按钮。当前没有剧本管理、镜头与场景关联、角色设定/参考图库、素材与生成产物库、" +
+      "版本比较与采用、制作流程看板与 Agent 协作。",
+    status: "partial",
+    priority: "P1",
+    existingFeatures: [
+      "AI 漫剧项目类型与「剧集与镜头」专用导航（概览 / 剧集与镜头 / 任务关联 / 设置）",
+      "用事项阶段 episode / shot 承载剧集拆分与镜头清单，支持线性排序与状态轮转",
+      "项目事项树、任务弱关联、归档/删除/备份",
+      "首页只列 planned/unavailable 能力，不出现上传或生成按钮",
+    ],
+    missingFeatures: [
+      "剧本/台本管理与版本",
+      "分镜元数据（景别、画幅、时长、台词）与镜头-场景关联",
+      "角色设定、关系与参考图库",
+      "素材库与生成产物登记、导入",
+      "图像/视频生成管线接入与失败恢复",
+      "版本比较、采用与回滚",
+      "制作流程看板与 Agent 协作",
+    ],
+    dependencies: [
+      "workspace_items.stage（已具备，但只是阶段占位）",
+      "独立的剧集/镜头/角色/素材数据模型（未设计）",
+      "生成管线与产物存储（未接入）",
+    ],
+    acceptanceCriteria: [
+      "创建漫剧项目后可拆分剧集与镜头并关联任务",
+      "未接入生成能力时不显示可点击的生成入口",
+      "接入分镜元数据后镜头顺序、画幅与时长可稳定保存",
+      "生成失败可解释且不产生半成品引用",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "工作空间 → 新建「AI 漫剧」项目",
+      "完整工作台左侧导航「工作空间」",
+    ],
+  },
+
   {
     id: "core.file-shelf",
     category: "workflow",
@@ -772,6 +1170,83 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "taskdock.exe --mcp-server（外部 MCP 客户端 stdio 接入）",
       "设置 → Agent 接入 → MCP（开关 / 凭据 / 授权 / 审计）",
     ],
+  },
+
+  {
+    id: "agent.builtin",
+    category: "agent",
+    title: "内置 Agent：目标推进与任务接续",
+    description: "在 Task Dock 内部持续执行目标、拆解任务、跨会话接续工作现场，而不只是观测外部 Agent。",
+    detail:
+      "这是长期方向，当前没有内置执行循环，因此登记为 planned：" +
+      "Agent 行动中心只聚合外部 Agent 的需介入状态，MCP Server 只让外部客户端读写规划数据，" +
+      "开发工作台只提供任务锚点与快速继续入口，三者都不能等同于完整内置 Agent。" +
+      "本条目定义的目标是「目标的持续推进、任务的接续、工作现场的恢复」：" +
+      "用户给出目标后由 Task Dock 拆解为可执行任务，按计划推进，跨会话恢复上下文，" +
+      "在执行受阻或需要危险操作时请求人工审批，最终以可复核证据判定完成。" +
+      "现有可复用的地基：Agent 事件有界管线与适配器、工作现场快照/恢复、任务与项目数据模型、Agent 导入包与验收工作台；" +
+      "缺少的是执行循环、状态机、审批策略与完成判定本身。",
+    status: "planned",
+    priority: "P1",
+    existingFeatures: [],
+    missingFeatures: [
+      "长期目标与关键结果管理（目标拆解、依赖、优先级）",
+      "可持续的执行循环（计划 → 执行 → 验证 → 复盘），不是一次性会话",
+      "任务中断恢复与工作现场接续（跨重启、跨窗口、后续跨设备）",
+      "多 Agent 分工、交接与冲突仲裁",
+      "执行结果归集、进度追踪与风险发现",
+      "人工审批策略（权限分级、危险动作确认、可撤销）",
+      "完成判定与失败重试策略（以证据而非自述为准）",
+    ],
+    dependencies: [
+      "Agent 事件管线 + 各适配器（提供状态与动作回执）",
+      "工作现场快照/恢复与任务、项目数据模型",
+      "审批、权限与审计模型（尚未设计）",
+      "内置执行器与调度器（尚未设计）",
+    ],
+    acceptanceCriteria: [
+      "目标可拆解为任务并保留依赖关系",
+      "进程重启后任务从断点继续，不重复执行已确认步骤",
+      "危险动作在执行前进入人工审批，拒绝后状态可回退",
+      "完成判定有可复核证据，未达条件不标记完成",
+      "多 Agent 交接不丢上下文，冲突有明确仲裁结果",
+    ],
+    verification: "unverified",
+  },
+  {
+    id: "agent.relay",
+    category: "agent",
+    title: "Relay Agent 集成",
+    description: "与独立 Relay 中转服务协作，实现 Agent 间通信、任务交接与执行结果回传。",
+    detail:
+      "Relay 是独立的中转与协作方向，当前只有预研文档（docs/RELAY_INTEGRATION.md，2026-11-14），" +
+      "仓库中没有 Relay 服务端、客户端连接器或协议实现，因此登记为 planned，不能把 MCP Server 的已有能力冒充为 Relay 集成。" +
+      "职责边界：MCP Server 是外部客户端读写 Task Dock 规划数据的本地接口；Relay 负责 Agent 之间的消息路由、任务交接与结果回传，" +
+      "两者信任模型、生命周期与失败语义不同，不合并。立项前必须先确定协议、身份与权限模型、幂等与失败恢复策略，" +
+      "以及与行动中心/任务系统的边界，缺少安全设计与验收方案时不得直接排期。",
+    status: "planned",
+    priority: "P1",
+    existingFeatures: [],
+    missingFeatures: [
+      "Relay 协议与信任模型（消息格式、身份、授权）",
+      "Task Dock 侧连接器：配对、鉴权、重连与断线补偿",
+      "任务交接与执行结果回传（幂等、可追溯）",
+      "失败恢复与重试策略（不重复执行、不丢结果）",
+      "权限分级与审计日志",
+      "与 MCP Server、Agent 行动中心的职责边界与去重",
+    ],
+    dependencies: [
+      "Relay 独立立项与协议冻结",
+      "TLS/身份与凭据存储（复用既有安全边界）",
+      "任务/项目模型与 Agent 事件管线",
+    ],
+    acceptanceCriteria: [
+      "交接任务在断线重连后不重复执行且结果可追溯",
+      "未授权 Agent 无法读取或改写任务",
+      "失败有明确回执与恢复路径，不静默丢弃",
+      "MCP 与 Relay 的能力边界在文档与代码中一致",
+    ],
+    verification: "unverified",
   },
 
   // ─── 任务与交互增强 ────────────────────────────────────────────────

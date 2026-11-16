@@ -1836,7 +1836,11 @@ unsupported`，字节与流落到 `data_dir/drag-incoming` 的暂存副本，前
 会让 deep 顶栏能拖却不变光标。原生相位来自 `drag_watch::install`（本窗口 label，
 `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE` → `window-drag`），与微件窗口共用同一机制：系统模态
 移动循环期间 WebView2 收不到 `pointerup`，只有原生 `end` 才能松手即复位 grabbing；安装时机
-与 `window_cursor` 相同，经 `run_on_main_thread` 在窗口创建后完成。窗口按钮簇声明
+与 `window_cursor` 相同，经 `run_on_main_thread` 在窗口创建后完成。会话 effect 必须等顶栏
+真正挂载后再建（与 `booted = settingsReady && routeHydrated && projectHydrated` 同条件）：
+启动加载卡片阶段 `topbarRef` 为空，若只写 `[]` 依赖会永久漏挂，表现为悬停有 `grab`、按下没有
+`is-dragging`（2026-11-16 真机反馈的根因）。按住后的**系统光标**仍由 Windows 模态循环拥有，
+CSS `grabbing` 只表达前端会话态，技术边界见本章 1023–1033 节。窗口按钮簇声明
 `data-tauri-drag-region="false"` 且 CSS `cursor: default`，不继承拖动区的抓取手型。
 
 窗口外形仍由 Win32 `SetWindowRgn` 与 `.wb-root` 的 CSS 弧共同定义（见
@@ -1946,9 +1950,9 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
   自身窗口/外观配置入口。导航显隐/排序、Ctrl+数字语义（切到同一稳定入口，页面为兼容页）
   与旧数据都不变；工作台侧栏直接打开对应完整页。
 - Phase E（开发/游戏/AI 漫剧/小说专业模块）：开发项目页与 Profile 模块已在工作台内复用；
-  游戏/漫剧仍只有事项阶段承载（与旧边界一致）；小说（2026-11-15，A 阶段）已接入项目类型
-  （v57 迁移 / Profile / 导航 / 首页 / 备份），正文、章节、人物、世界观与 AI 辅助尚未实现
-  （能力登记为 `planned`）。
+  游戏/漫剧仍只有事项阶段承载（与旧边界一致）；小说（B1，2026-11-16）已接入
+  v57 类型 + v58 `novel_volumes`/`novel_chapters`、`manuscript` 模块与纯文本正文自动保存，
+  并纳入备份往返；人物、世界观、AI 辅助与富文本/版本历史/导出仍未实现（`planned` 或未登记）。
 - **原生冒烟（2026-11-14，隔离实例）已通过**：唯一工作台目标、创建即导航、已存在窗口导航、
   无项目使用、路由持久化、ack 清队、任务栏扩展样式（`WS_EX_APPWINDOW`、非
   `WS_EX_TOOLWINDOW`）、最大化/恢复、`WM_CLOSE` 后主窗口存活与重开；1180×760 @125% DPI

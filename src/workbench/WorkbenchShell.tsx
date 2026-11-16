@@ -277,6 +277,14 @@ export default function WorkbenchShell() {
   const [devProjects, setDevProjects] = useState<DevProject[]>([]);
   const selectedIdRef = useRef<string | null>(selectedId);
   selectedIdRef.current = selectedId;
+  /** 工作空间页注册的离开守卫（正文脏稿落盘）；只在项目切换时 await。 */
+  const workspaceLeaveGuardRef = useRef<(() => Promise<boolean>) | null>(null);
+  const registerWorkspaceLeaveGuard = useCallback(
+    (guard: (() => Promise<boolean>) | null) => {
+      workspaceLeaveGuardRef.current = guard;
+    },
+    [],
+  );
   const projectsRef = useRef<WorkspaceProject[]>(projects);
   projectsRef.current = projects;
 
@@ -446,7 +454,8 @@ export default function WorkbenchShell() {
   }
 
   const selectProject = useCallback(
-    (id: string | null) => {
+    async (id: string | null): Promise<boolean> => {
+      if (id === selectedIdRef.current) return true;
       // 显式改选项目本身就是「取消当前待决导航」：不取消的话，用户确认旧导航
       // 会在稍后覆盖这次选择，造成 UI 与持久化不一致。
       if (useUiStore.getState().pendingTab) {
@@ -455,6 +464,12 @@ export default function WorkbenchShell() {
       projectIntentSeq.current += 1;
       const intent = projectIntentSeq.current;
       const previous = selectedIdRef.current;
+      // 正文模块有脏稿时，先 await 落盘；失败或已被更新选择取代则取消本次切换。
+      const guard = workspaceLeaveGuardRef.current;
+      if (guard) {
+        const ok = await guard();
+        if (!ok || projectIntentSeq.current !== intent) return false;
+      }
       setSelectedId(id);
       // 选择即所有权：串行写入，最后一次选择最终落库（旧写入不会覆盖新选择）。
       void activeWriterRef.current?.submit(id).then((result) => {
@@ -471,6 +486,7 @@ export default function WorkbenchShell() {
           toastErrorRef.current("workbench.projectRecordFailed", e),
         );
       });
+      return true;
     },
     [],
   );
@@ -1749,8 +1765,9 @@ export default function WorkbenchShell() {
                     openCreateProjectIfNeeded(next);
                   }}
                   onSelectProjectAndOpen={(id) => {
-                    selectProject(id);
-                    goRoute("workspace");
+                    void selectProject(id).then((ok) => {
+                      if (ok) goRoute("workspace");
+                    });
                   }}
                   onCreateProject={openCreateProject}
                   onQuickAddTask={() => {
@@ -1777,6 +1794,7 @@ export default function WorkbenchShell() {
                     onOpenDevWorkbench={requestDevWorkbench}
                     onCreateProject={openCreateProject}
                     onNotice={showNotice}
+                    registerProjectLeaveGuard={registerWorkspaceLeaveGuard}
                     moduleRequest={moduleRequest}
                   />
                 </RouteSlot>

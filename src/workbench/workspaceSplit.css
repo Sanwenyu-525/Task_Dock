@@ -114,6 +114,42 @@ body.workspace-split-resizing {
   color: var(--text-primary);
 }
 
+/* 侧栏内的分段控件是导航，不是页面顶部的紧凑药丸：每项都要有可见边界，
+   避免未选中项看起来像静态标签；仍沿用同一套语义 Token。 */
+.workspace-split__sidebar .seg-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.workspace-split__sidebar .seg-btn {
+  flex: 1 1 calc(50% - 4px);
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-raised) 68%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.workspace-split__sidebar .seg-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.workspace-split__sidebar .seg-btn.active {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+
 @container workspace-split (max-width: 560px) {
   .workspace-split:not(.is-single) {
     grid-template-columns: minmax(0, 1fr);

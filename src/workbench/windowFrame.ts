@@ -10,9 +10,14 @@
 // （`set_workspace_window_radius`），与主窗 `apply_window_radius` 同一口径，
 // 不新增第三套圆角规范。
 //
-// 第二轮：苹果式连续圆角（`corner-shape: superellipse(4)`）。
-// - WebView2 支持时：CSS 用超椭圆、Rust 用同指数裁剪，并把名义半径 +4px 补偿
-//   超椭圆在同半径下"更方"的观感（18→22 / 20→24，与 CSS 用同一个计算值）；
+// 第二轮：苹果式连续圆角（CSS `corner-shape: superellipse(K)`）。
+// - `K` 是 CSS 规范参数，**数学指数是 n = 2^K**（Chromium 实测：K=1→n=2、
+//   2→n=4、3→n=8、4→n=16、8→n=64，`squircle` 关键字等价于 K=2）。
+//   因此苹果式 squircle 必须写 `superellipse(2)`，Rust 侧用 n=4；早期实现把
+//   K 当成 n 直接写 `superellipse(4)`（= n=16，几乎方形），与原生 n=4 裁剪
+//   不一致，原生会把 CSS 更方的角部切掉，表现为圆角阶梯与 1px 边框断裂。
+// - WebView2 支持时：CSS 与 Rust 同时用 n=4，并把名义半径 +4px 补偿超椭圆
+//   在同半径下"更方"的观感（18→22 / 20→24，与 CSS 用同一个计算值）；
 // - 不支持时：指数回落 2、补偿回落 0，视觉与第一轮圆弧完全一致（不引入不一致）。
 //
 // 另外把「是否最大化」写到 <html data-window-maximized>：最大化按 Windows
@@ -22,10 +27,18 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const RADIUS_TOKEN = "--radius-window";
 const FALLBACK_RADIUS = 18;
-/** 超椭圆指数（4 = 苹果式连续圆角；2 是圆弧）。 */
-export const CONTINUOUS_CORNER_EXPONENT = 4;
+/**
+ * CSS `superellipse(K)` 的参数 K（规范语义）。K=2 = 苹果式 squircle（n=4）。
+ * 注意：K **不是**数学指数，n = 2^K；两个概念分开命名，避免再次混用。
+ */
+export const CONTINUOUS_CORNER_CSS_K = 2;
+/** 数学指数 n = 2^K = 4（Rust `window_shape` 与 CSS 渲染同一条曲线）。 */
+export const CONTINUOUS_CORNER_EXPONENT = 2 ** CONTINUOUS_CORNER_CSS_K;
 /** 超椭圆的名义半径补偿（CSS px）：同半径下超椭圆看起来更"方"，补回圆润度。 */
 export const CONTINUOUS_CORNER_EXTRA = 4;
+
+/** CSS 里实际书写的能力探测/声明值，保证检测与绘制用同一个 K。 */
+export const CONTINUOUS_CORNER_CSS_VALUE = `superellipse(${CONTINUOUS_CORNER_CSS_K})`;
 
 /** 读取当前预设的窗口圆角（CSS px）；取不到时用默认预设值。 */
 export function readWindowRadiusCss(): number {
@@ -36,11 +49,11 @@ export function readWindowRadiusCss(): number {
   return Number.isFinite(value) && value >= 0 ? value : FALLBACK_RADIUS;
 }
 
-/** 当前 WebView2 是否支持 `corner-shape: superellipse()`（能力检测，不猜版本号）。 */
+/** 当前 WebView2 是否支持 `corner-shape: superellipse(K)`（能力检测，不猜版本号）。 */
 export function supportsContinuousCorners(): boolean {
   try {
     const api = typeof CSS !== "undefined" ? CSS : undefined;
-    return Boolean(api?.supports?.("corner-shape", "superellipse(4)"));
+    return Boolean(api?.supports?.("corner-shape", CONTINUOUS_CORNER_CSS_VALUE));
   } catch {
     return false;
   }
@@ -48,17 +61,20 @@ export function supportsContinuousCorners(): boolean {
 
 /**
  * 圆角方案：CSS 的半径（含补偿）与 Rust 的指数/半径必须来自同一处计算。
- * `radius` 是最终 CSS px；`exponent` 2/4；`extra` 只用于写 `--wb-corner-extra`。
+ * - `cssK`：写进 CSS 的 `corner-shape: superellipse(K)` 参数；
+ * - `exponent`：Rust 原生曲线数学指数（= 2^cssK）；
+ * - `radius`：最终 CSS px；`extra` 只用于写 `--wb-corner-extra`。
  */
 export function windowCornerPlan(
   baseRadius: number,
   squircleSupported: boolean,
-): { radius: number; exponent: number; extra: number; squircle: boolean } {
+): { radius: number; cssK: number; exponent: number; extra: number; squircle: boolean } {
   const base = Number.isFinite(baseRadius) && baseRadius >= 0 ? baseRadius : FALLBACK_RADIUS;
   const squircle = squircleSupported;
   const extra = squircle ? CONTINUOUS_CORNER_EXTRA : 0;
   return {
     radius: base + extra,
+    cssK: squircle ? CONTINUOUS_CORNER_CSS_K : 1,
     exponent: squircle ? CONTINUOUS_CORNER_EXPONENT : 2,
     extra,
     squircle,

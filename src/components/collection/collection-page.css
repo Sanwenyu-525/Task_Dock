@@ -233,3 +233,22 @@
   color: var(--status-error);
   border-color: var(--status-error);
 }
+
+/* R5：暂存架分类/空间/投递目标作为左侧导航，不再占用主区右栏。
+   侧栏内保持纵向卡片流；主区文件列表与外壳详情栏并行。 */
+.workspace-split__sidebar .col-rail-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+}
+
+.workspace-split__sidebar .col-rail-sidebar .col-rail-tiles {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workspace-split__sidebar .col-rail-sidebar .col-rail-card {
+  padding: 9px 10px;
+}

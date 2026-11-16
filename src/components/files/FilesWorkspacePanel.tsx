@@ -43,6 +43,12 @@ import {
   Check,
   AlertTriangle,
   ChevronDown,
+  Copy,
+  Move,
+  Send,
+  ClipboardCopy,
+  ExternalLink,
+  GitCompare,
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
@@ -100,7 +106,23 @@ import { useWorkbenchPageActive } from "../../lib/windowHost";
 import type { WorkspaceProject } from "../../lib/bridge";
 import { parentOf, basename } from "../../lib/filesWorkspace/pathUtils";
 import { pickFolder, validateFolderPath, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
+import {
+  detectTransferConflicts,
+  movedSourcesToClear,
+  pickAutomaticTarget,
+  transferRefreshDirs,
+  type ConflictStrategy,
+  type TransferConflict,
+  type TransferEffect,
+  type TransferTarget,
+} from "../../lib/filesWorkspace/transfer";
+import {
+  finishQueueOperation,
+  startQueueOperation,
+} from "../../lib/filesWorkspace/operationQueue";
+import { copyText } from "../../lib/clipboard";
 
+import OperationQueueBar from "./OperationQueueBar";
 const FilePane = lazy(() => import("./FilePane"));
 
 /** 最小窗格尺寸（CSS px）：分割比例按容器实测换算钳制。 */
@@ -164,14 +186,83 @@ function SplitWithDivider({
   layoutEditMode,
   projectRoot,
 }: SplitRenderProps & { node: Extract<SplitNode, { type: "split" }> }) {
+  const { t } = useLocale();
   const ref = useRef<HTMLDivElement>(null);
   const store = useFilesWorkspaceStore;
   const horizontal = node.direction === "horizontal";
   const minPx = horizontal ? MIN_PANE_W : MIN_PANE_H;
+  const [ratioHint, setRatioHint] = useState<string | null>(null);
+  const [ratioMenu, setRatioMenu] = useState<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startPos: number;
+    startRatio: number;
+    size: number;
+    minRatio: number;
+    maxRatio: number;
+    lastRatio: number;
+    raf: number;
+  } | null>(null);
+
+  const clampForElement = useCallback(
+    (ratio: number): { value: number; min: number; max: number } => {
+      const el = ref.current;
+      const size = el ? (horizontal ? el.getBoundingClientRect().width : el.getBoundingClientRect().height) : 1000;
+      const minRatio = Math.min(0.45, minPx / Math.max(size, minPx * 2));
+      const maxRatio = 1 - minRatio;
+      return { value: Math.min(maxRatio, Math.max(minRatio, ratio)), min: minRatio, max: maxRatio };
+    },
+    [horizontal, minPx],
+  );
+
+  const setHint = (ratio: number) => {
+    const pct = Math.round(ratio * 100);
+    setRatioHint(`${pct}% / ${100 - pct}%`);
+  };
+
+  const endResizeVisual = useCallback((pointerId?: number) => {
+    document.body.classList.remove("fw-resizing", "fw-resizing-col", "fw-resizing-row");
+    if (pointerId !== undefined) {
+      try {
+        ref.current?.querySelector<HTMLElement>(".fw-divider")?.releasePointerCapture(pointerId);
+      } catch {
+        // 指针已释放/捕获已丢失时 releasePointerCapture 会抛 DOMException；无需补偿。
+      }
+    }
+    setRatioHint(null);
+  }, []);
+
+  const cancelResize = useCallback(() => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    if (drag.raf) cancelAnimationFrame(drag.raf);
+    dragRef.current = null;
+    store.getState().cancelRatioResize();
+    endResizeVisual(drag.pointerId);
+  }, [endResizeVisual, store]);
+
+  useEffect(() => {
+    if (!ratioMenu) return;
+    const close = () => setRatioMenu(null);
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [ratioMenu]);
+
+  // 窗口失焦没有 pointercancel 时也必须退出调整态并回滚临时比例。
+  useEffect(() => {
+    const onBlur = () => cancelResize();
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [cancelResize]);
 
   const beginResize = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
+    event.stopPropagation();
     const el = ref.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
@@ -179,30 +270,79 @@ function SplitWithDivider({
     const minRatio = Math.min(0.45, minPx / Math.max(size, minPx * 2));
     const maxRatio = 1 - minRatio;
     const startPos = horizontal ? event.clientX : event.clientY;
-    const startRatio = node.ratio;
-    document.body.classList.add("fw-resizing");
-    const onMove = (e: PointerEvent) => {
-      const pos = horizontal ? e.clientX : e.clientY;
-      const delta = (pos - startPos) / Math.max(size, 1);
-      store.getState().updateRatio(node.id, Math.min(maxRatio, Math.max(minRatio, startRatio + delta)));
+    // 整个拖动只入一条撤销记录；移动帧走 previewRatio。
+    store.getState().beginRatioResize(node.id);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startPos,
+      startRatio: node.ratio,
+      size,
+      minRatio,
+      maxRatio,
+      lastRatio: node.ratio,
+      raf: 0,
     };
-    const onUp = () => {
-      document.body.classList.remove("fw-resizing");
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp, { once: true });
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    document.body.classList.add("fw-resizing", horizontal ? "fw-resizing-col" : "fw-resizing-row");
+    setHint(node.ratio);
+  };
+
+  const onResizeMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const pos = horizontal ? event.clientX : event.clientY;
+    const ratio = Math.min(
+      drag.maxRatio,
+      Math.max(drag.minRatio, drag.startRatio + (pos - drag.startPos) / Math.max(drag.size, 1)),
+    );
+    drag.lastRatio = ratio;
+    if (!drag.raf) {
+      drag.raf = requestAnimationFrame(() => {
+        const current = dragRef.current;
+        if (!current) return;
+        current.raf = 0;
+        store.getState().previewRatio(node.id, current.lastRatio);
+        setHint(current.lastRatio);
+      });
+    }
+  };
+
+  const finishResize = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (drag.raf) {
+      cancelAnimationFrame(drag.raf);
+      drag.raf = 0;
+    }
+    const finalRatio = drag.lastRatio;
+    dragRef.current = null;
+    // 松开前把最后一帧比例同步提交，避免 rAF 被取消后丢失最后一次移动。
+    if (Math.abs(finalRatio - drag.startRatio) < 0.0005) {
+      store.getState().cancelRatioResize();
+    } else {
+      store.getState().previewRatio(node.id, finalRatio);
+      store.getState().commitRatioResize();
+    }
+    endResizeVisual(drag.pointerId);
   };
 
   const nudge = (delta: number) => {
-    const el = ref.current;
-    const size = el ? (horizontal ? el.getBoundingClientRect().width : el.getBoundingClientRect().height) : 1000;
-    const minRatio = Math.min(0.45, minPx / Math.max(size, minPx * 2));
-    store.getState().updateRatio(node.id, Math.min(1 - minRatio, Math.max(minRatio, node.ratio + delta)));
+    const current = clampForElement(node.ratio + delta);
+    store.getState().updateRatio(node.id, current.value);
+  };
+
+  const applyRatio = (ratio: number) => {
+    store.getState().updateRatio(node.id, clampForElement(ratio).value);
+    setRatioMenu(null);
   };
 
   const firstStyle = horizontal ? { width: `${node.ratio * 100}%` } : { height: `${node.ratio * 100}%` };
+  const menuPosition = ratioMenu
+    ? {
+        left: Math.min(ratioMenu.x, Math.max(8, window.innerWidth - 176)),
+        top: Math.min(ratioMenu.y, Math.max(8, window.innerHeight - 210)),
+      }
+    : null;
 
   return (
     <div ref={ref} className={`fw-split fw-split-${node.direction}`}>
@@ -219,25 +359,72 @@ function SplitWithDivider({
         />
       </div>
       <div
-        className={`fw-divider${horizontal ? " is-horizontal" : " is-vertical"}`}
+        className={`fw-divider${horizontal ? " is-horizontal" : " is-vertical"}${ratioHint ? " is-dragging" : ""}`}
         role="separator"
         aria-orientation={horizontal ? "vertical" : "horizontal"}
-        aria-label="调整分栏比例"
+        aria-label={t("fw.divider.aria")}
         aria-valuemin={15}
         aria-valuemax={85}
         aria-valuenow={Math.round(node.ratio * 100)}
         tabIndex={0}
         onPointerDown={beginResize}
-        onKeyDown={(e) => {
-          if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-            e.preventDefault();
-            nudge(horizontal ? -0.03 : -0.03);
-          } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-            e.preventDefault();
-            nudge(0.03);
+        onPointerMove={onResizeMove}
+        onPointerUp={finishResize}
+        onPointerCancel={cancelResize}
+        onLostPointerCapture={() => {
+          if (dragRef.current) cancelResize();
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          applyRatio(0.5);
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setRatioMenu({ x: event.clientX, y: event.clientY });
+        }}
+        onKeyDown={(event) => {
+          const step = event.shiftKey ? 0.1 : 0.03;
+          if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+            event.preventDefault();
+            nudge(-step);
+          } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+            event.preventDefault();
+            nudge(step);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            setRatioMenu(null);
+            if (dragRef.current) cancelResize();
           }
         }}
-      />
+      >
+        <span className="fw-divider-line" aria-hidden="true" />
+        <span className="fw-divider-grip" aria-hidden="true">
+          {ratioHint && <span className="fw-divider-ratio">{ratioHint}</span>}
+        </span>
+      </div>
+         {ratioMenu && menuPosition && (
+        <div
+          className="fw-divider-menu"
+          role="menu"
+          aria-label={t("fw.divider.ratioMenu")}
+          style={{ left: menuPosition.left, top: menuPosition.top }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {[0.25, 1 / 3, 0.5, 2 / 3, 0.75].map((ratio) => (
+            <button
+              key={ratio}
+              type="button"
+              role="menuitem"
+              onClick={() => applyRatio(ratio)}
+              className={Math.abs(node.ratio - ratio) < 0.005 ? "is-current" : ""}
+            >
+              {Math.round(ratio * 100)} : {Math.round((1 - ratio) * 100)}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="fw-split-child fw-split-child-second">
         <SplitRender
           node={node.second}
@@ -339,6 +526,40 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const savedHydratedRef = useRef(false);
   /** 键盘删除模式：Shift+Delete = 永久删除（独立确认语义）。 */
   const [deletePermanent, setDeletePermanent] = useState(false);
+  /** 快速传输目标选择器（F5/F6 无明确目标、右键“复制到/移动到”）。 */
+  const [transferPicker, setTransferPicker] = useState<{
+    effect: TransferEffect;
+    paths: string[];
+    sourcePaneId: string;
+  } | null>(null);
+  /** 批量冲突：整批只弹一次；策略统一应用到所有同名项。 */
+  const [conflictPending, setConflictPending] = useState<{
+    effect: TransferEffect;
+    paths: string[];
+    targetDir: string;
+    conflicts: TransferConflict[];
+    after?: (report: FsOpReport | null) => void;
+  } | null>(null);
+  /** F5/F6 多窗格时优先复用上次目标（会话内）。 */
+  const lastTransferTargetRef = useRef<string | null>(null);
+
+  const paneTargets = useMemo<TransferTarget[]>(() => {
+    const ids = paneIds(tree);
+    return ids
+      .map((paneId) => {
+        const pane = panes[paneId];
+        const tab = pane?.tabs.find((item) => item.tabId === pane.activeTabId);
+        return tab
+          ? {
+              paneId,
+              label: tabTitle(tab),
+              dir: tab.path,
+              active: paneId === activePaneId,
+            }
+          : null;
+      })
+      .filter((item): item is TransferTarget => Boolean(item));
+  }, [tree, panes, activePaneId]);
 
   // ── 项目 hydration（代际令牌防串位）──────────────────────────────────
   useEffect(() => {
@@ -421,22 +642,53 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     return () => window.removeEventListener("taskdock-fw-open-folder", onOpen);
   }, []);
 
-  // ── 应用内拖拽：坐标/修饰键/落点派发/取消清理 ───────────────────────
+  // 窗格右键「复制到…/移动到…」：文件名/数量与目标目录由统一选择器确认。
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      const detail = (e as CustomEvent<{
+        effect?: TransferEffect;
+        paths?: string[];
+        sourcePaneId?: string;
+      }>).detail;
+      if (!detail?.paths?.length) return;
+      const s = store.getState();
+      setTransferPicker({
+        effect: detail.effect === "move" ? "move" : "copy",
+        paths: [...detail.paths],
+        sourcePaneId: detail.sourcePaneId ?? s.activePaneId,
+      });
+    };
+    window.addEventListener("taskdock-fw-request-transfer", onRequest);
+    return () => window.removeEventListener("taskdock-fw-request-transfer", onRequest);
+  }, [store]);
+
+  // ── 应用内拖拽/快速传输共用的真实文件操作 ────────────────────────────
   const applyFileDrop = useCallback(
-    async (paths: string[], targetDir: string, effect: "copy" | "move"): Promise<FsOpReport | null> => {
+    async (
+      paths: string[],
+      targetDir: string,
+      effect: "copy" | "move",
+      strategy: ConflictStrategy = "rename",
+    ): Promise<FsOpReport | null> => {
       // 操作 ID 由前端生成、Rust 沿用：`Ok(report)` 里 failed>0 时 IPC 仍是成功，
       // 只有带着同一个 ID 的业务事件才能让「部分失败」在诊断中心可见且可关联。
       const op = startOperation("file", effect === "copy" ? "workspace_copy" : "workspace_move", {
         component: "文件工作区",
         metadata: { count: paths.length },
       });
+      startQueueOperation({ id: op.id, effect, total: paths.length });
       try {
         op.stage("ipc");
         const report: FsOpReport =
           effect === "copy"
-            ? await fsCopyPaths(paths, targetDir, "rename", op.id)
-            : await fsMovePaths(paths, targetDir, "rename", op.id);
-        invalidateDirs([targetDir, ...paths.map((p) => parentOf(p) ?? "").filter(Boolean)]);
+            ? await fsCopyPaths(paths, targetDir, strategy, op.id)
+            : await fsMovePaths(paths, targetDir, strategy, op.id);
+        invalidateDirs(transferRefreshDirs(paths, targetDir));
+        // 移动成功才清来源选择；失败/部分完成源仍在，保留选择供用户重试。
+        if (effect === "move") {
+          store.getState().removePathsFromSelections(movedSourcesToClear(report));
+        }
+        finishQueueOperation(op.id, report);
         // 业务终态由 Rust 写入诊断（同一 operation_id）；这里只负责把「失败了
         // 几项、主要原因是什么、下一步去哪里看」讲清楚，不重复上报同一故障。
         showFsOpOutcome({ effect, report, t, showToast });
@@ -445,12 +697,79 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         // IPC 抛错已由 invokeCommand 归属（含命令名/错误码）并 markLogged；
         // 只有未被归属的错误才补一条终态，不重复上报同一故障。
         if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
+        finishQueueOperation(op.id, null, errorMessage(e));
         showToast(errorMessage(e), { kind: "error" });
         return null;
       }
     },
-    [showToast, t],
+    [showToast, store, t],
   );
+
+  /**
+   * 统一入口：先检测同名冲突；有冲突只弹一次决策，再执行。
+   * 冲突检测失败时中止（宁可不操作，也不静默按 rename 覆盖用户预期）。
+   */
+  const requestTransfer = useCallback(
+    async (
+      paths: string[],
+      targetDir: string,
+      effect: TransferEffect,
+      after?: (report: FsOpReport | null) => void,
+    ): Promise<FsOpReport | null> => {
+      if (!paths.length) return null;
+      try {
+        const conflicts = await detectTransferConflicts(paths, targetDir);
+        if (conflicts.length > 0) {
+          setConflictPending({ effect, paths, targetDir, conflicts, after });
+          return null;
+        }
+        const report = await applyFileDrop(paths, targetDir, effect);
+        after?.(report);
+        return report;
+      } catch (e) {
+        showToast(errorMessage(e), { kind: "error" });
+        return null;
+      }
+    },
+    [applyFileDrop, showToast],
+  );
+
+  /** F5/F6 与快速按钮共用：两窗格直接另一个；多窗格优先上次目标；否则弹选择器。 */
+  const quickTransfer = useCallback(
+    (effect: TransferEffect) => {
+      const s = store.getState();
+      const paneId = s.activePaneId;
+      const selection = s.selection[paneId]?.paths ?? [];
+      if (!selection.length) {
+        showToast(t("fw.quick.noSelection"), { kind: "info" });
+        return;
+      }
+      const targets = paneTargets.filter((target) => target.paneId !== paneId);
+      if (!targets.length) {
+        showToast(t("fw.quick.noTarget"), { kind: "info" });
+        return;
+      }
+      const decided = pickAutomaticTarget({
+        sourcePaneId: paneId,
+        paneIds: targets.map((target) => target.paneId),
+        lastTargetPaneId: lastTransferTargetRef.current,
+      });
+      if (decided.needsPicker || !decided.paneId) {
+        setTransferPicker({ effect, paths: [...selection], sourcePaneId: paneId });
+        return;
+      }
+      const target = targets.find((item) => item.paneId === decided.paneId);
+      if (!target) {
+        setTransferPicker({ effect, paths: [...selection], sourcePaneId: paneId });
+        return;
+      }
+      lastTransferTargetRef.current = target.paneId;
+      void requestTransfer(selection, target.dir, effect);
+    },
+    [paneTargets, requestTransfer, showToast, store, t],
+  );
+
+
 
   useEffect(() => {
     const clearHints = () => {
@@ -513,7 +832,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             : null;
       if (!targetDir) return;
       const effect = resolveEffect(payload, targetDir, st.modifiers);
-      void applyFileDrop(payload.paths, targetDir, effect === "copy" ? "copy" : "move");
+      void requestTransfer(payload.paths, targetDir, effect === "copy" ? "copy" : "move");
     };
     // 取消通道：Escape / pointercancel / 窗口失焦 / 指针离开窗口 / 卸载。
     // 取消绝不执行文件操作（P0：防误移动）。
@@ -560,7 +879,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       document.removeEventListener("pointerleave", onLeaveDoc);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyFileDrop, store]);
+  }, [requestTransfer, store]);
 
   // hover zone 上报（来自各 Pane）：仅变化时 setState（拖拽中每帧 emit 不再牵动整树）。
   const onHoverZone = useCallback((zone: FwDropZone | null) => {
@@ -630,7 +949,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
           }
           return;
         }
-        void applyFileDrop(paths, hit.dir, "copy");
+        void requestTransfer(paths, hit.dir, "copy");
       },
       onPayload: (payload: DragPayloadView, point: { x: number; y: number } | null, meta: { operationId: string }) => {
         onHoverZone(null);
@@ -654,7 +973,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             return;
           }
           // 外部来源恒为复制语义：绝不删用户源文件；消费后释放后端会话。
-          void applyFileDrop(payload.paths, hit.dir, "copy").then(() =>
+          void requestTransfer(payload.paths, hit.dir, "copy").then(() =>
             discardOperation(meta.operationId, "files-workspace-committed"),
           );
           return;
@@ -667,7 +986,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     return () => {
       unregister();
     };
-  }, [applyFileDrop, pageActive, showToast, store, t]);
+  }, [requestTransfer, pageActive, showToast, store, t]);
 
   // ── 键盘快捷键（活动窗格）───────────────────────────────────────────
   useEffect(() => {
@@ -696,6 +1015,59 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         store.getState().setLayoutEditMode(false);
         return;
       }
+      if (e.key === "F5") {
+        e.preventDefault();
+        quickTransfer("copy");
+        return;
+      }
+      if (e.key === "F6") {
+        e.preventDefault();
+        quickTransfer("move");
+        return;
+      }
+      if (e.key === "F7") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("taskdock-fw-new-folder", { detail: store.getState().activePaneId }));
+        return;
+      }
+      if (e.key === "F2") {
+        const s0 = store.getState();
+        const current = s0.selection[s0.activePaneId]?.paths ?? [];
+        if (current.length === 1) {
+          e.preventDefault();
+          window.dispatchEvent(
+            new CustomEvent("taskdock-fw-rename", { detail: { paneId: s0.activePaneId, path: current[0] } }),
+          );
+          return;
+        }
+      }
+      if (e.ctrlKey && (e.key === "Tab" || e.key === "l" || e.key === "L")) {
+        e.preventDefault();
+        const s0 = store.getState();
+        const pane = s0.panes[s0.activePaneId];
+        if (e.key === "Tab" && pane && pane.tabs.length > 0) {
+          const idx = pane.tabs.findIndex((tab) => tab.tabId === pane.activeTabId);
+          const step = e.shiftKey ? -1 : 1;
+          const next = pane.tabs[(idx + step + pane.tabs.length) % pane.tabs.length];
+          if (next) s0.setActiveTab(s0.activePaneId, next.tabId);
+        } else if (e.key === "l" || e.key === "L") {
+          window.dispatchEvent(new CustomEvent("taskdock-fw-focus-path", { detail: s0.activePaneId }));
+        }
+        return;
+      }
+      if (e.code === "Space") {
+        const s0 = store.getState();
+        const current = s0.selection[s0.activePaneId]?.paths ?? [];
+        if (current.length === 1) {
+          e.preventDefault();
+          window.dispatchEvent(
+            new CustomEvent("taskdock-fw-preview", {
+              detail: { paneId: s0.activePaneId, path: current[0] },
+            }),
+          );
+          return;
+        }
+      }
       const s = store.getState();
       const paneId = s.activePaneId;
       const pane = s.panes[paneId];
@@ -723,17 +1095,20 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         void (async () => {
           const clip = getFwClipboard();
           if (!clip) return;
-          const report = await applyFileDrop(clip.paths, tab.path, clip.mode === "copy" ? "copy" : "move");
-          if (clip.mode === "cut") {
-            // 剪切语义（P0：失败不得静默清空剪切状态）：部分失败只保留未完成项。
-            // 失败与「部分完成」都视为源仍在：保留在剪切待办，成功项才移出。
-            const pending = report
-              ? report.entries
-                  .filter((r) => r.status === "failed" || r.status === "partial")
-                  .map((r) => r.source)
-              : [...clip.paths];
-            setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
-          }
+          // 剪切语义（P0：失败不得静默清空剪切状态）：部分失败只保留未完成项。
+          // 冲突决策可能延后执行，因此把剪贴板收尾作为 after 回调绑定到这次请求。
+          const after =
+            clip.mode === "cut"
+              ? (report: FsOpReport | null) => {
+                  const pending = report
+                    ? report.entries
+                        .filter((r) => r.status === "failed" || r.status === "partial")
+                        .map((r) => r.source)
+                    : [...clip.paths];
+                  setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
+                }
+              : undefined;
+          await requestTransfer(clip.paths, tab.path, clip.mode === "copy" ? "copy" : "move", after);
         })();
       } else if (e.shiftKey && e.key === "Delete" && selection.length) {
         // 永久删除：独立入口 + 独立确认（不得混入回收站语义）。
@@ -757,7 +1132,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageActive, hydrated, activePaneId, applyFileDrop]);
+  }, [pageActive, hydrated, activePaneId, requestTransfer, quickTransfer]);
 
   // Delete 的确认语义（键盘触发时复用 ConfirmDialog）。
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -810,11 +1185,11 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         showToast(t("fw.error.dropOutside"), { kind: "warning" });
         return;
       }
-      void applyFileDrop(paths, dir, detail.mode === "move" ? "move" : "copy");
+      void requestTransfer(paths, dir, detail.mode === "move" ? "move" : "copy");
     };
     window.addEventListener("taskdock-fw-deliver", onDeliver);
     return () => window.removeEventListener("taskdock-fw-deliver", onDeliver);
-  }, [applyFileDrop, showToast, store, t]);
+  }, [requestTransfer, showToast, store, t]);
 
   // ── 布局动作 ────────────────────────────────────────────────────────
   /**
@@ -1598,7 +1973,149 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         <p>{t("fw.dialog.closeOthersBlockedBody", { count: closeOthersBlocked ?? 0 })}</p>
       </Dialog>
 
-      {/* 拖拽 ghost（独立订阅组件：每帧位置更新只重渲染自身） */}
+      {/* 传输目标选择器：列出已打开窗格（名称/目录/是否活动），单窗格不显示入口 */}
+      <Dialog
+        open={transferPicker !== null}
+        onClose={() => setTransferPicker(null)}
+        title={
+          transferPicker?.effect === "move"
+            ? t("fw.quick.pickerMoveTitle")
+            : t("fw.quick.pickerCopyTitle")
+        }
+        size="md"
+        ariaLabel={t("fw.quick.pickerAria")}
+        footer={
+          <button type="button" className="btn" onClick={() => setTransferPicker(null)}>
+            {t("common.cancel")}
+          </button>
+        }
+      >
+        {transferPicker && (
+          <>
+            <p className="fw-transfer-summary">
+              {transferPicker.effect === "move"
+                ? t("fw.quick.moveSummary", { count: transferPicker.paths.length })
+                : t("fw.quick.copySummary", { count: transferPicker.paths.length })}
+            </p>
+            <div className="fw-transfer-targets">
+              {paneTargets
+                .filter((target) => target.paneId !== transferPicker.sourcePaneId)
+                .map((target) => (
+                  <button
+                    key={target.paneId}
+                    type="button"
+                    className={`fw-transfer-target${target.active ? " is-active" : ""}`}
+                    onClick={() => {
+                      const pending = transferPicker;
+                      setTransferPicker(null);
+                      lastTransferTargetRef.current = target.paneId;
+                      void requestTransfer(pending.paths, target.dir, pending.effect);
+                    }}
+                  >
+                    <span className="fw-transfer-target-icon" aria-hidden="true">
+                      {transferPicker.effect === "move" ? <Move size={16} /> : <Copy size={16} />}
+                    </span>
+                    <span className="fw-transfer-target-main">
+                      <span className="fw-transfer-target-name">
+                        {target.label}
+                        {target.active && <span className="fw-transfer-active">{t("fw.quick.activePane")}</span>}
+                      </span>
+                      <span className="fw-transfer-target-path" title={target.dir}>
+                        {target.dir}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+            </div>
+          </>
+        )}
+      </Dialog>
+
+      {/* 批量冲突：只决策一次，策略统一应用于整批；默认“保留两者”不覆盖 */}
+      <Dialog
+        open={conflictPending !== null}
+        onClose={() => setConflictPending(null)}
+        title={t("fw.conflict.title", { count: conflictPending?.conflicts.length ?? 0 })}
+        size="md"
+        ariaLabel={t("fw.conflict.aria")}
+        footer={
+          <>
+            <button type="button" className="btn" onClick={() => setConflictPending(null)}>
+              {t("common.cancel")}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                const pending = conflictPending;
+                setConflictPending(null);
+                if (!pending) return;
+                void applyFileDrop(pending.paths, pending.targetDir, pending.effect, "skip").then((report) =>
+                  pending.after?.(report),
+                );
+              }}
+            >
+              {t("fw.conflict.skip")}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                const pending = conflictPending;
+                setConflictPending(null);
+                if (!pending) return;
+                void applyFileDrop(pending.paths, pending.targetDir, pending.effect, "overwrite").then((report) =>
+                  pending.after?.(report),
+                );
+              }}
+            >
+              {t("fw.conflict.replace")}
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => {
+                const pending = conflictPending;
+                setConflictPending(null);
+                if (!pending) return;
+                void applyFileDrop(pending.paths, pending.targetDir, pending.effect, "rename").then((report) =>
+                  pending.after?.(report),
+                );
+              }}
+            >
+              {t("fw.conflict.keepBoth")}
+            </button>
+          </>
+        }
+      >
+        {conflictPending && (
+          <>
+            <p>{t("fw.conflict.body", { target: conflictPending.targetDir })}</p>
+            <p className="fw-template-hint">{t("fw.conflict.applyAll")}</p>
+            <ul className="fw-conflict-list">
+              {conflictPending.conflicts.slice(0, 6).map((conflict) => (
+                <li key={conflict.target}>
+                  <span className="fw-conflict-name">{basename(conflict.source)}</span>
+                  <span className="fw-conflict-kind">
+                    {conflict.targetKind === "dir"
+                      ? t("fw.conflict.kindDir")
+                      : conflict.targetKind === "link"
+                        ? t("fw.conflict.kindLink")
+                        : t("fw.conflict.kindFile")}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {conflictPending.conflicts.length > 6 && (
+              <p className="fw-template-hint">
+                {t("fw.conflict.more", { count: conflictPending.conflicts.length - 6 })}
+              </p>
+            )}
+          </>
+        )}
+      </Dialog>
+
+      <OperationQueueBar />
       <FwDragGhost />
     </div>
   );
@@ -1652,9 +2169,31 @@ function FwDragGhost() {
     }
   } else {
     denied = !st.hover;
-    text = st.effect === "copy"
-      ? t("fw.drag.copy", { count: st.payload.paths.length })
-      : t("fw.drag.move", { count: st.payload.paths.length });
+    const targetDir =
+      st.hover?.type === "folder"
+        ? st.hover.path
+        : st.hover?.type === "center"
+          ? st.hover.dir
+          : null;
+    const targetPaneId =
+      st.hover?.type === "folder" || st.hover?.type === "center" ? st.hover.paneId : null;
+    if (!targetDir || !targetPaneId) {
+      text = t("fw.drag.fileDenied", { count: st.payload.paths.length });
+      denied = true;
+    } else {
+      text =
+        st.effect === "copy"
+          ? t("fw.drag.copyTo", {
+              count: st.payload.paths.length,
+              target: basename(targetDir),
+              pane: paneLabel(targetPaneId),
+            })
+          : t("fw.drag.moveTo", {
+              count: st.payload.paths.length,
+              target: basename(targetDir),
+              pane: paneLabel(targetPaneId),
+            });
+    }
   }
   return (
     <div

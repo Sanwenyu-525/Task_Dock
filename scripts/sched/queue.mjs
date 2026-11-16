@@ -14,8 +14,8 @@ import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { atomicWriteJson, appendBoundedJsonLine, paths, readJson, readJsonDir, sha256 } from "./state.mjs";
 import { verifyIdentity } from "./proc.mjs";
-import { estimateForClass } from "./mem.mjs";
-import { computeBudget, planAdmission, planGlobalConcurrency, readReservations } from "./budget.mjs";
+import { concurrencyForClass } from "./config.mjs";
+import { planGlobalConcurrency, readReservations } from "./admission.mjs";
 
 export const PRIORITY_LABEL = { 0: "P0", 1: "P1", 2: "P2", 3: "P3" };
 export const ACTIVE_STATUSES = new Set(["queued", "waiting_resources", "running"]);
@@ -118,7 +118,7 @@ export function slotUsage(home, cfg) {
     try { st = statSync(join(dir, name)); } catch { continue; }
     if (!st.isDirectory()) continue;
     // 超过配置并发量的历史槽位（配置调小后）不计入，但其目录仍会被回收
-    if (Number(m[2]) > (cfg[`${m[1]}Concurrency`] ?? 1)) continue;
+    if (Number(m[2]) > concurrencyForClass(cfg, m[1])) continue;
     usage[m[1]] += 1;
   }
   return usage;
@@ -143,34 +143,27 @@ export function slotHolderTaskIds(home) {
 }
 
 /**
- * 判断本任务是否可以开始，并把阻塞原因分成四类，供调度循环区别处理：
+ * 判断本任务是否可以开始，并把阻塞原因分成三类，供调度循环区别处理：
  *   - slotFull：本分类槽位被占（可能是**已经死掉的会话留下的陈旧槽位**，需要定期取证回收，
  *     所以不能只凭目录存在就永久拒绝，否则崩溃后就永远排不上）；
- *   - budget：全局构建预算不足（约束 B，所有分类共用一个池）；
- *   - globalCap：全局构建并发已满（约束 C，heavy/medium/light 合计；等任一构建结束自动释放名额）；
+ *   - globalCap：全局构建并发已满（heavy/medium/light 合计；等任一构建结束自动释放名额）；
  *   - priorityBlockers：同分类内存在更高/更早的任务在等（心跳过期的僵尸记录不算）。
- * 跨分类不做头阻塞（重型在等预算时轻量仍可跑），这是 16GB 机器上避免整体停滞的关键。
- * 2026-11-15 起不再有「实时可用内存门槛」（约束 A）：可用内存只作展示，不阻塞任何任务。
+ * 跨分类不做头阻塞（重型在等时轻量仍可跑）。
+ *
+ * 2026-11-15 删除「实时可用内存门槛」（约束 A）；2026-11-16 删除「按物理内存估算的全局预算」
+ * （约束 B）。现在**没有任何内存维度参与准入**：准入只看槽位 + 全局构建并发 + 优先级。
  *
  * 注意：这里只做**只读评估**（不回收、不写台账），权威判定在 acquireAdmission 的临界区里重做一次。
  */
-export function evaluateEligibility({ home, task, tasks, cfg, mem }) {
+export function evaluateEligibility({ home, task, tasks, cfg }) {
   const now = Date.now();
-  const estimateMb = Number.isFinite(task.estimateMb) ? task.estimateMb : null;
-  // 预留台账只读一次：预算（约束 B）与全局并发（约束 C）必须看同一份快照，否则两处结论会打架
+  // 预留台账只读一次：全局并发（约束 C）与状态展示必须看同一份快照
   const entries = readReservations(home);
-  const budgetEval = planAdmission({
-    budget: computeBudget({ cfg, totalMb: mem.totalMb }),
-    entries,
-    taskId: task.id,
-    estimateMb: estimateMb ?? estimateForClass(cfg, task.taskClass),
-  });
-  const capEval = planGlobalConcurrency({ cfg, entries, taskId: task.id });
+  const capEval = planGlobalConcurrency({ cfg, entries, taskId: task.id, taskClass: task.taskClass });
   const usage = slotUsage(home, cfg);
-  const concurrency = cfg[`${task.taskClass}Concurrency`] ?? 1;
+  const concurrency = concurrencyForClass(cfg, task.taskClass);
   const slotFull = usage[task.taskClass] >= concurrency;
   const slotBlockers = slotFull ? [`${task.taskClass} 槽位已满（${usage[task.taskClass]}/${concurrency}）`] : [];
-  const budgetBlockers = budgetEval.admit ? [] : [budgetEval.reason];
   const capBlockers = capEval.admit ? [] : [capEval.reason];
 
   // 僵尸记录（提交进程已死、心跳早已停更）不参与排序，否则崩溃一次就会永远堵住同分类队列；
@@ -187,33 +180,26 @@ export function evaluateEligibility({ home, task, tasks, cfg, mem }) {
     priorityBlockers.push(`同分类同优先级需排队（前面有 ${samePriorityAhead.length} 个，最早 ${samePriorityAhead[0].id}）`);
   }
 
-  const blockers = [...slotBlockers, ...budgetBlockers, ...capBlockers, ...priorityBlockers];
+  const blockers = [...slotBlockers, ...capBlockers, ...priorityBlockers];
   return {
     eligible: blockers.length === 0,
     blockers,
     slotFull,
     slotBlockers,
-    budgetBlockers,
     capBlockers,
     priorityBlockers,
-    // 槽位被占、预算/并发与优先级都没问题：值得定期做一次「持有者是否已死」的回收取证
-    slotOnlyBlocked: slotFull && budgetBlockers.length === 0 && capBlockers.length === 0,
-    // 预算被占住也可能是崩溃残留的预留：值得定期去台账做一次回收取证（否则残留会永久堵住准入）
-    budgetBlocked: budgetBlockers.length > 0,
-    // 并发名额被占住同样可能是崩溃残留的预留（预留随任务收尾删除），必须定期去台账取证
+    // 槽位被占、全局并发与优先级都没问题：值得定期做一次「持有者是否已死」的回收取证
+    slotOnlyBlocked: slotFull && capBlockers.length === 0,
+    // 并发名额被占住可能是崩溃残留的台账（名额随任务收尾删除），必须定期去台账取证
     capBlocked: capBlockers.length > 0,
-    budget: budgetEval,
     cap: capEval,
     usage,
     waitingAhead: better.length,
   };
 }
 
-export function statusLabel(task, nowMs, cfg) {
-  if (task.status === "running") return "running";
-  // 只剩全局预算（约束 B）这一条资源约束：不足属于"资源不足"而不是普通排队
-  const resOk = task.lastBudgetOk !== false;
-  return resOk ? "queued" : "waiting_resources";
+export function statusLabel(task) {
+  return task.status === "running" ? "running" : "queued";
 }
 
 /**

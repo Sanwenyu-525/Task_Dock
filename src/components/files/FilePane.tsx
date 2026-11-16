@@ -34,6 +34,13 @@ import {
   MoreHorizontal,
   FolderOpen,
   FolderPlus,
+  Copy,
+  Move,
+  Send,
+  ClipboardCopy,
+  ExternalLink,
+  GitCompare,
+  ListChecks,
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
@@ -41,6 +48,7 @@ import { ConfirmDialog, Dialog } from "../ui/Dialog";
 import FileList from "./FileList";
 import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
+import { copyText } from "../../lib/clipboard";
 import { isLogged, startOperation } from "../../lib/diagnostics";
 import { showFsOpOutcome } from "./fsOpFeedback";
 import {
@@ -259,15 +267,26 @@ function DropPreview({ zone }: { zone: FwDropZone }) {
   }
   if (zone.type === "center") {
     const st = getFwDragState();
-    const label =
-      st.payload?.kind === "files"
-        ? st.effect === "copy"
-          ? t("fw.drag.copyHere")
-          : t("fw.drag.moveHere")
-        : t("fw.drag.mergeHint");
+    if (st.payload?.kind === "files") {
+      return (
+        <div className="fw-drop-preview fw-drop-center" aria-hidden="true">
+          <span className="fw-drop-label">
+            {st.effect === "copy"
+              ? t("fw.drag.copyHereCount", {
+                  count: st.payload.paths.length,
+                  target: basename(zone.dir),
+                })
+              : t("fw.drag.moveHereCount", {
+                  count: st.payload.paths.length,
+                  target: basename(zone.dir),
+                })}
+          </span>
+        </div>
+      );
+    }
     return (
       <div className="fw-drop-preview fw-drop-center" aria-hidden="true">
-        <span className="fw-drop-label">{label}</span>
+        <span className="fw-drop-label">{t("fw.drag.mergeHint")}</span>
       </div>
     );
   }
@@ -361,9 +380,24 @@ export default function FilePane({
       setDialog({ kind: "rename", path: detail.path });
       setDialogInput(detail.path.split(/[\\/]/).filter(Boolean).pop() ?? "");
     };
+    const onNewFolder = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== paneId) return;
+      setDialog({ kind: "newDir" });
+      setDialogInput(t("fw.menu.newFolderName"));
+    };
+    const onFocusPath = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== paneId) return;
+      setPathEdit(dirPath);
+    };
     window.addEventListener("taskdock-fw-rename", onRename);
-    return () => window.removeEventListener("taskdock-fw-rename", onRename);
-  }, [paneId]);
+    window.addEventListener("taskdock-fw-new-folder", onNewFolder);
+    window.addEventListener("taskdock-fw-focus-path", onFocusPath);
+    return () => {
+      window.removeEventListener("taskdock-fw-rename", onRename);
+      window.removeEventListener("taskdock-fw-new-folder", onNewFolder);
+      window.removeEventListener("taskdock-fw-focus-path", onFocusPath);
+    };
+  }, [paneId, dirPath, t]);
 
   // ── 排序 / 筛选（内存完成，目录恒在前）──────────────────────────────
   const visibleEntries = useMemo(() => {
@@ -693,6 +727,53 @@ export default function FilePane({
     }
   };
 
+  /** 选中上下文：跨窗格操作走面板统一目标选择器/冲突处理，不在窗格内另造 IPC。 */
+  const requestCrossPane = (effect: "copy" | "move", paths = selectedPaths) => {
+    if (!paths.length) return;
+    window.dispatchEvent(
+      new CustomEvent("taskdock-fw-request-transfer", {
+        detail: { effect, paths: [...paths], sourcePaneId: paneId },
+      }),
+    );
+  };
+
+  const copySelectedPaths = async (paths = selectedPaths) => {
+    if (!paths.length) return;
+    const ok = await copyText(paths.join("\r\n"));
+    showToast(ok ? t("fw.quick.pathsCopied", { count: paths.length }) : t("fw.quick.copyFailed"), {
+      kind: ok ? "success" : "error",
+    });
+  };
+
+  const revealSelected = async (paths = selectedPaths) => {
+    if (!paths.length) return;
+    try {
+      await fsReveal(paths[0]);
+    } catch (e) {
+      showToast(errorMessage(e), { kind: "error" });
+    }
+  };
+
+  const previewSelected = (paths = selectedPaths) => {
+    if (paths.length !== 1) return;
+    window.dispatchEvent(
+      new CustomEvent("taskdock-fw-preview", { detail: { paneId, path: paths[0] } }),
+    );
+  };
+
+  const batchRenameSelected = (paths = selectedPaths) => {
+    if (paths.length < 2) return;
+    window.dispatchEvent(
+      new CustomEvent("taskdock-fw-batch-rename", { detail: { paneId, paths: [...paths] } }),
+    );
+  };
+
+  const compareSelected = () => {
+    window.dispatchEvent(
+      new CustomEvent("taskdock-fw-compare", { detail: { paneId, paths: [...selectedPaths] } }),
+    );
+  };
+
   // ── 打开文件夹（原生选择器 / 路径 / 最近 / 固定 / 项目根）──────────────
   const reportPickFailure = (result: Extract<PickFolderResult, { status: "invalid" }>) => {
     if (result.reason === "notFound") {
@@ -809,6 +890,47 @@ export default function FilePane({
         key: "reveal",
         label: t("fw.menu.reveal"),
         onSelect: () => void fsReveal(singlePath ?? joinPath(dirPath, entry.name)).catch(() => {}),
+      });
+      items.push({
+        key: "preview",
+        label: t("fw.menu.preview"),
+        icon: <Eye size={13} />,
+        disabled: menuSelection.length !== 1 || entry.kind === "dir",
+        onSelect: () => previewSelected(menuSelection),
+      });
+      items.push({
+        key: "copyTo",
+        label: t("fw.menu.copyTo"),
+        icon: <Copy size={13} />,
+        disabled: totalPanes <= 1,
+        onSelect: () => requestCrossPane("copy", menuSelection),
+      });
+      items.push({
+        key: "moveTo",
+        label: t("fw.menu.moveTo"),
+        icon: <Move size={13} />,
+        disabled: totalPanes <= 1,
+        onSelect: () => requestCrossPane("move", menuSelection),
+      });
+      items.push({
+        key: "copyPath",
+        label: t("fw.menu.copyPath"),
+        icon: <ClipboardCopy size={13} />,
+        onSelect: () => void copySelectedPaths(menuSelection),
+      });
+      items.push({
+        key: "batchRename",
+        label: t("fw.menu.batchRename"),
+        icon: <ListChecks size={13} />,
+        disabled: menuSelection.length < 2,
+        onSelect: () => batchRenameSelected(menuSelection),
+      });
+      items.push({
+        key: "compare",
+        label: t("fw.menu.compare"),
+        icon: <GitCompare size={13} />,
+        disabled: totalPanes <= 1,
+        onSelect: compareSelected,
       });
       items.push({
         key: "copy",
@@ -1274,6 +1396,95 @@ export default function FilePane({
           />
         </div>
       </div>
+
+      {/* 选中上下文操作区：高频操作按选择出现，常驻工具栏保持收敛 */}
+      {selectedPaths.length > 0 && (
+        <div className="fw-selection-bar" role="toolbar" aria-label={t("fw.selection.aria")}>
+          <span className="fw-selection-count">{t("fw.status.selected", { count: selectedPaths.length })}</span>
+          {totalPanes > 1 && (
+            <>
+              <button
+                type="button"
+                className="fw-selection-btn"
+                onClick={() => requestCrossPane("copy")}
+                data-tip={t("fw.action.copyTo")}
+              >
+                <Copy size={13} aria-hidden="true" />
+                <span>{t("fw.action.copyTo")}</span>
+              </button>
+              <button
+                type="button"
+                className="fw-selection-btn"
+                onClick={() => requestCrossPane("move")}
+                data-tip={t("fw.action.moveTo")}
+              >
+                <Move size={13} aria-hidden="true" />
+                <span>{t("fw.action.moveTo")}</span>
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="fw-selection-btn"
+            onClick={() => void sendToShelf(selectedPaths)}
+            data-tip={t("fw.action.toShelf")}
+          >
+            <Send size={13} aria-hidden="true" />
+            <span>{t("fw.action.toShelf")}</span>
+          </button>
+          <button
+            type="button"
+            className="fw-selection-btn"
+            onClick={() => void copySelectedPaths()}
+            data-tip={t("fw.action.copyPath")}
+          >
+            <ClipboardCopy size={13} aria-hidden="true" />
+            <span>{t("fw.action.copyPath")}</span>
+          </button>
+          <button
+            type="button"
+            className="fw-selection-btn"
+            onClick={() => void revealSelected()}
+            data-tip={t("fw.action.reveal")}
+          >
+            <ExternalLink size={13} aria-hidden="true" />
+            <span>{t("fw.action.reveal")}</span>
+          </button>
+          {selectedPaths.length === 1 && (
+            <button
+              type="button"
+              className="fw-selection-btn"
+              onClick={() => previewSelected()}
+              data-tip={t("fw.action.preview")}
+            >
+              <Eye size={13} aria-hidden="true" />
+              <span>{t("fw.action.preview")}</span>
+            </button>
+          )}
+          {selectedPaths.length > 1 && (
+            <button
+              type="button"
+              className="fw-selection-btn"
+              onClick={() => batchRenameSelected()}
+              data-tip={t("fw.action.batchRename")}
+            >
+              <ListChecks size={13} aria-hidden="true" />
+              <span>{t("fw.action.batchRename")}</span>
+            </button>
+          )}
+          {totalPanes > 1 && (
+            <button
+              type="button"
+              className="fw-selection-btn"
+              onClick={compareSelected}
+              data-tip={t("fw.action.compare")}
+            >
+              <GitCompare size={13} aria-hidden="true" />
+              <span>{t("fw.action.compare")}</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 内容区 */}
       {dirError ? (

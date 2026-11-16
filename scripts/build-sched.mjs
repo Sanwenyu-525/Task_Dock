@@ -19,14 +19,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  DEFAULT_CONFIG, configEnvName, configRisks, describeSources, loadConfig, DANGER_AUTH_ENV, DANGER_TOKENS,
+  DEFAULT_CONFIG, concurrencyForClass, configEnvName, configRisks, describeSources, loadConfig,
 } from "./sched/config.mjs";
 import {
   ensureState, paths, readJson, resolveStateHome, slotDir,
 } from "./sched/state.mjs";
-import {
-  concurrencyForClass, formatMb, readMemory,
-} from "./sched/mem.mjs";
 import { reapOrphanChild, snapshotSlots } from "./sched/lock.mjs";
 import {
   ACTIVE_STATUSES, PRIORITY_LABEL, clearCancelMarker, compareOrder, effectivePriority,
@@ -36,8 +33,8 @@ import { EXIT, executeTask, runInline } from "./sched/runner.mjs";
 import { scanDevServers } from "./sched/devservers.mjs";
 import { verifyIdentity } from "./sched/proc.mjs";
 import {
-  budgetSnapshot, classifyReservation, computeBudget, defaultProbe, readReservations, reclaimStaleReservations,
-} from "./sched/budget.mjs";
+  admissionSnapshot, classifyReservation, defaultProbe, readReservations, reclaimStaleReservations,
+} from "./sched/admission.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SELF = "node scripts/build-sched.mjs";
@@ -109,6 +106,13 @@ function fmtAgo(iso) {
   return `${(ms / 3600000).toFixed(1)}h`;
 }
 
+/** 人类可读的体积（只用于日志目录/文件大小；与已删除的内存准入无关）。 */
+function formatSizeMb(mb) {
+  const n = Number(mb);
+  if (!Number.isFinite(n)) return "-";
+  return n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${Math.round(n)} MB`;
+}
+
 // ---------------------------------------------------------------- 上下文
 
 function context() {
@@ -123,7 +127,7 @@ function context() {
   const loaded = loadConfig({ repoRoot: REPO_ROOT, stateHome: state.home, env: process.env });
   return {
     cwd, state, cfg: loaded.config, sources: loaded.sources,
-    configProblems: loaded.problems, danger: loaded.danger,
+    configProblems: loaded.problems,
   };
 }
 
@@ -193,7 +197,6 @@ async function cmdRun(argv) {
     detachChild: opts.detachChild === true,
     waitTimeoutMin,
     runTimeoutMin,
-    estimateMb: opts.estimateMb ? Number(opts.estimateMb) : null,
     repoRoot: REPO_ROOT,
   });
 }
@@ -207,7 +210,6 @@ function printRunHelp() {
   --label <文字>       显示在 queue/status 里的任务名
   --wait-timeout <分>  排队等待上限（默认取配置 defaultWaitTimeoutMin；0 = 不限）
   --run-timeout <分>   运行上限（默认 0 = 不限；超时终止本任务子进程树）
-  --estimate-mb <N>    覆盖预计内存峰值（仅影响准入下限与解释文案）
   --cwd <路径>         执行目录（默认当前目录；cargo 请用 cargo 子命令）
   --no-dedupe          关闭等价任务合并（仍会执行）
   --no-tee             子进程输出只写日志，不转发到终端
@@ -223,60 +225,39 @@ function printRunHelp() {
 function cmdStatus(argv) {
   const { opts } = parseOptions(argv);
   const ctx = context();
-  const mem = readMemory();
   const slots = snapshotSlots(ctx.state.home, { verify: opts.verbose === true });
   const tasks = readQueue(ctx.state.home).filter((t) => ACTIVE_STATUSES.has(t.status));
-  const budget = budgetSnapshot({ home: ctx.state.home, cfg: ctx.cfg, totalMb: mem.totalMb });
+  const admission = admissionSnapshot({ home: ctx.state.home, cfg: ctx.cfg });
   const devScan = opts.verbose === true ? scanDevServers({ repoRoot: REPO_ROOT, knownRoots: knownWorktrees() }) : null;
 
   const payload = {
     generatedAt: new Date().toISOString(),
     stateHome: ctx.state.home,
     stateSource: ctx.state.source,
-    memory: { availMb: mem.availMb, totalMb: mem.totalMb, simulated: mem.simulated, source: mem.source },
-    budget,
+    admission,
     slots,
     tasks,
     config: ctx.cfg,
     configProblems: ctx.configProblems,
     configSources: describeSources(ctx.sources),
-    danger: ctx.danger,
-    configRisks: configRisks({ config: ctx.cfg, danger: ctx.danger, sources: ctx.sources, problems: ctx.configProblems }),
+    configRisks: configRisks({ config: ctx.cfg, sources: ctx.sources, problems: ctx.configProblems }),
     devServers: devScan ? { findings: devScan.findings, rows: devScan.rows.length } : null,
   };
   if (opts.json) { console.log(JSON.stringify(payload, null, 2)); return EXIT.ok; }
 
   console.log(`状态目录：${ctx.state.home}  (来源：${ctx.state.source})`);
-  console.log(`内存：可用 ${formatMb(mem.availMb)} / 总计 ${formatMb(mem.totalMb)}` +
-    `${mem.simulated ? "  ⚠ 模拟值" : ""}  〔${mem.source}〕（仅展示，不参与准入）`);
-  console.log(`全局预算：${budget.enabled ? "启用" : "⚠ 已被显式关闭（危险授权生效）"} ` +
-    `${formatMb(budget.reservedMb)} / ${formatMb(budget.budgetMb)} 已预留` +
-    `（可用余量 ${formatMb(budget.availableMb)}；硬上限 = 物理 ${formatMb(budget.totalMb)} - 系统保留 ${formatMb(budget.reserveMb)}` +
-    ` = ${formatMb(budget.hardLimitMb)}）`);
-  // 危险授权 / 安全余量 / 配置来源：三条都必须显著可见，避免「配置被改了却看不出来」
-  if (!budget.enabled) {
-    console.log(`  ⚠ 预算关闭依据：${DANGER_AUTH_ENV}=${budget.dangerAuth.join(",") || "(缺令牌)"}` +
-      "；本机不再执行跨分类全局预算，history 会标记该任务");
-  }
-  if (Number(budget.reserveReducedMb) > 0) {
-    console.log(`  ⚠ 安全余量被下调：申报 ${formatMb(budget.reserveMb)}，推荐基线 ` +
-      `${formatMb(budget.reserveBaselineMb)}，减少 ${formatMb(budget.reserveReducedMb)}` +
-      `${budget.reserveLowerAuthorized ? "（已获 reserve-lower 授权）" : "（未经授权，有效值已回到基线）"}`);
-  } else {
-    console.log(`  安全余量：系统保留 ${formatMb(budget.reserveMb)}（推荐基线 ${formatMb(budget.reserveBaselineMb)}，未下调）`);
-  }
-  console.log(`  配置来源：${budget.configSources}`);
-  // 预算风险一律显式打印：系统保留被侵占、预算装不下最大分类峰值、系统保留 ≥ 物理内存
-  if (budget.warning) console.log(`  ${budget.warning}`);
-  for (const e of budget.entries) {
-    console.log(`  ${pad(e.taskId, 16)} ${pad(e.taskClass, 6)} ${pad(formatMb(e.reservedMb), 9)} ` +
-      `phase=${pad(e.phase ?? "?", 9)} pid=${pad(e.ownerPid ?? "?", 7)} ` +
-      `${e.state && e.state !== "owner-alive" ? `⚠ ${e.state}` : ""}`);
-  }
-  const globalView = budget.global;
+  console.log(`配置来源：${describeSources(ctx.sources)}`);
+  const globalView = admission.global;
   console.log(`全局构建并发：${globalView?.cap ? `${globalView.active}/${globalView.cap} 个构建在跑` : "上限未启用"}` +
     `${globalView?.cap ? "（heavy/medium/light 合计；dev 常驻服务由 dev 槽位独立管理、不计入）" : ""}` +
     `${globalView?.cap && globalView.active >= globalView.cap ? "  ⚠ 已满，后续构建将排队" : ""}`);
+  console.log(`活动台账：${admission.count} 条（每条占一个全局构建名额，任务收尾自动归还）`);
+  for (const e of admission.entries) {
+    console.log(`  ${pad(e.taskId, 16)} ${pad(e.taskClass, 6)} phase=${pad(e.phase ?? "?", 9)} ` +
+      `pid=${pad(e.ownerPid ?? "?", 7)} child=${pad(e.childPid ?? "-", 7)} ` +
+      `心跳 ${pad(e.heartbeatAgeMs === null ? "?" : `${Math.round(e.heartbeatAgeMs / 1000)}s`, 4)}前 ` +
+      `${e.state && e.state !== "owner-alive" ? `⚠ ${e.state}` : ""}`);
+  }
   console.log("");
   console.log("槽位：");
   const bySlot = new Map(slots.map((s) => [s.slot, s]));
@@ -307,8 +288,8 @@ function cmdStatus(argv) {
     `重型 并发${ctx.cfg.heavyConcurrency} ` +
     `中型 并发${ctx.cfg.mediumConcurrency} ` +
     `轻量 并发${ctx.cfg.lightConcurrency} ` +
-    `dev 并发${ctx.cfg.devConcurrency} 内存采样${ctx.cfg.memorySampleMs}ms ` +
-    `cargoJobs=${ctx.cfg.cargoJobs}（无内存门槛，不等式约束 = 全局并发 + 槽位并发 + 全局预算）`);
+    `dev 并发${ctx.cfg.devConcurrency} ` +
+    `cargoJobs=${ctx.cfg.cargoJobs}（无内存维度：准入 = 全局并发 + 槽位并发 + 优先级排队）`);
   if (ctx.configProblems.length) {
     console.log("");
     for (const p of ctx.configProblems) console.log(`配置问题：${p}`);
@@ -349,15 +330,13 @@ function cmdQueue(argv) {
     console.log(JSON.stringify({
       generatedAt: new Date().toISOString(),
       stateHome: ctx.state.home,
-      memory: readMemory(),
+      admission: admissionSnapshot({ home: ctx.state.home, cfg: ctx.cfg }),
       tasks: sorted.slice(0, limit),
     }, null, 2));
     return EXIT.ok;
   }
   if (!sorted.length) {
     console.log("队列为空（没有排队或运行中的任务）");
-    const emptyBudget = budgetSnapshot({ home: ctx.state.home, cfg: ctx.cfg, totalMb: readMemory().totalMb });
-    if (emptyBudget.warning) console.log(`⚠ ${emptyBudget.warning}`);
     return EXIT.ok;
   }
   printTable(sorted.slice(0, limit).map((t) => ({
@@ -378,15 +357,13 @@ function cmdQueue(argv) {
     { key: "waiting_reason", title: "等待原因/标签" },
   ]);
   console.log("");
-  // 队列底部固定给出预算与风险：`waiting_reason` 里已经写明是哪一侧不够，这里再给出"这台机器能不能装下"的结论，
-  // 避免"峰值大于预算"被误读成"再等等就好"。
-  const budgetView = budgetSnapshot({ home: ctx.state.home, cfg: ctx.cfg, totalMb: readMemory().totalMb });
-  console.log(`全局预算：${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留` +
-    `（硬上限 = 物理 ${formatMb(budgetView.totalMb)} - 系统保留 ${formatMb(budgetView.reserveMb)}）`);
-  const globalView = budgetView.global;
+  // 队列底部固定给出全局构建并发与活动台账：`waiting_reason` 里已写明是哪一侧不够，
+  // 这里给出"谁在占名额"的视图，便于判断是正常排队还是崩溃残留。
+  const admissionView = admissionSnapshot({ home: ctx.state.home, cfg: ctx.cfg });
+  const globalView = admissionView.global;
   console.log(`全局构建并发：${globalView?.cap ? `${globalView.active}/${globalView.cap} 个构建在跑` : "上限未启用"}` +
     `${globalView?.cap ? "（heavy/medium/light 合计；dev 不计入）" : ""}`);
-  if (budgetView.warning) console.log(`⚠ ${budgetView.warning}`);
+  console.log(`活动台账：${admissionView.count} 条（每条占一个名额；任务收尾自动归还）`);
   console.log("");
   console.log("说明：优先级列显示「基础/经老化后的有效优先级」；等待越久有效优先级越高，避免 P3 饥饿。");
   return EXIT.ok;
@@ -491,8 +468,6 @@ function cmdHistory(argv) {
     exit: e.exitCode ?? "-",
     waiting: e.waitMs ? `${Math.round(e.waitMs / 1000)}s` : "0s",
     run: e.runMs ? `${Math.round(e.runMs / 1000)}s` : "0s",
-    memory: e.memDuringRun?.minAvailMb !== null && e.memDuringRun?.minAvailMb !== undefined
-      ? `低至${formatMb(e.memDuringRun.minAvailMb)}` : "-",
     finished: e.finishedAt?.slice(5, 19).replace("T", " ") ?? "-",
     label: truncate(e.label ?? e.command?.join(" ") ?? "", 40),
     reason: truncate(e.reason ?? "", 40),
@@ -504,7 +479,6 @@ function cmdHistory(argv) {
     { key: "exit", title: "退出码" },
     { key: "waiting", title: "等待" },
     { key: "run", title: "运行" },
-    { key: "memory", title: "运行期最低可用内存" },
     { key: "finished", title: "结束时间" },
     { key: "label", title: "任务" },
     { key: "reason", title: "备注" },
@@ -545,10 +519,9 @@ function cmdDoctor(argv) {
     for (const p of ctx.configProblems) issues.push({ severity: "P1", text: `配置：${p}` });
   } else ok.push("配置校验通过（未知字段/非法数值会被拒绝而不是静默忽略）");
 
-  // 2b) 配置风险：预算被关、保留被下调、预计峰值被改到 1 MB 级、环境变量覆盖……
-  //     这类「配置被改坏」不会报错，只会让预算静默失效（19:22 那次真实发生过），必须成条列出。
+  // 2b) 配置风险：环境变量覆盖、未知字段、配置不可读……
   const cfgRisks = configRisks({
-    config: ctx.cfg, danger: ctx.danger, sources: ctx.sources, problems: ctx.configProblems,
+    config: ctx.cfg, sources: ctx.sources, problems: ctx.configProblems,
     hasActiveReservations: readReservations(home).length > 0,
   });
   for (const r of cfgRisks) {
@@ -559,8 +532,7 @@ function cmdDoctor(argv) {
         `${r.affectsRunning ? "；影响运行中任务" : ""}）`,
     });
   }
-  if (!cfgRisks.length) ok.push(`配置安全边界正常（预算${ctx.cfg.budgetEnabled === false ? "关闭" : "开启"}，` +
-    `系统保留 ${formatMb(ctx.cfg.systemReserveMb)} ≥ 基线 ${formatMb(ctx.cfg.recommendedSystemReserveMb)}）`);
+  if (!cfgRisks.length) ok.push("配置安全边界正常（未知字段/非法数值会被拒绝，环境变量覆盖会显式记录）");
 
   // 3) 槽位卫生
   const slots = snapshotSlots(home, { verify: true });
@@ -592,41 +564,35 @@ function cmdDoctor(argv) {
   }
   if (tasks.length && !staleQueued.length) ok.push(`队列记录 ${tasks.length} 条，无孤儿`);
 
-  // 5b) 全局预算台账（预留与活动任务应当一一对应：多出来的就是崩溃残留）
+  // 5b) 活动台账（全局并发名额计数与崩溃回收；台账与活动任务应当一一对应）
   const reservations = readReservations(home);
-  const budgetView = budgetSnapshot({ home, cfg: ctx.cfg, totalMb: readMemory().totalMb, probe: defaultProbe() });
-  ok.push(`全局预算 ${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留（${reservations.length} 条台账）`);
-  if (budgetView.global?.cap) {
-    ok.push(`全局构建并发 ${budgetView.global.active}/${budgetView.global.cap}` +
+  const admissionView = admissionSnapshot({ home, cfg: ctx.cfg, probe: defaultProbe() });
+  ok.push(`活动台账 ${reservations.length} 条（每条占一个全局构建名额）`);
+  if (admissionView.global?.cap) {
+    ok.push(`全局构建并发 ${admissionView.global.active}/${admissionView.global.cap}` +
       "（heavy/medium/light 合计；dev 常驻服务不计入）");
   }
-  // 预算风险（系统保留被侵占 / 预算装不下最大分类峰值 / 系统保留 ≥ 物理内存）必须在诊断里成条列出，
-  // 而不是只在 status 里一行带过：这类问题会让重型任务"永远排队"，容易被误读成"谁占着槽位"。
-  if (budgetView.warning) {
-    issues.push({ severity: budgetView.reserveExhausted ? "P0" : "P2", text: `全局预算：${budgetView.warning}` });
-  }
-  const probe = defaultProbe();
-  for (const r of budgetView.entries) {
+  for (const r of admissionView.entries) {
     if (r.state === "owner-alive") {
       const taskRec = tasks.find((t) => t.id === r.taskId);
       if (taskRec && ACTIVE_STATUSES.has(taskRec.status)) continue; // 正常在跑
       issues.push({
         severity: "P2",
-        text: `预留 ${r.taskId}（${formatMb(r.reservedMb)}）的持有进程仍存活但队列里没有对应活跃任务` +
+        text: `台账 ${r.taskId} 的持有进程仍存活但队列里没有对应活跃任务` +
           `（phase=${r.phase}，pid=${r.ownerPid}）`,
       });
       continue;
     }
     issues.push({
       severity: "P1",
-      text: `预留 ${r.taskId}（${formatMb(r.reservedMb)}）无法自动回收：${r.state}——${r.note}`,
+      text: `台账 ${r.taskId} 无法自动回收：${r.state}——${r.note}`,
     });
   }
 
   // 6) 体积
   const logBytes = dirBytes(paths(home).logs);
   const histLines = readHistoryLines(paths(home).history).length;
-  ok.push(`日志目录 ${formatMb(logBytes / 1024 / 1024)}（${countFiles(paths(home).logs)} 个文件），历史 ${histLines} 条`);
+  ok.push(`日志目录 ${formatSizeMb(logBytes / 1024 / 1024)}（${countFiles(paths(home).logs)} 个文件），历史 ${histLines} 条`);
 
   // 7) 开发服务器
   const devScan = scanDevServers({ repoRoot: REPO_ROOT, knownRoots: knownWorktrees() });
@@ -670,7 +636,7 @@ function cmdDoctor(argv) {
       catch (err) { actions.push(`删除 ${l} 失败：${err?.code ?? err}`); }
     }
 
-    // 预留台账：先按"证明已死"的规则处置能处置的；只有「持有者已死 + 子进程仍存活」的条目
+    // 活动台账：先按"证明已死"的规则处置能处置的；只有「持有者已死 + 子进程仍存活」的条目
     // 才用命令行签名取证终止子进程（绝不触碰持有者仍活着的任务）。
     const ledgerProbe = defaultProbe();
     const auditPath = paths(home).reclaimLog;
@@ -680,20 +646,20 @@ function cmdDoctor(argv) {
       if (verdict.reclaimable || verdict.state === "owner-alive") continue;
       const reap = reapOrphanChild({
         child: { pid: entry.childPid, commandLine: entry.childCmdLine ?? entry.childCmdSignature },
-        taskId: entry.taskId, audit: auditPath, reason: `doctor --reap 处置预留 ${entry.taskId} 的构建子进程`,
+        taskId: entry.taskId, audit: auditPath, reason: `doctor --reap 处置台账 ${entry.taskId} 的构建子进程`,
       });
       actions.push(reap.ok
-        ? `终止预留 ${entry.taskId} 的旧构建子进程：${reap.detail}`
-        : `拒绝终止预留 ${entry.taskId} 的子进程：${reap.detail}`);
+        ? `终止台账 ${entry.taskId} 的旧构建子进程：${reap.detail}`
+        : `拒绝终止台账 ${entry.taskId} 的子进程：${reap.detail}`);
     }
     const sweep = reclaimStaleReservations({
       home, cfg: ctx.cfg, probe: ledgerProbe, audit: auditPath, log: (m) => actions.push(m),
     });
     if (sweep.removed.length) {
-      actions.push(`回收崩溃残留预留 ${sweep.removed.length} 条：` +
-        sweep.removed.map((r) => `${r.taskId}(${formatMb(r.reservedMb)})`).join("、"));
+      actions.push(`回收崩溃残留台账 ${sweep.removed.length} 条：` +
+        sweep.removed.map((r) => r.taskId).join("、"));
     }
-    for (const b of sweep.blocked) actions.push(`保留预留 ${b.taskId}（${formatMb(b.reservedMb)}）：${b.detail}`);
+    for (const b of sweep.blocked) actions.push(`保留台账 ${b.taskId}：${b.detail}`);
 
     const cleaned = housekeeping({ home, tasks: readQueue(home), cfg: ctx.cfg, log: (m) => actions.push(m) });
     if (cleaned.length) actions.push(`归档/清理队列记录 ${cleaned.length} 条`);
@@ -707,8 +673,8 @@ function cmdDoctor(argv) {
   if (opts.json) {
     console.log(JSON.stringify({
       generatedAt: new Date().toISOString(), stateHome: home, ok, issues, actions,
-      memory: readMemory(), budget: budgetView, slots, config: ctx.cfg,
-      configSources: describeSources(ctx.sources), danger: ctx.danger, configRisks: cfgRisks,
+      admission: admissionView, slots, config: ctx.cfg,
+      configSources: describeSources(ctx.sources), configRisks: cfgRisks,
     }, null, 2));
     return issues.some((i) => i.severity === "P0") ? EXIT.internal : EXIT.ok;
   }
@@ -724,12 +690,8 @@ function cmdDoctor(argv) {
   } else if (issues.length) {
     console.log("提示：加 --reap 才会执行槽位回收/残留清理（默认只诊断，不动任何进程与文件）。");
   }
-  const mem = readMemory();
-  console.log(`内存：可用 ${formatMb(mem.availMb)} / ${formatMb(mem.totalMb)}${mem.simulated ? "（模拟值）" : ""}`);
-  console.log(`全局预算：${formatMb(budgetView.reservedMb)} / ${formatMb(budgetView.budgetMb)} 已预留` +
-    `（硬上限 ${formatMb(budgetView.hardLimitMb)} = 物理 ${formatMb(budgetView.totalMb)} - 系统保留 ${formatMb(budgetView.reserveMb)}）`);
-  console.log(`全局构建并发：${budgetView.global?.cap ? `${budgetView.global.active}/${budgetView.global.cap} 个构建在跑` : "上限未启用"}` +
-    `${budgetView.global?.cap ? "（heavy/medium/light 合计；dev 不计入）" : ""}`);
+  console.log(`全局构建并发：${admissionView.global?.cap ? `${admissionView.global.active}/${admissionView.global.cap} 个构建在跑` : "上限未启用"}` +
+    `${admissionView.global?.cap ? "（heavy/medium/light 合计；dev 不计入）" : ""}`);
   console.log(`配置来源：${describeSources(ctx.sources)}`);
   return issues.some((i) => i.severity === "P0") ? EXIT.internal : EXIT.ok;
 }
@@ -781,8 +743,7 @@ function cmdConfig(argv) {
     console.log(JSON.stringify({
       stateHome: ctx.state.home, sources: ctx.sources, problems: ctx.configProblems,
       effective: ctx.cfg, defaults: opts.all ? DEFAULT_CONFIG : undefined,
-      danger: ctx.danger,
-      configRisks: configRisks({ config: ctx.cfg, danger: ctx.danger, sources: ctx.sources, problems: ctx.configProblems }),
+      configRisks: configRisks({ config: ctx.cfg, sources: ctx.sources, problems: ctx.configProblems }),
     }, null, 2));
     return EXIT.ok;
   }
@@ -807,21 +768,6 @@ function cmdConfig(argv) {
   if (ctx.configProblems.length) {
     console.log("");
     for (const p of ctx.configProblems) console.log(`问题：${p}`);
-  }
-  if (ctx.danger) {
-    console.log("");
-    console.log(`危险授权（${DANGER_AUTH_ENV}）：${ctx.danger.tokens.length ? ctx.danger.tokens.join(",") : "未设置"}`);
-    if (ctx.danger.budgetOffRequested) {
-      console.log(`  · 配置要求关闭预算：${ctx.danger.budgetOffAuthorized ? "已授权生效" : "未授权，已忽略"}`);
-    }
-    if (ctx.danger.reserveBreachRequested) {
-      console.log(`  · 配置要求 allowReserveBreach：${ctx.danger.reserveBreachAuthorized ? "已授权生效" : "未授权，已关闭"}`);
-    }
-    if (ctx.danger.reserveLowerRequested) {
-      console.log(`  · 配置降低系统保留：${ctx.danger.reserveDeclaredMb} MB（基线 ` +
-        `${ctx.danger.reserveBaselineMb} MB）→ ${ctx.danger.reserveLowerAuthorized ? "已授权生效" : "未授权，有效值回到基线"}`);
-    }
-    for (const b of ctx.danger.blocked) console.log(`  · ${b}`);
   }
   return ctx.configProblems.length ? EXIT.usage : EXIT.ok;
 }
@@ -905,11 +851,11 @@ async function cmdCargo(argv) {
 function printHelp() {
   console.log(`Task Dock 统一构建调度器（${SELF}）
 
-  run      提交并执行一个构建任务（排队 + 内存准入 + 全局互斥）
+  run      提交并执行一个构建任务（排队 + 全局构建并发 + 槽位互斥）
   status   资源与槽位现状（--json 供程序读取，--verbose 附带进程身份校验与 dev 盘点）
   queue    当前队列（按有效优先级排序）
   cancel   取消排队或运行中的任务
-  history  执行记录（退出码、等待时长、运行期最低可用内存）
+  history  执行记录（退出码、等待时长、运行时长、失败原因）
   doctor   自诊断（--reap 才执行槽位回收/残留清理）
   config   有效配置与来源
   dev      开发服务器/端口冲突盘点（只读）

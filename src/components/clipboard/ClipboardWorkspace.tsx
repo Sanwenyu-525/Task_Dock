@@ -1293,14 +1293,6 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               </div>
               <div className="clip-side-group" role="group" aria-label="类型筛选">
                 <span className="clip-side-label">内容类型</span>
-                <button
-                  type="button"
-                  className={`clip-side-type ${filters.kind === "all" ? "active" : ""}`}
-                  aria-pressed={filters.kind === "all"}
-                  onClick={() => setFilters({ kind: "all" })}
-                >
-                  全部
-                </button>
                 {KIND_CHIPS.map((k) => (
                   <button
                     key={k.id}

@@ -146,7 +146,7 @@ const UPTIME_TOLERANCE_MS = 2000;
  * 2026-11-15 修复（第二轮）：原来 `probe.known && probe.alive && probe.startTime === null`
  * 会一路掉到最后的 `gone`（"PID 已被复用"），而"读不到创建时间"根本**证明不了** PID 被复用。
  * 这个假阴性会连锁两件事：等价任务去重被跳过（同一构建跑两遍）、崩溃回收把**活着的**构建的
- * 槽位/预算判成可回收（并发超卖）。现在这种情形返回 `unknown`，由调用方按 fail-closed 处理。
+ * 槽位/名额判成可回收（并发超卖）。现在这种情形返回 `unknown`，由调用方按 fail-closed 处理。
  */
 export function verifyIdentity(identity, opts = {}) {
   const probeOf = (pid) => (typeof opts.probe === "function" ? opts.probe(pid, opts) : probeProcess(pid, opts));

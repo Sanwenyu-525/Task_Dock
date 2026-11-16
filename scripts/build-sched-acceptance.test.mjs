@@ -1,12 +1,14 @@
 //! 构建调度器**跨进程行为验收**（node --test）：
-//! 真实起多个调度进程与真实子进程，用「模拟可用内存」设定展示值、用预算/槽位制造极端场景，
+//! 真实起多个调度进程与真实子进程，用槽位并发与全局构建并发制造排队/超时场景，
 //! 不靠真实耗尽内存压测（会危害开发机）。
 //!
 //! 运行：npm run sched:acceptance   （约 60–90s）
 //!
-//! 覆盖需求第十一条验收项：
-//!   1 跨进程互斥 / 2 跨 Worktree / 3 内存不参与准入 / 4 异常恢复 /
-//!   5 排队与运行中取消 / 6 构建去重与输入变化 / 7 轻量并行 / 8 队列公平性 / 9 原有工具链兼容
+//! 2026-11-16 按用户要求删除「按物理内存估算的全局预算」后，本套件不再有预算/危险授权用例；
+//! 保留并覆盖：
+//!   1 跨进程互斥 / 2 跨 Worktree / 3（已删除：内存准入）/ 4 异常恢复 /
+//!   5 排队与运行中取消 / 6 构建去重与输入变化 / 7 轻量并行 / 8 队列公平性 / 9 原有工具链兼容 /
+//!   10 等待超时层级 / 11 失败原因可查 / 12 全局构建并发上限 3
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -14,7 +16,7 @@ import { spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
 } from "node:fs";
-import { totalmem, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,8 +30,7 @@ const SCHED = join(REPO, "scripts", "build-sched.mjs");
 let envSeq = 0;
 
 /**
- * 每个测试一套独立状态目录与两个「工作区」，互不干扰；
- * 内存用 sim 文件模拟（可随时改值），调度器自身读的是同一份模拟值。
+ * 每个测试一套独立状态目录与两个「工作区」，互不干扰。
  */
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), `sched-acc-${envSeq++}-`));
@@ -39,12 +40,10 @@ function setup() {
   mkdirSync(wsA, { recursive: true });
   mkdirSync(wsB, { recursive: true });
   for (const ws of [wsA, wsB]) writeFileSync(join(ws, "package.json"), JSON.stringify({ name: "fixture" }));
-  const simFile = join(dir, "sim-avail.txt");
-  writeFileSync(simFile, "avail_mb=9000\n");
   const log = join(dir, "fake-build.log");
   const fake = join(dir, "fake-build.mjs");
   writeFileSync(fake, FAKE_BUILD_SOURCE);
-  return { dir, home, wsA, wsB, simFile, log, fake };
+  return { dir, home, wsA, wsB, log, fake };
 }
 
 const FAKE_BUILD_SOURCE = `
@@ -69,10 +68,6 @@ setTimeout(() => {
 }, dur);
 `;
 
-function setSimAvail(ctx, mb) {
-  writeFileSync(ctx.simFile, `avail_mb=${mb}\n`);
-}
-
 function baseEnv(ctx, extra = {}) {
   const base = { ...process.env };
   // 2026-11-15 第二轮：本套件允许被排队执行
@@ -86,10 +81,8 @@ function baseEnv(ctx, extra = {}) {
   return {
     ...base,
     TASKDOCK_BUILD_SCHED_HOME: ctx.home,
-    TASKDOCK_SCHED_SIM_FILE: ctx.simFile,
     // 测试专用加速参数：不影响生产默认值
     TASKDOCK_SCHED_POLL_MS: "150",
-    TASKDOCK_SCHED_MEMORY_SAMPLE_MS: "400",
     TASKDOCK_SCHED_HEARTBEAT_MS: "500",
     TASKDOCK_SCHED_DISK_PRECHECK: "false",
     // 验收里任何「排队卡死」都必须在 1 分钟内暴露成退出码 3，而不是等默认的 20 分钟
@@ -280,23 +273,12 @@ test("验收2：两个不同 Worktree 提交重型任务，共享同一全局资
   } finally { cleanup(ctx); }
 });
 
-// ---------------------------------------------------------------- 3. 内存不足与恢复
-
-test("验收3：可用内存只有 3GB 时重型任务照常准入（内存门槛已于 2026-11-15 删除）", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 3000); // 旧行为会在这里挡住重型任务；现在只影响展示与 history
-    const run = runFake(ctx, { tag: "mem", durationMs: 600, priority: "P0" });
-    const res = await run.done;
-    assert.equal(res.code, 0, `内存水位不应再阻止重型任务：${res.stderr}`);
-    assert.equal(startCount(ctx.log, "mem"), 1, "重型任务应启动恰好一次");
-    const rec = findTask(ctx, (t) => t.command?.[2] === "mem");
-    assert.equal(rec?.status, "succeeded");
-    assert.doesNotMatch(String(rec?.waitReason ?? ""), /内存/,
-      "等待原因里不得再出现内存不足（门槛已删除）");
-    assert.equal(readSlots(ctx).length, 0, "任务结束后不得残留槽位");
-  } finally { cleanup(ctx); }
-});
+// ---------------------------------------------------------------- 3. 内存准入（已删除）
+//
+// 2026-11-16：按用户要求删除「按物理内存估算的全局预算」后，调度器不再读取任何内存读数，
+// 内存也彻底不再是准入维度（2026-11-15 删除的实时可用内存门槛同理）。
+// 原「可用内存只有 3GB 时重型任务照常准入」用例依赖模拟内存文件，已随功能一并移除；
+// 「无内存维度」由单测（配置未知字段、evaluateEligibility 入参）锁定。
 
 // ---------------------------------------------------------------- 4. 异常恢复
 
@@ -451,7 +433,7 @@ test("验收6：等价并发构建只执行一次；输入变化后不再复用"
 
 // ---------------------------------------------------------------- 7. 轻量并行
 
-test("验收7：重型运行期间轻量任务可并行（可用内存不再参与准入）", async () => {
+test("验收7：重型运行期间轻量任务可并行（跨分类槽位互不阻塞）", async () => {
   const ctx = setup();
   try {
     const heavy = runFake(ctx, { tag: "big", durationMs: 5000, taskClass: "heavy" });
@@ -576,15 +558,21 @@ test("补充A：嵌套调度不自锁（tauri build → beforeBuildCommand `npm 
 
 // ---------------------------------------------------------------- 10. 等待超时层级
 
-test("验收10：资源等待超时记为调度层失败（exit 3），不被误判为编译错误，子进程未启动", async () => {
+test("验收10：槽位等待超时记为调度层失败（exit 3），不被误判为编译错误，子进程未启动", async () => {
   const ctx = setup();
   try {
-    // 预算设为 0：任务永远无法准入（这是现在唯一能造成"资源等待"的约束，内存门槛已删除）；
-    // --wait-timeout 0.1 分钟 ≈ 6s 超时
+    // 用两个长跑 light 占满 light-1/light-2（默认 lightConcurrency=2），
+    // 第 3 个 light 只能排队；--wait-timeout 0.05 分钟 ≈ 3s 后超时。
+    const holders = [
+      runFake(ctx, { tag: "wt-hold-1", taskClass: "light", durationMs: 6000 }),
+      runFake(ctx, { tag: "wt-hold-2", taskClass: "light", durationMs: 6000 }),
+    ];
+    await waitFor(() => startCount(ctx.log, "wt-hold-1") === 1 && startCount(ctx.log, "wt-hold-2") === 1, {
+      what: "两个 light 槽位被占满",
+    });
     const run = runFake(ctx, {
       tag: "wait-timeout", taskClass: "light", durationMs: 500,
-      extraArgs: ["--wait-timeout", "0.1"],
-      envExtra: budgetEnv(0),
+      extraArgs: ["--wait-timeout", "0.05"],
     });
     const res = await run.done;
 
@@ -606,343 +594,16 @@ test("验收10：资源等待超时记为调度层失败（exit 3），不被误
     assert.equal(entry.status, "failed");
     assert.equal(entry.exitCode, 3);
     assert.match(String(entry.reason ?? ""), /等待资源超时/);
+
+    const holderResults = await Promise.all(holders.map((h) => h.done));
+    for (const r of holderResults) assert.equal(r.code, 0, `占槽任务应成功：${r.stderr}`);
   } finally { cleanup(ctx); }
 });
 
-// ---------------------------------------------------------------- 12. 跨分类全局预算
-//
-// 2026-11-15 晚：实时可用内存门槛已删除，以下用例只能用**预算/槽位**制造"只够一个"的组合
-// （绝不真实压满内存）；`setSimAvail` 现在只影响展示与 history。
-
-const TOTAL_MB_REAL = Math.round(totalmem() / (1024 * 1024));
-
-/** 让调度进程的全局预算恰好等于 targetMb（通过"物理总量 - 目标预算"反推系统保留）。 */
-function budgetEnv(targetMb, extra = {}) {
-  return { TASKDOCK_SCHED_SYSTEM_RESERVE_MB: String(TOTAL_MB_REAL - targetMb), ...extra };
-}
-
-function reservationsOf(ctx) {
-  const dir = join(ctx.home, "reservations");
-  try {
-    return readdirSync(dir).filter((n) => n.endsWith(".json") && !n.startsWith("."))
-      .map((n) => { try { return JSON.parse(readFileSync(join(dir, n), "utf8")); } catch { return null; } })
-      .filter(Boolean);
-  } catch { return []; }
-}
-
-/** 造一条"崩溃残留"预留：和一个真实崩溃留下的文件完全同构。 */
-function writeResidue(ctx, entry) {
-  const dir = join(ctx.home, "reservations");
-  mkdirSync(dir, { recursive: true });
-  const full = {
-    taskId: entry.taskId,
-    taskClass: entry.taskClass ?? "heavy",
-    reservedMb: entry.reservedMb,
-    label: "crashed-residue",
-    ownerPid: entry.ownerPid,
-    ownerStartTime: entry.ownerStartTime ?? new Date().toISOString(),
-    ownerStartTimeSource: "uptime",
-    nonce: "residue",
-    childPid: entry.childPid ?? null,
-    childCmdSignature: entry.childCmdSignature ?? null,
-    childCmdLine: entry.childCmdLine ?? null,
-    detached: entry.detached === true,
-    phase: entry.phase ?? "starting",
-    createdAt: entry.createdAt ?? new Date(Date.now() - 600000).toISOString(),
-    heartbeatAt: entry.heartbeatAt ?? new Date(Date.now() - 300000).toISOString(),
-  };
-  writeFileSync(join(dir, `${full.taskId}.json`), JSON.stringify(full, null, 2));
-  return full;
-}
-
-/** 一个确定已退出的 PID：拿它当"崩溃掉的调度进程"。 */
-function deadPid() {
-  const r = spawnSync(process.execPath, ["-e", "process.exit(0)"], { timeout: 15000, windowsHide: true });
-  return r.pid;
-}
-
-/**
- * 复核"有没有超卖"的硬证据：每个真正启动过的任务都记录了它**准入那一刻**的
- * （预算上限 / 已预留 / 本次预计），三者必须始终满足 `reserved + estimate <= budget`。
- */
-function assertBudgetInvariant(ctx, expectedBudgetMb, label = "") {
-  const rows = readHistory(ctx).filter((e) => e.budgetAtStart);
-  assert.ok(rows.length > 0, `${label}历史里必须有预算证据（budgetAtStart）`);
-  for (const e of rows) {
-    const b = e.budgetAtStart;
-    assert.ok(b.budgetMb >= expectedBudgetMb - 1 && b.budgetMb <= expectedBudgetMb + 1,
-      `${label}预算上限应为 ${expectedBudgetMb}，实际 ${b.budgetMb}（${e.id}）`);
-    assert.ok(b.reservedMb + b.estimateMb <= b.budgetMb,
-      `${label}⛔ 超卖：任务 ${e.id} 准入时已预留 ${b.reservedMb} + 本次 ${b.estimateMb} > 预算 ${b.budgetMb}`);
-  }
-  // 收尾后台账必须清空：任何残留都意味着预算泄漏
-  assert.equal(reservationsOf(ctx).length, 0, `${label}任务结束后预留台账必须清空`);
-}
-
-test("预算1：Heavy 与 Medium 同时申请，预算只够一个时不并行", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000); // 展示值（不再参与准入）
-    const env = budgetEnv(8900); // 6000 + 3000 = 9000 > 8900
-    const heavy = runFake(ctx, { tag: "b1-heavy", taskClass: "heavy", durationMs: 1200, envExtra: env });
-    const medium = runFake(ctx, { tag: "b1-medium", taskClass: "medium", durationMs: 1200, envExtra: env });
-    const [rh, rm] = await Promise.all([heavy.done, medium.done]);
-    assert.equal(rh.code, 0, `heavy 应成功：${rh.stderr}`);
-    assert.equal(rm.code, 0, `medium 应成功：${rm.stderr}`);
-    assert.equal(maxOverlap(intervals(ctx.log)), 1, "⛔ 预算只够一个却发生了并行 = 超卖");
-    assertBudgetInvariant(ctx, 8900, "预算1 ");
-  } finally { cleanup(ctx); }
-});
-
-test("预算2：Heavy + 两个 Dev 同时申请（6000+3000+3000 > 9000）", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000);
-    const env = budgetEnv(9000);
-    const runs = [
-      runFake(ctx, { tag: "b2-heavy", taskClass: "heavy", durationMs: 1200, envExtra: env }),
-      runFake(ctx, { tag: "b2-dev1", taskClass: "dev", durationMs: 1200, envExtra: env }),
-      runFake(ctx, { tag: "b2-dev2", taskClass: "dev", durationMs: 1200, envExtra: env }),
-    ];
-    const results = await Promise.all(runs.map((r) => r.done));
-    for (const r of results) assert.equal(r.code, 0, `任务应成功：${r.stderr}`);
-    assertBudgetInvariant(ctx, 9000, "预算2 ");
-    const iv = intervals(ctx.log);
-    assert.equal(iv.length, 3, "三个任务都应真正执行过");
-  } finally { cleanup(ctx); }
-});
-
-test("预算3：Medium + 两个 Light（3000+800+800 > 3800）", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000);
-    // 把重型预计峰值调小，只为让 3800MB 预算能容纳三个任务；预算本身严格等于 3800（不再被夹取抬高）
-    const env = budgetEnv(3800, { TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "3000" });
-    const runs = [
-      runFake(ctx, { tag: "b3-medium", taskClass: "medium", durationMs: 1200, envExtra: env }),
-      runFake(ctx, { tag: "b3-light1", taskClass: "light", durationMs: 1200, envExtra: env }),
-      runFake(ctx, { tag: "b3-light2", taskClass: "light", durationMs: 1200, envExtra: env }),
-    ];
-    const results = await Promise.all(runs.map((r) => r.done));
-    for (const r of results) assert.equal(r.code, 0, `任务应成功：${r.stderr}`);
-    assertBudgetInvariant(ctx, 3800, "预算3 ");
-    assert.ok(maxOverlap(intervals(ctx.log)) <= 2, "3800MB 预算下最多只能有 3000+800 两个任务并行");
-  } finally { cleanup(ctx); }
-});
-
-test("预算4：两个不同 Worktree 同时申请，共享同一份全局预算", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000);
-    const env = budgetEnv(8900);
-    const a = runFake(ctx, { tag: "b4-wt-a", taskClass: "heavy", durationMs: 1200, cwd: ctx.wsA, envExtra: env });
-    const b = runFake(ctx, { tag: "b4-wt-b", taskClass: "medium", durationMs: 1200, cwd: ctx.wsB, envExtra: env });
-    const [ra, rb] = await Promise.all([a.done, b.done]);
-    assert.equal(ra.code, 0); assert.equal(rb.code, 0);
-    assert.equal(maxOverlap(intervals(ctx.log)), 1, "⛔ 不同 Worktree 各自放行导致超卖");
-    assertBudgetInvariant(ctx, 8900, "预算4 ");
-  } finally { cleanup(ctx); }
-});
-
-test("预算5：三个不同分类同时提交，合计超过预算时不并行超卖", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000);
-    const env = budgetEnv(6900); // heavy 6000 + light 800 = 6800 ≤ 6900；再加 medium 3000 → 9800 > 6900
-    const runs = [
-      runFake(ctx, { tag: "b5-heavy", taskClass: "heavy", durationMs: 1000, envExtra: env }),
-      runFake(ctx, { tag: "b5-medium", taskClass: "medium", durationMs: 1000, envExtra: env }),
-      runFake(ctx, { tag: "b5-light", taskClass: "light", durationMs: 1000, envExtra: env }),
-    ];
-    const results = await Promise.all(runs.map((r) => r.done));
-    for (const r of results) assert.equal(r.code, 0, `任务应成功：${r.stderr}`);
-    assertBudgetInvariant(ctx, 6900, "预算5 ");
-  } finally { cleanup(ctx); }
-});
-
-test("预算6：崩溃残留预留（崩在 spawn 之前）——宽限期内挡人，宽限后安全回收", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 9000);
-    const env = budgetEnv(6000, {
-      TASKDOCK_SCHED_RECLAIM_PROBE_MS: "400",
-      TASKDOCK_SCHED_RESERVATION_ORPHAN_GRACE_MS: "2500",
-    });
-    // 一个"刚崩溃、还没来得及登记子进程"的重型任务：占满 6000MB 预算
-    writeResidue(ctx, { taskId: "h-crash-before-spawn", reservedMb: 6000, ownerPid: deadPid(), detached: false });
-
-    const run = runFake(ctx, { tag: "b6-light", taskClass: "light", durationMs: 500, envExtra: env });
-    // 宽限期内：必须挡在等待里，且不得动残留（否则无法证明旧构建没在跑）
-    // 有界自适应等待：满载机器上固定 2s 会误报（第二轮实测过一次 33/34），但也不能无限等。
-    await waitFor(() => {
-      const rec = findTask(ctx, (t) => t.command?.[2] === "b6-light");
-      return rec && rec.status === "waiting_resources" ? rec : null;
-    }, { timeoutMs: 10000, what: "任务进入 waiting_resources（有界自适应 10s）" });
-    assert.match(
-      String(findTask(ctx, (t) => t.command?.[2] === "b6-light")?.waitReason ?? ""),
-      /全局构建预算不足|准入临界区/,
-      "必须明确写出是全局预算不足，而不是含糊的等待",
-    );
-    assert.equal(reservationsOf(ctx).length, 1, "宽限期内不得回收崩溃残留");
-
-    const res = await run.done;
-    assert.equal(res.code, 0, `宽限到期后应自动回收并执行：${res.stderr}`);
-    assert.equal(reservationsOf(ctx).length, 0, "任务结束后台账必须清空");
-    assertBudgetInvariant(ctx, 6000, "预算6 ");
-  } finally { cleanup(ctx); }
-});
-
-test("预算7：detached 孤儿预留 fail-closed——不会自动回收，任务明确等待超时", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 9000);
-    const env = budgetEnv(6000, { TASKDOCK_SCHED_RECLAIM_PROBE_MS: "400", TASKDOCK_SCHED_RESERVATION_ORPHAN_GRACE_MS: "500" });
-    writeResidue(ctx, {
-      taskId: "h-detached-orphan", reservedMb: 6000, ownerPid: deadPid(),
-      detached: true, heartbeatAt: new Date(Date.now() - 300000).toISOString(),
-    });
-    const res = await runFake(ctx, {
-      tag: "b7-light", taskClass: "light", durationMs: 300, envExtra: env,
-      extraArgs: ["--wait-timeout", "0.05"],
-    }).done;
-    assert.equal(res.code, 3, "资源等待超时必须记调度层退出码 3");
-    assert.match(String(res.stderr), /全局构建预算不足/, "失败原因必须指向全局预算");
-    assert.equal(reservationsOf(ctx).length, 1, "⛔ detached 孤儿不得被自动回收（无法证明它已退出）");
-    assert.ok(startCount(ctx.log, "b7-light") === 0, "被预算挡住的任务绝不能真的启动子进程");
-  } finally { cleanup(ctx); }
-});
-
-test("预算8：持有者已死但旧构建子进程仍存活——拒绝回收，子进程结束后才回收", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 9000);
-    const env = budgetEnv(6000, { TASKDOCK_SCHED_RECLAIM_PROBE_MS: "400", TASKDOCK_SCHED_RESERVATION_ORPHAN_GRACE_MS: "500" });
-    const liveChild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120000)"], {
-      detached: true, stdio: "ignore", windowsHide: true,
-    });
-    liveChild.unref();
-    try {
-      writeResidue(ctx, {
-        taskId: "h-orphan-with-child", reservedMb: 6000, ownerPid: deadPid(),
-        childPid: liveChild.pid, childCmdLine: "node -e setTimeout", detached: false,
-      });
-
-      const first = await runFake(ctx, {
-        tag: "b8-light-1", taskClass: "light", durationMs: 300, envExtra: env,
-        extraArgs: ["--wait-timeout", "0.05"],
-      }).done;
-      assert.equal(first.code, 3, "旧构建还在跑时必须等待超时，不得放行新构建");
-      assert.equal(reservationsOf(ctx).length, 1, "⛔ 子进程仍存活时不得回收预留");
-      assert.equal(startCount(ctx.log, "b8-light-1"), 0, "新构建绝不能启动");
-
-      killOnly(liveChild.pid);
-      await waitFor(() => !isAlive(liveChild.pid), { timeoutMs: 5000, what: "旧构建子进程退出" });
-
-      const second = await runFake(ctx, {
-        tag: "b8-light-2", taskClass: "light", durationMs: 300, envExtra: env,
-        extraArgs: ["--wait-timeout", "0.5"],
-      }).done;
-      assert.equal(second.code, 0, `旧构建结束后应回收并执行：${second.stderr}`);
-      assert.equal(reservationsOf(ctx).length, 0, "回收后台账必须清空");
-    } finally {
-      if (isAlive(liveChild.pid)) killOnly(liveChild.pid);
-    }
-  } finally { cleanup(ctx); }
-});
-
-test("预算9：取消与超时都不得漏账（预留必须归还）", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000);
-    const env = budgetEnv(9000);
-
-    // (a) 运行中取消
-    const run = runFake(ctx, { tag: "b9-cancel", taskClass: "light", durationMs: 4000, envExtra: env });
-    const id = await waitFor(() => {
-      const rec = findTask(ctx, (t) => t.command?.[2] === "b9-cancel" && t.status === "running");
-      return rec ? rec.id : null;
-    }, { timeoutMs: 10000, what: "任务进入 running" });
-    assert.equal(reservationsOf(ctx).length, 1, "运行中必须有且只有一条预留");
-    const cancel = schedCli(ctx, ["cancel", id, "--wait", "5"]);
-    assert.equal(cancel.status, 0, `cancel 应返回 0：${cancel.stdout}${cancel.stderr}`);
-    const res = await run.done;
-    assert.equal(res.code, 4, "取消必须返回调度层退出码 4");
-    assert.equal(reservationsOf(ctx).length, 0, "⛔ 取消后预留没有归还（预算泄漏）");
-
-    // (b) 预算为 0 导致的等待超时（内存门槛已删除，用预算制造"永不满足"的约束）
-    const timeout = await runFake(ctx, {
-      tag: "b9-timeout", taskClass: "light", durationMs: 200, envExtra: budgetEnv(0),
-      extraArgs: ["--wait-timeout", "0.05"],
-    }).done;
-    assert.equal(timeout.code, 3);
-    assert.equal(reservationsOf(ctx).length, 0, "从未启动的任务不得留下预留");
-  } finally { cleanup(ctx); }
-});
-
-test("预算10：Dev 长期运行时普通构建申请资源（6000+6000 超过预算，必须排队）", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000);
-    const env = budgetEnv(6000);
-    const dev = runFake(ctx, { tag: "b10-dev", taskClass: "dev", durationMs: 2600, envExtra: env });
-    await waitFor(() => findTask(ctx, (t) => t.command?.[2] === "b10-dev" && t.status === "running"),
-      { timeoutMs: 10000, what: "dev 任务开始运行" });
-    const heavy = runFake(ctx, { tag: "b10-heavy", taskClass: "heavy", durationMs: 800, envExtra: env });
-    const [rd, rh] = await Promise.all([dev.done, heavy.done]);
-    assert.equal(rd.code, 0); assert.equal(rh.code, 0, `heavy 应在 dev 结束后执行：${rh.stderr}`);
-    const devIv = intervals(ctx.log).filter((i) => i.tag === "b10-dev");
-    const heavyIv = intervals(ctx.log).filter((i) => i.tag === "b10-heavy");
-    assert.equal(devIv.length, 1); assert.equal(heavyIv.length, 1);
-    assert.ok(heavyIv[0].start >= devIv[0].end,
-      "⛔ dev 常驻（3000）+ heavy（6000）合计超过 6000 预算却并行了");
-  } finally { cleanup(ctx); }
-});
-
-test("预算11：多进程争最后一份预算（槽位允许 2 个并发，预算只够 1 个）", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 9000);
-    // 三个分类的预计峰值都调成 800，预算 800 → 只有 1 个能跑（light 槽位本来有 2 个）
-    const env = budgetEnv(800, {
-      TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "800",
-      TASKDOCK_SCHED_ESTIMATE_MEDIUM_MB: "800",
-    });
-    const runs = ["b11-l1", "b11-l2", "b11-l3"].map((tag) =>
-      runFake(ctx, { tag, taskClass: "light", durationMs: 1000, envExtra: env }));
-    const results = await Promise.all(runs.map((r) => r.done));
-    for (const r of results) assert.equal(r.code, 0, `任务应成功：${r.stderr}`);
-    assert.equal(maxOverlap(intervals(ctx.log)), 1,
-      "⛔ 预算只够 1 个，却有 2 个轻量任务同时跑（槽位不是唯一闸门）");
-    assertBudgetInvariant(ctx, 800, "预算11 ");
-  } finally { cleanup(ctx); }
-});
-
-test("预算12：预算不足时只在排队、绝不预占预算；退出后台账清空", async () => {
-  const ctx = setup();
-  try {
-    const run = runFake(ctx, {
-      tag: "b12-light", taskClass: "light", durationMs: 400, envExtra: budgetEnv(0),
-      extraArgs: ["--wait-timeout", "0.15"],
-    });
-    const waiting = await waitFor(() => {
-      const rec = findTask(ctx, (t) => t.command?.[2] === "b12-light");
-      return rec && rec.status === "waiting_resources" ? rec : null;
-    }, { timeoutMs: 3000, what: "预算不足时进入 waiting_resources" });
-    assert.match(String(waiting.waitReason ?? ""), /预算|装不下/, "等待原因必须指向全局预算");
-    assert.equal(reservationsOf(ctx).length, 0, "预算不足时不得先把预算占住");
-
-    const res = await run.done;
-    assert.equal(res.code, 3, `预算始终不足应等待超时（exit 3）：${res.stderr}`);
-    assert.equal(reservationsOf(ctx).length, 0, "从未启动的任务不得留下预算残留");
-  } finally { cleanup(ctx); }
-});
-
-// ---------------------------------------------------------------- 11. 子进程失败原因可查询
 
 test("验收11：子进程非零退出后，队列记录与历史都能查到明确失败原因与日志路径", async () => {
   const ctx = setup();
   try {
-    setSimAvail(ctx, 9000);
     const run = runFake(ctx, { tag: "fail-code", taskClass: "light", durationMs: 200, exitCode: 7 });
     const res = await run.done;
 
@@ -967,31 +628,48 @@ test("验收11：子进程非零退出后，队列记录与历史都能查到明
 
 // ------------------------------------------------- 验收12. 全局构建并发上限（2026-11-16）
 
+/** 读当前活动台账（`reservations/*.json`）：每条占一个全局构建名额。 */
+function reservationsOf(ctx) {
+  const dir = join(ctx.home, "reservations");
+  try {
+    return readdirSync(dir).filter((n) => n.endsWith(".json") && !n.startsWith("."))
+      .map((n) => { try { return JSON.parse(readFileSync(join(dir, n), "utf8")); } catch { return null; } })
+      .filter(Boolean);
+  } catch { return []; }
+}
+
 test("验收12：全局构建并发上限 3——第 4 个构建排队，任一结束即自动释放名额", async () => {
   const ctx = setup();
   try {
-    // 轻量槽位放宽到 4，确保唯一挡人的是「全局构建并发上限」而不是分类槽位；
-    // --estimate-mb 300 让全局预算在任何物理内存档位都不会成为干扰因素（本用例只验证并发锁）。
-    const env = { TASKDOCK_SCHED_LIGHT_CONCURRENCY: "4", TASKDOCK_SCHED_GLOBAL_CONCURRENCY: "3" };
-    const extraArgs = ["--estimate-mb", "300"];
-    const tags = ["cap-a", "cap-b", "cap-c"];
-    const first = tags.map((tag) => runFake(ctx, {
-      tag, durationMs: 1800, taskClass: "light", envExtra: env, extraArgs,
-    }));
+    // heavy/medium/light 三个不同分类各占自己的 1 个槽位（分类内不会互相让位），
+    // 第 4 个用 light：此刻 light-2 空闲，唯一挡它的就是「全局构建并发上限」。
+    const env = { TASKDOCK_SCHED_GLOBAL_CONCURRENCY: "3" };
+    const extraArgs = ["--no-dedupe"];
+    const tags = ["cap-h", "cap-m", "cap-l1"];
+    const first = [
+      runFake(ctx, { tag: "cap-h", durationMs: 4000, taskClass: "heavy", envExtra: env, extraArgs }),
+      runFake(ctx, { tag: "cap-m", durationMs: 4000, taskClass: "medium", envExtra: env, extraArgs }),
+      runFake(ctx, { tag: "cap-l1", durationMs: 4000, taskClass: "light", envExtra: env, extraArgs }),
+    ];
     await waitFor(() => tags.every((tag) => startCount(ctx.log, tag) === 1), {
       what: "前 3 个构建全部启动",
     });
+    // 前提必须是"提交第 4 个时确有 3 个在跑"，否则本用例证明不了任何并发上限
+    await waitFor(() => readQueue(ctx).filter((t) => t.status === "running").length === 3, {
+      what: "队列里确有 3 个 running 任务",
+    });
 
     const fourth = runFake(ctx, {
-      tag: "cap-d", durationMs: 600, taskClass: "light", envExtra: env, extraArgs,
+      tag: "cap-l2", durationMs: 600, taskClass: "light", envExtra: env, extraArgs,
     });
     const queued = await waitFor(() => {
-      const t = findTask(ctx, (x) => x.command?.[2] === "cap-d");
+      const t = findTask(ctx, (x) => x.command?.[2] === "cap-l2");
       return t && t.status !== "running" && t.waitReason ? t : null;
-    }, { what: "第 4 个构建进入排队" });
+    }, { timeoutMs: 15000, what: "第 4 个构建进入排队" });
+    assert.equal(queued.status, "queued", "被并发上限挡住属于普通排队，不是 waiting_resources");
     assert.match(String(queued.waitReason), /全局构建并发已满（3\/3）/, "排队原因必须写明全局名额已满");
     await new Promise((r) => setTimeout(r, 400));
-    assert.equal(startCount(ctx.log, "cap-d"), 0, "⛔ 名额已满时第 4 个构建不得启动");
+    assert.equal(startCount(ctx.log, "cap-l2"), 0, "⛔ 名额已满时第 4 个构建不得启动");
 
     const results = await Promise.all([...first, fourth].map((r) => r.done));
     for (const r of results) assert.equal(r.code, 0, `任务应成功：${r.stderr?.slice(-300)}`);
@@ -999,7 +677,7 @@ test("验收12：全局构建并发上限 3——第 4 个构建排队，任一�
     const iv = intervals(ctx.log);
     assert.equal(iv.length, 4, "四个任务都应真正执行过");
     assert.equal(maxOverlap(iv), 3, "⛔ 任意时刻最多 3 个构建：全局并发上限被突破");
-    const d = iv.find((x) => x.tag === "cap-d");
+    const d = iv.find((x) => x.tag === "cap-l2");
     const abc = iv.filter((x) => tags.includes(x.tag));
     assert.ok(d && abc.length === 3, "区间缺失，无法判定并发与自动释放");
     assert.ok(d.start >= Math.min(...abc.map((x) => x.end)),
@@ -1009,7 +687,9 @@ test("验收12：全局构建并发上限 3——第 4 个构建排队，任一�
     assert.equal(reservationsOf(ctx).length, 0, "全部结束后名额台账必须清空（否则名额会泄漏）");
 
     // 准入证据：每个任务都记录"准入那一刻在跑的构建数"，且永不超过上限
-    for (const e of readHistory(ctx).filter((x) => tags.includes(x.command?.[2]) || x.command?.[2] === "cap-d")) {
+    const capHits = readHistory(ctx).filter((x) => [...tags, "cap-l2"].includes(x.command?.[2]));
+    assert.equal(capHits.length, 4, "四个任务都应有历史记录");
+    for (const e of capHits) {
       assert.ok(e.globalAtStart, `历史缺少 globalAtStart 证据：${e.id}`);
       assert.equal(e.globalAtStart.cap, 3);
       assert.ok(e.globalAtStart.active <= 3,
@@ -1018,116 +698,11 @@ test("验收12：全局构建并发上限 3——第 4 个构建排队，任一�
   } finally { cleanup(ctx); }
 });
 
-// ------------------------------------------------- 补充B. 预算夹取策略修正（2026-11-15 第二轮）
-//
-// 复现本轮 P0 缺陷：旧公式 `max(totalMb - systemReserveMb, 最大分类预计峰值)` 会在小内存机器上把预算
-// 抬高到 Heavy 峰值（8GB / 3GB 保留 → 5120MB 预算被抬到 6000MB），静默侵占系统保留的安全边界。
-// 现在预算严格等于 `total - 保留`，装不下的任务明确判为不可准入；突破只能是显式开关。
-// 注意：这里用 `budgetEnv(5120)` 模拟"预算只有 5120MB"的机器（真实 totalMb 仍是 15.63GB，
-// 通过把 systemReserveMb 调到 9.98GB 达成），设备档位对应的真实算式在
-// scripts/build-sched.test.mjs 的「4/8/16/32GB 档位判定表」里逐个断言。
-
-test("补充B1：预算 5120MB 下 Heavy（预计 6000MB）判为不可准入——不排队等待、不启动子进程、原因明确", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000); // 展示值；唯一挡它的是预算
-    const env = budgetEnv(5120);
-    const res = await runFake(ctx, {
-      tag: "b13-heavy-infeasible", taskClass: "heavy", durationMs: 300,
-      envExtra: env, extraArgs: ["--wait-timeout", "0.05"],
-    }).done;
-
-    assert.equal(res.code, 3, "装不下的任务最终是调度层等待超时（3），不是编译失败码");
-    assert.match(String(res.stderr), /本机装不下/, "失败原因必须直说本机装不下");
-    assert.match(String(res.stderr), /系统保留 .*不会自我放行/);
-    assert.match(String(res.stderr), /不是排队问题/, "必须明确区别于普通排队");
-    assert.equal(startCount(ctx.log, "b13-heavy-infeasible"), 0, "⛔ 不可准入的任务绝不能启动子进程");
-    assert.equal(reservationsOf(ctx).length, 0, "被预算拒绝的任务不得留下预留");
-
-    const rec = findTask(ctx, (t) => t.command?.[2] === "b13-heavy-infeasible");
-    assert.ok(rec, "队列记录应落盘");
-    assert.match(String(rec.finishReason ?? ""), /本机装不下/);
-    const hist = readHistory(ctx).find((e) => e.command?.[2] === "b13-heavy-infeasible");
-    assert.ok(hist, "历史里必须有该任务记录");
-    assert.equal(hist.budgetAtStart, null, "从未准入的任务不得写入 budgetAtStart 证据");
-
-    // status 必须把"预算装不下最大分类峰值"这件事显式打出来，而不是只显示一个很小的预算数字
-    const st = spawnSync(process.execPath, [SCHED, "status"], {
-      cwd: ctx.wsA, env: baseEnv(ctx, env), encoding: "utf8", timeout: 60000, windowsHide: true,
-    });
-    assert.equal(st.status, 0, `status 应正常退出：${st.stderr}`);
-    assert.match(st.stdout, /硬上限 = 物理 .* - 系统保留 .* = 5\.00 GB/, "status 必须展示硬上限的推导");
-    assert.match(st.stdout, /小于最大分类预计峰值 5\.86 GB/, "status 必须提示预算装不下重型任务");
-    assert.match(st.stdout, /无法准入/, "提示必须给出结论：该类任务无法准入");
-  } finally { cleanup(ctx); }
-});
-
-test("补充B2：同一预算下显式开启 allowReserveBreach 才能让 Heavy 准入，且必须留下「已突破保留边界」证据", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000);
-    const env = budgetEnv(5120, {
-      TASKDOCK_SCHED_ALLOW_RESERVE_BREACH: "true",
-      // 第三轮 4.1：开启 allowReserveBreach 本身也是"削弱安全边界"，必须同时持危险授权
-      TASKDOCK_SCHED_DANGER_AUTH: "reserve-breach",
-    });
-    const res = await runFake(ctx, {
-      tag: "b14-heavy-breach", taskClass: "heavy", durationMs: 800, envExtra: env,
-      extraArgs: ["--wait-timeout", "0.3"],
-    }).done;
-    assert.equal(res.code, 0, `显式突破保留边界后应能执行：${res.stderr}`);
-    assert.equal(startCount(ctx.log, "b14-heavy-breach"), 1);
-
-    const hist = readHistory(ctx).find((e) => e.command?.[2] === "b14-heavy-breach");
-    assert.ok(hist?.budgetAtStart, "准入证据必须落盘");
-    assert.equal(hist.budgetAtStart.budgetMb, 6000, "突破时预算被抬到最大分类峰值 6000MB");
-    assert.equal(hist.budgetAtStart.hardLimitMb, 5120, "硬上限仍是 5120MB（物理-保留），证据里必须区分");
-    assert.equal(hist.budgetAtStart.reserveBreached, true, "⛔ 突破保留边界这件事必须可事后复核");
-    assert.ok((hist.budgetAtStart.dangerAuth ?? []).includes("reserve-breach"), "授权令牌必须落进 history");
-    assert.equal(reservationsOf(ctx).length, 0, "任务结束后台账必须清空");
-
-    // status 必须显著告警（这是"危险开关"的唯一可见性来源）
-    const st = spawnSync(process.execPath, [SCHED, "status"], {
-      cwd: ctx.wsA, env: baseEnv(ctx, env), encoding: "utf8", timeout: 60000, windowsHide: true,
-    });
-    assert.equal(st.status, 0);
-    assert.match(st.stdout, /已显式开启 allowReserveBreach/);
-    assert.match(st.stdout, /安全垫已被侵占/);
-  } finally { cleanup(ctx); }
-});
-
-test("补充B3：预算 5120MB 下 heavy(3000)+medium(2400) 合计 5400 超预算——不并行超卖，light 仍能跑", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000);
-    const env = budgetEnv(5120, {
-      TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "3000",
-      TASKDOCK_SCHED_ESTIMATE_MEDIUM_MB: "2400",
-    });
-    const runs = [
-      runFake(ctx, { tag: "b15-heavy", taskClass: "heavy", durationMs: 1000, envExtra: env }),
-      runFake(ctx, { tag: "b15-medium", taskClass: "medium", durationMs: 1000, envExtra: env }),
-      runFake(ctx, { tag: "b15-light1", taskClass: "light", durationMs: 600, envExtra: env }),
-      runFake(ctx, { tag: "b15-light2", taskClass: "light", durationMs: 600, envExtra: env }),
-    ];
-    const results = await Promise.all(runs.map((r) => r.done));
-    for (const r of results) assert.equal(r.code, 0, `任务应成功：${r.stderr}`);
-    const iv = intervals(ctx.log);
-    assert.equal(iv.length, 4, "四个任务都应真正执行过");
-    const heavyIv = iv.find((i) => i.tag === "b15-heavy");
-    const medIv = iv.find((i) => i.tag === "b15-medium");
-    assert.ok(heavyIv && medIv, "两种分类都应留下执行区间");
-    assert.ok(heavyIv.end <= medIv.start || medIv.end <= heavyIv.start,
-      "⛔ 3000+2400=5400 > 5120 预算，heavy 与 medium 不得并行");
-    assert.ok(maxOverlap(iv) <= 3, "预算只允许 heavy/medium 之一 + 两个 light 并行");
-    assertBudgetInvariant(ctx, 5120, "补充B3 ");
-  } finally { cleanup(ctx); }
-});
 
 // ------------------------------------------------- 补充C. 构建入口全覆盖（零资源静态闸门）
 //
 // 本轮 P0 之三：`apps/mobile/package.json` 的 build 脚本曾是 `cd android && gradlew.bat assembleRelease`，
-// 可以完全绕过统一调度器（直接 Gradle 会把 16GB 机器打到 OOM，且不占重型槽位、不计预算）。
+// 可以完全绕过统一调度器（直接 Gradle 会把 16GB 机器打到 OOM，且不占重型槽位与全局名额）。
 // 这里把"哪个入口必须经调度器、哪个是显式逃生口"写成可执行断言：
 //   - 高资源入口的脚本体必须包含 `scripts/build-sched.mjs run`；
 //   - 每个被包装的入口都必须有一个 `:raw` 逃生口（排障用，不得作为日常推荐命令）；
@@ -1304,153 +879,13 @@ test("补充C6：本套件在调度任务内运行时必须剥离嵌套标记（
   const saved = process.env.TASKDOCK_SCHED_TASK_ID;
   process.env.TASKDOCK_SCHED_TASK_ID = "h-selpstnt-abcdef";
   try {
-    const env = baseEnv({ home: "H:\\fake-home", simFile: "H:\\fake-sim.json" }, { EXTRA_PROBE: "1" });
+    const env = baseEnv({ home: "H:\\fake-home" }, { EXTRA_PROBE: "1" });
     assert.equal(env.TASKDOCK_SCHED_TASK_ID, undefined, "嵌套标记必须被剥离");
     assert.equal(env.TASKDOCK_SCHED_NESTED, undefined, "嵌套标记必须被剥离（2）");
     assert.equal(env.TASKDOCK_BUILD_SCHED_HOME, "H:\\fake-home", "状态目录仍必须是本用例的临时目录");
-    assert.equal(env.TASKDOCK_SCHED_SIM_FILE, "H:\\fake-sim.json", "模拟内存文件仍必须指向本用例");
     assert.equal(env.EXTRA_PROBE, "1", "extra 参数必须照常合并");
   } finally {
     if (saved === undefined) delete process.env.TASKDOCK_SCHED_TASK_ID;
     else process.env.TASKDOCK_SCHED_TASK_ID = saved;
   }
-});
-
-// ---------------------------------------------------------------- 配置安全（第三轮 4.1-4.4，跨进程）
-
-function writeMachineConfig(ctx, obj) {
-  mkdirSync(ctx.home, { recursive: true });
-  writeFileSync(join(ctx.home, "config.json"), JSON.stringify(obj, null, 2));
-}
-
-test("配置安全1：只改配置文件 budgetEnabled=false，不得绕过全局预算（跨进程）", async () => {
-  const ctx = setup();
-  try {
-    writeMachineConfig(ctx, { budgetEnabled: false });
-    setSimAvail(ctx, 9000);      // 展示值（不再参与准入）
-    const env = budgetEnv(6000); // 预算恰好只够一个 heavy
-    const heavy = runFake(ctx, { tag: "cfgoff-heavy", taskClass: "heavy", durationMs: 1200, envExtra: env });
-    const medium = runFake(ctx, { tag: "cfgoff-medium", taskClass: "medium", durationMs: 1200, envExtra: env });
-    const [rh, rm] = await Promise.all([heavy.done, medium.done]);
-    assert.equal(rh.code, 0, `heavy 应成功：${rh.stderr}`);
-    assert.equal(rm.code, 0, `medium 应成功：${rm.stderr}`);
-    assert.equal(maxOverlap(intervals(ctx.log)), 1, "⛔ 配置里的 false 未被授权却仍然生效 = 静默绕过预算");
-    const rows = readHistory(ctx).filter((e) => e.budgetAtStart);
-    assert.ok(rows.length >= 2);
-    for (const e of rows) {
-      assert.equal(e.budgetAtStart.budgetEnabled, true, "history 必须显示这次预算仍然开启");
-      assert.equal(e.budgetAtStart.budgetOffAuthorized, false);
-    }
-  } finally { cleanup(ctx); }
-});
-
-test("配置安全2：带 budget-off 危险授权才真的关闭预算，history 可审计", async () => {
-  const ctx = setup();
-  try {
-    writeMachineConfig(ctx, { budgetEnabled: false });
-    setSimAvail(ctx, 9000);
-    const env = budgetEnv(6000, { TASKDOCK_SCHED_DANGER_AUTH: "budget-off" });
-    const heavy = runFake(ctx, { tag: "cfgoff2-heavy", taskClass: "heavy", durationMs: 1500, envExtra: env });
-    const medium = runFake(ctx, { tag: "cfgoff2-medium", taskClass: "medium", durationMs: 1500, envExtra: env });
-    const [rh, rm] = await Promise.all([heavy.done, medium.done]);
-    assert.equal(rh.code, 0, `heavy 应成功：${rh.stderr}`);
-    assert.equal(rm.code, 0, `medium 应成功：${rm.stderr}`);
-    assert.equal(maxOverlap(intervals(ctx.log)), 2, "授权关闭预算后两类任务应并行（预算是唯一约束）");
-    const rows = readHistory(ctx).filter((e) => e.budgetAtStart);
-    assert.ok(rows.some((e) => e.budgetAtStart.budgetEnabled === false &&
-      e.budgetAtStart.budgetOffAuthorized === true &&
-      (e.budgetAtStart.dangerAuth ?? []).includes("budget-off")),
-      "history 必须记录「这次任务是在预算关闭下准入的」");
-    const status = schedJson(ctx, ["status", "--json"], { TASKDOCK_SCHED_DANGER_AUTH: "budget-off" });
-    assert.equal(status.budget.enabled, false);
-    assert.ok((status.danger.tokens ?? []).includes("budget-off"));
-  } finally { cleanup(ctx); }
-});
-
-test("配置安全3：systemReserveMb 低于基线未授权 → 有效值回基线；授权后才下调并显示减少量", () => {
-  const ctx = setup();
-  try {
-    writeMachineConfig(ctx, { systemReserveMb: 512, recommendedSystemReserveMb: 3072 });
-    const denied = schedJson(ctx, ["status", "--json"]);
-    assert.equal(denied.budget.reserveMb, 3072, "未经授权时有效保留必须回到基线");
-    assert.equal(denied.danger.reserveLowerRequested, true);
-    assert.equal(denied.danger.reserveLowerAuthorized, false);
-    const authorized = schedJson(ctx, ["status", "--json"], { TASKDOCK_SCHED_DANGER_AUTH: "reserve-lower" });
-    assert.equal(authorized.budget.reserveMb, 512);
-    assert.equal(authorized.budget.reserveReducedMb, 2560, "status 必须显示实际减少的安全余量");
-    assert.equal(authorized.budget.hardLimitMb, TOTAL_MB_REAL - 512);
-    const doctor = schedCli(ctx, ["doctor"], { TASKDOCK_SCHED_DANGER_AUTH: "reserve-lower" });
-    assert.match(doctor.stdout, /安全余量减少 2560 MB/, "doctor 必须报出减少量");
-    assert.match(doctor.stdout, /P1.*systemReserveMb/, "降保留至少是 P1 风险");
-  } finally { cleanup(ctx); }
-});
-
-test("配置安全4：1 MB 预计峰值 + 关闭预算 → doctor 报 P0 且非 0 退出", () => {
-  const ctx = setup();
-  try {
-    writeMachineConfig(ctx, {
-      budgetEnabled: false,
-      estimateHeavyMb: 1, estimateMediumMb: 1, estimateLightMb: 1,
-    });
-    const doctor = schedCli(ctx, ["doctor"], { TASKDOCK_SCHED_DANGER_AUTH: "budget-off" });
-    assert.equal(doctor.status, 5, "存在 P0 配置风险时 doctor 必须以非 0 退出（EXIT.internal=5）");
-    assert.match(doctor.stdout, /P0.*budgetEnabled/);
-    assert.match(doctor.stdout, /P1.*estimateHeavyMb/);
-    assert.match(doctor.stdout, /配置来源：/);
-  } finally { cleanup(ctx); }
-});
-
-test("配置安全5：环境变量覆盖机器配置会被 doctor 点名（含来源与当前值）", () => {
-  const ctx = setup();
-  try {
-    const doctor = schedCli(ctx, ["doctor"], { TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "8192" });
-    assert.equal(doctor.status, 0, "仅环境覆盖（未削弱安全边界）不应让 doctor 失败");
-    assert.match(doctor.stdout, /环境变量覆盖了 \d+ 项配置/);
-    assert.match(doctor.stdout, /TASKDOCK_SCHED_ESTIMATE_HEAVY_MB/);
-    const cfg = schedJson(ctx, ["config", "--json"], { TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "8192" });
-    assert.equal(cfg.effective.estimateHeavyMb, 8192);
-    assert.ok(cfg.sources.some((s) => s.kind === "env" && (s.names ?? []).includes("TASKDOCK_SCHED_ESTIMATE_HEAVY_MB")));
-  } finally { cleanup(ctx); }
-});
-test("配置安全6：任务运行期间修改机器配置——运行中任务沿用准入时预算，后续任务用新配置", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 9000);
-    writeMachineConfig(ctx, { systemReserveMb: TOTAL_MB_REAL - 2000 });
-    const first = runFake(ctx, { tag: "cfgmut-1", taskClass: "light", durationMs: 2200 });
-    const running = await waitFor(() => findTask(ctx, (t) => t.command?.[2] === "cfgmut-1" && t.status === "running"),
-      { timeoutMs: 10000, what: "首个轻量任务进入 running" });
-    assert.ok(running);
-    // 运行中改配置：预算从 2000 变 3000
-    writeMachineConfig(ctx, { systemReserveMb: TOTAL_MB_REAL - 3000 });
-    const status = schedJson(ctx, ["status", "--json"]);
-    assert.equal(status.budget.budgetMb, 3000, "配置变化必须立即对后续准入生效");
-    assert.equal(status.budget.reservedMb, 800, "运行中任务的预留仍按准入时的峰值算");
-    const r1 = await first.done;
-    assert.equal(r1.code, 0, `首个任务应成功：${r1.stderr}`);
-    const second = runFake(ctx, { tag: "cfgmut-2", taskClass: "light", durationMs: 300 });
-    const r2 = await second.done;
-    assert.equal(r2.code, 0, `第二个任务应成功：${r2.stderr}`);
-    const rows = readHistory(ctx).filter((e) => e.budgetAtStart);
-    const firstRow = rows.find((e) => e.command?.[2] === "cfgmut-1");
-    const secondRow = rows.find((e) => e.command?.[2] === "cfgmut-2");
-    assert.equal(firstRow?.budgetAtStart?.budgetMb, 2000, "运行中任务不得被改后的配置追溯");
-    assert.equal(secondRow?.budgetAtStart?.budgetMb, 3000, "后续任务必须使用新配置");
-  } finally { cleanup(ctx); }
-});
-test("配置安全7：只配置 allowReserveBreach=true 而不持 reserve-breach 授权——不得突破保留边界", async () => {
-  const ctx = setup();
-  try {
-    setSimAvail(ctx, 12000);
-    writeMachineConfig(ctx, { allowReserveBreach: true });
-    const env = budgetEnv(5120); // 硬上限 5120 < heavy 6000
-    const res = await runFake(ctx, {
-      tag: "cfgbreach-denied", taskClass: "heavy", durationMs: 800, envExtra: env,
-      extraArgs: ["--wait-timeout", "0.3"],
-    }).done;
-    assert.equal(res.code, 3, `未授权时不得准入，必须明确失败而不是偷偷突破：${res.stderr}`);
-    assert.match(res.stderr + res.stdout, /本机装不下|预算|装不下/);
-    assert.equal(startCount(ctx.log, "cfgbreach-denied"), 0, "⛔ 未授权却真的跑了 = 静默侵占安全余量");
-    assert.equal(reservationsOf(ctx).length, 0);
-  } finally { cleanup(ctx); }
 });

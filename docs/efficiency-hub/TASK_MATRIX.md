@@ -45,7 +45,7 @@
 | PW-6 | 游戏制作闭环 | 工作空间 P1 | 仅事项阶段 | 事项承载关卡/系统阶段 | 资源关联、构建/测试登记、引擎跳转 | not_started | unverified |
 | PW-7 | AI 漫剧闭环 | 工作空间 P1 | 仅事项阶段 | 剧集/镜头用 stage 承载 | 素材/角色库、生成结果导入、版本比较/采用 | not_started | unverified |
 | PW-8 | 跨项目资源与产出物关系 | 工作空间 P2 | 无 | 无 | — | not_started | unverified |
-| PW-9 | 小说项目类型接入（创作工作台 A 阶段） | 2026-11-15 | v57 迁移、`commands/project_workspace.rs`、`src/workspace/workspaceProfiles.ts`、`ProjectWorkspacePanel.tsx`、`WorkbenchShell.tsx`、`commands/backup.rs` | 第五种类型 `novel`：CHECK 五值、Rust `PROJECT_KINDS`、Profile（小说/概览/写作事项/任务关联/项目设置）、首页五卡片（含项目简介与计划能力清单）、图标 `book-open`、创建/编辑/列表/切换/实例/事项/任务关联/备份往返全部复用既有实现 | 正文编辑器、章节/卷、人物档案、世界观、剧情时间线、AI 创作、导出（均为下一阶段；能力已登记 `planned` 且不可调用） | implemented | partially_verified（2026-11-16 复跑：Rust 3/3、Vitest 16/16、`tsc --noEmit` 通过；原生窗口与视觉未逐页走查） | 无 | B 阶段：章节模型与编辑器（先建章节树，再评估独立表） |
+| PW-10 | 小说正文与章节（创作工作台 B1） | 2026-11-16 | v58 迁移、`commands/project_workspace.rs`、`commands/backup.rs`、`src/workspace/workspaceProfiles.ts`、`src/lib/bridge.ts`、`NovelManuscriptPanel.tsx`、`ProjectWorkspacePanel.tsx`、`workspace.css` | v58 卷/章两表三索引；8 个卷/章命令（列表/读取/保存/正文保存/删除）；`manuscript` 模块与 `novel.manuscript` available；卷→章树 + 纯文本编辑器（0.9s 防抖自动保存、失焦/切换/卸载落盘、保存失败阻止切章、实时字数、归档只读） | 富文本/Markdown、版本历史、导入导出、全文搜索；人物/世界观/剧情/伏笔/AI；跨卷拖拽移动 | implemented | partially_verified（Rust 5/5、Vitest 16+4、`tsc --noEmit` 通过；原生窗口未逐页走查） | 无 | 原生走查：新建卷/章、自动保存、切换章节、归档只读、备份恢复 |
 
 ## 4. 旧任务编号映射（不丢失追踪）
 
@@ -68,8 +68,9 @@
 4. U5 统一问题复现包（复用诊断，不建第二套日志）。
 5. U4 开发环境监控 MVP（只读登记 + 明确授权执行）。
 6. U8 游戏/AI 漫剧最小闭环（有真实接口才把能力从 planned 提升）。
-7. B 阶段：小说章节模型与编辑器（先做项目内章节树，再评估独立表）；人物/世界观条目；
-   AI 辅助前先定义上下文装配与授权边界。
+7. ~~B1：小说卷→章树 + 纯文本正文编辑器（2026-11-16）。~~ ✅
+8. B2：人物/世界观条目（同构条目 + 关系，不建第二套搜索/任务）；随后再评估 AI 辅助的
+   上下文装配与授权边界，以及导出与版本历史。
 
 ## 6. 2026-11-14 第二轮（U2：交接包 ↔ Agent 会话、Agent 结果待验收）
 
@@ -143,4 +144,29 @@ Ctrl+数字语义与旧数据不变；工作台侧栏仍是唯一完整功能入
 - 未执行原生窗口逐页走查（新建/编辑/归档/切换/备份恢复的 UI 层），只做了自动化验证。
 - 2026-11-16 复跑：Rust `cargo test --lib novel` 3 passed / 0 failed；
   `vitest run src/workspace/workspaceProfiles.test.ts` 16 passed；`tsc --noEmit` 退出码 0。
+
+## 9. 2026-11-16 创作工作台 B1（小说正文与章节）
+
+目标：在既有 Project Workspace 上完成「卷 → 章」两级章节树与纯文本正文编辑器；
+仍不新增第二套项目/任务/窗口系统，不复制 CRUD。
+
+| 层 | 落地内容 | 证据/验证 |
+|---|---|---|
+| 数据库 | 迁移 **v58**（append-only）：`novel_volumes`、`novel_chapters`（`volume_id` 可空=未分卷，项目/卷均级联），三索引；不改 v57 与任何既有表 | `v58_novel_chapter_tables_preserve_existing_rows_and_cascade`（v57 升级、既有项目/实例/事项保留、卷/章写入、删卷/删项目级联、FK 0） |
+| Rust | 卷：list/save/delete；章：list（仅元信息）/get（正文）/save（新建/改名/移卷/排序，正文不变）/save_content（只更新正文与字数）/delete；标题 240 字符、正文 8 MiB、字数=非空白字符、跨项目卷引用拒绝 | `novel_chapters_support_volumes_content_autosave_and_cascade` |
+| 前端 | `manuscript` 模块（概览/正文/写作事项/任务关联/项目设置）；`novel.manuscript` → available；卷→章树 + 未分卷桶；textarea 0.9s 防抖保存 + 失焦/切换/卸载落盘；保存失败阻止切章；实时字数、保存状态、归档只读；概览「开始写作」真实跳转 | `workspaceProfiles.test.ts`（16 passed）；`NovelManuscriptPanel.test.tsx`（4 passed：树/正文回填、失焦落盘、归档只读、保存失败阻止切章） |
+| 备份 | `novel_volumes` / `novel_chapters` 登记 `EXTENDED_TABLES` 与 `BACKUP_TABLES`，快速备份全量分支显式放行；恢复顺序 项目 → 卷 → 章 | `novel_workspace_project_roundtrips_in_full_and_quick_backup`（Full + Quick，正文逐字与 word_count 一致） |
+
+明确未做（不冒充）：
+
+- 富文本/Markdown、版本历史/撤销快照、TXT/Markdown/DOCX/PDF 导出、全文搜索、拼写检查；
+- 人物档案、世界观、剧情时间线、伏笔追踪、AI 续写/改写；
+- 跨卷拖拽移动与批量操作（B1 只支持同卷上下移、新建时指定卷）；
+- 原生窗口逐页走查：本机仅做自动化与组件测试，未启动隔离实例逐页点击（未验证）。
+- 命令：`cargo test -j 1 --lib novel` → 5 passed / 0 failed（日志
+  `m-mwimhxy1-c5b5e4.log`）；`vitest run src/workspace/workspaceProfiles.test.ts` → 16 passed
+  （`l-mwimjaco-30d10f.log`）；`vitest run src/workbench/NovelManuscriptPanel.test.tsx` → 4 passed
+  （`l-mwimq139-37c86e.log`）；合并复跑两文件 **20 passed**
+  （`l-mwimskcj-3034f9.log`）；
+  `tsc --noEmit` 退出码 0（`m-mwimqbau-683566.log`，组件最终改动后复跑）。
 

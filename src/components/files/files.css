@@ -21,6 +21,12 @@
   --border-strong: var(--fw-border-strong);
   --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.22);
 
+  /* 文件类别语义色：局部补齐视频/音频/文本差异，不改共享 styles.css。 */
+  --file-tone-video: #b39dfb;
+  --file-tone-audio: #e879f9;
+  --file-tone-text: #9aa9bd;
+  --file-tone-other: #8b95a5;
+
   height: 100%;
   min-width: 0;
   display: flex;
@@ -36,6 +42,11 @@ html[data-theme="light"] .fw-root {
   --fw-border-subtle: rgba(17, 24, 39, 0.08);
   --fw-border-strong: rgba(17, 24, 39, 0.16);
   --shadow-raised: 0 1px 2px rgba(17, 24, 39, 0.06);
+
+  --file-tone-video: #7c3aed;
+  --file-tone-audio: #a21caf;
+  --file-tone-text: #52627a;
+  --file-tone-other: #64748b;
 }
 
 .fw-root-boot {
@@ -144,52 +155,159 @@ html[data-theme="light"] .fw-root {
 }
 
 .fw-divider {
-  flex: 0 0 6px;
+  flex: 0 0 16px;
   background: transparent;
   position: relative;
   z-index: 1;
   cursor: default;
   outline: none;
+  touch-action: none;
+  user-select: none;
 }
 
-.fw-divider::after {
-  content: "";
+.fw-divider-line {
   position: absolute;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--border-strong) 62%, transparent);
+  background: color-mix(in srgb, var(--border-strong) 72%, transparent);
   transition: background 120ms ease;
+}
+
+.fw-divider-grip {
+  position: absolute;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-tertiary) 52%, transparent);
+  opacity: 0.42;
+  transition:
+    opacity 120ms ease,
+    background 120ms ease;
 }
 
 .fw-divider.is-horizontal {
   cursor: col-resize;
 }
 
-.fw-divider.is-horizontal::after {
-  left: 2px;
-  right: 2px;
+.fw-divider.is-horizontal .fw-divider-line {
+  left: 50%;
   top: 4px;
   bottom: 4px;
+  width: 1px;
+  transform: translateX(-0.5px);
+}
+
+.fw-divider.is-horizontal .fw-divider-grip {
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 5px;
+  transform: translate(-50%, -50%);
 }
 
 .fw-divider.is-vertical {
   cursor: row-resize;
 }
 
-.fw-divider.is-vertical::after {
-  top: 2px;
-  bottom: 2px;
+.fw-divider.is-vertical .fw-divider-line {
+  top: 50%;
   left: 4px;
   right: 4px;
+  height: 1px;
+  transform: translateY(-0.5px);
 }
 
-.fw-divider:hover::after,
-.fw-divider:focus-visible::after {
+.fw-divider.is-vertical .fw-divider-grip {
+  top: 50%;
+  left: 50%;
+  width: 5px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+}
+
+.fw-divider:hover .fw-divider-line,
+.fw-divider:focus-visible .fw-divider-line,
+.fw-divider.is-dragging .fw-divider-line {
   background: var(--accent);
 }
 
+.fw-divider:hover .fw-divider-grip,
+.fw-divider:focus-visible .fw-divider-grip,
+.fw-divider.is-dragging .fw-divider-grip {
+  opacity: 1;
+  background: var(--accent);
+}
+
+.fw-divider.is-dragging .fw-divider-grip {
+  opacity: 1;
+}
+
+.fw-divider-ratio {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  padding: 2px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.fw-divider.is-vertical .fw-divider-ratio {
+  left: calc(100% + 6px);
+  bottom: auto;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.fw-divider-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-raised);
+  display: flex;
+  flex-direction: column;
+}
+
+.fw-divider-menu button {
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font-size: 12px;
+  padding: 6px 9px;
+  border-radius: 5px;
+  cursor: default;
+}
+
+.fw-divider-menu button:hover,
+.fw-divider-menu button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: none;
+}
+
+.fw-divider-menu button.is-current {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 body.fw-resizing {
-  cursor: inherit;
   user-select: none;
+}
+
+body.fw-resizing-col,
+body.fw-resizing-col * {
+  cursor: col-resize !important;
+}
+
+body.fw-resizing-row,
+body.fw-resizing-row * {
+  cursor: row-resize !important;
 }
 
 /* ── 分栏 ───────────────────────────────────────────────────────────── */
@@ -353,6 +471,61 @@ body.fw-resizing {
   align-items: center;
   gap: 2px;
   flex: 0 0 auto;
+}
+
+/* 选中上下文操作区：出现时不挤压常驻工具栏，窄窗格自动隐藏文字只留图标+提示 */
+.fw-selection-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  min-height: 28px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface-raised));
+  overflow: hidden;
+}
+
+.fw-selection-count {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.fw-selection-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: default;
+}
+
+.fw-selection-btn:hover,
+.fw-selection-btn:focus-visible {
+  background: var(--surface-overlay);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+  outline: none;
+}
+
+@container fw-pane (max-width: 520px) {
+  .fw-selection-btn span {
+    display: none;
+  }
+  .fw-selection-btn {
+    width: 24px;
+    padding: 0;
+    justify-content: center;
+  }
 }
 
 .fw-icon-btn {
@@ -1327,6 +1500,184 @@ body.fw-resizing {
   margin: 8px 0 0;
   font-size: 11px;
   color: var(--text-tertiary);
+}
+
+.fw-transfer-summary {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.fw-transfer-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fw-transfer-target {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--surface-base);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: default;
+}
+
+.fw-transfer-target:hover,
+.fw-transfer-target:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-base));
+  outline: none;
+}
+
+.fw-transfer-target.is-active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+}
+
+.fw-transfer-target-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.fw-transfer-target-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fw-transfer-target-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fw-transfer-target-path {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-transfer-active {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.fw-conflict-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fw-conflict-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: var(--surface-base);
+  font-size: 12px;
+}
+
+.fw-conflict-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-conflict-kind {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+/* 操作队列条：真实报告后端是否可取消，不用前端假按钮 */
+.fw-op-queue {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.fw-op-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.fw-op-queue-item.has-error {
+  color: var(--danger, #e5484d);
+}
+
+.fw-op-queue-item.is-running .fw-op-name {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.fw-op-name {
+  flex: 0 0 auto;
+}
+
+.fw-op-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-op-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+}
+
+.fw-op-no-cancel {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.fw-op-spinner {
+  animation: fw-op-spin 900ms linear infinite;
+}
+
+@keyframes fw-op-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-op-spinner {
+    animation: none;
+  }
 }
 
 .fw-props {

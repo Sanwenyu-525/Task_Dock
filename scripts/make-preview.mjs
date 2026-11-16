@@ -1458,14 +1458,31 @@ const shim = `
       // 真机 IPC 每次返回新反序列化的对象；夹具必须同样返回快照，
       // 否则删除类 mock 就地 splice 会直接改写 store 里的 view，
       // 让「离场中按原位钉住」在走查前就找不到目标行（假阴性）。
-      case "clipboard_view":
+      case "clipboard_view": {
+        // 走查 harness 也要模拟后端筛选，否则截图里「图片」筛选会继续显示
+        // 文本/链接项，把 UI 状态与列表内容混在一起，无法作为交互证据。
+        const f = args?.filter || {};
+        const kind = f.kind || "all";
+        const favorite = f.favorite === true;
+        const search = (f.search || "").trim().toLowerCase();
+        const filtered = clipboardItems.filter((i) => {
+          if (kind !== "all" && i.kind !== kind) return false;
+          if (favorite && !i.favorite) return false;
+          if (!search) return true;
+          const hay = [i.title, i.preview, i.text, i.source_app, i.source_title]
+            .filter(Boolean).join(" ").toLowerCase();
+          return hay.includes(search);
+        });
+        const offset = Math.max(0, f.offset ?? 0);
+        const limit = Math.max(1, f.limit ?? 200);
         return {
-          items: clipboardItems.map((i) => ({ ...i })),
+          items: filtered.slice(offset, offset + limit).map((i) => ({ ...i })),
           // 列表接口与真实契约一致：不返回分组明细 items，只有详情接口才带。
           groups: clipboardGroups.map(({ items: _detail, ...g }) => ({ ...g })),
           stats: { ...clipboardStats, items: clipboardItems.length, groups: clipboardGroups.length },
-          total_items: clipboardItems.length,
+          total_items: filtered.length,
         };
+      }
       case "clipboard_stats": return { ...clipboardStats, items: clipboardItems.length, groups: clipboardGroups.length };
       case "clipboard_item": return clipboardItems.find((i) => i.id === args?.itemId) ?? clipboardItems[0];
       // 分组详情接口必须带 items/image_count/preview（bridge.ClipboardGroup 的「仅详情接口填充」字段），

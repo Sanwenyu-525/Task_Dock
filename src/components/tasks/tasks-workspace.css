@@ -1,0 +1,120 @@
+/*
+ * 任务工作区布局（2026-11-16）
+ *
+ * 原来「概览 + 快速添加 + 筛选 + 列表」全部纵向堆叠，任务列表只在页面下半部
+ * 获得空间。这里把概览/快速添加/筛选组织成独立左栏，任务列表占据主工作区，
+ * 形成「导航筛选 | 任务列表 | 外壳详情」的页面级结构。
+ *
+ * 只重排 TasksPanel 的直接子节点，不改筛选、排序、提醒与编辑器状态；
+ * 专注/统计模式仍是独立全宽视图。
+ */
+
+.tasks-panel.tasks-workspace-layout {
+  display: grid;
+  grid-template-columns: clamp(180px, 23%, 268px) minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  column-gap: 16px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tasks-panel.tasks-workspace-layout > .wb-page-header {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+/* 左栏独立滚动：统计卡、快速添加、日期/状态筛选和搜索即使在小高度窗口
+   同时存在，也不把任务列表挤到页面外。 */
+.tasks-panel.tasks-workspace-layout > .tasks-head {
+  grid-column: 1;
+  grid-row: 2;
+  align-self: stretch;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 4px 2px 0;
+}
+
+.tasks-panel.tasks-workspace-layout > .active-reminders {
+  grid-column: 1;
+  grid-row: 3;
+  align-self: start;
+}
+
+.tasks-panel.tasks-workspace-layout > .task-list {
+  grid-column: 2;
+  grid-row: 2 / 4;
+  height: auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 左栏内的统计卡在 180-268px 宽度下用 2×2 紧凑网格：既保留可下钻的四项
+   指标，又不让四张竖排大卡吃掉筛选与搜索的可见高度。 */
+.tasks-panel.tasks-workspace-layout .tasks-overview--stats {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-overview--stats .overview-card {
+  min-height: 68px;
+  padding: 10px 10px;
+  gap: 3px;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-overview--stats .overview-value {
+  font-size: 20px;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-overview--stats .overview-label {
+  font-size: 10.5px;
+  white-space: normal;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-viewbar,
+.tasks-panel.tasks-workspace-layout .tasks-filterbar {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-views {
+  width: 100%;
+  flex-wrap: wrap;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-views .seg-btn {
+  flex: 1 1 calc(33.333% - 4px);
+  min-width: 0;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-filterbar .search-box {
+  flex: 1 1 100%;
+  width: 100%;
+}
+
+.tasks-panel.tasks-workspace-layout .tasks-filterbar .seg-group,
+.tasks-panel.tasks-workspace-layout .tasks-filterbar .sort-select {
+  flex: 1 1 100%;
+  width: 100%;
+}
+
+/* 窗口/容器极窄时才退回上下分区；侧栏保留，筛选能力不被隐藏。 */
+@container (max-width: 520px) {
+  .tasks-panel.tasks-workspace-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+  .tasks-panel.tasks-workspace-layout > .tasks-head {
+    grid-column: 1;
+    grid-row: 2;
+    max-height: 42vh;
+  }
+  .tasks-panel.tasks-workspace-layout > .active-reminders {
+    grid-column: 1;
+    grid-row: 4;
+  }
+  .tasks-panel.tasks-workspace-layout > .task-list {
+    grid-column: 1;
+    grid-row: 3;
+  }
+}

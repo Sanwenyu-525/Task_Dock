@@ -223,6 +223,16 @@ export interface FilesWorkspaceActions {
   /** 任意两区域位置互换（布局编辑模式：拖动区域 A 到区域 B 中心）。 */
   swapPanes: (a: string, b: string) => boolean;
   updateRatio: (splitId: string, ratio: number) => void;
+  /**
+   * 分割线拖动事务：开始记录一次撤销快照 → 每帧只预览树比例（不写历史、不持久化）
+   * → 松开提交最终比例（仍只保留一条撤销记录）。取消恢复拖动前树并回滚该快照。
+   */
+  beginRatioResize: (splitId: string) => void;
+  previewRatio: (splitId: string, ratio: number) => void;
+  commitRatioResize: () => void;
+  cancelRatioResize: () => void;
+  /** 文件移动成功后的来源选择清理（按真实成功项；失败/部分完成仍保留选择）。 */
+  removePathsFromSelections: (paths: string[]) => void;
   setActivePane: (paneId: string) => void;
   toggleMaximize: (paneId: string) => void;
   /** 应用布局预设并**保留全部已打开目录**（按稳定规则重新分配标签）。 */
@@ -259,6 +269,13 @@ let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let applyPersistError: ((value: string | null) => void) | null = null;
 /** 历史合并窗口（同一 kind+key 的连续操作合并为一条撤销单元）。 */
 let historyCoalesce: { kind: string; key: string; at: number } | null = null;
+/** 分割线拖动事务：保存拖动前快照与历史栈，取消时精确回滚且不留下撤销项。 */
+let ratioDrag: {
+  splitId: string;
+  snapshot: LayoutSnapshot;
+  history: LayoutSnapshot[];
+  future: LayoutSnapshot[];
+} | null = null;
 
 function schedulePersist(get: () => FilesWorkspaceStore): void {
   if (persistTimer) clearTimeout(persistTimer);
@@ -937,6 +954,67 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
     updateRatio: (splitId, ratio) => {
       recordHistory("ratio", splitId);
       withTree(updateRatioInTree(get().tree, splitId, ratio));
+    },
+
+    beginRatioResize: (splitId) => {
+      const s = get();
+      ratioDrag = {
+        splitId,
+        snapshot: snapshotLayout(s),
+        history: s.layoutHistory,
+        future: s.layoutFuture,
+      };
+      // 整个拖动事务只在这里入栈一次；移动过程不调用 recordHistory。
+      set({
+        layoutHistory: [...s.layoutHistory, ratioDrag.snapshot].slice(-MAX_LAYOUT_HISTORY),
+        layoutFuture: [],
+      });
+    },
+
+    previewRatio: (splitId, ratio) => {
+      // 拖动帧只改树，不写历史、不排持久化：避免每帧一条撤销记录/一次磁盘写。
+      set({ tree: updateRatioInTree(get().tree, splitId, ratio) });
+    },
+
+    commitRatioResize: () => {
+      if (!ratioDrag) return;
+      ratioDrag = null;
+      schedulePersist(get);
+    },
+
+    cancelRatioResize: () => {
+      if (!ratioDrag) return;
+      const drag = ratioDrag;
+      ratioDrag = null;
+      set({
+        tree: drag.snapshot.tree,
+        layoutHistory: drag.history,
+        layoutFuture: drag.future,
+      });
+      // 预览从未持久化；回到拖动前的已持久化状态，无需再写。
+    },
+
+    removePathsFromSelections: (paths) => {
+      if (!paths.length) return;
+      const remove = new Set(paths.map((p) => normalizePath(p).toLowerCase()));
+      set((s) => {
+        let changed = false;
+        const selection: Record<string, PaneSelection> = {};
+        for (const [paneId, current] of Object.entries(s.selection)) {
+          const kept = current.paths.filter((p) => !remove.has(normalizePath(p).toLowerCase()));
+          if (kept.length === current.paths.length) {
+            selection[paneId] = current;
+            continue;
+          }
+          changed = true;
+          const anchor =
+            current.anchor && kept.some((p) => samePath(p, current.anchor))
+              ? current.anchor
+              : (kept[0] ?? null);
+          selection[paneId] = { paths: kept, anchor };
+        }
+        return changed ? { selection } : s;
+      });
     },
 
     setActivePane: (paneId) => {

@@ -21,7 +21,7 @@ export const STATE_DIR_NAME = "taskdock-build-sched";
 // 状态目录布局（写在这里便于 status/doctor 输出与排障）：
 //   lock/                    准入互斥（当前未使用；槽位租约即互斥原语）
 //   slots/<class>-<n>/       资源槽位租约；heavy-1 即「全局构建互斥锁」
-//   reservations/<taskId>.json  跨分类全局预算预留台账（活跃任务，见 budget.mjs）
+//   reservations/<taskId>.json  跨分类活动台账（全局并发名额计数与崩溃回收，见 admission.mjs）
 //   queue/<taskId>.json      任务记录（仅由提交它的进程写入）
 //   queue/cancel/<taskId>    取消标记（任何进程可创建，持有者轮询后协作取消）
 //   logs/<taskId>.log        每个任务的标准输出/错误原文
@@ -76,7 +76,7 @@ function gitCommonDir(cwd, env) {
     }
   } catch { /* 走文件系统探测 */ }
   // Git 不在 PATH（很常见的被裁剪 shell / 服务环境）时，不能静默退回 tmpdir：
-  // 那会让同一仓库的不同进程使用不同锁与预算台账。直接读取 .git 指针即可恢复同一状态目录。
+  // 那会让同一仓库的不同进程使用不同锁与活动台账。直接读取 .git 指针即可恢复同一状态目录。
   return gitCommonDirFromFs(cwd);
 }
 

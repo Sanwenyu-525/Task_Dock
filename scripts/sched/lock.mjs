@@ -215,7 +215,7 @@ function tryReclaim({
   return { reclaimed: true, reason: why, detail: orphan.detail, holderTask: owner.taskId ?? null };
 }
 
-/** 准入临界区槽位名（与 budget.mjs 的 ADMISSION_SLOT 一致；在此处独立定义，避免循环依赖）。 */
+/** 准入临界区槽位名（与 admission.mjs 的 ADMISSION_SLOT 一致；在此处独立定义，避免循环依赖）。 */
 const ADMISSION_SLOT_NAME = ".admission";
 
 /**

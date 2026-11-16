@@ -2,7 +2,7 @@
 //!
 //! 设计约束（对应需求第四/五/七条）：
 //!   - 槽位租约覆盖子进程的**整个生命周期**（起之前拿、退出之后才放），不是「起进程就放锁」；
-//!   - 等待期间不停轮询优先级、内存、取消标记，并以 15 秒节流输出等待原因（不静默无限等待）；
+//!   - 等待期间不停轮询优先级、取消标记，并以 15 秒节流输出等待原因（不静默无限等待）；
 //!   - 子进程的标准输出/错误写日志文件，子进程退出码原样返回；
 //!   - 取消/超时由「持有者自己」终止自己 spawn 的子进程树——不越权杀别人的进程；
 //!     这区别于 lock.mjs 的 reapOrphanChild：后者处置的是**记录在磁盘上**的他人/崩溃遗留进程，
@@ -16,13 +16,14 @@ import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { classifyArgv } from "./classify.mjs";
-import { concurrencyForClass, createMemorySampler, estimateForClass, formatMb } from "./mem.mjs";
+import { concurrencyForClass } from "./config.mjs";
 import { appendBoundedJsonLine, ensureState, newTaskId, paths } from "./state.mjs";
 import { killTree, selfIdentity, waitForGone } from "./proc.mjs";
 import { reapStaleSlots, slotNames } from "./lock.mjs";
 import {
-  acquireAdmission, releaseReservation, setReservationChild, setReservationPhase, startReservationHeartbeat,
-} from "./budget.mjs";
+  acquireAdmission, BUILD_CLASSES, releaseReservation, setReservationChild, setReservationPhase,
+  startReservationHeartbeat,
+} from "./admission.mjs";
 import {
   ACTIVE_STATUSES, PRIORITY_LABEL, WAITING_STATUSES, clearCancelMarker, computeFingerprint, effectivePriority,
   evaluateEligibility, finalizeOrphanRecord, findRunningEquivalent, housekeeping, isCancelRequested, readQueue, readTask,
@@ -162,7 +163,7 @@ function createLogWriter(logPath, maxMb) {
 export async function executeTask({
   argv, cwd = process.cwd(), label, priority = 1, explicitClass = null,
   cfg, home, env = process.env, tee = true, dedupe = true, shellRaw = false, detachChild = false,
-  waitTimeoutMin = null, runTimeoutMin = null, estimateMb = null, repoRoot = DEFAULT_REPO_ROOT,
+  waitTimeoutMin = null, runTimeoutMin = null, repoRoot = DEFAULT_REPO_ROOT,
   io = { out: process.stdout, err: process.stderr },
 }) {
   const err = (msg) => io.err.write(`[sched] ${msg}\n`);
@@ -180,7 +181,6 @@ export async function executeTask({
   const concurrency = concurrencyForClass(cfg, taskClass);
   const waitMs = (waitTimeoutMin === null ? cfg.defaultWaitTimeoutMin : waitTimeoutMin) * 60000;
   const runLimitMs = (runTimeoutMin === null ? cfg.defaultRunTimeoutMin : runTimeoutMin) * 60000;
-  const estMb = estimateMb ?? estimateForClass(cfg, taskClass);
 
   const precheckPath = join(repoRoot, "scripts", "build-guard.mjs");
   const fingerprint = dedupe ? computeFingerprint({ argv, cwd, env }) : null;
@@ -206,7 +206,6 @@ export async function executeTask({
       CARGO_BUILD_JOBS: env.CARGO_BUILD_JOBS ?? null,
     },
     fingerprint: fingerprint ? { hash: fingerprint.hash, parts: fingerprint.parts } : null,
-    estimateMb: estMb,
     detached: detachChild,
     owner: ownerIdentity(),
     logPath: `logs/${taskId}.log`,
@@ -214,8 +213,7 @@ export async function executeTask({
     child: null,
   };
 
-  err(`任务 ${taskId} 分类=${taskClass}（${classification.reason}）优先级=${PRIORITY_LABEL[priority]}` +
-    `${estMb ? `，预计峰值≈${formatMb(estMb)}` : ""}`);
+  err(`任务 ${taskId} 分类=${taskClass}（${classification.reason}）优先级=${PRIORITY_LABEL[priority]}`);
 
   // ---- 等价任务去重：只附加到「正在运行」的等价任务，不复用已结束的旧结果
   if (fingerprint) {
@@ -229,7 +227,6 @@ export async function executeTask({
 
   writeTask(home, task);
 
-  const sampler = createMemorySampler({ intervalMs: cfg.memorySampleMs, env });
   let lease = null;
   let reservation = null;
   let reservationHeartbeat = null;
@@ -242,7 +239,6 @@ export async function executeTask({
   const startWait = Date.now();
   const deadline = waitMs > 0 ? startWait + waitMs : Infinity;
   let lastReason = "";
-  const memDuringWait = { startAvailMb: null, minAvailMb: null };
 
   const releaseLease = () => {
     if (lease && !released) {
@@ -252,14 +248,14 @@ export async function executeTask({
     }
   };
 
-  // 预留（全局预算）与槽位（分类互斥）是两份账：任何一条退出路径都必须两份都释放，
-  // 否则崩溃/取消一次就会永久占掉一份预算（后来者只能看到一个"莫名其妙"的预算不足）。
+  // 台账（全局并发名额）与槽位（分类互斥）是两份账：任何一条退出路径都必须两份都释放，
+  // 否则崩溃/取消一次就会永久占掉一个全局名额（后来者只能看到"莫名其妙"的并发已满）。
   const releaseReservationEntry = (reason) => {
     if (reservationHeartbeat) { reservationHeartbeat.stop(); reservationHeartbeat = null; }
     if (!reservation) return;
     setReservationPhase(home, reservation, "releasing");
     const r = releaseReservation({ home, entry: reservation, reason, log: (m) => err(m) });
-    if (!r.ok) err(`预留释放异常：${r.detail}`);
+    if (!r.ok) err(`台账释放异常：${r.detail}`);
     reservation = null;
   };
 
@@ -276,8 +272,8 @@ export async function executeTask({
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
 
-  // 收尾：记录最终状态 → 写历史 → 释放槽位 → 输出机器可读尾行
-  async function finish(t, { status, exitCode, reason, memDuringRun }) {
+  // 收尾：记录最终状态 → 写历史 → 释放槽位/名额 → 输出机器可读尾行
+  async function finish(t, { status, exitCode, reason }) {
     const finishedAt = nowIso();
     const runMs = t.startedAt ? Date.now() - Date.parse(t.startedAt) : 0;
     const waitTotal = t.startedAt
@@ -288,7 +284,7 @@ export async function executeTask({
     try {
       writeTask(home, {
         ...t, status, exitCode: exitCode ?? null, finishedAt,
-        finishReason: reason ?? null, memDuringRun: memDuringRun ?? null,
+        finishReason: reason ?? null,
       });
     } catch (e) { err(`写最终状态失败：${e?.message ?? e}`); }
 
@@ -314,16 +310,11 @@ export async function executeTask({
         waitMs: Math.max(0, waitTotal), runMs,
         worktree: t.worktree, command: t.command, cwd: t.cwd,
         logPath: t.logPath, fingerprint: t.fingerprint?.hash ?? null,
-        estimateMb: t.estimateMb,
-        // 全局预算证据：准入那一刻的预算上限/已预留/本次预计，事后可复核"有没有超卖"
-        budgetAtStart: t.budgetAtStart ?? null,
         // 全局并发证据：准入那一刻在跑的构建数与上限（约束 C）
         globalAtStart: t.globalAtStart ?? null,
         reservation: reservation
-          ? { taskId: reservation.taskId, reservedMb: reservation.reservedMb, phase: reservation.phase }
+          ? { taskId: reservation.taskId, phase: reservation.phase }
           : null,
-        memDuringRun: memDuringRun ?? null,
-        memDuringWait,
         child: t.child ?? null,
       }, cfg.historyMaxEntries);
     } catch (e) { err(`写历史失败：${e?.message ?? e}`); }
@@ -353,10 +344,6 @@ export async function executeTask({
         });
       }
 
-      const mem = sampler.current();
-      if (memDuringWait.startAvailMb === null) memDuringWait.startAvailMb = mem.availMb;
-      if (memDuringWait.minAvailMb === null || mem.availMb < memDuringWait.minAvailMb) memDuringWait.minAvailMb = mem.availMb;
-
       if (now - lastHousekeepAt > 5000) {
         lastHousekeepAt = now;
         const cleaned = housekeeping({
@@ -384,16 +371,15 @@ export async function executeTask({
       }
 
       const tasks = readQueue(home);
-      const elig = evaluateEligibility({ home, task, tasks, cfg, mem });
+      const elig = evaluateEligibility({ home, task, tasks, cfg });
 
-      // 状态语义：只有"全局预算也够"才算正常排队；预算不足是 waiting_resources，
-      // 否则用户看到 queued 会误以为"只是在排队"，实际是被预算挡住。
-      const nextStatus = elig.budget.admit ? "queued" : "waiting_resources";
+      // 2026-11-16 删除全局内存预算后，等待只有一个语义：排队。
+      // （`waiting_resources` 只作为历史记录的兼容状态保留，不再产生新记录。）
+      const nextStatus = "queued";
       const reason = elig.blockers.join("；");
       if (task.status !== nextStatus || reason !== lastReason || now - lastWriteAt > 6000) {
         task.status = nextStatus;
         task.waitReason = reason || null;
-        task.lastBudgetOk = elig.budget.admit;
         try { writeTask(home, task); } catch { /* 状态写失败不阻断，下轮重试 */ }
         lastWriteAt = now;
       }
@@ -401,9 +387,8 @@ export async function executeTask({
 
       // 注意：槽位目录存在 ≠ 一定有人在跑。崩溃会话留下的陈旧槽位只能靠「身份取证 + 回收」解决，
       // 而取证要查系统进程（较慢），因此按 reclaimProbeMs 节流，不能每轮都做，也不能永不做。
-      // 预算侧同理：预算被"崩溃残留的预留"占住时也必须定期去台账取证，否则残留会永久堵住准入。
-      // 全局并发名额（约束 C）同样由预留台账计数：残留预留也会永久占掉一个名额，必须一并取证。
-      const worthProbing = (elig.slotOnlyBlocked || elig.budgetBlocked || elig.capBlocked) &&
+      // 全局并发名额同理由台账计数：残留台账会永久占掉一个名额，必须一并取证。
+      const worthProbing = (elig.slotOnlyBlocked || elig.capBlocked) &&
         now - lastReclaimProbeAt >= cfg.reclaimProbeMs;
       if (elig.eligible || worthProbing) {
         if (elig.eligible && cfg.dedupe && fingerprint) {
@@ -415,33 +400,35 @@ export async function executeTask({
         }
         if (worthProbing) lastReclaimProbeAt = now;
 
-        // 原子准入：预算预留 + 分类槽位在同一个跨进程临界区完成（docs 5.7）。
-        // 不允许"先占槽位再发现预算不够"（会白占槽位），也不允许"先查预算再慢慢抢槽位"
-        // （两个进程会以为自己都拿到了最后一份预算）。
+        // 原子准入：全局并发名额 + 分类槽位在同一个跨进程临界区完成（docs 5.7）。
+        // 不允许"先占槽位再发现名额已满"（会白占槽位），也不允许"先查名额再慢慢抢槽位"
+        // （两个进程会以为自己都拿到了最后一个名额）。
         const acquired = acquireAdmission({
           home, taskId, taskClass,
-          estimateMb: task.estimateMb,
           label: task.label,
-          cfg, totalMb: mem.totalMb,
+          cfg,
           slotNames: slotNames(taskClass, concurrency),
           detached: detachChild,
           log: (m) => err(m),
           allowSlotReclaim: elig.eligible || worthProbing,
         });
-        if (acquired.plan) task.lastBudgetPlan = { ...acquired.plan, at: nowIso() };
         if (acquired.ok) {
-          // 只记录"真正准入那一刻"的预算证据：它才是可复核"有没有超卖"的样本
-          task.budgetAtStart = { ...acquired.plan, at: nowIso() };
-          // 约束 C 证据：准入那一刻全局在跑的构建数（含本次）/ 上限；用于事后复核"有没有放出第 4 个"
+          // 约束 C 证据：准入那一刻全局在跑的构建数（含本次）/ 上限；用于事后复核"有没有放出第 4 个"。
+          // dev 不占名额：它的 active 只统计同时在跑的 heavy/medium/light，不把自己 +1 进去。
           task.globalAtStart = acquired.cap
-            ? { active: (acquired.cap.active ?? 0) + 1, cap: acquired.cap.cap ?? null, at: nowIso() }
+            ? {
+              active: (acquired.cap.active ?? 0) + (BUILD_CLASSES.includes(task.taskClass) ? 1 : 0),
+              cap: acquired.cap.cap ?? null,
+              applies: acquired.cap.applies !== false,
+              at: nowIso(),
+            }
             : null;
           lease = acquired.lease;
           reservation = acquired.reservation;
           released = false;
           reservationHeartbeat = startReservationHeartbeat(home, reservation, cfg.heartbeatMs);
           if (acquired.ledgerReclaimed?.length) {
-            err(`回收了 ${acquired.ledgerReclaimed.length} 条崩溃残留预留（预算已归还）`);
+            err(`回收了 ${acquired.ledgerReclaimed.length} 条崩溃残留台账（名额已归还）`);
           }
           if (acquired.reclaimed?.holderTask) {
             const finalized = finalizeOrphanRecord({
@@ -543,19 +530,12 @@ export async function executeTask({
     setReservationChild(home, reservation, childRecord);
     setReservationPhase(home, reservation, "running");
 
-    const memDuringRun = { minAvailMb: null, samples: 0 };
     const outcome = await waitForChild(child, {
       pollMs: cfg.pollMs,
-      memorySampleMs: cfg.memorySampleMs,
-      sampler,
       runLimitMs,
       home,
       taskId,
       tee, io, log,
-      onMemorySample(m) {
-        memDuringRun.samples += 1;
-        if (memDuringRun.minAvailMb === null || m.availMb < memDuringRun.minAvailMb) memDuringRun.minAvailMb = m.availMb;
-      },
       onCancel: () => err("收到取消请求：终止本任务子进程树"),
     });
 
@@ -570,17 +550,15 @@ export async function executeTask({
       return await finish(task, {
         status: "failed", exitCode: EXIT.internal,
         reason: `子进程启动失败：${spawnError.code ?? spawnError.message}`,
-        memDuringRun,
       });
     }
     if (outcome.cancelled) {
-      return await finish(task, { status: "cancelled", exitCode: EXIT.cancelled, reason: "运行中被取消", memDuringRun });
+      return await finish(task, { status: "cancelled", exitCode: EXIT.cancelled, reason: "运行中被取消" });
     }
     if (outcome.timedOut) {
       return await finish(task, {
         status: "failed", exitCode: EXIT.waitTimeout,
         reason: `运行超时（上限 ${Math.round(runLimitMs / 60000)} 分钟），已终止子进程树`,
-        memDuringRun,
       });
     }
     const code = outcome.code ?? EXIT.internal;
@@ -590,7 +568,6 @@ export async function executeTask({
       reason: code === 0
         ? null
         : (outcome.signal ? `子进程被信号 ${outcome.signal} 终止` : `子进程退出码 ${code}`),
-      memDuringRun,
     });
   } catch (e) {
     err(`调度器内部错误：${e?.stack ?? e}`);
@@ -668,7 +645,7 @@ function formatWaitLimit(ms) {
 }
 
 /**
- * 等待子进程结束，同时：取消标记轮询、运行超时、内存采样。
+ * 等待子进程结束，同时：取消标记轮询、运行超时。
  * 终止时直接用自己的 child 句柄（不是磁盘记录），因为这是本进程 spawn 的进程。
  */
 function waitForChild(child, opts) {
@@ -676,7 +653,6 @@ function waitForChild(child, opts) {
     let cancelled = false;
     let timedOut = false;
     let settled = false;
-    let lastMemAt = Date.now();
     const startMs = Date.now();
 
     const kill = (why) => {
@@ -696,10 +672,6 @@ function waitForChild(child, opts) {
       if (opts.runLimitMs > 0 && !timedOut && Date.now() - startMs > opts.runLimitMs) {
         timedOut = true;
         kill("运行超时");
-      }
-      if (Date.now() - lastMemAt >= opts.memorySampleMs) {
-        lastMemAt = Date.now();
-        try { opts.onMemorySample(opts.sampler.current()); } catch { /* ignore */ }
       }
     }, Math.min(Math.max(opts.pollMs, 200), 1000));
 

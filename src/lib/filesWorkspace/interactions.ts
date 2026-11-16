@@ -16,7 +16,7 @@
 //! 语义（Windows 习惯）：Ctrl=复制、Shift=移动；默认同卷移动、跨卷复制，
 //! 释放前 UI 恒显示当前效果，不得因落点判断错误执行非预期移动。
 
-import { samePath, isSubPath, normalizePath } from "./pathUtils";
+import { samePath, isSubPath, normalizePath, parentOf } from "./pathUtils";
 
 export type FwDragPayload =
   | { kind: "tabs"; tabIds: string[]; fromPaneId: string; paths: string[] }
@@ -244,9 +244,15 @@ export function validateFileDrop(
   paths: string[],
   targetDir: string,
 ): string | null {
+  const target = normalizePath(targetDir);
+  if (!target) return null;
   for (const p of paths) {
     const from = normalizePath(p);
-    if (samePath(from, targetDir) || isSubPath(from, targetDir)) return null;
+    if (!from) return null;
+    // 目标就是源自身 / 源位于目标内（拖进自己的子树）→ 拒绝。
+    if (samePath(from, target) || isSubPath(from, target)) return null;
+    // 源已经在目标目录里：拖到当前目录没有语义，不能变成「原地复制」。
+    if (samePath(parentOf(from) ?? "", target)) return null;
   }
   return targetDir;
 }

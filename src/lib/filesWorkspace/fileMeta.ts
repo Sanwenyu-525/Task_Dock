@@ -30,8 +30,8 @@ export interface FileVisual {
 const CATEGORY_VISUAL: Record<string, FileVisual> = {
   folder: { icon: Folder, tone: "folder" },
   image: { icon: FileImage, tone: "image" },
-  video: { icon: FileVideo, tone: "media" },
-  audio: { icon: FileMusic, tone: "media" },
+  video: { icon: FileVideo, tone: "video" },
+  audio: { icon: FileMusic, tone: "audio" },
   text: { icon: FileText, tone: "text" },
   doc: { icon: FileText, tone: "doc" },
   sheet: { icon: FileSpreadsheet, tone: "sheet" },

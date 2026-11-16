@@ -1,4 +1,4 @@
-﻿//! 窗口外形（2026-11-01 二轮整改）：主窗**原生圆角区域 + CSS 抗锯齿边缘**，
+//! 窗口外形（2026-11-01 二轮整改）：主窗**原生圆角区域 + CSS 抗锯齿边缘**，
 //! 胶囊与弹窗沿用各自独立的 Win32 区域。
 //!
 //! 本应用是 `decorations:false` + `transparent:true` + `shadow:false` 的无边框窗口。
@@ -113,7 +113,7 @@ fn radius_milli(logical_radius: f64) -> u32 {
 }
 
 /// 角部曲线指数 → milli 整数。2 是 WebView2 一直以来的圆弧行为（默认、兼容口径），
-/// 4 是与 CSS `corner-shape: superellipse(4)` 对齐的连续圆角。超出 2–6 或非法值一律
+/// 4 是与 CSS `corner-shape: superellipse(2)`（K=2 ⇒ n=4）对齐的连续圆角。超出 2–6 或非法值一律
 /// 回退 2：宁可退化成普通圆角，也不写出与 CSS 不一致的区域（会露白/切边）。
 fn corner_milli(exponent: f64) -> u32 {
     let n = if exponent.is_finite() {
@@ -138,7 +138,7 @@ struct RegionStamp {
     /// 实际写入的物理区域半径（0 = 直角矩形区域）。
     radius: u32,
     scale_milli: u32,
-    /// 角部曲线指数 × 1000（2 = 圆弧，4 = superellipse）。与半径一起决定区域内容，
+    /// 角部曲线数学指数 n × 1000（2 = 圆弧，4 = 苹果式超椭圆/CSS K=2）。与半径一起决定区域内容，
     /// 切换预设导致曲线变化时必须重建，否则会留下"圆角 vs 连续圆角"的错位。
     corner: u32,
 }
@@ -667,7 +667,7 @@ pub fn apply_with_radius<R: Runtime>(win: &WebviewWindow<R>, logical_radius: f64
 /// 用指定半径 + **角部曲线指数**裁剪独立弹窗（工作台连续圆角专用）。
 ///
 /// 与 `apply_with_radius` 的唯一区别是角部曲线：`exponent = 2` 完全等价于原圆弧路径，
-/// `exponent = 4` 对应 CSS `corner-shape: superellipse(4)`。调用方必须让 CSS 与这里用
+/// `exponent = 4` 对应 CSS `corner-shape: superellipse(2)`（K=2 ⇒ n=4）。调用方必须让 CSS 与这里用
 /// 同一个指数——只在 WebView2 真正支持 `corner-shape` 时才传非 2 值。
 #[cfg(windows)]
 pub fn apply_with_corner_profile<R: Runtime>(
@@ -779,7 +779,7 @@ fn css_support_left(y: i32, h: i32, radius: f64) -> i32 {
 }
 
 /// 带角部曲线的版本：`exponent` = 2 时与 CSS `border-radius` 的圆弧逐像素一致，
-/// = 4 时与 CSS `corner-shape: superellipse(4)` 的超椭圆一致（苹果式连续圆角）。
+/// = 4 时与 CSS `corner-shape: superellipse(2)` 的超椭圆一致（CSS 参数 K=2，数学指数 n=2^K=4）。
 fn css_support_left_profile(y: i32, h: i32, radius: f64, exponent: f64) -> i32 {
     if radius <= 0.0 || h <= 0 {
         return 0;
@@ -802,8 +802,9 @@ fn support_from_edge(row: i32, radius: f64) -> i32 {
 ///
 /// 采样口径与 CSS 抗锯齿一致：判定像素 `[x,x+1] × [y,y+1]` 是否与角部曲线内部相交。
 /// - `exponent = 2`：`((r−x−1)/r)^2 + ((r−y−1)/r)^2 ≤ 1`，即圆弧（与旧实现逐像素一致）；
-/// - `exponent = 4`：同一不等式换成四次超椭圆 `u^4 + v^4 ≤ 1`，正是 CSS
-///   `corner-shape: superellipse(4)` 的角部曲线（n 越大角部越"饱满"、与直边过渡越连续）。
+/// - `exponent = 4`：同一不等式换成四次超椭圆 `u^4 + v^4 ≤ 1`，对应 CSS
+///   `corner-shape: superellipse(2)`（规范参数 K 与数学指数 n 的关系是 n = 2^K；
+///   K=2 ⇒ n=4 才是苹果式 squircle，K=4 会得到 n=16 的近方形角）。
 ///
 /// 对 x 反解：`u ≤ (1 − v^n)^(1/n)`，`x ≥ r − 1 − r·u`，取最小整数即本行起点。
 fn support_from_edge_profile(row: i32, radius: f64, exponent: f64) -> i32 {
@@ -904,7 +905,7 @@ fn support_rect_rgn(
 }
 
 /// 带角部曲线的像素支撑区域。`exponent = 2` 与 `support_rect_rgn` 完全等价；
-/// 其他指数用于工作台连续圆角（`corner-shape: superellipse(n)`），逐行支撑点由
+/// 其他指数用于工作台连续圆角（`corner-shape: superellipse(K)`，n = 2^K），逐行支撑点由
 /// `support_from_edge_profile` 计算，其余（DPI、平移、矩形合并）逻辑完全相同。
 #[cfg(windows)]
 fn support_rect_rgn_profile(
@@ -2126,7 +2127,7 @@ mod tests {
         assert_eq!(css_support_left(0, 0, r), 0, "退化高度不越界");
     }
 
-    // ── 苹果式连续圆角（corner-shape: superellipse(n)）────────────────────
+    // ── 苹果式连续圆角（corner-shape: superellipse(K)，数学指数 n = 2^K）────────
 
     /// 指数 2 必须与既有圆弧路径**逐像素相同**：这是"不改动其他窗口行为"的硬约束，
     /// 任何差异都会让主窗/右键菜单的既有区域悄然变化。
@@ -2152,7 +2153,7 @@ mod tests {
 
     /// 超椭圆支撑点的解析值：`x = ceil(r − 1 − r·(1 − v^n)^(1/n))`，v = 1 − (row+1)/r。
     /// n=4 / r=25 的首行为 9（圆弧是 17）：四角在同半径下更"饱满"，与 CSS
-    /// `corner-shape: superellipse(4)` 把直边延伸进角部的视觉一致。
+    /// `corner-shape: superellipse(2)`（n=2^K=4）把直边延伸进角部的视觉一致。
     #[test]
     fn continuous_corner_support_matches_superellipse_math() {
         let r = 25.0f64;
@@ -2178,8 +2179,28 @@ mod tests {
         }
     }
 
-    /// 区域探针在超椭圆下依然成立：`(1,1)` 在区域外（证明裁掉了角部），
-    /// `(r,r)` 在区域内（证明没有把内容裁光）。`region_is_current` 依赖这两点。
+    /// CSS 参数 K 与数学指数 n 是两个概念：`superellipse(K)` 的 n = 2^K。
+    /// 工作台必须停在 n=4（K=2）；若把 CSS 写成 K=4（n=16）而原生仍按 n=4 裁剪，
+    /// 原生会把 CSS 更方的角部整段切掉（1px 边框被打断、出现阶梯）。
+    /// 这里锁住「n=4 与 n=16 在 r=27.5 时差异显著」，防止有人把两者当成同一条曲线。
+    #[test]
+    fn css_k_and_math_exponent_are_not_interchangeable() {
+        let r = 27.5f64;
+        let n4 = support_from_edge_profile(0, r, 4.0);
+        let n16 = support_from_edge_profile(0, r, 16.0);
+        assert!(
+            n16 < n4,
+            "n=16 首行 {n16} 必须比 n=4 的 {n4} 更靠外（角更方）"
+        );
+        assert!(
+            n4 - n16 >= 3,
+            "r=27.5 时两种曲线至少差 3px；差值过小说明参数被混用"
+        );
+        // n=4 是工作台默认（corner_milli 2000..4000 的上端由调用方约束）。
+        assert_eq!(corner_exponent(4_000), 4.0);
+    }
+
+    /// 区域探针在超椭圆下依然成立：`(1,1)` 在区域外（证明裁掉了角部），    /// `(r,r)` 在区域内（证明没有把内容裁光）。`region_is_current` 依赖这两点。
     #[test]
     fn continuous_corner_keeps_region_probes_valid() {
         let h = 760;

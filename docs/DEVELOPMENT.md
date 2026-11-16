@@ -34,7 +34,7 @@ npm run build
 # 两个入口都经构建调度器（多会话并行时必须排队，见 7.8 与 docs/BUILD_SCHEDULER.md）
 npm test
 npm run cargo -- test
-# 不要用 `cd src-tauri && cargo test` 或 `npx vitest run` 绕过：那会绕开内存准入与全局预算，
+# 不要用 `cd src-tauri && cargo test` 或 `npx vitest run` 绕过：那会绕开构建槽位与全局并发名额，
 # 和别人的重型构建撞在一起。排障时才用 `test:raw` / GATE_NO_SCHED 这类逃生门，且要写明原因。
 
 # 生成应用图标（scripts/gen-icons.mjs，零依赖 PNG/ICO 编码）
@@ -469,18 +469,17 @@ exe 路径只通过本机诊断 IPC 返回，不写入应用日志。
 多个会话/子智能体/worktree 同时跑 `cargo build`、`npm run build`、`tauri build` 会争同一份
 Cargo target、同一个 `dist/` 和同一块内存。现在所有高资源构建统一经
 `node scripts/build-sched.mjs`（npm 入口 `npm run build` / `npm run tauri` / `npm run test` /
-`npm run cargo -- <子命令>`）：按分类槽位与全局预算排队、按 heavy/medium/light 分类隔离资源、
+`npm run cargo -- <子命令>`）：按分类槽位与全局构建并发排队、按 heavy/medium/light 分类隔离资源、
 槽位目录（`mkdir` 原子性）+ 心跳租约实现跨进程互斥，崩溃后靠身份取证安全回收。
 
-**准入约束（2026-11-15 晚起）**：实时可用内存门槛已按用户要求删除（见 `BUILD_SCHEDULER.md` 10.5），
-现在只剩 ① 各分类槽位并发；② 跨分类**全局预算**（`物理内存 - 系统保留` 对比所有活动任务的预留
-之和，台账在 `reservations/`）。可用内存只作展示/复盘，任一不足都只是排队，不是失败。
-
-**全局预算是硬上限，不会被任务峰值抬高**（2026-11-15 第二轮整改）：`budgetMb =
-max(0, totalMb - systemReserveMb)`。8 GB 机器（保留 3072 MB）预算就是 5120 MB，预计峰值
-6000 MB 的重型任务会被判为**不可准入**（`status`/`queue`/`waitReason` 三处都写明"本机装不下"，
-等待也不会放行），而不是把预算悄悄抬到 6000 MB 去侵占系统保留的安全垫。确需突破只能显式打开
-`allowReserveBreach`（默认关闭，开启后 `status` 显著告警、历史里留 `reserveBreached` 证据）。
+**准入约束（2026-11-15 晚起，2026-11-16 增补并删除内存维度）**：实时可用内存门槛已按用户要求删除
+（见 `BUILD_SCHEDULER.md` 10.5）；同日第二轮又把「按物理内存估算的全局预算」整体删除
+（见 10.7）。现在是 ① **全局构建并发上限**（`globalConcurrency=3`：heavy/medium/light 合计同时在跑
+不超过 3 个，第 4 个排队、构建收尾自动释放名额；dev 常驻服务不计入，见
+`BUILD_SCHEDULER.md` 4.2 / 10.6）；② 各分类槽位并发；③ 同分类内 P0–P3 + 老化排队。
+**内存不再是准入维度**：不读物理/可用内存、不按 `estimate*Mb` 记账、没有 `budgetEnabled` /
+`allowReserveBreach` / `--estimate-mb`；`status`/`history` 也不再展示内存。低内存下重型构建
+可能以 `exit 101`（OOM）失败，按运行期 OOM 处理（局部检查、降低 `cargoJobs`、等机器空闲）。
 
 **所有构建入口都经调度器**（2026-11-15 第二轮整改）：`apps/mobile/package.json` 的
 `start` / `android` / `prebuild` / `typecheck` / `test` / `build:android` 现在都包了一层
@@ -509,7 +508,7 @@ node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mo
 
 `apps/mobile` 状态目录解析到同一个 `<git-common-dir>/taskdock-build-sched`（已用
 `git rev-parse --path-format=absolute --git-common-dir` 从 `apps/mobile/android` 实测确认），
-所以手机端构建与桌面端共享同一份槽位与预算台账。带 `:raw` 后缀的脚本（`dev:raw`、`preview:raw`、
+所以手机端构建与桌面端共享同一份槽位与活动台账。带 `:raw` 后缀的脚本（`dev:raw`、`preview:raw`、
 `build:raw`、`test:raw`、`tauri:raw`、`build:android:raw` 等）是**排障逃生口**：只用于调度器自身
 故障时定位，不得作为日常推荐命令（见 `docs/BUILD_SCHEDULER.md` §3.8 与 §12）。
 

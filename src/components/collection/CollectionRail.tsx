@@ -60,7 +60,7 @@ export default function CollectionRail() {
   const quotaPercent = quotaBytes > 0 ? Math.min(100, Math.round((usedBytes / quotaBytes) * 100)) : 0;
 
   return (
-    <aside className="col-rail" aria-label={t("collection.title")}>
+    <aside className="col-rail col-rail-sidebar" aria-label={t("collection.title")}>
       <section className="col-rail-card">
         <header className="col-rail-head">
           <h3>

@@ -9,13 +9,13 @@ import { join, resolve, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { DEFAULT_CONFIG, loadConfig, configRisks, DANGER_AUTH_ENV } from "./sched/config.mjs";
-import { classifyArgv, classifyCommandLine, splitCommandLine } from "./sched/classify.mjs";
+import { DEFAULT_CONFIG, loadConfig, configRisks } from "./sched/config.mjs";
+import { classifyArgv, classifyCommandLine, splitCommandLine, CLASSES } from "./sched/classify.mjs";
 import { effectivePriority, compareOrder, parsePriority, computeFingerprint, evaluateEligibility } from "./sched/queue.mjs";
 import {
-  classifyReservation, computeBudget, createReservation, maxEstimateMb, planAdmission, planGlobalConcurrency,
-  readReservation, readReservations, releaseReservation, setReservationChild, sumReserved, writeReservation,
-} from "./sched/budget.mjs";
+  BUILD_CLASSES, classifyReservation, createReservation, planGlobalConcurrency, readReservation,
+  readReservations, releaseReservation, setReservationChild, writeReservation,
+} from "./sched/admission.mjs";
 import { resolveStateHome, ensureState, paths } from "./sched/state.mjs";
 import { slotNames, snapshotSlots, cmdlineSignature, reapStaleSlots } from "./sched/lock.mjs";
 import { selfIdentity, verifyIdentity } from "./sched/proc.mjs";
@@ -196,144 +196,24 @@ test("优先级：同级按入队先后，高优先级排在前面", () => {
   assert.ok(compareOrder(p0, a, now, cfg) < 0);
 });
 
-// ---------------------------------------------------------------- 内存准入（已删除）
-//
-// 2026-11-15 晚：`evaluateMemoryAdmission` / `memoryFloorForClass` / `pressureLevel` 连同
-// `heavyMinAvailMb` / `mediumMinAvailMb` / `lightMinAvailMb` / `hysteresisMb` / `safetyReserveMb`
-// 已整体删除。原先「3GB 挡住重型 / 滞回 / 压力等级」这四组用例随功能一并移除；
-// 现在只剩槽位并发与全局预算两条约束（见下一节）。
-
-// ---------------------------------------------------------------- 全局预算（跨分类）
-//
-// 背景（2026-11-15 整改前）：旧实现里「准入 = 本分类槽位有空 + 本任务自己的内存门槛达标」，
-// 不同分类各自读同一份 os.freemem 快照各自放行 → Heavy(6000)+Medium(3000) 在 7GB 可用时
-// 双双合格，合计 9000MB 已经超卖。当时为此加了全局预算约束。
-//
-// 2026-11-15 晚：内存门槛（约束 A）已按用户要求整体删除，现在**只有**槽位并发与全局预算
-// 两条约束；预算仍是防超卖的唯一跨分类闸门，这一组测试继续锁定它。
-
-test("全局预算：上限 = 物理总量 - 系统保留（硬上限，不被任务峰值抬高）", () => {
-  const b = computeBudget({ cfg, totalMb: 16005 });
-  assert.equal(b.budgetMb, 16005 - cfg.systemReserveMb);
-  assert.equal(b.hardLimitMb, 16005 - cfg.systemReserveMb);
-  assert.equal(b.reserveBreached, false, "未开 allowReserveBreach 时绝不能突破系统保留");
-
-  // 系统保留调得过大时：预算**不再**被夹到最大分类峰值（旧公式的缺陷），
-  // 而是如实变成 1005MB 并标记「最大分类峰值装不下」，由 planAdmission 明确拒绝重型任务。
-  const tight = computeBudget({ cfg: { ...cfg, systemReserveMb: 15000 }, totalMb: 16005 });
-  assert.equal(tight.rawMb, 1005);
-  assert.equal(tight.budgetMb, 1005, "预算必须严格等于 totalMb - systemReserveMb");
-  assert.equal(tight.hardLimitMb, 1005);
-  assert.equal(tight.reserveBreached, false);
-  assert.equal(tight.peakExceedsBudget, true, "6000MB 峰值装不进 1005MB 预算");
-  assert.match(tight.warning, /无法准入/);
-
-  assert.equal(maxEstimateMb(cfg), 6000);
-  assert.equal(computeBudget({ cfg: { ...cfg, budgetEnabled: false }, totalMb: 16005 }).enabled, false);
-  const noReserve = computeBudget({ cfg: { ...cfg, systemReserveMb: 0 }, totalMb: 16005 });
-  assert.equal(noReserve.budgetMb, 16005);
-  // 把安全垫整块取消（systemReserveMb=0）也是风险，必须显式提示，而不是悄悄"用满物理内存"
-  assert.match(noReserve.warning, /systemReserveMb=0/);
-  assert.match(noReserve.warning, /没有给操作系统/);
+test("全局并发：BUILD_CLASSES 与分类表保持一致（只排除 dev，防止新增分类后名额口径漂移）", () => {
+  assert.deepEqual(
+    [...BUILD_CLASSES].sort(),
+    CLASSES.filter((c) => c !== "dev").sort(),
+    "全局并发只统计一次性构建分类；新增分类时这里必须同步并显式决定是否占名额",
+  );
 });
 
-test("全局预算：4/8/16/32GB 设备档位的判定表（安全余量不被静默突破）", () => {
-  const devices = [
-    { totalMb: 4096, label: "4GB" },
-    { totalMb: 8192, label: "8GB" },
-    { totalMb: 16384, label: "16GB" },
-    { totalMb: 32768, label: "32GB" },
+test("全局并发：3 个构建在跑时 dev 任务不被构建锁挡住（它只受 dev 槽位约束）", () => {
+  const entries = [
+    { taskId: "h-1", taskClass: "heavy" },
+    { taskId: "m-1", taskClass: "medium" },
+    { taskId: "l-1", taskClass: "light" },
   ];
-  const rows = [];
-  for (const d of devices) {
-    const budget = computeBudget({ cfg, totalMb: d.totalMb });
-    const expected = Math.max(0, d.totalMb - cfg.systemReserveMb);
-    assert.equal(budget.budgetMb, expected, `${d.label} 预算应严格等于 物理-保留`);
-    assert.equal(budget.hardLimitMb, expected, `${d.label} 硬上限不得被抬高`);
-    // 核心不变量：生效预算 + 系统保留 ≤ 物理内存（默认配置下永不侵占安全垫）
-    assert.ok(budget.budgetMb + budget.reserveMb <= d.totalMb,
-      `${d.label} ⛔ 预算 ${budget.budgetMb} + 保留 ${budget.reserveMb} 超过物理 ${d.totalMb}（安全余量被静默突破）`);
-
-    const heavy = planAdmission({ budget, entries: [], taskId: "h", estimateMb: cfg.estimateHeavyMb });
-    const medium = planAdmission({ budget, entries: [], taskId: "m", estimateMb: cfg.estimateMediumMb });
-    rows.push({
-      device: d.label, budgetMb: budget.budgetMb,
-      heavy: heavy.admit ? "准入" : (heavy.infeasible ? "不可准入（峰值>预算）" : "预算不足"),
-      medium: medium.admit ? "准入" : (medium.infeasible ? "不可准入（峰值>预算）" : "预算不足"),
-      warning: budget.warning ?? "",
-    });
-
-    if (d.totalMb < cfg.systemReserveMb + cfg.estimateHeavyMb) {
-      // 4GB / 8GB：重型 6000MB 装不下 → 必须是"不可准入"，并且原因里写清物理与保留
-      assert.equal(heavy.admit, false, `${d.label} 重型任务不得准入`);
-      assert.equal(heavy.infeasible, true, `${d.label} 应判为 infeasible（等待也不会放行）`);
-      assert.match(heavy.reason, /本机装不下|全局预算为 0/);
-      assert.match(heavy.hint, /systemReserveMb/, "可操作建议里必须指明 systemReserveMb 这个旋钮");
-      assert.ok(budget.warning, `${d.label} 必须给出预算风险提示`);
-    } else {
-      assert.equal(heavy.admit, true, `${d.label} 重型任务应准入`);
-    }
-  }
-  // 判定表本身留证据，便于报告引用
-  assert.equal(rows.map((r) => r.device).join(","), "4GB,8GB,16GB,32GB");
-  assert.equal(rows[0].budgetMb, 4096 - cfg.systemReserveMb, "4GB 档：4096-3072=1024MB");
-  assert.equal(rows[1].budgetMb, 8192 - cfg.systemReserveMb);
-  assert.equal(rows[1].heavy, "不可准入（峰值>预算）", "8GB 档重型任务必须明确不可准入，而不是排队");
-});
-
-test("全局预算：8GB 机器上 Heavy 6GB 的完整判定（本题 P0 的复现场景）", () => {
-  const budget = computeBudget({ cfg, totalMb: 8192 });
-  assert.equal(budget.reserveMb, 3072);
-  assert.equal(budget.hardLimitMb, 5120, "8GB - 3GB 保留 = 5GB 才是真实上限");
-  assert.equal(budget.budgetMb, 5120, "旧公式会把它抬到 6000MB，这里必须仍是 5120");
-  const plan = planAdmission({ budget, entries: [], taskId: "heavy-1", estimateMb: 6000 });
-  assert.equal(plan.admit, false);
-  assert.equal(plan.infeasible, true);
-  assert.equal(plan.hardLimitMb, 5120);
-  assert.match(plan.reason, /预计峰值 5\.86 GB > 本机全局预算上限 5\.00 GB/);
-  assert.match(plan.reason, /系统保留 3\.00 GB/);
-  assert.match(plan.reason, /不是排队问题/);
-  assert.match(plan.hint, /allowReserveBreach/);
-  // 同一台 8GB 机器上中型/轻量仍然可跑（不能因为重型装不下就整体停摆）
-  assert.equal(planAdmission({ budget, entries: [], taskId: "m-1", estimateMb: 3000 }).admit, true);
-  assert.equal(planAdmission({ budget, entries: [], taskId: "l-1", estimateMb: 800 }).admit, true);
-});
-
-test("全局预算：系统保留 ≥ 物理内存的退化场景（预算为 0，全部不可准入且原因明确）", () => {
-  for (const [totalMb, reserveMb] of [[8192, 8192], [8192, 9000], [4096, 5120]]) {
-    const budget = computeBudget({ cfg: { ...cfg, systemReserveMb: reserveMb }, totalMb });
-    assert.equal(budget.rawMb, totalMb - reserveMb);
-    assert.equal(budget.budgetMb, 0, `保留 ${reserveMb} ≥ 物理 ${totalMb} 时预算必须夹到 0`);
-    assert.equal(budget.hardLimitMb, 0);
-    assert.equal(budget.reserveExhausted, true);
-    assert.match(budget.warning, /系统保留 .* ≥ 物理内存 .*全局预算为 0/);
-    const plan = planAdmission({ budget, entries: [], taskId: "x", estimateMb: 800 });
-    assert.equal(plan.admit, false);
-    assert.equal(plan.infeasible, true);
-    assert.match(plan.reason, /全局预算为 0/);
-  }
-});
-
-test("全局预算：多个任务合计超过预算时必须拒绝（原子预留不超卖）", () => {
-  const budget = computeBudget({ cfg, totalMb: 8192 }); // 5120MB
-  const sitting = [
-    { taskId: "h-1", taskClass: "heavy", reservedMb: 6000 }, // 理论上不该被写进去（峰值>预算）
-  ];
-  // 即使台账里存在一条超过预算的旧预留（例如历史上允许突破时留下的），后来的任务也不会被放行
-  const blocked = planAdmission({ budget, entries: sitting, taskId: "m-1", estimateMb: 3000 });
-  assert.equal(blocked.admit, false);
-  assert.equal(blocked.reservedMb, 6000);
-  assert.match(blocked.reason, /全局构建预算不足/);
-
-  // 正常组合：3000 已预留 + 3000 再来 = 6000 > 5120 → 拒绝；预留 2000 + 3000 = 5000 ≤ 5120 → 放行
-  const ok = planAdmission({ budget, entries: [{ taskId: "m-old", reservedMb: 2000 }], taskId: "m-new", estimateMb: 3000 });
-  assert.equal(ok.admit, true);
-  const no = planAdmission({ budget, entries: [{ taskId: "m-old", reservedMb: 3000 }], taskId: "m-new", estimateMb: 3000 });
-  assert.equal(no.admit, false);
-  // 预算 5120 下：两个 light(800) + medium(3000) = 4600 ≤ 5120 → 第三个 light 会超
-  const three = [{ taskId: "l-1", reservedMb: 800 }, { taskId: "m-1", reservedMb: 3000 }];
-  assert.equal(planAdmission({ budget, entries: three, taskId: "l-2", estimateMb: 800 }).admit, true);
-  assert.equal(planAdmission({ budget, entries: [...three, { taskId: "l-2", reservedMb: 800 }], taskId: "l-3", estimateMb: 800 }).admit, false);
+  const devReq = planGlobalConcurrency({ cfg, entries, taskId: "d-new", taskClass: "dev" });
+  assert.equal(devReq.applies, false);
+  assert.equal(devReq.active, 3, "active 仍如实展示 3 个构建在跑");
+  assert.equal(devReq.admit, true, "dev 不占名额，也不该被并发上限拒绝");
 });
 
 test("全局并发：上限 3 统计 heavy/medium/light 合计，dev 不占名额，重入不把自己算成占用者", () => {
@@ -382,115 +262,36 @@ test("全局并发：globalConcurrency 必须 >= 1，非法值被拒绝且环境
   assert.equal(overridden.config.globalConcurrency, 2);
 });
 
-test("全局并发：3 个构建在跑时，第 4 个的等待原因是「全局构建并发已满」而不是预算不足", () => {
+test("全局并发：3 个构建在跑时，第 4 个的等待原因是「全局构建并发已满」", () => {
   const home = join(tmpRoot, "elig-global-cap");
   ensureState(home);
   const now = new Date().toISOString();
-  const mk = (taskId, taskClass, reservedMb) => ({
-    taskId, taskClass, reservedMb, label: null, ownerPid: process.pid,
+  const mk = (taskId, taskClass) => ({
+    taskId, taskClass, label: null, ownerPid: process.pid,
     ownerStartTime: now, ownerStartTimeSource: "test", nonce: taskId,
     childPid: null, detached: false, phase: "running", createdAt: now, heartbeatAt: now,
   });
-  writeReservation(home, mk("h-1", "heavy", 6000));
-  writeReservation(home, mk("m-1", "medium", 3000));
-  writeReservation(home, mk("l-1", "light", 800));
+  writeReservation(home, mk("h-1", "heavy"));
+  writeReservation(home, mk("m-1", "medium"));
+  writeReservation(home, mk("l-1", "light"));
 
   const task = { id: "l-new", taskClass: "light", priority: 1, status: "queued", enqueuedAt: now, updatedAt: now };
-  const elig = evaluateEligibility({ home, task, tasks: [task], cfg, mem: { totalMb: 16384 } });
+  const elig = evaluateEligibility({ home, task, tasks: [task], cfg });
   assert.equal(elig.eligible, false);
   assert.equal(elig.capBlocked, true);
-  assert.equal(elig.budgetBlockers.length, 0, "预算充足（6000+3000+800+800 远小于 13GB）");
   assert.ok(elig.blockers.some((b) => /全局构建并发已满（3\/3）/.test(b)), `等待原因应写明并发已满：${elig.blockers}`);
 
   // 释放一个名额（等价于某个构建结束）后必须立刻可准入
   rmSync(join(paths(home).reservations, "h-1.json"), { force: true });
-  const after = evaluateEligibility({ home, task, tasks: [task], cfg, mem: { totalMb: 16384 } });
+  const after = evaluateEligibility({ home, task, tasks: [task], cfg });
   assert.equal(after.capBlocked, false);
   assert.equal(after.eligible, true);
 });
 
-test("全局预算：显式 allowReserveBreach 开关（默认关闭；开启后必须显著标注风险）", () => {
-  const totalMb = 8192;
-  // 默认关闭：口头/配置里没写就是关闭，绝不能悄悄突破
-  const off = computeBudget({ cfg, totalMb });
-  assert.equal(off.breachAllowed, false);
-  assert.equal(off.reserveBreached, false);
-  assert.equal(off.budgetMb, 5120);
-
-  // 显式开启：预算被抬到最大分类峰值 6000，但必须标注"侵占了 880MB 安全垫"
-  const on = computeBudget({ cfg: { ...cfg, allowReserveBreach: true }, totalMb });
-  assert.equal(on.breachAllowed, true);
-  assert.equal(on.budgetMb, 6000);
-  assert.equal(on.hardLimitMb, 5120);
-  assert.equal(on.breachMb, 880);
-  assert.equal(on.reserveBreached, true);
-  assert.equal(on.clamped, true, "兼容字段 clamped 只在显式突破时成立");
-  assert.match(on.warning, /已显式开启 allowReserveBreach/);
-  assert.match(on.warning, /5\.86 GB 高于/);
-  assert.match(on.warning, /安全垫已被侵占 880 MB/);
-
-  // 开启后重型任务可以准入，但 plan 上仍带 reserveBreached 证据
-  const plan = planAdmission({ budget: on, entries: [], taskId: "h-1", estimateMb: 6000 });
-  assert.equal(plan.admit, true);
-  assert.equal(plan.reserveBreached, true);
-  assert.equal(plan.hardLimitMb, 5120);
-
-  // 大机器上开关没有副作用（raw 已经大于峰值）
-  const big = computeBudget({ cfg: { ...cfg, allowReserveBreach: true }, totalMb: 16384 });
-  assert.equal(big.reserveBreached, false);
-  assert.equal(big.budgetMb, 16384 - 3072);
-  assert.equal(big.warning, null);
-});
-
-test("全局预算：跨分类合计超卖必须被拒绝，恰好等于上限才放行", () => {
-  const budget = { ...computeBudget({ cfg, totalMb: 16005 }), budgetMb: 9000, reservedMb: 0 };
-  const sitting = [
-    { taskId: "h-1", taskClass: "heavy", reservedMb: 6000 },
-    { taskId: "m-1", taskClass: "medium", reservedMb: 3000 },
-  ];
-
-  // Heavy 已预留 6000，再来一个 Medium(3000)：6000+3000 = 9000 ≤ 9000 → 恰好可放行
-  const exact = planAdmission({ budget, entries: [sitting[0]], taskId: "m-2", estimateMb: 3000 });
-  assert.equal(exact.admit, true, "恰好等于预算上限应当放行");
-  assert.equal(exact.reservedMb, 6000);
-
-  // 已有 6000+3000，再来 Light(800)：9800 > 9000 → 拒绝（这正是旧实现会放过的超卖组合）
-  const over = planAdmission({ budget, entries: sitting, taskId: "l-1", estimateMb: 800 });
-  assert.equal(over.admit, false);
-  assert.match(over.reason, /全局构建预算不足/);
-  assert.match(over.reason, /已预留 8\.79 GB/);
-
-  // 自身旧预留不计入（重入而不是"另一个任务"，否则自己会和自己抢预算）
-  const self = planAdmission({ budget, entries: sitting, taskId: "h-1", estimateMb: 6000 });
-  assert.equal(self.reservedMb, 3000);
-  assert.equal(self.admit, true);
-
-  // 单任务预计峰值就超过预算 → 直接拒绝，不允许自我放行（且明确判为 infeasible，而不是"排队"）
-  const huge = planAdmission({ budget: { ...budget, budgetMb: 5000 }, entries: [], taskId: "x", estimateMb: 6000 });
-  assert.equal(huge.admit, false);
-  assert.equal(huge.infeasible, true);
-  assert.match(huge.reason, /本机全局预算上限 4\.88 GB/);
-
-  // 预算被显式关闭时只保留约束 A（故障回退路径）
-  const off = planAdmission({ budget: { ...budget, enabled: false }, entries: sitting, taskId: "l-2", estimateMb: 800 });
-  assert.equal(off.admit, true);
-});
-
-test("全局预算：台账预留在预算侧扣减；内存门槛已删除，不存在重复扣减问题", () => {
-  const home = join(tmpRoot, "budget-no-double-count");
-  writeReservation(home, createReservation({ taskId: "h-held", taskClass: "heavy", reservedMb: 6000 }));
-
-  // 约束 B 独立地看到 6000 已预留：预算 10000 时 6000+6000 = 12000 > 10000 → 排队
-  const tight = { ...computeBudget({ cfg, totalMb: 16005 }), budgetMb: 10000, enabled: true };
-  const plan = planAdmission({ budget: tight, entries: readReservations(home), taskId: "h-new", estimateMb: 6000 });
-  assert.equal(plan.reservedMb, 6000);
-  assert.equal(plan.admit, false);
-  assert.equal(sumReserved(readReservations(home)), 6000);
-});
 
 test("预留台账：写入/读取正常，释放必须校验身份（PID/nonce 不符时拒绝删除）", () => {
   const home = join(tmpRoot, "budget-ledger");
-  const entry = createReservation({ taskId: "h-led", taskClass: "heavy", reservedMb: 6000, detached: false });
+  const entry = createReservation({ taskId: "h-led", taskClass: "heavy", detached: false });
   writeReservation(home, entry);
 
   assert.equal(readReservations(home).length, 1);
@@ -507,7 +308,7 @@ test("预留台账：写入/读取正常，释放必须校验身份（PID/nonce 
   for (const fake of [{ ...entry, nonce: "deadbeef" }, { ...entry, ownerPid: entry.ownerPid + 1 }]) {
     const r = releaseReservation({ home, entry: fake });
     assert.equal(r.ok, false);
-    assert.equal(readReservations(home).length, 1, "拒绝删除后预留必须仍在（否则预算会被错误归还）");
+    assert.equal(readReservations(home).length, 1, "拒绝删除后台账必须仍在（否则名额会被错误归还）");
   }
 
   assert.equal(releaseReservation({ home, entry: readReservation(home, "h-led") }).ok, true);
@@ -516,10 +317,10 @@ test("预留台账：写入/读取正常，释放必须校验身份（PID/nonce 
   assert.equal(releaseReservation({ home, entry }).ok, true);
 });
 
-test("崩溃残留预留：只有证明旧构建已结束才回收，unknown/detached/子进程存活一律 fail-closed", () => {
+test("崩溃残留台账：只有证明旧构建已结束才回收，unknown/detached/子进程存活一律 fail-closed", () => {
   const now = Date.parse("2026-01-01T00:00:00.000Z");
   const mk = (over = {}) => ({
-    taskId: "h-crash", taskClass: "heavy", reservedMb: 6000, ownerPid: 4242,
+    taskId: "h-crash", taskClass: "heavy", ownerPid: 4242,
     ownerStartTime: "2026-01-01T00:00:00.000Z", ownerStartTimeSource: "uptime", nonce: "n",
     childPid: null, detached: false,
     heartbeatAt: new Date(now - 200000).toISOString(), createdAt: new Date(now - 260000).toISOString(),
@@ -549,10 +350,10 @@ test("崩溃残留预留：只有证明旧构建已结束才回收，unknown/det
 test("配置：未知字段、非法数值被拒绝而不是静默忽略", () => {
   const repo = mkWorkspace("cfg-repo");
   writeFileSync(join(repo, "build-sched.config.json"), JSON.stringify({
-    estimateHeavyMb: 5000, unknownKey: 1, pollMs: "abc", logMaxMb: 12.5,
+    globalConcurrency: 5, unknownKey: 1, pollMs: "abc", logMaxMb: 12.5,
   }));
   const { config, problems } = loadConfig({ repoRoot: repo, stateHome: join(tmpRoot, "cfg-home"), env: {} });
-  assert.equal(config.estimateHeavyMb, 5000);
+  assert.equal(config.globalConcurrency, 5);
   assert.equal(config.logMaxMb, 12.5);
   assert.ok(problems.some((p) => p.includes("unknownKey")));
   assert.ok(problems.some((p) => p.includes("pollMs")));
@@ -560,29 +361,34 @@ test("配置：未知字段、非法数值被拒绝而不是静默忽略", () =>
 
 test("配置：环境变量覆盖优先于仓库配置", () => {
   const repo = mkWorkspace("cfg-env", null);
-  writeFileSync(join(repo, "build-sched.config.json"), JSON.stringify({ estimateHeavyMb: 5000 }));
+  writeFileSync(join(repo, "build-sched.config.json"), JSON.stringify({ globalConcurrency: 4 }));
   const { config, sources } = loadConfig({
     repoRoot: repo, stateHome: join(tmpRoot, "cfg-env-home"),
-    env: { TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "6000" },
+    env: { TASKDOCK_SCHED_GLOBAL_CONCURRENCY: "2" },
   });
-  assert.equal(config.estimateHeavyMb, 6000);
+  assert.equal(config.globalConcurrency, 2);
   assert.ok(sources.some((s) => s.kind === "env"));
 });
 
-test("配置：已删除的内存门槛字段不得重新生效（必须报未知字段）", () => {
-  const home = join(tmpRoot, "cfg-gate-removed");
+test("配置：已删除的内存门槛与预算字段不得重新生效（必须报未知字段）", () => {
+  const home = join(tmpRoot, "cfg-budget-removed");
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, "config.json"), JSON.stringify({
     memoryAdmissionEnabled: false, heavyMinAvailMb: 1, hysteresisMb: 1,
+    budgetEnabled: false, systemReserveMb: 1, estimateHeavyMb: 1, allowReserveBreach: true,
   }));
   const loaded = loadConfig({ stateHome: home, env: {} });
-  for (const k of ["memoryAdmissionEnabled", "heavyMinAvailMb", "hysteresisMb"]) {
+  const removed = [
+    "memoryAdmissionEnabled", "heavyMinAvailMb", "hysteresisMb",
+    "budgetEnabled", "systemReserveMb", "estimateHeavyMb", "allowReserveBreach",
+  ];
+  for (const k of removed) {
     assert.ok(loaded.problems.some((p) => p.includes(`未知字段 ${k}`),
-      `字段 ${k} 已随门槛删除，写在配置里必须报未知字段而不是静默生效`));
+      `字段 ${k} 已随功能删除，写在配置里必须报未知字段而不是静默生效`));
     assert.equal(loaded.config[k], undefined, `${k} 不得再出现在有效配置里`);
   }
   const risks = configRisks({
-    config: loaded.config, danger: loaded.danger, sources: loaded.sources, problems: loaded.problems,
+    config: loaded.config, sources: loaded.sources, problems: loaded.problems,
   });
   assert.ok(risks.some((r) => r.key === "unknown" && r.level === "P1"), "未知字段必须是 P1 风险项");
 });
@@ -789,7 +595,7 @@ test("身份取证：记录缺失 PID 判 gone；不存在的 PID 不得判为�
 test("身份取证：「进程在但读不到创建时间」只能是 unknown，不得冤判成 PID 已被复用", () => {
   // 2026-11-15 第二轮缺陷：旧实现把 startTime=null 一路掉到 gone，于是
   //   ① 等价任务去重被跳过（同一构建跑两遍）；
-  //   ② 崩溃回收可能把**活着的**构建的槽位/预算判成可回收（并发超卖）。
+  //   ② 崩溃回收可能把**活着的**构建的槽位/名额判成可回收（并发超卖）。
   // 这里用注入的 probe 把四种结论都钉住（不需要真实 CIM）。
   const live = process.pid;
   const now = new Date().toISOString();
@@ -823,122 +629,20 @@ test("身份取证：「进程在但读不到创建时间」只能是 unknown，
   );
 });
 
-// ---------------------------------------------------------------- 配置安全（第三轮 4.1-4.4）
-
-function mkState(name, configObj) {
-  const dir = join(tmpRoot, name);
-  mkdirSync(dir, { recursive: true });
-  if (configObj) writeFileSync(join(dir, "config.json"), JSON.stringify(configObj, null, 2));
-  return dir;
-}
-
-const DANGER_ENV = "TASKDOCK_SCHED_DANGER_AUTH";
-
-test("配置安全：budgetEnabled=false 没有危险授权时必须被忽略", () => {
-  const home = mkState("cfg-off-noauth", { budgetEnabled: false });
-  const loaded = loadConfig({ stateHome: home, env: {} });
-  assert.equal(loaded.config.budgetEnabled, true, "只凭配置文件不得关闭全局预算");
-  assert.equal(loaded.danger.budgetOffRequested, true);
-  assert.equal(loaded.danger.budgetOffAuthorized, false);
-  assert.ok(loaded.problems.some((p) => p.includes("budget-off"), "必须明说缺哪个授权令牌"));
-  assert.ok(loaded.danger.blocked.length >= 1);
-});
-
-test("配置安全：budget-off 授权生效，且预算证据里能审计到关闭原因", () => {
-  const home = mkState("cfg-off-auth", { budgetEnabled: false });
-  const loaded = loadConfig({ stateHome: home, env: { [DANGER_ENV]: "budget-off" } });
-  assert.equal(loaded.config.budgetEnabled, false);
-  assert.equal(loaded.danger.budgetOffAuthorized, true);
-  const budget = computeBudget({ cfg: loaded.config, totalMb: 16005 });
-  assert.equal(budget.enabled, false);
-  assert.equal(budget.budgetOffAuthorized, true);
-  assert.deepEqual(budget.dangerAuth, ["budget-off"]);
-  const plan = planAdmission({ budget, entries: [], estimateMb: 6000 });
-  assert.equal(plan.admit, true, "授权关闭后不再受预算约束");
-  assert.equal(plan.budgetEnabled, false, "history 的 budgetAtStart 必须能看出这次是关了预算的");
-  assert.match(plan.reason, /危险授权/);
-});
-
-test("配置安全：allowReserveBreach 需要独立授权才生效", () => {
-  const home = mkState("cfg-breach", { allowReserveBreach: true });
-  const denied = loadConfig({ stateHome: home, env: {} });
-  assert.equal(denied.config.allowReserveBreach, false, "未授权时不得侵占系统保留");
-  const allowed = loadConfig({ stateHome: home, env: { [DANGER_ENV]: "reserve-breach" } });
-  assert.equal(allowed.config.allowReserveBreach, true);
-  const budget = computeBudget({ cfg: allowed.config, totalMb: 8192 });
-  assert.equal(budget.hardLimitMb, 5120);
-  assert.equal(budget.budgetMb, 6000);
-  assert.equal(budget.reserveBreached, true);
-  assert.equal(computeBudget({ cfg: denied.config, totalMb: 8192 }).budgetMb, 5120);
-});
-
-test("配置安全：systemReserveMb 低于推荐基线未授权时 fail-closed 回基线", () => {
-  const home = mkState("cfg-reserve-low", { systemReserveMb: 1024, recommendedSystemReserveMb: 3072 });
-  const denied = loadConfig({ stateHome: home, env: {} });
-  assert.equal(denied.config.systemReserveMb, 3072, "有效值必须回到基线，避免安全余量被静默缩小");
-  assert.equal(denied.danger.reserveLowerRequested, true);
-  assert.equal(denied.danger.reserveLowerAuthorized, false);
-  const authorized = loadConfig({ stateHome: home, env: { [DANGER_ENV]: "reserve-lower" } });
-  assert.equal(authorized.config.systemReserveMb, 1024, "授权后保留申报值（不改配置文件）");
-  const budget = computeBudget({ cfg: authorized.config, totalMb: 8192 });
-  assert.equal(budget.reserveReducedMb, 2048, "必须算出实际减少的安全余量");
-  assert.equal(budget.hardLimitMb, 7168);
-  const risks = configRisks({ config: authorized.config, danger: authorized.danger });
-  assert.ok(risks.some((r) => r.key === "systemReserveMb" && r.level === "P1" && r.text.includes("2048")),
-    "doctor 必须报「安全余量减少 2048 MB」");
-});
-
-test("配置安全：doctor 能抓到 1 MB 预计峰值、关闭预算与环境变量覆盖", () => {
-  const home = mkState("cfg-broken", {
-    budgetEnabled: false, estimateHeavyMb: 1, estimateMediumMb: 1, estimateLightMb: 1,
-  });
-  const loaded = loadConfig({
-    stateHome: home,
-    env: { [DANGER_ENV]: "budget-off", TASKDOCK_SCHED_ESTIMATE_HEAVY_MB: "1" },
-  });
-  const risks = configRisks({ config: loaded.config, danger: loaded.danger, sources: loaded.sources, problems: loaded.problems });
-  const keys = risks.map((r) => r.key);
-  assert.ok(keys.includes("budgetEnabled"), "关闭预算必须是风险项");
-  assert.ok(risks.some((r) => r.key === "budgetEnabled" && r.level === "P0"));
-  for (const k of ["estimateHeavyMb", "estimateMediumMb", "estimateLightMb"]) {
-    assert.ok(risks.some((r) => r.key === k && r.level === "P1"), `${k}=1MB 必须报 P1`);
-  }
-  assert.ok(risks.some((r) => r.key === "env" && r.text.includes("TASKDOCK_SCHED_ESTIMATE_HEAVY_MB")),
-    "环境变量覆盖必须被点名");
-  assert.ok(risks.every((r) => r.source), "每条风险都要能说出配置来源");
-});
-
-test("配置安全：4/8/16/32 GB 档位在「预算关闭 + 保留 0」等极端组合下语义稳定", () => {
-  for (const totalMb of [4096, 8192, 16005, 32768]) {
-    const normal = computeBudget({ cfg: DEFAULT_CONFIG, totalMb });
-    assert.equal(normal.budgetMb, totalMb - DEFAULT_CONFIG.systemReserveMb);
-    // systemReserveMb=0 且未授权：有效值必须回到推荐基线（0 不再等于"用满物理内存"）
-    const zeroDeniedHome = mkState(`cfg-zero-denied-${totalMb}`, { systemReserveMb: 0 });
-    const zeroDenied = computeBudget({ cfg: loadConfig({ stateHome: zeroDeniedHome, env: {} }).config, totalMb });
-    assert.equal(zeroDenied.reserveMb, DEFAULT_CONFIG.recommendedSystemReserveMb, "无授权时 0 被 fail-closed 收紧");
-    // 授权 reserve-lower 后才允许 0：同时必须算出「安全余量减少 3072 MB」并保留告警
-    const zeroAuthHome = mkState(`cfg-zero-auth-${totalMb}`, { systemReserveMb: 0 });
-    const zero = computeBudget({ cfg: loadConfig({ stateHome: zeroAuthHome, env: { [DANGER_ENV]: "reserve-lower" } }).config, totalMb });
-    assert.equal(zero.reserveMb, 0);
-    assert.equal(zero.reserveReducedMb, DEFAULT_CONFIG.recommendedSystemReserveMb, "减少的安全余量必须可计算");
-    assert.ok(zero.warning, "systemReserveMb=0 必须继续显式告警");
-    const offHome = mkState(`cfg-off2-${totalMb}`, { budgetEnabled: false });
-    const off = computeBudget({ cfg: loadConfig({ stateHome: offHome, env: {} }).config, totalMb });
-    assert.equal(off.enabled, true, "无授权时配置里的 false 不得生效");
-  }
-});
 test("配置安全：坏 JSON 与未知字段必须被 doctor 报出来，而不是静默忽略", () => {
   const badHome = join(tmpRoot, "cfg-badjson");
   mkdirSync(badHome, { recursive: true });
   writeFileSync(join(badHome, "config.json"), "{ this is not json ");
   const bad = loadConfig({ stateHome: badHome, env: {} });
   assert.ok(bad.problems.some((p) => p.includes("读取失败")), "坏 JSON 必须报读取失败");
-  const badRisks = configRisks({ config: bad.config, danger: bad.danger, sources: bad.sources, problems: bad.problems });
+  const badRisks = configRisks({ config: bad.config, sources: bad.sources, problems: bad.problems });
   assert.ok(badRisks.some((r) => r.key === "config" && r.level === "P0"));
 
-  const typoHome = mkState("cfg-typo", { estimateHeavyMb: 6000, typpoKey: 1 });
+  const typoHome = join(tmpRoot, "cfg-typo");
+  mkdirSync(typoHome, { recursive: true });
+  writeFileSync(join(typoHome, "config.json"), JSON.stringify({ globalConcurrency: 6, typpoKey: 1 }));
   const typo = loadConfig({ stateHome: typoHome, env: {} });
   assert.ok(typo.problems.some((p) => p.includes("未知字段 typpoKey")), "拼错的字段必须被点名");
-  const typoRisks = configRisks({ config: typo.config, danger: typo.danger, sources: typo.sources, problems: typo.problems });
+  const typoRisks = configRisks({ config: typo.config, sources: typo.sources, problems: typo.problems });
   assert.ok(typoRisks.some((r) => r.key === "unknown" && r.level === "P1"), "未知字段至少 P1");
 });

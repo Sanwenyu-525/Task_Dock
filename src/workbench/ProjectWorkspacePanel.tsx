@@ -111,6 +111,11 @@ export interface ProjectWorkspacePanelProps {
   /** 外部请求切到某模块（如右栏「项目设置」）；token 变化触发一次。 */
   moduleRequest?: { token: number; module: WorkspaceModuleId } | null;
   onNotice: (kind: ProjectPanelNoticeKind, text: string) => void;
+  /**
+   * 向统一工作台注册「项目切换离开前」守卫：正文模块有脏稿时，项目选择必须先
+   * await 落盘；返回 false 则取消本次项目切换。壳层只保存回调，不重建导航状态机。
+   */
+  registerProjectLeaveGuard?: (guard: (() => Promise<boolean>) | null) => void;
 }
 
 export default function ProjectWorkspacePanel({
@@ -124,6 +129,7 @@ export default function ProjectWorkspacePanel({
   onCreateProject,
   moduleRequest = null,
   onNotice,
+  registerProjectLeaveGuard,
 }: ProjectWorkspacePanelProps) {
   const selectedId = project?.id ?? null;
   const profile = useMemo(() => resolveWorkspaceProfile(project?.kind), [project?.kind]);
@@ -153,6 +159,9 @@ export default function ProjectWorkspacePanel({
   selectedIdRef.current = selectedId;
   /** 模块点击序号：异步保存完成后只让最后一次点击更新本地状态。 */
   const moduleClickSeqRef = useRef(0);
+  /** 正文模块注册的落盘回调；null 表示当前未挂载正文编辑器。 */
+  const manuscriptFlushRef = useRef<(() => Promise<boolean>) | null>(null);
+  const activeModuleRef = useRef<WorkspaceModuleId>("overview");
 
   useEffect(() => {
     mountedRef.current = true;
@@ -174,6 +183,26 @@ export default function ProjectWorkspacePanel({
     activeModule === "links" && Boolean(selectedId),
     ctx.links.map((l) => l.taskId),
   );
+
+  activeModuleRef.current = activeModule;
+  const registerManuscriptFlush = useCallback(
+    (flush: (() => Promise<boolean>) | null) => {
+      manuscriptFlushRef.current = flush;
+    },
+    [],
+  );
+  const projectLeaveGuardRef = useRef<() => Promise<boolean>>(async () => true);
+  projectLeaveGuardRef.current = async () => {
+    if (activeModuleRef.current !== "manuscript") return true;
+    const flush = manuscriptFlushRef.current;
+    return flush ? flush() : true;
+  };
+  // 壳层切换项目前调用该守卫；失败时项目选择取消，正文面板与草稿保持原状。
+  useEffect(() => {
+    if (!registerProjectLeaveGuard) return;
+    registerProjectLeaveGuard(() => projectLeaveGuardRef.current());
+    return () => registerProjectLeaveGuard(null);
+  }, [registerProjectLeaveGuard]);
 
   // 项目切换：清空模块覆盖与一次性交互状态（旧项目的编辑表单不得套到新项目）。
   useEffect(() => {
@@ -219,6 +248,11 @@ export default function ProjectWorkspacePanel({
 
   const switchModule = useCallback(
     async (m: WorkspaceModuleId) => {
+      // 离开正文模块前必须先完成正文落盘；失败则不切换，保留原页面与草稿。
+      if (m !== activeModule && activeModule === "manuscript") {
+        const flush = manuscriptFlushRef.current;
+        if (flush && !(await flush())) return;
+      }
       const seq = moduleClickSeqRef.current + 1;
       moduleClickSeqRef.current = seq;
       setLocalModule(m);
@@ -234,7 +268,7 @@ export default function ProjectWorkspacePanel({
         setLocalModule(null);
       }
     },
-    [context, onNotice],
+    [activeModule, context, onNotice],
   );
 
   const switchModuleRef = useRef(switchModule);
@@ -888,6 +922,7 @@ export default function ProjectWorkspacePanel({
           projectId={project.id}
           archived={project.status === "archived"}
           onNotice={onNotice}
+          registerFlush={registerManuscriptFlush}
         />
       )}
 

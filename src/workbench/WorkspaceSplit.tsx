@@ -17,7 +17,7 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent,
-  type PointerEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { GripVertical } from "lucide-react";
@@ -91,17 +91,17 @@ export default function WorkspaceSplit({
   );
 
   const beginResize = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
+    (event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0 || !rootRef.current) return;
       event.preventDefault();
       const rect = rootRef.current.getBoundingClientRect();
       const pointerId = event.pointerId;
 
-      const onMove = (moveEvent: PointerEvent) => {
+      const onMove = (moveEvent: globalThis.PointerEvent) => {
         if (moveEvent.pointerId !== pointerId) return;
         commitWidth(moveEvent.clientX - rect.left);
       };
-      const onUp = (upEvent: PointerEvent) => {
+      const onUp = (upEvent: globalThis.PointerEvent) => {
         if (upEvent.pointerId !== pointerId) return;
         document.body.classList.remove("workspace-split-resizing");
         window.removeEventListener("pointermove", onMove);

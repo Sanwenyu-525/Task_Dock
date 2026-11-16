@@ -37,12 +37,17 @@ import { errorMessage } from "../lib/errors";
 const AUTOSAVE_MS = 900;
 
 type NoticeKind = "ok" | "error" | "info";
-type SaveState = "idle" | "saving" | "saved" | "error";
+type SaveState = "idle" | "pending" | "saving" | "saved" | "error";
 
 export interface NovelManuscriptPanelProps {
   projectId: string;
   archived: boolean;
   onNotice: (kind: NoticeKind, text: string) => void;
+  /**
+   * 向父级注册「离开前落盘」回调：父级切换模块/项目时必须 await 它，
+   * 返回 false 表示保存失败、应取消离开。卸载时注册 null。
+   */
+  registerFlush?: (flush: (() => Promise<boolean>) | null) => void;
 }
 
 function byOrder<T extends { sortOrder: number; createdAt: string; id: string }>(a: T, b: T) {
@@ -68,6 +73,7 @@ export default function NovelManuscriptPanel({
   projectId,
   archived,
   onNotice,
+  registerFlush,
 }: NovelManuscriptPanelProps) {
   const [volumes, setVolumes] = useState<NovelVolume[]>([]);
   const [chapters, setChapters] = useState<NovelChapterSummary[]>([]);
@@ -86,16 +92,24 @@ export default function NovelManuscriptPanel({
 
   const mountedRef = useRef(true);
   const projectRef = useRef(projectId);
+  const archivedRef = useRef(archived);
   const selectedRef = useRef<string | null>(null);
   const draftRef = useRef("");
   const savedRef = useRef("");
+  /** 当前在途的唯一正文保存请求；同一章节绝不并发写。 */
+  const savePromiseRef = useRef<Promise<boolean> | null>(null);
   const timerRef = useRef<number | null>(null);
   const loadTokenRef = useRef(0);
   const chapterTokenRef = useRef(0);
   const skipRenameBlurRef = useRef(false);
+  const flushRef = useRef<() => Promise<boolean>>(async () => true);
+  // 通知回调只用于提示，不参与正文读取的 effect 依赖；父级重渲染不应触发重新读库。
+  const onNoticeRef = useRef(onNotice);
+  onNoticeRef.current = onNotice;
 
   selectedRef.current = selectedId;
   draftRef.current = draft;
+  archivedRef.current = archived;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -139,16 +153,11 @@ export default function NovelManuscriptPanel({
     }
   }, [projectId]);
 
-  // 项目切换：先把上一个项目未落盘的正文写回，再刷新树（旧结果不得进入新项目）。
+  // 项目切换：父级必须先 await 注册的 flush 才会换项目；正常路径到这里时已无脏稿。
+  // 若被绕过（例如测试/外部调用），仍清空旧项目界面状态，正文由卸载兜底保存。
   useEffect(() => {
     if (projectRef.current === projectId) return;
-    const previousChapter = selectedRef.current;
-    const previousContent = draftRef.current;
-    if (previousChapter && previousContent !== savedRef.current) {
-      void novelChapterSaveContent(previousChapter, previousContent).catch(() => {
-        // 项目已切换，失败只影响旧项目草稿；新项目不读取旧结果。
-      });
-    }
+    void flushRef.current();
     projectRef.current = projectId;
     clearTimer();
     setVolumes([]);
@@ -166,58 +175,117 @@ export default function NovelManuscriptPanel({
     void loadTree();
   }, [loadTree]);
 
-  const saveNow = useCallback(async () => {
-    const id = selectedRef.current;
-    const content = draftRef.current;
-    if (!id || archived || content === savedRef.current) return;
-    clearTimer();
-    setSaveState("saving");
-    const targetProject = projectRef.current;
-    try {
-      const result = await novelChapterSaveContent(id, content);
-      if (!mountedRef.current || projectRef.current !== targetProject) return;
-      savedRef.current = content;
-      setChapters((prev) =>
-        prev.map((c) =>
-          c.id === id
-            ? { ...c, wordCount: result.chapter.wordCount, updatedAt: result.chapter.updatedAt }
-            : c,
-        ),
-      );
-      setSaveState(draftRef.current === content ? "saved" : "idle");
-    } catch (e) {
-      if (!mountedRef.current || projectRef.current !== targetProject) return;
-      setSaveState("error");
-      onNotice("error", `正文保存失败：${errorMessage(e)}`);
-    }
-  }, [archived, clearTimer, onNotice]);
+  const persistOnce = useCallback(
+    async (chapterId: string, targetProject: string, content: string): Promise<boolean> => {
+      if (mountedRef.current) setSaveState("saving");
+      try {
+        const result = await novelChapterSaveContent(chapterId, content);
+        // 数据已落库：同一项目/同一章内即使组件已卸载，也要更新已保存基线，
+        // 否则卸载后的 flush 循环会误判草稿仍脏并无限重复写库。
+        if (projectRef.current === targetProject && selectedRef.current === chapterId) {
+          savedRef.current = content;
+          if (mountedRef.current) {
+            setChapters((prev) =>
+              prev.map((c) =>
+                c.id === chapterId
+                  ? { ...c, wordCount: result.chapter.wordCount, updatedAt: result.chapter.updatedAt }
+                  : c,
+              ),
+            );
+            setSaveState(draftRef.current === content ? "saved" : "pending");
+          }
+        }
+        return true;
+      } catch (e) {
+        if (mountedRef.current) setSaveState("error");
+        onNotice("error", `正文保存失败：${errorMessage(e)}`);
+        return false;
+      }
+    },
+    [onNotice],
+  );
 
-  // 卸载时兜底落盘（仅一次；不依赖 React 状态，避免旧闭包）。
+  /**
+   * 单章节串行落盘：同一时刻只允许一个请求；请求结束后若最新草稿仍未保存，
+   * 自动再写一次最新版本。并发调用者共享同一轮在途请求，不会产生乱序写入。
+   */
+  const flush = useCallback(async (): Promise<boolean> => {
+    clearTimer();
+    const chapterId = selectedRef.current;
+    if (!chapterId) return true;
+    const targetProject = projectRef.current;
+    if (archivedRef.current) {
+      if (draftRef.current === savedRef.current) return true;
+      if (mountedRef.current) setSaveState("error");
+      onNotice("error", "项目已归档，未保存的正文无法写入；请先恢复为进行中");
+      return false;
+    }
+    while (true) {
+      if (selectedRef.current !== chapterId || projectRef.current !== targetProject) {
+        return true; // 已离开该章节/项目，旧请求不再影响新界面。
+      }
+      if (archivedRef.current) {
+        if (mountedRef.current) setSaveState("error");
+        onNotice("error", "项目已归档，未保存的正文无法写入；请先恢复为进行中");
+        return false;
+      }
+      if (draftRef.current === savedRef.current) {
+        if (mountedRef.current) {
+          setSaveState((s) => (s === "pending" || s === "saving" ? "saved" : s));
+        }
+        return true;
+      }
+      if (savePromiseRef.current) {
+        if (!(await savePromiseRef.current)) return false;
+        continue;
+      }
+      const content = draftRef.current;
+      const promise = persistOnce(chapterId, targetProject, content);
+      savePromiseRef.current = promise;
+      const ok = await promise;
+      if (savePromiseRef.current === promise) savePromiseRef.current = null;
+      if (!ok) return false;
+      // 继续循环：若用户在保存期间又输入，自动提交最新草稿。
+    }
+  }, [clearTimer, onNotice, persistOnce]);
+
+  flushRef.current = flush;
+
+  // 向父级注册离开前保存协议；父级切模块/切项目必须 await 它。
+  useEffect(() => {
+    if (!registerFlush) return;
+    registerFlush(() => flushRef.current());
+    return () => registerFlush(null);
+  }, [registerFlush]);
+
+  // 卸载兜底：不复用旧闭包、不再直接发裸 IPC；与在途请求串行并补交最新草稿。
+  // 注意：窗口被强杀时无法等待完成，见验收报告的未验证项。
   useEffect(() => {
     return () => {
-      const id = selectedRef.current;
-      const content = draftRef.current;
-      if (id && content !== savedRef.current) {
-        void novelChapterSaveContent(id, content).catch(() => {});
-      }
+      void flushRef.current();
     };
   }, []);
 
-  // 防抖自动保存：只在正文变化且与已保存内容不同时排程。
+  // 防抖自动保存：正文变化立即标记 pending；900ms 后走同一个串行 flush。
   useEffect(() => {
     draftRef.current = draft;
-    if (!selectedId || chapterLoading || archived) return;
+    if (!selectedId || chapterLoading) return;
+    if (archived) {
+      if (draft !== savedRef.current) setSaveState("error");
+      return;
+    }
     if (draft === savedRef.current) {
       if (timerRef.current === null) setSaveState((s) => (s === "error" ? s : "idle"));
       return;
     }
+    setSaveState((s) => (s === "saving" ? s : "pending"));
     clearTimer();
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
-      void saveNow();
+      void flushRef.current();
     }, AUTOSAVE_MS);
     return clearTimer;
-  }, [draft, selectedId, chapterLoading, archived, clearTimer, saveNow]);
+  }, [draft, selectedId, chapterLoading, archived, clearTimer]);
 
   // 读取选中章节正文：只接受最新一次请求的结果。
   useEffect(() => {
@@ -244,7 +312,7 @@ export default function NovelManuscriptPanel({
         setChapter(null);
         setDraft("");
         setSaveState("error");
-        onNotice("error", `读取章节失败：${errorMessage(e)}`);
+        onNoticeRef.current("error", `读取章节失败：${errorMessage(e)}`);
       })
       .finally(() => {
         if (mountedRef.current && token === chapterTokenRef.current) setChapterLoading(false);
@@ -252,15 +320,26 @@ export default function NovelManuscriptPanel({
     return () => {
       chapterTokenRef.current += 1;
     };
-  }, [selectedId, onNotice]);
+  }, [selectedId]);
+
+  // 归档时立即关闭所有可写交互；已输入的正文草稿保留在 textarea，恢复后可重试保存。
+  useEffect(() => {
+    if (!archived) return;
+    setRenaming(null);
+    setConfirmDelete(null);
+    setNewVolumeTitle("");
+    setRenameDraft("");
+    skipRenameBlurRef.current = true;
+  }, [archived]);
 
   const selectChapter = useCallback(
     async (id: string) => {
       if (id === selectedRef.current) return;
-      await saveNow();
+      // 保存失败时停留在当前章，避免用下一章覆盖未落盘的草稿。
+      if (!(await flushRef.current())) return;
       setSelectedId(id);
     },
-    [saveNow],
+    [],
   );
 
   const sortedVolumes = useMemo(() => [...volumes].sort(byOrder), [volumes]);
@@ -316,6 +395,8 @@ export default function NovelManuscriptPanel({
         onNotice("info", "项目已归档，只读");
         return;
       }
+      // 新建前先把当前章草稿落盘；失败则中止，避免切走后丢正文。
+      if (!(await flushRef.current())) return;
       await runBusy(async () => {
         try {
           const result = await novelChapterSave({
@@ -357,6 +438,10 @@ export default function NovelManuscriptPanel({
       return;
     }
     if (!renaming) return;
+    if (archivedRef.current) {
+      setRenaming(null);
+      return;
+    }
     const title = trimTitle(renameDraft);
     if (!title) {
       onNotice("error", "标题不能为空");
@@ -431,7 +516,7 @@ export default function NovelManuscriptPanel({
         }
       });
     },
-    [sortedVolumes, projectId, runBusy, onNotice, loadTree],
+    [sortedVolumes, projectId, runBusy, onNotice, loadTree, archived],
   );
 
   const reorderChapters = useCallback(
@@ -477,7 +562,7 @@ export default function NovelManuscriptPanel({
         }
       });
     },
-    [chapters, chaptersOf, unfiledChapters, projectId, runBusy, onNotice, loadTree],
+    [chapters, chaptersOf, unfiledChapters, projectId, runBusy, onNotice, loadTree, archived],
   );
 
   const removeVolume = useCallback(
@@ -506,7 +591,7 @@ export default function NovelManuscriptPanel({
         }
       });
     },
-    [confirmDelete, runBusy, onNotice],
+    [confirmDelete, runBusy, onNotice, archived],
   );
 
   const removeChapter = useCallback(
@@ -532,7 +617,7 @@ export default function NovelManuscriptPanel({
         }
       });
     },
-    [confirmDelete, runBusy, onNotice],
+    [confirmDelete, runBusy, onNotice, archived],
   );
 
   const renderChapterRow = (item: NovelChapterSummary) => {
@@ -555,7 +640,10 @@ export default function NovelManuscriptPanel({
             autoFocus
             onChange={(e) => setRenameDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") void submitRename();
+              if (e.key === "Enter") {
+                void submitRename();
+                skipRenameBlurRef.current = true;
+              }
               if (e.key === "Escape") {
                 skipRenameBlurRef.current = true;
                 setRenaming(null);
@@ -581,6 +669,7 @@ export default function NovelManuscriptPanel({
               type="button"
               className="ws-btn ws-btn-quiet"
               aria-label={`重命名章节「${item.title}」`}
+              disabled={busy || archived}
               onClick={() => startRename(item.id, item.title)}
             >
               <Pencil size={11} />
@@ -589,7 +678,7 @@ export default function NovelManuscriptPanel({
               type="button"
               className="ws-btn ws-btn-quiet"
               aria-label={`上移章节「${item.title}」`}
-              disabled={busy || bucketIndex <= 0}
+              disabled={busy || archived || bucketIndex <= 0}
               onClick={() => void reorderChapters(item.id, -1)}
             >
               <ChevronUp size={11} />
@@ -598,7 +687,7 @@ export default function NovelManuscriptPanel({
               type="button"
               className="ws-btn ws-btn-quiet"
               aria-label={`下移章节「${item.title}」`}
-              disabled={busy || bucketIndex < 0 || bucketIndex >= bucketSize - 1}
+              disabled={busy || archived || bucketIndex < 0 || bucketIndex >= bucketSize - 1}
               onClick={() => void reorderChapters(item.id, 1)}
             >
               <ChevronDown size={11} />
@@ -607,7 +696,7 @@ export default function NovelManuscriptPanel({
               type="button"
               className={`ws-btn ws-btn-quiet ${confirmDelete === deleteKey ? "ws-btn-danger" : ""}`}
               aria-label={`删除章节「${item.title}」`}
-              disabled={busy}
+              disabled={busy || archived}
               onClick={() => void removeChapter(item)}
             >
               <Trash2 size={11} /> {confirmDelete === deleteKey ? "确认" : ""}
@@ -636,7 +725,10 @@ export default function NovelManuscriptPanel({
               autoFocus
               onChange={(e) => setRenameDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") void submitRename();
+                if (e.key === "Enter") {
+                  void submitRename();
+                  skipRenameBlurRef.current = true;
+                }
                 if (e.key === "Escape") {
                   skipRenameBlurRef.current = true;
                   setRenaming(null);
@@ -650,7 +742,7 @@ export default function NovelManuscriptPanel({
               type="button"
               className="ws-novel-volume-title"
               onClick={() => volume && startRename(volume.id, volume.title)}
-              disabled={!volume}
+              disabled={!volume || archived}
               data-tip={volume ? "点击重命名" : undefined}
             >
               {title}
@@ -663,7 +755,7 @@ export default function NovelManuscriptPanel({
                 type="button"
                 className="ws-btn ws-btn-quiet"
                 aria-label={`上移卷「${volume.title}」`}
-                disabled={busy || index <= 0}
+                disabled={busy || archived || index <= 0}
                 onClick={() => void reorderVolumes(volume.id, -1)}
               >
                 <ChevronUp size={11} />
@@ -672,7 +764,7 @@ export default function NovelManuscriptPanel({
                 type="button"
                 className="ws-btn ws-btn-quiet"
                 aria-label={`下移卷「${volume.title}」`}
-                disabled={busy || index < 0 || index >= sortedVolumes.length - 1}
+                disabled={busy || archived || index < 0 || index >= sortedVolumes.length - 1}
                 onClick={() => void reorderVolumes(volume.id, 1)}
               >
                 <ChevronDown size={11} />
@@ -681,7 +773,7 @@ export default function NovelManuscriptPanel({
                 type="button"
                 className={`ws-btn ws-btn-quiet ${confirmDelete === deleteKey ? "ws-btn-danger" : ""}`}
                 aria-label={`删除卷「${volume.title}」及其章节`}
-                disabled={busy}
+                disabled={busy || archived}
                 onClick={() => void removeVolume(volume)}
               >
                 <Trash2 size={11} /> {confirmDelete === deleteKey ? "确认" : ""}
@@ -706,14 +798,18 @@ export default function NovelManuscriptPanel({
   };
 
   const saveLabel = (() => {
-    if (archived) return "项目已归档，只读";
+    if (archived) {
+      return draft !== savedRef.current ? "项目已归档，正文未保存" : "项目已归档，只读";
+    }
     if (chapterLoading) return "读取正文…";
     if (saveState === "saving") return "保存中…";
     if (saveState === "saved") return "已自动保存";
-    if (saveState === "error") return "保存失败";
+    if (saveState === "error") return "保存失败，可重试";
+    if (saveState === "pending") return "待保存";
     if (selectedId && draft !== savedRef.current) return "待保存";
     return "自动保存已开启";
   })();
+  const saveTone = archived && draft !== savedRef.current ? "error" : saveState;
 
   return (
     <div className="ws-novel">
@@ -788,11 +884,20 @@ export default function NovelManuscriptPanel({
                   本章 {currentWordCount} 字 · 全书 {totalWords} 字
                 </div>
               </div>
-              <span className="ws-novel-save" data-tone={saveState}>
+              <span className="ws-novel-save" data-tone={saveTone}>
                 {saveState === "saved" && <CheckCircle2 size={12} />}
-                {saveState === "error" && <AlertCircle size={12} />}
+                {(saveState === "error" || saveTone === "error") && <AlertCircle size={12} />}
                 {saveLabel}
               </span>
+              {saveState === "error" && !archived && (
+                <button
+                  type="button"
+                  className="ws-btn"
+                  onClick={() => void flushRef.current()}
+                >
+                  重试保存
+                </button>
+              )}
             </header>
             {archived && (
               <div className="ws-notice" data-tone="info">
@@ -807,7 +912,9 @@ export default function NovelManuscriptPanel({
               placeholder="在这里写正文…（纯文本，自动保存）"
               aria-label={`${chapter?.title ?? "章节"}正文`}
               onChange={(e) => setDraft(e.target.value)}
-              onBlur={() => void saveNow()}
+              onBlur={() => {
+                if (!archived) void flushRef.current();
+              }}
             />
             <div className="ws-meta">
               停止输入约 {AUTOSAVE_MS / 1000} 秒后自动写入本地数据库；失焦、切换章节与切换项目时立即保存。

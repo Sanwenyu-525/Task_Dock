@@ -1,10 +1,11 @@
 //! 帮助中心主面板（完整模式第 13 个视觉入口的宿主页面）。
 //!
-//! 结构：搜索 + 分类浏览 + 最近使用 + 文章阅读视图 + 相关功能/页面跳转。
+//! R5 信息架构：分类/最近导航 + 文章列表 + 常驻阅读区，三者并行。
+//! 打开文章不再替换整个列表；窄窗由 CSS 降级为上下分区。
 //! 无后台任务：搜索是纯函数、最近浏览只在打开文章时写一次 localStorage。
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, LifeBuoy } from "lucide-react";
+import { ArrowLeft, BookOpen, Clock3, LifeBuoy } from "lucide-react";
 import { SearchField, StatusBadge } from "../ui";
 import { useLocale } from "../../hooks/useLocale";
 import { useUiStore } from "../../store/useUiStore";
@@ -66,10 +67,6 @@ export default function HelpCenterPanel() {
     setRecentIds(recordRecentArticle(id));
   }
 
-  function backToList() {
-    setOpenId(null);
-  }
-
   function returnToSource() {
     if (!helpReturnTab) return;
     setTab(helpReturnTab, { after: () => clearHelpReturnTab(null) });
@@ -79,10 +76,12 @@ export default function HelpCenterPanel() {
   const searchResults = normalizedQuery ? searchHelpArticles(normalizedQuery, locale) : [];
   const categoryArticles = articlesByCategory(categoryId);
   const recent = recentArticles(recentIds);
+  const categoryCounts = new Map(
+    HELP_CATEGORY_ORDER.map((id) => [id, articlesByCategory(id).length] as const),
+  );
 
   return (
-    <div className="help-panel page-fill">
-      {/* 页面级页头（2026-11-15 统一）：返回来源页按钮进动作区。 */}
+    <div className={`help-panel page-fill${openArticle ? " has-article" : ""}`}>
       <WorkbenchPageHeader
         icon={LifeBuoy}
         title={t("help.title")}
@@ -110,154 +109,180 @@ export default function HelpCenterPanel() {
           ariaLabel={t("help.searchAria")}
           clearLabel={t("help.searchClear")}
         />
+        <span className="help-toolbar-count" role="status">
+          {normalizedQuery
+            ? t("help.searchResultCount", { count: searchResults.length })
+            : `${t(HELP_CATEGORY_LABEL_KEYS[categoryId])} · ${categoryArticles.length}`}
+        </span>
         <ReopenOnboardingButton />
       </div>
 
-      <div className="page-scroll help-body">
-        {openArticle ? (
-          <div className="help-article">
-            <div className="help-badges">
+      <div className="help-workspace">
+        <aside className="help-side" aria-label={t("help.categories")}>
+          <div className="workspace-rail-head">
+            <span className="workspace-rail-eyebrow">KNOWLEDGE</span>
+            <h2>{t("help.categories")}</h2>
+          </div>
+          <nav className="help-cat-list" aria-label={t("help.categories")}>
+            {HELP_CATEGORY_ORDER.map((id) => (
               <button
+                key={id}
                 type="button"
-                className="btn sm"
-                onClick={backToList}
-                aria-label={t("help.backToList")}
+                className={`help-cat${categoryId === id && !normalizedQuery ? " active" : ""}`}
+                aria-pressed={categoryId === id && !normalizedQuery}
+                onClick={() => {
+                  setCategoryId(id);
+                  setQuery("");
+                }}
               >
-                <ArrowLeft size={12} aria-hidden="true" style={{ marginRight: 4 }} />
-                {t("help.backToList")}
+                <span>{t(HELP_CATEGORY_LABEL_KEYS[id])}</span>
+                <em>{categoryCounts.get(id) ?? 0}</em>
               </button>
-            </div>
-            <HelpArticleBody article={openArticle} locale={locale} />
-            {openArticle.relatedFeatureIds.length > 0 && (
-              <section className="help-related" aria-label={t("help.relatedFeatures")}>
-                <p className="help-related-title">{t("help.relatedFeatures")}</p>
-                {openArticle.relatedFeatureIds.map((featureId, i) => (
-                  <HelpFeatureLink
-                    key={featureId}
-                    featureId={featureId}
-                    routeId={openArticle.relatedRouteIds[i % openArticle.relatedRouteIds.length]}
-                  />
-                ))}
-              </section>
-            )}
-            {openArticle.relatedRouteIds.length > 0 && (
-              <section className="help-related" aria-label={t("help.relatedRoutes")}>
-                <p className="help-related-title">{t("help.relatedRoutes")}</p>
-                {openArticle.relatedRouteIds.map((routeId) => {
-                  const entry = navEntry(routeId);
-                  if (!entry) return null;
-                  const label = navLabel(entry, t);
-                  const hidden = !layout.left.includes(entry.id);
+            ))}
+          </nav>
+
+          {recent.length > 0 && (
+            <section className="help-side-recent" aria-label={t("help.recent")}>
+              <div className="help-side-section-head">
+                <span>
+                  <Clock3 size={12} aria-hidden="true" /> {t("help.recent")}
+                </span>
+                <button
+                  type="button"
+                  className="btn sm"
+                  aria-label={t("help.recentClearAria")}
+                  onClick={() => {
+                    clearRecentArticles();
+                    setRecentIds([]);
+                  }}
+                >
+                  {t("help.recentClear")}
+                </button>
+              </div>
+              <div className="help-side-recent-list">
+                {recent.slice(0, 5).map((article) => {
+                  const content = helpContent(article, locale);
                   return (
-                    <div key={routeId} className="help-related-row">
-                      <button
-                        type="button"
-                        className="btn sm"
-                        aria-label={t("help.goToPage", { label })}
-                        onClick={() => setTab(entry.tabs[0])}
-                      >
-                        {t("help.goToPage", { label })}
-                      </button>
-                      {hidden && <span className="help-route-hint">{t("help.featureHidden")}</span>}
-                    </div>
+                    <button
+                      key={article.id}
+                      type="button"
+                      className={`help-side-recent-row${openId === article.id ? " is-active" : ""}`}
+                      onClick={() => open(article.id)}
+                    >
+                      {content.title}
+                    </button>
                   );
                 })}
-              </section>
-            )}
-          </div>
-        ) : (
-          <>
-            {recent.length > 0 && (
-              <section className="help-related" aria-label={t("help.recent")}>
-                <div className="help-related-row">
-                  <p className="help-related-title">{t("help.recent")}</p>
-                  <span className="flex-spacer" />
-                  <button
-                    type="button"
-                    className="btn sm"
-                    aria-label={t("help.recentClearAria")}
-                    onClick={() => {
-                      clearRecentArticles();
-                      setRecentIds([]);
-                    }}
-                  >
-                    {t("help.recentClear")}
-                  </button>
-                </div>
-                <div className="help-list">
-                  {recent.map((article) => (
-                    <ArticleRow
-                      key={article.id}
-                      article={article}
-                      locale={locale}
-                      onOpen={open}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
+              </div>
+            </section>
+          )}
+        </aside>
 
-            {normalizedQuery ? (
-              <section aria-label={t("help.searchAria")}>
-                {searchResults.length === 0 ? (
-                  <p className="help-empty" role="status">
-                    {t("help.searchEmpty", { query: normalizedQuery })}
-                  </p>
-                ) : (
-                  <>
-                    <div className="help-badges">
-                      <span className="help-meta-text">
-                        {t("help.searchResultCount", { count: searchResults.length })}
-                      </span>
-                    </div>
-                    <div className="help-list">
-                      {searchResults.map((article) => (
-                        <ArticleRow
-                          key={article.id}
-                          article={article}
-                          locale={locale}
-                          onOpen={open}
+        <section className="help-list-pane" aria-label={normalizedQuery ? t("help.searchAria") : t(HELP_CATEGORY_LABEL_KEYS[categoryId])}>
+          <div className="help-pane-head">
+            <div>
+              <span className="workspace-rail-eyebrow">ARTICLES</span>
+              <h3>{normalizedQuery ? t("help.searchAria") : t(HELP_CATEGORY_LABEL_KEYS[categoryId])}</h3>
+            </div>
+            <span className="help-pane-meta">
+              {normalizedQuery
+                ? t("help.searchResultCount", { count: searchResults.length })
+                : categoryArticles.length}
+            </span>
+          </div>
+          <div className="help-list-scroll page-scroll">
+            {normalizedQuery && searchResults.length === 0 ? (
+              <p className="help-empty" role="status">
+                {t("help.searchEmpty", { query: normalizedQuery })}
+              </p>
+            ) : null}
+            {!normalizedQuery && categoryArticles.length === 0 ? (
+              <p className="help-empty" role="status">
+                {t("help.emptyCategory")}
+              </p>
+            ) : null}
+            <div className="help-list">
+              {(normalizedQuery ? searchResults : categoryArticles).map((article) => (
+                <ArticleRow
+                  key={article.id}
+                  article={article}
+                  locale={locale}
+                  active={openId === article.id}
+                  onOpen={open}
+                />
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="help-reader-pane" aria-label={t("help.title")}>
+          {openArticle ? (
+            <>
+              <div className="help-reader-head">
+                <div>
+                  <span className="workspace-rail-eyebrow">READING</span>
+                  <h3>{helpContent(openArticle, locale).title}</h3>
+                </div>
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => setOpenId(null)}
+                  aria-label={t("help.backToList")}
+                >
+                  <ArrowLeft size={12} aria-hidden="true" />
+                  {t("help.backToList")}
+                </button>
+              </div>
+              <div className="help-reader-scroll page-scroll">
+                <div className="help-article">
+                  <HelpArticleBody article={openArticle} locale={locale} />
+                  {openArticle.relatedFeatureIds.length > 0 && (
+                    <section className="help-related" aria-label={t("help.relatedFeatures")}>
+                      <p className="help-related-title">{t("help.relatedFeatures")}</p>
+                      {openArticle.relatedFeatureIds.map((featureId, i) => (
+                        <HelpFeatureLink
+                          key={featureId}
+                          featureId={featureId}
+                          routeId={openArticle.relatedRouteIds[i % openArticle.relatedRouteIds.length]}
                         />
                       ))}
-                    </div>
-                  </>
-                )}
-              </section>
-            ) : (
-              <>
-                <nav className="help-cats" aria-label={t("help.categories")}>
-                  {HELP_CATEGORY_ORDER.map((id) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className={`help-cat${categoryId === id ? " active" : ""}`}
-                      aria-pressed={categoryId === id}
-                      onClick={() => setCategoryId(id)}
-                    >
-                      {t(HELP_CATEGORY_LABEL_KEYS[id])}
-                    </button>
-                  ))}
-                </nav>
-                <div className="help-list">
-                  {categoryArticles.length === 0 ? (
-                    <p className="help-empty" role="status">
-                      {t("help.emptyCategory")}
-                    </p>
-                  ) : (
-                    categoryArticles.map((article) => (
-                      <ArticleRow
-                        key={article.id}
-                        article={article}
-                        locale={locale}
-                        onOpen={open}
-                      />
-                    ))
+                    </section>
+                  )}
+                  {openArticle.relatedRouteIds.length > 0 && (
+                    <section className="help-related" aria-label={t("help.relatedRoutes")}>
+                      <p className="help-related-title">{t("help.relatedRoutes")}</p>
+                      {openArticle.relatedRouteIds.map((routeId) => {
+                        const entry = navEntry(routeId);
+                        if (!entry) return null;
+                        const label = navLabel(entry, t);
+                        const hidden = !layout.left.includes(entry.id);
+                        return (
+                          <div key={routeId} className="help-related-row">
+                            <button
+                              type="button"
+                              className="btn sm"
+                              aria-label={t("help.goToPage", { label })}
+                              onClick={() => setTab(entry.tabs[0])}
+                            >
+                              {t("help.goToPage", { label })}
+                            </button>
+                            {hidden && <span className="help-route-hint">{t("help.featureHidden")}</span>}
+                          </div>
+                        );
+                      })}
+                    </section>
                   )}
                 </div>
-              </>
-            )}
-          </>
-        )}
+              </div>
+            </>
+          ) : (
+            <div className="help-reader-empty">
+              <BookOpen size={26} aria-hidden="true" />
+              <strong>{t("help.emptyCategory")}</strong>
+              <span>{t("help.subtitle")}</span>
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );
@@ -266,17 +291,24 @@ export default function HelpCenterPanel() {
 function ArticleRow({
   article,
   locale,
+  active,
   onOpen,
 }: {
   article: HelpArticle;
   locale: ReturnType<typeof useLocale>["locale"];
+  active: boolean;
   onOpen: (id: string) => void;
 }) {
   const { t } = useLocale();
   const content = helpContent(article, locale);
   const statusMeta = HELP_STATUS_META[article.status];
   return (
-    <button type="button" className="help-item" onClick={() => onOpen(article.id)}>
+    <button
+      type="button"
+      className={`help-item${active ? " is-active" : ""}`}
+      aria-pressed={active}
+      onClick={() => onOpen(article.id)}
+    >
       <p className="help-item-title">{content.title}</p>
       <p className="help-item-summary">{content.summary}</p>
       <span className="help-badges">

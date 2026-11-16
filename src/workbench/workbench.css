@@ -35,13 +35,16 @@ body {
 }
 
 /* 苹果式连续圆角：只在 WebView2 真正支持 `corner-shape` 时启用。
+   注意参数语义：CSS `superellipse(K)` 的数学指数是 n = 2^K，苹果式 squircle
+   必须写 K=2（n=4）；写 K=4 会得到 n=16（近乎方形）的角，与原生 n=4 裁剪
+   不一致，原生会把更方的 CSS 角部切掉（阶梯/边框断裂）。
    `data-window-corner` 由 windowFrame.ts 的能力检测统一写入（同一判定只做一次），
    Rust 侧同指数裁剪（`set_workspace_window_corner`）。不支持时整块规则不生效，
    视觉回到第一轮的圆弧，不会出现 CSS 与原生区域错位。 */
-@supports (corner-shape: superellipse(4)) {
+@supports (corner-shape: superellipse(2)) {
   html[data-window-corner="squircle"] .wb-root,
   html[data-window-corner="squircle"] .wb-boot {
-    corner-shape: superellipse(4);
+    corner-shape: superellipse(2);
   }
 }
 
@@ -481,6 +484,15 @@ body.wb-resizing {
 .wb-icon-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* 顶栏右端工具簇（右栏 / 明暗 / 视觉主题）与窗口按钮同一「无框图标」语言：
+   默认不描边，只保留悬停与选中态的底色反馈（效果图顶栏也是无框图标）。
+   全局 `box-sizing: border-box`，删掉 1px 边框不改变 30×30 命中区与顶栏对齐；
+   边框只是绘制，DropdownMenu 的触发、点击与定位均在按钮自身，不受影响。
+   2026-11-16 按用户反馈：红框内三个图标按钮不要加边框。 */
+.wb-topbar-actions .wb-icon-btn {
+  border: none;
 }
 
 /* 注意：不要复用 `.wb-body`——该名称是开发工作台面板内部的既有类

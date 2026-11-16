@@ -19,6 +19,7 @@ import ShelfPanel from "../shelf/ShelfPanel";
 import NotesPanel from "../notes/NotesPanel";
 import ModuleRunControl from "../lifecycle/ModuleRunControl";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 import CollectionRail from "./CollectionRail";
 import { useLocale } from "../../hooks/useLocale";
 import "./collection-page.css";
@@ -78,14 +79,18 @@ export default function CollectionPanel() {
       </div>
       <div className="collection-body">
         {sub === "shelf" ? (
-          /* 文件暂存：主区（暂存架）+ 右侧信息栏。窄内容区由容器查询折叠为
-             单列（信息栏落到列表下方），不挤压暂存架行宽。 */
-          <div className="collection-split">
-            <div className="collection-main">
-              <ShelfPanel />
-            </div>
-            <CollectionRail />
-          </div>
+          /* R5：分类/空间/投递目标提升为左侧导航；文件列表占满主区，
+             选中文件详情由外壳右栏承担，不再在主区内复制第二套右栏。 */
+          <WorkspaceSplit
+            id="collection-shelf"
+            sidebar={<CollectionRail />}
+            sidebarLabel={t("workbench.page.collectionCategories")}
+            defaultWidth={236}
+            minWidth={216}
+            maxWidth={320}
+          >
+            <ShelfPanel />
+          </WorkspaceSplit>
         ) : sub === "inbox" ? (
           <CaptureInboxPanel />
         ) : (

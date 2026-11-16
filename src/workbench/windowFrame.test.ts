@@ -11,7 +11,13 @@
 //!    `sync_workbench_frame`），避免屏边缝隙与 1px 亮边。
 import { describe, expect, it, beforeEach } from "vitest";
 import workbenchCss from "./workbench.css?raw";
-import { readWindowRadiusCss, windowCornerPlan } from "./windowFrame";
+import {
+  CONTINUOUS_CORNER_CSS_K,
+  CONTINUOUS_CORNER_CSS_VALUE,
+  CONTINUOUS_CORNER_EXPONENT,
+  readWindowRadiusCss,
+  windowCornerPlan,
+} from "./windowFrame";
 
 const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, "");
 
@@ -56,9 +62,9 @@ describe("workbench 窗口框", () => {
     const squircle = bodyOf(
       'html[data-window-corner="squircle"] .wb-root, html[data-window-corner="squircle"] .wb-boot',
     );
-    expect(squircle).toContain("corner-shape: superellipse(4)");
+    expect(squircle).toContain("corner-shape: superellipse(2)");
     // 规则必须在 @supports 内：避免"检测通过但 CSS 引擎不支持"时残留半套曲线
-    expect(stripComments(workbenchCss)).toContain("@supports (corner-shape: superellipse(4))");
+    expect(stripComments(workbenchCss)).toContain("@supports (corner-shape: superellipse(2))");
     // 不能把 corner-shape 直接写进基础窗口框（那会在不支持的运行时丢掉整条声明以外的一切）
     expect(bodyOf(".wb-root, .wb-boot")).not.toContain("corner-shape");
   });
@@ -79,15 +85,24 @@ describe("workbench 窗口框", () => {
 });
 
 describe("windowCornerPlan", () => {
+  it("CSS 参数 K 与数学指数 n 的映射是 n = 2^K（防再次混用）", () => {
+    // Chromium 实测：superellipse(1)→n=2、2→n=4、3→n=8、4→n=16、8→n=64
+    expect(CONTINUOUS_CORNER_CSS_K).toBe(2);
+    expect(CONTINUOUS_CORNER_EXPONENT).toBe(2 ** CONTINUOUS_CORNER_CSS_K);
+    expect(CONTINUOUS_CORNER_EXPONENT).toBe(4);
+    expect(CONTINUOUS_CORNER_CSS_VALUE).toBe("superellipse(2)");
+  });
+
   it("支持 corner-shape 时用超椭圆并补偿名义半径", () => {
     const plan = windowCornerPlan(18, true);
-    expect(plan).toEqual({ radius: 22, exponent: 4, extra: 4, squircle: true });
+    expect(plan).toEqual({ radius: 22, cssK: 2, exponent: 4, extra: 4, squircle: true });
     expect(windowCornerPlan(20, true).radius).toBe(24);
   });
 
   it("不支持时指数回落 2、半径不动，与第一轮圆弧完全一致", () => {
     expect(windowCornerPlan(18, false)).toEqual({
       radius: 18,
+      cssK: 1,
       exponent: 2,
       extra: 0,
       squircle: false,
