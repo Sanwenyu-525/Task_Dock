@@ -700,11 +700,14 @@ node scripts/build-guard.mjs precheck            # 现有构建守卫保持兼�
 
 - **正式测试安装包只来自 `integration` 分支的集成快照**，不直接打包共享工作区：快照只叠加
   「待集成」任务的声明路径改动，未完成任务的未提交改动与更晚的 `main` 提交都不会进入产物。
-- 流程命令：`task add/check/ready`（登记与交付）、`snapshot bootstrap|create`（基线与增量集成，
-  含集成静态检查）、`build --snapshot <id> --platform desktop|web|android`（干净快照工作区构建，
-  相同「提交+平台+配置」复用产物）、`accept --build <id> --task <id> --status pass|fail`（多 Agent
-  基于同一构建版本各自验收）、`status`（汇总）。
-- 集成工作区固定为 `<仓库父目录>/<仓库名>-integration`（分支 `integration`），与 Agent 任务
+- 流程命令：`task add/check/ready`（登记与交付，`task check --commit` 绑定检查提交，省略时绑定
+  当时 `HEAD`；`task ready` 只认交付提交上的通过检查）、
+  `snapshot bootstrap|create`（基线与增量集成，含集成静态检查）、
+  `build --snapshot <id> --platform desktop|web|android`（独立构建工作区，相同「提交+平台+配置」
+  复用产物）、`accept --build <id> --task <id> --status pass|fail`（多 Agent 基于同一构建版本
+  各自验收）、`status`（汇总）。
+- 集成快照工作区固定为 `<仓库父目录>/<仓库名>-integration`（分支 `integration`），构建工作区为
+  `<仓库父目录>/<仓库名>-integration-build`（detached HEAD），两者独立锁、可并行，与 Agent 任务
   Worktree 分开；桌面构建缓存 `src-tauri/target-integration`，全部经构建调度器排队（label
   `integration-<构建ID>`）。
 - 记录在 `tmp/integration/{tasks,snapshots,builds,logs}`（不入库）；任务关联同时写进快照提交信息

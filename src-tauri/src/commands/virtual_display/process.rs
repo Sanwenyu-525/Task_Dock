@@ -2,16 +2,27 @@
 //!
 //! 并发模型：
 //! - 全局 `HashMap<session_id, Arc<SessionHandle>>` 只在增删/遍历时短暂加锁；
+//! - 会话创建由独立的 `start_gate` 串行化：进程启动、Job Object 分配与线程创建
+//!   都不在全局会话表锁内进行；
 //! - 每个会话自己的 `Mutex<Inner>` 保护 Child 与状态；
-//! - `stop` 标记 stopping 后立刻返回，收尾线程独立等待，读查询不被阻塞；
-//! - 每个会话最多 3 个线程（日志读取、退出等待、停止收尾），会话上限 2。
+//! - `stop` 只标记 stopping + 设置强杀截止时间并立即返回，收尾由退出监控线程完成，
+//!   读查询不会被关闭流程阻塞；
+//! - 每个会话最多 3 个线程（stdout 日志、stderr 日志、退出监控），会话上限 2。
+//!
+//! 可靠性约束：
+//! - 三个后台线程任一创建失败都会回收 scrcpy 进程并返回可解释错误，不留孤儿；
+//! - 只有「收到 scrcpy 视频流日志」才进入 running；PID 存活不算就绪；
+//! - 关闭只针对本模块记录的 PID（WM_CLOSE → 有界等待 → 强杀），不使用全局 taskkill；
+//! - 截图先校验窗口/客户区/PrintWindow/像素读取/PNG 可解码，再做启发式质量警告，
+//!   不把启发式结果伪装成确定性失败。
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use chrono::Local;
@@ -40,8 +51,16 @@ const STAGE_READY: &str = "ready";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(25);
 /// 停止：先 WM_CLOSE 等 5s，仍未退出才强杀。
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+/// 会话已判定结束（错误/断线）后，给 scrcpy 的自我保护退出时间。
+const ENDED_KILL_GRACE: Duration = Duration::from_secs(3);
 /// 结束会话在列表中的保留时间：让前端看到失败原因后自然消失。
 const ENDED_RETENTION: Duration = Duration::from_secs(12);
+/// 后台线程栈：日志读取与状态轮询都很浅，固定大小便于失败可复现。
+const THREAD_STACK_BYTES: usize = 512 * 1024;
+/// 截图质量启发式的采样步长（像素）：只需估计色彩丰富度，不必全量统计。
+const SAMPLE_STRIDE: usize = 97;
+/// 低于该采样颜色数视为「信息量偏低」并返回警告（不判失败）。
+const RICH_COLOR_THRESHOLD: usize = 8;
 
 pub struct StartRequest {
     pub serial: String,
@@ -70,6 +89,9 @@ struct Inner {
     app_started: bool,
     ready_warning_added: bool,
     close_requested: bool,
+    /// 到点仍未退出则强杀；stop 与「已判定结束」共用同一条有界回收路径。
+    kill_deadline: Option<Instant>,
+    force_killed: bool,
 }
 
 struct SessionHandle {
@@ -84,6 +106,9 @@ impl SessionHandle {
 
 pub struct SessionManager {
     map: Mutex<std::collections::HashMap<String, Arc<SessionHandle>>>,
+    /// 串行化「检查上限 → 启动进程 → 创建线程 → 登记会话」，
+    /// 避免并发点击创建多个进程，同时不把进程启动放进全局会话表锁。
+    start_gate: Mutex<()>,
 }
 
 static MANAGER: OnceLock<SessionManager> = OnceLock::new();
@@ -91,6 +116,7 @@ static MANAGER: OnceLock<SessionManager> = OnceLock::new();
 pub fn manager() -> &'static SessionManager {
     MANAGER.get_or_init(|| SessionManager {
         map: Mutex::new(std::collections::HashMap::new()),
+        start_gate: Mutex::new(()),
     })
 }
 
@@ -157,39 +183,96 @@ fn parse_log_line(line: &str) -> Option<LogSignal> {
     None
 }
 
+/// 致命 ERROR：只有这些会结束会话；其余 ERROR 作为警告保留，避免误判运行中的窗口。
+fn is_fatal_error(message: &str) -> bool {
+    message.contains("Could not start app")
+        || message.contains("Unable to start app")
+        || message.contains("Could not create display")
+        || message.contains("Could not open video stream")
+}
+
+/// 进程退出后的最终状态（纯函数，便于单测）。
+/// 返回 (状态, 错误原因, 警告)。
+fn decide_exit_status(
+    current: &str,
+    exit_code: Option<i32>,
+    force_killed: bool,
+) -> (&'static str, Option<String>, Option<String>) {
+    let forced_warning = force_killed.then(|| {
+        if current == STATUS_STOPPING {
+            "窗口未在 5 秒内退出，已强制结束进程".to_string()
+        } else {
+            "scrcpy 未在回收期限内退出，已强制结束进程".to_string()
+        }
+    });
+    match current {
+        STATUS_STOPPING => (STATUS_STOPPED, None, forced_warning),
+        STATUS_ERROR => (STATUS_ERROR, None, forced_warning),
+        STATUS_DISCONNECTED => (STATUS_DISCONNECTED, None, forced_warning),
+        STATUS_RUNNING => {
+            if exit_code == Some(0) {
+                (STATUS_STOPPED, None, forced_warning)
+            } else {
+                (
+                    STATUS_DISCONNECTED,
+                    Some(format!(
+                        "scrcpy 异常退出（code {}）",
+                        exit_code.unwrap_or(-1)
+                    )),
+                    forced_warning,
+                )
+            }
+        }
+        // starting 阶段退出：无论退出码都视为启动失败。
+        _ => (STATUS_ERROR, None, forced_warning),
+    }
+}
+
+fn append_warning(info: &mut VdSession, message: &str) {
+    let next = match info.warning.take() {
+        Some(previous) if !previous.is_empty() => format!("{previous}；{message}"),
+        _ => message.to_string(),
+    };
+    info.warning = Some(next.chars().take(400).collect());
+}
+
 impl SessionManager {
     pub fn start(&self, req: StartRequest) -> AppResult<VdSession> {
-        // 先构造参数（可能读缓存的 scrcpy --help），不要把外部命令放进会话锁内。
+        // 先构造参数（可能读缓存的 scrcpy --help），不要把外部命令放进任何锁内。
         let args = build_args(&req);
-        let mut map = self.map.lock().expect("vd sessions");
-        let active: Vec<VdSession> = map
-            .values()
-            .map(|handle| handle.snapshot())
-            .filter(|info| status_is_active(&info.status))
-            .collect();
+        let _gate = self.start_gate.lock().expect("vd start gate");
 
-        // 重复点击/重复请求：同一设备同一模式同一应用只允许一个活动会话。
-        if let Some(existing) = active.iter().find(|info| {
-            info.serial == req.serial && info.mode == req.mode && info.package == req.package
-        }) {
-            let what = if existing.mode == super::MODE_MIRROR {
-                "该设备已有屏幕镜像窗口"
-            } else {
-                "该应用已在虚拟屏中运行"
-            };
-            return Err(AppError::Conflict(what.into()));
-        }
+        {
+            let map = self.map.lock().expect("vd sessions");
+            let active: Vec<VdSession> = map
+                .values()
+                .map(|handle| handle.snapshot())
+                .filter(|info| status_is_active(&info.status))
+                .collect();
 
-        let limit = if req.allow_multi { VD_MAX_SESSIONS } else { 1 };
-        if active.len() >= limit {
-            return Err(AppError::Conflict(format!(
-                "并发投屏会话已达上限（{limit}）。请先关闭现有窗口{}",
-                if req.allow_multi {
-                    ""
+            // 重复点击/重复请求：同一设备同一模式同一应用只允许一个活动会话。
+            if let Some(existing) = active.iter().find(|info| {
+                info.serial == req.serial && info.mode == req.mode && info.package == req.package
+            }) {
+                let what = if existing.mode == super::MODE_MIRROR {
+                    "该设备已有屏幕镜像窗口"
                 } else {
-                    "，或在高级选项中开启多屏实验模式"
-                }
-            )));
+                    "该应用已在虚拟屏中运行"
+                };
+                return Err(AppError::Conflict(what.into()));
+            }
+
+            let limit = if req.allow_multi { VD_MAX_SESSIONS } else { 1 };
+            if active.len() >= limit {
+                return Err(AppError::Conflict(format!(
+                    "并发投屏会话已达上限（{limit}）。请先关闭现有窗口{}",
+                    if req.allow_multi {
+                        ""
+                    } else {
+                        "，或在高级选项中开启多屏实验模式"
+                    }
+                )));
+            }
         }
 
         let id = Uuid::new_v4().to_string();
@@ -206,9 +289,9 @@ impl SessionManager {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = cmd.spawn().map_err(|err| {
-            AppError::Unavailable(format!("启动 scrcpy 失败：{err}"))
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|err| AppError::Unavailable(format!("启动 scrcpy 失败：{err}")))?;
         let pid = child.id();
         // scrcpy 5.x 把 INFO/Texture/New display/Starting app 写在 stdout，错误写在 stderr；
         // 两路都必须读，否则「进程活着但没就绪」会被误判为成功或超时。
@@ -219,7 +302,8 @@ impl SessionManager {
         if let Some(warning) = req.warning.clone() {
             warnings.push(warning);
         }
-        if !win::assign(pid) {
+        let job_assigned = win::assign(pid);
+        if !job_assigned {
             warnings.push(
                 "未能把 scrcpy 加入 Job Object：task_dock 被强制结束时可能残留窗口，请手动关闭"
                     .to_string(),
@@ -249,6 +333,7 @@ impl SessionManager {
                 Some(warnings.join("；"))
             },
             size: req.size.clone(),
+            job_assigned,
         };
 
         let handle = Arc::new(SessionHandle {
@@ -264,48 +349,35 @@ impl SessionManager {
                 app_started: false,
                 ready_warning_added: false,
                 close_requested: false,
+                kill_deadline: None,
+                force_killed: false,
             }),
         });
-        map.insert(id.clone(), Arc::clone(&handle));
-        drop(map);
 
-        let log_serial_err = req.serial.clone();
-        let log_serial_out = req.serial.clone();
-        let log_path_err = log_path.clone();
-        let log_path_out = log_path.clone();
-        if let Some(stderr) = stderr {
-            let log_handle = Arc::clone(&handle);
-            std::thread::Builder::new()
-                .name(format!("vd-log-err-{pid}"))
-                .spawn(move || {
-                    read_logs(
-                        log_handle,
-                        BufReader::new(stderr),
-                        log_path_err,
-                        log_serial_err,
-                    )
-                })
-                .ok();
+        // 三个线程全部成功才登记会话；任一失败先回收进程，不留孤儿会话。
+        if let Err(err) = spawn_session_threads(
+            &handle,
+            pid,
+            stdout,
+            stderr,
+            &log_path,
+            &req.serial,
+        ) {
+            let _ = {
+                let mut inner = handle.inner.lock().expect("vd session");
+                let _ = inner.child.kill();
+                let _ = inner.child.try_wait();
+            };
+            remove_file(&log_path);
+            return Err(AppError::Unavailable(format!(
+                "启动会话失败：{err}。已回收 scrcpy 进程"
+            )));
         }
-        if let Some(stdout) = stdout {
-            let log_handle = Arc::clone(&handle);
-            std::thread::Builder::new()
-                .name(format!("vd-log-out-{pid}"))
-                .spawn(move || {
-                    read_logs(
-                        log_handle,
-                        BufReader::new(stdout),
-                        log_path_out,
-                        log_serial_out,
-                    )
-                })
-                .ok();
-        }
-        let wait_handle = Arc::clone(&handle);
-        std::thread::Builder::new()
-            .name(format!("vd-wait-{pid}"))
-            .spawn(move || wait_loop(wait_handle))
-            .ok();
+
+        self.map
+            .lock()
+            .expect("vd sessions")
+            .insert(id, Arc::clone(&handle));
         Ok(info)
     }
 
@@ -317,64 +389,78 @@ impl SessionManager {
         let Some(handle) = handle else {
             return Ok(false);
         };
-        let (alive, pid, ended) = {
+        let (pid, need_close) = {
             let mut inner = handle.inner.lock().expect("vd session");
+            let pid = inner.info.pid;
             if inner.finalized || status_is_ended(&inner.info.status) {
-                (false, inner.info.pid, true)
+                // 已结束：不再触碰进程，幂等返回。
+                (pid, false)
             } else {
-                inner.info.status = STATUS_STOPPING.to_string();
-                (true, inner.info.pid, false)
+                if inner.info.status != STATUS_STOPPING {
+                    inner.info.status = STATUS_STOPPING.to_string();
+                }
+                // 重复点击不重置截止时间，避免无限延长收尾。
+                if inner.kill_deadline.is_none() {
+                    inner.kill_deadline = Some(Instant::now() + STOP_TIMEOUT);
+                }
+                (pid, true)
             }
         };
-        if !alive || ended {
-            return Ok(true);
+        if need_close {
+            // WM_CLOSE 在锁外发送：即使 scrcpy 消息循环卡顿，也不阻塞状态查询。
+            win::close_windows(pid);
         }
-        std::thread::Builder::new()
-            .name(format!("vd-stop-{pid}"))
-            .spawn(move || stop_loop(handle, pid))
-            .ok();
         Ok(true)
     }
 
     pub fn sessions(&self) -> AppResult<Vec<VdSession>> {
-        let handles: Vec<Arc<SessionHandle>> = {
+        let handles: Vec<(String, Arc<SessionHandle>)> = {
             let map = self.map.lock().expect("vd sessions");
-            map.values().cloned().collect()
+            map.iter()
+                .map(|(id, handle)| (id.clone(), Arc::clone(handle)))
+                .collect()
         };
         let mut out: Vec<VdSession> = handles
             .iter()
-            .map(|handle| handle.snapshot())
+            .map(|(_, handle)| handle.snapshot())
             .collect();
         out.sort_by(|a, b| a.started_at.cmp(&b.started_at));
 
         // 清理保留期已过的结束会话及其临时截图。
-        let mut map = self.map.lock().expect("vd sessions");
-        let expired: Vec<String> = map
-            .iter()
-            .filter_map(|(id, handle)| {
-                let inner = handle.inner.lock().expect("vd session");
-                match inner.ended_instant {
-                    Some(at) if at.elapsed() >= ENDED_RETENTION => Some(id.clone()),
-                    _ => None,
-                }
-            })
-            .collect();
-        for id in expired {
-            if let Some(handle) = map.remove(&id) {
-                let inner = handle.inner.lock().expect("vd session");
-                remove_file(&inner.log_path);
-                if let Some(shot) = &inner.shot_path {
-                    remove_file(shot);
+        let expired: Vec<String> = {
+            let map = self.map.lock().expect("vd sessions");
+            map.iter()
+                .filter_map(|(id, handle)| {
+                    let inner = handle.inner.lock().expect("vd session");
+                    match inner.ended_instant {
+                        Some(at) if at.elapsed() >= ENDED_RETENTION => Some(id.clone()),
+                        _ => None,
+                    }
+                })
+                .collect()
+        };
+        if !expired.is_empty() {
+            let mut map = self.map.lock().expect("vd sessions");
+            for id in expired {
+                if let Some(handle) = map.remove(&id) {
+                    let inner = handle.inner.lock().expect("vd session");
+                    remove_file(&inner.log_path);
+                    if let Some(shot) = &inner.shot_path {
+                        remove_file(shot);
+                    }
                 }
             }
         }
-        drop(map);
         Ok(out)
     }
 
     pub fn active_count_for_serial(&self, serial: &str) -> usize {
-        let map = self.map.lock().expect("vd sessions");
-        map.values()
+        let handles: Vec<Arc<SessionHandle>> = {
+            let map = self.map.lock().expect("vd sessions");
+            map.values().cloned().collect()
+        };
+        handles
+            .iter()
             .filter(|handle| {
                 let info = handle.snapshot();
                 info.serial == serial && status_is_active(&info.status)
@@ -409,17 +495,22 @@ impl SessionManager {
             (inner.info.pid, inner.info.status.clone())
         };
         if status != STATUS_RUNNING {
-            return Err(AppError::Conflict("会话尚未就绪或已结束，无法截图".into()));
+            return Err(AppError::Conflict(
+                "会话尚未就绪或已结束，无法截图".into(),
+            ));
         }
         // 虚拟屏首帧可能只渲染出背景层（见 capture_window_png 的颜色采样）。
-        // 用户主动截图时做 3 次有界重试：拿到有内容的帧即返回，仍为空则返回
-        // 最后一帧（不伪造错误，也不额外无限等待）。
-        let mut last: Option<(Vec<u8>, u32, u32)> = None;
+        // 用户主动截图时做 3 次有界重试：拿到信息量足够的帧即返回，否则返回最后一帧
+        // 并附带**警告**——纯色画面也可能是用户真实看到的页面，不伪造确定性失败。
+        let mut best: Option<WindowCapture> = None;
         let mut last_err: Option<String> = None;
         for attempt in 0..3 {
             match win::capture_window_png(pid) {
-                Ok((png, width, height, rich)) => {
-                    last = Some((png, width, height));
+                Ok(capture) => {
+                    let rich = capture.rich;
+                    if best.as_ref().map(|current| !current.rich).unwrap_or(true) {
+                        best = Some(capture);
+                    }
                     last_err = None;
                     if rich {
                         break;
@@ -431,12 +522,13 @@ impl SessionManager {
                 std::thread::sleep(Duration::from_millis(300));
             }
         }
-        let (png, width, height) = last.ok_or_else(|| {
+        let capture = best.ok_or_else(|| {
             AppError::Unavailable(format!(
                 "截取画面失败：{}",
                 last_err.unwrap_or_else(|| "未知错误".into())
             ))
         })?;
+
         let dir = std::env::temp_dir().join("task-dock-vd").join("shots");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!(
@@ -444,9 +536,22 @@ impl SessionManager {
             session_id,
             Local::now().timestamp_millis()
         ));
-        std::fs::write(&path, png)?;
+        std::fs::write(&path, &capture.png)?;
+        // 文件落盘后再解码一次：证明 PNG 可读、尺寸可信，而不是只相信内存里的缓冲区。
+        let (width, height) = match verify_png_file(&path) {
+            Ok(size) => size,
+            Err(err) => {
+                remove_file(&path);
+                return Err(AppError::Unavailable(format!("截图文件校验失败：{err}")));
+            }
+        };
+        let warning = capture_warning(capture.rich, width, height);
 
         let mut inner = handle.inner.lock().expect("vd session");
+        if inner.finalized || status_is_ended(&inner.info.status) {
+            remove_file(&path);
+            return Err(AppError::Conflict("会话已结束，截图已丢弃".into()));
+        }
         if let Some(previous) = inner.shot_path.replace(path.clone()) {
             remove_file(&previous);
         }
@@ -455,6 +560,7 @@ impl SessionManager {
             width,
             height,
             captured_at: now_stamp(),
+            warning,
         })
     }
 
@@ -495,26 +601,35 @@ impl SessionManager {
             if !alive {
                 continue;
             }
+            {
+                let mut inner = handle.inner.lock().expect("vd session");
+                if !inner.finalized {
+                    inner.info.status = STATUS_STOPPING.to_string();
+                }
+            }
             win::close_windows(pid);
             let deadline = Instant::now() + Duration::from_millis(1500);
             loop {
                 let exited = {
                     let mut inner = handle.inner.lock().expect("vd session");
-                    matches!(inner.child.try_wait(), Ok(Some(_)))
+                    matches!(inner.child.try_wait(), Ok(Some(_)) | Err(_))
                 };
                 if exited || Instant::now() >= deadline {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(60));
             }
-            {
-                let mut inner = handle.inner.lock().expect("vd session");
-                if matches!(inner.child.try_wait(), Ok(None)) {
-                    let _ = inner.child.kill();
-                    let _ = inner.child.wait();
-                }
-                finalize_locked(&mut inner, STATUS_STOPPED, None, Some("task_dock 退出，已结束会话".into()));
+            let mut inner = handle.inner.lock().expect("vd session");
+            if matches!(inner.child.try_wait(), Ok(None)) {
+                let _ = inner.child.kill();
+                let _ = inner.child.try_wait();
             }
+            finalize_locked(
+                &mut inner,
+                STATUS_STOPPED,
+                None,
+                Some("task_dock 退出，已结束会话".into()),
+            );
         }
     }
 
@@ -524,6 +639,56 @@ impl SessionManager {
             .cloned()
             .ok_or_else(|| AppError::NotFound("会话不存在或已结束".into()))
     }
+}
+
+/// 三个后台线程全部成功才返回 Ok；失败由调用方回收进程与会话。
+fn spawn_session_threads(
+    handle: &Arc<SessionHandle>,
+    pid: u32,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+    log_path: &Path,
+    serial: &str,
+) -> Result<(), String> {
+    if let Some(stderr) = stderr {
+        let log_handle = Arc::clone(handle);
+        let path = log_path.to_path_buf();
+        let serial = serial.to_string();
+        spawn_named(format!("vd-log-err-{pid}"), move || {
+            read_logs(log_handle, BufReader::new(stderr), path, serial)
+        })
+        .map_err(|err| format!("错误日志线程创建失败（{err}）"))?;
+    }
+    if let Some(stdout) = stdout {
+        let log_handle = Arc::clone(handle);
+        let path = log_path.to_path_buf();
+        let serial = serial.to_string();
+        spawn_named(format!("vd-log-out-{pid}"), move || {
+            read_logs(log_handle, BufReader::new(stdout), path, serial)
+        })
+        .map_err(|err| format!("输出日志线程创建失败（{err}）"))?;
+    }
+    let wait_handle = Arc::clone(handle);
+    spawn_named(format!("vd-wait-{pid}"), move || wait_loop(wait_handle))
+        .map_err(|err| format!("退出监控线程创建失败（{err}）"))?;
+    Ok(())
+}
+
+fn spawn_named<F>(name: String, f: F) -> io::Result<JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    spawn_named_with_stack(name, THREAD_STACK_BYTES, f)
+}
+
+fn spawn_named_with_stack<F>(name: String, stack: usize, f: F) -> io::Result<JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name(name)
+        .stack_size(stack)
+        .spawn(f)
 }
 
 fn build_args(req: &StartRequest) -> Vec<String> {
@@ -593,6 +758,8 @@ fn apply_line(handle: &SessionHandle, line: &str) {
     if inner.finalized || status_is_ended(&inner.info.status) {
         return;
     }
+    // 用户主动关闭期间，设备断线/应用退出的日志不应把状态改写成「连接中断」。
+    let stopping = inner.info.status == STATUS_STOPPING;
     match parse_log_line(trimmed) {
         Some(LogSignal::NewDisplay) => {
             if inner.info.status == STATUS_STARTING {
@@ -627,32 +794,34 @@ fn apply_line(handle: &SessionHandle, line: &str) {
             };
         }
         Some(LogSignal::DeviceDisconnected) => {
-            inner.info.status = STATUS_DISCONNECTED.to_string();
-            inner.info.ended_at = Some(now_stamp());
-            inner.ended_instant = Some(Instant::now());
-            inner.info.error = Some("设备连接已断开".to_string());
+            if stopping {
+                append_warning(&mut inner.info, "关闭过程中设备连接已断开");
+            } else {
+                inner.info.status = STATUS_DISCONNECTED.to_string();
+                inner.info.ended_at = Some(now_stamp());
+                inner.ended_instant = Some(Instant::now());
+                inner.info.error = Some("设备连接已断开".to_string());
+            }
         }
         Some(LogSignal::Error(message)) => {
             if !message.is_empty() {
-                inner.info.error = Some(message.clone());
-            }
-            let fatal = message.contains("Could not start app")
-                || message.contains("Unable to start app")
-                || message.contains("Could not create display")
-                || message.contains("Could not open video stream");
-            if fatal {
-                inner.info.status = STATUS_ERROR.to_string();
-                inner.info.ended_at = Some(now_stamp());
-                inner.ended_instant = Some(Instant::now());
+                if stopping {
+                    // 关闭阶段的失败不影响最终「已结束」结论。
+                } else if is_fatal_error(&message) {
+                    inner.info.error = Some(message.clone());
+                    inner.info.status = STATUS_ERROR.to_string();
+                    inner.info.ended_at = Some(now_stamp());
+                    inner.ended_instant = Some(Instant::now());
+                } else {
+                    let warning = format!("scrcpy：{message}");
+                    append_warning(&mut inner.info, &warning);
+                }
             }
         }
         Some(LogSignal::Warning(message)) => {
             if !message.is_empty() {
-                let next = match inner.info.warning.take() {
-                    Some(previous) if !previous.is_empty() => format!("{previous}；{message}"),
-                    _ => message,
-                };
-                inner.info.warning = Some(next.chars().take(400).collect());
+                let warning = message.chars().take(400).collect::<String>();
+                append_warning(&mut inner.info, &warning);
             }
         }
         None => {}
@@ -662,50 +831,49 @@ fn apply_line(handle: &SessionHandle, line: &str) {
 fn wait_loop(handle: Arc<SessionHandle>) {
     let started = Instant::now();
     let mut startup_timed_out = false;
-    let mut kill_at: Option<Instant> = None;
     loop {
-        let (exited, exit_code, pid, status, should_close) = {
+        let (exited, exit_code, pid, status, force_killed, close_now, force_now) = {
             let mut inner = handle.inner.lock().expect("vd session");
             let (exited, exit_code) = match inner.child.try_wait() {
                 Ok(Some(exit)) => (true, exit.code()),
                 Ok(None) => (false, None),
                 Err(_) => (true, None),
             };
-            let should_close = status_is_ended(&inner.info.status) && !inner.close_requested;
-            if should_close {
-                inner.close_requested = true;
+            let status = inner.info.status.clone();
+            let mut close_now = false;
+            let mut force_now = false;
+            if !exited {
+                if status_is_ended(&status) && !inner.close_requested {
+                    inner.close_requested = true;
+                    close_now = true;
+                    if inner.kill_deadline.is_none() {
+                        inner.kill_deadline = Some(Instant::now() + ENDED_KILL_GRACE);
+                    }
+                }
+                if let Some(deadline) = inner.kill_deadline {
+                    if !inner.force_killed && Instant::now() >= deadline {
+                        inner.force_killed = true;
+                        force_now = true;
+                    }
+                }
             }
             (
                 exited,
                 exit_code,
                 inner.info.pid,
-                inner.info.status.clone(),
-                should_close,
+                status,
+                inner.force_killed,
+                close_now,
+                force_now,
             )
         };
 
         if exited {
             let mut inner = handle.inner.lock().expect("vd session");
-            let final_status: &'static str = if inner.info.status == STATUS_STOPPING {
-                STATUS_STOPPED
-            } else if status_is_ended(&inner.info.status) {
-                match inner.info.status.as_str() {
-                    STATUS_ERROR => STATUS_ERROR,
-                    STATUS_DISCONNECTED => STATUS_DISCONNECTED,
-                    _ => STATUS_STOPPED,
-                }
-            } else if inner.info.status == STATUS_RUNNING {
-                if exit_code == Some(0) {
-                    STATUS_STOPPED
-                } else {
-                    STATUS_DISCONNECTED
-                }
-            } else {
-                STATUS_ERROR
-            };
-            let detail = if final_status == STATUS_ERROR
-                && inner.info.error.is_none()
-            {
+            let (final_status, detail, warning) =
+                decide_exit_status(&status, exit_code, force_killed);
+            // 启动阶段早退：补充日志尾部，给出可解释原因。
+            let detail = if final_status == STATUS_ERROR && inner.info.error.is_none() {
                 let tail = inner
                     .last_lines
                     .iter()
@@ -726,20 +894,17 @@ fn wait_loop(handle: Arc<SessionHandle>) {
                 } else {
                     format!("scrcpy 已退出：{tail}")
                 })
-            } else if final_status == STATUS_DISCONNECTED && inner.info.error.is_none() {
-                Some(format!(
-                    "scrcpy 异常退出（code {}）",
-                    exit_code.unwrap_or(-1)
-                ))
             } else {
-                None
+                detail
             };
-            finalize_locked(&mut inner, final_status, detail, None);
+            finalize_locked(&mut inner, final_status, detail, warning);
             break;
         }
 
         let now = Instant::now();
-        if !startup_timed_out && status == STATUS_STARTING && now.duration_since(started) >= STARTUP_TIMEOUT
+        if !startup_timed_out
+            && status == STATUS_STARTING
+            && now.duration_since(started) >= STARTUP_TIMEOUT
         {
             startup_timed_out = true;
             {
@@ -752,23 +917,22 @@ fn wait_loop(handle: Arc<SessionHandle>) {
                         "启动超时（{}s）：未收到 scrcpy 视频流，请检查 ADB 连接与应用启动入口",
                         STARTUP_TIMEOUT.as_secs()
                     ));
+                    if inner.kill_deadline.is_none() {
+                        inner.kill_deadline = Some(now + ENDED_KILL_GRACE);
+                    }
                 }
             }
             win::close_windows(pid);
-            kill_at = Some(now + Duration::from_secs(3));
         }
 
-        // 应用启动失败/设备断开时会话已结束：主动收掉仍在运行的 scrcpy。
-        if should_close {
+        if close_now {
             win::close_windows(pid);
-            kill_at = Some(now + Duration::from_secs(3));
         }
-        if let Some(at) = kill_at {
-            if now >= at {
-                let mut inner = handle.inner.lock().expect("vd session");
-                if matches!(inner.child.try_wait(), Ok(None)) {
-                    let _ = inner.child.kill();
-                }
+        if force_now {
+            let mut inner = handle.inner.lock().expect("vd session");
+            if matches!(inner.child.try_wait(), Ok(None)) {
+                // 只强杀本会话记录的 PID；不做全局 taskkill。
+                let _ = inner.child.kill();
             }
         }
 
@@ -793,51 +957,15 @@ fn wait_loop(handle: Arc<SessionHandle>) {
             };
             if should_warn {
                 let mut inner = handle.inner.lock().expect("vd session");
-                let next = match inner.info.warning.take() {
-                    Some(previous) if !previous.is_empty() => format!(
-                        "{previous}；已收到视频流，但未能确认应用已启动，画面可能为空"
-                    ),
-                    _ => "已收到视频流，但未能确认应用已启动，画面可能为空".to_string(),
-                };
-                inner.info.warning = Some(next);
+                append_warning(
+                    &mut inner.info,
+                    "已收到视频流，但未能确认应用已启动，画面可能为空",
+                );
             }
         }
 
         std::thread::sleep(Duration::from_millis(120));
     }
-}
-
-fn stop_loop(handle: Arc<SessionHandle>, pid: u32) {
-    win::close_windows(pid);
-    let deadline = Instant::now() + STOP_TIMEOUT;
-    let mut forced = false;
-    loop {
-        let (exited, finalized) = {
-            let mut inner = handle.inner.lock().expect("vd session");
-            let exited = matches!(inner.child.try_wait(), Ok(Some(_)) | Err(_));
-            (exited, inner.finalized)
-        };
-        if exited || finalized {
-            break;
-        }
-        if Instant::now() >= deadline {
-            let mut inner = handle.inner.lock().expect("vd session");
-            if matches!(inner.child.try_wait(), Ok(None)) {
-                let _ = inner.child.kill();
-                let _ = inner.child.wait();
-                forced = true;
-            }
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let mut inner = handle.inner.lock().expect("vd session");
-    let warning = if forced {
-        Some("窗口未在 5 秒内退出，已强制结束进程".to_string())
-    } else {
-        None
-    };
-    finalize_locked(&mut inner, STATUS_STOPPED, None, warning);
 }
 
 fn finalize_locked(
@@ -862,13 +990,11 @@ fn finalize_locked(
         inner.info.error = error;
     }
     if let Some(warning) = warning {
-        let next = match inner.info.warning.take() {
-            Some(previous) if !previous.is_empty() => format!("{previous}；{warning}"),
-            _ => warning,
-        };
-        inner.info.warning = Some(next);
+        append_warning(&mut inner.info, &warning);
     }
-    inner.ended_instant = Some(Instant::now());
+    if inner.ended_instant.is_none() {
+        inner.ended_instant = Some(Instant::now());
+    }
     remove_file(&inner.log_path);
 }
 
@@ -876,12 +1002,85 @@ fn remove_file(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
+// ── 截图质量分析（纯函数，可单测）──────────────────────────
+
+struct PixelStats {
+    uniform: bool,
+    sampled_colors: usize,
+}
+
+/// 统计整幅像素是否同色，并抽样估计色彩丰富度。
+/// 只用于「信息量偏低」的警告，不作为失败判据。
+fn analyse_bgra(pixels: &[u8]) -> PixelStats {
+    if pixels.len() < 4 {
+        return PixelStats {
+            uniform: true,
+            sampled_colors: 1,
+        };
+    }
+    let mut colors = std::collections::HashSet::new();
+    let first = [pixels[0], pixels[1], pixels[2]];
+    let mut uniform = true;
+    for (index, chunk) in pixels.chunks_exact(4).enumerate() {
+        if uniform && (chunk[0] != first[0] || chunk[1] != first[1] || chunk[2] != first[2]) {
+            uniform = false;
+        }
+        if index % SAMPLE_STRIDE == 0 && colors.len() <= RICH_COLOR_THRESHOLD {
+            colors.insert([chunk[0], chunk[1], chunk[2]]);
+        }
+    }
+    PixelStats {
+        uniform,
+        sampled_colors: colors.len(),
+    }
+}
+
+fn capture_warning(rich: bool, width: u32, height: u32) -> Option<String> {
+    let mut reasons: Vec<String> = Vec::new();
+    if width < 100 || height < 100 {
+        reasons.push("捕获区域尺寸异常偏小".to_string());
+    }
+    if !rich {
+        reasons.push("采样色彩较少，可能仍在加载、窗口被遮挡，或页面本身就是纯色".to_string());
+    }
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{}。截图已保存，请在预览中确认后再加入暂存架。",
+            reasons.join("；")
+        ))
+    }
+}
+
+/// 解码刚写入的 PNG，确认文件可读且尺寸有效。
+fn verify_png_file(path: &Path) -> Result<(u32, u32), String> {
+    let file = std::fs::File::open(path).map_err(|err| format!("打开失败：{err}"))?;
+    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let reader = decoder.read_info().map_err(|err| format!("PNG 头无效：{err}"))?;
+    let info = reader.info();
+    if info.width == 0 || info.height == 0 {
+        return Err("PNG 尺寸为 0".to_string());
+    }
+    if info.width > 8192 || info.height > 8192 {
+        return Err("PNG 尺寸超出合理范围".to_string());
+    }
+    Ok((info.width, info.height))
+}
+
 // ── Windows 进程/窗口/截图 ─────────────────────────────────
+
+struct WindowCapture {
+    png: Vec<u8>,
+    width: u32,
+    height: u32,
+    /// 采样色彩数达到阈值：仅表示画面可能已渲染，不代表应用内容正确。
+    rich: bool,
+}
 
 #[cfg(windows)]
 mod win {
     use std::ffi::c_void;
-    use std::path::PathBuf;
     use std::sync::OnceLock;
     use std::time::Duration;
 
@@ -1018,9 +1217,9 @@ mod win {
         }
     }
 
-    pub fn focus_window(pid: u32) -> super::VdFocus {
+    pub fn focus_window(pid: u32) -> super::super::VdFocus {
         let Some(hwnd) = find_window(pid) else {
-            return super::VdFocus {
+            return super::super::VdFocus {
                 found: false,
                 focused: false,
             };
@@ -1033,7 +1232,7 @@ mod win {
             }
             BringWindowToTop(hwnd);
             let focused = SetForegroundWindow(hwnd) != 0;
-            super::VdFocus {
+            super::super::VdFocus {
                 found: true,
                 focused,
             }
@@ -1041,8 +1240,8 @@ mod win {
     }
 
     /// 截取 scrcpy 窗口客户区（PW_CLIENTONLY | PW_RENDERFULLCONTENT）。
-    /// 返回 (PNG 字节, 宽, 高)；最小化窗口会先恢复再截取。
-    pub fn capture_window_png(pid: u32) -> Result<(Vec<u8>, u32, u32, bool), String> {
+    /// 最小化窗口会先恢复再截取。
+    pub fn capture_window_png(pid: u32) -> Result<super::WindowCapture, String> {
         let Some(hwnd) = find_window(pid) else {
             return Err("未找到 scrcpy 窗口".to_string());
         };
@@ -1078,11 +1277,7 @@ mod win {
             }
             let old: HGDIOBJ = SelectObject(mem_dc, bitmap as HGDIOBJ);
 
-            let printed = PrintWindow(
-                hwnd,
-                mem_dc,
-                PW_CLIENTONLY | PW_RENDERFULLCONTENT,
-            );
+            let printed = PrintWindow(hwnd, mem_dc, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
             let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
             let mut info = BITMAPINFO::default();
             info.bmiHeader.biSize = std::mem::size_of_val(&info.bmiHeader) as u32;
@@ -1118,26 +1313,11 @@ mod win {
                 return Err("读取窗口像素失败".to_string());
             }
 
-            // PrintWindow 不保证 alpha；全同色视为空白/黑屏。
-            // 同时按固定步长采样颜色数：虚拟屏刚就绪时首帧可能只有背景层
-            // （如设置页的灰底+状态栏），调用方据此短暂重试，避免截到空画面。
-            let first = [pixels[0], pixels[1], pixels[2]];
-            let mut uniform = true;
-            let mut colors = std::collections::HashSet::new();
-            for (index, chunk) in pixels.chunks_exact(4).enumerate() {
-                if uniform
-                    && (chunk[0] != first[0] || chunk[1] != first[1] || chunk[2] != first[2])
-                {
-                    uniform = false;
-                }
-                if index % 97 == 0 && colors.len() < 8 {
-                    colors.insert([chunk[0], chunk[1], chunk[2]]);
-                }
-            }
-            if uniform {
-                return Err("窗口画面为空白，截图失败（请先恢复窗口后重试）".to_string());
-            }
-            let rich = colors.len() >= 8;
+            // PrintWindow 不保证 alpha；纯色不再视为失败（用户可能正在看纯色页面），
+            // 只统计信息量并由调用方附加警告。
+            let stats = super::analyse_bgra(&pixels);
+            let _ = stats.uniform;
+            let rich = stats.sampled_colors >= super::RICH_COLOR_THRESHOLD;
 
             let mut rgba = Vec::with_capacity(pixels.len());
             for chunk in pixels.chunks_exact(4) {
@@ -1155,12 +1335,14 @@ mod win {
                     .write_image_data(&rgba)
                     .map_err(|err| format!("PNG 写入失败：{err}"))?;
             }
-            Ok((png, width as u32, height as u32, rich))
+            Ok(super::WindowCapture {
+                png,
+                width: width as u32,
+                height: height as u32,
+                rich,
+            })
         }
     }
-
-    #[allow(dead_code)]
-    fn _assert_types(_: PathBuf) {}
 }
 
 #[cfg(not(windows))]
@@ -1173,14 +1355,14 @@ mod win {
         0
     }
 
-    pub fn focus_window(_pid: u32) -> super::VdFocus {
-        super::VdFocus {
+    pub fn focus_window(_pid: u32) -> super::super::VdFocus {
+        super::super::VdFocus {
             found: false,
             focused: false,
         }
     }
 
-    pub fn capture_window_png(_pid: u32) -> Result<(Vec<u8>, u32, u32), String> {
+    pub fn capture_window_png(_pid: u32) -> Result<super::WindowCapture, String> {
         Err("当前平台不支持窗口截图".to_string())
     }
 }
@@ -1220,7 +1402,10 @@ mod tests {
             parse_log_line("WARN: Could not set clipboard"),
             Some(LogSignal::Warning("Could not set clipboard".to_string()))
         );
-        assert_eq!(parse_log_line("scrcpy 5.0.1 <https://github.com/Genymobile/scrcpy>"), None);
+        assert_eq!(
+            parse_log_line("scrcpy 5.0.1 <https://github.com/Genymobile/scrcpy>"),
+            None
+        );
     }
 
     #[test]
@@ -1280,5 +1465,111 @@ mod tests {
         assert!(status_is_ended(STATUS_ERROR));
         assert!(status_is_ended(STATUS_DISCONNECTED));
         assert!(!status_is_active(STATUS_ERROR));
+    }
+
+    #[test]
+    fn exit_status_distinguishes_normal_close_and_abnormal_exit() {
+        // 用户主动关闭 → stopped，不保留误导性错误。
+        assert_eq!(
+            decide_exit_status(STATUS_STOPPING, Some(1), false).0,
+            STATUS_STOPPED
+        );
+        // 运行中 code 0（用户直接关窗口）→ stopped。
+        assert_eq!(
+            decide_exit_status(STATUS_RUNNING, Some(0), false).0,
+            STATUS_STOPPED
+        );
+        // 运行中非 0 → disconnected + 可解释错误。
+        let (status, error, _) = decide_exit_status(STATUS_RUNNING, Some(2), false);
+        assert_eq!(status, STATUS_DISCONNECTED);
+        assert!(error.unwrap_or_default().contains("code 2"));
+        // 启动阶段退出（即使 code 0）→ error。
+        assert_eq!(
+            decide_exit_status(STATUS_STARTING, Some(0), false).0,
+            STATUS_ERROR
+        );
+        // 已判定错误/断线的状态不被退出码覆盖。
+        assert_eq!(
+            decide_exit_status(STATUS_ERROR, Some(0), false).0,
+            STATUS_ERROR
+        );
+        assert_eq!(
+            decide_exit_status(STATUS_DISCONNECTED, Some(0), false).0,
+            STATUS_DISCONNECTED
+        );
+    }
+
+    #[test]
+    fn forced_kill_is_reported_as_warning_not_error() {
+        let (status, error, warning) = decide_exit_status(STATUS_STOPPING, Some(1), true);
+        assert_eq!(status, STATUS_STOPPED);
+        assert!(error.is_none());
+        assert!(warning.unwrap_or_default().contains("强制结束"));
+    }
+
+    #[test]
+    fn only_known_fatal_errors_end_a_running_session() {
+        assert!(is_fatal_error("Could not start app"));
+        assert!(is_fatal_error("Could not create display"));
+        assert!(is_fatal_error("Could not open video stream"));
+        assert!(!is_fatal_error("Could not set clipboard"));
+        assert!(!is_fatal_error("Audio disabled"));
+    }
+
+    #[test]
+    fn pixel_analysis_flags_uniform_frames_without_treating_them_as_failure() {
+        let mut flat = vec![20u8; 64 * 4];
+        // BGRA 全同色：uniform=true，采样色数只有 1。
+        let stats = analyse_bgra(&flat);
+        assert!(stats.uniform);
+        assert_eq!(stats.sampled_colors, 1);
+
+        // 加入多种颜色后不再是空白帧，但分析本身不产生错误。
+        for (index, chunk) in flat.chunks_exact_mut(4).enumerate() {
+            chunk[0] = (index % 251) as u8;
+            chunk[1] = (index % 199) as u8;
+        }
+        let stats = analyse_bgra(&flat);
+        assert!(!stats.uniform);
+        assert!(stats.sampled_colors > 1);
+        let warning = capture_warning(true, 1080, 1920);
+        assert!(warning.is_none());
+
+        // 低信息量只返回警告文案，绝不返回「失败」。
+        let warning = capture_warning(false, 1080, 1920).expect("应有警告");
+        assert!(warning.contains("纯色"));
+        assert!(capture_warning(true, 40, 40).is_some());
+    }
+
+    #[test]
+    fn png_verification_rejects_non_png_files() {
+        let dir = std::env::temp_dir().join("task-dock-vd-test");
+        std::fs::create_dir_all(&dir).expect("创建测试目录");
+        let bad = dir.join("not-a-png.bin");
+        std::fs::write(&bad, b"not a png").expect("写入测试文件");
+        assert!(verify_png_file(&bad).is_err());
+        remove_file(&bad);
+
+        let good = dir.join("tiny.png");
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 3, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("写 PNG 头");
+            writer
+                .write_image_data(&[0u8; 3 * 2 * 4])
+                .expect("写 PNG 数据");
+        }
+        std::fs::write(&good, &png).expect("写入 PNG");
+        assert_eq!(verify_png_file(&good).expect("合法 PNG"), (3, 2));
+        remove_file(&good);
+    }
+
+    #[test]
+    fn oversized_thread_stack_reports_creation_failure() {
+        // 模拟线程创建失败：调用方据此回收进程并返回错误，而不是 .ok() 静默忽略。
+        let result = spawn_named_with_stack("vd-test-oversized".to_string(), usize::MAX, || {});
+        assert!(result.is_err(), "超大栈应创建失败");
     }
 }

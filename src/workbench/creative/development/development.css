@@ -1,0 +1,214 @@
+/* 开发 D1 模块样式（本目录独占；颜色 / 间距 / 圆角全部走语义 Token，不硬编码主题色）。 */
+
+.dws-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  padding: 4px;
+}
+
+.dws-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dws-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.dws-repo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dws-repo {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dws-facts {
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.dws-fact {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.dws-path {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.dws-subhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dws-file-status {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  min-width: 32px;
+}
+
+.dws-file-path {
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-truncated {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.dws-risk-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dws-risk {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+  background: var(--surface-raised);
+}
+
+.dws-risk[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--danger, #e5484d) 40%, transparent);
+}
+
+.dws-risk-message {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.dws-risk-files {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-task-switch {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.dws-active {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.dws-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.dws-run {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dws-run-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dws-run-sub {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dws-latest {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dws-link-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.dws-link-form .ws-input {
+  flex: 1 1 160px;
+}
+
+.dws-save-error {
+  font-size: 12px;
+  color: var(--danger, #e5484d);
+}
+
+@media (max-width: 720px) {
+  .dws-link-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dws-risk,
+  .dws-run {
+    transition: none;
+  }
+}

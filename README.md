@@ -261,7 +261,7 @@ src-tauri/target/release/bundle/msi/*.msi
 仓库不托管安装包下载；请以本地实际构建产物为准。
 
 **正式测试安装包不从这里直接打包**：多 Agent 协作时，先由已完成任务生成集成快照，再从快照
-构建（`npm run integrate -- snapshot create` → `build --snapshot <快照> --platform desktop`），
+构建（`npm run integrate -- snapshot create --base <稳定提交>` → `build --snapshot <快照> --platform desktop`），
 这样未完成任务不会混进验收包，同一快照也只构建一次。说明见
 [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md)。
 

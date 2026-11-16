@@ -368,26 +368,35 @@
 }
 
 @container wb-content (max-width: 900px) {
+  /* 窄窗/详情栏关闭时按文档流纵向排列：会话树 → 任务上下文 → 运行记录，
+     由工作区整体滚动；避免单列 grid 的 auto 行与内部滚动区互相覆盖。 */
   .agents-panel .agent-workspace {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
   }
 
   .agents-panel .agent-center {
-    grid-column: 1;
-    grid-row: 1;
+    grid-column: auto;
+    grid-row: auto;
+    flex: 0 0 auto;
+    min-height: 320px;
   }
 
   .agents-panel .agent-inspector {
-    grid-column: 1;
-    grid-row: 2;
+    grid-column: auto;
+    grid-row: auto;
+    position: static;
+    flex: 0 0 auto;
     max-height: none;
     overflow: visible;
   }
 
   .agents-panel .agent-runlog {
-    grid-column: 1;
-    grid-row: 3;
+    grid-column: auto;
+    grid-row: auto;
+    flex: 0 0 auto;
   }
 }
 

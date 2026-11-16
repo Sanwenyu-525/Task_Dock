@@ -1,0 +1,35 @@
+/* 游戏 G1 模块样式（本目录独占；颜色/间距/圆角复用既有 ws-* 语义类与 Token）。 */
+
+.ws-game {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px;
+}
+
+.ws-game .ws-card:last-child {
+  margin-bottom: 0;
+}
+
+.ws-game .ws-form-row {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ws-game .ws-row {
+  flex-wrap: wrap;
+}
+
+.ws-game .ws-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 480px) {
+  .ws-game .ws-form-row > .ws-input,
+  .ws-game .ws-form-row > .ws-textarea,
+  .ws-game .ws-form-row > .ui-select-trigger {
+    flex: 1 1 100%;
+  }
+}

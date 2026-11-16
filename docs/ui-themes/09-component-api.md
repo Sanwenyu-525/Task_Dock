@@ -85,10 +85,10 @@ interface ComboboxProps<T extends string = string> {
 
 ## 3. DropdownMenu
 
-操作菜单。支持普通项与**单选组**两种形态。
+操作菜单。支持普通项、**单选组**与**分界线**三种形态。
 
 ```ts
-interface DropdownMenuItem {
+interface DropdownMenuActionItem {
   key: string;
   label: string;
   icon?: ReactNode;
@@ -99,7 +99,18 @@ interface DropdownMenuItem {
   radio?: boolean;        // 渲染为 menuitemradio
   checked?: boolean;      // radio 组的选中态
   onSelect?: () => void;  // 不传则整个菜单为纯展示
+  separator?: false;
 }
+
+// 分界线项：渲染为一条 <div role="separator">，不参与 hover / 焦点 /
+// 方向键与字母定位，点击既不触发选项也不收起菜单
+interface DropdownMenuSeparatorItem {
+  key: string;
+  separator: true;
+  label?: never;          // 分界线没有文案，不能用空 label 的普通项冒充
+}
+
+type DropdownMenuItem = DropdownMenuActionItem | DropdownMenuSeparatorItem;
 
 interface DropdownMenuProps {
   trigger: (props: DropdownMenuTriggerProps) => ReactNode; // 触发器由调用方渲染
@@ -127,6 +138,8 @@ interface DropdownMenuTriggerProps {
 - 展开后焦点**进入菜单**（`role="menu"` / `menuitem` / `menuitemradio`），
   与 `Select` 的「焦点留在触发器」不同——这是 ARIA 两种模式的既定差异。
 - `items` 为空数组时不渲染触发器（避免出现点不开的空菜单）。
+- 分组之间的横线必须写成 `{ key, separator: true }`；**不要再用 `label: ""` 的普通项冒充**：
+  空项会被渲染成可 hover、可聚焦、可点击的空白行，点击还会把菜单收起来。
 
 ## 4. Popover
 

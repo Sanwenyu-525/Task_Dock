@@ -155,17 +155,38 @@
   }
 
   @container wb-content (max-width: 900px) {
+    /* 窄窗/详情栏关闭时，检查器改为文档流中的下方区域并让整页滚动，
+       不再在单列 grid 中与列表抢同一行，避免列表内容与检查器重叠。 */
     .diag-center .diag-body {
-      grid-template-columns: minmax(0, 1fr);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
     }
 
     .diag-center .diag-body > *,
     .diag-center .diag-body > .diag-center-filters {
-      grid-column: 1;
+      grid-column: auto;
       grid-row: auto;
       position: static;
+      width: 100%;
+      flex: 0 0 auto;
       max-height: none;
       overflow: visible;
+    }
+
+    /* 全宽检查器不再使用窄栏的纵向拉伸；字段改为两列网格，避免每个
+       detail 行被 flex:1 拉成 220px 高而产生大片空白。 */
+    .diag-center .diag-center-inspector .diag-center-details {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 14px;
+    }
+
+    .diag-center .diag-center-inspector .diag-center-detail,
+    .diag-center .diag-center-inspector .diag-center-detail-wide {
+      flex: 0 0 auto;
+      min-height: 0;
     }
 
     .diag-body .diag-center-filters .diag-center-filter-grid {

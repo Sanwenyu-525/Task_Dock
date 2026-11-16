@@ -8,9 +8,8 @@ import { Check } from "lucide-react";
 import Popover from "./Popover";
 import { scrollIntoViewIfNeeded } from "./overlay";
 
-export interface DropdownMenuItem {
+interface DropdownMenuItemBase {
   key: string;
-  label: string;
   icon?: ReactNode;
   description?: string;
   trailing?: ReactNode;
@@ -21,6 +20,23 @@ export interface DropdownMenuItem {
   checked?: boolean;
   onSelect?: () => void;
 }
+
+/** 普通可选项 */
+export interface DropdownMenuActionItem extends DropdownMenuItemBase {
+  separator?: false;
+  label: string;
+}
+
+/**
+ * 分隔线条目：渲染为一条不可点击的分界线，不参与 hover 高亮、焦点、
+ * 方向键导航与字母定位。分隔线不是选项，绝不能用空 label 的普通项冒充。
+ */
+export interface DropdownMenuSeparatorItem extends DropdownMenuItemBase {
+  separator: true;
+  label?: never;
+}
+
+export type DropdownMenuItem = DropdownMenuActionItem | DropdownMenuSeparatorItem;
 
 export interface DropdownMenuTriggerProps {
   ref: (el: HTMLElement | null) => void;
@@ -68,13 +84,13 @@ export default function DropdownMenu({
   }
 
   function enabledIndexes() {
-    return items.map((it, i) => (it.disabled ? -1 : i)).filter((i) => i >= 0);
+    return items.map((it, i) => (it.disabled || it.separator ? -1 : i)).filter((i) => i >= 0);
   }
 
   function openMenu() {
     const idxs = enabledIndexes();
     const checked = items.findIndex((it) => it.checked);
-    const start = checked >= 0 && !items[checked].disabled ? checked : idxs[0] ?? -1;
+    const start = checked >= 0 && !items[checked].disabled && !items[checked].separator ? checked : idxs[0] ?? -1;
     setActiveIndex(start);
     setOpenState(true);
   }
@@ -106,7 +122,7 @@ export default function DropdownMenu({
 
   function activate(index: number) {
     const item = items[index];
-    if (!item || item.disabled) return;
+    if (!item || item.disabled || item.separator) return;
     setOpenState(false);
     item.onSelect?.();
   }
@@ -121,7 +137,7 @@ export default function DropdownMenu({
     const start = idxs.findIndex((i) => i > activeIndex);
     for (let k = 0; k < idxs.length; k++) {
       const i = idxs[(Math.max(0, start) + k) % idxs.length];
-      if (items[i].label.toLowerCase().startsWith(q)) {
+      if ((items[i].label ?? "").toLowerCase().startsWith(q)) {
         setActiveIndex(i);
         return;
       }
@@ -193,36 +209,41 @@ export default function DropdownMenu({
         ariaLabel={menuLabel}
       >
         <div className="ui-menu" ref={menuRef} onKeyDown={onMenuKeyDown}>
-          {items.map((it, i) => (
-            <button
-              key={it.key}
-              id={`${menuId}-item-${i}`}
-              type="button"
-              role={it.radio ? "menuitemradio" : "menuitem"}
-              aria-checked={it.radio ? !!it.checked : undefined}
-              aria-disabled={it.disabled || undefined}
-              tabIndex={i === activeIndex ? 0 : -1}
-              className={`ui-menu-item ${it.checked ? "is-checked" : ""} ${it.danger ? "is-danger" : ""} ${
-                it.disabled ? "is-disabled" : ""
-              } ${i === activeIndex ? "is-active" : ""}`}
-              onMouseEnter={() => !it.disabled && setActiveIndex(i)}
-              onClick={() => activate(i)}
-            >
-              {it.icon ? <span className="ui-menu-icon">{it.icon}</span> : null}
-              <span className="ui-menu-text">
-                <span className="ui-menu-label">{it.label}</span>
-                {it.description ? <em className="ui-menu-desc">{it.description}</em> : null}
-              </span>
-              {/* 单选项勾选标记：与右键菜单统一「选中」视觉词汇（此前仅底色+字重） */}
-              {it.trailing ? (
-                <span className="ui-menu-trailing">{it.trailing}</span>
-              ) : it.radio ? (
-                <span className="ui-menu-trailing" aria-hidden="true">
-                  {it.checked ? <Check size={14} strokeWidth={2.5} /> : null}
+          {items.map((it, i) => {
+            if (it.separator) {
+              return <div key={it.key} className="ui-menu-sep" role="separator" aria-hidden="true" />;
+            }
+            return (
+              <button
+                key={it.key}
+                id={`${menuId}-item-${i}`}
+                type="button"
+                role={it.radio ? "menuitemradio" : "menuitem"}
+                aria-checked={it.radio ? !!it.checked : undefined}
+                aria-disabled={it.disabled || undefined}
+                tabIndex={i === activeIndex ? 0 : -1}
+                className={`ui-menu-item ${it.checked ? "is-checked" : ""} ${it.danger ? "is-danger" : ""} ${
+                  it.disabled ? "is-disabled" : ""
+                } ${i === activeIndex ? "is-active" : ""}`}
+                onMouseEnter={() => !it.disabled && setActiveIndex(i)}
+                onClick={() => activate(i)}
+              >
+                {it.icon ? <span className="ui-menu-icon">{it.icon}</span> : null}
+                <span className="ui-menu-text">
+                  <span className="ui-menu-label">{it.label}</span>
+                  {it.description ? <em className="ui-menu-desc">{it.description}</em> : null}
                 </span>
-              ) : null}
-            </button>
-          ))}
+                {/* 单选项勾选标记：与右键菜单统一「选中」视觉词汇（此前仅底色+字重） */}
+                {it.trailing ? (
+                  <span className="ui-menu-trailing">{it.trailing}</span>
+                ) : it.radio ? (
+                  <span className="ui-menu-trailing" aria-hidden="true">
+                    {it.checked ? <Check size={14} strokeWidth={2.5} /> : null}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
       </Popover>
     </>

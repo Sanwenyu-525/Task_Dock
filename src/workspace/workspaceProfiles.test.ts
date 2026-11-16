@@ -41,10 +41,12 @@ describe("Profile 注册中心", () => {
     expect(new Set(labels).size).toBe(5);
     expect(WORKSPACE_PROFILES.development.modules.map((m) => m.label)).toContain("开发事项");
     expect(WORKSPACE_PROFILES.game.modules.map((m) => m.label)).toContain("制作事项");
-    expect(WORKSPACE_PROFILES.ai_comic.modules.map((m) => m.label)).toContain("剧集与镜头");
+    expect(WORKSPACE_PROFILES.ai_comic.modules.map((m) => m.label)).toContain("分镜");
     expect(WORKSPACE_PROFILES.novel.modules.map((m) => m.label)).toEqual([
       "概览",
       "正文",
+      "人物",
+      "世界观",
       "写作事项",
       "任务关联",
       "项目设置",
@@ -52,6 +54,8 @@ describe("Profile 注册中心", () => {
     expect(WORKSPACE_PROFILES.novel.modules.map((m) => m.id)).toEqual([
       "overview",
       "manuscript",
+      "characters",
+      "worldview",
       "items",
       "links",
       "settings",
@@ -157,12 +161,16 @@ describe("Profile 注册中心", () => {
   });
 
   it("原有四种 Profile 的声明未被小说类型改变", () => {
-    // 通用工作空间不冒充拥有专业能力
+    // 通用工作空间不冒充拥有专业能力：只声明 core.* + 本轮 U1 的四项通用专业能力
     expect(WORKSPACE_PROFILES.general.capabilities).toEqual([
       "core.project",
       "core.items",
       "core.taskLinks",
       "core.layout",
+      "general.templates",
+      "general.milestones",
+      "general.materials",
+      "general.delivery",
     ]);
     expect(WORKSPACE_PROFILES.development.capabilities).toContain("dev.git");
     expect(WORKSPACE_PROFILES.game.capabilities).toContain("game.build");
@@ -214,10 +222,12 @@ describe("布局解析与模块顺序", () => {
       expect(legacy.layout).toEqual(defaultLayout(profile));
       expect(legacy.repaired).toBe(false);
     }
-    // 小说默认布局来自自己的 Profile（概览起步，正文紧随其后）
+    // 小说默认布局来自自己的 Profile（概览起步，正文紧随其后，人物与世界观随后）
     expect(defaultLayout(novel).moduleOrder).toEqual([
       "overview",
       "manuscript",
+      "characters",
+      "worldview",
       "items",
       "links",
       "settings",
@@ -279,11 +289,18 @@ describe("布局解析与模块顺序", () => {
       activeModule: "overview",
     };
     const modules = resolveModuleOrder(dev, layout);
-    expect(modules.map((m) => m.id)).toEqual(["links", "overview", "settings"]);
+    expect(modules.map((m) => m.id)).toEqual([
+      "links",
+      "overview",
+      "git",
+      "agents",
+      "builds",
+      "settings",
+    ]);
     // 隐藏不存在的模块不影响其他模块
     expect(
       resolveModuleOrder(dev, { ...layout, hiddenModules: ["links"] }).map((m) => m.id),
-    ).toEqual(["overview", "items", "settings"]);
+    ).toEqual(["overview", "items", "git", "agents", "builds", "settings"]);
   });
 
   it("小说项目读取旧版布局：已有顺序/隐藏保留，缺失模块自动补齐", () => {
@@ -298,14 +315,89 @@ describe("布局解析与模块顺序", () => {
       "items",
       "overview",
       "manuscript",
+      "characters",
+      "worldview",
       "links",
       "settings",
     ]);
     // 旧配置里隐藏的模块继续隐藏，不因新增类型被重新显示
     expect(
       resolveModuleOrder(novel, { ...legacy, hiddenModules: ["links"] }).map((m) => m.id),
-    ).toEqual(["items", "overview", "manuscript", "settings"]);
+    ).toEqual(["items", "overview", "manuscript", "characters", "worldview", "settings"]);
     // 旧布局本身是合法 v1，不标记 repaired
     expect(parseWorkspaceLayout(JSON.stringify(legacy), novel).repaired).toBe(false);
+  });
+});
+
+describe("创作工作台五线模块注册（2026-11-16）", () => {
+  it("五种类型各自具备自己的生产流程模块，不复用同一套导航", () => {
+    expect(WORKSPACE_PROFILES.novel.modules.map((m) => m.id)).toEqual(
+      expect.arrayContaining(["manuscript", "characters", "worldview"]),
+    );
+    expect(WORKSPACE_PROFILES.game.modules.map((m) => m.id)).toEqual(
+      expect.arrayContaining(["items", "assets", "builds"]),
+    );
+    expect(WORKSPACE_PROFILES.ai_comic.modules.map((m) => m.id)).toEqual(
+      expect.arrayContaining(["episodes", "shots", "characters", "assets"]),
+    );
+    expect(WORKSPACE_PROFILES.general.modules.map((m) => m.id)).toEqual(
+      expect.arrayContaining(["milestones", "materials"]),
+    );
+    expect(WORKSPACE_PROFILES.development.modules.map((m) => m.id)).toEqual(
+      expect.arrayContaining(["git", "agents", "builds"]),
+    );
+    // 任何类型都不得缺少「概览」落点，否则没有可打开的默认页
+    for (const profile of Object.values(WORKSPACE_PROFILES)) {
+      expect(profile.modules.map((m) => m.id)).toContain("overview");
+      expect(profile.defaultModule).toBe("overview");
+      // 同一类型内模块 ID 不得重复（重复会让 tab key 冲突、布局解析去重后丢项）
+      expect(new Set(profile.modules.map((m) => m.id)).size).toBe(profile.modules.length);
+    }
+  });
+
+  it("每个声明模块的 ID 都是布局合法值（否则切换模块后无法持久化）", () => {
+    for (const profile of Object.values(WORKSPACE_PROFILES)) {
+      const ids = profile.modules.map((m) => m.id);
+      const parsed = parseWorkspaceLayout(
+        JSON.stringify({
+          version: WORKSPACE_LAYOUT_VERSION,
+          moduleOrder: ids,
+          hiddenModules: [],
+          activeModule: profile.defaultModule,
+        }),
+        profile,
+      );
+      expect(parsed.repaired).toBe(false);
+      // 全部保留：说明 isModuleId 已覆盖五线新增的每个模块
+      expect(parsed.layout.moduleOrder).toEqual(ids);
+    }
+  });
+
+  it("五线新增能力本轮保持 planned / 不可调用（诚实闸门，交付证据齐全后才升级）", () => {
+    const gated = [
+      "game.projectDetect",
+      "game.test",
+      "comic.scripts",
+      "comic.review",
+      "general.templates",
+      "general.milestones",
+      "general.materials",
+      "general.delivery",
+      "dev.gitRisk",
+      "dev.taskHandoff",
+      "dev.buildTrace",
+    ] as const;
+    for (const id of gated) {
+      expect(WORKSPACE_CAPABILITIES[id], `能力 ${id} 未登记`).toBeTruthy();
+      expect(WORKSPACE_CAPABILITIES[id].fallback, `能力 ${id} 缺少降级说明`).toBeTruthy();
+    }
+    // 跨媒介引用只预留：不得被任何 Profile 声明，永远不可调用
+    expect(WORKSPACE_CAPABILITIES["core.mediaLink"].state).toBe("planned");
+    for (const profile of Object.values(WORKSPACE_PROFILES)) {
+      expect(profile.capabilities).not.toContain("core.mediaLink");
+      expect(canInvokeCapability(profile.kind, "core.mediaLink")).toBe(false);
+    }
+    // 未接入的生成能力依旧不可调用（不得因新增模块而放行）
+    expect(canInvokeCapability("ai_comic", "comic.generate")).toBe(false);
   });
 });

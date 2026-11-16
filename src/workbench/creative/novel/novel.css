@@ -1,0 +1,333 @@
+/* 小说 B2 人物 / 世界观模块样式（本目录独占；颜色/间距/圆角全部走语义 Token）。 */
+
+.novel-layout {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  padding: 4px;
+}
+
+.novel-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.novel-pane-list {
+  width: 280px;
+  flex: 0 0 280px;
+  gap: 10px;
+}
+
+.novel-pane-detail {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  gap: 16px;
+  padding-right: 4px;
+}
+
+@media (max-width: 720px) {
+  .novel-layout {
+    flex-direction: column;
+  }
+  .novel-pane-list {
+    width: 100%;
+    flex: 0 0 auto;
+    max-height: 40%;
+  }
+}
+
+.novel-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.novel-kind-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.novel-kind-chip {
+  appearance: none;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border-radius: var(--radius-control);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.novel-kind-chip.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.novel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.novel-list-row {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.novel-list-row:hover {
+  background: var(--surface-hover);
+}
+
+.novel-list-row.is-active {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.novel-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.novel-row-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.novel-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.novel-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.novel-field-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.novel-field-hint {
+  font-style: normal;
+  color: var(--text-tertiary);
+  margin-left: 6px;
+}
+
+.novel-input,
+.novel-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.novel-textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.novel-input:disabled,
+.novel-textarea:disabled,
+.novel-btn:disabled,
+.novel-btn-ghost:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.novel-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: #fff;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.novel-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.novel-btn-ghost {
+  appearance: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.novel-btn-ghost:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.novel-btn-ghost.is-danger {
+  border-color: color-mix(in srgb, var(--danger, #e5484d) 50%, transparent);
+  color: var(--danger, #e5484d);
+}
+
+.novel-form-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.novel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.novel-section-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.novel-ref-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.novel-ref-add .novel-input {
+  flex: 1 1 160px;
+}
+
+.novel-ref-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.novel-ref-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+  background: var(--surface-raised);
+}
+
+.novel-ref-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.novel-ref-note {
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.novel-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.novel-tag {
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--surface-hover);
+}
+
+.novel-banner {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+}
+
+.novel-banner-archived {
+  border-color: color-mix(in srgb, var(--warning, #d97706) 40%, transparent);
+  color: var(--text-primary);
+}
+
+.novel-load-error {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid color-mix(in srgb, var(--danger, #e5484d) 40%, transparent);
+  border-radius: var(--radius-control);
+  padding: 10px 12px;
+  color: var(--danger, #e5484d);
+  font-size: 12px;
+}
+
+.novel-inline-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger, #e5484d);
+}
+
+.novel-empty-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 8px 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .novel-btn,
+  .novel-list-row,
+  .novel-kind-chip {
+    transition: none;
+  }
+}

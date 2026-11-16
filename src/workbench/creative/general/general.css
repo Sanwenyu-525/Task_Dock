@@ -1,0 +1,104 @@
+/* 通用线模块局部样式（U1）。只使用既有语义 Token；新类名以 ws-general- 前缀隔离。 */
+
+.ws-general {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ws-general-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 8px;
+}
+
+.ws-general-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--ws-border);
+  border-radius: 10px;
+  background: var(--ws-surface);
+}
+
+.ws-general-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ws-general-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px dashed var(--ws-border);
+  border-radius: 10px;
+}
+
+.ws-general-draft-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.ws-general-row {
+  align-items: flex-start;
+}
+
+.ws-general-row-icon {
+  flex: none;
+  margin-top: 3px;
+  color: var(--ws-muted);
+}
+
+.ws-general-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ws-general-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.ws-general-row-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-general-row-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.ws-general-current strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-general-status-done {
+  background: color-mix(in srgb, var(--ws-ok) 14%, transparent);
+  color: var(--ws-ok);
+}
+
+.ws-general-status-skipped {
+  background: color-mix(in srgb, var(--c-ink) 8%, transparent);
+  color: var(--ws-muted);
+}
+
+.ws-general-status-open {
+  background: color-mix(in srgb, var(--ws-accent) 15%, transparent);
+  color: var(--ws-accent);
+}

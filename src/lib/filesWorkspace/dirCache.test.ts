@@ -13,6 +13,7 @@ vi.mock("../../lib/bridge", () => bridgeMocks);
 import {
   getDirState,
   loadDir,
+  reloadIfChanged,
   subscribeDir,
   invalidateDirs,
 } from "./dirCache";
@@ -118,5 +119,23 @@ describe("LRU 与订阅", () => {
     await vi.waitFor(() => expect(pending).toHaveLength(0));
     // 最早的条目已被挤出（上限 32，灌 40 条后第一条不在）。
     expect(getDirState("D:\\lru-pure-0", false).listing).toBeNull();
+  });
+});
+
+describe("目录签名轮询去重", () => {
+  it("同一目录 3 秒内的重复探测只发一次 IPC", async () => {
+    const path = "D:\\poll-dedupe";
+    loadDir(path, false);
+    pending.shift()!.resolve(listing(path, ["a"]));
+    await vi.waitFor(() => expect(getDirState(path, false).listing).not.toBeNull());
+    // 等首次签名回填完成，避免把「首次记录签名」算进本轮探测。
+    await vi.waitFor(() => expect(getDirState(path, false).signatureModifiedMs).not.toBeNull());
+    const before = bridgeMocks.fsDirSignature.mock.calls.length;
+    // 多分栏 + 可见性回调在同一时刻触发：只允许一次探测。
+    reloadIfChanged(path, false);
+    reloadIfChanged(path, false);
+    reloadIfChanged(path, false);
+    await Promise.resolve();
+    expect(bridgeMocks.fsDirSignature.mock.calls.length - before).toBe(1);
   });
 });

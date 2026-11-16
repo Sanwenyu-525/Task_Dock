@@ -276,5 +276,7 @@ JS 侧（`src/screens/CaptureScreen.tsx` voice 模式）：运行时申请 `RECO
   vitest 54 文件 / 561 例通过；真机视觉复核未执行（设备被并行会话占用、未出新包），详见
   `tmp/acceptance/mobile-capture-picker-row/report.md`。
   同一写法还存在于 `features/capture/CaptureReviewScreen.tsx`（裁剪模式「应用裁剪」）与
-  `CaptureImportScreen.tsx`（相册/文件两按钮），本轮未改。
+  `CaptureImportScreen.tsx`（相册/文件两按钮）——已同批修复：这两处改为
+  `style={styles.toolSlot}` / `style={styles.actionSlot}` 承载 `flex`，`contentStyle` 只保留
+  背景、圆角与内边距，工具栏与导入页按钮恢复等宽。
 

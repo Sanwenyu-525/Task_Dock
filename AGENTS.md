@@ -98,21 +98,24 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 
 ```bash
 npm run integrate -- task add --id <任务> --owner <agent> --module <模块> --paths <写入范围>
-npm run integrate -- task check --id <任务> --cmd "<检查命令>" --exit <退出码>
+npm run integrate -- task check --id <任务> --cmd "<检查命令>" --exit <退出码> [--commit <检查提交>]
 npm run integrate -- task ready --id <任务> --commit <交付提交>
 npm run integrate:status
 ```
 
 写入范围是集成与冲突判定的唯一依据：交付提交里出现未声明路径会被拒绝（防串味）；确属本任务时
-用 `--allow-extra-paths` 显式放行并留痕。
+用 `--allow-extra-paths` 显式放行，**这些路径会一并进入快照**并记入 `includedExtraPaths`，不是
+“只记录不应用”。检查记录应显式 `--commit` 绑定它实际运行的提交（省略时绑定当时 `HEAD`）；
+`task ready` 只认同一交付提交上的通过检查。
 
 ### 3.4 集成、构建与验收职责
 
 - **集成（主 Agent / 集成负责人）**：只把「待集成」任务的声明路径改动叠加到 `integration` 分支，
   生成带 `TaskDock-Snapshot/Tasks` 提交信息的快照；检查交集、越界、冲突，执行集成静态检查。
-  不等待未完成任务；已完成任务按批次集成，失败批次保留现场与日志。
-- **构建（集成负责人）**：**只有快照提交能出正式测试安装包**；在干净快照工作区执行、经构建调度器
-  排队、桌面与移动端分别构建；同一「提交+平台+配置」复用已有产物，不因第二个 Agent 要验收重打。
+  不等待未完成任务；已完成任务按批次集成。失败时快照工作区回到基线，日志与台账记录保留供复现，
+  不会把半个补丁留在工作区。
+- **构建（集成负责人）**：**只有快照提交能出正式测试安装包**；在独立的干净构建工作区执行、经构建
+  调度器排队、桌面与移动端分别构建；同一「提交+平台+配置」复用已有产物，不因第二个 Agent 要验收重打。
 - **验收（各任务 Agent + 集成验收 Agent）**：多 Agent 可基于**同一 `buildId`** 并行验收各自模块，
   各写自己的验收记录（不改他人结论）；跨模块链路与回归由集成验收 Agent 负责。
   并行验收的共享资源（同一窗口/实例、手机、剪贴板、CDP 端口、数据库目录）按
@@ -128,8 +131,9 @@ npm run integrate:status
   `create` 只在 3.1 判定需要隔离后执行，`cleanup` 默认 dry-run，`--execute` 的准入见
   [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §8.7。
 - 工具不自动创建/提交/合并/删除；异常保留现场上报，冲突先读双方 diff，无法安全合并时停止。
-- 集成与构建使用工具自有的 `<仓库父目录>/<仓库名>-integration` 工作区（分支 `integration`），
-  与 Agent 任务 Worktree 分开管理；不得手工用它做开发或验收操作。
+- 集成与构建使用工具自有的两个工作区：`<仓库父目录>/<仓库名>-integration`（分支 `integration`，
+  只做快照）与 `<仓库父目录>/<仓库名>-integration-build`（detached HEAD，只做构建）；两者用
+  独立锁，可并行。与 Agent 任务 Worktree 分开管理；不得手工用它们做开发或验收操作。
 
 ## 4. 架构与数据安全红线
 
@@ -180,11 +184,14 @@ npm run integrate:status
   desktop|web|android`。共享工作区里的未提交改动、`main` 上更晚的提交都不进入产物。
 - 每个「快照提交 + 平台 + 构建配置」原则上只构建一次；已有成功产物且校验值一致时复用，
   不因不同 Agent 分别验收而重复打包。桌面端与移动端、不同架构/配置**不能视为同一个安装包**。
-- 构建记录必须含：构建 ID、Git commit（含 `dirty=false` 断言）、平台与配置、时间、包含的任务、
-  退出码、产物路径与 sha256、调度任务与日志路径。记录位置与字段见
-  [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md) §5。
-- 集成任务的构建走调度器（label `integration-<构建ID>`），与日常构建共享同一队列，不另造锁。
-- 未构建/构建失败写「未执行」或失败记录，不得用历史产物冒充本轮结果。
+- 构建记录必须含：构建 ID、Git commit（`dirty` 为构建前后实测，不得硬编码 false）、平台与配置、
+  时间、包含的任务、退出码、产物路径与 sha256、调度任务与日志路径；`status=succeeded` 还必须
+  至少有一个平台可用产物（web `dist/index.html`、桌面安装包、Android apk），零产物或 dirty 构建
+  一律记失败。记录位置与字段见 [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md) §5。
+- 集成任务的构建走调度器（label `integration-<构建ID>`），与日常构建共享同一队列，不另造锁；
+  构建工作区与快照工作区分离，构建使用 `<仓库>-integration-build`。
+- 未构建/构建失败写「未执行」或失败记录，不得用历史产物冒充本轮结果；只有 `status=succeeded`
+  且 `dirty=false` 的构建才能进入 `verifying`，`accept pass|fail` 还必须匹配任务当前快照与交付提交。
 
 ### 5.3 磁盘、命令与证据
 - 构建前检查磁盘与缓存（`npm run tauri` 自动 `build-guard precheck`），不足先停止并 `report`；

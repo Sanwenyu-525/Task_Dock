@@ -504,8 +504,8 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 
 集成构建的额外约定（不改调度器代码）：
 
-- 正式测试安装包只从集成快照构建；集成构建在 `<仓库父目录>/<仓库名>-integration` 里执行
-  `git checkout --detach <快照提交>`，不使用主工作区；
+- 正式测试安装包只从集成快照构建；构建在 `<仓库父目录>/<仓库名>-integration-build` 里执行
+  `git checkout --detach <快照提交>`，不使用主工作区；快照工作区 `-integration` 只负责分支推进；
 - 桌面构建用绝对路径 `CARGO_TARGET_DIR=<主仓库>/src-tauri/target-integration`，与主工作区
   `src-tauri/target` 分开，避免跨 checkout 指纹反复失效；
 - 同一「快照提交 + 平台 + 配置」已有成功产物时由集成工具直接复用，不再入队；这与本调度器的

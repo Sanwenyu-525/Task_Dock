@@ -124,7 +124,7 @@ font   = { page: 24, display: 30, hero: 26, stat: 26, section: 17, title: 16, re
 | `SwipeRow` | 滑删容器 | 红底圆角/内缩见 §3；卡片表面色由 `surface` 传入，必须不透明；`radii` / `borderEdges` 只给分组列表用：首行顶部直角、末行底部 `radius.row`，行与行之间只保留一条 hairline |
 | `TaskRow` | 任务行 | 标题 16/600，最多两行；**三个热区互不重叠**：左侧 44dp 勾选区只切换完成/恢复、行主体轻点打开 `TaskEditorSheet`、任意区域长按开动作表、左滑删除；优先级/分类/截止/逾期/重复/标签用 12sp 胶囊（优先级只显示「高/中/低」一字，完整语义进无障碍文案；分类 accentSoft，截止 accentSoft + 时钟，逾期 warnSoft）；完成态淡青底 + 白勾 + 标题删除线，标签退回中性色；行内不再放右侧箭头，减少与分组箭头重复。交互路由由 `src/domain/taskRowAction.ts` 定义并有回归测试 |
 | `TaskGroupHeader` | 分组条 | 与任务行拼成一个连续分组卡：46dp 浅色条（待办 `accentWash`、完成 `okSoft`、逾期提示 `warnSoft`）+ 24dp 实色圆底语义图标 + 15/700 标题 + 白底计数胶囊 + 可选提示胶囊 + 折叠箭头；折叠时四角收圆并去掉底边，展开时只圆顶部 |
-| `MetricTile` | 统计磁贴 | `variant="stat"` 是三张独立磁贴：30dp 语义色图标底板 + 26sp/800 数字 + 12sp 标签，等高、等间距；`variant="column"` 仍用于设置页摘要（一张卡三段）；0 值图标/数字退回中性色；只接收真实统计值 |
+| `MetricTile` | 统计磁贴 | `variant="stat"` 是四张独立磁贴：30dp 语义色图标底板 + 26sp/800 数字 + 12sp 标签，等高、等间距；`statLayout="row"` 时数字排在图标右侧同一行（首页两列且字号 ≤1.15 时启用），`stack` 保留图标在上，避免窄格/大字号截断数字；`variant="column"` 仍用于设置页摘要（一张卡三段）；0 值图标/数字退回中性色；只接收真实统计值 |
 | `TabBar` | 底部导航 | **一体式贴底栏**：主题表面 + 顶部 hairline，无外框、无圆角、无 `barShadow`、无滑动胶囊；5 个一级栏等宽（首页 / 任务 / 工作区 / 工具 / 我的），图标 22dp，选中 = `accent` 图标 + `accentText` 文字，未选中 `muted`；项高 ≥52dp，底部安全区由 `bottomInset` 衔接 |
 | `ScreenHeader` | 一级页顶栏 | 56dp，标题 `font.page` + 右侧 44dp 图标插槽；不参与内容滚动；第七轮起不再画贯穿全屏的底部分割线 |
 | `BackButton` | 二级页返回 | 44dp 命中区，`AppIcon name="back"`（22dp），仅在 `onBack` 传入时渲染 |
@@ -155,7 +155,7 @@ font   = { page: 24, display: 30, hero: 26, stat: 26, section: 17, title: 16, re
 | `SettingRow` | 静态信息行 | label 左 / value 右；`valueTone="muted"` 表达未配置/规划值 |
 | `SettingActionRow` | 可点设置行 | label(+helper) + 尾部插槽 + 可选箭头；命中区 ≥44dp；无 onPress 退化为静态行 |
 | `StatusPill` | 状态胶囊 | 状态点 + 文案，ok/warn/danger/neutral 四态 |
-| `NoteCard` | 笔记卡片 | 标题（空标题回退摘要）+ 两行摘要 + `revision·时间`；置顶图钉在 footer 右侧；45 行内不出现滑删 |
+| `NoteCard` | 笔记卡片 | 与 `TaskGroupHeader` 拼成连续分组卡（`position` = first/middle/last/only：首行顶部直角、末行底部圆角、行间只留一条 hairline，不再是一堆独立白卡）；标题（空标题回退摘要）+ 两行摘要 + `revision·时间`；置顶图钉在 footer 右侧；45 行内不出现滑删 |
 
 新增组件前先确认：现有组件是否只差一个 tone/prop。禁止另造平行按钮、平行卡片。
 
@@ -856,4 +856,19 @@ SQLite 没有 projects/features/scenes/agent/监控表，任务也没有 project
   的「文件暂存架」不是同一对象。
 - **我的 · 最近内容**：展示层对历史标题里的百分号编码做一次安全解码（异常原样保留、超长截断），
   不改数据库原始标题。
+
+## 2026-11-16 布局修正（采集入口等宽 / 笔记分组连续 / 概览数字右移）
+
+- **采集入口等宽**：`PressableScale` 的 `flex` 必须落在外层 `style`，`contentStyle` 只负责内层视觉。
+  快速采集页四入口（`CaptureScreen.pickerPress`）、导入页两按钮（`CaptureImportScreen.actionSlot`）、
+  素材复核页工具栏（`CaptureReviewScreen.toolSlot`）统一按该写法，四/二/三列等宽铺满，不再按内容宽度收缩。
+- **笔记分组连续**：`NoteCard` 增加 `position`（only/first/middle/last），改用 `cardSolid` + hairline
+  边 + `radius.row` 的连续分组卡，首行与 `TaskGroupHeader` 衔接、末行收底角，与任务页同一形态；
+  `NotesScreen` 的扁平行模型为每条笔记补 `position`。
+- **今日概览数字右移**：`MetricTile variant="stat"` 新增 `statLayout`（默认 `stack`）；`row` 时
+  30dp 图标与 26sp 数字同一行垂直居中、标签在下，卡片最小高度 106→88。首页在「两列且
+  `fontScale ≤ 1.15`」时启用 `row`，大字号或四列窄格回退 `stack`，避免三位数被截断。
+- **验证**：`tsc --noEmit` 与移动端 vitest 见 `tmp/acceptance/mobile-capture-picker-row/report.md`
+  及 `tmp/acceptance/mobile-layout-followup/report.md`；真机视觉复核状态以这两份报告为准，
+  本轮未以代码推断替代真机结论。
 

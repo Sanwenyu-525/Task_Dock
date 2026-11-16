@@ -1,0 +1,156 @@
+/* 漫剧 C1 剧集 / 分镜 / 角色场景 / 素材版本样式（本目录独占；颜色/间距/圆角全部走语义 Token）。 */
+
+.comic-layout {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  padding: 4px;
+}
+
+.comic-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.comic-pane-list {
+  width: 300px;
+  flex: 0 0 300px;
+  gap: 10px;
+}
+
+.comic-pane-detail {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  gap: 16px;
+  padding-right: 4px;
+}
+
+@media (max-width: 720px) {
+  .comic-layout {
+    flex-direction: column;
+  }
+  .comic-pane-list {
+    width: 100%;
+    flex: 0 0 auto;
+    max-height: 40%;
+  }
+}
+
+.comic-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.comic-list-row {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+button.comic-list-row:hover {
+  background: var(--surface-hover);
+}
+
+.comic-list-row.is-active {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.comic-row-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.comic-row-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comic-row-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.comic-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.comic-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.comic-field-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.comic-field-hint {
+  font-style: normal;
+  color: var(--text-tertiary);
+  margin-left: 6px;
+}
+
+.comic-script {
+  min-height: 220px;
+  line-height: 1.6;
+}
+
+.comic-check-group {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  padding: 10px;
+  margin: 0;
+}
+
+.comic-check-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 6px;
+}
+
+.comic-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.comic-import-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.ws-btn-danger.is-armed {
+  border-color: var(--ws-error);
+  background: color-mix(in srgb, var(--ws-error) 12%, transparent);
+}

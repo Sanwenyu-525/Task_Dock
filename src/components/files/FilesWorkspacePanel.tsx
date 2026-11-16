@@ -1574,7 +1574,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
                 { key: "right", label: t("fw.openMode.right"), onSelect: () => void browseFolder(activePaneId, "right") },
                 { key: "top", label: t("fw.openMode.top"), onSelect: () => void browseFolder(activePaneId, "top") },
                 { key: "bottom", label: t("fw.openMode.bottom"), onSelect: () => void browseFolder(activePaneId, "bottom") },
-                { key: "sep", label: "" },
+                { key: "sep", separator: true },
                 {
                   key: "path",
                   label: t("fw.openMode.byPath"),
@@ -1630,7 +1630,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
               { key: "topBottom", label: t("fw.preset.topBottom"), icon: <Rows2 size={13} />, onSelect: () => applyLayoutPreset("topBottom") },
               { key: "threeLeft", label: t("fw.preset.three"), icon: <Columns3 size={13} />, onSelect: () => applyLayoutPreset("threeLeft") },
               { key: "quad", label: t("fw.preset.quad"), icon: <LayoutGrid size={13} />, onSelect: () => applyLayoutPreset("quad") },
-              { key: "sep1", label: "" },
+              { key: "sep1", separator: true },
               {
                 key: "edit",
                 label: layoutEditMode ? t("fw.layout.exitEdit") : t("fw.layout.edit"),
@@ -1639,7 +1639,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
               },
               { key: "undoMenu", label: t("fw.layout.undo"), icon: <Undo2 size={13} />, disabled: undoCount === 0, onSelect: () => store.getState().undoLayout() },
               { key: "redoMenu", label: t("fw.layout.redo"), icon: <Redo2 size={13} />, disabled: redoCount === 0, onSelect: () => store.getState().redoLayout() },
-              { key: "sep2", label: "" },
+              { key: "sep2", separator: true },
               { key: "customize", label: t("fw.layout.customizeHint"), description: t("fw.layout.customizeBody"), onSelect: () => setLayoutOpen(true) },
             ]}
           />

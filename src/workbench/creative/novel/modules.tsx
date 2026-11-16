@@ -4,5 +4,11 @@
 //! 集成负责人只在 `../moduleRegistry.ts` 里 import 本导出，不会修改本文件。
 
 import type { CreativeModuleMap } from "../types";
+import "./novel.css";
+import { CharactersPanel } from "./CharactersPanel";
+import { WorldviewPanel } from "./WorldviewPanel";
 
-export const NOVEL_CREATIVE_MODULES: CreativeModuleMap = {};
+export const NOVEL_CREATIVE_MODULES: CreativeModuleMap = {
+  characters: CharactersPanel,
+  worldview: WorldviewPanel,
+};

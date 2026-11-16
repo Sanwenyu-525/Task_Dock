@@ -7,7 +7,7 @@
 //! 一旦导航或焦点行为漂移，所有调用点会同时出问题，所以在这里锁死。
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import DropdownMenu, { type DropdownMenuItem } from "./DropdownMenu";
 
@@ -22,6 +22,13 @@ const RADIO: DropdownMenuItem[] = [
   { key: "due", label: "按截止时间", radio: true, checked: true },
   { key: "created", label: "按创建时间", radio: true },
   { key: "priority", label: "按优先级", radio: true },
+];
+
+/** 分隔线条目夹在普通项之间：它必须是分界线，不能被当成空菜单项。 */
+const SEPARATED: DropdownMenuItem[] = [
+  { key: "asc", label: "升序排列" },
+  { key: "sep", separator: true },
+  { key: "desc", label: "降序排列" },
 ];
 
 function Harness({
@@ -150,6 +157,31 @@ describe("DropdownMenu 基元", () => {
     expect(items[2].getAttribute("aria-disabled")).toBe("true");
     await user.click(items[2]);
 
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole("menu")).toBeTruthy();
+  });
+
+  it("分隔线条目是分界线，不是可点击的空菜单项", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<Harness items={SEPARATED} onSelect={onSelect} />);
+    await user.click(screen.getByRole("button", { name: "排序" }));
+
+    // 只有两个真实选项；分隔线不进菜单项集合，也不吃焦点
+    expect(screen.getAllByRole("menuitem")).toHaveLength(2);
+    // 分隔线是装饰性结构，aria-hidden 后不在可访问树里，按 class 断言
+    const seps = document.querySelectorAll<HTMLElement>(".ui-menu-sep");
+    expect(seps).toHaveLength(1);
+    expect(seps[0].tagName).toBe("DIV");
+    expect(seps[0].getAttribute("role")).toBe("separator");
+
+    await waitForFocus(0);
+    await user.keyboard("{ArrowDown}");
+    // 方向键跳过分隔线，直接落到第二项
+    await waitForFocus(1);
+
+    // 点击分界线不触发任何选项，也不关闭菜单
+    fireEvent.click(seps[0]);
     expect(onSelect).not.toHaveBeenCalled();
     expect(screen.getByRole("menu")).toBeTruthy();
   });

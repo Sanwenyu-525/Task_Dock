@@ -364,3 +364,109 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 无响应时无法保证保存。系统强杀/断电不执行退出握手。应用退出失败只取消退出并提示，未提供
 “强制退出（明确丢弃正文）”按钮；用户需先处理保存错误后重新退出。
 
+## 12. 创作工作台五线（B2 / G1 / C1 / U1 / D1，2026-11-16）
+
+五种专业工作空间**不是五套项目管理系统**：项目容器仍是 `workspace_projects`，事项仍是
+`workspace_items`，任务关联仍是 `workspace_task_links`，窗口外壳、导航、右栏、Toast 与
+关闭/退出握手全部复用 U0 统一工作台。本轮只给每种类型补上「自己那条生产流程」的内容区。
+
+### 12.1 五线并行的文件所有权（防止五线互相覆盖）
+
+公共外壳文件由**集成负责人独占写入**，五条开发线只读：
+
+```
+src/workspace/workspaceProfiles.ts        # Profile / 模块清单 / 能力状态
+src/workbench/ProjectWorkspacePanel.tsx   # 模块装配点
+src/workbench/WorkbenchShell.tsx           # 窗口外壳与导航门禁
+src/lib/bridge.ts                          # 通用 IPC 契约
+src-tauri/src/lib.rs                       # generate_handler! 注册
+src-tauri/src/commands/mod.rs              # 命令模块声明
+src-tauri/src/db/mod.rs                    # MIGRATIONS 追加
+src-tauri/src/commands/backup.rs           # BACKUP_TABLES / EXTENDED_TABLES 登记
+```
+
+每条线独占自己的领域目录与 Rust 领域文件（一对一）：
+
+| 线 | 前端 | 后端 | 迁移 |
+|---|---|---|---|
+| A 小说 B2 | `src/workbench/creative/novel/` | `commands/novel_workspace.rs` | v59 |
+| B 游戏 G1 | `src/workbench/creative/game/` | `commands/game_workspace.rs` | v60 |
+| C 漫剧 C1 | `src/workbench/creative/comic/` | `commands/comic_workspace.rs` | v61 |
+| D 通用 U1 | `src/workbench/creative/general/` | `commands/general_workspace.rs` | v62 |
+| E 开发 D1 | `src/workbench/creative/development/` | `commands/development_workspace.rs` | v63 |
+
+冻结契约写在 `tmp/acceptance/creative-workspaces-v1/contract.md`（含表名、备份
+`restore_order` 分段、命令前缀、验收口径）。
+
+### 12.2 模块注册表：壳层与专业模块的唯一接触面
+
+`ProjectWorkspacePanel` 不再为每种类型写一套 `if (kind === ...)`：通用模块
+（概览 / 正文 / 事项 / 关联 / 设置）由壳层自己渲染，其余模块按 `kind` 从注册表取实现。
+
+- `src/workbench/creative/types.ts`：`CreativeModuleId` 并集、`CreativeModuleProps`
+  （`projectId / kind / archived / rootPath / rootExists / devProjectId / onNotice / switchModule`）
+  与 `CreativeModuleMap`；
+- `src/workbench/creative/moduleRegistry.ts`：`kind → CreativeModuleMap` 装配点，
+  五条线各自导出 `<DOMAIN>_CREATIVE_MODULES`，此处只做 import + 分桶；
+- `src/workbench/creative/CreativeModuleHost.tsx`：按 `kind + moduleId` 找实现，
+  **找不到就渲染「该模块尚未接入本轮实现」占位**（`role="status"`），不留空白页、不伪造数据。
+
+模块 ID 并集（同一 ID 可在不同类型下各表其义，注册表按 `kind` 分桶）：
+
+| 类型 | 模块顺序 |
+|---|---|
+| 小说 | 概览 → 正文 → 人物 → 世界观 → 写作事项 → 任务关联 → 项目设置 |
+| 游戏 | 概览 → 制作事项 → 游戏资源 → 构建与测试 → 任务关联 → 设置 |
+| AI 漫剧 | 概览 → 剧集 → 分镜 → 角色与场景 → 素材与产物 → 任务关联 → 设置 |
+| 通用 | 概览 → 阶段与里程碑 → 项目资料 → 事项 → 任务关联 → 设置 |
+| 开发 | 概览 → 开发事项 → 仓库与风险 → Agent 接续 → 构建与验收 → 任务关联 → 设置 |
+
+新增模块 ID 必须同时进入 `WorkspaceModuleId` 与 `isModuleId()`，否则布局持久化会把它当非法值
+剔除（`workspaceProfiles.test.ts` 有专项断言锁定这一点）。
+
+### 12.3 能力状态必须诚实（四态闸门不变）
+
+`WORKSPACE_CAPABILITIES` 新增本轮专业能力（`game.projectDetect` / `game.test` /
+`comic.scripts` / `comic.review` / `general.templates` / `general.milestones` /
+`general.materials` / `general.delivery` / `dev.gitRisk` / `dev.taskHandoff` /
+`dev.buildTrace`），初始一律 `planned`：模块渲染出可操作入口、且有真实测试证据后，
+才由集成负责人升级为 `available` / `limited`。`canInvokeCapability` 对 `planned` /
+`unavailable` 返回 false，UI 不得渲染可点击的生成/构建按钮。
+
+跨媒介预留 `core.mediaLink` 只登记、**不进任何 Profile 的 `capabilities`**，
+因此即使未来误加 UI 也无法通过 `canInvokeCapability` 闸门。
+
+### 12.4 数据库迁移与备份登记
+
+| 迁移 | 表（表名已冻结） | 备份 restore_order |
+|---|---|---|
+| v59 | `novel_characters` / `novel_character_relations` / `novel_worldview_entries` / `novel_entity_refs` | 610–618 |
+| v60 | `game_project_facts` / `game_assets` / `game_builds` / `game_tests` | 630–636 |
+| v61 | `comic_episodes` / `comic_shots` / `comic_characters` / `comic_scenes` / `comic_media_versions` | 650–660 |
+| v62 | `general_milestones` / `general_materials` | 680–682 |
+| v63 | `dws_task_links` / `dws_workspace_probes` | 700–702 |
+
+与其他迁移的差别（可追溯的架构决定）：DDL 常量放在各领域的
+`commands/*_workspace.rs` 里（`MIGRATION_59` … `MIGRATION_63`），
+`db/mod.rs` 只在 `MIGRATIONS` 末尾按序引用它们。这样五条线并行开发时**不需要**同时改
+`db/mod.rs`——"只能在 `db/mod.rs` 末尾追加"的规则仍然成立，只是每条迁移的 SQL 归属到
+领域文件。所有新表全部在 `EXTENDED_TABLES` + `BACKUP_TABLES` 登记（`quick` 全量保存，
+创作内容不截断），否则 `backup.rs` 的 schema 覆盖测试会直接失败。
+
+### 12.5 IPC 通道：`creativeInvoke` 与 `bridge.ts` 的关系
+
+五线专业命令**不逐条写进 `src/lib/bridge.ts`**：那里是公共契约文件，五条线并发改必然冲突。
+统一走 `src/workbench/creative/ipc.ts` 的 `creativeInvoke<T>(command, args)`——
+
+- 仍然是单一 invoke 出口（禁止组件里直接 `import { invoke }`）；
+- 参数 camelCase（Tauri 映射到 Rust snake_case 形参），命令名必须与 `lib.rs`
+  `generate_handler!` 登记一致；
+- 各领域在自己的 `ipc.ts` 里声明命令名与参数/返回类型，集成负责人负责把命令注册进
+  `lib.rs`。这是本轮对「业务 IPC 统一经 bridge.ts」的**范围收敛**，而非另立第二套契约层。
+
+### 12.6 交付状态
+
+（五线实现与验收结果见 `tmp/acceptance/creative-workspaces-v1/` 与各线
+`tmp/acceptance/creative-*/report.md`；能力状态以 `workspaceProfiles.ts` 当前声明为准。）
+
+

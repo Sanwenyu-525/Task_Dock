@@ -104,6 +104,8 @@ pub struct VdSession {
     pub error: Option<String>,
     pub warning: Option<String>,
     pub size: Option<String>,
+    /// scrcpy 是否成功加入 Job Object；false 时 task_dock 被强杀可能残留窗口（有 warning）。
+    pub job_assigned: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,6 +134,9 @@ pub struct VdScreenshot {
     pub width: u32,
     pub height: u32,
     pub captured_at: String,
+    /// 启发式质量提示（低信息量/尺寸偏小）；为空表示未发现异常。
+    /// 它不是失败判据：纯色页面也可能真实存在，前端应提示而非直接丢弃。
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

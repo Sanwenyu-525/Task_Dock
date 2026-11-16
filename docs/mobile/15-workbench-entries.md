@@ -176,6 +176,14 @@ kv 键：`workbench_entries`（移动端专属；桌面端是 settings 表的 `n
   管理页 `openEntry` 对 tab/createTask 先 `onBack()` 再切换，修掉「点了没反应」；窄屏
   `compact` 隐藏简介、列表拖动手柄与工作台 × 扩大命中区；`QuickTile` 标签改 2 行并收紧
   内距，保持 78 高，修 4 列下「本机素材暂存」省略号。typecheck 0、全量 561 例通过、
-  release APK versionCode 62 / 0.1.14 已在真机验证配置跨版本保留与小屏/拖拽。19 个入口的
+  release APK versionCode 64 / 0.1.16 已构建并安装（自建 heavy `h-mwiujy9y-9e90f5`，
+  398s），真机验证配置跨版本保留与小屏/拖拽。19 个入口的
   真机逐项点击受设备自动化漂移影响只完成 1 项，其余以代码契约 + 单测覆盖，详见
   `tmp/acceptance/mobile-entry-customization/report-round2.md`。
+- 2026-11-16（六点拖拽手柄）：新增 `src/components/entry/GripDots.tsx`（2 列 × 3 行，
+  `accessible={false}`、`importantForAccessibility="no-hide-descendants"`，颜色由外层
+  `tokens.muted` 传入）。管理页 `DragHandle` 由旋转 `AppIcon name="more"` 改为
+  `GripDots dot={3} gap={3}`（容器 22×40）；工作台网格手柄改为 `GripDots dot={2.5} gap={2}`
+  （容器 18×18）。原 `handleIcon`/`gripIcon` 旋转样式删除；无障碍标签、`hitSlop` 与
+  拖拽几何（78 高、18×18 手柄）不变。入口 7 文件 / 114 例与 `tsc --noEmit` 通过；
+  vc64 管理页已截图确认 6 点（`62-grip-manager.png`），网格编辑态手柄截图待补。

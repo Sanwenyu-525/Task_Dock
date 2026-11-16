@@ -373,27 +373,40 @@
   }
 
   @container wb-content (max-width: 900px) {
+    /* 窄窗改为纵向文档流：动作队列 → 详情 → 执行记录，由工作区整体滚动。
+       不能保留单列 grid + auto 行，否则队列的 page-scroll 高度塌陷，
+       列表内容会与下方详情/执行记录重叠。 */
     .action-workspace {
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
     }
 
     .action-center {
-      grid-column: 1;
-      grid-row: 1;
+      grid-column: auto;
+      grid-row: auto;
+      flex: 0 0 auto;
+    }
+
+    .action-center > .action-body {
+      flex: 0 0 auto;
+      overflow: visible;
     }
 
     .action-inspector {
-      grid-column: 1;
-      grid-row: 2;
+      grid-column: auto;
+      grid-row: auto;
       position: static;
+      flex: 0 0 auto;
       max-height: none;
       overflow: visible;
     }
 
     .action-runtime {
-      grid-column: 1;
-      grid-row: 3;
+      grid-column: auto;
+      grid-row: auto;
+      flex: 0 0 auto;
     }
   }
 
