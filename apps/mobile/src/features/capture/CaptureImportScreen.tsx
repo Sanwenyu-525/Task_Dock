@@ -19,14 +19,27 @@ import { useTheme } from "../../theme/ThemeProvider";
 import { font, radius, space } from "../../theme/tokens";
 
 import { importLocalFiles } from "./service";
+import { resolveDisplayName } from "./album";
 import { bumpCaptureRevision } from "./revision";
+import { isOpaqueFileName, uploadDisplayName } from "../../lib/sync/fileIo";
 
 type Result = { kind: "idle" } | { kind: "done"; created: number; failures: string[] };
+type PickedEntry = { file: FsFile; displayName: string };
+
+/** 系统选择器可能把名字返回成 document:1000069262；预览与导入前统一解析成真实 DISPLAY_NAME。 */
+async function withDisplayName(file: FsFile): Promise<PickedEntry> {
+  const opaque = isOpaqueFileName(file.name);
+  if (opaque && file.uri.startsWith("content://")) {
+    const resolved = await resolveDisplayName(file.uri);
+    if (resolved?.name) return { file, displayName: resolved.name };
+  }
+  return { file, displayName: uploadDisplayName(file) };
+}
 
 export function CaptureImportScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
-  const [picked, setPicked] = useState<FsFile[]>([]);
+  const [picked, setPicked] = useState<PickedEntry[]>([]);
   /** 最近一次选择用的入口：决定落库的 source 语义，不能一律写成相册 */
   const [picker, setPicker] = useState<"gallery" | "file_picker">("gallery");
   const [busy, setBusy] = useState(false);
@@ -42,7 +55,8 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
         imagesOnly ? { multipleFiles: true, mimeTypes: ["image/*"] } : { multipleFiles: true },
       );
       if (pickedResult.canceled) return;
-      setPicked(pickedResult.result);
+      const entries = await Promise.all(pickedResult.result.map(withDisplayName));
+      setPicked(entries);
       setPicker(imagesOnly ? "gallery" : "file_picker");
       setResult({ kind: "idle" });
     } catch (error) {
@@ -54,10 +68,13 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
     if (busy || picked.length === 0) return;
     setBusy(true);
     try {
-      const outcome = await importLocalFiles(picked, {
-        source: picker,
-        onProgress: (index, count, name) => setProgress({ index: index + 1, count, name }),
-      });
+      const outcome = await importLocalFiles(
+        picked.map((entry) => entry.file),
+        {
+          source: picker,
+          onProgress: (index, count, name) => setProgress({ index: index + 1, count, name }),
+        },
+      );
       setResult({ kind: "done", created: outcome.created.length, failures: outcome.failures });
       setPicked([]);
       bumpCaptureRevision();
@@ -133,7 +150,7 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
                   已选择 {picked.length} 个素材
                 </Text>
                 <Text style={[styles.cardSubtitle, { color: tokens.muted }]}>
-                  {formatBytes(picked.reduce((sum, file) => sum + (file.size || 0), 0))}
+                  {formatBytes(picked.reduce((sum, entry) => sum + (entry.file.size || 0), 0))}
                 </Text>
               </View>
               <PressableScale
@@ -148,7 +165,9 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
               </PressableScale>
             </View>
             <View style={[styles.previewDivider, { backgroundColor: tokens.separator }]} />
-            {picked.slice(0, 20).map((file, index) => {
+            {picked.slice(0, 20).map((entry, index) => {
+              const file = entry.file;
+              const displayName = entry.displayName;
               const image = file.type?.startsWith("image/") ?? false;
               return (
                 <View key={`${file.uri}-${index}`} style={styles.fileRow}>
@@ -160,19 +179,19 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
                     />
                   ) : (
                     <View style={styles.fileIcon}>
-                      <FileTypeIcon kind={fileTypeOf(file.name)} size={34} />
+                      <FileTypeIcon kind={fileTypeOf(displayName)} size={34} />
                     </View>
                   )}
                   <View style={styles.fileBody}>
                     <Text numberOfLines={1} style={[styles.fileName, { color: tokens.text }]}>
-                      {file.name || "未命名文件"}
+                      {displayName}
                     </Text>
                     <Text numberOfLines={1} style={[styles.fileMeta, { color: tokens.muted }]}>
                       {formatBytes(file.size)}
                     </Text>
                   </View>
                   <PressableScale
-                    accessibilityLabel={`移除 ${file.name || "未命名文件"}`}
+                    accessibilityLabel={`移除 ${displayName}`}
                     disabled={busy}
                     onPress={() =>
                       setPicked((current) => current.filter((_, currentIndex) => currentIndex !== index))

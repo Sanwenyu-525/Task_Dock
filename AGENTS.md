@@ -191,7 +191,8 @@ npm run integrate:status
   架构/配置**不能视为同一个安装包**。构建依赖必须与快照代码一致（已存在 junction 也每次核对）；
   桌面缓存登记失败（build-guard register）必须阻止构建，不能产生无法追踪的大缓存。
 - 构建记录必须含：构建 ID、Git commit（`dirty` 为构建前后实测，不得硬编码 false）、平台与配置、
-  架构与构建输入指纹、时间、包含的任务（声明路径与显式放行的额外路径）、退出码、产物路径与 sha256、
+  架构与构建输入指纹、时间、包含的任务（声明路径与显式放行的额外路径；`snapshotChain` /
+  `includedTasks` 给出累计来源）、退出码、产物路径与 sha256、
   调度任务与日志路径；`status=succeeded` 还必须
   至少有一个平台可用产物（web `dist/index.html`、桌面安装包、Android apk），零产物或 dirty 构建
   一律记失败。记录位置与字段见 [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md) §5。

@@ -16,6 +16,7 @@ import { useTasksStore } from "../../store/useTasksStore";
 import { useNavigationStore } from "../../store/useNavigationStore";
 import { useUiStore } from "../../store/useUiStore";
 import TasksPanel from "./TasksPanel";
+import { WorkbenchDetailHostProvider } from "../../workbench/pageDetail";
 import { listTasks, toggleTask } from "../../lib/bridge";
 import type { Task, TaskFilter } from "../../lib/bridge";
 import { EXIT_MS } from "../../lib/motion";
@@ -652,7 +653,13 @@ describe("任务页左栏分隔条", () => {
         ],
       },
     });
-    render(<TasksPanel />);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    render(
+      <WorkbenchDetailHostProvider host={host}>
+        <TasksPanel />
+      </WorkbenchDetailHostProvider>,
+    );
 
     await user.click(screen.getByText("买牛奶"));
     const link = document.querySelector<HTMLButtonElement>(".task-detail-link");

@@ -107,7 +107,6 @@ import {
 import {
   WORKBENCH_DETAIL_WIDTH_MAX,
   WORKBENCH_DETAIL_WIDTH_MIN,
-  WORKBENCH_NAV_LABELS_MIN_WIDTH,
   WORKBENCH_NAV_WIDTH_MAX,
   WORKBENCH_NAV_WIDTH_MIN,
   isWorkbenchRoute,
@@ -118,6 +117,7 @@ import {
   setWorkbenchNavWidth,
   setWorkbenchProject,
   setWorkbenchRoute,
+  shouldCompactWorkbenchNavLabels,
   useWorkbenchLayout,
   useWorkbenchLayoutReady,
   type WorkbenchRoute,
@@ -455,8 +455,7 @@ export default function WorkbenchShell() {
     return () => observer.disconnect();
   }, []);
 
-  const navLabelsCompact =
-    Math.round(navActualWidth ?? navWidth) < WORKBENCH_NAV_LABELS_MIN_WIDTH;
+  const navLabelsCompact = shouldCompactWorkbenchNavLabels(navActualWidth ?? navWidth);
 
   // ── 项目列表读写 ────────────────────────────────────────────────────
   const refreshProjects = useCallback(async (): Promise<WorkspaceProject[]> => {

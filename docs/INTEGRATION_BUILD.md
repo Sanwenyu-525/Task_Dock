@@ -67,7 +67,8 @@ npm run integrate -- task add --id files-rescan --owner agent-a --module 资源�
     --paths src/components/files/FilesWorkspacePanel.tsx,src/lib/filesWorkspace/interactions.ts
 # 真实执行：在 <仓库>-integration-verify 的干净 detached 工作区 checkout 到交付提交，
 # 按该提交核对依赖，经构建调度器执行命令，日志与退出码写入台账（失败仍写记录并返回 2）
-npm run integrate -- task verify --id files-rescan --commit <交付提交> --cmd "npm test -- src/components/files"
+npm run integrate -- task verify --id files-rescan --commit <交付提交> --cmd "npm test -- src/components/files" \
+    [--priority P1] [--class light|medium|heavy]  # 仅当命令确实轻量时显式降级，默认由调度器自动判定
 npm run integrate -- task ready --id files-rescan --commit <交付提交>
 ```
 
@@ -83,8 +84,9 @@ npm run integrate -- task ready --id files-rescan --commit <交付提交>
   写 `source=executed`、`commit`、`logPath`、`exitCode`、`durationMs` 与 `schedulerTaskId`。`task check`
   是人工登记，只记 `source=external`；没有证据的手动登记可用于留痕，但不能让任务进入待集成。
   集成时工具还会执行一次真实的静态检查（`--check static`，默认），这次结果才是「快照可构建」的证据。
-- **检查绑定提交**：`task verify --commit` 必须是任务当前交付提交（或交付前的同一提交）；验证期间
-  任务若被改成新提交，结果不会写入台账，需重新验证。不能把旧版本上的通过记录用于新版本。
+- **检查绑定提交**：`task verify --commit` 必须是任务当前交付提交；返工时（任务为 `accept-failed`/
+  `developing`）允许先验证修复提交，但只有随后 `task ready --commit <修复提交>` 才会更新交付关联。
+  验证期间任务若被改成别的交付提交，结果不会写入台账，需重新验证。不能把旧版本上的通过记录用于新版本。
 - 写入范围一旦变更，工具会清空交付提交、检查、快照与验收关联并回到 `developing`，必须重新
   `task check` / `task ready`，不能事后扩大范围再沿用旧结论。
 - 返工：`accept-failed` 后修完用 `task ready --commit <修复提交> --from <上一交付提交>`，
@@ -140,7 +142,7 @@ TaskDock-Check: npm run build:raw exit=0
 ```
 
 记录写入 `tmp/integration/snapshots/<快照>.json`（任务的 commit / paths /
-`includedExtraPaths` / checks / note）。`snapshot create` 不会改动 `main`，也不会创建或删除任何
+`includedExtraPaths` / checks / note / `baseSnapshot`）。`snapshot create` 不会改动 `main`，也不会创建或删除任何
 任务分支。应用补丁或静态检查失败时，工具自有快照工作区会 `reset` 回基线并清理该工作区里由补丁
 产生的未跟踪文件，**检查日志与
 `tmp/integration/logs/<快照>-failure.json` 失败记录保留**，不会把半个补丁留给下一次操作；需要现场可用
@@ -193,7 +195,8 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
 - **dry-run**：只输出计划与是否已有可复用构建，不创建构建工作区、不切换 HEAD、不写记录、不改
   任务状态；任何复用/加锁/建目录都必须发生在 dry-run 返回之后。
 
-构建记录（`tmp/integration/builds/<构建ID>/build.json`）字段：
+构建记录（`tmp/integration/builds/<构建ID>/build.json`）字段（`tasks` 是本批增量，`snapshotChain` /
+`includedTasks` 是按快照 base 链累计的完整来源，供安装包追溯）：
 
 ```json
 {
@@ -203,6 +206,8 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
   "status": "succeeded", "exitCode": 0, "startedAt": "...", "finishedAt": "...", "durationMs": 123456,
   "tasks": [{ "id": "files-rescan", "commit": "...", "module": "资源管理器", "owner": "agent-a",
               "paths": ["src/..."], "extraPaths": [] }],
+  "snapshotChain": ["snap-01", "snap-02"],
+  "includedTasks": [{ "id": "files-rescan", "commit": "...", "module": "资源管理器", "owner": "agent-a" }],
   "command": ["npm", "run", "tauri:raw", "--", "build"],
   "cwd": "<仓库父目录>/<仓库名>-integration-build", "targetDir": "<target-integration>",
   "logPath": "tmp/integration/builds/.../build.log", "schedulerTaskId": "h-...",

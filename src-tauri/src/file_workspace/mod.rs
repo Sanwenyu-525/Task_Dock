@@ -1529,7 +1529,9 @@ pub fn rename(path: &Path, new_name: &str) -> AppResult<PathBuf> {
         .parent()
         .ok_or_else(|| AppError::Validation("路径没有父目录".into()))?;
     let target = parent.join(&name);
-    if target.exists() {
+    // 大小写-only 改名：Windows 的 exists() 大小写不敏感，若目标是与源同一路径键
+    // 则不是外部冲突，交给 fs::rename 真正改大小写。
+    if target.exists() && path_key(&target) != path_key(path) {
         return Err(AppError::Conflict(format!("已存在同名条目: {name}")));
     }
     fs::rename(path, &target).map_err(|e| AppError::Io(e))?;
@@ -2325,6 +2327,34 @@ mod tests {
         let renamed = rename(&root.join("a/old.txt"), "renamed.txt").unwrap();
         assert!(renamed.exists());
         assert!(!root.join("a/old.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rename_allows_case_only_change() {
+        let root = temp_root("rename-case");
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("CaseOnly.txt");
+        fs::write(&source, "x").unwrap();
+        let renamed = rename(&source, "caseonly.txt").unwrap();
+        assert_eq!(renamed.file_name().unwrap().to_string_lossy(), "caseonly.txt");
+        assert!(root.join("caseonly.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn batch_rename_allows_case_only_change() {
+        let root = temp_root("batch-case");
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("CaseOnly.txt");
+        fs::write(&source, "x").unwrap();
+        let items = vec![BatchRenameItem {
+            path: source.to_string_lossy().into_owned(),
+            new_name: "caseonly.txt".into(),
+        }];
+        let report = batch_rename(&items, &[], None);
+        assert_eq!(report.ok, 1, "report: {report:?}");
+        assert!(root.join("caseonly.txt").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 

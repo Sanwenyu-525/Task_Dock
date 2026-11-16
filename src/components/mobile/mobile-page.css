@@ -320,6 +320,15 @@
   }
 }
 
+/* 工作台在 ≤760px 时导航实际收为 56px，但根网格仍使用持久化列宽；手机互传页
+   激活时把该列对齐到真实导航宽度，避免投屏面板在 320/400px 窗口只剩 98/174px。
+   仅在当前页面存在 `mobile-transfer-panel` 时生效，不影响其他路由。 */
+@media (max-width: 760px) {
+  .wb-root:has(.mobile-transfer-panel) {
+    --wb-nav-width: 56px !important;
+  }
+}
+
 /* 传输中：在文件行底部显示真实进度条（总进度来自 received_chunks/chunks）。
    只在手机互传页生效，设置页里的同款文件行保持原高度。 */
 .mobile-transfer-panel .mobile-file-item:has(.mobile-file-progress) {

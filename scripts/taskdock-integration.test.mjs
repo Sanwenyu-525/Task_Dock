@@ -411,6 +411,13 @@ test("验收失败后修复 → 增量集成 → 新构建 → 复验通过（�
     assert.equal(build2.status, 0, build2.out);
     const b2 = readBuild(repo, "b02-web-r1");
     assert.equal(b2.commit, snap.commit);
+    assert.equal(snap.baseSnapshot, "snap-01", "增量快照应记录父快照");
+    assert.deepEqual(b2.snapshotChain, ["snap-01", "snap-02"], "构建应记录快照链");
+    assert.deepEqual(
+      b2.includedTasks.map((t) => t.id).sort(),
+      ["alpha", "beta"],
+      "构建应能直接列出累计包含的全部任务，而不只本批增量",
+    );
     // 旧构建不能给新版本写验收结论
     const stale = run(repo, ["accept", "--build", "b01-web-r1", "--task", "beta", "--status", "pass"]);
     assert.equal(stale.status, 2, stale.out);

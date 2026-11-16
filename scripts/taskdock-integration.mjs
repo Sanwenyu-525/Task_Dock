@@ -750,6 +750,31 @@ function latestSnapshot(paths) {
   return all.length ? all[all.length - 1] : null;
 }
 
+// 安装包可追溯性：任务可能分散在多个增量快照里，构建记录必须能沿 base 链列出“累计包含的任务”。
+function snapshotAncestry(paths, snap) {
+  const all = readJsonDir(paths.snapshots);
+  const byCommit = new Map(all.map((s) => [s.commit, s]));
+  const chain = [snap];
+  const visited = new Set([snap.id]);
+  let cur = snap;
+  while (cur.base) {
+    const prev = byCommit.get(cur.base);
+    if (!prev || visited.has(prev.id)) break;
+    chain.unshift(prev);
+    visited.add(prev.id);
+    cur = prev;
+  }
+  const tasks = [];
+  for (const s of chain) {
+    for (const t of s.tasks ?? []) {
+      const at = tasks.findIndex((x) => x.id === t.id);
+      if (at >= 0) tasks[at] = t;
+      else tasks.push(t);
+    }
+  }
+  return { chain, tasks };
+}
+
 function orderByNeeds(paths, tasks) {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const deps = new Map(tasks.map((t) => [t.id, []]));
@@ -1597,6 +1622,7 @@ function cmdSnapshotCreateInner(args, ctx, paths) {
         extraPaths: p.extraPaths,
       })),
       includedExtraPaths: plans.flatMap((p) => p.extraPaths.map((x) => `${p.task.id}: ${x}`)),
+      baseSnapshot: readJsonDir(paths.snapshots).find((s) => s.commit === base)?.id ?? null,
       overlaps,
       checks: checkResult ? [checkResult] : [],
       note: str(args, "note"),
@@ -2065,6 +2091,7 @@ function cmdBuild(argv) {
       else if (dirtyAfter) reason = "构建后工作区出现未提交改动，产物不可复现";
       else reason = "构建退出码 0，但没有收集到该平台可用产物";
     }
+    const ancestry = snapshotAncestry(paths, snap);
     record = {
       id: buildId,
       snapshot: snap.id,
@@ -2086,6 +2113,8 @@ function cmdBuild(argv) {
         id: t.id, commit: t.commit, module: t.module, owner: t.owner,
         paths: t.paths ?? [], extraPaths: t.extraPaths ?? [],
       })),
+      snapshotChain: ancestry.chain.map((s) => s.id),
+      includedTasks: ancestry.tasks.map((t) => ({ id: t.id, commit: t.commit, module: t.module, owner: t.owner })),
       command,
       cwd: wt,
       targetDir: cfg.needsTarget ? targetDir : null,

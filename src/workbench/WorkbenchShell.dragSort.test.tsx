@@ -71,7 +71,7 @@ vi.mock("../store/useHotkeysStore", () => ({ useHotkeysRuntime: () => undefined 
 import WorkbenchShell from "./WorkbenchShell";
 import NavigationVisibilitySection from "../components/settings/NavigationVisibilitySection";
 import { defaultNavigationLayout } from "../lib/navVisibility";
-import { defaultWorkbenchLayout } from "../lib/workbenchLayout";
+import { defaultWorkbenchLayout, shouldCompactWorkbenchNavLabels } from "../lib/workbenchLayout";
 import { resetNavOrderIntents } from "../lib/navOrderIntent";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useTasksStore } from "../store/useTasksStore";
@@ -868,11 +868,11 @@ describe("拖拽手柄放大与命中区", () => {
 });
 
 describe("导航宽度临界点与名称 tooltip", () => {
-  it("达到 200px 时显示名称，不挂名称 tooltip", async () => {
+  it("181px（最小宽度以上）显示名称，不挂名称 tooltip", async () => {
     useSettingsStore.setState({
       settings: {
         ...baseSettings(),
-        workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 200 },
+        workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 181 },
       } as never,
     });
     await renderShell();
@@ -887,7 +887,7 @@ describe("导航宽度临界点与名称 tooltip", () => {
     expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-label')).toMatch(/display: none/);
   });
 
-  it("180px（最小宽度）进入图标态，动态入口与固定入口都补名称 tooltip", async () => {
+  it("180px（最小宽度）仍显示名称，不挂名称 tooltip，不留下空白轨道", async () => {
     useSettingsStore.setState({
       settings: {
         ...baseSettings(),
@@ -896,62 +896,21 @@ describe("导航宽度临界点与名称 tooltip", () => {
     });
     await renderShell();
     const root = document.querySelector<HTMLElement>(".wb-root");
-    expect(root?.getAttribute("data-nav-compact")).toBe("true");
+    expect(root?.hasAttribute("data-nav-compact")).toBe(false);
 
-    const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
-    const pageLabel = page?.querySelector<HTMLElement>(".wb-nav-label")?.textContent;
-    expect(page?.getAttribute("data-tip")).toBe(pageLabel);
-    // 整行（含名称/徽标之外的空白）悬停也应显示名称提示。
-    expect(navRows()[0].getAttribute("data-tip")).toBe(pageLabel);
-    // 首页、设置、更多也属于导航入口；图标态悬停必须有名称提示。
     const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
-    expect(nav.querySelectorAll("[data-tip]").length).toBeGreaterThanOrEqual(2);
+    expect(nav.querySelectorAll("[data-tip]")).toHaveLength(0);
+    const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
+    expect(page?.hasAttribute("data-tip")).toBe(false);
+    expect(page?.querySelector(".wb-nav-label")).toBeTruthy();
   });
 
-  it("200px 名义宽度实测 199.587px 时按整像素判定，不误折叠名称", async () => {
-    class FractionalResizeObserver {
-      private callback: ResizeObserverCallback;
-      constructor(callback: ResizeObserverCallback) {
-        this.callback = callback;
-      }
-      observe(target: Element) {
-        const width = 199.587;
-        target.getBoundingClientRect = () =>
-          ({
-            x: 0,
-            y: 0,
-            width,
-            height: 900,
-            top: 0,
-            right: width,
-            bottom: 900,
-            left: 0,
-            toJSON: () => ({}),
-          }) as DOMRect;
-        this.callback(
-          [{ target, contentRect: { width } } as unknown as ResizeObserverEntry],
-          this as unknown as ResizeObserver,
-        );
-      }
-      unobserve() {}
-      disconnect() {}
-    }
-    vi.stubGlobal("ResizeObserver", FractionalResizeObserver);
-    try {
-      useSettingsStore.setState({
-        settings: {
-          ...baseSettings(),
-          workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 200 },
-        } as never,
-      });
-      await renderShell();
-      const root = document.querySelector<HTMLElement>(".wb-root");
-      await waitFor(() => expect(root?.hasAttribute("data-nav-compact")).toBe(false));
-      const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
-      expect(page?.hasAttribute("data-tip")).toBe(false);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+  it("按整像素判定：180 / 180.4 保持名称，179.4 与 56px 进入图标态", () => {
+    expect(shouldCompactWorkbenchNavLabels(181)).toBe(false);
+    expect(shouldCompactWorkbenchNavLabels(180)).toBe(false);
+    expect(shouldCompactWorkbenchNavLabels(180.4)).toBe(false);
+    expect(shouldCompactWorkbenchNavLabels(179.4)).toBe(true);
+    expect(shouldCompactWorkbenchNavLabels(56)).toBe(true);
   });
 });
 

@@ -66,8 +66,17 @@ export interface WorkbenchLayout {
 
 export const WORKBENCH_NAV_WIDTH_MIN = 180;
 export const WORKBENCH_NAV_WIDTH_MAX = 320;
-/** 低于该宽度时导航进入图标态：隐藏 Tab 名称，悬停时用 tooltip 补名称。 */
-export const WORKBENCH_NAV_LABELS_MIN_WIDTH = 200;
+/**
+ * 低于该宽度才进入图标态（<180px）：隐藏 Tab 名称，悬停时用 tooltip 补名称。
+ * 180px 是最小可拖拽宽度，仍能完整放下名称，因此 180px 起保持名称可见，
+ * 避免图标态在最小宽度下留下一条没有信息的空白轨道。
+ */
+export const WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH = 180;
+
+/** 名称折叠判据：按整像素取整后严格低于 180px；180px 本身仍显示名称。 */
+export function shouldCompactWorkbenchNavLabels(width: number): boolean {
+  return Math.round(width) < WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH;
+}
 export const WORKBENCH_DETAIL_WIDTH_MIN = 260;
 export const WORKBENCH_DETAIL_WIDTH_MAX = 480;
 
