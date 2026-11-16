@@ -61,10 +61,12 @@ import {
   fsCopyPaths,
   fsMovePaths,
   fsDeletePaths,
+  fsDeleteVerifiedDuplicates,
   fsPlaces,
   fsStat,
   type FsOpReport,
   type FsPlace,
+  type VerifiedDuplicateDeleteGroup,
 } from "../../lib/bridge";
 import {
   invalidateDirs,
@@ -107,6 +109,7 @@ import { pickFolder, validateFolderPath, type PickFolderResult } from "../../lib
 import {
   detectTransferConflicts,
   movedSourcesToClear,
+  filterTransferablePaths,
   pickAutomaticTarget,
   transferRefreshDirs,
   type ConflictStrategy,
@@ -124,7 +127,7 @@ import BatchRenameDialog, { type BatchRenameRequest } from "./BatchRenameDialog"
 import FolderCompareDialog, { type CompareRequest } from "./FolderCompareDialog";
 import QuickPreviewDialog, { type PreviewRequest } from "./QuickPreviewDialog";
 import WorkspaceSearchDialog from "./WorkspaceSearchDialog";
-import DuplicateFinderDialog from "./DuplicateFinderDialog";
+import DuplicateFinderDialog, { type DuplicateDeleteOutcome } from "./DuplicateFinderDialog";
 const FilePane = lazy(() => import("./FilePane"));
 
 /** 最小窗格尺寸（CSS px）：分割比例按容器实测换算钳制。 */
@@ -791,13 +794,18 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       after?: (report: FsOpReport | null) => void,
     ): Promise<FsOpReport | null> => {
       if (!paths.length) return null;
+      const effective = filterTransferablePaths(paths, targetDir);
+      if (!effective.length) {
+        showToast(t("fw.quick.alreadyHere"), { kind: "info" });
+        return null;
+      }
       try {
-        const conflicts = await detectTransferConflicts(paths, targetDir);
+        const conflicts = await detectTransferConflicts(effective, targetDir);
         if (conflicts.length > 0) {
-          setConflictPending({ effect, paths, targetDir, conflicts, after });
+          setConflictPending({ effect, paths: effective, targetDir, conflicts, after });
           return null;
         }
-        const report = await applyFileDrop(paths, targetDir, effect);
+        const report = await applyFileDrop(effective, targetDir, effect);
         after?.(report);
         return report;
       } catch (e) {
@@ -805,7 +813,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         return null;
       }
     },
-    [applyFileDrop, showToast],
+    [applyFileDrop, showToast, t],
   );
 
   const revealSearchHit = useCallback(
@@ -819,32 +827,42 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     [showToast, store, t],
   );
 
-  /** 重复文件对话框的删除出口：沿用回收站安全流程，逐项结果由 Rust 报告。 */
+  /** 重复文件对话框的删除出口：只在服务端重新哈希通过后走回收站。 */
   const deleteDuplicatePaths = useCallback(
-    async (paths: string[]) => {
+    async (groups: VerifiedDuplicateDeleteGroup[]): Promise<DuplicateDeleteOutcome> => {
+      const paths = groups.flatMap((group) => group.deletePaths);
+      if (!paths.length) return { ok: 0, failed: 0, failedPaths: [] };
       const dirs = [...new Set(paths.map((path) => parentOf(path)).filter(Boolean))] as string[];
       const op = startOperation("file", "workspace_delete_duplicates", {
         component: "文件工作区",
-        metadata: { count: paths.length },
+        metadata: { groups: groups.length, count: paths.length },
       });
       startQueueOperation({ id: op.id, effect: "delete", total: paths.length });
       try {
         op.stage("ipc");
-        const report = await fsDeletePaths(paths, false, op.id);
+        const report = await fsDeleteVerifiedDuplicates(groups, op.id);
         invalidateDirs(dirs);
         finishQueueOperation(op.id, report);
-        if (report.failed > 0) {
-          showToast(t("fw.duplicates.deletePartial", { ok: report.ok, failed: report.failed }), { kind: "error" });
+        const failedPaths = report.entries
+          .filter((entry) => entry.status !== "ok")
+          .map((entry) => entry.source);
+        if (failedPaths.length > 0) {
+          showToast(
+            t("fw.duplicates.deletePartial", { ok: report.ok, failed: failedPaths.length }),
+            { kind: "error" },
+          );
         } else {
           showToast(t("fw.duplicates.deleted", { count: report.ok }), { kind: "success" });
         }
+        return { ok: report.ok, failed: failedPaths.length, failedPaths };
       } catch (e) {
         if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
         finishQueueOperation(op.id, null, errorMessage(e));
         showToast(errorMessage(e), { kind: "error" });
+        return { ok: 0, failed: paths.length, failedPaths: paths };
       }
     },
-    [showToast, store, t],
+    [showToast, t],
   );
 
   /** F5/F6 与快速按钮共用：两窗格直接另一个；多窗格优先上次目标；否则弹选择器。 */

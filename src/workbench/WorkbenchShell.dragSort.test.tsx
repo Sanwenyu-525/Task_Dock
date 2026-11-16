@@ -421,6 +421,43 @@ describe("跨分组排序", () => {
     expect(new Set(savedLeft())).toEqual(new Set(defaultNavigationLayout().left));
     // 分组归属与排序写在同一份 navigation_layout。
     expect(savedLeftGroups()?.history).toBe("core");
+    // 只改被拖入口；其他入口的既有归属不能被标题收敛顺手改写。
+    expect(savedLeftGroups()?.workbench).toBe("core");
+    expect(savedLeftGroups()?.actions).toBe("capture");
+  });
+
+  it("旧配置的重复标题段只在渲染层抑制，不重写其他入口归属", async () => {
+    const base = defaultNavigationLayout();
+    const layout = {
+      ...base,
+      left: ["actions", "workbench", "history", "settings"],
+      leftGroups: {
+        ...base.leftGroups,
+        actions: "capture",
+        workbench: "core",
+        history: "planning",
+        settings: "system",
+      },
+    };
+    useSettingsStore.setState({
+      settings: { ...baseSettings(), navigation_layout: layout } as never,
+    });
+
+    await renderShell();
+
+    expect(navIds()).toEqual(["actions", "workbench", "history"]);
+    expect(
+      [...document.querySelectorAll<HTMLElement>(".wb-nav-group")].map((node) => node.textContent),
+    ).toEqual(["自动化与内容", "工作协同"]);
+    // 数据层归属保持原样：旧配置不会因为视觉去批量合并其他入口。
+    const groups = (
+      useSettingsStore.getState().settings?.navigation_layout as
+        | { leftGroups?: Record<string, string> }
+        | undefined
+    )?.leftGroups;
+    expect(groups?.actions).toBe("capture");
+    expect(groups?.workbench).toBe("core");
+    expect(groups?.history).toBe("planning");
   });
 });
 
@@ -449,7 +486,9 @@ describe("点击语义", () => {
     await renderShell();
     dragNavRowToTop("clipboard");
 
-    const clipboard = navList().querySelector<HTMLElement>('[data-nav-entry="clipboard"]');
+    const clipboard = navList()
+      .querySelector<HTMLElement>('[data-nav-entry="clipboard"]')
+      ?.querySelector<HTMLElement>(".wb-nav-page");
     expect(clipboard).toBeTruthy();
     fireEvent.click(clipboard as HTMLElement);
 
@@ -524,9 +563,10 @@ describe("键盘排序与播报", () => {
 
     expect(navIds().indexOf("tasks")).toBe(navIds().indexOf("files") - 1);
     await waitFor(() => expect(navWriteCalls()).toHaveLength(1));
-    // 焦点按稳定 ID 回到同一逻辑入口。
+    // 焦点按稳定 ID 回到同一逻辑入口的页面切换按钮。
     const focused = document.activeElement as HTMLElement | null;
-    expect(focused?.dataset.navEntry).toBe("tasks");
+    expect(focused?.dataset.navPage).toBeDefined();
+    expect(focused?.closest("[data-nav-entry]")?.getAttribute("data-nav-entry")).toBe("tasks");
     expect(await screen.findByText(/「任务」已移到第 3 位/)).toBeTruthy();
     expect(savedLeft().indexOf("tasks")).toBe(savedLeft().indexOf("files") - 1);
   });
@@ -688,12 +728,12 @@ describe("显隐与恢复默认不回归", () => {
 });
 
 describe("拖拽手柄放大与命中区", () => {
-  it("手柄图标 15px、命中区 26×28；手柄位于 Tab 左侧、× 位于最右侧，固定列网格保持行高 36px", async () => {
+  it("手柄图标 17px、命中区 28×28；手柄位于 Tab 左侧、× 位于最右侧，固定列网格保持行高 36px", async () => {
     await renderShell();
     const row = navRows()[0];
     const grip = gripOf(row);
-    expect(grip.querySelector("svg")?.getAttribute("width")).toBe("15");
-    expect(grip.querySelector("svg")?.getAttribute("height")).toBe("15");
+    expect(grip.querySelector("svg")?.getAttribute("width")).toBe("17");
+    expect(grip.querySelector("svg")?.getAttribute("height")).toBe("17");
     // 导航 Tab 不再挂 hover tooltip。
     expect(row.hasAttribute("data-tip")).toBe(false);
 
@@ -717,8 +757,8 @@ describe("拖拽手柄放大与命中区", () => {
     expect(hide.querySelector("svg")?.getAttribute("width")).toBe("15");
     expect(hide.querySelector("svg")?.getAttribute("height")).toBe("15");
 
-    // CSS 契约：15px 图标 / 26×28 命中区；默认低对比灰、无背景；行高不变。
-    expect(cssRule(".wb-nav-grip")).toMatch(/width: 26px/);
+    // CSS 契约：17px 图标 / 28×28 命中区；默认低对比灰、无背景；行高不变。
+    expect(cssRule(".wb-nav-grip")).toMatch(/width: 28px/);
     expect(cssRule(".wb-nav-grip")).toMatch(/height: 28px/);
     expect(cssRule(".wb-nav-grip")).toMatch(/background: transparent/);
     expect(cssRule(".wb-nav-grip")).toMatch(/opacity: 0\.55/);
@@ -728,10 +768,31 @@ describe("拖拽手柄放大与命中区", () => {
     expect(cssRule(".wb-nav-hide")).toMatch(/opacity: 0;/);
     expect(cssRule(".wb-nav-item")).toMatch(/min-height: 36px/);
     expect(cssRule(".wb-nav-item")).toMatch(
-      /grid-template-columns: 26px 20px minmax\(0, 1fr\) auto 24px/,
+      /grid-template-columns: 28px 20px minmax\(0, 1fr\) auto 24px/,
     );
     expect(row.classList.contains("has-grip")).toBe(true);
     expect(cssRule(".wb-nav-actions")).toMatch(/display: inline-flex/);
+  });
+
+  it("外层行是普通布局容器，页面切换/拖拽/隐藏是三个独立按钮", async () => {
+    await renderShell();
+    const row = navRows()[0];
+    const page = row.querySelector<HTMLElement>(".wb-nav-page");
+    const grip = gripOf(row);
+    const hide = row.querySelector<HTMLElement>("[data-nav-hide]");
+
+    expect(row.getAttribute("role")).toBeNull();
+    expect(row.hasAttribute("tabindex")).toBe(false);
+    expect(page?.tagName).toBe("BUTTON");
+    expect(page?.dataset.navPage).toBeDefined();
+    expect(page?.querySelector(".wb-nav-icon")).toBeTruthy();
+    expect(page?.querySelector(".wb-nav-label")).toBeTruthy();
+    expect(grip.tagName).toBe("BUTTON");
+    expect(grip.getAttribute("tabindex")).toBe("-1");
+    expect(hide?.tagName).toBe("BUTTON");
+    // 行内没有任何 button 嵌 button；三个控件是兄弟关系。
+    expect(row.querySelectorAll("button button")).toHaveLength(0);
+    expect([...row.querySelectorAll("button")]).toEqual([grip, page, hide]);
   });
 
   it("拖拽进行中隐藏按钮禁用，取消拖拽后恢复可用", async () => {

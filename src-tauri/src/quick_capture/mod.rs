@@ -43,6 +43,9 @@ pub const FLUSH_DRAFT_EVENT: &str = "capture-flush-draft";
 /// 设计尺寸（逻辑像素，与 tauri.conf.json 的 width/height 一致）。
 pub const WINDOW_WIDTH: f64 = 640.0;
 pub const WINDOW_HEIGHT: f64 = 360.0;
+/// 捕获卡片圆角（逻辑像素）：必须与 styles-capture.css 的 `--radius-capture`
+/// 一致，`window_shape` 按同一半径裁剪原生窗口，否则外阴影/圆角会错位。
+const CAPTURE_RADIUS: f64 = 16.0;
 /// 退出前等待前端落草稿的上限（毫秒）：有界，避免拖慢退出。
 pub const FLUSH_WAIT_MS: u64 = 300;
 /// 等待草稿 ack 的轮询步长（毫秒）。
@@ -204,6 +207,9 @@ pub fn show(app: &AppHandle) -> AppResult<QuickCaptureShowResult> {
         let _ = win.set_position(PhysicalPosition::new(x, y));
         tracing::debug!(x, y, w, h, "快速捕获窗口定位");
     }
+    // 区域必须在每次显示前按最终尺寸重算：尺寸变化会重置窗口区域，
+    // 不重算会让原生阴影/裁剪沿用上一帧的圆角矩形。
+    crate::window_shape::apply_with_radius(&win, CAPTURE_RADIUS);
     let _ = win.unminimize();
     // 只有 show 失败才算「窗口打开失败」；定位/尺寸失败仍尝试显示并如实报告焦点状态。
     win.show().map_err(|e| AppError::Tauri(e))?;
@@ -263,12 +269,18 @@ pub fn init(app: &AppHandle) {
         tracing::warn!(window = WINDOW_LABEL, "快速捕获窗口未创建，跳过事件挂接");
         return;
     };
+    // 先按最终卡片半径建立原生区域，再挂原生伴随阴影；顺序反了会让阴影
+    // 首帧按矩形窗口绘制，出现四角方形阴影。
+    crate::window_shape::apply_with_radius(&win, CAPTURE_RADIUS);
+    #[cfg(windows)]
+    crate::window_shadow::attach(&win);
     // 头部拖拽相位监视（与微件同一协议）：松手瞬间结束前端 grabbing 光标会话。
     // init 在 setup（主线程）执行，子类化可直接安装；drag_watch 自身幂等。
     if let Ok(hwnd) = win.hwnd() {
         crate::drag_watch::install(app, hwnd.0 as isize, WINDOW_LABEL);
     }
     let handle = app.clone();
+    let shape_win = win.clone();
     win.on_window_event(move |event| match event {
         tauri::WindowEvent::Focused(false) => {
             // hide 自身触发的失焦：忽略（HIDING 期间由 hide_capture 统一处理）
@@ -284,6 +296,11 @@ pub fn init(app: &AppHandle) {
             // 先通知前端落草稿，再隐藏；不抢回焦点（用户已切走）
             let _ = handle.emit_to(WINDOW_LABEL, FLUSH_DRAFT_EVENT, ());
             hide_capture(&handle, false);
+        }
+        tauri::WindowEvent::Resized(_) => {
+            // 系统缩放/工作区过小时窗口尺寸会被钳制；每次尺寸变化重算区域，
+            // 保证原生阴影轮廓一直贴合卡片圆角。
+            crate::window_shape::apply_with_radius(&shape_win, CAPTURE_RADIUS);
         }
         tauri::WindowEvent::CloseRequested { api, .. } => {
             // 窗口常驻复用：关闭 = 隐藏并恢复原前台窗口，不销毁 WebView

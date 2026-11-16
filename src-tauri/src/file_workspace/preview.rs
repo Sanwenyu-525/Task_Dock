@@ -206,7 +206,10 @@ pub fn handle_preview_uri(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     if status == StatusCode::PARTIAL_CONTENT {
         builder = builder.header(
             header::CONTENT_RANGE,
-            format!("bytes {start}-{}/{size}", start + read_total.saturating_sub(1)),
+            format!(
+                "bytes {start}-{}/{size}",
+                start + read_total.saturating_sub(1) as u64
+            ),
         );
     }
     builder

@@ -88,7 +88,7 @@ pub async fn fs_batch_rename(
         |items: Vec<fw::BatchRenameItem>, protected: &Vec<PathBuf>| {
             fw::batch_rename(&items, protected, operation_id.clone())
         }
-    )?;
+    );
     emit_op_diagnostics(&report, "workspace_batch_rename", "rename", started.elapsed());
     Ok(report)
 }
@@ -104,7 +104,7 @@ pub async fn fs_hash_files(app: AppHandle, paths: Vec<String>) -> AppResult<Vec<
     }
     let result = fs_blocking!(app, paths, |paths: Vec<String>, protected: &Vec<PathBuf>| {
         fw::hash_files(&paths, protected)
-    })?;
+    });
     Ok(result)
 }
 

@@ -29,7 +29,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 // 预览/测试环境没有 Tauri 运行时，这里显式按「桌面端」安装桥。
-// `drag_loop_active` 是前端关联 start 与本地会话的唯一原生查询。
+// 正常路径靠 `arm_drag_session` 预置 token；`drag_loop_active` 只用于无 token 载荷的兜底。
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
   invoke: (command: string, args?: { generation?: number; token?: string }) => {

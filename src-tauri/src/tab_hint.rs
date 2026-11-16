@@ -296,6 +296,11 @@ pub fn hide(app: &AppHandle) {
 /// 启动时挂接：不抢焦点 + 点击穿透 + 尺寸变化重算圆角区域。
 pub fn init(app: &AppHandle) {
     if let Some(win) = hint_window(app) {
+        // 提示是 240×32 的小胶囊：先按 HINT_RADIUS 建立原生区域，再挂伴生
+        // 阴影，避免阴影首帧沿窗口矩形画出四角方影。
+        crate::window_shape::apply_with_radius(&win, HINT_RADIUS);
+        #[cfg(windows)]
+        crate::window_shadow::attach(&win);
         // 不抢焦点：只靠配置的 `focus:false` 不够——它只表示创建时不聚焦。
         // `set_focusable(false)` 把「不可聚焦」交给 tao 的窗口状态机，
         // show/set_size 重算样式时会保留 WS_EX_NOACTIVATE；手写 EXSTYLE 会被覆盖。

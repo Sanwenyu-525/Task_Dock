@@ -878,19 +878,23 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   ①**数据契约**：`NavLayoutConfig` 新增可选 `leftGroups: Record<entryId, NavGroup>`，仍写入
   `navigation_layout` 同一份 version 1 配置，不新增设置键、Store、localStorage 或迁移；
   缺省字段按注册中心 `group` 回退，隐藏入口的归属也保留。
-  ②**收敛规则**：`reconcileLeftGroups(order, groups, movedId)` 先按落点前后邻居决定被拖入口
-  归属，再把重复的可见分组段（工作协同 / 自动化与内容 / 项目与系统）并入前一段；只改归属，
-  不改 `left` 顺序、不丢入口。`normalizeNavigationLayout` 与恢复默认使用同一函数，
-  手工改库产生的重复标题也会被清洗。
+  ②**收敛边界（2026-11-16 更正）**：`reconcileLeftGroups(order, groups, movedId)` 只按落点
+  前后邻居给**被拖入口**归组；其他入口（含隐藏入口）的原归属保持不动，旧配置已有的重复
+  标题段不在数据层批量合并。`normalizeNavigationLayout` 只补齐分组映射，不再清洗重复段；
+  重复标题由 `WorkbenchShell.navSections` 在渲染层抑制（同一可见分组标题最多出现一次），
+  `left` 顺序与 `leftGroups` 归属仍按用户保存值呈现。
   ③**写入链路**：`useNavOrderDraft` 的乐观草稿和写入同时携带顺序与 `leftGroups`；
   `navOrderIntent` 与设置页排序共用这份归属，因此侧栏和设置页不会各自推导出不同标题。
-  ④**视觉结构**：普通行固定五列 `26px 20px minmax(0,1fr) auto 24px`，行首 26×28 的
-  `GripVertical` 15px 手柄（默认低对比灰、无默认背景，悬停强调色、仅拖拽时轻背景），
-  行尾 24×24 的 ×（默认 opacity 0，行 hover/focus-within 显示）；固定首页/设置保留空轨道，
-  保证功能图标和 Tab 名称对齐且 200px 导航不横向溢出。
-  测试：`WorkbenchShell.dragSort.test.tsx`（26 项，含跨组标题/尺寸/网格/隐藏/保存失败）、
-  `navVisibility.test.ts`（37 项，含重复标题段收敛）、`useNavOrderDraft.test.tsx`（6 项）、
-  `navOrderIntent.test.ts`（11 项）。
+  ④**视觉与交互结构（2026-11-16 最终整改）**：普通行固定五列
+  `28px 20px minmax(0,1fr) auto 24px`，行首 28×28 命中区的 `GripVertical` 17px 手柄
+  （默认低对比灰、无默认背景，悬停强调色、仅拖拽时轻背景、按下 grabbing），行尾 24×24
+  的 ×（默认 opacity 0，行 hover/focus-within 显示）；固定首页/设置/更多保留空轨道，
+  保证功能图标和 Tab 名称对齐且 200px 导航不横向溢出。动态行外层是普通布局容器，
+  页面切换、拖拽、隐藏分别是兄弟 `button`（页面按钮 `data-nav-page` 占功能图标/名称/
+  徽标三列），不再出现 `role=button` 容器内嵌 button；排序后的焦点恢复到页面按钮。
+  测试：`WorkbenchShell.dragSort.test.tsx`（28 项，含跨组标题/尺寸/网格/DOM 语义/隐藏/
+  保存失败）、`navVisibility.test.ts`（38 项，含重复段不批量改写与 movedId 边界）、
+  `useNavOrderDraft.test.tsx`（6 项）、`navOrderIntent.test.ts`（11 项）。
 - 设置页信息架构（2026-11-06，一级分类 + 查找定位）：设置页从「十几个分组纵向堆叠」
   改为**六个一级分类**（通用与外观 / 功能与应用 / 通知与语音 / 数据与资源 / 接入与诊断 /
   帮助与教程），同一时刻只渲染当前分类的分组。
@@ -1032,6 +1036,15 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     原 `refresh_edge_tab_cursor`（`WM_CURSOR_EDGE_TAB` → `SetCursor(IDC_HAND/ARROW)`）已移除：
     Win32 没有与 `grab/grabbing` 等价的系统光标，强制写入只会在松手后留下手形/箭头，
     并覆盖 CSS 结果。
+  - **2026-11-16 拖拽会话身份（token）**：原先前端收到 `window-drag` 的 `start` 后，需要
+    在系统模态循环期间调用 `drag_loop_active` IPC 查询来确认「这条 start 属于当前会话」。
+    主线程在模态循环内的 IPC 受理时机不可依赖，查询晚于 `end` 返回时会话就永远绑不上代次，
+    松手后 `is-dragging` 收不掉，表现为「拳头要等鼠标再动一下才变回手」。
+    现在前端在 `pointerdown`（`startDragging` 之前、主线程仍受理 IPC）调用
+    `arm_drag_session(token)`；窗口过程在 `WM_ENTERSIZEMOVE` 按 hwnd 取走 token，原样附在
+    `window-drag { phase, generation, token }` 的 start/end 上。前端按 token 精确绑定/收尾，
+    迟到旧事件带旧 token，天然不误伤新会话；`drag_loop_active` 仅保留为**无 token 载荷**的兜底。
+    token 限长 64、字符集 `[A-Za-z0-9_-]`，3 秒未消费即作废。
   - 多入口共享打包 CSS（`cssCodeSplit: false`）时，**弹窗入口不得写无作用域的
     `html / body / #root` 布局规则**：它们会同时作用到主窗（历史故障：tab-hint 页的
     `#root{display:flex}` 把主窗压成 0 宽）。页面级规则一律挂各入口的页面根 class；
@@ -1263,7 +1276,8 @@ window API；唯一的窗口 API 是 drag-region 触发的原生拖动（2026-11
 **头部拖拽（2026-11-11）**：标题、类型标签与空白区声明 `data-tauri-drag-region`（关闭按钮不声明），
 由 Tauri drag-region 进入 Win32 系统移动循环；`src/capture/main.tsx` 安装
 `installNativeDragBridge()`，后端 `drag_watch::install` 监听 `WM_ENTERSIZEMOVE`/`WM_EXITSIZEMOVE`
-并发 `window-drag {phase, generation}`，前端据此切换 `grabbing` 光标会话（与主窗/微件同一协议）。
+并发 `window-drag {phase, generation, token}`（2026-11-16 起带按下时预置的会话身份），前端据此
+切换 `grabbing` 光标会话（与主窗/微件同一协议）。
 捕获窗固定 640×360，拖拽只改位置不改尺寸；双击拖拽面被前端拦截，避免默认
 `internal_toggle_maximize` 把卡片撑满屏幕。
 
@@ -1834,7 +1848,7 @@ unsupported`，字节与流落到 `data_dir/drag-incoming` 的暂存副本，前
 复用主窗口的 `src/lib/dragCursorSession.ts` 会话机制（`.ui-drag-surface` / `.ui-drag-session`）；
 会话以 `deepRegion: true` 镜像 `drag.js` 的命中规则，否则「只有事件 target 自身声明才起拖」
 会让 deep 顶栏能拖却不变光标。原生相位来自 `drag_watch::install`（本窗口 label，
-`WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE` → `window-drag`），与微件窗口共用同一机制：系统模态
+`WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE` → `window-drag`，载荷含按下时预置的 `token`），与微件窗口共用同一机制：系统模态
 移动循环期间 WebView2 收不到 `pointerup`，只有原生 `end` 才能松手即复位 grabbing；安装时机
 与 `window_cursor` 相同，经 `run_on_main_thread` 在窗口创建后完成。会话 effect 必须等顶栏
 真正挂载后再建（与 `booted = settingsReady && routeHydrated && projectHydrated` 同条件）：

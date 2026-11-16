@@ -1748,7 +1748,9 @@ pub fn batch_rename(
             }
         };
         let target = parent.join(&name);
-        let unchanged = path_key(&source) == path_key(&target);
+        // 大小写-only 改名是合法操作；只有“完全相同的名称”才是 skipped。
+        // path_key 仍用于重复目标/源集合比较（Windows 文件系统大小写不敏感）。
+        let unchanged = source.file_name() == target.file_name();
         if !unchanged {
             target_keys.entry(path_key(&target)).or_default().push(index);
         }
@@ -1806,7 +1808,7 @@ pub fn batch_rename(
             });
             continue;
         }
-        if item.target.exists() {
+        if item.target.exists() && path_key(&item.source) != path_key(&item.target) {
             // 目标若是本批另一个源，同样视为冲突：直接改名会破坏该源，暂不支持互换。
             let reason = if source_keys.contains(&path_key(&item.target)) {
                 "目标名称与本批其他源文件互换；请分步重命名".to_string()

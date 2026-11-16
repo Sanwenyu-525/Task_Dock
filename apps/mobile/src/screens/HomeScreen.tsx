@@ -88,7 +88,7 @@ export function HomeScreen({
   const { width, fontScale } = useWindowDimensions();
   const narrow = width < 360;
   // ≤340dp（320dp 窄屏）概览磁贴改两行两列；只改布局比例，不整体缩小字号
-  const statsTwoCol = width <= 340;
+  const statsTwoCol = width < 480;
   // 320dp 或大字号时品牌块变窄/隐藏，长句改用同义短句，保证一行读完
   const brandSize = fontScale > 1.25 ? 0 : narrow ? 40 : 50;
   const tagline =
@@ -737,8 +737,8 @@ const styles = StyleSheet.create({
   },
   retryText: { fontSize: font.body, fontWeight: "700" },
   statsRow: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, alignItems: "stretch" },
-  statCell: { flexGrow: 0, flexShrink: 1, flexBasis: "25%" },
-  statCellHalf: { flexBasis: "50%" },
+  statCell: { flexGrow: 0, flexShrink: 1, flexBasis: "23%" },
+  statCellHalf: { flexBasis: "48%" },
   progressPress: {},
   progressCard: {
     padding: space.lg,

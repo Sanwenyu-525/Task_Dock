@@ -571,7 +571,10 @@ export default function FilePane({
     store.getState().setActivePane(paneId);
     beginDragCandidate(e, entry, null);
     const path = joinPath(dirPath, entry.name);
-    const current = store.getState().selection[paneId]?.paths ?? [];
+    // store 与渲染快照理论上同步；多选拖拽起始时以非空的一侧为准，
+    // 避免极短窗口内 selection 被其它 pointer 事件短暂清空后把整组选择折叠成单项。
+    const stored = store.getState().selection[paneId]?.paths ?? [];
+    const current = stored.length > 0 ? stored : selectedPaths;
     if (e.ctrlKey || e.metaKey) {
       const next = current.includes(path) ? current.filter((p) => p !== path) : [...current, path];
       store.getState().setSelection(paneId, next, path);

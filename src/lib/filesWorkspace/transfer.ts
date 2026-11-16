@@ -4,7 +4,7 @@
 //! 只把「前端需要知道什么」收敛成可测试的纯逻辑。
 
 import { fsStat, type FsOpReport } from "../bridge";
-import { basename, joinPath, normalizePath, parentOf } from "./pathUtils";
+import { basename, joinPath, normalizePath, parentOf, samePath } from "./pathUtils";
 import { validateFileDrop } from "./interactions";
 
 export type TransferEffect = "copy" | "move";
@@ -18,12 +18,23 @@ export interface TransferConflict {
   targetKind: "dir" | "file" | "link" | "missing";
 }
 
+/**
+ * 过滤掉「源已经在目标目录」的路径：拖回当前目录没有语义，绝不能变成原地复制。
+ * 合法路径仍交给 `validateFileDrop` 做子树/自身检查。
+ */
+export function filterTransferablePaths(paths: string[], targetDir: string): string[] {
+  return paths.filter((path) => {
+    if (validateFileDrop([path], targetDir) !== targetDir) return false;
+    return !samePath(parentOf(path) ?? "", targetDir);
+  });
+}
+
 /** 目标目录中的同名项（批量操作只弹一次；全部应用同一策略）。 */
 export async function detectTransferConflicts(
   paths: string[],
   targetDir: string,
 ): Promise<TransferConflict[]> {
-  const accepted = paths.filter((path) => validateFileDrop([path], targetDir) === targetDir);
+  const accepted = filterTransferablePaths(paths, targetDir);
   if (!accepted.length) return [];
   const targets = accepted.map((path) => joinPath(targetDir, basename(path)));
   const stats: Awaited<ReturnType<typeof fsStat>> = [];

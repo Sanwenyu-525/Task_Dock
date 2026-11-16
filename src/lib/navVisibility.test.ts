@@ -225,7 +225,7 @@ describe("导航布局配置", () => {
 
 // ── 分组归属与标题连续性（2026-11-15）─────────────────────────────
 // 跨组拖拽只改入口归属，不改 left 顺序；重复的可见标题段必须并入前一段，
-// 保证侧栏标题「工作协同 / 自动化与内容 / 项目与系统」不会反复出现。
+// 数据层只做 movedId 的边界归组；重复标题由侧栏渲染层抑制，不能反推去改其他入口。
 describe("左侧分组归属与标题连续性", () => {
   const sectionOf = (group: ReturnType<typeof leftGroupFor>): string =>
     group === "system" ? "system" : group === "core" ? "core" : "flow";
@@ -264,17 +264,18 @@ describe("左侧分组归属与标题连续性", () => {
     expect(Object.keys(groups).sort()).toEqual([...ALL_LEFT].sort());
   });
 
-  it("旧配置里被隔开的重复标题段并入前一段，顺序不变", () => {
+  it("旧配置里被隔开的重复标题段不会被批量改写归属", () => {
     const base = defaultNavigationLayout();
     const order = ["actions", "workbench", "history", "settings"];
     const groups = reconcileLeftGroups(order, base.leftGroups);
-    // actions 是 flow，workbench 是 core；history 的 planning 段与 actions 的 flow 段
-    // 标题相同且被 core 隔开，因此整段并入上一段 core，不再重复渲染标题。
-    expect(groups.history).toBe("core");
-    expect(visibleSections(order, groups)).toEqual(["flow", "core", "system"]);
+    // 数据层只保留用户归属；actions / workbench / history 的原分组不被视觉清洗篡改，
+    // 重复标题由侧栏渲染层抑制。
+    expect(groups.actions).toBe("capture");
+    expect(groups.workbench).toBe("core");
+    expect(groups.history).toBe("planning");
   });
 
-  it("归一化会清洗手工产生的重复标题段，并提供完整分组映射", () => {
+  it("归一化保留旧配置的其他入口归属，只补齐完整映射", () => {
     const base = defaultNavigationLayout();
     const raw = {
       ...base,
@@ -289,13 +290,21 @@ describe("左侧分组归属与标题连续性", () => {
     };
     const result = normalizeNavigationLayout(raw);
     expect(result.config.left).toEqual(raw.left);
-    expect(result.config.leftGroups?.history).toBe("core");
-    expect(visibleSections(result.config.left, result.config.leftGroups)).toEqual([
-      "flow",
-      "core",
-      "system",
-    ]);
+    expect(result.config.leftGroups?.actions).toBe("capture");
+    expect(result.config.leftGroups?.workbench).toBe("core");
+    expect(result.config.leftGroups?.history).toBe("planning");
     expect(Object.keys(result.config.leftGroups ?? {}).sort()).toEqual([...ALL_LEFT].sort());
+  });
+
+  it("移动一个入口时只改它自己的归属，不波及邻居", () => {
+    const base = defaultNavigationLayout();
+    const order = ["actions", "workbench", "history", "settings"];
+    const before = reconcileLeftGroups(order, base.leftGroups);
+    const after = reconcileLeftGroups(order, base.leftGroups, "history");
+    // history 在 core 与 system 之间，按边界规则归入上方 core；其他入口全部原样。
+    expect(after.history).toBe("core");
+    const changed = ALL_LEFT.filter((id) => before[id] !== after[id]);
+    expect(changed).toEqual(["history"]);
   });
 });
 

@@ -31,7 +31,8 @@ export interface ToastState {
 export type ToastAction =
   | { type: "enqueue"; item: ToastItem; now?: number }
   | { type: "dismiss"; id: number }
-  | { type: "clear" };
+  | { type: "clear" }
+  | { type: "clearQueue" };
 
 /** 自动消失时长：成功更短，错误给足阅读时间。 */
 export const TOAST_DURATION_MS: Record<ToastTone, number> = {
@@ -126,6 +127,9 @@ export function toastReducer(
     }
     case "clear":
       return createToastState();
+    case "clearQueue":
+      // 切换页面时只丢掉旧页面尚未展示的排队消息；已经在读的当前条允许播完。
+      return { current: state.current, queue: [] };
     default:
       return state;
   }

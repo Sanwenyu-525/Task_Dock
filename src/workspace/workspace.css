@@ -270,6 +270,18 @@
 .ws-novel-save[data-tone="saved"] { color: var(--ws-ok); }
 .ws-novel-save[data-tone="error"] { color: var(--ws-error); }
 .ws-novel-save[data-tone="saving"] { color: var(--ws-accent); }
+.ws-novel-delete-facts {
+  margin: 8px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.ws-novel-delete-warning {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ws-error);
+}
 .ws-novel-textarea {
   width: 100%;
   min-height: 52vh;

@@ -5,7 +5,7 @@
 //! 只 mock 桥接层，不 mock React/DOM；用 deferred Promise 模拟真实请求竞争。
 
 import { useRef, useState } from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -73,6 +73,8 @@ beforeEach(() => {
   api.novelChapterSaveContent.mockImplementation(async (id: string, content: string) =>
     saveResult(id, content),
   );
+  api.novelChapterDelete.mockResolvedValue(undefined);
+  api.novelVolumeDelete.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -229,6 +231,178 @@ describe("NovelManuscriptPanel · 串行保存", () => {
     expect(textarea.value).toBe("新建前的草稿");
   });
 });
+
+describe("NovelManuscriptPanel · 删除安全", () => {
+    it("删除非当前章节：不触发当前正文保存，直接删除目标", async () => {
+      const second = { ...chapter, id: "c2", title: "第二章", sortOrder: 1 };
+      api.novelChapterList.mockResolvedValue({ chapters: [chapter, second] });
+      const { flushRef } = renderPanel();
+      await getPanel(flushRef);
+
+      fireEvent.click(screen.getByRole("button", { name: "删除章节「第二章」" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除章节" });
+      expect(within(dialog).getByText(/本章字数：4 字/)).toBeTruthy();
+      expect(within(dialog).getByText(/未保存草稿：无/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+
+      await waitFor(() => expect(api.novelChapterDelete).toHaveBeenCalledWith("c2"));
+      await waitFor(() => expect(screen.queryByRole("button", { name: "第二章" })).toBeNull());
+      expect(api.novelChapterSaveContent).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("第一章正文")).toBeTruthy();
+    });
+
+    it("删除当前章节：先保存草稿，成功后才删除并清空编辑区", async () => {
+      const save = deferred<ReturnType<typeof saveResult>>();
+      api.novelChapterSaveContent.mockReturnValue(save.promise);
+      const { flushRef } = renderPanel();
+      const textarea = await getPanel(flushRef);
+      fireEvent.change(textarea, { target: { value: "删除前的最后草稿" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "删除章节「第一章」" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除章节" });
+      expect(within(dialog).getByText(/未保存草稿：有/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "保存后删除" }));
+
+      await waitFor(() =>
+        expect(api.novelChapterSaveContent).toHaveBeenCalledWith("c1", "删除前的最后草稿"),
+      );
+      expect(api.novelChapterDelete).not.toHaveBeenCalled();
+      await act(async () => {
+        save.resolve(saveResult("c1", "删除前的最后草稿"));
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(api.novelChapterDelete).toHaveBeenCalledWith("c1"));
+      await waitFor(() => expect(screen.queryByLabelText("第一章正文")).toBeNull());
+    });
+
+    it("保存失败时取消删除：章节和草稿都保留，并给出错误", async () => {
+      api.novelChapterSaveContent.mockRejectedValue(new Error("磁盘只读"));
+      const { flushRef } = renderPanel();
+      const textarea = await getPanel(flushRef);
+      fireEvent.change(textarea, { target: { value: "保存失败不能删" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "删除章节「第一章」" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除章节" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "保存后删除" }));
+
+      await waitFor(() =>
+        expect(within(dialog).getByText(/保存失败，已取消删除/)).toBeTruthy(),
+      );
+      expect(api.novelChapterDelete).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("第一章正文")).toBe(textarea);
+      expect(textarea.value).toBe("保存失败不能删");
+    });
+
+    it("明确丢弃草稿并删除：不发起新保存，但删除成功", async () => {
+      const { flushRef } = renderPanel();
+      const textarea = await getPanel(flushRef);
+      fireEvent.change(textarea, { target: { value: "用户明确丢弃" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "删除章节「第一章」" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除章节" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "丢弃草稿并删除" }));
+
+      await waitFor(() => expect(api.novelChapterDelete).toHaveBeenCalledWith("c1"));
+      expect(api.novelChapterSaveContent).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.queryByLabelText("第一章正文")).toBeNull());
+    });
+
+    it("删除卷包含当前章节：先保存当前正文，再级联删除卷和章节", async () => {
+      const { flushRef } = renderPanel();
+      const textarea = await getPanel(flushRef);
+      fireEvent.change(textarea, { target: { value: "卷删除前正文" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "删除卷「第一卷」及其章节" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除卷" });
+      expect(within(dialog).getByText(/卷内章节：1 章/)).toBeTruthy();
+      expect(within(dialog).getByText(/当前正在编辑该卷章节：是/)).toBeTruthy();
+      expect(within(dialog).getByText(/未保存草稿：有/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "保存后删除" }));
+
+      await waitFor(() =>
+        expect(api.novelChapterSaveContent).toHaveBeenCalledWith("c1", "卷删除前正文"),
+      );
+      await waitFor(() => expect(api.novelVolumeDelete).toHaveBeenCalledWith("v1"));
+      expect(api.novelChapterDelete).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.queryByLabelText("第一章正文")).toBeNull());
+      expect(screen.queryByText("第一卷")).toBeNull();
+    });
+
+    it("删除当前章节时有在途保存：等待同一请求，不并发第二次写入", async () => {
+      const d = deferred<ReturnType<typeof saveResult>>();
+      api.novelChapterSaveContent.mockReturnValue(d.promise);
+      const { flushRef } = renderPanel();
+      const textarea = await getPanel(flushRef);
+      fireEvent.change(textarea, { target: { value: "在途正文" } });
+      await act(async () => {
+        void flushRef.current?.();
+        await Promise.resolve();
+      });
+      expect(api.novelChapterSaveContent).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "删除章节「第一章」" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除章节" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "保存后删除" }));
+      expect(api.novelChapterDelete).not.toHaveBeenCalled();
+
+      await act(async () => {
+        d.resolve(saveResult("c1", "在途正文"));
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(api.novelChapterDelete).toHaveBeenCalledWith("c1"));
+      expect(api.novelChapterSaveContent).toHaveBeenCalledTimes(1);
+    });
+
+    it("删除其他卷：不影响当前卷章节，也不触发当前正文保存", async () => {
+      const volume2 = { ...volume, id: "v2", title: "第二卷", sortOrder: 1 };
+      const c2 = { ...chapter, id: "c2", volumeId: "v2", title: "第二章", sortOrder: 1 };
+      api.novelVolumeList.mockResolvedValue({ volumes: [volume, volume2] });
+      api.novelChapterList.mockResolvedValue({ chapters: [chapter, c2] });
+      const { flushRef } = renderPanel();
+      await getPanel(flushRef);
+
+      fireEvent.click(screen.getByRole("button", { name: "删除卷「第二卷」及其章节" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除卷" });
+      expect(within(dialog).getByText(/卷内章节：1 章/)).toBeTruthy();
+      expect(within(dialog).getByText(/当前正在编辑该卷章节：否/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+
+      await waitFor(() => expect(api.novelVolumeDelete).toHaveBeenCalledWith("v2"));
+      expect(api.novelChapterSaveContent).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "第一章" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "第二卷" })).toBeNull();
+    });
+
+    it("取消删除：不发请求，章节仍在", async () => {
+      const second = { ...chapter, id: "c2", title: "第二章", sortOrder: 1 };
+      api.novelChapterList.mockResolvedValue({ chapters: [chapter, second] });
+      const { flushRef } = renderPanel();
+      await getPanel(flushRef);
+
+      fireEvent.click(screen.getByRole("button", { name: "删除章节「第二章」" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除章节" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(api.novelChapterDelete).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "第二章" })).toBeTruthy();
+    });
+
+    it("删除失败：保留章节与正文，显示错误可重试", async () => {
+      api.novelChapterDelete.mockRejectedValueOnce(new Error("数据库忙"));
+      const { flushRef } = renderPanel();
+      const textarea = await getPanel(flushRef);
+
+      fireEvent.click(screen.getByRole("button", { name: "删除章节「第一章」" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除章节" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+
+      await waitFor(() => expect(within(dialog).getByText(/删除失败：数据库忙/)).toBeTruthy());
+      expect(screen.getByLabelText("第一章正文")).toBe(textarea);
+      expect(textarea.value).toBe("初稿内容");
+      expect(screen.getByRole("button", { name: "第一章" })).toBeTruthy();
+    });
+  });
 
 describe("NovelManuscriptPanel · 离开与卸载", () => {
   const moduleNotice = vi.fn();
@@ -413,6 +587,9 @@ describe("NovelManuscriptPanel · 归档只读", () => {
     ).toBe(true);
     expect(
       (screen.getByRole("button", { name: "删除章节「第一章」" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "删除卷「第一卷」及其章节" }) as HTMLButtonElement).disabled,
     ).toBe(true);
     screen.getAllByRole("button", { name: /新建章节/ }).forEach((button) => {
       expect((button as HTMLButtonElement).disabled).toBe(true);

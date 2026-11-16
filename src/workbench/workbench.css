@@ -153,7 +153,7 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
      不会因悬停显隐或徽标出现而横向跳动。普通入口（首页/设置）没有首尾操作，
      但保留空轨道，功能图标仍与可排序 Tab 对齐。 */
   display: grid;
-  grid-template-columns: 26px 20px minmax(0, 1fr) auto 24px;
+  grid-template-columns: 28px 20px minmax(0, 1fr) auto 24px;
   column-gap: 4px;
   align-items: center;
   width: 100%;
@@ -174,6 +174,8 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
 /* 可拖拽行沿用同一套网格；类名保留给拖拽/测试语义，不再单独改内边距。 */
 .wb-nav-item.has-grip {
   padding: 3px 4px 3px 2px;
+  /* 行本身不是按钮：页面切换只在中间的 .wb-nav-page 上响应。 */
+  cursor: default;
 }
 .wb-nav-item:hover {
   background: var(--surface-hover);
@@ -193,8 +195,33 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   outline-offset: 1px;
 }
 
+/* 动态行的页面切换按钮：占据功能图标 + 名称 + 徽标三列。
+   行本身是普通布局容器，不再承担 button 角色；拖拽和隐藏是它的兄弟控件。 */
+.wb-nav-page {
+  grid-column: 2 / 5;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  column-gap: 4px;
+  align-items: center;
+  width: 100%;
+  height: 28px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.wb-nav-page:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .wb-nav-icon {
-  grid-column: 2;
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -203,17 +230,28 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   height: 20px;
   flex: 0 0 auto;
 }
+/* 固定入口（首页 / 设置 / 更多）仍直接以 button 作为行；图标和名称按同一轨道摆放。 */
+.wb-nav-item > .wb-nav-icon {
+  grid-column: 2;
+}
+.wb-nav-page .wb-nav-icon {
+  grid-column: 1;
+}
 
 .wb-nav-label {
-  grid-column: 3;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.wb-nav-item > .wb-nav-label {
+  grid-column: 3;
+}
+.wb-nav-page .wb-nav-label {
+  grid-column: 2;
+}
 
 .wb-nav-badge {
-  grid-column: 4;
   justify-self: end;
   position: static;
   flex: 0 0 auto;
@@ -230,6 +268,9 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   line-height: 16px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+.wb-nav-page .wb-nav-badge {
+  grid-column: 3;
 }
 .wb-nav-badge.is-subtle {
   background: color-mix(in srgb, var(--text-tertiary) 15%, transparent);
@@ -1407,16 +1448,35 @@ body.wb-resizing {
     display: none;
   }
   .wb-nav-item {
-    display: flex;
-    justify-content: center;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
     gap: 0;
-    padding-inline: 4px;
+    padding: 3px 4px;
   }
   /* 极窄导航只剩图标：行首手柄与行尾 × 都没有横向空间，一并隐藏；仍可
      通过拉宽导航或设置页管理显隐。 */
   .wb-nav-grip,
   .wb-nav-actions {
     display: none;
+  }
+  .wb-nav-page {
+    grid-column: 1;
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    width: 100%;
+    height: 28px;
+  }
+  .wb-nav-page .wb-nav-icon,
+  .wb-nav-item > .wb-nav-icon {
+    grid-column: auto;
+  }
+  .wb-nav-page .wb-nav-label {
+    display: none;
+  }
+  .wb-nav-page .wb-nav-badge {
+    grid-column: auto;
   }
   .wb-new-task span {
     display: none;
@@ -1556,7 +1616,7 @@ body.wb-resizing {
 
 /* ── 左侧导航拖拽排序（2026-11-15）──────────────────────────────────────
    视觉保持二维平面：跟手位移 + 其它行让位 + 落点细线，不做缩放/倾斜/3D。
-   手柄占行首 26×28 命中区，15px 六点图标；默认低对比灰色、无背景，不与
+   手柄占行首 28×28 命中区，17px 六点图标；默认低对比灰色、无背景，不与
    功能图标争夺注意力。仅悬停/拖拽时变强调色，真正拖拽才出现轻背景。 */
 .wb-nav-grip {
   grid-column: 1;
@@ -1565,11 +1625,14 @@ body.wb-resizing {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
+  width: 28px;
   height: 28px;
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-control);
   background: transparent;
   color: var(--text-tertiary);
+  font: inherit;
   opacity: 0.55;
   pointer-events: auto;
   cursor: grab;

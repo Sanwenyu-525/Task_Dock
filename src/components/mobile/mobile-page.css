@@ -17,34 +17,193 @@
   gap: 7px;
 }
 
-/* 宽屏两栏：主列（配对/设备/传输）+ 右列（虚拟屏与扩展能力）。
-   2026-11-15：宽窄判断由 @media（视口）改为容器查询（内容区实际宽度）。
-   原写法在 1180 窗口下视口 1180 > 1080 仍判为两栏，但内容区只有约 620px，
-   右列被压到 ~230px，虚拟屏区块的分辨率行换行后被裁掉。改容器查询后，
-   内容区 <760px 直接回落单列，右列拿到整行宽度。 */
+/* 2026-11-16 R5：主工作区按业务重新分区——
+   左=设备与连接，中=传输记录，右=选中传输详情；虚拟屏作为下方扩展能力。
+   容器查询继续保证窄内容区折叠，而不是把三栏硬压成不可用宽度。 */
 .mobile-transfer-panel .mobile-body {
   min-height: 0;
   container-type: inline-size;
   container-name: mobile-body;
-}
-.mobile-transfer-panel .mobile-body-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
-  max-width: 1280px;
-}
-.mobile-transfer-panel .mobile-body-main,
-.mobile-transfer-panel .mobile-body-side {
-  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
+}
+.mobile-transfer-panel .mobile-sync-workspace {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(280px, 350px);
+  gap: 14px;
+  align-items: stretch;
+  min-width: 0;
+}
+.mobile-transfer-panel .mobile-sync-workspace__devices,
+.mobile-transfer-panel .mobile-sync-workspace__files,
+.mobile-transfer-panel .mobile-sync-workspace__inspector {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+.mobile-transfer-panel .mobile-sync-workspace__inspector {
+  position: sticky;
+  top: 0;
+  align-self: start;
+}
+.mobile-transfer-panel .mobile-workspace-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.mobile-transfer-panel .mobile-workspace-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.mobile-transfer-panel .mobile-workspace-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.mobile-transfer-panel .mobile-body-tools {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+.mobile-transfer-panel .mobile-file-main {
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+  min-width: 0;
+}
+.mobile-transfer-panel .mobile-file-main:focus-visible,
+.mobile-transfer-panel .mobile-file-item:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+.mobile-transfer-panel .mobile-file-item.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.mobile-transfer-panel .mobile-inspector-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 10px 2px;
+  color: var(--text-secondary);
+}
+.mobile-transfer-panel .mobile-inspector-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+.mobile-transfer-panel .mobile-inspector-empty p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+.mobile-transfer-panel .mobile-inspector-empty-hint {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+.mobile-transfer-panel .mobile-inspector-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.mobile-transfer-panel .mobile-inspector-preview {
+  display: grid;
+  place-items: center;
+  min-height: 110px;
+  max-height: 180px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--inset-face);
+  color: var(--accent);
+}
+.mobile-transfer-panel .mobile-inspector-preview img {
+  width: 100%;
+  height: 180px;
+  object-fit: contain;
+  display: block;
+}
+.mobile-transfer-panel .mobile-inspector-name {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.mobile-transfer-panel .mobile-inspector-facts {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 5px 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11px;
+}
+.mobile-transfer-panel .mobile-inspector-facts > span {
+  color: var(--text-tertiary);
+}
+.mobile-transfer-panel .mobile-inspector-facts > strong {
+  color: var(--text-primary);
+  font-weight: 520;
+  overflow-wrap: anywhere;
+}
+.mobile-transfer-panel .mobile-inspector-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.mobile-transfer-panel .mobile-inspector-note.is-success {
+  color: var(--status-success);
+}
+.mobile-transfer-panel .mobile-inspector-note.is-error {
+  color: var(--status-error);
+}
+.mobile-transfer-panel .mobile-inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
-@container mobile-body (max-width: 760px) {
-  .mobile-transfer-panel .mobile-body-grid {
+@container mobile-body (max-width: 1000px) {
+  .mobile-transfer-panel .mobile-sync-workspace {
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  }
+  .mobile-transfer-panel .mobile-sync-workspace__inspector {
+    grid-column: 1 / -1;
+    position: static;
+  }
+}
+@container mobile-body (max-width: 800px) {
+  .mobile-transfer-panel .mobile-sync-workspace {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .mobile-transfer-panel .mobile-sync-workspace__inspector {
+    grid-column: auto;
   }
 }
 

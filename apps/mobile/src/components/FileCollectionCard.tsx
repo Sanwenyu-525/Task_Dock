@@ -34,7 +34,10 @@ export function FileCollectionCard({
 
   const text = (
     <>
-      <Text numberOfLines={1} style={[styles.label, { color: enabled ? tokens.text : tokens.muted }]}>
+      <Text
+        numberOfLines={horizontal ? 1 : 2}
+        style={[styles.label, { color: enabled ? tokens.text : tokens.muted }]}
+      >
         {label}
       </Text>
       {/* 说明槽位三轮对齐：没有说明的占位卡也保留空槽，三张卡的图标与标题才会在同一条线上 */}
@@ -132,6 +135,9 @@ const styles = StyleSheet.create({
   label: {
     fontSize: font.meta,
     fontWeight: "700",
+    // 三列窄卡允许两行完整显示「本机素材暂存」，不靠截断或缩字号。
+    minHeight: 32,
+    lineHeight: 17,
   },
   caption: {
     fontSize: font.label,

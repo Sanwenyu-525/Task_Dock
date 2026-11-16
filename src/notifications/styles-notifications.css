@@ -1,15 +1,12 @@
 @layer base, theme, ui, menu, ntf;
 @layer ntf {
 /* ════════════════════════════════════════════════════════════════
-   六状态液态玻璃通知（v0.7）— 仅通知窗口装载（notification.html）
+   六状态通知（2D round-2）— 仅通知窗口装载（notification.html）
    ────────────────────────────────────────────────────────────────
-   视觉来源：docs/design-refs/v07/通知效果图/task_dock_notification_ui_demo.html（C 方案），
-   深浅两套取值均按原型逐项移植并经视觉验证；状态语义色为模块级
-   --ntf-tone（原型设计值），文本/边框等仍引用主题令牌。
-
-   材质模型与右键菜单一致：CSS 半透明渐变承担玻璃底色（桌面色彩
-   可透出），不做原生 blur/acrylic（DWM 后端按整个窗口矩形合成，
-   会在圆角外留残影）；backdrop-filter 仅作浏览器预览渐进增强。
+   与主窗/工作台共用 styles-flat.css 的语义表面、圆角、文字与阴影。
+   状态语义色只落在图标、标记和少量强调色上，不再用整卡径向光斑、
+   顶部镜面高光或内侧厚度阴影表达状态。玻璃厚度由原生窗口阴影承担，
+   卡片本身只用不透明表面 + 1px 轮廓 + 柔和外阴影。
 
    动效：入场 260ms / 离场 200ms / 详情 200ms；无常驻高频动画
    （不确定进度条仅在该卡存续期间循环，且尊重 prefers-reduced-motion）。
@@ -27,19 +24,19 @@ body {
   font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei",
     -apple-system, sans-serif;
   font-size: 13px;
-  color: #f0f5ff;
+  color: var(--text-primary);
   user-select: none;
   -webkit-user-select: none;
 }
 
-/* 状态语义色（原型 C 方案设计值） */
+/* 状态语义色：直接消费全局状态 Token，不再维护通知窗口独立色板。 */
 :root {
-  --ntf-blue: #3882f6;
-  --ntf-amber: #f5b90b;
-  --ntf-green: #22c55e;
-  --ntf-red: #ef4444;
-  --ntf-orange: #f97316;
-  --ntf-purple: #a855f7;
+  --ntf-blue: var(--status-running);
+  --ntf-amber: var(--status-waiting);
+  --ntf-green: var(--status-success);
+  --ntf-red: var(--status-error);
+  --ntf-orange: var(--status-waiting);
+  --ntf-purple: var(--icon-violet);
 }
 
 /* ── 根容器：窗口 400px 宽，卡片 360px 居中 ──────────────────
@@ -112,27 +109,15 @@ body {
   position: relative;
   overflow: hidden;
   box-sizing: border-box;
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   padding: 8px 12px 7px;
   --tone: var(--ntf-blue);
-  /* 通透层次：底色不再接近不透明，桌面色彩可透出；靠顶部高光/边缘描边/阴影保可读。
-     radial 状态色只做极轻的角部染色，语义色集中在图标与关键操作，不整卡染色。 */
-  background:
-    radial-gradient(
-      170px 130px at 83% -16%,
-      color-mix(in srgb, var(--tone) 7%, transparent),
-      transparent 86%
-    ),
-    linear-gradient(145deg, rgba(31, 51, 86, 0.86), rgba(17, 29, 52, 0.88) 55%, rgba(22, 36, 61, 0.87));
-  border: 1px solid rgba(177, 209, 255, 0.24);
-  color: #f0f5ff;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 -1px 0 rgba(3, 18, 43, 0.51),
-    /* 投影收敛到 10px：窗口只有 400px 宽、卡片四周余量有限，
-       过大的 blur 会在窗口/滚动容器边缘被硬切掉一截（见 .ntf-stack padding） */
-    0 4px 10px rgba(0, 0, 0, 0.45),
-    0 4px 15px color-mix(in srgb, var(--tone) 7%, transparent);
+  /* 2D 表面：实色语义面 + 低对比度轮廓 + 柔和外阴影。
+     状态色只在 `--tone` 控制的图标/标记上出现，不整卡铺渐变。 */
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  box-shadow: var(--elev-3);
   animation: ntfEnter 0.26s cubic-bezier(0.21, 0.81, 0.26, 1.04) both;
 }
 
@@ -145,15 +130,7 @@ body {
   pointer-events: none;
 }
 
-/* 顶部柔和高光 */
-.ntf-card::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 40px;
-  background: linear-gradient(180deg, rgba(195, 221, 255, 0.1), transparent);
-  pointer-events: none;
-}
+/* 2D round-2：取消顶部镜面高光；层级由表面色与 1px 轮廓承担。 */
 
 .ntf-card[data-state="agent_running"] {
   --tone: var(--ntf-blue);
@@ -213,7 +190,7 @@ body {
   width: 18px;
   height: 18px;
   flex: none;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
 }
 .ntf-app-symbol img {
@@ -223,25 +200,25 @@ body {
   object-fit: contain;
 }
 .ntf-timestamp {
-  color: #a8b9d5;
+  color: var(--text-tertiary);
   margin-left: auto;
   font-size: 10px;
 }
 .ntf-icon-btn {
   border: 0;
   background: transparent;
-  color: #bdcdeb;
+  color: var(--text-secondary);
   display: grid;
   place-items: center;
   width: 18px;
   height: 18px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 2px;
   cursor: pointer;
 }
 .ntf-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 
 /* ── 主体：状态图标 + 标题 + 正文 ─────────────────────────── */
@@ -259,15 +236,11 @@ body {
   flex: none;
   display: grid;
   place-items: center;
-  background: radial-gradient(
-    circle at 35% 25%,
-    color-mix(in srgb, var(--tone) 40%, transparent),
-    color-mix(in srgb, var(--tone) 16%, transparent) 75%
-  );
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--tone) 32%, transparent),
-    0 0 24px color-mix(in srgb, var(--tone) 13%, transparent);
-  color: color-mix(in srgb, var(--tone) 89%, white);
+  /* 状态色只在图标本身与 1px 描边出现；不再叠加径向底与发光。 */
+  background: var(--surface-raised);
+  border: 1px solid color-mix(in srgb, var(--tone) 45%, var(--border-subtle));
+  color: var(--tone);
+  box-shadow: none;
 }
 .ntf-status-glyph {
   display: block;
@@ -291,7 +264,7 @@ body {
   margin: 2px 0 0;
   font-size: 12.5px;
   line-height: 1.4;
-  color: #b9cae6;
+  color: var(--text-secondary);
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -303,7 +276,7 @@ body {
   margin: 3px 0 0;
   font-size: 12px;
   line-height: 1.4;
-  color: #d3e3fb;
+  color: var(--text-primary);
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -320,8 +293,9 @@ body {
 }
 .ntf-progress-track {
   height: 5px;
-  background: rgba(211, 227, 255, 0.16);
-  border-radius: 5px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
   overflow: hidden;
   flex: 1;
 }
@@ -329,9 +303,8 @@ body {
 .ntf-progress-fill.indeterminate {
   height: 100%;
   width: 42%;
-  border-radius: 5px;
-  background: linear-gradient(90deg, #286be7, #50b7ff);
-  box-shadow: 0 0 10px rgba(54, 140, 251, 0.62);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
   animation: ntfIndeterminate 2.4s ease-in-out infinite;
 }
 
@@ -341,10 +314,10 @@ body {
   gap: 6px;
   margin-top: 6px;
   font-size: 10.5px;
-  color: #d5dfef;
-  background: rgba(189, 206, 236, 0.05);
-  border: 1px solid rgba(175, 198, 229, 0.11);
-  border-radius: 8px;
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
   padding: 4px 7px;
 }
 .ntf-inline-meta svg {
@@ -364,22 +337,23 @@ body {
   gap: 4px;
   align-items: center;
   padding: 4px 7px;
-  border-radius: 7px;
-  background: rgba(194, 213, 255, 0.07);
-  color: #c6d7f4;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
   font-size: 10px;
 }
 .ntf-count-chip b {
   font-variant-numeric: tabular-nums;
 }
 .ntf-count-chip.done svg {
-  color: #55e996;
+  color: var(--status-success);
 }
 .ntf-count-chip.err svg {
-  color: #ff7777;
+  color: var(--status-error);
 }
 .ntf-count-chip.lost svg {
-  color: #ffb263;
+  color: var(--status-waiting);
 }
 
 /* ── 动作按钮 ─────────────────────────────────────────────── */
@@ -394,34 +368,37 @@ body {
 }
 .ntf-cta {
   height: 24px;
-  border: 1px solid rgba(186, 208, 246, 0.13);
-  color: #dbe8ff;
-  background: rgba(187, 204, 236, 0.09);
-  border-radius: 9px;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  border-radius: var(--radius-md);
   font-size: 12px;
   font-weight: 600;
   flex: 1;
   cursor: pointer;
-  transition: background 0.12s, transform 0.12s;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 .ntf-cta:hover {
-  background: rgba(187, 204, 236, 0.2);
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
 }
 .ntf-cta:active {
-  transform: scale(0.98);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised));
+  border-color: var(--accent);
 }
 .ntf-cta:disabled {
   opacity: 0.42;
   cursor: not-allowed;
 }
 .ntf-cta.strong {
-  background: linear-gradient(150deg, #4a9bff, #2667ec);
-  border-color: rgba(151, 200, 255, 0.32);
-  color: white;
-  box-shadow: inset 0 1px rgba(197, 234, 255, 0.19), 0 4px 11px rgba(37, 108, 239, 0.24);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text-on);
+  box-shadow: none;
 }
 .ntf-cta.strong:hover {
-  filter: brightness(1.12);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 /* 完成/执行中：单个跳转用轻量文字操作，不占整行强主按钮 */
 .ntf-cta.text {
@@ -430,28 +407,28 @@ body {
   padding: 1px 6px;
   border-color: transparent;
   background: transparent;
-  color: #9fc3ff;
+  color: var(--accent);
   font-weight: 550;
 }
 .ntf-cta.text:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #cfe2ff;
+  background: var(--surface-hover);
+  color: var(--accent-hover);
 }
 .ntf-cta:focus-visible,
 .ntf-icon-btn:focus-visible,
 .ntf-inline-expand:focus-visible {
-  outline: 2px solid #8ebaff;
+  outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
 
 /* ── 展开详情 ─────────────────────────────────────────────── */
 .ntf-extra {
-  border-top: 1px solid rgba(195, 218, 255, 0.13);
+  border-top: 1px solid var(--border-subtle);
   padding: 6px 2px 0;
   margin-top: 7px;
   display: grid;
   gap: 6px;
-  color: #b8cbe7;
+  color: var(--text-secondary);
   font-size: 10.5px;
   line-height: 1.5;
   animation: ntfDetailIn 0.2s ease-out;
@@ -474,13 +451,13 @@ body {
 }
 .ntf-extra-line strong {
   font-weight: 550;
-  color: #d9e8fd;
+  color: var(--text-primary);
   text-align: right;
   max-width: 60%;
   word-break: break-word;
 }
 .ntf-extra-line strong.warning {
-  color: #ffcca4;
+  color: var(--status-waiting);
 }
 /* 长文本（错误原因、长路径、长 Agent 名）整行展示：左对齐、可换行，不撑破布局 */
 .ntf-extra-line.long {
@@ -495,10 +472,10 @@ body {
 .ntf-feedback {
   margin: 5px 0 0;
   font-size: 10.5px;
-  color: #ffcca4;
-  background: rgba(249, 115, 22, 0.08);
-  border: 1px solid rgba(249, 115, 22, 0.22);
-  border-radius: 8px;
+  color: var(--status-waiting);
+  background: color-mix(in srgb, var(--status-waiting) 8%, var(--surface-raised));
+  border: 1px solid color-mix(in srgb, var(--status-waiting) 28%, var(--border-subtle));
+  border-radius: var(--radius-sm);
   padding: 4px 7px;
   position: relative;
   z-index: 1;
@@ -509,16 +486,16 @@ body {
   align-items: center;
   gap: 3px;
   font-size: 10px;
-  color: #adcaff;
+  color: var(--accent);
   background: transparent;
   border: 0;
   margin: 5px auto 0;
   padding: 3px 7px;
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 .ntf-inline-expand:hover {
-  color: #d5e6ff;
+  color: var(--accent-hover);
 }
 .ntf-inline-expand .flip {
   transform: rotate(180deg);
@@ -548,98 +525,8 @@ body {
   display: none;
 }
 
-/* ── 浅色主题：同布局，浅磨砂 + 深文字，状态色保持语义 ────── */
-html[data-theme="light"] body {
-  color: #152d4f;
-}
-html[data-theme="light"] .ntf-card {
-  background:
-    radial-gradient(
-      170px 130px at 85% -14%,
-      color-mix(in srgb, var(--tone) 6%, transparent),
-      transparent 85%
-    ),
-    linear-gradient(145deg, rgba(246, 250, 255, 0.93), rgba(226, 238, 255, 0.9));
-  border-color: rgba(255, 255, 255, 0.88);
-  box-shadow:
-    inset 0 1px #ffffff,
-    0 4px 10px rgba(43, 94, 172, 0.24),
-    0 4px 9px rgba(93, 133, 194, 0.11);
-}
-html[data-theme="light"] .ntf-title {
-  color: #162f58;
-}
-html[data-theme="light"] .ntf-body {
-  color: #536d96;
-}
-html[data-theme="light"] .ntf-summary {
-  color: #33507b;
-}
-html[data-theme="light"] .ntf-timestamp {
-  color: #57739e;
-}
-html[data-theme="light"] .ntf-icon-btn {
-  color: #506c98;
-}
-html[data-theme="light"] .ntf-icon-btn:hover {
-  background: rgba(21, 45, 79, 0.08);
-  color: #152d4f;
-}
-html[data-theme="light"] .ntf-status-icon {
-  color: color-mix(in srgb, var(--tone) 78%, #1b3a66);
-}
-html[data-theme="light"] .ntf-cta:not(.strong) {
-  color: #284d7b;
-  background: rgba(171, 200, 245, 0.2);
-  border-color: rgba(126, 159, 210, 0.18);
-}
-html[data-theme="light"] .ntf-cta:not(.strong):hover {
-  background: rgba(171, 200, 245, 0.4);
-}
-html[data-theme="light"] .ntf-cta.strong {
-  border-color: rgba(126, 159, 210, 0.2);
-  color: #fff;
-}
-html[data-theme="light"] .ntf-cta.text {
-  color: #2c5f9e;
-}
-html[data-theme="light"] .ntf-cta.text:hover {
-  background: rgba(21, 45, 79, 0.07);
-  color: #163f70;
-}
-html[data-theme="light"] .ntf-inline-meta {
-  color: #3d5d84;
-  background: rgba(183, 212, 252, 0.23);
-  border-color: rgba(136, 178, 235, 0.24);
-}
-html[data-theme="light"] .ntf-count-chip {
-  background: rgba(148, 185, 234, 0.21);
-  color: #355b87;
-}
-html[data-theme="light"] .ntf-progress-track {
-  background: rgba(152, 183, 231, 0.48);
-}
-html[data-theme="light"] .ntf-extra {
-  border-color: rgba(110, 159, 213, 0.24);
-  color: #4b6791;
-}
-html[data-theme="light"] .ntf-extra-line strong {
-  color: #275079;
-}
-html[data-theme="light"] .ntf-extra-line strong.warning {
-  color: #b45309;
-}
-html[data-theme="light"] .ntf-feedback {
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.1);
-  border-color: rgba(180, 83, 9, 0.25);
-}
-html[data-theme="light"] .ntf-inline-expand {
-  color: #3a6cb9;
-}
-html[data-theme="light"] .ntf-inline-expand:hover {
-  color: #23466e;
-}
+/* 浅色/深色不再维护独立色板：全部走 styles-flat.css 的语义 Token。
+   状态色仍由 `--tone` / `--status-*` 表达，保证六态可区分。 */
 
 /* ── 动效 ─────────────────────────────────────────────────── */
 @keyframes ntfEnter {

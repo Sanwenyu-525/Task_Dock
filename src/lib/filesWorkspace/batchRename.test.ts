@@ -26,14 +26,14 @@ describe("buildBatchRenamePreview", () => {
     expect(preview[0].newName).toBe("Character_image_a.png");
   });
 
-  it("批量内目标与其他源重名标冲突，不静默覆盖", () => {
+  it("大小写-only 改名允许执行；目标与源同一个文件不算外部冲突", () => {
     const preview = buildBatchRenamePreview(
-      ["D:\\dir\\A.txt", "D:\\dir\\a.txt"],
+      ["D:\\dir\\A.txt"],
       { ...DEFAULT_BATCH_RENAME_OPTIONS, mode: "lower" },
-      [],
+      ["D:\\dir\\a.txt"],
     );
-    expect(preview[0].status).toBe("conflict");
-    expect(preview[1].status).toBe("unchanged");
+    expect(preview[0].newName).toBe("a.txt");
+    expect(preview[0].status).toBe("ok");
   });
 
   it("目标已存在为冲突，不静默覆盖", () => {

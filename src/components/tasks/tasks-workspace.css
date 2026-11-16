@@ -16,6 +16,9 @@
   column-gap: 16px;
   min-height: 0;
   overflow: hidden;
+  /* 窄窗回退依赖容器查询；没有 container-type 时 @container 永远不会命中，
+     400px 主窗会留下 122px 宽的任务列，标题被迫逐字换行。 */
+  container-type: inline-size;
 }
 
 .tasks-panel.tasks-workspace-layout > .wb-page-header {

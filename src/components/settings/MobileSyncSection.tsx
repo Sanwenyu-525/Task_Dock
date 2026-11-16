@@ -133,6 +133,8 @@ export default function MobileSyncSection() {
   const thumbRequested = useRef(new Set<string>());
   const [groups, setGroups] = useState<ShelfGroup[]>([]);
   const [shelfBusyId, setShelfBusyId] = useState<string | null>(null);
+  /** 右栏检查器选中的传输记录；只从真实 files 列表取，不复制一份独立数据。 */
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   /** 本轮会话内导入暂存架失败的记录（id → 错误信息）；成功/刷新后清除。 */
   const [shelfFailures, setShelfFailures] = useState<Record<string, string>>({});
   /** 每条记录最近一次选择的分组，失败重试时沿用上一次选择。 */
@@ -242,6 +244,34 @@ export default function MobileSyncSection() {
       cancelled = true;
     };
   }, [files]);
+
+  // 删除/刷新导致选中记录消失时，右栏回到真实空态，不保留过期详情。
+  useEffect(() => {
+    if (selectedFileId && !files.some((file) => file.id === selectedFileId)) {
+      setSelectedFileId(null);
+    }
+  }, [files, selectedFileId]);
+
+  // 右栏预览按需拉更高分辨率的真实缩略图；列表缩略图缓存存在时不重复请求。
+  useEffect(() => {
+    const file = selectedFileId ? files.find((f) => f.id === selectedFileId) : null;
+    if (!file || file.status !== "ready" || !isImageName(file.name) || thumbs[file.id]) return;
+    if (thumbRequested.current.has(file.id)) return;
+    thumbRequested.current.add(file.id);
+    let cancelled = false;
+    void mobileFileThumbnail(file.id, 768)
+      .then((url) => {
+        if (!cancelled && url) {
+          setThumbs((prev) => (prev[file.id] ? prev : { ...prev, [file.id]: url }));
+        }
+      })
+      .catch(() => {
+        // 预览是增强能力：失败仍保留类型图标和真实元信息。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [files, selectedFileId, thumbs]);
 
   const enabled = settings?.mobile_sync_enabled ?? false;
   const port = settings?.mobile_sync_port ?? 47822;
@@ -444,6 +474,134 @@ export default function MobileSyncSection() {
     });
   };
 
+  const selectedFile = selectedFileId
+    ? files.find((file) => file.id === selectedFileId) ?? null
+    : null;
+
+  const openSelectedInShelf = (file: MobileFile) => {
+    if (!file.shelf_item_id) return;
+    openFullApp("shelf", () => requestShelfLocate(file.shelf_item_id!, "file"));
+  };
+
+  const renderInspector = () => {
+    if (!selectedFile) {
+      return (
+        <div className="mobile-inspector-empty">
+          <span className="mobile-inspector-empty-icon" aria-hidden="true">
+            <ArrowDownLeft size={18} />
+          </span>
+          <p>从中间传输记录选择一条文件，查看状态、来源设备、暂存架关联和可执行操作。</p>
+          <p className="mobile-inspector-empty-hint">这里不预填文件信息；刷新或删除后会回到空态。</p>
+        </div>
+      );
+    }
+
+    const thumb = thumbs[selectedFile.id];
+    const canShelf = selectedFile.status === "ready" && selectedFile.direction === "to_desktop";
+    const imported = Boolean(selectedFile.shelf_item_id);
+    const failed = Boolean(shelfFailures[selectedFile.id]);
+    const stamp = formatStamp(selectedFile.completed_at ?? selectedFile.created_at);
+    const ext = fileTypeLabel(selectedFile.name);
+
+    return (
+      <article className="mobile-inspector-card">
+        <div className={`mobile-inspector-preview is-${selectedFile.direction}`}>
+          {thumb ? (
+            <img src={thumb} alt="" draggable={false} />
+          ) : selectedFile.direction === "to_phone" ? (
+            <ArrowUpRight size={28} aria-hidden="true" />
+          ) : (
+            <ArrowDownLeft size={28} aria-hidden="true" />
+          )}
+        </div>
+        <h4 className="mobile-inspector-name">{selectedFile.name}</h4>
+        <div className="mobile-inspector-facts">
+          <span>方向</span>
+          <strong>
+            {t(
+              selectedFile.direction === "to_phone"
+                ? "settings.mobileSync.files.toPhone"
+                : "settings.mobileSync.files.toDesktop",
+            )}
+          </strong>
+          <span>状态</span>
+          <strong>{fileStatusLabel(selectedFile)}</strong>
+          <span>大小</span>
+          <strong>
+            {formatBytes(selectedFile.size)}
+            {ext ? ` · ${ext}` : ""}
+          </strong>
+          {selectedFile.direction === "to_desktop" ? (
+            <>
+              <span>来源设备</span>
+              <strong>{deviceNameOf(selectedFile)}</strong>
+            </>
+          ) : null}
+          <span>时间</span>
+          <strong>{stamp ?? "—"}</strong>
+          {imported ? (
+            <>
+              <span>暂存架</span>
+              <strong>{groupNameOf(selectedFile)}</strong>
+            </>
+          ) : null}
+        </div>
+        {imported ? (
+          <p className="mobile-inspector-note is-success">
+            <PackageCheck size={12} aria-hidden="true" />
+            已导入暂存架，可前往暂存架定位原条目。
+          </p>
+        ) : failed ? (
+          <p className="mobile-inspector-note is-error" role="alert">
+            {shelfFailures[selectedFile.id]}
+          </p>
+        ) : canShelf ? (
+          <p className="mobile-inspector-note">此文件已就绪，可导入暂存架或直接打开所在目录。</p>
+        ) : null}
+        <div className="mobile-inspector-actions">
+          {selectedFile.status === "ready" ? (
+            <button type="button" className="btn sm" onClick={() => void revealFile(selectedFile)}>
+              <FolderOpen size={12} aria-hidden="true" /> 打开目录
+            </button>
+          ) : null}
+          {canShelf && !imported ? (
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={shelfBusyId === selectedFile.id}
+              onClick={() => void importToShelf(selectedFile, null)}
+            >
+              <PackagePlus size={12} aria-hidden="true" /> 导入暂存架
+            </button>
+          ) : null}
+          {imported ? (
+            <button type="button" className="btn sm" onClick={() => openSelectedInShelf(selectedFile)}>
+              <PackageCheck size={12} aria-hidden="true" /> 查看暂存架
+            </button>
+          ) : null}
+          {failed ? (
+            <button
+              type="button"
+              className="btn sm"
+              disabled={shelfBusyId === selectedFile.id}
+              onClick={() => void importToShelf(selectedFile, shelfGroupChoice.current[selectedFile.id] ?? null)}
+            >
+              <RotateCcw size={12} aria-hidden="true" /> 重试导入
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="btn sm danger-ghost"
+            onClick={() => setDeleteTarget(selectedFile)}
+            aria-label={`${t("mobileCaptureShelf.deleteTransfer")} ${selectedFile.name}`}
+          >
+            <Trash2 size={12} aria-hidden="true" /> 删除记录
+          </button>
+        </div>
+      </article>
+    );
+  };
+
   const renderFileGroup = (direction: MobileFile["direction"], items: MobileFile[]) => {
     if (items.length === 0) return null;
     return (
@@ -472,7 +630,10 @@ export default function MobileSyncSection() {
                 ? Math.min(100, Math.round((file.received_chunks / file.chunks) * 100))
                 : null;
             return (
-              <div className="mobile-file-item" key={file.id}>
+              <div
+                className={`mobile-file-item${selectedFileId === file.id ? " is-selected" : ""}`}
+                key={file.id}
+              >
                 <span className={`mobile-file-icon is-${file.direction}`} aria-hidden="true">
                   {thumb ? (
                     <img
@@ -496,7 +657,13 @@ export default function MobileSyncSection() {
                     <ArrowDownLeft size={14} />
                   )}
                 </span>
-                <div className="mobile-file-main">
+                <button
+                  type="button"
+                  className="mobile-file-main"
+                  aria-pressed={selectedFileId === file.id}
+                  aria-label={`查看 ${file.name}`}
+                  onClick={() => setSelectedFileId(file.id)}
+                >
                   <span className="mobile-file-name" data-tip={file.name}>
                     {file.name}
                   </span>
@@ -508,7 +675,7 @@ export default function MobileSyncSection() {
                       : ""}
                     {stamp ? ` · ${stamp}` : ""}
                   </span>
-                </div>
+                </button>
                 <span className={`mobile-file-status is-${file.status}`}>
                   {fileStatusLabel(file)}
                 </span>
@@ -634,6 +801,14 @@ export default function MobileSyncSection() {
 
   return (
     <>
+      <div className="mobile-sync-workspace">
+        <section className="mobile-sync-workspace__devices" aria-label="设备与连接">
+          <div className="mobile-workspace-title-row">
+            <h3 className="mobile-workspace-title">设备与连接</h3>
+            <span className="mobile-workspace-count">
+              {status?.devices.length ?? 0} 台
+            </span>
+          </div>
       <div className="setting-row">
         <span>{t("settings.mobileSync.enabled")}</span>
         <Switch
@@ -760,6 +935,13 @@ export default function MobileSyncSection() {
         <div className="setting-note">{t("settings.mobileSync.noDevices")}</div>
       )}
 
+        </section>
+
+        <section className="mobile-sync-workspace__files" aria-label={t("settings.mobileSync.files.title")}>
+          <div className="mobile-workspace-title-row">
+            <h3 className="mobile-workspace-title">传输记录</h3>
+            <span className="mobile-workspace-count">{files.length} 条</span>
+          </div>
       <div className="setting-row mobile-file-toolbar">
         <span>{t("settings.mobileSync.files.title")}</span>
         <div className="btn-row">
@@ -813,6 +995,21 @@ export default function MobileSyncSection() {
           )}
         </div>
       )}
+
+        </section>
+
+        <aside className="mobile-sync-workspace__inspector" aria-label="传输详情">
+          <div className="mobile-workspace-title-row">
+            <h3 className="mobile-workspace-title">传输详情</h3>
+            {selectedFile ? (
+              <button type="button" className="btn sm" onClick={() => setSelectedFileId(null)}>
+                收起
+              </button>
+            ) : null}
+          </div>
+          {renderInspector()}
+        </aside>
+      </div>
 
       <div className="setting-note">{t("settings.mobileSync.firewallNote")}</div>
       <div className="setting-note">{t("settings.mobileSync.securityNote")}</div>

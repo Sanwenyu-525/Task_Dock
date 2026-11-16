@@ -1750,6 +1750,15 @@ export const auditTestData = (apply = false) =>
   invoke<TestDataAudit>("audit_test_data", { apply });
 
 export const quitApp = () => invoke<void>("quit_app");
+/** 应用退出前的工作台正文保存握手；requestId 由 Rust 生成。 */
+export type AppExitRequest = { requestId: number };
+export const onAppBeforeExit = (cb: (request: AppExitRequest) => void): Promise<UnlistenFn> =>
+  listen<AppExitRequest>("app-before-exit", (event) => cb(event.payload));
+/** 回执：true=草稿已落盘或无需落盘；false=保存失败/无守卫，Rust 取消本次退出。 */
+export const appExitAck = (requestId: number, ok: boolean) =>
+  invoke<boolean>("app_exit_ack", { requestId, ok });
+export const onAppExitBlocked = (cb: (reason: string) => void): Promise<UnlistenFn> =>
+  listen<{ reason: string }>("app-exit-blocked", (event) => cb(event.payload.reason));
 export const setAutostart = (enabled: boolean) => invoke<boolean>("set_autostart", { enabled });
 export const applyMode = (mode: string) => invoke<void>("apply_mode", { mode });
 
@@ -5531,6 +5540,14 @@ export interface FsHashEntry {
   error: string | null;
 }
 
+/** 重复文件删除请求：后端会重新哈希保留项与待删项，校验失败时不删除。 */
+export interface VerifiedDuplicateDeleteGroup {
+  keepPath: string;
+  deletePaths: string[];
+  expectedSize: number;
+  expectedHash: string;
+}
+
 export const fsHashFiles = (paths: string[]) => invoke<FsHashEntry[]>("fs_hash_files", { paths });
 
 export interface FsTextPreview {
@@ -5568,6 +5585,12 @@ export const fsMovePaths = (paths: string[], targetDir: string, conflict: string
 
 export const fsDeletePaths = (paths: string[], permanent: boolean, operationId?: string) =>
   invoke<FsOpReport>("fs_delete_paths", { paths, permanent, operationId });
+
+/** 重复文件专用删除：每个组必须保留一项，后端重新 SHA-256 后才进回收站。 */
+export const fsDeleteVerifiedDuplicates = (
+  groups: VerifiedDuplicateDeleteGroup[],
+  operationId?: string,
+) => invoke<FsOpReport>("fs_delete_verified_duplicates", { groups, operationId });
 
 export const fsStat = (paths: string[]) => invoke<FsStat[]>("fs_stat", { paths });
 

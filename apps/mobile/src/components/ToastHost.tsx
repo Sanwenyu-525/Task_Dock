@@ -60,7 +60,7 @@ export function ToastHost({
         easing: easeOut,
         useNativeDriver: true,
       }).start(({ finished }) => {
-        if (finished) dismissToast(id);
+        if (finished && closing.current === id) dismissToast(id);
       });
     },
     [dismissToast, opacity, reduceMotion],
@@ -97,7 +97,10 @@ export function ToastHost({
       }
     } else if (transition === "refresh") {
       // 同文案重复触发：只重置计时，不重播入场动画。
+      // 若旧计时器已经开始退场，必须停掉它并把透明度拉回 1，否则旧回调会把刷新后的消息关掉。
       closing.current = null;
+      opacity.stopAnimation();
+      opacity.setValue(1);
     }
 
     const timer = setTimeout(() => hide(current.id), current.durationMs);

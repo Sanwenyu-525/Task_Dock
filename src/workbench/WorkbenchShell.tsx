@@ -36,6 +36,11 @@ import {
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { createAppExitHandler } from "./workbenchExitGuard";
+import {
+  installWorkbenchCloseGuard,
+  type WorkbenchCloseWindow,
+} from "./workbenchCloseGuard";
 import {
   GripVertical,
   Inbox,
@@ -127,6 +132,9 @@ import {
   workspaceProjectList,
   workspaceProjectSave,
   workspaceSetActiveProject,
+  appExitAck,
+  onAppBeforeExit,
+  onAppExitBlocked,
   type DevProject,
   type WorkbenchNavRequest,
   type WorkbenchNavStatus,
@@ -285,6 +293,20 @@ export default function WorkbenchShell() {
     },
     [],
   );
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
+  const appExitHandler = useMemo(
+    () =>
+      createAppExitHandler({
+        getFlush: () => workspaceLeaveGuardRef.current,
+        ack: (requestId, ok) => appExitAck(requestId, ok),
+        onError: (error) =>
+          showToastRef.current(`应用退出前保存失败：${errorMessage(error)}`, {
+            kind: "error",
+          }),
+      }),
+    [],
+  );
   const projectsRef = useRef<WorkspaceProject[]>(projects);
   projectsRef.current = projects;
 
@@ -311,7 +333,13 @@ export default function WorkbenchShell() {
   const projectIntentSeq = useRef(0);
 
   const toastError = useCallback(
-    (key: "workbench.layoutSaveFailed" | "workbench.projectRecordFailed", error: unknown) => {
+    (
+      key:
+        | "workbench.layoutSaveFailed"
+        | "workbench.projectRecordFailed"
+        | "workbench.projectSwitchSaveFailed",
+      error: unknown,
+    ) => {
       showToast(t(key, { error: errorMessage(error) }), {
         kind: "error",
         code: key,
@@ -467,7 +495,13 @@ export default function WorkbenchShell() {
       // 正文模块有脏稿时，先 await 落盘；失败或已被更新选择取代则取消本次切换。
       const guard = workspaceLeaveGuardRef.current;
       if (guard) {
-        const ok = await guard();
+        let ok = false;
+        try {
+          ok = await guard();
+        } catch (error) {
+          toastErrorRef.current("workbench.projectSwitchSaveFailed", error);
+          return false;
+        }
         if (!ok || projectIntentSeq.current !== intent) return false;
       }
       setSelectedId(id);
@@ -962,6 +996,64 @@ export default function WorkbenchShell() {
   // 旧 IPC `open_project_workspace_window` 已在 Rust 侧转换为同一条导航队列请求；
   // 不再监听 `project-selected`（该事件会绕过草稿门禁直接改路由/项目）。
 
+  // 关闭/退出前的正文保存握手：复用 workspaceLeaveGuardRef，不新建第二套保存器。
+  // - 窗口关闭由 Tauri onCloseRequested 先 preventDefault，flush 成功才真正 close；
+  // - 应用退出由 Rust 发 app-before-exit，回执失败时 Rust 取消退出并保持窗口。
+  useEffect(() => {
+    let disposed = false;
+    const stops: Array<() => void> = [];
+    const track = (subscription: Promise<() => void>) => {
+      void subscription
+        .then((stop) => {
+          if (disposed) stop();
+          else stops.push(stop);
+        })
+        .catch(() => {});
+    };
+
+    track(
+      onAppBeforeExit((request) => {
+        void appExitHandler(request.requestId);
+      }),
+    );
+    track(
+      onAppExitBlocked((reason) => {
+        showToastRef.current(`应用退出已取消：${reason}`, { kind: "error" });
+      }),
+    );
+
+    let stopClose: (() => void) | null = null;
+    try {
+      const current = getCurrentWindow();
+      void installWorkbenchCloseGuard({
+        window: current as unknown as WorkbenchCloseWindow,
+        getFlush: () => workspaceLeaveGuardRef.current,
+        onError: (error) =>
+          showToastRef.current(`工作台未关闭：${errorMessage(error)}`, { kind: "error" }),
+      })
+        .then((stop) => {
+          if (disposed) stop();
+          else stopClose = stop;
+        })
+        .catch((error) => {
+          if (!disposed) {
+            showToastRef.current(`工作台关闭保护未启用：${errorMessage(error)}`, {
+              kind: "error",
+            });
+          }
+        });
+    } catch {
+      // 浏览器预览/单测不是 Tauri 环境：没有原生窗口关闭事件。
+    }
+
+    return () => {
+      disposed = true;
+      stops.forEach((stop) => stop());
+      stopClose?.();
+    };
+  }, [appExitHandler]);
+
+
   // 主题/预设/材质跨窗口同步 + 设置键广播（只带键名）。
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
@@ -1192,7 +1284,7 @@ export default function WorkbenchShell() {
     if (!id) return;
     navFocusRef.current = null;
     navListRef.current
-      ?.querySelector<HTMLElement>(`[data-nav-entry="${id}"]`)
+      ?.querySelector<HTMLElement>(`[data-nav-entry="${id}"] .wb-nav-page`)
       ?.focus({ preventScroll: true });
   }, [navOrderIds]);
 
@@ -1245,17 +1337,21 @@ export default function WorkbenchShell() {
       label: string;
       items: NavEntry[];
     }> = [];
+    const seenSections = new Set<NavSectionKey>();
     for (const entry of entriesToRender) {
       const section = sectionOf(entry);
       const last = sections[sections.length - 1];
       if (!last || last.section !== section) {
-        // 标题最多出现一次；段首入口 ID 仍用于稳定 key。
+        // 旧配置可能留下被隔开的重复分组段：只抑制重复标题，不重写分组归属，
+        // 也不改变入口顺序；正常拖拽只会改动被拖入口，其他归属保持不变。
+        const repeated = seenSections.has(section);
         sections.push({
           key: `${section}-${entry.id}`,
           section,
-          label: labels[section],
+          label: repeated ? "" : labels[section],
           items: [],
         });
+        if (!repeated) seenSections.add(section);
       }
       sections[sections.length - 1].items.push(entry);
     }
@@ -1451,12 +1547,14 @@ export default function WorkbenchShell() {
           )}
           {navSections.map((section) => (
             <Fragment key={section.key}>
-              <div
-                className={`wb-nav-group${navDrag.draggingId ? " is-dragging" : ""}`}
-                role="presentation"
-              >
-                {section.label}
-              </div>
+              {section.label && (
+                <div
+                  className={`wb-nav-group${navDrag.draggingId ? " is-dragging" : ""}`}
+                  role="presentation"
+                >
+                  {section.label}
+                </div>
+              )}
               {section.items.map((entry) => {
                 const active = !atHome && entry.tabs.includes(tab);
                 const count = entry.badge ? counts[entry.badge] : 0;
@@ -1467,35 +1565,18 @@ export default function WorkbenchShell() {
                 return (
                   <div
                     key={entry.id}
-                    role="button"
-                    tabIndex={0}
                     className={`wb-nav-item has-grip${active ? " active" : ""}${dragging ? " is-dragging" : ""}`}
-                    aria-current={active ? "page" : undefined}
-                    aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
                     data-nav-entry={entry.id}
                     style={translate !== 0 ? { transform: `translateY(${translate}px)` } : undefined}
-                    onClick={() => {
-                      // 拖拽松手后的补发 click 不是「打开页面」的意图。
-                      if (Date.now() - navDragEndedAtRef.current < NAV_DRAG_CLICK_GUARD_MS) return;
-                      openEntry(entry);
-                    }}
-                    onKeyDown={(event) => {
-                      // 行内的 × 是独立控件：Enter / Space 归它，不再触发整行导航。
-                      if (event.target !== event.currentTarget) return;
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        if (Date.now() - navDragEndedAtRef.current < NAV_DRAG_CLICK_GUARD_MS) return;
-                        openEntry(entry);
-                        return;
-                      }
-                      onNavEntryKeyDown(event, entry.id);
-                    }}
                   >
-                    <span
+                    {/* 行是普通布局容器；页面切换、拖拽、隐藏是三个独立按钮，
+                        不再出现 role=button 容器里嵌 button 的嵌套交互。 */}
+                    <button
+                      type="button"
                       className="wb-nav-grip"
                       data-nav-grip
-                      aria-hidden="true"
+                      tabIndex={-1}
+                      aria-label={t("nav.dragHandle", { label })}
                       onPointerDown={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -1505,17 +1586,31 @@ export default function WorkbenchShell() {
                         event.stopPropagation();
                       }}
                     >
-                      <GripVertical size={15} strokeWidth={2} />
-                    </span>
-                    <span className="wb-nav-icon">
-                      <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
-                    </span>
-                    <span className="wb-nav-label">{label}</span>
-                    {count > 0 && (
-                      <em className={`wb-nav-badge${entry.badge === "pending" ? " is-subtle" : ""}`}>
-                        {count > 99 ? "99+" : count}
-                      </em>
-                    )}
+                      <GripVertical size={17} strokeWidth={2} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="wb-nav-page"
+                      data-nav-page
+                      aria-current={active ? "page" : undefined}
+                      aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
+                      onClick={() => {
+                        // 拖拽松手后的补发 click 不是「打开页面」的意图。
+                        if (Date.now() - navDragEndedAtRef.current < NAV_DRAG_CLICK_GUARD_MS) return;
+                        openEntry(entry);
+                      }}
+                      onKeyDown={(event) => onNavEntryKeyDown(event, entry.id)}
+                    >
+                      <span className="wb-nav-icon">
+                        <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
+                      </span>
+                      <span className="wb-nav-label">{label}</span>
+                      {count > 0 && (
+                        <em className={`wb-nav-badge${entry.badge === "pending" ? " is-subtle" : ""}`}>
+                          {count > 99 ? "99+" : count}
+                        </em>
+                      )}
+                    </button>
                     {/* 行尾操作区固定占位：只切换透明度，悬停时行宽度不会跳变。
                         拖拽只从左侧手柄启动，× 的任何事件都不冒泡到行。 */}
                     <span
@@ -1572,7 +1667,9 @@ export default function WorkbenchShell() {
                   onClick={onClick}
                   onKeyDown={onKeyDown}
                 >
-                  <MoreHorizontal size={18} aria-hidden="true" />
+                  <span className="wb-nav-icon">
+                    <MoreHorizontal size={18} aria-hidden="true" />
+                  </span>
                   <span className="wb-nav-label">{t("workbench.more")}</span>
                 </button>
               )}

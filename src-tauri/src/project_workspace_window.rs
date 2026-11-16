@@ -907,7 +907,10 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
     let w = win.clone();
     win.on_window_event(move |event| match event {
         tauri::WindowEvent::CloseRequested { .. } => {
-            // 关闭按钮 / Alt+F4：保存几何后正常销毁；不 prevent_close，窗口才是真关闭。
+            // 关闭按钮 / Alt+F4：保存几何后正常销毁；不在这里 prevent_close。
+            // 正文保存门禁由 WorkbenchShell 的 onCloseRequested 前端握手负责：
+            // 有脏稿时同步 preventDefault → await flush → 成功后才二次 close；
+            // 失败保持窗口。Rust 若同时 prevent_close 会与前端二次 close 竞争。
             save_geometry(&app, &w, true);
         }
         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {

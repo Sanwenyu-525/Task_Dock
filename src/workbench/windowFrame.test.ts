@@ -58,6 +58,13 @@ describe("workbench 窗口框", () => {
     expect(decls.get("border-radius")).toContain("var(--wb-corner-extra, 0px)");
   });
 
+  it("窗口外阴影交给原生 window_shadow，不在根容器上写会被裁剪的 box-shadow", () => {
+    // Win32 区域裁剪按窗口矩形切掉圆角外的像素，CSS 外阴影无法在根容器上
+    // 完整画出来；这里锁住 CSS 不越权，原生伴生阴影由 window_shadow.rs 负责。
+    expect(bodyOf(".wb-root, .wb-boot")).not.toContain("box-shadow");
+    expect(bodyOf(".wb-root, .wb-boot")).toContain("overflow: hidden");
+  });
+
   it("连续圆角由能力检测开关控制，未支持时不启用 corner-shape", () => {
     const squircle = bodyOf(
       'html[data-window-corner="squircle"] .wb-root, html[data-window-corner="squircle"] .wb-boot',

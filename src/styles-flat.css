@@ -35,6 +35,8 @@
     --radius-lg: 12px; /* 普通卡片、列表行 */
     --radius-xl: 14px; /* 面板、抽屉、工具容器 */
     --radius-2xl: 18px; /* 大型容器、模态内容 */
+    --radius-window: 18px; /* 窗口级圆角；预设层可覆盖，缺失时兜底 */
+    --radius-capture: 16px; /* 快速捕获卡片圆角；必须与 quick_capture 的原生区域半径一致 */
     --radius-pill: 999px;
     /* 既有语义别名 → 统一刻度（组件无需改写） */
     --radius-card: var(--radius-lg);
@@ -46,6 +48,15 @@
     --elev-2: 0 1px 2px rgba(17, 20, 37, 0.04), 0 8px 20px -14px rgba(17, 20, 37, 0.16); /* 卡片 */
     --elev-3: 0 2px 6px -3px rgba(17, 20, 37, 0.08), 0 16px 36px -20px rgba(17, 20, 37, 0.26); /* 浮层 */
     --elev-4: 0 4px 12px -6px rgba(17, 20, 37, 0.10), 0 28px 64px -32px rgba(17, 20, 37, 0.34); /* 模态 */
+
+    /* 窗口：描边与外部阴影分开。`--window-edge` 永远只做 1px 轮廓；
+       `--window-shadow` 只做窗口外围柔和扩散，供透明留白窗口消费。
+       主窗/工作台的外围阴影由原生 `window_shadow` 伴生窗口绘制（会被 Win32
+       区域裁剪的 CSS 外阴影不能替代它）；通知/捕获等带透明留白的独立窗口
+       在各自 CSS 中同时使用这两个 Token。 */
+    --window-shadow: 0 16px 44px -18px rgba(17, 20, 37, 0.30),
+      0 4px 14px -8px rgba(17, 20, 37, 0.10);
+    --window-shadow-maximized: none;
 
     /* 图标尺寸档：12/14/16/18/24。导航 18，标题栏 14，行内 14，微标 12。 */
     --icon-xs: 12px;
@@ -317,6 +328,8 @@
     --elev-2: 0 6px 18px -14px rgba(0, 0, 0, 0.55);
     --elev-3: 0 14px 36px -22px rgba(0, 0, 0, 0.62);
     --elev-4: 0 22px 56px -30px rgba(0, 0, 0, 0.68);
+    --window-shadow: 0 20px 56px -20px rgba(0, 0, 0, 0.60),
+      0 6px 18px -10px rgba(0, 0, 0, 0.32);
 
     --card-face: rgba(255, 255, 255, 0.05);
     --card-shadow: 0 0 0 1px var(--border-subtle), 0 1px 2px rgba(0, 0, 0, 0.24),
@@ -549,5 +562,45 @@
     --rail-active-text: #ccd2ff;
     --menu-active-text: #ccd2ff;
     --orb-gradient: linear-gradient(135deg, #7c8cff 0%, #9aa6ff 100%);
+  }
+
+  /* ── 5. 第二轮 2D 补漏：组件选择器里的直接材质 ───────────────
+     这些规则原先直接写在 styles-themes.css 的选择器中，Token 覆盖不到。
+     统一改成「底色 + 1px 轮廓 + 柔和外阴影」，不再保留顶部镜面高光、
+     底部内侧厚度阴影或双层凸起。 */
+  .dock-window.material-glass,
+  .dock-window {
+    box-shadow: var(--window-edge);
+  }
+
+  .preset-preview {
+    box-shadow: 0 0 0 1px var(--border-subtle), var(--elev-1);
+  }
+
+  .pp-card {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--border-subtle) 82%, transparent);
+  }
+
+  .clip-kind,
+  .history-kind {
+    border-radius: var(--radius-xs);
+    box-shadow: none;
+  }
+
+  .action-kind {
+    box-shadow: none;
+  }
+
+  .capsule-panel {
+    box-shadow: 0 0 0 1px var(--wing-panel-edge, var(--border-subtle)),
+      var(--wing-panel-shadow, var(--control-shadow));
+  }
+
+  .snap-feedback {
+    box-shadow: var(--shadow-overlay);
+  }
+
+  .preset-card.active {
+    box-shadow: 0 0 0 1.5px var(--accent), var(--control-shadow);
   }
 }

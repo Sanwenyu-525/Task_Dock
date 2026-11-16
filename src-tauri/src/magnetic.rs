@@ -644,8 +644,8 @@ fn forget_drag_token(generation: u64) {
 
 /// 系统移动/缩放循环当前是否仍在运行（与磁吸开关无关）。
 ///
-/// 前端在收到 `start` 时用它确认「这条开始信号对应的循环此刻是否仍活跃」，
-/// 从而把迟到的旧 start 与已经开始的新会话解耦（见 `drag_signal` 模块文档）。
+/// 仅供**没有携带 token 的旧载荷**兜底关联使用；正常路径由前端预置的会话身份
+/// 精确匹配（见 `drag_signal` 模块文档）。
 #[cfg(windows)]
 static DRAG_LOOP_ACTIVE: AtomicBool = AtomicBool::new(false);
 

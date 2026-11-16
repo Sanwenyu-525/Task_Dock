@@ -802,8 +802,9 @@ fail-closed 占名额，需要 `doctor --reap` 或等取证回收；`globalConcu
 - 真机：`node scripts/build-sched.mjs config` 只剩非内存配置（`globalConcurrency 3` 等）；
   `status` 显示"全局构建并发：1/3""活动台账：2 条"，正在跑的其他会话任务未受影响。
 
-**回退**：本次改动未提交（工作区 `git diff` 可复核）；需要恢复时从 git 历史取回
-`scripts/sched/budget.mjs`、`scripts/sched/mem.mjs` 及相关调用即可。本机无旧配置文件需要恢复。
+**回退**：本任务未主动执行 Git 写操作；仓库的定时自动提交在 2026-11-16 11:03 以
+`736412b`（56 个文件）收录了本次改动，可用于复核或回退。需要恢复预算实现时，从该提交之前的
+历史取回 `scripts/sched/budget.mjs`、`scripts/sched/mem.mjs` 及相关调用即可。本机无旧配置文件需要恢复。
 
 ## 11. 故障处理手册
 

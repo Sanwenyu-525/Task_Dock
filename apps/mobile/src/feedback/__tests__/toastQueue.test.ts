@@ -135,6 +135,14 @@ describe("toastQueue", () => {
     expect(state.queue).toHaveLength(0);
   });
 
+  it("切换页面只清排队消息，当前已显示的消息可以播完", () => {
+    let state = add(createToastState(), item("正在显示", "info", 1000));
+    state = toastReducer(state, { type: "enqueue", item: item("旧页排队", "success", 1100), now: 1100 });
+    state = toastReducer(state, { type: "clearQueue" });
+    expect(state.current?.text).toBe("正在显示");
+    expect(state.queue).toHaveLength(0);
+  });
+
   it("四种 tone 的阅读时长符合产品口径", () => {
     expect(TOAST_DURATION_MS.info).toBe(2400);
     expect(TOAST_DURATION_MS.success).toBe(2000);

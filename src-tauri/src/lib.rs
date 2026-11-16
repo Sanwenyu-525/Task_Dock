@@ -14,6 +14,7 @@ pub mod context_menu;
 pub mod db;
 pub mod devwork;
 pub mod diagnostics;
+mod exit_handshake;
 pub mod dragdrop;
 mod drag_signal;
 mod drag_watch;
@@ -49,7 +50,7 @@ mod winproc;
 pub mod workflows;
 pub mod workspace;
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::error::AppError;
@@ -1260,6 +1261,7 @@ pub fn run() {
             commands::hotkeys::hotkeys_change,
             commands::hotkeys::hotkeys_reset,
             commands::system::quit_app,
+            commands::system::app_exit_ack,
             commands::system::set_autostart,
             commands::system::apply_mode,
             commands::system::set_hotkeys_enabled,
@@ -1575,6 +1577,7 @@ pub fn run() {
             commands::file_workspace::fs_copy_paths,
             commands::file_workspace::fs_move_paths,
             commands::file_workspace::fs_delete_paths,
+            commands::duplicate_delete::fs_delete_verified_duplicates,
             commands::file_workspace::fs_stat,
             commands::file_workspace::fs_open,
             commands::file_workspace::fs_reveal,
@@ -1688,6 +1691,55 @@ pub fn run() {
 // 退出流程防重入：第一次请求触发排空，排空完成后置 READY 再真正退出。
 static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static EXIT_READY: AtomicBool = AtomicBool::new(false);
+static EXIT_HANDSHAKE: exit_handshake::ExitHandshake = exit_handshake::ExitHandshake::new();
+static NEXT_EXIT_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+const EXIT_HANDSHAKE_TIMEOUT_MS: u64 = 5_000;
+const EVENT_APP_BEFORE_EXIT: &str = "app-before-exit";
+const EVENT_APP_EXIT_BLOCKED: &str = "app-exit-blocked";
+
+/// 接收工作台前端对退出保存请求的回执；只接受当前请求号与首个回执。
+pub fn complete_exit_handshake(request_id: u64, ok: bool) -> bool {
+    EXIT_HANDSHAKE.complete(request_id, ok)
+}
+
+/// 退出前通知工作台落正文，并在有界时间内等待回执。
+///
+/// 工作台窗口不存在时立即通过；存在但没有正文模块时前端快速回执 true。
+/// 回执 false/超时返回 Err，调用方必须取消本次退出，不能继续 shutdown 管线。
+async fn flush_workbench_before_exit(app: &AppHandle) -> Result<(), String> {
+    if app
+        .get_webview_window(project_workspace_window::WINDOW_LABEL)
+        .is_none()
+    {
+        return Ok(());
+    }
+    let request_id = NEXT_EXIT_REQUEST_ID.fetch_add(1, Ordering::SeqCst) + 1;
+    if !EXIT_HANDSHAKE.begin(request_id) {
+        return Err("已有退出保存请求正在处理，请稍后重试".into());
+    }
+    let payload = serde_json::json!({ "requestId": request_id });
+    if let Err(error) = app.emit_to(
+        project_workspace_window::WINDOW_LABEL,
+        EVENT_APP_BEFORE_EXIT,
+        payload,
+    ) {
+        EXIT_HANDSHAKE.cancel(request_id);
+        return Err(format!("无法通知工作台保存正文：{error}"));
+    }
+    match EXIT_HANDSHAKE
+        .wait(
+            request_id,
+            std::time::Duration::from_millis(EXIT_HANDSHAKE_TIMEOUT_MS),
+        )
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("工作台正文保存失败，退出已取消".into()),
+        Err(exit_handshake::WaitError::Timeout) => {
+            Err("工作台正文保存回执超时（5 秒），退出已取消".into())
+        }
+    }
+}
 
 /// 请求退出：异步排空接入管线（有界时限）后退出。
 /// 立即返回，不阻塞调用方（托盘事件循环 / Tauri 命令线程）。
@@ -1697,10 +1749,22 @@ pub fn request_exit(app: &AppHandle) {
     }
     // 独立工作空间窗口不会走主窗口的关闭流程：退出前强制落一次几何。
     project_workspace_window::persist_geometry_on_exit(app);
-    // 1. 先停接入方（HTTP accept / 文件投递扫描），避免排空期间又有新事件进入。
-    agents::shutdown_signal::begin();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        // 先完成工作台正文保存握手；失败必须取消退出并保持应用可用，
+        // 绝不能已经 begin 管线 shutdown 后才发现正文没落下。
+        if let Err(reason) = flush_workbench_before_exit(&app).await {
+            EXIT_REQUESTED.store(false, Ordering::SeqCst);
+            EXIT_READY.store(false, Ordering::SeqCst);
+            tracing::warn!(reason, "退出前正文保存未完成，已取消退出");
+            let _ = app.emit(
+                EVENT_APP_EXIT_BLOCKED,
+                serde_json::json!({ "reason": reason }),
+            );
+            return;
+        }
+        // 1. 先停接入方（HTTP accept / 文件投递扫描），避免排空期间又有新事件进入。
+        agents::shutdown_signal::begin();
         // 捕获窗口可见时先让前端落草稿（最多等 300ms；未显示则立即返回）
         quick_capture::flush_draft_before_exit(&app).await;
         let report = match app.try_state::<Arc<agents::pipeline::IngestPipeline>>() {

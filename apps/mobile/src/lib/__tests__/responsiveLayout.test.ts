@@ -22,9 +22,11 @@ describe("responsiveLayout", () => {
     expect(shouldStackFileCards(390, 1)).toBe(false);
   });
 
-  it("我的页四项统计只在窄屏切 2×2", () => {
+  it("四项统计在手机宽度 2×2，平板宽度才一行四格", () => {
     expect(shouldUseNarrowStats(320)).toBe(true);
-    expect(shouldUseNarrowStats(360)).toBe(false);
+    expect(shouldUseNarrowStats(360)).toBe(true);
+    expect(shouldUseNarrowStats(430)).toBe(true);
+    expect(shouldUseNarrowStats(480)).toBe(false);
   });
 });
 

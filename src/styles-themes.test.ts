@@ -1061,7 +1061,7 @@ describe("胶囊面板共享输入与添加入口", () => {
   it("胶囊搜索变体只由容器 :focus-within 表达焦点", () => {
     const rule = /\.ui-search\.ui-search--capsule:focus-within\s*\{([\s\S]*?)\}/.exec(uiCss);
     expect(rule?.[1], "缺少胶囊搜索焦点规则").toBeTruthy();
-    expect(rule![1]).toMatch(/box-shadow:\s*inset 0 0 0 1px var\(--accent\)/);
+    expect(rule![1]).toMatch(/box-shadow:\s*0 0 0 1px var\(--accent\)/);
     expect(rule![1]).not.toMatch(/var\(--focus-ring\)/);
   });
 

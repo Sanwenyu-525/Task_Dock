@@ -82,8 +82,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const setActiveScope = useCallback((scope: string) => {
     if (scope === activeScope.current) return;
     activeScope.current = scope;
-    // 切换页面后旧页面的排队提示不再有意义，直接清掉，避免回到该页时补弹过时消息。
-    dispatch({ type: "clear" });
+    // 切换页面后旧页面的排队提示不再有意义，直接清掉；当前已显示的消息允许播完。
+    dispatch({ type: "clearQueue" });
   }, []);
 
   const actions = useMemo(

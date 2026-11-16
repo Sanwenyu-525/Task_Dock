@@ -2,8 +2,8 @@
 //!
 //! 从「设置 → 手机与同步」提出来：配对、设备与文件传输是操作，不是偏好。
 //! 设置页只保留真正的配置项；这里复用既有 `MobileSyncSection`，避免两套实现。
-//! 2026-11-14 统一工作台适配：page-fill 骨架 + 页面级页头 + 宽屏两栏
-//! （主列=同步与传输，右列=虚拟屏与扩展能力）；MobileSyncSection 内部零改动。
+//! 2026-11-16 R5：主区改为设备/传输/详情三栏，虚拟屏作为下方扩展能力；
+//! MobileSyncSection 内部的数据与暂存架逻辑保持不变，只把信息重新分区。
 import { Smartphone } from "lucide-react";
 
 import { useLocale } from "../../hooks/useLocale";
@@ -23,14 +23,10 @@ export default function MobileTransferPanel() {
         subtitle={t("mobileTransfer.subtitle")}
       />
       <div className="page-scroll mobile-body">
-        <div className="mobile-body-grid">
-          <section className="mobile-body-main" aria-label={t("mobileTransfer.title")}>
-            <MobileSyncSection />
-          </section>
-          <aside className="mobile-body-side" aria-label={t("virtualDisplay.title")}>
-            <VirtualDisplaySection />
-          </aside>
-        </div>
+        <MobileSyncSection />
+        <section className="mobile-body-tools" aria-label={t("virtualDisplay.title")}>
+          <VirtualDisplaySection />
+        </section>
       </div>
     </div>
   );

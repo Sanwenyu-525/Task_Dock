@@ -32,12 +32,16 @@ import {
   type NovelChapterSummary,
   type NovelVolume,
 } from "../lib/bridge";
+import { Dialog } from "../components/ui";
 import { errorMessage } from "../lib/errors";
 
 const AUTOSAVE_MS = 900;
 
 type NoticeKind = "ok" | "error" | "info";
 type SaveState = "idle" | "pending" | "saving" | "saved" | "error";
+type DeleteTarget =
+  | { kind: "chapter"; chapter: NovelChapterSummary }
+  | { kind: "volume"; volume: NovelVolume };
 
 export interface NovelManuscriptPanelProps {
   projectId: string;
@@ -87,11 +91,13 @@ export default function NovelManuscriptPanel({
   const [newVolumeTitle, setNewVolumeTitle] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const mountedRef = useRef(true);
   const projectRef = useRef(projectId);
+  const projectChangeTokenRef = useRef(0);
   const archivedRef = useRef(archived);
   const selectedRef = useRef<string | null>(null);
   const draftRef = useRef("");
@@ -102,6 +108,7 @@ export default function NovelManuscriptPanel({
   const loadTokenRef = useRef(0);
   const chapterTokenRef = useRef(0);
   const skipRenameBlurRef = useRef(false);
+  const deleteBusyRef = useRef(false);
   const flushRef = useRef<() => Promise<boolean>>(async () => true);
   // 通知回调只用于提示，不参与正文读取的 effect 依赖；父级重渲染不应触发重新读库。
   const onNoticeRef = useRef(onNotice);
@@ -153,23 +160,35 @@ export default function NovelManuscriptPanel({
     }
   }, [projectId]);
 
-  // 项目切换：父级必须先 await 注册的 flush 才会换项目；正常路径到这里时已无脏稿。
-  // 若被绕过（例如测试/外部调用），仍清空旧项目界面状态，正文由卸载兜底保存。
+  // 项目切换：父级 selectProject 必须先 await flush，但这里仍做最后一道异步防线。
+  // 在 flush 成功前保留旧项目的唯一草稿与界面状态；失败则保留原稿并提示，绝不先清空。
   useEffect(() => {
     if (projectRef.current === projectId) return;
-    void flushRef.current();
-    projectRef.current = projectId;
-    clearTimer();
-    setVolumes([]);
-    setChapters([]);
-    setSelectedId(null);
-    setChapter(null);
-    setDraft("");
-    savedRef.current = "";
-    setSaveState("idle");
-    setRenaming(null);
-    setConfirmDelete(null);
-  }, [projectId, clearTimer]);
+    const token = projectChangeTokenRef.current + 1;
+    projectChangeTokenRef.current = token;
+    void (async () => {
+      const ok = await flushRef.current();
+      if (!mountedRef.current || token !== projectChangeTokenRef.current) return;
+      if (!ok) {
+        onNoticeRef.current("error", "项目切换已取消：正文尚未保存，已保留当前草稿");
+        return;
+      }
+      projectRef.current = projectId;
+      clearTimer();
+      savePromiseRef.current = null;
+      setVolumes([]);
+      setChapters([]);
+      setSelectedId(null);
+      setChapter(null);
+      setDraft("");
+      savedRef.current = "";
+      setSaveState("idle");
+      setRenaming(null);
+      setDeleteTarget(null);
+      setDeleteError(null);
+      void loadTree();
+    })();
+  }, [projectId, clearTimer, loadTree]);
 
   useEffect(() => {
     void loadTree();
@@ -326,7 +345,8 @@ export default function NovelManuscriptPanel({
   useEffect(() => {
     if (!archived) return;
     setRenaming(null);
-    setConfirmDelete(null);
+    setDeleteTarget(null);
+    setDeleteError(null);
     setNewVolumeTitle("");
     setRenameDraft("");
     skipRenameBlurRef.current = true;
@@ -427,7 +447,7 @@ export default function NovelManuscriptPanel({
       skipRenameBlurRef.current = false;
       setRenaming(id);
       setRenameDraft(title);
-      setConfirmDelete(null);
+      setDeleteTarget(null);
     },
     [archived, onNotice],
   );
@@ -565,65 +585,130 @@ export default function NovelManuscriptPanel({
     [chapters, chaptersOf, unfiledChapters, projectId, runBusy, onNotice, loadTree, archived],
   );
 
-  const removeVolume = useCallback(
-    async (volume: NovelVolume) => {
-      if (archived) return;
-      const key = `volume:${volume.id}`;
-      if (confirmDelete !== key) {
-        setConfirmDelete(key);
-        return;
-      }
-      setConfirmDelete(null);
-      await runBusy(async () => {
-        try {
-          await novelVolumeDelete(volume.id);
-          setVolumes((prev) => prev.filter((v) => v.id !== volume.id));
-          setChapters((prev) => {
-            const removed = prev.filter((c) => c.volumeId === volume.id);
-            if (selectedRef.current && removed.some((c) => c.id === selectedRef.current)) {
-              setSelectedId(null);
-            }
-            return prev.filter((c) => c.volumeId !== volume.id);
-          });
-          onNotice("ok", `已删除卷「${volume.title}」及其章节`);
-        } catch (e) {
-          onNotice("error", `删除卷失败：${errorMessage(e)}`);
-        }
-      });
+  const settleInFlight = useCallback(async () => {
+    clearTimer();
+    const pending = savePromiseRef.current;
+    if (!pending) return;
+    // 删除/丢弃也必须等已发出的正文请求彻底结束，不能让旧请求在删除后再写库。
+    await pending;
+    if (savePromiseRef.current === pending) savePromiseRef.current = null;
+  }, [clearTimer]);
+
+  const requestDeleteChapter = useCallback(
+    (item: NovelChapterSummary) => {
+      if (archived || busy || deleteBusyRef.current || chapterLoading) return;
+      setDeleteError(null);
+      setDeleteTarget({ kind: "chapter", chapter: item });
     },
-    [confirmDelete, runBusy, onNotice, archived],
+    [archived, busy, chapterLoading],
   );
 
-  const removeChapter = useCallback(
-    async (item: NovelChapterSummary) => {
-      if (archived) return;
-      const key = `chapter:${item.id}`;
-      if (confirmDelete !== key) {
-        setConfirmDelete(key);
-        return;
-      }
-      setConfirmDelete(null);
-      await runBusy(async () => {
-        try {
-          await novelChapterDelete(item.id);
-          setChapters((prev) => prev.filter((c) => c.id !== item.id));
-          if (selectedRef.current === item.id) {
-            savedRef.current = draftRef.current;
-            setSelectedId(null);
-          }
-          onNotice("ok", `已删除章节「${item.title}」`);
-        } catch (e) {
-          onNotice("error", `删除章节失败：${errorMessage(e)}`);
-        }
-      });
+  const requestDeleteVolume = useCallback(
+    (volume: NovelVolume) => {
+      if (archived || busy || deleteBusyRef.current || chapterLoading) return;
+      setDeleteError(null);
+      setDeleteTarget({ kind: "volume", volume });
     },
-    [confirmDelete, runBusy, onNotice, archived],
+    [archived, busy, chapterLoading],
+  );
+
+  const closeDeleteDialog = useCallback(() => {
+    if (deleteBusyRef.current || busy) return;
+    setDeleteTarget(null);
+    setDeleteError(null);
+  }, [busy]);
+
+  const confirmDelete = useCallback(
+    async (discardDraft: boolean) => {
+      if (!deleteTarget || archivedRef.current || deleteBusyRef.current) return;
+      deleteBusyRef.current = true;
+      setDeleteError(null);
+      try {
+        await runBusy(async () => {
+          const target = deleteTarget;
+          const currentSelected = selectedRef.current;
+          const currentInTarget =
+            target.kind === "chapter"
+              ? currentSelected === target.chapter.id
+              : chapters.some(
+                  (c) => c.id === currentSelected && c.volumeId === target.volume.id,
+                );
+
+          if (currentInTarget) {
+            if (!discardDraft) {
+              // 保存后删除：flush 会先等待在途请求，再补交最新草稿。
+              if (!(await flushRef.current())) {
+                setDeleteError("正文保存失败，已取消删除；当前草稿仍保留，可重试。");
+                return;
+              }
+            } else {
+              // 明确丢弃：不再发起新保存，但必须先等待已经发出的请求结束。
+              clearTimer();
+              selectedRef.current = null;
+              await settleInFlight();
+            }
+          }
+
+          if (currentInTarget) selectedRef.current = null;
+          try {
+            if (target.kind === "chapter") {
+              await novelChapterDelete(target.chapter.id);
+            } else {
+              await novelVolumeDelete(target.volume.id);
+            }
+          } catch (e) {
+            if (currentInTarget) selectedRef.current = currentSelected;
+            setDeleteError(`删除失败：${errorMessage(e)}`);
+            onNotice("error", `删除失败：${errorMessage(e)}`);
+            return;
+          }
+
+          clearTimer();
+          if (target.kind === "chapter") {
+            setChapters((prev) => prev.filter((c) => c.id !== target.chapter.id));
+            if (currentInTarget) {
+              chapterTokenRef.current += 1;
+              setSelectedId(null);
+              setChapter(null);
+              setDraft("");
+              savedRef.current = "";
+              setSaveState("idle");
+            }
+            onNotice("ok", `已删除章节「${target.chapter.title}」`);
+          } else {
+            const removed = chapters.filter((c) => c.volumeId === target.volume.id);
+            setVolumes((prev) => prev.filter((v) => v.id !== target.volume.id));
+            setChapters((prev) => prev.filter((c) => c.volumeId !== target.volume.id));
+            if (currentInTarget) {
+              chapterTokenRef.current += 1;
+              setSelectedId(null);
+              setChapter(null);
+              setDraft("");
+              savedRef.current = "";
+              setSaveState("idle");
+            }
+            onNotice("ok", `已删除卷「${target.volume.title}」及其 ${removed.length} 章`);
+          }
+          setDeleteTarget(null);
+          setDeleteError(null);
+        });
+      } finally {
+        deleteBusyRef.current = false;
+      }
+    },
+    [
+      deleteTarget,
+      runBusy,
+      chapters,
+      clearTimer,
+      settleInFlight,
+      onNotice,
+    ],
   );
 
   const renderChapterRow = (item: NovelChapterSummary) => {
     const isSelected = selectedId === item.id;
     const isRenaming = renaming === item.id;
-    const deleteKey = `chapter:${item.id}`;
     const bucketSize = (item.volumeId === null ? unfiledChapters : chaptersOf(item.volumeId)).length;
     const bucketIndex = (item.volumeId === null ? unfiledChapters : chaptersOf(item.volumeId)).findIndex(
       (c) => c.id === item.id,
@@ -694,12 +779,12 @@ export default function NovelManuscriptPanel({
             </button>
             <button
               type="button"
-              className={`ws-btn ws-btn-quiet ${confirmDelete === deleteKey ? "ws-btn-danger" : ""}`}
+              className="ws-btn ws-btn-quiet"
               aria-label={`删除章节「${item.title}」`}
-              disabled={busy || archived}
-              onClick={() => void removeChapter(item)}
+              disabled={busy || archived || chapterLoading}
+              onClick={() => requestDeleteChapter(item)}
             >
-              <Trash2 size={11} /> {confirmDelete === deleteKey ? "确认" : ""}
+              <Trash2 size={11} />
             </button>
           </span>
         )}
@@ -713,7 +798,6 @@ export default function NovelManuscriptPanel({
     const rows = volume ? chaptersOf(volume.id) : unfiledChapters;
     const words = rows.reduce((sum, c) => sum + c.wordCount, 0);
     const isRenaming = volume ? renaming === volume.id : false;
-    const deleteKey = volume ? `volume:${volume.id}` : "";
     const index = volume ? sortedVolumes.findIndex((v) => v.id === volume.id) : -1;
     return (
       <section className="ws-novel-volume" key={key} aria-label={title}>
@@ -771,12 +855,12 @@ export default function NovelManuscriptPanel({
               </button>
               <button
                 type="button"
-                className={`ws-btn ws-btn-quiet ${confirmDelete === deleteKey ? "ws-btn-danger" : ""}`}
+                className="ws-btn ws-btn-quiet"
                 aria-label={`删除卷「${volume.title}」及其章节`}
-                disabled={busy || archived}
-                onClick={() => void removeVolume(volume)}
+                disabled={busy || archived || chapterLoading}
+                onClick={() => requestDeleteVolume(volume)}
               >
-                <Trash2 size={11} /> {confirmDelete === deleteKey ? "确认" : ""}
+                <Trash2 size={11} />
               </button>
             </span>
           )}
@@ -796,6 +880,45 @@ export default function NovelManuscriptPanel({
       </section>
     );
   };
+
+  const deleteInfo = useMemo(() => {
+    if (!deleteTarget) return null;
+    if (deleteTarget.kind === "chapter") {
+      const row = chapters.find((c) => c.id === deleteTarget.chapter.id) ?? deleteTarget.chapter;
+      const isCurrent = selectedRef.current === row.id;
+      const words = isCurrent && !chapterLoading ? countWords(draft) : row.wordCount;
+      const dirty =
+        isCurrent && (draft !== savedRef.current || savePromiseRef.current !== null);
+      return {
+        kind: "chapter" as const,
+        title: row.title,
+        words,
+        chapterCount: 1,
+        isCurrent,
+        dirty,
+      };
+    }
+    const volume = volumes.find((v) => v.id === deleteTarget.volume.id) ?? deleteTarget.volume;
+    const rows = chapters.filter((c) => c.volumeId === volume.id);
+    const current = rows.find((c) => c.id === selectedRef.current);
+    const isCurrent = Boolean(current);
+    const words = rows.reduce((sum, c) => {
+      if (isCurrent && current && !chapterLoading && c.id === current.id) {
+        return sum - c.wordCount + countWords(draft);
+      }
+      return sum + c.wordCount;
+    }, 0);
+    const dirty =
+      isCurrent && (draft !== savedRef.current || savePromiseRef.current !== null);
+    return {
+      kind: "volume" as const,
+      title: volume.title,
+      words,
+      chapterCount: rows.length,
+      isCurrent,
+      dirty,
+    };
+  }, [deleteTarget, chapters, volumes, draft, selectedId, chapterLoading, saveState]);
 
   const saveLabel = (() => {
     if (archived) {
@@ -923,6 +1046,84 @@ export default function NovelManuscriptPanel({
           </>
         )}
       </section>
+
+      {deleteTarget && deleteInfo && (
+        <Dialog
+          open
+          title={deleteInfo.kind === "chapter" ? "删除章节" : "删除卷"}
+          onClose={closeDeleteDialog}
+          dismissOnScrim={false}
+          size="sm"
+          ariaLabel={deleteInfo.kind === "chapter" ? "确认删除章节" : "确认删除卷"}
+          footer={
+            <>
+              <button type="button" className="ws-btn" disabled={busy} onClick={closeDeleteDialog}>
+                取消
+              </button>
+              {deleteInfo.dirty && (
+                <button
+                  type="button"
+                  className="ws-btn ws-btn-danger"
+                  disabled={busy}
+                  onClick={() => void confirmDelete(true)}
+                >
+                  丢弃草稿并删除
+                </button>
+              )}
+              <button
+                type="button"
+                className="ws-btn ws-btn-danger"
+                disabled={busy}
+                onClick={() => void confirmDelete(false)}
+              >
+                {busy ? (
+                  <>
+                    <Loader2 size={11} className="ws-spin" /> 删除中…
+                  </>
+                ) : deleteInfo.dirty ? (
+                  "保存后删除"
+                ) : (
+                  "删除"
+                )}
+              </button>
+            </>
+          }
+        >
+          <p>
+            确定删除{deleteInfo.kind === "chapter" ? "章节" : "卷"}「{deleteInfo.title}」？
+          </p>
+          <ul className="ws-novel-delete-facts">
+            {deleteInfo.kind === "volume" ? (
+              <>
+                <li>卷内章节：{deleteInfo.chapterCount} 章</li>
+                <li>正文总字数：{deleteInfo.words} 字</li>
+                <li>当前正在编辑该卷章节：{deleteInfo.isCurrent ? "是" : "否"}</li>
+              </>
+            ) : (
+              <li>本章字数：{deleteInfo.words} 字</li>
+            )}
+            <li>未保存草稿：{deleteInfo.dirty ? "有" : "无"}</li>
+          </ul>
+          {deleteInfo.kind === "volume" ? (
+            <p className="ws-novel-delete-warning">
+              删除卷会级联删除该卷全部章节和正文，删除后不可通过普通撤销恢复。
+            </p>
+          ) : (
+            <p className="ws-novel-delete-warning">删除后正文不可恢复。</p>
+          )}
+          {deleteInfo.dirty && (
+            <p className="ws-novel-delete-warning">
+              「保存后删除」会先落盘最新草稿；「丢弃草稿并删除」会明确放弃未保存修改。
+            </p>
+          )}
+          {deleteError && (
+            <div className="ws-notice" data-tone="error" role="alert">
+              <AlertCircle size={13} />
+              <span>{deleteError}</span>
+            </div>
+          )}
+        </Dialog>
+      )}
     </div>
   );
 }

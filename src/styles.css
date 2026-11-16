@@ -357,11 +357,12 @@ code {
 .dock-window.material-glass {
   background: var(--glass-tint);
   border-color: var(--border-strong);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  /* 2D 化：窗口轮廓只保留 1px ring；外围柔和阴影由原生 window_shadow 承担 */
+  box-shadow: var(--window-edge);
 }
 
 :root[data-theme="dark"] .dock-window.material-glass {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: var(--window-edge);
 }
 
 /* 主窗滚动条：透明轨道 + 6px 细 thumb（与右键菜单同款）。

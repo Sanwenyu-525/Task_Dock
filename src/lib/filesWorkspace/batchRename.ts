@@ -124,13 +124,14 @@ export function buildBatchRenamePreview(
     const sourceKey = item.path.toLocaleLowerCase();
     const invalid = invalidRenameName(item.newName);
     if (invalid) return { ...item, status: "invalid", reason: invalid };
-    if (key === sourceKey || item.newName === item.oldName) {
+    if (item.newName === item.oldName) {
       return { ...item, status: "unchanged", reason: "名称未变化" };
     }
     if ((targetCounts.get(key) ?? 0) > 1) {
       return { ...item, status: "conflict", reason: "批量内目标名称重复" };
     }
-    if (existing.has(key)) {
+    // 大小写-only 改名：目标路径与源是同一个文件，不能当成“已存在”冲突。
+    if (existing.has(key) && key !== sourceKey) {
       return { ...item, status: "conflict", reason: "目标目录已存在同名条目" };
     }
     return { ...item, status: "ok" };

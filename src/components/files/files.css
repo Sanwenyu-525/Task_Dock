@@ -1,27 +1,18 @@
 /*! 文件工作区（多目录分栏）样式。组件规则只消费语义 Token（--surface/--border/--text/
     --accent/--file-tone-*），不写零散硬编码颜色；独立文件避免触碰共享 styles.css。 */
 
-/* Flat 2D 表面标度：只在文件工作区内生效，不改共享主题 Token。
-   原因：某些主题的 `--card-face` 与 `--window-fill` 是渐变，`--surface-raised`
-   直接继承 `--card-face`，只改组件背景仍会残留上亮下暗的立体卡片效果。
-   这里用一组作用域内的纯色 Token（唯一允许写具体色值的定义处）收敛工作区表面，
-   其余组件仍引用语义 Token；其他页面继续走既有主题。 */
+/* Flat 2D 表面：文件工作区不再维护独立表面色板，全部映射到
+   styles-flat.css 的语义 Token。`--fw-*` 仅保留为兼容别名，方便既有
+   组件继续引用；不再在这里覆盖 `--surface-*` / `--shadow-raised`，
+   否则会形成第二套全局表面体系。 */
 .fw-root {
-  --fw-surface-base: #101320;
-  --fw-surface-raised: #171b28;
-  --fw-surface-overlay: #1e2333;
-  --fw-border-subtle: rgba(255, 255, 255, 0.08);
-  --fw-border-strong: rgba(255, 255, 255, 0.16);
+  --fw-surface-base: var(--surface-base);
+  --fw-surface-raised: var(--surface-raised);
+  --fw-surface-overlay: var(--surface-overlay);
+  --fw-border-subtle: var(--border-subtle);
+  --fw-border-strong: var(--border-strong);
 
-  /* 作用域内替换语义 Token，让所有子组件（按钮/标签/面包屑）统一平面化。 */
-  --surface-base: var(--fw-surface-base);
-  --surface-raised: var(--fw-surface-raised);
-  --surface-overlay: var(--fw-surface-overlay);
-  --border-subtle: var(--fw-border-subtle);
-  --border-strong: var(--fw-border-strong);
-  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.22);
-
-  /* 文件类别语义色：局部补齐视频/音频/文本差异，不改共享 styles.css。 */
+  /* 文件类别语义色：局部补齐视频/音频/文本差异，不改共享样式。 */
   --file-tone-video: #b39dfb;
   --file-tone-audio: #e879f9;
   --file-tone-text: #9aa9bd;
@@ -36,13 +27,6 @@
 }
 
 html[data-theme="light"] .fw-root {
-  --fw-surface-base: #f2f4f8;
-  --fw-surface-raised: #ffffff;
-  --fw-surface-overlay: #f7f8fb;
-  --fw-border-subtle: rgba(17, 24, 39, 0.08);
-  --fw-border-strong: rgba(17, 24, 39, 0.16);
-  --shadow-raised: 0 1px 2px rgba(17, 24, 39, 0.06);
-
   --file-tone-video: #7c3aed;
   --file-tone-audio: #a21caf;
   --file-tone-text: #52627a;
@@ -2605,4 +2589,54 @@ body.fw-resizing-row * {
   .fw-crumb-ellipsis {
     display: inline;
   }
+}
+
+/* ── 2D round-2：新文件对话框/分栏组件的圆角归并 ───────────────
+   外部新增的搜索、批量重命名、重复查找、比较、预览对话框原先各自写
+   4/5/6/7px；这里只归并这些实际存在的组件到语义刻度，不整文件重写。
+   文件类型色与拖拽状态色保持独立语义，不建立第二套表面色板。 */
+.fw-divider-ratio,
+.fw-filter-chip,
+.fw-search-field input,
+.fw-search-source,
+.fw-search-results,
+.fw-duplicate-groups,
+.fw-crumb,
+.fw-tab-close,
+.fw-tab-add,
+.fw-icon-btn,
+.fw-cell-thumb,
+.fw-drop-shade,
+.fw-drop-label,
+.fw-empty-chip,
+.fw-pick-error,
+.fw-dir-row-main,
+.fw-tab-list,
+.fw-conflict-list li,
+.fw-batch-mode,
+.fw-dialog-field input,
+.fw-batch-alert,
+.fw-batch-result,
+.fw-batch-preview,
+.fw-compare-target,
+.fw-compare-stat,
+.fw-compare-table,
+.fw-preview-video,
+.fw-divider-menu button,
+.fw-selection-btn {
+  border-radius: var(--radius-xs);
+}
+
+.fw-divider-menu,
+.fw-cell,
+.fw-transfer-target,
+.fw-compare-pane,
+.fw-compare-confirm,
+.fw-preview-stage,
+.fw-row {
+  border-radius: var(--radius-sm);
+}
+
+.fw-tab {
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
 }

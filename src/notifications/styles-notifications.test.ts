@@ -1,13 +1,14 @@
-//! 通知窗口样式的**结构守卫**：锁住 C 方案的材质与动效约束，
-//! 避免以后改样式时悄悄退化成不透明色板或常驻高频动画。
+//! 通知窗口样式的**结构守卫**：锁住 2D 语义表面与动效约束，
+//! 避免以后改样式时悄悄退回整卡玻璃渐变或常驻高频动画。
 //!
 //! 硬约束：
-//! - 深/浅两套卡片底色都必须是**有层次的半透明渐变**（玻璃，不是纯色平涂）；
-//! - 卡片圆角 16px、栈内间距 8px、卡片宽 360px（原型规格）；
+//! - 卡片底色消费 `--surface-overlay`，边框消费 `--border-subtle`，
+//!   外阴影消费 `--elev-3`，不再维护深/浅两套独立玻璃色板；
+//! - 卡片圆角使用 `--radius-xl`；卡片宽 360px、栈间距 6px 保持原型规格；
+//! - 状态语义色只落在 `--tone` / 全局 `--status-*`，不整卡铺径向光斑；
 //! - 动画只有入场/离场/详情/图标与不确定进度（finite 或卡内存续期），
 //!   必须有 prefers-reduced-motion 兜底；
-//! - 键盘焦点 focus-visible 必须有独立描边（无障碍）；
-//! - 状态语义色六值与原型一致。
+//! - 键盘焦点 focus-visible 必须有独立描边（无障碍）。
 
 import { describe, expect, it } from "vitest";
 import ntfCss from "./styles-notifications.css?raw";
@@ -26,40 +27,51 @@ function rule(selectorIncludes: string): Rule | undefined {
   return RULES.find((r) => r.selector.includes(selectorIncludes));
 }
 
-describe("玻璃材质（深浅两套）", () => {
-  it("深色卡片底色是有层次的半透明渐变，不是纯色平涂", () => {
+function exactRule(selector: string): Rule | undefined {
+  return RULES.find((r) => r.selector === selector);
+}
+
+describe("2D 语义表面", () => {
+  it("卡片使用语义表面、1px 轮廓与柔和外阴影，不再铺玻璃渐变", () => {
     const card = rule(".ntf-card");
     expect(card).toBeDefined();
-    expect(card!.body).toContain("linear-gradient(145deg");
-    expect(card!.body).toContain("radial-gradient(");
-    expect(card!.body).not.toMatch(/background:\s*#\w+\s*;/);
+    expect(card!.body).toContain("background: var(--surface-overlay)");
+    expect(card!.body).toContain("border: 1px solid var(--border-subtle)");
+    expect(card!.body).toContain("box-shadow: var(--elev-3)");
+    expect(card!.body).not.toMatch(/radial-gradient|linear-gradient|inset\s+0/);
   });
 
-  it("浅色主题有独立卡片底色且为半透明渐变", () => {
-    const light = rule('html[data-theme="light"] .ntf-card');
-    expect(light).toBeDefined();
-    expect(light!.body).toContain("linear-gradient(145deg");
-    expect(light!.body).toContain("rgba(246, 250, 255");
+  it("不再维护浅色主题的独立卡片玻璃色板", () => {
+    expect(ntfCss).not.toContain('html[data-theme="light"] .ntf-card');
+    expect(rule(".ntf-card")!.body).toContain("border-radius: var(--radius-xl)");
   });
 
-  it("原型规格：圆角 16px、卡片 360px、栈间距 6px（2026-11-08 垂直紧凑化对齐系统通知密度）", () => {
-    expect(rule(".ntf-card")!.body).toContain("border-radius: 16px");
+  it("原型规格：卡片 360px、栈间距 6px 保持不变", () => {
     expect(rule(".ntf-stack")!.body).toContain("width: 360px");
     expect(rule(".ntf-stack")!.body).toContain("gap: 6px");
   });
+
+  it("状态图标不再使用径向渐变或发光，状态色只落在图标/描边", () => {
+    const status = exactRule(".ntf-status-icon");
+    expect(status).toBeDefined();
+    expect(status!.body).toContain("background: var(--surface-raised)");
+    expect(status!.body).toContain("color: var(--tone)");
+    expect(status!.body).not.toContain("radial-gradient");
+    expect(status!.body).not.toMatch(/0 0 24px|inset/);
+  });
 });
 
-describe("状态语义色（原型 C 方案六值）", () => {
+describe("状态语义色", () => {
   const tones: Array<[string, string]> = [
-    ["--ntf-blue", "#3882f6"],
-    ["--ntf-amber", "#f5b90b"],
-    ["--ntf-green", "#22c55e"],
-    ["--ntf-red", "#ef4444"],
-    ["--ntf-orange", "#f97316"],
-    ["--ntf-purple", "#a855f7"],
+    ["--ntf-blue", "var(--status-running)"],
+    ["--ntf-amber", "var(--status-waiting)"],
+    ["--ntf-green", "var(--status-success)"],
+    ["--ntf-red", "var(--status-error)"],
+    ["--ntf-orange", "var(--status-waiting)"],
+    ["--ntf-purple", "var(--icon-violet)"],
   ];
   for (const [name, value] of tones) {
-    it(`${name} = ${value}`, () => {
+    it(`${name} 消费全局状态 Token`, () => {
       expect(ntfCss).toContain(`${name}: ${value}`);
     });
   }

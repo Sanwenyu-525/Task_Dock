@@ -6,6 +6,7 @@ import { Files, Search, Trash2 } from "lucide-react";
 import { Dialog, ConfirmDialog } from "../ui/Dialog";
 import Select from "../ui/Select";
 import { useLocale } from "../../hooks/useLocale";
+import type { VerifiedDuplicateDeleteGroup } from "../../lib/bridge";
 import {
   collectWorkspaceFiles,
   hashDuplicateGroups,
@@ -15,12 +16,18 @@ import {
   type SearchSource,
 } from "../../lib/filesWorkspace/workspaceSearch";
 
+export interface DuplicateDeleteOutcome {
+  ok: number;
+  failed: number;
+  failedPaths: string[];
+}
+
 interface Props {
   open: boolean;
   sources: SearchSource[];
   onClose: () => void;
   onReveal: (paneId: string, dirPath: string, filePath: string) => void;
-  onDelete: (paths: string[]) => Promise<void>;
+  onDelete: (groups: VerifiedDuplicateDeleteGroup[]) => Promise<DuplicateDeleteOutcome>;
 }
 
 export default function DuplicateFinderDialog({ open, sources, onClose, onReveal, onDelete }: Props) {
@@ -33,20 +40,27 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
   const [running, setRunning] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [checked, setChecked] = useState<Record<string, boolean>>({});
-  const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<VerifiedDuplicateDeleteGroup[] | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  const resetResults = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setGroups([]);
+    setVerified(false);
+    setChecked({});
+    setConfirmDelete(null);
+    setProgress(null);
+    setTruncated(false);
+    setRunning(false);
+  };
 
   useEffect(() => {
     if (!open) return;
     setSelected(sources.map((source) => source.paneId));
-    setGroups([]);
-    setVerified(false);
-    setChecked({});
-    setProgress(null);
-    setTruncated(false);
-    setRunning(false);
-    abortRef.current?.abort();
-    abortRef.current = null;
+    resetResults();
+    // resetResults 只清理由本次对话框持有的结果与请求，不触碰外部状态。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sources]);
 
   const scan = async (withHash: boolean) => {
@@ -81,21 +95,45 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
     }
   };
 
-  const deleteChecked = async () => {
-    const paths = Object.entries(checked)
-      .filter(([, value]) => value)
-      .map(([path]) => path);
-    if (!paths.length) return;
-    setConfirmDelete(paths);
+  const deleteChecked = () => {
+    if (!verified) return;
+    const request: VerifiedDuplicateDeleteGroup[] = [];
+    for (const group of groups) {
+      if (!group.hash) continue;
+      const deletePaths = group.files.filter((file) => checked[file.path]).map((file) => file.path);
+      if (!deletePaths.length) continue;
+      request.push({
+        keepPath: group.files[0].path,
+        deletePaths,
+        expectedSize: group.size,
+        expectedHash: group.hash,
+      });
+    }
+    if (!request.length) return;
+    setConfirmDelete(request);
   };
 
   const runDelete = async () => {
-    const paths = confirmDelete ?? [];
+    const request = confirmDelete ?? [];
     setConfirmDelete(null);
-    if (!paths.length) return;
-    await onDelete(paths);
-    setChecked({});
-    await scan(verified);
+    if (!request.length || !verified) return;
+    const outcome = await onDelete(request);
+    if (outcome.failed === 0) {
+      setChecked({});
+    } else {
+      // 只保留真实失败项，成功项不再显示为待删，避免误以为还被选中。
+      const failed = new Set(outcome.failedPaths);
+      setChecked((current) =>
+        Object.fromEntries(Object.entries(current).filter(([path, value]) => value && failed.has(path))),
+      );
+    }
+    await scan(true);
+    if (outcome.failedPaths.length) {
+      setChecked((current) => {
+        const failed = new Set(outcome.failedPaths);
+        return Object.fromEntries(Object.entries(current).filter(([path, value]) => value || failed.has(path)));
+      });
+    }
   };
 
   const depthOptions = ["0", "1", "2", "3", "4"].map((value) => ({
@@ -104,6 +142,7 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
   }));
 
   const checkedCount = Object.values(checked).filter(Boolean).length;
+  const confirmDeleteCount = (confirmDelete ?? []).reduce((count, group) => count + group.deletePaths.length, 0);
 
   return (
     <>
@@ -111,7 +150,17 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
         <div className="fw-search-form">
           <div className="fw-search-field">
             <span>{t("fw.search.depth")}</span>
-            <Select value={depth} options={depthOptions} onChange={setDepth} ariaLabel={t("fw.search.depth")} size="sm" block />
+            <Select
+              value={depth}
+              options={depthOptions}
+              onChange={(value) => {
+                setDepth(value);
+                resetResults();
+              }}
+              ariaLabel={t("fw.search.depth")}
+              size="sm"
+              block
+            />
           </div>
           <div className="fw-search-note">{t("fw.duplicates.note")}</div>
         </div>
@@ -123,11 +172,12 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
               className={`fw-search-source${selected.includes(source.paneId) ? " is-on" : ""}`}
               aria-pressed={selected.includes(source.paneId)}
               title={source.path}
-              onClick={() =>
+              onClick={() => {
+                resetResults();
                 setSelected((current) =>
                   current.includes(source.paneId) ? current.filter((id) => id !== source.paneId) : [...current, source.paneId],
-                )
-              }
+                );
+              }}
             >
               <span className="fw-search-source-label">{source.label}</span>
               <span className="fw-search-source-path">{source.path}</span>
@@ -157,13 +207,15 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
                   <div key={file.path} className="fw-duplicate-row">
                     {index === 0 ? (
                       <span className="fw-duplicate-keep">{t("fw.duplicates.keep")}</span>
-                    ) : (
+                    ) : verified && group.hash ? (
                       <input
                         type="checkbox"
                         checked={checked[file.path] ?? false}
                         aria-label={t("fw.duplicates.selectDelete", { name: file.name })}
                         onChange={(event) => setChecked((current) => ({ ...current, [file.path]: event.target.checked }))}
                       />
+                    ) : (
+                      <span className="fw-search-warn" aria-hidden="true">—</span>
                     )}
                     <button type="button" className="fw-duplicate-path" title={file.path} onClick={() => onReveal(file.paneId, file.dirPath, file.path)}>
                       {file.path}
@@ -184,7 +236,7 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
               {t("fw.duplicates.verify")}
             </button>
           )}
-          {groups.length > 0 && (
+          {verified && groups.length > 0 && (
             <button type="button" className="btn sm danger" disabled={checkedCount === 0 || running} onClick={() => void deleteChecked()}>
               <Trash2 size={12} aria-hidden="true" />
               {t("fw.duplicates.deleteSelected", { count: checkedCount })}
@@ -201,7 +253,7 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
       <ConfirmDialog
         open={confirmDelete !== null}
         title={t("fw.duplicates.deleteTitle")}
-        detail={t("fw.duplicates.deleteDetail", { count: confirmDelete?.length ?? 0 })}
+        detail={t("fw.duplicates.deleteDetail", { count: confirmDeleteCount })}
         confirmLabel={t("fw.duplicates.deletePermanent")}
         danger
         onConfirm={() => void runDelete()}

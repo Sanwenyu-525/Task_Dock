@@ -2067,9 +2067,9 @@
 .preset-swatch {
   width: 22px;
   height: 22px;
-  border-radius: 7px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 70%, transparent), 0 0 0 1px var(--divider);
+  box-shadow: 0 0 0 1px var(--divider);
 }
 
 .preset-swatch.swatch-dream-gradient {
@@ -2580,20 +2580,17 @@
 
 .quick-add-btn.btn.primary {
   border: none;
-  border-radius: 8px;
-  background: var(--accent-gradient);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 40%, transparent),
-    0 4px 12px -6px rgba(99, 102, 241, 0.75);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  box-shadow: var(--control-shadow);
   padding: 4px 10px;
   font-size: 11px;
   font-weight: 600;
 }
 
 .quick-add-btn.btn.primary:hover {
-  background: var(--accent-gradient);
-  filter: brightness(1.06);
-  color: #fff;
+  background: var(--accent-hover);
+  color: var(--accent-text-on);
 }
 
 /* 筛选与排序 */
@@ -2928,7 +2925,7 @@ textarea:focus {
 .empty-icon {
   background: var(--accent-soft);
   color: var(--accent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--c-paper) 50%, transparent);
+  box-shadow: none;
 }
 
 /* ── 11. 设置面板：预设选择卡 ───────────────────────────────── */
@@ -3032,7 +3029,6 @@ textarea:focus {
   position: absolute;
   inset: 0;
   background: linear-gradient(115deg, rgba(255, 255, 255, 0.30), transparent 42%, rgba(99, 102, 241, 0.12));
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55);
   pointer-events: none;
 }
 
@@ -3469,43 +3465,35 @@ textarea:focus {
 .preset-card.active {
   box-shadow:
     0 0 0 1.5px var(--accent),
-    var(--control-shadow),
-    0 10px 20px -14px color-mix(in srgb, var(--c-accent) 55%, transparent);
+    var(--control-shadow);
 }
 
 .preset-preview {
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 60%, transparent),
+    0 0 0 1px var(--border-subtle),
     0 2px 6px -4px color-mix(in srgb, var(--c-night) 28%, transparent);
 }
 
 .pp-card {
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 70%, transparent),
-    0 1px 2px color-mix(in srgb, var(--c-accent) 16%, transparent);
+    0 0 0 1px color-mix(in srgb, var(--border-subtle) 82%, transparent);
 }
 
-/* 状态标签：小面积凸起，不改变原有颜色语义 */
+/* 状态标签：颜色语义由底色承担，不再用小面积凸起/内高光。 */
 .clip-kind,
 .history-kind,
 .action-kind {
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 45%, transparent),
-    0 1px 2px -1px color-mix(in srgb, var(--c-night) 22%, transparent);
+  box-shadow: none;
 }
 
-/* 分类胶囊：面板与翼片同属一套材质（冷蓝玻璃基底 + 内侧边缘高光）。
-   底色仍由 styles.css 的 --capsule-face（不透明）承担，玻璃层由
-   --wing-panel-face / --wing-panel-border / --wing-panel-shadow 表达，
-   这里只按预设补充边缘厚度，不改背景。
+/* 分类胶囊：面板与翼片同属一套材质，但厚度只用 1px 轮廓 + 柔和外阴影表达；
+   不再叠加内侧顶部高光与底部厚度阴影。
    **轨道不在此列**：翼片表面由 `CapsuleWing` 的 SVG 轮廓承担，
    在轨道容器上写 box-shadow / border 会沿矩形外框画出一整块方影。 */
 .capsule-panel {
   border-color: var(--wing-panel-border);
   box-shadow:
     0 0 0 1px var(--wing-panel-edge),
-    inset 0 1px 0 var(--wing-panel-inner),
-    inset 0 -2px 6px -6px color-mix(in srgb, var(--c-night) 45%, transparent),
     var(--wing-panel-shadow);
 }
 
@@ -3515,11 +3503,9 @@ textarea:focus {
   box-shadow: var(--rail-active-shadow);
 }
 
-/* 吸附反馈条：与卡片的浮起方向一致 */
+/* 吸附反馈条：只保留一层柔和外阴影 */
 .snap-feedback {
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--c-paper) 42%, transparent),
-    var(--shadow-overlay);
+  box-shadow: var(--shadow-overlay);
 }
 }
 

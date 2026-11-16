@@ -146,10 +146,13 @@ kv 键：`workbench_entries`（移动端专属；桌面端是 settings 表的 `n
 | `src/lib/__tests__/entryReorder.test.ts` | 网格落格/列表换位/轻点判定的边界与异常输入 |
 | `src/db/__tests__/entryLayout.test.ts` | 真实 SQLite 往返、损坏恢复、旧版本迁移、已删除入口清理、读失败标记 |
 | `src/lib/__tests__/entryLayoutStore.test.ts` | 单飞加载、串行写不互相覆盖、重启一致性、恢复默认 |
+| `src/lib/__tests__/entryLayoutStoreWriteFailure.test.ts` | 写盘失败注入：回滚到最近成功、失败不残留 settings、连续失败不污染、失败后仍可写、慢写串行 |
+| `src/lib/__tests__/entryLayout.test.ts` 的「边界输入与 dropped 统计」 | 非字符串 / 重复 / 未知 / 暂不可用 / 空数组 / known 缺失或不全 / 旧结构 / 损坏 |
 
-组件级（渲染）测试在本仓库不可行：`vitest.config.ts` 是 `environment: "node"`，
-未安装 jsdom 与 `@testing-library/react-native`。因此界面部分以真机验收为准，
-证据在 `tmp/acceptance/mobile-entry-customization/`。
+`vitest.config.ts` 为 mobile 自带 React 19.3.0 与仓库根 19.3.1 的双实例补了
+`react/jsx-runtime`、`react/jsx-dev-runtime` alias（automatic JSX 走子路径，只写 `react`
+不命中）；入口模块本身不依赖渲染器。2026-11-16 全量 54 文件 / 561 例通过。capture 组件
+测试的环境问题由该模块自己的测试改动修复，不属于入口模块。
 
 ## 9. 变更记录
 
@@ -167,3 +170,12 @@ kv 键：`workbench_entries`（移动端专属；桌面端是 settings 表的 `n
   桌面端在 `%APPDATA%\com.taskdock.desktop\task-dock.db`，两端键名 `workbench_entries` /
   `navigation_layout` 互不引用（桌面端对 `workbench_entries` 引用 0 处）。
   反方向（改桌面端后验移动端）未执行，避免写入用户真实配置，详见报告 §10 隔离取证。
+- 2026-11-16（第二轮质量加固）：补写盘失败注入 10 例、归一化边界 13 例，入口模块 7 文件
+  114 例通过；`commitEntryLayout` 失败改为整份快照回滚（不再残留 `source:"settings"` /
+  `corrupt:false`）；`normalizeEntryLayout` 对 `visible` 逐项校验，非字符串计入 `dropped`。
+  管理页 `openEntry` 对 tab/createTask 先 `onBack()` 再切换，修掉「点了没反应」；窄屏
+  `compact` 隐藏简介、列表拖动手柄与工作台 × 扩大命中区；`QuickTile` 标签改 2 行并收紧
+  内距，保持 78 高，修 4 列下「本机素材暂存」省略号。typecheck 0、全量 561 例通过、
+  release APK versionCode 62 / 0.1.14 已在真机验证配置跨版本保留与小屏/拖拽。19 个入口的
+  真机逐项点击受设备自动化漂移影响只完成 1 项，其余以代码契约 + 单测覆盖，详见
+  `tmp/acceptance/mobile-entry-customization/report-round2.md`。

@@ -210,7 +210,6 @@ fn hbmp_to_png(hbmp: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<Vec<u8>> 
 }
 
 fn encode_png(rgba: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
-    use std::io::Write;
     let mut out = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut out, w, h);

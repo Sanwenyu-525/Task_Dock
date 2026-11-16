@@ -17,6 +17,13 @@ pub fn quit_app(app: tauri::AppHandle) {
     crate::request_exit(&app);
 }
 
+/// 工作台正文保存握手回执：Rust 只在 requestId 匹配且尚未回执时接受。
+/// 返回 false 表示请求已过期/已处理，前端不应把它当成保存成功。
+#[tauri::command]
+pub fn app_exit_ack(request_id: u64, ok: bool) -> bool {
+    crate::complete_exit_handshake(request_id, ok)
+}
+
 /// 显示模式对应的窗口尺寸。
 fn mode_size(mode: &str) -> (f64, f64) {
     match mode {
@@ -317,10 +324,10 @@ pub fn set_magnetic_drag_config(enabled: bool, range: f64, max_lead: f64, releas
     crate::magnetic::installed()
 }
 
-/// 拖拽会话关联：指定代次的系统移动循环**此刻**是否仍在调用方窗口上运行。
+/// 拖拽会话关联的**兜底查询**：指定代次的系统移动循环此刻是否仍在调用方窗口上运行。
 ///
-/// 前端收到原生 `window-drag { phase: "start", generation }` 后调用它，把开始
-/// 信号关联到正确的本地会话（详见 `src/lib/dragCursorSession.ts`）：
+/// 相位载荷带 `token` 时前端已能精确关联（见 `drag_signal` 模块文档），不再调用本命令；
+/// 只有载荷没有 token（旧协议/非预期窗口类型）时才回退到这里：
 /// - 主窗：磁力子类化维护的代次 + 活跃标志；
 /// - 微件窗口：`drag_watch` 按窗口标签维护的同口径状态。
 ///

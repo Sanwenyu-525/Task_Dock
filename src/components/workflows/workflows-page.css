@@ -50,15 +50,16 @@
   }
 }
 
-/* 2026-11-15 R2：宽屏下工作流列表与「最近运行」并排，像效果图一样把
-   右侧信息带用起来；窄内容区再回落单列。 */
+/* 2026-11-16 R5：工作流从“卡片列表 + 侧栏”升级为三栏工作区。
+   左栏只负责选择（不重复操作按钮），中栏展示真实步骤定义与操作，右栏保留
+   当前执行与最近运行；窄内容区按容器宽度降级为两栏/单栏。 */
 .workflows-panel .wf-body {
   container-type: inline-size;
   container-name: wf-body;
 }
 .workflows-panel .wf-main {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  grid-template-columns: minmax(210px, 260px) minmax(360px, 1fr) minmax(280px, 330px);
   gap: 14px;
   align-items: start;
   min-width: 0;
@@ -66,7 +67,17 @@
 .workflows-panel .wf-list-col {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+.workflows-panel .wf-detail-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   min-width: 0;
 }
 .workflows-panel .wf-side-col {
@@ -75,9 +86,391 @@
   gap: 14px;
   min-width: 0;
 }
-@container wf-body (max-width: 900px) {
+@container wf-body (max-width: 880px) {
+  .workflows-panel .wf-main {
+    grid-template-columns: minmax(200px, 230px) minmax(0, 1fr);
+  }
+  .workflows-panel .wf-side-col {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+@container wf-body (max-width: 760px) {
   .workflows-panel .wf-main {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .workflows-panel .wf-list-col {
+    max-height: 230px;
+  }
+  .workflows-panel .wf-side-col {
+    display: flex;
+  }
+}
+
+/* 左栏：单选列表。选中态用左侧强调线 + 语义表面，不在一行里塞多个按钮。 */
+.workflows-panel .wf-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.workflows-panel .wf-rail-head strong {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.workflows-panel .wf-rail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+}
+.workflows-panel .wf-rail-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 8px 9px 10px;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.workflows-panel .wf-rail-item:hover {
+  background: var(--surface-hover);
+}
+.workflows-panel .wf-rail-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.workflows-panel .wf-rail-item.is-selected {
+  border-color: var(--border-subtle);
+  border-left-color: var(--accent);
+  background: var(--surface-hover);
+}
+.workflows-panel .wf-rail-item.is-disabled {
+  opacity: 0.62;
+}
+.workflows-panel .wf-rail-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.workflows-panel .wf-rail-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.workflows-panel .wf-rail-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+.workflows-panel .wf-rail-side {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+.workflows-panel .wf-rail-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.workflows-panel .wf-rail-badge.kind-success {
+  background: var(--status-success-soft, var(--accent-soft));
+  color: var(--status-success);
+}
+.workflows-panel .wf-rail-badge.kind-danger {
+  background: var(--status-error-soft, var(--surface-hover));
+  color: var(--status-error);
+}
+.workflows-panel .wf-rail-badge.kind-running,
+.workflows-panel .wf-rail-badge.is-running {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.workflows-panel .wf-rail-badge.is-muted {
+  color: var(--text-tertiary);
+}
+.workflows-panel .wf-rail-empty {
+  margin: 0;
+  padding: 8px 4px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+/* 中栏：选中工作流的定义与操作。 */
+.workflows-panel .wf-detail-empty {
+  min-height: 280px;
+  display: grid;
+  place-items: center;
+}
+.workflows-panel .wf-detail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+.workflows-panel .wf-detail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+.workflows-panel .wf-detail-title-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.workflows-panel .wf-detail-title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+.workflows-panel .wf-detail-desc {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.workflows-panel .wf-detail-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.workflows-panel .wf-detail-busy {
+  color: var(--accent);
+}
+.workflows-panel .wf-detail-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.workflows-panel .wf-detail-stats > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-hover);
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+.workflows-panel .wf-detail-stats strong {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 620;
+}
+.workflows-panel .wf-detail-section,
+.workflows-panel .wf-detail-last {
+  min-width: 0;
+}
+.workflows-panel .wf-detail-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.workflows-panel .wf-detail-section-head h4 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.workflows-panel .wf-detail-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+.workflows-panel .wf-step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.workflows-panel .wf-step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.workflows-panel .wf-step-row.is-disabled {
+  opacity: 0.58;
+}
+.workflows-panel .wf-step-index {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.workflows-panel .wf-step-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.workflows-panel .wf-step-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.workflows-panel .wf-step-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+.workflows-panel .wf-step-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.workflows-panel .wf-step-badge.is-muted {
+  color: var(--text-tertiary);
+}
+.workflows-panel .wf-detail-empty-hint {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+.workflows-panel .wf-detail-last {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.workflows-panel .wf-last-run-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.workflows-panel .wf-last-run-time {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 全宽底部时间线：使用 lastRuns 的真实状态/步骤/开始时间，
+   给三栏工作区一个明确的“最近发生了什么”阅读终点。 */
+.workflows-panel .wf-timeline {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+.workflows-panel .wf-timeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+}
+.workflows-panel .wf-timeline-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 2px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 11.5px;
+}
+.workflows-panel .wf-timeline-item:nth-child(-n + 2) {
+  border-top: none;
+}
+.workflows-panel .wf-timeline-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.workflows-panel .wf-timeline-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.workflows-panel .wf-timeline-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.workflows-panel .wf-timeline-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+@container wf-body (max-width: 760px) {
+  .workflows-panel .wf-timeline-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workflows-panel .wf-timeline-item:nth-child(2) {
+    border-top: 1px solid var(--border-subtle);
   }
 }
 

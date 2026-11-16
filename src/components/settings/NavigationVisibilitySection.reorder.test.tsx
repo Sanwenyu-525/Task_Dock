@@ -145,35 +145,38 @@ describe("拖拽排序", () => {
 
   it("向下跨越多个位置：落点决定最终下标，隐藏项不参与", async () => {
     render(<NavigationVisibilitySection />);
-    const { list } = stubGeometry();
+    const { list, rows } = stubGeometry();
     const handle = within(list).getByRole("button", { name: "拖拽排序 任务" });
+    const startIndex = rows.findIndex((row) => row.dataset.navEntry === "tasks");
+    const actionsIndex = rows.findIndex((row) => row.dataset.navEntry === "actions");
+    const rowCenter = (index: number) => index * (ROW_H + ROW_GAP) + ROW_H / 2;
 
     fireEvent.pointerDown(handle, {
       pointerId: 2,
       button: 0,
       pointerType: "mouse",
       clientX: 20,
-      clientY: 84,
+      clientY: rowCenter(startIndex),
     });
-    // 拖到第 6 行中心附近：越过 agents/apps/widgets/actions 的中心
+    // 拖到「行动」的中心上方：跨过中间多行，落点决定最终下标。
     fireEvent.pointerMove(window, {
       pointerId: 2,
       pointerType: "mouse",
       clientX: 20,
-      clientY: 84 + 106,
+      clientY: rowCenter(actionsIndex) - 1,
     });
     fireEvent.pointerUp(window, {
       pointerId: 2,
       pointerType: "mouse",
       clientX: 20,
-      clientY: 84 + 106,
+      clientY: rowCenter(actionsIndex) - 1,
     });
 
     await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
     const left = savedLeft();
     const index = left.indexOf("tasks");
     expect(index).toBeGreaterThan(2);
-    // 任务排到了「行动」之前（落点在 actions 的中心之上）
+    // 任务排到了「行动」之前（落点在 actions 的中心之上）。
     expect(index).toBe(left.indexOf("actions") - 1);
   });
 
@@ -236,22 +239,23 @@ describe("上下箭头：长按连续移动", () => {
     stubGeometry();
 
     const up = screen.getByRole("button", { name: "上移 任务" });
+    const taskIndex = rowLabels().indexOf("任务");
     fireEvent.pointerDown(up, { pointerId: 5, button: 0, pointerType: "mouse" });
-    // 第一步同步生效：任务与工作空间交换
+    // 第一步同步生效：任务上移一格（当前默认顺序里越过「文件工作区」）。
     expect(rowLabels()[0]).toBe("工作台");
-    expect(rowLabels()[1]).toBe("任务");
+    expect(rowLabels()[taskIndex - 1]).toBe("任务");
 
     // 未到长按阈值：不再移动
     act(() => {
       vi.advanceTimersByTime(300);
     });
-    expect(rowLabels()[1]).toBe("任务");
+    expect(rowLabels()[taskIndex - 1]).toBe("任务");
 
     // 进入连续移动：再上移一格到顶部，随后到边界停止
     act(() => {
       vi.advanceTimersByTime(400);
     });
-    expect(rowLabels()[0]).toBe("任务");
+    expect(rowLabels().indexOf("任务")).toBeLessThan(taskIndex - 1);
 
     act(() => {
       vi.advanceTimersByTime(140 * 6);
@@ -406,11 +410,12 @@ describe("键盘与无障碍", () => {
   it("排序后用 aria-live 播报最终位置", async () => {
     render(<NavigationVisibilitySection />);
     stubGeometry();
-    // 键盘点击（detail=0）等价单击一次
+    const initialIndex = defaultNavigationLayout().left.indexOf("clipboard");
+    // 键盘点击（detail=0）等价单击一次；上移一格后的位置为 initialIndex（1 基）。
     fireEvent.click(screen.getByRole("button", { name: "上移 剪贴板" }));
     await waitFor(() =>
       expect(document.querySelector('[aria-live="polite"]')?.textContent).toContain(
-        "已移到第 7 位",
+        `已移到第 ${initialIndex} 位`,
       ),
     );
   });

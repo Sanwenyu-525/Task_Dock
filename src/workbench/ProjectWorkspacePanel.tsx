@@ -100,7 +100,7 @@ export interface ProjectWorkspacePanelProps {
   /** 重新读取项目列表（创建/保存/归档/删除后由 shell 统一持有列表）。 */
   onProjectsChanged: () => Promise<WorkspaceProject[]>;
   /** 选择项目（null = 无项目）。 */
-  onSelectProject: (id: string | null) => void;
+  onSelectProject: (id: string | null) => Promise<boolean> | void;
   onRefreshDevProjects: () => Promise<void>;
   /** 切到开发工作台路由；返回值来自 shell 的导航门禁。 */
   onNavigateWorkbench: () => ProjectPanelNavResult;
@@ -406,7 +406,11 @@ export default function ProjectWorkspacePanel({
     try {
       await workspaceProjectDelete(project.id);
       const list = await onProjectsChanged();
-      onSelectProject(list[0]?.id ?? null);
+      const switched = await Promise.resolve(onSelectProject(list[0]?.id ?? null));
+      if (switched === false) {
+        onNotice("error", "项目已删除，但切换被正文保存守卫取消；请保存后重试");
+        return;
+      }
       setConfirmDelete(false);
       setEditing(false);
       onNotice("ok", "已删除工作空间登记；外部文件与关联任务未受影响");

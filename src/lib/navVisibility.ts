@@ -96,12 +96,12 @@ export function leftGroupFor(
 }
 
 /**
- * 把左侧顺序收敛成「每个分组最多连续出现一段」。
+ * 左侧入口分组归属的边界收敛。
  *
- * 跨组拖拽时入口会跟随落点邻居归组；历史上的旧配置若已经出现重复的
- * 视觉分组段（工作协同 / 自动化与内容 / 项目与系统），则把后一段并入前一段
- * （只改分组归属，不改任何顺序、不丢入口）。
- * 因而侧栏不会反复出现同一个分组标题，排序仍然是用户保存的真实顺序。
+ * 只处理「本次真正被拖动的入口」：按落点前后邻居决定它的分组，并保留
+ * `leftGroups` 里其他入口的原归属。旧配置若已有重复标题段，不在数据层批量
+ * 改写其他入口；侧栏渲染层会抑制重复标题，避免为了视觉去篡改用户归属。
+ * 隐藏入口的归属原样保留，恢复显示后仍可回到原分组。
  */
 export function reconcileLeftGroups(
   order: readonly string[],
@@ -126,45 +126,7 @@ export function reconcileLeftGroups(
     resolved[movedId] = target;
   }
 
-  type Run = { group: NavGroup; ids: string[] };
-  type VisibleSection = "core" | "flow" | "system";
-  // 与 WorkbenchShell.navSections 的可见标题保持一致：capture/planning 同为「自动化与内容」。
-  const visibleSectionOf = (group: NavGroup): VisibleSection =>
-    group === "system" ? "system" : group === "core" ? "core" : "flow";
-  const runs: Run[] = [];
-  for (const id of order) {
-    const group = leftGroupFor(id, resolved);
-    const last = runs[runs.length - 1];
-    if (last && last.group === group) last.ids.push(id);
-    else runs.push({ group, ids: [id] });
-  }
-
-  const merged: Run[] = [];
-  const seenSections = new Set<VisibleSection>();
-  let lastSection: VisibleSection | null = null;
-  for (const run of runs) {
-    const section = visibleSectionOf(run.group);
-    if (lastSection === section) {
-      // 同一可见分组的相邻子段（capture 紧接 planning）保留各自归属；标题只出现一次。
-      merged.push({ group: run.group, ids: [...run.ids] });
-      continue;
-    }
-    if (seenSections.has(section) && merged.length > 0) {
-      // 同一标题被其他分组隔开：整段并入上一段，只改归属，不改变左侧顺序。
-      merged[merged.length - 1].ids.push(...run.ids);
-      lastSection = visibleSectionOf(merged[merged.length - 1].group);
-      continue;
-    }
-    merged.push({ group: run.group, ids: [...run.ids] });
-    seenSections.add(section);
-    lastSection = section;
-  }
-
-  const result: Record<string, NavGroup> = { ...resolved };
-  for (const run of merged) {
-    for (const id of run.ids) result[id] = run.group;
-  }
-  return result;
+  return resolved;
 }
 
 /** 注册中心默认：默认可见入口按默认顺序，known 为当前全部入口。 */

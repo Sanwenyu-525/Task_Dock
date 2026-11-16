@@ -8,7 +8,7 @@
 //!
 //! 真正的结束信号在窗口过程里：`WM_EXITSIZEMOVE`。原生侧（主窗 `magnetic.rs`、
 //! 微件 `drag_watch.rs`）在循环开始/结束时各发一次 `window-drag`
-//! （载荷 `{ phase, generation }`，见 `src-tauri/src/drag_signal.rs`）。
+//! （载荷 `{ phase, generation, token? }`，见 `src-tauri/src/drag_signal.rs`）。
 //!
 //! ## 代次（generation）解决的是跨会话竞态
 //! 事件是异步的：旧拖拽的结束信号可能在用户**已经开始下一次拖拽**之后才被消费。

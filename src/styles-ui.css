@@ -496,15 +496,15 @@
   height: var(--input-height-sm);
   padding: 0 9px;
   gap: 6px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--cap-chip-face);
-  box-shadow: inset 0 1px 2px -1px color-mix(in srgb, var(--c-night) 8%, transparent);
+  box-shadow: 0 0 0 1px var(--border-subtle);
   transition: box-shadow 0.12s ease, background 0.12s ease;
 }
 
 .ui-search.ui-search--capsule:focus-within {
   background: var(--cap-chip-face-hover);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 /* 胶囊搜索容器固定 30px，仍用 compact 档的常规字号与统一行高；
@@ -901,9 +901,8 @@
   height: 13px;
   border-radius: 50%;
   background: #fff;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.85),
-    0 1px 3px rgba(0, 0, 0, 0.30);
+  /* 2D：只保留一层接触阴影，取消顶部内高光，避免实体开关的凸起感。 */
+  box-shadow: 0 1px 2px rgba(15, 20, 37, 0.18);
   transition: transform 0.16s var(--ease-out);
 }
 
