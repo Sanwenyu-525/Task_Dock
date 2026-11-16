@@ -304,6 +304,36 @@ function DropPreview({ zone }: { zone: FwDropZone }) {
       </div>
     );
   }
+  if (zone.type === "folder") {
+    const st = drag;
+    if (st.payload?.kind !== "files") {
+      return (
+        <div className="fw-drop-preview fw-drop-folder is-invalid" aria-hidden="true">
+          <span className="fw-drop-label">{t("fw.drag.mergeHint")}</span>
+        </div>
+      );
+    }
+    const accepted = filterTransferablePaths(st.payload.paths, zone.path);
+    const name = basename(zone.path) || zone.path;
+    if (!accepted.length) {
+      return (
+        <div className="fw-drop-preview fw-drop-folder is-invalid" aria-hidden="true">
+          <span className="fw-drop-label" title={zone.path}>
+            {t("fw.drag.folderInvalid", { target: name })}
+          </span>
+        </div>
+      );
+    }
+    return (
+      <div className="fw-drop-preview fw-drop-folder" aria-hidden="true">
+        <span className="fw-drop-label" title={zone.path}>
+          {st.effect === "copy"
+            ? t("fw.drag.folderCopy", { count: accepted.length, target: name })
+            : t("fw.drag.folderMove", { count: accepted.length, target: name })}
+        </span>
+      </div>
+    );
+  }
   if (zone.type === "tabbar") {
     return <span className="fw-tabbar-hint" aria-hidden="true" />;
   }
@@ -550,6 +580,10 @@ export default function FilePane({
       const zone = computeZone(fw.x, fw.y, fw.payload.kind);
       if (sameZone(zone, lastZoneRef.current)) return;
       lastZoneRef.current = zone;
+      // 悬停到未打开的目录行/另一窗格目录时，先预热目标卷键；否则缓存未命中
+      // 会按安全默认显示“复制”，与实际同卷移动不一致。
+      if (zone?.type === "folder") void primeVolumeKeys([zone.path]);
+      else if (zone?.type === "center") void primeVolumeKeys([zone.dir]);
       // 订阅回调内更新 hover 是允许的（签名不变时协调器不会再广播）——
       // 旧实现无条件 emit 造成订阅者→emit→订阅者的无限递归（P0 缺陷）。
       updateFwHover(zone);
@@ -827,6 +861,19 @@ export default function FilePane({
       }),
     );
   };
+
+  // Space 由面板统一识别（只在活动窗格触发），但面板不持有当前目录的可见条目；
+  // 这里补齐 entries，避免预览监听器因 detail.entries 为空而丢弃事件。
+  useEffect(() => {
+    const onPreviewRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ paneId?: string; path?: string }>).detail;
+      if (!detail || detail.paneId !== paneId) return;
+      if (selectedPaths.length !== 1 || selectedPaths[0] !== detail.path) return;
+      previewSelected();
+    };
+    window.addEventListener("taskdock-fw-preview-request", onPreviewRequest);
+    return () => window.removeEventListener("taskdock-fw-preview-request", onPreviewRequest);
+  }, [paneId, selectedPaths, visibleEntries]);
 
   const batchRenameSelected = (paths = selectedPaths) => {
     if (paths.length < 2) return;

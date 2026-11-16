@@ -203,6 +203,8 @@ describe("uploadDisplayName / isOpaqueFileName", () => {
   it("识别 vivo 风格的非显示名", () => {
     expect(isOpaqueFileName("document:1000069262")).toBe(true);
     expect(isOpaqueFileName("document%3A1000069262")).toBe(true);
+    expect(isOpaqueFileName("image:1000069917")).toBe(true);
+    expect(isOpaqueFileName("video:1000069917")).toBe(true);
     expect(isOpaqueFileName("1000069262")).toBe(true);
     expect(isOpaqueFileName(" IMG_20261115.jpg ")).toBe(false);
     expect(isOpaqueFileName("")).toBe(true);
@@ -212,6 +214,9 @@ describe("uploadDisplayName / isOpaqueFileName", () => {
     const fallback = uploadDisplayName(fake("document:1000069262"));
     expect(fallback.startsWith("手机文件-")).toBe(true);
     expect(fallback.endsWith(".jpg")).toBe(true);
+    const imageFallback = uploadDisplayName(fake("image:1000069917"));
+    expect(imageFallback.startsWith("手机文件-")).toBe(true);
+    expect(imageFallback.endsWith(".jpg")).toBe(true);
     expect(uploadDisplayName(fake("IMG_0001.jpg"))).toBe("IMG_0001.jpg");
   });
 });

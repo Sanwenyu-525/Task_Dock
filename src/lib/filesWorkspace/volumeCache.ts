@@ -1,8 +1,8 @@
-//! 真实卷缓存（第四轮 P0 补缺）。
+//! 真实卷缓存（第四轮 P0 补缺，第五轮安全默认修正）。
 //!
 //! `defaultEffect()` 是同步纯函数，不能在每个 pointermove 上等 IPC；这里在
-//! 目录打开/选择变化时预热，拖拽时只读缓存。缓存未命中返回 null，由调用方
-//! 回退到盘符启发式；无法判定时宁可复制，绝不静默移动。
+//! 目录打开/选择变化时预热，拖拽时只读缓存。缓存未命中返回 null，调用方
+//! **必须按复制处理**——盘符相同不足以证明同卷，绝不能静默移动。
 
 import { normalizePath } from "./pathUtils";
 
@@ -21,7 +21,12 @@ export async function primeVolumeKeys(paths: string[]): Promise<void> {
   try {
     const { fsVolumeKeys } = await import("../bridge");
     const keys = await fsVolumeKeys(fresh);
-    fresh.forEach((p, i) => cache.set(p, keys[i] ?? null));
+    fresh.forEach((p, i) => {
+      const key = keys[i] ?? null;
+      // 查询失败不缓存 null，否则后续拖拽无法重新预热，只能永久按复制。
+      if (key) cache.set(p, key);
+      else cache.delete(p);
+    });
   } catch {
     // 后端不可用/路径暂时不可读：不写入 null，后续仍可重试。
   } finally {
@@ -34,16 +39,27 @@ export function cachedVolumeKey(path: string): string | null {
   return cache.get(keyOf(path)) ?? null;
 }
 
+/** 测试与目录/挂载变化时使用：丢弃指定路径（不传则全清）的缓存。 */
+export function invalidateVolumeCache(paths?: string[]): void {
+  if (!paths?.length) {
+    cache.clear();
+    pending.clear();
+    return;
+  }
+  for (const path of paths) cache.delete(keyOf(path));
+}
+
 /**
  * 只用真实卷缓存判断默认效果：
- * - 源与目标都已知 → 相同移动 / 不同复制；
- * - 任一未知 → null，调用方回退盘符启发式。
+ * - 所有源与目标都已知，且全部源同卷 → 移动；
+ * - 任一源与目标不同卷 → 复制；
+ * - 任一源/目标未知 → null，调用方按复制处理（安全默认）。
  */
 export function volumeDecision(paths: string[], targetDir: string): "copy" | "move" | null {
-  const first = paths[0];
-  if (!first) return null;
-  const source = cachedVolumeKey(first);
+  if (!paths.length) return null;
   const target = cachedVolumeKey(targetDir);
-  if (!source || !target) return null;
-  return source === target ? "move" : "copy";
+  if (!target) return null;
+  const sources = paths.map(cachedVolumeKey);
+  if (sources.some((source) => !source)) return null;
+  return sources.every((source) => source === target) ? "move" : "copy";
 }

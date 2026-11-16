@@ -1260,6 +1260,25 @@ body.fw-resizing-row * {
   transform: translate(-50%, -50%);
 }
 
+/* 文件夹行落点：只在右上角显示小标签，不用整块彩色遮罩，避免遮挡文件名。 */
+.fw-drop-folder {
+  border: none;
+  background: transparent;
+}
+
+.fw-drop-folder .fw-drop-label {
+  right: 8px;
+  top: 6px;
+  max-width: min(280px, 45%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fw-drop-folder.is-invalid .fw-drop-label {
+  border-color: color-mix(in srgb, var(--status-error, #dc2626) 55%, transparent);
+  color: var(--status-error, #dc2626);
+}
+
 .fw-drop-swap {
   border-color: color-mix(in srgb, var(--accent) 70%, transparent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -2100,6 +2119,28 @@ body.fw-resizing-row * {
   margin: 2px 0;
 }
 
+.fw-compare-depth {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.fw-compare-depth > span {
+  flex: none;
+}
+
+.fw-compare-depth .ui-select {
+  min-width: 0;
+  max-width: 150px;
+}
+
+.fw-compare-incomplete {
+  color: var(--warning, #d97706);
+}
+
 .fw-compare-target {
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
@@ -2138,13 +2179,20 @@ body.fw-resizing-row * {
 }
 
 .fw-compare-stat.is-contentDiff,
-.fw-compare-stat.is-sizeDiff {
+.fw-compare-stat.is-sizeDiff,
+.fw-compare-stat.is-dirDiff {
   color: var(--warning, #d97706);
 }
 
 .fw-compare-stat.is-contentSame,
-.fw-compare-stat.is-same {
+.fw-compare-stat.is-same,
+.fw-compare-stat.is-dirSame {
   color: var(--success, #2f9e44);
+}
+
+.fw-compare-stat.is-dirUnchecked,
+.fw-compare-stat.is-dirPartial {
+  color: var(--text-tertiary);
 }
 
 .fw-compare-empty {
@@ -2217,13 +2265,21 @@ body.fw-resizing-row * {
 .fw-compare-dot.is-contentDiff,
 .fw-compare-dot.is-sizeDiff,
 .fw-compare-dot.is-timeDiff,
-.fw-compare-dot.is-kindDiff {
+.fw-compare-dot.is-kindDiff,
+.fw-compare-dot.is-dirDiff {
   background: var(--warning, #d97706);
 }
 
 .fw-compare-dot.is-contentSame,
-.fw-compare-dot.is-same {
+.fw-compare-dot.is-same,
+.fw-compare-dot.is-dirSame {
   background: var(--success, #2f9e44);
+}
+
+.fw-compare-dot.is-dirUnchecked,
+.fw-compare-dot.is-dirPartial {
+  background: var(--text-tertiary);
+  opacity: 0.6;
 }
 
 .fw-compare-size {
@@ -2373,6 +2429,15 @@ body.fw-resizing-row * {
 
 .fw-preview-truncated {
   margin: 0 0 6px;
+  color: var(--warning, #d97706);
+  font-size: 11px;
+}
+
+.fw-preview-encoding {
+  margin: 0 0 6px;
+  padding: 4px 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--warning, #d97706) 10%, transparent);
   color: var(--warning, #d97706);
   font-size: 11px;
 }

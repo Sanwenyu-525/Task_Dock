@@ -1728,6 +1728,7 @@ pub fn run() {
             commands::virtual_display::vd_list_apps,
             commands::virtual_display::vd_start,
             commands::virtual_display::vd_stop,
+            commands::virtual_display::vd_nav,
             commands::virtual_display::vd_sessions,
             commands::virtual_display::vd_focus,
             commands::virtual_display::vd_screenshot,

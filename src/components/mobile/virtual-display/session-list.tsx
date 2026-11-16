@@ -5,8 +5,11 @@
 
 import {
   AppWindow,
+  ArrowLeft,
   Camera,
   CircleAlert,
+  Home,
+  List,
   LocateFixed,
   MonitorSmartphone,
   ShieldAlert,
@@ -35,9 +38,14 @@ export interface SessionListProps {
   now: number;
   closingIds: string[];
   capturingId: string | null;
+  navBusyId: string | null;
   t: Translate;
   onFocus: (session: VdSession) => void;
   onCapture: (session: VdSession) => void;
+  onNavigate: (
+    session: VdSession,
+    action: "back" | "home" | "recents",
+  ) => void;
   onClose: (session: VdSession) => void;
 }
 
@@ -49,9 +57,11 @@ export default function SessionList({
   now,
   closingIds,
   capturingId,
+  navBusyId,
   t,
   onFocus,
   onCapture,
+  onNavigate,
   onClose,
 }: SessionListProps) {
   return (
@@ -85,6 +95,15 @@ export default function SessionList({
             const stage = stageKey(session.stage);
             const closing = session.status === "stopping" || closingIds.includes(session.id);
             const canCapture = session.status === "running" && capturingId !== session.id;
+            const navUnavailable =
+              session.mode === "virtual" && session.display_id === null;
+            const navDisabled =
+              session.status !== "running" || navUnavailable || navBusyId === session.id;
+            const navTip = navUnavailable
+              ? t("virtualDisplay.session.navUnavailable")
+              : session.status !== "running"
+                ? t("virtualDisplay.session.navNotReady")
+                : undefined;
             const modeLabel = t(
               session.mode === "mirror"
                 ? "virtualDisplay.mode.mirror"
@@ -161,7 +180,50 @@ export default function SessionList({
                 ) : null}
 
                 {active ? (
-                  <div className="vd-session-actions">
+                  <>
+                    <div className="vd-session-nav" aria-label={t("virtualDisplay.session.nav")}>
+                      <button
+                        type="button"
+                        className="btn sm vd-nav-btn"
+                        onClick={() => onNavigate(session, "back")}
+                        disabled={navDisabled}
+                        data-tip={navTip}
+                      >
+                        {navBusyId === session.id ? (
+                          <Loader2 size={12} className="spin" />
+                        ) : (
+                          <ArrowLeft size={12} />
+                        )}
+                        {t("virtualDisplay.session.back")}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn sm vd-nav-btn"
+                        onClick={() => onNavigate(session, "home")}
+                        disabled={navDisabled}
+                        data-tip={navTip}
+                      >
+                        <Home size={12} />
+                        {t("virtualDisplay.session.home")}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn sm vd-nav-btn"
+                        onClick={() => onNavigate(session, "recents")}
+                        disabled={navDisabled}
+                        data-tip={navTip}
+                      >
+                        <List size={12} />
+                        {t("virtualDisplay.session.recents")}
+                      </button>
+                      {navUnavailable ? (
+                        <span className="vd-nav-note">
+                          {t("virtualDisplay.session.navUnavailableShort")}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div className="vd-session-actions">
                     <button
                       className="btn sm"
                       onClick={() => onFocus(session)}
@@ -204,6 +266,7 @@ export default function SessionList({
                         : t("virtualDisplay.session.close")}
                     </button>
                   </div>
+                  </>
                 ) : (
                   <div className="vd-session-ended" role="status">
                     {t("virtualDisplay.sessions.endedHint")}

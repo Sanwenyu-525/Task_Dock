@@ -39,14 +39,15 @@ function previewKind(entry: FsEntry | null | undefined): "image" | "video" | "au
   if (entry.category === "image") return "image";
   if (entry.category === "video") return "video";
   if (entry.category === "audio") return "audio";
-  if (entry.category === "text" || entry.category === "code" || entry.category === "data" || entry.category === "doc") {
-    return "text";
-  }
+  // 只有明确的文本/代码类别，或下面的文本扩展名白名单才按文本读取。
+  // doc（PDF/DOCX）、sheet（XLSX）、archive、program 等二进制格式没有预览引擎，
+  // 不能丢给 read_text 后把“二进制拒绝”误报成读取失败。
+  if (entry.category === "text" || entry.category === "code") return "text";
   const ext = extOf(entry.name);
-  if (["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "avif", "ico"].includes(ext)) return "image";
+  if (["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "avif", "ico", "tif", "tiff"].includes(ext)) return "image";
   if (["mp4", "webm", "mov", "m4v", "mkv", "avi"].includes(ext)) return "video";
   if (["mp3", "wav", "flac", "m4a", "aac", "ogg", "oga"].includes(ext)) return "audio";
-  if (["txt", "md", "json", "ts", "tsx", "js", "jsx", "css", "html", "rs", "py", "toml", "yaml", "yml", "xml", "csv", "log"].includes(ext)) {
+  if (["txt", "md", "json", "ts", "tsx", "js", "jsx", "css", "html", "rs", "py", "toml", "yaml", "yml", "xml", "csv", "log", "ini", "cfg", "conf", "sql"].includes(ext)) {
     return "text";
   }
   return "unsupported";
@@ -110,6 +111,7 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [mediaUrl, setMediaUrl] = useState<string | null>(null);
   const [text, setText] = useState<FsTextPreview | null>(null);
+  const [encodingWarning, setEncodingWarning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(100);
@@ -139,6 +141,7 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
     setImageUrl(null);
     setMediaUrl(null);
     setText(null);
+    setEncodingWarning(false);
     const path = joinPath(request.dir, current.name);
     void (async () => {
       try {
@@ -152,7 +155,10 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
           if (!cancelled) setMediaUrl(url);
         } else if (kind === "text") {
           const preview = await fsReadText(path);
-          if (!cancelled) setText(preview);
+          if (!cancelled) {
+            setText(preview);
+            setEncodingWarning(preview.content.includes("\uFFFD"));
+          }
         }
       } catch (e) {
         if (!cancelled) setError(errorMessage(e));
@@ -285,14 +291,25 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
           </div>
         )}
         {!loading && !error && kind === "video" && mediaUrl && (
-          <video className="fw-preview-video" src={mediaUrl} controls preload="metadata">
+          <video
+            className="fw-preview-video"
+            src={mediaUrl}
+            controls
+            preload="metadata"
+            onError={() => setError(t("fw.preview.playbackFailed"))}
+          >
             {t("fw.preview.videoUnsupported")}
           </video>
         )}
         {!loading && !error && kind === "audio" && mediaUrl && (
           <div className="fw-preview-audio">
             <div className="fw-preview-audio-name">{current?.name}</div>
-            <audio src={mediaUrl} controls preload="metadata" />
+            <audio
+              src={mediaUrl}
+              controls
+              preload="metadata"
+              onError={() => setError(t("fw.preview.playbackFailed"))}
+            />
             <div className="fw-preview-audio-meta">
               {formatSize(current?.size ?? null)} · {formatModified(current?.modifiedMs ?? null)}
             </div>
@@ -301,6 +318,7 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
         {!loading && !error && kind === "text" && text && (
           <div className="fw-preview-text">
             {text.truncated && <p className="fw-preview-truncated">{t("fw.preview.truncated")}</p>}
+            {encodingWarning && <p className="fw-preview-encoding">{t("fw.preview.encodingWarning")}</p>}
             <pre>
               {codeLike
                 ? text.content.split("\n").map((line, lineIndex) => (

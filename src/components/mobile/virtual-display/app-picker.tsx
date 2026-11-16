@@ -1,10 +1,18 @@
-//! Android 应用选择器：名称/包名实时搜索、用户/系统标识、可启动状态与手动包名。
+//! Android 应用选择器：按需展开全部应用，默认只展示当前选中、最近使用与收藏。
 //!
-//! 应用列表与设备 UID 绑定：父组件在设备切换时递增请求序号并丢弃迟到响应；
-//! 本组件只负责展示与本地过滤，不缓存跨设备数据。
+//! 名称/图标来自 Rust 侧的 Android PackageManager；搜索支持中文名、英文名、
+//! 完整包名与包名片段。列表仍与设备 UID 绑定，父组件负责丢弃过期响应。
 
 import { useEffect, useMemo, useState } from "react";
-import { AppWindow, Check, Loader2, RefreshCw } from "lucide-react";
+import {
+  AppWindow,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Loader2,
+  RefreshCw,
+  Star,
+} from "lucide-react";
 
 import type { VdApp } from "../../../lib/bridge";
 import { SearchField } from "../../ui";
@@ -18,16 +26,124 @@ export interface AppPickerProps {
   includeAll: boolean;
   deviceUid: string;
   selectedPackage: string;
+  recentPackages: string[];
+  favoritePackages: string[];
   manual: boolean;
   manualPackage: string;
   manualError: string | null;
   disabled: boolean;
   t: Translate;
   onSelect: (packageName: string) => void;
+  onToggleFavorite: (packageName: string) => void;
   onManualChange: (value: string) => void;
   onToggleManual: (open: boolean) => void;
   onToggleIncludeAll: () => void;
   onRefresh: () => void;
+}
+
+function appDisplayName(app: VdApp): string {
+  return app.label?.trim() || app.package;
+}
+
+function AppIcon({ app }: { app: VdApp }) {
+  const [broken, setBroken] = useState(false);
+  return (
+    <span className="vd-app-icon" aria-hidden="true">
+      {app.icon && !broken ? (
+        <img
+          src={app.icon}
+          alt=""
+          width={24}
+          height={24}
+          draggable={false}
+          onError={() => setBroken(true)}
+        />
+      ) : (
+        <AppWindow size={14} />
+      )}
+    </span>
+  );
+}
+
+function AppRow({
+  app,
+  selected,
+  disabled,
+  favorite,
+  onSelect,
+  onToggleFavorite,
+  t,
+  compact = false,
+}: {
+  app: VdApp;
+  selected: boolean;
+  disabled: boolean;
+  favorite: boolean;
+  onSelect: (packageName: string) => void;
+  onToggleFavorite: (packageName: string) => void;
+  t: Translate;
+  compact?: boolean;
+}) {
+  const unavailable = app.launchable === false;
+  return (
+    <div className={`vd-app-item${selected ? " is-selected" : ""}${compact ? " is-compact" : ""}`}>
+      <button
+        type="button"
+        className={`vd-app-row${selected ? " is-selected" : ""}${
+          unavailable ? " is-disabled" : ""
+        }`}
+        aria-pressed={selected}
+        disabled={disabled || unavailable}
+        data-tip={
+          unavailable ? app.reason ?? t("virtualDisplay.noLaunchable") : app.package
+        }
+        onClick={() => onSelect(app.package)}
+      >
+        <AppIcon app={app} />
+        <span className="vd-app-main">
+          <span className="vd-app-name">
+            {appDisplayName(app)}
+            {selected ? (
+              <Check size={12} className="vd-app-check" aria-hidden="true" />
+            ) : null}
+          </span>
+          {!compact ? <span className="vd-app-package">{app.package}</span> : null}
+          {unavailable && !compact ? (
+            <span className="vd-app-reason">
+              {app.reason ?? t("virtualDisplay.noLaunchable")}
+            </span>
+          ) : null}
+        </span>
+        {!compact ? (
+          <span className="vd-app-tags">
+            <span className={`vd-app-tag is-${app.system ? "system" : "user"}`}>
+              {t(app.system ? "virtualDisplay.systemApp" : "virtualDisplay.userApp")}
+            </span>
+          </span>
+        ) : null}
+      </button>
+      {!unavailable ? (
+        <button
+          type="button"
+          className={`vd-app-fav${favorite ? " is-favorite" : ""}`}
+          aria-label={t(
+            favorite
+              ? "virtualDisplay.app.unfavorite"
+              : "virtualDisplay.app.favorite",
+          )}
+          aria-pressed={favorite}
+          data-tip={t(
+            favorite
+              ? "virtualDisplay.app.unfavorite"
+              : "virtualDisplay.app.favorite",
+          )}
+          onClick={() => onToggleFavorite(app.package)}
+        >
+          <Star size={12} fill={favorite ? "currentColor" : "none"} aria-hidden="true" />
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 export default function AppPicker({
@@ -38,33 +154,64 @@ export default function AppPicker({
   includeAll,
   deviceUid,
   selectedPackage,
+  recentPackages,
+  favoritePackages,
   manual,
   manualPackage,
   manualError,
   disabled,
   t,
   onSelect,
+  onToggleFavorite,
   onManualChange,
   onToggleManual,
   onToggleIncludeAll,
   onRefresh,
 }: AppPickerProps) {
   const [query, setQuery] = useState("");
+  const [browseAll, setBrowseAll] = useState(false);
 
-  // 设备切换后清空旧搜索词：避免新设备的应用被上一台手机的搜索条件过滤掉。
+  // 设备切换后清空旧搜索词；当前选中由父组件按包名保留/校验。
   useEffect(() => {
     setQuery("");
+    setBrowseAll(false);
   }, [deviceUid]);
 
+  const keyword = query.trim().toLowerCase();
   const filtered = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
     if (!keyword) return apps;
     return apps.filter(
       (app) =>
         (app.label ?? "").toLowerCase().includes(keyword) ||
         app.package.toLowerCase().includes(keyword),
     );
-  }, [apps, query]);
+  }, [apps, keyword]);
+
+  const byPackage = useMemo(
+    () => new Map(apps.map((app) => [app.package, app])),
+    [apps],
+  );
+  const selectedApp = selectedPackage ? byPackage.get(selectedPackage) ?? null : null;
+  const recentApps = recentPackages
+    .map((pkg) => byPackage.get(pkg))
+    .filter((app): app is VdApp => Boolean(app) && app!.launchable !== false);
+  const favoriteApps = favoritePackages
+    .map((pkg) => byPackage.get(pkg))
+    .filter((app): app is VdApp => Boolean(app) && app!.launchable !== false);
+  const showAll = browseAll || keyword.length > 0;
+  const availableCount = apps.filter((app) => app.launchable !== false).length;
+  const favoriteSet = useMemo(() => new Set(favoritePackages), [favoritePackages]);
+
+  const rowProps = (app: VdApp, compact = false) => ({
+    app,
+    selected: app.package === selectedPackage,
+    disabled,
+    favorite: favoriteSet.has(app.package),
+    onSelect,
+    onToggleFavorite,
+    t,
+    compact,
+  });
 
   return (
     <div className="vd-app-picker">
@@ -72,7 +219,9 @@ export default function AppPicker({
         <span className="vd-field-label">{t("virtualDisplay.config.app")}</span>
         {!manual ? (
           <span className="vd-field-count">
-            {t("virtualDisplay.app.count", { count: filtered.length })}
+            {loading
+              ? t("virtualDisplay.app.loading")
+              : t("virtualDisplay.app.count", { count: filtered.length })}
           </span>
         ) : null}
         {!manual ? (
@@ -139,61 +288,90 @@ export default function AppPicker({
             <div className="vd-app-state is-error" role="alert">
               {error}
             </div>
-          ) : filtered.length === 0 ? (
-            <div className="vd-app-state">
-              <span className="vd-app-state-title">{t("virtualDisplay.app.empty")}</span>
-              <span className="vd-hint">{t("virtualDisplay.app.emptyHint")}</span>
-            </div>
+          ) : showAll ? (
+            filtered.length === 0 ? (
+              <div className="vd-app-state">
+                <span className="vd-app-state-title">{t("virtualDisplay.app.empty")}</span>
+                <span className="vd-hint">{t("virtualDisplay.app.emptyHint")}</span>
+              </div>
+            ) : (
+              <div
+                className={`vd-app-list vd-app-grid${browseAll ? " is-browse" : ""}`}
+                aria-label={t("virtualDisplay.app.allApps")}
+              >
+                {filtered.map((app) => (
+                  <AppRow key={app.package} {...rowProps(app)} />
+                ))}
+              </div>
+            )
           ) : (
-            <div className="vd-app-list" aria-label={t("virtualDisplay.app")}>
-              {filtered.map((app) => {
-                const unavailable = app.launchable === false;
-                const selected = app.package === selectedPackage;
-                return (
-                  <button
-                    type="button"
-                    key={app.package}
-                    className={`vd-app-row${selected ? " is-selected" : ""}${
-                      unavailable ? " is-disabled" : ""
-                    }`}
-                    aria-pressed={selected}
-                    disabled={disabled || unavailable}
-                    data-tip={unavailable ? app.reason ?? t("virtualDisplay.noLaunchable") : undefined}
-                    onClick={() => onSelect(app.package)}
-                  >
-                    <span className="vd-app-icon" aria-hidden="true">
-                      <AppWindow size={14} />
-                    </span>
-                    <span className="vd-app-main">
-                      <span className="vd-app-name">
-                        {app.label ?? t("virtualDisplay.app.unknownName")}
-                        {selected ? (
-                          <Check size={12} className="vd-app-check" aria-hidden="true" />
-                        ) : null}
-                      </span>
-                      <span className="vd-app-package">{app.package}</span>
-                      {unavailable ? (
-                        <span className="vd-app-reason">
-                          {app.reason ?? t("virtualDisplay.noLaunchable")}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="vd-app-tags">
-                      <span
-                        className={`vd-app-tag is-${app.system ? "system" : "user"}`}
-                      >
-                        {t(
-                          app.system
-                            ? "virtualDisplay.systemApp"
-                            : "virtualDisplay.userApp",
-                        )}
-                      </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            <>
+              {selectedApp ? (
+                <div className="vd-app-section">
+                  <div className="vd-app-section-title">
+                    <span>{t("virtualDisplay.app.selected")}</span>
+                  </div>
+                  <div className="vd-app-summary">
+                    <AppRow {...rowProps(selectedApp, true)} />
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="vd-app-section">
+                <div className="vd-app-section-title">
+                  <span>{t("virtualDisplay.app.recent")}</span>
+                  {recentApps.length ? (
+                    <span className="vd-app-section-count">{recentApps.length}</span>
+                  ) : null}
+                </div>
+                {recentApps.length ? (
+                  <div className="vd-app-grid is-quick">
+                    {recentApps.slice(0, 4).map((app) => (
+                      <AppRow key={app.package} {...rowProps(app, true)} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="vd-app-quiet">{t("virtualDisplay.app.recentEmpty")}</div>
+                )}
+              </div>
+
+              {favoriteApps.length ? (
+                <div className="vd-app-section">
+                  <div className="vd-app-section-title">
+                    <span>{t("virtualDisplay.app.favorites")}</span>
+                    <span className="vd-app-section-count">{favoriteApps.length}</span>
+                  </div>
+                  <div className="vd-app-grid is-quick">
+                    {favoriteApps.slice(0, 4).map((app) => (
+                      <AppRow key={app.package} {...rowProps(app, true)} />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <button
+                type="button"
+                className="vd-app-browse"
+                onClick={() => setBrowseAll(true)}
+                disabled={disabled}
+              >
+                <ChevronDown size={13} aria-hidden="true" />
+                {t("virtualDisplay.app.browseAll", { count: availableCount })}
+              </button>
+            </>
           )}
+
+          {showAll ? (
+            <button
+              type="button"
+              className="vd-app-browse is-collapse"
+              onClick={() => setBrowseAll(false)}
+              disabled={disabled}
+            >
+              <ChevronUp size={13} aria-hidden="true" />
+              {t("virtualDisplay.app.collapseAll")}
+            </button>
+          ) : null}
 
           <div className="vd-app-foot">
             <button

@@ -7,12 +7,14 @@
 //!   node scripts/taskdock-integration.mjs task ready  --id <slug> --commit <交付提交> [--from <起点>]
 //!   node scripts/taskdock-integration.mjs task list|show --id <slug>
 //!
+//!   node scripts/taskdock-integration.mjs batch plan --platform desktop|web|android
+//!                                           [--mode batch|urgent|manual] [--min-ready 2] [--json]
 //!   node scripts/taskdock-integration.mjs snapshot bootstrap --base <稳定提交> [--note <说明>] [--force]
 //!   node scripts/taskdock-integration.mjs snapshot create --tasks a,b,c | --all-ready
 //!                                           [--base <稳定提交>] [--check none|static] [--dry-run]
 //!                                           [--allow-overlap] [--allow-extra-paths] [--note <文字>]
 //!   node scripts/taskdock-integration.mjs build --snapshot <id|latest> --platform desktop|web|android
-//!                                           [--dry-run] [--force] [--target-dir <绝对路径>]
+//!                                           [--mode batch|urgent|manual] [--dry-run] [--force] [--target-dir <绝对路径>]
 //!                                           [--priority P0..P3] [--command <实验用命令串>]
 //!   node scripts/taskdock-integration.mjs accept --build <id> --task <id>
 //!                                           --status pass|fail|blocked|not-run
@@ -24,7 +26,9 @@
 //!   - 集成 = 把「已登记交付提交」里**声明路径**的改动，按顺序应用到工具自有的 `integration` 分支
 //!     工作区，产出快照提交；共享工作区里其他任务的未提交改动无法进入快照；
 //!   - 构建 = 在独立的 `-integration-build` 工作区 checkout 到快照提交后执行，产物与 commit/任务/校验值一起记账；
-//!   - 验收 = 多个 Agent 针对同一 buildId 各写自己的验收记录，不改他人结论。
+//!     默认 batch 合批，任务 ready 不自动出包；失败按 source/dependency/resource/environment/packaging/unknown 分类；
+//!   - 验收 = 多个 Agent 针对同一 buildId 各写自己的验收记录，不改他人结论；资格按构建累计 includedTasks 判断，
+//!     旧任务可在包含其代码的新构建上验收/回归，记录保留 buildId+taskId 的 revision/history。
 //!
 //! 安全边界：
 //!   - 只读主工作区的 Git 对象，不提交、不重置、不 stash、不 checkout 主工作区；
@@ -36,11 +40,12 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
+  appendFileSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
   readlinkSync, statSync, symlinkSync, unlinkSync, writeSync,
 } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cpus, freemem, totalmem } from "node:os";
 import { atomicWriteJson, readJson } from "./sched/state.mjs";
 
 const SELF_PATH = fileURLToPath(import.meta.url);
@@ -57,6 +62,10 @@ const STATUS_LABEL = {
   "accept-failed": "验收失败",
 };
 const ACCEPT_STATUS = ["pass", "fail", "blocked", "not-run"];
+const BUILD_MODES = ["batch", "urgent", "manual"];
+const FAILURE_CLASSES = [
+  "source-error", "dependency-error", "resource-error", "environment-error", "packaging-error", "unknown",
+];
 const EXIT = { ok: 0, usage: 1, rejected: 2, buildFailed: 3, state: 4 };
 const TASK_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_TASK_ID = 48;
@@ -775,6 +784,260 @@ function snapshotAncestry(paths, snap) {
   return { chain, tasks };
 }
 
+// 一个 build 实际包含的任务集合：优先使用构建记录里的累计清单；旧记录没有该字段时沿快照 base 链回算。
+function includedTasksForBuild(paths, build) {
+  const out = new Map();
+  const snap = build.snapshot ? readJson(join(paths.snapshots, `${build.snapshot}.json`)) : null;
+  if (snap) for (const t of snapshotAncestry(paths, snap).tasks) out.set(t.id, t);
+  for (const t of build.tasks ?? []) out.set(t.id, t);
+  for (const t of build.includedTasks ?? []) out.set(t.id, t);
+  return [...out.values()];
+}
+
+// 平台适用性只用任务声明的写入范围和模块名做保守判断：移动端改动不能拿桌面/Web 产物验收。
+function isMobileTask(task) {
+  const module = String(task.module ?? "").toLowerCase();
+  return (task.paths ?? []).some((p) => String(p).replace(/\\/g, "/").startsWith("apps/mobile/")) ||
+    module.includes("mobile") || module.includes("android");
+}
+
+function taskAppliesToPlatform(task, platform) {
+  if (platform === "android") return isMobileTask(task);
+  return !isMobileTask(task);
+}
+
+function hasTrustedCheck(task) {
+  return (task.checks ?? []).some((c) =>
+    c.exitCode === 0 && c.commit === task.commit &&
+    (c.source === "executed" || (c.source === "external" && c.evidence)));
+}
+
+function readinessBlockers(task) {
+  const blockers = [];
+  if (!task.commit) blockers.push("没有交付提交");
+  if (!(task.paths ?? []).length) blockers.push("没有写入范围");
+  if (task.commit && !hasTrustedCheck(task)) blockers.push("缺少与交付提交一致的通过检查");
+  return blockers;
+}
+
+function buildDirs(paths) {
+  if (!existsSync(paths.builds)) return [];
+  return readdirSync(paths.builds, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+}
+
+function latestBuildFor(paths, { snapshot = null, platform = null, usableOnly = false } = {}) {
+  const records = buildDirs(paths)
+    .map((name) => readJson(join(paths.builds, name, "build.json")))
+    .filter((b) => b && (!snapshot || b.snapshot === snapshot) && (!platform || b.platform === platform))
+    .sort((a, b) => String(b.finishedAt ?? "").localeCompare(String(a.finishedAt ?? "")) || String(b.id).localeCompare(String(a.id)));
+  if (!usableOnly) return records[0] ?? null;
+  return records.find((b) => b.status === "succeeded" && b.dirty === false &&
+    artifactsUsable(b.platform, b.artifacts, join(paths.builds, b.id))) ?? null;
+}
+
+function acceptanceRecordFor(paths, buildId, taskId) {
+  return readJson(join(paths.builds, buildId, "acceptance", `${taskId}.json`));
+}
+
+function pathsConflict(a, b) {
+  const ap = [...(a.paths ?? []), ...(a.extraPaths ?? [])];
+  const bp = [...(b.paths ?? []), ...(b.extraPaths ?? [])];
+  return ap.some((x) => bp.some((y) => pathCovered(x, y) || pathCovered(y, x) || x === y));
+}
+
+function planTaskView(task, platform, extra = {}) {
+  return {
+    id: task.id,
+    module: task.module,
+    owner: task.owner,
+    status: task.status,
+    commit: task.commit,
+    snapshot: task.snapshot,
+    paths: task.paths ?? [],
+    needs: task.needs ?? [],
+    applicable: taskAppliesToPlatform(task, platform),
+    ...extra,
+  };
+}
+
+function cmdBatch(sub, argv) {
+  if (sub !== "plan") throw new Fail(`未知 batch 子命令：${sub ?? "(空)"}（可用 plan）`, EXIT.usage);
+  const args = parseArgs(argv);
+  const platform = str(args, "platform", "desktop");
+  const cfg = PLATFORMS[platform];
+  if (!cfg) throw new Fail(`--platform 只能是 ${Object.keys(PLATFORMS).join("|")}`, EXIT.usage);
+  const mode = str(args, "mode", "batch");
+  if (!BUILD_MODES.includes(mode)) throw new Fail(`--mode 只能是 ${BUILD_MODES.join("|")}`, EXIT.usage);
+  const rawMin = args.minReady === undefined ? 2 : Number(args.minReady);
+  if (!Number.isInteger(rawMin) || rawMin < 1 || rawMin > 20) {
+    throw new Fail("--min-ready 必须是 1..20 的整数", EXIT.usage);
+  }
+  const ctx = repoContext();
+  const paths = statePaths(ctx); // 只读：不调用 ensureDirs，也不获取写锁
+  const tasks = readJsonDir(paths.tasks).sort((a, b) => a.id.localeCompare(b.id));
+  const snapshots = readJsonDir(paths.snapshots).sort((a, b) => snapshotSeq(a.id) - snapshotSeq(b.id));
+  const latestSnap = snapshots.length ? snapshots[snapshots.length - 1] : null;
+  const ancestry = latestSnap ? snapshotAncestry(paths, latestSnap) : { chain: [], tasks: [] };
+  const liveById = new Map(tasks.map((t) => [t.id, t]));
+  // 快照 tasks 只保存任务来源，不是最新状态；批次计划必须叠加当前台账的状态/构建关联。
+  const cumulative = new Map(ancestry.tasks.map((t) => {
+    const live = liveById.get(t.id);
+    return [t.id, live ? {
+      ...t,
+      status: live.status,
+      build: live.build,
+      acceptance: live.acceptance,
+      module: live.module,
+      owner: live.owner,
+      paths: live.paths ?? [],
+      extraPaths: live.extraPaths ?? [],
+      needs: live.needs ?? [],
+    } : t];
+  }));
+
+  const ready = tasks.filter((t) => t.status === "integration-ready");
+  const readyIds = new Set(ready.map((t) => t.id));
+  const readyBlocked = [];
+  for (const t of ready) {
+    const blockers = readinessBlockers(t);
+    for (const depId of t.needs ?? []) {
+      if (readyIds.has(depId) || cumulative.has(depId)) continue;
+      blockers.push(`依赖 ${depId} 尚未集成且不在本批`);
+    }
+    for (const other of ready) {
+      if (t.id >= other.id) continue;
+      if (pathsConflict(t, other)) {
+        blockers.push(`与 ${other.id} 写入范围冲突`);
+        const at = readyBlocked.find((x) => x.id === other.id);
+        if (!at) readyBlocked.push({ id: other.id, reason: `与 ${t.id} 写入范围冲突` });
+      }
+    }
+    if (blockers.length) readyBlocked.push({ id: t.id, reason: blockers.join("；") });
+  }
+  const blockedIds = new Set(readyBlocked.map((x) => x.id));
+  const eligibleReady = ready.filter((t) => !blockedIds.has(t.id));
+
+  const latestUsable = latestSnap ? latestBuildFor(paths, { snapshot: latestSnap.id, platform, usableOnly: true }) : null;
+  const latestAny = latestSnap ? latestBuildFor(paths, { snapshot: latestSnap.id, platform }) : null;
+
+  const pendingAcceptance = [];
+  for (const t of cumulative.values()) {
+    if (!taskAppliesToPlatform(t, platform)) continue;
+    if (t.status === "accept-failed") continue;
+    if (latestUsable) {
+      const rec = acceptanceRecordFor(paths, latestUsable.id, t.id);
+      if (!rec || !["pass", "fail"].includes(rec.status)) pendingAcceptance.push(t);
+    } else if (t.status === "verifying" || t.status === "accept-passed" || t.status === "integrated") {
+      pendingAcceptance.push(t);
+    }
+  }
+
+  const newTaskIds = new Set(eligibleReady.map((t) => t.id));
+  const regression = [...cumulative.values()].filter((t) => !newTaskIds.has(t.id) &&
+    taskAppliesToPlatform(t, platform) &&
+    eligibleReady.some((n) => pathsConflict(t, n) || (n.needs ?? []).includes(t.id) || (t.needs ?? []).includes(n.id)));
+
+  const scopeMap = new Map();
+  for (const t of [...eligibleReady, ...pendingAcceptance, ...regression]) {
+    if (!scopeMap.has(t.id)) scopeMap.set(t.id, planTaskView(t, platform));
+  }
+  const plannedAcceptance = [...scopeMap.values()];
+
+  const latestReuse = latestSnap && cfg ? (() => {
+    const digest = buildInputsDigest(ctx, latestSnap, platform, cfg, cfg.command);
+    const key = `${latestSnap.commit}|${platform}|${cfg.config}|${process.arch}|${digest}`;
+    const found = findReusableBuild(paths, key, { experimental: false, command: cfg.command, snapshot: latestSnap.id });
+    return { key, buildId: found?.id ?? null, available: Boolean(found) };
+  })() : null;
+
+  const applicableReady = eligibleReady.filter((t) => taskAppliesToPlatform(t, platform));
+  const newSnapshotPlanned = eligibleReady.length > 0;
+  const nextId = newSnapshotPlanned ? nextSnapshotId(paths) : (latestSnap?.id ?? null);
+  let build = false;
+  let reason = "";
+  if (!latestSnap) {
+    reason = "尚无集成快照；先用 snapshot bootstrap 选定稳定基线";
+  } else if (mode === "urgent") {
+    build = applicableReady.length > 0;
+    reason = build ? "urgent：不等待普通任务" : "urgent：当前平台没有可集成就绪任务";
+  } else if (mode === "manual") {
+    build = applicableReady.length > 0;
+    reason = build ? "manual：人工指定构建" : "manual：当前平台没有可集成就绪任务";
+  } else if (!latestUsable && applicableReady.length > 0) {
+    build = true;
+    reason = "当前快照没有可用构建，需要一次正式构建建立验收基线";
+  } else if (applicableReady.length >= rawMin) {
+    build = true;
+    reason = `已就绪且兼容的任务 ${applicableReady.length} 个，达到 min-ready=${rawMin}`;
+  } else if (applicableReady.length > 0) {
+    reason = `仅 ${applicableReady.length} 个任务就绪，低于 min-ready=${rawMin}；建议等待合批（紧急用 --mode urgent）`;
+  } else if (latestReuse?.available) {
+    reason = `无新增可集成任务；${latestReuse.buildId} 可复用，直接供待验收/回归任务使用`;
+  } else if (pendingAcceptance.length) {
+    reason = "无新增可集成任务；当前平台尚无可用构建，需要一次正式构建";
+    build = !latestUsable;
+  } else {
+    reason = "当前没有需要构建或验收的任务";
+  }
+
+  const plan = {
+    mode,
+    platform,
+    config: cfg.config,
+    generatedAt: nowIso(),
+    readOnly: true,
+    minReady: rawMin,
+    latestSnapshot: latestSnap ? { id: latestSnap.id, commit: latestSnap.commit, base: latestSnap.base, tasks: ancestry.tasks.length } : null,
+    counts: {
+      tasks: tasks.length,
+      developing: tasks.filter((t) => t.status === "developing").length,
+      ready: ready.length,
+      eligibleReady: eligibleReady.length,
+      applicableReady: applicableReady.length,
+      pendingAcceptance: pendingAcceptance.length,
+      regression: regression.length,
+      plannedAcceptance: plannedAcceptance.length,
+    },
+    ready: eligibleReady.map((t) => planTaskView(t, platform, { blocked: false })),
+    blocked: readyBlocked.map((b) => ({ ...b, task: tasks.find((t) => t.id === b.id)?.status ?? null })),
+    newTasks: eligibleReady.map((t) => planTaskView(t, platform)),
+    pendingAcceptance: pendingAcceptance.map((t) => planTaskView(t, platform)),
+    regression: regression.map((t) => planTaskView(t, platform)),
+    acceptanceScope: plannedAcceptance,
+    reuse: latestReuse,
+    latestBuild: latestAny ? { id: latestAny.id, status: latestAny.status, usable: Boolean(latestUsable && latestUsable.id === latestAny.id) } : null,
+    recommendation: {
+      build,
+      reason,
+      snapshot: nextId,
+      plannedSnapshot: newSnapshotPlanned,
+      base: latestSnap?.commit ?? null,
+      buildMode: mode,
+      buildId: latestReuse?.available ? latestReuse.buildId : null,
+    },
+  };
+
+  if (flag(args, "json")) {
+    console.log(JSON.stringify(plan, null, 2));
+    return EXIT.ok;
+  }
+
+  console.log(`验收批次计划（${platform} / ${cfg.config} / mode=${mode} / min-ready=${rawMin}）`);
+  console.log(`  任务：${plan.counts.tasks} 个；开发中 ${plan.counts.developing}；待集成 ${plan.counts.ready}；可合批 ${plan.counts.applicableReady}`);
+  console.log(`  上一快照：${plan.latestSnapshot ? `${plan.latestSnapshot.id} @ ${plan.latestSnapshot.commit.slice(0, 7)}（累计 ${plan.latestSnapshot.tasks} 项）` : "(无)"}`);
+  console.log(`  新增可纳入：${plan.newTasks.map((t) => t.id).join(", ") || "(无)"}`);
+  console.log(`  待验收/回归：${plan.pendingAcceptance.map((t) => `${t.id}(${t.status})`).join(", ") || "(无)"}`);
+  if (plan.blocked.length) console.log(`  阻塞：${plan.blocked.map((b) => `${b.id}（${b.reason}）`).join("；")}`);
+  console.log(`  可复用构建：${plan.reuse?.available ? plan.reuse.buildId : "无"}`);
+  console.log(`  建议快照：${plan.recommendation.snapshot ?? "(无)"}；是否建议正式构建：${build ? "是" : "否"}`);
+  console.log(`  原因：${reason}`);
+  console.log(`  计划验收范围（${plannedAcceptance.length}）：${plannedAcceptance.map((t) => t.id).join(", ") || "(无)"}`);
+  console.log("  只读：未写台账、未加锁、未切换工作区、未构建");
+  return EXIT.ok;
+}
+
 function orderByNeeds(paths, tasks) {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const deps = new Map(tasks.map((t) => [t.id, []]));
@@ -1248,10 +1511,12 @@ function runScheduled(ctx, wt, label, argvTokens, logPath, env, priority = "P1",
 function runToLog(command, { cwd, env, logPath, timeoutMs = 0 }) {
   mkdirSync(dirname(logPath), { recursive: true });
   const fd = openSync(logPath, "a");
-  const bin = command[0] === "node" ? process.execPath : command[0];
+  // Windows 的 npm/npx 是 .cmd 包装脚本，spawnSync 不会自动按 PATHEXT 解析；用 shell 执行。
+  const raw = command[0] === "node" ? process.execPath : command[0];
+  const useShell = process.platform === "win32" && ["npm", "npx"].includes(raw);
   try {
-    const r = spawnSync(bin, command.slice(1), {
-      cwd, env, stdio: ["ignore", fd, fd], windowsHide: true,
+    const r = spawnSync(raw, command.slice(1), {
+      cwd, env, stdio: ["ignore", fd, fd], windowsHide: true, ...(useShell ? { shell: true } : {}),
       ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
     });
     return { status: r.status, error: r.error ?? null, logPath, timedOut: r.error?.code === "ETIMEDOUT" };
@@ -1581,15 +1846,16 @@ function cmdSnapshotCreateInner(args, ctx, paths) {
     let checkResult = null;
     if (check === "static") {
       ensureNodeModulesLink(ctx, wt);
-      console.log("  执行集成静态检查：tsc --noEmit && vite build（经构建调度器排队）");
-      const r = runScheduled(ctx, wt, `integration-${snapId}-static`, ["npm", "run", "build:raw"], checkLog, {
+      // 集成阶段只做类型检查；Vite 打包交给正式构建的 beforeBuildCommand，避免重复生成同一 dist。
+      console.log("  执行集成静态检查：npm run typecheck（tsc --noEmit，不生成 Vite dist；经构建调度器排队）");
+      const r = runScheduled(ctx, wt, `integration-${snapId}-static`, ["npm", "run", "typecheck"], checkLog, {
         ...process.env, CARGO_TARGET_DIR: join(ctx.mainRoot, "src-tauri", "target-integration"),
       });
-      checkResult = { cmd: "npm run build:raw", exitCode: r.status, at: nowIso(), logPath: rel(ctx.mainRoot, checkLog) };
+      checkResult = { cmd: "npm run typecheck", exitCode: r.status, at: nowIso(), logPath: rel(ctx.mainRoot, checkLog) };
       if (r.status !== 0) {
         throw new Fail(`集成静态检查失败（exit ${r.status}）：\n${logTail(checkLog)}\n日志：${checkLog}`, EXIT.buildFailed);
       }
-      console.log("  静态检查通过");
+      console.log("  静态类型检查通过（未执行 Vite 打包）");
     }
 
     // 7) 生成快照提交（提交信息带任务关联，供 git log 追溯）
@@ -1854,7 +2120,7 @@ function buildInputsDigest(ctx, snap, platform, cfg, command) {
 }
 
 function findReusableBuild(paths, reuseKey, { experimental = false, command = null, snapshot = null } = {}) {
-  const dirs = readdirSync(paths.builds, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  const dirs = buildDirs(paths);
   for (const name of dirs.sort().reverse()) {
     const record = readJson(join(paths.builds, name, "build.json"));
     if (!record || record.status !== "succeeded" || record.reuseKey !== reuseKey) continue;
@@ -1935,6 +2201,105 @@ function worktreeHasRelevantChanges(wt) {
   }
 }
 
+function resourceSnapshot() {
+  return {
+    freeMemMB: Math.round(freemem() / 1024 / 1024),
+    totalMemMB: Math.round(totalmem() / 1024 / 1024),
+    cpuCount: cpus().length,
+  };
+}
+
+function classifyBuildFailure({ status, logPath, dirty, artifacts, platform }) {
+  const text = logPath && existsSync(logPath) ? logTail(logPath, 240) : "";
+  if (status === 0 && dirty) {
+    return { class: "source-error", hint: "构建后工作区出现非构建输出改动；先清理/复核，不能把脏产物记为成功" };
+  }
+  if (status === 0 && !artifactsUsable(platform, artifacts, dirname(logPath ?? ""))) {
+    return { class: "packaging-error", hint: "命令退出 0 但没有平台可用产物；检查打包产物路径与构建配置" };
+  }
+  if (status !== 0) {
+    if (/STATUS_STACK_BUFFER_OVERRUN|0xc0000409|memory allocation of|Out of memory|out of memory|os error 1455|not enough memory|Cannot allocate memory|exit code: 101/i.test(text)) {
+      return { class: "resource-error", hint: "内存/资源不足；降低 CARGO_BUILD_JOBS，等资源空闲后重建，不要立即重复整包构建" };
+    }
+    if (/rustup|toolchain|linker|MSVC|Visual Studio|program not found|spawn .*ENOENT|Access is denied|permission denied/i.test(text)) {
+      return { class: "environment-error", hint: "工具链或环境异常；先核对 rustc/cargo/linker，不要仅调高并发" };
+    }
+    if (/failed to download|registry|ENOENT|Could not find|cannot find package|lock file|network|EACCES/i.test(text)) {
+      return { class: "dependency-error", hint: "依赖/锁文件或网络异常；核对依赖指纹与锁文件后重试" };
+    }
+    if (/bundle|NSIS|msi|wix|makensis|artifact|installer/i.test(text)) {
+      return { class: "packaging-error", hint: "代码已编译但打包阶段失败；检查 Tauri/NSIS/MSI 打包配置与产物路径" };
+    }
+    if (/error TS|error\[E|error: could not compile|failed to compile|syntax error|compilation failed/i.test(text)) {
+      return { class: "source-error", hint: "源码编译错误；修复源码，不要用资源参数掩盖" };
+    }
+    return { class: "unknown", hint: "退出码非 0 且无法从日志归类；保留日志人工判断" };
+  }
+  return { class: null, hint: null };
+}
+
+function readReuseHits(paths, buildId) {
+  const file = join(paths.builds, buildId, "reuse-hits.jsonl");
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).map((line) => {
+    try { return JSON.parse(line); } catch { return null; }
+  }).filter(Boolean);
+}
+
+function recordReuseHit(paths, buildId, { snapshot, platform, mode }) {
+  const file = join(paths.builds, buildId, "reuse-hits.jsonl");
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, `${JSON.stringify({ at: nowIso(), by: process.env.TASKDOCK_AGENT ?? null, snapshot, platform, mode })}\n`, "utf8");
+  updateBuildCoverage(paths, buildId);
+}
+
+// 轻量覆盖率记录：不新增数据库/服务，只写 build 目录下的 coverage.json。
+function updateBuildCoverage(paths, buildId) {
+  const build = readJson(join(paths.builds, buildId, "build.json"));
+  if (!build) return null;
+  const release = acquireLock(paths, `coverage-${buildId}`, `coverage ${buildId}`, { waitMs: 10_000 });
+  try {
+    const included = includedTasksForBuild(paths, build);
+    const records = readJsonDir(join(paths.builds, buildId, "acceptance"));
+    const completed = records.filter((r) => r.status === "pass" || r.status === "fail");
+    const first = records.filter((r) => r.kind === "first");
+    const regression = records.filter((r) => r.kind === "regression");
+    const pass = records.filter((r) => r.status === "pass").length;
+    const fail = records.filter((r) => r.status === "fail").length;
+    const blocked = records.filter((r) => r.status === "blocked").length;
+    const notRun = records.filter((r) => r.status === "not-run").length;
+    const reuseHits = readReuseHits(paths, buildId).length;
+    const coverage = {
+      buildId,
+      snapshot: build.snapshot,
+      commit: build.commit,
+      platform: build.platform,
+      status: build.status,
+      failureClass: build.failureClass ?? null,
+      newTasks: (build.tasks ?? []).length,
+      includedTasks: included.length,
+      applicableTasks: included.filter((t) => taskAppliesToPlatform(t, build.platform)).length,
+      plannedAcceptance: included.length,
+      completedAcceptance: completed.length,
+      pass,
+      fail,
+      blocked,
+      notRun,
+      firstAcceptance: first.length,
+      regressionAcceptance: regression.length,
+      coverageRate: included.length ? Number((completed.length / included.length).toFixed(4)) : 0,
+      reuseHits,
+      heavyBuildExecuted: true,
+      durationMs: build.durationMs ?? null,
+      generatedAt: nowIso(),
+    };
+    writeJson(join(paths.builds, buildId, "coverage.json"), coverage);
+    return coverage;
+  } finally {
+    release();
+  }
+}
+
 function cmdBuild(argv) {
   const args = parseArgs(argv);
   const ctx = repoContext();
@@ -1951,6 +2316,9 @@ function cmdBuild(argv) {
   const platform = str(args, "platform");
   const cfg = PLATFORMS[platform];
   if (!cfg) throw new Fail(`--platform 只能是 ${Object.keys(PLATFORMS).join("|")}（当前 ${platform || "空"}）`, EXIT.usage);
+
+  const mode = str(args, "mode", "batch");
+  if (!BUILD_MODES.includes(mode)) throw new Fail(`--mode 只能是 ${BUILD_MODES.join("|")}（当前 ${mode || "空"}）`, EXIT.usage);
 
   let targetDir = null;
   if (cfg.needsTarget) {
@@ -1980,10 +2348,12 @@ function cmdBuild(argv) {
     const reusable = flag(args, "force")
       ? null
       : findReusableBuild(paths, reuseKey, { experimental, command, snapshot: snap.id });
-    console.log(`构建计划 ${buildIdPreview}：快照 ${snap.id} / ${snap.commit.slice(0, 7)} / ${platform} / ${cfg.config}`);
+    console.log(`构建计划 ${buildIdPreview}：快照 ${snap.id} / ${snap.commit.slice(0, 7)} / ${platform} / ${cfg.config} / mode=${mode}`);
     if (reusable) console.log(`  已有可复用构建：${reusable.id}（dry-run 只读，不改变任务状态）`);
     console.log(`  工作区：${integrationBuildWorktree(ctx)}（dry-run 不会创建）`);
     console.log(`  目标缓存：${cfg.needsTarget ? targetDir : "(无)"}`);
+    console.log(`  资源：可用内存 ${resourceSnapshot().freeMemMB} MB / ${resourceSnapshot().totalMemMB} MB`);
+    if (cfg.needsTarget) console.log(`  Rust 并行：CARGO_BUILD_JOBS=${process.env.CARGO_BUILD_JOBS ?? "2（默认）"}`);
     console.log(`  命令：${command.join(" ")}`);
     console.log(`  调度：${override ? "直接执行（覆盖命令）" : "经 scripts/build-sched.mjs 排队"}`);
     console.log("  产物：");
@@ -1999,7 +2369,8 @@ function cmdBuild(argv) {
     if (reusable) {
       console.log(`复用已有构建 ${reusable.id}（同一提交 ${snap.commit.slice(0, 7)} / ${platform} / ${cfg.config}）`);
       for (const a of reusable.artifacts) console.log(`  · ${a.name} ${a.kind === "dir" ? `${a.files} 个文件` : `${(a.bytes / 1024 / 1024).toFixed(1)} MB`} sha256=${a.sha256.slice(0, 12)}… ${a.copiedTo}`);
-      markSnapshotTasks(paths, snap, reusable.id, "verifying");
+      markSnapshotTasks(paths, snap, reusable.id, "verifying", includedTasksForBuild(paths, reusable));
+      recordReuseHit(paths, reusable.id, { snapshot: snap.id, platform, mode });
       return EXIT.ok;
     }
   }
@@ -2011,17 +2382,31 @@ function cmdBuild(argv) {
   let wt = integrationBuildWorktree(ctx);
   const startedAt = nowIso();
   const startedMs = Date.now();
+  const resource = resourceSnapshot();
   const env = { ...process.env };
   if (cfg.needsTarget) env.CARGO_TARGET_DIR = targetDir;
+  if (cfg.needsTarget) {
+    // 台式机低内存时 rustc 的 windows crate 容易异常退出；默认保守并行，可被显式环境变量覆盖。
+    env.CARGO_BUILD_JOBS = process.env.CARGO_BUILD_JOBS ?? "2";
+  }
   let record = null;
 
   try {
+    if (!override && cfg.needsTarget && resource.freeMemMB < envInt("TASKDOCK_MIN_FREE_MEM_MB", 256)) {
+      const err = new Fail(
+        `构建前资源检查未通过：可用内存 ${resource.freeMemMB} MB，低于 TASKDOCK_MIN_FREE_MEM_MB=${envInt("TASKDOCK_MIN_FREE_MEM_MB", 256)} MB；不启动正式桌面构建，避免浪费完整构建时间。`,
+        EXIT.buildFailed,
+      );
+      err.failureClass = "resource-error";
+      throw err;
+    }
     // 等锁期间另一个进程可能已经完成同一构建：取得锁后必须再查一次，避免重复构建。
     if (!flag(args, "force")) {
       const again = findReusableBuild(paths, reuseKey, { experimental, command, snapshot: snap.id });
       if (again) {
         console.log(`复用并发构建的产物 ${again.id}（等待锁后复核，避免重复构建）`);
-        markSnapshotTasks(paths, snap, again.id, "verifying");
+        markSnapshotTasks(paths, snap, again.id, "verifying", includedTasksForBuild(paths, again));
+        recordReuseHit(paths, again.id, { snapshot: snap.id, platform, mode });
         return EXIT.ok;
       }
     }
@@ -2092,6 +2477,9 @@ function cmdBuild(argv) {
       else reason = "构建退出码 0，但没有收集到该平台可用产物";
     }
     const ancestry = snapshotAncestry(paths, snap);
+    const failure = usable ? null : classifyBuildFailure({
+      status: result.status, logPath, dirty: dirtyAfter, artifacts, platform,
+    });
     record = {
       id: buildId,
       snapshot: snap.id,
@@ -2100,6 +2488,7 @@ function cmdBuild(argv) {
       dirty: dirtyAfter,
       platform,
       config: cfg.config,
+      mode,
       reuseKey,
       inputsDigest,
       arch: process.arch,
@@ -2115,6 +2504,8 @@ function cmdBuild(argv) {
       })),
       snapshotChain: ancestry.chain.map((s) => s.id),
       includedTasks: ancestry.tasks.map((t) => ({ id: t.id, commit: t.commit, module: t.module, owner: t.owner })),
+      plannedAcceptance: ancestry.tasks.length,
+      resource,
       command,
       cwd: wt,
       targetDir: cfg.needsTarget ? targetDir : null,
@@ -2123,8 +2514,10 @@ function cmdBuild(argv) {
       artifacts,
       host: `${process.platform}-${process.arch}`,
       ...(reason ? { reason } : {}),
+      ...(failure?.class ? { failureClass: failure.class, failureHint: failure.hint } : {}),
     };
     writeJson(join(buildDir, "build.json"), record);
+    updateBuildCoverage(paths, buildId);
 
     if (!usable) {
       throw new Fail(
@@ -2140,8 +2533,8 @@ function cmdBuild(argv) {
       console.log(`    sha256=${a.sha256}`);
       console.log(`    ${a.copiedTo}`);
     }
-    markSnapshotTasks(paths, snap, buildId, "verifying");
-    console.log(`包含任务：${(snap.tasks ?? []).map((t) => t.id).join(", ") || "(无)"}`);
+    markSnapshotTasks(paths, snap, buildId, "verifying", ancestry.tasks);
+    console.log(`包含任务（累计）：${ancestry.tasks.map((t) => t.id).join(", ") || "(无)"}`);
     console.log(`验收记录：npm run integrate -- accept --build ${buildId} --task <任务> --status pass`);
     return EXIT.ok;
   } catch (err) {
@@ -2154,6 +2547,7 @@ function cmdBuild(argv) {
         dirty: worktreeHasRelevantChanges(wt),
         platform,
         config: cfg.config,
+        mode,
         reuseKey,
         inputsDigest,
         arch: process.arch,
@@ -2167,6 +2561,8 @@ function cmdBuild(argv) {
           id: t.id, commit: t.commit, module: t.module, owner: t.owner,
           paths: t.paths ?? [], extraPaths: t.extraPaths ?? [],
         })),
+        plannedAcceptance: (snap.tasks ?? []).length,
+        resource,
         command,
         cwd: wt,
         targetDir: cfg.needsTarget ? targetDir : null,
@@ -2175,8 +2571,15 @@ function cmdBuild(argv) {
         artifacts: [],
         host: `${process.platform}-${process.arch}`,
         reason: String(err.message ?? err).split("\n")[0],
+        failureClass: err.failureClass ?? classifyBuildFailure({
+          status: err.code ?? EXIT.rejected, logPath, dirty: worktreeHasRelevantChanges(wt), artifacts: [], platform,
+        }).class,
+        failureHint: err.failureClass ? "构建前资源检查拒绝，等资源空闲后重试" : classifyBuildFailure({
+          status: err.code ?? EXIT.rejected, logPath, dirty: worktreeHasRelevantChanges(wt), artifacts: [], platform,
+        }).hint,
       };
       writeJson(join(buildDir, "build.json"), record);
+      updateBuildCoverage(paths, buildId);
     }
     throw err;
   } finally {
@@ -2184,15 +2587,17 @@ function cmdBuild(argv) {
   }
 }
 
-function markSnapshotTasks(paths, snap, buildId, status) {
-  for (const t of snap.tasks ?? []) {
+function markSnapshotTasks(paths, snap, buildId, status, includedTasks = null) {
+  const targets = includedTasks ?? snap.tasks ?? [];
+  for (const t of targets) {
     // 逐个任务加锁并在锁内重新读取：构建结束时任务可能已返工/改路径，不能被旧快照覆盖。
     withTaskLocks(paths, [t.id], `build ${buildId} 更新任务`, () => {
       const task = readJson(taskFile(paths, t.id));
       if (!task) return;
-      if (task.status === "accept-passed") return;
-      if (task.snapshot && task.snapshot !== snap.id) return;
+      // 已通过/已失败的结论不能被新构建静默回退；返工的新提交通过新快照重新进入 verifying。
+      if (["accept-passed", "accept-failed"].includes(task.status)) return;
       if (!task.commit || task.commit !== t.commit) return;
+      if (!task.integratedCommit || task.integratedCommit !== task.commit) return;
       task.status = status;
       task.build = buildId;
       saveTask(paths, task);
@@ -2221,30 +2626,47 @@ function cmdAccept(argv) {
   const build = readJson(join(buildDir, "build.json"));
   if (!build) throw new Fail(`构建不存在：${buildId}`, EXIT.usage);
   const task = loadTask(paths, taskId);
-  const buildTask = (build.tasks ?? []).find((t) => t.id === taskId);
+  // 关键修复：验收资格按「构建实际累计包含的任务」判断，而不是只看当前增量快照。
+  // 这样 A/B/C 在 S1 集成后，仍可在包含它们代码的 S2 安装包上做首次/回归验收。
+  const included = includedTasksForBuild(paths, build);
+  const buildTask = included.find((t) => t.id === taskId);
   if (!buildTask) {
-    throw new Fail(`任务 ${taskId} 不在构建 ${buildId} 的任务清单里（构建包含：${(build.tasks ?? []).map((t) => t.id).join(", ")}）`, EXIT.rejected);
-  }
-  if (build.snapshot !== task.snapshot) {
     throw new Fail(
-      `构建 ${buildId} 的快照 ${build.snapshot} 与任务当前快照 ${task.snapshot ?? "(空)"} 不一致；` +
-      "不能用旧构建的结论证明新版本（先构建当前快照）。",
+      `任务 ${taskId} 不在构建 ${buildId} 的累计任务清单里（构建包含：${included.map((t) => t.id).join(", ") || "(空)"}）`,
       EXIT.rejected,
     );
   }
-  if (task.status !== "verifying") {
-    throw new Fail(`任务 ${taskId} 当前状态为「${STATUS_LABEL[task.status] ?? task.status}」，只有「待验收」才能写验收结论`, EXIT.rejected);
-  }
-  if (task.commit !== task.integratedCommit || buildTask.commit !== task.commit) {
+  if (!taskAppliesToPlatform(task, build.platform)) {
     throw new Fail(
-      `验收版本与任务当前交付提交不一致：task.commit=${task.commit?.slice(0, 7) ?? "(空)"} / ` +
-      `task.integratedCommit=${task.integratedCommit?.slice(0, 7) ?? "(空)"} / build.task.commit=${buildTask.commit?.slice(0, 7) ?? "(空)"}。`,
+      `任务 ${taskId} 是移动端/非桌面任务，不能用 ${build.platform} 构建 ${buildId} 的产物验收（平台独立合批）`,
+      EXIT.rejected,
+    );
+  }
+  if (!["verifying", "accept-passed"].includes(task.status)) {
+    throw new Fail(
+      `任务 ${taskId} 当前状态为「${STATUS_LABEL[task.status] ?? task.status}」，只有已包含在可用构建中的「待验收」或「已通过（回归）」任务才能写结论`,
+      EXIT.rejected,
+    );
+  }
+  if (!task.commit || task.commit !== buildTask.commit) {
+    throw new Fail(
+      `任务 ${taskId} 的最新交付提交 ${task.commit?.slice(0, 7) ?? "(空)"} 不等于旧构建 ${buildId} 包含的提交 ` +
+      `${buildTask.commit?.slice(0, 7) ?? "(空)"}；返工/新交付尚未进入该旧快照，不能用旧构建错误标记通过。`,
+      EXIT.rejected,
+    );
+  }
+  if (!task.integratedCommit || task.integratedCommit !== task.commit) {
+    throw new Fail(
+      `任务 ${taskId} 的交付提交尚未进入任何快照（integratedCommit=${task.integratedCommit?.slice(0, 7) ?? "(空)"}），不能凭构建记录验收。`,
       EXIT.rejected,
     );
   }
   const snapshot = readJson(join(paths.snapshots, `${build.snapshot}.json`));
   if (!snapshot || snapshot.commit !== build.commit) {
     throw new Fail(`构建 ${buildId} 的 commit 与快照 ${build.snapshot} 记录不一致，拒绝写验收结论`, EXIT.rejected);
+  }
+  if (git(["cat-file", "-e", `${build.commit}^{commit}`], ctx.mainRoot).status !== 0) {
+    throw new Fail(`构建 ${buildId} 的 commit ${build.commit} 在仓库中不可验证，拒绝写验收结论`, EXIT.rejected);
   }
   if (status === "pass" || status === "fail") {
     if (build.status !== "succeeded" || build.dirty !== false || !artifactsUsable(build.platform, build.artifacts, buildDir)) {
@@ -2274,8 +2696,10 @@ function cmdAccept(argv) {
     build: buildId,
     snapshot: build.snapshot,
     commit: build.commit,
+    platform: build.platform,
     task: taskId,
     status,
+    kind: task.snapshot && task.snapshot !== build.snapshot ? "regression" : "first",
     note,
     repro,
     evidencePaths: evidence ? [evidence] : [],
@@ -2283,6 +2707,17 @@ function cmdAccept(argv) {
     at: nowIso(),
   };
   const dest = join(buildDir, "acceptance", `${taskId}.json`);
+  // 同一 buildId + taskId 的重复提交不能静默抹掉旧结论：保留 revision 与有限历史。
+  const previous = readJson(dest);
+  if (previous) {
+    const prior = { ...previous, history: undefined };
+    const history = [...(previous.history ?? []), prior].slice(-20);
+    record.revision = (Number.isInteger(previous.revision) ? previous.revision : 1) + 1;
+    record.history = history;
+  } else {
+    record.revision = 1;
+    record.history = [];
+  }
   writeJson(dest, record);
 
   if (status === "pass") { task.status = "accept-passed"; task.acceptance = rel(ctx.mainRoot, dest); }
@@ -2290,6 +2725,7 @@ function cmdAccept(argv) {
   else { task.acceptance = rel(ctx.mainRoot, dest); }
   task.build = buildId;
   saveTask(paths, task);
+  updateBuildCoverage(paths, buildId);
 
   console.log(`已记录验收：${taskId} @ ${buildId} → ${status}${evidence ? `（证据 ${evidence}）` : "（无证据路径）"}`);
   if (status === "blocked" || status === "not-run") {
@@ -2318,7 +2754,7 @@ function cmdStatus(argv) {
       const file = join(paths.builds, e.name, "build.json");
       const value = readJson(file);
       if (!value) console.error(`警告：忽略无法解析的构建记录 ${file}（未删除，请人工检查）`);
-      return value;
+      return value ? { ...value, coverage: readJson(join(paths.builds, e.name, "coverage.json")) } : value;
     })
     .filter(Boolean)
     .sort((a, b) => String(a.id).localeCompare(String(b.id)));
@@ -2394,13 +2830,15 @@ function cmdStatus(argv) {
       { key: "shortCommit", title: "提交" },
       { key: "platform", title: "平台" },
       { key: "statusText", title: "结果" },
-      { key: "taskIds", title: "任务" },
+      { key: "taskIds", title: "本批任务" },
+      { key: "coverageText", title: "验收覆盖" },
       { key: "artifactText", title: "产物" },
       { key: "durationText", title: "耗时" },
     ], (b) => ({
       ...b,
-      statusText: b.status === "succeeded" ? "成功" : `失败(${b.exitCode})`,
+      statusText: b.status === "succeeded" ? "成功" : `失败(${b.exitCode}${b.failureClass ? `/${b.failureClass}` : ""})`,
       taskIds: (b.tasks ?? []).map((t) => t.id).join(", ") || "-",
+      coverageText: b.coverage ? `${b.coverage.completedAcceptance}/${b.coverage.plannedAcceptance}（复用命中 ${b.coverage.reuseHits}）` : "-",
       artifactText: (b.artifacts ?? []).map((a) => a.name).join(", ") || "-",
       durationText: `${Math.round((b.durationMs ?? 0) / 1000)}s`,
     }));
@@ -2489,21 +2927,25 @@ function printHelp() {
   console.log(`Task Dock 统一集成 / 构建 / 验收台账
 
   task add|update|check|verify|ready|list|show 任务登记与交付（状态机见 docs/INTEGRATION_BUILD.md）
+  batch plan [--platform desktop|web|android] [--mode batch|urgent|manual] [--min-ready 2] [--json]
+                                            只读验收批次计划：累计任务、新增、阻塞、复用、建议
   worktree adopt|status                    迁移/查看工具自有工作区身份（只校验登记，不重建不重置）
   snapshot bootstrap                      只登记一个已确认的稳定基线（不叠加任务）
   snapshot create                         把「待集成」任务的声明路径改动应用到 integration 分支并生成快照提交
-  build                                   在干净快照工作区构建；同一输入复用已有产物
-  accept                                  针对某个 buildId 写验收结论（多 Agent 各写一份）
+  build [--mode batch|urgent|manual]       在干净快照工作区构建；同一输入复用已有产物
+  accept                                  针对某个 buildId 写验收结论（多 Agent 各写一份；按累计任务判断资格）
   status                                  查看任务 / 快照 / 构建 / 验收记录
 
 关键约束：
+  - 批次优先：任务 ready 只代表可进入下一批；默认 batch 模式，min-ready 未达到时不建议正式构建。
   - 首次集成必须 --base <稳定提交>；未完成任务的未提交改动不会进入快照。
+  - 验收资格按构建的累计 includedTasks 判断：旧任务可在包含其代码的新构建上验收/回归，但返工未入构建时拒绝。
+  - 验收记录保留 buildId+taskId 的 revision/history，不覆盖旧结论；旧版本通过不能自动代表新版本通过。
+  - 构建失败按 source/dependency/resource/environment/packaging/unknown 分类，并记录资源快照；默认不自动重试。
+  - 集成快照静态检查只用 tsc --noEmit（npm run typecheck），不重复生成 Vite dist；正式 Tauri 构建保留自身 beforeBuildCommand。
   - 集成/构建/验证工作区必须带身份记录才能被修改；旧工作区用 worktree adopt 迁移，缺记录时拒绝。
-  - 集成快照在 <仓库>-integration 分支工作区；构建/验证在 <仓库>-integration-build|-verify 的 detached 工作区。
-  - task check 是外部登记（source=external），无证据不算集成资格；task verify 在隔离工作区真实执行并记录提交/日志。
   - 构建复用键 = 提交 + 平台 + 配置 + CPU 架构 + 依赖/工具链输入指纹；旧记录无指纹不复用。
   - 构建成功还必须收集到平台可用产物（web dist/index.html、桌面安装包、Android apk），否则记为失败。
-  - 验收必须匹配任务当前快照/交付提交，且任务处于「待验收」；旧构建不能写 pass/fail。
   - 本工具不推送、不打标签、不操作主工作区；失败时日志与记录保留，工具自有工作区回到基线。`);
 }
 
@@ -2518,6 +2960,7 @@ function main(argv) {
       if (rest[0] === "bootstrap") return cmdSnapshotBootstrap(rest.slice(1));
       throw new Fail(`未知 snapshot 子命令：${rest[0] ?? "(空)"}（可用 bootstrap | create）`, EXIT.usage);
     case "build": return cmdBuild(rest);
+    case "batch": return cmdBatch(rest[0], rest.slice(1));
     case "accept": return cmdAccept(rest);
     case "worktree": return cmdWorktree(rest[0], rest.slice(1));
     case "status": return cmdStatus(rest);
@@ -2528,7 +2971,7 @@ function main(argv) {
       printHelp();
       return EXIT.ok;
     default:
-      throw new Fail(`未知命令：${cmd}（可用 task | snapshot | build | accept | worktree | status | help）`, EXIT.usage);
+      throw new Fail(`未知命令：${cmd}（可用 task | snapshot | batch | build | accept | worktree | status | help）`, EXIT.usage);
   }
 }
 

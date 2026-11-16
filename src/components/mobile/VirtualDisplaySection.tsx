@@ -27,6 +27,7 @@ import {
   vdDiagnostics,
   vdFocus,
   vdListApps,
+  vdNav,
   vdProbe,
   vdReconnect,
   vdScreenshot,
@@ -94,6 +95,10 @@ export default function VirtualDisplaySection() {
   const [appsLoading, setAppsLoading] = useState(false);
   const [appsError, setAppsError] = useState<string | null>(null);
   const [includeAll, setIncludeAll] = useState(false);
+  const [appUsage, setAppUsage] = useState<{ recent: string[]; favorites: string[] }>({
+    recent: [],
+    favorites: [],
+  });
 
   const [mode, setMode] = useState<VdMode>("mirror");
   const [packageName, setPackageName] = useState("");
@@ -110,6 +115,7 @@ export default function VirtualDisplaySection() {
   const [now, setNow] = useState(() => Date.now());
 
   const [capturingId, setCapturingId] = useState<string | null>(null);
+  const [navBusyId, setNavBusyId] = useState<string | null>(null);
   const [shot, setShot] = useState<{
     sessionId: string;
     session: VdSession;
@@ -316,6 +322,84 @@ export default function VirtualDisplaySection() {
   useEffect(() => {
     if (selectedDevice) selectedUidRef.current = selectedDevice.uid;
   }, [selectedDevice]);
+
+  // 最近/收藏按物理设备 UID 隔离，避免 A 手机的记录出现在 B 手机上。
+  useEffect(() => {
+    if (!selectedUid) {
+      setAppUsage({ recent: [], favorites: [] });
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(`task-dock.vd.apps.${selectedUid}`);
+      const parsed = raw ? (JSON.parse(raw) as Partial<typeof appUsage>) : null;
+      setAppUsage({
+        recent: Array.isArray(parsed?.recent)
+          ? parsed.recent.filter((value): value is string => typeof value === "string")
+          : [],
+        favorites: Array.isArray(parsed?.favorites)
+          ? parsed.favorites.filter((value): value is string => typeof value === "string")
+          : [],
+      });
+    } catch {
+      setAppUsage({ recent: [], favorites: [] });
+    }
+  }, [selectedUid]);
+
+  // 只有真正进入 running 的虚拟屏会话才写入最近使用；点击启动本身不算成功。
+  useEffect(() => {
+    if (!selectedUid) return;
+    const launched = sessions
+      .filter(
+        (session) =>
+          session.status === "running" &&
+          session.mode === "virtual" &&
+          session.device_uid === selectedUid &&
+          Boolean(session.package),
+      )
+      .map((session) => session.package as string);
+    if (launched.length === 0) return;
+    setAppUsage((previous) => {
+      const nextRecent = [...launched, ...previous.recent].filter(
+        (pkg, index, all) => all.indexOf(pkg) === index,
+      );
+      if (
+        nextRecent.length === previous.recent.length &&
+        nextRecent.every((pkg, index) => pkg === previous.recent[index])
+      ) {
+        return previous;
+      }
+      const next = { ...previous, recent: nextRecent.slice(0, 8) };
+      try {
+        window.localStorage.setItem(
+          `task-dock.vd.apps.${selectedUid}`,
+          JSON.stringify(next),
+        );
+      } catch {
+        // 本地存储不可用时仍保留本次会话内的最近记录。
+      }
+      return next;
+    });
+  }, [sessions, selectedUid]);
+
+  const toggleFavorite = (packageToToggle: string) => {
+    setAppUsage((previous) => {
+      const favorites = previous.favorites.includes(packageToToggle)
+        ? previous.favorites.filter((pkg) => pkg !== packageToToggle)
+        : [packageToToggle, ...previous.favorites].slice(0, 12);
+      const next = { ...previous, favorites };
+      try {
+        if (selectedUid) {
+          window.localStorage.setItem(
+            `task-dock.vd.apps.${selectedUid}`,
+            JSON.stringify(next),
+          );
+        }
+      } catch {
+        // 同上：不可用时只在本会话内保留。
+      }
+      return next;
+    });
+  };
 
   // 设备切换后清空上一台手机的包名与手动输入，避免把 A 的包名带到 B。
   useEffect(() => {
@@ -525,6 +609,35 @@ export default function VirtualDisplaySection() {
     }
   };
 
+  const navigateSession = async (
+    session: VdSession,
+    action: "back" | "home" | "recents",
+  ) => {
+    if (navBusyId) return;
+    setNavBusyId(session.id);
+    try {
+      const result = await vdNav(session.id, action);
+      const label = t(
+        action === "back"
+          ? "virtualDisplay.session.back"
+          : action === "home"
+            ? "virtualDisplay.session.home"
+            : "virtualDisplay.session.recents",
+      );
+      showToast(
+        t("virtualDisplay.session.navSent", {
+          action: label,
+          display: result.display_id,
+        }),
+        { kind: "success" },
+      );
+    } catch (err) {
+      showToast(toMessage(err), { kind: "error" });
+    } finally {
+      if (mountedRef.current) setNavBusyId(null);
+    }
+  };
+
   const captureSession = async (session: VdSession) => {
     if (capturingId || shotBusy) return;
     setCapturingId(session.id);
@@ -632,35 +745,39 @@ export default function VirtualDisplaySection() {
           </div>
         ) : null}
 
-        <DeviceTools
-          devices={devices}
-          selected={selectedDevice}
-          serial={serial}
-          adbOk={adbOk}
-          deviceError={deviceError}
-          probe={probe}
-          probeBusy={probeBusy}
-          refreshing={refreshing}
-          loading={initializing}
-          t={tr}
-          onSelect={setSerial}
-          onRefresh={() => void refreshAll()}
-          onRecheck={() => void refreshProbe.current()}
-        />
+        <div className="vd-overview">
+          <DeviceTools
+            devices={devices}
+            selected={selectedDevice}
+            serial={serial}
+            adbOk={adbOk}
+            deviceError={deviceError}
+            probe={probe}
+            probeBusy={probeBusy}
+            refreshing={refreshing}
+            loading={initializing}
+            t={tr}
+            onSelect={setSerial}
+            onRefresh={() => void refreshAll()}
+            onRecheck={() => void refreshProbe.current()}
+          />
+        </div>
 
-        <ModePicker
-          mode={mode}
-          busy={busy}
-          virtualSupported={virtualSupported}
-          activeCount={activeSessions.length}
-          t={tr}
-          onModeChange={(next) => {
-            setMode(next);
-            setStartError(null);
-          }}
-        />
+        <div className="vd-workbench">
+          <div className="vd-primary-column">
+            <ModePicker
+              mode={mode}
+              busy={busy}
+              virtualSupported={virtualSupported}
+              activeCount={activeSessions.length}
+              t={tr}
+              onModeChange={(next) => {
+                setMode(next);
+                setStartError(null);
+              }}
+            />
 
-        <section className="vd-block vd-config" aria-label={t("virtualDisplay.config.title")}>
+            <section className="vd-block vd-config" aria-label={t("virtualDisplay.config.title")}>
           <div className="vd-block-head">
             <h3 className="vd-block-title">{t("virtualDisplay.config.title")}</h3>
             <span className="vd-block-note">
@@ -711,12 +828,15 @@ export default function VirtualDisplaySection() {
                 includeAll={includeAll}
                 deviceUid={selectedUid}
                 selectedPackage={packageName}
+                recentPackages={appUsage.recent}
+                favoritePackages={appUsage.favorites}
                 manual={manual}
                 manualPackage={manualPackage}
                 manualError={manualInvalid ? t("virtualDisplay.app.manualInvalid") : null}
                 disabled={busy}
                 t={tr}
                 onSelect={setPackageName}
+                onToggleFavorite={toggleFavorite}
                 onManualChange={setManualPackage}
                 onToggleManual={(open) => {
                   setManual(open);
@@ -805,20 +925,26 @@ export default function VirtualDisplaySection() {
             </div>
           ) : null}
         </section>
+          </div>
 
-        <SessionList
-          sessions={sessions}
-          activeCount={activeSessions.length}
-          limit={sessionLimit}
-          currentDevice={selectedDevice}
-          now={now}
-          closingIds={closingIds}
-          capturingId={capturingId}
-          t={tr}
-          onFocus={(session) => void focusSession(session)}
-          onCapture={(session) => void captureSession(session)}
-          onClose={(session) => void closeSession(session)}
-        />
+          <div className="vd-secondary-column">
+            <SessionList
+              sessions={sessions}
+              activeCount={activeSessions.length}
+              limit={sessionLimit}
+              currentDevice={selectedDevice}
+              now={now}
+              closingIds={closingIds}
+              capturingId={capturingId}
+              navBusyId={navBusyId}
+              t={tr}
+              onFocus={(session) => void focusSession(session)}
+              onCapture={(session) => void captureSession(session)}
+              onNavigate={(session, action) => void navigateSession(session, action)}
+              onClose={(session) => void closeSession(session)}
+            />
+          </div>
+        </div>
 
         <AdvancedSection
           open={advancedOpen}

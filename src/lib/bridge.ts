@@ -5304,8 +5304,10 @@ export interface VdDeviceList {
 
 export interface VdApp {
   package: string;
-  /** scrcpy 解析到的应用名；未知时回退显示包名。 */
+  /** Android PackageManager 的本地化应用名；未知时回退显示包名。 */
   label: string | null;
+  /** 96×96 PNG data URL；读取失败时为 null，前端显示统一占位。 */
+  icon: string | null;
   system: boolean;
   /** true=确认可启动；false=确认没有启动入口；null=设备无法判定。 */
   launchable: boolean | null;
@@ -5333,6 +5335,8 @@ export interface VdSession {
   status: VdSessionStatus;
   /** process | display | app | video | ready */
   stage: string;
+  /** scrcpy 确认的 Display ID；虚拟屏未确认前为 null，导航操作会被拒绝。 */
+  display_id: number | null;
   title: string;
   started_at: string;
   ready_at: string | null;
@@ -5413,6 +5417,10 @@ export const vdStart = (opts: VdStartOptions) =>
 /** 关闭会话；stopping 后由后端后台收尾，不阻塞状态查询。 */
 export const vdStop = (sessionId: string) =>
   invoke<boolean>("vd_stop", { sessionId });
+
+/** 向会话绑定的 Display ID 发送返回/Home/最近任务，不允许默认显示回退。 */
+export const vdNav = (sessionId: string, action: "back" | "home" | "recents") =>
+  invoke<{ action: string; display_id: number }>("vd_nav", { sessionId, action });
 
 /** 会话列表（含刚结束的保留窗口，便于展示失败原因）。 */
 export const vdSessions = () => invoke<VdSession[]>("vd_sessions");

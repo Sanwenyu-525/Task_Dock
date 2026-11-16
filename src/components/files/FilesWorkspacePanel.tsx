@@ -1192,8 +1192,9 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         const current = s0.selection[s0.activePaneId]?.paths ?? [];
         if (current.length === 1) {
           e.preventDefault();
+          // 由持有可见条目的 FilePane 补齐 entries 后再打开预览；面板本身不持有目录列表。
           window.dispatchEvent(
-            new CustomEvent("taskdock-fw-preview", {
+            new CustomEvent("taskdock-fw-preview-request", {
               detail: { paneId: s0.activePaneId, path: current[0] },
             }),
           );

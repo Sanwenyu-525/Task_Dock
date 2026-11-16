@@ -60,8 +60,16 @@ export interface SearchResult {
 
 function matchesHit(entry: FsEntry, options: SearchOptions): boolean {
   if (entry.kind !== "file" && entry.kind !== "link") {
-    if (options.category !== "folder") return false;
-    return options.query === "" && options.extensions.length === 0 && options.modifiedWithinDays === null;
+    // 文件夹是联合搜索的一等结果：名称、分类、修改时间都参与筛选。
+    // 文件夹没有扩展名，扩展名筛选只对文件生效，不能因此把文件夹排除。
+    if (options.category && options.category !== "folder") return false;
+    if (options.extensions.length) return false;
+    if (options.query && !entry.name.toLocaleLowerCase().includes(options.query.toLocaleLowerCase())) return false;
+    if (options.modifiedWithinDays !== null) {
+      const cutoff = Date.now() - options.modifiedWithinDays * 24 * 60 * 60 * 1000;
+      if ((entry.modifiedMs ?? 0) < cutoff) return false;
+    }
+    return true;
   }
   if (options.category && entry.category !== options.category) return false;
   if (options.extensions.length && !options.extensions.includes(entry.ext.toLowerCase())) return false;
@@ -176,11 +184,11 @@ export async function collectWorkspaceFiles(
   return { files, truncated: result.truncated, cancelled: result.cancelled };
 }
 
-/** 按大小预筛：只有 >=2 个文件的 size 组才可能重复。 */
+/** 按大小预筛：零字节文件也可成为候选；同大小至少 2 个文件才进入哈希确认。 */
 export function sizeGroups(files: DuplicateFile[]): DuplicateGroup[] {
   const bySize = new Map<number, DuplicateFile[]>();
   for (const file of files) {
-    if (file.size <= 0) continue;
+    if (file.size < 0 || !Number.isFinite(file.size)) continue;
     const group = bySize.get(file.size) ?? [];
     group.push(file);
     bySize.set(file.size, group);

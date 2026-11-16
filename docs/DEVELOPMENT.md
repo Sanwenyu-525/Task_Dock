@@ -497,6 +497,7 @@ node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mo
 | `npm run dev` | `run --class dev --priority P2 --label desktop-vite -- vite` | dev / P2 |
 | `npm run preview` | `run --class dev --priority P2 --label desktop-preview -- vite preview` | dev / P2 |
 | `npm run build` | `run --priority P1 --label desktop-build -- npm run build:raw` | medium / P1 |
+| `npm run typecheck` | `tsc --noEmit`（集成快照检查通过调度器执行；不生成 Vite dist） | light / P1 |
 | `npm run test` | `run --priority P1 --label desktop-test -- npm run test:raw` | medium / P1 |
 | `npm run tauri -- build` | `run --priority P0 --label tauri -- npm run tauri:raw` | heavy / P0 |
 

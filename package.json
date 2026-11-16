@@ -9,6 +9,7 @@
     "dev:raw": "vite",
     "build": "node scripts/build-sched.mjs run --priority P1 --label desktop-build -- npm run build:raw",
     "build:raw": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
     "pretauri": "node scripts/build-guard.mjs precheck",
     "tauri": "node scripts/build-sched.mjs run --priority P0 --label tauri -- npm run tauri:raw",
     "tauri:raw": "tauri",

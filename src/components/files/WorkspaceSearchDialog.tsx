@@ -6,6 +6,7 @@ import { Search, Square, X } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import Select from "../ui/Select";
 import { useLocale } from "../../hooks/useLocale";
+import { errorMessage } from "../../lib/errors";
 import {
   DEFAULT_SEARCH_OPTIONS,
   parseExtensions,
@@ -50,29 +51,37 @@ export default function WorkspaceSearchDialog({ open, sources, onClose, onReveal
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [progress, setProgress] = useState<SearchProgress | null>(null);
   const [summary, setSummary] = useState<{ truncated: boolean; failedDirs: number; cancelled: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  /** 请求代际：只有最新一代允许写结果、进度、状态和清理控制器。 */
+  const requestSeq = useRef(0);
 
   useEffect(() => {
+    requestSeq.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
     if (open) {
       setSelected(sources.map((source) => source.paneId));
       setHits([]);
       setSummary(null);
+      setError(null);
       setProgress(null);
       setRunning(false);
-      abortRef.current?.abort();
-      abortRef.current = null;
     }
   }, [open, sources]);
 
   const run = async () => {
     if (running || selected.length === 0) return;
     abortRef.current?.abort();
+    const seq = ++requestSeq.current;
     const controller = new AbortController();
     abortRef.current = controller;
     setRunning(true);
     setHits([]);
     setSummary(null);
+    setError(null);
+    setProgress(null);
     try {
       const result = await searchWorkspace(
         sources.filter((source) => selected.includes(source.paneId)),
@@ -84,22 +93,44 @@ export default function WorkspaceSearchDialog({ open, sources, onClose, onReveal
           modifiedWithinDays: recent === "any" ? null : Number(recent),
           maxDepth: Number(depth),
         },
-        setProgress,
+        (next) => {
+          if (seq === requestSeq.current) setProgress(next);
+        },
         controller.signal,
       );
+      if (seq !== requestSeq.current) return;
       setHits(result.hits);
       setSummary({ truncated: result.truncated, failedDirs: result.failedDirs, cancelled: result.cancelled });
-    } catch {
-      setSummary({ truncated: false, failedDirs: 0, cancelled: true });
+    } catch (e) {
+      if (seq !== requestSeq.current) return;
+      if ((e as { name?: string }).name === "AbortError") {
+        setSummary({ truncated: false, failedDirs: 0, cancelled: true });
+      } else {
+        setError(errorMessage(e));
+      }
     } finally {
-      setRunning(false);
-      abortRef.current = null;
+      if (seq === requestSeq.current) {
+        setRunning(false);
+        abortRef.current = null;
+      }
     }
   };
 
   const stop = () => {
+    requestSeq.current += 1;
     abortRef.current?.abort();
+    abortRef.current = null;
     setRunning(false);
+  };
+
+  const toggleSource = (paneId: string) => {
+    // 搜索目录变化会让上一代结果失去意义，立即失效并停止运行。
+    stop();
+    setSummary(null);
+    setHits([]);
+    setSelected((current) =>
+      current.includes(paneId) ? current.filter((id) => id !== paneId) : [...current, paneId],
+    );
   };
 
   const depthOptions = [
@@ -162,11 +193,7 @@ export default function WorkspaceSearchDialog({ open, sources, onClose, onReveal
             className={`fw-search-source${selected.includes(source.paneId) ? " is-on" : ""}`}
             aria-pressed={selected.includes(source.paneId)}
             title={source.path}
-            onClick={() =>
-              setSelected((current) =>
-                current.includes(source.paneId) ? current.filter((id) => id !== source.paneId) : [...current, source.paneId],
-              )
-            }
+            onClick={() => toggleSource(source.paneId)}
           >
             <Square size={9} aria-hidden="true" />
             <span className="fw-search-source-label">{source.label}</span>
@@ -194,6 +221,12 @@ export default function WorkspaceSearchDialog({ open, sources, onClose, onReveal
           {summary.failedDirs > 0 && (
             <span className="fw-search-warn"> · {t("fw.search.failedDirs", { count: summary.failedDirs })}</span>
           )}
+        </div>
+      )}
+
+      {error && (
+        <div className="fw-search-summary" role="alert">
+          <span className="fw-search-warn">{t("fw.search.failed", { error })}</span>
         </div>
       )}
 

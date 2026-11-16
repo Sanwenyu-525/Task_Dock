@@ -135,12 +135,24 @@ fn status_is_ended(status: &str) -> bool {
 /// 从 scrcpy stderr 行提取可核验事实。放在纯函数里便于单测。
 #[derive(Debug, PartialEq, Eq)]
 enum LogSignal {
-    NewDisplay,
-    StartingApp { package: String, label: Option<String> },
+    NewDisplay { display_id: Option<u32> },
+    StartingApp { package: String, label: Option<String>, display_id: Option<u32> },
     Texture,
     DeviceDisconnected,
     Error(String),
     Warning(String),
+}
+
+fn parse_display_id(line: &str, marker: &str) -> Option<u32> {
+    let rest = line.split_once(marker)?.1;
+    let digits: String = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<u32>().ok().filter(|id| *id > 0)
 }
 
 fn parse_log_line(line: &str) -> Option<LogSignal> {
@@ -159,7 +171,9 @@ fn parse_log_line(line: &str) -> Option<LogSignal> {
         return Some(LogSignal::Warning(message.trim().to_string()));
     }
     if line.contains("New display:") {
-        return Some(LogSignal::NewDisplay);
+        return Some(LogSignal::NewDisplay {
+            display_id: parse_display_id(line, "(id="),
+        });
     }
     if line.contains("Starting app") {
         let label = line
@@ -174,7 +188,11 @@ fn parse_log_line(line: &str) -> Option<LogSignal> {
             .map(|(pkg, _)| pkg.trim().to_string())
             .filter(|pkg| super::is_package_name(pkg));
         if let Some(package) = package {
-            return Some(LogSignal::StartingApp { package, label });
+            return Some(LogSignal::StartingApp {
+                package,
+                label,
+                display_id: parse_display_id(line, "on display "),
+            });
         }
     }
     if line.contains("Texture") {
@@ -323,6 +341,12 @@ impl SessionManager {
             app_label: req.app_label.clone(),
             status: STATUS_STARTING.to_string(),
             stage: STAGE_PROCESS.to_string(),
+            // 镜像固定作用于主显示；虚拟屏等 scrcpy 日志给出真实 display id 后再解锁导航。
+            display_id: if req.mode == super::MODE_MIRROR {
+                Some(0)
+            } else {
+                None
+            },
             title: req.title.clone(),
             started_at: now_stamp(),
             ready_at: None,
@@ -454,6 +478,11 @@ impl SessionManager {
             }
         }
         Ok(out)
+    }
+
+    /// 按会话 ID 读取不可变快照；导航/截图等操作必须先绑定明确会话。
+    pub fn session(&self, session_id: &str) -> AppResult<VdSession> {
+        Ok(self.handle(session_id)?.snapshot())
     }
 
     pub fn active_count_for_serial(&self, serial: &str) -> usize {
@@ -773,13 +802,23 @@ fn apply_line(handle: &SessionHandle, line: &str) {
     // 用户主动关闭期间，设备断线/应用退出的日志不应把状态改写成「连接中断」。
     let stopping = inner.info.status == STATUS_STOPPING;
     match parse_log_line(trimmed) {
-        Some(LogSignal::NewDisplay) => {
+        Some(LogSignal::NewDisplay { display_id }) => {
+            if let Some(display_id) = display_id {
+                inner.info.display_id = Some(display_id);
+            }
             if inner.info.status == STATUS_STARTING {
                 inner.info.stage = STAGE_DISPLAY.to_string();
             }
         }
-        Some(LogSignal::StartingApp { package, label }) => {
+        Some(LogSignal::StartingApp {
+            package,
+            label,
+            display_id,
+        }) => {
             inner.app_started = true;
+            if let Some(display_id) = display_id {
+                inner.info.display_id = Some(display_id);
+            }
             inner.info.stage = if inner.info.status == STATUS_RUNNING {
                 STAGE_READY.to_string()
             } else {
@@ -1388,7 +1427,9 @@ mod tests {
     fn log_signals_cover_display_app_texture_and_errors() {
         assert_eq!(
             parse_log_line("[server] INFO: New display: 1080x1920/384 (id=17)"),
-            Some(LogSignal::NewDisplay)
+            Some(LogSignal::NewDisplay {
+                display_id: Some(17)
+            })
         );
         assert_eq!(
             parse_log_line(
@@ -1397,6 +1438,7 @@ mod tests {
             Some(LogSignal::StartingApp {
                 package: "com.android.settings".to_string(),
                 label: Some("设置".to_string()),
+                display_id: Some(17),
             })
         );
         assert_eq!(

@@ -77,8 +77,8 @@ const EXTENSION_BY_MIME: Record<string, string> = {
 export function isOpaqueFileName(raw: string | null | undefined): boolean {
   const value = (raw ?? "").trim();
   if (!value) return true;
-  // `document:1000069262`（部分 vivo/第三方文件管理器）与 `%3A` 编码形态都不是显示名
-  return /^document(%3A|:)?\d+$/i.test(value) || /^\d+$/i.test(value);
+  // `document:1000069262` / `image:1000069917`（vivo 相册与文件管理器）与 `%3A` 编码形态都不是显示名
+  return /^(document|image|video|audio|file)(%3A|:)?\d+$/i.test(value) || /^\d+$/i.test(value);
 }
 
 export function uploadDisplayName(file: FsFile): string {

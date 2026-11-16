@@ -41,6 +41,20 @@ describe("searchWorkspace", () => {
     expect(result.hits.map((hit) => hit.path)).toEqual(["D:\\a\\x.png"]);
     expect(list).toHaveBeenCalledTimes(2);
   });
+
+  it("文件夹名称也参与联合搜索，不被 query 排除", async () => {
+    list.mockImplementation(async (path: string) => ({
+      path,
+      entries: [entry("Characters", "dir", 0, "folder"), entry("notes.txt", "file", 10, "text")],
+      scanned: 2,
+      hasMore: false,
+    }));
+    const result = await searchWorkspace(
+      [{ paneId: "p1", label: "A", path: "D:\\a" }],
+      { query: "char", extensions: [], category: null, modifiedWithinDays: null, maxDepth: 0, maxResults: 50, maxDirs: 10 },
+    );
+    expect(result.hits.map((hit) => hit.entry.name)).toEqual(["Characters"]);
+  });
 });
 
 describe("parseExtensions", () => {
@@ -69,5 +83,25 @@ describe("duplicate", () => {
     expect(confirmed).toHaveLength(1);
     expect(confirmed[0].hash).toBe("same");
     expect(confirmed[0].files.map((file) => file.name)).toEqual(["one.txt", "two.txt"]);
+  });
+
+  it("至少两个零字节文件可进入候选组，哈希仍会确认", async () => {
+    const files = [
+      { path: "D:\\a\\empty1.txt", dirPath: "D:\\a", paneId: "p1", paneLabel: "A", name: "empty1.txt", size: 0 },
+      { path: "D:\\a\\empty2.txt", dirPath: "D:\\a", paneId: "p1", paneLabel: "A", name: "empty2.txt", size: 0 },
+      { path: "D:\\a\\one.txt", dirPath: "D:\\a", paneId: "p1", paneLabel: "A", name: "one.txt", size: 0 },
+    ];
+    const groups = sizeGroups(files);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].size).toBe(0);
+    expect(groups[0].files).toHaveLength(3);
+    hash.mockResolvedValue([
+      { path: "D:\\a\\empty1.txt", size: 0, hash: "e3b0c442", error: null },
+      { path: "D:\\a\\empty2.txt", size: 0, hash: "e3b0c442", error: null },
+      { path: "D:\\a\\one.txt", size: 0, hash: "other", error: null },
+    ]);
+    const confirmed = await hashDuplicateGroups(groups);
+    expect(confirmed).toHaveLength(1);
+    expect(confirmed[0].files.map((file) => file.name)).toEqual(["empty1.txt", "empty2.txt"]);
   });
 });

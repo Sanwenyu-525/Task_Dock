@@ -1,8 +1,13 @@
 //! 内部拖拽协调单测：效果解析（Ctrl/Shift/默认同异卷）、合法性、剪贴板暂存、
 //! 广播纪律（重入收敛/变更检测/取消清理）——P0 拖拽重入缺陷的回归钉。
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("./volumeCache", () => ({
+  volumeDecision: vi.fn(),
+}));
+
+import { volumeDecision } from "./volumeCache";
 import {
   defaultEffect,
   resolveEffect,
@@ -20,18 +25,27 @@ import {
   sameZone,
 } from "./interactions";
 
+const volume = vi.mocked(volumeDecision);
+
+beforeEach(() => {
+  volume.mockReset();
+  // 默认按同卷处理，便于拖拽状态机测试；未知/跨卷用例显式覆盖。
+  volume.mockReturnValue("move");
+});
+
 describe("defaultEffect 同/异卷", () => {
-  it("同盘符默认移动", () => {
+  it("卷未知时默认复制，不按盘符猜移动（P0 安全默认）", () => {
+    volume.mockReturnValue(null);
+    expect(defaultEffect(["D:\\a\\f.txt"], "D:\\b")).toBe("copy");
+    expect(defaultEffect(["\\\\srv\\share\\a\\f.txt"], "\\\\srv\\share\\b")).toBe("copy");
+  });
+  it("明确同卷默认移动", () => {
+    volume.mockReturnValue("move");
     expect(defaultEffect(["D:\\a\\f.txt"], "D:\\b")).toBe("move");
   });
-  it("不同盘符默认复制", () => {
+  it("明确跨卷默认复制", () => {
+    volume.mockReturnValue("copy");
     expect(defaultEffect(["C:\\a\\f.txt"], "D:\\b")).toBe("copy");
-  });
-  it("UNC 与本地盘之间默认复制", () => {
-    expect(defaultEffect(["\\\\srv\\share\\f.txt"], "D:\\b")).toBe("copy");
-  });
-  it("UNC 同一共享之间默认移动", () => {
-    expect(defaultEffect(["\\\\srv\\share\\a\\f.txt"], "\\\\srv\\share\\b")).toBe("move");
   });
 });
 
@@ -43,9 +57,13 @@ describe("resolveEffect 修饰键", () => {
   it("Shift 强制移动", () => {
     expect(resolveEffect(files, "D:\\y", { shiftKey: true })).toBe("move");
   });
-  it("无修饰键按默认（同异卷）", () => {
+  it("无修饰键按真实卷判定；未知按复制", () => {
+    volume.mockReturnValue("move");
     expect(resolveEffect(files, "C:\\z", {})).toBe("move");
+    volume.mockReturnValue("copy");
     expect(resolveEffect(files, "D:\\z", {})).toBe("copy");
+    volume.mockReturnValue(null);
+    expect(resolveEffect(files, "C:\\z", {})).toBe("copy");
   });
   it("标签拖拽恒为 tab 效果", () => {
     const tabs = { kind: "tabs" as const, tabIds: ["t1"], fromPaneId: "p1", paths: [] };

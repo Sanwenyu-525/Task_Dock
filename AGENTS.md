@@ -90,19 +90,24 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 | 开发中 | 正在改代码 | 负责人 `task add` / `task update` |
 | 待集成 | 代码完成且模块级检查**真实执行**通过 | 负责人 `task ready`（需交付提交 + `task verify` 通过记录） |
 | 已集成 | 改动进入快照提交 | 工具 `snapshot create` 成功 |
-| 待验收 | 代码在可测产物中 | 工具 `build` 成功 |
-| 验收通过 / 验收失败 | 在指定构建版本上的结论 | 验收 Agent `accept --status pass|fail` |
+| 待验收 | 代码在可测产物中 | 工具 `build` 成功（一个构建可包含多个累计任务） |
+| 验收通过 / 验收失败 | 在指定构建版本上的结论 | 验收 Agent `accept --status pass 或 fail`（按 `buildId` 各写记录） |
 
 交付时必须提供：**任务标识与模块、写入范围、主要改动、实际执行的检查与结果、未解决问题、
 是否改公共接口、是否需其他模块配合、交付提交（可追溯）**。用统一台账登记，不另建数据库：
 
 ```bash
-npm run integrate -- task add --id <任务> --owner <agent> --module <模块> --paths <写入范围>
+npm run integrate -- task add --id <任务> --owner <agent> --module <模块> --paths <写入范围> \
+  [--note "<主要改动/未解决问题>"] [--public-interface] [--needs <依赖任务>]
 npm run integrate -- task verify --id <任务> --commit <提交> --cmd "<真实命令>"
 npm run integrate -- task ready --id <任务> --commit <交付提交>
 npm run integrate:status
+npm run integrate -- batch plan --platform desktop   # 只读：查看下一验收批、阻塞、复用与建议
 ```
 
+任务完成（`ready`）只代表可进入下一验收批次，**默认不立即触发正式安装包构建**。默认 `batch`
+模式按 `min-ready`（默认 2）合批；`urgent` 用于阻塞性故障/安全修复，`manual` 用于人工指定任务或
+固定快照。`batch plan` 不写台账、不加锁、不构建，正式构建仍走 `build --snapshot`。
 写入范围是集成与冲突判定的唯一依据：交付提交里出现未声明路径会被拒绝（防串味）；确属本任务时
 用 `--allow-extra-paths` 显式放行，**这些路径会一并进入快照、参与交集判定**并记入
 `includedExtraPaths`，不是“只记录不应用”。**`task verify` 才是在隔离工作区对指定提交真实执行检查**；
@@ -112,13 +117,17 @@ npm run integrate:status
 ### 3.4 集成、构建与验收职责
 
 - **集成（主 Agent / 集成负责人）**：只把「待集成」任务的声明路径改动叠加到 `integration` 分支，
-  生成带 `TaskDock-Snapshot/Tasks` 提交信息的快照；检查交集、越界、冲突，执行集成静态检查。
-  不等待未完成任务；已完成任务按批次集成。失败时快照工作区回到基线，日志与台账记录保留供复现，
-  不会把半个补丁留在工作区。
+  生成带 `TaskDock-Snapshot/Tasks` 提交信息的快照；检查交集、越界、冲突，执行集成静态检查
+  （类型检查 `npm run typecheck`，不重复 Vite 打包）。不等待未完成任务；已完成任务按批次集成。
+  失败时快照工作区回到基线，日志与台账记录保留供复现，不会把半个补丁留在工作区。
 - **构建（集成负责人）**：**只有快照提交能出正式测试安装包**；在独立的干净构建工作区执行、经构建
-  调度器排队、桌面与移动端分别构建；同一「提交+平台+配置」复用已有产物，不因第二个 Agent 要验收重打。
+  调度器排队、桌面与移动端分别构建；同一「提交+平台+配置+依赖/工具链指纹」复用已有产物，不因第二个
+  Agent 要验收重打。默认按 `batch` 合批，任务刚 `ready` 不自动出包；`build` 记录 `mode`、累计
+  `includedTasks`、失败分类与资源快照，失败不自动重试。
 - **验收（各任务 Agent + 集成验收 Agent）**：多 Agent 可基于**同一 `buildId`** 并行验收各自模块，
-  各写自己的验收记录（不改他人结论）；跨模块链路与回归由集成验收 Agent 负责。
+  各写自己的验收记录（不改他人结论），记录以 `buildId + taskId` 保留 revision/history；
+  只要任务代码仍在构建的累计 `includedTasks` 中，旧任务可在包含其代码的新构建上首次/回归验收；
+  历史通过结论不能自动复制成新版本通过。跨模块链路与回归由集成验收 Agent 负责。
   并行验收的共享资源（同一窗口/实例、手机、剪贴板、CDP 端口、数据库目录）按
   [docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md) §5.4–5.5 串行或隔离。
 - **验收失败**：记录构建版本、现象与复现 → 负责人修复 → 新交付提交 → 下一个快照与构建 →
@@ -187,9 +196,11 @@ npm run integrate:status
 - **正式测试安装包只从集成快照构建**：`npm run integrate -- build --snapshot <快照> --platform
   desktop|web|android`。共享工作区里的未提交改动、`main` 上更晚的提交都不进入产物。
 - 每个「快照提交 + 平台 + 配置 + 架构 + 构建输入指纹」只构建一次；已有成功产物**重新校验**后才复用，
-  不因不同 Agent 分别验收而重复打包。输入指纹覆盖依赖锁/依赖段与工具链。桌面端与移动端、不同
-  架构/配置**不能视为同一个安装包**。构建依赖必须与快照代码一致（已存在 junction 也每次核对）；
-  桌面缓存登记失败（build-guard register）必须阻止构建，不能产生无法追踪的大缓存。
+  不因不同 Agent 分别验收而重复打包。构建前先 `batch plan` 判断是否需要新构建；默认 `batch` 合批，
+  不为单个普通任务自动出包。桌面端与移动端、不同架构/配置**不能视为同一个安装包**。
+  构建依赖必须与快照代码一致（已存在 junction 也每次核对）；桌面缓存登记失败（build-guard register）
+  必须阻止构建，不能产生无法追踪的大缓存。桌面 release 构建默认 `CARGO_BUILD_JOBS=2`，失败按
+  `source/dependency/resource/environment/packaging/unknown` 分类；资源不足先等空闲/降并发，不无限重试。
 - 构建记录必须含：构建 ID、Git commit（`dirty` 为构建前后实测，不得硬编码 false）、平台与配置、
   架构与构建输入指纹、时间、包含的任务（声明路径与显式放行的额外路径；`snapshotChain` /
   `includedTasks` 给出累计来源）、退出码、产物路径与 sha256、
@@ -199,7 +210,8 @@ npm run integrate:status
 - 集成任务的构建走调度器（label `integration-<构建ID>`），与日常构建共享同一队列，不另造锁；
   构建工作区与快照工作区分离，构建使用 `<仓库>-integration-build`。
 - 未构建/构建失败写「未执行」或失败记录，不得用历史产物冒充本轮结果；只有 `status=succeeded`
-  且 `dirty=false` 的构建才能进入 `verifying`，`accept pass|fail` 还必须匹配任务当前快照与交付提交。
+  且 `dirty=false` 的构建才能进入 `verifying`，`accept pass|fail` 还必须匹配任务当前交付提交
+  并出现在该构建的累计 `includedTasks` 中（旧任务可在新构建上验收，返工未入构建时拒绝）。
 
 ### 5.3 磁盘、命令与证据
 - 构建前检查磁盘与缓存（`npm run tauri` 自动 `build-guard precheck`），不足先停止并 `report`；

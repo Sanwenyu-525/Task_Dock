@@ -955,3 +955,310 @@ test("build-guard register 失败时拒绝构建并保留错误", () => {
 function fsReadTask(repo, id) {
   return readFileSync(join(repo, "tmp", "integration", "tasks", `${id}.json`), "utf8");
 }
+
+// ---------------------------------------------------------------- 第三轮：合批与跨快照验收
+
+test("batch plan 只读、按 min-ready 合批，不创建快照/构建", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    const beta = commitFile(repo, { "src/other.txt": "other v2\n" }, "beta");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    addReadyTask(repo, "beta", ["src/other.txt"], beta);
+
+    const before = run(repo, ["batch", "plan", "--platform", "web", "--json"]);
+    assert.equal(before.status, 0, before.out);
+    const pre = JSON.parse(before.out);
+    assert.equal(pre.readOnly, true);
+    assert.equal(pre.latestSnapshot, null);
+    assert.equal(pre.counts.ready, 2);
+    assert.equal(pre.recommendation.build, false);
+    assert.equal(existsSync(join(repo, "tmp", "integration", "snapshots", "snap-01.json")), false);
+    assert.deepEqual(existsSync(join(repo, "tmp", "integration", "builds"))
+      ? readdirSync(join(repo, "tmp", "integration", "builds")) : [], []);
+
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha,beta", "--base", base, "--check", "none"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    const gamma = commitFile(repo, { "src/notes.txt": "notes v2\n" }, "gamma");
+    addReadyTask(repo, "gamma", ["src/notes.txt"], gamma);
+
+    const snapshotsBefore = readdirSync(join(repo, "tmp", "integration", "snapshots")).filter((f) => f.endsWith(".json")).length;
+    const buildsBefore = readdirSync(join(repo, "tmp", "integration", "builds")).length;
+    const after = run(repo, ["batch", "plan", "--platform", "web", "--json"]);
+    assert.equal(after.status, 0, after.out);
+    const plan = JSON.parse(after.out);
+    assert.equal(plan.readOnly, true);
+    assert.equal(plan.latestSnapshot.id, "snap-01");
+    assert.equal(plan.latestSnapshot.tasks, 2);
+    assert.deepEqual(plan.newTasks.map((t) => t.id), ["gamma"]);
+    assert.equal(plan.counts.pendingAcceptance, 2);
+    assert.equal(plan.recommendation.build, false);
+    assert.match(plan.recommendation.reason, /低于 min-ready=2/);
+    assert.ok(plan.reuse);
+    assert.equal(plan.latestBuild.id, "b01-web-r1");
+    assert.equal(readdirSync(join(repo, "tmp", "integration", "snapshots")).filter((f) => f.endsWith(".json")).length, snapshotsBefore);
+    assert.equal(readdirSync(join(repo, "tmp", "integration", "builds")).length, buildsBefore);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("batch plan 标记同一路径冲突，冲突任务不进入可合批集合", () => {
+  const { home, repo } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app alpha\n" }, "alpha");
+    const beta = commitFile(repo, { "src/app.txt": "app beta\n" }, "beta");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    addReadyTask(repo, "beta", ["src/app.txt"], beta);
+    const r = run(repo, ["batch", "plan", "--platform", "web", "--json"]);
+    assert.equal(r.status, 0, r.out);
+    const plan = JSON.parse(r.out);
+    assert.equal(plan.counts.eligibleReady, 0);
+    assert.equal(plan.recommendation.build, false);
+    assert.equal(plan.blocked.length >= 2, true, JSON.stringify(plan.blocked));
+    assert.match(JSON.stringify(plan.blocked), /写入范围冲突/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("六 Agent 一次合批：六任务同快照、一次正式构建、六份共享 buildId 验收", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const ids = ["agent-a", "agent-b", "agent-c", "agent-d", "agent-e", "agent-f"];
+    for (const id of ids) {
+      const commit = commitFile(repo, { [`src/${id}.txt`]: `${id} v1\n` }, id);
+      addReadyTask(repo, id, [`src/${id}.txt`], commit);
+    }
+    const pre = JSON.parse(run(repo, ["batch", "plan", "--platform", "web", "--json"]).out);
+    assert.equal(pre.recommendation.build, false);
+    assert.match(pre.recommendation.reason, /尚无集成快照|bootstrap/);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", ids.join(","), "--base", base, "--check", "none"]).status, 0);
+    const plan = JSON.parse(run(repo, ["batch", "plan", "--platform", "web", "--json"]).out);
+    assert.equal(plan.recommendation.build, true);
+    assert.equal(plan.counts.pendingAcceptance, 6);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--mode", "batch", "--command", "node emit.mjs"]).status, 0);
+    assert.equal(readdirSync(join(repo, "tmp", "integration", "builds")).filter((n) => n.startsWith("b01-web")).length, 1);
+    const build = readBuild(repo, "b01-web-r1");
+    assert.equal(build.tasks.length, 6);
+    assert.deepEqual(build.includedTasks.map((t) => t.id).sort(), ids.slice().sort());
+    for (const id of ids) {
+      const r = run(repo, ["accept", "--build", "b01-web-r1", "--task", id, "--status", "pass", "--agent", `verifier-${id}`]);
+      assert.equal(r.status, 0, r.out);
+      const rec = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b01-web-r1", "acceptance", `${id}.json`), "utf8"));
+      assert.equal(rec.build, "b01-web-r1");
+      assert.equal(rec.kind, "first");
+    }
+    const cov = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b01-web-r1", "coverage.json"), "utf8"));
+    assert.equal(cov.plannedAcceptance, 6);
+    assert.equal(cov.completedAcceptance, 6);
+    assert.equal(cov.pass, 6);
+    assert.equal(cov.firstAcceptance, 6);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("分批完成：A/B/C 先批构建，D/E/F 后批增量，新构建累计六任务", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const first = ["wave-a", "wave-b", "wave-c"].map((id) => {
+      const commit = commitFile(repo, { [`src/${id}.txt`]: `${id} v1\n` }, id);
+      addReadyTask(repo, id, [`src/${id}.txt`], commit);
+      return id;
+    });
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", first.join(","), "--base", base, "--check", "none"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    const second = ["wave-d", "wave-e", "wave-f"].map((id) => {
+      const commit = commitFile(repo, { [`src/${id}.txt`]: `${id} v1\n` }, id);
+      addReadyTask(repo, id, [`src/${id}.txt`], commit);
+      return id;
+    });
+    const plan = JSON.parse(run(repo, ["batch", "plan", "--platform", "web", "--json"]).out);
+    assert.equal(plan.recommendation.build, true);
+    assert.deepEqual(plan.newTasks.map((t) => t.id).sort(), second.slice().sort());
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", second.join(","), "--check", "none"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-02", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    const b2 = readBuild(repo, "b02-web-r1");
+    assert.deepEqual(b2.includedTasks.map((t) => t.id).sort(), [...first, ...second].sort());
+    assert.equal(run(repo, ["accept", "--build", "b02-web-r1", "--task", "wave-a", "--status", "pass"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b02-web-r1", "--task", "wave-d", "--status", "pass"]).status, 0);
+    const recA = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b02-web-r1", "acceptance", "wave-a.json"), "utf8"));
+    assert.equal(recA.kind, "regression");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("五进程同时请求同一快照构建：只实际构建一次，其余复用同一 buildId", async () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v5\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
+    const args = ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"];
+    const results = await Promise.all(Array.from({ length: 5 }, () => runAsync(repo, args, { TASKDOCK_BUILD_LOCK_WAIT_MS: "120000" })));
+    for (const r of results) assert.equal(r.status, 0, r.out);
+    const dirs = readdirSync(join(repo, "tmp", "integration", "builds")).filter((n) => n.startsWith("b01-web"));
+    assert.deepEqual(dirs, ["b01-web-r1"]);
+    assert.equal(results.filter((r) => /复用/.test(r.out)).length >= 4, true, JSON.stringify(results.map((r) => r.out)));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("一个修复批次：两个验收失败任务一次增量快照/一次构建，旧失败记录保留", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const a0 = commitFile(repo, { "src/app.txt": "app before fix\n" }, "a0");
+    const b0 = commitFile(repo, { "src/other.txt": "other before fix\n" }, "b0");
+    addReadyTask(repo, "fix-a", ["src/app.txt"], a0);
+    addReadyTask(repo, "fix-b", ["src/other.txt"], b0);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "fix-a,fix-b", "--base", base, "--check", "none"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b01-web-r1", "--task", "fix-a", "--status", "fail", "--note", "A 失败"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b01-web-r1", "--task", "fix-b", "--status", "fail", "--note", "B 失败"]).status, 0);
+
+    const a1 = commitFile(repo, { "src/app.txt": "app fixed\n" }, "a fix");
+    const b1 = commitFile(repo, { "src/other.txt": "other fixed\n" }, "b fix");
+    assert.equal(run(repo, ["task", "verify", "--id", "fix-a", "--commit", a1, "--cmd", "node emit.mjs"]).status, 0);
+    assert.equal(run(repo, ["task", "ready", "--id", "fix-a", "--commit", a1, "--from", b0]).status, 0);
+    assert.equal(run(repo, ["task", "verify", "--id", "fix-b", "--commit", b1, "--cmd", "node emit.mjs"]).status, 0);
+    assert.equal(run(repo, ["task", "ready", "--id", "fix-b", "--commit", b1, "--from", a1]).status, 0);
+    const snap2 = run(repo, ["snapshot", "create", "--tasks", "fix-a,fix-b", "--check", "none"]);
+    assert.equal(snap2.status, 0, snap2.out);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-02", "--platform", "web", "--mode", "batch", "--command", "node emit.mjs"]).status, 0);
+    const b2 = readBuild(repo, "b02-web-r1");
+    assert.deepEqual(b2.includedTasks.map((t) => t.id).sort(), ["fix-a", "fix-b"]);
+    assert.equal(run(repo, ["accept", "--build", "b02-web-r1", "--task", "fix-a", "--status", "pass"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b02-web-r1", "--task", "fix-b", "--status", "pass"]).status, 0);
+    const oa = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b01-web-r1", "acceptance", "fix-a.json"), "utf8"));
+    const ob = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b01-web-r1", "acceptance", "fix-b.json"), "utf8"));
+    assert.equal(oa.status, "fail");
+    assert.equal(ob.status, "fail");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("移动端任务不能用桌面/Web 构建验收（平台独立合批）", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "apps/mobile/src/screen.txt": "screen v1\n" }, "mobile change");
+    addReadyTask(repo, "mobile-alpha", ["apps/mobile/src/screen.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "mobile-alpha", "--base", base, "--check", "none"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    const r = run(repo, ["accept", "--build", "b01-web-r1", "--task", "mobile-alpha", "--status", "pass"]);
+    assert.equal(r.status, 2, r.out);
+    assert.match(r.out, /移动端|平台|桌面/);
+    const task = JSON.parse(fsReadTask(repo, "mobile-alpha"));
+    assert.equal(task.status, "verifying");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("旧任务可以在包含其代码的新构建上验收，旧构建记录保留且标记 regression", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    const beta = commitFile(repo, { "src/other.txt": "other v2\n" }, "beta");
+    const gamma = commitFile(repo, { "src/notes.txt": "notes v2\n" }, "gamma");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    addReadyTask(repo, "beta", ["src/other.txt"], beta);
+    addReadyTask(repo, "gamma", ["src/notes.txt"], gamma);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha,beta,gamma", "--base", base, "--check", "none"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b01-web-r1", "--task", "alpha", "--status", "pass", "--agent", "agent-alpha"]).status, 0);
+
+    const delta = commitFile(repo, { "src/delta.txt": "delta v1\n" }, "delta");
+    const epsilon = commitFile(repo, { "src/epsilon.txt": "epsilon v1\n" }, "epsilon");
+    addReadyTask(repo, "delta", ["src/delta.txt"], delta);
+    addReadyTask(repo, "epsilon", ["src/epsilon.txt"], epsilon);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "delta,epsilon", "--check", "none"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-02", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    const b2 = readBuild(repo, "b02-web-r1");
+    assert.deepEqual(b2.includedTasks.map((t) => t.id).sort(), ["alpha", "beta", "delta", "epsilon", "gamma"]);
+
+    // 旧任务 alpha/beta/gamma 都在 snap-02 累计清单中，可以在 b02 上做回归验收。
+    const a2 = run(repo, ["accept", "--build", "b02-web-r1", "--task", "alpha", "--status", "pass", "--agent", "agent-alpha"]);
+    assert.equal(a2.status, 0, a2.out);
+    assert.equal(run(repo, ["accept", "--build", "b02-web-r1", "--task", "beta", "--status", "pass", "--agent", "agent-beta"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b02-web-r1", "--task", "gamma", "--status", "fail", "--agent", "agent-gamma", "--note", "窗口回归失败"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b02-web-r1", "--task", "delta", "--status", "pass", "--agent", "agent-delta"]).status, 0);
+
+    const a2record = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b02-web-r1", "acceptance", "alpha.json"), "utf8"));
+    assert.equal(a2record.build, "b02-web-r1");
+    assert.equal(a2record.kind, "regression");
+    const b1record = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b01-web-r1", "acceptance", "alpha.json"), "utf8"));
+    assert.equal(b1record.build, "b01-web-r1");
+    assert.equal(b1record.status, "pass");
+    const d = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b02-web-r1", "acceptance", "delta.json"), "utf8"));
+    assert.equal(d.kind, "first");
+
+    const cov = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b02-web-r1", "coverage.json"), "utf8"));
+    assert.equal(cov.plannedAcceptance, 5);
+    assert.equal(cov.completedAcceptance, 4);
+    assert.equal(cov.pass, 3);
+    assert.equal(cov.fail, 1);
+    assert.equal(cov.firstAcceptance, 1);
+    assert.equal(cov.regressionAcceptance, 3);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("同一 buildId+taskId 重复验收保留 revision/history，不覆盖旧结论", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b01-web-r1", "--task", "alpha", "--status", "pass"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b01-web-r1", "--task", "alpha", "--status", "pass", "--note", "复测通过"]).status, 0);
+    assert.equal(run(repo, ["accept", "--build", "b01-web-r1", "--task", "alpha", "--status", "fail", "--note", "后来发现回归"]).status, 0);
+    const record = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b01-web-r1", "acceptance", "alpha.json"), "utf8"));
+    assert.equal(record.revision, 3);
+    assert.equal(record.status, "fail");
+    assert.equal(record.history.length, 2);
+    assert.deepEqual(record.history.map((h) => h.status), ["pass", "pass"]);
+    const task = JSON.parse(fsReadTask(repo, "alpha"));
+    assert.equal(task.status, "accept-failed");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("构建失败按日志分类为 resource-error，不自动重复执行", () => {
+  const { home, repo } = makeRepo();
+  try {
+    const base = commitFile(repo, {
+      "fail.mjs": 'console.error("memory allocation of 25427984 bytes failed");\nprocess.exit(1);\n',
+    }, "fail helper");
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
+    const r = run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--mode", "urgent", "--command", "node fail.mjs"]);
+    assert.ok([2, 3].includes(r.status), r.out);
+    const failed = readBuild(repo, "b01-web-r1");
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.mode, "urgent");
+    assert.equal(failed.failureClass, "resource-error");
+    assert.match(failed.failureHint, /降低 CARGO_BUILD_JOBS|资源/);
+    assert.equal(failed.exitCode, 1);
+    assert.equal(readdirSync(join(repo, "tmp", "integration", "builds")).filter((n) => n.startsWith("b01-web")).length, 1);
+    const cov = JSON.parse(readFileSync(join(repo, "tmp", "integration", "builds", "b01-web-r1", "coverage.json"), "utf8"));
+    assert.equal(cov.status, "failed");
+    assert.equal(cov.failureClass, "resource-error");
+    assert.equal(cov.completedAcceptance, 0);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("集成静态检查只执行 npm run typecheck，不再重复 Vite 打包", () => {
+  const { home, repo } = makeRepo();
+  try {
+    const pkg = JSON.stringify({ name: "demo", version: "1.0.0", scripts: { typecheck: "node check.mjs" } }, null, 2) + "\n";
+    const lock = JSON.stringify({ name: "demo", version: "1.0.0", lockfileVersion: 3, requires: true, packages: {} }, null, 2) + "\n";
+    const base = commitFile(repo, {
+      "package.json": pkg,
+      "package-lock.json": lock,
+      "check.mjs": 'console.log("typecheck ok");\n',
+    }, "package fixture");
+    mkdirSync(join(repo, "node_modules"), { recursive: true });
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    const create = run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "static"]);
+    assert.equal(create.status, 0, create.out);
+    const snap = readSnapshot(repo, "snap-01");
+    assert.equal(snap.checks[0].cmd, "npm run typecheck");
+    assert.equal(snap.checks[0].exitCode, 0);
+    assert.equal(existsSync(join(buildWtPath(repo), "dist", "index.html")), false);
+    const log = readFileSync(join(repo, snap.checks[0].logPath), "utf8");
+    assert.match(log, /typecheck ok/);
+    assert.doesNotMatch(log, /vite build/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+

@@ -3,13 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Dialog } from "../ui/Dialog";
 import { Checkbox } from "../ui";
+import Select from "../ui/Select";
 import { useLocale } from "../../hooks/useLocale";
 import { useUiStore } from "../../store/useUiStore";
-import { fsHashFiles, fsListDir, type FsHashEntry, type FsOpReport } from "../../lib/bridge";
+import { fsHashFiles, type FsHashEntry, type FsOpReport } from "../../lib/bridge";
 import { formatSize } from "../../lib/filesWorkspace/fileMeta";
 import {
   applyHashesByPath,
-  compareEntries,
+  compareFolders,
   hashTargets,
   type CompareItem,
   type CompareStatus,
@@ -43,6 +44,10 @@ const STATUS_KEY = {
   contentSame: "fw.compare.status.contentSame",
   contentDiff: "fw.compare.status.contentDiff",
   same: "fw.compare.status.same",
+  dirUnchecked: "fw.compare.status.dirUnchecked",
+  dirSame: "fw.compare.status.dirSame",
+  dirDiff: "fw.compare.status.dirDiff",
+  dirPartial: "fw.compare.status.dirPartial",
 } as const satisfies Record<CompareStatus, string>;
 
 export default function FolderCompareDialog({ request, onClose, onCopy }: Props) {
@@ -50,6 +55,10 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
   const showToast = useUiStore((s) => s.showToast);
   const [targetPaneId, setTargetPaneId] = useState("");
   const [hasMore, setHasMore] = useState(false);
+  const [complete, setComplete] = useState(true);
+  const [failedDirs, setFailedDirs] = useState(0);
+  const [depth, setDepth] = useState("0");
+  const [progress, setProgress] = useState<{ dirsVisited: number; filesScanned: number } | null>(null);
   const [items, setItems] = useState<CompareItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [hashRunning, setHashRunning] = useState(false);
@@ -59,11 +68,13 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
 
   const target = request?.targets.find((item) => item.paneId === targetPaneId) ?? request?.targets[0] ?? null;
   const loadSeq = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!request) return;
     loadSeq.current += 1;
     setTargetPaneId(request.targets[0]?.paneId ?? "");
+    setDepth("0");
     setSelected(new Set());
     setConfirm(null);
   }, [request]);
@@ -72,6 +83,7 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
     // 切换右侧目标时，旧目标的选中项与确认内容不能继续生效；同时让在途
     // 目录读取晚到的结果失效，避免旧结果覆盖新目标。
     loadSeq.current += 1;
+    abortRef.current?.abort();
     setSelected(new Set());
     setConfirm(null);
   }, [target?.paneId]);
@@ -79,28 +91,47 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
   const reload = async () => {
     if (!request || !target) return;
     const seq = ++loadSeq.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
+    setProgress(null);
     try {
-      const [left, right] = await Promise.all([
-        fsListDir(request.sourceDir, false, 0),
-        fsListDir(target.dir, false, 0),
-      ]);
+      const result = await compareFolders(request.sourceDir, target.dir, {
+        maxDepth: Number(depth),
+        signal: controller.signal,
+        onProgress: setProgress,
+      });
       if (seq !== loadSeq.current) return;
-      setHasMore(left.hasMore || right.hasMore);
-      setItems(compareEntries(left.entries, right.entries));
+      setItems(result.items);
+      setComplete(result.complete);
+      setHasMore(!result.complete);
+      setFailedDirs(result.failedDirs);
+      setSelected((current) => {
+        if (result.complete) return current;
+        // 结果不完整时，未加载的目录不能证明“仅一侧存在”，禁用所有差异选择。
+        return new Set();
+      });
     } catch (e) {
       if (seq !== loadSeq.current) return;
-      showToast(errorMessage(e), { kind: "error" });
-      setItems([]);
+      if ((e as { name?: string }).name !== "AbortError") {
+        showToast(errorMessage(e), { kind: "error" });
+        setItems([]);
+        setComplete(false);
+        setHasMore(true);
+      }
     } finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current) {
+        setLoading(false);
+        abortRef.current = null;
+      }
     }
   };
 
   useEffect(() => {
     void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request, target?.dir]);
+  }, [request, target?.dir, depth]);
 
   const counts = useMemo(() => {
     const result: Record<CompareStatus, number> = {
@@ -112,6 +143,10 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
       contentSame: 0,
       contentDiff: 0,
       same: 0,
+      dirUnchecked: 0,
+      dirSame: 0,
+      dirDiff: 0,
+      dirPartial: 0,
     };
     for (const item of items) result[item.status] += 1;
     return result;
@@ -125,6 +160,10 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
   ).length;
 
   const prepare = () => {
+    if (!complete) {
+      showToast(t("fw.compare.incomplete"), { kind: "warning" });
+      return;
+    }
     const leftToRight: string[] = [];
     const rightToLeft: string[] = [];
     for (const item of items) {
@@ -230,7 +269,7 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
   };
 
   const runHash = async () => {
-    if (!request || !target || hashRunning) return;
+    if (!request || !target || hashRunning || !complete) return;
     const targets = hashTargets(items, request.sourceDir, target.dir);
     if (!targets.length) {
       showToast(t("fw.compare.noHashTargets"), { kind: "info" });
@@ -251,6 +290,11 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
     }
   };
 
+  const depthOptions = ["0", "1", "2", "3", "4"].map((value) => ({
+    value,
+    label: value === "0" ? t("fw.compare.depthCurrent") : t("fw.compare.depthN", { count: value }),
+  }));
+
   if (!request) return null;
 
   return (
@@ -265,10 +309,10 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
           <button type="button" className="btn" onClick={onClose}>
             {t("common.cancel")}
           </button>
-          <button type="button" className="btn" disabled={hashRunning || loading} onClick={() => void runHash()}>
+          <button type="button" className="btn" disabled={hashRunning || loading || !complete} onClick={() => void runHash()}>
             {hashRunning ? t("fw.compare.hashing") : t("fw.compare.hashAction")}
           </button>
-          <button type="button" className="btn primary" disabled={!selected.size} onClick={prepare}>
+          <button type="button" className="btn primary" disabled={!selected.size || !complete} onClick={prepare}>
             {t("fw.compare.copySelected", { count: selected.size })}
           </button>
         </>
@@ -296,6 +340,16 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
               </button>
             ))}
           </div>
+          <div className="fw-compare-depth">
+            <span>{t("fw.compare.depth")}</span>
+            <Select
+              value={depth}
+              options={depthOptions}
+              onChange={setDepth}
+              ariaLabel={t("fw.compare.depth")}
+              size="sm"
+            />
+          </div>
           <span className="fw-compare-path" title={target?.dir}>
             {target?.dir}
           </span>
@@ -303,19 +357,31 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
       </div>
 
       <div className="fw-compare-stats" role="status">
-        {(["leftOnly", "rightOnly", "sizeDiff", "timeDiff", "contentSame", "contentDiff", "same"] as CompareStatus[]).map(
-          (status) => (
-            <span key={status} className={`fw-compare-stat is-${status}`}>
-              {t(STATUS_KEY[status])} {counts[status]}
-            </span>
-          ),
+        {(["leftOnly", "rightOnly", "kindDiff", "sizeDiff", "timeDiff", "contentSame", "contentDiff", "same", "dirUnchecked", "dirSame", "dirDiff", "dirPartial"] as CompareStatus[]).map(
+          (status) =>
+            counts[status] > 0 && (
+              <span key={status} className={`fw-compare-stat is-${status}`}>
+                {t(STATUS_KEY[status])} {counts[status]}
+              </span>
+            ),
+        )}
+        {progress && loading && (
+          <span className="fw-compare-stat is-progress">
+            {t("fw.compare.progress", { dirs: progress.dirsVisited, files: progress.filesScanned })}
+          </span>
         )}
         {hashedPairs > 0 && (
           <span className="fw-compare-stat is-hashed">{t("fw.compare.hashedPairs", { count: hashedPairs })}</span>
         )}
       </div>
 
-      {hasMore && <p className="fw-template-hint">{t("fw.compare.truncated")}</p>}
+      {!complete && !loading && (
+        <p className="fw-template-hint fw-compare-incomplete" role="alert">
+          {t("fw.compare.incomplete")}
+          {failedDirs > 0 ? ` · ${t("fw.compare.failedDirs", { count: failedDirs })}` : ""}
+          {hasMore ? ` · ${t("fw.compare.truncated")}` : ""}
+        </p>
+      )}
       <p className="fw-template-hint">{t("fw.compare.safeCopyHint")}</p>
 
       {loading ? (
@@ -332,7 +398,7 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
             <span role="columnheader">{t("fw.compare.columnRight")}</span>
           </div>
           {items.map((item) => {
-            const selectable = item.status === "leftOnly" || item.status === "rightOnly";
+            const selectable = complete && (item.status === "leftOnly" || item.status === "rightOnly");
             return (
               <div key={item.name} className={`fw-compare-row is-${item.status}`} role="row">
                 <span role="cell">

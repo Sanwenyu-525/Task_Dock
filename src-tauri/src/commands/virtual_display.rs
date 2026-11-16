@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
@@ -63,8 +64,10 @@ pub struct VdDeviceList {
 #[derive(Debug, Clone, Serialize)]
 pub struct VdApp {
     pub package: String,
-    /// 已解析到的应用名；解析不到时为 null，前端回退显示包名。
+    /// Android PackageManager 的本地化名称；无法读取时为 null，前端回退显示包名。
     pub label: Option<String>,
+    /// 96×96 PNG data URL；仅在成功读取到应用图标时返回。
+    pub icon: Option<String>,
     pub system: bool,
     /// true=确认有启动入口；false=确认没有；null=当前设备无法判定。
     pub launchable: Option<bool>,
@@ -96,6 +99,9 @@ pub struct VdSession {
     pub status: String,
     /// process | display | app | video | ready（后端可核验的阶段性事实）
     pub stage: String,
+    /// scrcpy 创建/镜像的目标 Display ID；虚拟屏未从日志确认前为 null。
+    /// 导航键只发送到这个 ID，避免误控手机实体屏。
+    pub display_id: Option<u32>,
     pub title: String,
     pub started_at: String,
     pub ready_at: Option<String>,
@@ -137,6 +143,14 @@ pub struct VdScreenshot {
     /// 启发式质量提示（低信息量/尺寸偏小）；为空表示未发现异常。
     /// 它不是失败判据：纯色页面也可能真实存在，前端应提示而非直接丢弃。
     pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VdNav {
+    /// 已发送的按键动作：back | home | recents。
+    pub action: String,
+    /// 实际发送到的 Display ID；前端可据此展示目标。
+    pub display_id: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -654,7 +668,167 @@ fn known_app_label(device_uid: &str, package: &str) -> Option<String> {
         .cloned()
 }
 
-fn fetch_apps(adb: &Path, serial: &str) -> Result<(Vec<VdApp>, bool), String> {
+// ── Android PackageManager 元数据（真实名称/图标） ─────────────
+//
+// vivo 的图标加载会走 Settings 的 LabelCacheProvider，从 shell UID 调用会
+// SecurityException。这里改为在设备本地用 app_process 读取 PackageManager，
+// 直接通过应用 Resources 取 Drawable 并渲染成 PNG；不需要 root，也不改变
+// Android 系统状态。帮助器随 Rust 二进制打包（4KB dex），运行时只推送到
+// /data/local/tmp 读取，退出后不常驻。
+
+const APPMETA_DEX: &[u8] = include_bytes!("../../assets/android-appmeta/classes.dex");
+const APPMETA_REMOTE_DEX: &str = "/data/local/tmp/taskdock-appmeta.dex";
+const APPMETA_REMOTE_ICONS: &str = "/data/local/tmp/taskdock-appmeta";
+
+#[derive(Debug, Clone)]
+struct AppMetaEntry {
+    label: String,
+    system: bool,
+    launchable: bool,
+    icon: Option<String>,
+}
+
+struct AppMetaCacheEntry {
+    fetched_at: Instant,
+    apps: HashMap<String, AppMetaEntry>,
+}
+
+fn app_meta_cache() -> &'static Mutex<HashMap<String, AppMetaCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, AppMetaCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn appmeta_local_paths(uid: &str) -> (PathBuf, PathBuf) {
+    let base = std::env::temp_dir()
+        .join("task-dock-vd")
+        .join("appmeta")
+        .join(uid.replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"));
+    (base.join("classes.dex"), base.join("icons"))
+}
+
+fn ensure_appmeta_helper(adb: &Path, serial: &str, local_dex: &Path) -> Result<(), String> {
+    if let Some(parent) = local_dex.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("创建元数据缓存目录失败：{err}"))?;
+    }
+    std::fs::write(local_dex, APPMETA_DEX).map_err(|err| format!("写入元数据帮助器失败：{err}"))?;
+    let local = local_dex.to_string_lossy().to_string();
+    let output = adb_output(
+        adb,
+        &["-s", serial, "push", &local, APPMETA_REMOTE_DEX],
+        Duration::from_secs(12),
+    )?;
+    if !output.status.success() {
+        return Err(format!(
+            "推送元数据帮助器失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// 解析帮助器的 TSV：package \t label \t system(0/1) \t launchable(0/1) \t iconPath。
+/// 图标路径只用于判断是否有图，实际文件按 package.png 从本地缓存目录读取。
+fn parse_appmeta(stdout: &str, icon_dir: &Path) -> HashMap<String, AppMetaEntry> {
+    let mut out = HashMap::new();
+    for line in stdout.lines() {
+        let mut parts = line.split('\t');
+        let Some(package) = parts.next().map(str::trim) else {
+            continue;
+        };
+        if !is_package_name(package) {
+            continue;
+        }
+        let Some(label) = parts.next() else { continue };
+        let system = parts.next() == Some("1");
+        let launchable = parts.next() == Some("1");
+        let icon_path = parts.next().unwrap_or("").trim();
+        let icon = if launchable && !icon_path.is_empty() {
+            let local = icon_dir.join(format!("{package}.png"));
+            match std::fs::read(&local) {
+                Ok(bytes) if !bytes.is_empty() && bytes.len() <= 128 * 1024 => Some(format!(
+                    "data:image/png;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                )),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let label = label.trim();
+        if label.is_empty() {
+            continue;
+        }
+        out.insert(
+            package.to_string(),
+            AppMetaEntry {
+                label: label.to_string(),
+                system,
+                launchable,
+                icon,
+            },
+        );
+    }
+    out
+}
+
+fn fetch_app_meta(
+    adb: &Path,
+    serial: &str,
+    uid: &str,
+) -> Result<HashMap<String, AppMetaEntry>, String> {
+    const TTL: Duration = Duration::from_secs(600);
+    {
+        let cache = app_meta_cache().lock().expect("vd appmeta cache");
+        if let Some(entry) = cache.get(uid) {
+            if entry.fetched_at.elapsed() < TTL {
+                return Ok(entry.apps.clone());
+            }
+        }
+    }
+
+    let (local_dex, icon_dir) = appmeta_local_paths(uid);
+    ensure_appmeta_helper(adb, serial, &local_dex)?;
+    let command = format!(
+        "CLASSPATH={APPMETA_REMOTE_DEX} app_process /system/bin com.taskdock.appmeta.Main"
+    );
+    let stdout = adb_shell(adb, serial, &["sh", "-c", &command], Duration::from_secs(40))
+        .map_err(|err| format!("读取应用元数据失败：{err}"))?;
+
+    let _ = std::fs::remove_dir_all(&icon_dir);
+    std::fs::create_dir_all(&icon_dir).map_err(|err| format!("创建图标缓存目录失败：{err}"))?;
+    let local_icons = icon_dir.to_string_lossy().to_string();
+    let pull = adb_output(
+        adb,
+        &["-s", serial, "pull", APPMETA_REMOTE_ICONS, &local_icons],
+        Duration::from_secs(40),
+    );
+    // 某些设备可能禁止 /data/local/tmp 读回；名称仍可用，图标降级为占位。
+    if let Ok(output) = pull {
+        if !output.status.success() {
+            let _ = std::fs::remove_dir_all(&icon_dir);
+            std::fs::create_dir_all(&icon_dir).ok();
+        }
+    }
+
+    let apps = parse_appmeta(&stdout, &icon_dir);
+    if apps.is_empty() {
+        return Err("设备未返回可解析的应用元数据".into());
+    }
+    let mut cache = app_meta_cache().lock().expect("vd appmeta cache");
+    if cache.len() > 8 {
+        cache.clear();
+    }
+    cache.insert(
+        uid.to_string(),
+        AppMetaCacheEntry {
+            fetched_at: Instant::now(),
+            apps: apps.clone(),
+        },
+    );
+    Ok(apps)
+}
+
+fn fetch_apps(adb: &Path, serial: &str, uid: &str) -> Result<(Vec<VdApp>, bool), String> {
     let user = adb_shell(adb, serial, &["pm", "list", "packages", "-3"], Duration::from_secs(20))
         .map(|out| parse_pm_packages(&out))
         .unwrap_or_default();
@@ -674,21 +848,30 @@ fn fetch_apps(adb: &Path, serial: &str) -> Result<(Vec<VdApp>, bool), String> {
         all.extend(plain);
     }
     let launchable = query_launchable(adb, serial);
-    let launchable_known = launchable.is_some();
+    // 优先使用 PackageManager 的本地化名称、系统标记、启动入口与真实图标；
+    // 读取失败时仍保留上方 pm/query-activities 的包名与启动入口结果。
+    let metadata = fetch_app_meta(adb, serial, uid).ok();
+    let launchable_known = launchable.is_some() || metadata.is_some();
     let mut apps: Vec<VdApp> = all
         .into_iter()
         .map(|package| {
-            let is_launchable = launchable
-                .as_ref()
-                .map(|set| set.contains(&package));
+            let meta = metadata.as_ref().and_then(|map| map.get(&package));
+            let is_launchable = meta
+                .map(|entry| entry.launchable)
+                .or_else(|| launchable.as_ref().map(|set| set.contains(&package)));
+            let is_system = meta.map(|entry| entry.system).unwrap_or_else(|| system.contains(&package));
+            let label = meta.map(|entry| entry.label.clone());
+            let icon = meta.and_then(|entry| entry.icon.clone());
+            let reason = match is_launchable {
+                Some(false) => Some("该应用没有启动入口".to_string()),
+                _ => None,
+            };
             VdApp {
-                label: None,
-                system: system.contains(&package),
+                label,
+                icon,
+                system: is_system,
                 launchable: is_launchable,
-                reason: match is_launchable {
-                    Some(false) => Some("该应用没有启动入口".to_string()),
-                    _ => None,
-                },
+                reason,
                 package,
             }
         })
@@ -716,7 +899,7 @@ fn cached_apps(
             }
         }
     }
-    let (apps, launchable_known) = fetch_apps(adb, serial)?;
+    let (apps, launchable_known) = fetch_apps(adb, serial, uid)?;
     let mut cache = app_cache().lock().expect("vd app cache");
     if cache.len() > 8 {
         cache.clear();
@@ -966,11 +1149,12 @@ pub fn vd_start(
     // 固定使用后端选定的 transport，避免 mDNS/直连重复 transport 导致 scrcpy 报多设备。
     let transport = device.serial.clone();
 
+    let mut resolved_app_label = None;
     if let Some(package) = package.as_deref() {
         let (apps, launchable_known) = cached_apps(&adb, &transport, &device.uid)
             .map_err(|err| AppError::Unavailable(format!("检查应用启动入口失败：{err}")))?;
+        let entry = apps.iter().find(|app| app.package == package);
         if launchable_known {
-            let entry = apps.iter().find(|app| app.package == package);
             match entry.and_then(|app| app.launchable) {
                 Some(false) | None => {
                     return Err(AppError::Validation(
@@ -980,11 +1164,11 @@ pub fn vd_start(
                 Some(true) => {}
             }
         }
+        resolved_app_label = entry.and_then(|app| app.label.clone());
     }
 
-    let app_label = package
-        .as_deref()
-        .and_then(|pkg| known_app_label(&device.uid, pkg));
+    let app_label = resolved_app_label
+        .or_else(|| package.as_deref().and_then(|pkg| known_app_label(&device.uid, pkg)));
     let title = match mode {
         MODE_VIRTUAL => format!(
             "Task Dock · 虚拟屏 · {}",
@@ -1016,6 +1200,55 @@ pub fn vd_start(
 #[tauri::command]
 pub fn vd_stop(session_id: String) -> AppResult<bool> {
     process::manager().stop(&session_id)
+}
+
+/// 向会话绑定的显示目标发送 Android 导航键。
+///
+/// 虚拟屏优先使用 scrcpy 日志中确认的 Display ID；未确认时拒绝发送，
+/// 绝不回退到默认显示（那会错误控制手机实体屏）。镜像固定作用于 display 0。
+#[tauri::command]
+pub fn vd_nav(session_id: String, action: String) -> AppResult<VdNav> {
+    let session = process::manager().session(&session_id)?;
+    if session.status != "running" {
+        return Err(AppError::Conflict(
+            "会话尚未就绪或已结束，无法发送导航操作".into(),
+        ));
+    }
+    let action = action.trim().to_ascii_lowercase();
+    let key = match action.as_str() {
+        "back" => "KEYCODE_BACK",
+        "home" => "KEYCODE_HOME",
+        "recents" => "KEYCODE_APP_SWITCH",
+        _ => {
+            return Err(AppError::Validation(
+                "不支持的导航操作（仅 back/home/recents）".into(),
+            ))
+        }
+    };
+    let display_id = session.display_id.ok_or_else(|| {
+        AppError::Unavailable(
+            "尚未从 scrcpy 日志确认虚拟屏 Display ID，已拒绝发送导航键；请先定位 scrcpy 窗口并使用其快捷键"
+                .into(),
+        )
+    })?;
+    if session.mode == MODE_VIRTUAL && display_id == 0 {
+        return Err(AppError::Conflict(
+            "虚拟屏未获取到独立 Display ID，已拒绝作用于手机实体屏".into(),
+        ));
+    }
+    let adb = find_adb().ok_or_else(|| AppError::Unavailable("未找到 adb".into()))?;
+    let display = display_id.to_string();
+    adb_shell(
+        &adb,
+        &session.serial,
+        &["input", "-d", &display, "keyevent", key],
+        Duration::from_secs(8),
+    )
+    .map_err(|err| AppError::Unavailable(format!("发送 Android 导航键失败：{err}")))?;
+    Ok(VdNav {
+        action,
+        display_id,
+    })
 }
 
 /// 会话列表（含刚结束的短保留窗口，便于前端展示错误原因）。

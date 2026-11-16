@@ -118,6 +118,7 @@ export function buildBatchRenamePreview(
     const key = item.target.toLocaleLowerCase();
     targetCounts.set(key, (targetCounts.get(key) ?? 0) + 1);
   }
+  const sourceKeys = new Set(paths.map((path) => path.toLocaleLowerCase()));
 
   return initial.map((item) => {
     const key = item.target.toLocaleLowerCase();
@@ -132,6 +133,16 @@ export function buildBatchRenamePreview(
     }
     // 大小写-only 改名：目标路径与源是同一个文件，不能当成“已存在”冲突。
     if (existing.has(key) && key !== sourceKey) {
+      if (sourceKeys.has(key)) {
+        // A.txt → B.txt 且 B.txt → A.txt 需要临时名两阶段交换。后端明确不支持
+        // 源目标互换（逐项执行时先写的目标会覆盖后写的源），这里提前拒绝，
+        // 不提供伪交换按钮，避免为了“功能完整”引入数据丢失风险。
+        return {
+          ...item,
+          status: "conflict",
+          reason: "目标与另一待重命名项互换；两阶段交换未启用，请先改为临时名并分两次执行",
+        };
+      }
       return { ...item, status: "conflict", reason: "目标目录已存在同名条目" };
     }
     return { ...item, status: "ok" };

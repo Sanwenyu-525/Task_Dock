@@ -128,8 +128,10 @@ npm run integrate -- snapshot create --all-ready --base <稳定提交>  # 首次
 6. **应用补丁**：对每个任务 `git diff <from>..<commit> -- <声明路径 + 放行路径>` 后
    `git apply --index --3way`；冲突 → 拒绝并提示先读双方 diff；
 7. **越界复核**：应用后工作区改动必须仍在声明范围（含显式放行的路径）；
-8. **集成检查**：`--check static`（默认）在集成工作区执行 `tsc --noEmit && vite build`，
-   经构建调度器排队（label `integration-<快照>-static`），失败则不提交快照；
+8. **集成检查**：`--check static`（默认）在集成工作区执行 `npm run typecheck`（即 `tsc --noEmit`），
+   经构建调度器排队（label `integration-<快照>-static`），失败则不提交快照。该阶段**不再执行
+   `vite build`**：Vite 打包由正式构建自身的 `beforeBuildCommand` 完成，避免同一份 dist 被生成两次。
+   类型检查覆盖公共类型/接口兼容；需要运行测试的任务在 `task verify` 阶段完成，不把完整安装包构建当模块检查。
 9. **生成快照提交**，提交信息带任务关联（可从 commit 反查任务）：
 
 ```
@@ -138,7 +140,7 @@ integration: 3 项已集成任务（snap-02）
 TaskDock-Snapshot: snap-02
 TaskDock-Base: <基线提交>
 TaskDock-Tasks: files-rescan=<提交> tasks-filter=<提交> window-snap=<提交>
-TaskDock-Check: npm run build:raw exit=0
+TaskDock-Check: npm run typecheck exit=0
 ```
 
 记录写入 `tmp/integration/snapshots/<快照>.json`（任务的 commit / paths /
@@ -148,13 +150,24 @@ TaskDock-Check: npm run build:raw exit=0
 `tmp/integration/logs/<快照>-failure.json` 失败记录保留**，不会把半个补丁留给下一次操作；需要现场可用
 `--dry-run` 加人工复现，而不是依赖残留工作区。
 
-## 5. 统一构建（build）
+## 5. 验收批次与统一构建（build）
+
+**默认不是「一个任务完成就出包」。** `task ready` 只把任务放入下一验收批；先评估再决定是否构建：
 
 ```bash
-npm run integrate -- build --snapshot snap-02 --platform desktop
+# 只读：输出待验收/新增/阻塞/复用/建议快照，不写台账、不加锁、不构建
+npm run integrate -- batch plan --platform desktop [--mode batch|urgent|manual] [--min-ready 2] [--json]
+
+npm run integrate -- build --snapshot snap-02 --platform desktop [--mode batch|urgent|manual]
 npm run integrate -- build --snapshot snap-02 --platform web|android
 npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # 只打印计划
 ```
+
+`batch plan` 输出：当前待验收任务数、已就绪未集成任务、上一快照累计任务、当前可纳入新增任务、
+依赖/冲突阻塞任务、已有构建是否可复用、预计回归任务、推荐快照与验收范围，以及本轮是否建议正式构建。
+默认 `min-ready=2`：低于 2 个可合批任务时建议继续等待；`urgent` 用于阻塞性故障/安全修复，
+`manual` 用于人工指定任务或固定快照，最终都走同一条独立快照、调度器、产物校验流程，不绕过安全机制。
+不新增后台轮询/常驻服务；在任务就绪、主 Agent 请求、`batch plan` 与正式构建前评估即可。
 
 | 平台 | 配置 | 命令（经调度器） | 产物 |
 |---|---|---|---|
@@ -174,7 +187,13 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
   登记失败（或缺少 `scripts/build-guard.mjs`）直接拒绝构建并写失败记录，不产生无法追踪的大缓存。
 - **磁盘与缓存**：桌面构建 `CARGO_TARGET_DIR=<主仓库>/src-tauri/target-integration`（绝对路径，
   与主工作区 target 分开）；构建前复用 `build-guard precheck`；构建结束按 build-guard 规则人工回收
-  （记录里的 `targetDir` 就是回收对象）。
+  （记录里的 `targetDir` 就是回收对象）。桌面 release 默认 `CARGO_BUILD_JOBS=2`（可用环境变量覆盖，
+  但会被记入记录），并在构建前写入可用/总内存快照；极低内存（默认低于
+  `TASKDOCK_MIN_FREE_MEM_MB=256`）直接写 `resource-error` 失败记录，不启动整包构建。
+- **失败分类**：失败构建按日志与退出状态归为 `source-error` / `dependency-error` / `resource-error` /
+  `environment-error` / `packaging-error` / `unknown`，写 `failureClass` 与 `failureHint`；工具**不自动
+  重试**昂贵正式构建，资源类失败先等空闲/降并发再人工重试。`STATUS_STACK_BUFFER_OVERRUN` 或
+  `memory allocation of ... failed` 不得误报为源码错误。
 - **调度**：一律经 `scripts/build-sched.mjs run`（label `integration-<构建ID>`），与其他会话共享
   全局并发与槽位，不另造锁；`build.json` 记录 `schedulerTaskId`（若日志可解析）与日志路径。
 - **复用**：复用键 = `快照提交 | 平台 | 配置 | CPU 架构 | 构建输入指纹`。输入指纹覆盖
@@ -201,13 +220,15 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
 ```json
 {
   "id": "b02-desktop-r1", "snapshot": "snap-02", "commit": "<40 位 SHA>", "shortCommit": "<7 位>",
-  "dirty": false, "platform": "desktop", "config": "release-nsis-msi", "experimental": false,
+  "dirty": false, "platform": "desktop", "config": "release-nsis-msi", "mode": "batch", "experimental": false,
   "reuseKey": "<commit>|desktop|release-nsis-msi|<arch>|<inputsDigest>", "inputsDigest": "<64 位>", "arch": "x64",
   "status": "succeeded", "exitCode": 0, "startedAt": "...", "finishedAt": "...", "durationMs": 123456,
   "tasks": [{ "id": "files-rescan", "commit": "...", "module": "资源管理器", "owner": "agent-a",
               "paths": ["src/..."], "extraPaths": [] }],
   "snapshotChain": ["snap-01", "snap-02"],
   "includedTasks": [{ "id": "files-rescan", "commit": "...", "module": "资源管理器", "owner": "agent-a" }],
+  "plannedAcceptance": 2, "resource": { "freeMemMB": 1024, "totalMemMB": 16384, "cpuCount": 16 },
+  "failureClass": null, "failureHint": null,
   "command": ["npm", "run", "tauri:raw", "--", "build"],
   "cwd": "<仓库父目录>/<仓库名>-integration-build", "targetDir": "<target-integration>",
   "logPath": "tmp/integration/builds/.../build.log", "schedulerTaskId": "h-...",
@@ -215,6 +236,13 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
                   "sha256": "<64 位>", "copiedTo": "tmp/integration/builds/b02-desktop-r1/artifacts/..." }]
 }
 ```
+
+每个构建目录另有 `coverage.json`（覆盖率）和 `reuse-hits.jsonl`（相同输入复用命中记录）。`coverage.json`
+至少包含 `newTasks` / `includedTasks` / `plannedAcceptance` / `completedAcceptance` / `firstAcceptance` /
+`regressionAcceptance` / `coverageRate` / `reuseHits` / `heavyBuildExecuted` / `durationMs` /
+`failureClass`；这些是 CLI/JSON 指标，不新增构建看板 UI。重复构建避免次数只统计实际 `reuse-hits`
+事件，不把“理论上少构建”写成已节省。
+
 
 `dirty` 是构建前后的实际测量结果，不是常量；失败构建同样写 `status=failed`、`exitCode`、
 `reason` 与日志尾部/路径，失败也是证据。`--command` 构建会写 `experimental=true`，只用于测试，
@@ -231,12 +259,19 @@ npm run integrate -- accept --build b02-desktop-r1 --task tasks-filter --status 
     --note "筛选后列表不刷新" --repro "1) 输入关键词 2) 清空 3) 列表仍为旧结果"
 ```
 
-- 每个任务写自己的 `<构建目录>/acceptance/<任务>.json`，**互不覆盖**；多条记录可同时存在；
-- `pass` / `fail` 要求：构建 `status=succeeded`、`dirty=false`、有平台可用产物；任务处于
-  `verifying`，且构建的 `snapshot` / commit 与任务当前 `snapshot` / `commit` 一致。旧构建、
-  失败构建、零产物构建、已验收任务都不能再写 `pass`/`fail`；
-- `fail` 必须写原因；`blocked` / `not-run` 也要求任务处于 `verifying`，但不改任务状态；
+- 每个任务写自己的 `<构建目录>/acceptance/<任务>.json`，**互不覆盖**；同一 `buildId+taskId`
+  重复提交时保留 `revision` 与最多 20 条 `history`，不静默抹掉旧结论；多条记录可同时存在；
+- 验收资格按构建的**累计任务清单** `includedTasks` 判断，而不是要求 `build.snapshot === task.snapshot`：
+  任务代码仍包含在当前构建、任务当前交付提交与构建包含的提交一致、且该交付已进入快照时，允许
+  基于该 `buildId` 做首次（`kind=first`）或回归（`kind=regression`）验收。典型案例：S1 的 A/B/C
+  可在包含 A–E 的 S2 安装包上验收/回归；但 S2 之后又返工、尚未进入 S2 的提交必须拒绝。
+- `pass` / `fail` 还要求：构建 `status=succeeded`、`dirty=false`、有平台可用产物；任务处于
+  `verifying` 或 `accept-passed`（后者用于新版本回归）；平台必须适用（移动端任务不能用桌面/Web
+  构建验收，反之亦然）。失败构建、零产物构建不能写 `pass`/`fail`；
+- `fail` 必须写原因；`blocked` / `not-run` 也要求任务处于可验收状态，但不改任务状态；
 - 验收必须落在运行证据上（通道与边界见 ACCEPTANCE_ROUTING.md），不能只凭源码或构建成功宣称通过；
+- 同一任务在旧构建上的通过记录只证明旧版本，**不会自动复制**成新构建通过；新版本需要独立记录。
+
 - 只有与该构建相关的集成链路才做跨模块回归，不做无意义的全量端到端。
 
 **共享资源协调**（可并行就并行，有冲突就串行）：
@@ -280,10 +315,11 @@ snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验�
 | 命令 | 用途 |
 |---|---|
 | `npm run integrate -- status [--json]` | 任务 / 快照 / 构建 / 验收汇总（只读） |
+| `npm run integrate -- batch plan ...` | 只读验收批次计划（累计任务、阻塞、复用、建议） |
 | `npm run integrate -- task ...` | 登记、真实执行检查（`verify`）、就绪、查看 |
 | `npm run integrate -- worktree adopt\|status` | 迁移/查看工具自有工作区身份（只校验登记，不重建不重置） |
 | `npm run integrate -- snapshot bootstrap\|create` | 基线 / 增量快照 |
-| `npm run integrate -- build --snapshot <id> --platform <p>` | 统一构建（含复用与 dry-run） |
+| `npm run integrate -- build --snapshot <id> --platform <p>` | 统一构建（含复用、`--mode` 与 dry-run） |
 | `npm run integrate -- accept --build <id> --task <id> --status <s>` | 写验收结论 |
 | `npm run integrate:test` | 本机制的自动化用例（临时仓库，不碰真实工作区） |
 
@@ -310,6 +346,7 @@ snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验�
 | 内容 | 位置 | 是否入库 |
 |---|---|---|
 | 任务、快照、构建、验收、真实检查日志 | `tmp/integration/{tasks,snapshots,builds,logs}/` | 否（`tmp/` 已 gitignore） |
+| 构建覆盖率与复用命中 | `tmp/integration/builds/<构建ID>/{coverage.json,reuse-hits.jsonl}` | 否（`tmp/` 已 gitignore） |
 | 工具工作区身份记录 | `tmp/integration/worktrees/{snapshot,build,verify}.json` | 否（`tmp/` 已 gitignore；缺记录时工具拒绝操作，可 `worktree adopt` 非破坏迁移） |
 | 集成快照工作区 | `<仓库父目录>/<仓库名>-integration`（分支 `integration`） | 否（独立 checkout） |
 | 集成构建工作区 | `<仓库父目录>/<仓库名>-integration-build`（detached HEAD） | 否（独立 checkout） |

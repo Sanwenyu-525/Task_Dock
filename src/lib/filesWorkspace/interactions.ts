@@ -127,23 +127,12 @@ export function sameZone(a: FwDropZone | null, b: FwDropZone | null): boolean {
   return false;
 }
 
-/** 默认效果：同卷 → 移动，跨卷 → 复制（Windows 习惯）。 */
+/** 默认效果：明确同卷 → 移动；明确跨卷 / 卷未知 → 复制（安全默认）。 */
 export function defaultEffect(paths: string[], targetDir: string): "copy" | "move" {
   // 优先使用后端 Win32 卷键（可区分目录挂载点/符号链接/网络共享）。
+  // 未命中时不按盘符猜测：同一盘符可能挂载不同卷，未知一律复制。
   const volume = volumeDecision(paths, targetDir);
-  if (volume) return volume;
-  const first = normalizePath(paths[0] ?? "");
-  const driveOf = (p: string): string => {
-    const m = /^([a-zA-Z]):/.exec(p);
-    if (m) return m[1].toLowerCase();
-    if (p.startsWith("\\\\")) {
-      // UNC：server/share 前缀
-      const parts = p.split("\\").filter(Boolean);
-      return `unc:${parts[0] ?? ""}/${parts[1] ?? ""}`.toLowerCase();
-    }
-    return "?";
-  };
-  return driveOf(first) === driveOf(normalizePath(targetDir)) ? "move" : "copy";
+  return volume ?? "copy";
 }
 
 /** 效果解析（坐标/落点/修饰键由协调器持有，组件只读快照）。 */

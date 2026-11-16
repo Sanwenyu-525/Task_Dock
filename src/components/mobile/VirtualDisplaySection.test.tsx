@@ -22,6 +22,7 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     })),
     vdFocus: vi.fn(async () => ({ found: true, focused: true })),
     vdListApps: vi.fn(),
+    vdNav: vi.fn(async () => ({ action: "home", display_id: 17 })),
     vdProbe: vi.fn(),
     vdReconnect: vi.fn(async () => true),
     vdScreenshot: vi.fn(),
@@ -47,6 +48,7 @@ import {
   vdDiagnostics,
   vdFocus,
   vdListApps,
+  vdNav,
   vdProbe,
   vdReconnect,
   vdScreenshot,
@@ -66,6 +68,7 @@ const appsMock = vi.mocked(vdListApps);
 const probeMock = vi.mocked(vdProbe);
 const sessionsMock = vi.mocked(vdSessions);
 const startMock = vi.mocked(vdStart);
+const navMock = vi.mocked(vdNav);
 const stopMock = vi.mocked(vdStop);
 const focusMock = vi.mocked(vdFocus);
 const shotMock = vi.mocked(vdScreenshot);
@@ -135,6 +138,7 @@ function session(overrides: Partial<VdSession> = {}): VdSession {
     app_label: "设置",
     status: "starting",
     stage: "process",
+    display_id: 17,
     title: "Task Dock · 虚拟屏 · com.android.settings",
     started_at: new Date(Date.now() - 65_000).toISOString(),
     ready_at: null,
@@ -151,6 +155,7 @@ function session(overrides: Partial<VdSession> = {}): VdSession {
 const SETTINGS_APP = {
   package: "com.android.settings",
   label: "设置",
+  icon: null,
   system: true,
   launchable: true,
   reason: null,
@@ -159,6 +164,7 @@ const SETTINGS_APP = {
 const CHROME_APP = {
   package: "com.google.android.chrome",
   label: "Chrome",
+  icon: null,
   system: false,
   launchable: true,
   reason: null,
@@ -167,6 +173,7 @@ const CHROME_APP = {
 const CAMERA_APP = {
   package: "com.android.camera",
   label: "相机",
+  icon: null,
   system: true,
   launchable: false,
   reason: "没有可启动的 Activity",
@@ -289,6 +296,7 @@ describe("VirtualDisplaySection", () => {
 
     await user.click(screen.getByRole("button", { name: "显示无启动入口的应用" }));
     await waitFor(() => expect(appsMock).toHaveBeenLastCalledWith(SERIAL_A, true));
+    await user.click(screen.getByRole("button", { name: /浏览全部应用/ }));
     const camera = await screen.findByRole("button", { name: /相机/ });
     expect((camera as HTMLButtonElement).disabled).toBe(true);
     expect(within(camera).getByText("没有可启动的 Activity")).toBeTruthy();
@@ -336,6 +344,8 @@ describe("VirtualDisplaySection", () => {
     render(<VirtualDisplaySection />);
     await screen.findAllByText("V2323A");
     await user.click(screen.getByRole("button", { name: /独立虚拟屏幕/ }));
+    await screen.findByText("要打开的应用");
+    await user.click(screen.getByRole("button", { name: /浏览全部应用/ }));
 
     const app = screen.getByText("com.android.settings").closest("button");
     expect(app).not.toBeNull();
@@ -435,6 +445,36 @@ describe("VirtualDisplaySection", () => {
 
     expect(exportMock).toHaveBeenCalledWith("session-1", "D:\\tmp\\out.png");
     await waitFor(() => expect(screen.queryByText("窗口截图")).toBeNull());
+  });
+
+  it("Android 导航键绑定会话与 Display ID，不按当前设备猜测", async () => {
+    sessionsMock.mockResolvedValue([
+      session({ status: "running", stage: "ready", display_id: 17 }),
+    ]);
+    const user = userEvent.setup();
+    render(<VirtualDisplaySection />);
+
+    await screen.findByText("V2323A · 设置");
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(navMock).toHaveBeenCalledWith("session-1", "back");
+    await user.click(screen.getByRole("button", { name: "Home" }));
+    expect(navMock).toHaveBeenCalledWith("session-1", "home");
+    await user.click(screen.getByRole("button", { name: "最近任务" }));
+    expect(navMock).toHaveBeenCalledWith("session-1", "recents");
+  });
+
+  it("虚拟屏 Display ID 未确认时导航键禁用，不回退到手机实体屏", async () => {
+    sessionsMock.mockResolvedValue([
+      session({ status: "running", stage: "ready", display_id: null }),
+    ]);
+    render(<VirtualDisplaySection />);
+
+    await screen.findByText("V2323A · 设置");
+    expect(screen.getByText("Display ID 未确认")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "返回" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(navMock).not.toHaveBeenCalled();
   });
 
   it("关闭会话调用 vd_stop，并立即显示关闭中状态", async () => {
