@@ -129,7 +129,7 @@ function navIds(): string[] {
   return navRows().map((row) => row.dataset.navEntry ?? "");
 }
 
-/** 拖拽只允许从手柄启动：所有拖拽用例必须命中 `[data-nav-grip]`。 */
+/** 拖拽手柄是整行拖拽面上的视觉提示，仍可用于明确的坐标断言。 */
 function gripOf(row: HTMLElement): HTMLElement {
   const grip = row.querySelector<HTMLElement>("[data-nav-grip]");
   if (!grip) throw new Error(`入口 ${row.dataset.navEntry ?? "?"} 没有拖拽手柄`);
@@ -159,27 +159,27 @@ function stubSettingsGeometry(): HTMLElement[] {
 
 let pointerSeq = 0;
 
-/** 按下并移动超过 5px 阈值：与真实鼠标「按下—拖出」顺序一致。 */
-function startDrag(element: HTMLElement, fromY: number, toY: number): number {
+/** 按下并移动超过 6px 阈值：与真实鼠标「按下—拖出」顺序一致。 */
+function startDrag(element: HTMLElement, fromY: number, toY: number, fromX = 24): number {
   pointerSeq += 1;
   const pointerId = pointerSeq;
   fireEvent.pointerDown(element, {
     pointerId,
     button: 0,
     pointerType: "mouse",
-    clientX: 24,
+    clientX: fromX,
     clientY: fromY,
   });
   fireEvent.pointerMove(window, {
     pointerId,
     pointerType: "mouse",
-    clientX: 24,
+    clientX: fromX,
     clientY: fromY + 10,
   });
   fireEvent.pointerMove(window, {
     pointerId,
     pointerType: "mouse",
-    clientX: 24,
+    clientX: fromX,
     clientY: toY,
   });
   return pointerId;
@@ -355,7 +355,7 @@ describe("工作台侧栏鼠标拖拽", () => {
     expect(savedLeft()).toEqual([...navIds(), "settings"]);
   });
 
-  it("位移未超过 5px 阈值时不进入拖拽：没有落点线，也不写库", async () => {
+  it("位移未超过 6px 阈值时不进入拖拽：没有落点线，也不写库", async () => {
     await renderShell();
     const rows = navRows();
     const filesIndex = rows.findIndex((row) => row.dataset.navEntry === "files");
@@ -369,7 +369,7 @@ describe("工作台侧栏鼠标拖拽", () => {
       clientX: 24,
       clientY: rowCenterY(filesIndex),
     });
-    // 4px：两个轴都未达到 5px 阈值，仍是点击而不是拖拽。
+    // 4px：纵向未达到 6px 阈值，仍是点击而不是拖拽。
     fireEvent.pointerMove(window, {
       pointerId,
       pointerType: "mouse",
@@ -381,6 +381,112 @@ describe("工作台侧栏鼠标拖拽", () => {
 
     fireEvent.pointerUp(window, { pointerId, pointerType: "mouse" });
     expect(navIds()).toEqual(before);
+    expect(navWriteCalls()).toHaveLength(0);
+  });
+
+  it("纵向 6px 且纵向主导才启动排序；横向移动不会触发垂直排序", async () => {
+    await renderShell();
+    await openTasks();
+    const filesRow = navList().querySelector<HTMLElement>('[data-nav-entry="files"]');
+    const page = filesRow?.querySelector<HTMLElement>(".wb-nav-page");
+    if (!filesRow || !page) throw new Error("文件入口未渲染");
+    const y = rowCenterY(navIds().indexOf("files"));
+    pointerSeq += 1;
+    const pointerId = pointerSeq;
+
+    fireEvent.pointerDown(page, {
+      pointerId,
+      button: 0,
+      pointerType: "mouse",
+      clientX: 80,
+      clientY: y,
+    });
+    // 横向 20px、纵向 3px：未达到纵向阈值，不能启动垂直排序。
+    fireEvent.pointerMove(window, {
+      pointerId,
+      pointerType: "mouse",
+      clientX: 100,
+      clientY: y + 3,
+    });
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
+    // 纵向 5px、横向 0：仍差 1px，不启动。
+    fireEvent.pointerMove(window, {
+      pointerId,
+      pointerType: "mouse",
+      clientX: 80,
+      clientY: y + 5,
+    });
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
+    // 纵向 6px 且纵向主导：进入拖拽。
+    fireEvent.pointerMove(window, {
+      pointerId,
+      pointerType: "mouse",
+      clientX: 80,
+      clientY: y + 6,
+    });
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeTruthy();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    fireEvent.pointerUp(window, { pointerId, pointerType: "mouse" });
+    expect(navWriteCalls()).toHaveLength(0);
+  });
+
+  it("横向主导的移动即使纵向过了 6px 也不启动垂直排序", async () => {
+    await renderShell();
+    await openTasks();
+    const filesRow = navList().querySelector<HTMLElement>('[data-nav-entry="files"]');
+    const page = filesRow?.querySelector<HTMLElement>(".wb-nav-page");
+    if (!filesRow || !page) throw new Error("文件入口未渲染");
+    const y = rowCenterY(navIds().indexOf("files"));
+    pointerSeq += 1;
+    const pointerId = pointerSeq;
+
+    fireEvent.pointerDown(page, {
+      pointerId,
+      button: 0,
+      pointerType: "mouse",
+      clientX: 80,
+      clientY: y,
+    });
+    fireEvent.pointerMove(window, {
+      pointerId,
+      pointerType: "mouse",
+      clientX: 120,
+      clientY: y + 7,
+    });
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
+
+    // 未进入拖拽，松手后的普通 click 仍然正常打开页面。
+    fireEvent.pointerUp(window, { pointerId, pointerType: "mouse" });
+    fireEvent.click(page);
+    expect(useUiStore.getState().tab).toBe("files");
+    expect(navWriteCalls()).toHaveLength(0);
+  });
+
+  it("触屏上下滑动优先保留列表滚动，不误触排序", async () => {
+    await renderShell();
+    const filesRow = navList().querySelector<HTMLElement>('[data-nav-entry="files"]');
+    const page = filesRow?.querySelector<HTMLElement>(".wb-nav-page");
+    if (!filesRow || !page) throw new Error("文件入口未渲染");
+    const y = rowCenterY(navIds().indexOf("files"));
+
+    fireEvent.pointerDown(page, {
+      pointerId: 301,
+      button: 0,
+      pointerType: "touch",
+      clientX: 80,
+      clientY: y,
+    });
+    fireEvent.pointerMove(window, {
+      pointerId: 301,
+      pointerType: "touch",
+      clientX: 80,
+      clientY: y + 24,
+    });
+    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
+    expect(navList().querySelector(".wb-nav-drop-line")).toBeNull();
+
+    fireEvent.pointerUp(window, { pointerId: 301, pointerType: "touch" });
     expect(navWriteCalls()).toHaveLength(0);
   });
 
@@ -399,6 +505,68 @@ describe("工作台侧栏鼠标拖拽", () => {
     expect(navIds().at(-1)).toBe("files");
     await waitFor(() => expect(navWriteCalls()).toHaveLength(1));
     expect(savedLeft()).toEqual([...navIds(), "settings"]);
+  });
+});
+
+describe("整行拖拽面", () => {
+  const surfaces: Array<{
+    name: string;
+    pick: (row: HTMLElement) => HTMLElement | null;
+    x: number;
+  }> = [
+    { name: "功能图标", pick: (row) => row.querySelector<HTMLElement>(".wb-nav-icon"), x: 52 },
+    { name: "名称", pick: (row) => row.querySelector<HTMLElement>(".wb-nav-label"), x: 96 },
+    { name: "原手柄位置", pick: (row) => row.querySelector<HTMLElement>("[data-nav-grip]"), x: 24 },
+    { name: "行首空白", pick: (row) => row, x: 2 },
+  ];
+
+  it.each(surfaces)("从$name起拖可以完成排序", async ({ pick, x }) => {
+    await renderShell();
+    const rows = navRows();
+    const filesIndex = rows.findIndex((row) => row.dataset.navEntry === "files");
+    const target = pick(rows[filesIndex]);
+    if (!target) throw new Error("拖拽目标未渲染");
+
+    const pointerId = startDrag(target, rowCenterY(filesIndex), 2, x);
+    // 真正进入拖拽后，整行都是拖拽面，不要求命中手柄。
+    expect(navList().querySelector(".wb-nav-item.is-dragging")?.getAttribute("data-nav-entry")).toBe(
+      "files",
+    );
+    finishDrag(pointerId, 2);
+
+    expect(navIds()[0]).toBe("files");
+    await waitFor(() => expect(navWriteCalls()).toHaveLength(1));
+  });
+
+  it("从宽导航行尾的非操作空白起拖可以完成排序", async () => {
+    useSettingsStore.setState({
+      settings: {
+        ...baseSettings(),
+        workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 320 },
+      } as never,
+    });
+    await renderShell();
+    const rows = navRows();
+    const filesIndex = rows.findIndex((row) => row.dataset.navEntry === "files");
+    const pointerId = startDrag(rows[filesIndex], rowCenterY(filesIndex), 2, 300);
+    finishDrag(pointerId, 2);
+    expect(navIds()[0]).toBe("files");
+  });
+
+  it("从数量徽标起拖可以完成排序", async () => {
+    useCaptureStore.setState({ inboxCount: 4, inboxCountLoaded: true });
+    await renderShell();
+    const row = navList().querySelector<HTMLElement>('[data-nav-entry="collection"]');
+    if (!row) throw new Error("收集入口未渲染");
+    await waitFor(() => expect(row.querySelector(".wb-nav-badge")).toBeTruthy());
+    const badge = row.querySelector<HTMLElement>(".wb-nav-badge");
+    if (!badge) throw new Error("数量徽标未渲染");
+    const index = navIds().indexOf("collection");
+    const pointerId = startDrag(badge, rowCenterY(index), 2, 120);
+    finishDrag(pointerId, 2);
+
+    expect(navIds()[0]).toBe("collection");
+    await waitFor(() => expect(navWriteCalls()).toHaveLength(1));
   });
 });
 
@@ -728,14 +896,14 @@ describe("显隐与恢复默认不回归", () => {
   });
 });
 
-describe("拖拽手柄放大与命中区", () => {
-  it("手柄图标 17px、命中区 28×28；手柄位于 Tab 左侧、× 位于最右侧，固定列网格保持行高 36px", async () => {
+describe("拖拽手柄视觉与整行拖拽语义", () => {
+  it("手柄图标 17px、视觉区 28×28；手柄位于 Tab 左侧、× 位于最右侧，行高保持 36px", async () => {
     await renderShell();
     const row = navRows()[0];
     const grip = gripOf(row);
     expect(grip.querySelector("svg")?.getAttribute("width")).toBe("17");
     expect(grip.querySelector("svg")?.getAttribute("height")).toBe("17");
-    // 导航 Tab 不再挂 hover tooltip。
+    // 宽导航下整行不挂名称 tooltip。
     expect(row.hasAttribute("data-tip")).toBe(false);
 
     const actions = row.querySelector<HTMLElement>(".wb-nav-actions");
@@ -758,12 +926,15 @@ describe("拖拽手柄放大与命中区", () => {
     expect(hide.querySelector("svg")?.getAttribute("width")).toBe("15");
     expect(hide.querySelector("svg")?.getAttribute("height")).toBe("15");
 
-    // CSS 契约：17px 图标 / 28×28 命中区；默认低对比灰、无背景；行高不变。
+    // CSS 契约：17px 图标 / 28×28 视觉区；默认低对比灰、无背景；行高不变。
     expect(cssRule(".wb-nav-grip")).toMatch(/width: 28px/);
     expect(cssRule(".wb-nav-grip")).toMatch(/height: 28px/);
     expect(cssRule(".wb-nav-grip")).toMatch(/background: transparent/);
     expect(cssRule(".wb-nav-grip")).toMatch(/opacity: 0\.55/);
-    expect(cssRule(".wb-nav-grip")).not.toMatch(/position: absolute/);
+    // 手柄已纯视觉化：不接收指针，整行才是拖拽入口。
+    expect(cssRule(".wb-nav-grip")).toMatch(/pointer-events: none/);
+    expect(cssRule(".wb-nav-grip")).not.toMatch(/pointer-events: auto/);
+    expect(cssRule(".wb-nav-item.has-grip")).toMatch(/cursor: grab/);
     expect(cssRule(".wb-nav-hide")).toMatch(/width: 24px/);
     expect(cssRule(".wb-nav-hide")).toMatch(/height: 24px/);
     expect(cssRule(".wb-nav-hide")).toMatch(/opacity: 0;/);
@@ -775,7 +946,7 @@ describe("拖拽手柄放大与命中区", () => {
     expect(cssRule(".wb-nav-actions")).toMatch(/display: inline-flex/);
   });
 
-  it("外层行是普通布局容器，页面切换/拖拽/隐藏是三个独立按钮", async () => {
+  it("外层行是普通布局容器，页面切换/隐藏是独立按钮，手柄只是视觉元素", async () => {
     await renderShell();
     const row = navRows()[0];
     const page = row.querySelector<HTMLElement>(".wb-nav-page");
@@ -788,12 +959,13 @@ describe("拖拽手柄放大与命中区", () => {
     expect(page?.dataset.navPage).toBeDefined();
     expect(page?.querySelector(".wb-nav-icon")).toBeTruthy();
     expect(page?.querySelector(".wb-nav-label")).toBeTruthy();
-    expect(grip.tagName).toBe("BUTTON");
-    expect(grip.getAttribute("tabindex")).toBe("-1");
+    expect(grip.tagName).toBe("SPAN");
+    expect(grip.getAttribute("aria-hidden")).toBe("true");
+    expect(grip.hasAttribute("tabindex")).toBe(false);
     expect(hide?.tagName).toBe("BUTTON");
-    // 行内没有任何 button 嵌 button；三个控件是兄弟关系。
+    // 行内没有任何 button 嵌 button；页面切换与隐藏是兄弟关系。
     expect(row.querySelectorAll("button button")).toHaveLength(0);
-    expect([...row.querySelectorAll("button")]).toEqual([grip, page, hide]);
+    expect([...row.querySelectorAll("button")]).toEqual([page, hide]);
   });
 
   it("拖拽进行中隐藏按钮禁用，取消拖拽后恢复可用", async () => {
@@ -813,40 +985,24 @@ describe("拖拽手柄放大与命中区", () => {
     await waitFor(() => expect(hide.disabled).toBe(false));
   });
 
-  it("只有手柄能起拖：行体与 × 的指针位移不进入拖拽，点击手柄不导航", async () => {
+  it("× 独立：按下移动不起拖、不切页；手柄与行内空白仍属于整行点击", async () => {
     await renderShell();
     await openTasks();
     const filesRow = navList().querySelector<HTMLElement>('[data-nav-entry="files"]');
     if (!filesRow) throw new Error("文件入口未渲染");
     const before = navIds();
 
-    // 行体按下并移动：新交互只允许手柄起拖。
-    fireEvent.pointerDown(filesRow, {
-      pointerId: 201,
-      button: 0,
-      pointerType: "mouse",
-      clientX: 80,
-      clientY: rowCenterY(navIds().indexOf("files")),
-    });
-    fireEvent.pointerMove(window, {
-      pointerId: 201,
-      pointerType: "mouse",
-      clientX: 80,
-      clientY: 2,
-    });
-    expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
-    fireEvent.pointerUp(window, { pointerId: 201, pointerType: "mouse" });
-    expect(navIds()).toEqual(before);
-
-    // 点手柄不触发导航（仍在任务页）。
+    // 点原手柄位置现在也是整行点击，正常打开页面。
     fireEvent.click(gripOf(filesRow));
-    expect(screen.getByTestId("tasks-panel")).toBeTruthy();
+    expect(useUiStore.getState().tab).toBe("files");
 
-    // 操作区空白（两个按钮之间的间隙）也不触发整行导航。
-    fireEvent.click(filesRow.querySelector(".wb-nav-actions") as HTMLElement);
-    expect(screen.getByTestId("tasks-panel")).toBeTruthy();
+    act(() => useUiStore.getState().setTab("tasks"));
+    // 行内空白点击同样打开页面。
+    fireEvent.click(filesRow);
+    expect(useUiStore.getState().tab).toBe("files");
 
-    // × 区域按下移动也不起拖。
+    act(() => useUiStore.getState().setTab("tasks"));
+    // × 区域按下移动也不起拖，且顺序不变。
     const hide = within(filesRow).getByRole("button", { name: "隐藏「文件工作区」导航入口" });
     fireEvent.pointerDown(hide, {
       pointerId: 202,
@@ -864,6 +1020,8 @@ describe("拖拽手柄放大与命中区", () => {
     expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
     fireEvent.pointerUp(window, { pointerId: 202, pointerType: "mouse" });
     expect(navIds()).toEqual(before);
+    // 只移动不点击 ×：仍是任务页，不因 × 区域起拖而跳页。
+    expect(useUiStore.getState().tab).toBe("tasks");
   });
 });
 
@@ -903,6 +1061,45 @@ describe("导航宽度临界点与名称 tooltip", () => {
     const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
     expect(page?.hasAttribute("data-tip")).toBe(false);
     expect(page?.querySelector(".wb-nav-label")).toBeTruthy();
+  });
+
+  it("200 / 280 / 320px 以及窗口 700px + 320px 导航都显示名称", async () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 700,
+    });
+    try {
+      for (const navWidth of [200, 280, 320]) {
+        cleanup();
+        useSettingsStore.setState({
+          settings: {
+            ...baseSettings(),
+            workbench_layout: { ...defaultWorkbenchLayout(), navWidth },
+          } as never,
+        });
+        await renderShell();
+        const root = document.querySelector<HTMLElement>(".wb-root");
+        expect(root?.hasAttribute("data-nav-compact")).toBe(false);
+        expect(root?.style.getPropertyValue("--wb-nav-width")).toBe(`${navWidth}px`);
+        const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
+        expect(nav.querySelectorAll("[data-tip]")).toHaveLength(0);
+        const label = navRows()[0].querySelector<HTMLElement>(".wb-nav-label");
+        expect(label).toBeTruthy();
+        // 窗口只有 700px 也不能覆盖用户设置的 320px 导航宽度。
+        expect(navRows()[0].querySelector(".wb-nav-page")).toBeTruthy();
+      }
+    } finally {
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+    }
+    // 760px 导航媒体块已删除：不得再把导航压成 56px；宽度模式只由
+    // data-nav-compact（实际导航宽度）控制。
+    const css = readFileSync(resolve(process.cwd(), "src/workbench/workbench.css"), "utf8");
+    expect(css).not.toContain("width: 56px");
+    expect(css).not.toMatch(/\.wb-nav \{[\s\S]*?width: 56px/);
   });
 
   it("按整像素判定：180 / 180.4 保持名称，179.4 与 56px 进入图标态", () => {

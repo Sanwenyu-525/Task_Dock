@@ -1625,6 +1625,24 @@ function cmdSnapshotBootstrapInner(args, ctx, paths) {
   return EXIT.ok;
 }
 
+function staticCheckCommand(wt) {
+  const pkgPath = join(wt, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = readJson(pkgPath);
+      if (pkg?.scripts?.typecheck) {
+        return { args: ["npm", "run", "typecheck"], label: "npm run typecheck" };
+      }
+    } catch { /* 坏 package.json 交给实际命令暴露错误 */ }
+  }
+  // 旧快照可能还没有 typecheck 脚本；不能因此跳过检查，也不能回退到会生成 dist 的 build:raw。
+  const localTsc = join(wt, "node_modules", "typescript", "bin", "tsc");
+  if (existsSync(localTsc)) {
+    return { args: [process.execPath, localTsc, "--noEmit"], label: "node node_modules/typescript/bin/tsc --noEmit（旧快照无 typecheck 脚本）" };
+  }
+  return { args: ["npx", "--no-install", "tsc", "--noEmit"], label: "npx --no-install tsc --noEmit（旧快照无 typecheck 脚本）" };
+}
+
 function cmdSnapshotCreate(argv) {
   const args = parseArgs(argv);
   const ctx = repoContext();
@@ -1847,11 +1865,12 @@ function cmdSnapshotCreateInner(args, ctx, paths) {
     if (check === "static") {
       ensureNodeModulesLink(ctx, wt);
       // 集成阶段只做类型检查；Vite 打包交给正式构建的 beforeBuildCommand，避免重复生成同一 dist。
-      console.log("  执行集成静态检查：npm run typecheck（tsc --noEmit，不生成 Vite dist；经构建调度器排队）");
-      const r = runScheduled(ctx, wt, `integration-${snapId}-static`, ["npm", "run", "typecheck"], checkLog, {
+      const staticCheck = staticCheckCommand(wt);
+      console.log(`  执行集成静态检查：${staticCheck.label}（不生成 Vite dist；经构建调度器排队）`);
+      const r = runScheduled(ctx, wt, `integration-${snapId}-static`, staticCheck.args, checkLog, {
         ...process.env, CARGO_TARGET_DIR: join(ctx.mainRoot, "src-tauri", "target-integration"),
       });
-      checkResult = { cmd: "npm run typecheck", exitCode: r.status, at: nowIso(), logPath: rel(ctx.mainRoot, checkLog) };
+      checkResult = { cmd: staticCheck.label, exitCode: r.status, at: nowIso(), logPath: rel(ctx.mainRoot, checkLog) };
       if (r.status !== 0) {
         throw new Fail(`集成静态检查失败（exit ${r.status}）：\n${logTail(checkLog)}\n日志：${checkLog}`, EXIT.buildFailed);
       }

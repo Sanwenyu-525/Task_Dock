@@ -60,8 +60,10 @@ import { clearCaptureDraft, loadCaptureDraft, saveCaptureDraft } from "../lib/ca
 import { formatBytes, formatDuration } from "../lib/capture/summary";
 import { describeError } from "../lib/errors";
 import { newId } from "../lib/id";
-import type { CaptureIntent, Nav } from "../lib/nav";
+import type { CaptureIntent, Nav, RouteKey } from "../lib/nav";
 import { consumePendingShare, subscribePendingShare } from "../lib/pendingShare";
+import { offerImageDraft, offerLinkDraft, offerSnippetDraft, offerTextDraft } from "../features/tools/shareIntake";
+import { sendToolFileToDesktop } from "../features/tools/shared/sendToDesktop";
 import type { CaptureSource, StashedItem } from "../domain/types";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
@@ -87,6 +89,11 @@ function itemIcon(item: StashedItem): IconName {
   if (item.kind === "image") return "fileImage";
   if (item.kind === "audio") return "fileAudio";
   return "fileGeneric";
+}
+
+/** 分享文本是否是一个可以直接保存为资料/GitHub 的链接（只认 http/https）。 */
+function isHttpLink(text: string): boolean {
+  return /^https?:\/\/[^\s]+$/i.test(text.trim());
 }
 
 /**
@@ -138,6 +145,14 @@ export function CaptureScreen({
   const [recording, setRecording] = useState(false);
   const [recordStartedAt, setRecordStartedAt] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
+  /** 系统分享进来的内容：给「分享快捷处理」用；只保留本次分享，不覆盖用户输入 */
+  const [shareQuick, setShareQuick] = useState<{
+    text: string;
+    imageUri: string | null;
+    imageName: string;
+    mime: string;
+  } | null>(null);
+  const [shareSending, setShareSending] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [voiceResultId, setVoiceResultId] = useState<string | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -273,6 +288,15 @@ export function CaptureScreen({
       }
       if (reasons.length > 0) setRejected((prev) => [...prev, ...reasons]);
       if (payload.text) setText((prev) => (prev.trim() ? `${prev}\n${payload.text}` : payload.text ?? ""));
+      const firstImage = incoming.find((item) => item.kind === "image");
+      if (payload.text || added > 0) {
+        setShareQuick({
+          text: payload.text ?? "",
+          imageUri: firstImage?.localUri ?? null,
+          imageName: firstImage?.name ?? "分享图片",
+          mime: firstImage?.mime ?? "image/jpeg",
+        });
+      }
       return added;
     },
     [pushItem],
@@ -301,7 +325,21 @@ export function CaptureScreen({
           if (intent !== "task") setDestination(draft.destination);
         }
         const payload = consumePendingShare();
-        if (payload) await stagePayload(payload);
+        if (payload) {
+          await stagePayload(payload);
+          // 分享文本在进入页面时先落一次草稿：即使用户立刻被杀进程，也不会只剩暂存附件。
+          // 附件由 stagePayload 写入 capture_stash，本身已持久化。
+          const baseText = draft?.text ?? "";
+          const mergedText = payload.text
+            ? baseText.trim()
+              ? `${baseText}\n${payload.text}`
+              : payload.text
+            : baseText;
+          await saveCaptureDraft({
+            text: mergedText,
+            destination: draft?.destination ?? "capture",
+          }).catch(() => undefined);
+        }
       } catch (error) {
         if (active) showToast(`读取本机采集失败：${describeError(error)}`, "danger");
       } finally {
@@ -863,6 +901,58 @@ export function CaptureScreen({
     [items],
   );
 
+  // ── 系统分享快捷处理（J）：不替换采集流程，只在分享来源的会话里提供入口 ──
+  const openSharedTextTool = (route: RouteKey, mode: "snippet" | "text") => {
+    const value = shareQuick?.text?.trim() ?? "";
+    if (!value) {
+      showToast("这次分享没有可处理的文本", "warn");
+      return;
+    }
+    if (mode === "snippet") offerSnippetDraft(value);
+    else offerTextDraft(value);
+    nav.push(route);
+  };
+
+  const openSharedLinkTool = (route: RouteKey) => {
+    const value = shareQuick?.text?.trim() ?? "";
+    if (!isHttpLink(value)) {
+      showToast("分享内容不是 http/https 链接", "warn");
+      return;
+    }
+    offerLinkDraft(value);
+    nav.push(route);
+  };
+
+  const openSharedImageTool = (route: RouteKey) => {
+    if (!shareQuick?.imageUri) {
+      showToast("这次分享没有图片", "warn");
+      return;
+    }
+    offerImageDraft(shareQuick.imageUri, shareQuick.imageName);
+    nav.push(route);
+  };
+
+  const sendSharedImage = async () => {
+    if (!shareQuick?.imageUri || shareSending) return;
+    setShareSending(true);
+    try {
+      const outcome = await sendToolFileToDesktop({
+        uri: shareQuick.imageUri,
+        fileName: shareQuick.imageName,
+        mime: shareQuick.mime,
+      });
+      showToast(outcome.message, outcome.ok ? "success" : "warn");
+    } catch (error) {
+      showToast(`发送失败：${describeError(error)}`, "danger");
+    } finally {
+      setShareSending(false);
+    }
+  };
+
+  const sharedText = shareQuick?.text.trim() ?? "";
+  const sharedIsLink = isHttpLink(sharedText);
+  const showShareQuick = Boolean(shareQuick && (sharedText || shareQuick.imageUri));
+
   return (
     <View style={styles.container} testID="capture-screen">
       <AppBar
@@ -1182,6 +1272,72 @@ export function CaptureScreen({
             </GlassCard>
           ) : null}
 
+          {showShareQuick && shareQuick ? (
+            <GlassCard style={[styles.shareCard, { borderColor: tokens.accent }]}>
+              <View style={styles.shareHead}>
+                <AppIcon name="share" size={18} color={tokens.accent} />
+                <View style={styles.shareHeadText}>
+                  <Text style={[styles.shareTitle, { color: tokens.text }]}>分享内容快捷处理</Text>
+                  <Text style={[styles.shareHint, { color: tokens.muted }]}>
+                    内容已在本机；选择工具不会上传，也不会自动发起网络请求
+                  </Text>
+                </View>
+              </View>
+
+              {sharedText ? (
+                <View style={[styles.shareGroup, { borderTopColor: tokens.separator }]}>
+                  <Text style={[styles.shareLabel, { color: tokens.textSoft }]} numberOfLines={1}>
+                    {sharedIsLink ? "链接" : "文本"} · {sharedText.length} 字符
+                  </Text>
+                  <View style={styles.shareActions}>
+                    {sharedIsLink ? (
+                      <>
+                        <ShareQuickButton icon="folder" label="项目资料" onPress={() => openSharedLinkTool("tool_docs")} />
+                        <ShareQuickButton icon="code" label="GitHub" onPress={() => openSharedLinkTool("tool_github")} />
+                      </>
+                    ) : (
+                      <>
+                        <ShareQuickButton icon="snippet" label="代码片段" onPress={() => openSharedTextTool("tool_snippets", "snippet")} />
+                        <ShareQuickButton icon="json" label="JSON 格式化" onPress={() => openSharedTextTool("tool_json", "text")} />
+                        <ShareQuickButton icon="regex" label="正则测试" onPress={() => openSharedTextTool("tool_regex", "text")} />
+                        <ShareQuickButton icon="workflow" label="代码对比" onPress={() => openSharedTextTool("tool_diff", "text")} />
+                        <ShareQuickButton icon="fileText" label="文本编解码" onPress={() => openSharedTextTool("tool_text_codec", "text")} />
+                      </>
+                    )}
+                    <ShareQuickButton
+                      icon="note"
+                      label="保存为笔记"
+                      onPress={() => {
+                        setDestination("note");
+                        showToast("已切到「保存为笔记」，检查内容后点底部保存", "info");
+                      }}
+                    />
+                  </View>
+                </View>
+              ) : null}
+
+              {shareQuick.imageUri ? (
+                <View style={[styles.shareGroup, { borderTopColor: tokens.separator }]}>
+                  <Text style={[styles.shareLabel, { color: tokens.textSoft }]}>
+                    图片 · {shareQuick.imageName}
+                  </Text>
+                  <View style={styles.shareActions}>
+                    <ShareQuickButton icon="gauge" label="压缩图片" onPress={() => openSharedImageTool("tool_image_compress")} />
+                    <ShareQuickButton icon="sparkles" label="提取颜色" onPress={() => openSharedImageTool("tool_color_picker")} />
+                    <ShareQuickButton
+                      icon="desktop"
+                      label={shareSending ? "发送中…" : "发送到电脑"}
+                      onPress={() => void sendSharedImage()}
+                    />
+                  </View>
+                  <Text style={[styles.shareHint, { color: tokens.muted }]}>
+                    发送到电脑走已配对的文件互传；未配对时会明确提示，不会显示成已发送。
+                  </Text>
+                </View>
+              ) : null}
+            </GlassCard>
+          ) : null}
+
           <GlassCard style={styles.composer}>
             <TextInput
               value={text}
@@ -1392,9 +1548,33 @@ export function CaptureScreen({
   );
 }
 
+function ShareQuickButton({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  onPress: () => void;
+}) {
+  const { tokens } = useTheme();
+  return (
+    <PressableScale
+      onPress={onPress}
+      accessibilityLabel={label}
+      contentStyle={[
+        styles.shareAction,
+        { backgroundColor: tokens.accentWash, borderColor: tokens.cardBorder },
+      ]}
+    >
+      <AppIcon name={icon} size={16} color={tokens.accentText} />
+      <Text style={[styles.shareActionText, { color: tokens.accentText }]}>{label}</Text>
+    </PressableScale>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  headerAction: { minHeight: 40, paddingHorizontal: space.sm, justifyContent: "center" },
+  container: { flex: 1 },  headerAction: { minHeight: 40, paddingHorizontal: space.sm, justifyContent: "center" },
   headerActionText: { fontSize: font.meta, fontWeight: "600" },
   content: {
     paddingHorizontal: space.lg,
@@ -1420,6 +1600,24 @@ const styles = StyleSheet.create({
   resultSecondaryText: { fontSize: font.body, fontWeight: "600" },
   rejectedCard: { padding: space.md, gap: space.xs, borderWidth: 1 },
   rejectReason: { fontSize: font.label, lineHeight: 17 },
+  shareCard: { padding: space.md, gap: space.sm, borderWidth: 1 },
+  shareHead: { flexDirection: "row", alignItems: "flex-start", gap: space.sm },
+  shareHeadText: { flex: 1, gap: 2 },
+  shareTitle: { fontSize: font.body, fontWeight: "700" },
+  shareHint: { fontSize: font.label, lineHeight: 17 },
+  shareGroup: { gap: space.xs, paddingTop: space.xs, borderTopWidth: StyleSheet.hairlineWidth },
+  shareLabel: { fontSize: font.label },
+  shareActions: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  shareAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs,
+    minHeight: 44,
+    paddingHorizontal: space.md,
+    borderRadius: radius.control,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  shareActionText: { fontSize: font.meta, fontWeight: "600" },
   composer: { padding: space.md, gap: space.xs },
   input: {
     minHeight: 96,

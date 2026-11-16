@@ -1971,6 +1971,13 @@ export const clipboardGroupItemPosition = (groupId: string, itemId: string) =>
 export const clipboardStats = () => invoke<ClipboardStats>("clipboard_stats");
 export const clipboardThumb = (itemId: string) =>
   invoke<string | null>("clipboard_thumb", { itemId });
+/**
+ * 工作台大图预览（最长边 640px）。后端按需从原图生成并缓存，失败时回退缩略图。
+ * 与 `clipboardThumb` 并存：列表/胶囊继续用 192px 缩略图，只有放大展示的卡片
+ * 才请求预览规格，避免所有卡片同时拉高分辨率。
+ */
+export const clipboardPreview = (itemId: string) =>
+  invoke<string | null>("clipboard_preview", { itemId });
 export const clipboardImage = (itemId: string) =>
   invoke<string | null>("clipboard_image", { itemId });
 /**
@@ -5584,6 +5591,10 @@ export const fsReadText = (path: string, maxBytes?: number) =>
 /** 视频/音频预览 URL（短期 token + 自定义协议，支持 Range）。 */
 export const fsPreviewMediaUrl = (path: string) =>
   invoke<string>("fs_preview_media_url", { path });
+
+/** 关闭/切换预览时释放媒体 token，避免短期 token 槽位积压。 */
+export const fsReleasePreviewUrl = (url: string) =>
+  invoke<void>("fs_release_preview_url", { url });
 
 /**
  * conflict: skip | rename | overwrite

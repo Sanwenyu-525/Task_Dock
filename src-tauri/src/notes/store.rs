@@ -227,7 +227,7 @@ fn row_to_note(row: &Row<'_>) -> rusqlite::Result<Note> {
     })
 }
 
-fn get_in_conn(conn: &Connection, id: &str) -> AppResult<Note> {
+pub(crate) fn get_in_conn(conn: &Connection, id: &str) -> AppResult<Note> {
     conn.query_row(
         &format!("SELECT {} FROM notes WHERE id = ?1", NOTE_COLUMNS),
         [id],
@@ -325,6 +325,12 @@ pub fn get(db: &Db, id: &str) -> AppResult<Note> {
 // ── 写入 ────────────────────────────────────────────────────
 
 pub fn create(db: &Db, input: CreateNoteInput) -> AppResult<Note> {
+    db.with_conn(|conn| create_in_conn(conn, input))
+}
+
+/// 在调用方连接/事务内创建笔记（MCP 写工具与命令层共用同一校验与列定义）。
+/// 不自行开启事务：调用方的审计与业务写入必须同事务提交。
+pub fn create_in_conn(conn: &Connection, input: CreateNoteInput) -> AppResult<Note> {
     let title = input.title.unwrap_or_default();
     let content = input.content.unwrap_or_default();
     validate(&title, &content)?;
@@ -344,56 +350,56 @@ pub fn create(db: &Db, input: CreateNoteInput) -> AppResult<Note> {
         updated_at: now,
     };
 
-    db.with_conn(|conn| {
-        conn.execute(
-            "INSERT INTO notes (id, title, content, pinned, favorite, task_id, workspace_id, \
-             source_capture_id, revision, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, 0, 0, NULL, NULL, NULL, 1, ?4, ?4)",
-            params![note.id, note.title, note.content, note.created_at],
-        )?;
-        Ok(())
-    })?;
+    conn.execute(
+        "INSERT INTO notes (id, title, content, pinned, favorite, task_id, workspace_id, \
+         source_capture_id, revision, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, 0, 0, NULL, NULL, NULL, 1, ?4, ?4)",
+        params![note.id, note.title, note.content, note.created_at],
+    )?;
     Ok(note)
 }
 
 /// 更新标题 / 正文。内容未变化时不写库、不递增 revision。
 pub fn update(db: &Db, id: &str, input: UpdateNoteInput) -> AppResult<Note> {
-    validate(&input.title, &input.content)?;
-    let now = now_iso();
-
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
-        let current = get_in_conn(&tx, id)?;
+        let note = update_in_conn(&tx, id, input)?;
+        tx.commit()?;
+        Ok(note)
+    })
+}
 
-        if !input.force {
-            if let Some(expected) = input.expected_revision {
-                if expected != current.revision {
-                    return Err(AppError::Conflict(
-                        "笔记已在其他位置更新，请查看最新内容后再保存".into(),
-                    ));
-                }
+/// 在调用方事务内更新笔记；并发检测与「内容未变不递增」语义与命令层完全一致。
+pub fn update_in_conn(conn: &Connection, id: &str, input: UpdateNoteInput) -> AppResult<Note> {
+    validate(&input.title, &input.content)?;
+    let now = now_iso();
+    let current = get_in_conn(conn, id)?;
+
+    if !input.force {
+        if let Some(expected) = input.expected_revision {
+            if expected != current.revision {
+                return Err(AppError::Conflict(
+                    "笔记已在其他位置更新，请查看最新内容后再保存".into(),
+                ));
             }
         }
+    }
 
-        if current.title == input.title && current.content == input.content {
-            tx.commit()?;
-            return Ok(current);
-        }
+    if current.title == input.title && current.content == input.content {
+        return Ok(current);
+    }
 
-        let changed = tx.execute(
-            "UPDATE notes SET title = ?2, content = ?3, revision = revision + 1, updated_at = ?4 \
-             WHERE id = ?1 AND revision = ?5",
-            params![id, input.title, input.content, now, current.revision],
-        )?;
-        if changed == 0 {
-            return Err(AppError::Conflict(
-                "笔记已在其他位置更新，请查看最新内容后再保存".into(),
-            ));
-        }
-        let updated = get_in_conn(&tx, id)?;
-        tx.commit()?;
-        Ok(updated)
-    })
+    let changed = conn.execute(
+        "UPDATE notes SET title = ?2, content = ?3, revision = revision + 1, updated_at = ?4 \
+         WHERE id = ?1 AND revision = ?5",
+        params![id, input.title, input.content, now, current.revision],
+    )?;
+    if changed == 0 {
+        return Err(AppError::Conflict(
+            "笔记已在其他位置更新，请查看最新内容后再保存".into(),
+        ));
+    }
+    get_in_conn(conn, id)
 }
 
 /// 置顶 / 收藏。两者都不改变 `revision` 与 `updated_at`（不是内容编辑）。
@@ -418,20 +424,32 @@ pub fn set_flags(
 
 /// 关联任务；`task_id = None` 表示取消关联。
 pub fn set_task_link(db: &Db, id: &str, task_id: Option<String>) -> AppResult<Note> {
-    let link = normalize_link(task_id);
     db.with_conn(|conn| {
-        if let Some(task_id) = link.as_deref() {
-            ensure_task_exists(conn, task_id)?;
-        }
-        let changed = conn.execute(
-            "UPDATE notes SET task_id = ?2 WHERE id = ?1",
-            params![id, link],
-        )?;
-        if changed == 0 {
-            return Err(AppError::NotFound("笔记不存在或已删除".into()));
-        }
-        get_in_conn(conn, id)
+        let tx = conn.unchecked_transaction()?;
+        let note = set_task_link_in_conn(&tx, id, task_id)?;
+        tx.commit()?;
+        Ok(note)
     })
+}
+
+/// 在调用方事务内关联任务（外键存在性校验与命令层一致）。
+pub fn set_task_link_in_conn(
+    conn: &Connection,
+    id: &str,
+    task_id: Option<String>,
+) -> AppResult<Note> {
+    let link = normalize_link(task_id);
+    if let Some(task_id) = link.as_deref() {
+        ensure_task_exists(conn, task_id)?;
+    }
+    let changed = conn.execute(
+        "UPDATE notes SET task_id = ?2 WHERE id = ?1",
+        params![id, link],
+    )?;
+    if changed == 0 {
+        return Err(AppError::NotFound("笔记不存在或已删除".into()));
+    }
+    get_in_conn(conn, id)
 }
 
 /// 关联工作现场；`workspace_id = None` 表示取消关联。

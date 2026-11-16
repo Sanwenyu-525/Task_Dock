@@ -52,4 +52,31 @@ describe("volumeDecision", () => {
     invalidateVolumeCache(["D:\\a\\f.txt"]);
     expect(volumeDecision(["D:\\a\\f.txt"], "D:\\b")).toBeNull();
   });
+
+  it("UNC 明确同卷才 move，共享路径无法解析时保持 null", async () => {
+    keys.mockResolvedValue(["\\\\srv\\share", "\\\\srv\\share"]);
+    await primeVolumeKeys(["\\\\srv\\share\\a\\f.txt", "\\\\srv\\share\\b"]);
+    expect(volumeDecision(["\\\\srv\\share\\a\\f.txt"], "\\\\srv\\share\\b")).toBe("move");
+
+    invalidateVolumeCache();
+    keys.mockResolvedValue([null, "\\\\srv\\share"]);
+    await primeVolumeKeys(["\\\\srv\\share\\a\\f.txt", "\\\\srv\\share\\b"]);
+    expect(volumeDecision(["\\\\srv\\share\\a\\f.txt"], "\\\\srv\\share\\b")).toBeNull();
+  });
+
+  it("符号链接/junction 解析到不同卷键时按 copy（模拟真机未验证）", async () => {
+    keys.mockResolvedValue(["\\\\?\\volume{target-d}\\", "\\\\?\\volume{target-c}\\"]);
+    await primeVolumeKeys(["D:\\link-to-c\\f.txt", "C:\\real\\b"]);
+    expect(volumeDecision(["D:\\link-to-c\\f.txt"], "C:\\real\\b")).toBe("copy");
+  });
+
+  it("查询失败不缓存 null，允许下一次重试", async () => {
+    keys.mockRejectedValueOnce(new Error("volume query failed"));
+    await primeVolumeKeys(["D:\\a\\f.txt", "D:\\b"]);
+    expect(volumeDecision(["D:\\a\\f.txt"], "D:\\b")).toBeNull();
+
+    keys.mockResolvedValue(["k1", "k1"]);
+    await primeVolumeKeys(["D:\\a\\f.txt", "D:\\b"]);
+    expect(volumeDecision(["D:\\a\\f.txt"], "D:\\b")).toBe("move");
+  });
 });

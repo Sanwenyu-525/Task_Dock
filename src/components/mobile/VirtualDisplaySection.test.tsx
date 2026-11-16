@@ -260,6 +260,30 @@ describe("VirtualDisplaySection", () => {
     expect(screen.getByRole("button", { name: /开始屏幕镜像/ })).toBeTruthy();
   });
 
+  it("默认不铺满全部应用，展开后才显示完整列表与真实图标", async () => {
+    const iconApp = {
+      ...CHROME_APP,
+      icon: "data:image/png;base64,iVBORw0KGgo=",
+    };
+    appsMock.mockResolvedValue(appList(SERIAL_A, "UID-A", [SETTINGS_APP, iconApp]));
+    const user = userEvent.setup();
+    render(<VirtualDisplaySection />);
+    await screen.findAllByText("V2323A");
+    await user.click(screen.getByRole("button", { name: /独立虚拟屏幕/ }));
+
+    expect(screen.queryByText("com.google.android.chrome")).toBeNull();
+    expect(screen.queryByText("com.android.settings")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "浏览全部应用（2）" }));
+    expect(await screen.findByText("com.google.android.chrome")).toBeTruthy();
+    const item = screen
+      .getByText("com.google.android.chrome")
+      .closest(".vd-app-item") as HTMLElement;
+    const image = item.querySelector("img");
+    expect(image?.getAttribute("src")).toBe(iconApp.icon);
+    await user.click(within(item).getByRole("button", { name: "收藏应用" }));
+    expect(within(item).getByRole("button", { name: "取消收藏" })).toBeTruthy();
+  });
+
   it("应用搜索同时匹配名称与包名，并提供无结果状态", async () => {
     appsMock.mockResolvedValue(appList(SERIAL_A, "UID-A", [SETTINGS_APP, CHROME_APP]));
     const user = userEvent.setup();
@@ -271,6 +295,11 @@ describe("VirtualDisplaySection", () => {
     await user.type(search, "chrom");
     expect(screen.queryByText("com.android.settings")).toBeNull();
     expect(screen.getByText("com.google.android.chrome")).toBeTruthy();
+
+    await user.clear(search);
+    await user.type(search, "设置");
+    expect(screen.getByText("com.android.settings")).toBeTruthy();
+    expect(screen.queryByText("com.google.android.chrome")).toBeNull();
 
     await user.clear(search);
     await user.type(search, "com.android.settings");
@@ -292,7 +321,7 @@ describe("VirtualDisplaySection", () => {
     render(<VirtualDisplaySection />);
     await screen.findAllByText("V2323A");
     await user.click(screen.getByRole("button", { name: /独立虚拟屏幕/ }));
-    await screen.findByText("com.android.settings");
+    await screen.findByRole("button", { name: /浏览全部应用/ });
 
     await user.click(screen.getByRole("button", { name: "显示无启动入口的应用" }));
     await waitFor(() => expect(appsMock).toHaveBeenLastCalledWith(SERIAL_A, true));
@@ -587,6 +616,7 @@ describe("VirtualDisplaySection", () => {
     await waitFor(() => expect(appsMock).toHaveBeenCalledWith(SERIAL_B, false));
 
     await user.click(screen.getByRole("button", { name: /独立虚拟屏幕/ }));
+    await user.click(await screen.findByRole("button", { name: /浏览全部应用/ }));
     expect(await screen.findByRole("button", { name: /Chrome/ })).toBeTruthy();
 
     await act(async () => {
@@ -610,11 +640,12 @@ describe("VirtualDisplaySection", () => {
 
     await screen.findAllByText("V2323A");
     await user.click(screen.getByRole("button", { name: /独立虚拟屏幕/ }));
-    expect(await screen.findByText("正在读取应用列表…")).toBeTruthy();
+    expect((await screen.findAllByText("正在读取应用列表…")).length).toBeGreaterThan(0);
 
     await act(async () => {
       resolveApps(appList(SERIAL_A, "UID-A", [SETTINGS_APP]));
     });
+    await user.click(await screen.findByRole("button", { name: /浏览全部应用/ }));
     expect(await screen.findByText("com.android.settings")).toBeTruthy();
   });
 

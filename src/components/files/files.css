@@ -926,6 +926,7 @@ body.fw-resizing-row * {
 }
 
 .fw-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -954,6 +955,34 @@ body.fw-resizing-row * {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
+}
+
+/* 目录行落点标签：贴右上角，只覆盖时间/大小列，不压住文件名。 */
+.fw-row-drop-hint,
+.fw-cell-drop-hint {
+  position: absolute;
+  z-index: 2;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: min(240px, 38%);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--fw-border-subtle);
+  background: var(--fw-surface-overlay);
+  color: var(--text-primary);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.fw-cell-drop-hint {
+  top: 4px;
+  right: 4px;
+  transform: none;
+  max-width: calc(100% - 8px);
 }
 
 .fw-row-icon {
@@ -1002,6 +1031,7 @@ body.fw-resizing-row * {
 }
 
 .fw-cell {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -1260,24 +1290,7 @@ body.fw-resizing-row * {
   transform: translate(-50%, -50%);
 }
 
-/* 文件夹行落点：只在右上角显示小标签，不用整块彩色遮罩，避免遮挡文件名。 */
-.fw-drop-folder {
-  border: none;
-  background: transparent;
-}
-
-.fw-drop-folder .fw-drop-label {
-  right: 8px;
-  top: 6px;
-  max-width: min(280px, 45%);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.fw-drop-folder.is-invalid .fw-drop-label {
-  border-color: color-mix(in srgb, var(--status-error, #dc2626) 55%, transparent);
-  color: var(--status-error, #dc2626);
-}
+/* 文件夹行落点标签由 FileList 的行/单元格渲染，避免整块遮罩。 */
 
 .fw-drop-swap {
   border-color: color-mix(in srgb, var(--accent) 70%, transparent);
@@ -2132,7 +2145,7 @@ body.fw-resizing-row * {
   flex: none;
 }
 
-.fw-compare-depth .ui-select {
+.fw-compare-depth .ui-select-trigger {
   min-width: 0;
   max-width: 150px;
 }
@@ -2236,6 +2249,11 @@ body.fw-resizing-row * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.fw-compare-detail {
+  color: var(--text-tertiary);
+  font-size: 10px;
 }
 
 .fw-compare-status {

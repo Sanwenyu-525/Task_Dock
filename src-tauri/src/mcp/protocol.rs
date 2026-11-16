@@ -4,9 +4,15 @@
 //! - `initialize`：协议版本协商（支持 2024-11-05 / 2025-06-18，未知版本回退）
 //! - `notifications/initialized` 等通知：静默接收，不回包
 //! - `ping`：返回 `{}`
-//! - `tools/list`：返回 18 个工具定义
+//! - `tools/list`：返回全部已注册工具定义（原始 18 个 + 资源扩展工具）
 //! - `tools/call`：经 bridge 鉴权执行；业务失败以 `isError:true` 的 result 返回
 //!   （MCP 约定），身份/授权失败以 JSON-RPC error 返回（见错误码）。
+//!
+//! 严格性（2026-11 对齐 MCP 规范）：
+//! - 请求必须带 `"jsonrpc":"2.0"`，否则 `-32600`；
+//! - `tools/call` 的 `params` 必须是对象，`params.name` 必须是非空字符串，否则 `-32602`；
+//! - 通知（无 `id` 字段）一律不回包（含错误），符合 JSON-RPC 2.0；
+//! - 未知方法返回 `-32601`，客户端可据此降级（不伪造未实现的能力）。
 //!
 //! stdio 运行器（`--mcp-server` 子命令）每行一个 JSON-RPC 消息，把请求原样
 //! POST 到 loopback bridge 并把响应原样写回 stdout。Task Dock 未运行 / 未启用
@@ -80,6 +86,11 @@ pub fn handle_request_value(
         // 通知：按 spec 不回包（连错误也不回）
         return None;
     }
+    // 通知之外的所有请求必须声明 JSON-RPC 2.0；缺失/错误版本按规范拒绝，
+    // 避免把非 MCP 报文当成工具调用执行。
+    if obj.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
+        return Some(error(id, INVALID_REQUEST, "缺少或非法的 jsonrpc 版本（必须为 2.0）"));
+    }
     match method {
         "initialize" => {
             let client_version = params
@@ -95,7 +106,7 @@ pub fn handle_request_value(
                         "name": "task-dock",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
-                    "instructions": "Task Dock 规划中心：list/get 工具只读；写工具需要项目授权并强制 expected_revision 乐观并发。",
+                    "instructions": "Task Dock：规划中心工具只读/写需项目授权；任务、笔记、工作流与文件工作区工具需要用户单独授予资源能力（默认最小权限）。写操作强制版本校验，冲突时返回当前版本，不得静默覆盖。",
                 }),
             ))
         }
@@ -114,8 +125,28 @@ pub fn handle_request_value(
             Some(success(id, json!({ "tools": tools })))
         }
         "tools/call" => {
-            let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let args = params.get("arguments").cloned().unwrap_or(json!({}));
+            let Some(params_obj) = params.as_object() else {
+                return Some(error(id, INVALID_PARAMS, "tools/call 的 params 必须是对象"));
+            };
+            let name = params_obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            if name.is_empty() {
+                return Some(error(id, INVALID_PARAMS, "tools/call 缺少非空的 params.name"));
+            }
+            let args = match params_obj.get("arguments") {
+                None | Some(Value::Null) => json!({}),
+                Some(v @ Value::Object(_)) => v.clone(),
+                Some(_) => {
+                    return Some(error(
+                        id,
+                        INVALID_PARAMS,
+                        "tools/call 的 params.arguments 必须是对象",
+                    ))
+                }
+            };
             Some(match call_tool(name, &args) {
                 Ok(result) => success(id, result),
                 Err(e) => error_with_data(id, e.code, &e.message, e.data),
@@ -244,7 +275,46 @@ mod tests {
         let payload = json!({"jsonrpc":"2.0","id":2,"method":"tools/list"});
         let resp = handle_request_value(&payload, &|_, _| unreachable!()).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 18, "应暴露全部 18 个工具");
+        assert!(tools.len() >= 18, "原始 18 个规划工具不得减少");
+        for name in [
+            "taskdock_list_projects",
+            "taskdock_get_project",
+            "taskdock_update_project",
+            "taskdock_create_feature",
+            "taskdock_get_feature",
+            "taskdock_add_step",
+            "taskdock_submit_for_review",
+        ] {
+            assert!(
+                tools.iter().any(|t| t["name"] == name),
+                "缺少既有工具 {name}"
+            );
+        }
         assert!(tools.iter().all(|t| t["inputSchema"].is_object()));
+    }
+
+    #[test]
+    fn missing_jsonrpc_version_is_invalid_request() {
+        let payload = json!({"id": 3, "method": "ping"});
+        let resp = handle_request_value(&payload, &|_, _| unreachable!()).unwrap();
+        assert_eq!(resp["error"]["code"], INVALID_REQUEST);
+    }
+
+    #[test]
+    fn tool_call_requires_named_params_object() {
+        let no_name = json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"arguments":{}}});
+        let resp = handle_request_value(&no_name, &|_, _| unreachable!()).unwrap();
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+
+        let bad_args =
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"x","arguments":[]}});
+        let resp = handle_request_value(&bad_args, &|_, _| unreachable!()).unwrap();
+        assert_eq!(resp["error"]["code"], INVALID_PARAMS);
+    }
+
+    #[test]
+    fn notifications_are_ignored_even_without_jsonrpc_version() {
+        let payload = json!({"method":"notifications/cancelled","params":{"requestId":1}});
+        assert!(handle_request_value(&payload, &|_, _| unreachable!()).is_none());
     }
 }

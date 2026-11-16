@@ -1838,3 +1838,10 @@
     transition: none;
   }
 }
+
+/* 宽屏左侧内容足够时，两种模式并排；窄屏仍由上面的单列规则接管。 */
+@container mobile-body (min-width: 720px) {
+  .vd-mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

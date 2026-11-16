@@ -281,15 +281,18 @@ fn rebuild_reminders_tx(
 }
 
 pub(crate) fn get_task(db: &Db, id: &str) -> AppResult<Task> {
-    db.with_conn(|conn| {
-        conn.query_row(
-            &format!("{} WHERE t.id = ?1", TASK_SELECT),
-            rusqlite::params![id],
-            row_to_task,
-        )
-        .optional()
-        .map_err(AppError::from)
-    })?
+    db.with_conn(|conn| get_task_in_conn(conn, id))
+}
+
+/// 在调用方连接/事务内读取任务（MCP 写工具与命令层共用同一列投影）。
+pub(crate) fn get_task_in_conn(conn: &rusqlite::Connection, id: &str) -> AppResult<Task> {
+    conn.query_row(
+        &format!("{} WHERE t.id = ?1", TASK_SELECT),
+        rusqlite::params![id],
+        row_to_task,
+    )
+    .optional()
+    .map_err(AppError::from)?
     .ok_or_else(|| AppError::NotFound(format!("任务不存在: {}", id)))
 }
 
@@ -455,6 +458,11 @@ pub struct TaskStats {
 
 #[tauri::command]
 pub fn task_stats(db: State<'_, Arc<Db>>) -> AppResult<TaskStats> {
+    task_stats_inner(&db)
+}
+
+/// 统计内核（命令层与 MCP 共用，避免两套口径）。
+pub(crate) fn task_stats_inner(db: &Db) -> AppResult<TaskStats> {
     let (today_start, tomorrow_start) = local_day_bounds();
     let now = now_iso();
     db.with_conn(|conn| {
@@ -493,7 +501,7 @@ pub fn task_stats(db: State<'_, Arc<Db>>) -> AppResult<TaskStats> {
 /// 供 `create_task_inner` 与快速捕获提交共用：**不提交**，事务边界由调用方
 /// 决定；任何失败都随调用方事务整体回滚。返回新任务 id。
 pub(crate) fn create_task_tx(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     input: TaskInput,
 ) -> AppResult<String> {
     check_title(&input.title)?;
@@ -565,8 +573,23 @@ pub fn update_task(db: State<'_, Arc<Db>>, id: String, input: TaskInput) -> AppR
 /// 旧实现先删旧规则再更新任务（错误被 `let _ =` 吞掉），中途失败会让
 /// ON DELETE SET NULL 静默吃掉任务的重复规则。
 pub fn update_task_inner(db: &Db, id: &str, input: TaskInput) -> AppResult<Task> {
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let task = update_task_in_conn(&tx, id, input)?;
+        tx.commit()?;
+        Ok(task)
+    })
+}
+
+/// 在调用方事务内更新任务（MCP 与命令层共用）。校验、规则更新、任务更新、
+/// 提醒重建、三态时间解析全部与命令层一致；不提交，失败随调用方事务整体回滚。
+pub(crate) fn update_task_in_conn(
+    conn: &rusqlite::Connection,
+    id: &str,
+    input: TaskInput,
+) -> AppResult<Task> {
     check_title(&input.title)?;
-    let existing = get_task(db, id)?;
+    let existing = get_task_in_conn(conn, id)?;
     // P0 修复：三态解析。此前 `Option<String>` 把「没传」与「清空」压成同一个
     // None，编辑任务（例如只改标题）会把独立的 remind_at 写成 NULL，
     // 用户的提醒被静默删除。现在只有显式 null 才会清空。
@@ -583,62 +606,60 @@ pub fn update_task_inner(db: &Db, id: &str, input: TaskInput) -> AppResult<Task>
     let tags = input.tags.unwrap_or(existing.tags.clone());
     let now = now_iso();
 
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let mut next_rule: Option<String> = existing.recurrence.as_ref().map(|r| r.id.clone());
-        match &input.recurrence {
-            // 界面没有提供 until/anchor 编辑；修改规则时保留它们及现有 ID。
-            Some(Some(r)) if !r.freq.is_empty() => {
-                crate::recurrence::validate_rule(r)
-                    .map_err(AppError::Validation)?;
-                if let Some(old) = &next_rule {
-                    tx.execute(
-                        "UPDATE recurrence_rules SET freq = ?1, interval = ?2, by_weekday = ?3, by_monthday = ?4, by_setpos = ?5 WHERE id = ?6",
-                        rusqlite::params![r.freq, r.interval.max(1), serde_json::to_string(&r.by_weekday)?, r.by_monthday, r.by_setpos, old],
-                    )?;
-                } else {
-                    let anchor_date = due_dt
-                        .map(|d| d.with_timezone(&Local).date_naive().format("%Y-%m-%d").to_string())
-                        .unwrap_or_else(|| Local::now().date_naive().format("%Y-%m-%d").to_string());
-                    next_rule = insert_rule_tx(&tx, r, &anchor_date)?;
-                }
+    let mut next_rule: Option<String> = existing.recurrence.as_ref().map(|r| r.id.clone());
+    match &input.recurrence {
+        // 界面没有提供 until/anchor 编辑；修改规则时保留它们及现有 ID。
+        Some(Some(r)) if !r.freq.is_empty() => {
+            crate::recurrence::validate_rule(r)
+                .map_err(AppError::Validation)?;
+            if let Some(old) = &next_rule {
+                conn.execute(
+                    "UPDATE recurrence_rules SET freq = ?1, interval = ?2, by_weekday = ?3, by_monthday = ?4, by_setpos = ?5 WHERE id = ?6",
+                    rusqlite::params![r.freq, r.interval.max(1), serde_json::to_string(&r.by_weekday)?, r.by_monthday, r.by_setpos, old],
+                )?;
+            } else {
+                let anchor_date = due_dt
+                    .map(|d| d.with_timezone(&Local).date_naive().format("%Y-%m-%d").to_string())
+                    .unwrap_or_else(|| Local::now().date_naive().format("%Y-%m-%d").to_string());
+                next_rule = insert_rule_tx(conn, r, &anchor_date)?;
             }
-            // 显式 null：用户选择了「不重复」
-            // （空 freq 的对象也按「不重复」处理，与前端空表单一致）
-            Some(None) | Some(Some(_)) => {
-                if let Some(old) = &next_rule {
-                    tx.execute("DELETE FROM recurrence_rules WHERE id = ?1", rusqlite::params![old])?;
-                    next_rule = None;
-                }
+        }
+        // 显式 null：用户选择了「不重复」
+        // （空 freq 的对象也按「不重复」处理，与前端空表单一致）
+        Some(None) | Some(Some(_)) => {
+            if let Some(old) = &next_rule {
+                conn.execute("DELETE FROM recurrence_rules WHERE id = ?1", rusqlite::params![old])?;
+                next_rule = None;
             }
-            // 未提供：保持原规则不变（这就是本次修复的核心）
-            None => {}
         }
-        tx.execute(
-            "UPDATE tasks SET title = ?1, description = ?2, priority = ?3, category = ?4, tags = ?5,
-               due_at = ?6, remind_at = ?7, advance_minutes = ?8, recurrence_rule_id = ?9, updated_at = ?10
-             WHERE id = ?11",
-            rusqlite::params![
-                input.title.trim(),
-                input.description.trim(),
-                priority as i64,
-                input.category.clone().unwrap_or(existing.category.clone()),
-                serde_json::to_string(&tags)?,
-                due_iso,
-                remind_iso,
-                advance,
-                next_rule,
-                now,
-                id,
-            ],
-        )?;
-        if due_iso != existing.due_at || remind_iso != existing.remind_at || advance != existing.advance_minutes {
-            rebuild_reminders_tx(&tx, id, due_iso.as_deref(), remind_iso.as_deref(), advance)?;
-        }
-        tx.commit()?;
-        Ok::<_, AppError>(())
-    })?;
-    get_task(db, id)
+        // 未提供：保持原规则不变（这就是本次修复的核心）
+        None => {}
+    }
+    conn.execute(
+        "UPDATE tasks SET title = ?1, description = ?2, priority = ?3, category = ?4, tags = ?5,
+           due_at = ?6, remind_at = ?7, advance_minutes = ?8, recurrence_rule_id = ?9, updated_at = ?10
+         WHERE id = ?11",
+        rusqlite::params![
+            input.title.trim(),
+            input.description.trim(),
+            priority as i64,
+            input.category.clone().unwrap_or(existing.category.clone()),
+            serde_json::to_string(&tags)?,
+            due_iso,
+            remind_iso,
+            advance,
+            next_rule,
+            now,
+            id,
+        ],
+    )?;
+    if due_iso != existing.due_at
+        || remind_iso != existing.remind_at
+        || advance != existing.advance_minutes
+    {
+        rebuild_reminders_tx(conn, id, due_iso.as_deref(), remind_iso.as_deref(), advance)?;
+    }
+    get_task_in_conn(conn, id)
 }
 
 #[tauri::command]

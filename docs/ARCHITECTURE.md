@@ -885,32 +885,36 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `left` 顺序与 `leftGroups` 归属仍按用户保存值呈现。
   ③**写入链路**：`useNavOrderDraft` 的乐观草稿和写入同时携带顺序与 `leftGroups`；
   `navOrderIntent` 与设置页排序共用这份归属，因此侧栏和设置页不会各自推导出不同标题。
-  ④**视觉与交互结构（2026-11-16 最终整改）**：普通行固定五列
-  `28px 20px minmax(0,1fr) auto 24px`，行首 28×28 命中区的 `GripVertical` 17px 手柄
-  （默认低对比灰、无默认背景，悬停强调色、仅拖拽时轻背景、按下 grabbing），行尾 24×24
-  的 ×（默认 opacity 0，行 hover/focus-within 显示）；固定首页/设置/更多保留空轨道，
-  保证功能图标和 Tab 名称对齐且 200px 导航不横向溢出。动态行外层是普通布局容器，
-  页面切换、拖拽、隐藏分别是兄弟 `button`（页面按钮 `data-nav-page` 占功能图标/名称/
-  徽标三列），不再出现 `role=button` 容器内嵌 button；排序后的焦点恢复到页面按钮。
-  拖拽结束后的补发 click 由「一次性 pending 标记 + 350ms 时间窗」双重抑制，页面按钮的真实
-  pointerdown 或 Enter/Space 会先清掉标记，因此正常点击/键盘激活不受影响（2026-11-16 修复
-  并行测试下时间窗竞态）。
-  ≤760px 时导航收为 56px 纯图标：手柄、×、分组标题与名称一并隐藏，页面按钮单列居中；
-  手柄规则用 `.wb-nav-item > .wb-nav-grip` 覆盖基础样式中后置的 `.wb-nav-grip` display，
-  避免 56px 内手柄和分组标题逐字换行（2026-11-16 真实窗口极窄检查修复）。
+  ④**视觉与交互结构（2026-11-16 全行拖拽整改）**：普通行固定五列
+  `28px 20px minmax(0,1fr) auto 24px`，行首 `GripVertical` 17px 手柄只作视觉提示
+  （`span`、`pointer-events:none`、默认低对比灰、悬停强调色、拖拽轻背景），行尾 24×24
+  的 ×（默认 opacity 0，行 hover/focus-within 显示）；固定首页/设置/更多保留空轨道。
+  **可排序行的整行都是拖拽面**：行容器承接 `pointerdown`，从手柄、功能图标、名称、徽标
+  和行内空白都能起拖；纵向移动达到 6px 且纵向大于横向才进入排序，横向移动不触发垂直排序。
+  页面切换仍是独立 `button`（`data-nav-page` 占功能图标/名称/徽标三列），× 仍是独立
+  `button` 并阻止事件冒泡；行内点击（含手柄与空白）打开页面，× 只隐藏、不切页，× 区域
+  不成为拖拽起点。外层是普通布局容器，不再出现 `role=button` 容器内嵌 button；排序后的
+  焦点恢复到页面按钮。拖拽结束后的补发 click 由「一次性 pending 标记 + 350ms 时间窗」
+  双重抑制，页面按钮/行的真实 pointerdown 或 Enter/Space 会先清掉标记，因此正常点击/键盘
+  激活不受影响（2026-11-16 修复并行测试下时间窗竞态）。
+  **不再有 `@media (max-width:760px)` 导航降级**：导航宽度只由用户设置的实际宽度和根节点
+  `--wb-nav-width` 决定，窄窗口优先收起右侧上下文栏/压缩中央内容，不再把导航强制压成
+  56px，也不会因窗口变窄隐藏名称、手柄或 ×。
   ⑤**导航宽度临界点与名称 tooltip（2026-11-16）**：临界点设在最小可拖拽宽度之下，
   `WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH = 180`（`WORKBENCH_NAV_WIDTH_MIN = 180`）。
-  实际导航宽度按整像素取整后 **<180px**（含响应式 56px）时根节点 `data-nav-compact="true"`，
-  CSS 隐藏 `.wb-nav-label`；动态行容器/页面按钮与首页/设置/更多只在该状态挂 `data-tip`。
+  导航实际宽度按整像素取整后 **<180px** 时根节点 `data-nav-compact="true"`，CSS 隐藏
+  `.wb-nav-label`；动态行容器/页面按钮与首页/设置/更多只在该状态挂 `data-tip`。
   **180px 是最小拖拽宽度，仍能放下名称，因此 180px 起显示名称、不挂名称 `data-tip`**，
-  不留下图标态的无信息空白轨道；181px 及更宽同样显示名称。页面按钮因有可见文字也不会触发
-  TooltipLayer 的 `aria-label` 回退；拖拽手柄与 × 在宽态用 `data-tip-skip` 抑制自身回退提示。实际宽度由
-  `ResizeObserver` 校正，避免只依赖设置里的 `navWidth` 而漏掉 ≤760px 的 CSS 降级；取整是为
-  了避免名义 180px 实测 180.4px 时因亚像素误差误折叠（180.4→180 保持名称，179.4→179 进入图标态）。
+  不留下图标态的无信息空白轨道；181px、200px、240px、280px、320px 同样显示名称。页面按钮
+  因有可见文字也不会触发 TooltipLayer 的 `aria-label` 回退；拖拽手柄与 × 在宽态用
+  `data-tip-skip` 抑制自身回退提示。实际宽度由 `ResizeObserver` 校正，**不再依赖窗口宽度
+  媒体查询**；取整是为了避免名义 180px 实测 180.4px 时因亚像素误差误折叠（180.4→180 保持
+  名称，179.4→179 进入图标态）。窗口 700px + 导航 320px 也必须显示名称。
   Agent 统一图标 `AgentIcon` 由旧 Orbit Core 改为 Lucide `Bot` 机器人（`data-agent-icon="robot"`），
   全项目 Agent 入口/胶囊/面板同步生效，仍只使用 `currentColor`，默认 18px / stroke 1.75。
-  测试：`WorkbenchShell.dragSort.test.tsx`（31 项，含跨组标题/尺寸/网格/DOM 语义/隐藏/
-  181px 与 180px 宽态、180.4px 保持名称与 179.4/56px 折叠判定）、`AgentIcon.test.tsx`（5 项，机器人几何与默认属性）、
+  测试：`WorkbenchShell.dragSort.test.tsx`（含整行拖拽面、纵向 6px 主导阈值、横向/触屏
+  不误触、× 独立、跨组标题、尺寸/网格/DOM 语义、隐藏、180/200/280/320px 宽态与窗口
+  700px + 320px 导航）、`AgentIcon.test.tsx`（机器人几何与默认属性）、
   `navVisibility.test.ts`（38 项，含重复段不批量改写与 movedId 边界）、
   `useNavOrderDraft.test.tsx`（6 项）、`navOrderIntent.test.ts`（11 项）。
 - 设置页信息架构（2026-11-06，一级分类 + 查找定位）：设置页从「十几个分组纵向堆叠」

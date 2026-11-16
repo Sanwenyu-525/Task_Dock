@@ -10,6 +10,7 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
+import android.media.ExifInterface
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
@@ -21,6 +22,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.util.Collections
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -72,6 +74,30 @@ class MediaStoreModule : Module() {
     // 文档扫描：多页图片合成一个 A4 PDF（页序即传入顺序）。
     AsyncFunction("createPdfAsync") { sourceUris: List<String> ->
       createPdf(sourceUris)
+    }
+
+    // 开发者工具：真正重编码压缩（不是改扩展名）。输出路径由 JS 传入，
+    // 原生侧再次校验必须落在应用 files/cache 目录内，防止不可信路径覆盖其他文件。
+    AsyncFunction("compressImageAsync") { sourceUri: String, outputPath: String, maxWidth: Int, maxHeight: Int, quality: Int, format: String ->
+      compressImage(sourceUri, outputPath, maxWidth, maxHeight, quality, format)
+    }
+
+    // 取色会话：解码一次、按需采样像素。只保留最多 2 个会话，
+    // 避免大图在原生堆里长期驻留；关闭页面必须调用 closeImageSessionAsync。
+    AsyncFunction("openImageSessionAsync") { sourceUri: String, maxDimension: Int ->
+      openImageSession(sourceUri, maxDimension)
+    }
+
+    AsyncFunction("samplePixelsAsync") { sessionId: String, xs: List<Int>, ys: List<Int> ->
+      samplePixels(sessionId, xs, ys)
+    }
+
+    AsyncFunction("closeImageSessionAsync") { sessionId: String ->
+      closeImageSession(sessionId)
+    }
+
+    OnDestroy {
+      closeAllSessions()
     }
   }
 
@@ -392,6 +418,281 @@ class MediaStoreModule : Module() {
     } finally {
       document.close()
     }
+  }
+
+  // ── 开发者工具：压缩 / 取色 ─────────────────────────────
+
+  /** 取色会话：一张解码后的位图 + 展示尺寸。坐标为「屏幕方向」像素坐标（已应用 EXIF 旋转）。 */
+  private data class ImageSession(val bitmap: Bitmap, val width: Int, val height: Int)
+
+  /** 最多保留 2 个会话，超出按插入顺序回收最旧的一张，避免多张大图同时驻留。 */
+  private val sessions: MutableMap<String, ImageSession> =
+    Collections.synchronizedMap(LinkedHashMap<String, ImageSession>())
+
+  /**
+   * 真正重新编码：解码 → EXIF 方向纠正 → 按最大宽高缩放 → 编码写盘。
+   *
+   * 关键事实：
+   * - 输出字节是重新编码产生的，不是改扩展名；
+   * - 因为重新编码，EXIF（含 GPS 位置）默认被移除（Bitmap.compress 不写 EXIF）；
+   * - JPEG 不支持透明通道，带透明像素时合成到白底，避免出现黑块；
+   * - 内存上限：解码时按目标像素的 4 倍采样，最大图也不会整张全分辨率解码。
+   */
+  @Suppress("DEPRECATION")
+  private fun compressImage(
+    sourceUri: String,
+    outputPath: String,
+    maxWidthRaw: Int,
+    maxHeightRaw: Int,
+    qualityRaw: Int,
+    formatRaw: String,
+  ): Map<String, Any> {
+    val targetFile = resolveOutputFile(outputPath)
+    val format = formatRaw.lowercase()
+    val compressFormat: Bitmap.CompressFormat = when (format) {
+      "jpeg" -> Bitmap.CompressFormat.JPEG
+      "png" -> Bitmap.CompressFormat.PNG
+      "webp" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Bitmap.CompressFormat.WEBP_LOSSY
+      } else {
+        Bitmap.CompressFormat.WEBP
+      }
+      else -> throw IllegalArgumentException("不支持的输出格式：$formatRaw")
+    }
+    val quality = qualityRaw.coerceIn(10, 100)
+    val (rawWidth, rawHeight) = decodeBounds(sourceUri)
+    val orientation = readOrientation(sourceUri)
+    val swap = orientation == ExifInterface.ORIENTATION_ROTATE_90 ||
+      orientation == ExifInterface.ORIENTATION_ROTATE_270 ||
+      orientation == ExifInterface.ORIENTATION_TRANSPOSE ||
+      orientation == ExifInterface.ORIENTATION_TRANSVERSE
+    val orientedWidth = if (swap) rawHeight else rawWidth
+    val orientedHeight = if (swap) rawWidth else rawHeight
+
+    val maxWidth = if (maxWidthRaw > 0) maxWidthRaw else orientedWidth
+    val maxHeight = if (maxHeightRaw > 0) maxHeightRaw else orientedHeight
+    val scale = min(
+      1f,
+      min(maxWidth.toFloat() / orientedWidth, maxHeight.toFloat() / orientedHeight),
+    )
+    val targetWidth = (orientedWidth * scale).roundToInt().coerceIn(1, orientedWidth)
+    val targetHeight = (orientedHeight * scale).roundToInt().coerceIn(1, orientedHeight)
+
+    // 采样上限 = 目标像素 4 倍 + 1MP：给旋转/缩放留余量，同时挡住 48MP 全解码。
+    val decodeBudget = targetWidth.toLong() * targetHeight.toLong() * 4 + 1_000_000L
+    val options = BitmapFactory.Options().apply {
+      inSampleSize = sampleSize(rawWidth, rawHeight, decodeBudget)
+      inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
+    var working = openStream(sourceUri).use { BitmapFactory.decodeStream(it, null, options) }
+      ?: throw IllegalArgumentException("无法解析图片，可能是损坏文件或不受支持的编码")
+
+    try {
+      // 1) 方向纠正（旋转/镜像）——必须在缩放前做，否则宽高比会被算错。
+      val matrix = orientationMatrix(orientation)
+      if (!matrix.isIdentity) {
+        val rotated = Bitmap.createBitmap(working, 0, 0, working.width, working.height, matrix, true)
+        if (rotated !== working) {
+          working.recycle()
+          working = rotated
+        }
+      }
+      // 2) 精确缩放到目标尺寸
+      if (working.width != targetWidth || working.height != targetHeight) {
+        val scaled = Bitmap.createScaledBitmap(working, targetWidth, targetHeight, true)
+        if (scaled !== working) {
+          working.recycle()
+          working = scaled
+        }
+      }
+      // 3) JPEG 无 alpha：透明像素合成到白底，避免相册里出现黑块
+      var flattened: Bitmap? = null
+      if (compressFormat == Bitmap.CompressFormat.JPEG && working.hasAlpha()) {
+        val canvasBitmap = Bitmap.createBitmap(working.width, working.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(canvasBitmap)
+        canvas.drawColor(Color.WHITE)
+        canvas.drawBitmap(working, 0f, 0f, Paint(Paint.ANTI_ALIAS_FLAG))
+        flattened = canvasBitmap
+      }
+      val outputBitmap = flattened ?: working
+
+      try {
+        targetFile.parentFile?.mkdirs()
+        val temp = File(targetFile.parentFile, "${targetFile.name}.part")
+        try {
+          FileOutputStream(temp).use { stream ->
+            if (!outputBitmap.compress(compressFormat, quality, stream)) {
+              throw IllegalStateException("图片编码失败")
+            }
+          }
+          if (temp.length() <= 0L) throw IllegalStateException("压缩结果为空文件")
+          if (targetFile.exists() && !targetFile.delete()) {
+            throw IllegalStateException("无法覆盖已有输出文件")
+          }
+          if (!temp.renameTo(targetFile)) {
+            throw IllegalStateException("无法保存压缩结果")
+          }
+        } finally {
+          if (temp.exists()) temp.delete()
+        }
+      } finally {
+        if (flattened != null && !flattened.isRecycled) flattened.recycle()
+      }
+
+      return mapOf(
+        "uri" to Uri.fromFile(targetFile).toString(),
+        "path" to targetFile.absolutePath,
+        "width" to targetWidth,
+        "height" to targetHeight,
+        "sourceWidth" to rawWidth,
+        "sourceHeight" to rawHeight,
+        "orientation" to orientation,
+        "mime" to mimeOf(format),
+        "size" to targetFile.length(),
+        "format" to format,
+      )
+    } finally {
+      if (!working.isRecycled) working.recycle()
+    }
+  }
+
+  private fun openImageSession(sourceUri: String, maxDimensionRaw: Int): Map<String, Any> {
+    val maxDimension = maxDimensionRaw.coerceIn(256, 2048)
+    val (rawWidth, rawHeight) = decodeBounds(sourceUri)
+    val orientation = readOrientation(sourceUri)
+    val budget = maxDimension.toLong() * maxDimension.toLong() * 2
+    val options = BitmapFactory.Options().apply {
+      inSampleSize = sampleSize(rawWidth, rawHeight, budget)
+      inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
+    var bitmap = openStream(sourceUri).use { BitmapFactory.decodeStream(it, null, options) }
+      ?: throw IllegalArgumentException("无法解析图片")
+    try {
+      val matrix = orientationMatrix(orientation)
+      if (!matrix.isIdentity) {
+        val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        if (rotated !== bitmap) {
+          bitmap.recycle()
+          bitmap = rotated
+        }
+      }
+      val longest = max(bitmap.width, bitmap.height)
+      if (longest > maxDimension) {
+        val scale = maxDimension.toFloat() / longest
+        val scaled = Bitmap.createScaledBitmap(
+          bitmap,
+          (bitmap.width * scale).roundToInt().coerceAtLeast(1),
+          (bitmap.height * scale).roundToInt().coerceAtLeast(1),
+          true,
+        )
+        if (scaled !== bitmap) {
+          bitmap.recycle()
+          bitmap = scaled
+        }
+      }
+    } catch (error: Exception) {
+      if (!bitmap.isRecycled) bitmap.recycle()
+      throw error
+    }
+
+    val id = UUID.randomUUID().toString()
+    synchronized(sessions) {
+      while (sessions.size >= 2) {
+        val oldest = sessions.keys.firstOrNull() ?: break
+        sessions.remove(oldest)?.bitmap?.recycle()
+      }
+      sessions[id] = ImageSession(bitmap, bitmap.width, bitmap.height)
+    }
+    return mapOf("id" to id, "width" to bitmap.width, "height" to bitmap.height)
+  }
+
+  /**
+   * 批量采样：一次调用返回多个点的 ARGB。越界返回 -1，绝不生成「触摸位置模拟色」。
+   * ARGB 用 Long 返回，避免 Int 在 JS 里变成负数。
+   */
+  private fun samplePixels(sessionId: String, xs: List<Int>, ys: List<Int>): List<Long> {
+    if (xs.size != ys.size) throw IllegalArgumentException("xs 与 ys 数量不一致")
+    if (xs.size > 4096) throw IllegalArgumentException("单次最多采样 4096 个点")
+    val session = synchronized(sessions) { sessions[sessionId] }
+      ?: throw IllegalArgumentException("取色会话已关闭，请重新选择图片")
+    return xs.indices.map { index ->
+      val x = xs[index]
+      val y = ys[index]
+      if (x < 0 || y < 0 || x >= session.width || y >= session.height) {
+        -1L
+      } else {
+        session.bitmap.getPixel(x, y).toLong() and 0xFFFFFFFFL
+      }
+    }
+  }
+
+  private fun closeImageSession(sessionId: String) {
+    val removed = synchronized(sessions) { sessions.remove(sessionId) }
+    removed?.bitmap?.let { if (!it.isRecycled) it.recycle() }
+  }
+
+  private fun closeAllSessions() {
+    synchronized(sessions) {
+      sessions.values.forEach { session -> if (!session.bitmap.isRecycled) session.bitmap.recycle() }
+      sessions.clear()
+    }
+  }
+
+  /** EXIF 方向：只读取流，不落盘、不回传。失败按「正常方向」处理。 */
+  private fun readOrientation(sourceUri: String): Int {
+    return try {
+      openStream(sourceUri).use { stream ->
+        ExifInterface(stream).getAttributeInt(
+          ExifInterface.TAG_ORIENTATION,
+          ExifInterface.ORIENTATION_NORMAL,
+        )
+      }
+    } catch (_: Exception) {
+      ExifInterface.ORIENTATION_NORMAL
+    }
+  }
+
+  private fun orientationMatrix(orientation: Int): Matrix {
+    val matrix = Matrix()
+    when (orientation) {
+      ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.setScale(-1f, 1f)
+      ExifInterface.ORIENTATION_ROTATE_180 -> matrix.setRotate(180f)
+      ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.setScale(1f, -1f)
+      ExifInterface.ORIENTATION_TRANSPOSE -> {
+        matrix.setRotate(90f)
+        matrix.postScale(-1f, 1f)
+      }
+      ExifInterface.ORIENTATION_ROTATE_90 -> matrix.setRotate(90f)
+      ExifInterface.ORIENTATION_TRANSVERSE -> {
+        matrix.setRotate(270f)
+        matrix.postScale(-1f, 1f)
+      }
+      ExifInterface.ORIENTATION_ROTATE_270 -> matrix.setRotate(270f)
+      else -> matrix.setRotate(0f)
+    }
+    return matrix
+  }
+
+  /**
+   * 输出路径校验：必须是应用 files/ 或 cache/ 内的绝对路径。
+   * 这条检查是「JS 传入不可信路径」的最后一道防线。
+   */
+  private fun resolveOutputFile(outputPath: String): File {
+    if (outputPath.isBlank()) throw IllegalArgumentException("输出路径为空")
+    val file = File(outputPath)
+    if (!file.isAbsolute) throw IllegalArgumentException("输出路径必须是绝对路径")
+    val canonical = file.canonicalFile
+    val roots = listOf(context.filesDir.canonicalFile, context.cacheDir.canonicalFile)
+    if (roots.none { canonical.path.startsWith(it.path + File.separator) || canonical.path == it.path }) {
+      throw IllegalArgumentException("输出路径必须位于应用私有目录内")
+    }
+    return canonical
+  }
+
+  private fun mimeOf(format: String): String = when (format) {
+    "png" -> "image/png"
+    "webp" -> "image/webp"
+    else -> "image/jpeg"
   }
 
   // ── 基础工具 ──────────────────────────────────────────────

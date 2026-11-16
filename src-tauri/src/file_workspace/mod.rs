@@ -805,11 +805,10 @@ fn copy_file(src: &Path, dst: &Path, conflict: Conflict) -> Result<(), FsFailure
         let copied = fs::copy(src, &tmp).map(|_| ());
         match copied {
             Ok(()) => {
-                let replace = || -> Result<(), std::io::Error> {
-                    fs::remove_file(dst)?;
-                    fs::rename(&tmp, dst)?;
-                    Ok(())
-                };
+                // Windows 的 std::fs::rename 使用 MOVEFILE_REPLACE_EXISTING：
+                // 临时文件完整落盘后直接原子替换，绝不能先 remove_file(dst)
+                // 再 rename（那会在 rename 失败时把原目标也丢掉）。
+                let replace = || std::fs::rename(&tmp, dst);
                 if let Err(e) = replace() {
                     let _ = fs::remove_file(&tmp);
                     return Err(FsFailure::io_ctx(
@@ -1072,8 +1071,9 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
                     }
                     return Ok(dst.to_path_buf());
                 }
-                fs::remove_file(dst)
-                    .map_err(|e| FsFailure::io_ctx("prepare", "覆盖旧文件失败", &e))?;
+                // 不先删除目标：同卷 rename 在 Windows 上原子替换；跨卷回退
+                // 也会先复制到临时名、删除源成功后再落位。提前 remove_file
+                // 会在后续复制/rename 失败时把用户原有目标文件丢掉。
             }
         }
     }
@@ -1099,23 +1099,27 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
                     let _ = fs::remove_file(&tmp);
                     return Err(FsFailure::io("transfer", &e));
                 }
-                if let Err(e) = fs::remove_file(src) {
-                    let _ = fs::remove_file(&tmp); // 源删除失败：目标副本回滚，不留半状态
+                // 先把完整副本落到最终目标（Windows rename 原子替换旧目标），
+                // 确认目标可用后才删除源。若先删源再落位失败，移动就变成
+                // “源已消失、目标仍是旧内容/临时名”的不可解释状态。
+                if let Err(e) = fs::rename(&tmp, dst) {
+                    let _ = fs::remove_file(&tmp);
                     return Err(FsFailure::io_ctx(
                         "cleanup",
-                        "复制完成但删除源失败（已回滚目标副本）",
+                        "复制完成但目标落位失败（源已保留）",
                         &e,
                     ));
                 }
-                if let Err(e) = fs::rename(&tmp, dst) {
-                    // 不把临时文件的绝对路径写进 reason：reason 会进 UI 与诊断日志，
-                    // 只需让用户知道「文件还在目标目录里的临时名」即可找回。
-                    let tmp_name = tmp_display_name(&tmp);
+                if let Err(e) = fs::remove_file(src) {
+                    // 目标已是完整新内容，源仍在：这是可解释的 partial，不是丢数据。
                     return Err(FsFailure::new(
                         classify_io_error(&e),
                         "cleanup",
-                        format!("源已删除但目标落位失败（数据保留在目标目录内的临时文件「{tmp_name}」）: {e}"),
-                    ));
+                        format!(
+                            "目标已落位，但删除源失败（源已保留，可重试删除）: {e}"
+                        ),
+                    )
+                    .mark_partial());
                 }
             }
             Ok(dst.to_path_buf())
@@ -2570,6 +2574,38 @@ mod tests {
         .unwrap();
         assert_eq!(report.ok, 1);
         assert_eq!(fs::read_to_string(&dst).unwrap(), "new-content");
+        let leftovers: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".taskdock-tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "临时文件必须清理: {leftovers:?}");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn move_overwrite_locked_target_keeps_source_and_original() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = temp_root("mvovlock");
+        let src_dir = root.join("in");
+        fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("new.txt");
+        let dst = root.join("new.txt");
+        fs::write(&src, "new-content").unwrap();
+        fs::write(&dst, "old-content").unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&dst).unwrap();
+        let report = move_paths(
+            &[src.to_string_lossy().into_owned()],
+            &root,
+            Conflict::Overwrite,
+            &protected(),
+        )
+        .unwrap();
+        drop(lock);
+        assert_eq!(report.ok, 0, "目标被占用时不能报告移动成功: {:?}", report.entries);
+        assert_eq!(report.failed, 1, "{:?}", report.entries);
+        assert!(src.exists(), "落位失败时源文件必须保留");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "old-content", "旧目标不能被提前删除");
         let leftovers: Vec<_> = fs::read_dir(&root)
             .unwrap()
             .filter_map(|e| e.ok())

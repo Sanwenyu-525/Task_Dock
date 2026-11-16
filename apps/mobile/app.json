@@ -22,6 +22,7 @@
       "expo-secure-store",
       "./plugins/withShareTargetActivity.js",
       "./plugins/withTaskDockWidgets.js",
+      "./plugins/withToolShareProvider.js",
       "./plugins/withCapturePermissions.js",
       "./plugins/withShortcuts.js",
       [

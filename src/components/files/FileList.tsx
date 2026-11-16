@@ -7,6 +7,7 @@
 import {
   memo,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -15,7 +16,10 @@ import {
 
 import type { FsEntry } from "../../lib/bridge";
 import { fileVisual, formatModified, formatSize, toneVar } from "../../lib/filesWorkspace/fileMeta";
-import { joinPath } from "../../lib/filesWorkspace/pathUtils";
+import { basename, joinPath } from "../../lib/filesWorkspace/pathUtils";
+import { getFwDragState, subscribeFwDrag } from "../../lib/filesWorkspace/interactions";
+import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
+import { useLocale } from "../../hooks/useLocale";
 
 const LIST_ROW_H = 26;
 const GRID_CELL_W = 104;
@@ -123,6 +127,7 @@ interface EntryRowProps {
   selected: boolean;
   active: boolean;
   isDropTarget: boolean;
+  dropLabel?: string;
   index: number;
   thumbnails: boolean;
   onPointerDown: (e: React.PointerEvent, entry: FsEntry, index: number) => void;
@@ -136,6 +141,7 @@ const ListRow = memo(function ListRow({
   selected,
   active,
   isDropTarget,
+  dropLabel,
   index,
   onPointerDown,
   onDoubleClick,
@@ -161,6 +167,9 @@ const ListRow = memo(function ListRow({
       <span className="fw-row-name" title={entry.name}>
         {entry.name}
       </span>
+      {isDropTarget && dropLabel ? (
+        <span className="fw-row-drop-hint" title={path}>{dropLabel}</span>
+      ) : null}
       <span className="fw-row-time">{formatModified(entry.modifiedMs)}</span>
       <span className="fw-row-size">{entry.kind === "dir" ? "—" : formatSize(entry.size)}</span>
       <span className="fw-row-type">{entry.kind === "dir" ? "文件夹" : entry.ext ? entry.ext.toUpperCase() : "文件"}</span>
@@ -174,6 +183,7 @@ const GridCell = memo(function GridCell({
   selected,
   active,
   isDropTarget,
+  dropLabel,
   index,
   thumbnails,
   onPointerDown,
@@ -211,6 +221,9 @@ const GridCell = memo(function GridCell({
       <span className="fw-cell-name" title={entry.name}>
         {entry.name}
       </span>
+      {isDropTarget && dropLabel ? (
+        <span className="fw-cell-drop-hint" title={path}>{dropLabel}</span>
+      ) : null}
     </div>
   );
 });
@@ -250,6 +263,25 @@ export default function FileList({
 }: FileListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(6);
+  const { t } = useLocale();
+  const [dragState, setDragState] = useState(() => getFwDragState());
+
+  // 只在目录行成为落点后订阅；标签随 Ctrl/Shift/真实卷判定即时刷新。
+  useEffect(() => {
+    if (!dropTargetPath) return;
+    setDragState(getFwDragState());
+    return subscribeFwDrag(setDragState);
+  }, [dropTargetPath]);
+
+  const dropLabel = useMemo(() => {
+    if (!dropTargetPath || dragState.payload?.kind !== "files") return undefined;
+    const accepted = filterTransferablePaths(dragState.payload.paths, dropTargetPath);
+    const target = basename(dropTargetPath) || dropTargetPath;
+    if (!accepted.length) return t("fw.drag.folderInvalid", { target });
+    return dragState.effect === "copy"
+      ? t("fw.drag.folderCopy", { count: accepted.length, target })
+      : t("fw.drag.folderMove", { count: accepted.length, target });
+  }, [dropTargetPath, dragState, t]);
 
   // 网格按容器宽度计算列数（分栏宽度变化自适应）。
   useEffect(() => {
@@ -284,6 +316,7 @@ export default function FileList({
           selected={selectedPaths.has(path)}
           active={activePath === path}
           isDropTarget={dropTargetPath === path && entry.kind === "dir"}
+          dropLabel={dropTargetPath === path ? dropLabel : undefined}
           thumbnails={thumbnails}
           onPointerDown={onEntryPointerDown}
           onDoubleClick={onEntryActivate}
@@ -305,6 +338,7 @@ export default function FileList({
               selected={selectedPaths.has(path)}
               active={activePath === path}
               isDropTarget={dropTargetPath === path && entry.kind === "dir"}
+              dropLabel={dropTargetPath === path ? dropLabel : undefined}
               thumbnails={thumbnails}
               onPointerDown={onEntryPointerDown}
               onDoubleClick={onEntryActivate}

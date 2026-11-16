@@ -167,6 +167,28 @@ function extFromName(name: string | null | undefined): string | null {
   return normalizeExt(value.slice(dot + 1));
 }
 
+/**
+ * 只按文件名/路径解析展示类型（2026-11-16 剪贴板复用）。
+ *
+ * 剪贴板条目只有 `file_paths`，没有后端 `file_ext` 与 `kind`，因此需要一条
+ * 不依赖 ShelfItem 的入口；仍复用同一张扩展名表与同一套色调 Token，
+ * 禁止在剪贴板里再写一份后缀映射。
+ */
+export function fileTypeFromName(nameOrPath: string): ShelfFileTypeUi {
+  const name = (nameOrPath.split(/[\\/]/).pop() ?? nameOrPath).trim();
+  const ext = extFromName(name);
+  const group = ext ? EXT_INDEX.get(ext) : undefined;
+  if (group) {
+    return {
+      icon: group.icon,
+      label: `${ext!.toUpperCase()} ${group.category}`,
+      tone: group.tone,
+      ext,
+    };
+  }
+  return { icon: File, label: ext ? `${ext.toUpperCase()} 文件` : "文件", tone: "other", ext };
+}
+
 const KIND_FALLBACK: Record<ShelfKind, Omit<ShelfFileTypeUi, "ext">> = {
   file: { icon: File, label: "文件", tone: "other" },
   image: { icon: FileImage, label: "图片", tone: "image" },

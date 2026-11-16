@@ -1,0 +1,25 @@
+// 本地 Expo module：系统剪贴板读写（Android ClipboardManager）。
+//
+// 为什么需要：RN 新版已移除内置 Clipboard，Expo 未安装 expo-clipboard。
+// 为了「从剪贴板粘贴代码 / 一键复制结果」且不新增 npm 依赖（包体积与授权成本），
+// 这里用 60 行原生代码实现最小能力；不申请任何权限，不监听剪贴板变化。
+//
+// 安全边界：
+// - 只在用户点「粘贴 / 复制」时调用一次，不轮询、不后台读取；
+// - Android 10+ 后台读取会被系统拒绝（返回 null），UI 必须提示「请回到前台再试」；
+// - 不写日志、不回传剪贴板内容到任何网络。
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'dev.taskdock.mobile'
+version = '1.0.0'
+
+android {
+  namespace "dev.taskdock.modules.clipboard"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+}

@@ -21,8 +21,11 @@ import {
 import { moveEntryToIndex } from "../lib/navVisibility";
 import { registerOverlay } from "../lib/overlayStack";
 
-/** 超过该位移才进入拖拽态，避免点击手柄被误判成拖拽。 */
-const DRAG_THRESHOLD = 5;
+/**
+ * 纵向启动阈值：整行都可拖后，必须让短点击保持为点击。
+ * 同时要求纵向位移大于横向位移，单纯左右移动不能触发垂直排序。
+ */
+const DRAG_THRESHOLD = 6;
 
 const EMPTY_SHIFTS = new Map<string, number>();
 
@@ -34,6 +37,8 @@ export interface NavDragSortOptions {
   isFixed: (id: string) => boolean;
   disabled?: boolean;
   onDrop: (id: string, toIndex: number) => void;
+  /** 真正进入过拖拽态的指针结束（即使落回原位）。用于抑制浏览器补发的 click。 */
+  onDragEnd?: () => void;
   onCancel?: () => void;
 }
 
@@ -114,6 +119,8 @@ export function useNavDragSort(options: NavDragSortOptions): NavDragSortView {
   disabledRef.current = !!options.disabled;
   const onDropRef = useRef(options.onDrop);
   onDropRef.current = options.onDrop;
+  const onDragEndRef = useRef(options.onDragEnd);
+  onDragEndRef.current = options.onDragEnd;
   const onCancelRef = useRef(options.onCancel);
   onCancelRef.current = options.onCancel;
 
@@ -225,6 +232,9 @@ export function useNavDragSort(options: NavDragSortOptions): NavDragSortView {
     (event: ReactPointerEvent<HTMLElement>, id: string) => {
       if (disabledRef.current) return;
       if (event.button !== 0) return;
+      // 触屏优先保留导航列表的原生上下滚动；桌面端不做普通滑动误触排序。
+      // 若要支持触屏排序，应另做长按启动，而不是复用这套鼠标阈值。
+      if (event.pointerType === "touch") return;
       if (fixedRef.current(id)) return;
       const container = listRef.current?.current;
       if (!container) return;
@@ -261,10 +271,10 @@ export function useNavDragSort(options: NavDragSortOptions): NavDragSortView {
           const node = listRef.current?.current;
           if (!node) return;
           if (!current.active) {
-            if (
-              Math.abs(moveEvent.clientX - current.startX) < DRAG_THRESHOLD &&
-              Math.abs(moveEvent.clientY - current.startY) < DRAG_THRESHOLD
-            ) {
+            const dx = Math.abs(moveEvent.clientX - current.startX);
+            const dy = Math.abs(moveEvent.clientY - current.startY);
+            // 只让纵向主导的移动进入排序；横向滑动不触发垂直拖拽。
+            if (dy < DRAG_THRESHOLD || dy <= dx) {
               return;
             }
             current.active = true;
@@ -304,7 +314,10 @@ export function useNavDragSort(options: NavDragSortOptions): NavDragSortView {
           }
           const { id: movedId, finalIndex, fromIndex: originIndex } = current;
           cleanup();
-          if (finalIndex !== originIndex) onDropRef.current(movedId, finalIndex);
+          const moved = finalIndex !== originIndex;
+          if (moved) onDropRef.current(movedId, finalIndex);
+          // 即使落回原位，真正拖过也必须吞掉松手后的补发 click。
+          onDragEndRef.current?.();
         },
         onCancel: (cancelEvent) => {
           const current = sessionRef.current;

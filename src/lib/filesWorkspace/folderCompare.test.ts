@@ -73,9 +73,48 @@ describe("compareFolders 递归与完整性", () => {
     });
     const result = await compareFolders("D:\\L", "D:\\R", { maxDepth: 1 });
     expect(result.items[0].status).toBe("dirDiff");
+    expect(result.items[0].detail).toContain("assets/only-left.png");
     expect(result.complete).toBe(true);
     expect(result.dirsVisited).toBe(2);
     expect(result.filesScanned).toBe(4);
+  });
+
+  it("同名同大小同时间但未哈希时不能宣称目录内容相同", async () => {
+    mockTree({
+      "D:\\L": [dir("assets")],
+      "D:\\R": [dir("assets")],
+      "D:\\L\\assets": [file("a.txt", 10, 1)],
+      "D:\\R\\assets": [file("a.txt", 10, 1)],
+    });
+    const result = await compareFolders("D:\\L", "D:\\R", { maxDepth: 1 });
+    expect(result.items[0].status).toBe("dirPartial");
+  });
+
+  it("空同名目录递归后可以确认一致；目录数上限命中时明确不完整", async () => {
+    mockTree({
+      "D:\\L": [dir("empty"), dir("empty2")],
+      "D:\\R": [dir("empty"), dir("empty2")],
+      "D:\\L\\empty": [],
+      "D:\\R\\empty": [],
+      "D:\\L\\empty2": [],
+      "D:\\R\\empty2": [],
+    });
+    const same = await compareFolders("D:\\L", "D:\\R", { maxDepth: 1 });
+    expect(same.items.find((item) => item.name === "empty")?.status).toBe("dirSame");
+    expect(same.complete).toBe(true);
+
+    const limited = await compareFolders("D:\\L", "D:\\R", { maxDepth: 1, maxDirs: 2 });
+    expect(limited.complete).toBe(false);
+    expect(limited.items.find((item) => item.name === "empty2")?.status).toBe("dirPartial");
+  });
+
+  it("文件数上限命中时结果不完整，不把未扫描内容当成相同", async () => {
+    mockTree({
+      "D:\\L": [file("a.txt", 10, 1), file("b.txt", 10, 1)],
+      "D:\\R": [file("a.txt", 10, 1), file("b.txt", 10, 1)],
+    });
+    const result = await compareFolders("D:\\L", "D:\\R", { maxDepth: 0, maxFiles: 3 });
+    expect(result.complete).toBe(false);
   });
 
   it("递归 1 层且子目录仍有更深内容时，父子目录标未完整检查", async () => {
@@ -110,6 +149,16 @@ describe("compareFolders 递归与完整性", () => {
     const result = await compareFolders("D:\\L", "D:\\R", { maxDepth: 1 });
     expect(result.complete).toBe(false);
     expect(result.failedDirs).toBe(1);
+  });
+
+  it("取消后不再继续扫描，并标记 cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    mockTree({ "D:\\L": [dir("assets")], "D:\\R": [dir("assets")] });
+    const result = await compareFolders("D:\\L", "D:\\R", { maxDepth: 2, signal: controller.signal });
+    expect(result.cancelled).toBe(true);
+    expect(result.complete).toBe(false);
+    expect(list).not.toHaveBeenCalled();
   });
 });
 

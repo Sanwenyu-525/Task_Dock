@@ -42,8 +42,11 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [confirmDelete, setConfirmDelete] = useState<VerifiedDuplicateDeleteGroup[] | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /** 扫描请求代际：旧扫描不得覆盖新目录/新深度的结果或运行状态。 */
+  const scanSeq = useRef(0);
 
   const resetResults = () => {
+    scanSeq.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
     setGroups([]);
@@ -66,6 +69,7 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
   const scan = async (withHash: boolean) => {
     if (running || selected.length === 0) return;
     abortRef.current?.abort();
+    const seq = ++scanSeq.current;
     const controller = new AbortController();
     abortRef.current = controller;
     setRunning(true);
@@ -75,23 +79,31 @@ export default function DuplicateFinderDialog({ open, sources, onClose, onReveal
       const scanResult = await collectWorkspaceFiles(
         sources.filter((source) => selected.includes(source.paneId)),
         Number(depth),
-        setProgress,
+        (next) => {
+          if (seq === scanSeq.current) setProgress(next);
+        },
         controller.signal,
       );
+      if (seq !== scanSeq.current) return;
       setTruncated(scanResult.truncated);
       const sizeCandidates = sizeGroups(scanResult.files);
       if (withHash) {
-        setGroups(await hashDuplicateGroups(sizeCandidates, controller.signal));
+        const hashed = await hashDuplicateGroups(sizeCandidates, controller.signal);
+        if (seq !== scanSeq.current) return;
+        setGroups(hashed);
         setVerified(true);
       } else {
         setGroups(sizeCandidates);
         setVerified(false);
       }
     } catch (error) {
+      if (seq !== scanSeq.current) return;
       if ((error as { name?: string }).name !== "AbortError") setGroups([]);
     } finally {
-      setRunning(false);
-      abortRef.current = null;
+      if (seq === scanSeq.current) {
+        setRunning(false);
+        abortRef.current = null;
+      }
     }
   };
 

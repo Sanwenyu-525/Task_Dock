@@ -306,3 +306,9 @@ pub fn fs_preview_media_url(app: AppHandle, path: String) -> AppResult<String> {
     fw::ensure_not_protected(&path, &protected_dirs(&app))?;
     fw::preview::register_media_url(&path)
 }
+
+/// 关闭/切换预览时释放媒体 token；失败不影响关闭流程。
+#[tauri::command]
+pub fn fs_release_preview_url(url: String) -> AppResult<()> {
+    fw::preview::release_media_url(&url)
+}

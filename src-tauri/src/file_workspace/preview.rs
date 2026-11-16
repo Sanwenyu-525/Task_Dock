@@ -75,6 +75,24 @@ fn media_url(token: &str) -> String {
     format!("http://taskdock-preview.localhost/{token}")
 }
 
+/// 预览关闭/切换时主动释放 token；旧 token 立即失效，不再占用 64 个槽位。
+pub fn release_media_url(url: &str) -> AppResult<()> {
+    let prefix = "http://taskdock-preview.localhost/";
+    let token = url
+        .strip_prefix(prefix)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    if token.is_empty() {
+        return Err(AppError::Validation("无效的预览 URL".into()));
+    }
+    if let Ok(mut map) = tokens().lock() {
+        map.remove(token);
+    }
+    Ok(())
+}
+
 fn mime_for(path: &Path) -> &'static str {
     let ext = path
         .extension()
@@ -177,6 +195,11 @@ pub fn handle_preview_uri(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
             let capped_end = end.min(start + MAX_RANGE_BYTES - 1);
             (start, capped_end, StatusCode::PARTIAL_CONTENT)
         }
+        None if size > MAX_RANGE_BYTES => {
+            // 没有 Range 头的大文件也只返回首块，但必须声明 206/Content-Range，
+            // 否则播放器会把 8 MiB 当成完整文件，无法继续 seek。
+            (0, MAX_RANGE_BYTES - 1, StatusCode::PARTIAL_CONTENT)
+        }
         None => (0, size.saturating_sub(1), StatusCode::OK),
     };
     let length = end.saturating_sub(start) + 1;
@@ -215,4 +238,38 @@ pub fn handle_preview_uri(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     builder
         .body(body)
         .unwrap_or_else(|_| build_status(StatusCode::INTERNAL_SERVER_ERROR, "text/plain"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_range_limits_and_suffixes() {
+        assert_eq!(parse_range("bytes=0-1023", 10_000), Some((0, 1023)));
+        assert_eq!(parse_range("bytes=500-", 10_000), Some((500, 9999)));
+        assert_eq!(parse_range("bytes=-500", 10_000), Some((9500, 9999)));
+        assert_eq!(parse_range("bytes=10000-", 10_000), None);
+        assert_eq!(parse_range("items=0-1", 10_000), None);
+    }
+
+    #[test]
+    fn release_media_url_invalidates_token() {
+        let token = "abc123";
+        let url = media_url(token);
+        let path = std::env::temp_dir().join(format!("taskdock-preview-{token}.txt"));
+        std::fs::write(&path, b"x").unwrap();
+        let _ = register_media_url(&path);
+        // 直接插入与 register 不同的 token，验证 release 只按 URL 中的 token 删除。
+        tokens().lock().unwrap().insert(
+            token.to_string(),
+            PreviewToken {
+                path: path.clone(),
+                expires: Instant::now() + TOKEN_TTL,
+            },
+        );
+        release_media_url(&url).unwrap();
+        assert!(!tokens().lock().unwrap().contains_key(token));
+        let _ = std::fs::remove_file(path);
+    }
 }

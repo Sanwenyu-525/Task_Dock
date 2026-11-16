@@ -29,8 +29,15 @@ pub mod auth;
 pub mod bridge;
 pub mod commands;
 pub mod config;
+pub mod diagnostics;
+pub mod note_tools;
+pub mod permissions;
 pub mod protocol;
+pub mod schema;
+pub mod task_tools;
 pub mod tools;
+pub mod workflow_tools;
+pub mod workspace_tools;
 
 #[cfg(test)]
 mod tests;

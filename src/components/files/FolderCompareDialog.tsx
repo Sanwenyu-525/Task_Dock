@@ -270,8 +270,7 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
 
   const runHash = async () => {
     if (!request || !target || hashRunning || !complete) return;
-    const targets = hashTargets(items, request.sourceDir, target.dir);
-    if (!targets.length) {
+    const targets = hashTargets(items, request.sourceDir, target.dir);    if (!targets.length) {
       showToast(t("fw.compare.noHashTargets"), { kind: "info" });
       return;
     }
@@ -288,6 +287,17 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
     } finally {
       setHashRunning(false);
     }
+  };
+
+  const cancelScan = () => {
+    loadSeq.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setComplete(false);
+    setHasMore(false);
+    setItems([]);
+    showToast(t("fw.compare.cancelled"), { kind: "info" });
   };
 
   const depthOptions = ["0", "1", "2", "3", "4"].map((value) => ({
@@ -309,6 +319,11 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
           <button type="button" className="btn" onClick={onClose}>
             {t("common.cancel")}
           </button>
+          {loading && (
+            <button type="button" className="btn" onClick={cancelScan}>
+              {t("fw.compare.cancelScan")}
+            </button>
+          )}
           <button type="button" className="btn" disabled={hashRunning || loading || !complete} onClick={() => void runHash()}>
             {hashRunning ? t("fw.compare.hashing") : t("fw.compare.hashAction")}
           </button>
@@ -417,8 +432,11 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
                     />
                   ) : null}
                 </span>
-                <span className="fw-compare-name-cell" role="cell" title={item.name}>
+                <span className="fw-compare-name-cell" role="cell" title={item.detail ?? item.name}>
                   {item.name}
+                  {item.detail && item.detail !== item.name ? (
+                    <span className="fw-compare-detail"> · {item.detail}</span>
+                  ) : null}
                 </span>
                 <span className="fw-compare-status" role="cell">
                   <span className={`fw-compare-dot is-${item.status}`} aria-hidden="true" />

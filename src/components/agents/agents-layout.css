@@ -37,7 +37,9 @@
 
 /* R5：Agent 控制中心 = 左侧分区/状态/搜索导航 + 主区会话树或统计/接入。
    会话抽屉、实时轮次分页、历史搜索与接入向导全部复用既有实现。 */
-.agents-panel > .workspace-split {
+/* 2026-11-16：WorkspaceSplit 外层新增 `.workspace-split-frame` 作为容器查询宿主，
+   页面级的「占满剩余高度」规则必须挂到 frame 上，否则网格会退回到内容高度。 */
+.agents-panel > .workspace-split-frame {
   flex: 1 1 auto;
   min-height: 0;
 }

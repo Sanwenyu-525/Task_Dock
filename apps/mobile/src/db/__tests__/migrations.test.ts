@@ -21,13 +21,54 @@ beforeEach(async () => {
   await closeDatabase();
 });
 
-describe("迁移 v1→v8", () => {
+describe("迁移 v1→v9", () => {
   it("迁移到最新版本且序列连续", async () => {
     await openDatabase();
     const row = await rawFirst<{ user_version: number }>("PRAGMA user_version");
     expect(row?.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(8);
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(SCHEMA_VERSION).toBe(9);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  it("v9 新增开发者工具表：片段 / 请求 / 资源，且带查询索引", async () => {
+    await openDatabase();
+    const snippetColumns = (await rawAll<{ name: string }>("PRAGMA table_info(snippets)")).map(
+      (column) => column.name,
+    );
+    expect(snippetColumns).toEqual([
+      "id", "title", "language", "content", "tags", "favorite", "pinned",
+      "created_at", "updated_at", "last_used_at", "deleted_at",
+    ]);
+    const requestColumns = (await rawAll<{ name: string }>("PRAGMA table_info(tool_requests)")).map(
+      (column) => column.name,
+    );
+    expect(requestColumns).toEqual([
+      "id", "kind", "name", "method", "url", "query_json", "headers_json", "body",
+      "body_kind", "created_at", "updated_at", "last_used_at", "deleted_at",
+    ]);
+    const resourceColumns = (await rawAll<{ name: string }>("PRAGMA table_info(tool_resources)")).map(
+      (column) => column.name,
+    );
+    expect(resourceColumns).toEqual([
+      "id", "kind", "title", "url", "category", "note", "storage", "linked_kind",
+      "linked_id", "favorite", "created_at", "updated_at", "last_opened_at",
+      "open_count", "deleted_at",
+    ]);
+    const indexes = (
+      await rawAll<{ name: string; tbl_name: string }>(
+        "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('snippets','tool_requests','tool_resources')",
+      )
+    ).map((index) => index.name);
+    expect(indexes).toEqual(
+      expect.arrayContaining(["idx_snippets_list", "idx_snippets_language", "idx_tool_requests_list", "idx_tool_resources_list"]),
+    );
+    // kind 约束：非法 kind 被 CHECK 拒绝，避免页面写入无法分类的记录
+    await expect(
+      rawRun(
+        `INSERT INTO tool_requests (id, kind, method, url, created_at, updated_at)
+         VALUES ('req-bad', 'queue', 'GET', 'https://example.com', 1, 1)`,
+      ),
+    ).rejects.toThrow();
   });
 
   it("v7 新增采集提交幂等登记表，主键是 client_id", async () => {

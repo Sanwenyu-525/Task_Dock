@@ -168,14 +168,16 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   text-align: left;
   cursor: pointer;
   position: relative;
+  /* 整行拖拽时任何位置都不能选中文字；行内按钮仍保留点击语义。 */
+  user-select: none;
+  -webkit-user-select: none;
   /* 拖拽时其它行平滑让位；只过渡 transform，悬停/选中颜色仍即时响应。 */
   transition: transform 160ms cubic-bezier(0.2, 0, 0, 1);
 }
-/* 可拖拽行沿用同一套网格；类名保留给拖拽/测试语义，不再单独改内边距。 */
+/* 可拖拽行沿用同一套网格；整行都是拖拽面，手柄只是视觉提示。 */
 .wb-nav-item.has-grip {
   padding: 3px 4px 3px 2px;
-  /* 行本身不是按钮：页面切换只在中间的 .wb-nav-page 上响应。 */
-  cursor: default;
+  cursor: grab;
 }
 .wb-nav-item:hover {
   background: var(--surface-hover);
@@ -214,7 +216,7 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   font: inherit;
   font-size: 13px;
   text-align: left;
-  cursor: pointer;
+  cursor: inherit;
 }
 .wb-nav-page:focus-visible {
   outline: 2px solid var(--accent);
@@ -251,8 +253,8 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   grid-column: 2;
 }
 
-/* 导航宽度低于设置临界点（默认 200px）时只保留图标与徽标；名称由
-   TooltipLayer 的 data-tip 在悬停时补出。不要在这里改行高或侧栏宽度。 */
+/* 导航实际宽度低于 180px 时只保留图标与徽标；名称由 TooltipLayer 的
+   data-tip 在悬停时补出。不要在这里改行高或侧栏宽度，也不要按窗口宽度判断。 */
 .wb-root[data-nav-compact="true"] .wb-nav-label {
   display: none;
 }
@@ -1466,54 +1468,8 @@ body.wb-resizing {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@media (max-width: 760px) {
-  .wb-nav {
-    width: 56px;
-    flex-basis: 56px;
-    padding-inline: 4px;
-  }
-  .wb-nav-label {
-    display: none;
-  }
-  .wb-nav-item {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    justify-items: center;
-    gap: 0;
-    padding: 3px 4px;
-  }
-  /* 极窄导航只剩图标：行首手柄与行尾 × 都没有横向空间，一并隐藏；仍可
-     通过拉宽导航或设置页管理显隐。分组标题同样收起，避免 56px 内逐字换行。 */
-  .wb-nav-item > .wb-nav-grip,
-  .wb-nav-actions {
-    display: none;
-  }
-  .wb-nav-group,
-  .wb-nav-sep {
-    display: none;
-  }
-  .wb-nav-page {
-    grid-column: 1;
-    display: flex;
-    justify-content: center;
-    gap: 4px;
-    width: 100%;
-    height: 28px;
-  }
-  .wb-nav-page .wb-nav-icon,
-  .wb-nav-item > .wb-nav-icon {
-    grid-column: auto;
-  }
-  .wb-nav-page .wb-nav-label {
-    display: none;
-  }
-  .wb-nav-page .wb-nav-badge {
-    grid-column: auto;
-  }
-  .wb-new-task span {
-    display: none;
-  }
-}
+/* 导航宽度只由用户设置的实际宽度决定；窗口宽度不再强制把导航压成 56px。
+   窄窗优先收起右侧上下文栏、压缩中央内容，不覆盖用户已经调宽的导航。 */
 
 /* ── 统一工作台第一批（2026-11-14）：顶栏品牌 / 全局搜索 / 快速创建 ────── */
 .wb-topbar {
@@ -1646,10 +1602,11 @@ body.wb-resizing {
   margin-top: 4px;
 }
 
-/* ── 左侧导航拖拽排序（2026-11-15）──────────────────────────────────────
+/* ── 左侧导航拖拽排序（2026-11-15，2026-11-16 整行化）──────────────
    视觉保持二维平面：跟手位移 + 其它行让位 + 落点细线，不做缩放/倾斜/3D。
-   手柄占行首 28×28 命中区，17px 六点图标；默认低对比灰色、无背景，不与
-   功能图标争夺注意力。仅悬停/拖拽时变强调色，真正拖拽才出现轻背景。 */
+   手柄占行首 28×28 视觉区，17px 六点图标；默认低对比灰色、无背景，不与
+   功能图标争夺注意力。整行都是拖拽面，手柄只负责视觉提示；只有悬停整行/
+   拖拽时变强调色，真正拖拽才出现轻背景。 */
 .wb-nav-grip {
   grid-column: 1;
   justify-self: center;
@@ -1666,9 +1623,9 @@ body.wb-resizing {
   color: var(--text-tertiary);
   font: inherit;
   opacity: 0.55;
-  pointer-events: auto;
-  cursor: grab;
-  touch-action: none;
+  /* 手柄只承担视觉提示；整行的 pointerdown 才是拖拽入口，
+     这样手柄本身不需要、也不保留一个无实际用途的独立按钮。 */
+  pointer-events: none;
   user-select: none;
   transition:
     opacity 120ms ease,
@@ -1690,7 +1647,6 @@ body.wb-resizing {
 .wb-nav-grip:active {
   cursor: grabbing;
 }
-
 /* 被拖行：轻微浮起（背景 + 柔和阴影），不做缩放与旋转。 */
 .wb-nav-item.is-dragging {
   z-index: var(--z-content);

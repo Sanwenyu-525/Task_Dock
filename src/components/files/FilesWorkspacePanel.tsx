@@ -120,6 +120,7 @@ import {
 import {
   finishQueueOperation,
   startQueueOperation,
+  withFileOperationSlot,
 } from "../../lib/filesWorkspace/operationQueue";
 
 import OperationQueueBar from "./OperationQueueBar";
@@ -756,10 +757,11 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       startQueueOperation({ id: op.id, effect, total: paths.length });
       try {
         op.stage("ipc");
-        const report: FsOpReport =
+        const report: FsOpReport = await withFileOperationSlot(() =>
           effect === "copy"
-            ? await fsCopyPaths(paths, targetDir, strategy, op.id)
-            : await fsMovePaths(paths, targetDir, strategy, op.id);
+            ? fsCopyPaths(paths, targetDir, strategy, op.id)
+            : fsMovePaths(paths, targetDir, strategy, op.id),
+        );
         invalidateDirs(transferRefreshDirs(paths, targetDir));
         // 移动成功才清来源选择；失败/部分完成源仍在，保留选择供用户重试。
         if (effect === "move") {
@@ -840,7 +842,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       startQueueOperation({ id: op.id, effect: "delete", total: paths.length });
       try {
         op.stage("ipc");
-        const report = await fsDeleteVerifiedDuplicates(groups, op.id);
+        const report = await withFileOperationSlot(() => fsDeleteVerifiedDuplicates(groups, op.id));
         invalidateDirs(dirs);
         finishQueueOperation(op.id, report);
         const failedPaths = report.entries
@@ -2030,7 +2032,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             });
             try {
               op.stage("ipc");
-              const report = await fsDeletePaths(paths, permanent, op.id);
+              const report = await withFileOperationSlot(() => fsDeletePaths(paths, permanent, op.id));
               invalidateDirs(paths.map((p) => parentOf(p) ?? "").filter(Boolean));
               showFsOpOutcome({
                 effect: permanent ? "deletePermanent" : "deleteRecycle",

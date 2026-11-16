@@ -10,6 +10,7 @@ import {
   fsPreviewImage,
   fsPreviewMediaUrl,
   fsReadText,
+  fsReleasePreviewUrl,
   type FsEntry,
   type FsTextPreview,
 } from "../../lib/bridge";
@@ -132,6 +133,14 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
     setZoom(100);
     setFit(true);
   }, [request, files]);
+
+  useEffect(() => {
+    if (!mediaUrl) return;
+    return () => {
+      // 切换文件/关闭对话框时让旧 token 立即失效；不等 30 分钟 TTL。
+      void fsReleasePreviewUrl(mediaUrl).catch(() => undefined);
+    };
+  }, [mediaUrl]);
 
   useEffect(() => {
     if (!request || !current) return;

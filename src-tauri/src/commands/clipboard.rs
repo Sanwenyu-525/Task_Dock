@@ -117,6 +117,28 @@ pub fn clipboard_thumb(
     store::thumb_data_url(&rt.db, &rt.root, &item_id)
 }
 
+/// 工作台大图预览（最长边 640px，按需生成并缓存）。
+///
+/// 与 `clipboard_thumb`（192px 列表缩略图）分开是**新增命令**而不是改签名：
+/// 旧命令仍是列表与胶囊面板的稳定契约，卡片放大只多一条可失败的预览链路，
+/// 老数据/旧前端调用不受影响。解码与缩放放在阻塞线程池，命令线程只做查询。
+#[tauri::command]
+pub async fn clipboard_preview(
+    state: State<'_, Arc<ClipboardRuntime>>,
+    item_id: String,
+) -> AppResult<Option<String>> {
+    let rt = Arc::clone(runtime(&state));
+    tauri::async_runtime::spawn_blocking(move || {
+        store::preview_data_url(&rt.db, &rt.root, &item_id)
+    })
+    .await
+    .map_err(|e| {
+        AppError::Io(std::io::Error::other(format!(
+            "预览图后台任务异常结束：{e}"
+        )))
+    })?
+}
+
 #[tauri::command]
 pub fn clipboard_image(
     state: State<'_, Arc<ClipboardRuntime>>,

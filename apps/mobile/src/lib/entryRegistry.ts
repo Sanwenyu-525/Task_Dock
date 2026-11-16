@@ -13,7 +13,7 @@
 // 约束：本文件是纯数据 + 纯函数，不得 import react / react-native / db。
 import type { RouteKey, TabKey } from "./nav";
 
-export type EntryCategory = "capture" | "task" | "device" | "system";
+export type EntryCategory = "capture" | "task" | "dev" | "device" | "system";
 
 /**
  * available = 移动端已有真实页面或真实能力，可加入工作台；
@@ -362,6 +362,130 @@ export const MOBILE_ENTRIES = [
     defaultVisible: false,
     order: 270,
   },
+  // ── 开发者效率工具（2026-11-16）───────────────────────────
+  // 全部 defaultVisible: false：工具页可以直达，是否放到工作台由用户在入口管理器决定，
+  // 避免首页因为新增 11 个工具变得臃肿。id 与 features/tools/toolCatalog.ts 一一对应。
+  {
+    id: "tool.snippet",
+    label: "代码片段",
+    icon: "snippet",
+    description: "保存常用代码与命令，复制 / 导出 / 发送到电脑",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_snippets" },
+    defaultVisible: false,
+    order: 301,
+  },
+  {
+    id: "tool.json",
+    label: "JSON 格式化",
+    icon: "json",
+    description: "格式化、压缩、校验与树形查看",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_json" },
+    defaultVisible: false,
+    order: 302,
+  },
+  {
+    id: "tool.timestamp",
+    label: "时间戳转换",
+    icon: "clock",
+    description: "秒 / 毫秒 / ISO / 本地与 UTC 互转",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_timestamp" },
+    defaultVisible: false,
+    order: 303,
+  },
+  {
+    id: "tool.text",
+    label: "文本编解码",
+    icon: "codeTerminal",
+    description: "URL、Base64、Unicode 转义与换行格式",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_text_codec" },
+    defaultVisible: false,
+    order: 304,
+  },
+  {
+    id: "tool.regex",
+    label: "正则测试",
+    icon: "regex",
+    description: "安全线性引擎、匹配高亮、捕获组与替换预览",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_regex" },
+    defaultVisible: false,
+    order: 305,
+  },
+  {
+    id: "tool.diff",
+    label: "代码对比",
+    icon: "code",
+    description: "行级差异、忽略空白与差异统计",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_diff" },
+    defaultVisible: false,
+    order: 306,
+  },
+  {
+    id: "tool.image-compress",
+    label: "图片压缩",
+    icon: "fileImage",
+    description: "真正重编码、批量处理与大小对比",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_image_compress" },
+    defaultVisible: false,
+    order: 307,
+  },
+  {
+    id: "tool.color-picker",
+    label: "取色器",
+    icon: "sparkles",
+    description: "读取真实像素，HEX/RGB/HSL 与对比度",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_color_picker" },
+    defaultVisible: false,
+    order: 308,
+  },
+  {
+    id: "tool.api",
+    label: "API 调试",
+    icon: "api",
+    description: "构建请求、导入 cURL、查看历史（发送待安全审查）",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_api" },
+    defaultVisible: false,
+    order: 309,
+  },
+  {
+    id: "tool.docs",
+    label: "项目资料",
+    icon: "fileDoc",
+    description: "文档链接、收藏、最近查阅与简易预览",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_docs" },
+    defaultVisible: false,
+    order: 310,
+  },
+  {
+    id: "tool.github",
+    label: "GitHub 入口",
+    icon: "code",
+    description: "常用仓库链接、Issues / PR 快捷打开与最近访问",
+    category: "dev",
+    availability: "available",
+    launch: { kind: "route", route: "tool_github" },
+    defaultVisible: false,
+    order: 311,
+  },
 ] as const satisfies readonly MobileEntry[];
 
 export type EntryId = (typeof MOBILE_ENTRIES)[number]["id"];
@@ -416,6 +540,7 @@ export function entriesForIds(ids: readonly EntryId[]): MobileEntry[] {
 export const CATEGORY_LABELS: Record<EntryCategory, string> = {
   capture: "采集与记录",
   task: "任务与内容",
+  dev: "开发者工具",
   device: "设备与连接",
   system: "系统与工具",
 };
@@ -424,6 +549,7 @@ export const CATEGORY_LABELS: Record<EntryCategory, string> = {
 export const CATEGORY_ORDER: readonly EntryCategory[] = [
   "capture",
   "task",
+  "dev",
   "device",
   "system",
 ];

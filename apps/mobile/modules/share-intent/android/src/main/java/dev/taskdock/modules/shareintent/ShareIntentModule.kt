@@ -23,11 +23,14 @@
 //    文件）；模块自身的 clearPendingShare 只清引用，不删已交付文件。
 package dev.taskdock.modules.shareintent
 
+import android.content.ClipData
 import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import androidx.core.content.FileProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
@@ -85,6 +88,76 @@ class ShareIntentModule : Module() {
 
     Function("clearPendingShare") {
       pending = null
+    }
+
+    // 主动分享出去（开发者工具用）：只由用户点「分享」触发一次。
+    // 文本不需要 FileProvider；文件通过 FileProvider 生成 content://，
+    // 避免 Android 7+ 的 FileUriExposedException。
+    AsyncFunction("shareTextAsync") { text: String, subject: String ->
+      shareText(text, subject)
+      true
+    }
+
+    AsyncFunction("shareFileAsync") { fileUri: String, mime: String, subject: String ->
+      shareFile(fileUri, mime, subject)
+      true
+    }
+  }
+
+  // ── 主动分享 ──────────────────────────────────────────────
+
+  private fun shareText(text: String, subject: String) {
+    if (text.isBlank()) throw IllegalArgumentException("没有可分享的文本")
+    val intent = Intent(Intent.ACTION_SEND).apply {
+      type = "text/plain"
+      putExtra(Intent.EXTRA_TEXT, text)
+      if (subject.isNotBlank()) putExtra(Intent.EXTRA_SUBJECT, subject)
+    }
+    launchChooser(intent, subject)
+  }
+
+  private fun shareFile(fileUri: String, mime: String, subject: String) {
+    val source = Uri.parse(fileUri)
+    val contentUri: Uri = when (source.scheme) {
+      "content" -> source
+      "file" -> {
+        val path = source.path ?: throw IllegalArgumentException("文件路径无效")
+        val file = File(path)
+        if (!file.exists() || file.length() <= 0L) throw IllegalArgumentException("文件不存在或为空")
+        // 只允许分享应用私有目录内的文件：外部路径不进入 FileProvider。
+        val canonical = file.canonicalFile
+        val roots = listOf(
+          requireNotNull(appContext.reactContext).filesDir.canonicalFile,
+          requireNotNull(appContext.reactContext).cacheDir.canonicalFile,
+        )
+        if (roots.none { canonical.path.startsWith(it.path + File.separator) }) {
+          throw IllegalArgumentException("只能分享应用目录内的文件")
+        }
+        val authority = "${requireNotNull(appContext.reactContext).packageName}.toolfiles"
+        FileProvider.getUriForFile(requireNotNull(appContext.reactContext), authority, canonical)
+      }
+      else -> throw IllegalArgumentException("不支持的分享地址：$fileUri")
+    }
+
+    val intent = Intent(Intent.ACTION_SEND).apply {
+      type = mime.ifBlank { "application/octet-stream" }
+      putExtra(Intent.EXTRA_STREAM, contentUri)
+      if (subject.isNotBlank()) putExtra(Intent.EXTRA_SUBJECT, subject)
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      clipData = ClipData.newUri(requireNotNull(appContext.reactContext).contentResolver, "TaskDock", contentUri)
+    }
+    launchChooser(intent, subject)
+  }
+
+  private fun launchChooser(intent: Intent, subject: String) {
+    val title = if (subject.isNotBlank()) "分享：$subject" else "分享"
+    val chooser = Intent.createChooser(intent, title)
+    val activity = appContext.currentActivity
+    if (activity != null) {
+      activity.startActivity(chooser)
+    } else {
+      chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      requireNotNull(appContext.reactContext).startActivity(chooser)
     }
   }
 

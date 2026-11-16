@@ -7,7 +7,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { Image as ImageIcon } from "lucide-react";
-import { clipboardImage, clipboardThumb } from "../../lib/bridge";
+import { clipboardImage, clipboardPreview, clipboardThumb } from "../../lib/bridge";
 
 const THUMB_CACHE_MAX = 240;
 const thumbCache = new Map<string, string | null>();
@@ -17,7 +17,68 @@ const IMAGE_CACHE_MAX = 2;
 const imageCache = new Map<string, string>();
 const imagePending = new Map<string, Promise<string | null>>();
 
+/**
+ * 工作台大图预览缓存（640px 规格）。
+ *
+ * 上限 48 条：一屏舒适卡片约 6–12 张，48 条覆盖 3–4 屏的往返滚动，
+ * 每条 640px PNG 实测 100–600KB，最坏约 30MB，明显低于原图（单条可达数十 MB）。
+ * 超出按插入顺序淘汰；命中即触碰（LRU），避免「滚回去就重新 IPC」。
+ */
+const PREVIEW_CACHE_MAX = 48;
+const previewCache = new Map<string, string | null>();
+const previewPending = new Map<string, Promise<string | null>>();
+
+/** 删除/清空历史后丢弃对应缓存：先删缓存，再让在途请求的结果不被写回。 */
+let mediaEpoch = 0;
+const forgottenMedia = new Set<string>();
+
+function isForgotten(id: string): boolean {
+  return forgottenMedia.has(id);
+}
+
+function touchPreview(id: string, url: string | null) {
+  if (isForgotten(id)) return;
+  previewCache.delete(id);
+  previewCache.set(id, url);
+  if (previewCache.size > PREVIEW_CACHE_MAX) {
+    const oldest = previewCache.keys().next().value;
+    if (oldest) previewCache.delete(oldest);
+  }
+}
+
+/**
+ * 删除单条历史后调用：丢弃该条目的所有图像缓存（缩略图/预览/原图）。
+ * 只影响展示缓存，不触碰磁盘文件。
+ */
+export function forgetClipboardMedia(itemId: string): void {
+  thumbCache.delete(itemId);
+  previewCache.delete(itemId);
+  imageCache.delete(itemId);
+  forgottenMedia.add(itemId);
+  if (forgottenMedia.size > 800) {
+    const oldest = forgottenMedia.values().next().value;
+    if (oldest) forgottenMedia.delete(oldest);
+  }
+}
+
+/** 清空历史后调用：整体失效，并让清空前发出的请求结果失效。 */
+export function clearClipboardMediaCache(): void {
+  thumbCache.clear();
+  previewCache.clear();
+  imageCache.clear();
+  pendingPrune();
+  mediaEpoch += 1;
+}
+
+/** 清空时把在途 promise 从索引移除：新请求不会复用旧结果。 */
+function pendingPrune(): void {
+  thumbPending.clear();
+  previewPending.clear();
+  imagePending.clear();
+}
+
 function rememberThumb(id: string, url: string | null) {
+  if (isForgotten(id)) return;
   thumbCache.set(id, url);
   if (thumbCache.size > THUMB_CACHE_MAX) {
     const oldest = thumbCache.keys().next().value;
@@ -37,9 +98,10 @@ export function useThumbnail(itemId: string, enabled: boolean): string | null {
     let alive = true;
     let job = thumbPending.get(itemId);
     if (!job) {
+      const epoch = mediaEpoch;
       job = clipboardThumb(itemId)
         .then((v) => {
-          rememberThumb(itemId, v);
+          if (epoch === mediaEpoch) rememberThumb(itemId, v);
           return v;
         })
         .catch(() => null)
@@ -54,6 +116,64 @@ export function useThumbnail(itemId: string, enabled: boolean): string | null {
     };
   }, [itemId, enabled]);
   return url;
+}
+
+export type PreviewImageState = "loading" | "ready" | "missing" | "error";
+
+/**
+ * 640px 预览规格加载（按需、去重、LRU）。
+ *
+ * `enabled=false`（未进入视口/卡片已不可见）时不发起任何 IPC；
+ * 失败只影响这一张卡片，不冒泡成页面错误。
+ */
+export function usePreviewImage(
+  itemId: string,
+  enabled: boolean,
+): { state: PreviewImageState; url: string | null; forId: string } {
+  const [state, setState] = useState<PreviewImageState>(() =>
+    previewCache.has(itemId) && previewCache.get(itemId) ? "ready" : "loading",
+  );
+  const [url, setUrl] = useState<string | null>(() => previewCache.get(itemId) ?? null);
+  const [forId, setForId] = useState(itemId);
+  useEffect(() => {
+    if (!enabled) return;
+    setForId(itemId);
+    const cached = previewCache.get(itemId);
+    if (cached) {
+      touchPreview(itemId, cached);
+      setUrl(cached);
+      setState("ready");
+      return;
+    }
+    let alive = true;
+    setState("loading");
+    setUrl(null);
+    const epoch = mediaEpoch;
+    let job = previewPending.get(itemId);
+    if (!job) {
+      job = clipboardPreview(itemId)
+        .then((v) => {
+          if (epoch === mediaEpoch) touchPreview(itemId, v);
+          return v;
+        })
+        .catch(() => null)
+        .finally(() => previewPending.delete(itemId));
+      previewPending.set(itemId, job);
+    }
+    job.then((v) => {
+      if (!alive) return;
+      if (v) {
+        setUrl(v);
+        setState("ready");
+      } else {
+        setState("missing");
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [itemId, enabled]);
+  return { state, url, forId };
 }
 
 /**
@@ -253,7 +373,7 @@ export function ClipboardThumb({
       <ImageIcon size={16} />
     </span>
   );
-  if (!onOpen) return body;
+  if (!onOpen) return <span className="clip-thumb-slot">{body}</span>;
   return (
     <button
       type="button"
@@ -267,6 +387,62 @@ export function ClipboardThumb({
       onKeyDown={(e) => e.stopPropagation()}
       data-tip="点击查看大图"
       aria-label={openLabel}
+    >
+      {body}
+    </button>
+  );
+}
+
+/**
+ * 大图预览（工作台卡片主视觉）：640px 预览规格 + 192px 缩略图兜底。
+ *
+ * 与 `ClipboardThumb` 的区别：这是卡片里**独立的一层按钮**（不与正文按钮嵌套），
+ * 固定高度由 CSS 容器查询决定；图像按完整比例 contain 展示，不裁切宽图，
+ * 长截图也不会被拉成通栏高度。
+ *
+ * `enabled=false` 时不发任何 IPC（由调用方按可视区域决定）。
+ */
+export function ClipboardHeroImage({
+  itemId,
+  hasThumb,
+  enabled,
+  onOpen,
+  label = "查看大图",
+}: {
+  itemId: string;
+  hasThumb: boolean;
+  enabled: boolean;
+  onOpen?: () => void;
+  label?: string;
+}) {
+  const preview = usePreviewImage(itemId, enabled);
+  // 预览缺失/失败时才请求 192px 缩略图兜底；成功路径不重复发起缩略图 IPC。
+  const thumb = useThumbnail(itemId, hasThumb && enabled && preview.state !== "loading");
+  const src = preview.state === "ready" ? preview.url : thumb;
+  const loading = preview.state === "loading" && !thumb;
+  const body = src ? (
+    <img
+      className="clip-hero-img"
+      src={src}
+      alt=""
+      loading="lazy"
+      draggable={false}
+      data-preview-state={preview.state}
+    />
+  ) : (
+    <span className="clip-hero-empty">
+      <ImageIcon size={18} aria-hidden="true" />
+      {loading ? "正在准备预览…" : "图片文件缺失或已被清理"}
+    </span>
+  );
+  if (!onOpen) return <div className="clip-hero">{body}</div>;
+  return (
+    <button
+      type="button"
+      className="clip-hero"
+      onClick={onOpen}
+      data-tip="点击查看大图"
+      aria-label={label}
     >
       {body}
     </button>

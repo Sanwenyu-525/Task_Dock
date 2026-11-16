@@ -20,6 +20,11 @@ import {
 } from "../lib/bridge";
 import { EXIT_MS, prefersReducedMotion } from "../lib/motion";
 import { createSubscriptionScope } from "../lib/subscriptions";
+import {
+  readClipboardDensity,
+  writeClipboardDensity,
+  type ClipboardDensity,
+} from "../lib/clipboardDensity";
 
 const PAGE_SIZE = 80;
 /** 后端 `clipboard_view` 的 limit 上限；静默刷新按这个块大小补齐已加载条目。 */
@@ -226,6 +231,11 @@ export const useClipboardStore = create<{
   filters: ClipboardFilters;
   /** 历史 / 分组 二级视图 */
   section: "items" | "groups";
+  /**
+   * 视图密度：舒适卡片 / 紧凑卡片 / 列表。
+   * 只影响呈现；切换不重置筛选、不清空多选、不重新拉取数据。
+   */
+  density: ClipboardDensity;
   /** 搜索框原始文本（与 filters.search 分离，搜索框内容即时回显） */
   searchText: string;
   loading: boolean;
@@ -237,6 +247,7 @@ export const useClipboardStore = create<{
   exiting: Record<string, ExitEntry>;
   setFilters: (patch: Partial<ClipboardFilters>) => void;
   setSection: (section: "items" | "groups") => void;
+  setDensity: (density: ClipboardDensity) => void;
   setSearchText: (text: string) => void;
   load: (opts?: { append?: boolean; silent?: boolean }) => Promise<void>;
   /** 复制成功后只更新该条目的使用次数，不重新拉取整个列表。 */
@@ -316,6 +327,7 @@ export const useClipboardStore = create<{
   view: null,
   filters: { kind: "all", search: "", favorite: false },
   section: "items",
+  density: readClipboardDensity(),
   searchText: "",
   loading: false,
   loadingMore: false,
@@ -334,6 +346,13 @@ export const useClipboardStore = create<{
   },
 
   setSection: (section) => set({ section }),
+
+  // 密度切换只改呈现：不推进 filterGen、不清空多选、不触发 load()，
+  // 因此「切换模式后筛选条件不丢失、多选按合理规则保留、不重复创建监听」。
+  setDensity: (density) => {
+    writeClipboardDensity(density);
+    set({ density });
+  },
   setSearchText: (searchText) => set({ searchText }),
 
   load: async (opts) => {

@@ -1619,3 +1619,73 @@
     stroke-width: 1.6;
   }
 }
+
+/* ════════════════════════════════════════════════════════════════
+   共享响应式布局原语（2026-11-16）
+   ────────────────────────────────────────────────────────────────
+   桌面端功能页的**唯一**响应式入口。规则三条：
+
+   1. 判断依据是「内容区真实可用宽度」，不是窗口宽度。大型工作台里同时存在
+      左侧主导航、页内筛选侧栏与右侧详情栏，窗口 1920 时内容区可能只有 900。
+      因此这里只使用 Container Queries（容器由页面自己声明）。
+   2. 卡片列数由 minmax() 自适应算出，不手写「>=1320 就四列」这类断点。
+      `--layout-card-min` 是内容最小宽度，页面可覆盖，但不得复制一套新数字。
+   3. 容器必须是**祖先**：容器不能查询自己的尺寸（2026-11-16 修复的
+      WorkspaceSplit 缺陷就是自引用）。声明 container-type 的元素不要再写
+      依赖自身宽度的 @container 规则。
+
+   接入方式（其他页面）：
+     <div class="ui-page-frame">
+       <div class="ui-adaptive-grid">…卡片…</div>
+     </div>
+   需要多列/单列切换时优先调 `--layout-card-min`，而不是新增断点。
+   详细规范见 docs/ui-responsive-layout.md。
+   ════════════════════════════════════════════════════════════════ */
+
+/* 内容区宽度查询容器：只负责测量，不参与自身布局变化（避免循环依赖）。 */
+.ui-page-frame {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  container-type: inline-size;
+  container-name: ui-page;
+}
+
+/* 自适应卡片网格：列数 = 可用宽度能放下几个「最小合理宽度」。 */
+.ui-adaptive-grid {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(var(--ui-card-min, var(--layout-card-min, 280px)), 1fr)
+  );
+  gap: var(--ui-grid-gap, var(--layout-gap, 8px));
+  min-width: 0;
+}
+
+/* 窄内容区（<520px）：强制单列，避免 auto-fill 在两列临界处抖动。 */
+@container ui-page (max-width: 519px) {
+  .ui-adaptive-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--ui-grid-gap-compact, var(--layout-gap-compact, 6px));
+  }
+}
+
+/* 工具栏：允许换行，右侧动作组在换行后仍保持右对齐且不溢出。 */
+.ui-toolbar-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--layout-gap-compact, 6px);
+  min-width: 0;
+}
+.ui-toolbar-row > .ui-toolbar-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 页面内容内边距：与 WorkbenchShell 的 16/20 不同层级，统一走 Token。 */
+.ui-content-pad {
+  padding: var(--layout-page-pad, 14px);
+}

@@ -63,6 +63,7 @@ import {
 import { formatSize, CATEGORY_LABEL } from "../../lib/filesWorkspace/fileMeta";
 import { basename, breadcrumbSegments, joinPath, normalizePath, parentOf } from "../../lib/filesWorkspace/pathUtils";
 import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
+import { withFileOperationSlot } from "../../lib/filesWorkspace/operationQueue";
 import { primeVolumeKeys } from "../../lib/filesWorkspace/volumeCache";
 import { pickFolder, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
 import { MAX_TABS_PER_PANE, pathToPane } from "../../lib/filesWorkspace/model";
@@ -301,36 +302,6 @@ function DropPreview({ zone }: { zone: FwDropZone }) {
     return (
       <div className="fw-drop-preview fw-drop-center" aria-hidden="true">
         <span className="fw-drop-label">{t("fw.drag.mergeHint")}</span>
-      </div>
-    );
-  }
-  if (zone.type === "folder") {
-    const st = drag;
-    if (st.payload?.kind !== "files") {
-      return (
-        <div className="fw-drop-preview fw-drop-folder is-invalid" aria-hidden="true">
-          <span className="fw-drop-label">{t("fw.drag.mergeHint")}</span>
-        </div>
-      );
-    }
-    const accepted = filterTransferablePaths(st.payload.paths, zone.path);
-    const name = basename(zone.path) || zone.path;
-    if (!accepted.length) {
-      return (
-        <div className="fw-drop-preview fw-drop-folder is-invalid" aria-hidden="true">
-          <span className="fw-drop-label" title={zone.path}>
-            {t("fw.drag.folderInvalid", { target: name })}
-          </span>
-        </div>
-      );
-    }
-    return (
-      <div className="fw-drop-preview fw-drop-folder" aria-hidden="true">
-        <span className="fw-drop-label" title={zone.path}>
-          {st.effect === "copy"
-            ? t("fw.drag.folderCopy", { count: accepted.length, target: name })
-            : t("fw.drag.folderMove", { count: accepted.length, target: name })}
-        </span>
       </div>
     );
   }
@@ -751,7 +722,7 @@ export default function FilePane({
       });
       try {
         op.stage("ipc");
-        const report = await fsDeletePaths(paths, permanent, op.id);
+        const report = await withFileOperationSlot(() => fsDeletePaths(paths, permanent, op.id));
         refreshBoth(paths.map((p) => parentOf(p) ?? "").filter(Boolean));
         showFsOpOutcome({
           effect: permanent ? "deletePermanent" : "deleteRecycle",

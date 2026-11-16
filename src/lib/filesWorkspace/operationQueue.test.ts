@@ -6,6 +6,7 @@ import {
   finishQueueOperation,
   getQueueEntries,
   startQueueOperation,
+  withFileOperationSlot,
 } from "./operationQueue";
 
 describe("operationQueue", () => {
@@ -38,5 +39,26 @@ describe("operationQueue", () => {
 
   it("后端无安全取消通道，UI 不得伪装取消", () => {
     expect(QUEUE_CANCEL_SUPPORTED).toBe(false);
+  });
+
+  it("真实文件 IPC 并发上限为 1，后来的操作排队而不是同时占磁盘", async () => {
+    let active = 0;
+    let maxActive = 0;
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const run = async (wait: Promise<void>) =>
+      withFileOperationSlot(async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await wait;
+        active -= 1;
+      });
+    const first = run(firstGate);
+    const second = run(Promise.resolve());
+    await Promise.resolve();
+    expect(active).toBe(1);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(maxActive).toBe(1);
   });
 });

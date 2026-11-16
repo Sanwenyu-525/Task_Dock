@@ -4,7 +4,7 @@
   /* R5：行动中心 = 左侧分类/类型/范围/计数导航 + 主区覆盖度与动作列表。
      分类切换、确认/恢复、跳转、分页与离场动画全部沿用既有 Store 行为。 */
 
-  .action-panel > .workspace-split {
+  .action-panel > .workspace-split-frame {
     flex: 1 1 auto;
     min-height: 0;
   }

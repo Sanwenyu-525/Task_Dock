@@ -791,7 +791,7 @@ fn fetch_app_meta(
     let command = format!(
         "CLASSPATH={APPMETA_REMOTE_DEX} app_process /system/bin com.taskdock.appmeta.Main"
     );
-    let stdout = adb_shell(adb, serial, &["sh", "-c", &command], Duration::from_secs(40))
+    let stdout = adb_shell(adb, serial, &[&command], Duration::from_secs(40))
         .map_err(|err| format!("读取应用元数据失败：{err}"))?;
 
     let _ = std::fs::remove_dir_all(&icon_dir);
@@ -1456,5 +1456,27 @@ not a component\n";
         );
         assert_eq!(set.len(), 2);
         assert!(set.contains("com.android.settings"));
+    }
+
+    #[test]
+    fn appmeta_parser_keeps_labels_and_valid_icons_only() {
+        let dir = std::env::temp_dir().join(format!("taskdock-appmeta-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("com.android.settings.png"), b"png").unwrap();
+        let stdout = "com.android.settings\t设置\t1\t1\t/data/local/tmp/taskdock-appmeta/com.android.settings.png\n\
+com.example.user\t示例\t0\t1\t/data/local/tmp/taskdock-appmeta/com.example.user.png\n\
+not-a-package\t坏包名\t0\t0\t\n";
+        let apps = parse_appmeta(stdout, &dir);
+        let settings = apps.get("com.android.settings").expect("settings metadata");
+        assert_eq!(settings.label, "设置");
+        assert!(settings.system);
+        assert!(settings.launchable);
+        assert_eq!(settings.icon.as_deref(), Some("data:image/png;base64,cG5n"));
+        let user = apps.get("com.example.user").expect("user metadata");
+        assert!(!user.system);
+        assert!(user.launchable);
+        assert!(user.icon.is_none());
+        assert!(!apps.contains_key("not-a-package"));
+        std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -435,10 +435,9 @@ export default function WorkbenchShell() {
     return () => window.removeEventListener("resize", measure);
   }, []);
 
-  // 导航实际宽度可能被响应式媒体查询覆盖（窗口 ≤760px 时固定 56px），
-  // 因此名称折叠不能只依赖设置里的 navWidth；观察真实渲染宽度，保证拖拽阈值
-  // 与窗口降级使用同一套 tooltip 语义。jsdom 的 ResizeObserver 是空实现，
-  // 此时回退到 navWidth。
+  // 名称折叠只跟随导航的实际渲染宽度，不再读取窗口宽度。近距离窗口变化时
+  // ResizeObserver 会重新量取；jsdom 的 ResizeObserver 是空实现，此时回退到
+  // 设置里的 navWidth，保证同一套 tooltip / 紧凑语义。
   useEffect(() => {
     const node = navRef.current;
     if (!node || typeof ResizeObserver === "undefined") return;
@@ -1196,10 +1195,14 @@ export default function WorkbenchShell() {
     isFixed: isFixedNavEntry,
     disabled: hidingId !== null,
     onDrop: (id, toIndex) => {
-      navDragEndedAtRef.current = Date.now();
-      navDragClickPendingRef.current = true;
       if (!moveNavEntryTo(id, toIndex)) return;
       navPendingAnnounceRef.current = id;
+    },
+    onDragEnd: () => {
+      // 整行拖拽的松手 click 可能落在页面按钮、手柄或行内空白：统一留下
+      // 一次性待消费标记 + 时间窗，只有真正拖过才设置。
+      navDragEndedAtRef.current = Date.now();
+      navDragClickPendingRef.current = true;
     },
     onCancel: () => {
       navDragEndedAtRef.current = Date.now();
@@ -1598,34 +1601,48 @@ export default function WorkbenchShell() {
                 const dragging = navDrag.draggingId === entry.id;
                 const shift = navDrag.shifts.get(entry.id) ?? 0;
                 const translate = dragging ? navDrag.offsetY : shift;
+                const activateEntry = () => {
+                  // 拖拽松手后的补发 click 不是「打开页面」的意图。
+                  // 先消费一次性标记；新的真实 pointerdown 或键盘操作会提前清掉它。
+                  if (navDragClickPendingRef.current) {
+                    navDragClickPendingRef.current = false;
+                    return;
+                  }
+                  if (Date.now() - navDragEndedAtRef.current < NAV_DRAG_CLICK_GUARD_MS) return;
+                  openEntry(entry);
+                };
                 return (
                   <div
                     key={entry.id}
                     className={`wb-nav-item has-grip${active ? " active" : ""}${dragging ? " is-dragging" : ""}`}
                     data-nav-entry={entry.id}
+                    data-nav-drag-surface
                     data-tip={navLabelsCompact ? label : undefined}
                     style={translate !== 0 ? { transform: `translateY(${translate}px)` } : undefined}
+                    onPointerDown={(event) => {
+                      if (event.button !== 0) return;
+                      const target = event.target as HTMLElement | null;
+                      // × / 行尾操作区是独立控件，不能成为拖拽起点。
+                      if (target?.closest("[data-nav-hide], .wb-nav-actions")) return;
+                      // 新手势开始：清掉上一次拖拽留下的一次性 click 守卫，
+                      // 保证短按打开页面不会被历史拖拽时间窗误伤。
+                      navDragClickPendingRef.current = false;
+                      navDragEndedAtRef.current = 0;
+                      navDrag.beginDrag(event, entry.id);
+                    }}
+                    onClick={(event) => {
+                      const target = event.target as HTMLElement | null;
+                      // 页面按钮自己处理点击；× / 操作区已 stopPropagation。
+                      // 行首手柄、行内空白点击同样属于整行点击，统一打开页面。
+                      if (target?.closest("[data-nav-page], [data-nav-hide], .wb-nav-actions")) return;
+                      activateEntry();
+                    }}
                   >
-                    {/* 行是普通布局容器；页面切换、拖拽、隐藏是三个独立按钮，
-                        不再出现 role=button 容器里嵌 button 的嵌套交互。 */}
-                    <button
-                      type="button"
-                      className="wb-nav-grip"
-                      data-nav-grip
-                      data-tip-skip={navLabelsCompact ? undefined : "1"}
-                      tabIndex={-1}
-                      aria-label={t("nav.dragHandle", { label })}
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        navDrag.beginDrag(event, entry.id);
-                      }}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                      }}
-                    >
-                      <GripVertical size={17} strokeWidth={2} aria-hidden="true" />
-                    </button>
+                    {/* 行是普通布局容器；页面切换与隐藏是独立按钮，拖拽由整行
+                        pointerdown 统一承接。手柄只保留视觉提示，不再是独立控件。 */}
+                    <span className="wb-nav-grip" data-nav-grip aria-hidden="true">
+                      <GripVertical size={17} strokeWidth={2} />
+                    </span>
                     <button
                       type="button"
                       className="wb-nav-page"
@@ -1633,22 +1650,14 @@ export default function WorkbenchShell() {
                       aria-current={active ? "page" : undefined}
                       aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
                       data-tip={navLabelsCompact ? label : undefined}
-                      onClick={() => {
-                        // 拖拽松手后的补发 click 不是「打开页面」的意图。
-                        // 先消费一次性标记；真实 pointerdown/键盘操作会提前清掉它。
-                        if (navDragClickPendingRef.current) {
-                          navDragClickPendingRef.current = false;
-                          return;
-                        }
-                        if (Date.now() - navDragEndedAtRef.current < NAV_DRAG_CLICK_GUARD_MS) return;
-                        openEntry(entry);
-                      }}
-                      onPointerDown={() => {
-                        navDragClickPendingRef.current = false;
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        activateEntry();
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           navDragClickPendingRef.current = false;
+                          navDragEndedAtRef.current = 0;
                         }
                         onNavEntryKeyDown(event, entry.id);
                       }}
@@ -1664,7 +1673,7 @@ export default function WorkbenchShell() {
                       )}
                     </button>
                     {/* 行尾操作区固定占位：只切换透明度，悬停时行宽度不会跳变。
-                        拖拽只从左侧手柄启动，× 的任何事件都不冒泡到行。 */}
+                        × 的任何事件都不冒泡到行，既不起拖也不触发页面切换。 */}
                     <span
                       className="wb-nav-actions"
                       onPointerDown={(event) => event.stopPropagation()}

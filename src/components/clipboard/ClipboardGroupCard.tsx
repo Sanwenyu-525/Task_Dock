@@ -13,6 +13,7 @@ import {
   clipboardTime, groupComposition, groupCoverSize, groupExcerpt, groupFamily,
   groupKindCounts, groupModeLabel, groupStatusLabel, linkSummary, urlDomain,
 } from "../../lib/clipboardUi";
+import type { ClipboardDensity } from "../../lib/clipboardDensity";
 import DropdownMenu from "../ui/DropdownMenu";
 import { ClipboardThumb, useCompactViewport, useInViewport } from "./Media";
 
@@ -24,6 +25,7 @@ export default function ClipboardGroupCard({
   linkMode,
   removing,
   pending,
+  density,
   onSelect,
   onToggle,
   onCopyRich,
@@ -41,6 +43,8 @@ export default function ClipboardGroupCard({
   removing: boolean;
   /** 删除请求在途（后端尚未确认）：显示执行中并挡住重复操作 */
   pending: boolean;
+  /** 页面态密度；不传为抽屉/工具面板行布局。分组只在舒适态放大封面。 */
+  density?: ClipboardDensity;
   onSelect: () => void;
   onToggle: (flag: "favorite" | "pinned") => void;
   onCopyRich: () => void;
@@ -135,7 +139,7 @@ export default function ClipboardGroupCard({
     <article
       ref={cardRef}
       data-clip-id={group.id}
-      className={`clip-group-card ${selected ? "selected" : ""} ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
+      className={`clip-group-card density-${density ?? "row"} ${selected ? "selected" : ""} ${removing ? "removing" : ""} ${pending ? "pending" : ""}`}
       onClick={locked ? undefined : onDetail}
       aria-label={`分组 ${group.name}，${composition.join("、") || `${group.item_count} 项`}`}
       aria-hidden={removing || undefined}
@@ -211,7 +215,8 @@ export default function ClipboardGroupCard({
             {composition.join(" · ") || `${group.item_count} 项`}
             {/* 尺寸只属于单图组；多图组的首图尺寸不能冒充整组尺寸 */}
             {family === "image" && group.image_count === 1 && coverSize && ` · ${coverSize}`}
-            {group.mode !== "auto" && ` · ${groupModeLabel(group.mode)}`}
+            {/* 自动/手动分组都显式标出：自动分组是后端行为，用户需要能分辨。 */}
+            {` · ${groupModeLabel(group.mode)}`}
           </span>
         </div>
       </div>

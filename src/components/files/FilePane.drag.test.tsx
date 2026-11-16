@@ -38,6 +38,7 @@ import {
   finishFwDrag,
   getFwDragState,
   moveFwDrag,
+  startFwDrag,
   type FwDropZone,
 } from "../../lib/filesWorkspace/interactions";
 
@@ -97,7 +98,9 @@ function stubRects(): void {
   });
 }
 
-async function renderPane(options: { layoutEditMode?: boolean } = {}): Promise<{ zones: Array<FwDropZone | null> }> {
+async function renderPane(
+  options: { layoutEditMode?: boolean; dropHint?: FwDropZone | null } = {},
+): Promise<{ zones: Array<FwDropZone | null> }> {
   const zones: Array<FwDropZone | null> = [];
   render(
     <FilePane
@@ -105,7 +108,7 @@ async function renderPane(options: { layoutEditMode?: boolean } = {}): Promise<{
       active
       pageActive
       onHoverZone={(zone) => zones.push(zone)}
-      dropHint={null}
+      dropHint={options.dropHint ?? null}
       layoutEditMode={options.layoutEditMode ?? false}
       projectRoot={null}
     />,
@@ -126,12 +129,25 @@ describe("FilePane 拖拽起点（PointerEvent 组件链）", () => {
     // 面板角色：坐标推进 → FilePane 按最新坐标命中本窗格中心并上报。
     act(() => moveFwDrag(400, 300, {}));
     expect(zones.at(-1)).toEqual({ type: "center", paneId: "pane-1", dir: DIR });
-    // 效果默认同卷移动。
-    expect(getFwDragState().effect).toBe("move");
+    // 本测试没有后端卷缓存：卷未知必须按安全默认复制，绝不按同盘符猜移动。
+    expect(getFwDragState().effect).toBe("copy");
   });
 
-  it("未越阈值（点击）不建立拖拽会话", async () => {
+  it("目录行作为落点时显示目标、数量与复制语义", async () => {
     stubRects();
+    const folder = `${DIR}\\sub`;
+    await renderPane({ dropHint: { type: "folder", paneId: "pane-1", path: folder } });
+    act(() => startFwDrag({ kind: "files", paths: [`${DIR}\\a.txt`], fromPaneId: "pane-1" }, 100, 100));
+    await waitFor(() => {
+      const hint = document.querySelector(".fw-row-drop-hint");
+      expect(hint).toBeTruthy();
+      // 卷缓存未命中：安全默认 copy；test locale 的 t 直接返回 key。
+      expect(hint?.textContent).toBe("fw.drag.folderCopy");
+      expect(hint?.getAttribute("title")).toBe(folder);
+    });
+  });
+
+  it("未越阈值（点击）不建立拖拽会话", async () => {    stubRects();
     await renderPane();
     const row = screen.getByText("a.txt").closest("[data-fw-path]")!;
     fireEvent.pointerDown(row, { button: 0, clientX: 100, clientY: 100, pointerId: 1 });

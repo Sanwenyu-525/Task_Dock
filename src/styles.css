@@ -143,6 +143,27 @@
   --snap-capsule-num: var(--text-primary);
   --snap-alert-ring-failed: rgba(239, 68, 68, 0.5);
   --snap-alert-ring-waiting: rgba(249, 115, 22, 0.5);
+  /* ── 共享响应式布局量（2026-11-16）────────────────────────────
+     桌面端所有功能页共用的**几何事实源**：卡片密度、最小内容宽度、命中区、
+     侧栏上下限、页面内边距与媒体预览高度。这里只放几何量，不放颜色——
+     颜色仍由上面的语义 Token 与主题层承担，禁止在这里长出第二套皮肤。
+     页面可按内容最小宽度覆盖单个变量（例如长文本页提高 --layout-card-min），
+     但不得另建一套断点数字。 */
+  --layout-gap-compact: 6px;
+  --layout-gap: 8px;
+  --layout-gap-comfort: 12px;
+  --layout-row-min: 34px;
+  /* 卡片最小合理宽度：再窄就只剩类型标签与一行省略，失去预览价值。 */
+  --layout-card-min: 280px;
+  /* 单卡最大合理宽度：超过后正文行长过长、图片留白过多。 */
+  --layout-card-max: 560px;
+  /* 图标按钮最小命中区：低于 28px 时鼠标误点明显上升。 */
+  --layout-hit-target: 32px;
+  --layout-sidebar-min: 200px;
+  --layout-sidebar-max: 340px;
+  --layout-page-pad: 14px;
+  /* 列表内图片预览的最大高度：宽屏用上限，窄屏用下限。 */
+  --layout-media-max-h: 240px;
   color-scheme: light;
 }
 
@@ -5808,6 +5829,8 @@ code {
 .clip-status.tone-ok { color: var(--status-success); }
 .clip-status.tone-paused { color: var(--status-waiting); }
 .clip-status.tone-off { color: var(--text-tertiary); }
+/* 状态尚未确认（首次查询中）：中性灰，绝不使用「正常」的绿色。 */
+.clip-status.tone-idle { color: var(--text-tertiary); }
 .clip-status.tone-bad { color: var(--status-error); }
 
 .clip-link-banner {
@@ -5966,21 +5989,67 @@ code {
   margin-top: 6px;
 }
 
-/* ── 条目 / 分组卡片 ── */
-
+/* ── 条目 / 分组卡片 ──
+   2026-11-16：条目卡片由 flex 行改为**具名网格区域**（check/thumb/top/main/actions）。
+   原因：图片大图预览、缩略图与正文按钮必须是同级兄弟（按钮不能嵌套按钮），
+   而视觉顺序仍要求「类型徽标 → 图片 → 标题/正文 → 动作」。具名区域让 DOM
+   （可访问性顺序）与视觉顺序解耦：焦点先到选择框，再到主预览按钮，再到动作。
+   分组卡片保持 flex，不受影响。 */
 .clip-item,
+.clip-group-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  transition: border-color 0.12s, background 0.12s;
+  min-width: 0;
+}
+
 .clip-group-card {
   display: flex;
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 4px;
   padding: 6px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-card);
-  background: var(--surface-raised);
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
-  min-width: 0;
+}
+
+/* 行布局（抽屉 / 工具面板 / 页面列表模式）：选择框 | [缩略图] | 顶行+正文 | 动作 */
+.clip-item {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "check thumb top actions"
+    "check thumb main actions";
+  align-items: start;
+  gap: 4px 6px;
+  padding: 6px 8px;
+  cursor: default;
+}
+
+.clip-item:not(.is-thumb) {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "check top actions"
+    "check main actions";
+}
+
+.clip-item > .clip-check {
+  grid-area: check;
+}
+.clip-item > .clip-item-top {
+  grid-area: top;
+}
+.clip-item > .clip-item-main {
+  grid-area: main;
+}
+.clip-item > .clip-actions {
+  grid-area: actions;
+}
+.clip-item > .clip-thumb-open,
+.clip-item > .clip-thumb-slot {
+  grid-area: thumb;
+  align-self: start;
 }
 
 .clip-item:hover,
@@ -6091,6 +6160,27 @@ code {
   gap: 2px;
 }
 
+/* 条目卡片的主预览入口是真实按钮：清掉按钮默认外观，只保留语义与焦点环。
+   这样键盘 Enter/Space 只触发「打开预览」，不会再叠加一次卡片级 click。 */
+.clip-item > .clip-item-main {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.clip-item > .clip-item-main:disabled {
+  cursor: default;
+}
+.clip-item > .clip-item-main:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .clip-item-top {
   display: flex;
   align-items: center;
@@ -6150,8 +6240,9 @@ code {
 
 .clip-preview {
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
   min-width: 0;
   font-size: 11.5px;
   line-height: 1.45;
@@ -6163,9 +6254,9 @@ code {
 }
 
 /* 分组卡片的预览仍是 `.clip-preview` 的直系 span：单行省略。
-   条目卡片把 span 移进了 `.clip-preview-body`，不再命中这条规则——
-   截断约束必须同时挂在新的父级上（见下），不能只靠这里。 */
-.clip-preview > span {
+   条目卡片把标题/正文移进了 `.clip-preview-body`，后者本身必须是纵向多行容器，
+   不能被这条「直系子元素单行截断」规则误伤。 */
+.clip-preview > span:not(.clip-preview-body) {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6193,14 +6284,14 @@ code {
   white-space: nowrap;
 }
 
-/* 正文预览：两行截断。
+/* 正文预览：默认两行截断，行数由密度通过 `--clip-text-lines` 提供。
    `overflow: hidden` 是 `-webkit-line-clamp` 的生效前提，必须写在正文元素
    自身——之前它由 `.clip-preview > span` 顺带提供，DOM 一换父级就整段失效，
    文本按原始行数撑高卡片并盖住相邻条目。`overflow-wrap: anywhere` 负责
    没有空格的长串（URL、文件名、哈希）。 */
 .clip-preview-body > .clip-text {
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: var(--clip-text-lines, 2);
   -webkit-box-orient: vertical;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -6500,23 +6591,59 @@ code {
   color: var(--text-secondary);
 }
 
+/* 文件清单（2026-11-16）：由「等宽文件名的药丸」改为**逐行清单**：
+   类型图标 + 文件名 + 类型名，路径完整值进 tooltip。行内不需要额外底色，
+   卡片本身已经是 raised surface，再加药丸会让 5 行文件看起来像 5 个按钮。 */
 .clip-file-list {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
-  font-size: 9.5px;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  min-width: 0;
+  font-size: 10px;
+  line-height: 1.4;
   color: var(--text-tertiary);
 }
 
-.clip-file-list span {
-  max-width: 150px;
+.clip-file-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.clip-file-icon {
+  flex: none;
+}
+
+.clip-file-name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: var(--surface-base);
+  color: var(--text-secondary);
+}
+
+.clip-file-kind {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  color: var(--text-tertiary);
+}
+
+.clip-file-more {
+  color: var(--text-tertiary);
+}
+
+.clip-file-note {
+  margin-top: 1px;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  opacity: 0.78;
 }
 
 .clip-actions {

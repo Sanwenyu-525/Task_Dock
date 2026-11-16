@@ -3,8 +3,31 @@
  *
  * 作用：把页面的导航/筛选从顶部工具条提升为独立区域。默认三列
  * 「侧栏 + 分隔条 + 主区」，右栏仍由 WorkbenchShell 统一承担。
- * 容器变窄时降级为上下分区，不隐藏筛选能力，也不整体缩放页面。
+ *
+ * 响应式结构（2026-11-16 修复）：
+ * 容器查询的匹配规则是「查询容器自身尺寸 → 命中其**后代**选择器」，
+ * 容器不能响应自己的尺寸。此前 `.workspace-split` 同时声明 `container-type`
+ * 并在 `@container workspace-split` 内改自己的 `grid-template-columns`，
+ * 属于自引用，浏览器永远不会命中——窄窗下侧栏依旧挤占主区、分隔条也仍然
+ * 占着 8px 的命中区。现在由外层 `.workspace-split-frame` 承担查询容器，
+ * 内层 `.workspace-split` 只做网格：容器尺寸由父级 flex 决定，不读取
+ * 子元素尺寸，因此不存在容器查询循环依赖。
+ *
+ * 宽度记忆仍写在 localStorage：窄窗降级只是视觉覆盖，不会回写保存值，
+ * 窗口恢复后自动回到用户设定的宽度。
  */
+
+/* ── 查询容器（只有它声明 container-type）── */
+.workspace-split-frame {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  /* 页面内部可用宽度（左侧导航/右栏扣除后的真实宽度），不是窗口宽度。 */
+  container-type: inline-size;
+  container-name: workspace-split;
+}
 
 .workspace-split {
   --workspace-split-sidebar: 236px;
@@ -12,11 +35,10 @@
   grid-template-columns: var(--workspace-split-sidebar) 8px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  container-type: inline-size;
-  container-name: workspace-split;
 }
 
 .workspace-split.is-single {
@@ -149,17 +171,27 @@ body.workspace-split-resizing {
   color: var(--text-primary);
 }
 
+/* ── 中等宽度（560–879px）：侧栏最多占 38%，主区至少 62% ──
+   仍允许拖动（拖动上限受同一封顶约束），但绝不把主内容压到不可用。 */
+@container workspace-split (min-width: 560px) and (max-width: 879px) {
+  .workspace-split:not(.is-single) {
+    grid-template-columns: min(var(--workspace-split-sidebar), 38%) 8px minmax(0, 1fr);
+  }
+}
 
-@container workspace-split (max-width: 560px) {
+/* ── 窄容器（<560px）：上下分区，侧栏折叠为顶部筛选区，分隔条不再占位 ── */
+@container workspace-split (max-width: 559px) {
   .workspace-split:not(.is-single) {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }
   .workspace-split__sidebar {
-    max-height: 44%;
+    max-height: 42%;
+    padding: 10px 10px 12px;
     border-right: none;
     border-bottom: 1px solid var(--border-subtle);
   }
+  /* display:none 同时移除 8px 网格列与命中区，不残留不可见拖拽区域。 */
   .workspace-split__resizer {
     display: none;
   }

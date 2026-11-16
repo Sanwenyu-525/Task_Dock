@@ -8,6 +8,10 @@
 //! - 宽度经指针拖动或键盘调整，写入 localStorage（WebView 独立持久化）；
 //! - 最小/最大宽度按页面传入，避免侧栏压垮主区；
 //! - 容器宽度不足时自动降级为上下分区，侧栏仍可滚动，不隐藏筛选能力。
+//!
+//! 2026-11-16：查询容器移到外层 `.workspace-split-frame`。容器查询只能让
+//! 容器**的后代**响应它的尺寸，此前 `.workspace-split` 查询自身属于自引用，
+//! 窄容器规则永远不会命中（详见 workspaceSplit.css 头部说明）。
 
 import {
   useCallback,
@@ -73,7 +77,7 @@ export default function WorkspaceSplit({
   minWidth = 200,
   maxWidth = 340,
 }: WorkspaceSplitProps) {
-  const rootRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(() => readWidth(id, defaultWidth, minWidth, maxWidth));
   const sidebarId = `${useId()}-sidebar`;
 
@@ -92,9 +96,10 @@ export default function WorkspaceSplit({
 
   const beginResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0 || !rootRef.current) return;
+      if (event.button !== 0 || !frameRef.current) return;
       event.preventDefault();
-      const rect = rootRef.current.getBoundingClientRect();
+      // 以查询容器的左边界测量：frame 与 grid 同宽同起点，命中区只在其内部列中。
+      const rect = frameRef.current.getBoundingClientRect();
       const pointerId = event.pointerId;
 
       const onMove = (moveEvent: globalThis.PointerEvent) => {
@@ -142,35 +147,47 @@ export default function WorkspaceSplit({
 
   if (!sidebar) {
     return (
-      <div className="workspace-split is-single" ref={rootRef} style={style}>
-        <div className="workspace-split__main">{children}</div>
+      <div
+        className="workspace-split-frame"
+        ref={frameRef}
+        data-workspace-split={id}
+      >
+        <div className="workspace-split is-single" style={style}>
+          <div className="workspace-split__main">{children}</div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="workspace-split" ref={rootRef} style={style}>
-      <aside className="workspace-split__sidebar" id={sidebarId} aria-label={sidebarLabel}>
-        {sidebar}
-      </aside>
-      <div
-        className="workspace-split__resizer"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label={`调整${sidebarLabel}宽度`}
-        aria-controls={sidebarId}
-        aria-valuemin={minWidth}
-        aria-valuemax={maxWidth}
-        aria-valuenow={Math.round(width)}
-        tabIndex={0}
-        onPointerDown={beginResize}
-        onKeyDown={onResizerKeyDown}
-        onDoubleClick={() => commitWidth(defaultWidth)}
-        data-tip="拖动调整宽度；方向键微调，双击恢复默认"
-      >
-        <GripVertical size={13} aria-hidden="true" />
+    <div
+      className="workspace-split-frame"
+      ref={frameRef}
+      data-workspace-split={id}
+    >
+      <div className="workspace-split" style={style}>
+        <aside className="workspace-split__sidebar" id={sidebarId} aria-label={sidebarLabel}>
+          {sidebar}
+        </aside>
+        <div
+          className="workspace-split__resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={`调整${sidebarLabel}宽度`}
+          aria-controls={sidebarId}
+          aria-valuemin={minWidth}
+          aria-valuemax={maxWidth}
+          aria-valuenow={Math.round(width)}
+          tabIndex={0}
+          onPointerDown={beginResize}
+          onKeyDown={onResizerKeyDown}
+          onDoubleClick={() => commitWidth(defaultWidth)}
+          data-tip="拖动调整宽度；方向键微调，双击恢复默认"
+        >
+          <GripVertical size={13} aria-hidden="true" />
+        </div>
+        <section className="workspace-split__main">{children}</section>
       </div>
-      <section className="workspace-split__main">{children}</section>
     </div>
   );
 }

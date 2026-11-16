@@ -26,6 +26,20 @@ describe("buildBatchRenamePreview", () => {
     expect(preview[0].newName).toBe("Character_image_a.png");
   });
 
+  it("后缀/替换/删除文本均保留扩展名", () => {
+    const suffix = buildBatchRenamePreview(paths, { ...DEFAULT_BATCH_RENAME_OPTIONS, mode: "suffix", suffix: "_v2" }, []);
+    expect(suffix[0].newName).toBe("image_a_v2.png");
+    const replace = buildBatchRenamePreview(paths, { ...DEFAULT_BATCH_RENAME_OPTIONS, mode: "replace", find: "image_", replace: "pic-" }, []);
+    expect(replace[0].newName).toBe("pic-a.png");
+    const remove = buildBatchRenamePreview(paths, { ...DEFAULT_BATCH_RENAME_OPTIONS, mode: "delete", find: "_a" }, []);
+    expect(remove[0].newName).toBe("image.png");
+  });
+
+  it("序号位数不足时补零，超过位数不截断", () => {
+    const preview = buildBatchRenamePreview(paths, { ...DEFAULT_BATCH_RENAME_OPTIONS, mode: "sequence", start: 9, digits: 2 }, []);
+    expect(preview.map((item) => item.newName)).toEqual(["09.png", "10.png", "11.png"]);
+  });
+
   it("大小写-only 改名允许执行；目标与源同一个文件不算外部冲突", () => {
     const preview = buildBatchRenamePreview(
       ["D:\\dir\\A.txt"],
@@ -45,5 +59,16 @@ describe("buildBatchRenamePreview", () => {
   it("名称不变标 unchanged，不参与执行", () => {
     const preview = buildBatchRenamePreview(["D:\\dir\\same.png"], { ...DEFAULT_BATCH_RENAME_OPTIONS, mode: "prefix", prefix: "" }, []);
     expect(preview[0].status).toBe("unchanged");
+  });
+
+  it("目标属于本批另一源（A↔B 互换）时拒绝，不启用两阶段交换", () => {
+    const preview = buildBatchRenamePreview(
+      ["D:\\dir\\2.txt", "D:\\dir\\1.txt"],
+      { ...DEFAULT_BATCH_RENAME_OPTIONS, mode: "sequence", start: 1, digits: 1 },
+      [],
+    );
+    expect(preview.map((item) => item.status)).toEqual(["conflict", "conflict"]);
+    expect(preview[0].reason).toContain("互换");
+    expect(preview[0].reason).toContain("两阶段交换未启用");
   });
 });

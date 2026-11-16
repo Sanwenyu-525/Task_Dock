@@ -16,7 +16,7 @@ import {
 import { fsBatchRename, fsStat, type FsOpReport } from "../../lib/bridge";
 import { invalidateDirs } from "../../lib/filesWorkspace/dirCache";
 import { parentOf } from "../../lib/filesWorkspace/pathUtils";
-import { finishQueueOperation, startQueueOperation } from "../../lib/filesWorkspace/operationQueue";
+import { finishQueueOperation, startQueueOperation, withFileOperationSlot } from "../../lib/filesWorkspace/operationQueue";
 import { startOperation } from "../../lib/diagnostics";
 import { errorMessage } from "../../lib/errors";
 
@@ -105,9 +105,11 @@ export default function BatchRenameDialog({ request, onClose }: Props) {
     startQueueOperation({ id: op.id, effect: "rename", total: executable.length });
     try {
       op.stage("ipc");
-      const report = await fsBatchRename(
-        executable.map((item) => ({ path: item.path, newName: item.newName })),
-        op.id,
+      const report = await withFileOperationSlot(() =>
+        fsBatchRename(
+          executable.map((item) => ({ path: item.path, newName: item.newName })),
+          op.id,
+        ),
       );
       finishQueueOperation(op.id, report);
       setResult(report);
@@ -256,6 +258,7 @@ export default function BatchRenameDialog({ request, onClose }: Props) {
                 </li>
               ))}
           </ul>
+          <p className="fw-batch-recovery">{t("fw.batch.recovery")}</p>
         </div>
       )}
 

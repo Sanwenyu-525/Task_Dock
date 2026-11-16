@@ -131,6 +131,9 @@ npm run integrate -- snapshot create --all-ready --base <稳定提交>  # 首次
 8. **集成检查**：`--check static`（默认）在集成工作区执行 `npm run typecheck`（即 `tsc --noEmit`），
    经构建调度器排队（label `integration-<快照>-static`），失败则不提交快照。该阶段**不再执行
    `vite build`**：Vite 打包由正式构建自身的 `beforeBuildCommand` 完成，避免同一份 dist 被生成两次。
+   若旧快照的 `package.json` 尚未定义 `typecheck`（例如 `snap-04` 之前的提交），自动回退到本地
+   `node_modules/typescript/bin/tsc --noEmit`；仍不执行 Vite。本地 TypeScript 缺失时检查失败，
+   不跳过、不把“脚本不存在”当作通过。
    类型检查覆盖公共类型/接口兼容；需要运行测试的任务在 `task verify` 阶段完成，不把完整安装包构建当模块检查。
 9. **生成快照提交**，提交信息带任务关联（可从 commit 反查任务）：
 

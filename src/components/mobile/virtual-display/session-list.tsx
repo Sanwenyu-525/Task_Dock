@@ -96,7 +96,8 @@ export default function SessionList({
             const closing = session.status === "stopping" || closingIds.includes(session.id);
             const canCapture = session.status === "running" && capturingId !== session.id;
             const navUnavailable =
-              session.mode === "virtual" && session.display_id === null;
+              session.mode === "virtual" &&
+              (session.display_id === null || session.display_id === 0);
             const navDisabled =
               session.status !== "running" || navUnavailable || navBusyId === session.id;
             const navTip = navUnavailable

@@ -47,6 +47,12 @@ describe("defaultEffect 同/异卷", () => {
     volume.mockReturnValue("copy");
     expect(defaultEffect(["C:\\a\\f.txt"], "D:\\b")).toBe("copy");
   });
+  it("拖拽期间目标变化时按新目标重新判定，不沿用旧目标效果", () => {
+    volume.mockReturnValueOnce(null).mockReturnValueOnce("move");
+    const paths = ["D:\\a\\f.txt"];
+    expect(defaultEffect(paths, "D:\\changed-target")).toBe("copy");
+    expect(defaultEffect(paths, "D:\\same-volume-target")).toBe("move");
+  });
 });
 
 describe("resolveEffect 修饰键", () => {

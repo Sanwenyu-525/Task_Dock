@@ -27,6 +27,8 @@ export interface CompareItem {
   status: CompareStatus;
   /** 两边都是同大小文件且未做哈希：可由用户显式计算 SHA-256。 */
   canHash: boolean;
+  /** 目录递归后第一处差异的相对路径，供表格定位；无差异时为空。 */
+  detail?: string;
 }
 
 export function compareEntries(left: FsEntry[], right: FsEntry[]): CompareItem[] {
@@ -168,6 +170,13 @@ function mergeState(current: DirState, next: DirState): DirState {
   return "same";
 }
 
+function firstDiff(items: CompareItem[]): string | null {
+  for (const item of items) {
+    if (statusState(item.status) === "diff") return item.detail ?? item.name;
+  }
+  return null;
+}
+
 /** 递归比较两个目录；达到目录/文件/时间上限或读取失败时返回 partial，不冒充完整。 */
 async function compareDir(
   leftDir: string,
@@ -215,9 +224,14 @@ async function compareDir(
           ctx,
         );
         item.status = child.state === "same" ? "dirSame" : child.state === "diff" ? "dirDiff" : "dirPartial";
+        if (child.state === "diff") {
+          const nested = firstDiff(child.items);
+          item.detail = nested ? `${item.name}/${nested}` : item.name;
+        }
         next = child.state;
       }
     }
+    if (next === "diff" && !item.detail) item.detail = item.name;
     state = mergeState(state, next);
   }
   ctx.onProgress?.({ dirsVisited: ctx.dirsVisited, filesScanned: ctx.filesScanned });

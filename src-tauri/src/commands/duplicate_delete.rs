@@ -104,9 +104,8 @@ fn verify_duplicate_groups(
         if group.delete_paths.is_empty() {
             return Err(invalid("每个重复组至少需要一个待删文件，且必须保留一个原文件"));
         }
-        if group.expected_size == 0 {
-            return Err(invalid("空文件不能进入重复删除流程"));
-        }
+        // 零字节文件的 SHA-256 固定且可复核（e3b0c442…），不能仅因 size=0
+        // 就拒绝；否则前端已确认的空文件重复组永远无法清理。
         if !is_sha256_hex(&group.expected_hash) {
             return Err(invalid("重复组哈希不是有效的 SHA-256"));
         }
@@ -367,6 +366,18 @@ mod tests {
         fs::write(&delete, b"diff-content").unwrap();
         let err = verify_duplicate_groups(&[request], &[]).unwrap_err();
         assert!(err.to_string().contains("拒绝删除"), "{err}");
+    }
+
+    #[test]
+    fn zero_byte_duplicate_is_verified_and_deletes_only_unkept_copy() {
+        let dir = TempDir::new("zero");
+        let keep = write(&dir, "keep.txt", b"");
+        let delete = write(&dir, "delete.txt", b"");
+        let report = delete_verified_duplicates(vec![group(&keep, &delete)], Some("dupe-zero".into()), &[])
+            .expect("zero-byte duplicate should be verifiable");
+        assert_eq!(report.ok, 1, "{report:?}");
+        assert!(Path::new(&keep).exists(), "保留的零字节文件不能被删除");
+        assert!(!Path::new(&delete).exists(), "待删零字节文件应进入回收站");
     }
 
     #[test]

@@ -66,6 +66,14 @@ pub const MAX_IMAGE_PIXELS: u64 = 100_000_000;
 pub const MAX_FILE_COUNT: usize = 200;
 /// 缩略图最长边。
 pub const THUMB_MAX_EDGE: u32 = 192;
+/// 工作台预览规格：最长边 640px。列表卡片按 2× DPI 显示到约 300px 宽时仍清晰，
+/// 又不会像原图那样把整张 4K 截图塞进 IPC。
+pub const PREVIEW_MAX_EDGE: u32 = 640;
+/// 预览生成的内存闸门：源图超过 1600 万像素（约 64MB RGBA）时直接回退缩略图，
+/// 不做解码，避免一次预览把进程内存顶到 OOM。
+pub const PREVIEW_MAX_SOURCE_PIXELS: u64 = 16_000_000;
+/// 预览缓存单文件上限（640px PNG 实测通常 < 1MB）。超过即视为损坏，重新生成。
+pub const PREVIEW_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// 自动分组单组条数上限（防止一次长时间截图会话无限膨胀）。
 pub const MAX_AUTO_GROUP_ITEMS: usize = 300;
 

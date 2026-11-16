@@ -12,8 +12,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  AlertTriangle, Clipboard, Copy, Eraser, FolderPlus, Info, Link2, ListChecks, Loader2, Merge, Pause, Pin, Play,
-  RefreshCw, Settings as SettingsIcon, Star, Trash2, X,
+  AlertTriangle, Clipboard, Copy, Eraser, Filter, FolderPlus, Info, Link2, ListChecks,
+  Loader2, Merge, Pause, Pin, Play, RefreshCw, Settings as SettingsIcon, Star, Trash2, X,
 } from "lucide-react";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
 import WorkspaceSplit from "../../workbench/WorkspaceSplit";
@@ -28,8 +28,12 @@ import {
   clipboardDeleteGroup,
   clipboardDeleteItems,
   clipboardGroupPage,
+  clipboardItem,
   clipboardLinkTask,
   clipboardMergeGroups,
+  clipboardOpenLocalPath,
+  clipboardOpenUrl,
+  clipboardRevealLocalPath,
   clipboardStatus,
   clipboardToggleGroup,
   clipboardToggleItem,
@@ -40,7 +44,9 @@ import {
   type DeleteReport,
 } from "../../lib/bridge";
 import { errorMessage } from "../../lib/errors";
-import { clipSource, clipboardTime, formatBytes, groupDeleteFeedback, kindLabel, objectHint } from "../../lib/clipboardUi";
+import { clipSource, clipboardTime, fileBaseName, formatBytes, groupDeleteFeedback, kindLabel, objectHint } from "../../lib/clipboardUi";
+import { fileTypeFromName } from "../../lib/fileTypeUi";
+import { CLIPBOARD_DENSITY_OPTIONS } from "../../lib/clipboardDensity";
 import { EXIT_MS, REORDER_MS, prefersReducedMotion } from "../../lib/motion";
 import { useClipboardStore } from "../../store/useClipboardStore";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
@@ -56,7 +62,7 @@ import ClipboardGroupCard from "./ClipboardGroupCard";
 import ClipboardGroupDetail from "./ClipboardGroupDetail";
 import ClipboardItemCard from "./ClipboardItemCard";
 import ClipboardItemDetail from "./ClipboardItemDetail";
-import { ClipboardThumb } from "./Media";
+import { ClipboardHeroImage, clearClipboardMediaCache, forgetClipboardMedia } from "./Media";
 import { WorkbenchDetailFacts, WorkbenchPageDetail } from "../../workbench/pageDetail";
 import CopySwitchPanel from "./CopySwitchPanel";
 import ImageLightbox from "./ImageLightbox";
@@ -143,6 +149,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const selectedGroups = useClipboardStore((s) => s.selectedGroups);
   const setFilters = useClipboardStore((s) => s.setFilters);
   const setSection = useClipboardStore((s) => s.setSection);
+  const density = useClipboardStore((s) => s.density);
+  const setDensity = useClipboardStore((s) => s.setDensity);
   const setSearchText = useClipboardStore((s) => s.setSearchText);
   const load = useClipboardStore((s) => s.load);
   const setFullLive = useClipboardStore((s) => s.setFullLive);
@@ -153,6 +161,29 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const [detail, setDetailState] = useState<ClipboardDetail | null>(null);
   /** 选中条目的右栏预览：列表保持原位，详情在 WorkbenchPageDetail 中只读展示。 */
   const [previewId, setPreviewId] = useState<string | null>(null);
+  /**
+   * 右栏预览的**完整内容**（列表只是压实后的预览，正文被截断）。
+   * 每次选中一条才取一次，`alive` 代际保证快速换选时旧响应不覆盖新内容；
+   * 拉取失败保留列表预览，右栏不会变成空白。
+   */
+  const [railFull, setRailFull] = useState<{ id: string; item: ClipboardItem } | null>(null);
+  useEffect(() => {
+    if (!previewId) {
+      setRailFull(null);
+      return;
+    }
+    let alive = true;
+    clipboardItem(previewId)
+      .then((item) => {
+        if (alive) setRailFull({ id: previewId, item });
+      })
+      .catch(() => {
+        // 取完整内容失败不影响预览：继续展示列表里的截断预览。
+      });
+    return () => {
+      alive = false;
+    };
+  }, [previewId]);
   /** 详情打开前的列表滚动位置；返回列表时按同一筛选恢复（不恢复旧筛选的位置）。 */
   const savedListScrollRef = useRef<{ top: number; filterKey: string } | null>(null);
   const restoreListScrollRef = useRef<{ top: number; filterKey: string } | null>(null);
@@ -283,6 +314,12 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const [busy, setBusy] = useState<string | null>(null);
   /** 批量管理：显式模式，即使 0 选中也保留「全选当前页 / 退出」入口。 */
   const [batchMode, setBatchMode] = useState(false);
+  /**
+   * 页内筛选侧栏是否展开（只影响页面态）。
+   * 窄容器时 WorkspaceSplit 已会自动降级为上下分区；这里给用户一个主动收纳入口，
+   * 收纳后主区用满宽度，筛选入口仍在工具栏（不会「窄窗直接消失」）。
+   */
+  const [filtersOpen, setFiltersOpen] = useState(true);
   const [groupName, setGroupName] = useState("");
   const [mergeName, setMergeName] = useState("");
   const [confirm, setConfirm] = useState<{
@@ -636,35 +673,55 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   const legacyPaused = !configError && configOrigin === "legacy_upgrade_paused";
   const paused = configError ? true : settings?.clipboard_paused ?? false;
   const enabled = configError ? false : settings?.clipboard_enabled ?? true;
-  const monitoringDown = status?.monitoring === false;
+  /**
+   * 监听状态必须区分「尚未查询完」与「监听正常」。
+   *
+   * 2026-11-16 修复：此前 `status === null` 时 `monitoringDown` 为 false，
+   * 分支直接落到「监听中」——首次挂载、状态查询失败都会短暂/持续显示
+   * 一个未经确认的正常态。现在三态前置：
+   *   查询中（checking）→ 运行状态未知（unknown）→ 只有拿到 `monitoring=true`
+   *   才允许显示「监听中」。暂停/停用的「意图态」仍可先于线程状态显示，
+   *   因为那是数据库里已确认的用户设置，不代表线程已在跑。
+   */
+  const statusLoaded = status !== null;
+  const statusUnknown = !statusLoaded && statusError !== null;
+  const monitoringDown = statusLoaded && status?.monitoring === false;
   const draining = Boolean(status?.monitoring || status?.maintenance || status?.draining);
   // 停用/暂停请求已接受但线程仍在收尾：如实显示过渡态，不提前说“已停止/已暂停”。
   const stopping = !enabled && draining;
   const pausing = enabled && paused && draining;
   const statusLabel = configError
     ? "配置异常，自动记录已暂停"
-    : !enabled
-      ? stopping
-        ? "正在停止…"
-        : "已停用"
-      : paused
-        ? pausing
-          ? "正在暂停…"
-          : "已暂停"
-        : monitoringDown
-          ? "监听未启动"
-          : "监听中";
+    : statusUnknown
+      ? "运行状态未知"
+      : !statusLoaded
+        ? "正在检查运行状态…"
+        : !enabled
+          ? stopping
+            ? "正在停止…"
+            : "已停用"
+          : paused
+            ? pausing
+              ? "正在暂停…"
+              : "已暂停"
+            : monitoringDown
+              ? "监听未启动"
+              : "监听中";
   const statusTone = configError
     ? "bad"
-    : !enabled
-      ? stopping
-        ? "paused"
-        : "off"
-      : paused
-        ? "paused"
-        : monitoringDown
-          ? "bad"
-          : "ok";
+    : statusUnknown
+      ? "bad"
+      : !statusLoaded
+        ? "idle"
+        : !enabled
+          ? stopping
+            ? "paused"
+            : "off"
+          : paused
+            ? "paused"
+            : monitoringDown
+              ? "bad"
+              : "ok";
   const stats = view?.stats;
 
   function reportCopy(r: CopyReport) {
@@ -736,8 +793,39 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           (r) => r.deleted,
           // 带上对象信息：相似内容连排时，只有一句「删除成功」认不出动的是哪条
           () => showToast(`已删除「${objectHint(item)}」`, { kind: "success" }),
+          // 后端已确认删除：丢弃该条目的图像缓存，避免缩略图/预览残留在内存里，
+          // 也防止「删完又滚回来」时旧图闪现。
+          () => forgetClipboardMedia(item.id),
         ),
     });
+  }
+
+  /** 链接条目：显式用户操作才访问网络（后端二次校验只允许 http/https）。 */
+  async function onOpenUrlItem(item: ClipboardItem) {
+    try {
+      await clipboardOpenUrl(item.id);
+      showToast("已在浏览器中打开链接", { kind: "success" });
+    } catch (e) {
+      showToast(`打开链接失败：${errorMessage(e)}`, { kind: "error" });
+    }
+  }
+
+  /** 文件条目：用系统关联程序打开（后端校验绝对路径且必须存在）。 */
+  async function onOpenLocalFile(path: string) {
+    try {
+      await clipboardOpenLocalPath(path);
+    } catch (e) {
+      showToast(`打开文件失败：${errorMessage(e)}`, { kind: "error" });
+    }
+  }
+
+  /** 文件条目：在资源管理器中定位（不打开内容，只定位路径）。 */
+  async function onRevealLocalFile(path: string) {
+    try {
+      await clipboardRevealLocalPath(path);
+    } catch (e) {
+      showToast(`定位文件失败：${errorMessage(e)}`, { kind: "error" });
+    }
   }
 
   async function onCopyGroup(group: ClipboardGroup, mode: "rich" | "files") {
@@ -814,6 +902,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           // 清空后没有「原列表」可返回：丢弃刚记录的详情返回快照
           restoreListScrollRef.current = null;
           useClipboardStore.getState().resetAfterClear();
+          // 清空成功后才丢弃图像缓存：失败时 UI 仍展示旧数据，缓存也必须继续可用。
+          clearClipboardMediaCache();
           const warn = r.failed_files > 0
             ? `；${r.failed_files} 个缓存文件删除失败，将在下次清理时重试`
             : "";
@@ -901,7 +991,10 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           (r) => r.deleted,
           // 走到这里说明选中项已全部删除；数量仍以后端为准
           (deleted) => showToast(`已删除 ${deleted} 条`, { kind: "success" }),
-          clearSelection,
+          () => {
+            ids.forEach(forgetClipboardMedia);
+            clearSelection();
+          },
         ),
     });
   }
@@ -997,11 +1090,12 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         );
       }
       return (
-        <div className="clip-list" ref={listRef}>
+        <div className={`clip-list${isDrawer ? "" : ` clip-group-grid clip-density-${density}`}`} ref={listRef}>
           {groups.map((g) => (
             <ClipboardGroupCard
               key={g.id}
               group={g}
+              density={isDrawer ? undefined : density}
               selected={selectedGroups.includes(g.id)}
               removing={!!exiting[g.id]}
               pending={pendingIds.includes(g.id)}
@@ -1053,7 +1147,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     return (
       <>
         {/* 页面态加网格修饰类（宽屏自适应多列）；抽屉保持原单列列表 */}
-        <div className={`clip-list${isDrawer ? "" : " clip-list-grid"}`} ref={listRef}>
+        <div className={`clip-list${isDrawer ? "" : ` clip-list-grid clip-density-${density}`}`} ref={listRef}>
           {items.map((item) => (
             <ClipboardItemCard
               key={item.id}
@@ -1062,6 +1156,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               removing={!!exiting[item.id]}
               pending={pendingIds.includes(item.id)}
               linkMode={!!linkTask}
+              density={isDrawer ? undefined : density}
               onSelect={() => toggleItemSelection(item.id)}
               onCopy={() => void onCopyItem(item)}
               onCopySwitch={() => setDetail({ kind: "copy-switch", item })}
@@ -1071,6 +1166,7 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               onDelete={() => onDeleteItem(item)}
               onLink={() => void onLink("item", item.id)}
               onOpenImage={() => openSingleImage(item)}
+              onOpenUrl={item.kind === "url" ? () => void onOpenUrlItem(item) : undefined}
             />
           ))}
         </div>
@@ -1097,6 +1193,9 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
     ? (view?.items.find((i) => i.id === previewId) ?? null)
     : null;
   const railSource = railItem ? clipSource(railItem) : null;
+  /** 右栏正文：优先用按需取的完整内容，失败时退回列表里的截断预览。 */
+  const railDetail = railFull && railItem && railFull.id === railItem.id ? railFull.item : null;
+  const railText = (railDetail?.text || railItem?.preview || "").trim();
 
   /** 页头动作在页面态与抽屉态共用；抽屉隐藏帮助入口，关闭按钮只在抽屉出现。 */
   const headActions = (
@@ -1221,15 +1320,48 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               ariaLabel="搜索剪贴板历史"
               clearLabel="清除搜索"
             />
-            <button
-              className={`icon-btn sm ${filters.favorite ? "active" : ""}`}
-              data-tip={filters.favorite ? "显示全部" : "只看收藏"}
-              aria-label={filters.favorite ? "显示全部条目" : "只看收藏"}
-              aria-pressed={filters.favorite}
-              onClick={() => setFilters({ favorite: !filters.favorite })}
-            >
-              <Star size={13} />
-            </button>
+            {isDrawer && (
+              // 抽屉没有左侧导航，收藏筛选只能留在工具条；页面态由导航区承担，
+              // 不再出现「顶部一个星标 + 侧栏一个仅看收藏」的重复入口。
+              <button
+                className={`icon-btn sm ${filters.favorite ? "active" : ""}`}
+                data-tip={filters.favorite ? "显示全部" : "只看收藏"}
+                aria-label={filters.favorite ? "显示全部条目" : "只看收藏"}
+                aria-pressed={filters.favorite}
+                onClick={() => setFilters({ favorite: !filters.favorite })}
+              >
+                <Star size={13} />
+              </button>
+            )}
+            {!isDrawer && (
+              <button
+                type="button"
+                className={`icon-btn sm ${filtersOpen ? "active" : ""}`}
+                data-tip={filtersOpen ? "收起筛选导航，把宽度让给内容" : "展开筛选导航"}
+                aria-label={filtersOpen ? "收起筛选导航" : "展开筛选导航"}
+                aria-pressed={filtersOpen}
+                aria-controls="clipboard-filter-pane"
+                onClick={() => setFiltersOpen((v) => !v)}
+              >
+                <Filter size={13} aria-hidden="true" />
+              </button>
+            )}
+            {!isDrawer && (
+              <div className="clip-density-switch" role="group" aria-label="视图密度">
+                {CLIPBOARD_DENSITY_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={`clip-density-btn ${density === option.value ? "active" : ""}`}
+                    aria-pressed={density === option.value}
+                    data-tip={option.hint}
+                    onClick={() => setDensity(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <button
               className={`btn sm ${batchMode ? "primary" : ""}`}
               aria-pressed={batchMode}
@@ -1259,8 +1391,8 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         id="clipboard"
         sidebarLabel="剪贴板导航"
         sidebar={
-          !detail && !isDrawer ? (
-            <div className="clip-filter-pane">
+          !detail && !isDrawer && filtersOpen ? (
+            <div className="clip-filter-pane" id="clipboard-filter-pane">
               <div className="workspace-rail-head">
                 <span className="workspace-rail-eyebrow">剪贴板</span>
                 <h2>内容导航</h2>
@@ -1360,7 +1492,9 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
       </WorkspaceSplit>
 
       {/* 右栏：所选内容预览。中央列表始终保留；完整详情仍由「详情」按钮进入，
-          不改变原有详情页的编辑/跳转能力。 */}
+          不改变原有详情页的编辑/跳转能力。
+          2026-11-16：64px 缩略图改为 640px 预览规格 + 完整正文 + 文件清单，
+          右栏本身可滚动（wb-context），长内容不撑破窗口。 */}
       {!detail && railItem && (
         <WorkbenchPageDetail
           title="所选内容预览"
@@ -1375,19 +1509,14 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
           }
         >
           <div className="clip-rail-head">
-            {railItem.kind === "image" ? (
-              <ClipboardThumb
-                itemId={railItem.id}
-                hasThumb={railItem.has_thumb}
-                size={64}
-                openLabel="查看大图"
-                onOpen={() => setDetail({ kind: "item", id: railItem.id })}
-              />
-            ) : (
-              <span className={`clip-rail-kind kind-${railItem.kind}`}>
-                {kindLabel(railItem.kind)}
+            <span className={`clip-rail-kind kind-${railItem.kind}`}>
+              {kindLabel(railItem.kind)}
+            </span>
+            {railItem.kind === "image" && railItem.image_width && railItem.image_height ? (
+              <span className="clip-rail-dim">
+                {railItem.image_width} × {railItem.image_height}
               </span>
-            )}
+            ) : null}
             {(railItem.pinned || railItem.favorite) && (
               <span className="clip-rail-flags">
                 {railItem.pinned && (
@@ -1403,8 +1532,53 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
               </span>
             )}
           </div>
+          {railItem.kind === "image" && (
+            <div className="clip-rail-hero-media">
+              <ClipboardHeroImage
+                itemId={railItem.id}
+                hasThumb={railItem.has_thumb}
+                enabled
+                onOpen={() => openSingleImage(railItem)}
+                label="查看原图"
+              />
+            </div>
+          )}
           {railItem.title && <p className="wb-detail-title"><span>{railItem.title}</span></p>}
-          {railItem.preview && <p className="wb-detail-desc">{railItem.preview}</p>}
+          {railItem.kind === "text" || railItem.kind === "html" ? (
+            <div className="clip-rail-text" role="document">
+              {railText || "（无文本内容）"}
+            </div>
+          ) : (
+            railItem.preview &&
+            railItem.kind !== "image" && <p className="wb-detail-desc">{railItem.preview}</p>
+          )}
+          {railItem.file_paths.length > 0 && (
+            <div className="clip-rail-files" aria-label="文件清单">
+              {railItem.file_paths.slice(0, 6).map((path, index) => {
+                const type = fileTypeFromName(path);
+                const FileIcon = type.icon;
+                return (
+                  <div className="clip-rail-file" key={`${path}-${index}`}>
+                    <FileIcon
+                      size={13}
+                      className={`file-tone-${type.tone} clip-file-icon`}
+                      aria-hidden="true"
+                    />
+                    <span className="clip-rail-file-text">
+                      <span className="clip-rail-file-name">{fileBaseName(path)}</span>
+                      <span className="clip-rail-file-meta">{type.label}</span>
+                    </span>
+                  </div>
+                );
+              })}
+              {railItem.file_paths.length > 6 && (
+                <div className="clip-rail-file-more">
+                  还有 {railItem.file_paths.length - 6} 个文件
+                </div>
+              )}
+              <p className="clip-side-hint">仅记录路径，删除历史不会删除本地文件。</p>
+            </div>
+          )}
           <WorkbenchDetailFacts
             rows={[
               {
@@ -1414,6 +1588,10 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
                   : railItem.source_title || "未知来源",
               },
               { label: "类型", value: kindLabel(railItem.kind) },
+              ...(railItem.kind === "image" && railItem.image_width && railItem.image_height
+                ? [{ label: "分辨率", value: `${railItem.image_width} × ${railItem.image_height}` }]
+                : []),
+              { label: "内容大小", value: formatBytes(railItem.byte_size) },
               { label: "记录时间", value: clipboardTime(railItem.last_seen_at) },
               { label: "使用次数", value: `${railItem.copy_count}` },
               {
@@ -1429,6 +1607,36 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
             <button type="button" className="btn sm primary" onClick={() => void onCopyItem(railItem)}>
               <Copy size={11} aria-hidden="true" /> 复制
             </button>
+            {railItem.kind === "image" && (
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => openSingleImage(railItem)}
+                data-tip="在灯箱中查看原图"
+              >
+                查看原图
+              </button>
+            )}
+            {railItem.kind === "url" && (
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => void onOpenUrlItem(railItem)}
+                data-tip="用系统默认浏览器打开"
+              >
+                在浏览器打开
+              </button>
+            )}
+            {railItem.file_paths.length > 0 && (
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => void onRevealLocalFile(railItem.file_paths[0])}
+                data-tip="在资源管理器中定位第一个文件"
+              >
+                定位文件
+              </button>
+            )}
           </div>
         </WorkbenchPageDetail>
       )}

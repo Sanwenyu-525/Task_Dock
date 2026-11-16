@@ -260,6 +260,70 @@ CREATE TABLE IF NOT EXISTS capture_destinations (
 CREATE INDEX IF NOT EXISTS idx_capture_destinations_state ON capture_destinations(state);
 `;
 
+// v9：开发者效率工具的本地持久层（2026-11-16）。append-only，不改 v1–v8。
+//
+// 三张表都属于**本机数据**，不进入同步协议、不写 outbox：
+// - snippets：代码片段。跨设备只通过「导出文本文件 / 发送到电脑（文件互传）」，
+//   协议里没有 snippet 实体，这里也不伪造「已同步」状态。
+// - tool_requests：API 调试的请求定义与历史。敏感 header 值在写入前已脱敏
+//   （见 domain/tools/apiRequest.ts 的 redactDraftForHistory），token 不落库。
+// - tool_resources：项目资料与 GitHub 快捷入口的链接元数据。只存链接与标题，
+//   不缓存网页正文；本地文件与在线链接用 storage 字段区分。
+// 索引只覆盖真实查询：列表按更新时间倒序、按语言/类型过滤、按软删除过滤。
+export const MIGRATION_9 = `
+CREATE TABLE IF NOT EXISTS snippets (
+  id TEXT PRIMARY KEY NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  language TEXT NOT NULL DEFAULT 'text',
+  content TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '',
+  favorite INTEGER NOT NULL DEFAULT 0,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_used_at INTEGER,
+  deleted_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_snippets_list ON snippets(deleted_at, pinned DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snippets_language ON snippets(language);
+
+CREATE TABLE IF NOT EXISTS tool_requests (
+  id TEXT PRIMARY KEY NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('saved','history')),
+  name TEXT NOT NULL DEFAULT '',
+  method TEXT NOT NULL,
+  url TEXT NOT NULL,
+  query_json TEXT NOT NULL DEFAULT '[]',
+  headers_json TEXT NOT NULL DEFAULT '[]',
+  body TEXT NOT NULL DEFAULT '',
+  body_kind TEXT NOT NULL DEFAULT 'none',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_used_at INTEGER,
+  deleted_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_tool_requests_list ON tool_requests(kind, deleted_at, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS tool_resources (
+  id TEXT PRIMARY KEY NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('doc','github')),
+  title TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  storage TEXT NOT NULL DEFAULT 'online' CHECK (storage IN ('online','local')),
+  linked_kind TEXT,
+  linked_id TEXT,
+  favorite INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_opened_at INTEGER,
+  open_count INTEGER NOT NULL DEFAULT 0,
+  deleted_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_tool_resources_list ON tool_resources(kind, deleted_at, favorite DESC, updated_at DESC);
+`;
+
 /** 解析顺序即执行顺序；末尾追加新迁移，不要插入或重排。 */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: MIGRATION_1 },
@@ -270,6 +334,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 6, sql: MIGRATION_6 },
   { version: 7, sql: MIGRATION_7 },
   { version: 8, sql: MIGRATION_8 },
+  { version: 9, sql: MIGRATION_9 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

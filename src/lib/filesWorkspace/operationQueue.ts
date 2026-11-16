@@ -101,3 +101,27 @@ export function subscribeQueue(listener: (items: FileQueueEntry[]) => void): () 
 
 /** 后端没有安全取消通道；UI 只能等待 IPC 返回，不能显示假取消按钮。 */
 export const QUEUE_CANCEL_SUPPORTED = false;
+
+/** 前端文件操作并发上限：同一时刻只允许一个高成本 IPC，其余在内存中排队。 */
+export const MAX_CONCURRENT_OPERATIONS = 1;
+let activeOperations = 0;
+const operationWaiters: Array<() => void> = [];
+
+/**
+ * 用有限并发包裹一次真实文件操作。排队期间不动磁盘；释放时把名额直接交给
+ * 下一个等待者，避免并发计数抖动。抛出/取消路径都在 finally 归还名额。
+ */
+export async function withFileOperationSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (activeOperations >= MAX_CONCURRENT_OPERATIONS) {
+    await new Promise<void>((resolve) => operationWaiters.push(resolve));
+  } else {
+    activeOperations += 1;
+  }
+  try {
+    return await task();
+  } finally {
+    const next = operationWaiters.shift();
+    if (next) next();
+    else activeOperations -= 1;
+  }
+}

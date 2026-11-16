@@ -38,6 +38,19 @@ export const ROUTE_KEYS = [
   // 工作台入口自定义：同一屏幕的两个入口各用一条路由，避免给 push 增加第 5 个参数
   "entry_manager",
   "all_features",
+  // 开发者效率工具（2026-11-16）：每条路由都对应一个真实页面，
+  // 页面内部的「列表 / 编辑」用本屏状态切换，不额外增加栈层级。
+  "tool_snippets",
+  "tool_json",
+  "tool_timestamp",
+  "tool_text_codec",
+  "tool_regex",
+  "tool_diff",
+  "tool_image_compress",
+  "tool_color_picker",
+  "tool_api",
+  "tool_docs",
+  "tool_github",
 ] as const;
 
 export type RouteKey = (typeof ROUTE_KEYS)[number];

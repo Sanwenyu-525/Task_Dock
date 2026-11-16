@@ -203,11 +203,24 @@ pub fn normalize_clipboard_png(
 
 /// 生成最长边不超过 192px 的缩略图（区域平均）。原图更小时原样返回副本。
 pub fn thumbnail(rgba: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, u32) {
+    resize_to_max_edge(rgba, width, height, THUMB_MAX_EDGE)
+}
+
+/// 按最长边等比缩小（区域平均）。原图不大于 `max_edge` 时原样返回副本。
+///
+/// 列表缩略图（192px）与工作台预览（640px）共用同一算法，避免两套采样导致
+/// 同一条目在不同位置出现色差；调用方只决定目标最长边。
+pub fn resize_to_max_edge(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    max_edge: u32,
+) -> (Vec<u8>, u32, u32) {
     let longest = width.max(height);
-    if longest <= THUMB_MAX_EDGE {
+    if longest <= max_edge {
         return (rgba.to_vec(), width, height);
     }
-    let scale = THUMB_MAX_EDGE as f64 / longest as f64;
+    let scale = max_edge as f64 / longest as f64;
     let dw = ((width as f64 * scale).round() as u32).max(1);
     let dh = ((height as f64 * scale).round() as u32).max(1);
     let mut out = vec![0u8; dw as usize * dh as usize * 4];

@@ -2090,6 +2090,9 @@ CREATE INDEX idx_novel_chapters_volume
     crate::commands::comic_workspace::MIGRATION_61,
     crate::commands::general_workspace::MIGRATION_62,
     crate::commands::development_workspace::MIGRATION_63,
+    // MCP 资源能力授权（任务 / 笔记 / 工作流 / 文件工作区）。DDL 在 mcp/schema.rs，
+    // 本文件只登记迁移号，避免与其他领域并发修改同一段 SQL。
+    crate::mcp::schema::MIGRATION_64,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

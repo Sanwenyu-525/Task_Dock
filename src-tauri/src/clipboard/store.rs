@@ -17,7 +17,8 @@ use super::{
     CaptureOutcome, CapturedContent, CleanupReport, ClearReport, ClipboardGroup,
     ClipboardGroupItemPosition, ClipboardGroupPage, ClipboardItem, ClipboardStats, ClipboardView,
     DeleteReport, GroupKindCounts, KIND_FILES, KIND_IMAGE, KIND_URL, MAX_AUTO_GROUP_ITEMS,
-    MAX_HTML_BYTES, MAX_TEXT_BYTES,
+    MAX_HTML_BYTES, MAX_TEXT_BYTES, PREVIEW_MAX_BYTES, PREVIEW_MAX_EDGE,
+    PREVIEW_MAX_SOURCE_PIXELS,
 };
 use crate::db::{Db, Settings};
 use crate::error::{AppError, AppResult};
@@ -3192,6 +3193,14 @@ fn asset_rel(db: &Db, item_id: &str, role: &str) -> AppResult<Option<String>> {
     })
 }
 
+fn png_data_url(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
 fn data_url(
     db: &Db,
     root: &Path,
@@ -3211,15 +3220,74 @@ fn data_url(
         return Err(AppError::Validation("图片过大，无法内联预览".into()));
     }
     let bytes = std::fs::read(&abs)?;
-    use base64::Engine as _;
-    Ok(Some(format!(
-        "data:image/png;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    )))
+    Ok(Some(png_data_url(&bytes)))
 }
 
 pub fn thumb_data_url(db: &Db, root: &Path, item_id: &str) -> AppResult<Option<String>> {
     data_url(db, root, item_id, "thumb", 4 * 1024 * 1024)
+}
+
+/// 工作台预览图：最长边 640px，按需从原图生成并落盘缓存。
+///
+/// 为什么不直接用原图：列表卡片一次可见 10–20 张，原图 data URL 单条可达数十 MB，
+/// 会同时压垮 IPC 与前端内存。为什么不直接放大 192px 缩略图：2× DPI 下 300px 宽
+/// 显示会明显发虚。
+///
+/// - 缓存文件放 `thumbs/<id>-preview-640.png`，**不写 `clipboard_assets`**：
+///   预览是纯派生缓存，缺失可重建，不参与引用计数，也不会让数据库迁移发生变化；
+///   资源清理把它当孤立缩略图清掉是预期行为（下次访问自动重建）。
+/// - 源图缺失、解码失败或超过 1600 万像素时回退缩略图，保证 UI 永远有可用图像，
+///   不因预览失败把卡片变成空白。
+/// - 写盘用唯一临时名 + rename，并发请求最多重复计算一次，不会读到半截文件。
+pub fn preview_data_url(db: &Db, root: &Path, item_id: &str) -> AppResult<Option<String>> {
+    let Some(rel) = asset_rel(db, item_id, "image")? else {
+        return thumb_data_url(db, root, item_id);
+    };
+    let abs = asset_abs(root, &rel)?;
+    if !abs.is_file() {
+        return thumb_data_url(db, root, item_id);
+    }
+    let cache_rel = format!("thumbs/{item_id}-preview-{PREVIEW_MAX_EDGE}.png");
+    let cache_abs = match asset_abs(root, &cache_rel) {
+        Ok(path) => path,
+        Err(_) => return thumb_data_url(db, root, item_id),
+    };
+    if let Ok(meta) = std::fs::metadata(&cache_abs) {
+        let len = meta.len() as usize;
+        if len > 0 && len <= PREVIEW_MAX_BYTES {
+            if let Ok(bytes) = std::fs::read(&cache_abs) {
+                return Ok(Some(png_data_url(&bytes)));
+            }
+        }
+    }
+    let bytes = match std::fs::read(&abs) {
+        Ok(bytes) => bytes,
+        Err(_) => return thumb_data_url(db, root, item_id),
+    };
+    let (rgba, width, height) = match image::decode_png_rgba(&bytes) {
+        Ok(value) => value,
+        Err(_) => return thumb_data_url(db, root, item_id),
+    };
+    if (width as u64) * (height as u64) > PREVIEW_MAX_SOURCE_PIXELS {
+        return thumb_data_url(db, root, item_id);
+    }
+    let (preview_rgba, pw, ph) = image::resize_to_max_edge(&rgba, width, height, PREVIEW_MAX_EDGE);
+    let png = image::encode_png(&preview_rgba, pw, ph)?;
+    if png.len() <= PREVIEW_MAX_BYTES {
+        if let Some(parent) = cache_abs.parent() {
+            let _ = std::fs::create_dir_all(parent);
+            let tmp = parent.join(format!(
+                "{item_id}-preview-{PREVIEW_MAX_EDGE}.{}.tmp",
+                uuid::Uuid::new_v4()
+            ));
+            let ok = std::fs::write(&tmp, &png).is_ok()
+                && std::fs::rename(&tmp, &cache_abs).is_ok();
+            if !ok {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    }
+    Ok(Some(png_data_url(&png)))
 }
 
 pub fn image_data_url(db: &Db, root: &Path, item_id: &str) -> AppResult<Option<String>> {

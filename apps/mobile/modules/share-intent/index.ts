@@ -48,6 +48,10 @@ declare class ShareIntentNativeModule extends NativeModule<ShareIntentEvents> {
   takePendingShare(): ShareIntentPayload | null;
   /** 清空待处理分享引用（不删已复制文件，文件所有权已交给 JS）。 */
   clearPendingShare(): void;
+  /** 主动分享文本（开发者工具用，用户点一次才调用）。 */
+  shareTextAsync(text: string, subject: string): Promise<boolean>;
+  /** 主动分享应用私有目录内的文件（FileProvider → content://）。 */
+  shareFileAsync(fileUri: string, mime: string, subject: string): Promise<boolean>;
 }
 
 const native = requireOptionalNativeModule<ShareIntentNativeModule>("ShareIntent");

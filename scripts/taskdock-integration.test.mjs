@@ -1262,3 +1262,23 @@ test("集成静态检查只执行 npm run typecheck，不再重复 Vite 打包",
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+test("旧快照没有 typecheck 脚本时回退本地 typescript tsc --noEmit，不执行 Vite 打包", () => {
+  const { home, repo } = makeRepo();
+  try {
+    const base = addNodeProject(repo);
+    // 模拟旧快照：package.json 没有 typecheck 脚本，只有本地 typescript 包。
+    write(repo, "node_modules/typescript/bin/tsc", 'console.log("fallback typecheck ok");\n');
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    const create = run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "static"]);
+    assert.equal(create.status, 0, create.out);
+    const snap = readSnapshot(repo, "snap-01");
+    assert.match(snap.checks[0].cmd, /node_modules\/typescript\/bin\/tsc --noEmit/);
+    assert.equal(snap.checks[0].exitCode, 0);
+    assert.equal(existsSync(join(buildWtPath(repo), "dist", "index.html")), false);
+    const log = readFileSync(join(repo, snap.checks[0].logPath), "utf8");
+    assert.match(log, /fallback typecheck ok/);
+    assert.doesNotMatch(log, /vite build/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
