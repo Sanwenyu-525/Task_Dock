@@ -63,6 +63,7 @@ import {
 import { formatSize, CATEGORY_LABEL } from "../../lib/filesWorkspace/fileMeta";
 import { basename, breadcrumbSegments, joinPath, normalizePath, parentOf } from "../../lib/filesWorkspace/pathUtils";
 import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
+import { primeVolumeKeys } from "../../lib/filesWorkspace/volumeCache";
 import { pickFolder, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
 import { MAX_TABS_PER_PANE, pathToPane } from "../../lib/filesWorkspace/model";
 import {
@@ -461,6 +462,11 @@ export default function FilePane({
     () => (selection?.paths ?? []).filter((p) => p.startsWith(dirPath)),
     [selection?.paths, dirPath],
   );
+
+  // 真实卷键预热：目录与选中项变化时批量取，拖拽默认效果只读缓存。
+  useEffect(() => {
+    void primeVolumeKeys([dirPath, ...selectedPaths]);
+  }, [dirPath, selectedPaths]);
 
   // ── 拖拽悬停解析（应用内拖拽，仅本窗格命中时上报）────────────────────
   const computeZone = useCallback(

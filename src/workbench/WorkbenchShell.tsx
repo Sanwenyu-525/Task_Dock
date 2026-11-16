@@ -79,6 +79,7 @@ import WorkbenchHome from "./WorkbenchHome";
 import WorkbenchContextPane from "./WorkbenchContextPane";
 import WorkbenchThemeMenu from "./WorkbenchThemeMenu";
 import WorkbenchPresetMenu from "./WorkbenchPresetMenu";
+import WorkbenchPinButton from "./WorkbenchPinButton";
 import WorkbenchWindowControls from "./WorkbenchWindowControls";
 import { WorkbenchDetailHostProvider } from "./pageDetail";
 
@@ -454,7 +455,8 @@ export default function WorkbenchShell() {
     return () => observer.disconnect();
   }, []);
 
-  const navLabelsCompact = (navActualWidth ?? navWidth) < WORKBENCH_NAV_LABELS_MIN_WIDTH;
+  const navLabelsCompact =
+    Math.round(navActualWidth ?? navWidth) < WORKBENCH_NAV_LABELS_MIN_WIDTH;
 
   // ── 项目列表读写 ────────────────────────────────────────────────────
   const refreshProjects = useCallback(async (): Promise<WorkspaceProject[]> => {
@@ -1892,12 +1894,23 @@ export default function WorkbenchShell() {
             >
               <PanelRight size={15} aria-hidden="true" />
             </button>
+          </div>
+          {/* 功能工具组：主题 / 外观 / 置顶。与窗口控制组之间用一条细分隔线
+              分开，整组右端不再用负外边距抵消顶栏内边距——关闭按钮与窗口
+              右边保留与顶栏一致的 14px 安全留白。 */}
+          <div
+            className="wb-titlebar-tools"
+            role="group"
+            aria-label={t("workbench.titlebarTools")}
+            data-tauri-drag-region="false"
+          >
             {/* 明暗主题：顶栏即标题栏，切主题不该只能绕到设置页（与主窗口
                 标题栏的「明暗」菜单同一语义，写库走同一设置管道）。 */}
             <WorkbenchThemeMenu />
             {/* 视觉主题（柔光玻璃 / 梦幻渐变）：与明暗正交，改的是
                 `visual_preset`；工作台圆角随预设变化由 windowFrame 重算。 */}
             <WorkbenchPresetMenu />
+            <WorkbenchPinButton />
           </div>
           <WorkbenchWindowControls />
         </header>

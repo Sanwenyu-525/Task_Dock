@@ -17,6 +17,7 @@
 //! 释放前 UI 恒显示当前效果，不得因落点判断错误执行非预期移动。
 
 import { samePath, isSubPath, normalizePath } from "./pathUtils";
+import { volumeDecision } from "./volumeCache";
 
 export type FwDragPayload =
   | { kind: "tabs"; tabIds: string[]; fromPaneId: string; paths: string[] }
@@ -128,6 +129,9 @@ export function sameZone(a: FwDropZone | null, b: FwDropZone | null): boolean {
 
 /** 默认效果：同卷 → 移动，跨卷 → 复制（Windows 习惯）。 */
 export function defaultEffect(paths: string[], targetDir: string): "copy" | "move" {
+  // 优先使用后端 Win32 卷键（可区分目录挂载点/符号链接/网络共享）。
+  const volume = volumeDecision(paths, targetDir);
+  if (volume) return volume;
   const first = normalizePath(paths[0] ?? "");
   const driveOf = (p: string): string => {
     const m = /^([a-zA-Z]):/.exec(p);

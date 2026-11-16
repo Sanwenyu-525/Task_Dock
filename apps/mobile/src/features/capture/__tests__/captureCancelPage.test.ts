@@ -70,6 +70,22 @@ vi.mock("react-native", async () => {
     Modal: (props: Record<string, unknown>) =>
       props.visible ? React.createElement("div", null, props.children as React.ReactNode) : null,
     Dimensions: { get: () => ({ width: 400, height: 800 }) },
+    Animated: {
+      Value: class {
+        constructor(public value: number) {}
+        setValue(value: number) {
+          this.value = value;
+        }
+      },
+      View: host("div"),
+      timing: () => ({
+        start: (done?: (result: { finished: boolean }) => void) => done?.({ finished: true }),
+      }),
+      spring: () => ({
+        start: (done?: (result: { finished: boolean }) => void) => done?.({ finished: true }),
+      }),
+    },
+    PanResponder: { create: () => ({ panHandlers: {} }) },
     StyleSheet: {
       create: (value: unknown) => value,
       hairlineWidth: 1,

@@ -138,6 +138,8 @@ export function CaptureScreen({
   const [recording, setRecording] = useState(false);
   const [recordStartedAt, setRecordStartedAt] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [voiceResultId, setVoiceResultId] = useState<string | null>(null);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [shotBusy, setShotBusy] = useState(false);
   const cameraRef = useRef<CameraView>(null);
@@ -425,13 +427,23 @@ export function CaptureScreen({
           showToast("已取消本次录音", "info");
           return true;
         }
+        if (playingId) {
+          try {
+            VoiceRecorder?.stopPlayback();
+          } catch {
+            // 播放器已释放
+          }
+          setPlayingId(null);
+        }
+        setVoiceResultId(null);
+        setElapsedMs(0);
         setMode("compose");
         return true;
       }
       return false;
     });
     return () => sub.remove();
-  }, [mode, recording, showToast, stopRecordingSafely]);
+  }, [mode, playingId, recording, showToast, stopRecordingSafely]);
 
   // ── 采集动作 ─────────────────────────────────────────────────────────
   const stagePersisted = useCallback(
@@ -453,7 +465,7 @@ export function CaptureScreen({
         const reason = rejection ? describeQuotaRejection(rejection.reason) : "超出本次采集上限";
         setRejected((prev) => [...prev, `${file.name || "文件"}：${reason}`]);
         showToast(reason, "warn");
-        return;
+        return null;
       }
       try {
         const staged = await addStashItem({
@@ -469,9 +481,11 @@ export function CaptureScreen({
         });
         pushItem(staged);
         showToast("已加入本次采集", "success");
+        return staged;
       } catch (error) {
         deleteStoredFileQuietly(file.localUri);
         showToast(`加入采集失败：${describeError(error)}`, "danger");
+        return null;
       }
     },
     [pushItem, showToast],
@@ -563,11 +577,12 @@ export function CaptureScreen({
   }, [showToast, stageFiles, staging]);
 
   const startRecording = useCallback(async () => {
-    if (recording) return;
+    if (recording || voiceBusy) return;
     if (!voiceRecorderAvailable) {
       showToast("当前构建未包含录音模块，请安装新版安装包后再用语音速记", "warn");
       return;
     }
+    setVoiceBusy(true);
     try {
       const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
       if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
@@ -579,18 +594,21 @@ export function CaptureScreen({
       setRecording(true);
       setRecordStartedAt(Date.now());
       setElapsedMs(0);
+      setVoiceResultId(null);
       setMode("voice");
     } catch (error) {
       showToast(`开始录音失败：${voiceErrorText(error)}`, "danger");
+    } finally {
+      setVoiceBusy(false);
     }
-  }, [recording, sessionId, showToast]);
+  }, [recording, sessionId, showToast, voiceBusy]);
 
   const finishRecording = useCallback(async () => {
-    if (!recording || !VoiceRecorder) return;
+    if (!recording || !VoiceRecorder || voiceBusy) return;
+    setVoiceBusy(true);
     try {
       const stopped = VoiceRecorder.stopRecording();
       setRecording(false);
-      setElapsedMs(0);
       const duration = formatDuration(stopped.durationMs) ?? "0:00";
       // 录音先用私有存储里的临时文件，这里复制进统一的采集附件目录：
       // 附件行只引用 `files/capture/`，试听、发送到电脑、清理都走同一条路径。
@@ -603,24 +621,36 @@ export function CaptureScreen({
         },
         { kind: "audio", name: `语音 ${duration}`, usedBytes: items.reduce((sum, item) => sum + item.size, 0) },
       );
-      await stagePersisted(persisted, "audio", "voice", { durationMs: stopped.durationMs });
+      const staged = await stagePersisted(persisted, "audio", "voice", {
+        durationMs: stopped.durationMs,
+      });
       try {
         VoiceRecorder.deleteFile(stopped.path);
       } catch {
         // 临时文件清理失败不影响已保存的副本
       }
-      setMode("compose");
-      showToast("录音已保存，可在本机试听或补写要点", "success");
+      setElapsedMs(staged ? stopped.durationMs : 0);
+      setRecordStartedAt(0);
+      setVoiceResultId(staged?.id ?? null);
+      // 停在语音结果页，让用户直接试听、删除、重录或保存；不再自动跳回编辑态。
+      setMode("voice");
     } catch (error) {
       setRecording(false);
       setElapsedMs(0);
+      setRecordStartedAt(0);
       showToast(`结束录音失败：${voiceErrorText(error)}`, "danger");
+    } finally {
+      setVoiceBusy(false);
     }
-  }, [items, recording, showToast, stagePersisted]);
+  }, [items, recording, showToast, stagePersisted, voiceBusy]);
 
   const cancelRecording = useCallback(() => {
     stopRecordingSafely(true);
-    setMode("compose");
+    setRecording(false);
+    setElapsedMs(0);
+    setRecordStartedAt(0);
+    setVoiceBusy(false);
+    setMode("voice");
     showToast("已取消录音，临时文件已删除", "info");
   }, [showToast, stopRecordingSafely]);
 
@@ -647,7 +677,7 @@ export function CaptureScreen({
   );
 
   const handleRemove = useCallback(
-    async (item: StashedItem) => {
+    async (item: StashedItem): Promise<boolean> => {
       try {
         if (playingId === item.id) {
           VoiceRecorder?.stopPlayback();
@@ -660,8 +690,10 @@ export function CaptureScreen({
           delete next[item.id];
           return next;
         });
+        return true;
       } catch (error) {
         showToast(`删除失败：${describeError(error)}`, "danger");
+        return false;
       }
     },
     [playingId, showToast],
@@ -673,6 +705,37 @@ export function CaptureScreen({
     },
     [],
   );
+
+  const voiceResult = useMemo(
+    () => (voiceResultId ? items.find((item) => item.id === voiceResultId) ?? null : null),
+    [items, voiceResultId],
+  );
+
+  const deleteVoiceResult = useCallback(async () => {
+    if (!voiceResult || voiceBusy) return;
+    setVoiceBusy(true);
+    try {
+      const removed = await handleRemove(voiceResult);
+      if (removed) {
+        setVoiceResultId(null);
+        setElapsedMs(0);
+        showToast("已删除本次录音", "success");
+      }
+    } finally {
+      setVoiceBusy(false);
+    }
+  }, [handleRemove, showToast, voiceBusy, voiceResult]);
+
+  const restartVoice = useCallback(async () => {
+    if (voiceBusy) return;
+    if (voiceResult) {
+      const removed = await handleRemove(voiceResult);
+      if (!removed) return;
+    }
+    setVoiceResultId(null);
+    setElapsedMs(0);
+    await startRecording();
+  }, [handleRemove, startRecording, voiceBusy, voiceResult]);
 
   const persistTranscript = useCallback(
     async (item: StashedItem, value: string) => {
@@ -750,6 +813,14 @@ export function CaptureScreen({
       setTranscripts({});
       setRejected([]);
       setSendToDesktop(false);
+      setVoiceResultId(null);
+      setElapsedMs(0);
+      setPlayingId(null);
+      try {
+        VoiceRecorder?.stopPlayback();
+      } catch {
+        // 播放器已释放
+      }
       await clearCaptureDraft().catch(() => undefined);
       sessionId.current = newId("cap");
       notifyLocalChange();
@@ -802,6 +873,26 @@ export function CaptureScreen({
           ) : undefined
         }
         onBack={() => {
+          if (mode === "voice") {
+            if (recording) {
+              cancelRecording();
+              setMode("compose");
+              return;
+            }
+            if (playingId) {
+              try {
+                VoiceRecorder?.stopPlayback();
+              } catch {
+                // 播放器已释放
+              }
+              setPlayingId(null);
+            }
+            // 离开语音页只收起结果视图；录音仍在采集列表/本机素材库里。
+            setVoiceResultId(null);
+            setElapsedMs(0);
+            setMode("compose");
+            return;
+          }
           if (mode !== "compose") {
             setMode("compose");
             return;
@@ -878,55 +969,163 @@ export function CaptureScreen({
       ) : null}
 
       {mode === "voice" ? (
-        <View style={styles.voiceWrap}>
+        <ScrollView
+          contentContainerStyle={styles.voiceWrap}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
           <GlassCard style={styles.voiceCard}>
+            <PressableScale
+              onPress={() => {
+                if (recording) void finishRecording();
+                else if (voiceResult) void handlePlay(voiceResult);
+                else void startRecording();
+              }}
+              accessibilityLabel={
+                recording
+                  ? "停止录音并保留"
+                  : voiceResult
+                    ? playingId === voiceResult.id
+                      ? "暂停试听"
+                      : "试听录音"
+                    : "开始录音"
+              }
+              accessibilityState={{ disabled: voiceBusy || saving }}
+              disabled={voiceBusy || saving}
+              style={styles.voiceMicPress}
+              contentStyle={[
+                styles.voiceMic,
+                {
+                  backgroundColor: tokens.accentFill,
+                  opacity: voiceBusy || saving ? 0.72 : 1,
+                },
+              ]}
+            >
+              {voiceBusy && !recording ? (
+                <ActivityIndicator color={tokens.onAccent} size="large" />
+              ) : recording ? (
+                <View style={[styles.voiceStopGlyph, { backgroundColor: tokens.onAccent }]} />
+              ) : (
+                <AppIcon
+                  name={voiceResult ? "activity" : "mic"}
+                  color={tokens.onAccent}
+                  size={46}
+                />
+              )}
+            </PressableScale>
             <Text style={[styles.voiceTimer, { color: tokens.text }]} accessibilityRole="timer">
-              {formatDuration(recording ? elapsedMs : 0) ?? "0:00"}
+              {formatDuration(recording ? elapsedMs : voiceResult?.durationMs ?? elapsedMs) ?? "0:00"}
             </Text>
-            <Text style={[styles.voiceState, { color: recording ? tokens.accentText : tokens.muted }]}>
-              {recording ? "正在录音…说完点停止" : "点下方按钮开始录音"}
+            <Text
+              style={[
+                styles.voiceState,
+                { color: recording || voiceResult ? tokens.text : tokens.muted },
+              ]}
+            >
+              {recording
+                ? "正在录音…再次点击中央按钮停止"
+                : voiceBusy
+                  ? "正在保存录音…"
+                  : voiceResult
+                    ? playingId === voiceResult.id
+                      ? "正在试听录音"
+                      : "录音已完成"
+                    : "点击麦克风开始录音"}
             </Text>
+            <Text style={[styles.voiceHelper, { color: tokens.faint }]}>
+              {recording
+                ? "停止后录音会保存到本机，可试听、删除或重新录制"
+                : voiceResult
+                  ? "录音已保存在本机素材库；保存后可按当前目标继续处理"
+                  : "进入页面不会自动录音，点击后才会申请麦克风权限"}
+            </Text>
+
             {recording ? (
-              <View style={styles.voiceActions}>
-                <PressableScale
-                  onPress={() => void finishRecording()}
-                  accessibilityLabel="停止并保留录音"
-                  contentStyle={[styles.voicePrimary, { backgroundColor: tokens.accentFill }]}
-                >
-                  <Text style={[styles.voicePrimaryText, { color: tokens.onAccent }]}>停止并保留</Text>
-                </PressableScale>
-                <PressableScale
-                  onPress={cancelRecording}
-                  accessibilityLabel="取消录音"
-                  contentStyle={[styles.voiceSecondary, { borderColor: tokens.cardBorder }]}
-                >
-                  <Text style={[styles.voiceSecondaryText, { color: tokens.danger }]}>取消</Text>
-                </PressableScale>
+              <PressableScale
+                onPress={cancelRecording}
+                accessibilityLabel="取消并删除本次录音"
+                style={styles.voiceCancelPress}
+                contentStyle={styles.voiceCancelButton}
+              >
+                <Text style={[styles.voiceCancelText, { color: tokens.danger }]}>取消并删除</Text>
+              </PressableScale>
+            ) : null}
+
+            {voiceResult ? (
+              <View style={[styles.voiceResult, { borderColor: tokens.separator }]}>
+                <View style={styles.voiceResultHead}>
+                  <View style={[styles.voiceResultIcon, { backgroundColor: tokens.okSoft }]}>
+                    <AppIcon name="fileAudio" color={tokens.ok} size={24} />
+                  </View>
+                  <View style={styles.voiceResultText}>
+                    <Text numberOfLines={1} style={[styles.voiceResultName, { color: tokens.text }]}>
+                      {voiceResult.name}
+                    </Text>
+                    <Text numberOfLines={1} style={[styles.voiceResultMeta, { color: tokens.muted }]}>
+                      录音已完成 · {formatBytes(voiceResult.size)} · 本机素材库
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.voiceResultActions}>
+                  <PressableScale
+                    onPress={() => void handlePlay(voiceResult)}
+                    accessibilityLabel={playingId === voiceResult.id ? "暂停试听录音" : "试听录音"}
+                    style={styles.voiceActionSlot}
+                    contentStyle={[styles.voiceAction, { backgroundColor: tokens.accentSoft }]}
+                  >
+                    <Text style={[styles.voiceActionText, { color: tokens.accentText }]}>
+                      {playingId === voiceResult.id ? "暂停试听" : "试听"}
+                    </Text>
+                  </PressableScale>
+                  <PressableScale
+                    onPress={() => void restartVoice()}
+                    accessibilityLabel="删除当前录音并重新录制"
+                    disabled={voiceBusy}
+                    style={styles.voiceActionSlot}
+                    contentStyle={[styles.voiceAction, { backgroundColor: tokens.track }]}
+                  >
+                    <Text style={[styles.voiceActionText, { color: tokens.textSoft }]}>重新录制</Text>
+                  </PressableScale>
+                  <PressableScale
+                    onPress={() => void deleteVoiceResult()}
+                    accessibilityLabel="删除本次录音"
+                    disabled={voiceBusy}
+                    style={styles.voiceActionSlot}
+                    contentStyle={[styles.voiceAction, { backgroundColor: tokens.dangerSoft }]}
+                  >
+                    <Text style={[styles.voiceActionText, { color: tokens.danger }]}>删除</Text>
+                  </PressableScale>
+                  <PressableScale
+                    onPress={() => void handleSave()}
+                    accessibilityLabel="保存本次录音"
+                    disabled={voiceBusy || saving}
+                    style={styles.voiceActionSlot}
+                    contentStyle={[
+                      styles.voiceAction,
+                      { backgroundColor: saving ? tokens.track : tokens.accentFill },
+                    ]}
+                  >
+                    {saving ? (
+                      <ActivityIndicator color={tokens.onAccent} size="small" />
+                    ) : (
+                      <Text style={[styles.voiceActionText, { color: tokens.onAccent }]}>
+                        {destination === "capture"
+                          ? "保存"
+                          : destination === "task"
+                            ? "创建任务"
+                            : "保存为笔记"}
+                      </Text>
+                    )}
+                  </PressableScale>
+                </View>
               </View>
-            ) : (
-              <View style={styles.voiceActions}>
-                <PressableScale
-                  onPress={() => void startRecording()}
-                  accessibilityLabel="开始录音"
-                  contentStyle={[styles.voicePrimary, { backgroundColor: tokens.accentFill }]}
-                >
-                  <Text style={[styles.voicePrimaryText, { color: tokens.onAccent }]}>开始录音</Text>
-                </PressableScale>
-                <PressableScale
-                  onPress={() => setMode("compose")}
-                  accessibilityLabel="返回"
-                  contentStyle={[styles.voiceSecondary, { borderColor: tokens.cardBorder }]}
-                >
-                  <Text style={[styles.voiceSecondaryText, { color: tokens.textSoft }]}>返回</Text>
-                </PressableScale>
-              </View>
-            )}
+            ) : null}
           </GlassCard>
           <Text style={[styles.voiceHint, { color: tokens.faint }]}>
-            录音只保存在这台手机上，不会自动上传。本机未接入离线语音识别，录完显示「尚未转写」，
-            你可以直接手写要点；原文音频始终保留，方便以后接识别服务。
+            录音只保存在这台手机上，不会自动上传。本机未接入离线语音识别，录完显示「尚未转写」；
+            原文音频始终保留，方便以后接识别服务。
           </Text>
-        </View>
+        </ScrollView>
       ) : null}
 
       {mode === "compose" ? (
@@ -1101,7 +1300,12 @@ export function CaptureScreen({
               <Text style={[styles.pickerText, { color: tokens.accentText }]}>相册</Text>
             </PressableScale>
             <PressableScale
-              onPress={() => void startRecording()}
+              onPress={() => {
+                setResult(null);
+                setVoiceResultId(null);
+                setElapsedMs(0);
+                setMode("voice");
+              }}
               accessibilityLabel="语音速记"
               style={styles.pickerPress}
               contentStyle={[styles.picker, { backgroundColor: tokens.accentWash }]}
@@ -1343,27 +1547,60 @@ const styles = StyleSheet.create({
   cameraCount: { minWidth: 72, alignItems: "flex-end" },
   cameraCountText: { fontSize: font.meta },
   cameraHint: { fontSize: font.label, textAlign: "center", paddingTop: space.sm },
-  voiceWrap: { flex: 1, padding: space.lg, gap: space.md },
-  voiceCard: { padding: space.xl, alignItems: "center", gap: space.sm },
-  voiceTimer: { fontSize: font.display, fontWeight: "700" },
-  voiceState: { fontSize: font.meta },
-  voiceActions: { flexDirection: "row", alignItems: "center", gap: space.md, paddingTop: space.sm },
-  voicePrimary: {
-    minHeight: 48,
-    paddingHorizontal: space.xl,
-    borderRadius: radius.control,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  voicePrimaryText: { fontSize: font.title, fontWeight: "600" },
-  voiceSecondary: {
-    minHeight: 48,
+  voiceWrap: { flexGrow: 1, padding: space.lg, gap: space.md },
+  voiceCard: {
+    width: "100%",
     paddingHorizontal: space.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: radius.control,
+    paddingVertical: space.xl,
+    alignItems: "center",
+    gap: space.xs,
+  },
+  voiceMicPress: { alignSelf: "center", marginBottom: space.xs },
+  voiceMic: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
     alignItems: "center",
     justifyContent: "center",
   },
-  voiceSecondaryText: { fontSize: font.title, fontWeight: "600" },
+  voiceStopGlyph: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+  },
+  voiceTimer: { fontSize: font.display, fontWeight: "700", fontVariant: ["tabular-nums"] },
+  voiceState: { fontSize: font.body, fontWeight: "600", textAlign: "center" },
+  voiceHelper: { fontSize: font.meta, lineHeight: 18, textAlign: "center", paddingHorizontal: space.sm },
+  voiceCancelPress: { minHeight: 44, justifyContent: "center", marginTop: space.xxs },
+  voiceCancelButton: { minHeight: 44, alignItems: "center", justifyContent: "center" },
+  voiceCancelText: { fontSize: font.meta, fontWeight: "600" },
+  voiceResult: {
+    width: "100%",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: space.sm,
+    paddingTop: space.md,
+    gap: space.sm,
+  },
+  voiceResultHead: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  voiceResultIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.iconTile,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  voiceResultText: { flex: 1, minWidth: 0, gap: 2 },
+  voiceResultName: { fontSize: font.body, fontWeight: "700" },
+  voiceResultMeta: { fontSize: font.label },
+  voiceResultActions: { flexDirection: "row", flexWrap: "wrap", gap: space.sm },
+  voiceActionSlot: { flexBasis: "48%", flexGrow: 1, minWidth: 0 },
+  voiceAction: {
+    minHeight: 44,
+    borderRadius: radius.control,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: space.sm,
+  },
+  voiceActionText: { fontSize: font.meta, fontWeight: "700", textAlign: "center" },
   voiceHint: { fontSize: font.label, lineHeight: 18 },
 });

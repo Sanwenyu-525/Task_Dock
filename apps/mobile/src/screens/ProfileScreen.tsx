@@ -238,8 +238,7 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                   <View style={styles.tilesGrid}>
                     <View style={styles.tileHalf}>
                       <MetricTile
-                        variant="column"
-                        columnLayout="row"
+                        variant="compactInline"
                         icon="tasks"
                         label="待办任务"
                         value={overview.pending}
@@ -248,8 +247,7 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                     </View>
                     <View style={styles.tileHalf}>
                       <MetricTile
-                        variant="column"
-                        columnLayout="row"
+                        variant="compactInline"
                         icon="note"
                         label="笔记"
                         value={overview.notes}
@@ -257,8 +255,7 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                     </View>
                     <View style={styles.tileHalf}>
                       <MetricTile
-                        variant="column"
-                        columnLayout="row"
+                        variant="compactInline"
                         icon="inbox"
                         label="收集箱"
                         value={overview.captures}
@@ -266,8 +263,7 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                     </View>
                     <View style={styles.tileHalf}>
                       <MetricTile
-                        variant="column"
-                        columnLayout="row"
+                        variant="compactInline"
                         icon="fileStack"
                         label="本机素材"
                         value={overview.stash}
@@ -277,8 +273,7 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                 ) : (
                   <View style={styles.tilesRow}>
                     <MetricTile
-                      variant="column"
-                      columnLayout="row"
+                      variant="compactInline"
                       icon="tasks"
                       label="待办任务"
                       value={overview.pending}
@@ -286,24 +281,21 @@ export function ProfileScreen({ nav, version }: { nav: AppNav; version: number }
                     />
                     <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
                     <MetricTile
-                      variant="column"
-                      columnLayout="row"
+                      variant="compactInline"
                       icon="note"
                       label="笔记"
                       value={overview.notes}
                     />
                     <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
                     <MetricTile
-                      variant="column"
-                      columnLayout="row"
+                      variant="compactInline"
                       icon="inbox"
                       label="收集箱"
                       value={overview.captures}
                     />
                     <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
                     <MetricTile
-                      variant="column"
-                      columnLayout="row"
+                      variant="compactInline"
                       icon="fileStack"
                       label="本机素材"
                       value={overview.stash}

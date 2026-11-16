@@ -14,8 +14,8 @@
 //   cancelled             已取消
 //
 // 优先级：处理中 > 暂存架成功 > 上传成功但暂存架失败 > 收件箱成功 > 相册成功 >
-// 等待连接 > 失败 > 取消 > 仅本机。上传成功永远优先于失败展示，避免「实际已上传」
-// 被另一目的地的失败掩盖。
+// 失败 > 取消 > 等待连接 > 仅本机。上传成功永远优先于失败展示，避免「实际已上传」
+// 被另一目的地的失败掩盖；取消是明确的用户动作，不能再被残留的 pending 盖成“等待电脑”。
 import type {
   CaptureAsset,
   CaptureDestination,
@@ -77,8 +77,8 @@ export function captureStatusOf(asset: CaptureAsset, items: CaptureDestination[]
   if (desktop === "done" && shelf === "failed") return build("uploaded_shelf_failed");
   if (desktop === "done") return build("sent_inbox");
   if (album === "done") return build("album_saved");
-  if (desktop === "pending" || shelf === "pending") return build("waiting_desktop");
   if (states.includes("failed")) return build("failed");
   if (states.includes("cancelled")) return build("cancelled");
+  if (desktop === "pending" || shelf === "pending") return build("waiting_desktop");
   return build("local_only");
 }

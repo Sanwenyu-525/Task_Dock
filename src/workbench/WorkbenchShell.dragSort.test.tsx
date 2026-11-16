@@ -901,9 +901,57 @@ describe("导航宽度临界点与名称 tooltip", () => {
     const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
     const pageLabel = page?.querySelector<HTMLElement>(".wb-nav-label")?.textContent;
     expect(page?.getAttribute("data-tip")).toBe(pageLabel);
+    // 整行（含名称/徽标之外的空白）悬停也应显示名称提示。
+    expect(navRows()[0].getAttribute("data-tip")).toBe(pageLabel);
     // 首页、设置、更多也属于导航入口；图标态悬停必须有名称提示。
     const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
     expect(nav.querySelectorAll("[data-tip]").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("200px 名义宽度实测 199.587px 时按整像素判定，不误折叠名称", async () => {
+    class FractionalResizeObserver {
+      private callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+      }
+      observe(target: Element) {
+        const width = 199.587;
+        target.getBoundingClientRect = () =>
+          ({
+            x: 0,
+            y: 0,
+            width,
+            height: 900,
+            top: 0,
+            right: width,
+            bottom: 900,
+            left: 0,
+            toJSON: () => ({}),
+          }) as DOMRect;
+        this.callback(
+          [{ target, contentRect: { width } } as unknown as ResizeObserverEntry],
+          this as unknown as ResizeObserver,
+        );
+      }
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", FractionalResizeObserver);
+    try {
+      useSettingsStore.setState({
+        settings: {
+          ...baseSettings(),
+          workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 200 },
+        } as never,
+      });
+      await renderShell();
+      const root = document.querySelector<HTMLElement>(".wb-root");
+      await waitFor(() => expect(root?.hasAttribute("data-nav-compact")).toBe(false));
+      const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
+      expect(page?.hasAttribute("data-tip")).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

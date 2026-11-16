@@ -271,43 +271,74 @@ export function PairingScreen({ nav }: { nav: Nav }) {
         </Text>
 
         <GlassCard style={styles.steps}>
-          {STEPS.map((label, index) => (
-            <View key={label} style={styles.step}>
-              <View
-                style={[
-                  styles.stepDot,
-                  {
-                    backgroundColor: index <= stepIndex ? tokens.accentFill : "transparent",
-                    borderColor: index <= stepIndex ? tokens.accentFill : tokens.cardBorder,
-                  },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.stepIndex,
-                    { color: index <= stepIndex ? tokens.onAccent : tokens.muted },
-                  ]}
-                >
-                  {index + 1}
-                </Text>
-              </View>
-              <Text
-                numberOfLines={1}
-                style={[
-                  styles.stepLabel,
-                  {
-                    color: index === stepIndex ? tokens.text : tokens.muted,
-                    fontWeight: index === stepIndex ? "600" : "400",
-                  },
-                ]}
-              >
-                {label}
-              </Text>
-              {index < STEPS.length - 1 ? (
-                <View style={[styles.stepLine, { backgroundColor: tokens.separator }]} />
-              ) : null}
-            </View>
-          ))}
+          <View style={styles.stepsBody}>
+            {/* 连接线在两节点之间，不占节点容器宽度；节点三等分整条轨道。 */}
+            <View
+              style={[
+                styles.stepLine,
+                styles.stepLineFirst,
+                { backgroundColor: stepIndex >= 1 ? tokens.accent : tokens.separator },
+              ]}
+            />
+            <View
+              style={[
+                styles.stepLine,
+                styles.stepLineSecond,
+                { backgroundColor: stepIndex >= 2 ? tokens.accent : tokens.separator },
+              ]}
+            />
+            {STEPS.map((label, index) => {
+              const completed = success ? index <= stepIndex : index < stepIndex;
+              const current = !success && index === stepIndex;
+              return (
+                <View key={label} style={styles.stepCol}>
+                  <View
+                    style={[
+                      styles.stepDot,
+                      {
+                        backgroundColor: completed
+                          ? tokens.okSoft
+                          : current
+                            ? tokens.accentFill
+                            : tokens.card,
+                        borderColor: completed
+                          ? tokens.ok
+                          : current
+                            ? tokens.accentFill
+                            : tokens.cardBorder,
+                      },
+                      current ? styles.stepDotCurrent : null,
+                    ]}
+                  >
+                    {completed ? (
+                      <AppIcon name="check" color={tokens.ok} size={13} />
+                    ) : (
+                      <Text
+                        style={[
+                          styles.stepIndex,
+                          { color: current ? tokens.onAccent : tokens.muted },
+                        ]}
+                      >
+                        {index + 1}
+                      </Text>
+                    )}
+                  </View>
+                  <Text
+                    numberOfLines={2}
+                    style={[
+                      styles.stepLabel,
+                      {
+                        color: current ? tokens.text : completed ? tokens.textSoft : tokens.muted,
+                        fontWeight: current ? "700" : completed ? "600" : "400",
+                      },
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                </View>
+              );
+            })}
+          </View>
         </GlassCard>
 
         {success ? (
@@ -600,27 +631,33 @@ const styles = StyleSheet.create({
   steps: {
     marginHorizontal: space.lg,
     marginTop: space.md,
-    flexDirection: "row",
-    alignItems: "center",
-    padding: space.md,
-    gap: space.xs,
+    paddingHorizontal: space.md,
+    paddingVertical: space.md,
   },
-  step: {
+  // 轨道：三个等宽节点 + 两条绝对定位连接线，连线不再挤占节点容器宽度。
+  stepsBody: {
+    position: "relative",
     flexDirection: "row",
+    alignItems: "flex-start",
+    width: "100%",
+  },
+  stepCol: {
+    flex: 1,
+    minWidth: 0,
     alignItems: "center",
     gap: space.xs,
-    // 三段等分整行：flex:1 让每段拿到行宽的 1/3（RN 下 flexBasis 归 0，按 grow 等分）。
-    // 连接线在每段内部，只有 step 自身先拿到宽度，段内 flex:1 的连线才有空间补满；
-    // 若这里只写 flexShrink:0，第一段会靠内部 grow 的连线吃掉整行，把后两段挤出卡片（真机复验踩过）。
-    flex: 1,
+    zIndex: 1,
   },
   stepDot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     borderWidth: 1.5,
     alignItems: "center",
     justifyContent: "center",
+  },
+  stepDotCurrent: {
+    borderWidth: 2,
   },
   stepIndex: {
     fontSize: font.label,
@@ -629,16 +666,25 @@ const styles = StyleSheet.create({
   },
   stepLabel: {
     fontSize: font.label,
-    // RN/Yoga 的 flexShrink 默认是 0（与 Web 不同），不显式给 1 的话窄屏或大字号下
-    // 文字只会撑出本段而不会省略。给 1 让它先收缩、再由 numberOfLines={1} 省略，
-    // 保证任何宽度下先省略文字，而不是把后两段顶出卡片或压成竖排。
+    lineHeight: 16,
+    textAlign: "center",
     flexShrink: 1,
   },
   stepLine: {
-    height: StyleSheet.hairlineWidth,
-    flex: 1,
-    minWidth: 12,
-    marginHorizontal: space.xs,
+    position: "absolute",
+    top: 11,
+    height: 2,
+    borderRadius: 1,
+    zIndex: 0,
+  },
+  // 节点中心分别在 16.67% / 50% / 83.33%，线段从一个中心连到下一个中心。
+  stepLineFirst: {
+    left: "16.67%",
+    width: "33.33%",
+  },
+  stepLineSecond: {
+    left: "50%",
+    width: "33.33%",
   },
   segment: {
     flexDirection: "row",

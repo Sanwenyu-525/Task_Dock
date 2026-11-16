@@ -81,6 +81,16 @@ describe("captureStatusOf", () => {
     ).toBe("waiting_desktop");
   });
 
+  it("取消优先于残留的离线等待，不能把已取消显示成等待电脑", () => {
+    const status = captureStatusOf(asset, [
+      dest("local", "done"),
+      dest("desktop", "pending"),
+      dest("shelf", "cancelled"),
+    ]);
+    expect(status.key).toBe("cancelled");
+    expect(status.label).toBe("已取消");
+  });
+
   it("running 优先于其他已完成目的地", () => {
     expect(
       captureStatusOf(asset, [dest("local", "done"), dest("desktop", "running")]).key,

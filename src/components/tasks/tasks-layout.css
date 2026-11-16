@@ -539,3 +539,72 @@
   outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   outline-offset: -1px;
 }
+
+/* 任务详情：关联资源来自真实导航目标（TaskNavLink），只做只读摘要；
+   点击统一进入任务上下文抽屉，不在此重复建设第二套目标管理器。 */
+.task-detail-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.task-detail-links-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 2px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.task-detail-links-head span {
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  letter-spacing: 0;
+}
+
+.task-detail-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-detail-link:hover {
+  background: var(--surface-raised);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border-subtle));
+}
+
+.task-detail-link-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.task-detail-link-meta {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+}
+
+.task-detail-link svg {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}

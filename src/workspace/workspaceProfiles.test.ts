@@ -111,31 +111,38 @@ describe("Profile 注册中心", () => {
     // 布局字段支持排序/隐藏，但当前没有编辑入口：只能声明受限，不能宣称可自定义。
     expect(WORKSPACE_CAPABILITIES["core.layout"].state).toBe("limited");
     expect(WORKSPACE_CAPABILITIES["core.layout"].fallback).toBeTruthy();
-    expect(WORKSPACE_CAPABILITIES["game.build"].state).toBe("planned");
-    expect(WORKSPACE_CAPABILITIES["game.assets"].state).toBe("planned");
+    // 五线（2026-11-16）：前端与编译检查已通过，但 Rust 运行期测试未取得证据，
+    // 因此专业能力只能是 limited（可入口 + 明确降级），不得宣称 available。
+    expect(WORKSPACE_CAPABILITIES["game.build"].state).toBe("limited");
+    expect(WORKSPACE_CAPABILITIES["game.build"].fallback).toContain("未接入");
+    expect(WORKSPACE_CAPABILITIES["game.assets"].state).toBe("limited");
+    // 未接入生成管线：永远不可调用，即使同类型其它能力已开放。
     expect(WORKSPACE_CAPABILITIES["comic.generate"].state).toBe("unavailable");
     expect(WORKSPACE_CAPABILITIES["comic.shots"].state).toBe("limited");
+    expect(WORKSPACE_CAPABILITIES["comic.shots"].provider).toContain("comic_shots");
 
-    // 小说专业能力：B1 已接入「正文与章节」；人物/世界观/AI 仍只登记、不实现。
+    // 小说专业能力：B1 正文已 available；B2 人物/世界观已落盘但运行期测试未取证 → limited；
+    // AI 辅助仍只登记、不实现。
     const manuscript = WORKSPACE_CAPABILITIES["novel.manuscript"];
     expect(manuscript.state).toBe("available");
     expect(manuscript.provider).toContain("novel_volumes");
     expect(manuscript.provider).toContain("novel_chapters");
     expect(manuscript.action).toEqual({ kind: "module", target: "manuscript" });
     expect(manuscript.fallback).toBeTruthy();
-    for (const id of ["novel.characters", "novel.worldview", "novel.aiAssist"] as const) {
-      expect(WORKSPACE_CAPABILITIES[id].state).toBe("planned");
-      expect(WORKSPACE_CAPABILITIES[id].action).toBeUndefined();
+    for (const id of ["novel.characters", "novel.worldview"] as const) {
+      expect(WORKSPACE_CAPABILITIES[id].state).toBe("limited");
+      expect(WORKSPACE_CAPABILITIES[id].provider).toContain("v59");
       expect(WORKSPACE_CAPABILITIES[id].fallback).toBeTruthy();
     }
+    expect(WORKSPACE_CAPABILITIES["novel.aiAssist"].state).toBe("planned");
+    expect(WORKSPACE_CAPABILITIES["novel.aiAssist"].action).toBeUndefined();
 
-    expect(canInvokeCapability("game", "game.build")).toBe(false);
+    expect(canInvokeCapability("game", "game.build")).toBe(true); // limited 允许入口，降级文案必读
     expect(canInvokeCapability("ai_comic", "comic.generate")).toBe(false);
     // B1：正文与章节已真实可用（模块 + v58 表 + 自动保存）
     expect(canInvokeCapability("novel", "novel.manuscript")).toBe(true);
-    // 其余小说专业能力仍不得调用
-    expect(canInvokeCapability("novel", "novel.characters")).toBe(false);
-    expect(canInvokeCapability("novel", "novel.worldview")).toBe(false);
+    expect(canInvokeCapability("novel", "novel.characters")).toBe(true);
+    expect(canInvokeCapability("novel", "novel.worldview")).toBe(true);
     expect(canInvokeCapability("novel", "novel.aiAssist")).toBe(false);
     // 跨类型不得调用
     expect(canInvokeCapability("game", "dev.git")).toBe(false);
@@ -146,7 +153,7 @@ describe("Profile 注册中心", () => {
     expect(canInvokeCapability("novel", "core.layout")).toBe(true); // limited 允许入口
   });
 
-  it("小说 Profile 的可用能力包含正文与既有四项核心能力", () => {
+  it("小说 Profile 的可用能力包含正文、人物、世界观与既有四项核心能力", () => {
     const available = capabilitiesFor("novel")
       .filter((c) => c.state === "available" || c.state === "limited")
       .map((c) => c.id)
@@ -156,7 +163,9 @@ describe("Profile 注册中心", () => {
       "core.layout",
       "core.project",
       "core.taskLinks",
+      "novel.characters",
       "novel.manuscript",
+      "novel.worldview",
     ]);
   });
 
@@ -373,31 +382,46 @@ describe("创作工作台五线模块注册（2026-11-16）", () => {
     }
   });
 
-  it("五线新增能力本轮保持 planned / 不可调用（诚实闸门，交付证据齐全后才升级）", () => {
-    const gated = [
+  it("五线专业能力：状态诚实（非 planned 必须有真实 provider），未接入项永不可调用", () => {
+    const delivered = [
+      "novel.characters",
+      "novel.worldview",
       "game.projectDetect",
       "game.test",
+      "game.assets",
+      "game.build",
+      "comic.episodes",
+      "comic.shots",
+      "comic.characters",
+      "comic.assets",
       "comic.scripts",
       "comic.review",
       "general.templates",
       "general.milestones",
       "general.materials",
-      "general.delivery",
       "dev.gitRisk",
       "dev.taskHandoff",
       "dev.buildTrace",
     ] as const;
-    for (const id of gated) {
-      expect(WORKSPACE_CAPABILITIES[id], `能力 ${id} 未登记`).toBeTruthy();
-      expect(WORKSPACE_CAPABILITIES[id].fallback, `能力 ${id} 缺少降级说明`).toBeTruthy();
+    for (const id of delivered) {
+      const cap = WORKSPACE_CAPABILITIES[id];
+      expect(cap, `能力 ${id} 未登记`).toBeTruthy();
+      // 已交付但运行期测试未取证：只能 limited，且不得出现「未接入」式 provider
+      expect(cap.state, `能力 ${id} 状态`).toBe("limited");
+      expect(cap.provider, `能力 ${id} provider`).not.toContain("未接入");
+      expect(cap.fallback, `能力 ${id} 缺少降级说明`).toBeTruthy();
     }
+    // 明确不提供/只预留的，仍必须被闸门挡住
+    expect(WORKSPACE_CAPABILITIES["comic.generate"].state).toBe("unavailable");
+    expect(WORKSPACE_CAPABILITIES["novel.aiAssist"].state).toBe("planned");
+    expect(WORKSPACE_CAPABILITIES["general.delivery"].state).toBe("planned");
+    expect(canInvokeCapability("general", "general.delivery")).toBe(false);
     // 跨媒介引用只预留：不得被任何 Profile 声明，永远不可调用
     expect(WORKSPACE_CAPABILITIES["core.mediaLink"].state).toBe("planned");
     for (const profile of Object.values(WORKSPACE_PROFILES)) {
       expect(profile.capabilities).not.toContain("core.mediaLink");
       expect(canInvokeCapability(profile.kind, "core.mediaLink")).toBe(false);
     }
-    // 未接入的生成能力依旧不可调用（不得因新增模块而放行）
     expect(canInvokeCapability("ai_comic", "comic.generate")).toBe(false);
   });
 });

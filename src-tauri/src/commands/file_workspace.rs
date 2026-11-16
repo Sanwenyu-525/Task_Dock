@@ -55,6 +55,15 @@ pub fn fs_places() -> AppResult<Vec<fw::Place>> {
     Ok(places)
 }
 
+/// 真实卷键（Volume GUID / 卷挂载根）；用于前端判断同卷默认移动、跨卷默认复制。
+#[tauri::command]
+pub fn fs_volume_keys(paths: Vec<String>) -> AppResult<Vec<Option<String>>> {
+    if paths.len() > fw::MAX_OP_PATHS {
+        return Err(AppError::Validation(format!("单批最多 {} 项", fw::MAX_OP_PATHS)));
+    }
+    Ok(fw::volume::volume_keys(&paths))
+}
+
 #[tauri::command]
 pub fn fs_create_dir(app: AppHandle, parent: String, name: String) -> AppResult<String> {
     let parent = fw::validate_abs_path(&parent)?;

@@ -27,6 +27,14 @@ const TONE_ICON: Record<ToastItem["tone"], IconName> = {
   danger: "error",
 };
 
+/** 标题只表达语义层级，不替代业务文案；详细说明仍完整使用调用方传入的 text。 */
+const TONE_TITLE: Record<ToastItem["tone"], string> = {
+  info: "提示",
+  success: "完成",
+  warn: "注意",
+  danger: "失败",
+};
+
 export function ToastHost({
   safeTop,
   defaultHeaderHeight,
@@ -148,51 +156,69 @@ export function ToastHost({
 
   return (
     <View pointerEvents="box-none" style={styles.host} accessibilityElementsHidden={false}>
-      <Animated.View
+      <View
         pointerEvents="box-none"
-        style={[
-          styles.card,
-          atTop ? { top: topOffset } : { bottom },
-          {
-            backgroundColor: tokens.sheet,
-            borderColor: tokens.cardBorder,
-            opacity,
-            transform: [
-              {
-                translateY: opacity.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [atTop ? -8 : 8, 0],
-                }),
-              },
-            ],
-          },
-          cardShadow(scheme),
-        ]}
+        style={[styles.anchor, atTop ? { top: topOffset } : { bottom }]}
       >
-        <View style={[styles.bar, { backgroundColor: toneColor }]} />
-        <View style={[styles.iconWrap, { backgroundColor: toneSoft }]}>
-          <AppIcon name={TONE_ICON[visible.tone]} color={toneColor} size={18} />
-        </View>
-        <Text
-          numberOfLines={3}
-          ellipsizeMode="tail"
-          accessibilityRole={visible.tone === "danger" ? "alert" : "text"}
-          accessibilityLiveRegion={visible.tone === "danger" ? "assertive" : "polite"}
-          accessibilityLabel={visible.text}
-          style={[styles.text, { color: tokens.text }]}
+        <Animated.View
+          pointerEvents="box-none"
+          style={[
+            styles.card,
+            {
+              backgroundColor: tokens.sheet,
+              borderColor: tokens.cardBorder,
+              opacity,
+              transform: [
+                {
+                  translateY: opacity.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [atTop ? -8 : 8, 0],
+                  }),
+                },
+              ],
+            },
+            cardShadow(scheme),
+          ]}
         >
-          {visible.text}
-        </Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="关闭提示"
-          hitSlop={8}
-          onPress={() => hide(visible.id)}
-          style={({ pressed }) => [styles.close, { opacity: pressed ? 0.55 : 1 }]}
-        >
-          <AppIcon name="close" color={tokens.muted} size={16} />
-        </Pressable>
-      </Animated.View>
+          <View
+            accessible={false}
+            importantForAccessibility="no"
+            style={[styles.iconWrap, { backgroundColor: toneSoft }]}
+          >
+            <AppIcon name={TONE_ICON[visible.tone]} color={toneColor} size={19} />
+          </View>
+          <View style={styles.body}>
+            {/* 标题只是视觉层级；读屏统一读下面带语义前缀的完整文案，避免同一句播报两次。 */}
+            <Text
+              accessible={false}
+              importantForAccessibility="no"
+              numberOfLines={1}
+              style={[styles.title, { color: toneColor }]}
+            >
+              {TONE_TITLE[visible.tone]}
+            </Text>
+            <Text
+              numberOfLines={3}
+              ellipsizeMode="tail"
+              accessibilityRole={visible.tone === "danger" ? "alert" : "text"}
+              accessibilityLiveRegion={visible.tone === "danger" ? "assertive" : "polite"}
+              accessibilityLabel={`${TONE_TITLE[visible.tone]}：${visible.text}`}
+              style={[styles.text, { color: tokens.text }]}
+            >
+              {visible.text}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="关闭提示"
+            hitSlop={6}
+            onPress={() => hide(visible.id)}
+            style={({ pressed }) => [styles.close, { opacity: pressed ? 0.55 : 1 }]}
+          >
+            <AppIcon name="close" color={tokens.muted} size={15} />
+          </Pressable>
+        </Animated.View>
+      </View>
     </View>
   );
 }
@@ -205,11 +231,17 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
   },
-  card: {
+  anchor: {
     position: "absolute",
-    left: space.lg,
-    right: space.lg,
-    minHeight: 48,
+    left: 0,
+    right: 0,
+    alignItems: "center",
+    paddingHorizontal: space.lg,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 520,
+    minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
     gap: space.sm,
@@ -219,27 +251,32 @@ const styles = StyleSheet.create({
     borderRadius: radius.row,
     borderWidth: StyleSheet.hairlineWidth,
   },
-  bar: {
-    width: 3,
-    alignSelf: "stretch",
-    borderRadius: 2,
-  },
   iconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 9,
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
-  text: {
+  body: {
     flex: 1,
-    fontSize: font.body,
-    lineHeight: 20,
+    gap: 1,
+    minWidth: 0,
+  },
+  title: {
+    fontSize: font.meta,
+    lineHeight: 17,
+    fontWeight: "700",
+  },
+  text: {
+    fontSize: font.meta,
+    lineHeight: 18,
     fontWeight: "500",
   },
   close: {
-    width: 44,
-    height: 44,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
   },

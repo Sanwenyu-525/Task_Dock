@@ -415,16 +415,16 @@ export default function VirtualDisplaySection() {
     ? t("virtualDisplay.start.checking")
     : launchSession?.status === "starting"
       ? t(launchStageKey(launchSession.stage))
-      : launchSession?.status === "running"
-        ? t("virtualDisplay.start.ready")
-        : null;
+      : null;
 
   const startLabel = busy
     ? t("virtualDisplay.start.checking")
     : launchSession?.status === "starting"
       ? t(launchStageKey(launchSession.stage))
       : launchSession?.status === "running"
-        ? t("virtualDisplay.start.ready")
+        ? limitReached
+          ? t("virtualDisplay.start.limitLabel")
+          : t("virtualDisplay.start.ready")
         : launchSession?.status === "stopping"
           ? t("virtualDisplay.session.stopping")
           : lastFailed

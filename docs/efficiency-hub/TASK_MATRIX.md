@@ -204,3 +204,37 @@ vite 18.40s；同样早于该并发破坏）。
 关闭门禁仅前端 `onCloseRequested`，Rust 不 `prevent_close`；系统强杀/断电无法握手；退出失败
 没有“强制退出并明确丢弃正文”的独立按钮。
 
+## 10. 2026-11-16 创作工作台五线并行（B2 / G1 / C1 / U1 / D1）
+
+五条线同时开工、各自独占领域目录与 Rust 领域文件，公共外壳（Profile、面板装配、
+`bridge.ts`、`lib.rs`、`commands/mod.rs`、`db/mod.rs`、`backup.rs`）只由集成负责人写。
+契约见 `tmp/acceptance/creative-workspaces-v1/contract.md`，架构说明见
+[WORKSPACE_PROJECTS.md §12](../WORKSPACE_PROJECTS.md)。
+
+| 线 | 任务 ID | 已实现 | 前端测试 | 迁移 | IPC | 结论 |
+|---|---|---|---|---|---|---|
+| A 小说 | `creative-novel-b2` | 人物档案+关系、世界观设定、章节引用、人物/世界观模块 | 6/6 通过 | v59（4 表） | 14 | 部分通过 |
+| B 游戏 | `creative-game-g1` | 引擎识别（Unity/Unreal/Godot/自定义+手动指定）、资源关联、构建/测试登记、资源与构建模块 | 7/7 通过 | v60（4 表） | 12 | 部分通过 |
+| C 漫剧 | `creative-comic-c1` | 剧集（含剧本）、分镜（可排序）、角色与场景、素材版本与采用状态 | 12/12 通过 | v61（5 表） | 21 | 部分通过 |
+| D 通用 | `creative-general-u1` | 6 模板真实初始化、里程碑与阶段、项目资料关联、真实统计视图 | 7/7 通过 | v62（2 表） | 9 | 部分通过 |
+| E 开发 | `creative-development-d1` | 仓库与 Git 风险只读探测、Agent 任务接续（自述完成≠验收通过）、构建/验收追溯 | 7/7 通过 | v63（2 表） | 7 | 部分通过 |
+
+公共侧由集成负责人完成：模块 ID 并集与 `isModuleId`、五个 Profile 的模块顺序、11 项专业
+能力登记、`creative/moduleRegistry.ts` 装配、`CreativeModuleHost` 降级、63 条命令注册、
+v59–v63 迁移引用、17 张新表的备份登记（`EXTENDED_TABLES` + `BACKUP_TABLES`，
+`quick` 全量保存）。
+
+**本轮共同未取证项**（因此所有专业能力只声明 `limited`，不得声明 `available`）：
+
+- Rust 功能测试（五线共 30 个用例）**未取得运行证据**：`cargo check` exit 0 只证明可编译；
+  `cargo test` 先后被本机页面文件耗尽（`os error 1455`，rustc `0xc0000409`）与并行线在途
+  `#[cfg(test)]` 代码阻塞；
+- 真实 Windows 窗口内的逐线操作链路、备份真实往返恢复、500+ 条性能手感未走查；
+- `npm run build` / 统一快照构建在并发任务破坏工作树期间无法取得干净基线
+  （`src/components/tasks/TasksPanel.test.tsx` 语法错误、`src/file_workspace/volume.rs`
+  `raw` 未定义均属**其他任务在途文件**）。
+
+未接入且保持不可调用：`comic.generate`（unavailable，无生成管线）、`novel.aiAssist`、
+`general.delivery`、`core.mediaLink`（跨媒介预留，只登记不进任何 Profile）。
+
+

@@ -1531,7 +1531,7 @@ mod tests {
 
     #[test]
     fn pixel_analysis_flags_uniform_frames_without_treating_them_as_failure() {
-        let mut flat = vec![20u8; 64 * 4];
+        let mut flat = vec![20u8; 200 * 4];
         // BGRA 全同色：uniform=true，采样色数只有 1。
         let stats = analyse_bgra(&flat);
         assert!(stats.uniform);

@@ -10,7 +10,7 @@
 //! 2026-11-14：概览三卡压成一行紧凑摘要（styles 不变，视觉降权见 tasks-layout.css）；
 //! ≥480px 时概览摘要与快速添加同排，头部省一行——DOM 顺序不变，布局由 CSS 网格重排。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import QuickAdd from "./QuickAdd";
 import QuickReminder from "./QuickReminder";
 import ActiveReminders from "./ActiveReminders";
@@ -25,6 +25,7 @@ import { Select, SearchField, DropdownMenu } from "../ui";
 import {
   ArrowLeft,
   BarChart3,
+  GripVertical,
   ListChecks,
   AlertTriangle,
   Inbox,
@@ -74,6 +75,33 @@ const SORTS: readonly { id: "due" | "priority" | "created"; labelKey: MessageKey
   { id: "created", labelKey: "tasks.sort.created" },
 ] as const;
 
+// 与 WorkspaceSplit 共用同一 localStorage 命名空间，避免任务页出现第二套布局记忆。
+const TASKS_RAIL_KEY = "taskdock.workspace.split.tasks";
+const TASKS_RAIL_DEFAULT = 236;
+const TASKS_RAIL_MIN = 180;
+const TASKS_RAIL_MAX = 320;
+const TASKS_RAIL_STEP = 8;
+
+function readTasksRailWidth(): number {
+  if (typeof window === "undefined") return TASKS_RAIL_DEFAULT;
+  try {
+    const value = Number(window.localStorage.getItem(TASKS_RAIL_KEY));
+    if (!Number.isFinite(value) || value <= 0) return TASKS_RAIL_DEFAULT;
+    return Math.min(TASKS_RAIL_MAX, Math.max(TASKS_RAIL_MIN, Math.round(value)));
+  } catch {
+    return TASKS_RAIL_DEFAULT;
+  }
+}
+
+function persistTasksRailWidth(width: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TASKS_RAIL_KEY, String(Math.round(width)));
+  } catch {
+    // 隐私模式/配额失败只影响记忆，不影响本次拖拽。
+  }
+}
+
 export default function TasksPanel() {
   const { t, locale } = useLocale();
   const filter = useTasksStore((s) => s.filter);
@@ -86,6 +114,7 @@ export default function TasksPanel() {
   const stats = useTasksStore((s) => s.stats);
   const linksError = useNavigationStore((s) => s.linksError);
   const loadTaskLinks = useNavigationStore((s) => s.loadTaskLinks);
+  const linksByTask = useNavigationStore((s) => s.linksByTask);
   const editor = useUiStore((s) => s.editor);
   const closeEditor = useUiStore((s) => s.closeEditor);
   const openTaskEditor = useUiStore((s) => s.openEditor);
@@ -99,6 +128,58 @@ export default function TasksPanel() {
   const [quickReminderOpen, setQuickReminderOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const listScrollTop = useRef(0);
+  const railRef = useRef<HTMLDivElement>(null);
+  const [railWidth, setRailWidth] = useState(readTasksRailWidth);
+
+  const commitRailWidth = useCallback((next: number) => {
+    const clamped = Math.min(TASKS_RAIL_MAX, Math.max(TASKS_RAIL_MIN, Math.round(next)));
+    setRailWidth(clamped);
+    persistTasksRailWidth(clamped);
+  }, []);
+
+  const beginRailResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || !railRef.current) return;
+      event.preventDefault();
+      const rect = railRef.current.getBoundingClientRect();
+      const pointerId = event.pointerId;
+      const onMove = (moveEvent: globalThis.PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
+        commitRailWidth(moveEvent.clientX - rect.left);
+      };
+      const onUp = (upEvent: globalThis.PointerEvent) => {
+        if (upEvent.pointerId !== pointerId) return;
+        document.body.classList.remove("workspace-split-resizing");
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      };
+      document.body.classList.add("workspace-split-resizing");
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [commitRailWidth],
+  );
+
+  const onRailResizerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      commitRailWidth(railWidth - TASKS_RAIL_STEP);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      commitRailWidth(railWidth + TASKS_RAIL_STEP);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      commitRailWidth(TASKS_RAIL_MIN);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      commitRailWidth(TASKS_RAIL_MAX);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      commitRailWidth(TASKS_RAIL_DEFAULT);
+    }
+  };
   // 日期分段容器：横向溢出指示与激活项入视都由 useViewsOverflow 负责。
   const viewsRef = useRef<HTMLDivElement>(null);
   // 指针按下后的 focus 不做「入视」滚动：mousedown 与 mouseup 之间把按钮
@@ -207,6 +288,10 @@ export default function TasksPanel() {
     () => (selectedTaskId ? displayedTasks.find((task) => task.id === selectedTaskId) ?? null : null),
     [displayedTasks, selectedTaskId],
   );
+  const selectedTaskLinks = useMemo(
+    () => (selectedTask ? linksByTask[selectedTask.id] ?? [] : []),
+    [linksByTask, selectedTask],
+  );
 
   // 日期分段横向滚动（320/360 窄窗）：溢出侧显示边缘渐变；激活项在
   // 外部下钻 / 键盘聚焦 / 语言切换后自动进入可见区。编辑态与子视图不监听。
@@ -254,8 +339,10 @@ export default function TasksPanel() {
   const ModeIcon = analytics ? BarChart3 : Timer;
   return (
     <div
+      ref={railRef}
       className={`tasks-panel ${subview ? "tasks-subview" : ""} ${mode === "list" ? "tasks-workspace-layout" : ""} page-fill`}
       data-task-mode={mode}
+      style={{ "--tasks-rail-width": `${railWidth}px` } as CSSProperties}
     >
       {subview ? (
         <header className="tasks-subview-head">
@@ -523,6 +610,23 @@ export default function TasksPanel() {
             <QuickReminder open onClose={() => setQuickReminderOpen(false)} />
           )}
           </div>
+
+          <div
+            className="tasks-rail-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整任务筛选栏宽度"
+            aria-valuemin={TASKS_RAIL_MIN}
+            aria-valuemax={TASKS_RAIL_MAX}
+            aria-valuenow={railWidth}
+            tabIndex={0}
+            onPointerDown={beginRailResize}
+            onKeyDown={onRailResizerKeyDown}
+            onDoubleClick={() => commitRailWidth(TASKS_RAIL_DEFAULT)}
+            data-tip="拖动调整筛选栏宽度；方向键微调，双击恢复默认"
+          >
+            <GripVertical size={13} aria-hidden="true" />
+          </div>
         </>
       )}
 
@@ -706,6 +810,30 @@ export default function TasksPanel() {
               },
             ]}
           />
+          {selectedTaskLinks.length > 0 && (
+            <div className="task-detail-links" aria-label="关联资源">
+              <p className="task-detail-links-head">
+                关联资源
+                <span>{selectedTaskLinks.length}</span>
+              </p>
+              {selectedTaskLinks.map((link) => (
+                <button
+                  key={link.id}
+                  type="button"
+                  className="task-detail-link"
+                  onClick={() => openTaskContext(selectedTask)}
+                  data-tip="打开任务上下文（现场 / 关联目标）"
+                >
+                  <span className="task-detail-link-name">{link.target.display_name}</span>
+                  <span className="task-detail-link-meta">
+                    {link.target.category || link.target.target_type}
+                    {link.is_default ? " · 默认" : ""}
+                  </span>
+                  <Layers size={11} aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          )}
           <div className="wb-detail-actions">
             <button
               type="button"

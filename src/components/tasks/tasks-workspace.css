@@ -10,10 +10,11 @@
  */
 
 .tasks-panel.tasks-workspace-layout {
+  --tasks-rail-width: 236px;
   display: grid;
-  grid-template-columns: clamp(180px, 23%, 268px) minmax(0, 1fr);
+  grid-template-columns: var(--tasks-rail-width) 8px minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr);
-  column-gap: 16px;
+  column-gap: 8px;
   min-height: 0;
   overflow: hidden;
   /* 窄窗回退依赖容器查询；没有 container-type 时 @container 永远不会命中，
@@ -45,11 +46,84 @@
 }
 
 .tasks-panel.tasks-workspace-layout > .task-list {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 2 / 4;
   height: auto;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* 分隔条不覆盖内容：8px 网格列 + 中央 2px 线，命中区只在自身列内。 */
+.tasks-rail-resizer {
+  grid-column: 2;
+  grid-row: 2 / 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 8px;
+  min-height: 0;
+  color: var(--text-muted);
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+}
+
+.tasks-rail-resizer::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 3px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background-color 120ms ease;
+}
+
+.tasks-rail-resizer:hover::before,
+.tasks-rail-resizer:focus-visible::before {
+  background: color-mix(in srgb, var(--accent) 46%, transparent);
+}
+
+.tasks-rail-resizer:focus-visible {
+  outline: none;
+}
+
+.tasks-rail-resizer svg {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.tasks-rail-resizer:hover svg,
+.tasks-rail-resizer:focus-visible svg {
+  opacity: 1;
+}
+
+/* 容器查询触发的单列降级：分隔条隐藏，筛选项回到上方，任务列表保持可滚动。 */
+@container (max-width: 560px) {
+  .tasks-panel.tasks-workspace-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
+  .tasks-panel.tasks-workspace-layout > .tasks-head {
+    grid-column: 1;
+    grid-row: 2;
+    max-height: 42vh;
+  }
+
+  .tasks-panel.tasks-workspace-layout > .active-reminders {
+    grid-column: 1;
+    grid-row: 4;
+  }
+
+  .tasks-panel.tasks-workspace-layout > .task-list {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .tasks-rail-resizer {
+    display: none;
+  }
 }
 
 /* 左栏内的统计卡在 180-268px 宽度下用 2×2 紧凑网格：既保留可下钻的四项
@@ -101,27 +175,6 @@
   width: 100%;
 }
 
-/* 窗口/容器极窄时才退回上下分区；侧栏保留，筛选能力不被隐藏。 */
-@container (max-width: 520px) {
-  .tasks-panel.tasks-workspace-layout {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
-  }
-  .tasks-panel.tasks-workspace-layout > .tasks-head {
-    grid-column: 1;
-    grid-row: 2;
-    max-height: 42vh;
-  }
-  .tasks-panel.tasks-workspace-layout > .active-reminders {
-    grid-column: 1;
-    grid-row: 4;
-  }
-  .tasks-panel.tasks-workspace-layout > .task-list {
-    grid-column: 1;
-    grid-row: 3;
-  }
-}
-
 /* 容器查询不能改容器自身：主窗 400px 时父级视口才是可靠回退点。
    工作台 944px 不命中，仍保留上面的两列布局。 */
 @media (max-width: 640px) {
@@ -141,5 +194,8 @@
   .tasks-panel.tasks-workspace-layout > .task-list {
     grid-column: 1;
     grid-row: 3;
+  }
+  .tasks-rail-resizer {
+    display: none;
   }
 }

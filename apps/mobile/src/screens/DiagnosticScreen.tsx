@@ -200,7 +200,7 @@ export function DiagnosticScreen({
               <GlassCard style={styles.tilesCard}>
                 <View style={styles.tilesRow}>
                   <MetricTile
-                    variant="column"
+                    variant="compactInline"
                     icon="tasks"
                     label="任务"
                     value={result.counts.tasks}
@@ -208,7 +208,7 @@ export function DiagnosticScreen({
                   />
                   <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
                   <MetricTile
-                    variant="column"
+                    variant="compactInline"
                     icon="inbox"
                     label="收集箱"
                     value={result.counts.captures}
@@ -217,14 +217,14 @@ export function DiagnosticScreen({
                 <View style={[styles.rowDivider, { backgroundColor: tokens.separator }]} />
                 <View style={styles.tilesRow}>
                   <MetricTile
-                    variant="column"
+                    variant="compactInline"
                     icon="alarm"
                     label="提醒排期"
                     value={result.counts.reminderSchedule}
                   />
                   <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
                   <MetricTile
-                    variant="column"
+                    variant="compactInline"
                     icon="hash"
                     label="本机键值"
                     value={result.counts.kv}

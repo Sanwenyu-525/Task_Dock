@@ -256,7 +256,7 @@ test("集成工作区路径被非工作区目录占用时拒绝（不覆盖现�
     writeFileSync(join(wtPath(repo), "keep.txt"), "别人的目录\n", "utf8");
     const r = run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]);
     assert.equal(r.status, 2, r.out);
-    assert.match(r.out, /不是本仓库登记的工作区/);
+    assert.match(r.out, /不是本仓库的 Worktree/);
     assert.equal(readFileSync(join(wtPath(repo), "keep.txt"), "utf8"), "别人的目录\n");
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
@@ -315,6 +315,7 @@ test("集成构建工作区不干净时构建拒绝执行", () => {
     assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
     const buildWt = buildWtPath(repo);
     git(repo, ["worktree", "add", "--detach", buildWt, base]);
+    assert.equal(run(repo, ["worktree", "adopt", "--role", "build"]).status, 0);
     writeFileSync(join(buildWt, "scratch.txt"), "未清理的临时文件\n", "utf8");
     const r = run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]);
     assert.equal(r.status, 2, r.out);
@@ -510,7 +511,7 @@ test("同一类集成操作受锁保护，dry-run 不受锁影响", () => {
     writeFileSync(lockPath, JSON.stringify({
       pid: process.pid, token: "test-lock", startedAt: new Date().toISOString(), command: "test",
     }) + "\n", "utf8");
-    const blocked = run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]);
+    const blocked = run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"], { TASKDOCK_BUILD_LOCK_WAIT_MS: "0" });
     assert.equal(blocked.status, 2, blocked.out);
     assert.match(blocked.out, /另一个集成操作正在运行/);
     const dry = run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--dry-run", "--command", "node emit.mjs"]);

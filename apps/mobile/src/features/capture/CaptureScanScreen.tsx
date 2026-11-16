@@ -24,7 +24,7 @@ import {
 import { CameraView, useCameraPermissions } from "expo-camera";
 
 import { AppIcon } from "../../components/icons/AppIcon";
-import { useToastTopAnchor } from "../../feedback/ToastLayoutProvider";
+import { useToastBottomAnchor, useToastTopAnchor } from "../../feedback/ToastLayoutProvider";
 import * as repo from "../../db/captureAssets";
 import { AppError, describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
@@ -51,6 +51,8 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
   const topAnchor = useToastTopAnchor();
+  // 底部 Toast 必须让开快门/页缩略图/完成按钮这一整条操作区。
+  const bottomAnchor = useToastBottomAnchor();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
   const [ready, setReady] = useState(false);
@@ -328,7 +330,7 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
       ) : null}
 
       <View
-        style={[styles.topBar, { paddingTop: space.sm, backgroundColor: tokens.inkScrim }]}
+        style={[styles.topBar, { paddingTop: space.sm }]}
         onLayout={topAnchor.onLayout}
       >
         <Pressable
@@ -361,7 +363,8 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
       </View>
 
       <View
-        style={[styles.bottomBar, { paddingBottom: insets.bottom + space.md, backgroundColor: tokens.inkScrim }]}
+        onLayout={bottomAnchor.onLayout}
+        style={[styles.bottomBar, { paddingBottom: insets.bottom + space.md }]}
       >
         {pages.length > 0 ? (
           <ScrollView
@@ -389,14 +392,27 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
             ))}
           </ScrollView>
         ) : (
-          <Text style={[styles.hint, styles.stripHint, { color: tokens.inkText }]}>
+          <Text
+            style={[
+              styles.hint,
+              styles.stripHint,
+              styles.hintChip,
+              { backgroundColor: tokens.inkScrim, color: tokens.inkText },
+            ]}
+          >
             对准文档逐页拍摄，页序可在缩略图上调整
           </Text>
         )}
 
         <View style={styles.actionRow}>
           <View style={styles.sideSlot}>
-            <Text style={[styles.sideHint, { color: tokens.inkText }]}>
+            <Text
+              style={[
+                styles.sideHint,
+                styles.hintChip,
+                { backgroundColor: tokens.inkScrim, color: tokens.inkText },
+              ]}
+            >
               {pages.length > 0 ? "点缩略图编辑" : "自动对焦"}
             </Text>
           </View>
@@ -407,7 +423,7 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
             accessibilityState={{ disabled: busy || !ready }}
             disabled={busy || !ready}
             onPress={() => void addPage()}
-            style={[styles.shutterOuter, { borderColor: tokens.onInk }]}
+            style={[styles.shutterOuter, { borderColor: tokens.onInk, backgroundColor: tokens.inkScrim }]}
           >
             <View
               style={[
@@ -434,7 +450,15 @@ export function CaptureScanScreen({ nav }: { nav: Nav }) {
                 )}
               </Pressable>
             ) : (
-              <Text style={[styles.sideHint, { color: tokens.inkText }]}>无需逐页确认</Text>
+              <Text
+                style={[
+                  styles.sideHint,
+                  styles.hintChip,
+                  { backgroundColor: tokens.inkScrim, color: tokens.inkText },
+                ]}
+              >
+                无需逐页确认
+              </Text>
             )}
           </View>
         </View>
@@ -747,7 +771,18 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   strip: { paddingHorizontal: space.lg, gap: space.sm },
-  stripHint: { paddingHorizontal: space.lg, fontSize: font.label },
+  stripHint: {
+    alignSelf: "flex-start",
+    marginHorizontal: space.sm,
+    fontSize: font.label,
+  },
+  hintChip: {
+    paddingHorizontal: space.sm,
+    paddingVertical: 3,
+    borderRadius: 999,
+    overflow: "hidden",
+    textAlign: "center",
+  },
   thumbButton: { width: 56, height: 72, borderRadius: 8, overflow: "hidden" },
   thumb: { width: "100%", height: "100%" },
   thumbFallback: { flex: 1 },

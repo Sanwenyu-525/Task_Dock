@@ -102,7 +102,7 @@ function seedTasks() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useUiStore.setState({ editor: { open: false, task: null } });
+  useUiStore.setState({ editor: { open: false, task: null }, context: { open: false, task: null } });
   // jsdom 的 requestAnimationFrame 兜底（退出编辑态后恢复列表滚动位置）
   vi.stubGlobal(
     "requestAnimationFrame",
@@ -611,5 +611,55 @@ describe("任务页统计概览", () => {
       });
     });
     expect(document.querySelectorAll(".overview-card")[2].classList.contains("warn")).toBe(true);
+  });
+});
+
+describe("任务页左栏分隔条", () => {
+  it("方向键调整宽度并写入统一布局键，Enter 恢复默认", () => {
+    window.localStorage.removeItem("taskdock.workspace.split.tasks");
+    seedTasks();
+    render(<TasksPanel />);
+
+    const separator = screen.getByRole("separator", { name: "调整任务筛选栏宽度" });
+    expect(separator.getAttribute("aria-valuenow")).toBe("236");
+
+    fireEvent.keyDown(separator, { key: "ArrowRight" });
+    expect(separator.getAttribute("aria-valuenow")).toBe("244");
+    expect(window.localStorage.getItem("taskdock.workspace.split.tasks")).toBe("244");
+
+    fireEvent.keyDown(separator, { key: "Enter" });
+    expect(separator.getAttribute("aria-valuenow")).toBe("236");
+    expect(window.localStorage.getItem("taskdock.workspace.split.tasks")).toBe("236");
+  });
+
+  it("详情展示真实关联资源，点击进入统一任务上下文", async () => {
+    const user = userEvent.setup();
+    seedTasks();
+    useNavigationStore.setState({
+      linksByTask: {
+        a: [
+          {
+            id: "link-a-vscode",
+            task_id: "a",
+            target_id: "nav-vscode",
+            display_order: 0,
+            is_default: true,
+            launch_behavior: "focus",
+            created_at: "2026-10-27T00:00:00Z",
+            target: { display_name: "VS Code", category: "开发" },
+            running_state: "has_window",
+          } as never,
+        ],
+      },
+    });
+    render(<TasksPanel />);
+
+    await user.click(screen.getByText("买牛奶"));
+    const link = document.querySelector<HTMLButtonElement>(".task-detail-link");
+    expect(link).toBeTruthy();
+    await user.click(link!);
+
+    expect(useUiStore.getState().context.open).toBe(true);
+    expect(useUiStore.getState().context.task?.title).toBe("买牛奶");
   });
 });

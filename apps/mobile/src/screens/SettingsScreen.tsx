@@ -126,12 +126,12 @@ export function SettingsScreen({
         {/* 与首页效率概览同一形态：一张卡三段，不再各占一张白卡 */}
         <GlassCard style={styles.tiles}>
           <View style={styles.tilesRow}>
-            <MetricTile variant="column" icon="tasks" label="任务" value={summary.tasks} tone="accent" />
+            <MetricTile variant="compactInline" icon="tasks" label="任务" value={summary.tasks} tone="accent" />
             <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
-            <MetricTile variant="column" icon="inbox" label="收集" value={summary.captures} />
+            <MetricTile variant="compactInline" icon="inbox" label="收集" value={summary.captures} />
             <View style={[styles.tileDivider, { backgroundColor: tokens.separator }]} />
             <MetricTile
-              variant="column"
+              variant="compactInline"
               icon="success"
               label="已完成"
               value={summary.completed}

@@ -5554,6 +5554,10 @@ export interface VerifiedDuplicateDeleteGroup {
 
 export const fsHashFiles = (paths: string[]) => invoke<FsHashEntry[]>("fs_hash_files", { paths });
 
+/** 真实卷键：Volume GUID / 卷挂载根；null 表示无法判定，调用方按跨卷安全复制。 */
+export const fsVolumeKeys = (paths: string[]) =>
+  invoke<Array<string | null>>("fs_volume_keys", { paths });
+
 export interface FsTextPreview {
   path: string;
   size: number;

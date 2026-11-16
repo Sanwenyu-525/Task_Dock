@@ -435,9 +435,35 @@ function requireToolWorktree(ctx, paths, wt, role, { forWrite = true } = {}) {
 }
 
 function adoptToolWorktree(ctx, paths, wt, role, { quiet = false } = {}) {
+  const entry = worktreeRegisteredInRepo(ctx, wt);
+  if (!entry) throw new Fail(`无法登记 ${wt}：不是本仓库的 Worktree，或就是主工作区`, EXIT.rejected);
+  assertClean(wt, "待登记的工具工作区");
+  // 旧版本工具可能把快照工作区停在 detached HEAD。登记时把它接回 integration 分支：
+  // 只在分支不存在（或已指向同一提交）时执行，绝不移动已有分支或改变文件内容。
+  if (role === "snapshot" && entry.detached) {
+    const head = gitOut(["rev-parse", "HEAD"], wt, "读取待登记工作区提交").trim();
+    const branchRef = `refs/heads/${BRANCH}`;
+    const exists = git(["rev-parse", "--verify", branchRef], ctx.mainRoot).status === 0;
+    if (exists) {
+      const tip = gitOut(["rev-parse", "--verify", branchRef], ctx.mainRoot, "读取 integration 分支").trim();
+      if (tip !== head) {
+        throw new Fail(
+          `integration 分支已指向 ${tip.slice(0, 7)}，与工作区 HEAD ${head.slice(0, 7)} 不一致；为避免移动分支，拒绝自动接回。`,
+          EXIT.rejected,
+        );
+      }
+      const r = git(["checkout", "--quiet", BRANCH], wt);
+      if (r.status !== 0) throw new Fail(`接回 ${BRANCH} 分支失败：${(r.stderr || r.stdout).trim()}`, EXIT.rejected);
+    } else {
+      const r = git(["checkout", "--quiet", "-B", BRANCH, head], wt);
+      if (r.status !== 0) throw new Fail(`创建 ${BRANCH} 分支失败：${(r.stderr || r.stdout).trim()}`, EXIT.rejected);
+      console.log(`已将旧快照工作区接回 ${BRANCH} 分支（${head.slice(0, 7)}，内容未变）`);
+    }
+    entry.branch = BRANCH;
+    entry.detached = false;
+  }
   const shape = checkRoleShape(ctx, wt, role);
   if (shape) throw new Fail(`无法登记 ${wt}：${shape}`, EXIT.rejected);
-  assertClean(wt, "待登记的工具工作区");
   const existing = readIdentity(paths, role);
   if (existing && !samePath(existing.path ?? "", wt)) {
     throw new Fail(
@@ -660,6 +686,13 @@ function cmdTask(sub, argv) {
         EXIT.rejected,
       );
     }
+    if (task.commit !== commit) {
+      // 新交付提交代表新一轮集成；旧快照/构建/验收关联只留在历史记录里，不再挂在这条任务上。
+      task.integratedCommit = null;
+      task.snapshot = null;
+      task.build = null;
+      task.acceptance = null;
+    }
     task.commit = commit;
     task.from = from;
     task.status = "integration-ready";
@@ -841,7 +874,7 @@ function cmdTaskVerify(args) {
   const id = str(args, "id");
   const cmdText = str(args, "cmd");
   if (!id || !cmdText) {
-    throw new Fail("用法：task verify --id <slug> --commit <提交> --cmd \"<真实命令>\" [--priority P1] [--timeout <秒>]", EXIT.usage);
+    throw new Fail("用法：task verify --id <slug> --commit <提交> --cmd \"<真实命令>\" [--priority P0..P3] [--class light|medium|heavy] [--timeout <秒>]", EXIT.usage);
   }
   const ctx = repoContext();
   const paths = statePaths(ctx);
@@ -851,13 +884,20 @@ function cmdTaskVerify(args) {
     ? gitOut(["rev-parse", "HEAD"], ctx.mainRoot, "解析待验证提交").trim()
     : gitOut(["rev-parse", "--verify", `${str(args, "commit")}^{commit}`], ctx.mainRoot, "解析待验证提交").trim();
   if (task.commit && task.commit !== commit) {
-    throw new Fail(
-      `任务 ${id} 的交付提交是 ${task.commit.slice(0, 7)}，与本次待验证提交 ${commit.slice(0, 7)} 不一致。\n` +
-      "先按新提交重新交付（task update 会清空旧关联），再执行 task verify。",
-      EXIT.rejected,
-    );
+    // 返工允许在旧交付提交之上验证新的修复提交（status=accept-failed/developing）。
+    // 已进入待集成及之后的状态必须先退回开发，防止用未登记的新提交绕过任务状态机。
+    const reworkable = task.status === "accept-failed" || task.status === "developing";
+    if (!reworkable) {
+      throw new Fail(
+        `任务 ${id} 的交付提交是 ${task.commit.slice(0, 7)}，与本次待验证提交 ${commit.slice(0, 7)} 不一致。\n` +
+        "先按新提交重新交付（task update 会清空旧关联），再执行 task verify。",
+        EXIT.rejected,
+      );
+    }
+    console.log(`  返工：验证新提交 ${commit.slice(0, 7)}（旧交付 ${task.commit.slice(0, 7)}，通过后再 task ready 才更新交付关联）`);
   }
 
+  const taskCommitAtStart = task.commit ?? null;
   const wt = ensureDetachedToolWorktree(ctx, paths, "verify", commit);
   const hasLock = existsSync(join(wt, "package-lock.json"));
   if (hasLock) {
@@ -872,6 +912,10 @@ function cmdTaskVerify(args) {
   const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "");
   const logPath = join(paths.logs, `verify-${id}-${ts}.log`);
   const priority = str(args, "priority", "P1");
+  const schedClass = str(args, "class", "");
+  if (schedClass && !["light", "medium", "heavy", "dev"].includes(schedClass)) {
+    throw new Fail("--class 只接受 light|medium|heavy|dev（默认按命令自动分类）", EXIT.usage);
+  }
   const timeoutSec = Number.parseInt(str(args, "timeout", "0"), 10);
   if (!Number.isInteger(timeoutSec) || timeoutSec < 0) throw new Fail("--timeout 需要非负整数秒", EXIT.usage);
   const header = [
@@ -891,7 +935,7 @@ function cmdTaskVerify(args) {
   const run = runScheduled(
     ctx, wt, `verify-${id}-${ts}`,
     ["cmd.exe", "/d", "/s", "/c", cmdText],
-    logPath, { ...process.env }, priority, timeoutSec > 0 ? timeoutSec * 1000 : 0,
+    logPath, { ...process.env }, priority, timeoutSec > 0 ? timeoutSec * 1000 : 0, schedClass || null,
   );
   const durationMs = Date.now() - startedMs;
   const exitCode = Number.isInteger(run.status) ? run.status : -1;
@@ -900,9 +944,9 @@ function cmdTaskVerify(args) {
   try {
     withTaskLocks(paths, [id], `task verify ${id} 记录`, () => {
       const fresh = loadTask(paths, id);
-      if (fresh.commit && fresh.commit !== commit) {
+      if ((fresh.commit ?? null) !== taskCommitAtStart) {
         throw new Fail(
-          `验证期间任务交付提交已被改为 ${fresh.commit.slice(0, 7)}；本次结果（commit ${commit.slice(0, 7)}）不写入台账，避免错挂版本。\n` +
+          `验证期间任务交付提交已被改为 ${(fresh.commit ?? "").slice(0, 7) || "(空)"}；本次结果（commit ${commit.slice(0, 7)}）不写入台账，避免错挂版本。\n` +
           `日志保留：${rel(ctx.mainRoot, logPath)}`,
           EXIT.rejected,
         );
@@ -1166,11 +1210,11 @@ function readlinkSafe(path) {
   try { return readlinkSync(path); } catch { return null; }
 }
 
-function runScheduled(ctx, wt, label, argvTokens, logPath, env, priority = "P1", timeoutMs = 0) {
+function runScheduled(ctx, wt, label, argvTokens, logPath, env, priority = "P1", timeoutMs = 0, schedClass = null) {
   const sched = join(ctx.mainRoot, "scripts", "build-sched.mjs");
   const useSched = existsSync(sched);
   const command = useSched
-    ? ["node", sched, "run", "--priority", priority, "--label", label, "--cwd", wt, "--", ...argvTokens]
+    ? ["node", sched, "run", "--priority", priority, "--label", label, ...(schedClass ? ["--class", schedClass] : []), "--cwd", wt, "--", ...argvTokens]
     : argvTokens;
   if (!useSched) console.log("  提示：未找到构建调度器，按直接执行处理（仅测试/实验环境允许）");
   return runToLog(command, { cwd: wt, env, logPath, timeoutMs });
@@ -1934,7 +1978,7 @@ function cmdBuild(argv) {
     }
   }
 
-  const release = acquireLock(paths, "build", `build ${buildIdPreview} / ${snap.id} / ${platform}`, { waitMs: 20 * 60 * 1000 });
+  const release = acquireLock(paths, "build", `build ${buildIdPreview} / ${snap.id} / ${platform}`, { waitMs: envInt("TASKDOCK_BUILD_LOCK_WAIT_MS", 20 * 60 * 1000) });
   let buildId = buildIdPreview;
   let buildDir = join(paths.builds, buildId);
   let logPath = join(buildDir, "build.log");

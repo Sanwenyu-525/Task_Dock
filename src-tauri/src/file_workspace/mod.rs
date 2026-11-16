@@ -13,6 +13,7 @@
 
 pub mod preview;
 pub mod thumbnail;
+pub mod volume;
 
 use std::fs;
 use std::os::windows::fs::MetadataExt;

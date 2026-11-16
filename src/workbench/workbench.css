@@ -445,9 +445,21 @@ body.wb-resizing {
   flex: 1 1 auto;
 }
 
+/* 功能工具组：明暗主题 / 视觉主题 / 置顶。紧邻窗口控制组，用细分隔线收束；
+   右侧不再用负外边距抵消顶栏内边距，整组与关闭按钮一起左移。 */
+.wb-titlebar-tools {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  border-right: 1px solid var(--border-subtle);
+  margin-right: 8px;
+}
+
 /* ── 自绘标题栏的窗口控制（最小化 / 最大化-还原 / 关闭）──────────────
    workspace 窗口无原生装饰（decorations(false)），这三个按钮就是系统标题栏
-   的替代：固定在最右侧、与工具栏同高，图标居中、命中区足够大。
+   的替代：固定在功能工具组右侧，与工具栏同高，图标居中、命中区足够大。
    颜色只走语义 Token，浅色/深色/各视觉预设自动适配；关闭的悬停反馈明确
    但不刺眼（危险色的低透明底 + 危险色图标）。 */
 .wb-window-controls {
@@ -455,23 +467,24 @@ body.wb-resizing {
   display: flex;
   align-items: center;
   gap: 2px;
-  align-self: stretch;
-  margin-left: 2px;
+  /* 分组分隔线已由 `.wb-titlebar-tools` 的 border-right 承担，这里不再画
+     第二条线；`margin-left` 只保留分组间距。 */
+  margin-left: 0;
   /* 整簇显式 `data-tauri-drag-region="false"`（不参与拖动）：
      不继承顶栏拖动区的 grab，否则按钮间隙会误示可拖。 */
   cursor: default;
-  /* 抵消顶栏 16px 右侧内边距，按钮与窗口右边只留 4px，视觉上贴住标题栏 */
-  margin-right: -12px;
-  padding-left: 6px;
-  border-left: 1px solid var(--border-subtle);
+  /* 不再用负外边距贴住窗口右边：与顶栏 14px 内边距对齐，关闭按钮与窗口
+     右上角保留安全留白，避免「系统按钮硬塞进来」的观感。 */
+  margin-right: 0;
+  padding-left: 0;
 }
 
 .wb-window-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: none;
   border-radius: var(--radius-sm);
@@ -523,6 +536,9 @@ body.wb-resizing {
   background: var(--surface-hover);
   color: var(--text-primary);
 }
+.wb-icon-btn:active {
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+}
 .wb-icon-btn.is-on {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
@@ -533,13 +549,19 @@ body.wb-resizing {
   outline-offset: 1px;
 }
 
-/* 顶栏右端工具簇（右栏 / 明暗 / 视觉主题）与窗口按钮同一「无框图标」语言：
-   默认不描边，只保留悬停与选中态的底色反馈（效果图顶栏也是无框图标）。
+/* 顶栏右端工具簇（右栏 / 明暗 / 视觉主题 / 置顶）与窗口按钮同一「无框图标」
+   语言：默认不描边，只保留悬停与选中态的底色反馈（效果图顶栏也是无框图标）。
    全局 `box-sizing: border-box`，删掉 1px 边框不改变 30×30 命中区与顶栏对齐；
    边框只是绘制，DropdownMenu 的触发、点击与定位均在按钮自身，不受影响。
    2026-11-16 按用户反馈：红框内三个图标按钮不要加边框。 */
-.wb-topbar-actions .wb-icon-btn {
+.wb-topbar-actions .wb-icon-btn,
+.wb-titlebar-tools .wb-icon-btn {
   border: none;
+}
+
+/* 置顶激活态：底色之外再给图标本身 accent 色，避免只靠边框/提示区分。 */
+.wb-pin-btn.is-on {
+  color: var(--accent);
 }
 
 /* 注意：不要复用 `.wb-body`——该名称是开发工作台面板内部的既有类

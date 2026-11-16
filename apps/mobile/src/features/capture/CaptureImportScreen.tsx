@@ -3,10 +3,12 @@
 // 流程：系统选择器 → 复制进应用 library（content:// 不能当永久路径）→ SHA-256 +
 // 缩略图 → capture_assets(saved) → 直接进「本机素材库」，可继续发送电脑或整理。
 import { useCallback, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, View } from "react-native";
 import { File as FsFile } from "expo-file-system";
 
 import { AppBar } from "../../components/AppBar";
+import { AppIcon } from "../../components/icons/AppIcon";
+import { FileTypeIcon, fileTypeOf } from "../../components/FileTypeIcon";
 import { PressableScale } from "../../components/PressableScale";
 import { useToast } from "../../feedback/ToastProvider";
 import { describeError } from "../../lib/errors";
@@ -71,41 +73,71 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
     <View style={[styles.root, { backgroundColor: tokens.bg }]}>
       <AppBar title="导入素材" onBack={nav.back} />
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + space.xl }]}>
-        <Text style={[styles.title, { color: tokens.text }]}>从系统相册或文件中选择素材</Text>
+        <Text style={[styles.title, { color: tokens.text }]}>选择素材来源</Text>
         <Text style={[styles.note, { color: tokens.muted }]}>
           只读取你在系统选择器里明确选中的文件；不会申请完整相册权限，也不会自动上传。
           导入后会复制一份到 TaskDock 本机素材库，原文件保持不变。
         </Text>
 
+        {/* 两个入口等宽铺满可用宽度；外层 Pressable 负责 flex，内层只做视觉。 */}
         <View style={styles.actions}>
           <PressableScale
-            accessibilityLabel="选择图片"
+            accessibilityLabel="从相册选择图片"
+            accessibilityHint="支持多选图片，导入后进入本机素材库"
             onPress={() => void pick(true)}
             disabled={busy}
             style={styles.actionSlot}
-            contentStyle={[styles.primary, { backgroundColor: tokens.accentFill }]}
+            contentStyle={[
+              styles.importCard,
+              { backgroundColor: tokens.card, borderColor: tokens.cardBorder },
+            ]}
           >
-            <Text style={[styles.primaryText, { color: tokens.onAccent }]}>选择图片</Text>
+            <View style={[styles.entryIcon, { backgroundColor: tokens.accentSoft }]}>
+              <AppIcon name="gallery" color={tokens.accentText} size={32} />
+            </View>
+            <Text numberOfLines={2} style={[styles.entryTitle, { color: tokens.text }]}>
+              从相册选择
+            </Text>
+            <Text numberOfLines={2} style={[styles.entryHint, { color: tokens.muted }]}>
+              支持多选图片，保留原始尺寸
+            </Text>
           </PressableScale>
           <PressableScale
-            accessibilityLabel="选择文件"
+            accessibilityLabel="从本机文件选择"
+            accessibilityHint="支持文档、压缩包、音视频等文件，导入后进入本机素材库"
             onPress={() => void pick(false)}
             disabled={busy}
             style={styles.actionSlot}
-            contentStyle={[styles.secondary, { backgroundColor: tokens.accentSoft }]}
+            contentStyle={[
+              styles.importCard,
+              { backgroundColor: tokens.card, borderColor: tokens.cardBorder },
+            ]}
           >
-            <Text style={[styles.secondaryText, { color: tokens.accentText }]}>选择文件</Text>
+            <View style={[styles.entryIcon, { backgroundColor: tokens.accentAltSoft }]}>
+              <AppIcon name="folder" color={tokens.accent} size={32} />
+            </View>
+            <Text numberOfLines={2} style={[styles.entryTitle, { color: tokens.text }]}>
+              从本机文件选择
+            </Text>
+            <Text numberOfLines={2} style={[styles.entryHint, { color: tokens.muted }]}>
+              文档、压缩包、音视频等
+            </Text>
           </PressableScale>
         </View>
 
         {picked.length > 0 ? (
           <View style={[styles.card, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
             <View style={styles.cardHead}>
-              <Text style={[styles.cardTitle, { color: tokens.text }]}>
-                已选择 {picked.length} 个文件
-              </Text>
+              <View style={styles.cardHeadText}>
+                <Text style={[styles.cardTitle, { color: tokens.text }]}>
+                  已选择 {picked.length} 个素材
+                </Text>
+                <Text style={[styles.cardSubtitle, { color: tokens.muted }]}>
+                  {formatBytes(picked.reduce((sum, file) => sum + (file.size || 0), 0))}
+                </Text>
+              </View>
               <PressableScale
-                accessibilityLabel="清空已选文件"
+                accessibilityLabel="清空已选素材"
                 disabled={busy}
                 onPress={() => setPicked([])}
                 style={styles.clearPress}
@@ -115,29 +147,63 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
                 <Text style={[styles.clearText, { color: tokens.accentText }]}>清空</Text>
               </PressableScale>
             </View>
-            {picked.slice(0, 20).map((file, index) => (
-              <Text
-                key={`${file.uri}-${index}`}
-                numberOfLines={1}
-                style={[styles.fileLine, { color: tokens.textSoft }]}
-              >
-                {index + 1}. {file.name || "未命名"} · {formatBytes(file.size)}
-              </Text>
-            ))}
+            <View style={[styles.previewDivider, { backgroundColor: tokens.separator }]} />
+            {picked.slice(0, 20).map((file, index) => {
+              const image = file.type?.startsWith("image/") ?? false;
+              return (
+                <View key={`${file.uri}-${index}`} style={styles.fileRow}>
+                  {image ? (
+                    <Image
+                      source={{ uri: file.uri }}
+                      style={[styles.fileThumb, { backgroundColor: tokens.track }]}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={styles.fileIcon}>
+                      <FileTypeIcon kind={fileTypeOf(file.name)} size={34} />
+                    </View>
+                  )}
+                  <View style={styles.fileBody}>
+                    <Text numberOfLines={1} style={[styles.fileName, { color: tokens.text }]}>
+                      {file.name || "未命名文件"}
+                    </Text>
+                    <Text numberOfLines={1} style={[styles.fileMeta, { color: tokens.muted }]}>
+                      {formatBytes(file.size)}
+                    </Text>
+                  </View>
+                  <PressableScale
+                    accessibilityLabel={`移除 ${file.name || "未命名文件"}`}
+                    disabled={busy}
+                    onPress={() =>
+                      setPicked((current) => current.filter((_, currentIndex) => currentIndex !== index))
+                    }
+                    style={styles.removePress}
+                    contentStyle={styles.removeButton}
+                    scaleTo={0.9}
+                  >
+                    <AppIcon name="close" color={tokens.muted} size={16} />
+                  </PressableScale>
+                </View>
+              );
+            })}
             {picked.length > 20 ? (
               <Text style={[styles.note, { color: tokens.muted }]}>
-                其余 {picked.length - 20} 个文件未展开显示
+                其余 {picked.length - 20} 个文件未展开显示，仍会一起导入
               </Text>
             ) : null}
             <PressableScale
-              accessibilityLabel="导入到本机暂存"
+              accessibilityLabel="导入到本机素材库"
               onPress={() => void runImport()}
               disabled={busy}
-              contentStyle={[styles.primary, { backgroundColor: busy ? tokens.track : tokens.accentFill }]}
+              style={styles.fullWidthPress}
+              contentStyle={[
+                styles.importAction,
+                { backgroundColor: busy ? tokens.track : tokens.accentFill },
+              ]}
             >
               {busy ? <ActivityIndicator color={tokens.onAccent} size="small" /> : null}
-              <Text style={[styles.primaryText, { color: tokens.onAccent }]}>
-                {busy ? "导入中…" : `导入到本机暂存（${picked.length}）`}
+              <Text style={[styles.importActionText, { color: busy ? tokens.muted : tokens.onAccent }]}>
+                {busy ? "导入中…" : `导入到本机素材库（${picked.length}）`}
               </Text>
             </PressableScale>
             {busy && progress ? (
@@ -184,9 +250,30 @@ const styles = StyleSheet.create({
   content: { padding: space.lg, gap: space.md },
   title: { fontSize: font.title, fontWeight: "700" },
   note: { fontSize: font.meta, lineHeight: 18 },
-  actions: { flexDirection: "row", gap: space.sm },
+  actions: { flexDirection: "row", gap: space.md },
   // 等宽两列：flex 必须落在外层 Pressable 上（contentStyle 只负责内层视觉）
-  actionSlot: { flex: 1 },
+  actionSlot: { flex: 1, minWidth: 0 },
+  importCard: {
+    width: "100%",
+    minHeight: 154,
+    borderRadius: radius.row,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: space.md,
+    paddingVertical: space.lg,
+    gap: space.xs,
+  },
+  entryIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: radius.iconTile,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: space.xxs,
+  },
+  entryTitle: { fontSize: font.title, fontWeight: "700", textAlign: "center" },
+  entryHint: { fontSize: font.meta, lineHeight: 17, textAlign: "center" },
   primary: {
     minHeight: 48,
     borderRadius: radius.row,
@@ -209,12 +296,51 @@ const styles = StyleSheet.create({
     borderRadius: radius.row,
     borderWidth: StyleSheet.hairlineWidth,
     padding: space.md,
-    gap: space.xs,
+    gap: space.sm,
   },
   cardTitle: { fontSize: font.body, fontWeight: "700" },
+  cardSubtitle: { fontSize: font.meta, fontVariant: ["tabular-nums"] },
   cardHead: { flexDirection: "row", alignItems: "center", gap: space.sm },
-  clearPress: { marginLeft: "auto", minWidth: 44, minHeight: 44, justifyContent: "center" },
+  cardHeadText: { flex: 1, minWidth: 0, gap: 1 },
+  clearPress: { minWidth: 44, minHeight: 44, justifyContent: "center" },
   clearButton: { alignItems: "flex-end", justifyContent: "center", minHeight: 44 },
   clearText: { fontSize: font.meta, fontWeight: "600" },
+  previewDivider: { height: StyleSheet.hairlineWidth },
+  fileRow: {
+    minHeight: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.md,
+  },
+  fileThumb: { width: 52, height: 52, borderRadius: radius.control },
+  fileIcon: {
+    width: 52,
+    height: 52,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fileBody: { flex: 1, minWidth: 0, gap: 2 },
+  fileName: { fontSize: font.body, fontWeight: "600" },
+  fileMeta: { fontSize: font.meta, fontVariant: ["tabular-nums"] },
+  removePress: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  removeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fullWidthPress: { alignSelf: "stretch", marginTop: space.xs },
+  importAction: {
+    width: "100%",
+    minHeight: 48,
+    borderRadius: radius.row,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.sm,
+    paddingHorizontal: space.md,
+  },
+  importActionText: { fontSize: font.body, fontWeight: "700" },
   fileLine: { fontSize: font.label, lineHeight: 16 },
 });

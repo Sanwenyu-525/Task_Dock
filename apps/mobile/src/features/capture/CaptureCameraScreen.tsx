@@ -21,7 +21,7 @@ import {
 import { CameraView, useCameraPermissions, type CameraType, type FlashMode } from "expo-camera";
 
 import { AppIcon } from "../../components/icons/AppIcon";
-import { useToastTopAnchor } from "../../feedback/ToastLayoutProvider";
+import { useToastBottomAnchor, useToastTopAnchor } from "../../feedback/ToastLayoutProvider";
 import * as repo from "../../db/captureAssets";
 import { AppError, describeError } from "../../lib/errors";
 import { useWindowInsets } from "../../lib/insets";
@@ -50,6 +50,8 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
   const topAnchor = useToastTopAnchor();
+  // 底部 Toast 必须让开快门/缩略图/相机切换这一整条操作区。
+  const bottomAnchor = useToastBottomAnchor();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
   const [ready, setReady] = useState(false);
@@ -268,7 +270,7 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
       )}
 
       <View
-        style={[styles.topBar, { paddingTop: space.sm, backgroundColor: tokens.inkScrim }]}
+        style={[styles.topBar, { paddingTop: space.sm }]}
         onLayout={topAnchor.onLayout}
       >
         <Pressable
@@ -314,7 +316,8 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
       </View>
 
       <View
-        style={[styles.bottomBar, { paddingBottom: insets.bottom + space.md, backgroundColor: tokens.inkScrim }]}
+        onLayout={bottomAnchor.onLayout}
+        style={[styles.bottomBar, { paddingBottom: insets.bottom + space.md }]}
       >
         <View style={styles.thumbnailSlot}>
           {staged.length > 0 ? (
@@ -329,7 +332,15 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
               </View>
             </Pressable>
           ) : (
-            <Text style={[styles.slotHint, { color: tokens.onInkMuted }]}>连续拍摄</Text>
+            <Text
+              style={[
+                styles.slotHint,
+                styles.hintChip,
+                { backgroundColor: tokens.inkScrim, color: tokens.onInkMuted },
+              ]}
+            >
+              连续拍摄
+            </Text>
           )}
         </View>
 
@@ -339,7 +350,7 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
           accessibilityState={{ disabled: busy || !ready }}
           disabled={busy || !ready}
           onPress={() => void takePhoto()}
-          style={[styles.shutterOuter, { borderColor: tokens.onInk }]}
+          style={[styles.shutterOuter, { borderColor: tokens.onInk, backgroundColor: tokens.inkScrim }]}
         >
           <View
             style={[
@@ -372,7 +383,15 @@ export function CaptureCameraScreen({ nav }: { nav: Nav }) {
             </Pressable>
           ) : (
             <View style={styles.zoomHint}>
-              <Text style={[styles.slotHint, { color: tokens.onInkMuted }]}>双指缩放</Text>
+              <Text
+                style={[
+                  styles.slotHint,
+                  styles.hintChip,
+                  { backgroundColor: tokens.inkScrim, color: tokens.onInkMuted },
+                ]}
+              >
+                双指缩放
+              </Text>
             </View>
           )}
         </View>
@@ -459,6 +478,13 @@ const styles = StyleSheet.create({
   thumbnailFallback: { alignItems: "center", justifyContent: "center" },
   thumbnailCount: { fontSize: font.title, fontWeight: "700" },
   slotHint: { fontSize: font.label },
+  hintChip: {
+    paddingHorizontal: space.sm,
+    paddingVertical: 3,
+    borderRadius: 999,
+    overflow: "hidden",
+    textAlign: "center",
+  },
   shutterOuter: {
     width: 78,
     height: 78,

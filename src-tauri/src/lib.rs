@@ -1571,6 +1571,7 @@ pub fn run() {
             commands::file_workspace::fs_rename,
             commands::file_workspace::fs_batch_rename,
             commands::file_workspace::fs_hash_files,
+            commands::file_workspace::fs_volume_keys,
             commands::file_workspace::fs_preview_image,
             commands::file_workspace::fs_read_text,
             commands::file_workspace::fs_preview_media_url,
@@ -1640,6 +1641,21 @@ pub fn run() {
             commands::project_workspace::novel_chapter_save,
             commands::project_workspace::novel_chapter_save_content,
             commands::project_workspace::novel_chapter_delete,
+            // 小说 B2（v59）：人物档案 / 人物关系 / 世界观设定 / 实体→章节引用
+            commands::novel_workspace::novel_character_list,
+            commands::novel_workspace::novel_character_get,
+            commands::novel_workspace::novel_character_save,
+            commands::novel_workspace::novel_character_delete,
+            commands::novel_workspace::novel_character_relation_list,
+            commands::novel_workspace::novel_character_relation_save,
+            commands::novel_workspace::novel_character_relation_delete,
+            commands::novel_workspace::novel_worldview_list,
+            commands::novel_workspace::novel_worldview_get,
+            commands::novel_workspace::novel_worldview_save,
+            commands::novel_workspace::novel_worldview_delete,
+            commands::novel_workspace::novel_entity_ref_list,
+            commands::novel_workspace::novel_entity_ref_add,
+            commands::novel_workspace::novel_entity_ref_delete,
             // ── 创作工作台五线（B2/G1/C1/U1/D1，v59–v63，2026-11-16）──────────
             // 五条线只写自己的领域文件（commands/*_workspace.rs）；命令注册点统一在这里，
             // 集成负责人按各线交付清单登记，避免五线并发改 lib.rs。

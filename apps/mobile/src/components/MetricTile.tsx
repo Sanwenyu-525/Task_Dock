@@ -2,6 +2,8 @@
 //
 // variant="stat"：首页效率概览的三张独立统计卡（白卡 + 语义色图标底板）。
 // variant="column"：只渲染列内容，由调用方放进同一张卡（设置统计）。
+// variant="compactInline"：诊断/设置/我的等卡片内的紧凑横排，图标 + 数字 + 标签同一行；
+//   标签允许两行换行，不靠缩小字号或截断适配窄屏与大字号。
 // variant="card"：保留给单张统计卡，当前无调用方。
 // 只接收真实统计值，不内置任何示例数据。
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
@@ -29,7 +31,7 @@ export function MetricTile({
   /** 语义图标；没有合适语义时可以不传，只显示数字与标签 */
   icon?: IconName;
   tone?: MetricTone;
-  variant?: "card" | "column" | "stat";
+  variant?: "card" | "column" | "stat" | "compactInline";
   /** stat 变体的图标与数字排布：row = 数字在图标右侧，stack = 图标上方（窄卡片回退用） */
   statLayout?: "row" | "stack";
   /** column 变体的排布：row = 图标左侧、数字与标签在右侧，stack = 图标在上 */
@@ -102,6 +104,20 @@ export function MetricTile({
           {label}
         </Text>
       </GlassCard>
+    );
+  }
+
+  if (variant === "compactInline") {
+    return (
+      <View style={[styles.compactInline, style]}>
+        {icon ? <AppIcon name={icon} color={iconColor} size={18} style={styles.compactIcon} /> : null}
+        <Text numberOfLines={1} style={[styles.compactValue, { color }]}>
+          {value}
+        </Text>
+        <Text numberOfLines={2} style={[styles.compactLabel, { color: tokens.muted }]}>
+          {label}
+        </Text>
+      </View>
     );
   }
 
@@ -242,5 +258,33 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
     letterSpacing: -0.8,
     lineHeight: font.stat + 5,
+  },
+  compactInline: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: space.sm,
+    paddingVertical: 6,
+  },
+  compactIcon: {
+    flexShrink: 0,
+  },
+  compactValue: {
+    flexShrink: 0,
+    fontSize: font.title,
+    lineHeight: font.title + 4,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+    letterSpacing: -0.4,
+  },
+  compactLabel: {
+    flexShrink: 1,
+    minWidth: 0,
+    fontSize: font.label,
+    lineHeight: 16,
+    fontWeight: "600",
   },
 });

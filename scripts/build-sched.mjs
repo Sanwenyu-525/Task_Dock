@@ -399,7 +399,12 @@ async function cmdCancel(argv) {
   requestCancel(ctx.state.home, task.id, { reason: "CLI cancel" });
   console.log(`[sched] 已登记取消请求：${task.id}（${task.taskClass} / ${task.status}）`);
 
-  const owner = verifyIdentity({ pid: task.owner?.pid, startTime: task.owner?.startTime ?? null });
+  // identity.source 必须一并传：队列记录的创建时间由 process.uptime() 反推（来源 uptime），
+  // 与 CIM 的 CreationDate 天然差几百毫秒；不传来源时 verifyIdentity 会跳过 2s 容差，把活着的
+  // 提交进程判成"PID 已被复用 → gone"，进而把仍在排队的任务错标为 cancelled。
+  const owner = verifyIdentity({
+    pid: task.owner?.pid, startTime: task.owner?.startTime ?? null, source: task.owner?.startTimeSource,
+  });
   // 只有「身份取证明确判定已退出」且「记录长时间没有任何更新」才敢直接按终态处理：
   // 单次 blink 式探活失败（重负载下进程快照漏读、PID 复用判定）不足以断言提交进程已死，
   // 否则会先把活着的提交进程的任务标成 cancelled，然后它自己覆盖回 running 继续跑（错判）。
@@ -429,7 +434,9 @@ async function cmdCancel(argv) {
     // 等待中再取证一次：确认「提交进程确实已退出」且「记录 6s 内没被任何人更新」时，
     // 才敢替它收尾（否则只登记取消请求，让活着的持有者自己按取消码退出）。
     if (Date.now() - t0 > 2000) {
-      const again = verifyIdentity({ pid: rec.owner?.pid, startTime: rec.owner?.startTime ?? null });
+      const again = verifyIdentity({
+        pid: rec.owner?.pid, startTime: rec.owner?.startTime ?? null, source: rec.owner?.startTimeSource,
+      });
       const idle = Date.now() - Date.parse(rec.updatedAt ?? rec.enqueuedAt ?? 0);
       if (again.state === "gone" && idle > 6000) {
         writeTask(ctx.state.home, {
@@ -558,7 +565,9 @@ function cmdDoctor(argv) {
   // 5) 队列残留
   const tasks = readQueue(home);
   const staleQueued = tasks.filter((t) => ACTIVE_STATUSES.has(t.status) && t.status !== "running" &&
-    verifyIdentity({ pid: t.owner?.pid, startTime: t.owner?.startTime ?? null }).state === "gone");
+    verifyIdentity({
+      pid: t.owner?.pid, startTime: t.owner?.startTime ?? null, source: t.owner?.startTimeSource,
+    }).state === "gone");
   for (const t of staleQueued) {
     issues.push({ severity: "P2", text: `排队任务 ${t.id} 的提交进程已退出（会被 housekeeping 归档为 cancelled）` });
   }
@@ -612,7 +621,9 @@ function cmdDoctor(argv) {
         }
         continue;
       }
-      const idCheck = verifyIdentity({ pid: owner.pid, startTime: owner.startTime ?? null });
+      const idCheck = verifyIdentity({
+        pid: owner.pid, startTime: owner.startTime ?? null, source: owner.startTimeSource,
+      });
       if (idCheck.state !== "gone") continue;
       const reap = reapOrphanChild({
         child: owner.child ?? null, taskId: owner.taskId ?? null,

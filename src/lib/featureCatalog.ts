@@ -612,29 +612,34 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "项目还复用工作空间的概览、写作事项、任务关联与项目设置模块。" +
       "这是真实可用的基础编辑能力，不是完整专业创作闭环：人物档案、世界观、大纲、版本历史、导入导出、全文搜索与 AI 辅助均未接入，" +
       "对应能力在 workspaceProfiles 中登记为 planned，UI 不渲染生成/续写按钮。" +
-      "B1 验收报告结论为部分通过：自动化与预览通道通过，原生窗口长篇输入走查未执行。",
+      "B1 验收报告结论为部分通过：自动化与预览通道通过，原生窗口长篇输入走查未执行。" +
+      "【更正 2026-11-16 B2】人物档案与世界观设定已接入（迁移 v59：novel_characters / " +
+      "novel_character_relations / novel_worldview_entries / novel_entity_refs，模块「人物」「世界观」），" +
+      "章节引用为真实数据；但前端单测与编译检查虽通过，Rust 运行期功能测试因本机页面文件耗尽未取得证据，" +
+      "能力状态只能为 limited。大纲、版本历史、全文搜索与 AI 辅助仍未接入。",
     status: "partial",
     priority: "P1",
     existingFeatures: [
-      "小说项目类型（v57）与独立「正文」模块：概览 / 正文 / 写作事项 / 任务关联 / 项目设置",
+      "小说项目类型（v57）与独立模块：概览 / 正文 / 人物 / 世界观 / 写作事项 / 任务关联 / 项目设置",
       "卷→章树：卷与章的增删改、排序、未分卷章节归属",
       "章节正文纯文本编辑、自动保存与字数统计；单章 8 MiB 上限，保存失败可重试",
-      "小说卷/章数据进入备份表清单，恢复后正文与结构保留",
-      "首页只展示真实数据，planned 能力（人物/世界观/AI 辅助）不渲染可点击入口",
+      "人物档案（姓名/别名/简介/外貌/背景/动机/阵营/状态/标签）与人物关系，按项目隔离",
+      "世界观设定（地点/组织/历史事件/物品/规则体系/自定义类型），可检索可关联",
+      "人物/设定 → 章节引用为真实数据，解绑不删除人物或章节",
+      "小说卷/章、人物/世界观数据进入备份表清单，恢复后结构与内容保留",
     ],
     missingFeatures: [
-      "人物档案、关系与出场章节（novel.characters 仍为 planned）",
-      "世界观设定集与引用关系（novel.worldview 仍为 planned）",
       "AI 创作辅助：续写、改写、灵感提示（需独立授权与上下文装配，novel.aiAssist 仍为 planned）",
-      "大纲/章节梗概与结构视图",
+      "大纲/章节梗概与结构视图、完整剧情时间线",
+      "伏笔追踪与跨媒介 IP 转换（core.mediaLink 只预留）",
       "版本记录、历史对比与撤销",
       "Markdown/富文本、导入导出（TXT/Word）与全文搜索",
       "长篇连续写作的原生真机走查与性能基线",
     ],
     dependencies: [
-      "迁移 v58（novel_volumes / novel_chapters）与 workspace_projects novel kind",
-      "workspaceProfiles 能力注册表与备份表清单",
-      "后续人物/世界观需要新表与迁移（append-only）",
+      "迁移 v58（novel_volumes / novel_chapters）与迁移 v59（人物/世界观/引用）",
+      "workspace_projects 的 novel kind 与 workspaceProfiles 能力注册表",
+      "创作工作台模块注册表（src/workbench/creative/moduleRegistry.ts）",
     ],
     acceptanceCriteria: [
       "创建卷/章并保存正文，重启后结构、正文与字数一致",

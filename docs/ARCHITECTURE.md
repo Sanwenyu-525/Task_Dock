@@ -900,15 +900,16 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   避免 56px 内手柄和分组标题逐字换行（2026-11-16 真实窗口极窄检查修复）。
   ⑤**导航宽度临界点与名称 tooltip（2026-11-16）**：新增
   `WORKBENCH_NAV_LABELS_MIN_WIDTH = 200`（拖拽下限仍是 `WORKBENCH_NAV_WIDTH_MIN = 180`）。
-  实际导航宽度 <200px（180–199，或响应式 56px）时根节点 `data-nav-compact="true"`，
-  CSS 隐藏 `.wb-nav-label`；动态页面按钮与首页/设置/更多只在该状态挂 `data-tip`。
+  实际导航宽度按整像素取整后 <200px（180–199，或响应式 56px）时根节点 `data-nav-compact="true"`，
+  CSS 隐藏 `.wb-nav-label`；动态行容器/页面按钮与首页/设置/更多只在该状态挂 `data-tip`。
   ≥200px 时不挂名称 `data-tip`，页面按钮因有可见文字也不会触发 TooltipLayer 的
   `aria-label` 回退；拖拽手柄与 × 在宽态用 `data-tip-skip` 抑制自身回退提示。实际宽度由
-  `ResizeObserver` 校正，避免只依赖设置里的 `navWidth` 而漏掉 ≤760px 的 CSS 降级。
+  `ResizeObserver` 校正，避免只依赖设置里的 `navWidth` 而漏掉 ≤760px 的 CSS 降级；取整是为
+  了避免 WebView2 实测 `199.587px`（名义 200px）时被亚像素误差误判为图标态（2026-11-16 修复）。
   Agent 统一图标 `AgentIcon` 由旧 Orbit Core 改为 Lucide `Bot` 机器人（`data-agent-icon="robot"`），
   全项目 Agent 入口/胶囊/面板同步生效，仍只使用 `currentColor`，默认 18px / stroke 1.75。
-  测试：`WorkbenchShell.dragSort.test.tsx`（30 项，含跨组标题/尺寸/网格/DOM 语义/隐藏/
-  临界点 200px 与 180px 图标态 tooltip）、`AgentIcon.test.tsx`（5 项，机器人几何与默认属性）、
+  测试：`WorkbenchShell.dragSort.test.tsx`（31 项，含跨组标题/尺寸/网格/DOM 语义/隐藏/
+  临界点 200px、180px 图标态 tooltip 与 199.587px 亚像素回归）、`AgentIcon.test.tsx`（5 项，机器人几何与默认属性）、
   `navVisibility.test.ts`（38 项，含重复段不批量改写与 movedId 边界）、
   `useNavOrderDraft.test.tsx`（6 项）、`navOrderIntent.test.ts`（11 项）。
 - 设置页信息架构（2026-11-06，一级分类 + 查找定位）：设置页从「十几个分组纵向堆叠」

@@ -7,9 +7,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Dimensions,
   Image,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -115,10 +117,14 @@ function isImageAsset(asset: repo.CaptureAsset): boolean {
   return asset.mime.startsWith("image/");
 }
 
-function DestinationChips({
+function AssetStatusStrip({
+  statusLabel,
+  statusColor,
   items,
   tokens,
 }: {
+  statusLabel: string;
+  statusColor: string;
   items: repo.CaptureDestination[];
   tokens: ReturnType<typeof useTheme>["tokens"];
 }) {
@@ -129,17 +135,27 @@ function DestinationChips({
     shelf: "暂存架",
   };
   const shown = items.filter((item) => item.destination !== "local");
-  if (shown.length === 0) return null;
   return (
-    <View style={styles.badgeRow}>
+    <View style={styles.statusStrip}>
+      <View
+        style={[
+          styles.statusBadge,
+          { backgroundColor: `${statusColor}1F`, borderColor: `${statusColor}55` },
+        ]}
+      >
+        <Text style={[styles.statusText, { color: statusColor }]}>{statusLabel}</Text>
+      </View>
       {shown.map((item) => {
         const toneColor = destinationTone(item.state, tokens);
         return (
           <View
             key={item.destination}
-            style={[styles.destBadge, { backgroundColor: `${toneColor}1F` }]}
+            style={[
+              styles.statusBadge,
+              { backgroundColor: `${toneColor}1F`, borderColor: `${toneColor}55` },
+            ]}
           >
-            <Text style={[styles.destBadgeText, { color: toneColor }]}>
+            <Text style={[styles.statusText, { color: toneColor }]}>
               {labels[item.destination]}
             </Text>
             {item.state === "done" ? (
@@ -184,6 +200,8 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const [availability, setAvailability] = useState<PairingAvailability | null>(null);
   const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
   const [lightbox, setLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null);
+  // 详情面板的垂直拖拽位移；只由顶部拖拽条驱动，内容区滚动不参与。
+  const detailTranslateY = useRef(new Animated.Value(0)).current;
 
   const { showToast } = useToast();
   // 批量操作栏只在多选且已选中时出现：出现时把实际高度交给 Toast，避免底部提示压住动作。
@@ -241,10 +259,51 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
 
   useEffect(() => {
     if (!detail) return;
+    detailTranslateY.setValue(0);
     setNameDraft(detail.name);
     setNoteDraft(detail.note);
     setDetailDestinations(destinations[detail.id] ?? []);
-  }, [detail?.id, detail?.name, detail?.note, destinations]);
+  }, [detail?.id, detail?.name, detail?.note, destinations, detailTranslateY]);
+
+  const detailPan = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderMove: (_, gesture) => {
+          detailTranslateY.setValue(gesture.dy);
+        },
+        onPanResponderRelease: (_, gesture) => {
+          const shouldClose = Math.abs(gesture.dy) > 72 || Math.abs(gesture.vy) > 1.1;
+          if (shouldClose) {
+            Animated.timing(detailTranslateY, {
+              toValue: gesture.dy >= 0 ? 420 : -420,
+              duration: 180,
+              useNativeDriver: true,
+            }).start(() => {
+              setDetail(null);
+              detailTranslateY.setValue(0);
+            });
+            return;
+          }
+          Animated.spring(detailTranslateY, {
+            toValue: 0,
+            useNativeDriver: true,
+            bounciness: 0,
+            speed: 22,
+          }).start();
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(detailTranslateY, {
+            toValue: 0,
+            useNativeDriver: true,
+            bounciness: 0,
+            speed: 22,
+          }).start();
+        },
+      }),
+    [detailTranslateY],
+  );
 
   const visible = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -792,8 +851,8 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                     />
                   </Pressable>
                 ) : (
-                  <View style={[styles.typeBoard, { backgroundColor: tokens.tileBase, borderColor: tokens.tileBorder }]}>
-                    <FileTypeIcon kind={fileTypeOf(asset.name)} size={22} />
+                  <View style={styles.fileIconBare}>
+                    <FileTypeIcon kind={fileTypeOf(asset.name)} size={34} />
                   </View>
                 )}
                 <View style={styles.cardMain}>
@@ -808,19 +867,12 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                   <Text style={[styles.cardMeta, { color: tokens.muted }]} numberOfLines={1}>
                     {formatRelative(asset.createdAt, now)} · {formatBytes(asset.byteSize)}
                   </Text>
-                  <View style={styles.statusRow}>
-                    <View
-                      style={[
-                        styles.statusBadge,
-                        { backgroundColor: `${statusColor}1F`, borderColor: `${statusColor}55` },
-                      ]}
-                    >
-                      <Text style={[styles.statusText, { color: statusColor }]}>
-                        {status.label}
-                      </Text>
-                    </View>
-                  </View>
-                  <DestinationChips items={items} tokens={tokens} />
+                  <AssetStatusStrip
+                    statusLabel={status.label}
+                    statusColor={statusColor}
+                    items={items}
+                    tokens={tokens}
+                  />
                   {items.some((item) => item.state === "failed") ? (
                     <Text style={[styles.cardError, { color: tokens.danger }]} numberOfLines={1}>
                       {items.find((item) => item.state === "failed")?.lastError}
@@ -935,7 +987,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         onRequestClose={() => setDetail(null)}
       >
         <View style={[styles.modalMask, { backgroundColor: tokens.overlay }]}>
-          <View
+          <Animated.View
             style={[
               styles.detailSheet,
               {
@@ -943,9 +995,19 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                 paddingBottom: (keyboardHeight > 0 ? 0 : insets.bottom) + space.md,
                 marginBottom: keyboardHeight,
                 maxHeight: sheetMaxHeight,
+                transform: [{ translateY: detailTranslateY }],
               },
             ]}
           >
+            <View
+              {...detailPan.panHandlers}
+              style={styles.detailDragHandle}
+              accessible
+              accessibilityLabel="拖动关闭素材详情"
+              accessibilityHint="向上或向下拖动可关闭；也可以使用右上角关闭按钮或系统返回键"
+            >
+              <View style={[styles.detailDragBar, { backgroundColor: tokens.separator }]} />
+            </View>
             {detail ? (
               <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                 <View style={styles.detailHeader}>
@@ -1115,7 +1177,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                 </Text>
               </ScrollView>
             ) : null}
-          </View>
+          </Animated.View>
         </View>
       </Modal>
 
@@ -1172,11 +1234,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   thumb: { width: 56, height: 56, borderRadius: radius.control },
-  typeBoard: {
+  fileIconBare: {
     width: 40,
     height: 40,
-    borderRadius: radius.iconTile,
-    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1184,26 +1244,25 @@ const styles = StyleSheet.create({
   nameRow: { flexDirection: "row", alignItems: "center", gap: space.xs },
   cardName: { flexShrink: 1, fontSize: font.title, fontWeight: "600" },
   cardMeta: { fontSize: font.meta },
-  badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: space.xs, marginTop: space.xxs },
+  statusStrip: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: space.xs,
+    marginTop: space.xxs,
+  },
   statusRow: { flexDirection: "row", marginTop: space.xs },
   statusBadge: {
-    minHeight: 20,
+    minHeight: 22,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.xxs,
     paddingHorizontal: space.sm,
     borderRadius: radius.chip,
     borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
   },
   statusText: { fontSize: font.label, fontWeight: "700" },
-  destBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: space.xxs,
-    paddingHorizontal: space.xs,
-    paddingVertical: space.xxs,
-    borderRadius: radius.chip,
-  },
-  destBadgeText: { fontSize: font.label, fontWeight: "700" },
   cardError: { fontSize: font.label },
   boundary: {
     paddingTop: space.md,
@@ -1256,6 +1315,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     paddingTop: space.md,
   },
+  detailDragHandle: {
+    minHeight: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: -space.sm,
+    marginBottom: space.xs,
+  },
+  detailDragBar: { width: 44, height: 5, borderRadius: 3 },
   detailHeader: { flexDirection: "row", alignItems: "center", marginBottom: space.sm },
   detailTitle: { flex: 1, fontSize: font.title, fontWeight: "700" },
   detailClose: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.sm },
