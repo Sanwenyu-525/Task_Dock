@@ -88,7 +88,7 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 | 状态 | 含义 | 推进方式 |
 |---|---|---|
 | 开发中 | 正在改代码 | 负责人 `task add` / `task update` |
-| 待集成 | 代码完成且模块级检查通过 | 负责人 `task ready`（需交付提交 + 通过检查） |
+| 待集成 | 代码完成且模块级检查**真实执行**通过 | 负责人 `task ready`（需交付提交 + `task verify` 通过记录） |
 | 已集成 | 改动进入快照提交 | 工具 `snapshot create` 成功 |
 | 待验收 | 代码在可测产物中 | 工具 `build` 成功 |
 | 验收通过 / 验收失败 | 在指定构建版本上的结论 | 验收 Agent `accept --status pass|fail` |
@@ -98,15 +98,16 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 
 ```bash
 npm run integrate -- task add --id <任务> --owner <agent> --module <模块> --paths <写入范围>
-npm run integrate -- task check --id <任务> --cmd "<检查命令>" --exit <退出码> [--commit <检查提交>]
+npm run integrate -- task verify --id <任务> --commit <提交> --cmd "<真实命令>"
 npm run integrate -- task ready --id <任务> --commit <交付提交>
 npm run integrate:status
 ```
 
 写入范围是集成与冲突判定的唯一依据：交付提交里出现未声明路径会被拒绝（防串味）；确属本任务时
-用 `--allow-extra-paths` 显式放行，**这些路径会一并进入快照**并记入 `includedExtraPaths`，不是
-“只记录不应用”。检查记录应显式 `--commit` 绑定它实际运行的提交（省略时绑定当时 `HEAD`）；
-`task ready` 只认同一交付提交上的通过检查。
+用 `--allow-extra-paths` 显式放行，**这些路径会一并进入快照、参与交集判定**并记入
+`includedExtraPaths`，不是“只记录不应用”。**`task verify` 才是在隔离工作区对指定提交真实执行检查**；
+`task check` 只是 `source=external` 的人工登记，无证据不能作为正式集成资格。`task ready` 只认同一
+交付提交上的真实执行（或带证据的外部）通过记录。任务台账按任务加锁并带修订号，禁止绕过工具手改 JSON。
 
 ### 3.4 集成、构建与验收职责
 
@@ -131,9 +132,12 @@ npm run integrate:status
   `create` 只在 3.1 判定需要隔离后执行，`cleanup` 默认 dry-run，`--execute` 的准入见
   [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §8.7。
 - 工具不自动创建/提交/合并/删除；异常保留现场上报，冲突先读双方 diff，无法安全合并时停止。
-- 集成与构建使用工具自有的两个工作区：`<仓库父目录>/<仓库名>-integration`（分支 `integration`，
-  只做快照）与 `<仓库父目录>/<仓库名>-integration-build`（detached HEAD，只做构建）；两者用
-  独立锁，可并行。与 Agent 任务 Worktree 分开管理；不得手工用它们做开发或验收操作。
+- 集成、构建与真实检查使用工具自有的三个工作区：`<仓库父目录>/<仓库名>-integration`（分支
+  `integration`，只做快照）、`<仓库父目录>/<仓库名>-integration-build`（detached HEAD，只做构建）、
+  `<仓库父目录>/<仓库名>-integration-verify`（detached HEAD，只做 `task verify`）。每个工作区必须有
+  `tmp/integration/worktrees/<role>.json` 身份记录；缺记录/被改/指向其他仓库/被普通 Agent Worktree
+  占用时工具拒绝操作，**不重建、不删除、不 reset/clean、不切分支**。旧工作区先 `worktree adopt --role ...`
+  做非破坏登记。三者用独立锁，可并行；与 Agent 任务 Worktree 分开管理，不得手工用于开发或验收。
 
 ## 4. 架构与数据安全红线
 
@@ -182,10 +186,13 @@ npm run integrate:status
 ### 5.2 统一构建与安装包
 - **正式测试安装包只从集成快照构建**：`npm run integrate -- build --snapshot <快照> --platform
   desktop|web|android`。共享工作区里的未提交改动、`main` 上更晚的提交都不进入产物。
-- 每个「快照提交 + 平台 + 构建配置」原则上只构建一次；已有成功产物且校验值一致时复用，
-  不因不同 Agent 分别验收而重复打包。桌面端与移动端、不同架构/配置**不能视为同一个安装包**。
+- 每个「快照提交 + 平台 + 配置 + 架构 + 构建输入指纹」只构建一次；已有成功产物**重新校验**后才复用，
+  不因不同 Agent 分别验收而重复打包。输入指纹覆盖依赖锁/依赖段与工具链。桌面端与移动端、不同
+  架构/配置**不能视为同一个安装包**。构建依赖必须与快照代码一致（已存在 junction 也每次核对）；
+  桌面缓存登记失败（build-guard register）必须阻止构建，不能产生无法追踪的大缓存。
 - 构建记录必须含：构建 ID、Git commit（`dirty` 为构建前后实测，不得硬编码 false）、平台与配置、
-  时间、包含的任务、退出码、产物路径与 sha256、调度任务与日志路径；`status=succeeded` 还必须
+  架构与构建输入指纹、时间、包含的任务（声明路径与显式放行的额外路径）、退出码、产物路径与 sha256、
+  调度任务与日志路径；`status=succeeded` 还必须
   至少有一个平台可用产物（web `dist/index.html`、桌面安装包、Android apk），零产物或 dirty 构建
   一律记失败。记录位置与字段见 [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md) §5。
 - 集成任务的构建走调度器（label `integration-<构建ID>`），与日常构建共享同一队列，不另造锁；

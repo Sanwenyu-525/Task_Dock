@@ -62,13 +62,19 @@ const TASK_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_TASK_ID = 48;
 const SNAPSHOT_ID_RE = /^snap-\d+$/;
 const BUILD_ID_RE = /^b\d+-[a-z]+-r\d+$/;
-const LOCK_STALE_MS = 12 * 60 * 60 * 1000;
+const WORKTREE_ID_VERSION = 1;
+const WORKTREE_ROLES = ["snapshot", "build", "verify"];
 
 class Fail extends Error {
   constructor(message, code = EXIT.rejected) {
     super(message);
     this.code = code;
   }
+}
+
+function envInt(name, fallback) {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isInteger(value) && value >= 0 ? value : fallback;
 }
 
 // ---------------------------------------------------------------- 基础工具
@@ -140,12 +146,17 @@ function isProcessAlive(pid) {
   }
 }
 
-// 工具自有工作区的写操作必须互斥。锁文件位于 tmp/integration，进程退出后由下一次
-// 操作按 PID/时间回收；构建可能持续很久，因此只锁「同一类工作区」，快照与构建各自一把锁。
-function acquireLock(paths, name, description) {
+// 工具自有工作区的写操作必须互斥。锁文件位于 tmp/integration。回收原则是 fail-closed：
+// 只有能证明「持有进程已经不存在」时才允许删除锁；PID 仍存活、锁内容不可解析、或无法确认
+// 归属时一律拒绝，绝不按时间猜测。构建/验收可能很久，锁按「角色」与「任务」分开。
+function sleepSync(ms) {  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(1, ms)); } catch { /* 忽略 */ }
+}
+
+function acquireLock(paths, name, description, { waitMs = 0 } = {}) {
   const lockPath = join(paths.root, `.${name}.lock`);
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const deadline = Date.now() + waitMs;
+  for (let attempt = 0; attempt < 100000; attempt++) {
     try {
       const fd = openSync(lockPath, "wx");
       try {
@@ -162,7 +173,7 @@ function acquireLock(paths, name, description) {
         try {
           const current = readJson(lockPath);
           if (current?.token === token) unlinkSync(lockPath);
-        } catch { /* 锁已不在或无法读取，交给下一次操作回收 */ }
+        } catch { /* 锁已不在或无法读取，交给下一次操作人工核对 */ }
       };
     } catch (err) {
       if (err?.code !== "EEXIST") {
@@ -171,17 +182,29 @@ function acquireLock(paths, name, description) {
       const holder = readJson(lockPath);
       let lockAgeMs = Infinity;
       try { lockAgeMs = Date.now() - statSync(lockPath).mtimeMs; } catch { /* 锁可能刚被释放 */ }
-      const age = holder?.startedAt ? Date.now() - Date.parse(holder.startedAt) : Infinity;
-      // 刚 open 成功但内容尚未写入的短暂窗口：不要当成死锁删除，让对方完成写入。
-      const freshUnreadable = !holder && lockAgeMs < 5000;
-      const stale = !holder ? !freshUnreadable : (!isProcessAlive(holder.pid) || !Number.isFinite(age) || age > LOCK_STALE_MS);
-      if (!stale) {
+      if (!holder) {
+        // 可能是别人刚 open、内容还没落盘的窗口；除这个窗口外，无法确认归属就不回收。
+        if (lockAgeMs < 5000) {
+          if (Date.now() < deadline) { sleepSync(1000); continue; }
+          throw new Fail(`另一个集成操作正在创建锁：${lockPath}，稍后重试`, EXIT.rejected);
+        }
         throw new Fail(
-          `另一个集成操作正在运行：pid=${holder?.pid ?? "(锁正在创建)"}（${holder?.command ?? "未知命令"}），锁 ${lockPath}。\n` +
-          "等待它结束后重试；若确认持有进程已死亡，可删除该锁文件。",
+          `锁文件存在但内容不可解析，无法确认持有者：${lockPath}\n` +
+          "按 fail-closed 保留现场；确认没有进程在操作后手工删除该锁。",
           EXIT.rejected,
         );
       }
+      if (isProcessAlive(holder.pid)) {
+        // 只有显式允许等待的调用（构建排队）才等；快照/验收遇到活跃锁立即拒绝，
+        // 绝不因为锁“太旧”就回收仍在运行的进程。
+        if (Date.now() < deadline) { sleepSync(2000); continue; }
+        throw new Fail(
+          `另一个集成操作正在运行：pid=${holder.pid}（${holder.command ?? "未知命令"}，开始于 ${holder.startedAt ?? "?"}），锁 ${lockPath}。\n` +
+          "等待它结束；只要持有进程还存活，本工具不会因为锁“太旧”而回收。",
+          EXIT.rejected,
+        );
+      }
+      console.log(`回收死亡进程留下的锁：${lockPath}（pid=${holder.pid}，已不存在）`);
       try { unlinkSync(lockPath); } catch { /* 下一轮重试 */ }
     }
   }
@@ -191,6 +214,18 @@ function acquireLock(paths, name, description) {
 function withLock(paths, name, description, fn) {
   const release = acquireLock(paths, name, description);
   try { return fn(); } finally { release(); }
+}
+
+// 任务级锁：同一任务写入互斥，不同任务可并行；多任务按 id 排序获取，避免死锁。
+function withTaskLocks(paths, ids, description, fn, { waitMs = envInt("TASKDOCK_TASK_LOCK_WAIT_MS", 30000) } = {}) {
+  const ordered = [...new Set(ids)].sort();
+  const releases = [];
+  try {
+    for (const id of ordered) releases.push(acquireLock(paths, `task-${id}`, `${description}（任务 ${id}）`, { waitMs }));
+    return fn();
+  } finally {
+    for (const release of releases.reverse()) release();
+  }
 }
 
 function parseArgs(argv) {
@@ -261,6 +296,7 @@ function statePaths(ctx) {
     snapshots: join(root, "snapshots"),
     builds: join(root, "builds"),
     logs: join(root, "logs"),
+    worktrees: join(root, "worktrees"),
   };
 }
 
@@ -274,8 +310,148 @@ function integrationBuildWorktree(ctx) {
   return join(dirname(ctx.mainRoot), `${basename(ctx.mainRoot)}-integration-build`);
 }
 
+function integrationVerifyWorktree(ctx) {
+  return join(dirname(ctx.mainRoot), `${basename(ctx.mainRoot)}-integration-verify`);
+}
+
+function roleWorktree(ctx, role) {
+  if (role === "snapshot") return integrationWorktree(ctx);
+  if (role === "build") return integrationBuildWorktree(ctx);
+  if (role === "verify") return integrationVerifyWorktree(ctx);
+  throw new Fail(`未知工作区角色：${role}（可用 ${WORKTREE_ROLES.join("|")}）`, EXIT.usage);
+}
+
+// --------------------------------------------------------------- 工作区身份
+// 「Git 登记 + 目录名」只能证明它是本仓库的 Worktree，不能证明是本工具创建并管理的。
+// 工具自有工作区在 tmp/integration/worktrees/<role>.json 留下身份记录：仓库身份、真实路径、
+// 用途、创建时间、记录格式版本、gitdir 与校验和。每次改动工作区之前都必须核对；
+// 记录缺失、被篡改或对不上时一律拒绝（fail-closed），绝不重建/删除/重置。
+
+function worktreeIdentityFile(paths, role) {
+  return join(paths.worktrees, `${role}.json`);
+}
+
+function gitDirOf(wt) {
+  const dotGit = join(wt, ".git");
+  let st;
+  try { st = lstatSync(dotGit); } catch { return null; }
+  if (st.isDirectory()) return resolve(dotGit);
+  try {
+    const text = readFileSync(dotGit, "utf8").trim();
+    const m = /^gitdir:\s*(.+)$/.exec(text);
+    return m ? resolve(wt, m[1].trim()) : null;
+  } catch { return null; }
+}
+
+function identityChecksum(record) {
+  return createHash("sha256").update(JSON.stringify({
+    formatVersion: record.formatVersion,
+    role: record.role,
+    path: record.path,
+    mainRoot: record.repo?.mainRoot,
+    commonDir: record.repo?.commonDir,
+    gitDir: record.gitDir,
+  })).digest("hex");
+}
+
+function buildIdentity(ctx, wt, role, token) {
+  return {
+    formatVersion: WORKTREE_ID_VERSION,
+    role,
+    path: resolve(wt),
+    repo: { mainRoot: resolve(ctx.mainRoot), commonDir: resolve(ctx.commonDir) },
+    gitDir: gitDirOf(wt),
+    createdAt: nowIso(),
+    token,
+    checksum: null,
+  };
+}
+
+function writeIdentity(paths, ctx, wt, role) {
+  const record = buildIdentity(ctx, wt, role, `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  record.checksum = identityChecksum(record);
+  writeJson(worktreeIdentityFile(paths, role), record);
+  return record;
+}
+
+function readIdentity(paths, role) {
+  const file = worktreeIdentityFile(paths, role);
+  if (!existsSync(file)) return null;
+  try { return readJson(file); } catch { return null; }
+}
+
+function worktreeRegisteredInRepo(ctx, wt) {
+  const entry = parseWorktrees(ctx.mainRoot).find((w) => samePath(w.path, wt));
+  if (!entry) return null;
+  const common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], wt);
+  if (common.status !== 0) return null;
+  if (!samePath(common.stdout.trim(), ctx.commonDir)) return null;
+  if (samePath(wt, ctx.mainRoot)) return null;
+  return entry;
+}
+
+// 角色形态：snapshot 必须挂在 integration 分支；build/verify 必须是 detached（只读快照）。
+function checkRoleShape(ctx, wt, role) {
+  const entry = worktreeRegisteredInRepo(ctx, wt);
+  if (!entry) return `不是本仓库的 Worktree，或就是主工作区`;
+  if (role === "snapshot") {
+    if (!entry.branch || entry.branch !== BRANCH) return `快照工作区必须挂在 ${BRANCH} 分支（当前 ${entry.branch ?? "detached"}）`;
+  } else if (!entry.detached) {
+    return `${role} 工作区必须是 detached HEAD（当前分支 ${entry.branch ?? "(无)"}）`;
+  }
+  return null;
+}
+
+function requireToolWorktree(ctx, paths, wt, role, { forWrite = true } = {}) {
+  if (!existsSync(wt)) throw new Fail(`工具工作区不存在：${wt}`, EXIT.rejected);
+  const shape = checkRoleShape(ctx, wt, role);
+  if (shape) throw new Fail(`拒绝操作 ${wt}：${shape}`, EXIT.rejected);
+  const record = readIdentity(paths, role);
+  if (!record) {
+    throw new Fail(
+      `工具工作区缺少身份记录，拒绝${forWrite ? "修改" : "使用"}：${wt}\n` +
+      `记录应由工具在创建时写入 ${worktreeIdentityFile(paths, role)}。\n` +
+      `若确认这个工作区是旧版本工具创建的，先运行：node scripts/taskdock-integration.mjs worktree adopt --role ${role}` +
+      "（只校验并登记，不重建、不重置、不删除）。",
+      EXIT.rejected,
+    );
+  }
+  if (record.formatVersion !== WORKTREE_ID_VERSION) {
+    throw new Fail(`身份记录格式版本 ${record.formatVersion} 不受支持（期望 ${WORKTREE_ID_VERSION}），先用 worktree adopt 重新登记`, EXIT.rejected);
+  }
+  if (record.role !== role) throw new Fail(`身份记录用途为 ${record.role}，与本次操作（${role}）不一致，拒绝操作 ${wt}`, EXIT.rejected);
+  if (!samePath(record.path ?? "", wt)) throw new Fail(`身份记录路径 ${record.path} 与实际 ${wt} 不一致（可能被移动或篡改），拒绝操作`, EXIT.rejected);
+  if (!samePath(record.repo?.mainRoot ?? "", ctx.mainRoot) || !samePath(record.repo?.commonDir ?? "", ctx.commonDir)) {
+    throw new Fail(`身份记录属于其他仓库（${record.repo?.commonDir}），拒绝操作 ${wt}`, EXIT.rejected);
+  }
+  const gitDir = gitDirOf(wt);
+  if (!record.gitDir || !gitDir || !samePath(record.gitDir, gitDir)) {
+    throw new Fail(`身份记录的 gitdir 与实际不一致（记录 ${record.gitDir ?? "(空)"} / 实际 ${gitDir ?? "(空)"}），拒绝操作`, EXIT.rejected);
+  }
+  if (record.checksum !== identityChecksum(record)) {
+    throw new Fail(`身份记录校验和不匹配（文件被修改过），拒绝操作 ${wt}`, EXIT.rejected);
+  }
+  return record;
+}
+
+function adoptToolWorktree(ctx, paths, wt, role, { quiet = false } = {}) {
+  const shape = checkRoleShape(ctx, wt, role);
+  if (shape) throw new Fail(`无法登记 ${wt}：${shape}`, EXIT.rejected);
+  assertClean(wt, "待登记的工具工作区");
+  const existing = readIdentity(paths, role);
+  if (existing && !samePath(existing.path ?? "", wt)) {
+    throw new Fail(
+      `已有 ${role} 身份记录指向另一个路径 ${existing.path}；先人工确认废弃后再登记（本工具不删除记录）`,
+      EXIT.rejected,
+    );
+  }
+  const record = writeIdentity(paths, ctx, wt, role);
+  if (!quiet) console.log(`已登记工具工作区身份：${role} → ${wt}（formatVersion=${record.formatVersion}）`);
+  return record;
+}
+
 function ensureDirs(paths) {
-  for (const dir of [paths.root, paths.tasks, paths.snapshots, paths.builds, paths.logs]) {
+  for (const dir of [paths.root, paths.tasks, paths.snapshots, paths.builds, paths.logs, paths.worktrees]) {
     mkdirSync(dir, { recursive: true });
   }
 }
@@ -315,6 +491,7 @@ function loadTask(paths, id) {
 }
 
 function saveTask(paths, task) {
+  task.rev = (Number.isInteger(task.rev) ? task.rev : 0) + 1;
   task.updatedAt = nowIso();
   writeJson(taskFile(paths, task.id), task);
   return task;
@@ -330,12 +507,14 @@ function cmdTask(sub, argv) {
   if (sub === "add") {
     if (!id) throw new Fail("用法：task add --id <slug> --owner <agent> --module <模块> --paths <a,b>", EXIT.usage);
     if (!TASK_RE.test(id) || id.length > MAX_TASK_ID) throw new Fail(`任务标识非法：${id}`, EXIT.usage);
+    return withTaskLocks(paths, [id], "task add", () => {
     if (existsSync(taskFile(paths, id))) throw new Fail(`任务已存在：${id}（用 task update 修改）`, EXIT.rejected);
     const task = {
       id,
       module: str(args, "module", "(未声明模块)"),
       owner: str(args, "owner", "(未声明负责人)"),
       status: "developing",
+      rev: 0,
       paths: list(args.paths).map((p) => normalizeRepoPath(p, "--paths")),
       commit: null,
       from: null,
@@ -354,6 +533,7 @@ function cmdTask(sub, argv) {
     saveTask(paths, task);
     console.log(`已登记任务 ${id}（${STATUS_LABEL[task.status]}，写入范围 ${task.paths.length} 项）`);
     return EXIT.ok;
+    });
   }
 
   // 只读命令必须先于任务加载（list/status 不需要 --id）
@@ -376,9 +556,9 @@ function cmdTask(sub, argv) {
     return EXIT.ok;
   }
 
-  const task = loadTask(paths, id);
-
   if (sub === "update") {
+    return withTaskLocks(paths, [id], "task update", () => {
+    const task = loadTask(paths, id);
     if (args.paths !== undefined) {
       const next = list(args.paths).map((p) => normalizeRepoPath(p, "--paths"));
       if (next.length === 0) throw new Fail("--paths 不能为空", EXIT.usage);
@@ -395,7 +575,7 @@ function cmdTask(sub, argv) {
         task.acceptance = null;
         task.checks = [];
         task.status = "developing";
-        console.log("  写入范围已变更：交付提交、检查、快照与验收关联已清空，需重新 task check / task ready。");
+        console.log("  写入范围已变更：交付提交、检查、快照与验收关联已清空，需重新 task verify / task ready。");
       }
     }
     if (args.module !== undefined) task.module = str(args, "module");
@@ -409,7 +589,7 @@ function cmdTask(sub, argv) {
         throw new Fail(`task update 只能切到 developing / integration-ready（其余状态由集成与验收流程推进）`, EXIT.usage);
       }
       if (next === "integration-ready") {
-        throw new Fail("进入待集成的判据由 task ready 校验（需交付提交 + 通过检查）", EXIT.usage);
+        throw new Fail("进入待集成的判据由 task ready 校验（需交付提交 + 真实执行通过的检查）", EXIT.usage);
       }
       task.status = "developing";
       task.snapshot = null;
@@ -419,11 +599,14 @@ function cmdTask(sub, argv) {
     saveTask(paths, task);
     console.log(`已更新任务 ${id}（${STATUS_LABEL[task.status]}）`);
     return EXIT.ok;
+    });
   }
 
   if (sub === "check") {
+    return withTaskLocks(paths, [id], "task check", () => {
+    const task = loadTask(paths, id);
     const cmdText = str(args, "cmd");
-    if (!cmdText) throw new Fail("用法：task check --id <slug> --cmd <命令> --exit <退出码> --commit <检查提交> [--log <路径>]", EXIT.usage);
+    if (!cmdText) throw new Fail("用法：task check --id <slug> --cmd <命令> --exit <退出码> --commit <检查提交> [--log <路径>] [--evidence <证据路径>]", EXIT.usage);
     const rawExit = str(args, "exit");
     const exitCode = Number.parseInt(rawExit, 10);
     if (!Number.isInteger(exitCode)) throw new Fail(`--exit 需要整数退出码（当前 ${rawExit}）`, EXIT.usage);
@@ -432,13 +615,28 @@ function cmdTask(sub, argv) {
     const checkCommit = args.commit === undefined
       ? (git(["rev-parse", "HEAD"], ctx.mainRoot).stdout ?? "").trim() || null
       : gitOut(["rev-parse", "--verify", `${str(args, "commit")}^{commit}`], ctx.mainRoot, "解析检查提交").trim();
-    task.checks.push({ cmd: cmdText, exitCode, at: nowIso(), logPath, commit: checkCommit });
+    let evidence = null;
+    if (args.evidence !== undefined) {
+      evidence = normalizeRepoPath(str(args, "evidence"), "--evidence");
+      if (!existsSync(join(ctx.mainRoot, evidence))) throw new Fail(`证据路径不存在：${evidence}`, EXIT.rejected);
+    }
+    // 手动登记一律标为 external：它可以作为辅助证据，但不能单独证明「测试真实通过」。
+    task.checks.push({
+      cmd: cmdText, exitCode, at: nowIso(), logPath, commit: checkCommit,
+      source: "external", evidence,
+    });
     saveTask(paths, task);
-    console.log(`已记录检查（${id}）：${cmdText} → exit ${exitCode}${checkCommit ? ` @ ${checkCommit.slice(0, 7)}` : "（未绑定提交）"}`);
+    console.log(`已记录外部检查（${id}）：${cmdText} → exit ${exitCode}${checkCommit ? ` @ ${checkCommit.slice(0, 7)}` : "（未绑定提交）"}`);
+    if (exitCode === 0 && !evidence) {
+      console.log("  提示：这是无证据的手动登记，不能作为正式集成资格；正式集成请用 task verify 真实执行。");
+    }
     return exitCode === 0 ? EXIT.ok : EXIT.rejected;
+    });
   }
 
   if (sub === "ready") {
+    return withTaskLocks(paths, [id], "task ready", () => {
+    const task = loadTask(paths, id);
     const commitRef = str(args, "commit");
     if (!commitRef) throw new Fail("用法：task ready --id <slug> --commit <交付提交> [--from <起点>]", EXIT.usage);
     const commit = gitOut(["rev-parse", "--verify", `${commitRef}^{commit}`], ctx.mainRoot, "解析交付提交").trim();
@@ -450,12 +648,15 @@ function cmdTask(sub, argv) {
     if (ancestor.status !== 0) {
       throw new Fail(`--from ${from.slice(0, 7)} 不是交付提交 ${commit.slice(0, 7)} 的祖先，无法形成可应用补丁`, EXIT.rejected);
     }
-    // 检查必须绑定到同一个交付提交；否则“在旧版本上跑过的测试”会被误当成新版本证据。
-    const passing = task.checks.filter((c) => c.exitCode === 0 && c.commit === commit);
+    // 只有「真实执行」的检查（task verify）或带证据的外部检查可以证明这一版代码；
+    // 无证据的手动登记（source=external, evidence=null）一律不算。
+    const passing = task.checks.filter((c) =>
+      c.exitCode === 0 && c.commit === commit &&
+      (c.source === "executed" || (c.source === "external" && c.evidence)));
     if (passing.length === 0) {
       throw new Fail(
-        `任务 ${id} 没有在交付提交 ${commit.slice(0, 7)} 上通过的检查记录，不能进入待集成。\n` +
-        "先执行 task check --commit <同一提交>（不能只复用旧提交上的检查结果）。",
+        `任务 ${id} 没有在交付提交 ${commit.slice(0, 7)} 上可信通过的检查记录，不能进入待集成。\n` +
+        "先执行 task verify --commit <同一提交> --cmd \"<真实命令>\"（无证据的 task check 不算）。",
         EXIT.rejected,
       );
     }
@@ -463,11 +664,15 @@ function cmdTask(sub, argv) {
     task.from = from;
     task.status = "integration-ready";
     saveTask(paths, task);
-    console.log(`任务 ${id} → 待集成（交付提交 ${commit.slice(0, 7)}，通过检查 ${passing.length} 项）`);
+    console.log(`任务 ${id} → 待集成（交付提交 ${commit.slice(0, 7)}，可信检查 ${passing.length} 项）`);
     return EXIT.ok;
+    });
   }
 
+  if (sub === "verify") return cmdTaskVerify(args);
+
   if (sub === "show") {
+    const task = loadTask(paths, id);
     if (flag(args, "json")) { console.log(JSON.stringify(task, null, 2)); return EXIT.ok; }
     console.log(`任务 ${task.id}`);
     console.log(`  模块：${task.module}`);
@@ -481,15 +686,17 @@ function cmdTask(sub, argv) {
     if (task.acceptance) console.log(`  验收记录：${task.acceptance}`);
     console.log(`  公共接口：${task.publicInterface ? "是" : "否"}`);
     if (task.needs.length) console.log(`  依赖任务：${task.needs.join(", ")}`);
+    console.log(`  修订号：${task.rev ?? 0}`);
     console.log("  检查记录：");
     for (const c of task.checks) {
-      console.log(`    - ${c.at} exit=${c.exitCode} ${c.cmd}${c.commit ? ` @ ${c.commit.slice(0, 7)}` : "（未绑定提交）"}${c.logPath ? `（日志 ${c.logPath}）` : ""}`);
+      const kind = c.source === "executed" ? "真实执行" : "外部登记";
+      console.log(`    - ${c.at} [${kind}] exit=${c.exitCode} ${c.cmd}${c.commit ? ` @ ${c.commit.slice(0, 7)}` : "（未绑定提交）"}${c.logPath ? `（日志 ${c.logPath}）` : ""}${c.evidence ? `（证据 ${c.evidence}）` : ""}`);
     }
     if (task.notes) console.log(`  备注：${task.notes}`);
     return EXIT.ok;
   }
 
-  throw new Fail(`未知 task 子命令：${sub}（可用 add|update|check|ready|list|show）`, EXIT.usage);
+  throw new Fail(`未知 task 子命令：${sub}（可用 add|update|check|verify|ready|list|show）`, EXIT.usage);
 }
 
 // ---------------------------------------------------------------- 集成快照
@@ -601,7 +808,7 @@ function assertClean(wt, what) {
 // 既不是任务交付内容，也不能因为上一次构建的残留阻塞下一次集成。
 const BUILD_OUTPUT_PREFIXES = [
   "node_modules/", "dist/", ".preview/", ".screenshots/", "tmp/",
-  "src-tauri/target", "src-tauri/gen/", "apps/mobile/android/",
+  "src-tauri/target", "src-tauri/gen/", "apps/mobile/android/", ".taskdock-deps.json",
 ];
 
 function isBuildOutputPath(rawPath) {
@@ -627,13 +834,115 @@ function dirtyEntries(wt) {
   return entries;
 }
 
-function moveIntegrationBranch(ctx, baseCommit) {
-  const wt = integrationWorktree(ctx);
-  const entry = parseWorktrees(ctx.mainRoot).find((w) => samePath(w.path, wt));
-  if (existsSync(wt)) {
-    if (!entry || !isToolWorktree(ctx, wt)) {
-      throw new Fail(`集成工作区存在但不是本仓库登记的工作区，拒绝改分支：${wt}`, EXIT.rejected);
+// 真实模块检查：task verify 不只记录退出码，它在干净的隔离工作区里 checkout 到指定提交、
+// 按该提交核对依赖、经构建调度器真实执行命令，并把日志/提交/退出码一起写回任务台账。
+// 这是进入「待集成」的可信检查来源；task check 的手动登记只作外部证据。
+function cmdTaskVerify(args) {
+  const id = str(args, "id");
+  const cmdText = str(args, "cmd");
+  if (!id || !cmdText) {
+    throw new Fail("用法：task verify --id <slug> --commit <提交> --cmd \"<真实命令>\" [--priority P1] [--timeout <秒>]", EXIT.usage);
+  }
+  const ctx = repoContext();
+  const paths = statePaths(ctx);
+  ensureDirs(paths);
+  const task = loadTask(paths, id);
+  const commit = args.commit === undefined
+    ? gitOut(["rev-parse", "HEAD"], ctx.mainRoot, "解析待验证提交").trim()
+    : gitOut(["rev-parse", "--verify", `${str(args, "commit")}^{commit}`], ctx.mainRoot, "解析待验证提交").trim();
+  if (task.commit && task.commit !== commit) {
+    throw new Fail(
+      `任务 ${id} 的交付提交是 ${task.commit.slice(0, 7)}，与本次待验证提交 ${commit.slice(0, 7)} 不一致。\n` +
+      "先按新提交重新交付（task update 会清空旧关联），再执行 task verify。",
+      EXIT.rejected,
+    );
+  }
+
+  const wt = ensureDetachedToolWorktree(ctx, paths, "verify", commit);
+  const hasLock = existsSync(join(wt, "package-lock.json"));
+  if (hasLock) {
+    ensureNodeModulesLink(ctx, wt);
+    if (existsSync(join(wt, "apps", "mobile", "package-lock.json")) && existsSync(join(ctx.mainRoot, "apps", "mobile", "node_modules"))) {
+      ensureNodeModulesLink(ctx, wt, "apps/mobile");
     }
+  } else {
+    console.log("  提示：该提交没有 package-lock.json，跳过 Node 依赖一致性核对（依赖检查不适用）");
+  }
+
+  const ts = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "");
+  const logPath = join(paths.logs, `verify-${id}-${ts}.log`);
+  const priority = str(args, "priority", "P1");
+  const timeoutSec = Number.parseInt(str(args, "timeout", "0"), 10);
+  if (!Number.isInteger(timeoutSec) || timeoutSec < 0) throw new Fail("--timeout 需要非负整数秒", EXIT.usage);
+  const header = [
+    `# task verify ${id}`,
+    `commit: ${commit}`,
+    `worktree: ${wt}`,
+    `command: ${cmdText}`,
+    `startedAt: ${nowIso()}`,
+    "",
+  ].join("\n");
+  mkdirSync(dirname(logPath), { recursive: true });
+  const hfd = openSync(logPath, "a");
+  try { writeSync(hfd, header); } finally { closeSync(hfd); }
+
+  console.log(`task verify ${id}：在隔离工作区 ${wt} 执行「${cmdText}」（commit ${commit.slice(0, 7)}）`);
+  const startedMs = Date.now();
+  const run = runScheduled(
+    ctx, wt, `verify-${id}-${ts}`,
+    ["cmd.exe", "/d", "/s", "/c", cmdText],
+    logPath, { ...process.env }, priority, timeoutSec > 0 ? timeoutSec * 1000 : 0,
+  );
+  const durationMs = Date.now() - startedMs;
+  const exitCode = Number.isInteger(run.status) ? run.status : -1;
+
+  let recorded = true;
+  try {
+    withTaskLocks(paths, [id], `task verify ${id} 记录`, () => {
+      const fresh = loadTask(paths, id);
+      if (fresh.commit && fresh.commit !== commit) {
+        throw new Fail(
+          `验证期间任务交付提交已被改为 ${fresh.commit.slice(0, 7)}；本次结果（commit ${commit.slice(0, 7)}）不写入台账，避免错挂版本。\n` +
+          `日志保留：${rel(ctx.mainRoot, logPath)}`,
+          EXIT.rejected,
+        );
+      }
+      fresh.checks.push({
+        cmd: cmdText,
+        exitCode,
+        at: nowIso(),
+        commit,
+        source: "executed",
+        logPath: rel(ctx.mainRoot, logPath),
+        worktree: rel(ctx.mainRoot, wt),
+        durationMs,
+        schedulerTaskId: schedulerTaskId(logPath),
+        timedOut: Boolean(run.timedOut),
+        dependenciesFingerprint: hasLock ? depsFingerprintFrom(wt) : null,
+      });
+      saveTask(paths, fresh);
+    }, { waitMs: 2 * 60 * 1000 });
+  } catch (err) {
+    recorded = false;
+    console.error(err.message);
+  }
+
+  const summary = `task verify ${id} @ ${commit.slice(0, 7)} → exit ${exitCode}，${durationMs} ms，日志 ${rel(ctx.mainRoot, logPath)}`;
+  if (exitCode === 0) {
+    console.log(`${summary}${recorded ? "" : "（未写入台账）"}`);
+    console.log(`下一步：task ready --id ${id} --commit ${commit}`);
+    return EXIT.ok;
+  }
+  console.log(`${summary}（失败：需修复后重新 verify，不能用旧结果 ready）`);
+  console.log(logTail(logPath, 20));
+  return EXIT.rejected;
+}
+
+function moveIntegrationBranch(ctx, paths, baseCommit) {
+  const wt = integrationWorktree(ctx);
+  if (existsSync(wt)) {
+    // 只改「身份记录可证明属于本工具」的工作区；其他仓库/普通 Agent 的工作区一律不动。
+    requireToolWorktree(ctx, paths, wt, "snapshot");
     assertClean(wt, "集成工作区（重设基线前）");
     const r = git(["checkout", "-q", "-B", BRANCH, baseCommit], wt);
     if (r.status !== 0) throw new Fail(`重设 integration 基线失败：${(r.stderr || r.stdout).trim()}`, EXIT.rejected);
@@ -643,7 +952,7 @@ function moveIntegrationBranch(ctx, baseCommit) {
   if (r.status !== 0) throw new Fail(`重设 integration 分支失败：${(r.stderr || r.stdout).trim()}`, EXIT.rejected);
 }
 
-function prepareWorktree(ctx, baseCommit) {
+function prepareWorktree(ctx, paths, baseCommit) {
   const wt = integrationWorktree(ctx);
   const registered = parseWorktrees(ctx.mainRoot).find((w) => samePath(w.path, wt));
   const branchRef = `refs/heads/${BRANCH}`;
@@ -672,11 +981,11 @@ function prepareWorktree(ctx, baseCommit) {
       : ["worktree", "add", "-b", BRANCH, wt, baseCommit];
     const r = git(args, ctx.mainRoot, { timeout: 300000 });
     if (r.status !== 0) throw new Fail(`创建集成工作区失败：${(r.stderr || r.stdout).trim()}`, EXIT.rejected);
-    console.log(`已创建集成工作区：${wt}（分支 ${BRANCH}）`);
-  } else if (!registered) {
-    throw new Fail(`路径已存在但不是本仓库登记的工作区，拒绝触碰：${wt}`, EXIT.rejected);
-  } else if (!isToolWorktree(ctx, wt)) {
-    throw new Fail(`工作区不属于本仓库或就是主工作区，拒绝操作：${wt}`, EXIT.rejected);
+    writeIdentity(paths, ctx, wt, "snapshot");
+    console.log(`已创建集成工作区：${wt}（分支 ${BRANCH}，已登记身份）`);
+  } else {
+    // 身份先于一切写操作：目录名和 Git 登记都不足以证明「这是本工具的工作区」。
+    requireToolWorktree(ctx, paths, wt, "snapshot");
   }
 
   assertClean(wt, "集成工作区");
@@ -696,9 +1005,16 @@ function prepareWorktree(ctx, baseCommit) {
   return wt;
 }
 
-function cleanupWorktree(wt, commit) {
+function cleanupWorktree(ctx, paths, wt, commit, role = "snapshot") {
   // 仅用于工具自有干净工作区：应用补丁或检查失败后回到起点，避免半个补丁留在工作区。
   if (!existsSync(wt)) return;
+  try {
+    requireToolWorktree(ctx, paths, wt, role);
+  } catch (err) {
+    // 身份无法确认时绝不 reset/clean：保留现场，交人工处理。
+    console.error(`拒绝清理（身份校验未通过）：${err.message}`);
+    return;
+  }
   git(["reset", "--hard", "--quiet", commit], wt);
   git(["reset", "--quiet"], wt);
   // 失败补丁可能留下未跟踪的新文件；只清理工具自有工作区的未跟踪文件，
@@ -760,53 +1076,89 @@ function dependencyMap(text) {
   } catch { return null; }
 }
 
-function ensureNodeModulesLink(ctx, wt, commit, relRoot = "") {
+// 依赖身份：锁文件（逐字节，忽略换行风格）+ package.json 依赖段 + 安装它的 Node 主版本/平台。
+// 只比对一部分会让「代码是新版本、依赖是旧版本」悄悄通过，所以三条都要一致才允许复用。
+function depsFingerprintFrom(dir, relRoot = "") {
+  const prefix = relRoot ? `${relRoot}/` : "";
+  const lockPath = join(dir, `${prefix}package-lock.json`);
+  const pkgPath = join(dir, `${prefix}package.json`);
+  if (!existsSync(lockPath)) return null;
+  const deps = existsSync(pkgPath) ? dependencyMap(readFileSync(pkgPath, "utf8")) : null;
+  const payload = JSON.stringify({
+    lock: normalizeNewlines(readFileSync(lockPath, "utf8")),
+    deps,
+    node: process.versions.node.split(".")[0],
+    platform: process.platform,
+    arch: process.arch,
+  });
+  return createHash("sha256").update(payload).digest("hex");
+}
+
+const DEPS_MARKER = ".taskdock-deps.json";
+
+function readDepsMarker(base) {
+  const marker = join(base, DEPS_MARKER);
+  if (!existsSync(marker)) return null;
+  try { return readJson(marker); } catch { return null; }
+}
+
+function writeDepsMarker(base, value) {
+  writeJson(join(base, DEPS_MARKER), { formatVersion: 1, ...value, at: nowIso() });
+}
+
+// 依赖环境必须与「工作区里的实际依赖声明」一致：
+// - 已存在的 junction 每次都要重新核对指纹，不能因为链接在就认为依赖正确；
+// - 独立安装的 node_modules 必须有匹配的 marker；
+// - 不一致时拒绝，不静默复用、不删除别人的目录。
+function ensureNodeModulesLink(ctx, wt, relRoot = "") {
   const base = relRoot ? join(wt, relRoot) : wt;
   const mainBase = relRoot ? join(ctx.mainRoot, relRoot) : ctx.mainRoot;
   const nm = join(base, "node_modules");
-  if (existsSync(nm)) {
-    let st;
-    try { st = lstatSync(nm); } catch { st = null; }
-    if (st && st.isSymbolicLink()) {
-      const real = resolve(base, readlinkSafe(nm) ?? "");
-      if (!samePath(real, join(mainBase, "node_modules"))) {
-        throw new Fail(`集成工作区 node_modules 链接指向异常：${real}`, EXIT.rejected);
-      }
-      return;
-    }
-    return; // 独立安装，保留
-  }
-  // 依赖是否一致以 package-lock 为准；package.json 只比较依赖段（脚本/元数据差异不影响已装依赖）
-  const lockRel = relRoot ? `${relRoot}/package-lock.json` : "package-lock.json";
-  const pkgRel = relRoot ? `${relRoot}/package.json` : "package.json";
-  const lockAtCommit = lockFileOf(ctx, commit, lockRel);
-  const lockOnDisk = join(mainBase, "package-lock.json");
-  if (lockAtCommit === null || !existsSync(lockOnDisk)) {
-    throw new Fail(`无法核对依赖一致性（缺少 ${lockRel}），拒绝在集成工作区构建`, EXIT.rejected);
-  }
-  if (normalizeNewlines(lockAtCommit) !== normalizeNewlines(readFileSync(lockOnDisk, "utf8"))) {
+  const want = depsFingerprintFrom(base, "");
+  const have = depsFingerprintFrom(mainBase, "");
+  if (want === null || have === null) {
     throw new Fail(
-      `集成快照的 ${lockRel} 与主工作区不一致：不能在共享依赖上构建。\n` +
-      "请在集成工作区内独立安装依赖（npm ci）后重试，或先确认主工作区依赖与快照一致。",
+      `无法核对依赖一致性：${relRoot ? `${relRoot}/` : ""}package-lock.json 缺失（工作区或主工作区）。\n` +
+      "缺少锁文件就无法证明依赖对应哪版代码，拒绝构建。",
       EXIT.rejected,
     );
   }
-  const pkgAtCommit = lockFileOf(ctx, commit, pkgRel);
-  if (pkgAtCommit !== null && existsSync(join(mainBase, "package.json"))) {
-    const a = dependencyMap(pkgAtCommit);
-    const b = dependencyMap(readFileSync(join(mainBase, "package.json"), "utf8"));
-    if (a === null || b === null || a !== b) {
+  const label = relRoot ? `（${relRoot}）` : "";
+  if (want !== have) {
+    throw new Fail(
+      `工作区依赖${label}与主工作区不一致：不能在共享 node_modules 上构建。\n` +
+      `  期望指纹 ${want.slice(0, 12)}… / 主工作区 ${have.slice(0, 12)}…\n` +
+      "处理：在工具工作区内用 `npm ci` 独立安装（可重复），或先确认主工作区依赖与快照一致；本工具不会替你删除或重建依赖目录。",
+      EXIT.rejected,
+    );
+  }
+
+  let st = null;
+  try { st = lstatSync(nm); } catch { st = null; }
+  if (st?.isSymbolicLink()) {
+    const real = resolve(base, readlinkSafe(nm) ?? "");
+    if (!samePath(real, join(mainBase, "node_modules"))) {
+      throw new Fail(`node_modules 链接指向异常：${real}（期望 ${join(mainBase, "node_modules")}），拒绝使用`, EXIT.rejected);
+    }
+    writeDepsMarker(base, { mode: "junction", target: join(mainBase, "node_modules"), fingerprint: want, relRoot });
+    return;
+  }
+  if (st) {
+    const marker = readDepsMarker(base);
+    if (!marker || marker.mode !== "installed" || marker.fingerprint !== want) {
       throw new Fail(
-        `集成快照的 ${pkgRel} 依赖声明与主工作区不一致：不能在共享依赖上构建。\n` +
-        "请先确认依赖版本，或在集成工作区内独立安装依赖（npm ci）。",
+        `已存在独立 node_modules，但缺少匹配的安装记录（${DEPS_MARKER}）。\n` +
+        "无法证明它对应当前依赖，拒绝使用；请用 `npm ci` 重新安装（本工具不会删除该目录）。",
         EXIT.rejected,
       );
     }
+    return;
   }
   const target = join(mainBase, "node_modules");
   if (!existsSync(target)) throw new Fail(`主工作区缺少 node_modules：${target}`, EXIT.rejected);
   symlinkSync(target, nm, "junction");
-  console.log(`已链接依赖（junction）：${nm} → ${target}`);
+  writeDepsMarker(base, { mode: "junction", target, fingerprint: want, relRoot });
+  console.log(`已链接依赖（junction）：${nm} → ${target}（指纹 ${want.slice(0, 12)}…）`);
 }
 
 // 读取链接/junction 目标；失败返回 null（由调用方拒绝，不猜测）
@@ -814,25 +1166,26 @@ function readlinkSafe(path) {
   try { return readlinkSync(path); } catch { return null; }
 }
 
-function runScheduled(ctx, wt, label, argvTokens, logPath, env, priority = "P1") {
+function runScheduled(ctx, wt, label, argvTokens, logPath, env, priority = "P1", timeoutMs = 0) {
   const sched = join(ctx.mainRoot, "scripts", "build-sched.mjs");
   const useSched = existsSync(sched);
   const command = useSched
     ? ["node", sched, "run", "--priority", priority, "--label", label, "--cwd", wt, "--", ...argvTokens]
     : argvTokens;
   if (!useSched) console.log("  提示：未找到构建调度器，按直接执行处理（仅测试/实验环境允许）");
-  return runToLog(command, { cwd: wt, env, logPath });
+  return runToLog(command, { cwd: wt, env, logPath, timeoutMs });
 }
 
-function runToLog(command, { cwd, env, logPath }) {
+function runToLog(command, { cwd, env, logPath, timeoutMs = 0 }) {
   mkdirSync(dirname(logPath), { recursive: true });
   const fd = openSync(logPath, "a");
   const bin = command[0] === "node" ? process.execPath : command[0];
   try {
     const r = spawnSync(bin, command.slice(1), {
       cwd, env, stdio: ["ignore", fd, fd], windowsHide: true,
+      ...(timeoutMs > 0 ? { timeout: timeoutMs } : {}),
     });
-    return { status: r.status, error: r.error ?? null, logPath };
+    return { status: r.status, error: r.error ?? null, logPath, timedOut: r.error?.code === "ETIMEDOUT" };
   } finally {
     try { closeSync(fd); } catch { /* ignore */ }
   }
@@ -909,7 +1262,7 @@ function cmdSnapshotBootstrapInner(args, ctx, paths) {
           EXIT.rejected,
         );
       }
-      moveIntegrationBranch(ctx, base);
+      moveIntegrationBranch(ctx, paths, base);
       console.log(`已把 integration 分支重设到新基线 ${base.slice(0, 7)}`);
     }
   }
@@ -943,7 +1296,18 @@ function cmdSnapshotCreate(argv) {
   const ctx = repoContext();
   const paths = statePaths(ctx);
   ensureDirs(paths);
+  const selected = list(args.tasks);
+  const allReady = flag(args, "allReady");
+  if (selected.length === 0 && !allReady) {
+    throw new Fail("用法：snapshot create --tasks a,b,c（或 --all-ready）[--base <提交>] [--check static|none]", EXIT.usage);
+  }
+  // 先锁住本次可能选中的全部任务（按 id 排序，避免死锁），再读取状态、算计划、应用补丁：
+  // 防止「读到 ready、集成时任务已被改成新提交/改了路径」的旧状态被带进快照。
+  const lockIds = allReady ? readJsonDir(paths.tasks).map((t) => t.id) : selected;
+  return withTaskLocks(paths, lockIds, "snapshot create", () => cmdSnapshotCreateInner(args, ctx, paths));
+}
 
+function cmdSnapshotCreateInner(args, ctx, paths) {
   const selectedIds = [...new Set(list(args.tasks))];
   const allReady = flag(args, "allReady");
   if (selectedIds.length === 0 && !allReady) {
@@ -971,6 +1335,16 @@ function cmdSnapshotCreate(argv) {
       throw new Fail(`任务 ${t.id} 当前状态为「${STATUS_LABEL[t.status] ?? t.status}」，只有「待集成」（或返工后的新交付）可进入集成`, EXIT.rejected);
     }
     if (!t.commit) throw new Fail(`任务 ${t.id} 没有交付提交（先 task ready）`, EXIT.rejected);
+    const trusted = (t.checks ?? []).some((c) =>
+      c.exitCode === 0 && c.commit === t.commit &&
+      (c.source === "executed" || (c.source === "external" && c.evidence)));
+    if (!trusted) {
+      throw new Fail(
+        `任务 ${t.id} 的交付提交 ${t.commit.slice(0, 7)} 没有可信通过的检查记录（task verify 或带证据的外部检查），拒绝集成。\n` +
+        "先执行 task verify，再重新 task ready。",
+        EXIT.rejected,
+      );
+    }
     if (!t.paths?.length) throw new Fail(`任务 ${t.id} 缺少写入范围声明`, EXIT.rejected);
     const ancestor = t.from ? git(["merge-base", "--is-ancestor", t.from, t.commit], ctx.mainRoot) : { status: 1 };
     if (!t.from || ancestor.status !== 0) {
@@ -1050,14 +1424,24 @@ function cmdSnapshotCreate(argv) {
     plans.push({ task: t, changed, extraEntries, extraPaths: allowExtra ? extraPaths : [] });
   }
 
-  // 3) 选中任务之间的路径交集（同一文件只能有一个所有者）
+  // 3) 选中任务之间的路径交集（同一文件只能有一个所有者）。
+  //    显式放行的额外路径已经会被写入快照，因此必须和声明路径一起参与交集判定，
+  //    只记录不检查会造成两个任务同时改同一文件而无人察觉。
+  const effectivePaths = (plan) => [
+    ...plan.task.paths.map((p) => ({ p, label: "声明" })),
+    ...plan.extraPaths.map((p) => ({ p, label: "额外" })),
+  ];
   const overlaps = [];
   for (let i = 0; i < plans.length; i++) {
     for (let j = i + 1; j < plans.length; j++) {
-      for (const a of plans[i].task.paths) {
-        for (const b of plans[j].task.paths) {
-          if (pathCovered(a, b) || pathCovered(b, a) || a === b) {
-            overlaps.push(`${plans[i].task.id} ↔ ${plans[j].task.id}：${a}${a === b ? "" : ` / ${b}`}`);
+      const aSet = effectivePaths(plans[i]);
+      const bSet = effectivePaths(plans[j]);
+      for (const x of aSet) {
+        for (const y of bSet) {
+          if (pathCovered(x.p, y.p) || pathCovered(y.p, x.p) || x.p === y.p) {
+            overlaps.push(
+              `${plans[i].task.id}(${x.label}) ↔ ${plans[j].task.id}(${y.label})：${x.p}${x.p === y.p ? "" : ` / ${y.p}`}`,
+            );
           }
         }
       }
@@ -1083,14 +1467,14 @@ function cmdSnapshotCreate(argv) {
       if (p.extraPaths.length) console.log(`    显式放行并应用未声明路径：${p.extraPaths.join("；")}`);
     }
     console.log(`  · 检查级别：${check === "none" ? "跳过" : "静态（tsc + vite build）"}`);
-    console.log("  · dry-run：未加锁、未创建快照、未写工作区");
+    console.log("  · dry-run：未创建快照、未写工作区（任务锁仅用于稳定读取）");
     return EXIT.ok;
   }
 
   const release = acquireLock(paths, "snapshot", `snapshot create ${snapId}`);
   let wt;
   try {
-    wt = prepareWorktree(ctx, base);
+    wt = prepareWorktree(ctx, paths, base);
   } catch (err) {
     release();
     throw err;
@@ -1127,7 +1511,7 @@ function cmdSnapshotCreate(argv) {
     // 6) 集成检查（真实执行，不接受“应该能过”）
     let checkResult = null;
     if (check === "static") {
-      ensureNodeModulesLink(ctx, wt, base);
+      ensureNodeModulesLink(ctx, wt);
       console.log("  执行集成静态检查：tsc --noEmit && vite build（经构建调度器排队）");
       const r = runScheduled(ctx, wt, `integration-${snapId}-static`, ["npm", "run", "build:raw"], checkLog, {
         ...process.env, CARGO_TARGET_DIR: join(ctx.mainRoot, "src-tauri", "target-integration"),
@@ -1166,6 +1550,7 @@ function cmdSnapshotCreate(argv) {
         commit: p.task.commit,
         from: p.task.from,
         paths: p.task.paths,
+        extraPaths: p.extraPaths,
       })),
       includedExtraPaths: plans.flatMap((p) => p.extraPaths.map((x) => `${p.task.id}: ${x}`)),
       overlaps,
@@ -1203,7 +1588,7 @@ function cmdSnapshotCreate(argv) {
     } catch (writeErr) {
       console.error(`警告：写入快照失败记录失败：${writeErr.message}`);
     }
-    cleanupWorktree(wt, base);
+    cleanupWorktree(ctx, paths, wt, base);
     throw err;
   } finally {
     release();
@@ -1366,6 +1751,38 @@ function artifactsUsable(platform, artifacts, buildDir) {
   });
 }
 
+function toolchainIdentity(platform) {
+  const out = { node: process.versions.node, platform: process.platform, arch: process.arch };
+  const probe = (name, args = ["--version"]) => {
+    const r = spawnSync(name, args, { encoding: "utf8", windowsHide: true, timeout: 15000 });
+    const text = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n")[0];
+    if (r.status === 0 && text) out[name] = text;
+    else out[name] = `(不可用: ${r.error?.code ?? r.status})`;
+  };
+  if (platform === "desktop") { probe("rustc"); probe("cargo"); }
+  if (platform === "android") probe("java", ["-version"]);
+  return out;
+}
+
+// 复用键不能再只是 commit|platform|config：依赖锁、Node/CPU、工具链都会改变产物。
+// 这些输入变了就必须重新构建，旧记录（没有 inputsDigest）一律视为不可复用。
+function buildInputsDigest(ctx, snap, platform, cfg, command) {
+  const file = (p) => lockFileOf(ctx, snap.commit, p);
+  const pkgDeps = (p) => {
+    const text = file(p);
+    return text === null ? null : dependencyMap(text);
+  };
+  return createHash("sha256").update(JSON.stringify({
+    rootLock: file("package-lock.json"),
+    rootDeps: pkgDeps("package.json"),
+    mobileLock: file("apps/mobile/package-lock.json"),
+    mobileDeps: pkgDeps("apps/mobile/package.json"),
+    config: cfg.config,
+    command,
+    toolchain: toolchainIdentity(platform),
+  })).digest("hex");
+}
+
 function findReusableBuild(paths, reuseKey, { experimental = false, command = null, snapshot = null } = {}) {
   const dirs = readdirSync(paths.builds, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
   for (const name of dirs.sort().reverse()) {
@@ -1391,32 +1808,52 @@ function findReusableBuild(paths, reuseKey, { experimental = false, command = nu
   return null;
 }
 
-function ensureBuildWorktree(ctx, commit) {
-  const wt = integrationBuildWorktree(ctx);
+function ensureDetachedToolWorktree(ctx, paths, role, commit) {
+  const wt = roleWorktree(ctx, role);
   if (!existsSync(wt)) {
     const registered = parseWorktrees(ctx.mainRoot).find((w) => samePath(w.path, wt));
     if (registered) {
-      throw new Fail(`集成构建工作区目录缺失但 Git 仍有登记：${wt}\n先人工确认废弃后执行 git worktree prune`, EXIT.rejected);
+      throw new Fail(`工具工作区目录缺失但 Git 仍有登记：${wt}\n先人工确认废弃后执行 git worktree prune`, EXIT.rejected);
     }
+    if (!isInside(dirname(ctx.mainRoot), wt)) throw new Fail(`工具工作区必须位于主仓库同级目录：${wt}`, EXIT.rejected);
     const r = git(["worktree", "add", "--detach", wt, commit], ctx.mainRoot, { timeout: 300000 });
-    if (r.status !== 0) throw new Fail(`创建集成构建工作区失败：${(r.stderr || r.stdout).trim()}`, EXIT.rejected);
-    console.log(`已创建集成构建工作区（detached ${commit.slice(0, 7)}）：${wt}`);
-  } else if (!isToolWorktree(ctx, wt)) {
-    throw new Fail(`集成构建工作区不属于本仓库或就是主工作区：${wt}`, EXIT.rejected);
+    if (r.status !== 0) throw new Fail(`创建 ${role} 工作区失败：${(r.stderr || r.stdout).trim()}`, EXIT.rejected);
+    writeIdentity(paths, ctx, wt, role);
+    console.log(`已创建 ${role} 工作区（detached ${commit.slice(0, 7)}）：${wt}`);
+  } else {
+    // 已存在：先证明身份，再做任何 Git 写操作；旧工作区没有身份记录时要求显式 adopt，不重建。
+    requireToolWorktree(ctx, paths, wt, role);
+    assertClean(wt, `${role} 工作区（切换前）`);
+    const r = git(["checkout", "--quiet", "--detach", commit], wt);
+    if (r.status !== 0) throw new Fail(`切换 ${role} 工作区到 ${commit.slice(0, 7)} 失败：${(r.stderr || r.stdout).trim()}`, EXIT.rejected);
   }
+  const head = gitOut(["rev-parse", "HEAD"], wt, `校验 ${role} 工作区提交`).trim();
+  if (head !== commit) throw new Fail(`${role} 工作区提交与目标不一致：${head} ≠ ${commit}`, EXIT.rejected);
+  assertClean(wt, `${role} 工作区（切换后）`);
   return wt;
+}
+
+function ensureBuildWorktree(ctx, paths, commit) {
+  return ensureDetachedToolWorktree(ctx, paths, "build", commit);
 }
 
 function registerTargetDir(ctx, targetDir, buildId) {
   const guard = join(ctx.mainRoot, "scripts", "build-guard.mjs");
-  if (!existsSync(guard)) return;
+  if (!existsSync(guard)) {
+    throw new Fail(`缺少 scripts/build-guard.mjs，无法登记构建缓存目录 ${targetDir}；拒绝创建无法追踪的大缓存`, EXIT.rejected);
+  }
   const r = spawnSync(process.execPath, [
     guard, "register", "--dir", targetDir, "--task", `integration-${buildId}`,
     "--purpose", `统一集成构建 ${buildId}`,
   ], { cwd: ctx.mainRoot, encoding: "utf8", windowsHide: true, timeout: 120000 });
   if (r.status !== 0) {
-    console.error(`警告：build-guard register 失败（exit ${r.status}）：${(r.stdout || "") + (r.stderr || "")}`);
+    throw new Fail(
+      `build-guard register 失败（exit ${r.status}），拒绝继续构建，避免产生无法追踪的缓存：\n` +
+      `${(r.stdout || "") + (r.stderr || "")}`.trim(),
+      EXIT.rejected,
+    );
   }
+  console.log(`已登记构建缓存目录：${targetDir}（build-guard，integration-${buildId}）`);
 }
 
 function worktreeHasRelevantChanges(wt) {
@@ -1460,10 +1897,11 @@ function cmdBuild(argv) {
   }
 
   const priority = str(args, "priority", "P0");
-  const reuseKey = `${snap.commit}|${platform}|${cfg.config}`;
   const override = args.command === undefined ? null : str(args, "command");
   const command = override ? ["cmd.exe", "/d", "/s", "/c", override] : cfg.command;
   const experimental = Boolean(override);
+  const inputsDigest = buildInputsDigest(ctx, snap, platform, cfg, command);
+  const reuseKey = `${snap.commit}|${platform}|${cfg.config}|${process.arch}|${inputsDigest}`;
   if (override) console.log("  提示：使用 --command 覆盖平台命令（仅测试/实验，绕过构建调度器）");
 
   const buildIdPreview = nextBuildId(paths, snap.id, platform);
@@ -1496,7 +1934,7 @@ function cmdBuild(argv) {
     }
   }
 
-  const release = acquireLock(paths, "build", `build ${buildIdPreview} / ${snap.id} / ${platform}`);
+  const release = acquireLock(paths, "build", `build ${buildIdPreview} / ${snap.id} / ${platform}`, { waitMs: 20 * 60 * 1000 });
   let buildId = buildIdPreview;
   let buildDir = join(paths.builds, buildId);
   let logPath = join(buildDir, "build.log");
@@ -1508,7 +1946,16 @@ function cmdBuild(argv) {
   let record = null;
 
   try {
-    wt = ensureBuildWorktree(ctx, snap.commit);
+    // 等锁期间另一个进程可能已经完成同一构建：取得锁后必须再查一次，避免重复构建。
+    if (!flag(args, "force")) {
+      const again = findReusableBuild(paths, reuseKey, { experimental, command, snapshot: snap.id });
+      if (again) {
+        console.log(`复用并发构建的产物 ${again.id}（等待锁后复核，避免重复构建）`);
+        markSnapshotTasks(paths, snap, again.id, "verifying");
+        return EXIT.ok;
+      }
+    }
+    wt = ensureBuildWorktree(ctx, paths, snap.commit);
     // 取得锁后再定 ID，避免两个进程同时算出 b01 而覆盖记录。
     buildId = nextBuildId(paths, snap.id, platform);
     buildDir = join(paths.builds, buildId);
@@ -1534,8 +1981,8 @@ function cmdBuild(argv) {
     assertClean(wt, "集成构建工作区（切换后）");
 
     if (cfg.needsNodeModules && !override) {
-      ensureNodeModulesLink(ctx, wt, snap.commit);
-      if (cfg.needsMobileNodeModules) ensureNodeModulesLink(ctx, wt, snap.commit, "apps/mobile");
+      ensureNodeModulesLink(ctx, wt);
+      if (cfg.needsMobileNodeModules) ensureNodeModulesLink(ctx, wt, "apps/mobile");
     }
     const requiredPaths = [wt];
     for (const relPath of cfg.requires ?? []) requiredPaths.push(join(wt, relPath));
@@ -1583,13 +2030,18 @@ function cmdBuild(argv) {
       platform,
       config: cfg.config,
       reuseKey,
+      inputsDigest,
+      arch: process.arch,
       experimental,
       status: usable ? "succeeded" : "failed",
       exitCode: result.status,
       startedAt,
       finishedAt: nowIso(),
       durationMs,
-      tasks: (snap.tasks ?? []).map((t) => ({ id: t.id, commit: t.commit, module: t.module, owner: t.owner })),
+      tasks: (snap.tasks ?? []).map((t) => ({
+        id: t.id, commit: t.commit, module: t.module, owner: t.owner,
+        paths: t.paths ?? [], extraPaths: t.extraPaths ?? [],
+      })),
       command,
       cwd: wt,
       targetDir: cfg.needsTarget ? targetDir : null,
@@ -1630,13 +2082,18 @@ function cmdBuild(argv) {
         platform,
         config: cfg.config,
         reuseKey,
+        inputsDigest,
+        arch: process.arch,
         experimental,
         status: "failed",
         exitCode: err.code ?? EXIT.rejected,
         startedAt,
         finishedAt: nowIso(),
         durationMs: Date.now() - startedMs,
-        tasks: (snap.tasks ?? []).map((t) => ({ id: t.id, commit: t.commit, module: t.module, owner: t.owner })),
+        tasks: (snap.tasks ?? []).map((t) => ({
+          id: t.id, commit: t.commit, module: t.module, owner: t.owner,
+          paths: t.paths ?? [], extraPaths: t.extraPaths ?? [],
+        })),
         command,
         cwd: wt,
         targetDir: cfg.needsTarget ? targetDir : null,
@@ -1656,15 +2113,17 @@ function cmdBuild(argv) {
 
 function markSnapshotTasks(paths, snap, buildId, status) {
   for (const t of snap.tasks ?? []) {
-    const task = readJson(taskFile(paths, t.id));
-    if (!task) continue;
-    if (task.status === "accept-passed") continue;
-    // 只推进仍然对应当前快照/交付提交的任务；旧记录或返工中的任务不能被旧构建覆盖状态。
-    if (task.snapshot && task.snapshot !== snap.id) continue;
-    if (!task.commit || task.commit !== t.commit) continue;
-    task.status = status;
-    task.build = buildId;
-    saveTask(paths, task);
+    // 逐个任务加锁并在锁内重新读取：构建结束时任务可能已返工/改路径，不能被旧快照覆盖。
+    withTaskLocks(paths, [t.id], `build ${buildId} 更新任务`, () => {
+      const task = readJson(taskFile(paths, t.id));
+      if (!task) return;
+      if (task.status === "accept-passed") return;
+      if (task.snapshot && task.snapshot !== snap.id) return;
+      if (!task.commit || task.commit !== t.commit) return;
+      task.status = status;
+      task.build = buildId;
+      saveTask(paths, task);
+    }, { waitMs: 5 * 60 * 1000 });
   }
 }
 
@@ -1684,6 +2143,8 @@ function cmdAccept(argv) {
   if (!ACCEPT_STATUS.includes(status)) throw new Fail(`--status 只能是 ${ACCEPT_STATUS.join("|")}`, EXIT.usage);
 
   const buildDir = join(paths.builds, buildId);
+  // 验收写入必须与任务的其他状态变更互斥：锁内重新读取，防止覆盖并发的 ready/返工/改路径。
+  return withTaskLocks(paths, [taskId], `accept ${taskId} @ ${buildId}`, () => {
   const build = readJson(join(buildDir, "build.json"));
   if (!build) throw new Fail(`构建不存在：${buildId}`, EXIT.usage);
   const task = loadTask(paths, taskId);
@@ -1765,6 +2226,7 @@ function cmdAccept(argv) {
     console.log(`  下一步：负责人修复后 task ready，再 snapshot create 生成下一个快照（旧 build 记录保留）。`);
   }
   return EXIT.ok;
+  });
 }
 
 // ---------------------------------------------------------------- 状态
@@ -1812,6 +2274,7 @@ function cmdStatus(argv) {
   console.log(`仓库：${ctx.mainRoot}`);
   console.log(`集成快照工作区：${integrationWorktree(ctx)}${existsSync(integrationWorktree(ctx)) ? "" : "（尚未创建，snapshot create 时创建）"}`);
   console.log(`集成构建工作区：${integrationBuildWorktree(ctx)}${existsSync(integrationBuildWorktree(ctx)) ? "" : "（尚未创建，build 时创建）"}`);
+  console.log(`集成验证工作区：${integrationVerifyWorktree(ctx)}${existsSync(integrationVerifyWorktree(ctx)) ? "" : "（尚未创建，task verify 时创建）"}`);
 
   console.log("\n任务：");
   if (tasks.length === 0) console.log("  （暂无）");
@@ -1916,23 +2379,58 @@ function rel(root, p) {
   return relative(root, p).split(sep).join("/");
 }
 
+// 旧版本工具创建的集成工作区没有身份记录。adopt 只做「校验 + 登记」，不重建、不重置、不删除，
+// 用于非破坏迁移；登记前后工作区内容不变。
+function cmdWorktree(sub, argv) {
+  const args = parseArgs(argv);
+  const ctx = repoContext();
+  const paths = statePaths(ctx);
+  ensureDirs(paths);
+  const role = str(args, "role");
+  if (sub === "status" || sub === undefined) {
+    for (const r of WORKTREE_ROLES) {
+      const wt = roleWorktree(ctx, r);
+      const record = readIdentity(paths, r);
+      let verdict = "未创建";
+      if (existsSync(wt)) {
+        try { requireToolWorktree(ctx, paths, wt, r); verdict = "身份有效"; }
+        catch (err) { verdict = `拒绝：${String(err.message).split("\n")[0]}`; }
+      }
+      console.log(`${r}: ${wt}\n  身份=${record ? `formatVersion ${record.formatVersion} / ${record.createdAt}` : "缺失"} / ${verdict}`);
+    }
+    return EXIT.ok;
+  }
+  if (!WORKTREE_ROLES.includes(role)) {
+    throw new Fail(`--role 只能是 ${WORKTREE_ROLES.join("|")}（当前 ${role || "空"}）`, EXIT.usage);
+  }
+  if (sub === "adopt") {
+    const wt = args.path === undefined ? roleWorktree(ctx, role) : resolve(str(args, "path"));
+    const record = adoptToolWorktree(ctx, paths, wt, role);
+    console.log(`身份记录：${worktreeIdentityFile(paths, role)}（格式 ${record.formatVersion}）`);
+    return EXIT.ok;
+  }
+  throw new Fail(`未知 worktree 子命令：${sub ?? "(空)"}（可用 adopt | status）`, EXIT.usage);
+}
+
 function printHelp() {
   console.log(`Task Dock 统一集成 / 构建 / 验收台账
 
-  task add|update|check|ready|list|show   任务登记与交付（状态机见 docs/INTEGRATION_BUILD.md）
-  snapshot bootstrap                     只登记一个已确认的稳定基线（不叠加任务）
-  snapshot create                        把「待集成」任务的声明路径改动应用到 integration 分支并生成快照提交
-  build                                  在干净快照工作区构建；同一输入复用已有产物
-  accept                                 针对某个 buildId 写验收结论（多 Agent 各写一份）
-  status                                 查看任务 / 快照 / 构建 / 验收记录
+  task add|update|check|verify|ready|list|show 任务登记与交付（状态机见 docs/INTEGRATION_BUILD.md）
+  worktree adopt|status                    迁移/查看工具自有工作区身份（只校验登记，不重建不重置）
+  snapshot bootstrap                      只登记一个已确认的稳定基线（不叠加任务）
+  snapshot create                         把「待集成」任务的声明路径改动应用到 integration 分支并生成快照提交
+  build                                   在干净快照工作区构建；同一输入复用已有产物
+  accept                                  针对某个 buildId 写验收结论（多 Agent 各写一份）
+  status                                  查看任务 / 快照 / 构建 / 验收记录
 
 关键约束：
   - 首次集成必须 --base <稳定提交>；未完成任务的未提交改动不会进入快照。
-  - 集成快照在 <仓库>-integration 分支工作区；构建在 <仓库>-integration-build 的 detached 工作区，二者用独立锁。
-  - 只有 integration 分支上的快照提交能生成正式测试安装包；桌面与移动端分别构建。
+  - 集成/构建/验证工作区必须带身份记录才能被修改；旧工作区用 worktree adopt 迁移，缺记录时拒绝。
+  - 集成快照在 <仓库>-integration 分支工作区；构建/验证在 <仓库>-integration-build|-verify 的 detached 工作区。
+  - task check 是外部登记（source=external），无证据不算集成资格；task verify 在隔离工作区真实执行并记录提交/日志。
+  - 构建复用键 = 提交 + 平台 + 配置 + CPU 架构 + 依赖/工具链输入指纹；旧记录无指纹不复用。
   - 构建成功还必须收集到平台可用产物（web dist/index.html、桌面安装包、Android apk），否则记为失败。
   - 验收必须匹配任务当前快照/交付提交，且任务处于「待验收」；旧构建不能写 pass/fail。
-  - 构建记录含 commit / 平台 / 配置 / 任务 / 产物 sha256 / dirty 实测，位于 tmp/integration/builds/<构建>/build.json。
   - 本工具不推送、不打标签、不操作主工作区；失败时日志与记录保留，工具自有工作区回到基线。`);
 }
 
@@ -1948,6 +2446,7 @@ function main(argv) {
       throw new Fail(`未知 snapshot 子命令：${rest[0] ?? "(空)"}（可用 bootstrap | create）`, EXIT.usage);
     case "build": return cmdBuild(rest);
     case "accept": return cmdAccept(rest);
+    case "worktree": return cmdWorktree(rest[0], rest.slice(1));
     case "status": return cmdStatus(rest);
     case "help":
     case "--help":
@@ -1956,7 +2455,7 @@ function main(argv) {
       printHelp();
       return EXIT.ok;
     default:
-      throw new Fail(`未知命令：${cmd}（可用 task | snapshot | build | accept | status | help）`, EXIT.usage);
+      throw new Fail(`未知命令：${cmd}（可用 task | snapshot | build | accept | worktree | status | help）`, EXIT.usage);
   }
 }
 

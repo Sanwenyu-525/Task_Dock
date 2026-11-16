@@ -36,7 +36,7 @@ baseline 提交（人工选定，snap-01）
 | 状态 | 含义 | 谁推进 | 判据 |
 |---|---|---|---|
 | `developing` 开发中 | 正在改代码 | 任务负责人（`task add` / `task update`） | — |
-| `integration-ready` 待集成 | 代码完成且模块级检查通过 | 负责人 `task ready` | 已登记交付提交 + 至少 1 条在该交付提交上 `exit=0` 的检查记录 |
+| `integration-ready` 待集成 | 代码完成且模块级检查通过 | 负责人 `task ready` | 已登记交付提交 + 至少 1 条在**该交付提交上真实执行**（`source=executed`）通过的检查记录；带证据的外部检查可作补充 |
 | `integrated` 已集成 | 改动进入快照提交 | 工具（`snapshot create` 成功） | 快照提交生成、改动全部落在声明范围 |
 | `verifying` 待验收 | 代码已包含在可用产物中 | 工具（`build` 成功） | 构建成功、有平台可用产物、产物校验值已记录、`dirty=false` |
 | `accept-passed` 验收通过 | 在指定构建版本上验收通过 | 验收 Agent（`accept --status pass`） | 有构建版本 + 验收记录（建议附证据路径） |
@@ -55,7 +55,8 @@ baseline 提交（人工选定，snap-01）
 | `module` / `owner` | 模块与负责人（人读，用于交接与派发核对） |
 | `paths` | **写入范围白名单**（文件或目录；目录按前缀覆盖，`src/foo` 覆盖 `src/foo/...`）；集成只应用这些路径 |
 | `commit` + `from` | 交付提交与起点（默认 `commit^`）；多提交任务用 `--from` 指定起点，起点必须是交付提交的祖先 |
-| `checks` | 实际执行的检查：命令 + 退出码 + 时间 + 日志路径 + 检查提交 |
+| `checks` | 检查证据：真实执行（`source=executed`，含提交/日志/工作区/耗时/调度任务）或外部登记（`source=external`，可选证据路径）；只有真实执行或带证据的外部检查可满足 `task ready` |
+| `rev` | 台账修订号：每次写入 +1；写入前在任务锁内重新读取，用于发现并拒绝覆盖并发的更新 |
 | `publicInterface` | 是否改动公共接口（IPC/类型/迁移/设置键），供人工复核顺序与兼容性 |
 | `needs` | 依赖的其他任务；集成时用于拓扑排序与依赖校验，不在本批的依赖必须已集成 |
 
@@ -64,8 +65,9 @@ baseline 提交（人工选定，snap-01）
 ```bash
 npm run integrate -- task add --id files-rescan --owner agent-a --module 资源管理器 \
     --paths src/components/files/FilesWorkspacePanel.tsx,src/lib/filesWorkspace/interactions.ts
-npm run integrate -- task check --id files-rescan --cmd "npm test -- src/components/files" --exit 0 \
-    --commit <交付提交>
+# 真实执行：在 <仓库>-integration-verify 的干净 detached 工作区 checkout 到交付提交，
+# 按该提交核对依赖，经构建调度器执行命令，日志与退出码写入台账（失败仍写记录并返回 2）
+npm run integrate -- task verify --id files-rescan --commit <交付提交> --cmd "npm test -- src/components/files"
 npm run integrate -- task ready --id files-rescan --commit <交付提交>
 ```
 
@@ -77,8 +79,12 @@ npm run integrate -- task ready --id files-rescan --commit <交付提交>
   防止空补丁任务被标成已集成。
 - 检查记录应显式用 `--commit` 绑定它实际运行的提交；省略时工具绑定执行时的 `HEAD`。`task ready`
   只接受与交付提交相同的通过检查。这避免“在旧版本上跑过的测试”被当成新版本证据。
-- 检查记录是负责人的声明；集成时工具还会执行一次真实的静态检查（`--check static`，默认），
-  这次结果才是「快照可构建」的证据。
+- **检查必须真实执行**：`task verify` 在隔离工作区 checkout 指定提交、核对依赖、经调度器运行命令，
+  写 `source=executed`、`commit`、`logPath`、`exitCode`、`durationMs` 与 `schedulerTaskId`。`task check`
+  是人工登记，只记 `source=external`；没有证据的手动登记可用于留痕，但不能让任务进入待集成。
+  集成时工具还会执行一次真实的静态检查（`--check static`，默认），这次结果才是「快照可构建」的证据。
+- **检查绑定提交**：`task verify --commit` 必须是任务当前交付提交（或交付前的同一提交）；验证期间
+  任务若被改成新提交，结果不会写入台账，需重新验证。不能把旧版本上的通过记录用于新版本。
 - 写入范围一旦变更，工具会清空交付提交、检查、快照与验收关联并回到 `developing`，必须重新
   `task check` / `task ready`，不能事后扩大范围再沿用旧结论。
 - 返工：`accept-failed` 后修完用 `task ready --commit <修复提交> --from <上一交付提交>`，
@@ -110,10 +116,13 @@ npm run integrate -- snapshot create --all-ready --base <稳定提交>  # 首次
 3. **路径核对**：交付提交的改动必须全部落在声明范围；新增/删除/改名的两侧都要在范围内；
    声明路径一个都没改动时拒绝；`--allow-extra-paths` 会把未声明路径一并纳入补丁并记录；
 4. **依赖与交集**：`needs` 依赖任务必须先于本任务应用；不在本批的依赖必须已经进入过快照。
-   同批选中任务之间写入范围有交集即拒绝（交集文件只能有一个所有者），确需同批用
-   `--allow-overlap` 并在记录中留痕；
-5. **工作区**：`<仓库父目录>/<仓库名>-integration`，分支 `integration`；快照与构建各用独立锁，
-   同一时刻只有一个 snapshot create。目录已存在但不是本仓库登记的工作区、或状态不干净 → 拒绝；
+   同批选中任务之间写入范围有交集即拒绝（交集文件只能有一个所有者）；**显式放行的额外路径与声明
+   路径一起参与交集判定**，并进入快照记录与构建任务溯源。确需同批用 `--allow-overlap` 并在记录中留痕；
+5. **工作区**：`<仓库父目录>/<仓库名>-integration`，分支 `integration`；必须存在且身份记录
+   （`tmp/integration/worktrees/snapshot.json`）可证明它由本工具创建/登记。旧工作区没有记录时先用
+   `worktree adopt --role snapshot` 做非破坏登记；缺记录/记录被改/指向其他仓库/被普通 Agent Worktree
+   占用时一律拒绝，且不做 reset/clean/切分支。快照与构建/验证各用独立锁，同一时刻只有一个
+   snapshot create；本次选中的任务会在任务锁内重新读取，避免旧状态进入快照；
 6. **应用补丁**：对每个任务 `git diff <from>..<commit> -- <声明路径 + 放行路径>` 后
    `git apply --index --3way`；冲突 → 拒绝并提示先读双方 diff；
 7. **越界复核**：应用后工作区改动必须仍在声明范围（含显式放行的路径）；
@@ -154,25 +163,31 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
 构建要点：
 
 - **独立干净构建工作区**：`<仓库父目录>/<仓库名>-integration-build` 以 detached HEAD 执行
-  `git checkout <快照提交>`；快照工作区 `<仓库名>-integration` 只负责 `integration` 分支，两者
-  各有锁，不会互相换 HEAD。构建前要求工作区干净；其他 Agent 在主工作区的未提交改动、乃至
-  `main` 上更晚的提交都不会进入产物。
+  `git checkout <快照提交>`；必须带身份记录（`tmp/integration/worktrees/build.json`）才能被切换/构建，
+  缺记录时先 `worktree adopt --role build`，不会自动重建或删除。快照工作区 `<仓库名>-integration`
+  只负责 `integration` 分支，验证工作区 `<仓库名>-integration-verify` 只做真实检查；三者各有锁，
+  不会互相换 HEAD。构建前要求工作区干净；其他 Agent 在主工作区的未提交改动、乃至 `main` 上更晚的
+  提交都不会进入产物。
+- **缓存登记 fail-closed**：桌面构建创建 `target-integration` 后必须 `build-guard register` 成功才继续；
+  登记失败（或缺少 `scripts/build-guard.mjs`）直接拒绝构建并写失败记录，不产生无法追踪的大缓存。
 - **磁盘与缓存**：桌面构建 `CARGO_TARGET_DIR=<主仓库>/src-tauri/target-integration`（绝对路径，
-  与主工作区 target 分开）；构建前复用 `build-guard precheck`，创建后 `build-guard register`
-  标记归属；构建结束按 build-guard 规则人工回收（记录里的 `targetDir` 就是回收对象）。
+  与主工作区 target 分开）；构建前复用 `build-guard precheck`；构建结束按 build-guard 规则人工回收
+  （记录里的 `targetDir` 就是回收对象）。
 - **调度**：一律经 `scripts/build-sched.mjs run`（label `integration-<构建ID>`），与其他会话共享
   全局并发与槽位，不另造锁；`build.json` 记录 `schedulerTaskId`（若日志可解析）与日志路径。
-- **复用**：复用键 = `快照提交 | 平台 | 配置`；只复用 `status=succeeded`、`dirty=false`、有平台
-  可用产物且目录/文件校验值一致的构建。空产物、失败构建、`--command` 实验构建不会被正式构建
-  复用；`--force` 才重建。
+- **复用**：复用键 = `快照提交 | 平台 | 配置 | CPU 架构 | 构建输入指纹`。输入指纹覆盖
+  `package-lock.json`、根/移动端依赖段、命令与 Node/Rust/Java 工具链版本；旧记录没有指纹一律
+  视为不可复用。只复用 `status=succeeded`、`dirty=false`、有平台可用产物**且重新计算校验值一致**
+  的构建；空产物、失败构建、`--command` 实验构建不复用；`--force` 才重建。两个进程同时请求
+  同一构建时，后到者等待锁并在取得锁后重新查复用，不重复打包。
 - **成功判据**：命令退出 0 之外，还必须有平台可用产物：web 的 `dist/index.html` 非空、桌面至少
   一个本次生成的 `.exe`/`.msi`、Android 至少一个本次生成的 `.apk`；产物按构建开始时间过滤，
   避免把 `target-integration` 里的旧安装包记到当前 commit。零产物构建记 `failed`，任务不会进入
   `verifying`。
-- **依赖**：集成构建工作区没有 `node_modules` 时，仅在 `package-lock.json` 与主工作区逐字节一致、
-  且 `package.json` 的依赖段（dependencies / devDependencies 等）一致时建立 junction；
-  Android 还需要 `apps/mobile/package-lock.json` 与 `apps/mobile/node_modules` 的同规则链接；
-  不一致则拒绝并提示独立安装。
+- **依赖**：每次构建（包括已存在链接/独立目录）都重新读取**构建工作区当前文件**的
+  `package-lock.json` 与依赖段，和主工作区比较；一致才允许 junction 或带 `.taskdock-deps.json`
+  指纹的独立安装。已存在的 junction 不因“链接还在”而直接复用；不一致时拒绝并提示在工具工作区
+  用 `npm ci` 独立安装，不删除别人的依赖目录。Android 的 `apps/mobile` 按同一规则**单独**校验。
 - **移动端输入**：`apps/mobile/android/` 不入库，集成构建工作区缺失时明确拒绝并提示先 `expo prebuild`，
   不会静默产出不可信产物。
 - **dry-run**：只输出计划与是否已有可复用构建，不创建构建工作区、不切换 HEAD、不写记录、不改
@@ -184,8 +199,10 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
 {
   "id": "b02-desktop-r1", "snapshot": "snap-02", "commit": "<40 位 SHA>", "shortCommit": "<7 位>",
   "dirty": false, "platform": "desktop", "config": "release-nsis-msi", "experimental": false,
+  "reuseKey": "<commit>|desktop|release-nsis-msi|<arch>|<inputsDigest>", "inputsDigest": "<64 位>", "arch": "x64",
   "status": "succeeded", "exitCode": 0, "startedAt": "...", "finishedAt": "...", "durationMs": 123456,
-  "tasks": [{ "id": "files-rescan", "commit": "...", "module": "资源管理器", "owner": "agent-a" }],
+  "tasks": [{ "id": "files-rescan", "commit": "...", "module": "资源管理器", "owner": "agent-a",
+              "paths": ["src/..."], "extraPaths": [] }],
   "command": ["npm", "run", "tauri:raw", "--", "build"],
   "cwd": "<仓库父目录>/<仓库名>-integration-build", "targetDir": "<target-integration>",
   "logPath": "tmp/integration/builds/.../build.log", "schedulerTaskId": "h-...",
@@ -258,7 +275,8 @@ snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验�
 | 命令 | 用途 |
 |---|---|
 | `npm run integrate -- status [--json]` | 任务 / 快照 / 构建 / 验收汇总（只读） |
-| `npm run integrate -- task ...` | 登记、检查、就绪、查看 |
+| `npm run integrate -- task ...` | 登记、真实执行检查（`verify`）、就绪、查看 |
+| `npm run integrate -- worktree adopt\|status` | 迁移/查看工具自有工作区身份（只校验登记，不重建不重置） |
 | `npm run integrate -- snapshot bootstrap\|create` | 基线 / 增量快照 |
 | `npm run integrate -- build --snapshot <id> --platform <p>` | 统一构建（含复用与 dry-run） |
 | `npm run integrate -- accept --build <id> --task <id> --status <s>` | 写验收结论 |
@@ -272,9 +290,11 @@ snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验�
 | 3 | 执行失败（集成静态检查失败、构建失败） |
 | 4 | 状态/IO 异常（记录读写失败、未预期错误） |
 
-注：`task check` 默认把检查绑定到**当前 HEAD**，也可用 `--commit <检查提交>` 显式指定；自己的改动还
-没提交时先提交再检查，避免把检查记到别人的提交上。`--exit` 非 0 会把记录写入台账，但命令本身返回 2
-（便于脚本在失败检查后立即停）；`task ready` 要求同一交付提交上至少一条 `exit=0` 记录，否则返回 2。
+注：`task check` 是**人工登记**（`source=external`），只绑定提交与退出码，可用于留痕；无证据的登记
+不能让任务进入待集成。正式资格来自 `task verify --commit <交付提交> --cmd "<真实命令>"`：它会在
+隔离工作区 checkout 该提交、核对依赖、经调度器执行，并记录日志/退出码/调度任务。`--exit` 非 0 时
+`task check` 仍写记录但返回 2；`task ready` 需要同一交付提交上至少一条 `source=executed`（或带
+`--evidence` 的外部）通过记录，否则返回 2。
 
 环境变量：`TASKDOCK_GIT` 可显式指定 Git 可执行文件。默认先查 `PATH`，再回落到 Windows 常见安装
 位置（`C:\Program Files\Git\cmd\git.exe` 等）——不同 Agent 的 shell 未必都带 Git；构建命令里的
@@ -284,18 +304,21 @@ snap-02 / b02-desktop-r1  ← 当前稳定验收版本（Agent A、B 在此验�
 
 | 内容 | 位置 | 是否入库 |
 |---|---|---|
-| 任务、快照、构建、验收记录 | `tmp/integration/{tasks,snapshots,builds,logs}/` | 否（`tmp/` 已 gitignore） |
+| 任务、快照、构建、验收、真实检查日志 | `tmp/integration/{tasks,snapshots,builds,logs}/` | 否（`tmp/` 已 gitignore） |
+| 工具工作区身份记录 | `tmp/integration/worktrees/{snapshot,build,verify}.json` | 否（`tmp/` 已 gitignore；缺记录时工具拒绝操作，可 `worktree adopt` 非破坏迁移） |
 | 集成快照工作区 | `<仓库父目录>/<仓库名>-integration`（分支 `integration`） | 否（独立 checkout） |
 | 集成构建工作区 | `<仓库父目录>/<仓库名>-integration-build`（detached HEAD） | 否（独立 checkout） |
+| 真实检查工作区 | `<仓库父目录>/<仓库名>-integration-verify`（detached HEAD） | 否（独立 checkout） |
 | 桌面构建缓存 | `src-tauri/target-integration/` | 否（`target-*` 规则） |
 | 任务关联的持久记录 | 快照提交信息里的 `TaskDock-*` 行 | 是（随 commit 走） |
 
 清理：
 
 ```bash
-# 集成快照/构建工作区（确认没有 Agent 正在运行对应操作后）
+# 集成快照/构建/验证工作区（确认没有 Agent 正在运行对应操作后）
 git worktree remove ../task_dock-integration        # 不带 --force；被占用会被拒绝
 git worktree remove ../task_dock-integration-build
+git worktree remove ../task_dock-integration-verify
 git branch -d integration                           # 仅在快照已合入需要的位置后
 
 # 桌面构建缓存（按 build-guard 归属规则，人工确认后）

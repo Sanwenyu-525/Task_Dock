@@ -11,7 +11,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
   type MouseEvent as ReactMouseEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -243,7 +242,8 @@ function EditHandle({
 function DropPreview({ zone }: { zone: FwDropZone }) {
   const { t } = useLocale();
   // 拖拽过程中 Ctrl/Shift 变化不改变落点，但会改变语义；订阅快照让标签即时刷新。
-  const drag = useSyncExternalStore(subscribeFwDrag, getFwDragState);
+  const [drag, setDrag] = useState(() => getFwDragState());
+  useEffect(() => subscribeFwDrag(setDrag), []);
   if (zone.type === "edge") {
     const label =
       zone.edge === "left"
@@ -1495,6 +1495,7 @@ export default function FilePane({
               <button
                 type="button"
                 className="fw-selection-btn"
+                aria-label={t("fw.action.copyTo")}
                 onClick={() => requestCrossPane("copy")}
                 data-tip={t("fw.action.copyTo")}
               >
@@ -1504,6 +1505,7 @@ export default function FilePane({
               <button
                 type="button"
                 className="fw-selection-btn"
+                aria-label={t("fw.action.moveTo")}
                 onClick={() => requestCrossPane("move")}
                 data-tip={t("fw.action.moveTo")}
               >
@@ -1515,6 +1517,7 @@ export default function FilePane({
           <button
             type="button"
             className="fw-selection-btn"
+            aria-label={t("fw.action.toShelf")}
             onClick={() => void sendToShelf(selectedPaths)}
             data-tip={t("fw.action.toShelf")}
           >
@@ -1524,6 +1527,7 @@ export default function FilePane({
           <button
             type="button"
             className="fw-selection-btn"
+            aria-label={t("fw.action.copyPath")}
             onClick={() => void copySelectedPaths()}
             data-tip={t("fw.action.copyPath")}
           >
@@ -1533,6 +1537,7 @@ export default function FilePane({
           <button
             type="button"
             className="fw-selection-btn"
+            aria-label={t("fw.action.reveal")}
             onClick={() => void revealSelected()}
             data-tip={t("fw.action.reveal")}
           >
@@ -1543,6 +1548,7 @@ export default function FilePane({
             <button
               type="button"
               className="fw-selection-btn"
+              aria-label={t("fw.action.preview")}
               onClick={() => previewSelected()}
               data-tip={t("fw.action.preview")}
             >
@@ -1554,6 +1560,7 @@ export default function FilePane({
             <button
               type="button"
               className="fw-selection-btn"
+              aria-label={t("fw.action.batchRename")}
               onClick={() => batchRenameSelected()}
               data-tip={t("fw.action.batchRename")}
             >
@@ -1565,6 +1572,7 @@ export default function FilePane({
             <button
               type="button"
               className="fw-selection-btn"
+              aria-label={t("fw.action.compare")}
               onClick={compareSelected}
               data-tip={t("fw.action.compare")}
             >

@@ -71,6 +71,7 @@ vi.mock("../store/useHotkeysStore", () => ({ useHotkeysRuntime: () => undefined 
 import WorkbenchShell from "./WorkbenchShell";
 import NavigationVisibilitySection from "../components/settings/NavigationVisibilitySection";
 import { defaultNavigationLayout } from "../lib/navVisibility";
+import { defaultWorkbenchLayout } from "../lib/workbenchLayout";
 import { resetNavOrderIntents } from "../lib/navOrderIntent";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useTasksStore } from "../store/useTasksStore";
@@ -863,6 +864,46 @@ describe("拖拽手柄放大与命中区", () => {
     expect(navList().querySelector(".wb-nav-item.is-dragging")).toBeNull();
     fireEvent.pointerUp(window, { pointerId: 202, pointerType: "mouse" });
     expect(navIds()).toEqual(before);
+  });
+});
+
+describe("导航宽度临界点与名称 tooltip", () => {
+  it("达到 200px 时显示名称，不挂名称 tooltip", async () => {
+    useSettingsStore.setState({
+      settings: {
+        ...baseSettings(),
+        workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 200 },
+      } as never,
+    });
+    await renderShell();
+    const root = document.querySelector<HTMLElement>(".wb-root");
+    expect(root?.hasAttribute("data-nav-compact")).toBe(false);
+    const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
+    // 宽态名称可见，TooltipLayer 不应因为 aria-label 回退或显式 data-tip 弹名称提示。
+    expect(nav.querySelectorAll("[data-tip]")).toHaveLength(0);
+    const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
+    expect(page?.hasAttribute("data-tip")).toBe(false);
+    // 折叠规则只在临界点以下生效，不能把名称永久隐藏。
+    expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-label')).toMatch(/display: none/);
+  });
+
+  it("180px（最小宽度）进入图标态，动态入口与固定入口都补名称 tooltip", async () => {
+    useSettingsStore.setState({
+      settings: {
+        ...baseSettings(),
+        workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 180 },
+      } as never,
+    });
+    await renderShell();
+    const root = document.querySelector<HTMLElement>(".wb-root");
+    expect(root?.getAttribute("data-nav-compact")).toBe("true");
+
+    const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
+    const pageLabel = page?.querySelector<HTMLElement>(".wb-nav-label")?.textContent;
+    expect(page?.getAttribute("data-tip")).toBe(pageLabel);
+    // 首页、设置、更多也属于导航入口；图标态悬停必须有名称提示。
+    const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
+    expect(nav.querySelectorAll("[data-tip]").length).toBeGreaterThanOrEqual(2);
   });
 });
 

@@ -5,7 +5,7 @@
 //!
 //! scrcpy 真机行为不在 jsdom 覆盖范围：这里只验证 UI 层级、交互与 IPC 契约。
 
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -405,6 +405,8 @@ describe("VirtualDisplaySection", () => {
     expect(screen.getByText("截图可能不完整")).toBeTruthy();
     expect(screen.getByText("窗口可能被遮挡")).toBeTruthy();
 
+    // jsdom 不会真正解码图片；显式触发 load，验证「可显示后才允许入暂存架」。
+    fireEvent.load(screen.getByRole("img"));
     await user.click(screen.getByRole("button", { name: "保存到暂存架" }));
     expect(shelfMock).toHaveBeenCalledWith(["C:\\tmp\\shot.png"], "managed", "manual");
     await waitFor(() => expect(screen.queryByText("窗口截图")).toBeNull());
@@ -428,6 +430,7 @@ describe("VirtualDisplaySection", () => {
     await screen.findByText("V2323A · 设置");
     await user.click(screen.getByRole("button", { name: "截屏" }));
     await screen.findByText("窗口截图");
+    fireEvent.load(screen.getByRole("img"));
     await user.click(screen.getByRole("button", { name: /另存为/ }));
 
     expect(exportMock).toHaveBeenCalledWith("session-1", "D:\\tmp\\out.png");
@@ -447,6 +450,38 @@ describe("VirtualDisplaySection", () => {
 
     expect(stopMock).toHaveBeenCalledWith("session-1");
     expect((await screen.findAllByText("关闭中")).length).toBeGreaterThan(0);
+  });
+
+  it("两个会话可独立关闭，一个关闭中不阻塞另一个", async () => {
+    sessionsMock.mockResolvedValue([
+      session({ status: "running", stage: "ready" }),
+      session({
+        id: "session-2",
+        package: "com.google.android.chrome",
+        app_label: "Chrome",
+        title: "Task Dock · 虚拟屏 · Chrome",
+        status: "running",
+        stage: "ready",
+      }),
+    ]);
+    stopMock.mockImplementation(() => new Promise<boolean>(() => {}));
+    const user = userEvent.setup();
+    render(<VirtualDisplaySection />);
+
+    await screen.findByText("V2323A · 设置");
+    await screen.findByText("V2323A · Chrome");
+    const firstClose = screen.getAllByRole("button", { name: "关闭" })[0];
+    await user.click(firstClose);
+
+    expect(stopMock).toHaveBeenCalledWith("session-1");
+    const firstClosing = screen.getByRole("button", { name: "关闭中" });
+    expect((firstClosing as HTMLButtonElement).disabled).toBe(true);
+    const secondClose = screen.getByRole("button", { name: "关闭" });
+    expect((secondClose as HTMLButtonElement).disabled).toBe(false);
+
+    await user.click(secondClose);
+    expect(stopMock).toHaveBeenCalledWith("session-2");
+    expect(screen.getAllByRole("button", { name: "关闭中" })).toHaveLength(2);
   });
 
   it("高级设置默认折叠，诊断与重连只在展开后可用", async () => {

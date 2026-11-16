@@ -99,10 +99,10 @@ export function sessionTitle(session: VdSession, deviceLabel: string, t: Transla
   return t("virtualDisplay.sessions.sessionName.virtual", { device, app });
 }
 
-/** 当前设备的可读名称：型号优先，其次序列号（仅在无型号时兜底）。 */
+/** 当前设备的可读名称：型号优先，缺失时用中性名称，不暴露完整序列号/IP。 */
 export function deviceLabel(device: VdDevice | null, t: Translate): string {
   if (!device) return t("virtualDisplay.noDevice");
-  return device.model?.trim() || device.serial;
+  return device.model?.trim() || t("virtualDisplay.device.unnamed");
 }
 
 /** 会话标题使用的设备名：会话记录里的型号 → 当前选择设备 → 通用 Android。 */

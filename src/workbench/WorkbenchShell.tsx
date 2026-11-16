@@ -106,6 +106,7 @@ import {
 import {
   WORKBENCH_DETAIL_WIDTH_MAX,
   WORKBENCH_DETAIL_WIDTH_MIN,
+  WORKBENCH_NAV_LABELS_MIN_WIDTH,
   WORKBENCH_NAV_WIDTH_MAX,
   WORKBENCH_NAV_WIDTH_MIN,
   isWorkbenchRoute,
@@ -273,6 +274,8 @@ export default function WorkbenchShell() {
   const [detailWidth, setDetailWidth] = useState(320);
   const [detailOpen, setDetailOpen] = useState(true);
   const [compact, setCompact] = useState(false);
+  const navRef = useRef<HTMLElement | null>(null);
+  const [navActualWidth, setNavActualWidth] = useState<number | null>(null);
   const navWidthRef = useRef(navWidth);
   navWidthRef.current = navWidth;
   const detailWidthRef = useRef(detailWidth);
@@ -430,6 +433,28 @@ export default function WorkbenchShell() {
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
   }, []);
+
+  // 导航实际宽度可能被响应式媒体查询覆盖（窗口 ≤760px 时固定 56px），
+  // 因此名称折叠不能只依赖设置里的 navWidth；观察真实渲染宽度，保证拖拽阈值
+  // 与窗口降级使用同一套 tooltip 语义。jsdom 的 ResizeObserver 是空实现，
+  // 此时回退到 navWidth。
+  useEffect(() => {
+    const node = navRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const width = node.getBoundingClientRect().width;
+      if (width <= 0) return;
+      setNavActualWidth((previous) =>
+        previous !== null && Math.abs(previous - width) <= 0.5 ? previous : width,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  const navLabelsCompact = (navActualWidth ?? navWidth) < WORKBENCH_NAV_LABELS_MIN_WIDTH;
 
   // ── 项目列表读写 ────────────────────────────────────────────────────
   const refreshProjects = useCallback(async (): Promise<WorkspaceProject[]> => {
@@ -1150,7 +1175,10 @@ export default function WorkbenchShell() {
 
   const navListRef = useRef<HTMLDivElement | null>(null);
   // 拖拽结束后浏览器补发的 click 不能变成页面跳转（与设置页同一语义）。
+  // 不能只依赖时间窗：测试/慢帧下补发 click 也可能晚到；同时用一个「待消费」
+  // 标记记住本次拖拽结束，页面按钮的真实 pointerdown 或键盘操作会主动清掉它。
   const navDragEndedAtRef = useRef(0);
+  const navDragClickPendingRef = useRef(false);
   // 隐藏入口：复用设置页同一条 `navigation_layout` 写入链路。一次只处理一个
   // 入口，避免快速连点时两个「读-改-写」互相覆盖；进入 pending 期间保持 busy，
   // 用户取消后才释放（取消不得写隐藏配置）。
@@ -1168,11 +1196,13 @@ export default function WorkbenchShell() {
     disabled: hidingId !== null,
     onDrop: (id, toIndex) => {
       navDragEndedAtRef.current = Date.now();
+      navDragClickPendingRef.current = true;
       if (!moveNavEntryTo(id, toIndex)) return;
       navPendingAnnounceRef.current = id;
     },
     onCancel: () => {
       navDragEndedAtRef.current = Date.now();
+      navDragClickPendingRef.current = true;
       setNavAnnouncement(t("nav.dragCancelled"));
     },
   });
@@ -1523,13 +1553,18 @@ export default function WorkbenchShell() {
   } as CSSProperties;
 
   return (
-    <div className={`wb-root${compact ? " is-compact" : ""}`} style={rootStyle}>
-      <nav className="wb-nav" aria-label={t("workbench.navAria")}>
+    <div
+      className={`wb-root${compact ? " is-compact" : ""}`}
+      style={rootStyle}
+      data-nav-compact={navLabelsCompact ? "true" : undefined}
+    >
+      <nav ref={navRef} className="wb-nav" aria-label={t("workbench.navAria")}>
         <div className="wb-nav-items" ref={navListRef}>
           <button
             type="button"
             className={`wb-nav-item${atHome ? " active" : ""}`}
             aria-current={atHome ? "page" : undefined}
+            data-tip={navLabelsCompact ? t("workbench.home") : undefined}
             onClick={() => goRoute("home")}
           >
             <span className="wb-nav-icon">
@@ -1567,6 +1602,7 @@ export default function WorkbenchShell() {
                     key={entry.id}
                     className={`wb-nav-item has-grip${active ? " active" : ""}${dragging ? " is-dragging" : ""}`}
                     data-nav-entry={entry.id}
+                    data-tip={navLabelsCompact ? label : undefined}
                     style={translate !== 0 ? { transform: `translateY(${translate}px)` } : undefined}
                   >
                     {/* 行是普通布局容器；页面切换、拖拽、隐藏是三个独立按钮，
@@ -1575,6 +1611,7 @@ export default function WorkbenchShell() {
                       type="button"
                       className="wb-nav-grip"
                       data-nav-grip
+                      data-tip-skip={navLabelsCompact ? undefined : "1"}
                       tabIndex={-1}
                       aria-label={t("nav.dragHandle", { label })}
                       onPointerDown={(event) => {
@@ -1594,12 +1631,26 @@ export default function WorkbenchShell() {
                       data-nav-page
                       aria-current={active ? "page" : undefined}
                       aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
+                      data-tip={navLabelsCompact ? label : undefined}
                       onClick={() => {
                         // 拖拽松手后的补发 click 不是「打开页面」的意图。
+                        // 先消费一次性标记；真实 pointerdown/键盘操作会提前清掉它。
+                        if (navDragClickPendingRef.current) {
+                          navDragClickPendingRef.current = false;
+                          return;
+                        }
                         if (Date.now() - navDragEndedAtRef.current < NAV_DRAG_CLICK_GUARD_MS) return;
                         openEntry(entry);
                       }}
-                      onKeyDown={(event) => onNavEntryKeyDown(event, entry.id)}
+                      onPointerDown={() => {
+                        navDragClickPendingRef.current = false;
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          navDragClickPendingRef.current = false;
+                        }
+                        onNavEntryKeyDown(event, entry.id);
+                      }}
                     >
                       <span className="wb-nav-icon">
                         <entry.icon size={18} strokeWidth={1.75} aria-hidden="true" />
@@ -1622,6 +1673,7 @@ export default function WorkbenchShell() {
                         type="button"
                         className="wb-nav-hide"
                         data-nav-hide
+                        data-tip-skip={navLabelsCompact ? undefined : "1"}
                         aria-label={t("nav.hideAria", { label })}
                         disabled={hidingId !== null || navDrag.draggingId !== null}
                         onPointerDown={(event) => {
@@ -1663,7 +1715,7 @@ export default function WorkbenchShell() {
                   aria-haspopup="menu"
                   aria-expanded={expanded}
                   aria-label={t("workbench.moreAria")}
-                  data-tip={t("workbench.more")}
+                  data-tip={navLabelsCompact ? t("workbench.more") : undefined}
                   onClick={onClick}
                   onKeyDown={onKeyDown}
                 >
@@ -1705,6 +1757,7 @@ export default function WorkbenchShell() {
                 className={`wb-nav-item${active ? " active" : ""}`}
                 aria-current={active ? "page" : undefined}
                 aria-label={label}
+                data-tip={navLabelsCompact ? label : undefined}
                 onClick={() => {
                   openEntry(entry);
                 }}

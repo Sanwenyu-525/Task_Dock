@@ -50,7 +50,7 @@
 |---|---|---|
 | 统一大型工作台 `workbench.unified` | implemented | U0（2026-11-14）：胶囊 / 快捷工具面板 / 独立大型工作台三层职责；20 条路由；统一导航复用 navigationRegistry + navVisibility；workbench_layout 恢复路由/项目/右栏/分栏宽度；ModuleRunControl + useLifecycleStore 管理模块启停；workbenchOnly 与 workspaceProfiles 构成专业模块接入协议。20 路由验收为部分通过（Windows 原生通道未执行） |
 | 专业项目工作空间 `workbench.projects` | partial | 五种项目类型（development / game / ai_comic / general / novel）、项目 CRUD/归档、事项与阶段树、任务与暂存弱关联、开发型复用 dev_projects（Git/Agent 快照）、每项目独立窗口状态、三层入口、能力四态声明。缺口：core.layout 只有当前模块写回；项目级笔记/Agent/产物关联；项目进度字段；跨设备项目同步；多显示器/DPI 真机走查 |
-| 多目录文件工作区 `workbench.files` | implemented | 递归分割树（12 窗格/深度 6/每窗格 12 标签）、自由打开目录与四方向分栏、布局持久化、标签管理、复制/移动/重命名/新建/删除（回收站与永久删除独立确认）、跨窗格拖拽、外部 OS 拖入复制语义、冲突整批一次决策、类型图标与缩略图、搜索排序。真实拖拽/回收站/缩略图待原生真机验收 |
+| 多目录文件工作区 `workbench.files` | implemented | 递归分割树（12 窗格/深度 6/每窗格 12 标签）、自由打开目录与四方向分栏、布局持久化、标签管理、复制/移动/重命名/新建/删除（回收站与永久删除独立确认）、跨窗格拖拽、外部 OS 拖入复制语义、冲突整批一次决策、类型图标与缩略图、搜索排序；已接入多目录联合搜索、批量重命名、目录对比、快速预览与重复文件查找（大小预筛 + 显式哈希）。真实拖拽/回收站/缩略图待原生真机验收 |
 | 小说创作工作台 `create.novel` | partial | v58 卷→章树、纯文本正文、自动保存、字数统计、8 MiB 单章上限、备份；项目概览/写作事项/任务关联。缺口：人物、世界观、大纲、版本记录、Markdown/导入导出/全文搜索、AI 辅助（均为 planned，无假入口）；长篇原生走查未执行 |
 | 游戏开发工作台 `create.game` | partial | 游戏项目类型、概览/制作事项/任务关联/设置、以事项阶段承载关卡/系统/美术阶段。缺口：GDD、角色/场景/资源库、构建与测试流水线、产物登记、引擎跳转、测试与缺陷跟踪；构建/资源能力为 planned |
 | AI 漫剧工作台 `create.ai-comic` | partial | 漫剧项目类型、剧集与镜头导航、以事项阶段承载 episode/shot（limited）、任务关联。缺口：剧本、分镜元数据与镜头-场景关联、角色与素材库、生成管线、版本比较与采用、制作看板与 Agent 协作；生成能力为 unavailable |

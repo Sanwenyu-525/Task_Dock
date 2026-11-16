@@ -530,6 +530,13 @@ Worktree 按需使用、交付走统一集成线**。写入文件集合与共享
 安全清理，**不执行 commit / merge / rebase / push**，也不替 Agent 判断是否需要隔离；所有 Git 写
 操作仍由主 Agent 或任务所有者按授权执行。
 
+与任务 Worktree 不同，统一集成/构建/真实检查使用工具自有的三个工作区（`-integration`、
+`-integration-build`、`-integration-verify`），由 `scripts/taskdock-integration.mjs` 独占管理：
+每个工作区在 `tmp/integration/worktrees/<role>.json` 有身份记录（仓库、真实路径、用途、gitdir、
+格式版本、校验和），缺记录/被篡改/不属于本仓库时一律拒绝修改，且不会重建或清理它们。旧工作区用
+`worktree adopt --role <snapshot|build|verify>` 做**非破坏登记**；真实检查用 `task verify`，详见
+[INTEGRATION_BUILD.md](INTEGRATION_BUILD.md)。
+
 ### 8.1 目录与分支约定
 
 - 仅对判定需要隔离的任务使用本节约定；共享工作区并行的任务不建 Worktree、不建任务分支，

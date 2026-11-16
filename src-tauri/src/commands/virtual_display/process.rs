@@ -289,9 +289,11 @@ impl SessionManager {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = cmd
-            .spawn()
-            .map_err(|err| AppError::Unavailable(format!("启动 scrcpy 失败：{err}")))?;
+        let mut child = cmd.spawn().map_err(|err| {
+            // 进程没启动成功时不留空日志文件。
+            remove_file(&log_path);
+            AppError::Unavailable(format!("启动 scrcpy 失败：{err}"))
+        })?;
         let pid = child.id();
         // scrcpy 5.x 把 INFO/Texture/New display/Starting app 写在 stdout，错误写在 stderr；
         // 两路都必须读，否则「进程活着但没就绪」会被误判为成功或超时。
@@ -545,7 +547,17 @@ impl SessionManager {
                 return Err(AppError::Unavailable(format!("截图文件校验失败：{err}")));
             }
         };
-        let warning = capture_warning(capture.rich, width, height);
+        let mut warning = capture_warning(capture.rich, width, height);
+        if capture.width != width || capture.height != height {
+            let mismatch = format!(
+                "截图尺寸与捕获尺寸不一致（捕获 {}x{}，文件 {}x{}）",
+                capture.width, capture.height, width, height
+            );
+            warning = Some(match warning {
+                Some(existing) => format!("{existing}；{mismatch}"),
+                None => mismatch,
+            });
+        }
 
         let mut inner = handle.inner.lock().expect("vd session");
         if inner.finalized || status_is_ended(&inner.info.status) {
@@ -1070,6 +1082,7 @@ fn verify_png_file(path: &Path) -> Result<(u32, u32), String> {
 
 // ── Windows 进程/窗口/截图 ─────────────────────────────────
 
+#[derive(Debug)]
 struct WindowCapture {
     png: Vec<u8>,
     width: u32,
@@ -1571,5 +1584,51 @@ mod tests {
         // 模拟线程创建失败：调用方据此回收进程并返回错误，而不是 .ok() 静默忽略。
         let result = spawn_named_with_stack("vd-test-oversized".to_string(), usize::MAX, || {});
         assert!(result.is_err(), "超大栈应创建失败");
+    }
+
+    #[test]
+    fn missing_scrcpy_reports_start_failure_without_registering_session() {
+        let manager = SessionManager {
+            map: Mutex::new(std::collections::HashMap::new()),
+            start_gate: Mutex::new(()),
+        };
+        let req = StartRequest {
+            serial: "TESTSERIAL0001".into(),
+            device_uid: "UID".into(),
+            device_model: None,
+            mode: super::super::MODE_MIRROR,
+            package: None,
+            app_label: None,
+            size: None,
+            clipboard_sync: false,
+            allow_multi: false,
+            scrcpy: PathBuf::from(r"C:\__task_dock_test__\missing-scrcpy.exe"),
+            warning: None,
+            title: "Task Dock · 手机屏幕".into(),
+        };
+        let err = manager.start(req).expect_err("不存在的 scrcpy 必须启动失败");
+        assert!(
+            err.to_string().contains("启动 scrcpy 失败"),
+            "错误应可解释: {err}"
+        );
+        assert!(
+            manager.sessions().expect("读取空会话").is_empty(),
+            "启动失败不能登记会话"
+        );
+    }
+
+    #[test]
+    fn redaction_keeps_device_serial_out_of_logs() {
+        let line = "INFO: Device 192.0.2.12:5555 connected";
+        let redacted = redact_line(line, "192.0.2.12:5555");
+        assert!(!redacted.contains("192.0.2.12:5555"));
+        assert!(redacted.contains("<设备>"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn screenshot_of_missing_window_returns_explainable_error() {
+        let err = win::capture_window_png(u32::MAX).expect_err("不存在的 PID 不应截到图");
+        assert!(err.contains("未找到 scrcpy 窗口"), "错误应可解释: {err}");
     }
 }

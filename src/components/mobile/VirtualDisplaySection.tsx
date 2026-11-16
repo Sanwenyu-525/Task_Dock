@@ -105,7 +105,7 @@ export default function VirtualDisplaySection() {
 
   const [sessions, setSessions] = useState<VdSession[]>([]);
   const [busy, setBusy] = useState(false);
-  const [closingId, setClosingId] = useState<string | null>(null);
+  const [closingIds, setClosingIds] = useState<string[]>([]);
   const [startError, setStartError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
@@ -487,8 +487,9 @@ export default function VirtualDisplaySection() {
   };
 
   const closeSession = async (session: VdSession) => {
-    if (closingId) return;
-    setClosingId(session.id);
+    if (closingIds.includes(session.id)) return;
+    // 每个会话独立记录收尾状态：关闭 A 不应阻止用户继续关闭 B。
+    setClosingIds((previous) => [...previous, session.id]);
     // 立即显示「关闭中」，不等待下一次轮询；后端会在空闲时完成真实收尾。
     setSessions((previous) =>
       previous.map((item) =>
@@ -505,7 +506,9 @@ export default function VirtualDisplaySection() {
       });
       await refreshSessions.current();
     } finally {
-      if (mountedRef.current) setClosingId(null);
+      if (mountedRef.current) {
+        setClosingIds((previous) => previous.filter((id) => id !== session.id));
+      }
     }
   };
 
@@ -809,7 +812,7 @@ export default function VirtualDisplaySection() {
           limit={sessionLimit}
           currentDevice={selectedDevice}
           now={now}
-          closingId={closingId}
+          closingIds={closingIds}
           capturingId={capturingId}
           t={tr}
           onFocus={(session) => void focusSession(session)}

@@ -328,6 +328,7 @@ mod imp {
 
 
     fn build_bitmap(state: &mut State, win_w: i32, win_h: i32, hrgn: Option<isize>) -> bool {
+        let t0 = std::time::Instant::now();
         let pr = params();
         let margin = state.margin;
         let w = win_w + margin * 2;
@@ -426,8 +427,8 @@ mod imp {
                 samples.push_str(&format!("{d}px:{:.3} ", a));
             }
             eprintln!(
-                "[shadow] bitmap {}x{} margin={}px amb_pass={} con_pass={} edge_alpha(outside) {}",
-                w, h, margin, amb_pass, con_pass, samples
+                "[shadow] bitmap {}x{} margin={}px amb_pass={} con_pass={} edge_alpha(outside) {} elapsed_ms={:.2}",
+                w, h, margin, amb_pass, con_pass, samples, t0.elapsed().as_secs_f64() * 1000.0
             );
         }
         true

@@ -982,10 +982,13 @@ pub fn vd_start(
         }
     }
 
+    let app_label = package
+        .as_deref()
+        .and_then(|pkg| known_app_label(&device.uid, pkg));
     let title = match mode {
         MODE_VIRTUAL => format!(
             "Task Dock · 虚拟屏 · {}",
-            package.as_deref().unwrap_or("Android")
+            app_label.as_deref().unwrap_or("独立虚拟屏")
         ),
         _ => format!(
             "Task Dock · 手机屏幕 · {}",
@@ -999,9 +1002,7 @@ pub fn vd_start(
         device_model: device.model.clone(),
         mode,
         package: package.clone(),
-        app_label: package
-            .as_deref()
-            .and_then(|pkg| known_app_label(&device.uid, pkg)),
+        app_label,
         size,
         clipboard_sync: clipboard_sync.unwrap_or(false),
         allow_multi: allow_multi.unwrap_or(false),

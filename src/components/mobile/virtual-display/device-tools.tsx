@@ -105,7 +105,7 @@ export default function DeviceTools({
 
   const deviceOptions = devices.map((device) => ({
     value: device.serial,
-    label: device.model?.trim() || device.serial,
+    label: device.model?.trim() || t("virtualDisplay.device.unnamed"),
     hint: t(connectionLabelKey(device.connection)),
   }));
 
@@ -159,8 +159,9 @@ export default function DeviceTools({
               </span>
               <div className="vd-device-info">
                 <div className="vd-device-title-row">
-                  <span className="vd-device-name" data-tip={selected?.serial}>
-                    {selected?.model?.trim() || selected?.serial || t("virtualDisplay.noDevice")}
+                  <span className="vd-device-name">
+                    {selected?.model?.trim() ||
+                      t("virtualDisplay.device.unnamed")}
                   </span>
                   {selected ? (
                     <StatusBadge tone={deviceTone(selected.state)} size="sm">

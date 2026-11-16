@@ -166,14 +166,12 @@ export default function AppPicker({
                     </span>
                     <span className="vd-app-main">
                       <span className="vd-app-name">
-                        {app.label ?? app.package}
+                        {app.label ?? t("virtualDisplay.app.unknownName")}
                         {selected ? (
                           <Check size={12} className="vd-app-check" aria-hidden="true" />
                         ) : null}
                       </span>
-                      {app.label ? (
-                        <span className="vd-app-package">{app.package}</span>
-                      ) : null}
+                      <span className="vd-app-package">{app.package}</span>
                       {unavailable ? (
                         <span className="vd-app-reason">
                           {app.reason ?? t("virtualDisplay.noLaunchable")}

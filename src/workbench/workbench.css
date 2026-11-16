@@ -251,6 +251,12 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
   grid-column: 2;
 }
 
+/* 导航宽度低于设置临界点（默认 200px）时只保留图标与徽标；名称由
+   TooltipLayer 的 data-tip 在悬停时补出。不要在这里改行高或侧栏宽度。 */
+.wb-root[data-nav-compact="true"] .wb-nav-label {
+  display: none;
+}
+
 .wb-nav-badge {
   justify-self: end;
   position: static;

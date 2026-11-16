@@ -1248,6 +1248,12 @@ body.fw-resizing-row * {
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 
+/* 同目录/不可传输落点：明确表达「不会执行」，不伪装成移动成功。 */
+.fw-drop-center.is-invalid {
+  border-color: color-mix(in srgb, var(--status-waiting) 60%, transparent);
+  background: color-mix(in srgb, var(--status-waiting) 6%, transparent);
+}
+
 .fw-drop-center .fw-drop-label {
   left: 50%;
   top: 50%;

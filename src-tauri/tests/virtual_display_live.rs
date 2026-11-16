@@ -210,6 +210,11 @@ fn live_mirror_and_virtual_session_roundtrip() {
     assert_eq!(running.mode, "virtual");
     assert_eq!(running.package.as_deref(), Some("com.android.settings"));
     assert!(
+        !running.title.contains("com.android.settings"),
+        "会话标题不应使用完整包名: {}",
+        running.title
+    );
+    assert!(
         matches!(running.stage.as_str(), "ready" | "video"),
         "虚拟屏 stage={}",
         running.stage
@@ -217,7 +222,60 @@ fn live_mirror_and_virtual_session_roundtrip() {
     let shot = capture_with_retry(&virtual_session.id);
     eprintln!("虚拟屏截图: {} {}x{}", shot.path, shot.width, shot.height);
 
-    assert!(vd::vd_stop(virtual_session.id.clone()).expect("关闭虚拟屏"));
-    wait_gone(&virtual_session.id, Duration::from_secs(12));
+    // 第二个虚拟屏：不同应用、显式开启多会话。验证两个会话可并存、可单独关闭。
+    let second_package = apps
+        .apps
+        .iter()
+        .find(|app| {
+            app.package != "com.android.settings"
+                && app.launchable == Some(true)
+                && app.package != "com.android.shell"
+        })
+        .map(|app| app.package.clone());
+    if let Some(package) = second_package {
+        let second = vd::vd_start(
+            device.serial.clone(),
+            "virtual".into(),
+            Some(package.clone()),
+            Some("1080x1920/384".into()),
+            Some(false),
+            Some(true),
+        )
+        .expect("启动第二个虚拟屏");
+        let second_running = wait_for(&second.id, &["running"], Duration::from_secs(30));
+        assert_eq!(second_running.mode, "virtual");
+        assert_eq!(second_running.package.as_deref(), Some(package.as_str()));
+
+        let all = vd::vd_sessions().expect("读取双会话");
+        let active = all
+            .iter()
+            .filter(|session| {
+                session.serial == device.serial
+                    && matches!(session.status.as_str(), "starting" | "running")
+            })
+            .count();
+        assert!(active >= 2, "双虚拟屏未同时运行: {all:?}");
+
+        // 单独关闭第一个，第二个必须保持运行。
+        assert!(vd::vd_stop(virtual_session.id.clone()).expect("关闭第一个虚拟屏"));
+        wait_gone(&virtual_session.id, Duration::from_secs(12));
+        let remaining = vd::vd_sessions()
+            .expect("关闭第一个后读取会话")
+            .into_iter()
+            .find(|session| session.id == second.id)
+            .expect("第二个会话不应被连带关闭");
+        assert!(
+            matches!(remaining.status.as_str(), "running" | "starting" | "stopping"),
+            "第二个会话状态异常: {remaining:?}"
+        );
+
+        assert!(vd::vd_stop(second.id.clone()).expect("关闭第二个虚拟屏"));
+        wait_gone(&second.id, Duration::from_secs(12));
+    } else {
+        eprintln!("没有第二个可启动应用，跳过双虚拟屏并发验证");
+        assert!(vd::vd_stop(virtual_session.id.clone()).expect("关闭虚拟屏"));
+        wait_gone(&virtual_session.id, Duration::from_secs(12));
+    }
+
     eprintln!("真机联调完成：镜像与虚拟屏均已启动、截图并回收");
 }

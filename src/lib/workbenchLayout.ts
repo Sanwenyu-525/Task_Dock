@@ -66,6 +66,8 @@ export interface WorkbenchLayout {
 
 export const WORKBENCH_NAV_WIDTH_MIN = 180;
 export const WORKBENCH_NAV_WIDTH_MAX = 320;
+/** 低于该宽度时导航进入图标态：隐藏 Tab 名称，悬停时用 tooltip 补名称。 */
+export const WORKBENCH_NAV_LABELS_MIN_WIDTH = 200;
 export const WORKBENCH_DETAIL_WIDTH_MIN = 260;
 export const WORKBENCH_DETAIL_WIDTH_MAX = 480;
 

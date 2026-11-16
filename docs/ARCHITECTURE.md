@@ -892,11 +892,24 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   保证功能图标和 Tab 名称对齐且 200px 导航不横向溢出。动态行外层是普通布局容器，
   页面切换、拖拽、隐藏分别是兄弟 `button`（页面按钮 `data-nav-page` 占功能图标/名称/
   徽标三列），不再出现 `role=button` 容器内嵌 button；排序后的焦点恢复到页面按钮。
+  拖拽结束后的补发 click 由「一次性 pending 标记 + 350ms 时间窗」双重抑制，页面按钮的真实
+  pointerdown 或 Enter/Space 会先清掉标记，因此正常点击/键盘激活不受影响（2026-11-16 修复
+  并行测试下时间窗竞态）。
   ≤760px 时导航收为 56px 纯图标：手柄、×、分组标题与名称一并隐藏，页面按钮单列居中；
   手柄规则用 `.wb-nav-item > .wb-nav-grip` 覆盖基础样式中后置的 `.wb-nav-grip` display，
   避免 56px 内手柄和分组标题逐字换行（2026-11-16 真实窗口极窄检查修复）。
-  测试：`WorkbenchShell.dragSort.test.tsx`（28 项，含跨组标题/尺寸/网格/DOM 语义/隐藏/
-  保存失败）、`navVisibility.test.ts`（38 项，含重复段不批量改写与 movedId 边界）、
+  ⑤**导航宽度临界点与名称 tooltip（2026-11-16）**：新增
+  `WORKBENCH_NAV_LABELS_MIN_WIDTH = 200`（拖拽下限仍是 `WORKBENCH_NAV_WIDTH_MIN = 180`）。
+  实际导航宽度 <200px（180–199，或响应式 56px）时根节点 `data-nav-compact="true"`，
+  CSS 隐藏 `.wb-nav-label`；动态页面按钮与首页/设置/更多只在该状态挂 `data-tip`。
+  ≥200px 时不挂名称 `data-tip`，页面按钮因有可见文字也不会触发 TooltipLayer 的
+  `aria-label` 回退；拖拽手柄与 × 在宽态用 `data-tip-skip` 抑制自身回退提示。实际宽度由
+  `ResizeObserver` 校正，避免只依赖设置里的 `navWidth` 而漏掉 ≤760px 的 CSS 降级。
+  Agent 统一图标 `AgentIcon` 由旧 Orbit Core 改为 Lucide `Bot` 机器人（`data-agent-icon="robot"`），
+  全项目 Agent 入口/胶囊/面板同步生效，仍只使用 `currentColor`，默认 18px / stroke 1.75。
+  测试：`WorkbenchShell.dragSort.test.tsx`（30 项，含跨组标题/尺寸/网格/DOM 语义/隐藏/
+  临界点 200px 与 180px 图标态 tooltip）、`AgentIcon.test.tsx`（5 项，机器人几何与默认属性）、
+  `navVisibility.test.ts`（38 项，含重复段不批量改写与 movedId 边界）、
   `useNavOrderDraft.test.tsx`（6 项）、`navOrderIntent.test.ts`（11 项）。
 - 设置页信息架构（2026-11-06，一级分类 + 查找定位）：设置页从「十几个分组纵向堆叠」
   改为**六个一级分类**（通用与外观 / 功能与应用 / 通知与语音 / 数据与资源 / 接入与诊断 /

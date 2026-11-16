@@ -159,7 +159,7 @@ vi.mock("../../../feedback/ToastProvider", () => {
   // 必须返回稳定引用：页面 load 的 useCallback 依赖 showToast，若每次 render 都新建函数，
   // Effect 会反复触发 load 并造成页面级测试超时。
   const showToast = () => undefined;
-  return { useToast: () => ({ showToast }) };
+  return { useToast: () => ({ showToast }), useToastScope: () => "global" };
 });
 vi.mock("../../../components/icons/AppIcon", async () => {
   const React = await import("react");

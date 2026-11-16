@@ -68,6 +68,7 @@ describe("toastQueue", () => {
     expect(state.queue).toHaveLength(0);
     expect(state.current?.id).toBe(first.id);
     expect(state.current?.rev).toBe(1);
+    expect(state.current?.createdAt).toBe(1000 + TOAST_DEDUPE_MS - 1);
   });
 
   it("同文案同类型但不同位置不合并：新消息保留自己的底部位置", () => {

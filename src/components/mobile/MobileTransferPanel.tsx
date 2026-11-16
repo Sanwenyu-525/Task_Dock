@@ -74,7 +74,7 @@ export default function MobileTransferPanel() {
             id="mobile-tab-files"
             className={`mobile-pane-tab${pane === "files" ? " is-active" : ""}`}
             aria-selected={pane === "files"}
-            aria-controls="mobile-pane-files"
+            aria-controls={pane === "files" ? "mobile-pane-files" : undefined}
             tabIndex={pane === "files" ? 0 : -1}
             onClick={() => setPane("files")}
             onKeyDown={onTabKeyDown}
@@ -98,7 +98,7 @@ export default function MobileTransferPanel() {
             id="mobile-tab-screen"
             className={`mobile-pane-tab${pane === "screen" ? " is-active" : ""}`}
             aria-selected={pane === "screen"}
-            aria-controls="mobile-pane-screen"
+            aria-controls={pane === "screen" ? "mobile-pane-screen" : undefined}
             tabIndex={pane === "screen" ? 0 : -1}
             onClick={() => setPane("screen")}
             onKeyDown={onTabKeyDown}

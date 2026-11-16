@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 // ToastProvider 集成测试：用真实 Provider + React 生命周期验证 scope 丢弃、
-// 页面切换清队列、当前条保留，以及「页面挂载首帧提示」与 Shell 更新顺序。
+// 页面切换队列过滤、当前条保留，以及「页面挂载首帧提示」与 Shell 更新顺序。
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { act, useEffect, useLayoutEffect, type ReactNode } from "react";
+import React, { act, useEffect, useLayoutEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { ToastProvider, ToastScope, useToast, useToastState } from "../ToastProvider";
@@ -21,20 +21,22 @@ interface ProbeApi {
 
 let latest: { state: ToastState; api: ProbeApi } | null = null;
 
+function scopeElement(scope: string, ...children: ReactNode[]) {
+  return React.createElement(ToastScope, {
+    scope,
+    children: children.length === 1 ? children[0] : children,
+  });
+}
+
 function Probe() {
   const state = useToastState();
   const api = useToast();
   latest = { state, api };
-  return <div data-testid="probe">{state.current?.text ?? ""}</div>;
+  return React.createElement("div", { "data-testid": "probe" }, state.current?.text ?? "");
 }
 
-function Harness({ scope, children }: { scope: string; children?: ReactNode }) {
-  return (
-    <ToastScope scope={scope}>
-      {children}
-      <Probe />
-    </ToastScope>
-  );
+function Harness({ scope }: { scope: string }) {
+  return scopeElement(scope, React.createElement(Probe));
 }
 
 /** 模拟 Shell：activeScope 在 layout effect 中切换，子页面在 passive effect 中发提示。 */
@@ -53,10 +55,10 @@ function MountingPage({ scope, text }: { scope: string; text: string }) {
 function SyncScope({ scope, text }: { scope: string; text: string }) {
   const toast = useToast();
   toast.syncActiveScope(scope);
-  return (
-    <ToastScope scope={scope}>
-      <PageOnLayout text={text} />
-    </ToastScope>
+  return scopeElement(
+    scope,
+    React.createElement(PageOnLayout, { key: "page", text }),
+    React.createElement(Probe, { key: "probe" }),
   );
 }
 
@@ -72,6 +74,7 @@ describe("ToastProvider integration", () => {
   let root: Root;
 
   beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     latest = null;
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -91,9 +94,7 @@ describe("ToastProvider integration", () => {
 
   it("活动 scope 的消息正常入队，隐藏页面的晚到消息被丢弃", async () => {
     await render(
-      <ToastProvider>
-        <Harness scope="tab:home" />
-      </ToastProvider>,
+      React.createElement(ToastProvider, null, React.createElement(Harness, { scope: "tab:home" })),
     );
     act(() => latest!.api.setActiveScope("tab:home"));
     act(() => latest!.api.showToast("首页保存完成", "success", "top"));
@@ -107,9 +108,7 @@ describe("ToastProvider integration", () => {
 
   it("切入新页面清空旧页排队消息，但允许当前条播完", async () => {
     await render(
-      <ToastProvider>
-        <Harness scope="tab:home" />
-      </ToastProvider>,
+      React.createElement(ToastProvider, null, React.createElement(Harness, { scope: "tab:home" })),
     );
     act(() => latest!.api.setActiveScope("tab:home"));
     act(() => latest!.api.showToast("正在显示", "info", "top"));
@@ -124,11 +123,24 @@ describe("ToastProvider integration", () => {
 
   it("页面挂载首帧提示不会因 activeScope 晚一拍而丢失", async () => {
     await render(
-      <ToastProvider>
-        <ToastScope scope="push:note_editor">
-          <MountingPage scope="push:note_editor" text="编辑器已打开" />
-        </ToastScope>
-      </ToastProvider>,
+      React.createElement(
+        ToastProvider,
+        null,
+        React.createElement(
+          ToastScope,
+          {
+            scope: "push:note_editor",
+            children: [
+              React.createElement(MountingPage, {
+                key: "page",
+                scope: "push:note_editor",
+                text: "编辑器已打开",
+              }),
+              React.createElement(Probe, { key: "probe" }),
+            ],
+          },
+        ),
+      ),
     );
     expect(latest!.state.current?.text).toBe("编辑器已打开");
     expect(latest!.state.current?.scope).toBe("push:note_editor");
@@ -136,9 +148,14 @@ describe("ToastProvider integration", () => {
 
   it("render 阶段同步 scope 后，子页面 layout effect 的提示不会丢", async () => {
     await render(
-      <ToastProvider>
-        <SyncScope scope="push:capture_review" text="已进入处理页" />
-      </ToastProvider>,
+      React.createElement(
+        ToastProvider,
+        null,
+        React.createElement(SyncScope, {
+          scope: "push:capture_review",
+          text: "已进入处理页",
+        }),
+      ),
     );
     expect(latest!.state.current?.text).toBe("已进入处理页");
     expect(latest!.state.current?.scope).toBe("push:capture_review");
@@ -146,17 +163,17 @@ describe("ToastProvider integration", () => {
 
   it("快速连续切换页面不串台，新页面消息按自己的 scope 入队", async () => {
     await render(
-      <ToastProvider>
-        <Harness scope="tab:home" />
-      </ToastProvider>,
+      React.createElement(ToastProvider, null, React.createElement(Harness, { scope: "tab:home" })),
     );
     act(() => latest!.api.setActiveScope("tab:home"));
     act(() => latest!.api.showToast("首页消息", "info", "top"));
     act(() => latest!.api.setActiveScope("tab:tasks"));
     await render(
-      <ToastProvider>
-        <Harness scope="tab:tasks" />
-      </ToastProvider>,
+      React.createElement(
+        ToastProvider,
+        null,
+        React.createElement(Harness, { scope: "tab:tasks" }),
+      ),
     );
     act(() => latest!.api.setActiveScope("tab:tasks"));
     act(() => latest!.api.showToast("任务消息", "success", "bottom"));

@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-//! AgentIcon：Orbit Core 的几何、默认属性与可访问性约定。
+//! AgentIcon：机器人图标的几何、默认属性与可访问性约定。
 //!
 //! 守卫点：统一组件一旦被改动（换图形、改默认线宽、加固定颜色、丢掉 aria-hidden），
 //! 全项目十几处 Agent 图标会一起变；这里把「契约」写死。
@@ -17,15 +17,14 @@ function svgOf(ui: React.ReactElement): SVGSVGElement {
   return svg;
 }
 
-describe("AgentIcon（Orbit Core）", () => {
+describe("AgentIcon（机器人）", () => {
   it("固定 24 视窗、currentColor 描边，不写死颜色", () => {
     const svg = svgOf(<AgentIcon />);
     expect(svg.getAttribute("viewBox")).toBe("0 0 24 24");
     expect(svg.getAttribute("stroke")).toBe("currentColor");
     expect(svg.getAttribute("fill")).toBe("none");
-    // 不允许自带品牌色/底板：除中央节点外没有 fill，也没有任何 color 属性
+    // 不允许自带品牌色/底板：没有 color 属性、渐变，机器人底板是描边矩形
     expect(svg.getAttribute("color")).toBeNull();
-    expect(svg.querySelector("rect")).toBeNull();
     expect(svg.querySelector("linearGradient")).toBeNull();
   });
 
@@ -41,7 +40,8 @@ describe("AgentIcon（Orbit Core）", () => {
     expect(svg.getAttribute("width")).toBe("10");
     expect(svg.getAttribute("height")).toBe("10");
     expect(svg.getAttribute("stroke-width")).toBe("2");
-    expect(svg.getAttribute("class")).toBe("cap-agent");
+    expect(svg.getAttribute("class")).toContain("lucide-bot");
+    expect(svg.getAttribute("class")).toContain("cap-agent");
   });
 
   it("默认 aria-hidden，不参与重复朗读", () => {
@@ -50,17 +50,13 @@ describe("AgentIcon（Orbit Core）", () => {
     expect(svg.getAttribute("role")).toBeNull();
   });
 
-  it("图形契约：三段轨道弧 + 三个外围节点 + 中央实心节点", () => {
+  it("图形契约：机器人头部/天线/双眼/两侧听筒，不使用旧 Orbit Core 轨道弧", () => {
     const svg = svgOf(<AgentIcon />);
-    expect(svg.querySelectorAll("path")).toHaveLength(3);
-    const circles = Array.from(svg.querySelectorAll("circle"));
-    expect(circles).toHaveLength(4);
-    // 外围三个节点是描边空心，中央节点是实心（fill=currentColor 且无描边）
-    const center = circles.filter((c) => c.getAttribute("fill") === "currentColor");
-    expect(center).toHaveLength(1);
-    expect(center[0].getAttribute("cx")).toBe("12");
-    expect(center[0].getAttribute("cy")).toBe("12");
-    expect(center[0].getAttribute("stroke")).toBe("none");
-    expect(circles.filter((c) => c.getAttribute("fill") === null)).toHaveLength(3);
+    expect(svg.getAttribute("data-agent-icon")).toBe("robot");
+    // Lucide Bot 的主体轮廓用一个圆角矩形表示头部/身体。
+    expect(svg.querySelectorAll("rect")).toHaveLength(1);
+    expect(svg.querySelectorAll("path").length).toBeGreaterThanOrEqual(4);
+    expect(svg.querySelectorAll("circle")).toHaveLength(0);
+    expect(svg.querySelectorAll("path")).not.toHaveLength(3);
   });
 });

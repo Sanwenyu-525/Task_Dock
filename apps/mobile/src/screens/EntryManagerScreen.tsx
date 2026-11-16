@@ -67,7 +67,7 @@ const VIEW_OPTIONS = [
 /** 行高下限：拖动按行高步进计算，行必须等高（文本用 numberOfLines 截断） */
 const ROW_MIN_HEIGHT = 72;
 /** 拖动手柄占位宽度（选择模式隐藏手柄时仍保留，行文字不跳位） */
-const HANDLE_ZONE = 30;
+const HANDLE_ZONE = 44;
 
 export function EntryManagerScreen({
   nav,
@@ -866,12 +866,13 @@ function DragHandle({
   return (
     <View
       {...responder.panHandlers}
-      accessible
-      accessibilityRole="button"
-      accessibilityLabel={`拖动调整${entry.label}的顺序`}
-      accessibilityHint="按住上下拖动，或用行内动作表上移下移"
-      // 手柄本体只有 22×40：向外扩一点命中区，避免拇指抓不住（不影响行内滚动）
-      hitSlop={{ top: 8, bottom: 8, left: 4, right: 6 }}
+      // 纯拖拽手柄不单独进读屏焦点：入口行本身可聚焦，双击行打开动作表，
+      // 用「上移一位 / 下移一位 / 从工作台移除」完成同样操作，避免重复焦点。
+      accessible={false}
+      importantForAccessibility="no-hide-descendants"
+      // 视觉仍是 22×40 的六点手柄；左右各 9 的命中区把它扩到 40dp，
+      // 外层 handleZone 44dp 提供容纳空间，且不会压到右侧文字。
+      hitSlop={{ top: 8, bottom: 8, left: 9, right: 9 }}
       style={[styles.handle, { backgroundColor: tokens.track, borderColor: tokens.cardBorder }]}
     >
       <GripDots color={tokens.muted} dot={3} gap={3} />
@@ -942,7 +943,7 @@ const styles = StyleSheet.create({
   rowGrow: { flex: 1 },
   handleZone: {
     width: HANDLE_ZONE,
-    alignItems: "flex-start",
+    alignItems: "center",
     justifyContent: "center",
   },
   dragSurface: {

@@ -54,7 +54,7 @@ export default function ScreenshotPreview({
           <button
             className="btn sm vd-shot-primary"
             onClick={onSaveShelf}
-            disabled={busy || loadFailed}
+            disabled={busy || loadFailed || !loaded}
             data-tip={
               loadFailed ? t("virtualDisplay.screenshot.unreadable") : undefined
             }
@@ -65,7 +65,7 @@ export default function ScreenshotPreview({
           <button
             className="btn sm"
             onClick={onSaveAs}
-            disabled={busy || loadFailed}
+            disabled={busy || loadFailed || !loaded}
           >
             {t("virtualDisplay.screenshot.saveAs")}
           </button>

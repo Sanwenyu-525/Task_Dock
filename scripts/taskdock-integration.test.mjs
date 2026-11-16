@@ -7,12 +7,12 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), "taskdock-integration.mjs");
@@ -53,8 +53,8 @@ function git(repo, args) {
   return r.stdout.trim();
 }
 
-function run(repo, args) {
-  const r = spawnSync(process.execPath, [TOOL, ...args], { cwd: repo, encoding: "utf8", env: ENV });
+function run(repo, args, envExtra = {}) {
+  const r = spawnSync(process.execPath, [TOOL, ...args], { cwd: repo, encoding: "utf8", env: { ...ENV, ...envExtra } });
   return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
@@ -104,7 +104,8 @@ function commitFile(repo, changes, message) {
 function addReadyTask(repo, id, paths, commit, from, extra = []) {
   const r1 = run(repo, ["task", "add", "--id", id, "--owner", `agent-${id}`, "--module", "测试模块", "--paths", paths.join(",")]);
   assert.equal(r1.status, 0, r1.out);
-  const r2 = run(repo, ["task", "check", "--id", id, "--cmd", "npm test", "--exit", "0", "--commit", commit]);
+  // 正式集成资格必须来自真实执行（task verify），手动 task check 只作外部证据。
+  const r2 = run(repo, ["task", "verify", "--id", id, "--commit", commit, "--cmd", "node emit.mjs"]);
   assert.equal(r2.status, 0, r2.out);
   const readyArgs = ["task", "ready", "--id", id, "--commit", commit, ...extra];
   if (from) readyArgs.push("--from", from);
@@ -122,6 +123,31 @@ function readBuild(repo, id) {
 
 function wtPath(repo) { return join(dirname(repo), `${repo.split(/[\\/]/).pop()}-integration`); }
 function buildWtPath(repo) { return join(dirname(repo), `${repo.split(/[\\/]/).pop()}-integration-build`); }
+function verifyWtPath(repo) { return join(dirname(repo), `${repo.split(/[\\/]/).pop()}-integration-verify`); }
+function identityFile(repo, role) { return join(repo, "tmp", "integration", "worktrees", `${role}.json`); }
+function writeJsonFile(path, value) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8"); }
+
+function runAsync(repo, args, envExtra = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [TOOL, ...args], { cwd: repo, env: { ...ENV, ...envExtra }, windowsHide: true });
+    let output = "";
+    child.stdout.on("data", (d) => { output += d; });
+    child.stderr.on("data", (d) => { output += d; });
+    child.on("close", (status) => resolve({ status, out: output }));
+  });
+}
+
+// 测试仓库里的“依赖环境”：锁文件 + 依赖段 + 共享 node_modules（真实构建只校验，不执行 npm）。
+function addNodeProject(repo, lockText = "lock-v1", { mobile = false } = {}) {
+  const root = mobile ? "apps/mobile" : "";
+  const prefix = root ? `${root}/` : "";
+  write(repo, `${prefix}package.json`, JSON.stringify({ name: "demo", dependencies: { "demo-dep": "1.0.0" } }, null, 2));
+  write(repo, `${prefix}package-lock.json`, `{"lockfileVersion":3,"dep":"${lockText}"}\n`);
+  write(repo, `${prefix}node_modules/demo-dep/index.js`, "module.exports = 1;\n");
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-q", "-m", `node project ${root || "root"} ${lockText}`]);
+  return git(repo, ["rev-parse", "HEAD"]);
+}
 
 // ---------------------------------------------------------------- 任务与状态机
 
@@ -133,10 +159,15 @@ test("任务交付必须带通过检查，未就绪不得进入集成", () => {
     assert.equal(run(repo, ["task", "check", "--id", "alpha", "--cmd", "npm test", "--exit", "1"]).status, 2);
     assert.equal(run(repo, ["task", "ready", "--id", "alpha", "--commit", base]).status, 2);
     const commit = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha work");
+    // 手动登记（即使 exit 0）只是外部证据，不能单独让任务进入待集成。
     assert.equal(run(repo, ["task", "check", "--id", "alpha", "--cmd", "npm test", "--exit", "0", "--commit", commit]).status, 0);
+    assert.equal(run(repo, ["task", "ready", "--id", "alpha", "--commit", commit]).status, 2);
+    // 真实执行并绑定同一提交后才算可信检查。
+    assert.equal(run(repo, ["task", "verify", "--id", "alpha", "--commit", commit, "--cmd", "node emit.mjs"]).status, 0);
     assert.equal(run(repo, ["task", "ready", "--id", "alpha", "--commit", commit]).status, 0);
     const show = run(repo, ["task", "show", "--id", "alpha", "--json"]);
     assert.equal(JSON.parse(show.out).status, "integration-ready");
+    assert.equal(JSON.parse(show.out).checks.at(-1).source, "executed");
     // 没有 --base 的首次集成必须拒绝（防止用共享工作区 HEAD 当基线）
     assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--check", "none"]).status, 1);
   } finally { rmSync(home, { recursive: true, force: true }); }
@@ -359,7 +390,7 @@ test("验收失败后修复 → 增量集成 → 新构建 → 复验通过（�
     git(repo, ["add", "src/other.txt"]);
     git(repo, ["commit", "-q", "-m", "beta fix"]);
     const fix = git(repo, ["rev-parse", "HEAD"]);
-    assert.equal(run(repo, ["task", "check", "--id", "beta", "--cmd", "npm test", "--exit", "0", "--commit", fix]).status, 0);
+    assert.equal(run(repo, ["task", "verify", "--id", "beta", "--commit", fix, "--cmd", "node emit.mjs"]).status, 0);
     const ready = run(repo, ["task", "ready", "--id", "beta", "--commit", fix, "--from", beta]);
     assert.equal(ready.status, 0, ready.out);
 
@@ -528,7 +559,7 @@ test("needs 依赖先于被依赖任务应用", () => {
     const add = (id, paths, commit, needs = []) => {
       const r = run(repo, ["task", "add", "--id", id, "--owner", id, "--module", "m", "--paths", paths, ...(needs.length ? ["--needs", needs.join(",")] : [])]);
       assert.equal(r.status, 0, r.out);
-      assert.equal(run(repo, ["task", "check", "--id", id, "--cmd", "npm test", "--exit", "0", "--commit", commit]).status, 0);
+      assert.equal(run(repo, ["task", "verify", "--id", id, "--commit", commit, "--cmd", "node emit.mjs"]).status, 0);
       assert.equal(run(repo, ["task", "ready", "--id", id, "--commit", commit]).status, 0);
     };
     add("alpha", "src/app.txt", alpha);
@@ -575,3 +606,344 @@ test("已集成任务没有新交付提交时不重复集成", () => {
     assert.match(allReady.out, /待集成队列为空/);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+// ---------------------------------------------------------------- P1-01 工作区身份
+
+test("工具工作区缺少身份记录 / 被篡改 / 非工具 Worktree 时拒绝，且不重置现场", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
+    const beta = commitFile(repo, { "src/other.txt": "other v2\n" }, "beta");
+    addReadyTask(repo, "beta", ["src/other.txt"], beta);
+    const wt = wtPath(repo);
+    const before = git(wt, ["rev-parse", "HEAD"]);
+    write(wt, "sentinel-other-agent.txt", "must survive\n");
+    rmSync(identityFile(repo, "snapshot"));
+
+    const rejected = run(repo, ["snapshot", "create", "--tasks", "beta", "--check", "none"]);
+    assert.equal(rejected.status, 2, rejected.out);
+    assert.match(rejected.out, /缺少身份记录/);
+    assert.equal(git(wt, ["rev-parse", "HEAD"]), before, "缺身份时不得切换/重置工作区");
+    assert.equal(readFileSync(join(wt, "sentinel-other-agent.txt"), "utf8"), "must survive\n");
+
+    rmSync(join(wt, "sentinel-other-agent.txt"));
+    assert.equal(run(repo, ["worktree", "adopt", "--role", "snapshot"]).status, 0);
+    const status = run(repo, ["worktree", "status"]);
+    assert.equal(status.status, 0, status.out);
+    assert.match(status.out, /snapshot:[\s\S]*身份有效/);
+
+    // 篡改身份记录（改路径）必须被校验和拦住
+    const identity = JSON.parse(readFileSync(identityFile(repo, "snapshot"), "utf8"));
+    identity.path = repo;
+    writeJsonFile(identityFile(repo, "snapshot"), identity);
+    const tampered = run(repo, ["snapshot", "create", "--tasks", "beta", "--check", "none"]);
+    assert.equal(tampered.status, 2, tampered.out);
+    assert.match(tampered.out, /校验和不匹配|路径/);
+
+    // 主工作区不能被登记为工具工作区
+    assert.equal(run(repo, ["worktree", "adopt", "--role", "snapshot", "--path", repo]).status, 2);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("预设路径被普通 Agent Worktree 占用时拒绝，不切分支不清理", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const wt = wtPath(repo);
+    git(repo, ["worktree", "add", "-b", "agent-work", wt]);
+    write(wt, "src/app.txt", "agent work in progress\n");
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    const r = run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]);
+    assert.equal(r.status, 2, r.out);
+    assert.match(r.out, /不是本仓库的 Worktree|必须挂在 integration 分支|缺少身份记录/);
+    assert.equal(readFileSync(join(wt, "src/app.txt"), "utf8"), "agent work in progress\n");
+    const branch = git(repo, ["worktree", "list", "--porcelain"]);
+    assert.match(branch, /branch refs\/heads\/agent-work/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("构建工作区缺身份记录时拒绝构建；adopt 后可继续，旧产物保留", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    const artifact = join(repo, "tmp", "integration", "builds", "b01-web-r1", "artifacts", "dist", "index.html");
+    assert.equal(existsSync(artifact), true);
+    const bwt = buildWtPath(repo);
+    rmSync(identityFile(repo, "build"));
+    const refused = run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs", "--force"]);
+    assert.equal(refused.status, 2, refused.out);
+    assert.match(refused.out, /缺少身份记录/);
+    assert.equal(existsSync(artifact), true, "拒绝构建不能删除已有产物");
+    assert.equal(run(repo, ["worktree", "adopt", "--role", "build"]).status, 0);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs", "--force"]).status, 0);
+    assert.equal(existsSync(join(bwt, "dist", "index.html")), true);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------- P1-02 依赖一致性
+
+test("依赖一致才复用 junction；主工作区 lock 变化后已存在 junction 仍被重新校验拒绝", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const lockCommit = addNodeProject(repo, "lock-v1");
+    assert.equal(run(repo, ["task", "add", "--id", "alpha", "--owner", "a", "--module", "m", "--paths", "src/app.txt"]).status, 0);
+    assert.equal(run(repo, ["task", "verify", "--id", "alpha", "--commit", lockCommit, "--cmd", "node emit.mjs"]).status, 0);
+    const vwt = verifyWtPath(repo);
+    const nm = join(vwt, "node_modules");
+    assert.equal(existsSync(join(nm, "demo-dep", "index.js")), true);
+    assert.equal(existsSync(join(vwt, ".taskdock-deps.json")), true);
+
+    // 主工作区未提交地改了 lock：代码提交没变，但依赖已经不是同一套
+    write(repo, "package-lock.json", '{"lockfileVersion":3,"dep":"lock-v2"}\n');
+    const r = run(repo, ["task", "verify", "--id", "alpha", "--commit", lockCommit, "--cmd", "node emit.mjs"]);
+    assert.equal(r.status, 2, r.out);
+    assert.match(r.out, /依赖.*不一致/);
+    assert.equal(existsSync(nm), true, "拒绝时必须保留已存在的依赖链接，不能静默删除");
+
+    // 独立 node_modules 缺少 marker 时也拒绝（依赖本身恢复一致，排除指纹差异干扰）
+    write(repo, "package-lock.json", '{"lockfileVersion":3,"dep":"lock-v1"}\n');
+    rmSync(nm, { recursive: true, force: true });
+    mkdirSync(join(nm, "demo-dep"), { recursive: true });
+    writeFileSync(join(nm, "demo-dep", "index.js"), "module.exports = 2;\n");
+    const independent = run(repo, ["task", "verify", "--id", "alpha", "--commit", lockCommit, "--cmd", "node emit.mjs"]);
+    assert.equal(independent.status, 2, independent.out);
+    assert.match(independent.out, /缺少匹配的安装记录/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("移动端依赖与桌面依赖分别校验，不共用同一个指纹", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    addNodeProject(repo, "root-v1");
+    const mobileCommit = addNodeProject(repo, "mobile-v1", { mobile: true });
+    assert.equal(run(repo, ["task", "add", "--id", "mobile", "--owner", "a", "--module", "m", "--paths", "src/app.txt"]).status, 0);
+    assert.equal(run(repo, ["task", "verify", "--id", "mobile", "--commit", mobileCommit, "--cmd", "node emit.mjs"]).status, 0);
+    assert.equal(existsSync(join(verifyWtPath(repo), "apps", "mobile", "node_modules", "demo-dep", "index.js")), true);
+
+    write(repo, "apps/mobile/package-lock.json", '{"lockfileVersion":3,"dep":"mobile-v2"}\n');
+    const r = run(repo, ["task", "verify", "--id", "mobile", "--commit", mobileCommit, "--cmd", "node emit.mjs"]);
+    assert.equal(r.status, 2, r.out);
+    assert.match(r.out, /apps\/mobile|（apps\/mobile）/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------- P1-03 台账并发
+
+test("任务锁 fail-closed：死亡进程锁可回收，活跃进程的旧锁绝不按时间回收", () => {
+  const { home, repo } = makeRepo();
+  try {
+    assert.equal(run(repo, ["task", "add", "--id", "alpha", "--owner", "a", "--module", "m", "--paths", "src/app.txt"]).status, 0);
+    const lock = join(repo, "tmp", "integration", ".task-alpha.lock");
+    writeJsonFile(lock, { pid: 2147483646, token: "dead", startedAt: "2000-01-01T00:00:00.000Z", command: "crash" });
+    utimesSync(lock, new Date(0), new Date(0));
+    const r1 = run(repo, ["task", "update", "--id", "alpha", "--note", "after-crash"], { TASKDOCK_TASK_LOCK_WAIT_MS: "500" });
+    assert.equal(r1.status, 0, r1.out);
+    assert.equal(existsSync(lock), false);
+
+    // 活跃 PID + 20 年前的锁：年龄不能成为回收理由
+    const lock2 = join(repo, "tmp", "integration", ".task-alpha.lock");
+    writeJsonFile(lock2, { pid: process.pid, token: "live", startedAt: "2000-01-01T00:00:00.000Z", command: "active" });
+    utimesSync(lock2, new Date(0), new Date(0));
+    const r2 = run(repo, ["task", "update", "--id", "alpha", "--note", "blocked"], { TASKDOCK_TASK_LOCK_WAIT_MS: "300" });
+    assert.equal(r2.status, 2, r2.out);
+    assert.match(r2.out, /不会因为锁“太旧”而回收/);
+    assert.equal(existsSync(lock2), true, "活跃进程的锁必须保留");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("五进程同时更新五个不同任务，记录与修订号不丢失", async () => {
+  const { home, repo } = makeRepo();
+  try {
+    const ids = ["t1", "t2", "t3", "t4", "t5"];
+    for (const id of ids) {
+      assert.equal(run(repo, ["task", "add", "--id", id, "--owner", "a", "--module", "m", "--paths", "src/app.txt"]).status, 0);
+    }
+    const results = await Promise.all(ids.map((id) =>
+      runAsync(repo, ["task", "update", "--id", id, "--note", `note-${id}`])));
+    for (const r of results) assert.equal(r.status, 0, r.out);
+    for (const id of ids) {
+      const task = JSON.parse(fsReadTask(repo, id));
+      assert.equal(task.rev, 2);
+      assert.equal(task.notes, `note-${id}`);
+    }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("两进程同时更新同一任务：串行化且不丢修订", async () => {
+  const { home, repo } = makeRepo();
+  try {
+    assert.equal(run(repo, ["task", "add", "--id", "alpha", "--owner", "a", "--module", "m", "--paths", "src/app.txt"]).status, 0);
+    const [a, b] = await Promise.all([
+      runAsync(repo, ["task", "update", "--id", "alpha", "--note", "from-A"]),
+      runAsync(repo, ["task", "update", "--id", "alpha", "--note", "from-B"]),
+    ]);
+    assert.equal(a.status, 0, a.out);
+    assert.equal(b.status, 0, b.out);
+    const task = JSON.parse(fsReadTask(repo, "alpha"));
+    assert.ok(task.rev >= 3, `rev=${task.rev}`);
+    assert.ok(["from-A", "from-B"].includes(task.notes));
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("五进程并发写同一任务的检查记录：任务锁串行，不丢任何一条", async () => {
+  const { home, repo } = makeRepo();
+  try {
+    assert.equal(run(repo, ["task", "add", "--id", "alpha", "--owner", "a", "--module", "m", "--paths", "src/app.txt"]).status, 0);
+    const results = await Promise.all([0, 1, 2, 3, 4].map((i) =>
+      runAsync(repo, ["task", "check", "--id", "alpha", "--cmd", `check-${i}`, "--exit", "0"])));
+    for (const r of results) assert.equal(r.status, 0, r.out);
+    const task = JSON.parse(fsReadTask(repo, "alpha"));
+    assert.equal(task.checks.length, 5);
+    assert.equal(task.rev, 6);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("task update 与 snapshot create 竞争：锁内重新读取，任务状态与备注不被旧快照覆盖", async () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    const [snap, upd] = await Promise.all([
+      runAsync(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]),
+      runAsync(repo, ["task", "update", "--id", "alpha", "--note", "concurrent-note"]),
+    ]);
+    assert.equal(snap.status, 0, snap.out);
+    assert.equal(upd.status, 0, upd.out);
+    const task = JSON.parse(fsReadTask(repo, "alpha"));
+    assert.equal(task.status, "integrated");
+    assert.equal(task.notes, "concurrent-note");
+    assert.equal(readSnapshot(repo, "snap-01").tasks[0].id, "alpha");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("两个进程并发构建同一快照：只产生一个构建，第二个复用", async () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
+    const args = ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"];
+    const [a, b] = await Promise.all([runAsync(repo, args), runAsync(repo, args)]);
+    assert.equal(a.status, 0, a.out);
+    assert.equal(b.status, 0, b.out);
+    const builds = readdirSync(join(repo, "tmp", "integration", "builds")).filter((n) => n.startsWith("b01-web-r"));
+    assert.equal(builds.length, 1, `builds=${builds.join(",")}`);
+    assert.match(a.out + b.out, /复用/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------- P1-04 真实检查
+
+test("task verify 真实执行并绑定提交；失败命令写记录但不得 ready", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, {
+      "src/app.txt": "app v2\n",
+      "fail-check.mjs": "process.exit(1);\n",
+    }, "alpha");
+    assert.equal(run(repo, ["task", "add", "--id", "alpha", "--owner", "a", "--module", "m", "--paths", "src/app.txt"]).status, 0);
+    const fail = run(repo, ["task", "verify", "--id", "alpha", "--commit", alpha, "--cmd", "node fail-check.mjs"]);
+    assert.equal(fail.status, 2, fail.out);
+    let task = JSON.parse(fsReadTask(repo, "alpha"));
+    assert.equal(task.checks.at(-1).source, "executed");
+    assert.equal(task.checks.at(-1).exitCode, 1);
+    assert.match(task.checks.at(-1).logPath, /tmp\/integration\/logs\/verify-alpha-/);
+    assert.equal(run(repo, ["task", "ready", "--id", "alpha", "--commit", alpha]).status, 2);
+
+    assert.equal(run(repo, ["task", "verify", "--id", "alpha", "--commit", alpha, "--cmd", "node emit.mjs"]).status, 0);
+    task = JSON.parse(fsReadTask(repo, "alpha"));
+    assert.equal(task.checks.at(-1).exitCode, 0);
+    assert.equal(task.checks.at(-1).commit, alpha);
+    assert.equal(run(repo, ["task", "ready", "--id", "alpha", "--commit", alpha]).status, 0);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("task verify 拒绝与任务当前交付提交不一致的提交", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    const other = commitFile(repo, { "src/other.txt": "other v2\n" }, "other");
+    const r = run(repo, ["task", "verify", "--id", "alpha", "--commit", other, "--cmd", "node emit.mjs"]);
+    assert.equal(r.status, 2, r.out);
+    assert.match(r.out, /不一致/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------- P2 额外路径 / 复用 / 缓存
+
+test("--allow-extra-paths 的额外路径参与交集判定，并进入快照与构建溯源", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n", "src/extra.txt": "extra from alpha\n" }, "alpha");
+    const beta = commitFile(repo, { "src/extra.txt": "extra from beta\n" }, "beta");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    addReadyTask(repo, "beta", ["src/extra.txt"], beta);
+    const overlap = run(repo, ["snapshot", "create", "--tasks", "alpha,beta", "--base", base, "--check", "none", "--allow-extra-paths"]);
+    assert.equal(overlap.status, 2, overlap.out);
+    assert.match(overlap.out, /额外.*↔|↔.*声明|交集/);
+
+    // 只集成 alpha：额外路径真正进入快照，并在构建记录里可追溯
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none", "--allow-extra-paths"]).status, 0);
+    assert.deepEqual(readSnapshot(repo, "snap-01").includedExtraPaths, ["alpha: src/extra.txt"]);
+    assert.equal(run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]).status, 0);
+    const build = readBuild(repo, "b01-web-r1");
+    assert.deepEqual(build.tasks[0].extraPaths, ["src/extra.txt"]);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("复用键覆盖依赖/工具链指纹；旧记录或产物被改都不复用", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
+    const args = ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"];
+    assert.equal(run(repo, args).status, 0);
+    const b1 = readBuild(repo, "b01-web-r1");
+    assert.match(b1.reuseKey, new RegExp(`\\|${b1.inputsDigest}$`));
+    assert.equal(b1.arch, process.arch);
+
+    // 模拟旧工具产生的记录（没有输入指纹）
+    b1.reuseKey = `${b1.commit}|web|frontend-dist`;
+    delete b1.inputsDigest;
+    writeJsonFile(join(repo, "tmp", "integration", "builds", "b01-web-r1", "build.json"), b1);
+    const again = run(repo, args);
+    assert.equal(again.status, 0, again.out);
+    assert.doesNotMatch(again.out, /复用已有构建/);
+    assert.equal(existsSync(join(repo, "tmp", "integration", "builds", "b01-web-r2")), true);
+
+    // 产物被篡改后必须重新构建，而不是凭 build.json 说成功就复用
+    const artifact = join(repo, "tmp", "integration", "builds", "b01-web-r2", "artifacts", "dist", "index.html");
+    writeFileSync(artifact, "<!doctype html><title>tampered</title>\n");
+    const tampered = run(repo, args);
+    assert.equal(tampered.status, 0, tampered.out);
+    assert.equal(existsSync(join(repo, "tmp", "integration", "builds", "b01-web-r3")), true);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("build-guard register 失败时拒绝构建并保留错误", () => {
+  const { home, repo } = makeRepo();
+  try {
+    const guard = "import process from \"node:process\";\nprocess.exit(1);\n";
+    const base = commitFile(repo, { "scripts/build-guard.mjs": guard }, "guard stub");
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
+    const r = run(repo, ["build", "--snapshot", "snap-01", "--platform", "desktop", "--command", "node emit.mjs"]);
+    assert.equal(r.status, 2, r.out);
+    assert.match(r.out, /build-guard register 失败/);
+    const record = readBuild(repo, "b01-desktop-r1");
+    assert.equal(record.status, "failed");
+    assert.match(record.reason, /build-guard register 失败/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+function fsReadTask(repo, id) {
+  return readFileSync(join(repo, "tmp", "integration", "tasks", `${id}.json`), "utf8");
+}

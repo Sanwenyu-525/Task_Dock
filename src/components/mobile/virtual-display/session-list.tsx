@@ -33,7 +33,7 @@ export interface SessionListProps {
   limit: number;
   currentDevice: VdDevice | null;
   now: number;
-  closingId: string | null;
+  closingIds: string[];
   capturingId: string | null;
   t: Translate;
   onFocus: (session: VdSession) => void;
@@ -47,7 +47,7 @@ export default function SessionList({
   limit,
   currentDevice,
   now,
-  closingId,
+  closingIds,
   capturingId,
   t,
   onFocus,
@@ -83,7 +83,7 @@ export default function SessionList({
             const duration =
               session.status === "running" ? formatDuration(session.started_at, now) : null;
             const stage = stageKey(session.stage);
-            const closing = session.status === "stopping" || closingId === session.id;
+            const closing = session.status === "stopping" || closingIds.includes(session.id);
             const canCapture = session.status === "running" && capturingId !== session.id;
             const modeLabel = t(
               session.mode === "mirror"
