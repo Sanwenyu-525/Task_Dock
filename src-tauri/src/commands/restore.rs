@@ -210,6 +210,145 @@ fn session_dir(data_dir: &Path, session_id: &str) -> PathBuf {
     sessions_dir(data_dir).join(session_id)
 }
 
+/// 会话标识只接受安全字符（UUID 形态）。`cleanup_session` 会对其做递归删除，
+/// 任何分隔符/上跳分量必须在进入文件系统前被拒绝——恢复日志被篡改时不能删到
+/// 会话目录之外。
+fn is_safe_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// 校验日志里的 session_id 并返回可信会话目录。
+fn checked_session_dir(data_dir: &Path, session_id: &str) -> AppResult<PathBuf> {
+    if !is_safe_session_id(session_id) {
+        return Err(AppError::Validation(format!(
+            "恢复日志的会话标识非法，拒绝任何文件操作: {session_id}"
+        )));
+    }
+    Ok(session_dir(data_dir, session_id))
+}
+
+/// Windows 路径词法规范化（复用文件工作区的统一实现）+ 小写比较键。
+fn restore_path_key(path: &Path) -> String {
+    crate::file_workspace::normalize_lexical(path)
+        .to_string_lossy()
+        .to_ascii_lowercase()
+}
+
+/// `path` 是否位于 `root` 之内（含相等）。词法规范化后按分量边界比较，
+/// `C:\AppData` 不会匹配 `C:\AppDataBackup`。
+fn is_within(path: &Path, root: &Path) -> bool {
+    let inner = restore_path_key(path);
+    let outer = restore_path_key(root);
+    !inner.is_empty() && (inner == outer || inner.starts_with(&format!("{outer}\\")))
+}
+
+/// 归属校验：先词法，再（存在时）真实路径。链接指进受信根内允许，
+/// 指到根外继续拒绝。
+fn ensure_within(path: &Path, root: &Path, what: &str) -> AppResult<()> {
+    if is_within(path, root) {
+        return Ok(());
+    }
+    let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if let Ok(real) = std::fs::canonicalize(path) {
+        if is_within(&real, &real_root) {
+            return Ok(());
+        }
+    }
+    Err(AppError::Validation(format!(
+        "恢复日志中的{what}越界（不在允许目录内）: {}",
+        path.display()
+    )))
+}
+
+/// 恢复目标的可信根：与应用数据目录的布局一致，绝不由日志决定。
+fn trusted_dest_roots(data_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        data_dir.join("clipboard"),
+        data_dir.join("shelf"),
+        data_dir.join("audio").join("voice-packs"),
+        crate::agents::retention::archive_dir(data_dir),
+    ]
+}
+
+/// 一次恢复会话的可信路径集合：staging/vault 只能落在会话目录，
+/// 目标文件只能落在应用数据目录的资产/归档子目录。
+struct TrustedPlan {
+    staging: PathBuf,
+    vault: PathBuf,
+    dest_roots: Vec<PathBuf>,
+}
+
+fn trusted_plan(data_dir: &Path, journal: &RestoreJournal) -> AppResult<TrustedPlan> {
+    let session = checked_session_dir(data_dir, &journal.session_id)?;
+    Ok(TrustedPlan {
+        staging: session.join("staging"),
+        vault: session.join("vault"),
+        dest_roots: trusted_dest_roots(data_dir),
+    })
+}
+
+fn within_any(path: &Path, roots: &[PathBuf]) -> bool {
+    if roots.iter().any(|root| is_within(path, root)) {
+        return true;
+    }
+    match std::fs::canonicalize(path) {
+        Ok(real) => roots.iter().any(|root| {
+            let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            is_within(&real, &real_root)
+        }),
+        Err(_) => false,
+    }
+}
+
+/// 逐项校验日志里的路径：不信任日志保存的绝对路径，只用它做「是否落在可信根内」
+/// 的判断。越界即整体拒绝（fail-closed），不做任何文件操作。
+fn validate_planned(trusted: &TrustedPlan, file: &PlannedFile) -> AppResult<()> {
+    if file.kind != "asset" && file.kind != "archive" {
+        return Err(AppError::Validation(format!(
+            "恢复日志里的文件类型非法: {}",
+            file.kind
+        )));
+    }
+    ensure_within(Path::new(&file.staged), &trusted.staging, "暂存路径")?;
+    ensure_within(Path::new(&file.vault), &trusted.vault, "恢复前副本路径")?;
+    let dest = Path::new(&file.dest);
+    if !within_any(dest, &trusted.dest_roots) {
+        return Err(AppError::Validation(format!(
+            "恢复日志中的目标文件越界（不在允许目录内）: {}",
+            dest.display()
+        )));
+    }
+    if file.kind == "asset" {
+        backup::safe_asset_rel(&file.rel)?;
+    } else if file.rel.contains('\\') || file.rel.contains('/') || file.rel.contains("..") {
+        return Err(AppError::Validation(format!(
+            "恢复日志中的归档名非法: {}",
+            file.rel
+        )));
+    }
+    Ok(())
+}
+
+/// 完整校验整份日志（提交/回滚/续跑前调用）。
+fn validate_journal_paths(data_dir: &Path, journal: &RestoreJournal) -> AppResult<()> {
+    let trusted = trusted_plan(data_dir, journal)?;
+    for file in &journal.plan {
+        validate_planned(&trusted, file)?;
+    }
+    if let Some(pre) = journal.pre_backup.as_deref() {
+        ensure_within(
+            Path::new(pre),
+            &data_dir.join("backups"),
+            "恢复前完整备份路径",
+        )?;
+    }
+    Ok(())
+}
+
 fn read_journal(data_dir: &Path) -> AppResult<Option<RestoreJournal>> {
     let path = journal_path(data_dir);
     if !path.exists() {
@@ -223,6 +362,11 @@ fn read_journal(data_dir: &Path) -> AppResult<Option<RestoreJournal>> {
             "不支持的恢复日志版本: {}",
             journal.version
         )));
+    }
+    if !is_safe_session_id(&journal.session_id) {
+        return Err(AppError::Validation(
+            "恢复日志的会话标识非法，已拒绝任何文件操作（请检查 restore/journal.json）".into(),
+        ));
     }
     Ok(Some(journal))
 }
@@ -257,7 +401,14 @@ fn remove_journal(data_dir: &Path) {
 }
 
 fn cleanup_session(data_dir: &Path, session_id: &str) {
-    let _ = std::fs::remove_dir_all(session_dir(data_dir, session_id));
+    // 递归删除前必须先证明会话目录归属：非法标识直接跳过并告警，
+    // 绝不把被篡改的 session_id 拼成路径交给 remove_dir_all。
+    match checked_session_dir(data_dir, session_id) {
+        Ok(dir) => {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        Err(error) => tracing::warn!("拒绝清理非法恢复会话目录: {error}"),
+    }
 }
 
 fn read_marker(db: &Db) -> AppResult<Option<String>> {
@@ -308,7 +459,8 @@ fn file_matches(path: &Path, size: u64, sha256: &str) -> AppResult<bool> {
     Ok(actual_size == size && actual_sha.eq_ignore_ascii_case(sha256))
 }
 
-fn commit_planned(file: &PlannedFile) -> AppResult<()> {
+fn commit_planned(trusted: &TrustedPlan, file: &PlannedFile) -> AppResult<()> {
+    validate_planned(trusted, file)?;
     let staged = Path::new(&file.staged);
     let dest = Path::new(&file.dest);
     if !staged.exists() {
@@ -328,23 +480,22 @@ fn commit_planned(file: &PlannedFile) -> AppResult<()> {
             file.rel
         )));
     }
-    if file.kind == "asset" {
-        backup::safe_asset_rel(&file.rel)?;
-    }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
     backup::commit_file(staged, dest)
 }
 
-fn complete_planned_files(journal: &RestoreJournal) -> AppResult<()> {
+fn complete_planned_files(data_dir: &Path, journal: &RestoreJournal) -> AppResult<()> {
+    let trusted = trusted_plan(data_dir, journal)?;
     for file in &journal.plan {
-        commit_planned(file)?;
+        commit_planned(&trusted, file)?;
     }
     Ok(())
 }
 
-fn rollback_file(file: &PlannedFile) -> AppResult<()> {
+fn rollback_file(trusted: &TrustedPlan, file: &PlannedFile) -> AppResult<()> {
+    validate_planned(trusted, file)?;
     let dest = Path::new(&file.dest);
     if file.existed {
         let vault = Path::new(&file.vault);
@@ -554,10 +705,15 @@ fn do_rollback(
 
     journal.phase = "rollback_files".into();
     let _ = write_journal(data_dir, journal);
-    for file in journal.plan.iter().rev() {
-        if let Err(e) = rollback_file(file) {
-            errors.push(format!("还原 {} 失败: {}", file.rel, e));
+    match trusted_plan(data_dir, journal) {
+        Ok(trusted) => {
+            for file in journal.plan.iter().rev() {
+                if let Err(e) = rollback_file(&trusted, file) {
+                    errors.push(format!("还原 {} 失败: {}", file.rel, e));
+                }
+            }
         }
+        Err(e) => errors.push(format!("恢复日志路径校验失败，已跳过文件回滚: {}", e)),
     }
     if let Err(e) = clear_marker(db) {
         errors.push(format!("清理恢复标记失败: {}", e));
@@ -908,6 +1064,11 @@ pub fn restore_bundle(
     // 5. 文件提交（逐个原子替换；每步都可幂等重跑）。
     journal.phase = "files".into();
     let _ = write_journal(data_dir, &mut journal);
+    // 提交前先证明日志路径可信：越界路径在这里被拒绝，走回滚而不是写出去。
+    let trusted = match trusted_plan(data_dir, &journal) {
+        Ok(trusted) => trusted,
+        Err(e) => return rollback_outcome(data_dir, db, journal, &e),
+    };
     let mut file_index = 0usize;
     for (index, asset) in read.assets.iter().enumerate() {
         let planned = &journal.plan[index];
@@ -923,7 +1084,7 @@ pub fn restore_bundle(
             };
             return rollback_outcome(data_dir, db, journal, &cause);
         }
-        if let Err(e) = commit_planned(planned) {
+        if let Err(e) = commit_planned(&trusted, planned) {
             return rollback_outcome(data_dir, db, journal, &e);
         }
         if options.faults.crash_after_file == Some(file_index) {
@@ -946,7 +1107,7 @@ pub fn restore_bundle(
             };
             return rollback_outcome(data_dir, db, journal, &cause);
         }
-        if let Err(e) = commit_planned(planned) {
+        if let Err(e) = commit_planned(&trusted, planned) {
             return rollback_outcome(data_dir, db, journal, &e);
         }
         if options.faults.crash_after_file == Some(file_index) {
@@ -1152,6 +1313,8 @@ fn recover_pending_inner(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryO
     };
     let marker = read_marker(db)?;
     let marker_matches = marker.as_deref() == Some(journal.session_id.as_str());
+    // 日志可信性校验：任何越界路径都在改动数据库/磁盘之前拒绝（fail-closed）。
+    validate_journal_paths(data_dir, &journal)?;
 
     match journal.state {
         RestoreState::Aborted | RestoreState::RolledBack => {
@@ -1169,7 +1332,7 @@ fn recover_pending_inner(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryO
         }
         RestoreState::Completed => {
             if marker_matches {
-                if let Err(e) = complete_planned_files(&journal) {
+                if let Err(e) = complete_planned_files(data_dir, &journal) {
                     let cause = AppError::Agent(format!("恢复完成收尾时文件校验失败: {}", e));
                     return rollback_recovery(data_dir, db, journal, &cause);
                 }
@@ -1202,7 +1365,7 @@ fn recover_pending_inner(data_dir: &Path, db: &Db) -> AppResult<Option<RecoveryO
                 journal.state = RestoreState::Committing;
                 journal.phase = "recovery_files".into();
                 let _ = write_journal(data_dir, &mut journal);
-                if let Err(e) = complete_planned_files(&journal) {
+                if let Err(e) = complete_planned_files(data_dir, &journal) {
                     let cause = AppError::Agent(format!("恢复续跑失败: {}", e));
                     return rollback_recovery(data_dir, db, journal, &cause);
                 }
@@ -2772,5 +2935,115 @@ mod tests {
         .unwrap();
         assert_eq!(tasks, 1);
         let _ = std::fs::remove_dir_all(&rows_dir);
+    }
+
+    // ── 恢复日志信任边界（安全回归） ────────────────────────────────────
+
+    fn guard_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "td-restore-guard-{}-{}",
+            tag,
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join("restore").join("sessions")).unwrap();
+        root
+    }
+
+    fn guard_journal(root: &Path, dest: PathBuf) -> RestoreJournal {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session = session_dir(root, &session_id);
+        RestoreJournal {
+            version: JOURNAL_VERSION,
+            session_id,
+            state: RestoreState::Completed,
+            phase: "files".into(),
+            source: "test".into(),
+            source_kind: "bundle".into(),
+            backup_kind: "full".into(),
+            partial: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+            pre_backup: None,
+            plan: vec![PlannedFile {
+                kind: "asset".into(),
+                rel: "images/a.png".into(),
+                staged: session
+                    .join("staging")
+                    .join("images")
+                    .join("a.png")
+                    .to_string_lossy()
+                    .to_string(),
+                dest: dest.to_string_lossy().to_string(),
+                vault: session
+                    .join("vault")
+                    .join("assets")
+                    .join("images")
+                    .join("a.png")
+                    .to_string_lossy()
+                    .to_string(),
+                existed: false,
+                size: 1,
+                sha256: "00".into(),
+                vault_sha256: None,
+                vault_size: None,
+            }],
+            error: None,
+            config: None,
+            config_applied: false,
+        }
+    }
+
+    #[test]
+    fn journal_with_traversal_session_id_is_rejected() {
+        let root = guard_root("sid");
+        let mut journal = guard_journal(&root, root.join("clipboard").join("images").join("a.png"));
+        journal.session_id = r"..\..\victim".into();
+        std::fs::write(
+            root.join("restore").join("journal.json"),
+            serde_json::to_vec(&journal).unwrap(),
+        )
+        .unwrap();
+        let error = read_journal(&root).unwrap_err().to_string();
+        assert!(error.contains("会话标识非法"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleanup_session_refuses_path_traversal() {
+        let base = std::env::temp_dir().join(format!("td-restore-clean-{}", uuid::Uuid::new_v4()));
+        let data = base.join("data");
+        std::fs::create_dir_all(data.join("restore").join("sessions")).unwrap();
+        let victim = base.join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("keep.txt"), b"keep").unwrap();
+
+        cleanup_session(&data, r"..\..\victim");
+        cleanup_session(&data, "..");
+        cleanup_session(&data, r"C:\Windows");
+
+        assert!(victim.join("keep.txt").exists(), "越界会话标识不得触发递归删除");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn journal_with_out_of_tree_dest_is_rejected() {
+        let root = guard_root("dest");
+        let victim = std::env::temp_dir().join(format!("td-restore-victim-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&victim).unwrap();
+        let journal = guard_journal(&root, victim.join("evil.txt"));
+        let error = validate_journal_paths(&root, &journal)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("目标文件越界"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&victim);
+    }
+
+    #[test]
+    fn journal_with_in_tree_paths_is_accepted() {
+        let root = guard_root("ok");
+        let journal = guard_journal(&root, root.join("clipboard").join("images").join("a.png"));
+        assert!(validate_journal_paths(&root, &journal).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -68,8 +68,9 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
   const [tab, setTab] = useState<WidgetTab>("enabled");
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
-  /** 右栏配置：只有从卡片「配置」进入时才选中；空态不占右栏。 */
+  /** 右栏配置：首次进入已启用视图时自动选中首个微件；用户关闭后不强行重开。 */
   const [configuredId, setConfiguredId] = useState<string | null>(null);
+  const autoConfigRef = useRef<WidgetTab | null>(null);
   const detailHost = useWorkbenchDetailHost();
   const configInRail = detailHost !== null;
   /** 已请求桌面显示、但窗口尚未确认成功的微件（id → 标题）。 */
@@ -108,6 +109,19 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
     () => visible.find((item) => item.widget_id === configuredId) ?? null,
     [visible, configuredId],
   );
+
+  // 大屏下右栏应常驻一个可编辑对象，而不是默认停留在通用上下文。
+  // 只在首次进入「已启用」视图时自动选中首个微件；用户关闭配置或切到库/布局后不强行重开。
+  useEffect(() => {
+    if (!configInRail) return;
+    if (tab !== "enabled") {
+      autoConfigRef.current = null;
+      return;
+    }
+    if (configuredWidget || visible.length === 0 || autoConfigRef.current === "enabled") return;
+    autoConfigRef.current = "enabled";
+    setConfiguredId(visible[0].widget_id);
+  }, [configInRail, tab, configuredWidget, visible]);
   const desktopCount = widgets.filter((item) => item.desktop.visible).length;
   // 「配置期望」与「真实已显示」分开统计，不能用配置冒充已创建窗口。
   const desktopShownCount = widgets.filter(

@@ -24,7 +24,16 @@ use crate::error::{AppError, AppResult};
 
 /// 单次列目录分页大小：超出返回 has_more 标记（前端「加载更多」续拉，
 /// 万级目录不再只能看到前 8000 项）。
+/// 单页最多返回的可见条目数。
 pub const MAX_LIST_ENTRIES: usize = 8000;
+/// 单页最多**扫描**的磁盘条目数（含被隐藏过滤/元数据失败的项）。
+///
+/// 没有这个上限时，`show_hidden=false` 遇到「大量隐藏项 + 少量可见项」的目录会
+/// 在一次 IPC 里遍历整个目录（10 万级条目时长时间占住调用线程）。
+/// 达到上限即返回 `has_more`，由前端按 `scanned` 作为 offset 继续分页。
+pub const MAX_SCAN_PER_PAGE: usize = 16_000;
+/// 分页 offset 上限：超过它说明调用方在无意义地遍历超大目录，直接钳制。
+pub const MAX_LIST_OFFSET: usize = 5_000_000;
 /// 单批操作（复制/移动/删除）路径数上限：与 shelf::MAX_LOCAL_PATHS 对齐。
 pub const MAX_OP_PATHS: usize = 500;
 /// 名称长度上限（单路径分量）。
@@ -354,6 +363,12 @@ pub fn list_dir(path: &Path, show_hidden: bool, offset: usize) -> AppResult<DirL
         AppError::Validation(format!("读取目录失败: {}（{e}）", dir.display()))
     })?;
     for item in read {
+        // 单轮扫描工作量上限：先判上限再消费，保证 scanned 始终等于「已消费条目数」，
+        // 下一页 offset 可以直接复用（不重不漏）。
+        if scanned >= offset.saturating_add(MAX_SCAN_PER_PAGE) {
+            has_more = true;
+            break;
+        }
         scanned += 1;
         if scanned <= offset {
             continue;

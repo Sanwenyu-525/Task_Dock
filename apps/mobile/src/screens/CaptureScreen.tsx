@@ -1084,6 +1084,7 @@ export function CaptureScreen({
             <PressableScale
               onPress={() => void openCamera()}
               accessibilityLabel="拍照"
+              style={styles.pickerPress}
               contentStyle={[styles.picker, { backgroundColor: tokens.accentWash }]}
             >
               <AppIcon name="scan" size={20} color={tokens.accentText} />
@@ -1093,6 +1094,7 @@ export function CaptureScreen({
               onPress={() => void pickImages()}
               accessibilityLabel="从相册选择图片"
               disabled={staging}
+              style={styles.pickerPress}
               contentStyle={[styles.picker, { backgroundColor: tokens.accentWash }]}
             >
               <AppIcon name="fileImage" size={20} color={tokens.accentText} />
@@ -1101,6 +1103,7 @@ export function CaptureScreen({
             <PressableScale
               onPress={() => void startRecording()}
               accessibilityLabel="语音速记"
+              style={styles.pickerPress}
               contentStyle={[styles.picker, { backgroundColor: tokens.accentWash }]}
             >
               <AppIcon name="activity" size={20} color={tokens.accentText} />
@@ -1110,6 +1113,7 @@ export function CaptureScreen({
               onPress={() => void pickFiles()}
               accessibilityLabel="选择文件"
               disabled={staging}
+              style={styles.pickerPress}
               contentStyle={[styles.picker, { backgroundColor: tokens.accentWash }]}
             >
               <AppIcon name="folder" size={20} color={tokens.accentText} />
@@ -1255,8 +1259,9 @@ const styles = StyleSheet.create({
   },
   summaryLine: { fontSize: font.label, textAlign: "right" },
   pickerRow: { flexDirection: "row", gap: space.sm },
+  // 等宽四列：flex 必须在外层 Pressable 上，写进 contentStyle 只会让内层按内容宽度排列
+  pickerPress: { flex: 1 },
   picker: {
-    flex: 1,
     minHeight: 64,
     borderRadius: radius.row,
     alignItems: "center",

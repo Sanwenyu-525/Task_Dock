@@ -1455,9 +1455,13 @@ body.wb-resizing {
     padding: 3px 4px;
   }
   /* 极窄导航只剩图标：行首手柄与行尾 × 都没有横向空间，一并隐藏；仍可
-     通过拉宽导航或设置页管理显隐。 */
-  .wb-nav-grip,
+     通过拉宽导航或设置页管理显隐。分组标题同样收起，避免 56px 内逐字换行。 */
+  .wb-nav-item > .wb-nav-grip,
   .wb-nav-actions {
+    display: none;
+  }
+  .wb-nav-group,
+  .wb-nav-sep {
     display: none;
   }
   .wb-nav-page {

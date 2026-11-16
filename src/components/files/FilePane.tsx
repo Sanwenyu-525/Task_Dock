@@ -363,9 +363,20 @@ export default function FilePane({
   useEffect(() => {
     if (!pageActive || !dirPath) return;
     const timer = window.setInterval(() => {
+      // 页面不可见（窗口最小化/隐藏/切到其他应用）时不轮询：WebView 的定时器
+      // 不会因为不可见而停，多分栏叠加就是纯浪费的 IPC 与磁盘 metadata 探测。
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       reloadIfChanged(dirPath, showHidden);
     }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    // 重新可见时立即补一次，避免等了半轮才更新。
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") reloadIfChanged(dirPath, showHidden);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [pageActive, dirPath, showHidden]);
 
   // 目录切换时清空选择（区域内状态独立）。
@@ -589,7 +600,9 @@ export default function FilePane({
         return;
       }
       store.getState().setSelection(paneId, [path], path);
-    } else if (!current.includes(path) || current.length !== 1) {
+    } else if (!current.includes(path)) {
+      // 普通点击只在「点到未选项」时变成单选；按下已选中的任意一项必须保留整组选择，
+      // 否则多选拖拽会在 pointerdown 时折叠成单文件（原生回归发现）。
       store.getState().setSelection(paneId, [path], path);
     }
   };

@@ -1,31 +1,32 @@
 # AGENTS.md — Task Dock 开发协作规范
 
-本文件是所有开发 Agent 的**入口规范**：规定「必须遵守什么」，「具体怎么做」见专项文档（第 1
-节路由）。子目录 `AGENTS.md`（目前只有 `apps/mobile/`）在自身路径下优先，未覆盖的仍按本文件。
+本文件是所有开发 Agent 的**入口规范**：只写「必须遵守什么」与路由，「具体怎么做」见专项文档。
+子目录 `AGENTS.md`（目前只有 `apps/mobile/`）在自身路径下优先，未覆盖的仍按本文件。
 
 **事实优先级**：代码与可复现输出 > 测试/真机证据（命令、时间、退出码、证据路径）> 文档。文档
-与代码冲突以代码为准，不按过期描述盲改实现；发现偏差更新文档，超出本次范围写入验收报告。
+与代码冲突以代码为准；发现偏差更新文档，超出本次范围写入验收报告。
 
 ## 1. 项目定位、开工检查与按任务加载
 
 Task Dock 是 Windows 桌面任务/启动器/Agent 监控中枢：Tauri 2 + Rust（`src-tauri/`）、React +
 TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobile/` 以本地 SQLite
-为主，支持用户显式发起的局域网配对、手动同步与文件互传（TLS-only + SPKI 指纹固定），不是
-「完全离线独立运行」。能力与状态见 [README.md](README.md)。
+为主，支持用户显式发起的局域网配对、手动同步与文件互传（TLS-only + SPKI 指纹固定）。能力与
+状态见 [README.md](README.md)。
 
-**开工必做**：1）读本文件（改移动端同读其 `AGENTS.md`）；2）`git status`——本仓库可能多会话
-共享同一工作树，**未提交/未跟踪改动默认属于其他任务**，不还原、不删除、不覆盖、不代为提交；
-3）按任务查表并**实际读取**对应文档与相关代码/测试/迁移/命令定义。不求通读全部手册，但涉及
-某模块时不得跳过其安全与兼容边界。
+**开工必做**：1）读本文件（改移动端同读其 `AGENTS.md`）；2）`git status`——本仓库多会话共享
+同一工作树，**未提交/未跟踪改动默认属于其他任务**，不还原、不删除、不覆盖、不代为提交；
+3）按任务查表并**实际读取**对应文档与相关代码/测试/迁移/命令定义。不求通读手册，但涉及某模块时
+不得跳过其安全与兼容边界。
 
 | 任务类型 | 按需阅读 |
 |---|---|
 | 通用代码修改 | 本文件 + 相关源码与测试 |
 | Rust / Tauri / IPC / 数据库 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 对应章节 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | 移动端（Android） | [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md) + [docs/mobile/](docs/mobile/) |
-| 多 Agent 并行 / Worktree | 本文件第 3 节 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第八章 |
-| 构建、并发构建排队、内存/资源 | 本文件 5.1 + [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md) |
-| 构建产物、缓存、磁盘 | 本文件第 5 节 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第七章 |
+| 多 Agent 并行 / Worktree 隔离 | 本文件第 3 节 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第八章 |
+| 任务交付 / 统一集成 / 统一构建 / 联合验收 | 本文件 §3.3–3.4、§5.2 + [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md) |
+| 构建排队、并发构建、资源准入 | 本文件 5.1 + [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md) |
+| 构建产物、缓存、磁盘 | 本文件 5.3 + [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第七章 |
 | 测试、验收、真机、性能 | [docs/TESTING.md](docs/TESTING.md)、[docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md)、`docs/PERFORMANCE_*.md` |
 | UI/UX、视觉 | 本文件第 6 节 + [docs/ui-themes/](docs/ui-themes/) + [docs/AGENT_SKILL_ROUTING.md](docs/AGENT_SKILL_ROUTING.md) |
 | Agent 接入、导航 | [docs/AGENT_ADAPTERS.md](docs/AGENT_ADAPTERS.md)、[AGENT_COVERAGE_MATRIX.md](AGENT_COVERAGE_MATRIX.md)、[APP_NAVIGATION_MATRIX.md](APP_NAVIGATION_MATRIX.md) |
@@ -34,210 +35,202 @@ TypeScript + Vite + Zustand（`src/`）、SQLite；Android 客户端 `apps/mobil
 
 ## 2. 基本开发原则
 - 默认简体中文；先读实际代码与测试，不凭记忆或文档臆断；既有注释与文案保持原语言风格。
-- **范围最小**：只改必需代码，不顺手清理、不扩大重构、不整文件格式化、不擅自升级或引入
-  依赖；保持架构与公开 API 兼容，破坏性变更先说明影响面、迁移方案与回退路径。
+- **范围最小**：只改必需代码，不顺手清理、不扩大重构、不整文件格式化、不擅自升级或引入依赖；
+  保持架构与公开 API 兼容，破坏性变更先说明影响面、迁移方案与回退路径。
 - 优先修根因，不用 `setTimeout`、重试、吞异常兜底；确需兜底说明根因层为何无法解决。
 - **不得伪造测试结果、真机验证、性能数据或截图**：未执行写「未执行」，环境阻塞写
   `ENVIRONMENT BLOCKED`，证据不足写「证据不足」，不用「应该/理论上」代替证据。
-- 非关键细节可判断并记录假设，关键需求不明先问；范围外问题写入验收报告，不擅自修复。
+- 非关键细节可判断并记录假设，关键需求不明先问；范围外问题写入报告，不擅自修复。
 
-## 3. Git 安全与多 Agent 并行协作
+## 3. 多 Agent 并行、Git 安全与统一集成
 
-总原则：**共享工作区优先、文件所有权优先、Worktree 按需使用、最终统一集成验收**。并行本身
-不是创建 Worktree 的理由；隔离取决于写入范围、共享资源与 Git 状态风险。命令、退出码、派发
-模板、清理与阶段清单见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第八章。
+总原则：**共享工作区优先、文件所有权优先、Worktree 按需使用、交付与验收走统一集成线**。
+并行本身不是创建 Worktree 的理由；是否隔离取决于写入范围、共享资源与 Git 状态风险。
+「Agent 声称完成」不等于「已集成」；**只有集成快照可以生成正式测试安装包**（§5.2）。
 
-### 3.1 Git 安全（所有协作方式共用）
-- 开工前、交付前各 `git status`；编辑前后复核暂存区。
-- 不自动 commit/push/打标签/改分支/强制推送/改 Git 配置；禁止 `git clean`、`git reset --hard`、
-  `git checkout -- <path>`、`git restore <path>`。
-- **共享工作区默认禁止 Git stash**：禁止裸 `git stash`、无路径限制的 `git stash push`/`push -u`；
-  不得 stash 他人修改或未跟踪文件，不得因切换任务擅自清理共享工作区。确需暂存须先 `git status`、
-  确认文件完全属于本任务且无其他 Agent 在使用、取得授权、路径规格不扩大匹配范围，再执行
-  `git stash push -u -m <唯一标签> -- <精确路径>`（未跟踪文件单独确认归属）；恢复前复核目标
-  状态，只恢复本任务内容。**唯一标签不是安全隔离的充分条件**；归属无法确认时停止并交主 Agent
-  协调，必要时改用独立 Worktree。
+### 3.1 并行与隔离判定（四类情况）
+
+| 情况 | 处理 |
+|---|---|
+| A 完全独立文件/模块 | 共享工作区并行；文件所有权明确、不互相覆盖 |
+| B 可能同时改同一文件 | 独立 Worktree，或指定唯一所有者后串行写入 |
+| C 改公共配置/全局类型/共享架构 | 先定负责人、顺序与兼容边界（必要时 Worktree），由主 Agent 协调 |
+| D 他人仍在开发，但要出稳定安装包 | **从已集成快照构建**（`integration` 分支的提交），不得直接打包共享工作区 |
+
+- 工作区里的 Git 暂存区、工作树状态、依赖目录、构建产物同样共享：即使改动不重叠，也必须避免
+  误提交、误清理与构建期文件竞争（判据与检查清单见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §8.10）。
+- **跨模块**「耗时长」「Agent 数量 > 1」都不是必须隔离的理由；**Worktree 不自动解决冲突**。
+
+### 3.2 共享工作区安全边界
+
+- 开工前、交付前各 `git status`；编辑前后复核暂存区；不自动 commit/push/打标签/改分支/强制
+  推送/改 Git 配置；禁止 `git clean`、`git reset --hard`、`git checkout -- <path>`、
+  `git restore <path>`。
+- **默认禁止 Git stash**：禁止裸 `git stash`、无路径限制的 `push`/`push -u`；不得 stash 他人
+  修改或未跟踪文件。确需暂存须确认路径完全属于本任务、无其他 Agent 使用并取得授权，执行
+  `git stash push -u -m <唯一标签> -- <精确路径>`，恢复前复核；归属无法确认即停止并交主 Agent。
 - 不用 `git add -A`/`git add .`/`git commit -a`；按精确路径暂存并复核，防止带入构建产物、
-  数据库或证据日志。
-- 同一文件被并行修改：先读双方 diff 再合并，不整文件覆盖；无法安全合并时停止报告，不猜测丢弃。
-- **共享工作区的 Git 写操作由主 Agent 统一协调**：未获授权时子任务只改自己拥有的文件，不执行
-  add/commit/stash/merge/rebase、不切换或创建分支、不清理暂存区；落盘时报告路径，由主 Agent
-  按精确路径暂存提交。
-- 不覆盖他人日志、截图、验收报告；新证据用含日期的独立文件名，推翻历史结论时保留旧文件并追加
-  更正。未经授权不批量 `git rm --cached`、不删除构建或验收目录；应清理项只列路径、体量、建议
-  命令等待授权；交付时如实列出本次修改/新增/删除的文件，不「整理」不理解的暂存内容。
-
-### 3.2 默认共享工作区与文件所有权
-写入集合、构建输出、公共接口、分支与依赖版本、Git 写操作、运行时资源均不冲突时，多任务
-**直接在主工作区并行，不创建 Worktree**；「跨模块」「耗时长」不构成例外（例：前端页面与独立
-Rust 模块）。共享契约由唯一所有者集成，其余只读或等待接口确认。
-
-派发必须书面声明：**允许写入白名单**、禁止写入的共享枢纽文件、需协调的公共接口（IPC/类型/
-迁移/设置键）、依赖与集成顺序、隔离方式及判据、测试与验收责任（模板见
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §8.11）。
-
-- **目录所有权≠目录下全部文件的永久独占**：声明只做粗筛，写入集合出现交集立即重新协调，交集
-  文件按「唯一所有者」处理。
-- 共享枢纽文件：`src/lib/bridge.ts`、`src/lib/navigationRegistry.ts`、
-  `src/lib/featureCatalog.ts`、`src/store/useUiStore.ts`、`src-tauri/src/lib.rs`、
-  `src-tauri/src/commands/mod.rs`、`src-tauri/src/db/mod.rs`，以及全局样式与主题 Token、i18n
-  语言文件、依赖与构建配置、数据库迁移及版本定义。可同时读取；
-  **同时写入必须由唯一所有者或主 Agent 串行协调**。
-- 需改未授权文件：不越界 → 说明文件与原因 → 主 Agent 重分配或亲自集成 → 继续其余无冲突部分。
+  数据库或证据日志。同一文件被并行修改：先读双方 diff 再合并，不整文件覆盖，无法安全合并时停止。
+- **Git 写操作由主 Agent 统一协调**：未获授权时子任务只改自己拥有的文件，不执行 add/commit/
+  stash/merge/rebase、不切换或创建分支、不清理暂存区；落盘时报告路径，由主 Agent按精确路径提交。
+- **目录所有权≠目录下全部文件的永久独占**；写入集合出现交集立即重新协调，交集文件按「唯一
+  所有者」处理。共享枢纽文件（`src/lib/bridge.ts`、`navigationRegistry.ts`、`featureCatalog.ts`、
+  `useUiStore.ts`、`src-tauri/src/lib.rs`、`commands/mod.rs`、`db/mod.rs`、全局样式与主题 Token、
+  i18n、依赖与构建配置、数据库迁移与版本定义）可同时读，**同时写必须由唯一所有者串行**。
+- 需改未授权文件：不越界 → 说明文件与原因 → 主 Agent 重分配或亲自集成 → 继续无冲突部分。
   越界写入、覆盖他人改动、自行清理缓存均视为事故。
+- 不覆盖他人日志、截图、验收报告；新证据用含日期独立文件名；应清理项只列路径、体量与建议命令。
+- **外部定时提交**（`chore: 定时提交 …（N 个文件）`，非本仓库脚本产生）会把在途改动整体写进
+  历史，因此**不能用 `main` 的提交或当前工作区来判断「哪些任务已完成」**——那是集成快照的职责。
 
-### 3.3 Worktree 按需使用
-Worktree 是**风险评估结果**，不是并行前置步骤：
-- **必须隔离**：并发改同一批文件且无法指定唯一所有者；需要不同分支/依赖版本/提交基线；工作区
-  状态冲突难以消除 → 一任务一 Worktree。
-- **建议隔离**：长期实验可能污染稳定主工作区；需不受他人修改影响的环境独立复现/验收；需独立
-  跑完整构建且资源隔离不足 → 优先 Worktree，或主工作区 + 资源隔离并记录理由。
-- **无需隔离**：写入集合与共享资源均无冲突 → 主工作区并行。
+### 3.3 任务状态与交付
 
-「跨模块」「耗时长」「多 Agent 并行本身」不是必须隔离的理由。**Worktree 不自动解决冲突**：
-两个 Worktree 改同一文件，合并时仍冲突。
+| 状态 | 含义 | 推进方式 |
+|---|---|---|
+| 开发中 | 正在改代码 | 负责人 `task add` / `task update` |
+| 待集成 | 代码完成且模块级检查通过 | 负责人 `task ready`（需交付提交 + 通过检查） |
+| 已集成 | 改动进入快照提交 | 工具 `snapshot create` 成功 |
+| 待验收 | 代码在可测产物中 | 工具 `build` 成功 |
+| 验收通过 / 验收失败 | 在指定构建版本上的结论 | 验收 Agent `accept --status pass|fail` |
 
-### 3.4 并行数量与共享资源
-- 不设固定 Subagent 上限：按独立性、依赖、实际能力与 CPU/内存/磁盘余量决定，紧密耦合部分
-  串行；不超过执行器或额度限制，遇阻塞收敛报告、不重试放大；不为凑数量制造冲突。
-- **文件不重叠不等于运行环境无冲突**（Git 见 3.1），派发前检查：
-  - **跨会话并发构建**：由 `scripts/build-sched.mjs` 统一闸门（本文件 5.1），派发时不要另造
-    锁/信号量；只需在写声明里要求"构建走标准入口"，不必为构建互斥而串行化整个任务。
-  - **前端**：同一时刻只允许一个构建写同一输出目录（`dist/`、`.preview/`）；不并发改同一
-    `node_modules`；dev 端口单实例或显式改端口；只读检查与单测可并行。
-  - **Rust/Tauri**：不并发争用同一 Cargo target；隔离时用绝对路径 `CARGO_TARGET_DIR` 指向
-    `src-tauri/target-<task>` 并 `build-guard register`；共享 target 时接受文件锁串行。
-  - **SQLite**：迁移 append-only，同一时刻唯一所有者改迁移并按合并顺序协调版本号；测试库与
-    用户库隔离（`TASK_DOCK_DATA_DIR`/临时库）；Worktree 不能替代数据库与运行时隔离。
-  - **验收证据**：各任务用 `tmp/acceptance/<task>/`，不覆盖他人报告、截图、日志与临时数据。
+交付时必须提供：**任务标识与模块、写入范围、主要改动、实际执行的检查与结果、未解决问题、
+是否改公共接口、是否需其他模块配合、交付提交（可追溯）**。用统一台账登记，不另建数据库：
 
-### 3.5 调度决策与最终集成
-1. 拆分任务 → 列写入集合求交集 → 检查共享资源（构建输出、dev 端口、Cargo target、依赖目录、
-   测试库、隔离实例目录、Git 状态/暂存区）→ 按 3.3/3.4 选择：共享并行 / 共享 + 资源隔离 /
-   共享 + 唯一所有者 / Worktree / 先串行前置。
-2. 执行中范围扩大、写入集合变化或出现新依赖时重新评估，不因初始无冲突忽略后续共享文件修改。
-3. 主 Agent 最终集成验收：修改文件与所有权越界、公共接口一致性、TS/Rust 类型与协议、测试与
-   构建结果、`git status`、他人未提交改动是否被带入。
-4. [scripts/worktree-guard.mjs](scripts/worktree-guard.mjs) 保持现有命令与安全边界，不自动
-   强制创建/提交/合并/删除；`create` 仅在 3.3 判定需要隔离后执行；`cleanup` 默认 dry-run，
-   `--execute` 的准入条件与拒绝规则见
-   [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §8.7。异常保留现场上报，冲突先读双方 diff，
-   无法安全合并时停止。
+```bash
+npm run integrate -- task add --id <任务> --owner <agent> --module <模块> --paths <写入范围>
+npm run integrate -- task check --id <任务> --cmd "<检查命令>" --exit <退出码>
+npm run integrate -- task ready --id <任务> --commit <交付提交>
+npm run integrate:status
+```
+
+写入范围是集成与冲突判定的唯一依据：交付提交里出现未声明路径会被拒绝（防串味）；确属本任务时
+用 `--allow-extra-paths` 显式放行并留痕。
+
+### 3.4 集成、构建与验收职责
+
+- **集成（主 Agent / 集成负责人）**：只把「待集成」任务的声明路径改动叠加到 `integration` 分支，
+  生成带 `TaskDock-Snapshot/Tasks` 提交信息的快照；检查交集、越界、冲突，执行集成静态检查。
+  不等待未完成任务；已完成任务按批次集成，失败批次保留现场与日志。
+- **构建（集成负责人）**：**只有快照提交能出正式测试安装包**；在干净快照工作区执行、经构建调度器
+  排队、桌面与移动端分别构建；同一「提交+平台+配置」复用已有产物，不因第二个 Agent 要验收重打。
+- **验收（各任务 Agent + 集成验收 Agent）**：多 Agent 可基于**同一 `buildId`** 并行验收各自模块，
+  各写自己的验收记录（不改他人结论）；跨模块链路与回归由集成验收 Agent 负责。
+  并行验收的共享资源（同一窗口/实例、手机、剪贴板、CDP 端口、数据库目录）按
+  [docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md) §5.4–5.5 串行或隔离。
+- **验收失败**：记录构建版本、现象与复现 → 负责人修复 → 新交付提交 → 下一个快照与构建 →
+  定向复测 + 受影响链路回归。**不得用旧版本的通过结论证明新版本通过**。
+- 命令、状态机、记录字段、构建平台与复用规则、清理方式见
+  [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md)。
+
+### 3.5 Worktree（按需隔离）
+
+- 创建/状态/冲突预检/安全清理统一走 `scripts/worktree-guard.mjs`（`npm run worktree:*`）；
+  `create` 只在 3.1 判定需要隔离后执行，`cleanup` 默认 dry-run，`--execute` 的准入见
+  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §8.7。
+- 工具不自动创建/提交/合并/删除；异常保留现场上报，冲突先读双方 diff，无法安全合并时停止。
+- 集成与构建使用工具自有的 `<仓库父目录>/<仓库名>-integration` 工作区（分支 `integration`），
+  与 Agent 任务 Worktree 分开管理；不得手工用它做开发或验收操作。
 
 ## 4. 架构与数据安全红线
+
 以 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 为准，以下不可破坏：
 1. **分层**：UI 不直接访问数据库，React 不直接调用 Win32。
-2. **IPC**：业务 IPC 统一经 `src/lib/bridge.ts`，导航经 `src/lib/navigation.ts`；参数
-   camelCase，新增命令同步前端类型与 Rust 签名。
-3. **SQLite**：只在 `src-tauri/src/db/mod.rs` 的 `MIGRATIONS` 末尾追加，不改已发布迁移；新设置
-   项同步 `db::Settings`/`ALLOWED_KEYS`；新表登记 `BACKUP_TABLES`。
-4. **Agent 管线**：事件必须进入 `agents/pipeline.rs` 有界管线；waiting/failed/completed 不得
-   合并或静默丢弃，过载返回可重试错误；`origin` 由服务端判定；禁止无界队列、同步阻塞写库、
-   事务内广播/通知。
+2. **IPC**：业务 IPC 统一经 `src/lib/bridge.ts`，导航经 `src/lib/navigation.ts`；参数 camelCase，
+   新增命令同步前端类型与 Rust 签名。
+3. **SQLite**：只在 `src-tauri/src/db/mod.rs` 的 `MIGRATIONS` 末尾追加，不改已发布迁移；新设置项
+   同步 `db::Settings`/`ALLOWED_KEYS`；新表登记 `BACKUP_TABLES`。
+4. **Agent 管线**：事件必须进入 `agents/pipeline.rs` 有界管线；waiting/failed/completed 不得合并
+   或静默丢弃，过载返回可重试错误；`origin` 由服务端判定；禁止无界队列、同步阻塞写库、事务内广播。
 5. **剪贴板**：Win32 访问只在 `clipboard/platform.rs`；三线程 + 有界队列且丢弃必须计数；
    `ACCESS_LOCK` 串行化、锁内比较后才写入，绝不覆盖用户新复制；配置 fail-closed；日志与事件
    不记录正文、完整图片、文件路径或密钥。
 6. **窗口与多显示器**：保留贴边吸附、位置恢复、DPI 换算与多显示器收敛；保存矩形前验证可见性；
    HWND/PID 只作运行时身份，绝不落库。
-7. **UI Token**：预设/明暗/材质正交并落到 `html[data-preset|data-theme|data-material]`；只用
-   语义 Token（`styles-themes.css`/`styles-ui.css`）；不写原生 `<select>`、裸 `z-index`，不
-   绕过统一组件层与 overlay 栈。
-8. **异步生命周期**：后台任务、轮询、订阅、定时器必须可取消、有超时、有上限、可回收；不留
-   重复监听器或永不停止的轮询。
-9. **兼容性**：DB schema、备份 manifest 版本、命令签名、设置键是公开契约；变更必须说明兼容
-   范围、迁移方式与旧数据/旧备份处理结果。
+7. **UI Token**：预设/明暗/材质正交并落到 `html[data-preset|data-theme|data-material]`；只用语义
+   Token（`styles-themes.css`/`styles-ui.css`）；不写原生 `<select>`、裸 `z-index`，不绕过统一
+   组件层与 overlay 栈。
+8. **异步生命周期**：后台任务、轮询、订阅、定时器必须可取消、有超时、有上限、可回收；不留重复
+   监听器或永不停止的轮询。
+9. **兼容性**：DB schema、备份 manifest 版本、命令签名、设置键是公开契约；变更必须说明兼容范围、
+   迁移方式与旧数据/旧备份处理结果。
 
 ## 5. 构建、测试与验收
 
 ### 5.1 构建资源调度（所有会话与子智能体共用）
-- **所有高资源构建必须经统一入口**：`npm run build` / `npm run tauri` / `npm run test` /
-  `npm run dev` / `npm run preview` / `npm run cargo -- <子命令>`，或
-  `node scripts/build-sched.mjs run -- <命令>`（`dev`/`preview` 是常驻 dev 服务，占 dev 槽位，
-  第 3 个要排队；端口不归调度器分配）。
-  `*-raw` 与直接 `cargo`/`vite`/`gradlew` 只用于调度器自身排障；**不得绕过调度器**规避队列（改了
-  `package.json` 绕开同样算绕过）。手机端同理：`npm --prefix apps/mobile run build:android` 已接入
-  调度器（重型槽位、`--cwd android`、label `apk-release`），等价写法是
-  `node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mobile/android -- gradlew.bat assembleRelease`；
-  `apps/mobile` 的 `android`/`prebuild`（heavy）、`typecheck`/`test`（medium）、`start`（dev）也都
-  已接入，`*:raw` 只作排障逃生口，不得写进日常推荐命令。
-- 准入约束**是全局构建并发 + 分类槽位**（2026-11-15 晚按用户要求删除"实时可用内存门槛"；
-  2026-11-16 新增 `globalConcurrency`；2026-11-16 同日第二轮按用户要求**删除按物理内存估算的
-  全局预算**，见 `docs/BUILD_SCHEDULER.md` 4.2 / 10.6 / 10.7）：
-  ① **全局构建并发上限**（heavy/medium/light 合计最多 3 个在跑，第 4 个**排队**、任一构建收尾即自动释放名额；
-  dev 常驻服务不计入，由 `devConcurrency` 单独限流）；② 各分类的槽位并发。**内存不是准入维度**：
-  不读物理/可用内存、不按 `estimate*Mb` 记账、没有 `budgetEnabled`/`allowReserveBreach`/`--estimate-mb`，
-  `status`/`history` 也不再展示内存。低内存下重型构建可能以 `exit 101`（OOM）失败，按运行期 OOM 处理；
-  正确做法是局部检查、降低 `cargoJobs` 或等机器空闲，**不是**另造内存门槛或绕过调度器。
-- 调度器只管构建，不管代码：**构建互斥不限制正常开发**——多个会话可并行改不冲突的文件；
-  无文件冲突时**不强制 Worktree**；构建排队期间可以继续读代码、写文档、改无关模块。
-- 优先局部检查再全量：能单 crate `cargo check` / 单测 / 单模块 `tsc` 就不整包构建，避免重复全量。
-- 失败先判层级再改代码：**代码错误（子进程码）/ 槽位或全局名额不足（exit 3 + reason 含槽位/全局构建并发）/
-  超时（exit 3）/ 运行期 OOM（rustc/cargo exit 101）/ 调度或磁盘错误（exit 5/6）**分别处理，不能把
-  "没抢到槽位/名额"当成代码缺陷，也不能为了跑通就绕过准入。
-- 不清理其他会话的构建缓存/target/隔离目录，不终止未经授权的他人进程（含 dev 服务器）；
-  疑似陈旧锁或活动台账残留用 `npm run sched:doctor`（默认只读），`--reap` 前先确认回收对象
-  已被证明死亡（`unknown` 身份一律不动）。
-- 最终验收必须针对**正确代码状态**执行（自己的改动已落盘、`git status` 无他人未提交改动被带入）；
-  子智能体与主智能体适用同一套资源规则，派发时应把本小节原文一并交代。
-- 用法、配置、退出码、锁与回收原理、Windows 控制台生命周期见
-  [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md)；资源现状用 `npm run sched:status`（含全局
-  构建并发与活动台账）、`npm run sched:queue`、`npm run sched:history` 查。工程门禁
-  `scripts/perf/gate-run.sh` 已接入调度器，`GATE_DRY_RUN=1` 可零资源核对路由。
+- **所有高资源构建必须经统一入口**：`npm run build|tauri|test|dev|preview|cargo` 或
+  `node scripts/build-sched.mjs run -- <命令>`；手机端 `npm --prefix apps/mobile run build:android`
+  已接入。`*-raw`、直接 `cargo`/`vite`/`gradlew` 只用于调度器排障，**不得绕过排队**（改
+  `package.json` 绕开同样算绕过）。
+- 准入 = **全局构建并发（heavy/medium/light 合计 3 个，第 4 个排队）+ 分类槽位 + P0–P3 老化**；
+  dev 常驻服务单独限流。**没有内存维度**：不读物理/可用内存、不按体积估算准入；低内存下重型
+  构建可能 `exit 101`（OOM），按运行期 OOM 处理，正确做法是局部检查、降 `cargoJobs` 或等空闲。
+- 调度器只管构建，不管代码：构建排队期间可继续读代码、写文档、改无关模块；**无文件冲突不强制
+  Worktree**。
+- 优先局部检查再全量：能单 crate `cargo check` / 单测 / 单模块 `tsc` 就不整包构建。
+- 失败先判层级：**代码错误（子进程码）/ 槽位或名额不足（exit 3 + reason）/ 超时（exit 3）/
+  运行期 OOM（exit 101）/ 调度或磁盘错误（exit 5/6）**分别处理，不能把「没抢到槽位」当代码缺陷，
+  也不能为跑通绕过准入。
+- 不清理他人构建缓存/target/隔离目录，不终止未经授权的他人进程（含 dev 服务器）；陈旧锁或活动
+  台账用 `npm run sched:doctor`（默认只读），`--reap` 前必须证明对象已死亡（`unknown` 一律不动）。
+- 用法、配置、退出码、锁与回收原理见 [docs/BUILD_SCHEDULER.md](docs/BUILD_SCHEDULER.md)；
+  现状查 `npm run sched:status|queue|history`。
 
-### 5.2 磁盘、命令与证据
-- 构建前检查磁盘与缓存（`npm run tauri` 自动执行 `build-guard precheck`），空间不足先停止并
-  `report`；缓存复用、隔离与回收按 3.4 与 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第七章
-  执行；不清理他人目录、发布产物、用户数据或验收证据，无法确认归属即跳过。
+### 5.2 统一构建与安装包
+- **正式测试安装包只从集成快照构建**：`npm run integrate -- build --snapshot <快照> --platform
+  desktop|web|android`。共享工作区里的未提交改动、`main` 上更晚的提交都不进入产物。
+- 每个「快照提交 + 平台 + 构建配置」原则上只构建一次；已有成功产物且校验值一致时复用，
+  不因不同 Agent 分别验收而重复打包。桌面端与移动端、不同架构/配置**不能视为同一个安装包**。
+- 构建记录必须含：构建 ID、Git commit（含 `dirty=false` 断言）、平台与配置、时间、包含的任务、
+  退出码、产物路径与 sha256、调度任务与日志路径。记录位置与字段见
+  [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md) §5。
+- 集成任务的构建走调度器（label `integration-<构建ID>`），与日常构建共享同一队列，不另造锁。
+- 未构建/构建失败写「未执行」或失败记录，不得用历史产物冒充本轮结果。
+
+### 5.3 磁盘、命令与证据
+- 构建前检查磁盘与缓存（`npm run tauri` 自动 `build-guard precheck`），不足先停止并 `report`；
+  隔离缓存用**绝对路径** `CARGO_TARGET_DIR`（`target-*` 命名）并 `build-guard register`，结束按
+  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 第七/八章回收；不清理他人目录、发布产物、用户数据。
 - 命令矩阵见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)、[docs/TESTING.md](docs/TESTING.md)：
-  cargo 必须在 `src-tauri/` 内运行（勿从仓库根用 `--manifest-path`）；`cargo test` 需要
-  `dist/`；不得用 `cargo build --release` 代替 Tauri 发布验收；安装/升级/卸载未经授权不执行并
-  写「未执行」。
+  cargo 在 `src-tauri/` 内运行；`cargo test` 需要 `dist/`；不得用 `cargo build --release` 代替
+  Tauri 发布验收；安装/升级/卸载未经授权不执行并写「未执行」。
 - 结论必须可追溯：命令 + 工作目录 + 退出码 + 时间 + 证据路径；数字以当次输出为准；
   `#[ignore]` 的性能/真机套件不计为通过。
 - **真实窗口、系统通知、系统剪贴板、前台焦点、DPI、多显示器、贴边吸附必须原生真机验收**；
-  jsdom/单测/预览截图不能替代；视觉走查用 `scripts/serve-preview.mjs`（勿用
-  `npx vite preview`）。
-- 验收按 [docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md) 的 A–F 通道（静态 / 隔离
-  预览 / CDP WebView2 / UIAutomation / Win32-DWM / 物理操作）选择，证据按项标注、跨层结论
-  组合通道。CDP 不证明 Win32 裁剪、吸附手感、系统级命中、通知真实展示、实际音效与桌面合成；
-  物理操作仅作最后手段，移动光标/抢前台/操作他应用前取得授权；CDP 只连 `127.0.0.1` 且不连
-  来路不明 target。默认低干扰，隔离实例用 `TASK_DOCK_DATA_DIR`，结束释放实例/端口/进程。
+  jsdom/单测/预览截图不能替代；视觉走查用 `scripts/serve-preview.mjs`。
+- 验收按 [docs/ACCEPTANCE_ROUTING.md](docs/ACCEPTANCE_ROUTING.md) 的 A–F 通道选择；CDP 不证明
+  Win32 裁剪、吸附手感、系统级命中、通知真实展示与桌面合成；物理操作仅作最后手段，移动光标/
+  抢前台/操作他应用前取得授权；CDP 只连 `127.0.0.1`，默认低干扰，隔离实例用 `TASK_DOCK_DATA_DIR`。
 - 性能结论必须附可复核条件（二进制 sha256、构建模式、工具链、数据目录隔离、样本数、机器空闲
-  状态、p50/p95 与证据文件）；不得用单次短采样宣称「无泄漏」，只能写「在 X 条件下未观察到
-  泄漏型增长」。
-- 环境失败（锁屏、前台锁拒绝、权限不足、磁盘满）记 `ENVIRONMENT BLOCKED`，不标记通过也不臆断
-  为代码缺陷；同条件复跑结果一并保留；推翻历史结论时保留旧记录并追加带日期更正。
+  状态、p50/p95 与证据文件）；不得用单次短采样宣称「无泄漏」。
+- 环境失败（锁屏、前台锁拒绝、权限不足、磁盘满）记 `ENVIRONMENT BLOCKED`，不标记通过，也不臆断
+  为代码缺陷；同条件复跑结果一并保留。
 
 ## 6. UI/UX 与 Skill 路由
-- 复用 `src/components/ui/` 基元与语义 Token，不新增平行组件、不硬编码颜色/圆角/阴影；不产生
-  重复输入框、弹层、事件监听，订阅逻辑确认引用计数。
-- 新弹层接入 `src/lib/overlayStack.ts`，一次按键只关一层；图标按钮必须有 `aria-label`，提示
-  统一 `data-tip`（不用原生 `title`）；检查遮挡、溢出、焦点顺序、键盘与 Escape。
-- 覆盖深/浅主题、两套视觉预设、320/400 窄窗与不同 DPI；长文本截断或换行而非撑破布局；动画
-  轻量并尊重 `prefers-reduced-motion`，液态玻璃不得牺牲可读性与操作效率。
-- 性能红线：轮询/订阅不重复，窗口隐藏/恢复不重复全量刷新；IPC 高频通信合并或节流；异常、
-  取消、超时、强杀后状态正确（不清空用户数据）；大事件/历史/图片下内存与 CPU 有平台期。
+- 复用 `src/components/ui/` 基元与语义 Token，不新增平行组件、不硬编码颜色/圆角/阴影；不产生重复
+  输入框、弹层、事件监听，订阅逻辑确认引用计数。
+- 新弹层接入 `src/lib/overlayStack.ts`，一次按键只关一层；图标按钮必须有 `aria-label`，提示统一
+  `data-tip`（不用原生 `title`）；检查遮挡、溢出、焦点顺序、键盘与 Escape。
+- 覆盖深/浅主题、两套视觉预设、320/400 窄窗与不同 DPI；长文本截断或换行而非撑破布局；动画轻量
+  并尊重 `prefers-reduced-motion`，液态玻璃不得牺牲可读性与操作效率。
+- 性能红线：轮询/订阅不重复，窗口隐藏/恢复不重复全量刷新；IPC 高频通信合并或节流；异常、取消、
+  超时、强杀后状态正确；大事件/历史/图片下内存与 CPU 有平台期。
 - **开发前按任务判断是否需要 Skill**：只加载适用项并实际读取 `SKILL.md`，不凭名称宣称已使用；
-  **项目规范优先于 Skill**，Skill 不替代真机验收，不得另造设计语言或推翻用户要求、确认的参考
-  图与 Token 体系。路由、边界与跨 Agent 目录约定见
-  [docs/AGENT_SKILL_ROUTING.md](docs/AGENT_SKILL_ROUTING.md)。
+  **项目规范优先于 Skill**，Skill 不替代真机验收，不得另造设计语言或推翻已确认的参考图与 Token。
 
 ## 7. 文档、验收产物与交付
-- 正式文档按模块归属维护（见第 1 节路由）；功能、接口或数据结构变化必须同步对应文档并说明
-  兼容性与迁移要求，不能只写在验收报告里。
-- 同一主题在原文档追加带日期记录，推翻历史结论时保留原文并标注更正，不重复生成同主题报告；
-  历史记录与当前执行指令分开表述，当前规则以本文件为准。
-- 任务产物进 `tmp/acceptance|debug|experiments/<task-name>/`（短横线英文，一任务一目录；
-  `tmp/` 已 gitignore），临时脚本/数据库/隔离实例数据同目录；仓库根不新增零散验收文件；正式
-  证据归档到 `docs/` 对应目录并更新索引，不迁移、覆盖或删除历史资料。
+- 正式文档按模块归属维护（见第 1 节路由）；功能、接口或数据结构变化必须同步对应文档并说明兼容性
+  与迁移要求，不能只写在验收报告里。
+- 同一主题在原文档追加带日期记录，推翻历史结论时保留原文并标注更正；历史记录与当前规则分开表述。
+- 任务产物进 `tmp/acceptance|debug|experiments/<task-name>/`（短横线英文，一任务一目录；`tmp/` 已
+  gitignore）；集成台账在 `tmp/integration/`；仓库根不新增零散验收文件；正式证据归档 `docs/` 并
+  更新索引，不迁移、覆盖或删除历史资料。
 - 任务级报告 `tmp/acceptance/<task-name>/report.md` 必含：任务范围、检查依据、P0–P3 问题清单
-  （现象/根因/影响/证据）、修改文件与关键位置、命令与结果（工作目录/退出码）、已验证/未验证
-  项及原因、遗留风险、结论、真实证据路径。P0 数据丢失/安全泄露/崩溃/核心流程不可用；P1 主要
-  功能错误或严重仓库/数据风险且无合理绕行；P2 边界错误/次要缺陷/文档与实现不一致；P3 体验/
-  格式/低风险改进。结论只用 **通过 / 部分通过 / 不通过 / 证据不足**；环境阻塞单列。
-- **用户数据库、剪贴板正文/图片、密钥、令牌、个人路径、本机敏感日志不得写入可提交文件**；
-  证据只保留类型、计数、耗时、退出码等可复核元数据，必要时脱敏。
+  （现象/根因/影响/证据）、修改文件与关键位置、命令与结果（工作目录/退出码）、已验证/未验证项及
+  原因、遗留风险、结论、真实证据路径。P0 数据丢失/安全泄露/崩溃/核心流程不可用；P1 主要功能错误
+  或严重仓库/数据风险；P2 边界错误/次要缺陷/文档与实现不一致；P3 体验/格式/低风险改进。
+  结论只用 **通过 / 部分通过 / 不通过 / 证据不足**；环境阻塞单列。
+- **用户数据库、剪贴板正文/图片、密钥、令牌、个人路径、本机敏感日志不得写入可提交文件**；证据只
+  保留类型、计数、耗时、退出码等可复核元数据，必要时脱敏。
 - 交付前自检：`git status` 只含本次预期改动；无敏感数据进入可提交文件；临时产物在任务目录；
-  报告字段齐全；未自动提交、推送或执行破坏性 Git 操作。交付时如实说明完成内容与范围、主要
-  修改文件、根因与解决层、测试与构建结果、未验证项与残余风险、报告路径、产物位置与缓存清理
-  结果、是否需要进一步授权（清理、真机验证）。
+  报告字段齐全；未自动提交、推送或执行破坏性 Git 操作。交付时如实说明完成内容与范围、主要修改
+  文件、根因与解决层、测试与构建结果、未验证项与残余风险、报告路径、产物位置与清理结果。

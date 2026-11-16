@@ -240,8 +240,9 @@ async function openWorkspace() {
   );
   // 真实 ProjectWorkspacePanel：mock 的项目上下文把 activeModule 设为 manuscript，
   // 因此这里会挂载真实 NovelManuscriptPanel，而不是替身。
-  await screen.findByText("第一卷");
-  await screen.findByLabelText("第一章正文");
+  await waitFor(() => expect(bridge.novelVolumeList).toHaveBeenCalled(), { timeout: 5000 });
+  await screen.findByText("第一卷", undefined, { timeout: 5000 });
+  await screen.findByLabelText("第一章正文", undefined, { timeout: 5000 });
   // 隔离挂载期的 hydration 写入；本组只断言用户选择后的守卫结果。
   bridge.workspaceSetActiveProject.mockClear();
 }

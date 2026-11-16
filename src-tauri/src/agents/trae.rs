@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn trae_command_uses_cmd_wrapper_not_leading_quote() {
         let exe = PathBuf::from(r"C:\Program Files\Task Dock\task-dock.exe");
-        let cmd = hooks_install::trae_hook_command(&exe, "trae", "Stop");
+        let cmd = hooks_install::trae_hook_command(&exe, "trae", "Stop").unwrap();
         assert!(
             !cmd.trim_start().starts_with('"'),
             "不得以引号开头: {}",

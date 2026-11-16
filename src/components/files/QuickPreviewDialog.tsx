@@ -125,11 +125,11 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
 
   useEffect(() => {
     if (!request) return;
-    const found = request.entries.findIndex((entry) => joinPath(request.dir, entry.name) === request.path);
+    const found = files.findIndex((entry) => joinPath(request.dir, entry.name) === request.path);
     setIndex(found >= 0 ? found : 0);
     setZoom(100);
     setFit(true);
-  }, [request]);
+  }, [request, files]);
 
   useEffect(() => {
     if (!request || !current) return;

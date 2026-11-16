@@ -30,6 +30,7 @@ import { listAssets } from "../db/captureAssets";
 import { listCaptures } from "../db/captures";
 import { listNotes } from "../db/notes";
 import { listTasks } from "../db/tasks";
+import { decodeRecentTitle } from "../lib/recentTitle";
 import {
   countTasks,
   formatDue,
@@ -89,6 +90,8 @@ export function HomeScreen({
   const narrow = width < 360;
   // ≤340dp（320dp 窄屏）概览磁贴改两行两列；只改布局比例，不整体缩小字号
   const statsTwoCol = width < 480;
+  // 概览磁贴：两列且字号正常时数字放在图标右侧；大字号或四列窄格回退为图标在上，避免数字被截断
+  const statLayout = statsTwoCol && fontScale <= 1.15 ? "row" : "stack";
   // 320dp 或大字号时品牌块变窄/隐藏，长句改用同义短句，保证一行读完
   const brandSize = fontScale > 1.25 ? 0 : narrow ? 40 : 50;
   const tagline =
@@ -164,8 +167,8 @@ export function HomeScreen({
     const taskEntries: ActivityEntry[] = tasks.map((task) => ({
       id: task.id,
       kind: "task",
-      title: task.title.trim() || "未命名任务",
-      snippet: task.description.trim().replace(/\s+/g, " ").slice(0, 60),
+      title: decodeRecentTitle(task.title.trim() || "未命名任务"),
+      snippet: decodeRecentTitle(task.description.trim().replace(/\s+/g, " ").slice(0, 60)),
       at: task.updatedAt,
     }));
     const noteEntries: ActivityEntry[] = notes.map((note) => {
@@ -173,16 +176,16 @@ export function HomeScreen({
       return {
         id: note.id,
         kind: "note",
-        title: note.title.trim() || body.split("\n")[0]?.slice(0, 24) || "无标题笔记",
-        snippet: body.replace(/\s+/g, " ").slice(0, 60),
+        title: decodeRecentTitle(note.title.trim() || body.split("\n")[0]?.slice(0, 24) || "无标题笔记"),
+        snippet: decodeRecentTitle(body.replace(/\s+/g, " ").slice(0, 60)),
         at: note.updatedAt,
       };
     });
     const captureEntries: ActivityEntry[] = captures.map((capture) => ({
       id: capture.id,
       kind: "capture",
-      title: capture.content.split("\n")[0]?.slice(0, 24) || "速记",
-      snippet: capture.content.replace(/\s+/g, " ").slice(0, 60),
+      title: decodeRecentTitle(capture.content.split("\n")[0]?.slice(0, 24) || "速记"),
+      snippet: decodeRecentTitle(capture.content.replace(/\s+/g, " ").slice(0, 60)),
       at: capture.createdAt,
     }));
     return [...taskEntries, ...noteEntries, ...captureEntries]
@@ -370,6 +373,7 @@ export function HomeScreen({
                 <View style={[styles.statCell, statsTwoCol ? styles.statCellHalf : null]}>
                   <MetricTile
                     variant="stat"
+                    statLayout={statLayout}
                     icon="pending"
                     value={counts.pending}
                     label="待处理任务"
@@ -379,6 +383,7 @@ export function HomeScreen({
                 <View style={[styles.statCell, statsTwoCol ? styles.statCellHalf : null]}>
                   <MetricTile
                     variant="stat"
+                    statLayout={statLayout}
                     icon="calendar"
                     value={counts.dueToday}
                     label="今日到期"
@@ -388,6 +393,7 @@ export function HomeScreen({
                 <View style={[styles.statCell, statsTwoCol ? styles.statCellHalf : null]}>
                   <MetricTile
                     variant="stat"
+                    statLayout={statLayout}
                     icon="success"
                     value={counts.completed}
                     label="已完成"
@@ -397,6 +403,7 @@ export function HomeScreen({
                 <View style={[styles.statCell, statsTwoCol ? styles.statCellHalf : null]}>
                   <MetricTile
                     variant="stat"
+                    statLayout={statLayout}
                     icon="stats"
                     value={completionPercent}
                     label="完成率"

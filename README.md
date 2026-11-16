@@ -260,6 +260,11 @@ src-tauri/target/release/bundle/msi/*.msi
 
 仓库不托管安装包下载；请以本地实际构建产物为准。
 
+**正式测试安装包不从这里直接打包**：多 Agent 协作时，先由已完成任务生成集成快照，再从快照
+构建（`npm run integrate -- snapshot create` → `build --snapshot <快照> --platform desktop`），
+这样未完成任务不会混进验收包，同一快照也只构建一次。说明见
+[docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md)。
+
 ### 构建缓存与磁盘
 
 ```powershell
@@ -333,7 +338,7 @@ npm run guard:cleanup    # 默认 dry-run，需 --execute 才删除
 
 详见 [架构说明](docs/ARCHITECTURE.md)、[开发指南](docs/DEVELOPMENT.md)、
 [测试矩阵](docs/TESTING.md)、[验收通道说明](docs/ACCEPTANCE_ROUTING.md)、
-[Agent Adapter](docs/AGENT_ADAPTERS.md)。
+[统一集成与构建](docs/INTEGRATION_BUILD.md)、[Agent Adapter](docs/AGENT_ADAPTERS.md)。
 
 ## 项目结构
 

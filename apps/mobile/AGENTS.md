@@ -69,6 +69,11 @@
 - 版本号唯一事实源是 `app.json`（`version` + `android.versionCode`）；
   `SettingsScreen` 的「关于」文案随版本同步。`versionCode` 单调递增（同版本重装会被安装器拒绝）。
 - 构建命令与故障处理见 `docs/mobile/05-build.md`。
+- **正式 APK 只从集成快照构建**：`npm run integrate -- build --snapshot <快照> --platform android`
+  （桌面与移动端分别构建、分别记录，不能视为同一个安装包）。集成工作区不含 `android/` 时脚本会
+  明确拒绝，需先在集成工作区内 `npx expo prebuild` 或改用主工作区的调试产物；日常自测仍可直接用
+  `npm --prefix apps/mobile run build:android`（已接入构建调度器）。机制见
+  [docs/INTEGRATION_BUILD.md](../../docs/INTEGRATION_BUILD.md)。
 
 ## 6. 改完必须做
 

@@ -146,6 +146,28 @@ pub const EXTENDED_TABLES: &[&str] = &[
     // 小说卷/章（v58）：卷 → 章；章正文是用户创作内容，快速备份也全量保存。
     "novel_volumes",
     "novel_chapters",
+    // 小说 B2（v59）：人物档案、人物关系、世界观设定、实体→章节引用。
+    "novel_characters",
+    "novel_character_relations",
+    "novel_worldview_entries",
+    "novel_entity_refs",
+    // 游戏 G1（v60）：引擎识别事实、资源关联、构建记录、测试记录。
+    "game_project_facts",
+    "game_assets",
+    "game_builds",
+    "game_tests",
+    // AI 漫剧 C1（v61）：剧集、分镜、角色、场景、素材版本。
+    "comic_episodes",
+    "comic_shots",
+    "comic_characters",
+    "comic_scenes",
+    "comic_media_versions",
+    // 通用 U1（v62）：里程碑、项目资料关联。
+    "general_milestones",
+    "general_materials",
+    // 开发 D1（v63）：开发任务接续关联、Git/Worktree 探测快照。
+    "dws_task_links",
+    "dws_workspace_probes",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -559,6 +581,142 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     rule!("shelf_tags", "shelf", "all", 456, &["shelf_items"], true),
     // 暂存回收站（v53）：短期撤销快照，按本机瞬时状态处理（写空 section）。
     rule!("shelf_trash", "shelf", "all", 457, &["shelf_items"], true),
+    // ── 创作工作台五线（v59–v63，2026-11-16）────────────────────────────────
+    // 五个专业领域共用同一条备份线：都是用户创作内容，quick 也全量保存，
+    // 恢复顺序按「项目 → 领域内主表 → 关系表」排列；restore_order 分段分配
+    // （小说 610+ / 游戏 630+ / 漫剧 650+ / 通用 680+ / 开发 700+），
+    // 新增表必须先在此登记，否则 schema 覆盖测试会直接失败。
+    rule!(
+        "novel_characters",
+        "core",
+        "all",
+        610,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "novel_character_relations",
+        "core",
+        "all",
+        612,
+        &["novel_characters"],
+        true
+    ),
+    rule!(
+        "novel_worldview_entries",
+        "core",
+        "all",
+        614,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "novel_entity_refs",
+        "core",
+        "all",
+        618,
+        &["novel_characters", "novel_worldview_entries", "novel_chapters"],
+        true
+    ),
+    rule!(
+        "game_project_facts",
+        "core",
+        "all",
+        630,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "game_assets",
+        "core",
+        "all",
+        632,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "game_builds",
+        "core",
+        "all",
+        634,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "game_tests",
+        "core",
+        "all",
+        636,
+        &["workspace_projects", "game_builds"],
+        true
+    ),
+    rule!(
+        "comic_episodes",
+        "core",
+        "all",
+        650,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "comic_shots",
+        "core",
+        "all",
+        652,
+        &["comic_episodes"],
+        true
+    ),
+    rule!(
+        "comic_characters",
+        "core",
+        "all",
+        654,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "comic_scenes",
+        "core",
+        "all",
+        656,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "comic_media_versions",
+        "core",
+        "all",
+        660,
+        &["comic_shots", "comic_characters", "comic_scenes"],
+        true
+    ),
+    rule!(
+        "general_milestones",
+        "core",
+        "all",
+        680,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "general_materials",
+        "core",
+        "all",
+        682,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "dws_task_links",
+        "core",
+        "all",
+        700,
+        &["workspace_projects", "dev_projects"],
+        true
+    ),
+    // 探测快照是本机瞬时事实（分支 / dirty / worktree），跨机恢复无意义，
+    // 但仍在 registry 中登记以满足 schema 覆盖测试。
+    rule!("dws_workspace_probes", "devwork", "all", 702, &[], true),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {

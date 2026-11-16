@@ -22,13 +22,30 @@ fn protected_dirs(app: &AppHandle) -> Vec<PathBuf> {
 }
 
 #[tauri::command]
-pub fn fs_list_dir(path: String, show_hidden: bool, offset: Option<usize>) -> AppResult<fw::DirListing> {
-    fw::list_dir(&fw::validate_abs_path(&path)?, show_hidden, offset.unwrap_or(0))
+pub async fn fs_list_dir(
+    app: AppHandle,
+    path: String,
+    show_hidden: bool,
+    offset: Option<usize>,
+) -> AppResult<fw::DirListing> {
+    let path = fw::validate_abs_path(&path)?;
+    // 只读命令同样要过受保护目录边界：目录列举会暴露应用数据目录里的
+    // 数据库文件名、备份与 TLS 私钥目录结构，不能因为「不写文件」就放开。
+    fw::ensure_not_protected(&path, &protected_dirs(&app))?;
+    let offset = offset.unwrap_or(0).min(fw::MAX_LIST_OFFSET);
+    // 目录 IO 可能落在慢速/网络盘上：放到阻塞线程，避免占住 IPC 线程。
+    tauri::async_runtime::spawn_blocking(move || fw::list_dir(&path, show_hidden, offset))
+        .await
+        .map_err(|e| AppError::Agent(format!("列目录任务失败: {e}")))?
 }
 
 #[tauri::command]
-pub fn fs_dir_signature(path: String) -> AppResult<fw::DirSignature> {
-    Ok(fw::dir_signature(&fw::validate_abs_path(&path)?))
+pub async fn fs_dir_signature(app: AppHandle, path: String) -> AppResult<fw::DirSignature> {
+    let path = fw::validate_abs_path(&path)?;
+    fw::ensure_not_protected(&path, &protected_dirs(&app))?;
+    tauri::async_runtime::spawn_blocking(move || fw::dir_signature(&path))
+        .await
+        .map_err(|e| AppError::Agent(format!("目录签名任务失败: {e}")))
 }
 
 #[tauri::command]
@@ -184,14 +201,25 @@ fn emit_op_diagnostics(
 }
 
 #[tauri::command]
-pub fn fs_stat(paths: Vec<String>) -> AppResult<Vec<fw::FsStat>> {
+pub async fn fs_stat(app: AppHandle, paths: Vec<String>) -> AppResult<Vec<fw::FsStat>> {
     if paths.len() > fw::MAX_OP_PATHS {
         return Err(AppError::Validation(format!(
             "单批最多 {} 项",
             fw::MAX_OP_PATHS
         )));
     }
-    Ok(paths.iter().map(|p| fw::stat_path(p)).collect())
+    let protected = protected_dirs(&app);
+    tauri::async_runtime::spawn_blocking(move || -> AppResult<Vec<fw::FsStat>> {
+        let mut out = Vec::with_capacity(paths.len());
+        for raw in paths {
+            let path = fw::validate_abs_path(&raw)?;
+            fw::ensure_not_protected(&path, &protected)?;
+            out.push(fw::stat_path(&path.to_string_lossy()));
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("读取属性任务失败: {e}")))?
 }
 
 /// 用系统默认程序打开文件/目录（opener 插件；路径先过本地路径校验）。
@@ -207,9 +235,10 @@ pub fn fs_open(app: AppHandle, path: String) -> AppResult<()> {
 
 /// 在资源管理器中定位（explorer /select）；目录直接打开目录本身。
 #[tauri::command]
-pub fn fs_reveal(path: String) -> AppResult<()> {
+pub fn fs_reveal(app: AppHandle, path: String) -> AppResult<()> {
     use std::os::windows::process::CommandExt;
     let target = crate::navigation::validate_local_path(&path)?;
+    fw::ensure_not_protected(&target, &protected_dirs(&app))?;
     if target.is_dir() {
         std::process::Command::new("explorer.exe")
             .arg(target.as_os_str())
@@ -227,8 +256,9 @@ pub fn fs_reveal(path: String) -> AppResult<()> {
 /// 缩略图（PNG data URL）；无处理器/失败返回 None（前端回落类型图标，不伪造占位成功）。
 /// 并发上限与 LRU 缓存都在核心层（信号量 4 / 缓存 256）。
 #[tauri::command]
-pub async fn fs_thumbnail(path: String, max_px: u32) -> AppResult<Option<String>> {
+pub async fn fs_thumbnail(app: AppHandle, path: String, max_px: u32) -> AppResult<Option<String>> {
     let path = fw::validate_abs_path(&path)?;
+    fw::ensure_not_protected(&path, &protected_dirs(&app))?;
     match fw::thumbnail::thumbnail_png(path, max_px).await {
         Some(bytes) => Ok(Some(format!(
             "data:image/png;base64,{}",

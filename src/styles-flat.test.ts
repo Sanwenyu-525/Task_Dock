@@ -179,6 +179,7 @@ describe("窄窗任务页回退", () => {
     const panel = singleBody(tasksWorkspaceCss, ".tasks-panel.tasks-workspace-layout");
     expect(panel).toContain("container-type: inline-size");
     expect(tasksWorkspaceCss).toContain("@container (max-width: 520px)");
+    expect(tasksWorkspaceCss).toContain("@media (max-width: 640px)");
     expect(tasksWorkspaceCss).toContain("grid-template-columns: minmax(0, 1fr)");
   });
 });

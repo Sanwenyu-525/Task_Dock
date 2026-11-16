@@ -7,7 +7,7 @@
 
   .diag-center .diag-body {
     display: grid;
-    grid-template-columns: 228px minmax(0, 1fr);
+    grid-template-columns: 228px minmax(0, 1fr) minmax(280px, 330px);
     align-items: start;
     gap: 10px 12px;
     padding-right: 4px;
@@ -27,6 +27,78 @@
     max-height: calc(100vh - 180px);
     overflow: auto;
     padding-right: 2px;
+  }
+
+  /* 外壳已提供页面详情宿主时，详情投送到右栏；正文只保留筛选 + 列表两列，
+     避免自建检查器与通用上下文栏并排形成第四列。 */
+  .diag-center .diag-body.has-detail-host {
+    grid-template-columns: 228px minmax(0, 1fr);
+  }
+
+  /* 选中事件进入常驻检查器：列表只负责定位，完整字段、操作链和复制动作
+     在右侧完成，避免在行内展开后把下一条事件推离视口。 */
+  .diag-center .diag-body > .diag-center-inspector {
+    grid-column: 3;
+    grid-row: 1 / span 12;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 240px;
+    max-height: calc(100vh - 180px);
+    overflow: auto;
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md, 8px);
+    background: var(--surface-2);
+  }
+
+  .diag-center-inspector-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .diag-center-inspector-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--text-primary);
+  }
+
+  .diag-center-inspector-empty {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 4px 2px;
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+
+  .diag-center-inspector .diag-center-details {
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 8px;
+    padding: 0;
+    border-top: 0;
+  }
+
+  .diag-center-inspector .diag-center-detail,
+  .diag-center-inspector .diag-center-detail-wide {
+    flex: 1 1 100%;
+  }
+
+  .diag-center-row.is-selected {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+
+  .diag-center-row.is-selected:hover {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
   }
 
   .diag-center .diag-body.is-chain {
@@ -66,6 +138,20 @@
   .diag-center .diag-body > .diag-center-list,
   .diag-center .diag-body > .diag-center-chain {
     min-height: 0;
+  }
+
+  @container wb-content (max-width: 1080px) {
+    .diag-center .diag-body {
+      grid-template-columns: 228px minmax(0, 1fr);
+    }
+
+    .diag-center .diag-body > .diag-center-inspector {
+      grid-column: 1 / -1;
+      grid-row: auto;
+      position: static;
+      max-height: none;
+      overflow: visible;
+    }
   }
 
   @container wb-content (max-width: 900px) {

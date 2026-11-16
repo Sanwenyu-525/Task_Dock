@@ -28,6 +28,7 @@ import { PressableScale } from "../components/PressableScale";
 import { SearchField } from "../components/SearchField";
 import { SectionHeader } from "../components/SectionHeader";
 import { SegmentedControl } from "../components/SegmentedControl";
+import { GripDots } from "../components/entry/GripDots";
 import { useToast } from "../feedback/ToastProvider";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { moveEntryByIndex, mergeEntryOrder } from "../lib/entryLayout";
@@ -873,7 +874,7 @@ function DragHandle({
       hitSlop={{ top: 8, bottom: 8, left: 4, right: 6 }}
       style={[styles.handle, { backgroundColor: tokens.track, borderColor: tokens.cardBorder }]}
     >
-      <AppIcon name="more" color={tokens.muted} size={12} style={styles.handleIcon} />
+      <GripDots color={tokens.muted} dot={3} gap={3} />
     </View>
   );
 }
@@ -958,7 +959,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  handleIcon: { transform: [{ rotate: "90deg" }] },
   footer: { gap: space.xs, paddingTop: space.xs },
   resetPress: {},
   reset: {

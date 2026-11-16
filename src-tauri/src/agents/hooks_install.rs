@@ -728,17 +728,44 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
+/// Hook 命令参数里不允许出现的字符。
+///
+/// 同一串 `command` 会被不同宿主用不同解析器执行（cmd.exe / PowerShell /
+/// CreateProcess），这三者对下列字符的处理互不相同且无法用同一种转义同时满足：
+/// - cmd：`%VAR%` 在双引号内**仍然**展开；启用延迟展开时 `!VAR!` 同样展开；
+/// - PowerShell：双引号参数内的 `` ` `` 是转义符、`$` 会做变量/子表达式展开；
+/// - CR/LF/`\0`：三种解析器都会在此截断命令。
+/// Windows 文件名本身允许 `% ! $`，但在这条命令链路里无法安全表达，因此在安装前
+/// 显式拒绝并给出处置建议，而不是把它们原样拼进命令字符串。
+const HOOK_UNSAFE_CHARS: &[char] = &['"', '%', '!', '`', '$', '\r', '\n', '\0'];
+
+fn check_hook_arg(value: &str, what: &str) -> AppResult<()> {
+    if let Some(bad) = value
+        .chars()
+        .find(|c| HOOK_UNSAFE_CHARS.contains(c) || c.is_control())
+    {
+        return Err(AppError::Agent(format!(
+            "Hook 安装已拒绝：{what}包含无法在 Agent 命令字符串中安全表达的字符 {bad:?}（{value}）。\
+             请将 Task Dock 安装到不含 % ! $ ` 等字符的目录后重试。"
+        )));
+    }
+    Ok(())
+}
+
 /// Task Dock hook 命令行（写入各 Agent 配置的 command 字段）。
 /// 原生 CLI 单事件进程开销约 10ms（旧 PowerShell 脚本约 300ms+）。
 /// event 来自 Task Dock 的静态白名单事件表，不接收外部输入，无注入面。
-pub fn hook_command(exe: &Path, source_id: &str, event: &str) -> String {
-    format!(
+pub fn hook_command(exe: &Path, source_id: &str, event: &str) -> AppResult<String> {
+    check_hook_arg(&exe.to_string_lossy(), "可执行路径")?;
+    check_hook_arg(source_id, "source")?;
+    check_hook_arg(event, "event")?;
+    Ok(format!(
         "\"{}\" {} --source {} --event {}",
         exe.to_string_lossy(),
         MARKER,
         source_id,
         event
-    )
+    ))
 }
 
 /// Codex 专用 hook 命令行。
@@ -748,14 +775,17 @@ pub fn hook_command(exe: &Path, source_id: &str, event: &str) -> String {
 /// 导致 `hook: <Event> Failed`（0.165.0-alpha.1.2 实测）。
 /// `cmd /c call "<exe>" ...` 让 cmd 二次解析参数，带空格的安装路径也能正确执行，
 /// 且比 `powershell -Command` 少约 300ms 冷启动。
-pub fn codex_hook_command(exe: &Path, source_id: &str, event: &str) -> String {
-    format!(
+pub fn codex_hook_command(exe: &Path, source_id: &str, event: &str) -> AppResult<String> {
+    check_hook_arg(&exe.to_string_lossy(), "可执行路径")?;
+    check_hook_arg(source_id, "source")?;
+    check_hook_arg(event, "event")?;
+    Ok(format!(
         "cmd.exe /c call \"{}\" {} --source {} --event {}",
         exe.to_string_lossy(),
         MARKER,
         source_id,
         event
-    )
+    ))
 }
 
 /// Trae 专用 hook 命令行。
@@ -770,18 +800,21 @@ pub fn codex_hook_command(exe: &Path, source_id: &str, event: &str) -> String {
 /// `C:\Windows\System32\cmd.exe /c call "<exe>" ...` 三者都成立：cmd 二次解析参数、
 /// PowerShell 把无空格的绝对 cmd.exe 当命令、CreateProcess 也能解析首 token。
 /// 每个事件只多一层 cmd.exe（约 5ms），不引入 PowerShell 包装。
-pub fn trae_hook_command(exe: &Path, source_id: &str, event: &str) -> String {
+pub fn trae_hook_command(exe: &Path, source_id: &str, event: &str) -> AppResult<String> {
+    check_hook_arg(&exe.to_string_lossy(), "可执行路径")?;
+    check_hook_arg(source_id, "source")?;
+    check_hook_arg(event, "event")?;
     let shell = std::env::var("SystemRoot")
         .map(|r| format!("{}\\System32\\cmd.exe", r))
         .unwrap_or_else(|_| "cmd.exe".to_string());
-    format!(
+    Ok(format!(
         "{} /c call \"{}\" {} --source {} --event {}",
         shell,
         exe.to_string_lossy(),
         MARKER,
         source_id,
         event
-    )
+    ))
 }
 
 /// 旧版 PowerShell 脚本路径（仅用于卸载清理与兼容检测）。
@@ -816,7 +849,7 @@ mod tests {
         // Codex 在 Windows 上把 command 交给 cmd 且不剥离引号：
         // 命令不能以 `"` 开头，否则 cmd 会把引号当成路径的一部分（实测 hook: <Event> Failed）。
         let exe = PathBuf::from(r"C:\Program Files\Task Dock\task-dock.exe");
-        let cmd = codex_hook_command(&exe, "codex", "Stop");
+        let cmd = codex_hook_command(&exe, "codex", "Stop").unwrap();
         assert!(cmd.starts_with("cmd.exe /c call \""), "{}", cmd);
         assert!(cmd.contains("--agent-hook --source codex --event Stop"));
         assert!(!cmd.trim_start().starts_with('"'), "命令不得以引号开头");
@@ -825,7 +858,7 @@ mod tests {
     #[test]
     fn generic_hook_command_keeps_claude_compatible_form() {
         let exe = PathBuf::from(r"C:\Program Files\Task Dock\task-dock.exe");
-        let cmd = hook_command(&exe, "workbuddy", "Stop");
+        let cmd = hook_command(&exe, "workbuddy", "Stop").unwrap();
         assert_eq!(
             cmd,
             r#""C:\Program Files\Task Dock\task-dock.exe" --agent-hook --source workbuddy --event Stop"#
@@ -1118,7 +1151,7 @@ mod tests {
         let target = dir.join("task-dock.exe");
         std::fs::copy(&bin, &target).unwrap();
 
-        let cmd = trae_hook_command(&target, "trae", "SessionStart");
+        let cmd = trae_hook_command(&target, "trae", "SessionStart").unwrap();
         assert!(cmd.contains("/c call \""), "{}", cmd);
         assert!(!cmd.trim_start().starts_with('"'), "不得以引号开头");
 
@@ -1149,5 +1182,40 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn hook_command_rejects_shell_metacharacters_in_exe_path() {
+        // cmd 的 `%VAR%`/延迟展开 `!`、PowerShell 双引号内的 `` ` ``/`$`：
+        // 这些字符无法在三种宿主解析器里同时安全表达，必须在生成命令前拒绝。
+        for bad in [
+            r"C:\%TEMP%\task-dock.exe",
+            r"C:\a!b\task-dock.exe",
+            r"C:\$x\task-dock.exe",
+            "C:\\a`b\\task-dock.exe",
+            "C:\\a\nb\\task-dock.exe",
+        ] {
+            let exe = PathBuf::from(bad);
+            assert!(hook_command(&exe, "claude", "Stop").is_err(), "{bad}");
+            assert!(codex_hook_command(&exe, "codex", "Stop").is_err(), "{bad}");
+            assert!(trae_hook_command(&exe, "trae", "Stop").is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn hook_command_accepts_chinese_and_space_paths() {
+        // 合法但「不寻常」的路径必须继续可用：中文、空格、圆括号。
+        let exe = PathBuf::from(r"C:\Program Files\任务 坞 (x86)\task-dock.exe");
+        let cmd = hook_command(&exe, "claude", "Stop").unwrap();
+        assert!(cmd.starts_with('"'), "{cmd}");
+        assert!(cmd.contains(r"C:\Program Files\任务 坞 (x86)\task-dock.exe"), "{cmd}");
+        let cmd = codex_hook_command(&exe, "codex", "Stop").unwrap();
+        assert!(
+            cmd.contains(r#"call "C:\Program Files\任务 坞 (x86)\task-dock.exe""#),
+            "{cmd}"
+        );
+        let cmd = trae_hook_command(&exe, "trae", "Stop").unwrap();
+        assert!(cmd.contains("/c call \""), "{cmd}");
+        assert!(cmd.contains("--agent-hook --source trae --event Stop"), "{cmd}");
     }
 }

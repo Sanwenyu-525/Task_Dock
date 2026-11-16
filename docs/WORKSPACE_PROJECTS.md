@@ -325,3 +325,42 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 - 跨卷拖拽移动（B1 只支持同卷内上下移与新建时指定卷）；
 - 原生窗口逐页走查（自动化与组件测试已覆盖树读取、正文回填、失焦保存与归档只读）。
 
+### 11.5 第三轮关闭/退出与删除安全（2026-11-16）
+
+- **工作台关闭握手**：新增 `workbenchCloseGuard.ts`，通过 Tauri
+  `window.onCloseRequested` 在事件回调内**同步** `preventDefault()`，再 await 工作台已注册的
+  正文 `workspaceLeaveGuardRef`；成功置 `allowClose` 后调用 `window.close()`，失败保持窗口、
+  保留草稿并 Toast。无正文守卫直接放行；重复关闭只执行一轮 flush；监听安装失败会显示
+  “工作台关闭保护未启用”，不再静默。
+- **应用退出握手**：Rust `exit_handshake.rs` 提供 requestId 状态机（begin/complete/cancel/wait，
+  25ms 轮询、5 秒超时、只接受首个匹配回执）；`lib.rs` 的 `request_exit()` 在
+  `agents::shutdown_signal::begin()` **之前** `emit app-before-exit` 并 await 回执。失败/超时会
+  回滚 `EXIT_REQUESTED`/`EXIT_READY`、emit `app-exit-blocked` 并直接返回，应用保持可用；
+  托盘退出、`quit_app`、`RunEvent::ExitRequested` 统一走该路径。前端
+  `createAppExitHandler` 复用同一个正文守卫，保存失败回执 false，同 requestId 只处理一次。
+- **删除与自动保存协调**：删除统一走 `DeleteTarget` + 现有 Dialog；当前章属于删除目标时，
+  “保存后删除”先 await `flush`（含在途请求与最新补交），失败保留对话框与草稿；“丢弃草稿并
+  删除”先 `clearTimer()`、置空选择、`settleInFlight()` 等已发请求结束，再删除。删除 IPC 失败
+  恢复选择并显示错误；成功后清理选择/草稿/保存状态并递增 `chapterTokenRef`，旧请求不能写新
+  界面。`deleteBusyRef` 防重复点击。
+- **删除确认信息**：章节显示名称、本章字数、未保存草稿有/无、不可恢复；卷显示卷名、实际章节
+  数、正文总字数、是否正在编辑该卷、未保存草稿有/无、级联删除全部章节与正文。按钮为取消 /
+  保存后删除 / 必要时“丢弃草稿并删除”。
+- **项目切换防线**：`NovelManuscriptPanel` 的 projectId effect 改为 async：先 await flush，
+  失败提示“项目切换已取消：正文尚未保存，已保留当前草稿”并保留旧项目状态；成功才清空并
+  `loadTree()`；`projectChangeTokenRef` 防旧结果写新项目。`WorkbenchShell.selectProject` 捕获
+  守卫抛错并用 `workbench.projectSwitchSaveFailed` 提示后取消切换。
+- **测试**：新增 `WorkbenchShell.selectGuard.test.tsx` 改为**真实 WorkbenchShell + 真实
+  ProjectWorkspacePanel + 真实 NovelManuscriptPanel**（项目数据 hook 用 mock），覆盖脏稿等待、
+  保存失败保留、无脏稿放行、快速两次选择；新增 closeGuard 5 项、exitGuard 6 项；正文组件
+  扩到 21 项。Rust 新增 `exit_handshake` 5 项；既有 `novel` 6 项回归全部通过。前端四文件
+  36/36；B1 改动后 `tsc --noEmit` 与 `npm run build` 曾 exit 0，最终全工程 `tsc` 被其他任务
+  未完成的 `ActionCenterPanel.tsx` JSX 语法错误阻塞（3 个错误，非本轮文件；见验收报告）。
+- **未新增 v59**：删除级联、归档写入门禁、跨项目卷门禁均由 v58 外键 + 既有
+  `ensure_novel_project` 覆盖，没有重建旧表。
+
+**明确限制**：工作台关闭门禁仍只在前端 `onCloseRequested` 层实现，Rust
+`project_workspace_window.rs` 的 `CloseRequested` 不 `prevent_close`；监听未安装或 WebView
+无响应时无法保证保存。系统强杀/断电不执行退出握手。应用退出失败只取消退出并提示，未提供
+“强制退出（明确丢弃正文）”按钮；用户需先处理保存错误后重新退出。
+

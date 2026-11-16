@@ -121,3 +121,25 @@
     grid-row: 3;
   }
 }
+
+/* 容器查询不能改容器自身：主窗 400px 时父级视口才是可靠回退点。
+   工作台 944px 不命中，仍保留上面的两列布局。 */
+@media (max-width: 640px) {
+  .tasks-panel.tasks-workspace-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+  .tasks-panel.tasks-workspace-layout > .tasks-head {
+    grid-column: 1;
+    grid-row: 2;
+    max-height: 42vh;
+  }
+  .tasks-panel.tasks-workspace-layout > .active-reminders {
+    grid-column: 1;
+    grid-row: 4;
+  }
+  .tasks-panel.tasks-workspace-layout > .task-list {
+    grid-column: 1;
+    grid-row: 3;
+  }
+}

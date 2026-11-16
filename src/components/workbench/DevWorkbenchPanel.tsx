@@ -294,9 +294,6 @@ export default function DevWorkbenchPanel() {
               </div>
               <p className="endpoint-hint">{t("workbench.quickActionsHint")}</p>
               <div className="wb-quick-grid">
-                <button type="button" className="btn sm" onClick={openQuickCapture}>
-                  {t("workbench.quickCapture")}
-                </button>
                 <button type="button" className="btn sm" onClick={() => setTabSafe("tasks")}>
                   {t("nav.tasks")}
                 </button>
@@ -1072,7 +1069,7 @@ function WorkSiteSection({
       {!currentId ? (
         <div className="endpoint-hint">{t("workbench.workSiteNoTask")}</div>
       ) : snaps.length === 0 ? (
-        <div className="endpoint-hint">{t("workbench.workSiteEmpty")}</div>
+        <div className="endpoint-hint">{t("workbench.noSnapshots")}</div>
       ) : (
         <div className="wb-worksite-grid">
           {snaps.map((snap) => {

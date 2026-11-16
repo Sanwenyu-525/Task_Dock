@@ -18,8 +18,35 @@
 
 import type { WorkspaceKind } from "../lib/bridge";
 
-/** 工作空间模块 ID：页面路由单位，Profile 决定顺序与标题。 */
-export type WorkspaceModuleId = "overview" | "manuscript" | "items" | "links" | "settings";
+/**
+ * 工作空间模块 ID：页面路由单位，Profile 决定顺序与标题。
+ *
+ * 2026-11-16（创作工作台五线）：在原有 5 个通用模块之外，专业工作台各自追加
+ * 自己的生产流程模块（人物 / 世界观 / 资源 / 构建 / 剧集 / 分镜 / 里程碑 / 资料 /
+ * Git / Agent）。同一 ID 可被不同类型复用（如 `assets` 在游戏与漫剧各表其义），
+ * 因为模块注册表按 `kind` 分桶（见 `src/workbench/creative/moduleRegistry.ts`）。
+ */
+export type WorkspaceModuleId =
+  | "overview"
+  | "manuscript"
+  | "items"
+  | "links"
+  | "settings"
+  // 小说 B2
+  | "characters"
+  | "worldview"
+  // 游戏 G1
+  | "assets"
+  | "builds"
+  // 漫剧 C1
+  | "episodes"
+  | "shots"
+  // 通用 U1
+  | "milestones"
+  | "materials"
+  // 开发 D1
+  | "git"
+  | "agents";
 
 /** 稳定能力 ID（跨版本不可改名；新增能力只能追加）。 */
 export type WorkspaceCapabilityId =
@@ -42,7 +69,21 @@ export type WorkspaceCapabilityId =
   | "novel.manuscript"
   | "novel.characters"
   | "novel.worldview"
-  | "novel.aiAssist";
+  | "novel.aiAssist"
+  // 创作工作台五线（2026-11-16）追加的专业能力
+  | "game.projectDetect"
+  | "game.test"
+  | "comic.scripts"
+  | "comic.review"
+  | "general.templates"
+  | "general.milestones"
+  | "general.materials"
+  | "general.delivery"
+  | "dev.gitRisk"
+  | "dev.taskHandoff"
+  | "dev.buildTrace"
+  // 跨媒介预留：本轮只登记，不做实现，永远不得渲染可点击入口
+  | "core.mediaLink";
 
 /**
  * 能力实现状态（四态，互斥）：
@@ -245,6 +286,107 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     provider: "未接入（没有小说上下文装配与调用链）",
     fallback: "不显示生成/续写按钮；AI 辅助在后续阶段单独设计与授权",
   },
+  // ── 创作工作台五线（2026-11-16）─────────────────────────────────────────
+  // 状态规则不变：模块真正渲染出可操作入口、且有测试证据，才允许从 planned
+  // 升级为 available / limited；集成负责人按各线交付证据逐项改，禁止提前宣称可用。
+  "game.projectDetect": {
+    id: "game.projectDetect",
+    label: "游戏引擎识别",
+    summary: "按真实文件特征识别 Unity / Unreal / Godot / 自定义项目，失败可手动指定。",
+    state: "planned",
+    provider: "未接入（游戏线开发中）",
+    condition: "项目已设置根目录",
+    fallback: "识别不出时显示「未知」并提供手动指定，不猜测引擎类型",
+  },
+  "game.test": {
+    id: "game.test",
+    label: "测试记录",
+    summary: "登记测试轮次、范围、结果与缺陷，关联构建记录。",
+    state: "planned",
+    provider: "未接入（游戏线开发中）",
+    fallback: "不显示测试录入入口",
+  },
+  "comic.scripts": {
+    id: "comic.scripts",
+    label: "剧本",
+    summary: "按集保存剧本正文与剧情简介。",
+    state: "planned",
+    provider: "未接入（漫剧线开发中）",
+    fallback: "不显示剧集剧本编辑入口",
+  },
+  "comic.review": {
+    id: "comic.review",
+    label: "产物审核",
+    summary: "导入本地素材、标记候选/采用版本、记录修改意见。",
+    state: "planned",
+    provider: "未接入（漫剧线开发中）",
+    fallback: "不显示素材导入与采用入口",
+  },
+  "general.templates": {
+    id: "general.templates",
+    label: "项目模板",
+    summary: "学习计划 / 个人计划 / 内容制作 / 活动筹备 / 研究项目等模板一次初始化。",
+    state: "planned",
+    provider: "未接入（通用线开发中）",
+    fallback: "不显示模板选择入口",
+  },
+  "general.milestones": {
+    id: "general.milestones",
+    label: "阶段与里程碑",
+    summary: "项目阶段、里程碑目标日期、完成情况与进度汇总。",
+    state: "planned",
+    provider: "未接入（通用线开发中）",
+    fallback: "不显示里程碑编辑入口",
+  },
+  "general.materials": {
+    id: "general.materials",
+    label: "项目资料",
+    summary: "把文件、文件夹、链接、笔记关联到项目，只存引用不复制原文件。",
+    state: "planned",
+    provider: "未接入（通用线开发中）",
+    fallback: "不显示资料关联入口",
+  },
+  "general.delivery": {
+    id: "general.delivery",
+    label: "交付物",
+    summary: "交付物清单与完成状态，统计来自真实数据。",
+    state: "planned",
+    provider: "未接入（通用线开发中）",
+    fallback: "交付物指标显示 0，不填充示例数据",
+  },
+  "dev.gitRisk": {
+    id: "dev.gitRisk",
+    label: "Git / Worktree 风险",
+    summary: "只读探测分支、dirty、worktree 与多任务文件重叠风险。",
+    state: "planned",
+    provider: "未接入（开发线开发中）",
+    condition: "开发项目根目录是 Git 仓库",
+    fallback: "非 Git 目录只显示登记状态；发现冲突只提示，不自动 reset/stash/clean",
+  },
+  "dev.taskHandoff": {
+    id: "dev.taskHandoff",
+    label: "Agent 任务接续",
+    summary: "关联交接包、Agent 会话与执行记录，展示待验收/失败原因。",
+    state: "planned",
+    provider: "未接入（开发线开发中）",
+    fallback: "Agent 自述完成不等于验收通过，结论只取 dev_acceptance_records",
+  },
+  "dev.buildTrace": {
+    id: "dev.buildTrace",
+    label: "构建与验收追溯",
+    summary: "把开发任务关联到既有 buildId / commit / 测试与验收记录。",
+    state: "planned",
+    provider: "未接入（开发线开发中）",
+    fallback: "复用既有集成台账只读展示，不创建第二套构建队列",
+  },
+  "core.mediaLink": {
+    id: "core.mediaLink",
+    label: "跨媒介引用（预留）",
+    summary: "原始 IP 与改编实体之间的引用关系（小说人物 ↔ 漫剧角色 ↔ 游戏角色）。",
+    state: "planned",
+    provider: "本轮只预留稳定 ID 与数据所有权边界，未接入引用编辑器",
+    fallback: "不显示任何跨媒介关联入口；修改源设定不会自动覆盖媒介改编数据",
+  },
 };
 
 /** 首页卡片形态：决定渲染哪些真实数据，避免每个类型复制一套页面。 */
@@ -297,6 +439,10 @@ export interface WorkspaceProfile {
 const DEV_MODULES: WorkspaceModule[] = [
   { id: "overview", label: "概览" },
   { id: "items", label: "开发事项" },
+  // D1：开发项目关联 / Git 风险 / Agent 接续 / 构建验收追溯
+  { id: "git", label: "仓库与风险" },
+  { id: "agents", label: "Agent 接续" },
+  { id: "builds", label: "构建与验收" },
   { id: "links", label: "任务关联" },
   { id: "settings", label: "设置" },
 ];
@@ -304,28 +450,40 @@ const DEV_MODULES: WorkspaceModule[] = [
 const GAME_MODULES: WorkspaceModule[] = [
   { id: "overview", label: "概览" },
   { id: "items", label: "制作事项" },
+  // G1：资源关联与构建/测试记录
+  { id: "assets", label: "游戏资源" },
+  { id: "builds", label: "构建与测试" },
   { id: "links", label: "任务关联" },
   { id: "settings", label: "设置" },
 ];
 
 const COMIC_MODULES: WorkspaceModule[] = [
   { id: "overview", label: "概览" },
-  { id: "items", label: "剧集与镜头" },
+  // C1：剧集（剧本）→ 分镜 → 角色与场景 → 素材与产物版本
+  { id: "episodes", label: "剧集" },
+  { id: "shots", label: "分镜" },
+  { id: "characters", label: "角色与场景" },
+  { id: "assets", label: "素材与产物" },
   { id: "links", label: "任务关联" },
   { id: "settings", label: "设置" },
 ];
 
 const GENERAL_MODULES: WorkspaceModule[] = [
   { id: "overview", label: "概览" },
+  // U1：阶段/里程碑（含进度与交付）→ 项目资料 → 事项
+  { id: "milestones", label: "阶段与里程碑" },
+  { id: "materials", label: "项目资料" },
   { id: "items", label: "事项" },
   { id: "links", label: "任务关联" },
   { id: "settings", label: "设置" },
 ];
 
-/** 小说项目（B1）：在既有模块之外增加独立「正文」模块（卷 → 章两级）。 */
+/** 小说项目（B1 + B2）：正文 → 人物 → 世界观 → 写作事项。 */
 const NOVEL_MODULES: WorkspaceModule[] = [
   { id: "overview", label: "概览" },
   { id: "manuscript", label: "正文" },
+  { id: "characters", label: "人物" },
+  { id: "worldview", label: "世界观" },
   { id: "items", label: "写作事项" },
   { id: "links", label: "任务关联" },
   { id: "settings", label: "项目设置" },
@@ -355,6 +513,9 @@ export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
       "dev.git",
       "dev.agents",
       "dev.acceptance",
+      "dev.gitRisk",
+      "dev.taskHandoff",
+      "dev.buildTrace",
     ],
     recommendedTools: ["在开发工作台打开", "打开开发项目根目录"],
   },
@@ -371,7 +532,17 @@ export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
       { id: "game-assets", title: "资源关联", body: "assets", capability: "game.assets" },
       { id: "game-links", title: "关联任务", body: "links", capability: "core.taskLinks" },
     ],
-    capabilities: ["core.project", "core.items", "core.taskLinks", "core.layout", "game.items", "game.assets", "game.build"],
+    capabilities: [
+      "core.project",
+      "core.items",
+      "core.taskLinks",
+      "core.layout",
+      "game.items",
+      "game.assets",
+      "game.build",
+      "game.projectDetect",
+      "game.test",
+    ],
     recommendedTools: ["用阶段字段记录关卡/系统制作进度"],
   },
   ai_comic: {
@@ -398,6 +569,8 @@ export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
       "comic.characters",
       "comic.assets",
       "comic.generate",
+      "comic.scripts",
+      "comic.review",
     ],
     recommendedTools: ["用事项阶段 episode / shot 记录剧集与镜头"],
   },
@@ -450,7 +623,16 @@ export const WORKSPACE_PROFILES: Record<WorkspaceKind, WorkspaceProfile> = {
       { id: "general-items", title: "事项进度", body: "items", capability: "core.items" },
       { id: "general-links", title: "关联任务", body: "links", capability: "core.taskLinks" },
     ],
-    capabilities: ["core.project", "core.items", "core.taskLinks", "core.layout"],
+    capabilities: [
+      "core.project",
+      "core.items",
+      "core.taskLinks",
+      "core.layout",
+      "general.templates",
+      "general.milestones",
+      "general.materials",
+      "general.delivery",
+    ],
     recommendedTools: [],
   },
 };
@@ -520,7 +702,17 @@ function isModuleId(value: unknown): value is WorkspaceModuleId {
     value === "manuscript" ||
     value === "items" ||
     value === "links" ||
-    value === "settings"
+    value === "settings" ||
+    value === "characters" ||
+    value === "worldview" ||
+    value === "assets" ||
+    value === "builds" ||
+    value === "episodes" ||
+    value === "shots" ||
+    value === "milestones" ||
+    value === "materials" ||
+    value === "git" ||
+    value === "agents"
   );
 }
 

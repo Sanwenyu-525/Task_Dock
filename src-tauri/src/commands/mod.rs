@@ -12,6 +12,13 @@ pub mod context;
 pub mod diagnostics;
 pub mod data;
 pub mod dev_workbench;
+// 创作工作台五线专业后端（v59–v63，2026-11-16）：各线独占自己的文件，
+// 本清单与 `lib.rs` 的命令注册、`db/mod.rs` 的迁移追加由集成负责人统一维护。
+pub mod comic_workspace;
+pub mod development_workspace;
+pub mod game_workspace;
+pub mod general_workspace;
+pub mod novel_workspace;
 pub mod dragdrop;
 pub mod duplicate_delete;
 pub mod file_workspace;

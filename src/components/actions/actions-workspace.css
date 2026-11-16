@@ -9,6 +9,260 @@
     min-height: 0;
   }
 
+  /* R5：行动中心内部再做「当前队列 + 常驻详情 + 全宽执行记录」。
+     外层 WorkspaceSplit 继续承担分类筛选，不重复造第二套侧栏。 */
+  .action-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(290px, 330px);
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 10px 12px;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .action-center {
+    grid-column: 1;
+    grid-row: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  /* 外壳详情宿主可用时，动作详情投送到右栏；正文只保留动作队列 + 全宽执行记录，
+     不自建第二个右栏与通用上下文并排。 */
+  .action-workspace.has-detail-host {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .action-workspace.has-detail-host .action-center {
+    grid-column: 1;
+  }
+
+  .action-inspector {
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    min-width: 0;
+    max-height: calc(100vh - 180px);
+    overflow: auto;
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md, 8px);
+    background: var(--surface-2);
+  }
+
+  .action-inspector-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    min-width: 0;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .action-inspector-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  .action-inspector-state {
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    font-size: 9px;
+    color: var(--text-secondary);
+  }
+
+  .action-inspector-state.is-acked {
+    color: var(--status-success);
+    border-color: color-mix(in srgb, var(--status-success) 35%, transparent);
+  }
+
+  .action-inspector-message {
+    max-height: 98px;
+    overflow: auto;
+    padding: 7px 8px;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    background: color-mix(in srgb, var(--accent) 5%, transparent);
+    font-size: 10.5px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+  }
+
+  .action-inspector-facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px 10px;
+    margin: 0;
+  }
+
+  .action-inspector-facts > div {
+    min-width: 0;
+  }
+
+  .action-inspector-facts dt {
+    font-size: 9px;
+    color: var(--text-muted);
+  }
+
+  .action-inspector-facts dd {
+    margin: 1px 0 0;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--text-primary);
+  }
+
+  .action-inspector-mono {
+    font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
+    font-size: 9.5px !important;
+  }
+
+  .action-inspector-ellipsis {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .action-inspector-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding-top: 7px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .action-inspector-empty {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    color: var(--text-secondary);
+  }
+
+  .action-inspector-empty span {
+    font-size: 11px;
+    color: var(--text-primary);
+  }
+
+  .action-inspector-empty p {
+    margin: 0;
+    font-size: 10px;
+    line-height: 1.55;
+  }
+
+  .action-item.is-selected {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface-2));
+  }
+
+  .action-runtime {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding: 9px 11px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md, 8px);
+    background: var(--surface-2);
+  }
+
+  .action-runtime-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  .action-runtime-head h2 {
+    margin: 0;
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    color: var(--text-primary);
+  }
+
+  .action-runtime-head span {
+    font-size: 9.5px;
+    color: var(--text-muted);
+  }
+
+  .action-runtime-track {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 14px;
+    min-width: 0;
+  }
+
+  .action-runtime-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 150px;
+    max-width: 100%;
+    font-size: 9.5px;
+    color: var(--text-secondary);
+  }
+
+  .action-runtime-item.is-selected {
+    color: var(--text-primary);
+  }
+
+  .action-runtime-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--status-warning);
+  }
+
+  .action-runtime-item.kind-failed .action-runtime-dot,
+  .action-runtime-item.kind-disconnected .action-runtime-dot {
+    background: var(--status-error);
+  }
+
+  .action-runtime-item.kind-completed .action-runtime-dot {
+    background: var(--status-success);
+  }
+
+  .action-runtime-item.kind-running .action-runtime-dot {
+    background: var(--accent);
+  }
+
+  .action-runtime-item strong {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .action-runtime-mono {
+    font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
+    font-size: 9px;
+    color: var(--text-muted);
+  }
+
+  .action-runtime-state {
+    margin-left: auto;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-secondary) 8%, transparent);
+    font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
+    font-size: 8.5px;
+    text-transform: uppercase;
+  }
+
+  .action-runtime-note {
+    margin: 0;
+    font-size: 9px;
+    color: var(--text-muted);
+  }
+
   .action-rail {
     display: flex;
     flex-direction: column;
@@ -113,9 +367,34 @@
     min-height: 0;
   }
 
-  .action-main > .action-body {
+  .action-center > .action-body {
     flex: 1 1 auto;
     min-height: 0;
+  }
+
+  @container wb-content (max-width: 900px) {
+    .action-workspace {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto;
+    }
+
+    .action-center {
+      grid-column: 1;
+      grid-row: 1;
+    }
+
+    .action-inspector {
+      grid-column: 1;
+      grid-row: 2;
+      position: static;
+      max-height: none;
+      overflow: visible;
+    }
+
+    .action-runtime {
+      grid-column: 1;
+      grid-row: 3;
+    }
   }
 
   @container wb-content (max-width: 760px) {

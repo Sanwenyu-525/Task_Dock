@@ -12,6 +12,13 @@ use std::sync::{Mutex, OnceLock};
 /// 缩略图最大边长（CSS 像素 × 2 供高分屏，仍保守）。
 pub const MAX_THUMB_PX: u32 = 256;
 const CACHE_MAX: usize = 256;
+/// 缓存字节预算：条目数之外的第二道闸门（256 条 × 数百 KB 会顶到几十 MB）。
+const CACHE_MAX_BYTES: usize = 48 * 1024 * 1024;
+/// 单张位图解码的像素上限（RGBA 峰值 = 像素 × 4）。Shell 处理器可能返回
+/// 比请求尺寸大得多的位图（`SIIGBF_BIGGERSIZEOK`），必须按真实宽高校验。
+const MAX_DECODE_PIXELS: u64 = 16_000_000;
+/// 单边上限：防畸形处理器返回极端长宽（例如 1 × 2_000_000）。
+const MAX_DECODE_EDGE: i32 = 16_384;
 const CONCURRENCY: usize = 4;
 
 static CACHE: OnceLock<Mutex<ThumbCache>> = OnceLock::new();
@@ -21,6 +28,8 @@ struct ThumbCache {
     map: HashMap<String, Vec<u8>>,
     /// 插入顺序（LRU 淘汰最旧）。
     order: Vec<String>,
+    /// 当前缓存字节数（与 map 同步维护）。
+    bytes: usize,
 }
 
 impl ThumbCache {
@@ -28,21 +37,38 @@ impl ThumbCache {
         Self {
             map: HashMap::new(),
             order: Vec::new(),
+            bytes: 0,
         }
     }
-    fn get(&self, key: &str) -> Option<Vec<u8>> {
-        self.map.get(key).cloned()
+    fn get(&mut self, key: &str) -> Option<Vec<u8>> {
+        let hit = self.map.get(key).cloned()?;
+        // 命中即提升为最新，避免热数据被冷数据挤掉。
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push(key.to_string());
+        Some(hit)
     }
     fn put(&mut self, key: String, bytes: Vec<u8>) {
         if self.map.contains_key(&key) {
             return;
         }
-        if self.order.len() >= CACHE_MAX {
+        let added = bytes.len();
+        // 单条就超预算：不缓存（返回给调用方即可），避免一条挤空整个缓存。
+        if added > CACHE_MAX_BYTES {
+            return;
+        }
+        while !self.order.is_empty()
+            && (self.order.len() >= CACHE_MAX || self.bytes + added > CACHE_MAX_BYTES)
+        {
             let oldest = self.order.remove(0);
-            self.map.remove(&oldest);
+            if let Some(old) = self.map.remove(&oldest) {
+                self.bytes = self.bytes.saturating_sub(old.len());
+            }
         }
         self.order.push(key.clone());
         self.map.insert(key, bytes);
+        self.bytes += added;
     }
 }
 
@@ -71,6 +97,9 @@ pub async fn preview_png(path: PathBuf, max_px: u32) -> Option<Vec<u8>> {
         return None;
     }
     let max_px = max_px.clamp(64, 1400);
+    // 与缩略图共用同一个解码信号量：快速预览是用户逐个触发的，但连续点开多张
+    // 图片时不能为每张都起一个无上限的阻塞任务（GDI 峰值内存会叠加）。
+    let _permit = semaphore().acquire().await.ok()?;
     tokio::task::spawn_blocking(move || shell_thumbnail(&path, max_px))
         .await
         .ok()?
@@ -86,8 +115,10 @@ pub async fn thumbnail_png(path: PathBuf, max_px: u32) -> Option<Vec<u8>> {
         .ok()
         .map(|t| chrono::DateTime::<chrono::Utc>::from(t).timestamp_millis());
     let key = cache_key(&path, mtime_ms, (!meta.is_dir()).then_some(meta.len()));
-    if let Some(hit) = cache().lock().ok()?.get(&key) {
-        return Some(hit);
+    if let Ok(mut guard) = cache().lock() {
+        if let Some(hit) = guard.get(&key) {
+            return Some(hit);
+        }
     }
     let _permit = semaphore().acquire().await.ok()?;
     // 阻塞线程内做 COM + 位图转换；spawn_blocking 失败（任务被中止）按无缩略图处理。
@@ -166,6 +197,14 @@ fn hbmp_to_png(hbmp: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<Vec<u8>> 
         return None;
     }
     let (w, h) = (bm.bmWidth as i32, bm.bmHeight as i32);
+    // 按真实宽高做资源准入：不信任请求尺寸，也不信任处理器会遵守它。
+    if w > MAX_DECODE_EDGE || h > MAX_DECODE_EDGE {
+        return None;
+    }
+    let pixels = (w as u64).saturating_mul(h as u64);
+    if pixels == 0 || pixels > MAX_DECODE_PIXELS {
+        return None;
+    }
     let mut bi = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -183,7 +222,7 @@ fn hbmp_to_png(hbmp: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<Vec<u8>> 
         },
         bmiColors: [Default::default(); 1],
     };
-    let mut buf = vec![0u8; (w as usize) * (h as usize) * 4];
+    let mut buf = vec![0u8; (pixels as usize) * 4];
     let hdc = unsafe { GetDC(None) };
     let lines = unsafe {
         GetDIBits(

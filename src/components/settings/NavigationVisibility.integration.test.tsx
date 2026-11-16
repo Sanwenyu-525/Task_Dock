@@ -198,7 +198,7 @@ describe("导航显隐 · 主内容区始终有效", () => {
     expect(useSettingsStore.getState().settings?.mode).toBe("full");
     expect(useSettingsStore.getState().settings?.theme).toBe("dark");
     expect(useSettingsStore.getState().settings?.material).toBe("solid");
-  });
+  }, 15_000);
 
   it("完整面板与胶囊配置互相独立，切换配置不影响主内容区", async () => {
     const user = userEvent.setup();

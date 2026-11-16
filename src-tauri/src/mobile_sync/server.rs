@@ -48,6 +48,10 @@ const MAX_BODY: usize = 4 * 1024;
 const MAX_CONNECTIONS: usize = 16;
 /// 同时处理中的请求上限；超出返回 429 + Retry-After。
 const MAX_INFLIGHT: usize = 8;
+/// TLS 握手独立超时：TCP 已建立但不发送握手数据的客户端（扫描器、半开连接、
+/// 断网但未 RST 的客户端）必须在有限时间内被释放，否则 16 个连接额度会被
+/// 慢慢占满，正常手机再也连不上。5 秒覆盖局域网与移动网络的正常握手。
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const BODY_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -1134,12 +1138,20 @@ async fn route(
 
 async fn handle_conn(stream: TcpStream, peer: SocketAddr, ctx: Arc<ServerCtx>) {
     // v2 起 TLS-only：握手失败（明文 HTTP、端口扫描、协议不匹配）直接断开，
-    // 不发送任何 HTTP 响应，也不回退明文。握手本身计入连接总超时。
-    let tls_stream = match ctx.tls.acceptor().accept(stream).await {
-        Ok(stream) => stream,
-        Err(error) => {
+    // 不发送任何 HTTP 响应，也不回退明文。
+    // 握手必须有自己的超时：`accept()` 在客户端不发数据时会一直等待，
+    // 而连接信号量是在这里持有时才释放——没有超时等于把额度交给对端控制。
+    let tls_stream = match tokio::time::timeout(HANDSHAKE_TIMEOUT, ctx.tls.acceptor().accept(stream))
+        .await
+    {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(error)) => {
             // 只记错误分类，不记对端提供的任何证书/主机名细节。
             tracing::debug!("手机接入 TLS 握手失败（可能为明文客户端或扫描）: {error}");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!("手机接入 TLS 握手超时（客户端未在限期内发送握手数据），已释放连接");
             return;
         }
     };
@@ -1174,25 +1186,30 @@ pub async fn serve(
         tls,
     });
     let conn_sem = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    // 在途连接任务台账：监听器退出（关服务/换端口/应用退出）时必须把它们一起
+    // 收掉，否则旧端口上的请求会在监听关闭后继续跑，任务与连接会累积。
+    let mut conns: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
+        // 已完成任务及时出账（台账本身受 MAX_CONNECTIONS 约束，不会无界增长）。
+        conns.retain(|handle| !handle.is_finished());
         tokio::select! {
             _ = crate::agents::shutdown_signal::wait() => {
                 tracing::info!("应用退出：关闭手机接入监听");
-                return;
+                break;
             }
             _ = tick.tick() => {
                 let settings = crate::db::Settings::load(&db).unwrap_or_default();
                 if !settings.mobile_sync_enabled || settings.mobile_sync_port != port {
                     tracing::info!("手机接入配置变更，重新绑定监听");
-                    return;
+                    break;
                 }
                 if !ctx.state.is_running() {
                     // 状态被外部重置（例如启停竞态）：退出让主管重新评估，
                     // 避免出现「监听在跑但状态显示已停」的分裂。
-                    return;
+                    break;
                 }
             }
             accepted = listener.accept() => {
@@ -1201,13 +1218,13 @@ pub async fn serve(
                         match conn_sem.clone().try_acquire_owned() {
                             Ok(permit) => {
                                 let ctx = ctx.clone();
-                                tokio::spawn(async move {
+                                conns.push(tokio::spawn(async move {
                                     let _permit: OwnedSemaphorePermit = permit;
                                     handle_conn(stream, peer, ctx).await;
-                                });
+                                }));
                             }
                             Err(_) => {
-                                tokio::spawn(reject_busy(stream));
+                                conns.push(tokio::spawn(reject_busy(stream)));
                             }
                         }
                     }
@@ -1218,6 +1235,16 @@ pub async fn serve(
                 }
             }
         }
+    }
+
+    // 监听器已停止：中止遗留连接任务，保证端口与连接额度随服务关闭一起回收。
+    drop(listener);
+    let leftover = conns.len();
+    for handle in conns.drain(..) {
+        handle.abort();
+    }
+    if leftover > 0 {
+        tracing::info!("手机接入关闭：已中止 {leftover} 个在途连接任务");
     }
 }
 

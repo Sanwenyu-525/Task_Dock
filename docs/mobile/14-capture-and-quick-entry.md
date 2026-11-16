@@ -269,4 +269,12 @@ JS 侧（`src/screens/CaptureScreen.tsx` voice 模式）：运行时申请 `RECO
   真机已验证草稿恢复、camera/task 快捷动作、三类附件入口与 PDF 打开、语音录制/试听；
   系统分享、相册批量、大文件边界、双端同步仍未验证。测试 29 文件 / 283 例；详见
   `tmp/acceptance/mobile-efficiency-remediation-20261115/report.md`。
+- 2026-11-16 布局修复：快速采集页「拍照 / 相册 / 语音 / 文件」四个入口把 `flex: 1` 写在
+  `PressableScale` 的 `contentStyle` 上，外层 `Pressable` 仍按内容宽度收缩，整行右侧留空。
+  改为 `style={styles.pickerPress}`（外层 `flex: 1`）+ `contentStyle` 只承载视觉属性，
+  四格等宽铺满行宽（360dp 屏每格 76dp，320dp 屏 66dp）。`tsc --noEmit` exit 0、
+  vitest 54 文件 / 561 例通过；真机视觉复核未执行（设备被并行会话占用、未出新包），详见
+  `tmp/acceptance/mobile-capture-picker-row/report.md`。
+  同一写法还存在于 `features/capture/CaptureReviewScreen.tsx`（裁剪模式「应用裁剪」）与
+  `CaptureImportScreen.tsx`（相册/文件两按钮），本轮未改。
 

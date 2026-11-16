@@ -691,7 +691,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
           <>
             <Pressable
               accessibilityRole="button"
-              style={[styles.toolButton, { backgroundColor: tokens.track }]}
+              style={[styles.toolSlot, styles.toolButton, { backgroundColor: tokens.track }]}
               onPress={() => {
                 setCropActive(false);
                 setCropFraction(CROP_DEFAULT);
@@ -702,6 +702,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             <PressableScale
               accessibilityLabel="应用裁剪"
               onPress={() => void applyCrop()}
+              style={styles.toolSlot}
               contentStyle={[styles.toolButton, { backgroundColor: tokens.accentFill }]}
             >
               <Text style={[styles.toolText, { color: tokens.onAccent }]}>应用裁剪</Text>
@@ -713,7 +714,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
               <>
                 <Pressable
                   accessibilityRole="button"
-                  style={[styles.toolButton, { backgroundColor: tokens.track }]}
+                  style={[styles.toolSlot, styles.toolButton, { backgroundColor: tokens.track }]}
                   onPress={() => void rotate()}
                   disabled={busy || current.state === "saved"}
                 >
@@ -721,7 +722,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
                 </Pressable>
                 <Pressable
                   accessibilityRole="button"
-                  style={[styles.toolButton, { backgroundColor: tokens.track }]}
+                  style={[styles.toolSlot, styles.toolButton, { backgroundColor: tokens.track }]}
                   onPress={() => setCropActive(true)}
                   disabled={busy || current.state === "saved"}
                 >
@@ -732,7 +733,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={isImage ? "重拍这一张" : "删除这份文档"}
-              style={[styles.toolButton, { backgroundColor: tokens.track }]}
+              style={[styles.toolSlot, styles.toolButton, { backgroundColor: tokens.track }]}
               onPress={retake}
               disabled={busy}
             >
@@ -1067,8 +1068,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.lg,
     paddingVertical: space.sm,
   },
+  // 等宽按钮：flex 落在最外层 Pressable，toolButton 只承载视觉属性
+  toolSlot: { flex: 1 },
   toolButton: {
-    flex: 1,
     minHeight: 40,
     borderRadius: radius.row,
     alignItems: "center",

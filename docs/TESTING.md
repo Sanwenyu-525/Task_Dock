@@ -49,8 +49,9 @@
 ### 多 Agent Worktree 隔离机制（2026-11-07）
 
 > 适用范围说明：本节只记录 Worktree 工具能力与安全边界的测试证据（2026-11-07）。是否创建
-> Worktree 的当前判定以根 `AGENTS.md` §3.3 为准——共享工作区优先、Worktree 按需使用；本节
-> 不构成「多 Agent 必须创建 Worktree」的要求。
+> Worktree 的当前判定以根 `AGENTS.md` §3.1 / §3.5 为准——共享工作区优先、Worktree 按需使用；本节
+> 不构成「多 Agent 必须创建 Worktree」的要求。正式测试安装包改由集成快照构建，见
+> [INTEGRATION_BUILD.md](INTEGRATION_BUILD.md)。
 
 | 检查 | 结果 | 证据 |
 |---|---|---|

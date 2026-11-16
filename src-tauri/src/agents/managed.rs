@@ -319,7 +319,7 @@ pub struct HooksAdapter {
     /// 安装探测（第 1/2 层）
     pub detect_impl: fn(&mut DetectionReport),
     /// hook 命令行构造（各产品对引号的处理不同，Codex 需要 cmd /c call 包裹）
-    pub hook_command: fn(&Path, &str, &str) -> String,
+    pub hook_command: fn(&Path, &str, &str) -> AppResult<String>,
     /// 配置布局：多数产品为 Claude 兼容扁平结构；ZCode 为 hooks.events 嵌套结构
     pub layout: hooks_install::HooksLayout,
     pub limitations: Vec<String>,
@@ -330,15 +330,19 @@ impl HooksAdapter {
     fn specs(&self, events: &[String]) -> AppResult<Vec<hooks_install::HookSpec>> {
         let exe = std::env::current_exe()
             .map_err(|e| AppError::Agent(format!("无法定位 Task Dock 可执行文件: {}", e)))?;
-        Ok(events
+        // 命令构造失败（路径含无法安全表达的字符）必须让安装整体失败，
+        // 不能写出一条可能被宿主误解析的 command。
+        events
             .iter()
-            .map(|e| hooks_install::HookSpec {
-                event: e.clone(),
-                matcher: None,
-                command: (self.hook_command)(&exe, self.source_id, e),
-                timeout_secs: Some(self.timeout_secs),
+            .map(|e| {
+                Ok(hooks_install::HookSpec {
+                    event: e.clone(),
+                    matcher: None,
+                    command: (self.hook_command)(&exe, self.source_id, e)?,
+                    timeout_secs: Some(self.timeout_secs),
+                })
             })
-            .collect())
+            .collect()
     }
 }
 
@@ -391,6 +395,7 @@ impl ManagedAdapter for HooksAdapter {
         let sample = events
             .first()
             .map(|e| (self.hook_command)(&exe, self.source_id, e))
+            .transpose()?
             .unwrap_or_default();
         Ok(json!({
             "adapter": self.id(),

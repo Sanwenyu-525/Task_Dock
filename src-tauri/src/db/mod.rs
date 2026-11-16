@@ -2082,6 +2082,14 @@ CREATE INDEX idx_novel_chapters_volume
   ON novel_chapters(volume_id);
 "#,
     ),
+    // ── 创作工作台五线（2026-11-16）：迁移号由集成负责人独占分配，一领域一号，
+    // DDL 常量放在各领域自己的 `commands/*_workspace.rs` 里，避免五线并发改本文件。
+    // 顺序即执行顺序：每条只依赖更小的号，互不引用。
+    crate::commands::novel_workspace::MIGRATION_59,
+    crate::commands::game_workspace::MIGRATION_60,
+    crate::commands::comic_workspace::MIGRATION_61,
+    crate::commands::general_workspace::MIGRATION_62,
+    crate::commands::development_workspace::MIGRATION_63,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

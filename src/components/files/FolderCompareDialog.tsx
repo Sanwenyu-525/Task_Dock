@@ -1,6 +1,6 @@
 //! 文件夹对比：两层可解释差异 + 用户显式哈希 + 确认后才复制（默认不删除）。
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Dialog } from "../ui/Dialog";
 import { Checkbox } from "../ui";
 import { useLocale } from "../../hooks/useLocale";
@@ -58,29 +58,42 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
   const [copying, setCopying] = useState(false);
 
   const target = request?.targets.find((item) => item.paneId === targetPaneId) ?? request?.targets[0] ?? null;
+  const loadSeq = useRef(0);
 
   useEffect(() => {
     if (!request) return;
+    loadSeq.current += 1;
     setTargetPaneId(request.targets[0]?.paneId ?? "");
     setSelected(new Set());
     setConfirm(null);
   }, [request]);
 
+  useEffect(() => {
+    // 切换右侧目标时，旧目标的选中项与确认内容不能继续生效；同时让在途
+    // 目录读取晚到的结果失效，避免旧结果覆盖新目标。
+    loadSeq.current += 1;
+    setSelected(new Set());
+    setConfirm(null);
+  }, [target?.paneId]);
+
   const reload = async () => {
     if (!request || !target) return;
+    const seq = ++loadSeq.current;
     setLoading(true);
     try {
       const [left, right] = await Promise.all([
         fsListDir(request.sourceDir, false, 0),
         fsListDir(target.dir, false, 0),
       ]);
+      if (seq !== loadSeq.current) return;
       setHasMore(left.hasMore || right.hasMore);
       setItems(compareEntries(left.entries, right.entries));
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       showToast(errorMessage(e), { kind: "error" });
       setItems([]);
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   };
 
@@ -126,6 +139,53 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
     setConfirm({ leftToRight, rightToLeft });
   };
 
+  type DirectionResult = {
+    ok: number;
+    failedNames: string[];
+    partial: number;
+    skipped: number;
+    error: string | null;
+  };
+
+  const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+  const copyDirection = async (
+    names: string[],
+    paths: string[],
+    targetDir: string,
+  ): Promise<DirectionResult> => {
+    if (!names.length) return { ok: 0, failedNames: [], partial: 0, skipped: 0, error: null };
+    let report: FsOpReport | null;
+    try {
+      report = await onCopy(paths, targetDir);
+    } catch (e) {
+      return { ok: 0, failedNames: names, partial: 0, skipped: 0, error: errorMessage(e) };
+    }
+    if (!report) {
+      return {
+        ok: 0,
+        failedNames: names,
+        partial: 0,
+        skipped: 0,
+        error: t("fw.compare.copyNotConfirmed"),
+      };
+    }
+    const entries = report.entries ?? [];
+    const badCount = report.failed + report.partial + report.skipped;
+    const failedNames = names.filter((name) => {
+      const entry = entries.find((item) => baseName(item.source).toLocaleLowerCase() === name.toLocaleLowerCase());
+      // 没有逐项结果时按汇总计数 fail-closed：只要报告里有非成功项，就不清空现场。
+      return entry ? entry.status !== "ok" : badCount > 0;
+    });
+    return {
+      ok: report.ok,
+      failedNames,
+      partial: report.partial,
+      skipped: report.skipped,
+      error: null,
+    };
+  };
+
   const executeCopy = async () => {
     if (!request || !target || !confirm || copying) return;
     const sep = request.sourceDir.includes("\\") ? "\\" : "/";
@@ -133,13 +193,37 @@ export default function FolderCompareDialog({ request, onClose, onCopy }: Props)
     const rightPaths = confirm.rightToLeft.map((name) => `${target.dir.replace(/[\\/]$/, "")}${sep}${name}`);
     setCopying(true);
     try {
-      if (leftPaths.length) await onCopy(leftPaths, target.dir);
-      if (rightPaths.length) await onCopy(rightPaths, request.sourceDir);
-      setConfirm(null);
-      setSelected(new Set());
-      await reload();
-    } catch (e) {
-      showToast(errorMessage(e), { kind: "error" });
+      const left = await copyDirection(confirm.leftToRight, leftPaths, target.dir);
+      const right = await copyDirection(confirm.rightToLeft, rightPaths, request.sourceDir);
+      const failedNames = [...left.failedNames, ...right.failedNames];
+      const error = left.error ?? right.error;
+      if (failedNames.length === 0) {
+        setConfirm(null);
+        setSelected(new Set());
+        await reload();
+        showToast(t("fw.compare.copyDone", { count: left.ok + right.ok }), { kind: "success" });
+      } else {
+        // 部分/失败/跳过都保留在确认区与勾选中；不能因为另一方向成功就整体清空。
+        setConfirm({
+          leftToRight: left.failedNames,
+          rightToLeft: right.failedNames,
+        });
+        setSelected(new Set(failedNames));
+        await reload();
+        if (error) {
+          showToast(t("fw.compare.copyFailed", { error }), { kind: "error" });
+        } else {
+          showToast(
+            t("fw.compare.copyPartial", {
+              ok: left.ok + right.ok,
+              failed: failedNames.length,
+              partial: left.partial + right.partial,
+              skipped: left.skipped + right.skipped,
+            }),
+            { kind: "error" },
+          );
+        }
+      }
     } finally {
       setCopying(false);
     }

@@ -328,6 +328,65 @@ describe("NovelManuscriptPanel · 删除安全", () => {
       expect(screen.queryByText("第一卷")).toBeNull();
     });
 
+    it("删除多章节卷：展示章节数与总字数，删除后切其他卷不串正文", async () => {
+      const volume2 = { ...volume, id: "v2", title: "第二卷", sortOrder: 1 };
+      const chapter2 = { ...chapter, id: "c2", title: "第二章", sortOrder: 1 };
+      const chapter3 = { ...chapter, id: "c3", volumeId: "v2", title: "第三章", sortOrder: 0 };
+      api.novelVolumeList.mockResolvedValue({ volumes: [volume, volume2] });
+      api.novelChapterList.mockResolvedValue({ chapters: [chapter, chapter2, chapter3] });
+      api.novelChapterGet.mockImplementation(async (id: string) => ({
+        chapter: {
+          ...(id === "c3" ? chapter3 : id === "c2" ? chapter2 : chapter),
+          content: id === "c1" ? "初稿内容" : id === "c2" ? "第二章正文" : "第三章正文",
+        },
+      }));
+
+      const { flushRef } = renderPanel();
+      const textarea = await getPanel(flushRef);
+      fireEvent.change(textarea, { target: { value: "多章删除前正文" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "删除卷「第一卷」及其章节" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除卷" });
+      expect(within(dialog).getByText(/卷内章节：2 章/)).toBeTruthy();
+      expect(within(dialog).getByText(/正文总字数：/)).toBeTruthy();
+      expect(within(dialog).getByText(/当前正在编辑该卷章节：是/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "保存后删除" }));
+
+      await waitFor(() => expect(api.novelVolumeDelete).toHaveBeenCalledWith("v1"));
+      await waitFor(() => expect(screen.queryByRole("button", { name: "第一卷" })).toBeNull());
+      expect(screen.queryByRole("button", { name: "第二章" })).toBeNull();
+      // 删除成功后不再触发旧正文保存；其他卷章节仍可打开且内容不串。
+      expect(api.novelChapterSaveContent).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole("button", { name: "第三章" }));
+      await waitFor(() =>
+        expect((screen.getByLabelText("第三章正文") as HTMLTextAreaElement).value).toBe(
+          "第三章正文",
+        ),
+      );
+      expect(screen.queryByText("多章删除前正文")).toBeNull();
+    });
+
+    it("删除期间重复点击：只发一次删除 IPC，按钮进入删除中", async () => {
+      const d = deferred<void>();
+      api.novelChapterDelete.mockReturnValue(d.promise);
+      const { flushRef } = renderPanel();
+      await getPanel(flushRef);
+
+      fireEvent.click(screen.getByRole("button", { name: "删除章节「第一章」" }));
+      const dialog = await screen.findByRole("dialog", { name: "确认删除章节" });
+      const remove = within(dialog).getByRole("button", { name: "删除" });
+      fireEvent.click(remove);
+      fireEvent.click(remove);
+
+      await waitFor(() => expect(api.novelChapterDelete).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(within(dialog).getByText("删除中…")).toBeTruthy());
+      await act(async () => {
+        d.resolve(undefined);
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
+
     it("删除当前章节时有在途保存：等待同一请求，不并发第二次写入", async () => {
       const d = deferred<ReturnType<typeof saveResult>>();
       api.novelChapterSaveContent.mockReturnValue(d.promise);

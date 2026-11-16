@@ -15,7 +15,7 @@ import { Chip } from "../components/Chip";
 import { BackButton } from "../components/BackButton";
 import { EmptyState } from "../components/EmptyState";
 import { AppIcon } from "../components/icons/AppIcon";
-import { NoteCard } from "../components/NoteCard";
+import { NoteCard, type NoteCardPosition } from "../components/NoteCard";
 import { PressableScale } from "../components/PressableScale";
 import { SearchField } from "../components/SearchField";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
@@ -42,7 +42,7 @@ const FILTERS: { key: NoteFilter; label: string }[] = [
 /** 与任务页同一套扁平行模型：分组头与卡片交替，单 FlatList 渲染 */
 type NoteListRow =
   | { type: "section"; key: string; title: string; count: number; tone: "accent" | "muted" }
-  | { type: "note"; key: string; note: Note };
+  | { type: "note"; key: string; note: Note; position: NoteCardPosition };
 
 function matchesQuery(note: Note, rawQuery: string): boolean {
   const query = rawQuery.trim().toLowerCase();
@@ -107,7 +107,12 @@ export function NotesScreen({
     const pushSection = (key: string, title: string, tone: "accent" | "muted", list: Note[]) => {
       if (list.length === 0) return;
       next.push({ type: "section", key, title, count: list.length, tone });
-      for (const note of list) next.push({ type: "note", key: `note-${note.id}`, note });
+      list.forEach((note, index) => {
+        // 与任务分组同一套圆角规则：首行/末行决定分组卡的上下角
+        const position: NoteCardPosition =
+          list.length === 1 ? "only" : index === 0 ? "first" : index === list.length - 1 ? "last" : "middle";
+        next.push({ type: "note", key: `note-${note.id}`, note, position });
+      });
     };
     const next: NoteListRow[] = [];
     if (filter === "all") {
@@ -146,7 +151,7 @@ export function NotesScreen({
           />
         );
       }
-      return <NoteCard note={item.note} now={now} onPress={openEditor} />;
+      return <NoteCard note={item.note} position={item.position} now={now} onPress={openEditor} />;
     },
     [now, openEditor],
   );

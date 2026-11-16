@@ -182,3 +182,25 @@ Ctrl+数字语义与旧数据不变；工作台侧栏仍是唯一完整功能入
 
 已知限制：Tauri `CloseRequested` 仍未 `prevent_close`，应用关闭/强杀时 cleanup 会发起保存但无法等待完成，本轮未改全局关闭协议。
 
+### 9.2 2026-11-16 B1 第三轮：关闭/退出握手、删除安全与生命周期验收
+
+| 层 | 落地内容 | 证据/验证 |
+|---|---|---|
+| 工作台关闭 | `workbenchCloseGuard.ts` 在 `onCloseRequested` 内同步 `preventDefault()`，再 await 正文守卫；成功 `allowClose` 后 `window.close()`；失败保持窗口并提示；无守卫放行、重复关闭只跑一轮、监听安装失败 Toast | closeGuard 5 项；WorkbenchShell 安装于真实窗口 effect（单测环境跳过） |
+| 应用退出 | Rust `ExitHandshake`（requestId、首个匹配回执、5s 超时、并发拒绝）；`request_exit()` 在管线 shutdown 前排空工作台正文，失败回滚防重入并 emit `app-exit-blocked`，应用保持可用；托盘/`quit_app`/`RunEvent` 均走该路径 | `exit_handshake` 5/5；`app_exit_ack` 注册；托盘/系统退出共用 `request_exit` |
+| 删除安全 | 删除对话框展示章节数/总字数/当前编辑/未保存状态；保存后删除 await `flush`，明确丢弃先等 `settleInFlight`；失败保留数据与草稿；token 防旧请求写新 UI | `NovelManuscriptPanel.test.tsx` 21 项中删除安全 11 项，含 deferred 在途请求、多章节卷、重复点击 |
+| 项目切换 | 正文面板 projectId effect 先 await flush 再清空/换项目；壳层 `selectProject` 捕获抛错并取消；真实壳层测试使用真实 `WorkbenchShell` + `ProjectWorkspacePanel` + `NovelManuscriptPanel` | `WorkbenchShell.selectGuard.test.tsx` 4/4（项目数据 hook mock；面板与正文组件真实） |
+| 回归 | v57/v58、Full/Quick 备份、novel 类型/归档门禁未改；未新增 v59 | 隔离 worktree `cargo test -j 1 --lib novel` 6/6（含 v57、v58、备份往返、kind/归档） |
+
+实际命令与日志：前端四文件合计 **36 passed / 0 failed**（`l-mwitumhh-ee92e8.log`）；
+`cargo test -j 1 --lib exit_handshake` **5 passed / 0 failed**（`m-mwisiway-17db43.log`）；
+`cargo test -j 1 --lib novel` **6 passed / 0 failed**（`m-mwisq0fp-b1da86.log`）；
+`tsc --noEmit` 在本轮改动后、其他任务破坏前 exit 0（`m-mwite1wb-c2cc5a.log`）；最终复跑
+`m-mwitvali-e69464.log` exit 2，仅 3 个错误全部来自其他任务的 `ActionCenterPanel.tsx`（未完成
+JSX），本轮文件无报错。`npm run build` exit 0（`m-mwith57o-a6d089.log`，2047 modules /
+vite 18.40s；同样早于该并发破坏）。
+
+未验证：真实原生窗口关闭/托盘退出/系统退出走查、Tauri 打包/安装包。已知限制：
+关闭门禁仅前端 `onCloseRequested`，Rust 不 `prevent_close`；系统强杀/断电无法握手；退出失败
+没有“强制退出并明确丢弃正文”的独立按钮。
+

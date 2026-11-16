@@ -497,9 +497,19 @@ Windows 会复用 PID。`PID 1234 存活`不能证明"还是原来那个会话"�
 |---|---|
 | `scripts/build-guard.mjs`（磁盘/缓存守卫） | **复用**：`run` 前跑同一套 `precheck` 阈值（exit 2 → 调度器 exit 6）；缓存回收仍由它的 `cleanup` 负责 |
 | `scripts/worktree-guard.mjs` | 不变。它管"目录与冲突"，本调度器管"构建并发与槽位"，互不替代 |
+| `scripts/taskdock-integration.mjs`（集成/构建台账，2026-11-16） | **复用**：集成快照的静态检查与各平台构建都经 `run` 子命令排队（label `integration-<构建ID>`），与其他会话共享同一队列；本调度器不感知快照语义，只按命令分类与准入规则执行 |
 | `scripts/watch-dev-processes.ps1` | 不变（观察/窄条件终止）。`sched dev` 是它的只读替代视图，不做终止 |
 | `scripts/perf/gate-run.sh` | **已接入（2026-11-15）**：所有门禁步经 `run`/`cargo` 子命令排队；cargo 步改用 `cargo` 子命令（`cwd=src-tauri/`，不再用 `--manifest-path`）。`GATE_DRY_RUN=1` 零资源核对路由，`GATE_NO_SCHED=1` 仅在调度器故障时排障用 |
 | `AGENTS.md` §3.4/§5 | 已增补"高资源构建统一入口"与"子智能体同规则"，细节指向本文档 |
+
+集成构建的额外约定（不改调度器代码）：
+
+- 正式测试安装包只从集成快照构建；集成构建在 `<仓库父目录>/<仓库名>-integration` 里执行
+  `git checkout --detach <快照提交>`，不使用主工作区；
+- 桌面构建用绝对路径 `CARGO_TARGET_DIR=<主仓库>/src-tauri/target-integration`，与主工作区
+  `src-tauri/target` 分开，避免跨 checkout 指纹反复失效；
+- 同一「快照提交 + 平台 + 配置」已有成功产物时由集成工具直接复用，不再入队；这与本调度器的
+  同刻去重（§7）互补：调度器合并同时运行的等价任务，集成工具复用已完成的历史产物。
 
 ## 10. 配置
 

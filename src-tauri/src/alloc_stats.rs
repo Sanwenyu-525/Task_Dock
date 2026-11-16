@@ -1,13 +1,15 @@
 //! 进程内堆分配统计：区分「Rust 活跃分配增长」与「分配器保留/原生内存增长」。
 //!
-//! 默认开启，每次分配/释放各两次 relaxed 原子操作；设置
-//! `TASK_DOCK_ALLOC_STATS=0` 可关闭计数（关闭后仅一次 relaxed 读取）。
-//! 计数只用于诊断，不参与任何业务判断。
+//! 每次分配/释放各 2–3 次 relaxed 原子操作，是全局热点路径上的固定开销。
+//! 因此默认策略与构建形态绑定：
+//! - **debug 构建**：默认开启（诊断便利，性能不敏感）；
+//! - **release 构建**：默认关闭，需要时用 `TASK_DOCK_ALLOC_STATS=1` 显式打开。
+//! 关闭后每次分配只剩一次 relaxed 读取，计数只用于诊断、不参与任何业务判断。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
-static ENABLED: AtomicBool = AtomicBool::new(true);
+static ENABLED: AtomicBool = AtomicBool::new(cfg!(debug_assertions));
 static LIVE: AtomicI64 = AtomicI64::new(0);
 static PEAK: AtomicI64 = AtomicI64::new(0);
 static ALLOC_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -87,7 +89,8 @@ unsafe impl GlobalAlloc for TrackingAllocator {
 pub fn init_from_env() {
     let enabled = std::env::var("TASK_DOCK_ALLOC_STATS")
         .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-        .unwrap_or(true);
+        // 未显式设置时跟随构建形态：release 默认关闭（见文件头说明）。
+        .unwrap_or(cfg!(debug_assertions));
     ENABLED.store(enabled, Ordering::Relaxed);
 }
 
@@ -109,7 +112,11 @@ mod tests {
 
     #[test]
     fn snapshot_reports_consistent_counters() {
-        init_from_env();
+        // 计数默认只在调试构建开启：这里显式打开，避免 release 下断言 0 计数失败。
+        let requested = std::env::var("TASK_DOCK_ALLOC_STATS")
+            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+            .unwrap_or(true);
+        ENABLED.store(requested, Ordering::Relaxed);
         let snap = snapshot();
         let live = snap["live_bytes"].as_i64().unwrap();
         let peak = snap["peak_bytes"].as_i64().unwrap();

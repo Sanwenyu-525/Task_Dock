@@ -82,6 +82,7 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
             accessibilityLabel="选择图片"
             onPress={() => void pick(true)}
             disabled={busy}
+            style={styles.actionSlot}
             contentStyle={[styles.primary, { backgroundColor: tokens.accentFill }]}
           >
             <Text style={[styles.primaryText, { color: tokens.onAccent }]}>选择图片</Text>
@@ -90,6 +91,7 @@ export function CaptureImportScreen({ nav }: { nav: Nav }) {
             accessibilityLabel="选择文件"
             onPress={() => void pick(false)}
             disabled={busy}
+            style={styles.actionSlot}
             contentStyle={[styles.secondary, { backgroundColor: tokens.accentSoft }]}
           >
             <Text style={[styles.secondaryText, { color: tokens.accentText }]}>选择文件</Text>
@@ -183,9 +185,10 @@ const styles = StyleSheet.create({
   title: { fontSize: font.title, fontWeight: "700" },
   note: { fontSize: font.meta, lineHeight: 18 },
   actions: { flexDirection: "row", gap: space.sm },
+  // 等宽两列：flex 必须落在外层 Pressable 上（contentStyle 只负责内层视觉）
+  actionSlot: { flex: 1 },
   primary: {
     minHeight: 48,
-    flex: 1,
     borderRadius: radius.row,
     alignItems: "center",
     justifyContent: "center",
@@ -196,7 +199,6 @@ const styles = StyleSheet.create({
   primaryText: { fontSize: font.body, fontWeight: "700" },
   secondary: {
     minHeight: 48,
-    flex: 1,
     borderRadius: radius.row,
     alignItems: "center",
     justifyContent: "center",

@@ -32,6 +32,7 @@ import { useLocale } from "../../hooks/useLocale";
 import { useFullViewVisible } from "../../hooks/useMainUiVisible";
 import { useUiStore } from "../../store/useUiStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import { WorkbenchPageDetail, useWorkbenchDetailHost } from "../../workbench/pageDetail";
 import { ConfirmDialog, Select } from "../ui";
 import { errorMessage } from "../../lib/errors";
 import {
@@ -245,6 +246,7 @@ export default function DiagnosticsCenterPanel() {
     setBusyState((prev) => (prev[key] === value ? prev : { ...prev, [key]: value }));
   }, []);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const detailHost = useWorkbenchDetailHost();
   const [confirmClear, setConfirmClear] = useState(false);
   const [cleared, setCleared] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -658,6 +660,12 @@ export default function DiagnosticsCenterPanel() {
   const capacityTone = capacityPercent >= 60 ? "is-warn" : "is-neutral";
 
   const filtered = hasActiveFilter(applied);
+  const selectedItem = expanded
+    ? page?.items.find(
+        (item: DiagnosticEventRecord, index: number) =>
+          `${item.timestamp}-${index}` === expanded,
+      )
+    : undefined;
   const noLogsAtAll =
     !!status &&
     status.totalBytes === 0 &&
@@ -975,6 +983,41 @@ export default function DiagnosticsCenterPanel() {
     );
   }
 
+  function renderInspectorContent() {
+    if (!selectedItem) {
+      return (
+        <div className="diag-center-inspector-empty">
+          <span className="diag-center-inspector-title">
+            {t("diagnosticsCenter.list.title")}
+          </span>
+          <span>{t("diagnosticsCenter.list.emptyHint")}</span>
+        </div>
+      );
+    }
+    return (
+      <>
+        <div className="diag-center-inspector-head">
+          <span className={levelClass(selectedItem.level)}>
+            {selectedItem.level}
+          </span>
+          <strong className="diag-center-inspector-title diag-center-ellipsis">
+            {selectedItem.module}/{selectedItem.action}
+          </strong>
+          <button
+            type="button"
+            className="icon-btn sm"
+            aria-label={t("diagnosticsCenter.list.collapse")}
+            data-tip={t("diagnosticsCenter.list.collapse")}
+            onClick={() => setExpanded(null)}
+          >
+            <X size={12} aria-hidden="true" />
+          </button>
+        </div>
+        {renderDetails(selectedItem)}
+      </>
+    );
+  }
+
   return (
     <div className="diag-center page-fill">
       {/* 页面级页头（2026-11-15 统一）：模式徽标进入标题 meta 槽，三个动作进右侧
@@ -1038,7 +1081,7 @@ export default function DiagnosticsCenterPanel() {
         }
       />
 
-      <div className={`page-scroll diag-body${chain ? " is-chain" : ""}`}>
+      <div className={`page-scroll diag-body${chain ? " is-chain" : ""}${detailHost ? " has-detail-host" : ""}`}>
         {loadError && (
           <div className="diag-center-state is-error" role="alert">
             <AlertTriangle size={13} aria-hidden="true" />
@@ -1361,7 +1404,7 @@ export default function DiagnosticsCenterPanel() {
                     <li key={rowKey} className="diag-center-row-item">
                       <button
                         type="button"
-                        className="diag-center-row"
+                        className={`diag-center-row${isOpen ? " is-selected" : ""}`}
                         aria-expanded={isOpen}
                         onClick={() => setExpanded(isOpen ? null : rowKey)}
                       >
@@ -1401,7 +1444,6 @@ export default function DiagnosticsCenterPanel() {
                           </span>
                         </span>
                       </button>
-                      {isOpen && renderDetails(item)}
                     </li>
                   );
                 })}
@@ -1479,6 +1521,21 @@ export default function DiagnosticsCenterPanel() {
             </button>
           </div>
         </section>
+
+        {!chain && detailHost && (
+          <WorkbenchPageDetail title={t("diagnosticsCenter.list.title")}>
+            {renderInspectorContent()}
+          </WorkbenchPageDetail>
+        )}
+
+        {!chain && !detailHost && (
+          <aside
+            className="diag-center-inspector"
+            aria-label={t("diagnosticsCenter.list.title")}
+          >
+            {renderInspectorContent()}
+          </aside>
+        )}
       </div>
 
       <ConfirmDialog

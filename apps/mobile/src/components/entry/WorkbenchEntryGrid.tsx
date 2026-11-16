@@ -24,6 +24,7 @@ import { radius, space } from "../../theme/tokens";
 
 import { ActionSheet, type SheetAction } from "../ActionSheet";
 import { QuickTile } from "../QuickTile";
+import { GripDots } from "./GripDots";
 import { AppIcon, type IconName } from "../icons/AppIcon";
 
 /** 磁贴固有高度：与 QuickTile 的 minHeight 一致（拖拽行步进用它，避免逐格测量） */
@@ -313,9 +314,9 @@ function EditableTile({
         <AppIcon name="close" color={tokens.danger} size={12} />
       </Pressable>
 
-      {/* 拖动手柄：三枚竖向点 + 浅底，明确「这里可以抓」 */}
+      {/* 拖动手柄：六点 + 浅底，明确「这里可以抓」 */}
       <View pointerEvents="none" style={[styles.grip, { backgroundColor: tokens.track }]}>
-        <AppIcon name="more" color={tokens.muted} size={12} style={styles.gripIcon} />
+        <GripDots color={tokens.muted} dot={2.5} gap={2} />
       </View>
     </Animated.View>
   );
@@ -358,8 +359,5 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     alignItems: "center",
     justifyContent: "center",
-  },
-  gripIcon: {
-    transform: [{ rotate: "90deg" }],
   },
 });

@@ -296,6 +296,19 @@ mod tests {
     }
 
     #[test]
+    fn verified_group_deletes_only_delete_path_and_keeps_original() {
+        let dir = TempDir::new("delete");
+        let keep = write(&dir, "keep.txt", b"same-content");
+        let delete = write(&dir, "delete.txt", b"same-content");
+        let report = delete_verified_duplicates(vec![group(&keep, &delete)], Some("dupe-test".into()), &[])
+            .expect("verified duplicate delete should succeed");
+        assert_eq!(report.ok, 1, "{report:?}");
+        assert_eq!(report.failed, 0, "{report:?}");
+        assert!(Path::new(&keep).exists(), "保留文件不能被删除");
+        assert!(!Path::new(&delete).exists(), "待删文件应离开原路径（进入回收站）");
+    }
+
+    #[test]
     fn changed_size_is_rejected() {
         let dir = TempDir::new("size");
         let keep = write(&dir, "keep.txt", b"x");
@@ -314,6 +327,46 @@ mod tests {
         request.delete_paths = vec![keep.clone()];
         let err = verify_duplicate_groups(&[request], &[]).unwrap_err();
         assert!(err.to_string().contains("保留文件"), "{err}");
+    }
+
+    #[test]
+    fn disappeared_delete_path_is_rejected() {
+        let dir = TempDir::new("gone");
+        let keep = write(&dir, "keep.txt", b"same");
+        let delete = write(&dir, "delete.txt", b"same");
+        let request = group(&keep, &delete);
+        fs::remove_file(&delete).unwrap();
+        let err = verify_duplicate_groups(&[request], &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("哈希") || err.to_string().contains("读取"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn content_changed_after_hashing_is_rejected() {
+        let dir = TempDir::new("changed");
+        let keep = write(&dir, "keep.txt", b"same");
+        let delete = write(&dir, "delete.txt", b"same");
+        let request = group(&keep, &delete);
+        fs::write(&delete, b"diff").unwrap();
+        let err = verify_duplicate_groups(&[request], &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("拒绝删除") || err.to_string().contains("大小"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn same_size_content_changed_after_hashing_is_rejected() {
+        let dir = TempDir::new("same-size-changed");
+        let keep = write(&dir, "keep.txt", b"same-content");
+        let delete = write(&dir, "delete.txt", b"same-content");
+        let request = group(&keep, &delete);
+        // 保持大小不变，只替换内容；必须走到 SHA-256 复核，不能只靠大小拦截。
+        fs::write(&delete, b"diff-content").unwrap();
+        let err = verify_duplicate_groups(&[request], &[]).unwrap_err();
+        assert!(err.to_string().contains("拒绝删除"), "{err}");
     }
 
     #[test]

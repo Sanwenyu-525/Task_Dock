@@ -20,6 +20,7 @@ export function MetricTile({
   icon,
   tone = "neutral",
   variant = "card",
+  statLayout = "stack",
   style,
 }: {
   value: number;
@@ -28,6 +29,8 @@ export function MetricTile({
   icon?: IconName;
   tone?: MetricTone;
   variant?: "card" | "column" | "stat";
+  /** stat 变体的图标与数字排布：row = 数字在图标右侧，stack = 图标上方（窄卡片回退用） */
+  statLayout?: "row" | "stack";
   style?: StyleProp<ViewStyle>;
 }) {
   const { tokens } = useTheme();
@@ -63,6 +66,25 @@ export function MetricTile({
             : tokens.track;
 
   if (variant === "stat") {
+    if (statLayout === "row") {
+      return (
+        <GlassCard style={[styles.statCard, styles.statCardRow, style]}>
+          <View style={styles.statHead}>
+            {icon ? (
+              <View style={[styles.statIcon, styles.statIconInline, { backgroundColor: iconBackground }]}>
+                <AppIcon name={icon} color={iconColor} size={17} />
+              </View>
+            ) : null}
+            <Text numberOfLines={1} style={[styles.statValue, styles.statValueInline, { color: tokens.text }]}>
+              {value}
+            </Text>
+          </View>
+          <Text numberOfLines={1} style={[styles.label, { color: tokens.muted }]}>
+            {label}
+          </Text>
+        </GlassCard>
+      );
+    }
     return (
       <GlassCard style={[styles.statCard, style]}>
         {icon ? (
@@ -115,6 +137,10 @@ const styles = StyleSheet.create({
     paddingVertical: space.md,
     gap: 2,
   },
+  // 行内排布少掉一整行图标高度，卡片同步收矮，不留空底
+  statCardRow: {
+    minHeight: 88,
+  },
   statIcon: {
     width: 30,
     height: 30,
@@ -122,6 +148,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: space.xs,
+  },
+  // 行内排布：图标与数字同一行垂直居中，圆角底不再需要下边距
+  statHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+  },
+  statIconInline: {
+    marginBottom: 0,
+  },
+  statValueInline: {
+    flexShrink: 1,
   },
   statValue: {
     fontSize: font.stat,

@@ -520,14 +520,15 @@ node scripts/build-sched.mjs run --priority P0 --label apk-release --cwd apps/mo
 ## 八、多 Agent 并行协作与 Worktree 隔离
 
 并行协作以根 [AGENTS.md](../AGENTS.md) 第 3 节为准：**共享工作区优先、文件所有权优先、
-Worktree 按需使用、最终统一集成验收**。写入文件集合与共享资源都不冲突的多个任务直接在同一
-工作区并行；Worktree 只在风险评估判定需要隔离时创建（判据见 AGENTS.md §3.3），不是并行开发
+Worktree 按需使用、交付走统一集成线**。写入文件集合与共享资源都不冲突的多个任务直接在同一
+工作区并行；Worktree 只在风险评估判定需要隔离时创建（判据见 AGENTS.md §3.1），不是并行开发
 的前置步骤，也不因为「跨模块」「耗时长」或「Agent 数量大于 1」而自动创建。
 
-主工作区承担最终集成、验收与稳定版本管理。工具 `scripts/worktree-guard.mjs`（零依赖 Node，
-与 `build-guard.mjs` 同级）只负责已判定需要隔离的任务的创建、状态、冲突预检与安全清理，
-**不执行 commit / merge / rebase / push**，也不替 Agent 判断是否需要隔离；所有 Git 写操作仍由
-主 Agent 或任务所有者按授权执行。
+日常开发与最终合入仍在主工作区完成；**正式测试安装包不从这里打包**——它必须来自 `integration`
+分支上的集成快照（[INTEGRATION_BUILD.md](INTEGRATION_BUILD.md)）。工具 `scripts/worktree-guard.mjs`
+（零依赖 Node，与 `build-guard.mjs` 同级）只负责已判定需要隔离的任务的创建、状态、冲突预检与
+安全清理，**不执行 commit / merge / rebase / push**，也不替 Agent 判断是否需要隔离；所有 Git 写
+操作仍由主 Agent 或任务所有者按授权执行。
 
 ### 8.1 目录与分支约定
 
@@ -688,11 +689,28 @@ node scripts/build-guard.mjs precheck            # 现有构建守卫保持兼�
 | 禁止写入 | 共享枢纽文件与其他任务的写入范围 |
 | 公共接口 | 需要协调的 IPC 命令、类型、迁移、设置键 |
 | 依赖关系 | 前置任务、接口确认、集成顺序 |
-| 隔离方式 | 共享工作区 / 资源隔离 / Worktree，并写明判据（AGENTS.md §3.3） |
+| 隔离方式 | 共享工作区 / 资源隔离 / Worktree，并写明判据（AGENTS.md §3.1） |
 | 测试与验收 | 负责的命令、通道与证据路径 |
+| 交付与集成 | 任务标识、写入范围、交付提交；验收绑定哪个 `buildId` |
 
 声明只做粗筛：**目录所有权不等于对目录下全部文件的永久独占**；写入集合出现交集时立即按 8.6
 重新协调，交集文件按「唯一所有者」处理。
+
+### 8.12 统一集成、统一构建与联合验收（2026-11-16）
+
+- **正式测试安装包只来自 `integration` 分支的集成快照**，不直接打包共享工作区：快照只叠加
+  「待集成」任务的声明路径改动，未完成任务的未提交改动与更晚的 `main` 提交都不会进入产物。
+- 流程命令：`task add/check/ready`（登记与交付）、`snapshot bootstrap|create`（基线与增量集成，
+  含集成静态检查）、`build --snapshot <id> --platform desktop|web|android`（干净快照工作区构建，
+  相同「提交+平台+配置」复用产物）、`accept --build <id> --task <id> --status pass|fail`（多 Agent
+  基于同一构建版本各自验收）、`status`（汇总）。
+- 集成工作区固定为 `<仓库父目录>/<仓库名>-integration`（分支 `integration`），与 Agent 任务
+  Worktree 分开；桌面构建缓存 `src-tauri/target-integration`，全部经构建调度器排队（label
+  `integration-<构建ID>`）。
+- 记录在 `tmp/integration/{tasks,snapshots,builds,logs}`（不入库）；任务关联同时写进快照提交信息
+  （`TaskDock-Snapshot` / `TaskDock-Tasks`），因此只凭 commit 也能查到这个版本包含哪些任务。
+- 状态机、拒绝条件、退出码、记录字段、清理方式见 [INTEGRATION_BUILD.md](INTEGRATION_BUILD.md)；
+  自动化用例 `npm run integrate:test`（在临时 Git 仓库自建仓库，不读写真实工作区）。
 
 ## 资源管理与清理
 

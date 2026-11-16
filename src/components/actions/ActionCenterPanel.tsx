@@ -12,6 +12,7 @@ import {
   Bell,
   Check,
   ChevronDown,
+  ExternalLink,
   Inbox,
   Layers,
   RefreshCw,
@@ -28,6 +29,7 @@ import {
 } from "../../store/useActionsStore";
 import { useUiStore } from "../../store/useUiStore";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import { WorkbenchPageDetail, useWorkbenchDetailHost } from "../../workbench/pageDetail";
 import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useAgentsStore } from "../../store/useAgentsStore";
@@ -122,6 +124,8 @@ export default function ActionCenterPanel() {
   const refreshAgents = useAgentsStore((s) => s.load);
   const openContext = useUiStore((s) => s.openContext);
   const [busy, setBusy] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const detailHost = useWorkbenchDetailHost();
   /**
    * 标记已处理（默认筛选不含已处理时该行会退出列表）：先执行 `ack()`，
    * 只有真成功且需要退出当前筛选才播收拢淡出。
@@ -154,6 +158,9 @@ export default function ActionCenterPanel() {
     return out;
   }, [current, exitSnapshot]);
 
+  const selectedItem =
+    selectedId ? displayedItems.find((item) => item.id === selectedId) : undefined;
+
   useEffect(() => {
     if (!feed) void load();
   }, [feed, load]);
@@ -177,6 +184,7 @@ export default function ActionCenterPanel() {
       exitTimerRef.current = null;
     }
     setExitSnapshot(null);
+    setSelectedId(null);
   }, [category, filter.kind, filter.priority, filter.source_id, filter.task_id, filter.include_acked]);
 
   // 卸载（关闭抽屉或切走）时不留悬空定时器
@@ -296,6 +304,107 @@ export default function ActionCenterPanel() {
       setBusy(null);
     }
   }
+
+  const inspectorNode = selectedItem ? (
+    <>
+      <div className="action-inspector-head">
+        <span className={`priority-tag p${selectedItem.priority}`}>
+          {PRIORITY_LABELS[selectedItem.priority] ?? "P3"}
+        </span>
+        <strong className="action-inspector-title">{selectedItem.title}</strong>
+        <span className={`action-inspector-state${selectedItem.acked ? " is-acked" : ""}`}>
+          {selectedItem.acked ? "已处理" : "待处理"}
+        </span>
+      </div>
+      <div className="action-inspector-message">
+        {selectedItem.message || "该动作没有附加消息。"}
+      </div>
+      <dl className="action-inspector-facts">
+        <div>
+          <dt>来源</dt>
+          <dd>{selectedItem.source_name}</dd>
+        </div>
+        <div>
+          <dt>分类</dt>
+          <dd>{CATEGORY_LABELS[selectedItem.category]}</dd>
+        </div>
+        <div>
+          <dt>类型</dt>
+          <dd className="action-inspector-mono">{selectedItem.kind}</dd>
+        </div>
+        <div>
+          <dt>发生时间</dt>
+          <dd>{formatRelative(selectedItem.occurred_at)}</dd>
+        </div>
+        <div>
+          <dt>会话</dt>
+          <dd className="action-inspector-mono action-inspector-ellipsis" data-tip={selectedItem.session_external_id}>
+            {selectedItem.session_external_id || "—"}
+          </dd>
+        </div>
+        <div>
+          <dt>轮次</dt>
+          <dd className="action-inspector-mono action-inspector-ellipsis" data-tip={selectedItem.run_external_id ?? selectedItem.id}>
+            {selectedItem.run_external_id ?? selectedItem.id}
+          </dd>
+        </div>
+        <div>
+          <dt>关联任务</dt>
+          <dd className="action-inspector-ellipsis" data-tip={selectedItem.task_title ?? undefined}>
+            {selectedItem.task_title ?? "—"}
+          </dd>
+        </div>
+        <div>
+          <dt>判定</dt>
+          <dd>
+            {selectedItem.authorization_inferred
+              ? "授权类型为关键词推断"
+              : "来自真实 Agent / 任务事件"}
+          </dd>
+        </div>
+      </dl>
+      <div className="action-inspector-actions">
+        {selectedItem.task_id && (
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => void onOpenTaskContext(selectedItem)}
+            disabled={busy === selectedItem.id}
+          >
+            <Layers size={12} /> 打开任务上下文
+          </button>
+        )}
+        {(selectedItem.kind === "reminder" ||
+          (selectedItem.source_id && selectedItem.session_external_id)) && (
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => void onOpen(selectedItem)}
+            disabled={busy === selectedItem.id}
+          >
+            <ExternalLink size={12} />
+            {selectedItem.kind === "reminder" ? "打开任务" : "打开会话"}
+          </button>
+        )}
+        {canAck(selectedItem) && (
+          <button
+            type="button"
+            className={`btn sm${selectedItem.acked ? "" : " primary"}`}
+            onClick={() => void onAck(selectedItem)}
+            disabled={busy === selectedItem.id}
+          >
+            {selectedItem.acked ? <Undo2 size={12} /> : <Check size={12} />}
+            {selectedItem.acked ? "恢复为待处理" : "标记已处理"}
+          </button>
+        )}
+      </div>
+    </>
+  ) : (
+    <div className="action-inspector-empty">
+      <span>动作详情</span>
+      <p>从中间列表选择一条动作，查看真实上下文、任务关联和可执行操作。</p>
+    </div>
+  );
 
   return (
     <div className="action-panel page-fill">
@@ -432,7 +541,8 @@ export default function ActionCenterPanel() {
           </aside>
         }
       >
-        <div className="action-main">
+        <div className={`action-workspace${detailHost ? " has-detail-host" : ""}`}>
+          <div className="action-center">
 
       {actionsPaused && feed?.enabled !== false && (
         <div className="empty-hint action-paused-hint" role="status">
@@ -506,6 +616,8 @@ export default function ActionCenterPanel() {
                       else rowRefs.current.delete(item.id);
                     }}
                     className={`task-card action-item p${item.priority} kind-${item.kind} ${item.acked ? "acked" : ""} ${
+                      selectedId === item.id ? "is-selected" : ""
+                    } ${
                       leaving ? "leaving" : ""
                     }`}
                     inert={leaving || undefined}
@@ -518,8 +630,9 @@ export default function ActionCenterPanel() {
                   >
                     <button
                       className="action-main"
-                      onClick={() => onOpen(item)}
-                      title={item.kind === "reminder" ? "查看任务" : "跳转到该 Agent 会话"}
+                      onClick={() => setSelectedId(item.id)}
+                      aria-pressed={selectedId === item.id}
+                      title="查看动作详情与上下文"
                     >
                       <div className="action-head">
                         <span className={`priority-tag p${item.priority}`}>
@@ -550,6 +663,18 @@ export default function ActionCenterPanel() {
                       </div>
                     </button>
                     <div className="action-side">
+                      {(item.kind === "reminder" ||
+                        (item.source_id && item.session_external_id)) && (
+                        <button
+                          className="icon-btn sm"
+                          onClick={() => void onOpen(item)}
+                          disabled={busy === item.id}
+                          title={item.kind === "reminder" ? "打开任务" : "打开 Agent 会话"}
+                          aria-label={item.kind === "reminder" ? "打开任务" : "打开会话"}
+                        >
+                          <ExternalLink size={12} />
+                        </button>
+                      )}
                       {item.task_id && (
                         <button
                           className="icon-btn sm"
@@ -599,7 +724,54 @@ export default function ActionCenterPanel() {
             )}
           </div>
           </>
-      )}
+          )}
+          </div>
+
+          {feed?.enabled !== false && detailHost && (
+            <WorkbenchPageDetail title="动作详情">
+              {inspectorNode}
+            </WorkbenchPageDetail>
+          )}
+
+          {feed?.enabled !== false && !detailHost && (
+            <aside className="action-inspector" aria-label="动作详情">
+              {inspectorNode}
+            </aside>
+          )}
+
+          {feed?.enabled !== false && displayedItems.length > 0 && (
+            <section className="action-runtime" aria-label="执行记录">
+              <div className="action-runtime-head">
+                <h2>执行记录</h2>
+                <span>
+                  {feed?.generated_at
+                    ? `聚合于 ${formatRelative(feed.generated_at)}`
+                    : "等待聚合"}
+                </span>
+              </div>
+              <div className="action-runtime-track">
+                {displayedItems.slice(0, 6).map((item) => (
+                  <div
+                    key={item.id}
+                    className={`action-runtime-item kind-${item.kind}${item.id === selectedId ? " is-selected" : ""}`}
+                  >
+                    <span className="action-runtime-dot" aria-hidden="true" />
+                    <strong>{item.source_name}</strong>
+                    <span className="action-runtime-mono">
+                      {item.run_external_id ?? item.id}
+                    </span>
+                    <span>{formatRelative(item.occurred_at)}</span>
+                    <span className="action-runtime-state">
+                      {item.acked ? "acked" : item.kind}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="action-runtime-note">
+                当前分类的真实动作状态；跨分类与原始事件流水以「历史」为准。
+              </p>
+            </section>
+          )}
         </div>
       </WorkspaceSplit>
     </div>

@@ -77,6 +77,7 @@ function touch(key: string): void {
     if (victim === null) break;
     cache.delete(victim);
     reqSeq.delete(victim);
+    lastSignatureProbe.delete(victim);
   }
 }
 
@@ -205,13 +206,25 @@ async function refreshSignature(path: string, showHidden: boolean): Promise<void
   }
 }
 
+/** 同一目录签名探测的最小间隔：多个分栏打开同一目录时共用一次 IPC。 */
+const SIG_MIN_INTERVAL_MS = 3000;
+/** 每个缓存键最近一次签名探测时间（与 cache 同生命周期）。 */
+const lastSignatureProbe = new Map<string, number>();
+
 /**
  * 轮询刷新：签名变化才重拉列表；目录失效时把 error 标为 DIR_MISSING。
  * 返回 true 表示触发了重载。
  */
 export function reloadIfChanged(path: string, showHidden: boolean): boolean {
+  const key = `${showHidden ? "h1" : "h0"}:${path}`;
   const state = getDirState(path, showHidden);
-  if (state.loading || inflight.has(`${showHidden ? "h1" : "h0"}:${path}`)) return false;
+  if (state.loading || inflight.has(key)) return false;
+  // 去重：同一目录被多个分栏 / 多次可见性回调同时触发时，只允许一个探测窗口，
+  // 避免 N 个分栏 → N 倍 `fs_dir_signature` IPC。
+  const now = Date.now();
+  const last = lastSignatureProbe.get(key) ?? 0;
+  if (now - last < SIG_MIN_INTERVAL_MS) return false;
+  lastSignatureProbe.set(key, now);
   const known = state.signatureModifiedMs;
   if (known === null) {
     refreshSignature(path, showHidden);

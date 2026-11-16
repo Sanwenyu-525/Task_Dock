@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import AgentIcon from "../ui/AgentIcon";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
+import { WorkbenchPageDetail, useWorkbenchDetailHost } from "../../workbench/pageDetail";
 import WorkspaceSplit from "../../workbench/WorkspaceSplit";
 import CollapsibleSection from "../ui/CollapsibleSection";
 import EmptyState from "../ui/EmptyState";
@@ -446,6 +447,8 @@ export default function AgentPanel() {
   const dismissWizard = useAgentOnboardingStore((s) => s.dismiss);
   const [inboxDir, setInboxDir] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const detailHost = useWorkbenchDetailHost();
   // 若上次离开时接入操作仍在进行/结果未确认，重新进入直接回到向导页。
   const [section, setSection] = useState<Section>(() =>
     useAgentOnboardingStore.getState().wizard ? "onboard" : "monitor",
@@ -742,6 +745,53 @@ export default function AgentPanel() {
     });
   }, [tree, monitorFilter, monitorQuery]);
 
+  const selectedAgent = useMemo(
+    () => (selectedAgentId ? tree.find((agent) => agent.id === selectedAgentId) ?? null : null),
+    [tree, selectedAgentId],
+  );
+
+  // 筛选/搜索把选中 Agent 隐藏后，右栏不能继续显示一个已经不在当前视图里的对象。
+  useEffect(() => {
+    if (
+      selectedAgentId &&
+      !visibleAgents.some((agent) => agent.id === selectedAgentId)
+    ) {
+      setSelectedAgentId(null);
+    }
+  }, [selectedAgentId, visibleAgents]);
+
+  // 运行记录只取该 Agent 当前已加载的真实会话/轮次；没有历史加载时不伪造任务。
+  const selectedAgentRuns = useMemo(() => {
+    if (!selectedAgent) return [];
+    const sessions = [
+      ...selectedAgent.instances.flatMap((instance) => instance.sessions),
+      ...selectedAgent.unassignedSessions,
+    ];
+    const seen = new Set<string>();
+    const runs: TreeRun[] = [];
+    for (const session of sessions) {
+      for (const run of session.runs) {
+        if (seen.has(run.id)) continue;
+        seen.add(run.id);
+        runs.push(run);
+      }
+    }
+    return runs.sort(
+      (left, right) =>
+        new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+    );
+  }, [selectedAgent]);
+
+  const selectedAgentRunCounts = useMemo(() => {
+    const counts = { running: 0, waiting: 0, failed: 0, total: selectedAgentRuns.length };
+    for (const run of selectedAgentRuns) {
+      if (run.status === "running") counts.running += 1;
+      else if (run.status === "waiting") counts.waiting += 1;
+      else if (run.status === "failed" || run.status === "disconnected") counts.failed += 1;
+    }
+    return counts;
+  }, [selectedAgentRuns]);
+
   const monitorSearching = monitorQuery.trim().length > 0;
   // 历史搜索走后端分页（防抖 + 代际保护）；与实时快照刷新互不阻塞。
   // 只有打开「运行监控」分区且有搜索词时才请求，不轮询。
@@ -846,6 +896,78 @@ export default function AgentPanel() {
       <div className="empty-hint">{tr("common.loading")}…</div>
     );
   }
+
+  const agentInspectorNode = selectedAgent ? (
+    <div className="agent-inspector-body">
+      <div className={`agent-inspector-identity attention-${selectedAgent.liveState}`}>
+        <span className={`agent-dot state-${selectedAgent.liveState}`} />
+        <strong>{selectedAgent.name}</strong>
+        <span className={`session-state state-${selectedAgent.liveState}`}>
+          {AGENT_STATE_LABELS[selectedAgent.liveState] ?? "未知"}
+        </span>
+      </div>
+      <div className="agent-inspector-metrics">
+        <div>
+          <strong>{selectedAgent.activeCount}</strong>
+          <span>活跃会话</span>
+        </div>
+        <div>
+          <strong>{selectedAgent.sessionCount}</strong>
+          <span>会话总数</span>
+        </div>
+        <div>
+          <strong>{selectedAgent.instances.length}</strong>
+          <span>实例分组</span>
+        </div>
+        <div>
+          <strong>{selectedAgentRuns.length}</strong>
+          <span>已加载轮次</span>
+        </div>
+      </div>
+      <div className="agent-inspector-facts">
+        <div>
+          <span>接入状态</span>
+          <strong>{selectedAgent.connected ? "已接入监控" : "暂无实时接入证据"}</strong>
+        </div>
+        <div>
+          <span>当前运行</span>
+          <strong>{selectedAgentRunCounts.running} 轮</strong>
+        </div>
+        <div>
+          <span>等待介入</span>
+          <strong>{selectedAgentRunCounts.waiting} 轮</strong>
+        </div>
+        <div>
+          <span>失败 / 失联</span>
+          <strong>{selectedAgentRunCounts.failed} 轮</strong>
+        </div>
+        <div>
+          <span>关联任务数</span>
+          <strong>
+            {new Set(
+              selectedAgentRuns
+                .map((run) => run.taskTitle)
+                .filter((title) => title.trim().length > 0),
+            ).size}{" "}
+            个
+          </strong>
+        </div>
+      </div>
+      <div className="agent-inspector-note">
+        会话、实例与轮次均来自当前已加载快照；展开左侧会话可查看真实轮次与待处理事项。
+        未加载的历史不会在此处补写。
+      </div>
+    </div>
+  ) : (
+    <div className="agent-inspector-empty">
+      <Activity size={18} />
+      <strong>选择一个 Agent</strong>
+      <span>
+        选中左侧 Agent 后，这里显示它的接入状态、实例/会话统计与已加载轮次；
+        不会复制会话正文，也不会伪造任务关联。
+      </span>
+    </div>
+  );
 
   return (
     <div className="agents-panel page-fill">
@@ -974,6 +1096,8 @@ export default function AgentPanel() {
 
       {/* ══ 历史搜索结果（后端分页；与 Agent 名称过滤互不替代）══ */}
       {section === "monitor" && (
+        <div className={`agent-workspace${detailHost ? " has-detail-host" : ""}`}>
+          <div className="agent-center">
         <div className="page-scroll agents-body">
             {monitorSearching && (
               <HistorySearchResults
@@ -1022,6 +1146,8 @@ export default function AgentPanel() {
                   focusRunId={agentFocus?.refId ?? null}
                   focusPin={focusPin}
                   onRequestSearchFocus={focusMonitorSearch}
+                  onSelectAgent={setSelectedAgentId}
+                  selected={selectedAgentId === agent.id}
                   discovery={discoveryBySource.get(agent.id)}
                   onConnect={
                     discoveryBySource.has(agent.id)
@@ -1044,6 +1170,59 @@ export default function AgentPanel() {
                 />
               )}
           </div>
+          </div>
+          </div>
+          {detailHost && (
+            <WorkbenchPageDetail title="Agent 任务上下文">
+              {agentInspectorNode}
+            </WorkbenchPageDetail>
+          )}
+          {!detailHost && (
+            <aside className="agent-inspector" aria-label="Agent 任务上下文">
+              <div className="agent-inspector-head">
+                <span className="workspace-rail-eyebrow">AGENT CONTEXT</span>
+                <h2>任务上下文</h2>
+              </div>
+              {agentInspectorNode}
+            </aside>
+          )}
+          {selectedAgent && (
+            <section className="agent-runlog" aria-label="Agent 运行记录">
+              <div className="agent-runlog-head">
+                <div>
+                  <span className="workspace-rail-eyebrow">RUN LOG</span>
+                  <h2>运行记录</h2>
+                </div>
+                <span className="agent-runlog-count">
+                  {selectedAgentRuns.length > 8
+                    ? `显示最近 8 / ${selectedAgentRuns.length} 条已加载轮次`
+                    : `${selectedAgentRuns.length} 条已加载轮次`}
+                </span>
+              </div>
+              {selectedAgentRuns.length === 0 ? (
+                <div className="agent-runlog-empty">
+                  当前快照没有该 Agent 的已加载轮次；展开会话或刷新后按真实结果更新。
+                </div>
+              ) : (
+                <div className="agent-runlog-list">
+                  {selectedAgentRuns.slice(0, 8).map((run) => (
+                    <div key={run.id} className="agent-runlog-item">
+                      <span className={`agent-dot state-${run.status}`} />
+                      <span className="run-source">
+                        {run.externalRunId?.slice(0, 12) ?? "自动轮次"}
+                      </span>
+                      <span className={`session-state state-${run.status}`}>
+                        {AGENT_STATE_LABELS[run.status] ?? run.status}
+                      </span>
+                      <span className="agent-runlog-time">
+                        {formatRelative(run.updatedAt)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
         </div>
       )}
 
@@ -1521,6 +1700,8 @@ function AgentNode({
   onRequestSearchFocus,
   discovery,
   onConnect,
+  onSelectAgent,
+  selected,
 }: {
   agent: TreeAgent;
   expanded: Record<string, boolean>;
@@ -1535,6 +1716,8 @@ function AgentNode({
   onRequestSearchFocus: () => void;
   discovery?: DiscoveredAgent;
   onConnect?: () => void;
+  onSelectAgent?: (agentId: string) => void;
+  selected?: boolean;
 }) {
   const open = !!expanded[agent.id];
   /** 快照外历史定位：即使快照已把该来源挤出窗口，也要能展开它真实的历史分区。 */
@@ -1647,12 +1830,15 @@ function AgentNode({
     agent.unassignedSessions.length > 0 || pinnedUnassigned || unassignedHistoryCount > 0;
 
   return (
-    <div className={`tree-agent attention-${agent.liveState}`}>
+    <div className={`tree-agent attention-${agent.liveState}${selected ? " is-selected" : ""}`}>
       {/* 行容器为 div：展开按钮与导航操作按钮是兄弟节点（修复 button 嵌套） */}
       <div className="tree-row tree-agent-row">
         <button
           className="tree-row-main"
-          onClick={() => setExpanded((e) => ({ ...e, [agent.id]: !e[agent.id] }))}
+          onClick={() => {
+            onSelectAgent?.(agent.id);
+            setExpanded((e) => ({ ...e, [agent.id]: !e[agent.id] }));
+          }}
           aria-expanded={open}
         >
           {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}

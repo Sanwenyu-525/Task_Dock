@@ -892,6 +892,9 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   保证功能图标和 Tab 名称对齐且 200px 导航不横向溢出。动态行外层是普通布局容器，
   页面切换、拖拽、隐藏分别是兄弟 `button`（页面按钮 `data-nav-page` 占功能图标/名称/
   徽标三列），不再出现 `role=button` 容器内嵌 button；排序后的焦点恢复到页面按钮。
+  ≤760px 时导航收为 56px 纯图标：手柄、×、分组标题与名称一并隐藏，页面按钮单列居中；
+  手柄规则用 `.wb-nav-item > .wb-nav-grip` 覆盖基础样式中后置的 `.wb-nav-grip` display，
+  避免 56px 内手柄和分组标题逐字换行（2026-11-16 真实窗口极窄检查修复）。
   测试：`WorkbenchShell.dragSort.test.tsx`（28 项，含跨组标题/尺寸/网格/DOM 语义/隐藏/
   保存失败）、`navVisibility.test.ts`（38 项，含重复段不批量改写与 movedId 边界）、
   `useNavOrderDraft.test.tsx`（6 项）、`navOrderIntent.test.ts`（11 项）。

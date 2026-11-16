@@ -30,6 +30,8 @@ import {
 
 import WorkbenchPageHeader from "./WorkbenchPageHeader";
 import NovelManuscriptPanel from "./NovelManuscriptPanel";
+import CreativeModuleHost from "./creative/CreativeModuleHost";
+import type { CreativeModuleId } from "./creative/types";
 import Select from "../components/ui/Select";
 import {
   agentSnapshot,
@@ -74,6 +76,19 @@ const ITEM_STATUS_LABEL: Record<string, string> = {
   done: "完成",
   archived: "归档",
 };
+
+/**
+ * 壳层自己渲染的通用模块（内容写在下面各 `activeModule === ...` 分支里）。
+ * 其余模块都是专业领域模块，统一交给 `CreativeModuleHost` 按 `kind` 分桶装配：
+ * 这样五条开发线只写自己的内容组件，不必改本文件。
+ */
+const BUILTIN_MODULES = new Set<WorkspaceModuleId>([
+  "overview",
+  "manuscript",
+  "items",
+  "links",
+  "settings",
+]);
 
 const STAGE_HINT: Record<WorkspaceKind, string> = {
   development: "阶段（如 api / ui / 联调）",
@@ -927,6 +942,25 @@ export default function ProjectWorkspacePanel({
           archived={project.status === "archived"}
           onNotice={onNotice}
           registerFlush={registerManuscriptFlush}
+        />
+      )}
+
+      {/* 专业领域模块（人物 / 世界观 / 资源 / 构建 / 剧集 / 分镜 / 里程碑 /
+          资料 / Git / Agent）：按 kind 从注册表取实现；key 带项目 ID，
+          切项目即重挂，杜绝跨项目残留状态。 */}
+      {project && !BUILTIN_MODULES.has(activeModule) && (
+        <CreativeModuleHost
+          key={`${project.id}:${activeModule}`}
+          moduleId={activeModule as CreativeModuleId}
+          kind={profile.kind}
+          projectId={project.id}
+          projectName={project.name}
+          archived={project.status === "archived"}
+          rootPath={project.rootPath || null}
+          rootExists={project.rootExists}
+          devProjectId={project.devProjectId}
+          onNotice={onNotice}
+          switchModule={(id) => void switchModule(id as WorkspaceModuleId)}
         />
       )}
 

@@ -67,6 +67,68 @@ mod imp {
 
     const CLASS_NAME: &str = "TaskDockWindowShadow";
 
+    /// 一组阴影参数（CSS px / 0–1 alpha）。默认即下方常量，验收时可在 **debug 构建**
+    /// 用 `TASK_DOCK_SHADOW_*` 环境变量整体替换，避免为每个候选方案重新编译。
+    /// release 构建永远使用常量，不接受环境变量。
+    #[derive(Clone, Copy, Debug)]
+    struct ShadowParams {
+        margin: f64,
+        ambient_blur: f64,
+        ambient_alpha: f32,
+        contact_blur: f64,
+        contact_alpha: f32,
+        offset_y: f64,
+        color: (f32, f32, f32),
+    }
+
+    impl ShadowParams {
+        const fn defaults() -> Self {
+            Self {
+                margin: MARGIN_CSS,
+                ambient_blur: AMBIENT_BLUR_CSS,
+                ambient_alpha: AMBIENT_ALPHA,
+                contact_blur: CONTACT_BLUR_CSS,
+                contact_alpha: CONTACT_ALPHA,
+                offset_y: OFFSET_Y_CSS,
+                color: (SHADOW_R, SHADOW_G, SHADOW_B),
+            }
+        }
+    }
+
+    /// 纯函数便于单测：`get` 返回环境变量值，缺失/非法时回退默认。
+    fn parse_params(get: impl Fn(&str) -> Option<String>) -> ShadowParams {
+        let d = ShadowParams::defaults();
+        let num = |key: &str, fallback: f64| -> f64 {
+            get(key)
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .unwrap_or(fallback)
+        };
+        ShadowParams {
+            margin: num("TASK_DOCK_SHADOW_MARGIN", d.margin).clamp(16.0, 96.0),
+            ambient_blur: num("TASK_DOCK_SHADOW_AMBIENT_BLUR", d.ambient_blur).clamp(2.0, 64.0),
+            ambient_alpha: num("TASK_DOCK_SHADOW_AMBIENT_ALPHA", d.ambient_alpha as f64)
+                .clamp(0.0, 0.6) as f32,
+            contact_blur: num("TASK_DOCK_SHADOW_CONTACT_BLUR", d.contact_blur).clamp(2.0, 32.0),
+            contact_alpha: num("TASK_DOCK_SHADOW_CONTACT_ALPHA", d.contact_alpha as f64)
+                .clamp(0.0, 0.6) as f32,
+            offset_y: num("TASK_DOCK_SHADOW_OFFSET_Y", d.offset_y).clamp(0.0, 24.0),
+            color: d.color,
+        }
+    }
+
+    fn params() -> ShadowParams {
+        #[cfg(debug_assertions)]
+        {
+            static P: OnceLock<ShadowParams> = OnceLock::new();
+            *P.get_or_init(|| parse_params(|k| std::env::var(k).ok()))
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            ShadowParams::defaults()
+        }
+    }
+
     struct State {
         shadow: isize,
         old_proc: isize,
@@ -263,6 +325,7 @@ mod imp {
 
 
     fn build_bitmap(state: &mut State, win_w: i32, win_h: i32, hrgn: Option<isize>) -> bool {
+        let pr = params();
         let margin = state.margin;
         let w = win_w + margin * 2;
         let h = win_h + margin * 2;
@@ -314,8 +377,8 @@ mod imp {
         state.ambient.resize(total, 0.0);
         state.contact.clear();
         state.contact.resize(total, 0.0);
-        let amb_pass = (((AMBIENT_BLUR_CSS * state.scale).round() as usize) / 2).max(1);
-        let con_pass = (((CONTACT_BLUR_CSS * state.scale).round() as usize) / 2).max(1);
+        let amb_pass = (((pr.ambient_blur * state.scale).round() as usize) / 2).max(1);
+        let con_pass = (((pr.contact_blur * state.scale).round() as usize) / 2).max(1);
         blur3(
             &state.mask,
             &mut state.tmp,
@@ -337,12 +400,12 @@ mod imp {
         unsafe {
             let out = std::slice::from_raw_parts_mut(state.bits, total * 4);
             for i in 0..total {
-                let a = (state.ambient[i] * AMBIENT_ALPHA + state.contact[i] * CONTACT_ALPHA)
+                let a = (state.ambient[i] * pr.ambient_alpha + state.contact[i] * pr.contact_alpha)
                     .clamp(0.0, 1.0);
                 let p = i * 4;
-                out[p] = (SHADOW_B * a) as u8;
-                out[p + 1] = (SHADOW_G * a) as u8;
-                out[p + 2] = (SHADOW_R * a) as u8;
+                out[p] = (pr.color.2 * a) as u8;
+                out[p + 1] = (pr.color.1 * a) as u8;
+                out[p + 2] = (pr.color.0 * a) as u8;
                 out[p + 3] = (a * 255.0) as u8;
             }
         }
@@ -355,8 +418,8 @@ mod imp {
             let mut samples = String::new();
             for d in [0usize, 4, 10, 20, 34] {
                 let x = inside_x.saturating_sub(d);
-                let a = state.ambient[cy * w as usize + x] * AMBIENT_ALPHA
-                    + state.contact[cy * w as usize + x] * CONTACT_ALPHA;
+                let a = state.ambient[cy * w as usize + x] * pr.ambient_alpha
+                    + state.contact[cy * w as usize + x] * pr.contact_alpha;
                 samples.push_str(&format!("{d}px:{:.3} ", a));
             }
             eprintln!(
@@ -407,7 +470,7 @@ mod imp {
 
             let dpi = GetDpiForWindow(owner_hwnd);
             state.scale = if dpi > 0 { f64::from(dpi) / 96.0 } else { 1.0 };
-            state.margin = (MARGIN_CSS * state.scale).round() as i32;
+            state.margin = (params().margin * state.scale).round() as i32;
 
             // 当前窗口区域；未设置区域（或读取失败）时按整窗矩形
             let probe = CreateRectRgn(0, 0, 0, 0);
@@ -452,7 +515,7 @@ mod imp {
 
             let x = rect.left - state.margin;
             // 光源在窗口上方：整张阴影位图整体下移 offset，上边缘因此更"贴身"、下边缘更"落空"。
-            let y = rect.top - state.margin + (OFFSET_Y_CSS * state.scale).round() as i32;
+            let y = rect.top - state.margin + (params().offset_y * state.scale).round() as i32;
             let w = win_w + state.margin * 2;
             let h = win_h + state.margin * 2;
 
@@ -632,7 +695,7 @@ mod imp {
                 bits: std::ptr::null_mut(),
                 bmp_w: 0,
                 bmp_h: 0,
-                margin: (MARGIN_CSS * 1.25).round() as i32,
+                margin: (params().margin * 1.25).round() as i32,
                 scale: 1.0,
                 shape_hash: u64::MAX,
                 topmost: false,
@@ -673,6 +736,42 @@ mod imp {
 
     pub fn detach(hwnd: isize) {
         destroy_now(hwnd);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn defaults_are_the_shipping_values() {
+            let p = parse_params(|_| None);
+            assert_eq!(p.margin, 40.0);
+            assert_eq!(p.ambient_blur, 18.0);
+            assert!((p.ambient_alpha - 0.17).abs() < 1e-6);
+            assert_eq!(p.contact_blur, 6.0);
+            assert!((p.contact_alpha - 0.12).abs() < 1e-6);
+            assert_eq!(p.offset_y, 5.0);
+            assert_eq!(p.color, (17.0, 26.0, 44.0));
+        }
+
+        #[test]
+        fn env_override_parses_and_clamps() {
+            let lookup = |k: &str| match k {
+                "TASK_DOCK_SHADOW_MARGIN" => Some("52".into()),
+                "TASK_DOCK_SHADOW_AMBIENT_BLUR" => Some("25".into()),
+                "TASK_DOCK_SHADOW_AMBIENT_ALPHA" => Some("0.20".into()),
+                "TASK_DOCK_SHADOW_CONTACT_ALPHA" => Some("9".into()), // 超界 → 0.6
+                "TASK_DOCK_SHADOW_OFFSET_Y" => Some("bad".into()),    // 非法 → 默认 5
+                _ => None,
+            };
+            let p = parse_params(lookup);
+            assert_eq!(p.margin, 52.0);
+            assert_eq!(p.ambient_blur, 25.0);
+            assert!((p.ambient_alpha - 0.20).abs() < 1e-6);
+            assert_eq!(p.contact_alpha, 0.6);
+            assert_eq!(p.contact_blur, 6.0);
+            assert_eq!(p.offset_y, 5.0);
+        }
     }
 }
 
