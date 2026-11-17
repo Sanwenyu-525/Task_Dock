@@ -201,7 +201,7 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     state: "limited",
     provider: "game_assets（v60）+ 文件工作区只读打开",
     condition: "游戏项目且根目录存在",
-    fallback: "路径失效会显示「文件缺失」提示；后端运行期功能测试未取得证据（Rust 测试受阻）",
+    fallback: "路径失效会显示「文件缺失」提示；后端 Rust 用例已于 2026-11-17 实测通过；真实桌面窗口验收待统一构建后执行",
   },
   "game.build": {
     id: "game.build",
@@ -219,7 +219,7 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     state: "limited",
     provider: "comic_episodes（v61）",
     condition: "AI 漫剧项目；归档只读",
-    fallback: "前端交互与编译检查通过；后端运行期功能测试未取得证据（Rust 测试受阻）",
+    fallback: "前端交互与编译检查通过；后端 Rust 用例已于 2026-11-17 实测通过；真实桌面窗口验收待统一构建后执行",
   },
   "comic.shots": {
     id: "comic.shots",
@@ -228,7 +228,7 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     state: "limited",
     provider: "comic_shots（v61）",
     condition: "AI 漫剧项目；归档只读",
-    fallback: "前端交互与编译检查通过；后端运行期功能测试未取得证据（Rust 测试受阻）",
+    fallback: "前端交互与编译检查通过；后端 Rust 用例已于 2026-11-17 实测通过；真实桌面窗口验收待统一构建后执行",
   },
   "comic.characters": {
     id: "comic.characters",
@@ -277,7 +277,7 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     condition: "小说项目；归档只读",
     // 诚实边界：前端 6/6 与 cargo check 通过，但 Rust 功能测试因本机页面文件耗尽未执行成功，
     // 运行期语义（隔离/归档/解绑不删主实体）尚无测试证据，故只能声明受限。
-    fallback: "前端交互与编译检查通过；后端运行期功能测试未取得证据（Rust 测试受阻），异常会显示错误并可重试",
+    fallback: "前端交互与编译检查通过；后端 Rust 用例已于 2026-11-17 实测通过；真实桌面窗口验收待统一构建后执行，异常会显示错误并可重试",
   },
   "novel.worldview": {
     id: "novel.worldview",
@@ -286,7 +286,7 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     state: "limited",
     provider: "novel_worldview_entries / novel_entity_refs（v59）",
     condition: "小说项目；归档只读",
-    fallback: "前端交互与编译检查通过；后端运行期功能测试未取得证据（Rust 测试受阻）",
+    fallback: "前端交互与编译检查通过；后端 Rust 用例已于 2026-11-17 实测通过；真实桌面窗口验收待统一构建后执行",
   },
   "novel.aiAssist": {
     id: "novel.aiAssist",
@@ -324,7 +324,7 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     state: "limited",
     provider: "comic_episodes.script（v61）",
     condition: "AI 漫剧项目；归档只读",
-    fallback: "仅纯文本剧本；后端运行期功能测试未取得证据（Rust 测试受阻）",
+    fallback: "仅纯文本剧本；后端 Rust 用例已于 2026-11-17 实测通过；真实桌面窗口验收待统一构建后执行",
   },
   "comic.review": {
     id: "comic.review",
@@ -342,7 +342,7 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
     state: "limited",
     provider: "general_apply_template（v62）+ 前端模板常量",
     condition: "通用项目且进行中",
-    fallback: "模板生成真实事项与里程碑；后端运行期功能测试未取得证据（Rust 测试受阻）",
+    fallback: "模板生成真实事项与里程碑；后端 Rust 用例已于 2026-11-17 实测通过；真实桌面窗口验收待统一构建后执行",
   },
   "general.milestones": {
     id: "general.milestones",
