@@ -480,10 +480,63 @@ fn instance_identifier_for(base: &str, data_dir: Option<&std::ffi::OsStr>) -> St
     format!("{base}.iso.{:08x}", hash as u32)
 }
 
+/// 开发实例的专属数据目录（纯函数，便于单测）：`<RoamingAppData>/<应用标识>/dev-instance`。
+///
+/// 放在正式版数据目录的**子目录**而不是仓库里：不污染工作树、不需要额外忽略规则，
+/// 同时与正式版（`<RoamingAppData>/<应用标识>`）严格分开，互为父子但互不覆盖。
+fn dev_data_dir_for(
+    base: &str,
+    appdata: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    let appdata = appdata.filter(|value| !value.is_empty())?;
+    Some(
+        std::path::PathBuf::from(appdata)
+            .join(base)
+            .join("dev-instance"),
+    )
+}
+
+/// 开发态实例隔离：`npm run tauri dev` 编出的调试程序与安装版共用同一应用标识时，
+/// 先启动的一方会把另一方当成「重复启动」拦下——开发版看似启动成功，实际界面仍是
+/// 被唤醒的旧进程（用户看到的还是旧版本/旧数据）。
+///
+/// 未显式设置 `TASK_DOCK_DATA_DIR` 时给 dev 构建换一个专属数据目录：单实例锁、
+/// 通知 AUMID、数据库、备份、剪贴板与暂存架资产全部随目录派生/隔离，因此
+/// 开发版与正式版可并行、各自重复启动仍各自唤醒。显式设置（验收/便携模式）时
+/// 完全尊重现有配置，正式版（非 dev 构建）行为不变。
+fn apply_dev_instance_isolation(base: &str) {
+    if !tauri::is_dev() {
+        return;
+    }
+    if std::env::var_os("TASK_DOCK_DATA_DIR").is_some() {
+        return;
+    }
+    let appdata = std::env::var_os("APPDATA");
+    let Some(dir) = dev_data_dir_for(base, appdata.as_deref()) else {
+        tracing::warn!("无法确定开发实例数据目录（APPDATA 缺失），本次沿用正式版目录");
+        return;
+    };
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        tracing::warn!(
+            "创建开发实例数据目录失败（{}），本次沿用正式版目录: {error}",
+            dir.display()
+        );
+        return;
+    }
+    std::env::set_var("TASK_DOCK_DATA_DIR", &dir);
+    tracing::info!(
+        "开发实例已隔离到专属数据目录: {}（不写入正式版数据库）",
+        dir.display()
+    );
+}
+
 pub fn run() {
     alloc_stats::init_from_env();
     let mut context = tauri::generate_context!();
     let base_identifier = context.config().identifier.clone();
+    // 必须在 `instance_identifier` 之前：单实例锁按数据目录派生，
+    // 开发版与正式版因此成为两个互不拦截的实例。
+    apply_dev_instance_isolation(&base_identifier);
     context.config_mut().identifier = instance_identifier(&base_identifier);
     tauri::Builder::default()
         // 单实例保护必须最先注册：插件按注册顺序初始化，
@@ -704,8 +757,9 @@ pub fn run() {
             // get_settings / list_tasks 因此可能在 DB 等状态尚未 manage 时失败，
             // 表现为「重启后主题 / 视觉预设 / 材质停在默认值，刷新页面才恢复」。
             // 推迟到上述状态全部托管之后再创建，首屏 IPC 必定可用。
-            // 其余窗口（context-menu / notification / capture）保持原有创建时机，
-            // 不受此改动影响。
+            // 其余窗口（notification / capture）保持原有创建时机；
+            // context-menu 也改为 DB 托管后由 context_menu::init 创建，
+            // 避免其首屏 get_settings 与 handle.manage(db) 竞态。
             if let Some(cfg) = handle
                 .config()
                 .app
@@ -2348,6 +2402,43 @@ mod tests {
         let a = instance_identifier_for("x", Some(std::ffi::OsStr::new("C:/Tmp/Ab")));
         let b = instance_identifier_for("x", Some(std::ffi::OsStr::new("c:/tmp/ab")));
         assert_eq!(a, b, "Windows 路径大小写不同不应产生第二个实例身份");
+    }
+
+    #[test]
+    fn dev_data_dir_lives_under_release_app_data_dir() {
+        let dir = dev_data_dir_for(
+            "com.taskdock.desktop",
+            Some(std::ffi::OsStr::new(r"C:\Users\x\AppData\Roaming")),
+        )
+        .expect("APPDATA 存在时必须能算出开发目录");
+        assert_eq!(
+            dir,
+            std::path::PathBuf::from(
+                r"C:\Users\x\AppData\Roaming\com.taskdock.desktop\dev-instance"
+            )
+        );
+    }
+
+    #[test]
+    fn dev_data_dir_requires_appdata() {
+        assert!(dev_data_dir_for("com.taskdock.desktop", None).is_none());
+        assert!(
+            dev_data_dir_for("com.taskdock.desktop", Some(std::ffi::OsStr::new(""))).is_none(),
+            "空 APPDATA 不能拼出相对路径"
+        );
+    }
+
+    #[test]
+    fn dev_instance_never_shares_identity_with_release() {
+        let release = instance_identifier_for("com.taskdock.desktop", None);
+        let dev_dir = dev_data_dir_for(
+            "com.taskdock.desktop",
+            Some(std::ffi::OsStr::new(r"C:\Users\x\AppData\Roaming")),
+        )
+        .expect("开发目录");
+        let dev = instance_identifier_for("com.taskdock.desktop", Some(dev_dir.as_os_str()));
+        assert_ne!(release, dev, "开发版与正式版不能共用单实例身份");
+        assert!(dev.starts_with("com.taskdock.desktop.iso."));
     }
 
     #[test]

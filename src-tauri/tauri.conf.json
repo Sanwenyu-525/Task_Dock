@@ -42,7 +42,8 @@
         "maximizable": false,
         "minimizable": false,
         "focus": false,
-        "visible": false
+        "visible": false,
+        "create": false
       },
       {
         "label": "notification",

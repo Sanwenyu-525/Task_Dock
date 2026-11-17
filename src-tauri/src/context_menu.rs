@@ -1,7 +1,7 @@
 //! 液态玻璃右键菜单（v0.6）：独立透明弹出窗口 + 统一锚点定位。
 //!
 //! 取代原托盘原生 `Menu`（Windows 深灰系统样式）。悬浮栏右键与托盘右键
-//! 共用同一个 `context-menu` 窗口（tauri.conf.json 声明、启动即创建并隐藏）：
+//! 共用同一个 `context-menu` 窗口（tauri.conf.json 声明、DB 托管后创建并隐藏）：
 //!
 //! - **可回收**：窗口常驻复用，关闭只是 `hide()`，不存在反复创建/销毁的
 //!   窗口与 WebView 泄漏；内容高度通过 `fit_context_menu` 一次性回传
@@ -31,7 +31,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindowBuilder};
 
 use crate::db::Db;
 
@@ -400,6 +400,37 @@ fn menu_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
     app.get_webview_window(WINDOW_LABEL)
 }
 
+/// 在 DB/缓存等状态托管完成后创建菜单窗口。
+///
+/// 根因：`context-menu` 若由 Tauri 配置在 setup 前创建，其首屏会在
+/// `handle.manage(db)` 之前调用 `get_settings`，命令直接报
+/// `state not managed for field 'db'`，菜单主题/勾选态可能停在默认值。
+/// 因此配置改为 `create:false`，由本函数在 `context_menu::init` 中
+/// 按同一份窗口配置延迟创建；创建仍失败时保持 `None`，调用方只告警，
+/// 不阻断托盘/工作台启动。
+fn ensure_menu_window(app: &AppHandle) -> Option<tauri::WebviewWindow> {
+    let cfg = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == WINDOW_LABEL)
+        .cloned()?;
+    match WebviewWindowBuilder::from_config(app, &cfg) {
+        Ok(builder) => match builder.build() {
+            Ok(win) => Some(win),
+            Err(error) => {
+                tracing::warn!("context-menu 窗口创建失败: {error}");
+                None
+            }
+        },
+        Err(error) => {
+            tracing::warn!("context-menu 窗口配置读取失败: {error}");
+            None
+        }
+    }
+}
+
 fn cancel_pending_blur_close() {
     BLUR_TOKEN.fetch_add(1, Ordering::SeqCst);
 }
@@ -564,7 +595,7 @@ pub fn show_at_tab(app: &AppHandle, tab: crate::tab_popups::ScreenRect, edge: u8
 
 fn show_target(app: &AppHandle, target: Target, variant: &'static str) {
     let Some(win) = menu_window(app) else {
-        tracing::warn!("context-menu 窗口不存在（未在 tauri.conf.json 声明？）");
+        tracing::warn!("context-menu 窗口不存在（init 未执行或创建失败）");
         return;
     };
     tracing::info!(target = ?target, variant, "右键菜单：请求显示");
@@ -598,12 +629,14 @@ pub fn hide(app: &AppHandle) {
     }
 }
 
-/// 启动时挂接弹窗窗口事件：失焦延迟关闭 + 尺寸/DPI 变化重算圆角区域，
-/// 预应用原生材质（失败不致命，show 时还会重试），
+/// 初始化时创建窗口（DB 等状态已托管）并挂接事件：失焦延迟关闭 + 尺寸/DPI
+/// 变化重算圆角区域，预应用原生材质（失败不致命，show 时还会重试），
 /// 安装前台切换钩子（点击桌面/其他应用关闭菜单，事件驱动），
 /// 并在销毁时清理区域缓存。
 pub fn init(app: &AppHandle) {
-    if let Some(win) = menu_window(app) {
+    // 只在 DB 等状态托管完成后创建（见 ensure_menu_window 的根因说明）；
+    // 若窗口已存在（例如旧配置仍自动创建），直接复用，不重复 build。
+    if let Some(win) = menu_window(app).or_else(|| ensure_menu_window(app)) {
         if let Ok(h) = win.hwnd() {
             MENU_HWND.store(h.0 as isize, Ordering::Relaxed);
         }
