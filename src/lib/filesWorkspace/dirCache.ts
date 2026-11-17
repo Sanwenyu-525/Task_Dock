@@ -18,7 +18,10 @@ export interface DirState {
   truncated: boolean;
   /** 目录还有更多未加载的条目（翻页续拉）。 */
   hasMore: boolean;
-  /** 已消费的磁盘条目数（含隐藏过滤项；翻页 offset 依据）。 */
+  /**
+   * 已消费的**绝对磁盘位置**（含隐藏过滤项与元数据失败项），即下一页入参 offset；
+   * 来源于后端 `nextOffset`，禁止再与本页 `scanned` 二次累加。
+   */
   diskScanned: number | null;
   loading: boolean;
   error: string | null;
@@ -131,7 +134,7 @@ export function loadDir(path: string, showHidden: boolean, force = false): void 
       current.listing = listing.entries;
       current.truncated = listing.hasMore;
       current.hasMore = listing.hasMore;
-      current.diskScanned = listing.scanned;
+      current.diskScanned = listing.nextOffset;
       current.fetchedAt = Date.now();
       current.error = null;
       // 首次记录签名；后续轮询对比。
@@ -155,15 +158,19 @@ export function loadDir(path: string, showHidden: boolean, force = false): void 
     });
 }
 
+/**
+ * 分页停滞错误码：后端声明 hasMore=true，但 `nextOffset` 未推进到当前 offset 之后。
+ * 此时停止翻页并如实报错，绝不重复请求同一页，也不静默当作完整。
+ */
+export const PAGING_STALLED = "PAGING_STALLED";
+
 /** 翻页续拉：把下一页条目追加到缓存列表（超限目录的剩余部分）。 */
 export function loadMore(path: string, showHidden: boolean): void {
   const key = `${showHidden ? "h1" : "h0"}:${path}`;
   const state = getDirState(path, showHidden);
   if (!state.hasMore || state.loading || inflight.has(key)) return;
-  const scannedBefore = state.listing?.length ?? 0;
-  // scannedBefore 是已展示条目数；offset 需要磁盘序（含隐藏过滤项）——
-  // 增量扫描偏移用「当前已消费的磁盘条目数」，由后端 scanned 累计。
-  const consumed = state.diskScanned ?? scannedBefore;
+  // 绝对磁盘偏移：首页已由 loadDir 写入后端 nextOffset；缺省时退回 0（防御，不应发生）。
+  const consumed = state.diskScanned ?? 0;
   inflight.add(key);
   const seq = (reqSeq.get(key) ?? 0) + 1;
   reqSeq.set(key, seq);
@@ -171,12 +178,19 @@ export function loadMore(path: string, showHidden: boolean): void {
     .then((listing) => {
       if ((reqSeq.get(key) ?? 0) !== seq) return;
       const current = getDirState(path, showHidden);
+      // 停滞保护：还有更多但偏移未推进 → 不再翻页，保留已有列表并如实报错。
+      if (listing.hasMore && listing.nextOffset <= consumed) {
+        current.hasMore = false;
+        current.truncated = true;
+        current.error = PAGING_STALLED;
+        return;
+      }
       const existing = current.listing ?? [];
       const names = new Set(existing.map((e) => e.name));
       current.listing = [...existing, ...listing.entries.filter((e) => !names.has(e.name))];
       current.hasMore = listing.hasMore;
       current.truncated = listing.hasMore;
-      current.diskScanned = consumed + listing.scanned;
+      current.diskScanned = listing.nextOffset;
       current.fetchedAt = Date.now();
     })
     .catch((e) => {

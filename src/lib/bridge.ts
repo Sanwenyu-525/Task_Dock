@@ -5609,9 +5609,21 @@ export interface FsEntry {
 export interface FsDirListing {
   path: string;
   entries: FsEntry[];
-  /** 本轮扫描的磁盘条目数（含隐藏过滤项；翻页 offset 依据）。 */
+  /**
+   * 本轮结束时从目录开头累计的已消费磁盘位置（磁盘原始序，含隐藏过滤项与
+   * 元数据失败项）；恒 >= 入参 offset（offset 超界时等于目录条目总数且 hasMore=false）。
+   * 翻页不要用本字段自行累加，一律用 `nextOffset`。
+   */
   scanned: number;
-  /** 目录还有更多未返回的条目（继续按 offset 翻页）。 */
+  /**
+   * 下一页的**绝对偏移**，显式等于 `scanned`；前端翻页一律用本字段，
+   * 禁止再 `offset + scanned` 自行累加。`hasMore=true` 时必 > offset。
+   */
+  nextOffset: number;
+  /**
+   * 目录还有更多未返回的条目：仅因返回条数上限或扫描预算停止、且目录尚有未读条目
+   * 时为 true；遍历到末尾必为 false。
+   */
   hasMore: boolean;
 }
 

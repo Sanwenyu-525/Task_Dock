@@ -13,9 +13,11 @@ vi.mock("../../lib/bridge", () => bridgeMocks);
 import {
   getDirState,
   loadDir,
+  loadMore,
   reloadIfChanged,
   subscribeDir,
   invalidateDirs,
+  PAGING_STALLED,
 } from "./dirCache";
 
 /** 受控的 fsListDir promise（测试手动 resolve/reject 模拟乱序）。 */
@@ -37,19 +39,26 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function listing(path: string, names: string[]) {
+function entry(name: string) {
+  return {
+    name,
+    kind: "file" as const,
+    ext: "txt",
+    size: 1,
+    modifiedMs: 1,
+    hidden: false,
+    category: "text",
+  };
+}
+
+function listing(path: string, names: string[], hasMore = false, nextOffset?: number) {
+  const scanned = nextOffset ?? names.length;
   return {
     path,
-    truncated: false,
-    entries: names.map((n) => ({
-      name: n,
-      kind: "file",
-      ext: "txt",
-      size: 1,
-      modifiedMs: 1,
-      hidden: false,
-      category: "text",
-    })),
+    entries: names.map(entry),
+    scanned,
+    nextOffset: scanned,
+    hasMore,
   };
 }
 
@@ -137,5 +146,86 @@ describe("目录签名轮询去重", () => {
     reloadIfChanged(path, false);
     await Promise.resolve();
     expect(bridgeMocks.fsDirSignature.mock.calls.length - before).toBe(1);
+  });
+});
+
+describe("loadMore 翻页契约（nextOffset + 停滞保护）", () => {
+  it("连续三页按 nextOffset 翻页，最终条目不重不漏、hasMore 收敛", async () => {
+    const path = "D:\\multi-page";
+    const plan: Record<number, { names: string[]; nextOffset: number; hasMore: boolean }> = {
+      0: { names: ["a", "b"], nextOffset: 2, hasMore: true },
+      2: { names: ["c", "d"], nextOffset: 4, hasMore: true },
+      4: { names: ["e"], nextOffset: 5, hasMore: false },
+    };
+    bridgeMocks.fsListDir.mockImplementation(async (_p: string, _h: boolean, offset: number) => {
+      const page = plan[offset];
+      return listing(path, page.names, page.hasMore, page.nextOffset);
+    });
+
+    loadDir(path, false);
+    await vi.waitFor(() => expect(getDirState(path, false).listing?.map((e) => e.name)).toEqual(["a", "b"]));
+    expect(bridgeMocks.fsListDir).toHaveBeenNthCalledWith(1, path, false, 0);
+
+    loadMore(path, false);
+    await vi.waitFor(() =>
+      expect(getDirState(path, false).listing?.map((e) => e.name)).toEqual(["a", "b", "c", "d"]),
+    );
+    expect(bridgeMocks.fsListDir).toHaveBeenNthCalledWith(2, path, false, 2);
+
+    loadMore(path, false);
+    await vi.waitFor(() =>
+      expect(getDirState(path, false).listing?.map((e) => e.name)).toEqual(["a", "b", "c", "d", "e"]),
+    );
+    expect(bridgeMocks.fsListDir).toHaveBeenNthCalledWith(3, path, false, 4);
+
+    const state = getDirState(path, false);
+    expect(state.hasMore).toBe(false);
+    expect(state.diskScanned).toBe(5);
+  });
+
+  it("跨 8000/16000/24000 边界的多页并集不重不漏", async () => {
+    const path = "D:\\big-dir";
+    const plan: Record<number, { names: string[]; nextOffset: number; hasMore: boolean }> = {
+      0: { names: ["f0000"], nextOffset: 8000, hasMore: true },
+      8000: { names: ["f8000"], nextOffset: 16000, hasMore: true },
+      16000: { names: ["f16000"], nextOffset: 24000, hasMore: true },
+      24000: { names: ["f24000"], nextOffset: 24001, hasMore: false },
+    };
+    bridgeMocks.fsListDir.mockImplementation(async (_p: string, _h: boolean, offset: number) => {
+      const page = plan[offset];
+      return listing(path, page.names, page.hasMore, page.nextOffset);
+    });
+    loadDir(path, false);
+    await vi.waitFor(() => expect(getDirState(path, false).listing?.map((e) => e.name)).toEqual(["f0000"]));
+    loadMore(path, false);
+    await vi.waitFor(() => expect(getDirState(path, false).listing?.map((e) => e.name)).toContain("f8000"));
+    loadMore(path, false);
+    await vi.waitFor(() => expect(getDirState(path, false).listing?.map((e) => e.name)).toContain("f16000"));
+    loadMore(path, false);
+    await vi.waitFor(() => expect(getDirState(path, false).listing?.map((e) => e.name)).toContain("f24000"));
+    const names = getDirState(path, false).listing!.map((e) => e.name);
+    expect(names).toEqual(["f0000", "f8000", "f16000", "f24000"]);
+    expect(getDirState(path, false).hasMore).toBe(false);
+  });
+
+  it("分页停滞（hasMore 但 nextOffset 未推进）置错误且不再发请求", async () => {
+    const path = "D:\\stall";
+    bridgeMocks.fsListDir.mockImplementation(async (_p: string, _h: boolean, _offset: number | undefined) => {
+      // 首页正常；次页声明还有更多，但 nextOffset 停在 1（停滞）。
+      return listing(path, ["a"], true, 1);
+    });
+    loadDir(path, false);
+    await vi.waitFor(() => expect(getDirState(path, false).listing?.map((e) => e.name)).toEqual(["a"]));
+
+    loadMore(path, false);
+    await vi.waitFor(() => expect(getDirState(path, false).error).toBe(PAGING_STALLED));
+    const state = getDirState(path, false);
+    expect(state.hasMore).toBe(false);
+    expect(state.listing?.map((e) => e.name)).toEqual(["a"]);
+
+    const calls = bridgeMocks.fsListDir.mock.calls.length;
+    loadMore(path, false);
+    await Promise.resolve();
+    expect(bridgeMocks.fsListDir.mock.calls.length).toBe(calls);
   });
 });

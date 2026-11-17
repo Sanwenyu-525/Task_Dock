@@ -20,11 +20,16 @@ import { basename, joinPath } from "../../lib/filesWorkspace/pathUtils";
 import { getFwDragState, subscribeFwDrag } from "../../lib/filesWorkspace/interactions";
 import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
 import { useLocale } from "../../hooks/useLocale";
+import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
 
 const LIST_ROW_H = 26;
+/** 吸顶表头高度（与 .fw-list-head CSS 高度一致；虚拟化 headOffset 按此计入）。 */
+const LIST_HEAD_H = 26;
 const GRID_CELL_W = 104;
 const GRID_CELL_H = 116;
 const GRID_GAP = 8;
+
+type ListViewMode = "list" | "grid";
 
 // ── 缩略图（客户端并发 ≤3 + 有界缓存）─────────────────────────────────
 
@@ -43,6 +48,102 @@ function pumpThumbQueue(): void {
     void job();
   }
 }
+
+// ── 滚动位置会话缓存（会话内内存，不落库）───────────────────────────────
+// 归属键 = 稳定标签 tabId：分栏交换、双栏↔四宫格、最大化/恢复导致窗格重挂载后，
+// 同一标签的浏览位置不丢；两个标签打开同一路径时位置互不覆盖。拿不到标签上下文
+// （孤立挂载/测试）时退回目录路径兜底。缓存有界 LRU，活跃标签受保护不被驱逐。
+
+interface ScrollEntry {
+  /** 视口内首个可见条目的文件名（锚点文件）；空目录为空串。 */
+  anchorName: string;
+  /** 锚点行相对视口顶部的像素偏移（含吸顶表头之外的半行/滚过距离）。 */
+  anchorOffset: number;
+  viewMode: ListViewMode;
+  seq: number;
+}
+
+const scrollCache = new Map<string, ScrollEntry>();
+const SCROLL_CACHE_MAX = 200;
+/** 当前挂载中的会话键：LRU 驱逐不得淘汰正在浏览的标签。 */
+const activeSessions = new Set<string>();
+let scrollSeq = 0;
+
+/**
+ * 锚点索引：优先精确同名；锚点文件被删除/过滤时返回按名称排序的最近邻插入位，
+ * 保持浏览上下文，而不是按旧像素位置落到完全不相干的条目上。
+ */
+function findAnchorIndex(entries: FsEntry[], anchorName: string): number {
+  if (!entries.length) return -1;
+  let lo = 0;
+  let hi = entries.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (entries[mid].name.localeCompare(anchorName, "zh-CN", { numeric: true }) < 0) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo < entries.length && entries[lo].name === anchorName) return lo;
+  if (lo <= 0) return 0;
+  if (lo >= entries.length) return entries.length - 1;
+  return lo;
+}
+
+function resolveSessionKey(
+  el: HTMLElement | null,
+  fallbackPath: string,
+  prop?: string,
+): string {
+  if (prop) return `tab:${prop}`;
+  const paneEl = el?.closest?.("[data-fw-pane-id]");
+  if (paneEl) {
+    const paneId = paneEl.getAttribute("data-fw-pane-id");
+    const pane = paneId ? useFilesWorkspaceStore.getState().panes[paneId] : undefined;
+    const tabId = pane?.tabs.find((t) => t.tabId === pane.activeTabId)?.tabId;
+    if (tabId) return `tab:${tabId}`;
+  }
+  return `path:${fallbackPath}`;
+}
+
+function rememberScroll(key: string, entry: Omit<ScrollEntry, "seq">): void {
+  if (!Number.isFinite(entry.anchorOffset)) return;
+  scrollCache.set(key, { ...entry, seq: ++scrollSeq });
+  if (scrollCache.size > SCROLL_CACHE_MAX) {
+    // 优先淘汰非活跃会话中最久未访问者；活跃标签位置受保护，不被容量回收丢掉。
+    let oldest: string | undefined;
+    let oldestSeq = Number.POSITIVE_INFINITY;
+    for (const [k, entry] of scrollCache) {
+      if (activeSessions.has(k)) continue;
+      if (entry.seq < oldestSeq) {
+        oldestSeq = entry.seq;
+        oldest = k;
+      }
+    }
+    if (oldest === undefined) oldest = scrollCache.keys().next().value;
+    if (oldest !== undefined) scrollCache.delete(oldest);
+  }
+}
+
+/** 标签关闭/移出后由面板层调用：释放已不在任何窗格或收纳中的会话缓存。 */
+export function pruneScrollSessions(liveTabIds: ReadonlySet<string>): void {
+  for (const key of scrollCache.keys()) {
+    if (!key.startsWith("tab:")) continue;
+    if (!liveTabIds.has(key.slice("tab:".length))) scrollCache.delete(key);
+  }
+}
+
+/** 测试用：清空会话缓存与活跃登记。 */
+export function __resetScrollCache(): void {
+  scrollCache.clear();
+  activeSessions.clear();
+}
+
+/** 测试用：暴露缓存内部句柄，验证 LRU 有界与活跃保护（不进入产品 API）。 */
+export const __scrollCacheForTest = {
+  remember: rememberScroll,
+  cache: scrollCache,
+  active: activeSessions,
+  max: SCROLL_CACHE_MAX,
+};
 
 /** category 属于可出缩略图的类型（图片/视频）；失败回落图标。 */
 function thumbCapable(category: string): boolean {
@@ -96,6 +197,7 @@ function useScrollRange(
   containerRef: React.RefObject<HTMLElement | null>,
   itemHeight: number,
   count: number,
+  headOffset = 0,
 ): { start: number; end: number; viewportH: number } {
   const [range, setRange] = useState({ start: 0, end: 40, viewportH: 480 });
   useEffect(() => {
@@ -103,8 +205,10 @@ function useScrollRange(
     if (!el) return;
     const measure = () => {
       const viewportH = Math.max(el.clientHeight, 120);
-      const start = Math.max(0, Math.floor(el.scrollTop / itemHeight) - 4);
-      const end = Math.min(count, Math.ceil((el.scrollTop + viewportH) / itemHeight) + 4);
+      // 吸顶表头占去顶部 headOffset 高度：可见行范围按「表头之下」的滚动偏移换算。
+      const visibleTop = Math.max(0, el.scrollTop - headOffset);
+      const start = Math.max(0, Math.floor(visibleTop / itemHeight) - 4);
+      const end = Math.min(count, Math.ceil((visibleTop + viewportH) / itemHeight) + 4);
       setRange({ start, end, viewportH });
     };
     measure();
@@ -115,7 +219,7 @@ function useScrollRange(
       el.removeEventListener("scroll", measure);
       ro.disconnect();
     };
-  }, [containerRef, itemHeight, count]);
+  }, [containerRef, itemHeight, count, headOffset]);
   return range;
 }
 
@@ -234,6 +338,11 @@ export interface FileListProps {
   entries: FsEntry[];
   dirPath: string;
   viewMode: "list" | "grid";
+  /**
+   * 稳定会话标识（标签 tabId）。显式传入时滚动缓存按它归属；缺省时组件从最近的
+   * `[data-fw-pane-id]` 窗格反查活动标签，再退回目录路径兜底。
+   */
+  sessionKey?: string;
   selectedPaths: ReadonlySet<string>;
   activePath: string | null;
   dropTargetPath: string | null;
@@ -250,6 +359,7 @@ export default function FileList({
   entries,
   dirPath,
   viewMode,
+  sessionKey,
   selectedPaths,
   activePath,
   dropTargetPath,
@@ -263,6 +373,10 @@ export default function FileList({
 }: FileListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(6);
+  /** 网格列数测量完成前不恢复锚点：初始列数只是占位，按错误列数换算会落到错误行。 */
+  const [geometryReady, setGeometryReady] = useState(false);
+  /** 已恢复过位置的会话键：目录刷新重渲染时不重复回写滚动条，避免打断用户滚动。 */
+  const restoredRef = useRef<string | null>(null);
   const { t } = useLocale();
   const [dragState, setDragState] = useState(() => getFwDragState());
 
@@ -285,12 +399,17 @@ export default function FileList({
 
   // 网格按容器宽度计算列数（分栏宽度变化自适应）。
   useEffect(() => {
+    setGeometryReady(false);
     const el = containerRef.current;
-    if (!el || viewMode !== "grid") return;
+    if (!el || viewMode !== "grid") {
+      setGeometryReady(true);
+      return;
+    }
     const measure = () => {
       const inner = el.clientWidth - 8;
       const per = Math.max(2, Math.floor((inner + GRID_GAP) / (GRID_CELL_W + GRID_GAP)));
       setCols(per);
+      setGeometryReady(true);
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -298,9 +417,50 @@ export default function FileList({
     return () => ro.disconnect();
   }, [viewMode]);
 
-  const rowCount = viewMode === "list" ? entries.length : Math.ceil(entries.length / cols);
+  const gridCols = Math.max(1, cols);
+  const rowCount = viewMode === "list" ? entries.length : Math.ceil(entries.length / gridCols);
   const rowH = viewMode === "list" ? LIST_ROW_H : GRID_CELL_H + GRID_GAP;
-  const { start, end } = useScrollRange(containerRef, rowH, rowCount);
+  // 吸顶表头占去顶部 LIST_HEAD_H：可见行范围按「表头之下」的滚动偏移换算。
+  const headOffset = viewMode === "list" ? LIST_HEAD_H : 0;
+  const { start, end } = useScrollRange(containerRef, rowH, rowCount, headOffset);
+
+  // 重挂载（布局切换/分栏重排/最大化恢复）后按「锚点文件 + 视口内偏移」恢复：
+  // 中间条目增删/重排不再依赖首末签名，不会恢复错位置；锚点消失时落到名称最近邻。
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const key = resolveSessionKey(el, dirPath, sessionKey);
+    activeSessions.add(key);
+    const saved = scrollCache.get(key);
+    if (saved && saved.viewMode === viewMode && saved.anchorName && entries.length) {
+      if (restoredRef.current !== key && (viewMode === "list" || geometryReady)) {
+        const index = findAnchorIndex(entries, saved.anchorName);
+        const row = viewMode === "list" ? index : Math.floor(index / gridCols);
+        const maxScroll = Math.max(0, rowCount * rowH - el.clientHeight);
+        const target = Math.max(0, row) * rowH + saved.anchorOffset;
+        el.scrollTop = Math.min(maxScroll, Math.max(0, target));
+        restoredRef.current = key;
+      }
+    }
+    const onScroll = () => {
+      if (!entries.length) return;
+      const visibleTop = Math.max(0, el.scrollTop - headOffset);
+      const row = Math.floor(visibleTop / rowH);
+      const index = viewMode === "list" ? row : row * gridCols;
+      const anchor = entries[Math.min(Math.max(index, 0), entries.length - 1)];
+      rememberScroll(key, {
+        anchorName: anchor?.name ?? "",
+        // 相对滚动容器顶部的绝对偏移：包含吸顶表头占位，恢复时无需再加 headOffset。
+        anchorOffset: el.scrollTop - row * rowH,
+        viewMode,
+      });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      activeSessions.delete(key);
+    };
+  }, [dirPath, viewMode, sessionKey, entries, rowCount, rowH, headOffset, gridCols, geometryReady]);
 
   const renderRow = (rowIndex: number): ReactNode => {
     if (viewMode === "list") {
@@ -370,6 +530,15 @@ export default function FileList({
       onPointerDown={onBodyPointerDown}
       onContextMenu={onBodyContextMenu}
     >
+      {viewMode === "list" && (
+        <div className="fw-list-head" aria-hidden="true">
+          <span className="fw-row-icon" />
+          <span className="fw-row-name">{t("fw.sort.name")}</span>
+          <span className="fw-row-time">{t("fw.sort.modified")}</span>
+          <span className="fw-row-size">{t("fw.sort.size")}</span>
+          <span className="fw-row-type">{t("fw.sort.type")}</span>
+        </div>
+      )}
       <div style={innerStyle}>
         <div style={offsetStyle}>
           {Array.from({ length: Math.max(0, end - start) }, (_, i) => renderRow(start + i))}

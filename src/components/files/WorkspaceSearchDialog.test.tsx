@@ -47,6 +47,7 @@ function result(name: string): SearchResult {
     truncated: false,
     failedDirs: 0,
     cancelled: false,
+    complete: true,
   };
 }
 

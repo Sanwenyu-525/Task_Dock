@@ -132,6 +132,8 @@ export interface CompareFoldersResult {
   dirsVisited: number;
   filesScanned: number;
   cancelled: boolean;
+  /** 整次对比最严重的不完整原因；null = 完整。 */
+  limit: ReadLimit;
 }
 
 interface CompareContext {
@@ -142,6 +144,7 @@ interface CompareContext {
   filesScanned: number;
   failedDirs: number;
   incomplete: boolean;
+  limit: ReadLimit;
   signal?: AbortSignal;
   onProgress?: CompareFoldersOptions["onProgress"];
 }
@@ -177,6 +180,62 @@ function firstDiff(items: CompareItem[]): string | null {
   return null;
 }
 
+/** 目录未读全的原因；null = 正常读完。 */
+export type ReadLimit = "budget" | "stalled" | "failed" | null;
+
+export interface ReadAllResult {
+  entries: FsEntry[];
+  /** 不完整原因：预算截断 / 分页停滞 / IPC 失败；null = 正常读完。 */
+  limit: ReadLimit;
+  /** 本目录实际保留进 entries 的条数（已计入 ctx.filesScanned）。 */
+  consumed: number;
+}
+
+/** 合并两侧目录的不完整原因：failed > stalled > budget。 */
+function mergeLimit(a: ReadLimit, b: ReadLimit): ReadLimit {
+  if (a === "failed" || b === "failed") return "failed";
+  if (a === "stalled" || b === "stalled") return "stalled";
+  if (a === "budget" || b === "budget") return "budget";
+  return null;
+}
+
+/**
+ * 翻页读完一个目录：按 nextOffset 续拉直到 hasMore=false；停滞即停止并标记 stalled。
+ * 预算是左右两侧、所有目录共用的全局已消费预算：翻页前按剩余预算有界保留条目，
+ * 只把真正保留进 entries 的条数计入 ctx.filesScanned。
+ */
+async function readAllDir(dir: string, ctx: CompareContext): Promise<ReadAllResult> {
+  const entries: FsEntry[] = [];
+  let offset = 0;
+  for (;;) {
+    if (ctx.signal?.aborted) throw abortError();
+    const remaining = ctx.maxFiles - ctx.filesScanned;
+    if (remaining <= 0) {
+      return { entries, limit: "budget", consumed: entries.length };
+    }
+    let listing: Awaited<ReturnType<typeof fsListDir>>;
+    try {
+      listing = await fsListDir(dir, false, offset);
+    } catch {
+      return { entries, limit: "failed", consumed: entries.length };
+    }
+    const keep = Math.min(listing.entries.length, remaining);
+    entries.push(...listing.entries.slice(0, keep));
+    ctx.filesScanned += keep;
+    // 本页超出剩余预算：有界保留 remaining 条，停止翻页并标记预算截断。
+    if (listing.entries.length > remaining) {
+      return { entries, limit: "budget", consumed: entries.length };
+    }
+    // 停滞保护：hasMore 但 nextOffset 未推进 → 保留本页条目，不再翻页，未读全。
+    if (listing.hasMore && listing.nextOffset <= offset) {
+      return { entries, limit: "stalled", consumed: entries.length };
+    }
+    if (!listing.hasMore) break;
+    offset = listing.nextOffset;
+  }
+  return { entries, limit: null, consumed: entries.length };
+}
+
 /** 递归比较两个目录；达到目录/文件/时间上限或读取失败时返回 partial，不冒充完整。 */
 async function compareDir(
   leftDir: string,
@@ -189,26 +248,32 @@ async function compareDir(
     ctx.incomplete = true;
     return { items: [], state: "partial" };
   }
-  let left: Awaited<ReturnType<typeof fsListDir>>;
-  let right: Awaited<ReturnType<typeof fsListDir>>;
-  try {
-    [left, right] = await Promise.all([
-      fsListDir(leftDir, false, 0),
-      fsListDir(rightDir, false, 0),
-    ]);
-  } catch {
+  // 串行先左后右：右侧按左侧真实消费后的剩余预算读取，禁止 Promise.all 并行双读。
+  const leftR = await readAllDir(leftDir, ctx);
+  if (leftR.limit === "failed") {
     ctx.failedDirs += 1;
     ctx.incomplete = true;
+    ctx.limit = mergeLimit(ctx.limit, "failed");
     return { items: [], state: "partial" };
   }
-  ctx.dirsVisited += 1;
-  ctx.filesScanned += left.entries.length + right.entries.length;
-  if (left.hasMore || right.hasMore || ctx.filesScanned > ctx.maxFiles) {
-    // 目录列表被截断：未加载的条目不能判断“不存在”，也不能用于不可靠的差异同步。
+  const rightR = await readAllDir(rightDir, ctx);
+  if (rightR.limit === "failed") {
+    ctx.failedDirs += 1;
     ctx.incomplete = true;
+    ctx.limit = mergeLimit(ctx.limit, "failed");
+    return { items: [], state: "partial" };
   }
 
-  const items = compareEntries(left.entries, right.entries);
+  ctx.dirsVisited += 1;
+  // 条目消耗已在 readAllDir 内记账，这里不再用 entries.length 二次累加。
+  const dirLimit = mergeLimit(leftR.limit, rightR.limit);
+  if (dirLimit !== null) {
+    // 目录列表未读全：未加载的条目不能判断“不存在”，也不能用于不可靠的差异同步。
+    ctx.incomplete = true;
+    ctx.limit = mergeLimit(ctx.limit, dirLimit);
+  }
+
+  const items = compareEntries(leftR.entries, rightR.entries);
   let state: DirState = "same";
   for (const item of items) {
     let next = statusState(item.status);
@@ -255,6 +320,7 @@ export async function compareFolders(
     filesScanned: 0,
     failedDirs: 0,
     incomplete: false,
+    limit: null,
     signal: options.signal,
     onProgress: options.onProgress,
   };
@@ -267,6 +333,7 @@ export async function compareFolders(
       dirsVisited: ctx.dirsVisited,
       filesScanned: ctx.filesScanned,
       cancelled: Boolean(options.signal?.aborted),
+      limit: ctx.limit,
     };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
@@ -277,6 +344,7 @@ export async function compareFolders(
         dirsVisited: ctx.dirsVisited,
         filesScanned: ctx.filesScanned,
         cancelled: true,
+        limit: ctx.limit,
       };
     }
     throw error;

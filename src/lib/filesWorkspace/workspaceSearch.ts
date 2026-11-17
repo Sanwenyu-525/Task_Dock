@@ -53,9 +53,18 @@ export interface SearchResult {
   hits: SearchHit[];
   dirsVisited: number;
   filesScanned: number;
+  /**
+   * 因结果数上限、目录数上限、扫描预算耗尽或分页停滞而未读全。
+   * 普通中间页 `hasMore=true` 是正常分页，**不**置 truncated。
+   */
   truncated: boolean;
   failedDirs: number;
   cancelled: boolean;
+  /**
+   * 完整读完所有选中目录：未命中任何上限、未取消、无读取失败目录、无分页停滞。
+   * `truncated`/`cancelled`/`failedDirs` 字段保持对外兼容，本字段是合并后的完整性结论。
+   */
+  complete: boolean;
 }
 
 function matchesHit(entry: FsEntry, options: SearchOptions): boolean {
@@ -94,11 +103,15 @@ export async function searchWorkspace(
     pane,
   }));
   const hits: SearchHit[] = [];
+  /** 已入结果的完整路径：重叠根/重复翻页不产生同路径重复命中。 */
+  const seenPaths = new Set<string>();
   let dirsVisited = 0;
   let filesScanned = 0;
   let failedDirs = 0;
   let truncated = false;
   let cancelled = false;
+  /** 分页停滞：hasMore=true 但 nextOffset 未推进，属真实不完整，不重复请求同一页。 */
+  let stalled = false;
 
   while (queue.length) {
     if (signal?.aborted) {
@@ -112,21 +125,45 @@ export async function searchWorkspace(
     const item = queue.shift()!;
     dirsVisited += 1;
     try {
-      const listing = await fsListDir(item.dir, false, 0);
-      if (listing.hasMore) truncated = true;
-      for (const entry of listing.entries) {
-        filesScanned += 1;
-        const path = joinPath(item.dir, entry.name);
-        if (matchesHit(entry, options)) {
-          hits.push({ paneId: item.pane.paneId, paneLabel: item.pane.label, dirPath: item.dir, entry, path });
-          if (hits.length >= options.maxResults) {
-            truncated = true;
-            break;
+      // 目录内按后端 nextOffset 契约续拉分页：offset 取上一页 nextOffset（绝对磁盘序），
+      // 不重不漏，直到 hasMore=false 或中止/结果上限命中（与 dirCache 的翻页语义一致）。
+      let offset = 0;
+      for (;;) {
+        if (signal?.aborted) {
+          cancelled = true;
+          break;
+        }
+        const listing = await fsListDir(item.dir, false, offset);
+        if (signal?.aborted) {
+          cancelled = true;
+          break;
+        }
+        for (const entry of listing.entries) {
+          filesScanned += 1;
+          const path = joinPath(item.dir, entry.name);
+          if (matchesHit(entry, options)) {
+            if (!seenPaths.has(path)) {
+              seenPaths.add(path);
+              hits.push({ paneId: item.pane.paneId, paneLabel: item.pane.label, dirPath: item.dir, entry, path });
+            }
+            if (hits.length >= options.maxResults) {
+              truncated = true;
+              break;
+            }
+          }
+          if (entry.kind === "dir" && item.depth < options.maxDepth) {
+            queue.push({ dir: path, depth: item.depth + 1, pane: item.pane });
           }
         }
-        if (entry.kind === "dir" && item.depth < options.maxDepth) {
-          queue.push({ dir: path, depth: item.depth + 1, pane: item.pane });
+        if (cancelled || truncated) break;
+        // 停滞保护：还有更多但偏移未推进 → 保留本页条目，停止本目录翻页，标记不完整。
+        if (listing.hasMore && listing.nextOffset <= offset) {
+          stalled = true;
+          truncated = true;
+          break;
         }
+        if (!listing.hasMore) break;
+        offset = listing.nextOffset;
       }
     } catch {
       failedDirs += 1;
@@ -138,7 +175,8 @@ export async function searchWorkspace(
     }
   }
 
-  return { hits, dirsVisited, filesScanned, truncated, failedDirs, cancelled };
+  const complete = !truncated && !cancelled && failedDirs === 0 && !stalled;
+  return { hits, dirsVisited, filesScanned, truncated, failedDirs, cancelled, complete };
 }
 
 export interface DuplicateFile {
@@ -164,7 +202,7 @@ export async function collectWorkspaceFiles(
   onProgress?: (progress: SearchProgress) => void,
   signal?: AbortSignal,
   maxDirs = 200,
-): Promise<{ files: DuplicateFile[]; truncated: boolean; cancelled: boolean }> {
+): Promise<{ files: DuplicateFile[]; truncated: boolean; failedDirs?: number; cancelled: boolean; complete: boolean }> {
   const result = await searchWorkspace(
     sources,
     { ...DEFAULT_SEARCH_OPTIONS, query: "", extensions: [], category: null, modifiedWithinDays: null, maxDepth, maxResults: 8000, maxDirs },
@@ -181,7 +219,7 @@ export async function collectWorkspaceFiles(
       name: hit.entry.name,
       size: hit.entry.size ?? 0,
     }));
-  return { files, truncated: result.truncated, cancelled: result.cancelled };
+  return { files, truncated: result.truncated, failedDirs: result.failedDirs, cancelled: result.cancelled, complete: result.complete };
 }
 
 /** 按大小预筛：零字节文件也可成为候选；同大小至少 2 个文件才进入哈希确认。 */

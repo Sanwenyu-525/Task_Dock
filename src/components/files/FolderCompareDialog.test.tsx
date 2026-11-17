@@ -68,6 +68,7 @@ beforeEach(() => {
     path,
     entries: path === request.sourceDir ? [entry("left.txt", 10)] : [entry("right.txt", 20)],
     scanned: 1,
+    nextOffset: 1,
     hasMore: false,
   }));
 });

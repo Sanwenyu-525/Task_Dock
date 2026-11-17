@@ -23,15 +23,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
 
-/// 单次列目录分页大小：超出返回 has_more 标记（前端「加载更多」续拉，
-/// 万级目录不再只能看到前 8000 项）。
-/// 单页最多返回的可见条目数。
+/// 单次列目录分页大小：超出返回 has_more 标记（前端按 `nextOffset` 续拉，
+/// 万级目录不再只能看到前 8000 项）。单页最多返回的可见条目数。
 pub const MAX_LIST_ENTRIES: usize = 8000;
 /// 单页最多**扫描**的磁盘条目数（含被隐藏过滤/元数据失败的项）。
 ///
 /// 没有这个上限时，`show_hidden=false` 遇到「大量隐藏项 + 少量可见项」的目录会
 /// 在一次 IPC 里遍历整个目录（10 万级条目时长时间占住调用线程）。
-/// 达到上限即返回 `has_more`，由前端按 `scanned` 作为 offset 继续分页。
+/// 达到上限即返回 `has_more`，由前端按 `nextOffset` 继续分页。
 pub const MAX_SCAN_PER_PAGE: usize = 16_000;
 /// 分页 offset 上限：超过它说明调用方在无意义地遍历超大目录，直接钳制。
 pub const MAX_LIST_OFFSET: usize = 5_000_000;
@@ -319,9 +318,15 @@ pub struct FsEntry {
 pub struct DirListing {
     pub path: String,
     pub entries: Vec<FsEntry>,
-    /// 本轮扫描的磁盘条目数（含被隐藏过滤的项；分页 offset 依据）。
+    /// 本轮结束时从目录开头累计的已消费磁盘位置（磁盘原始序，含隐藏过滤项与
+    /// 元数据失败项）；恒 `>= offset`（offset 超界时等于目录条目总数且
+    /// `has_more=false`）。翻页不要用本字段自行累加，见 `next_offset`。
     pub scanned: usize,
-    /// 目录里还有更多未返回的条目（继续以 offset 翻页）。
+    /// 下一页的**绝对偏移**，显式等于 `scanned`；前端翻页一律用本字段，
+    /// 禁止再 `offset + scanned` 自行累加。`has_more=true` 时必 `> offset`。
+    pub next_offset: usize,
+    /// 目录里还有更多未返回的条目：仅因返回条数上限或扫描预算停止、且目录尚有
+    /// 未读条目时为 true；遍历到末尾必为 false。
     pub has_more: bool,
 }
 
@@ -353,20 +358,52 @@ pub fn category_of(is_dir: bool, is_link: bool, ext: &str) -> &'static str {
 }
 
 /// 列目录：逐项容错（单项元数据失败跳过，不整体失败）。
-/// `offset` 按**磁盘原始序**跳过前 N 个条目（隐藏过滤不影响偏移语义），
-/// 前端据此翻页读取超限目录的剩余部分。
+///
+/// 分页契约（前端一律按 `nextOffset` 翻页，禁止 `offset + scanned` 自行累加）：
+/// 1. `offset` 为**绝对磁盘序偏移**，指向本页第一个候选条目（read_dir 原始序，
+///    含隐藏项与元数据失败项）；
+/// 2. `scanned` 为本轮结束时从目录开头累计的已消费位置，恒 `>= offset`
+///    （offset 超界时等于目录条目总数且 `has_more=false`）；
+/// 3. `next_offset` 显式等于 `scanned`；`has_more=true` 时保证 `next_offset > offset`；
+/// 4. `has_more` 仅表示「因返回条数上限或扫描预算停止、且目录尚有未读条目」，
+///    遍历到末尾必为 false；
+/// 5. 隐藏项与元数据失败项都消耗偏移（不阻塞翻页）。
 pub fn list_dir(path: &Path, show_hidden: bool, offset: usize) -> AppResult<DirListing> {
+    list_dir_with_limits(path, show_hidden, offset, MAX_LIST_ENTRIES, MAX_SCAN_PER_PAGE)
+}
+
+/// 内部可注入上限版本：公开 IPC 契约不变；仅测试用更小的页/扫描预算真实跨多页
+/// 遍历边界，避免为 7999/8000/…/32000 量级用例真造数万文件。
+fn list_dir_with_limits(
+    path: &Path,
+    show_hidden: bool,
+    offset: usize,
+    max_entries: usize,
+    max_scan: usize,
+) -> AppResult<DirListing> {
     let dir = validate_dir(path)?;
-    let mut entries: Vec<FsEntry> = Vec::new();
-    let mut scanned: usize = 0;
-    let mut has_more = false;
     let read = fs::read_dir(&dir).map_err(|e| {
         AppError::Validation(format!("读取目录失败: {}（{e}）", dir.display()))
     })?;
+    Ok(list_entries(read, &dir, show_hidden, offset, max_entries, max_scan))
+}
+
+/// 核心列举逻辑：迭代器可注入（测试可混入读取失败项）；`dir` 仅用于回填路径字段。
+fn list_entries(
+    read: impl Iterator<Item = std::io::Result<fs::DirEntry>>,
+    dir: &Path,
+    show_hidden: bool,
+    offset: usize,
+    max_entries: usize,
+    max_scan: usize,
+) -> DirListing {
+    let mut entries: Vec<FsEntry> = Vec::new();
+    let mut scanned: usize = 0;
+    let mut has_more = false;
+    let scan_budget = offset.saturating_add(max_scan);
     for item in read {
-        // 单轮扫描工作量上限：先判上限再消费，保证 scanned 始终等于「已消费条目数」，
-        // 下一页 offset 可以直接复用（不重不漏）。
-        if scanned >= offset.saturating_add(MAX_SCAN_PER_PAGE) {
+        // 扫描预算：先判上限再消费；本条未消费，scanned 保持已消费位置。
+        if scanned >= scan_budget {
             has_more = true;
             break;
         }
@@ -374,9 +411,10 @@ pub fn list_dir(path: &Path, show_hidden: bool, offset: usize) -> AppResult<DirL
         if scanned <= offset {
             continue;
         }
-        if entries.len() >= MAX_LIST_ENTRIES {
+        // 返回条数上限：本条未消费，scanned 回退一条，下一页从它开始。
+        if entries.len() >= max_entries {
             has_more = true;
-            scanned -= 1; // 本条未消费：下一页从它开始
+            scanned -= 1;
             break;
         }
         let Ok(item) = item else { continue };
@@ -420,12 +458,13 @@ pub fn list_dir(path: &Path, show_hidden: bool, offset: usize) -> AppResult<DirL
             name,
         });
     }
-    Ok(DirListing {
+    DirListing {
         path: dir.to_string_lossy().into_owned(),
         entries,
         scanned,
+        next_offset: scanned,
         has_more,
-    })
+    }
 }
 
 /// 轻量目录签名（轮询刷新用）：只做一次 metadata，不读内容。
@@ -825,9 +864,19 @@ fn copy_file(src: &Path, dst: &Path, conflict: Conflict) -> Result<(), FsFailure
             }
         }
     } else {
-        fs::copy(src, dst)
-            .map(|_| ())
-            .map_err(|e| FsFailure::io("transfer", &e))
+        // 全新目标：复制中途失败（磁盘满 / 源被占用或不可读）时，清理本次产生的
+        // 半截目标，不留一个可能被当成「已复制」的残缺文件；复制前已存在的目标
+        // 不动（并发兜底，避免误删他人刚创建的同名项）。
+        let preexisting = dst.exists();
+        match fs::copy(src, dst) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if !preexisting {
+                    let _ = fs::remove_file(dst);
+                }
+                Err(FsFailure::io("transfer", &e))
+            }
+        }
     }
 }
 
@@ -2070,7 +2119,7 @@ mod tests {
     fn list_dir_pagination_beyond_page_limit() {
         let root = temp_root("pager");
         // 一页上限由 MAX_LIST_ENTRIES 决定；造一个小的 offset 分页场景验证语义：
-        // 建 5 项，每轮 offset 推进 scanned，直到 has_more=false。
+        // 建 5 项，每轮按 nextOffset 推进，直到 has_more=false。
         for i in 0..5 {
             fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
         }
@@ -2083,7 +2132,9 @@ mod tests {
                 seen.push(e.name.clone());
             }
             rounds += 1;
-            offset += page.scanned;
+            // 契约：nextOffset 显式等于 scanned；前端一律用 nextOffset 翻页。
+            assert_eq!(page.next_offset, page.scanned);
+            offset = page.next_offset;
             if !page.has_more {
                 break;
             }
@@ -2095,6 +2146,179 @@ mod tests {
         let mut expected: Vec<String> = (0..5).map(|i| format!("f{i}.txt")).collect();
         expected.sort();
         assert_eq!(sorted, expected);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 测试辅助：把文件标记为 Windows 隐藏属性（FILE_ATTRIBUTE_HIDDEN）。
+    #[cfg(windows)]
+    fn mark_hidden(path: &Path) {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN};
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        unsafe {
+            let _ = SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_ATTRIBUTE_HIDDEN);
+        }
+    }
+
+    /// 跨多页遍历：聚合各页并集，断言不重不漏、has_more 收敛、停滞不变量成立。
+    /// 生产上限为 MAX_LIST_ENTRIES=8000 / MAX_SCAN_PER_PAGE=16000；这里注入等比缩小的
+    /// 内部参数（4 / 8），真实遍历等价于 7999/8000/8001/12000/16000/16001/24000/32000
+    /// 量级的多页边界，避免真造数万文件。
+    fn traverse_paged(
+        root: &Path,
+        show_hidden: bool,
+        max_entries: usize,
+        max_scan: usize,
+    ) -> (Vec<String>, Vec<usize>, usize) {
+        let mut offset = 0usize;
+        let mut seen: Vec<String> = Vec::new();
+        let mut next_offsets: Vec<usize> = Vec::new();
+        let mut rounds = 0;
+        loop {
+            let page = list_dir_with_limits(root, show_hidden, offset, max_entries, max_scan).unwrap();
+            // 契约 2/3：scanned 恒 >= offset；nextOffset 显式等于 scanned。
+            assert!(page.scanned >= offset, "scanned 不得回退到 offset 之前");
+            assert_eq!(page.next_offset, page.scanned);
+            if page.has_more {
+                // 契约 3：has_more=true 时 nextOffset 必须 > offset（否则前端停滞）。
+                assert!(page.next_offset > offset, "分页停滞：nextOffset 未推进");
+            }
+            for e in &page.entries {
+                seen.push(e.name.clone());
+            }
+            next_offsets.push(page.next_offset);
+            rounds += 1;
+            offset = page.next_offset;
+            if !page.has_more {
+                break;
+            }
+            assert!(rounds < 100, "分页不收敛");
+        }
+        (seen, next_offsets, rounds)
+    }
+
+    #[test]
+    fn pagination_union_is_complete_no_dup_no_missing() {
+        let root = temp_root("pagerunion");
+        const TOTAL: usize = 20;
+        for i in 0..TOTAL {
+            fs::write(root.join(format!("f{i:02}.txt")), "x").unwrap();
+        }
+        let (seen, next_offsets, rounds) = traverse_paged(&root, true, 4, 8);
+        assert!(rounds >= 3, "必须真实跨多页遍历（>=3 页）");
+        assert_eq!(seen.len(), TOTAL, "各页并集必须覆盖全部条目");
+        let mut sorted = seen.clone();
+        sorted.sort();
+        let mut expected: Vec<String> = (0..TOTAL).map(|i| format!("f{i:02}.txt")).collect();
+        expected.sort();
+        assert_eq!(sorted, expected, "不重不漏");
+        // 偏移单调推进，最后一页 nextOffset 等于目录条目总数。
+        for pair in next_offsets.windows(2) {
+            assert!(pair[1] >= pair[0]);
+        }
+        assert_eq!(*next_offsets.last().unwrap(), TOTAL);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn pagination_hidden_items_consume_offset_but_are_filtered() {
+        let root = temp_root("pagerhidden");
+        // 6 个可见 + 10 个隐藏，交错创建；隐藏项计入磁盘偏移但不返回。
+        for i in 0..6 {
+            fs::write(root.join(format!("v{i}.txt")), "x").unwrap();
+        }
+        for i in 0..10 {
+            let hidden = root.join(format!("h{i}.txt"));
+            fs::write(&hidden, "x").unwrap();
+            #[cfg(windows)]
+            mark_hidden(&hidden);
+        }
+        // show_hidden=false：可见并集 == 6 个 v*；隐藏项不出现在结果里。
+        let (visible, _, rounds) = traverse_paged(&root, false, 2, 5);
+        assert!(rounds >= 3, "隐藏项消耗偏移后必须跨多页");
+        let mut visible_sorted = visible.clone();
+        visible_sorted.sort();
+        let mut expected: Vec<String> = (0..6).map(|i| format!("v{i}.txt")).collect();
+        expected.sort();
+        assert_eq!(visible_sorted, expected);
+        assert!(visible.iter().all(|n| !n.starts_with('h')));
+
+        // 首页 nextOffset 大于本页返回条数：证明隐藏项确实消耗了偏移。
+        let first = list_dir_with_limits(&root, false, 0, 2, 5).unwrap();
+        assert!(first.next_offset > first.entries.len());
+
+        // show_hidden=true：16 项全部返回。
+        let (all, _, _) = traverse_paged(&root, true, 4, 8);
+        assert_eq!(all.len(), 16);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn pagination_offset_beyond_end_returns_empty_no_more() {
+        let root = temp_root("pageroob");
+        for i in 0..3 {
+            fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        // offset 超界：空页、has_more=false，scanned/nextOffset 等于目录条目总数。
+        let page = list_dir_with_limits(&root, true, 100, 4, 8).unwrap();
+        assert!(page.entries.is_empty());
+        assert_eq!(page.scanned, 3);
+        assert_eq!(page.next_offset, 3);
+        assert_eq!(page.has_more, false);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn pagination_stops_on_scan_budget_then_completes() {
+        let root = temp_root("pagerbudget");
+        for i in 0..12 {
+            fs::write(root.join(format!("f{i:02}.txt")), "x").unwrap();
+        }
+        // 扫描预算 5、返回条数上限放到很大：第一条停止路径 = 扫描预算耗尽。
+        let first = list_dir_with_limits(&root, true, 0, 100, 5).unwrap();
+        assert_eq!(first.has_more, true);
+        assert!(first.entries.len() < 100, "预算停止不应触达返回条数上限");
+        assert_eq!(first.next_offset, 5);
+        assert!(first.next_offset > 0);
+        let (seen, _, _) = traverse_paged(&root, true, 100, 5);
+        assert_eq!(seen.len(), 12, "预算分页续拉后仍须读全");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn pagination_stops_on_entry_count_limit_then_completes() {
+        let root = temp_root("pagercount");
+        for i in 0..12 {
+            fs::write(root.join(format!("f{i:02}.txt")), "x").unwrap();
+        }
+        // 返回条数上限 3、扫描预算放到很大：第二条停止路径 = 返回条数上限。
+        let first = list_dir_with_limits(&root, true, 0, 3, 100).unwrap();
+        assert_eq!(first.has_more, true);
+        assert_eq!(first.entries.len(), 3);
+        assert!(first.next_offset > 0);
+        let (seen, _, rounds) = traverse_paged(&root, true, 3, 100);
+        assert!(rounds >= 4, "3 条/页 × 12 项必须跨 4 页");
+        assert_eq!(seen.len(), 12, "条数上限分页续拉后仍须读全");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn pagination_failed_entry_consumes_offset_without_blocking() {
+        let root = temp_root("pagerfail");
+        for i in 0..5 {
+            fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        // 注入一条读取失败项：它消耗偏移但不返回，其余条目正常列举。
+        let read = fs::read_dir(&root).unwrap();
+        let mut items: Vec<std::io::Result<fs::DirEntry>> = read.collect();
+        let total = items.len();
+        items[1] = Err(std::io::Error::new(std::io::ErrorKind::Other, "boom"));
+        let listing = list_entries(items.into_iter(), &root, true, 0, 100, 100);
+        assert_eq!(listing.entries.len(), total - 1, "失败项不返回");
+        assert_eq!(listing.scanned, total, "失败项仍计入已消费位置");
+        assert_eq!(listing.next_offset, listing.scanned);
+        assert_eq!(listing.has_more, false);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2662,6 +2886,33 @@ mod tests {
         assert_eq!(report.ok, 1);
         assert_eq!(report.failed, 1);
         assert!(dst_dir.join("good.txt").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn copy_fresh_failure_leaves_no_partial_target() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = temp_root("copyfreshfail");
+        let src_dir = root.join("in");
+        fs::create_dir_all(&src_dir).unwrap();
+        let src = src_dir.join("busy.txt");
+        fs::write(&src, "busy-content").unwrap();
+        // 独占锁定源（share_mode 0）：fs::copy 打开源即被拒绝，模拟复制中途失败。
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&src).unwrap();
+        let report = copy_paths(
+            &[src.to_string_lossy().into_owned()],
+            &root,
+            Conflict::Rename,
+            &protected(),
+        )
+        .unwrap();
+        drop(lock);
+        assert_eq!(report.failed, 1, "复制失败必须如实报告: {:?}", report.entries);
+        assert!(
+            !root.join("busy.txt").exists(),
+            "失败的全新目标不得残留半截文件"
+        );
+        assert!(src.exists(), "源必须完整保留");
         fs::remove_dir_all(&root).unwrap();
     }
 

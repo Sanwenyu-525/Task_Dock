@@ -2198,5 +2198,38 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
 - **验证状态**：见第三轮报告（命令/退出码/证据路径以报告为准）。未执行项（无 Windows 原生
   选择器真实点击、视觉截图对照等）在报告中标 `NOT VERIFIED`，不以预览 shim 推断通过。
 
+### 第六轮：目录分页完整性与搜索完整性（2026-11-17）
 
+修复前端两个调用方把后端 `scanned` 二次累加导致的跳页漏文件，以及目录对比只读首页、
+搜索把中间页 `has_more` 误判为截断的问题。报告 `tmp/acceptance/files-workspace/round6/agentA-r6b/`。
 
+**目录列举分页契约（`file_workspace::list_dir`，r6 冻结；后端实现、`bridge.ts` 类型、
+前端 dirCache / workspaceSearch / folderCompare 与测试均按此解释，调用方不得自行解读）：**
+
+1. `offset` 是**绝对磁盘序偏移**，指向本页第一个候选条目（`read_dir` 原始序，含隐藏项与
+   元数据失败项）；不是已展示条目数。
+2. `scanned` 为本轮结束时从目录开头累计的已消费位置；恒 `>= offset`（offset 超界时等于
+   目录条目总数且 `has_more=false`）。
+3. 新增 `nextOffset` 字段（Rust `next_offset`，serde camelCase），显式等于 `scanned`；
+   `has_more=true` 时保证 `nextOffset > offset`。**前端一律用 `nextOffset` 翻页**，
+   禁止再 `offset + scanned` 或 `consumed + scanned` 自行累加。
+4. `has_more` 仅表示「因返回条数上限（`MAX_LIST_ENTRIES=8000`）或扫描预算
+   （`MAX_SCAN_PER_PAGE=16000`）停止、且目录尚有未读条目」；遍历到末尾必为 false。
+5. 隐藏项与元数据失败项都消耗偏移（计入 `scanned`/`nextOffset`），但不阻塞翻页、不返回。
+6. 前端必须有「不前进」保护：`hasMore && nextOffset <= offset` 即分页停滞
+  （dirCache 错误码 `PAGING_STALLED`），停止翻页并如实报错，绝不重复请求同一页，
+  也不静默当作完整。
+
+**搜索完整性语义（`searchWorkspace` / `collectWorkspaceFiles`）**：结果区分
+`complete / truncated / cancelled / failedDirs`。中间页 `hasMore=true` 是正常分页，
+**不**置 `truncated`；只有结果数上限、目录数上限、扫描预算耗尽、分页停滞、目录读取失败、
+用户取消且结果未完整等真实限制才认定不完整。`truncated`/`cancelled`/`failedDirs`
+对外字段保持兼容，新增 `complete` 为合并后的完整性结论。文件夹对比两侧都按 `nextOffset`
+翻页读完，停滞或未读全时 `complete=false`，未加载条目不得判断「不存在」。
+
+**文件夹对比预算（A1）**：左右目录共享同一 `maxFiles` 预算，翻页前按剩余预算决定本页保留条数；
+超限即停止后续 IPC，保留已读项并置 `complete=false`，区分 `budget` / `stalled` / `failed`；
+不完整结果禁止差异同步。
+
+**重复查找完整性（A2）**：扫描结论保留 `complete/truncated/failedDirs/cancelled`；不完整时结果区
+与确认框持续警示，关闭或卸载中止在途扫描；只有哈希确认组可进入删除请求。

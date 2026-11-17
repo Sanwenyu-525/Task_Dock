@@ -1,7 +1,7 @@
 //! 快速预览：图片/视频/音频/文本代码；Space 打开、Escape 关闭、左右方向键切换。
 //! 大文件按需读取，媒体通过短期 token 协议 + Range，不扩大 asset 协议范围。
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, ExternalLink, Minus, Plus } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { useLocale } from "../../hooks/useLocale";
@@ -106,6 +106,47 @@ function highlightKeywords(text: string, offset: number): ReactNode[] {
   return nodes;
 }
 
+export interface PreviewTokenTracker {
+  /** 登记一个已取得、尚未释放的媒体 token。 */
+  register(url: string): void;
+  /** 释放：只有仍活跃的 token 返回 true（调用方据此发 IPC），重复调用返回 false。 */
+  release(url: string): boolean;
+  has(url: string): boolean;
+  readonly activeCount: number;
+  readonly historySize: number;
+}
+
+/**
+ * 有界媒体 token 跟踪器：活跃集合 + 最近释放历史（默认上限 128）。
+ * 活跃集合保证同一 token 只发一次释放 IPC；历史只用于诊断，超限淘汰最旧，
+ * 不会随预览次数无限增长。
+ */
+export function createPreviewTokenTracker(historyMax = 128): PreviewTokenTracker {
+  const active = new Set<string>();
+  const history: string[] = [];
+  return {
+    register(url: string): void {
+      if (url) active.add(url);
+    },
+    release(url: string): boolean {
+      if (!url || !active.has(url)) return false;
+      active.delete(url);
+      history.push(url);
+      if (history.length > historyMax) history.shift();
+      return true;
+    },
+    has(url: string): boolean {
+      return active.has(url);
+    },
+    get activeCount(): number {
+      return active.size;
+    },
+    get historySize(): number {
+      return history.length;
+    },
+  };
+}
+
 export default function QuickPreviewDialog({ request, onClose }: Props) {
   const { t } = useLocale();
   const [index, setIndex] = useState(0);
@@ -117,6 +158,22 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(100);
   const [fit, setFit] = useState(true);
+  /**
+   * 媒体 token 生命周期跟踪（有界，不随组件生命周期无限增长）。
+   *
+   * - `register`：拿到可用 URL 后登记为活跃；晚到响应也先登记再释放。
+   * - `release`：只有仍活跃的 token 才发一次 IPC；释放后移出活跃集。
+   * - 已释放 token 不会再出现在活跃集里，因此关闭/切换/卸载/晚到响应先后命中同一
+   *   URL 时不会重复 IPC；即使极端情况下漏网，后端 `release_media_url` 仍幂等兜底。
+   * - `history` 只保留最近 128 个已释放 token 供诊断，超出淘汰最旧，内存有界。
+   */
+  const tokenTrackerRef = useRef(createPreviewTokenTracker());
+  const releaseMediaToken = (url: string | null): void => {
+    if (!url) return;
+    if (!tokenTrackerRef.current.release(url)) return;
+    // 释放失败不影响关闭/切换流程；Promise.resolve 兜底非 Promise 返回（如测试桩）。
+    Promise.resolve(fsReleasePreviewUrl(url)).catch(() => undefined);
+  };
 
   const files = useMemo(
     () => (request ? request.entries.filter((entry) => entry.kind !== "dir") : []),
@@ -138,9 +195,21 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
     if (!mediaUrl) return;
     return () => {
       // 切换文件/关闭对话框时让旧 token 立即失效；不等 30 分钟 TTL。
-      void fsReleasePreviewUrl(mediaUrl).catch(() => undefined);
+      releaseMediaToken(mediaUrl);
     };
   }, [mediaUrl]);
+
+  // 对话框关闭（request 置空）时组件仍挂载在父面板上：主动释放残留媒体 token，
+  // 并清空旧图片 base64 / 文本内存态，不等 30 分钟 TTL、不在关闭后保留旧预览数据。
+  useEffect(() => {
+    if (request) return;
+    if (mediaUrl) {
+      releaseMediaToken(mediaUrl);
+      setMediaUrl(null);
+    }
+    setImageUrl(null);
+    setText(null);
+  }, [request, mediaUrl]);
 
   useEffect(() => {
     if (!request || !current) return;
@@ -161,7 +230,13 @@ export default function QuickPreviewDialog({ request, onClose }: Props) {
           else setError(t("fw.preview.imageUnavailable"));
         } else if (kind === "video" || kind === "audio") {
           const url = await fsPreviewMediaUrl(path);
-          if (!cancelled) setMediaUrl(url);
+          tokenTrackerRef.current.register(url);
+          if (cancelled) {
+            // 切换/关闭后后端仍已注册该 token：立即释放，避免挂到 30 分钟 TTL。
+            releaseMediaToken(url);
+            return;
+          }
+          setMediaUrl(url);
         } else if (kind === "text") {
           const preview = await fsReadText(path);
           if (!cancelled) {

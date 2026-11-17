@@ -130,6 +130,7 @@ import QuickPreviewDialog, { type PreviewRequest } from "./QuickPreviewDialog";
 import WorkspaceSearchDialog from "./WorkspaceSearchDialog";
 import DuplicateFinderDialog, { type DuplicateDeleteOutcome } from "./DuplicateFinderDialog";
 const FilePane = lazy(() => import("./FilePane"));
+import { pruneScrollSessions } from "./FileList";
 
 /** 最小窗格尺寸（CSS px）：分割比例按容器实测换算钳制。 */
 const MIN_PANE_W = 220;
@@ -182,7 +183,61 @@ function SplitRender({ node, pageActive, maximizedPaneId, dropHintPane, dropHint
   );
 }
 
-function SplitWithDivider({
+/** 触发点是否真实可见：offsetParent 为 null（display:none / 祖先隐藏）或矩形零尺寸都视为不可见。 */
+function isElementVisible(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  if (el.offsetParent === null) return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+/**
+ * 抽屉锚点解析（纯函数，便于回归）：优先打开时的触发点；它被隐藏后跟随另一可见
+ * 按钮；两个都不可见返回 null，由 positionOverride 退化为视口居中，而不是落到原点。
+ */
+export function resolveDrawerAnchor(
+  origin: "toolbar" | "more",
+  layoutVisible: boolean,
+  moreVisible: boolean,
+): "layout" | "more" | null {
+  if (origin === "more") return moreVisible ? "more" : layoutVisible ? "layout" : null;
+  return layoutVisible ? "layout" : moreVisible ? "more" : null;
+}
+
+/** 锚点全部不可见时的视口居中退化位置；有锚点或抽屉未打开时返回 null。 */
+export function drawerCenterOverride(
+  open: boolean,
+  anchor: "layout" | "more" | null,
+  viewport: { width: number; height: number },
+  size: { width: number; height: number } = { width: 280, height: 320 },
+): { left: number; top: number } | null {
+  if (!open || anchor !== null) return null;
+  const maxLeft = Math.max(8, viewport.width - size.width - 8);
+  const maxTop = Math.max(8, viewport.height - size.height - 8);
+  return {
+    left: Math.min(maxLeft, Math.max(8, Math.round((viewport.width - size.width) / 2))),
+    top: Math.min(maxTop, Math.max(8, Math.round((viewport.height - size.height) / 2))),
+  };
+}
+
+/**
+ * 抽屉锚点可见性监听：窗口尺寸变化与**父容器**尺寸变化都要触发重算。
+ * 返回取消订阅函数（组件卸载/抽屉关闭时调用）。
+ */
+export function watchAnchorResize(el: HTMLElement | null, onChange: () => void): () => void {
+  window.addEventListener("resize", onChange);
+  let observer: ResizeObserver | null = null;
+  if (el && typeof ResizeObserver !== "undefined") {
+    observer = new ResizeObserver(onChange);
+    observer.observe(el);
+  }
+  return () => {
+    window.removeEventListener("resize", onChange);
+    observer?.disconnect();
+  };
+}
+
+export function SplitWithDivider({
   node,
   pageActive,
   maximizedPaneId,
@@ -199,6 +254,8 @@ function SplitWithDivider({
   const minPx = horizontal ? MIN_PANE_W : MIN_PANE_H;
   const [ratioHint, setRatioHint] = useState<string | null>(null);
   const [ratioMenu, setRatioMenu] = useState<{ x: number; y: number } | null>(null);
+  /** 容器实测尺寸：aria-valuemin/max 与真实可拖范围必须由同一套边界换算。 */
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const dragRef = useRef<{
     pointerId: number;
     startPos: number;
@@ -210,16 +267,39 @@ function SplitWithDivider({
     raf: number;
   } | null>(null);
 
-  const clampForElement = useCallback(
-    (ratio: number): { value: number; min: number; max: number } => {
-      const el = ref.current;
-      const size = el ? (horizontal ? el.getBoundingClientRect().width : el.getBoundingClientRect().height) : 1000;
-      const minRatio = Math.min(0.45, minPx / Math.max(size, minPx * 2));
-      const maxRatio = 1 - minRatio;
-      return { value: Math.min(maxRatio, Math.max(minRatio, ratio)), min: minRatio, max: maxRatio };
-    },
-    [horizontal, minPx],
-  );
+  // 容器尺寸变化（窗口/分栏/最大化恢复）时重算边界；aria 与实际布局共用 bounds。
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      setContainerSize((current) =>
+        current.width === rect.width && current.height === rect.height
+          ? current
+          : { width: rect.width, height: rect.height },
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const bounds = useMemo(() => {
+    const measured = horizontal ? containerSize.width : containerSize.height;
+    const size = measured || 1000;
+    const min = Math.min(0.45, minPx / Math.max(size, minPx * 2));
+    const max = 1 - min;
+    return { value: Math.min(max, Math.max(min, node.ratio)), min, max };
+  }, [containerSize.height, containerSize.width, horizontal, minPx, node.ratio]);
+
+  // 容器缩到当前比例超出合法区间时，把 store 也收敛到同一有效值，避免
+  // 「Store 比例 / ARIA / 实际布局」三者分叉（只在越界时写一次）。
+  useEffect(() => {
+    if (Math.abs(node.ratio - bounds.value) > 0.0005) {
+      store.getState().updateRatio(node.id, bounds.value);
+    }
+  }, [bounds.value, node.id, node.ratio, store]);
 
   const setHint = (ratio: number) => {
     const pct = Math.round(ratio * 100);
@@ -333,19 +413,19 @@ function SplitWithDivider({
   };
 
   const nudge = (delta: number) => {
-    const current = clampForElement(node.ratio + delta);
-    store.getState().updateRatio(node.id, current.value);
+    const current = Math.min(bounds.max, Math.max(bounds.min, node.ratio + delta));
+    store.getState().updateRatio(node.id, current);
   };
 
   const applyRatio = (ratio: number) => {
-    store.getState().updateRatio(node.id, clampForElement(ratio).value);
+    store.getState().updateRatio(node.id, Math.min(bounds.max, Math.max(bounds.min, ratio)));
     setRatioMenu(null);
   };
 
   // 比例按整块容器计：先去一半 16px 分割线，保证 50% 时两侧等宽、分割线居中。
   const firstStyle = horizontal
-    ? { width: `calc(${node.ratio * 100}% - 8px)` }
-    : { height: `calc(${node.ratio * 100}% - 8px)` };
+    ? { width: `calc(${bounds.value * 100}% - 8px)` }
+    : { height: `calc(${bounds.value * 100}% - 8px)` };
   const menuPosition = ratioMenu
     ? {
         left: Math.min(ratioMenu.x, Math.max(8, window.innerWidth - 176)),
@@ -372,9 +452,9 @@ function SplitWithDivider({
         role="separator"
         aria-orientation={horizontal ? "vertical" : "horizontal"}
         aria-label={t("fw.divider.aria")}
-        aria-valuemin={15}
-        aria-valuemax={85}
-        aria-valuenow={Math.round(node.ratio * 100)}
+        aria-valuemin={Number((bounds.min * 100).toFixed(1))}
+        aria-valuemax={Number((bounds.max * 100).toFixed(1))}
+        aria-valuenow={Number((bounds.value * 100).toFixed(1))}
         tabIndex={0}
         onPointerDown={beginResize}
         onPointerMove={onResizeMove}
@@ -401,6 +481,18 @@ function SplitWithDivider({
           } else if (event.key === "ArrowRight" || event.key === "ArrowDown") {
             event.preventDefault();
             nudge(step);
+          } else if (event.key === "Home") {
+            // 与 WorkspaceSplit 对齐：跳到最小边界（first 侧最小宽度）。
+            event.preventDefault();
+            applyRatio(bounds.min);
+          } else if (event.key === "End") {
+            // 跳到最大边界（second 侧最小宽度）。
+            event.preventDefault();
+            applyRatio(bounds.max);
+          } else if (event.key === "Enter") {
+            // 双击/回车复位为 50%。
+            event.preventDefault();
+            applyRatio(0.5);
           } else if (event.key === "Escape") {
             event.preventDefault();
             setRatioMenu(null);
@@ -516,7 +608,13 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
 
   const [dropHint, setDropHint] = useState<FwDropZone | null>(null);
   const [layoutOpen, setLayoutOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const layoutBtnRef = useRef<HTMLButtonElement>(null);
+  /** 窄内容区「模板/存为模板」按钮被收纳进更多菜单后，抽屉改锚到更多按钮，避免锚点隐藏后浮层落到视口原点。 */
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  const [drawerAnchor, setDrawerAnchor] = useState<"toolbar" | "more">("toolbar");
+  /** 抽屉打开期间窗口/布局尺寸变化时重算锚点可见性（触发按钮被收纳后换锚点或退化为居中）。 */
+  const [anchorTick, setAnchorTick] = useState(0);
   const [openFolder, setOpenFolder] = useState<{ paneId: string; mode: OpenFolderMode } | null>(null);
   const [openFolderPath, setFolderPath] = useState("");
   const [pickBusy, setPickBusy] = useState(false);
@@ -643,6 +741,35 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     });
     return () => unsub();
   }, [store]);
+
+  // 标签关闭/移出后立即释放对应滚动会话缓存（纯会话内内存，不落库）；
+  // 收纳标签仍保留位置，标签彻底从所有窗格与收纳中消失才驱逐。
+  useEffect(() => {
+    const live = new Set<string>();
+    for (const pane of Object.values(panes)) for (const tab of pane.tabs) live.add(tab.tabId);
+    for (const tab of stashed) live.add(tab.tabId);
+    pruneScrollSessions(live);
+  }, [panes, stashed]);
+
+  // 抽屉打开期间监听窗口与父容器尺寸变化：锚点按钮被容器查询收纳/恢复后，重算可见触发点。
+  // 只监听 window.resize 会漏掉「窗口不变、面板/分栏变窄」导致的按钮隐藏。
+  useEffect(() => {
+    if (!layoutOpen) return;
+    return watchAnchorResize(rootRef.current, () => setAnchorTick((n) => n + 1));
+  }, [layoutOpen]);
+
+  // 抽屉锚点退化：优先打开时的触发点；它被隐藏（display:none / 零尺寸）后跟随另一
+  // 个可见按钮；两个都不可见时不锚到视口原点，改由 positionOverride 退化为视口居中。
+  const layoutAnchorVisible = isElementVisible(layoutBtnRef.current);
+  const moreAnchorVisible = isElementVisible(moreBtnRef.current);
+  const drawerAnchorKind = resolveDrawerAnchor(drawerAnchor, layoutAnchorVisible, moreAnchorVisible);
+  const drawerAnchorRef =
+    drawerAnchorKind === "layout" ? layoutBtnRef : drawerAnchorKind === "more" ? moreBtnRef : null;
+  const drawerPositionOverride = drawerCenterOverride(layoutOpen, drawerAnchorKind, {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
+  void anchorTick;
 
   // ── 快速位置 ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1489,6 +1616,22 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       onSelect: () => store.getState().setLayoutEditMode(!layoutEditMode),
     },
     {
+      // 窄内容区工具栏按钮被收纳后，模板抽屉仍可从这里打开（功能不丢）。
+      key: "templates",
+      label: t("fw.toolbar.templates"),
+      icon: <LayoutPanelTop size={13} />,
+      onSelect: () => {
+        setDrawerAnchor("more");
+        setLayoutOpen((v) => !v);
+      },
+    },
+    {
+      key: "saveLayout",
+      label: t("fw.toolbar.saveLayout"),
+      icon: <Save size={13} />,
+      onSelect: () => setSaveTemplateOpen(true),
+    },
+    {
       key: "undo",
       label: t("fw.layout.undo"),
       icon: <Undo2 size={13} />,
@@ -1529,7 +1672,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   }
 
   return (
-    <div className="fw-root">
+    <div className="fw-root" ref={rootRef}>
       {/* 顶部工具栏（不重复 Shell 既有功能） */}
       <header className="fw-toolbar">
         <div className="fw-toolbar-title">
@@ -1646,7 +1789,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
               { key: "undoMenu", label: t("fw.layout.undo"), icon: <Undo2 size={13} />, disabled: undoCount === 0, onSelect: () => store.getState().undoLayout() },
               { key: "redoMenu", label: t("fw.layout.redo"), icon: <Redo2 size={13} />, disabled: redoCount === 0, onSelect: () => store.getState().redoLayout() },
               { key: "sep2", separator: true },
-              { key: "customize", label: t("fw.layout.customizeHint"), description: t("fw.layout.customizeBody"), onSelect: () => setLayoutOpen(true) },
+              { key: "customize", label: t("fw.layout.customizeHint"), description: t("fw.layout.customizeBody"), onSelect: () => { setDrawerAnchor("more"); setLayoutOpen(true); } },
             ]}
           />
 
@@ -1658,6 +1801,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             aria-expanded={layoutOpen}
             onClick={(e) => {
               e.stopPropagation();
+              setDrawerAnchor("toolbar");
               setLayoutOpen((v) => !v);
             }}
           >
@@ -1674,7 +1818,19 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             menuLabel={t("fw.toolbar.more")}
             placement="bottom-end"
             trigger={({ ref, expanded, onClick, onKeyDown }) => (
-              <button ref={ref} type="button" className="fw-icon-btn" aria-haspopup="menu" aria-expanded={expanded} aria-label={t("fw.toolbar.more")} onClick={onClick} onKeyDown={onKeyDown}>
+              <button
+                ref={(el) => {
+                  ref(el);
+                  moreBtnRef.current = el as HTMLButtonElement | null;
+                }}
+                type="button"
+                className="fw-icon-btn"
+                aria-haspopup="menu"
+                aria-expanded={expanded}
+                aria-label={t("fw.toolbar.more")}
+                onClick={onClick}
+                onKeyDown={onKeyDown}
+              >
                 <MoreHorizontal size={15} aria-hidden="true" />
               </button>
             )}
@@ -1725,7 +1881,8 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       <Popover
         open={layoutOpen}
         onOpenChange={setLayoutOpen}
-        anchorRef={layoutBtnRef}
+        anchorRef={drawerAnchorRef ?? layoutBtnRef}
+        positionOverride={drawerPositionOverride}
         placement="bottom-end"
         className="fw-layout-pop"
         role="dialog"

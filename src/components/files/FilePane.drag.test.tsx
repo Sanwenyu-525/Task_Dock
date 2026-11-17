@@ -157,6 +157,27 @@ describe("FilePane 拖拽起点（PointerEvent 组件链）", () => {
     expect(getFwDragState().payload).toBeNull();
   });
 
+  it("pointercancel 回收候选指针，随后悬停移动不幻影建立会话", async () => {
+    stubRects();
+    await renderPane();
+    const row = screen.getByText("a.txt").closest("[data-fw-path]")!;
+    fireEvent.pointerDown(row, { button: 0, clientX: 100, clientY: 100, pointerId: 1 });
+    fireEvent.pointerCancel(window, { pointerId: 1 });
+    // 按键已释放后的普通悬停移动：候选必须已清空，不得被越阈值判断误判成新拖拽。
+    fireEvent.pointerMove(window, { clientX: 300, clientY: 300, pointerId: 1 });
+    expect(getFwDragState().payload).toBeNull();
+  });
+
+  it("窗口失焦回收候选指针，随后悬停移动不幻影建立会话", async () => {
+    stubRects();
+    await renderPane();
+    const row = screen.getByText("a.txt").closest("[data-fw-path]")!;
+    fireEvent.pointerDown(row, { button: 0, clientX: 100, clientY: 100, pointerId: 1 });
+    fireEvent.blur(window);
+    fireEvent.pointerMove(window, { clientX: 320, clientY: 260, pointerId: 1 });
+    expect(getFwDragState().payload).toBeNull();
+  });
+
   it("标签 pointerdown + 移动 → tabs 会话；普通模式不再有整窗格把手", async () => {
     stubRects();
     await renderPane();

@@ -58,6 +58,7 @@ import {
   reloadIfChanged,
   subscribeDir,
   getDirState,
+  PAGING_STALLED,
   type DirState,
 } from "../../lib/filesWorkspace/dirCache";
 import { formatSize, CATEGORY_LABEL } from "../../lib/filesWorkspace/fileMeta";
@@ -541,6 +542,10 @@ export default function FilePane({
   useEffect(() => {
     return subscribeFwDrag((fw) => {
       if (!fw.payload) {
+        // 协调器会话结束（finish/cancel/Esc/失焦/离开文档）：候选指针一并回收，
+        // 避免取消后残留的 pointerdown 候选在下次悬停移动时被误判成新拖拽。
+        dragCandidate.current = null;
+        pendingCtrlToggle.current = null;
         if (lastZoneRef.current) {
           lastZoneRef.current = null;
           onHoverZone(null);
@@ -607,11 +612,21 @@ export default function FilePane({
         store.getState().setSelection(paneId, next, next[0] ?? null);
       }
     };
+    // pointercancel / 窗口失焦在协调器会话建立前就可能发生；与 onUp 不同，
+    // 取消不兑现 Ctrl 点击的选择翻转，只回收候选指针（根因层关闭幻影拖拽窗口）。
+    const onCancel = () => {
+      dragCandidate.current = null;
+      pendingCtrlToggle.current = null;
+    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onCancel);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onCancel);
     };
   }, [dirPath, layoutEditMode, paneId, selectedPaths, selectedSet, store]);
 
@@ -1211,7 +1226,12 @@ export default function FilePane({
     );
   }
 
-  const dirError = dirState?.error === "DIR_MISSING" || (Boolean(dirState?.error) && !dirState?.listing);
+  // 分页停滞（hasMore=true 但 nextOffset 未推进）属于非阻断状态：列表保留已加载部分，
+  // 用顶部警示条提示，不进 dirError 阻断面板。
+  const pagingStalled = dirState?.error === PAGING_STALLED;
+  const dirError =
+    !pagingStalled &&
+    (dirState?.error === "DIR_MISSING" || (Boolean(dirState?.error) && !dirState?.listing));
 
   return (
     <section
@@ -1608,6 +1628,22 @@ export default function FilePane({
               <span>{t("fw.action.compare")}</span>
             </button>
           )}
+        </div>
+      )}
+
+      {/* 分页停滞警示：不阻断列表与已有操作，仅提示目录未读完、可刷新重试。 */}
+      {pagingStalled && (
+        <div className="fw-paging-stalled" role="status" aria-live="polite">
+          <span className="fw-paging-stalled-text">{t("fw.status.pagingStalled")}</span>
+          <button
+            type="button"
+            className="fw-paging-stalled-refresh"
+            onClick={() => refreshBoth([dirPath])}
+            data-tip={t("fw.pane.refresh")}
+          >
+            <RotateCcw size={12} aria-hidden="true" />
+            {t("fw.menu.refresh")}
+          </button>
         </div>
       )}
 
