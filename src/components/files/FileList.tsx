@@ -11,12 +11,21 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 
 import type { FsEntry } from "../../lib/bridge";
 import { fileVisual, formatModified, formatSize, toneVar } from "../../lib/filesWorkspace/fileMeta";
 import { basename, joinPath } from "../../lib/filesWorkspace/pathUtils";
+import {
+  autoScrollVelocity,
+  marqueeHitTest,
+  normalizeMarqueeRect,
+  toMarqueeContentPoint,
+  type MarqueeBodyRect,
+  type MarqueeGeometry,
+} from "../../lib/filesWorkspace/marqueeSelection";
 import { getFwDragState, subscribeFwDrag } from "../../lib/filesWorkspace/interactions";
 import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
 import { useLocale } from "../../hooks/useLocale";
@@ -28,6 +37,41 @@ const LIST_HEAD_H = 26;
 const GRID_CELL_W = 104;
 const GRID_CELL_H = 116;
 const GRID_GAP = 8;
+/** 鼠标移动超过该距离才从「空白点击」升级为框选，避免手抖误清空/误选。 */
+const MARQUEE_THRESHOLD_PX = 5;
+const MARQUEE_AUTO_SCROLL_MAX = 14;
+const MARQUEE_AUTO_SCROLL_EDGE = 44;
+
+function scheduleFrame(callback: FrameRequestCallback): number {
+  if (typeof window.requestAnimationFrame === "function") return window.requestAnimationFrame(callback);
+  return window.setTimeout(() => callback(Date.now()), 16);
+}
+
+function cancelFrame(id: number): void {
+  if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(id);
+  else window.clearTimeout(id);
+}
+
+interface MarqueeSession {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  started: boolean;
+  lastClientX: number;
+  lastClientY: number;
+  lastPathsKey: string;
+  moveFrame: number | null;
+  autoFrame: number | null;
+}
+
+interface MarqueeViewportRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
 
 type ListViewMode = "list" | "grid";
 
@@ -255,7 +299,7 @@ const ListRow = memo(function ListRow({
   const Icon = visual.icon;
   return (
     <div
-      className={`fw-row${selected ? " is-selected" : ""}${active && selected ? " is-active" : ""}${isDropTarget ? " is-drop-folder" : ""}`}
+      className={`fw-row${selected ? " is-selected" : ""}${active ? " is-active" : ""}${isDropTarget ? " is-drop-folder" : ""}`}
       style={{ height: LIST_ROW_H }}
       data-fw-path={path}
       data-fw-kind={entry.kind}
@@ -305,7 +349,7 @@ const GridCell = memo(function GridCell({
   }, [thumbnails, path, entry.category]);
   return (
     <div
-      className={`fw-cell${selected ? " is-selected" : ""}${active && selected ? " is-active" : ""}${isDropTarget ? " is-drop-folder" : ""}`}
+      className={`fw-cell${selected ? " is-selected" : ""}${active ? " is-active" : ""}${isDropTarget ? " is-drop-folder" : ""}`}
       style={{ width: GRID_CELL_W, height: GRID_CELL_H }}
       data-fw-path={path}
       data-fw-kind={entry.kind}
@@ -352,6 +396,22 @@ export interface FileListProps {
   onEntryContextMenu: (e: React.MouseEvent, entry: FsEntry) => void;
   onBodyPointerDown: (e: React.PointerEvent) => void;
   onBodyContextMenu: (e: React.MouseEvent) => void;
+  /**
+   * 框选阶段回调。`start` 表示阈值已达、基准集合应由 FilePane 记录；
+   * `preview` 每次候选实际变化时调用；`commit` 在 pointerup 提交；`cancel` 恢复基准。
+   * 不传时禁用框选（布局编辑模式/回收站等）。
+   */
+  onMarqueeChange?: (payload: {
+    phase: "start" | "preview" | "commit" | "cancel";
+    paths: string[];
+    ctrlKey: boolean;
+    shiftKey: boolean;
+  }) => void;
+  /** 空白处普通点击（未形成框选）时清空选择，由 FilePane 处理。 */
+  onBlankClick?: () => void;
+  /** 网格列数变化时同步给键盘导航使用。 */
+  onGridColsChange?: (cols: number) => void;
+  marqueeEnabled?: boolean;
   children?: ReactNode;
 }
 
@@ -369,10 +429,16 @@ export default function FileList({
   onEntryContextMenu,
   onBodyPointerDown,
   onBodyContextMenu,
+  onMarqueeChange,
+  onBlankClick,
+  onGridColsChange,
+  marqueeEnabled = true,
   children,
 }: FileListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(6);
+  const marqueeRef = useRef<MarqueeSession | null>(null);
+  const [marqueeView, setMarqueeView] = useState<MarqueeViewportRect | null>(null);
   /** 网格列数测量完成前不恢复锚点：初始列数只是占位，按错误列数换算会落到错误行。 */
   const [geometryReady, setGeometryReady] = useState(false);
   /** 已恢复过位置的会话键：目录刷新重渲染时不重复回写滚动条，避免打断用户滚动。 */
@@ -403,19 +469,21 @@ export default function FileList({
     const el = containerRef.current;
     if (!el || viewMode !== "grid") {
       setGeometryReady(true);
+      onGridColsChange?.(1);
       return;
     }
     const measure = () => {
       const inner = el.clientWidth - 8;
       const per = Math.max(2, Math.floor((inner + GRID_GAP) / (GRID_CELL_W + GRID_GAP)));
       setCols(per);
+      onGridColsChange?.(per);
       setGeometryReady(true);
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [viewMode]);
+  }, [viewMode, onGridColsChange]);
 
   const gridCols = Math.max(1, cols);
   const rowCount = viewMode === "list" ? entries.length : Math.ceil(entries.length / gridCols);
@@ -461,6 +529,265 @@ export default function FileList({
       activeSessions.delete(key);
     };
   }, [dirPath, viewMode, sessionKey, entries, rowCount, rowH, headOffset, gridCols, geometryReady]);
+
+  // ── 矩形框选（空白区按下；与行上的文件选择/拖拽互斥）────────────────
+  // 只把指针坐标按虚拟几何换算为候选路径，不查询当前 DOM 的 .fw-row；
+  // 因此滚出视口的行、25000 项目录和网格都能得到一致结果。
+  const entriesRef = useRef(entries);
+  const colsRef = useRef(gridCols);
+  const marqueeCallbacksRef = useRef({ onMarqueeChange, onBlankClick });
+  entriesRef.current = entries;
+  colsRef.current = gridCols;
+  marqueeCallbacksRef.current = { onMarqueeChange, onBlankClick };
+  const stopMarqueeRef = useRef<((cancel: boolean) => void) | null>(null);
+
+  useEffect(() => {
+    return () => stopMarqueeRef.current?.(true);
+  }, []);
+
+  const marqueeGeometry = (el: HTMLElement): MarqueeGeometry => ({
+    viewMode: viewMode === "grid" ? "grid" : "list",
+    rowHeight: rowH,
+    gridCols: Math.max(1, colsRef.current),
+    gridCellWidth: GRID_CELL_W,
+    gridCellHeight: GRID_CELL_H,
+    gridGap: GRID_GAP,
+    gridPaddingX: 4,
+    bodyWidth: Math.max(0, el.clientWidth),
+  });
+
+  const marqueeBodyRect = (el: HTMLElement): MarqueeBodyRect => {
+    const rect = el.getBoundingClientRect();
+    return {
+      left: rect.left,
+      top: rect.top,
+      width: Math.max(0, el.clientWidth || rect.width),
+      height: Math.max(0, el.clientHeight || rect.height),
+    };
+  };
+
+  const marqueePaths = (
+    session: MarqueeSession,
+    clientX: number,
+    clientY: number,
+  ): { paths: string[]; view: MarqueeViewportRect | null } => {
+    const el = containerRef.current;
+    if (!el) return { paths: [], view: null };
+    const body = marqueeBodyRect(el);
+    const head = viewMode === "list" ? LIST_HEAD_H : 0;
+    const topBound = body.top + head;
+    const bottomBound = body.top + body.height;
+    const rightBound = body.left + body.width;
+    // 指针只在内容区（表头之下、滚动条之外）参与几何计算；视觉矩形同样钳制。
+    const x = Math.min(Math.max(clientX, body.left), rightBound);
+    const y = Math.min(Math.max(clientY, topBound), bottomBound);
+    const start = toMarqueeContentPoint(
+      session.startClientX,
+      session.startClientY,
+      body,
+      el.scrollTop,
+      head,
+    );
+    const current = toMarqueeContentPoint(x, y, body, el.scrollTop, head);
+    const contentRect = normalizeMarqueeRect(start.x, start.y, current.x, current.y);
+    const hits = marqueeHitTest(entriesRef.current, dirPath, contentRect, marqueeGeometry(el));
+    const view: MarqueeViewportRect = {
+      left: Math.min(session.startClientX, x),
+      top: Math.min(session.startClientY, y),
+      width: Math.abs(x - session.startClientX),
+      height: Math.abs(y - session.startClientY),
+    };
+    return { paths: hits, view };
+  };
+
+  const updateMarquee = (session: MarqueeSession, commit = false): string[] => {
+    if (marqueeRef.current !== session) return [];
+    const next = marqueePaths(session, session.lastClientX, session.lastClientY);
+    setMarqueeView(next.view);
+    const key = next.paths.join("\u0000");
+    if (commit || key !== session.lastPathsKey) {
+      session.lastPathsKey = key;
+      marqueeCallbacksRef.current.onMarqueeChange?.({
+        phase: commit ? "commit" : "preview",
+        paths: next.paths,
+        ctrlKey: session.ctrlKey,
+        shiftKey: session.shiftKey,
+      });
+    }
+    return next.paths;
+  };
+
+  const stopMarquee = (session: MarqueeSession, cancel: boolean): void => {
+    if (marqueeRef.current !== session) return;
+    marqueeRef.current = null;
+    if (session.moveFrame !== null) {
+      cancelFrame(session.moveFrame);
+      session.moveFrame = null;
+    }
+    if (session.autoFrame !== null) {
+      cancelFrame(session.autoFrame);
+      session.autoFrame = null;
+    }
+    const el = containerRef.current;
+    try {
+      if (el?.hasPointerCapture?.(session.pointerId)) el.releasePointerCapture(session.pointerId);
+    } catch {
+      /* pointer capture 已由系统释放（PointerCancel） */
+    }
+    if (cancel && session.started) {
+      marqueeCallbacksRef.current.onMarqueeChange?.({
+        phase: "cancel",
+        paths: [],
+        ctrlKey: session.ctrlKey,
+        shiftKey: session.shiftKey,
+      });
+    }
+    setMarqueeView(null);
+    if (stopMarqueeRef.current) stopMarqueeRef.current = null;
+  };
+
+  const startAutoScroll = (session: MarqueeSession): void => {
+    if (session.autoFrame !== null) return;
+    const tick = () => {
+      if (marqueeRef.current !== session) {
+        session.autoFrame = null;
+        return;
+      }
+      const el = containerRef.current;
+      if (!el) {
+        session.autoFrame = null;
+        return;
+      }
+      const body = marqueeBodyRect(el);
+      const top = body.top + (viewMode === "list" ? LIST_HEAD_H : 0);
+      const bottom = body.top + body.height;
+      const step = autoScrollVelocity(session.lastClientY, top, bottom, {
+        edge: MARQUEE_AUTO_SCROLL_EDGE,
+        maxSpeed: MARQUEE_AUTO_SCROLL_MAX,
+      });
+      if (step !== 0) {
+        const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+        const before = el.scrollTop;
+        el.scrollTop = Math.min(maxScroll, Math.max(0, before + step));
+        if (el.scrollTop !== before) updateMarquee(session);
+      }
+      session.autoFrame = scheduleFrame(tick);
+    };
+    session.autoFrame = scheduleFrame(tick);
+  };
+
+  const handleBodyPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    onBodyPointerDown(e);
+    if (!marqueeEnabled || !marqueeCallbacksRef.current.onMarqueeChange) return;
+    if (marqueeRef.current) return;
+    if (e.button !== 0 || e.pointerType === "touch") return;
+    const el = containerRef.current;
+    if (!el) return;
+    const target = e.target as HTMLElement;
+    // 行/表头/工具按钮/滚动条不启动框选；行上的按下继续走 FilePane 的
+    // 文件选择或文件拖拽候选，两个手势从命中目标起即互斥。
+    if (target.closest("[data-fw-path], .fw-list-head, button, a, input, textarea, select, [data-fw-no-marquee]")) {
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const xInBody = e.clientX - rect.left;
+    const yInBody = e.clientY - rect.top;
+    if (xInBody < 0 || yInBody < 0 || xInBody > el.clientWidth || yInBody > el.clientHeight) return;
+    if (yInBody < (viewMode === "list" ? LIST_HEAD_H : 0)) return;
+
+    e.preventDefault();
+    const session: MarqueeSession = {
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      ctrlKey: e.ctrlKey || e.metaKey,
+      shiftKey: e.shiftKey,
+      started: false,
+      lastClientX: e.clientX,
+      lastClientY: e.clientY,
+      lastPathsKey: "",
+      moveFrame: null,
+      autoFrame: null,
+    };
+    marqueeRef.current = session;
+    try {
+      el.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* 某些合成事件没有可捕获指针；窗口监听仍可完成框选 */
+    }
+
+    const onMove = (event: PointerEvent) => {
+      if (marqueeRef.current !== session || event.pointerId !== session.pointerId) return;
+      session.lastClientX = event.clientX;
+      session.lastClientY = event.clientY;
+      if (!session.started) {
+        if (
+          Math.hypot(
+            session.lastClientX - session.startClientX,
+            session.lastClientY - session.startClientY,
+          ) < MARQUEE_THRESHOLD_PX
+        ) {
+          return;
+        }
+        session.started = true;
+        marqueeCallbacksRef.current.onMarqueeChange?.({
+          phase: "start",
+          paths: [],
+          ctrlKey: session.ctrlKey,
+          shiftKey: session.shiftKey,
+        });
+        startAutoScroll(session);
+      }
+      if (session.moveFrame === null) {
+        session.moveFrame = scheduleFrame(() => {
+          session.moveFrame = null;
+          if (marqueeRef.current === session) updateMarquee(session);
+        });
+      }
+    };
+
+    const onUp = (event: PointerEvent) => {
+      if (event.pointerId !== session.pointerId) return;
+      session.lastClientX = event.clientX;
+      session.lastClientY = event.clientY;
+      if (session.started) {
+        updateMarquee(session, true);
+      } else {
+        marqueeCallbacksRef.current.onBlankClick?.();
+      }
+      cleanup(false);
+    };
+
+    const onCancel = (event: PointerEvent) => {
+      if (event.pointerId !== session.pointerId) return;
+      cleanup(true);
+    };
+
+    const onBlur = () => cleanup(true);
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || marqueeRef.current !== session) return;
+      // 捕获阶段截断：Escape 只取消本次框选并恢复基准选择，不再让面板清空选择。
+      event.preventDefault();
+      event.stopPropagation();
+      cleanup(true);
+    };
+
+    const cleanup = (cancel: boolean) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("keydown", onKey, true);
+      stopMarquee(session, cancel);
+    };
+    stopMarqueeRef.current = cleanup;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("keydown", onKey, true);
+  };
 
   const renderRow = (rowIndex: number): ReactNode => {
     if (viewMode === "list") {
@@ -523,11 +850,11 @@ export default function FileList({
 
   return (
     <div
-      className={`fw-body fw-${viewMode}`}
+      className={`fw-body fw-${viewMode}${marqueeView ? " is-marquee-active" : ""}`}
       ref={containerRef}
       role="listbox"
       aria-multiselectable="true"
-      onPointerDown={onBodyPointerDown}
+      onPointerDown={handleBodyPointerDown}
       onContextMenu={onBodyContextMenu}
     >
       {viewMode === "list" && (
@@ -545,6 +872,18 @@ export default function FileList({
           {children}
         </div>
       </div>
+      {marqueeView && (
+        <div
+          className="fw-marquee"
+          aria-hidden="true"
+          style={{
+            left: marqueeView.left,
+            top: marqueeView.top,
+            width: marqueeView.width,
+            height: marqueeView.height,
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -65,6 +65,12 @@ import { formatSize, CATEGORY_LABEL } from "../../lib/filesWorkspace/fileMeta";
 import { basename, breadcrumbSegments, joinPath, normalizePath, parentOf } from "../../lib/filesWorkspace/pathUtils";
 import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
 import { withFileOperationSlot } from "../../lib/filesWorkspace/operationQueue";
+import {
+  mergeMarqueeSelection,
+  moveFocusIndex,
+  type FilePointerGesture,
+  type MarqueeSelectionMode,
+} from "../../lib/filesWorkspace/marqueeSelection";
 import { primeVolumeKeys } from "../../lib/filesWorkspace/volumeCache";
 import { pickFolder, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
 import { MAX_TABS_PER_PANE, pathToPane } from "../../lib/filesWorkspace/model";
@@ -346,6 +352,9 @@ export default function FilePane({
   const [dialogInput, setDialogInput] = useState("");
   const [propsData, setPropsData] = useState<FsStat | null>(null);
   const [deletePermanent, setDeletePermanent] = useState(false);
+  /** 键盘/鼠标焦点文件：允许「一个焦点 + 多个选中」；与 selection.paths 分离。 */
+  const [focusedPath, setFocusedPath] = useState<string | null>(null);
+  const [gridCols, setGridCols] = useState(1);
   /** 关闭区域被容量阻止：列出待安置标签，让用户明确选择而不是静默丢弃。 */
   const [closePrompt, setClosePrompt] = useState<{
     tabs: FolderTab[];
@@ -357,6 +366,10 @@ export default function FilePane({
   const tabbarRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLElement>(null);
   const dragCandidate = useRef<{ x: number; y: number; entry: FsEntry | null; tabId: string | null; paneDrag: boolean } | null>(null);
+  /** 文件拖拽手势（与 FileList 的 marquee-* 通过命中目标互斥，不另建协调器）。 */
+  const gestureRef = useRef<FilePointerGesture>("idle");
+  /** 框选按下时的选择基准：一次拖拽期间 Ctrl/Shift 语义稳定，Escape 可完整恢复。 */
+  const marqueeBaseRef = useRef<{ paths: string[]; anchor: string | null } | null>(null);
   /** Ctrl 点击已选项的取消选择延迟到 pointerup；若随后形成拖拽则保留整组选择。 */
   const pendingCtrlToggle = useRef<string | null>(null);
   const lastZoneRef = useRef<FwDropZone | null>(null);
@@ -399,6 +412,8 @@ export default function FilePane({
   // 目录切换时清空选择（区域内状态独立）。
   useEffect(() => {
     store.getState().clearSelection(paneId);
+    setFocusedPath(null);
+    marqueeBaseRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirPath]);
 
@@ -583,6 +598,7 @@ export default function FilePane({
     // 布局编辑模式只允许「拖动整个区域」，文件与标签拖拽全部暂停，避免争抢命中区域。
     if (layoutEditMode && !paneDrag) return;
     dragCandidate.current = { x: e.clientX, y: e.clientY, entry, tabId, paneDrag };
+    gestureRef.current = paneDrag ? "file-drag-pending" : "file-drag-pending";
   };
 
   useEffect(() => {
@@ -592,6 +608,7 @@ export default function FilePane({
       if (Math.hypot(e.clientX - cand.x, e.clientY - cand.y) < DRAG_THRESHOLD_PX) return;
       dragCandidate.current = null;
       pendingCtrlToggle.current = null;
+      gestureRef.current = "file-drag-active";
       if (cand.paneDrag) {
         startFwDrag({ kind: "pane", fromPaneId: paneId }, e.clientX, e.clientY, e);
       } else if (cand.tabId) {
@@ -606,6 +623,7 @@ export default function FilePane({
       const pending = pendingCtrlToggle.current;
       pendingCtrlToggle.current = null;
       dragCandidate.current = null;
+      gestureRef.current = "idle";
       if (pending) {
         const current = store.getState().selection[paneId]?.paths ?? [];
         const next = current.filter((p) => p !== pending);
@@ -617,6 +635,7 @@ export default function FilePane({
     const onCancel = () => {
       dragCandidate.current = null;
       pendingCtrlToggle.current = null;
+      gestureRef.current = "idle";
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -633,8 +652,9 @@ export default function FilePane({
   // ── 选择 ────────────────────────────────────────────────────────────
   const onEntryPointerDown = (e: ReactPointerEvent, entry: FsEntry, _index: number) => {
     store.getState().setActivePane(paneId);
-    beginDragCandidate(e, entry, null);
     const path = joinPath(dirPath, entry.name);
+    setFocusedPath(path);
+    beginDragCandidate(e, entry, null);
     // store 与渲染快照理论上同步；多选拖拽起始时以非空的一侧为准，
     // 避免极短窗口内 selection 被其它 pointer 事件短暂清空后把整组选择折叠成单项。
     const stored = store.getState().selection[paneId]?.paths ?? [];
@@ -666,11 +686,57 @@ export default function FilePane({
 
   const onBodyPointerDown = (e: ReactPointerEvent) => {
     const target = e.target as HTMLElement;
-    if (!target.closest("[data-fw-path]")) {
-      store.getState().setActivePane(paneId);
-      store.getState().clearSelection(paneId);
-    }
+    store.getState().setActivePane(paneId);
+    if (target.closest("[data-fw-path]")) return;
+    // 空白点击的“清空选择”延迟到 pointerup：FileList 需要先用 5px 阈值判断
+    // 这是普通点击还是框选，不能在 pointerdown 就抹掉基准选择。
   };
+
+  const onBlankClick = () => {
+    store.getState().setActivePane(paneId);
+    store.getState().clearSelection(paneId);
+    setFocusedPath(null);
+  };
+
+  const onMarqueeChange = useCallback(
+    (payload: {
+      phase: "start" | "preview" | "commit" | "cancel";
+      paths: string[];
+      ctrlKey: boolean;
+      shiftKey: boolean;
+    }) => {
+      if (payload.phase === "start") {
+        const current = store.getState().selection[paneId];
+        marqueeBaseRef.current = {
+          paths: [...(current?.paths ?? [])],
+          anchor: current?.anchor ?? null,
+        };
+        return;
+      }
+      if (payload.phase === "cancel") {
+        const base = marqueeBaseRef.current;
+        marqueeBaseRef.current = null;
+        if (base) {
+          store.getState().setSelection(paneId, base.paths, base.anchor);
+          setFocusedPath(base.anchor ?? base.paths[0] ?? null);
+        }
+        return;
+      }
+      const base = marqueeBaseRef.current?.paths ?? [];
+      const mode: MarqueeSelectionMode = payload.ctrlKey ? "toggle" : payload.shiftKey ? "add" : "replace";
+      const merged = mergeMarqueeSelection(base, payload.paths, mode);
+      const anchor =
+        payload.shiftKey && marqueeBaseRef.current?.anchor
+          ? marqueeBaseRef.current.anchor
+          : (payload.paths[0] ?? null);
+      store.getState().setSelection(paneId, merged, anchor);
+      if (payload.phase === "commit") {
+        marqueeBaseRef.current = null;
+        setFocusedPath(payload.paths[0] ?? anchor ?? merged[0] ?? null);
+      }
+    },
+    [paneId, store],
+  );
 
   const onEntryActivate = (entry: FsEntry) => {
     const path = joinPath(dirPath, entry.name);
@@ -682,6 +748,82 @@ export default function FilePane({
       showToast(t("fw.error.openFailed", { error: errorMessage(e) }), { kind: "error" });
     });
   };
+
+  // ── 键盘焦点与范围选择（活动窗格；不抢占输入框/对话框）───────────────
+  useEffect(() => {
+    if (!pageActive || layoutEditMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (store.getState().activePaneId !== paneId || isFwDragging()) return;
+      const key = e.key;
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter"].includes(key)) {
+        return;
+      }
+      if (!visibleEntries.length) return;
+      const currentPath =
+        focusedPath ??
+        selection?.anchor ??
+        selectedPaths[0] ??
+        null;
+      let currentIndex = currentPath
+        ? visibleEntries.findIndex((entry) => joinPath(dirPath, entry.name) === currentPath)
+        : -1;
+      if (currentIndex < 0) currentIndex = 0;
+      const view = tab?.viewMode ?? "list";
+
+      if (key === "Enter") {
+        const entry = visibleEntries[currentIndex];
+        if (!entry) return;
+        e.preventDefault();
+        setFocusedPath(joinPath(dirPath, entry.name));
+        onEntryActivate(entry);
+        return;
+      }
+
+      const nextIndex = moveFocusIndex(currentIndex, key, visibleEntries.length, view, gridCols);
+      const next = visibleEntries[nextIndex];
+      if (!next) return;
+      e.preventDefault();
+      const nextPath = joinPath(dirPath, next.name);
+      setFocusedPath(nextPath);
+      // Ctrl+方向只移动焦点；Shift+方向扩展选择；普通方向替换为单选。
+      if (e.shiftKey && !(e.ctrlKey || e.metaKey)) {
+        const anchor = selection?.anchor ?? currentPath ?? nextPath;
+        let anchorIndex = visibleEntries.findIndex((entry) => joinPath(dirPath, entry.name) === anchor);
+        if (anchorIndex < 0) anchorIndex = currentIndex;
+        const [lo, hi] = anchorIndex < nextIndex ? [anchorIndex, nextIndex] : [nextIndex, anchorIndex];
+        const range = visibleEntries.slice(lo, hi + 1).map((entry) => joinPath(dirPath, entry.name));
+        store.getState().setSelection(paneId, range, anchor);
+      } else if (!(e.ctrlKey || e.metaKey)) {
+        store.getState().setSelection(paneId, [nextPath], nextPath);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    pageActive,
+    layoutEditMode,
+    paneId,
+    focusedPath,
+    selection?.anchor,
+    selectedPaths,
+    visibleEntries,
+    dirPath,
+    tab?.viewMode,
+    gridCols,
+    store,
+    onEntryActivate,
+  ]);
 
   // ── 文件操作 ────────────────────────────────────────────────────────
   const refreshBoth = useCallback((targets: string[]) => {
@@ -950,6 +1092,7 @@ export default function FilePane({
     if (!current.includes(path)) {
       store.getState().setSelection(paneId, [path], path);
     }
+    setFocusedPath(path);
     store.getState().setActivePane(paneId);
     setMenu({ x: e.clientX, y: e.clientY, entry });
   };
@@ -1679,7 +1822,7 @@ export default function FilePane({
           dirPath={dirPath}
           viewMode={tab.viewMode}
           selectedPaths={selectedSet}
-          activePath={selectedPaths.length === 1 ? selectedPaths[0] : null}
+          activePath={focusedPath ?? (selectedPaths.length === 1 ? selectedPaths[0] : null)}
           dropTargetPath={dropHint?.type === "folder" ? dropHint.path : null}
           thumbnails={tab.viewMode === "grid"}
           onEntryPointerDown={onEntryPointerDown}
@@ -1687,6 +1830,10 @@ export default function FilePane({
           onEntryContextMenu={onEntryContextMenu}
           onBodyPointerDown={onBodyPointerDown}
           onBodyContextMenu={onBodyContextMenu}
+          onMarqueeChange={onMarqueeChange}
+          onBlankClick={onBlankClick}
+          onGridColsChange={setGridCols}
+          marqueeEnabled={!layoutEditMode}
         >
           {/* 超限目录翻页续拉（万级目录不再只能看前 8000 项）。 */}
           {dirState?.hasMore && (

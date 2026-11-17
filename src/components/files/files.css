@@ -933,6 +933,22 @@ body.fw-resizing-row * {
   container-type: inline-size;
 }
 
+.fw-body.is-marquee-active {
+  cursor: crosshair;
+}
+
+/* 框选矩形：固定定位在 WebView 视口，不随内容滚动漂移；不接收指针、
+   不产生阴影或动画、不遮挡文字（仅半透明填充 + 1px 描边）。 */
+.fw-marquee {
+  position: fixed;
+  z-index: var(--z-sticky);
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-sizing: border-box;
+}
+
 /* 列表列宽只在此处定义一次：表头与文件行共用同一套 grid 轨道，
    避免两套硬编码宽度在缩窄/DPI 变化时错位。 */
 .fw-body.fw-list {
@@ -961,26 +977,41 @@ body.fw-resizing-row * {
   user-select: none;
   font-size: 12px;
   color: var(--text-primary);
+  isolation: isolate;
 }
 
-.fw-row:hover {
+/* 行槽高度固定（虚拟滚动按 LIST_ROW_H 换算）；交互背景画在槽内 inset，
+   绝不使用 margin 改变行距，避免虚拟高度、点击命中与框选坐标错位。 */
+.fw-row::before {
+  content: "";
+  position: absolute;
+  inset: 1px 2px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.fw-row:hover::before {
   background: var(--surface-overlay);
 }
 
-/* 选中态用通栏矩形色块，不继承行的圆角；多选时相邻行连成一整条，
-   与资源管理器的列表选择一致（悬停态仍保留行圆角）。 */
-.fw-row.is-selected {
-  border-radius: 0;
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+/* 每行独立圆角轮廓：连续多选时不会连成一整条通栏色块。 */
+.fw-row.is-selected::before {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
-.fw-row.is-active {
-  outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+/* 焦点是独立视觉通道：未选中也有轮廓，选中时叠加在选中背景之上。 */
+.fw-row.is-active::before {
+  outline: 1px solid color-mix(in srgb, var(--accent) 66%, transparent);
   outline-offset: -1px;
 }
 
-.fw-row.is-drop-folder {
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
+.fw-row.is-drop-folder::before {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border-color: transparent;
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
 }
@@ -1081,6 +1112,8 @@ body.fw-resizing-row * {
   display: flex;
   align-items: flex-start;
   padding: 0 4px;
+  /* 行槽 = 卡片高 116 + 行间 8；与 FileList 的 rowH=124 和框选几何一致。 */
+  margin-bottom: 8px;
 }
 
 .fw-cell {
@@ -1091,9 +1124,11 @@ body.fw-resizing-row * {
   align-items: center;
   gap: 4px;
   padding: 6px 4px;
+  border: 1px solid transparent;
   border-radius: 8px;
   cursor: default;
   user-select: none;
+  box-sizing: border-box;
 }
 
 .fw-cell:hover {
@@ -1101,16 +1136,18 @@ body.fw-resizing-row * {
 }
 
 .fw-cell.is-selected {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
 .fw-cell.is-active {
-  outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 66%, transparent);
   outline-offset: -1px;
 }
 
 .fw-cell.is-drop-folder {
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border-color: transparent;
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
 }
