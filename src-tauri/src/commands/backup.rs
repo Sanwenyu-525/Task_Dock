@@ -156,11 +156,16 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "game_assets",
     "game_builds",
     "game_tests",
-    // AI 漫剧 C1（v61）：剧集、分镜、角色、场景、素材版本。
+    // AI 漫剧 C1（v61）：剧集、角色、场景、分镜、素材版本。
+    // 顺序即恢复插入顺序（data.rs 正向插、清理时逆序删），必须满足外键依赖：
+    // comic_shots 同时引用 comic_episodes 与 comic_scenes(scene_id)，因此 shots 必须
+    // 排在 scenes 之后。2026-11-17 集成修复：此前 shots(161) 在 scenes(163) 之前，
+    // 恢复时镜头行先插入而场景父行尚不存在，触发外键即时校验
+    // `FOREIGN KEY constraint failed (787)`（漫剧 Full/Quick 往返用例实测命中）。
     "comic_episodes",
-    "comic_shots",
     "comic_characters",
     "comic_scenes",
+    "comic_shots",
     "comic_media_versions",
     // 通用 U1（v62）：里程碑、项目资料关联。
     "general_milestones",
@@ -688,8 +693,8 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         "comic_shots",
         "core",
         "all",
-        652,
-        &["comic_episodes"],
+        658,
+        &["comic_episodes", "comic_scenes"],
         true
     ),
     rule!(
@@ -4254,13 +4259,13 @@ mod tests {
                 [],
             )?;
             c.execute(
-                "INSERT INTO life_event_items (id,event_id,item_id,item_name_snapshot,quantity_value,quantity_unit,total_price_minor,currency,created_at,updated_at) \
-                 VALUES ('lei-1','le-1','li-1','大米','5','kg',4800,'CNY','2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
+                "INSERT INTO life_event_items (id,event_id,item_id,item_name_snapshot,quantity_value,quantity_unit,total_price_minor,currency,amount_scale,created_at,updated_at) \
+                 VALUES ('lei-1','le-1','li-1','大米','5','kg',4800,'CNY',2,'2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
                 [],
             )?;
             c.execute(
-                "INSERT INTO life_document_links (id,owner_type,owner_id,document_ref,document_source,document_name,mime,byte_size,transfer_state,created_at,updated_at) \
-                 VALUES ('ld-1','event','le-1','asset-1','capture_asset','大米小票.jpg','image/jpeg',1024,'metadata_only','2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
+                "INSERT INTO life_document_links (id,owner_type,owner_id,document_ref,document_source,document_name,mime,byte_size,transfer_state,remote_ref,remote_source,created_at,updated_at) \
+                 VALUES ('ld-1','event','le-1','asset-1','capture_asset','大米小票.jpg','image/jpeg',1024,'transferred','shelf-1','shelf_item','2026-11-16T00:00:00Z','2026-11-16T00:00:00Z')",
                 [],
             )?;
             Ok::<_, crate::error::AppError>(())
@@ -4291,12 +4296,26 @@ mod tests {
                 |r| r.get(0),
             )?;
             assert_eq!(total, 4800);
-            let link: (String, String) = c.query_row(
-                "SELECT owner_id, transfer_state FROM life_document_links WHERE id = 'ld-1'",
+            let amount_scale: i64 = c.query_row(
+                "SELECT amount_scale FROM life_event_items WHERE id = 'lei-1'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )?;
-            assert_eq!(link, ("le-1".to_string(), "metadata_only".to_string()));
+            assert_eq!(amount_scale, 2);
+            let link: (String, String, String, String) = c.query_row(
+                "SELECT owner_id, transfer_state, remote_ref, remote_source FROM life_document_links WHERE id = 'ld-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
+            assert_eq!(
+                link,
+                (
+                    "le-1".to_string(),
+                    "transferred".to_string(),
+                    "shelf-1".to_string(),
+                    "shelf_item".to_string()
+                )
+            );
             Ok::<_, crate::error::AppError>(())
         })
         .unwrap();
