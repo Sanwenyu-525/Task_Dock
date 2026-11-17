@@ -487,4 +487,20 @@ src-tauri/src/commands/backup.rs           # BACKUP_TABLES / EXTENDED_TABLES 登
 （五线实现与验收结果见 `tmp/acceptance/creative-workspaces-v1/` 与各线
 `tmp/acceptance/creative-*/report.md`；能力状态以 `workspaceProfiles.ts` 当前声明为准。）
 
+**2026-11-17 V1 最终验收更新（保留上述历史口径，不覆盖）**：
+
+- 五线领域代码在 r13（`3f8eddb`）之后未改动，本轮实质风险集中在公共层；已修复 3 个 P1：
+  快速备份写出策略缺 17 张专业表（此前五线 Quick 备份一律 `Err("扩展表缺少备份策略")`）、
+  漫剧段扩展表恢复顺序把 `comic_shots` 排在父表 `comic_scenes` 之前（恢复期
+  `FOREIGN KEY constraint failed (787)`）、暂存架↔项目关联早于父表（潜在同类风险）。
+- 实测：五线 Rust 用例小说 9/9、游戏 9/9、漫剧 7/7、通用 15/15、开发 9/9 全绿；前端
+  29/29、10/10、16/16、21/21、7/7 全绿；`cargo test --lib roundtrip` 39 passed；
+  CLI Full（43,840 B）/ Quick（44,034 B）**真往返**，17 张表行数/主键/项目归属一致、
+  恢复退出码 0、外键违例 0。
+- **仍未验证**：真实 Windows 窗口生命周期（关闭/托盘退出/系统退出/正文保存失败阻止关闭/
+  在途保存/删章删卷前保存）、五线各 500 条性能、720×600 / 1024×768 / 1440×900 /
+  1920×1080 四尺寸适配、NSIS/MSI 首次安装与升级卸载、v58→v63 迁移回放。
+- 因此 §12 的整体状态为 **PARTIAL**，不得表述为"V1 正式通过"；完整结论、缺陷清单与
+  未完成项见 `tmp/acceptance/creative-workspaces-v1/report.md` §10.6。
+
 
