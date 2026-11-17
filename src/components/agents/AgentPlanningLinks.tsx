@@ -8,6 +8,9 @@ import {
 import { formatRelative, AGENT_STATE_LABELS } from "../../lib/format";
 import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
 
+/** 折叠态默认展示的关联链接数；超出部分由「展开全部」入口访问，功能不丢失。 */
+const COLLAPSED_COUNT = 5;
+
 export default function AgentPlanningLinks({
   agentSource,
   sessionId,
@@ -18,12 +21,14 @@ export default function AgentPlanningLinks({
   const [items, setItems] = useState<PlanningAgentFeatureLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const requestSeq = useRef(0);
 
   useEffect(() => {
     const seq = ++requestSeq.current;
     setLoading(true);
     setError(null);
+    setExpanded(false);
     void planningListAgentFeatureLinks(agentSource, sessionId)
       .then((result) => {
         if (seq === requestSeq.current) setItems(result);
@@ -57,31 +62,46 @@ export default function AgentPlanningLinks({
       ) : items.length === 0 ? (
         <div className="empty-hint">暂无关联的规划功能。</div>
       ) : (
-        items.map((link) => {
-          const status = link.agent_status
-            ? AGENT_STATE_LABELS[link.agent_status] ?? "未知"
-            : "未知";
-          return (
-            <div className="tree-row" key={link.id}>
-              <span className="tree-row-main">
-                <span className="tree-title">{link.feature_title}</span>
-                <span className="tree-meta">{link.project_name}</span>
-                <span className="run-source">
-                  {status} · 最近执行：
-                  {link.last_execution_at ? formatRelative(link.last_execution_at) : "未知"}
+        <>
+          {(expanded ? items : items.slice(0, COLLAPSED_COUNT)).map((link) => {
+            const status = link.agent_status
+              ? AGENT_STATE_LABELS[link.agent_status] ?? "未知"
+              : "未知";
+            return (
+              <div className="tree-row" key={link.id}>
+                <span className="tree-row-main">
+                  <span className="tree-title">{link.feature_title}</span>
+                  <span className="tree-meta">{link.project_name}</span>
+                  <span
+                    className="run-source"
+                    title={`${status} · 最近执行：${link.last_execution_at ? formatRelative(link.last_execution_at) : "未知"}`}
+                  >
+                    {status} · 最近执行：
+                    {link.last_execution_at ? formatRelative(link.last_execution_at) : "未知"}
+                  </span>
                 </span>
-              </span>
-              <button
-                type="button"
-                className="btn sm"
-                aria-label={`定位规划功能 ${link.feature_title}`}
-                onClick={() => openFeature(link)}
-              >
-                <ExternalLink size={12} aria-hidden="true" /> 查看功能
-              </button>
-            </div>
-          );
-        })
+                <button
+                  type="button"
+                  className="btn sm"
+                  aria-label={`定位规划功能 ${link.feature_title}`}
+                  onClick={() => openFeature(link)}
+                >
+                  <ExternalLink size={12} aria-hidden="true" /> 查看功能
+                </button>
+              </div>
+            );
+          })}
+          {items.length > COLLAPSED_COUNT && (
+            <button
+              type="button"
+              className="btn sm tree-history-more"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((v) => !v)}
+            >
+              {expanded ? "收起关联功能" : `展开全部 ${items.length} 个关联功能`}
+            </button>
+          )}
+        </>
       )}
     </section>
   );

@@ -301,3 +301,92 @@
   }
 }
 
+/* ═══ A16 响应式加固（2026-11-17）═══
+   范围：规划中心自有节点。宽度判断只走容器查询（wb-content / planning），
+   不写窗口媒体断点；颜色 / 圆角 / 间距沿用既有语义 Token 与 --layout-*。
+   不改业务语义与既有交互：仅补宽度护栏、收缩行为、宽屏密度与窄区换行。 */
+
+/* 1. 宽度护栏：各层容器可被压缩；长英文 / 会话 ID / 路径只在自身换行，
+      不把祖先撑出整页横向滚动。 */
+.planning-panel,
+.planning-workspace,
+.roadmap-panel,
+.planning-projects,
+.planning-overview-layout,
+.planning-project-main,
+.planning-groups,
+.roadmap-section,
+.planning-detail,
+.roadmap-detail {
+  min-width: 0;
+}
+
+/* 2. 卡片标题可收缩：窄卡内标题按省略号截断，状态徽标 / 优先级 / 进度 /
+      里程碑 chip / 箭头保持自身尺寸，不被挤出标题行。 */
+.planning-panel .planning-card-title,
+.planning-panel .roadmap-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.planning-panel .planning-card-title-row .ui-status-badge,
+.planning-panel .roadmap-card-title-row .ui-status-badge,
+.planning-panel .planning-card-title-row .priority-tag,
+.planning-panel .roadmap-card-title-row .priority-tag {
+  flex-shrink: 0;
+}
+
+/* 3. 数据源切换行：窄内容区允许换行，标签与分段控件不互相挤压。 */
+.planning-panel .planning-source-switch {
+  flex-wrap: wrap;
+}
+
+/* 4. 内置路线图：宽内容区按自适应网格铺卡片，避免单列通栏拉长；
+      窄内容区仍是纵向单列（沿用既有 .roadmap-cards 规则）。 */
+@container wb-content (min-width: 880px) {
+  .roadmap-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--layout-gap, 8px);
+    align-items: start;
+  }
+}
+
+/* 5. 视图条：中等偏窄容器（≤640px）下 Tab 轨与项目选择器上下分行，
+      选择器占满一行，不挤压 Tab；既有 ≤460px 细则继续生效。 */
+@container planning (max-width: 640px) {
+  .planning-view-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .planning-view-project {
+    flex: 1 1 100%;
+  }
+}
+
+/* 6. 超宽内容区：概览主栏收在上限宽度内，避免进度条 / 摘要卡拉成通栏巨条；
+      右栏「本期规划」由外壳详情宿主负责，不在此约束。 */
+@container wb-content (min-width: 1320px) {
+  .planning-project-main {
+    max-width: 1080px;
+  }
+}
+
+/* 7. 看板 / 时间轴横向滚动区：自身限宽，横向溢出只在各自滚动区内消化，
+      不带动页面级横向滚动。 */
+.planning-panel .planning-kanban,
+.planning-panel .planning-timeline {
+  max-width: 100%;
+}
+
+/* 8. 关联 Agent 列表：行内信息多时允许换行，操作按钮组落到下一整行；
+      多条关联仍由共享 .planning-act-list 的限高 + 纵向滚动自理。 */
+.planning-panel .planning-act--links {
+  flex-wrap: wrap;
+}
+
+.planning-panel .planning-act--links .planning-detail-foot-actions {
+  width: 100%;
+}
+

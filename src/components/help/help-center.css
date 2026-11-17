@@ -95,6 +95,7 @@
     font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
+    overflow-wrap: anywhere;
   }
 
   .help-item-summary {
@@ -115,6 +116,8 @@
   .help-meta-text {
     font-size: 11px;
     color: var(--text-tertiary);
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .help-empty {
@@ -123,11 +126,13 @@
     padding: 16px 4px;
   }
 
-  /* 文章阅读视图 */
+  /* 文章阅读视图：正文按可读行宽封顶（72ch），超宽容器不再拉成整行巨文；
+     窄容器随 pane 收窄。max-width 带 100% 兜底，避免窄到溢出。 */
   .help-article {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    max-width: min(72ch, 100%);
   }
 
   .help-article-title {
@@ -135,6 +140,7 @@
     font-size: 16px;
     font-weight: 600;
     color: var(--text-primary);
+    overflow-wrap: anywhere;
   }
 
   .help-article-summary {
@@ -155,6 +161,7 @@
     font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
+    overflow-wrap: anywhere;
   }
 
   .help-p {
@@ -212,6 +219,39 @@
     margin-bottom: 2px;
   }
 
+  /* 防御性规则：当前正文为纯结构化 React，尚无 code/pre/table 段落类型；
+     预留等宽与各自横向滚动能力，后续新增命令示例/对照表时不把整页拖出横向滚动。 */
+  .help-article code,
+  .help-article kbd {
+    font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+    font-size: 0.92em;
+    overflow-wrap: anywhere;
+  }
+
+  .help-article pre {
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm, 6px);
+    background: color-mix(in srgb, var(--surface-raised) 70%, transparent);
+    font-family: var(--font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  .help-article pre code {
+    overflow-wrap: normal;
+  }
+
+  .help-article table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+  }
+
   /* 相关功能 / 相关页面 */
   .help-related {
     border-top: 1px solid var(--border-subtle);
@@ -233,12 +273,19 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+    min-width: 0;
+  }
+
+  .help-related-row .help-meta-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .help-route-hint {
     flex-basis: 100%;
     font-size: 11px;
     color: var(--text-tertiary);
+    overflow-wrap: anywhere;
   }
 
   /* ContextHelpButton 弹层 */
@@ -255,6 +302,17 @@
     font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  /* 上下文帮助按钮：视觉沿用共享 sm 图标基元（22×22），命中区外扩到
+     --layout-hit-target（32×32，WCAG 2.5.8）。伪元素属于按钮自身，
+     点击仍触发同一 onClick；不改共享 .icon-btn 组件本身。 */
+  .help-context-btn::after {
+    content: "";
+    position: absolute;
+    inset: -5px;
+    border-radius: inherit;
   }
 
   .help-context-summary {
@@ -275,14 +333,15 @@
 @layer ui {
   /* ── R5：帮助中心工作区（分类/最近 + 文章列表 + 常驻阅读区）────────────
      桌面三区并行；容器变窄时降级为「跟随列表/阅读切换」，不整页缩放。 */
+  /* 查询容器由共享原语 .ui-page-frame 提供（container-name: ui-page）；
+     本页只保留自身布局覆盖，不再自声明 container-type，避免与帧重复。 */
   .help-panel {
     max-width: none;
-    container-type: inline-size;
-    container-name: help-panel;
   }
 
   .help-toolbar {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
+    min-width: 0;
   }
 
   .help-toolbar-count {
@@ -323,10 +382,16 @@
     justify-content: space-between;
     gap: 8px;
     width: 100%;
+    min-width: 0;
     padding: 7px 9px;
     border-radius: var(--radius-sm);
     text-align: left;
     font-size: 12px;
+  }
+
+  .help-cat span {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .help-cat em {
@@ -369,6 +434,7 @@
 
   .help-side-recent-row {
     width: 100%;
+    min-width: 0;
     padding: 6px 8px;
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
@@ -377,6 +443,7 @@
     font-size: 11px;
     line-height: 1.35;
     text-align: left;
+    overflow-wrap: anywhere;
   }
 
   .help-side-recent-row:hover {
@@ -415,6 +482,11 @@
     flex: 0 0 auto;
   }
 
+  .help-pane-head > div,
+  .help-reader-head > div {
+    min-width: 0;
+  }
+
   .help-pane-head h3,
   .help-reader-head h3 {
     margin: 2px 0 0;
@@ -422,6 +494,7 @@
     font-weight: 650;
     line-height: 1.35;
     color: var(--text-primary);
+    overflow-wrap: anywhere;
   }
 
   .help-pane-meta {
@@ -441,6 +514,12 @@
 
   .help-list-scroll .help-list {
     gap: 6px;
+  }
+
+  /* 页内小文本按钮命中区对齐 --layout-hit-target（32px，WCAG 2.5.8）；
+     视觉字号与横向内边距保持紧凑，只抬高最小高度。 */
+  .help-panel .btn.sm {
+    min-height: var(--layout-hit-target, 32px);
   }
 
   .help-item.is-active {
@@ -471,7 +550,7 @@
     max-width: 260px;
   }
 
-  @container help-panel (max-width: 900px) {
+  @container ui-page (max-width: 900px) {
     .help-workspace {
       grid-template-columns: 200px minmax(0, 1fr);
     }
@@ -483,7 +562,7 @@
     }
   }
 
-  @container help-panel (max-width: 660px) {
+  @container ui-page (max-width: 660px) {
     .help-workspace {
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: auto minmax(0, 1fr);

@@ -15,7 +15,17 @@
 .analytics-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
+}
+
+.analytics-head > .seg-group {
+  min-width: 0;
+}
+
+.analytics-head .flex-spacer {
+  min-width: 0;
 }
 
 .analytics-refreshing {
@@ -23,9 +33,11 @@
   color: var(--text-tertiary);
 }
 
+/* 卡片列数随内容宽度自适应：宽区 4 列，窄区自动降为 2 / 1 列，
+   不按窗口宽度写固定断点。 */
 .analytics-cards {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 6px;
 }
 
@@ -75,16 +87,22 @@
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
+  min-width: 0;
 }
 
 .analytics-section-head h4 {
   margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .analytics-hint {
+  flex: 0 0 auto;
   font-size: 10px;
   color: var(--text-tertiary);
 }
@@ -255,12 +273,6 @@
   font-size: 10px;
   color: var(--text-tertiary);
   text-align: right;
-}
-
-@media (max-width: 420px) {
-  .analytics-cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

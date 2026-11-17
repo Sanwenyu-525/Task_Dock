@@ -243,3 +243,56 @@ describe("MobileSyncSection 暂存架导入与来源标记", () => {
     expect(screen.getByRole("button", { name: "删除传输副本" })).toBeTruthy();
   });
 });
+
+describe("MobileSyncSection 布局结构", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      settings: {
+        mode: "full",
+        theme: "light",
+        visual_preset: "dream-gradient",
+        mobile_sync_enabled: true,
+        mobile_sync_port: 47822,
+      } as never,
+    });
+    statusMock.mockReset();
+    filesMock.mockReset();
+    filesMock.mockResolvedValue([]);
+    groupsMock.mockReset();
+    groupsMock.mockResolvedValue([]);
+    thumbMock.mockReset();
+    thumbMock.mockResolvedValue(null);
+    importMock.mockReset();
+    useGlobalSearchStore.setState({ pendingLocate: null });
+  });
+
+  it("多设备各自成行，设备名带省略号类，撤销按钮可定位", async () => {
+    statusMock.mockResolvedValue(
+      status({
+        devices: [
+          device({ id: "device-1", name: "Pixel 9" }),
+          device({ id: "device-2", name: "Old Phone" }),
+        ],
+      }),
+    );
+
+    const { container } = render(<MobileSyncSection />);
+    await screen.findByText("Pixel 9");
+
+    const rows = container.querySelectorAll(".mobile-sync-device");
+    expect(rows).toHaveLength(2);
+    const name = rows[0].querySelector(".mobile-sync-device-name");
+    expect(name).toBeTruthy();
+    expect(rows[0].querySelector(".btn.sm.danger-ghost")).toBeTruthy();
+  });
+
+  it("工作区三栏骨架与设置行类名就位", async () => {
+    statusMock.mockResolvedValue(status());
+    const { container } = render(<MobileSyncSection />);
+
+    await waitFor(() =>
+      expect(container.querySelector(".mobile-sync-workspace")).toBeTruthy(),
+    );
+    expect(container.querySelectorAll(".setting-row").length).toBeGreaterThan(0);
+  });
+});

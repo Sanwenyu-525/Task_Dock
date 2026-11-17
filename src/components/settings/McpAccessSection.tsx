@@ -493,7 +493,7 @@ export default function McpAccessSection() {
               </label>
               <button type="button" onClick={() => void copy(created.token)}><Copy size={14} /> {t("settings.mcpAccess.copyToken")}</button>
               {copied === created.token && <span role="status">{t("settings.mcpAccess.copied")}</span>}
-              <fieldset>
+              <fieldset className="mcp-btn-group">
                 <legend>{t("settings.mcpAccess.configClient")}</legend>
                 {CLIENTS.map((item) => (
                   <button key={item} type="button" aria-pressed={client === item} onClick={() => { setClient(item); setSnippet(""); setHint(""); }}>
@@ -533,7 +533,7 @@ export default function McpAccessSection() {
             <article key={agent.id} aria-label={agent.display_name} className="setting-note">
               <h5>{agent.display_name}</h5>
               <p>{agent.agent_id} · {t("settings.mcpAccess.lastSeen")}: {agent.last_seen_at ?? t("settings.mcpAccess.neverSeen")}</p>
-              <div aria-label={t("settings.mcpAccess.scopeLabel")}>
+              <div className="mcp-btn-group" aria-label={t("settings.mcpAccess.scopeLabel")}>
                 {SCOPES.map((scope) => (
                   <button key={scope} type="button" aria-pressed={agent.scope === scope} disabled={busyId === agent.id || agent.scope === scope} onClick={() => void updateScope(agent, scope)}>
                     {t(scopeLabel(scope))}
@@ -550,7 +550,7 @@ export default function McpAccessSection() {
                 </li>
               ))}</ul>
               {projects.filter((project) => !agent.granted_project_ids.includes(project.id)).length > 0 && (
-                <div aria-label={t("settings.mcpAccess.grantProject")}>
+                <div className="mcp-btn-group" aria-label={t("settings.mcpAccess.grantProject")}>
                   {projects.filter((project) => !agent.granted_project_ids.includes(project.id)).map((project) => (
                     <button key={project.id} type="button" disabled={busyId === agent.id} onClick={() => void grantProject(agent, project.id)}>
                       {t("settings.mcpAccess.grantProjectTo", { project: project.name })}
@@ -639,8 +639,10 @@ export default function McpAccessSection() {
               ? projects.find((project) => project.id === pendingAction.projectId)?.name ?? pendingAction.projectId
               : "",
           })}</p>
-          <button type="button" onClick={confirmPendingAction}>{t("settings.mcpAccess.confirmAction")}</button>
-          <button type="button" onClick={() => setPendingAction(null)}>{t("common.cancel")}</button>
+          <div className="mcp-btn-group">
+            <button type="button" onClick={confirmPendingAction}>{t("settings.mcpAccess.confirmAction")}</button>
+            <button type="button" onClick={() => setPendingAction(null)}>{t("common.cancel")}</button>
+          </div>
         </div>
       )}
 
@@ -661,7 +663,7 @@ export default function McpAccessSection() {
                 </li>
               ))}
             </ul>
-            <div>
+            <div className="mcp-btn-group">
               <button type="button" disabled={auditLoading || audit.offset <= 0} onClick={() => void loadAudit(Math.max(0, audit.offset - audit.limit))}>
                 {t("settings.mcpAccess.audit.previous")}
               </button>

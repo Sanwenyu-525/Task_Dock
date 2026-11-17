@@ -96,7 +96,7 @@ export default function FeatureAgentLinks({ featureId }: { featureId: string }) 
               ? AGENT_STATE_LABELS[link.agent_status] ?? "未知"
               : "未知";
             return (
-              <li className="planning-act" key={link.id}>
+              <li className="planning-act planning-act--links" key={link.id}>
                 <span className="planning-act-kind">
                   {link.agent_name || "未知 Agent"}
                   <span className="run-source">{link.agent_source}</span>

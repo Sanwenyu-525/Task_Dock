@@ -1019,7 +1019,7 @@ export default function DiagnosticsCenterPanel() {
   }
 
   return (
-    <div className="diag-center page-fill">
+    <div className="diag-center page-fill ui-page-frame">
       {/* 页面级页头（2026-11-15 统一）：模式徽标进入标题 meta 槽，三个动作进右侧
           动作区；标题级别从 h1 收到 h2 —— 工作台外壳已有唯一的 h1（路由可访问名），
           页面内再出现 h1 会让标题层级重复。 */}

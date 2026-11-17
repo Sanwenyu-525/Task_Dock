@@ -46,8 +46,12 @@
     flex-direction: column;
     gap: 9px;
     min-width: 0;
-    max-height: calc(100vh - 180px);
-    overflow: auto;
+    /* 高度跟随 grid 行（minmax(0,1fr)），不再按视口高度封顶：分栏/右栏展开时
+       视口高度与可用高度并不等价；min-height:0 + 内部 overflow 才能在小高度
+       窗口下与主列表分层滚动。 */
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
     padding: 10px;
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md, 8px);
@@ -367,9 +371,31 @@
     min-height: 0;
   }
 
+  /* 徽标行允许折行：窄卡时优先级/类型/未确认/推断徽标与时间不再互相挤压或被
+     卡片 overflow:hidden 裁切；状态徽标是核心信息，必须保持可见。 */
+  .action-item .action-head {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  /* 长来源名省略号收尾，不把任务徽标挤出 meta 行。 */
+  .action-source {
+    min-width: 0;
+    max-width: 42%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .action-center > .action-body {
     flex: 1 1 auto;
     min-height: 0;
+    /* 共享规则 `.page-fill > .page-scroll` 只覆盖页面根的直接子级；
+       本列表嵌套在 .action-center 下，必须自行声明独立滚动，否则大量条目
+       会被外层 overflow:hidden 的分栏主区裁切、列表本区无法滚动。 */
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
   }
 
   @container wb-content (max-width: 900px) {
@@ -415,6 +441,20 @@
       flex-direction: row;
       flex-wrap: wrap;
       gap: 8px;
+    }
+
+    /* 窄内容区：操作按钮从右侧竖排改为条目底部横排右对齐。三枚按钮全部保留，
+       不收纳进菜单、不隐藏功能；主文本拿到整行宽度，不再被按钮列挤压。 */
+    .action-item {
+      flex-wrap: wrap;
+    }
+
+    .action-side {
+      width: 100%;
+      flex-direction: row;
+      justify-content: flex-end;
+      gap: 5px;
+      padding-top: 4px;
     }
   }
 }

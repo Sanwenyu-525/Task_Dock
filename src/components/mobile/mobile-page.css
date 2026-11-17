@@ -113,7 +113,9 @@
   min-width: 0;
 }
 
-@media (max-width: 520px) {
+/* 二级切换条在滚动容器 `.mobile-body` 之外，只能由根节点 `.ui-page-frame`
+   声明的 `ui-page` 容器查询命中；按内容区宽度响应，不跟随窗口宽度。 */
+@container ui-page (max-width: 520px) {
   .mobile-transfer-panel .mobile-pane-tabs {
     display: flex;
     width: 100%;
@@ -154,6 +156,10 @@
   gap: 14px;
   align-items: stretch;
   min-width: 0;
+  /* 超宽内容区封顶，避免中间传输列被拉成一行一张巨卡（对齐 .vd-panel 1180px）。 */
+  width: 100%;
+  max-width: 1180px;
+  margin-inline: auto;
 }
 .mobile-transfer-panel .mobile-sync-workspace__devices,
 .mobile-transfer-panel .mobile-sync-workspace__files,
@@ -253,7 +259,8 @@
 }
 .mobile-transfer-panel .mobile-inspector-preview img {
   width: 100%;
-  height: 180px;
+  height: auto;
+  max-height: 180px;
   object-fit: contain;
   display: block;
 }
@@ -302,6 +309,33 @@
   gap: 6px;
 }
 
+/* ── 操作按钮命中区（--layout-hit-target，WCAG 2.5.8）──────────────
+   视觉尺寸沿用共享 sm 基元：图标按钮用透明伪元素把命中区外扩到 32×32，
+   文本小按钮抬高最小高度；伪元素属于按钮自身，点击仍触发同一 onClick，
+   不改共享 .btn / .icon-btn 组件本身。 */
+.mobile-transfer-panel .mobile-file-actions .icon-btn.sm::after,
+.mobile-transfer-panel .mobile-sync-status .icon-btn.sm::after,
+.mobile-transfer-panel .mobile-sync-address-row .icon-btn.sm::after {
+  inset: -5px;
+}
+
+.mobile-transfer-panel .mobile-file-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.mobile-transfer-panel .mobile-sync-device .btn.sm.danger-ghost {
+  flex: 0 0 auto;
+  max-width: 100%;
+  min-height: var(--layout-hit-target);
+}
+
+.mobile-transfer-panel .mobile-inspector-actions .btn.sm,
+.mobile-transfer-panel .mobile-sync-workspace .setting-row > .btn.sm,
+.mobile-transfer-panel .mobile-file-toolbar .btn-row .btn.sm {
+  min-height: var(--layout-hit-target);
+}
+
 @container mobile-body (max-width: 1000px) {
   .mobile-transfer-panel .mobile-sync-workspace {
     grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
@@ -317,6 +351,28 @@
   }
   .mobile-transfer-panel .mobile-sync-workspace__inspector {
     grid-column: auto;
+  }
+}
+
+/* 窄内容区：设置行换行，标签不被固定宽度的 NumberInput 挤压；
+   状态/地址/控件组沉到下一行右对齐。规则跟随 `.mobile-body` 内容容器，
+   不依赖设置页窗口宽度断点。 */
+@container mobile-body (max-width: 560px) {
+  .mobile-transfer-panel .mobile-sync-workspace .setting-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .mobile-transfer-panel .mobile-sync-workspace .setting-row > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-transfer-panel .mobile-sync-workspace .setting-row > .mobile-sync-status,
+  .mobile-transfer-panel .mobile-sync-workspace .setting-row > .btn-row,
+  .mobile-transfer-panel .mobile-sync-workspace .setting-row > .ui-number {
+    flex: 1 1 auto;
+    justify-content: flex-end;
   }
 }
 

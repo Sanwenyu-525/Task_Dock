@@ -233,7 +233,7 @@ export default function ResourceManagementPanel() {
   const scopeText = t(REFRESH_SCOPE[segment]);
 
   return (
-    <div className="resource-page page-fill" ref={pageRef}>
+    <div className="resource-page page-fill ui-page-frame" ref={pageRef}>
       {/* 页面级页头（对齐效果图 07）：图标 + 标题 + 副标题；安全徽标与刷新
           作为页头动作区，`.resource-page-head` 仍是「唯一刷新入口」的容器。 */}
       <WorkbenchPageHeader

@@ -13,9 +13,28 @@
   .inbox-commandbar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
     min-height: 32px;
     flex: 0 0 auto;
+  }
+
+  .inbox-count-hint {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 宽内容区：条目卡片自适应多列；窄内容区回到单列。
+     选择器加 `.inbox-body` 前缀以压过 styles.css 中同名的单列 flex 规则。 */
+  .inbox-body .inbox-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 6px;
+  }
+
+  .inbox-body .inbox-actions {
+    flex-wrap: wrap;
   }
 
   .inbox-rail {
@@ -163,6 +182,10 @@
   @container wb-content (max-width: 700px) {
     .inbox-panel.has-detail .inbox-body {
       padding-bottom: 4px;
+    }
+
+    .inbox-body .inbox-list {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 }

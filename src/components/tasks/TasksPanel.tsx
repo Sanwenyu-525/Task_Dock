@@ -331,7 +331,7 @@ export default function TasksPanel() {
   // 编辑态：主内容区切换（不新开窗口、不铺遮罩）。列表 DOM 卸载，筛选与滚动由上方逻辑恢复。
   if (editor.open) {
     return (
-      <div className="tasks-panel task-editor-page page-fill">
+      <div className="tasks-panel task-editor-page page-fill ui-page-frame">
         <TaskEditorView
           task={editor.task}
           defaultCategory={editor.defaultCategory}
@@ -351,7 +351,7 @@ export default function TasksPanel() {
   return (
     <div
       ref={railRef}
-      className={`tasks-panel ${subview ? "tasks-subview" : ""} ${mode === "list" ? "tasks-workspace-layout" : ""} page-fill`}
+      className={`tasks-panel ${subview ? "tasks-subview" : ""} ${mode === "list" ? "tasks-workspace-layout" : ""} page-fill ui-page-frame`}
       data-task-mode={mode}
       style={{ "--tasks-rail-width": `${railWidth}px` } as CSSProperties}
     >
@@ -500,7 +500,7 @@ export default function TasksPanel() {
 
           {/* 日期筛选常驻；提醒调度、帮助、专注、统计、更多集中在同一行。
               窄窗只允许日期分段横向滚动，工具图标不换行。 */}
-          <div className="tasks-viewbar">
+          <div className="tasks-viewbar ui-toolbar-row">
             <div
               ref={viewsRef}
               className="seg-group tasks-views"
@@ -579,7 +579,7 @@ export default function TasksPanel() {
           </div>
 
           {/* 搜索 + 状态 + 排序：同一行紧凑工具区，搜索框吃掉剩余宽度 */}
-          <div className="tasks-filterbar">
+          <div className="tasks-filterbar ui-toolbar-row">
             <SearchField
               size="compact"
               placeholder={t("tasks.searchPlaceholder")}

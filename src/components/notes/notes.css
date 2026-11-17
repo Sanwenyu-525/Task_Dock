@@ -8,13 +8,16 @@
   grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
   gap: 10px;
   height: 100%;
+  min-width: 0;
   min-height: 0;
 }
 
 .notes-sidebar {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 8px;
+  min-width: 0;
   min-height: 0;
   padding-right: 2px;
 }
@@ -137,6 +140,7 @@
   list-style: none;
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 6px;
   overflow-y: auto;
   min-height: 0;
@@ -249,12 +253,13 @@
 .notes-editor-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
 }
 
 .notes-title-input {
-  flex: 1;
+  flex: 1 1 160px;
   min-width: 0;
   padding: 6px 8px;
   border-radius: var(--radius-control);
@@ -275,12 +280,14 @@
 .notes-editor-actions {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
   flex: none;
 }
 
 .notes-template-select {
   max-width: 96px;
+  min-width: 0;
 }
 
 .notes-danger.is-confirming {
@@ -420,7 +427,9 @@
   }
 }
 
-@media (max-width: 720px) {
+/* 窄内容区（按 `.wb-content` 容器宽度判断，不按窗口视口）：上下布局，
+   列表限高独立滚动，编辑器占据剩余空间；编辑器头动作组允许落到第二行。 */
+@container wb-content (max-width: 719px) {
   .notes-panel {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(120px, 40%) minmax(0, 1fr);
@@ -439,6 +448,10 @@
   .notes-link-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .notes-content-input {
+    min-height: 120px;
   }
 }
 

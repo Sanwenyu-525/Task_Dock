@@ -805,6 +805,19 @@ describe("微件面板", () => {
     }
   });
 
+  it("接入共享响应式原语：主区为 ui-page-frame 容器，卡片网格为 ui-adaptive-grid", () => {
+    seedTasks();
+    const { container } = render(<WidgetsPanel />);
+
+    const main = container.querySelector(".widgets-main");
+    expect(main).toBeTruthy();
+    expect(main!.classList.contains("ui-page-frame")).toBe(true);
+
+    const grid = container.querySelector(".widgets-grid");
+    expect(grid).toBeTruthy();
+    expect(grid!.classList.contains("ui-adaptive-grid")).toBe(true);
+  });
+
   it("注入 A/C 数据源后显示真实倒计时与统计，而不是占位", () => {
     enable("focus-timer", "efficiency");
     render(<WidgetsPanel sources={{ focus: makeFocusSource(), efficiency: EFFICIENCY_SOURCE }} />);

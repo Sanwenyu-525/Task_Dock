@@ -231,7 +231,7 @@ export default function WorkbenchHome({
   );
 
   return (
-    <div className="wb-home">
+    <div className="wb-home ui-page-frame">
       <header className="wb-home-head">
         <div className="wb-home-head-main">
           <span className="wb-home-greeting-icon" aria-hidden="true">
@@ -258,7 +258,7 @@ export default function WorkbenchHome({
         </p>
       )}
 
-      <div className="wb-home-grid">
+      <div className="wb-home-grid ui-adaptive-grid">
         <section className="wb-panel wb-panel--focus" aria-labelledby="wb-home-focus">
           <div className="wb-panel-head">
             <h3 id="wb-home-focus">

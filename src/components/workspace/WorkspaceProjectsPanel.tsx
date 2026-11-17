@@ -59,14 +59,14 @@ export default function WorkspaceProjectsPanel() {
   }, []);
 
   return (
-    <div className="workspace-projects-panel" style={{ padding: 16 }}>
-      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>{t("nav.workspace")}</h2>
-      <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-secondary)" }}>
+    <div className="workspace-projects-panel ui-content-pad">
+      <h2 className="wsp-title">{t("nav.workspace")}</h2>
+      <p className="wsp-desc">
         项目工作空间是跨工具的长期工作容器；完整编辑在统一工作台中进行。
       </p>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <div className="wsp-toolbar">
         <input
-          style={{ flex: 1, padding: "6px 8px", border: "1px solid var(--border, #ddd)", borderRadius: 8 }}
+          className="ws-input"
           placeholder="新建项目名称"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -78,19 +78,19 @@ export default function WorkspaceProjectsPanel() {
           打开工作台
         </button>
       </div>
-      {error && <div style={{ color: "var(--status-error, #dc2626)", fontSize: 12, marginBottom: 8 }}>{error}</div>}
-      <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+      {error && <div className="wsp-error">{error}</div>}
+      <ul className="wsp-list">
         {projects.map((p) => (
-          <li key={p.id} style={{ border: "1px solid var(--border, #ddd)", borderRadius: 8, padding: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <strong>{p.name}</strong>
-              <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7 }}>{resolveWorkspaceProfile(p.kind).label}</span>
-              <div style={{ fontSize: 11, opacity: 0.7 }}>事项 {p.itemCount} · 关联 {p.taskLinkCount}</div>
+          <li key={p.id} className="wsp-item">
+            <div className="wsp-item-main">
+              <strong className="wsp-item-name">{p.name}</strong>
+              <span className="wsp-item-kind">{resolveWorkspaceProfile(p.kind).label}</span>
+              <div className="wsp-item-meta">事项 {p.itemCount} · 关联 {p.taskLinkCount}</div>
             </div>
             <button className="btn sm" onClick={() => openWindow(p.id)}>打开</button>
           </li>
         ))}
-        {projects.length === 0 && <li style={{ opacity: 0.6, fontSize: 13 }}>暂无项目</li>}
+        {projects.length === 0 && <li className="wsp-empty">暂无项目</li>}
       </ul>
     </div>
   );

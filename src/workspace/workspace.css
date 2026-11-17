@@ -117,8 +117,12 @@
 
 .ws-tabs {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+  row-gap: 6px;
   margin-bottom: 12px;
+  min-width: 0;
 }
 .ws-tab {
   padding: 6px 10px;
@@ -134,13 +138,49 @@
 .ws-empty { color: var(--ws-muted); font-size: 13px; padding: 16px; text-align: center; }
 
 .ws-list { display: flex; flex-direction: column; gap: 8px; }
-.ws-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--ws-border); }
+.ws-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--ws-border); min-width: 0; }
 .ws-row:last-child { border-bottom: none; }
+/* 行内纯文案 span 超长时在自身位置省略，不把徽标/操作按钮挤出可视区；
+   含多行子结构的 .ws-general-row-main（div）不在此列，保持原有换行。 */
+.ws-row > span.ws-flex {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 引擎识别行（含多个徽标）与错误/提示条允许换行，不参与单行省略。 */
+.ws-game .ws-row > span.ws-flex,
+.ws-state > span.ws-flex {
+  white-space: normal;
+  overflow: visible;
+}
 
 .ws-badge { font-size: 10px; padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--ws-accent) 15%, transparent); color: var(--ws-accent); }
 
-.ws-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-@media (max-width: 700px) { .ws-grid { grid-template-columns: 1fr; } .ws-main { grid-template-columns: 1fr; } }
+/* 概览卡片自适应网格：复用 .ui-adaptive-grid 原语，列数按内容宽度自然算出；
+   单卡最小宽度 300px，宽内容区封顶三列，避免超宽屏一排碎卡或一行一张巨卡。 */
+.ws-overview-grid {
+  --ui-card-min: 300px;
+  gap: var(--ui-grid-gap, var(--layout-gap-comfort, 12px));
+}
+@container ui-page (min-width: 1320px) {
+  .ws-overview-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* 专业模块详情内的双列表单字段（漫剧等）：跟随内容宽度，窄内容区降单列。 */
+.ws-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  min-width: 0;
+}
+@container ui-page (max-width: 700px) {
+  .ws-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 
 /* ── P0/P1 整改新增：状态、提示、能力与表单 ───────────────────────────── */
 
@@ -176,7 +216,9 @@
   flex: 1;
   min-width: 0;
 }
-.ws-form-row { display: flex; gap: 6px; margin-bottom: 12px; align-items: center; }
+.ws-form-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center; }
+.ws-form-row .ws-input,
+.ws-form-row .ws-textarea { min-width: 0; }
 .ws-form-actions { display: flex; gap: 6px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
 .ws-subhead { margin: 14px 0 6px; font-size: 13px; }
 
@@ -303,7 +345,7 @@
 .ws-novel-editor-empty { padding: 32px 12px; text-align: center; color: var(--ws-muted); }
 .ws-novel-editor-empty h3 { margin: 0 0 6px; font-size: 14px; color: var(--ws-text); }
 .ws-novel-editor-empty p { margin: 0; font-size: 12px; line-height: 1.6; }
-@media (max-width: 800px) {
+@container ui-page (max-width: 800px) {
   .ws-novel { grid-template-columns: 1fr; }
   .ws-novel-tree { max-height: 40vh; }
 }
@@ -376,7 +418,7 @@
 .ws-cap { padding: 8px; border: 1px solid var(--ws-border); border-radius: 8px; display: flex; flex-direction: column; gap: 3px; }
 .ws-cap-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
-.ws-agent-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px; }
+.ws-agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 8px; margin-bottom: 8px; }
 .ws-agent-grid > div {
   display: flex;
   flex-direction: column;
@@ -391,4 +433,52 @@
 .ws-agent-grid span { font-size: 11px; color: var(--ws-muted); }
 
 .ws-dev-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+
+/* ── 遗留独立项目列表面板（WorkspaceProjectsPanel；样式走归属 CSS，不再内联） ── */
+.workspace-projects-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.wsp-title { margin: 0 0 8px; font-size: 16px; }
+.wsp-desc { margin: 0 0 12px; font-size: 13px; color: var(--ws-muted); }
+.wsp-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  min-width: 0;
+}
+.wsp-toolbar .ws-input { flex: 1 1 160px; min-width: 0; }
+.wsp-error { color: var(--ws-error); font-size: 12px; margin-bottom: 8px; }
+.wsp-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.wsp-item {
+  border: 1px solid var(--ws-border);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.wsp-item-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wsp-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wsp-item-kind { font-size: 11px; color: var(--ws-muted); }
+.wsp-item-meta { font-size: 11px; color: var(--ws-muted); }
+.wsp-empty { opacity: 0.6; font-size: 13px; }
 

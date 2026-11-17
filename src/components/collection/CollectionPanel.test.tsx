@@ -12,16 +12,33 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { act } from "react";
 import userEvent from "@testing-library/user-event";
 
+const bridge = vi.hoisted(() => ({
+  lifecycleStatus: vi.fn(async () => [] as unknown[]),
+  // CollectionRail 挂载时经 useDropTargetsStore.load 拉取投递目标；
+  // jsdom 下真实 Tauri invoke 不返回，必须 mock 为空列表，否则 worker 挂起。
+  shelfDropTargets: vi.fn(async () => [] as unknown[]),
+}));
+
+vi.mock("../../lib/bridge", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/bridge")>()),
+  ...bridge,
+}));
+
 vi.mock("../inbox/CaptureInboxPanel", () => ({ default: () => <div>inbox-panel</div> }));
 vi.mock("../shelf/ShelfPanel", () => ({ default: () => <div>shelf-panel</div> }));
 vi.mock("../notes/NotesPanel", () => ({ default: () => <div>notes-panel</div> }));
 
 import CollectionPanel from "./CollectionPanel";
 import { useUiStore } from "../../store/useUiStore";
+import { resetLifecycleStoreForTest } from "../../store/useLifecycleStore";
 
 afterEach(cleanup);
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  bridge.lifecycleStatus.mockResolvedValue([]);
+  bridge.shelfDropTargets.mockResolvedValue([]);
+  resetLifecycleStoreForTest();
   useUiStore.setState({ tab: "inbox", collectionSub: "inbox" });
 });
 

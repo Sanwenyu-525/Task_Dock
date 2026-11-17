@@ -170,6 +170,28 @@ describe("McpAccessSection", () => {
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Codex" })).toBeNull());
   });
 
+  it("内联确认：取消不执行撤销，确认步骤不被绕过；常驻按钮组走可换行容器", async () => {
+    render(<McpAccessSection />);
+    await screen.findByRole("heading", { name: "Codex" });
+
+    // 作用域切换 / 授权项目两组常驻按钮都带可换行容器类（窄宽度下不挤成一行溢出）。
+    expect(document.querySelectorAll(".mcp-access .mcp-btn-group").length).toBeGreaterThanOrEqual(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "settings.mcpAccess.revoke" }));
+    const dialog = await screen.findByRole("alertdialog");
+    const confirmBtn = screen.getByRole("button", { name: "settings.mcpAccess.confirmAction" });
+    const cancelBtn = screen.getByRole("button", { name: "common.cancel" });
+    expect(confirmBtn).toBeTruthy();
+    expect(cancelBtn).toBeTruthy();
+    // 确认前不调用撤销：确认步骤不能被布局改动弱化或绕过。
+    expect(mocks.revoke).not.toHaveBeenCalled();
+
+    fireEvent.click(cancelBtn);
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(mocks.revoke).not.toHaveBeenCalled();
+    expect(dialog.isConnected).toBe(false);
+  });
+
   it("confirms token rotation and keeps the returned secret only in the open create state", async () => {
     render(<McpAccessSection />);
     await screen.findByRole("heading", { name: "Codex" });

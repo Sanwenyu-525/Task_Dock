@@ -1,11 +1,13 @@
 /*
- * 历史记录「页面态」布局（2026-11-15 视觉对齐）。
+ * 历史记录「页面态」布局（2026-11-15 视觉对齐；2026-11-17 响应式修复）。
  *
  * 背景：原来筛选与未读统计分属两条 `.filter-bar`，第二行只剩一句「N 条未读 / 共 M」，
  * 下方接着时间轴，视觉上悬空且把工具栏撑成两段。合并为一条工具栏后，筛选在左、
  * 统计靠右同排；可用宽度不足时统计随筛选组一起换行，仍贴住右边缘。
  *
  * 作用域统一 `.history-panel`，颜色 / 间距沿用既有语义 Token，不新增皮肤。
+ * 宽度判断只走容器查询（祖先 `.ui-page-frame` = `ui-page`、`.workspace-split-frame`
+ * = `workspace-split`），不写窗口宽度媒体查询。
  */
 
 .history-panel .filter-bar.history-toolbar {
@@ -42,12 +44,14 @@
   margin-left: auto;
 }
 
-/* 1180 带右栏 / 960 无右栏时工具栏会换行：搜索独占第二行并铺满，
-   避免只占右侧一小段、左侧留下空白，看起来像两条分散的工具栏。 */
-@container wb-content (max-width: 760px) {
+/* 760px 以下（带右栏 / 窄导航导致内容区收窄）工具栏换行：搜索独占一行并铺满，
+   避免只占右侧一小段、左侧留下空白，看起来像两条分散的工具栏。
+   查询本页祖先 `.ui-page-frame`（ui-page），不依赖外壳 `wb-content` 是否挂载。 */
+@container ui-page (max-width: 760px) {
   .history-panel .history-search {
     flex: 1 1 100%;
     max-width: none;
+    min-width: 0;
     margin-left: 0;
   }
 }
@@ -119,6 +123,7 @@
   width: 100%;
   max-width: none;
   flex: 1 1 100%;
+  min-width: 0;
   margin-left: 0;
 }
 
@@ -131,8 +136,70 @@
   overflow-wrap: anywhere;
 }
 
+/* ── 时间轴主区：独立滚动并吃满可用高度 ────────────────────────────
+   共享规则 `.page-fill > .page-scroll` 只覆盖页面根的直接子级；本列表嵌套在
+   `.workspace-split__main` 下，必须自行声明独立滚动与 min-height:0，否则条目
+   增多时会被主区 `overflow:hidden` 裁切、「加载更早」入口滚不到（同 actions 页
+   的处理口径）。横向只做防护性隐藏：换行由下方长文本规则负责，不用 hidden 裁内容。 */
 .workspace-split__main .history-timeline {
   flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
 }
 
+/* 空状态在可用高度内垂直居中，避免「内容堆在顶部、下方大片空白」。 */
+.workspace-split__main .history-timeline > .empty-state {
+  flex: 1 1 auto;
+  min-height: 240px;
+  justify-content: center;
+}
+
+/* ── 长文本防护：列表内标题单行省略，全文在详情中查看；详情内任意位置可断行 ── */
+.history-panel .history-item {
+  min-width: 0;
+}
+
+.history-panel .history-detail {
+  min-width: 0;
+}
+
+.history-panel .detail-row {
+  flex-wrap: wrap;
+}
+
+.history-panel .detail-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* 「加载更早」按钮：窄窗下文案可折行、可断词，不撑破列表宽度。 */
+.history-panel .history-more .btn {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* ── 窄内容区（<520px）：条目头部换行，来源徽标不再独占固定宽度挤压标题 ──
+   标题折到整行；徽标允许收缩并省略，时间戳仍留在首行末尾，不与标题重叠。 */
+@container ui-page (max-width: 519px) {
+  .history-panel .history-head {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .history-panel .history-kind {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 60%;
+    overflow: hidden;
+  }
+
+  .history-panel .history-title {
+    flex-basis: 100%;
+  }
+}

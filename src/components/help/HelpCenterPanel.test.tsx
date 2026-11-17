@@ -205,6 +205,27 @@ describe("帮助中心 · 翻译状态与语言", () => {
   });
 });
 
+describe("帮助中心 · 布局骨架（响应式接入）", () => {
+  it("根节点接入共享 .ui-page-frame 查询容器；列表与阅读区各自独立滚动", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<HelpCenterPanel />);
+    const root = container.querySelector(".help-panel");
+    expect(root).toBeTruthy();
+    expect(root?.classList.contains("ui-page-frame")).toBe(true);
+    expect(container.querySelector(".help-list-scroll.page-scroll")).toBeTruthy();
+    await user.click(screen.getByText("快捷工具面板导览：导航、新建任务与徽标"));
+    expect(container.querySelector(".help-reader-scroll.page-scroll")).toBeTruthy();
+  });
+
+  it("打开文章后根节点带 has-article（窄布局列表/阅读切换钩子保留）", async () => {
+    const user = userEvent.setup();
+    render(<HelpCenterPanel />);
+    expect(document.querySelector(".help-panel")?.classList.contains("has-article")).toBe(false);
+    await user.click(screen.getByText("快捷工具面板导览：导航、新建任务与徽标"));
+    expect(document.querySelector(".help-panel")?.classList.contains("has-article")).toBe(true);
+  });
+});
+
 describe("帮助中心 · 一次性意图与引导入口", () => {
   it("返回进入帮助中心前的来源页面并清除来源记录", async () => {
     useUiStore.setState({ helpReturnTab: "settings" });

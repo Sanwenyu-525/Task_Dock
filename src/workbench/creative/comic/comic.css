@@ -19,23 +19,27 @@
   width: 300px;
   flex: 0 0 300px;
   gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  max-height: 60vh;
 }
 
 .comic-pane-detail {
   flex: 1 1 auto;
+  min-width: 0;
   overflow-y: auto;
   gap: 16px;
   padding-right: 4px;
 }
 
-@media (max-width: 720px) {
+@container ui-page (max-width: 720px) {
   .comic-layout {
     flex-direction: column;
   }
   .comic-pane-list {
     width: 100%;
     flex: 0 0 auto;
-    max-height: 40%;
+    max-height: 40vh;
   }
 }
 

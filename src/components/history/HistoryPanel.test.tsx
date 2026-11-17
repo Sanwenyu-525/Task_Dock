@@ -340,3 +340,70 @@ describe("HistoryPanel 分页与刷新空隙", () => {
     expect(more).toBeTruthy();
   });
 });
+
+describe("HistoryPanel A15 响应式接入与长文本/空态", () => {
+  it("根节点接入 ui-page-frame 查询容器，时间/来源/类型/搜索筛选全部常驻可达", async () => {
+    render(<HistoryPanel />);
+    await waitFor(() => expect(bridge.listAgentEvents).toHaveBeenCalled());
+
+    const root = document.querySelector(".history-panel");
+    expect(root).not.toBeNull();
+    expect(root?.classList.contains("ui-page-frame")).toBe(true);
+
+    // 筛选侧栏：时间分段（4 项）+ 来源下拉 + 类型分段（3 项）+ 搜索框，均未被隐藏。
+    const groups = document.querySelectorAll(".history-filter-pane .seg-group");
+    expect(groups.length).toBe(2);
+    expect(groups[0].querySelectorAll(".seg-btn").length).toBe(4);
+    expect(groups[1].querySelectorAll(".seg-btn").length).toBe(3);
+    expect(screen.getByRole("combobox")).toBeTruthy();
+    expect(screen.getByLabelText("搜索已加载的历史记录")).toBeTruthy();
+  });
+
+  it("超长会话 ID 在详情内联面板中完整保留并可断行，不抛错", async () => {
+    const longId = "sess_" + "a".repeat(120);
+    bridge.listAgentEvents.mockResolvedValue(
+      eventPageOf(
+        [{ ...event("e-long"), session_external_id: longId, message: "事件 e-long" }],
+        { filtered_total: 1 },
+      ),
+    );
+    render(<HistoryPanel />);
+    const title = await screen.findByText("事件 e-long");
+    fireEvent.click(title.closest(".history-item") as HTMLElement);
+
+    const detail = await waitFor(() => {
+      const el = document.querySelector(".history-detail");
+      expect(el).not.toBeNull();
+      return el;
+    });
+    const code = detail?.querySelector(".detail-row code");
+    expect(code?.textContent).toBe(longId);
+  });
+
+  it("超长通知正文在摘要行省略、展开后进入内联详情展示", async () => {
+    const longBody = "正文 " + "长路径/堆栈信息".repeat(40);
+    bridge.notificationPage.mockResolvedValue(
+      notificationPageOf([{ ...notif("n-long"), body: longBody }]),
+    );
+    bridge.listAgentEvents.mockResolvedValue(eventPageOf([]));
+    render(<HistoryPanel />);
+    const title = await screen.findByText("提醒 n-long");
+    fireEvent.click(title.closest(".history-item") as HTMLElement);
+
+    const detail = await waitFor(() => {
+      const el = document.querySelector(".history-detail");
+      expect(el).not.toBeNull();
+      return el;
+    });
+    expect(detail?.querySelector(".detail-row code")?.textContent).toBe(longBody);
+  });
+
+  it("空状态渲染标题与引导说明，不是整屏空白", async () => {
+    render(<HistoryPanel />);
+    expect(await screen.findByText("暂无历史记录")).toBeTruthy();
+    const empty = document.querySelector(".history-timeline .empty-state");
+    expect(empty).not.toBeNull();
+    expect(empty?.querySelector(".empty-title")?.textContent).toBeTruthy();
+    expect(empty?.querySelector(".empty-hint")?.textContent).toBeTruthy();
+  });
+});

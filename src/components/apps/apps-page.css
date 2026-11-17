@@ -1,19 +1,26 @@
 /*
- * 应用中心「页面态」栅格（2026-11-15 视觉对齐）。
+ * 应用中心「页面态」栅格（2026-11-15 视觉对齐；2026-11-17 响应式修订）。
  *
- * 背景：`.apps-grid` 在 ≥560px 容器时用 `minmax(150px, 1fr)`，1180 窗口下内容区约 620px
- * 会排成 4 列、每列约 150px，应用名被压到只剩「Visua…」「窗口已…」，卡片里的收藏和
- * 更多按钮也挤在同一行。把最小列宽提到 240px 后同一宽度只排 3 列（每列约 200px），
- * 名称与状态可读，行内控件不再互相挤压。
- *
- * 只在 ≥560px 的容器档位生效，保留窄窗原有的 1 / 2 / 3 列降级行为；作用域 .apps-panel。
+ * 列数由 auto-fill 按主区宽度自然算出：卡片最小宽走本页局部 Token
+ * `--apps-card-min`（260px，与首页卡片密度对齐）；宽屏单卡再由共享
+ * `--layout-card-max` 封顶，不写死固定列数、不按窗口宽度断档。
+ * <560px 的单行卡片 1/2/3 列降级规则保留在全局 base（styles.css .apps-grid）。
+ * 查询容器为最近祖先 `.workspace-split-frame`（WorkspaceSplit 提供），
+ * 被查询元素是后代网格/卡片——容器与被查询者不是同一元素，不构成自引用。
  */
 
 @container (min-width: 560px) {
   .apps-panel .apps-grid {
-    /* 显式 3 列：auto-fill + 260px 在 1600 内容区会生成 4 个隐式列，
-       三张卡只占左侧 3/4，右侧留一条空列。1366 仍三列、1180/960 落两列。 */
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    --apps-card-min: 260px;
+    grid-template-columns: repeat(
+      auto-fill,
+      minmax(var(--apps-card-min), 1fr)
+    );
+  }
+
+  /* 宽屏单列不被拉成巨卡：封顶走共享卡片 Token。 */
+  .apps-panel .apps-tile {
+    max-width: var(--layout-card-max);
   }
 
   /* 效果图 10 的应用卡是图标在上、名称/状态在下的大卡，不是 52px 行内条目。
@@ -69,20 +76,13 @@
   }
 }
 
-/* 1180 内容区约 666px、960 约 754px：三列会把 15px 名称压到 200px 以下，
-   两列保持大卡可读性。1366（约 852px）仍走上面的三列。 */
-@container (min-width: 560px) and (max-width: 799px) {
-  .apps-panel .apps-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 /* ── 第三轮：组合场景 / 最近使用 / 右栏详情 ── */
 .apps-quick-sections {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
   gap: 10px;
   margin-bottom: 12px;
+  min-width: 0;
 }
 
 /* 没有可成组的分类时只渲染「组合场景」真实空态 + 最近使用，两者各占一行；
@@ -296,7 +296,9 @@
   margin-top: 10px;
 }
 
-@media (max-width: 1180px) {
+/* 窄内容区：场景/最近使用两栏挤不下时上下堆叠；按 split 帧容器宽度响应，
+   不使用窗口宽度媒体查询。 */
+@container (max-width: 1179px) {
   .apps-quick-sections {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -362,4 +364,37 @@
   min-height: 0;
 }
 
+/* ── 卡片操作按钮命中区 ────────────────────────────────────────────
+   视觉仍是 22×22 的 sm 图标按钮，用透明伪元素把命中区向外扩到
+   `--layout-hit-target`（32px，WCAG 2.5.8）；伪元素属于按钮自身，
+   点击仍触发同一个 onClick，不改变相邻按钮的布局间距。 */
+.apps-panel .apps-tile-actions .icon-btn,
+.apps-panel .apps-extra-row > .icon-btn {
+  position: relative;
+}
 
+.apps-panel .apps-tile-actions .icon-btn::after,
+.apps-panel .apps-tile > .apps-tile-del::after,
+.apps-panel .apps-extra-row > .icon-btn::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: inherit;
+}
+
+/* ── 页内编辑表单（TargetEditForm）窄宽兼容 ────────────────────────
+   表单字段纵向排列、输入框 width:100% 由全局基类负责；这里只补长身份
+   路径与长标签的换行，避免窄主区下把输入框或开关挤出可视区。表单渲染在
+   `.page-scroll.apps-body` 内，小高度窗口随主区独立滚动，按钮不被裁切。 */
+.apps-panel .endpoint-hint {
+  min-width: 0;
+}
+
+.apps-panel .endpoint-hint code {
+  overflow-wrap: anywhere;
+}
+
+.apps-panel .setting-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

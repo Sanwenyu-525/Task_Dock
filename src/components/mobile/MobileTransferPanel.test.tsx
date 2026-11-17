@@ -66,6 +66,16 @@ describe("MobileTransferPanel", () => {
     expect(mounts.screen).toBe(2);
   });
 
+  it("根节点接入 ui-page-frame 查询容器，滚动体保留 mobile-body 容器", () => {
+    const { container } = render(<MobileTransferPanel />);
+    const root = container.querySelector(".mobile-transfer-panel");
+    expect(root?.classList.contains("page-fill")).toBe(true);
+    expect(root?.classList.contains("ui-page-frame")).toBe(true);
+    const body = container.querySelector(".mobile-body");
+    expect(body?.classList.contains("page-scroll")).toBe(true);
+    expect(body?.classList.contains("mobile-body")).toBe(true);
+  });
+
   it("支持左右方向键在两个功能区之间移动", async () => {
     const user = userEvent.setup();
     render(<MobileTransferPanel />);

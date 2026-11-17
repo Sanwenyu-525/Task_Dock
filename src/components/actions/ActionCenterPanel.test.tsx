@@ -648,3 +648,97 @@ describe("ActionCenterPanel 已处理退出反馈", () => {
     expect(row.textContent).toContain("构建失败");
   });
 });
+
+describe("ActionCenterPanel 响应式结构与空态引导", () => {
+  it("筛选无结果时空态给出「清除筛选」入口，点击后重置类型/优先级/来源/任务条件并保留当前分类", async () => {
+    useActionsStore.setState({
+      feed: feedOf({
+        items: [],
+        counts: countsOf({ failed: 5, intervention: 5 }),
+        db_total: 5,
+        filtered_total: 0,
+        loaded: 0,
+      }),
+      filter: {
+        category: "intervention",
+        kind: "failed",
+        priority: 1,
+        source_id: "codex",
+        task_id: "t1",
+        include_acked: true,
+        limit: 40,
+      },
+    });
+    feedMock.mockResolvedValue(feedOf({ items: [], counts: countsOf({ intervention: 5 }) }));
+    render(<ActionCenterPanel />);
+
+    const clearBtn = await screen.findByRole("button", { name: "清除筛选" });
+    fireEvent.click(clearBtn);
+
+    await waitFor(() => {
+      const f = useActionsStore.getState().filter;
+      expect(f.category).toBe("intervention");
+      expect(f.kind).toBeUndefined();
+      expect(f.priority).toBeUndefined();
+      expect(f.source_id).toBeUndefined();
+      expect(f.task_id).toBeUndefined();
+      expect(f.include_acked).toBe(false);
+    });
+  });
+
+  it("当前分类本身为空时不渲染清除筛选入口", async () => {
+    useActionsStore.setState({
+      feed: feedOf({
+        category: "notification",
+        items: [],
+        counts: countsOf({ intervention: 2, notification: 0, reminder: 0 }),
+        db_total: 0,
+        filtered_total: 0,
+        loaded: 0,
+      }),
+      filter: { category: "notification", include_acked: false, limit: 40 },
+    });
+    render(<ActionCenterPanel />);
+    await screen.findByText("没有未确认通知");
+    expect(screen.queryByRole("button", { name: "清除筛选" })).toBeNull();
+  });
+
+  it("条目保留来源省略位与全部就地操作（会话/任务上下文/标记已处理），长标题与长来源不抛结构错误", () => {
+    const longTitle = "构建".repeat(60);
+    const longSource = "very-long-agent-source-name-that-should-not-break-the-row".repeat(2);
+    useActionsStore.setState({
+      feed: feedOf({
+        items: [
+          itemOf("run:1", {
+            title: longTitle,
+            source_name: longSource,
+            task_id: "t1",
+            task_title: "落地任务".repeat(20),
+          }),
+        ],
+        counts: countsOf({ intervention: 1 }),
+      }),
+    });
+    const { container } = render(<ActionCenterPanel />);
+
+    const source = container.querySelector<HTMLElement>(".action-source");
+    expect(source).toBeTruthy();
+    expect(source?.textContent).toBe(longSource);
+
+    const side = container.querySelector<HTMLElement>(".action-item .action-side");
+    expect(side).toBeTruthy();
+    // 会话跳转 + 任务上下文 + 标记已处理：窄档重排只改布局，功能按钮一枚不丢
+    expect(side?.querySelectorAll("button")).toHaveLength(3);
+    expect(container.querySelector(".action-title")?.textContent).toBe(longTitle);
+  });
+
+  it("列表区挂载独立滚动容器（page-scroll），大量条目时条目随列表渲染", () => {
+    const items = Array.from({ length: 12 }, (_, i) => itemOf(`run:${i}`));
+    useActionsStore.setState({
+      feed: feedOf({ items, counts: countsOf({ intervention: items.length }) }),
+    });
+    const { container } = render(<ActionCenterPanel />);
+    expect(container.querySelector(".action-body.page-scroll")).toBeTruthy();
+    expect(container.querySelectorAll(".action-item")).toHaveLength(12);
+  });
+});

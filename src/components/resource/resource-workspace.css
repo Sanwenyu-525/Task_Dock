@@ -66,10 +66,54 @@
     min-height: 0;
   }
 
-  .resource-page-body {
+  /* 主体是嵌套在 WorkspaceSplit 主区下的 `.page-scroll`：共享规则
+     `.page-fill > .page-scroll` 只匹配直接子级，主区 `overflow:hidden`，
+     必须在本页自己声明滚动，否则大量进程/文件会被裁掉、本区无法独立滚动。 */
+  .workspace-split__main > .resource-page-body {
     flex: 1 1 auto;
     min-height: 0;
     padding: 0 2px 8px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+  }
+
+  /* 长数字 / 长文案防御：数值列允许在任意字符处断行并参与收缩，不把卡片撑破。 */
+  .resource-summary-value,
+  .resource-storage-total strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  /* 磁盘分析文件行：网格行自身允许收缩，长父目录省略号才生效。 */
+  .resource-analysis-file {
+    min-width: 0;
+  }
+
+  /* 极窄内容区：进程行两段 nowrap 数值退到名称下方整行，避免把名称压成 0 后仍挤出列表。 */
+  @container resource-body (max-width: 360px) {
+    .resource-process-line1 {
+      flex-wrap: wrap;
+    }
+
+    .resource-process-values {
+      flex-basis: 100%;
+    }
+  }
+
+  /* 窄分栏（侧栏折成顶部 42% 轨道）：分区条恢复横向可换行，不再竖排占满顶部轨道。 */
+  @container workspace-split (max-width: 559px) {
+    .resource-rail .resource-segments,
+    .resource-rail .resource-segments-vertical {
+      flex-direction: row;
+      flex-wrap: wrap;
+      overflow-x: auto;
+    }
+
+    .resource-rail .resource-segment {
+      flex: 1 1 auto;
+      width: auto;
+    }
   }
 
   @container wb-content (max-width: 820px) {

@@ -384,7 +384,7 @@ export default function HistoryPanel() {
   }
 
   return (
-    <div className="history-panel page-fill">
+    <div className="history-panel page-fill ui-page-frame">
       {/* 页面级页头（2026-11-15 统一）：图标 + 标题 + 副标题，主要操作移到右侧动作区，
           与 19 张效果图的页头结构一致；筛选仍在下方工具栏，不与页头混排。 */}
       <WorkbenchPageHeader

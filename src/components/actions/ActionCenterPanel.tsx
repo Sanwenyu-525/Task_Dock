@@ -218,6 +218,17 @@ export default function ActionCenterPanel() {
     });
   }
 
+  // 筛选无结果时的引导入口：只清类型/优先级/来源/任务/已确认条件，保留当前分类与分页大小。
+  function clearFilters() {
+    setFilter({
+      kind: undefined,
+      priority: undefined,
+      source_id: undefined,
+      task_id: undefined,
+      include_acked: false,
+    });
+  }
+
   function canAck(item: ActionItem): boolean {
     if (item.category !== "history") return true;
     return ["failed", "authorization", "waiting_input"].includes(item.kind);
@@ -602,6 +613,13 @@ export default function ActionCenterPanel() {
                 icon={<Inbox size={22} />}
                 title={emptyTitle(category, current.filtered_total, categoryTotal)}
                 hint={emptyHint(category, current.filtered_total, categoryTotal)}
+                action={
+                  current.filtered_total === 0 && categoryTotal > 0 ? (
+                    <button type="button" className="btn sm" onClick={clearFilters}>
+                      清除筛选
+                    </button>
+                  ) : undefined
+                }
               />
             )}
             {current && displayedItems.length > 0 && (
@@ -651,7 +669,7 @@ export default function ActionCenterPanel() {
                       <div className="action-title">{item.title}</div>
                       {item.message && <div className="action-msg">{item.message}</div>}
                       <div className="action-meta">
-                        <span>{item.source_name}</span>
+                        <span className="action-source">{item.source_name}</span>
                         {item.task_title && (
                           <span className="action-task">任务：{item.task_title}</span>
                         )}

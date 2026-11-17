@@ -50,7 +50,7 @@ export default function MobileTransferPanel() {
   };
 
   return (
-    <div className="mobile-transfer-panel page-fill">
+    <div className="mobile-transfer-panel page-fill ui-page-frame">
       <WorkbenchPageHeader
         icon={Smartphone}
         title={t("mobileTransfer.title")}

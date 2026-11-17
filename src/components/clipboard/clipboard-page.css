@@ -819,3 +819,59 @@
   flex: 1 1 auto;
   min-height: 0;
 }
+
+/* ════════════════════════════════════════════════════════════════
+   九、响应式补缺（2026-11-17 A11 定向修复）
+   ────────────────────────────────────────────────────────────────
+   只补既有三档密度 + 右栏检查器结构下的窄窗/超宽窗缺口，不改变
+   业务语义、选择器契约与既有断点。
+   ════════════════════════════════════════════════════════════════ */
+
+/* 工具栏：非搜索控件不参与压缩（按钮文字 nowrap，被压窄会裁切标签）；
+   搜索框保留可用最小宽度，窄窗先换行到下一行，而不是被挤成只剩图标。 */
+.clipboard-page .clip-toolbar .btn,
+.clipboard-page .clip-toolbar .clip-density-switch {
+  flex-shrink: 0;
+}
+
+.clipboard-page .clip-search {
+  min-width: 140px;
+}
+
+/* 阅读视图里的嵌套代码块：超长无空格串（URL/标识符/路径）允许任意断行，
+   不把右栏或窄卡片顶出横向滚动；.clip-full-text.as-code 的 pre 横滚是
+   既有代码阅读行为，不在此覆盖。 */
+.clipboard-page .clip-doc pre {
+  overflow-wrap: anywhere;
+}
+
+/* 超宽内容区（≥1920px）：在 1320px 四/五列封顶基础上再加一档密度，
+   让宽屏提高单屏信息量，而不是把卡片等比拉宽留白。仍用 minmax(0, 1fr)，
+   不写死像素列宽；分组卡片同档升到四列。 */
+@container clip-page (min-width: 1920px) {
+  .clipboard-page .clip-list-grid.clip-density-comfort {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .clipboard-page .clip-list-grid.clip-density-compact {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .clipboard-page .clip-group-grid.clip-density-comfort {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* 灯箱经 createPortal 挂到 document.body，不在 .clipboard-page 子树内，
+   页面前缀无法命中；以下 `.clip-lightbox-*` 类名仅剪贴板灯箱使用。
+   - 底部工具条不参与纵向压缩：短窗口（<1290 高度）下按钮行始终保留
+     自身高度，不会被舞台挤到裁切；舞台已有 min-height:0 承接剩余空间。
+   - 工具组在极窄窗口允许换行到第二行，关闭/保存/翻页按钮不溢出。 */
+.clip-lightbox-bar {
+  flex: 0 0 auto;
+}
+
+.clip-lightbox-tools {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}

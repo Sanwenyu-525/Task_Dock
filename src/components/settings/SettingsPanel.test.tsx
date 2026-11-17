@@ -131,6 +131,7 @@ import {
   type SettingsSectionId,
 } from "../../lib/settingsSections";
 import {
+  SETTINGS_CATEGORY_IDS,
   SETTINGS_CATEGORY_STORAGE_KEY,
   categoryForSection,
   sectionsForCategory,
@@ -730,5 +731,37 @@ describe("设置页查找设置", () => {
     fireEvent.click(screen.getByRole("button", { name: "清除查找" }));
     await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
     expect((input as HTMLInputElement).value).toBe("");
+  });
+});
+
+// ── 响应式布局结构（窄容器降级的结构不变量；jsdom 不测量像素，这里锁定结构/角色/ARIA）──
+describe("设置页响应式布局结构", () => {
+  it("六个分类逐一可达：选中态切换，内容区渲染对应分组与可操作控件", () => {
+    render(<SettingsPanel />);
+    for (const category of SETTINGS_CATEGORY_IDS) {
+      activateCategory(category);
+      const meta = settingsCategory(category);
+      expect(meta).toBeTruthy();
+      const tab = screen.getByRole("tab", { name: zhCN[meta!.labelKey] });
+      expect(tab.getAttribute("aria-selected")).toBe("true");
+
+      const panel = screen.getByRole("tabpanel");
+      // 该分类至少渲染一个折叠分组头，且内容区存在可操作控件（开关/下拉/数字框/按钮/输入框）。
+      expect(panel.querySelectorAll("[aria-expanded]").length).toBeGreaterThan(0);
+      expect(
+        panel.querySelectorAll(
+          'button, [role="switch"], [role="combobox"], [role="spinbutton"], input, select, textarea',
+        ).length,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("表单行与长说明保留窄档降级所需结构，根节点挂页面查询容器", () => {
+    render(<SettingsPanel />);
+    expect(document.querySelector(".settings-panel")).toBeTruthy();
+
+    fireEvent.click(openSection("appearance"));
+    expect(document.querySelectorAll(".setting-row").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".setting-note").length).toBeGreaterThan(0);
   });
 });

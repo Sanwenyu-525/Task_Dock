@@ -1,47 +1,32 @@
-/* 「收集与暂存」页面级布局（2026-11-15）。
-   只负责本页的主区 + 信息栏编排与信息栏卡面；颜色/圆角/阴影全部走语义 Token，
+/* 「收集与暂存」页面级布局（2026-11-17 响应式修订）。
+   只负责本页主区 + 子页签编排与侧栏卡面；颜色/圆角/阴影全部走语义 Token，
    不复制按钮与弹层体系。宽度判断用 `.wb-content` 容器查询（真实内容宽度），
-   不用视口断点——工作台 125% DPI 下窗口外框与 CSS 内容宽并不等价。 */
+   不用视口断点——工作台 125% DPI 下窗口外框与 CSS 内容宽并不等价。
+   分栏复用共享原语 WorkspaceSplit（侧栏窄态自动降级为上下分区），这里不再
+   自造第二套 split 网格。 */
 
-.collection-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: 0 2px 2px;
-}
-
-.collection-main {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  /* 2026-11-15：暂存架列表自身的 `overflow-y:auto` 只有在祖先高度被约束时
-     才生效。这里给主区一个明确的裁剪盒，并按列向 flex 让 `.shelf-list` 的
-     `flex:1` 拿到真实剩余高度——否则最后几行会溢出到下方信息带上（实测
-     1180×760 时第 5 行被「常用投递目标」卡片遮住）。 */
-  overflow: hidden;
-}
-
-.collection-main > * {
-  flex: 1 1 auto;
+.collection-panel {
   min-width: 0;
   min-height: 0;
 }
 
-.collection-main > .shelf-workspace {
-  display: flex;
-  flex-direction: column;
-  /* 列表的 `flex:1` 在无界高度下失效（它的父级链不是 flex 列），所以这里
-     让整个暂存架自己成为滚动容器：行不会被裁掉，也不会压到下方信息带。 */
-  overflow-y: auto;
-  overscroll-behavior: contain;
+/* 子页签行：签组可收缩；窄内容区允许换行，模块控制不被挤出可视区。 */
+.collection-head .seg-group {
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
-/* 宽内容区（≥880px）：信息栏固定在右侧 236px；暂存架主区仍占满剩余宽度。 */
-@container wb-content (min-width: 880px) {
-  .collection-split {
-    grid-template-columns: minmax(0, 1fr) 236px;
+.collection-head .seg-btn {
+  min-width: 0;
+}
+
+@container wb-content (max-width: 719px) {
+  .collection-head {
+    row-gap: 6px;
+  }
+
+  .collection-head .seg-group {
+    flex: 1 1 auto;
   }
 }
 
@@ -52,29 +37,6 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
-}
-
-/* 窄内容区（<880px，例如 1180px 窗口 + 右栏展开时）：信息栏降级为底部信息带，
-   避免与暂存架争抢行宽。
-   2026-11-15：原先 auto-fit 180px 会在 636px 内容区挤出三张 ~200px 的窄卡，
-   三列又都不满高，整块被推出视口。改为「主区吃满 + 信息带固定上限」的行布局，
-   卡片最小 240px（两列），信息带内部自己滚动，不再吃掉暂存架的高度。 */
-@container wb-content (max-width: 879px) {
-  .collection-split {
-    grid-template-rows: minmax(0, 1fr) auto;
-  }
-
-  .col-rail {
-    display: grid;
-    /* 2026-11-15：信息带从 2 列（约 270px 高）收紧为 3 列，把高度还给暂存架列表
-       （实测列表视口从 288px 增至约 380px）；min 210px 保证 2×2 计数磁贴不挤压。 */
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-    align-content: start;
-    max-height: 30vh;
-    overflow: auto;
-    overscroll-behavior: contain;
-    padding-right: 2px;
-  }
 }
 
 .col-rail-card {

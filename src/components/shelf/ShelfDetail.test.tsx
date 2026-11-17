@@ -138,8 +138,13 @@ describe("ShelfDetail 任务关联选择器", () => {
     renderDetail();
 
     const trigger = (await screen.findByRole("combobox", { name: "选择要关联的任务" })) as HTMLButtonElement;
+    // 等待加载态收敛到空态：combobox 角色先于文案就绪，不能在拿到角色时同步断言，
+    // 否则并发负载下会捕获到「正在加载任务…」中间态。
+    await waitFor(() => {
+      expect(trigger.textContent).toContain("暂无可关联任务");
+    });
+    expect(screen.queryByText("正在加载任务…")).toBeNull();
     expect(trigger.disabled).toBe(true);
-    expect(trigger.textContent).toContain("暂无可关联任务");
     expect(taskLinkButton().disabled).toBe(true);
   });
 

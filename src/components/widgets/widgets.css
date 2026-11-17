@@ -65,61 +65,44 @@
   white-space: nowrap;
 }
 
+/* 页内小按钮命中区对齐 --layout-hit-target（32px）；视觉字号与横向内边距保持紧凑，
+   与资源页同一页级覆盖模式，不改共享 .btn 组件本身。 */
+.widgets-page .btn.sm {
+  min-height: var(--layout-hit-target);
+  padding: 0 9px;
+  gap: 5px;
+}
+
 /* ── 网格与尺寸 ───────────────────────────────────────────── */
 
 /* 2026-11-16 R5 四页批次：栅格必须按**实际内容区**（左筛选栏之后的 widgets-main）
    分档，而不是按外层 widgets-body 分档。否则 1180 窗口下外层约 900px 会误判为
-   宽屏，主区只剩约 400px 却仍排 2–3 列，卡片文字被裁。 */
+   宽屏，主区只剩约 400px 却仍排 2–3 列，卡片文字被裁。
+   2026-11-17：容器同时挂共享原语名 ui-page，供 .ui-adaptive-grid 的窄单列规则查询；
+   容器是网格的祖先，不存在自引用。 */
 .widgets-main {
   container-type: inline-size;
-  container-name: widgets-main;
+  container-name: ui-page widgets-main;
 }
 
 .widgets-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  /* 列数由 .ui-adaptive-grid 的 auto-fill minmax(--layout-card-min, 1fr) 按内容
+     宽度自然算出，不再手写 1/2/3 列断点；宽屏不再封顶三列留下大片空白。 */
   gap: 12px;
   /* 卡片按内容自然高度排列，不为了填满行高而拉伸内容。 */
   align-items: start;
   align-content: start;
 }
 
-.widget-size-sm {
-  grid-column: span 1;
-}
-
 /* 工作台内所有微件同宽铺满网格：尺寸语义只作用于桌面独立窗口，
    不在这里制造「大卡独占整行」导致内容区右侧大片空白。 */
+.widget-size-sm,
 .widget-size-md,
 .widget-size-lg {
   grid-column: span 1;
 }
 
-@container widgets-main (min-width: 540px) {
-  .widgets-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@container widgets-main (min-width: 760px) {
-  .widgets-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .widget-size-lg {
-    grid-column: span 1;
-  }
-}
-
-@container widgets-main (max-width: 539px) {
-  .widget-size-sm,
-  .widget-size-md,
-  .widget-size-lg {
-    grid-column: span 1;
-  }
-}
-
-/* 旧的三档 @media 已由上面的容器查询替代（2026-11-15）：媒体查询看的是窗口
+/* 旧的三档 @media 已由容器查询 / 共享自适应网格替代（2026-11-15）：媒体查询看的是窗口
    宽度，在「左导航 + 右详情栏」吃掉约 500px 后必然误判，故删除而不是叠加覆盖。 */
 
 /* ── 卡片 ─────────────────────────────────────────────────── */
@@ -179,6 +162,7 @@
 }
 
 .widget-icon-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -191,6 +175,15 @@
   color: var(--text-tertiary);
   cursor: pointer;
   transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+/* 视觉仍是 22×22，命中区向外扩到 32×32（--layout-hit-target / WCAG 2.5.8）。
+   伪元素属于按钮自身，点击仍命中同一个 onClick；与外壳导航按钮同一模式。 */
+.widget-icon-btn::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: inherit;
 }
 
 /* 统一轻量反馈：hover 只用低对比背景，不用整块强调色。 */
@@ -244,6 +237,9 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* 窄卡片下字段可收缩、标签与下拉可上下排列，不把输入框压到不可用。 */
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .widget-config-label {
@@ -258,12 +254,14 @@
 
 .widget-config-row > .ui-switch {
   margin-left: auto;
+  min-width: 0;
 }
 
 .widget-config-actions {
   display: flex;
   align-items: center;
   gap: 1px;
+  flex-wrap: wrap;
   margin-left: auto;
 }
 .widget-config-actions .btn {
@@ -788,12 +786,19 @@
 .widget-library-title strong {
   font-size: 11.5px;
   color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
 .widget-library-desc {
   font-size: 10.5px;
   line-height: 1.5;
   color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+  /* 长描述最多两行，超出省略，不把卡片撑高或撑破。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .widget-library-controls {
@@ -807,9 +812,9 @@
   max-width: 100%;
 }
 
-/* 窄窗：名称/说明占满一行，控件整体落到下一行左侧；不压缩字号，也不让
-   中文被挤成竖排。465px 及以下必须命中。 */
-@media (max-width: 560px) {
+/* 窄内容区：名称/说明占满一行，控件整体落到下一行左侧；不压缩字号，也不让
+   中文被挤成竖排。按主区容器宽度响应，不按窗口宽度。 */
+@container widgets-main (max-width: 559px) {
   .widget-library-row {
     align-items: stretch;
   }
@@ -1006,12 +1011,7 @@
   font-size: 11.5px;
   max-width: 360px;
   line-height: 1.6;
-}
-
-@media (max-width: 620px) {
-  .widget-stat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1132,6 +1132,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .widgets-layout-head h3 {
@@ -1233,6 +1234,7 @@
   font-size: 10px;
   line-height: 1.45;
   color: var(--text-tertiary);
+  overflow-wrap: anywhere;
 }
 
 .widgets-rail-form {
@@ -1260,6 +1262,7 @@
 .widgets-rail-switch > span {
   font-size: 9.5px;
   color: var(--text-tertiary);
+  overflow-wrap: anywhere;
 }
 
 .widgets-rail-actions {
@@ -1294,17 +1297,6 @@
     display: none;
   }
 }
-
-@media (max-width: 980px) {
-  .widgets-stat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .widgets-tabs-meta {
-    display: none;
-  }
-}
-
 
 /* R5：微件管理 = 左侧视图/桌面预览导航 + 主区大数字摘要与卡片 + 外壳配置。
    只改布局；启用、排序、尺寸、桌面窗口与配置写入仍走既有 Store/IPC。 */

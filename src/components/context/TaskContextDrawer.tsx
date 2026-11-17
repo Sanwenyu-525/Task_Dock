@@ -690,7 +690,7 @@ export default function TaskContextDrawer() {
       <div className="clipboard-layer context-layer">
         <div className="clipboard-scrim" aria-hidden onMouseDown={close} />
         <section
-          className="clipboard-drawer context-drawer"
+          className="clipboard-drawer context-drawer tasks-context-drawer"
           role="dialog"
           aria-modal="true"
           aria-label="任务上下文"

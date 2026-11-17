@@ -1064,7 +1064,7 @@
 }
 
 .vd-session-actions .btn {
-  min-height: 28px;
+  min-height: var(--layout-hit-target);
   padding-inline: 10px;
 }
 
@@ -1243,6 +1243,20 @@
   gap: 6px;
   flex-wrap: wrap;
   padding-top: 2px;
+}
+
+/* ── 操作按钮命中区（--layout-hit-target，WCAG 2.5.8）──────────────
+   视觉尺寸沿用共享 sm 基元；图标按钮用透明伪元素外扩到 32×32，
+   文本小按钮抬高最小高度，不改共享 .btn / .icon-btn 组件本身。 */
+.vd-device-actions .icon-btn.sm::after,
+.vd-toolchain-actions .icon-btn.sm::after,
+.vd-advanced .icon-btn.sm::after {
+  inset: -5px;
+}
+
+.vd-device-actions .btn.sm,
+.vd-advanced-actions .btn.sm {
+  min-height: var(--layout-hit-target);
 }
 
 .vd-diag-list {
@@ -1795,7 +1809,7 @@
 }
 
 .vd-nav-btn {
-  min-height: 30px;
+  min-height: var(--layout-hit-target);
   padding-inline: 8px;
   font-size: 10.5px;
 }

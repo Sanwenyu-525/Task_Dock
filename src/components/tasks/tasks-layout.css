@@ -5,13 +5,15 @@
  *
  * 只负责布局与间距；颜色 / 圆角 / 阴影 / 材质一律沿用既有语义 Token，
  * 不在此文件复制第二套皮肤。文件不带 @layer，天然高于 base/theme，因此
- * 每条选择器都必须以 .tasks-panel 或 .tasks-subview 开头做作用域隔离，
- * 避免改到其他页面共用的 .filter-bar / .task-card / .page-fill 行为。
+ * 每条选择器都必须以 .tasks-panel、.tasks-subview 或 .tasks-context-drawer
+ * （任务上下文抽屉的本页钩子类）开头做作用域隔离，避免改到其他页面共用的
+ * .filter-bar / .task-card / .page-fill 行为。
  */
 
 /* 页根：列表 / 专注 / 统计三种模式都填满内容区剩余高度。 */
 .tasks-panel {
   min-height: 0;
+  min-width: 0;
   gap: 6px;
 }
 
@@ -21,6 +23,7 @@
   flex-direction: column;
   gap: 6px;
   flex-shrink: 0;
+  min-width: 0;
 }
 
 /* 任务概览大卡（2026-11-15 对齐效果图 01）：四张等宽统计卡，
@@ -268,10 +271,12 @@
 
 .tasks-panel .tasks-filterbar .seg-group {
   flex: 0 0 auto;
+  min-width: 0;
 }
 
 .tasks-panel .tasks-filterbar .sort-select {
   flex: 0 0 auto;
+  min-width: 0;
   max-width: 84px;
 }
 
@@ -318,6 +323,13 @@
 .tasks-panel .task-item {
   padding: 6px 8px;
   gap: 7px;
+}
+
+/* 标题行：标题吃掉剩余宽度并可收缩省略；优先级徽标固定不被挤掉。
+   中英文长标题都在标题内单行截断，不把徽标或截止时间挤出行外。 */
+.tasks-panel .task-title-row .task-title {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .tasks-panel .task-meta {
@@ -607,4 +619,24 @@
 .task-detail-link svg {
   flex: 0 0 auto;
   color: var(--text-muted);
+}
+
+/* ── 任务上下文抽屉（TaskContextDrawer） ──────────────────────────────
+   抽屉由本页打开，复用剪贴板抽屉的共享壳；这里只补本页相关的纵向 flex 约束：
+   头部固定、正文独立滚动，正文内各区块在可滚动容器里保持自然高度，
+   不被 flex-shrink 压成一行（否则 scrollHeight 等于 clientHeight，内容无法滚出）。 */
+.tasks-context-drawer {
+  min-width: 0;
+}
+
+.tasks-context-drawer .clip-head {
+  min-width: 0;
+}
+
+.tasks-context-drawer .context-body {
+  min-width: 0;
+}
+
+.tasks-context-drawer .context-body > * {
+  flex-shrink: 0;
 }

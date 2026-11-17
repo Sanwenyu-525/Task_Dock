@@ -339,7 +339,7 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
             </aside>
           }
         >
-          <div className="page-scroll widgets-main">
+          <div className="page-scroll ui-page-frame widgets-main">
         {/* 大数字摘要：管理页先给四条真实状态，再按 tabs 进入列表/库/布局。
             失败数来自 desktopRuntime，不能用「配置为显示」冒充已创建窗口。 */}
         <div className="widgets-stat-grid" aria-label="微件状态摘要">
@@ -396,7 +396,7 @@ export default function WidgetsPanel({ sources = {} }: WidgetsPanelProps) {
 
           {tab === "enabled" &&
             (visible.length > 0 ? (
-              <div className="widgets-grid" aria-label={t("widgets.gridAria")}>
+              <div className="widgets-grid ui-adaptive-grid" aria-label={t("widgets.gridAria")}>
                 {visible.map((item, index) => (
                   <WidgetCard
                     key={item.widget_id}

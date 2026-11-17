@@ -44,3 +44,40 @@
 .mcp-access .setting-note {
   overflow-wrap: anywhere;
 }
+
+/* 分区头：标题块与刷新按钮两端对齐，窄宽度下标题先占满、按钮不被挤压。 */
+.mcp-access .settings-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mcp-access .settings-section-header > div {
+  min-width: 0;
+}
+
+/* 按钮组（作用域切换 / 授权项目 / 审计翻页 / 确认操作等）：允许换行，
+   窄内容区不把多个长按钮挤成一行溢出。 */
+.mcp-access .mcp-btn-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 勾选标签：勾选框与文字同行；长文字换行而不是把框挤出。 */
+.mcp-access label:has(input[type="checkbox"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 长标识 / 路径 / 配置片段：任意位置换行，不撑破卡片与列表。 */
+.mcp-access article,
+.mcp-access li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

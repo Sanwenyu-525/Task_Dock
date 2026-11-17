@@ -30,6 +30,60 @@
   padding: 3px 6px;
 }
 
+/* 树行信息分配：标题/名称吃剩余空间并省略；状态徽标、来源标签保持不被压缩；
+   次要元信息允许截断。避免固定 max-width 把中英文标题挤成不可读，也避免徽标
+   把核心名称挤出可读宽度（状态是核心信息，不得被裁切）。 */
+.agents-panel .tree-row .tree-row-main {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.agents-panel .tree-row-main > strong,
+.agents-panel .tree-row-main .tree-title,
+.agents-panel .tree-row-main .tree-inst-key {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agents-panel .tree-row-main .session-state {
+  flex: 0 0 auto;
+}
+
+.agents-panel .tree-row-main .run-source {
+  flex: 0 1 auto;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agents-panel .tree-row-main .tree-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agents-panel .tree-row > .btn {
+  flex: 0 0 auto;
+}
+
+/* 接入来源卡：列数按内容宽度自然算出（复用 --layout-card-min），窄窗减列、
+   宽屏不出现一行一张巨卡；极窄内容区退回单列。容器是祖先 `.agents-panel`。 */
+.agents-panel .discovery-grid {
+  grid-template-columns: repeat(auto-fill, minmax(var(--layout-card-min, 280px), 1fr));
+}
+
+@container agents-panel (max-width: 519px) {
+  .agents-panel .discovery-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* 运行中徽标与「等待 / 异常」同级强调（对照效果图状态徽标视觉）。 */
 .agents-panel .session-state.state-running {
   font-weight: 600;
@@ -123,7 +177,10 @@
   min-height: 0;
 }
 
-@container wb-content (max-width: 760px) {
+/* 侧栏上下分区（窄容器，WorkspaceSplit 已把导航变为顶部横带）时，4 张统计卡
+   一行排开；侧栏仍在左侧时保持 2×2，避免在 208px 窄侧栏里挤成 4 个碎卡。
+   查询容器是外层 `.workspace-split-frame`（workspace-split），不是页面自身。 */
+@container workspace-split (max-width: 559px) {
   .agents-panel .agent-summary-rail {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -220,6 +277,10 @@
   font-size: 13px;
 }
 
+.agent-inspector-identity .session-state {
+  flex: 0 0 auto;
+}
+
 .agent-inspector-metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -262,6 +323,7 @@
   padding: 6px 0;
   border-bottom: 1px solid var(--border-subtle);
   font-size: 10.5px;
+  min-width: 0;
 }
 
 .agent-inspector-facts span {
@@ -272,6 +334,8 @@
   font-weight: 600;
   color: var(--text-primary);
   text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .agent-inspector-note {

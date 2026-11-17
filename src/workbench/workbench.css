@@ -387,12 +387,12 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
     color 120ms ease,
     background-color 120ms ease;
 }
-/* 视觉仍是 24×24，命中区向外扩到 28×28（WCAG 2.5.8 的最小目标尺寸）。
+/* 视觉仍是 24×24，命中区向外扩到 32×32（--layout-hit-target / WCAG 2.5.8）。
    伪元素属于按钮自身，点击仍命中同一个 onClick。 */
 .wb-nav-hide::after {
   content: "";
   position: absolute;
-  inset: -2px;
+  inset: -4px;
   border-radius: inherit;
 }
 /* 默认低干扰；悬停整行或键盘聚焦（含 Tab 到 ×）时显形。 */
@@ -696,6 +696,7 @@ body.wb-resizing {
 .wb-context {
   flex: 0 0 var(--wb-detail-width, 320px);
   width: var(--wb-detail-width, 320px);
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   padding: 14px 14px 20px;
@@ -991,7 +992,13 @@ body.wb-resizing {
 
 /* ── 首页 ──────────────────────────────────────────────────────────── */
 .wb-home {
-  max-width: 1080px;
+  /* 接入共享页面帧（.ui-page-frame）：卡片最小宽 / 间距由 ui-adaptive-grid
+     的变量接管，这里只覆盖首页自己的值；页面不再锁死 1080 阅读宽，
+     宽屏靠单卡 --layout-card-max 封顶，而不是把整张表拉成巨卡。 */
+  --ui-card-min: 260px;
+  --ui-grid-gap: 14px;
+  width: 100%;
+  max-width: 1440px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -1199,7 +1206,10 @@ body.wb-resizing {
 
 /* ── 项目工作空间内容 ───────────────────────────────────────────────── */
 .wb-project {
-  max-width: 1180px;
+  /* 宽屏阅读宽与首页 .wb-home 对齐到 1440px 并居中：旧 1180px 硬宽在
+     1920/2560 下右侧留白偏大；窄内容区（<900px）由下方容器查询解除封顶。 */
+  max-width: 1440px;
+  margin-inline: auto;
   /* workspace.css 的 --ws-* 默认指向浅色纸张 token，嵌入工作台深色主题时
      若不覆盖，.ws-card 会变成白底 + 浅色文字（2026-11-15 深色实测不可读）。
      这里把 legacy 工作空间变量映射回当前语义 token；standalone 窗口不受影响。 */
@@ -1603,10 +1613,11 @@ body.wb-resizing {
 
 .wb-search-field {
   /* 顶栏里搜索是第二主控件：过窄会让占位文案被截成半句、与快捷键标签重叠
-     （1180 窗口下实测）。保证 150px 底线，空间不足时由容器查询先隐藏快捷键标签。 */
-  flex: 0 1 400px;
-  max-width: 420px;
-  min-width: 150px;
+     （1180 窗口下实测）。底线 132px，空间不足时由容器查询先隐藏快捷键标签；
+     宽窗允许增长但封顶 520px，避免搜索条占满整行、动作组被挤到最右留下大段空白。 */
+  flex: 1 1 320px;
+  max-width: 520px;
+  min-width: var(--layout-search-min, 132px);
   display: flex;
   align-items: center;
   height: 32px;
@@ -2030,8 +2041,9 @@ body.wb-resizing {
 .wb-home-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: var(--ui-grid-gap, 14px);
   align-items: stretch;
+  min-width: 0;
 }
 @container wb-content (min-width: 940px) {
   .wb-home-grid {
@@ -2253,6 +2265,8 @@ body.wb-resizing {
   text-align: left;
   cursor: pointer;
   min-width: 0;
+  /* 宽屏单列不被拉成巨卡：封顶走共享卡片 Token。 */
+  max-width: var(--layout-card-max);
 }
 .wb-pcard:hover {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));

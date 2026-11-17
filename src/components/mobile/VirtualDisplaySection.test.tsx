@@ -653,6 +653,41 @@ describe("VirtualDisplaySection", () => {
     expect(screen.getByText("com.google.android.chrome")).toBeTruthy();
   });
 
+  it("切换设备不重置当前投屏模式", async () => {
+    const deviceB = device({
+      serial: SERIAL_B,
+      uid: "UID-B",
+      model: "Pixel 9",
+      transports: [SERIAL_B],
+    });
+    devicesMock.mockResolvedValue({
+      devices: [device(), deviceB],
+      adb_ok: true,
+      error: null,
+    });
+    appsMock.mockImplementation((serial) =>
+      Promise.resolve(
+        appList(serial, serial === SERIAL_A ? "UID-A" : "UID-B", [CHROME_APP]),
+      ),
+    );
+    const user = userEvent.setup();
+    render(<VirtualDisplaySection />);
+
+    await screen.findAllByText("V2323A");
+    const virtual = screen.getByRole("button", { name: /独立虚拟屏幕/ });
+    await user.click(virtual);
+    expect((virtual as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
+
+    await user.click(screen.getByRole("combobox", { name: "选择设备" }));
+    await user.click(await screen.findByRole("option", { name: /Pixel 9/ }));
+    await waitFor(() => expect(appsMock).toHaveBeenCalledWith(SERIAL_B, false));
+
+    const virtualAfter = screen.getByRole("button", { name: /独立虚拟屏幕/ });
+    expect((virtualAfter as HTMLButtonElement).getAttribute("aria-pressed")).toBe("true");
+    const mirrorAfter = screen.getByRole("button", { name: /手机屏幕镜像/ });
+    expect((mirrorAfter as HTMLButtonElement).getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("应用列表读取期间显示加载状态", async () => {
     let resolveApps: (value: VdAppList) => void = () => {};
     appsMock.mockReturnValue(

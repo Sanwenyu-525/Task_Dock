@@ -1558,4 +1558,17 @@ describe("ResourceManagementPanel", () => {
     fireEvent.keyDown(tab("resource.segment.process"), { key: "Home" });
     expect(tab("resource.segment.overview").getAttribute("aria-selected")).toBe("true");
   });
+
+  it("根节点接入 ui-page-frame 查询容器，主体滚动容器与分区导航常驻可达", async () => {
+    render(<ResourceManagementPanel />);
+    await waitFor(() => expect(mocks.snapshot).toHaveBeenCalledTimes(1));
+
+    const root = document.querySelector(".resource-page") as HTMLElement;
+    expect(root).not.toBeNull();
+    expect(root?.classList.contains("ui-page-frame")).toBe(true);
+
+    // 主体是嵌套在分栏主区下的独立滚动容器；五个分区 Tab 常驻在 DOM 中。
+    expect(root?.querySelector(".resource-page-body")).not.toBeNull();
+    expect(document.querySelectorAll('[role="tab"]').length).toBe(5);
+  });
 });

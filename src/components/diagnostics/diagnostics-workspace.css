@@ -1,203 +1,277 @@
-@layer base, theme, ui, menu;
+/*
+ * 诊断中心「页面态」布局（2026-11-15 视觉对齐；2026-11-17 A18 响应式修复）。
+ *
+ * 作用域统一 `.diag-center`；颜色 / 间距沿用既有语义 Token，不新增皮肤。
+ * 不带 @layer：冻结 styles.css 中诊断段为未分层规则，页面覆盖规则同样
+ * 未分层，靠选择器作用域前缀与源码顺序生效（口径同 history / clipboard 页）。
+ * 宽度判断只走容器查询（祖先 `.ui-page-frame` = `ui-page`），不写窗口视口断点。
+ */
 
-@layer ui {
-  /* R5：诊断中心从「健康概览 + 三列筛选 + 行内列表」提升为
-     左侧筛选栏 + 右侧健康概览与事件列表。
-     仅改网格编排，请求/分页/清理/导出与错误语义完全沿用原实现。 */
+/* R5：诊断中心 = 左侧筛选栏 + 右侧健康概览与事件列表。
+   仅改网格编排，请求/分页/清理/导出与错误语义完全沿用原实现。 */
 
+.diag-center .diag-body {
+  display: grid;
+  grid-template-columns: 228px minmax(0, 1fr) minmax(280px, 330px);
+  align-items: start;
+  gap: 10px 12px;
+  padding-right: 4px;
+  min-width: 0;
+  /* 横向防护：长串折行由下方长文本规则负责，不用 hidden 裁掉正文。 */
+  overflow-x: hidden;
+}
+
+.diag-center .diag-body > * {
+  grid-column: 2;
+  min-width: 0;
+}
+
+.diag-center .diag-body > .diag-center-filters {
+  grid-column: 1;
+  grid-row: 1 / span 12;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  min-height: 0;
+  max-height: calc(100vh - 180px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+/* 外壳已提供页面详情宿主时，详情投送到右栏；正文只保留筛选 + 列表两列，
+   避免自建检查器与通用上下文栏并排形成第四列。 */
+.diag-center .diag-body.has-detail-host {
+  grid-template-columns: 228px minmax(0, 1fr);
+}
+
+/* 选中事件进入常驻检查器：列表只负责定位，完整字段、操作链和复制动作
+   在右侧完成，避免在行内展开后把下一条事件推离视口。 */
+.diag-center .diag-body > .diag-center-inspector {
+  grid-column: 3;
+  grid-row: 1 / span 12;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 240px;
+  max-height: calc(100vh - 180px);
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-2);
+}
+
+.diag-center-inspector-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.diag-center-inspector-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.diag-center-inspector-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 2px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.diag-center-inspector .diag-center-details {
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  border-top: 0;
+}
+
+.diag-center-inspector .diag-center-detail,
+.diag-center-inspector .diag-center-detail-wide {
+  flex: 1 1 100%;
+}
+
+.diag-center-row.is-selected {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.diag-center-row.is-selected:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.diag-center .diag-body.is-chain {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.diag-center .diag-body.is-chain > * {
+  grid-column: 1;
+}
+
+/* 侧栏里的筛选字段纵向排列：范围/级别/模块/关键词各自成行，
+   按钮在底部，避免在 228px 内挤成两列窄输入框。 */
+.diag-body .diag-center-filters .diag-center-filter-grid,
+.diag-body .diag-center-filters .diag-center-advanced .diag-center-filter-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.diag-body .diag-center-filters .diag-center-filter-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.diag-body .diag-center-filters .diag-center-advanced-toggle {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.diag-body .diag-center-filters .diag-center-input,
+.diag-body .diag-center-filters .ui-select-trigger {
+  width: 100%;
+  min-width: 0;
+}
+
+.diag-center .diag-body > .diag-center-list,
+.diag-center .diag-body > .diag-center-chain {
+  min-height: 0;
+  min-width: 0;
+}
+
+/* ── 长内容可读性（2026-11-17 A18）────────────────────────────
+   详情正文 / 链路消息保留多行日志与堆栈的换行、缩进；超长无空格串
+   （URL / 路径 / 哈希）在任意位置断行，不把列表或检查器撑出横向滚动。
+   列表行内模块/消息仍走单行省略（ellipsis + data-tip），全文在详情查看。 */
+.diag-center .diag-center-message,
+.diag-center .diag-center-timeline-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.diag-center .diag-center-details,
+.diag-center .diag-center-detail,
+.diag-center .diag-center-detail dd,
+.diag-center .diag-center-op,
+.diag-center .diag-center-meta,
+.diag-center .diag-center-meta-row,
+.diag-center .diag-center-meta-value {
+  min-width: 0;
+}
+
+.diag-center .diag-center-meta-row dd,
+.diag-center .diag-center-meta-value {
+  overflow-wrap: anywhere;
+}
+
+.diag-center .diag-center-rows,
+.diag-center .diag-center-timeline,
+.diag-center .diag-center-timeline-item {
+  min-width: 0;
+}
+
+/* ── 操作命中区（--layout-hit-target，WCAG 2.5.8）──────────────
+   视觉尺寸沿用共享 sm 基元：图标按钮用透明伪元素把命中区外扩到 32×32，
+   文本小按钮抬高最小高度。伪元素属于按钮自身，点击仍触发同一 onClick，
+   不改变相邻按钮的布局间距；不改共享 .btn / .icon-btn 组件本身。 */
+.diag-center .icon-btn.sm {
+  position: relative;
+}
+
+.diag-center .icon-btn.sm::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: inherit;
+}
+
+.diag-center .btn.sm {
+  min-height: var(--layout-hit-target, 32px);
+}
+
+.diag-center .diag-center-advanced-toggle {
+  min-height: var(--layout-hit-target, 32px);
+}
+
+/* 页面根 .ui-page-frame 声明了 container-name: ui-page；下列降级规则
+   选择器均为根的后代，不查询容器自身。宽度判断按内容容器，不按窗口视口。 */
+@container ui-page (max-width: 1080px) {
   .diag-center .diag-body {
-    display: grid;
-    grid-template-columns: 228px minmax(0, 1fr) minmax(280px, 330px);
-    align-items: start;
-    gap: 10px 12px;
-    padding-right: 4px;
-  }
-
-  .diag-center .diag-body > * {
-    grid-column: 2;
-    min-width: 0;
-  }
-
-  .diag-center .diag-body > .diag-center-filters {
-    grid-column: 1;
-    grid-row: 1 / span 12;
-    position: sticky;
-    top: 0;
-    align-self: start;
-    max-height: calc(100vh - 180px);
-    overflow: auto;
-    padding-right: 2px;
-  }
-
-  /* 外壳已提供页面详情宿主时，详情投送到右栏；正文只保留筛选 + 列表两列，
-     避免自建检查器与通用上下文栏并排形成第四列。 */
-  .diag-center .diag-body.has-detail-host {
     grid-template-columns: 228px minmax(0, 1fr);
   }
 
-  /* 选中事件进入常驻检查器：列表只负责定位，完整字段、操作链和复制动作
-     在右侧完成，避免在行内展开后把下一条事件推离视口。 */
   .diag-center .diag-body > .diag-center-inspector {
-    grid-column: 3;
-    grid-row: 1 / span 12;
-    position: sticky;
-    top: 0;
-    align-self: start;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-height: 240px;
-    max-height: calc(100vh - 180px);
-    overflow: auto;
-    padding: 10px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md, 8px);
-    background: var(--surface-2);
-  }
-
-  .diag-center-inspector-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-    padding-bottom: 7px;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .diag-center-inspector-title {
-    flex: 1 1 auto;
-    min-width: 0;
-    font-size: 11px;
-    color: var(--text-primary);
-  }
-
-  .diag-center-inspector-empty {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    padding: 4px 2px;
-    font-size: 10px;
-    color: var(--text-secondary);
-  }
-
-  .diag-center-inspector .diag-center-details {
-    flex: 1 1 auto;
-    flex-direction: column;
-    gap: 8px;
-    padding: 0;
-    border-top: 0;
-  }
-
-  .diag-center-inspector .diag-center-detail,
-  .diag-center-inspector .diag-center-detail-wide {
-    flex: 1 1 100%;
-  }
-
-  .diag-center-row.is-selected {
-    background: color-mix(in srgb, var(--accent) 10%, transparent);
-  }
-
-  .diag-center-row.is-selected:hover {
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-  }
-
-  .diag-center .diag-body.is-chain {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .diag-center .diag-body.is-chain > * {
-    grid-column: 1;
-  }
-
-  /* 侧栏里的筛选字段纵向排列：范围/级别/模块/关键词各自成行，
-     按钮在底部，避免在 228px 内挤成两列窄输入框。 */
-  .diag-body .diag-center-filters .diag-center-filter-grid,
-  .diag-body .diag-center-filters .diag-center-advanced .diag-center-filter-grid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-  }
-
-  .diag-body .diag-center-filters .diag-center-filter-actions {
     grid-column: 1 / -1;
+    grid-row: auto;
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+@container ui-page (max-width: 900px) {
+  /* 窄窗/详情栏关闭时，检查器改为文档流中的下方区域并让整页滚动，
+     不再在单列 grid 中与列表抢同一行，避免列表内容与检查器重叠。 */
+  .diag-center .diag-body {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
   }
 
-  .diag-body .diag-center-filters .diag-center-advanced-toggle {
+  .diag-center .diag-body > *,
+  .diag-center .diag-body > .diag-center-filters {
+    grid-column: auto;
+    grid-row: auto;
+    position: static;
     width: 100%;
-    justify-content: flex-start;
+    flex: 0 0 auto;
+    max-height: none;
+    overflow: visible;
   }
 
-  .diag-body .diag-center-filters .diag-center-input,
-  .diag-body .diag-center-filters .ui-select-trigger {
-    width: 100%;
-    min-width: 0;
+  /* 全宽检查器不再使用窄栏的纵向拉伸；字段改为两列网格，避免每个
+     detail 行被 flex:1 拉成 220px 高而产生大片空白。 */
+  .diag-center .diag-center-inspector .diag-center-details {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 8px 14px;
   }
 
-  .diag-center .diag-body > .diag-center-list,
-  .diag-center .diag-body > .diag-center-chain {
+  .diag-center .diag-center-inspector .diag-center-detail,
+  .diag-center .diag-center-inspector .diag-center-detail-wide {
+    flex: 0 0 auto;
     min-height: 0;
   }
 
-  @container wb-content (max-width: 1080px) {
-    .diag-center .diag-body {
-      grid-template-columns: 228px minmax(0, 1fr);
-    }
-
-    .diag-center .diag-body > .diag-center-inspector {
-      grid-column: 1 / -1;
-      grid-row: auto;
-      position: static;
-      max-height: none;
-      overflow: visible;
-    }
+  .diag-body .diag-center-filters .diag-center-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  @container wb-content (max-width: 900px) {
-    /* 窄窗/详情栏关闭时，检查器改为文档流中的下方区域并让整页滚动，
-       不再在单列 grid 中与列表抢同一行，避免列表内容与检查器重叠。 */
-    .diag-center .diag-body {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      overflow-y: auto;
-    }
-
-    .diag-center .diag-body > *,
-    .diag-center .diag-body > .diag-center-filters {
-      grid-column: auto;
-      grid-row: auto;
-      position: static;
-      width: 100%;
-      flex: 0 0 auto;
-      max-height: none;
-      overflow: visible;
-    }
-
-    /* 全宽检查器不再使用窄栏的纵向拉伸；字段改为两列网格，避免每个
-       detail 行被 flex:1 拉成 220px 高而产生大片空白。 */
-    .diag-center .diag-center-inspector .diag-center-details {
-      display: grid !important;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      align-items: start;
-      gap: 8px 14px;
-    }
-
-    .diag-center .diag-center-inspector .diag-center-detail,
-    .diag-center .diag-center-inspector .diag-center-detail-wide {
-      flex: 0 0 auto;
-      min-height: 0;
-    }
-
-    .diag-body .diag-center-filters .diag-center-filter-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
+  /* 窄内容区下拉/输入框收缩到容器宽度内，冻结字段 min-width:128px
+     不再把两列网格撑破；长选项文案由触发条自身省略号收尾。 */
+  .diag-center .diag-center-field {
+    min-width: 0;
+    max-width: 100%;
   }
+}
 
-  @container wb-content (max-width: 620px) {
-    .diag-body .diag-center-filters .diag-center-filter-grid {
-      grid-template-columns: minmax(0, 1fr);
-    }
+@container ui-page (max-width: 620px) {
+  .diag-body .diag-center-filters .diag-center-filter-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

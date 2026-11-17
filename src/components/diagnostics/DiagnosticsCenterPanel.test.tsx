@@ -771,4 +771,109 @@ describe("DiagnosticsCenterPanel", () => {
     });
     await waitFor(() => expect(exportButton.disabled).toBe(false));
   });
+
+  // ── A18 响应式与长内容可读性（2026-11-17）────────────────────────
+  // jsdom 不计算 CSS，下列用例只断言结构 / 类名 / 节点可达性：
+  // 折行、命中区与滚动分层由页面 CSS 规则承担，真实布局在阶段 5 截图验收。
+
+  it("根节点接入页面查询容器 ui-page-frame，主体保持纵向 page-fill 骨架", () => {
+    render(<DiagnosticsCenterPanel />);
+    const root = document.querySelector(".diag-center");
+    expect(root?.className).toContain("ui-page-frame");
+    expect(root?.className).toContain("page-fill");
+  });
+
+  it("展开记录后多行日志与超长无空格串在详情中完整保留，复制/链路/收起按钮可达", async () => {
+    const longUrl =
+      "https://logs.taskdock.local/diagnostics/clipboard/paste_batch/" +
+      "a".repeat(96) +
+      "?token=" +
+      "b".repeat(64);
+    const multiLine =
+      "batch paste completed\n  at clipboard::persist_batch\n    at src/clipboard/store.rs:218:9";
+    mocks.query.mockResolvedValue({
+      ...PAGE,
+      items: [
+        {
+          ...PAGE.items[0],
+          session_id: "sess-" + "c".repeat(48),
+          window_id: "win-1",
+          operation_id: "op-1",
+          stage: "on-disk",
+          duration_ms: 123,
+          message: multiLine,
+          metadata: { trace: longUrl, note: "readonly" },
+        },
+      ],
+    });
+
+    render(<DiagnosticsCenterPanel />);
+    await waitFor(() => expect(rowButton()).toBeTruthy());
+
+    fireEvent.click(rowButton());
+    const inspector = await screen.findByRole("complementary");
+
+    // 多行日志的两行与缩进标识在 DOM 中完整保留（CSS 层用 pre-wrap 保对齐）。
+    expect(inspector.textContent).toContain("clipboard::persist_batch");
+    expect(inspector.textContent).toContain("src/clipboard/store.rs:218:9");
+    // 超长 URL / 哈希不在 React 层截断。
+    expect(inspector.textContent).toContain(longUrl);
+
+    // 详情旁的复制、链路、收起按钮均渲染可达；页头刷新/复制摘要/导出不被移出。
+    expect(
+      screen.getByRole("button", { name: /common\.copy diagnosticsCenter\.list\.session/ }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /diagnosticsCenter\.list\.chain/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /diagnosticsCenter\.list\.collapse/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /diagnosticsCenter\.action\.refresh/ })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /diagnosticsCenter\.action\.copySummary/ }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /diagnosticsCenter\.action\.export/ })).toBeTruthy();
+  });
+
+  it("级别/时间范围/来源/关键字筛选常驻，高级面板可展开收起，已选条件可整体清除", async () => {
+    render(<DiagnosticsCenterPanel />);
+    await waitFor(() =>
+      expect(screen.getByText("diagnosticsCenter.overview.modeNormal")).toBeTruthy(),
+    );
+
+    // 主筛选条件在任何宽度下都常驻，不收进隐藏菜单。
+    expect(screen.getByRole("combobox", { name: "diagnosticsCenter.filter.level" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "diagnosticsCenter.filter.range" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "diagnosticsCenter.filter.module" })).toBeTruthy();
+    // 关键字框为 type="search"，隐式角色 searchbox。
+    expect(
+      screen.getByRole("searchbox", { name: "diagnosticsCenter.filter.keyword" }),
+    ).toBeTruthy();
+
+    // 高级条件默认收纳，展开后代码/操作字段可见。
+    expect(
+      screen.queryByRole("combobox", { name: "diagnosticsCenter.filter.code" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "diagnosticsCenter.filter.advanced" }));
+    expect(
+      screen.getByRole("combobox", { name: "diagnosticsCenter.filter.code" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("textbox", { name: "diagnosticsCenter.filter.operation" }),
+    ).toBeTruthy();
+
+    // 重置清除全部已选条件：级别/模块/错误码/操作/关键字均回到未收窄。
+    fireEvent.click(screen.getByRole("button", { name: "diagnosticsCenter.filter.reset" }));
+    await waitFor(() => {
+      const calls = mocks.query.mock.calls;
+      const lastFilter = calls[calls.length - 1]?.[0];
+      expect(lastFilter).toEqual(
+        expect.objectContaining({
+          levels: undefined,
+          modules: undefined,
+          errorCodes: undefined,
+          operationId: undefined,
+          text: undefined,
+          anomaliesOnly: true,
+        }),
+      );
+    });
+  });
 });

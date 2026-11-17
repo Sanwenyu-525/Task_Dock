@@ -474,6 +474,27 @@ describe("开发工作台", () => {
     await waitFor(() => expect(quickCaptureShow).toHaveBeenCalledTimes(1));
   });
 
+  it("接入响应式原语：页面查询容器、独立滚动层、动作工具栏与栅格分层", async () => {
+    seedSettings({ workbench_current_task: "a" });
+    render(<DevWorkbenchPanel />);
+    await screen.findByText("重构剪贴板模块");
+    const root = document.querySelector(".a02-dev-workbench");
+    expect(root).toBeTruthy();
+    // 根节点接入共享查询容器原语（祖先容器，不在自身上写依赖自身宽度的规则）
+    expect(root?.classList.contains("ui-page-frame")).toBe(true);
+    // 主内容独立滚动层：页头之外的卡片栈在 .page-scroll 内
+    expect(root?.querySelector(".page-scroll.wb-body")).toBeTruthy();
+    expect(root?.querySelector(".wb-dev-stack")).toBeTruthy();
+    // 三层栅格（当前任务/项目、Agent/交接/验收、待处理/快速/最近）+ 满宽工作现场
+    expect(root?.querySelectorAll(".wb-dev-grid").length).toBe(3);
+    expect(root?.querySelector(".wb-worksite-grid")).toBeTruthy();
+    // 下一步动作组接入工具栏原语（窄卡片内整按钮换行，不压缩文字）
+    const continueBtn = screen.getByRole("button", { name: "继续工作" });
+    const actionsBar = continueBtn.closest(".wb-actions");
+    expect(actionsBar).toBeTruthy();
+    expect(actionsBar?.classList.contains("ui-toolbar-row")).toBe(true);
+  });
+
   it("英文界面：工作台区域标题与动作全部本地化", async () => {
     seedSettings({ workbench_current_task: "a" });
     useLocaleStore.setState({ locale: "en-US", preference: "en-US" });

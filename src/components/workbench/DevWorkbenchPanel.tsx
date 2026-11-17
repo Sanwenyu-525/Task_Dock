@@ -77,6 +77,7 @@ import { t as translate } from "../../i18n";
 import DevProjectContext from "../devwork/DevProjectContext";
 import DevHandoffSection from "../devwork/DevHandoffSection";
 import DevAcceptanceSection from "../devwork/DevAcceptanceSection";
+import "./devWorkbenchPanel.css";
 
 /** 最近待办数量：区域 D 与空态快捷选择共用，保持首屏一屏内可读。 */
 const RECENT_LIMIT = 6;
@@ -234,7 +235,7 @@ export default function DevWorkbenchPanel() {
   }, [showToast, t]);
 
   return (
-    <div className="workbench-panel page-fill">
+    <div className="workbench-panel page-fill ui-page-frame a02-dev-workbench">
       {/* 页面级页头（2026-11-15 统一）：与其它 19 个页面同构；快捷捕获与
           「停止恢复」留在右侧动作区。 */}
       <WorkbenchPageHeader
@@ -558,8 +559,9 @@ function CurrentTaskSection({
             )}
           </div>
 
-          {/* 下一步动作：继续工作按「现场 → 关联会话 → 上下文」给出真实可执行的一步 */}
-          <div className="wb-actions">
+          {/* 下一步动作：继续工作按「现场 → 关联会话 → 上下文」给出真实可执行的一步；
+              窄卡片内整按钮随工具栏换行，不压缩按钮文字。 */}
+          <div className="wb-actions ui-toolbar-row">
             <button
               type="button"
               className="btn primary"

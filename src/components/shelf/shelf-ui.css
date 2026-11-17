@@ -74,6 +74,31 @@
   flex: 0 0 auto;
 }
 
+/* 中窄内容区（≤560px）：工具条允许换行，搜索框独占下一行；
+   各操作按钮不被互相压扁，功能入口不丢。 */
+@container shelf-panel (max-width: 560px) {
+  .shelf-workspace .shelf-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .shelf-workspace .shelf-toolbar .shelf-search {
+    flex-basis: 100%;
+    order: 99;
+  }
+}
+
+/* 文件操作内嵌面板：窄内容区两列堆叠，列宽不被 220px 最小宽撑破。 */
+@container shelf-panel (max-width: 480px) {
+  .shelf-workspace .shelf-fileop-col {
+    min-width: 0;
+    flex-basis: 100%;
+  }
+
+  .shelf-workspace .shelf-cleanup-row {
+    flex-wrap: wrap;
+  }
+}
+
 /* ── 激活筛选摘要：只在有筛选时占一行，横向滚动不撑破 ── */
 .shelf-active-filters {
   display: flex;
@@ -194,7 +219,7 @@
 .shelf-workspace .shelf-selectbar {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 4px;
   margin: 4px 14px 0;
   padding: 6px 8px;
@@ -209,6 +234,7 @@
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .shelf-workspace .shelf-selectbar .flex-spacer {
@@ -761,6 +787,12 @@
   font-size: 11px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+}
+
+/* 灯箱动作较多：窄视口允许动作组换行，按钮不被裁切或重叠。 */
+.shelf-lightbox-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .shelf-lightbox-sep {

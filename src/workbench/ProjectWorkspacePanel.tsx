@@ -557,7 +557,7 @@ export default function ProjectWorkspacePanel({
             {ctx.items.length === 0 && <div className="ws-empty">暂无事项</div>}
             {ctx.items.slice(0, 6).map((it) => (
               <div key={it.id} className="ws-row">
-                <span className="ws-flex">{it.title}</span>
+                <span className="ws-flex" title={it.title}>{it.title}</span>
                 {it.stage && <span className="ws-badge">{it.stage}</span>}
                 <span className="ws-badge">{ITEM_STATUS_LABEL[it.status] ?? it.status}</span>
               </div>
@@ -575,7 +575,7 @@ export default function ProjectWorkspacePanel({
             {ctx.links.length === 0 && <div className="ws-empty">暂无关联任务</div>}
             {ctx.links.slice(0, 6).map((l) => (
               <div key={l.taskId} className="ws-row">
-                <span className="ws-flex">{l.title}</span>
+                <span className="ws-flex" title={l.title}>{l.title}</span>
                 <span className="ws-badge">{l.status}</span>
               </div>
             ))}
@@ -681,7 +681,7 @@ export default function ProjectWorkspacePanel({
             )}
             {shots.slice(0, 6).map((it) => (
               <div key={it.id} className="ws-row">
-                <span className="ws-flex">{it.title}</span>
+                <span className="ws-flex" title={it.title}>{it.title}</span>
                 <span className="ws-badge">{ITEM_STATUS_LABEL[it.status] ?? it.status}</span>
               </div>
             ))}
@@ -705,7 +705,7 @@ export default function ProjectWorkspacePanel({
 
   if (!project) {
     return (
-      <section className="wb-project wb-project-empty" aria-label="项目工作空间">
+      <section className="wb-project wb-project-empty ui-page-frame" aria-label="项目工作空间">
         <WorkbenchPageHeader
           icon={FolderKanban}
           title="项目工作空间"
@@ -730,7 +730,7 @@ export default function ProjectWorkspacePanel({
   }
 
   return (
-    <section className="wb-project" aria-label="项目工作空间" aria-busy={ctx.status === "loading"}>
+    <section className="wb-project ui-page-frame" aria-label="项目工作空间" aria-busy={ctx.status === "loading"}>
       {/* 项目页头（2026-11-15 统一为 WorkbenchPageHeader）：项目名作标题、
           登记信息作副标题、类型与状态作 meta，避免「页面标题 + 项目名」两层大标题。 */}
       <WorkbenchPageHeader
@@ -747,7 +747,14 @@ export default function ProjectWorkspacePanel({
         subtitle={
           <>
             事项 {ctx.items.length} · 关联任务 {ctx.links.length}
-            {project.rootPath ? ` · 根目录 ${project.rootPath}` : " · 未设置根目录"}
+            {project.rootPath ? (
+              <>
+                {" · 根目录 "}
+                <span className="ws-path">{project.rootPath}</span>
+              </>
+            ) : (
+              " · 未设置根目录"
+            )}
           </>
         }
         actions={
@@ -771,7 +778,7 @@ export default function ProjectWorkspacePanel({
         </div>
       )}
 
-      <div className="ws-tabs" role="tablist" aria-label="工作空间模块">
+      <div className="ws-tabs ui-toolbar-row" role="tablist" aria-label="工作空间模块">
         {modules.map((m) => (
           <button
             key={m.id}
@@ -857,7 +864,7 @@ export default function ProjectWorkspacePanel({
               </p>
             )}
           </section>
-          <div className="ws-grid">
+          <div className="ws-overview-grid ui-adaptive-grid">
             {profile.homeCards.map((card) => {
               const cap = WORKSPACE_CAPABILITIES[card.capability];
               return (
@@ -908,7 +915,7 @@ export default function ProjectWorkspacePanel({
           <div className="ws-list">
             {ctx.items.map((it) => (
               <div key={it.id} className="ws-row">
-                <span className="ws-flex">{it.title}</span>
+                <span className="ws-flex" title={it.title}>{it.title}</span>
                 {it.stage && <span className="ws-badge">{it.stage}</span>}
                 <button
                   className="ws-btn"
@@ -989,7 +996,7 @@ export default function ProjectWorkspacePanel({
           <div className="ws-list">
             {ctx.links.map((l: WorkspaceTaskLink) => (
               <div key={l.taskId} className="ws-row">
-                <span className="ws-flex">{l.title}</span>
+                <span className="ws-flex" title={l.title}>{l.title}</span>
                 <span className="ws-badge">{l.status}</span>
                 <button className="ws-btn" onClick={() => void removeTaskLink(l.taskId)}>
                   <Link2 size={12} /> 取消关联
@@ -1006,7 +1013,7 @@ export default function ProjectWorkspacePanel({
             {!picker.loading &&
               picker.tasks.map((t) => (
                 <div key={t.id} className="ws-row">
-                  <span className="ws-flex">{t.title}</span>
+                  <span className="ws-flex" title={t.title}>{t.title}</span>
                   {t.status === "completed" && <span className="ws-badge">已完成</span>}
                   <button className="ws-btn" onClick={() => void addTaskLink(t.id)}>
                     <Plus size={12} /> 关联

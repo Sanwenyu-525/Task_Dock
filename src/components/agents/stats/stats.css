@@ -9,6 +9,7 @@
 
 .astats-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -18,9 +19,14 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-width: 0;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.astats-head > .btn {
+  flex: 0 0 auto;
 }
 
 .astats-filters {
@@ -160,7 +166,11 @@
 
 .astats-chart {
   display: block;
-  max-width: none;
+  /* 随容器宽度缩放（viewBox 保持比例）；min-width 保证柱体可读，
+     更窄时由外层 wrap 横向滚动，而不是把柱子压成不可见。 */
+  width: 100%;
+  height: auto;
+  min-width: 280px;
 }
 
 .astats-grid {
@@ -292,9 +302,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 窄窗（≤400px，含 320 与 240 最小窗宽）：卡片单列、来源表列距收紧并允许表头换行，
-   数值仍单行省略，不撑破面板；趋势图保持横向滚动。 */
-@media (max-width: 400px) {
+/* 窄内容区（≤400px，含 320 与 240 最小窗宽）：卡片单列、来源表列距收紧并允许表头换行，
+   数值仍单行省略，不撑破面板；趋势图保持横向滚动。按内容容器宽度查询（wb-content 祖先），
+   不按窗口宽度断点。 */
+@container wb-content (max-width: 400px) {
   .astats-cards {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -4,7 +4,7 @@
 //! 打开文章不再替换整个列表；窄窗由 CSS 降级为上下分区。
 //! 无后台任务：搜索是纯函数、最近浏览只在打开文章时写一次 localStorage。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, BookOpen, Clock3, LifeBuoy } from "lucide-react";
 import { SearchField, StatusBadge } from "../ui";
 import { useLocale } from "../../hooks/useLocale";
@@ -43,6 +43,8 @@ export default function HelpCenterPanel() {
   const [categoryId, setCategoryId] = useState<HelpCategoryId>("quickstart");
   const [openId, setOpenId] = useState<string | null>(null);
   const [recentIds, setRecentIds] = useState<string[]>(() => readRecentArticleIds());
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const readerScrollRef = useRef<HTMLDivElement | null>(null);
 
   // 消费一次性意图（ContextHelpButton「查看完整教程」等）：打开指定文章。
   // 请求取到即清除，避免返回本页时被旧 token 重复打开。
@@ -80,8 +82,18 @@ export default function HelpCenterPanel() {
     HELP_CATEGORY_ORDER.map((id) => [id, articlesByCategory(id).length] as const),
   );
 
+  // 滚动容器在宽/窄布局下复用同一 DOM 节点：切换分类或搜索词后列表回到顶部；
+  // 切换文章后阅读区回到顶部，避免「切到下一篇仍停在上一篇的中间位置」。
+  useEffect(() => {
+    if (listScrollRef.current) listScrollRef.current.scrollTop = 0;
+  }, [categoryId, normalizedQuery]);
+
+  useEffect(() => {
+    if (readerScrollRef.current) readerScrollRef.current.scrollTop = 0;
+  }, [openId]);
+
   return (
-    <div className={`help-panel page-fill${openArticle ? " has-article" : ""}`}>
+    <div className={`help-panel ui-page-frame page-fill${openArticle ? " has-article" : ""}`}>
       <WorkbenchPageHeader
         icon={LifeBuoy}
         title={t("help.title")}
@@ -186,7 +198,7 @@ export default function HelpCenterPanel() {
                 : categoryArticles.length}
             </span>
           </div>
-          <div className="help-list-scroll page-scroll">
+          <div className="help-list-scroll page-scroll" ref={listScrollRef}>
             {normalizedQuery && searchResults.length === 0 ? (
               <p className="help-empty" role="status">
                 {t("help.searchEmpty", { query: normalizedQuery })}
@@ -229,7 +241,7 @@ export default function HelpCenterPanel() {
                   {t("help.backToList")}
                 </button>
               </div>
-              <div className="help-reader-scroll page-scroll">
+              <div className="help-reader-scroll page-scroll" ref={readerScrollRef}>
                 <div className="help-article">
                   <HelpArticleBody article={openArticle} locale={locale} />
                   {openArticle.relatedFeatureIds.length > 0 && (

@@ -1,0 +1,65 @@
+/* 开发工作台页面专属样式（A02，2026-11-17 响应式修复）。
+ *
+ * 仅被 DevWorkbenchPanel.tsx 引用；不追加到 workbench.css，不进入全局样式。
+ * 网格列数与容器档位仍由外壳样式层 workbench.css 的 @container wb-content 负责；
+ * 本文件只补页面层接入：查询容器挂钩、主滚动分层、动作工具栏换行兜底、
+ * 窄内容区最小宽度与长文本防溢出。
+ *
+ * 纪律：按内容容器宽度响应，不写窗口媒体查询；不整体缩放；不用 overflow:hidden
+ * 裁切内容；不复制外壳已有的网格断点规则。
+ */
+
+/* 页面根挂钩类：同时承担 .ui-page-frame 查询容器与本文件作用域前缀。 */
+.a02-dev-workbench {
+  min-width: 0;
+}
+
+/* 主滚动分层：页头留在 flex-shrink:0 槽位，卡片栈在 .page-scroll 内独立滚动。 */
+.a02-dev-workbench > .page-scroll.wb-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.a02-dev-workbench .wb-dev-stack {
+  min-width: 0;
+}
+
+/* 下一步动作组（继续工作 / 打开上下文 / 查看 Agent / 编辑 / 完成）：
+ * 窄卡片内整按钮作为单位换行，按钮文字不被压缩、不逐字折行。 */
+.a02-dev-workbench .wb-actions.ui-toolbar-row {
+  flex-wrap: wrap;
+  gap: var(--layout-gap-compact, 6px);
+}
+
+.a02-dev-workbench .wb-actions .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 项目选择行：标签 + 选择器在窄内容区允许换行；选择器保留最小可用宽度，
+ * 不被标签压成截断条。（host 层布局兜底；选择器内部行为归 devwork 组件。） */
+.a02-dev-workbench .wb-dev-select-row {
+  flex-wrap: wrap;
+}
+
+.a02-dev-workbench .wb-dev-select {
+  flex: 1 1 160px;
+}
+
+/* 自适应栅格：最小列宽用 min(100%, …) 兜底，卡片比最小列宽更窄时收成单列，
+ * 不产生横向溢出（列数仍由容器宽度自然算出，不写断点）。 */
+.a02-dev-workbench .wb-quick-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+}
+
+.a02-dev-workbench .wb-links {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+
+/* 可折行的辅助文本：超长 token 允许断点折行兜底，避免单个长路径撑破卡片网格。
+ * 标题主链路仍走省略号（nowrap + ellipsis），不在此覆盖。 */
+.a02-dev-workbench .wb-worksite-meta,
+.a02-dev-workbench .wb-accept-evidence-line {
+  overflow-wrap: anywhere;
+}

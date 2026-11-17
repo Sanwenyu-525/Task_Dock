@@ -20,6 +20,8 @@
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
+  /* 空间不足时允许换行；输入框/按钮按弹性基宽落到下一行，不挤成不可用宽度。 */
+  flex-wrap: wrap;
 }
 
 .voice-pack-heading > div,
@@ -85,6 +87,17 @@
   box-shadow: var(--focus-ring);
 }
 
+/* 行内表单：输入框弹性占剩余空间，按钮保持固有宽度；空间不足时整体换行。 */
+.voice-pack-input-row input {
+  flex: 1 1 160px;
+  width: auto;
+}
+
+.voice-pack-inline-form input {
+  flex: 1 1 140px;
+  width: auto;
+}
+
 .voice-pack-input-row .btn,
 .voice-pack-actions .btn,
 .voice-pack-confirm .btn,
@@ -146,6 +159,7 @@
 
 .voice-pack-inline-form {
   display: flex;
+  flex-wrap: wrap;
   gap: 5px;
   min-width: 0;
 }

@@ -26,7 +26,7 @@
   text-overflow: ellipsis;
 }
 
-@media (max-width: 480px) {
+@container ui-page (max-width: 480px) {
   .ws-game .ws-form-row > .ws-input,
   .ws-game .ws-form-row > .ws-textarea,
   .ws-game .ws-form-row > .ui-select-trigger {
