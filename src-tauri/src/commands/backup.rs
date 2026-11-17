@@ -112,6 +112,12 @@ pub const EXTENDED_TABLES: &[&str] = &[
     // Agent MCP Server（v37）：Agent 身份 → 授权/审计 → 功能会话关联（FK 依赖序）。
     "mcp_agents",
     "mcp_agent_grants",
+    // v64 资源能力授权：能力/笔记归属/文件工作区根目录都挂在 Agent 上。
+    // 2026-11-17 验收修复：此前三张表建了但漏登记备份，恢复后能力授权、笔记归属
+    // 与工作区根目录会整体丢失（不报错，属于静默数据缺失）。
+    "mcp_agent_capabilities",
+    "mcp_note_ownership",
+    "mcp_workspace_roots",
     "mcp_audit_log",
     "feature_agent_links",
     // 场景工作区（v38）：软引用 workflow 与现场快照，必须排在两者之后。
@@ -488,6 +494,32 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         "all",
         365,
         &["mcp_agents", "planning_projects"],
+        true
+    ),
+    // v64：能力 × 资源授权、笔记归属、工作区根目录。行小且属于用户配置，
+    // 快速备份全量保存；恢复顺序必须在 mcp_agents 之后。
+    rule!(
+        "mcp_agent_capabilities",
+        "agent",
+        "all",
+        366,
+        &["mcp_agents"],
+        true
+    ),
+    rule!(
+        "mcp_note_ownership",
+        "agent",
+        "all",
+        367,
+        &["mcp_agents"],
+        true
+    ),
+    rule!(
+        "mcp_workspace_roots",
+        "agent",
+        "all",
+        368,
+        &["mcp_agents"],
         true
     ),
     rule!("mcp_audit_log", "agent", "all", 370, &["mcp_agents"], true),
@@ -1055,6 +1087,9 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
     // 快速备份全量保存（审计是问责依据，不截断）
     | "mcp_agents"
     | "mcp_agent_grants"
+    | "mcp_agent_capabilities"
+    | "mcp_note_ownership"
+    | "mcp_workspace_roots"
     | "mcp_audit_log"
         | "feature_agent_links"
         | "scenarios"
@@ -3410,6 +3445,85 @@ mod tests {
         assert_eq!(read.kind, "full");
         assert!(!read.partial);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// v64 三张表（能力授权/笔记归属/工作区根目录）必须进入备份并在恢复后保持一致。
+    /// 之前只建表未登记，恢复后授权静默消失，用户不会收到任何提示。
+    #[test]
+    fn mcp_v64_authorization_tables_survive_backup_restore() {
+        let db = memdb();
+        seed_minimal(&db);
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO mcp_agents (id, agent_id, display_name, token_hash, scope, created_at, updated_at)
+                 VALUES ('agent-row-1', 'agent-1', '测试 Agent', 'hash', 'project_rw', ?1, ?1)",
+                rusqlite::params![now],
+            )?;
+            c.execute(
+                "INSERT INTO mcp_agent_capabilities (id, agent_row_id, capability, resource_id, created_at)
+                 VALUES ('cap-1', 'agent-row-1', 'tasks.write', '', ?1)",
+                rusqlite::params![now],
+            )?;
+            c.execute(
+                "INSERT INTO mcp_note_ownership (note_id, agent_row_id, created_at)
+                 VALUES ('note-owned-1', 'agent-row-1', ?1)",
+                rusqlite::params![now],
+            )?;
+            c.execute(
+                "INSERT INTO mcp_workspace_roots (id, agent_row_id, root_path, created_at)
+                 VALUES ('root-1', 'agent-row-1', 'D:\\Work\\(shared)', ?1)",
+                rusqlite::params![now],
+            )?;
+            Ok::<_, crate::error::AppError>(())
+        })
+        .unwrap();
+
+        for kind in [BackupKind::Full, BackupKind::Quick] {
+            let (_, read, dir) = write_then_read(&db, kind);
+            assert_eq!(
+                spilled_rows(&read, "mcp_agent_capabilities").len(),
+                1,
+                "{kind:?} 备份缺少能力授权"
+            );
+            assert_eq!(
+                spilled_rows(&read, "mcp_note_ownership").len(),
+                1,
+                "{kind:?} 备份缺少笔记归属"
+            );
+            assert_eq!(
+                spilled_rows(&read, "mcp_workspace_roots").len(),
+                1,
+                "{kind:?} 备份缺少工作区根目录"
+            );
+
+            let dst = memdb();
+            seed_minimal(&dst);
+            import_read(&dst, &read).unwrap();
+            dst.with_read(|c| {
+                let caps: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM mcp_agent_capabilities WHERE agent_row_id = 'agent-row-1'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let notes: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM mcp_note_ownership WHERE note_id = 'note-owned-1'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let root: String = c.query_row(
+                    "SELECT root_path FROM mcp_workspace_roots WHERE id = 'root-1'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                assert_eq!(caps, 1, "{kind:?} 恢复后能力授权丢失");
+                assert_eq!(notes, 1, "{kind:?} 恢复后笔记归属丢失");
+                assert_eq!(root, "D:\\Work\\(shared)", "{kind:?} 恢复后工作区路径改变");
+                Ok::<_, crate::error::AppError>(())
+            })
+            .unwrap();
+            std::fs::remove_dir_all(dir).ok();
+        }
     }
 
     /// 用户配置（快捷键/语言/微件）作为可选 header.config 打包：
