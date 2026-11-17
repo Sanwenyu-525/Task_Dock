@@ -1355,8 +1355,10 @@ pub fn dws_git_risk_probe_impl(
             }
 
             // 只读取改动文件清单（porcelain），限量聚合。
+            // `-uall` 展开未跟踪目录为逐文件条目：默认折叠会把整个新目录记成一条
+            // `?? dir/`，丢失文件级公共文件 / 跨任务重叠判定所需路径。
             if let Some((true, stdout)) =
-                run_git_readonly(&repo.root_path, &["status", "--porcelain"])
+                run_git_readonly(&repo.root_path, &["status", "--porcelain", "-uall"])
             {
                 for line in stdout.lines() {
                     if line.trim().is_empty() {
@@ -2210,6 +2212,18 @@ mod tests {
             .map_err(AppError::from)?;
             Ok::<_, AppError>(())
         })
+        .unwrap();
+        // dev-1 经手工关联进入本项目的仓库清单（种子弱引用为空），否则探测不到失效条目。
+        dws_task_link_save_impl(
+            &db,
+            &pa,
+            Some("task-1".into()),
+            Some("dev-1".into()),
+            None,
+            None,
+            None,
+            None,
+        )
         .unwrap();
 
         let risk = dws_git_risk_probe_impl(&db, &pa, None).unwrap();
