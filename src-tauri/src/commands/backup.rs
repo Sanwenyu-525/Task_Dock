@@ -88,7 +88,6 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "shelf_groups",
     "shelf_items",
     "shelf_task_links",
-    "shelf_project_links",
     // 暂存条目标签（v52）：只存关系，恢复晚于 shelf_items。
     "shelf_tags",
     // 暂存回收站（v53）：删除撤销的短期快照，属于本机瞬时状态。
@@ -140,6 +139,11 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "dev_acceptance_records",
     // 项目工作空间（v49）：项目 → 实例/事项 → 任务关联（外键依赖序）。
     "workspace_projects",
+    // 暂存架↔项目关联：`shelf_project_links.project_id` 是 NOT NULL + ON DELETE
+    // CASCADE 外键，指向 workspace_projects，恢复时父行必须先存在。2026-11-17
+    // 集成修复：原先排在 shelf 段（远早于本表），带 project 关联的备份会在恢复
+    // 阶段触发外键失败；现有 shelf 夹具无该表数据，所以此前未暴露。
+    "shelf_project_links",
     "workspace_instances",
     "workspace_items",
     "workspace_task_links",
@@ -1074,7 +1078,7 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         // 小说卷/章（v58）：用户创作内容，快速备份也必须全量保存（不截断正文）。
         | "novel_volumes"
         | "novel_chapters"
-        // 创作工作台五线（v59–v63，2026-11-17 集成修复）：16 张专业表此前只登记了
+        // 创作工作台五线（v59–v63，2026-11-17 集成修复）：17 张专业表此前只登记了
         // BACKUP_TABLES/EXTENDED_TABLES 与恢复依赖，**漏登记快速备份的写出策略**，
         // 使 write_bundle(Quick) 落入 other => Err("扩展表缺少备份策略")，五线
         // 的 Full/Quick 往返用例全部在写出阶段失败。这些表都是用户创作/工作产物，
