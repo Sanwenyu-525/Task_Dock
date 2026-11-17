@@ -361,3 +361,116 @@ fn deleting_event_soft_deletes_event_and_removes_children_with_tombstones() {
     })
     .unwrap();
 }
+
+#[test]
+fn currency_totals_never_sum_different_currencies() {
+    // 商品 A：CNY 100.00；商品 B：USD 100.00。正确结果是两行，而不是 CNY 200 或 200。
+    let totals = group_currency_totals(&[
+        (Some(10_000), "CNY".into(), 2),
+        (Some(10_000), "USD".into(), 2),
+    ])
+    .unwrap();
+    assert_eq!(totals.len(), 2);
+    assert_eq!(totals[0].currency, "CNY");
+    assert_eq!(totals[0].total_price_minor, 10_000);
+    assert_eq!(totals[0].amount_scale, 2);
+    assert_eq!(totals[1].currency, "USD");
+    assert_eq!(totals[1].total_price_minor, 10_000);
+}
+
+#[test]
+fn currency_totals_respect_iso_precision_and_legacy_scales() {
+    // JPY：0 位；旧行若按 2 位存但可整除，收敛到 0 位，仍不失真。
+    let jpy = group_currency_totals(&[(Some(100), "JPY".into(), 0), (Some(500), "JPY".into(), 2)])
+        .unwrap();
+    assert_eq!(jpy[0].total_price_minor, 105);
+    assert_eq!(jpy[0].amount_scale, 0);
+
+    // 旧 JPY 行存在 0.5 日元这种 ISO 无法表示的精度：退到组内最大精度，原样展示，不四舍五入。
+    let legacy_fraction =
+        group_currency_totals(&[(Some(50), "JPY".into(), 2), (Some(1), "JPY".into(), 0)]) .unwrap();
+    assert_eq!(legacy_fraction[0].total_price_minor, 150);
+    assert_eq!(legacy_fraction[0].amount_scale, 2);
+
+    // KWD：3 位。2 位与 3 位混合必须按 3 位对齐，绝不丢千分位。
+    let kwd =
+        group_currency_totals(&[(Some(100), "KWD".into(), 2), (Some(1), "KWD".into(), 3)]).unwrap();
+    assert_eq!(kwd[0].total_price_minor, 1_001);
+    assert_eq!(kwd[0].amount_scale, 3);
+
+    // 同一币种不同精度：CNY 2 位与 3 位可精确对齐到 ISO 2 位。
+    let cny =
+        group_currency_totals(&[(Some(10_000), "CNY".into(), 2), (Some(5_000), "CNY".into(), 3)])
+            .unwrap();
+    assert_eq!(cny[0].total_price_minor, 10_500);
+    assert_eq!(cny[0].amount_scale, 2);
+}
+
+#[test]
+fn currency_totals_keep_missing_currency_separate_and_ignore_empty_amounts() {
+    let totals = group_currency_totals(&[
+        (None, "CNY".into(), 2),
+        (Some(1_200), "".into(), 2),
+        (Some(300), "CNY".into(), 2),
+    ])
+    .unwrap();
+    assert_eq!(totals.len(), 2, "空金额不参与累计，空货币单独成组");
+    assert_eq!(totals[0].currency, "CNY");
+    assert_eq!(totals[0].total_price_minor, 300);
+    assert_eq!(totals[0].item_count, 1);
+    assert_eq!(totals[1].currency, "", "未填货币不得并入 CNY");
+    assert_eq!(totals[1].total_price_minor, 1_200);
+}
+
+#[test]
+fn life_events_recent_returns_grouped_totals_from_real_rows() {
+    let db = Db::open_in_memory().unwrap();
+    let now = now_iso();
+    db.with_transaction(|conn| {
+        conn.execute(
+            "INSERT INTO life_events
+             (id, event_type, title, description, occurred_at, merchant, source, created_at, updated_at)
+             VALUES ('evt-multi', 'purchase', '混币测试', '', ?1, '', 'manual', ?2, ?2)",
+            params![parse_occurred_at("2026-11-17").unwrap(), now],
+        )?;
+        conn.execute(
+            "INSERT INTO life_event_items
+             (id, event_id, item_id, item_name_snapshot, quantity_value, quantity_unit,
+              unit_price_minor, total_price_minor, currency, amount_scale, note, created_at, updated_at)
+             VALUES ('ei-cny','evt-multi',NULL,'商品 A',NULL,'件',NULL,10000,'CNY',2,'',?1,?1)",
+            params![now],
+        )?;
+        conn.execute(
+            "INSERT INTO life_event_items
+             (id, event_id, item_id, item_name_snapshot, quantity_value, quantity_unit,
+              unit_price_minor, total_price_minor, currency, amount_scale, note, created_at, updated_at)
+             VALUES ('ei-usd','evt-multi',NULL,'商品 B',NULL,'件',NULL,10000,'USD',2,'',?1,?1)",
+            params![now],
+        )?;
+        Ok::<_, AppError>(())
+    })
+    .unwrap();
+
+    // 直接复用命令内部的分组路径：读取两条明细 → group_currency_totals。
+    db.with_read(|conn| {
+        let entries = conn
+            .prepare(
+                "SELECT total_price_minor, currency, amount_scale FROM life_event_items
+                  WHERE event_id = 'evt-multi' ORDER BY id",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    row.get::<_, Option<i64>>(2)?.unwrap_or(2),
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let totals = group_currency_totals(&entries)?;
+        assert_eq!(totals.len(), 2);
+        assert!(totals.iter().all(|total| total.total_price_minor == 10_000));
+        assert!(totals.iter().all(|total| total.total_price_minor != 20_000));
+        Ok::<_, AppError>(())
+    })
+    .unwrap();
+}

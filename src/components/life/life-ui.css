@@ -1,12 +1,14 @@
-/* 生活页布局：只使用语义 Token，不写死颜色/圆角/阴影。
-   宽窗口双栏，中窄窗口自动降为单栏；所有列表可滚动，不横向溢出。 */
+/* 生活页布局：只使用语义 Token 与共享原语，不写死颜色/圆角/阴影。
+   根节点 .life-panel 同时挂 .ui-page-frame（container-name: ui-page，只测量），
+   所有 @container 规则只作用于后代，不查询容器自身；宽窗口双栏，窄内容区
+   自动降为单栏并由主体滚动区统一滚动；列表各自独立滚动，不横向溢出。 */
 
 .life-panel {
-  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 10px;
   min-height: 0;
+  min-width: 0;
   height: 100%;
   padding: 14px 16px 16px;
   overflow: hidden;
@@ -20,6 +22,7 @@
   justify-content: space-between;
   gap: 10px 16px;
   flex: none;
+  min-width: 0;
 }
 
 .life-head-main {
@@ -67,7 +70,7 @@
 .life-search {
   flex: 1 1 220px;
   max-width: 340px;
-  min-width: 180px;
+  min-width: 0;
 }
 
 .life-actions {
@@ -81,10 +84,11 @@
   white-space: nowrap;
 }
 
+/* 概览统计卡片区：列数交给 .ui-adaptive-grid 按容器宽度自然算出，
+   这里只覆盖本页密度的最小卡宽与间距。 */
 .life-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
-  gap: 8px;
+  --ui-card-min: 105px;
+  --ui-grid-gap: 8px;
   flex: none;
 }
 
@@ -116,6 +120,7 @@
   grid-template-columns: minmax(0, 1.35fr) minmax(310px, 1fr);
   gap: 10px;
   min-height: 0;
+  min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
 }
@@ -168,6 +173,7 @@
   font-size: 11.5px;
   line-height: 1.45;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .life-section-head .life-muted {
@@ -269,6 +275,8 @@
   white-space: nowrap;
 }
 
+/* 金额是核心信息：不设最大宽度、不省略号，窄行内允许整行换行兜底，不被挤掉。
+   多币种按行展示（pre-line），每一行只包含同一币种的金额。 */
 .life-event-amount,
 .life-item-price,
 .life-history-amount {
@@ -276,13 +284,9 @@
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   color: var(--text-primary);
-}
-
-.life-event-amount {
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
+  text-align: right;
+  line-height: 1.4;
 }
 
 .life-task-list li {
@@ -323,6 +327,7 @@
 
 .life-task-time {
   flex: none;
+  min-width: 0;
   max-width: 45%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -490,10 +495,11 @@
 }
 
 .life-history-list li {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 8px 2px;
+  padding: 8px 56px 8px 2px;
   border-bottom: 1px solid var(--border-subtle);
   min-width: 0;
 }
@@ -531,11 +537,6 @@
   position: absolute;
   top: 6px;
   right: 0;
-}
-
-.life-history-list li {
-  position: relative;
-  padding-right: 56px;
 }
 
 .life-detail-links {
@@ -610,7 +611,7 @@
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  flex: 1 1 0;
+  flex: 1 1 160px;
 }
 
 .life-field > span {
@@ -618,14 +619,17 @@
   color: var(--text-secondary);
 }
 
+/* 表单行允许换行：弹窗经 portal 挂到 body，不经过页面容器查询，窄对话框内
+   字段按最小宽度折行，不把输入框压成截断条。 */
 .life-field-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
 }
 
 .life-field-row.three .life-field:nth-child(1) {
-  flex: 0.8 1 0;
+  flex: 0.8 1 160px;
 }
 
 .life-textarea {
@@ -684,8 +688,10 @@
   font-size: 12px;
 }
 
-/* 中窄窗口：双栏保持但压缩右侧；窄窗口切单栏并由外层滚动。 */
-@container (max-width: 1080px) {
+/* ── 窄内容区降级（容器查询，只作用于 .ui-page-frame 的后代）──────────────────
+   断点按内容区宽度，不按窗口宽度；容器自身布局不在此查询内修改。 */
+
+@container ui-page (max-width: 1080px) {
   .life-body {
     grid-template-columns: minmax(0, 1.15fr) minmax(270px, 0.85fr);
   }
@@ -695,17 +701,11 @@
   }
 }
 
-@container (max-width: 860px) {
-  .life-panel {
-    overflow: auto;
-    height: auto;
-    min-height: 100%;
-  }
-
+@container ui-page (max-width: 860px) {
   .life-body {
     display: flex;
     flex-direction: column;
-    overflow: visible;
+    overflow: auto;
   }
 
   .life-main,
@@ -714,16 +714,13 @@
     padding-right: 0;
   }
 
+  /* 窄内容区：详情/商品列表下置到主区块之前，随主体滚动区统一滚动。 */
   .life-side {
     order: -1;
   }
 }
 
-@container (max-width: 560px) {
-  .life-panel {
-    padding: 12px 12px 14px;
-  }
-
+@container ui-page (max-width: 560px) {
   .life-head-main {
     flex-basis: 100%;
   }
@@ -741,20 +738,8 @@
     flex: 1 1 auto;
   }
 
-  .life-field-row {
-    flex-direction: column;
-  }
-
-  .life-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .life-event-row {
     flex-wrap: wrap;
-  }
-
-  .life-event-amount {
-    max-width: none;
   }
 }
 

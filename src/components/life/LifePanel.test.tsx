@@ -1,0 +1,326 @@
+/**
+ * @vitest-environment jsdom
+ */
+//! 生活页（A06）页面级结构与交互测试：
+//! - 响应式原语接入标记（.ui-page-frame / .ui-toolbar-row / .ui-adaptive-grid）；
+//! - 搜索输入受控，关键词经防抖后进入查询；
+//! - 记录 ↔ 详情子区块切换后主区块内容与筛选保留；
+//! - 列表行内金额、票据状态徽标、提醒时间等关键节点结构存在。
+//!
+//! 边界：jsdom 不计算真实 CSS 布局，这里只断言类名 / ARIA / 节点结构与受控输入行为，
+//! 不断言列宽、换行或可见性等布局结论；后端命令全部 mock，store 用真实实例。
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+import {
+  lifeDocumentLinksList,
+  lifeEventDetail,
+  lifeEventsRecent,
+  lifeItemHistory,
+  lifeItemsList,
+  lifeOverview,
+  type LifeDocumentLink,
+  type LifeEventDetail,
+  type LifeEventSummary,
+  type LifeItemHistory,
+  type LifeItemSummary,
+  type LifeOverview,
+} from "../../lib/lifeBridge";
+import { listTasks, type Task } from "../../lib/bridge";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { useGlobalSearchStore } from "../../store/useGlobalSearchStore";
+import { useUiStore } from "../../store/useUiStore";
+import LifePanel from "./LifePanel";
+
+vi.mock("../../lib/lifeBridge", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/lifeBridge")>();
+  return {
+    ...actual,
+    lifeItemsList: vi.fn(async () => []),
+    lifeItemHistory: vi.fn(async () => null),
+    lifeEventsRecent: vi.fn(async () => []),
+    lifeEventDetail: vi.fn(async () => null),
+    lifeEventCreate: vi.fn(),
+    lifeEventUpdate: vi.fn(),
+    lifeEventDelete: vi.fn(),
+    lifeOverview: vi.fn(async () => null),
+    lifeDocumentLinkCreate: vi.fn(),
+    lifeDocumentLinkDelete: vi.fn(),
+    lifeDocumentLinksList: vi.fn(async () => []),
+  };
+});
+
+vi.mock("../../lib/bridge", () => ({
+  listTasks: vi.fn(async () => []),
+  shelfList: vi.fn(async () => ({ items: [] })),
+  shelfGetItem: vi.fn(),
+  shelfOpenItem: vi.fn(),
+  toggleTask: vi.fn(),
+}));
+
+vi.mock("../shelf/ShelfImageLightbox", () => ({
+  default: () => null,
+}));
+
+const ITEM: LifeItemSummary = {
+  id: "item-1",
+  name: "大米",
+  normalized_name: "大米",
+  category: "主食",
+  note: "",
+  aliases: [],
+  purchase_count: 3,
+  last_purchase_at: "2026-11-10T08:00:00.000Z",
+  last_quantity_value: "5",
+  last_quantity_unit: "kg",
+  last_unit_price_minor: null,
+  last_total_price_minor: 4800,
+  last_currency: "CNY",
+  last_amount_scale: 2,
+  interval_days: 12,
+  updated_at: "2026-11-10T08:00:00.000Z",
+};
+
+const LINK: LifeDocumentLink = {
+  id: "link-1",
+  owner_type: "event",
+  owner_id: "ev-1",
+  document_ref: "shelf-1",
+  document_source: "shelf_item",
+  document_name: "购物小票.jpg",
+  mime: "",
+  byte_size: 1024,
+  remote_ref: null,
+  remote_source: null,
+  transfer_state: "local",
+  created_at: "2026-11-10T08:00:00.000Z",
+  updated_at: "2026-11-10T08:00:00.000Z",
+};
+
+const EVENT: LifeEventSummary = {
+  id: "ev-1",
+  event_type: "purchase",
+  title: "",
+  description: "",
+  occurred_at: "2026-11-10T08:00:00.000Z",
+  merchant: "超市",
+  item_names: ["大米"],
+  total_price_minor: 4800,
+  currency: "CNY",
+  amount_scale: 2,
+  totals: [
+    { currency: "CNY", amount_scale: 2, total_price_minor: 4800, item_count: 1 },
+  ],
+  link_count: 1,
+};
+
+const OVERVIEW: LifeOverview = {
+  item_count: 1,
+  purchase_count: 3,
+  receipt_count: 1,
+  purchases_last_30_days: 2,
+};
+
+const TASK: Task = {
+  id: "task-1",
+  title: "交水电费",
+  description: "",
+  priority: 2,
+  status: "pending",
+  category: "生活",
+  tags: [],
+  due_at: "2026-11-20T00:00:00.000Z",
+  remind_at: null,
+  advance_minutes: 30,
+  recurrence: null,
+  created_at: "2026-11-01T00:00:00.000Z",
+  updated_at: "2026-11-01T00:00:00.000Z",
+  completed_at: null,
+  linked_agents: 0,
+};
+
+const EVENT_DETAIL: LifeEventDetail = {
+  event: {
+    id: "ev-1",
+    event_type: "purchase",
+    title: "大米",
+    description: "",
+    occurred_at: "2026-11-10T08:00:00.000Z",
+    merchant: "超市",
+    source: "manual",
+    created_at: "2026-11-10T08:00:00.000Z",
+    updated_at: "2026-11-10T08:00:00.000Z",
+  },
+  items: [
+    {
+      id: "ei-1",
+      event_id: "ev-1",
+      item_id: "item-1",
+      item_name_snapshot: "大米",
+      quantity_value: "5",
+      quantity_unit: "kg",
+      unit_price_minor: null,
+      total_price_minor: 4800,
+      currency: "CNY",
+      amount_scale: 2,
+      note: "",
+    },
+  ],
+  links: [LINK],
+};
+
+const HISTORY: LifeItemHistory = {
+  item: ITEM,
+  purchases: [
+    {
+      event_id: "ev-1",
+      item_row_id: "row-1",
+      occurred_at: "2026-11-10T08:00:00.000Z",
+      created_at: "2026-11-10T08:00:00.000Z",
+      item_name: "大米",
+      quantity_value: "5",
+      quantity_unit: "kg",
+      unit_price_minor: null,
+      total_price_minor: 4800,
+      currency: "CNY",
+      amount_scale: 2,
+      merchant: "超市",
+      note: "",
+      event_note: "",
+      links: [LINK],
+    },
+  ],
+  total_count: 1,
+};
+
+function seed() {
+  vi.mocked(lifeItemsList).mockResolvedValue([ITEM]);
+  vi.mocked(lifeOverview).mockResolvedValue(OVERVIEW);
+  vi.mocked(lifeEventsRecent).mockResolvedValue([EVENT]);
+  vi.mocked(lifeDocumentLinksList).mockResolvedValue([LINK]);
+  vi.mocked(listTasks).mockResolvedValue([TASK]);
+  vi.mocked(lifeEventDetail).mockResolvedValue(EVENT_DETAIL);
+  vi.mocked(lifeItemHistory).mockResolvedValue(HISTORY);
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  useSettingsStore.setState({ settings: null });
+  useGlobalSearchStore.setState({ pendingLocate: null });
+  useUiStore.setState({ showToast: vi.fn(), openEditor: vi.fn() });
+  seed();
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+describe("LifePanel 生活页（A06 响应式）", () => {
+  it("根节点接入页面查询容器，工具栏与统计卡片使用共享原语", async () => {
+    render(<LifePanel />);
+
+    const root = document.querySelector(".life-panel");
+    expect(root).not.toBeNull();
+    expect(root?.classList.contains("ui-page-frame")).toBe(true);
+
+    const head = document.querySelector(".life-head");
+    expect(head?.classList.contains("ui-toolbar-row")).toBe(true);
+    expect(document.querySelector(".life-head .ui-toolbar-spacer")).not.toBeNull();
+
+    const stats = document.querySelector(".life-stats");
+    expect(stats?.classList.contains("ui-adaptive-grid")).toBe(true);
+
+    // 默认侧栏为商品列表，ARIA 标记随视图切换。
+    await screen.findAllByText("大米");
+    expect(screen.getByLabelText("商品列表")).not.toBeNull();
+  });
+
+  it("搜索输入受控：键入后输入框回显，防抖后按关键词查询", async () => {
+    render(<LifePanel />);
+    await screen.findAllByText("大米");
+
+    const search = screen.getByLabelText("搜索商品或购买记录") as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "大米" } });
+    expect(search.value).toBe("大米");
+
+    await waitFor(() => {
+      expect(lifeItemsList).toHaveBeenCalledWith(expect.objectContaining({ query: "大米" }));
+    });
+  });
+
+  it("记录切换到详情后主区块与筛选保留，详情面板带可关闭标识", async () => {
+    render(<LifePanel />);
+    await screen.findAllByText("大米");
+    const search = (await screen.findByLabelText("搜索商品或购买记录")) as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "大米" } });
+
+    const eventRow = await waitFor(() => {
+      const row = document.querySelector<HTMLButtonElement>(".life-event-row");
+      expect(row).not.toBeNull();
+      return row as HTMLButtonElement;
+    });
+    fireEvent.click(eventRow);
+
+    const aside = await screen.findByLabelText("生活详情");
+    expect(aside).not.toBeNull();
+    expect(lifeEventDetail).toHaveBeenCalledWith("ev-1");
+
+    // 主区块三个分组标题仍在，筛选关键词未被切换清掉。
+    expect(screen.getByRole("heading", { name: "最近购买" })).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "生活待办" })).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "票据资料" })).not.toBeNull();
+    expect((screen.getByLabelText("搜索商品或购买记录") as HTMLInputElement).value).toBe("大米");
+
+    const closeBtn = screen.getByRole("button", { name: "关闭详情" });
+    expect(closeBtn).not.toBeNull();
+  });
+
+  it("列表行保留金额、票据状态徽标与提醒时间等关键节点（结构标记）", async () => {
+    render(<LifePanel />);
+    await screen.findAllByText("大米");
+
+    // 最近购买行：日期 / 标题 / 金额节点共存，金额节点不被打隐藏标记。
+    const eventRow = document.querySelector(".life-event-row");
+    expect(eventRow?.querySelector(".life-event-date")).not.toBeNull();
+    expect(eventRow?.querySelector(".life-event-title")).not.toBeNull();
+    expect(eventRow?.querySelector(".life-event-amount")).not.toBeNull();
+
+    // 票据行：文件名 + 状态徽标共存。
+    const receiptRow = document.querySelector(".life-receipt-row");
+    expect(receiptRow?.querySelector(".life-receipt-name")).not.toBeNull();
+    expect(receiptRow?.querySelector(".life-chip")).not.toBeNull();
+
+    // 提醒行：勾选按钮 / 标题 / 时间节点共存。
+    const taskRow = document.querySelector(".life-task-list li");
+    expect(taskRow?.querySelector(".life-task-check")).not.toBeNull();
+    expect(taskRow?.querySelector(".life-task-title")).not.toBeNull();
+    expect(taskRow?.querySelector(".life-task-time")).not.toBeNull();
+  });
+
+  it("多币种事件按币种分行展示，绝不合并成一个总额", async () => {
+    const mixed: LifeEventSummary = {
+      ...EVENT,
+      id: "ev-mixed",
+      title: "混币购买",
+      total_price_minor: null,
+      currency: "",
+      totals: [
+        { currency: "CNY", amount_scale: 2, total_price_minor: 10_000, item_count: 1 },
+        { currency: "USD", amount_scale: 2, total_price_minor: 10_000, item_count: 1 },
+      ],
+    };
+    vi.mocked(lifeEventsRecent).mockResolvedValue([mixed]);
+    render(<LifePanel />);
+    await waitFor(() => {
+      const amount = document.querySelector(".life-event-amount");
+      expect(amount?.textContent).toContain("100.00 CNY");
+      expect(amount?.textContent).toContain("100.00 USD");
+      expect(amount?.textContent).not.toContain("200.00");
+    });
+    // 两行结构：金额节点文本包含换行，CSS 以 pre-line 渲染。
+    expect(document.querySelector(".life-event-amount")?.textContent).toBe(
+      "100.00 CNY\n100.00 USD",
+    );
+  });
+});

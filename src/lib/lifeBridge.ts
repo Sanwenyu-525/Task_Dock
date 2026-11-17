@@ -100,6 +100,13 @@ export interface LifeEventDetail {
   links: LifeDocumentLink[];
 }
 
+export interface LifeCurrencyTotal {
+  currency: string;
+  amount_scale: number;
+  total_price_minor: number;
+  item_count: number;
+}
+
 export interface LifeEventSummary {
   id: string;
   event_type: "purchase" | "maintenance" | "general";
@@ -111,6 +118,8 @@ export interface LifeEventSummary {
   total_price_minor: number | null;
   currency: string;
   amount_scale: number;
+  /** 按币种分组的真实汇总；不同货币绝不直接相加。旧响应可能缺省。 */
+  totals?: LifeCurrencyTotal[];
   link_count: number;
 }
 

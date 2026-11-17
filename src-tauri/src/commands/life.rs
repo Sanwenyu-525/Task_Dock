@@ -543,6 +543,15 @@ pub struct LifeEventDetail {
     pub links: Vec<LifeDocumentLink>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CurrencyTotal {
+    /// 空串 = 原记录没有填写货币，必须单独展示，不能并入任何具体币种。
+    pub currency: String,
+    pub amount_scale: i64,
+    pub total_price_minor: i64,
+    pub item_count: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct LifeEventSummary {
     pub id: String,
@@ -552,10 +561,82 @@ pub struct LifeEventSummary {
     pub occurred_at: String,
     pub merchant: String,
     pub item_names: Vec<String>,
+    /// 单一币种时保留旧字段以兼容既有前端；多币种时为 None，由 `totals` 分行展示。
     pub total_price_minor: Option<i64>,
     pub currency: String,
     pub amount_scale: i64,
+    /// 按币种分组的真实汇总；不同货币绝不直接相加。
+    pub totals: Vec<CurrencyTotal>,
     pub link_count: i64,
+}
+
+fn convert_minor_exact(minor: i64, from_scale: i64, to_scale: i64) -> Option<i64> {
+    if from_scale == to_scale {
+        return Some(minor);
+    }
+    let diff = (to_scale - from_scale).unsigned_abs() as u32;
+    let factor = 10_i64.checked_pow(diff)?;
+    if to_scale > from_scale {
+        minor.checked_mul(factor)
+    } else if minor % factor == 0 {
+        Some(minor / factor)
+    } else {
+        None
+    }
+}
+
+/// 按币种分组汇总金额。规则与移动端 `groupLifeCurrencyTotals` 完全一致：
+/// - 不同货币绝不直接相加，也不做汇率折算；
+/// - 同币种优先收敛到 ISO 精度，旧数据无法整除时退到组内最大精度；
+/// - 空货币单独一组；金额为空的行不参与累计。
+fn group_currency_totals(entries: &[(Option<i64>, String, i64)]) -> AppResult<Vec<CurrencyTotal>> {
+    use std::collections::BTreeMap;
+
+    let mut groups: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
+    for (total, currency, scale) in entries {
+        let Some(total) = total else { continue };
+        let code = currency.trim().to_uppercase();
+        let safe_scale = if (0..=3).contains(scale) { *scale } else { 2 };
+        groups.entry(code).or_default().push((*total, safe_scale));
+    }
+
+    let mut totals = Vec::with_capacity(groups.len());
+    for (currency, rows) in groups {
+        let max_scale = rows.iter().map(|(_, scale)| *scale).max().unwrap_or(2);
+        let mut target_scale = max_scale;
+        if !currency.is_empty() {
+            if let Ok(canonical) = currency_scale(&currency) {
+                let convertible = rows
+                    .iter()
+                    .all(|(total, scale)| convert_minor_exact(*total, *scale, canonical).is_some());
+                if convertible {
+                    target_scale = canonical;
+                }
+            }
+        }
+        let mut sum = 0_i64;
+        for (total, scale) in &rows {
+            let converted = convert_minor_exact(*total, *scale, target_scale)
+                .ok_or_else(|| AppError::Validation("金额累计超出范围".into()))?;
+            sum = sum
+                .checked_add(converted)
+                .ok_or_else(|| AppError::Validation("金额累计超出范围".into()))?;
+        }
+        totals.push(CurrencyTotal {
+            currency,
+            amount_scale: target_scale,
+            total_price_minor: sum,
+            item_count: rows.len() as i64,
+        });
+    }
+    // BTreeMap 会把空串排在最前；界面与其他端统一为「有货币在前，空货币最后」。
+    totals.sort_by(|left, right| match (left.currency.is_empty(), right.currency.is_empty()) {
+        (false, false) => left.currency.cmp(&right.currency),
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+    });
+    Ok(totals)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1000,10 +1081,6 @@ pub fn life_events_recent(
             "SELECT e.id, e.event_type, e.title, e.description, e.occurred_at, e.merchant,
                     (SELECT GROUP_CONCAT(ei.item_name_snapshot, '、')
                        FROM life_event_items ei WHERE ei.event_id = e.id),
-                    (SELECT SUM(COALESCE(ei.total_price_minor, 0))
-                       FROM life_event_items ei WHERE ei.event_id = e.id),
-                    (SELECT MAX(ei.currency) FROM life_event_items ei WHERE ei.event_id = e.id),
-                    (SELECT MAX(ei.amount_scale) FROM life_event_items ei WHERE ei.event_id = e.id),
                     (SELECT COUNT(*) FROM life_document_links l
                        WHERE l.owner_type = 'event' AND l.owner_id = e.id AND l.deleted_at IS NULL)
              FROM life_events e
@@ -1011,7 +1088,7 @@ pub fn life_events_recent(
              ORDER BY e.occurred_at DESC, e.created_at DESC, e.id DESC
              LIMIT ?2",
         )?;
-        let rows = stmt
+        let mut rows = stmt
             .query_map(params![event_type, limit], |row| {
                 let names: Option<String> = row.get(6)?;
                 Ok(LifeEventSummary {
@@ -1027,13 +1104,40 @@ pub fn life_events_recent(
                         .filter(|s| !s.is_empty())
                         .map(|s| s.to_string())
                         .collect(),
-                    total_price_minor: row.get(7)?,
-                    currency: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
-                    amount_scale: row.get::<_, Option<i64>>(9)?.unwrap_or(2),
-                    link_count: row.get::<_, Option<i64>>(10)?.unwrap_or(0),
+                    total_price_minor: None,
+                    currency: String::new(),
+                    amount_scale: 2,
+                    totals: Vec::new(),
+                    link_count: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+
+        // 金额按币种在 Rust 侧分组，不在 SQL 里 SUM/MAX：SQL 无法表达「不同货币不可相加」。
+        // 事件上限 100，逐事件读取明细是本地小查询，换取规则可测试、可解释。
+        let mut items_stmt = conn.prepare(
+            "SELECT total_price_minor, currency, amount_scale
+               FROM life_event_items WHERE event_id = ?1",
+        )?;
+        for summary in &mut rows {
+            let entries = items_stmt
+                .query_map(params![summary.id], |row| {
+                    Ok((
+                        row.get::<_, Option<i64>>(0)?,
+                        row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        row.get::<_, Option<i64>>(2)?.unwrap_or(2),
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            summary.totals = group_currency_totals(&entries)?;
+            if summary.totals.len() == 1 {
+                let only = &summary.totals[0];
+                summary.total_price_minor = Some(only.total_price_minor);
+                summary.currency = only.currency.clone();
+                summary.amount_scale = only.amount_scale;
+            }
+        }
         Ok(rows)
     })
 }

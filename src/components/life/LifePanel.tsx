@@ -37,6 +37,7 @@ import {
   lifeOverview,
   formatLifeDate,
   formatMoneyMinor,
+  type LifeCurrencyTotal,
   type LifeDocumentLink,
   type LifeEventDetail,
   type LifeEventInput,
@@ -72,6 +73,20 @@ const CURRENCY_OPTIONS = [
   { value: "HKD", label: "HKD 港币" },
   { value: "KWD", label: "KWD 科威特第纳尔（3 位小数）" },
 ];
+
+/** 单条记录金额展示：单币种一行；多币种逐行列出，绝不把不同货币合成一个数。 */
+function eventAmountText(event: LifeEventSummary): string {
+  const totals: LifeCurrencyTotal[] = event.totals ?? [];
+  if (totals.length > 0) {
+    return totals
+      .map((total) => {
+        const amount = formatMoneyMinor(total.total_price_minor, total.currency, total.amount_scale);
+        return total.currency ? amount : `未标注货币 ${amount}`;
+      })
+      .join("\n");
+  }
+  return formatMoneyMinor(event.total_price_minor, event.currency, event.amount_scale) || "未记金额";
+}
 
 interface PurchaseForm {
   mode: "create" | "edit";
@@ -538,8 +553,8 @@ export default function LifePanel() {
   const showDetail = Boolean(selected || selectedEvent);
 
   return (
-    <div className="life-panel page-fill">
-      <header className="life-head">
+    <div className="life-panel page-fill ui-page-frame">
+      <header className="life-head ui-toolbar-row">
         <div className="life-head-main">
           <div className="life-title">
             <span className="life-title-icon" aria-hidden="true">
@@ -558,6 +573,7 @@ export default function LifePanel() {
             className="life-search"
           />
         </div>
+        <span className="ui-toolbar-spacer" aria-hidden="true" />
         <div className="life-actions">
           <button type="button" className="btn sm primary" onClick={openCreate}>
             <Plus size={13} aria-hidden="true" /> 记录购买
@@ -581,7 +597,7 @@ export default function LifePanel() {
         </div>
       )}
 
-      <div className="life-stats" aria-label="生活概览">
+      <div className="life-stats ui-adaptive-grid" aria-label="生活概览">
         <div className="life-stat">
           <span>商品</span>
           <strong>{overview?.item_count ?? 0}</strong>
@@ -634,9 +650,7 @@ export default function LifePanel() {
                             .join(" · ") || "购买记录"}
                         </span>
                       </span>
-                      <span className="life-event-amount">
-                        {formatMoneyMinor(event.total_price_minor, event.currency, event.amount_scale)}
-                      </span>
+                      <span className="life-event-amount">{eventAmountText(event)}</span>
                       <ChevronRight size={13} aria-hidden="true" />
                     </button>
                   </li>
