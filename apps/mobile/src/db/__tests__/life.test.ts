@@ -12,6 +12,7 @@ import {
   getItemHistory,
   listDocumentLinks,
   listItems,
+  markDocumentFileUploaded,
   markDocumentUploaded,
   searchLife,
 } from "../life";
@@ -225,6 +226,50 @@ describe("生活票据关联", () => {
     expect(detail?.links[0]?.documentSource).toBe("capture_asset");
     expect(detail?.links[0]?.documentRef).toBe("asset-plain");
     expect(detail?.links[0]?.transferState).toBe("local");
+  });
+
+  it("上传成功但暂存导入失败时保留远端文件 ID，重试可复用而非重复上传", async () => {
+    const purchase = await createPurchase({
+      name: "大米",
+      occurredAt: day(2026, 11, 3),
+    });
+    const db = getDatabase();
+    await db.runAsync(
+      `INSERT INTO capture_assets (id, kind, source, name, local_path, mime, state, created_at, updated_at)
+       VALUES ('asset-retry', 'photo', 'camera', 'receipt.jpg', '/tmp/receipt.jpg', 'image/jpeg', 'saved', 1, 1)`,
+    );
+    const linkId = await createDocumentLink({
+      ownerType: "event",
+      ownerId: purchase.eventId,
+      documentRef: "asset-retry",
+      documentSource: "capture_asset",
+      documentName: "小票",
+      mime: "image/jpeg",
+      transferState: "local",
+    });
+
+    await markDocumentFileUploaded(linkId, {
+      remoteFileId: "file-upload-1",
+      name: "小票.jpg",
+    });
+    let link = (await listDocumentLinks("event", purchase.eventId))[0];
+    expect(link).toMatchObject({
+      documentSource: "capture_asset",
+      documentRef: "asset-retry",
+      remoteRef: "file-upload-1",
+      remoteSource: "file",
+      transferState: "metadata_only",
+      documentName: "小票.jpg",
+    });
+
+    await markDocumentUploaded(linkId, { shelfItemId: "shelf-receipt-1" });
+    link = (await listDocumentLinks("event", purchase.eventId))[0];
+    expect(link).toMatchObject({
+      documentSource: "capture_asset",
+      remoteRef: "shelf-receipt-1",
+      remoteSource: "shelf_item",
+      transferState: "transferred",
+    });
   });
 
   it("原图经文件互传入库后，关联切到 shelf_item 并标记 transferred", async () => {

@@ -677,7 +677,11 @@ fn list_life_items_inner(
     filter: &LifeItemFilter,
 ) -> AppResult<Vec<LifeItemSummary>> {
     let limit = filter.limit.unwrap_or(60).clamp(1, 200) as i64;
-    let query = filter.query.as_deref().map(|q| q.trim()).unwrap_or("");
+    let query = filter
+        .query
+        .as_deref()
+        .map(extract_query_keyword)
+        .unwrap_or_default();
     let sql = if query.is_empty() {
         format!(
             "{} ORDER BY (p.occurred_at IS NOT NULL) DESC, p.occurred_at DESC, i.name ASC, i.id ASC LIMIT ?1",
@@ -695,7 +699,7 @@ fn list_life_items_inner(
         stmt.query_map(params![limit], row_to_item_summary)?
             .collect::<rusqlite::Result<Vec<_>>>()?
     } else {
-        let pattern = like_pattern(query);
+        let pattern = like_pattern(&query);
         stmt.query_map(params![pattern, limit], row_to_item_summary)?
             .collect::<rusqlite::Result<Vec<_>>>()?
     };

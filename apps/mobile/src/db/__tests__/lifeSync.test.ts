@@ -234,13 +234,13 @@ describe("生活同步 push 载荷", () => {
 
     const eventOp = byEntity.get("life_event");
     expect(eventOp?.targetId).toBe(saved.eventId);
-    expect(eventOp?.patch.occurredAt).toBe(day(2026, 11, 3));
-    expect(eventOp?.patch.merchant).toBe("某超市");
+    expect(eventOp?.op.patch.occurredAt).toBe(day(2026, 11, 3));
+    expect(eventOp?.op.patch.merchant).toBe("某超市");
     const itemOp = byEntity.get("life_event_item");
-    expect(itemOp?.patch.itemNameSnapshot).toBe("大米");
-    expect(itemOp?.patch.quantityValue).toBe("5");
-    expect(itemOp?.patch.totalPriceMinor).toBe(4800);
-    expect(itemOp?.patch.currency).toBe("CNY");
-    expect(typeof itemOp?.patch.totalPriceMinor).toBe("number");
+    expect(itemOp?.op.patch.itemNameSnapshot).toBe("大米");
+    expect(itemOp?.op.patch.quantityValue).toBe("5");
+    expect(itemOp?.op.patch.totalPriceMinor).toBe(4800);
+    expect(itemOp?.op.patch.currency).toBe("CNY");
+    expect(typeof itemOp?.op.patch.totalPriceMinor).toBe("number");
   });
 });

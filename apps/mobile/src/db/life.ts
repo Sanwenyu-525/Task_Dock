@@ -747,8 +747,45 @@ export async function setDocumentLinkTransferState(
 }
 
 /**
- * 原图经「文件互传」进入桌面暂存架后，把同一条关联切到 shelf_item 引用。
- * 只改引用的来源与稳定 ID，不复制图片字节，也不新建第二条关联。
+ * 文件已上传到电脑、但尚未导入暂存架：保留远端文件 ID，重试时直接复用，
+ * 避免重复上传制造孤立文件。`document_ref`/`document_source` 仍保留本机来源。
+ */
+export async function markDocumentFileUploaded(
+  linkId: string,
+  input: { remoteFileId: string; name?: string; mime?: string; byteSize?: number | null },
+): Promise<void> {
+  const db = getDatabase();
+  const now = Date.now();
+  await db.withTransactionAsync(async () => {
+    const row = await db.getFirstAsync<{ server_rev: number } & LinkRow>(
+      "SELECT * FROM life_document_links WHERE id = ? AND deleted_at IS NULL",
+      [linkId],
+    );
+    if (!row) throw new Error("票据关联不存在");
+    const remoteFileId = input.remoteFileId.trim();
+    if (!remoteFileId) throw new Error("电脑端未返回文件 ID");
+    await db.runAsync(
+      `UPDATE life_document_links
+          SET remote_ref = ?, remote_source = 'file', document_name = ?, mime = ?,
+              byte_size = ?, transfer_state = 'metadata_only', updated_at = ?,
+              rev = rev + 1
+        WHERE id = ?`,
+      [
+        remoteFileId,
+        (input.name ?? row.document_name).trim(),
+        input.mime ?? row.mime,
+        input.byteSize ?? row.byte_size,
+        now,
+        linkId,
+      ],
+    );
+    await enqueue(db, "life_document_link", linkId, row.server_rev ?? 0, "update", now);
+  });
+}
+
+/**
+ * 原图经「文件互传」进入桌面暂存架后，记录远端稳定引用并标记 transferred。
+ * `document_ref`/`document_source` 继续保留本机来源，绝不改成桌面 shelf ID。
  */
 export async function markDocumentUploaded(
   linkId: string,
@@ -813,7 +850,22 @@ export async function relinkDocument(
       [ownerType, ownerId, row.document_ref, row.document_source],
     );
     if (duplicate) {
-      // 目标已存在同一张票据：只删除旧关联，不重复建行。
+      // 目标已存在同一张票据：只删除旧关联，不重复建行；远端引用以当前关联为准补全。
+      await db.runAsync(
+        `UPDATE life_document_links
+            SET remote_ref = ?, remote_source = ?, transfer_state = ?, updated_at = ?,
+                rev = rev + 1
+          WHERE id = ?`,
+        [row.remote_ref, row.remote_source, row.transfer_state, now, duplicate.id],
+      );
+      await enqueue(
+        db,
+        "life_document_link",
+        duplicate.id,
+        duplicate.server_rev ?? 0,
+        "update",
+        now,
+      );
       await db.runAsync(
         "UPDATE life_document_links SET deleted_at = ?, updated_at = ?, rev = rev + 1 WHERE id = ?",
         [now, now, linkId],
@@ -826,9 +878,10 @@ export async function relinkDocument(
     const newLinkId = newId("ld");
     await db.runAsync(
       `INSERT INTO life_document_links (id, owner_type, owner_id, document_ref, document_source,
-                                        document_name, mime, byte_size, transfer_state,
-                                        created_at, updated_at, deleted_at, rev, server_rev)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0)`,
+                                        document_name, mime, byte_size, remote_ref, remote_source,
+                                        transfer_state, created_at, updated_at, deleted_at, rev,
+                                        server_rev)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0)`,
       [
         newLinkId,
         ownerType,
@@ -838,6 +891,8 @@ export async function relinkDocument(
         row.document_name,
         row.mime,
         row.byte_size,
+        row.remote_ref,
+        row.remote_source,
         row.transfer_state,
         now,
         now,

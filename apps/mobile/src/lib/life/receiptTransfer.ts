@@ -2,10 +2,16 @@
 // 不新建连接、不复制图片字节进同步协议。
 //
 // 元数据同步与文件传输分开：同步成功不代表电脑已有原图；只有这里真正上传并
-// 导入桌面暂存架成功后，才写入 remote_ref 并标记 transferred（本机来源保留）。
+// 导入桌面暂存架成功后，才写入 shelf_item 远端引用并标记 transferred（本机来源保留）。
+// 若上传成功但导入失败，先记录远端文件 ID，重试直接复用，避免重复文件。
 import { File } from "expo-file-system";
 
-import { getDocumentLink, markDocumentUploaded, setDocumentLinkTransferState } from "../../db/life";
+import {
+  getDocumentLink,
+  markDocumentFileUploaded,
+  markDocumentUploaded,
+  setDocumentLinkTransferState,
+} from "../../db/life";
 import { loadConnection, readToken } from "../../db/syncConnection";
 import { AppError, describeError } from "../errors";
 
@@ -50,14 +56,12 @@ export async function sendReceiptToDesktop(linkId: string): Promise<ReceiptTrans
   if (link.documentSource !== "capture_asset") {
     throw new AppError("validation", "只有手机采集的原图可以通过文件互传发送");
   }
-  if (!link.localUri) {
-    throw new AppError("storage", "原图尚未保存到本机，请先在素材库保存后再发送");
-  }
 
-  const file = new File(link.localUri);
-  if (!file.exists) {
-    throw new AppError("storage", "本机原图已缺失，无法发送；可重新拍照或导入");
-  }
+  // 上次已经上传成功但暂存架导入失败：复用远端文件 ID，不重复上传。
+  const existingRemoteFileId =
+    link.remoteSource === "file" && link.remoteRef ? link.remoteRef : null;
+
+  let remoteFileId = existingRemoteFileId;
 
   const transport = await resolveTransport();
   const client = createFileClient({
@@ -67,9 +71,31 @@ export async function sendReceiptToDesktop(linkId: string): Promise<ReceiptTrans
   });
 
   try {
-    const remote = await uploadLocalFile(client, file, () => undefined, undefined, link.documentName);
+    if (!remoteFileId) {
+      if (!link.localUri) {
+        throw new AppError("storage", "原图尚未保存到本机，请先在素材库保存后再发送");
+      }
+      const file = new File(link.localUri);
+      if (!file.exists) {
+        throw new AppError("storage", "本机原图已缺失，无法发送；可重新拍照或导入");
+      }
+      const remote = await uploadLocalFile(
+        client,
+        file,
+        () => undefined,
+        undefined,
+        link.documentName,
+      );
+      remoteFileId = remote.id;
+      await markDocumentFileUploaded(link.id, {
+        remoteFileId: remote.id,
+        name: remote.name || link.documentName,
+        mime: link.mime,
+        byteSize: remote.size,
+      });
+    }
     try {
-      const imported = await client.importToShelf(remote.id, null);
+      const imported = await client.importToShelf(remoteFileId, null);
       const shelfItemId = (imported.shelf_item_id ?? "").trim();
       if (!shelfItemId) {
         await setDocumentLinkTransferState(link.id, "metadata_only");

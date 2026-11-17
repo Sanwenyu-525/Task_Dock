@@ -185,6 +185,26 @@ fn quick_query_returns_real_latest_purchase() {
 }
 
 #[test]
+fn items_list_accepts_natural_language_queries() {
+    let db = Db::open_in_memory().unwrap();
+    insert_purchase(&db, "大米", "2026-11-03", Some("5"), Some("48"), Some("CNY"));
+    let items = db
+        .with_read(|conn| {
+            list_life_items_inner(
+                conn,
+                &LifeItemFilter {
+                    query: Some("上次什么时候买的大米？".into()),
+                    limit: None,
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(items.len(), 1, "自然语言查询必须定位真实商品");
+    assert_eq!(items[0].name, "大米");
+    assert_eq!(items[0].purchase_count, 1);
+}
+
+#[test]
 fn quick_query_keyword_rules_are_deterministic() {
     for (input, expected) in [
         ("大米", "大米"),

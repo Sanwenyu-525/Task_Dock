@@ -539,7 +539,7 @@ export default function LifePanel() {
             value={query}
             onChange={setQuery}
             ariaLabel="搜索商品或购买记录"
-            placeholder="搜索商品，例如「大米」"
+            placeholder="搜索商品，例如「大米」或「上次什么时候买的大米」"
             className="life-search"
           />
         </div>
