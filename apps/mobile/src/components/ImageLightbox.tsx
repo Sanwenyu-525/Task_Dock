@@ -4,7 +4,7 @@
 // - 恒暗 ink 底，图片 contain；顶部关闭按钮 44dp（onInk），底部页码 onInkMuted；
 // - 只用 RN 自带 FlatList 横向分页，不引入手势/缩放第三方库；
 // - 点背景关闭；系统开启减少动态效果时不做额外动画。
-import { useEffect, useRef, useState, type ElementRef } from "react";
+import { useCallback, useEffect, useRef, useState, type ElementRef } from "react";
 import {
   Dimensions,
   FlatList,
@@ -28,11 +28,58 @@ import { font, space } from "../theme/tokens";
 import { AppIcon } from "./icons/AppIcon";
 
 export interface LightboxImage {
+  /** 优先展示的高清资源（素材详情的原图 / 处理后的高清文件） */
   uri: string;
+  /** 高清资源不可读时的降级资源（列表缩略图）；不得反过来优先使用 */
+  fallbackUri?: string;
   name?: string;
 }
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
+
+/**
+ * 单页图片：先加载高清资源，读取失败才降级到缩略图，并把降级结果上报给灯箱页脚，
+ * 避免用户把压缩缩略图误认为原图。
+ */
+function LightboxPage({
+  item,
+  onClose,
+  onResolved,
+}: {
+  item: LightboxImage;
+  onClose: () => void;
+  onResolved: (primaryUri: string, resolvedUri: string, degraded: boolean) => void;
+}) {
+  const [uri, setUri] = useState(item.uri);
+  const degraded = uri !== item.uri;
+
+  useEffect(() => {
+    setUri(item.uri);
+  }, [item.uri]);
+
+  useEffect(() => {
+    onResolved(item.uri, uri, degraded);
+  }, [degraded, item.uri, onResolved, uri]);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={item.name ?? "查看图片"}
+      onPress={onClose}
+      style={styles.page}
+    >
+      <Image
+        source={{ uri }}
+        resizeMode="contain"
+        style={styles.image}
+        accessibilityIgnoresInvertColors
+        onError={() => {
+          if (item.fallbackUri && uri !== item.fallbackUri) setUri(item.fallbackUri);
+        }}
+      />
+    </Pressable>
+  );
+}
 
 export function ImageLightbox({
   visible,
@@ -55,6 +102,8 @@ export function ImageLightbox({
   // 放大时暂停横向翻页，避免两套手势争抢；还原后可继续左右滑动。
   const [zoomed, setZoomed] = useState(false);
   const [viewport, setViewport] = useState({ width: SCREEN_WIDTH, height: 0 });
+  /** 每页实际解析到的地址与是否已降级：放大必须用真正加载成功的那个地址 */
+  const [resolved, setResolved] = useState<Record<string, { uri: string; degraded: boolean }>>({});
 
   const safeIndex = Math.min(Math.max(initialIndex, 0), Math.max(images.length - 1, 0));
 
@@ -78,9 +127,25 @@ export function ImageLightbox({
   };
 
   const current = images[index];
+  const resolvedCurrent = current ? resolved[current.uri] : undefined;
+  const currentUri = resolvedCurrent?.uri ?? current?.uri ?? "";
+  const currentDegraded = resolvedCurrent?.degraded ?? false;
   const zoomScale = 2.5;
   const zoomedWidth = viewport.width * zoomScale;
   const zoomedHeight = Math.max(1, viewport.height) * zoomScale;
+
+  const handleResolved = useCallback(
+    (primaryUri: string, actualUri: string, degraded: boolean) => {
+      setResolved((prev) => {
+        const existing = prev[primaryUri];
+        if (existing && existing.uri === actualUri && existing.degraded === degraded) {
+          return prev;
+        }
+        return { ...prev, [primaryUri]: { uri: actualUri, degraded } };
+      });
+    },
+    [],
+  );
 
   const toggleZoom = () => {
     const next = !zoomed;
@@ -123,7 +188,7 @@ export function ImageLightbox({
             maximumZoomScale={1}
           >
             <Image
-              source={{ uri: current?.uri ?? "" }}
+              source={{ uri: currentUri }}
               resizeMode="contain"
               style={{ width: zoomedWidth, height: zoomedHeight }}
               accessibilityIgnoresInvertColors
@@ -146,19 +211,7 @@ export function ImageLightbox({
             })}
             onMomentumScrollEnd={onMomentumScrollEnd}
             renderItem={({ item }) => (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={item.name ?? "查看图片"}
-                onPress={onClose}
-                style={styles.page}
-              >
-                <Image
-                  source={{ uri: item.uri }}
-                  resizeMode="contain"
-                  style={styles.image}
-                  accessibilityIgnoresInvertColors
-                />
-              </Pressable>
+              <LightboxPage item={item} onClose={onClose} onResolved={handleResolved} />
             )}
           />
         )}
@@ -200,6 +253,11 @@ export function ImageLightbox({
             { paddingBottom: insets.bottom + space.md },
           ]}
         >
+          {currentDegraded ? (
+            <Text style={[styles.degraded, { color: tokens.warn }]}>
+              高清原图不可读，当前显示缩略图预览
+            </Text>
+          ) : null}
           {current?.name ? (
             <Text numberOfLines={1} style={[styles.name, { color: tokens.onInkMuted }]}>
               {current.name}
@@ -260,6 +318,11 @@ const styles = StyleSheet.create({
   name: {
     maxWidth: SCREEN_WIDTH - space.lg * 2,
     fontSize: font.meta,
+    textAlign: "center",
+  },
+  degraded: {
+    fontSize: font.label,
+    fontWeight: "600",
     textAlign: "center",
   },
   pageCount: {

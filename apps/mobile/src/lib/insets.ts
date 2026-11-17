@@ -18,8 +18,12 @@ function compute(): Insets {
   const screen = Dimensions.get("screen");
   const win = Dimensions.get("window");
   const raw = Math.round(screen.height - win.height - top);
-  // 某些 ROM 在 edge-to-edge 下 screen 与 window 相等，此时给一个保守的底部留白
-  const bottom = raw > 0 ? Math.min(raw, 48) : 8;
+  // Android 15+ 强制 edge-to-edge 后 screen 与 window 恒相等，raw 恒 ≤ 0，拿不到真实
+  // 导航栏高度。此时按系统栏规格兜底：手势导航 24dp、三键导航 48dp。曾经兜底 8dp，
+  // 在 320×640 / 160dpi（Android 15，手势导航）实测 TabBar 文案侵入系统手势条 32px，
+  // 「工作区」被手势条压住。
+  const androidFallback = 24;
+  const bottom = raw > 0 ? Math.min(raw, 48) : Platform.OS === "android" ? androidFallback : 8;
   return { top, bottom };
 }
 

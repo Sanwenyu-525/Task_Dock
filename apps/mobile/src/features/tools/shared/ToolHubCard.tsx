@@ -1,6 +1,7 @@
 // 聚合页的入口卡片：文本处理 / 资料与链接共用，避免两套相同 JSX 与样式。
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { iconTileRadius } from "../../../components/IconTile";
 import { AppIcon, type IconName } from "../../../components/icons/AppIcon";
 import { useTheme } from "../../../theme/ThemeProvider";
 import { font, radius, space } from "../../../theme/tokens";
@@ -33,7 +34,7 @@ export function ToolHubCard({
       ]}
     >
       <View style={[styles.iconTile, { backgroundColor: tokens.accentSoft }]}>
-        <AppIcon name={icon} size={22} color={tokens.accent} />
+        <AppIcon name={icon} size={20} color={tokens.accent} />
       </View>
       <View style={styles.body}>
         <Text style={[styles.title, { color: tokens.text }]}>{title}</Text>
@@ -58,9 +59,9 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   iconTile: {
-    width: 44,
-    height: 44,
-    borderRadius: radius.tile,
+    width: 36,
+    height: 36,
+    borderRadius: iconTileRadius(36),
     alignItems: "center",
     justifyContent: "center",
   },

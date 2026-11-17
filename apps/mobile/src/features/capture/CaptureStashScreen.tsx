@@ -117,6 +117,20 @@ function isImageAsset(asset: repo.CaptureAsset): boolean {
   return asset.mime.startsWith("image/");
 }
 
+/**
+ * 详情/灯箱使用的高清资源。
+ * localPath 指向的是「当前有效文件」——用户旋转/裁剪后会由 updateAssetMedia 覆盖为处理后的
+ * 高清版本，因此这里不能去读原始未处理文件；thumbnailPath 只作为不可读时的降级资源。
+ */
+function fullImageUri(asset: repo.CaptureAsset): string | null {
+  return asset.localPath ?? asset.thumbnailPath ?? null;
+}
+
+/** 列表缩略图：优先 thumbnailPath，缺失时才退回原图（滚动性能优先） */
+function thumbnailUri(asset: repo.CaptureAsset): string | null {
+  return asset.thumbnailPath ?? asset.localPath ?? null;
+}
+
 function groupDestinations(
   items: repo.CaptureDestination[],
 ): Record<string, repo.CaptureDestination[]> {
@@ -220,6 +234,9 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   const [availability, setAvailability] = useState<PairingAvailability | null>(null);
   const [confirmIds, setConfirmIds] = useState<string[] | null>(null);
   const [lightbox, setLightbox] = useState<{ images: LightboxImage[]; index: number } | null>(null);
+  /** 详情大图实际加载的地址：先高清，失败才降级缩略图，并把降级状态告诉用户 */
+  const [detailImageUri, setDetailImageUri] = useState<string | null>(null);
+  const [detailImageDegraded, setDetailImageDegraded] = useState(false);
   // 详情面板的垂直拖拽位移；只由顶部拖拽条驱动，内容区滚动不参与。
   const detailTranslateY = useRef(new Animated.Value(0)).current;
 
@@ -335,11 +352,26 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   }, [load]);
 
   useEffect(() => {
-    if (!detail) return;
+    if (!detail) {
+      // 关闭详情时释放引用，避免页面长期持有大图路径。
+      setDetailImageUri(null);
+      setDetailImageDegraded(false);
+      return;
+    }
     detailTranslateY.setValue(0);
     setNameDraft(detail.name);
     setNoteDraft(detail.note);
+    setDetailImageUri(isImageAsset(detail) ? fullImageUri(detail) : null);
+    setDetailImageDegraded(false);
   }, [detail?.id, detailTranslateY]);
+
+  // 旋转/裁剪会覆盖 localPath 指向处理后的高清文件；路径变化时刷新详情图，
+  // 但不动用户正在编辑的名称/备注草稿。
+  useEffect(() => {
+    if (!detail || !isImageAsset(detail)) return;
+    setDetailImageUri(fullImageUri(detail));
+    setDetailImageDegraded(false);
+  }, [detail?.id, detail?.localPath, detail?.thumbnailPath]);
 
   // 目的地状态会因后台对账/发送刷新；只更新状态行，不能重置用户正在编辑的草稿。
   useEffect(() => {
@@ -400,7 +432,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   }, [assets, query, typeFilter]);
 
   const imagePool = useMemo(
-    () => assets.filter((asset) => isImageAsset(asset) && (asset.thumbnailPath || asset.localPath)),
+    () => assets.filter((asset) => isImageAsset(asset) && Boolean(fullImageUri(asset))),
     [assets],
   );
 
@@ -430,10 +462,19 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
   }, [visible]);
 
   const openLightbox = useCallback((asset: repo.CaptureAsset) => {
-    const images: LightboxImage[] = imagePool.map((item) => ({
-      uri: item.thumbnailPath ?? item.localPath ?? "",
-      name: item.name,
-    }));
+    const images = imagePool.reduce<LightboxImage[]>((acc, item) => {
+      const full = fullImageUri(item);
+      if (!full) return acc;
+      const thumb = thumbnailUri(item);
+      const entry: LightboxImage = {
+        // 优先高清原图/处理后的高清文件，缩略图只作为加载失败时的降级。
+        uri: full,
+        name: item.name,
+      };
+      if (thumb && thumb !== full) entry.fallbackUri = thumb;
+      acc.push(entry);
+      return acc;
+    }, []);
     const index = imagePool.findIndex((item) => item.id === asset.id);
     setLightbox({ images, index: index >= 0 ? index : 0 });
   }, [imagePool]);
@@ -976,7 +1017,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
             const isSelected = selected.has(asset.id);
             const status = captureStatusOf(asset, items);
             const statusColor = statusTone(status.tone, tokens);
-            const thumbUri = asset.thumbnailPath ?? asset.localPath;
+            const thumbUri = thumbnailUri(asset);
             const showThumb = isImageAsset(asset) && Boolean(thumbUri);
             return (
               <Pressable
@@ -1196,18 +1237,35 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                     <Text style={[styles.detailCloseText, { color: tokens.muted }]}>关闭</Text>
                   </Pressable>
                 </View>
-                {detail.localPath && isImageAsset(detail) ? (
-                  <Pressable
-                    onPress={() => openLightbox(detail)}
-                    accessibilityRole="imagebutton"
-                    accessibilityLabel="在灯箱中查看图片"
-                  >
-                    <Image
-                      source={{ uri: detail.thumbnailPath ?? detail.localPath }}
-                      style={[styles.detailImage, { backgroundColor: tokens.ink }]}
-                      resizeMode="contain"
-                    />
-                  </Pressable>
+                {detailImageUri && isImageAsset(detail) ? (
+                  <>
+                    <Pressable
+                      onPress={() => openLightbox(detail)}
+                      accessibilityRole="imagebutton"
+                      accessibilityLabel="在灯箱中查看高清图片"
+                    >
+                      <Image
+                        source={{ uri: detailImageUri }}
+                        style={[styles.detailImage, { backgroundColor: tokens.ink }]}
+                        resizeMode="contain"
+                        onError={() => {
+                          // 只有高清资源确实不可读时才降级，并明确告诉用户当前不是原图。
+                          if (
+                            detail.thumbnailPath &&
+                            detail.thumbnailPath !== detailImageUri
+                          ) {
+                            setDetailImageUri(detail.thumbnailPath);
+                            setDetailImageDegraded(true);
+                          }
+                        }}
+                      />
+                    </Pressable>
+                    {detailImageDegraded ? (
+                      <Text style={[styles.detailImageNote, { color: tokens.warn }]}>
+                        高清原图不可读，当前显示缩略图预览（放大后仍会尝试重新读取高清资源）
+                      </Text>
+                    ) : null}
+                  </>
                 ) : detail.localPath ? (
                   <Pressable
                     onPress={() => void openFile(detail)}
@@ -1279,7 +1337,7 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
                   <Pressable
                     accessibilityRole="button"
                     onPress={() => requestDelete([detail.id])}
-                    style={[styles.smallButton, { backgroundColor: tokens.dangerSoft }]}
+                    style={[styles.smallButton, { backgroundColor: tokens.track }]}
                   >
                     <Text style={[styles.smallButtonText, { color: tokens.danger }]}>删除本机</Text>
                   </Pressable>
@@ -1522,6 +1580,11 @@ const styles = StyleSheet.create({
   detailClose: { minHeight: 44, justifyContent: "center", paddingHorizontal: space.sm },
   detailCloseText: { fontSize: font.label, fontWeight: "600" },
   detailImage: { width: "100%", height: 220, borderRadius: radius.row },
+  detailImageNote: {
+    fontSize: font.label,
+    lineHeight: 16,
+    marginTop: space.xs,
+  },
   detailFileCard: {
     width: "100%",
     minHeight: 150,

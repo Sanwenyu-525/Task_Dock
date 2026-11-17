@@ -10,6 +10,7 @@ import { ActionSheet, type SheetAction } from "../../../components/ActionSheet";
 import { AppBar } from "../../../components/AppBar";
 import { BottomSheet } from "../../../components/BottomSheet";
 import { Chip } from "../../../components/Chip";
+import { iconTileRadius } from "../../../components/IconTile";
 import { AppIcon } from "../../../components/icons/AppIcon";
 import { SearchField } from "../../../components/SearchField";
 import { useToast } from "../../../feedback/ToastProvider";
@@ -382,9 +383,9 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   rowIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.tile,
+    width: 36,
+    height: 36,
+    borderRadius: iconTileRadius(36),
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",

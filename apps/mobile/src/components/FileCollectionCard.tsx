@@ -52,12 +52,12 @@ export function FileCollectionCard({
 
   const body = horizontal ? (
     <View style={styles.rowInner}>
-      <IconTile name={icon} size={40} tone={enabled ? "primary" : "neutral"} />
+      <IconTile name={icon} size={36} tone={enabled ? "primary" : "neutral"} />
       <View style={styles.rowText}>{text}</View>
     </View>
   ) : (
     <>
-      <IconTile name={icon} size={40} tone={enabled ? "primary" : "neutral"} />
+      <IconTile name={icon} size={36} tone={enabled ? "primary" : "neutral"} />
       {text}
     </>
   );

@@ -1288,6 +1288,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
         <View style={styles.fieldRow}>
           <Text style={[styles.fieldLabel, { color: tokens.muted }]}>票据名称</Text>
           <TextInput
+            underlineColorAndroid="transparent"
             value={receiptName}
             onChangeText={setReceiptName}
             style={[
@@ -1302,6 +1303,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
         <View style={styles.fieldRow}>
           <Text style={[styles.fieldLabel, { color: tokens.muted }]}>日期</Text>
           <TextInput
+            underlineColorAndroid="transparent"
             value={receiptDate}
             onChangeText={setReceiptDate}
             style={[
@@ -1373,6 +1375,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             <View style={styles.fieldRow}>
               <Text style={[styles.fieldLabel, { color: tokens.muted }]}>商品名称</Text>
               <TextInput
+                underlineColorAndroid="transparent"
                 value={receiptPurchaseName}
                 onChangeText={setReceiptPurchaseName}
                 style={[
@@ -1391,6 +1394,7 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
             <View style={styles.fieldRow}>
               <Text style={[styles.fieldLabel, { color: tokens.muted }]}>金额</Text>
               <TextInput
+                underlineColorAndroid="transparent"
                 value={receiptTotal}
                 onChangeText={setReceiptTotal}
                 keyboardType="decimal-pad"

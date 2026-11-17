@@ -9,6 +9,7 @@ import { File as FsFile } from "expo-file-system";
 import { AppBar } from "../../components/AppBar";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { FileTypeIcon, fileTypeOf } from "../../components/FileTypeIcon";
+import { iconTileRadius } from "../../components/IconTile";
 import { PressableScale } from "../../components/PressableScale";
 import { useToast } from "../../feedback/ToastProvider";
 import { describeError } from "../../lib/errors";
@@ -286,7 +287,7 @@ const styles = StyleSheet.create({
   entryIcon: {
     width: 56,
     height: 56,
-    borderRadius: radius.iconTile,
+    borderRadius: iconTileRadius(56),
     alignItems: "center",
     justifyContent: "center",
     marginBottom: space.xxs,

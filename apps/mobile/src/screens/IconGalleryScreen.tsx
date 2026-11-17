@@ -135,13 +135,13 @@ export function IconGalleryScreen({ nav }: { nav: Nav }) {
           ))}
         </GlassCard>
 
-        <Text style={[styles.section, { color: tokens.text }]}>底板：一级入口 / 占位</Text>
+        <Text style={[styles.section, { color: tokens.text }]}>底板：46 网格入口 / 36 卡片内嵌 / 30 统计</Text>
         <GlassCard style={styles.card}>
           <View style={styles.tileRow}>
             <IconTile name="inbox" size={46} />
-            <IconTile name="inbox" size={40} />
             <IconTile name="inbox" size={36} />
             <IconTile name="inbox" size={30} iconSize={18} />
+            <IconTile name="inbox" size={24} iconSize={18} />
             <IconTile name="clipboard" size={46} tone="neutral" />
           </View>
         </GlassCard>

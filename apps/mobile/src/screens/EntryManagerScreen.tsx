@@ -426,7 +426,7 @@ export function EntryManagerScreen({
         />
 
         <Text style={[styles.summary, { color: tokens.muted }]}>
-          {`已显示 ${order.length} · 未显示 ${hiddenIds.length} · 暂不可用 ${unavailable.length}`}
+          {`已加入 ${order.length} · 未加入 ${hiddenIds.length} · 暂未开放 ${unavailable.length}`}
         </Text>
 
         {notice ? (
@@ -462,9 +462,7 @@ export function EntryManagerScreen({
                 {searchResults.map((entry, index) => {
                   const status = statusOf(entry);
                   const trailing =
-                    status === "unavailable" ? (
-                      <Badge label="暂不可用" tone="unimplemented" />
-                    ) : selecting ? (
+                    status === "unavailable" ? null : selecting ? (
                       selectionMark(entry)
                     ) : status === "visible" ? (
                       actionButton(
@@ -501,7 +499,10 @@ export function EntryManagerScreen({
         ) : view === "layout" ? (
           <>
             <View style={styles.section}>
-              <SectionHeader icon="check" title={`已显示 · ${order.length}`} />
+              <SectionHeader icon="check" title={`已加入首页快捷入口 · ${order.length}`} />
+              <Text style={[styles.sectionHint, { color: tokens.muted }]}>
+                这些入口已经显示在首页快捷入口区，可拖动排序或移除。
+              </Text>
               {orderedVisible.length === 0 ? (
                 <GlassCard style={styles.card}>
                   <View style={styles.emptyBlock}>
@@ -588,7 +589,10 @@ export function EntryManagerScreen({
             </View>
 
             <View style={styles.section}>
-              <SectionHeader icon="add" title={`未显示 · ${hiddenEntries.length}`} />
+              <SectionHeader icon="add" title={`未加入首页快捷入口 · ${hiddenEntries.length}`} />
+              <Text style={[styles.sectionHint, { color: tokens.muted }]}>
+                功能本身可用，只是没有放到首页；仍可在「全部功能」里找到，点「+」即可加回。
+              </Text>
               {hiddenEntries.length === 0 ? (
                 <GlassCard style={styles.card}>
                   <Text style={[styles.emptyHint, { color: tokens.muted }]}>
@@ -617,7 +621,7 @@ export function EntryManagerScreen({
             </View>
 
             <View style={styles.section}>
-              <SectionHeader icon="lock" title={`暂不可用 · ${unavailable.length}`} />
+              <SectionHeader icon="lock" title={`暂未开放 · ${unavailable.length}`} />
               <GlassCard style={styles.card}>
                 {unavailable.map((entry, index) => (
                   <View key={entry.id}>
@@ -625,14 +629,14 @@ export function EntryManagerScreen({
                       <View style={[styles.divider, { backgroundColor: tokens.separator }]} />
                     ) : null}
                     {rowFor(entry, "unavailable", {
-                      trailing: <Badge label="暂不可用" tone="unimplemented" />,
                       onPress: () => openEntry(entry),
                     })}
                   </View>
                 ))}
               </GlassCard>
               <Text style={[styles.footnote, { color: tokens.muted }]}>
-                暂不可用是移动端能力缺失，不是被你隐藏；它们不会出现在工作台，也无法被添加。
+                暂未开放是「移动端没有可用实现」，不是被你隐藏；它们不会出现在首页快捷入口，
+                也无法被添加。点按只会说明缺少哪条链路。
               </Text>
             </View>
 
@@ -673,13 +677,11 @@ export function EntryManagerScreen({
                             <View style={[styles.divider, { backgroundColor: tokens.separator }]} />
                           ) : null}
                           {rowFor(entry, shown ? "visible" : "hidden", {
-                            trailing: shown ? (
-                              <Badge label="已显示" tone="active" />
-                            ) : (
-                              actionButton(entry, `添加${entry.label}到工作台`, "add", () => {
-                                void toggleEntry(entry, true);
-                              })
-                            ),
+                            trailing: shown
+                              ? undefined
+                              : actionButton(entry, `添加${entry.label}到工作台`, "add", () => {
+                                  void toggleEntry(entry, true);
+                                }),
                             onPress: () => openEntry(entry),
                           })}
                         </View>
@@ -691,7 +693,7 @@ export function EntryManagerScreen({
             })}
 
             <View style={styles.section}>
-              <SectionHeader icon="lock" title={`暂不可用 · ${unavailable.length}`} />
+              <SectionHeader icon="lock" title={`暂未开放 · ${unavailable.length}`} />
               <GlassCard style={styles.card}>
                 {unavailable.map((entry, index) => (
                   <View key={entry.id}>
@@ -699,7 +701,6 @@ export function EntryManagerScreen({
                       <View style={[styles.divider, { backgroundColor: tokens.separator }]} />
                     ) : null}
                     {rowFor(entry, "unavailable", {
-                      trailing: <Badge label="暂不可用" tone="unimplemented" />,
                       onPress: () => openEntry(entry),
                     })}
                   </View>
@@ -807,15 +808,26 @@ function EntryManageRow({
         tone={status === "unavailable" ? "neutral" : "primary"}
       />
       <View style={styles.rowText}>
-        <Text
-          numberOfLines={1}
-          style={[
-            styles.rowLabel,
-            { color: status === "unavailable" ? tokens.muted : tokens.text },
-          ]}
-        >
-          {entry.label}
-        </Text>
+        <View style={styles.rowLabelRow}>
+          <Text
+            numberOfLines={1}
+            style={[
+              styles.rowLabel,
+              styles.rowLabelText,
+              { color: status === "unavailable" ? tokens.muted : tokens.text },
+            ]}
+          >
+            {entry.label}
+          </Text>
+          {/* 状态徽标紧跟名称：不依赖颜色区分三种状态，也避免贴在行右上角与图标错位 */}
+          <Badge
+            label={
+              status === "visible" ? "已加入" : status === "unavailable" ? "暂未开放" : "未加入"
+            }
+            tone={status === "visible" ? "active" : "unimplemented"}
+            style={styles.rowBadge}
+          />
+        </View>
         {showHelper ? (
           <Text
             numberOfLines={helperLines}
@@ -888,6 +900,7 @@ const styles = StyleSheet.create({
     gap: space.md,
   },
   summary: { fontSize: font.meta },
+  sectionHint: { fontSize: font.label, lineHeight: 16, paddingHorizontal: space.xs },
   notice: {
     flexDirection: "row",
     alignItems: "center",
@@ -915,7 +928,16 @@ const styles = StyleSheet.create({
   // 窄屏收紧图标与文字之间的间距，把宽度让给功能名称（不缩字号）
   rowCompact: { gap: space.sm },
   rowText: { flex: 1, gap: 2 },
+  rowLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs,
+  },
+  // 徽标固定在同一基线上：alignSelf center 覆盖 Badge 默认的 flex-start
+  rowBadge: { alignSelf: "center" },
   rowLabel: { fontSize: font.body, fontWeight: "600" },
+  // 长名称先收缩省略，不能把状态徽标挤出屏幕
+  rowLabelText: { flexShrink: 1 },
   rowHelper: { fontSize: font.label, lineHeight: 16 },
   divider: { height: StyleSheet.hairlineWidth },
   action: {

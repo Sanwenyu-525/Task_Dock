@@ -41,7 +41,7 @@ export function ProjectSpaceCard({
   const body = (
     <GlassCard style={[styles.card, { width }]}>
       <View style={styles.cardInner}>
-        <IconTile name={KIND_ICON[project.kind]} size={38} />
+        <IconTile name={KIND_ICON[project.kind]} size={36} />
         <Text numberOfLines={2} style={[styles.name, { color: tokens.text }]}>
           {project.name}
         </Text>
@@ -116,7 +116,7 @@ export function ProjectSpacePlaceholder() {
       accessibilityState={{ disabled: true }}
       style={[styles.placeholder, { borderColor: tokens.cardBorderStrong }]}
     >
-      <IconTile name="project" size={34} tone="neutral" />
+      <IconTile name="project" size={36} tone="neutral" />
       <View style={styles.placeholderText}>
         <Text style={[styles.placeholderTitle, { color: tokens.text }]}>
           项目数据尚未同步到手机

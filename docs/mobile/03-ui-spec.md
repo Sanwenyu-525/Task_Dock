@@ -130,13 +130,13 @@ font   = { page: 24, display: 30, hero: 26, stat: 26, section: 17, title: 16, re
 | `BackButton` | 二级页返回 | 44dp 命中区，`AppIcon name="back"`（22dp），仅在 `onBack` 传入时渲染 |
 | `AppIcon` | 全站唯一图标出口 | 语义名 → lucide 几何（或 `iconMap.json` 的 `overrides`）；按尺寸自动选 md(96px)/sm(64px)/lg(128px) 位图，保证 16→32dp 视觉重量一致；`tintColor` 着色，`fadeDuration=0` 防闪烁；生成物带 `ICON_MAP_HASH`，测试会拦住「改了映射没重跑生成器」 |
 | `FileTypeIcon` | 文件类型图标 | 形状由 `fileTypeKind` 决定（PDF 用文件轮廓 + P，Markdown 用文件 + 笔），颜色取自语义 Token（PDF danger、文档 accentText、表格/音频 ok、演示/压缩/APK warn、代码/视频 accent、文本/通用 muted）；传出的方向由外层底板表达，不再用同一套灰色 |
-| `IconTile` | 图标底板 | `primary` 浅蓝渐变底 + 细描边 + 蓝线图标（真实入口）；`neutral` 中性底 + 灰线（未接入）；圆角 = 边长的 30%；品牌块不再走这里，统一 `BrandMark` |
+| `IconTile` | 图标底板 | `primary` 浅蓝渐变底 + 细描边 + 蓝线图标（真实入口）；`neutral` 中性底 + 灰线（未接入）；圆角 = 边长的 30%（`iconTileRadius(size)`）；板径只有 46（页面/网格入口）/ 36（卡片与列表内入口）/ 30（统计磁贴），24 只给分区标题，56 只给采集导入这类整页二选一大卡；卡片本身有底色时图标裸放、不叠底板；品牌块不再走这里，统一 `BrandMark` |
 | `BrandMark` | 应用品牌标识 | 蓝→青渐变圆角方块 + 白色 `</>`；24/32/46/64dp 四档；不得复用 `project`/`boxes` 等业务图标 |
 | `FeatureIconPlaceholder` | 未接入能力占位 | 图标+名称(+说明)，`accessibilityState.disabled`，不可点、不渲染二级页；`compact` 用 46dp 中性底板并与 `IconEntry` 同为 85dp 内容高度，同一行内图标/文字基线对齐；`inline` 变体可省略 `label`（模块标题已写明名称时不重复） |
 | `ClampedText` | 长文本限高 | 默认 N 行，用透明同宽文本量真实行数决定是否显示「展开全文」；收集箱长速记固定 5 行 |
 | `IconEntry` | 四列真实入口 | 46dp `IconTile` + 12sp 名称，`badge` 只传真实计数 |
 | `SectionHeader` | 区域标题 | 图标 + 标题 + 右侧动作；无 `onAction` 时动作文字置灰不可点 |
-| `ProjectSpaceCard` / `ProjectSpacePlaceholder` | 项目空间 | 卡片字段全来自 `workspace_projects` 语义；未同步时渲染 76dp 虚线空状态（`cardBorderStrong` dashed + 34dp 中性图标 + 标题/说明），不再带「待接入」胶囊，视觉权重低于「常用工具」，卡内不重复模块标题 |
+| `ProjectSpaceCard` / `ProjectSpacePlaceholder` | 项目空间 | 卡片字段全来自 `workspace_projects` 语义；未同步时渲染 76dp 虚线空状态（`cardBorderStrong` dashed + 36dp 中性图标 + 标题/说明），不再带「待接入」胶囊，视觉权重低于「常用工具」，卡内不重复模块标题 |
 | `FileCollectionCard` | 文件集合 | 三列文件夹卡；有 `onPress` 才是真实入口（白卡 + 描边 + 蓝色图标/说明），否则标注「暂未接入」（浅蓝无描边面板 + 中性图标） |
 | `Chip` | 筛选/选项 | `variant="solid"`（默认）选中用 `accentFill` 承载白字；`variant="soft"` 是任务页次级日期筛选：白底/hairline 未选、`accentSoft` + `accentText` 选中，视觉权重低于主分段 |
 | `SegmentedControl` | 分段控件 | 内容由调用方渲染；只负责轨道、滑动指示器、无障碍语义；`size="compact"` 用于任务/工作区一级分段（轨道约 38dp，选中实底白字） |
@@ -375,6 +375,11 @@ font   = { page: 24, display: 30, hero: 26, stat: 26, section: 17, title: 16, re
 ## 8. 禁止事项
 
 - 不给二级/三级卡片加 `elevation` / `shadow*`；不用半透明卡片表面（一级卡的 `cardShadow()` 例外，见 §3.1）。
+- 不给图标按钮（只有图标、没有文字的按钮）铺填充底色：底色是「内容入口」的记号，动作再染上就会
+  与入口磁贴同构，删除尤其不能变成屏幕上最亮的一块。破坏性文字按钮用中性 `track` 底 + `danger`
+  文字，`dangerSoft` 只用于状态与提示（Toast / 错误卡 / 优先级胶囊），不给按钮当底。
+- 图标底板只用 46 / 36 / 30 三档（标题 24、采集导入大卡 56），不新增 38/40/44/48 这类中间值；
+  卡片本身已有底色时图标裸放，不叠底板。
 - 不写死颜色、圆角、间距；不从组件里直接读 `useColorScheme`（统一走 `useTheme()`）。
 - 不新增运行时图标库、图标字体或 Emoji；不手绘通用图标（统一 `AppIcon`）。
   图标几何来自 `iconMap.json` 的 lucide 映射与少量 `overrides`；新增/修改语义要运行
@@ -881,4 +886,44 @@ SQLite 没有 projects/features/scenes/agent/监控表，任务也没有 project
   宽屏四列一致；设置页/诊断页的 `column` 变体仍为默认 `stack`，不受影响。
 - **验证**：`icons:check` 通过（103 图标 / 130 变体，仅新增 `pendingTasks`）；typecheck 与
   vitest 结果见 `tmp/acceptance/mobile-profile-icons/report.md`。
+
+## 2026-11-17 第十二轮：图标底色口径与板径收敛
+
+**背景**：移动端图标底板数量偏多，用户提出「要不要去掉底色」。审计后确认问题不是「有底色」，
+而是**底色在替动作打工**：编辑/删除这类图标按钮铺上 `track` / `dangerSoft` 填充后，与内容入口
+（`IconTile` / `QuickTile`）视觉同构，删除反而成了屏幕上最亮的一块；同时板径散落 34/38/40/44/48
+五个中间值，同一个「行首入口」在不同页面画得不一样大。
+
+**口径（按「底色承载什么」分三类）**：
+
+1. **语义底板 = 保留**。`MetricTile` 统计图标、`TaskGroupHeader` 分组图标、`SettingSection`
+   分区标题图标、状态胶囊：底色承载状态/分类语义，0 值已退回中性，不动。
+2. **入口底板 = 保留，但「一屏只允许一层底」**。卡片/磁贴本身已有底色
+   （`accentWash` / `accentSoft` / `accentFill`）时图标裸放（`QuickTile`、采集页主卡、采集页
+   素材选择磁贴都是这个写法）；只有白卡或无底色页面上的入口才用 `IconTile`。底板只表示
+   「去哪」，不表示「做什么」。
+3. **动作图标 = 不铺底色**。只有图标的按钮（编辑 / 删除 / 更多 / 关闭）不使用填充底：动作靠
+   图标颜色与 ≥44dp 热区表达，危险动作用 `danger` 图标色。破坏性**文字**按钮（整行工具条里的
+   「删除」「重拍」）可以保留中性 `track` 底，但不得铺 `dangerSoft`——`dangerSoft` 只用于状态与
+   提示（Toast / 错误卡 / 优先级胶囊 / 删除确认说明）。
+
+**改动位置**：
+
+- `TaskDetailScreen` 底部操作区：编辑（原 `track` 底）与删除（原 `dangerSoft` 底）改为裸图标，
+  编辑 `textSoft`、删除 `danger`，热区仍 48dp；主操作「标记完成」保持 `accentFill`。
+- `CaptureStashScreen` 详情「删除本机」、`CaptureScreen` 语音结果条「删除」：`dangerSoft` 底改
+  中性 `track` 底 + `danger` 文字，与 `CaptureReviewScreen` 工具条「重拍 / 删除」同一写法。
+- **板径收敛为 46 / 36 / 30（标题 24、采集导入大卡 56）**：`FileCollectionCard` 40→36、
+  `ProjectSpaceCard` 38→36、`ProjectSpacePlaceholder` 34→36、`FeatureIconPlaceholder` grid
+  48→46、`CaptureHomeScreen` 手写底板 40→36（次级 22→20、主卡 26→22）、`ToolHubCard` 44→36
+  （图标 22→20）、`CaptureScreen` 语音结果图标 40→36（图标 24→20）、`GithubScreen` /
+  `DocsScreen` 行首图标 40→36；`CaptureImportScreen` 大选择卡保留 56，圆角改用统一比例。
+- 新增 `iconTileRadius(size)`（由 `IconTile` 导出）：底板圆角统一 = 边长 30%，消除
+  「固定 `radius.iconTile` + 30% 手算」两套写法。
+- `IconGalleryScreen` 底板示例改为 46 / 36 / 30 / 24，作为视觉验收基准。
+
+**验证**：`npm run test`（调度器 `m-mwklvjc0-aefadc`）79 文件 / 873 用例通过；`npm run typecheck`
+（`m-mwklvic0-144f51`）exit 2，唯一错误在并行任务未跟踪的 `TaskEditorSheet.test.ts`（缺 `task` 实参），
+本轮未越界修改。真机视觉复核（浅/深色、320–430dp、130%/150% 字号）**未执行**，本轮不以代码推断
+替代真机结论。证据与问题清单见 `tmp/acceptance/mobile-icon-surface/report.md`。
 

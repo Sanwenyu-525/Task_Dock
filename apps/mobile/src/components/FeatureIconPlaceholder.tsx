@@ -80,7 +80,7 @@ export function FeatureIconPlaceholder({
     >
       <IconTile
         name={icon}
-        size={grid ? 48 : 46}
+        size={46}
         tone="neutral"
       />
       <Text

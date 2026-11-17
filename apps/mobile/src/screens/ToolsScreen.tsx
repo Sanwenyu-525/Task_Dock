@@ -4,7 +4,7 @@
 // 最近使用 → 常用操作 → 图片与素材 → 资料与内容 → 高级工具。
 // API 调试 / 正则 / 代码对比已从普通工具体系下架；搜索、最近使用与星标只认新目录，
 // 旧入口不会借最近使用记录重新出现。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Keyboard, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 
 import { GlassCard } from "../components/GlassCard";
@@ -51,19 +51,37 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
   const { config } = useEntryLayout();
   const [query, setQuery] = useState("");
   const [recent, setRecent] = useState<RecentToolUse[]>([]);
+  /**
+   * 最近使用读取失败：不能吞掉异常伪装成「没有最近使用」。
+   * 只在这一块显示轻提示 + 重试，其余分类照常展示。
+   */
+  const [recentError, setRecentError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
   const { width } = useWindowDimensions();
   const columns = gridColumnsForWidth(width);
   const cellStyle = columns === 2 ? styles.cellHalf : styles.cellQuarter;
 
   const loadRecent = useCallback(() => {
     void listRecentTools()
-      .then(setRecent)
-      .catch(() => undefined);
+      .then((list) => {
+        if (!mountedRef.current) return;
+        setRecent(list);
+        setRecentError(null);
+      })
+      .catch((error: unknown) => {
+        if (!mountedRef.current) return;
+        setRecentError(describeError(error));
+      });
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     loadRecent();
-    return subscribeRecentTools(loadRecent);
+    const unsubscribe = subscribeRecentTools(loadRecent);
+    return () => {
+      mountedRef.current = false;
+      unsubscribe();
+    };
   }, [loadRecent]);
 
   const match = (label: string, hint = "") => {
@@ -215,6 +233,26 @@ export function ToolsScreen({ nav }: { nav: AppNav }) {
                   ))}
                 </ScrollView>
               </View>
+            ) : recentError ? (
+              <View style={styles.group}>
+                <SectionHeader icon="clock" title="最近使用" />
+                <GlassCard style={styles.recentErrorCard}>
+                  <View style={styles.recentErrorMain}>
+                    <AppIcon name="warning" size={16} color={tokens.warn} />
+                    <Text style={[styles.recentErrorText, { color: tokens.textSoft }]}>
+                      最近使用记录读取失败：{recentError}。下面的工具仍可正常打开。
+                    </Text>
+                  </View>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="重新读取最近使用记录"
+                    onPress={loadRecent}
+                    style={({ pressed }) => [styles.recentRetry, { opacity: pressed ? 0.6 : 1 }]}
+                  >
+                    <Text style={[styles.recentRetryText, { color: tokens.accentText }]}>重试</Text>
+                  </Pressable>
+                </GlassCard>
+              </View>
             ) : null}
 
             {filteredCommon.length > 0 ? (
@@ -277,6 +315,25 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   recentLabel: { fontSize: font.meta, fontWeight: "600" },
+  recentErrorCard: {
+    padding: space.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+  },
+  recentErrorMain: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: space.xs,
+  },
+  recentErrorText: { flex: 1, fontSize: font.label, lineHeight: 16 },
+  recentRetry: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: space.sm,
+  },
+  recentRetryText: { fontSize: font.label, fontWeight: "700" },
   footnote: { fontSize: font.label, lineHeight: 18, paddingHorizontal: space.xs },
   manageLink: { flexDirection: "row", alignItems: "center", gap: space.xs, minHeight: 44, paddingHorizontal: space.xs },
   manageText: { fontSize: font.meta, fontWeight: "600" },

@@ -21,7 +21,9 @@ class HarnessDatabase {
   private closed = false;
 
   constructor() {
-    this.native = new DatabaseSync(":memory:");
+    // 默认 :memory:；仅重启持久化用例通过环境变量显式切到临时文件库。
+    const file = process.env.TASK_DOCK_TEST_DB_FILE?.trim();
+    this.native = new DatabaseSync(file && file.length > 0 ? file : ":memory:");
     this.native.exec("PRAGMA foreign_keys = ON");
   }
 

@@ -30,6 +30,7 @@ import type { ShareIntentPayload } from "../../modules/share-intent";
 import { AppBar } from "../components/AppBar";
 import { Badge } from "../components/Badge";
 import { GlassCard } from "../components/GlassCard";
+import { iconTileRadius } from "../components/IconTile";
 import { PressableScale } from "../components/PressableScale";
 import { SegmentedControl } from "../components/SegmentedControl";
 import { useToast } from "../feedback/ToastProvider";
@@ -1145,7 +1146,7 @@ export function CaptureScreen({
               <View style={[styles.voiceResult, { borderColor: tokens.separator }]}>
                 <View style={styles.voiceResultHead}>
                   <View style={[styles.voiceResultIcon, { backgroundColor: tokens.okSoft }]}>
-                    <AppIcon name="fileAudio" color={tokens.ok} size={24} />
+                    <AppIcon name="fileAudio" color={tokens.ok} size={20} />
                   </View>
                   <View style={styles.voiceResultText}>
                     <Text numberOfLines={1} style={[styles.voiceResultName, { color: tokens.text }]}>
@@ -1181,7 +1182,7 @@ export function CaptureScreen({
                     accessibilityLabel="删除本次录音"
                     disabled={voiceBusy}
                     style={styles.voiceActionSlot}
-                    contentStyle={[styles.voiceAction, { backgroundColor: tokens.dangerSoft }]}
+                    contentStyle={[styles.voiceAction, { backgroundColor: tokens.track }]}
                   >
                     <Text style={[styles.voiceActionText, { color: tokens.danger }]}>删除</Text>
                   </PressableScale>
@@ -1338,6 +1339,7 @@ export function CaptureScreen({
 
           <GlassCard style={styles.composer}>
             <TextInput
+              underlineColorAndroid="transparent"
               value={text}
               onChangeText={setText}
               multiline
@@ -1408,6 +1410,7 @@ export function CaptureScreen({
                           尚未转写 · 可手写要点
                         </Text>
                         <TextInput
+                          underlineColorAndroid="transparent"
                           value={transcript}
                           onChangeText={(value) => handleTranscript(item, value)}
                           onBlur={() => void persistTranscript(item, transcript)}
@@ -1779,9 +1782,9 @@ const styles = StyleSheet.create({
   },
   voiceResultHead: { flexDirection: "row", alignItems: "center", gap: space.sm },
   voiceResultIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.iconTile,
+    width: 36,
+    height: 36,
+    borderRadius: iconTileRadius(36),
     alignItems: "center",
     justifyContent: "center",
   },

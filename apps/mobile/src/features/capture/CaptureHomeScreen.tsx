@@ -10,6 +10,7 @@ import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View
 
 import { AppBar } from "../../components/AppBar";
 import { EntryRow } from "../../components/EntryRow";
+import { iconTileRadius } from "../../components/IconTile";
 import { PressableScale } from "../../components/PressableScale";
 import { SectionHeader } from "../../components/SectionHeader";
 import * as repo from "../../db/captureAssets";
@@ -61,9 +62,9 @@ function CaptureAction({
       ]}
       scaleTo={0.97}
     >
-      {/* 主卡不做半透明白底板（色值无处可落 Token）；次级卡保留浅蓝底板维持图标节奏 */}
+      {/* 一屏只允许一层底：主卡已是 accentFill 整卡底，图标裸放；次级卡是白卡，才给浅蓝底板 */}
       <View style={[styles.actionIcon, primary ? null : { backgroundColor: tokens.accentSoft }]}>
-        <AppIcon name={icon} color={primary ? tokens.onAccent : tokens.accentText} size={primary ? 26 : 22} />
+        <AppIcon name={icon} color={primary ? tokens.onAccent : tokens.accentText} size={primary ? 22 : 20} />
       </View>
       <Text
         style={[styles.actionLabel, { color: primary ? tokens.onAccent : tokens.text }]}
@@ -296,9 +297,9 @@ const styles = StyleSheet.create({
     gap: space.xs,
   },
   actionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.iconTile,
+    width: 36,
+    height: 36,
+    borderRadius: iconTileRadius(36),
     alignItems: "center",
     justifyContent: "center",
   },

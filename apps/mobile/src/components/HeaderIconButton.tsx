@@ -8,12 +8,15 @@ import { AppIcon, type IconName } from "./icons/AppIcon";
 export function HeaderIconButton({
   icon,
   accessibilityLabel,
+  accessibilityHint,
   onPress,
   disabled = false,
   tone = "default",
 }: {
   icon: IconName;
   accessibilityLabel: string;
+  /** 可选的补充说明：告诉用户点下去会发生什么（不替代 label） */
+  accessibilityHint?: string;
   onPress?: () => void;
   disabled?: boolean;
   /** default = 正文色（主操作）；muted = 次要操作（如关闭搜索） */
@@ -26,6 +29,7 @@ export function HeaderIconButton({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled }}
       disabled={disabled || !onPress}
       onPress={onPress}
