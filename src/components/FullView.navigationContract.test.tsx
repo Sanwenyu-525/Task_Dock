@@ -61,12 +61,14 @@ describe("脚本侧导航契约与真实导航一致", () => {
     const covered = RAIL_ENTRIES.flatMap((e) => (e.tabs ?? [e.id]));
     expect([...covered].sort()).toEqual([...TAB_ORDER, ...RAIL_ONLY_TABS].sort());
     expect(RAIL_ENTRIES.find((e) => e.id === "collection")?.tabs).toEqual(["inbox", "shelf"]);
-    // 视觉顺序：工作台在最前（不占 Ctrl+数字）；应用位于 Agent 之后、行动之前；微件紧随应用之后；
-    // 帮助 → 诊断中心 → 资源管理 → 设置 依次相邻
+    // 视觉顺序：工作台在最前（不占 Ctrl+数字）；生活是其中一项可选工作台页面，
+    // 位于 Agent 之后、应用之前；应用之后紧接微件、行动；帮助 → 诊断中心 → 资源管理 → 设置 依次相邻。
     const visual = RAIL_ENTRIES.map((e) => e.id);
     expect(visual[0]).toBe("workbench");
-    expect(visual.indexOf("apps")).toBe(visual.indexOf("agents") + 1);
-    expect(visual.indexOf("actions")).toBe(visual.indexOf("apps") + 2);
+    expect(visual.indexOf("apps")).toBeGreaterThan(visual.indexOf("agents"));
+    expect(visual.indexOf("apps")).toBeLessThan(visual.indexOf("actions"));
+    expect(visual.indexOf("widgets")).toBe(visual.indexOf("apps") + 1);
+    expect(visual.indexOf("actions")).toBe(visual.indexOf("widgets") + 1);
     expect(visual.indexOf("mobile")).toBe(visual.indexOf("clipboard") + 1);
     expect(visual.indexOf("diagnostics")).toBe(visual.indexOf("help") + 1);
     expect(visual.indexOf("resource")).toBe(visual.indexOf("diagnostics") + 1);

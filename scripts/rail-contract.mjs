@@ -57,9 +57,9 @@ export const RAIL_ENTRIES = Object.freeze([
   // 主窗口 FullView 不渲染 workbenchOnly 页面，故不计入侧栏 DOM 标签。
   { id: "files", label: "文件工作区", shortcut: "", workbenchOnly: true },
   { id: "tasks", label: "任务", shortcut: "Ctrl+1" },
+  { id: "agents", label: "Agent", shortcut: "Ctrl+2" },
   // 生活：完整工作台内的生活效率页面，不占 Ctrl+数字，默认隐藏（可选业务领域）。
   { id: "life", label: "生活", shortcut: "", defaultVisible: false, workbenchOnly: true },
-  { id: "agents", label: "Agent", shortcut: "Ctrl+2" },
   { id: "apps", label: "应用", shortcut: "" },
   { id: "widgets", label: "微件", shortcut: "" },
   { id: "actions", label: "行动", shortcut: "Ctrl+3" },
