@@ -2,7 +2,7 @@
 // 组件挂载/返回键属于真机回归；这里固定状态机输入，避免信号归零逻辑被改坏。
 import { describe, expect, it } from "vitest";
 
-import { TAB_ORDER, parseWidgetRouteUri, shouldConsumeCreateSignal } from "../nav";
+import { TAB_ORDER, parseWidgetRouteUri, shouldConsumeCreateSignal, shouldConsumeSignal } from "../nav";
 
 describe("TAB_ORDER", () => {
   it("五栏顺序固定为 首页/任务/工作区/工具/我的", () => {
@@ -20,7 +20,27 @@ describe("parseWidgetRouteUri", () => {
   });
 });
 
-describe("shouldConsumeCreateSignal", () => {
+describe("shouldConsumeSignal（搜索聚焦与新建共用同一契约）", () => {
+  it("0 表示没有信号，不触发任何动作", () => {
+    expect(shouldConsumeSignal(0, 0)).toBe(false);
+  });
+
+  it("同一信号只消费一次：页面重挂载/重渲染不会反复抢焦点", () => {
+    expect(shouldConsumeSignal(7, 0)).toBe(true);
+    expect(shouldConsumeSignal(7, 7)).toBe(false);
+  });
+
+  it("连续点击产生新 id 时才再次消费", () => {
+    expect(shouldConsumeSignal(8, 7)).toBe(true);
+  });
+
+  it("旧实现 shouldConsumeCreateSignal 与新契约一致（兼容保留）", () => {
+    expect(shouldConsumeCreateSignal(3, 2)).toBe(true);
+    expect(shouldConsumeCreateSignal(3, 3)).toBe(false);
+  });
+});
+
+describe("shouldConsumeCreateSignal（兼容旧调用）", () => {
   it("0 表示空闲，不打开弹层", () => {
     expect(shouldConsumeCreateSignal(0, 0)).toBe(false);
   });

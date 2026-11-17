@@ -14,6 +14,7 @@ import {
   saveSyncResult,
   settlePush,
   type PendingOp,
+  type PullApplyResult,
   type SyncLastResult,
 } from "../../db/sync";
 import { loadConnection, readToken, touchConnection } from "../../db/syncConnection";
@@ -87,22 +88,34 @@ export function syncNow(options: { fetchImpl?: FetchLike } = {}): Promise<SyncLa
   return task;
 }
 
-async function pullAll(client: SyncClient): Promise<{ pulled: number; applied: number }> {
+interface PullTotals extends PullApplyResult {
+  pulled: number;
+}
+
+function emptyPullTotals(): PullTotals {
+  return { pulled: 0, applied: 0, deleted: 0, stale: 0, deferred: 0, rejected: 0, skipped: 0 };
+}
+
+async function pullAll(client: SyncClient): Promise<PullTotals> {
   let cursor = await loadSyncCursor();
-  let pulled = 0;
-  let applied = 0;
+  const total = emptyPullTotals();
 
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const result = await client.pull(cursor, PAGE_SIZE);
-    pulled += result.changes.length;
+    total.pulled += result.changes.length;
     const outcome = await applyPullChanges(result.changes);
-    applied += outcome.applied + outcome.deleted;
+    total.applied += outcome.applied;
+    total.deleted += outcome.deleted;
+    total.stale += outcome.stale;
+    total.deferred += outcome.deferred;
+    total.rejected += outcome.rejected;
+    total.skipped += outcome.skipped;
     cursor = result.cursor || cursor;
     await saveSyncCursor(cursor);
     if (result.changes.length < PAGE_SIZE) break;
   }
 
-  return { pulled, applied };
+  return total;
 }
 
 async function execute(options: { fetchImpl?: FetchLike }): Promise<SyncLastResult> {
@@ -147,19 +160,32 @@ async function execute(options: { fetchImpl?: FetchLike }): Promise<SyncLastResu
       }
       // 服务端对每个 ack 的操作都会写变更日志；再拉一次把新 rev 落到本地，
       // 否则下一次本地编辑仍用旧 base_rev，会立刻自己和自己冲突。
-      await pullAll(client);
+      // 第二次 pull 的应用结果同样计入本次同步，不能只统计第一次。
+      const afterPush = await pullAll(client);
+      pull.pulled += afterPush.pulled;
+      pull.applied += afterPush.applied;
+      pull.deleted += afterPush.deleted;
+      pull.stale += afterPush.stale;
+      pull.deferred += afterPush.deferred;
+      pull.rejected += afterPush.rejected;
+      pull.skipped += afterPush.skipped;
     }
 
     const outcome: SyncLastResult = {
       at: Date.now(),
       pulled: pull.pulled,
       applied: pull.applied,
+      deleted: pull.deleted,
+      stale: pull.stale,
+      deferred: pull.deferred,
+      rejected: pull.rejected,
+      skipped: pull.skipped,
       pushed,
       conflicts,
     };
     // pull 落地了新变更：桌面端可能改了/删了提醒时间，触发一次系统通知对账。
     // 对账失败（权限被撤等）不应让整轮同步报错，只留下次启动/前台恢复再对账。
-    if (pull.applied > 0) {
+    if (pull.applied > 0 || pull.deleted > 0) {
       await rescheduleAllReminders().catch(() => undefined);
     }
     // 服务端在鉴权时已刷新 last_seen；本机元数据也同步更新，避免同步页还显示旧时间。
@@ -172,6 +198,11 @@ async function execute(options: { fetchImpl?: FetchLike }): Promise<SyncLastResu
       at: Date.now(),
       pulled: 0,
       applied: 0,
+      deleted: 0,
+      stale: 0,
+      deferred: 0,
+      rejected: 0,
+      skipped: 0,
       pushed: 0,
       conflicts: 0,
       error: message,

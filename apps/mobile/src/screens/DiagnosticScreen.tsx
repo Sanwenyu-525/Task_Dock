@@ -32,6 +32,11 @@ import {
   listSyncConflicts,
   type SyncConflictRow,
 } from "../db/sync";
+import {
+  listDeferredLifeChanges,
+  type DeferredLifeChange,
+} from "../db/lifeSync";
+import { ENTITY_LABEL as LIFE_ENTITY_LABEL, reasonMeta } from "../lib/lifeSyncStatus";
 import { loadConnection, readToken, type PairedConnection } from "../db/syncConnection";
 import { describeError } from "../lib/errors";
 import type { Nav } from "../lib/nav";
@@ -73,6 +78,9 @@ interface DiagnosticData {
   failedAttachments: number;
   conflicts: number;
   conflictRows: SyncConflictRow[];
+  deferredRows: DeferredLifeChange[];
+  deferredCount: number;
+  rejectedCount: number;
   connection: PairedConnection | null;
   hasToken: boolean;
 }
@@ -95,7 +103,7 @@ export function DiagnosticScreen({
     setLoading(true);
     setLoadError(null);
     try {
-      const [result, pendingOps, transferTotal, attachments, conflicts, conflictRows, connection, token] =
+      const [result, pendingOps, transferTotal, attachments, conflicts, conflictRows, connection, token, deferredRows] =
         await Promise.all([
           quickCheck(),
           countPendingSyncOps().catch(() => 0),
@@ -105,6 +113,7 @@ export function DiagnosticScreen({
           listSyncConflicts().catch(() => []),
           loadConnection().catch(() => null),
           readToken().catch(() => null),
+          listDeferredLifeChanges().catch(() => []),
         ]);
       const failedAttachments = attachments.filter(
         (attachment) => attachment.transferState === "failed",
@@ -116,6 +125,9 @@ export function DiagnosticScreen({
         failedAttachments,
         conflicts,
         conflictRows,
+        deferredRows,
+        deferredCount: deferredRows.length,
+        rejectedCount: deferredRows.filter((row) => row.reason === "invalid").length,
         connection,
         hasToken: Boolean(token),
       });
@@ -296,10 +308,25 @@ export function DiagnosticScreen({
                   divider
                   onPress={data.conflicts > 0 ? () => nav.push("conflict") : undefined}
                 />
+                <EntryRow
+                  icon="sync"
+                  label="生活同步待处理"
+                  helper="依赖未到 / 本机未发送 / 同名商品 / 重复关联 / 无效数据"
+                  trailingText={`${data.deferredCount} 条`}
+                  divider
+                  onPress={data.deferredCount > 0 ? () => nav.push("sync_deferred") : undefined}
+                />
+                <EntryRow
+                  icon="error"
+                  label="生活同步拒绝"
+                  helper="字段或业务校验失败、无法自动应用的数据"
+                  trailingText={`${data.rejectedCount} 条`}
+                  onPress={data.rejectedCount > 0 ? () => nav.push("sync_deferred") : undefined}
+                />
               </GlassCard>
             </View>
 
-            {/* 异常记录：只列 sync_conflicts 真实条目；空态用 EmptyState，不造假列表 */}
+            {/* 异常记录：冲突条目在前，生活同步待处理随后；全部来自真实数据库，空态不造假列表 */}
             <View style={styles.group}>
               <SectionHeader icon="warning" title="异常记录" />
               {data.conflictRows.length === 0 ? (
@@ -337,6 +364,36 @@ export function DiagnosticScreen({
                   );
                 })
               )}
+              {data.deferredRows.length > 0 ? (
+                <>
+                  <Text style={[styles.deferredSectionTitle, { color: tokens.textSoft }]}>
+                    生活同步待处理（{data.deferredCount}）
+                  </Text>
+                  {data.deferredRows.slice(0, 5).map((row) => (
+                    <PressableScale
+                      key={row.id}
+                      onPress={() => nav.push("sync_deferred")}
+                      accessibilityLabel={`${LIFE_ENTITY_LABEL[row.entity]}待处理，${reasonMeta(row.reason).label}`}
+                      accessibilityHint="打开生活同步待处理页"
+                      style={styles.conflictPress}
+                      contentStyle={[styles.conflictCard, { borderColor: tokens.cardBorder }]}
+                      scaleTo={0.98}
+                    >
+                      <View style={styles.conflictHead}>
+                        <Text numberOfLines={1} style={[styles.conflictTitle, { color: tokens.text }]}>
+                          {LIFE_ENTITY_LABEL[row.entity]} · {row.targetId.slice(0, 8)}
+                        </Text>
+                        <Text style={[styles.conflictReason, { color: tokens.warn }]}>
+                          {reasonMeta(row.reason).label}
+                        </Text>
+                      </View>
+                      <Text style={[styles.conflictMeta, { color: tokens.muted }]}>
+                        变更 {formatTime(row.updatedAt)} · 重试 {row.retryCount} 次 · {row.reason}
+                      </Text>
+                    </PressableScale>
+                  ))}
+                </>
+              ) : null}
             </View>
 
             {/* 未采集的能力：如实说明移动端尚无数据源，不做假仪表盘，也不显示 0 / 正常 */}
@@ -451,6 +508,12 @@ const styles = StyleSheet.create({
   conflictTitle: { flex: 1, fontSize: font.body, fontWeight: "700" },
   conflictReason: { fontSize: font.label, fontWeight: "600" },
   conflictMeta: { fontSize: font.label },
+  deferredSectionTitle: {
+    fontSize: font.meta,
+    fontWeight: "600",
+    marginTop: space.xs,
+    marginBottom: space.xxs,
+  },
   notCollected: {
     padding: space.md,
     gap: space.xs,

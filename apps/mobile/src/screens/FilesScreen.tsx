@@ -33,11 +33,13 @@ import { useToast } from "../feedback/ToastProvider";
 import { useToastBottomAnchor } from "../feedback/ToastLayoutProvider";
 import { getSetting, setSetting } from "../db/kv";
 import { loadConnection, readToken, type PairedConnection } from "../db/syncConnection";
-import { AppError, describeError } from "../lib/errors";
+import { AppError, describeError, isAppError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
 import type { Nav } from "../lib/nav";
 import { deriveSyncKey } from "../lib/sync/crypto";
 import {
+  MANUAL_LIST_MAX_RETRIES,
+  MANUAL_LIST_TIMEOUT_MS,
   classifyListError,
   createFileClient,
   createListRunTracker,
@@ -46,6 +48,18 @@ import {
   type ListErrorState,
   type RemoteFile,
 } from "../lib/sync/files";
+import {
+  AUTHORIZATION_LABEL,
+  CONNECTION_LABEL,
+  authorizationTone,
+  connectionTone,
+  hydrateLinkState,
+  reportLinkChecking,
+  reportLinkFailure,
+  reportLinkOnline,
+  reportLinkUnknown,
+  useLinkState,
+} from "../lib/sync/linkState";
 import {
   directoryLabel,
   downloadRemoteFile,
@@ -231,16 +245,23 @@ function FileRow({
 export function FilesScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
+  /** 配对授权 / 当前连接：与同步页、配对页共用同一份状态，不在这里另存一份 */
+  const link = useLinkState();
 
   const [connection, setConnection] = useState<PairedConnection | null>(null);
   const [files, setFiles] = useState<RemoteFile[]>([]);
   const [loading, setLoading] = useState(true);
+  /**
+   * 首屏加载阶段：先确认本机配好没有（检测电脑连接），再读传输记录。
+   * 两个阶段的文案必须分开，用户才知道卡在哪一步、是不是电脑没开。
+   */
+  const [phase, setPhase] = useState<"detecting" | "listing">("detecting");
   const [refreshing, setRefreshing] = useState(false);
   const [saveDir, setSaveDir] = useState<string | null>(null);
   const [downloaded, setDownloaded] = useState<Record<string, string>>({});
   const [transfer, setTransfer] = useState<TransferState | null>(null);
   /**
-   * 列表读取失败后的持久错误态：离线可重试 / 安全授权类需重新配对 / 未配对引导。
+   * 列表读取失败后的持久错误态：离线可重试 / 授权失效 / 安全校验失败 / 未配对引导。
    * 不再把超时或离线降级成一闪而过的 Toast 或空列表。
    */
   const [listError, setListError] = useState<ListErrorState | null>(null);
@@ -290,22 +311,49 @@ export function FilesScreen({ nav }: { nav: Nav }) {
   }, []);
 
   const refresh = useCallback(
-    async (quiet = false) => {
+    async (quiet = false, manual = false) => {
       if (!quiet) setRefreshing(true);
       const run = listTracker.current.begin();
       // 新一次刷新先取消上一次在途列表读取；只取消列表，不触碰在途上传/下载。
       clientRef.current?.cancelList();
+      if (mounted.current) {
+        setPhase(clientRef.current ? "listing" : "detecting");
+        // 连接检测只更新「当前连接」，不动配对授权。
+        reportLinkChecking();
+      }
       try {
         const client = await ensureClient();
         if (listTracker.current.stale(run)) return;
-        const next = await client.list();
-        if (listTracker.current.stale(run)) return;
+        if (mounted.current) setPhase("listing");
+        // 首次/自动读取用页面默认的 3.5s × 0 次快速失败预算；
+        // 用户点「重试」/下拉刷新才用独立的手动预算（4.5s × 1 次）。
+        const next = manual
+          ? await client.list({
+              timeoutMs: MANUAL_LIST_TIMEOUT_MS,
+              maxRetries: MANUAL_LIST_MAX_RETRIES,
+            })
+          : await client.list();
+        if (listTracker.current.stale(run) || !mounted.current) return;
         setFiles(next);
         setListError(null);
+        // 列表读取成功 = 认证与指纹校验都通过，才可以把「当前连接」置为在线。
+        reportLinkOnline();
       } catch (error) {
         // 过期请求（被新刷新取代或已卸载）的结果一律忽略，不覆盖当前错误态。
         if (listTracker.current.stale(run) || !mounted.current) return;
-        setListError(classifyListError(error));
+        const failure = classifyListError(error);
+        setListError(failure);
+        // 只有连接层/授权/安全类失败才更新全局链路状态：
+        // 读取失败（响应不合法）与未配对不代表电脑不可达。
+        if (failure.kind === "offline") {
+          const timedOut = isAppError(error) && error.code === "request_timeout";
+          reportLinkFailure(timedOut ? "timeout" : "offline", failure.message);
+        } else if (failure.kind === "auth" || failure.kind === "tls") {
+          reportLinkFailure(failure.kind, failure.message);
+        } else if (failure.kind === "unpaired") {
+          // 没有可用凭据：连接状态回到「未检测」，不把「检测中」永久挂住。
+          reportLinkUnknown();
+        }
       } finally {
         if (mounted.current && !listTracker.current.stale(run)) {
           setRefreshing(false);
@@ -318,6 +366,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
 
   useEffect(() => {
     mounted.current = true;
+    void hydrateLinkState().catch(() => undefined);
     void (async () => {
       const [meta, dir] = await Promise.all([
         loadConnection().catch(() => null),
@@ -548,6 +597,28 @@ export function FilesScreen({ nav }: { nav: Nav }) {
       ? Math.min(transfer.size, transfer.done * transfer.chunkBytes)
       : 0;
 
+  /** 错误面板标题按分类区分：授权失效、安全校验、连接失败、读取失败不能混为一谈 */
+  const errorTitle = !listError
+    ? ""
+    : listError.kind === "auth"
+      ? "配对授权已失效"
+      : listError.kind === "tls"
+        ? "连接安全校验失败"
+        : listError.kind === "offline"
+          ? link.connection === "timeout"
+            ? "连接超时"
+            : "连接失败"
+          : "读取传输记录失败";
+
+  const toneColor = (tone: "ok" | "warn" | "danger" | "muted") =>
+    tone === "ok"
+      ? tokens.ok
+      : tone === "warn"
+        ? tokens.warn
+        : tone === "danger"
+          ? tokens.danger
+          : tokens.faint;
+
   return (
     <View style={[styles.root, { backgroundColor: tokens.bg }]}>
       <AppBar
@@ -555,7 +626,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
         onBack={() => nav.back()}
         right={
           <PressableScale
-            onPress={() => void refresh()}
+            onPress={() => void refresh(false, true)}
             accessibilityLabel="刷新文件列表"
             disabled={refreshing}
             contentStyle={styles.refresh}
@@ -576,7 +647,7 @@ export function FilesScreen({ nav }: { nav: Nav }) {
           connection ? (
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={() => void refresh()}
+              onRefresh={() => void refresh(false, true)}
               tintColor={tokens.accent}
               colors={[tokens.accent]}
               progressBackgroundColor={tokens.card}
@@ -584,10 +655,44 @@ export function FilesScreen({ nav }: { nav: Nav }) {
           ) : undefined
         }
       >
+        {link.loaded ? (
+          <View style={[styles.linkBar, { borderColor: tokens.separator }]}>
+            <View style={styles.linkRow}>
+              <View
+                style={[
+                  styles.linkDot,
+                  { backgroundColor: toneColor(authorizationTone(link.authorization)) },
+                ]}
+              />
+              <Text style={[styles.linkText, { color: tokens.textSoft }]}>
+                配对授权：{AUTHORIZATION_LABEL[link.authorization]}
+              </Text>
+            </View>
+            <View style={styles.linkRow}>
+              <View
+                style={[
+                  styles.linkDot,
+                  { backgroundColor: toneColor(connectionTone(link.connection)) },
+                ]}
+              />
+              <Text style={[styles.linkText, { color: tokens.textSoft }]}>
+                当前连接：{CONNECTION_LABEL[link.connection]}
+              </Text>
+            </View>
+            {link.lastSuccessAt ? (
+              <Text style={[styles.linkStamp, { color: tokens.muted }]}>
+                上次成功连接：{formatFileTime(link.lastSuccessAt)}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+
         {loading ? (
           <View style={styles.loading}>
             <ActivityIndicator color={tokens.accent} />
-            <Text style={[styles.hint, { color: tokens.muted }]}>正在读取传输记录…</Text>
+            <Text style={[styles.hint, { color: tokens.muted }]}>
+              {phase === "detecting" ? "正在检测电脑连接…" : "正在读取传输记录…"}
+            </Text>
           </View>
         ) : !connection || listError?.kind === "unpaired" ? (
           <EmptyState
@@ -599,19 +704,28 @@ export function FilesScreen({ nav }: { nav: Nav }) {
           />
         ) : listError ? (
           <View style={styles.errorPanel}>
-            <Text style={[styles.errorTitle, { color: tokens.danger }]}>
-              {listError.kind === "repair" ? "文件互传连接校验失败" : "连接失败"}
-            </Text>
+            <Text style={[styles.errorTitle, { color: tokens.danger }]}>{errorTitle}</Text>
             <Text style={[styles.errorText, { color: tokens.text }]}>{listError.message}</Text>
+            {listError.kind === "offline" ? (
+              <Text style={[styles.errorHint, { color: tokens.muted }]}>
+                配对仍有效，无需重新配对；请确认电脑端已启动并开启「手机互传」。
+              </Text>
+            ) : null}
+            {listError.kind === "tls" ? (
+              <Text style={[styles.errorHint, { color: tokens.muted }]}>
+                为避免中间人攻击，本机不会在指纹不一致时传输任何数据。
+              </Text>
+            ) : null}
             <PressableScale
               onPress={() => {
                 if (listError.needsRepair) {
                   nav.push("pairing");
                 } else {
-                  void refresh();
+                  void refresh(false, true);
                 }
               }}
-              accessibilityLabel={listError.needsRepair ? "重新扫码配对" : "重试"}
+              disabled={refreshing}
+              accessibilityLabel={listError.needsRepair ? "重新扫码配对" : "重试读取传输记录"}
               contentStyle={[
                 styles.errorAction,
                 listError.needsRepair
@@ -625,7 +739,11 @@ export function FilesScreen({ nav }: { nav: Nav }) {
                   { color: listError.needsRepair ? tokens.onDanger : tokens.onAccent },
                 ]}
               >
-                {listError.needsRepair ? "重新配对" : "重试"}
+                {refreshing
+                  ? "正在重试…"
+                  : listError.needsRepair
+                    ? "重新配对"
+                    : "重试"}
               </Text>
             </PressableScale>
           </View>
@@ -830,6 +948,30 @@ const styles = StyleSheet.create({
     gap: space.sm,
     paddingVertical: space.xl,
   },
+  /** 授权/连接状态条：两个状态并排展示，避免把「已配对」误读成「电脑在线」 */
+  linkBar: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingBottom: space.sm,
+    gap: 3,
+  },
+  linkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs + 1,
+  },
+  linkDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  linkText: {
+    fontSize: font.label,
+    fontWeight: "600",
+  },
+  linkStamp: {
+    fontSize: font.label,
+    fontVariant: ["tabular-nums"],
+  },
   hint: {
     fontSize: font.meta,
   },
@@ -966,6 +1108,11 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: font.label,
     lineHeight: 17,
+    textAlign: "center",
+  },
+  errorHint: {
+    fontSize: font.label,
+    lineHeight: 16,
     textAlign: "center",
   },
   errorAction: {

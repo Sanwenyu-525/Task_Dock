@@ -128,10 +128,11 @@ describe("列表读取：正常返回与错误分类", () => {
     expect(error).toMatchObject({ kind: "network", code: "request_timeout" });
     const failure = classifyListError(error);
     expect(failure.kind).toBe("offline");
-    expect(failure.message).toContain("桌面端可能未启动");
+    expect(failure.connection).toBe(true);
+    expect(failure.message).toContain("电脑可能未启动");
   });
 
-  it("TLS 指纹不匹配：不自动重试，分类为需重新配对", async () => {
+  it("TLS 指纹不匹配：不自动重试，分类为安全校验失败", async () => {
     const calls = vi.fn();
     const { client } = await harness(async () => {
       calls();
@@ -149,8 +150,9 @@ describe("列表读取：正常返回与错误分类", () => {
     const failure = classifyListError(
       new AppError("validation", "指纹不匹配", undefined, "tls_pin_mismatch"),
     );
-    expect(failure.kind).toBe("repair");
+    expect(failure.kind).toBe("tls");
     expect(failure.needsRepair).toBe(true);
+    expect(failure.connection).toBe(false);
   });
 
   it("未配对错误：分类为配对引导，不进加载死循环", () => {
@@ -166,13 +168,23 @@ describe("列表读取：正常返回与错误分类", () => {
       new AppError("network", "安全通道连接失败", undefined, "offline"),
     );
     expect(failure.kind).toBe("offline");
+    expect(failure.connection).toBe(true);
     expect(failure.needsRepair).toBe(false);
   });
 
-  it("401/403 授权失效：分类为需重新配对，不当成普通离线", () => {
-    expect(classifyListError(new FileHttpError(401, "unauthorized")).needsRepair).toBe(true);
-    expect(classifyListError(new FileHttpError(403, null)).needsRepair).toBe(true);
-    expect(classifyListError(new FileHttpError(503, null)).needsRepair).toBe(false);
+  it("401/403 授权失效与安全校验分开：都需重新配对，但不是同一类错误", () => {
+    const unauthorized = classifyListError(new FileHttpError(401, "unauthorized"));
+    expect(unauthorized.kind).toBe("auth");
+    expect(unauthorized.needsRepair).toBe(true);
+    expect(unauthorized.connection).toBe(false);
+
+    const forbidden = classifyListError(new FileHttpError(403, null));
+    expect(forbidden.kind).toBe("auth");
+    expect(forbidden.needsRepair).toBe(true);
+
+    const unavailable = classifyListError(new FileHttpError(503, null));
+    expect(unavailable.kind).toBe("read");
+    expect(unavailable.needsRepair).toBe(false);
   });
 });
 
@@ -283,12 +295,12 @@ describe("并发护栏：连续重试不产生多个并行列表请求", () => {
     expect(tracker.stale(run2)).toBe(true);
   });
 
-  it("重试后恢复：第一次失败落错误态，第二次列表成功并清空错误态", async () => {
+  it("首次失败后手动重试恢复：默认不自动重试，第二次 list 才成功", async () => {
     let attempts = 0;
     const { client, key } = await harness(async () => {
       attempts += 1;
-      // 列表自带 1 次自动重试：前两次尝试都失败，第一次 list 调用才会落到错误态。
-      if (attempts <= 2) throw new Error("connect ECONNREFUSED 192.168.1.10:47822");
+      // 默认预算 3.5s × 0 次：第一次调用只发一次请求就落到错误态。
+      if (attempts === 1) throw new Error("connect ECONNREFUSED 192.168.1.10:47822");
       return jsonResponse(
         200,
         encryptEnvelope(key, AAD_FILES_LIST, { files: [fileRecord()] }),
@@ -296,8 +308,28 @@ describe("并发护栏：连续重试不产生多个并行列表请求", () => {
     });
 
     await expect(client.list()).rejects.toMatchObject({ kind: "network" });
+    expect(attempts).toBe(1);
+
+    // 用户主动重试才发起第二次请求，并清空错误态。
     const list = await client.list();
     expect(list).toHaveLength(1);
-    expect(attempts).toBe(3);
+    expect(attempts).toBe(2);
+  });
+
+  it("手动重试可以带自己的预算：maxRetries=1 时在同一调用内自动重试一次", async () => {
+    let attempts = 0;
+    const { client, key } = await harness(async () => {
+      attempts += 1;
+      // 首次失败，自动重试（1 次）内成功：总共 2 次请求。
+      if (attempts === 1) throw new Error("connect ECONNREFUSED 192.168.1.10:47822");
+      return jsonResponse(
+        200,
+        encryptEnvelope(key, AAD_FILES_LIST, { files: [fileRecord()] }),
+      );
+    });
+
+    const list = await client.list({ timeoutMs: 30, maxRetries: 1 });
+    expect(list).toHaveLength(1);
+    expect(attempts).toBe(2);
   });
 });

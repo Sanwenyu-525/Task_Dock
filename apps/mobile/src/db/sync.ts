@@ -34,7 +34,18 @@ const LAST_RESULT_KEY = "sync.last_result.v1";
 export interface SyncLastResult {
   at: number;
   pulled: number;
+  /** 成功写入的内容变更（新增/更新），不含删除。 */
   applied: number;
+  /** 成功应用的删除。 */
+  deleted: number;
+  /** 旧版本或已被更新数据覆盖，无需应用。 */
+  stale: number;
+  /** 因依赖未到、本地 outbox、重复关联等原因延后，已持久化等待恢复。 */
+  deferred: number;
+  /** 数据校验失败，无法自动应用，已进入待处理/诊断。 */
+  rejected: number;
+  /** 非生活实体且无需应用的变更（保持原有语义）。 */
+  skipped: number;
   pushed: number;
   conflicts: number;
   error?: string;
@@ -43,6 +54,10 @@ export interface SyncLastResult {
 export interface PullApplyResult {
   applied: number;
   deleted: number;
+  stale: number;
+  deferred: number;
+  rejected: number;
+  /** 非生活实体的无操作变更；不再混入生活延后/拒绝。 */
   skipped: number;
 }
 
@@ -81,6 +96,12 @@ export async function loadSyncResult(): Promise<SyncLastResult | null> {
       at: value.at,
       pulled: typeof value.pulled === "number" ? value.pulled : 0,
       applied: typeof value.applied === "number" ? value.applied : 0,
+      // 旧版本只存 applied；缺失的新状态按 0 处理，读旧数据不报错也不伪造统计。
+      deleted: typeof value.deleted === "number" ? value.deleted : 0,
+      stale: typeof value.stale === "number" ? value.stale : 0,
+      deferred: typeof value.deferred === "number" ? value.deferred : 0,
+      rejected: typeof value.rejected === "number" ? value.rejected : 0,
+      skipped: typeof value.skipped === "number" ? value.skipped : 0,
       pushed: typeof value.pushed === "number" ? value.pushed : 0,
       conflicts: typeof value.conflicts === "number" ? value.conflicts : 0,
       error: typeof value.error === "string" ? value.error : undefined,
@@ -445,9 +466,21 @@ async function recordPullLifeConflict(
  */
 export async function applyPullChanges(changes: readonly Change[]): Promise<PullApplyResult> {
   const db = getDatabase();
-  let applied = 0;
-  let deleted = 0;
-  let skipped = 0;
+  const result: PullApplyResult = {
+    applied: 0,
+    deleted: 0,
+    stale: 0,
+    deferred: 0,
+    rejected: 0,
+    skipped: 0,
+  };
+  // 本页出现的记录即使此前被延后，也不能在重放阶段再次计数：
+  // 否则「旧延后行 + 同一记录的新版本」会被算成两次（applied + stale）。
+  const pulledLifeKeys = new Set(
+    changes
+      .filter((change) => isLifeEntity(change.entity))
+      .map((change) => `${change.entity}:${change.id}`),
+  );
 
   // 外键顺序：生活实体必须 item → event → event_item → link 应用；
   // 其他实体保持原有 seq 顺序。Array#sort 是稳定的，同实体内部不会打乱。
@@ -468,19 +501,19 @@ export async function applyPullChanges(changes: readonly Change[]): Promise<Pull
       if (isLifeEntity(change.entity)) {
         const outcome = await applyLifeChange(db, change);
         if (outcome.status === "applied") {
-          applied += 1;
+          result.applied += 1;
         } else if (outcome.status === "deleted") {
-          deleted += 1;
+          result.deleted += 1;
         } else if (outcome.status === "stale") {
-          skipped += 1;
+          result.stale += 1;
         } else if (outcome.status === "deferred") {
-          skipped += 1;
+          result.deferred += 1;
           await recordDeferredLifeChange(db, change, outcome.reason);
           if (outcome.reason === "name_conflict") {
             await recordPullLifeConflict(db, change);
           }
         } else {
-          skipped += 1;
+          result.rejected += 1;
           await recordDeferredLifeChange(db, change, "invalid");
         }
         continue;
@@ -500,18 +533,20 @@ export async function applyPullChanges(changes: readonly Change[]): Promise<Pull
         default:
           outcome = "skipped";
       }
-      if (outcome === "applied") applied += 1;
-      else if (outcome === "deleted") deleted += 1;
-      else skipped += 1;
+      if (outcome === "applied") result.applied += 1;
+      else if (outcome === "deleted") result.deleted += 1;
+      else result.skipped += 1;
     }
 
     // 无新变更也要重放旧延后项：手动同步可在依赖已到达后自愈。
-    const retried = await retryDeferredLifeChangesInTx(db);
-    applied += retried.applied;
-    deleted += retried.deleted;
+    // 本页已覆盖的记录由上面的正常应用负责，重放只清理旧行、不重复计数。
+    const retried = await retryDeferredLifeChangesInTx(db, pulledLifeKeys);
+    result.applied += retried.applied;
+    result.deleted += retried.deleted;
+    result.stale += retried.stale;
   });
 
-  return { applied, deleted, skipped };
+  return result;
 }
 
 interface OutboxRow {

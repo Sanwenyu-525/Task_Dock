@@ -35,10 +35,19 @@ const MAX_RETRIES = 3;
 /**
  * 列表读取是只读探测：桌面端未运行时必须快速失败，落到页内错误态与重试入口，
  * 不能跟着传输类请求一起等 30s。独立于 REQUEST_TIMEOUT_MS，不要复用。
+ *
+ * 2026-11-17 整改：首次进入页面总等待预算收敛到 4~5s。
+ * 旧值 9s + 1 次自动重试（约 18s）会让用户在「正在读取传输记录」上干等十秒以上。
  */
-const LIST_TIMEOUT_MS = 9_000;
-/** 列表读取最多自动重试 1 次；TLS/授权/参数类不可重试错误按分类直接停止。 */
-const LIST_MAX_RETRIES = 1;
+const LIST_TIMEOUT_MS = 3_500;
+/**
+ * 首次/自动列表读取不重试：桌面端没开时重试只会把等待翻倍。
+ * 手动重试走 list({ timeoutMs, maxRetries }) 的独立预算。
+ */
+const LIST_MAX_RETRIES = 0;
+/** 手动重试的预算：用户主动点的重试可以多等一点，并允许 1 次自动重试（总时长仍可控）。 */
+export const MANUAL_LIST_TIMEOUT_MS = 4_500;
+export const MANUAL_LIST_MAX_RETRIES = 1;
 
 export const AAD_FILES_LIST = "taskdock-sync-v1|GET|/v1/files";
 export const AAD_FILE_CREATE = "taskdock-sync-v1|POST|/v1/files";
@@ -67,7 +76,8 @@ export type RemoteFileDirection = "to_phone" | "to_desktop";
 export type RemoteFileStatus = "pending" | "ready" | "failed";
 
 export interface RemoteFile {
-  id: string;  direction: RemoteFileDirection;
+  id: string;
+  direction: RemoteFileDirection;
   name: string;
   size: number;
   sha256: string;
@@ -97,14 +107,19 @@ export interface FileClientOptions {
   /** deriveSyncKey(token) 的结果；长度必须是 32 */
   syncKey: Uint8Array;
   fetchImpl?: FetchLike;
-  /** 列表读取超时（毫秒）；默认 9s，独立于传输类 30s 超时。 */
+  /** 列表读取超时（毫秒）；默认 3.5s，独立于传输类 30s 超时。 */
   listTimeoutMs?: number;
-  /** 列表读取自动重试次数（首次尝试之外）；默认 1。 */
+  /** 列表读取自动重试次数（首次尝试之外）；默认 0。 */
   listMaxRetries?: number;
 }
 
 export interface FileClient {
-  list(): Promise<RemoteFile[]>;
+  /**
+   * 读取传输记录。
+   * 不传 options 时使用页面默认的快速失败预算（3.5s、0 次自动重试）；
+   * 手动重试传 MANUAL_* 常量，形成独立的请求流程。
+   */
+  list(options?: { timeoutMs?: number; maxRetries?: number }): Promise<RemoteFile[]>;
   create(name: string, size: number): Promise<RemoteFile>;
   uploadChunk(id: string, index: number, bytes: Uint8Array): Promise<RemoteFile>;
   complete(id: string): Promise<RemoteFile>;
@@ -265,67 +280,94 @@ function parseShelfGroups(value: unknown): RemoteShelfGroup[] {
 }
 
 /** 列表读取失败后的页内错误分类：决定落哪种持久错误态与操作入口。 */
-export type ListErrorKind = "offline" | "repair" | "unpaired";
+export type ListErrorKind = "offline" | "auth" | "tls" | "unpaired" | "read";
 
 export interface ListErrorState {
   kind: ListErrorKind;
   message: string;
-  /** true = 安全/授权类失败，普通重试无法恢复，必须走「重新配对」。 */
+  /** true = 授权/安全类失败，普通重试无法恢复，必须走「重新配对」。 */
   needsRepair: boolean;
+  /** 连接层失败（离线/超时）：页面文案说「电脑不可达」，不是「记录读不出来」 */
+  connection: boolean;
 }
 
 /** 安全校验类错误码：与 transferError 的分类口径一致，这里只做列表页路由。 */
-const REPAIR_CODES = new Set(["tls_pin_mismatch", "tls_handshake", "insecure_transport"]);
+const TLS_CODES = new Set(["tls_pin_mismatch", "tls_handshake", "insecure_transport"]);
 
 /**
  * 把列表读取异常收敛成页内错误态。只依赖结构化信号（AppError code/kind、
  * HTTP 状态码），不匹配中文文案；分类规则仍以 transferError.ts 为准。
+ *
+ * 分类要点（2026-11-17）：
+ * - 授权失效（401/403）与 TLS 指纹不匹配必须分开：前者要求重新授权，后者是安全失败；
+ * - 普通网络失败/超时绝不能清配对信息，只影响「当前连接」；
+ * - 响应能到但内容不合法（validation）= 读取失败，不是连接失败。
  */
 export function classifyListError(error: unknown): ListErrorState {
   if (isAppError(error)) {
     const code = error.code ?? "";
-    if (REPAIR_CODES.has(code)) {
-      return { kind: "repair", needsRepair: true, message: describeError(error) };
+    if (TLS_CODES.has(code)) {
+      return {
+        kind: "tls",
+        needsRepair: true,
+        connection: false,
+        message: describeError(error) || "桌面端证书校验失败，请重新扫码配对",
+      };
     }
     if (code === "not_paired") {
-      return { kind: "unpaired", needsRepair: false, message: "尚未配对，请先与桌面端配对" };
+      return {
+        kind: "unpaired",
+        needsRepair: false,
+        connection: false,
+        message: "尚未配对，请先与桌面端配对",
+      };
     }
     if (code === "request_timeout") {
       return {
         kind: "offline",
         needsRepair: false,
-        message: "请求超时（桌面端可能未启动）",
+        connection: true,
+        message: "连接超时：电脑可能未启动，或与本机不在同一局域网",
       };
     }
     if (error.kind === "network") {
       return {
         kind: "offline",
         needsRepair: false,
+        connection: true,
         message:
-          describeError(error) || "桌面端暂时不可达，请检查电脑是否已启动并处于同一局域网",
+          describeError(error) || "电脑暂时不可达，请检查电脑是否已启动并处于同一局域网",
       };
     }
-    // validation/其他本地错误：不可自动重试，落到离线错误态展示原文。
-    return { kind: "offline", needsRepair: false, message: describeError(error) };
+    // validation/其他本地错误：连接正常但数据不可用，归为「读取失败」而不是连接失败。
+    return {
+      kind: "read",
+      needsRepair: false,
+      connection: false,
+      message: describeError(error) || "传输记录读取失败",
+    };
   }
   if (error instanceof FileHttpError) {
     if (error.status === 401 || error.status === 403) {
       return {
-        kind: "repair",
+        kind: "auth",
         needsRepair: true,
-        message: "设备令牌已失效或已被桌面端撤销，请重新扫码配对",
+        connection: false,
+        message: "配对授权已失效或被桌面端撤销，请重新扫码配对（本地配对信息仍保留）",
       };
     }
     return {
-      kind: "offline",
+      kind: "read",
       needsRepair: false,
+      connection: false,
       message: `桌面端响应异常（HTTP ${error.status}），请稍后重试`,
     };
   }
   return {
-    kind: "offline",
+    kind: "read",
     needsRepair: false,
-    message: describeError(error) || "连接失败，请稍后重试",
+    connection: false,
+    message: describeError(error) || "传输记录读取失败，请稍后重试",
   };
 }
 
@@ -500,17 +542,29 @@ export function createFileClient(options: FileClientOptions): FileClient {
     timeoutMs: REQUEST_TIMEOUT_MS,
     maxRetries: MAX_RETRIES,
   };
-  /** 列表读取与只读分组探测配置：9s × 1 次，独立快速失败。 */
+  /** 列表读取与只读分组探测配置：3.5s × 0 次，独立快速失败。 */
   const listConfig: RequestConfig = {
     kind: "list",
     timeoutMs: listTimeoutMs,
     maxRetries: listMaxRetries,
   };
 
-  function list(): Promise<RemoteFile[]> {
-    return request("GET", "/v1/files", AAD_FILES_LIST, undefined, listConfig).then(
-      parseListPayload,
-    );
+  function list(options?: { timeoutMs?: number; maxRetries?: number }): Promise<RemoteFile[]> {
+    // 手动重试等场景可以给本次请求一套自己的预算，不修改客户端默认值：
+    // 上传/下载的分块配置完全不受影响（它们各自持有 transferConfig）。
+    const timeoutMs =
+      options?.timeoutMs != null && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+        ? options.timeoutMs
+        : listConfig.timeoutMs;
+    const maxRetries =
+      options?.maxRetries != null && Number.isInteger(options.maxRetries) && options.maxRetries >= 0
+        ? options.maxRetries
+        : listConfig.maxRetries;
+    return request("GET", "/v1/files", AAD_FILES_LIST, undefined, {
+      kind: "list",
+      timeoutMs,
+      maxRetries,
+    }).then(parseListPayload);
   }
 
   function create(name: string, size: number): Promise<RemoteFile> {

@@ -54,6 +54,7 @@ import { CaptureScreen } from "./src/screens/CaptureScreen";
 import { ConflictScreen } from "./src/screens/ConflictScreen";
 import { DeviceScreen } from "./src/screens/DeviceScreen";
 import { DiagnosticScreen } from "./src/screens/DiagnosticScreen";
+import { DeferredSyncScreen } from "./src/screens/DeferredSyncScreen";
 import { EntryManagerScreen } from "./src/screens/EntryManagerScreen";
 import { FilesScreen } from "./src/screens/FilesScreen";
 import { HomeScreen } from "./src/screens/HomeScreen";
@@ -178,6 +179,9 @@ function Shell() {
   const [createSignal, setCreateSignal] = useState(0);
   /** 信号被任务页消费后立即归零；避免切走再切回时旧信号重复弹层 */
   const [createPending, setCreatePending] = useState(false);
+  /** 首页放大镜 → 任务页搜索框聚焦的一次性信号（与新建信号同构） */
+  const [searchSignal, setSearchSignal] = useState(0);
+  const [searchPending, setSearchPending] = useState(false);
   /** 推送栈：非空时全屏盖在 Tab 之上（隐藏 TabBar），硬件返回 = pop */
   const [stack, setStack] = useState<Route[]>([]);
 
@@ -202,6 +206,14 @@ function Shell() {
 
   // 收集箱转任务后只刷新数据、不强制切页：用户通常要连续整理多条记录
   const handleDataChanged = useCallback(() => {
+    setVersion((v) => v + 1);
+  }, []);
+
+  // 切 Tab 时自增数据版本：五个一级页常驻挂载，隐藏期间可能已被别的页改过数据
+  // （任务页新建任务后回首页/我的，概览仍是旧的 0）。这里按「切页即重查」收敛；
+  // 本地 SQLite 读取是毫秒级，代价远低于展示过期数据。重复点当前 Tab 也重查。
+  const handleTabChange = useCallback((key: TabKey) => {
+    setTab(key);
     setVersion((v) => v + 1);
   }, []);
 
@@ -347,9 +359,20 @@ function Shell() {
 
   const consumeCreateSignal = useCallback(() => setCreatePending(false), []);
 
+  // 首页放大镜：切到任务栏 + 发一个"聚焦搜索"信号。
+  // 不把参数塞进 nav 栈：任务页是一级常驻页，没有导航参数这个概念，
+  // 一次性信号 + 消费归零才是可靠通道（旧实现只 openTab，输入框不会聚焦）。
+  const openTaskSearch = useCallback(() => {
+    setTab("tasks");
+    setSearchSignal((value) => value + 1);
+    setSearchPending(true);
+  }, []);
+
+  const consumeSearchSignal = useCallback(() => setSearchPending(false), []);
+
   const nav = useMemo(
-    () => ({ push, back, openTab: setTab, openCreateTask }),
-    [push, back, openCreateTask],
+    () => ({ push, back, openTab: setTab, openCreateTask, openTaskSearch }),
+    [push, back, openCreateTask, openTaskSearch],
   );
 
   // 硬件返回：栈非空时 pop 栈顶。NoteEditor 会注册自己的返回监听（晚于这里注册，
@@ -480,6 +503,8 @@ function Shell() {
         );
       case "life":
         return <LifeScreen nav={nav} />;
+      case "sync_deferred":
+        return <DeferredSyncScreen nav={nav} />;
       case "diagnostics":
         return <DiagnosticScreen nav={nav} onBack={back} version={version} />;
       // 工作台入口自定义：管理与「全部功能」共用同一个屏幕，按 initialView 区分落点
@@ -528,6 +553,8 @@ function Shell() {
               nav={nav}
               openCreateSignal={createPending ? createSignal : 0}
               onConsumeCreateSignal={consumeCreateSignal}
+              focusSearchSignal={searchPending ? searchSignal : 0}
+              onConsumeSearchSignal={consumeSearchSignal}
             />
           </TabPage>
           <TabPage active={tab === "workspace"} scope="tab:workspace">
@@ -564,7 +591,7 @@ function Shell() {
         </View>
       ) : null}
 
-      {top ? null : <TabBar active={tab} onChange={setTab} bottomInset={insets.bottom} />}
+      {top ? null : <TabBar active={tab} onChange={handleTabChange} bottomInset={insets.bottom} />}
 
       {/* 全局唯一 ToastHost：位于所有一级页、二级页与 TabBar 之上，切页不销毁。 */}
       <ToastHost

@@ -36,6 +36,8 @@ export const ROUTE_KEYS = [
   "task_detail",
   // 生活效率系统（2026-11-16）：购买记录、生活待办、票据资料。
   "life",
+  // 生活同步待处理：延后/拒绝变更的单条与批量恢复（2026-11-17 验收修复）。
+  "sync_deferred",
   "diagnostics",
   // 工作台入口自定义：同一屏幕的两个入口各用一条路由，避免给 push 增加第 5 个参数
   "entry_manager",
@@ -96,6 +98,12 @@ export interface Nav {
 export interface AppNav extends Nav {
   openTab: (tab: TabKey) => void;
   openCreateTask: () => void;
+  /**
+   * 首页放大镜 → 任务页并聚焦搜索框。
+   * 单独一条能力而不是给 openTab 加参数：五个一级页常驻挂载，openTab 只切可见性，
+   * 无法表达"这一次进入要聚焦"这种一次性信号。
+   */
+  openTaskSearch: () => void;
 }
 
 /** 小组件点击深链允许直达的入口（推送页不在深链白名单里，避免无参打开） */
@@ -116,9 +124,17 @@ export function parseWidgetRouteUri(url: string | null | undefined): WidgetRoute
 }
 
 /**
+ * 一次性导航信号是否应被当前页面实例消费（新建任务 / 聚焦搜索共用）。
+ * 只认「非 0 且没消费过」的 id；Shell 在消费后会把信号归零，组件重挂载不会再次触发。
+ */
+export function shouldConsumeSignal(signal: number, lastConsumed: number): boolean {
+  return signal > 0 && signal !== lastConsumed;
+}
+
+/**
  * 首页新建任务信号是否应被当前任务页实例消费。
- * 只认「非 0 且没消费过」的 id；Shell 在消费后会把信号归零，组件重挂载不会再次打开弹层。
+ * @deprecated 使用 shouldConsumeSignal；保留导出避免历史调用与测试断裂。
  */
 export function shouldConsumeCreateSignal(signal: number, lastConsumed: number): boolean {
-  return signal > 0 && signal !== lastConsumed;
+  return shouldConsumeSignal(signal, lastConsumed);
 }

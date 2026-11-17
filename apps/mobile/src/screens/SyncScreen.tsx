@@ -13,8 +13,7 @@ import { SettingRow } from "../components/SettingRow";
 import { SettingSection } from "../components/SettingSection";
 import { ToggleSwitch } from "../components/ToggleSwitch";
 import { useToast } from "../feedback/ToastProvider";
-import type { ToastPlacement } from "../feedback/toastQueue";
-import { countAttachmentsForTransfer } from "../db/attachments";
+import type { ToastPlacement } from "../feedback/toastQueue";import { countAttachmentsForTransfer } from "../db/attachments";
 import { countDeferredLifeChanges } from "../db/lifeSync";
 import {
   countPendingSyncOps,
@@ -43,7 +42,21 @@ import {
 import { transferPendingAttachments } from "../lib/sync/attachmentTransfer";
 import { isLegacyConnection } from "../lib/sync/connectionState";
 import { syncNow } from "../lib/sync/engine";
-import { PairingRequestError, pingDesktop, pairingErrorMessage } from "../lib/sync/pairClient";
+import {
+  AUTHORIZATION_LABEL,
+  CONNECTION_LABEL,
+  authorizationTone,
+  connectionTone,
+  failureKindFromError,
+  hasCredentials,
+  hydrateLinkState,
+  reportLinkChecking,
+  reportLinkFailure,
+  reportLinkOnline,
+  reportLinkUnpaired,
+  useLinkState,
+} from "../lib/sync/linkState";
+import { pingDesktop, pairingErrorMessage } from "../lib/sync/pairClient";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
@@ -69,8 +82,11 @@ export function SyncScreen({ nav }: { nav: Nav }) {
   const [pendingOps, setPendingOps] = useState(0);
   const [connection, setConnection] = useState<PairedConnection | null>(null);
   const [hasToken, setHasToken] = useState(false);
-  /** 桌面端已撤销/令牌失效：连接信息还在，但不能再显示「已配对」健康态 */
-  const [invalid, setInvalid] = useState(false);
+  /**
+   * 配对授权与当前连接是两个独立状态，统一来自 linkState：
+   * 这里不再维护「invalid」这样的本地布尔值，避免与文件互传/配对页互相矛盾。
+   */
+  const link = useLinkState();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -109,8 +125,6 @@ export function SyncScreen({ nav }: { nav: Nav }) {
       setPendingAttachments(attachmentCount);
       setAutoSettings(settings);
       setAutoNote(status.lastAutoNote);
-      // v1 遗留连接（http:// 或缺少 SPKI 指纹）：桌面端已硬切 TLS-only，无法再连通。
-      setInvalid(isLegacyConnection(meta));
     } catch (error) {
       if (mounted.current) showToast(`读取同步状态失败：${describeError(error)}`, "danger");
     } finally {
@@ -120,6 +134,8 @@ export function SyncScreen({ nav }: { nav: Nav }) {
 
   useEffect(() => {
     mounted.current = true;
+    // 冷启动/页面重入都先恢复授权状态（幂等）；读取失败不影响其余统计加载。
+    void hydrateLinkState().catch(() => undefined);
     void refresh();
     // 自动同步/附件传送完成后实时刷新计数，不靠轮询
     const unsubscribe = subscribeSyncStatus((snapshot) => {
@@ -151,7 +167,11 @@ export function SyncScreen({ nav }: { nav: Nav }) {
     [showToast],
   );
 
-  const paired = Boolean(connection && hasToken) && !invalid;
+  /** 已配对 = 授权状态为已配对；电脑是否在线由 link.connection 单独表达 */
+  const paired = link.authorization === "paired";
+  const authBlocked =
+    link.authorization === "auth_invalid" || link.authorization === "security_error";
+  const credentials = hasCredentials(link.authorization);
 
   const testConnection = useCallback(
     async (placement: ToastPlacement = "top") => {
@@ -166,10 +186,12 @@ export function SyncScreen({ nav }: { nav: Nav }) {
       // 不发送令牌，直接提示重新配对，避免以首用信任把 Bearer 令牌交给中间人。
       const pin = (connection.tlsFingerprint ?? "").trim().toLowerCase();
       if (!/^[0-9a-f]{64}$/.test(pin)) {
+        reportLinkFailure("tls", "缺少桌面端 TLS 指纹，请重新扫码配对");
         showToast("缺少桌面端 TLS 指纹，请重新扫码配对", "danger", placement);
         return;
       }
       setBusy(true);
+      reportLinkChecking();
       try {
         const result = await pingDesktop({
           address: { host: connection.host, port: connection.port, baseUrl: connection.baseUrl },
@@ -181,13 +203,13 @@ export function SyncScreen({ nav }: { nav: Nav }) {
         await touchConnection(now);
         if (!mounted.current) return;
         setConnection({ ...connection, lastSeenAt: now });
-        setInvalid(false);
+        // 认证 + 指纹双重通过才算在线。
+        reportLinkOnline(now);
         showToast(`连接正常：${result.serverName || connection.serverName}`, "success", placement);
       } catch (error) {
         if (!mounted.current) return;
-        if (error instanceof PairingRequestError && error.code === "unauthorized") {
-          setInvalid(true);
-        }
+        // 连接失败只改「当前连接」；只有 401/403 或 TLS 失败才动授权状态。
+        reportLinkFailure(failureKindFromError(error), pairingErrorMessage(error));
         showToast(pairingErrorMessage(error), "danger", placement);
       } finally {
         if (mounted.current) setBusy(false);
@@ -203,11 +225,20 @@ export function SyncScreen({ nav }: { nav: Nav }) {
       const outcome = await syncNow();
       if (!mounted.current) return;
       setLastResult(outcome);
+      const received = outcome.applied + outcome.deleted;
+      const attention = outcome.conflicts + outcome.rejected;
+      const extras = [
+        outcome.deleted > 0 ? `删除 ${outcome.deleted}` : "",
+        outcome.stale > 0 ? `旧数据 ${outcome.stale}` : "",
+        outcome.deferred > 0 ? `延后 ${outcome.deferred}` : "",
+        outcome.rejected > 0 ? `拒绝 ${outcome.rejected}` : "",
+      ]
+        .filter(Boolean)
+        .join("，");
       showToast(
-        outcome.conflicts > 0
-          ? `同步完成：接收 ${outcome.applied}，发送 ${outcome.pushed}，${outcome.conflicts} 条冲突待处理`
-          : `同步完成：接收 ${outcome.applied}，发送 ${outcome.pushed}`,
-        outcome.conflicts > 0 ? "info" : "success",
+        `同步完成：接收 ${received}${extras ? `（${extras}）` : ""}，发送 ${outcome.pushed}` +
+          (outcome.conflicts > 0 ? `，${outcome.conflicts} 条冲突待处理` : ""),
+        attention > 0 ? "info" : outcome.deferred > 0 ? "info" : "success",
         "bottom",
       );
       await refresh();
@@ -271,9 +302,10 @@ export function SyncScreen({ nav }: { nav: Nav }) {
                 if (!mounted.current) return;
                 setConnection(null);
                 setHasToken(false);
-                setInvalid(false);
                 setLastResult(null);
                 setConflictCount(0);
+                // 解除后授权=未配对、连接=未检测，同步页/互传页/配对页一起回到初始态。
+                reportLinkUnpaired();
                 showToast("已解除本机配对", "success", "bottom");
               })
               .catch((error) => {
@@ -290,15 +322,25 @@ export function SyncScreen({ nav }: { nav: Nav }) {
     );
   }, [connection, showToast]);
 
+  const toneColor = (tone: "ok" | "warn" | "danger" | "muted") =>
+    tone === "ok"
+      ? tokens.ok
+      : tone === "warn"
+        ? tokens.warn
+        : tone === "danger"
+          ? tokens.danger
+          : tokens.faint;
+
   return (
     <View style={styles.container}>
       <AppBar
         title="同步"
         badge={
-          paired ? (
-            <Badge label="已配对" tone="active" />
-          ) : invalid ? (
-            <Badge label="需重新配对" tone="unimplemented" />
+          credentials ? (
+            <Badge
+              label={AUTHORIZATION_LABEL[link.authorization]}
+              tone={authorizationTone(link.authorization) === "ok" ? "active" : "unimplemented"}
+            />
           ) : undefined
         }
         onBack={nav.back}
@@ -309,16 +351,25 @@ export function SyncScreen({ nav }: { nav: Nav }) {
         showsVerticalScrollIndicator={false}
       >
         <GlassCard style={styles.card}>
-          <View style={styles.statusRow}>
-            <View
-              style={[
-                styles.dot,
-                { backgroundColor: invalid ? tokens.danger : paired ? tokens.ok : tokens.faint },
-              ]}
-            />
-            <Text style={[styles.statusText, { color: tokens.text }]}>
-              {loading ? "读取中…" : invalid ? "令牌已失效" : paired ? "已配对" : "未配对"}
-            </Text>
+          <View style={styles.statusGroup}>
+            <View style={styles.statusRow}>
+              <View
+                style={[styles.dot, { backgroundColor: toneColor(authorizationTone(link.authorization)) }]}
+              />
+              <Text style={[styles.statusLabel, { color: tokens.muted }]}>配对授权</Text>
+              <Text style={[styles.statusValue, { color: tokens.text }]}>
+                {loading || !link.loaded ? "读取中…" : AUTHORIZATION_LABEL[link.authorization]}
+              </Text>
+            </View>
+            <View style={styles.statusRow}>
+              <View
+                style={[styles.dot, { backgroundColor: toneColor(connectionTone(link.connection)) }]}
+              />
+              <Text style={[styles.statusLabel, { color: tokens.muted }]}>当前连接</Text>
+              <Text style={[styles.statusValue, { color: tokens.text }]}>
+                {loading || !link.loaded ? "读取中…" : CONNECTION_LABEL[link.connection]}
+              </Text>
+            </View>
           </View>
           {connection && hasToken ? (
             <>
@@ -328,22 +379,35 @@ export function SyncScreen({ nav }: { nav: Nav }) {
               <Text style={[styles.cardHint, { color: tokens.textSoft }]}>
                 {connection.baseUrl}
               </Text>
-              {invalid ? (
+              {link.authorization === "security_error" ? (
                 <Text style={[styles.cardHint, { color: tokens.danger }]}>
-                  {connection.baseUrl.startsWith("http://")
+                  {isLegacyConnection(connection)
                     ? "桌面端协议已升级（TLS 加密传输），旧连接不再受支持；请重新扫码配对，本机数据不会被删除。"
-                    : "桌面端已撤销该设备或令牌已失效，请重新配对；本机数据不会被删除。"}
+                    : "桌面端证书指纹校验失败（可能存在中间人），已拒绝传输。请人工确认后重新扫码配对。"}
+                </Text>
+              ) : link.authorization === "auth_invalid" ? (
+                <Text style={[styles.cardHint, { color: tokens.danger }]}>
+                  桌面端已撤销该设备或令牌已失效，请重新配对；本机数据不会被删除。
                 </Text>
               ) : connection.fingerprint ? (
                 <Text style={[styles.cardHint, { color: tokens.muted }]}>
-                  设备指纹 {fingerprintLabel(connection.fingerprint)} · 上次连接{" "}
-                  {formatStamp(connection.lastSeenAt)}
+                  设备指纹 {fingerprintLabel(connection.fingerprint)} · 上次成功连接{" "}
+                  {formatStamp(link.lastSuccessAt ?? connection.lastSeenAt)}
                 </Text>
               ) : (
                 <Text style={[styles.cardHint, { color: tokens.muted }]}>
-                  上次连接 {formatStamp(connection.lastSeenAt)}
+                  上次成功连接 {formatStamp(link.lastSuccessAt ?? connection.lastSeenAt)}
                 </Text>
               )}
+              {link.lastError &&
+              (link.connection === "offline" ||
+                link.connection === "timeout" ||
+                link.connection === "untrusted") ? (
+                <Text style={[styles.cardHint, { color: tokens.warn }]}>
+                  失败原因：{link.lastError}
+                  {link.connection !== "untrusted" ? "（配对仍有效，可稍后重新检测）" : ""}
+                </Text>
+              ) : null}
             </>
           ) : (
             <Text style={[styles.cardHint, { color: tokens.textSoft }]}>
@@ -363,6 +427,17 @@ export function SyncScreen({ nav }: { nav: Nav }) {
               ) : undefined
             }
           />
+          <SettingActionRow
+            label="生活同步待处理"
+            helper="依赖未到、本机修改未发送、同名商品、重复票据或数据校验失败的生活变更"
+            chevron
+            onPress={() => nav.push("sync_deferred")}
+            trailing={
+              deferredCount > 0 ? (
+                <Badge label={`${deferredCount} 条`} tone="unimplemented" />
+              ) : undefined
+            }
+          />
         </GlassCard>
 
         <View style={styles.tiles}>
@@ -377,7 +452,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           <View style={[styles.tile, { backgroundColor: tokens.card, borderColor: tokens.cardBorder }]}>
             <Text style={[styles.tileLabel, { color: tokens.muted }]}>上次接收</Text>
             <Text style={[styles.tileValue, { color: tokens.textSoft }]}>
-              {lastResult ? lastResult.applied : "—"}
+              {lastResult ? lastResult.applied + lastResult.deleted : "—"}
             </Text>
           </View>
         </View>
@@ -410,7 +485,11 @@ export function SyncScreen({ nav }: { nav: Nav }) {
         {lastResult ? (
           <Text style={[styles.lastResult, { color: tokens.muted }]}>
             上次同步 {formatStamp(new Date(lastResult.at).toISOString())} · 接收{" "}
-            {lastResult.applied} · 发送 {lastResult.pushed}
+            {lastResult.applied + lastResult.deleted}
+            {lastResult.deleted > 0 ? `（删除 ${lastResult.deleted}）` : ""} · 发送 {lastResult.pushed}
+            {lastResult.stale > 0 ? ` · 旧数据 ${lastResult.stale}` : ""}
+            {lastResult.deferred > 0 ? ` · 延后 ${lastResult.deferred}` : ""}
+            {lastResult.rejected > 0 ? ` · 拒绝 ${lastResult.rejected}` : ""}
             {lastResult.conflicts > 0 ? ` · 冲突 ${lastResult.conflicts}` : ""}
             {lastResult.error ? ` · 失败：${lastResult.error}` : ""}
           </Text>
@@ -420,13 +499,17 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           {connection && hasToken ? (
             <SettingActionRow
               label={connection.serverName}
-              helper={`${connection.baseUrl} · 上次连接 ${formatStamp(connection.lastSeenAt)}`}
+              helper={`${connection.baseUrl} · 上次成功连接 ${formatStamp(
+                link.lastSuccessAt ?? connection.lastSeenAt,
+              )}`}
               onPress={() => void testConnection()}
               trailing={
-                busy ? (
+                busy || link.connection === "checking" ? (
                   <Text style={[styles.busyText, { color: tokens.muted }]}>测试中…</Text>
-                ) : invalid ? (
+                ) : authBlocked ? (
                   <Badge label="需重新配对" tone="unimplemented" />
+                ) : link.connection === "offline" || link.connection === "timeout" ? (
+                  <Badge label="重新检测" tone="unimplemented" />
                 ) : (
                   <Badge label="连接测试" tone="active" />
                 )
@@ -477,11 +560,6 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           />
           <SettingRow label="后台同步" value="不支持常驻（Android 限制）" valueTone="muted" />
           <SettingRow label="同步冲突时" value="不自动覆盖，写入冲突页" valueTone="muted" />
-          <SettingRow
-            label="生活延后处理"
-            value={deferredCount > 0 ? `${deferredCount} 条待依赖/待处理` : "无"}
-            valueTone={deferredCount > 0 ? "default" : "muted"}
-          />
           <SettingRow label="同步范围" value="任务 / 收集箱 / 笔记 / 生活" valueTone="muted" />
         </SettingSection>
 
@@ -513,7 +591,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
               contentStyle={styles.secondary}
             >
               <Text style={[styles.secondaryText, { color: tokens.accentText }]}>
-                {busy ? "正在测试连接…" : "测试连接"}
+                {busy ? "正在测试连接…" : "重新检测连接"}
               </Text>
             </PressableScale>
             <PressableScale onPress={unpair} accessibilityLabel="解除本机配对" contentStyle={styles.dangerLink}>
@@ -522,16 +600,44 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           </>
         ) : (
           <>
+            {credentials ? (
+              <>
+                <PressableScale
+                  onPress={() => void testConnection("bottom")}
+                  disabled={busy}
+                  accessibilityLabel="重新检测连接"
+                  accessibilityState={{ disabled: busy }}
+                  contentStyle={[styles.primary, { backgroundColor: tokens.accentFill }]}
+                >
+                  <Text style={[styles.primaryText, { color: tokens.onAccent }]}>
+                    {busy ? "正在检测…" : "重新检测连接"}
+                  </Text>
+                </PressableScale>
+                <Text style={[styles.cardHint, { color: tokens.warn, textAlign: "center" }]}>
+                  {link.authorization === "security_error"
+                    ? "连接不可信：证书指纹校验失败。请人工确认网络环境后重新扫码配对。"
+                    : "授权已失效：电脑端撤销了本机，需要重新扫码配对；本机数据不会被删除。"}
+                </Text>
+              </>
+            ) : null}
             <PressableScale
               onPress={() => nav.push("pairing")}
-              accessibilityLabel={invalid ? "重新配对" : "配对新设备"}
-              contentStyle={[styles.primary, { backgroundColor: tokens.accentFill }]}
+              accessibilityLabel={credentials ? "重新配对" : "配对新设备"}
+              contentStyle={[
+                credentials ? styles.secondary : styles.primary,
+                credentials ? undefined : { backgroundColor: tokens.accentFill },
+              ]}
             >
-              <Text style={[styles.primaryText, { color: tokens.onAccent }]}>
-                {invalid ? "重新配对" : "配对新设备"}
+              <Text
+                style={[
+                  credentials ? styles.secondaryText : styles.primaryText,
+                  { color: credentials ? tokens.accentText : tokens.onAccent },
+                ]}
+              >
+                {credentials ? "重新配对" : "配对新设备"}
               </Text>
             </PressableScale>
-            {invalid ? (
+            {credentials ? (
               <PressableScale
                 onPress={unpair}
                 accessibilityLabel="解除本机配对"
@@ -565,6 +671,9 @@ const styles = StyleSheet.create({
     padding: space.md,
     gap: space.sm,
   },
+  statusGroup: {
+    gap: space.xs,
+  },
   statusRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -575,7 +684,13 @@ const styles = StyleSheet.create({
     height: 7,
     borderRadius: 4,
   },
-  statusText: {
+  statusLabel: {
+    fontSize: font.body,
+    fontWeight: "600",
+    minWidth: 64,
+  },
+  statusValue: {
+    flex: 1,
     fontSize: font.body,
     fontWeight: "600",
   },

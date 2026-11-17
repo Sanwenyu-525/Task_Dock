@@ -108,7 +108,14 @@ describe("生活同步 pull", () => {
       eventItemChange(),
       linkChange(),
     ]);
-    expect(result).toEqual({ applied: 4, deleted: 0, skipped: 0 });
+    expect(result).toEqual({
+      applied: 4,
+      deleted: 0,
+      stale: 0,
+      deferred: 0,
+      rejected: 0,
+      skipped: 0,
+    });
 
     const db = getDatabase();
     const event = await db.getFirstAsync<{ occurred_at: number }>(
@@ -138,7 +145,7 @@ describe("生活同步 pull", () => {
       linkChange(3),
     ]);
     expect(result.applied).toBe(0);
-    expect(result.skipped).toBe(4);
+    expect(result.stale).toBe(4);
 
     // 旧 rev 晚到：保持 rev 3 的内容。
     const stale = await applyPullChanges([
@@ -147,7 +154,8 @@ describe("生活同步 pull", () => {
         fields: { ...itemChange(2).fields, name: "旧名称" },
       },
     ]);
-    expect(stale.skipped).toBe(1);
+    expect(stale.skipped).toBe(0);
+    expect(stale.stale).toBe(1);
     const db = getDatabase();
     const row = await db.getFirstAsync<{ name: string; server_rev: number }>(
       "SELECT name, server_rev FROM life_items WHERE id = 'item-g'",
@@ -160,7 +168,14 @@ describe("生活同步 pull", () => {
 
   it("关联先到：延后保存；父级到达后自动重放，不随游标丢失", async () => {
     const first = await applyPullChanges([linkChange(1)]);
-    expect(first).toEqual({ applied: 0, deleted: 0, skipped: 1 });
+    expect(first).toEqual({
+      applied: 0,
+      deleted: 0,
+      stale: 0,
+      deferred: 1,
+      rejected: 0,
+      skipped: 0,
+    });
     expect(
       await getDatabase().getFirstAsync<{ id: number; reason: string }>(
         "SELECT id, reason FROM life_sync_deferred WHERE target_id = 'link-g'",
@@ -183,7 +198,14 @@ describe("生活同步 pull", () => {
 
     // 同一变更再次到达时已经是旧版本，跳过但记录仍在。
     const replay = await applyPullChanges([linkChange(1)]);
-    expect(replay).toEqual({ applied: 0, deleted: 0, skipped: 1 });
+    expect(replay).toEqual({
+      applied: 0,
+      deleted: 0,
+      stale: 1,
+      deferred: 0,
+      rejected: 0,
+      skipped: 0,
+    });
   });
 
   it("墓碑按版本生效；旧墓碑不会复活或删除新记录", async () => {
@@ -203,7 +225,7 @@ describe("生活同步 pull", () => {
     const staleTombstone = await applyPullChanges([
       { ...eventChange(4), deleted: true, fields: {} },
     ]);
-    expect(staleTombstone.skipped).toBe(1);
+    expect(staleTombstone.stale).toBe(1);
   });
 
   it("本地有 pending outbox 时，pull 不覆盖本机编辑", async () => {
@@ -221,7 +243,8 @@ describe("生活同步 pull", () => {
     remote.fields.name = "桌面大米";
     remote.fields.normalizedName = "桌面大米";
     const result = await applyPullChanges([remote]);
-    expect(result.skipped).toBe(1);
+    expect(result.deferred).toBe(1);
+    expect(result.skipped).toBe(0);
     const row = await db.getFirstAsync<{ name: string }>(
       "SELECT name FROM life_items WHERE id = 'item-local'",
     );

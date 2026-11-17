@@ -41,6 +41,15 @@ import {
   type PairingTarget,
 } from "../lib/sync/pairing";
 import { pairWithDesktop, pairingErrorMessage } from "../lib/sync/pairClient";
+import {
+  AUTHORIZATION_LABEL,
+  CONNECTION_LABEL,
+  failureKindFromError,
+  hydrateLinkState,
+  reportLinkFailure,
+  reportLinkPaired,
+  useLinkState,
+} from "../lib/sync/linkState";
 import { consumePendingPairing, subscribePendingPairing } from "../lib/sync/pendingPairing";
 import { useTheme } from "../theme/ThemeProvider";
 import { useReduceMotion } from "../theme/MotionProvider";
@@ -66,6 +75,8 @@ export function PairingScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
   const reduceMotion = useReduceMotion();
+  /** 与同步页/文件互传共享：配对成功只改「授权」，不伪造「在线」 */
+  const link = useLinkState();
   const [permission, requestPermission] = useCameraPermissions();
   const [manual, setManual] = useState(false);
   const [target, setTarget] = useState<PairingTarget | null>(null);
@@ -116,6 +127,10 @@ export function PairingScreen({ nav }: { nav: Nav }) {
   });
 
   const { showToast } = useToast();
+
+  useEffect(() => {
+    void hydrateLinkState().catch(() => undefined);
+  }, []);
 
   // 已配对过：预填上次桌面地址，方便换码重配；不覆盖正在输入的内容。
   useEffect(() => {
@@ -202,8 +217,19 @@ export function PairingScreen({ nav }: { nav: Nav }) {
       });
       setTarget(null);
       setCode("");
+      // 授权=已配对；连接保持「未检测」——配对成功不代表电脑此刻在线。
+      reportLinkPaired();
     } catch (reason) {
       setError(pairingErrorMessage(reason));
+      // 只有授权/安全类问题才污染全局授权状态；配对码错误、地址错误等只在本页提示。
+      const code =
+        typeof reason === "object" && reason !== null && "code" in reason
+          ? String((reason as { code?: unknown }).code ?? "")
+          : "";
+      const kind = failureKindFromError(reason);
+      if (kind === "auth" || kind === "tls" || code === "network") {
+        reportLinkFailure(kind, pairingErrorMessage(reason));
+      }
     } finally {
       setBusy(false);
     }
@@ -257,7 +283,22 @@ export function PairingScreen({ nav }: { nav: Nav }) {
     <View style={styles.container}>
       <AppBar
         title="配对新设备"
-        badge={<Badge label="局域网" tone="active" />}
+        badge={
+          link.loaded && link.authorization !== "unpaired" ? (
+            <Badge
+              label={
+                link.authorization === "paired"
+                  ? "已配对"
+                  : link.authorization === "security_error"
+                    ? "安全校验异常"
+                    : "需重新配对"
+              }
+              tone={link.authorization === "paired" ? "active" : "unimplemented"}
+            />
+          ) : (
+            <Badge label="局域网" tone="active" />
+          )
+        }
         onBack={nav.back}
       />
 
@@ -269,6 +310,23 @@ export function PairingScreen({ nav }: { nav: Nav }) {
         <Text style={[styles.intro, { color: tokens.textSoft }]}>
           与桌面端 Task Dock 在同一 Wi-Fi 下建立连接。桌面端是配对发起方，手机端只接受授权。
         </Text>
+
+        {link.loaded && link.authorization !== "unpaired" ? (
+          <View style={[styles.linkBar, { borderColor: tokens.separator }]}>
+            <Text style={[styles.linkText, { color: tokens.textSoft }]}>
+              本机当前：配对授权「{AUTHORIZATION_LABEL[link.authorization]}」· 当前连接「
+              {CONNECTION_LABEL[link.connection]}」
+            </Text>
+            {link.lastError ? (
+              <Text style={[styles.linkText, { color: tokens.warn }]} numberOfLines={3}>
+                上次失败：{link.lastError}
+              </Text>
+            ) : null}
+            <Text style={[styles.linkText, { color: tokens.muted }]}>
+              已配对只代表授权有效；电脑关机或不在同一局域网时会显示为离线，无需重新配对。
+            </Text>
+          </View>
+        ) : null}
 
         <GlassCard style={styles.steps}>
           <View style={styles.stepsBody}>
@@ -354,7 +412,10 @@ export function PairingScreen({ nav }: { nav: Nav }) {
             </View>
             <Text style={[styles.successTitle, { color: tokens.text }]}>配对成功</Text>
             <Text style={[styles.successText, { color: tokens.textSoft }]}>
-              「{success.serverName}」已授权，令牌已保存到本机安全存储。可在「同步」页测试连接。
+              「{success.serverName}」已授权，令牌已保存到本机安全存储。
+              {"\n"}
+              配对成功不代表电脑一直在线：若之后显示离线，先确认电脑已启动并处于同一局域网。
+              可在「同步」页点「重新检测连接」确认当前连接状态。
             </Text>
             <PressableScale
               onPress={nav.back}
@@ -633,6 +694,17 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     paddingHorizontal: space.lg,
     paddingTop: space.md,
+  },
+  linkBar: {
+    marginHorizontal: space.lg,
+    marginTop: space.md,
+    paddingTop: space.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: 4,
+  },
+  linkText: {
+    fontSize: font.label,
+    lineHeight: 17,
   },
   steps: {
     marginHorizontal: space.lg,

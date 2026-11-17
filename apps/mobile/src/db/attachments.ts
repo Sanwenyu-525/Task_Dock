@@ -171,6 +171,26 @@ export async function listAttachmentCounts(
   return counts;
 }
 
+/**
+ * 归属实体仍然存在（未被软删除）。
+ *
+ * 为什么必须参与「待传」查询：任务 / 笔记 / 收集箱被删除后，它们的附件行不会被删
+ * （用户的原始素材不能因为删业务记录而被销毁）。如果待传队列不校验归属，用户删掉
+ * 一条任务后，前台自动传送仍会把它的照片上传到桌面端——本机已删除的内容被外发，
+ * 同时「待传 N」数字永远降不下去。
+ *
+ * 这里只隐藏、不删行也不删字节；孤儿行与字节的回收属于「本地数据清理」，
+ * 不在读取路径里做破坏性操作。
+ */
+const OWNER_ALIVE_SQL = `(
+    (owner_entity = 'task' AND EXISTS (
+      SELECT 1 FROM tasks t WHERE t.id = attachments.owner_id AND t.deleted_at IS NULL))
+    OR (owner_entity = 'note' AND EXISTS (
+      SELECT 1 FROM notes n WHERE n.id = attachments.owner_id AND n.deleted_at IS NULL))
+    OR (owner_entity = 'capture' AND EXISTS (
+      SELECT 1 FROM captures c WHERE c.id = attachments.owner_id AND c.deleted_at IS NULL))
+  )`;
+
 /** 需要发送到桌面端的附件：pending（从未尝试）与 failed（可重试）。 */
 export async function listAttachmentsForTransfer(
   limit = 20,
@@ -181,6 +201,7 @@ export async function listAttachmentsForTransfer(
   const rows = await db.getAllAsync<AttachmentDbRow>(
     `SELECT ${COLUMNS} FROM attachments
       WHERE deleted_at IS NULL AND transfer_state IN (${placeholders})
+        AND ${OWNER_ALIVE_SQL}
       ORDER BY created_at ASC
       LIMIT ?`,
     [...states, Math.max(1, Math.min(limit, 100))],
@@ -250,10 +271,12 @@ export async function resetInterruptedUploads(): Promise<number> {
   return result.changes;
 }
 
-export async function countAttachmentsForTransfer(): Promise<number> {  const db = getDatabase();
+export async function countAttachmentsForTransfer(): Promise<number> {
+  const db = getDatabase();
   const row = await db.getFirstAsync<{ n: number }>(
     `SELECT COUNT(*) AS n FROM attachments
-      WHERE deleted_at IS NULL AND transfer_state IN ('pending', 'failed')`,
+      WHERE deleted_at IS NULL AND transfer_state IN ('pending', 'failed')
+        AND ${OWNER_ALIVE_SQL}`,
   );
   return row?.n ?? 0;
 }

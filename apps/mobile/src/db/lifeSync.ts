@@ -667,6 +667,8 @@ async function retryUpdateFailure(
  */
 export async function retryDeferredLifeChangesInTx(
   db: SQLiteDatabase,
+  /** 本次 pull 已覆盖的记录：照常清理旧延后行，但不重复计入结果统计。 */
+  alreadyAppliedKeys?: ReadonlySet<string>,
 ): Promise<DeferredRetryResult> {
   const result: DeferredRetryResult = { applied: 0, deleted: 0, stale: 0 };
   for (let pass = 0; pass < 3; pass += 1) {
@@ -686,6 +688,7 @@ export async function retryDeferredLifeChangesInTx(
       ) {
         continue;
       }
+      const excluded = alreadyAppliedKeys?.has(`${row.entity}:${row.target_id}`) === true;
       const change: Change = {
         entity: row.entity,
         id: row.target_id,
@@ -696,15 +699,15 @@ export async function retryDeferredLifeChangesInTx(
       };
       const outcome = await applyLifeChange(db, change);
       if (outcome.status === "applied") {
-        result.applied += 1;
+        if (!excluded) result.applied += 1;
         await clearDeferredRow(db, row.id);
         progressed = true;
       } else if (outcome.status === "deleted") {
-        result.deleted += 1;
+        if (!excluded) result.deleted += 1;
         await clearDeferredRow(db, row.id);
         progressed = true;
       } else if (outcome.status === "stale") {
-        result.stale += 1;
+        if (!excluded) result.stale += 1;
         await clearDeferredRow(db, row.id);
         progressed = true;
       } else if (outcome.status === "deferred") {
@@ -723,6 +726,116 @@ export async function retryDeferredLifeChangesInTx(
     if (!progressed) break;
   }
   return result;
+}
+
+export interface DeferredSingleRetryResult {
+  status: "applied" | "deleted" | "stale" | "deferred" | "rejected" | "missing";
+  reason?: LifeDeferReason;
+}
+
+/**
+ * 用户主动重试单条延后记录。
+ *
+ * 与自动重放的区别：这是显式的人工动作，允许对 duplicate_link / invalid 重新校验一次，
+ * 但不会无限重试（失败只累加 retry_count 并保留原因）。name_conflict 仍需先到冲突页
+ * 关联同名商品，否则重试必然再次失败。
+ */
+export async function retryDeferredLifeChange(id: number): Promise<DeferredSingleRetryResult> {
+  const db = getDatabase();
+  let result: DeferredSingleRetryResult = { status: "missing" };
+  await db.withTransactionAsync(async () => {
+    const row = await db.getFirstAsync<DeferredRow>(
+      `SELECT id, entity, target_id, server_rev, deleted, fields_json, updated_at, reason,
+              first_seen_at, retry_count, last_attempt_at
+         FROM life_sync_deferred WHERE id = ?`,
+      [id],
+    );
+    if (!row) {
+      result = { status: "missing" };
+      return;
+    }
+    const change: Change = {
+      entity: row.entity,
+      id: row.target_id,
+      rev: row.server_rev,
+      deleted: row.deleted === 1,
+      fields: parseFields(row.fields_json),
+      updated_at: row.updated_at,
+    };
+    const outcome = await applyLifeChange(db, change);
+    if (outcome.status === "applied" || outcome.status === "deleted" || outcome.status === "stale") {
+      await clearDeferredRow(db, row.id);
+      result = { status: outcome.status };
+      return;
+    }
+    if (outcome.status === "deferred") {
+      if (outcome.reason !== row.reason) {
+        await retryUpdateFailure(db, row, outcome.reason);
+      } else {
+        await db.runAsync(
+          "UPDATE life_sync_deferred SET retry_count = retry_count + 1, last_attempt_at = ? WHERE id = ?",
+          [Date.now(), row.id],
+        );
+      }
+      result = { status: "deferred", reason: outcome.reason };
+      return;
+    }
+    // rejected：保留原始记录与字段，只把原因归到 invalid，供诊断与人工处理。
+    await retryUpdateFailure(db, row, "invalid");
+    result = { status: "rejected", reason: "invalid" };
+  });
+  return result;
+}
+
+/** 判断 duplicate_link 延后项是否已有等价的本地关联；有则只清理待处理行，不重复插入。 */
+export async function findExistingLifeLinkForDeferred(
+  row: DeferredLifeChange,
+): Promise<{ id: string } | null> {
+  if (row.entity !== "life_document_link") return null;
+  const ownerType = asString(row.fields.ownerType);
+  const ownerId = asString(row.fields.ownerId);
+  const documentRef = asString(row.fields.documentRef);
+  const documentSource = asString(row.fields.documentSource);
+  if (!ownerId || !documentRef) return null;
+  if (!["event", "item"].includes(ownerType)) return null;
+  if (!["capture_asset", "shelf_item", "attachment", "file"].includes(documentSource)) {
+    return null;
+  }
+  return getDatabase().getFirstAsync<{ id: string }>(
+    `SELECT id FROM life_document_links
+      WHERE deleted_at IS NULL AND owner_type = ? AND owner_id = ?
+        AND document_ref = ? AND document_source = ? LIMIT 1`,
+    [ownerType, ownerId, documentRef, documentSource],
+  );
+}
+
+/**
+ * 清除一条无需再处理的延后记录（仅删同步队列行，不删任何生活业务数据）。
+ *
+ * 安全前提由调用方在 UI 明确确认，这里再做一次事实校验：
+ * - duplicate_link：必须确实存在等价关联，否则拒绝清除；
+ * - invalid：只允许用户显式忽略无效变更，绝不自动调用。
+ */
+export async function dismissDeferredLifeChange(
+  id: number,
+  mode: "duplicate_link" | "invalid",
+): Promise<void> {
+  const db = getDatabase();
+  const row = await db.getFirstAsync<DeferredRow>(
+    `SELECT id, entity, target_id, server_rev, deleted, fields_json, updated_at, reason,
+            first_seen_at, retry_count, last_attempt_at
+       FROM life_sync_deferred WHERE id = ?`,
+    [id],
+  );
+  if (!row) throw new Error("待处理记录已不存在");
+  if (row.reason !== mode) throw new Error("处理方式与异常原因不匹配，请刷新后重试");
+  if (mode === "duplicate_link") {
+    const duplicate = await findExistingLifeLinkForDeferred(mapDeferred(row));
+    if (!duplicate) {
+      throw new Error("未找到已存在的等价关联，不能按“重复”清除；请先重试或重新同步");
+    }
+  }
+  await clearDeferredRow(db, row.id);
 }
 
 /** 独立重试入口（供同步流程在无新变更时也能消化旧延后项）。 */

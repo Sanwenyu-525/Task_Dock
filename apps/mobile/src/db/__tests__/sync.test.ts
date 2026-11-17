@@ -114,7 +114,14 @@ describe("applyPullChanges", () => {
         updated_at: 5,
       },
     ]);
-    expect(result).toEqual({ applied: 3, deleted: 0, skipped: 0 });
+    expect(result).toEqual({
+      applied: 3,
+      deleted: 0,
+      stale: 0,
+      deferred: 0,
+      rejected: 0,
+      skipped: 0,
+    });
 
     const task = await taskRow("t-1");
     expect(task?.server_rev).toBe(3);
@@ -142,7 +149,14 @@ describe("applyPullChanges", () => {
     const result = await applyPullChanges([
       taskChange({ id: "t-1", rev: 5, deleted: true, fields: {}, updated_at: 0 }),
     ]);
-    expect(result).toEqual({ applied: 0, deleted: 1, skipped: 0 });
+    expect(result).toEqual({
+      applied: 0,
+      deleted: 1,
+      stale: 0,
+      deferred: 0,
+      rejected: 0,
+      skipped: 0,
+    });
     const row = await taskRow("t-1");
     expect(row?.deleted_at).not.toBeNull();
     expect(row?.server_rev).toBe(5);
@@ -166,7 +180,14 @@ describe("applyPullChanges", () => {
   it("本地有未发送 outbox 的记录：pull 跳过不覆盖，交给 push 冲突判定", async () => {
     await insertOutbox([{ opId: "op-local", entity: "task", targetId: "t-1", type: "update", createdAt: 10 }]);
     const result = await applyPullChanges([taskChange({ id: "t-1", rev: 9 })]);
-    expect(result).toEqual({ applied: 0, deleted: 0, skipped: 1 });
+    expect(result).toEqual({
+      applied: 0,
+      deleted: 0,
+      stale: 0,
+      deferred: 0,
+      rejected: 0,
+      skipped: 1,
+    });
     expect(await taskRow("t-1")).toBeNull();
   });
 
@@ -373,7 +394,18 @@ describe("游标与状态", () => {
   it("cursor / last_result 读写与损坏恢复", async () => {
     await saveSyncCursor("42");
     expect(await loadSyncCursor()).toBe("42");
-    await saveSyncResult({ at: 1, pulled: 2, applied: 2, pushed: 0, conflicts: 0 });
+    await saveSyncResult({
+      at: 1,
+      pulled: 2,
+      applied: 2,
+      deleted: 0,
+      stale: 0,
+      deferred: 0,
+      rejected: 0,
+      skipped: 0,
+      pushed: 0,
+      conflicts: 0,
+    });
     expect((await loadSyncResult())?.pulled).toBe(2);
     await getDatabase().runAsync("UPDATE kv SET value = '{broken' WHERE key = 'sync.last_result.v1'");
     expect(await loadSyncResult()).toBeNull();
