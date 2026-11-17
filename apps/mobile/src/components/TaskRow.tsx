@@ -68,7 +68,8 @@ function TaskRowBase({
     task.priority >= 3 ? tokens.danger : task.priority === 2 ? tokens.warn : tokens.muted;
 
   const enter = useRef(
-    new Animated.Value(reduceMotion || entranceIndex > STAGGER_LIMIT ? 1 : 0),
+    // entranceIndex < 0 = 页面已经过了首屏阶段，直接透出，不再播放任何入场动画
+    new Animated.Value(reduceMotion || entranceIndex < 0 || entranceIndex > STAGGER_LIMIT ? 1 : 0),
   ).current;
   const appeared = useRef(false);
   const progress = useRef(new Animated.Value(done ? 1 : 0)).current;
@@ -80,7 +81,7 @@ function TaskRowBase({
   useEffect(() => {
     if (appeared.current) return;
     appeared.current = true;
-    if (reduceMotion || entranceIndex > STAGGER_LIMIT) {
+    if (reduceMotion || entranceIndex < 0 || entranceIndex > STAGGER_LIMIT) {
       enter.setValue(1);
       return;
     }

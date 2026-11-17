@@ -144,6 +144,17 @@ export function countTasks(tasks: Task[], now: number): TaskCounts {
   return { total: tasks.length, pending, completed, dueToday, overdue };
 }
 
+/**
+ * 首页「当前进度」的统一口径：全部任务完成率。
+ * 分子 = 全部已完成任务，分母 = 全部任务；空列表返回 0，绝不产生 0/0 = NaN。
+ * 今日进度是独立指标（counts.dueToday / counts.pending），不能混进这里。
+ */
+export function completionOf(counts: TaskCounts): { ratio: number; percent: number } {
+  if (counts.total <= 0) return { ratio: 0, percent: 0 };
+  const ratio = Math.max(0, Math.min(1, counts.completed / counts.total));
+  return { ratio, percent: Math.round(ratio * 100) };
+}
+
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /** 截止时间展示：今天/明天/月-日 + HH:mm；已过期加前缀 */

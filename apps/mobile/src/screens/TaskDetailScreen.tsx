@@ -17,12 +17,12 @@ import {
 
 import { AppBar } from "../components/AppBar";
 import { AttachmentStrip } from "../components/AttachmentStrip";
-import { BottomSheet } from "../components/BottomSheet";
 import { ClampedText } from "../components/ClampedText";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { GlassCard } from "../components/GlassCard";
 import { AppIcon, type IconName } from "../components/icons/AppIcon";
 import { PressableScale } from "../components/PressableScale";
-import { TaskEditorSheet } from "../components/TaskEditorSheet";
+import { TaskEditorSheet, type TaskSubmitOutcome } from "../components/TaskEditorSheet";
 import { useToast } from "../feedback/ToastProvider";
 import { getSetting } from "../db/kv";
 import { deleteTask, getTask, toggleTask, updateTask } from "../db/tasks";
@@ -113,25 +113,38 @@ export function TaskDetailScreen({
     setBusy(true);
     try {
       const outcome = await toggleTask(task.id);
-      if (outcome.advanced) {
-        // 期次推进后提醒时间变了：重建排期（引擎按 (task_id, occurrence) 幂等）
-        await rescheduleAllReminders();
-        const nextDue = formatDue(outcome.advanced.toDueAt, Date.now());
-        showToast(nextDue ? `已完成本期，下次 ${nextDue}` : "已完成本期", "success", "bottom");
-      } else if (outcome.task) {
-        if (outcome.task.status === "completed") {
+      if (!outcome.task) {
+        // 任务在切换前已被删除：详情页不能继续展示旧数据
+        showToast("任务已不存在", "danger", "bottom");
+        nav.back();
+        return;
+      }
+
+      // 数据库已经给出更新后的任务（期次推进时含新的 dueAt / remindAt），
+      // 必须立刻写回详情页；旧实现只弹 toast 不更新 state，详情会一直显示上一期日期。
+      setTask(outcome.task);
+
+      // 提醒排期是派生副作用：它失败不能把已经成功的完成操作说成失败。
+      try {
+        if (outcome.advanced) {
+          // 期次推进后提醒时间变了：重建排期（引擎按 (task_id, occurrence) 幂等）
+          await rescheduleAllReminders();
+          const nextDue = formatDue(outcome.advanced.toDueAt, Date.now());
+          showToast(nextDue ? `已完成本期，下次 ${nextDue}` : "已完成本期", "success", "bottom");
+        } else if (outcome.task.status === "completed") {
           await cancelReminder(task.id);
         } else if (outcome.task.remindAt != null && outcome.task.remindAt > Date.now()) {
           const snooze = (await getSetting(SNOOZE_SETTING_KEY)) !== "0";
           await scheduleReminder(task.id, outcome.task.title, outcome.task.remindAt, snooze);
         }
-        setTask(outcome.task);
-      } else {
-        // 任务在切换前已被删除：回到列表
-        showToast("任务已不存在", "danger", "bottom");
-        nav.back();
-        return;
+      } catch (reason) {
+        showToast(
+          `任务状态已更新，但提醒排期失败：${describeError(reason)}`,
+          "warn",
+          "bottom",
+        );
       }
+
       notifyWidgetDataChanged();
       onDataChanged();
     } catch (reason) {
@@ -158,12 +171,13 @@ export function TaskDetailScreen({
   }, [busy, nav, onDataChanged, showToast, task]);
 
   const handleEditSubmit = useCallback(
-    async (input: NewTaskInput) => {
-      if (!task) return;
+    async (input: NewTaskInput): Promise<TaskSubmitOutcome> => {
+      if (!task) return { ok: false, message: "任务已不存在" };
+      let updated: Task | null;
       try {
         // 三态契约：category 不由编辑弹层提供，这里不传该键（省略=不改），
         // 避免把既有分类误清空；tags/description 按既有列表页同款补丁显式给出。
-        const updated = await updateTask(task.id, {
+        updated = await updateTask(task.id, {
           title: input.title,
           description: input.description ?? "",
           priority: input.priority ?? 0,
@@ -175,20 +189,31 @@ export function TaskDetailScreen({
             ? { recurrenceRule: input.recurrenceRule }
             : {}),
         });
-        if (!updated) {
-          showToast("任务已不存在", "danger", "bottom");
-          await load();
-        } else {
-          await rescheduleAllReminders();
-          setTask(updated);
-          showToast("任务已更新", "success", "bottom");
-        }
       } catch (reason) {
-        showToast(`更新失败：${describeError(reason)}`, "danger", "bottom");
+        // 数据没写进去：弹层保持打开，用户输入原样保留
+        return { ok: false, message: describeError(reason) };
       }
+
+      if (!updated) {
+        showToast("任务已不存在", "danger", "bottom");
+        await load();
+        return { ok: false, message: "任务已不存在，可能已被删除" };
+      }
+
+      // 数据已落库：先更新页面，再处理派生的提醒排期
+      setTask(updated);
       notifyWidgetDataChanged();
       onDataChanged();
-      setEditorOpen(false);
+
+      let notice: string | undefined;
+      try {
+        await rescheduleAllReminders();
+      } catch (reason) {
+        notice = `任务已保存，但提醒重建失败：${describeError(reason)}`;
+      }
+      showToast(notice ?? "任务已更新", notice ? "warn" : "success", "bottom");
+      // 关闭弹层由 TaskEditorSheet 在 ok=true 时统一执行，避免"失败也关"
+      return { ok: true, notice };
     },
     [load, onDataChanged, showToast, task],
   );
@@ -367,6 +392,8 @@ export function TaskDetailScreen({
               </Text>
             </PressableScale>
 
+            {/* 图标按钮不铺底色：底色是「内容入口」的记号，动作再染上就会和入口磁贴抢注意力。
+                动作只靠图标颜色表达层级，危险动作用 danger 图标色，不铺 dangerSoft 粉底。 */}
             <PressableScale
               onPress={() => setEditorOpen(true)}
               accessibilityRole="button"
@@ -374,9 +401,9 @@ export function TaskDetailScreen({
               accessibilityHint="打开标题、优先级、截止与提醒编辑"
               disabled={busy}
               style={styles.iconActionPress}
-              contentStyle={[styles.iconAction, { backgroundColor: tokens.track }]}
+              contentStyle={styles.iconAction}
             >
-              <AppIcon name="edit" color={tokens.text} size={20} />
+              <AppIcon name="edit" color={tokens.textSoft} size={20} />
             </PressableScale>
 
             <PressableScale
@@ -386,7 +413,7 @@ export function TaskDetailScreen({
               accessibilityState={{ disabled: busy }}
               disabled={busy}
               style={styles.iconActionPress}
-              contentStyle={[styles.iconAction, { backgroundColor: tokens.dangerSoft }]}
+              contentStyle={styles.iconAction}
             >
               <AppIcon name="delete" color={tokens.danger} size={20} />
             </PressableScale>
@@ -394,38 +421,20 @@ export function TaskDetailScreen({
         </>
       )}
 
-      {/* 删除确认：BottomSheet 二次确认后才真实删除 */}
-      <BottomSheet
+      {/* 删除确认：与任务列表共用同一个确认弹层（ConfirmSheet） */}
+      <ConfirmSheet
         visible={deleteOpen}
-        onRequestClose={() => setDeleteOpen(false)}
+        title="删除这条任务？"
+        message="删除后会从任务列表移除，本机提醒一并取消。"
+        confirmLabel="删除任务"
+        busy={busy}
+        onConfirm={() => void handleDelete()}
+        onRequestClose={() => {
+          if (busy) return;
+          setDeleteOpen(false);
+        }}
         accessibilityLabel="删除任务确认"
-      >
-        <Text style={[styles.sheetTitle, { color: tokens.text }]}>删除这条任务？</Text>
-        <Text style={[styles.sheetBody, { color: tokens.muted }]}>
-          删除后会从任务列表移除，本机提醒一并取消。
-        </Text>
-        <View style={styles.sheetActions}>
-          <PressableScale
-            onPress={() => setDeleteOpen(false)}
-            accessibilityRole="button"
-            accessibilityLabel="取消删除"
-            style={styles.sheetCancelPress}
-            contentStyle={[styles.sheetCancel, { backgroundColor: tokens.track }]}
-          >
-            <Text style={[styles.sheetCancelText, { color: tokens.text }]}>取消</Text>
-          </PressableScale>
-          <PressableScale
-            onPress={() => void handleDelete()}
-            accessibilityRole="button"
-            accessibilityLabel="确认删除任务"
-            disabled={busy}
-            style={styles.sheetDeletePress}
-            contentStyle={[styles.sheetDelete, { backgroundColor: tokens.dangerFill }]}
-          >
-            <Text style={[styles.sheetDeleteText, { color: tokens.onDanger }]}>删除任务</Text>
-          </PressableScale>
-        </View>
-      </BottomSheet>
+      />
 
       <TaskEditorSheet
         visible={editorOpen}
@@ -461,7 +470,9 @@ function InfoRow({
       <Text numberOfLines={1} style={[styles.infoLabel, { color: tokens.muted }]}>
         {label}
       </Text>
-      <Text numberOfLines={2} style={[styles.infoValue, { color: tokens.text }]}>
+      {/* 右侧值统一右对齐：不同长度的值（「未分类」「无截止时间」「2026-11-17 09:30」）
+          在视觉上落在同一条基线上；长文本允许换到第三行，但左侧标签宽度固定，不会被挤压 */}
+      <Text numberOfLines={3} style={[styles.infoValue, { color: tokens.text }]}>
         {value}
       </Text>
     </View>
@@ -527,7 +538,15 @@ const styles = StyleSheet.create({
     minHeight: 46,
   },
   infoLabel: { width: 76, fontSize: font.meta },
-  infoValue: { flex: 1, fontSize: font.body, fontWeight: "600", lineHeight: 20 },
+  infoValue: {
+    flex: 1,
+    fontSize: font.body,
+    fontWeight: "600",
+    lineHeight: 20,
+    // 右对齐 + 靠右收口：值长度不同也不会参差，长文本在右侧自然换行
+    textAlign: "right",
+    flexShrink: 1,
+  },
   descCard: { padding: space.lg, gap: space.xs },
   cardLabel: { fontSize: font.meta, fontWeight: "600" },
   descText: { fontSize: font.reading, lineHeight: 23 },

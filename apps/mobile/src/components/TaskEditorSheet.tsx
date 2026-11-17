@@ -1,8 +1,20 @@
 // 任务编辑/新建弹层：标题、优先级、截止、提醒四段，全部用相对选项，
 // 不引日期选择器依赖。由旧 QuickAddModal 演进而来，新建与编辑共用同一份表单，
 // 差异只在「编辑时把原值映射回选项，映射不到就提供『保持原定』」。
+//
+// 提交契约（2026-11-17 整改）：onSubmit 返回保存结果，弹层只在成功后关闭。
+// 旧实现是「先提交再无条件 onClose」——数据库写失败时用户输入已经随弹层一起消失。
+// 现在失败时保留全部输入、显示原因、允许修改后重试；保存期间禁止重复提交与取消。
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
 import {
   buildRecurrencePreset,
@@ -39,6 +51,13 @@ type RemindKey =
   | "keep";
 /** custom 规则会被归一化成 keep（保持原定），因此选中态只有预设与 keep */
 type RepeatKey = RecurrencePreset | "keep";
+
+/**
+ * 保存结果契约：
+ * - ok=true：数据已落库（notice 用于「已保存但提醒未排期」这类非失败提示）；
+ * - ok=false：数据没有落库，message 必须能说明原因，弹层据此保留输入。
+ */
+export type TaskSubmitOutcome = { ok: true; notice?: string } | { ok: false; message: string };
 
 /** 选项与真实时间戳允许的匹配误差：小于一分钟时仍认为「就是今天/明天」 */
 const MATCH_TOLERANCE_MS = 60_000;
@@ -217,7 +236,11 @@ export function TaskEditorSheet({
   /** 仅编辑模式使用；新建传 null */
   task: Task | null;
   onClose: () => void;
-  onSubmit: (input: NewTaskInput) => void;
+  /**
+   * 异步保存：成功（ok=true）才关闭弹层；失败（ok=false）保留输入并展示 message。
+   * 调用方负责把「数据库写入成功」与「通知排期失败」分开：后者应返回 ok=true + notice。
+   */
+  onSubmit: (input: NewTaskInput) => Promise<TaskSubmitOutcome>;
 }) {
   const { tokens } = useTheme();
   const [title, setTitle] = useState("");
@@ -226,10 +249,16 @@ export function TaskEditorSheet({
   const [remindKey, setRemindKey] = useState<RemindKey>("none");
   const [repeatKey, setRepeatKey] = useState<RepeatKey>("none");
   const [tagsText, setTagsText] = useState("");
+  /** 保存中：禁止重复提交，也禁止用取消/遮罩关闭（否则等于丢弃正在写入的内容） */
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // 每次打开都按当前任务重算初值；关闭期间不动，避免把用户未保存的输入冲掉
   useEffect(() => {
     if (!visible) return;
+    // 重新打开是一次全新的编辑会话：上一轮的错误提示不能带进来
+    setSaveError(null);
+    setSaving(false);
     if (mode === "edit" && task) {
       setTitle(task.title);
       setPriority(task.priority);
@@ -298,11 +327,17 @@ export function TaskEditorSheet({
     ];
   }, [hasKeepRepeat, task]);
 
-  const canSave = title.trim().length > 0;
+  const canSave = title.trim().length > 0 && !saving;
 
-  const submit = () => {
+  /** 保存中不允许关闭：正在写库时关掉弹层，用户会以为保存成功、实际输入已丢 */
+  const requestClose = () => {
+    if (saving) return;
+    onClose();
+  };
+
+  const submit = async () => {
     const text = title.trim();
-    if (!text) return;
+    if (!text || saving) return;
     const at = Date.now();
     const editing = mode === "edit" ? task : null;
     let dueAt = resolveDue(dueKey, editing, at);
@@ -321,28 +356,42 @@ export function TaskEditorSheet({
     // 提醒必须在 dueAt 定稿之后解析：相对提醒要用最终截止时间做锚点
     const reminder = resolveReminder(remindKey, editing, at, dueAt);
 
-    onSubmit({
-      title: text,
-      priority,
-      dueAt,
-      remindAt: reminder.remindAt,
-      advanceMinutes: reminder.advanceMinutes,
-      recurrenceRule,
-      // 标签用空格/逗号分隔，空串等价于清空
-      tags: tagsText
-        .split(/[,，\s]+/)
-        .map((tag) => tag.trim())
-        .filter((tag) => tag.length > 0),
-      // 编辑时描述必须显式带上，否则三态更新之外的路径会把它清空
-      description: editing ? editing.description : undefined,
-    });
-    onClose();
+    setSaveError(null);
+    setSaving(true);
+    let outcome: TaskSubmitOutcome;
+    try {
+      outcome = await onSubmit({
+        title: text,
+        priority,
+        dueAt,
+        remindAt: reminder.remindAt,
+        advanceMinutes: reminder.advanceMinutes,
+        recurrenceRule,
+        // 标签用空格/逗号分隔，空串等价于清空
+        tags: tagsText
+          .split(/[,，\s]+/)
+          .map((tag) => tag.trim())
+          .filter((tag) => tag.length > 0),
+        // 编辑时描述必须显式带上，否则三态更新之外的路径会把它清空
+        description: editing ? editing.description : undefined,
+      });
+    } catch (error) {
+      // 调用方漏了 try/catch 也不能让输入消失：异常同样按保存失败处理
+      outcome = { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+    setSaving(false);
+    if (outcome.ok) {
+      onClose();
+      return;
+    }
+    // 失败：弹层保持打开、输入原样保留、显示原因，用户可以改完再存
+    setSaveError(outcome.message || "保存失败，请重试");
   };
 
   return (
     <BottomSheet
       visible={visible}
-      onRequestClose={onClose}
+      onRequestClose={requestClose}
       keyboardAware
       maxHeightRatio={0.88}
       accessibilityLabel={mode === "edit" ? "编辑任务" : "新建任务"}
@@ -352,9 +401,11 @@ export function TaskEditorSheet({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="取消"
-          onPress={onClose}
+          accessibilityState={{ disabled: saving }}
+          disabled={saving}
+          onPress={requestClose}
           hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          style={({ pressed }) => ({ opacity: saving ? 0.45 : pressed ? 0.6 : 1 })}
         >
           <Text style={[styles.headerAction, { color: tokens.muted }]}>取消</Text>
         </Pressable>
@@ -364,23 +415,41 @@ export function TaskEditorSheet({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={mode === "edit" ? "保存修改" : "保存任务"}
-          accessibilityState={{ disabled: !canSave }}
+          accessibilityState={{ disabled: !canSave, busy: saving }}
           disabled={!canSave}
-          onPress={submit}
+          onPress={() => void submit()}
           hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
-          style={({ pressed }) => ({ opacity: !canSave ? 0.45 : pressed ? 0.6 : 1 })}
+          style={({ pressed }) => [
+            styles.savePress,
+            { opacity: !canSave ? 0.45 : pressed ? 0.6 : 1 },
+          ]}
         >
-          <Text
-            style={[
-              styles.headerAction,
-              styles.headerActionPrimary,
-              { color: canSave ? tokens.accent : tokens.muted },
-            ]}
-          >
-            保存
-          </Text>
+          {saving ? (
+            <ActivityIndicator size="small" color={tokens.accent} />
+          ) : (
+            <Text
+              style={[
+                styles.headerAction,
+                styles.headerActionPrimary,
+                { color: canSave ? tokens.accent : tokens.muted },
+              ]}
+            >
+              保存
+            </Text>
+          )}
         </Pressable>
       </View>
+
+      {saveError ? (
+        <View
+          accessibilityLiveRegion="polite"
+          style={[styles.errorBox, { backgroundColor: tokens.dangerSoft }]}
+        >
+          <Text style={[styles.errorText, { color: tokens.danger }]}>
+            保存失败：{saveError}。输入内容已保留，可以修改后重试。
+          </Text>
+        </View>
+      ) : null}
 
       <ScrollView
         keyboardShouldPersistTaps="handled"
@@ -397,7 +466,7 @@ export function TaskEditorSheet({
           autoCapitalize="none"
           autoCorrect={false}
           returnKeyType="done"
-          onSubmitEditing={submit}
+          onSubmitEditing={() => void submit()}
           underlineColorAndroid="transparent"
           style={[
             styles.input,
@@ -515,6 +584,23 @@ const styles = StyleSheet.create({
   },
   headerActionPrimary: {
     fontWeight: "700",
+  },
+  savePress: {
+    minWidth: 44,
+    minHeight: 32,
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  errorBox: {
+    borderRadius: radius.control,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    marginBottom: space.xs,
+  },
+  errorText: {
+    fontSize: font.label,
+    lineHeight: 18,
+    fontWeight: "600",
   },
   body: {
     gap: space.sm,

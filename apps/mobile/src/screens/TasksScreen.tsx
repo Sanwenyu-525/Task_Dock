@@ -5,7 +5,7 @@
 //
 // 数据边界：移动端只有本机任务，「项目任务 / 团队任务」没有数据链路，分段保留为降饱和禁用占位，
 // 不切换、不造假列表；卡片不显示负责人（无对应字段）。
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -13,18 +13,20 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   type ListRenderItemInfo,
 } from "react-native";
 
 import { ActionSheet, type SheetAction } from "../components/ActionSheet";
 import { Chip } from "../components/Chip";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { EmptyState } from "../components/EmptyState";
 import { HeaderIconButton } from "../components/HeaderIconButton";
 import { SearchField } from "../components/SearchField";
 import { ScreenHeader } from "../components/ScreenHeader";
 import { SegmentedControl, type SegmentOption } from "../components/SegmentedControl";
-import { TaskEditorSheet } from "../components/TaskEditorSheet";
+import { TaskEditorSheet, type TaskSubmitOutcome } from "../components/TaskEditorSheet";
 import { TaskGroupHeader } from "../components/TaskGroupHeader";
 import { TaskRow } from "../components/TaskRow";
 import { type IconName } from "../components/icons/AppIcon";
@@ -48,7 +50,7 @@ import type {
 } from "../domain/types";
 import { describeError } from "../lib/errors";
 import type { AppNav } from "../lib/nav";
-import { shouldConsumeCreateSignal } from "../lib/nav";
+import { shouldConsumeCreateSignal, shouldConsumeSignal } from "../lib/nav";
 import { notifyWidgetDataChanged } from "../lib/widgetSnapshot";
 import { rescheduleAllReminders, SNOOZE_SETTING_KEY } from "../notifications/reminderEngine";
 import { cancelReminder, scheduleReminder } from "../notifications/reminders";
@@ -66,6 +68,15 @@ const SCOPE_OPTIONS: SegmentOption<TaskScope>[] = [
   { value: "project", label: "项目任务", disabled: true },
   { value: "team", label: "团队任务", disabled: true },
 ];
+
+/**
+ * 未开放范围的反馈文案：移动端没有项目/团队的数据链路，
+ * 不能伪装成可用筛选项，但点上去必须有明确说明（旧实现是 disabled 静默吞点击）。
+ */
+const SCOPE_UNAVAILABLE_COPY: Record<Exclude<TaskScope, "mine">, string> = {
+  project: "项目任务暂未开放：移动端目前只支持个人任务，项目数据请在桌面端查看。",
+  team: "团队任务暂未开放：移动端目前只支持个人任务，团队协作请在桌面端使用。",
+};
 
 /** 主筛选只放状态：日期范围是次级筛选，两者正交，不再混在同一个胶囊组里 */
 const PERIOD_FILTERS: { key: TaskPeriodFilter; label: string }[] = [
@@ -127,6 +138,8 @@ export function TasksScreen({
   nav,
   openCreateSignal = 0,
   onConsumeCreateSignal,
+  focusSearchSignal = 0,
+  onConsumeSearchSignal,
 }: {
   version?: number;
   /** Shell 注入的导航对象；用于轻点行主体进入任务详情 */
@@ -135,6 +148,9 @@ export function TasksScreen({
   openCreateSignal?: number;
   /** 消费后由 Shell 立刻归零，避免页面卸载重挂时再次打开弹层 */
   onConsumeCreateSignal?: () => void;
+  /** 首页放大镜发出的「聚焦搜索框」信号；0 = 无信号 */
+  focusSearchSignal?: number;
+  onConsumeSearchSignal?: () => void;
 }) {
   const { tokens } = useTheme();
   const reduceMotion = useReduceMotion();
@@ -145,8 +161,12 @@ export function TasksScreen({
   const [statusFilter, setStatusFilter] = useState<TaskStatusFilter>("all");
   const [periodFilter, setPeriodFilter] = useState<TaskPeriodFilter>("any");
   const [query, setQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  /**
+   * 入场 stagger 只服务"首次进入页面"：数据首次到达后一帧就把开关关掉，
+   * 之后筛选/滚动导致的重新挂载都不再播放入场动画（旧实现每次重挂都飞入一次）。
+   */
+  const [entranceEnabled, setEntranceEnabled] = useState(true);
   /** 折叠的分组：只影响展示，计数与分组头始终保留 */
   const [collapsed, setCollapsed] = useState<ReadonlySet<SectionKey>>(() => new Set());
 
@@ -156,8 +176,13 @@ export function TasksScreen({
   const [editorOpen, setEditorOpen] = useState(false);
   const [actionTask, setActionTask] = useState<Task | null>(null);
   const [actionOpen, setActionOpen] = useState(false);
+  /** 删除统一走确认弹层：列表滑删 / 动作表删除 / 详情删除语义一致 */
+  const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const searchRef = useRef<ComponentRef<typeof TextInput> | null>(null);
   const refreshSeq = useRef(0);
   const mounted = useRef(true);
+  const entranceDone = useRef(false);
 
   const { showToast } = useToast();
   // 任务页顶部筛选区在列表内随内容滚动；默认把 Toast 放到底部，避免遮挡分段/日期筛选。
@@ -192,6 +217,14 @@ export function TasksScreen({
         // 配置必须紧贴数据提交：提前调用会被其它状态更新消费掉
         if (animated) animateLayout();
         setTasks(next);
+        // 首屏入场只播一次：等这一帧真正画出来后再关闭开关，
+        // 之后的筛选切换/虚拟列表重挂载都不会再让整列任务重新"飞入"。
+        if (!entranceDone.current) {
+          entranceDone.current = true;
+          requestAnimationFrame(() => {
+            if (mounted.current) setEntranceEnabled(false);
+          });
+        }
       } catch (error) {
         if (!mounted.current || request !== refreshSeq.current) return;
         showToast(`读取任务失败：${describeError(error)}`, "danger");
@@ -276,54 +309,77 @@ export function TasksScreen({
     [refresh, showToast],
   );
 
-  const handleDelete = useCallback(
-    async (task: Task, placement: ToastPlacement = "bottom") => {
-      try {
-        await deleteTask(task.id);
-        await cancelReminder(task.id);
-        showToast("任务已删除", "info", placement);
-      } catch (error) {
-        showToast(`删除失败：${describeError(error)}`, "danger", placement);
-      }
-      // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
-      notifyWidgetDataChanged();
-      await refresh(true);
-    },
-    [refresh, showToast],
-  );
+  /** 先确认再删除：列表滑删与动作表删除共用同一个入口，不再出现"一处直接删一处要确认" */
+  const requestDelete = useCallback((task: Task) => {
+    setActionOpen(false);
+    setDeleteTarget(task);
+  }, []);
+
+  const handleDelete = useCallback(async () => {
+    const task = deleteTarget;
+    if (!task) return;
+    setDeleting(true);
+    try {
+      await deleteTask(task.id);
+      await cancelReminder(task.id);
+      showToast("任务已删除", "info", "bottom");
+      setDeleteTarget(null);
+    } catch (error) {
+      // 失败时保留确认弹层，用户可以直接重试或取消
+      showToast(`删除失败：${describeError(error)}`, "danger", "bottom");
+    } finally {
+      if (mounted.current) setDeleting(false);
+    }
+    // 任务数据变了：小组件快照随后台去抖刷新（内部去重，连续操作只推一次）
+    notifyWidgetDataChanged();
+    await refresh(true);
+  }, [deleteTarget, refresh, showToast]);
 
   const handleOpenActions = useCallback((task: Task) => {
     setActionTask(task);
     setActionOpen(true);
   }, []);
 
+  /**
+   * 新建任务：数据库写入与通知排期严格分开。
+   * 旧实现把 scheduleReminder 也包在同一个 try 里——通知权限/排期失败会被当成"保存失败"，
+   * 用户重试就会创建出重复任务。现在只有写库失败才算失败。
+   */
   const handleCreate = useCallback(
-    async (input: NewTaskInput) => {
+    async (input: NewTaskInput): Promise<TaskSubmitOutcome> => {
+      let task: Task;
       try {
-        const task = await createTask(input);
-        if (input.remindAt != null) {
+        task = await createTask(input);
+      } catch (error) {
+        return { ok: false, message: describeError(error) };
+      }
+
+      let notice: string | undefined;
+      if (input.remindAt != null) {
+        try {
           const snooze = (await getSetting(SNOOZE_SETTING_KEY)) !== "0";
           const scheduled = await scheduleReminder(task.id, task.title, input.remindAt, snooze);
-          if (!scheduled) {
-            showToast("提醒未排期：系统通知权限未开启，任务已保存", "warn", "bottom");
-          }
+          if (!scheduled) notice = "任务已保存，但提醒未排期：系统通知权限未开启";
+        } catch (error) {
+          notice = `任务已保存，但提醒排期失败：${describeError(error)}`;
         }
-        showToast("任务已添加", "success", "bottom");
-      } catch (error) {
-        showToast(`保存失败：${describeError(error)}`, "danger", "bottom");
       }
+
       notifyWidgetDataChanged();
       await refresh(true);
+      showToast(notice ?? "任务已添加", notice ? "warn" : "success", "bottom");
+      return { ok: true, notice };
     },
     [refresh, showToast],
   );
 
   const handleUpdate = useCallback(
-    async (original: Task, input: NewTaskInput) => {
+    async (original: Task, input: NewTaskInput): Promise<TaskSubmitOutcome> => {
+      let updated: Task | null;
       try {
         // 三态契约：编辑弹层里选「无」就是显式清空，所以这里一律显式传值，
         // 用 null 表示清空、而不是省略键（省略会被数据层理解为「保持不变」）。
-        const updated = await updateTask(original.id, {
+        updated = await updateTask(original.id, {
           title: input.title,
           description: input.description ?? "",
           priority: input.priority ?? 0,
@@ -336,26 +392,36 @@ export function TasksScreen({
             ? { recurrenceRule: input.recurrenceRule }
             : {}),
         });
-        if (!updated) {
-          showToast("任务已不存在", "danger", "bottom");
-        } else {
-          // 改了提醒时间要重建排期；引擎内部按 (task_id, occurrence) 幂等，不会重复弹。
-          await rescheduleAllReminders();
-          showToast("任务已更新", "success", "bottom");
-        }
       } catch (error) {
-        showToast(`更新失败：${describeError(error)}`, "danger", "bottom");
+        return { ok: false, message: describeError(error) };
       }
+
+      if (!updated) {
+        notifyWidgetDataChanged();
+        await refresh(true);
+        return { ok: false, message: "任务已不存在，可能已被删除" };
+      }
+
+      // 数据已落库。提醒重建失败同样不能回滚成"更新失败"，否则用户会重复提交。
+      let notice: string | undefined;
+      try {
+        await rescheduleAllReminders();
+      } catch (error) {
+        notice = `任务已保存，但提醒重建失败：${describeError(error)}`;
+      }
+
       notifyWidgetDataChanged();
       await refresh(true);
+      showToast(notice ?? "任务已更新", notice ? "warn" : "success", "bottom");
+      return { ok: true, notice };
     },
     [refresh, showToast],
   );
 
   const handleEditorSubmit = useCallback(
-    (input: NewTaskInput) => {
-      if (editorState.mode === "edit") void handleUpdate(editorState.task, input);
-      else void handleCreate(input);
+    async (input: NewTaskInput): Promise<TaskSubmitOutcome> => {
+      if (editorState.mode === "edit") return handleUpdate(editorState.task, input);
+      return handleCreate(input);
     },
     [editorState, handleCreate, handleUpdate],
   );
@@ -408,9 +474,11 @@ export function TasksScreen({
         setEditorOpen(true);
         return;
       }
-      if (key === "delete") void handleDelete(task, "bottom");
+      if (key === "delete") {
+        requestDelete(task);
+      }
     },
-    [actionTask, handleDelete, handleToggle],
+    [actionTask, handleToggle, requestDelete],
   );
 
   const openCreate = useCallback(() => {
@@ -436,6 +504,25 @@ export function TasksScreen({
     onConsumeCreateSignal?.();
   }, [onConsumeCreateSignal, openCreate, openCreateSignal]);
 
+  /**
+   * 首页放大镜 → 聚焦搜索框。
+   *
+   * 这里不用导航参数，也不用 setTimeout：信号由 Shell 传递、页面消费后归零。
+   * 页面从 display:none 变为可见的同一帧里，原生输入框可能还没完成布局，
+   * 所以先同步 focus 一次，下一帧再补一次（对齐键盘弹出时机）。
+   * 只消费一次，不会在之后每次重渲染时抢焦点。
+   */
+  const lastSearchSignal = useRef(0);
+  useEffect(() => {
+    if (!shouldConsumeSignal(focusSearchSignal, lastSearchSignal.current)) return;
+    lastSearchSignal.current = focusSearchSignal;
+    searchRef.current?.focus();
+    requestAnimationFrame(() => {
+      if (mounted.current) searchRef.current?.focus();
+    });
+    onConsumeSearchSignal?.();
+  }, [focusSearchSignal, onConsumeSearchSignal]);
+
   const renderRow = useCallback(
     ({ item }: ListRenderItemInfo<TaskListRow>) => {
       if (item.type === "section") {
@@ -456,16 +543,17 @@ export function TasksScreen({
         <TaskRow
           task={item.task}
           now={now}
-          entranceIndex={item.entranceIndex}
+          // 首屏之后不再入场：筛选切换/虚拟列表重挂载不应该让整列任务重新飞入
+          entranceIndex={entranceEnabled ? item.entranceIndex : -1}
           last={item.position === "last" || item.position === "only"}
           onToggle={handleToggle}
           onOpenEditor={openDetail}
           onOpenActions={handleOpenActions}
-          onDelete={handleDelete}
+          onDelete={requestDelete}
         />
       );
     },
-    [collapsed, handleDelete, handleOpenActions, handleToggle, now, openDetail, toggleSection],
+    [collapsed, entranceEnabled, handleOpenActions, handleToggle, now, openDetail, requestDelete, toggleSection],
   );
 
   const keyExtractor = useCallback(
@@ -495,13 +583,14 @@ export function TasksScreen({
       : openCreate;
 
   const toggleSearch = useCallback(() => {
-    if (searchOpen) setQuery("");
-    setSearchOpen((open) => !open);
-  }, [searchOpen]);
+    // 输入框常驻：放大镜只负责聚焦，不再控制显示/隐藏，也不清空已有查询。
+    // 从其他页面返回时用户正在用的搜索条件必须保留。
+    searchRef.current?.focus();
+  }, []);
 
   const listHeader = (
     <View style={styles.header}>
-      {/* 范围分段：项目/团队无数据链路，禁用占位不切换 */}
+      {/* 范围分段：项目/团队无数据链路，禁用占位不切换；点按给出明确说明 */}
       <SegmentedControl
         options={SCOPE_OPTIONS}
         value={scope}
@@ -509,6 +598,10 @@ export function TasksScreen({
         accessibilityLabel="任务范围"
         emphasis="soft"
         size="compact"
+        onDisabledPress={(option) => {
+          const key = option.value === "project" ? "project" : "team";
+          showToast(SCOPE_UNAVAILABLE_COPY[key], "info", "bottom");
+        }}
       />
 
       <SegmentedControl
@@ -540,14 +633,14 @@ export function TasksScreen({
         ))}
       </ScrollView>
 
-      {searchOpen ? (
-        <SearchField
-          value={query}
-          onChangeText={setQuery}
-          placeholder="搜索任务、标签、分类"
-          accessibilityLabel="搜索任务"
-        />
-      ) : null}
+      {/* 搜索框常驻在筛选栏下方：不再由右上角放大镜决定是否出现 */}
+      <SearchField
+        inputRef={searchRef}
+        value={query}
+        onChangeText={setQuery}
+        placeholder="搜索任务标题、标签或备注"
+        accessibilityLabel="搜索任务"
+      />
 
       {searching ? (
         <Text style={[styles.searchHint, { color: tokens.muted }]}>
@@ -566,7 +659,8 @@ export function TasksScreen({
           <>
             <HeaderIconButton
               icon="search"
-              accessibilityLabel={searchOpen ? "关闭任务搜索" : "搜索任务"}
+              accessibilityLabel="聚焦任务搜索框"
+              accessibilityHint="输入框常驻在筛选栏下方，这里只是把光标放进去"
               onPress={toggleSearch}
             />
             <HeaderIconButton icon="add" accessibilityLabel="新建任务" onPress={openCreate} />
@@ -615,6 +709,25 @@ export function TasksScreen({
         task={editorTask}
         onClose={closeEditor}
         onSubmit={handleEditorSubmit}
+      />
+
+      {/* 删除确认：与任务详情使用同一个确认弹层，避免两个入口要求不一致 */}
+      <ConfirmSheet
+        visible={deleteTarget != null}
+        title="删除这条任务？"
+        message={
+          deleteTarget
+            ? `「${deleteTarget.title}」会从任务列表移除，本机提醒一并取消。`
+            : ""
+        }
+        confirmLabel="删除任务"
+        busy={deleting}
+        onConfirm={() => void handleDelete()}
+        onRequestClose={() => {
+          if (deleting) return;
+          setDeleteTarget(null);
+        }}
+        accessibilityLabel="删除任务确认"
       />
     </View>
   );

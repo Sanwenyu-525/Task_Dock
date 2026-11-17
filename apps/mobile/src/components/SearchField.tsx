@@ -1,6 +1,9 @@
 // 搜索框：任务页与收集箱共用。放大镜与清除按钮统一走 AppIcon（同一套线性图标），
 // 命中区按 44dp 补齐。
-import { useState } from "react";
+//
+// 2026-11-17 整改：输入框常驻，不再由放大镜控制显示/隐藏。
+// 为了让首页的放大镜能跨页面真正聚焦到输入框，组件接受外部 ref 与 autoFocus
+import { useState, type ComponentRef, type RefObject } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
@@ -13,11 +16,17 @@ export function SearchField({
   onChangeText,
   placeholder,
   accessibilityLabel,
+  inputRef,
+  autoFocus = false,
 }: {
   value: string;
   onChangeText: (text: string) => void;
   placeholder: string;
   accessibilityLabel: string;
+  /** 外部持有输入框实例，用于跨页面/页内快捷按钮聚焦 */
+  inputRef?: RefObject<ComponentRef<typeof TextInput> | null>;
+  /** 仅首次挂载时生效；页面已挂载时用 inputRef.focus() 更可靠 */
+  autoFocus?: boolean;
 }) {
   const { tokens } = useTheme();
   const [focused, setFocused] = useState(false);
@@ -37,6 +46,8 @@ export function SearchField({
       </View>
 
       <TextInput
+        ref={inputRef}
+        autoFocus={autoFocus}
         accessibilityLabel={accessibilityLabel}
         value={value}
         onChangeText={onChangeText}

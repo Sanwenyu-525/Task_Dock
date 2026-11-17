@@ -4,6 +4,11 @@
 // 数据边界：所有数字来自本机 tasks / notes / captures / capture_assets 表；
 // 移动端没有项目、看板、Agent、进度百分比字段，因此不显示「进行中项目」、
 // 不推算任务进度，完成率只表达「已完成 / 全部任务」的真实比例。
+//
+// 2026-11-17 整改：
+// - 四个数据源分别加载、分别失败：一个源读失败不再把整页打成错误态；
+// - 读失败/未读到的源不显示 0，避免把「未知」说成「没有」；
+// - 完成率口径统一为「全部任务」，文案不再写成「今日任务完成度」。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -32,6 +37,7 @@ import { listNotes } from "../db/notes";
 import { listTasks } from "../db/tasks";
 import { decodeRecentTitle } from "../lib/recentTitle";
 import {
+  completionOf,
   countTasks,
   formatDue,
   formatRelative,
@@ -59,6 +65,50 @@ import { font, radius, space } from "../theme/tokens";
 
 /** 卡片内只显示一字优先级标签，完整语义由任务页承担 */
 const PRIORITY_SHORT: Record<number, string> = { 1: "低", 2: "中", 3: "高" };
+
+/** 首页四个独立数据源：任何一个失败都只影响它自己那部分展示 */
+type HomeSource = "tasks" | "notes" | "captures" | "assets";
+
+const HOME_SOURCES: HomeSource[] = ["tasks", "notes", "captures", "assets"];
+
+/** 局部失败卡片：说明哪个数据没读到、原因，并给出只重试该数据的入口 */
+function SourceErrorCard({
+  label,
+  message,
+  retrying,
+  onRetry,
+}: {
+  label: string;
+  message: string;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  const { tokens } = useTheme();
+  return (
+    <GlassCard style={styles.sourceErrorCard}>
+      <View style={styles.sourceErrorHead}>
+        <AppIcon name="warning" color={tokens.warn} size={18} />
+        <Text style={[styles.sourceErrorTitle, { color: tokens.text }]}>
+          {label}读取失败
+        </Text>
+      </View>
+      <Text style={[styles.sourceErrorHint, { color: tokens.muted }]}>{message}</Text>
+      <PressableScale
+        onPress={onRetry}
+        accessibilityLabel={`重试读取${label}`}
+        disabled={retrying}
+        style={styles.retryPress}
+        contentStyle={[styles.retry, { backgroundColor: tokens.accentFill }]}
+      >
+        {retrying ? (
+          <ActivityIndicator size="small" color={tokens.onAccent} />
+        ) : (
+          <Text style={[styles.retryText, { color: tokens.onAccent }]}>重试</Text>
+        )}
+      </PressableScale>
+    </GlassCard>
+  );
+}
 
 type ActivityKind = "task" | "note" | "capture";
 
@@ -92,19 +142,25 @@ export function HomeScreen({
   const statsTwoCol = width < 480;
   // 概览磁贴：两列且字号正常时数字放在图标右侧；大字号或四列窄格回退为图标在上，避免数字被截断
   const statLayout = statsTwoCol && fontScale <= 1.15 ? "row" : "stack";
-  // 320dp 或大字号时品牌块变窄/隐藏，长句改用同义短句，保证一行读完
-  const brandSize = fontScale > 1.25 ? 0 : narrow ? 40 : 50;
+  // 320dp 或大字号时长句改用同义短句，保证一行读完
   const tagline =
     narrow || fontScale > 1.25
       ? "专注重要的事，高效推进。"
       : "专注重要的事，高效推进每一个任务。";
 
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [notes, setNotes] = useState<Note[]>([]);
-  const [captures, setCaptures] = useState<Capture[]>([]);
-  const [stashCount, setStashCount] = useState(0);
+  /**
+   * null = 这个数据源还没成功读到过。
+   * 不能先塞空数组：那样「读取失败」和「确实没有笔记/速记」在界面上完全一样，
+   * 用户会把未知当成 0。
+   */
+  const [notes, setNotes] = useState<Note[] | null>(null);
+  const [captures, setCaptures] = useState<Capture[] | null>(null);
+  const [stashCount, setStashCount] = useState<number | null>(null);
+  /** 每个数据源各自的失败原因；成功一次就清掉自己那一项 */
+  const [sourceErrors, setSourceErrors] = useState<Partial<Record<HomeSource, string>>>({});
+  const [retrying, setRetrying] = useState<Partial<Record<HomeSource, boolean>>>({});
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   /** 防止较慢的旧请求覆盖较新的 version 刷新结果；卸载后不再写状态 */
   const requestSeq = useRef(0);
@@ -118,30 +174,61 @@ export function HomeScreen({
     };
   }, []);
 
-  const refresh = useCallback(async () => {
+  /**
+   * 按数据源分别加载：每个源自己 try/catch，任何一个失败都不会中断其他源。
+   * 旧实现是一个 Promise.all + 单一 error 状态——素材表读失败会把整个首页打成错误页。
+   */
+  const refresh = useCallback(async (sources: HomeSource[] = HOME_SOURCES) => {
     const request = ++requestSeq.current;
-    try {
-      const [nextTasks, nextNotes, nextCaptures, nextAssets] = await Promise.all([
-        listTasks(),
-        listNotes(),
-        listCaptures(),
-        listAssets("saved"),
-      ]);
-      if (!mounted.current || request !== requestSeq.current) return;
-      setTasks(nextTasks);
-      setNotes(nextNotes);
-      setCaptures(nextCaptures);
-      setStashCount(nextAssets.length);
-      setError(null);
-    } catch (reason) {
-      if (!mounted.current || request !== requestSeq.current) return;
-      setError(describeError(reason));
-    } finally {
-      if (!mounted.current || request !== requestSeq.current) return;
-      setNow(Date.now());
-      setLoading(false);
-    }
+    const stale = () => !mounted.current || request !== requestSeq.current;
+
+    const load = async <T,>(
+      key: HomeSource,
+      run: () => Promise<T>,
+      apply: (value: T) => void,
+    ) => {
+      try {
+        const value = await run();
+        if (stale()) return;
+        apply(value);
+        setSourceErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
+      } catch (reason) {
+        if (stale()) return;
+        const message = describeError(reason);
+        setSourceErrors((prev) => ({ ...prev, [key]: message }));
+      }
+    };
+
+    await Promise.all([
+      sources.includes("tasks")
+        ? load("tasks", listTasks, (value) => setTasks(value))
+        : Promise.resolve(),
+      sources.includes("notes")
+        ? load("notes", listNotes, (value) => setNotes(value))
+        : Promise.resolve(),
+      sources.includes("captures")
+        ? load("captures", listCaptures, (value) => setCaptures(value))
+        : Promise.resolve(),
+      sources.includes("assets")
+        ? load("assets", () => listAssets("saved"), (value) => setStashCount(value.length))
+        : Promise.resolve(),
+    ]);
+
+    if (stale()) return;
+    setNow(Date.now());
+    setLoading(false);
   }, []);
+
+  /** 只重试失败的那一个源，不清空其他已成功的数据 */
+  const retrySource = useCallback(
+    async (key: HomeSource) => {
+      setRetrying((prev) => ({ ...prev, [key]: true }));
+      await refresh([key]);
+      if (!mounted.current) return;
+      setRetrying((prev) => ({ ...prev, [key]: false }));
+    },
+    [refresh],
+  );
 
   useEffect(() => {
     void refresh();
@@ -153,9 +240,11 @@ export function HomeScreen({
   }, []);
 
   const counts = useMemo(() => countTasks(tasks, now), [tasks, now]);
-  const completionRatio =
-    counts.total > 0 ? Math.max(0, Math.min(1, counts.completed / counts.total)) : 0;
-  const completionPercent = Math.round(completionRatio * 100);
+  /**
+   * 完成率口径：全部任务。分子=全部已完成，分母=全部任务。
+   * 空任务时返回 0，不做除法（避免 0/0 = NaN 把进度条画坏）。
+   */
+  const { ratio: completionRatio, percent: completionPercent } = completionOf(counts);
 
   const pendingTop3 = useMemo(
     () => sortTasks(tasks.filter((task) => task.status === "pending")).slice(0, 3),
@@ -171,7 +260,7 @@ export function HomeScreen({
       snippet: decodeRecentTitle(task.description.trim().replace(/\s+/g, " ").slice(0, 60)),
       at: task.updatedAt,
     }));
-    const noteEntries: ActivityEntry[] = notes.map((note) => {
+    const noteEntries: ActivityEntry[] = (notes ?? []).map((note) => {
       const body = note.body.trim();
       return {
         id: note.id,
@@ -181,7 +270,7 @@ export function HomeScreen({
         at: note.updatedAt,
       };
     });
-    const captureEntries: ActivityEntry[] = captures.map((capture) => ({
+    const captureEntries: ActivityEntry[] = (captures ?? []).map((capture) => ({
       id: capture.id,
       kind: "capture",
       title: decodeRecentTitle(capture.content.split("\n")[0]?.slice(0, 24) || "速记"),
@@ -192,6 +281,11 @@ export function HomeScreen({
       .sort((a, b) => b.at - a.at)
       .slice(0, 5);
   }, [tasks, notes, captures]);
+
+  /** 最近动态的源里有没有读失败：有就要在列表下方说明"这里只显示了一部分" */
+  const activityError = sourceErrors.notes ?? sourceErrors.captures ?? null;
+  const activitySourceMissing =
+    notes === null || captures === null ? "部分数据未读取成功" : null;
 
   const openActivity = useCallback(
     (entry: ActivityEntry) => {
@@ -217,8 +311,10 @@ export function HomeScreen({
   // 显示哪些入口、什么顺序全部来自 lib/entryLayoutStore（本机 kv 持久化）；
   // 页面不再自己维护入口数组，长按磁贴进入编辑态，「管理」进独立管理页。
   const layout = useEntryLayout();
+  // 暂未开放（entryTargetOf 为 null）的入口不能出现在首页快捷入口区：
+  // 否则点按无反馈，用户会误以为功能坏了。它们只在「全部功能」里以「暂未开放」展示。
   const visibleEntries = useMemo(
-    () => entriesForIds(layout.config.visible),
+    () => entriesForIds(layout.config.visible).filter((entry) => entryTargetOf(entry) !== null),
     [layout.config.visible],
   );
   const [editingEntries, setEditingEntries] = useState(false);
@@ -229,12 +325,20 @@ export function HomeScreen({
   const openEntry = useCallback(
     (entry: MobileEntry) => {
       const launch = entryTargetOf(entry);
-      if (!launch) return;
+      if (!launch) {
+        // 防御性兜底：正常情况下暂未开放入口已被过滤出轨道；万一配置/注册表不同步，
+        // 也必须给出明确反馈，而不是静默无响应。
+        showEntryToast(
+          `「${entry.label}」暂未开放：${entry.reason ?? "移动端暂无可用入口"}`,
+          "warn",
+        );
+        return;
+      }
       if (launch.kind === "route") nav.push(launch.route);
       else if (launch.kind === "tab") nav.openTab(launch.tab);
       else nav.openCreateTask();
     },
-    [nav],
+    [nav, showEntryToast],
   );
 
   const reorderEntries = useCallback(
@@ -282,7 +386,8 @@ export function HomeScreen({
   }, [showEntryToast]);
 
   const badgeForEntry = useCallback(
-    (id: string) => (id === "stash" ? stashCount : undefined),
+    // 素材数还没读到时不显示徽标：宁可没有角标，也不显示一个假的 0
+    (id: string) => (id === "stash" && stashCount != null ? stashCount : undefined),
     [stashCount],
   );
 
@@ -302,7 +407,8 @@ export function HomeScreen({
         <HeaderIconButton
           icon="search"
           accessibilityLabel="搜索任务"
-          onPress={() => nav.openTab("tasks")}
+          accessibilityHint="打开任务页并把光标放进搜索框"
+          onPress={() => nav.openTaskSearch()}
         />
         <HeaderIconButton
           icon="bell"
@@ -342,29 +448,24 @@ export function HomeScreen({
               {tagline}
             </Text>
           </View>
-          {brandSize > 0 ? (
-            <View style={styles.heroBrand}>
-              <BrandMark size={brandSize} />
-            </View>
-          ) : null}
         </View>
 
         {loading ? (
           <ActivityIndicator style={styles.loading} color={tokens.accent} />
-        ) : error ? (
-          <GlassCard style={styles.errorCard}>
-            <Text style={[styles.errorTitle, { color: tokens.danger }]}>读取本机数据失败</Text>
-            <Text style={[styles.errorHint, { color: tokens.muted }]}>{error}</Text>
-            <PressableScale
-              onPress={() => void refresh()}
-              accessibilityLabel="重试"
-              style={styles.retryPress}
-              contentStyle={[styles.retry, { backgroundColor: tokens.accentFill }]}
-            >
-              <Text style={[styles.retryText, { color: tokens.onAccent }]}>重试</Text>
-            </PressableScale>
-          </GlassCard>
-        ) : (
+        ) : null}
+
+        {!loading && sourceErrors.tasks ? (
+          // 任务数据没读到：只让依赖任务的三块（概览/进度/待处理）降级为局部错误，
+          // 快捷入口与最近动态仍按各自数据源正常展示，不再整页错误。
+          <SourceErrorCard
+            label="任务"
+            message={sourceErrors.tasks}
+            retrying={retrying.tasks === true}
+            onRetry={() => void retrySource("tasks")}
+          />
+        ) : null}
+
+        {!loading && !sourceErrors.tasks ? (
           <>
             {/* 今日概览：待处理 / 今日到期 / 已完成 / 完成率，全部来自 tasks 表真实计数 */}
             <View style={styles.section}>
@@ -416,13 +517,13 @@ export function HomeScreen({
             {/* 当前进度：真实完成率进度条；整卡进任务页，不进入任何项目空间 */}
             <PressableScale
               onPress={() => nav.openTab("tasks")}
-              accessibilityLabel={`今日任务完成度 ${completionPercent}%，查看全部任务`}
-              accessibilityHint="打开任务页"
+              accessibilityLabel={`任务完成率 ${completionPercent}%，共 ${counts.total} 项，已完成 ${counts.completed} 项`}
+              accessibilityHint="打开任务页查看全部任务"
               style={styles.progressPress}
               contentStyle={styles.progressCard}
             >
               <View style={styles.progressHeader}>
-                <AppIcon name="stats" color={tokens.accent} size={20} />
+                <AppIcon name="stats" color={tokens.accent} size={18} />
                 <Text style={[styles.progressTitle, { color: tokens.text }]}>当前进度</Text>
                 <View style={styles.progressAction}>
                   <Text style={[styles.progressActionText, { color: tokens.accentText }]}>
@@ -433,7 +534,7 @@ export function HomeScreen({
               </View>
               <ProgressBar value={completionRatio} label={`${completionPercent}%`} />
               <Text style={[styles.progressHint, { color: tokens.muted }]}>
-                今日任务完成度 · 共 {counts.total} 项，已完成 {counts.completed} 项
+                全部任务完成率 · 共 {counts.total} 项，已完成 {counts.completed} 项
               </Text>
             </PressableScale>
 
@@ -549,6 +650,11 @@ export function HomeScreen({
               )}
             </View>
 
+          </>
+        ) : null}
+
+        {!loading ? (
+          <>
             {/* 快捷入口：入口与顺序由用户配置决定；长按磁贴或点「管理」进入编辑/管理 */}
             <View style={styles.section}>
               <SectionHeader
@@ -616,6 +722,26 @@ export function HomeScreen({
                   onDragActiveChange={setEntryDragActive}
                 />
               )}
+              {/* 素材库数量是独立数据源：失败时不能把「未读到」显示成 0，给出局部提示与重试 */}
+              {sourceErrors.assets ? (
+                <View style={styles.inlineError}>
+                  <Text style={[styles.inlineErrorText, { color: tokens.warn }]}>
+                    素材库数量读取失败：{sourceErrors.assets}
+                  </Text>
+                  <PressableScale
+                    onPress={() => void retrySource("assets")}
+                    accessibilityLabel="重试读取素材库数量"
+                    disabled={retrying.assets === true}
+                    contentStyle={[styles.inlineRetry, { backgroundColor: tokens.accentFill }]}
+                  >
+                    {retrying.assets === true ? (
+                      <ActivityIndicator size="small" color={tokens.onAccent} />
+                    ) : (
+                      <Text style={[styles.inlineRetryText, { color: tokens.onAccent }]}>重试</Text>
+                    )}
+                  </PressableScale>
+                </View>
+              ) : null}
               {/* 编辑提示放在轨道下方：进入编辑态时轨道位置保持不变，磁贴不会被文案顶下去 */}
               {editingEntries && visibleEntries.length > 0 ? (
                 <Text style={[styles.entryHint, { color: tokens.muted }]}>
@@ -663,9 +789,38 @@ export function HomeScreen({
                   ))}
                 </View>
               )}
+
+              {/* 最近动态是任务/笔记/速记的合并视图：某个源读失败时，
+                  列表照常显示已读到的部分，但要说明这里并不完整，并提供重试 */}
+              {activityError ? (
+                <Text style={[styles.activityPartial, { color: tokens.warn }]}>
+                  {activitySourceMissing ? "最近动态不完整：" : ""}
+                  {activityError}
+                </Text>
+              ) : null}
+              {activityError ? (
+                <PressableScale
+                  onPress={() => {
+                    if (sourceErrors.notes) void retrySource("notes");
+                    if (sourceErrors.captures) void retrySource("captures");
+                  }}
+                  accessibilityLabel="重试读取最近动态"
+                  disabled={retrying.notes === true || retrying.captures === true}
+                  style={styles.retryPress}
+                  contentStyle={[styles.retry, { backgroundColor: tokens.accentFill }]}
+                >
+                  {retrying.notes === true || retrying.captures === true ? (
+                    <ActivityIndicator size="small" color={tokens.onAccent} />
+                  ) : (
+                    <Text style={[styles.retryText, { color: tokens.onAccent }]}>
+                      重试最近动态
+                    </Text>
+                  )}
+                </PressableScale>
+              ) : null}
             </View>
           </>
-        )}
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -731,15 +886,16 @@ const styles = StyleSheet.create({
     lineHeight: font.hero + 8,
   },
   tagline: { fontSize: font.meta, lineHeight: 19 },
-  heroBrand: { alignSelf: "center" },
   loading: { marginTop: space.xl },
-  errorCard: { padding: space.lg, gap: space.sm },
-  errorTitle: { fontSize: font.title, fontWeight: "700" },
-  errorHint: { fontSize: font.meta, lineHeight: 19 },
-  retryPress: { alignSelf: "flex-start", marginTop: space.xs },
+  sourceErrorCard: { padding: space.lg, gap: space.sm },
+  sourceErrorHead: { flexDirection: "row", alignItems: "center", gap: space.xs },
+  sourceErrorTitle: { fontSize: font.title, fontWeight: "700", flexShrink: 1 },
+  sourceErrorHint: { fontSize: font.meta, lineHeight: 19 },
+  retryPress: { alignSelf: "flex-start", marginTop: space.xs, minHeight: 44, justifyContent: "center" },
   retry: {
     minHeight: 44,
     justifyContent: "center",
+    alignItems: "center",
     paddingHorizontal: space.lg,
     borderRadius: radius.chip,
   },
@@ -752,15 +908,22 @@ const styles = StyleSheet.create({
     padding: space.lg,
     gap: space.sm + 2,
   },
-  progressHeader: { flexDirection: "row", alignItems: "center", gap: space.sm },
-  progressTitle: { fontSize: font.section, fontWeight: "700", letterSpacing: -0.2 },
+  progressHeader: { flexDirection: "row", alignItems: "center", gap: space.sm, minHeight: 24 },
+  progressTitle: {
+    fontSize: font.section,
+    fontWeight: "700",
+    letterSpacing: -0.2,
+    lineHeight: 20,
+  },
   progressAction: {
     marginLeft: "auto",
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "center",
     gap: 2,
+    minHeight: 24,
   },
-  progressActionText: { fontSize: font.meta, fontWeight: "600" },
+  progressActionText: { fontSize: font.meta, fontWeight: "600", lineHeight: 18 },
   progressHint: { fontSize: font.label, lineHeight: 17 },
   listCard: { paddingHorizontal: space.md, paddingVertical: space.xxs },
   pendingPress: {},
@@ -784,6 +947,7 @@ const styles = StyleSheet.create({
   },
   metaText: { fontSize: font.label, fontWeight: "600" },
   emptyText: { fontSize: font.meta, lineHeight: 20, paddingVertical: space.xs },
+  activityPartial: { fontSize: font.meta, lineHeight: 19, paddingTop: space.xs },
   entryHint: { fontSize: font.label, lineHeight: 16 },
   entryEmptyCard: { paddingVertical: space.xs },
   entryEmptyActions: {
@@ -809,6 +973,22 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
   },
   entryEmptySecondaryLabel: { fontSize: font.body, fontWeight: "600" },
+  inlineError: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    paddingHorizontal: space.xs,
+  },
+  inlineErrorText: { flex: 1, fontSize: font.label, lineHeight: 16 },
+  inlineRetry: {
+    minHeight: 44,
+    minWidth: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.chip,
+    paddingHorizontal: space.sm,
+  },
+  inlineRetryText: { fontSize: font.label, fontWeight: "700" },
   activityList: {},
   divider: { height: StyleSheet.hairlineWidth },
   activityPress: {},
