@@ -136,20 +136,22 @@ export default function WorkflowRunView({
               {startError}
             </p>
           ) : null}
-          <ol className="wf-steps" aria-label="将要执行的步骤">
-            {workflow.steps.map((s, i) => (
-              <li key={s.id} className={`wf-step ${s.enabled ? "" : "is-disabled"}`}>
-                <div className="wf-step-row">
-                  <span className="wf-step-index">{i + 1}</span>
-                  <span className="wf-step-main">
-                    <span className="wf-step-type">{WORKFLOW_STEP_TYPE_LABELS[s.step_type]}</span>
-                    <span className="wf-step-summary">{stepParamsSummary(s)}</span>
-                  </span>
-                  {!s.enabled ? <span className="wf-step-status kind-muted">已停用</span> : null}
-                </div>
-              </li>
-            ))}
-          </ol>
+          <div className="wf-run-output">
+            <ol className="wf-steps" aria-label="将要执行的步骤">
+              {workflow.steps.map((s, i) => (
+                <li key={s.id} className={`wf-step ${s.enabled ? "" : "is-disabled"}`}>
+                  <div className="wf-step-row">
+                    <span className="wf-step-index">{i + 1}</span>
+                    <span className="wf-step-main">
+                      <span className="wf-step-type">{WORKFLOW_STEP_TYPE_LABELS[s.step_type]}</span>
+                      <span className="wf-step-summary">{stepParamsSummary(s)}</span>
+                    </span>
+                    {!s.enabled ? <span className="wf-step-status kind-muted">已停用</span> : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
           <div className="wf-run-actions">
             <button
               type="button"
@@ -185,26 +187,28 @@ export default function WorkflowRunView({
               {controlError}
             </p>
           ) : null}
-          <ol className="wf-steps" aria-label="执行结果">
-            {detail.steps.map((rs, i) => (
-              <li key={rs.id} className={`wf-step kind-${STEP_STATUS_KIND[rs.status]}`}>
-                <div className="wf-step-row">
-                  <span className="wf-step-index">{i + 1}</span>
-                  <span className="wf-step-main">
-                    <span className="wf-step-type">{WORKFLOW_STEP_TYPE_LABELS[rs.step_type]}</span>
-                    <span className="wf-step-summary">
-                      {rs.detail ||
-                        (rs.status === "running" ? "执行中…" : rs.status === "pending" ? "待执行" : "")}
+          <div className="wf-run-output">
+            <ol className="wf-steps" aria-label="执行结果">
+              {detail.steps.map((rs, i) => (
+                <li key={rs.id} className={`wf-step kind-${STEP_STATUS_KIND[rs.status]}`}>
+                  <div className="wf-step-row">
+                    <span className="wf-step-index">{i + 1}</span>
+                    <span className="wf-step-main">
+                      <span className="wf-step-type">{WORKFLOW_STEP_TYPE_LABELS[rs.step_type]}</span>
+                      <span className="wf-step-summary">
+                        {rs.detail ||
+                          (rs.status === "running" ? "执行中…" : rs.status === "pending" ? "待执行" : "")}
+                      </span>
                     </span>
-                  </span>
-                  <span className={`wf-step-status kind-${STEP_STATUS_KIND[rs.status]}`}>
-                    {WORKFLOW_STEP_STATUS_LABELS[rs.status]}
-                  </span>
-                </div>
-                {rs.step_type === "enter_scene" ? <SceneReceiptList step={rs} /> : null}
-              </li>
-            ))}
-          </ol>
+                    <span className={`wf-step-status kind-${STEP_STATUS_KIND[rs.status]}`}>
+                      {WORKFLOW_STEP_STATUS_LABELS[rs.status]}
+                    </span>
+                  </div>
+                  {rs.step_type === "enter_scene" ? <SceneReceiptList step={rs} /> : null}
+                </li>
+              ))}
+            </ol>
+          </div>
           <div className="wf-run-actions">
             {running ? (
               <>

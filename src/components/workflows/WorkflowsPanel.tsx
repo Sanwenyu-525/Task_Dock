@@ -7,10 +7,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
   Copy,
   History,
   Layers,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Play,
   Plus,
@@ -31,7 +34,7 @@ import { onWorkflowRunProgress } from "../../lib/bridge";
 import { useWorkflowsStore } from "../../store/useWorkflowsStore";
 import { errorMessage } from "../../lib/errors";
 import WorkbenchPageHeader from "../../workbench/WorkbenchPageHeader";
-import { ConfirmDialog, EmptyState } from "../ui";
+import { ConfirmDialog, DropdownMenu, EmptyState } from "../ui";
 import { runStatusKind, stepParamsSummary } from "./display";
 import { WORKFLOW_TEMPLATES } from "./templates";
 import WorkflowEditorView from "./WorkflowEditorView";
@@ -288,13 +291,16 @@ export default function WorkflowsPanel() {
     activeTotal > 0 ? Math.round(((activeRunDetail?.completed_steps ?? 0) / activeTotal) * 100) : 0;
 
   const selectedSummary = workflows?.find((w) => w.id === selectedId) ?? null;
+  const selectedIndex = selectedSummary
+    ? (workflows?.findIndex((w) => w.id === selectedSummary.id) ?? -1)
+    : -1;
   const selectedLast = selectedId ? lastRuns[selectedId] : undefined;
   const selectedDetailReady = Boolean(selectedSummary && selectedDetail?.id === selectedSummary.id);
   const selectedSteps = selectedDetailReady ? (selectedDetail?.steps ?? []) : [];
   const selectedBusy = selectedId ? busyId === selectedId : false;
 
   return (
-    <div ref={rootRef} className={`workflows-panel page-fill${page ? " wf-editor-page" : ""}`}>
+    <div ref={rootRef} className={`workflows-panel page-fill ui-page-frame${page ? " wf-editor-page" : ""}`}>
       {page?.kind === "edit" ? (
         <WorkflowEditorView
           workflow={page.workflow}
@@ -500,6 +506,15 @@ export default function WorkflowsPanel() {
                         <p className="wf-hint-text">{tr("workflows.emptyHint")}</p>
                       </>
                     }
+                    action={
+                      <button
+                        type="button"
+                        className="btn primary"
+                        onClick={() => void openEditor(null, null)}
+                      >
+                        <Plus size={13} aria-hidden="true" /> 新建工作流
+                      </button>
+                    }
                   />
                 )}
               </div>
@@ -557,55 +572,61 @@ export default function WorkflowsPanel() {
                   <button type="button" className="btn sm" onClick={() => openHistory(selectedSummary)}>
                     <History size={13} aria-hidden="true" /> 运行历史
                   </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`复制 ${selectedSummary.name}`}
-                    data-tip="创建副本"
-                    disabled={selectedBusy}
-                    onClick={() =>
-                      void guard(selectedSummary.id, async () => {
-                        await duplicateWorkflow(selectedSummary.id);
-                      })()
-                    }
-                  >
-                    <Copy size={13} aria-hidden="true" />
-                  </button>
                   <span className="flex-spacer" />
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`上移 ${selectedSummary.name}`}
-                    data-tip="上移"
-                    disabled={selectedBusy || (workflows?.findIndex((w) => w.id === selectedSummary.id) ?? 0) <= 0}
-                    onClick={() => move(selectedSummary, -1)}
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm"
-                    aria-label={`下移 ${selectedSummary.name}`}
-                    data-tip="下移"
-                    disabled={
-                      selectedBusy ||
-                      (workflows?.findIndex((w) => w.id === selectedSummary.id) ?? 0) >=
-                        (workflows?.length ?? 0) - 1
-                    }
-                    onClick={() => move(selectedSummary, 1)}
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn sm danger-ghost"
-                    aria-label={`删除 ${selectedSummary.name}`}
-                    data-tip="删除工作流及其运行记录"
-                    disabled={selectedBusy}
-                    onClick={() => setDeleteTarget(selectedSummary)}
-                  >
-                    <Trash2 size={13} aria-hidden="true" />
-                  </button>
+                  <DropdownMenu
+                    trigger={({ ref, expanded, onClick, onKeyDown }) => (
+                      <button
+                        ref={ref}
+                        type="button"
+                        className="icon-btn sm"
+                        aria-label={`更多操作 ${selectedSummary.name}`}
+                        aria-haspopup="menu"
+                        aria-expanded={expanded}
+                        data-tip="更多操作"
+                        onClick={onClick}
+                        onKeyDown={onKeyDown}
+                      >
+                        <MoreHorizontal size={13} aria-hidden="true" />
+                      </button>
+                    )}
+                    items={[
+                      {
+                        key: "duplicate",
+                        icon: <Copy size={13} aria-hidden="true" />,
+                        label: "创建副本",
+                        disabled: selectedBusy,
+                        onSelect: () =>
+                          void guard(selectedSummary.id, async () => {
+                            await duplicateWorkflow(selectedSummary.id);
+                          })(),
+                      },
+                      {
+                        key: "move-up",
+                        icon: <ArrowUp size={13} aria-hidden="true" />,
+                        label: "上移",
+                        disabled: selectedBusy || selectedIndex <= 0,
+                        onSelect: () => move(selectedSummary, -1),
+                      },
+                      {
+                        key: "move-down",
+                        icon: <ArrowDown size={13} aria-hidden="true" />,
+                        label: "下移",
+                        disabled: selectedBusy || selectedIndex >= (workflows?.length ?? 1) - 1,
+                        onSelect: () => move(selectedSummary, 1),
+                      },
+                      { key: "sep", separator: true },
+                      {
+                        key: "delete",
+                        icon: <Trash2 size={13} aria-hidden="true" />,
+                        label: "删除工作流",
+                        danger: true,
+                        disabled: selectedBusy,
+                        onSelect: () => setDeleteTarget(selectedSummary),
+                      },
+                    ]}
+                    menuLabel={`更多操作 ${selectedSummary.name}`}
+                    placement="bottom-end"
+                  />
                   {selectedBusy ? <Loader2 size={12} className="spin wf-detail-busy" aria-hidden="true" /> : null}
                 </div>
 

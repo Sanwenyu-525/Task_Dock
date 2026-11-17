@@ -713,7 +713,7 @@ export default function ScenarioWorkspaceView({ onBack }: { onBack: () => void }
       ) : null}
       {loaded && summaries.length > 0 && filtered.length === 0 ? <p className="wf-empty-steps">没有匹配的场景。</p> : null}
 
-      <div className="planning-cards scenario-cards">
+      <div className="ui-adaptive-grid scenario-cards">
         {filtered.map((scene) => {
           const result = results[scene.id];
           const state = result ? resultState(result.items, progressByItem, result) : null;

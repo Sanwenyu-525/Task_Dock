@@ -44,9 +44,18 @@
   grid-column: span 2;
   justify-content: center;
 }
-@media (max-width: 900px) {
+/* 按内容容器宽度降级，不按窗口宽度；统计卡在窄区减列。 */
+@container wf-body (max-width: 880px) {
   .workflows-panel .wf-stat-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container wf-body (max-width: 519px) {
+  .workflows-panel .wf-stat-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workflows-panel .wf-stat-progress {
+    grid-column: auto;
   }
 }
 
@@ -61,14 +70,16 @@
   display: grid;
   grid-template-columns: minmax(210px, 260px) minmax(360px, 1fr) minmax(280px, 330px);
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
   min-width: 0;
+  min-height: 0;
 }
 .workflows-panel .wf-list-col {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  min-height: 0;
   padding: 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
@@ -79,12 +90,14 @@
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+  min-height: 0;
 }
 .workflows-panel .wf-side-col {
   display: flex;
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+  min-height: 0;
 }
 @container wf-body (max-width: 880px) {
   .workflows-panel .wf-main {
@@ -130,8 +143,10 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .workflows-panel .wf-rail-item {
   display: flex;
@@ -666,4 +681,104 @@
   font-size: 11px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── 操作按钮命中区（--layout-hit-target，WCAG 2.5.8）──────────────────
+   视觉尺寸沿用共享 sm 基元：图标按钮用透明伪元素把命中区外扩到 32×32，
+   文本小按钮抬高最小高度。伪元素属于按钮自身，点击仍触发同一 onClick，
+   不改变相邻按钮的布局间距；不改共享 .btn / .icon-btn 组件本身。 */
+.workflows-panel .icon-btn.sm {
+  position: relative;
+}
+
+.workflows-panel .icon-btn.sm::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: inherit;
+}
+
+.workflows-panel .btn.sm {
+  min-height: var(--layout-hit-target);
+  padding: 0 9px;
+  gap: 5px;
+}
+
+/* ── 运行 / 历史子视图：填满剩余高度，页头与操作条固定，结果区独立滚动 ──
+   外层 .workflows-panel 是 .page-fill 纵向 flex；子视图根节点吃满高度后，
+   步骤/回执清单在自己的区域内滚动，长输出不撑破容器，矮窗下操作条仍可达。 */
+.workflows-panel .wf-subpage {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.workflows-panel .wf-run-confirm,
+.workflows-panel .wf-run-progress {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.workflows-panel .wf-run-output {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.workflows-panel .wf-run-actions {
+  flex-shrink: 0;
+}
+
+.workflows-panel .wf-history-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.workflows-panel .wf-history-pager {
+  flex-shrink: 0;
+}
+
+/* 历史展开的逐步骤回执：长结果摘要折行，不与相邻行重叠。 */
+.workflows-panel .wf-history-detail .wf-step-summary {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* ── 编辑器 / 场景表单：窄宽降级 ──────────────────────────────────────
+   名称/描述、现场/工作流关联在 ≥520 内容区两列；窄区回退单列。
+   输入框占满字段宽度并允许收缩，避免被压成一列字符。 */
+.workflows-panel .wf-editor .form-field .input,
+.workflows-panel .scenario-form .form-field .input {
+  width: 100%;
+  min-width: 0;
+}
+
+.workflows-panel .wf-editor .wf-step-form-row .form-field {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+@container ui-page (min-width: 520px) {
+  .workflows-panel .wf-editor .form-grid,
+  .workflows-panel .scenario-form .form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+}
+
+/* 窄内容区：步骤行换行，工具按钮沉到行尾；底部操作按钮撑满一行，不被裁切。 */
+@container ui-page (max-width: 519px) {
+  .workflows-panel .wf-editor .wf-step-row {
+    flex-wrap: wrap;
+  }
+
+  .workflows-panel .wf-editor .wf-step-tools {
+    margin-left: auto;
+  }
+
+  .workflows-panel .wf-editor-actions .btn {
+    flex: 1 1 auto;
+  }
 }

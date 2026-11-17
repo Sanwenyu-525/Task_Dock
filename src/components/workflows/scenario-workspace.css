@@ -24,9 +24,15 @@
   width: min(100%, 360px);
 }
 
+/* 场景卡片栅格复用共享 .ui-adaptive-grid：列数按内容宽度由 auto-fill 自然算出，
+   宽屏单卡由 --layout-card-max 封顶，不写死固定列数、不按窗口宽度断档。 */
 .scenario-cards {
-  display: grid;
-  gap: 12px;
+  --ui-card-min: 300px;
+  gap: var(--layout-gap-comfort, 12px);
+}
+
+.scenario-cards .scenario-card {
+  max-width: var(--layout-card-max);
 }
 
 .scenario-card {
@@ -259,7 +265,9 @@
   font-size: 11px;
 }
 
-@media (max-width: 520px) {
+/* 窄内容区（<520px）按容器宽度降级：应用行收成「字段 + 删除按钮」两列，
+   路径/参数字段整行下沉；操作行允许换行。查询容器为祖先 .ui-page-frame。 */
+@container ui-page (max-width: 519px) {
   .scenario-app-row {
     grid-template-columns: minmax(0, 1fr) auto;
   }
@@ -366,7 +374,7 @@
   margin-top: 4px;
 }
 
-@media (max-width: 520px) {
+@container ui-page (max-width: 519px) {
   .scenario-icon-grid {
     grid-template-columns: repeat(6, 34px);
   }
