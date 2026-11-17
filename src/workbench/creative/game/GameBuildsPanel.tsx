@@ -396,6 +396,9 @@ export default function GameBuildsPanel({
                     <FolderOpen size={13} aria-hidden="true" /> 产物
                   </button>
                 )}
+                {build.itemId && !build.itemExists && (
+                  <span className="ws-badge ws-badge-unavailable">事项（已删除）</span>
+                )}
                 {linked && <span className="ws-badge ws-badge-soft">{linked.title}</span>}
                 {!readonly && (
                   <>
@@ -559,6 +562,9 @@ export default function GameBuildsPanel({
                   {test.title}
                   {test.scope ? <span className="ws-meta"> · {test.scope}</span> : null}
                 </span>
+                {test.buildId && !test.buildExists && (
+                  <span className="ws-badge ws-badge-unavailable">构建（已删除）</span>
+                )}
                 {linkedBuild && (
                   <span className="ws-badge ws-badge-soft">构建：{linkedBuild.target}</span>
                 )}
@@ -577,6 +583,9 @@ export default function GameBuildsPanel({
                   {formatLocalizedDateTime(test.testedAt)}
                   {test.defectCount > 0 ? ` · 缺陷 ${test.defectCount}` : ""}
                 </span>
+                {test.itemId && !test.itemExists && (
+                  <span className="ws-badge ws-badge-unavailable">事项（已删除）</span>
+                )}
                 {linked && <span className="ws-badge ws-badge-soft">{linked.title}</span>}
                 {!readonly && (
                   <>

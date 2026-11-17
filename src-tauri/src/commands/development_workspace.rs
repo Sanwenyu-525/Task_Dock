@@ -89,6 +89,8 @@ const MAX_NOTE_CHARS: usize = 500;
 const CHANGED_FILE_CAP: usize = 50;
 /// 构建追溯一次合并的任务数上限。
 const TRACE_TASK_CAP: usize = 20;
+/// 每个项目保留的探测快照条数上限（超出按时间倒序回收旧快照，避免表无界增长）。
+const PROBE_SNAPSHOT_KEEP: i64 = 20;
 const STEP_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -1207,6 +1209,26 @@ fn run_git_readonly(root: &str, args: &[&str]) -> Option<(bool, String)> {
     }
 }
 
+/// 剥离 git porcelain 对含特殊字符路径加的外层双引号（与 `devwork::git::unquote` 口径一致）。
+fn unquote_git_path(raw: &str) -> String {
+    let s = raw.trim();
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// 判定 porcelain XY 状态是否为未合并冲突：任一列为 `U`，或双方同改/同删（AA/DD）。
+fn is_conflict_status(status: &str) -> bool {
+    let mut chars = status.chars();
+    let first = chars.next();
+    let second = chars.next();
+    matches!((first, second), (Some('U'), _) | (Some(_), Some('U')))
+        || status == "AA"
+        || status == "DD"
+}
+
 /// 解析 `git status --porcelain` 单行：XY 状态 + 路径（重命名取新路径）。
 fn parse_porcelain_line(line: &str) -> Option<(String, String)> {
     let line = line.trim_end();
@@ -1217,8 +1239,8 @@ fn parse_porcelain_line(line: &str) -> Option<(String, String)> {
     let path = line[3..].trim_start();
     // 重命名/复制：`old -> new`，只保留新路径。
     let path = match path.split_once(" -> ") {
-        Some((_, new)) => new.to_string(),
-        None => path.to_string(),
+        Some((_, new)) => unquote_git_path(new),
+        None => unquote_git_path(path),
     };
     if path.is_empty() {
         return None;
@@ -1369,6 +1391,21 @@ pub fn dws_git_risk_probe_impl(
                 });
             }
 
+            // 未解决的合并冲突（UU/AA/DD/AU/UA/DU/UD）：单独标记，文件清单随附。
+            let conflict_files: Vec<String> = changed_files
+                .iter()
+                .filter(|f| is_conflict_status(&f.status))
+                .map(|f| f.path.clone())
+                .collect();
+            if !conflict_files.is_empty() {
+                risks.push(DwsRiskFlag {
+                    level: "warn".into(),
+                    code: "merge_conflict".into(),
+                    message: "存在未解决的合并冲突，必须先人工解决冲突并确认文件所有权后再提交。".into(),
+                    files: conflict_files,
+                });
+            }
+
             // 跨任务路径重叠（对照台账任务声明的写入范围）。
             let mut overlap_files: Vec<String> = Vec::new();
             let mut overlap_tasks: Vec<String> = Vec::new();
@@ -1440,6 +1477,18 @@ pub fn dws_git_risk_probe_impl(
             let risks_json =
                 serde_json::to_string(&aggregated).unwrap_or_else(|_| "{}".into());
             let first = repos.first();
+            // 回收旧快照：每个项目只保留最近 PROBE_SNAPSHOT_KEEP 条，避免表无界增长。
+            conn.execute(
+                "DELETE FROM dws_workspace_probes
+                 WHERE project_id = ?1
+                   AND id NOT IN (
+                     SELECT id FROM dws_workspace_probes
+                     WHERE project_id = ?1
+                     ORDER BY probed_at DESC, rowid DESC
+                     LIMIT ?2
+                 )",
+                params![project_id, PROBE_SNAPSHOT_KEEP],
+            )?;
             conn.execute(
                 "INSERT INTO dws_workspace_probes
                  (id, project_id, probed_at, git_status, branch, detached, head_sha,
@@ -2005,5 +2054,168 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&repo);
         let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    #[test]
+    fn probe_flags_detached_head_and_linked_worktree() {
+        if !require_git() {
+            return;
+        }
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        let (pa, _parch, _pg, _dev) = seed_projects(&db, &now);
+
+        let repo = temp_dir("detached");
+        git_in(&repo, &["init", "-q"]);
+        std::fs::write(repo.join("a.txt"), "v1\n").unwrap();
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-q", "-m", "c1"]);
+        std::fs::write(repo.join("a.txt"), "v2\n").unwrap();
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-q", "-m", "c2"]);
+        // detached 到前一个提交。
+        git_in(&repo, &["checkout", "-q", "--detach", "HEAD~1"]);
+
+        let linked = temp_dir("linked");
+        let linked_path = linked.to_string_lossy().into_owned();
+        git_in(&repo, &["worktree", "add", "-q", linked_path.as_str(), "-b", "feature"]);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE dev_projects SET root_path = ?1 WHERE id = 'dev-1'",
+                [repo.to_string_lossy().to_string()],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        dws_task_link_save_impl(
+            &db,
+            &pa,
+            Some("task-1".into()),
+            Some("dev-1".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let main_risk = dws_git_risk_probe_impl(&db, &pa, None).unwrap();
+        let main = &main_risk.repos[0];
+        assert!(main.git.detached, "detached HEAD 必须如实标记");
+        assert!(main.git.branch.is_none());
+        assert!(main.risks.iter().any(|r| r.code == "detached_head"));
+
+        // linked worktree 视角：is_worktree=true，主仓库路径可追溯。
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE dev_projects SET root_path = ?1 WHERE id = 'dev-1'",
+                [linked.to_string_lossy().to_string()],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let linked_risk = dws_git_risk_probe_impl(&db, &pa, None).unwrap();
+        let linked_repo = &linked_risk.repos[0];
+        assert!(linked_repo.git.is_worktree);
+        assert!(linked_repo.git.main_repo_path.is_some());
+        assert!(linked_repo.risks.iter().any(|r| r.code == "linked_worktree"));
+
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&linked);
+    }
+
+    #[test]
+    fn probe_flags_unresolved_merge_conflict() {
+        if !require_git() {
+            return;
+        }
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        let (pa, _parch, _pg, _dev) = seed_projects(&db, &now);
+
+        let repo = temp_dir("conflict");
+        git_in(&repo, &["init", "-q"]);
+        std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-q", "-m", "c1"]);
+        git_in(&repo, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repo.join("a.txt"), "side version\n").unwrap();
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-q", "-m", "side"]);
+        git_in(&repo, &["checkout", "-q", "master"]);
+        std::fs::write(repo.join("a.txt"), "main version\n").unwrap();
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-q", "-m", "main"]);
+        // 合并必然冲突（退出码 1），这是预期形态，不作为失败。
+        let merge = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["merge", "-q", "side"])
+            .output()
+            .expect("spawn git merge");
+        assert!(!merge.status.success(), "本夹具必须产生冲突");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE dev_projects SET root_path = ?1 WHERE id = 'dev-1'",
+                [repo.to_string_lossy().to_string()],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        dws_task_link_save_impl(
+            &db,
+            &pa,
+            Some("task-1".into()),
+            Some("dev-1".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let risk = dws_git_risk_probe_impl(&db, &pa, None).unwrap();
+        let repo_risk = &risk.repos[0];
+        let conflict = repo_risk
+            .risks
+            .iter()
+            .find(|r| r.code == "merge_conflict")
+            .expect("冲突文件必须报 merge_conflict");
+        assert!(conflict.files.iter().any(|f| f == "a.txt"));
+        assert!(repo_risk
+            .changed_files
+            .iter()
+            .any(|f| f.status == "UU" && f.path == "a.txt"));
+
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn probe_degrades_missing_path_without_panic() {
+        let db = Db::open_in_memory().unwrap();
+        let now = now_iso();
+        let (pa, _parch, _pg, _dev) = seed_projects(&db, &now);
+
+        let gone = std::env::temp_dir().join(format!("td-dws-gone-{}", uuid::Uuid::new_v4().simple()));
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE dev_projects SET root_path = ?1 WHERE id = 'dev-1'",
+                [gone.to_string_lossy().to_string()],
+            )
+            .map_err(AppError::from)?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let risk = dws_git_risk_probe_impl(&db, &pa, None).unwrap();
+        let repo_risk = &risk.repos[0];
+        assert!(!repo_risk.exists);
+        assert_eq!(repo_risk.git.status, DevGitStatus::PathMissing);
+        assert!(repo_risk.risks.iter().any(|r| r.code == "path_missing"));
     }
 }

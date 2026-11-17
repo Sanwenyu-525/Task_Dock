@@ -164,6 +164,7 @@ struct LifeEventItemRow {
     unit_price_minor: Option<i64>,
     total_price_minor: Option<i64>,
     currency: String,
+    amount_scale: i64,
     note: String,
     created_at: String,
     updated_at: String,
@@ -176,7 +177,8 @@ fn load_life_event_item_row(
     Ok(conn
         .query_row(
             "SELECT event_id, item_id, item_name_snapshot, quantity_value, quantity_unit,
-                    unit_price_minor, total_price_minor, currency, note, created_at, updated_at
+                    unit_price_minor, total_price_minor, currency, amount_scale, note,
+                    created_at, updated_at
              FROM life_event_items WHERE id = ?1",
             params![id],
             |row| {
@@ -189,9 +191,10 @@ fn load_life_event_item_row(
                     unit_price_minor: row.get(5)?,
                     total_price_minor: row.get(6)?,
                     currency: row.get(7)?,
-                    note: row.get(8)?,
-                    created_at: row.get(9)?,
-                    updated_at: row.get(10)?,
+                    amount_scale: row.get(8)?,
+                    note: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
                 })
             },
         )
@@ -216,6 +219,7 @@ pub(crate) fn load_life_event_item_change(
         "unitPriceMinor": row.unit_price_minor,
         "totalPriceMinor": row.total_price_minor,
         "currency": if row.currency.is_empty() { Value::Null } else { json!(row.currency) },
+        "amountScale": row.amount_scale,
         "note": if row.note.is_empty() { Value::Null } else { json!(row.note) },
         "createdAt": iso_to_ms(&row.created_at).unwrap_or(0),
         "updatedAt": updated_at,
@@ -356,6 +360,29 @@ pub(crate) fn apply_life_item_op(
             if op.base_rev != 0 {
                 conflicts.push(conflict(op, "record_missing", None));
             } else {
+                // 先做同名检查：若桌面端已有同归一名的活动商品，返回该商品的完整服务端记录，
+                // 手机端据此提供「关联到已有商品并保留本机购买历史」的可恢复路径，
+                // 而不是只给一个 invalid_patch、连目标 ID 都拿不到。
+                let name = required_text(&op.patch, "name", "商品名称", 80)?;
+                let normalized = normalize_name(&name);
+                if !normalized.is_empty() {
+                    let existing: Option<String> = conn
+                        .query_row(
+                            "SELECT id FROM life_items
+                              WHERE normalized_name = ?1 AND deleted_at IS NULL",
+                            params![normalized],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    if let Some(other_id) = existing {
+                        if other_id != op.id {
+                            let other_latest = latest_seq(conn, "life_item", &other_id)?;
+                            let server = load_life_item_change(conn, &other_id, other_latest)?;
+                            conflicts.push(conflict(op, "life_item_name_conflict", server));
+                            return Ok(());
+                        }
+                    }
+                }
                 insert_life_item_from_patch(conn, op)?;
                 ack_op(conn, device_id, op, ack)?;
             }
@@ -610,6 +637,17 @@ fn patch_currency(patch: &Map<String, Value>) -> AppResult<String> {
     normalize_currency(Some(text.as_str())).map_err(|_| {
         AppError::Validation("currency 必须是三位字母代码或 null".into())
     })
+}
+
+/// 兼容旧客户端：未带 amountScale 时按历史两位小数解释，绝不改变已有金额。
+fn patch_amount_scale(patch: &Map<String, Value>) -> AppResult<i64> {
+    let scale = patch_i64(patch, "amountScale")?.unwrap_or(2);
+    if !(0..=3).contains(&scale) {
+        return Err(AppError::Validation(
+            "amountScale 必须是 0–3 的整数".into(),
+        ));
+    }
+    Ok(scale)
 }
 
 fn patch_aliases(patch: &Map<String, Value>) -> AppResult<Option<Vec<String>>> {
@@ -925,6 +963,7 @@ fn insert_life_event_item_from_patch(conn: &Connection, op: &SyncOp) -> AppResul
     let unit_price = patch_money(&op.patch, "unitPriceMinor")?;
     let total_price = patch_money(&op.patch, "totalPriceMinor")?;
     let currency = patch_currency(&op.patch)?;
+    let amount_scale = patch_amount_scale(&op.patch)?;
     let note = patch_string(&op.patch, "note")?
         .unwrap_or_default()
         .trim()
@@ -935,8 +974,8 @@ fn insert_life_event_item_from_patch(conn: &Connection, op: &SyncOp) -> AppResul
     conn.execute(
         "INSERT INTO life_event_items
          (id, event_id, item_id, item_name_snapshot, quantity_value, quantity_unit,
-          unit_price_minor, total_price_minor, currency, note, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+          unit_price_minor, total_price_minor, currency, amount_scale, note, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             op.id,
             event_id,
@@ -947,6 +986,7 @@ fn insert_life_event_item_from_patch(conn: &Connection, op: &SyncOp) -> AppResul
             unit_price,
             total_price,
             currency,
+            amount_scale,
             note,
             created_at,
             updated_at
@@ -1009,6 +1049,11 @@ fn update_life_event_item_from_patch(
     } else {
         row.currency.clone()
     };
+    let amount_scale = if patch.contains_key("amountScale") {
+        patch_amount_scale(patch)?
+    } else {
+        row.amount_scale
+    };
     let note = match patch_string(patch, "note")? {
         Some(value) => value.trim().to_string(),
         None => row.note.clone(),
@@ -1018,8 +1063,8 @@ fn update_life_event_item_from_patch(
         "UPDATE life_event_items
          SET event_id = ?1, item_id = ?2, item_name_snapshot = ?3, quantity_value = ?4,
              quantity_unit = ?5, unit_price_minor = ?6, total_price_minor = ?7,
-             currency = ?8, note = ?9, updated_at = ?10
-         WHERE id = ?11",
+             currency = ?8, amount_scale = ?9, note = ?10, updated_at = ?11
+         WHERE id = ?12",
         params![
             event_id,
             item_id,
@@ -1029,6 +1074,7 @@ fn update_life_event_item_from_patch(
             unit_price,
             total_price,
             currency,
+            amount_scale,
             note,
             now,
             id

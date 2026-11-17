@@ -1353,7 +1353,11 @@ export function CaptureReviewScreen({ nav }: { nav: Nav }) {
                       {formatLifeDate(purchase.occurredAt)}
                       {purchase.merchant ? ` · ${purchase.merchant}` : ""}
                       {purchase.totalPriceMinor !== null
-                        ? ` · ${formatMoneyMinor(purchase.totalPriceMinor, purchase.currency)}`
+                        ? ` · ${formatMoneyMinor(
+                            purchase.totalPriceMinor,
+                            purchase.currency,
+                            purchase.amountScale,
+                          )}`
                         : ""}
                     </Text>
                   </View>

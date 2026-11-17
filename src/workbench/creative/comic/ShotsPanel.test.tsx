@@ -119,6 +119,24 @@ describe("ShotsPanel", () => {
     expect(screen.getByDisplayValue("中景")).toBeTruthy();
   });
 
+  it("保存前裁剪失效角色与场景弱引用", async () => {
+    const stale = { ...shotA, characterIds: ["c1", "gone"], sceneId: "gone-scene" };
+    api.comicShotList.mockResolvedValue({ shots: [stale] });
+    render(<ShotsPanel {...base} archived={false} onNotice={vi.fn()} />);
+
+    await screen.findByText(/A-镜头1描述/);
+    screen.getByText(/A-镜头1描述/).click();
+    await screen.findByDisplayValue("A-镜头1描述");
+
+    screen.getByRole("button", { name: "保存镜头" }).click();
+
+    await waitFor(() => {
+      expect(api.comicShotSave).toHaveBeenCalledWith(
+        expect.objectContaining({ characterIds: ["c1"], sceneId: null }),
+      );
+    });
+  });
+
   it("空集点击加镜头即可填写并保存首条镜头", async () => {
     const newShot = { ...shotA, id: "hnew", shotNo: 1, description: "新镜头" };
     api.comicShotList

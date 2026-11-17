@@ -2097,6 +2097,8 @@ CREATE INDEX idx_novel_chapters_volume
     crate::commands::life::MIGRATION_65,
     // 生活票据：补充桌面端实际收到原图的 remote_ref / remote_source。
     crate::commands::life::MIGRATION_66,
+    // 生活金额：记录该行使用的货币小数位，历史行默认 2 位。
+    crate::commands::life::MIGRATION_67,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

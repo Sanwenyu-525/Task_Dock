@@ -72,7 +72,7 @@ import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
 const LIFE_CATEGORY = "生活";
-const CURRENCIES = ["CNY", "USD", "EUR", "JPY", "GBP", "HKD"];
+const CURRENCIES = ["CNY", "USD", "EUR", "JPY", "GBP", "HKD", "KWD"];
 
 type Sheet =
   | { type: "purchase" }
@@ -99,6 +99,14 @@ function todayText(): string {
   return formatLifeDate(Date.now());
 }
 
+function moneyInputText(minor: number, scale: number): string {
+  const safeScale = Number.isInteger(scale) && scale >= 0 && scale <= 3 ? scale : 2;
+  const factor = 10 ** safeScale;
+  const whole = Math.floor(minor / factor);
+  if (safeScale === 0) return String(whole);
+  return `${whole}.${String(minor % factor).padStart(safeScale, "0")}`;
+}
+
 function emptyForm(currency: string): PurchaseForm {
   return {
     mode: "create",
@@ -117,14 +125,42 @@ function emptyForm(currency: string): PurchaseForm {
 
 function countText(link: LifeDocumentLink): string {
   if (link.transferState === "missing") return "原文件缺失";
-  if (link.documentSource === "shelf_item" || link.remoteRef) {
-    return "原图已传输到电脑";
+  if (
+    link.transferState === "transferred" &&
+    link.remoteSource === "shelf_item" &&
+    link.remoteRef
+  ) {
+    return "原图已导入电脑";
+  }
+  if (link.remoteRef && link.transferState === "metadata_only") {
+    return "文件已传到电脑，尚未导入";
   }
   if (link.documentSource === "capture_asset") {
     if (!link.localUri) return "本机原图缺失";
+    if (link.remoteRef) return "文件已传到电脑，尚未导入";
     return link.transferState === "metadata_only" ? "仅元数据，原图未到电脑" : "本机原图，未传电脑";
   }
+  if (link.documentSource === "shelf_item") return "电脑文件引用";
   return "文件引用";
+}
+
+type ReceiptAction = "send" | "resume" | "transferred";
+
+/** 按完整传输状态派生可执行动作，不能只看 remoteRef 是否非空。 */
+function receiptAction(link: LifeDocumentLink): ReceiptAction | null {
+  if (link.transferState === "missing") return null;
+  if (
+    link.transferState === "transferred" &&
+    link.remoteSource === "shelf_item" &&
+    link.remoteRef
+  ) {
+    return "transferred";
+  }
+  // 文件已上传但导入失败：保留远端文件 ID，必须允许用户继续导入。
+  if (link.transferState === "metadata_only" && link.remoteRef) return "resume";
+  if (link.remoteRef && link.documentSource !== "shelf_item") return "resume";
+  if (link.documentSource === "capture_asset" && link.localUri && !link.remoteRef) return "send";
+  return null;
 }
 
 export function LifeScreen({ nav }: { nav: Nav }) {
@@ -268,7 +304,9 @@ export function LifeScreen({ nav }: { nav: Nav }) {
         quantity: purchase.quantityValue ?? "",
         unit: purchase.quantityUnit,
         total:
-          purchase.totalPriceMinor === null ? "" : (purchase.totalPriceMinor / 100).toFixed(2),
+          purchase.totalPriceMinor === null
+            ? ""
+            : moneyInputText(purchase.totalPriceMinor, purchase.amountScale),
         currency: purchase.currency,
         merchant: purchase.merchant,
         category: detailValue?.item.category ?? "",
@@ -817,7 +855,11 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                       </Text>
                     </View>
                     <Text style={[styles.amount, { color: tokens.text }]}>
-                      {formatMoneyMinor(purchase.totalPriceMinor, purchase.currency) || "未记金额"}
+                      {formatMoneyMinor(
+                        purchase.totalPriceMinor,
+                        purchase.currency,
+                        purchase.amountScale,
+                      ) || "未记金额"}
                     </Text>
                   </Pressable>
                 ))
@@ -1207,7 +1249,11 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                     )}
                   </View>
                   <Text style={[styles.amount, { color: tokens.text }]}>
-                    {formatMoneyMinor(purchase.totalPriceMinor, purchase.currency) || "未记金额"}
+                    {formatMoneyMinor(
+                      purchase.totalPriceMinor,
+                      purchase.currency,
+                      purchase.amountScale,
+                    ) || "未记金额"}
                   </Text>
                   <View style={styles.rowActions}>
                     <HeaderIconButton
@@ -1266,7 +1312,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                     <Text style={[styles.rowTitle, { color: tokens.text }]}>{item.itemName}</Text>
                     <Text style={[styles.rowMeta, { color: tokens.muted }]}>
                       {item.quantityValue ? `${item.quantityValue}${item.quantityUnit} · ` : ""}
-                      {formatMoneyMinor(item.totalPriceMinor, item.currency) || "未记录金额"}
+                      {formatMoneyMinor(item.totalPriceMinor, item.currency, item.amountScale) || "未记录金额"}
                     </Text>
                   </View>
                   {item.itemId && (
@@ -1295,17 +1341,30 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                   <Pressable accessibilityRole="button" onPress={() => openRelink(link.id)}>
                     <Text style={[styles.linkText, { color: tokens.accentText }]}>改关联</Text>
                   </Pressable>
-                  {link.documentSource === "capture_asset" && !link.remoteRef && (
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={receiptSendingId === link.id}
-                      onPress={() => void sendLink(link)}
-                    >
-                      <Text style={[styles.linkText, { color: tokens.accentText }]}>
-                        {receiptSendingId === link.id ? "发送中…" : "发送到电脑"}
-                      </Text>
-                    </Pressable>
-                  )}
+                  {(() => {
+                    const action = receiptAction(link);
+                    if (!action) return null;
+                    if (action === "transferred") {
+                      return (
+                        <Text style={[styles.linkText, { color: tokens.muted }]}>已传输</Text>
+                      );
+                    }
+                    return (
+                      <Pressable
+                        accessibilityRole="button"
+                        disabled={receiptSendingId === link.id}
+                        onPress={() => void sendLink(link)}
+                      >
+                        <Text style={[styles.linkText, { color: tokens.accentText }]}>
+                          {receiptSendingId === link.id
+                            ? "发送中…"
+                            : action === "resume"
+                              ? "继续导入"
+                              : "发送到电脑"}
+                        </Text>
+                      </Pressable>
+                    );
+                  })()}
                   <Pressable accessibilityRole="button" onPress={() => removeLink(link)}>
                     <Text style={[styles.linkText, { color: tokens.danger }]}>解除</Text>
                   </Pressable>

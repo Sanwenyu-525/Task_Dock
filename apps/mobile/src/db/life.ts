@@ -5,6 +5,7 @@
 import type { SQLiteDatabase } from "expo-sqlite";
 
 import {
+  currencyDecimals,
   extractLifeQueryKeyword,
   formatLifeDate,
   formatMoneyMinor,
@@ -67,6 +68,7 @@ interface EventItemRow {
   unit_price_minor: number | null;
   total_price_minor: number | null;
   currency: string | null;
+  amount_scale: number;
   note: string | null;
   created_at: number;
   updated_at: number;
@@ -186,6 +188,7 @@ function validatePurchase(input: LifePurchaseInput): {
   quantityUnit: string;
   totalMinor: number | null;
   currency: string;
+  amountScale: number;
   merchant: string;
   category: string;
   note: string;
@@ -200,8 +203,10 @@ function validatePurchase(input: LifePurchaseInput): {
     throw new Error("填写数量时必须填写单位");
   }
 
-  const totalMinor = parseMoneyMinor(input.totalPrice);
   const currency = normalizeCurrency(input.currency);
+  const totalMinor = parseMoneyMinor(input.totalPrice, currency);
+  const amountScale =
+    totalMinor === null ? 2 : currencyDecimals(currency);
   if (totalMinor !== null && currency === "") {
     throw new Error("填写金额时必须选择货币");
   }
@@ -216,6 +221,7 @@ function validatePurchase(input: LifePurchaseInput): {
     quantityUnit,
     totalMinor,
     currency,
+    amountScale,
     merchant: (input.merchant ?? "").trim(),
     category: (input.category ?? "").trim(),
     note: (input.note ?? "").trim(),
@@ -252,8 +258,8 @@ export async function createPurchase(input: LifePurchaseInput): Promise<CreatePu
     await db.runAsync(
       `INSERT INTO life_event_items (id, event_id, item_id, item_name_snapshot, quantity_value,
                                      quantity_unit, unit_price_minor, total_price_minor, currency,
-                                     note, created_at, updated_at, rev, server_rev)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, 0)`,
+                                     amount_scale, note, created_at, updated_at, rev, server_rev)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, 0)`,
       [
         itemRowId,
         eventId,
@@ -263,6 +269,7 @@ export async function createPurchase(input: LifePurchaseInput): Promise<CreatePu
         values.quantityUnit,
         values.totalMinor,
         values.currency,
+        values.amountScale,
         values.note,
         now,
         now,
@@ -298,6 +305,11 @@ export async function updatePurchase(eventId: string, input: LifePurchaseInput):
     const row = rows[0];
     const item = await ensureItemInTx(db, values.name, values.category, now);
 
+    const amountScale =
+      values.currency === (row.currency ?? "") && row.amount_scale != null
+        ? row.amount_scale
+        : values.amountScale;
+
     await db.runAsync(
       `UPDATE life_events SET title = ?, occurred_at = ?, merchant = ?, updated_at = ?, rev = rev + 1
         WHERE id = ?`,
@@ -308,7 +320,8 @@ export async function updatePurchase(eventId: string, input: LifePurchaseInput):
     await db.runAsync(
       `UPDATE life_event_items
           SET item_id = ?, item_name_snapshot = ?, quantity_value = ?, quantity_unit = ?,
-              total_price_minor = ?, currency = ?, note = ?, updated_at = ?, rev = rev + 1
+              total_price_minor = ?, currency = ?, amount_scale = ?, note = ?,
+              updated_at = ?, rev = rev + 1
         WHERE id = ?`,
       [
         item.id,
@@ -317,6 +330,7 @@ export async function updatePurchase(eventId: string, input: LifePurchaseInput):
         values.quantityUnit,
         values.totalMinor,
         values.currency,
+        amountScale,
         values.note,
         now,
         row.id,
@@ -467,6 +481,7 @@ export async function getItemHistory(itemId: string, limit = 50): Promise<LifeIt
     unitPriceMinor: row.unit_price_minor,
     totalPriceMinor: row.total_price_minor,
     currency: row.currency ?? "",
+    amountScale: row.amount_scale ?? 2,
     note: row.note ?? "",
     links: [...(eventLinks.get(row.event_id) ?? []), ...itemLinks],
   }));
@@ -528,6 +543,7 @@ export async function listRecentPurchases(limit = 20): Promise<LifeRecentPurchas
   return events.map((event) => {
     const rows = itemsByEvent.get(event.id) ?? [];
     const currencies = new Set(rows.map((row) => row.currency ?? "").filter(Boolean));
+    const scales = new Set(rows.map((row) => row.amount_scale ?? 2));
     const total = rows.reduce((sum, row) => sum + (row.total_price_minor ?? 0), 0);
     const hasTotal = rows.some((row) => row.total_price_minor !== null);
     return {
@@ -537,6 +553,7 @@ export async function listRecentPurchases(limit = 20): Promise<LifeRecentPurchas
       merchant: event.merchant ?? "",
       totalPriceMinor: hasTotal ? total : null,
       currency: currencies.size === 1 ? [...currencies][0] : "",
+      amountScale: scales.size === 1 ? [...scales][0] : 2,
       itemNames: rows.map((row) => row.item_name_snapshot),
       linkCount: linkCount.get(event.id) ?? 0,
     };
@@ -576,6 +593,7 @@ export async function getEventDetail(eventId: string): Promise<LifeEventDetail |
     unitPriceMinor: row.unit_price_minor,
     totalPriceMinor: row.total_price_minor,
     currency: row.currency ?? "",
+    amountScale: row.amount_scale ?? 2,
     note: row.note ?? "",
   }));
 
@@ -925,8 +943,14 @@ export async function searchLife(raw: string, limit = 30): Promise<LifeSearchHit
     [like, like, limit],
   );
   for (const row of items) {
-    const last = await db.getFirstAsync<{ occurred_at: number; total: number | null; currency: string }>(
-      `SELECT e.occurred_at, ei.total_price_minor AS total, ei.currency
+    const last = await db.getFirstAsync<{
+      occurred_at: number;
+      total: number | null;
+      currency: string;
+      amount_scale: number;
+    }>(
+      `SELECT e.occurred_at, ei.total_price_minor AS total, ei.currency,
+              ei.amount_scale
          FROM life_event_items ei JOIN life_events e ON e.id = ei.event_id
         WHERE ei.item_id = ? AND e.deleted_at IS NULL AND e.event_type = 'purchase'
         ORDER BY e.occurred_at DESC, e.created_at DESC, e.id DESC LIMIT 1`,
@@ -937,7 +961,9 @@ export async function searchLife(raw: string, limit = 30): Promise<LifeSearchHit
       id: row.id,
       title: row.name,
       subtitle: last
-        ? `${formatLifeDate(last.occurred_at)} · ${formatMoneyMinor(last.total, last.currency) || "未记录金额"}`
+        ? `${formatLifeDate(last.occurred_at)} · ${
+            formatMoneyMinor(last.total, last.currency, last.amount_scale) || "未记录金额"
+          }`
         : "尚无购买记录",
       occurredAt: last?.occurred_at ?? null,
     });

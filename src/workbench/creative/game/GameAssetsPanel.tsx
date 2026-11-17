@@ -151,15 +151,21 @@ export default function GameAssetsPanel({
       const det = await api.gameProjectDetect(projectId);
       setDetection(det.detection);
       setFacts(det.facts);
+      // 已保存的手动指定事实优先：自动扫描结果仅作展示参考，不静默覆盖用户的显式选择。
+      const persistedManual = det.facts?.detectionMethod === "manual";
       if (det.detection.engine !== "unknown") {
-        await api.gameProjectFactsSave({
-          projectId,
-          engine: det.detection.engine,
-          detectionMethod: "auto",
-          evidence: det.detection.evidence.join("; "),
-          engineVersion: det.detection.engineVersion || null,
-        });
-        onNotice("ok", "已按真实文件特征识别引擎并保存");
+        if (persistedManual) {
+          onNotice("info", "已保留手动指定的引擎；本次扫描结果仅作参考，可在下方重新保存手动指定");
+        } else {
+          await api.gameProjectFactsSave({
+            projectId,
+            engine: det.detection.engine,
+            detectionMethod: "auto",
+            evidence: det.detection.evidence.join("; "),
+            engineVersion: det.detection.engineVersion || null,
+          });
+          onNotice("ok", "已按真实文件特征识别引擎并保存");
+        }
       } else {
         onNotice("info", "未识别到已知引擎特征，可手动指定");
       }
@@ -178,7 +184,7 @@ export default function GameAssetsPanel({
         projectId,
         engine: manualEngine,
         detectionMethod: "manual",
-        evidence: detection?.evidence.join("; ") || "用户手动指定",
+        evidence: "用户手动指定",
         engineVersion: manualVersion || null,
       });
       onNotice("ok", "已保存手动指定的引擎类型");
@@ -337,6 +343,15 @@ export default function GameAssetsPanel({
             {detection && detection.evidence.length > 0 && (
               <div className="ws-meta">
                 特征证据：{detection.evidence.map((e) => `「${e}」`).join("、")}
+              </div>
+            )}
+            {detection && detection.conflicts.length > 0 && (
+              <div className="ws-state" data-tone="warn" data-testid="game-detect-conflicts">
+                <AlertTriangle size={12} aria-hidden="true" />
+                <span>
+                  检测到多引擎标记冲突：{detection.conflicts.join("、")}；当前按优先级暂判为
+                  {engineLabel(detection.engine)}，请核对后手动指定。
+                </span>
               </div>
             )}
             {detection && !detection.rootExists && (
@@ -605,6 +620,9 @@ export default function GameAssetsPanel({
                   <span className="ws-state" data-tone="error" data-testid="asset-lost">
                     <AlertTriangle size={12} aria-hidden="true" /> 文件丢失：{asset.path}
                   </span>
+                )}
+                {asset.itemId && !asset.itemExists && (
+                  <span className="ws-badge ws-badge-unavailable">事项（已删除）</span>
                 )}
                 {linked && <span className="ws-badge ws-badge-soft">{linked.title}</span>}
                 {asset.pathExists && (

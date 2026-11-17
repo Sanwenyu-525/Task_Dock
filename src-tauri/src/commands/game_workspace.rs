@@ -153,6 +153,8 @@ pub struct GameDetectionReport {
     pub engine_version: String,
     /// 命中的真实特征标记（相对项目根的路径片段）；未命中为空。
     pub evidence: Vec<String>,
+    /// 多引擎标记冲突：除胜出引擎外，其余命中引擎的特征标记；无冲突为空。
+    pub conflicts: Vec<String>,
     pub root_exists: bool,
     pub root_path: String,
 }
@@ -175,6 +177,8 @@ pub struct GameAsset {
     pub updated_at: String,
     /// 读时计算：登记路径当前是否存在（不落库）。
     pub path_exists: bool,
+    /// 读时计算：关联事项是否仍存在（弱引用，不落库）。
+    pub item_exists: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -197,6 +201,8 @@ pub struct GameBuild {
     pub updated_at: String,
     pub log_exists: bool,
     pub artifact_exists: bool,
+    /// 读时计算：关联事项是否仍存在（弱引用，不落库）。
+    pub item_exists: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -215,6 +221,10 @@ pub struct GameTestRecord {
     pub note: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 读时计算：关联构建是否仍存在（弱引用，不落库）。
+    pub build_exists: bool,
+    /// 读时计算：关联事项是否仍存在（弱引用，不落库）。
+    pub item_exists: bool,
 }
 
 // ── 命令响应包装 ────────────────────────────────────────────────────────
@@ -385,6 +395,20 @@ fn ensure_item_belongs(
     }
 }
 
+/// 弱引用目标是否仍存在；未关联（None）视为无失效。表名为内部常量，不拼接外部输入。
+fn weak_ref_exists(conn: &Connection, table: &str, id: Option<&str>) -> bool {
+    match id {
+        None => true,
+        Some(id) => conn
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE id = ?1)"),
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap_or(false),
+    }
+}
+
 fn ensure_build_belongs(
     conn: &Connection,
     project_id: &str,
@@ -445,17 +469,42 @@ fn first_uproject(root: &Path) -> Option<PathBuf> {
     None
 }
 
+/// 从 `*.uproject` JSON 提取 `EngineAssociation`（引擎版本/关联标识）；解析失败留空，不报错。
+fn unreal_association(uproject: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(uproject) else {
+        return String::new();
+    };
+    for chunk in text.split(',') {
+        if let Some(idx) = chunk.find("EngineAssociation") {
+            let rest = &chunk[idx..];
+            let mut parts = rest.split('"').filter(|s| !s.is_empty());
+            parts.next(); // 键名
+            if let Some(value) = parts.next() {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    return v;
+                }
+            }
+        }
+    }
+    String::new()
+}
+
 fn dir_has_entry(root: &Path) -> bool {
     std::fs::read_dir(root)
         .map(|mut it| it.next().is_some())
         .unwrap_or(false)
 }
 
-/// 按真实文件特征识别引擎；目录名不作为证据。
-fn detect_engine(root: &Path) -> (String, String, Vec<String>) {
-    if !root.is_dir() {
-        return ("unknown".into(), String::new(), Vec::new());
-    }
+struct EngineHit {
+    engine: &'static str,
+    version: String,
+    evidence: Vec<String>,
+}
+
+/// 独立收集三种引擎的命中情况（互不短路），用于冲突告知；顺序即固定优先级。
+fn detect_hits(root: &Path) -> Vec<EngineHit> {
+    let mut hits = Vec::new();
 
     // Unity：ProjectSettings/ProjectVersion.txt 为权威特征。
     let unity_pv = root.join("ProjectSettings").join("ProjectVersion.txt");
@@ -467,8 +516,11 @@ fn detect_engine(root: &Path) -> (String, String, Vec<String>) {
         if has_file(root, "Packages/manifest.json") {
             evidence.push("Packages/manifest.json".to_string());
         }
-        let version = unity_version(&unity_pv);
-        return ("unity".into(), version, evidence);
+        hits.push(EngineHit {
+            engine: "unity",
+            version: unity_version(&unity_pv),
+            evidence,
+        });
     }
 
     // Unreal：根目录存在 *.uproject。
@@ -483,7 +535,11 @@ fn detect_engine(root: &Path) -> (String, String, Vec<String>) {
         if has_file(root, "Config/DefaultEngine.ini") {
             evidence.push("Config/DefaultEngine.ini".to_string());
         }
-        return ("unreal".into(), String::new(), evidence);
+        hits.push(EngineHit {
+            engine: "unreal",
+            version: unreal_association(&uproject),
+            evidence,
+        });
     }
 
     // Godot：project.godot 为权威特征。
@@ -492,14 +548,55 @@ fn detect_engine(root: &Path) -> (String, String, Vec<String>) {
         if has_dir(root, ".godot") {
             evidence.push(".godot/".to_string());
         }
-        return ("godot".into(), String::new(), evidence);
+        hits.push(EngineHit {
+            engine: "godot",
+            version: String::new(),
+            evidence,
+        });
     }
 
-    // 目录存在且有内容但无引擎特征 → 普通自定义游戏项目；空目录 → 未知。
-    if dir_has_entry(root) {
-        ("custom".into(), String::new(), Vec::new())
-    } else {
-        ("unknown".into(), String::new(), Vec::new())
+    hits
+}
+
+/// 按真实文件特征识别引擎；目录名不作为证据。
+/// 返回 `(引擎, 版本, 胜出证据, 冲突特征)`。多引擎标记同时命中时，按固定优先级取首个作为
+/// 建议引擎，其余命中特征进入 `conflicts` 告知前端，不得静默丢弃。
+fn detect_engine(root: &Path) -> (String, String, Vec<String>, Vec<String>) {
+    if !root.is_dir() {
+        return ("unknown".into(), String::new(), Vec::new(), Vec::new());
+    }
+
+    let hits = detect_hits(root);
+    match hits.len() {
+        0 => {
+            // 目录存在且有内容但无引擎特征 → 普通自定义游戏项目；空目录 → 未知。
+            if dir_has_entry(root) {
+                ("custom".into(), String::new(), Vec::new(), Vec::new())
+            } else {
+                ("unknown".into(), String::new(), Vec::new(), Vec::new())
+            }
+        }
+        1 => {
+            let hit = hits.into_iter().next().expect("hits 非空");
+            (hit.engine.into(), hit.version, hit.evidence, Vec::new())
+        }
+        _ => {
+            let primary = &hits[0];
+            let conflicts: Vec<String> = hits[1..]
+                .iter()
+                .flat_map(|h| {
+                    h.evidence
+                        .iter()
+                        .map(|e| format!("{}: {}", h.engine, e))
+                })
+                .collect();
+            (
+                primary.engine.into(),
+                primary.version.clone(),
+                primary.evidence.clone(),
+                conflicts,
+            )
+        }
     }
 }
 
@@ -600,9 +697,9 @@ pub fn game_project_detect_impl(db: &Db, project_id: &str) -> AppResult<GameDete
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         let root_exists = root.as_ref().map(|p| p.is_dir()).unwrap_or(false);
-        let (engine, engine_version, evidence) = match &root {
+        let (engine, engine_version, evidence, conflicts) = match &root {
             Some(root) => detect_engine(root),
-            None => ("unknown".into(), String::new(), Vec::new()),
+            None => ("unknown".into(), String::new(), Vec::new(), Vec::new()),
         };
         let facts = fact_get_impl(db, project_id)?;
         Ok(GameDetection {
@@ -610,6 +707,7 @@ pub fn game_project_detect_impl(db: &Db, project_id: &str) -> AppResult<GameDete
                 engine,
                 engine_version,
                 evidence,
+                conflicts,
                 root_exists,
                 root_path,
             },
@@ -699,14 +797,20 @@ pub fn game_project_facts_get_impl(db: &Db, project_id: &str) -> AppResult<GameF
 
 // ── 游戏资源 ───────────────────────────────────────────────────────────
 
-fn row_to_asset(row: &rusqlite::Row<'_>, root: Option<&Path>) -> rusqlite::Result<GameAsset> {
+fn row_to_asset(
+    row: &rusqlite::Row<'_>,
+    root: Option<&Path>,
+    conn: &Connection,
+) -> rusqlite::Result<GameAsset> {
     let path: String = row.get("path")?;
+    let item_id: Option<String> = row.get("item_id")?;
     let path_exists = Path::new(&path).exists();
     // 相对关系按当前根目录重新计算（根目录可能被修改）。
     let (relative_path, location) = match Path::new(&path).canonicalize() {
         Ok(abs) => rel_and_location(root, &abs),
         Err(_) => rel_and_location(root, Path::new(&path)),
     };
+    let item_exists = weak_ref_exists(conn, "workspace_items", item_id.as_deref());
     Ok(GameAsset {
         id: row.get("id")?,
         project_id: row.get("project_id")?,
@@ -717,11 +821,12 @@ fn row_to_asset(row: &rusqlite::Row<'_>, root: Option<&Path>) -> rusqlite::Resul
         location,
         size_bytes: row.get("size_bytes")?,
         modified_at: row.get("modified_at")?,
-        item_id: row.get("item_id")?,
+        item_id,
         note: row.get("note")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         path_exists,
+        item_exists,
     })
 }
 
@@ -738,7 +843,7 @@ pub fn game_asset_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<GameAsse
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![project_id, MAX_LIST_ROWS], |r| {
-            row_to_asset(r, root.as_deref())
+            row_to_asset(r, root.as_deref(), conn)
         })?;
         let mut out = Vec::new();
         for row in rows {
@@ -833,7 +938,7 @@ pub fn game_asset_save_impl(
                     modified_at, item_id, note, created_at, updated_at
              FROM game_assets WHERE id = ?1",
             params![saved_id],
-            |r| row_to_asset(r, root.as_deref()),
+            |r| row_to_asset(r, root.as_deref(), conn),
         )
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("资源不存在: {saved_id}")))
@@ -861,11 +966,13 @@ pub fn game_asset_delete_impl(db: &Db, id: &str) -> AppResult<()> {
 
 // ── 构建记录 ────────────────────────────────────────────────────────────
 
-fn row_to_build(row: &rusqlite::Row<'_>) -> rusqlite::Result<GameBuild> {
+fn row_to_build(row: &rusqlite::Row<'_>, conn: &Connection) -> rusqlite::Result<GameBuild> {
     let log_path: String = row.get("log_path")?;
     let artifact_path: String = row.get("artifact_path")?;
+    let item_id: Option<String> = row.get("item_id")?;
     let log_exists = path_exists(&log_path);
     let artifact_exists = path_exists(&artifact_path);
+    let item_exists = weak_ref_exists(conn, "workspace_items", item_id.as_deref());
     Ok(GameBuild {
         id: row.get("id")?,
         project_id: row.get("project_id")?,
@@ -878,12 +985,13 @@ fn row_to_build(row: &rusqlite::Row<'_>) -> rusqlite::Result<GameBuild> {
         log_summary: row.get("log_summary")?,
         artifact_path,
         source: row.get("source")?,
-        item_id: row.get("item_id")?,
+        item_id,
         note: row.get("note")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         log_exists,
         artifact_exists,
+        item_exists,
     })
 }
 
@@ -898,7 +1006,7 @@ pub fn game_build_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<GameBuil
              ORDER BY built_at DESC, id
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![project_id, MAX_LIST_ROWS], row_to_build)?;
+        let rows = stmt.query_map(params![project_id, MAX_LIST_ROWS], |r| row_to_build(r, conn))?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row.map_err(AppError::from)?);
@@ -1006,7 +1114,7 @@ pub fn game_build_save_impl(
                     log_summary, artifact_path, source, item_id, note, created_at, updated_at
              FROM game_builds WHERE id = ?1",
             params![saved_id],
-            row_to_build,
+            |r| row_to_build(r, conn),
         )
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("构建记录不存在: {saved_id}")))
@@ -1033,21 +1141,27 @@ pub fn game_build_delete_impl(db: &Db, id: &str) -> AppResult<()> {
 
 // ── 测试记录 ──────────────────────────────────────────────────────────
 
-fn row_to_test(row: &rusqlite::Row<'_>) -> rusqlite::Result<GameTestRecord> {
+fn row_to_test(row: &rusqlite::Row<'_>, conn: &Connection) -> rusqlite::Result<GameTestRecord> {
+    let build_id: Option<String> = row.get("build_id")?;
+    let item_id: Option<String> = row.get("item_id")?;
+    let build_exists = weak_ref_exists(conn, "game_builds", build_id.as_deref());
+    let item_exists = weak_ref_exists(conn, "workspace_items", item_id.as_deref());
     Ok(GameTestRecord {
         id: row.get("id")?,
         project_id: row.get("project_id")?,
-        build_id: row.get("build_id")?,
+        build_id,
         title: row.get("title")?,
         scope: row.get("scope")?,
         result: row.get("result")?,
         tested_at: row.get("tested_at")?,
         summary: row.get("summary")?,
         defect_count: row.get("defect_count")?,
-        item_id: row.get("item_id")?,
+        item_id,
         note: row.get("note")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        build_exists,
+        item_exists,
     })
 }
 
@@ -1062,7 +1176,7 @@ pub fn game_test_list_impl(db: &Db, project_id: &str) -> AppResult<Vec<GameTestR
              ORDER BY tested_at DESC, id
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![project_id, MAX_LIST_ROWS], row_to_test)?;
+        let rows = stmt.query_map(params![project_id, MAX_LIST_ROWS], |r| row_to_test(r, conn))?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row.map_err(AppError::from)?);
@@ -1163,7 +1277,7 @@ pub fn game_test_save_impl(
                     defect_count, item_id, note, created_at, updated_at
              FROM game_tests WHERE id = ?1",
             params![saved_id],
-            row_to_test,
+            |r| row_to_test(r, conn),
         )
         .optional()?
         .ok_or_else(|| AppError::NotFound(format!("测试记录不存在: {saved_id}")))
@@ -1371,7 +1485,7 @@ mod tests {
     use crate::commands::backup::{read_bundle, write_bundle, BackupKind, BackupSources};
     use crate::commands::data::{import_parsed_with, validate_bundle, ImportOptions};
     use crate::commands::project_workspace::{
-        workspace_item_save_impl, workspace_project_delete_impl,
+        workspace_item_delete_impl, workspace_item_save_impl, workspace_project_delete_impl,
         workspace_project_save_impl, workspace_project_set_status_impl,
     };
 
@@ -1540,6 +1654,140 @@ mod tests {
         std::fs::remove_dir_all(godot).ok();
         std::fs::remove_dir_all(custom).ok();
         std::fs::remove_dir_all(empty).ok();
+    }
+
+    #[test]
+    fn detect_reports_conflicts_and_parses_unreal_association() {
+        let db = memdb();
+
+        // 三引擎标记同时命中：固定优先级胜出 Unity，其余特征必须进入 conflicts 告知。
+        let conflict = temp_dir("conflict");
+        std::fs::create_dir_all(conflict.join("ProjectSettings")).unwrap();
+        std::fs::write(
+            conflict.join("ProjectSettings").join("ProjectVersion.txt"),
+            "m_EditorVersion: 2021.3.0f1\n",
+        )
+        .unwrap();
+        std::fs::write(conflict.join("Duel.uproject"), "{\"EngineAssociation\": \"5.2\"}\n").unwrap();
+        std::fs::write(conflict.join("project.godot"), "[application]\nconfig_version=5\n").unwrap();
+
+        let project = make_game_project(&db, "冲突项目", Some(&conflict));
+        let report = game_project_detect_impl(&db, &project.id).unwrap();
+        assert_eq!(report.detection.engine, "unity");
+        assert_eq!(report.detection.engine_version, "2021.3.0f1");
+        assert!(report.detection.conflicts.iter().any(|c| c.contains(".uproject")));
+        assert!(report.detection.conflicts.iter().any(|c| c.contains("project.godot")));
+
+        // Unreal：EngineAssociation 解析为引擎版本。
+        let unreal = temp_dir("unreal-ver");
+        std::fs::create_dir_all(unreal.join("Content")).unwrap();
+        std::fs::write(unreal.join("MyGame.uproject"), "{\"EngineAssociation\": \"5.3\"}\n").unwrap();
+        workspace_project_save_impl(
+            &db,
+            Some(project.id.clone()),
+            "冲突项目".into(),
+            "game".into(),
+            Some(unreal.to_string_lossy().into_owned()),
+            None,
+            None,
+        )
+        .unwrap();
+        let report = game_project_detect_impl(&db, &project.id).unwrap();
+        assert_eq!(report.detection.engine, "unreal");
+        assert_eq!(report.detection.engine_version, "5.3");
+        assert!(report.detection.conflicts.is_empty());
+
+        std::fs::remove_dir_all(conflict).ok();
+        std::fs::remove_dir_all(unreal).ok();
+    }
+
+    #[test]
+    fn weak_ref_missing_is_marked_instead_of_hidden() {
+        let db = memdb();
+        let dir = temp_dir("weakref");
+        let project = make_game_project(&db, "弱引用项目", Some(&dir));
+        let item = workspace_item_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            None,
+            "机制".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let asset = game_asset_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "image".into(),
+            "贴图".into(),
+            dir.join("t.png").to_string_lossy().into_owned(),
+            Some(item.id.clone()),
+            None,
+        )
+        .unwrap();
+        assert!(asset.item_exists);
+
+        let build = game_build_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "Win".into(),
+            None,
+            None,
+            "planned".into(),
+            None,
+            None,
+            None,
+            None,
+            Some(item.id.clone()),
+            None,
+        )
+        .unwrap();
+        assert!(build.item_exists);
+
+        let test = game_test_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            Some(build.id.clone()),
+            "回归".into(),
+            None,
+            "passed".into(),
+            None,
+            None,
+            Some(0),
+            Some(item.id.clone()),
+            None,
+        )
+        .unwrap();
+        assert!(test.build_exists);
+        assert!(test.item_exists);
+
+        // 删除事项与构建后，读侧必须如实标注失效，而不是静默隐藏徽章。
+        game_build_delete_impl(&db, &build.id).unwrap();
+        workspace_item_delete_impl(&db, &item.id).unwrap();
+
+        let test_row = game_test_list_impl(&db, &project.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("测试记录仍在");
+        assert!(!test_row.build_exists);
+        assert!(!test_row.item_exists);
+
+        let asset_row = game_asset_list_impl(&db, &project.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("资源登记仍在");
+        assert!(!asset_row.item_exists);
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -1992,5 +2240,305 @@ mod tests {
             .unwrap();
         assert_eq!(counts, (0, 0, 0, 0));
         let _ = asset;
+    }
+
+    /// 隔离库 + 真实目录夹具验证（环境变量驱动；未设置时跳过，不进入常规套件）。
+    ///
+    /// - `GAME_G1_DATA_DIR`：隔离 SQLite 目录（真实文件，非内存库；严禁指向用户真实库）；
+    /// - `GAME_G1_FIXTURE_DIR`：自建夹具根（unity/unreal/godot/custom/empty/conflict/outside-assets）。
+    ///
+    /// 结果同时写入 `<data_dir>/verify-report.json` 作为可复核证据。
+    #[test]
+    fn isolated_file_db_real_fixture_verification() {
+        let Some(data_dir) = std::env::var_os("GAME_G1_DATA_DIR") else {
+            return;
+        };
+        let Some(fixture_root) = std::env::var_os("GAME_G1_FIXTURE_DIR") else {
+            return;
+        };
+        let data_dir = PathBuf::from(data_dir);
+        let fixture_root = PathBuf::from(fixture_root);
+        std::fs::create_dir_all(&data_dir).expect("创建隔离数据目录");
+        let db_path = data_dir.join("task-dock.db");
+        let _ = std::fs::remove_file(&db_path);
+        let db = Db::open(&db_path).expect("打开隔离 SQLite 文件");
+
+        let mut checks: Vec<(String, bool, String)> = Vec::new();
+        let mut check = |name: &str, ok: bool, detail: String| {
+            checks.push((name.to_string(), ok, detail));
+        };
+
+        // 1. 真实夹具识别：引擎 / 版本 / 证据 / 冲突 / 根目录存在性。
+        let cases: [(&str, &str, Option<&str>); 7] = [
+            ("unity", "unity", Some("2022.3.10f1")),
+            ("unreal", "unreal", Some("5.3")),
+            ("godot", "godot", None),
+            ("custom", "custom", None),
+            ("empty", "unknown", None),
+            ("conflict", "unity", Some("2021.3.0f1")),
+            ("missing", "unknown", None),
+        ];
+        for (tag, expect_engine, expect_version) in cases {
+            let root = if tag == "missing" {
+                fixture_root.join("missing-root").join("gone")
+            } else {
+                fixture_root.join(tag)
+            };
+            let project = make_game_project(&db, &format!("夹具-{tag}"), Some(&root));
+            let report = game_project_detect_impl(&db, &project.id).expect("识别不得 panic");
+            let engine_ok = report.detection.engine == expect_engine;
+            let version_ok = match expect_version {
+                Some(v) => report.detection.engine_version == v,
+                None => true,
+            };
+            let conflict_ok = if tag == "conflict" {
+                report.detection.conflicts.len() >= 2
+            } else {
+                report.detection.conflicts.is_empty()
+            };
+            let root_exists_ok = if tag == "missing" {
+                !report.detection.root_exists
+            } else {
+                report.detection.root_exists
+            };
+            check(
+                &format!("detect.{tag}"),
+                engine_ok && version_ok && conflict_ok && root_exists_ok,
+                format!(
+                    "engine={} version={} evidence={:?} conflicts={:?} root_exists={}",
+                    report.detection.engine,
+                    report.detection.engine_version,
+                    report.detection.evidence,
+                    report.detection.conflicts,
+                    report.detection.root_exists
+                ),
+            );
+        }
+
+        // 2. 两个游戏项目：资源 / 构建 / 测试归属与跨项目隔离。
+        let proj_a = make_game_project(&db, "隔离-A", Some(&fixture_root.join("unity")));
+        let proj_b = make_game_project(&db, "隔离-B", Some(&fixture_root.join("godot")));
+        let item_a = workspace_item_save_impl(
+            &db,
+            None,
+            proj_a.id.clone(),
+            None,
+            "A 事项".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let item_b = workspace_item_save_impl(
+            &db,
+            None,
+            proj_b.id.clone(),
+            None,
+            "B 事项".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let inside_asset = game_asset_save_impl(
+            &db,
+            None,
+            proj_a.id.clone(),
+            "image".into(),
+            "根内贴图".into(),
+            fixture_root
+                .join("unity")
+                .join("Assets")
+                .join("hero.png")
+                .to_string_lossy()
+                .into_owned(),
+            Some(item_a.id.clone()),
+            None,
+        )
+        .unwrap();
+        let outside_asset = game_asset_save_impl(
+            &db,
+            None,
+            proj_a.id.clone(),
+            "audio".into(),
+            "外部音频".into(),
+            fixture_root
+                .join("outside-assets")
+                .join("ref.wav")
+                .to_string_lossy()
+                .into_owned(),
+            None,
+            None,
+        )
+        .unwrap();
+        check(
+            "asset.inside_outside",
+            inside_asset.location == "inside" && outside_asset.location == "outside",
+            format!(
+                "inside rel={} outside rel={}",
+                inside_asset.relative_path, outside_asset.relative_path
+            ),
+        );
+
+        // B 项目看不到 A 的资源。
+        let b_assets = game_asset_list_impl(&db, &proj_b.id).unwrap();
+        check("asset.isolation", b_assets.is_empty(), format!("B 资源数={}", b_assets.len()));
+
+        // 跨项目绑定事项必须拒绝。
+        let cross_item = game_asset_save_impl(
+            &db,
+            None,
+            proj_a.id.clone(),
+            "image".into(),
+            "越界绑定".into(),
+            fixture_root.join("unity").join("x.png").to_string_lossy().into_owned(),
+            Some(item_b.id.clone()),
+            None,
+        );
+        check("asset.cross_item_rejected", cross_item.is_err(), "跨项目事项绑定".into());
+
+        let build_a = game_build_save_impl(
+            &db,
+            None,
+            proj_a.id.clone(),
+            "Windows".into(),
+            Some("Unity".into()),
+            Some("Release".into()),
+            "success".into(),
+            None,
+            None,
+            Some("构建通过".into()),
+            None,
+            Some(item_a.id.clone()),
+            None,
+        )
+        .unwrap();
+        let test_a = game_test_save_impl(
+            &db,
+            None,
+            proj_a.id.clone(),
+            Some(build_a.id.clone()),
+            "主流程回归".into(),
+            Some("启动流程".into()),
+            "passed".into(),
+            None,
+            Some("3 项通过".into()),
+            Some(2),
+            Some(item_a.id.clone()),
+            None,
+        )
+        .unwrap();
+
+        let a_builds = game_build_list_impl(&db, &proj_a.id).unwrap();
+        let a_tests = game_test_list_impl(&db, &proj_a.id).unwrap();
+        let b_builds = game_build_list_impl(&db, &proj_b.id).unwrap();
+        let b_tests = game_test_list_impl(&db, &proj_b.id).unwrap();
+        check(
+            "record.ownership",
+            a_builds.len() == 1 && a_tests.len() == 1 && b_builds.is_empty() && b_tests.is_empty(),
+            format!("A builds={} tests={} B builds={} tests={}", a_builds.len(), a_tests.len(), b_builds.len(), b_tests.len()),
+        );
+
+        // 跨项目绑定构建必须拒绝。
+        let cross_build = game_test_save_impl(
+            &db,
+            None,
+            proj_b.id.clone(),
+            Some(build_a.id.clone()),
+            "串线测试".into(),
+            None,
+            "unknown".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        check("test.cross_build_rejected", cross_build.is_err(), "跨项目构建绑定".into());
+
+        // 手动指定事实持久化。
+        let facts = game_project_facts_save_impl(
+            &db,
+            proj_a.id.clone(),
+            "godot".into(),
+            "manual".into(),
+            Some("用户手动指定".into()),
+            Some("4.3".into()),
+        )
+        .unwrap();
+        check(
+            "facts.manual_persisted",
+            facts.detection_method == "manual" && facts.engine_version == "4.3",
+            format!("engine={} method={} evidence={}", facts.engine, facts.detection_method, facts.evidence),
+        );
+
+        // 弱引用失效：删除构建与事项后，读侧标注 exists=false。
+        game_build_delete_impl(&db, &build_a.id).unwrap();
+        workspace_item_delete_impl(&db, &item_a.id).unwrap();
+        let test_row = game_test_list_impl(&db, &proj_a.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("测试记录保留");
+        check(
+            "weak_ref.marked_missing",
+            !test_row.build_exists && !test_row.item_exists,
+            format!("build_exists={} item_exists={}", test_row.build_exists, test_row.item_exists),
+        );
+
+        // 归档后写入被拒，读取仍可用。
+        workspace_project_set_status_impl(&db, &proj_b.id, "archived".into()).unwrap();
+        let archived_write = game_asset_save_impl(
+            &db,
+            None,
+            proj_b.id.clone(),
+            "image".into(),
+            "归档写入".into(),
+            fixture_root.join("godot").join("x.png").to_string_lossy().into_owned(),
+            None,
+            None,
+        );
+        let archived_read = game_asset_list_impl(&db, &proj_b.id).unwrap();
+        check(
+            "archived.read_only",
+            archived_write.is_err() && archived_read.is_empty(),
+            format!("write_err={} read_count={}", archived_write.is_err(), archived_read.len()),
+        );
+
+        // 汇总计数真实来自 DB。
+        let counts: (i64, i64, i64, i64) = db
+            .with_read(|conn| {
+                let f: i64 = conn.query_row("SELECT COUNT(*) FROM game_project_facts", [], |r| r.get(0))?;
+                let a: i64 = conn.query_row("SELECT COUNT(*) FROM game_assets", [], |r| r.get(0))?;
+                let b: i64 = conn.query_row("SELECT COUNT(*) FROM game_builds", [], |r| r.get(0))?;
+                let t: i64 = conn.query_row("SELECT COUNT(*) FROM game_tests", [], |r| r.get(0))?;
+                Ok((f, a, b, t))
+            })
+            .unwrap();
+
+        let report = serde_json::json!({
+            "db_path": db_path.to_string_lossy(),
+            "fixture_root": fixture_root.to_string_lossy(),
+            "counts": { "facts": counts.0, "assets": counts.1, "builds": counts.2, "tests": counts.3 },
+            "checks": checks.iter().map(|(name, ok, detail)| {
+                serde_json::json!({ "name": name, "ok": ok, "detail": detail })
+            }).collect::<Vec<_>>(),
+        });
+        std::fs::write(
+            data_dir.join("verify-report.json"),
+            serde_json::to_vec_pretty(&report).expect("序列化证据 JSON"),
+        )
+        .expect("写入证据 JSON");
+
+        let failed: Vec<String> = checks
+            .iter()
+            .filter(|(_, ok, _)| !ok)
+            .map(|(name, _, detail)| format!("{name}: {detail}"))
+            .collect();
+        assert!(failed.is_empty(), "隔离库验证未通过:\n{}", failed.join("\n"));
+        let _ = test_a;
     }
 }

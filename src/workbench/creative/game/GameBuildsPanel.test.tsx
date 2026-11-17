@@ -51,6 +51,7 @@ const build = {
   updatedAt: "2026-11-16T09:00:00+08:00",
   logExists: false,
   artifactExists: false,
+  itemExists: true,
 };
 
 const testRecord = {
@@ -67,6 +68,8 @@ const testRecord = {
   note: "",
   createdAt: "2026-11-16T09:10:00+08:00",
   updatedAt: "2026-11-16T09:10:00+08:00",
+  buildExists: true,
+  itemExists: true,
 };
 
 beforeEach(() => {
@@ -101,5 +104,14 @@ describe("GameBuildsPanel", () => {
   it("非 game 类型防御性降级", () => {
     render(<GameBuildsPanel {...baseProps} kind="novel" />);
     expect(screen.getByText("构建与测试模块仅对游戏项目开放。")).toBeTruthy();
+  });
+
+  it("关联构建被删除后标注失效，而不是隐藏徽章", async () => {
+    api.gameTestList.mockResolvedValue({
+      tests: [{ ...testRecord, buildId: "b1", buildExists: false, itemExists: true }],
+    });
+    render(<GameBuildsPanel {...baseProps} />);
+
+    await waitFor(() => expect(screen.getByText("构建（已删除）")).toBeTruthy());
   });
 });

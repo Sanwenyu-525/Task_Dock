@@ -191,6 +191,14 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
       .split(/[,，;；]/)
       .map((part) => part.trim())
       .filter(Boolean);
+    // 角色/场景为弱引用：档案被删除后草稿里可能残留失效 ID，保存前按当前清单裁剪，
+    // 避免不可见的悬空引用把后端归属校验卡住。
+    const knownCharacterIds = new Set(characters.map((character) => character.id));
+    const characterIds = draft.characterIds.filter((id) => knownCharacterIds.has(id));
+    const sceneId =
+      draft.sceneId && scenes.some((scene) => scene.id === draft.sceneId)
+        ? draft.sceneId
+        : null;
     setSaving(true);
     setSaveError(null);
     try {
@@ -200,8 +208,8 @@ export function ShotsPanel({ projectId, archived, onNotice }: CreativeModuleProp
         episodeId: activeEpisodeId,
         shotNo: draft.shotNo.trim() ? Number(draft.shotNo) : null,
         description: draft.description,
-        characterIds: draft.characterIds,
-        sceneId: draft.sceneId || null,
+        characterIds,
+        sceneId,
         dialogue: draft.dialogue,
         shotSize: draft.shotSize,
         cameraMove: draft.cameraMove,

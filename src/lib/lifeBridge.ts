@@ -22,6 +22,7 @@ export interface LifeItemSummary {
   last_unit_price_minor: number | null;
   last_total_price_minor: number | null;
   last_currency: string;
+  last_amount_scale: number;
   interval_days: number | null;
   updated_at: string;
 }
@@ -53,6 +54,7 @@ export interface LifePurchase {
   unit_price_minor: number | null;
   total_price_minor: number | null;
   currency: string;
+  amount_scale: number;
   merchant: string;
   note: string;
   event_note: string;
@@ -88,6 +90,7 @@ export interface LifeEventItem {
   unit_price_minor: number | null;
   total_price_minor: number | null;
   currency: string;
+  amount_scale: number;
   note: string;
 }
 
@@ -107,6 +110,7 @@ export interface LifeEventSummary {
   item_names: string[];
   total_price_minor: number | null;
   currency: string;
+  amount_scale: number;
   link_count: number;
 }
 
@@ -140,6 +144,8 @@ export interface LifeItemInput {
   unit_price?: string | null;
   total_price?: string | null;
   currency?: string | null;
+  /** 编辑历史记录时沿用原行金额小数位；新建不填。 */
+  amount_scale?: number | null;
   note?: string | null;
 }
 
@@ -207,15 +213,28 @@ export const lifeDocumentLinksList = (ownerType?: string | null, ownerId?: strin
     ownerId: ownerId ?? null,
   });
 
-/** 金额格式化：整数最小货币单位 → 展示文本（不做浮点累计）。 */
-export function formatMoneyMinor(minor: number | null | undefined, currency: string | null | undefined) {
+/**
+ * 金额格式化：整数最小货币单位 → 展示文本（不做浮点累计）。
+ * `amountScale` 必须与数据库行一致：JPY=0、KWD=3、旧行=2；缺省按 2 位保持历史兼容。
+ */
+export function formatMoneyMinor(
+  minor: number | null | undefined,
+  currency: string | null | undefined,
+  amountScale?: number | null,
+) {
   if (minor === null || minor === undefined) return "";
+  const scale =
+    typeof amountScale === "number" && Number.isInteger(amountScale) && amountScale >= 0 && amountScale <= 3
+      ? amountScale
+      : 2;
   const sign = minor < 0 ? "-" : "";
   const abs = Math.abs(minor);
-  const whole = Math.floor(abs / 100);
-  const cents = String(abs % 100).padStart(2, "0");
+  const factor = 10 ** scale;
+  const whole = Math.floor(abs / factor);
   const code = (currency ?? "").trim().toUpperCase();
-  return `${sign}${whole}.${cents}${code ? ` ${code}` : ""}`;
+  if (scale === 0) return `${sign}${whole}${code ? ` ${code}` : ""}`;
+  const fraction = String(abs % factor).padStart(scale, "0");
+  return `${sign}${whole}.${fraction}${code ? ` ${code}` : ""}`;
 }
 
 /** 本地日期（YYYY-MM-DD），用于购买记录展示与日期输入。 */

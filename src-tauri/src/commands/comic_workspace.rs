@@ -1513,6 +1513,16 @@ pub fn comic_media_import_impl(
                 if owner != project_id {
                     return Err(AppError::Validation("素材版本不属于当前项目".into()));
                 }
+                // 更新关联目标时同样校验归属，禁止把版本指向其它项目的镜头/角色/场景。
+                if let Some(shot_id) = shot_id.as_deref() {
+                    ensure_shot_belongs(conn, &project_id, shot_id)?;
+                }
+                if let Some(character_id) = character_id.as_deref() {
+                    ensure_character_belongs(conn, &project_id, character_id)?;
+                }
+                if let Some(scene_id) = scene_id.as_deref() {
+                    ensure_scene_belongs(conn, &project_id, scene_id)?;
+                }
                 conn.execute(
                     "UPDATE comic_media_versions
                      SET shot_id = ?2, character_id = ?3, scene_id = ?4, file_path = ?5,
@@ -2326,5 +2336,402 @@ mod tests {
             assert_eq!(adopted.len(), 1, "{:?} 采用状态必须随备份还原", kind);
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    // ── V1 收口验收：隔离文件库 + 真实临时素材文件的全流程 ──────────────────────
+
+    /// 隔离数据目录 / 素材目录：优先取验收环境变量，缺省回退系统临时目录，保证测试可独立复跑。
+    fn v1_isolated_dirs() -> (std::path::PathBuf, std::path::PathBuf) {
+        let data = std::env::var("COMIC_V1_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| temp_dir("v1-data"));
+        let fixtures = std::env::var("COMIC_V1_FIXTURE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| temp_dir("v1-fixtures"));
+        std::fs::remove_dir_all(&data).ok();
+        std::fs::create_dir_all(&data).expect("创建隔离数据目录");
+        std::fs::create_dir_all(&fixtures).expect("创建素材夹具目录");
+        (data, fixtures)
+    }
+
+    fn write_v1_fixture(dir: &Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("写入素材夹具");
+        path
+    }
+
+    #[test]
+    fn comic_long_script_roundtrip_without_truncation() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_comic_project(&db, "长剧本漫剧");
+        // 多行、含标点与空白的长文本：往返必须逐字一致，不截断、不去首尾空白。
+        let long_script = (1..=1200)
+            .map(|i| format!("第 {} 行：林野在三分线外接球起跳，篮网应声落网。\n", i))
+            .collect::<String>();
+        let episode = comic_episode_save_impl(
+            &db, None, project.id.clone(), None, "长剧本集".into(),
+            "简介".into(), long_script.clone(), "scripting".into(), 0, None, None,
+        )
+        .unwrap();
+        let got = comic_episode_get_impl(&db, &episode.id).unwrap();
+        assert_eq!(got.script, long_script, "剧本往返必须逐字一致");
+        assert_eq!(got.script.len(), long_script.len(), "剧本字节长度不得变化");
+        assert!(got.script.starts_with("第 1 行："), "开头换行与缩进必须保留");
+        assert!(got.script.ends_with("落网。\n"), "结尾换行必须保留");
+    }
+
+    #[test]
+    fn comic_v1_full_flow_isolated_db_with_real_files() {
+        let (data_dir, fixture_dir) = v1_isolated_dirs();
+        let db_path = data_dir.join("task-dock.db");
+        let db = Db::open(&db_path).expect("打开隔离文件库");
+
+        // 1. 创建漫剧项目 → 剧集（长剧本）→ 三个分镜。
+        let project = create_comic_project(&db, "验收漫剧 V1");
+        let long_script = (1..=600)
+            .map(|i| format!("镜头铺垫 {}：少年突破分球，内线接应上篮。\n", i))
+            .collect::<String>();
+        let episode = comic_episode_save_impl(
+            &db, None, project.id.clone(), None, "第 1 集 · 真实的起点".into(),
+            "开场简介".into(), long_script.clone(), "scripting".into(), 20, None, None,
+        )
+        .unwrap();
+        let episode_again = comic_episode_get_impl(&db, &episode.id).unwrap();
+        assert_eq!(episode_again.script, long_script, "剧本往返逐字一致");
+
+        let mut shots = Vec::new();
+        for i in 1..=3 {
+            shots.push(
+                comic_shot_save_impl(
+                    &db, None, project.id.clone(), episode.id.clone(), Some(i),
+                    format!("镜头 {} 描述", i), None, None, format!("镜头 {} 台词", i),
+                    "中景".into(), "推镜".into(), Some(2.5), "todo".into(), None,
+                    "备注".into(), None,
+                )
+                .unwrap(),
+            );
+        }
+
+        // 2. 角色 / 场景，并关联到剧集与镜头。
+        let c1 = comic_character_save_impl(
+            &db, None, project.id.clone(), "黑发少年".into(), "小前锋".into(),
+            "196cm，25 号球衣".into(), None, None,
+        )
+        .unwrap();
+        let c2 = comic_character_save_impl(
+            &db, None, project.id.clone(), "队友".into(), "后卫".into(),
+            "组织进攻".into(), None, None,
+        )
+        .unwrap();
+        let s1 = comic_scene_save_impl(
+            &db, None, project.id.clone(), "篮球场".into(), "室内体育馆".into(), None, None,
+        )
+        .unwrap();
+        let s2 = comic_scene_save_impl(
+            &db, None, project.id.clone(), "更衣室".into(), "赛后走廊".into(), None, None,
+        )
+        .unwrap();
+
+        comic_episode_save_impl(
+            &db, Some(episode.id.clone()), project.id.clone(), None, "第 1 集 · 真实的起点".into(),
+            "开场简介".into(), long_script.clone(), "storyboard".into(), 35,
+            Some(vec![c1.id.clone(), c2.id.clone()]), None,
+        )
+        .unwrap();
+        comic_shot_save_impl(
+            &db, Some(shots[0].id.clone()), project.id.clone(), episode.id.clone(), None,
+            "镜头 1 描述".into(), Some(vec![c1.id.clone()]), Some(s1.id.clone()),
+            "开场台词".into(), "中景".into(), "推镜".into(), Some(2.5), "todo".into(),
+            None, "备注".into(), None,
+        )
+        .unwrap();
+
+        // 3. 镜头逆序重排：sort_order 必须连续、不重复。
+        comic_shot_reorder_impl(
+            &db, &project.id, &episode.id,
+            vec![shots[2].id.clone(), shots[1].id.clone(), shots[0].id.clone()],
+        )
+        .unwrap();
+        let shots_ep = comic_shot_list_impl(&db, &project.id, Some(episode.id.clone())).unwrap();
+        assert_eq!(shots_ep[0].id, shots[2].id);
+        let raw_orders: Vec<i64> = db
+            .with_read(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT sort_order FROM comic_shots WHERE episode_id = ?1 ORDER BY sort_order",
+                )?;
+                let rows = stmt.query_map(params![episode.id], |r| r.get(0))?;
+                Ok(rows.filter_map(|x| x.ok()).collect::<Vec<i64>>())
+            })
+            .unwrap();
+        assert_eq!(raw_orders, vec![0, 1, 2], "重排后 sort_order 必须连续且不重复");
+
+        // 4. 真实素材文件：导入两个版本，file_exists=true，source 固定 imported。
+        let f1 = write_v1_fixture(&fixture_dir, "shot-h1-v1.png", b"FIXTURE-V1-CONTENT-0001");
+        let f2 = write_v1_fixture(&fixture_dir, "shot-h1-v2.png", b"FIXTURE-V2-CONTENT-0002");
+        let f3 = write_v1_fixture(&fixture_dir, "shot-h2-v1.png", b"FIXTURE-V3-CONTENT-0003");
+        let f4 = write_v1_fixture(&fixture_dir, "char-c2-ref.png", b"FIXTURE-V4-CONTENT-0004");
+        let f5 = write_v1_fixture(&fixture_dir, "scene-s1-ref.png", b"FIXTURE-V5-CONTENT-0005");
+
+        let m1 = comic_media_import_impl(
+            &db, None, project.id.clone(), Some(shots[0].id.clone()), None, None,
+            f1.to_string_lossy().into(), "image".into(), Some("v1".into()), Some("初稿".into()),
+        )
+        .unwrap();
+        let m2 = comic_media_import_impl(
+            &db, None, project.id.clone(), Some(shots[0].id.clone()), None, None,
+            f2.to_string_lossy().into(), "image".into(), Some("v2".into()), Some("调整后".into()),
+        )
+        .unwrap();
+        let m3 = comic_media_import_impl(
+            &db, None, project.id.clone(), Some(shots[1].id.clone()), None, None,
+            f3.to_string_lossy().into(), "image".into(), Some("v1".into()), None,
+        )
+        .unwrap();
+        let m4 = comic_media_import_impl(
+            &db, None, project.id.clone(), None, Some(c2.id.clone()), None,
+            f4.to_string_lossy().into(), "image".into(), Some("角色参考".into()), None,
+        )
+        .unwrap();
+        let m5 = comic_media_import_impl(
+            &db, None, project.id.clone(), None, None, Some(s1.id.clone()),
+            f5.to_string_lossy().into(), "image".into(), Some("场景参考".into()), None,
+        )
+        .unwrap();
+        for m in [&m1, &m2, &m3, &m4, &m5] {
+            assert!(m.file_exists, "真实夹具文件必须标记存在");
+            assert_eq!(m.source, "imported", "导入来源必须是 imported");
+        }
+
+        // 5. 采用 v2：v1 回到候选，同镜头只能有一个 adopted（DB 唯一索引 + 事务双保险）。
+        comic_media_adopt_impl(&db, &m2.id).unwrap();
+        let list_h1 = comic_media_list_impl(&db, &project.id, Some(shots[0].id.clone())).unwrap();
+        let adopted: Vec<_> = list_h1.iter().filter(|v| v.status == "adopted").collect();
+        assert_eq!(adopted.len(), 1, "同镜头不能同时存在多个采用版本");
+        assert_eq!(adopted[0].id, m2.id);
+        assert_eq!(
+            list_h1.iter().find(|v| v.id == m1.id).unwrap().status,
+            "candidate"
+        );
+
+        // 拒收 v1，再恢复候选。
+        comic_media_save_impl(&db, &m1.id, None, Some("rejected".into()), None).unwrap();
+        assert_eq!(
+            comic_media_save_impl(&db, &m1.id, None, Some("candidate".into()), None)
+                .unwrap()
+                .status,
+            "candidate"
+        );
+
+        // 6. 回退：重新采用 v1，v2 回到候选，仍只有一个 adopted。
+        comic_media_adopt_impl(&db, &m1.id).unwrap();
+        let list_h1 = comic_media_list_impl(&db, &project.id, Some(shots[0].id.clone())).unwrap();
+        let adopted: Vec<_> = list_h1.iter().filter(|v| v.status == "adopted").collect();
+        assert_eq!(adopted.len(), 1, "回退后只能有一个采用版本");
+        assert_eq!(adopted[0].id, m1.id);
+        assert_eq!(
+            list_h1.iter().find(|v| v.id == m2.id).unwrap().status,
+            "candidate"
+        );
+
+        // 7. 再替换回 v2：唯一采用约束依然成立。
+        comic_media_adopt_impl(&db, &m2.id).unwrap();
+        let list_h1 = comic_media_list_impl(&db, &project.id, Some(shots[0].id.clone())).unwrap();
+        assert_eq!(
+            list_h1.iter().filter(|v| v.status == "adopted").count(),
+            1
+        );
+
+        // 8. 删除角色 c2：镜头/剧集不得误删；素材角色引用置空；剧集/镜头 JSON 弱引用保留（读侧降级）。
+        comic_character_delete_impl(&db, &c2.id).unwrap();
+        assert_eq!(
+            comic_shot_list_impl(&db, &project.id, None).unwrap().len(),
+            3,
+            "删除角色不得误删镜头"
+        );
+        let m4_after = comic_media_list_impl(&db, &project.id, None)
+            .unwrap()
+            .into_iter()
+            .find(|v| v.id == m4.id)
+            .unwrap();
+        assert_eq!(m4_after.character_id, None, "角色删除后素材角色引用必须置空");
+        let episode_after = comic_episode_get_impl(&db, &episode.id).unwrap();
+        assert!(
+            episode_after.character_ids.contains(&c2.id),
+            "剧集 JSON 弱引用按设计保留，由读侧降级展示"
+        );
+
+        // 9. 删除场景 s1：镜头 scene_id 置空，镜头保留；素材场景引用置空。
+        comic_scene_delete_impl(&db, &s1.id).unwrap();
+        assert_eq!(
+            comic_shot_list_impl(&db, &project.id, None).unwrap().len(),
+            3,
+            "删除场景不得误删镜头"
+        );
+        let h1 = comic_shot_get_impl(&db, &shots[0].id).unwrap();
+        assert_eq!(h1.scene_id, None, "场景删除后镜头场景外键必须置空");
+        let m5_after = comic_media_list_impl(&db, &project.id, None)
+            .unwrap()
+            .into_iter()
+            .find(|v| v.id == m5.id)
+            .unwrap();
+        assert_eq!(m5_after.scene_id, None, "场景删除后素材场景引用必须置空");
+
+        // 10. 删除镜头 h1：其素材版本级联删除元数据行；原文件必须原样保留。
+        comic_shot_delete_impl(&db, &shots[0].id).unwrap();
+        let media_left = comic_media_list_impl(&db, &project.id, None).unwrap();
+        assert!(
+            media_left.iter().all(|v| v.shot_id != Some(shots[0].id.clone())),
+            "镜头删除后其素材版本元数据必须级联清理"
+        );
+        assert!(f1.exists() && f2.exists(), "镜头删除不得删除素材原文件");
+        assert_eq!(std::fs::read(&f1).unwrap(), b"FIXTURE-V1-CONTENT-0001");
+        assert_eq!(std::fs::read(&f2).unwrap(), b"FIXTURE-V2-CONTENT-0002");
+
+        // 11. 直接删除素材版本记录：原文件保留且内容不变。
+        comic_media_delete_impl(&db, &m3.id).unwrap();
+        assert!(f3.exists(), "删除素材记录不得删除原文件");
+        assert_eq!(std::fs::read(&f3).unwrap(), b"FIXTURE-V3-CONTENT-0003");
+
+        // 12. 文件缺失：读侧 file_exists=false，不报错、不崩溃、不清理引用。
+        let missing = comic_media_import_impl(
+            &db, None, project.id.clone(), Some(shots[1].id.clone()), None, None,
+            "C:/definitely/not/existing/shot-missing.png".into(), "image".into(),
+            Some("缺失版本".into()), None,
+        )
+        .unwrap();
+        assert!(!missing.file_exists);
+
+        // 13. 项目隔离：另一漫剧项目列表为空；跨项目引用一律拒绝。
+        let other = create_comic_project(&db, "另一部漫剧");
+        assert!(comic_episode_list_impl(&db, &other.id).unwrap().is_empty());
+        assert!(comic_shot_list_impl(&db, &other.id, None).unwrap().is_empty());
+        assert!(comic_character_list_impl(&db, &other.id).unwrap().is_empty());
+        assert!(comic_scene_list_impl(&db, &other.id).unwrap().is_empty());
+        assert!(comic_media_list_impl(&db, &other.id, None).unwrap().is_empty());
+        assert!(comic_shot_save_impl(
+            &db, None, other.id.clone(), episode.id.clone(), None, "偷渡镜头".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .is_err(), "跨项目镜头归属必须拒绝");
+        assert!(comic_episode_save_impl(
+            &db, None, other.id.clone(), None, "偷渡剧集".into(), "".into(), "".into(),
+            "draft".into(), 0, Some(vec![c1.id.clone()]), None,
+        )
+        .is_err(), "跨项目角色引用必须拒绝");
+        assert!(comic_media_import_impl(
+            &db, None, other.id.clone(), Some(shots[1].id.clone()), None, None,
+            f3.to_string_lossy().into(), "image".into(), None, None,
+        )
+        .is_err(), "跨项目镜头素材关联必须拒绝");
+
+        // 14. 归档只读：读取允许，所有写入拒绝；恢复 active 后可写。
+        workspace_project_set_status_impl(&db, &project.id, "archived".into()).unwrap();
+        assert!(!comic_episode_list_impl(&db, &project.id).unwrap().is_empty());
+        assert!(comic_episode_save_impl(
+            &db, Some(episode.id.clone()), project.id.clone(), None, "改名".into(), "".into(), "".into(),
+            "draft".into(), 0, None, None,
+        )
+        .is_err());
+        assert!(comic_episode_delete_impl(&db, &episode.id).is_err());
+        assert!(comic_episode_reorder_impl(&db, &project.id, vec![episode.id.clone()]).is_err());
+        assert!(comic_shot_save_impl(
+            &db, Some(shots[1].id.clone()), project.id.clone(), episode.id.clone(), None, "改名".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .is_err());
+        assert!(comic_shot_delete_impl(&db, &shots[1].id).is_err());
+        assert!(comic_shot_reorder_impl(
+            &db, &project.id, &episode.id, vec![shots[1].id.clone()],
+        )
+        .is_err());
+        assert!(comic_character_save_impl(
+            &db, None, project.id.clone(), "偷渡角色".into(), "".into(), "".into(), None, None,
+        )
+        .is_err());
+        assert!(comic_character_delete_impl(&db, &c1.id).is_err());
+        assert!(comic_scene_save_impl(
+            &db, None, project.id.clone(), "偷渡场景".into(), "".into(), None, None,
+        )
+        .is_err());
+        assert!(comic_scene_delete_impl(&db, &s2.id).is_err());
+        let archived_media = comic_media_list_impl(&db, &project.id, None).unwrap();
+        let archived_media_id = archived_media
+            .iter()
+            .find(|v| v.shot_id.is_some())
+            .expect("归档前应存在镜头关联素材")
+            .id
+            .clone();
+        assert!(comic_media_import_impl(
+            &db, None, project.id.clone(), Some(shots[1].id.clone()), None, None,
+            f3.to_string_lossy().into(), "image".into(), None, None,
+        )
+        .is_err());
+        assert!(comic_media_save_impl(&db, &archived_media_id, None, Some("rejected".into()), None).is_err());
+        assert!(comic_media_adopt_impl(&db, &archived_media_id).is_err());
+        assert!(comic_media_delete_impl(&db, &archived_media_id).is_err());
+
+        workspace_project_set_status_impl(&db, &project.id, "active".into()).unwrap();
+
+        // 15. 外键完整性：无悬空外键。
+        let violations: i64 = db
+            .with_read(|conn| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?
+                )
+            })
+            .unwrap();
+        assert_eq!(violations, 0, "外键完整性检查必须通过");
+    }
+
+    #[test]
+    fn comic_media_import_update_rejects_cross_project_target() {
+        let db = Db::open_in_memory().unwrap();
+        let own = create_comic_project(&db, "本项目漫剧");
+        let other = create_comic_project(&db, "他项目漫剧");
+
+        let own_ep = comic_episode_save_impl(
+            &db, None, own.id.clone(), None, "本项目剧集".into(), "".into(), "".into(),
+            "draft".into(), 0, None, None,
+        )
+        .unwrap();
+        let own_shot = comic_shot_save_impl(
+            &db, None, own.id.clone(), own_ep.id.clone(), None, "本项目镜头".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .unwrap();
+        let other_ep = comic_episode_save_impl(
+            &db, None, other.id.clone(), None, "他项目剧集".into(), "".into(), "".into(),
+            "draft".into(), 0, None, None,
+        )
+        .unwrap();
+        let other_shot = comic_shot_save_impl(
+            &db, None, other.id.clone(), other_ep.id.clone(), None, "他项目镜头".into(),
+            None, None, "".into(), "".into(), "".into(), None, "todo".into(), None, "".into(), None,
+        )
+        .unwrap();
+
+        let fixture = temp_dir("v1-media-update");
+        let file = write_v1_fixture(&fixture, "update.png", b"UPDATE-PAYLOAD");
+        let version = comic_media_import_impl(
+            &db, None, own.id.clone(), Some(own_shot.id.clone()), None, None,
+            file.to_string_lossy().into(), "image".into(), Some("v1".into()), None,
+        )
+        .unwrap();
+
+        // 把本项目版本改挂到他项目镜头：必须拒绝，不得跨项目串引用。
+        assert!(comic_media_import_impl(
+            &db, Some(version.id.clone()), own.id.clone(), Some(other_shot.id.clone()), None, None,
+            file.to_string_lossy().into(), "image".into(), Some("v2".into()), None,
+        )
+        .is_err());
+        // 改挂回本项目镜头仍然成功。
+        let updated = comic_media_import_impl(
+            &db, Some(version.id.clone()), own.id.clone(), Some(own_shot.id.clone()), None, None,
+            file.to_string_lossy().into(), "image".into(), Some("v2".into()), None,
+        )
+        .unwrap();
+        assert_eq!(updated.shot_id, Some(own_shot.id.clone()));
+        std::fs::remove_dir_all(&fixture).ok();
     }
 }

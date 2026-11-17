@@ -88,6 +88,24 @@ describe("EpisodesPanel", () => {
     expect(screen.getByText("黑发少年")).toBeTruthy();
   });
 
+  it("保存前裁剪已失效的角色弱引用，不向校验层发送悬空 ID", async () => {
+    const stale = { ...episodeA, characterIds: ["c1", "gone"] };
+    api.comicEpisodeList.mockResolvedValue({ episodes: [stale] });
+    render(<EpisodesPanel {...base} archived={false} onNotice={vi.fn()} />);
+
+    await screen.findByText(/第一集/);
+    screen.getByText(/第一集/).click();
+    await screen.findByDisplayValue("第一集");
+
+    screen.getByRole("button", { name: "保存剧集" }).click();
+
+    await waitFor(() => {
+      expect(api.comicEpisodeSave).toHaveBeenCalledWith(
+        expect.objectContaining({ characterIds: ["c1"] }),
+      );
+    });
+  });
+
   it("空列表点击新建剧集即可填写并保存首集", async () => {
     const newEpisode = { ...episodeA, id: "enew", title: "新剧集", episodeNo: 1 };
     api.comicEpisodeList

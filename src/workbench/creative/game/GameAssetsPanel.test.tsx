@@ -63,6 +63,7 @@ const existingAsset = {
   createdAt: "2026-11-16T09:00:00+08:00",
   updatedAt: "2026-11-16T09:00:00+08:00",
   pathExists: true,
+  itemExists: true,
 };
 
 const lostAsset = {
@@ -80,6 +81,7 @@ const lostAsset = {
   createdAt: "2026-11-16T09:00:00+08:00",
   updatedAt: "2026-11-16T09:00:00+08:00",
   pathExists: false,
+  itemExists: true,
 };
 
 beforeEach(() => {
@@ -89,6 +91,7 @@ beforeEach(() => {
       engine: "godot",
       engineVersion: "4.3",
       evidence: ["project.godot"],
+      conflicts: [],
       rootExists: true,
       rootPath: "D:\\proj",
     },
@@ -128,6 +131,54 @@ describe("GameAssetsPanel", () => {
   it("非 game 类型防御性降级", () => {
     render(<GameAssetsPanel {...baseProps} kind="novel" />);
     expect(screen.getByText("游戏资源模块仅对游戏项目开放。")).toBeTruthy();
+  });
+
+  it("多引擎标记冲突时展示冲突警告，不静默取首个", async () => {
+    api.gameProjectDetect.mockResolvedValue({
+      detection: {
+        engine: "unity",
+        engineVersion: "2021.3.0f1",
+        evidence: ["ProjectSettings/ProjectVersion.txt"],
+        conflicts: ["unreal: Duel.uproject", "godot: project.godot"],
+        rootExists: true,
+        rootPath: "D:\\proj",
+      },
+      facts: null,
+    });
+    render(<GameAssetsPanel {...baseProps} />);
+
+    await waitFor(() => expect(screen.getByTestId("game-detect-conflicts")).toBeTruthy());
+    expect(screen.getByTestId("game-detect-conflicts").textContent).toContain("多引擎标记冲突");
+  });
+
+  it("已保存手动指定的事实不被自动扫描覆盖", async () => {
+    api.gameProjectDetect.mockResolvedValue({
+      detection: {
+        engine: "unity",
+        engineVersion: "2021.3.0f1",
+        evidence: ["ProjectSettings/ProjectVersion.txt"],
+        conflicts: [],
+        rootExists: true,
+        rootPath: "D:\\proj",
+      },
+      facts: {
+        id: "f1",
+        projectId: "p1",
+        engine: "godot",
+        detectionMethod: "manual",
+        engineVersion: "4.3",
+        evidence: "用户手动指定",
+        createdAt: "2026-11-16T09:00:00+08:00",
+        updatedAt: "2026-11-16T09:00:00+08:00",
+      },
+    });
+    render(<GameAssetsPanel {...baseProps} />);
+    await waitFor(() =>
+      expect(screen.getByTestId("game-engine-badge").textContent).toContain("Godot"),
+    );
+
+    fireEvent.click(screen.getByText("重新识别"));
+    await waitFor(() => expect(api.gameProjectFactsSave).not.toHaveBeenCalled());
   });
 
   it("保存事项时写入分类元数据并刷新", async () => {

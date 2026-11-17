@@ -131,6 +131,10 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
       return;
     }
     const episodeNo = draft.episodeNo.trim();
+    // 角色为弱引用：角色被删除后 JSON 里可能残留失效 ID，保存前按当前清单裁剪，
+    // 避免不可见的悬空引用把后端归属校验卡住。
+    const knownCharacterIds = new Set(characters.map((character) => character.id));
+    const characterIds = draft.characterIds.filter((id) => knownCharacterIds.has(id));
     setSaving(true);
     setSaveError(null);
     try {
@@ -143,7 +147,7 @@ export function EpisodesPanel({ projectId, archived, onNotice }: CreativeModuleP
         script: draft.script,
         status: draft.status,
         progress,
-        characterIds: draft.characterIds,
+        characterIds,
       });
       onNotice("ok", selectedId ? "剧集已更新" : `已新建剧集「${result.episode.title}」`);
       await loadAll();

@@ -495,33 +495,34 @@ pub fn general_apply_template_impl(
         return Err(AppError::Validation("模板里程碑总数超出上限".into()));
     }
 
-    let existing: i64 = db.with_read(|conn| {
-        ensure_general_project(conn, &project_id, true)?;
-        let items: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1",
-            params![project_id],
-            |r| r.get(0),
-        )?;
-        let milestones: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1",
-            params![project_id],
-            |r| r.get(0),
-        )?;
-        Ok(items + milestones)
-    })?;
-    if existing > 0 {
-        return Ok(GeneralApplyTemplateResult {
-            applied: false,
-            items_created: 0,
-            milestones_created: 0,
-            reason: Some("项目已有事项或里程碑，模板未重复应用".into()),
-        });
+    // 幂等计数与批量写入放在同一写事务内：检查与插入都在写连接持锁期间完成，
+    // 避免「读连接计数通过 → 另一写入者先落库 → 本事务再插入」的竞态导致重复初始化。
+    enum ApplyOutcome {
+        Skipped,
+        Applied { items: i64, milestones: i64 },
     }
 
-    let mut items_created = 0i64;
-    let mut milestones_created = 0i64;
-    db.with_transaction(|conn| {
+    let outcome = db.with_transaction(|conn| {
         ensure_general_project(conn, &project_id, true)?;
+        let existing: i64 = {
+            let items: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1",
+                params![project_id],
+                |r| r.get(0),
+            )?;
+            let milestones: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1",
+                params![project_id],
+                |r| r.get(0),
+            )?;
+            items + milestones
+        };
+        if existing > 0 {
+            return Ok(ApplyOutcome::Skipped);
+        }
+
+        let mut items_created = 0i64;
+        let mut milestones_created = 0i64;
         let now = now_iso();
         for (stage_index, stage) in stages.iter().enumerate() {
             let mut stage_item_ids: Vec<String> = Vec::new();
@@ -568,15 +569,29 @@ pub fn general_apply_template_impl(
                 milestones_created += 1;
             }
         }
-        Ok(())
+        Ok(ApplyOutcome::Applied {
+            items: items_created,
+            milestones: milestones_created,
+        })
     })?;
 
-    Ok(GeneralApplyTemplateResult {
-        applied: true,
-        items_created,
-        milestones_created,
-        reason: None,
-    })
+    match outcome {
+        ApplyOutcome::Skipped => Ok(GeneralApplyTemplateResult {
+            applied: false,
+            items_created: 0,
+            milestones_created: 0,
+            reason: Some("项目已有事项或里程碑，模板未重复应用".into()),
+        }),
+        ApplyOutcome::Applied {
+            items,
+            milestones,
+        } => Ok(GeneralApplyTemplateResult {
+            applied: true,
+            items_created: items,
+            milestones_created: milestones,
+            reason: None,
+        }),
+    }
 }
 
 // ── 里程碑（D2）───────────────────────────────────────────────────────
@@ -666,16 +681,31 @@ pub fn general_milestone_save_impl(
             }
         }
         if let Some(task_id) = &linked_task_id {
-            let task_exists = conn
+            // 与关联事项同口径：任务必须已通过 workspace_task_links 关联到当前项目，
+            // 不允许跨项目弱引用其他项目的任务。
+            let linked: Option<()> = conn
                 .query_row(
-                    "SELECT 1 FROM tasks WHERE id = ?1",
-                    params![task_id],
+                    "SELECT 1 FROM workspace_task_links WHERE project_id = ?1 AND task_id = ?2",
+                    params![project_id, task_id],
                     |_| Ok(()),
                 )
-                .optional()?
-                .is_some();
-            if !task_exists {
-                return Err(AppError::NotFound(format!("关联任务不存在: {task_id}")));
+                .optional()?;
+            match linked {
+                Some(_) => {}
+                None => {
+                    let task_exists = conn
+                        .query_row(
+                            "SELECT 1 FROM tasks WHERE id = ?1",
+                            params![task_id],
+                            |_| Ok(()),
+                        )
+                        .optional()?
+                        .is_some();
+                    if task_exists {
+                        return Err(AppError::Validation("关联任务不属于当前项目".into()));
+                    }
+                    return Err(AppError::NotFound(format!("关联任务不存在: {task_id}")));
+                }
             }
         }
         match id {
@@ -1260,9 +1290,10 @@ pub fn general_stats(
 mod tests {
     use super::*;
     use crate::commands::project_workspace::{
-        workspace_item_list_impl, workspace_item_save_impl, workspace_project_save_impl,
-        workspace_task_link_add_impl,
+        workspace_item_list_impl, workspace_item_save_impl, workspace_project_delete_impl,
+        workspace_project_save_impl, workspace_task_link_add_impl,
     };
+    use std::collections::BTreeSet;
 
     fn temp_db_path(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1648,5 +1679,749 @@ mod tests {
             1
         );
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    // ── V1 收口验收补充（2026-11-17）─────────────────────────────────────
+
+    struct TemplateDef {
+        id: &'static str,
+        expected_items: usize,
+        expected_milestones: usize,
+        stage_titles: Vec<&'static str>,
+        milestone_titles: Vec<&'static str>,
+        stages: serde_json::Value,
+    }
+
+    /// 与前端 `templates.ts` 的六个模板逐一对照（事项/里程碑/阶段标题）。
+    fn template_defs() -> Vec<TemplateDef> {
+        vec![
+            TemplateDef {
+                id: "blank",
+                expected_items: 0,
+                expected_milestones: 0,
+                stage_titles: vec![],
+                milestone_titles: vec![],
+                stages: serde_json::json!([]),
+            },
+            TemplateDef {
+                id: "study-plan",
+                expected_items: 6,
+                expected_milestones: 3,
+                stage_titles: vec!["目标梳理", "计划拆解", "学习执行"],
+                milestone_titles: vec!["目标确认", "计划就绪", "阶段验收"],
+                stages: serde_json::json!([
+                    { "title": "目标梳理", "items": ["明确学习目标", "盘点已有基础"], "milestone": { "title": "目标确认", "note": "目标与基础盘点完成" } },
+                    { "title": "计划拆解", "items": ["制定学习计划", "准备学习资料"], "milestone": { "title": "计划就绪" } },
+                    { "title": "学习执行", "items": ["按计划学习", "练习与复盘"], "milestone": { "title": "阶段验收" } }
+                ]),
+            },
+            TemplateDef {
+                id: "personal-plan",
+                expected_items: 5,
+                expected_milestones: 3,
+                stage_titles: vec!["现状盘点", "计划制定", "跟进调整"],
+                milestone_titles: vec!["现状清晰", "计划落地", "阶段回顾"],
+                stages: serde_json::json!([
+                    { "title": "现状盘点", "items": ["梳理现状与期望"], "milestone": { "title": "现状清晰" } },
+                    { "title": "计划制定", "items": ["拆解行动步骤", "安排时间节奏"], "milestone": { "title": "计划落地" } },
+                    { "title": "跟进调整", "items": ["执行行动项", "定期回顾调整"], "milestone": { "title": "阶段回顾" } }
+                ]),
+            },
+            TemplateDef {
+                id: "content-production",
+                expected_items: 7,
+                expected_milestones: 3,
+                stage_titles: vec!["选题策划", "素材准备", "制作发布"],
+                milestone_titles: vec!["选题定稿", "素材就绪", "成品交付"],
+                stages: serde_json::json!([
+                    { "title": "选题策划", "items": ["确定选题", "调研参考案例"], "milestone": { "title": "选题定稿" } },
+                    { "title": "素材准备", "items": ["收集素材", "整理素材清单"], "milestone": { "title": "素材就绪" } },
+                    { "title": "制作发布", "items": ["完成初稿", "审核修改", "发布成品"], "milestone": { "title": "成品交付" } }
+                ]),
+            },
+            TemplateDef {
+                id: "event-planning",
+                expected_items: 7,
+                expected_milestones: 3,
+                stage_titles: vec!["方案策划", "筹备落实", "执行复盘"],
+                milestone_titles: vec!["方案确认", "筹备就绪", "活动收官"],
+                stages: serde_json::json!([
+                    { "title": "方案策划", "items": ["确定目标与规模", "拟定活动方案"], "milestone": { "title": "方案确认" } },
+                    { "title": "筹备落实", "items": ["排期与预算", "落实场地与物料", "邀约参与人员"], "milestone": { "title": "筹备就绪" } },
+                    { "title": "执行复盘", "items": ["现场执行", "整理反馈复盘"], "milestone": { "title": "活动收官" } }
+                ]),
+            },
+            TemplateDef {
+                id: "research",
+                expected_items: 6,
+                expected_milestones: 3,
+                stage_titles: vec!["问题界定", "方案设计", "分析总结"],
+                milestone_titles: vec!["问题界定", "方案成型", "成果交付"],
+                stages: serde_json::json!([
+                    { "title": "问题界定", "items": ["明确研究问题", "检索文献资料"], "milestone": { "title": "问题界定" } },
+                    { "title": "方案设计", "items": ["设计研究方法", "制定执行计划"], "milestone": { "title": "方案成型" } },
+                    { "title": "分析总结", "items": ["收集分析资料", "撰写结论报告"], "milestone": { "title": "成果交付" } }
+                ]),
+            },
+        ]
+    }
+
+    fn stages_of(value: &serde_json::Value) -> Vec<TemplateStageInput> {
+        serde_json::from_value(value.clone()).expect("模板阶段结构合法")
+    }
+
+    fn count_direct(db: &Db, project_id: &str, table: &str) -> i64 {
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE project_id = ?1");
+        db.with_read(|c| {
+            let n: i64 = c.query_row(&sql, params![project_id], |r| r.get(0))?;
+            Ok(n)
+        })
+        .expect("直接计数")
+    }
+
+    #[test]
+    fn six_templates_produce_distinct_real_structures() {
+        let db = Db::open_in_memory().unwrap();
+        let defs = template_defs();
+        let mut item_sets: Vec<(String, BTreeSet<String>)> = Vec::new();
+        let mut milestone_sets: Vec<(String, BTreeSet<String>)> = Vec::new();
+
+        for def in &defs {
+            let project = create_project(&db, def.id, "general");
+            let result = general_apply_template_impl(
+                &db,
+                project.id.clone(),
+                def.id.into(),
+                stages_of(&def.stages),
+            )
+            .unwrap();
+            assert_eq!(result.applied, def.expected_items > 0 || def.expected_milestones > 0);
+            assert_eq!(result.items_created, def.expected_items as i64, "{} 事项数", def.id);
+            assert_eq!(result.milestones_created, def.expected_milestones as i64, "{} 里程碑数", def.id);
+
+            let items = workspace_item_list_impl(&db, &project.id).unwrap();
+            let milestones = general_milestone_list_impl(&db, &project.id).unwrap().milestones;
+            assert_eq!(items.len(), def.expected_items);
+            assert_eq!(milestones.len(), def.expected_milestones);
+
+            let mut stage_order: Vec<String> = Vec::new();
+            for item in &items {
+                if !stage_order.contains(&item.stage) {
+                    stage_order.push(item.stage.clone());
+                }
+            }
+            assert_eq!(stage_order, def.stage_titles, "{} 阶段标题", def.id);
+            let milestone_titles: Vec<String> = milestones.iter().map(|m| m.title.clone()).collect();
+            assert_eq!(milestone_titles, def.milestone_titles, "{} 里程碑标题", def.id);
+
+            let item_ids: BTreeSet<String> = items.iter().map(|i| i.id.clone()).collect();
+            for m in &milestones {
+                if let Some(linked) = &m.linked_item_id {
+                    assert!(item_ids.contains(linked), "里程碑关联事项不在本项目");
+                }
+                assert!(m.linked_item_exists || m.linked_item_id.is_none());
+            }
+
+            item_sets.push((def.id.to_string(), items.iter().map(|i| i.title.clone()).collect()));
+            milestone_sets.push((def.id.to_string(), milestone_titles.into_iter().collect()));
+        }
+
+        // 非空白模板两两事项/里程碑集合不得相同。
+        for a in 0..item_sets.len() {
+            for b in (a + 1)..item_sets.len() {
+                if item_sets[a].0 == "blank" || item_sets[b].0 == "blank" {
+                    continue;
+                }
+                assert_ne!(
+                    item_sets[a].1, item_sets[b].1,
+                    "事项集合重复：{} vs {}",
+                    item_sets[a].0, item_sets[b].0
+                );
+                assert_ne!(
+                    milestone_sets[a].1, milestone_sets[b].1,
+                    "里程碑集合重复：{} vs {}",
+                    milestone_sets[a].0, milestone_sets[b].0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_template_input_leaves_zero_rows() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "半成品检查", "general");
+
+        // 阶段名称空白：校验在写事务之前失败，不得留下半成品。
+        let bad = serde_json::json!([
+            { "title": "   ", "items": ["事项一"], "milestone": { "title": "里程碑一" } }
+        ]);
+        let result = general_apply_template_impl(
+            &db,
+            project.id.clone(),
+            "bad".into(),
+            serde_json::from_value(bad).unwrap(),
+        );
+        assert!(result.is_err());
+        assert_eq!(count_direct(&db, &project.id, "workspace_items"), 0);
+        assert_eq!(count_direct(&db, &project.id, "general_milestones"), 0);
+
+        // 事项标题空白同样拒绝，且不产生任何行。
+        let bad2 = serde_json::json!([
+            { "title": "阶段一", "items": ["   "], "milestone": null }
+        ]);
+        let result2 = general_apply_template_impl(
+            &db,
+            project.id.clone(),
+            "bad2".into(),
+            serde_json::from_value(bad2).unwrap(),
+        );
+        assert!(result2.is_err());
+        assert_eq!(count_direct(&db, &project.id, "workspace_items"), 0);
+        assert_eq!(count_direct(&db, &project.id, "general_milestones"), 0);
+    }
+
+    #[test]
+    fn stats_match_direct_db_row_counts() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "统计对照", "general");
+
+        let mk_item = |status: &str, title: &str| {
+            workspace_item_save_impl(
+                &db,
+                None,
+                project.id.clone(),
+                None,
+                title.into(),
+                None,
+                Some(status.into()),
+                None,
+                None,
+            )
+            .unwrap();
+        };
+        mk_item("todo", "待办一");
+        mk_item("todo", "待办二");
+        mk_item("doing", "进行中");
+        mk_item("blocked", "阻塞");
+        mk_item("done", "已完成");
+
+        let mk_ms = |status: &str, title: &str| {
+            general_milestone_save_impl(
+                &db,
+                None,
+                project.id.clone(),
+                title.into(),
+                None,
+                Some(status.into()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        };
+        mk_ms("open", "开放一");
+        mk_ms("open", "开放二");
+        mk_ms("done", "完成里程碑");
+        mk_ms("skipped", "跳过里程碑");
+
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, created_at, updated_at) VALUES ('t-stats', '统计任务', ?1, ?1)",
+                params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        workspace_task_link_add_impl(&db, &project.id, "t-stats").unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "td-general-stats-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("stat.txt");
+        std::fs::write(&file, "x").unwrap();
+        general_material_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "file".into(),
+            "文件资料".into(),
+            file.to_string_lossy().to_string(),
+            None,
+        )
+        .unwrap();
+        general_material_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "link".into(),
+            "链接资料".into(),
+            "https://example.com/stats".into(),
+            None,
+        )
+        .unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO notes (id, title, content, pinned, favorite, task_id, workspace_id, source_capture_id, revision, created_at, updated_at) VALUES ('n-stats', '统计笔记', '', 0, 0, NULL, NULL, NULL, 1, ?1, ?1)",
+                params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        general_material_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "note".into(),
+            "笔记资料".into(),
+            "n-stats".into(),
+            None,
+        )
+        .unwrap();
+
+        let stats = general_stats_impl(&db, &project.id).unwrap().stats;
+        let count = |sql: &str| {
+            db.with_read(|c| {
+                let n: i64 = c.query_row(sql, params![project.id], |r| r.get(0))?;
+                Ok(n)
+            })
+            .unwrap()
+        };
+
+        assert_eq!(stats.total_items, count("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1"));
+        assert_eq!(stats.todo_items, count("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'todo'"));
+        assert_eq!(stats.doing_items, count("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'doing'"));
+        assert_eq!(stats.blocked_items, count("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'blocked'"));
+        assert_eq!(stats.done_items, count("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'done'"));
+        assert_eq!(stats.milestones_total, count("SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1"));
+        assert_eq!(stats.milestones_open, count("SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'open'"));
+        assert_eq!(stats.milestones_done, count("SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'done'"));
+        assert_eq!(stats.milestones_skipped, count("SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'skipped'"));
+        assert_eq!(stats.linked_tasks, count("SELECT COUNT(*) FROM workspace_task_links WHERE project_id = ?1"));
+        assert_eq!(stats.materials_total, count("SELECT COUNT(*) FROM general_materials WHERE project_id = ?1"));
+        assert_eq!(stats.materials_alive, 3);
+
+        assert_eq!(stats.total_items, 5);
+        assert_eq!(stats.milestones_total, 4);
+        assert_eq!(stats.linked_tasks, 1);
+        assert!(!stats.recent_activity.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deleting_milestone_keeps_linked_item_and_task() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "关联保留", "general");
+        let item = workspace_item_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            None,
+            "保留事项".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, created_at, updated_at) VALUES ('t-keep', '保留任务', ?1, ?1)",
+                params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        workspace_task_link_add_impl(&db, &project.id, "t-keep").unwrap();
+
+        let m = general_milestone_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "关联里程碑".into(),
+            None,
+            None,
+            None,
+            Some(item.id.clone()),
+            Some("t-keep".into()),
+            None,
+        )
+        .unwrap()
+        .milestone;
+        assert!(m.linked_item_exists && m.linked_task_exists);
+
+        general_milestone_delete_impl(&db, &m.id).unwrap();
+
+        let item_gone = db
+            .with_read(|c| {
+                c.query_row("SELECT 1 FROM workspace_items WHERE id = ?1", params![item.id], |_| Ok(()))
+            })
+            .optional()
+            .unwrap()
+            .is_none();
+        assert!(!item_gone, "删除里程碑不得删除关联事项");
+        let task_gone = db
+            .with_read(|c| {
+                c.query_row("SELECT 1 FROM tasks WHERE id = ?1", params!["t-keep"], |_| Ok(()))
+            })
+            .optional()
+            .unwrap()
+            .is_none();
+        assert!(!task_gone, "删除里程碑不得删除关联任务");
+        assert!(general_milestone_list_impl(&db, &project.id).unwrap().milestones.is_empty());
+    }
+
+    #[test]
+    fn material_unlink_keeps_file_and_detects_death() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "资料安全", "general");
+        let dir = std::env::temp_dir().join(format!(
+            "td-general-mat2-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("keep.txt");
+        std::fs::write(&file, "原始内容ABC").unwrap();
+        let folder = dir.join("folder");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("inner.txt"), "内").unwrap();
+
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO notes (id, title, content, pinned, favorite, task_id, workspace_id, source_capture_id, revision, created_at, updated_at) VALUES ('n-keep', '待删笔记', '', 0, 0, NULL, NULL, NULL, 1, ?1, ?1)",
+                params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let mat_file = general_material_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "file".into(),
+            "文件".into(),
+            file.to_string_lossy().to_string(),
+            None,
+        )
+        .unwrap()
+        .material;
+        let mat_folder = general_material_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "folder".into(),
+            "文件夹".into(),
+            folder.to_string_lossy().to_string(),
+            None,
+        )
+        .unwrap()
+        .material;
+        let mat_note = general_material_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "note".into(),
+            "笔记".into(),
+            "n-keep".into(),
+            None,
+        )
+        .unwrap()
+        .material;
+        assert!(mat_file.alive && mat_folder.alive && mat_note.alive);
+        assert_eq!(mat_note.linked_title.as_deref(), Some("待删笔记"));
+
+        // 删除关联：原始文件仍存在且内容不变。
+        general_material_delete_impl(&db, &mat_file.id).unwrap();
+        assert!(file.exists(), "删除资料关联不得删除原始文件");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "原始内容ABC");
+
+        // 外部删除文件夹与笔记 → 读侧派生失效并给出原因。
+        std::fs::remove_dir_all(&folder).unwrap();
+        db.with_conn(|c| {
+            c.execute("DELETE FROM notes WHERE id = 'n-keep'", params![])?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+
+        let mats = general_material_list_impl(&db, &project.id).unwrap().materials;
+        let dead_folder = mats.iter().find(|m| m.id == mat_folder.id).unwrap();
+        let dead_note = mats.iter().find(|m| m.id == mat_note.id).unwrap();
+        assert!(!dead_folder.alive);
+        assert!(dead_folder.alive_reason.is_some());
+        assert!(!dead_note.alive);
+        assert!(dead_note.alive_reason.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn milestone_rejects_task_from_another_project() {
+        let db = Db::open_in_memory().unwrap();
+        let a = create_project(&db, "甲项目", "general");
+        let b = create_project(&db, "乙项目", "general");
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO tasks (id, title, created_at, updated_at) VALUES ('t-cross', '跨项目任务', ?1, ?1)",
+                params![now],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        workspace_task_link_add_impl(&db, &a.id, "t-cross").unwrap();
+
+        // 已关联到甲项目的任务，甲项目里程碑可引用。
+        let ok = general_milestone_save_impl(
+            &db,
+            None,
+            a.id.clone(),
+            "甲里程碑".into(),
+            None,
+            None,
+            None,
+            None,
+            Some("t-cross".into()),
+            None,
+        );
+        assert!(ok.is_ok());
+
+        // 乙项目不得跨项目引用甲项目的任务。
+        let bad = general_milestone_save_impl(
+            &db,
+            None,
+            b.id.clone(),
+            "乙里程碑".into(),
+            None,
+            None,
+            None,
+            None,
+            Some("t-cross".into()),
+            None,
+        );
+        assert!(matches!(bad, Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn deleting_project_cascades_milestones_and_materials() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "级联项目", "general");
+        general_milestone_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "里程碑".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        general_material_save_impl(
+            &db,
+            None,
+            project.id.clone(),
+            "link".into(),
+            "链接".into(),
+            "https://example.com".into(),
+            None,
+        )
+        .unwrap();
+
+        workspace_project_delete_impl(&db, &project.id).unwrap();
+        assert_eq!(count_direct(&db, &project.id, "general_milestones"), 0);
+        assert_eq!(count_direct(&db, &project.id, "general_materials"), 0);
+    }
+
+    /// 隔离文件库验收证据导出：仅在设置 `GENERAL_V1_EVIDENCE_DIR` 时落盘 JSON。
+    #[test]
+    fn v1_acceptance_evidence_dump() {
+        let Some(evidence_dir) = std::env::var_os("GENERAL_V1_EVIDENCE_DIR") else {
+            return;
+        };
+        let evidence_dir = std::path::PathBuf::from(evidence_dir);
+        std::fs::create_dir_all(&evidence_dir).ok();
+
+        let db = match std::env::var_os("GENERAL_V1_DATA_DIR") {
+            Some(dir) => {
+                let dir = std::path::PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).ok();
+                let p = dir.join("verify-general-v1.db");
+                let _ = std::fs::remove_file(&p);
+                let _ = std::fs::remove_file(p.with_extension("db-wal"));
+                let _ = std::fs::remove_file(p.with_extension("db-shm"));
+                Db::open(&p).unwrap()
+            }
+            None => Db::open_in_memory().unwrap(),
+        };
+
+        let defs = template_defs();
+        let mut template_rows = Vec::new();
+        for def in &defs {
+            let project = create_project(&db, def.id, "general");
+            let before_items = count_direct(&db, &project.id, "workspace_items");
+            let before_ms = count_direct(&db, &project.id, "general_milestones");
+            let result = general_apply_template_impl(
+                &db,
+                project.id.clone(),
+                def.id.into(),
+                stages_of(&def.stages),
+            )
+            .unwrap();
+            let after_items = count_direct(&db, &project.id, "workspace_items");
+            let after_ms = count_direct(&db, &project.id, "general_milestones");
+            let again = general_apply_template_impl(
+                &db,
+                project.id.clone(),
+                def.id.into(),
+                stages_of(&def.stages),
+            )
+            .unwrap();
+            let again_items = count_direct(&db, &project.id, "workspace_items");
+            let again_ms = count_direct(&db, &project.id, "general_milestones");
+            let items = workspace_item_list_impl(&db, &project.id).unwrap();
+            let milestones = general_milestone_list_impl(&db, &project.id).unwrap().milestones;
+            template_rows.push(serde_json::json!({
+                "templateId": def.id,
+                "expectedItems": def.expected_items,
+                "expectedMilestones": def.expected_milestones,
+                "before": { "items": before_items, "milestones": before_ms },
+                "applied": {
+                    "applied": result.applied,
+                    "itemsCreated": result.items_created,
+                    "milestonesCreated": result.milestones_created,
+                    "reason": result.reason,
+                },
+                "after": { "items": after_items, "milestones": after_ms },
+                "reapply": {
+                    "applied": again.applied,
+                    "itemsCreated": again.items_created,
+                    "milestonesCreated": again.milestones_created,
+                    "items": again_items,
+                    "milestones": again_ms,
+                    "reason": again.reason,
+                },
+                "stages": items.iter().map(|i| serde_json::json!({
+                    "stage": i.stage, "title": i.title, "status": i.status
+                })).collect::<Vec<_>>(),
+                "milestones": milestones.iter().map(|m| serde_json::json!({
+                    "title": m.title, "status": m.status,
+                    "linkedItemExists": m.linked_item_exists,
+                    "linkedTaskExists": m.linked_task_exists
+                })).collect::<Vec<_>>(),
+            }));
+        }
+
+        // 失败回滚：非法输入前后行数对照。
+        let rb_project = create_project(&db, "回滚检查", "general");
+        let rb_before_i = count_direct(&db, &rb_project.id, "workspace_items");
+        let rb_before_m = count_direct(&db, &rb_project.id, "general_milestones");
+        let bad = serde_json::json!([{ "title": "", "items": ["x"], "milestone": { "title": "y" } }]);
+        let rb = general_apply_template_impl(
+            &db,
+            rb_project.id.clone(),
+            "bad".into(),
+            serde_json::from_value(bad).unwrap(),
+        );
+        let rb_after_i = count_direct(&db, &rb_project.id, "workspace_items");
+        let rb_after_m = count_direct(&db, &rb_project.id, "general_milestones");
+        let rollback = serde_json::json!({
+            "before": { "items": rb_before_i, "milestones": rb_before_m },
+            "result": if rb.is_err() { "err" } else { "ok" },
+            "error": rb.as_ref().err().map(|e| e.user_message().to_string()),
+            "after": { "items": rb_after_i, "milestones": rb_after_m },
+            "clean": rb_after_i == 0 && rb_after_m == 0,
+        });
+
+        // 统计口径：API 返回值 vs 直接 SQL 计数。
+        let stats_project = create_project(&db, "统计对照", "general");
+        for (status, title) in [("todo", "待办一"), ("todo", "待办二"), ("doing", "进行中"), ("blocked", "阻塞"), ("done", "已完成")] {
+            workspace_item_save_impl(&db, None, stats_project.id.clone(), None, title.into(), None, Some(status.into()), None, None).unwrap();
+        }
+        for (status, title) in [("open", "开放一"), ("open", "开放二"), ("done", "完成里程碑"), ("skipped", "跳过里程碑")] {
+            general_milestone_save_impl(&db, None, stats_project.id.clone(), title.into(), None, Some(status.into()), None, None, None, None).unwrap();
+        }
+        let now = now_iso();
+        db.with_conn(|c| {
+            c.execute("INSERT INTO tasks (id, title, created_at, updated_at) VALUES ('t-stats', '统计任务', ?1, ?1)", params![now])?;
+            Ok::<_, AppError>(())
+        }).unwrap();
+        workspace_task_link_add_impl(&db, &stats_project.id, "t-stats").unwrap();
+        general_material_save_impl(&db, None, stats_project.id.clone(), "link".into(), "链接资料".into(), "https://example.com/stats".into(), None).unwrap();
+
+        let stats = general_stats_impl(&db, &stats_project.id).unwrap().stats;
+        let direct = |sql: &str| {
+            db.with_read(|c| {
+                let n: i64 = c.query_row(sql, params![stats_project.id], |r| r.get(0))?;
+                Ok(n)
+            })
+            .unwrap()
+        };
+        let stats_comparison = serde_json::json!({
+            "totalItems": { "api": stats.total_items, "db": direct("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1") },
+            "todoItems": { "api": stats.todo_items, "db": direct("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'todo'") },
+            "doingItems": { "api": stats.doing_items, "db": direct("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'doing'") },
+            "blockedItems": { "api": stats.blocked_items, "db": direct("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'blocked'") },
+            "doneItems": { "api": stats.done_items, "db": direct("SELECT COUNT(*) FROM workspace_items WHERE project_id = ?1 AND status = 'done'") },
+            "milestonesTotal": { "api": stats.milestones_total, "db": direct("SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1") },
+            "milestonesOpen": { "api": stats.milestones_open, "db": direct("SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'open'") },
+            "milestonesDone": { "api": stats.milestones_done, "db": direct("SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'done'") },
+            "milestonesSkipped": { "api": stats.milestones_skipped, "db": direct("SELECT COUNT(*) FROM general_milestones WHERE project_id = ?1 AND status = 'skipped'") },
+            "linkedTasks": { "api": stats.linked_tasks, "db": direct("SELECT COUNT(*) FROM workspace_task_links WHERE project_id = ?1") },
+            "materialsTotal": { "api": stats.materials_total, "db": direct("SELECT COUNT(*) FROM general_materials WHERE project_id = ?1") },
+            "recentActivityCount": stats.recent_activity.len(),
+        });
+
+        // 夹具文件：登记 → 删除关联 → 文件仍在且内容不变。
+        let mut materials_report = serde_json::json!({ "fixtureFile": null });
+        if let Some(fixture) = std::env::var_os("GENERAL_V1_FIXTURE_FILE") {
+            let fixture = std::path::PathBuf::from(fixture);
+            let before_hash = std::fs::read(&fixture).ok().map(|b| hex_hash(&b));
+            let mat = general_material_save_impl(
+                &db,
+                None,
+                stats_project.id.clone(),
+                "file".into(),
+                "夹具文件".into(),
+                fixture.to_string_lossy().to_string(),
+                None,
+            ).unwrap().material;
+            general_material_delete_impl(&db, &mat.id).unwrap();
+            let after_exists = fixture.exists();
+            let after_hash = std::fs::read(&fixture).ok().map(|b| hex_hash(&b));
+            materials_report = serde_json::json!({
+                "fixtureFile": fixture.to_string_lossy().to_string(),
+                "beforeHash": before_hash,
+                "afterExists": after_exists,
+                "afterHash": after_hash,
+                "contentPreserved": before_hash == after_hash,
+            });
+        }
+
+        let report = serde_json::json!({
+            "generatedAt": now_iso(),
+            "head": std::env::var("GENERAL_V1_HEAD").unwrap_or_default(),
+            "templates": template_rows,
+            "rollback": rollback,
+            "statsComparison": stats_comparison,
+            "materials": materials_report,
+        });
+        let stamp: String = now_iso().chars().take(19).filter(|c| *c != ':' && *c != 'T').collect();
+        let out = evidence_dir.join(format!("general-v1-evidence-{stamp}.json"));
+        std::fs::write(&out, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    }
+
+    fn hex_hash(bytes: &[u8]) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
     }
 }

@@ -35,6 +35,8 @@ export interface GameDetectionReport {
   engine: GameEngine;
   engineVersion: string;
   evidence: string[];
+  /** 多引擎标记冲突：除胜出引擎外其余命中的特征标记；无冲突为空。 */
+  conflicts: string[];
   rootExists: boolean;
   rootPath: string;
 }
@@ -56,6 +58,8 @@ export interface GameAsset {
   updatedAt: string;
   /** 读时计算：登记路径当前是否存在。 */
   pathExists: boolean;
+  /** 读时计算：关联事项是否仍存在（弱引用）。 */
+  itemExists: boolean;
 }
 
 export interface GameBuild {
@@ -77,6 +81,8 @@ export interface GameBuild {
   updatedAt: string;
   logExists: boolean;
   artifactExists: boolean;
+  /** 读时计算：关联事项是否仍存在（弱引用）。 */
+  itemExists: boolean;
 }
 
 export interface GameTestRecord {
@@ -93,6 +99,10 @@ export interface GameTestRecord {
   note: string;
   createdAt: string;
   updatedAt: string;
+  /** 读时计算：关联构建是否仍存在（弱引用）。 */
+  buildExists: boolean;
+  /** 读时计算：关联事项是否仍存在（弱引用）。 */
+  itemExists: boolean;
 }
 
 /** 制作事项分类（承载在 `workspace_items.metadataJson.category`）。 */

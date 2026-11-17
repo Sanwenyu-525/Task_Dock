@@ -70,6 +70,7 @@ const CURRENCY_OPTIONS = [
   { value: "JPY", label: "JPY 日元" },
   { value: "GBP", label: "GBP 英镑" },
   { value: "HKD", label: "HKD 港币" },
+  { value: "KWD", label: "KWD 科威特第纳尔（3 位小数）" },
 ];
 
 interface PurchaseForm {
@@ -82,6 +83,8 @@ interface PurchaseForm {
   unit: string;
   total: string;
   currency: string;
+  /** 编辑历史行时沿用原金额小数位；新建或切换货币后为 null。 */
+  amountScale: number | null;
   merchant: string;
   note: string;
   receiptId: string;
@@ -91,6 +94,15 @@ function todayLocal(): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+function minorToDecimalText(minor: number, scale: number): string {
+  const safeScale = Number.isInteger(scale) && scale >= 0 && scale <= 3 ? scale : 2;
+  const factor = 10 ** safeScale;
+  const whole = Math.floor(minor / factor);
+  if (safeScale === 0) return String(whole);
+  const fraction = String(minor % factor).padStart(safeScale, "0");
+  return `${whole}.${fraction}`;
 }
 
 function emptyForm(currency: string): PurchaseForm {
@@ -104,6 +116,7 @@ function emptyForm(currency: string): PurchaseForm {
     unit: "",
     total: "",
     currency,
+    amountScale: null,
     merchant: "",
     note: "",
     receiptId: "",
@@ -302,8 +315,9 @@ export default function LifePanel() {
       total:
         purchase.total_price_minor === null
           ? ""
-          : (purchase.total_price_minor / 100).toFixed(2),
+          : minorToDecimalText(purchase.total_price_minor, purchase.amount_scale),
       currency: purchase.currency,
+      amountScale: purchase.amount_scale,
       merchant: purchase.merchant,
       note: purchase.note,
       receiptId: "",
@@ -336,6 +350,7 @@ export default function LifePanel() {
           quantity_unit: form.unit.trim() || null,
           total_price: form.total.trim() || null,
           currency: form.currency.trim() || null,
+          amount_scale: form.mode === "edit" ? form.amountScale : null,
           note: form.note.trim() || null,
         },
       ],
@@ -620,7 +635,7 @@ export default function LifePanel() {
                         </span>
                       </span>
                       <span className="life-event-amount">
-                        {formatMoneyMinor(event.total_price_minor, event.currency)}
+                        {formatMoneyMinor(event.total_price_minor, event.currency, event.amount_scale)}
                       </span>
                       <ChevronRight size={13} aria-hidden="true" />
                     </button>
@@ -734,7 +749,7 @@ export default function LifePanel() {
                         {item.quantity_value ? `${item.quantity_value}${item.quantity_unit}` : ""}
                       </span>
                     </div>
-                    <span>{formatMoneyMinor(item.total_price_minor, item.currency) || "未记录金额"}</span>
+                    <span>{formatMoneyMinor(item.total_price_minor, item.currency, item.amount_scale) || "未记录金额"}</span>
                     {item.note && <span className="life-muted">{item.note}</span>}
                   </li>
                 ))}
@@ -851,7 +866,7 @@ export default function LifePanel() {
                             {purchase.quantity_value ? `${purchase.quantity_value}${purchase.quantity_unit}` : ""}
                           </span>
                           <span className="life-history-amount">
-                            {formatMoneyMinor(purchase.total_price_minor, purchase.currency) || "未记录金额"}
+                            {formatMoneyMinor(purchase.total_price_minor, purchase.currency, purchase.amount_scale) || "未记录金额"}
                           </span>
                         </div>
                         {(purchase.merchant || purchase.note) && (
@@ -949,7 +964,7 @@ export default function LifePanel() {
                             : "尚无购买记录"}
                         </span>
                         <span className="life-item-price">
-                          {formatMoneyMinor(item.last_total_price_minor, item.last_currency)}
+                          {formatMoneyMinor(item.last_total_price_minor, item.last_currency, item.last_amount_scale)}
                         </span>
                       </button>
                     </li>
@@ -1053,7 +1068,7 @@ export default function LifePanel() {
                 <Select
                   value={form.currency}
                   options={CURRENCY_OPTIONS}
-                  onChange={(value) => setForm({ ...form, currency: value })}
+                  onChange={(value) => setForm({ ...form, currency: value, amountScale: null })}
                   placeholder="请选择货币"
                   ariaLabel="货币"
                   size="sm"

@@ -181,6 +181,16 @@ ALTER TABLE life_document_links ADD COLUMN remote_source TEXT
 "#,
 );
 
+/// v67：金额精度跨端一致。
+/// 旧数据默认 scale=2，保持历史金额按原两位解释；新记录按货币精度显式写入
+/// （CNY/USD=2、JPY=0、KWD=3 等），显示、编辑回显与同步都使用该行自己的 scale。
+pub const MIGRATION_67: (i64, &str) = (
+    67,
+    r#"
+ALTER TABLE life_event_items ADD COLUMN amount_scale INTEGER NOT NULL DEFAULT 2;
+"#,
+);
+
 // ── 格式化与解析（跨端契约）────────────────────────────────
 
 fn now_iso() -> String {
@@ -243,11 +253,12 @@ pub fn normalize_name(raw: &str) -> String {
     trimmed.to_lowercase()
 }
 
-/// 金额解析：十进制字符串 → 最小货币单位整数（固定 2 位小数）。
+/// 金额解析：十进制字符串 → 最小货币单位整数（按该货币的小数位）。
 ///
-/// 只接受非负、最多两位小数的十进制文本；`48` → 4800，`48.5` → 4850。
-/// 拒绝科学计数法、千分位与超过 2 位小数，避免静默舍入。
-fn parse_minor(raw: &str) -> AppResult<i64> {
+/// 只接受非负、最多 `scale` 位小数的十进制文本；`48`（CNY, scale 2）→ 4800，
+/// `48.5` → 4850；JPY（scale 0）只接受整数；KWD（scale 3）接受三位小数。
+/// 拒绝科学计数法、千分位与超出精度的小数，避免静默舍入。
+fn parse_minor(raw: &str, scale: i64) -> AppResult<i64> {
     let text = raw.trim();
     if text.is_empty() {
         return Err(AppError::Validation("金额不能为空".into()));
@@ -269,27 +280,60 @@ fn parse_minor(raw: &str) -> AppResult<i64> {
     if int_digits.len() > 12 {
         return Err(AppError::Validation("金额过大".into()));
     }
-    if frac_part.len() > 2 {
-        return Err(AppError::Validation("金额最多支持 2 位小数".into()));
+    let scale_usize = scale as usize;
+    if frac_part.len() > scale_usize {
+        return Err(AppError::Validation(format!(
+            "该货币金额最多支持 {scale} 位小数"
+        )));
     }
-    let cents: i64 = match frac_part.len() {
-        0 => 0,
-        1 => frac_part
+    let frac: i64 = if frac_part.is_empty() {
+        0
+    } else {
+        frac_part
             .parse::<i64>()
             .map_err(|_| AppError::Validation("金额格式非法".into()))?
-            * 10,
-        _ => frac_part
-            .parse::<i64>()
-            .map_err(|_| AppError::Validation("金额格式非法".into()))?,
     };
+    let factor = 10_i64
+        .checked_pow(scale as u32)
+        .ok_or_else(|| AppError::Validation("货币精度非法".into()))?;
+    let frac_scaled = frac
+        .checked_mul(10_i64.pow((scale_usize - frac_part.len()) as u32))
+        .ok_or_else(|| AppError::Validation("金额过大".into()))?;
     let whole: i64 = int_digits
         .parse::<i64>()
         .map_err(|_| AppError::Validation("金额格式非法".into()))?;
-    let minor = whole
-        .checked_mul(100)
-        .and_then(|v| v.checked_add(cents))
-        .ok_or_else(|| AppError::Validation("金额过大".into()))?;
-    Ok(minor)
+    whole
+        .checked_mul(factor)
+        .and_then(|v| v.checked_add(frac_scaled))
+        .ok_or_else(|| AppError::Validation("金额过大".into()))
+}
+
+/// ISO 4217 常用货币的小数位。未列入的代码明确报错，不假设所有货币都是两位小数。
+pub(crate) fn currency_scale(currency: &str) -> AppResult<i64> {
+    let code = currency.trim().to_uppercase();
+    if code.is_empty() {
+        return Ok(2);
+    }
+    let scale = match code.as_str() {
+        // 0 位：无辅币单位
+        "JPY" | "KRW" | "VND" | "CLP" | "ISK" | "PYG" | "RWF" | "UGX" | "VUV"
+        | "XAF" | "XOF" | "XPF" | "KMF" | "DJF" | "GNF" | "BIF" => 0,
+        // 3 位：千分之一
+        "KWD" | "BHD" | "OMR" | "JOD" | "TND" | "IQD" | "LYD" => 3,
+        // 2 位：常用及绝大多数货币
+        "CNY" | "USD" | "EUR" | "GBP" | "HKD" | "MOP" | "TWD" | "AUD" | "CAD"
+        | "SGD" | "CHF" | "NZD" | "SEK" | "NOK" | "DKK" | "PLN" | "CZK" | "HUF"
+        | "RON" | "BGN" | "HRK" | "RSD" | "TRY" | "RUB" | "UAH" | "INR" | "PKR"
+        | "BDT" | "LKR" | "NPR" | "THB" | "MYR" | "IDR" | "PHP" | "BRL" | "MXN"
+        | "ARS" | "COP" | "PEN" | "UYU" | "ZAR" | "AED" | "SAR" | "QAR" | "ILS"
+        | "EGP" | "NGN" | "KES" | "GHS" | "MAD" | "DZD" => 2,
+        _ => {
+            return Err(AppError::Validation(format!(
+                "暂不支持货币 {code} 的金额精度，请选择已支持货币或配置精度"
+            )))
+        }
+    };
+    Ok(scale)
 }
 
 /// 数量解析：十进制字符串 → 规范文本（最多 3 位小数，去掉末尾 0）。
@@ -413,6 +457,8 @@ pub struct LifeItemSummary {
     pub last_unit_price_minor: Option<i64>,
     pub last_total_price_minor: Option<i64>,
     pub last_currency: String,
+    /// 最近一条购买金额的小数位；旧数据为 2。
+    pub last_amount_scale: i64,
     pub interval_days: Option<i64>,
     pub updated_at: String,
 }
@@ -446,6 +492,8 @@ pub struct LifePurchase {
     pub unit_price_minor: Option<i64>,
     pub total_price_minor: Option<i64>,
     pub currency: String,
+    /// 该行金额的小数位（CNY=2、JPY=0、KWD=3；旧行=2）。
+    pub amount_scale: i64,
     pub merchant: String,
     pub note: String,
     pub event_note: String,
@@ -484,6 +532,7 @@ pub struct LifeEventItem {
     pub unit_price_minor: Option<i64>,
     pub total_price_minor: Option<i64>,
     pub currency: String,
+    pub amount_scale: i64,
     pub note: String,
 }
 
@@ -505,6 +554,7 @@ pub struct LifeEventSummary {
     pub item_names: Vec<String>,
     pub total_price_minor: Option<i64>,
     pub currency: String,
+    pub amount_scale: i64,
     pub link_count: i64,
 }
 
@@ -553,6 +603,10 @@ pub struct LifeItemInput {
     pub total_price: Option<String>,
     #[serde(default)]
     pub currency: Option<String>,
+    /// 可选：沿用该行已有的金额小数位（编辑历史记录时保持原解释）；
+    /// 新建记录不填，由货币精度映射决定。
+    #[serde(default)]
+    pub amount_scale: Option<i64>,
     #[serde(default)]
     pub note: Option<String>,
 }
@@ -617,6 +671,7 @@ WITH purchases AS (
          ei.unit_price_minor AS unit_price_minor,
          ei.total_price_minor AS total_price_minor,
          ei.currency AS currency,
+         ei.amount_scale AS amount_scale,
          ROW_NUMBER() OVER (
            PARTITION BY ei.item_id
            ORDER BY e.occurred_at DESC, e.created_at DESC, e.id DESC
@@ -628,7 +683,7 @@ WITH purchases AS (
 )
 SELECT i.id, i.name, i.normalized_name, i.category, i.note, i.aliases, i.updated_at,
        p.occurred_at, p.quantity_value, p.quantity_unit, p.unit_price_minor,
-       p.total_price_minor, p.currency, p.cnt,
+       p.total_price_minor, p.currency, p.amount_scale, p.cnt,
        (SELECT p2.occurred_at FROM purchases p2 WHERE p2.item_id = i.id AND p2.rn = 2) AS prev_at
 FROM life_items i
 LEFT JOIN purchases p ON p.item_id = i.id AND p.rn = 1
@@ -639,7 +694,7 @@ fn row_to_item_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<LifeItemSumm
     let aliases_raw: String = row.get(5)?;
     let aliases: Vec<String> = serde_json::from_str(&aliases_raw).unwrap_or_default();
     let last_purchase_at: Option<String> = row.get(7)?;
-    let prev_at: Option<String> = row.get(14)?;
+    let prev_at: Option<String> = row.get(15)?;
     let interval = match (last_purchase_at.as_deref(), prev_at.as_deref()) {
         (Some(a), Some(b)) => interval_days(a, b),
         _ => None,
@@ -652,13 +707,14 @@ fn row_to_item_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<LifeItemSumm
         note: row.get(4)?,
         aliases,
         updated_at: row.get(6)?,
-        purchase_count: row.get::<_, Option<i64>>(13)?.unwrap_or(0),
+        purchase_count: row.get::<_, Option<i64>>(14)?.unwrap_or(0),
         last_purchase_at,
         last_quantity_value: row.get(8)?,
         last_quantity_unit: row.get::<_, Option<String>>(9)?.unwrap_or_default(),
         last_unit_price_minor: row.get(10)?,
         last_total_price_minor: row.get(11)?,
         last_currency: row.get::<_, Option<String>>(12)?.unwrap_or_default(),
+        last_amount_scale: row.get::<_, Option<i64>>(13)?.unwrap_or(2),
         interval_days: interval,
     })
 }
@@ -717,7 +773,7 @@ fn like_pattern(raw: &str) -> String {
 fn load_event_items(conn: &Connection, event_id: &str) -> AppResult<Vec<LifeEventItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, event_id, item_id, item_name_snapshot, quantity_value,
-                quantity_unit, unit_price_minor, total_price_minor, currency, note
+                quantity_unit, unit_price_minor, total_price_minor, currency, amount_scale, note
          FROM life_event_items WHERE event_id = ?1 ORDER BY created_at ASC, id ASC",
     )?;
     let rows = stmt
@@ -732,7 +788,8 @@ fn load_event_items(conn: &Connection, event_id: &str) -> AppResult<Vec<LifeEven
                 unit_price_minor: row.get(6)?,
                 total_price_minor: row.get(7)?,
                 currency: row.get(8)?,
-                note: row.get(9)?,
+                amount_scale: row.get(9)?,
+                note: row.get(10)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -840,7 +897,7 @@ fn list_purchases_for_item(
     let mut stmt = conn.prepare(
         "SELECT e.id, ei.id, e.occurred_at, ei.item_name_snapshot, ei.quantity_value,
                 ei.quantity_unit, ei.unit_price_minor, ei.total_price_minor, ei.currency,
-                e.merchant, ei.note, e.description, e.created_at
+                ei.amount_scale, e.merchant, ei.note, e.description, e.created_at
          FROM life_event_items ei
          JOIN life_events e ON e.id = ei.event_id
          WHERE ei.item_id = ?1 AND e.event_type = 'purchase' AND e.deleted_at IS NULL
@@ -859,10 +916,11 @@ fn list_purchases_for_item(
                 unit_price_minor: row.get(6)?,
                 total_price_minor: row.get(7)?,
                 currency: row.get(8)?,
-                merchant: row.get(9)?,
-                note: row.get(10)?,
-                event_note: row.get(11)?,
-                created_at: row.get(12)?,
+                amount_scale: row.get(9)?,
+                merchant: row.get(10)?,
+                note: row.get(11)?,
+                event_note: row.get(12)?,
+                created_at: row.get(13)?,
                 links: Vec::new(),
             })
         })?
@@ -945,6 +1003,7 @@ pub fn life_events_recent(
                     (SELECT SUM(COALESCE(ei.total_price_minor, 0))
                        FROM life_event_items ei WHERE ei.event_id = e.id),
                     (SELECT MAX(ei.currency) FROM life_event_items ei WHERE ei.event_id = e.id),
+                    (SELECT MAX(ei.amount_scale) FROM life_event_items ei WHERE ei.event_id = e.id),
                     (SELECT COUNT(*) FROM life_document_links l
                        WHERE l.owner_type = 'event' AND l.owner_id = e.id AND l.deleted_at IS NULL)
              FROM life_events e
@@ -970,7 +1029,8 @@ pub fn life_events_recent(
                         .collect(),
                     total_price_minor: row.get(7)?,
                     currency: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
-                    link_count: row.get::<_, Option<i64>>(9)?.unwrap_or(0),
+                    amount_scale: row.get::<_, Option<i64>>(9)?.unwrap_or(2),
+                    link_count: row.get::<_, Option<i64>>(10)?.unwrap_or(0),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1139,25 +1199,54 @@ fn resolve_currency(
 fn build_event_item_values(
     db: &Db,
     input: &LifeItemInput,
-) -> AppResult<(Option<String>, String, Option<i64>, Option<i64>, String, String)> {
+) -> AppResult<(Option<String>, String, Option<i64>, Option<i64>, String, i64, String)> {
     let quantity = match input.quantity_value.as_deref() {
         Some(raw) => canonical_quantity(raw)?,
         None => None,
     };
     let unit = input.quantity_unit.as_deref().unwrap_or("").trim().to_string();
     validate_text(&unit, "单位", 16)?;
+    let has_amount = input
+        .unit_price
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some()
+        || input
+            .total_price
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some();
+    let currency = resolve_currency(db, input.currency.as_deref(), has_amount)?;
+    let scale = match input.amount_scale {
+        Some(value) if (0..=3).contains(&value) => value,
+        Some(_) => {
+            return Err(AppError::Validation(
+                "金额小数位必须是 0–3 的整数".into(),
+            ))
+        }
+        None => currency_scale(&currency)?,
+    };
     let unit_price = match input.unit_price.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(raw) => Some(parse_minor(raw)?),
+        Some(raw) => Some(parse_minor(raw, scale)?),
         None => None,
     };
     let total_price = match input.total_price.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(raw) => Some(parse_minor(raw)?),
+        Some(raw) => Some(parse_minor(raw, scale)?),
         None => None,
     };
-    let currency = resolve_currency(db, input.currency.as_deref(), unit_price.is_some() || total_price.is_some())?;
     let note = input.note.as_deref().unwrap_or("").trim().to_string();
     validate_text(&note, "备注", 500)?;
-    Ok((quantity, unit, unit_price, total_price, currency, note))
+    Ok((
+        quantity,
+        unit,
+        unit_price,
+        total_price,
+        currency,
+        scale,
+        note,
+    ))
 }
 
 #[tauri::command]
@@ -1228,14 +1317,15 @@ pub fn life_event_create(
         )?;
         for item in &items {
             let (item_id, snapshot) = resolve_item_in_tx(conn, item, &now)?;
-            let (quantity, unit, unit_price, total_price, currency, note) =
+            let (quantity, unit, unit_price, total_price, currency, amount_scale, note) =
                 build_event_item_values(db_ref, item)?;
             let row_id = format!("lei_{}", Uuid::new_v4());
             conn.execute(
                 "INSERT INTO life_event_items
                  (id, event_id, item_id, item_name_snapshot, quantity_value, quantity_unit,
-                  unit_price_minor, total_price_minor, currency, note, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+                  unit_price_minor, total_price_minor, currency, amount_scale, note,
+                  created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
                 params![
                     row_id,
                     event_id,
@@ -1246,6 +1336,7 @@ pub fn life_event_create(
                     unit_price,
                     total_price,
                     currency,
+                    amount_scale,
                     note,
                     now
                 ],
@@ -1363,14 +1454,14 @@ pub fn life_event_update(
                         (Some(new_id), snapshot)
                     }
                 };
-                let (quantity, unit, unit_price, total_price, currency, note) =
+                let (quantity, unit, unit_price, total_price, currency, amount_scale, note) =
                     build_event_item_values(db_ref, item)?;
                 conn.execute(
                     "UPDATE life_event_items
                      SET item_id = ?1, item_name_snapshot = ?2, quantity_value = ?3,
                          quantity_unit = ?4, unit_price_minor = ?5, total_price_minor = ?6,
-                         currency = ?7, note = ?8, updated_at = ?9
-                     WHERE id = ?10",
+                         currency = ?7, amount_scale = ?8, note = ?9, updated_at = ?10
+                     WHERE id = ?11",
                     params![
                         item_id,
                         snapshot,
@@ -1379,6 +1470,7 @@ pub fn life_event_update(
                         unit_price,
                         total_price,
                         currency,
+                        amount_scale,
                         note,
                         now,
                         row.id
@@ -1387,13 +1479,14 @@ pub fn life_event_update(
             }
             for item in new_items.iter().skip(shared) {
                 let (item_id, snapshot) = resolve_item_in_tx(conn, item, &now)?;
-                let (quantity, unit, unit_price, total_price, currency, note) =
+                let (quantity, unit, unit_price, total_price, currency, amount_scale, note) =
                     build_event_item_values(db_ref, item)?;
                 conn.execute(
                     "INSERT INTO life_event_items
                      (id, event_id, item_id, item_name_snapshot, quantity_value, quantity_unit,
-                      unit_price_minor, total_price_minor, currency, note, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+                      unit_price_minor, total_price_minor, currency, amount_scale, note,
+                      created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
                     params![
                         format!("lei_{}", Uuid::new_v4()),
                         event_id,
@@ -1404,6 +1497,7 @@ pub fn life_event_update(
                         unit_price,
                         total_price,
                         currency,
+                        amount_scale,
                         note,
                         now
                     ],

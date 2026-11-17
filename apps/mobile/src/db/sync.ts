@@ -16,10 +16,13 @@ import { getSetting, setSetting } from "./kv";
 import {
   applyLifeChange,
   buildLifePatch,
+  clearDeferredLifeChangeForTarget,
   isLifeEntity,
   isLifeLocalDeleted,
   prepareLifeLocalResolution,
+  recordDeferredLifeChange,
   resetLifeSyncState,
+  retryDeferredLifeChangesInTx,
   softDeleteLifeLocalCopy,
 } from "./lifeSync";
 import { newId } from "../lib/id";
@@ -403,10 +406,41 @@ async function applyCaptureChange(db: SQLiteDatabase, change: Change): Promise<A
 }
 
 /**
+ * pull 方向遇到「同名商品但不同 ID」时写入与 push 冲突同一张表，
+ * 让冲突页可以用同一套机制展示，并提供「关联到桌面商品并保留本机购买历史」。
+ * 这里不占用 outbox：本地可能有 pending_outbox 的延后同理，等 push 自己产生冲突。
+ */
+async function recordPullLifeConflict(
+  db: SQLiteDatabase,
+  change: Change,
+): Promise<void> {
+  const opId = `pull:${change.entity}:${change.id}:${change.rev}`;
+  const now = Date.now();
+  await db.runAsync(
+    "DELETE FROM sync_conflicts WHERE entity = ? AND target_id = ? AND reason = ?",
+    [change.entity, change.id, "life_item_name_conflict"],
+  );
+  await db.runAsync(
+    `INSERT OR REPLACE INTO sync_conflicts
+       (op_id, entity, target_id, reason, server_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      opId,
+      change.entity,
+      change.id,
+      "life_item_name_conflict",
+      JSON.stringify(change),
+      now,
+    ],
+  );
+}
+
+/**
  * 应用一页 pull 变更。
  *
  * 同一记录在日志里可能出现多次（更新数次），按顺序应用即可；服务端游标保证不漏页。
- * 本地存在未发送 outbox 时跳过该记录：push 会带着旧 base_rev 得到冲突，由用户决定。
+ * 生活实体不再把所有异常都当成无害 skipped：依赖未到、本地未发送修改、同名冲突等
+ * 会写入 life_sync_deferred，游标可以推进，但变更不会丢；依赖到达后自动重放。
  */
 export async function applyPullChanges(changes: readonly Change[]): Promise<PullApplyResult> {
   const db = getDatabase();
@@ -430,6 +464,27 @@ export async function applyPullChanges(changes: readonly Change[]): Promise<Pull
 
   await db.withTransactionAsync(async () => {
     for (const change of ordered) {
+      if (isLifeEntity(change.entity)) {
+        const outcome = await applyLifeChange(db, change);
+        if (outcome.status === "applied") {
+          applied += 1;
+        } else if (outcome.status === "deleted") {
+          deleted += 1;
+        } else if (outcome.status === "stale") {
+          skipped += 1;
+        } else if (outcome.status === "deferred") {
+          skipped += 1;
+          await recordDeferredLifeChange(db, change, outcome.reason);
+          if (outcome.reason === "name_conflict") {
+            await recordPullLifeConflict(db, change);
+          }
+        } else {
+          skipped += 1;
+          await recordDeferredLifeChange(db, change, "invalid");
+        }
+        continue;
+      }
+
       let outcome: ApplyOutcome;
       switch (change.entity) {
         case "task":
@@ -441,12 +496,6 @@ export async function applyPullChanges(changes: readonly Change[]): Promise<Pull
         case "capture":
           outcome = await applyCaptureChange(db, change);
           break;
-        case "life_item":
-        case "life_event":
-        case "life_event_item":
-        case "life_document_link":
-          outcome = await applyLifeChange(db, change);
-          break;
         default:
           outcome = "skipped";
       }
@@ -454,6 +503,11 @@ export async function applyPullChanges(changes: readonly Change[]): Promise<Pull
       else if (outcome === "deleted") deleted += 1;
       else skipped += 1;
     }
+
+    // 无新变更也要重放旧延后项：手动同步可在依赖已到达后自愈。
+    const retried = await retryDeferredLifeChangesInTx(db);
+    applied += retried.applied;
+    deleted += retried.deleted;
   });
 
   return { applied, deleted, skipped };
@@ -813,6 +867,209 @@ async function softDeleteLocalCopy(entity: SyncEntity, id: string): Promise<void
   }
 }
 
+/** 同名商品冲突：UI 用这个判断是否展示「关联到已有商品」。 */
+export function isLifeNameConflict(conflict: SyncConflictRow): boolean {
+  return conflict.reason === "life_item_name_conflict";
+}
+
+interface LifeItemRowForMerge {
+  id: string;
+  name: string;
+  normalized_name: string;
+  category: string;
+  aliases: string;
+  note: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+  server_rev: number;
+}
+
+interface LifeEventItemRowForMerge {
+  id: string;
+  item_id: string | null;
+  server_rev: number;
+}
+
+interface LifeLinkRowForMerge {
+  id: string;
+  document_ref: string;
+  document_source: string;
+  server_rev: number;
+}
+
+async function enqueueLifeUpdate(
+  db: SQLiteDatabase,
+  entity: LifeEntity,
+  targetId: string,
+  baseRev: number,
+  now: number,
+): Promise<void> {
+  await db.runAsync(
+    "DELETE FROM outbox WHERE entity = ? AND target_id = ? AND state IN ('pending','failed','conflict')",
+    [entity, targetId],
+  );
+  await db.runAsync(
+    `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [newId("op"), entity, targetId, baseRev, JSON.stringify({ type: "update" }), now],
+  );
+}
+
+/**
+ * 解决「同名商品不同 ID」：
+ * - 目标 = 服务端已有的商品（冲突 server_json 的 id）；
+ * - 源 = 本机同归一名的活动商品；
+ * - 保留两端购买事件与名称/日期/金额快照，把本机明细 item_id 重映射到目标商品；
+ * - 商品级票据关联改挂目标；源商品软删并清掉其待发送写操作；
+ * - 明细/关联重新入队 update，待下一次同步让桌面端也完成关联。
+ * 不自动合并规格不同的商品：只有 normalized_name 完全相同才会走到这里。
+ */
+export async function resolveLifeNameConflict(conflict: SyncConflictRow): Promise<void> {
+  if (!isLifeNameConflict(conflict)) {
+    throw new Error("不是同名商品冲突");
+  }
+  const change = parseServerRecord(conflict.server_json);
+  if (!change || change.entity !== "life_item") {
+    throw new Error("冲突缺少桌面端商品记录，无法关联");
+  }
+  const targetId = change.id;
+  const normalized = asString(change.fields.normalizedName);
+  const db = getDatabase();
+  const now = Date.now();
+
+  await db.withTransactionAsync(async () => {
+    let source = await db.getFirstAsync<LifeItemRowForMerge>(
+      "SELECT * FROM life_items WHERE id = ?",
+      [conflict.target_id],
+    );
+    if (!source || source.deleted_at != null || source.id === targetId) {
+      source =
+        (await db.getFirstAsync<LifeItemRowForMerge>(
+          `SELECT * FROM life_items
+            WHERE deleted_at IS NULL AND normalized_name = ? AND id <> ?
+            LIMIT 1`,
+          [normalized, targetId],
+        )) ?? null;
+    }
+
+    if (source && source.id !== targetId) {
+      // 商品级票据关联：目标已有同一文件时只保留目标那条，否则改挂到目标。
+      const links = await db.getAllAsync<LifeLinkRowForMerge>(
+        `SELECT id, document_ref, document_source, server_rev
+           FROM life_document_links
+          WHERE owner_type = 'item' AND owner_id = ? AND deleted_at IS NULL`,
+        [source.id],
+      );
+      for (const link of links) {
+        const duplicate = await db.getFirstAsync<{ id: string }>(
+          `SELECT id FROM life_document_links
+            WHERE deleted_at IS NULL AND owner_type = 'item' AND owner_id = ?
+              AND document_ref = ? AND document_source = ? AND id <> ? LIMIT 1`,
+          [targetId, link.document_ref, link.document_source, link.id],
+        );
+        if (duplicate) {
+          await db.runAsync(
+            `UPDATE life_document_links
+                SET deleted_at = ?, updated_at = ?, rev = rev + 1
+              WHERE id = ?`,
+            [now, now, link.id],
+          );
+        } else {
+          await db.runAsync(
+            `UPDATE life_document_links
+                SET owner_id = ?, updated_at = ?, rev = rev + 1
+              WHERE id = ?`,
+            [targetId, now, link.id],
+          );
+          await enqueueLifeUpdate(db, "life_document_link", link.id, link.server_rev ?? 0, now);
+        }
+      }
+
+      // 购买明细指到目标商品；名称快照、日期、金额与单位保持原样。
+      const rows = await db.getAllAsync<LifeEventItemRowForMerge>(
+        "SELECT id, item_id, server_rev FROM life_event_items WHERE item_id = ?",
+        [source.id],
+      );
+      for (const row of rows) {
+        await db.runAsync(
+          "UPDATE life_event_items SET item_id = ?, updated_at = ?, rev = rev + 1 WHERE id = ?",
+          [targetId, now, row.id],
+        );
+        await enqueueLifeUpdate(db, "life_event_item", row.id, row.server_rev ?? 0, now);
+        await db.runAsync(
+          "DELETE FROM sync_conflicts WHERE entity = 'life_event_item' AND target_id = ?",
+          [row.id],
+        );
+      }
+
+      await db.runAsync(
+        `UPDATE life_items SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = 0
+          WHERE id = ?`,
+        [now, now, source.id],
+      );
+      await db.runAsync(
+        "DELETE FROM outbox WHERE entity = 'life_item' AND target_id = ?",
+        [source.id],
+      );
+      await db.runAsync(
+        "DELETE FROM sync_conflicts WHERE entity = 'life_item' AND target_id = ?",
+        [source.id],
+      );
+      await clearDeferredLifeChangeForTarget(db, source.id);
+    }
+
+    // 把桌面端商品记录落到本机（可能是新 ID；本地事件已重映射到它）。
+    const name = asString(change.fields.name, normalized);
+    const category = asString(change.fields.category);
+    const aliases = JSON.stringify(
+      Array.isArray(change.fields.aliases)
+        ? change.fields.aliases.filter((value): value is string => typeof value === "string")
+        : [],
+    );
+    const note = asString(change.fields.note);
+    const createdAt = asNumber(change.fields.createdAt, now);
+    const updatedAt = asNumber(change.fields.updatedAt, createdAt);
+    await db.runAsync(
+      `INSERT INTO life_items (id, name, normalized_name, category, aliases, note,
+                               created_at, updated_at, deleted_at, rev, server_rev)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         normalized_name = excluded.normalized_name,
+         category = excluded.category,
+         aliases = excluded.aliases,
+         note = excluded.note,
+         created_at = excluded.created_at,
+         updated_at = excluded.updated_at,
+         deleted_at = NULL,
+         rev = life_items.rev + 1,
+         server_rev = excluded.server_rev`,
+      [
+        targetId,
+        name,
+        normalized,
+        category,
+        aliases,
+        note,
+        createdAt,
+        updatedAt,
+        change.rev,
+      ],
+    );
+    await db.runAsync(
+      "DELETE FROM outbox WHERE entity = 'life_item' AND target_id = ? AND state = 'conflict'",
+      [targetId],
+    );
+    await clearDeferredLifeChangeForTarget(db, targetId);
+    await db.runAsync("DELETE FROM sync_conflicts WHERE op_id = ?", [conflict.op_id]);
+    await db.runAsync(
+      "DELETE FROM sync_conflicts WHERE entity = 'life_item' AND target_id = ? AND reason = ?",
+      [targetId, "life_item_name_conflict"],
+    );
+  });
+}
+
 /** 采用桌面端版本：清掉该记录的冲突守卫行，应用服务端版本，删除冲突记录。 */
 export async function resolveConflictWithServer(conflict: SyncConflictRow): Promise<void> {
   const db = getDatabase();
@@ -824,6 +1081,9 @@ export async function resolveConflictWithServer(conflict: SyncConflictRow): Prom
       "DELETE FROM outbox WHERE entity = ? AND target_id = ? AND state = 'conflict'",
       [entity ?? "", conflict.target_id],
     );
+    if (entity && isLifeEntity(entity)) {
+      await clearDeferredLifeChangeForTarget(db, conflict.target_id);
+    }
     await applyPullChanges([change]);
   } else {
     if (entity) {

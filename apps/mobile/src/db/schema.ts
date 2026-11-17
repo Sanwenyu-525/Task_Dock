@@ -420,6 +420,34 @@ ALTER TABLE life_document_links ADD COLUMN remote_source TEXT
   CHECK (remote_source IN ('shelf_item','file'));
 `;
 
+// v12：同步可靠性与货币精度。
+// - life_sync_deferred 持久化「暂时无法应用」的 pull 变更（父记录未到、本地 outbox、
+//   同名商品冲突等），游标可以继续推进，但变更本身不会随游标丢失；依赖到达或冲突解决后重放。
+// - amount_scale 记录该行金额使用的小数位。旧数据默认 2，保持历史金额按原两位解释；
+//   新写入按货币精度显式保存，JPY=0、KWD=3 等不再被统一按两位处理。
+export const MIGRATION_12 = `
+CREATE TABLE IF NOT EXISTS life_sync_deferred (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  server_rev INTEGER NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  fields_json TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL,
+  first_seen_at INTEGER NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at INTEGER,
+  UNIQUE(entity, target_id, server_rev, deleted)
+);
+CREATE INDEX IF NOT EXISTS idx_life_sync_deferred_reason
+  ON life_sync_deferred(reason, first_seen_at);
+CREATE INDEX IF NOT EXISTS idx_life_sync_deferred_target
+  ON life_sync_deferred(target_id);
+
+ALTER TABLE life_event_items ADD COLUMN amount_scale INTEGER NOT NULL DEFAULT 2;
+`;
+
 /** 解析顺序即执行顺序；末尾追加新迁移，不要插入或重排。 */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, sql: MIGRATION_1 },
@@ -433,6 +461,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 9, sql: MIGRATION_9 },
   { version: 10, sql: MIGRATION_10 },
   { version: 11, sql: MIGRATION_11 },
+  { version: 12, sql: MIGRATION_12 },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
