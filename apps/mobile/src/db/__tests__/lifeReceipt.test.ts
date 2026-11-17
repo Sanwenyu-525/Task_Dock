@@ -1,5 +1,8 @@
 // 票据上传/入库状态回归：上传成功但导入失败后保留远端文件，重启仍能继续导入；
 // 关联删除不得删除原始素材。
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { receiptAction, receiptCountText } from "../../lib/life/receiptState";
@@ -76,6 +79,62 @@ describe("票据传输状态", () => {
     const missing = await getDocumentLink(linkId);
     expect(receiptAction(missing!)).toBeNull();
     expect(receiptCountText(missing!)).toBe("原文件缺失");
+  });
+
+  it("上传成功但导入失败：关闭数据库再打开，远端文件与继续导入入口仍存在", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "taskdock-receipt-"));
+    const file = join(dir, "mobile.db");
+    process.env.TASK_DOCK_TEST_DB_FILE = file;
+    try {
+      await closeDatabase();
+      await openDatabase();
+      await getDatabase().runAsync(
+        `INSERT INTO capture_assets
+           (id, kind, source, name, local_path, mime, byte_size, state, created_at, updated_at)
+         VALUES ('asset-restart', 'photo', 'camera', '重启小票.jpg', '/tmp/restart.jpg',
+                 'image/jpeg', 1024, 'saved', 1, 1)`,
+      );
+      const { linkId } = await createReceiptEvent({
+        name: "重启小票",
+        assetId: "asset-restart",
+        mime: "image/jpeg",
+        byteSize: 1024,
+      });
+      await markDocumentFileUploaded(linkId, {
+        remoteFileId: "file-restart",
+        name: "重启小票",
+        mime: "image/jpeg",
+        byteSize: 1024,
+      });
+
+      await closeDatabase();
+      await openDatabase();
+
+      const reopened = await getDocumentLink(linkId);
+      expect(reopened?.transferState).toBe("metadata_only");
+      expect(reopened?.remoteSource).toBe("file");
+      expect(reopened?.remoteRef).toBe("file-restart");
+      expect(reopened?.localUri).toBe("/tmp/restart.jpg");
+      expect(receiptAction(reopened!)).toBe("resume");
+      expect(receiptCountText(reopened!)).toBe("文件已传到电脑，尚未导入");
+
+      // 重启后继续导入：复用远端文件 ID，状态转为 shelf_item + transferred。
+      await markDocumentUploaded(linkId, {
+        shelfItemId: "shelf-restart",
+        name: "重启小票",
+        mime: "image/jpeg",
+        byteSize: 1024,
+      });
+      const imported = await getDocumentLink(linkId);
+      expect(imported?.remoteSource).toBe("shelf_item");
+      expect(imported?.remoteRef).toBe("shelf-restart");
+      expect(receiptAction(imported!)).toBe("transferred");
+    } finally {
+      await closeDatabase().catch(() => undefined);
+      delete process.env.TASK_DOCK_TEST_DB_FILE;
+      await openDatabase();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("解除票据关联不删除原始素材文件记录", async () => {

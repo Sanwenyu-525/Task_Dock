@@ -73,6 +73,8 @@ export interface LifeRecentPurchase {
   totalPriceMinor: number | null;
   currency: string;
   amountScale: number;
+  /** 按币种分组的真实汇总；不同货币绝不直接相加。 */
+  totals: LifeCurrencyTotal[];
   itemNames: string[];
   linkCount: number;
 }
@@ -382,6 +384,117 @@ export function formatMoneyMinor(
   const fraction = String(minor % factor).padStart(safeScale, "0");
   const amount = `${whole}.${fraction}`;
   return code ? `${CURRENCY_SYMBOLS[code] ?? `${code} `}${amount}` : amount;
+}
+
+/** 单个币种在一个购买事件里的汇总（全部为整数最小单位，不使用浮点数）。 */
+export interface LifeCurrencyTotal {
+  /** 空串表示原记录没有填写货币；必须单独展示，不能并入任何具体币种。 */
+  currency: string;
+  amountScale: number;
+  totalPriceMinor: number;
+  /** 参与金额累计的商品行数；金额为空的行不计入。 */
+  itemCount: number;
+}
+
+export interface LifeAmountEntry {
+  totalPriceMinor: number | null;
+  currency: string;
+  amountScale: number;
+}
+
+function convertMinorExact(minor: number, fromScale: number, toScale: number): number | null {
+  if (fromScale === toScale) return minor;
+  const factor = 10 ** Math.abs(toScale - fromScale);
+  if (toScale > fromScale) {
+    const value = minor * factor;
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  if (minor % factor !== 0) return null;
+  return minor / factor;
+}
+
+/**
+ * 多币种金额分组：不同货币绝不直接相加，也绝不使用浮点数或汇率折算。
+ *
+ * 同一币种内优先收敛到 ISO 精度（JPY=0、CNY/USD=2、KWD=3）；旧数据若在该精度下
+ * 无法整除（例如历史 JPY 行存了 0.5 日元），则退到组内最大精度原样展示，
+ * 宁可多显示一位小数，也不四舍五入改变用户金额。空货币单独一组。
+ * 与桌面端 `life.rs` 的 `group_currency_totals` 使用同一规则。
+ */
+export function groupLifeCurrencyTotals(
+  entries: readonly LifeAmountEntry[],
+): LifeCurrencyTotal[] {
+  const groups = new Map<string, LifeAmountEntry[]>();
+  for (const entry of entries) {
+    if (entry.totalPriceMinor === null || !Number.isFinite(entry.totalPriceMinor)) continue;
+    const code = entry.currency.trim().toUpperCase();
+    const list = groups.get(code) ?? [];
+    list.push(entry);
+    groups.set(code, list);
+  }
+
+  const totals: LifeCurrencyTotal[] = [];
+  for (const [currency, list] of groups) {
+    const scales = list.map((entry) => {
+      const scale = entry.amountScale;
+      return Number.isInteger(scale) && scale >= 0 && scale <= 3 ? scale : 2;
+    });
+    const maxScale = Math.max(...scales);
+    const canonical = currency ? CURRENCY_DECIMALS[currency] : undefined;
+    let targetScale = maxScale;
+    if (canonical !== undefined) {
+      const convertible = list.every((entry, index) =>
+        convertMinorExact(
+          entry.totalPriceMinor ?? 0,
+          scales[index],
+          canonical,
+        ) !== null,
+      );
+      if (convertible) targetScale = canonical;
+    }
+
+    let sum = 0;
+    for (let index = 0; index < list.length; index += 1) {
+      const converted = convertMinorExact(
+        list[index].totalPriceMinor ?? 0,
+        scales[index],
+        targetScale,
+      );
+      if (converted === null || !Number.isSafeInteger(sum + converted)) {
+        throw new Error("金额累计超出可安全表示的范围，无法汇总");
+      }
+      sum += converted;
+    }
+    totals.push({
+      currency,
+      amountScale: targetScale,
+      totalPriceMinor: sum,
+      itemCount: list.length,
+    });
+  }
+
+  // 有货币的按代码排序，未标注货币固定放最后，界面阅读顺序稳定。
+  totals.sort((left, right) => {
+    if (!left.currency) return 1;
+    if (!right.currency) return -1;
+    return left.currency.localeCompare(right.currency);
+  });
+  return totals;
+}
+
+/** 多币种汇总的展示文本；单币种保持一行，多币种逐行列出，空货币明确标注。 */
+export function formatLifeCurrencyTotals(totals: readonly LifeCurrencyTotal[]): string {
+  if (totals.length === 0) return "";
+  return totals
+    .map((total) => {
+      const amount = formatMoneyMinor(
+        total.totalPriceMinor,
+        total.currency,
+        total.amountScale,
+      );
+      return total.currency ? amount : `未标注货币 ${amount}`;
+    })
+    .join("\n");
 }
 
 // ── 快捷查询 ───────────────────────────────────────────────

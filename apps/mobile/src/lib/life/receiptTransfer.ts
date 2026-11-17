@@ -81,10 +81,14 @@ export async function sendReceiptToDesktop(
   try {
     if (!remoteFileId) {
       if (!link.localUri) {
+        await setDocumentLinkTransferState(link.id, "missing").catch(() => undefined);
         throw new AppError("storage", "原图尚未保存到本机，请先在素材库保存后再发送");
       }
       const file = new File(link.localUri);
       if (!file.exists) {
+        // 原文件确实不存在：把关联状态落成 missing，界面才能如实显示「文件缺失」，
+        // 而不是一直停在「待发送」让用户反复点击。
+        await setDocumentLinkTransferState(link.id, "missing").catch(() => undefined);
         throw new AppError("storage", "本机原图已缺失，无法发送；可重新拍照或导入");
       }
       const remote = await uploadLocalFile(

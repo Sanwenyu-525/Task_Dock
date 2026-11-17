@@ -21,7 +21,7 @@ import { BottomSheet } from "../components/BottomSheet";
 import { HeaderIconButton } from "../components/HeaderIconButton";
 import { ImageLightbox, type LightboxImage } from "../components/ImageLightbox";
 import { SearchField } from "../components/SearchField";
-import { TaskEditorSheet } from "../components/TaskEditorSheet";
+import { TaskEditorSheet, type TaskSubmitOutcome } from "../components/TaskEditorSheet";
 import { AppIcon } from "../components/icons/AppIcon";
 import { useToast } from "../feedback/ToastProvider";
 import { useToastPagePlacement } from "../feedback/ToastLayoutProvider";
@@ -46,6 +46,7 @@ import {
 } from "../db/life";
 import { createTask, listTasks, toggleTask } from "../db/tasks";
 import {
+  formatLifeCurrencyTotals,
   formatLifeDate,
   formatMoneyMinor,
   normalizeCurrency,
@@ -590,6 +591,15 @@ export function LifeScreen({ nav }: { nav: Nav }) {
         } else {
           showToast(describeError(reason), "danger");
         }
+        // 失败也要刷新：上传成功但导入失败会落成 metadata_only，原文件缺失会落成 missing。
+        // 不刷新会让详情页仍显示旧按钮和旧徽标，用户看到的与数据库真实状态不一致。
+        try {
+          await refresh();
+          if (sheet?.type === "event") await openEvent(sheet.id);
+          else if (sheet?.type === "item") await openItem(sheet.id);
+        } catch (refreshError) {
+          showToast(`票据状态已更新，但刷新失败：${describeError(refreshError)}`, "warn");
+        }
       } finally {
         setReceiptSendingId(null);
         setReceiptProgress(null);
@@ -659,7 +669,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
   );
 
   const submitTask = useCallback(
-    async (input: NewTaskInput) => {
+    async (input: NewTaskInput): Promise<TaskSubmitOutcome> => {
       let reminderWarning: string | null;
       try {
         const result = await createLifeTaskWithReminder(input, {
@@ -670,8 +680,8 @@ export function LifeScreen({ nav }: { nav: Nav }) {
         });
         reminderWarning = result.reminderWarning;
       } catch (reason) {
-        showToast(`保存失败：${describeError(reason)}`, "danger");
-        return;
+        // 写库失败：把原因交回 TaskEditorSheet，由弹层保留输入并提示（不再先关弹层）
+        return { ok: false, message: describeError(reason) };
       }
       // 任务已保存；提醒是独立的异步排期，失败不得回滚或谎报保存失败。
       if (reminderWarning) {
@@ -689,6 +699,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
       } catch (reason) {
         showToast(`待办已保存，但列表刷新失败：${describeError(reason)}`, "warn");
       }
+      return { ok: true, notice: reminderWarning ?? undefined };
     },
     [refresh, showToast],
   );
@@ -810,6 +821,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
               </Text>
               <View style={styles.quickRow}>
                 <TextInput
+                  underlineColorAndroid="transparent"
                   value={quickName}
                   onChangeText={setQuickName}
                   placeholder="买了什么？例如 大米"
@@ -876,11 +888,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                       </Text>
                     </View>
                     <Text style={[styles.amount, { color: tokens.text }]}>
-                      {formatMoneyMinor(
-                        purchase.totalPriceMinor,
-                        purchase.currency,
-                        purchase.amountScale,
-                      ) || "未记金额"}
+                      {formatLifeCurrencyTotals(purchase.totals) || "未记金额"}
                     </Text>
                   </Pressable>
                 ))
@@ -1048,6 +1056,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
             )}
             <Text style={[styles.fieldLabel, { color: tokens.muted }]}>商品名称 *</Text>
             <TextInput
+              underlineColorAndroid="transparent"
               value={form.name}
               onChangeText={(name) => setForm({ ...form, name })}
               placeholder="例如 大米"
@@ -1082,6 +1091,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                 </Pressable>
               ))}
               <TextInput
+                underlineColorAndroid="transparent"
                 value={form.dateText}
                 onChangeText={(dateText) => setForm({ ...form, dateText })}
                 placeholder="YYYY-MM-DD"
@@ -1095,6 +1105,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
               <View style={styles.formCol}>
                 <Text style={[styles.fieldLabel, { color: tokens.muted }]}>数量</Text>
                 <TextInput
+                  underlineColorAndroid="transparent"
                   value={form.quantity}
                   onChangeText={(quantity) => setForm({ ...form, quantity })}
                   placeholder="支持小数"
@@ -1107,6 +1118,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
               <View style={styles.formCol}>
                 <Text style={[styles.fieldLabel, { color: tokens.muted }]}>单位</Text>
                 <TextInput
+                  underlineColorAndroid="transparent"
                   value={form.unit}
                   onChangeText={(unit) => setForm({ ...form, unit })}
                   placeholder="kg / 袋 / 个"
@@ -1121,6 +1133,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
               <View style={styles.formCol}>
                 <Text style={[styles.fieldLabel, { color: tokens.muted }]}>金额</Text>
                 <TextInput
+                  underlineColorAndroid="transparent"
                   value={form.total}
                   onChangeText={(total) => setForm({ ...form, total })}
                   placeholder="48.00"
@@ -1162,6 +1175,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
 
             <Text style={[styles.fieldLabel, { color: tokens.muted }]}>商家（选填）</Text>
             <TextInput
+              underlineColorAndroid="transparent"
               value={form.merchant}
               onChangeText={(merchant) => setForm({ ...form, merchant })}
               placeholder="例如 某超市"
@@ -1172,6 +1186,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
 
             <Text style={[styles.fieldLabel, { color: tokens.muted }]}>备注（选填）</Text>
             <TextInput
+              underlineColorAndroid="transparent"
               value={form.note}
               onChangeText={(note) => setForm({ ...form, note })}
               placeholder="例如 普通袋装"
@@ -1576,10 +1591,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
         mode="create"
         task={null}
         onClose={() => setTaskEditorOpen(false)}
-        onSubmit={(input) => {
-          setTaskEditorOpen(false);
-          void submitTask(input);
-        }}
+        onSubmit={async (input) => submitTask(input)}
       />
 
       <ImageLightbox

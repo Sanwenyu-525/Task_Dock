@@ -12,6 +12,7 @@ import {
   getItemHistory,
   listDocumentLinks,
   listItems,
+  listRecentPurchases,
   markDocumentFileUploaded,
   markDocumentUploaded,
   searchLife,
@@ -170,6 +171,34 @@ describe("生活购买记录", () => {
 
     expect(await searchLife("不存在的商品")).toEqual([]);
     expect(await searchLife("   ")).toEqual([]);
+  });
+
+  it("最近购买按币种汇总：CNY 100 + USD 100 绝不相加为 200", async () => {
+    const purchase = await createPurchase({
+      name: "商品 A",
+      occurredAt: day(2026, 11, 17),
+      totalPrice: "100.00",
+      currency: "CNY",
+    });
+    const db = getDatabase();
+    await db.runAsync(
+      `INSERT INTO life_event_items
+         (id, event_id, item_id, item_name_snapshot, quantity_value, quantity_unit,
+          unit_price_minor, total_price_minor, currency, amount_scale, note, created_at, updated_at)
+       VALUES ('ei-usd-test', ?, NULL, '商品 B', NULL, '件', NULL, 10000, 'USD', 2, '', 1, 1)`,
+      [purchase.eventId],
+    );
+
+    const recent = await listRecentPurchases(1);
+    expect(recent).toHaveLength(1);
+    expect(recent[0].totals).toEqual([
+      { currency: "CNY", amountScale: 2, totalPriceMinor: 10_000, itemCount: 1 },
+      { currency: "USD", amountScale: 2, totalPriceMinor: 10_000, itemCount: 1 },
+    ]);
+    // 多币种时旧扁平字段必须为空，调用方不能误把它当成总额。
+    expect(recent[0].totalPriceMinor).toBeNull();
+    expect(recent[0].currency).toBe("");
+    expect(recent[0].totals.some((total) => total.totalPriceMinor === 20_000)).toBe(false);
   });
 });
 

@@ -9,6 +9,7 @@ import {
   extractLifeQueryKeyword,
   formatLifeDate,
   formatMoneyMinor,
+  groupLifeCurrencyTotals,
   normalizeCurrency,
   normalizeLifeName,
   normalizeQuantity,
@@ -560,18 +561,25 @@ export async function listRecentPurchases(limit = 20): Promise<LifeRecentPurchas
 
   return events.map((event) => {
     const rows = itemsByEvent.get(event.id) ?? [];
-    const currencies = new Set(rows.map((row) => row.currency ?? "").filter(Boolean));
-    const scales = new Set(rows.map((row) => row.amount_scale ?? 2));
-    const total = rows.reduce((sum, row) => sum + (row.total_price_minor ?? 0), 0);
-    const hasTotal = rows.some((row) => row.total_price_minor !== null);
+    const totals = groupLifeCurrencyTotals(
+      rows.map((row) => ({
+        totalPriceMinor: row.total_price_minor ?? null,
+        currency: row.currency ?? "",
+        amountScale: row.amount_scale ?? 2,
+      })),
+    );
+    // 单一币种继续提供旧的扁平字段，保持既有调用方/历史数据展示兼容；
+    // 多币种时不再把不同货币相加，totalPriceMinor 置空，由 totals 分行展示。
+    const single = totals.length === 1 ? totals[0] : null;
     return {
       eventId: event.id,
       title: event.title,
       occurredAt: event.occurred_at,
       merchant: event.merchant ?? "",
-      totalPriceMinor: hasTotal ? total : null,
-      currency: currencies.size === 1 ? [...currencies][0] : "",
-      amountScale: scales.size === 1 ? [...scales][0] : 2,
+      totalPriceMinor: single ? single.totalPriceMinor : null,
+      currency: single ? single.currency : "",
+      amountScale: single ? single.amountScale : 2,
+      totals,
       itemNames: rows.map((row) => row.item_name_snapshot),
       linkCount: linkCount.get(event.id) ?? 0,
     };
