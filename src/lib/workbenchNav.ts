@@ -25,6 +25,7 @@ import {
 } from "./bridge";
 import { logEvent } from "./diagnostics";
 import { errorMessage } from "./errors";
+import { withTimeout } from "./timeout";
 
 export type WorkbenchNavOutcomeStatus = WorkbenchNavStatus;
 
@@ -56,6 +57,12 @@ export interface OpenWorkbenchOptions {
 }
 
 const ACK_TIMEOUT_MS = 12_000;
+/**
+ * IPC 命令本身的等待上限：`invoke` 不返回就不会进入回执等待，按钮会永远停在
+ * 「正在打开」。窗口创建在主线程被阻塞、WebView2 控制器创建卡死时都会出现；
+ * 到点必须收敛为可重试的失败，而不是无限 loading。
+ */
+const COMMAND_TIMEOUT_MS = 20_000;
 /**
  * pending 的最终等待上限：略大于 Rust 侧 awaiting 清理阈值（300s），
  * 让 Rust 先清理迟到回执，再由前端如实报告超时。
@@ -234,11 +241,16 @@ export async function openWorkbench(
   }
 
   try {
-    const response = await workbenchOpenWindow({
-      target,
-      projectId: target.projectId ?? null,
-      requestId,
-    });
+    const response = await withTimeout(
+      workbenchOpenWindow({
+        target,
+        projectId: target.projectId ?? null,
+        requestId,
+      }),
+      COMMAND_TIMEOUT_MS,
+      `打开工作台命令 ${Math.round(COMMAND_TIMEOUT_MS / 1000)} 秒未返回（窗口创建可能被阻塞）；` +
+        "工作台若随后出现，可直接使用，或回到主窗口重试",
+    );
     created = response.created;
     commandDone = true;
     if (response.requestId !== requestId) {

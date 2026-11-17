@@ -1112,28 +1112,33 @@ pub fn run() {
             //
             // 自启动与「发送到」不抢占大窗口（见 `startup_shows_quick_surface`）：
             // 前者是后台驻留，后者要的是暂存回显 + 主面板。
-            if startup_opens_workbench(startup_intent) {
-                if let Err(error) = project_workspace_window::open_workbench_on_startup(&handle, &db)
-                {
-                    diagnostics::event(
-                        diagnostics::DiagLevel::Error,
-                        "workbench",
-                        "startup-open",
-                        "failed",
-                    )
-                    .window(project_workspace_window::WINDOW_LABEL)
-                    .status(diagnostics::DiagStatus::Failed)
-                    .message(format!("启动打开大型工作台失败: {error}"))
-                    .from_error(&error)
-                    .emit();
-                    // 失败不能静默退回旧界面：显示主面板并广播明确错误与恢复入口
-                    // （托盘 / 快捷入口「打开完整工作台」会重新尝试创建）。
-                    project_workspace_window::fallback_to_main(
-                        &handle,
-                        &format!("大型工作台打开失败：{error}"),
-                    );
+            let workspace_created = if startup_opens_workbench(startup_intent) {
+                match project_workspace_window::open_workbench_on_startup(&handle, &db) {
+                    Ok(created) => created,
+                    Err(error) => {
+                        diagnostics::event(
+                            diagnostics::DiagLevel::Error,
+                            "workbench",
+                            "startup-open",
+                            "failed",
+                        )
+                        .window(project_workspace_window::WINDOW_LABEL)
+                        .status(diagnostics::DiagStatus::Failed)
+                        .message(format!("启动打开大型工作台失败: {error}"))
+                        .from_error(&error)
+                        .emit();
+                        // 失败不能静默退回旧界面：显示主面板并广播明确错误与恢复入口
+                        // （托盘 / 快捷入口「打开完整工作台」会重新尝试创建）。
+                        project_workspace_window::fallback_to_main(
+                            &handle,
+                            &format!("大型工作台打开失败：{error}"),
+                        );
+                        false
+                    }
                 }
-            }
+            } else {
+                false
+            };
 
             tracing::info!("Task Dock 启动完成（数据目录: {:?}）", data_dir);
             // 显式里程碑（不依赖 tracing 的 INFO：正常模式下 INFO 不落盘）。
@@ -1152,6 +1157,26 @@ pub fn run() {
                         .map(|settings| settings.mode.clone())
                         .unwrap_or_else(|_| "unknown".to_string()),
                 ),
+            )
+            // 启动环境快照：判断「看到的到底是不是这一版」只需这一条记录。
+            // 只记标识、目录、PID 与意图，不含任何令牌/口令。
+            .metadata("dev", serde_json::json!(tauri::is_dev()))
+            .metadata("pid", serde_json::json!(std::process::id()))
+            .metadata(
+                "instanceIdentifier",
+                serde_json::Value::String(handle.config().identifier.clone()),
+            )
+            .metadata(
+                "dataDir",
+                serde_json::Value::String(data_dir.display().to_string()),
+            )
+            .metadata(
+                "intent",
+                serde_json::Value::String(format!("{startup_intent:?}")),
+            )
+            .metadata(
+                "workspaceCreated",
+                serde_json::json!(workspace_created),
             )
             .emit();
             let _ = handle.emit("app-ready", ());

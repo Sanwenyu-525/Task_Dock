@@ -230,6 +230,24 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
   9 个入口原生点击与跳转。1180×760 @125% DPI 单屏。
 - **仍受限**：多显示器（本机 1 屏）、150%/200% DPI、2K/4K 逐页视觉/键盘走查未验证；
   迁移前性能基线未测（当前仅有迁移后采样）。
+- **状态栏「包信息」（2026-11-17）**：底部状态栏在「Agent 会话数 / 磁盘剩余」之后新增可点项
+  `构建 {短commit} · {profile} · {构建时间}`，右侧 `v0.5.0` 不变。数据来自新命令
+  `app_build_info`（`src-tauri/src/commands/system.rs`）：运行期包元信息（包名 / 版本 / 标识 /
+  `流程-架构`）+ 编译期注入的 `build`（短 commit、dirty、Unix 构建时间、debug/release、exe
+  路径）；`build` 复用 `build_info()`，与 `performance_diagnostics` 同一实现，不新增第二套溯源，
+  也不读写数据库或文件系统。弹窗「包信息」逐项展示字段（含「构建时工作树」三态：干净 / 有未提交
+  改动 / 未知），并给出可直接复制的 JSON（`commit / dirty / profile / builtAt.local|iso|unix /
+  exe`）；状态栏项另有 `data-build-*` 稳定属性，截图与脚本、Agent 读到的是同一份值。
+  **边界**：安装包产物、构建 ID、包含任务属于构建台账（`tmp/integration/builds/<buildId>/build.json`），
+  运行时不可得，弹窗只说明去哪查（或开发工作台「构建与验收追溯」面板），不伪造这些字段。
+  **降级**：非 Tauri 预览或 IPC 失败时整项不渲染；`commit` 与构建时间都取不到时也不占位；
+  窄窗（≤760px）只保留 `构建 {commit}` 短文案，避免把「Agent 会话数 / 磁盘剩余 / 版本号」挤成
+  截断（1180 与 400 宽静态 harness 对照：`tmp/visual-check/statusbar-1180.png`、`statusbar-400.png`）。
+  实现：`src/workbench/WorkbenchBuildStatus.tsx`（新增，含 `formatBuildStamp` /
+  `buildInfoSnapshot`）、`WorkbenchShell.tsx` 页脚一行接入、`workbench.css`、`src/lib/bridge.ts`
+  （`AppBuildInfo` + `appBuildInfo()`）、`src-tauri/src/lib.rs` 命令注册、zh/en 词条；
+  测试 `src/workbench/WorkbenchBuildStatus.test.tsx`（7 项，含降级与复制一致性）；
+  预览 harness 的 IPC mock 补同形夹具（`scripts/make-preview.mjs`）。
 
 ## 10. 小说项目类型（A 阶段，2026-11-15）
 

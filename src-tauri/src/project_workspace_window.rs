@@ -9,14 +9,15 @@
 //! - 几何按**物理像素**持久化到内部设置键 `workspace_window_rect`（不进入前端
 //!   `Settings` 快照）；恢复时收敛到目标显示器工作区，显示器消失时回落到主屏；
 //! - 最大化状态单独记忆：最大化期间不覆盖正常几何，下次打开仍可还原窗口大小。
-//! - 可见性（2026-11-17）：**未置顶时点击窗口外即隐藏**（前台换到别的进程，120ms 后复核），
-//!   置顶时越过失焦继续留在最前；最小化、以及前台仍是本进程窗口（原生文件对话框、
-//!   快速捕获、右键菜单、通知）时不隐藏。隐藏后由托盘、主窗口「打开完整工作台」、
-//!   全局快捷键或再次启动经同一条 `open_or_focus_workbench` 路径恢复（`show` + `set_focus`）。
+//! - 可见性（2026-11-17）：**未置顶时点击窗口外即收起**——前台换到别的进程后最小化到
+//!   任务栏（任务栏按钮保留，点按钮即可回来），与常见桌面软件一致；置顶时越过失焦继续留在
+//!   最前。已重新聚焦、已最小化、期间被置顶、窗口已不可见、前台仍是本进程窗口（原生文件
+//!   对话框、快速捕获、右键菜单、通知）都不收起。收起后由任务栏按钮、托盘、主窗口
+//!   「打开完整工作台」或再次启动经同一条 `open_or_focus_workbench` 路径恢复。
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -527,6 +528,23 @@ static STARTUP_MAXIMIZE: AtomicBool = AtomicBool::new(false);
 /// Tauri 对重复 label 会直接报错，这里先串行再二次检查，保证「工作台唯一」。
 static OPEN_LOCK: Mutex<()> = Mutex::new(());
 
+/// 进程内单调时钟起点：给「揭示后立刻失焦」与「用户真的点到别处」提供可比较的时间。
+static MONO_T0: OnceLock<Instant> = OnceLock::new();
+
+/// 本次工作台创建时刻（毫秒，相对 `MONO_T0`）：`workbench_ui_ready` 用它记录首帧耗时。
+/// 0 表示本轮没有创建（聚焦已有窗口）。
+static WORKBENCH_CREATED_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 揭示后至少持续聚焦这么久，才把这次失焦当成「用户点到窗口外面」。
+/// 启动揭示经常被 Windows 前台锁拒绝：窗口只会得到一次瞬时的
+/// `Focused(true) → Focused(false)`，若照常收起，刚显示的工作台会被立刻
+/// 最小化到 (-25600,-25600)，用户在任务栏之外什么都看不到。
+const COLLAPSE_MIN_FOCUS_MS: u64 = 2_000;
+
+fn mono_ms() -> u64 {
+    MONO_T0.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
 /// 新建窗口后何时显示：手动打开立刻显示（用户已经点了按钮，空白等待不可接受）；
 /// 启动路径等前端首帧就绪后再显示。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -928,36 +946,53 @@ pub fn set_workspace_window_corner(app: AppHandle, corner: Option<f64>) -> AppRe
     Ok(sync_workbench_frame(&win))
 }
 
-/// 失焦后延迟复核的等待：让最小化/任务栏动作先稳定下来，避免把「最小化」误判成
-/// 「点击窗口外」而隐藏窗口（见 `attach_events` 的 `Focused(false)` 分支）。
-const HIDE_ON_BLUR_DELAY: Duration = Duration::from_millis(120);
+/// 失焦后延迟复核的等待：让最小化/任务栏动作先稳定下来，避免把「用户自己最小化」
+/// 误判成「点击窗口外」而重复收起（见 `attach_events` 的 `Focused(false)` 分支）。
+const COLLAPSE_ON_BLUR_DELAY: Duration = Duration::from_millis(120);
 
 fn attach_events(app: &AppHandle, win: &WebviewWindow) {
     let app = app.clone();
     let w = win.clone();
-    // 失焦隐藏（见下方 `Focused` 分支）：只有真正拿到过焦点的窗口才参与判定。
+    // 失焦收起（见下方 `Focused` 分支）：只有真正拿到过焦点的窗口才参与判定。
     // 窗口以 `visible(false)` 创建，揭示时若前台被其他应用占着，会直接收到一次
-    // `Focused(false)`——那不是用户在窗口外点击，不能把刚揭示的窗口藏起来。
+    // `Focused(false)`——那不是用户在窗口外点击，不能把刚揭示的窗口收起。
     let was_focused = Arc::new(AtomicBool::new(false));
+    // 这次聚焦持续了多久：启动揭示的瞬时激活不算「用户进入了工作台」。
+    let focused_at_ms = Arc::new(AtomicU64::new(0));
     win.on_window_event(move |event| match event {
         tauri::WindowEvent::Focused(true) => {
             was_focused.store(true, Ordering::SeqCst);
+            focused_at_ms.store(mono_ms(), Ordering::SeqCst);
         }
-        // 未置顶 = 浮层语义：点击窗口外（前台换到别的进程）即隐藏；置顶 = 常驻最前。
+        // 未置顶 = 浮层语义：点击窗口外（前台换到别的进程）即收起；置顶 = 常驻最前。
+        // 收起用最小化而不是 `hide()`：任务栏按钮与 Alt-Tab 身份都保留，点任务栏即可回来，
+        // 不会出现「窗口从任务栏消失、只能靠托盘找」的失联状态。
         // 复核放在 120ms 之后（主线程）：最小化/任务栏动作会**先失焦**再改窗口状态，
-        // 前台句柄也可能晚一拍才更新；立即隐藏会把「最小化」变成「消失」。
+        // 前台句柄也可能晚一拍才更新；立即收起会把「最小化」变成「已经最小化」的重复判定。
         tauri::WindowEvent::Focused(false) => {
             if !was_focused.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            // 只持续了一瞬的聚焦是揭示过程被前台锁打断，不是「用户点到别处」。
+            // 必须在这里就判掉：否则刚显示的窗口会在 120ms 后被自己最小化。
+            let focused_for_ms = mono_ms().saturating_sub(focused_at_ms.load(Ordering::SeqCst));
+            if focused_for_ms < COLLAPSE_MIN_FOCUS_MS {
                 return;
             }
             if w.is_always_on_top().unwrap_or(false) {
                 return;
             }
-            let w = w.clone();
+            // 线程里只带 `AppHandle`，窗口在主线程按 label 重新取（不跨线程移动窗口对象）。
             let app = app.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(HIDE_ON_BLUR_DELAY);
+                std::thread::sleep(COLLAPSE_ON_BLUR_DELAY);
+                let app_for_main = app.clone();
                 let _ = app.run_on_main_thread(move || {
+                    let w = match app_for_main.get_webview_window(WINDOW_LABEL) {
+                        Some(w) => w,
+                        // 窗口已被关闭/销毁：没有可收起的对象。
+                        None => return,
+                    };
                     // 已重新聚焦 / 已被最小化 / 期间被置顶 / 已不可见 / 前台仍是本进程窗口
                     // （原生文件对话框、快速捕获、右键菜单、通知）——都不是「点击窗口外」。
                     if w.is_focused().unwrap_or(false)
@@ -968,7 +1003,8 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
                     {
                         return;
                     }
-                    let _ = w.hide();
+                    // 最小化到任务栏：任务栏按钮保留，点按钮即可回来（不像 `hide()` 那样断掉入口）。
+                    let _ = w.minimize();
                 });
             });
         }
@@ -1016,8 +1052,8 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
 /// 前台窗口是否属于本进程。
 ///
 /// 原生文件对话框（dialog 插件）、快速捕获窗口、右键菜单、通知窗口都会拿到前台；
-/// 它们让工作台收到 `Focused(false)` 时若照常隐藏，用户正在操作的对话框会连同父窗口
-/// 一起消失。只有前台落到**别的进程**（桌面、其他应用）才算「点击窗口外」。
+/// 它们让工作台收到 `Focused(false)` 时若照常收起，用户正在操作的对话框会连同父窗口
+/// 一起缩到任务栏。只有前台落到**别的进程**（桌面、其他应用）才算「点击窗口外」。
 fn foreground_is_own_process() -> bool {
     let hwnd = crate::navigation::window_manager::foreground_window();
     if hwnd == 0 {
@@ -1097,6 +1133,18 @@ fn spawn_startup_reveal_watchdog(app: AppHandle) {
 /// 并广播明确错误文案——绝不静默停在旧界面还宣称启动成功。
 pub(crate) fn fallback_to_main(app: &AppHandle, message: &str) {
     tracing::warn!(%message, "回退主面板");
+    // 记录「已经回退」这一事实：只有创建失败事件、没有回退事件时，
+    // 诊断中心无法区分「失败但窗口已恢复可用」与「失败且用户无界面」。
+    crate::diagnostics::event(
+        crate::diagnostics::DiagLevel::Error,
+        "workbench",
+        "startup-fallback",
+        "fallback",
+    )
+    .window(MAIN_LABEL)
+    .status(crate::diagnostics::DiagStatus::Failed)
+    .message(message.to_string())
+    .emit();
     if let Some(main) = app.get_webview_window(MAIN_LABEL) {
         crate::show_and_focus(&main);
         let _ = main.emit(
@@ -1108,9 +1156,9 @@ pub(crate) fn fallback_to_main(app: &AppHandle, message: &str) {
 
 /// 启动阶段打开大型工作台：依赖（DB/设置/托盘/快捷键）就绪后调用。
 /// 窗口隐藏创建，等前端首帧就绪后再显示；失败由调用方走 `fallback_to_main`。
-pub fn open_workbench_on_startup(app: &AppHandle, db: &Db) -> AppResult<()> {
-    open_or_focus_workbench(app, db, None, None, None, OpenReveal::WhenReady)?;
-    Ok(())
+pub fn open_workbench_on_startup(app: &AppHandle, db: &Db) -> AppResult<bool> {
+    let (created, _) = open_or_focus_workbench(app, db, None, None, None, OpenReveal::WhenReady)?;
+    Ok(created)
 }
 
 /// 重复启动（第二实例）的唤醒：工作台存在则聚焦，已关闭则重建。
@@ -1153,9 +1201,37 @@ pub fn workbench_ui_ready(window: WebviewWindow) -> AppResult<()> {
             "只有工作台窗口可以确认首帧就绪".to_string(),
         ));
     }
-    if STARTUP_REVEAL.swap(false, Ordering::SeqCst) {
+    let pending_startup = STARTUP_REVEAL.swap(false, Ordering::SeqCst);
+    let minimized = window.is_minimized().unwrap_or(false);
+    let hidden = !window.is_visible().unwrap_or(false);
+    // 启动揭示仍待兑现、或窗口已被最小化/隐藏时才重新揭示。正常可见的重复就绪
+    // （开发态 HMR 重挂）只记录，不抢前台焦点。
+    // 这条兜底很关键：8s watchdog 先显示、窗口随后被收起到任务栏时，
+    // 前端真正就绪的这一刻必须能把窗口还原回来，否则「窗口在但永远看不见」。
+    if pending_startup || minimized || hidden {
         reveal_workbench(&window)?;
     }
+    let created_ms = WORKBENCH_CREATED_MS.swap(0, Ordering::SeqCst);
+    crate::diagnostics::event(
+        crate::diagnostics::DiagLevel::Info,
+        "workbench",
+        "frontend-ready",
+        "ready",
+    )
+    .window(WINDOW_LABEL)
+    .status(crate::diagnostics::DiagStatus::Success)
+    .message("工作台前端首帧就绪")
+    .metadata("revealed", serde_json::json!(pending_startup || minimized || hidden))
+    .metadata("wasMinimized", serde_json::json!(minimized))
+    .metadata("wasHidden", serde_json::json!(hidden))
+    .metadata(
+        "elapsedMs",
+        match created_ms {
+            0 => serde_json::Value::Null,
+            value => serde_json::json!(mono_ms().saturating_sub(value)),
+        },
+    )
+    .emit();
     Ok(())
 }
 
@@ -1267,6 +1343,7 @@ fn open_or_focus_workbench(
         .flatten()
         .map(|monitor| window_layout::plan_for_monitor(&monitor))
         .unwrap_or_else(|| window_layout::plan_for_area(None));
+    let build_t0 = mono_ms();
     let win = match WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
@@ -1296,13 +1373,46 @@ fn open_or_focus_workbench(
     .min_inner_size(plan.min.width, plan.min.height)
     .build()
     {
-        Ok(win) => win,
+        Ok(win) => {
+            // 首帧耗时的计时起点：`workbench_ui_ready` 用它算出「创建→就绪」的真实时长，
+            // 这是判断「慢在前端还是慢在窗口创建」的唯一依据。
+            WORKBENCH_CREATED_MS.store(build_t0, Ordering::SeqCst);
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Info,
+                "workbench",
+                "window-create",
+                "created",
+            )
+            .window(WINDOW_LABEL)
+            .status(crate::diagnostics::DiagStatus::Success)
+            .message("工作台窗口创建成功")
+            .metadata("buildMs", serde_json::json!(mono_ms().saturating_sub(build_t0)))
+            .metadata("reveal", serde_json::json!(format!("{reveal:?}")))
+            .emit();
+            win
+        }
         Err(e) => {
             if matches!(reveal, OpenReveal::WhenReady) {
                 STARTUP_REVEAL.store(false, Ordering::SeqCst);
             }
+            WORKBENCH_CREATED_MS.store(0, Ordering::SeqCst);
             rollback_nav(&nav_request);
-            return Err(e.into());
+            // 原始错误必须保留：label 冲突 / WebView 创建失败 / 主线程调度失败
+            // 在诊断中心要能区分，不能只剩一句「打开失败」。
+            let error: AppError = e.into();
+            crate::diagnostics::event(
+                crate::diagnostics::DiagLevel::Error,
+                "workbench",
+                "window-create",
+                "failed",
+            )
+            .window(WINDOW_LABEL)
+            .status(crate::diagnostics::DiagStatus::Failed)
+            .message(format!("工作台窗口创建失败: {error}"))
+            .from_error(&error)
+            .metadata("buildMs", serde_json::json!(mono_ms().saturating_sub(build_t0)))
+            .emit();
+            return Err(error);
         }
     };
 

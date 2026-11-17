@@ -1528,13 +1528,25 @@ body.wb-resizing {
 .wb-boot-card p {
   margin: 0;
 }
+.wb-boot-actions {
+  display: flex;
+  gap: 8px;
+}
+/* 慢启动说明：只解释「还在等哪一段」，不改变卡片结构，也不占成功路径。 */
+.wb-boot-hint {
+  max-width: 360px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
 
 /* 首页栅格按**内容容器**宽度降列（2026-11-16）：原来写成 `@media (max-width:1080px)`
    看的是窗口宽度，但导航展开（320）与右栏（304）会吃掉同一个窗口里 220px 以上内容宽：
    1200 窗口 + 宽导航 + 右栏时内容只剩约 570px，四列统计与三列快捷入口必然挤压。
    改为容器查询后，列数只跟真实可用宽度走。 */
 @container wb-content (max-width: 900px) {
-  .wb-home {
+  .wb-home,
+  .wb-project {
     max-width: none;
   }
   .wb-stat-grid {
@@ -1876,9 +1888,109 @@ body.wb-resizing {
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* 状态栏多段状态同行：允许收缩到 0 并走省略号，长字段不撑破整行。 */
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .wb-status-end {
   margin-left: auto;
+}
+
+/* ── 状态栏「包信息」（2026-11-17）：可点项 + 详情弹窗 ──────────────────
+   可点项沿用 `.wb-status-item` 的字号/截断，只补悬停与焦点反馈；弹窗左标签右值，
+   长路径/长 commit 一律换行，不撑破 520px 面板。 */
+.wb-status-build {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 2px 6px;
+  /* 抵消行内 padding，视觉左缘与「Agent 会话数 / 磁盘」对齐 */
+  margin-inline-start: -6px;
+  max-width: 46vw;
+  flex: 0 1 auto;
+  min-width: 0;
+  border-radius: var(--radius-control);
+  transition: background-color 0.12s var(--ease-out), color 0.12s var(--ease-out);
+}
+.wb-status-build:hover {
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--text-secondary);
+}
+/* 省略号挂在文字层：flex 容器上的 text-overflow 对匿名文本项不生效。 */
+.wb-status-build-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 窄窗降级用的短文案默认不显示（见下方 760px 媒体查询）。 */
+.wb-status-build-short {
+  display: none;
+  white-space: nowrap;
+}
+.wb-status-build:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.wb-build-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+.wb-build-list {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+.wb-build-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+.wb-build-label {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.wb-build-value {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+.wb-build-note {
+  margin: 12px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+.wb-build-machine-title {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.wb-build-machine {
+  margin: 0;
+  padding: 10px;
+  max-height: 34vh;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface-raised) 70%, transparent);
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, "Cascadia Mono", monospace);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+  /* 给人和 AI 都留一份可直接选中复制的原文 */
+  user-select: text;
 }
 
 /* 顶栏/状态栏窄窗收敛：跟随 JS compact（<1000px）与极窄媒体查询 */
@@ -1896,6 +2008,18 @@ body.wb-resizing {
   .wb-statusbar {
     gap: 8px;
     padding-inline: 10px;
+  }
+  /* 「包信息」在窄窗只留提交号：状态栏还要放 Agent 会话数、磁盘与版本，不挤掉它们。 */
+  .wb-status-build-text {
+    display: none;
+  }
+  .wb-status-build-short {
+    display: inline;
+  }
+  /* 优先级降级：磁盘剩余空间在极窄窗最先收起（非核心状态），
+     保留 Agent 会话数、包信息与版本号；恢复宽窗即还原。 */
+  .wb-status-disk {
+    display: none;
   }
 }
 

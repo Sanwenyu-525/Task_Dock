@@ -1143,6 +1143,22 @@ const shim = `
       case "workspace_set_active_project": return { ok: true };
       case "workbench_take_nav": return null;
       case "workbench_nav_ack": return undefined;
+      // 状态栏「包信息」：与 Rust 的 app_build_info 同形状；预览没有真构建，用固定溯源。
+      // 本段在模板字符串内，路径反斜杠要写四个才等于 JS 字符串里的一个。
+      case "app_build_info":
+        return {
+          name: "Task Dock",
+          version: "0.5.0",
+          identifier: "com.taskdock.desktop",
+          platform: "windows-x86_64",
+          build: {
+            commit: "3086351",
+            dirty: "false",
+            built_at_unix: "1763259600",
+            profile: "release",
+            exe: "D:\\\\Develop\\\\task_dock\\\\src-tauri\\\\target\\\\release\\\\Task Dock.exe",
+          },
+        };
       // ── 项目工作空间（workspace 路由页头/概览卡）：事项/关联/实例最小夹具 ──
       case "workspace_instance_get":
         return { instance: { projectId: args?.projectId ?? "wp1", activeModule: "overview", layoutJson: null, lastOpenedAt: iso(30) } };

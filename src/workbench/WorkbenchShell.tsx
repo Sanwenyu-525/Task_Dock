@@ -153,10 +153,13 @@ import {
   type WorkspaceProject,
 } from "../lib/bridge";
 import { formatBytes } from "../lib/clipboardUi";
+// 底部状态栏「包信息」：构建溯源与包标识独立成组件，外壳只负责摆放。
+import WorkbenchBuildStatus from "./WorkbenchBuildStatus";
 import { createActiveProjectWriter, type ActiveProjectWriter } from "../workspace/activeProjectWriter";
 import { resolveWorkspaceProfile, WORKSPACE_PROFILES } from "../workspace/workspaceProfiles";
 import { errorMessage } from "../lib/errors";
 import { logEvent } from "../lib/diagnostics";
+import { withTimeout } from "../lib/timeout";
 import { WorkbenchPageActiveContext } from "../lib/windowHost";
 
 const ProjectWorkspacePanel = lazy(() => import("./ProjectWorkspacePanel"));
@@ -299,6 +302,11 @@ function measureWorkbenchNavLabelFit(root: HTMLElement): number | null {
   }
 }
 
+/** 启动门读请求上限：超过即按失败处理，给出原因与重试（不无限 loading）。 */
+const BOOT_READ_TIMEOUT_MS = 12_000;
+/** 启动门停留超过该时长仍未完成时，在加载卡片上说明还在等哪一段。 */
+const BOOT_SLOW_HINT_MS = 12_000;
+
 export default function WorkbenchShell() {
   const { t } = useLocale();
   const settingsReady = useWorkbenchLayoutReady();
@@ -350,6 +358,8 @@ export default function WorkbenchShell() {
   // ── 项目列表（shell 唯一持有；面板/首页只消费） ──────────────────────
   const [projects, setProjects] = useState<WorkspaceProject[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
+  /** 首次项目列表读取的真实错误：启动门据此显示原因与重试，而不是无限 loading。 */
+  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [devProjects, setDevProjects] = useState<DevProject[]>([]);
   const selectedIdRef = useRef<string | null>(selectedId);
@@ -528,12 +538,21 @@ export default function WorkbenchShell() {
 
   // ── 项目列表读写 ────────────────────────────────────────────────────
   const refreshProjects = useCallback(async (): Promise<WorkspaceProject[]> => {
+    setProjectsError(null);
     try {
-      const response = await workspaceProjectList();
+      // 初始化读请求必须有上限：IPC 若挂起，启动门会永远等不到 projectHydrated，
+      // 表现为「窗口在但一直正在恢复工作台」。超时按失败处理并给出重试。
+      const response = await withTimeout(
+        workspaceProjectList(),
+        BOOT_READ_TIMEOUT_MS,
+        `读取项目列表超过 ${Math.round(BOOT_READ_TIMEOUT_MS / 1000)} 秒未返回`,
+      );
       setProjects(response.projects);
       return response.projects;
     } catch (e) {
-      showToast(`读取项目列表失败：${errorMessage(e)}`, { kind: "error" });
+      const message = errorMessage(e);
+      setProjectsError(message);
+      showToast(`读取项目列表失败：${message}`, { kind: "error" });
       return [];
     } finally {
       setProjectsLoading(false);
@@ -621,8 +640,12 @@ export default function WorkbenchShell() {
   );
 
   // 项目 hydration：布局记录 → 活跃项目设置 → 无项目（都无效时保持未选择）。
+  // 读取失败（projectsError）不视为 hydrated：列表为空是「真的没有项目」，
+  // 读取失败是「还不知道有没有项目」，两者不能混为一谈。
   useEffect(() => {
-    if (!settingsReady || projectsLoading || projectHydratedRef.current) return;
+    if (!settingsReady || projectsLoading || projectsError !== null || projectHydratedRef.current) {
+      return;
+    }
     projectHydratedRef.current = true;
     setProjectHydrated(true);
     if (navAppliedProjectRef.current) return;
@@ -633,7 +656,7 @@ export default function WorkbenchShell() {
       (id): id is string => Boolean(id) && projects.some((p) => p.id === id),
     );
     setSelectedId(candidate ?? null);
-  }, [settingsReady, projectsLoading, projects]);
+  }, [settingsReady, projectsLoading, projects, projectsError]);
 
   // 列表刷新后校验当前选择：项目被其他窗口删除时降级为未选择（不显示幽灵项目）。
   useEffect(() => {
@@ -1682,28 +1705,81 @@ export default function WorkbenchShell() {
     readySent.current = true;
     // 启动路径的窗口是**隐藏创建**的（避免先看到空白窗口）：这里确认首帧可渲染
     // 后让后端显示窗口并聚焦。手动打开/已可见时后端是 no-op，可安全重复调用。
-    void workbenchUiReady().catch(() => {});
+    // 失败必须留痕：否则「窗口一直不显示」在诊断里没有任何线索。
+    void workbenchUiReady().catch((error) => {
+      logEvent({
+        level: "WARN",
+        module: "workbench",
+        action: "ui-ready",
+        event: "notify-failed",
+        message: errorMessage(error),
+      });
+    });
   }, [booted]);
+
+  // 启动门慢启动说明：只在仍未完成时计时，完成后立刻清零。
+  const [bootSlow, setBootSlow] = useState(false);
+  useEffect(() => {
+    if (booted) {
+      setBootSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setBootSlow(true), BOOT_SLOW_HINT_MS);
+    return () => window.clearTimeout(timer);
+  }, [booted]);
+
   if (!booted) {
-    const failed = Boolean(settingsError);
+    const failed = Boolean(settingsError || projectsError);
+    const failureText = settingsError
+      ? t("workbench.shellLoadFailed", { error: settingsError })
+      : projectsError
+        ? t("workbench.projectListFailed", { error: projectsError })
+        : null;
+    const retry = () => {
+      if (settingsError) {
+        void loadSettings().catch(() => {});
+      }
+      if (projectsError) {
+        setProjectsLoading(true);
+        void refreshProjects();
+      }
+    };
+    const pendingGates = [
+      settingsReady ? null : t("workbench.bootGateSettings"),
+      routeHydrated ? null : t("workbench.bootGateRoute"),
+      projectHydrated ? null : t("workbench.bootGateProjects"),
+    ]
+      .filter((gate): gate is string => Boolean(gate))
+      .join(t("workbench.bootGateSeparator"));
     return (
       <div className="wb-boot" role={failed ? "alert" : "status"}>
         <div className="wb-boot-card">
-          <p>
-            {failed
-              ? t("workbench.shellLoadFailed", { error: settingsError ?? "" })
-              : t("workbench.loading")}
-          </p>
+          <p>{failureText ?? t("workbench.loading")}</p>
           {failed && (
-            <button
-              type="button"
-              className="btn sm"
-              onClick={() => {
-                void loadSettings().catch(() => {});
-              }}
-            >
-              <RotateCcw size={12} aria-hidden="true" /> {t("common.retry")}
-            </button>
+            <div className="wb-boot-actions">
+              <button type="button" className="btn sm" onClick={retry}>
+                <RotateCcw size={12} aria-hidden="true" /> {t("common.retry")}
+              </button>
+              {projectsError && !settingsError && (
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => {
+                    // 显式跳过：清掉错误让 hydration 以空列表完成——这是用户
+                    // 知情后的选择，不是把失败静默当成功。
+                    setProjectsError(null);
+                    setProjectsLoading(false);
+                  }}
+                >
+                  {t("workbench.skipProjectList")}
+                </button>
+              )}
+            </div>
+          )}
+          {!failed && bootSlow && (
+            <p className="wb-boot-hint">
+              {t("workbench.bootSlow", { gates: pendingGates })}
+            </p>
           )}
         </div>
       </div>
@@ -2277,10 +2353,12 @@ export default function WorkbenchShell() {
             </span>
           )}
           {statusDisk && (
-            <span className="wb-status-item">
+            <span className="wb-status-item wb-status-disk">
               {t("workbench.statusDiskFree", { volume: statusDisk.volume, free: statusDisk.free })}
             </span>
           )}
+          {/* 包信息：同版本号的不同构建靠这里的提交与构建时间区分（截图即取证）。 */}
+          <WorkbenchBuildStatus onNotice={showNotice} />
           {appVersion && (
             <span className="wb-status-item wb-status-end">
               {t("workbench.statusVersion", { version: appVersion })}
