@@ -830,7 +830,9 @@ function buildDirs(paths) {
 function latestBuildFor(paths, { snapshot = null, platform = null, usableOnly = false } = {}) {
   const records = buildDirs(paths)
     .map((name) => readJson(join(paths.builds, name, "build.json")))
-    .filter((b) => b && (!snapshot || b.snapshot === snapshot) && (!platform || b.platform === platform))
+    // running / interrupted 是未收尾记录，既不能当作可复用产物，也不能当成“最新任意构建”参与批次判定。
+    .filter((b) => b && !["running", "interrupted"].includes(b.status) &&
+      (!snapshot || b.snapshot === snapshot) && (!platform || b.platform === platform))
     .sort((a, b) => String(b.finishedAt ?? "").localeCompare(String(a.finishedAt ?? "")) || String(b.id).localeCompare(String(a.id)));
   if (!usableOnly) return records[0] ?? null;
   return records.find((b) => b.status === "succeeded" && b.dirty === false &&
@@ -2435,6 +2437,47 @@ function cmdBuild(argv) {
     buildDir = join(paths.builds, buildId);
     logPath = join(buildDir, "build.log");
 
+    // 先落一份运行中骨架：进程若在准备/排队/构建阶段被外部终止（强杀、会话结束、
+    // 休眠或父进程退出），收尾 catch 不会执行，目录里仍能留下可追溯的结构化记录；
+    // 最终成功/失败记录会覆盖这份骨架。骨架状态不是 succeeded，不会被复用或计入验收覆盖。
+    const ancestry = snapshotAncestry(paths, snap);
+    const skeleton = {
+      id: buildId,
+      snapshot: snap.id,
+      commit: snap.commit,
+      shortCommit: snap.commit.slice(0, 7),
+      dirty: null,
+      platform,
+      config: cfg.config,
+      mode,
+      reuseKey,
+      inputsDigest,
+      arch: process.arch,
+      experimental,
+      status: "running",
+      exitCode: null,
+      startedAt,
+      finishedAt: null,
+      durationMs: null,
+      tasks: (snap.tasks ?? []).map((t) => ({
+        id: t.id, commit: t.commit, module: t.module, owner: t.owner,
+        paths: t.paths ?? [], extraPaths: t.extraPaths ?? [],
+      })),
+      snapshotChain: ancestry.chain.map((s) => s.id),
+      includedTasks: ancestry.tasks.map((t) => ({ id: t.id, commit: t.commit, module: t.module, owner: t.owner })),
+      plannedAcceptance: ancestry.tasks.length,
+      resource,
+      command,
+      cwd: wt,
+      targetDir: cfg.needsTarget ? targetDir : null,
+      logPath: rel(ctx.mainRoot, logPath),
+      schedulerTaskId: null,
+      artifacts: [],
+      host: `${process.platform}-${process.arch}`,
+      reason: "构建进行中：进程若在此处被中断，本骨架记录保留为 running，请核对同目录 build.log",
+    };
+    writeJson(join(buildDir, "build.json"), skeleton);
+
     // 磁盘预检（重型构建）：复用 build-guard，不另造门槛
     if (cfg.diskPrecheck && !override) {
       const guard = join(ctx.mainRoot, "scripts", "build-guard.mjs");
@@ -2495,7 +2538,6 @@ function cmdBuild(argv) {
       else if (dirtyAfter) reason = "构建后工作区出现未提交改动，产物不可复现";
       else reason = "构建退出码 0，但没有收集到该平台可用产物";
     }
-    const ancestry = snapshotAncestry(paths, snap);
     const failure = usable ? null : classifyBuildFailure({
       status: result.status, logPath, dirty: dirtyAfter, artifacts, platform,
     });
@@ -2558,6 +2600,7 @@ function cmdBuild(argv) {
     return EXIT.ok;
   } catch (err) {
     if (!record) {
+      const catchAncestry = snapshotAncestry(paths, snap);
       record = {
         id: buildId,
         snapshot: snap.id,
@@ -2580,7 +2623,9 @@ function cmdBuild(argv) {
           id: t.id, commit: t.commit, module: t.module, owner: t.owner,
           paths: t.paths ?? [], extraPaths: t.extraPaths ?? [],
         })),
-        plannedAcceptance: (snap.tasks ?? []).length,
+        snapshotChain: catchAncestry.chain.map((s) => s.id),
+        includedTasks: catchAncestry.tasks.map((t) => ({ id: t.id, commit: t.commit, module: t.module, owner: t.owner })),
+        plannedAcceptance: catchAncestry.tasks.length,
         resource,
         command,
         cwd: wt,
@@ -2770,10 +2815,45 @@ function cmdStatus(argv) {
   const builds = readdirSync(paths.builds, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => {
-      const file = join(paths.builds, e.name, "build.json");
+      const dir = join(paths.builds, e.name);
+      const file = join(dir, "build.json");
+      const logFile = join(dir, "build.log");
+      if (!existsSync(file)) {
+        // 进程在收尾前被外部终止（强杀/会话结束/休眠/父进程退出）时，build.json 从未写出，
+        // 目录只剩 build.log。不删除、不静默忽略：合成一条 interrupted 记录供追溯，
+        // 它不计入成功、不可复用、不参与验收覆盖判定。
+        if (existsSync(logFile)) {
+          console.error(`警告：构建记录未收尾（build.json 缺失，仅留 build.log）：${file}（未删除，请人工核对）`);
+          return {
+            id: e.name,
+            status: "interrupted",
+            platform: null,
+            config: null,
+            commit: null,
+            snapshot: null,
+            tasks: [],
+            snapshotChain: [],
+            includedTasks: [],
+            plannedAcceptance: 0,
+            artifacts: [],
+            logPath: rel(ctx.mainRoot, logFile),
+            reason: "build.json 缺失：构建进程在收尾前被中断/终止，仅留 build.log；记录未删除，请人工核对",
+            coverage: null,
+          };
+        }
+        console.error(`警告：空构建目录（无 build.json / build.log）：${dir}（未删除）`);
+        return null;
+      }
       const value = readJson(file);
-      if (!value) console.error(`警告：忽略无法解析的构建记录 ${file}（未删除，请人工检查）`);
-      return value ? { ...value, coverage: readJson(join(paths.builds, e.name, "coverage.json")) } : value;
+      if (!value) {
+        console.error(`警告：损坏的构建记录（JSON 无法解析）：${file}（未删除，请人工检查）`);
+        return null;
+      }
+      if (value.status === "running") {
+        value.status = "interrupted";
+        value.reason = value.reason ?? "运行中骨架记录未被最终覆盖：构建进程在收尾前被中断；请核对同目录 build.log";
+      }
+      return { ...value, coverage: readJson(join(dir, "coverage.json")) };
     })
     .filter(Boolean)
     .sort((a, b) => String(a.id).localeCompare(String(b.id)));
@@ -2855,7 +2935,9 @@ function cmdStatus(argv) {
       { key: "durationText", title: "耗时" },
     ], (b) => ({
       ...b,
-      statusText: b.status === "succeeded" ? "成功" : `失败(${b.exitCode}${b.failureClass ? `/${b.failureClass}` : ""})`,
+      statusText: b.status === "succeeded" ? "成功"
+        : b.status === "interrupted" ? "中断未收尾"
+        : `失败(${b.exitCode}${b.failureClass ? `/${b.failureClass}` : ""})`,
       taskIds: (b.tasks ?? []).map((t) => t.id).join(", ") || "-",
       coverageText: b.coverage ? `${b.coverage.completedAcceptance}/${b.coverage.plannedAcceptance}（复用命中 ${b.coverage.reuseHits}）` : "-",
       artifactText: (b.artifacts ?? []).map((a) => a.name).join(", ") || "-",

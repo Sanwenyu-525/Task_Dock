@@ -216,6 +216,13 @@ npm run integrate -- build --snapshot snap-02 --platform desktop --dry-run   # �
   不会静默产出不可信产物。
 - **dry-run**：只输出计划与是否已有可复用构建，不创建构建工作区、不切换 HEAD、不写记录、不改
   任务状态；任何复用/加锁/建目录都必须发生在 dry-run 返回之后。
+- **中断记录（不删除、可追溯）**：构建取得锁并定 ID 后，先落一份 `status="running"` 骨架记录
+  （快照、提交、平台、复用键、任务链、资源、命令、日志路径齐全，产物为空）；成功/失败收尾记录
+  覆盖它。若进程在准备/排队/构建阶段被外部终止（强杀、会话结束、休眠、父进程退出），收尾
+  catch 不会执行，骨架或仅 `build.log` 的目录保留现场。`status` 把 `running` 与「只有
+  `build.log`、`build.json` 从未写出」的目录分别归为 `interrupted`（中断未收尾）；`build.json`
+  存在但 JSON 损坏是另一类告警。**中断/损坏记录一律不删除、不容错解析**：不计入成功、不可复用、
+  不参与验收覆盖与批次判定；人工核对 `build.log` 与调度器 provenance 后再决定是否重试。
 
 构建记录（`tmp/integration/builds/<构建ID>/build.json`）字段（`tasks` 是本批增量，`snapshotChain` /
 `includedTasks` 是按快照 base 链累计的完整来源，供安装包追溯）：

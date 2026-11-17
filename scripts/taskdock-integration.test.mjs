@@ -58,6 +58,12 @@ function run(repo, args, envExtra = {}) {
   return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
+// 只读命令的告警走 stderr，解析 JSON 时只取 stdout，避免告警文本污染 JSON。
+function runJson(repo, args) {
+  const r = spawnSync(process.execPath, [TOOL, ...args], { cwd: repo, encoding: "utf8", env: ENV });
+  return { status: r.status, payload: JSON.parse(r.stdout), out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
 function write(repo, relPath, content) {
   const abs = join(repo, relPath);
   mkdirSync(dirname(abs), { recursive: true });
@@ -1279,6 +1285,60 @@ test("旧快照没有 typecheck 脚本时回退本地 typescript tsc --noEmit，
     const log = readFileSync(join(repo, snap.checks[0].logPath), "utf8");
     assert.match(log, /fallback typecheck ok/);
     assert.doesNotMatch(log, /vite build/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+function buildsRoot(repo) { return join(repo, "tmp", "integration", "builds"); }
+
+test("未收尾构建（仅 build.log）与损坏 JSON 分别告警；中断记录不混入成功构建", () => {
+  const { home, repo } = makeRepo();
+  try {
+    const orphan = join(buildsRoot(repo), "b99-web-r1");
+    mkdirSync(orphan, { recursive: true });
+    writeFileSync(join(orphan, "build.log"), "[sched] 任务 h-orphan-001\n构建中途被终止\n", "utf8");
+    const corrupt = join(buildsRoot(repo), "b98-web-r2");
+    mkdirSync(corrupt, { recursive: true });
+    writeFileSync(join(corrupt, "build.json"), "{ this is not json\n", "utf8");
+    const running = join(buildsRoot(repo), "b97-web-r3");
+    mkdirSync(running, { recursive: true });
+    writeJsonFile(join(running, "build.json"), { id: "b97-web-r3", status: "running", platform: "web", reuseKey: "x" });
+
+    const payload = runJson(repo, ["status", "--json"]).payload;
+    const byId = Object.fromEntries(payload.builds.map((b) => [b.id, b]));
+    assert.equal(byId["b99-web-r1"].status, "interrupted");
+    assert.equal(byId["b97-web-r3"].status, "interrupted");
+    assert.equal(byId["b98-web-r2"], undefined);
+    assert.deepEqual(byId["b99-web-r1"].artifacts, []);
+
+    const human = run(repo, ["status"]);
+    assert.equal(human.status, 0);
+    assert.match(human.out, /未收尾（build\.json 缺失，仅留 build\.log）/);
+    assert.match(human.out, /损坏的构建记录（JSON 无法解析）/);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("运行中骨架不会被复用；成功构建把骨架覆盖为 succeeded", () => {
+  const { home, repo, base } = makeRepo();
+  try {
+    const alpha = commitFile(repo, { "src/app.txt": "app v2\n" }, "alpha");
+    addReadyTask(repo, "alpha", ["src/app.txt"], alpha);
+    assert.equal(run(repo, ["snapshot", "create", "--tasks", "alpha", "--base", base, "--check", "none"]).status, 0);
+    const first = run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]);
+    assert.equal(first.status, 0, first.out);
+    const ok = readBuild(repo, "b01-web-r1");
+    assert.equal(ok.status, "succeeded");
+    assert.equal(ok.reason, undefined);
+    assert.equal(ok.artifacts.length, 1);
+
+    // 模拟进程在收尾前被终止：记录停留在 running，不得命中复用，也不能当成最新可用构建。
+    ok.status = "running";
+    writeJsonFile(join(buildsRoot(repo), "b01-web-r1", "build.json"), ok);
+    const second = run(repo, ["build", "--snapshot", "snap-01", "--platform", "web", "--command", "node emit.mjs"]);
+    assert.equal(second.status, 0, second.out);
+    assert.doesNotMatch(second.out, /复用已有构建/);
+    assert.deepEqual(readdirSync(buildsRoot(repo)).sort(), ["b01-web-r1", "b01-web-r2"]);
+    const again = readBuild(repo, "b01-web-r2");
+    assert.equal(again.status, "succeeded");
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
