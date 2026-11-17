@@ -593,6 +593,25 @@ pub fn performance_diagnostics(
     }))
 }
 
+/// 包信息：当前运行包的可核对身份，供底部状态栏「包信息」与 AI/脚本读取。
+///
+/// 字段边界：`name/version/identifier/platform` 来自运行期包元信息；
+/// `build` 复用 [`build_info`] 的编译期注入（短 commit、脏标记、构建时间）。
+/// 只读内存中的元信息，不读写数据库、不碰文件系统、不触发任何构建或诊断动作。
+/// 安装包产物、构建 ID、包含任务属于构建台账（`tmp/integration/builds/`），
+/// 运行时不可得，本命令不伪造这些字段。
+#[tauri::command]
+pub fn app_build_info(app: AppHandle) -> serde_json::Value {
+    let package = app.package_info();
+    serde_json::json!({
+        "name": package.name.clone(),
+        "version": package.version.to_string(),
+        "identifier": app.config().identifier.clone(),
+        "platform": format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        "build": build_info(),
+    })
+}
+
 /// 构建溯源信息（编译期注入）：短 commit、构建时间（Unix 秒）、debug/release、
 /// 当前运行可执行文件路径。仅通过本地诊断 IPC 返回，不写入应用日志。
 fn build_info() -> serde_json::Value {

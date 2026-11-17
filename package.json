@@ -27,7 +27,7 @@
     "test": "node scripts/build-sched.mjs run --priority P1 --label desktop-test -- npm run test:raw",
     "test:raw": "vitest run",
     "test:watch": "vitest",
-    "test:scripts": "node --test --test-concurrency=1 scripts/build-guard.test.mjs scripts/worktree-guard.test.mjs scripts/build-sched.test.mjs scripts/taskdock-integration.test.mjs",
+    "test:scripts": "node --test --test-concurrency=1 scripts/build-guard.test.mjs scripts/worktree-guard.test.mjs scripts/build-sched.test.mjs scripts/sched/provenance.test.mjs scripts/taskdock-integration.test.mjs",
     "integrate": "node scripts/taskdock-integration.mjs",
     "integrate:status": "node scripts/taskdock-integration.mjs status",
     "integrate:test": "node --test scripts/taskdock-integration.test.mjs",

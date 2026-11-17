@@ -596,7 +596,7 @@ pub struct LifeItemInput {
     pub quantity_value: Option<String>,
     #[serde(default)]
     pub quantity_unit: Option<String>,
-    /// 十进制文本（最多 2 位小数），不接受浮点数。
+    /// 十进制文本（最多 3 位小数，按货币精度校验），不接受浮点数。
     #[serde(default)]
     pub unit_price: Option<String>,
     #[serde(default)]

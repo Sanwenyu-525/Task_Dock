@@ -267,7 +267,6 @@ pub struct NovelRefsList {
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NovelRefSaved {
-    #[serde(rename = "ref")]
     pub reference: NovelEntityRef,
 }
 
@@ -1563,6 +1562,75 @@ mod tests {
             x.id.clone(),
             y.id.clone(),
             "rivals".into(),
+            "".into(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn relation_update_retains_ownership_and_rejects_cross_project() {
+        let db = memdb();
+        let a = novel_project(&db, "小说 A");
+        let x = save_character(&db, &a.id, "甲", &[]);
+        let y = save_character(&db, &a.id, "乙", &[]);
+        let z = save_character(&db, &a.id, "丙", &[]);
+
+        let rel = novel_character_relation_save_impl(
+            &db,
+            None,
+            a.id.clone(),
+            x.id.clone(),
+            y.id.clone(),
+            "friend".into(),
+            "挚友".into(),
+        )
+        .unwrap();
+
+        // 修改关系：换另一端人物、换类型与描述，应在同项目内生效。
+        let updated = novel_character_relation_save_impl(
+            &db,
+            Some(rel.id.clone()),
+            a.id.clone(),
+            x.id.clone(),
+            z.id.clone(),
+            "enemy".into(),
+            "宿敌".into(),
+        )
+        .unwrap();
+        assert_eq!(updated.to_character_id, z.id);
+        assert_eq!(updated.relation_type, "enemy");
+        assert_eq!(updated.description, "宿敌");
+
+        // 旧的乙侧关系已解除，甲→丙可双向查到。
+        assert!(novel_character_relation_list_impl(&db, &a.id, Some(&y.id)).unwrap().is_empty());
+        let rels_of_z = novel_character_relation_list_impl(&db, &a.id, Some(&z.id)).unwrap();
+        assert_eq!(rels_of_z.len(), 1);
+
+        // 跨项目改挂：关系归属与人物归属复核拒绝，原关系保持不变。
+        let b = novel_project(&db, "小说 B");
+        let w = save_character(&db, &b.id, "丁", &[]);
+        assert!(novel_character_relation_save_impl(
+            &db,
+            Some(rel.id.clone()),
+            b.id.clone(),
+            x.id.clone(),
+            w.id.clone(),
+            "enemy".into(),
+            "".into(),
+        )
+        .is_err());
+        let unchanged = novel_character_relation_list_impl(&db, &a.id, None).unwrap();
+        assert_eq!(unchanged.len(), 1);
+        assert_eq!(unchanged[0].to_character_id, z.id);
+
+        // 不存在的关系 ID 返回错误。
+        assert!(novel_character_relation_save_impl(
+            &db,
+            Some("no-such-relation".into()),
+            a.id.clone(),
+            x.id.clone(),
+            z.id.clone(),
+            "enemy".into(),
             "".into(),
         )
         .is_err());

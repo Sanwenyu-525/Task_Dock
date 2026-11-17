@@ -8,14 +8,15 @@
 //! v0.14 新增「诊断中心」视觉入口（帮助之后、设置之前，默认隐藏，不占 Ctrl+数字）
 //! 与「资源管理」默认可见入口（设置之前、可隐藏/排序，不占 Ctrl+数字）；
 //! v0.17 新增「手机互传」视觉入口（剪贴板之后、收集与暂存之前，不占 Ctrl+数字）；
-//! 2026-11 新增「工作台」视觉入口（最前、开发模式主要入口，不占 Ctrl+数字），
-//! 因此 **16 个声明视觉入口（14 个默认可见）≠ 10 个逻辑 Tab**：
+//! 2026-11 新增「工作台」视觉入口（最前、开发模式主要入口，不占 Ctrl+数字）与
+//! 「文件工作区」「生活」视觉入口；生活入口默认隐藏，用户可在导航自定义中开启。
+//! 因此 **19 个声明视觉入口（主窗口渲染 15 个）≠ 10 个逻辑 Tab**：
 //! - `RAIL_ENTRIES`：视觉入口（渲染顺序、data-tip、aria-label 的事实源）；
 //! - `LOGICAL_TABS`：逻辑 Tab 顺序（= useUiStore.TAB_ORDER，快捷键 Ctrl+1…9 与 Ctrl+0 的
 //!   事实源，Ctrl+5=快速收集 inbox、Ctrl+6=文件暂存 shelf、Ctrl+0=设置，
 //!   旧 setTab 调用不受视觉合并影响）；
 //! - `RAIL_ONLY_TABS`：仅视觉入口、不占快捷键的 Tab
-//!   （当前为 apps/widgets/mobile/help/diagnostics/resource）。
+//!   （当前为 workbench/workspace/files/life/apps/widgets/mobile/help/diagnostics/resource）。
 //! 契约测试 src/components/FullView.navigationContract.test.tsx 校验两者与真实渲染一致，
 //! 导航增删/改名/换序时契约测试失败，避免脚本侧清单与真实导航漂移。
 
@@ -36,6 +37,8 @@ export const LOGICAL_TABS = Object.freeze([
 export const RAIL_ONLY_TABS = Object.freeze([
   "workbench",
   "workspace",
+  "files",
+  "life",
   "apps",
   "widgets",
   "mobile",
@@ -50,7 +53,12 @@ export const RAIL_ENTRIES = Object.freeze([
 
 
   { id: "workspace", label: "工作空间", shortcut: "" },
+  // 文件工作区：完整工作台内的多目录文件浏览器，不占 Ctrl+数字，默认可见；
+  // 主窗口 FullView 不渲染 workbenchOnly 页面，故不计入侧栏 DOM 标签。
+  { id: "files", label: "文件工作区", shortcut: "", workbenchOnly: true },
   { id: "tasks", label: "任务", shortcut: "Ctrl+1" },
+  // 生活：完整工作台内的生活效率页面，不占 Ctrl+数字，默认隐藏（可选业务领域）。
+  { id: "life", label: "生活", shortcut: "", defaultVisible: false, workbenchOnly: true },
   { id: "agents", label: "Agent", shortcut: "Ctrl+2" },
   { id: "apps", label: "应用", shortcut: "" },
   { id: "widgets", label: "微件", shortcut: "" },
@@ -82,7 +90,9 @@ export const RAIL_ENTRIES = Object.freeze([
  * 注意：不是 `RAIL_ENTRIES.length` —— 契约表包含默认隐藏入口（帮助、诊断中心），
  * 它们只出现在「更多」菜单里，不参与默认侧栏布局计数。
  */
-export const RAIL_ITEM_COUNT = RAIL_ENTRIES.filter((e) => e.defaultVisible !== false).length;
+export const RAIL_ITEM_COUNT = RAIL_ENTRIES.filter(
+  (e) => e.defaultVisible !== false && e.workbenchOnly !== true,
+).length;
 
 /**
  * **默认渲染在侧栏**的视觉入口标签（顺序 = DOM 中 `.rail-item` 的 `.rail-label`）。
@@ -90,7 +100,9 @@ export const RAIL_ITEM_COUNT = RAIL_ENTRIES.filter((e) => e.defaultVisible !== f
  * 因此不进入本清单；布局回归脚本用它同时校验入口数量与顺序。
  */
 export const RAIL_LABELS = Object.freeze(
-  RAIL_ENTRIES.filter((e) => e.defaultVisible !== false).map((e) => e.label),
+  RAIL_ENTRIES.filter(
+    (e) => e.defaultVisible !== false && e.workbenchOnly !== true,
+  ).map((e) => e.label),
 );
 
 /** 导航顶部「新建任务」按钮；真实 DOM 类名见 FullView.tsx 的 `.rail-new-task`。 */

@@ -113,8 +113,10 @@ import {
   WORKBENCH_DETAIL_WIDTH_MIN,
   WORKBENCH_NAV_WIDTH_MAX,
   WORKBENCH_NAV_WIDTH_MIN,
+  WORKBENCH_NAV_WIDTH_RAIL,
   isWorkbenchRoute,
   normalizeProjectId,
+  resolveWorkbenchNavWidth,
   selectWorkbenchLayout,
   setWorkbenchDetailOpen,
   setWorkbenchDetailWidth,
@@ -248,6 +250,55 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+/**
+ * 量取“名称完整显示所需的最小导航宽度”。
+ *
+ * 不依赖当前导航宽度：先给根节点挂 `data-nav-measuring`，让 CSS 把名称、徽标与
+ * 宽态行网格临时恢复（同步量完立即撤销，浏览器不会画出中间态），再取名称文字的
+ * 固有宽度（`scrollWidth`，内容被挤压时仍返回完整文字宽），加上行内固定轨道
+ * （手柄 / 图标 / × / 4 段列间距）、行内边距与徽标宽度。量不到（jsdom 无布局、
+ * 名称缺失）返回 null，调用方回退 180px 兜底阈值。
+ */
+function measureWorkbenchNavLabelFit(root: HTMLElement): number | null {
+  const nav = root.querySelector<HTMLElement>(".wb-nav");
+  if (!nav) return null;
+  root.setAttribute("data-nav-measuring", "true");
+  try {
+    const navStyle = getComputedStyle(nav);
+    const navPadX =
+      (parseFloat(navStyle.paddingLeft) || 0) + (parseFloat(navStyle.paddingRight) || 0);
+    let widest = 0;
+    for (const row of nav.querySelectorAll<HTMLElement>(".wb-nav-item")) {
+      const label = row.querySelector<HTMLElement>(".wb-nav-label");
+      if (!label || !label.firstChild) continue;
+      const style = getComputedStyle(row);
+      const tracks = style.gridTemplateColumns
+        .trim()
+        .split(/\s+/)
+        .map((token) => parseFloat(token) || 0);
+      if (tracks.length < 5) continue;
+      const gap = parseFloat(style.columnGap) || 0;
+      const rowPadX =
+        (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      // 第 3 列是名称（随容器伸缩）、第 4 列是徽标 auto 轨道；先把固定轨道与间距加总。
+      const fixed = (tracks[0] ?? 0) + (tracks[1] ?? 0) + (tracks[4] ?? 0) + gap * 4 + rowPadX;
+      // 名称列可能被挤到 0 宽；scrollWidth 取的是内容固有宽度（含被省略的部分）。
+      const labelWidth = Math.max(label.getBoundingClientRect().width, label.scrollWidth);
+      // 无真实布局（jsdom）：权重全为 0，交给兜底阈值，不把 0 当成名称宽度。
+      if (labelWidth <= 0.5) continue;
+      const badge = row.querySelector<HTMLElement>(".wb-nav-badge");
+      const badgeWidth = badge
+        ? Math.max(badge.getBoundingClientRect().width, badge.scrollWidth)
+        : 0;
+      widest = Math.max(widest, fixed + labelWidth + badgeWidth);
+    }
+    if (widest <= 0) return null;
+    return Math.ceil(widest + navPadX);
+  } finally {
+    root.removeAttribute("data-nav-measuring");
+  }
+}
+
 export default function WorkbenchShell() {
   const { t } = useLocale();
   const settingsReady = useWorkbenchLayoutReady();
@@ -282,10 +333,17 @@ export default function WorkbenchShell() {
   const [detailWidth, setDetailWidth] = useState(320);
   const [detailOpen, setDetailOpen] = useState(true);
   const [compact, setCompact] = useState(false);
+  /** 名称完整显示所需的最小导航宽度（实测）：null = 尚未量到，用 180px 兜底阈值。 */
+  const [navLabelFitWidth, setNavLabelFitWidth] = useState<number | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const navRef = useRef<HTMLElement | null>(null);
   const [navActualWidth, setNavActualWidth] = useState<number | null>(null);
   const navWidthRef = useRef(navWidth);
   navWidthRef.current = navWidth;
+  const navLabelFitRef = useRef<number | null>(navLabelFitWidth);
+  navLabelFitRef.current = navLabelFitWidth;
+  /** 导航分栏拖拽中：宽度吸附只在松手后发生，不打断连续跟手。 */
+  const navResizingRef = useRef(false);
   const detailWidthRef = useRef(detailWidth);
   detailWidthRef.current = detailWidth;
 
@@ -461,7 +519,12 @@ export default function WorkbenchShell() {
     return () => observer.disconnect();
   }, []);
 
-  const navLabelsCompact = shouldCompactWorkbenchNavLabels(navActualWidth ?? navWidth);
+  // 名称折叠判据 = 实测的“名称所需宽度”，不再读窗口宽度：宽度低于名称所需宽度时
+  // 名称已被省略号遮住，此时整列收成图标轨（见 CSS 的 data-nav-compact 规则）。
+  const navLabelsCompact = shouldCompactWorkbenchNavLabels(
+    navActualWidth ?? navWidth,
+    navLabelFitWidth ?? undefined,
+  );
 
   // ── 项目列表读写 ────────────────────────────────────────────────────
   const refreshProjects = useCallback(async (): Promise<WorkspaceProject[]> => {
@@ -1408,6 +1471,20 @@ export default function WorkbenchShell() {
     return sections;
   }, [entriesToRender, leftGroups, t]);
 
+  // 名称度量只跟“实际渲染出来的文字”有关：入口顺序/显隐/语言变化时才重新量。
+  // fixedEntries / entriesToRender 每次渲染都是新数组，这里收敛成一个字符串，
+  // 避免窗口尺寸等无关重渲染把下面的 layout effect 每帧唤醒。
+  const navLabelsKey = useMemo(
+    () =>
+      [
+        t("workbench.home"),
+        ...navSections.flatMap((section) => section.items.map((entry) => navLabel(entry, t))),
+        ...fixedEntries.map((entry) => navLabel(entry, t)),
+        t("workbench.more"),
+      ].join("\u0001"),
+    [fixedEntries, navSections, t],
+  );
+
   const counts = {
     intervention: actionsEnabled ? actionFeed?.counts.intervention ?? 0 : 0,
     attention: actionsEnabled ? attentionCount(actionFeed) : 0,
@@ -1447,6 +1524,9 @@ export default function WorkbenchShell() {
       event.preventDefault();
       const startX = event.clientX;
       const start = kind === "nav" ? navWidthRef.current : detailWidthRef.current;
+      // 松手以最后一次 move 的值为准：ref 要等下一次渲染才更新，事件之间可能差一帧。
+      let live = start;
+      if (kind === "nav") navResizingRef.current = true;
       document.body.classList.add("wb-resizing");
       const onMove = (moveEvent: PointerEvent) => {
         const delta =
@@ -1455,16 +1535,28 @@ export default function WorkbenchShell() {
           kind === "nav"
             ? clamp(start + delta, WORKBENCH_NAV_WIDTH_MIN, WORKBENCH_NAV_WIDTH_MAX)
             : clamp(start + delta, WORKBENCH_DETAIL_WIDTH_MIN, WORKBENCH_DETAIL_WIDTH_MAX);
+        live = next;
         if (kind === "nav") setNavWidth(next);
         else setDetailWidth(next);
       };
       const onUp = () => {
+        navResizingRef.current = false;
         document.body.classList.remove("wb-resizing");
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
-        const value = kind === "nav" ? navWidthRef.current : detailWidthRef.current;
-        const save = kind === "nav" ? setWorkbenchNavWidth(value) : setWorkbenchDetailWidth(value);
-        void save.catch((e) => toastErrorRef.current("workbench.layoutSaveFailed", e));
+        if (kind === "nav") {
+          // 松手才吸附：名称放不下就收成图标轨；拖拽过程中保持连续跟手，
+          // 名称在过程中按 data-nav-compact 规则隐藏，不会出现被遮住的半截名称。
+          const resolved = resolveWorkbenchNavWidth(live, navLabelFitRef.current);
+          if (resolved !== live) setNavWidth(resolved);
+          void setWorkbenchNavWidth(resolved).catch((e) =>
+            toastErrorRef.current("workbench.layoutSaveFailed", e),
+          );
+          return;
+        }
+        void setWorkbenchDetailWidth(live).catch((e) =>
+          toastErrorRef.current("workbench.layoutSaveFailed", e),
+        );
       };
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp, { once: true });
@@ -1474,7 +1566,19 @@ export default function WorkbenchShell() {
 
   const nudgePane = useCallback((kind: "nav" | "detail", delta: number) => {
     if (kind === "nav") {
-      const next = clamp(navWidthRef.current + delta, WORKBENCH_NAV_WIDTH_MIN, WORKBENCH_NAV_WIDTH_MAX);
+      const current = navWidthRef.current;
+      const fit = navLabelFitRef.current;
+      let next = clamp(current + delta, WORKBENCH_NAV_WIDTH_MIN, WORKBENCH_NAV_WIDTH_MAX);
+      if (fit !== null) {
+        const fitWidth = Math.round(fit);
+        if (delta > 0 && Math.round(current) < fitWidth) {
+          // 图标轨 → 一步展开到“名称刚好放得下”的最小宽态。
+          next = fitWidth <= WORKBENCH_NAV_WIDTH_MAX ? fitWidth : WORKBENCH_NAV_WIDTH_RAIL;
+        } else if (Math.round(next) < fitWidth) {
+          // 名称放不下 → 收成图标轨，不留半个名称的中间宽度。
+          next = WORKBENCH_NAV_WIDTH_RAIL;
+        }
+      }
       setNavWidth(next);
       void setWorkbenchNavWidth(next).catch((e) =>
         toastErrorRef.current("workbench.layoutSaveFailed", e),
@@ -1537,6 +1641,42 @@ export default function WorkbenchShell() {
   // ── 启动门：设置 + 路由 hydration 完成前不渲染假页面 ────────────────
   const booted = settingsReady && routeHydrated && projectHydrated;
   const readySent = useRef(false);
+
+  // ── 名称宽度实测与宽度吸附（2026-11-17）────────────────────────────
+  // 名称放不下时整列收成图标轨：宽态下限改为实测的“名称所需宽度”，
+  // 拖拽/键盘调整后低于该宽度一律吸附到图标轨，不留“半个名称”的中间态。
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!booted || !root) return;
+    let disposed = false;
+    const measure = () => {
+      const fit = measureWorkbenchNavLabelFit(root);
+      if (disposed || fit === null) return;
+      setNavLabelFitWidth((previous) => (previous === fit ? previous : fit));
+    };
+    measure();
+    // 系统字体/回退字体就绪后文字度量可能变一两个像素，再量一次。
+    void document.fonts?.ready
+      .then(() => {
+        if (!disposed) measure();
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, [booted, navLabelsKey]);
+
+  // 旧配置可能停在“名称被遮住”的宽度（如 180）：量到名称所需宽度后一次性
+  // 吸附到合法状态（图标轨或名称态）并落库，避免每次启动都重算同一处修正。
+  useEffect(() => {
+    if (!booted || navLabelFitWidth === null || navResizingRef.current) return;
+    const resolved = resolveWorkbenchNavWidth(navWidthRef.current, navLabelFitWidth);
+    if (resolved === navWidthRef.current) return;
+    setNavWidth(resolved);
+    void setWorkbenchNavWidth(resolved).catch((e) =>
+      toastErrorRef.current("workbench.layoutSaveFailed", e),
+    );
+  }, [booted, navLabelFitWidth, navWidth]);
   useEffect(() => {
     if (!booted || readySent.current) return;
     readySent.current = true;
@@ -1577,6 +1717,7 @@ export default function WorkbenchShell() {
 
   return (
     <div
+      ref={rootRef}
       className={`wb-root${compact ? " is-compact" : ""}`}
       style={rootStyle}
       data-nav-compact={navLabelsCompact ? "true" : undefined}
@@ -1617,6 +1758,12 @@ export default function WorkbenchShell() {
                 const active = !atHome && entry.tabs.includes(tab);
                 const count = entry.badge ? counts[entry.badge] : 0;
                 const label = navLabel(entry, t);
+                // 图标轨里徽标不画：把计数并进名称 tooltip，避免收窄后丢信息。
+                const navTip = navLabelsCompact
+                  ? count > 0
+                    ? t("nav.labelWithCount", { label, count })
+                    : label
+                  : undefined;
                 const dragging = navDrag.draggingId === entry.id;
                 const shift = navDrag.shifts.get(entry.id) ?? 0;
                 const translate = dragging ? navDrag.offsetY : shift;
@@ -1636,7 +1783,7 @@ export default function WorkbenchShell() {
                     className={`wb-nav-item has-grip${active ? " active" : ""}${dragging ? " is-dragging" : ""}`}
                     data-nav-entry={entry.id}
                     data-nav-drag-surface
-                    data-tip={navLabelsCompact ? label : undefined}
+                    data-tip={navTip}
                     style={translate !== 0 ? { transform: `translateY(${translate}px)` } : undefined}
                     onPointerDown={(event) => {
                       if (event.button !== 0) return;
@@ -1668,7 +1815,7 @@ export default function WorkbenchShell() {
                       data-nav-page
                       aria-current={active ? "page" : undefined}
                       aria-label={count > 0 ? t("nav.labelWithCount", { label, count }) : label}
-                      data-tip={navLabelsCompact ? label : undefined}
+                      data-tip={navTip}
                       onClick={(event) => {
                         event.stopPropagation();
                         activateEntry();

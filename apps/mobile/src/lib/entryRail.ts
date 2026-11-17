@@ -155,3 +155,33 @@ export function clampRailOffset(offset: number, maxOffset: number): number {
   const value = Number.isFinite(offset) ? offset : 0;
   return Math.min(Math.max(value, 0), max);
 }
+
+/**
+ * 拖动中相邻磁贴的让位位移（2026-11-17）。
+ *
+ * 被拖磁贴从 dragIndex 移到 targetIndex 时，被它跨过的每个槽位先让出一个 step：
+ *  - 向右拖：dragIndex 之后的磁贴左移，腾出 targetIndex 处的空位；
+ *  - 向左拖：targetIndex 到 dragIndex 之前的磁贴右移；
+ *  - 被拖磁贴自己与其他磁贴不动。
+ * 只算视觉位移，真正顺序仍在松手时一次性提交，所以中途取消不会改配置。
+ */
+export function railNeighborShift(
+  dragIndex: number,
+  targetIndex: number,
+  index: number,
+  step: number,
+): number {
+  const stride = Number.isFinite(step) && step > 0 ? step : 0;
+  if (
+    stride === 0 ||
+    !Number.isFinite(dragIndex) ||
+    !Number.isFinite(targetIndex) ||
+    !Number.isFinite(index)
+  ) {
+    return 0;
+  }
+  if (index === dragIndex || targetIndex === dragIndex) return 0;
+  if (dragIndex < targetIndex && index > dragIndex && index <= targetIndex) return -stride;
+  if (dragIndex > targetIndex && index >= targetIndex && index < dragIndex) return stride;
+  return 0;
+}

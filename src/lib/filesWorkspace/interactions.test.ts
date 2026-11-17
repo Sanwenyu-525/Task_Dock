@@ -131,6 +131,21 @@ describe("fwDrag 会话", () => {
     }
   });
 
+  it("非目标窗格上报 null 不覆盖目标窗格落点（B→A 方向缺陷钉）", () => {
+    try {
+      startFwDrag({ kind: "files", paths: ["C:\\b\\f.txt"], fromPaneId: "p2" }, 10, 10);
+      expect(updateFwHover({ type: "center", paneId: "p1", dir: "C:\\a" }, "p1")).toBe(true);
+      // 源窗格 p2 在目标 p1 内算出 null：必须被忽略，不能清空 p1 的 center。
+      expect(updateFwHover(null, "p2")).toBe(false);
+      expect(getFwDragState().hover).toEqual({ type: "center", paneId: "p1", dir: "C:\\a" });
+      // 落点拥有者 p1 自己离开时才允许清除。
+      expect(updateFwHover(null, "p1")).toBe(true);
+      expect(getFwDragState().hover).toBeNull();
+    } finally {
+      finishFwDrag();
+    }
+  });
+
   it("订阅回调内调用 updateFwHover 收敛不递归（P0 重入缺陷钉）", () => {
     try {
       let calls = 0;

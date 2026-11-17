@@ -557,7 +557,11 @@ export default function FilePane({
       else if (zone?.type === "center") void primeVolumeKeys([zone.dir]);
       // 订阅回调内更新 hover 是允许的（签名不变时协调器不会再广播）——
       // 旧实现无条件 emit 造成订阅者→emit→订阅者的无限递归（P0 缺陷）。
-      updateFwHover(zone);
+      // 目标窗格算出合法落点后，源/其他窗格会在同一轮广播里算出 null；
+      // 协调器只允许当前落点拥有者清除它，忽略时应同步保留面板层 dropHint，
+      // 否则 UI 仍会显示“目标无效”（右→左方向缺陷）。
+      const applied = updateFwHover(zone, paneId);
+      if (!applied) return;
       onHoverZone(zone);
     });
   }, [computeZone, onHoverZone]);

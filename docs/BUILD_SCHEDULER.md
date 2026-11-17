@@ -89,7 +89,10 @@ node scripts/build-sched.mjs run [选项] -- <命令> [参数...]
 - **非交互**：不读 stdin、不弹窗，适合任何自动化/AI 会话；
 - 子进程的环境变量、工作目录、`argv` 原样传递，**退出码原样返回**；
 - stdout/stderr 双写：转发到终端（`--no-tee` 可关）+ 落到 `state/logs/<taskId>.log`（超限截断，不无限增长）；
-- 日志尾部固定有一行机器可读结论：`sched: exit=0 status=succeeded class=medium reason=-`。
+- 日志尾部固定有一行机器可读结论：`sched: exit=0 status=succeeded class=medium reason=-`；
+- 任务收尾还会写 `state/logs/<taskId>.provenance.json`：开始执行时的 HEAD/分支/脏文件内容哈希，
+  以及本次任务实际写出的安装包与 `dist/` 资源 SHA256；用于从包 hash 反查源码来源。记录只含
+  元数据与哈希，不含源码正文或用户数据。
 
 ### 3.2 `status` / `queue` / `history`
 
@@ -98,9 +101,12 @@ node scripts/build-sched.mjs status              # 人读
 node scripts/build-sched.mjs status --json       # 程序读（槽位、活动台账/全局并发、队列、配置摘要）
 node scripts/build-sched.mjs status --verbose    # 额外做持有者身份校验 + dev 盘点（较慢）
 node scripts/build-sched.mjs history --limit 20
+node scripts/build-sched.mjs provenance --artifact <sha256>   # 按安装包/资源 hash 反查任务
+node scripts/build-sched.mjs provenance <任务ID>               # 查看该任务的源码与产物边车
 ```
 
-`history` 每条含 `status`、`exitCode`、`waitMs`、`runMs`、`reason`、`worktree`、`globalAtStart`。
+`history` 每条含 `status`、`exitCode`、`waitMs`、`runMs`、`reason`、`worktree`、`globalAtStart`、
+`provenancePath` 与 `source` 摘要；完整脏文件哈希与产物列表在 provenance 边车中。
 2026-11-16 起不再有 `minAvailMb` / `memDuringRun` / `budgetAtStart` 等内存与预算字段（旧条目保留原样）。
 
 ### 3.3 `cancel`
@@ -321,6 +327,7 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
 ├── queue/<taskId>.json
 ├── cancel/<taskId>
 ├── logs/<taskId>.log
+├── logs/<taskId>.provenance.json   构建源码/产物边车（HEAD、脏文件哈希、产物 SHA256）
 ├── history.jsonl
 ├── reclaim-log.jsonl
 └── config.json             (可选)

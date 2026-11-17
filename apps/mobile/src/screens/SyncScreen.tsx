@@ -15,6 +15,7 @@ import { ToggleSwitch } from "../components/ToggleSwitch";
 import { useToast } from "../feedback/ToastProvider";
 import type { ToastPlacement } from "../feedback/toastQueue";
 import { countAttachmentsForTransfer } from "../db/attachments";
+import { countDeferredLifeChanges } from "../db/lifeSync";
 import {
   countPendingSyncOps,
   countSyncConflicts,
@@ -75,6 +76,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
   const [syncing, setSyncing] = useState(false);
   const [lastResult, setLastResult] = useState<SyncLastResult | null>(null);
   const [conflictCount, setConflictCount] = useState(0);
+  const [deferredCount, setDeferredCount] = useState(0);
   const [pendingAttachments, setPendingAttachments] = useState(0);
   const [autoSettings, setAutoSettings] = useState<AutoSyncSettings | null>(null);
   const [autoNote, setAutoNote] = useState<string | null>(null);
@@ -85,7 +87,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [ops, meta, token, last, conflicts, attachmentCount, settings, status] =
+      const [ops, meta, token, last, conflicts, attachmentCount, settings, status, deferred] =
         await Promise.all([
           countPendingSyncOps(),
           loadConnection(),
@@ -95,6 +97,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           countAttachmentsForTransfer(),
           loadAutoSyncSettings(),
           loadSyncStatus(),
+          countDeferredLifeChanges(),
         ]);
       if (!mounted.current) return;
       setPendingOps(ops);
@@ -102,6 +105,7 @@ export function SyncScreen({ nav }: { nav: Nav }) {
       setHasToken(Boolean(token));
       setLastResult(last);
       setConflictCount(conflicts);
+      setDeferredCount(deferred);
       setPendingAttachments(attachmentCount);
       setAutoSettings(settings);
       setAutoNote(status.lastAutoNote);
@@ -473,7 +477,12 @@ export function SyncScreen({ nav }: { nav: Nav }) {
           />
           <SettingRow label="后台同步" value="不支持常驻（Android 限制）" valueTone="muted" />
           <SettingRow label="同步冲突时" value="不自动覆盖，写入冲突页" valueTone="muted" />
-          <SettingRow label="同步范围" value="任务 / 收集箱 / 笔记" valueTone="muted" />
+          <SettingRow
+            label="生活延后处理"
+            value={deferredCount > 0 ? `${deferredCount} 条待依赖/待处理` : "无"}
+            valueTone={deferredCount > 0 ? "default" : "muted"}
+          />
+          <SettingRow label="同步范围" value="任务 / 收集箱 / 笔记 / 生活" valueTone="muted" />
         </SettingSection>
 
         {autoNote ? (

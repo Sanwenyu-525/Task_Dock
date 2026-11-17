@@ -9,6 +9,10 @@
 //! - 几何按**物理像素**持久化到内部设置键 `workspace_window_rect`（不进入前端
 //!   `Settings` 快照）；恢复时收敛到目标显示器工作区，显示器消失时回落到主屏；
 //! - 最大化状态单独记忆：最大化期间不覆盖正常几何，下次打开仍可还原窗口大小。
+//! - 可见性（2026-11-17）：**未置顶时点击窗口外即隐藏**（前台换到别的进程，120ms 后复核），
+//!   置顶时越过失焦继续留在最前；最小化、以及前台仍是本进程窗口（原生文件对话框、
+//!   快速捕获、右键菜单、通知）时不隐藏。隐藏后由托盘、主窗口「打开完整工作台」、
+//!   全局快捷键或再次启动经同一条 `open_or_focus_workbench` 路径恢复（`show` + `set_focus`）。
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
@@ -924,10 +928,50 @@ pub fn set_workspace_window_corner(app: AppHandle, corner: Option<f64>) -> AppRe
     Ok(sync_workbench_frame(&win))
 }
 
+/// 失焦后延迟复核的等待：让最小化/任务栏动作先稳定下来，避免把「最小化」误判成
+/// 「点击窗口外」而隐藏窗口（见 `attach_events` 的 `Focused(false)` 分支）。
+const HIDE_ON_BLUR_DELAY: Duration = Duration::from_millis(120);
+
 fn attach_events(app: &AppHandle, win: &WebviewWindow) {
     let app = app.clone();
     let w = win.clone();
+    // 失焦隐藏（见下方 `Focused` 分支）：只有真正拿到过焦点的窗口才参与判定。
+    // 窗口以 `visible(false)` 创建，揭示时若前台被其他应用占着，会直接收到一次
+    // `Focused(false)`——那不是用户在窗口外点击，不能把刚揭示的窗口藏起来。
+    let was_focused = Arc::new(AtomicBool::new(false));
     win.on_window_event(move |event| match event {
+        tauri::WindowEvent::Focused(true) => {
+            was_focused.store(true, Ordering::SeqCst);
+        }
+        // 未置顶 = 浮层语义：点击窗口外（前台换到别的进程）即隐藏；置顶 = 常驻最前。
+        // 复核放在 120ms 之后（主线程）：最小化/任务栏动作会**先失焦**再改窗口状态，
+        // 前台句柄也可能晚一拍才更新；立即隐藏会把「最小化」变成「消失」。
+        tauri::WindowEvent::Focused(false) => {
+            if !was_focused.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            if w.is_always_on_top().unwrap_or(false) {
+                return;
+            }
+            let w = w.clone();
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(HIDE_ON_BLUR_DELAY);
+                let _ = app.run_on_main_thread(move || {
+                    // 已重新聚焦 / 已被最小化 / 期间被置顶 / 已不可见 / 前台仍是本进程窗口
+                    // （原生文件对话框、快速捕获、右键菜单、通知）——都不是「点击窗口外」。
+                    if w.is_focused().unwrap_or(false)
+                        || w.is_minimized().unwrap_or(false)
+                        || w.is_always_on_top().unwrap_or(false)
+                        || !w.is_visible().unwrap_or(false)
+                        || foreground_is_own_process()
+                    {
+                        return;
+                    }
+                    let _ = w.hide();
+                });
+            });
+        }
         tauri::WindowEvent::CloseRequested { .. } => {
             // 关闭按钮 / Alt+F4：保存几何后正常销毁；不在这里 prevent_close。
             // 正文保存门禁由 WorkbenchShell 的 onCloseRequested 前端握手负责：
@@ -967,6 +1011,19 @@ fn attach_events(app: &AppHandle, win: &WebviewWindow) {
         }
         _ => {}
     });
+}
+
+/// 前台窗口是否属于本进程。
+///
+/// 原生文件对话框（dialog 插件）、快速捕获窗口、右键菜单、通知窗口都会拿到前台；
+/// 它们让工作台收到 `Focused(false)` 时若照常隐藏，用户正在操作的对话框会连同父窗口
+/// 一起消失。只有前台落到**别的进程**（桌面、其他应用）才算「点击窗口外」。
+fn foreground_is_own_process() -> bool {
+    let hwnd = crate::navigation::window_manager::foreground_window();
+    if hwnd == 0 {
+        return false;
+    }
+    crate::clipboard::platform::window_pid(hwnd) == Some(std::process::id())
 }
 
 /// 打开计划：工作台标签存在时只能聚焦，不存在时才允许创建。

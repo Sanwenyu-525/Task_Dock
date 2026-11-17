@@ -8,7 +8,7 @@
 //! - 宽窗口恢复内联显示（纯 CSS 档位，不做 JS 宽度轮询）；
 //! - 菜单项与内联按钮是同一份逻辑，不存在第二套 theme/preset/pin。
 
-import { MoreHorizontal, Pin, PinOff } from "lucide-react";
+import { MoreHorizontal, Pin } from "lucide-react";
 import { DropdownMenu, type DropdownMenuItem } from "../components/ui";
 import { useLocale } from "../hooks/useLocale";
 import { useThemeMenuItems, usePresetMenuItems } from "./workbenchTitlebarItems";
@@ -28,10 +28,13 @@ export default function WorkbenchToolbarMore() {
     {
       key: "pin",
       label: pin.label,
-      icon: pin.pinned ? (
-        <Pin size={14} aria-hidden="true" />
-      ) : (
-        <PinOff size={14} aria-hidden="true" />
+      // 与内联按钮同一图标语义：未置顶空心、置顶实心，不用带斜线的 PinOff。
+      icon: (
+        <Pin
+          size={14}
+          aria-hidden="true"
+          fill={pin.pinned ? "currentColor" : "none"}
+        />
       ),
       onSelect: () => {
         void pin.toggle();

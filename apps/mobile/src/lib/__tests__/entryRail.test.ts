@@ -13,6 +13,7 @@ import {
   entryTileLineHeight,
   railMetrics,
   railMinTileWidth,
+  railNeighborShift,
 } from "../entryRail";
 
 const PHONE_WIDTHS = [280, 320, 360, 393, 412, 420, 430, 600, 800, 1024];
@@ -138,5 +139,40 @@ describe("clampRailOffset", () => {
     expect(clampRailOffset(Number.NaN, 40)).toBe(0);
     expect(clampRailOffset(30, Number.NaN)).toBe(0);
     expect(clampRailOffset(-1, -1)).toBe(0);
+  });
+});
+
+describe("railNeighborShift 拖动时相邻磁贴让位", () => {
+  const STEP = 76;
+
+  it("向右拖（1 → 3）：被跨过的 2、3 号槽位左移一格", () => {
+    expect(railNeighborShift(1, 3, 2, STEP)).toBe(-STEP);
+    expect(railNeighborShift(1, 3, 3, STEP)).toBe(-STEP);
+  });
+
+  it("向右拖时，未跨过的槽位与被拖磁贴本身不动", () => {
+    expect(railNeighborShift(1, 3, 0, STEP)).toBe(0);
+    expect(railNeighborShift(1, 3, 1, STEP)).toBe(0);
+    expect(railNeighborShift(1, 3, 4, STEP)).toBe(0);
+  });
+
+  it("向左拖（4 → 2）：被跨过的 2、3 号槽位右移一格", () => {
+    expect(railNeighborShift(4, 2, 2, STEP)).toBe(STEP);
+    expect(railNeighborShift(4, 2, 3, STEP)).toBe(STEP);
+    expect(railNeighborShift(4, 2, 1, STEP)).toBe(0);
+    expect(railNeighborShift(4, 2, 4, STEP)).toBe(0);
+  });
+
+  it("拖回原位时所有磁贴都回到原位", () => {
+    for (const index of [0, 1, 2, 3, 4]) {
+      expect(railNeighborShift(3, 3, index, STEP)).toBe(0);
+    }
+  });
+
+  it("异常步进 / 非有限下标返回 0，不产出 NaN 位移", () => {
+    expect(railNeighborShift(1, 3, 2, 0)).toBe(0);
+    expect(railNeighborShift(1, 3, 2, Number.NaN)).toBe(0);
+    expect(railNeighborShift(Number.NaN, 3, 2, STEP)).toBe(0);
+    expect(railNeighborShift(1, 3, Number.NaN, STEP)).toBe(0);
   });
 });

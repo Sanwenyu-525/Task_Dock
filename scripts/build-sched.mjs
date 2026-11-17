@@ -30,6 +30,7 @@ import {
   housekeeping, parsePriority, readQueue, readTask, requestCancel, writeTask,
 } from "./sched/queue.mjs";
 import { EXIT, executeTask, runInline } from "./sched/runner.mjs";
+import { findProvenanceByArtifact, readBuildProvenance } from "./sched/provenance.mjs";
 import { scanDevServers } from "./sched/devservers.mjs";
 import { verifyIdentity } from "./sched/proc.mjs";
 import {
@@ -503,6 +504,83 @@ function readHistoryLines(path) {
   } catch { return []; }
 }
 
+// ---------------------------------------------------------------- provenance
+
+function cmdProvenance(argv) {
+  const { opts, positional } = parseOptions(argv);
+  const ctx = context();
+  const logs = paths(ctx.state.home).logs;
+
+  if (typeof opts.artifact === "string") {
+    const matches = findProvenanceByArtifact(logs, opts.artifact);
+    if (opts.json) { console.log(JSON.stringify(matches, null, 2)); return EXIT.ok; }
+    if (!matches.length) {
+      console.log(`没有找到产物 sha256=${opts.artifact} 对应的 provenance。`);
+      console.log("若该包早于 provenance 功能上线，边车不存在；请查正式集成 build.json / 构建日志，不能从 SHA256 反推源码。");
+      console.log(`可直接查：${logs}\\<任务ID>.provenance.json`);
+      return EXIT.ok;
+    }
+    for (const p of matches) {
+      console.log(`任务 ${p.taskId} | ${p.status} | exit=${p.exitCode ?? "-"}`);
+      console.log(`  HEAD ${p.source?.shortHead ?? "-"} ${p.source?.branch ?? ""}`.trimEnd());
+      console.log(`  脏文件 ${p.source?.dirtyFileCount ?? "-"} 个 | sourceFingerprint ${p.source?.sourceFingerprint ?? "-"}`);
+      console.log(`  产物 ${(p.artifacts?.files ?? []).length} 项 | ${p.finishedAt ?? "-"}`);
+    }
+    return EXIT.ok;
+  }
+
+  const taskId = positional[0];
+  if (taskId) {
+    const p = readBuildProvenance(logs, taskId);
+    if (!p) { console.error(`[sched] 找不到 ${taskId} 的 provenance：${logs}\\${taskId}.provenance.json`); return EXIT.usage; }
+    if (opts.json) { console.log(JSON.stringify(p, null, 2)); return EXIT.ok; }
+    console.log(`任务：${p.taskId}（${p.label ?? "-"}）`);
+    console.log(`状态：${p.status} exit=${p.exitCode ?? "-"}  ${p.startedAt ?? "-"} → ${p.finishedAt ?? "-"}`);
+    console.log(`源码：HEAD=${p.source?.head ?? "-"} branch=${p.source?.branch ?? "-"} dirty=${p.source?.dirty ?? "-"} dirtyFiles=${p.source?.dirtyFileCount ?? "-"}`);
+    console.log(`指纹：${p.source?.sourceFingerprint ?? "-"}`);
+    if (p.source?.dirtyFiles?.length) {
+      console.log("脏文件：");
+      for (const f of p.source.dirtyFiles.slice(0, 30)) {
+        console.log(`  ${f.status} ${f.path}${f.sha256 ? ` sha256=${f.sha256.slice(0, 12)}…` : ""}`);
+      }
+      if (p.source.dirtyFiles.length > 30) console.log(`  … 其余见 JSON（共 ${p.source.dirtyFiles.length} 条）`);
+    }
+    if (p.artifacts?.files?.length) {
+      console.log("产物：");
+      for (const a of p.artifacts.files) console.log(`  ${a.path} ${a.bytes ?? "-"} B sha256=${a.sha256 ?? "-"}`);
+    }
+    return EXIT.ok;
+  }
+
+  // 无参数：列出最近的 provenance 边车，方便按任务/时间定位。
+  let names = [];
+  try { names = readdirSync(logs).filter((n) => n.endsWith(".provenance.json")); } catch { /* empty */ }
+  const rows = names.map((n) => {
+    try {
+      const p = JSON.parse(readFileSync(join(logs, n), "utf8"));
+      return {
+        taskId: p.taskId,
+        status: p.status,
+        head: p.source?.shortHead ?? "-",
+        dirty: p.source?.dirtyFileCount ?? "-",
+        artifacts: (p.artifacts?.files ?? []).length,
+        finishedAt: p.finishedAt ?? "-",
+      };
+    } catch { return null; }
+  }).filter(Boolean).sort((a, b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
+  if (opts.json) { console.log(JSON.stringify(rows.slice(0, Number(opts.limit ?? 20)), null, 2)); return EXIT.ok; }
+  if (!rows.length) { console.log("还没有 provenance 记录（下一次调度任务开始后会生成）。"); return EXIT.ok; }
+  printTable(rows.slice(0, Number(opts.limit ?? 20)), [
+    { key: "taskId", title: "任务ID" },
+    { key: "status", title: "状态" },
+    { key: "head", title: "HEAD" },
+    { key: "dirty", title: "脏文件" },
+    { key: "artifacts", title: "产物" },
+    { key: "finishedAt", title: "结束时间" },
+  ]);
+  return EXIT.ok;
+}
+
 // ---------------------------------------------------------------- doctor
 
 function cmdDoctor(argv) {
@@ -867,6 +945,7 @@ function printHelp() {
   queue    当前队列（按有效优先级排序）
   cancel   取消排队或运行中的任务
   history  执行记录（退出码、等待时长、运行时长、失败原因）
+  provenance 构建来源边车（--artifact <sha256> 反查；<任务ID> 查看源码/产物）
   doctor   自诊断（--reap 才执行槽位回收/残留清理）
   config   有效配置与来源
   dev      开发服务器/端口冲突盘点（只读）
@@ -886,6 +965,7 @@ async function main() {
     case "queue": return cmdQueue(rest);
     case "cancel": return await cmdCancel(rest);
     case "history": return cmdHistory(rest);
+    case "provenance": return cmdProvenance(rest);
     case "doctor": return cmdDoctor(rest);
     case "config": return cmdConfig(rest);
     case "dev": return cmdDev(rest);

@@ -469,25 +469,20 @@ fn first_uproject(root: &Path) -> Option<PathBuf> {
     None
 }
 
-/// 从 `*.uproject` JSON 提取 `EngineAssociation`（引擎版本/关联标识）；解析失败留空，不报错。
+/// 从 `*.uproject` JSON 提取 `EngineAssociation`（引擎版本/关联标识，可能是版本号或
+/// 源码构建 GUID）；解析失败留空，不报错。
 fn unreal_association(uproject: &Path) -> String {
     let Ok(text) = std::fs::read_to_string(uproject) else {
         return String::new();
     };
-    for chunk in text.split(',') {
-        if let Some(idx) = chunk.find("EngineAssociation") {
-            let rest = &chunk[idx..];
-            let mut parts = rest.split('"').filter(|s| !s.is_empty());
-            parts.next(); // 键名
-            if let Some(value) = parts.next() {
-                let v = value.trim().to_string();
-                if !v.is_empty() {
-                    return v;
-                }
-            }
-        }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return String::new();
+    };
+    match value.get("EngineAssociation") {
+        Some(serde_json::Value::String(s)) => s.trim().to_string(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        _ => String::new(),
     }
-    String::new()
 }
 
 fn dir_has_entry(root: &Path) -> bool {
@@ -689,30 +684,35 @@ fn fact_get_impl(db: &Db, project_id: &str) -> AppResult<Option<GameProjectFact>
 
 /// 只读扫描项目根目录的真实文件特征；不写库。归档项目也允许扫描查看。
 pub fn game_project_detect_impl(db: &Db, project_id: &str) -> AppResult<GameDetection> {
-    db.with_read(|conn| {
-        ensure_game_project(conn, project_id, false)?;
-        let root = project_root(conn, project_id)?;
-        let root_path = root
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let root_exists = root.as_ref().map(|p| p.is_dir()).unwrap_or(false);
-        let (engine, engine_version, evidence, conflicts) = match &root {
-            Some(root) => detect_engine(root),
-            None => ("unknown".into(), String::new(), Vec::new(), Vec::new()),
-        };
-        let facts = fact_get_impl(db, project_id)?;
-        Ok(GameDetection {
-            detection: GameDetectionReport {
-                engine,
-                engine_version,
-                evidence,
-                conflicts,
-                root_exists,
-                root_path,
-            },
-            facts,
-        })
+    // 先在一次读事务内取出项目根与识别结果；读连接释放后再单独查已存事实。
+    // 注意：内存库无独立读池，`with_read` 会退化为写连接锁；若在持锁闭包内再次
+    // 调用 `with_read`/`fact_get_impl` 会自锁同一把非递归 Mutex 造成死锁。
+    let (root_path, root_exists, engine, engine_version, evidence, conflicts) =
+        db.with_read(|conn| {
+            ensure_game_project(conn, project_id, false)?;
+            let root = project_root(conn, project_id)?;
+            let root_path = root
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let root_exists = root.as_ref().map(|p| p.is_dir()).unwrap_or(false);
+            let (engine, engine_version, evidence, conflicts) = match &root {
+                Some(root) => detect_engine(root),
+                None => ("unknown".into(), String::new(), Vec::new(), Vec::new()),
+            };
+            Ok((root_path, root_exists, engine, engine_version, evidence, conflicts))
+        })?;
+    let facts = fact_get_impl(db, project_id)?;
+    Ok(GameDetection {
+        detection: GameDetectionReport {
+            engine,
+            engine_version,
+            evidence,
+            conflicts,
+            root_exists,
+            root_path,
+        },
+        facts,
     })
 }
 

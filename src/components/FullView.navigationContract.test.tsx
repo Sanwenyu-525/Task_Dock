@@ -3,8 +3,8 @@
  */
 //! 左侧导航契约测试（脚本侧清单 ↔ 真实导航）：
 //! - scripts/rail-contract.mjs 供 Playwright 脚本使用（脚本无法导入 TS 模块），
-//!   此处校验它与 `TAB_ORDER`（10 个逻辑 Tab）、`RAIL_ENTRIES`（16 个声明视觉入口，
-//!   其中 14 个默认可见）及 FullView 实际渲染的入口顺序 / aria-label / data-tip 一致；
+//!   此处校验它与 `TAB_ORDER`（10 个逻辑 Tab）、`RAIL_ENTRIES`（19 个声明视觉入口，
+//!   主窗口渲染 15 个）及 FullView 实际渲染的入口顺序 / aria-label / data-tip 一致；
 //! - v0.8 起收集箱+暂存架合并为「收集与暂存」单一视觉入口：inbox / shelf 两个
 //!   逻辑 Tab 都让该入口呈选中态；快捷键仍按 TAB_ORDER 映射（Ctrl+5/6）不偏移；
 //! - v0.9 新增「工作流」视觉入口（Ctrl+7），第 10 个逻辑 Tab（设置）= Ctrl+0；
@@ -54,7 +54,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("脚本侧导航契约与真实导航一致", () => {
-  it("默认可见视觉入口 14 项；逻辑 Tab 10 项且与 TAB_ORDER 完全一致", () => {
+  it("默认可见视觉入口 15 项；逻辑 Tab 10 项且与 TAB_ORDER 完全一致", () => {
     expect(RAIL_ITEM_COUNT).toBe(15);
     expect([...LOGICAL_TABS]).toEqual([...TAB_ORDER]);
     // 合并入口覆盖 inbox+shelf，其余 1:1；「工作台」「应用」「微件」「帮助」「诊断中心」「资源管理」是仅视觉入口

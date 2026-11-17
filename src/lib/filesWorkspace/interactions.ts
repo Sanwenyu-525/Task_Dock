@@ -189,12 +189,25 @@ export function moveFwDrag(
   emit();
 }
 
-/** 更新悬停落点（窗格订阅回调按最新坐标计算后调用；签名不变不广播）。 */
-export function updateFwHover(zone: FwDropZone | null): void {
-  if (!state.payload) return;
+/**
+ * 更新悬停落点（窗格订阅回调按最新坐标计算后调用；签名不变不广播）。
+ *
+ * `paneId` 是上报窗格的身份。应用内拖拽时每个窗格都会收到广播：目标窗格
+ * 算出合法 center/folder，非目标窗格在自身矩形外算出 null。若允许非目标
+ * 窗格写入 null，它会覆盖目标窗格刚写入的落点；监听器顺序（A 先/B 后）
+ * 会让 B→A 被最后一个 null 清空，表现为方向相关的“目标无效”缺陷。
+ * 因此 null 只能由当前落点的拥有者窗格清除；返回 false 表示本次上报被忽略，
+ * 调用方不得同步清除面板层的 dropHint。
+ */
+export function updateFwHover(zone: FwDropZone | null, paneId?: string): boolean {
+  if (!state.payload) return false;
+  if (!zone && paneId && state.hover?.paneId && state.hover.paneId !== paneId) {
+    return false;
+  }
   state.hover = zone;
   state.effect = resolveEffect(state.payload, zoneTargetDir(zone), state.modifiers);
   emit();
+  return true;
 }
 
 /** 结束拖拽（pointerup 落点已由组件取走后调用）。 */

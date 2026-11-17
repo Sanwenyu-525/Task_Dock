@@ -4,7 +4,7 @@
 // - 生活待办复用现有 TaskEditorSheet / tasks 表，保存后 category = 生活；
 // - 票据只保存采集素材引用，原图为本机文件时走现有 ImageLightbox；
 // - 不展示演示数据；所有列表来自本地 SQLite，失败在页面与 Toast 明确反馈。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -62,6 +62,12 @@ import type { NewTaskInput, Task } from "../domain/types";
 import { describeError } from "../lib/errors";
 import { useWindowInsets } from "../lib/insets";
 import { sendReceiptToDesktop } from "../lib/life/receiptTransfer";
+import { receiptAction, receiptCountText } from "../lib/life/receiptState";
+import {
+  createLifeTaskWithReminder,
+  LIFE_TASK_CATEGORY,
+  toggleLifeTaskWithReminder,
+} from "../lib/life/taskActions";
 import type { Nav } from "../lib/nav";
 import {
   notifyWidgetDataChanged,
@@ -71,7 +77,7 @@ import { scheduleReminder } from "../notifications/reminders";
 import { useTheme } from "../theme/ThemeProvider";
 import { font, radius, space } from "../theme/tokens";
 
-const LIFE_CATEGORY = "生活";
+const LIFE_CATEGORY = LIFE_TASK_CATEGORY;
 const CURRENCIES = ["CNY", "USD", "EUR", "JPY", "GBP", "HKD", "KWD"];
 
 type Sheet =
@@ -123,46 +129,6 @@ function emptyForm(currency: string): PurchaseForm {
   };
 }
 
-function countText(link: LifeDocumentLink): string {
-  if (link.transferState === "missing") return "原文件缺失";
-  if (
-    link.transferState === "transferred" &&
-    link.remoteSource === "shelf_item" &&
-    link.remoteRef
-  ) {
-    return "原图已导入电脑";
-  }
-  if (link.remoteRef && link.transferState === "metadata_only") {
-    return "文件已传到电脑，尚未导入";
-  }
-  if (link.documentSource === "capture_asset") {
-    if (!link.localUri) return "本机原图缺失";
-    if (link.remoteRef) return "文件已传到电脑，尚未导入";
-    return link.transferState === "metadata_only" ? "仅元数据，原图未到电脑" : "本机原图，未传电脑";
-  }
-  if (link.documentSource === "shelf_item") return "电脑文件引用";
-  return "文件引用";
-}
-
-type ReceiptAction = "send" | "resume" | "transferred";
-
-/** 按完整传输状态派生可执行动作，不能只看 remoteRef 是否非空。 */
-function receiptAction(link: LifeDocumentLink): ReceiptAction | null {
-  if (link.transferState === "missing") return null;
-  if (
-    link.transferState === "transferred" &&
-    link.remoteSource === "shelf_item" &&
-    link.remoteRef
-  ) {
-    return "transferred";
-  }
-  // 文件已上传但导入失败：保留远端文件 ID，必须允许用户继续导入。
-  if (link.transferState === "metadata_only" && link.remoteRef) return "resume";
-  if (link.remoteRef && link.documentSource !== "shelf_item") return "resume";
-  if (link.documentSource === "capture_asset" && link.localUri && !link.remoteRef) return "send";
-  return null;
-}
-
 export function LifeScreen({ nav }: { nav: Nav }) {
   const { tokens } = useTheme();
   const insets = useWindowInsets();
@@ -191,6 +157,12 @@ export function LifeScreen({ nav }: { nav: Nav }) {
   const [eventDetail, setEventDetail] = useState<LifeEventDetail | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [receiptSendingId, setReceiptSendingId] = useState<string | null>(null);
+  const [receiptProgress, setReceiptProgress] = useState<{
+    linkId: string;
+    done: number;
+    total: number;
+  } | null>(null);
+  const receiptCancelRef = useRef(false);
 
   const [assetChoices, setAssetChoices] = useState<CaptureAsset[]>([]);
   const [assetBusy, setAssetBusy] = useState(false);
@@ -599,21 +571,37 @@ export function LifeScreen({ nav }: { nav: Nav }) {
 
   const sendLink = useCallback(
     async (link: LifeDocumentLink) => {
+      receiptCancelRef.current = false;
       setReceiptSendingId(link.id);
+      setReceiptProgress({ linkId: link.id, done: 0, total: 0 });
       try {
-        const outcome = await sendReceiptToDesktop(link.id);
-        showToast(`票据原图已传输到电脑：${outcome.name}`, "success");
+        const outcome = await sendReceiptToDesktop(link.id, {
+          isCancelled: () => receiptCancelRef.current,
+          onProgress: (done, total) =>
+            setReceiptProgress({ linkId: link.id, done, total }),
+        });
+        showToast(`票据已导入电脑暂存架：${outcome.name}`, "success");
         if (sheet?.type === "event") await openEvent(sheet.id);
         else if (sheet?.type === "item") await openItem(sheet.id);
         await refresh();
       } catch (reason) {
-        showToast(describeError(reason), "danger");
+        if (receiptCancelRef.current) {
+          showToast(describeError(reason), "warn");
+        } else {
+          showToast(describeError(reason), "danger");
+        }
       } finally {
         setReceiptSendingId(null);
+        setReceiptProgress(null);
       }
     },
     [openEvent, openItem, refresh, sheet, showToast],
   );
+
+  const cancelReceiptSend = useCallback((linkId: string) => {
+    if (receiptSendingId !== linkId) return;
+    receiptCancelRef.current = true;
+  }, [receiptSendingId]);
 
   const applyRelink = useCallback(
     async (ownerType: "event" | "item", ownerId: string) => {
@@ -635,17 +623,36 @@ export function LifeScreen({ nav }: { nav: Nav }) {
 
   const toggleLifeTask = useCallback(
     async (task: Task) => {
+      let outcome: Awaited<ReturnType<typeof toggleTask>>;
+      let reminderWarning: string | null;
       try {
-        const outcome = await toggleTask(task.id);
-        if (!outcome.task) {
-          showToast("任务已不存在", "danger");
-          return;
-        }
-        await rescheduleAllReminders();
-        notifyWidgetDataChanged();
-        await refresh();
+        const result = await toggleLifeTaskWithReminder(task.id, {
+          toggleTask,
+          rescheduleAllReminders,
+        });
+        outcome = result.outcome;
+        reminderWarning = result.reminderWarning;
       } catch (reason) {
         showToast(`更新待办失败：${describeError(reason)}`, "danger");
+        return;
+      }
+      if (!outcome.task) {
+        showToast("任务已不存在", "danger");
+        return;
+      }
+      // 任务状态已真实落库；提醒重排失败只能提示提醒异常，不能把完成说成失败。
+      try {
+        notifyWidgetDataChanged();
+      } catch {
+        // 小组件刷新是派生展示，失败不影响任务数据。
+      }
+      try {
+        await refresh();
+      } catch (reason) {
+        showToast(`待办状态已更新，但列表刷新失败：${describeError(reason)}`, "warn");
+      }
+      if (reminderWarning) {
+        showToast(`待办状态已更新，但${reminderWarning}`, "warn");
       }
     },
     [refresh, showToast],
@@ -653,20 +660,34 @@ export function LifeScreen({ nav }: { nav: Nav }) {
 
   const submitTask = useCallback(
     async (input: NewTaskInput) => {
+      let reminderWarning: string | null;
       try {
-        const task = await createTask({ ...input, category: LIFE_CATEGORY });
-        if (input.remindAt != null) {
-          const snooze = (await getSetting(SNOOZE_SETTING_KEY)) !== "0";
-          const scheduled = await scheduleReminder(task.id, task.title, input.remindAt, snooze);
-          if (!scheduled) {
-            showToast("提醒未排期：系统通知权限未开启，任务已保存", "warn");
-          }
-        }
-        showToast("生活待办已添加", "success");
-        notifyWidgetDataChanged();
-        await refresh();
+        const result = await createLifeTaskWithReminder(input, {
+          createTask,
+          getSetting,
+          scheduleReminder,
+          snoozeSettingKey: SNOOZE_SETTING_KEY,
+        });
+        reminderWarning = result.reminderWarning;
       } catch (reason) {
         showToast(`保存失败：${describeError(reason)}`, "danger");
+        return;
+      }
+      // 任务已保存；提醒是独立的异步排期，失败不得回滚或谎报保存失败。
+      if (reminderWarning) {
+        showToast(`待办已保存，但${reminderWarning}`, "warn");
+      } else {
+        showToast("生活待办已添加", "success");
+      }
+      try {
+        notifyWidgetDataChanged();
+      } catch {
+        // 派生展示刷新失败不改变任务已保存的事实。
+      }
+      try {
+        await refresh();
+      } catch (reason) {
+        showToast(`待办已保存，但列表刷新失败：${describeError(reason)}`, "warn");
       }
     },
     [refresh, showToast],
@@ -938,9 +959,38 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                       <Text style={[styles.rowTitle, { color: tokens.text }]} numberOfLines={1}>
                         {link.documentName || "生活票据"}
                       </Text>
-                      <Text style={[styles.rowMeta, { color: tokens.muted }]}>{countText(link)}</Text>
+                      <Text style={[styles.rowMeta, { color: tokens.muted }]}>{receiptCountText(link)}</Text>
                     </View>
-                    <AppIcon name="chevronRight" color={tokens.muted} size={14} />
+                    {receiptAction(link) === "send" || receiptAction(link) === "resume" ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          receiptSendingId === link.id ? "取消票据发送" : "发送票据到电脑"
+                        }
+                        onPress={() =>
+                          receiptSendingId === link.id
+                            ? cancelReceiptSend(link.id)
+                            : void sendLink(link)
+                        }
+                      >
+                        <Text style={[styles.linkText, { color: tokens.accentText }]}>
+                          {receiptSendingId === link.id
+                            ? `取消发送${
+                                receiptProgress?.linkId === link.id &&
+                                receiptProgress.total > 0
+                                  ? ` ${Math.round(
+                                      (receiptProgress.done / receiptProgress.total) * 100,
+                                    )}%`
+                                  : "…"
+                              }`
+                            : receiptAction(link) === "resume"
+                              ? "继续导入"
+                              : "发送"}
+                        </Text>
+                      </Pressable>
+                    ) : (
+                      <AppIcon name="chevronRight" color={tokens.muted} size={14} />
+                    )}
                   </Pressable>
                 ))
               )}
@@ -1336,7 +1386,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                     <Text style={[styles.rowTitle, { color: tokens.text }]} numberOfLines={1}>
                       {link.documentName || "生活票据"}
                     </Text>
-                    <Text style={[styles.rowMeta, { color: tokens.muted }]}>{countText(link)}</Text>
+                    <Text style={[styles.rowMeta, { color: tokens.muted }]}>{receiptCountText(link)}</Text>
                   </Pressable>
                   <Pressable accessibilityRole="button" onPress={() => openRelink(link.id)}>
                     <Text style={[styles.linkText, { color: tokens.accentText }]}>改关联</Text>
@@ -1352,12 +1402,25 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                     return (
                       <Pressable
                         accessibilityRole="button"
-                        disabled={receiptSendingId === link.id}
-                        onPress={() => void sendLink(link)}
+                        accessibilityLabel={
+                          receiptSendingId === link.id ? "取消票据发送" : "发送票据到电脑"
+                        }
+                        onPress={() =>
+                          receiptSendingId === link.id
+                            ? cancelReceiptSend(link.id)
+                            : void sendLink(link)
+                        }
                       >
                         <Text style={[styles.linkText, { color: tokens.accentText }]}>
                           {receiptSendingId === link.id
-                            ? "发送中…"
+                            ? `取消发送${
+                                receiptProgress?.linkId === link.id &&
+                                receiptProgress.total > 0
+                                  ? ` ${Math.round(
+                                      (receiptProgress.done / receiptProgress.total) * 100,
+                                    )}%`
+                                  : "…"
+                              }`
                             : action === "resume"
                               ? "继续导入"
                               : "发送到电脑"}
@@ -1397,6 +1460,7 @@ export function LifeScreen({ nav }: { nav: Nav }) {
                       unitPriceMinor: eventDetail.items[0].unitPriceMinor,
                       totalPriceMinor: eventDetail.items[0].totalPriceMinor,
                       currency: eventDetail.items[0].currency,
+                      amountScale: eventDetail.items[0].amountScale,
                       note: eventDetail.items[0].note,
                       links: eventDetail.links,
                     };

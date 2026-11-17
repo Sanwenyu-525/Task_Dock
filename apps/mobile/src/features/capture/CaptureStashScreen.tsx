@@ -249,10 +249,8 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         return;
       }
       reconcileInFlightRef.current = true;
-      let succeeded = false;
       try {
         const result = await reconcileShelfDestinations();
-        succeeded = true;
         if (!mountedRef.current || seq !== loadSeqRef.current) return;
         await refreshDestinations(seq);
         if (result.stale > 0 && staleNoticeRef.current !== result.stale) {
@@ -268,15 +266,16 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
         // 电脑离线/授权失败：保持本地已展示数据，下一次刷新再试。
       } finally {
         reconcileInFlightRef.current = false;
-        if (succeeded && reconcilePendingRef.current) {
-          reconcilePendingRef.current = false;
+        // 对账失败时也要消费 pending：否则在它执行期间到达的新一轮本地刷新
+        // 会丢掉唯一一次补跑机会，最新目的地状态只能等下一次用户操作才刷新。
+        const pending = reconcilePendingRef.current;
+        reconcilePendingRef.current = false;
+        if (pending) {
           const latestSeq = loadSeqRef.current;
           const latestPair = availabilityRef.current;
           if (mountedRef.current && latestSeq !== seq && latestPair?.paired) {
             backgroundReconcileRef.current(latestPair, latestSeq);
           }
-        } else {
-          reconcilePendingRef.current = false;
         }
       }
     },
@@ -340,8 +339,13 @@ export function CaptureStashScreen({ nav }: { nav: Nav }) {
     detailTranslateY.setValue(0);
     setNameDraft(detail.name);
     setNoteDraft(detail.note);
+  }, [detail?.id, detailTranslateY]);
+
+  // 目的地状态会因后台对账/发送刷新；只更新状态行，不能重置用户正在编辑的草稿。
+  useEffect(() => {
+    if (!detail) return;
     setDetailDestinations(destinations[detail.id] ?? []);
-  }, [detail?.id, detail?.name, detail?.note, destinations, detailTranslateY]);
+  }, [detail?.id, destinations]);
 
   const detailPan = useMemo(
     () =>

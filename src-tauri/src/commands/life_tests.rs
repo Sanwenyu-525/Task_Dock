@@ -30,13 +30,13 @@ fn insert_purchase(
             params![event_id, format!("购买 {}", name), occurred, now],
         )?;
         let (item_id, snapshot) = resolve_item_in_tx(conn, &item, &now)?;
-        let (quantity, unit, unit_price, total_price, currency_value, note) =
+        let (quantity, unit, unit_price, total_price, currency_value, amount_scale, note) =
             build_event_item_values(db, &item)?;
         conn.execute(
             "INSERT INTO life_event_items
              (id, event_id, item_id, item_name_snapshot, quantity_value, quantity_unit,
-              unit_price_minor, total_price_minor, currency, note, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+              unit_price_minor, total_price_minor, currency, amount_scale, note, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
             params![
                 format!("lei_{}", Uuid::new_v4()),
                 event_id,
@@ -47,6 +47,7 @@ fn insert_purchase(
                 unit_price,
                 total_price,
                 currency_value,
+                amount_scale,
                 note,
                 now
             ],
@@ -88,6 +89,13 @@ fn migration_creates_tables_and_sync_triggers() {
         }
         assert!(columns.contains(&"remote_ref".to_string()));
         assert!(columns.contains(&"remote_source".to_string()));
+        // v67：历史金额默认 2 位；新行按货币精度显式保存。
+        let amount_scale_type: String = conn.query_row(
+            "SELECT type FROM pragma_table_info('life_event_items') WHERE name = 'amount_scale'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(amount_scale_type, "INTEGER");
         Ok::<_, AppError>(())
     })
     .unwrap();
@@ -98,17 +106,36 @@ fn normalize_name_handles_fullwidth_and_spacing() {
     assert_eq!(normalize_name("  大　米  "), "大 米");
     assert_eq!(normalize_name("Milk"), "milk");
     assert_eq!(normalize_name("大米。"), "大米");
-    assert_eq!(normalize_name("大米（东北）"), "大米（东北）");
+    // 契约明确「全角 ASCII → 半角」：全角括号同样归一为半角，与移动端一致。
+    assert_eq!(normalize_name("大米（东北）"), "大米(东北)");
     assert_ne!(normalize_name("小包装大米"), normalize_name("大米"));
+}
+
+/// 购买时间以 UTC 存储，展示与验收按用户本地日期（+08:00）判断。
+fn local_date(iso: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .expect("occurred_at 必须是 RFC3339")
+        .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 #[test]
 fn money_and_quantity_are_fixed_point() {
-    assert_eq!(parse_minor("48").unwrap(), 4800);
-    assert_eq!(parse_minor("48.5").unwrap(), 4850);
-    assert_eq!(parse_minor("0.05").unwrap(), 5);
-    assert!(parse_minor("48.555").is_err());
-    assert!(parse_minor("-1").is_err());
+    assert_eq!(parse_minor("48", 2).unwrap(), 4800);
+    assert_eq!(parse_minor("48.5", 2).unwrap(), 4850);
+    assert_eq!(parse_minor("0.05", 2).unwrap(), 5);
+    assert!(parse_minor("48.555", 2).is_err());
+    assert!(parse_minor("-1", 2).is_err());
+    // 货币精度必须按 ISO 小数位解析：JPY 0 位、KWD 3 位，不能一律两位。
+    assert_eq!(parse_minor("48", 0).unwrap(), 48);
+    assert!(parse_minor("48.5", 0).is_err());
+    assert_eq!(parse_minor("48.123", 3).unwrap(), 48123);
+    assert!(parse_minor("48.1234", 3).is_err());
+    assert_eq!(currency_scale("JPY").unwrap(), 0);
+    assert_eq!(currency_scale("KWD").unwrap(), 3);
+    assert_eq!(currency_scale("CNY").unwrap(), 2);
+    assert!(currency_scale("XYZ").is_err());
     assert_eq!(canonical_quantity("5").unwrap().unwrap(), "5");
     assert_eq!(canonical_quantity("5.500").unwrap().unwrap(), "5.5");
     assert_eq!(canonical_quantity("0.250").unwrap().unwrap(), "0.25");
@@ -130,7 +157,7 @@ fn purchase_history_sorts_by_occurred_at_not_created_at() {
     let summary = &items[0];
     assert_eq!(summary.purchase_count, 3);
     let last = summary.last_purchase_at.clone().unwrap();
-    assert!(last.starts_with("2026-11-03"), "最近购买应为 11-03，实际 {last}");
+    assert_eq!(local_date(&last), "2026-11-03", "最近购买应为 11-03，实际 {last}");
     assert_eq!(summary.interval_days, Some(30));
     assert_eq!(summary.last_total_price_minor, Some(4800));
 
@@ -138,28 +165,42 @@ fn purchase_history_sorts_by_occurred_at_not_created_at() {
         .with_read(|conn| list_purchases_for_item(conn, &summary.id, 40))
         .unwrap();
     assert_eq!(history.len(), 3);
-    assert!(history[0].occurred_at.starts_with("2026-11-03"));
-    assert!(history[1].occurred_at.starts_with("2026-10-04"));
-    assert!(history[2].occurred_at.starts_with("2026-09-06"));
+    assert_eq!(local_date(&history[0].occurred_at), "2026-11-03");
+    assert_eq!(local_date(&history[1].occurred_at), "2026-10-04");
+    assert_eq!(local_date(&history[2].occurred_at), "2026-09-06");
     assert_eq!(history[0].quantity_value.as_deref(), Some("5"));
 }
 
 #[test]
 fn item_reuse_uses_normalized_name_without_merging_similar_names() {
     let db = Db::open_in_memory().unwrap();
-    insert_purchase(&db, "大米", "2026-11-03", Some("5"), Some("48"), Some("CNY"));
-    insert_purchase(&db, "大　米", "2026-10-04", Some("5"), Some("46"), Some("CNY"));
-    insert_purchase(&db, "东北大米", "2026-09-06", Some("5"), Some("80"), Some("CNY"));
+    insert_purchase(&db, "Milk", "2026-11-03", Some("1"), Some("12"), Some("CNY"));
+    insert_purchase(&db, "milk", "2026-10-04", Some("2"), Some("24"), Some("CNY"));
+    insert_purchase(&db, "大米", "2026-10-01", Some("5"), Some("48"), Some("CNY"));
+    // 全角空格按契约折叠为普通空格，但内部空格保留：`大 米` 与 `大米`
+    // 是不同 normalized_name，不能为了“看起来像”强行合并。
+    insert_purchase(&db, "大　米", "2026-09-01", Some("5"), Some("46"), Some("CNY"));
+    insert_purchase(&db, "东北大米", "2026-08-01", Some("5"), Some("80"), Some("CNY"));
 
     let items = db
         .with_read(|conn| list_life_items_inner(conn, &LifeItemFilter::default()))
         .unwrap();
-    assert_eq!(items.len(), 2, "全角空格归一后应复用；相似但不同的商品不得合并");
+    assert_eq!(items.len(), 4, "大小写归一复用；空格/相似名称不得强行合并");
+    let milk = items
+        .iter()
+        .find(|item| item.name == "Milk")
+        .expect("缺少 Milk");
+    assert_eq!(milk.purchase_count, 2);
     let rice = items
         .iter()
         .find(|item| item.name == "大米")
         .expect("缺少大米");
-    assert_eq!(rice.purchase_count, 2);
+    assert_eq!(rice.purchase_count, 1);
+    let spaced_rice = items
+        .iter()
+        .find(|item| item.name == "大　米")
+        .expect("缺少 大　米");
+    assert_eq!(spaced_rice.purchase_count, 1);
 }
 
 #[test]

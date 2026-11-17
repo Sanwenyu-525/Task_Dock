@@ -257,10 +257,12 @@ async function openTasks(): Promise<void> {
 /** 读取 workbench.css 中某个类的基础声明块，用于尺寸/命中区契约断言。 */
 function cssRule(selector: string): string {
   const css = readFileSync(resolve(process.cwd(), "src/workbench/workbench.css"), "utf8");
-  const start = css.indexOf(`${selector} {`);
+  // 只认行首选择器：图标轨里也有 `[data-nav-compact] .wb-nav-grip`，
+  // 按子串找会把宽态契约读成图标态规则。
+  const start = css.indexOf(`\n${selector} {`);
   if (start < 0) return "";
   const end = css.indexOf("}", start);
-  return end < 0 ? "" : css.slice(start, end);
+  return end < 0 ? "" : css.slice(start + 1, end);
 }
 
 beforeEach(() => {
@@ -939,9 +941,11 @@ describe("拖拽手柄视觉与整行拖拽语义", () => {
     expect(cssRule(".wb-nav-hide")).toMatch(/height: 24px/);
     expect(cssRule(".wb-nav-hide")).toMatch(/opacity: 0;/);
     expect(cssRule(".wb-nav-item")).toMatch(/min-height: 36px/);
-    expect(cssRule(".wb-nav-item")).toMatch(
-      /grid-template-columns: 28px 20px minmax\(0, 1fr\) auto 24px/,
+    // 宽态行网格抽成自定义属性：名称宽度实测要复用同一份几何。
+    expect(cssRule(".wb-nav-item")).toContain(
+      "--wb-nav-row-columns: 28px 20px minmax(0, 1fr) auto 24px",
     );
+    expect(cssRule(".wb-nav-item")).toMatch(/grid-template-columns: var\(--wb-nav-row-columns\)/);
     expect(row.classList.contains("has-grip")).toBe(true);
     expect(cssRule(".wb-nav-actions")).toMatch(/display: inline-flex/);
   });
@@ -1041,11 +1045,11 @@ describe("导航宽度临界点与名称 tooltip", () => {
     expect(nav.querySelectorAll("[data-tip]")).toHaveLength(0);
     const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
     expect(page?.hasAttribute("data-tip")).toBe(false);
-    // 折叠规则只在临界点以下生效，不能把名称永久隐藏。
+    // 折叠规则只在名称放不下时生效，不能把名称永久隐藏。
     expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-label')).toMatch(/display: none/);
   });
 
-  it("180px（最小宽度）仍显示名称，不挂名称 tooltip，不留下空白轨道", async () => {
+  it("180px 在兜底阈值下仍显示名称（jsdom 量不到名称宽度），不挂名称 tooltip", async () => {
     useSettingsStore.setState({
       settings: {
         ...baseSettings(),
@@ -1054,6 +1058,7 @@ describe("导航宽度临界点与名称 tooltip", () => {
     });
     await renderShell();
     const root = document.querySelector<HTMLElement>(".wb-root");
+    // 真实运行由实测的“名称所需宽度”决定；jsdom 无布局、量不到名称宽度时回退 180px。
     expect(root?.hasAttribute("data-nav-compact")).toBe(false);
 
     const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
@@ -1061,6 +1066,29 @@ describe("导航宽度临界点与名称 tooltip", () => {
     const page = navRows()[0].querySelector<HTMLElement>(".wb-nav-page");
     expect(page?.hasAttribute("data-tip")).toBe(false);
     expect(page?.querySelector(".wb-nav-label")).toBeTruthy();
+  });
+
+  it("96px 图标轨：整列收窄为图标，名称/徽标隐藏并补名称 tooltip", async () => {
+    useSettingsStore.setState({
+      settings: {
+        ...baseSettings(),
+        workbench_layout: { ...defaultWorkbenchLayout(), navWidth: 96 },
+      } as never,
+    });
+    await renderShell();
+    const root = document.querySelector<HTMLElement>(".wb-root");
+    expect(root?.hasAttribute("data-nav-compact")).toBe(true);
+    expect(root?.style.getPropertyValue("--wb-nav-width")).toBe("96px");
+    // 图标态靠 tooltip 补名称（TooltipLayer 在本文件是替身，只断言挂载数据）。
+    const nav = screen.getByRole("navigation", { name: "工作台功能导航" });
+    expect(nav.querySelectorAll("[data-tip]").length).toBeGreaterThan(0);
+    // 图标轨几何：24px 手柄轨道 / 32px 图标轨道 / 24px × 轨道，名称与徽标隐藏。
+    expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-item')).toContain(
+      "24px minmax(0, 1fr) 24px",
+    );
+    expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-label')).toMatch(/display: none/);
+    expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-badge')).toMatch(/display: none/);
+    expect(cssRule('.wb-root[data-nav-compact="true"] .wb-nav-grip')).toContain("opacity: 0");
   });
 
   it("200 / 280 / 320px 以及窗口 700px + 320px 导航都显示名称", async () => {
@@ -1102,7 +1130,8 @@ describe("导航宽度临界点与名称 tooltip", () => {
     expect(css).not.toMatch(/\.wb-nav \{[\s\S]*?width: 56px/);
   });
 
-  it("按整像素判定：180 / 180.4 保持名称，179.4 与 56px 进入图标态", () => {
+  it("兜底判据按整像素：180 / 180.4 显示名称，179.4 与 56px 进入图标态", () => {
+    // 正常运行时阈值是实测名称宽度（见 workbenchLayout.test.ts）；这里锁定回退语义。
     expect(shouldCompactWorkbenchNavLabels(181)).toBe(false);
     expect(shouldCompactWorkbenchNavLabels(180)).toBe(false);
     expect(shouldCompactWorkbenchNavLabels(180.4)).toBe(false);

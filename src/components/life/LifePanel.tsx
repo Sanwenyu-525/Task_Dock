@@ -905,6 +905,7 @@ export default function LifePanel() {
                                   item_names: [purchase.item_name],
                                   total_price_minor: purchase.total_price_minor,
                                   currency: purchase.currency,
+                                  amount_scale: purchase.amount_scale,
                                   link_count: purchase.links.length,
                                 },
                               );

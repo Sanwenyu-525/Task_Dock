@@ -689,14 +689,17 @@ const styles = StyleSheet.create({
     borderRadius: 1,
     zIndex: 0,
   },
-  // 首尾节点圆心距轨道两端 12dp（圆点半径），中间节点圆心在 50%；线段从左圆心连到右圆心。
+  // 首尾节点圆心距轨道两端 12dp（圆点半径），中间节点圆心在 50%；
+  // 连线只画在节点之间，端点各让出 12dp，避免完成态的透明底色把连线透出来。
   stepLineFirst: {
-    left: 12,
+    left: 24,
     right: "50%",
+    marginRight: 12,
   },
   stepLineSecond: {
     left: "50%",
-    right: 12,
+    marginLeft: 12,
+    right: 24,
   },
   segment: {
     flexDirection: "row",

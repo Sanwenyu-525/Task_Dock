@@ -1606,4 +1606,89 @@ mod tests {
             .unwrap();
         assert_eq!(exists, 0);
     }
+
+    #[test]
+    fn life_item_same_name_conflict_returns_desktop_record() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO life_items
+                   (id, name, normalized_name, category, aliases, note, created_at, updated_at)
+                 VALUES ('item-desk', '大米', '大米', '', '[]', '',
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO life_items
+                   (id, name, normalized_name, category, aliases, note, created_at, updated_at)
+                 VALUES ('item-other', '面粉', '面粉', '', '[]', '',
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // 手机离线新建同名商品：必须回传桌面已有商品 ID，供手机重映射购买明细。
+        let create = op_for(
+            "life_item",
+            "op-life-create",
+            "item-phone",
+            0,
+            json!({"name": "大米", "category": "", "aliases": [], "note": ""}),
+        );
+        let result = apply_push(&db, "device-1", &[create]).unwrap();
+        assert!(result.ack.is_empty());
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].reason, "life_item_name_conflict");
+        let server = result.conflicts[0].server_record.as_ref().unwrap();
+        assert_eq!(server.id, "item-desk");
+        assert_eq!(server.fields["name"], "大米");
+        let inserted: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM life_items WHERE id='item-phone'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(inserted, 0, "冲突不得静默创建重复商品");
+
+        // 改名撞同名也必须返回可恢复冲突，而不是无目标 ID 的 invalid_patch。
+        let base_rev: i64 = db
+            .with_conn(|conn| latest_seq(conn, "life_item", "item-other"))
+            .unwrap();
+        let rename = op_for(
+            "life_item",
+            "op-life-rename",
+            "item-other",
+            base_rev,
+            json!({"name": "大米"}),
+        );
+        let result = apply_push(&db, "device-1", &[rename]).unwrap();
+        assert!(result.ack.is_empty());
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].reason, "life_item_name_conflict");
+        assert_eq!(
+            result.conflicts[0]
+                .server_record
+                .as_ref()
+                .unwrap()
+                .id,
+            "item-desk"
+        );
+        let name: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT name FROM life_items WHERE id='item-other'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(name, "面粉", "冲突时不得改写旧商品");
+    }
 }

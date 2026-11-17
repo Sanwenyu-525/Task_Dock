@@ -168,6 +168,12 @@ pub const EXTENDED_TABLES: &[&str] = &[
     // 开发 D1（v63）：开发任务接续关联、Git/Worktree 探测快照。
     "dws_task_links",
     "dws_workspace_probes",
+    // 生活效率 v1（v65–v67）：商品 → 事件 → 明细 → 票据关联。使用通用行格式，
+    // 避免漏写新增字段（如 amount_scale / remote_ref）；顺序满足外键依赖。
+    "life_items",
+    "life_events",
+    "life_event_items",
+    "life_document_links",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -329,15 +335,15 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     rule!("application_settings", "settings", "all", 250, &[], false),
     // 生活效率系统 v1（2026-11-16）：商品主数据 → 事件 → 事件明细 → 票据关联。
     // 关联表与主表一起备份/恢复，恢复后校验关联一致性；票据只存引用，不含图片字节。
-    rule!("life_items", "life", "all", 251, &[], false),
-    rule!("life_events", "life", "all", 252, &[], false),
+    rule!("life_items", "life", "all", 251, &[], true),
+    rule!("life_events", "life", "all", 252, &[], true),
     rule!(
         "life_event_items",
         "life",
         "all",
         253,
         &["life_events", "life_items"],
-        false
+        true
     ),
     rule!(
         "life_document_links",
@@ -345,7 +351,7 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         "all",
         254,
         &["life_events", "life_items"],
-        false
+        true
     ),
     // 规划中心（v0.7）：用户项目数据，快速备份也全量保存（用户规划不截断）。
     // 依赖序：项目 → 里程碑 → 功能 → 步骤/历史。
@@ -1063,6 +1069,39 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         // 小说卷/章（v58）：用户创作内容，快速备份也必须全量保存（不截断正文）。
         | "novel_volumes"
         | "novel_chapters"
+        // 创作工作台五线（v59–v63，2026-11-17 集成修复）：16 张专业表此前只登记了
+        // BACKUP_TABLES/EXTENDED_TABLES 与恢复依赖，**漏登记快速备份的写出策略**，
+        // 使 write_bundle(Quick) 落入 other => Err("扩展表缺少备份策略")，五线
+        // 的 Full/Quick 往返用例全部在写出阶段失败。这些表都是用户创作/工作产物，
+        // 体量小且不含文件内容（素材只存路径引用），快速备份按全量写出口径一致。
+        // 顺序与 EXTENDED_TABLES 的依赖序对齐，便于对照阅读（match arm 顺序本身不影响语义）。
+        // 小说 B2（v59）：人物档案 / 人物关系 / 世界观设定 / 实体→章节引用
+        | "novel_characters"
+        | "novel_character_relations"
+        | "novel_worldview_entries"
+        | "novel_entity_refs"
+        // 游戏 G1（v60）：引擎识别事实 / 资源关联 / 构建记录 / 测试记录
+        | "game_project_facts"
+        | "game_assets"
+        | "game_builds"
+        | "game_tests"
+        // AI 漫剧 C1（v61）：剧集 / 分镜 / 角色 / 场景 / 素材版本
+        | "comic_episodes"
+        | "comic_shots"
+        | "comic_characters"
+        | "comic_scenes"
+        | "comic_media_versions"
+        // 通用 U1（v62）：里程碑 / 项目资料关联
+        | "general_milestones"
+        | "general_materials"
+        // 开发 D1（v63）：开发任务接续关联 / Git 与 Worktree 探测快照
+        | "dws_task_links"
+        | "dws_workspace_probes"
+        // 生活效率 v1（v65–v67）：快速备份也全量保存商品、事件、明细与票据引用。
+        | "life_items"
+        | "life_events"
+        | "life_event_items"
+        | "life_document_links"
         | "voice_bindings" => format!("SELECT * FROM {} ORDER BY rowid", table),
         // 运行历史：快速备份保留最近 20 次运行（回执按运行子集过滤，保证引用完整）
         "workflow_runs" => format!(

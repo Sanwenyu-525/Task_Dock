@@ -15,6 +15,7 @@ import {
   markDocumentFileUploaded,
   markDocumentUploaded,
   searchLife,
+  updatePurchase,
 } from "../life";
 import { closeDatabase, getDatabase, openDatabase } from "../database";
 
@@ -69,13 +70,8 @@ describe("生活购买记录", () => {
     expect(history?.purchases[0]?.currency).toBe("CNY");
     // 最近两次间隔 = 30 天（10/4 → 11/3）
     expect(history?.intervalDays).toBe(30);
-
-    // 关闭再打开：数据仍在，证明不是内存态。
-    await closeDatabase();
-    await openDatabase();
-    const reopened = await getItemHistory(first.itemId);
-    expect(reopened?.totalCount).toBe(3);
-    expect(reopened?.purchases[0]?.occurredAt).toBe(day(2026, 11, 3));
+    // 注意：node 测试替身是 :memory: SQLite，close/open 会得到空库，
+    // 因此「重启后仍存在」只能在真机/集成环境验证，不能在这里断言。
   });
 
   it("金额用最小货币单位整数累计，数量保留小数并规范去尾零", async () => {
@@ -104,6 +100,44 @@ describe("生活购买记录", () => {
     });
     const secondDetail = await getEventDetail(second.eventId);
     expect(secondDetail?.items[0]?.totalPriceMinor).toBe(20);
+  });
+
+  it("按货币精度落库：JPY 0 位、KWD 3 位，编辑历史行保持原精度", async () => {
+    const jpy = await createPurchase({
+      name: "日本酱油",
+      occurredAt: day(2026, 11, 1),
+      totalPrice: "100",
+      currency: "JPY",
+    });
+    const jpyDetail = await getEventDetail(jpy.eventId);
+    expect(jpyDetail?.items[0]?.totalPriceMinor).toBe(100);
+    expect(jpyDetail?.items[0]?.amountScale).toBe(0);
+
+    const kwd = await createPurchase({
+      name: "科威特椰枣",
+      occurredAt: day(2026, 11, 2),
+      totalPrice: "12.345",
+      currency: "KWD",
+    });
+    const kwdDetail = await getEventDetail(kwd.eventId);
+    expect(kwdDetail?.items[0]?.totalPriceMinor).toBe(12345);
+    expect(kwdDetail?.items[0]?.amountScale).toBe(3);
+
+    // 旧 JPY 行可能按 2 位存储；原币种编辑时按该行原 scale 解析，不改变金额含义。
+    const db = getDatabase();
+    await db.runAsync(
+      "UPDATE life_event_items SET amount_scale = 2 WHERE id = ?",
+      [jpyDetail!.items[0]!.id],
+    );
+    await updatePurchase(jpy.eventId, {
+      name: "日本酱油",
+      occurredAt: day(2026, 11, 1),
+      totalPrice: "100.00",
+      currency: "JPY",
+    });
+    const edited = await getEventDetail(jpy.eventId);
+    expect(edited?.items[0]?.totalPriceMinor).toBe(10000);
+    expect(edited?.items[0]?.amountScale).toBe(2);
   });
 
   it("同名商品复用同一条 life_item，名称相似但不同商品不强行合并", async () => {

@@ -9,12 +9,15 @@ import {
   WORKBENCH_LAYOUT_VERSION,
   WORKBENCH_NAV_WIDTH_MAX,
   WORKBENCH_NAV_WIDTH_MIN,
+  WORKBENCH_NAV_WIDTH_RAIL,
   defaultWorkbenchLayout,
   hasStoredWorkbenchLayout,
   isWorkbenchRoute,
   normalizeProjectId,
   normalizeWorkbenchLayout,
+  resolveWorkbenchNavWidth,
   selectWorkbenchLayout,
+  shouldCompactWorkbenchNavLabels,
 } from "./workbenchLayout";
 
 describe("workbenchLayout", () => {
@@ -88,6 +91,30 @@ describe("workbenchLayout", () => {
     const high = normalizeWorkbenchLayout({ version: 1, navWidth: 999, detailWidth: 999 }).config;
     expect(high.navWidth).toBe(WORKBENCH_NAV_WIDTH_MAX);
     expect(high.detailWidth).toBe(WORKBENCH_DETAIL_WIDTH_MAX);
+  });
+
+  it("导航宽度只留两个稳态：图标轨或 ≥ 名称所需宽度（2026-11-17）", () => {
+    expect(WORKBENCH_NAV_WIDTH_MIN).toBe(WORKBENCH_NAV_WIDTH_RAIL);
+    // 名称需要 200px：199/150 都会被名称遮住，一律吸附到 96px 图标轨。
+    expect(resolveWorkbenchNavWidth(199.4, 200)).toBe(WORKBENCH_NAV_WIDTH_RAIL);
+    expect(resolveWorkbenchNavWidth(150, 200)).toBe(WORKBENCH_NAV_WIDTH_RAIL);
+    expect(resolveWorkbenchNavWidth(WORKBENCH_NAV_WIDTH_RAIL, 200)).toBe(WORKBENCH_NAV_WIDTH_RAIL);
+    // 刚好放下名称即进入宽态；上限与取整仍按协议钳制。
+    expect(resolveWorkbenchNavWidth(200, 200)).toBe(200);
+    expect(resolveWorkbenchNavWidth(200.4, 200)).toBe(200);
+    expect(resolveWorkbenchNavWidth(999, 200)).toBe(WORKBENCH_NAV_WIDTH_MAX);
+    // 量不到名称宽度（首帧 / jsdom）时只做区间钳制，不凭空吸附。
+    expect(resolveWorkbenchNavWidth(150, null)).toBe(150);
+    expect(resolveWorkbenchNavWidth(180)).toBe(180);
+  });
+
+  it("折叠判据按名称实测宽度取整比较，缺省回退 180px", () => {
+    expect(shouldCompactWorkbenchNavLabels(200, 200)).toBe(false);
+    expect(shouldCompactWorkbenchNavLabels(199.4, 200)).toBe(true);
+    expect(shouldCompactWorkbenchNavLabels(96, 200)).toBe(true);
+    // 未量到名称宽度（jsdom）时保持旧兜底语义：180 起显示名称。
+    expect(shouldCompactWorkbenchNavLabels(180)).toBe(false);
+    expect(shouldCompactWorkbenchNavLabels(179.4)).toBe(true);
   });
 
   it("项目 ID 规范化：去空白、拒绝空/超长/控制字符", () => {

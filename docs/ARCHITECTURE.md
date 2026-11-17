@@ -910,6 +910,18 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
   `data-tip-skip` 抑制自身回退提示。实际宽度由 `ResizeObserver` 校正，**不再依赖窗口宽度
   媒体查询**；取整是为了避免名义 180px 实测 180.4px 时因亚像素误差误折叠（180.4→180 保持
   名称，179.4→179 进入图标态）。窗口 700px + 导航 320px 也必须显示名称。
+  **⑥导航宽态下限改为实测名称宽度 + 96px 图标轨（2026-11-17，更正 ⑤ 的固定 180px）**：
+  `WORKBENCH_NAV_WIDTH_RAIL = 96` 成为最小可拖拽宽度（导航内边距 16 + 手柄 24 + 图标 32 + × 24），
+  折叠判据 `shouldCompactWorkbenchNavLabels(width, labelFitWidth)` 改为按“名称完整显示所需宽度”
+  整像素比较；`resolveWorkbenchNavWidth` 把宽度吸附到两个稳态之一：图标轨，或 ≥ 名称所需宽度。
+  WorkbenchShell 在挂载/名称或语言变化后给根节点临时加 `data-nav-measuring="true"`，用行网格
+  固定轨道（28/20/24 + 4 段 4px 列间距 + 行内边距 6）加名称 `scrollWidth`、徽标宽度实测所需
+  宽度，同步量完立即撤销（浏览器不绘制中间态）；jsdom/首帧量不到时回退 180px 兜底阈值。
+  拖拽过程中宽度连续跟手，低于名称所需宽度即按 `data-nav-compact` 隐藏名称；松手（或键盘
+  调整）后低于名称所需宽度一律落回 96px 图标轨并落库；旧配置停在 180px 这类“名称被遮住”
+  的宽度时，只在量到名称宽度后吸附一次。图标轨同时隐藏 `.wb-nav-label` 与 `.wb-nav-badge`，
+  行网格收为 `24px 32px 24px`：图标居中、悬停不跳动，手柄与 × 保留 24px 轨道与命中区、
+  悬停/键盘聚焦才显现，徽标计数并入名称 tooltip；分节标题压成一条分隔线。
   Agent 统一图标 `AgentIcon` 由旧 Orbit Core 改为 Lucide `Bot` 机器人（`data-agent-icon="robot"`），
   全项目 Agent 入口/胶囊/面板同步生效，仍只使用 `currentColor`，默认 18px / stroke 1.75。
   测试：`WorkbenchShell.dragSort.test.tsx`（含整行拖拽面、纵向 6px 主导阈值、横向/触屏
@@ -1912,6 +1924,16 @@ CSS `grabbing` 只表达前端会话态，技术边界见本章 1023–1033 节�
 [window-size-spec.md](window-size-spec.md)；内容响应式仍按容器宽度（
 [ui-responsive-layout.md](ui-responsive-layout.md)），两者边界不得混用。
 
+**窗口可见性与置顶（2026-11-17）**：工作台创建时 `always_on_top(false)`、`skip_taskbar(false)`，
+顶栏「置顶」按钮只走 Tauri window API（`setAlwaysOnTop`），不新增业务 IPC，也不持久化（重开回到
+未置顶）。可见性随置顶状态联动：**未置顶时点击窗口外（前台换到别的进程）即 `hide()`**；置顶时越过
+失焦继续留在最前。判定在 `Focused(false)` 后 120ms 于主线程复核，以下任一条成立都不隐藏：已重新
+聚焦、已最小化（最小化会先失焦，不能变成「消失」）、期间被置顶、窗口已不可见、前台仍是本进程窗口
+（原生文件对话框、快速捕获、右键菜单、通知）。`was_focused` 只让真正拿到过焦点的窗口参与，避免
+「以 `visible(false)` 创建、揭示时前台被别的应用占着」产生的假失焦把刚显示的工作台藏起来。隐藏后
+由托盘、主窗口「打开完整工作台」、全局快捷键或再次启动经同一条 `open_or_focus_workbench` 恢复
+（`unminimize` + `show` + `set_focus`）。
+
 主窗口（`main`）不套用工作台口径：完整/紧凑/极简各自独立最小尺寸，极简下限按核心控件实测为
 **264×112**（240×96 会把「待办」挤成竖排），常量在 `window_layout::MAIN_*`，与 `tauri.conf.json`
 的启动 `minWidth/minHeight` 同源。
@@ -1985,7 +2007,7 @@ CSS `grabbing` 只表达前端会话态，技术边界见本章 1023–1033 节�
      "detailOpen": true, "navWidth": 224, "detailWidth": 320 }
    ```
    路由必须是注册中心逻辑 Tab 或 `home`；项目 ID 去空白/限长；宽度钳制
-   （导航 180–320，右栏 260–480）；版本/对象损坏整体回默认；未知字段忽略。
+   （导航 96–320，右栏 260–480）；版本/对象损坏整体回默认；未知字段忽略。
    后端 `validate_setting` 只做结构边界校验（对象/版本/路由/项目/布尔/宽度范围），
    语义归一化在 `src/lib/workbenchLayout.ts`，写入经串行链。
 3. **Project Workspace**：`workspace_instances.layout_json`（模块顺序/隐藏/当前模块），

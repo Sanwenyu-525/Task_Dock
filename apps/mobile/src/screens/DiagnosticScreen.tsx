@@ -43,6 +43,10 @@ const ENTITY_LABEL: Record<string, string> = {
   task: "任务",
   note: "笔记",
   capture: "收集箱",
+  life_item: "生活商品",
+  life_event: "生活记录",
+  life_event_item: "购买明细",
+  life_document_link: "票据关联",
 };
 
 const REASON_LABEL: Record<string, string> = {
@@ -51,6 +55,7 @@ const REASON_LABEL: Record<string, string> = {
   record_missing: "桌面端没有该记录",
   invalid_patch: "补丁被拒绝",
   permission_denied: "设备权限不足",
+  life_item_name_conflict: "同名商品不同 ID",
   unknown: "未知冲突",
 };
 

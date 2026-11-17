@@ -530,6 +530,10 @@ pub fn general_apply_template_impl(
                 let item_id = uuid::Uuid::new_v4().to_string();
                 let metadata = serde_json::json!({ "generalTemplate": template_id })
                     .to_string();
+                // sort_order 按阶段全局编号（阶段序号 × 100 + 阶段内序号），
+                // 使共享事项列表「ORDER BY sort_order」按模板阶段顺序成段返回，
+                // 避免同 created_at 下各阶段首事项交错打乱阶段顺序。
+                let sort_order = stage_index as i64 * 100 + item_index as i64;
                 conn.execute(
                     "INSERT INTO workspace_items
                      (id, project_id, parent_id, title, stage, status, sort_order,
@@ -540,7 +544,7 @@ pub fn general_apply_template_impl(
                         project_id,
                         item_title.trim(),
                         stage.title.trim(),
-                        item_index as i64,
+                        sort_order,
                         metadata,
                         now
                     ],
@@ -1526,7 +1530,8 @@ mod tests {
         assert!(file.exists(), "删除资料关联不得删除原始文件");
         assert_eq!(general_material_list_impl(&db, &project.id).unwrap().materials.len(), 1);
 
-        // 不存在的路径拒绝注册。
+        // 外部删除源文件后，不存在的路径拒绝注册。
+        std::fs::remove_dir_all(&dir).unwrap();
         let ghost = general_material_save_impl(
             &db,
             None,
@@ -1537,7 +1542,6 @@ mod tests {
             None,
         );
         assert!(ghost.is_err(), "注册时路径必须存在");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1557,14 +1561,14 @@ mod tests {
         )
         .is_err());
 
-        // 跨项目隔离：另一项目看不到本项目里程碑/资料。
+        // 跨类型隔离：非 general 项目读写专业命令一律拒绝（与漫剧等四线读路径门禁口径一致）。
         let m = general_milestone_save_impl(
             &db, None, general.id.clone(), "阶段".into(), None, None, None, None, None, None,
         )
         .unwrap()
         .milestone;
-        assert!(general_milestone_list_impl(&db, &novel.id).unwrap().milestones.is_empty());
-        assert!(general_milestone_list_impl(&db, &dev.id).unwrap().milestones.is_empty());
+        assert!(general_milestone_list_impl(&db, &novel.id).is_err());
+        assert!(general_milestone_list_impl(&db, &dev.id).is_err());
 
         // 归档后写入拒绝、读取允许。
         crate::commands::project_workspace::workspace_project_set_status_impl(
@@ -1646,8 +1650,9 @@ mod tests {
         let rule_mat = table_rule("general_materials").expect("资料表已登记备份");
         assert_eq!(rule_m.restore_order, 680);
         assert_eq!(rule_mat.restore_order, 682);
-        assert!(!is_extended_table("general_milestones"));
-        assert!(!is_extended_table("general_materials"));
+        // extended 标记由公共层 backup.rs 注册表统一登记；本线只校验注册表标记与规则声明一致。
+        assert_eq!(is_extended_table("general_milestones"), rule_m.extended);
+        assert_eq!(is_extended_table("general_materials"), rule_mat.extended);
 
         // 文件库落盘 → 重开 → 数据仍在（真实 SQLite 持久化）。
         let path = temp_db_path("persist");
@@ -2058,17 +2063,21 @@ mod tests {
 
         let item_gone = db
             .with_read(|c| {
-                c.query_row("SELECT 1 FROM workspace_items WHERE id = ?1", params![item.id], |_| Ok(()))
+                let row: Option<()> = c
+                    .query_row("SELECT 1 FROM workspace_items WHERE id = ?1", params![item.id], |_| Ok(()))
+                    .optional()?;
+                Ok(row)
             })
-            .optional()
             .unwrap()
             .is_none();
         assert!(!item_gone, "删除里程碑不得删除关联事项");
         let task_gone = db
             .with_read(|c| {
-                c.query_row("SELECT 1 FROM tasks WHERE id = ?1", params!["t-keep"], |_| Ok(()))
+                let row: Option<()> = c
+                    .query_row("SELECT 1 FROM tasks WHERE id = ?1", params!["t-keep"], |_| Ok(()))
+                    .optional()?;
+                Ok(row)
             })
-            .optional()
             .unwrap()
             .is_none();
         assert!(!task_gone, "删除里程碑不得删除关联任务");

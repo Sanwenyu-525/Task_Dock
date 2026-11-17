@@ -1,11 +1,11 @@
-// 迁移测试：v1→v11 全序列在真实 SQLite（node:sqlite 内存库）上执行，
+// 迁移测试：v1→v12 全序列在真实 SQLite（node:sqlite 内存库）上执行，
 // 验证 schema 演进与既有数据保留。业务代码（schema.ts + database.ts）原样运行。
 import { beforeEach, describe, expect, it } from "vitest";
 import * as SQLite from "expo-sqlite";
 import type { SQLiteBindValue } from "expo-sqlite";
 
 import { closeDatabase, getDatabase, openDatabase } from "../database";
-import { MIGRATIONS, MIGRATION_11, SCHEMA_VERSION } from "../schema";
+import { MIGRATIONS, MIGRATION_11, MIGRATION_12, SCHEMA_VERSION } from "../schema";
 
 type Bind = SQLiteBindValue[];
 
@@ -22,18 +22,18 @@ beforeEach(async () => {
   await closeDatabase();
 });
 
-describe("迁移 v1→v11", () => {
+describe("迁移 v1→v12", () => {
   it("迁移到最新版本且序列连续", async () => {
     await openDatabase();
     const row = await rawFirst<{ user_version: number }>("PRAGMA user_version");
     expect(row?.user_version).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(11);
+    expect(SCHEMA_VERSION).toBe(12);
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
     ]);
   });
 
-  it("v10 新增生活四表与查询索引，v11 补充票据远端引用列", async () => {
+  it("v10 新增生活四表与查询索引，v11 补票据远端引用，v12 补延后表与金额精度", async () => {
     await openDatabase();
     const itemColumns = (await rawAll<{ name: string }>("PRAGMA table_info(life_items)")).map(
       (column) => column.name,
@@ -55,16 +55,16 @@ describe("迁移 v1→v11", () => {
     expect(eventItemColumns).toEqual([
       "id", "event_id", "item_id", "item_name_snapshot", "quantity_value",
       "quantity_unit", "unit_price_minor", "total_price_minor", "currency", "note",
-      "created_at", "updated_at", "rev", "server_rev",
+      "created_at", "updated_at", "rev", "server_rev", "amount_scale",
     ]);
     const linkColumns = (
       await rawAll<{ name: string }>("PRAGMA table_info(life_document_links)")
     ).map((column) => column.name);
     expect(linkColumns).toEqual([
       "id", "owner_type", "owner_id", "document_ref", "document_source",
-      "document_name", "mime", "byte_size", "remote_ref", "remote_source",
-      "transfer_state", "created_at",
-      "updated_at", "deleted_at", "rev", "server_rev",
+      "document_name", "mime", "byte_size", "transfer_state",
+      "created_at", "updated_at", "deleted_at", "rev", "server_rev",
+      "remote_ref", "remote_source",
     ]);
     const indexes = (
       await rawAll<{ name: string }>(
@@ -143,6 +143,49 @@ describe("迁移 v1→v11", () => {
         remote_source: null,
         transfer_state: "local",
       });
+    } finally {
+      await legacy.closeAsync();
+    }
+  });
+
+  it("v11 旧库追加 v12：延后表就绪，旧金额行默认按 2 位解释", async () => {
+    await closeDatabase();
+    const legacy = await SQLite.openDatabaseAsync("legacy-life-v12");
+    try {
+      for (const migration of MIGRATIONS.filter((entry) => entry.version <= 11)) {
+        await legacy.execAsync(migration.sql);
+      }
+      await legacy.execAsync("PRAGMA user_version = 11");
+      await legacy.runAsync(
+        `INSERT INTO life_events (id, event_type, title, occurred_at, created_at, updated_at)
+         VALUES ('event-v12', 'purchase', '大米', 100, 100, 100)`,
+      );
+      await legacy.runAsync(
+        `INSERT INTO life_event_items
+           (id, event_id, item_name_snapshot, quantity_unit, total_price_minor, currency,
+            created_at, updated_at)
+         VALUES ('item-v12', 'event-v12', '大米', 'kg', 4800, 'CNY', 100, 100)`,
+      );
+      await legacy.execAsync(MIGRATION_12);
+      await legacy.execAsync("PRAGMA user_version = 12");
+
+      const row = await legacy.getFirstAsync<{ total_price_minor: number; amount_scale: number }>(
+        `SELECT total_price_minor, amount_scale FROM life_event_items WHERE id = 'item-v12'`,
+      );
+      expect(row).toEqual({ total_price_minor: 4800, amount_scale: 2 });
+      const deferred = await legacy.getFirstAsync<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'life_sync_deferred'",
+      );
+      expect(deferred?.name).toBe("life_sync_deferred");
+      const indexes = await legacy.getAllAsync<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'life_sync_deferred'",
+      );
+      expect(indexes.map((item) => item.name)).toEqual(
+        expect.arrayContaining([
+          "idx_life_sync_deferred_reason",
+          "idx_life_sync_deferred_target",
+        ]),
+      );
     } finally {
       await legacy.closeAsync();
     }

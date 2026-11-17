@@ -29,6 +29,7 @@ import {
   evaluateEligibility, finalizeOrphanRecord, findRunningEquivalent, housekeeping, isCancelRequested, readQueue, readTask,
   writeTask,
 } from "./queue.mjs";
+import { collectArtifactProvenance, collectSourceProvenance, writeBuildProvenance } from "./provenance.mjs";
 
 // 调度层退出码（子进程自身的退出码原样透传；用日志尾部 `sched:` 行区分层级）
 export const EXIT = {
@@ -231,6 +232,9 @@ export async function executeTask({
   let reservation = null;
   let reservationHeartbeat = null;
   let released = false;
+  // 任务真正开始执行时采集一次源码快照；排队/未启动的任务保持 null，
+  // 但仍会在收尾时写一份“未启动/取消”的 provenance，避免日志路径悬空。
+  let sourceProvenance = null;
   let lastNoticeAt = 0;
   let lastHousekeepAt = 0;
   let lastReclaimProbeAt = 0;
@@ -280,11 +284,47 @@ export async function executeTask({
       ? Date.parse(t.startedAt) - Date.parse(t.enqueuedAt)
       : Date.now() - Date.parse(t.enqueuedAt);
 
+    // 先采集源码/产物 provenance，再落最终状态：这样任务记录、历史与边车文件
+    // 指向同一份证据，不会出现 task 已结束但日志里没有来源记录的空窗。
+    let provenancePath = null;
+    let provenanceSummary = null;
+    try {
+      const startedAtMs = Date.parse(t.startedAt ?? t.enqueuedAt ?? "");
+      const artifacts = Number.isFinite(startedAtMs)
+        ? collectArtifactProvenance({ cwd: t.cwd ?? cwd, repoRoot, startedAtMs })
+        : null;
+      provenancePath = writeBuildProvenance({
+        logDir: p.logs,
+        task: t,
+        status,
+        exitCode,
+        reason,
+        startedAt: t.startedAt ?? null,
+        finishedAt,
+        source: sourceProvenance,
+        artifacts,
+      });
+      provenanceSummary = {
+        path: provenancePath,
+        head: sourceProvenance?.head ?? null,
+        shortHead: sourceProvenance?.shortHead ?? null,
+        branch: sourceProvenance?.branch ?? null,
+        dirty: sourceProvenance?.dirty ?? null,
+        dirtyFileCount: sourceProvenance?.dirtyFileCount ?? null,
+        sourceFingerprint: sourceProvenance?.sourceFingerprint ?? null,
+        artifactCount: artifacts?.files?.length ?? 0,
+      };
+    } catch (e) {
+      err(`写 provenance 失败（不阻断构建收尾）：${e?.message ?? e}`);
+    }
+
     // 先落最终状态再让 housekeeping 清理：附加方需要读到确定的 exitCode
     try {
       writeTask(home, {
         ...t, status, exitCode: exitCode ?? null, finishedAt,
         finishReason: reason ?? null,
+        provenancePath,
+        source: provenanceSummary,
       });
     } catch (e) { err(`写最终状态失败：${e?.message ?? e}`); }
 
@@ -310,6 +350,8 @@ export async function executeTask({
         waitMs: Math.max(0, waitTotal), runMs,
         worktree: t.worktree, command: t.command, cwd: t.cwd,
         logPath: t.logPath, fingerprint: t.fingerprint?.hash ?? null,
+        provenancePath,
+        source: provenanceSummary,
         // 全局并发证据：准入那一刻在跑的构建数与上限（约束 C）
         globalAtStart: t.globalAtStart ?? null,
         reservation: reservation
@@ -469,6 +511,22 @@ export async function executeTask({
     task.startedAt = nowIso();
     task.waitMs = Date.now() - startWait;
     task.waitReason = null;
+    try {
+      sourceProvenance = collectSourceProvenance({ cwd, repoRoot });
+      task.source = sourceProvenance
+        ? {
+            head: sourceProvenance.head,
+            shortHead: sourceProvenance.shortHead,
+            branch: sourceProvenance.branch,
+            dirty: sourceProvenance.dirty,
+            dirtyFileCount: sourceProvenance.dirtyFileCount,
+            sourceFingerprint: sourceProvenance.sourceFingerprint,
+          }
+        : null;
+    } catch (provenanceErr) {
+      err(`采集源码 provenance 失败（不阻断构建）：${provenanceErr?.message ?? provenanceErr}`);
+      task.source = null;
+    }
     writeTask(home, task);
     lease.setPhase("running");
     setReservationPhase(home, reservation, "starting");

@@ -320,7 +320,7 @@ export default function GameAssetsPanel({
               <span className="ws-flex">
                 识别结果：
                 <span className="ws-badge" data-testid="game-engine-badge">
-                  {detection ? engineLabel(detection.engine) : "—"}
+                  {facts?.engine ? engineLabel(facts.engine) : detection ? engineLabel(detection.engine) : "—"}
                 </span>
                 {facts && (
                   <span className="ws-badge ws-badge-soft" data-testid="game-facts-method">
@@ -352,6 +352,12 @@ export default function GameAssetsPanel({
                   检测到多引擎标记冲突：{detection.conflicts.join("、")}；当前按优先级暂判为
                   {engineLabel(detection.engine)}，请核对后手动指定。
                 </span>
+              </div>
+            )}
+            {facts && detection && facts.engine !== detection.engine && (
+              <div className="ws-meta">
+                本次扫描建议：{engineLabel(detection.engine)}（未覆盖已保存的
+                {facts.detectionMethod === "manual" ? "手动指定" : "自动识别"}事实）
               </div>
             )}
             {detection && !detection.rootExists && (

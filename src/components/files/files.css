@@ -942,7 +942,10 @@ body.fw-resizing-row * {
   background: var(--surface-overlay);
 }
 
+/* 选中态用通栏矩形色块，不继承行的圆角；多选时相邻行连成一整条，
+   与资源管理器的列表选择一致（悬停态仍保留行圆角）。 */
 .fw-row.is-selected {
+  border-radius: 0;
   background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 

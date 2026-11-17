@@ -94,10 +94,20 @@ vi.mock("react-native", async () => {
       },
       props.children as React.ReactNode,
     );
+  const TextInput = (props: Record<string, unknown>) => {
+    const onChangeText = props.onChangeText as ((value: string) => void) | undefined;
+    return React.createElement("input", {
+      ...clean(props),
+      value: props.value as string,
+      onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
+        onChangeText?.(event.target.value);
+      },
+    });
+  };
   return {
     View: host("div"),
     Text: host("span"),
-    TextInput: host("input"),
+    TextInput,
     ScrollView: host("div"),
     Image: host("img"),
     Pressable,
@@ -340,6 +350,13 @@ function makeDeferred() {
   return { promise, resolve, reject };
 }
 
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (!setter) throw new Error("HTMLInputElement value setter unavailable");
+  setter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 beforeEach(() => {
   page.assets = [];
   page.assetResults = [];
@@ -437,6 +454,94 @@ describe("CaptureStashScreen Local First", () => {
 
     expect(host.textContent).toContain("run4-01.jpg");
     expect(page.reconcileCalls).toBeLessThanOrEqual(2);
+
+    await act(async () => {
+      root.unmount();
+    });
+    host.remove();
+  });
+
+  it("F. 对账失败时，期间到达的新 revision 仍补跑一次，不丢最新状态", async () => {
+    page.assets = assets(1, "run1");
+    page.assetResults = [assets(1, "run1"), assets(1, "run2")];
+    page.reconcileDeferred = makeDeferred();
+    const { host, root } = await renderPage();
+
+    expect(page.reconcileCalls).toBe(1);
+    await act(async () => {
+      page.revisionListeners.slice().forEach((listener) => listener());
+    });
+    await flush();
+
+    // 第一次对账仍在飞行中，新 revision 只设置 pending，不并发发请求。
+    expect(host.textContent).toContain("run2-01.jpg");
+    expect(page.reconcileCalls).toBe(1);
+
+    await act(async () => {
+      page.reconcileDeferred!.reject(new Error("offline: desktop unreachable"));
+    });
+    await flush(12);
+
+    // 失败也必须消费 pending；否则最新一轮刷新永远等不到对账。
+    expect(page.reconcileCalls).toBe(2);
+    expect(host.textContent).toContain("run2-01.jpg");
+    expect(host.textContent).not.toContain("本机素材读取失败");
+    expect(page.deleteCalls).toBe(0);
+
+    await act(async () => {
+      root.unmount();
+    });
+    host.remove();
+  });
+
+  it("G. 后台刷新目的地不覆盖详情面板未保存的文件名/备注草稿", async () => {
+    page.assets = assets(1);
+    page.reconcileDeferred = makeDeferred();
+    const { host, root } = await renderPage();
+
+    const card = Array.from(host.querySelectorAll('[role="button"]')).find((node) =>
+      node.textContent?.includes("素材-01.jpg"),
+    ) as HTMLElement | undefined;
+    expect(card).toBeTruthy();
+    await act(async () => {
+      card!.click();
+    });
+    await flush();
+
+    const nameInput = Array.from(host.querySelectorAll("input")).find(
+      (input) => input.getAttribute("aria-label") === "文件名",
+    ) as HTMLInputElement | undefined;
+    const noteInput = Array.from(host.querySelectorAll("input")).find(
+      (input) => input.getAttribute("aria-label") === "备注",
+    ) as HTMLInputElement | undefined;
+    expect(nameInput).toBeTruthy();
+    expect(noteInput).toBeTruthy();
+
+    await act(async () => {
+      setInputValue(nameInput!, "未保存的新名字");
+      setInputValue(noteInput!, "未保存的备注");
+    });
+    await flush();
+
+    // 模拟后台对账成功：目的地状态回写，详情面板应更新状态行，但不能重置草稿。
+    page.destinations = [
+      {
+        assetId: "素材-1",
+        destination: "desktop",
+        state: "done",
+        remoteId: "f".repeat(32),
+        remoteShelfId: null,
+        lastError: null,
+      },
+    ];
+    await act(async () => {
+      page.reconcileDeferred!.resolve({ checked: 1, stale: 0, updated: 0 });
+    });
+    await flush(12);
+
+    expect(host.textContent).toContain("电脑收件箱 · 成功");
+    expect(nameInput!.value).toBe("未保存的新名字");
+    expect(noteInput!.value).toBe("未保存的备注");
 
     await act(async () => {
       root.unmount();

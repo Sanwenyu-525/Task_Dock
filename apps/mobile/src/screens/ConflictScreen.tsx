@@ -10,9 +10,11 @@ import { GlassCard } from "../components/GlassCard";
 import { PressableScale } from "../components/PressableScale";
 import { useToast } from "../feedback/ToastProvider";
 import {
+  isLifeNameConflict,
   listSyncConflicts,
   resolveConflictWithLocal,
   resolveConflictWithServer,
+  resolveLifeNameConflict,
   type SyncConflictRow,
 } from "../db/sync";
 import { describeError } from "../lib/errors";
@@ -27,6 +29,7 @@ const REASON_LABEL: Record<string, string> = {
   record_missing: "桌面端没有该记录",
   invalid_patch: "补丁被拒绝",
   permission_denied: "设备权限不足",
+  life_item_name_conflict: "同名商品不同 ID",
   unknown: "未知冲突",
 };
 
@@ -34,6 +37,10 @@ const ENTITY_LABEL: Record<string, string> = {
   task: "任务",
   note: "笔记",
   capture: "收集箱",
+  life_item: "生活商品",
+  life_event: "生活记录",
+  life_event_item: "购买明细",
+  life_document_link: "票据关联",
 };
 
 interface ServerRecordPreview {
@@ -51,13 +58,16 @@ function parseServerRecord(raw: string | null): ServerRecordPreview {
       rev?: number;
     };
     const rawTitle = value.fields?.title;
+    const rawName = value.fields?.name;
     const rawContent = value.fields?.content;
     const title =
       typeof rawTitle === "string" && rawTitle.trim()
         ? rawTitle
-        : typeof rawContent === "string" && rawContent.trim()
-          ? rawContent
-          : null;
+        : typeof rawName === "string" && rawName.trim()
+          ? rawName
+          : typeof rawContent === "string" && rawContent.trim()
+            ? rawContent
+            : null;
     return {
       title,
       deleted: value.deleted === true,
@@ -99,11 +109,15 @@ export function ConflictScreen({ nav }: { nav: Nav }) {
   }, [load]);
 
   const resolve = useCallback(
-    async (conflict: SyncConflictRow, mode: "server" | "local") => {
+    async (conflict: SyncConflictRow, mode: "server" | "local" | "merge") => {
       if (busyId) return;
       setBusyId(conflict.op_id);
       try {
-        if (mode === "server") {
+        if (mode === "merge") {
+          await resolveLifeNameConflict(conflict);
+          await syncNow();
+          showToast("已关联到桌面端商品，购买历史已保留并重新同步", "success");
+        } else if (mode === "server") {
           await resolveConflictWithServer(conflict);
           showToast("已采用桌面端版本", "success");
         } else {
@@ -161,6 +175,7 @@ export function ConflictScreen({ nav }: { nav: Nav }) {
               server.title?.trim() ||
               `${entityLabel} ${conflict.target_id.slice(0, 8)}`;
             const busy = busyId === conflict.op_id;
+            const nameConflict = isLifeNameConflict(conflict);
             return (
               <GlassCard key={conflict.op_id} style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -177,33 +192,58 @@ export function ConflictScreen({ nav }: { nav: Nav }) {
                   {server.rev != null ? ` · 桌面端版本 ${server.rev}` : ""}
                   {server.deleted ? " · 桌面端已删除" : ""}
                 </Text>
+                {nameConflict ? (
+                  <Text style={[styles.cardMeta, { color: tokens.textSoft }]}>
+                    两端离线创建了同名商品。关联到桌面端商品后，本机购买明细、日期、金额与名称快照都会保留。
+                  </Text>
+                ) : null}
                 <View style={styles.actions}>
-                  {conflict.server_json ? (
+                  {nameConflict ? (
                     <PressableScale
-                      onPress={() => void resolve(conflict, "server")}
+                      onPress={() => void resolve(conflict, "merge")}
                       disabled={busy}
-                      accessibilityLabel="采用桌面端版本"
+                      accessibilityLabel="关联到桌面端已有商品"
                       style={styles.actionSlot}
-                      contentStyle={[styles.actionBtn, { borderColor: tokens.cardBorder }]}
+                      contentStyle={[
+                        styles.actionBtn,
+                        styles.actionPrimary,
+                        { backgroundColor: busy ? tokens.track : tokens.accentFill },
+                      ]}
                     >
-                      <Text style={[styles.actionText, { color: tokens.text }]}>采用桌面端</Text>
+                      <Text style={[styles.actionText, { color: tokens.onAccent }]}>
+                        {busy ? "处理中…" : "关联到已有商品"}
+                      </Text>
                     </PressableScale>
-                  ) : null}
-                  <PressableScale
-                    onPress={() => void resolve(conflict, "local")}
-                    disabled={busy}
-                    accessibilityLabel="保留本机版本并重新发送"
-                    style={styles.actionSlot}
-                    contentStyle={[
-                      styles.actionBtn,
-                      styles.actionPrimary,
-                      { backgroundColor: busy ? tokens.track : tokens.accentFill },
-                    ]}
-                  >
-                    <Text style={[styles.actionText, { color: tokens.onAccent }]}>
-                      {busy ? "处理中…" : "保留本机"}
-                    </Text>
-                  </PressableScale>
+                  ) : (
+                    <>
+                      {conflict.server_json ? (
+                        <PressableScale
+                          onPress={() => void resolve(conflict, "server")}
+                          disabled={busy}
+                          accessibilityLabel="采用桌面端版本"
+                          style={styles.actionSlot}
+                          contentStyle={[styles.actionBtn, { borderColor: tokens.cardBorder }]}
+                        >
+                          <Text style={[styles.actionText, { color: tokens.text }]}>采用桌面端</Text>
+                        </PressableScale>
+                      ) : null}
+                      <PressableScale
+                        onPress={() => void resolve(conflict, "local")}
+                        disabled={busy}
+                        accessibilityLabel="保留本机版本并重新发送"
+                        style={styles.actionSlot}
+                        contentStyle={[
+                          styles.actionBtn,
+                          styles.actionPrimary,
+                          { backgroundColor: busy ? tokens.track : tokens.accentFill },
+                        ]}
+                      >
+                        <Text style={[styles.actionText, { color: tokens.onAccent }]}>
+                          {busy ? "处理中…" : "保留本机"}
+                        </Text>
+                      </PressableScale>
+                    </>
+                  )}
                 </View>
               </GlassCard>
             );

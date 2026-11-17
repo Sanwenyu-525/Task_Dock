@@ -1286,6 +1286,7 @@ pub fn run() {
             commands::system::get_snap_state,
             commands::system::hub_health,
             commands::system::performance_diagnostics,
+            commands::system::app_build_info,
             commands::system::apply_window_material,
             commands::system::apply_window_radius,
             // 工作台窗口半径（与主窗同一口径，按视觉预设由前端下发）

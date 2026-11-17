@@ -264,12 +264,19 @@ export function currencyDecimals(currency: string): number {
 export function parseMoneyMinor(
   raw: string | null | undefined,
   currency: string,
+  amountScale?: number | null,
 ): number | null {
   const value = (raw ?? "").trim().replace(/,/g, "");
   if (value === "") return null;
   const code = normalizeCurrency(currency);
   if (!code) throw new Error("填写金额时必须选择货币");
-  const scale = currencyDecimals(code);
+  const scale =
+    typeof amountScale === "number" &&
+    Number.isInteger(amountScale) &&
+    amountScale >= 0 &&
+    amountScale <= 3
+      ? amountScale
+      : currencyDecimals(code);
   const pattern = scale === 0 ? /^\d+$/ : new RegExp(`^\\d+(\\.\\d{1,${scale}})?$`);
   if (!pattern.test(value)) {
     throw new Error(

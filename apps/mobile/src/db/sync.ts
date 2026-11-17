@@ -24,6 +24,7 @@ import {
   resetLifeSyncState,
   retryDeferredLifeChangesInTx,
   softDeleteLifeLocalCopy,
+  type LifeEntity,
 } from "./lifeSync";
 import { newId } from "../lib/id";
 
@@ -912,7 +913,14 @@ async function enqueueLifeUpdate(
   await db.runAsync(
     `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [newId("op"), entity, targetId, baseRev, JSON.stringify({ type: "update" }), now],
+    [
+      newId("op"),
+      entity,
+      targetId,
+      baseRev,
+      JSON.stringify({ type: baseRev > 0 ? "update" : "create" }),
+      now,
+    ],
   );
 }
 
@@ -953,56 +961,22 @@ export async function resolveLifeNameConflict(conflict: SyncConflictRow): Promis
         )) ?? null;
     }
 
+    let links: LifeLinkRowForMerge[] = [];
+    let rows: LifeEventItemRowForMerge[] = [];
     if (source && source.id !== targetId) {
-      // 商品级票据关联：目标已有同一文件时只保留目标那条，否则改挂到目标。
-      const links = await db.getAllAsync<LifeLinkRowForMerge>(
+      links = await db.getAllAsync<LifeLinkRowForMerge>(
         `SELECT id, document_ref, document_source, server_rev
            FROM life_document_links
           WHERE owner_type = 'item' AND owner_id = ? AND deleted_at IS NULL`,
         [source.id],
       );
-      for (const link of links) {
-        const duplicate = await db.getFirstAsync<{ id: string }>(
-          `SELECT id FROM life_document_links
-            WHERE deleted_at IS NULL AND owner_type = 'item' AND owner_id = ?
-              AND document_ref = ? AND document_source = ? AND id <> ? LIMIT 1`,
-          [targetId, link.document_ref, link.document_source, link.id],
-        );
-        if (duplicate) {
-          await db.runAsync(
-            `UPDATE life_document_links
-                SET deleted_at = ?, updated_at = ?, rev = rev + 1
-              WHERE id = ?`,
-            [now, now, link.id],
-          );
-        } else {
-          await db.runAsync(
-            `UPDATE life_document_links
-                SET owner_id = ?, updated_at = ?, rev = rev + 1
-              WHERE id = ?`,
-            [targetId, now, link.id],
-          );
-          await enqueueLifeUpdate(db, "life_document_link", link.id, link.server_rev ?? 0, now);
-        }
-      }
-
-      // 购买明细指到目标商品；名称快照、日期、金额与单位保持原样。
-      const rows = await db.getAllAsync<LifeEventItemRowForMerge>(
+      rows = await db.getAllAsync<LifeEventItemRowForMerge>(
         "SELECT id, item_id, server_rev FROM life_event_items WHERE item_id = ?",
         [source.id],
       );
-      for (const row of rows) {
-        await db.runAsync(
-          "UPDATE life_event_items SET item_id = ?, updated_at = ?, rev = rev + 1 WHERE id = ?",
-          [targetId, now, row.id],
-        );
-        await enqueueLifeUpdate(db, "life_event_item", row.id, row.server_rev ?? 0, now);
-        await db.runAsync(
-          "DELETE FROM sync_conflicts WHERE entity = 'life_event_item' AND target_id = ?",
-          [row.id],
-        );
-      }
 
+      // 先软删源商品释放唯一索引，再落目标商品；明细的 item_id 有外键，
+      // 必须在目标商品存在后才能重映射，否则会 FOREIGN KEY constraint failed。
       await db.runAsync(
         `UPDATE life_items SET deleted_at = ?, updated_at = ?, rev = rev + 1, server_rev = 0
           WHERE id = ?`,
@@ -1017,9 +991,17 @@ export async function resolveLifeNameConflict(conflict: SyncConflictRow): Promis
         [source.id],
       );
       await clearDeferredLifeChangeForTarget(db, source.id);
+      // 源商品如果已经同步到桌面，必须发删除墓碑，否则下次 pull 仍会把它拉回来。
+      if ((source.server_rev ?? 0) > 0) {
+        await db.runAsync(
+          `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
+           VALUES (?, 'life_item', ?, ?, '{"type":"delete"}', ?)`,
+          [newId("op"), source.id, source.server_rev, now],
+        );
+      }
     }
 
-    // 把桌面端商品记录落到本机（可能是新 ID；本地事件已重映射到它）。
+    // 把桌面端商品记录落到本机（可能是新 ID；随后把本地明细/关联重映射到它）。
     const name = asString(change.fields.name, normalized);
     const category = asString(change.fields.category);
     const aliases = JSON.stringify(
@@ -1057,6 +1039,56 @@ export async function resolveLifeNameConflict(conflict: SyncConflictRow): Promis
         change.rev,
       ],
     );
+
+    // 商品级票据关联：目标已有同一文件时只保留目标那条并给源关联发删除墓碑，
+    // 否则改挂到目标；两种情况都不复制或删除原图。
+    for (const link of links) {
+      const duplicate = await db.getFirstAsync<{ id: string }>(
+        `SELECT id FROM life_document_links
+          WHERE deleted_at IS NULL AND owner_type = 'item' AND owner_id = ?
+            AND document_ref = ? AND document_source = ? AND id <> ? LIMIT 1`,
+        [targetId, link.document_ref, link.document_source, link.id],
+      );
+      if (duplicate) {
+        await db.runAsync(
+          `UPDATE life_document_links
+              SET deleted_at = ?, updated_at = ?, rev = rev + 1
+            WHERE id = ?`,
+          [now, now, link.id],
+        );
+        await db.runAsync(
+          "DELETE FROM outbox WHERE entity = 'life_document_link' AND target_id = ?",
+          [link.id],
+        );
+        await db.runAsync(
+          `INSERT INTO outbox (op_id, entity, target_id, base_rev, payload, created_at)
+           VALUES (?, 'life_document_link', ?, ?, '{"type":"delete"}', ?)`,
+          [newId("op"), link.id, link.server_rev ?? 0, now],
+        );
+      } else {
+        await db.runAsync(
+          `UPDATE life_document_links
+              SET owner_id = ?, updated_at = ?, rev = rev + 1
+            WHERE id = ?`,
+          [targetId, now, link.id],
+        );
+        await enqueueLifeUpdate(db, "life_document_link", link.id, link.server_rev ?? 0, now);
+      }
+    }
+
+    // 购买明细指到目标商品；名称快照、日期、金额与单位保持原样。
+    for (const row of rows) {
+      await db.runAsync(
+        "UPDATE life_event_items SET item_id = ?, updated_at = ?, rev = rev + 1 WHERE id = ?",
+        [targetId, now, row.id],
+      );
+      await enqueueLifeUpdate(db, "life_event_item", row.id, row.server_rev ?? 0, now);
+      await db.runAsync(
+        "DELETE FROM sync_conflicts WHERE entity = 'life_event_item' AND target_id = ?",
+        [row.id],
+      );
+    }
+
     await db.runAsync(
       "DELETE FROM outbox WHERE entity = 'life_item' AND target_id = ? AND state = 'conflict'",
       [targetId],

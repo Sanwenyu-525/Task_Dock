@@ -158,24 +158,38 @@ describe("生活同步 pull", () => {
     ).toHaveLength(1);
   });
 
-  it("外键顺序错误时跳过关联，事件到达后重放可落库", async () => {
+  it("关联先到：延后保存；父级到达后自动重放，不随游标丢失", async () => {
     const first = await applyPullChanges([linkChange(1)]);
-    expect(first.skipped).toBe(1);
-    // 事件到达后重放同一变更
-    await applyPullChanges([itemChange(1), eventChange(1)]);
-    const replay = await applyPullChanges([linkChange(1)]);
-    expect(replay.applied).toBe(1);
+    expect(first).toEqual({ applied: 0, deleted: 0, skipped: 1 });
+    expect(
+      await getDatabase().getFirstAsync<{ id: number; reason: string }>(
+        "SELECT id, reason FROM life_sync_deferred WHERE target_id = 'link-g'",
+      ),
+    ).toEqual({ id: expect.any(Number), reason: "dependency" });
+
+    // 商品/事件到达时，同一事务末尾自动重放延后关联，无需再手工重放。
+    const parentArrival = await applyPullChanges([itemChange(1), eventChange(1)]);
+    expect(parentArrival.applied).toBe(3);
     expect(
       await getDatabase().getFirstAsync<{ id: string }>(
         "SELECT id FROM life_document_links WHERE id = 'link-g'",
       ),
     ).toEqual({ id: "link-g" });
+    expect(
+      await getDatabase().getFirstAsync<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM life_sync_deferred",
+      ),
+    ).toEqual({ n: 0 });
+
+    // 同一变更再次到达时已经是旧版本，跳过但记录仍在。
+    const replay = await applyPullChanges([linkChange(1)]);
+    expect(replay).toEqual({ applied: 0, deleted: 0, skipped: 1 });
   });
 
   it("墓碑按版本生效；旧墓碑不会复活或删除新记录", async () => {
     await applyPullChanges([itemChange(5), eventChange(5)]);
     const tombstone = await applyPullChanges([
-      { ...eventChange(5), deleted: true, fields: {} },
+      { ...eventChange(6), deleted: true, fields: {} },
     ]);
     expect(tombstone.deleted).toBe(1);
     const db = getDatabase();

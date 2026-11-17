@@ -195,6 +195,11 @@ npm run integrate -- batch plan --platform desktop   # 只读：查看下一验�
 ### 5.2 统一构建与安装包
 - **正式测试安装包只从集成快照构建**：`npm run integrate -- build --snapshot <快照> --platform
   desktop|web|android`。共享工作区里的未提交改动、`main` 上更晚的提交都不进入产物。
+- **构建前先对齐“最新代码”**：执行 `npm run integrate:status` 与 `batch plan`，在不违反批次和资源规则的
+  前提下，把本轮所有已 `ready` / 待验收任务尽量纳入同一快照批次；核对快照 `commit`、`includedTasks` 与
+  各任务当前交付提交。目标任务代码不在最新快照内时，先集成并生成新快照，**不得复用缺代码的旧快照或
+  旧安装包**。正式包不以共享工作区未提交改动为准；确需从工作树打临时包时，必须在构建记录/验收报告中
+  标注“临时工作树包，非正式集成包”，且不得作为正式验收、发布或后续复用依据。
 - 每个「快照提交 + 平台 + 配置 + 架构 + 构建输入指纹」只构建一次；已有成功产物**重新校验**后才复用，
   不因不同 Agent 分别验收而重复打包。构建前先 `batch plan` 判断是否需要新构建；默认 `batch` 合批，
   不为单个普通任务自动出包。桌面端与移动端、不同架构/配置**不能视为同一个安装包**。
@@ -207,6 +212,10 @@ npm run integrate -- batch plan --platform desktop   # 只读：查看下一验�
   调度任务与日志路径；`status=succeeded` 还必须
   至少有一个平台可用产物（web `dist/index.html`、桌面安装包、Android apk），零产物或 dirty 构建
   一律记失败。记录位置与字段见 [docs/INTEGRATION_BUILD.md](docs/INTEGRATION_BUILD.md) §5。
+- 每个调度任务收尾写 `<state>/logs/<taskId>.provenance.json`：记录开始执行时的 Git
+  HEAD/分支/脏文件内容哈希，结束时本轮写出的安装包与 `dist/` 资源 SHA256。包 SHA256 可用
+  `npm run sched -- provenance --artifact <sha256>` 反查任务，再按任务查源码边车；该文件只记
+  元数据与哈希，不记正文，也不替代正式集成构建的 `build.json`。
 - 集成任务的构建走调度器（label `integration-<构建ID>`），与日常构建共享同一队列，不另造锁；
   构建工作区与快照工作区分离，构建使用 `<仓库>-integration-build`。
 - 未构建/构建失败写「未执行」或失败记录，不得用历史产物冒充本轮结果；只有 `status=succeeded`

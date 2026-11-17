@@ -393,6 +393,33 @@ pub(crate) fn apply_life_item_op(
             } else if latest != op.base_rev {
                 conflicts.push(conflict(op, "revision_mismatch", Some(server)));
             } else {
+                // 改名也可能撞上桌面端已有商品的唯一索引；同样返回可恢复的同名冲突，
+                // 而不是把 Validation 统一降级成没有目标 ID 的 invalid_patch。
+                if let Some(name) = patch_string(&op.patch, "name")? {
+                    let normalized = normalize_name(name.trim());
+                    if !normalized.is_empty() {
+                        let other: Option<String> = conn
+                            .query_row(
+                                "SELECT id FROM life_items
+                                  WHERE normalized_name = ?1 AND deleted_at IS NULL
+                                    AND id <> ?2",
+                                params![normalized, op.id],
+                                |row| row.get(0),
+                            )
+                            .optional()?;
+                        if let Some(other_id) = other {
+                            let other_latest = latest_seq(conn, "life_item", &other_id)?;
+                            let other_server =
+                                load_life_item_change(conn, &other_id, other_latest)?;
+                            conflicts.push(conflict(
+                                op,
+                                "life_item_name_conflict",
+                                other_server,
+                            ));
+                            return Ok(());
+                        }
+                    }
+                }
                 update_life_item_from_patch(conn, &op.id, &op.patch)?;
                 ack_op(conn, device_id, op, ack)?;
             }

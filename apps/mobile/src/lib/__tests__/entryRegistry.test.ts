@@ -131,6 +131,15 @@ describe("默认布局", () => {
     }
   });
 
+  it("生活入口首次安装默认隐藏，但仍可用且可在全部功能中找到", () => {
+    const life = entryById("life");
+    expect(life).toBeDefined();
+    expect(life?.defaultVisible).toBe(false);
+    expect(isEntryAvailable(life)).toBe(true);
+    expect(defaultVisibleEntryIds()).not.toContain("life");
+    expect(life?.icon).toBe("package");
+  });
+
   it("known 快照覆盖全部可用入口", () => {
     expect(availableEntryIds().sort()).toEqual(
       availableEntries()

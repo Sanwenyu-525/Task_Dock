@@ -82,6 +82,31 @@ describe("WorkbenchPinButton", () => {
     );
   });
 
+  it("图标不用斜线：未置顶空心、置顶实心（2026-11-17 用户反馈）", async () => {
+    const win = fakeWindow();
+    render(<WorkbenchPinButton window={win} />);
+
+    const offSvg = screen.getByRole("button", { name: "置顶窗口" }).querySelector("svg");
+    expect(offSvg).toBeTruthy();
+    // 空心：无填充。
+    expect(offSvg?.getAttribute("fill")).toBe("none");
+    // 不带斜线：`PinOff` 的斜线路径（d = "m2 2 20 20"）不得出现，只剩图钉本体 + 针杆。
+    const offPaths = Array.from(offSvg?.querySelectorAll("path") ?? []);
+    expect(offPaths).toHaveLength(2);
+    expect(offPaths.some((p) => (p.getAttribute("d") ?? "").includes("2 2 20 20"))).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "置顶窗口" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 实心：同一形状换成填充，不换图标。
+    const onSvg = screen.getByRole("button", { name: "取消置顶" }).querySelector("svg");
+    expect(onSvg?.getAttribute("fill")).toBe("currentColor");
+    expect(Array.from(onSvg?.querySelectorAll("path") ?? [])).toHaveLength(2);
+  });
+
   it("窗口重新获得焦点时回读真实状态，避免 UI 与窗口不一致", async () => {
     const win = fakeWindow();
     render(<WorkbenchPinButton window={win} />);

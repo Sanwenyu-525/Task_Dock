@@ -66,18 +66,40 @@ export interface WorkbenchLayout {
   detailWidth: number;
 }
 
-export const WORKBENCH_NAV_WIDTH_MIN = 180;
+/**
+ * 图标轨宽度（CSS px）：导航左右内边距 16 + 手柄轨道 24 + 图标轨道 32 + × 轨道 24。
+ * 名称放不下时整列收成这个宽度：只剩图标，手柄与 × 保留 24px 命中区，
+ * 悬停/键盘聚焦才显现（见 `workbench.css` 的 `data-nav-compact` 规则）。
+ */
+export const WORKBENCH_NAV_WIDTH_RAIL = 96;
+/** 最小可拖拽宽度 = 图标轨；宽态下限由实测的“名称所需宽度”决定。 */
+export const WORKBENCH_NAV_WIDTH_MIN = WORKBENCH_NAV_WIDTH_RAIL;
 export const WORKBENCH_NAV_WIDTH_MAX = 320;
 /**
- * 低于该宽度才进入图标态（<180px）：隐藏 Tab 名称，悬停时用 tooltip 补名称。
- * 180px 是最小可拖拽宽度，仍能完整放下名称，因此 180px 起保持名称可见，
- * 避免图标态在最小宽度下留下一条没有信息的空白轨道。
+ * 兜底折叠阈值：实测不到名称所需宽度（jsdom、首次绘制前）时才按 180px 判定。
+ * 正常运行由 `shouldCompactWorkbenchNavLabels` 传入实测名称宽度：宽度一旦低于
+ * 名称所需宽度，名称就会被省略号遮盖，此时整列收成图标轨，不留“半个名称”的中间态。
  */
 export const WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH = 180;
 
-/** 名称折叠判据：按整像素取整后严格低于 180px；180px 本身仍显示名称。 */
-export function shouldCompactWorkbenchNavLabels(width: number): boolean {
-  return Math.round(width) < WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH;
+/** 名称折叠判据：实际宽度按整像素取整后低于名称所需宽度即进入图标轨。 */
+export function shouldCompactWorkbenchNavLabels(
+  width: number,
+  labelFitWidth: number = WORKBENCH_NAV_LABELS_COMPACT_BELOW_WIDTH,
+): boolean {
+  return Math.round(width) < Math.round(labelFitWidth);
+}
+
+/**
+ * 把任意宽度吸附到两个稳态之一：图标轨，或名称能完整显示的宽态（≥ 名称所需宽度）。
+ * 中间宽度会让名称被省略号遮盖，因此低于名称所需宽度一律落到图标轨。
+ */
+export function resolveWorkbenchNavWidth(width: number, labelFitWidth?: number | null): number {
+  const rounded = Math.round(width);
+  if (typeof labelFitWidth === "number" && Number.isFinite(labelFitWidth) && labelFitWidth > 0) {
+    if (rounded < Math.round(labelFitWidth)) return WORKBENCH_NAV_WIDTH_RAIL;
+  }
+  return Math.min(Math.max(rounded, WORKBENCH_NAV_WIDTH_MIN), WORKBENCH_NAV_WIDTH_MAX);
 }
 export const WORKBENCH_DETAIL_WIDTH_MIN = 260;
 export const WORKBENCH_DETAIL_WIDTH_MAX = 480;

@@ -180,8 +180,7 @@ describe("场景五：旧版本配置升级", () => {
 
     await restart();
     const visible = getEntryLayoutState().config.visible;
-    // create-task 默认 order 20 < tools 50：新入口按默认顺序插到 tools 之前，
-    // 但不会打乱用户已经排好的相对顺序
+    // create-task 默认 order 20 < tools 50：新入口按默认顺序插到 tools 之前，    // 但不会打乱用户已经排好的相对顺序
     expect(visible).toEqual(["create-task", "tools"]);
   });
 });
@@ -238,5 +237,12 @@ describe("异常场景", () => {
     });
     expect(dirty.dropped).toBe(1);
     expect(dirty.config.visible).toEqual(["capture"]);
+  });
+
+  it("生活入口默认隐藏：旧配置升级不会把 life 强制塞回工作台", () => {
+    const known = availableEntryIds().filter((id) => id !== "life");
+    const normalized = normalizeEntryLayout({ version: 1, visible: ["tools"], known });
+    expect(normalized.config.visible).not.toContain("life");
+    expect(normalized.config.known).toContain("life");
   });
 });

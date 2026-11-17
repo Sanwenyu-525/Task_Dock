@@ -58,6 +58,7 @@ export type ConflictReason =
   | "record_missing"
   | "invalid_patch"
   | "permission_denied"
+  | "life_item_name_conflict"
   | "unknown";
 
 export interface Conflict {
@@ -77,6 +78,7 @@ const CONFLICT_REASONS: readonly ConflictReason[] = [
   "record_missing",
   "invalid_patch",
   "permission_denied",
+  "life_item_name_conflict",
   "unknown",
 ];
 

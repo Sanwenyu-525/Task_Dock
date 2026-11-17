@@ -122,12 +122,13 @@ export const MOBILE_ENTRIES = [
   {
     id: "life",
     label: "生活",
-    icon: "fileImage",
+    icon: "package",
     description: "购买记录、生活待办与票据资料",
     category: "task",
     availability: "available",
     launch: { kind: "route", route: "life" },
-    defaultVisible: true,
+    // 可选业务域：首次安装默认隐藏，用户可在「全部功能」中添加。
+    defaultVisible: false,
     order: 55,
   },
   {

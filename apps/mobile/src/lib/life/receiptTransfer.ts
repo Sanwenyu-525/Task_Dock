@@ -27,6 +27,11 @@ export interface ReceiptTransferOutcome {
   name: string;
 }
 
+export interface ReceiptTransferOptions {
+  onProgress?: (done: number, total: number) => void;
+  isCancelled?: () => boolean;
+}
+
 async function resolveTransport(): Promise<{ baseUrl: string; token: string; pin: string }> {
   const [connection, token] = await Promise.all([loadConnection(), readToken()]);
   if (!connection) throw new AppError("network", "尚未配对桌面端，无法发送票据原图");
@@ -43,7 +48,10 @@ async function resolveTransport(): Promise<{ baseUrl: string; token: string; pin
  * - 老桌面端不支持 `/shelf` 导入时，明确告知「文件已传到电脑但未入库」，
  *   关联保持 capture_asset + metadata_only，不伪造 transferred。
  */
-export async function sendReceiptToDesktop(linkId: string): Promise<ReceiptTransferOutcome> {
+export async function sendReceiptToDesktop(
+  linkId: string,
+  options: ReceiptTransferOptions = {},
+): Promise<ReceiptTransferOutcome> {
   const link = await getDocumentLink(linkId);
   if (!link) throw new AppError("validation", "票据关联不存在或已解除");
   if (
@@ -82,8 +90,8 @@ export async function sendReceiptToDesktop(linkId: string): Promise<ReceiptTrans
       const remote = await uploadLocalFile(
         client,
         file,
-        () => undefined,
-        undefined,
+        options.onProgress ?? (() => undefined),
+        options.isCancelled,
         link.documentName,
       );
       remoteFileId = remote.id;
@@ -93,6 +101,13 @@ export async function sendReceiptToDesktop(linkId: string): Promise<ReceiptTrans
         mime: link.mime,
         byteSize: remote.size,
       });
+    }
+    // 分块上传已完成但用户取消：保留远端文件 ID，状态为 metadata_only，可稍后继续导入。
+    if (options.isCancelled?.()) {
+      throw new AppError(
+        "network",
+        "已取消发送；文件已传到电脑，可稍后点击「继续导入」",
+      );
     }
     try {
       const imported = await client.importToShelf(remoteFileId, null);

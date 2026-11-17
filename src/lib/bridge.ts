@@ -1920,6 +1920,35 @@ export interface RetentionReport {
 }
 export const performanceDiagnostics = () =>
   invoke<PerformanceDiagnostics>("performance_diagnostics");
+
+/**
+ * 运行包的可核对身份（底部状态栏「包信息」与 AI/脚本读取同一份数据）。
+ *
+ * - `version` / `identifier` / `platform` 来自运行期包元信息；
+ * - `build` 来自编译期注入：同版本号的不同构建靠 `commit` + `built_at_unix` 区分；
+ * - 安装包产物、构建 ID、包含任务属于构建台账（`tmp/integration/builds/`），
+ *   运行时不可得，故不在这里出现。
+ */
+export interface AppBuildInfo {
+  name: string;
+  version: string;
+  identifier: string;
+  /** `流程-架构`，如 `windows-x86_64`（std::env::consts 口径） */
+  platform: string;
+  build: {
+    /** 短 commit；git 不可用时为 "unknown" */
+    commit: string;
+    /** "true" | "false" | "unknown"：构建时工作树是否存在未提交改动 */
+    dirty: string;
+    /** Unix 秒的字符串形式；构建脚本没取到时为 "unknown" */
+    built_at_unix: string;
+    /** "debug" | "release" */
+    profile: string;
+    /** 当前运行的可执行文件路径 */
+    exe: string;
+  };
+}
+export const appBuildInfo = () => invoke<AppBuildInfo>("app_build_info");
 export const agentRetentionStatus = () => invoke<Record<string, unknown>>("agent_retention_status");
 export const agentRetentionRun = () => invoke<RetentionReport>("agent_retention_run");
 export const agentArchiveList = () =>

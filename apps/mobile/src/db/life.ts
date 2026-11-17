@@ -181,7 +181,10 @@ async function ensureItemInTx(
   return { id, created: true };
 }
 
-function validatePurchase(input: LifePurchaseInput): {
+function validatePurchase(
+  input: LifePurchaseInput,
+  amountScaleOverride?: number | null,
+): {
   name: string;
   occurredAt: number;
   quantityValue: string | null;
@@ -204,9 +207,16 @@ function validatePurchase(input: LifePurchaseInput): {
   }
 
   const currency = normalizeCurrency(input.currency);
-  const totalMinor = parseMoneyMinor(input.totalPrice, currency);
+  const totalMinor = parseMoneyMinor(input.totalPrice, currency, amountScaleOverride);
   const amountScale =
-    totalMinor === null ? 2 : currencyDecimals(currency);
+    totalMinor === null
+      ? 2
+      : amountScaleOverride != null &&
+          Number.isInteger(amountScaleOverride) &&
+          amountScaleOverride >= 0 &&
+          amountScaleOverride <= 3
+        ? amountScaleOverride
+        : currencyDecimals(currency);
   if (totalMinor !== null && currency === "") {
     throw new Error("填写金额时必须选择货币");
   }
@@ -285,8 +295,20 @@ export async function createPurchase(input: LifePurchaseInput): Promise<CreatePu
 
 /** 更新一笔只包含单件商品的购买记录；多件商品事件不允许从移动端单行编辑。 */
 export async function updatePurchase(eventId: string, input: LifePurchaseInput): Promise<void> {
-  const values = validatePurchase(input);
   const db = getDatabase();
+  // 编辑历史行时按该行已保存的精度解析金额（例如旧 JPY 行按 2 位存储），
+  // 避免把「100」按 0 位解析成 100 后仍以 scale=2 存成 ¥1.00。
+  const preview = await db.getFirstAsync<EventItemRow>(
+    `SELECT ei.* FROM life_event_items ei
+      WHERE ei.event_id = ? LIMIT 1`,
+    [eventId],
+  );
+  const sameCurrency =
+    preview != null && normalizeCurrency(input.currency) === (preview.currency ?? "");
+  const values = validatePurchase(
+    input,
+    sameCurrency && preview?.amount_scale != null ? preview.amount_scale : null,
+  );
   const now = Date.now();
 
   await db.withTransactionAsync(async () => {
@@ -304,11 +326,7 @@ export async function updatePurchase(eventId: string, input: LifePurchaseInput):
     }
     const row = rows[0];
     const item = await ensureItemInTx(db, values.name, values.category, now);
-
-    const amountScale =
-      values.currency === (row.currency ?? "") && row.amount_scale != null
-        ? row.amount_scale
-        : values.amountScale;
+    const amountScale = values.amountScale;
 
     await db.runAsync(
       `UPDATE life_events SET title = ?, occurred_at = ?, merchant = ?, updated_at = ?, rev = rev + 1

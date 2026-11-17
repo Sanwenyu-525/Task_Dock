@@ -35,7 +35,13 @@ import {
 
 import { moveEntryByIndex } from "../../lib/entryLayout";
 import type { EntryId, MobileEntry } from "../../lib/entryRegistry";
-import { clampRailOffset, entryTileLineHeight, railMetrics, RAIL_INSET } from "../../lib/entryRail";
+import {
+  clampRailOffset,
+  entryTileLineHeight,
+  railMetrics,
+  railNeighborShift,
+  RAIL_INSET,
+} from "../../lib/entryRail";
 import { isTapGesture, railDropIndex } from "../../lib/entryReorder";
 import { floatingShadow } from "../../theme/shadows";
 import { useTheme } from "../../theme/ThemeProvider";
@@ -267,7 +273,9 @@ export function WorkbenchEntryRail({
             {entries.map((entry, index) => {
               const active = dragging?.index === index;
               // 拖动中：目标区间内的邻居实时让出/补上 step，松手后再提交顺序
-              const shift = dragging ? railShiftFor(dragging, index, metrics.step) : 0;
+              const shift = dragging
+                ? railNeighborShift(dragging.index, dragging.target, index, metrics.step)
+                : 0;
               return (
                 <RailCell
                   key={entry.id}
@@ -328,21 +336,6 @@ export function WorkbenchEntryRail({
       />
     </>
   );
-}
-
-/**
- * 拖动中的邻居位移：被拖磁贴跨过的每个位置都让出一个 step，形成实时换位。
- * 只做视觉位移，真正顺序仍在松手时一次性提交。
- */
-function railShiftFor(
-  drag: { index: number; target: number },
-  index: number,
-  step: number,
-): number {
-  if (index === drag.index || drag.target === drag.index) return 0;
-  if (drag.index < drag.target && index > drag.index && index <= drag.target) return -step;
-  if (drag.index > drag.target && index >= drag.target && index < drag.index) return step;
-  return 0;
 }
 
 /** 单个磁贴槽位：邻居让位用弹簧过渡，被拖磁贴本身不参与让位（它跟着手指走） */
