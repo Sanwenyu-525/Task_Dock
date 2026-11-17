@@ -220,12 +220,12 @@ vite-other`），会占轻量槽位并与另一条轻量任务同时拉起两个
 
 ### 4.1 任务分类（配置项可调）
 
-| 分类 | 槽位并发（默认） | 预计峰值（默认） | 典型任务 |
-|---|---|---|---|
-| `heavy` | 1 | 6000 MB | `cargo build`/`cargo test --all`、`tauri build`、release 构建、Gradle 构建、组合命令 |
-| `medium` | 1 | 3000 MB | `vite build`、整工程 `tsc`、`cargo check`、较大范围测试 |
-| `light` | 2 | 800 MB | ESLint/Prettier、单模块类型检查、小范围测试、`build-guard precheck` |
-| `dev` | 2 | 3000 MB | `tauri dev`、`vite`（常驻，独立槽位，见第 8 节） |
+| 分类 | 槽位并发（默认） | 典型任务 |
+|---|---|---|
+| `heavy` | 1 | `cargo build`/`cargo test --all`、`tauri build`、release 构建、Gradle 构建、组合命令 |
+| `medium` | 1 | `vite build`、整工程 `tsc`、`cargo check`、较大范围测试 |
+| `light` | 2 | ESLint/Prettier、单模块类型检查、小范围测试、`build-guard precheck` |
+| `dev` | 2 | `tauri dev`、`vite`（常驻，独立槽位，见第 8 节） |
 
 分类由 `scripts/sched/classify.mjs` 依据**命令链**判定，而不是看命令里有没有 "build"：
 

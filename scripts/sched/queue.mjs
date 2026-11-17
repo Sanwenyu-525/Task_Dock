@@ -230,20 +230,35 @@ export function housekeeping({ home, tasks, cfg, log, retentionMs = cfg.finished
 
   for (const t of tasks) {
     if (!ACTIVE_STATUSES.has(t.status)) continue;
+    // 并发扫描守卫：本快照可能是几秒前读的，收尾前必须复核落盘记录——
+    // 另一个等待者的 housekeeping 可能已经把它落成终态并删除，避免重复归档/重复写历史。
+    const onDisk = readTask(home, t.id);
+    if (!onDisk || !ACTIVE_STATUSES.has(onDisk.status)) continue;
     // 便宜的存活判据优先：心跳还在刷新说明提交进程仍在正常排队，不需要查系统进程
-    if (!recordStale(t, cfg, now)) continue;
-    if (t.status === "running") {
+    if (!recordStale(onDisk, cfg, now)) continue;
+    if (onDisk.status === "running") {
       // 运行中的记录只有确认「槽位也不再由它持有」时才收尾——否则交给槽位回收流程，
       // 因为绝不能因为记录心跳停了就放行新构建（旧构建可能还活着）。
       if (slotHolderTaskIds(home).includes(t.id)) continue;
     }
-    const idCheck = ownerLiveness(t);
+    const idCheck = ownerLiveness(onDisk);
     if (idCheck.alive) continue;
+    // 历史已有终态记录：只清掉残留的队列记录与取消标记，不再往 history.jsonl 追加第二条
+    // （并发扫描曾把同一 succeeded 任务重复写成多条矛盾 failed 记录）。
+    const alreadyHistoried = historyHasTerminal(home, t.id);
+    if (alreadyHistoried) {
+      try {
+        removeTask(home, t.id);
+        clearCancelMarker(home, t.id);
+        changed.push({ id: t.id, reason: "历史已有终态记录，清理残留队列记录" });
+      } catch { /* 单条失败不阻塞其他任务 */ }
+      continue;
+    }
     const orphan = {
-      ...t,
-      status: t.status === "running" ? "failed" : "cancelled",
+      ...onDisk,
+      status: onDisk.status === "running" ? "failed" : "cancelled",
       finishedAt: new Date().toISOString(),
-      finishReason: t.status === "running"
+      finishReason: onDisk.status === "running"
         ? `调度进程已退出且槽位已释放，记录由清理流程收尾（${idCheck.detail}）`
         : `提交进程已退出（${idCheck.detail}），排队任务不再可执行`,
       updatedAt: new Date().toISOString(),
@@ -252,10 +267,10 @@ export function housekeeping({ home, tasks, cfg, log, retentionMs = cfg.finished
       atomicWriteJson(join(paths(home).queue, `${t.id}.json`), orphan);
       appendBoundedJsonLine(paths(home).history, {
         event: "finished", id: t.id, label: t.label, taskClass: t.taskClass,
-        priority: t.priority, status: orphan.status, exitCode: t.status === "running" ? t.exitCode ?? null : null,
-        enqueuedAt: t.enqueuedAt, startedAt: null, finishedAt: orphan.finishedAt,
-        waitMs: now - Date.parse(t.enqueuedAt ?? now), runMs: 0,
-        worktree: t.worktree, command: t.command, reason: orphan.finishReason,
+        priority: t.priority, status: orphan.status, exitCode: onDisk.status === "running" ? onDisk.exitCode ?? null : null,
+        enqueuedAt: onDisk.enqueuedAt, startedAt: null, finishedAt: orphan.finishedAt,
+        waitMs: now - Date.parse(onDisk.enqueuedAt ?? now), runMs: 0,
+        worktree: onDisk.worktree, command: onDisk.command, reason: orphan.finishReason,
         recoveredBy: "housekeeping",
       }, cfg.historyMaxEntries);
       removeTask(home, t.id);
@@ -362,19 +377,32 @@ function spawnVersion(cmd, cwd) {
 /**
  * 判断「提交该记录的进程是否还在」。
  * 'gone' → 明确已退出（PID 不存在或被复用）；'same' → 身份一致；
- * 'unknown' → 无法取证时用记录更新时间兜底，仍新鲜则按存活处理（宁可等待也不误判）。
+ * 'unknown' → 无法取证时一律 fail-closed 按存活保留：取证失败（CIM/权限/读不到创建时间）
+ * 不等于进程已退出，不能再用「记录超过 45s 未更新」的时间兜底把活着但探不到的任务收尾。
+ * 真正的残留交给槽位/台账回收路径与 doctor --reap 用命令行签名取证处置。
  */
 export function ownerLiveness(task) {
   const check = verifyIdentity({ pid: task.owner?.pid, startTime: task.owner?.startTime ?? null, source: task.owner?.startTimeSource });
   if (check.state === "same") return { alive: true, detail: check.detail };
   if (check.state === "gone") return { alive: false, detail: check.detail };
-  const updated = Date.parse(task.updatedAt ?? task.enqueuedAt ?? "");
-  const ageMs = Number.isFinite(updated) ? Date.now() - updated : Infinity;
-  const fresh = ageMs < 45000;
   return {
-    alive: fresh,
-    detail: `无法确认进程身份（${check.detail}），记录 ${Number.isFinite(ageMs) ? Math.round(ageMs / 1000) + "s " : ""}前更新，按${fresh ? "存活" : "疑似退出"}处理`,
+    alive: true,
+    detail: `无法确认进程身份（${check.detail}），fail-closed 按存活保留，留待取证回收`,
   };
+}
+
+/** history.jsonl 中是否已存在该任务的终态记录（用于 housekeeping 防重复归档）。 */
+function historyHasTerminal(home, id) {
+  const hist = paths(home).history;
+  let text;
+  try { text = readFileSync(hist, "utf8"); } catch { return false; }
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry?.id === id) return true;
+  }
+  return false;
 }
 
 /**

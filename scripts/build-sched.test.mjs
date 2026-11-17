@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 
 import { DEFAULT_CONFIG, loadConfig, configRisks } from "./sched/config.mjs";
 import { classifyArgv, classifyCommandLine, splitCommandLine, CLASSES } from "./sched/classify.mjs";
-import { effectivePriority, compareOrder, parsePriority, computeFingerprint, evaluateEligibility } from "./sched/queue.mjs";
+import { effectivePriority, compareOrder, parsePriority, computeFingerprint, evaluateEligibility,
+  housekeeping, ownerLiveness, writeTask, readTask, removeTask, readQueue, recordStale } from "./sched/queue.mjs";
 import {
   BUILD_CLASSES, classifyReservation, createReservation, planGlobalConcurrency, readReservation,
   readReservations, releaseReservation, setReservationChild, writeReservation,
@@ -645,4 +646,57 @@ test("配置安全：坏 JSON 与未知字段必须被 doctor 报出来，而不
   assert.ok(typo.problems.some((p) => p.includes("未知字段 typpoKey")), "拼错的字段必须被点名");
   const typoRisks = configRisks({ config: typo.config, sources: typo.sources, problems: typo.problems });
   assert.ok(typoRisks.some((r) => r.key === "unknown" && r.level === "P1"), "未知字段至少 P1");
+});
+
+// ---------------------------------------------------------------- 清理并发守卫
+
+test("存活判定：身份 unknown 必须 fail-closed 按存活保留，不得用记录时长兜底判死", () => {
+  // 持有进程 PID 存活但读不到创建时间（CIM/权限失败）→ unknown：不能误判为已退出
+  const live = process.pid;
+  const liveness = ownerLiveness({ owner: { pid: live, startTime: null, startTimeSource: null } });
+  assert.equal(liveness.alive, true, "unknown 一律按存活保留，等待取证回收");
+  assert.match(liveness.detail, /fail-closed/);
+});
+
+test("清理残留：历史已有终态记录时不得重复追加矛盾的 failed 条目", () => {
+  const home = join(tmpRoot, "hk-dup-home");
+  ensureState(home);
+  const deadPid = spawnSync(process.execPath, ["-e", "0"], { encoding: "utf8" }).pid;
+  const old = new Date(Date.now() - 120000).toISOString();
+  writeTask(home, {
+    id: "q-dup", status: "queued", priority: 1, label: "dup", taskClass: "light",
+    enqueuedAt: old, updatedAt: old, command: ["node", "-e", "0"],
+    owner: { pid: deadPid, startTime: null, startTimeSource: "uptime" },
+  });
+  // 模拟提交进程自己已经收尾并写过一条 succeeded 历史
+  writeFileSync(paths(home).history, JSON.stringify({
+    event: "finished", id: "q-dup", status: "succeeded", exitCode: 0, finishedAt: old,
+  }) + "\n", "utf8");
+
+  housekeeping({ home, tasks: readQueue(home), cfg: { ...cfg, leaseTtlMs: 0 }, log: () => {} });
+
+  assert.equal(readTask(home, "q-dup"), null, "残留队列记录应被清理");
+  const lines = readFileSync(paths(home).history, "utf8").split(/\r?\n/).filter((l) => l.includes("q-dup"));
+  assert.equal(lines.length, 1, "history 不得出现第二条矛盾的收尾记录");
+  assert.match(lines[0], /succeeded/, "保留的应是提交进程自己写的终态记录");
+});
+
+test("清理残留：快照过期但落盘记录已终态时，不得重复收尾", () => {
+  const home = join(tmpRoot, "hk-terminal-home");
+  ensureState(home);
+  const deadPid = spawnSync(process.execPath, ["-e", "0"], { encoding: "utf8" }).pid;
+  const old = new Date(Date.now() - 120000).toISOString();
+  const staleSnapshot = {
+    id: "q-term", status: "queued", priority: 1, label: "term", taskClass: "light",
+    enqueuedAt: old, updatedAt: old, command: ["node", "-e", "0"],
+    owner: { pid: deadPid, startTime: null, startTimeSource: "uptime" },
+  };
+  // 落盘记录已被另一条路径落成终态（succeeded）
+  writeTask(home, { ...staleSnapshot, status: "succeeded", exitCode: 0, finishedAt: old });
+
+  housekeeping({ home, tasks: [staleSnapshot], cfg: { ...cfg, leaseTtlMs: 0 }, log: () => {} });
+
+  const onDisk = readTask(home, "q-term");
+  assert.equal(onDisk.status, "succeeded", "不得把已终态记录改回 failed/cancelled");
+  assert.equal(existsSync(paths(home).history), false, "不得再追加一条收尾历史");
 });
