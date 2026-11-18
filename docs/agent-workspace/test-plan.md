@@ -157,3 +157,44 @@ UI 未运行，验证的是 CLI 独立进程 + 文件协议。
 
 - `task get` / `task list` 的 JSON 未返回 `revision`；调用方只能从冲突错误或投影文件获取。
 - 文档表格写 `task.update` 用 `target_id`，实现要求 `payload.task_id`；Markdown `task.update` 尚未实现。
+
+## 9. 执行记录（2026-11-18，REST / 身份 / 交接真实运行）
+
+环境同 §8：隔离数据目录 `tmp/agent-workspace-smoke`；桌面 dev 二进制
+`src-tauri/target/debug/task-dock.exe`，SHA256 `E7675DA9E6C0E5F25D16687C9104A88913DFFD282F77E4EABD0FE4266A75A2E8`；
+CLI `taskdock.exe` SHA256 `D8CB89951586C0493D2B2318A15455422E2A437BBFAD74B596DA1E3648013221`。
+REST 仅监听 `127.0.0.1:47911`。测试 Agent 为 `smoke-rest`（scope `project_rw`，16 能力）与
+`smoke-readonly`（scope `readonly`，仅 `tasks.read`），Token 仅存 SHA-256，未写入本文件。
+
+| 用例 | 结果 | 证据摘要 |
+|---|---|---|
+| R1 认证拒绝 | 通过 | 无 `Authorization` / 错误 Token → 401；未认证 OpenAPI → 401；带外部 `Origin` → 403 |
+| R2 状态与身份 | 通过 | `/status` 200，`meta.actor=agent`、`agent_id=smoke-rest`、`interface=rest`；`interfaces.mcp=true` |
+| R3 列表分页 | 通过 | `?limit=1&offset=1` → 200，`meta.pagination.total=2`、`limit=1`、`offset=1`、`has_more=false`，仅 1 条 |
+| R4 详情路由 | 通过（修复后） | `GET /tasks/<id>` → 200；修复前误取 `seg(0)` 得到 `tasks` 并返回 `NOT_FOUND` |
+| R5 创建与幂等 | 通过 | `Idempotency-Key: smoke-key-1` 首次创建 `70f056d7-…`；同 key 重放同一 id 且 `meta.replayed=true` |
+| R6 版本更新 | 通过（修复后） | `PATCH` body `base_revision=1` → 200，标题更新；再次提交 `base_revision=1` → 409 `CONFLICT`，提示当前 revision=2 |
+| R7 只读拒绝 | 通过 | `GET /tasks` → 200；`POST /tasks` → 403 `FORBIDDEN`（`scope=readonly`） |
+| R8 Token 撤销 | 通过 | 写 `revoked_at` 后同一 Token → 401；恢复后不再测试 |
+| R9 请求体上限 | 通过 | 1.1 MiB body → 413 `VALIDATION`（`body 超过 1MiB`） |
+| R10 限流 | 通过 | 连续请求第 121 次 → 429 `RATE_LIMITED`（120 次/分） |
+| R11 OpenAPI | 通过 | 认证后 200，`openapi=3.0.3`，`paths` 30 条 |
+| H2/H3 交接流转 | 通过（自身闭环） | `smoke-rest → smoke-rest`：create rev1 → accept rev2 → complete rev3，`status=completed`，`accepted_at`/`completed_at` 均写入 |
+| H3 越权接收 | 通过 | `smoke-rest` 接收目标为 `smoke-readonly` 的交接 → `VALIDATION`，未改变状态 |
+| H6 工作报告 | 通过 | `agent report create --handoff …` 成功，返回 `revision=1`；列表 total=2 |
+| 活动审计 | 通过 | `agent activity --interface rest` 可见 `task.create`、`task.update`、`rest.failed`，身份与入口正确 |
+
+**REST 未通过/未执行**：REST 任务详情/列表响应仍不含 `revision` 字段，外部 Agent 无法仅靠 REST 取
+`base_revision`（当前需读 workspace 投影或从冲突错误推断），记为 P1 协议缺口。`PATCH` 的知识/决策、
+并发双写、端口占用、CORS 预检未测。
+
+**MCP 传输层：ENVIRONMENT BLOCKED**。`task-dock --mcp-server` stdio 入口可正常启动并对请求返回
+结构化 JSON-RPC 错误 `-32000`（MCP Server 未启用）；但桌面实例启动后仅监听 `47911`，未生成
+`mcp-transport.json`（`%APPDATA%\com.taskdock.desktop\mcp-transport.json` 仍为旧的
+`{"enabled":false,"port":0,"token":""}`）。在 `spawn_adapter` 入口新增日志后重建并重启，日志仍未
+出现，说明 setup 尚未执行到 MCP 适配器（应用窗口 `Responding=False`），不是 MCP 代码本身的编译或
+协议错误。另 `cargo test --lib mcp::protocol::tests` 因系统分页文件不足（`os error 1455`、OOM）
+在编译测试二进制时失败，未取得协议单测结果。
+
+**Phase 6 CLI 交接补充**：交接目标不匹配时 `smoke-rest` 接收 `smoke-readonly` 的交接被明确拒绝；
+自身闭环 create/accept/complete 的 revision 依次为 1/2/3，证明版本校验与状态机真实生效。

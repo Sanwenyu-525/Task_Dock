@@ -130,3 +130,37 @@
 - 本文档与 `docs/agent-workspace/` 其余设计文档
 
 > 未执行项一律标注“未执行”，未使用“应该/理论上”替代证据；环境导致的 OOM 单独记录为资源阻塞，未计为代码缺陷。
+
+## 10. 运行时验收更新（2026-11-18）
+
+本节推翻 §6/§8 中“REST/CLI/交接完全未验证”的旧结论，保留原文作为历史记录。
+
+**已真实执行并通过**
+
+- CLI：`status`、任务 CRUD/完成、项目/计划/知识/决策查询、`search`、`context`、`sync` 全链路；
+  版本冲突 exit 5、缺参 exit 2、不存在 exit 3、只读 exit 6、未初始化 exit 7。
+- 文件协议：`inbox` 合法导入归档、非法信封归档 `_rejected`、冲突写入与 `resolved_db`、
+  `sync export` 后 `scan` 防回环 `scanned=0`。
+- REST：认证 401/Origin 403、`/status` 身份与入口、列表分页、任务详情、创建 + `Idempotency-Key`
+  重放、`PATCH` 版本更新、旧 base 409 冲突、只读 403、撤销 Token 401、1.1 MiB 413、第 121 次 429、
+  OpenAPI 30 条路径。
+- 交接与报告：`smoke-rest → smoke-rest` create→accept→complete，revision 1→2→3，
+  `status=completed`；目标不匹配接收被拒绝；关联 handoff 提交报告成功；活动日志含 `interface=rest`
+  的 `task.create` / `task.update` / `rest.failed`。
+
+**修复**
+
+- REST 详情/更新路由 `seg(0)` → `seg(1)`（14 处），`PATCH` 支持从请求体读 `base_revision`；
+  由外部定时提交 `f7c3eae` 一并入库（该提交同时包含其他任务改动，非本任务单独提交）。
+- MCP 生命周期补充启动/设置/监听日志（`mcp/bridge.rs`），用于区分“未执行”与“启动失败”。
+
+**未通过 / 阻塞**
+
+- MCP 传输层：桌面实例未执行到 `spawn_adapter`，无 `mcp-transport.json`，stdio 只能返回
+  `-32000`；应用窗口 `Responding=False`。记为 `ENVIRONMENT BLOCKED`，不能宣称 MCP 端到端通过。
+- MCP 协议单测：测试二进制编译时系统分页文件不足（`os error 1455` / OOM），未执行。
+- REST 响应缺 `revision` 字段；知识/决策 PATCH、并发双写、端口冲突未测。
+- UI 真机视觉、安装包、性能基线未执行。
+
+**结论**：**部分通过**。四入口中 CLI、文件、REST 已取得真实读写与冲突/权限证据，MCP 传输层与 UI/
+安装包/性能仍未验收；不满足“整体端到端验收通过”。

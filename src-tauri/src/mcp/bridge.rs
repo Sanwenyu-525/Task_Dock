@@ -583,6 +583,7 @@ pub fn spawn_adapter(
 ) -> Arc<McpRuntimeStatus> {
     let status = Arc::new(McpRuntimeStatus::default());
     let status_for_task = status.clone();
+    tracing::info!("MCP bridge 生命周期任务已启动");
     tauri::async_runtime::spawn(async move {
         let mut current: Option<RunningBridge> = None;
         let mut wrote_disabled = false;
@@ -618,11 +619,13 @@ pub fn spawn_adapter(
                 let enabled = crate::db::Settings::load(&db)
                     .map(|s| s.mcp_server_enabled)
                     .unwrap_or(false);
+                tracing::info!(enabled, "MCP bridge 设置已读取");
                 match (enabled, current.is_some()) {
                     (true, false) => {
                         let emit = make_emitter(&app);
                         match start(db.clone(), emit).await {
                             Ok(b) => {
+                                tracing::info!(port = b.port, "MCP bridge 已监听");
                                 let _ = crate::mcp::write_transport_config(
                                     &data_dir, b.port, &b.token, true,
                                 );

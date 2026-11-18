@@ -132,8 +132,12 @@
 |---|---|---|---|
 | Rust 类型检查 | `npm run cargo -- check -j 1` | exit 0，24.72s（清理本轮告警后复跑）；本轮新增代码 0 警告，剩余 19 条均为既有模块 | `tmp/agent-workspace-check.log`、`.git/taskdock-build-sched/logs/m-mwly1u9c-fff525.log` |
 | 前端类型检查 | `npx tsc --noEmit` | exit 0 | `tmp/agent-workspace-tsc.log` |
-| Rust 单测 | — | 未执行（`cargo test` 依赖 `dist/`，且需排队） | — |
-| 端到端场景 A–F | — | 未执行 | [test-plan.md](test-plan.md)、[acceptance-report.md](acceptance-report.md) |
+| 桌面 dev 构建 | `npm run cargo -- build --bin task-dock -j 1` | exit 0，44s（REST 修复后）；另一次 1m49s（MCP 日志后） | `tmp/agent-workspace-desktop-build.log`、` -build2.log` |
+| CLI / 文件协议 | `taskdock` + `sync` | 通过：CRUD、导入归档、冲突、解决、防回环；错误码 2/3/5/6/7 符合规范 | `tmp/agent-workspace-smoke/`、test-plan §8 |
+| REST 真实链路 | `curl` @127.0.0.1:47911 | 通过：401/403、分页、详情、PATCH+409、只读 403、撤销 401、413、第 121 次 429、OpenAPI 30 路径 | test-plan §9 |
+| MCP stdio 入口 | `task-dock --mcp-server` | 入口返回结构化 `-32000`；bridge 未启动，无 transport 文件 | 本报告 §10 |
+| Rust 单测 | `npm run cargo -- test --lib mcp::protocol::tests` | 未执行：测试二进制编译 OOM（`os error 1455`） | `tmp/agent-workspace-mcp-protocol-test.log` |
+| 端到端场景 A–F | — | 部分执行：CLI/文件/REST 已覆盖，MCP/UI/安装包未覆盖 | [test-plan.md](test-plan.md)、[acceptance-report.md](acceptance-report.md) |
 | 性能基线 | — | 未执行 | [test-plan.md](test-plan.md) |
 
 > 说明：首次 `cargo check` 在“类型检查已通过、写 metadata”阶段因机器可用内存不足被 rustc OOM 终止（exit 101），
