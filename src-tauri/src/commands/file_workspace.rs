@@ -286,38 +286,141 @@ pub async fn fs_preview_operation(
     .map_err(|e| AppError::Agent(format!("操作预演任务失败: {e}")))?
 }
 
+/// ShellExecuteW 要求调用线程为 COM 单线程套间（STA）且可泵消息；tauri 异步命令线程
+/// 不满足，真机上 `openas` / `properties` 动词返回 31（SE_ERR_NOASSOC）。用常驻专用
+/// STA 线程统一执行（动态加载 ole32，不为此入口新增 Cargo 特性）。
+#[allow(non_snake_case)]
+mod sta_shell {
+    use std::os::windows::ffi::OsStrExt;
+    use std::sync::mpsc;
+    use std::sync::OnceLock;
+
+    #[repr(C)]
+    struct Msg {
+        hwnd: isize,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+        time: u32,
+        point: (i32, i32),
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryA(name: *const u8) -> isize;
+        fn GetProcAddress(module: isize, name: *const u8) -> isize;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn PeekMessageW(msg: *mut Msg, hwnd: isize, min: u32, max: u32, remove: u32) -> i32;
+        fn TranslateMessage(msg: *const Msg) -> i32;
+        fn DispatchMessageW(msg: *const Msg) -> isize;
+    }
+
+    pub struct StaJob {
+        pub verb: String,
+        pub target: String,
+        pub reply: mpsc::Sender<isize>,
+    }
+
+    const COINIT_APARTMENTTHREADED: u32 = 0x2;
+    const PM_REMOVE: u32 = 0x1;
+
+    type CoInitializeEx = unsafe extern "system" fn(*mut std::ffi::c_void, u32) -> i32;
+    type ShellExecuteWFn = unsafe extern "system" fn(
+        hwnd: isize,
+        verb: *const u16,
+        file: *const u16,
+        params: *const u16,
+        dir: *const u16,
+        show: i32,
+    ) -> isize;
+
+    /// 惰性启动常驻 STA 线程：初始化 COM STA 后循环消费任务并泵消息。
+    fn sta_channel() -> &'static mpsc::Sender<StaJob> {
+        static CHANNEL: OnceLock<mpsc::Sender<StaJob>> = OnceLock::new();
+        CHANNEL.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<StaJob>();
+            std::thread::Builder::new()
+                .name("fw-shell-execute-sta".into())
+                .spawn(move || unsafe {
+                    let ole32 = LoadLibraryA(b"ole32.dll\0".as_ptr());
+                    let co_init: Option<CoInitializeEx> = if ole32 != 0 {
+                        std::mem::transmute(GetProcAddress(ole32, b"CoInitializeEx\0".as_ptr()))
+                    } else {
+                        None
+                    };
+                    if let Some(init) = co_init {
+                        init(std::ptr::null_mut(), COINIT_APARTMENTTHREADED);
+                    }
+                    while let Ok(job) = rx.recv() {
+                        let code = run_shell_execute(&job.verb, std::path::Path::new(&job.target));
+                        let _ = job.reply.send(code);
+                        // 泵消息：Shell 对话框宿主需要 STA 线程可重入处理。
+                        let mut msg = Msg {
+                            hwnd: 0,
+                            message: 0,
+                            wparam: 0,
+                            lparam: 0,
+                            time: 0,
+                            point: (0, 0),
+                        };
+                        while PeekMessageW(&mut msg, 0, 0, 0, PM_REMOVE) != 0 {
+                            TranslateMessage(&msg);
+                            DispatchMessageW(&msg);
+                        }
+                    }
+                })
+                .expect("启动 Shell STA 线程失败");
+            tx
+        })
+    }
+
+    unsafe fn run_shell_execute(verb: &str, target: &std::path::Path) -> isize {
+        let shell32 = LoadLibraryA(b"shell32.dll\0".as_ptr());
+        if shell32 == 0 {
+            return 31;
+        }
+        let execute: Option<ShellExecuteWFn> =
+            std::mem::transmute(GetProcAddress(shell32, b"ShellExecuteW\0".as_ptr()));
+        let Some(execute) = execute else { return 31 };
+        let verb_w: Vec<u16> = verb.encode_utf16().chain(std::iter::once(0)).collect();
+        let file_w: Vec<u16> = target
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: 两个 UTF-16 缓冲区在调用期间有效且以 NUL 结尾；其余参数为 Shell 约定的空值。
+        execute(0, verb_w.as_ptr(), file_w.as_ptr(), std::ptr::null(), std::ptr::null(), 1)
+    }
+
+    pub fn execute(verb: &str, target: &std::path::Path) -> Result<(), String> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        sta_channel()
+            .send(StaJob {
+                verb: verb.into(),
+                target: target.to_string_lossy().into_owned(),
+                reply: reply_tx,
+            })
+            .map_err(|_| "Shell 执行线程不可用".to_string())?;
+        let code = reply_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|_| "Shell 执行线程无响应".to_string())?;
+        if code > 32 {
+            Ok(())
+        } else {
+            Err(format!(
+                "系统对话框打开失败（ShellExecute 返回 {code}）"
+            ))
+        }
+    }
+}
+
 /// 用 Shell 动词打开原生对话框：`openas` = 「打开方式」，`properties` = Windows 属性页。
 /// 只做系统 Shell 调用，不写文件；路径先过绝对路径与保护目录校验。
 fn shell_execute_verb(verb: &str, target: &std::path::Path) -> AppResult<()> {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let verb_w: Vec<u16> = verb.encode_utf16().chain(std::iter::once(0)).collect();
-    let file_w: Vec<u16> = target
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    // SAFETY: 两个 UTF-16 缓冲区在调用期间有效且以 NUL 结尾；其余参数为 Shell 约定的空值。
-    let result = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            verb_w.as_ptr(),
-            file_w.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    // ShellExecuteW 返回值 > 32 表示成功（<=32 是错误码）。
-    let code = result as isize;
-    if code > 32 {
-        Ok(())
-    } else {
-        Err(AppError::Validation(format!(
-            "系统对话框打开失败（ShellExecute 返回 {code}）"
-        )))
-    }
+    sta_shell::execute(verb, target)
+        .map_err(|err| AppError::Validation(err))
 }
 
 /// 打开 Windows「打开方式」选择器。

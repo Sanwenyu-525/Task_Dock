@@ -1077,6 +1077,7 @@ const shim = `
     name, kind, category, ext, size, hidden, modifiedMs: fwNow - Math.floor(Math.random() * 8.64e7),
   });
   const fwTree = new Map();
+  let fwLastJob = null;
   const fwDir = (path, entries) => { fwTree.set(path, entries); fwSig.set(path, fwNow); };
   fwDir("D:\\\\", [fwEntry("Games", "dir", "folder", ""), fwEntry("Documents", "dir", "folder", "")]);
   fwDir("D:\\\\Games", [fwEntry("MyGame", "dir", "folder", "")]);
@@ -1114,7 +1115,23 @@ const shim = `
   fwDir("D:\\\\Games\\\\MyGame\\\\Assets\\\\Audio", []);
   fwDir("D:\\\\Games\\\\MyGame\\\\Docs\\\\设计文档", []);
   fwDir("D:\\\\Games\\\\MyGame\\\\Docs\\\\剧情脚本", []);
-  fwDir("D:\\\\Games\\\\MyGame\\\\Build\\\\Windows", []);
+  fwDir("D:\\\\Games\\\\MyGame\\\\Build\\\\Windows", [
+    // r9 走查夹具：≥10 项触发移动预演；Locked.bin 在 fs_preview_operation 中
+    // 被特判为不可访问，用于演练「不完整预演门禁」的视觉与交互。
+    fwEntry("app.exe", "file", "program", "exe", 4096),
+    fwEntry("app.pdb", "file", "other", "pdb", 2048),
+    fwEntry("config.json", "file", "data", "json", 512),
+    fwEntry("resources.dat", "file", "other", "dat", 10240),
+    fwEntry("readme.txt", "file", "text", "txt", 256),
+    fwEntry("level_01.bin", "file", "other", "bin", 20480),
+    fwEntry("level_02.bin", "file", "other", "bin", 21504),
+    fwEntry("level_03.bin", "file", "other", "bin", 22528),
+    fwEntry("texture_01.dds", "file", "image", "dds", 1048576),
+    fwEntry("texture_02.dds", "file", "image", "dds", 786432),
+    fwEntry("Locked.bin", "file", "other", "bin", 40960),
+    fwEntry("shader_cache.bin", "file", "other", "bin", 5120),
+    fwEntry("crash_dump.dmp", "file", "other", "dmp", 65536),
+  ]);
   fwDir("D:\\\\Games\\\\MyGame\\\\Build\\\\Android", []);
   const fwTouch = (dir) => { fwSig.set(dir, Date.now()); };
   const fwNorm = (p) => {
@@ -1461,20 +1478,25 @@ const shim = `
         return { attempted: entries.length, ok: entries.length, failed: 0, skipped: 0, entries };
       }
       case "fs_stat": {
-        const src2 = fwNorm(args?.paths?.[0] || "");
-        const parent = src2.slice(0, src2.lastIndexOf(FW_BS));
-        const name = src2.slice(src2.lastIndexOf(FW_BS) + 1);
-        const entry = fwTree.get(parent)?.find((e) => e.name === name);
-        const isDir = fwTree.has(src2);
-        // 字段必须与 bridge 的 FsStat 完整对齐（含 accessedMs/attributes），
-        // 缺字段会让属性对话框崩进 error boundary（r8 走查教训）。
-        return [{
-          path: src2, exists: isDir || Boolean(entry), kind: isDir ? "dir" : entry ? "file" : "missing",
-          size: entry?.size ?? null, createdMs: entry?.modifiedMs ?? null, modifiedMs: entry?.modifiedMs ?? null,
-          accessedMs: entry?.modifiedMs ?? null,
-          attributes: isDir ? ["directory"] : entry ? ["archive"] : [],
-          readonly: false, hidden: false, childCount: isDir ? fwTree.get(src2)?.length ?? 0 : null, childTruncated: false,
-        }];
+        // r9 修正：fs_stat 是批量契约（返回与 paths 等长的数组）；旧夹具只处理
+        // paths[0]，批量调用方（冲突预检/存在性复查）会把其余项误判为不存在。
+        const statOne = (rawPath) => {
+          const src2 = fwNorm(rawPath || "");
+          const parent = src2.slice(0, src2.lastIndexOf(FW_BS));
+          const name = src2.slice(src2.lastIndexOf(FW_BS) + 1);
+          const entry = fwTree.get(parent)?.find((e) => e.name === name);
+          const isDir = fwTree.has(src2);
+          // 字段必须与 bridge 的 FsStat 完整对齐（含 accessedMs/attributes），
+          // 缺字段会让属性对话框崩进 error boundary（r8 走查教训）。
+          return {
+            path: src2, exists: isDir || Boolean(entry), kind: isDir ? "dir" : entry ? "file" : "missing",
+            size: entry?.size ?? null, createdMs: entry?.modifiedMs ?? null, modifiedMs: entry?.modifiedMs ?? null,
+            accessedMs: entry?.modifiedMs ?? null,
+            attributes: isDir ? ["directory"] : entry ? ["archive"] : [],
+            readonly: false, hidden: false, childCount: isDir ? fwTree.get(src2)?.length ?? 0 : null, childTruncated: false,
+          };
+        };
+        return (args?.paths || []).map(statOne);
       }
       case "fs_preview_operation": {
         // 只读预演夹具：统计条目/字节、同名冲突、重复源与不可访问源；不产生任何写入。
@@ -1502,7 +1524,13 @@ const shim = `
           const name = src.slice(src.lastIndexOf(FW_BS) + 1);
           const entry = fwTree.get(parent)?.find((e) => e.name === name);
           const isDir = fwTree.has(src);
+          // 走查夹具特判：Locked.bin 模拟「统计时不可访问」→ complete=false → UI 门禁。
           if (!isDir && !entry) {
+            preview.inaccessible.push(src);
+            preview.complete = false;
+            continue;
+          }
+          if (name === "Locked.bin") {
             preview.inaccessible.push(src);
             preview.complete = false;
             continue;
@@ -1523,7 +1551,65 @@ const shim = `
       }
       case "fs_open":
       case "fs_reveal": return undefined;
+      // r9 走查：系统动作 mock 刻意失败，验证「错误反馈 toast」真实出现。
+      case "fs_open_with":
+      case "fs_open_terminal":
+      case "fs_show_properties":
+        throw new Error("ShellExecute 模拟失败（走查夹具专用）");
       case "fs_thumbnail": return null;
+      // ── r9 走查：任务服务模拟（真实移动 fwTree + 立即终态 + 逐项报告）──
+      case "fs_move_job_start":
+      case "fs_copy_job_start": {
+        const move = cmd === "fs_move_job_start";
+        const targetDir = fwNorm(args?.targetDir || "");
+        const entries = [];
+        for (const raw of args?.paths || []) {
+          const src = fwNorm(raw);
+          const parent = src.slice(0, src.lastIndexOf(FW_BS));
+          const name = src.slice(src.lastIndexOf(FW_BS) + 1);
+          const entry = fwTree.get(parent)?.find((e) => e.name === name);
+          if (!entry) { entries.push({ source: src, target: null, status: "failed", reason: "源不存在" }); continue; }
+          if (move) {
+            const idx = fwTree.get(parent)?.findIndex((e) => e.name === name) ?? -1;
+            if (idx >= 0) fwTree.get(parent).splice(idx, 1);
+          }
+          fwTree.get(targetDir)?.push({ ...entry, modifiedMs: Date.now() });
+          fwTouch(targetDir);
+          fwTouch(parent);
+          entries.push({ source: src, target: targetDir + FW_BS + name, status: "ok", reason: null });
+        }
+        fwLastJob = {
+          id: "preview-job-1",
+          kind: move ? "move" : "copy",
+          paths: args?.paths || [],
+          targetDir,
+          entries,
+        };
+        return {
+          id: fwLastJob.id, kind: fwLastJob.kind, status: "completed", phase: "done",
+          total: entries.length, done: entries.length, ok: entries.filter((e) => e.status === "ok").length,
+          failed: entries.filter((e) => e.status === "failed").length, skipped: 0, partial: 0,
+          startedMs: Date.now() - 1, finishedMs: Date.now(),
+          cancelable: false, cancelRequested: false, failures: [], message: null,
+        };
+      }
+      case "fs_job_status": return {
+        id: fwLastJob?.id ?? "preview-job-1", kind: fwLastJob?.kind ?? "move", status: "completed", phase: "done",
+        total: fwLastJob?.entries.length ?? 0, done: fwLastJob?.entries.length ?? 0,
+        ok: fwLastJob?.entries.filter((e) => e.status === "ok").length ?? 0,
+        failed: fwLastJob?.entries.filter((e) => e.status === "failed").length ?? 0,
+        skipped: 0, partial: 0, startedMs: 0, finishedMs: Date.now(),
+        cancelable: false, cancelRequested: false, failures: [], message: null,
+      };
+      case "fs_job_report": return {
+        operationId: fwLastJob?.id ?? "preview-job-1",
+        attempted: fwLastJob?.entries.length ?? 0,
+        ok: fwLastJob?.entries.filter((e) => e.status === "ok").length ?? 0,
+        failed: fwLastJob?.entries.filter((e) => e.status === "failed").length ?? 0,
+        skipped: 0, partial: 0,
+        entries: fwLastJob?.entries ?? [],
+      };
+      case "fs_jobs": return [];
       // ── 回收站索引（视觉走查夹具）：只读列表/统计；真实扫描与还原走原生后端 ──
       case "recycle_stats":
         return recycleStatsFixture();
