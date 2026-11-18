@@ -150,14 +150,20 @@
 
 **修复**
 
+- `rest::start` 持有 `slot()` 锁后调用 `status()`，`status()` 再锁同一非重入 Mutex，启动自死锁；
+  改为写入监听槽位后 `drop(guard)` 再取状态，并补 setup 阶段日志（提交 `66899ea`）。修复前 REST
+  日志已出现但 setup 永不返回，MCP bridge 因此从未执行。
 - REST 详情/更新路由 `seg(0)` → `seg(1)`（14 处），`PATCH` 支持从请求体读 `base_revision`；
   由外部定时提交 `f7c3eae` 一并入库（该提交同时包含其他任务改动，非本任务单独提交）。
 - MCP 生命周期补充启动/设置/监听日志（`mcp/bridge.rs`），用于区分“未执行”与“启动失败”。
 
 **未通过 / 阻塞**
 
-- MCP 传输层：桌面实例未执行到 `spawn_adapter`，无 `mcp-transport.json`，stdio 只能返回
-  `-32000`；应用窗口 `Responding=False`。记为 `ENVIRONMENT BLOCKED`，不能宣称 MCP 端到端通过。
+- MCP 传输层：修复 REST 死锁后，setup 已越过 REST、恢复、剪贴板、暂存架与 AgentHub；随后在主窗口
+  `WebviewWindowBuilder::build()` / 窗口辅助模块初始化处发生主线程栈溢出
+  （`thread 'main' has overflowed its stack`，见 `tmp/agent-workspace-app-stderr5.log`、`-stderr8.log`）。
+  使用独立 `WEBVIEW2_USER_DATA_FOLDER` 可走到托盘初始化，但仍在辅助窗口处溢出（`-stderr9.log`）。
+  因此 bridge 未监听、无 `mcp-transport.json`；不是写文件失败，而是启动流程尚未执行到写文件。
 - MCP 协议单测：测试二进制编译时系统分页文件不足（`os error 1455` / OOM），未执行。
 - REST 响应缺 `revision` 字段；知识/决策 PATCH、并发双写、端口冲突未测。
 - UI 真机视觉、安装包、性能基线未执行。

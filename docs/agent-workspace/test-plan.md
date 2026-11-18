@@ -189,12 +189,21 @@ REST 仅监听 `127.0.0.1:47911`。测试 Agent 为 `smoke-rest`（scope `projec
 并发双写、端口占用、CORS 预检未测。
 
 **MCP 传输层：ENVIRONMENT BLOCKED**。`task-dock --mcp-server` stdio 入口可正常启动并对请求返回
-结构化 JSON-RPC 错误 `-32000`（MCP Server 未启用）；但桌面实例启动后仅监听 `47911`，未生成
+结构化 JSON-RPC 错误 `-32000`（MCP Server 未启用）；但桌面实例启动后未生成
 `mcp-transport.json`（`%APPDATA%\com.taskdock.desktop\mcp-transport.json` 仍为旧的
-`{"enabled":false,"port":0,"token":""}`）。在 `spawn_adapter` 入口新增日志后重建并重启，日志仍未
-出现，说明 setup 尚未执行到 MCP 适配器（应用窗口 `Responding=False`），不是 MCP 代码本身的编译或
-协议错误。另 `cargo test --lib mcp::protocol::tests` 因系统分页文件不足（`os error 1455`、OOM）
-在编译测试二进制时失败，未取得协议单测结果。
+`{"enabled":false,"port":0,"token":""}`）。
+
+已定位根因：`rest::start` 持有 `slot()` 互斥锁后又调用 `status()`，`status()` 再次锁同一把
+非重入 Mutex，启动线程自死锁；日志停在 `Agent REST 监听`，setup 永不继续，MCP `spawn_adapter`
+不会执行。已改为写入监听槽位后 `drop(guard)` 再取状态（提交 `66899ea`），并把 setup 阶段日志
+保留为启动诊断。
+
+修复后复测：setup 已越过 REST、恢复检查、剪贴板、暂存架与 AgentHub；随后在主窗口
+`WebviewWindowBuilder::build()` / 窗口辅助模块初始化处出现 `thread 'main' has overflowed its stack`
+（`tmp/agent-workspace-app-stderr5.log`、`-stderr8.log`）。使用独立
+`WEBVIEW2_USER_DATA_FOLDER` 时能进一步走到托盘初始化，但仍在窗口辅助模块处栈溢出
+（`-stderr9.log`、`-stdout9.log`）。因此本轮 MCP bridge 仍未实际监听，`mcp-transport.json`
+不是写失败，而是启动流程尚未执行到写文件；这是独立于 MCP 协议的桌面启动缺陷，需另行修复。
 
 **Phase 6 CLI 交接补充**：交接目标不匹配时 `smoke-rest` 接收 `smoke-readonly` 的交接被明确拒绝；
 自身闭环 create/accept/complete 的 revision 依次为 1/2/3，证明版本校验与状态机真实生效。
