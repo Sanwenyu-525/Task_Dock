@@ -173,6 +173,9 @@ pub fn start(db: Arc<Db>, port: u16) -> AppResult<RestStatus> {
         task,
     });
     tracing::info!("Agent REST 监听 127.0.0.1:{port}{BASE_PATH}");
+    // `status` 需要再次读取 slot；这里必须先释放锁，否则同一线程自死锁，
+    // 启动流程会停在 REST 初始化之后（MCP bridge 等后续模块永远不执行）。
+    drop(guard);
     Ok(status(&db))
 }
 

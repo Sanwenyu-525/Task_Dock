@@ -477,6 +477,16 @@ fn restore_window(app: &AppHandle, db: &Db) {
         match event {
             tauri::WindowEvent::Focused(false) => st.on_background(true),
             tauri::WindowEvent::Focused(true) => st.on_background(false),
+            tauri::WindowEvent::Resized(_) => {
+                // 最小化不一定触发失焦（部分窗口管理器/多显示器组合下焦点仍留在
+                // 隐藏窗口），在尺寸事件后按真实 is_minimized 结果补一次锁定。
+                if win_for_vault.is_minimized().unwrap_or(false) {
+                    st.lock(secure_vault::session::LockReason::WindowHidden);
+                }
+            }
+            tauri::WindowEvent::Destroyed => {
+                st.lock(secure_vault::session::LockReason::WindowHidden);
+            }
             _ => {}
         }
     });
@@ -686,6 +696,7 @@ pub fn run() {
                 }
                 Err(err) => tracing::warn!("读取 Agent 接入设置失败: {err}"),
             }
+            tracing::info!("setup: Agent 接入设置已应用（REST/监听）");
             // 先处理上次中断的恢复：数据库/文件提交要么续跑完成，要么回滚；
             // 必须在剪贴板监听与 Agent 管线启动前完成，避免恢复期间写入被覆盖。
             match commands::restore::recover_pending(&data_dir, &db) {
@@ -701,6 +712,7 @@ pub fn run() {
                 Ok(None) => {}
                 Err(e) => tracing::error!("处理中断恢复失败（需人工检查恢复日志）: {}", e),
             }
+            tracing::info!("setup: 中断恢复检查完成");
             // 受理序号起点必须高于库内已持久化的最大序号：
             // 时钟回拨/重启后新事件仍严格新于历史，旧事件不会覆盖新状态。
             match db.max_ingest_seq() {
@@ -772,6 +784,7 @@ pub fn run() {
                 tracing::info!("智能剪贴板已停用：不启动监听与后台维护");
             }
             handle.manage(clipboard_rt);
+            tracing::info!("setup: 剪贴板模块已托管");
 
             // 安全保险箱（P1）：独立库 + 内存会话。未建库时不创建连接；
             // 锁定 ticker 在构造时启动（单一后台任务，2s 判定一次）。
@@ -801,9 +814,11 @@ pub fn run() {
             ));
             drag_drop_state.sweep();
             handle.manage(drag_drop_state.clone());
+            tracing::info!("setup: 暂存架与拖入模块已就绪");
 
             let hub = Arc::new(AgentHub::new(handle.clone(), db.clone()));
             handle.manage(hub.clone());
+            tracing::info!("setup: AgentHub 已托管");
 
             // 主窗口在此显式创建（tauri.conf.json 中 main 设了 "create": false）。
             // 根因：配置窗口会在 setup 完成前创建并开始加载前端，页面里的
@@ -823,9 +838,11 @@ pub fn run() {
             {
                 tauri::WebviewWindowBuilder::from_config(&handle, &cfg)?.build()?;
             }
+            tracing::info!("setup: 主窗口已创建");
 
             // 窗口恢复（位置/模式/关闭行为）
             restore_window(&handle, &db);
+            tracing::info!("setup: 窗口恢复完成");
 
             // 圆角外形按当前视觉预设先落一次（前端加载后会以真实预设再同步一次），
             // 保证窗口第一次显示时四角就是圆角，不会闪一下直角。
@@ -1048,22 +1065,28 @@ pub fn run() {
             // 自定义快捷键：加载配置 → 合并动作 → 注册系统级组合 → 记录真实状态。
             // 旧版 `hotkey_enabled` 只作为「系统级默认启用」的种子；注册失败会写入状态并在 UI 展示。
             crate::hotkeys::init(&handle, settings.hotkey_enabled);
+            tracing::info!("setup: 快捷键初始化完成");
 
             // 托盘
             setup_tray(app).expect("托盘初始化失败");
             refresh_tray(&handle, AgentState::Idle);
+            tracing::info!("setup: 托盘初始化完成");
 
             // 液态玻璃右键菜单：挂接弹窗窗口事件（失焦关闭 / 圆角区域）
             context_menu::init(&handle);
+            tracing::info!("setup: 右键菜单模块初始化完成");
 
             // 极简标签悬停提示：独立透明窗口，点击穿透、不抢焦点
             tab_hint::init(&handle);
+            tracing::info!("setup: 标签提示模块初始化完成");
 
             // 自定义通知窗口：挂接生命周期事件（WS_EX_NOACTIVATE 在每次显示前确保）
             notification_window::init(&handle);
+            tracing::info!("setup: 通知窗口模块初始化完成");
 
             // 全局快速捕获：挂接窗口事件（失焦落草稿后隐藏 / 关闭改为隐藏）
             quick_capture::init(&handle);
+            tracing::info!("setup: 窗口辅助模块初始化完成");
 
             // Agent 适配器
             Box::new(agents::file_drop::FileDropAdapter::new(pipeline.clone())).spawn(hub.clone());
