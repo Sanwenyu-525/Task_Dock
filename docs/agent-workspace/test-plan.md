@@ -207,3 +207,51 @@ REST 仅监听 `127.0.0.1:47911`。测试 Agent 为 `smoke-rest`（scope `projec
 
 **Phase 6 CLI 交接补充**：交接目标不匹配时 `smoke-rest` 接收 `smoke-readonly` 的交接被明确拒绝；
 自身闭环 create/accept/complete 的 revision 依次为 1/2/3，证明版本校验与状态机真实生效。
+
+> **§8.2 更正（2026-11-18 后续）**：`task get` / `task list` 的 JSON 已补 `revision`，CLI、REST、
+> MCP 三入口一致；`task update` 信封字段仍以 `payload.task_id` 为准，Markdown `task.update` 仍未实现。
+
+## 10. 执行记录（2026-11-18，MCP 端到端真实运行）
+
+环境：隔离数据目录 `tmp/agent-workspace-smoke`；桌面 dev 二进制 `src-tauri/target/debug/task-dock.exe`
+（构建任务 `h-mwm2rzdy-4892e5`，exit 0）；CLI `src-tauri/target/debug/taskdock.exe`（构建任务
+`h-mwm2tf3n-b90446`，exit 0）。
+MCP bridge 由 `TASKDOCK_TEST_HEADLESS=1` 实例启动：transport `port=6946`、`enabled=true`；stdio 客户端
+通过 `TASK_DOCK_DATA_DIR` 读到同一 transport。测试 Agent `smoke-rest`（16 能力）与 `smoke-readonly`。
+
+| 用例 | 结果 | 证据摘要 |
+|---|---|---|
+| MCP initialize | 通过 | `protocolVersion=2025-06-18`，`serverInfo=task-dock/0.5.0` |
+| tools/list | 通过 | 94 个工具（既有 73 + 本任务 21） |
+| resources/list | 通过 | 10 个资源 |
+| prompts/list | 通过 | 5 个提示模板 |
+| manifest | 通过（修复后） | `capabilities` 16 项，与 DB 授予一致；修复前仅硬编码 12 项 |
+| 创建任务 | 通过（修复后） | `taskdock_create_task` → `d794e49f-…`，`revision=1`；修复前任务 JSON 无 revision |
+| 读取任务 | 通过 | `taskdock_get_task` 返回 `revision=1`、`updated_at` |
+| 完成任务 | 通过（修复后） | `expected_revision=1` → 200，`status=completed`、`revision=2` |
+| 统一活动 | 通过（修复后） | `agent_activity(interface=mcp)` 返回 `task.create`/`task.complete`，`agent_id=smoke-rest` |
+| 只读拒绝 | 通过 | `smoke-readonly` 创建任务 → JSON-RPC `-32002`，明确 scope=readonly |
+| 未知工具 | 通过 | `taskdock_nonexistent` → `-32602` |
+| 缺失 token | 通过（修复后） | 修复前 `-32000 retryable=true`；修复后 `-32001 retryable=false` |
+| resources/read tasks | 通过 | 5 条任务均含 `revision`，含 completed |
+| prompts/get | 通过 | `prepare_development_context` 返回上下文 Markdown（487 tokens，2 条目） |
+
+## 11. 本轮修复与回归
+
+1. `Task` 增加可选 `revision`（`db/models.rs`），CLI/MCP/REST 的任务详情、列表、创建、更新、完成统一输出；
+   桌面端既有查询保持 `None`，不改变原响应契约。
+2. 旧 MCP `taskdock_create_task` / `taskdock_update_task` 在同一事务内 `bump_revision` 并写
+   `agent_activity_logs`（`interface=mcp`），修复“MCP 写不进统一活动日志”的缺口。
+3. `manifest` 的 `capabilities` 改为 `mcp::permissions::CAPABILITIES`，从 12 项恢复为完整 16 项。
+4. stdio 错误映射：401 → `-32001`、403 → `-32002`、400 → `-32600`，不再一律 `-32000`。
+5. 测试专用 `TASKDOCK_TEST_HEADLESS=1`：跳过主窗口、窗口恢复/材质/吸附、开机自启、快捷键与辅助窗口，
+   保留托盘、REST、MCP、Hook 与接入管线；正常启动不设置，行为不变。该开关只用于验收，不是产品启动路径。
+
+**回归结果**：`npm run cargo -- check -j 1` exit 0（任务 `m-mwm2mxfc-0996bd`，29.54s）；
+桌面构建 exit 0（`h-mwm2rzdy-4892e5`）；CLI 构建 exit 0（`h-mwm2tf3n-b90446`）；
+REST `GET /tasks/<id>` revision=2、`PATCH base_revision=2` → revision=3、旧 base=2 → 409；
+CLI `task get` revision=3，`task list` 每条含 revision。
+
+**仍未通过**：正常桌面启动（不设置 headless）仍在主窗口 `WebviewWindowBuilder::build()` 处
+`thread 'main' has overflowed its stack`，因此 UI 真机、托盘交互、通知、剪贴板体验、安装包与
+`buildId` 正式验收均未执行；MCP 结论仅覆盖协议与后端服务层。

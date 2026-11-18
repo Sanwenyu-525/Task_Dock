@@ -14,13 +14,65 @@
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
+use crate::agent_access::store::{self, ActivityEntry};
+use crate::agent_access::{Principal, Source};
 use crate::commands::tasks::{
     create_task_tx, get_task_in_conn, list_tasks_inner, update_task_in_conn, TaskFilter, TaskInput,
 };
+use crate::db::{Db, Task};
 use crate::error::AppError;
 use crate::mcp::permissions::{self, Capability};
 use crate::mcp::tools::{arg_str, outcome, require_str, schema, CallOutcome, ToolCtx, ToolDef, ToolError};
 use crate::mcp::PlanningChanged;
+
+fn agent_principal(ctx: &ToolCtx) -> Principal {
+    Principal::agent(
+        ctx.agent.row_id.clone(),
+        ctx.agent.agent_id.clone(),
+        Source::Mcp,
+    )
+}
+
+/// 旧 MCP 任务工具复用 Agent 访问层的 revision 口径，保证
+/// create → get → complete 之间 base_revision 可闭合。
+fn attach_revision(db: &Db, task: &mut Task) -> Result<(), AppError> {
+    task.revision = Some(db.with_read(|conn| {
+        let (counter, counter_at, _) = store::read_revision(conn, "task", &task.id)?;
+        Ok(store::effective_revision(
+            counter,
+            &counter_at,
+            &task.updated_at,
+        ))
+    })?);
+    Ok(())
+}
+
+fn log_task_activity(
+    conn: &Connection,
+    ctx: &ToolCtx,
+    action: &str,
+    task_id: &str,
+    revision: i64,
+    detail: &str,
+) {
+    let principal = agent_principal(ctx);
+    let _ = store::write_activity(
+        conn,
+        &ActivityEntry {
+            principal: &principal,
+            action,
+            resource_kind: "task",
+            resource_id: task_id,
+            project_id: "",
+            request_id: "",
+            success: true,
+            error_code: "",
+            detail,
+            revision: Some(revision),
+            duration_ms: 0,
+        },
+    );
+}
 
 pub(crate) fn defs() -> Vec<ToolDef> {
     vec![
@@ -299,16 +351,20 @@ pub(crate) fn call(
         "taskdock_list_tasks" => {
             ensure_read_global(ctx)?;
             let filter = filter_from_args(args)?;
-            let tasks = list_tasks_inner(db, filter).map_err(ToolError::Failed)?;
+            let mut tasks = list_tasks_inner(db, filter).map_err(ToolError::Failed)?;
+            for task in tasks.iter_mut() {
+                attach_revision(db, task).map_err(ToolError::Failed)?;
+            }
             let value = serde_json::to_value(tasks).map_err(AppError::from)?;
             Ok(Some(outcome(value, "task", String::new(), None)))
         }
         "taskdock_get_task" => {
             let id = require_str(args, "task_id")?;
             ensure_read_one(ctx, &id)?;
-            let task = db
+            let mut task = db
                 .with_read(|conn| get_task_in_conn(conn, &id))
                 .map_err(ToolError::Failed)?;
+            attach_revision(db, &mut task).map_err(ToolError::Failed)?;
             let value = serde_json::to_value(task).map_err(AppError::from)?;
             Ok(Some(outcome(value, "task", id, None)))
         }
@@ -325,7 +381,7 @@ pub(crate) fn call(
                 .and_then(|v| v.as_u64())
                 .map(|v| v.clamp(1, 200) as u32)
                 .or(Some(100));
-            let tasks = list_tasks_inner(
+            let mut tasks = list_tasks_inner(
                 db,
                 TaskFilter {
                     view: Some(scope.to_string()),
@@ -335,6 +391,9 @@ pub(crate) fn call(
                 },
             )
             .map_err(ToolError::Failed)?;
+            for task in tasks.iter_mut() {
+                attach_revision(db, task).map_err(ToolError::Failed)?;
+            }
             let value = serde_json::to_value(tasks).map_err(AppError::from)?;
             Ok(Some(outcome(value, "task", String::new(), None)))
         }
@@ -350,7 +409,19 @@ pub(crate) fn call(
             ensure_write_global(ctx, conn)?;
             let input = input_from_args(args, true)?;
             let task_id = create_task_tx(conn, input).map_err(ToolError::Failed)?;
-            let task = get_task_in_conn(conn, &task_id).map_err(ToolError::Failed)?;
+            let mut task = get_task_in_conn(conn, &task_id).map_err(ToolError::Failed)?;
+            let principal = agent_principal(ctx);
+            let revision = store::bump_revision(
+                conn,
+                "task",
+                &task_id,
+                &principal,
+                &task.updated_at,
+                "",
+            )
+            .map_err(ToolError::Failed)?;
+            task.revision = Some(revision);
+            log_task_activity(conn, ctx, "task.create", &task_id, revision, "创建任务");
             let value = serde_json::to_value(&task).map_err(AppError::from)?;
             Ok(Some(outcome(
                 value,
@@ -360,7 +431,7 @@ pub(crate) fn call(
                     kind: "task",
                     project_id: None,
                     feature_id: None,
-                    revision: None,
+                    revision: Some(revision),
                 }),
             )))
         }
@@ -392,7 +463,19 @@ pub(crate) fn call(
             if args.get("tags").is_none() {
                 input.tags = Some(current.tags.clone());
             }
-            let task = update_task_in_conn(conn, &task_id, input).map_err(ToolError::Failed)?;
+            let mut task = update_task_in_conn(conn, &task_id, input).map_err(ToolError::Failed)?;
+            let principal = agent_principal(ctx);
+            let revision = store::bump_revision(
+                conn,
+                "task",
+                &task_id,
+                &principal,
+                &task.updated_at,
+                "",
+            )
+            .map_err(ToolError::Failed)?;
+            task.revision = Some(revision);
+            log_task_activity(conn, ctx, "task.update", &task_id, revision, "更新任务");
             let value = serde_json::to_value(&task).map_err(AppError::from)?;
             Ok(Some(outcome(
                 value,
@@ -402,7 +485,7 @@ pub(crate) fn call(
                     kind: "task",
                     project_id: None,
                     feature_id: None,
-                    revision: None,
+                    revision: Some(revision),
                 }),
             )))
         }

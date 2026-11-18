@@ -54,6 +54,9 @@
 说明：业务表自身的 `updated_at` 也参与冲突校验（`base_revision` + `base_updated_at` 双条件），
 因此 UI 直接改数据（不经服务层）也会被外部写入检测到。
 
+任务 JSON 在 CLI/MCP/REST/文件入口输出 `revision` 字段（`Task` 的可选序列化字段），值由
+`read_revision` + `effective_revision` 实时计算；桌面端既有查询不填该字段，保持原响应契约。
+
 ### 2.4 `agent_decisions`（架构/产品决策记录）
 
 `id` PK；`project_id` + `project_kind ∈ {none, planning, workspace}`（弱引用，无外键，避免跨模块级联）；

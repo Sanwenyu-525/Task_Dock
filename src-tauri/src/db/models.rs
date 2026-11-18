@@ -26,6 +26,10 @@ pub struct Task {
     /// 不落库，由查询时子查询计算，禁止用 tasks.remind_at/due_at 冒充）
     #[serde(default)]
     pub next_remind_at: Option<String>,
+    /// Agent 访问层有效 revision（`agent_resource_revisions` 计数器 + updated_at 推导）。
+    /// 只在 CLI/MCP/REST/文件入口填充；桌面端既有查询保持 None，不改变原响应契约。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

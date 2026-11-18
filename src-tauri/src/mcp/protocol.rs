@@ -200,6 +200,25 @@ fn unavailable(id: &Value, detail: &str) -> Value {
     )
 }
 
+/// 凭据缺失/不被识别：配置问题，重试同一请求不会自愈，标记不可重试。
+fn unauthorized(id: &Value, detail: &str) -> Value {
+    error_with_data(
+        id.clone(),
+        ERR_UNAUTHORIZED,
+        &format!("Task Dock MCP 未授权（{detail}）"),
+        json!({ "retryable": false }),
+    )
+}
+
+fn forbidden(id: &Value, detail: &str) -> Value {
+    error_with_data(
+        id.clone(),
+        ERR_FORBIDDEN,
+        &format!("Task Dock MCP 权限不足（{detail}）"),
+        json!({ "retryable": false }),
+    )
+}
+
 /// 提取请求 id 与「是否响应」判定：解析失败 → id=null（回 parse error）；
 /// 解析成功但无 id 字段 → 通知（不回包）。
 fn classify(line: &str) -> (Value, bool) {
@@ -227,9 +246,12 @@ fn answer(line: &str, out: &mut impl Write) -> std::io::Result<()> {
     let body = match bridge::post_json(line) {
         Ok(resp) => resp,
         Err(bridge::TransportFailure::Unreachable(detail)) => unavailable(&id, &detail).to_string(),
-        Err(bridge::TransportFailure::Rejected { code: _, detail }) => {
-            unavailable(&id, &detail).to_string()
-        }
+        Err(bridge::TransportFailure::Rejected { code, detail }) => match code {
+            401 => unauthorized(&id, &detail).to_string(),
+            403 => forbidden(&id, &detail).to_string(),
+            400 => error(id.clone(), INVALID_REQUEST, &detail).to_string(),
+            _ => unavailable(&id, &detail).to_string(),
+        },
     };
     writeln!(out, "{body}")
 }

@@ -193,6 +193,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         completed_at: row.get(12)?,
         linked_agents: row.get(21)?,
         next_remind_at: row.get(22)?,
+        revision: None,
     })
 }
 

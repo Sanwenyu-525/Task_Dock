@@ -37,7 +37,7 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 | `taskdock_get_handoff` | 读 | `handoffs.read` | 交接详情 |
 | `taskdock_list_handoffs` | 读 | `handoffs.read` | 待接收/进行中/已完成 |
 | `taskdock_submit_work_report` | 写 | `handoffs.write` | 工作报告 |
-| `taskdock_complete_task` | 写 | `tasks.write` | 需 `expected_revision` |
+| `taskdock_complete_task` | 写 | `tasks.write` | 先读任务 JSON 的 `revision`，作为 `expected_revision` 提交 |
 | `taskdock_search` | 读 | `projects.read` + 对应 read 能力 | 跨任务/知识/决策检索 |
 | `taskdock_agent_registry` | 读 | `workspace.read` | 已注册 Agent、scope、最近访问 |
 | `taskdock_agent_activity` | 读 | `workspace.read` | 四入口统一活动日志 |
@@ -47,6 +47,8 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 外层写事务嵌套；授权、版本、审计仍在统一层完成。
 
 已有工具（规划 18 个 + 任务/笔记/工作流/文件工作区/知识/Skill）保持不变，语义与授权不变。
+其中 `taskdock_create_task` / `taskdock_update_task` 返回的任务 JSON 也包含 `revision`，并在同一
+事务内写入 `agent_activity_logs`（`interface=mcp`），与 CLI/REST/文件入口共用版本与审计口径。
 
 ## 3. Resources（只读，按需读取）
 
@@ -56,7 +58,7 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 | `taskdock://projects` | 项目列表摘要 | 否（≤50） |
 | `taskdock://projects/{id}` | 项目详情 | 否 |
 | `taskdock://projects/{id}/context` | 该项目上下文（Markdown） | 否（受预算限制） |
-| `taskdock://tasks` | 任务摘要（默认 pending，≤100） | 否 |
+| `taskdock://tasks` | 任务快照（≤200，含 pending/completed，含 `revision`） | 否 |
 | `taskdock://plans/current` | 当前计划 | 否 |
 | `taskdock://knowledge/index` | 知识库与文档索引（≤200） | 否 |
 | `taskdock://decisions` | 决策列表（≤100） | 否 |
@@ -70,11 +72,11 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 
 | 名称 | 参数 | 用途 |
 |---|---|---|
-| `understand_project` | `project_id` | 读取项目状态与上下文，输出理解摘要与待确认问题 |
-| `continue_previous_work` | `project_id`、`agent_id?` | 读取最近交接/报告/活动，给出续做步骤 |
-| `prepare_development_context` | `task` 或 `task_id` | 装配实现所需上下文（任务/规划/决策/约束） |
-| `review_architecture_decision` | `decision_id` 或 `project_id` | 审阅决策记录，列出风险与替代方案 |
-| `submit_work_handoff` | `handoff_id` | 按模板填写完成项/待办/风险/下一步 |
+| `understand_project` | `project_id`（必填） | 读取项目状态与上下文，输出理解摘要与待确认问题 |
+| `continue_previous_work` | `handoff_id`（必填） | 读取最近交接/报告/活动，给出续做步骤 |
+| `prepare_development_context` | `task`（必填）、`project_id`（可选） | 装配实现所需上下文（任务/规划/决策/约束） |
+| `review_architecture_decision` | `decision_id`（必填） | 审阅决策记录，列出风险与替代方案 |
+| `submit_work_handoff` | `to_agent_id`、`summary`（必填） | 按模板填写完成项/待办/风险/下一步 |
 
 `prompts/get` 返回 `messages`（role=user 的模板文本），不包含任何密钥或默认自动执行指令。
 
@@ -95,3 +97,23 @@ MCP 客户端 ──stdio──▶ taskdock.exe --mcp-server ──HTTP 127.0.0.
 现有实现已覆盖 tools 的完整语义（含 idempotency、审计、双层凭据）且经过测试；引入 SDK 会带来
 新的依赖树、异步 runtime 与传输层抽象，收益不足。v76 只按规范补齐 resources/prompts 两种方法，
 协议封套与错误码沿用既有实现。
+
+## 7. 真实客户端验收记录（2026-11-18）
+
+使用 `task-dock.exe --mcp-server` 作为真实 stdio 子进程，`TASKDOCK_MCP_TOKEN=…` 指向测试 Agent
+`smoke-rest`，transport 文件由无头测试实例生成。结果：
+
+- `initialize` 返回 `protocolVersion=2025-06-18`、`serverInfo=task-dock/0.5.0`；`tools/list` 94 个、
+  `resources/list` 10 个、`prompts/list` 5 个。
+- `resources/read taskdock://manifest`：`capabilities` 16 项（与 `mcp_agent_capabilities` 授权一致），
+  `interfaces.mcp=true`、`rest=true`。
+- `tools/call taskdock_create_task` → 任务 `d794e49f-…`，`revision=1`；`taskdock_get_task` 返回同一
+  `revision=1`；`taskdock_complete_task(expected_revision=1)` → `revision=2`、`status=completed`。
+- `taskdock_agent_activity(interface=mcp)` 返回 `task.create` 与 `task.complete` 两条，`agent_id=smoke-rest`。
+- `smoke-readonly` 调用 `taskdock_create_task` → JSON-RPC `-32002`（scope=readonly 拒绝写）。
+- 缺 `TASKDOCK_MCP_TOKEN` → 修复后返回 `-32001`（此前误归类为可重试 `-32000`）；未知工具 → `-32602`。
+- 任务写工具此前不返回 `revision`、不写 `agent_activity_logs`；manifest 硬编码 12 项能力。均已在
+  本轮修复，详见 [test-plan.md](test-plan.md) §11 与 [acceptance-report.md](acceptance-report.md) §11。
+
+**限制**：上述 MCP 验收运行在 `TASKDOCK_TEST_HEADLESS=1` 下，绕过了主窗口栈溢出；正常桌面启动
+仍未通过，不能据此宣称 UI/安装包验收通过。

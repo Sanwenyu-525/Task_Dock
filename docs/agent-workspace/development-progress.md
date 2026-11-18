@@ -142,3 +142,18 @@
 
 > 说明：首次 `cargo check` 在“类型检查已通过、写 metadata”阶段因机器可用内存不足被 rustc OOM 终止（exit 101），
 > 属 `ENVIRONMENT BLOCKED` 类资源问题；内存恢复后同一命令通过，未发现代码错误。
+
+## 阶段状态更新（2026-11-18 晚）
+
+上表“MCP stdio 入口仅返回 -32000、bridge 未启动”为历史记录。补上 REST 启动自死锁修复后，MCP bridge
+已真实监听；用测试专用 `TASKDOCK_TEST_HEADLESS=1` 启动后端后完成端到端验收。
+
+- **Phase 4（MCP）**：从“已完成（代码）”更新为“已完成（真实测试）”。94 tools / 10 resources /
+  5 prompts；initialize、工具调用、资源读取、提示生成、任务创建/完成、权限拒绝、统一活动日志均通过。
+- **任务版本口径**：`Task` JSON 在 CLI/MCP/REST 统一输出 `revision`；MCP create/update 同事务写
+  `agent_resource_revisions` 与 `agent_activity_logs`；manifest `capabilities` 恢复 16 项。
+- **错误码**：stdio 401→`-32001`、403→`-32002`、400→`-32600`。
+- **启动缺陷未修复**：正常 GUI 启动仍在主窗口 `WebviewWindowBuilder::build()` 处主线程栈溢出；
+  headless 仅用于验收，不是产品能力。Phase 7 UI 真机、安装包、性能基线仍为未执行。
+
+证据与用例见 [test-plan.md](test-plan.md) §10–§11、[acceptance-report.md](acceptance-report.md) §11。

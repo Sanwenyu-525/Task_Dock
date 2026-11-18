@@ -303,12 +303,41 @@ pub fn list_tasks(
     let page = Page::new(limit, offset, total);
     let start = (offset as usize).min(all.len());
     let end = (start + limit as usize).min(all.len());
-    Ok((all[start..end].to_vec(), page))
+    let mut items = all[start..end].to_vec();
+    attach_task_revisions(db, &mut items)?;
+    Ok((items, page))
 }
 
 pub fn fetch_task(db: &Db, principal: &Principal, id: &str) -> AppResult<Task> {
     perms::require(db, principal, Capability::TasksRead, id)?;
-    get_task(db, id)
+    let mut task = get_task(db, id)?;
+    attach_task_revisions(db, std::slice::from_mut(&mut task))?;
+    Ok(task)
+}
+
+/// 给任务补上 Agent 入口需要的有效 revision（不改变桌面端既有 Task 契约）。
+pub fn task_revision(db: &Db, task: &Task) -> AppResult<i64> {
+    db.with_read(|conn| {
+        let (counter, counter_at, _) = store::read_revision(conn, "task", &task.id)?;
+        Ok(store::effective_revision(counter, &counter_at, &task.updated_at))
+    })
+}
+
+fn attach_task_revisions(db: &Db, tasks: &mut [Task]) -> AppResult<()> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    db.with_read(|conn| {
+        for task in tasks.iter_mut() {
+            let (counter, counter_at, _) = store::read_revision(conn, "task", &task.id)?;
+            task.revision = Some(store::effective_revision(
+                counter,
+                &counter_at,
+                &task.updated_at,
+            ));
+        }
+        Ok(())
+    })
 }
 
 /// 任务的当前版本（计数器 + 业务 `updated_at` 双校验）。
@@ -394,13 +423,14 @@ pub fn create_task(
         advance_minutes: input.advance_minutes,
         recurrence: None,
     };
-    let (task, revision) = db.with_transaction(|conn| {
+    let (mut task, revision) = db.with_transaction(|conn| {
         let id = create_task_tx(conn, task_input)?;
         let task = get_task_in_conn(conn, &id)?;
         let revision =
             store::bump_revision(conn, "task", &id, principal, &task.updated_at, "")?;
         Ok((task, revision))
     })?;
+    task.revision = Some(revision);
     store::log_activity(
         db,
         &store::ActivityEntry {
@@ -429,7 +459,7 @@ pub fn update_task(
     base_revision: Option<i64>,
 ) -> AppResult<Task> {
     perms::require(db, principal, Capability::TasksWrite, id)?;
-    let (task, revision, prior) = db.with_transaction(|conn| {
+    let (mut task, revision, prior) = db.with_transaction(|conn| {
         let existing = get_task_in_conn(conn, id)?;
         let (counter, counter_at, _) = store::read_revision(conn, "task", id)?;
         let effective = store::effective_revision(counter, &counter_at, &existing.updated_at);
@@ -473,6 +503,7 @@ pub fn update_task(
         Ok((task, revision, existing.updated_at))
     })?;
     let _ = prior;
+    task.revision = Some(revision);
     store::log_activity(
         db,
         &store::ActivityEntry {
@@ -513,7 +544,7 @@ pub fn complete_task(
             )));
         }
     }
-    let task = toggle_task_inner(db, id)?;
+    let mut task = toggle_task_inner(db, id)?;
     let next = db.with_conn(|conn| {
         store::bump_revision(conn, "task", id, principal, &task.updated_at, "")
     })?;
@@ -537,6 +568,7 @@ pub fn complete_task(
             duration_ms: 0,
         },
     );
+    task.revision = Some(next);
     Ok(task)
 }
 

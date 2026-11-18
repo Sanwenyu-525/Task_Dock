@@ -136,6 +136,8 @@ taskdock sync resolve <conflict_id> --action keep-db|keep-file|dismiss [--force]
 ## 6. 错误与并发
 
 - 所有写命令必须给 `--base-revision`（`task create` 除外）；缺失 → `VALIDATION`。
+- `task get` / `task list` 的 JSON 均返回 `revision`（与 REST/MCP 同一有效版本口径：
+  `agent_resource_revisions` 计数器 + 业务 `updated_at`），可直接作为下一次写的 `--base-revision`。
 - 冲突时 stderr 打印当前 revision 与更新时间，退出码 5；脚本可重新 `get` 后重试。
 - 并发安全：CLI 每次调用独立开库，写事务短；同一秒内多次写入串行化，不缓存跨进程状态。
 

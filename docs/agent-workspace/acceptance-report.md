@@ -170,3 +170,36 @@
 
 **结论**：**部分通过**。四入口中 CLI、文件、REST 已取得真实读写与冲突/权限证据，MCP 传输层与 UI/
 安装包/性能仍未验收；不满足“整体端到端验收通过”。
+
+## 11. MCP 端到端验收更新（2026-11-18 晚）
+
+本节修正 §10「MCP 传输层未监听」的历史结论：用测试专用 `TASKDOCK_TEST_HEADLESS=1` 启动后端后，
+MCP bridge 真实监听 `127.0.0.1:6946` 并生成 transport；stdio 客户端完成完整协议与业务闭环。
+
+**已真实执行并通过**
+
+- `initialize`：`protocolVersion=2025-06-18`、`serverInfo=task-dock/0.5.0`。
+- `tools/list` 94 个、`resources/list` 10 个、`prompts/list` 5 个。
+- `resources/read taskdock://manifest`：`capabilities` 16 项；`interfaces.mcp=true`、`rest=true`。
+- 创建/读取/完成：`taskdock_create_task` → `d794e49f-…` revision 1；`taskdock_get_task` revision 1；
+  `taskdock_complete_task(expected_revision=1)` → `status=completed`、revision 2、`completed_at` 写入。
+- 统一活动：`taskdock_agent_activity(interface=mcp)` 返回 `task.create`、`task.complete` 两条，
+  `agent_id=smoke-rest`、`resource_kind=task`。
+- 权限：`smoke-readonly` 调用 `taskdock_create_task` → `-32002`；未知工具 → `-32602`；
+  缺 `TASKDOCK_MCP_TOKEN` → 修复后 `-32001`（不可重试），修复前误为 `-32000 retryable=true`。
+- `resources/read taskdock://tasks` 返回 5 条任务，均含 `revision`。
+- 回归：REST GET/PATCH revision=2→3、旧 base 409；CLI `task get` revision=3、`task list` 每条含
+  `revision`；`cargo check` exit 0，桌面/CLI 构建 exit 0。
+
+**本轮修复**
+
+- `Task` 增加可选 `revision`，由 `agent_access::service` 统一填充；旧 MCP 任务写工具补
+  `bump_revision` 与 `agent_activity_logs`；manifest 能力从硬编码 12 项改为完整 16 项。
+- `mcp/protocol.rs` 按 HTTP 状态映射 JSON-RPC 错误：401→`-32001`、403→`-32002`、400→`-32600`。
+
+**仍未通过 / 阻塞**
+
+- 正常 GUI 启动（不设置 headless）仍在主窗口 `WebviewWindowBuilder::build()` 处
+  `thread 'main' has overflowed its stack`；headless 是测试开关，不能替代产品启动路径。
+- UI 真机、安装包、`buildId` 正式验收、性能基线仍未执行；REST 知识/决策 PATCH、并发双写、
+  端口冲突未测；CLI/文件 F8–F10 等未测。

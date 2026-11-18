@@ -828,6 +828,14 @@ pub fn run() {
             // 其余窗口（notification / capture）保持原有创建时机；
             // context-menu 也改为 DB 托管后由 context_menu::init 创建，
             // 避免其首屏 get_settings 与 handle.manage(db) 竞态。
+            //
+            // 验收/无头 Agent 测试专用：跳过窗口、材质、吸附、快捷键与托盘 UI，
+            // 只保留 REST / MCP / Hook / 接入管线。正常启动不设置该变量。
+            let headless = std::env::var_os("TASKDOCK_TEST_HEADLESS").is_some();
+            if headless {
+                tracing::warn!("TASKDOCK_TEST_HEADLESS 已设置：跳过主窗口与桌面 UI 初始化");
+            }
+            if !headless {
             if let Some(cfg) = handle
                 .config()
                 .app
@@ -940,6 +948,7 @@ pub fn run() {
                     let _ = window_shape::apply(&win_for_flush);
                 }));
             }
+            }
 
             // 窗口材质（毛玻璃）：在显示窗口之前应用，避免透明闪烁；
             // 失败自动回退 solid（前端 load 时会再次确认实际状态）
@@ -963,7 +972,7 @@ pub fn run() {
             let pipeline = agents::pipeline::IngestPipeline::new(sink, pipeline_config);
             pipeline.start();
             handle.manage(pipeline.clone());
-            if settings.material == "glass" {
+            if !headless && settings.material == "glass" {
                 // 预设一并传入：清透玻璃在启动时就必须走无原生模糊通道。
                 if let Ok(r) = commands::system::apply_window_material(
                     handle.clone(),
@@ -983,6 +992,9 @@ pub fn run() {
             // 但屏幕上没有任何主窗口像素；前端把容器尺寸 + 贴边位置 + 轨道区域
             // 一次做完后由 `notify_ui_ready` 清掉空白区域。旧实现先露出完整主窗口
             // 约 1.9s 再缩成胶囊，正是「停靠态仍看到主窗口矩形」的启动路径。
+            // 启动意图只判定一次：后面的工作台启动与回退都用同一个结果。
+            let startup_intent = startup_intent_from_args(&std::env::args().collect::<Vec<_>>());
+            if !headless {
             let docked_restore = settings.snap_enabled
                 && db
                     .get_setting("snap_state")
@@ -994,7 +1006,6 @@ pub fn run() {
                     .map(|s| s.is_valid() && s.edge != "none")
                     .unwrap_or(false);
             // 启动意图只判定一次：后面的工作台启动与回退都用同一个结果。
-            let startup_intent = startup_intent_from_args(&std::env::args().collect::<Vec<_>>());
             let show_quick_surface = startup_shows_quick_surface(startup_intent, docked_restore);
             if let Some(win) = handle.get_webview_window("main") {
                 if docked_restore {
@@ -1055,38 +1066,49 @@ pub fn run() {
                     tracing::debug!("普通启动：主窗口保持隐藏，由大型工作台作为首屏");
                 }
             }
+            }
 
             // 开机自启动（按设置应用）
-            if settings.autostart {
+            if !headless && settings.autostart {
                 use tauri_plugin_autostart::ManagerExt;
                 let _ = handle.autolaunch().enable();
             }
 
             // 自定义快捷键：加载配置 → 合并动作 → 注册系统级组合 → 记录真实状态。
             // 旧版 `hotkey_enabled` 只作为「系统级默认启用」的种子；注册失败会写入状态并在 UI 展示。
-            crate::hotkeys::init(&handle, settings.hotkey_enabled);
-            tracing::info!("setup: 快捷键初始化完成");
+            if !headless {
+                crate::hotkeys::init(&handle, settings.hotkey_enabled);
+                tracing::info!("setup: 快捷键初始化完成");
+            }
 
             // 托盘
             setup_tray(app).expect("托盘初始化失败");
             refresh_tray(&handle, AgentState::Idle);
             tracing::info!("setup: 托盘初始化完成");
 
-            // 液态玻璃右键菜单：挂接弹窗窗口事件（失焦关闭 / 圆角区域）
-            context_menu::init(&handle);
-            tracing::info!("setup: 右键菜单模块初始化完成");
+            // 验收/无头 Agent 测试专用：跳过四个辅助 WebView 窗口，保留托盘与 MCP/REST。
+            // 正常启动不设置该变量，行为不变。
+            if !headless && std::env::var_os("TASKDOCK_TEST_SKIP_AUX_WINDOWS").is_none() {
+                // 液态玻璃右键菜单：挂接弹窗窗口事件（失焦关闭 / 圆角区域）
+                context_menu::init(&handle);
+                tracing::info!("setup: 右键菜单模块初始化完成");
 
-            // 极简标签悬停提示：独立透明窗口，点击穿透、不抢焦点
-            tab_hint::init(&handle);
-            tracing::info!("setup: 标签提示模块初始化完成");
+                // 极简标签悬停提示：独立透明窗口，点击穿透、不抢焦点
+                tab_hint::init(&handle);
+                tracing::info!("setup: 标签提示模块初始化完成");
 
-            // 自定义通知窗口：挂接生命周期事件（WS_EX_NOACTIVATE 在每次显示前确保）
-            notification_window::init(&handle);
-            tracing::info!("setup: 通知窗口模块初始化完成");
+                // 自定义通知窗口：挂接生命周期事件（WS_EX_NOACTIVATE 在每次显示前确保）
+                notification_window::init(&handle);
+                tracing::info!("setup: 通知窗口模块初始化完成");
 
-            // 全局快速捕获：挂接窗口事件（失焦落草稿后隐藏 / 关闭改为隐藏）
-            quick_capture::init(&handle);
-            tracing::info!("setup: 窗口辅助模块初始化完成");
+                // 全局快速捕获：挂接窗口事件（失焦落草稿后隐藏 / 关闭改为隐藏）
+                quick_capture::init(&handle);
+                tracing::info!("setup: 窗口辅助模块初始化完成");
+            } else if headless {
+                tracing::warn!("TASKDOCK_TEST_HEADLESS 已设置：跳过辅助窗口初始化");
+            } else {
+                tracing::warn!("TASKDOCK_TEST_SKIP_AUX_WINDOWS 已设置：跳过辅助窗口初始化");
+            }
 
             // Agent 适配器
             Box::new(agents::file_drop::FileDropAdapter::new(pipeline.clone())).spawn(hub.clone());

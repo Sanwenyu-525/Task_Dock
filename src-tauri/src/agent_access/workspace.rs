@@ -344,16 +344,7 @@ pub fn manifest_value(db: &Db, row: &WorkspaceRow) -> AppResult<Value> {
                 .map(|s| format!("http://127.0.0.1:{}/api/v1", s.agent_api_port)),
             "remote": false,
         },
-        "capabilities": [
-            "projects.read",
-            "plans.read",
-            "tasks.read", "tasks.write",
-            "knowledge.read", "knowledge.write",
-            "decisions.read", "decisions.write",
-            "context.read",
-            "handoffs.read", "handoffs.write",
-            "skills.read"
-        ],
+        "capabilities": crate::mcp::permissions::CAPABILITIES,
         "resources": {
             "projects": "planning_projects + workspace_projects",
             "tasks": "tasks",
