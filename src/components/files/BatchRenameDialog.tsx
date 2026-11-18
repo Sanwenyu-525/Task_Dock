@@ -13,10 +13,22 @@ import {
   type BatchRenameOptions,
   type BatchRenamePreviewItem,
 } from "../../lib/filesWorkspace/batchRename";
-import { fsBatchRename, fsStat, type FsOpReport } from "../../lib/bridge";
+import {
+  fsBatchRenameJobStart,
+  fsStat,
+  isFileJobTerminal,
+  type FileJobSnapshot,
+  type FsOpReport,
+} from "../../lib/bridge";
 import { invalidateDirs } from "../../lib/filesWorkspace/dirCache";
 import { parentOf } from "../../lib/filesWorkspace/pathUtils";
-import { finishQueueOperation, startQueueOperation, withFileOperationSlot } from "../../lib/filesWorkspace/operationQueue";
+import { remainingSourcesAfterTransfer } from "../../lib/filesWorkspace/transfer";
+import { withFileOperationSlot } from "../../lib/filesWorkspace/operationQueue";
+import {
+  cancelFileJob,
+  finishFileJob,
+  registerFileJob,
+} from "../../lib/filesWorkspace/fileJobs";
 import { startOperation } from "../../lib/diagnostics";
 import { errorMessage } from "../../lib/errors";
 
@@ -40,6 +52,12 @@ export default function BatchRenameDialog({ request, onClose }: Props) {
   const [checking, setChecking] = useState(false);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<FsOpReport | null>(null);
+  /** 仍需处理的原始路径：只移除报告明确成功的项；取消/失败的项留在编辑列表。 */
+  const [pendingPaths, setPendingPaths] = useState<string[]>([]);
+  /** 本次实际提交的路径（展示「未处理」需要原始清单）。 */
+  const [attemptedPaths, setAttemptedPaths] = useState<string[]>([]);
+  const [job, setJob] = useState<FileJobSnapshot | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
 
   useEffect(() => {
     if (request) {
@@ -47,20 +65,27 @@ export default function BatchRenameDialog({ request, onClose }: Props) {
       setExisting(new Set());
       setRunning(false);
       setResult(null);
+      setPendingPaths([...request.paths]);
+      setAttemptedPaths([]);
+      setJob(null);
+      setCancelBusy(false);
     }
   }, [request]);
 
   // 先按“无已存在”生成目标，再只读 fs_stat 目标路径；不改文件，不后台扫目录。
   const basePreview = useMemo(
-    () => (request ? buildBatchRenamePreview(request.paths, options, existing) : []),
-    [request, options, existing],
+    () => (request ? buildBatchRenamePreview(pendingPaths, options, existing) : []),
+    [request, pendingPaths, options, existing],
   );
 
   useEffect(() => {
-    if (!request) return;
+    if (!request || pendingPaths.length === 0) {
+      setChecking(false);
+      return;
+    }
     let cancelled = false;
     setChecking(true);
-    const targets = buildBatchRenamePreview(request.paths, options, []).map((item) => item.target);
+    const targets = buildBatchRenamePreview(pendingPaths, options, []).map((item) => item.target);
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
@@ -82,7 +107,7 @@ export default function BatchRenameDialog({ request, onClose }: Props) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [request, options]);
+  }, [request, pendingPaths, options]);
 
   if (!request) return null;
 
@@ -90,41 +115,90 @@ export default function BatchRenameDialog({ request, onClose }: Props) {
   const conflicts = basePreview.filter((item) => item.status === "conflict");
   const unchanged = basePreview.filter((item) => item.status === "unchanged");
   const executable = basePreview.filter((item) => item.status === "ok");
-  const blocked = invalid.length > 0 || conflicts.length > 0 || request.paths.length > 500;
+  const blocked = invalid.length > 0 || conflicts.length > 0 || pendingPaths.length > 500;
   const previewLimited = basePreview.slice(0, 200);
 
   const update = (patch: Partial<BatchRenameOptions>) => setOptions((prev) => ({ ...prev, ...patch }));
 
   const execute = async () => {
     if (blocked || !executable.length || running) return;
+    const allPaths = [...pendingPaths];
+    const targets = executable.map((item) => item.path);
+    setAttemptedPaths(targets);
     setRunning(true);
+    setResult(null);
+    setJob(null);
     const op = startOperation("file", "workspace_batch_rename", {
       component: "文件工作区",
       metadata: { count: executable.length },
     });
-    startQueueOperation({ id: op.id, effect: "rename", total: executable.length });
     try {
-      op.stage("ipc");
-      const report = await withFileOperationSlot(() =>
-        fsBatchRename(
+      op.stage("job");
+      const initial = await withFileOperationSlot(() =>
+        fsBatchRenameJobStart(
           executable.map((item) => ({ path: item.path, newName: item.newName })),
           op.id,
         ),
       );
-      finishQueueOperation(op.id, report);
-      setResult(report);
+      registerFileJob(initial);
+      setJob(initial);
+      const { job: final, report } = await finishFileJob(initial.id);
+      if (final) setJob(final);
       const dirs = [...new Set(executable.map((item) => parentOf(item.path) ?? "").filter(Boolean))];
       invalidateDirs(dirs);
+      if (!final) {
+        showToast(t("fw.queue.jobLost"), { kind: "warning" });
+        return;
+      }
+      if (final.status === "cancelled" || final.status === "cancelling") {
+        // 取消后只移除报告明确成功的项；未处理/失败项仍留在编辑列表。
+        const remaining = remainingSourcesAfterTransfer(report, allPaths);
+        if (report) setResult(report);
+        setPendingPaths(remaining);
+        showToast(t("fw.batch.cancelled", { ok: final.ok, remaining: remaining.length }), {
+          kind: "warning",
+        });
+        return;
+      }
+      if (!report) {
+        // 计数已确认但逐项结果不可读：不移除任何行，避免把未执行项当成成功。
+        showToast(t("fw.batch.reportUnavailable", {
+          ok: final.ok,
+          failed: final.failed,
+          skipped: final.skipped,
+        }), { kind: "warning" });
+        return;
+      }
+      setResult(report);
+      const remaining = remainingSourcesAfterTransfer(report, allPaths);
+      setPendingPaths(remaining);
+      const incomplete = report.failed > 0 || report.partial > 0 || report.skipped > 0 || remaining.length > 0;
       showToast(
         t("fw.batch.result", { ok: report.ok, failed: report.failed, skipped: report.skipped }),
-        { kind: report.failed > 0 ? "warning" : "success" },
+        { kind: incomplete ? "warning" : "success" },
       );
-      if (report.failed === 0) onClose();
+      if (!incomplete) onClose();
     } catch (e) {
-      finishQueueOperation(op.id, null, errorMessage(e));
       showToast(errorMessage(e), { kind: "error" });
     } finally {
       setRunning(false);
+    }
+  };
+
+  const requestCancel = async () => {
+    if (!job || isFileJobTerminal(job) || job.cancelRequested || cancelBusy) return;
+    setCancelBusy(true);
+    try {
+      const effective = await cancelFileJob(job.id);
+      if (!effective) {
+        showToast(t("fw.queue.cancelNotEffective"), { kind: "warning" });
+      } else {
+        setJob((prev) => (prev ? { ...prev, cancelRequested: true } : prev));
+      }
+    } catch (e) {
+      showToast(errorMessage(e), { kind: "error" });
+    } finally {
+      setCancelBusy(false);
     }
   };
 
@@ -135,20 +209,43 @@ export default function BatchRenameDialog({ request, onClose }: Props) {
     return t("fw.batch.statusOk");
   };
 
+  const basenameOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  const resultStatusLabel = (status: string) => {
+    if (status === "ok") return t("fw.batch.resultOk");
+    if (status === "partial") return t("fw.batch.resultPartial");
+    if (status === "skipped") return t("fw.batch.resultSkipped");
+    return t("fw.batch.resultFailedStatus");
+  };
+  const resultEntries = result?.entries.slice(0, 100) ?? [];
+  const reportedSources = new Set((result?.entries ?? []).map((entry) => entry.source.toLowerCase()));
+  const unprocessed = result
+    ? attemptedPaths.filter((path) => !reportedSources.has(path.toLowerCase()))
+    : [];
+
   return (
     <Dialog
       open
       onClose={() => {
         if (!running) onClose();
       }}
-      title={t("fw.batch.title", { count: request.paths.length })}
+      title={t("fw.batch.title", { count: pendingPaths.length })}
       size="lg"
-      ariaLabel={t("fw.batch.title", { count: request.paths.length })}
+      ariaLabel={t("fw.batch.title", { count: pendingPaths.length })}
       footer={
         <>
           <button type="button" className="btn" disabled={running} onClick={onClose}>
             {t("common.cancel")}
           </button>
+          {running && job && !isFileJobTerminal(job) && job.cancelable && !job.cancelRequested && (
+            <button
+              type="button"
+              className="btn"
+              disabled={cancelBusy}
+              onClick={() => void requestCancel()}
+            >
+              {t("fw.batch.cancelJob")}
+            </button>
+          )}
           <button type="button" className="btn primary" disabled={blocked || running || executable.length === 0} onClick={() => void execute()}>
             {running ? t("fw.batch.running") : t("fw.batch.execute", { count: executable.length })}
           </button>
@@ -242,22 +339,35 @@ export default function BatchRenameDialog({ request, onClose }: Props) {
         {checking && <span>{t("fw.batch.checking")}</span>}
       </div>
 
-      {result && result.failed > 0 && (
+      {result && (
         <div className="fw-batch-result" role="alert">
           <div className="fw-batch-result-title">
             {t("fw.batch.resultFailed", { ok: result.ok, failed: result.failed, skipped: result.skipped })}
           </div>
           <ul>
-            {result.entries
-              .filter((entry) => entry.status === "failed")
-              .slice(0, 8)
-              .map((entry) => (
-                <li key={entry.source}>
-                  <span className="fw-batch-old">{entry.source.split(/[\\/]/).filter(Boolean).pop()}</span>
-                  <span className="fw-batch-reason">{entry.reason ?? t("fw.batch.unknownFailure")}</span>
-                </li>
-              ))}
+            {resultEntries.map((entry, index) => (
+              <li key={`${entry.source}-${index}`} className={`is-${entry.status}`}>
+                <span className="fw-batch-old">{basenameOf(entry.source)}</span>
+                <span className="fw-batch-new">{entry.target ? basenameOf(entry.target) : "—"}</span>
+                <span className="fw-batch-reason">
+                  {resultStatusLabel(entry.status)}
+                  {entry.reason ? `：${entry.reason}` : ""}
+                </span>
+              </li>
+            ))}
+            {unprocessed.map((path) => (
+              <li key={`pending-${path}`} className="is-skipped">
+                <span className="fw-batch-old">{basenameOf(path)}</span>
+                <span className="fw-batch-new">—</span>
+                <span className="fw-batch-reason">{t("fw.batch.unprocessed")}</span>
+              </li>
+            ))}
           </ul>
+          {result.entries.length > resultEntries.length && (
+            <p className="fw-batch-more">
+              {t("fw.batch.previewLimited", { count: result.entries.length - resultEntries.length })}
+            </p>
+          )}
           <p className="fw-batch-recovery">{t("fw.batch.recovery")}</p>
         </div>
       )}

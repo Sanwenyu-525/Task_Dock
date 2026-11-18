@@ -297,9 +297,70 @@ async fn handle_mcp_post(state: &BridgeState, req: Request<Incoming>) -> Respons
         agent,
         emit: state.emit.clone(),
     };
-    let response = crate::mcp::protocol::handle_request_value(&value, &|name, args| {
-        run_tool_call(&ctx, name, args)
-    });
+    let response = crate::mcp::protocol::handle_request_value_with(
+        &value,
+        &|name, args| run_tool_call(&ctx, name, args),
+        Some(&|method: &str, params: &Value| {
+            use crate::mcp::protocol::{INTERNAL_ERROR, INVALID_PARAMS, METHOD_NOT_FOUND};
+            use crate::agent_access::{Principal, Source};
+            let invalid = |msg: &str| crate::mcp::bridge::ToolRpcError {
+                code: INVALID_PARAMS,
+                message: msg.to_string(),
+                data: Value::Null,
+            };
+            let failed = |e: crate::error::AppError| crate::mcp::bridge::ToolRpcError {
+                code: INTERNAL_ERROR,
+                message: format!("{e}"),
+                data: Value::Null,
+            };
+            let principal = Principal::agent(
+                ctx.agent.row_id.clone(),
+                ctx.agent.agent_id.clone(),
+                Source::Mcp,
+            );
+            match method {
+                "resources/list" => Ok(json!({
+                    "resources": crate::agent_access::mcp_tools::resources()
+                })),
+                "resources/read" => {
+                    let uri = params
+                        .get("uri")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if uri.is_empty() {
+                        return Err(invalid("resources/read 缺少 params.uri"));
+                    }
+                    if !crate::agent_access::mcp_tools::is_resource_uri(uri) {
+                        return Err(invalid("资源 URI 必须以 taskdock:// 开头"));
+                    }
+                    crate::agent_access::mcp_tools::read_resource(&ctx.db, &principal, uri)
+                        .map_err(failed)
+                }
+                "prompts/list" => Ok(json!({
+                    "prompts": crate::agent_access::mcp_tools::prompts()
+                })),
+                "prompts/get" => {
+                    let name = params
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if name.is_empty() {
+                        return Err(invalid("prompts/get 缺少 params.name"));
+                    }
+                    let args = params.get("arguments").cloned().unwrap_or(json!({}));
+                    crate::agent_access::mcp_tools::build_prompt(&ctx.db, &principal, name, &args)
+                        .map_err(failed)
+                }
+                other => Err(crate::mcp::bridge::ToolRpcError {
+                    code: METHOD_NOT_FOUND,
+                    message: format!("不支持的方法: {other}"),
+                    data: Value::Null,
+                }),
+            }
+        }),
+    );
     match response {
         Some(resp) => json_response(StatusCode::OK, resp),
         // 通知：202 Accepted（MCP HTTP 传输约定），stdio 忽略响应

@@ -9,8 +9,9 @@
 //! - 失败原因取稳定错误码分类（权限 / 占用 / 同名冲突…），不展示路径；
 //! - 明确指向「设置 · 诊断与日志」，因为权威事件由 Rust 按同一 operation_id 写入。
 
-import type { FsOpReport } from "../../lib/bridge";
+import type { FileJobSnapshot, FsOpReport } from "../../lib/bridge";
 import type { MessageKey } from "../../i18n";
+import { reportFromJob } from "../../lib/filesWorkspace/fileJobs";
 import {
   reasonKeyForCategory,
   summarizeOpReport,
@@ -87,4 +88,36 @@ export function showFsOpOutcome(args: {
 /** 供测试与诊断面板复用：把报告压成一行摘要（不含路径）。 */
 export function describeOpSummary(summary: FsOpSummary): string {
   return `ok=${summary.ok} failed=${summary.failed} partial=${summary.partial} skipped=${summary.skipped} code=${summary.dominantCode ?? "-"}`;
+}
+
+export type FileJobOutcome = "ok" | "partial" | "cancelled" | "lost";
+
+/**
+ * 展示一次**后端任务**（`fsops`）的业务结果。
+ *
+ * 与 `showFsOpOutcome` 的区别：
+ * - 任务可能被取消（如实说明「已执行部分不可撤销」）；
+ * - 任务可能超出历史上限/应用重启后不可追踪（返回 `lost`，绝不当成功）；
+ * - 成功/失败计数来自服务端快照，不从条目标签反推。
+ */
+export function showFileJobOutcome(args: {
+  effect: FsOpEffect;
+  job: FileJobSnapshot | null;
+  t: Translator;
+  showToast: ShowToast;
+}): FileJobOutcome {
+  const { effect, job, t, showToast } = args;
+  if (!job) {
+    showToast(t("fw.queue.jobLost"), { kind: "warning" });
+    return "lost";
+  }
+  if (job.status === "cancelled" || job.status === "cancelling") {
+    const remaining = Math.max(0, job.total - job.done);
+    showToast(t("fw.queue.cancelledResult", { ok: job.ok, remaining }), {
+      kind: "warning",
+    });
+    return "cancelled";
+  }
+  const ok = showFsOpOutcome({ effect, report: reportFromJob(job), t, showToast });
+  return ok ? "ok" : "partial";
 }

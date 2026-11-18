@@ -26,6 +26,11 @@ export interface SearchOptions {
   /** 文件类别（folder/image/video/audio/text/doc/sheet/slide/archive/code/data/program/link/other）。 */
   category: string | null;
   modifiedWithinDays: number | null;
+  /** 文件字节下限/上限；null/缺省 = 不限。目录不参与大小过滤。 */
+  minSize?: number | null;
+  maxSize?: number | null;
+  /** 是否包含 Windows 隐藏项；缺省 false。 */
+  includeHidden?: boolean;
   maxDepth: number;
   maxResults: number;
   /** 硬上限：最多进入多少个目录，避免误选大目录后长时间扫描。 */
@@ -37,6 +42,9 @@ export const DEFAULT_SEARCH_OPTIONS: SearchOptions = {
   extensions: [],
   category: null,
   modifiedWithinDays: null,
+  minSize: null,
+  maxSize: null,
+  includeHidden: false,
   maxDepth: 2,
   maxResults: 500,
   maxDirs: 200,
@@ -68,6 +76,13 @@ export interface SearchResult {
 }
 
 function matchesHit(entry: FsEntry, options: SearchOptions): boolean {
+  if (!options.includeHidden && entry.hidden) return false;
+  const sizeMatches = (size: number | null): boolean => {
+    if (size === null) return true;
+    if (options.minSize != null && size < options.minSize) return false;
+    if (options.maxSize != null && size > options.maxSize) return false;
+    return true;
+  };
   if (entry.kind !== "file" && entry.kind !== "link") {
     // 文件夹是联合搜索的一等结果：名称、分类、修改时间都参与筛选。
     // 文件夹没有扩展名，扩展名筛选只对文件生效，不能因此把文件夹排除。
@@ -78,6 +93,7 @@ function matchesHit(entry: FsEntry, options: SearchOptions): boolean {
       const cutoff = Date.now() - options.modifiedWithinDays * 24 * 60 * 60 * 1000;
       if ((entry.modifiedMs ?? 0) < cutoff) return false;
     }
+    // 文件夹大小未知（目录不递归统计），不参与大小过滤。
     return true;
   }
   if (options.category && entry.category !== options.category) return false;
@@ -87,7 +103,7 @@ function matchesHit(entry: FsEntry, options: SearchOptions): boolean {
     const cutoff = Date.now() - options.modifiedWithinDays * 24 * 60 * 60 * 1000;
     if ((entry.modifiedMs ?? 0) < cutoff) return false;
   }
-  return true;
+  return sizeMatches(entry.size);
 }
 
 /** 递归搜索选定目录；目录/结果达到上限即停止，并在结果中标记 truncated。 */
@@ -133,7 +149,7 @@ export async function searchWorkspace(
           cancelled = true;
           break;
         }
-        const listing = await fsListDir(item.dir, false, offset);
+        const listing = await fsListDir(item.dir, options.includeHidden ?? false, offset);
         if (signal?.aborted) {
           cancelled = true;
           break;

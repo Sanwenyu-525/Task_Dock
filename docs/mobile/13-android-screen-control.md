@@ -45,21 +45,35 @@
                mode-picker.tsx         双模式卡片
                app-picker.tsx          应用搜索/选择/手动包名
                session-list.tsx        活动会话概览与操作
+               ProjectionToolbar.tsx   投屏控制栏（独立窗口内容，动作全部经 Session 层）
+               projection-window-controller.ts
+                                       Session ↔ 原生控制栏生命周期 / 可见性状态机
                screenshot-preview.tsx  截图预览与保存
                advanced-section.tsx    高级设置与诊断
-               format.ts               标题/状态/时长/包名校验等纯函数
+               format.ts               标题/状态/时长/包名校验/filterApps 等纯函数
+             src/toolbar/main.tsx      控制栏窗口入口（toolbar.html）
+             src/store/useVirtualDisplayStore.ts
+                                       投屏启动配置（按设备 UID，切页恢复）
              src/components/mobile/virtual-display.css
              src/components/mobile/mobile-page.css
-IPC 封装     src/lib/bridge.ts（Vd* 类型与 11 个命令）
+IPC 封装     src/lib/bridge.ts（Vd* 类型与命令，含 vd_session / vd_toolbar_*）
 命令层       src-tauri/src/commands/virtual_display.rs
                · 参数校验（serial / package / mode / size）
                · ADB 设备/应用查询、设备身份去重、工具链探测
                · vd_probe / vd_devices / vd_list_apps / vd_start / vd_stop /
                  vd_sessions / vd_focus / vd_screenshot / vd_screenshot_export /
                  vd_diagnostics / vd_reconnect
+投屏窗口伴随 src-tauri/src/commands/projection_window.rs
+               · Session → scrcpy HWND / Toolbar HWND 注册表（key 只能是 session_id）
+               · 窗口矩形/显示器工作区/DPI/最大化/全屏判定与外置/内置几何计算
+               · 控制栏 WebView 窗口创建、跟随 watcher、全屏底部触发与延迟隐藏
+               · 品牌化（标题/图标/AUMID）与焦点归还
+               · vd_session / vd_toolbar_attach|detach|update|destroy /
+                 vd_toolbar_set_locked|set_expanded|screenshot
 会话服务层   src-tauri/src/commands/virtual_display/process.rs
                · SessionManager（start_gate + 全局 HashMap + 每会话 Mutex）
                · 状态机、日志就绪探测、启动超时、停止收尾、Job Object、窗口与截图
+               · Session 生命周期钩子 → 控制栏创建/销毁与 toolbar_state
 ```
 
 设计约束：
@@ -81,9 +95,11 @@ IPC 封装     src/lib/bridge.ts（Vd* 类型与 11 个命令）
 | 输入法 | scrcpy 默认策略 | `--display-ime-policy=local`（支持时） |
 | 剪贴板 | 默认 `--no-clipboard-autosync` | 同左；高级设置显式开关可开启 |
 
-启动参数固定 `--no-audio`（本轮不转发音频）。scrcpy 原生窗口标题带 `Task Dock ·` 前缀：
-镜像为「Task Dock · 手机屏幕 · 型号」，虚拟屏为「Task Dock · 虚拟屏 · 应用名 / 独立虚拟屏」，
-不再把完整包名写进窗口标题或前端会话卡片标题。
+启动参数固定 `--no-audio`（本轮不转发音频）。scrcpy 原生窗口标题统一由
+`build_projection_window_title` 生成：`TaskDock · 设备型号 · 屏幕镜像` /
+`TaskDock · 设备型号 · 应用名`（应用名未知时回退「独立虚拟屏」）；标题不出现 serial、PID、
+IP 或 session id，也不再使用带空格的旧品牌写法。窗口图标与 AUMID 在 scrcpy 窗口就绪后由
+控制栏伴随系统重新写入（见 §16）。
 
 模式切换只影响下一次创建，不会关闭正在运行的窗口；UI 在存在活动会话时明确提示这一点。
 启动按钮反映后端 `stage`：检查环境 → 连接设备 → 创建虚拟屏 → 启动应用 → 等待视频流 → 已就绪。
@@ -269,10 +285,12 @@ scrcpy），需用户确认。
   窄窗两列改单列、会话操作换行、关闭按钮 min-width 76px、按钮最小高度 28px；弹层不超出视口。
   高度 1280×600/720/900 与 400×600 已验证页面级不横向溢出；400×600 启动配置需在
   `.mobile-body` 内部滚动，不是页面级滚动。
-- 会话导航：返回、Home、最近任务均绑定当前 session ID。虚拟屏的 `recents` 由前端禁用，
-  后端返回 `SERVICE_UNAVAILABLE`；Home/Back 按 Display ID 隔离。镜像模式 Recents 作用于
-  Display 0。
-- 多屏实验开启时，副标题仍写「默认最多 1 个…」，文案与头部 `0/2` 不一致（P3，见 §14）。
+- 会话导航：返回、Home、最近任务**不再**作为 TaskDock 主界面的日常操作按钮；改由投屏窗口
+  自带的独立控制栏承担（见 §16）。控制栏动作仍绑定当前 session ID；虚拟屏的 `recents`
+  在控制栏禁用并说明原因，后端同样拒绝；Home/Back 按 Display ID 隔离。镜像模式 Recents
+  作用于 Display 0。会话卡保留定位/截图/关闭与状态信息。
+- 多屏实验开启时，会话区副标题按当前上限动态显示「最多同时运行 {max} 个」，与头部
+  `{count}/{max}` 一致（2026-11-18 修复 P3 文案不一致）。
 - 视觉只用语义 Token（`--radius-card`、`--surface-raised`、`--border-subtle`、`--shadow-raised`、
   `--status-*` 等），无硬编码颜色/裸 `z-index`；尊重 `prefers-reduced-motion`。
 - 文案在 `zh-CN` / `en-US` 同步维护，键集合一致；本轮新增/修改键已逐项核对。
@@ -326,9 +344,10 @@ Rust 单测覆盖：ADB 输出解析、mDNS serial 提取、设备去重（USB/�
 
 | 项 | 状态 |
 |---|---|
-| 启动配置缓存刷新延迟 | 缓存过期后 `vd_start` 同步刷新全量 appmeta，真机 UI 到 running 曾约 21.2s（后端 scrcpy 就绪约 2.07s）；当前构建未修复，见 §9 与验收报告 P1 |
-| 页面切换后的配置保持 | 文件互传↔屏幕控制切换会重新挂载组件；后端会话保持 running，但前端 `allowMulti`、投屏模式与已选应用会重置（P2，组件卸载不停止 scrcpy 是正确行为） |
-| 多屏副标题 | 开启多屏实验后头部为 `0/2`，副标题仍写「默认最多 1 个…」（P3 文案不一致） |
+| 启动配置缓存刷新延迟 | 2026-11-18 已修复：`vd_start` 只读现有缓存做「已知无入口」校验，应用名称/图标/入口在后台线程刷新，不再阻塞投屏启动 |
+| 页面切换后的配置保持 | 2026-11-18 已修复：投屏模式/应用/尺寸/多屏与剪贴板开关提升到 `useVirtualDisplayStore`，按物理设备 UID 恢复，页面卸载不清除 |
+| 多屏副标题 | 2026-11-18 已修复：会话区副标题按当前上限动态显示（最多同时运行 {max} 个） |
+| 投屏控制栏原生验收 | 控制栏窗口/外置与内置位置/全屏触发带/多显示器/100–200% DPI/品牌图标与 AUMID 需要真实 scrcpy 窗口验证；本机无 Android 设备，记 `ENVIRONMENT BLOCKED`（见 §16） |
 | `recents` 错误语义 | 虚拟屏 Recents 返回 `SERVICE_UNAVAILABLE` 且 `retryable=true`；不可重试能力标为可重试（P2 语义瑕疵） |
 | 原生「另存为…」对话框 | 后端 `vd_screenshot_export` 已实测成功；UI 按钮的原生系统文件对话框尚未实际点击（P3 证据不足） |
 | Windows 系统 DPI | 仅在当前 125% 缩放环境实测；100%/150%/200% 未逐个切换验证（不能等效推断） |
@@ -398,3 +417,84 @@ Rust 单测覆盖：ADB 输出解析、mDNS serial 提取、设备去重（USB/�
   - **未修复项**：启动前 appmeta 缓存刷新延迟、页面切换后配置重置、多屏副标题文案、
     Recents 错误语义；系统 DPI/页面缩放/1440/1920 内容宽度与原生另存为对话框仍未验证。
   - **文档**：§1、§9、§10、§12、§14 按真机证据更新；没有把未验证项写成通过。
+- 2026-11-18（投屏窗口伴随系统）：
+  - **主界面与投屏窗口职责分离**：会话卡移除返回/Home/最近任务，新增独立控制栏窗口
+    （`ProjectionToolbar` + `toolbar.html`），动作全部经 Session 层并复用 `vd_nav` /
+    `vd_screenshot`；不再有全局 activeSession / killAllScrcpy 路径。
+  - **窗口跟随**：`projection_window.rs` 以 session_id 为键登记 scrcpy HWND 与 Toolbar HWND；
+    普通窗口外置（右→左→下→上→内部），最大化/全屏内置底部居中；全屏默认隐藏，
+    鼠标进入底部触发带显示、离开延迟隐藏，锁定后不自动隐藏；DPI 与显示器工作区参与计算。
+  - **品牌化**：统一 `TaskDock · 设备 · 模式/应用` 标题；Windows 标题栏/Alt+Tab/任务栏图标
+    使用内嵌正式产品图标（`WM_SETICON`），窗口 AUMID 固定 `TaskDock.Projection`。
+  - **性能与状态**：`vd_start` 不再同步等待 appmeta；页面切换不再重置模式/应用/尺寸/多屏配置；
+    多屏副标题与实际上限一致。
+  - **证据**：Rust 16 例（几何/DPI/绑定/幂等/可见性）+ 既有 25 例通过；前端新增 21 例通过；
+    `npm run build` exit 0（含 `toolbar.html`）；typecheck exit 0。无 Android 设备，控制栏
+    真实窗口、全屏触发、多显示器与品牌图标未做原生验收，记 `ENVIRONMENT BLOCKED`。
+
+## 16. 投屏窗口控制栏与品牌化（2026-11-18）
+
+### 16.1 职责边界
+
+```
+TaskDock 主窗口（工作台）
+  └─ 手机互传 / 屏幕控制页
+       └─ Session 管理（启动、状态、截图、关闭、诊断）
+            └─ scrcpy 独立窗口  ← 画面与输入
+            └─ TaskDock Toolbar 窗口（每个 Session 一个）← 返回/Home/最近任务/截屏/锁定/更多
+```
+
+- TaskDock 主窗口只负责「管理投屏会话」，不再承担手机日常导航；控制栏窗口负责「操作手机」。
+- 控制栏不是静态 UI 覆盖层：它是 Tauri 独立窗口（`toolbar.html`），带 `WS_EX_TOOLWINDOW`
+  与不可聚焦样式，不进 Alt+Tab/任务栏，点击不抢 scrcpy 键盘焦点。
+- 所有控制以 **session_id** 为唯一键。禁止 `get_active_device` / 全局最近会话 / 按设备名查找。
+
+### 16.2 生命周期
+
+| 时机 | 行为 |
+|---|---|
+| `vd_start` 成功 | 后台线程等待 Session `running` 且 scrcpy HWND 存在（上限 30s），登记绑定 → 品牌化 → 创建控制栏 → 启动 watcher → `toolbar_state=ready` |
+| 启动期窗口未找到 | 回滚到降级：`toolbar_state=unavailable` + warning；scrcpy 继续可用，会话卡提供「重试控制栏」 |
+| 控制栏创建失败 | 同上，不让会话进入未知状态；不伪造 ready |
+| 普通窗口 | watcher 每 120ms 只检查本 Session；状态不变不调用 `SetWindowPos`；外置优先右侧 |
+| 最大化 | 控制栏进入窗口内部底部居中（工作区内） |
+| 全屏 | 内部底部居中；默认隐藏；鼠标进入屏幕底部 28 逻辑 px 触发显示；离开 1.2s 后隐藏；锁定后常显 |
+| 窗口移动/缩放/跨屏 | 重新读取 HWND 矩形、显示器工作区与 DPI，重算位置；DPI 100/125/150/200% 均按逻辑尺寸 × 缩放 |
+| `vd_stop` / Session 结束 | 停 watcher → 销毁控制栏窗口（`destroy`）→ 移除注册表；幂等，可重复调用 |
+| 应用退出 | `shutdown_all` 先清理全部控制栏，再收 scrcpy |
+
+### 16.3 控制栏内容
+
+- 竖向（普通窗口）：返回、Home、最近任务、更多、截屏、锁定、关闭。
+- 横向（最大化/全屏）：同一组按钮横向排列。
+- 「更多」展开当前 Session 信息（模式/状态/分辨率/应用/Display ID）与截图、诊断、关闭动作；
+  展开只扩大控制栏窗口，不改变控制栏自身的锚点。
+- 最近任务在虚拟屏（display_id > 0）下 disabled 并给出原因，绝不发送 IPC。
+- 锁定状态持久在 Rust 注册表，由 watcher 决定全屏是否自动隐藏；前端只做状态镜像。
+- 截屏复用 `vd_screenshot` 的 Android 投屏截图链路（新增 `vd_toolbar_screenshot` 仅做广播），
+  不截 HWND，避免黑屏/遮挡/Toolbar 入镜。
+
+### 16.4 品牌化
+
+- `build_projection_window_title` 是唯一标题生成函数：`TaskDock · 设备型号 · 屏幕镜像` /
+  `TaskDock · 设备型号 · 应用名`。
+- `apply_taskdock_window_identity`：`SetWindowTextW` + `WM_SETICON(ICON_BIG/ICON_SMALL)`
+  + `IPropertyStore::SetValue(PKEY_AppUserModel_ID, "TaskDock.Projection")`。
+- 图标优先从二进制内嵌的 `icons/icon.ico` 解析（最大尺寸给 ICON_BIG、最接近 32px 给
+  ICON_SMALL），失败才回退 `ExtractIconExW`；失败只追加 warning，不阻断投屏。
+- 必须真机检查标题栏、Alt+Tab、任务栏三处；jsdom/单测不能替代。
+
+### 16.5 性能
+
+- `vd_start` 只读应用缓存做快速校验，不触发 appmeta 的 push/pull；缓存缺失时启动后后台刷新，
+  失败不影响投屏。
+- watcher 是每 Session 一个有界线程，只在几何/模式/可见性变化时写窗口；没有 16ms 全局轮询。
+- 控制栏窗口随 Session 创建/销毁，闲置会话不保留 watcher。
+
+### 16.6 已知风险与未验证
+
+- 本机 `adb devices` 无设备：控制栏真实窗口、外置/内置位置、全屏触发、多显示器、
+  100–200% DPI、图标与 AUMID 均**未做原生验收**，记 `ENVIRONMENT BLOCKED`。
+- 控制栏使用 topmost 窗口以覆盖 scrcpy 全屏；用户切换到其他应用时控制栏仍可能悬浮在
+  最上层（与 scrcpy 窗口生命周期绑定，Session 关闭即销毁）。原生验收时需确认是否可接受。
+- `vd_screenshot` 仍基于 `PrintWindow`，GPU/受保护窗口可能失败；无障碍/触摸注入仍需真机。

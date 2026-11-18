@@ -2099,6 +2099,27 @@ CREATE INDEX idx_novel_chapters_volume
     crate::commands::life::MIGRATION_66,
     // 生活金额：记录该行使用的货币小数位，历史行默认 2 位。
     crate::commands::life::MIGRATION_67,
+    // 回收站持久化索引（统一文件操作服务）：只存元数据缓存，不触碰真实回收站。
+    crate::recycle::index::MIGRATION_68,
+    // 五类项目共用的笔记/Agent 会话/产物弱关联；目标内容仍由原模块持有。
+    crate::commands::workspace_resources::MIGRATION_69,
+    crate::recycle::index::MIGRATION_70,
+    crate::recycle::index::MIGRATION_71,
+    // 知识与 AI 能力中心（v72）：知识库/Skill/外部 MCP/上下文/配方。
+    // DDL 在 capability/schema.rs，本文件只登记迁移号。
+    crate::capability::schema::MIGRATION_72,
+    // MCP 能力白名单扩展：knowledge.read（重建 mcp_agent_capabilities 的 CHECK）。
+    crate::mcp::schema::MIGRATION_73,
+    // 能力中心真实绑定（知识库 workspace、Skill workspace/agent）与 MCP 未知工具确认。
+    crate::capability::schema::MIGRATION_74,
+    // MCP 能力白名单扩展：skills.read（Agent 读取适用 Skill）。
+    crate::mcp::schema::MIGRATION_75,
+    // Agent 共享工作空间（v76）：身份元数据、能力白名单再扩展、11 张新表。
+    // 不新建第二套 Task/Project/Knowledge/Plan；既有实体只读写，不复制。
+    crate::agent_access::schema::MIGRATION_76,
+    // 协作中心（v77）：需求/Bug/方案/证据/可视化/版本/AI 任务/审计 9 张表。
+    // 纯新增，弱关联既有 planning_projects / tasks；不改既有迁移。
+    (77, crate::collab::schema::MIGRATION_77),
 ];
 
 /// 历史测试数据的保守回填（幂等）。
@@ -2523,6 +2544,19 @@ impl Db {
         f(&conn)
     }
 
+    /// 为长耗时后台任务打开独立连接（WAL 下可与主写连接并发）：
+    /// 用于回收站索引扫描等「分钟级、分批提交」的任务，避免长时间占用
+    /// 唯一写连接导致其他模块的写入排队。
+    pub fn open_worker_connection(&self) -> AppResult<Connection> {
+        let path = self
+            .path
+            .as_ref()
+            .ok_or_else(|| AppError::Validation("内存数据库不支持后台任务连接".into()))?;
+        let conn = Connection::open(path)?;
+        configure_writer(&conn)?;
+        Ok(conn)
+    }
+
     /// Execute a group of writes on the single writer connection as one transaction.
     /// The closure receives the transaction through `Connection` deref and must not
     /// start or commit a nested transaction. Returning an error rolls back all writes.
@@ -2725,6 +2759,18 @@ pub struct Settings {
     /// 启用后 stdio MCP 子命令才能经 mcp-transport.json 连入。
     #[serde(default)]
     pub mcp_server_enabled: bool,
+    /// Agent 共享工作空间根目录（空 = 数据目录下 `TaskDock-Agent-Workspace`）。
+    /// 由用户显式选择，代码不扫描磁盘猜测；与 Git 仓库无绑定。
+    #[serde(default)]
+    pub agent_workspace_path: String,
+    /// 文件监听（默认关闭）：开启后按 20s 轮询受控导入目录。
+    #[serde(default)]
+    pub agent_workspace_watch_enabled: bool,
+    /// 本地 REST API（默认关闭，只监听 127.0.0.1；远程访问本轮不实现）。
+    #[serde(default)]
+    pub agent_api_enabled: bool,
+    #[serde(default = "default_agent_api_port")]
+    pub agent_api_port: u16,
     /// 手机接入（v0.16）：允许手机在同一局域网内配对与连接。默认关闭；
     /// 只有显式开启时才监听局域网端口，关闭后立即停止监听并作废配对会话。
     #[serde(default)]
@@ -3055,6 +3101,10 @@ fn default_http_port() -> u16 {
 }
 fn default_mobile_sync_port() -> u16 {
     47822
+}
+/// Agent REST API 默认端口：与 http(47821)、手机接入(47822) 明确分段。
+fn default_agent_api_port() -> u16 {
+    47911
 }
 fn default_grace() -> u32 {
     24

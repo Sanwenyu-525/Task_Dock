@@ -1001,12 +1001,8 @@ pub fn clipboard_paste_items(
     item_ids: Vec<String>,
 ) -> AppResult<PasteStartReport> {
     let rt = runtime(&state);
-    let items = store::get_items_by_ids(&rt.db, &item_ids)?;
-    if items.is_empty() {
-        return Err(AppError::Validation("所选条目不存在或已删除".into()));
-    }
-    let ids: Vec<String> = items.into_iter().map(|i| i.id).collect();
     let _gate = rt.capture_gate.lock().unwrap_or_else(|e| e.into_inner());
+    let ids = store::prepare_paste_selection(&rt.db, &item_ids)?;
     rt.paste.start("", target_hwnd, expected_pid, &ids)
 }
 

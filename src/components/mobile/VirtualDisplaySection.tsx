@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { save as saveFileDialog } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import {
   CheckCircle2,
   Loader2,
@@ -27,7 +28,6 @@ import {
   vdDiagnostics,
   vdFocus,
   vdListApps,
-  vdNav,
   vdProbe,
   vdReconnect,
   vdScreenshot,
@@ -42,12 +42,14 @@ import {
   type VdMode,
   type VdProbe,
   type VdScreenshot,
+  type VdScreenshotEvent,
   type VdSession,
 } from "../../lib/bridge";
 import { copyText } from "../../lib/clipboard";
 import { localizedErrorMessage } from "../../i18n/errors";
 import { useLocale } from "../../hooks/useLocale";
 import { useUiStore } from "../../store/useUiStore";
+import { useVirtualDisplayStore } from "../../store/useVirtualDisplayStore";
 import { ConfirmDialog } from "../ui";
 import DeviceTools from "./virtual-display/device-tools";
 import ModePicker from "./virtual-display/mode-picker";
@@ -55,6 +57,10 @@ import AppPicker from "./virtual-display/app-picker";
 import SessionList from "./virtual-display/session-list";
 import AdvancedSection from "./virtual-display/advanced-section";
 import ScreenshotPreview from "./virtual-display/screenshot-preview";
+import {
+  projectionWindowController,
+  toolbarVisibilityFor,
+} from "./virtual-display/projection-window-controller";
 import {
   connectionLabelKey,
   deviceLabel,
@@ -76,6 +82,8 @@ export default function VirtualDisplaySection() {
   const { t } = useLocale();
   const tr = t as Translate;
   const showToast = useUiStore((s) => s.showToast);
+  const getStoredConfig = useVirtualDisplayStore((s) => s.getVirtualDisplayConfig);
+  const saveConfig = useVirtualDisplayStore((s) => s.setVirtualDisplayConfig);
 
   const [initializing, setInitializing] = useState(true);
   const [probe, setProbe] = useState<VdProbe | null>(null);
@@ -115,7 +123,6 @@ export default function VirtualDisplaySection() {
   const [now, setNow] = useState(() => Date.now());
 
   const [capturingId, setCapturingId] = useState<string | null>(null);
-  const [navBusyId, setNavBusyId] = useState<string | null>(null);
   const [shot, setShot] = useState<{
     sessionId: string;
     session: VdSession;
@@ -204,7 +211,9 @@ export default function VirtualDisplaySection() {
           (session) =>
             `${session.id}:${session.status}:${session.stage}:${session.app_label ?? ""}:${
               session.error ?? ""
-            }:${session.warning ?? ""}:${session.alive}:${session.package ?? ""}`,
+            }:${session.warning ?? ""}:${session.alive}:${session.package ?? ""}:${
+              session.toolbar_state
+            }`,
         )
         .join("|");
       if (signature !== sessionsSignature.current) {
@@ -315,6 +324,28 @@ export default function VirtualDisplaySection() {
   );
   const selectedUid = selectedDevice?.uid ?? "";
 
+  /** 把启动配置写入 store：页面切换/组件卸载不清除，只有用户修改或设备移除才变化。 */
+  const patchConfig = (
+    patch: Partial<{
+      mode: VdMode;
+      selectedPackage?: string;
+      size: string;
+      multiDisplayEnabled: boolean;
+      clipboardSync: boolean;
+    }>,
+  ) => {
+    if (!selectedUid) return;
+    const previous = getStoredConfig(selectedUid);
+    saveConfig(selectedUid, {
+      mode: patch.mode ?? previous?.mode ?? "mirror",
+      selectedPackage: patch.selectedPackage ?? previous?.selectedPackage,
+      size: patch.size ?? previous?.size ?? DEFAULT_SIZE,
+      multiDisplayEnabled:
+        patch.multiDisplayEnabled ?? previous?.multiDisplayEnabled ?? false,
+      clipboardSync: patch.clipboardSync ?? previous?.clipboardSync ?? false,
+    });
+  };
+
   useEffect(() => {
     void loadApps.current(serial, selectedUid, includeAll);
   }, [serial, selectedUid, includeAll]);
@@ -412,6 +443,71 @@ export default function VirtualDisplaySection() {
     }
     previousUid.current = selectedUid;
   }, [selectedUid]);
+
+  // 页面重新挂载/切换设备时恢复该设备的启动配置（在清空逻辑之后执行，覆盖默认值）。
+  useEffect(() => {
+    if (!selectedUid) return;
+    const config = getStoredConfig(selectedUid);
+    if (!config) return;
+    setMode(config.mode);
+    setSize(config.size || DEFAULT_SIZE);
+    setAllowMulti(config.multiDisplayEnabled);
+    setClipboardSync(Boolean(config.clipboardSync));
+    if (config.selectedPackage) {
+      setPackageName(config.selectedPackage);
+      setManual(false);
+      setManualPackage("");
+    }
+  }, [selectedUid, getStoredConfig]);
+
+  // 投屏控制栏生命周期：只在 Session running 后 attach；Session 真正结束后 destroy。
+  // 不在组件卸载时销毁窗口（切页/隐藏页面不会关闭投屏）。
+  const toolbarAttachedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const session of sessions) {
+      const attached = toolbarAttachedRef.current.has(session.id);
+      if (
+        session.status === "running" &&
+        session.toolbar_state !== "unavailable" &&
+        !attached
+      ) {
+        toolbarAttachedRef.current.add(session.id);
+        void projectionWindowController.attach(session.id);
+        toolbarVisibilityFor(session.id).showToolbar();
+      }
+      if (!isActiveSession(session) && attached) {
+        toolbarAttachedRef.current.delete(session.id);
+        void projectionWindowController.destroy(session.id);
+      }
+    }
+  }, [sessions]);
+
+  // 控制栏截图完成：复用主窗口现有的截图预览（页面未挂载时截图仍保存在临时目录）。
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<VdScreenshotEvent>("vd-screenshot-captured", (event) => {
+      const payload = event.payload;
+      if (!payload?.session || !payload?.screenshot) return;
+      if (!mountedRef.current) return;
+      setShot({
+        sessionId: payload.session.id,
+        session: payload.session,
+        data: payload.screenshot,
+      });
+    })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      })
+      .catch(() => {
+        // 非 Tauri 环境（单测/预览）没有事件通道：不影响页面其余功能。
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   const sizeOptions = useMemo(
     () => [
@@ -609,33 +705,12 @@ export default function VirtualDisplaySection() {
     }
   };
 
-  const navigateSession = async (
-    session: VdSession,
-    action: "back" | "home" | "recents",
-  ) => {
-    if (navBusyId) return;
-    setNavBusyId(session.id);
-    try {
-      const result = await vdNav(session.id, action);
-      const label = t(
-        action === "back"
-          ? "virtualDisplay.session.back"
-          : action === "home"
-            ? "virtualDisplay.session.home"
-            : "virtualDisplay.session.recents",
-      );
-      showToast(
-        t("virtualDisplay.session.navSent", {
-          action: label,
-          display: result.display_id,
-        }),
-        { kind: "success" },
-      );
-    } catch (err) {
-      showToast(toMessage(err), { kind: "error" });
-    } finally {
-      if (mountedRef.current) setNavBusyId(null);
-    }
+  const retryToolbar = async (session: VdSession) => {
+    toolbarAttachedRef.current.delete(session.id);
+    showToast(t("virtualDisplay.session.toolbarRetrying"), { kind: "info" });
+    await projectionWindowController.attach(session.id);
+    await projectionWindowController.update(session.id);
+    await refreshSessions.current();
   };
 
   const captureSession = async (session: VdSession) => {
@@ -774,6 +849,7 @@ export default function VirtualDisplaySection() {
               onModeChange={(next) => {
                 setMode(next);
                 setStartError(null);
+                patchConfig({ mode: next });
               }}
             />
 
@@ -835,9 +911,15 @@ export default function VirtualDisplaySection() {
                 manualError={manualInvalid ? t("virtualDisplay.app.manualInvalid") : null}
                 disabled={busy}
                 t={tr}
-                onSelect={setPackageName}
+                onSelect={(nextPackage) => {
+                  setPackageName(nextPackage);
+                  patchConfig({ selectedPackage: nextPackage });
+                }}
                 onToggleFavorite={toggleFavorite}
-                onManualChange={setManualPackage}
+                onManualChange={(value) => {
+                  setManualPackage(value);
+                  patchConfig({ selectedPackage: value });
+                }}
                 onToggleManual={(open) => {
                   setManual(open);
                   setStartError(null);
@@ -864,7 +946,10 @@ export default function VirtualDisplaySection() {
                         size === option.value ? " is-selected" : ""
                       }`}
                       aria-pressed={size === option.value}
-                      onClick={() => setSize(option.value)}
+                      onClick={() => {
+                        setSize(option.value);
+                        patchConfig({ size: option.value });
+                      }}
                       disabled={busy}
                     >
                       {option.value.startsWith("1920") ? (
@@ -936,11 +1021,10 @@ export default function VirtualDisplaySection() {
               now={now}
               closingIds={closingIds}
               capturingId={capturingId}
-              navBusyId={navBusyId}
               t={tr}
               onFocus={(session) => void focusSession(session)}
               onCapture={(session) => void captureSession(session)}
-              onNavigate={(session, action) => void navigateSession(session, action)}
+              onRetryToolbar={(session) => void retryToolbar(session)}
               onClose={(session) => void closeSession(session)}
             />
           </div>
@@ -950,11 +1034,20 @@ export default function VirtualDisplaySection() {
           open={advancedOpen}
           onToggle={() => setAdvancedOpen((value) => !value)}
           allowMulti={allowMulti}
-          onAllowMultiChange={setAllowMulti}
+          onAllowMultiChange={(value) => {
+            setAllowMulti(value);
+            patchConfig({ multiDisplayEnabled: value });
+          }}
           clipboardSync={clipboardSync}
-          onClipboardChange={setClipboardSync}
+          onClipboardChange={(value) => {
+            setClipboardSync(value);
+            patchConfig({ clipboardSync: value });
+          }}
           size={size}
-          onSizeChange={setSize}
+          onSizeChange={(value) => {
+            setSize(value);
+            patchConfig({ size: value });
+          }}
           sizeOptions={sizeOptions}
           probe={probe}
           selectedDevice={selectedDevice}

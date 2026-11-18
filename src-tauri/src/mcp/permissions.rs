@@ -20,6 +20,17 @@ pub const CAPABILITIES: &[&str] = &[
     "notes.write",
     "workflows.read",
     "workspace.read",
+    "knowledge.read",
+    "knowledge.write",
+    "skills.read",
+    // v76：Agent 共享工作空间（项目/规划/决策/上下文/交接）。
+    "projects.read",
+    "plans.read",
+    "decisions.read",
+    "decisions.write",
+    "context.read",
+    "handoffs.read",
+    "handoffs.write",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +41,16 @@ pub enum Capability {
     NotesWrite,
     WorkflowsRead,
     WorkspaceRead,
+    KnowledgeRead,
+    KnowledgeWrite,
+    SkillsRead,
+    ProjectsRead,
+    PlansRead,
+    DecisionsRead,
+    DecisionsWrite,
+    ContextRead,
+    HandoffsRead,
+    HandoffsWrite,
 }
 
 impl Capability {
@@ -41,6 +62,16 @@ impl Capability {
             Capability::NotesWrite => "notes.write",
             Capability::WorkflowsRead => "workflows.read",
             Capability::WorkspaceRead => "workspace.read",
+            Capability::KnowledgeRead => "knowledge.read",
+            Capability::KnowledgeWrite => "knowledge.write",
+            Capability::SkillsRead => "skills.read",
+            Capability::ProjectsRead => "projects.read",
+            Capability::PlansRead => "plans.read",
+            Capability::DecisionsRead => "decisions.read",
+            Capability::DecisionsWrite => "decisions.write",
+            Capability::ContextRead => "context.read",
+            Capability::HandoffsRead => "handoffs.read",
+            Capability::HandoffsWrite => "handoffs.write",
         }
     }
 
@@ -52,12 +83,37 @@ impl Capability {
             "notes.write" => Capability::NotesWrite,
             "workflows.read" => Capability::WorkflowsRead,
             "workspace.read" => Capability::WorkspaceRead,
+            "knowledge.read" => Capability::KnowledgeRead,
+            "knowledge.write" => Capability::KnowledgeWrite,
+            "skills.read" => Capability::SkillsRead,
+            "projects.read" => Capability::ProjectsRead,
+            "plans.read" => Capability::PlansRead,
+            "decisions.read" => Capability::DecisionsRead,
+            "decisions.write" => Capability::DecisionsWrite,
+            "context.read" => Capability::ContextRead,
+            "handoffs.read" => Capability::HandoffsRead,
+            "handoffs.write" => Capability::HandoffsWrite,
             _ => return None,
         })
     }
 
     pub fn is_write(self) -> bool {
-        matches!(self, Capability::TasksWrite | Capability::NotesWrite)
+        matches!(
+            self,
+            Capability::TasksWrite
+                | Capability::NotesWrite
+                | Capability::KnowledgeWrite
+                | Capability::DecisionsWrite
+                | Capability::HandoffsWrite
+        )
+    }
+
+    /// 作用域必须为全局的能力（逐资源授权对列表类查询无意义）。
+    pub fn global_only(self) -> bool {
+        matches!(
+            self,
+            Capability::SkillsRead | Capability::ContextRead | Capability::WorkspaceRead
+        )
     }
 }
 
@@ -84,12 +140,28 @@ fn check_resource(capability: Capability, resource_id: &str) -> AppResult<()> {
     if resource_id.chars().count() > MAX_RESOURCE_ID {
         return Err(AppError::Validation("resource_id 超过 128 字符".into()));
     }
-    if capability == Capability::WorkspaceRead && !resource_id.is_empty() {
-        return Err(AppError::Validation(
-            "workspace.read 的资源范围由工作区根目录授权决定，resource_id 必须为空".into(),
-        ));
+    if capability.global_only() && !resource_id.is_empty() {
+        return Err(AppError::Validation(format!(
+            "{} 只支持全局授权，resource_id 必须为空",
+            capability.as_str()
+        )));
     }
     Ok(())
+}
+
+/// 项目 ID 可能来自规划中心（planning_projects）或项目工作空间（workspace_projects），
+/// 两者都是既有实体；这里同时校验，避免跨模块再建一张「项目」表。
+fn project_exists(conn: &Connection, resource_id: &str) -> AppResult<bool> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM planning_projects WHERE id = ?1
+             UNION ALL SELECT 1 FROM workspace_projects WHERE id = ?1 LIMIT 1",
+            rusqlite::params![resource_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(AppError::from)?;
+    Ok(found.is_some())
 }
 
 fn resource_exists(conn: &Connection, capability: Capability, resource_id: &str) -> AppResult<bool> {
@@ -100,7 +172,25 @@ fn resource_exists(conn: &Connection, capability: Capability, resource_id: &str)
         Capability::TasksRead | Capability::TasksWrite => ("SELECT 1 FROM tasks WHERE id = ?1", "任务"),
         Capability::NotesRead | Capability::NotesWrite => ("SELECT 1 FROM notes WHERE id = ?1", "笔记"),
         Capability::WorkflowsRead => ("SELECT 1 FROM workflows WHERE id = ?1", "工作流"),
-        Capability::WorkspaceRead => return Ok(true),
+        Capability::KnowledgeRead | Capability::KnowledgeWrite => {
+            ("SELECT 1 FROM knowledge_bases WHERE id = ?1", "知识库")
+        }
+        Capability::WorkspaceRead | Capability::SkillsRead | Capability::ContextRead => {
+            return Ok(true)
+        }
+        Capability::ProjectsRead
+        | Capability::PlansRead
+        | Capability::DecisionsRead
+        | Capability::DecisionsWrite
+        | Capability::HandoffsRead
+        | Capability::HandoffsWrite => {
+            if !project_exists(conn, resource_id)? {
+                return Err(AppError::Validation(format!(
+                    "项目不存在: {resource_id}（规划项目或项目工作空间）"
+                )));
+            }
+            return Ok(true);
+        }
     };
     let found = conn
         .query_row(sql, rusqlite::params![resource_id], |r| r.get::<_, i64>(0))

@@ -265,6 +265,8 @@ export interface FilesWorkspaceActions {
   setLayoutEditMode: (value: boolean) => void;
 
   recordRecentDir: (path: string) => void;
+  /** 清空最近目录（地址栏路径历史）；不触碰固定目录与已打开标签。 */
+  clearRecentDirs: () => void;
   togglePinnedDir: (path: string) => void;
   /** 把收纳中的标签恢复到指定/活动区域（容量不足则返回 false）。 */
   restoreStashedTab: (tabId: string, paneId?: string) => boolean;
@@ -1208,6 +1210,12 @@ const useFilesWorkspaceStore = create<FilesWorkspaceStore>((set, get) => {
       const target = normalizePath(path);
       if (!target) return;
       set((s) => ({ recentDirs: dedupeDirs(s.recentDirs, target).slice(0, MAX_RECENT_DIRS) }));
+      schedulePersist(get);
+    },
+
+    clearRecentDirs: () => {
+      if (get().recentDirs.length === 0) return;
+      set({ recentDirs: [] });
       schedulePersist(get);
     },
 

@@ -39,6 +39,9 @@ pub enum AppError {
     /// 状态冲突（如已有同类长任务进行中）；调用方应等待或显式取消
     #[error("操作冲突: {0}")]
     Conflict(String),
+    /// 权限不足（能力/项目范围/角色限制）；不回显受保护数据是否存在
+    #[error("权限不足: {0}")]
+    Forbidden(String),
     #[error("Tauri 错误: {0}")]
     Tauri(#[from] tauri::Error),
 }
@@ -217,6 +220,12 @@ impl AppError {
                 severity: ErrorSeverity::Warning,
                 retryable: false,
             },
+            AppError::Forbidden(_) => ErrorMeta {
+                code: "PERMISSION_DENIED",
+                category: ErrorCategory::Permission,
+                severity: ErrorSeverity::Error,
+                retryable: false,
+            },
             AppError::Tauri(_) => ErrorMeta {
                 code: "IPC_ERROR",
                 category: ErrorCategory::Ipc,
@@ -274,6 +283,7 @@ impl AppError {
             }
             AppError::PermissionRequired(m) => sanitize(m),
             AppError::Conflict(m) => sanitize(m),
+            AppError::Forbidden(m) => sanitize(m),
         }
     }
 

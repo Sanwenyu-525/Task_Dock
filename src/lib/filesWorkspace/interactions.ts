@@ -266,12 +266,44 @@ export function validateFileDrop(
  * 刻意不触碰系统剪贴板：文件工作区的内部复制绝不覆盖用户已经复制的新内容
  * （任务规范 §9.2）；跨应用文件交换走暂存架与系统剪贴板既有链路。
  */
-let fwClipboardValue: { mode: "copy" | "cut"; paths: string[] } | null = null;
+export interface FwClipboardPayload {
+  mode: "copy" | "cut";
+  paths: string[];
+  /** 发起复制的窗格（用于粘贴后反馈/诊断；不影响文件语义）。 */
+  sourcePaneId?: string;
+  /** 复制/剪切时刻；同一 payload 内稳定，便于过期策略与排查。 */
+  createdAt: number;
+}
 
-export function getFwClipboard(): { mode: "copy" | "cut"; paths: string[] } | null {
+let fwClipboardValue: FwClipboardPayload | null = null;
+
+export function getFwClipboard(): FwClipboardPayload | null {
   return fwClipboardValue;
 }
 
-export function setFwClipboard(value: { mode: "copy" | "cut"; paths: string[] } | null): void {
-  fwClipboardValue = value;
+/** 设置文件剪贴板；路径为空等同清空，避免出现「有剪贴板但没有项」的假状态。 */
+export function setFwClipboard(
+  value: { mode: "copy" | "cut"; paths: string[]; sourcePaneId?: string } | null,
+): void {
+  fwClipboardValue =
+    value && value.paths.length > 0
+      ? {
+          mode: value.mode,
+          paths: [...value.paths],
+          sourcePaneId: value.sourcePaneId,
+          createdAt: Date.now(),
+        }
+      : null;
+}
+
+export function clearFwClipboard(): void {
+  fwClipboardValue = null;
+}
+
+export function hasFwClipboardItems(): boolean {
+  return (fwClipboardValue?.paths.length ?? 0) > 0;
+}
+
+export function getFwClipboardOperation(): "copy" | "cut" | null {
+  return fwClipboardValue?.mode ?? null;
 }

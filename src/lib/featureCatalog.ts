@@ -69,7 +69,7 @@ export const CATEGORY_META: Record<
     description: "P0–P1：统一宿主、项目容器与专业创作能力",
   },
   workflow: { label: "工作流与效率增强", description: "P1：把重复操作变成一次点击" },
-  info: { label: "信息管理与生活效率", description: "P2：信息收纳与生活事项" },
+  info: { label: "信息管理与生活效率", description: "P1–P2：信息收纳与生活事项" },
   agent: { label: "Agent 扩展", description: "更多 Agent 接入与执行洞察" },
   ecosystem: { label: "长期生态", description: "跨平台、插件、同步等长期方向" },
   system: {
@@ -119,6 +119,58 @@ export const CORE_FEATURE_COUNT = CORE_FEATURE_IDS.length;
 
 export const FEATURE_CATALOG: FeatureEntry[] = [
   // ─── 核心效率功能（P0）──────────────────────────────────────────────
+  {
+    id: "core.tasks",
+    category: "core",
+    title: "任务管理与提醒闭环",
+    description:
+      "任务创建、编辑、筛选与完成的主线：自然语言录入、优先级/分类/标签、截止与提醒、重复任务与关联。",
+    detail:
+      "任务本体此前被当作产品底座而未单独立项，导致导航「任务」（Ctrl+1）这条最高频主线在路线图缺席。" +
+      "本轮按现有代码补登：任务 CRUD 使用三态可空字段（键缺失=保持原值、显式 null=清除、值=写入），" +
+      "避免只改标题时误清截止时间或提醒；中文自然语言快速录入解析日期、时刻、相对时间、重复与提前提醒，" +
+      "解析结果先预览再创建；任务支持优先级、分类、标签、截止/提醒、描述与完成/取消完成；" +
+      "任务页提供全部 / 今天 / 明天 / 本周 / 逾期视图、状态与排序、搜索和页内编辑；" +
+      "任务可关联 Agent 会话、工作现场、剪贴板条目、专注会话、笔记与场景，删除关联不删除被引用对象；" +
+      "稍后提醒支持 5/10/15/30 分钟、1 小时与自定义并可撤销；任务通知提供查看、稍后提醒、完成三个真实操作。" +
+      "提醒调度、统计与生活例行的专项能力分别登记在 core.smart-reminders / tasks.stats-trends / core.life-routines，" +
+      "本条目只登记任务主线，不重复其缺口。",
+    status: "implemented",
+    priority: "P0",
+    existingFeatures: [
+      "任务 CRUD：标题、描述、优先级、分类、标签、截止时间、提醒时间；三态可空字段避免编辑时误清",
+      "中文自然语言快速录入：日期 / 时刻 / 相对时间 / 重复 / 提前提醒，解析预览后创建",
+      "任务页视图与筛选：全部 / 今天 / 明天 / 本周 / 逾期，状态、排序与搜索",
+      "完成 / 取消完成 / 删除 / 页内编辑；任务统计入口（统计口径见 tasks.stats-trends）",
+      "重复任务规则与完成推进（规则细节见 core.smart-reminders）",
+      "稍后提醒与撤销：5/10/15/30 分钟、1 小时与自定义时分",
+      "任务关联：Agent 会话、工作现场、剪贴板条目、专注会话、笔记与场景",
+      "任务提醒通知操作：查看任务 / 稍后提醒 / 完成任务",
+      "收集箱条目批量转任务；生活待办复用同一任务数据层",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "SQLite tasks / task_agent_links / recurrence 迁移（已发布不可修改）",
+      "nlp.rs 中文解析与重复规则引擎",
+      "通知调度器与提醒发送链路",
+      "Agent / 工作现场 / 剪贴板 / 专注 / 笔记关联服务",
+    ],
+    acceptanceCriteria: [
+      "创建、编辑、完成、删除后重启数据一致",
+      "快速录入的解析结果可在创建前预览并取消",
+      "只改标题不会清空截止时间或提醒时间",
+      "重复任务完成后推进下一期且不重复提醒",
+      "关联目标删除后任务仍存在，关联关系如实失效",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「任务」（Ctrl+1）",
+      "任务页顶部快速录入框（Ctrl+K）",
+      "悬浮胶囊任务面板",
+      "收集箱条目「转为任务」",
+      "生活页「生活待办」",
+    ],
+  },
   {
     id: "core.quick-capture",
     category: "core",
@@ -470,6 +522,7 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     priority: "P0",
     existingFeatures: [
       "三层形态：胶囊常驻入口 / 快捷工具面板（CompactView）/ 独立大型工作台（workspace.html）；极简悬浮（MinimalView）保留",
+      "工作台首页：真实任务统计、今日重点、Agent 快照、工作空间项目、暂存资源统计、工作流进度与快速操作；空态如实展示，不放假图表",
       "唯一大型工作台窗口承载 20 条路由（工作台首页 + 19 个逻辑页），普通装饰、任务栏可见、可缩放并记忆几何",
       "统一导航：左侧导航与胶囊共用 navigationRegistry + navVisibility 配置，不另建入口数组",
       "跨页面状态恢复：workbench_layout 版本化协议恢复上次路由、当前项目、右栏显隐与分栏宽度，非法字段逐项回默认",
@@ -494,6 +547,144 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "胶囊轨道「工作台」入口",
       "托盘 / 右键菜单「完整模式」",
       "独立工作台窗口（workspace.html）",
+    ],
+  },
+  {
+    id: "workbench.shell",
+    category: "workbench",
+    title: "窗口形态与贴边胶囊",
+    description:
+      "极简悬浮 / 快捷工具面板 / 独立完整工作台三形态，另保留紧凑模式（旧版兼容）；四边贴边吸附与分类胶囊轨道是快速捕获、任务、Agent 状态的常驻入口。",
+    detail:
+      "窗口外壳此前被视为共用基座而未登记，但它有独立用户入口与完整状态机，属于用户可感知的功能。" +
+      "已实现：极简悬浮（MinimalView）、快捷工具面板（主窗 full 视图，旧「完整模式」更名）、独立完整工作台（workspace 窗口）三种产品形态，" +
+      "并保留紧凑模式（CompactView，旧版兼容）；" +
+      "主窗可无边框拖动、缩放并记忆几何；四边贴边吸附用 Win32 SetWindowRgn 在「轨道」与「轨道∪面板」之间切换，" +
+      "停靠期间窗口不移动、不缩放，避免唤出时命中区来回跳动；胶囊轨道按五个分类承载任务、收集箱、剪贴板、应用与规划中心入口，" +
+      "Agent 由顶部状态球直达；展开面板朝屏幕内部展开；显示器移除、DPI 或分辨率变化时收敛到可见工作区，重启恢复模式与吸附边；" +
+      "停靠失败有几何回滚与 300/600/1200ms 有界重试，绝不把「发出了区域请求」当成原生已生效。" +
+      "边界：真实拖拽手感、边缘磁吸、多显示器插拔与混合 DPI 的桌面合成仍需原生真机验收，页面截图不能替代。",
+    status: "implemented",
+    priority: "P0",
+    existingFeatures: [
+      "三种产品形态：极简悬浮 / 快捷工具面板（旧「完整模式」）/ 独立完整工作台；另保留紧凑模式（旧版兼容），切换保留内容与状态",
+      "四边贴边吸附：左 / 右 / 上 / 下，停靠期间只切换 Win32 区域，窗口位置与尺寸固定",
+      "分类胶囊轨道：任务 / 收集箱 / 剪贴板 / 应用 / 规划中心五个分类入口，Agent 由顶部状态球直达",
+      "胶囊展开 / 收起、解除吸附、重新吸附；Esc 与点击外部可收起",
+      "窗口几何记忆与重启恢复：模式、停靠边、位置与尺寸；多显示器移除后收敛到可见工作区",
+      "停靠几何事务与失败回滚：尺寸 / 移动 / 区域任一步失败恢复事务起点，并抑制错误矩形落库",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "window_shape.rs（SetWindowRgn + GetWindowRgn 回读）",
+      "useEdgeSnap / capsuleLayout（相位与区域提交协议）",
+      "apply_mode / apply_window_capsule / save_snap_state 命令",
+    ],
+    acceptanceCriteria: [
+      "三形态切换后窗口内容、导航与滚动位置不丢失",
+      "四边吸附与解除后窗口完整可见，不出现窗口移出屏幕",
+      "重启后恢复模式与吸附边，非法状态回退默认",
+      "区域回读失败不推进相位，按上限重试后保持上一已确认形态",
+      "多显示器移除、DPI 变化后窗口收敛到可见工作区",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "标题栏窗口形态菜单（极简悬浮 / 紧凑模式（旧版兼容）/ 打开完整工作台）",
+      "托盘右键玻璃菜单的同组形态项",
+      "把窗口拖到屏幕边缘触发贴边吸附",
+      "胶囊轨道与分类面板",
+      "设置 → 窗口与快捷键 → 吸附 / 停靠",
+    ],
+  },
+  {
+    id: "workbench.planning-center",
+    category: "workbench",
+    title: "规划中心（我的项目 + 内置路线图）",
+    description:
+      "双数据源规划入口：内置功能目录只读展示，用户可自建项目、特性与里程碑并跟踪进度。",
+    detail:
+      "规划中心是导航「规划中心」（Ctrl+9）的完整页面，包含两个严格隔离的数据源：" +
+      "内置路线图（featureCatalog.ts 静态目录，只读）与用户项目（SQLite planning_projects / planning_features / planning_milestones，可创建、编辑、归档、删除）。" +
+      "用户项目提供总览、功能列表、看板与里程碑视图，支持状态、优先级、目标日期、进度与排序；" +
+      "内置目录支持按分区、状态、优先级筛选与搜索，展开详情可看到现有入口、缺口、依赖与验收标准。" +
+      "两者互不写回：用户项目不复制成目录条目，内置目录也不因用户项目改变；" +
+      "Agent 可通过 MCP 在授权 scope 内读写用户项目，但不能写内置目录。" +
+      "边界：用户项目没有跨设备同步与导入导出；内置目录的计数与状态以本文件为准。",
+    status: "implemented",
+    priority: "P1",
+    existingFeatures: [
+      "双数据源隔离：内置路线图（只读）+ 用户项目（planning_*，可编辑），互不写回",
+      "用户项目 CRUD / 归档 / 删除：项目、特性、里程碑三层实体与排序",
+      "四视图：总览、功能列表、看板、里程碑；状态 / 优先级 / 目标日期 / 进度字段",
+      "内置目录：七个展示分区、状态 / 优先级筛选、搜索、展开详情与现有入口",
+      "规划功能支持验收标准字段与进度历史（开发日志，分页）",
+      "规划功能关联 Agent 会话：显示来源、真实会话状态与最近执行，可解除并保留审计",
+      "内置目录统计（总数、已实现、部分实现、待开发、验证计数）实时派生，不手工维护第二份数字",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "planning_* 迁移 v37 / v38（已发布不可修改）",
+      "planning 服务层与规划中心 UI（FeatureRoadmapPanel / PlanningWorkspace）",
+      "MCP 规划工具（仅用户项目，受 scope 与逐项目授权约束）",
+    ],
+    acceptanceCriteria: [
+      "内置目录与用户项目同时可见且互不影响",
+      "用户项目创建、编辑、归档、删除后列表与计数一致",
+      "内置目录搜索与筛选命中具体功能并展开详情",
+      "MCP 未授权时不能读写用户项目，且不能写内置目录",
+      "旧项目数据升级后不丢失，非法字段回退默认",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「规划中心」（Ctrl+9）",
+      "悬浮胶囊规划面板",
+      "MCP 客户端（仅用户项目，需显式授权）",
+    ],
+  },
+  {
+    id: "capability.center",
+    category: "workbench",
+    title: "知识与 AI 能力中心",
+    description:
+      "统一管理知识库、Skill、外部 MCP 服务、上下文装配与能力配方，供 Agent 读取与复用。",
+    detail:
+      "2026-11-17 / 18 落地的独立能力面（导航「能力中心」），包含五个子页：" +
+      "知识库（引用 / 导入文档、索引、搜索、关联任务 / 项目 / 笔记 / Agent 会话 / 工作流 / 文件）、" +
+      "Skill（扫描本机 Skill、导入文件夹、启用 / 禁用、风险与作用域标注、正文预览，不执行脚本）、" +
+      "外部 MCP 服务（stdio 连接、工具与资源清单、高风险调用确认、调用日志与失败回退）、" +
+      "上下文装配（按任务 / 项目选择知识、Skill、MCP 工具与最近上下文，生成可复核的装配清单）、" +
+      "能力配方（knowledge_search / mcp_tool / save_note 等步骤的白名单配方，运行前确认）。" +
+      "所有能力默认最小授权：不把扫描到的 Skill 当可执行代码，不自动向外部服务发送数据；" +
+      "高风险 MCP 工具逐次确认，调用日志与失败原因可查。" +
+      "边界：PDF / DOCX 等二进制解析、向量嵌入、HTTP MCP、移动端编辑与云端同步未实现（P2，不渲染假入口）。",
+    status: "implemented",
+    priority: "P1",
+    existingFeatures: [
+      "知识库：引用 / 导入文档、索引状态、全文检索、文档关联任务 / 项目 / 笔记 / Agent 会话 / 工作流 / 文件",
+      "Skill 管理：扫描本机 Skill、导入文件夹、启用 / 禁用、风险等级与作用域标注、正文预览，不在 Task Dock 内执行脚本",
+      "外部 MCP 服务：stdio 连接、工具 / 资源 / 提示清单、启停、高风险调用确认、调用日志与失败回退",
+      "上下文装配：按任务 / 项目选择知识、Skill、MCP 工具与最近上下文，生成可复核清单",
+      "能力配方：knowledge_search / mcp_tool / save_note 等白名单步骤，运行前确认与逐项回执",
+      "统一检索新增 knowledge 分类，知识文档可直接跳转",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "capability_* 迁移与知识库存储（v72–v75）",
+      "Skill 扫描器与外部 MCP 客户端",
+      "统一检索 knowledge 分类与任务 / 项目关联服务",
+    ],
+    acceptanceCriteria: [
+      "知识库导入、索引、搜索与关联后重启数据一致",
+      "Skill 只读展示，未确认时不能执行任何脚本",
+      "外部 MCP 高风险工具每次调用都需要确认，拒绝后不重试",
+      "上下文装配清单与实际使用来源一致，不夹带未选择的内容",
+      "未实现的 P2 能力不出现可点击的假入口",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「能力中心」",
+      "知识库搜索（统一检索 knowledge 分类）",
+      "任务 / 项目详情中的知识关联入口",
     ],
   },
   {
@@ -746,6 +937,93 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
   },
 
   {
+    id: "ux.theme-system",
+    category: "workflow",
+    title: "主题与外观",
+    description:
+      "明暗、视觉预设与材质三个正交维度，统一语义 Token，并处理原生材质降级。",
+    detail:
+      "主题系统（docs/ui-themes/02-theme-architecture.md）已落地：" +
+      "视觉预设 dream-gradient / liquid-glass、明暗 light / dark / system、材质 solid / glass 三个正交维度，" +
+      "分别落到 html[data-preset|data-theme|data-material]；" +
+      "所有入口（设置页、完整工作台标题栏、托盘右键玻璃菜单）都收敛到同一 settings store，没有第二条写 DOM 的路径；" +
+      "原生 Mica / Acrylic 不可用、高对比度或系统要求减少透明时自动回退 solid，并用 data-native-glass 标注真实状态；" +
+      "窗口圆角与材质经 apply_window_radius / material 落到原生窗口，界面只使用语义 Token。" +
+      "边界：修复后的原生窗口像素验收（圆角、材质透出、Windows 10）仍为 UNVERIFIED，不能以页面截图替代。",
+    status: "implemented",
+    priority: "P1",
+    existingFeatures: [
+      "三个正交维度：视觉预设 / 明暗 / 材质，任意组合都有可读的回退",
+      "设置页、完整工作台标题栏与托盘右键玻璃菜单共用同一 settings store，切换即时生效",
+      "语义 Token 与 html[data-preset|data-theme|data-material] 落到 DOM，禁止硬编码颜色",
+      "原生 Mica / Acrylic 可用性探测与 solid 自动回退，data-native-glass 标注真实状态",
+      "窗口圆角与原生材质应用，高对比度 / 减少透明 / 减少动画的降级",
+      "随备份迁移外观偏好，旧备份缺字段时保留本机值",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "settings store 与 application_settings 白名单",
+      "styles-themes.css / styles-ui.css 语义 Token",
+      "apply_window_radius / apply_window_material 原生命令",
+    ],
+    acceptanceCriteria: [
+      "预设、明暗、材质任意组合下界面可读且对比度达标",
+      "原生材质不可用时明确回退，不出现文字压壁纸",
+      "所有入口切换后状态一致，重启保持",
+      "恢复旧备份后外观偏好保留本机值而不是被清空",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "设置 → 通用与外观 → 外观与主题",
+      "完整工作台标题栏主题菜单",
+      "托盘右键玻璃菜单 → 浅色 / 深色 / 跟随系统",
+      "system 模式下跟随系统深浅色变化",
+    ],
+  },
+  {
+    id: "ux.navigation-customization",
+    category: "workflow",
+    title: "导航自定义",
+    description:
+      "按稳定 ID 显示 / 隐藏与排序导航入口，新增入口自动合并，可一键恢复默认。",
+    detail:
+      "导航自定义已落地：导航偏好以稳定入口 ID 为身份，完整面板与停靠胶囊各自一份可见性与排序，" +
+      "持久化在 SQLite 设置 navigation_layout（单一真源）；支持显示 / 隐藏、拖拽与长按连续排序、恢复默认；" +
+      "「设置」是锁定入口，不可隐藏或排序，保证随时能回到配置页；" +
+      "隐藏只影响该界面的导航入口，不等于停用功能：页面、后台模块、快捷键与通知跳转都不变；" +
+      "新增导航项按默认可见性自动合并，不因旧配置丢失；" +
+      "写入串行化，界面切换先停拖拽并把排序真正落库后才切换；保存失败留在原界面、显示真实错误并可重试；" +
+      "配置非法、版本不符或损坏时回退默认，不白屏。" +
+      "边界：只控制可见性与顺序，不做权限控制；无权限入口仍由后端拒绝。",
+    status: "implemented",
+    priority: "P2",
+    existingFeatures: [
+      "完整面板与停靠胶囊各自一份可见性与排序，navigation_layout 为单一真源",
+      "显示 / 隐藏导航入口，按稳定 ID 识别，重命名标题不影响配置",
+      "拖拽排序、长按连续上 / 下移动、固定调整条与 Esc 取消；松手一次落库，无中途写库抖动",
+      "「设置」锁定入口不可隐藏或排序；隐藏当前页由统一逻辑安全切页",
+      "隐藏只影响该界面入口：功能、快捷键（Ctrl+1…0）、通知跳转均不受影响",
+      "新增入口自动合并默认可见性；恢复默认整份覆盖；非法配置回退默认",
+      "写入串行化与保存失败提示，界面始终显示后端真实配置",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "navigationRegistry 统一入口清单",
+      "navVisibility / navigation_layout 设置键（ALLOWED_KEYS）",
+    ],
+    acceptanceCriteria: [
+      "完整面板与胶囊的隐藏 / 排序互不影响，重启保持",
+      "新增入口在旧配置下仍按默认可见性出现",
+      "隐藏入口后功能仍可用，快捷键与通知跳转不变",
+      "「设置」入口始终存在且不可隐藏",
+      "保存失败保留原界面并显示可重试的错误",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "设置 → 通用与外观 → 导航自定义",
+    ],
+  },
+  {
     id: "core.file-shelf",
     category: "workflow",
     title: "文件暂存架",
@@ -830,8 +1108,9 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     priority: "P1",
     existingFeatures: [
       "双额度限流：关键通知（waiting/failed/disconnected）保底额度 + 可合并类独立额度",
+      "独立通知窗口与系统原生通知双通道：任务提醒可查看 / 稍后提醒 / 完成，Agent 通知可跳转会话",
       "高频完成合并为一条摘要 + 窗口尾摘要（每窗口最多一条）",
-      "全局静音 + 分类开关 + 限流窗口设置",
+      "全局静音 + 分类开关 + 限流窗口设置；通知窗口不抢前台",
       "通知历史全量持久化：已读 / 全部已读 / 清空（二次确认）",
       "行动中心三层优先呈现（需介入 > 通知 > 历史）",
     ],
@@ -886,15 +1165,15 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     id: "core.global-search",
     category: "workflow",
     title: "全局搜索",
-    description: "一处搜索任务、剪贴板、应用、Agent 会话、现场与笔记。",
+    description: "一处搜索任务、剪贴板、应用、Agent 会话、现场、规划、笔记、生活与知识。",
     detail:
       "统一搜索入口：全局快捷键唤起、实时搜索、分类筛选、结果快速跳转、最近搜索记录。复用现有各面板数据查询能力（任务 LIKE 查询、剪贴板标题搜索、历史过滤、应用扫描缓存），不复制数据建立第二套数据库；必要时仅建轻量索引并限制查询规模。",
     status: "partial",
     priority: "P1",
     existingFeatures: [
-      "统一命令 global_search：单只读连接一次查询任务/剪贴板/收集箱/暂存架/应用/Agent/现场/规划中心八类数据（v0.9）",
+      "统一命令 global_search：单只读连接一次查询任务 / 剪贴板 / 收集箱 / 暂存架 / 应用 / Agent / 现场 / 规划中心 / 笔记 / 生活 / 知识十一类数据（v0.9；2026-11-18 扩至 11 类）",
       "Ctrl+Shift+F 应用内快捷键 + 工作台顶栏锚定下拉层（ui/Popover menu 层）/ 主窗居中弹窗（dialog 层、焦点陷阱）；防抖 220ms、乱序防护",
-      "分类筛选（全部/任务/剪贴板/收集箱/文件暂存/应用/Agent/工作现场/规划中心）",
+      "分类筛选（全部 / 任务 / 剪贴板 / 收集箱 / 文件暂存 / 应用 / Agent / 工作现场 / 规划中心 / 笔记 / 生活 / 知识）",
       "确定性排序：匹配等级（精确>前缀>包含>元数据）→ 待办/置顶优先 → 时间新优先",
       "结果跳转：任务滚动高亮、剪贴板条目详情、收集箱定位、暂存架详情、应用 navNavigate、Agent focusAgent、现场开上下文抽屉并展开快照、规划中心定位功能/里程碑/项目",
       "最近搜索本地保存（≤10 条，去重、可清除，仅 localStorage 不出网）",
@@ -973,8 +1252,103 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     verification: "unverified",
     entryPoints: ["任务页新建重复任务（以重复规则承载）", "任务卡完成 / 延后（现有任务操作）"],
   },
+  {
+    id: "life.purchases",
+    category: "info",
+    title: "生活购买记录与票据",
+    description:
+      "记录购买、价格与渠道，管理生活物品、事件与票据，并支持手机端同步与检索。",
+    detail:
+      "生活效率系统 v1（迁移 v65 / v66，手机端 v10 / v11）已落地：物品目录（名称、分类、别名、备注）、" +
+      "购买记录（发生日期、数量、单价、总额、商家、币种，金额按最小货币单位整数存储）、生活事件（购买 / 维护 / 通用）与票据引用 / 关联；" +
+      "生活待办复用任务系统，不建第二套任务；统一检索新增 life 分类；桌面与手机端通过既有配对同步购买记录与票据。" +
+      "验收结论为部分通过：自动化测试与页面级检查通过，但真实双设备同步、票据原图传输链路、桌面与移动端真机走查以及正式集成包验收未完成。" +
+      "明确不在 v1：购物清单、OCR 识别、保修到期提醒、记账 / 库存 / 消费分析、AI 比价（按设计后置，不渲染入口）。",
+    status: "partial",
+    priority: "P1",
+    existingFeatures: [
+      "物品目录：名称、分类、别名与备注，支持搜索与排序",
+      "购买记录：发生日期、数量、单价、总额、商家与币种，按物品与时间浏览",
+      "购买历史：按时间线与物品聚合，支持筛选与详情查看",
+      "生活事件：购买 / 维护 / 通用事件，可与物品、购买记录关联",
+      "票据引用与关联：捕获素材 / 暂存架 / 附件 / 文件，原图预览；元数据同步不等于图片已传输",
+      "生活待办复用任务数据层（不建第二套任务与提醒）",
+      "桌面与手机端通过既有配对同步购买记录与票据",
+      "统一检索新增 life 分类（物品 / 事件 / 购买记录）",
+    ],
+    missingFeatures: [
+      "真实双设备同步端到端验收（当前只有自动化与页面级证据）",
+      "票据上传 / 下载链路真机验收（移动端与桌面端）",
+      "桌面与移动端真机走查（窄窗、深色、DPI、键盘）",
+      "正式集成包上的生活模块验收",
+      "v1 明确不做、但已登记为后续方向：购物清单、票据 OCR、保修提醒、AI 比价",
+    ],
+    dependencies: [
+      "life_* 迁移 v65 / v66（已发布不可修改）",
+      "移动端 v10 / v11 与移动同步传输层",
+      "票据资源目录与备份表清单",
+    ],
+    acceptanceCriteria: [
+      "购买记录、物品、事件与票据关联后重启数据一致",
+      "票据传输失败可解释，不产生半条记录",
+      "桌面与手机端同步后金额、数量与票据一致",
+      "生活待办与普通任务共用数据层且视图分离",
+      "未实现的 v1 外能力不出现可点击的假入口",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「生活」（默认隐藏，可在导航自定义开启）",
+      "Android 应用「生活」页",
+      "统一检索 life 分类",
+    ],
+  },
 
   // ─── Agent 扩展 ─────────────────────────────────────────────────────
+  {
+    id: "agent.monitoring",
+    category: "agent",
+    title: "Agent 监控与接入中心",
+    description:
+      "发现本机 Agent、安装接入、实时查看实例 / 会话 / 运行状态，并把需介入事项接入行动中心。",
+    detail:
+      "导航「Agent」是 Agent 相关能力的主入口；各适配器单独登记，本条目只登记监控与接入宿主。" +
+      "已实现：扫描本机已安装 Agent 与配置根；状态树 Agent → 实例 → 会话 → 运行；" +
+      "实时快照与 keyset 历史；接入向导（Hooks / 插件 / HTTP Bridge / 文件投递）与安装前预览、备份、回滚、卸载；" +
+      "自定义 Agent 来源与手动上报；链路自测 nonce；模拟数据与真实数据隔离，并在 UI 与通知中标注「模拟」；" +
+      "等待 / 失败事项进入行动中心，待处理项可转任务；Agent 与任务、规划功能弱关联。" +
+      "边界：各适配器的真实会话联调覆盖不同（见各自条目）；系统级托盘、通知与任务关联的整体真机组合未走查。",
+    status: "implemented",
+    priority: "P1",
+    existingFeatures: [
+      "本机 Agent 发现：配置根、可执行文件、运行进程与已安装状态",
+      "状态树：Agent → 实例 → 会话 → 运行，六种状态与阶段如实展示",
+      "实时快照 + keyset 历史；状态变化事件驱动，不靠轮询猜测",
+      "接入向导：Hooks / 插件 / HTTP Bridge / 文件投递，安装前预览、备份、失败回滚与卸载",
+      "自定义 Agent 来源与手动上报；链路自测 nonce",
+      "模拟数据与真实数据隔离，UI 与通知标注「模拟」",
+      "等待 / 失败事项进入行动中心；待处理项转任务，Agent 与任务 / 规划功能弱关联",
+      "统一的连接诊断与健康徽标，断连如实显示而不是假装在线",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "AgentHub 与 agents/pipeline.rs 有界事件管线",
+      "各 Agent 适配器与 HTTP Bridge / 文件投递通道",
+      "行动中心、任务与规划功能关联服务",
+    ],
+    acceptanceCriteria: [
+      "安装接入后真实事件进入管线，状态树与事件一致",
+      "卸载只移除本产品条目，保留用户原有配置",
+      "模拟数据不混入真实统计或通知",
+      "断连、超时、无事件分别显示可解释状态",
+      "等待 / 失败事项可在行动中心确认并跳转会话",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「Agent」",
+      "悬浮胶囊 Agent 面板",
+      "设置 → Agent 接入",
+    ],
+  },
   {
     id: "agent.codex-app-server",
     category: "agent",
@@ -1492,6 +1866,48 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     verification: "unverified",
     entryPoints: ["全局搜索弹窗（Ctrl+Shift+F）→ 输入句式"],
   },
+  {
+    id: "ux.history-center",
+    category: "workflow",
+    title: "事件历史与通知中心",
+    description:
+      "通知与 Agent 事件统一时间轴：按日分组、重复聚合、筛选、分页与已读管理。",
+    detail:
+      "历史页（导航「历史」，Ctrl+8）已落地：通知与 Agent 事件合并为统一时间轴，按本地日期分组；" +
+      "连续重复事件（失联 / 重连等）聚合；来源 / 类型 / 时间（今天 / 3 天 / 7 天 / 全部）筛选；" +
+      "通知与事件各自 keyset 分页，has_more 与 filtered_total 使用同一筛选口径；" +
+      "未读数来自全库统计，不受首页 100 条限制；点击展开详情、通知标已读 / 全部已读、清空二次确认；" +
+      "订阅 notification / agent-changed 实时刷新，后台刷新只合并时间上连续的页，出现空隙时保留旧页并提示，" +
+      "不把有缺口的列表伪装成完整时间轴。" +
+      "边界：按 run 的可视化时间轴仍是 agent.execution-timeline 的缺口，不在本条目重复登记。",
+    status: "implemented",
+    priority: "P2",
+    existingFeatures: [
+      "通知 + Agent 事件统一时间轴，按本地日期分组",
+      "连续重复事件聚合（失联 / 重连等），来源 / 类型 / 时间筛选",
+      "通知与事件各自 keyset 分页；has_more / filtered_total 同口径",
+      "未读数来自全库统计，不受首页条数限制",
+      "详情展开、通知标已读 / 全部已读、清空二次确认",
+      "实时订阅刷新；只在连续页合并，出现空隙保留旧页并提示",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "notification_history / agent_events 数据模型",
+      "keyset 分页与未读统计命令",
+      "notification / agent-changed 事件订阅",
+    ],
+    acceptanceCriteria: [
+      "按日分组与重复聚合顺序正确，不丢事件",
+      "筛选后分页 has_more 与总数口径一致",
+      "实时刷新不把有缺口的列表当成完整时间轴",
+      "清空需二次确认且不影响业务数据",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「历史」（Ctrl+8）",
+      "通知窗口「查看历史」",
+    ],
+  },
 
   // ─── 长期生态 ───────────────────────────────────────────────────────
   {
@@ -1670,8 +2086,12 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "两种模式：mirror（与手机实体屏同画面）与 virtual（--new-display + --start-app，手机可继续使用自己的应用）。" +
       "会话有完整状态机（starting/running/stopping/stopped/error/disconnected）与阶段（process→display→app→video→ready），" +
       "不允许仅凭 PID 判成功；25s 无视频流转 error 并回收；停止先 WM_CLOSE，5s 有界等待后强杀，Job Object 兜底。" +
+      "2026-11-18 新增投屏窗口伴随系统：每个 Session 一个独立控制栏（返回 / Home / 最近任务 / 截图 / 展开），" +
+      "普通窗口外置、最大化 / 全屏内置，全屏默认隐藏并支持底部触发；控制栏不抢 scrcpy 键盘焦点，scrcpy 窗口统一品牌化。" +
       "多屏实验默认关闭，开启后最多 2 个会话，同一设备+模式+应用只允许一个活动会话；" +
-      "截图按用户点击触发，残留虚拟屏可诊断并重连清理。明确不做：自研编码/WebRTC、MediaProjection 冒充、root/刷机、自动装 APK、嵌入 Tauri 窗口、云端远控。",
+      "截图按用户点击触发，残留虚拟屏可诊断并重连清理。" +
+      "边界：控制栏原生窗口、多显示器 / DPI、品牌图标与完整真机链路仍为 ENVIRONMENT BLOCKED（2026-11-18 验收报告结论为部分通过）。" +
+      "明确不做：自研编码/WebRTC、MediaProjection 冒充、root/刷机、自动装 APK、嵌入 Tauri 窗口、云端远控。",
     status: "implemented",
     priority: "P1",
     existingFeatures: [
@@ -1681,6 +2101,8 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
       "应用选择与启动入口校验（cmd package query-activities）",
       "窗口定位（按会话 PID 找 scrcpy 顶层窗口并前置）、PrintWindow 截图、截图存暂存架/另存",
       "残留虚拟屏诊断（dumpsys display）与重连 ADB 清理",
+      "投屏窗口控制栏（2026-11-18）：每 Session 独立工具栏，返回 / Home / 最近任务 / 截图 / 展开；普通窗口外置、最大化 / 全屏内置，全屏底部触发与延迟隐藏，不抢 scrcpy 焦点",
+      "scrcpy 窗口品牌化：统一标题、图标与稳定 AUMID（不把短生命周期 session_id 当 AUMID）",
       "多屏实验（默认关闭，开启后最多 2 个会话，每个会话独立关闭）",
       "运行期身份只存内存（serial/package/session 不写 SQLite、不新增设置键）；与自有 TLS 配对身份分离",
     ],
@@ -1701,6 +2123,133 @@ export const FEATURE_CATALOG: FeatureEntry[] = [
     entryPoints: [
       "完整工作台左侧导航「手机」→「屏幕控制」",
       "会话列表中的定位 / 截图 / 诊断 / 关闭",
+    ],
+  },
+  {
+    id: "system.settings",
+    category: "system",
+    title: "设置中心",
+    description:
+      "统一设置宿主：六个一级分类、17 个分组、搜索定位、模块启停与数据管理。",
+    detail:
+      "设置中心是全部偏好与运维入口的统一宿主（导航「设置」，Ctrl+0）：" +
+      "六个一级分类（通用与外观、功能与应用、通知与语音、数据与资源、接入与诊断、帮助与教程）共 17 个稳定分组；" +
+      "设置项经 ALLOWED_KEYS 白名单与版本化迁移写 SQLite，非法值拒绝而不是静默写入；" +
+      "支持分组内搜索与分类跳转、模块启停、应用管理、剪贴板、通知、语音、备份、资源、诊断、Agent / MCP、开发者与帮助入口。" +
+      "所有变更经同一 settings store 即时应用，托盘、标题栏与胶囊共享同一份状态。" +
+      "边界：开发者分组面向排障，不承诺稳定 UI；跨版本兼容由迁移与白名单保证，不提供任意键写入。",
+    status: "implemented",
+    priority: "P2",
+    existingFeatures: [
+      "六个一级分类、17 个稳定分组，分类与分组均为稳定 ID",
+      "设置页内搜索：分组标题、分类标题与别名命中，可跳转分组",
+      "模块启停（ModuleRunControl + useLifecycleStore），多入口状态同步",
+      "应用管理、剪贴板、通知、提示音、TTS、语音缓存、资源清理、备份恢复、诊断、Agent / MCP 入口",
+      "设置写入白名单与版本化迁移；非法值拒绝，不产生半写入",
+      "开发者分组：模拟数据、调试开关与运行时信息（面向排障）",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "settingsCategories / settingsSections 注册表",
+      "db::Settings 与 ALLOWED_KEYS",
+      "各功能设置组件与 bridge 命令",
+    ],
+    acceptanceCriteria: [
+      "六个分类与 17 个分组全部可见且可搜索",
+      "非法设置值被拒绝且原值保持不变",
+      "模块启停后胶囊、工作台与资源页状态一致",
+      "重启与备份恢复后设置保持",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "完整工作台左侧导航「设置」（Ctrl+0）",
+      "托盘 / 标题栏「设置」",
+    ],
+  },
+  {
+    id: "system.audio",
+    category: "system",
+    title: "提示音、语音播报与语音包",
+    description:
+      "事件驱动的统一音频服务：合成提示音、Windows 本地 TTS、持久缓存与自定义语音包。",
+    detail:
+      "统一音频服务（docs/audio/audio-notifications.md）已落地：后端只向主窗口广播 audio-event，" +
+      "前端唯一 AudioNotificationService 负责去重、完成合并、优先级、有界队列与串行播放；" +
+      "提示音用 Web Audio 合成，不依赖音频资源包；语音走 WinRT SpeechSynthesizer 常驻工作线程，" +
+      "持久缓存只保存白名单短语，动态文本不落盘；支持导入自定义 MP3 / WAV 语音包并按固定短语映射；" +
+      "设置页可试听、调音量 / 语速 / 音色、关闭 TTS 或全局静音。音频失败不影响事件入库与通知历史。" +
+      "边界：仅 Windows WinRT；云端 TTS、语音助手与任意文本缓存均不做；真实系统音频输出与多设备切换需真机听感验收。",
+    status: "implemented",
+    priority: "P2",
+    existingFeatures: [
+      "事件驱动：Agent 状态迁移、任务到期、日程提醒、失联扫描统一进入音频队列",
+      "去重（eventId）+ 完成合并（600ms 首条窗口）+ 优先级 + 24 条有界队列 + 串行播放",
+      "提示音：Web Audio 合成音调，音量 0 完全静音，切换设置立即中止当前播放",
+      "语音播报：WinRT 本地 TTS，语音枚举、语速 / 音色选择与超时取消",
+      "持久缓存：只缓存白名单短语，动态文本不落盘；缓存可清理",
+      "自定义语音包：导入 MP3 / WAV、重命名、删除与固定短语映射",
+      "设置页试听占用同一播放通道，不产生叠音",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "audio::AudioService 与 WinRT TTS 常驻线程",
+      "audio-event 后端广播与前端唯一 AudioNotificationService",
+      "语音包资源目录与 TTS 缓存目录",
+    ],
+    acceptanceCriteria: [
+      "同一事件只播放一次，完成事件按窗口合并",
+      "高优先级事件不被低优先级队列饿死",
+      "关闭 TTS / 全局静音后立即停止且不再合成",
+      "动态文本不进入持久缓存",
+      "音频失败不影响通知历史与业务状态",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "设置 → 通知与语音 → 提示音",
+      "设置 → 通知与语音 → 语音播报",
+      "设置 → 通知与语音 → 语音缓存 / 自定义语音包",
+    ],
+  },
+  {
+    id: "system.tray-autostart",
+    category: "system",
+    title: "托盘、开机自启与单实例",
+    description:
+      "托盘常驻菜单、开机自启、单实例参数转交与快速入口。",
+    detail:
+      "托盘与启动链路已落地：托盘图标按 Agent 状态切换并显示未处理摘要 tooltip；" +
+      "右键菜单与主窗菜单同源（显示 / 隐藏、快速捕获、快速记录、模式切换、主题、备份、退出等）；" +
+      "开机自启写注册表，并在 --autostart 启动时不弹主窗、不抢焦点；" +
+      "单实例插件把第二实例 argv 转交给首实例，SendTo 优先于 Autostart；" +
+      "托盘退出走统一退出确认与挂起写库保护。" +
+      "边界：托盘菜单项与主窗菜单必须同源；真实托盘点击、系统通知与多实例转交需原生真机验收。",
+    status: "implemented",
+    priority: "P2",
+    existingFeatures: [
+      "托盘图标按 Agent 状态切换，tooltip 显示未处理摘要并做节流缓存",
+      "托盘右键菜单与主窗菜单同源：显示 / 隐藏、快速捕获、快速记录、模式、主题、备份、退出",
+      "开机自启：注册表写入与 --autostart 静默启动（不弹主窗、不抢焦点）",
+      "单实例：第二实例 argv 转交首实例，SendTo 优先于 Autostart",
+      "托盘退出统一走退出确认与挂起写库保护",
+      "托盘 / 右键菜单提供快速捕获与快速记录第二入口",
+    ],
+    missingFeatures: [],
+    dependencies: [
+      "Tauri tray builder 与统一菜单定义",
+      "autostart 注册表命令",
+      "single-instance 插件与启动意图解析",
+    ],
+    acceptanceCriteria: [
+      "托盘图标状态与 Agent 状态一致，tooltip 不频繁刷新",
+      "开机自启后不弹主窗、不抢焦点，手动启动正常显示",
+      "第二实例启动时由首实例接管，不产生双托盘",
+      "托盘退出不丢未落库数据",
+    ],
+    verification: "unverified",
+    entryPoints: [
+      "系统托盘图标右键菜单",
+      "托盘 / 右键菜单「快速捕获」「快速记录」",
+      "设置 → 窗口与快捷键 → 开机自启",
     ],
   },
   {

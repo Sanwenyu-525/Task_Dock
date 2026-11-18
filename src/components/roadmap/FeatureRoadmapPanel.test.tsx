@@ -78,16 +78,18 @@ describe("结构渲染", () => {
     expect(screen.queryByRole("button", { name: /（受阻）/ })).toBeNull();
   });
 
-  it("七个分类区块条目数与目录一致（8 / 6 / 13 / 2 / 10 / 5 / 5）", () => {
+  it("七个分类区块条目数与目录一致（9 / 9 / 16 / 3 / 11 / 5 / 8）", () => {
     // 2026-11-16 路线图数据治理：新增「工作台与专业创作」「设备、系统与数据」两个分区
+    // 2026-11-18 全量补登：任务主线 / 窗口胶囊 / 规划中心 / 能力中心 / 生活 / Agent 监控 /
+    // 主题 / 导航自定义 / 历史中心 / 音频 / 托盘自启 / 设置中心
     const expected: [label: string, count: number][] = [
-      ["核心效率功能", 8],
-      ["工作台与专业创作", 6],
-      ["工作流与效率增强", 13],
-      ["信息管理与生活效率", 2],
-      ["Agent 扩展", 10],
+      ["核心效率功能", 9],
+      ["工作台与专业创作", 9],
+      ["工作流与效率增强", 16],
+      ["信息管理与生活效率", 3],
+      ["Agent 扩展", 11],
       ["长期生态", 5],
-      ["设备、系统与数据", 5],
+      ["设备、系统与数据", 8],
     ];
     for (const [label, count] of expected) {
       const section = screen.getByRole("region", { name: label });
@@ -186,10 +188,10 @@ describe("筛选与搜索", () => {
     expect(within(card).queryByText(/未见官方 hooks/)).toBeNull();
   });
 
-  it("优先级筛选 P0：11 项（12 项核心中的 P0 5 项 + 开发工作台 + 本轮补登 5 项）", () => {
+  it("优先级筛选 P0：13 项（12 项核心中的 P0 5 项 + 开发工作台 + 2026-11-16 补登 5 项 + 任务主线与窗口胶囊）", () => {
     fireEvent.click(screen.getByRole("button", { name: "P0" }));
     const cards = document.querySelectorAll(".roadmap-card");
-    expect(cards).toHaveLength(11);
+    expect(cards).toHaveLength(13);
     for (const title of [
       "全局快速捕获",
       "场景工作区",
@@ -202,6 +204,8 @@ describe("筛选与搜索", () => {
       "统一大型工作台",
       "专业项目工作空间",
       "多目录文件工作区",
+      "任务管理与提醒闭环",
+      "窗口形态与贴边胶囊",
     ]) {
       expect(cardOf(title)).toBeTruthy();
     }

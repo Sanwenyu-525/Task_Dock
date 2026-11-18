@@ -13,7 +13,7 @@ mod memory;
 mod probes;
 mod storage;
 mod user_junk;
-mod volumes;
+pub(crate) mod volumes;
 
 pub use analysis::{DiskScanFile, DiskScanFolder, DiskScanReport};
 pub use diagnostics::{CpuSampler, ProcessDiagnostics, SelfProcessSnapshot};

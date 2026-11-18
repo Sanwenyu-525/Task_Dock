@@ -27,9 +27,11 @@
 pub mod audit;
 pub mod auth;
 pub mod bridge;
+pub mod capability_tools;
 pub mod commands;
 pub mod config;
 pub mod diagnostics;
+pub mod knowledge_tools;
 pub mod note_tools;
 pub mod permissions;
 pub mod protocol;

@@ -1,6 +1,6 @@
 //! 跨目录文件传输的共享语义：冲突预检、批量决策、目标路径与成功项选择更新。
 //!
-//! 真实文件操作仍只走 `fsCopyPaths` / `fsMovePaths`；本模块不复制后端实现，
+//! 真实文件操作走 `fsCopyJobStart` / `fsMoveJobStart` 任务服务；本模块不复制后端实现，
 //! 只把「前端需要知道什么」收敛成可测试的纯逻辑。
 
 import { fsStat, type FsOpReport } from "../bridge";
@@ -65,6 +65,25 @@ export function movedSourcesToClear(report: FsOpReport | null): string[] {
     .filter((entry) => entry.status === "ok")
     .map((entry) => entry.source)
     .filter(Boolean);
+}
+
+/**
+ * 传输结束后仍需保留的源路径：**只移除报告明确 `ok` 的项**。
+ *
+ * 取消/部分完成时，未处理项不在报告里；报告缺失时无法判断任何一项，因此保留全部。
+ * 这条规则同时守护移动后的选择与内部剪切板，避免把「未执行」误当成「已完成」。
+ */
+export function remainingSourcesAfterTransfer(
+  report: FsOpReport | null,
+  originalPaths: string[],
+): string[] {
+  if (!report) return [...originalPaths];
+  const done = new Set(
+    report.entries
+      .filter((entry) => entry.status === "ok")
+      .map((entry) => normalizePath(entry.source).toLowerCase()),
+  );
+  return originalPaths.filter((path) => !done.has(normalizePath(path).toLowerCase()));
 }
 
 /** 操作后需要失效的目录：目标目录 + 所有成功迁移项的父目录（失败源目录也刷新更安全）。 */

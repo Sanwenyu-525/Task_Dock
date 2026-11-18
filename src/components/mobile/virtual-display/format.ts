@@ -2,7 +2,7 @@
 //!
 //! 只放纯函数：不读全局状态、不调用 IPC，便于前端单测与 UI 层复用。
 
-import type { VdDevice, VdSession, VdSessionStatus } from "../../../lib/bridge";
+import type { VdApp, VdDevice, VdSession, VdSessionStatus } from "../../../lib/bridge";
 import type { MessageKey } from "../../../i18n/messages";
 import type { StatusTone } from "../../ui";
 
@@ -128,4 +128,18 @@ export function isValidPackageName(value: string): boolean {
     !trimmed.startsWith("-") &&
     /^[A-Za-z0-9._]+$/.test(trimmed)
   );
+}
+
+/**
+ * 应用搜索的唯一实现：本地过滤（名称或包名包含关键词），不访问 Android。
+ * 保持已通过验收的 label / package 搜索行为不变。
+ */
+export function filterApps(apps: VdApp[], query: string): VdApp[] {
+  const keyword = query.trim().toLocaleLowerCase();
+  if (!keyword) return apps;
+  return apps.filter((app) => {
+    const label = (app.label ?? "").toLocaleLowerCase();
+    const packageName = app.package.toLocaleLowerCase();
+    return label.includes(keyword) || packageName.includes(keyword);
+  });
 }

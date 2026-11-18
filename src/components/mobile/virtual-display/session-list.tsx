@@ -5,11 +5,8 @@
 
 import {
   AppWindow,
-  ArrowLeft,
   Camera,
   CircleAlert,
-  Home,
-  List,
   LocateFixed,
   MonitorSmartphone,
   ShieldAlert,
@@ -38,14 +35,10 @@ export interface SessionListProps {
   now: number;
   closingIds: string[];
   capturingId: string | null;
-  navBusyId: string | null;
   t: Translate;
   onFocus: (session: VdSession) => void;
   onCapture: (session: VdSession) => void;
-  onNavigate: (
-    session: VdSession,
-    action: "back" | "home" | "recents",
-  ) => void;
+  onRetryToolbar: (session: VdSession) => void;
   onClose: (session: VdSession) => void;
 }
 
@@ -57,11 +50,10 @@ export default function SessionList({
   now,
   closingIds,
   capturingId,
-  navBusyId,
   t,
   onFocus,
   onCapture,
-  onNavigate,
+  onRetryToolbar,
   onClose,
 }: SessionListProps) {
   return (
@@ -71,7 +63,9 @@ export default function SessionList({
         <span className="vd-count" aria-label={t("virtualDisplay.sessions.countLabel")}>
           {t("virtualDisplay.sessions.count", { count: activeCount, max: limit })}
         </span>
-        <span className="vd-block-note">{t("virtualDisplay.sessions.maxHint")}</span>
+        <span className="vd-block-note">
+          {t("virtualDisplay.sessions.maxHint", { max: limit })}
+        </span>
       </div>
 
       {sessions.length === 0 ? (
@@ -95,24 +89,6 @@ export default function SessionList({
             const stage = stageKey(session.stage);
             const closing = session.status === "stopping" || closingIds.includes(session.id);
             const canCapture = session.status === "running" && capturingId !== session.id;
-            const navUnavailable =
-              session.mode === "virtual" &&
-              (session.display_id === null || session.display_id === 0);
-            const navDisabled =
-              session.status !== "running" || navUnavailable || navBusyId === session.id;
-            const navTip = navUnavailable
-              ? t("virtualDisplay.session.navUnavailable")
-              : session.status !== "running"
-                ? t("virtualDisplay.session.navNotReady")
-                : undefined;
-            // Android 16/vivo 实测：APP_SWITCH 由系统默认显示器处理，虚拟屏发送会切到实体屏。
-            // 宁可标记为不支持，也不能向用户返回“成功”却操作错屏幕。
-            const recentsUnsupported =
-              session.mode === "virtual" && (session.display_id ?? 0) > 0;
-            const recentsDisabled = navDisabled || recentsUnsupported;
-            const recentsTip = recentsUnsupported
-              ? t("virtualDisplay.session.recentsUnsupported")
-              : navTip;
             const modeLabel = t(
               session.mode === "mirror"
                 ? "virtualDisplay.mode.mirror"
@@ -190,51 +166,20 @@ export default function SessionList({
 
                 {active ? (
                   <>
-                    <div className="vd-session-nav" aria-label={t("virtualDisplay.session.nav")}>
-                      <button
-                        type="button"
-                        className="btn sm vd-nav-btn"
-                        onClick={() => onNavigate(session, "back")}
-                        disabled={navDisabled}
-                        data-tip={navTip}
-                      >
-                        {navBusyId === session.id ? (
-                          <Loader2 size={12} className="spin" />
-                        ) : (
-                          <ArrowLeft size={12} />
-                        )}
-                        {t("virtualDisplay.session.back")}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn sm vd-nav-btn"
-                        onClick={() => onNavigate(session, "home")}
-                        disabled={navDisabled}
-                        data-tip={navTip}
-                      >
-                        <Home size={12} />
-                        {t("virtualDisplay.session.home")}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn sm vd-nav-btn"
-                        onClick={() => onNavigate(session, "recents")}
-                        disabled={recentsDisabled}
-                        data-tip={recentsTip}
-                      >
-                        <List size={12} />
-                        {t("virtualDisplay.session.recents")}
-                      </button>
-                      {recentsUnsupported ? (
-                        <span className="vd-nav-note">
-                          {t("virtualDisplay.session.recentsUnsupportedShort")}
-                        </span>
-                      ) : navUnavailable ? (
-                        <span className="vd-nav-note">
-                          {t("virtualDisplay.session.navUnavailableShort")}
-                        </span>
-                      ) : null}
-                    </div>
+                    {session.status === "running" &&
+                    session.toolbar_state === "unavailable" ? (
+                      <div className="vd-session-alert is-warning">
+                        <ShieldAlert size={12} aria-hidden="true" />
+                        <span>{t("virtualDisplay.session.toolbarUnavailable")}</span>
+                        <button
+                          type="button"
+                          className="vd-link"
+                          onClick={() => onRetryToolbar(session)}
+                        >
+                          {t("virtualDisplay.session.toolbarRetry")}
+                        </button>
+                      </div>
+                    ) : null}
 
                     <div className="vd-session-actions">
                     <button

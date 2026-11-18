@@ -127,9 +127,9 @@ function makeView(count = 3): ClipboardView {
 }
 
 /**
- * 2026-11-16：删除/置顶/收藏/详情收进「更多操作」菜单。
- * 这些辅助动作不再是卡片行内的独立按钮，测试必须先展开菜单——
- * 这本身就是本轮「减少误触、动作分级」的验收点，不能靠隐藏按钮绕过。
+ * 删除仍收在「更多操作」菜单（危险动作 + 说明文案）；收藏/置顶/详情在宽度足够的
+ * 卡片上直接排在动作行（2026-11-17），窄卡与抽屉行仍必须先展开菜单。
+ * 测试按对应形态选择入口，不靠隐藏按钮绕过。
  */
 type TestUser = ReturnType<typeof userEvent.setup>;
 
@@ -778,17 +778,14 @@ describe("操作反馈与离场", () => {
     render(<ClipboardPanel />);
 
     const card = (await screen.findByText("第 0 条剪贴板预览")).closest<HTMLElement>("[data-clip-id]")!;
-    await user.click(within(card).getByRole("button", { name: "更多操作" }));
-    await user.click(screen.getByRole("menuitem", { name: /取消收藏/ }));
+    await user.click(within(card).getByRole("button", { name: "取消收藏" }));
 
     await waitFor(() => expect(bridge.clipboardToggleItem).toHaveBeenCalledWith("cif", "favorite"));
     await waitFor(() =>
       expect(useClipboardStore.getState().view?.items.find((i) => i.id === "cif")?.favorite).toBe(false),
     );
-    // 菜单项文案随之翻转（仍是同一个菜单入口，不是新按钮）
-    await user.click(within(card).getByRole("button", { name: "更多操作" }));
-    expect(screen.getByRole("menuitem", { name: /^收藏$/ })).toBeTruthy();
-    fireEvent.keyDown(window, { key: "Escape" });
+    // 行内按钮文案随之翻转（仍是同一个动作入口，不换成新按钮）
+    expect(within(card).getByRole("button", { name: "收藏" })).toBeTruthy();
     await waitFor(() => expect(useUiStore.getState().toast?.kind).toBe("success"));
     expect(useUiStore.getState().toast?.message).toContain("退出「只看收藏」列表");
     expect(useUiStore.getState().toast?.message).toContain("内容仍保留在历史中");
@@ -929,10 +926,9 @@ describe("操作反馈与离场", () => {
     );
     await user.click(
       within(document.querySelector<HTMLElement>('[data-clip-id="ci2"]')!).getByRole("button", {
-        name: "更多操作",
+        name: "置顶",
       }),
     );
-    await user.click(screen.getByRole("menuitem", { name: /^置顶$/ }));
 
     await waitFor(() =>
       expect(cards().map((c) => c.dataset.clipId)).toEqual(["ci2", "ci0", "ci1"]),

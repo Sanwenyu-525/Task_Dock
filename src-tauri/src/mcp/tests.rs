@@ -1549,4 +1549,242 @@ fn capability_grant_requires_known_capability_and_existing_resource() {
     let caps = crate::mcp::permissions::grant(&db, &agent.row_id, "tasks.read", "").unwrap();
     assert_eq!(caps.len(), 1);
     assert_eq!(caps[0].resource_id, "");
+
+    // knowledge.read：知识库级授权必须指向真实知识库。
+    db.with_conn(|c| {
+        c.execute(
+            "INSERT INTO knowledge_bases(id,name,description,kind,created_at,updated_at)
+             VALUES('kb-cap','资料','','personal','2026-11-18T00:00:00Z','2026-11-18T00:00:00Z')",
+            [],
+        )?;
+        Ok::<_, crate::error::AppError>(())
+    })
+    .unwrap();
+    assert!(crate::mcp::permissions::grant(
+        &db,
+        &agent.row_id,
+        "knowledge.read",
+        "missing-kb"
+    )
+    .is_err());
+    let caps =
+        crate::mcp::permissions::grant(&db, &agent.row_id, "knowledge.read", "kb-cap").unwrap();
+    assert!(caps
+        .iter()
+        .any(|cap| cap.capability == "knowledge.read" && cap.resource_id == "kb-cap"));
+}
+
+// ── capability：Skill / Context Agent 工具（需求 5–9、19）────────────
+
+fn seed_capability_fixture(db: &Db) -> (String, String) {
+    let now = "2026-11-18T00:00:00Z";
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO mcp_agents(id,agent_id,display_name,token_hash,scope,created_at,updated_at) \
+             VALUES('row-a','agent-a','Agent A','hash','readonly',?1,?1)",
+            [now],
+        )?;
+        for (id, name) in [("ws-a", "项目 A"), ("ws-b", "项目 B")] {
+            conn.execute(
+                "INSERT INTO workspace_projects(id,name,kind,root_path,dev_project_id,note,status,created_at,updated_at) \
+                 VALUES(?1,?2,'general','',NULL,'','active',?3,?3)",
+                rusqlite::params![id, name, now],
+            )?;
+        }
+        conn.execute(
+            "INSERT INTO tasks(id,title,description,priority,status,category,tags,advance_minutes,created_at,updated_at) \
+             VALUES('t-ctx','章节检查','检查人物一致性',2,'pending','','[]',0,?1,?1)",
+            [now],
+        )?;
+        conn.execute(
+            "INSERT INTO workspace_task_links(project_id,task_id,created_at) VALUES('ws-a','t-ctx',?1)",
+            [now],
+        )?;
+        conn.execute(
+            "INSERT INTO knowledge_bases(id,name,description,kind,project_id,created_at,updated_at) \
+             VALUES('kb-a','项目资料','','project','ws-a',?1,?1)",
+            [now],
+        )?;
+        conn.execute(
+            "INSERT INTO knowledge_documents(id,kb_id,title,source_kind,source_mode,source_path,mime,size_bytes,content,content_hash,status,error,chunk_count,indexed_at,created_at,updated_at) \
+             VALUES('doc-a','kb-a','设定.md','file','reference','D:\\\\docs\\\\setting.md','text/markdown',12,'Alpha 项目约定','hash','indexed','',1,?1,?1,?1)",
+            [now],
+        )?;
+        conn.execute(
+            "INSERT INTO knowledge_chunks(doc_id,kb_id,ordinal,start_offset,content) \
+             VALUES('doc-a','kb-a',0,0,'Alpha 项目约定')",
+            [],
+        )?;
+        let skill_rows: [(&str, &str, &str, Option<&str>, Option<&str>, Option<&str>, i64, i64); 7] = [
+            ("s-global", "全局技能", "global", None, None, None, 1, 0),
+            ("s-pa", "项目 A 技能", "project", Some("ws-a"), None, None, 1, 0),
+            ("s-pb", "项目 B 技能", "project", Some("ws-b"), None, None, 1, 0),
+            ("s-ws", "工作区技能", "workspace", None, Some("ws-a"), None, 1, 0),
+            ("s-agent", "Agent 专属", "agent", None, None, Some("row-a"), 1, 0),
+            ("s-disabled", "禁用技能", "global", None, None, None, 0, 0),
+            ("s-missing", "丢失技能", "global", None, None, None, 1, 1),
+        ];
+        for (id, name, scope, project, workspace, agent, enabled, missing) in skill_rows {
+            conn.execute(
+                "INSERT INTO capability_skills(id,name,description,source_kind,source_path,scope,project_id,workspace_id,agent_id,enabled,risk_level,risk_notes,version,format_ok,content,content_hash,missing,last_seen_at,created_at,updated_at) \
+                 VALUES(?1,?2,'说明','discovered',?1,?3,?4,?5,?6,?7,'low','[]','1.0',1,'正文','hash',?8,?9,?9,?9)",
+                rusqlite::params![id, name, scope, project, workspace, agent, enabled, missing, now],
+            )?;
+        }
+        Ok::<_, crate::error::AppError>(())
+    })
+    .unwrap();
+    ("ws-a".into(), "ws-b".into())
+}
+
+#[test]
+fn knowledge_document_existence_is_not_leaked() {
+    let db = memdb();
+    let (_, _) = seed_capability_fixture(&db);
+    // 只授权 kb-a；doc-a 所属 kb-a 可读，插入一个 kb-b 文档用于「存在但无权限」。
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO knowledge_bases(id,name,description,kind,created_at,updated_at) \
+             VALUES('kb-b','其他库','','personal','2026-11-18T00:00:00Z','2026-11-18T00:00:00Z')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO knowledge_documents(id,kb_id,title,source_kind,source_mode,mime,size_bytes,content,content_hash,status,error,chunk_count,created_at,updated_at) \
+             VALUES('doc-b','kb-b','秘密','text','imported','text/plain',4,'secret','h','indexed','',0,'2026-11-18T00:00:00Z','2026-11-18T00:00:00Z')",
+            [],
+        )?;
+        Ok::<_, crate::error::AppError>(())
+    })
+    .unwrap();
+    let (agent, _) = make_agent(&db, "leak-check", "readonly");
+    crate::mcp::permissions::grant(&db, &agent.row_id, "knowledge.read", "kb-a").unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    let denied = rpc_err(
+        &ctx,
+        "taskdock_get_knowledge_document",
+        json!({ "document_id": "doc-b" }),
+    );
+    let missing = rpc_err(
+        &ctx,
+        "taskdock_get_knowledge_document",
+        json!({ "document_id": "does-not-exist" }),
+    );
+    assert_eq!(denied.message, missing.message, "存在性与授权失败必须统一文案");
+    assert!(denied.message.contains("不存在或不可访问"));
+}
+
+#[test]
+fn skill_tools_filter_by_scope_project_and_agent() {
+    let db = memdb();
+    let (project_a, project_b) = seed_capability_fixture(&db);
+    let agent = db
+        .with_conn(|conn| crate::mcp::auth::find_active_agent_by_row_id(conn, "row-a"))
+        .unwrap()
+        .unwrap();
+    crate::mcp::permissions::grant(&db, &agent.row_id, "skills.read", "").unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    let list_a = call_ok(
+        &ctx,
+        "taskdock_list_skills",
+        json!({ "project_id": project_a, "workspace_id": project_a }),
+    );
+    let names: Vec<&str> = list_a["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(names.contains(&"全局技能"));
+    assert!(names.contains(&"项目 A 技能"));
+    assert!(names.contains(&"工作区技能"));
+    assert!(names.contains(&"Agent 专属"));
+    assert!(!names.contains(&"项目 B 技能"));
+    assert!(!names.contains(&"禁用技能"));
+    assert!(!names.contains(&"丢失技能"));
+
+    let list_b = call_ok(
+        &ctx,
+        "taskdock_list_skills",
+        json!({ "project_id": project_b, "workspace_id": project_b }),
+    );
+    let names_b: Vec<&str> = list_b["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(names_b.contains(&"全局技能"));
+    assert!(names_b.contains(&"项目 B 技能"));
+    assert!(!names_b.contains(&"项目 A 技能"));
+    assert!(!names_b.contains(&"工作区技能"));
+    // agent 级 Skill 跟随 Agent 身份，不随项目变化（同一 Agent 仍可见）。
+    assert!(names_b.contains(&"Agent 专属"));
+
+    // 跨项目读取 Skill 正文必须被拒绝，且与不存在同一文案。
+    let cross = rpc_err(
+        &ctx,
+        "taskdock_get_skill",
+        json!({ "skill_id": "s-pb", "project_id": project_a }),
+    );
+    let missing = rpc_err(
+        &ctx,
+        "taskdock_get_skill",
+        json!({ "skill_id": "no-such-skill", "project_id": project_a }),
+    );
+    assert_eq!(cross.message, missing.message);
+    assert!(cross.message.contains("不存在或不可访问"));
+
+    let own = call_ok(
+        &ctx,
+        "taskdock_get_skill",
+        json!({ "skill_id": "s-pa", "project_id": project_a }),
+    );
+    assert_eq!(own["skill"]["name"], "项目 A 技能");
+    assert_eq!(own["content"], "正文");
+}
+
+#[test]
+fn task_context_uses_project_binding_and_skills() {
+    let db = memdb();
+    let (project_a, project_b) = seed_capability_fixture(&db);
+    let agent = db
+        .with_conn(|conn| crate::mcp::auth::find_active_agent_by_row_id(conn, "row-a"))
+        .unwrap()
+        .unwrap();
+    crate::mcp::permissions::grant(&db, &agent.row_id, "knowledge.read", "").unwrap();
+    crate::mcp::permissions::grant(&db, &agent.row_id, "skills.read", "").unwrap();
+    let ctx = ctx_for(&db, &agent);
+
+    let context = call_ok(
+        &ctx,
+        "taskdock_get_task_context",
+        json!({ "task_id": "t-ctx", "query": "Alpha", "max_chars": 4000 }),
+    );
+    assert_eq!(context["task"]["id"], "t-ctx");
+    assert_eq!(context["projectId"], project_a);
+    assert!(context["contextProfileId"].is_null());
+    let sections = context["bundle"]["sections"].as_array().unwrap();
+    assert!(sections.iter().any(|s| s["kind"] == "knowledge"));
+    assert!(sections.iter().any(|s| s["kind"] == "skills"));
+    assert!(context["bundle"]["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["kind"] == "knowledge"));
+    assert!(context["policy"].as_str().unwrap().contains("安全默认"));
+
+    // 任务不属于请求的项目：统一拒绝，不泄露任务存在性。
+    let cross = rpc_err(
+        &ctx,
+        "taskdock_get_task_context",
+        json!({ "task_id": "t-ctx", "project_id": project_b }),
+    );
+    let missing = rpc_err(
+        &ctx,
+        "taskdock_get_task_context",
+        json!({ "task_id": "no-such-task" }),
+    );
+    assert_eq!(cross.message, missing.message);
 }

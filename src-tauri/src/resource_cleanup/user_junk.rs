@@ -969,20 +969,15 @@ fn sum_recycle_tree(
 
 #[cfg(windows)]
 fn recycle_bin_roots() -> Result<Vec<PathBuf>, (String, String)> {
-    let sid = current_user_sid().ok_or_else(|| {
-        (
-            "SHELL_FAILED".to_string(),
-            "无法确定当前用户标识，暂不能统计回收站".to_string(),
-        )
-    })?;
-    let mut roots = Vec::new();
-    for drive in super::volumes::local_drive_roots() {
-        let root = PathBuf::from(format!("{drive}\\$Recycle.Bin\\{sid}"));
-        if root.is_dir() {
-            roots.push(root);
-        }
-    }
-    Ok(roots)
+    // 卷/SID 发现统一由 `recycle::volume` 提供：这里曾有第三份实现
+    // （`local_drive_roots` + 手工拼 `$Recycle.Bin\<SID>`），三处逻辑一旦漂移，
+    // 资源管理面板看到的回收站范围就会和回收站视图不一致。
+    // 注意：下面的统计仍是「限量遍历」——资源清理预览必须在任意时刻都能给出
+    // 估计值，不能依赖可能尚未建立的索引；索引只服务于浏览与恢复。
+    Ok(crate::recycle::volume::bin_volumes()?
+        .into_iter()
+        .map(|volume| volume.root)
+        .collect())
 }
 
 #[cfg(not(windows))]

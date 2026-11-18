@@ -19,6 +19,7 @@ export type Tab =
   | "workflows"
   | "history"
   | "roadmap"
+  | "capability"
   | "settings"
   | "help"
   | "diagnostics"
@@ -70,6 +71,7 @@ export const RAIL_ORDER: readonly Tab[] = [
   "workflows",
   "history",
   "roadmap",
+  "capability",
   "help",
   "diagnostics",
   "resource",

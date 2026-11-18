@@ -12,6 +12,7 @@ export default defineConfig({
   // + notification.html（六状态桌面通知窗口）+ capture.html（全局快速捕获窗口）
   // + tab-hint.html（极简标签悬停提示：10px 窄窗内的浮层会被原生区域裁掉）
   // + widget.html（桌面微件独立窗口：轻量宿主，不挂载完整 App）
+  // + toolbar.html（投屏控制栏独立窗口：只装载 ProjectionToolbar）
   build: {
     // 多入口时共享 CSS 会被拆成独立 chunk，浏览器按 chunk 顺序加载会让
     // styles-themes.css 排在 styles.css 之前，覆盖关系反转。合并为单文件，
@@ -26,6 +27,7 @@ export default defineConfig({
         "tab-hint": resolve(__dirname, "tab-hint.html"),
         widget: resolve(__dirname, "widget.html"),
         workspace: resolve(__dirname, "workspace.html"),
+        toolbar: resolve(__dirname, "toolbar.html"),
       },
     },
   },
@@ -52,6 +54,7 @@ export default defineConfig({
         "./src/tab-hint/main.tsx",
         "./src/widgets/main.tsx",
         "./src/workspace/main.tsx",
+        "./src/toolbar/main.tsx",
       ],
     },
     watch: {

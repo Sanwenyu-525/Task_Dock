@@ -1399,3 +1399,148 @@ node tmp/acceptance/collect-paste/run-shelf-toolbar.mjs   # 228/228 checks
 - 长时间运行、异常中断恢复、多 Agent 高并发、响应时间/内存/连接回收等性能数据：均未采集。
 - `bridge.rs` 新增的 `header_tokens_reject_control_characters` 未取得执行结果：本机可用物理内存降至 0.6–1.7 GB 时，针对性测试与 `cargo check` 多次 `rustc-LLVM ERROR: out of memory`（`m-mwj6sxij-2a6254.log`、`m-mwj6we95-738b85.log`、`m-mwj72ady-e61801.log`）；降低 debug 信息、关闭增量、单 job 后 `cargo check` 最终 exit 0；测试二进制也能编译，但以同一低内存配置启动时 `STATUS_ENTRYPOINT_NOT_FOUND`（0xc0000139，`m-mwj7etf7-66fa0e.log`），未进入断言，不能记作通过。
 - `npm run typecheck` 整体未通过（范围外文件错误），集成静态检查结论为“证据不足”，不冒充通过。
+## Rust 测试二进制 0xC0000139 的根因与可用跑法（2026-11-17）
+
+上文 2026-11-16 记录的 `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` 已定位到**加载期清单缺失**，
+与内存无关，也不是代码缺陷：
+
+- `rfd`（tauri-plugin-dialog 的 Windows 后端）静态导入 `comctl32!TaskDialogIndirect`，该导出只在
+  Common-Controls **v6** 中存在；测试 exe 不会继承主程序的 manifest，默认解析到
+  `System32\comctl32.dll`（v5.82，无此导出），进程在 `main` 之前即退出。
+- `src-tauri/build.rs` 的 `emit_test_manifest()` 已尝试用 `embed_resource::compile_for_tests` 嵌入
+  `tests-manifest.rc`，但在本机（VS 18 + Windows SDK 10.0.26100）未生效：清理重建后测试 exe 中
+  仍搜不到 `Common-Controls`。Windows 10+ 也**不再读取 exe 旁的外部 manifest**。
+- 可用跑法（只改构建产物，不改源码）：正常 `cargo test --lib --no-run` 编译后执行
+  `mt.exe -nologo -manifest tests.manifest "-outputresource:<test exe>;#1"`，再直接运行该 exe
+  （如 `<exe> recycle:: --test-threads=1`）。`mt.exe` 位于
+  `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\`。
+- 建议后续把 rc.exe 纳入构建脚本查找路径或在 CI 固定 `mt.exe` 步骤；在此之前，`cargo test`
+  直接跑仍会 0xc0000139，遇到时按上面的方式处理，不要记成测试失败。
+
+## 四模块后端可靠性补齐（2026-11-17）
+
+范围：剪贴板工作现场引用、项目布局与原子删除、文件任务取消及完整报告、回收站同步准入和空卷选择。
+只修改后端及 `bridge.ts` 的只读 IPC 契约，未接前端页面，未构建正式安装包。
+
+证据：`tmp/acceptance/backend-four-modules-20261117/`；调度任务/完整命令见该目录 report.md。
+工作目录为仓库根；Rust 编译由调度器切到 `src-tauri/`。测试运行使用测试 exe 的独立副本，
+仅为该副本嵌入已有 `tests.manifest`，保留原产物；全部测试仍经调度器准入。
+
+| 检查（通道 A） | 2026-11-17 实际结果 |
+|---|---|
+| 修复前新增 6 项回归 | 0 passed / 6 failed，均到达预期断言（red-executed-rerun.log，exit 101） |
+| 最终 Rust 测试编译 | `node scripts/build-sched.mjs cargo test --lib backend_continuation --no-run`，exit 0 |
+| 最终新增回归 | 10 passed / 0 failed（regression.log），包括真实临时文件复制、预检失败及并发同步准入 |
+| `clipboard::` | 253 passed / 0 failed / 1 ignored |
+| `commands::project_workspace::` | 12 passed / 0 failed |
+| `fsops::`（含 `shelf::fsops` 共享路径保护回归） | 27 passed / 0 failed |
+| `recycle::`（含同名匹配的共享回收路径测试） | 37 passed / 0 failed / 1 ignored |
+| `file_workspace::` | 51 passed / 0 failed |
+| TypeScript | `build-sched run --class light --label backend-four-types -- npm run typecheck`，exit 0 |
+| `git diff --check` | exit 0；暂存区未修改 |
+
+以上套件含重复执行的新增用例，不能把各行相加当作唯一用例数。忽略项不计通过。
+首轮普通 cargo test 因 0xc0000139 未进入断言；补 manifest 后的运行结果单独保留，
+不能把首次环境失败写成通过。正式集成快照/安装包、原生回收站还原/清空、系统剪贴板、
+4 万/10 万条压测和前端完整业务旅程均未执行；整体结论为**部分通过**。
+
+### 同日第二轮：功能补齐及 v69 关联表验证
+
+当前结果以 `tmp/acceptance/backend-four-modules-20261117/round2-report.md` 与
+`backend-checklist.md` 为准。首轮“无迁移/批量重命名仍未纳入任务”等为历史状态。
+
+新增：复制/移动逐项进度与条目间取消、重命名任务、项目资源关联 v69 与进度读模型、
+多选粘贴失效项/跳过计数、扫描枚举取消与失败不删旧索引、递归复制完整性与零预算保护。
+
+最终编译 `m-mwkrzohw-1fa617` exit 0；执行 `m-mwks2nzs-4f14b6` exit 0，日志
+`round2-final-compile-with-budget.log` / `round2-final-regression.log`。
+TypeScript `l-mwks2vty-f61526` exit 0（`round2-final-types.log`）。
+
+| 过滤范围 | passed / failed / ignored |
+|---|---|
+| 第二轮新增回归（含完整/快速备份往返） | 12 / 0 / 0 |
+| 首轮新增回归在新代码上重跑 | 10 / 0 / 0 |
+| clipboard:: | 254 / 0 / 1 |
+| commands::project_workspace:: | 13 / 0 / 0 |
+| commands::workspace_resources:: | 3 / 0 / 0 |
+| fsops::（包含 shelf::fsops） | 28 / 0 / 0 |
+| recycle::（包含同名共享回收路径） | 38 / 0 / 1 |
+| file_workspace:: | 55 / 0 / 0 |
+| 每个历史 schema v1…v69 升级且保留旧行 | 1 / 0 / 0（循环逐版本，49.96s） |
+| 备份登记覆盖每张 schema 表 | 1 / 0 / 0 |
+
+套件有重复，不求和为唯一用例数。受控临时文件与真实 junction 测试通过；现有文件工作区
+套件会对自建临时链接调用系统回收站删除原语，不能因此宣称回收站页面/用户资料原生完整
+旅程通过。本轮未还原/清空用户既有回收站条目，未执行系统剪贴板真实目标应用粘贴。
+前端入口、正式集成安装包、原生联合旅程及大数据压测仍未完成，整体仍为**部分通过**。
+
+### 2026-11-18 前端接线复测与文件复制取消
+
+证据目录为 `tmp/acceptance/four-modules-20261118/`，命令与边界见该目录 `report.md`。
+当前前端接线在 Vitest 中 61 文件、710 项通过（调度任务 `m-mwlhtp7v-40fc80`），
+TypeScript 类型检查退出 0（`l-mwlhzsow-0c1a6f`）。
+
+Rust 回归使用本轮编译的测试副本（`m-mwlhzsn3-dc9e3a` 编译成功，`m-mwli4g8e-10bbbe` 执行退出 0）。
+两项新增回归实测 Windows 复制回调取消，以及复制期间出现同名目标时原目标、源和暂存清理的结果。
+文件工作区 57、文件任务相关 28、剪贴板 254、项目空间 13、项目资源 3、回收站相关 38 项
+通过，各套件均无失败，两个忽略项不计通过。新增文件测试已包含在文件工作区套件。
+本轮为受控文件系统和逻辑验证。真实 WebView2 联合交互、真实剪贴板粘贴、原生回收站
+还原与清空、安装包和大数据压测未执行，整体**部分通过**。
+
+### 2026-11-18 同日原生抽验与真实回收站规模测量
+
+补充当日自动化记录。当前共享工作树 debug 免安装构建 `h-mwlica6e-032e6e` 在隔离
+WebView2 实例复核四个入口。项目资源写入、读回、解除及文件复制、移动、重命名通过。
+真实回收站两卷扫描、查询、前两页非重复及自建文件恢复通过。恢复前共索引
+179,844 条，流程约 4 分 45 秒，含翻页和恢复。恢复后热查询每场景 10 个样本，
+首页含统计 IPC p95 1.36 s、偏移 100,000 的深页 0.86 s、按大小排序 54 ms、
+无命中子串查询 1.52 s。真机剪贴板实际粘贴、现有回收站数据的删除、安装升级未验，
+整体验收仍为**部分通过**。构建指纹、计数、命令与查询计划见
+`tmp/acceptance/four-modules-native-20261118/report.md`。
+
+### 2026-11-18 四模块复验与回收站修复
+
+共享工作树 debug 免安装构建 `h-mwljexpg-919f03` 联合复验通过。相关前端用例 942 项、定向
+Rust 用例 396 项通过。另有 3 项 Windows 剪贴板实测通过，覆盖格式回读、写入失败恢复和目标窗口预检。
+真实 WebView2 验证项目事项进度、状态读回和归档拒写，文件复制、移动、重命名及冲突跳过，
+回收站搜索、翻页和清空确认保护。自建文件经 Shell 还原后同步未出现旧条目，再次入桶和单条永久删除通过。
+
+同机复测索引 179,849 条，两卷，50 条每页，每场景 10 次热查询。首页含统计、偏移 100,000、
+按大小排序、无命中子串的 IPC p95 分别为 116、51、37、214 ms。以上为查询延迟，完整磁盘扫描另计。
+验收为**部分通过**，整卷实际清空、第三方应用原生粘贴、跨应用物理拖放和安装升级待验。
+构建身份、原始日志与影响范围见 `tmp/acceptance/four-modules-full-20261118/report.md`。
+
+### 2026-11-18 剩余原生场景复验
+
+复用前一轮二进制，另开隔离数据目录。跨应用原生拖入通过：独立 WinForms 源以 OLE 拖入
+自建文件夹打开空窗格，再将自建文件拖入已打开的目录，目标与源 SHA-256 相同，源文件保留。
+另有 124 项受控 OLE 及相关回归通过。文件工作区向外部应用拖出未实现，上一轮待验项按实际范围更正。
+第三方粘贴因剪贴板含无法保证完整复原的私有格式中止于写入前。整卷清空待独立测试卷，安装升级待
+当前改动的集成安装包与隔离环境。历史 MSI/NSIS 校验只证明对应产物完整。证据见
+`tmp/acceptance/four-modules-native-followup-20261118/report.md`。
+
+### 2026-11-18 文件拖出、悬停和清空复验
+
+文件工作区将普通文件用 Windows OLE 拖出到独立窗口通过，副本 SHA-256 一致且源文件保留。
+真实 WebView2 浅色、深色下悬停与选中样式通过。窗口指针捕获延迟 `pointerleave` 的回归已覆盖，
+34 个文件的 331 项定向用例全通过。最终免安装调试构建 `h-mwlkwhwg-fe6ec5` 再次验过拖出。
+真实清空任务中 C 盘返回 Shell 失败，但独立系统查询项目和容量均为零，修复后同盘任务成功。
+D 盘原生调用超过 15 分钟未返回，应用清空未通过该卷的真实规模验收。证据见
+`tmp/acceptance/file-drag-hover-and-empty-20261118/report.md`。
+
+### 2026-11-18 D 盘清空取消续验
+
+独立 STA 进程直接调用 Windows 清空接口，488 秒未返回。D 盘逐项永久删除样本 40 项通过，
+约 24.5 秒。最终免安装调试构建 `h-mwltqm0s-6edf0d` 在真实 D 盘启动清空后，约 130 毫秒内
+返回已取消，确认原生子进程退出，保留索引。回收站及关联 Windows 辅助测试 9 项通过。
+整卷清空仍未完成。第三方应用接收粘贴由用户确认正常。证据见
+`tmp/acceptance/recycle-empty-resume-20261118/report.md`。
+
+### 2026-11-18 大回收站批处理优化
+
+在 D 盘对应的真实回收站上，对照三组各 4,000 条、负载接近的样本。每 1,000 条串行约 38.21 秒，
+4,000 条单批串行约 36.79 秒，双 STA 线程各以 1,000 条为批约 22.54 秒。三组都回读确认删除完成。
+最终双线程版本清理余量后，Windows 系统独立返回 D 盘回收站 0 项、0 字节，磁盘配对计数也为零。
+重新同步仅保留 1 条原本就缺少元数据的不可恢复孤立载荷诊断。独立程序直接编译生产回收站模块，定向
+测试 36 项通过、1 个默认忽略。共享工作树整应用构建受其他模块编译错误阻塞。证据见
+`tmp/acceptance/recycle-batch-shell-20261118/report.md`。

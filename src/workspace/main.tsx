@@ -12,6 +12,7 @@ import "../components/global-search/global-search.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import ErrorBoundary from "../components/ErrorBoundary";
+import { bootFail, bootStage } from "../boot/bootProtocol";
 import { initLocale } from "../i18n";
 import { setWindowHostRole } from "../lib/windowHost";
 import { installNativeDragBridge } from "../lib/dragCursorSession";
@@ -38,15 +39,31 @@ try {
 }
 initLocale();
 
+// 启动协议阶段信号（docs/boot/README.md §3）：本窗口与主窗口共用同一份
+// public/boot/boot-watchdog.js。workspace.html 的静态占位先于本模块执行，
+// 因此即使模块图加载慢/失败，工作台窗口也不会是纯白页。
+bootStage("modules");
+
 // 窗口级圆角/边框：CSS 弧与 Win32 区域同源（读当前预设的 --radius-window
 // 下发给 Rust），并同步最大化状态。首帧前注册，启动门与外壳共用同一规则。
 const stopWindowFrame = initWorkbenchWindowFrame();
 window.addEventListener("pagehide", stopWindowFrame, { once: true });
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <ErrorBoundary scope="统一工作台">
-      <WorkspaceApp />
-    </ErrorBoundary>
-  </StrictMode>,
-);
+try {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <ErrorBoundary scope="统一工作台">
+        <WorkspaceApp />
+      </ErrorBoundary>
+    </StrictMode>,
+  );
+} catch (e) {
+  // createRoot/render 同步抛错：React 无法接管，按协议 §3 通知看门狗进入 error 态
+  // （写一次 UI_BOOT_FATAL），随后原样抛出交给全局错误处理，不吞异常。
+  bootFail({
+    stage: "mounted",
+    message: e instanceof Error ? e.message : String(e),
+  });
+  throw e;
+}
+bootStage("mounted");

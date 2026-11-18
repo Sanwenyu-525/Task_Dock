@@ -19,7 +19,7 @@ use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
 /// 支持的搜索分类（前端分类筛选与后端一一对应）。
-pub const CATEGORIES: [&str; 10] = [
+pub const CATEGORIES: [&str; 11] = [
     "tasks",
     "clipboard",
     "capture",
@@ -31,6 +31,8 @@ pub const CATEGORIES: [&str; 10] = [
     "notes",
     // 生活效率系统 v1：商品购买历史、生活事件、票据。
     "life",
+    // 知识与 AI 能力中心：已索引的知识文档。
+    "knowledge",
 ];
 
 /// 每类默认返回条数（任务书性能要求）。
@@ -906,6 +908,62 @@ fn search_notes(conn: &Connection, q: &str, limit: i64) -> AppResult<Vec<Candida
 
 // ── 入口 ────────────────────────────────────────────────────
 
+/// 知识库文档：只搜已索引文档，返回文档级摘要与知识库来源。
+fn search_knowledge(
+    conn: &Connection,
+    q: &str,
+    pat: &str,
+    limit: i64,
+) -> AppResult<Vec<Candidate>> {
+    let mut stmt = conn.prepare(
+        "SELECT d.id, d.kb_id, d.title, d.source_kind, d.source_path, \
+                substr(d.content, 1, 400), d.updated_at, kb.name \
+         FROM knowledge_documents d JOIN knowledge_bases kb ON kb.id = d.kb_id \
+         WHERE d.status = 'indexed' \
+           AND (d.title LIKE ?1 ESCAPE '\\' OR d.content LIKE ?1 ESCAPE '\\') \
+         ORDER BY d.updated_at DESC, d.id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![pat, limit], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, String>(7)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, kb_id, title, source_kind, source_path, content, updated_at, kb_name) = row?;
+        let rank = rank_match(q, &title, &content);
+        let mut subtitle = format!("知识库：{kb_name} · {source_kind}");
+        if let Some(path) = &source_path {
+            subtitle.push_str(" · ");
+            subtitle.push_str(path);
+        }
+        out.push((
+            rank,
+            GlobalSearchResult {
+                id: id.clone(),
+                category: "knowledge".into(),
+                kind: source_kind,
+                title: truncate(&title, TITLE_MAX_CHARS),
+                subtitle: truncate(&subtitle, SNIPPET_MAX_CHARS),
+                snippet: truncate(content.trim(), SNIPPET_MAX_CHARS),
+                occurred_at: Some(updated_at),
+                status: None,
+                priority: None,
+                target_id: Some(id),
+                parent_id: Some(kb_id),
+            },
+        ));
+    }
+    Ok(out)
+}
+
 /// 生活效率系统 v1：商品（含最近购买/次数）、生活事件、票据名称。
 ///
 /// 只查有效记录（`deleted_at IS NULL`），参数化 LIKE 并限制每类条数；
@@ -1180,6 +1238,9 @@ pub fn run_search(
         }
         if want("life") {
             push("life", search_life(conn, &query, &pat, sql_limit))?;
+        }
+        if want("knowledge") {
+            push("knowledge", search_knowledge(conn, &query, &pat, sql_limit))?;
         }
         Ok(())
     })?;
@@ -1684,5 +1745,39 @@ mod tests {
         // 宽松上限：LIKE 扫描在 23k 行内不应接近秒级（防退化失控；非严格 SLA）。
         assert!(hit_ms < 2000, "命中查询 {hit_ms} ms 超出宽松上限");
         assert!(miss_ms < 2000, "空结果查询 {miss_ms} ms 超出宽松上限");
+    }
+
+    #[test]
+    fn knowledge_documents_are_searchable_with_kb_source() {
+        let (dir, db) = temp_db("knowledge");
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO knowledge_bases(id,name,description,kind,created_at,updated_at)
+                 VALUES('kb1','小说设定','','personal','2026-11-18T00:00:00Z','2026-11-18T00:00:00Z')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO knowledge_documents
+                 (id,kb_id,title,source_kind,source_mode,source_path,content,content_hash,status,chunk_count,created_at,updated_at)
+                 VALUES('kd1','kb1','人物设定','file','reference','C:/docs/人物.md','林深是旧城线的核心人物。','h1','indexed',1,'2026-11-18T00:00:00Z','2026-11-18T00:00:00Z')",
+                [],
+            )?;
+            Ok::<_, AppError>(())
+        })
+        .unwrap();
+        let response = run_search(&db, "林深", &["knowledge".into()], 6).unwrap();
+        let group = response
+            .groups
+            .iter()
+            .find(|g| g.category == "knowledge")
+            .expect("应返回知识分组");
+        assert_eq!(group.items.len(), 1);
+        assert_eq!(group.items[0].id, "kd1");
+        assert_eq!(group.items[0].parent_id.as_deref(), Some("kb1"));
+        assert!(group.items[0].subtitle.contains("小说设定"));
+        // 未命中时不应出现空分组。
+        let none = run_search(&db, "不存在词xyzzy", &["knowledge".into()], 6).unwrap();
+        assert!(none.groups.is_empty());
+        std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -50,3 +50,54 @@ CREATE TABLE mcp_workspace_roots (
 CREATE INDEX idx_mcp_workspace_roots_agent ON mcp_workspace_roots(agent_row_id);
 "#,
 );
+
+/// 迁移 75：能力白名单追加 `skills.read`（Agent 读取适用 Skill）。
+///
+/// 与 v73 同一策略：重建表保留主键、外键、唯一键与索引，旧授权原样复制。
+pub const MIGRATION_75: (i64, &str) = (
+    75,
+    r#"
+CREATE TABLE mcp_agent_capabilities_v75 (
+  id TEXT PRIMARY KEY NOT NULL,
+  agent_row_id TEXT NOT NULL REFERENCES mcp_agents(id) ON DELETE CASCADE,
+  capability TEXT NOT NULL CHECK (capability IN (
+    'tasks.read','tasks.write','notes.read','notes.write','workflows.read','workspace.read',
+    'knowledge.read','skills.read'
+  )),
+  resource_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (agent_row_id, capability, resource_id)
+);
+INSERT INTO mcp_agent_capabilities_v75(id, agent_row_id, capability, resource_id, created_at)
+SELECT id, agent_row_id, capability, resource_id, created_at FROM mcp_agent_capabilities;
+DROP TABLE mcp_agent_capabilities;
+ALTER TABLE mcp_agent_capabilities_v75 RENAME TO mcp_agent_capabilities;
+CREATE INDEX idx_mcp_caps_agent ON mcp_agent_capabilities(agent_row_id, capability);
+"#,
+);
+
+/// 迁移 73：扩展能力白名单（v72 能力中心新增 `knowledge.read`）。
+///
+/// SQLite 不支持修改 CHECK 约束，只能重建表；保留主键、外键、唯一键与索引。
+/// 旧数据原样复制，不改变任何既有授权。
+pub const MIGRATION_73: (i64, &str) = (
+    73,
+    r#"
+CREATE TABLE mcp_agent_capabilities_v73 (
+  id TEXT PRIMARY KEY NOT NULL,
+  agent_row_id TEXT NOT NULL REFERENCES mcp_agents(id) ON DELETE CASCADE,
+  capability TEXT NOT NULL CHECK (capability IN (
+    'tasks.read','tasks.write','notes.read','notes.write','workflows.read','workspace.read',
+    'knowledge.read'
+  )),
+  resource_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  UNIQUE (agent_row_id, capability, resource_id)
+);
+INSERT INTO mcp_agent_capabilities_v73(id, agent_row_id, capability, resource_id, created_at)
+SELECT id, agent_row_id, capability, resource_id, created_at FROM mcp_agent_capabilities;
+DROP TABLE mcp_agent_capabilities;
+ALTER TABLE mcp_agent_capabilities_v73 RENAME TO mcp_agent_capabilities;
+CREATE INDEX idx_mcp_caps_agent ON mcp_agent_capabilities(agent_row_id, capability);
+"#,
+);

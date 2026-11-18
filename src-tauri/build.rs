@@ -54,6 +54,14 @@ fn emit_build_info() {
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=TASK_DOCK_GIT_COMMIT={commit}");
 
+    // 完整 commit 与短 commit 同源、同一次 build.rs 采集：详情弹窗要能区分
+    // 「短号用于一行展示」与「40 位完整号用于追溯」。git 不可用时两者都为
+    // unknown，前端不得用运行期 rev-parse 补造。
+    let commit_full = git_output(&repo_root, &["rev-parse", "HEAD"])
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=TASK_DOCK_GIT_COMMIT_FULL={commit_full}");
+
     // 轻量 dirty 标记：只表示构建时是否存在未提交的已跟踪修改
     //（未跟踪文件不计入，避免 .screenshots/ 等长期未跟踪项恒为脏）。
     // 不做全仓哈希；git 不可用时报 unknown，不误判为干净。

@@ -237,6 +237,38 @@ describe("searchWorkspace 分页完整性", () => {
     expect(result.hits.map((hit) => hit.entry.name)).toEqual(["visible.txt"]);
     expect(result.complete).toBe(true);
   });
+
+  it("includeHidden=true 时透传后端并保留隐藏项", async () => {
+    list.mockResolvedValue(
+      page([entry("visible.txt", "file", 10, "text"), entry("secret.txt", "file", 10, "text", true)], 2, false),
+    );
+    const result = await searchWorkspace(
+      [{ paneId: "p1", label: "A", path: "D:\\a" }],
+      baseOpts({ includeHidden: true }),
+    );
+    expect(list).toHaveBeenCalledWith("D:\\a", true, 0);
+    expect(result.hits.map((hit) => hit.entry.name)).toEqual(["visible.txt", "secret.txt"]);
+  });
+
+  it("minSize/maxSize 过滤文件，目录不受大小限制", async () => {
+    list.mockResolvedValue(
+      page(
+        [
+          entry("dir", "dir", 0, "folder"),
+          entry("small.txt", "file", 5, "text"),
+          entry("mid.txt", "file", 50, "text"),
+          entry("large.txt", "file", 500, "text"),
+        ],
+        4,
+        false,
+      ),
+    );
+    const result = await searchWorkspace(
+      [{ paneId: "p1", label: "A", path: "D:\\a" }],
+      baseOpts({ minSize: 10, maxSize: 100 }),
+    );
+    expect(result.hits.map((hit) => hit.entry.name)).toEqual(["dir", "mid.txt"]);
+  });
 });
 
 describe("collectWorkspaceFiles 失败目录透传", () => {

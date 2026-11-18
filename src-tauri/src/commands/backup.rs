@@ -153,6 +153,7 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "workspace_instances",
     "workspace_items",
     "workspace_task_links",
+    "workspace_resource_links",
     // 小说卷/章（v58）：卷 → 章；章正文是用户创作内容，快速备份也全量保存。
     "novel_volumes",
     "novel_chapters",
@@ -189,6 +190,38 @@ pub const EXTENDED_TABLES: &[&str] = &[
     "life_events",
     "life_event_items",
     "life_document_links",
+    // Windows 回收站索引（v68）：可从真实回收站重建的本机缓存，
+    // 备份只保留空 section（is_local_transient_table 跳过），避免 10 万级
+    // 索引把快速备份撑大；恢复后由后台同步自动重建。
+    "recycle_index",
+    "recycle_volume_state",
+    "recycle_restored_metadata",
+    // 知识与 AI 能力中心（v72）：知识库 → 文档 → 分块/关联，Skill，外部 MCP，
+    // 上下文与配方（依赖顺序：父表在前）。
+    "knowledge_bases",
+    "knowledge_documents",
+    "knowledge_chunks",
+    "knowledge_links",
+    "capability_skills",
+    "external_mcp_servers",
+    "external_mcp_confirmed_tools",
+    "external_mcp_calls",
+    "capability_contexts",
+    "capability_recipes",
+    "capability_recipe_runs",
+    // Agent 共享工作空间（v76）：工作空间注册 → 文件索引 → 版本/决策/交接/报告/日志。
+    // 依赖顺序：agent_workspaces 在 agent_workspace_files / agent_sync_conflicts 之前。
+    "agent_workspaces",
+    "agent_workspace_files",
+    "agent_resource_revisions",
+    "agent_decisions",
+    "agent_handoffs",
+    "agent_work_reports",
+    "agent_activity_logs",
+    "agent_sync_events",
+    "agent_sync_conflicts",
+    "agent_context_access_logs",
+    "agent_request_cache",
 ];
 
 /// 引入规划中心之前的扩展表集合（v0.7 前的备份没有 registry 头时按此校验完整性，
@@ -634,8 +667,9 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
         &["workspace_projects", "tasks"],
         true
     ),
-    // 暂存条目 ↔ 项目关联（v51）：只存关系，不复制项目/条目内容；
-    // 恢复必须晚于 workspace_projects 与 shelf_items。
+    // 项目级资源弱关联（v69）：目标仍由原模块/外部目录持有，恢复只依赖项目。
+    rule!("workspace_resource_links", "core", "all", 451, &["workspace_projects"], true),
+    // 暂存条目 ↔ 项目关联（v51）：恢复必须晚于 workspace_projects 与 shelf_items。
     rule!(
         "shelf_project_links",
         "shelf",
@@ -784,6 +818,151 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     // 探测快照是本机瞬时事实（分支 / dirty / worktree），跨机恢复无意义，
     // 但仍在 registry 中登记以满足 schema 覆盖测试。
     rule!("dws_workspace_probes", "devwork", "all", 702, &[], true),
+    // 回收站索引（v68）：本机缓存，可从真实回收站重建；登记以满足 schema 覆盖，
+    // 导出时按 is_local_transient_table 只写空 section，不进入任何备份。
+    rule!("recycle_index", "cache", "none", 9000, &[], true),
+    rule!("recycle_restored_metadata", "cache", "none", 9002, &[], true),
+    rule!(
+        "recycle_volume_state",
+        "cache",
+        "none",
+        9010,
+        &["recycle_index"],
+        true
+    ),
+    // 知识与 AI 能力中心（v72）。知识正文与分块属于用户资料，全量备份；
+    // 外部 MCP 环境变量以 DPAPI 密文存储，恢复后仅当前用户可解密。
+    rule!(
+        "knowledge_bases",
+        "core",
+        "all",
+        720,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "knowledge_documents",
+        "core",
+        "all",
+        722,
+        &["knowledge_bases"],
+        true
+    ),
+    rule!(
+        "knowledge_chunks",
+        "core",
+        "all",
+        724,
+        &["knowledge_documents"],
+        true
+    ),
+    rule!(
+        "knowledge_links",
+        "core",
+        "all",
+        726,
+        &["knowledge_documents"],
+        true
+    ),
+    rule!(
+        "capability_skills",
+        "core",
+        "all",
+        728,
+        &["workspace_projects"],
+        true
+    ),
+    rule!("external_mcp_servers", "core", "all", 730, &[], true),
+    rule!(
+        "external_mcp_confirmed_tools",
+        "core",
+        "all",
+        731,
+        &["external_mcp_servers"],
+        true
+    ),
+    rule!(
+        "external_mcp_calls",
+        "core",
+        "recent",
+        732,
+        &["external_mcp_servers"],
+        true
+    ),
+    rule!(
+        "capability_contexts",
+        "core",
+        "all",
+        734,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "capability_recipes",
+        "core",
+        "all",
+        736,
+        &["workspace_projects"],
+        true
+    ),
+    rule!(
+        "capability_recipe_runs",
+        "core",
+        "recent",
+        738,
+        &["capability_recipes"],
+        true
+    ),
+    // Agent 共享工作空间（v76）。运行期日志类按 recent 保留，配置与内容类按 all。
+    rule!("agent_workspaces", "core", "all", 740, &[], true),
+    rule!(
+        "agent_workspace_files",
+        "core",
+        "all",
+        742,
+        &["agent_workspaces"],
+        true
+    ),
+    rule!("agent_resource_revisions", "core", "all", 744, &[], true),
+    rule!("agent_decisions", "core", "all", 746, &[], true),
+    rule!("agent_handoffs", "core", "all", 748, &[], true),
+    rule!(
+        "agent_work_reports",
+        "core",
+        "all",
+        750,
+        &["agent_handoffs"],
+        true
+    ),
+    rule!("agent_activity_logs", "core", "recent", 752, &[], true),
+    rule!(
+        "agent_sync_events",
+        "core",
+        "recent",
+        754,
+        &["agent_workspaces"],
+        true
+    ),
+    rule!(
+        "agent_sync_conflicts",
+        "core",
+        "all",
+        756,
+        &["agent_workspaces"],
+        true
+    ),
+    rule!("agent_context_access_logs", "core", "recent", 758, &[], true),
+    rule!("agent_request_cache", "core", "recent", 760, &[], true),
+    // 协作中心（v77）：需求/Bug/方案/可视化/证据/审计。
+    rule!("collab_issues", "core", "all", 770, &["planning_projects"], false),
+    rule!("collab_issue_links", "core", "all", 772, &["collab_issues"], false),
+    rule!("collab_plans", "core", "all", 774, &["collab_issues"], false),
+    rule!("collab_plan_links", "core", "all", 776, &["collab_plans"], false),
+    rule!("collab_visual_docs", "core", "all", 778, &["collab_plans"], false),
+    rule!("collab_visual_versions", "core", "all", 780, &["collab_visual_docs"], false),
+    rule!("collab_evidence", "core", "all", 782, &[], true),
+    rule!("collab_ai_jobs", "core", "recent", 784, &["collab_plans", "collab_visual_docs"], true),
+    rule!("collab_audit", "core", "recent", 786, &[], true),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {
@@ -804,7 +983,16 @@ pub fn is_local_transient_table(table: &str) -> bool {
     // 指向不存在路径的记录；按本机瞬时状态处理。
     matches!(
         table,
-        "shelf_file_ops" | "shelf_trash" | "mobile_devices" | "sync_changes" | "sync_ops" | "mobile_files"
+        "shelf_file_ops"
+            | "shelf_trash"
+            | "mobile_devices"
+            | "sync_changes"
+            | "sync_ops"
+            | "mobile_files"
+            // 回收站索引是本机缓存：真实数据在系统回收站，绝不需要跨机迁移。
+            | "recycle_index"
+            | "recycle_volume_state"
+            | "recycle_restored_metadata"
     )
 }
 
@@ -1110,6 +1298,7 @@ fn generic_sql(table: &str, kind: BackupKind) -> AppResult<String> {
         | "workspace_instances"
         | "workspace_items"
         | "workspace_task_links"
+        | "workspace_resource_links"
         // 小说卷/章（v58）：用户创作内容，快速备份也必须全量保存（不截断正文）。
         | "novel_volumes"
         | "novel_chapters"
@@ -3704,6 +3893,27 @@ mod tests {
     }
 
     /// 小说项目（v57 / 创作工作台 A 阶段）：`novel` 不得被备份过滤。
+    #[test]
+    fn backend_round2_workspace_resources_roundtrip_full_and_quick() {
+        use crate::commands::{project_workspace as projects, workspace_resources as resources};
+        let db = memdb();
+        let project = projects::workspace_project_save_impl(&db, None, "resources".into(), "general".into(), None, None, None).unwrap();
+        let link = resources::save_impl(&db, &project.id, "artifact", "C:\\resource-backup-fixture\\output.txt", "output", "reference only").unwrap();
+        for kind in [BackupKind::Full, BackupKind::Quick] {
+            let (_, read, dir) = write_then_read(&db, kind);
+            assert_eq!(spilled_rows(&read, "workspace_resource_links").len(), 1);
+            let restored = memdb();
+            import_read(&restored, &read).unwrap();
+            let page = resources::list_impl(&restored, &project.id, None, 0, 50).unwrap();
+            assert_eq!(page.total, 1);
+            assert_eq!(page.links[0].id, link.id);
+            assert_eq!(page.links[0].target, link.target);
+            assert_eq!(page.links[0].note, "reference only");
+            assert!(dir.starts_with(std::env::temp_dir()));
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     /// 完整与快速备份都必须包含项目、窗口实例、写作事项与任务关联；
     /// 恢复到全新库后类型仍是 novel，计数与布局原样还原。
     #[test]

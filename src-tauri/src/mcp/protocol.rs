@@ -74,6 +74,16 @@ pub fn handle_request_value(
     body: &Value,
     call_tool: &dyn Fn(&str, &Value) -> Result<Value, bridge::ToolRpcError>,
 ) -> Option<Value> {
+    handle_request_value_with(body, call_tool, None)
+}
+
+/// `extras` 处理 `resources/*` 与 `prompts/*`：由 bridge 注入（需要 DB 与身份）；
+/// 旧调用方传 `None` 时这些方法按 METHOD_NOT_FOUND 处理。
+pub fn handle_request_value_with(
+    body: &Value,
+    call_tool: &dyn Fn(&str, &Value) -> Result<Value, bridge::ToolRpcError>,
+    extras: Option<&dyn Fn(&str, &Value) -> Result<Value, bridge::ToolRpcError>>,
+) -> Option<Value> {
     let obj = match body.as_object() {
         Some(o) => o,
         None => return Some(error(Value::Null, INVALID_REQUEST, "请求必须是 JSON 对象")),
@@ -101,7 +111,11 @@ pub fn handle_request_value(
                 id,
                 json!({
                     "protocolVersion": negotiated_version(client_version),
-                    "capabilities": { "tools": { "listChanged": false } },
+                    "capabilities": {
+                        "tools": { "listChanged": false },
+                        "resources": { "listChanged": false, "subscribe": false },
+                        "prompts": { "listChanged": false }
+                    },
                     "serverInfo": {
                         "name": "task-dock",
                         "version": env!("CARGO_PKG_VERSION"),
@@ -148,6 +162,19 @@ pub fn handle_request_value(
                 }
             };
             Some(match call_tool(name, &args) {
+                Ok(result) => success(id, result),
+                Err(e) => error_with_data(id, e.code, &e.message, e.data),
+            })
+        }
+        "resources/list" | "resources/read" | "prompts/list" | "prompts/get" => {
+            let Some(handler) = extras else {
+                return Some(error(
+                    id,
+                    METHOD_NOT_FOUND,
+                    &format!("不支持的方法: {method}"),
+                ));
+            };
+            Some(match handler(method, &params) {
                 Ok(result) => success(id, result),
                 Err(e) => error_with_data(id, e.code, &e.message, e.data),
             })

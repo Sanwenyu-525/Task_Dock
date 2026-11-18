@@ -31,6 +31,11 @@ const ALLOWED_KEYS: &[&str] = &[
     "http_port",
     // Agent MCP Server（v37）：外部 MCP 客户端 loopback bridge 开关，默认关闭
     "mcp_server_enabled",
+    // Agent 共享工作空间（v76）：目录、文件监听、本地 REST 开关与端口
+    "agent_workspace_path",
+    "agent_workspace_watch_enabled",
+    "agent_api_enabled",
+    "agent_api_port",
     // 手机接入（v0.16）：局域网配对与连接；默认关闭
     "mobile_sync_enabled",
     "mobile_sync_port",
@@ -211,6 +216,8 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         | "hotkey_enabled"
         | "http_enabled"
         | "mcp_server_enabled"
+        | "agent_workspace_watch_enabled"
+        | "agent_api_enabled"
         | "mobile_sync_enabled"
         | "mock_enabled"
         | "notify_reminder"
@@ -288,6 +295,31 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
             }
             Ok(())
         }
+        // Agent 工作空间目录：留空 = 数据目录下默认位置；否则必须是绝对路径。
+        // 不做 canonicalize（目录可能尚未创建），但拒绝控制字符与超长路径。
+        "agent_workspace_path" => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| AppError::Validation("agent_workspace_path 必须是字符串".into()))?;
+            if s.chars().count() > 260 {
+                return Err(AppError::Validation(
+                    "agent_workspace_path 超过 260 字符".into(),
+                ));
+            }
+            if s.chars().any(|c| c.is_control()) {
+                return Err(AppError::Validation(
+                    "agent_workspace_path 含非法控制字符".into(),
+                ));
+            }
+            if !s.is_empty() && !std::path::Path::new(s).is_absolute() {
+                return Err(AppError::Validation(
+                    "agent_workspace_path 必须是绝对路径或留空".into(),
+                ));
+            }
+            Ok(())
+        }
+        // Agent REST 端口：与 http(47821)/手机接入(47822) 分段，仅本机监听。
+        "agent_api_port" => int_in_range(v, key, 1024, 65535),
         "http_port" => int_in_range(v, key, 1, 65535),
         // 手机接入端口与 Agent 接入端口分开；绑定失败由状态命令如实回传。
         "mobile_sync_port" => int_in_range(v, key, 1024, 65535),
@@ -621,6 +653,17 @@ pub fn update_settings(
             if let Some(runtime) = app.try_state::<Arc<crate::mcp::bridge::McpRuntimeStatus>>() {
                 runtime.inner().notify_settings_changed();
             }
+        }
+        if k == "agent_workspace_watch_enabled" || k == "agent_workspace_path" {
+            let arc: Arc<Db> = db.inner().clone();
+            let enabled = Settings::load(&db)
+                .map(|s| s.agent_workspace_watch_enabled)
+                .unwrap_or(false);
+            let _ = crate::agent_access::watch::apply(arc, enabled);
+        }
+        if k == "agent_api_enabled" || k == "agent_api_port" {
+            let arc: Arc<Db> = db.inner().clone();
+            let _ = crate::agent_access::rest::apply(arc);
         }
     }
     // 跨窗口同步：两个 WebView 不共享前端 store。只广播**键名**（不含值，

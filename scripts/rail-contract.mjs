@@ -42,6 +42,7 @@ export const RAIL_ONLY_TABS = Object.freeze([
   "apps",
   "widgets",
   "mobile",
+  "capability",
   "help",
   "diagnostics",
   "resource",
@@ -75,6 +76,8 @@ export const RAIL_ENTRIES = Object.freeze([
   { id: "workflows", label: "工作流", shortcut: "Ctrl+7" },
   { id: "history", label: "历史", shortcut: "Ctrl+8" },
   { id: "roadmap", label: "规划中心", shortcut: "Ctrl+9" },
+  // 能力中心：统一工作台内的知识与 AI 能力页面，不占 Ctrl+数字。
+  { id: "capability", label: "能力中心", shortcut: "", workbenchOnly: true },
   // 帮助中心：仅视觉入口（不占 Ctrl+数字），位于「设置」之前；默认隐藏
   { id: "help", label: "帮助", shortcut: "", defaultVisible: false },
   // 诊断中心：仅视觉入口、默认隐藏（显式标记 defaultVisible: false），

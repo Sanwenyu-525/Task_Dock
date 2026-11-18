@@ -42,6 +42,8 @@ import {
   GitCompare,
   ListChecks,
   Filter,
+  History,
+  Info,
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
@@ -51,7 +53,7 @@ import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
 import { copyText } from "../../lib/clipboard";
 import { isLogged, startOperation } from "../../lib/diagnostics";
-import { showFsOpOutcome } from "./fsOpFeedback";
+import { showFileJobOutcome } from "./fsOpFeedback";
 import {
   loadDir,
   loadMore,
@@ -62,9 +64,8 @@ import {
   type DirState,
 } from "../../lib/filesWorkspace/dirCache";
 import { formatSize, CATEGORY_LABEL } from "../../lib/filesWorkspace/fileMeta";
-import { basename, breadcrumbSegments, joinPath, normalizePath, parentOf } from "../../lib/filesWorkspace/pathUtils";
+import { basename, breadcrumbSegments, joinPath, normalizePath, parentOf, samePath } from "../../lib/filesWorkspace/pathUtils";
 import { filterTransferablePaths } from "../../lib/filesWorkspace/transfer";
-import { withFileOperationSlot } from "../../lib/filesWorkspace/operationQueue";
 import {
   mergeMarqueeSelection,
   moveFocusIndex,
@@ -87,25 +88,42 @@ import {
   type FwDropZone,
 } from "../../lib/filesWorkspace/interactions";
 import {
-  fsCopyPaths,
-  fsMovePaths,
-  fsDeletePaths,
+  fsDeleteJobStart,
   fsOpen,
+  fsOpenTerminal,
+  fsOpenWith,
   fsReveal,
+  fsShowProperties,
   fsStat,
   fsCreateDir,
   fsCreateFile,
   fsRename,
   shelfAddPaths,
   type FsEntry,
-  type FsOpReport,
   type FsStat,
 } from "../../lib/bridge";
+import { waitForFileJob } from "../../lib/filesWorkspace/fileJobs";
 import { useFilesWorkspaceStore, tabTitle, type FileFilter, type FolderTab } from "../../store/useFilesWorkspaceStore";
 import { useUiStore } from "../../store/useUiStore";
 
 const POLL_INTERVAL_MS = 4000;
 const DRAG_THRESHOLD_PX = 6;
+
+/** Windows 属性代码 → i18n 键；未知代码原样展示（后端只返回稳定代码）。 */
+const ATTRIBUTE_LABEL_KEYS = {
+  readonly: "fw.props.attr.readonly",
+  hidden: "fw.props.attr.hidden",
+  system: "fw.props.attr.system",
+  directory: "fw.props.attr.directory",
+  archive: "fw.props.attr.archive",
+  reparse: "fw.props.attr.reparse",
+  compressed: "fw.props.attr.compressed",
+  encrypted: "fw.props.attr.encrypted",
+  offline: "fw.props.attr.offline",
+  sparse: "fw.props.attr.sparse",
+  temporary: "fw.props.attr.temporary",
+  normal: "fw.props.attr.normal",
+} as const;
 
 interface Props {
   paneId: string;
@@ -351,6 +369,7 @@ export default function FilePane({
   const [filterOpen, setFilterOpen] = useState(false);
   const [dialogInput, setDialogInput] = useState("");
   const [propsData, setPropsData] = useState<FsStat | null>(null);
+  const [selectionInfoOpen, setSelectionInfoOpen] = useState(false);
   const [deletePermanent, setDeletePermanent] = useState(false);
   /** 键盘/鼠标焦点文件：允许「一个焦点 + 多个选中」；与 selection.paths 分离。 */
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
@@ -479,6 +498,34 @@ export default function FilePane({
     () => (selection?.paths ?? []).filter((p) => p.startsWith(dirPath)),
     [selection?.paths, dirPath],
   );
+
+  /** 当前目录内被选中的真实条目（用于多选摘要；被筛选隐藏的选中项仍计入）。 */
+  const selectedEntries = useMemo(() => {
+    const listing = dirState?.listing ?? [];
+    return listing.filter((entry) => selectedSet.has(joinPath(dirPath, entry.name)));
+  }, [dirState?.listing, selectedSet, dirPath]);
+
+  const selectionSummary = useMemo(() => {
+    let files = 0;
+    let dirs = 0;
+    let totalBytes = 0;
+    const types = new Map<string, number>();
+    for (const entry of selectedEntries) {
+      if (entry.kind === "dir") dirs += 1;
+      else {
+        files += 1;
+        totalBytes += entry.size ?? 0;
+      }
+      types.set(entry.category, (types.get(entry.category) ?? 0) + 1);
+    }
+    return {
+      count: selectedEntries.length,
+      files,
+      dirs,
+      totalBytes,
+      types: [...types.entries()].sort((a, b) => b[1] - a[1]),
+    };
+  }, [selectedEntries]);
 
   // 真实卷键预热：目录与选中项变化时批量取，拖拽默认效果只读缓存。
   useEffect(() => {
@@ -830,51 +877,6 @@ export default function FilePane({
     useFilesWorkspaceStore.getState().notifyDirsChanged(targets);
   }, []);
 
-  const doCopyTo = useCallback(
-    async (paths: string[], target: string): Promise<FsOpReport | null> => {
-      // 与拖拽路径同一套语义：前端生成 operation_id，Rust 写权威业务结果。
-      const op = startOperation("file", "workspace_copy", {
-        component: "文件工作区",
-        metadata: { count: paths.length },
-      });
-      try {
-        op.stage("ipc");
-        const report = await fsCopyPaths(paths, target, "rename", op.id);
-        refreshBoth([target, ...paths.map((p) => parentOf(p) ?? "").filter(Boolean)]);
-        showFsOpOutcome({ effect: "copy", report, t, showToast });
-        return report;
-      } catch (e) {
-        // IPC 抛错已由 `invokeCommand` 记录并 `markLogged`：只有未被归属的错误
-        // 才补一条终态，避免同一故障在诊断中心出现两条记录。
-        if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
-        showToast(errorMessage(e), { kind: "error" });
-        return null;
-      }
-    },
-    [refreshBoth, showToast, t],
-  );
-
-  const doMoveTo = useCallback(
-    async (paths: string[], target: string): Promise<FsOpReport | null> => {
-      const op = startOperation("file", "workspace_move", {
-        component: "文件工作区",
-        metadata: { count: paths.length },
-      });
-      try {
-        op.stage("ipc");
-        const report = await fsMovePaths(paths, target, "rename", op.id);
-        refreshBoth([target, ...paths.map((p) => parentOf(p) ?? "").filter(Boolean)]);
-        showFsOpOutcome({ effect: "move", report, t, showToast });
-        return report;
-      } catch (e) {
-        if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
-        showToast(errorMessage(e), { kind: "error" });
-        return null;
-      }
-    },
-    [refreshBoth, showToast, t],
-  );
-
   const doDelete = useCallback(
     async (paths: string[], permanent: boolean) => {
       const op = startOperation("file", "workspace_delete", {
@@ -882,15 +884,26 @@ export default function FilePane({
         metadata: { count: paths.length },
       });
       try {
-        op.stage("ipc");
-        const report = await withFileOperationSlot(() => fsDeletePaths(paths, permanent, op.id));
+        op.stage("job");
+        // 删除走统一任务服务：IPC 立即返回任务快照，进度/取消由
+        // `OperationQueueBar` 展示；这里等待终态只为刷新缓存与给出一句结果。
+        const job = await fsDeleteJobStart(paths, permanent, op.id);
+        const final = await waitForFileJob(job.id);
         refreshBoth(paths.map((p) => parentOf(p) ?? "").filter(Boolean));
-        showFsOpOutcome({
+        const result = showFileJobOutcome({
           effect: permanent ? "deletePermanent" : "deleteRecycle",
-          report,
+          job: final,
           t,
           showToast,
         });
+        if (result === "ok") {
+          op.success({ metadata: { total: job.total } });
+        } else {
+          op.fail(
+            { code: final?.failures[0]?.code ?? "FS_OP_CANCELLED", message: t("fw.queue.unfinished") },
+            { stage: "job", severity: "WARN" },
+          );
+        }
         store.getState().clearSelection(paneId);
       } catch (e) {
         if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
@@ -1139,6 +1152,16 @@ export default function FilePane({
         onSelect: () => void fsReveal(singlePath ?? joinPath(dirPath, entry.name)).catch(() => {}),
       });
       items.push({
+        key: "openWith",
+        label: t("fw.menu.openWith"),
+        onSelect: () => void fsOpenWith(singlePath ?? joinPath(dirPath, entry.name)).catch(() => {}),
+      });
+      items.push({
+        key: "terminal",
+        label: t("fw.menu.openTerminal"),
+        onSelect: () => void fsOpenTerminal(singlePath ?? joinPath(dirPath, entry.name)).catch(() => {}),
+      });
+      items.push({
         key: "preview",
         label: t("fw.menu.preview"),
         icon: <Eye size={13} />,
@@ -1183,7 +1206,7 @@ export default function FilePane({
         key: "copy",
         label: t("fw.menu.copy"),
         onSelect: () => {
-          setFwClipboard({ mode: "copy", paths: menuSelection });
+          setFwClipboard({ mode: "copy", paths: menuSelection, sourcePaneId: paneId });
           showToast(t("fw.report.clipCopy", { count: menuSelection.length }), { kind: "info" });
         },
       });
@@ -1191,7 +1214,7 @@ export default function FilePane({
         key: "cut",
         label: t("fw.menu.cut"),
         onSelect: () => {
-          setFwClipboard({ mode: "cut", paths: menuSelection });
+          setFwClipboard({ mode: "cut", paths: menuSelection, sourcePaneId: paneId });
           showToast(t("fw.report.clipCut", { count: menuSelection.length }), { kind: "info" });
         },
       });
@@ -1233,6 +1256,12 @@ export default function FilePane({
         label: t("fw.menu.props"),
         onSelect: () => void openProps(singlePath ?? joinPath(dirPath, entry.name)),
       });
+      items.push({
+        key: "nativeProps",
+        label: t("fw.menu.nativeProps"),
+        onSelect: () =>
+          void fsShowProperties(singlePath ?? joinPath(dirPath, entry.name)).catch(() => {}),
+      });
       return items;
     }
     // 空白处菜单：新建 / 粘贴 / 刷新 / 隐藏文件
@@ -1260,18 +1289,12 @@ export default function FilePane({
         onSelect: () => {
           const clip = getFwClipboard();
           if (clip && dirPath) {
-            // 剪切语义（P0）：部分失败只保留未完成项，失败不静默清空。
-            void (clip.mode === "copy" ? doCopyTo(clip.paths, dirPath) : doMoveTo(clip.paths, dirPath)).then((report) => {
-              if (clip.mode === "cut") {
-                // 失败与「部分完成」都视为源仍在：保留在剪切待办。
-                const pending = report
-                  ? report.entries
-                      .filter((r) => r.status === "failed" || r.status === "partial")
-                      .map((r) => r.source)
-                  : [...clip.paths];
-                setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
-              }
-            });
+            // 复制/移动、进度与剪切板收尾统一由面板执行；这里只交目标目录。
+            window.dispatchEvent(
+              new CustomEvent("taskdock-fw-transfer-to", {
+                detail: { targetDir: dirPath },
+              }),
+            );
           }
         },
       },
@@ -1527,6 +1550,47 @@ export default function FilePane({
           )}
         </div>
 
+        {/* 路径历史：地址栏最近跳转过的目录；与导航后退历史（FolderTab.history）不同，
+            这里记录的是用户实际访问过的路径，可一键回到。 */}
+        {recentDirs.length > 0 && (
+          <DropdownMenu
+            menuLabel={t("fw.pane.recentDirs")}
+            placement="bottom-start"
+            trigger={({ ref, expanded, onClick, onKeyDown }) => (
+              <button
+                ref={ref}
+                type="button"
+                className="fw-icon-btn"
+                aria-haspopup="menu"
+                aria-expanded={expanded}
+                aria-label={t("fw.pane.recentDirs")}
+                data-tip={t("fw.pane.recentDirs")}
+                onClick={onClick}
+                onKeyDown={onKeyDown}
+              >
+                <History size={13} aria-hidden="true" />
+              </button>
+            )}
+            items={[
+              ...recentDirs
+                .filter((path) => !samePath(path, dirPath))
+                .map((path) => ({
+                  key: path,
+                  label: basename(path) || path,
+                  description: path,
+                  onSelect: () => store.getState().openInPane(paneId, path, "replace"),
+                })),
+              { key: "sep-history", separator: true },
+              {
+                key: "clear-history",
+                label: t("common.clear"),
+                danger: true,
+                onSelect: () => store.getState().clearRecentDirs(),
+              },
+            ]}
+          />
+        )}
+
         <button
           type="button"
           className={`fw-icon-btn${(tab.filter ?? "all") !== "all" ? " is-on" : ""}`}
@@ -1727,6 +1791,18 @@ export default function FilePane({
             <ClipboardCopy size={13} aria-hidden="true" />
             <span>{t("fw.action.copyPath")}</span>
           </button>
+          {selectedPaths.length > 1 && (
+            <button
+              type="button"
+              className="fw-selection-btn"
+              aria-label={t("fw.props.selectionCount")}
+              onClick={() => setSelectionInfoOpen(true)}
+              data-tip={t("fw.props.selectionCount")}
+            >
+              <Info size={13} aria-hidden="true" />
+              <span>{t("fw.props.selectionCount")}</span>
+            </button>
+          )}
           <button
             type="button"
             className="fw-selection-btn"
@@ -2023,8 +2099,25 @@ export default function FilePane({
               <dd>{propsData.modifiedMs ? new Date(propsData.modifiedMs).toLocaleString() : "—"}</dd>
             </div>
             <div>
+              <dt>{t("fw.props.accessed")}</dt>
+              <dd>{propsData.accessedMs ? new Date(propsData.accessedMs).toLocaleString() : "—"}</dd>
+            </div>
+            <div>
               <dt>{t("fw.props.created")}</dt>
               <dd>{propsData.createdMs ? new Date(propsData.createdMs).toLocaleString() : "—"}</dd>
+            </div>
+            <div>
+              <dt>{t("fw.props.attributes")}</dt>
+              <dd>
+                {propsData.attributes.length > 0
+                  ? propsData.attributes
+                      .map((attr) => {
+                        const key = ATTRIBUTE_LABEL_KEYS[attr as keyof typeof ATTRIBUTE_LABEL_KEYS];
+                        return key ? t(key) : attr;
+                      })
+                      .join("、")
+                  : t("fw.props.attributesEmpty")}
+              </dd>
             </div>
             <div>
               <dt>{t("fw.props.path")}</dt>
@@ -2032,6 +2125,47 @@ export default function FilePane({
             </div>
           </dl>
         )}
+      </Dialog>
+
+      {/* 多选摘要：数量、总大小、文件/文件夹与类型分布；不逐项读取磁盘。 */}
+      <Dialog
+        open={selectionInfoOpen}
+        onClose={() => setSelectionInfoOpen(false)}
+        title={t("fw.props.selectionCount")}
+        size="sm"
+        ariaLabel={t("fw.props.selectionCount")}
+        footer={
+          <button type="button" className="btn" onClick={() => setSelectionInfoOpen(false)}>
+            {t("common.close")}
+          </button>
+        }
+      >
+        <dl className="fw-props">
+          <div>
+            <dt>{t("fw.props.selectionCount")}</dt>
+            <dd>{selectionSummary.count}</dd>
+          </div>
+          <div>
+            <dt>{t("fw.props.selectionSize")}</dt>
+            <dd>{formatSize(selectionSummary.totalBytes)}</dd>
+          </div>
+          <div>
+            <dt>{t("fw.props.selectionFiles")}</dt>
+            <dd>
+              {selectionSummary.files} / {selectionSummary.dirs}
+            </dd>
+          </div>
+          <div>
+            <dt>{t("fw.props.selectionTypes")}</dt>
+            <dd>
+              {selectionSummary.types.length > 0
+                ? selectionSummary.types
+                    .map(([category, count]) => `${CATEGORY_LABEL[category] ?? category} ${count}`)
+                    .join("、")
+                : "—"}
+            </dd>
+          </div>
+        </dl>
       </Dialog>
     </section>
   );

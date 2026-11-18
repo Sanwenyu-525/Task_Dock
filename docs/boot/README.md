@@ -12,7 +12,23 @@
 |---|---|---|
 | 看门狗（经典脚本） | `public/boot/boot-watchdog.js` | 状态机、计时器、错误捕获、诊断直写、恢复按钮接线（先于模块脚本执行） |
 | TS 镜像 | `src/boot/bootProtocol.ts` | React 侧类型化入口 `bootStage/bootReady/bootFail`（API 缺失 no-op 安全） |
-| 占位界面 | `index.html` | 主题提示读取器、四态 DOM/CSS、死人在场保险、role 翻转 |
+| 主窗占位界面 | `index.html` | 主题提示读取器、四态 DOM/CSS、死人在场保险、role 翻转 |
+| 工作台占位界面 | `workspace.html` | 同一份看门狗的第二个宿主：主题提示、四态 DOM/CSS、死人在场保险、role 翻转（2026-11-17 补） |
+
+### 1.1 工作台窗口（2026-11-17）
+
+工作台窗口（`workspace` label）由 Rust 隐藏创建，前端 8s 内未就绪会被强制显示
+（`project_workspace_window.rs` 的 `STARTUP_REVEAL_TIMEOUT`）。此前 `workspace.html`
+只有一个 `#root`，React 挂载前窗口是纯白，主线程被阻塞时用户只能看到标题栏的
+「(未响应)」，没有任何启动/超时提示。现按同一协议补齐：
+
+- 静态占位在模块脚本之前渲染「正在恢复工作台…」，4s 转「加载稍久」，15s 显示恢复卡
+  （继续等待 / 重新加载 / 复制诊断信息）；诊断记录同 §6。
+- 就绪判据：`WorkspaceApp` 在设置落定（`settings !== null || loadError !== null`）后
+  调用 `bootStage("settings")` + `bootReady()`；失败时外壳的 `wb-boot` 错误卡接管渲染。
+- 看门狗、20s 死人在场保险与 role 翻转规则与主窗口一致；工作台入口的 `main.tsx`
+  补 `bootStage("modules")` / `bootStage("mounted")` / 同步抛错 `bootFail`。
+
 
 ## 2. 状态机（`#boot-splash[data-state]`）
 

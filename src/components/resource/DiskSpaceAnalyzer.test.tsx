@@ -96,7 +96,7 @@ describe("DiskSpaceAnalyzer", () => {
     expect(screen.getByText("C:\\Temp\\alpha")).toBeTruthy();
   });
 
-  it("点击子目录进入下一层，返回上一级来自后端 parent", async () => {
+  it("点击子目录进入下一层，返回上一级复用会话缓存而不是重扫", async () => {
     render(<DiskSpaceAnalyzer defaultPath={"C:\\Temp"} />);
     fireEvent.click(screen.getByRole("button", { name: "resource.analysis.scan" }));
     const alpha = await screen.findByRole("button", { name: /analysisFolder.*alpha/ });
@@ -114,6 +114,20 @@ describe("DiskSpaceAnalyzer", () => {
 
     const up = await screen.findByRole("button", { name: "resource.analysis.up" });
     fireEvent.click(up);
+    // 会话缓存：返回上级不再走一遍磁盘，直接回到最近一次扫描结果。
+    await waitFor(() =>
+      expect(document.querySelector(".resource-analysis-scope-path")?.textContent).toBe(
+        "C:\\Temp",
+      ),
+    );
+    expect(mocks.analyze).toHaveBeenCalledTimes(2);
+    // 命中缓存必须标注，避免把旧结果伪装成刚扫描的。
+    expect(
+      await screen.findByText(/resource\.analysis\.cachedNote/, { exact: false }),
+    ).toBeTruthy();
+
+    // 显式「重新分析」永远绕过缓存。
+    fireEvent.click(screen.getByRole("button", { name: "resource.analysis.rescan" }));
     await waitFor(() => expect(mocks.analyze).toHaveBeenLastCalledWith("C:\\Temp"));
   });
 

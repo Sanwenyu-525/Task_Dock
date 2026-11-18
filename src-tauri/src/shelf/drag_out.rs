@@ -1,4 +1,4 @@
-//! 文件暂存架：系统级拖出（Windows OLE）。
+//! 文件暂存架与文件工作区：系统级拖出（Windows OLE）。
 //!
 //! 约束与边界：
 //! - `DoDragDrop` 必须在左键仍按下时、在 **UI 线程**（tao 已 `OleInitialize`
@@ -8,12 +8,11 @@
 //! - 数据对象由本模块自己实现 `IDataObject`，暴露 `CF_HDROP` 并接受
 //!   `IDragSourceHelper` 写入的 `DragImageBits`：只实现前者时资源管理器
 //!   不会显示跟随光标的文件“幽灵”图像。
-//! - 路径只来自库内 `shelf::resolve_item_file`，前端传不了任意路径。
+//! - 命令层解析暂存条目或校验文件工作区的绝对路径。
 //! - 托管副本只允许复制（移动会把内部副本移出托管目录，直接弄坏暂存记录）；
 //!   引用模式允许 Windows 默认的复制/移动语义。
 //! - 同一时刻只允许一个拖拽会话；`DoDragDrop` 返回后统一释放数据对象与 COM。
 
-#[cfg(not(windows))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -54,6 +53,22 @@ impl Drop for DragInFlightGuard {
     fn drop(&mut self) {
         DRAG_IN_FLIGHT.store(false, Ordering::SeqCst);
     }
+}
+
+pub async fn drag_on_main_thread(
+    app: &tauri::AppHandle,
+    paths: Vec<PathBuf>,
+    allow_move: bool,
+) -> AppResult<DragOutOutcome> {
+    let guard = DragInFlightGuard::acquire()?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let _guard = guard;
+        let _ = tx.send(run_drag(&paths, allow_move));
+    })
+    .map_err(|e| AppError::Unavailable(format!("无法调度拖拽到主线程: {e}")))?;
+    rx.await
+        .map_err(|_| AppError::Unavailable("拖拽任务异常退出".into()))?
 }
 
 /// DROPEFFECT 位 → 前端可读结果（纯函数，便于无 COM 环境验证）。

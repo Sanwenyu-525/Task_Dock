@@ -108,9 +108,9 @@ describe("Profile 注册中心", () => {
     expect(WORKSPACE_CAPABILITIES["dev.git"].provider).toContain("dev_project_probe");
     expect(WORKSPACE_CAPABILITIES["dev.agents"].provider).toContain("AgentHub");
     expect(WORKSPACE_CAPABILITIES["dev.acceptance"].state).toBe("limited");
-    // 布局字段支持排序/隐藏，但当前没有编辑入口：只能声明受限，不能宣称可自定义。
-    expect(WORKSPACE_CAPABILITIES["core.layout"].state).toBe("limited");
-    expect(WORKSPACE_CAPABILITIES["core.layout"].fallback).toBeTruthy();
+    // 2026-11-17：项目页已提供排序/显隐编辑器并真实写回 layout_json。
+    expect(WORKSPACE_CAPABILITIES["core.layout"].state).toBe("available");
+    expect(WORKSPACE_CAPABILITIES["core.layout"].provider).toContain("布局");
     // 五线（2026-11-16）：前端与编译检查已通过，但 Rust 运行期测试未取得证据，
     // 因此专业能力只能是 limited（可入口 + 明确降级），不得宣称 available。
     expect(WORKSPACE_CAPABILITIES["game.build"].state).toBe("limited");

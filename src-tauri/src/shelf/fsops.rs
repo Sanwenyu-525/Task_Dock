@@ -684,7 +684,7 @@ fn overlaps_shelf_root(src: &Path, root: &Path) -> bool {
 /// 非 Windows 平台 `std` 没有 `RENAME_NOREPLACE` 等价物，只能先检查再改名；
 /// 这是明确记录的平台限制，当前交付目标为 Windows。
 #[cfg(windows)]
-fn rename_no_replace(src: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn rename_no_replace(src: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
 
@@ -706,7 +706,7 @@ fn rename_no_replace(src: &Path, target: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn rename_no_replace(src: &Path, target: &Path) -> std::io::Result<()> {
+pub(crate) fn rename_no_replace(src: &Path, target: &Path) -> std::io::Result<()> {
     if path_lexists(target) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,

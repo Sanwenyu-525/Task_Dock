@@ -47,6 +47,7 @@ import {
   ChevronDown,
   Copy,
   Move,
+  Trash2,
 } from "lucide-react";
 
 import DropdownMenu from "../ui/DropdownMenu";
@@ -56,11 +57,12 @@ import "./files.css";
 import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
 import { isLogged, startOperation } from "../../lib/diagnostics";
-import { showFsOpOutcome } from "./fsOpFeedback";
+import { showFileJobOutcome, showFsOpOutcome } from "./fsOpFeedback";
 import {
-  fsCopyPaths,
-  fsMovePaths,
-  fsDeletePaths,
+  fsCopyJobStart,
+  fsDragOut,
+  fsMoveJobStart,
+  fsDeleteJobStart,
   fsDeleteVerifiedDuplicates,
   fsPlaces,
   fsStat,
@@ -69,12 +71,18 @@ import {
   type VerifiedDuplicateDeleteGroup,
 } from "../../lib/bridge";
 import {
+  finishFileJob,
+  registerFileJob,
+  waitForFileJob,
+} from "../../lib/filesWorkspace/fileJobs";
+import {
   invalidateDirs,
 } from "../../lib/filesWorkspace/dirCache";
 import {
   LAYOUT_PRESETS,
   MAX_TABS_PER_PANE,
   defaultTree,
+  hasPane,
   paneIds,
   type SplitDirection,
   type SplitNode,
@@ -103,12 +111,12 @@ import { useFilesWorkspaceStore, tabTitle } from "../../store/useFilesWorkspaceS
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useWorkbenchPageActive } from "../../lib/windowHost";
-import type { WorkspaceProject } from "../../lib/bridge";
+import type { OperationPreview, WorkspaceProject } from "../../lib/bridge";
 import { parentOf, basename } from "../../lib/filesWorkspace/pathUtils";
 import { pickFolder, validateFolderPath, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
 import {
   detectTransferConflicts,
-  movedSourcesToClear,
+  remainingSourcesAfterTransfer,
   filterTransferablePaths,
   pickAutomaticTarget,
   transferRefreshDirs,
@@ -129,7 +137,13 @@ import FolderCompareDialog, { type CompareRequest } from "./FolderCompareDialog"
 import QuickPreviewDialog, { type PreviewRequest } from "./QuickPreviewDialog";
 import WorkspaceSearchDialog from "./WorkspaceSearchDialog";
 import DuplicateFinderDialog, { type DuplicateDeleteOutcome } from "./DuplicateFinderDialog";
+import OperationPreviewDialog from "./OperationPreviewDialog";
+import {
+  previewFileOperation,
+  shouldPreviewTransfer,
+} from "../../lib/filesWorkspace/operationPreview";
 const FilePane = lazy(() => import("./FilePane"));
+const RecycleWorkspaceView = lazy(() => import("./RecycleWorkspaceView"));
 import { pruneScrollSessions } from "./FileList";
 
 /** 最小窗格尺寸（CSS px）：分割比例按容器实测换算钳制。 */
@@ -628,6 +642,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   /** 关闭其他区域时容量不足：收纳 or 取消（不得静默丢弃）。 */
   const [closeOthersBlocked, setCloseOthersBlocked] = useState<number | null>(null);
   const hoverZoneRef = useRef<FwDropZone | null>(null);
+  const nativeDragOut = useRef(false);
   const hydrateGenRef = useRef(0);
   /** 已从持久化恢复过（true 后不再被「设置晚到补恢复」覆盖）。 */
   const savedHydratedRef = useRef(false);
@@ -647,6 +662,14 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     conflicts: TransferConflict[];
     after?: (report: FsOpReport | null) => void;
   } | null>(null);
+  /** 大量复制/移动前的只读预演；确认后才进入冲突决策或执行。 */
+  const [previewPending, setPreviewPending] = useState<{
+    preview: OperationPreview;
+    paths: string[];
+    targetDir: string;
+    effect: TransferEffect;
+    after?: (report: FsOpReport | null) => void;
+  } | null>(null);
   /** F5/F6 多窗格时优先复用上次目标（会话内）。 */
   const lastTransferTargetRef = useRef<string | null>(null);
   /** 批量重命名：预览/冲突拦截/后端逐项执行。 */
@@ -657,6 +680,11 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   const [previewRequest, setPreviewRequest] = useState<PreviewRequest | null>(null);
   const [workspaceSearchOpen, setWorkspaceSearchOpen] = useState(false);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
+  /** 标题栏二级入口：files = 文件工作区；recycle = 文件回收站索引视图。
+      两者共用同一外壳与虚拟列表语言，但操作权限完全隔离。 */
+  const [source, setSource] = useState<"files" | "recycle">("files");
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
 
   const paneTargets = useMemo<TransferTarget[]>(() => {
     const ids = paneIds(tree);
@@ -680,6 +708,24 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     () => paneTargets.map((target) => ({ paneId: target.paneId, label: target.label, path: target.dir })),
     [paneTargets],
   );
+
+  /**
+   * 搜索对话框的额外范围：项目根目录与固定目录（收藏范围的现有等价物）。
+   * 只给搜索用；重复文件查找仍只扫描已打开窗格，避免默认扩大磁盘扫描。
+   */
+  const workspaceSearchSources = useMemo(() => {
+    const list = [...searchSources];
+    const seen = new Set(list.map((source) => source.path.toLowerCase()));
+    const add = (paneId: string, label: string, path: string) => {
+      const key = path.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      list.push({ paneId, label, path });
+    };
+    if (project?.rootPath) add(`project:${project.id}`, project.name, project.rootPath);
+    for (const path of pinnedDirs) add(`favorite:${path}`, basename(path) || path, path);
+    return list;
+  }, [searchSources, project, pinnedDirs]);
 
   // ── 项目 hydration（代际令牌防串位）──────────────────────────────────
   useEffect(() => {
@@ -791,6 +837,13 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     return () => window.removeEventListener("taskdock-fw-open-folder", onOpen);
   }, []);
 
+  // 资源管理面板 / 其他入口：跳到回收站数据源（不新建窗口、不新增页面）。
+  useEffect(() => {
+    const onOpenRecycle = () => setSource("recycle");
+    window.addEventListener("taskdock-fw-open-recycle", onOpenRecycle);
+    return () => window.removeEventListener("taskdock-fw-open-recycle", onOpenRecycle);
+  }, []);
+
   // 窗格右键「复制到…/移动到…」：文件名/数量与目标目录由统一选择器确认。
   useEffect(() => {
     const onRequest = (e: Event) => {
@@ -878,35 +931,55 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       effect: "copy" | "move",
       strategy: ConflictStrategy = "rename",
     ): Promise<FsOpReport | null> => {
-      // 操作 ID 由前端生成、Rust 沿用：`Ok(report)` 里 failed>0 时 IPC 仍是成功，
-      // 只有带着同一个 ID 的业务事件才能让「部分失败」在诊断中心可见且可关联。
+      // 操作 ID 由前端生成、Rust 沿用：诊断与任务服务共享同一个 ID。
       const op = startOperation("file", effect === "copy" ? "workspace_copy" : "workspace_move", {
         component: "文件工作区",
         metadata: { count: paths.length },
       });
-      startQueueOperation({ id: op.id, effect, total: paths.length });
       try {
-        op.stage("ipc");
-        const report: FsOpReport = await withFileOperationSlot(() =>
+        op.stage("job");
+        const initial = await withFileOperationSlot(() =>
           effect === "copy"
-            ? fsCopyPaths(paths, targetDir, strategy, op.id)
-            : fsMovePaths(paths, targetDir, strategy, op.id),
+            ? fsCopyJobStart(paths, targetDir, strategy, op.id)
+            : fsMoveJobStart(paths, targetDir, strategy, op.id),
         );
+        // 立即登记快照：终态任务（空选择/全部预检失败）不必等 2.5s 轮询。
+        registerFileJob(initial);
+        const { job: final, report } = await finishFileJob(initial.id);
         invalidateDirs(transferRefreshDirs(paths, targetDir));
-        // 移动成功才清来源选择；失败/部分完成源仍在，保留选择供用户重试。
-        if (effect === "move") {
-          store.getState().removePathsFromSelections(movedSourcesToClear(report));
+        // 移动成功才清来源选择；取消/部分完成/报告缺失时源仍可能仍在，保留选择。
+        if (effect === "move" && report) {
+          const remaining = new Set(remainingSourcesAfterTransfer(report, paths));
+          store
+            .getState()
+            .removePathsFromSelections(paths.filter((path) => !remaining.has(path)));
         }
-        finishQueueOperation(op.id, report);
-        // 业务终态由 Rust 写入诊断（同一 operation_id）；这里只负责把「失败了
-        // 几项、主要原因是什么、下一步去哪里看」讲清楚，不重复上报同一故障。
-        showFsOpOutcome({ effect, report, t, showToast });
-        return report;
+        if (!final) {
+          showFileJobOutcome({ effect, job: null, t, showToast });
+          return null;
+        }
+        if (final.status === "cancelled" || final.status === "cancelling") {
+          showFileJobOutcome({ effect, job: final, t, showToast });
+          return report;
+        }
+        if (report) {
+          // 业务终态由 Rust 写入诊断（同一 operation_id）；这里只把「失败了几项、
+          // 主要原因是什么、下一步去哪里看」讲清楚，不重复上报同一故障。
+          showFsOpOutcome({ effect, report, t, showToast });
+          return report;
+        }
+        // 任务计数已确认，但逐项报告不可读：不得声称全部成功，也不清理任何源。
+        showToast(t("fw.queue.reportUnavailable", {
+          ok: final.ok,
+          failed: final.failed,
+          skipped: final.skipped,
+          remaining: Math.max(0, final.total - final.done),
+        }), { kind: "warning" });
+        return null;
       } catch (e) {
         // IPC 抛错已由 invokeCommand 归属（含命令名/错误码）并 markLogged；
         // 只有未被归属的错误才补一条终态，不重复上报同一故障。
         if (!isLogged(e as object)) op.fail(e, { stage: "ipc" });
-        finishQueueOperation(op.id, null, errorMessage(e));
         showToast(errorMessage(e), { kind: "error" });
         return null;
       }
@@ -932,6 +1005,12 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         return null;
       }
       try {
+        // 大量复制/移动先只读预演；小批量保持直接执行，避免日常操作变慢。
+        if (shouldPreviewTransfer(effective.length, effect)) {
+          const preview = await previewFileOperation({ paths: effective, targetDir, effect });
+          setPreviewPending({ preview, paths: effective, targetDir, effect, after });
+          return null;
+        }
         const conflicts = await detectTransferConflicts(effective, targetDir);
         if (conflicts.length > 0) {
           setConflictPending({ effect, paths: effective, targetDir, conflicts, after });
@@ -948,12 +1027,60 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     [applyFileDrop, showToast, t],
   );
 
+  /** 预演确认：有冲突先走冲突决策，否则直接执行；取消不产生写入。 */
+  const confirmPreview = useCallback(() => {
+    const pending = previewPending;
+    if (!pending) return;
+    setPreviewPending(null);
+    if (pending.preview.conflicts.length > 0) {
+      setConflictPending({
+        effect: pending.effect,
+        paths: pending.paths,
+        targetDir: pending.targetDir,
+        conflicts: pending.preview.conflicts.map((conflict) => ({
+          source: conflict.source,
+          target: conflict.target,
+          targetKind: conflict.kind,
+        })),
+        after: pending.after,
+      });
+      return;
+    }
+    void applyFileDrop(pending.paths, pending.targetDir, pending.effect).then((report) =>
+      pending.after?.(report),
+    );
+  }, [applyFileDrop, previewPending]);
+
+  // 窗格空白处「粘贴」只派发目标目录；执行、进度与剪切板收尾统一留在面板，
+  // 不再让 FilePane 维护第二套复制/移动 IPC 流程。
+  useEffect(() => {
+    const onTransferTo = (e: Event) => {
+      const detail = (e as CustomEvent<{ targetDir?: string }>).detail;
+      if (!detail?.targetDir) return;
+      const clip = getFwClipboard();
+      if (!clip?.paths.length) return;
+      const lastMode = clip.mode;
+      const after =
+        lastMode === "cut"
+          ? (report: FsOpReport | null) => {
+              const pending = remainingSourcesAfterTransfer(report, clip.paths);
+              setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
+            }
+          : undefined;
+      void requestTransfer(clip.paths, detail.targetDir, lastMode === "copy" ? "copy" : "move", after);
+    };
+    window.addEventListener("taskdock-fw-transfer-to", onTransferTo);
+    return () => window.removeEventListener("taskdock-fw-transfer-to", onTransferTo);
+  }, [requestTransfer]);
+
   const revealSearchHit = useCallback(
     (paneId: string, dirPath: string, filePath: string) => {
       const s = store.getState();
-      s.setActivePane(paneId);
-      const opened = s.openInPane(paneId, dirPath, "replace");
-      if (opened) s.setSelection(paneId, [filePath]);
+      // 项目/收藏来源不是真实窗格：定位时落到当前活动窗格，绝不新建窗格或伪造 ID。
+      const targetPaneId = hasPane(s.tree, paneId) ? paneId : s.activePaneId;
+      s.setActivePane(targetPaneId);
+      const opened = s.openInPane(targetPaneId, dirPath, "replace");
+      if (opened) s.setSelection(targetPaneId, [filePath]);
       else showToast(t("fw.search.revealFailed"), { kind: "error" });
     },
     [showToast, store, t],
@@ -1040,6 +1167,11 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       setDropHint(null);
     };
     const onMove = (e: PointerEvent) => {
+      // WebView2 在松开左键前保留鼠标捕获，pointerleave 可能来得太晚。
+      if (e.clientX < 0 || e.clientY < 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+        startNativeDragOut(e);
+        return;
+      }
       // 协调器唯一坐标入口（P0：旧实现坐标只在拖拽起点写入，hover 永远冻结）。
       moveFwDrag(e.clientX, e.clientY, e);
     };
@@ -1097,7 +1229,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       const effect = resolveEffect(payload, targetDir, st.modifiers);
       void requestTransfer(payload.paths, targetDir, effect === "copy" ? "copy" : "move");
     };
-    // 取消通道：Escape / pointercancel / 窗口失焦 / 指针离开窗口 / 卸载。
+    // 取消通道：Escape / pointercancel / 窗口失焦 / 卸载。
     // 取消绝不执行文件操作（P0：防误移动）。
     const onCancel = () => {
       if (!isFwDragging()) return;
@@ -1120,8 +1252,18 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         moveFwDrag(undefined, undefined, e);
       }
     };
+    const startNativeDragOut = (e: PointerEvent) => {
+      if (!isFwDragging()) return;
+      const { payload } = getFwDragState();
+      onCancel();
+      if (payload?.kind !== "files" || e.pointerType !== "mouse" || !(e.buttons & 1) || nativeDragOut.current) return;
+      nativeDragOut.current = true;
+      void fsDragOut(payload.paths)
+        .catch((error) => showToast(errorMessage(error), { kind: "error" }))
+        .finally(() => { nativeDragOut.current = false; });
+    };
     const onLeaveDoc = (e: PointerEvent) => {
-      if (!e.relatedTarget) onCancel();
+      if (!e.relatedTarget) startNativeDragOut(e);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -1185,7 +1327,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     const consumer = {
       id: "files-workspace",
       priority: 20,
-      claim: () => pageActive,
+      claim: () => pageActive && !nativeDragOut.current,
       onEnter: (point: { x: number; y: number } | null) => {
         const dir = point ? hitPaneDir(point) : null;
         onHoverZone(dir && point ? { type: "center", paneId: dropTargetAt(point, "data-fw-pane-id") ?? "", dir } : null);
@@ -1261,8 +1403,30 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       if (inEditor) return;
       if (!hydrated) return;
+      // 回收站视图有自己的选择/快捷键语义；普通文件快捷键不得作用于索引条目。
+      if (sourceRef.current === "recycle") return;
       if (previewRequest) return; // 预览打开时方向键/Escape 归预览对话框，不触发文件操作
       const mod = e.ctrlKey || e.metaKey;
+      // Windows 文件管理器习惯：Alt+Left/Right/Up 在活动窗格内前进/后退/上一级。
+      // 必须在布局撤销之前处理，避免 Alt 组合被 Ctrl/Cmd 分支吞掉。
+      if (e.altKey && !mod && !e.shiftKey) {
+        const active = store.getState().activePaneId;
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          store.getState().navigate(active, "back");
+          return;
+        }
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          store.getState().navigate(active, "forward");
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          store.getState().navigate(active, "up");
+          return;
+        }
+      }
       // 布局撤销/重做（只回滚布局与标签分配，绝不回滚真实文件操作）。
       if (mod && (e.key === "z" || e.key === "Z") && !e.shiftKey) {
         e.preventDefault();
@@ -1349,11 +1513,11 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         })();
       } else if (mod && (e.key === "c" || e.key === "C") && selection.length) {
         e.preventDefault();
-        setFwClipboard({ mode: "copy", paths: [...selection] });
+        setFwClipboard({ mode: "copy", paths: [...selection], sourcePaneId: paneId });
         showToast(t("fw.report.clipCopy", { count: selection.length }), { kind: "info" });
       } else if (mod && (e.key === "x" || e.key === "X") && selection.length) {
         e.preventDefault();
-        setFwClipboard({ mode: "cut", paths: [...selection] });
+        setFwClipboard({ mode: "cut", paths: [...selection], sourcePaneId: paneId });
         showToast(t("fw.report.clipCut", { count: selection.length }), { kind: "info" });
       } else if (mod && (e.key === "v" || e.key === "V")) {
         e.preventDefault();
@@ -1365,12 +1529,13 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
           const after =
             clip.mode === "cut"
               ? (report: FsOpReport | null) => {
-                  const pending = report
-                    ? report.entries
-                        .filter((r) => r.status === "failed" || r.status === "partial")
-                        .map((r) => r.source)
-                    : [...clip.paths];
-                  setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
+                  // 只移除报告明确成功的项；失败/部分/取消未处理项仍留在剪切待办。
+                  const pending = remainingSourcesAfterTransfer(report, clip.paths);
+                  setFwClipboard(
+                    pending.length
+                      ? { mode: "cut", paths: pending, sourcePaneId: clip.sourcePaneId }
+                      : null,
+                  );
                 }
               : undefined;
           await requestTransfer(clip.paths, tab.path, clip.mode === "copy" ? "copy" : "move", after);
@@ -1672,20 +1837,45 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
   }
 
   return (
-    <div className="fw-root" ref={rootRef}>
+    <div className={`fw-root${source === "recycle" ? " is-recycle-source" : ""}`} ref={rootRef}>
       {/* 顶部工具栏（不重复 Shell 既有功能） */}
       <header className="fw-toolbar">
         <div className="fw-toolbar-title">
           <span className="fw-toolbar-glyph" aria-hidden="true">
-            <FolderTree size={18} strokeWidth={1.75} />
+            {source === "recycle" ? <Trash2 size={18} strokeWidth={1.75} /> : <FolderTree size={18} strokeWidth={1.75} />}
           </span>
-          <span className="fw-toolbar-name">{t("fw.title")}</span>
+          <span className="fw-toolbar-name">
+            {source === "recycle" ? t("fw.recycle.title") : t("fw.title")}
+          </span>
           {project && (
             <span className="fw-toolbar-project" data-tip={project.rootPath || undefined}>
               <FolderOpen size={12} aria-hidden="true" />
               {project.name}
             </span>
           )}
+        </div>
+
+        <div className="fw-source-switch" role="tablist" aria-label={t("fw.recycle.sourceSwitch")}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={source === "files"}
+            className={`fw-source-btn${source === "files" ? " is-active" : ""}`}
+            onClick={() => setSource("files")}
+          >
+            <FolderOpen size={12} aria-hidden="true" />
+            {t("fw.recycle.sourceFiles")}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={source === "recycle"}
+            className={`fw-source-btn${source === "recycle" ? " is-active" : ""}`}
+            onClick={() => setSource("recycle")}
+          >
+            <Trash2 size={12} aria-hidden="true" />
+            {t("fw.recycle.sourceRecycle")}
+          </button>
         </div>
 
         <div className="fw-toolbar-actions">
@@ -1850,9 +2040,13 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         </div>
       )}
 
-      {/* 主区域：最大化单窗格或完整分割树 */}
+      {/* 主区域：普通文件分割树 / 回收站数据源（同一外壳，独立权限） */}
       <div className="fw-workarea">
-        {maximizedPaneId && panes[maximizedPaneId] ? (
+        {source === "recycle" ? (
+          <Suspense fallback={<div className="fw-pane-loading" role="status" />}>
+            <RecycleWorkspaceView />
+          </Suspense>
+        ) : maximizedPaneId && panes[maximizedPaneId] ? (
           <SplitRender
             node={{ type: "pane", paneId: maximizedPaneId }}
             pageActive={pageActive}
@@ -1978,7 +2172,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         </div>
       </Popover>
 
-      {/* 打开文件夹对话框：原生选择器为主操作，路径/最近/固定/常用位置为辅 */}
+      {/* 打开文件夹对话框：路径输入内嵌系统选择器为主操作，最近/固定/常用位置为辅 */}
       <Dialog
         open={openFolder !== null}
         onClose={() => setOpenFolder(null)}
@@ -2026,31 +2220,35 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             ))}
           </div>
 
-          <button
-            type="button"
-            className="btn sm primary fw-browse-btn"
-            disabled={pickBusy || !openFolder}
-            onClick={() => openFolder && void browseFolder(openFolder.paneId, openFolder.mode)}
-          >
-            <FolderSearch size={13} aria-hidden="true" />
-            {pickBusy ? t("fw.dialog.browsing") : t("fw.dialog.browse")}
-          </button>
-
-          <label className="fw-dialog-field">
-            <span>{t("fw.dialog.folderPath")}</span>
-            <input
-              className="ws-input"
-              value={openFolderPath}
-              placeholder={t("fw.dialog.folderPlaceholder")}
-              onChange={(e) => {
-                setFolderPath(e.target.value);
-                setPickError(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void submitOpenFolder();
-              }}
-            />
-          </label>
+          {/* 目录路径与「浏览文件夹」合成同一个输入框：按钮是输入框内的后缀动作，
+              左侧仍是完整可键入的绝对路径输入区（回车直接打开）。 */}
+          <div className="fw-dialog-field">
+            <span id="fw-open-folder-path-label">{t("fw.dialog.folderPath")}</span>
+            <div className="fw-path-field">
+              <input
+                className="fw-path-input"
+                aria-labelledby="fw-open-folder-path-label"
+                value={openFolderPath}
+                placeholder={t("fw.dialog.folderPlaceholder")}
+                onChange={(e) => {
+                  setFolderPath(e.target.value);
+                  setPickError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void submitOpenFolder();
+                }}
+              />
+              <button
+                type="button"
+                className="fw-path-browse"
+                disabled={pickBusy || !openFolder}
+                onClick={() => openFolder && void browseFolder(openFolder.paneId, openFolder.mode)}
+              >
+                <FolderSearch size={12} aria-hidden="true" />
+                {pickBusy ? t("fw.dialog.browsing") : t("fw.dialog.browse")}
+              </button>
+            </div>
+          </div>
 
           {pickError && (
             <p className="fw-pick-error" role="alert">
@@ -2191,15 +2389,27 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
               metadata: { count: paths.length, permanent },
             });
             try {
-              op.stage("ipc");
-              const report = await withFileOperationSlot(() => fsDeletePaths(paths, permanent, op.id));
+              op.stage("job");
+              // 与 FilePane 同一路径：删除交给统一任务服务，进度与取消由队列条呈现。
+              const job = await fsDeleteJobStart(paths, permanent, op.id);
+              const final = await waitForFileJob(job.id);
               invalidateDirs(paths.map((p) => parentOf(p) ?? "").filter(Boolean));
-              showFsOpOutcome({
+              const result = showFileJobOutcome({
                 effect: permanent ? "deletePermanent" : "deleteRecycle",
-                report,
+                job: final,
                 t,
                 showToast,
               });
+              if (result === "ok") op.success({ metadata: { total: job.total } });
+              else {
+                op.fail(
+                  {
+                    code: final?.failures[0]?.code ?? "FS_OP_CANCELLED",
+                    message: t("fw.queue.unfinished"),
+                  },
+                  { stage: "job", severity: "WARN" },
+                );
+              }
               store.getState().clearSelection(store.getState().activePaneId);
             } catch (e) {
               showToast(errorMessage(e), { kind: "error" });
@@ -2412,6 +2622,17 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         )}
       </Dialog>
 
+      <OperationPreviewDialog
+        request={
+          previewPending
+            ? {
+                preview: previewPending.preview,
+                onConfirm: confirmPreview,
+                onCancel: () => setPreviewPending(null),
+              }
+            : null
+        }
+      />
       <BatchRenameDialog request={batchRenameRequest} onClose={() => setBatchRenameRequest(null)} />
       <FolderCompareDialog
         request={compareRequest}
@@ -2421,7 +2642,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
       <QuickPreviewDialog request={previewRequest} onClose={() => setPreviewRequest(null)} />
       <WorkspaceSearchDialog
         open={workspaceSearchOpen}
-        sources={searchSources}
+        sources={workspaceSearchSources}
         onClose={() => setWorkspaceSearchOpen(false)}
         onReveal={revealSearchHit}
       />

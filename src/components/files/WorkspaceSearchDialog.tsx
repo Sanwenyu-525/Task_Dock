@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Search, Square, X } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import Select from "../ui/Select";
+import { Checkbox } from "../ui/Toggle";
 import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
 import {
@@ -48,6 +49,9 @@ export default function WorkspaceSearchDialog({ open, sources, onClose, onReveal
   const [category, setCategory] = useState<string>("");
   const [depth, setDepth] = useState("2");
   const [recent, setRecent] = useState("any");
+  const [minSizeMb, setMinSizeMb] = useState("");
+  const [maxSizeMb, setMaxSizeMb] = useState("");
+  const [includeHidden, setIncludeHidden] = useState(false);
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [progress, setProgress] = useState<SearchProgress | null>(null);
   const [summary, setSummary] = useState<{ truncated: boolean; failedDirs: number; cancelled: boolean } | null>(null);
@@ -68,8 +72,16 @@ export default function WorkspaceSearchDialog({ open, sources, onClose, onReveal
       setError(null);
       setProgress(null);
       setRunning(false);
+      setMinSizeMb("");
+      setMaxSizeMb("");
+      setIncludeHidden(false);
     }
   }, [open, sources]);
+
+  const sizeBytes = (value: string): number | null => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.round(n * 1024 * 1024) : null;
+  };
 
   const run = async () => {
     if (running || selected.length === 0) return;
@@ -91,6 +103,9 @@ export default function WorkspaceSearchDialog({ open, sources, onClose, onReveal
           extensions: parseExtensions(extensions),
           category: category || null,
           modifiedWithinDays: recent === "any" ? null : Number(recent),
+          minSize: sizeBytes(minSizeMb),
+          maxSize: sizeBytes(maxSizeMb),
+          includeHidden,
           maxDepth: Number(depth),
         },
         (next) => {
@@ -182,6 +197,33 @@ export default function WorkspaceSearchDialog({ open, sources, onClose, onReveal
         <div className="fw-search-field">
           <span>{t("fw.search.recent")}</span>
           <Select value={recent} options={recentOptions} onChange={setRecent} ariaLabel={t("fw.search.recent")} size="sm" block />
+        </div>
+        <label className="fw-search-field">
+          <span>{t("fw.search.minSize")}</span>
+          <input
+            inputMode="decimal"
+            value={minSizeMb}
+            placeholder="MB"
+            onChange={(event) => setMinSizeMb(event.target.value)}
+          />
+        </label>
+        <label className="fw-search-field">
+          <span>{t("fw.search.maxSize")}</span>
+          <input
+            inputMode="decimal"
+            value={maxSizeMb}
+            placeholder="MB"
+            onChange={(event) => setMaxSizeMb(event.target.value)}
+          />
+        </label>
+        <div className="fw-search-field">
+          <span>{t("fw.search.hidden")}</span>
+          <Checkbox
+            checked={includeHidden}
+            onChange={setIncludeHidden}
+            label={t("fw.search.includeHidden")}
+            ariaLabel={t("fw.search.includeHidden")}
+          />
         </div>
       </div>
 

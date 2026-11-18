@@ -43,6 +43,7 @@ export const WORKBENCH_ROUTES = [
   "workflows",
   "history",
   "roadmap",
+  "capability",
   "settings",
   "help",
   "diagnostics",

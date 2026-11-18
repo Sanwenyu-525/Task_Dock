@@ -626,6 +626,12 @@ export const useGlobalSearchStore = create<GlobalSearchState>((set, get) => ({
         set({ pendingLocate: intent });
         break;
       }
+      case "knowledge": {
+        // 能力中心宿主：KnowledgeSection 消费 pendingLocate 选中知识库/文档。
+        ui.setTab("capability");
+        set({ pendingLocate: intent });
+        break;
+      }
       default:
         // 未知分类不伪装跳转。
         set({ open: true, notice: "该结果类型暂不支持跳转" });

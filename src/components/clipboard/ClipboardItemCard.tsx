@@ -8,8 +8,9 @@
 //!   自己的 click，且键盘焦点永远落在可见控件上。
 //! - 图片改为独立的 `<button class="clip-hero">`（与正文按钮并列，不嵌套），
 //!   点击直接进灯箱；列表/抽屉态仍用小缩略图，不加载大图。
-//! - 辅助动作（收藏/置顶/详情/删除/打开链接）统一收进 DropdownMenu，
-//!   菜单弹出不改变卡片高度，也不再挤占行内空间。
+//! - 辅助动作分两级（2026-11-17）：卡片宽度足够时，收藏/置顶/查看详情直接排进
+//!   底部动作行；窄卡、抽屉行布局与任务关联模式仍收进 DropdownMenu，菜单弹出
+//!   不改变卡片高度。删除是危险操作且带「不会删除本地文件」说明，始终留在菜单。
 //!
 //! 三种密度只影响「呈现」：舒适（大图 + 多行正文）、紧凑（小图 + 少行）、
 //! 列表（单列行）。所有布局由 CSS Grid 区域决定，组件不做宽度测量。
@@ -25,8 +26,11 @@ import {
 } from "../../lib/clipboardUi";
 import { fileTypeFromName } from "../../lib/fileTypeUi";
 import type { ClipboardDensity } from "../../lib/clipboardDensity";
-import DropdownMenu from "../ui/DropdownMenu";
-import { ClipboardHeroImage, ClipboardThumb, useInViewport } from "./Media";
+import DropdownMenu, { type DropdownMenuItem } from "../ui/DropdownMenu";
+import { ClipboardHeroImage, ClipboardThumb, useCompactViewport, useInViewport } from "./Media";
+
+/** 卡片窄于此宽度（含内边距）时辅助动作收回菜单，避免动作行溢出或挤掉复制。 */
+const AUX_ACTIONS_MIN_WIDTH = 260;
 
 const KIND_ICONS: Record<string, typeof Type> = {
   text: Type,
@@ -118,7 +122,14 @@ export default function ClipboardItemCard({
   const firstFileDir = files[0] ? fileDirName(files[0]) : "";
   const openMain = locked ? undefined : (onPreview ?? onDetail);
 
-  const moreItems = [
+  // 辅助动作是否内联：页面态卡片才有独立动作行（抽屉是行布局），任务关联模式
+  // 还要放「关联」按钮，二者都保持收进菜单；宽度测量沿用分组卡片的同一 hook，
+  // 只在翻转时 setState，不做轮询或高频测量。
+  const narrowCard = useCompactViewport(previewRef, AUX_ACTIONS_MIN_WIDTH);
+  const inlineAux = density !== undefined && !linkMode && !narrowCard;
+
+  // 类型专属项先排（宽卡片辅助动作内联后，菜单也可能只剩它们 + 删除）。
+  const leadingItems: DropdownMenuItem[] = [
     ...(isImage && onOpenImage
       ? [{
           key: "image",
@@ -137,30 +148,42 @@ export default function ClipboardItemCard({
           onSelect: onOpenUrl,
         }]
       : []),
-    {
-      key: "favorite",
-      label: item.favorite ? "取消收藏" : "收藏",
-      icon: <Star size={12} aria-hidden="true" />,
-      trailing: item.favorite ? <span className="clip-menu-state">已收藏</span> : undefined,
-      disabled: locked,
-      onSelect: () => onToggle("favorite"),
-    },
-    {
-      key: "pinned",
-      label: item.pinned ? "取消置顶" : "置顶",
-      icon: <Pin size={12} aria-hidden="true" />,
-      trailing: item.pinned ? <span className="clip-menu-state">已置顶</span> : undefined,
-      disabled: locked,
-      onSelect: () => onToggle("pinned"),
-    },
-    {
-      key: "detail",
-      label: "查看详情",
-      icon: <Maximize2 size={12} aria-hidden="true" />,
-      disabled: locked,
-      onSelect: onDetail,
-    },
-    { key: "sep", separator: true as const, disabled: true },
+    // 收藏/置顶/详情在宽卡片已经内联，菜单里不重复出现；窄卡才作为兜底入口。
+    ...(inlineAux
+      ? []
+      : [
+          {
+            key: "favorite",
+            label: item.favorite ? "取消收藏" : "收藏",
+            icon: <Star size={12} aria-hidden="true" />,
+            trailing: item.favorite ? <span className="clip-menu-state">已收藏</span> : undefined,
+            disabled: locked,
+            onSelect: () => onToggle("favorite"),
+          },
+          {
+            key: "pinned",
+            label: item.pinned ? "取消置顶" : "置顶",
+            icon: <Pin size={12} aria-hidden="true" />,
+            trailing: item.pinned ? <span className="clip-menu-state">已置顶</span> : undefined,
+            disabled: locked,
+            onSelect: () => onToggle("pinned"),
+          },
+          {
+            key: "detail",
+            label: "查看详情",
+            icon: <Maximize2 size={12} aria-hidden="true" />,
+            disabled: locked,
+            onSelect: onDetail,
+          },
+        ]),
+  ];
+
+  const moreItems: DropdownMenuItem[] = [
+    ...leadingItems,
+    // 分隔线只在删除前确有普通动作时出现；菜单仅剩删除时不做一条悬空的分隔线。
+    ...(leadingItems.length > 0
+      ? [{ key: "sep", separator: true, disabled: true } as DropdownMenuItem]
+      : []),
     {
       key: "delete",
       label: "删除这条历史",
@@ -341,6 +364,44 @@ export default function ClipboardItemCard({
           >
             <ArrowUpRight size={12} />
           </button>
+        )}
+        {/* 空间足够时辅助动作直接常显：图标语义、状态反馈（aria-pressed + active）
+            与详情页同一口径；窄卡仍走「更多」菜单，不在两处重复同一动作。 */}
+        {inlineAux && (
+          <>
+            <button
+              type="button"
+              className={`icon-btn sm ${item.favorite ? "active" : ""}`}
+              data-tip={item.favorite ? "取消收藏" : "收藏"}
+              aria-label={item.favorite ? "取消收藏" : "收藏"}
+              aria-pressed={item.favorite}
+              onClick={() => onToggle("favorite")}
+              disabled={locked}
+            >
+              <Star size={12} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className={`icon-btn sm ${item.pinned ? "active" : ""}`}
+              data-tip={item.pinned ? "取消置顶" : "置顶"}
+              aria-label={item.pinned ? "取消置顶" : "置顶"}
+              aria-pressed={item.pinned}
+              onClick={() => onToggle("pinned")}
+              disabled={locked}
+            >
+              <Pin size={12} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="icon-btn sm"
+              data-tip="查看详情"
+              aria-label="查看详情"
+              onClick={onDetail}
+              disabled={locked}
+            >
+              <Maximize2 size={12} aria-hidden="true" />
+            </button>
+          </>
         )}
         <DropdownMenu
           trigger={({ ref, expanded, onClick, onKeyDown }) => (

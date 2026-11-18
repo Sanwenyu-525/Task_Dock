@@ -83,6 +83,8 @@ export interface WorkspaceProjectContext {
   reload: () => Promise<void>;
   /** 切换模块：只更新 activeModule，保留 moduleOrder/hiddenModules（旧实现传 "{}"）。 */
   saveModule: (module: WorkspaceModuleId) => Promise<WorkspaceActionResult>;
+  /** 保存布局排序/显隐：与模块切换共用同一串行写链，只作用于捕获时的项目。 */
+  saveLayout: (layout: WorkspaceLayoutConfig) => Promise<WorkspaceActionResult>;
   addItem: (input: { title: string; stage: string }) => Promise<WorkspaceActionResult>;
   cycleItemStatus: (item: WorkspaceItem) => Promise<WorkspaceActionResult>;
   removeItem: (item: WorkspaceItem) => Promise<WorkspaceActionResult>;
@@ -258,6 +260,7 @@ export function useWorkspaceProjectContext(
             const fetched = await workspaceInstanceGet(pid);
             if (!isCurrent(gen, pid)) return "stale";
             layoutJson = fetched.instance.layoutJson;
+            stateRef.current = { ...stateRef.current, instance: fetched.instance };
             setState((s) => (s.projectId === pid ? { ...s, instance: fetched.instance } : s));
           } catch (e) {
             if (!isCurrent(gen, pid)) return "stale";
@@ -279,6 +282,8 @@ export function useWorkspaceProjectContext(
               layoutJson: JSON.stringify(next),
             });
             if (!isCurrent(gen, pid)) return;
+            // 串行链里的下一次 saveModule 会立刻读 stateRef：同步更新，不等渲染。
+            stateRef.current = { ...stateRef.current, instance: saved.instance };
             setState((s) => (s.projectId === pid ? { ...s, instance: saved.instance } : s));
           },
           {},
@@ -287,6 +292,46 @@ export function useWorkspaceProjectContext(
 
       // 串行执行：连续点击 A→B 时后一次读到前一次落库的布局，最终 activeModule
       // 是用户最后一次选择，且 moduleOrder/hiddenModules 不会被旧值覆盖。
+      const queued = moduleSaveChainRef.current.then(run, run);
+      moduleSaveChainRef.current = queued.then(
+        () => undefined,
+        () => undefined,
+      );
+      return queued;
+    },
+    [isCurrent, runWrite, snapshot],
+  );
+
+  const saveLayout = useCallback(
+    async (nextLayout: WorkspaceLayoutConfig): Promise<WorkspaceActionResult> => {
+      const { pid, gen } = snapshot();
+      if (!pid) return "stale";
+      const run = async (): Promise<WorkspaceActionResult> => {
+        // 布局是用户偏好，不是可信输入：保存前按 Profile 再解析一遍，剔除非法/重复模块。
+        const parsed = parseWorkspaceLayout(JSON.stringify(nextLayout), profileRef.current).layout;
+        const active = parsed.hiddenModules.includes(parsed.activeModule)
+          ? "overview"
+          : parsed.activeModule;
+        const layout: WorkspaceLayoutConfig = { ...parsed, activeModule: active };
+        return runWrite(
+          "布局保存",
+          pid,
+          gen,
+          async () => {
+            const saved = await workspaceInstanceSave({
+              projectId: pid,
+              activeModule: active,
+              layoutJson: JSON.stringify(layout),
+            });
+            if (!isCurrent(gen, pid)) return;
+            // 与 saveModule 共用串行链：同步写入 ref，下一次保存立即读到新布局。
+            stateRef.current = { ...stateRef.current, instance: saved.instance };
+            setState((s) => (s.projectId === pid ? { ...s, instance: saved.instance } : s));
+          },
+          {},
+        );
+      };
+      // 与 saveModule 同一条串行链：连续排序/显隐/切换时后一次读到前一次落库结果。
       const queued = moduleSaveChainRef.current.then(run, run);
       moduleSaveChainRef.current = queued.then(
         () => undefined,
@@ -398,6 +443,7 @@ export function useWorkspaceProjectContext(
     layoutRepaired: layoutInfo.repaired,
     reload,
     saveModule,
+    saveLayout,
     addItem,
     cycleItemStatus,
     removeItem,

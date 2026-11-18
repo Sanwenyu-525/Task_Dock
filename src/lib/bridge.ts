@@ -735,6 +735,8 @@ export interface PasteJob {
   status: string;
   total: number;
   sent: number;
+  /** 持久化逐项状态中的跳过数；旧后端可能省略。 */
+  skipped?: number;
   started_at: string;
   ended_at: string | null;
   message: string;
@@ -1938,6 +1940,11 @@ export interface AppBuildInfo {
   build: {
     /** 短 commit；git 不可用时为 "unknown" */
     commit: string;
+    /**
+     * 40 位完整 commit（同一次 build.rs 采集）；旧版本包未注入该字段时为
+     * undefined，前端必须显示「未知」，不得用运行期 git 现算冒充。
+     */
+    commit_full?: string;
     /** "true" | "false" | "unknown"：构建时工作树是否存在未提交改动 */
     dirty: string;
     /** Unix 秒的字符串形式；构建脚本没取到时为 "unknown" */
@@ -1949,6 +1956,28 @@ export interface AppBuildInfo {
   };
 }
 export const appBuildInfo = () => invoke<AppBuildInfo>("app_build_info");
+
+/** 当前运行环境的 Git 现场（实时读取，与安装包内的构建元数据相互独立）。 */
+export type AppRuntimeGitStatus =
+  | "ok"
+  | "not_a_repo"
+  | "git_unavailable"
+  | "path_missing"
+  | "not_applicable";
+export interface AppRuntimeGitInfo {
+  status: AppRuntimeGitStatus;
+  /** 由 exe 向上找到的仓库根；not_applicable 时为 null。 */
+  repoRoot: string | null;
+  branch: string | null;
+  detached: boolean;
+  /** 40 位 HEAD；无仓库/git 不可用时为 null。 */
+  headSha: string | null;
+  /** 未提交改动行数（含未跟踪）；null = 未能统计，不得显示为 0。 */
+  dirtyCount: number | null;
+  /** 探测时间（ISO8601），用于说明这是「打开时的现场」。 */
+  probedAt: string;
+}
+export const appRuntimeGitInfo = () => invoke<AppRuntimeGitInfo>("app_runtime_git_info");
 export const agentRetentionStatus = () => invoke<Record<string, unknown>>("agent_retention_status");
 export const agentRetentionRun = () => invoke<RetentionReport>("agent_retention_run");
 export const agentArchiveList = () =>
@@ -3197,7 +3226,9 @@ export type McpCapability =
   | "notes.read"
   | "notes.write"
   | "workflows.read"
-  | "workspace.read";
+  | "workspace.read"
+  | "knowledge.read"
+  | "skills.read";
 
 export interface McpCapabilityGrant {
   capability: McpCapability;
@@ -3267,6 +3298,69 @@ export const agentMcpGrantProject = (id: string, projectId: string) =>
 export const agentMcpRevokeProject = (id: string, projectId: string) =>
   invoke<McpAgentInfo>("mcp_agent_revoke_project", { id, projectId });
 export const agentMcpRevoke = (id: string) => invoke<McpAgentInfo>("mcp_agent_revoke", { id });
+
+// ── Agent 共享工作空间（v76）───────────────────────────────────────
+// 四入口（CLI/MCP/REST/文件）共用同一 service 层；这里只做 UI 管理面封装。
+export type AgentAccessData = Record<string, unknown>;
+export const agentAccessStatus = () => invoke<AgentAccessData>("agent_access_status", {});
+export const agentAccessInit = (path?: string, name?: string) =>
+  invoke<AgentAccessData>("agent_access_init", { path, name });
+export const agentAccessManifest = () => invoke<AgentAccessData>("agent_access_manifest", {});
+export const agentAccessExport = () => invoke<AgentAccessData>("agent_access_export", {});
+export const agentAccessScan = () => invoke<AgentAccessData>("agent_access_scan", {});
+export const agentAccessSyncStatus = () => invoke<AgentAccessData>("agent_access_sync_status", {});
+export const agentAccessConflicts = () => invoke<AgentAccessData>("agent_access_conflicts", {});
+export const agentAccessResolveConflict = (conflictId: string, resolution: string) =>
+  invoke<AgentAccessData>("agent_access_resolve_conflict", { conflictId, resolution });
+export const agentAccessActivity = (params: {
+  agentId?: string;
+  interface?: string;
+  since?: string;
+  limit?: number;
+  offset?: number;
+}) => invoke<AgentAccessData>("agent_access_activity", params);
+export const agentAccessHandoffs = (params: {
+  status?: string;
+  projectId?: string;
+  limit?: number;
+  offset?: number;
+}) => invoke<AgentAccessData>("agent_access_handoffs", params);
+export const agentAccessHandoffDetail = (handoffId: string) =>
+  invoke<AgentAccessData>("agent_access_handoff_detail", { handoffId });
+export const agentAccessHandoffTransition = (
+  handoffId: string,
+  action: "accept" | "reject" | "complete",
+  baseRevision: number,
+  reason?: string,
+) =>
+  invoke<AgentAccessData>("agent_access_handoff_transition", {
+    handoffId,
+    action,
+    baseRevision,
+    reason,
+  });
+export const agentAccessReports = (params: {
+  agentId?: string;
+  handoffId?: string;
+  limit?: number;
+  offset?: number;
+}) => invoke<AgentAccessData>("agent_access_reports", params);
+export const agentAccessAgents = () => invoke<AgentAccessData>("agent_access_agents", {});
+export const agentAccessPermissions = (agentRowId: string) =>
+  invoke<AgentAccessData>("agent_access_permissions", { agentRowId });
+export const agentAccessGrant = (agentRowId: string, capability: string, resourceId = "") =>
+  invoke<AgentAccessData>("agent_access_grant", { agentRowId, capability, resourceId });
+export const agentAccessRevoke = (agentRowId: string, capability: string, resourceId = "") =>
+  invoke<AgentAccessData>("agent_access_revoke", { agentRowId, capability, resourceId });
+export const agentAccessContext = (params: {
+  projectId?: string;
+  task?: string;
+  taskId?: string;
+  budgetTokens?: number;
+  format?: "markdown" | "json";
+}) => invoke<AgentAccessData>("agent_access_context", params);
+export const agentAccessConfigInfo = () => invoke<AgentAccessData>("agent_access_config_info", {});
+
 export const agentMcpAuditList = (offset: number, limit: number) =>
   invoke<McpAuditPage>("mcp_audit_list", { offset, limit });
 export const agentMcpConfigSnippet = (client: McpConfigClient, agentToken: string) =>
@@ -5107,6 +5201,50 @@ export const workspaceProjectList = (status?: WorkspaceProjectStatus | null) =>
 export const workspaceProjectGet = (id: string) =>
   invoke<{ project: WorkspaceProject }>("workspace_project_get", { id });
 
+export interface WorkspaceProjectProgress {
+  projectId: string;
+  itemsTotal: number;
+  itemsTodo: number;
+  itemsDoing: number;
+  itemsBlocked: number;
+  itemsDone: number;
+  itemsArchived: number;
+  itemsPercent: number | null;
+  linkedTasksTotal: number;
+  linkedTasksCompleted: number;
+  linkedTasksPercent: number | null;
+}
+
+export const workspaceProjectProgress = (projectId: string) =>
+  invoke<WorkspaceProjectProgress>("workspace_project_progress", { projectId });
+
+export type WorkspaceResourceKind = "note" | "agent_session" | "artifact";
+export interface WorkspaceResourceLink {
+  id: string;
+  projectId: string;
+  kind: WorkspaceResourceKind;
+  target: string;
+  label: string;
+  note: string;
+  targetExists: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface WorkspaceResourcePage {
+  links: WorkspaceResourceLink[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+export const workspaceResourceSave = (input: {
+  projectId: string; kind: WorkspaceResourceKind; target: string; label: string; note: string;
+}) => invoke<WorkspaceResourceLink>("workspace_resource_save", input);
+export const workspaceResourceList = (projectId: string, kind: WorkspaceResourceKind | null = null, offset = 0, limit = 50) =>
+  invoke<WorkspaceResourcePage>("workspace_resource_list", { projectId, kind, offset, limit });
+export const workspaceResourceRemove = (projectId: string, id: string) =>
+  invoke<{ ok: boolean }>("workspace_resource_remove", { projectId, id });
+
 export const workspaceProjectSave = (input: {
   id?: string | null;
   name: string;
@@ -5492,6 +5630,8 @@ export interface VdSession {
   /** 子进程是否确认纳入 Windows Job Object（false 时 stop 无法保证收尾）。 */
   job_assigned: boolean;
   size: string | null;
+  /** 投屏控制栏状态：pending | ready | unavailable | closed。 */
+  toolbar_state: string;
 }
 
 export interface VdProbe {
@@ -5590,6 +5730,57 @@ export const vdDiagnostics = (serial: string) =>
 export const vdReconnect = (serial: string) =>
   invoke<boolean>("vd_reconnect", { serial });
 
+// ── 投屏窗口伴随系统（v0.17）──────────────────────────────
+
+export type ProjectionWindowMode = "normal" | "maximized" | "fullscreen";
+
+/** 控制栏导航动作（与后端 vd_nav 的白名单一致）。 */
+export type ProjectionNavigationAction = "back" | "home" | "recents";
+
+/** 后端 `vd-toolbar-state` 事件载荷。 */
+export interface ProjectionToolbarState {
+  mode: ProjectionWindowMode;
+  locked: boolean;
+  expanded: boolean;
+  visible: boolean;
+}
+
+/** 控制栏截图完成事件（复用主窗口截图预览）。 */
+export interface VdScreenshotEvent {
+  session: VdSession;
+  screenshot: VdScreenshot;
+}
+
+/** 按会话 ID 读取不可变快照（控制栏窗口只绑定自己的 Session）。 */
+export const vdSession = (sessionId: string) =>
+  invoke<VdSession>("vd_session", { sessionId });
+
+/** 幂等创建/恢复该会话的控制栏与窗口 watcher。返回 pending | ready。 */
+export const vdToolbarAttach = (sessionId: string) =>
+  invoke<string>("vd_toolbar_attach", { sessionId });
+
+/** 停止 watcher 并隐藏控制栏（不关闭 scrcpy）。 */
+export const vdToolbarDetach = (sessionId: string) =>
+  invoke<boolean>("vd_toolbar_detach", { sessionId });
+
+/** 立即重读窗口矩形/显示器/DPI 并重算控制栏位置。 */
+export const vdToolbarUpdate = (sessionId: string) =>
+  invoke<boolean>("vd_toolbar_update", { sessionId });
+
+/** 彻底销毁控制栏与绑定（幂等，Session 关闭时调用）。 */
+export const vdToolbarDestroy = (sessionId: string) =>
+  invoke<boolean>("vd_toolbar_destroy", { sessionId });
+
+export const vdToolbarSetLocked = (sessionId: string, locked: boolean) =>
+  invoke<boolean>("vd_toolbar_set_locked", { sessionId, locked });
+
+export const vdToolbarSetExpanded = (sessionId: string, expanded: boolean) =>
+  invoke<boolean>("vd_toolbar_set_expanded", { sessionId, expanded });
+
+/** 复用 vd_screenshot 的 Android 投屏截图链路，并广播给主窗口预览。 */
+export const vdToolbarScreenshot = (sessionId: string) =>
+  invoke<VdScreenshot>("vd_toolbar_screenshot", { sessionId });
+
 
 
 // ── 文件工作区（多目录文件浏览/操作/缩略图）────────────────────────────
@@ -5670,6 +5861,10 @@ export interface FsStat {
   size: number | null;
   createdMs: number | null;
   modifiedMs: number | null;
+  /** 最后访问时间；Windows 可能延迟更新，仅作参考。 */
+  accessedMs: number | null;
+  /** Windows 属性位的小写代码（readonly/hidden/system/...）。 */
+  attributes: string[];
   readonly: boolean;
   hidden: boolean;
   childCount: number | null;
@@ -5753,6 +5948,33 @@ export const fsReleasePreviewUrl = (url: string) =>
  * 后端把同一 ID 写进业务诊断事件——这样「用户看到的那次失败」在诊断中心可以
  * 精确关联，而不是前后端各记一条互不相认的日志。
  */
+export interface PreviewConflict {
+  source: string;
+  target: string;
+  kind: "file" | "dir" | "link";
+}
+
+/** 只读操作预演结果；不执行任何文件写入。 */
+export interface OperationPreview {
+  effect: "copy" | "move";
+  items: number;
+  files: number;
+  dirs: number;
+  bytes: number;
+  conflicts: PreviewConflict[];
+  inaccessible: string[];
+  duplicates: string[];
+  warnings: string[];
+  /** false = 统计触达条目/深度/读取上限，结果不完整。 */
+  complete: boolean;
+}
+
+export const fsPreviewOperation = (
+  paths: string[],
+  targetDir: string,
+  effect: "copy" | "move",
+) => invoke<OperationPreview>("fs_preview_operation", { paths, targetDir, effect });
+
 export const fsCopyPaths = (paths: string[], targetDir: string, conflict: string, operationId?: string) =>
   invoke<FsOpReport>("fs_copy_paths", { paths, targetDir, conflict, operationId });
 
@@ -5775,6 +5997,821 @@ export const fsOpen = (path: string) => invoke<void>("fs_open", { path });
 
 export const fsReveal = (path: string) => invoke<void>("fs_reveal", { path });
 
+/** Windows「打开方式」选择器（Shell openas 动词）。 */
+export const fsOpenWith = (path: string) => invoke<void>("fs_open_with", { path });
+
+/** Windows 原生属性页（与内部只读属性对话框区分）。 */
+export const fsShowProperties = (path: string) => invoke<void>("fs_show_properties", { path });
+
+/** 在终端中打开：目录直接打开；文件打开其父目录。 */
+export const fsOpenTerminal = (path: string) => invoke<void>("fs_open_terminal", { path });
+
 /** 缩略图（PNG data URL）；无处理器返回 null，由前端回落类型图标。 */
 export const fsThumbnail = (path: string, maxPx: number) =>
   invoke<string | null>("fs_thumbnail", { path, maxPx });
+
+// ── 回收站索引与统一文件操作任务（v68）─────────────────────────────────
+//
+// 设计约束：
+// - 列表/统计只读本地索引（毫秒级），不触发扫描；同步是显式后台动作；
+// - 索引 ID 为 `"{volume}|{recordKey}"`，不含 SID；后端按 ID 回查真实 `$I/$R`；
+// - 批量操作返回任务快照，进度经事件 `recycle:job-progress` 推送；
+// - 已执行的操作不可撤销，UI 不得把取消描述成「回滚」。
+
+export type RecycleState = "present" | "missing_data" | "unreadable";
+
+export interface RecycleItem {
+  id: string;
+  volume: string;
+  name: string;
+  originalPath: string;
+  isDir: boolean;
+  /** null = 目录或元数据未记录大小（UI 显示 —，绝不递归统计）。 */
+  size: number | null;
+  deletedMs: number;
+  state: RecycleState;
+  anomaly: string | null;
+}
+
+export interface RecycleVolumeStat {
+  volume: string;
+  items: number;
+  files: number;
+  folders: number;
+  knownBytes: number;
+  unknownSize: number;
+  /** ok | partial | offline | error | scanning | stale */
+  state: string;
+  lastSyncMs: number;
+  systemItems: number | null;
+  systemBytes: number | null;
+  systemCheckedMs: number | null;
+  errorCode: string | null;
+}
+
+export interface RecycleStats {
+  items: number;
+  files: number;
+  folders: number;
+  knownBytes: number;
+  unknownSize: number;
+  volumes: RecycleVolumeStat[];
+  lastSyncMs: number;
+  /** empty | ready | scanning | partial | offline | error */
+  state: string;
+  /** index（本地索引） | system（Shell 口径） */
+  source: string;
+  indexedAtMs: number;
+  /** >0 表示后台正在同步的卷数量。 */
+  syncing: number;
+}
+
+export interface RecycleQuery {
+  search?: string;
+  volume?: string | null;
+  kind?: "all" | "file" | "folder";
+  state?: "present" | "missing" | "unreadable" | null;
+  minSize?: number | null;
+  maxSize?: number | null;
+  deletedAfterMs?: number | null;
+  deletedBeforeMs?: number | null;
+  sort?: "deleted" | "name" | "size" | "path" | "volume";
+  dir?: "asc" | "desc";
+  offset?: number;
+  limit?: number;
+  /** 是否附带全表统计（10 万级为两次全表扫描，只在首页/刷新时请求）。 */
+  includeStats?: boolean;
+}
+
+export interface RecyclePage {
+  items: RecycleItem[];
+  total: number;
+  offset: number;
+  limit: number;
+  /** 仅首页/刷新请求统计；翻页时后端返回 null，避免每次翻页做全表聚合。 */
+  stats: RecycleStats | null;
+  /** 后端实测查询耗时（供性能验收记录）。 */
+  queryMs: number;
+}
+
+export interface RecycleSyncStatus {
+  running: boolean;
+  startedMs: number;
+  finishedMs: number;
+  volumesDone: number;
+  volumesTotal: number;
+  cancelRequested: boolean;
+  lastError: string | null;
+}
+
+export interface RecycleSyncVolumeOutcome {
+  volume: string;
+  state: string;
+  items: number;
+  added: number;
+  updated: number;
+  removed: number;
+  durationMs: number;
+  errorCode: string | null;
+}
+
+export interface RecycleSyncSummary {
+  startedMs: number;
+  finishedMs: number;
+  durationMs: number;
+  cancelled: boolean;
+  volumes: RecycleSyncVolumeOutcome[];
+  error: string | null;
+}
+
+export interface RecycleScanProgress {
+  volume: string;
+  phase: "enumerating" | "reading" | "writing" | "verifying" | "done";
+  done: number;
+  total: number;
+  added: number;
+  updated: number;
+  removed: number;
+}
+
+export interface FileJobEntry {
+  label: string;
+  status: "ok" | "failed" | "skipped" | "partial";
+  code: string | null;
+  message: string | null;
+}
+
+export interface FileJobSnapshot {
+  id: string;
+  /** 统一任务类型：复制/移动/重命名/删除/永久删除/恢复/永久删除回收站项/清空 */
+  kind:
+    | "copy"
+    | "move"
+    | "rename"
+    | "delete"
+    | "delete_permanent"
+    | "restore"
+    | "purge"
+    | "empty";
+  /**
+   * pending | running | cancelling | completed | partial | failed | cancelled
+   * `pending` 表示已入队未开始（可安全取消）；`cancelling` 表示取消已受理，
+   * 任务会在批次边界停止，已执行的不可逆操作不回滚。
+   */
+  status:
+    | "pending"
+    | "running"
+    | "cancelling"
+    | "completed"
+    | "partial"
+    | "failed"
+    | "cancelled";
+  total: number;
+  done: number;
+  ok: number;
+  failed: number;
+  /** 内容已落地但源未删除等「部分完成」条数。 */
+  partial: number;
+  skipped: number;
+  /** queued | executing | verifying | done */
+  phase: string;
+  cancelable: boolean;
+  cancelRequested: boolean;
+  startedMs: number;
+  finishedMs: number;
+  failures: FileJobEntry[];
+  message: string | null;
+}
+
+/** 任务是否已结束（前端不得把末态任务继续当运行中轮询）。 */
+export const isFileJobTerminal = (job: FileJobSnapshot): boolean =>
+  job.status === "completed" ||
+  job.status === "partial" ||
+  job.status === "failed" ||
+  job.status === "cancelled";
+
+export const recycleStats = () => invoke<RecycleStats>("recycle_stats");
+
+export const recycleList = (query: RecycleQuery) => invoke<RecyclePage>("recycle_list", { query });
+
+export const recycleSync = (force = false) =>
+  invoke<RecycleSyncStatus>("recycle_sync", { force });
+
+export const recycleSyncStatus = () => invoke<RecycleSyncStatus>("recycle_sync_status");
+
+export const recycleSyncCancel = () => invoke<void>("recycle_sync_cancel");
+
+export const recycleRestore = (ids: string[], conflict: "skip" | "rename", operationId?: string) =>
+  invoke<FileJobSnapshot>("recycle_restore", { ids, conflict, operationId });
+
+export const recyclePurge = (ids: string[], operationId?: string) =>
+  invoke<FileJobSnapshot>("recycle_purge", { ids, operationId });
+
+export const recycleEmpty = (volumes: string[] | null, operationId?: string) =>
+  invoke<FileJobSnapshot>("recycle_empty", { volumes, operationId });
+
+export const fsDeleteJobStart = (paths: string[], permanent: boolean, operationId?: string) =>
+  invoke<FileJobSnapshot>("fs_delete_job_start", { paths, permanent, operationId });
+
+/** 批量复制任务：立即返回任务快照，进度经 `recycle:job-progress` 推送。 */
+export const fsCopyJobStart = (
+  paths: string[],
+  targetDir: string,
+  conflict: "skip" | "rename" | "overwrite" = "rename",
+  operationId?: string,
+) => invoke<FileJobSnapshot>("fs_copy_job_start", { paths, targetDir, conflict, operationId });
+
+/** 批量移动任务：语义同复制，在顶层条目间取消，当前文件/目录需先完成。 */
+export const fsMoveJobStart = (
+  paths: string[],
+  targetDir: string,
+  conflict: "skip" | "rename" | "overwrite" = "rename",
+  operationId?: string,
+) => invoke<FileJobSnapshot>("fs_move_job_start", { paths, targetDir, conflict, operationId });
+
+export const fsJobStatus = (jobId: string) => invoke<FileJobSnapshot>("fs_job_status", { jobId });
+
+export const fsDragOut = (paths: string[]) => invoke<void>("fs_drag_out", { paths });
+
+/** 按需读取复制/移动/重命名完整逐项结果；null 表示尚无报告，任务过期会拒绝。 */
+export const fsJobReport = (jobId: string) => invoke<FsOpReport | null>("fs_job_report", { jobId });
+
+export const fsBatchRenameJobStart = (items: FsBatchRenameItem[], operationId?: string) =>
+  invoke<FileJobSnapshot>("fs_batch_rename_job_start", { items, operationId });
+
+export const fsJobCancel = (jobId: string) => invoke<boolean>("fs_job_cancel", { jobId });
+
+export const fsJobs = () => invoke<FileJobSnapshot[]>("fs_jobs");
+
+export const onRecycleJobProgress = (cb: (snapshot: FileJobSnapshot) => void): Promise<UnlistenFn> =>
+  listen<FileJobSnapshot>("recycle:job-progress", (event) => cb(event.payload));
+
+export const onRecycleSyncProgress = (cb: (progress: RecycleScanProgress) => void): Promise<UnlistenFn> =>
+  listen<RecycleScanProgress>("recycle:sync-progress", (event) => cb(event.payload));
+
+export const onRecycleSyncDone = (cb: (summary: RecycleSyncSummary) => void): Promise<UnlistenFn> =>
+  listen<RecycleSyncSummary>("recycle:sync-done", (event) => cb(event.payload));
+
+// ── 知识与 AI 能力中心（v72）────────────────────────────────────────
+// 约定：字段 camelCase 与 Rust `#[serde(rename_all="camelCase")]` 一一对应；
+// 知识正文、Skill 内容、MCP 返回一律按不可信数据展示。
+
+export type KnowledgeBaseKind = "personal" | "project" | "workspace";
+export type KnowledgeSourceKind = "file" | "folder" | "note" | "capture" | "text";
+export type KnowledgeSourceMode = "reference" | "imported";
+export type KnowledgeDocStatus = "pending" | "indexed" | "failed";
+
+export interface KnowledgeBase {
+  id: string;
+  name: string;
+  description: string;
+  kind: KnowledgeBaseKind;
+  projectId: string | null;
+  /** 工作区类型知识库的真实绑定（复用 workspace_projects.id）。 */
+  workspaceId: string | null;
+  favorite: boolean;
+  docCount: number;
+  indexedCount: number;
+  failedCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  kbId: string;
+  title: string;
+  sourceKind: KnowledgeSourceKind;
+  sourceMode: KnowledgeSourceMode;
+  sourcePath: string | null;
+  mime: string;
+  sizeBytes: number;
+  contentHash: string;
+  status: KnowledgeDocStatus;
+  error: string;
+  chunkCount: number;
+  indexedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeLink {
+  id: string;
+  docId: string;
+  targetKind: "task" | "project" | "note" | "agent_session" | "workflow" | "file";
+  targetId: string;
+  label: string;
+  createdAt: string;
+}
+
+export interface KnowledgeDocumentDetail extends KnowledgeDocument {
+  content: string;
+  truncated: boolean;
+  links: KnowledgeLink[];
+}
+
+export interface KnowledgeBaseDetail extends KnowledgeBase {
+  recentDocuments: KnowledgeDocument[];
+}
+
+export interface KnowledgeStats {
+  kbCount: number;
+  docCount: number;
+  indexedCount: number;
+  failedCount: number;
+  chunkCount: number;
+}
+
+export interface KnowledgeDocumentPage {
+  documents: KnowledgeDocument[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+export interface KnowledgeImportItem {
+  path: string;
+  status: "imported" | "skipped" | "duplicate" | "failed";
+  reason: string;
+}
+
+export interface KnowledgeImportReport {
+  imported: number;
+  skipped: number;
+  duplicates: number;
+  failed: number;
+  items: KnowledgeImportItem[];
+  documents: KnowledgeDocument[];
+}
+
+export interface KnowledgeSearchHit {
+  docId: string;
+  kbId: string;
+  kbName: string;
+  title: string;
+  sourceKind: KnowledgeSourceKind;
+  sourcePath: string | null;
+  snippet: string;
+  chunkOffset: number;
+  rank: number;
+  status: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeSearchPage {
+  query: string;
+  hits: KnowledgeSearchHit[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+export interface SkillRiskNote {
+  kind: string;
+  detail: string;
+  file: string;
+}
+
+export interface SkillSummary {
+  id: string;
+  name: string;
+  description: string;
+  sourceKind: "discovered" | "imported";
+  sourcePath: string;
+  scope: "global" | "project" | "workspace" | "agent";
+  projectId: string | null;
+  workspaceId: string | null;
+  /** 作用域为 agent 时复用 mcp_agents.id。 */
+  agentId: string | null;
+  enabled: boolean;
+  riskLevel: "low" | "medium" | "high";
+  riskNotes: SkillRiskNote[];
+  version: string;
+  formatOk: boolean;
+  missing: boolean;
+  nameConflict: boolean;
+  updatedAt: string;
+}
+
+export interface SkillDetail extends SkillSummary {
+  content: string;
+  files: { path: string; isDir: boolean; sizeBytes: number }[];
+}
+
+export interface SkillScanReport {
+  discovered: number;
+  updated: number;
+  missing: number;
+  roots: string[];
+}
+
+export interface McpToolInfo {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  highRisk: boolean;
+  riskLevel: "low" | "medium" | "high" | "unknown";
+  riskReasons: string[];
+  /** Server 的 ToolAnnotations；不可信提示，不是安全边界。 */
+  annotations: unknown;
+  trusted: boolean;
+}
+
+export interface McpResourceInfo {
+  uri: string;
+  name: string;
+  description: string;
+  mimeType: string;
+}
+
+export interface McpPromptInfo {
+  name: string;
+  description: string;
+  arguments: unknown;
+}
+
+export interface ExternalMcpServer {
+  id: string;
+  name: string;
+  transport: "stdio";
+  command: string;
+  args: string[];
+  env: { key: string; hasValue: boolean }[];
+  enabled: boolean;
+  allowHighRisk: boolean;
+  status: "unknown" | "ok" | "failed" | "disabled";
+  lastError: string;
+  serverInfo: unknown;
+  tools: McpToolInfo[];
+  resources: McpResourceInfo[];
+  prompts: McpPromptInfo[];
+  lastConnectedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface McpConnectionReport {
+  ok: boolean;
+  durationMs: number;
+  protocolVersion: string;
+  serverInfo: unknown;
+  tools: McpToolInfo[];
+  resources: McpResourceInfo[];
+  prompts: McpPromptInfo[];
+  error: string | null;
+}
+
+export interface McpCallReport {
+  ok: boolean;
+  durationMs: number;
+  isError: boolean;
+  content: unknown;
+  error: string | null;
+}
+
+export interface McpCallRecord {
+  id: string;
+  serverId: string;
+  toolName: string;
+  success: boolean;
+  durationMs: number;
+  error: string;
+  createdAt: string;
+}
+
+export interface McpCallPage {
+  items: McpCallRecord[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+export interface CapabilityMcpToolRef {
+  serverId: string;
+  toolName: string;
+}
+
+export interface CapabilityContextConfig {
+  kbIds: string[];
+  skillIds: string[];
+  mcpTools: CapabilityMcpToolRef[];
+  taskIds: string[];
+  rules: string;
+}
+
+export interface CapabilityContextProfile {
+  id: string;
+  name: string;
+  description: string;
+  projectId: string | null;
+  config: CapabilityContextConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CapabilityBundleItem {
+  id: string;
+  title: string;
+  source: string;
+  excerpt: string;
+  chars: number;
+}
+
+export interface CapabilityBundleSection {
+  kind: string;
+  title: string;
+  items: CapabilityBundleItem[];
+  chars: number;
+}
+
+export interface CapabilityBundleSource {
+  kind: string;
+  id: string;
+  label: string;
+  path: string | null;
+}
+
+export interface CapabilityContextBundle {
+  sections: CapabilityBundleSection[];
+  totalChars: number;
+  truncated: boolean;
+  sources: CapabilityBundleSource[];
+}
+
+export type CapabilityRecipeStep =
+  | { type: "knowledge_search"; kbIds: string[]; query: string; limit: number }
+  | {
+      type: "mcp_tool";
+      serverId: string;
+      toolName: string;
+      args: Record<string, unknown>;
+      highRisk: boolean;
+    }
+  | { type: "save_note"; title: string };
+
+export interface CapabilityRecipe {
+  id: string;
+  name: string;
+  description: string;
+  projectId: string | null;
+  enabled: boolean;
+  steps: CapabilityRecipeStep[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CapabilityRecipeSummary {
+  id: string;
+  name: string;
+  description: string;
+  projectId: string | null;
+  enabled: boolean;
+  stepCount: number;
+  lastRunStatus: string | null;
+  lastRunAt: string | null;
+  updatedAt: string;
+}
+
+export interface CapabilityRecipeRunStep {
+  index: number;
+  stepType: string;
+  status: string;
+  detail: string;
+  output: unknown;
+  durationMs: number;
+}
+
+export interface CapabilityRecipeRun {
+  id: string;
+  recipeId: string;
+  recipeName: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  steps: CapabilityRecipeRunStep[];
+  error: string;
+}
+
+export interface CapabilityRecipeRunSummary {
+  id: string;
+  recipeId: string;
+  recipeName: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string;
+}
+
+export interface CapabilityRecipeRunPage {
+  items: CapabilityRecipeRunSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+export const capabilityKnowledgeStats = () =>
+  invoke<KnowledgeStats>("capability_knowledge_stats", {});
+export const capabilityKbList = (query?: string, kind?: string) =>
+  invoke<KnowledgeBase[]>("capability_kb_list", { query, kind });
+export const capabilityKbGet = (id: string) =>
+  invoke<KnowledgeBaseDetail>("capability_kb_get", { id });
+export const capabilityKbCreate = (input: {
+  name: string;
+  description?: string;
+  kind?: KnowledgeBaseKind;
+  projectId?: string | null;
+  workspaceId?: string | null;
+}) => invoke<KnowledgeBase>("capability_kb_create", { input });
+export const capabilityKbUpdate = (
+  id: string,
+  input: {
+    name: string;
+    description?: string;
+    kind?: KnowledgeBaseKind;
+    projectId?: string | null;
+    workspaceId?: string | null;
+  },
+) => invoke<KnowledgeBase>("capability_kb_update", { id, input });
+export const capabilityKbDelete = (id: string) =>
+  invoke<{ deletedDocs: number; deletedCopies: number }>("capability_kb_delete", { id });
+export const capabilityKbSetFavorite = (id: string, favorite: boolean) =>
+  invoke<KnowledgeBase>("capability_kb_set_favorite", { id, favorite });
+export const capabilityDocumentList = (
+  kbId: string,
+  opts: {
+    query?: string;
+    status?: KnowledgeDocStatus;
+    sourceKind?: KnowledgeSourceKind;
+    offset?: number;
+    limit?: number;
+  } = {},
+) => invoke<KnowledgeDocumentPage>("capability_document_list", { kbId, ...opts });
+export const capabilityDocumentGet = (id: string) =>
+  invoke<KnowledgeDocumentDetail>("capability_document_get", { id });
+export const capabilityDocumentImportFile = (
+  kbId: string,
+  path: string,
+  mode: KnowledgeSourceMode,
+  title?: string,
+) => invoke<KnowledgeImportReport>("capability_document_import_file", { kbId, path, mode, title });
+export const capabilityDocumentImportFolder = (
+  kbId: string,
+  path: string,
+  mode: KnowledgeSourceMode,
+) => invoke<KnowledgeImportReport>("capability_document_import_folder", { kbId, path, mode });
+export const capabilityDocumentImportNote = (kbId: string, noteId: string) =>
+  invoke<KnowledgeImportReport>("capability_document_import_note", { kbId, noteId });
+export const capabilityDocumentImportCapture = (kbId: string, captureId: string) =>
+  invoke<KnowledgeImportReport>("capability_document_import_capture", { kbId, captureId });
+export const capabilityDocumentCreateText = (kbId: string, title: string, content: string) =>
+  invoke<KnowledgeImportReport>("capability_document_create_text", { kbId, title, content });
+export const capabilityDocumentReindex = (id: string) =>
+  invoke<KnowledgeDocument>("capability_document_reindex", { id });
+export const capabilityKbRebuild = (kbId: string) =>
+  invoke<{ indexed: number; failed: number; skipped: number }>("capability_kb_rebuild", { kbId });
+export const capabilityDocumentDelete = (id: string) =>
+  invoke<{ deletedCopy: boolean }>("capability_document_delete", { id });
+export const capabilityKnowledgeSearch = (
+  query: string,
+  opts: {
+    kbIds?: string[];
+    sourceKind?: KnowledgeSourceKind;
+    projectId?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+) => invoke<KnowledgeSearchPage>("capability_knowledge_search", { query, ...opts });
+export const capabilityKnowledgeLinkAdd = (
+  docId: string,
+  targetKind: KnowledgeLink["targetKind"],
+  targetId: string,
+  label = "",
+) => invoke<KnowledgeLink[]>("capability_knowledge_link_add", { docId, targetKind, targetId, label });
+export const capabilityKnowledgeLinkRemove = (docId: string, linkId: string) =>
+  invoke<KnowledgeLink[]>("capability_knowledge_link_remove", { docId, linkId });
+export const capabilityKnowledgeLinks = (docId: string) =>
+  invoke<KnowledgeLink[]>("capability_knowledge_links", { docId });
+
+export const capabilitySkillScan = (extraRoots: string[] = []) =>
+  invoke<SkillScanReport>("capability_skill_scan", { extraRoots });
+export const capabilitySkillList = (opts: {
+  query?: string;
+  scope?: string;
+  risk?: string;
+  projectId?: string;
+} = {}) => invoke<SkillSummary[]>("capability_skill_list", opts);
+export const capabilitySkillGet = (id: string) =>
+  invoke<SkillDetail>("capability_skill_get", { id });
+export const capabilitySkillSetEnabled = (id: string, enabled: boolean) =>
+  invoke<SkillSummary>("capability_skill_set_enabled", { id, enabled });
+export const capabilitySkillSetScope = (
+  id: string,
+  scope: SkillSummary["scope"],
+  projectId?: string | null,
+  workspaceId?: string | null,
+  agentId?: string | null,
+) =>
+  invoke<SkillSummary>("capability_skill_set_scope", {
+    id,
+    scope,
+    projectId,
+    workspaceId,
+    agentId,
+  });
+export const capabilitySkillImport = (
+  sourcePath: string,
+  scope?: SkillSummary["scope"],
+  projectId?: string | null,
+  workspaceId?: string | null,
+  agentId?: string | null,
+) =>
+  invoke<SkillDetail>("capability_skill_import", {
+    sourcePath,
+    scope,
+    projectId,
+    workspaceId,
+    agentId,
+  });
+export const capabilitySkillSaveContent = (id: string, content: string) =>
+  invoke<SkillSummary>("capability_skill_save_content", { id, content });
+export const capabilitySkillDelete = (id: string) =>
+  invoke<boolean>("capability_skill_delete", { id });
+
+export const capabilityMcpServersList = () =>
+  invoke<ExternalMcpServer[]>("capability_mcp_servers_list", {});
+export const capabilityMcpServerSave = (input: {
+  id?: string;
+  name: string;
+  command: string;
+  args: string[];
+  env: { key: string; value: string }[];
+}) => invoke<ExternalMcpServer>("capability_mcp_server_save", { input });
+export const capabilityMcpServerDelete = (id: string) =>
+  invoke<boolean>("capability_mcp_server_delete", { id });
+export const capabilityMcpServerSetEnabled = (id: string, enabled: boolean) =>
+  invoke<ExternalMcpServer>("capability_mcp_server_set_enabled", { id, enabled });
+export const capabilityMcpServerSetAllowHighRisk = (id: string, allow: boolean) =>
+  invoke<ExternalMcpServer>("capability_mcp_server_set_allow_high_risk", { id, allow });
+export const capabilityMcpServerTest = (id: string) =>
+  invoke<McpConnectionReport>("capability_mcp_server_test", { id });
+export const capabilityMcpServerCall = (
+  id: string,
+  toolName: string,
+  argsJson: string,
+  confirmed: boolean,
+) => invoke<McpCallReport>("capability_mcp_server_call", { id, toolName, argsJson, confirmed });
+export const capabilityMcpCalls = (serverId?: string, offset = 0, limit = 50) =>
+  invoke<McpCallPage>("capability_mcp_calls", { serverId, offset, limit });
+
+export const capabilityContextList = (projectId?: string) =>
+  invoke<CapabilityContextProfile[]>("capability_context_list", { projectId });
+export const capabilityContextGet = (id: string) =>
+  invoke<CapabilityContextProfile>("capability_context_get", { id });
+export const capabilityContextSave = (input: {
+  id?: string;
+  name: string;
+  description?: string;
+  projectId?: string | null;
+  config: CapabilityContextConfig;
+}) => invoke<CapabilityContextProfile>("capability_context_save", { input });
+export const capabilityContextDelete = (id: string) =>
+  invoke<boolean>("capability_context_delete", { id });
+export const capabilityContextDuplicate = (id: string) =>
+  invoke<CapabilityContextProfile>("capability_context_duplicate", { id });
+export const capabilityContextAssemble = (opts: {
+  id?: string;
+  config?: CapabilityContextConfig;
+  query?: string;
+  maxChars?: number;
+}) => invoke<CapabilityContextBundle>("capability_context_assemble", opts);
+
+export const capabilityRecipeList = () =>
+  invoke<CapabilityRecipeSummary[]>("capability_recipe_list", {});
+export const capabilityRecipeGet = (id: string) =>
+  invoke<CapabilityRecipe>("capability_recipe_get", { id });
+export const capabilityRecipeSave = (input: {
+  id?: string;
+  name: string;
+  description?: string;
+  projectId?: string | null;
+  enabled?: boolean;
+  steps: CapabilityRecipeStep[];
+}) => invoke<CapabilityRecipe>("capability_recipe_save", { input });
+export const capabilityRecipeDelete = (id: string) =>
+  invoke<boolean>("capability_recipe_delete", { id });
+export const capabilityRecipeDuplicate = (id: string) =>
+  invoke<CapabilityRecipe>("capability_recipe_duplicate", { id });
+export const capabilityRecipeExport = (id: string, includeSecretArgs = false) =>
+  invoke<string>("capability_recipe_export", { id, includeSecretArgs });
+export const capabilityRecipeImport = (json: string) =>
+  invoke<CapabilityRecipe>("capability_recipe_import", { json });
+export const capabilityRecipeRun = (id: string, confirmed: boolean) =>
+  invoke<CapabilityRecipeRun>("capability_recipe_run", { id, confirmed });
+export const capabilityRecipeRuns = (recipeId?: string, offset = 0, limit = 50) =>
+  invoke<CapabilityRecipeRunPage>("capability_recipe_runs", { recipeId, offset, limit });
+export const capabilityRecipeRunGet = (id: string) =>
+  invoke<CapabilityRecipeRun>("capability_recipe_run_get", { id });

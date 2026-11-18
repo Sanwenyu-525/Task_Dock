@@ -28,7 +28,7 @@
 |---|---|---|---|---|---|
 | 1 | 后续功能规划 | 历史聊天摘要 | 正式技术文档 `docs/ROADMAP.md` + 自动化测试 `featureCatalog.test.ts` | 目录本体（`featureCatalog.ts`） | 归入现有功能（单一事实源） |
 | 2 | 工作与生活效率功能扩展 | 历史聊天摘要 | 当前源代码 `tasks/` `notes/` + 自动化测试 | `core.life-routines`、`core.smart-reminders`、`core.quick-notes` | 归入现有功能（拆分） |
-| 3 | 产品规划中心 | 历史聊天摘要 | 当前源代码 `commands/planning.rs` + 自动化测试 + 正式技术文档 `docs/roadmap/planning-center.md` | 用户项目 `planning_*`（非 featureCatalog 条目） | 独立保留（双数据源隔离） |
+| 3 | 产品规划中心 | 历史聊天摘要 | 当前源代码 `commands/planning.rs` + 自动化测试 + 正式技术文档 `docs/roadmap/planning-center.md` | 用户项目 `planning_*` + 内置目录 `workbench.planning-center` | 独立保留（双数据源隔离） |
 | 4 | 场景工作区 | 历史聊天摘要 | 当前源代码 `commands/scenario.rs` + v38 迁移 + 自动化测试（5 个深度/循环用例） | `core.scenario-workspace` | 独立保留（不并入现场恢复） |
 | 5 | 智能日程提醒 | 历史聊天摘要 | 当前源代码 `nlp.rs` + 重复规则 + 自动化测试 | `core.smart-reminders` | 归入现有功能（复用任务/提醒） |
 | 6 | 文件暂存架与文件夹投递 | 历史聊天摘要 | 当前源代码 `shelf/` + 80 单测 + 历史验收报告 `tmp/acceptance/file-shelf/` | `core.file-shelf` | 独立保留（独立资产） |
@@ -51,6 +51,7 @@
 | 23 | Android 屏幕镜像与独立虚拟屏 | 历史聊天摘要 | 正式技术文档 `docs/mobile/13-android-screen-control.md` + `vd_*` 命令 + 2026-11-13/14 实现记录 | `mobile.virtual-display` | 独立保留（不并入伴随应用） |
 | 24 | 资源管理 / 诊断中心 / 备份恢复 | 历史聊天摘要 | `docs/RESOURCE_CLEANUP.md`、`docs/DIAGNOSTICS.md`、`docs/PERFORMANCE_FINAL_ACCEPTANCE.md` + 当前源代码 | `system.resources`、`system.diagnostics`、`system.backup` | 拆为三个独立 ID（不同生命周期与安全边界） |
 | 25 | 小说 / 游戏 / AI 漫剧专业工作台 | 历史聊天摘要 + **当前用户明确要求** | `docs/WORKSPACE_PROJECTS.md` + `workspaceProfiles.ts` 能力四态 + v58 小说迁移 | `create.novel`、`create.game`、`create.ai-comic` | 拆为三个 ID（不同制作流程与缺口） |
+| 26 | 将现有全部功能整理进内置路线图 | **当前用户明确要求（2026-11-18）** | `featureCatalog.ts` 本轮 12 项 + 导航 / 设置 / README 核对 | `core.tasks`、`workbench.shell`、`workbench.planning-center`、`capability.center`、`life.purchases`、`agent.monitoring`、`ux.theme-system`、`ux.navigation-customization`、`ux.history-center`、`system.audio`、`system.tray-autostart`、`system.settings` | 独立保留（全部登记，状态以目录为准） |
 
 > 表中「自动化测试」只表示存在对应测试文件与用例，不代表真机行为已验证；真机状态以各功能
 > `verification` 字段与验收报告为准。
@@ -140,6 +141,23 @@
 - **移动端 UI 专属小工具**：归属 `mobile.companion`，不按单个页面拆分。
 
 > 更正保留原判定与日期，不删除历史结论；当前规则以本节 4.2 为准。
+
+### 4.3 更正（2026-11-18，用户要求「现有功能全部进入内置路线图」）
+
+用户明确要求把当前全部功能整理进内置路线图，4.2 中以下「仍不新增条目」的边界被推翻并已登记：
+
+- **任务 CRUD 本体** → `core.tasks`（任务管理与提醒闭环）。
+- **产品规划中心本体** → `workbench.planning-center`（内置目录 + 用户项目双数据源）。
+- **悬浮胶囊 / 磁吸 / 贴边吸附** → `workbench.shell`（窗口形态与贴边胶囊）。
+
+同批补登 `capability.center`、`life.purchases`、`agent.monitoring`、`ux.theme-system`、
+`ux.navigation-customization`、`ux.history-center`、`system.audio`、`system.tray-autostart`、
+`system.settings`。
+
+维持不登记：**构建资源调度器**（开发基础设施，不是用户功能）；移动端专属小工具仍归属
+`mobile.companion`，不按单页拆分。历史判定原文保留，不回写。
+
+> 当前规则以本节 4.3 为准；状态与计数仍只以 `featureCatalog.ts` 为唯一事实源。
 
 ## 5. 维护规则
 

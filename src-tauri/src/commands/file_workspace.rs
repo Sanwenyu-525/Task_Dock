@@ -3,6 +3,7 @@
 //! 与核心层的分工：命令层只做参数解析、受保护目录解析（应用数据目录）与
 //! 打开/定位（opener / explorer），文件语义全部在 `file_workspace::` 核心。
 
+use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use base64::Engine as _;
@@ -260,6 +261,110 @@ pub fn fs_reveal(app: AppHandle, path: String) -> AppResult<()> {
         .spawn()
         .map_err(|e| AppError::Validation(format!("定位失败: {e}")))?;
     Ok(())
+}
+
+/// 只读预演复制/移动：统计条目/字节、同名冲突、无权限源与重复源。
+/// 不执行任何文件写入；目标与源都必须通过绝对路径与保护目录校验。
+#[tauri::command]
+pub async fn fs_preview_operation(
+    app: AppHandle,
+    paths: Vec<String>,
+    target_dir: String,
+    effect: String,
+) -> AppResult<fw::OperationPreview> {
+    let protected = protected_dirs(&app);
+    let target = fw::validate_abs_path(&target_dir)?;
+    fw::ensure_not_protected(&target, &protected)?;
+    for raw in &paths {
+        let source = fw::validate_abs_path(raw)?;
+        fw::ensure_not_protected(&source, &protected)?;
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        fw::preview_transfer(&paths, &target.to_string_lossy(), &effect)
+    })
+    .await
+    .map_err(|e| AppError::Agent(format!("操作预演任务失败: {e}")))?
+}
+
+/// 用 Shell 动词打开原生对话框：`openas` = 「打开方式」，`properties` = Windows 属性页。
+/// 只做系统 Shell 调用，不写文件；路径先过绝对路径与保护目录校验。
+fn shell_execute_verb(verb: &str, target: &std::path::Path) -> AppResult<()> {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb_w: Vec<u16> = verb.encode_utf16().chain(std::iter::once(0)).collect();
+    let file_w: Vec<u16> = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: 两个 UTF-16 缓冲区在调用期间有效且以 NUL 结尾；其余参数为 Shell 约定的空值。
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb_w.as_ptr(),
+            file_w.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW 返回值 > 32 表示成功（<=32 是错误码）。
+    let code = result as isize;
+    if code > 32 {
+        Ok(())
+    } else {
+        Err(AppError::Validation(format!(
+            "系统对话框打开失败（ShellExecute 返回 {code}）"
+        )))
+    }
+}
+
+/// 打开 Windows「打开方式」选择器。
+#[tauri::command]
+pub fn fs_open_with(app: AppHandle, path: String) -> AppResult<()> {
+    let target = crate::navigation::validate_local_path(&path)?;
+    fw::ensure_not_protected(&target, &protected_dirs(&app))?;
+    shell_execute_verb("openas", &target)
+}
+
+/// 打开 Windows 原生属性页（与内部只读属性对话框区分）。
+#[tauri::command]
+pub fn fs_show_properties(app: AppHandle, path: String) -> AppResult<()> {
+    let target = crate::navigation::validate_local_path(&path)?;
+    fw::ensure_not_protected(&target, &protected_dirs(&app))?;
+    shell_execute_verb("properties", &target)
+}
+
+/// 在终端中打开：优先 Windows Terminal，缺失时回退 cmd.exe。
+/// 目录目标直接作为工作目录；文件目标使用其父目录。
+#[tauri::command]
+pub fn fs_open_terminal(app: AppHandle, path: String) -> AppResult<()> {
+    let target = crate::navigation::validate_local_path(&path)?;
+    fw::ensure_not_protected(&target, &protected_dirs(&app))?;
+    let dir = if target.is_dir() {
+        target
+    } else {
+        target
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .ok_or_else(|| AppError::Validation("无法确定父目录".into()))?
+    };
+    if std::process::Command::new("wt.exe")
+        .arg("-d")
+        .arg(&dir)
+        .spawn()
+        .is_ok()
+    {
+        return Ok(());
+    }
+    // cmd.exe 在当前工作目录启动；不用拼接 cd 命令，避免路径引号/特殊字符注入。
+    std::process::Command::new("cmd.exe")
+        .current_dir(&dir)
+        .arg("/K")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| AppError::Validation(format!("打开终端失败: {e}")))
 }
 
 /// 缩略图（PNG data URL）；无处理器/失败返回 None（前端回落类型图标，不伪造占位成功）。

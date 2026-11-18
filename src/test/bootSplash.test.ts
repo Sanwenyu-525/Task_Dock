@@ -90,3 +90,55 @@ describe("启动阈值跨文件同步（协议 §2）", () => {
     expect(html).not.toContain("15000");
   });
 });
+
+/* ── 工作台窗口（workspace.html）启动占位 ──
+ * 背景：工作台窗口隐藏创建，8s 未收到前端就绪即强制显示；workspace.html
+ * 此前只有 #root，React 未挂载时用户看到纯白窗口（2026-11-17 实测截图）。
+ * 这里锁定与主窗口同一份看门狗、同一组恢复入口的静态契约。 */
+const workspaceHtml = readFileSync(resolve(process.cwd(), "workspace.html"), "utf8");
+const workspaceModuleAt = workspaceHtml.indexOf('src="/src/workspace/main.tsx"');
+const workspaceWatchdogAt = workspaceHtml.indexOf('<script src="/boot/boot-watchdog.js">');
+
+describe("workspace.html 工作台启动占位", () => {
+  it("在主模块之前提供可见占位与三个恢复入口", () => {
+    const splashAt = workspaceHtml.indexOf('id="boot-splash"');
+    const retryAt = workspaceHtml.indexOf('id="boot-retry"');
+    const waitAt = workspaceHtml.indexOf('id="boot-wait"');
+    const copyAt = workspaceHtml.indexOf('id="boot-copy"');
+    expect(splashAt).toBeGreaterThan(-1);
+    expect(retryAt).toBeGreaterThan(-1);
+    expect(waitAt).toBeGreaterThan(-1);
+    expect(copyAt).toBeGreaterThan(-1);
+    expect(splashAt).toBeLessThan(workspaceModuleAt);
+    expect(retryAt).toBeLessThan(workspaceModuleAt);
+    expect(workspaceHtml).toContain('id="boot-detail"');
+  });
+
+  it("恢复卡四态可见性由 data-state 驱动（boot/slow/timeout/error）", () => {
+    for (const state of ["boot", "slow", "timeout", "error"]) {
+      expect(workspaceHtml).toContain(`data-state="${state}"`);
+    }
+    expect(workspaceHtml).toContain('#boot-splash[data-state="timeout"] #boot-recovery');
+  });
+
+  it("主题提示读取器先于占位样式执行，且只接受白名单取值", () => {
+    const hintAt = workspaceHtml.indexOf("taskdock.boot-theme");
+    const styleAt = workspaceHtml.indexOf("<style>");
+    expect(hintAt).toBeGreaterThan(-1);
+    expect(styleAt).toBeGreaterThan(-1);
+    expect(hintAt).toBeLessThan(styleAt);
+    expect(workspaceHtml).toContain('hintTheme === "light"');
+    expect(workspaceHtml).toContain('hintTheme === "dark"');
+    expect(workspaceHtml).toContain('hintPreset === "frosted"');
+    expect(workspaceHtml).toContain('hintPreset === "dream-gradient"');
+  });
+
+  it("外部看门狗先于模块脚本加载，并保留 20s 死人在场保险", () => {
+    expect(workspaceWatchdogAt).toBeGreaterThan(-1);
+    expect(workspaceWatchdogAt).toBeLessThan(workspaceModuleAt);
+    const deadManAt = workspaceHtml.indexOf("死人在场保险");
+    expect(deadManAt).toBeGreaterThan(workspaceWatchdogAt);
+    expect(workspaceHtml).toContain("20000");
+    expect(workspaceHtml).toContain("removeChild");
+  });
+});

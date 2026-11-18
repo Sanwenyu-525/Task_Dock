@@ -88,6 +88,21 @@ function eventAmountText(event: LifeEventSummary): string {
   return formatMoneyMinor(event.total_price_minor, event.currency, event.amount_scale) || "未记金额";
 }
 
+/** 输入提示随所选货币的 ISO 精度变化，避免 KWD/JPY 被固定文案误导。 */
+function currencyMaxScale(currency: string): number {
+  const code = currency.trim().toUpperCase();
+  if (code === "JPY") return 0;
+  if (code === "KWD") return 3;
+  return 2;
+}
+
+function receiptStateLabel(state: LifeDocumentLink["transfer_state"]): string {
+  if (state === "transferred") return "已传输";
+  if (state === "local") return "本机";
+  if (state === "missing") return "文件缺失";
+  return "待传输";
+}
+
 interface PurchaseForm {
   mode: "create" | "edit";
   eventId: string | null;
@@ -562,14 +577,14 @@ export default function LifePanel() {
             </span>
             <div>
               <h1>生活</h1>
-              <p>购买记录、生活待办与票据，全部保存在本机并随任务系统同步。</p>
+              <p>购买记录、生活待办与票据保存在本机，可通过局域网与手机同步。</p>
             </div>
           </div>
           <SearchField
             value={query}
             onChange={setQuery}
             ariaLabel="搜索商品或购买记录"
-            placeholder="搜索商品，例如「大米」或「上次什么时候买的大米」"
+            placeholder="搜索商品，例如「大米」"
             className="life-search"
           />
         </div>
@@ -717,13 +732,7 @@ export default function LifePanel() {
                       <FileImage size={14} aria-hidden="true" />
                       <span className="life-receipt-name">{link.document_name || "生活票据"}</span>
                       <span className={`life-chip ${link.transfer_state}`}>
-                        {link.transfer_state === "transferred"
-                          ? "已传输"
-                          : link.transfer_state === "local"
-                            ? "本机"
-                            : link.transfer_state === "missing"
-                              ? "文件缺失"
-                              : "待传输"}
+                        {receiptStateLabel(link.transfer_state)}
                       </span>
                     </button>
                   </li>
@@ -800,6 +809,9 @@ export default function LifePanel() {
                       <button type="button" className="life-link-open" onClick={() => void openLink(link)}>
                         <ReceiptText size={13} aria-hidden="true" /> {link.document_name || "生活票据"}
                       </button>
+                      <span className={`life-chip ${link.transfer_state}`}>
+                        {receiptStateLabel(link.transfer_state)}
+                      </span>
                       <button type="button" className="btn sm" onClick={() => void removeLink(link)}>
                         解除
                       </button>
@@ -1068,7 +1080,9 @@ export default function LifePanel() {
                 />
               </label>
               <label className="life-field">
-                <span>金额（最多 2 位小数）</span>
+                <span>
+                  金额{form.currency ? `（最多 ${currencyMaxScale(form.currency)} 位小数）` : ""}
+                </span>
                 <input
                   className="input"
                   value={form.total}

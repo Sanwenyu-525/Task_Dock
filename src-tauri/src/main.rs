@@ -2,6 +2,9 @@
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--recycle-empty-worker") {
+        std::process::exit(task_dock_lib::recycle::volume::run_empty_worker(&args[2..]));
+    }
     if args.len() >= 2 && args[1] == "--agentctl" {
         // 无头模式：供自动化联调与运维（不启动窗口/托盘）
         std::process::exit(task_dock_lib::agentctl(&args[2..]));

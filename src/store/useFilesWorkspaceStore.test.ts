@@ -116,6 +116,16 @@ describe("标签与导航", () => {
     expect(tabPath()).toBe("D:\\a");
   });
 
+  it("最近目录去重且有界；clearRecentDirs 清空", () => {
+    state().clearRecentDirs();
+    state().recordRecentDir("D:\\a");
+    state().recordRecentDir("D:\\b");
+    state().recordRecentDir("D:\\a");
+    expect(state().recentDirs.slice(0, 2)).toEqual(["D:\\a", "D:\\b"]);
+    state().clearRecentDirs();
+    expect(state().recentDirs).toEqual([]);
+  });
+
   it("closeTab 关闭激活标签时落到相邻标签", () => {
     const paneId = state().activePaneId;
     state().openInPane(paneId, "D:\\a", "newTab");

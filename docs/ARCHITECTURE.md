@@ -512,7 +512,7 @@ Agent 逻辑不写入 UI，Adapter 只产生事件、不感知存储。
     百分比）；项目进度 = 已完成功能/总功能（无功能显示空态，不显示 0%）；功能状态
     与进度相互独立，不由完成率推断。功能状态变化与步骤勾选在后端同一事务写入
     `planning_activity`（status_change / step_done / note 三类显式区分）。
-  - 「内置路线图」：Task Dock 自身 49 项功能规划 / 7 个展示分区（`lib/featureCatalog.ts` 静态目录）
+  - 「内置路线图」：Task Dock 自身 61 项功能规划 / 7 个展示分区（`lib/featureCatalog.ts` 静态目录）
     经 `FeatureRoadmapPanel` 原样只读展示，不入库、不被用户项目编辑覆盖。
 - 任务编辑交互（2026-11-04，模态清理第二批）：原 `TaskEditor.tsx`（`modal-mask` + Dialog）
   删除，改为 `src/components/tasks/TaskEditorView.tsx` 的**页面内编辑态**；`TasksPanel.tsx`
@@ -2123,8 +2123,7 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
   后拼接词法尾部，防 junction/symlink 绕过保护目录）；`is_under` 分量边界比较（拒绝
   `C:\AppData` 与 `C:\AppDataBackup` 前缀混淆）；根路径拒绝删除/写入；回收站删除只用词法
   路径（不 canonicalize，防误删符号链接目标）；重解析点删除优先于 `is_dir`（std 对 junction
-  `is_dir()==false` 陷阱）。`list_dir` 改 `offset` 分页（`scanned`/`has_more`），前端
-  dirCache `loadMore` 翻页（>8000 不再截断丢失）。
+  `is_dir()==false` 陷阱）。`list_dir` 分页契约见下文「目录列举分页契约（r6 冻结）」。
 - **拖拽（P0）**：`interactions.ts` 重写——订阅回调内 `updateFwHover` 的事件重入以签名检测
   转迭代收敛（不再无限递归）；坐标只在变化时广播；四方向分栏 side="before"|"after"
   （左/上必须前侧插入树）；PointerUp/Cancel/Escape/失焦/卸载全清理；文件拖拽 ghost 显示
@@ -2202,7 +2201,7 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
 ### 第六轮：目录分页完整性与搜索完整性（2026-11-17）
 
 修复前端两个调用方把后端 `scanned` 二次累加导致的跳页漏文件，以及目录对比只读首页、
-搜索把中间页 `has_more` 误判为截断的问题。报告 `tmp/acceptance/files-workspace/round6/agentA-r6b/`。
+搜索把中间页 `has_more` 误判为截断的问题。报告 `tmp/acceptance/files-workspace/round6/agentA/`。
 
 **目录列举分页契约（`file_workspace::list_dir`，r6 冻结；后端实现、`bridge.ts` 类型、
 前端 dirCache / workspaceSearch / folderCompare 与测试均按此解释，调用方不得自行解读）：**
@@ -2228,9 +2227,130 @@ notification / autostart / global-shortcut / 窗口几何/拖拽权限。业务 
 对外字段保持兼容，新增 `complete` 为合并后的完整性结论。文件夹对比两侧都按 `nextOffset`
 翻页读完，停滞或未读全时 `complete=false`，未加载条目不得判断「不存在」。
 
-**文件夹对比预算（A1）**：左右目录共享同一 `maxFiles` 预算，翻页前按剩余预算决定本页保留条数；
-超限即停止后续 IPC，保留已读项并置 `complete=false`，区分 `budget` / `stalled` / `failed`；
-不完整结果禁止差异同步。
 
-**重复查找完整性（A2）**：扫描结论保留 `complete/truncated/failedDirs/cancelled`；不完整时结果区
-与确认框持续警示，关闭或卸载中止在途扫描；只有哈希确认组可进入删除请求。
+
+
+## 文件操作与回收站：统一任务服务与缓存边界（2026-11-17）
+
+- **统一入口** `src-tauri/src/fsops/`：复制/移动/删除/永久删除/回收站恢复/回收站永久删除/清空
+  加批量重命名，八类任务共用 `JobSnapshot`（kind/status/progress/ok/failed/partial/skipped/cancelable/phase）。
+  调度为固定 2 个 worker 的队列（`MAX_CONCURRENT_HEAVY`），排队上限 32；任务先 `pending`
+  再 `running`，取消进入 `cancelling`。复制及需要复制的移动在 Windows 文件复制回调中检查取消，
+  目录复制也在子项间检查。重命名与同卷原子移动在顶层条目之间停止，已提交的操作保留。
+- **注册表**只保留 24 个**终态**任务；运行中/排队中任务永不淘汰（旧实现按插入数淘汰，
+  长任务会被后续小任务挤出注册表，进度与取消随之丢失）。任务仅在进程内存在，重启后
+  不恢复、不伪造运行中状态。
+- **批量重命名**：保留旧 `fs_batch_rename`，新增 `fs_batch_rename_job_start`；整批冲突
+  预检仍在执行前完成，条目间可取消，完整旧名/新名/失败原因通过 `fs_job_report` 按需读取。
+- **回收站索引**（`src-tauri/src/recycle/`）只是缓存：浏览/搜索/统计只读 SQLite，真实状态
+  以 Shell 为准；扫描一遍目录项 + 只读新增/变化 `$I` 头部，绝不读 `$R` 内容、不递归。
+- **大回收站查询**（v70）：按删除时间分页时先走覆盖索引取当页主键，再回表读取详情。
+  删除时间相同的条目按记录键和回收站根目录稳定排序。各卷统计一次分组聚合，再合并扫描状态。
+- **还原后的残留元数据**（v71）：Windows Shell 还原成功后可能保留 `$I`，而 `$R` 已经移走。
+  还原成功时将旧索引的元数据指纹写入本机缓存，同时移除索引记录。后续只跳过同卷、同键、
+  同指纹且缺少 `$R` 的记录。元数据消失或变化后回收缓存标记，存在 `$R` 的条目仍正常索引。
+  两项迁移均由 SQLite 启动时追加执行。v70 重建查询索引，v71 增加本机瞬态表，均不改写旧条目、
+  IPC 或备份格式。标记生命周期限于本机数据库，备份不含其内容。旧版本无法使用标记，回退时应使用迁移前数据库副本。
+- **缓存职责（不强行合并）**：文件工作区 `dirCache`（目录内容+签名，随窗口/会话失效）、
+  回收站 `recycle_index`（持久化元数据索引）、资源管理（磁盘/应用占用快照）、
+  全局搜索（结果与索引）。公共能力是错误分类、失效通知与扫描取消，而不是一张全盘大表。
+- **文件拖出**：文件仍在工作台内部时由窗格协调器处理。按住左键越过 WebView2 边界时，协调器
+  结束内部会话，调用 `fs_drag_out({ paths })`。它校验现有绝对路径及保护目录，复用暂存架的主线程
+  Windows OLE 数据源及进程级单飞守卫，只提供复制效果。正在拖出的源窗格不接收自身的原生投递。
+  IPC 为新增命令，已有拖放接口和 SQLite 数据保持兼容。
+- **职责边界**：`resource_cleanup::user_junk` 只做「预览可清理空间 + 用户授权清理」，
+  卷/SID 发现统一委托 `recycle::volume::bin_volumes`；不再维护第二套回收站浏览/恢复实现。
+
+### 2026-11-17 首轮后端可靠性与逐项报告补充（后续能力见第二轮）
+
+- `pending → running` 与取消使用同一快照锁裁决，已取消任务不再被 worker 重新启动。
+  排队中的复制/移动也返回 `cancelable=true`；执行开始后按原能力变为 false。
+- 回收站同步的准入/取消/收尾使用同一状态锁，强制刷新也不能并发启动第二轮；节流仍以
+  上轮结束时间为基准。恢复目标沿用文件工作区的绝对路径、词法边界及真实路径保护检查。
+- `recycle_empty` 的 `volumes=null` 保留全部卷语义；`volumes=[]` 返回 validation，
+  禁止将“未选择”扩大成永久清空全部卷。
+- Windows 原生清空在同一可执行文件的单卷子进程运行。父进程先把子进程加入退出即回收的
+  Windows Job，再允许调用 Shell。子进程只处理已选卷当前用户目录中的配对条目，绑定到回收站
+  Shell 命名空间后每批最多 1,000 项，经 `IFileOperation::DeleteItems` 永久删除。至少两批时最多使用
+  两个独立 STA 线程，各处理不重叠的条目；一个批次时串行执行。
+  子进程每完成一批发送一次心跳。显式取消或连续 15 分钟无批次进展时结束子进程并保留索引，
+  后续同步读取实际变化。取消无法回滚已经删除的项目。
+- Shell 分批删除可能留下无载荷元数据。确认已选卷没有配对条目后，将孤立元数据按现有指纹表记录，
+  并与清理该卷索引、刷新卷状态一起提交。同卷重现载荷或指纹变化时正常同步。对账与同步写入串行，
+  其他卷不参与对账。原先只有 `$R`、没有 `$I` 的孤立载荷保留为异常诊断，Windows 不将其计为可恢复条目。
+  没有数据库迁移，现有 IPC 兼容。
+- 新增只读 IPC `fs_job_report({ jobId }) → FsOpReport | null`，前端桥接 `fsJobReport`。
+  复制/移动在结束前保存原始逐项报告，包含 `operationId/attempted/ok/failed/skipped/partial/entries`，
+  `entries` 保留源路径、目标路径、状态、原因与阶段；预检整批失败也返回逐项失败报告。
+  未产生报告（排队中、排队取消或其他任务类型）返回 null；任务不存在/已淘汰返回 NotFound。
+  报告按需读取，不进入进度广播或诊断日志；单批上限 500，随进程内任务历史淘汰，重启不恢复。
+  旧命令及事件结构保持兼容，Breaking Change: No，无迁移。
+- 此接口使前端可以转用复制/移动任务，同时保留“只清除成功源项”的既有语义；本轮只增加
+  后端与桥接契约，页面接线仍待前端任务完成。批量重命名仍使用原有有界 IPC。
+
+### 2026-11-17 第二轮功能补齐
+
+- `copy_paths_with_progress` / `move_paths_with_progress` / `batch_rename_with_progress` 共用原有
+  校验、父目录去重与冲突逻辑，在顶层条目间检查取消并回调真实逐项结果。任务事件节流到
+  100ms，完整报告单独保留；取消后的报告只包含实际处理项，未执行项不能被当成成功。
+- 目录复制遇到枚举/类型读取失败或重解析点会明确失败并保留源，防止不完整复制后移动继续
+  删除源；递归预算耗尽返回错误，不因下一条目录重用零预算而下溢 panic。
+- 回收站目录枚举阶段现在可取消并报告进度；任何枚举/元数据读取失败均终止本轮差集删除，
+  保留旧索引。取消产生 partial，非离线 IO 错误标 error，不伪装为空或离线成功。
+- 多选粘贴计划去重但保留部分失效 ID，由现有执行器记录 skipped；全部失效则拒绝开始。
+  `PasteJob.skipped` 从逐项持久化状态读回，无新计数列；保持跨重启的事实口径。
+- 新增 `workspace_project_progress`，分别统计事项状态和关联任务完成度；事项分母不含
+  archived，空分母返回 null，不混合两种百分比，不把 Agent 完成视为任务完成。
+- 新增 `commands/workspace_resources.rs` 与 v69 `workspace_resource_links`：五类项目共用
+  笔记/Agent 会话/外部产物弱关联。项目端外键级联，资源端不建多态外键，目标失效仍保留
+  关联用于定位/修复；不复制内容、不移动/删除外部文件。产物存在性检查在 SQLite 锁外执行。
+  列表默认 50/上限 200，项目最多 2000 关联，支持 kind 筛选、offset、total、hasMore。
+  新建笔记/会话关联要求目标存在；旧失效关联可编辑/解除；归档项目对此能力只读。
+  新命令 `workspace_resource_save/list/remove`，同项目/类型/目标保存幂等，移除必须匹配 projectId。
+- v69 只追加新表和索引，旧项目/关联不改写。完整与快速备份都全量包含关联元数据，恢复
+  顺序 451（晚于 workspace_projects）；旧备份缺表时恢复为空。schema 前进到 69，旧版本
+  不保证能读取新库/新备份；回退应使用升级前备份。IPC 为加法，Breaking Change: No。
+- 前端仅同步 bridge 契约和任务 kind 的一处展示映射；页面接线另交前端任务书，不据此
+  提升整体验收状态。记录形成时，单文件/目录内部取消尚未实现。
+
+### 2026-11-18 文件传输取消与目标提交
+
+- 文件先复制到目标目录内独立创建的临时目录。Windows 使用 `CopyFileExW` 的回调检查取消，
+  并在提交前复核取消状态。取消或提交失败只清理本次临时内容，原目标保留。
+- 跳过和改名策略使用 Windows 不覆盖的原子改名。若目标在预检后被创建，本项报告冲突或提交失败，
+  并发创建的数据保留。目录目标仅在明确选覆盖时允许合并，合并不进入目标重解析点。
+- 跨卷移动或目录合并先完成复制，再进入删源阶段。复制阶段取消保留源；已经落地的目录内容
+  保留并报部分完成。取消是协作式的，系统调用阻塞期间仍可能等待。当前进度按条目统计，
+  文件任务仅在本进程内保留。
+
+## 安全保险箱（Secure Vault，P0 规划中，2026-11-18）
+
+- **定位**：保存不常用但不能忘的敏感凭据（账号密码、API Key、软件许可证、恢复码、设备凭据、
+  私密备忘）。与知识库/任务/生活记录的职责边界见
+  [docs/features/secure-vault/README.md](features/secure-vault/README.md) §1。
+- **独立库**：数据存 `<数据目录>/secure-vault.db`，**不进** `task-dock.db`。原因：主库所有表
+  强制登记 `BACKUP_TABLES`（`commands/backup.rs` 的 `backup_registry_covers_every_schema_table`
+  会 panic），主库设置进备份，无令牌 CLI 等同 UI 权限，全局搜索直接持主库读连接。库分离是
+  物理隔离，不依赖调用方自律。
+- **加密**：AES-256-GCM；主密码经 Argon2id（64 MiB / t=3 / p=1）派生 KEK，解封装 32B 随机 DEK；
+  每条记录的 `meta` / `secret` 两个载荷各用 `HKDF(DEK, info=record/{id}/{purpose}/v{dek_ver})`
+  派生的独立子密钥，AAD 绑定 `id + purpose + 版本`。改主密码只重封装 DEK，不重加密记录。
+  恢复密钥为 20B CSPRNG（32 字符 Base32），HKDF 派生 KEK 解同一 DEK。
+- **明文边界**：库内只留 `id/rev/dek_ver/alg_ver/data_ver/tombstone` 与非敏感元数据；标题、
+  账号、URL、标签、分类、自定义字段名全部在密文内。搜索只在解锁态内存中进行，不建 FTS、
+  不落查询缓存。
+- **锁定**：后端单一 ticker 驱动。默认闲置 5 分钟、后台 60 秒宽限；系统锁屏（WTS）、休眠
+  （`WM_POWERBROADCAST`）、窗口隐藏、进程退出**强制立即锁定**且不可关闭。前端定时器不作为
+  安全机制。
+- **外部入口**：MCP 能力位、MCP 工具、CLI 子命令、本地 REST 端点、全局搜索**均不含保险箱**；
+  保险箱命令依赖仅桌面端 `manage` 的 `State<VaultState>`，因此在这些入口里结构性不可达。
+  未来若开放，只能走"用户当场授权 + 指定记录 + 短时租约 + 可审计"，见 threat-model T-09/T-10。
+- **备份**：独立 `.tdvault` 容器（头部明文 + 载荷密文），每次导出随机 `file_key`，由独立备份口令
+  封装；导入走 staging + 原子替换 + 保留 `.pre-restore`。**不得写入 `<数据目录>/backups/`**
+  （`list_backups`/`prune_backups` 会枚举该目录并按保留天数删除所有文件）。
+- **兼容性**：本阶段仅文档，**无 IPC / 无迁移 / 无新依赖 / 无 UI**；主库 schema 不变，
+  `featureCatalog.ts` 未登记（不计入当前 61 项统计）。P1 落地时 IPC 为加法，
+  Breaking Change: No。
+- **文档入口**：[docs/features/secure-vault/](features/secure-vault/README.md)，含需求矩阵、
+  现状分析（F-01..F-08）、威胁模型（T-01..T-15 / R-01..R-22）、安全架构、数据模型、
+  方法级接口、桌面与移动端交互、备份恢复、多设备同步架构、测试验收与路线图。

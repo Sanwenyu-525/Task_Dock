@@ -33,6 +33,7 @@ Task Dock 已有三类容易与「项目」混淆的对象，本功能不替换�
 | `workspace_instances` | 每个项目一份窗口状态 | `project_id` 主键 + 级联删除；`active_module`、`layout_json`、`last_opened_at` |
 | `workspace_items` | 通用事项/阶段节点（集数、镜头、角色、构建、测试、问题…） | 自引用 `parent_id`；`status` CHECK；`metadata_json` 只存 JSON 对象 |
 | `workspace_task_links` | 项目 ↔ 现有任务的多对多弱关联 | 两端外键级联；只存关联，不复制任务内容 |
+| `workspace_resource_links` | 五类项目共用的笔记 / Agent 会话 / 外部产物关联（v69） | 项目外键级联；资源目标为弱引用，目标失效仍保留关联；同项目/类型/目标唯一 |
 | `shelf_project_links` | 暂存条目 ↔ 项目弱关联（v51） | 两端外键级联；只存关联 |
 | `novel_volumes` | 小说卷（B1，v58） | `project_id` 级联删除；`sort_order` 控制卷内顺序 |
 | `novel_chapters` | 小说章与正文（B1，v58） | `project_id`、`volume_id`（可空=未分卷）均级联；正文为 `TEXT`，`word_count` 由保存时更新 |
@@ -160,6 +161,11 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
 - 同一项目的模块切换串行保存，保留 `moduleOrder`/`hiddenModules`，最后一次点击生效；
   项目切换那一帧不读取旧项目布局（必要时重新读取本项目实例）。
 
+**2026-11-17 后端补强**：`workspace_instance_save` 省略或传 `null` 的 `layoutJson`
+表示只保存活动模块，保留原布局；新实例仍默认 `{}`，显式传 `{}` 才清空布局。
+项目删除及清除匹配的活跃项目键现在处于同一 SQLite 事务中；任一步失败均回滚，避免
+命令报错后项目实际已消失。命令签名与表结构不变，无迁移；Breaking Change: No。
+
 ## 6.3 渲染隔离与任务选择器（P1-A / P1-B）
 
 - `scopeWorkspaceContext` 只允许渲染「上下文项目 === 当前选中项目」的数据；
@@ -230,6 +236,16 @@ type WorkspaceCapabilityState = "available" | "limited" | "planned" | "unavailab
   9 个入口原生点击与跳转。1180×760 @125% DPI 单屏。
 - **仍受限**：多显示器（本机 1 屏）、150%/200% DPI、2K/4K 逐页视觉/键盘走查未验证；
   迁移前性能基线未测（当前仅有迁移后采样）。
+- **状态栏磁盘项（2026-11-17）**：状态栏磁盘项改为列出 `resource_snapshot` 枚举到的**全部卷**，
+  按盘符稳定排序（`C: 剩余 … · D: 剩余 …`），不再只取 `disks[0]`（数据目录所在主卷）。原因是
+  不同窗口/实例的数据目录可能不在同一卷，只显示主卷时两个窗口会分别显示 `C:` 与 `D:`，看起来
+  像读到了不同的机器。读不到可用空间的卷（探测超时/未知）保留卷名并显示「暂不可用」，不以 0 冒充；
+  窄窗（≤760px）仍按原优先级整项隐藏。磁盘项右侧提供手动刷新按钮：点击复用同一个
+  `resource_snapshot`（不新增后端命令），刷新中禁用并旋转图标，失败保留上次读数并弹提示；
+  挂载时仍只读一次，无轮询。实现：`WorkbenchShell.tsx` 状态栏与 `workbench.css`、词条
+  `workbench.statusDiskUnavailable` / `statusDiskRefresh` / `statusDiskRefreshFailed`（zh/en）；
+  测试 `WorkbenchShell.test.tsx` 新增 1 项（三卷排序 + 暂不可用 + 点击刷新）。**未验证**：
+  真机多卷（含断连网络盘/可移动盘）状态栏与刷新走查未执行。
 - **状态栏「包信息」（2026-11-17）**：底部状态栏在「Agent 会话数 / 磁盘剩余」之后新增可点项
   `构建 {短commit} · {profile} · {构建时间}`，右侧 `v0.5.0` 不变。数据来自新命令
   `app_build_info`（`src-tauri/src/commands/system.rs`）：运行期包元信息（包名 / 版本 / 标识 /
@@ -502,5 +518,49 @@ src-tauri/src/commands/backup.rs           # BACKUP_TABLES / EXTENDED_TABLES 登
   1920×1080 四尺寸适配、NSIS/MSI 首次安装与升级卸载、v58→v63 迁移回放。
 - 因此 §12 的整体状态为 **PARTIAL**，不得表述为"V1 正式通过"；完整结论、缺陷清单与
   未完成项见 `tmp/acceptance/creative-workspaces-v1/report.md` §10.6。
+
+## 13. 通用项目资源关联与进度（2026-11-17，后端已接入，前端待接线）
+
+- v69 新增 `workspace_resource_links`，五类 Profile 都可关联现有笔记 ID、Agent 本地会话 ID、
+  外部产物绝对路径（文件或目录）。只存关联、标签和备注，原内容仍由原模块/目录持有。
+  项目删除只级联删关联；目标删除/离线不自动删关联，读侧 `targetExists=false` 表示当前不可用。
+- `workspace_resource_save({projectId,kind,target,label,note})` 返回关联；kind 为
+  `note / agent_session / artifact`。同项目/类型/目标重复保存更新标签备注，不新增重复行。
+  新笔记/会话必须存在，产物允许暂时离线；归档项目读取允许、写入拒绝。
+- `workspace_resource_list({projectId,kind?,offset?,limit?})` 返回
+  `{links,total,offset,limit,hasMore}`，默认 50/最大 200，每项目写入上限 2000。
+  `workspace_resource_remove({projectId,id})` 仅解除当前项目的关联，不删除目标。
+- `workspace_project_progress({projectId})` 返回事项五状态计数与 `itemsPercent`，以及独立的
+  `linkedTasksTotal / linkedTasksCompleted / linkedTasksPercent`。事项归档项不参与分母；
+  没有数据返回 null 百分比；父子事项按各自真实状态计数，不自动完成父级，不引入人工进度状态。
+- 新表登记到完整/快速备份和恢复顺序，旧备份没有该表时为空；升级不修改旧项目。
+  旧程序不能保证读取 v69 新库/备份，回退使用升级前备份；IPC 新增，Breaking Change: No。
+- 当前只交付后端及桥接，不能据此宣称 UI 已可用。项目笔记编辑仍复用 notes，Agent 会话
+  操作仍走原 Agent 模块；新接口只负责关联与事实读取，前端不得自动启动/发送 Agent 消息。
+
+> 2026-11-17 续：上述「前端待接线」为当日早些时候状态，原文保留；前端接入见 §13.1，
+> 整体仍按「部分通过」表述，不以预览夹具代替真实后端验收。
+
+### 13.1 2026-11-17 前端接入记录
+
+- **布局串行保存**：`useWorkspaceProjectContext.saveLayout()` 与 `saveModule()` 共用同一条
+  `moduleSaveChainRef`；保存前重新 `parseWorkspaceLayout` 归一化。修复了 `stateRef` 与
+  `setState` 不同步导致并发 `Promise.all([saveLayout, saveModule])` 丢失 `hiddenModules`
+  的竞态（测试首轮暴露，修复后 22/22）。`workspace_instance_save` 省略/null 保留旧布局的
+  后端语义由前端原样传递，显式 `{}` 才清空；归档项目只读。
+- **布局编辑器**：`src/workspace/ProjectLayoutEditor.tsx` 提供概览固定首位、其余模块上移/
+  下移/显隐；保存经 `saveLayout` 返回 `ok | stale | failed`。隐藏当前模块时活动模块回落
+  `overview`。`workspaceProfiles.ts` 的 `core.layout` 由 limited 升为 available。
+- **进度与资源卡**：`ProjectWorkspaceExtras.tsx` 展示事项五状态与关联任务的**独立百分比**；
+  空分母显示「暂无可计算进度」，读取失败保留旧值并标注「可能已过期」。资源按
+  `note / agent_session / artifact` 筛选、分页 50、长标签截断、`targetExists=false` 标注
+  「当前不可用」；解除关联的确认文案明确「不删除目标」。笔记选择复用 `notesList`，Agent
+  会话只读取已有会话快照登记、不启动新会话，产物只登记绝对路径。
+- **最小接入边界**：`src/workbench/ProjectWorkspacePanel.tsx` 作为共享枢纽文件只做了最小
+  增量（布局按钮/弹层、概览进度卡、设置区资源卡、`success→ok` 的提示映射），未改公共
+  IPC 签名、数据库迁移或全局主题。
+- **未验证**：真实 Tauri 窗口下的布局保存/资源登记与解除、真实 Agent 会话目标存在性、
+  真实产物离线/恢复、归档项目写拒绝的端到端；预览走查使用 CDP 临时夹具，仅证明视觉与
+  交互分支，不代表后端真实结果。跨设备项目同步仍未实现。
 
 

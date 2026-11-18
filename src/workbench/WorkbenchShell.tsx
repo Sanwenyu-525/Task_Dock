@@ -42,6 +42,7 @@ import {
   type WorkbenchCloseWindow,
 } from "./workbenchCloseGuard";
 import {
+  FolderOpen,
   GripVertical,
   Inbox,
   LayoutDashboard,
@@ -50,6 +51,7 @@ import {
   PanelRight,
   Plus,
   RotateCcw,
+  RefreshCw,
   Search,
   Settings2,
   X as CloseIcon,
@@ -147,6 +149,7 @@ import {
   onAppBeforeExit,
   onAppExitBlocked,
   type DevProject,
+  type ResourceSnapshot,
   type WorkbenchNavRequest,
   type WorkbenchNavStatus,
   type WorkspaceKind,
@@ -157,6 +160,7 @@ import { formatBytes } from "../lib/clipboardUi";
 import WorkbenchBuildStatus from "./WorkbenchBuildStatus";
 import { createActiveProjectWriter, type ActiveProjectWriter } from "../workspace/activeProjectWriter";
 import { resolveWorkspaceProfile, WORKSPACE_PROFILES } from "../workspace/workspaceProfiles";
+import { pickFolder } from "../lib/filesWorkspace/folderPicker";
 import { errorMessage } from "../lib/errors";
 import { logEvent } from "../lib/diagnostics";
 import { withTimeout } from "../lib/timeout";
@@ -175,6 +179,7 @@ const HelpCenterPanel = lazy(() => import("../components/help/HelpCenterPanel"))
 const DiagnosticsCenterPanel = lazy(() => import("../components/diagnostics/DiagnosticsCenterPanel"));
 const ResourceManagementPanel = lazy(() => import("../components/resource/ResourceManagementPanel"));
 const FilesWorkspacePanel = lazy(() => import("../components/files/FilesWorkspacePanel"));
+const CapabilityCenterPanel = lazy(() => import("../components/capability/CapabilityCenterPanel"));
 
 /** 左侧入口（与主窗口共用注册中心；声明顺序无关于展示顺序）。 */
 const LEFT_ENTRIES = entriesForSurface("left");
@@ -307,6 +312,18 @@ const BOOT_READ_TIMEOUT_MS = 12_000;
 /** 启动门停留超过该时长仍未完成时，在加载卡片上说明还在等哪一段。 */
 const BOOT_SLOW_HINT_MS = 12_000;
 
+type StatusDiskRow = { volume: string; free: string | null };
+
+/** 状态栏磁盘读数：全部卷按盘符稳定排序；读不到可用空间的卷保留「暂不可用」。 */
+function toStatusDisks(disks: ResourceSnapshot["disks"]): StatusDiskRow[] {
+  return [...disks]
+    .sort((left, right) => left.volume.toUpperCase().localeCompare(right.volume.toUpperCase()))
+    .map((disk) => ({
+      volume: disk.volume,
+      free: disk.availableBytes === null ? null : formatBytes(disk.availableBytes),
+    }));
+}
+
 export default function WorkbenchShell() {
   const { t } = useLocale();
   const settingsReady = useWorkbenchLayoutReady();
@@ -393,6 +410,7 @@ export default function WorkbenchShell() {
   const [createName, setCreateName] = useState("");
   const [createKind, setCreateKind] = useState<WorkspaceKind>("general");
   const [createRoot, setCreateRoot] = useState("");
+  const [createRootPicking, setCreateRootPicking] = useState(false);
   const [createNote, setCreateNote] = useState("");
   const [createBusy, setCreateBusy] = useState(false);
   const [moduleRequest, setModuleRequest] = useState<ProjectModuleRequest | null>(null);
@@ -788,6 +806,31 @@ export default function WorkbenchShell() {
   const openCreateProject = useCallback(() => {
     setCreateOpen(true);
   }, []);
+
+  const pickCreateRoot = useCallback(async () => {
+    setCreateRootPicking(true);
+    try {
+      const result = await pickFolder({
+        title: "选择项目工作目录",
+        defaultPath: createRoot || undefined,
+      });
+      if (result.status === "ok") {
+        setCreateRoot(result.path);
+        return;
+      }
+      if (result.status === "invalid") {
+        const reason =
+          result.reason === "notFound"
+            ? "目录不存在"
+            : result.reason === "notDir"
+              ? "选择的不是文件夹"
+              : `无法读取目录${result.message ? `：${result.message}` : ""}`;
+        showToast(`未选择工作目录：${reason}`, { kind: "error" });
+      }
+    } finally {
+      setCreateRootPicking(false);
+    }
+  }, [createRoot, showToast]);
 
   const submitCreateProject = useCallback(async () => {
     const name = createName.trim();
@@ -1636,7 +1679,40 @@ export default function WorkbenchShell() {
   // sessions 字段在旧快照/部分 mock 里可能缺失：可选链降级为「不显示」。
   const agentSessionCount = useAgentsStore((s) => s.snapshot?.sessions?.length ?? null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [statusDisk, setStatusDisk] = useState<{ volume: string; free: string } | null>(null);
+  // 状态栏列出后端枚举到的全部卷，而不是只取数据目录所在的主卷：不同窗口
+  // 的数据目录可能不在同一个卷，只显示 disks[0] 会让两个窗口看到的卷不一致。
+  // 展示顺序按盘符稳定排序（不跟随数据目录），同一台机器上各窗口一致。
+  const [statusDisks, setStatusDisks] = useState<StatusDiskRow[]>([]);
+  const [statusDiskLoading, setStatusDiskLoading] = useState(false);
+  const statusDiskRequestRef = useRef(0);
+  /** 双击锁：按钮 disabled 的渲染晚于事件，同一 tick 的第二次点击仍可能进来。 */
+  const statusDiskLockRef = useRef(false);
+
+  // 主动刷新与挂载时走同一条读取路径：复用已有的 resource_snapshot，不新增后端接口。
+  // 初次读取失败保持空态（状态栏其余项照常降级）；主动刷新失败保留上次读数并提示。
+  const reloadStatusDisks = useCallback(
+    async (notifyFailure: boolean) => {
+      if (statusDiskLockRef.current) return;
+      statusDiskLockRef.current = true;
+      const request = ++statusDiskRequestRef.current;
+      setStatusDiskLoading(true);
+      try {
+        const snapshot = await resourceSnapshot();
+        if (request !== statusDiskRequestRef.current) return;
+        setStatusDisks(toStatusDisks(snapshot.disks));
+      } catch {
+        if (request !== statusDiskRequestRef.current) return;
+        if (notifyFailure) {
+          showNotice("error", t("workbench.statusDiskRefreshFailed"));
+        }
+      } finally {
+        statusDiskLockRef.current = false;
+        if (request === statusDiskRequestRef.current) setStatusDiskLoading(false);
+      }
+    },
+    [showNotice, t],
+  );
+
   useEffect(() => {
     let disposed = false;
     // 版本与磁盘都是可选富信息：预览/单测等非 Tauri 环境 invoke 会拒绝，
@@ -1646,19 +1722,13 @@ export default function WorkbenchShell() {
         if (!disposed) setAppVersion(version);
       })
       .catch(() => {});
-    void resourceSnapshot()
-      .then((snapshot) => {
-        if (disposed) return;
-        // 数据目录所在卷排首位（后端约定）；取第一个有可用空间的卷。
-        const disk = snapshot.disks.find((item) => item.availableBytes !== null);
-        if (disk && disk.availableBytes !== null) {
-          setStatusDisk({ volume: disk.volume, free: formatBytes(disk.availableBytes) });
-        }
-      })
-      .catch(() => {});
+    void reloadStatusDisks(false);
     return () => {
       disposed = true;
+      // 卸载后让在途刷新失效，不再写入状态。
+      statusDiskRequestRef.current += 1;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在挂载时读一次；主动刷新走状态栏按钮
   }, []);
 
   // ── 启动门：设置 + 路由 hydration 完成前不渲染假页面 ────────────────
@@ -2291,6 +2361,10 @@ export default function WorkbenchShell() {
                   <PlanningCenterPanel />
                 </RouteSlot>
 
+              <RouteSlot label={t("nav.capability")} id="capability" active={route === "capability"}>
+                  <CapabilityCenterPanel />
+                </RouteSlot>
+
               <RouteSlot label={t("nav.help")} id="help" active={route === "help"}>
                   <HelpCenterPanel />
                 </RouteSlot>
@@ -2351,9 +2425,32 @@ export default function WorkbenchShell() {
               {t("workbench.statusAgentSessions", { count: agentSessionCount })}
             </span>
           )}
-          {statusDisk && (
+          {statusDisks.length > 0 && (
             <span className="wb-status-item wb-status-disk">
-              {t("workbench.statusDiskFree", { volume: statusDisk.volume, free: statusDisk.free })}
+              <span className="wb-status-disk-text">
+                {statusDisks
+                  .map((disk) =>
+                    disk.free === null
+                      ? t("workbench.statusDiskUnavailable", { volume: disk.volume })
+                      : t("workbench.statusDiskFree", { volume: disk.volume, free: disk.free }),
+                  )
+                  .join(" · ")}
+              </span>
+              {/* 主动刷新：复用 resource_snapshot，刷新期间禁用并旋转，失败保留上次读数。 */}
+              <button
+                type="button"
+                className="wb-status-refresh"
+                aria-label={t("workbench.statusDiskRefresh")}
+                data-tip={t("workbench.statusDiskRefresh")}
+                disabled={statusDiskLoading}
+                onClick={() => void reloadStatusDisks(true)}
+              >
+                <RefreshCw
+                  size={11}
+                  className={statusDiskLoading ? "spin" : undefined}
+                  aria-hidden="true"
+                />
+              </button>
             </span>
           )}
           {/* 包信息：同版本号的不同构建靠这里的提交与构建时间区分（截图即取证）。 */}
@@ -2429,12 +2526,36 @@ export default function WorkbenchShell() {
             />
           </label>
           <label>
-            <span>工作目录（绝对路径，可空）</span>
-            <input
-              className="ws-input"
-              value={createRoot}
-              onChange={(event) => setCreateRoot(event.target.value)}
-            />
+            <span>工作目录（可空）</span>
+            <div className="wb-path-picker">
+              <div
+                className="ws-input wb-path-value"
+                data-empty={createRoot ? "false" : "true"}
+                data-tip={createRoot || undefined}
+              >
+                {createRoot || "尚未选择目录"}
+              </div>
+              <button
+                type="button"
+                className="btn"
+                disabled={createRootPicking || createBusy}
+                onClick={() => void pickCreateRoot()}
+              >
+                <FolderOpen size={13} aria-hidden="true" />
+                {createRootPicking ? "选择中…" : "选择目录"}
+              </button>
+              {createRoot && (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={createBusy}
+                  aria-label="清除工作目录"
+                  onClick={() => setCreateRoot("")}
+                >
+                  <CloseIcon size={13} aria-hidden="true" />
+                </button>
+              )}
+            </div>
           </label>
           <label>
             <span>备注</span>

@@ -1130,6 +1130,28 @@ const shim = `
     { name: "D 盘", path: "D:\\\\", driveKind: "fixed" },
     { name: "C 盘", path: "C:\\\\", driveKind: "fixed" },
   ];
+  // 回收站索引夹具：只服务视觉走查（真实扫描/还原由原生后端负责）。
+  const recycleItemsFixture = () => [
+    { id: "rc-1", volume: "C:", name: "旧构建缓存", originalPath: "D:\\\\Games\\\\MyGame\\\\Build\\\\old", isDir: true, size: null, deletedMs: fwNow - 3600_000, state: "present", anomaly: null },
+    { id: "rc-2", volume: "C:", name: "char_03.png", originalPath: "D:\\\\Games\\\\MyGame\\\\Assets\\\\char_03.png", isDir: false, size: 842_112, deletedMs: fwNow - 7_200_000, state: "present", anomaly: null },
+    { id: "rc-3", volume: "D:", name: "临时导出", originalPath: "D:\\\\Games\\\\MyGame\\\\Docs\\\\临时导出", isDir: true, size: null, deletedMs: fwNow - 86_400_000, state: "missing_data", anomaly: "index-missing-data" },
+  ];
+  const recycleStatsFixture = () => ({
+    items: 3,
+    files: 1,
+    folders: 2,
+    knownBytes: 842_112,
+    unknownSize: 2,
+    volumes: [
+      { volume: "C:", items: 2, files: 1, folders: 1, knownBytes: 842_112, unknownSize: 1, state: "ok", lastSyncMs: fwNow, systemItems: 2, systemBytes: 842_112, systemCheckedMs: fwNow, errorCode: null },
+      { volume: "D:", items: 1, files: 0, folders: 1, knownBytes: 0, unknownSize: 1, state: "ok", lastSyncMs: fwNow, systemItems: 1, systemBytes: null, systemCheckedMs: null, errorCode: null },
+    ],
+    lastSyncMs: fwNow,
+    state: "ready",
+    source: "index",
+    indexedAtMs: fwNow - 60_000,
+    syncing: 0,
+  });
 
   async function invoke(cmd, args) {
     await new Promise((r) => setTimeout(r, 30));
@@ -1453,6 +1475,26 @@ const shim = `
       case "fs_open":
       case "fs_reveal": return undefined;
       case "fs_thumbnail": return null;
+      // ── 回收站索引（视觉走查夹具）：只读列表/统计；真实扫描与还原走原生后端 ──
+      case "recycle_stats":
+        return recycleStatsFixture();
+      case "recycle_sync_status":
+      case "recycle_sync":
+        return { running: false, startedMs: 0, finishedMs: fwNow, volumesDone: 0, volumesTotal: 0, cancelRequested: false, lastError: null };
+      case "recycle_sync_cancel": return undefined;
+      case "recycle_list": {
+        const list = recycleItemsFixture();
+        const offset = args?.query?.offset ?? 0;
+        const limit = args?.query?.limit ?? 400;
+        return {
+          items: list.slice(offset, offset + limit),
+          total: list.length,
+          offset,
+          limit,
+          stats: args?.query?.includeStats ? recycleStatsFixture() : null,
+          queryMs: 1,
+        };
+      }
       case "quick_capture_state": return { draft: null, last_type: "task", inbox_count: 3 };
       case "quick_capture_show":
       case "quick_capture_hide": return null;

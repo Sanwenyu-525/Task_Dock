@@ -10,6 +10,7 @@ import { fsStat } from "../../lib/bridge";
 import {
   detectTransferConflicts,
   movedSourcesToClear,
+  remainingSourcesAfterTransfer,
   pickAutomaticTarget,
   transferRefreshDirs,
 } from "./transfer";
@@ -63,6 +64,49 @@ describe("移动成功后的来源清理", () => {
       ],
     };
     expect(movedSourcesToClear(report)).toEqual(["D:\\a\\ok.txt"]);
+  });
+
+  it("取消后未处理项不在报告里：按成功集合保留全部未处理源", () => {
+    const report = {
+      operationId: "op",
+      attempted: 1,
+      ok: 1,
+      failed: 0,
+      skipped: 0,
+      partial: 0,
+      entries: [
+        { source: "D:\\a\\ok.txt", target: "D:\\b\\ok.txt", status: "ok" as const, reason: null },
+      ],
+    };
+    const original = ["D:\\a\\ok.txt", "D:\\a\\later.txt", "D:\\a\\never.txt"];
+    expect(remainingSourcesAfterTransfer(report, original)).toEqual([
+      "D:\\a\\later.txt",
+      "D:\\a\\never.txt",
+    ]);
+  });
+
+  it("报告缺失时保留全部来源（禁止把未确认当成功清理）", () => {
+    expect(remainingSourcesAfterTransfer(null, ["D:\\a\\x.txt", "D:\\a\\y.txt"])).toEqual([
+      "D:\\a\\x.txt",
+      "D:\\a\\y.txt",
+    ]);
+  });
+
+  it("Windows 路径比较忽略大小写", () => {
+    const report = {
+      operationId: "op",
+      attempted: 1,
+      ok: 1,
+      failed: 0,
+      skipped: 0,
+      partial: 0,
+      entries: [
+        { source: "D:\\A\\OK.TXT", target: "D:\\b\\OK.TXT", status: "ok" as const, reason: null },
+      ],
+    };
+    expect(remainingSourcesAfterTransfer(report, ["d:\\a\\ok.txt", "d:\\a\\keep.txt"])).toEqual([
+      "d:\\a\\keep.txt",
+    ]);
   });
 });
 

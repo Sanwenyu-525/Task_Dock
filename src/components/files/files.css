@@ -1054,7 +1054,12 @@ body.fw-resizing-row * {
 }
 
 .fw-row:hover::before {
-  background: var(--surface-overlay);
+  background: var(--surface-hover);
+}
+
+.fw-row > :where(.fw-row-icon, .fw-row-name, .fw-row-time, .fw-row-size, .fw-row-type) {
+  position: relative;
+  z-index: var(--z-content);
 }
 
 /* 每行独立圆角轮廓：连续多选时不会连成一整条通栏色块。 */
@@ -1806,8 +1811,70 @@ body.fw-resizing-row * {
   color: var(--accent);
 }
 
-.fw-browse-btn {
-  align-self: flex-start;
+/* 目录路径输入 + 内嵌「浏览文件夹」：两者共用同一个输入表面。
+   容器负责边框、圆角和 focus-within 高亮；左侧输入仍可正常键入绝对路径
+   （清掉自绘边框，避免「输入框套按钮」的双层框），按钮只占右侧后缀宽度，
+   不用绝对定位压在输入区上，不遮挡文本与点击。 */
+.fw-path-field {
+  display: flex;
+  align-items: stretch;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-base);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.fw-path-field:hover:not(:focus-within) {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-strong));
+}
+
+.fw-path-field:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
+  box-shadow: var(--control-shadow-focus);
+}
+
+.fw-path-field .fw-path-input,
+.fw-path-field .fw-path-input:focus,
+.fw-path-field .fw-path-input:focus-visible {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+/* 输入框内后缀按钮：宽度随文案自适应（打开选择器期间文案变长也不会压住输入区）。 */
+.fw-path-browse {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 0 calc(var(--radius-xs) - 1px) calc(var(--radius-xs) - 1px) 0;
+  box-shadow: inset 1px 0 0 var(--border-subtle);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.fw-path-browse:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+
+.fw-path-browse:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .fw-pick-error {
@@ -1967,6 +2034,35 @@ body.fw-resizing-row * {
   margin: 8px 0 0;
   font-size: 11px;
   color: var(--text-tertiary);
+}
+
+/* 操作预演：只读统计与高风险提示；沿用冲突列表样式，不新增浮层语义。 */
+.fw-preview-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.fw-preview-summary p {
+  margin: 0;
+}
+
+.fw-preview-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warning, #d97706);
+}
+
+.fw-preview-hint {
+  color: var(--text-secondary);
+}
+
+.fw-preview-warnings {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--warning, #d97706);
 }
 
 .fw-transfer-summary {
@@ -2751,6 +2847,37 @@ body.fw-resizing-row * {
   flex: 0 0 auto;
   color: var(--text-tertiary);
   font-size: 10px;
+}
+
+.fw-op-state {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.fw-op-cancel {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.fw-op-cancel:hover {
+  color: var(--danger, #e5484d);
+  border-color: var(--danger, #e5484d);
+}
+
+.fw-op-cancel:focus-visible {
+  outline: 2px solid var(--focus-ring, #4f8cff);
+  outline-offset: 1px;
 }
 
 .fw-op-spinner {

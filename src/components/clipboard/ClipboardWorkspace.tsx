@@ -912,6 +912,9 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
   }
 
   function onDeleteGroup(group: ClipboardGroup) {
+    // 反馈必须用后端真实报告（尤其 retained_shared），不能拿 0 假定：
+    // 分组只删自身时条目仍保留，是否「因共享而保留」只有后端知道。
+    let lastReport: DeleteReport | null = null;
     askConfirm({
       title: `删除分组「${group.name}」？`,
       detail: "只删除分组本身，分组内的历史条目仍保留。若要连同内容删除，请在分组详情中操作。",
@@ -923,14 +926,18 @@ export default function ClipboardWorkspace({ variant, active, onClose }: Clipboa
         runDelete(
           [group.id],
           "group",
-          () => clipboardDeleteGroup(group.id, false),
+          async () => {
+            const r = await clipboardDeleteGroup(group.id, false);
+            lastReport = r;
+            return r;
+          },
           (r) => r.groups_deleted,
           // 与分组详情共用同一反馈函数：判定看 groups_deleted，文案不各写一份
           (deleted) => {
             const feedback = groupDeleteFeedback(group.name, false, {
               groups_deleted: deleted,
-              deleted,
-              retained_shared: 0,
+              deleted: lastReport?.deleted ?? 0,
+              retained_shared: lastReport?.retained_shared ?? 0,
             });
             showToast(feedback.message, { kind: feedback.kind });
           },

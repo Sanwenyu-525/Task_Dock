@@ -28,6 +28,7 @@ import {
   Layers,
   LayoutDashboard,
   LayoutGrid,
+  LibraryBig,
   LifeBuoy,
   ListTodo,
   Map as MapIcon,
@@ -73,6 +74,7 @@ export type NavEntryId =
   | "workflows"
   | "history"
   | "roadmap"
+  | "capability"
   | "settings"
   | "inbox"
   | "help"
@@ -380,6 +382,23 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     defaults: {
       left: { order: 10, visible: true },
       capsule: { order: 6, visible: true },
+    },
+  },
+  {
+    // 知识与 AI 能力中心：完整工作台独立页面，不占 Ctrl+数字。
+    // 归入规划组（与工作流/规划中心同属「持续推进」类能力），不新增一级导航群。
+    id: "capability",
+    kind: "page",
+    workbenchOnly: true,
+    surfaces: ["left"],
+    labelKey: "nav.capability",
+    label: "能力中心",
+    icon: LibraryBig,
+    tabs: ["capability"],
+    group: "planning",
+    defaults: {
+      left: { order: 10.2, visible: true },
+      capsule: { order: 0, visible: false },
     },
   },
   {

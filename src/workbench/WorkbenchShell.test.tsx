@@ -6,6 +6,14 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const folderPicker = vi.hoisted(() => ({
+  pickFolder: vi.fn(),
+}));
+
+vi.mock("../lib/filesWorkspace/folderPicker", () => ({
+  pickFolder: folderPicker.pickFolder,
+}));
+
 const bridge = vi.hoisted(() => ({
   workspaceProjectList: vi.fn(),
   devProjectList: vi.fn(),
@@ -20,6 +28,8 @@ const bridge = vi.hoisted(() => ({
   taskStats: vi.fn(),
   agentSnapshot: vi.fn(),
   actionsFeed: vi.fn(),
+  // 底部状态栏的一次性资源快照（只读、失败即隐藏）。
+  resourceSnapshot: vi.fn(),
   // taskId 不在当前列表时的权威读取（P1-02）。
   fetchTask: vi.fn(),
 }));
@@ -88,6 +98,7 @@ beforeEach(() => {
   bridge.devProjectList.mockResolvedValue({ projects: [] });
   bridge.workspaceSetActiveProject.mockResolvedValue({ ok: true });
   bridge.workspaceProjectSave.mockResolvedValue({ project: { id: "p1", name: "新项目" } });
+  folderPicker.pickFolder.mockResolvedValue({ status: "cancelled" });
   bridge.onWorkbenchNavigate.mockImplementation(unlisten);
   bridge.workbenchTakeNav.mockResolvedValue(null);
   bridge.workbenchNavAck.mockResolvedValue(undefined);
@@ -111,6 +122,7 @@ beforeEach(() => {
     counts: { total: 0, intervention: 0, running: 0, reminder: 0 },
     items: [],
   });
+  bridge.resourceSnapshot.mockRejectedValue(new Error("IPC 不可用"));
 
   useSettingsStore.setState({
     settings: SETTINGS as never,
@@ -146,6 +158,73 @@ describe("WorkbenchShell", () => {
     expect(screen.getByRole("combobox").textContent).toContain("未选择项目");
     // 首页通用入口可用（不需要先建项目）：快速操作宫格含「新建任务」。
     expect(screen.getByText("新建任务", { selector: ".wb-quick-tile span" })).toBeTruthy();
+  });
+
+  it("新建项目工作目录只提供选择器，不回显可编辑文本框", async () => {
+    folderPicker.pickFolder.mockResolvedValue({
+      status: "ok",
+      path: "D:\\Projects\\demo",
+    });
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    fireEvent.click(screen.getByRole("button", { name: "打开快速创建菜单" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "新建项目" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "新建项目" });
+    const rootLabel = within(dialog).getByText("工作目录（可空）").closest("label");
+    expect(rootLabel?.querySelector("input")).toBeNull();
+
+    const pickButton = within(dialog)
+      .getAllByRole("button")
+      .find((button) => button.textContent === "选择目录");
+    expect(pickButton).toBeTruthy();
+    fireEvent.click(pickButton as HTMLButtonElement);
+    await waitFor(() => expect(folderPicker.pickFolder).toHaveBeenCalledTimes(1));
+    expect(await within(dialog).findByText("D:\\Projects\\demo")).toBeTruthy();
+    expect(rootLabel?.querySelector("input")).toBeNull();
+  });
+
+  it("状态栏列出全部卷，并可主动刷新（复用 resource_snapshot）", async () => {
+    bridge.resourceSnapshot
+      .mockResolvedValueOnce({
+        disks: [
+          { volume: "D:", kind: "fixed", totalBytes: 100, availableBytes: 27 * 1024 ** 3 },
+          { volume: "C:", kind: "fixed", totalBytes: 100, availableBytes: 91 * 1024 ** 3 },
+          { volume: "E:", kind: "remote", totalBytes: null, availableBytes: null },
+        ],
+      })
+      .mockResolvedValueOnce({
+        disks: [
+          { volume: "D:", kind: "fixed", totalBytes: 100, availableBytes: 27 * 1024 ** 3 },
+          { volume: "C:", kind: "fixed", totalBytes: 100, availableBytes: 80 * 1024 ** 3 },
+          { volume: "E:", kind: "remote", totalBytes: null, availableBytes: null },
+        ],
+      });
+    // 前面的用例也会挂载外壳并读到默认拒绝；只统计本用例的调用。
+    bridge.resourceSnapshot.mockClear();
+    render(<WorkbenchShell />);
+    await screen.findByRole("heading", { name: "工作台首页", level: 2 });
+
+    const statusbar = screen.getByRole("contentinfo");
+    await waitFor(() => {
+      expect(
+        within(statusbar).getByText(
+          "C: 剩余 91.00 GB · D: 剩余 27.00 GB · E: 暂不可用",
+        ),
+      ).toBeTruthy();
+    });
+    expect(bridge.resourceSnapshot.mock.calls.length).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新磁盘剩余空间" }));
+    await waitFor(() => {
+      expect(
+        within(statusbar).getByText(
+          "C: 剩余 80.00 GB · D: 剩余 27.00 GB · E: 暂不可用",
+        ),
+      ).toBeTruthy();
+    });
+    expect(bridge.resourceSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it("渲染四角缩放热区：Win32 圆角裁剪后斜向缩放仍可用", async () => {

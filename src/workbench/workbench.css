@@ -1210,7 +1210,15 @@ body.wb-resizing {
 /* ── 项目工作空间内容 ───────────────────────────────────────────────── */
 .wb-project {
   /* 宽屏阅读宽与首页 .wb-home 对齐到 1440px 并居中：旧 1180px 硬宽在
-     1920/2560 下右侧留白偏大；窄内容区（<900px）由下方容器查询解除封顶。 */
+     1920/2560 下右侧留白偏大；窄内容区（<900px）由下方容器查询解除封顶。
+
+     2026-11-17 P0：必须显式 `width: 100%`。本元素同时是 `.ui-page-frame`
+     （`container-type: inline-size`，固有宽度为 0），父级 `.wb-route` 是
+     纵向 flex；只写 `max-width + margin-inline: auto` 时 auto margin 会取消
+     flex 拉伸，宽度按 0 的固有尺寸计算，页面被压成 padding 宽度、文字逐字换行
+     （1660 宽窗口实测 .wb-project = 0px）。与 `.wb-home` 保持同一写法：
+     显式占满可用宽度，再由 max-width 封顶并居中。 */
+  width: 100%;
   max-width: 1440px;
   margin-inline: auto;
   /* workspace.css 的 --ws-* 默认指向浅色纸张 token，嵌入工作台深色主题时
@@ -1448,6 +1456,11 @@ body.wb-resizing {
 }
 .wb-project-empty .wb-empty-state {
   flex: 1 1 auto;
+  /* 空态内容在可用空间居中，但不随 1440 宽页拉伸成一行超长文本：
+     640px 落在 560–680 的设计区间，窄窗仍由 width:100% 自适应。 */
+  width: 100%;
+  max-width: 640px;
+  margin-inline: auto;
 }
 .wb-project-empty h2 {
   margin: 0 0 6px;
@@ -1515,6 +1528,31 @@ body.wb-resizing {
 .wb-create-form textarea {
   min-height: 64px;
   resize: vertical;
+}
+/* 工作目录只能通过系统文件夹选择器填写，避免手输相对路径/错盘符。
+   路径本身用只读行展示，长路径省略，完整值走 data-tip。 */
+.wb-path-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wb-path-picker .wb-path-value {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 20px;
+}
+.wb-path-picker .wb-path-value[data-empty="true"] {
+  color: var(--text-tertiary);
+}
+.wb-path-picker .btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* ── 启动门 ────────────────────────────────────────────────────────── */
@@ -1910,6 +1948,49 @@ body.wb-resizing {
   margin-left: auto;
 }
 
+/* ── 状态栏「磁盘剩余 + 主动刷新」 ─────────────────────────────────────
+   文本层负责省略，刷新按钮固定尺寸并保持可点；按钮沿用状态栏的字号/色彩，
+   不引入第二套按钮外观。窄窗仍由下方 `.wb-status-disk { display:none }` 整项收起。 */
+.wb-status-disk {
+  gap: 4px;
+  /* 焦点环不被截断容器裁掉；长文案的省略交给文本层。 */
+  overflow: visible;
+}
+.wb-status-disk-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-status-refresh {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: background-color 0.12s var(--ease-out), color 0.12s var(--ease-out);
+}
+.wb-status-refresh:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--text-secondary);
+}
+.wb-status-refresh:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.wb-status-refresh:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* ── 状态栏「包信息」（2026-11-17）：可点项 + 详情弹窗 ──────────────────
    可点项沿用 `.wb-status-item` 的字号/截断，只补悬停与焦点反馈；弹窗左标签右值，
    长路径/长 commit 一律换行，不撑破 520px 面板。 */
@@ -1955,6 +2036,23 @@ body.wb-resizing {
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-tertiary);
+}
+/* 包内构建信息 / 当前运行环境两块：同一弹窗里用轻分隔线分组，不新增卡片。
+   两块字段含义不同，标题必须写明「编译期固定」与「实时读取」，避免把运行期
+   HEAD 误读成安装包构建提交。 */
+.wb-build-section {
+  margin: 0;
+}
+.wb-build-section + .wb-build-section {
+  margin-top: 14px;
+}
+.wb-build-section-title {
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 .wb-build-list {
   margin: 0;
@@ -2850,6 +2948,12 @@ body.wb-resizing {
 .wb-route > * {
   min-width: 0;
   max-width: 100%;
+}
+/* 项目页声明 1440 阅读宽（与首页一致），但上面的通用 max-width:100% 与
+   .wb-project 同特异性且更靠后，会把封顶覆盖成「永远占满」。这里提高特异性
+   恢复 min(1440px, 100%)：宽屏不无限拉伸，窄窗仍以 100% 自适应。 */
+.wb-route > .wb-project {
+  max-width: min(1440px, 100%);
 }
 /* 内容区里的媒体不撑破卡片：只限最大宽度，不改已有高度语义 */
 .wb-route :is(img, video, canvas) {

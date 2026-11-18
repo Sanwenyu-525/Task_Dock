@@ -145,12 +145,10 @@ export const WORKSPACE_CAPABILITIES: Record<WorkspaceCapabilityId, WorkspaceCapa
   "core.layout": {
     id: "core.layout",
     label: "模块布局持久化",
-    summary: "每个项目独立保存当前模块与布局结构；损坏 JSON 安全回退默认布局。",
-    state: "limited",
-    provider: "workspace_instances.layout_json",
-    // 诚实边界：解析器已支持 moduleOrder / hiddenModules，但当前 UI 没有排序/隐藏
-    // 编辑器，只有 activeModule 会被用户操作写回。不能宣称「可自定义布局」。
-    fallback: "当前只持久化「上次所在模块」；模块排序与隐藏尚无编辑入口，字段已预留且向后兼容",
+    summary: "每个项目独立保存当前模块、排序与显隐；概览固定首位，损坏 JSON 安全回退默认布局。",
+    state: "available",
+    provider: "workspace_instances.layout_json + 项目页「布局」编辑器",
+    condition: "项目未归档（归档项目布局只读）",
   },
   "dev.project": {
     id: "dev.project",

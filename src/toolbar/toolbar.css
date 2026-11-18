@@ -1,0 +1,357 @@
+/* TaskDock 投屏控制栏（独立窗口）
+ *
+ * 只使用语义 Token（颜色/圆角/阴影/间距），不硬编码主题色。
+ * 普通窗口 = 竖向控制栏；最大化/全屏 = 横向控制栏；「更多」面板由窗口尺寸扩展承载。
+ */
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  color: var(--text-primary);
+  font-family: inherit;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#root {
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.vd-toolbar {
+  position: relative;
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  gap: 6px;
+  padding: 2px;
+  animation: vd-toolbar-in 140ms ease-out;
+}
+
+.vd-toolbar.is-normal {
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: flex-end;
+}
+
+.vd-toolbar.is-maximized,
+.vd-toolbar.is-fullscreen {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+}
+
+.vd-toolbar.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.vd-toolbar-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  backdrop-filter: blur(14px) saturate(1.15);
+}
+
+.vd-toolbar.is-normal .vd-toolbar-bar {
+  flex-direction: column;
+}
+
+.vd-toolbar.is-maximized .vd-toolbar-bar,
+.vd-toolbar.is-fullscreen .vd-toolbar-bar {
+  flex-direction: row;
+}
+
+.vd-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+
+.vd-toolbar-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.vd-toolbar-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.vd-toolbar-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.vd-toolbar-btn.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.vd-toolbar-btn.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--c-danger) 12%, transparent);
+  color: var(--c-danger);
+}
+
+.vd-toolbar-btn:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.vd-toolbar-sep {
+  width: 100%;
+  height: 1px;
+  margin: 2px 4px;
+  background: var(--border-subtle);
+  opacity: 0.7;
+}
+
+.vd-toolbar.is-maximized .vd-toolbar-sep,
+.vd-toolbar.is-fullscreen .vd-toolbar-sep {
+  width: 1px;
+  height: 22px;
+  margin: 0 4px;
+}
+
+/* ── 「更多」面板 ───────────────────────────────────────── */
+
+.vd-toolbar-details {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  -webkit-backdrop-filter: blur(16px) saturate(1.15);
+  backdrop-filter: blur(16px) saturate(1.15);
+  animation: vd-toolbar-details-in 140ms ease-out;
+}
+
+.vd-toolbar-details-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 12px;
+  overflow: auto;
+}
+
+.vd-toolbar-details-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+}
+
+.vd-toolbar-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 10px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.vd-toolbar-facts dt {
+  color: var(--text-tertiary);
+}
+
+.vd-toolbar-facts dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vd-toolbar-facts dd.is-wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.vd-toolbar-diag {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 74px;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--inset-face);
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.vd-toolbar-diag ul {
+  margin: 0;
+  padding-left: 14px;
+}
+
+.vd-toolbar-details-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.vd-toolbar-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.vd-toolbar-action:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.vd-toolbar-action.is-danger {
+  color: var(--c-danger);
+  border-color: color-mix(in srgb, var(--c-danger) 26%, transparent);
+}
+
+.vd-toolbar-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* ── 反馈 / 加载 / 错误 ─────────────────────────────────── */
+
+.vd-toolbar-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  z-index: 2;
+  max-width: calc(100% - 16px);
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-raised);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.4;
+  text-align: center;
+  transform: translateX(-50%);
+  animation: vd-toolbar-in 120ms ease-out;
+}
+
+.vd-toolbar-loading {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 16px;
+  background: var(--surface-raised);
+  color: var(--text-tertiary);
+}
+
+.vd-toolbar-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--c-danger) 30%, transparent);
+  border-radius: 14px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.vd-toolbar-error span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@keyframes vd-toolbar-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.vd-toolbar-toast {
+  animation-name: vd-toolbar-toast-in;
+}
+
+@keyframes vd-toolbar-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 4px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@keyframes vd-toolbar-details-in {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vd-toolbar,
+  .vd-toolbar-toast,
+  .vd-toolbar-details {
+    animation: none;
+    transition: none;
+  }
+}

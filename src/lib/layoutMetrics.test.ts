@@ -12,6 +12,9 @@ import rustSource from "../../src-tauri/src/window_layout.rs?raw";
 import systemSource from "../../src-tauri/src/commands/system.rs?raw";
 import tauriConfRaw from "../../src-tauri/tauri.conf.json?raw";
 import workbenchCss from "../workbench/workbench.css?raw";
+import projectPanelSource from "../workbench/ProjectWorkspacePanel.tsx?raw";
+import buildStatusSource from "../workbench/WorkbenchBuildStatus.tsx?raw";
+import buildRsSource from "../../src-tauri/build.rs?raw";
 import {
   WINDOW_METRICS,
   WINDOW_TIERS,
@@ -22,6 +25,13 @@ import {
 function cssToken(css: string, name: string): string | null {
   const match = new RegExp(`${name}\\s*:\\s*([^;]+);`).exec(css);
   return match ? match[1].trim() : null;
+}
+
+/** 取某个顶层选择器的声明块（本文件的选择器均为单层，无嵌套规则）。 */
+function cssBlock(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`).exec(css);
+  return match?.[1] ?? "";
 }
 
 function rustConst(source: string, name: string): number | null {
@@ -134,5 +144,60 @@ describe("窗口档位判定", () => {
   it("窗口变大后档位回到 full（常用操作恢复内联）", () => {
     expect(windowTier(1200)).toBe("full");
     expect(windowTier(1440)).toBe("full");
+  });
+});
+
+describe("工作空间项目页宽度契约（2026-11-17 P0 回归）", () => {
+  // 事故根因：`.wb-project` 同时是 `container-type: inline-size` 的 `.ui-page-frame`，
+  // 父级 `.wb-route` 是纵向 flex；只写 max-width + margin-inline:auto 时 auto margin
+  // 取消 flex 拉伸，inline-size 容器按 0 固有宽度计算 → 页面只剩 padding 宽。
+  // 契约：必须显式 width:100%，并且空态内容有自己的 560–680 阅读宽。
+  const projectBlock = cssBlock(workbenchCss, ".wb-project");
+  const emptyBlock = cssBlock(workbenchCss, ".wb-project-empty .wb-empty-state");
+
+  it("项目页显式占满可用宽度，再按 1440 封顶", () => {
+    expect(projectBlock).toMatch(/width:\s*100%/);
+    expect(projectBlock).toMatch(/max-width:\s*1440px/);
+    expect(projectBlock).toMatch(/margin-inline:\s*auto/);
+    // width 必须先于 auto margin 生效；只有 auto margin 就是这次坍缩的触发器
+    expect(projectBlock.indexOf("width: 100%")).toBeGreaterThan(-1);
+    expect(projectBlock.indexOf("width: 100%")).toBeLessThan(
+      projectBlock.indexOf("margin-inline"),
+    );
+  });
+
+  it("通用 max-width:100% 护栏不得把 1440 阅读宽覆盖掉", () => {
+    expect(workbenchCss).toMatch(
+      /\.wb-route\s*>\s*\.wb-project\s*\{[^}]*max-width:\s*min\(1440px,\s*100%\)/,
+    );
+  });
+
+  it("项目页确实使用 inline-size 容器，防守规则必须保留", () => {
+    expect(projectPanelSource).toContain("wb-project wb-project-empty ui-page-frame");
+    expect(projectPanelSource).toContain('className="wb-project ui-page-frame"');
+  });
+
+  it("空态内容在可用空间居中且有 560–680px 最大宽度", () => {
+    expect(emptyBlock).toMatch(/width:\s*100%/);
+    const maxWidth = /max-width:\s*([0-9]+)px/.exec(emptyBlock)?.[1];
+    expect(Number(maxWidth)).toBeGreaterThanOrEqual(560);
+    expect(Number(maxWidth)).toBeLessThanOrEqual(680);
+    expect(emptyBlock).toMatch(/margin-inline:\s*auto/);
+  });
+});
+
+describe("构建元数据来源契约（2026-11-17）", () => {
+  it("短/完整 commit 都由 build.rs 在编译期注入", () => {
+    expect(buildRsSource).toContain("cargo:rustc-env=TASK_DOCK_GIT_COMMIT=");
+    expect(buildRsSource).toContain("cargo:rustc-env=TASK_DOCK_GIT_COMMIT_FULL=");
+    expect(buildRsSource).toContain('["rev-parse", "HEAD"]');
+  });
+
+  it("状态栏运行期 Git 现场走独立 IPC，不在前端执行 rev-parse 冒充构建元数据", () => {
+    expect(buildStatusSource).toContain("appRuntimeGitInfo");
+    expect(buildStatusSource).toContain("workbench.buildSection.runtime");
+    expect(buildStatusSource).not.toContain("rev-parse");
+    expect(systemSource).toContain("pub fn app_runtime_git_info");
+    expect(systemSource).toContain("option_env!(\"TASK_DOCK_GIT_COMMIT_FULL\")");
   });
 });

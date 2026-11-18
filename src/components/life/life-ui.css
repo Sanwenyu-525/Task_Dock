@@ -371,6 +371,10 @@
   color: var(--status-success);
 }
 
+.life-chip.transferred {
+  color: var(--status-success);
+}
+
 .life-chip.missing {
   color: var(--status-error);
 }

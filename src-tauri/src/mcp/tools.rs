@@ -324,6 +324,12 @@ pub fn tool_defs() -> &'static [ToolDef] {
         defs.extend(crate::mcp::note_tools::defs());
         defs.extend(crate::mcp::workflow_tools::defs());
         defs.extend(crate::mcp::workspace_tools::defs());
+        defs.extend(crate::mcp::knowledge_tools::defs());
+        defs.extend(crate::mcp::capability_tools::defs());
+        // Agent 共享工作空间（v76）：项目状态/计划/知识写/决策/上下文/交接/报告/检索。
+        defs.extend(crate::agent_access::mcp_tools::definitions_for_registry());
+        // 协作中心（v77）：项目上下文/需求/Bug/方案/可视化/原型。
+        defs.extend(crate::collab::mcp_tools::definitions_for_registry());
         defs
     })
     .as_slice()
@@ -347,7 +353,7 @@ pub(crate) fn require_str(args: &Value, key: &str) -> Result<String, ToolError> 
     Ok(v.to_string())
 }
 
-fn require_revision(args: &Value) -> Result<i64, ToolError> {
+pub(crate) fn require_revision(args: &Value) -> Result<i64, ToolError> {
     args.get("expected_revision")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| {
@@ -625,6 +631,17 @@ fn call(
 ) -> Result<CallOutcome, ToolError> {
     let db = ctx.db.as_ref();
     let agent = &ctx.agent;
+    // Agent 共享工作空间工具走统一 service 层（授权、版本、审计都在那一层）。
+    if crate::agent_access::mcp_tools::is_owned(name) {
+        return crate::agent_access::mcp_tools::call(ctx, name, args, write_conn).unwrap_or_else(
+            || Err(ToolError::Failed(AppError::NotFound(format!("未知工具 {name}")))),
+        );
+    }
+    if crate::collab::mcp_tools::is_owned(name) {
+        return crate::collab::mcp_tools::call(ctx, name, args, write_conn).unwrap_or_else(
+            || Err(ToolError::Failed(AppError::NotFound(format!("未知工具 {name}")))),
+        );
+    }
     match name {
         // ── 读工具（scope ∈ {readonly, project_rw}）────────────────
         "taskdock_list_projects" => {
@@ -1132,6 +1149,16 @@ fn call(
             }
             if let Some(outcome) =
                 crate::mcp::workspace_tools::call(ctx, other, args, write_conn)?
+            {
+                return Ok(outcome);
+            }
+            if let Some(outcome) =
+                crate::mcp::knowledge_tools::call(ctx, other, args, write_conn)?
+            {
+                return Ok(outcome);
+            }
+            if let Some(outcome) =
+                crate::mcp::capability_tools::call(ctx, other, args, write_conn)?
             {
                 return Ok(outcome);
             }

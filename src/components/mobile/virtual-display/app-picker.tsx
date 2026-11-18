@@ -16,7 +16,7 @@ import {
 
 import type { VdApp } from "../../../lib/bridge";
 import { SearchField } from "../../ui";
-import type { Translate } from "./format";
+import { filterApps, type Translate } from "./format";
 
 export interface AppPickerProps {
   apps: VdApp[];
@@ -178,14 +178,7 @@ export default function AppPicker({
   }, [deviceUid]);
 
   const keyword = query.trim().toLowerCase();
-  const filtered = useMemo(() => {
-    if (!keyword) return apps;
-    return apps.filter(
-      (app) =>
-        (app.label ?? "").toLowerCase().includes(keyword) ||
-        app.package.toLowerCase().includes(keyword),
-    );
-  }, [apps, keyword]);
+  const filtered = useMemo(() => filterApps(apps, query), [apps, query]);
 
   const byPackage = useMemo(
     () => new Map(apps.map((app) => [app.package, app])),

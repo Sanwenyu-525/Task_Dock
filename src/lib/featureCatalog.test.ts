@@ -152,18 +152,18 @@ describe("目录结构契约", () => {
     expect(groups.reduce((n, g) => n + g.items.length, 0)).toBe(FEATURE_CATALOG.length);
   });
 
-  it("七个展示分区条目数为 core 8 / workbench 6 / workflow 13 / info 2 / agent 10 / ecosystem 5 / system 5", () => {
+  it("七个展示分区条目数为 core 9 / workbench 9 / workflow 16 / info 3 / agent 11 / ecosystem 5 / system 8", () => {
     const counts = Object.fromEntries(
       featuresByCategory().map((g) => [g.category, g.items.length]),
     );
     expect(counts).toEqual({
-      core: 8,
-      workbench: 6,
-      workflow: 13,
-      info: 2,
-      agent: 10,
+      core: 9,
+      workbench: 9,
+      workflow: 16,
+      info: 3,
+      agent: 11,
       ecosystem: 5,
-      system: 5,
+      system: 8,
     });
   });
 
@@ -269,10 +269,53 @@ describe("2026-11-16 路线图补登", () => {
   });
 });
 
+describe("2026-11-18 全量功能补登", () => {
+  /** 本轮补登的 12 项（ID → 分类 / 状态 / 优先级），锁定「现有功能全部进入内置路线图」 */
+  const EXPECTED: Array<[string, string, FeatureStatus, string]> = [
+    ["core.tasks", "core", "implemented", "P0"],
+    ["workbench.shell", "workbench", "implemented", "P0"],
+    ["workbench.planning-center", "workbench", "implemented", "P1"],
+    ["capability.center", "workbench", "implemented", "P1"],
+    ["life.purchases", "info", "partial", "P1"],
+    ["agent.monitoring", "agent", "implemented", "P1"],
+    ["ux.theme-system", "workflow", "implemented", "P1"],
+    ["ux.navigation-customization", "workflow", "implemented", "P2"],
+    ["ux.history-center", "workflow", "implemented", "P2"],
+    ["system.audio", "system", "implemented", "P2"],
+    ["system.tray-autostart", "system", "implemented", "P2"],
+    ["system.settings", "system", "implemented", "P2"],
+  ];
+
+  it("补登条目全部存在，分类/状态/优先级与代码证据一致", () => {
+    for (const [id, category, status, priority] of EXPECTED) {
+      const f = getFeatureById(id);
+      expect(f, `${id} 未登记`).toBeTruthy();
+      expect(f!.title.trim().length, `${id} title`).toBeGreaterThan(0);
+      expect(f!.description.trim().length, `${id} description`).toBeGreaterThan(0);
+      expect(f!.detail.trim().length, `${id} detail`).toBeGreaterThan(0);
+      expect(f!.category, `${id} category`).toBe(category);
+      expect(f!.status, `${id} status`).toBe(status);
+      expect(f!.priority, `${id} priority`).toBe(priority);
+      expect(f!.dependencies.length, `${id} dependencies`).toBeGreaterThan(0);
+      expect(f!.acceptanceCriteria.length, `${id} acceptanceCriteria`).toBeGreaterThan(0);
+      expect(f!.entryPoints?.length, `${id} entryPoints`).toBeGreaterThan(0);
+    }
+    expect(EXPECTED).toHaveLength(12);
+  });
+
+  it("导航入口与产品底座均已覆盖，且不与 12 项核心 ID 重复", () => {
+    const ids = EXPECTED.map(([id]) => id);
+    expect(ids.some((id) => (CORE_FEATURE_IDS as readonly string[]).includes(id))).toBe(false);
+    for (const id of ["core.tasks", "life.purchases", "agent.monitoring", "ux.history-center", "workbench.planning-center", "capability.center", "system.settings"]) {
+      expect(getFeatureById(id), `导航/主功能 ${id} 未登记`).toBeTruthy();
+    }
+  });
+});
+
 describe("统计摘要", () => {
-  it("全目录状态计数与验收基线一致（49 = 22 + 22 + 5 + 0）", () => {
+  it("全目录状态计数与验收基线一致（61 = 33 + 23 + 5 + 0）", () => {
     const s = featureCatalogSummary();
-    expect(s.total).toBe(49);
+    expect(s.total).toBe(61);
     // coreTotal 是 CORE_FEATURE_IDS 锁定的 12 项核心功能，与目录总数无关
     expect(s.coreTotal).toBe(12);
     // v0.10（2026-11-04 七项功能验收整改）：专注与休息、快速笔记、Agent 工作时间统计、
@@ -289,8 +332,11 @@ describe("统计摘要", () => {
     // 小说/游戏/漫剧/智能剪贴板/应用启动/内置 Agent/Relay/移动端/虚拟屏/资源/诊断/备份），
     // 新增「工作台与专业创作」「设备、系统与数据」两个分区；帮助教程计数由 25 更正为 27，
     // 补充「能力导览」后为 28 篇（24 verified / 1 needs_review / 3 draft）。
-    expect(s.implemented).toBe(22);
-    expect(s.partial).toBe(22);
+    // 2026-11-18 用户要求「现有功能全部进入内置路线图」：补登 12 项产品底座与导航入口
+    // （任务主线、窗口胶囊、规划中心、能力中心、生活、Agent 监控、主题、导航自定义、
+    // 历史中心、音频、托盘自启、设置中心），全部保持 unverified（未做新增真机走查）。
+    expect(s.implemented).toBe(33);
+    expect(s.partial).toBe(23);
     expect(s.planned).toBe(5);
     expect(s.blocked).toBe(0);
     // 状态计数之和必须等于总功能数
@@ -303,7 +349,7 @@ describe("统计摘要", () => {
     // 2026-11-16 新增 verified 2 项：智能剪贴板（五轮 GUI 联合验收 + 真机剪贴板证据）、
     // 备份与恢复（P1-04 PASS：真机 78.44MB 全量恢复 14.28s，边界见条目 detail）。
     expect(s.verified).toBe(10);
-    expect(s.unverified).toBe(39);
+    expect(s.unverified).toBe(51);
     expect(s.verified + s.unverified).toBe(s.total);
   });
 

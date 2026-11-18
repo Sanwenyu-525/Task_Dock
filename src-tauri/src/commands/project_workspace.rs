@@ -99,6 +99,24 @@ pub struct WorkspaceTaskLink {
     pub created_at: String,
 }
 
+/// 当前持久化事实的只读进度，不把 Agent completed 当作任务完成，也不自动完成父事项。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProjectProgress {
+    pub project_id: String,
+    pub items_total: i64,
+    pub items_todo: i64,
+    pub items_doing: i64,
+    pub items_blocked: i64,
+    pub items_done: i64,
+    pub items_archived: i64,
+    /// 分母不含 archived；没有有效事项时为 null，不能显示为 100%。
+    pub items_percent: Option<i64>,
+    pub linked_tasks_total: i64,
+    pub linked_tasks_completed: i64,
+    pub linked_tasks_percent: Option<i64>,
+}
+
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NovelVolume {
@@ -531,6 +549,39 @@ pub fn workspace_project_get_impl(db: &Db, id: &str) -> AppResult<WorkspaceProje
     db.with_read(|conn| read_project(conn, id))
 }
 
+pub fn workspace_project_progress_impl(db: &Db, project_id: &str) -> AppResult<WorkspaceProjectProgress> {
+    db.with_read(|conn| {
+        ensure_project_exists(conn, project_id)?;
+        // 单条 SQL 给出一致快照，任务计数与事项计数分开，避免关联任务被重复计入同一百分比。
+        conn.query_row(
+            "SELECT COUNT(*),
+                COALESCE(SUM(status = 'todo'), 0), COALESCE(SUM(status = 'doing'), 0),
+                COALESCE(SUM(status = 'blocked'), 0), COALESCE(SUM(status = 'done'), 0),
+                COALESCE(SUM(status = 'archived'), 0),
+                (SELECT COUNT(*) FROM workspace_task_links l JOIN tasks t ON t.id = l.task_id WHERE l.project_id = ?1),
+                (SELECT COUNT(*) FROM workspace_task_links l JOIN tasks t ON t.id = l.task_id
+                 WHERE l.project_id = ?1 AND t.status = 'completed')
+             FROM workspace_items WHERE project_id = ?1",
+            params![project_id],
+            |row| {
+                let total: i64 = row.get(0)?;
+                let done: i64 = row.get(4)?;
+                let archived: i64 = row.get(5)?;
+                let task_total: i64 = row.get(6)?;
+                let task_completed: i64 = row.get(7)?;
+                Ok(WorkspaceProjectProgress {
+                    project_id: project_id.to_string(), items_total: total,
+                    items_todo: row.get(1)?, items_doing: row.get(2)?, items_blocked: row.get(3)?,
+                    items_done: done, items_archived: archived,
+                    items_percent: (total > archived).then(|| done * 100 / (total - archived)),
+                    linked_tasks_total: task_total, linked_tasks_completed: task_completed,
+                    linked_tasks_percent: (task_total > 0).then(|| task_completed * 100 / task_total),
+                })
+            },
+        ).map_err(AppError::from)
+    })
+}
+
 /// 归档/恢复项目：只改 status，不删除项目、事项、任务关联或外部文件。
 pub fn workspace_project_set_status_impl(
     db: &Db,
@@ -556,17 +607,19 @@ pub fn workspace_project_set_status_impl(
 /// **不删除**外部目录、开发项目登记或任务；若它是活跃项目则同时清除活跃键。
 pub fn workspace_project_delete_impl(db: &Db, id: &str) -> AppResult<()> {
     db.with_conn(|conn| {
-        let deleted = conn.execute("DELETE FROM workspace_projects WHERE id = ?1", params![id])?;
+        let tx = conn.unchecked_transaction()?;
+        let deleted = tx.execute("DELETE FROM workspace_projects WHERE id = ?1", params![id])?;
         if deleted == 0 {
             return Err(AppError::NotFound(format!("工作空间项目不存在: {id}")));
         }
         // 活跃项目已被删除：清掉指向不存在项目的键，避免下次打开落空。
         let stored = serde_json::to_string(id)?;
-        conn.execute(
+        tx.execute(
             "DELETE FROM application_settings
              WHERE key = 'workspace_active_project' AND value = ?1",
             params![stored],
         )?;
+        tx.commit()?;
         Ok(())
     })
 }
@@ -631,16 +684,19 @@ pub fn workspace_instance_save_impl(
         let module = validate_text(&active_module, "活动模块", MAX_MODULE_CHARS, false)?;
         module
     };
-    let layout_json = normalize_json_object(layout_json, "布局", MAX_LAYOUT_BYTES)?;
+    // 省略布局表示只切换模块；显式传 {} 才清空布局。
+    let layout_json = layout_json
+        .map(|value| normalize_json_object(Some(value), "布局", MAX_LAYOUT_BYTES))
+        .transpose()?;
     let now = now_iso();
     db.with_conn(|conn| {
         ensure_project_exists(conn, project_id)?;
         conn.execute(
             "INSERT INTO workspace_instances (project_id, active_module, layout_json, last_opened_at)
-             VALUES (?1, ?2, ?3, ?4)
+             VALUES (?1, ?2, COALESCE(?3, '{}'), ?4)
              ON CONFLICT(project_id) DO UPDATE SET
                active_module = excluded.active_module,
-               layout_json = excluded.layout_json,
+               layout_json = COALESCE(?3, workspace_instances.layout_json),
                last_opened_at = excluded.last_opened_at",
             params![project_id, active_module, layout_json, now],
         )?;
@@ -1316,6 +1372,14 @@ pub fn workspace_project_get(
 }
 
 #[tauri::command]
+pub fn workspace_project_progress(
+    db: State<'_, Arc<Db>>,
+    project_id: String,
+) -> AppResult<WorkspaceProjectProgress> {
+    workspace_project_progress_impl(&db, &project_id)
+}
+
+#[tauri::command]
 pub fn workspace_project_save(
     db: State<'_, Arc<Db>>,
     id: Option<String>,
@@ -1569,6 +1633,37 @@ mod tests {
     }
 
     #[test]
+    fn backend_round2_progress_is_project_scoped_and_has_no_fake_empty_percent() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "progress", "general");
+        let other = create_project(&db, "other", "game");
+        let empty = workspace_project_progress_impl(&db, &project.id).unwrap();
+        assert_eq!(empty.items_percent, None);
+        assert_eq!(empty.linked_tasks_percent, None);
+        for status in ITEM_STATUSES {
+            workspace_item_save_impl(&db, None, project.id.clone(), None, status.to_string(),
+                None, Some(status.to_string()), None, None).unwrap();
+        }
+        workspace_item_save_impl(&db, None, other.id, None, "unrelated".into(),
+            None, Some("done".into()), None, None).unwrap();
+        db.with_conn(|conn| {
+            conn.execute("INSERT INTO tasks (id,title,status,created_at,updated_at)
+                VALUES ('progress-done','done','completed','now','now'),
+                       ('progress-open','open','pending','now','now')", [])?;
+            Ok(())
+        }).unwrap();
+        workspace_task_link_add_impl(&db, &project.id, "progress-done").unwrap();
+        workspace_task_link_add_impl(&db, &project.id, "progress-open").unwrap();
+        workspace_project_set_status_impl(&db, &project.id, "archived".into()).unwrap();
+        let progress = workspace_project_progress_impl(&db, &project.id).unwrap();
+        assert_eq!(progress.items_total, 5);
+        assert_eq!((progress.items_todo, progress.items_doing, progress.items_blocked, progress.items_done, progress.items_archived), (1,1,1,1,1));
+        assert_eq!(progress.items_percent, Some(25));
+        assert_eq!((progress.linked_tasks_total, progress.linked_tasks_completed, progress.linked_tasks_percent), (2,1,Some(50)));
+        assert!(workspace_project_progress_impl(&db, "missing").is_err());
+    }
+
+    #[test]
     fn project_crud_keeps_external_paths_and_clears_active_on_delete() {
         let db = Db::open_in_memory().unwrap();
         let dir = temp_dir("crud");
@@ -1708,6 +1803,37 @@ mod tests {
         // 模块保存是「该项目自己的状态」，不得隐式改写全局活跃项目。
         assert!(db.get_setting("workspace_active_project").unwrap().is_none());
         assert!(workspace_instance_save_impl(&db, &project.id, "items".into(), Some("[]".into())).is_err());
+    }
+
+    #[test]
+    fn backend_continuation_module_only_save_preserves_layout() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "布局", "general");
+        workspace_instance_save_impl(
+            &db, &project.id, "overview".into(), Some(r#"{"left":300}"#.into()),
+        ).unwrap();
+        let saved = workspace_instance_save_impl(&db, &project.id, "items".into(), None).unwrap();
+        assert_eq!(saved.active_module, "items");
+        assert_eq!(saved.layout_json, r#"{"left":300}"#);
+        let cleared = workspace_instance_save_impl(
+            &db, &project.id, "items".into(), Some("{}".into()),
+        ).unwrap();
+        assert_eq!(cleared.layout_json, "{}");
+    }
+
+    #[test]
+    fn backend_continuation_project_delete_rolls_back_on_setting_failure() {
+        let db = Db::open_in_memory().unwrap();
+        let project = create_project(&db, "原子删除", "general");
+        workspace_set_active_project_impl(&db, Some(project.id.clone())).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TRIGGER reject_active_delete BEFORE DELETE ON application_settings
+                WHEN OLD.key = 'workspace_active_project'
+                BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
+            Ok(())
+        }).unwrap();
+        assert!(workspace_project_delete_impl(&db, &project.id).is_err());
+        assert!(workspace_project_get_impl(&db, &project.id).is_ok());
     }
 
     /// 活跃项目由显式选择决定：A 的延迟模块保存不能覆盖用户后来选的 B。

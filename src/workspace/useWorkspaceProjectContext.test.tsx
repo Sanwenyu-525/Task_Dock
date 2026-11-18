@@ -354,6 +354,83 @@ describe("useWorkspaceProjectContext：布局持久化（P1-02 7.1）", () => {
     expect(saved.activeModule).toBe("settings");
   });
 
+  it("saveLayout 写回排序/显隐；隐藏当前模块时回落到概览", async () => {
+    const { result } = renderHook(() => useWorkspaceProjectContext("A", DEV));
+    await act(async () => {
+      resolveBucket("A", [], []);
+      await flush();
+    });
+
+    await act(async () => {
+      await result.current.saveLayout({
+        version: 1,
+        moduleOrder: ["items", "overview", "links", "settings"],
+        hiddenModules: ["items"],
+        activeModule: "items",
+      });
+      await flush();
+    });
+
+    expect(bridge.workspaceInstanceSave).toHaveBeenCalledTimes(1);
+    const payload = bridge.workspaceInstanceSave.mock.calls[0][0] as {
+      projectId: string;
+      activeModule: string;
+      layoutJson: string;
+    };
+    const saved = JSON.parse(payload.layoutJson) as {
+      moduleOrder: string[];
+      hiddenModules: string[];
+      activeModule: string;
+    };
+    expect(payload.projectId).toBe("A");
+    expect(payload.activeModule).toBe("overview");
+    expect(saved.hiddenModules).toEqual(["items"]);
+    expect(saved.activeModule).toBe("overview");
+  });
+
+  it("布局保存与模块切换共用串行链：后一次基于前一次落库布局", async () => {
+    bridge.workspaceInstanceSave.mockImplementation((async (input: {
+      projectId: string;
+      activeModule: string;
+      layoutJson: string;
+    }) => ({
+      instance: {
+        projectId: input.projectId,
+        activeModule: input.activeModule,
+        layoutJson: input.layoutJson,
+        lastOpenedAt: null,
+      },
+    })) as never);
+    const { result } = renderHook(() => useWorkspaceProjectContext("A", DEV));
+    await act(async () => {
+      resolveBucket("A", [], []);
+      await flush();
+    });
+
+    await act(async () => {
+      await Promise.all([
+        result.current.saveLayout({
+          version: 1,
+          moduleOrder: ["overview", "items", "links", "settings"],
+          hiddenModules: ["items"],
+          activeModule: "overview",
+        }),
+        result.current.saveModule("settings"),
+      ]);
+      await flush();
+    });
+
+    expect(bridge.workspaceInstanceSave).toHaveBeenCalledTimes(2);
+    const second = bridge.workspaceInstanceSave.mock.calls[1][0] as {
+      activeModule: string;
+      layoutJson: string;
+    };
+    expect(second.activeModule).toBe("settings");
+    const saved = JSON.parse(second.layoutJson) as { hiddenModules: string[]; activeModule: string };
+    expect(saved.hiddenModules).toEqual(["items"]);
+    expect(saved.activeModule).toBe("settings");
+  });
+
   it("布局损坏时安全回退并标记 repaired", async () => {
     bridge.workspaceInstanceGet.mockResolvedValueOnce({ instance: instanceRow("A", "{broken") } as never);
     const { result } = renderHook(() => useWorkspaceProjectContext("A", DEV));

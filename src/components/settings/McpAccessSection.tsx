@@ -46,6 +46,8 @@ const CAPABILITIES: readonly { id: McpCapability; label: MessageKey }[] = [
   { id: "notes.write", label: "settings.mcpAccess.capabilities.notesWrite" },
   { id: "workflows.read", label: "settings.mcpAccess.capabilities.workflowsRead" },
   { id: "workspace.read", label: "settings.mcpAccess.capabilities.workspaceRead" },
+  { id: "knowledge.read", label: "settings.mcpAccess.capabilities.knowledgeRead" },
+  { id: "skills.read", label: "settings.mcpAccess.capabilities.skillsRead" },
 ];
 const AUDIT_PAGE_SIZE = 20;
 

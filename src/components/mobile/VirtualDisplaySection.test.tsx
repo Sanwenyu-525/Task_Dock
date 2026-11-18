@@ -30,8 +30,19 @@ vi.mock("../../lib/bridge", async (importOriginal) => {
     vdSessions: vi.fn(async () => []),
     vdStart: vi.fn(),
     vdStop: vi.fn(async () => true),
+    vdSession: vi.fn(),
+    vdToolbarAttach: vi.fn(async () => "pending"),
+    vdToolbarDetach: vi.fn(async () => true),
+    vdToolbarDestroy: vi.fn(async () => true),
+    vdToolbarSetExpanded: vi.fn(async () => true),
+    vdToolbarSetLocked: vi.fn(async () => true),
+    vdToolbarUpdate: vi.fn(async () => true),
   };
 });
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => path,
@@ -56,12 +67,14 @@ import {
   vdSessions,
   vdStart,
   vdStop,
+  vdToolbarAttach,
   type VdAppList,
   type VdDevice,
   type VdProbe,
   type VdSession,
 } from "../../lib/bridge";
 import { save as saveFileDialog } from "@tauri-apps/plugin-dialog";
+import { useVirtualDisplayStore } from "../../store/useVirtualDisplayStore";
 
 const devicesMock = vi.mocked(vdDevices);
 const appsMock = vi.mocked(vdListApps);
@@ -70,6 +83,7 @@ const sessionsMock = vi.mocked(vdSessions);
 const startMock = vi.mocked(vdStart);
 const navMock = vi.mocked(vdNav);
 const stopMock = vi.mocked(vdStop);
+const toolbarAttachMock = vi.mocked(vdToolbarAttach);
 const focusMock = vi.mocked(vdFocus);
 const shotMock = vi.mocked(vdScreenshot);
 const exportMock = vi.mocked(vdScreenshotExport);
@@ -148,6 +162,7 @@ function session(overrides: Partial<VdSession> = {}): VdSession {
     warning: null,
     job_assigned: true,
     size: "1080x1920/384",
+    toolbar_state: "ready",
     ...overrides,
   };
 }
@@ -180,6 +195,9 @@ const CAMERA_APP = {
 };
 
 beforeEach(() => {
+  // 启动配置现在由 store 持久化（切页恢复）；每个用例必须从干净状态开始，
+  // 否则上一用例的 mode/package 会泄漏到下一用例。
+  useVirtualDisplayStore.setState({ configs: {} });
   probeMock.mockResolvedValue(probe());
   devicesMock.mockResolvedValue({ devices: [device()], adb_ok: true, error: null });
   appsMock.mockResolvedValue(appList(SERIAL_A, "UID-A", [SETTINGS_APP]));
@@ -476,59 +494,20 @@ describe("VirtualDisplaySection", () => {
     await waitFor(() => expect(screen.queryByText("窗口截图")).toBeNull());
   });
 
-  it("Android 导航键绑定会话与 Display ID，不按当前设备猜测", async () => {
+  it("主界面不再提供返回/Home/最近任务操作入口，控制栏按 Session 挂接", async () => {
     sessionsMock.mockResolvedValue([
       session({ status: "running", stage: "ready", display_id: 17 }),
     ]);
-    const user = userEvent.setup();
     render(<VirtualDisplaySection />);
 
     await screen.findByText("V2323A · 设置");
-    await user.click(screen.getByRole("button", { name: "返回" }));
-    expect(navMock).toHaveBeenCalledWith("session-1", "back");
-    await user.click(screen.getByRole("button", { name: "Home" }));
-    expect(navMock).toHaveBeenCalledWith("session-1", "home");
-    // Android 16/vivo 实测 APP_SWITCH 会落到实体屏；虚拟屏必须显式禁用，不能假成功。
-    const recents = screen.getByRole("button", { name: "最近任务" }) as HTMLButtonElement;
-    expect(recents.disabled).toBe(true);
-    expect(screen.getByText("最近任务仅支持实体屏")).toBeTruthy();
-    await user.click(recents);
-    expect(navMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("镜像会话的最近任务仍可发送到实体屏", async () => {
-    sessionsMock.mockResolvedValue([
-      session({
-        status: "running",
-        stage: "ready",
-        mode: "mirror",
-        package: null,
-        app_label: null,
-        display_id: 0,
-      }),
-    ]);
-    const user = userEvent.setup();
-    render(<VirtualDisplaySection />);
-
-    await screen.findByText("V2323A · 手机屏幕");
-    const recents = screen.getByRole("button", { name: "最近任务" }) as HTMLButtonElement;
-    expect(recents.disabled).toBe(false);
-    await user.click(recents);
-    expect(navMock).toHaveBeenCalledWith("session-1", "recents");
-  });
-
-  it("虚拟屏 Display ID 未确认时导航键禁用，不回退到手机实体屏", async () => {
-    sessionsMock.mockResolvedValue([
-      session({ status: "running", stage: "ready", display_id: null }),
-    ]);
-    render(<VirtualDisplaySection />);
-
-    await screen.findByText("V2323A · 设置");
-    expect(screen.getByText("Display ID 未确认")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "返回" }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    // P0：日常导航从主界面移除，改由投屏窗口的独立控制栏承担。
+    expect(screen.queryByRole("button", { name: "返回" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Home" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "最近任务" })).toBeNull();
     expect(navMock).not.toHaveBeenCalled();
+    // 主界面只负责把运行中的 Session 交给控制栏（绑定 session_id）。
+    expect(toolbarAttachMock).toHaveBeenCalledWith("session-1");
   });
 
   it("关闭会话调用 vd_stop，并立即显示关闭中状态", async () => {

@@ -612,11 +612,12 @@ pub fn app_build_info(app: AppHandle) -> serde_json::Value {
     })
 }
 
-/// 构建溯源信息（编译期注入）：短 commit、构建时间（Unix 秒）、debug/release、
+/// 构建溯源信息（编译期注入）：短/完整 commit、构建时间（Unix 秒）、debug/release、
 /// 当前运行可执行文件路径。仅通过本地诊断 IPC 返回，不写入应用日志。
 fn build_info() -> serde_json::Value {
     serde_json::json!({
         "commit": option_env!("TASK_DOCK_GIT_COMMIT").unwrap_or("unknown"),
+        "commit_full": option_env!("TASK_DOCK_GIT_COMMIT_FULL").unwrap_or("unknown"),
         "dirty": option_env!("TASK_DOCK_GIT_DIRTY").unwrap_or("unknown"),
         "built_at_unix": option_env!("TASK_DOCK_BUILD_TIME").unwrap_or("unknown"),
         "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
@@ -624,6 +625,59 @@ fn build_info() -> serde_json::Value {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "unknown".to_string()),
     })
+}
+
+/// 当前运行环境的 Git 现场（实时读取，**不属于安装包元数据**）。
+///
+/// 与 `build_info()` 的边界：
+/// - `build_info()` 的 commit/dirty 是构建时写死的，包被复制/升级后不变；
+/// - 本命令沿当前可执行文件向上寻找最近的 `.git`，只读探测 HEAD/分支/未提交数，
+///   仅代表「此刻运行环境」；安装到 Program Files 等非仓库路径时返回
+///   `not_applicable`，绝不拿运行期 HEAD 冒充包内构建提交。
+#[tauri::command]
+pub fn app_runtime_git_info() -> serde_json::Value {
+    runtime_git_info()
+}
+
+fn runtime_git_info() -> serde_json::Value {
+    let exe = std::env::current_exe().ok();
+    let repo_root = exe.as_deref().and_then(find_repo_root);
+    let Some(root) = repo_root else {
+        return serde_json::json!({
+            "status": "not_applicable",
+            "repoRoot": null,
+            "branch": null,
+            "detached": false,
+            "headSha": null,
+            "dirtyCount": null,
+            "probedAt": chrono::Utc::now().to_rfc3339(),
+        });
+    };
+    let info = crate::devwork::git::probe(&root.display().to_string());
+    serde_json::json!({
+        "status": info.status,
+        "repoRoot": root.display().to_string(),
+        "branch": info.branch,
+        "detached": info.detached,
+        "headSha": info.head_sha,
+        "dirtyCount": info.dirty_count,
+        "probedAt": info.probed_at,
+    })
+}
+
+/// 从可执行文件所在目录向上找最近的 Git 工作树根（最多 12 层）。
+///
+/// 只判断 `.git` 是否存在（目录或 worktree 的 gitfile 均可），不读取其内容；
+/// 找不到即返回 None，由调用方降级为 `not_applicable`。
+fn find_repo_root(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut current = exe.parent()?;
+    for _ in 0..12 {
+        if current.join(".git").exists() {
+            return Some(current.to_path_buf());
+        }
+        current = current.parent()?;
+    }
+    None
 }
 
 // ── 窗口材质（毛玻璃）────────────────────────────────────────

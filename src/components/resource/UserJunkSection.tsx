@@ -20,6 +20,8 @@ import {
 import {
   resourceJunkExecute,
   resourceJunkPreview,
+  recycleStats,
+  type RecycleStats,
   type ResourceJunkCategory,
   type ResourceJunkCategoryPreview,
   type ResourceJunkExecutionReport,
@@ -30,10 +32,10 @@ import { normalizeError } from "../../lib/errors";
 import { localizedErrorMessage } from "../../i18n/errors";
 import { useLocale } from "../../hooks/useLocale";
 import type { MessageKey } from "../../i18n";
+import { useUiStore } from "../../store/useUiStore";
 import { Checkbox } from "../ui";
 
 const CATEGORIES: readonly ResourceJunkCategory[] = [
-  "recycle_bin",
   "user_temp",
   "system_temp",
   "crash_dumps",
@@ -141,11 +143,19 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
   const [error, setError] = useState<string | null>(null);
   /** 上次扫描后是否清空过选择：明确告诉用户「重新扫描不等于沿用上次授权」。 */
   const [selectionReset, setSelectionReset] = useState(false);
+  /** 本地回收站索引（毫秒级）：只展示缓存统计，不触发扫描。 */
+  const [recycleIndex, setRecycleIndex] = useState<RecycleStats | null>(null);
   const mountedRef = useRef(false);
   const requestRef = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
+    // 仅读缓存；失败只意味着「暂无索引」，不能阻断资源面板的其他清理项。
+    void recycleStats()
+      .then((stats) => {
+        if (mountedRef.current) setRecycleIndex(stats);
+      })
+      .catch(() => undefined);
     return () => {
       mountedRef.current = false;
       requestRef.current += 1;
@@ -261,6 +271,56 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
       </div>
       <p className="setting-note">{t("resource.junk.desc")}</p>
 
+      {/* 回收站只展示本地索引统计与跳转入口：列表、恢复、清空统一在文件工作区，
+          资源面板不再做第二套回收站 UI，也不触发递归 $R 扫描。 */}
+      <div className="resource-cleanup-row resource-recycle-entry">
+        <span className="resource-cleanup-label">
+          <span className="resource-cleanup-title">
+            <Recycle size={13} aria-hidden="true" />
+            {t("resource.junk.category.recycleBin")}
+            <span className="resource-danger-tag">{t("resource.junk.irreversible")}</span>
+          </span>
+          <span className="resource-cleanup-description">
+            {t("resource.junk.category.recycleBinDesc")}
+          </span>
+        </span>
+        <div className="resource-cleanup-category-stats">
+          <strong>
+            {recycleIndex
+              ? t("resource.junk.items", { count: recycleIndex.items })
+              : t("resource.junk.indexPending")}
+          </strong>
+          <span>
+            {recycleIndex
+              ? t("settings.resourceCleanup.estimated", {
+                  bytes: formatBytes(recycleIndex.knownBytes),
+                })
+              : t("resource.junk.indexPendingHint")}
+          </span>
+          {recycleIndex && recycleIndex.unknownSize > 0 && (
+            <span className="resource-cleanup-row-status">
+              {t("resource.junk.indexed", {
+                count: recycleIndex.items,
+                bytes: formatBytes(recycleIndex.knownBytes),
+              })}
+            </span>
+          )}
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => {
+              useUiStore.getState().setTab("files");
+              window.setTimeout(
+                () => window.dispatchEvent(new CustomEvent("taskdock-fw-open-recycle")),
+                0,
+              );
+            }}
+          >
+            {t("resource.junk.openRecycle")}
+          </button>
+        </div>
+      </div>
+
       {preview ? (
         <div className="resource-cleanup-categories">
           {CATEGORIES.map((category) => {
@@ -282,11 +342,6 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
                       <span className="resource-cleanup-title">
                         <Icon size={13} aria-hidden="true" />
                         {categoryName(category)}
-                        {category === "recycle_bin" && (
-                          <span className="resource-danger-tag">
-                            {t("resource.junk.irreversible")}
-                          </span>
-                        )}
                       </span>
                       <span className="resource-cleanup-description">
                         {t(info.description)}
@@ -413,12 +468,6 @@ export default function UserJunkSection({ onSnapshotInvalidated }: UserJunkSecti
             ))}
           </div>
           <p className="setting-note">{t("resource.junk.confirmWarning")}</p>
-          {usableSelection.includes("recycle_bin") && (
-            <p className="setting-note resource-cleanup-danger-note" role="alert">
-              <AlertTriangle size={12} aria-hidden="true" />{" "}
-              {t("resource.junk.confirmRecycle")}
-            </p>
-          )}
           <div className="resource-cleanup-actions">
             <button
               className="btn sm"

@@ -46,6 +46,8 @@ export const GLOBAL_SEARCH_CATEGORIES = [
   "notes",
   // 生活效率系统 v1：商品购买历史、生活事件、票据。
   "life",
+  // 知识与 AI 能力中心：已索引的知识文档。
+  "knowledge",
 ] as const;
 export type GlobalSearchCategory = (typeof GLOBAL_SEARCH_CATEGORIES)[number];
 export type GlobalSearchCategoryFilter = GlobalSearchCategory | "all";
@@ -62,6 +64,7 @@ export const GLOBAL_SEARCH_CATEGORY_LABELS: Record<GlobalSearchCategoryFilter, s
   planning: "规划中心",
   notes: "笔记",
   life: "生活",
+  knowledge: "知识",
 };
 
 /** 分类内子类型的中文展示（未列出的 kind 原样显示）。 */
@@ -78,6 +81,7 @@ export const GLOBAL_SEARCH_KIND_LABELS: Record<string, string> = {
   milestone: "里程碑",
   note: "笔记",
   text: "文本",
+  capture: "收集箱",
   url: "链接",
   html: "网页",
   image: "图片",

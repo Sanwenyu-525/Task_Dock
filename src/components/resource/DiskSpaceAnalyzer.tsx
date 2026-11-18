@@ -35,6 +35,11 @@ interface DiskSpaceAnalyzerProps {
   embedded?: boolean;
 }
 
+/** 会话级扫描缓存有效期：返回上级目录时复用，超过则重扫。 */
+const ANALYSIS_CACHE_TTL_MS = 60_000;
+/** 会话级缓存条目上限（每个条目含前 40 个子目录与 30 个文件，避免内存过大）。 */
+const ANALYSIS_CACHE_MAX = 12;
+
 function parentOf(path: string): string {
   const index = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
   return index > 0 ? path.slice(0, index) : path;
@@ -51,6 +56,13 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
   const [revealError, setRevealError] = useState<string | null>(null);
   const mountedRef = useRef(false);
   const requestRef = useRef(0);
+  /**
+   * 会话级扫描缓存：返回上级目录/来回切换目录时不再重复走一遍磁盘。
+   * 只缓存「本次会话真的扫过」的路径，60 秒过期；显式「重新扫描」永远绕过缓存。
+   * 命中缓存必须给用户可见提示（磁盘可能在外部变化，不能假装是刚读的）。
+   */
+  const cacheRef = useRef(new Map<string, { report: ResourceDiskScanReport; at: number }>());
+  const [cachedAt, setCachedAt] = useState<number | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -65,7 +77,7 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
     if (!path && defaultPath) setPath(defaultPath);
   }, [defaultPath, path]);
 
-  async function scan(target?: string) {
+  async function scan(target?: string, force = false) {
     const next = (target ?? path).trim();
     if (!next || loading) return;
     const request = ++requestRef.current;
@@ -75,11 +87,26 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
     setFailedTarget(null);
     // 目标目录一变，旧报告立即作废：绝不让新路径下面挂着上一个目录的数据。
     if (report && report.path !== next) setReport(null);
+    const cached = cacheRef.current.get(next);
+    if (!force && cached && Date.now() - cached.at < ANALYSIS_CACHE_TTL_MS) {
+      setReport(cached.report);
+      setPath(cached.report.path);
+      setCachedAt(cached.at);
+      setLoading(false);
+      return;
+    }
+    setCachedAt(null);
     try {
       const result = await resourceDiskAnalyze(next);
       if (!mountedRef.current || request !== requestRef.current) return;
       setReport(result);
       setPath(result.path);
+      cacheRef.current.set(result.path, { report: result, at: Date.now() });
+      while (cacheRef.current.size > ANALYSIS_CACHE_MAX) {
+        const oldest = [...cacheRef.current.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+        if (!oldest) break;
+        cacheRef.current.delete(oldest[0]);
+      }
     } catch (reason) {
       if (!mountedRef.current || request !== requestRef.current) return;
       // 失败时清空报告：错误路径旁边不能继续展示上一次成功的结果。
@@ -108,7 +135,7 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
         setFailedTarget(null);
         setRevealError(null);
       }
-      await scan(next);
+      await scan(next, true);
     } catch (reason) {
       setError(localizedErrorMessage(reason));
     }
@@ -174,7 +201,7 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
           <button
             type="button"
             className="btn sm"
-            onClick={() => void scan()}
+            onClick={() => void scan(undefined, true)}
             disabled={loading || !path}
           >
             {loading ? (
@@ -241,6 +268,13 @@ export default function DiskSpaceAnalyzer({ defaultPath, embedded = false }: Dis
             )}
           </div>
           <p className="resource-analysis-summary">{summary}</p>
+          {cachedAt && (
+            <p className="setting-note" role="status">
+              {t("resource.analysis.cachedNote", {
+                seconds: Math.max(1, Math.round((Date.now() - cachedAt) / 1000)),
+              })}
+            </p>
+          )}
           {(report.truncated || report.skippedErrors > 0) && (
             <div className="setting-note resource-cleanup-error" role="status">
               {report.truncated && <span>{t("resource.analysis.truncated")}</span>}

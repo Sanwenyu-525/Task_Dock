@@ -158,7 +158,7 @@ pub(super) fn collect(data_root: &Path) -> Vec<DiskSnapshot> {
 
 /// 本地固定/可移动盘的盘符列表（`["C:", "D:"]`）。光驱、网络盘、内存盘不参与。
 /// 供回收站等「按卷处理」的功能复用，避免重复定义 GetDriveTypeW 的类型常量。
-pub(super) fn local_drive_roots() -> Vec<String> {
+pub(crate) fn local_drive_roots() -> Vec<String> {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};

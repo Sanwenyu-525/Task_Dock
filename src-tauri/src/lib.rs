@@ -1,6 +1,7 @@
 //! Task Dock 应用入口：插件装配、窗口/托盘/热键、数据库与 Agent 总线初始化。
 
 pub mod actions;
+pub mod agent_access;
 pub mod agent_stats;
 pub mod agents;
 pub mod alloc_stats;
@@ -21,12 +22,15 @@ mod drag_watch;
 pub mod error;
 pub mod file_workspace;
 pub mod focus;
+pub mod fsops;
 mod fs_safety;
 pub mod global_search;
 pub mod hotkeys;
 pub mod lifecycle;
 mod magnetic;
 pub mod mcp;
+pub mod capability;
+pub mod collab;
 pub mod mobile_sync;
 pub mod navigation;
 pub mod nlp;
@@ -35,6 +39,7 @@ pub mod notification_window;
 pub mod quick_capture;
 pub mod recurrence;
 mod project_workspace_window;
+pub mod recycle;
 pub mod resource_cleanup;
 pub mod scheduler;
 pub mod shelf;
@@ -642,7 +647,21 @@ pub fn run() {
 
             let handle = app.handle().clone();
 
+            // 投屏控制栏窗口服务：登记 AppHandle，供 vd_start 的伴随窗口线程使用。
+            commands::projection_window::init(&handle);
+
             let db = Arc::new(Db::open(&data_dir.join("task-dock.db")).expect("数据库打开失败"));
+            // Agent 共享工作空间：按设置恢复文件监听与本地 REST（默认都关闭）。
+            match db::Settings::load(&db) {
+                Ok(settings) => {
+                    let _ = agent_access::watch::apply(
+                        db.clone(),
+                        settings.agent_workspace_watch_enabled,
+                    );
+                    let _ = agent_access::rest::apply(db.clone());
+                }
+                Err(err) => tracing::warn!("读取 Agent 接入设置失败: {err}"),
+            }
             // 先处理上次中断的恢复：数据库/文件提交要么续跑完成，要么回滚；
             // 必须在剪贴板监听与 Agent 管线启动前完成，避免恢复期间写入被覆盖。
             match commands::restore::recover_pending(&data_dir, &db) {
@@ -687,6 +706,11 @@ pub fn run() {
                 audio_cache_dir.clone(),
             )));
             handle.manage(Arc::new(audio::AudioService::new(audio_cache_dir)));
+            // 统一文件操作任务注册表 + 固定 worker 池 + 回收站索引服务（v68）：
+            // 只持有数据库句柄与两个空转 worker，启动阶段不做任何扫描。
+            handle.manage(Arc::new(fsops::JobRegistry::new()));
+            handle.manage(fsops::Scheduler::new(handle.clone()));
+            handle.manage(recycle::RecycleService::new(db.clone()));
             // 快速捕获语音输入：只构造服务对象，工作线程与 COM 在首次使用时才创建。
             handle.manage(Arc::new(quick_capture::voice::VoiceInput::new()));
             let settings = db::Settings::load(&db).unwrap_or_else(|e| {
@@ -1366,6 +1390,7 @@ pub fn run() {
             commands::system::hub_health,
             commands::system::performance_diagnostics,
             commands::system::app_build_info,
+            commands::system::app_runtime_git_info,
             commands::system::apply_window_material,
             commands::system::apply_window_radius,
             // 工作台窗口半径（与主窗同一口径，按视觉预设由前端下发）
@@ -1488,6 +1513,61 @@ pub fn run() {
             mcp::commands::mcp_workspace_revoke_root,
             mcp::commands::mcp_audit_prune,
             mcp::commands::mcp_diagnostics,
+            // 知识与 AI 能力中心（v72）
+            capability::commands::capability_knowledge_stats,
+            capability::commands::capability_kb_list,
+            capability::commands::capability_kb_get,
+            capability::commands::capability_kb_create,
+            capability::commands::capability_kb_update,
+            capability::commands::capability_kb_delete,
+            capability::commands::capability_kb_set_favorite,
+            capability::commands::capability_document_list,
+            capability::commands::capability_document_get,
+            capability::commands::capability_document_import_file,
+            capability::commands::capability_document_import_folder,
+            capability::commands::capability_document_import_note,
+            capability::commands::capability_document_import_capture,
+            capability::commands::capability_document_create_text,
+            capability::commands::capability_document_reindex,
+            capability::commands::capability_kb_rebuild,
+            capability::commands::capability_document_delete,
+            capability::commands::capability_knowledge_search,
+            capability::commands::capability_knowledge_link_add,
+            capability::commands::capability_knowledge_link_remove,
+            capability::commands::capability_knowledge_links,
+            capability::commands::capability_knowledge_backlinks,
+            capability::commands::capability_skill_scan,
+            capability::commands::capability_skill_list,
+            capability::commands::capability_skill_get,
+            capability::commands::capability_skill_set_enabled,
+            capability::commands::capability_skill_set_scope,
+            capability::commands::capability_skill_import,
+            capability::commands::capability_skill_save_content,
+            capability::commands::capability_skill_delete,
+            capability::commands::capability_mcp_servers_list,
+            capability::commands::capability_mcp_server_save,
+            capability::commands::capability_mcp_server_delete,
+            capability::commands::capability_mcp_server_set_enabled,
+            capability::commands::capability_mcp_server_set_allow_high_risk,
+            capability::commands::capability_mcp_server_test,
+            capability::commands::capability_mcp_server_call,
+            capability::commands::capability_mcp_calls,
+            capability::commands::capability_context_list,
+            capability::commands::capability_context_get,
+            capability::commands::capability_context_save,
+            capability::commands::capability_context_delete,
+            capability::commands::capability_context_duplicate,
+            capability::commands::capability_context_assemble,
+            capability::commands::capability_recipe_list,
+            capability::commands::capability_recipe_get,
+            capability::commands::capability_recipe_save,
+            capability::commands::capability_recipe_delete,
+            capability::commands::capability_recipe_duplicate,
+            capability::commands::capability_recipe_export,
+            capability::commands::capability_recipe_import,
+            capability::commands::capability_recipe_run,
+            capability::commands::capability_recipe_runs,
+            capability::commands::capability_recipe_run_get,
             // 智能剪贴板（v0.5）
             commands::clipboard::clipboard_view,
             commands::clipboard::clipboard_item,
@@ -1689,7 +1769,29 @@ pub fn run() {
             commands::file_workspace::fs_stat,
             commands::file_workspace::fs_open,
             commands::file_workspace::fs_reveal,
+            commands::file_workspace::fs_preview_operation,
+            commands::file_workspace::fs_open_with,
+            commands::file_workspace::fs_show_properties,
+            commands::file_workspace::fs_open_terminal,
             commands::file_workspace::fs_thumbnail,
+            // 统一文件操作服务 + 回收站索引（v68）：批量任务、进度、取消与缓存查询
+            commands::recycle::fs_copy_job_start,
+            commands::recycle::fs_drag_out,
+            commands::recycle::fs_move_job_start,
+            commands::recycle::fs_delete_job_start,
+            commands::recycle::fs_job_status,
+            commands::recycle::fs_job_report,
+            commands::recycle::fs_batch_rename_job_start,
+            commands::recycle::fs_job_cancel,
+            commands::recycle::fs_jobs,
+            commands::recycle::recycle_stats,
+            commands::recycle::recycle_list,
+            commands::recycle::recycle_sync,
+            commands::recycle::recycle_sync_status,
+            commands::recycle::recycle_sync_cancel,
+            commands::recycle::recycle_restore,
+            commands::recycle::recycle_purge,
+            commands::recycle::recycle_empty,
             // 一键工作流（v0.9）
             commands::workflows::workflow_list,
             commands::workflows::workflow_get,
@@ -1727,6 +1829,10 @@ pub fn run() {
             // 项目工作空间（v49）：项目 / 实例 / 通用事项 / 任务关联
             commands::project_workspace::workspace_project_list,
             commands::project_workspace::workspace_project_get,
+            commands::project_workspace::workspace_project_progress,
+            commands::workspace_resources::workspace_resource_save,
+            commands::workspace_resources::workspace_resource_list,
+            commands::workspace_resources::workspace_resource_remove,
             commands::project_workspace::workspace_project_save,
             commands::project_workspace::workspace_project_set_status,
             commands::project_workspace::workspace_project_delete,
@@ -1842,6 +1948,83 @@ pub fn run() {
             commands::virtual_display::vd_screenshot_export,
             commands::virtual_display::vd_diagnostics,
             commands::virtual_display::vd_reconnect,
+            // 投屏窗口伴随系统（v0.17）：Session 级控制栏、窗口跟随与品牌身份
+            commands::projection_window::vd_session,
+            commands::projection_window::vd_toolbar_attach,
+            commands::projection_window::vd_toolbar_detach,
+            commands::projection_window::vd_toolbar_update,
+            commands::projection_window::vd_toolbar_destroy,
+            commands::projection_window::vd_toolbar_set_locked,
+            commands::projection_window::vd_toolbar_set_expanded,
+            commands::projection_window::vd_toolbar_screenshot,
+            // Agent 共享工作空间（v76）：接入管理 / 活动 / 交接 / 同步 / 权限
+            agent_access::commands::agent_access_status,
+            agent_access::commands::agent_access_init,
+            agent_access::commands::agent_access_manifest,
+            agent_access::commands::agent_access_export,
+            agent_access::commands::agent_access_scan,
+            agent_access::commands::agent_access_sync_status,
+            agent_access::commands::agent_access_conflicts,
+            agent_access::commands::agent_access_resolve_conflict,
+            agent_access::commands::agent_access_activity,
+            agent_access::commands::agent_access_handoffs,
+            agent_access::commands::agent_access_handoff_detail,
+            agent_access::commands::agent_access_handoff_transition,
+            agent_access::commands::agent_access_reports,
+            agent_access::commands::agent_access_agents,
+            agent_access::commands::agent_access_permissions,
+            agent_access::commands::agent_access_grant,
+            agent_access::commands::agent_access_revoke,
+            agent_access::commands::agent_access_context,
+            agent_access::commands::agent_access_config_info,
+            // 协作中心（v77）：上下文 / 需求与 Bug / 方案 / 可视化 / 原型 / AI / 审计
+            collab::commands::collab_context_get,
+            collab::commands::collab_context_overview,
+            collab::commands::collab_context_knowledge,
+            collab::commands::collab_issue_create,
+            collab::commands::collab_issue_update,
+            collab::commands::collab_issue_get,
+            collab::commands::collab_issue_list,
+            collab::commands::collab_issue_archive,
+            collab::commands::collab_issue_assign,
+            collab::commands::collab_issue_link,
+            collab::commands::collab_issue_duplicates,
+            collab::commands::collab_issue_resolve,
+            collab::commands::collab_issue_verify,
+            collab::commands::collab_evidence_attach,
+            collab::commands::collab_evidence_attach_text,
+            collab::commands::collab_evidence_list,
+            collab::commands::collab_plan_create_from_issue,
+            collab::commands::collab_plan_update,
+            collab::commands::collab_plan_get,
+            collab::commands::collab_plan_list,
+            collab::commands::collab_plan_submit,
+            collab::commands::collab_plan_review,
+            collab::commands::collab_plan_link_visual,
+            collab::commands::collab_plan_create_tasks,
+            collab::commands::collab_plan_tasks,
+            collab::commands::collab_plan_progress,
+            collab::commands::collab_visual_create,
+            collab::commands::collab_visual_update,
+            collab::commands::collab_visual_get,
+            collab::commands::collab_visual_list,
+            collab::commands::collab_visual_delete,
+            collab::commands::collab_visual_versions,
+            collab::commands::collab_visual_version,
+            collab::commands::collab_visual_restore,
+            collab::commands::collab_visual_compare,
+            collab::commands::collab_visual_export,
+            collab::commands::collab_renderers,
+            collab::commands::collab_prototype_state,
+            collab::commands::collab_prototype_dispatch,
+            collab::commands::collab_prototype_patch,
+            collab::commands::collab_prototype_validate,
+            collab::commands::collab_ai_generate,
+            collab::commands::collab_ai_image,
+            collab::commands::collab_ai_jobs,
+            collab::commands::collab_ai_cancel,
+            collab::commands::collab_ai_notice,
+            collab::commands::collab_audit_list,
         ])
         .build(context)
         .expect("启动 Task Dock 失败")

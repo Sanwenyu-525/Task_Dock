@@ -1595,6 +1595,19 @@ pub fn get_items_by_ids(db: &Db, ids: &[String]) -> AppResult<Vec<ClipboardItem>
         .collect())
 }
 
+/// 固定多选粘贴计划的顺序和总数：失效项仍入计划，由执行器记录 skipped，不能静默裁剪。
+pub fn prepare_paste_selection(db: &Db, ids: &[String]) -> AppResult<Vec<String>> {
+    if ids.is_empty() || ids.len() > 1000 || ids.iter().any(|id| id.is_empty() || id.len() > 128) {
+        return Err(AppError::Validation("逐项粘贴需要 1–1000 个有效条目标识".into()));
+    }
+    let mut seen = HashSet::new();
+    let selected: Vec<String> = ids.iter().filter(|id| seen.insert(id.as_str())).cloned().collect();
+    if get_items_by_ids(db, &selected)?.is_empty() {
+        return Err(AppError::Validation("所选条目不存在或已删除".into()));
+    }
+    Ok(selected)
+}
+
 pub fn toggle_item_flag(db: &Db, item_id: &str, flag: &str) -> AppResult<ClipboardItem> {
     let column = match flag {
         "favorite" => "favorite",
@@ -1673,6 +1686,10 @@ fn delete_items_conn(conn: &Connection, ids: &[String]) -> AppResult<(i64, Vec<S
         &format!("DELETE FROM clipboard_items WHERE id IN ({ph})"),
         params_from_iter(ids.iter()),
     )? as i64;
+    conn.execute(
+        &format!("DELETE FROM clipboard_snapshot_links WHERE target_type = 'item' AND target_id IN ({ph})"),
+        params_from_iter(ids.iter()),
+    )?;
     // 被删条目所在的分组若已空，分组与关联一起清理
     let empty_groups: Vec<String> = {
         let mut stmt = conn.prepare(
@@ -1687,6 +1704,10 @@ fn delete_items_conn(conn: &Connection, ids: &[String]) -> AppResult<(i64, Vec<S
         v
     };
     for gid in &empty_groups {
+        conn.execute(
+            "DELETE FROM clipboard_snapshot_links WHERE target_type = 'group' AND target_id = ?1",
+            params![gid],
+        )?;
         conn.execute(
             "DELETE FROM clipboard_task_links WHERE target_type = 'group' AND target_id = ?1",
             params![gid],
@@ -1756,7 +1777,7 @@ pub fn delete_items(db: &Db, root: &Path, ids: &[String]) -> AppResult<DeleteRep
     })
 }
 
-/// 删除分组：默认保留内容；`also_delete_items` 时只删除不再被其他分组/任务引用、
+/// 删除分组：默认保留内容；`also_delete_items` 时只删除不再被其他分组/任务/工作现场引用、
 /// 且未收藏/置顶的条目（引用安全）。
 pub fn delete_group(
     db: &Db,
@@ -1781,6 +1802,8 @@ pub fn delete_group(
                                    WHERE other.item_id = gi.item_id AND other.group_id <> ?1)
                    AND NOT EXISTS (SELECT 1 FROM clipboard_task_links lt
                                    WHERE lt.target_type = 'item' AND lt.target_id = gi.item_id)
+                   AND NOT EXISTS (SELECT 1 FROM clipboard_snapshot_links ls
+                                   WHERE ls.target_type = 'item' AND ls.target_id = gi.item_id)
                    AND NOT EXISTS (SELECT 1 FROM clipboard_items i
                                    WHERE i.id = gi.item_id AND (i.favorite = 1 OR i.pinned = 1))",
             )?;
@@ -1795,6 +1818,10 @@ pub fn delete_group(
         };
         tx.execute(
             "DELETE FROM clipboard_task_links WHERE target_type = 'group' AND target_id = ?1",
+            params![group_id],
+        )?;
+        tx.execute(
+            "DELETE FROM clipboard_snapshot_links WHERE target_type = 'group' AND target_id = ?1",
             params![group_id],
         )?;
         // rows affected：0 说明分组本来就不存在，不能让前端当成删除成功
@@ -2023,6 +2050,10 @@ pub fn split_group(
         source.retain(|id| !picked.contains(id));
         reindex_group(&tx, group_id)?;
         if source.is_empty() {
+            tx.execute(
+                "DELETE FROM clipboard_snapshot_links WHERE target_type = 'group' AND target_id = ?1",
+                params![group_id],
+            )?;
             tx.execute(
                 "DELETE FROM clipboard_task_links WHERE target_type = 'group' AND target_id = ?1",
                 params![group_id],
@@ -2321,6 +2352,9 @@ pub struct PasteJob {
     pub status: String,
     pub total: i64,
     pub sent: i64,
+    /// 从逐项持久化状态读取，跨重启保留，无需增加第二套计数列。
+    #[serde(default)]
+    pub skipped: i64,
     pub started_at: String,
     pub ended_at: Option<String>,
     pub message: String,
@@ -2505,7 +2539,9 @@ pub fn resumable_paste_jobs(
     db.with_conn(|conn| {
         let mut sql = String::from(
             "SELECT id, group_id, target_title, target_exe, status, total, sent, started_at,
-                    ended_at, message, remaining_items, uncertain_items, restored
+                    ended_at, message, remaining_items, uncertain_items, restored,
+                    (SELECT COUNT(*) FROM clipboard_paste_items pi
+                     WHERE pi.job_id = clipboard_paste_jobs.id AND pi.state = 'skipped')
              FROM clipboard_paste_jobs
              WHERE (status IN ('paused', 'interrupted', 'failed')
                 OR uncertain_items NOT IN ('', '[]'))",
@@ -2546,6 +2582,7 @@ fn row_to_paste_job(r: &rusqlite::Row<'_>) -> rusqlite::Result<PasteJob> {
         status: r.get(4)?,
         total: r.get(5)?,
         sent: r.get(6)?,
+        skipped: r.get(13)?,
         started_at: r.get(7)?,
         ended_at: r.get(8)?,
         message: r.get(9)?,
@@ -2560,7 +2597,9 @@ pub fn get_paste_job(db: &Db, id: &str) -> AppResult<PasteJob> {
         let mut job = conn
             .query_row(
                 "SELECT id, group_id, target_title, target_exe, status, total, sent, started_at,
-                        ended_at, message, remaining_items, uncertain_items, restored
+                        ended_at, message, remaining_items, uncertain_items, restored,
+                        (SELECT COUNT(*) FROM clipboard_paste_items pi
+                         WHERE pi.job_id = clipboard_paste_jobs.id AND pi.state = 'skipped')
                  FROM clipboard_paste_jobs WHERE id = ?1",
                 params![id],
                 row_to_paste_job,
@@ -4370,6 +4409,85 @@ mod tests {
         let left = remove_group_item(&db, &g.id, &b.item.id).unwrap();
         assert_eq!(left.items.len(), 1);
         assert!(get_item(&db, &b.item.id).is_ok(), "移出分组不删除内容");
+    }
+
+    #[test]
+    fn backend_round2_paste_selection_keeps_missing_ids_and_reports_skipped() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let a = record_capture(&db, &root.0, &text_payload("paste selection"), &settings()).unwrap();
+        let requested = vec![a.item.id.clone(), "missing".into(), a.item.id.clone()];
+        let selected = prepare_paste_selection(&db, &requested).unwrap();
+        assert_eq!(selected, vec![a.item.id, "missing".into()]);
+        let job_id = create_paste_job(&db, "", "test", "test", &selected).unwrap();
+        seed_paste_items(&db, &job_id, &selected, 0).unwrap();
+        record_paste_item_state(&db, &job_id, "missing", "skipped", Some("已删除")).unwrap();
+        let job = get_paste_job(&db, &job_id).unwrap();
+        assert_eq!(job.total, 2);
+        assert_eq!(job.skipped, 1);
+        assert!(prepare_paste_selection(&db, &["gone".into()]).is_err());
+        assert!(prepare_paste_selection(&db, &[]).is_err());
+        assert!(prepare_paste_selection(&db, &vec!["x".into(); 1001]).is_err());
+    }
+
+    fn continuation_snapshot(db: &Db) {
+        db.with_conn(|c| {
+            c.execute("INSERT INTO workspace_snapshots
+                (id, name, note, source, item_count, created_at, updated_at)
+                VALUES ('continuation', 'fixture', '', 'manual', 0, 'now', 'now')", [])?;
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn backend_continuation_deletion_cleans_snapshot_links() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+        let a = record_capture(&db, &root.0, &text_payload("linked"), &s).unwrap();
+        let group = create_manual_group(&db, "fixture", &[a.item.id.clone()]).unwrap();
+        continuation_snapshot(&db);
+        link_snapshot(&db, "continuation", "item", &a.item.id).unwrap();
+        link_snapshot(&db, "continuation", "group", &group.id).unwrap();
+        delete_items(&db, &root.0, &[a.item.id.clone()]).unwrap();
+        assert!(snapshot_links(&db, "continuation").unwrap().is_empty());
+    }
+
+    #[test]
+    fn backend_continuation_group_delete_retains_snapshot_material() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+        let a = record_capture(&db, &root.0, &text_payload("linked"), &s).unwrap();
+        let group = create_manual_group(&db, "fixture", &[a.item.id.clone()]).unwrap();
+        continuation_snapshot(&db);
+        link_snapshot(&db, "continuation", "item", &a.item.id).unwrap();
+        link_snapshot(&db, "continuation", "group", &group.id).unwrap();
+        let report = delete_group(&db, &root.0, &group.id, true).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.retained_shared, 1);
+        assert!(get_item(&db, &a.item.id).is_ok());
+        let links = snapshot_links(&db, "continuation").unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target_type, "item");
+    }
+
+    #[test]
+    fn backend_continuation_split_cleans_removed_group_snapshot_link() {
+        let db = Db::open_in_memory().unwrap();
+        let root = TempRoot::new();
+        let mut s = settings();
+        s.clipboard_auto_group = false;
+        let a = record_capture(&db, &root.0, &text_payload("split"), &s).unwrap();
+        let ids = [a.item.id.clone()];
+        let group = create_manual_group(&db, "fixture", &ids).unwrap();
+        continuation_snapshot(&db);
+        link_snapshot(&db, "continuation", "group", &group.id).unwrap();
+        let split = split_group(&db, &group.id, &ids, "new").unwrap();
+        assert_eq!(split.items.len(), 1);
+        assert!(snapshot_links(&db, "continuation").unwrap().is_empty());
     }
 
     #[test]

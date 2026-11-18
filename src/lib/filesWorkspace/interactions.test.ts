@@ -14,6 +14,9 @@ import {
   validateFileDrop,
   getFwClipboard,
   setFwClipboard,
+  clearFwClipboard,
+  hasFwClipboardItems,
+  getFwClipboardOperation,
   subscribeFwDrag,
   startFwDrag,
   moveFwDrag,
@@ -88,12 +91,28 @@ describe("validateFileDrop", () => {
 });
 
 describe("fwClipboard", () => {
-  it("设置与读取", () => {
+  it("设置与读取（含来源窗格与创建时间）", () => {
     setFwClipboard(null);
     expect(getFwClipboard()).toBeNull();
-    setFwClipboard({ mode: "cut", paths: ["C:\\a"] });
-    expect(getFwClipboard()?.mode).toBe("cut");
-    setFwClipboard(null);
+    expect(hasFwClipboardItems()).toBe(false);
+    expect(getFwClipboardOperation()).toBeNull();
+
+    setFwClipboard({ mode: "cut", paths: ["C:\\a"], sourcePaneId: "pane-1" });
+    const clip = getFwClipboard();
+    expect(clip?.mode).toBe("cut");
+    expect(clip?.paths).toEqual(["C:\\a"]);
+    expect(clip?.sourcePaneId).toBe("pane-1");
+    expect(clip?.createdAt).toBeTypeOf("number");
+    expect(hasFwClipboardItems()).toBe(true);
+    expect(getFwClipboardOperation()).toBe("cut");
+  });
+
+  it("空路径等同清空；clear 显式清理", () => {
+    setFwClipboard({ mode: "copy", paths: [] });
+    expect(getFwClipboard()).toBeNull();
+    setFwClipboard({ mode: "copy", paths: ["C:\\b"] });
+    clearFwClipboard();
+    expect(getFwClipboard()).toBeNull();
   });
 });
 

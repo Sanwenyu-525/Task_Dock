@@ -246,3 +246,8 @@ v59–v63 迁移引用、17 张新表的备份登记（`EXTENDED_TABLES` + `BACK
 `general.delivery`、`core.mediaLink`（跨媒介预留，只登记不进任何 Profile）。
 
 
+
+**2026-11-17 能力矩阵补充：** `files.operations`（统一文件操作任务：复制/移动/删除/永久删除/
+回收站恢复/回收站永久删除/清空）后端已具备并接入删除路径；复制/移动的 UI 仍使用既有
+阻塞 IPC 以保留逐条报告语义。`recycle.index`（持久化回收站索引）与 `resource.cleanup`
+（授权清理）保持独立能力，不合并为同一模块。

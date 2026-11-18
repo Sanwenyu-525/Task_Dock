@@ -25,6 +25,7 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  Settings2,
   Trash2,
 } from "lucide-react";
 
@@ -44,6 +45,7 @@ import {
   type WorkspaceTaskLink,
 } from "../lib/bridge";
 import { errorMessage } from "../lib/errors";
+import { pickFolder } from "../lib/filesWorkspace/folderPicker";
 import { formatLocalizedDateTime } from "../i18n/format";
 import {
   useWorkspaceDevContext,
@@ -52,6 +54,8 @@ import {
   type TaskPickerStatus,
 } from "../workspace/useWorkspaceProjectContext";
 import { scopeWorkspaceContext } from "../workspace/workspaceContextScope";
+import ProjectLayoutEditor from "../workspace/ProjectLayoutEditor";
+import { ProjectProgressCard, ProjectResourcesCard } from "../workspace/ProjectWorkspaceExtras";
 import { workspaceProfileIcon } from "../workspace/workspaceProfileIcons";
 import {
   CAPABILITY_STATE_LABEL,
@@ -155,6 +159,7 @@ export default function ProjectWorkspacePanel({
 
   const [localModule, setLocalModule] = useState<WorkspaceModuleId | null>(null);
   const [moduleSaveFailed, setModuleSaveFailed] = useState(false);
+  const [layoutEditorOpen, setLayoutEditorOpen] = useState(false);
   const [newItemTitle, setNewItemTitle] = useState("");
   const [newItemStage, setNewItemStage] = useState("");
   const [editing, setEditing] = useState(false);
@@ -374,6 +379,26 @@ export default function ProjectWorkspacePanel({
     // 上下文提交与导航在同一事务里由 shell 处理：取消/失败不改变当前开发项目。
     onOpenDevWorkbench(project.devProjectId);
   }, [project, onOpenDevWorkbench, onNotice]);
+
+  const pickEditRoot = useCallback(async () => {
+    const result = await pickFolder({
+      title: "选择项目工作目录",
+      defaultPath: editRoot || project?.rootPath || undefined,
+    });
+    if (result.status === "ok") {
+      setEditRoot(result.path);
+      return;
+    }
+    if (result.status === "invalid") {
+      const reason =
+        result.reason === "notFound"
+          ? "目录不存在"
+          : result.reason === "notDir"
+            ? "选择的不是文件夹"
+            : `无法读取目录${result.message ? `：${result.message}` : ""}`;
+      onNotice("error", `未选择工作目录：${reason}`);
+    }
+  }, [editRoot, project, onNotice]);
 
   const saveEdit = useCallback(async () => {
     if (!project) return;
@@ -793,7 +818,29 @@ export default function ProjectWorkspacePanel({
         {ctx.status === "loading" && (
           <span className="ws-tab-loading"><Loader2 size={12} className="ws-spin" /> 加载中</span>
         )}
+        <span className="ws-tabs-spacer" />
+        <button
+          type="button"
+          className="ws-btn ws-btn-quiet ws-layout-trigger"
+          aria-label="编辑模块布局"
+          data-tip="排序 / 显隐（按项目保存）"
+          onClick={() => setLayoutEditorOpen(true)}
+        >
+          <Settings2 size={13} aria-hidden="true" />
+          布局
+        </button>
       </div>
+      <ProjectLayoutEditor
+        open={layoutEditorOpen}
+        profile={profile}
+        layout={ctx.layout}
+        archived={project.status === "archived"}
+        onClose={() => setLayoutEditorOpen(false)}
+        onSave={(layout) => context.saveLayout(layout)}
+        onNotice={(message, kind) =>
+          onNotice(kind === "success" ? "ok" : kind === "error" ? "error" : "info", message)
+        }
+      />
       {moduleSaveFailed && (
         <div className="ws-meta" data-tone="warn">当前模块位置未保存成功（仅影响下次打开时的默认模块）</div>
       )}
@@ -864,6 +911,10 @@ export default function ProjectWorkspacePanel({
               </p>
             )}
           </section>
+          <ProjectProgressCard
+            projectId={selectedId}
+            archived={project.status === "archived"}
+          />
           <div className="ws-overview-grid ui-adaptive-grid">
             {profile.homeCards.map((card) => {
               const cap = WORKSPACE_CAPABILITIES[card.capability];
@@ -1082,12 +1133,28 @@ export default function ProjectWorkspacePanel({
                   ariaLabel="工作空间类型"
                 />
                 <div className="ws-gap" />
-                <input
-                  className="ws-input"
-                  placeholder="工作目录（绝对路径）"
-                  value={editRoot}
-                  onChange={(e) => setEditRoot(e.target.value)}
-                />
+                <div className="wb-path-picker">
+                  <div
+                    className="ws-input wb-path-value"
+                    data-empty={editRoot ? "false" : "true"}
+                    data-tip={editRoot || undefined}
+                  >
+                    {editRoot || "尚未选择目录"}
+                  </div>
+                  <button type="button" className="ws-btn" onClick={() => void pickEditRoot()}>
+                    <FolderOpen size={12} /> 选择目录
+                  </button>
+                  {editRoot && (
+                    <button
+                      type="button"
+                      className="ws-btn"
+                      aria-label="清除工作目录"
+                      onClick={() => setEditRoot("")}
+                    >
+                      清除
+                    </button>
+                  )}
+                </div>
                 <div className="ws-gap" />
                 <Select
                   value={editDev}
@@ -1123,6 +1190,14 @@ export default function ProjectWorkspacePanel({
               </>
             )}
           </section>
+
+          <ProjectResourcesCard
+            projectId={selectedId}
+            archived={project.status === "archived"}
+            onNotice={(message, kind) =>
+              onNotice(kind === "success" ? "ok" : kind === "error" ? "error" : "info", message)
+            }
+          />
 
           <section className="ws-card">
             <header className="ws-card-head">

@@ -120,6 +120,7 @@ async function renderEditor(onSubmit: (input: unknown) => Promise<unknown>) {
       React.createElement(TaskEditorSheet, {
         visible: true,
         mode: "create",
+        task: null,
         onClose,
         onSubmit: onSubmit as never,
       }),

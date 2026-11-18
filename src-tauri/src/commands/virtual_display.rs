@@ -112,6 +112,9 @@ pub struct VdSession {
     pub size: Option<String>,
     /// scrcpy 是否成功加入 Job Object；false 时 task_dock 被强杀可能残留窗口（有 warning）。
     pub job_assigned: bool,
+    /// 投屏控制栏状态：pending | ready | unavailable | closed。
+    /// unavailable 表示已降级为普通 scrcpy 窗口（仍可投屏，但主界面不再显示控制栏入口）。
+    pub toolbar_state: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -957,6 +960,51 @@ fn with_labels(mut apps: Vec<VdApp>, uid: &str) -> Vec<VdApp> {
     apps
 }
 
+/// 只读缓存：不触发任何 ADB 命令。`vd_start` 用它做「已知无启动入口」的快速校验，
+/// 绝不让图标/元数据刷新阻塞投屏启动。
+fn peek_cached_apps(serial: &str, uid: &str) -> Option<(Vec<VdApp>, bool)> {
+    let cache = app_cache().lock().ok()?;
+    let entry = cache.get(serial)?;
+    if entry.uid != uid {
+        return None;
+    }
+    Some((entry.apps.clone(), entry.launchable_known))
+}
+
+/// 后台预热应用名称/图标/启动入口；失败不影响投屏，也不向用户报错。
+/// 同一设备只允许一个在途刷新，避免启动与页面刷新叠加触发两次 40s 的 appmeta。
+fn spawn_app_metadata_refresh(adb: PathBuf, serial: String, uid: String) {
+    static IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let in_flight = IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let Ok(mut guard) = in_flight.lock() else {
+            return;
+        };
+        if !guard.insert(uid.clone()) {
+            return;
+        }
+    }
+    let label = uid.chars().take(12).collect::<String>();
+    let uid_for_thread = uid.clone();
+    if std::thread::Builder::new()
+        .name(format!("vd-appmeta-{label}"))
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            if let Err(error) = cached_apps(&adb, &serial, &uid_for_thread) {
+                tracing::debug!("后台刷新应用元数据失败（不影响投屏）: {error}");
+            }
+            if let Ok(mut guard) = in_flight.lock() {
+                guard.remove(&uid_for_thread);
+            }
+        })
+        .is_err()
+    {
+        if let Ok(mut guard) = in_flight.lock() {
+            guard.remove(&uid);
+        }
+    }
+}
+
 // ── 参数校验 ────────────────────────────────────────────────
 
 fn is_package_name(value: &str) -> bool {
@@ -1128,8 +1176,12 @@ pub fn vd_list_apps(serial: String, include_all: Option<bool>) -> AppResult<VdAp
 }
 
 /// 创建投屏会话（镜像或独立虚拟屏）。返回后由前端轮询状态直到 running。
+///
+/// 启动路径**不等待**应用图标/元数据：只读现有缓存做「已知无入口」的快速校验，
+/// 其余刷新在后台线程完成，避免 SM 层 appmeta 的 push/pull 拖慢投屏窗口出现。
 #[tauri::command]
 pub fn vd_start(
+    app: tauri::AppHandle,
     serial: String,
     mode: String,
     package: Option<String>,
@@ -1182,37 +1234,39 @@ pub fn vd_start(
     let transport = device.serial.clone();
 
     let mut resolved_app_label = None;
+    let mut need_metadata_refresh = false;
     if let Some(package) = package.as_deref() {
-        let (apps, launchable_known) = cached_apps(&adb, &transport, &device.uid)
-            .map_err(|err| AppError::Unavailable(format!("检查应用启动入口失败：{err}")))?;
-        let entry = apps.iter().find(|app| app.package == package);
-        if launchable_known {
-            match entry.and_then(|app| app.launchable) {
-                Some(false) | None => {
+        match peek_cached_apps(&transport, &device.uid) {
+            Some((apps, _launchable_known)) => {
+                let entry = apps.iter().find(|app| app.package == package);
+                // 只有缓存明确给出「没有启动入口」时才拒绝启动；
+                // 未知/缓存缺失一律放行，由 scrcpy 的真实启动结果决定。
+                if entry.and_then(|app| app.launchable) == Some(false) {
                     return Err(AppError::Validation(
                         "该应用没有可启动的入口，无法在虚拟屏中打开".into(),
                     ));
                 }
-                Some(true) => {}
+                resolved_app_label = entry.and_then(|app| app.label.clone());
             }
+            None => need_metadata_refresh = true,
         }
-        resolved_app_label = entry.and_then(|app| app.label.clone());
     }
 
     let app_label = resolved_app_label
         .or_else(|| package.as_deref().and_then(|pkg| known_app_label(&device.uid, pkg)));
-    let title = match mode {
-        MODE_VIRTUAL => format!(
-            "Task Dock · 虚拟屏 · {}",
-            app_label.as_deref().unwrap_or("独立虚拟屏")
-        ),
-        _ => format!(
-            "Task Dock · 手机屏幕 · {}",
-            device.model.as_deref().unwrap_or("Android")
-        ),
-    };
+    let title = crate::commands::projection_window::build_projection_window_title(
+        device.model.as_deref().unwrap_or("Android"),
+        if mode == MODE_VIRTUAL {
+            crate::commands::projection_window::ProjectionType::Virtual
+        } else {
+            crate::commands::projection_window::ProjectionType::Mirror
+        },
+        app_label.as_deref(),
+    );
 
-    process::manager().start(StartRequest {
+    let refresh_serial = transport.clone();
+    let refresh_uid = device.uid.clone();
+    let session = process::manager().start(StartRequest {
         serial: transport,
         device_uid: device.uid.clone(),
         device_model: device.model.clone(),
@@ -1225,13 +1279,21 @@ pub fn vd_start(
         scrcpy,
         warning,
         title,
-    })
+    })?;
+
+    // 投屏窗口真正的伴随系统：等 scrcpy HWND 出现后再创建控制栏，不阻塞本命令返回。
+    crate::commands::projection_window::spawn_attach(app, session.id.clone());
+    if mode == MODE_VIRTUAL && need_metadata_refresh {
+        spawn_app_metadata_refresh(adb, refresh_serial, refresh_uid);
+    }
+    Ok(session)
 }
 
 /// 关闭会话：标记 stopping 后立即返回，后台完成 WM_CLOSE → 有界等待 → 强杀。
+/// 同时停止该会话的窗口 watcher 并销毁控制栏（只针对本 Session，不做全局杀进程）。
 #[tauri::command]
 pub fn vd_stop(session_id: String) -> AppResult<bool> {
-    process::manager().stop(&session_id)
+    crate::commands::projection_window::close_projection_session(&session_id)
 }
 
 /// 校验导航动作并解析唯一目标显示；任何无法确认的目标都拒绝，绝不回退默认屏。
@@ -1389,6 +1451,8 @@ pub fn vd_reconnect(serial: String) -> AppResult<bool> {
 
 /// task_dock 退出时回收本进程创建的全部 scrcpy（Job Object 之外的显式兜底）。
 pub fn shutdown_all() {
+    // 先停控制栏 watcher 并销毁控制栏窗口，再收 scrcpy，避免出现「窗口已关、控制栏还在」。
+    crate::commands::projection_window::shutdown_all();
     process::manager().shutdown_all();
 }
 

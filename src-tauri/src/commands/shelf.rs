@@ -825,19 +825,7 @@ pub async fn shelf_drag_out(
         .map(|(id, _, path)| (path, id))
         .collect();
 
-    // 单飞守卫随主线程任务一起持有：命令 future 被丢弃也不会提前放行第二次拖拽。
-    let guard = shelf::drag_out::DragInFlightGuard::acquire()?;
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
-        let _guard = guard;
-        let result = shelf::drag_out::run_drag(&paths, allow_move);
-        let _ = tx.send(result);
-    })
-    .map_err(|e| AppError::Unavailable(format!("无法调度拖拽到主线程: {e}")))?;
-
-    let outcome = rx
-        .await
-        .map_err(|_| AppError::Unavailable("拖拽任务异常退出".into()))??;
+    let outcome = shelf::drag_out::drag_on_main_thread(&app, paths, allow_move).await?;
     let missing_ids = outcome
         .missing_paths
         .iter()

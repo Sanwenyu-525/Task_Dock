@@ -46,6 +46,59 @@ const MAX_RECURSE_ITEMS: usize = 200_000;
 /// Windows 隐藏/系统/重解析点属性位（std MetadataExt::attributes()）。
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
+const FILE_ATTRIBUTE_TEMPORARY: u32 = 0x100;
+const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
+const FILE_ATTRIBUTE_COMPRESSED: u32 = 0x800;
+const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
+const FILE_ATTRIBUTE_ENCRYPTED: u32 = 0x4000;
+
+/// 把 Windows 属性位转成稳定的小写代码；前端负责本地化展示。
+/// `normal` 只在没有任何其他位时出现，避免「普通文件 + 只读」同时显示 normal。
+fn attribute_names(attrs: u32) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if attrs & FILE_ATTRIBUTE_READONLY != 0 {
+        names.push("readonly");
+    }
+    if attrs & FILE_ATTRIBUTE_HIDDEN != 0 {
+        names.push("hidden");
+    }
+    if attrs & FILE_ATTRIBUTE_SYSTEM != 0 {
+        names.push("system");
+    }
+    if attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        names.push("directory");
+    }
+    if attrs & FILE_ATTRIBUTE_ARCHIVE != 0 {
+        names.push("archive");
+    }
+    if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        names.push("reparse");
+    }
+    if attrs & FILE_ATTRIBUTE_COMPRESSED != 0 {
+        names.push("compressed");
+    }
+    if attrs & FILE_ATTRIBUTE_ENCRYPTED != 0 {
+        names.push("encrypted");
+    }
+    if attrs & FILE_ATTRIBUTE_OFFLINE != 0 {
+        names.push("offline");
+    }
+    if attrs & FILE_ATTRIBUTE_SPARSE_FILE != 0 {
+        names.push("sparse");
+    }
+    if attrs & FILE_ATTRIBUTE_TEMPORARY != 0 {
+        names.push("temporary");
+    }
+    if names.is_empty() {
+        // FILE_ATTRIBUTE_NORMAL(0x80) 只有在单独设置时才有意义；按结果兜底。
+        names.push("normal");
+    }
+    names
+}
 
 /// SystemTime → Unix 毫秒（chrono 转换；失败返回 None 的分支由调用方 map 处理）。
 fn unix_ms(t: std::time::SystemTime) -> i64 {
@@ -809,85 +862,134 @@ fn tmp_display_name(tmp: &Path) -> String {
         .unwrap_or_else(|| "临时文件".to_string())
 }
 
-/// 覆盖用临时目标名（同目录、带进程标识，失败清理；不会与真实名冲突）。
-fn sibling_tmp(dst: &Path) -> PathBuf {
-    let name = dst
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".to_string());
-    dst.with_file_name(format!(".taskdock-tmp-{}-{name}", std::process::id()))
+fn transfer_cancelled() -> FsFailure {
+    FsFailure::new(FS_OP_CANCELLED, "transfer", "文件操作已取消")
 }
 
-/// 复制单个文件；目标存在时按策略处理（Rename 由调用侧先解析成唯一名）。
-/// 覆盖策略：先复制到同目录临时名，成功后再替换目标——复制中途失败（占用/
-/// 磁盘满/权限）绝不破坏目标原有数据（P0：先删后复制丢数据缺陷）。
-fn copy_file(src: &Path, dst: &Path, conflict: Conflict) -> Result<(), FsFailure> {
-    if dst.exists() {
-        match conflict {
-            Conflict::Skip => {
-                return Err(FsFailure::new(
-                    FS_OP_CONFLICT,
-                    "prepare",
-                    "目标已存在",
-                ))
-            }
-            Conflict::Rename => {
-                return Err(FsFailure::new(
-                    FS_OP_CONFLICT,
-                    "prepare",
-                    "目标已存在（rename 冲突未解析）",
-                ))
-            }
-            Conflict::Overwrite => {}
+#[cfg(windows)]
+fn copy_file_to_stage(
+    src: &Path,
+    stage: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> std::io::Result<()> {
+    use std::{ffi::c_void, os::windows::ffi::OsStrExt};
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            CopyFileExW, COPY_FILE_FAIL_IF_EXISTS, PROGRESS_CANCEL, PROGRESS_CONTINUE,
+        },
+    };
+
+    unsafe extern "system" fn on_progress(
+        _: i64,
+        _: i64,
+        _: i64,
+        _: i64,
+        _: u32,
+        _: u32,
+        _: HANDLE,
+        _: HANDLE,
+        context: *const c_void,
+    ) -> u32 {
+        // CopyFileExW invokes this synchronously. Never unwind through its callback.
+        let cancelled = unsafe { &*context.cast::<&dyn Fn() -> bool>() };
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cancelled())) {
+            Ok(false) => PROGRESS_CONTINUE,
+            _ => PROGRESS_CANCEL,
         }
-        let tmp = sibling_tmp(dst);
-        let copied = fs::copy(src, &tmp).map(|_| ());
-        match copied {
-            Ok(()) => {
-                // Windows 的 std::fs::rename 使用 MOVEFILE_REPLACE_EXISTING：
-                // 临时文件完整落盘后直接原子替换，绝不能先 remove_file(dst)
-                // 再 rename（那会在 rename 失败时把原目标也丢掉）。
-                let replace = || std::fs::rename(&tmp, dst);
-                if let Err(e) = replace() {
-                    let _ = fs::remove_file(&tmp);
-                    return Err(FsFailure::io_ctx(
-                        "transfer",
-                        "替换目标失败（原目标保留）",
-                        &e,
-                    ));
-                }
-                Ok(())
-            }
-            Err(e) => {
-                let _ = fs::remove_file(&tmp);
-                Err(FsFailure::io("transfer", &e))
-            }
-        }
+    }
+
+    let src = src.canonicalize()?;
+    let stage = stage
+        .parent()
+        .expect("stage has a parent")
+        .canonicalize()?
+        .join("data");
+    let wide = |path: &Path| -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    // The paths and callback context remain valid until CopyFileExW returns.
+    let result = unsafe {
+        CopyFileExW(
+            wide(&src).as_ptr(),
+            wide(&stage).as_ptr(),
+            Some(on_progress),
+            (&cancelled as *const &dyn Fn() -> bool).cast(),
+            std::ptr::null_mut(),
+            COPY_FILE_FAIL_IF_EXISTS,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
     } else {
-        // 全新目标：复制中途失败（磁盘满 / 源被占用或不可读）时，清理本次产生的
-        // 半截目标，不留一个可能被当成「已复制」的残缺文件；复制前已存在的目标
-        // 不动（并发兜底，避免误删他人刚创建的同名项）。
-        let preexisting = dst.exists();
-        match fs::copy(src, dst) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                if !preexisting {
-                    let _ = fs::remove_file(dst);
-                }
-                Err(FsFailure::io("transfer", &e))
-            }
-        }
+        Ok(())
     }
 }
 
+#[cfg(not(windows))]
+fn copy_file_to_stage(src: &Path, stage: &Path, _: &dyn Fn() -> bool) -> std::io::Result<()> {
+    fs::copy(src, stage).map(|_| ())
+}
+
+fn commit_file(src: &Path, dst: &Path, conflict: Conflict) -> std::io::Result<()> {
+    if conflict == Conflict::Overwrite {
+        fs::rename(src, dst)
+    } else {
+        crate::shelf::fsops::rename_no_replace(src, dst)
+    }
+}
+
+/// Stage the copy beside its final destination. Cancel or failed commit never removes a user target.
+fn copy_file(
+    src: &Path,
+    dst: &Path,
+    conflict: Conflict,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), FsFailure> {
+    if cancelled() {
+        return Err(transfer_cancelled());
+    }
+    let stage_dir = dst.with_file_name(format!(".taskdock-copy-{}", uuid::Uuid::new_v4().simple()));
+    fs::create_dir(&stage_dir).map_err(|e| FsFailure::io("transfer", &e))?;
+    let stage = stage_dir.join("data");
+    let result = match copy_file_to_stage(src, &stage, cancelled) {
+        _ if cancelled() => Err(transfer_cancelled()),
+        Err(error) => Err(FsFailure::io("transfer", &error)),
+        Ok(()) => commit_file(&stage, dst, conflict)
+            .map_err(|error| FsFailure::io_ctx("transfer", "目标提交失败", &error)),
+    };
+    if result.is_err() {
+        // Windows may copy the read-only attribute. Only change the operation's own staged file.
+        #[cfg(windows)]
+        if let Ok(meta) = stage.metadata() {
+            let mut permissions = meta.permissions();
+            if permissions.readonly() {
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(&stage, permissions);
+            }
+        }
+        let _ = fs::remove_file(&stage);
+    }
+    let _ = fs::remove_dir(&stage_dir);
+    result
+}
+
 /// 递归复制目录：重解析点（符号链接/junction）不跟随；深度与总量有上限。
-/// 子项一律按 Overwrite：父层已确定唯一目标名，子项名称在父目录内部天然无冲突。
+/// 只有 Overwrite 允许合并已有目录；子项沿用同一策略。
 fn copy_dir(
     src: &Path,
     dst: &Path,
     depth: usize,
     budget: &mut usize,
+    cancelled: &dyn Fn() -> bool,
+    conflict: Conflict,
 ) -> Result<(), FsFailure> {
+    if cancelled() {
+        return Err(transfer_cancelled());
+    }
     if depth > MAX_RECURSE_DEPTH {
         return Err(FsFailure::new(
             FS_OP_VALIDATION,
@@ -895,39 +997,81 @@ fn copy_dir(
             format!("目录嵌套超过 {MAX_RECURSE_DEPTH} 层，已中止"),
         ));
     }
-    fs::create_dir_all(dst)
-        .map_err(|e| FsFailure::io_ctx("transfer", "创建目录失败", &e))?;
-    let read = fs::read_dir(src).map_err(|e| FsFailure::io_ctx("transfer", "读取目录失败", &e))?;
-    for item in read {
-        *budget -= 1;
-        if *budget <= 0 {
-            return Err(FsFailure::new(
-                FS_OP_VALIDATION,
-                "transfer",
-                "目录内容超过上限（20 万项），已中止",
-            ));
+    let mut changed = match fs::create_dir(dst) {
+        Ok(()) => true,
+        Err(error)
+            if conflict == Conflict::Overwrite
+                && error.kind() == std::io::ErrorKind::AlreadyExists =>
+        {
+            let meta = fs::symlink_metadata(dst).map_err(|e| FsFailure::io("transfer", &e))?;
+            if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(FsFailure::new(
+                    FS_OP_CONFLICT,
+                    "transfer",
+                    "目标目录不可合并",
+                ));
+            }
+            false
         }
-        let Ok(item) = item else {
-            continue;
-        };
-        let Ok(ft) = item.file_type() else { continue };
-        let child_src = item.path();
-        let child_dst = dst.join(item.file_name());
-        // 重解析点（symlink/junction）：不跟随、不复制内容，跳过并留给报告。
-        let attrs = item
-            .metadata()
-            .map(|m| m.file_attributes())
-            .map_err(|e| FsFailure::io("transfer", &e))?;
-        if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 || ft.is_symlink() {
-            continue;
+        Err(error) => return Err(FsFailure::io_ctx("transfer", "创建目录失败", &error)),
+    };
+    let result = (|| {
+        let read =
+            fs::read_dir(src).map_err(|e| FsFailure::io_ctx("transfer", "读取目录失败", &e))?;
+        for item in read {
+            if cancelled() {
+                return Err(transfer_cancelled());
+            }
+            if *budget == 0 {
+                return Err(FsFailure::new(
+                    FS_OP_VALIDATION,
+                    "transfer",
+                    "目录内容超过上限（20 万项），已中止",
+                ));
+            }
+            *budget -= 1;
+            let item =
+                item.map_err(|e| FsFailure::io_ctx("transfer", "枚举目录条目失败，源已保留", &e))?;
+            let ft = item
+                .file_type()
+                .map_err(|e| FsFailure::io_ctx("transfer", "读取条目类型失败，源已保留", &e))?;
+            let child_src = item.path();
+            let child_dst = dst.join(item.file_name());
+            // 不完整复制必须失败，否则跨卷移动随后删源会把被跳过的条目也删除。
+            let attrs = item
+                .metadata()
+                .map(|m| m.file_attributes())
+                .map_err(|e| FsFailure::io("transfer", &e))?;
+            if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 || ft.is_symlink() {
+                return Err(FsFailure::new(
+                    FS_OP_UNSUPPORTED,
+                    "transfer",
+                    "目录含重解析点，未完整复制；源已保留",
+                ));
+            }
+            if ft.is_dir() {
+                copy_dir(
+                    &child_src,
+                    &child_dst,
+                    depth + 1,
+                    budget,
+                    cancelled,
+                    conflict,
+                )?;
+            } else {
+                copy_file(&child_src, &child_dst, conflict, cancelled)?;
+            }
+            changed = true;
         }
-        if ft.is_dir() {
-            copy_dir(&child_src, &child_dst, depth + 1, budget)?;
+        Ok(())
+    })();
+    result.map_err(|failure: FsFailure| {
+        if changed {
+            failure.mark_partial()
         } else {
-            copy_file(&child_src, &child_dst, Conflict::Overwrite)?;
+            failure
         }
-    }
-    Ok(())
+    })
 }
 
 /// 目录是否包含 target（移动目录进自身子树拒绝）。词法规范化 + 小写比较。
@@ -944,6 +1088,19 @@ pub fn copy_paths(
     conflict: Conflict,
     operation_id: Option<String>,
     protected: &[PathBuf],
+) -> AppResult<FsOpReport> {
+    copy_paths_with_progress(paths, target_dir, conflict, operation_id, protected, &|| false, &|_| {})
+}
+
+/// 在顶层条目边界取消；当前单个文件/目录必须完成后才停止，不回滚已完成结果。
+pub fn copy_paths_with_progress(
+    paths: &[String],
+    target_dir: &Path,
+    conflict: Conflict,
+    operation_id: Option<String>,
+    protected: &[PathBuf],
+    cancelled: &dyn Fn() -> bool,
+    progress: &dyn Fn(&FsEntryReport),
 ) -> AppResult<FsOpReport> {
     if paths.len() > MAX_OP_PATHS {
         return Err(AppError::Validation(format!(
@@ -962,8 +1119,15 @@ pub fn copy_paths(
     sources.sort_by_key(|p| p.components().count());
     let mut copied_roots: Vec<PathBuf> = Vec::new();
     let mut budget = MAX_RECURSE_ITEMS;
+    let mut notified = 0;
     for src in &sources {
-        ensure_not_protected(src, protected)?;
+        for entry in &report.entries[notified..] { progress(entry); }
+        notified = report.entries.len();
+        if cancelled() { break; }
+        if let Err(error) = ensure_not_protected(src, protected) {
+            report.push(fail_report(src, FsFailure::new(FS_OP_VALIDATION, "prepare", error.to_string())));
+            continue;
+        }
         if copied_roots
             .iter()
             .any(|root| contains_path(root, src) || same_path(root, src))
@@ -1004,7 +1168,7 @@ pub fn copy_paths(
                 continue;
             }
         };
-        if meta.file_type().is_symlink() {
+        if meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             report.push(FsEntryReport {
                 source: src.to_string_lossy().into_owned(),
                 target: None,
@@ -1047,13 +1211,10 @@ pub fn copy_paths(
             });
             continue;
         }
-        // 目录复制失败时判定「是否已经复制了一部分」：只有目标在此之前不存在、
-        // 且现在已有内容，才算 partial（避免把既有目标内容误判为本次成果）。
-        let dst_preexisting = dst.exists();
         let outcome = if meta.is_dir() {
-            copy_dir(src, &dst, 0, &mut budget)
+            copy_dir(src, &dst, 0, &mut budget, cancelled, conflict)
         } else {
-            copy_file(src, &dst, conflict)
+            copy_file(src, &dst, conflict, cancelled)
         };
         match outcome {
             Ok(()) => {
@@ -1067,21 +1228,10 @@ pub fn copy_paths(
                     stage: None,
                 });
             }
-            Err(failure) => {
-                let merged_partially = meta.is_dir()
-                    && !dst_preexisting
-                    && fs::read_dir(&dst)
-                        .map(|mut it| it.next().is_some())
-                        .unwrap_or(false);
-                let failure = if merged_partially {
-                    failure.mark_partial()
-                } else {
-                    failure
-                };
-                report.push(fail_report(src, failure));
-            }
+            Err(failure) => report.push(fail_report(src, failure)),
         }
     }
+    for entry in &report.entries[notified..] { progress(entry); }
     Ok(report)
 }
 
@@ -1090,14 +1240,21 @@ fn same_path(a: &Path, b: &Path) -> bool {
 }
 
 /// 同卷优先 rename；跨卷回退「复制 + 删除源」。返回目标路径或失败原因。
-/// 跨卷文件回退用临时名：源删除成功后目标才以完整形态出现——删除源失败时
-/// 回滚临时副本，源与目标都不留半个状态（P0：不可解释数据状态缺陷）。
-fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &mut usize) -> Result<PathBuf, FsFailure> {
+/// 跨卷文件先提交完整副本再删除源；提交后取消或删源失败时报告部分完成。
+fn move_one(
+    src: &Path,
+    dst: &Path,
+    conflict: Conflict,
+    depth: usize,
+    budget: &mut usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<PathBuf, FsFailure> {
+    if cancelled() {
+        return Err(transfer_cancelled());
+    }
     if dst.exists() {
         match conflict {
-            Conflict::Skip => {
-                return Err(FsFailure::new(FS_OP_CONFLICT, "prepare", "目标已存在"))
-            }
+            Conflict::Skip => return Err(FsFailure::new(FS_OP_CONFLICT, "prepare", "目标已存在")),
             Conflict::Rename => {
                 return Err(FsFailure::new(
                     FS_OP_CONFLICT,
@@ -1109,7 +1266,10 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
                 let meta = fs::symlink_metadata(dst).map_err(|e| FsFailure::io("prepare", &e))?;
                 if meta.is_dir() {
                     // 目录并入：递归复制后删除源（不删除已有目标内容）。
-                    copy_dir(src, &dst, depth, budget)?;
+                    copy_dir(src, dst, depth, budget, cancelled, conflict)?;
+                    if cancelled() {
+                        return Err(transfer_cancelled().mark_partial());
+                    }
                     if let Err(e) = delete_tree(src) {
                         return Err(FsFailure::new(
                             e.code,
@@ -1126,47 +1286,42 @@ fn move_one(src: &Path, dst: &Path, conflict: Conflict, depth: usize, budget: &m
             }
         }
     }
-    match fs::rename(src, dst) {
+    match commit_file(src, dst, conflict) {
         Ok(()) => Ok(dst.to_path_buf()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(FsFailure::io("transfer", &e))
+        }
         Err(_) => {
             // 跨卷或被占用：回退复制 + 删除源。目录复制失败时保留源（不丢数据）。
             let meta = fs::symlink_metadata(src).map_err(|e| FsFailure::io("transfer", &e))?;
             if meta.is_dir() {
-                copy_dir(src, &dst, depth, budget)?;
+                copy_dir(src, dst, depth, budget, cancelled, conflict)?;
+                if cancelled() {
+                    return Err(transfer_cancelled().mark_partial());
+                }
                 if let Err(e) = delete_tree(src) {
                     // 源保留 + 目标保留已复制部分：结果可解释，逐条报告给用户。
                     return Err(FsFailure::new(
                         e.code,
                         "cleanup",
-                        format!("复制已完成，但删除源失败（源已保留，目标存在已复制副本）: {}", e.reason),
+                        format!(
+                            "复制已完成，但删除源失败（源已保留，目标存在已复制副本）: {}",
+                            e.reason
+                        ),
                     )
                     .mark_partial());
                 }
             } else {
-                let tmp = sibling_tmp(dst);
-                if let Err(e) = fs::copy(src, &tmp).map(|_| ()) {
-                    let _ = fs::remove_file(&tmp);
-                    return Err(FsFailure::io("transfer", &e));
-                }
-                // 先把完整副本落到最终目标（Windows rename 原子替换旧目标），
-                // 确认目标可用后才删除源。若先删源再落位失败，移动就变成
-                // “源已消失、目标仍是旧内容/临时名”的不可解释状态。
-                if let Err(e) = fs::rename(&tmp, dst) {
-                    let _ = fs::remove_file(&tmp);
-                    return Err(FsFailure::io_ctx(
-                        "cleanup",
-                        "复制完成但目标落位失败（源已保留）",
-                        &e,
-                    ));
+                copy_file(src, dst, conflict, cancelled)?;
+                if cancelled() {
+                    return Err(transfer_cancelled().mark_partial());
                 }
                 if let Err(e) = fs::remove_file(src) {
                     // 目标已是完整新内容，源仍在：这是可解释的 partial，不是丢数据。
                     return Err(FsFailure::new(
                         classify_io_error(&e),
                         "cleanup",
-                        format!(
-                            "目标已落位，但删除源失败（源已保留，可重试删除）: {e}"
-                        ),
+                        format!("目标已落位，但删除源失败（源已保留，可重试删除）: {e}"),
                     )
                     .mark_partial());
                 }
@@ -1234,6 +1389,18 @@ pub fn move_paths(
     operation_id: Option<String>,
     protected: &[PathBuf],
 ) -> AppResult<FsOpReport> {
+    move_paths_with_progress(paths, target_dir, conflict, operation_id, protected, &|| false, &|_| {})
+}
+
+pub fn move_paths_with_progress(
+    paths: &[String],
+    target_dir: &Path,
+    conflict: Conflict,
+    operation_id: Option<String>,
+    protected: &[PathBuf],
+    cancelled: &dyn Fn() -> bool,
+    progress: &dyn Fn(&FsEntryReport),
+) -> AppResult<FsOpReport> {
     if paths.len() > MAX_OP_PATHS {
         return Err(AppError::Validation(format!(
             "单批最多 {} 项",
@@ -1250,8 +1417,15 @@ pub fn move_paths(
     sources.sort_by_key(|p| p.components().count());
     let mut moved_roots: Vec<PathBuf> = Vec::new();
     let mut budget = MAX_RECURSE_ITEMS;
+    let mut notified = 0;
     for src in &sources {
-        ensure_not_protected(src, protected)?;
+        for entry in &report.entries[notified..] { progress(entry); }
+        notified = report.entries.len();
+        if cancelled() { break; }
+        if let Err(error) = ensure_not_protected(src, protected) {
+            report.push(fail_report(src, FsFailure::new(FS_OP_VALIDATION, "prepare", error.to_string())));
+            continue;
+        }
         if moved_roots
             .iter()
             .any(|root| contains_path(root, src) || same_path(root, src))
@@ -1299,7 +1473,7 @@ pub fn move_paths(
                 continue;
             }
         };
-        if meta.file_type().is_symlink() {
+        if meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             report.push(FsEntryReport {
                 source: src.to_string_lossy().into_owned(),
                 target: None,
@@ -1338,7 +1512,7 @@ pub fn move_paths(
         } else {
             dir.join(&name)
         };
-        match move_one(src, &dst, conflict, 0, &mut budget) {
+        match move_one(src, &dst, conflict, 0, &mut budget, cancelled) {
             Ok(target) => {
                 moved_roots.push(src.clone());
                 report.push(FsEntryReport {
@@ -1353,6 +1527,7 @@ pub fn move_paths(
             Err(failure) => report.push(fail_report(src, failure)),
         }
     }
+    for entry in &report.entries[notified..] { progress(entry); }
     Ok(report)
 }
 
@@ -1744,6 +1919,16 @@ pub fn batch_rename(
     protected: &[PathBuf],
     operation_id: Option<String>,
 ) -> FsOpReport {
+    batch_rename_with_progress(items, protected, operation_id, &|| false, &|_| {})
+}
+
+pub fn batch_rename_with_progress(
+    items: &[BatchRenameItem],
+    protected: &[PathBuf],
+    operation_id: Option<String>,
+    cancelled: &dyn Fn() -> bool,
+    progress: &dyn Fn(&FsEntryReport),
+) -> FsOpReport {
     let mut report = FsOpReport::empty().with_operation(operation_id);
     if items.len() > MAX_OP_PATHS {
         report.push(FsEntryReport {
@@ -1844,7 +2029,11 @@ pub fn batch_rename(
         .map(|item| path_key(&item.source))
         .collect();
 
+    let mut notified = 0;
     for item in prepared {
+        for entry in &report.entries[notified..] { progress(entry); }
+        notified = report.entries.len();
+        if cancelled() { break; }
         if let Some(failure) = item.failure {
             report.push(FsEntryReport {
                 source: items[item.index].path.clone(),
@@ -1914,6 +2103,7 @@ pub fn batch_rename(
             }),
         }
     }
+    for entry in &report.entries[notified..] { progress(entry); }
     report
 }
 
@@ -1927,6 +2117,10 @@ pub struct FsStat {
     pub size: Option<u64>,
     pub created_ms: Option<i64>,
     pub modified_ms: Option<i64>,
+    /// 最后访问时间；Windows 可能延迟更新（Lazy Update），前端需标注仅供参考。
+    pub accessed_ms: Option<i64>,
+    /// Windows 属性位的小写代码（readonly/hidden/system/...）；前端本地化。
+    pub attributes: Vec<&'static str>,
     pub readonly: bool,
     pub hidden: bool,
     pub child_count: Option<u64>,
@@ -1944,6 +2138,8 @@ pub fn stat_path(raw: &str) -> FsStat {
                 size: None,
                 created_ms: None,
                 modified_ms: None,
+                accessed_ms: None,
+                attributes: Vec::new(),
                 readonly: false,
                 hidden: false,
                 child_count: None,
@@ -1960,6 +2156,8 @@ pub fn stat_path(raw: &str) -> FsStat {
             size: None,
             created_ms: None,
             modified_ms: None,
+            accessed_ms: None,
+            attributes: Vec::new(),
             readonly: false,
             hidden: false,
             child_count: None,
@@ -1999,11 +2197,179 @@ pub fn stat_path(raw: &str) -> FsStat {
         size: (!is_dir).then_some(meta.len()),
         created_ms: meta.created().ok().map(|t| unix_ms(t)),
         modified_ms: meta.modified().ok().map(|t| unix_ms(t)),
+        accessed_ms: meta.accessed().ok().map(|t| unix_ms(t)),
+        attributes: attribute_names(attrs),
         readonly,
         hidden,
         child_count,
         child_truncated,
     }
+}
+
+/// 操作预演最多统计的条目数；超过即标记不完整，不无限递归。
+const PREVIEW_MAX_ITEMS: usize = 50_000;
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewConflict {
+    pub source: String,
+    pub target: String,
+    /// file | dir | link
+    pub kind: &'static str,
+}
+
+/// 只读操作预演结果：不复制、不移动、不删除任何文件。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationPreview {
+    /// copy | move
+    pub effect: String,
+    pub items: usize,
+    pub files: usize,
+    pub dirs: usize,
+    pub bytes: u64,
+    pub conflicts: Vec<PreviewConflict>,
+    pub inaccessible: Vec<String>,
+    pub duplicates: Vec<String>,
+    pub warnings: Vec<String>,
+    /// false = 触达条目/深度/读取上限，统计不完整；UI 必须如实提示。
+    pub complete: bool,
+}
+
+fn measure_tree(
+    path: &Path,
+    depth: usize,
+    items: &mut usize,
+    files: &mut usize,
+    dirs: &mut usize,
+    bytes: &mut u64,
+) -> bool {
+    if depth > MAX_RECURSE_DEPTH || *items >= PREVIEW_MAX_ITEMS {
+        return false;
+    }
+    *items += 1;
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(_) => return true,
+    };
+    let is_reparse = meta.file_type().is_symlink()
+        || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    if meta.is_dir() && !is_reparse {
+        *dirs += 1;
+        let Ok(read) = fs::read_dir(path) else {
+            return false;
+        };
+        let mut complete = true;
+        for item in read {
+            if *items >= PREVIEW_MAX_ITEMS {
+                return false;
+            }
+            let Ok(item) = item else {
+                complete = false;
+                continue;
+            };
+            complete &= measure_tree(&item.path(), depth + 1, items, files, dirs, bytes);
+        }
+        complete
+    } else {
+        *files += 1;
+        *bytes = bytes.saturating_add(meta.len());
+        true
+    }
+}
+
+/// 预演复制/移动：统计条目/字节，检测同名冲突、无权限源与重复源。
+/// 目标目录必须是已存在的目录；源位于目标内（移动进自身子树）直接拒绝。
+pub fn preview_transfer(paths: &[String], target_dir: &str, effect: &str) -> AppResult<OperationPreview> {
+    let effect = match effect {
+        "copy" | "move" => effect,
+        other => {
+            return Err(AppError::Validation(format!(
+                "不支持的操作预演类型: {other}"
+            )))
+        }
+    };
+    if paths.is_empty() {
+        return Err(AppError::Validation("没有需要预演的文件".into()));
+    }
+    let target = validate_dir(&validate_abs_path(target_dir)?)?;
+    let mut preview = OperationPreview {
+        effect: effect.to_string(),
+        items: 0,
+        files: 0,
+        dirs: 0,
+        bytes: 0,
+        conflicts: Vec::new(),
+        inaccessible: Vec::new(),
+        duplicates: Vec::new(),
+        warnings: Vec::new(),
+        complete: true,
+    };
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for raw in paths {
+        let src = match validate_abs_path(raw) {
+            Ok(path) => path,
+            Err(_) => {
+                preview.inaccessible.push(raw.clone());
+                continue;
+            }
+        };
+        let key = path_key(&src);
+        if !seen.insert(key) {
+            preview.duplicates.push(src.to_string_lossy().into_owned());
+            continue;
+        }
+        let meta = match fs::symlink_metadata(&src) {
+            Ok(meta) => meta,
+            Err(_) => {
+                preview.inaccessible.push(src.to_string_lossy().into_owned());
+                continue;
+            }
+        };
+        if meta.is_dir() && is_under(&target, &src) {
+            return Err(AppError::Validation(format!(
+                "目标目录位于源目录内: {}",
+                src.display()
+            )));
+        }
+        if let Some(name) = src.file_name() {
+            let candidate = target.join(name);
+            if fs::symlink_metadata(&candidate).is_ok() {
+                let kind = fs::symlink_metadata(&candidate)
+                    .map(|m| {
+                        if m.file_type().is_symlink()
+                            || m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                        {
+                            "link"
+                        } else if m.is_dir() {
+                            "dir"
+                        } else {
+                            "file"
+                        }
+                    })
+                    .unwrap_or("file");
+                preview.conflicts.push(PreviewConflict {
+                    source: src.to_string_lossy().into_owned(),
+                    target: candidate.to_string_lossy().into_owned(),
+                    kind,
+                });
+            }
+        }
+        preview.complete &= measure_tree(
+            &src,
+            0,
+            &mut preview.items,
+            &mut preview.files,
+            &mut preview.dirs,
+            &mut preview.bytes,
+        );
+    }
+    if !preview.complete {
+        preview
+            .warnings
+            .push("统计达到条目或深度上限，结果不完整；执行前请缩小范围".into());
+    }
+    Ok(preview)
 }
 
 #[cfg(test)]
@@ -2424,6 +2790,70 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    // ── 操作预演 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn preview_transfer_counts_and_detects_conflicts() {
+        let root = temp_root("preview");
+        let src_dir = root.join("src");
+        let dst_dir = root.join("dst");
+        fs::create_dir_all(src_dir.join("nested")).unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+        fs::write(src_dir.join("a.txt"), "1234").unwrap();
+        fs::write(src_dir.join("nested/b.txt"), "56").unwrap();
+
+        let preview = preview_transfer(
+            &[src_dir.to_string_lossy().into_owned()],
+            &dst_dir.to_string_lossy(),
+            "copy",
+        )
+        .unwrap();
+        // 源目录本身 + a.txt + nested + b.txt。
+        assert_eq!(preview.items, 4);
+        assert_eq!(preview.files, 2);
+        assert_eq!(preview.dirs, 2);
+        assert_eq!(preview.bytes, 6);
+        assert!(preview.conflicts.is_empty());
+        assert!(preview.complete);
+
+        // 单文件同名冲突：目标已有 a.txt。
+        fs::write(dst_dir.join("a.txt"), "old").unwrap();
+        let preview = preview_transfer(
+            &[src_dir.join("a.txt").to_string_lossy().into_owned()],
+            &dst_dir.to_string_lossy(),
+            "copy",
+        )
+        .unwrap();
+        assert_eq!(preview.conflicts.len(), 1);
+        assert_eq!(preview.conflicts[0].kind, "file");
+
+        // 重复源只统计一次，并单独列出。
+        let duplicate = src_dir.join("a.txt").to_string_lossy().into_owned();
+        let preview = preview_transfer(
+            &[duplicate.clone(), duplicate],
+            &dst_dir.to_string_lossy(),
+            "copy",
+        )
+        .unwrap();
+        assert_eq!(preview.items, 1);
+        assert_eq!(preview.duplicates.len(), 1);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn preview_transfer_rejects_move_into_own_subtree() {
+        let root = temp_root("preview-self");
+        let src_dir = root.join("src");
+        fs::create_dir_all(src_dir.join("inner")).unwrap();
+        let result = preview_transfer(
+            &[src_dir.to_string_lossy().into_owned()],
+            &src_dir.join("inner").to_string_lossy(),
+            "move",
+        );
+        assert!(result.is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     // ── 移动 ───────────────────────────────────────────────────────────
 
     #[test]
@@ -2597,9 +3027,23 @@ mod tests {
         assert_eq!(stat.exists, true);
         assert_eq!(stat.kind, "dir");
         assert_eq!(stat.child_count, Some(1));
+        assert!(stat.attributes.contains(&"directory"));
         let stat = stat_path(&root.join("missing").to_string_lossy());
         assert_eq!(stat.exists, false);
+        assert!(stat.attributes.is_empty());
+        assert_eq!(stat.accessed_ms, None);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn attribute_names_maps_bits_without_duplicates() {
+        assert_eq!(attribute_names(0), vec!["normal"]);
+        let names = attribute_names(FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN);
+        assert_eq!(names, vec!["readonly", "hidden"]);
+        let names = attribute_names(FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY);
+        assert!(names.contains(&"reparse"));
+        assert!(names.contains(&"directory"));
+        assert!(!names.contains(&"normal"));
     }
 
     #[test]
@@ -3032,6 +3476,140 @@ mod tests {
         assert_eq!(report.failed, 1);
         assert!(src_dir.join("inner/f.txt").exists());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn round3_cancel_inside_native_copy_preserves_existing_target() {
+        let root = temp_root("native-copy-cancel");
+        let src = root.join("source.bin");
+        let dst = root.join("target.bin");
+        fs::write(&src, vec![42; 8 * 1024 * 1024]).unwrap();
+        fs::write(&dst, b"original").unwrap();
+        let calls = std::cell::Cell::new(0);
+        let error = copy_file(&src, &dst, Conflict::Overwrite, &|| {
+            calls.set(calls.get() + 1);
+            calls.get() >= 2
+        })
+        .unwrap_err();
+        assert_eq!(error.code, FS_OP_CANCELLED);
+        assert!(
+            calls.get() >= 3,
+            "native copy invoked cancellation before returning"
+        );
+        assert_eq!(fs::read(&dst).unwrap(), b"original");
+        assert_eq!(fs::metadata(&src).unwrap().len(), 8 * 1024 * 1024);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        assert!(root.starts_with(std::env::temp_dir()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn round3_no_replace_preserves_concurrent_target_and_source() {
+        let root = temp_root("copy-no-replace");
+        let src = root.join("source.txt");
+        let dst = root.join("target.txt");
+        fs::write(&src, b"source").unwrap();
+        let injected = std::cell::Cell::new(false);
+        let result = copy_file(&src, &dst, Conflict::Rename, &|| {
+            if !injected.get() && fs::read_dir(&root).unwrap().count() > 1 {
+                fs::write(&dst, b"concurrent").unwrap();
+                injected.set(true);
+            }
+            false
+        });
+        assert!(result.is_err());
+        assert!(injected.get());
+        assert_eq!(fs::read(&dst).unwrap(), b"concurrent");
+        assert_eq!(fs::read(&src).unwrap(), b"source");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+        assert!(root.starts_with(std::env::temp_dir()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn backend_round2_exhausted_copy_budget_returns_error_instead_of_panicking() {
+        let root = temp_root("zero-budget");
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("keep.txt"), "keep").unwrap();
+        let mut budget = 0;
+        assert!(copy_dir(&source, &root.join("first"), 0, &mut budget, &|| false, Conflict::Rename).is_err());
+        assert!(copy_dir(&source, &root.join("second"), 0, &mut budget, &|| false, Conflict::Rename).is_err());
+        assert!(source.join("keep.txt").exists());
+        assert!(root.starts_with(std::env::temp_dir()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn backend_round2_transfers_cancel_between_items_and_keep_unprocessed_sources() {
+        use std::cell::RefCell;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for moving in [false, true] {
+            let root = temp_root("cancel-transfer");
+            let source = root.join("src");
+            let target = root.join("dst");
+            fs::create_dir_all(&source).unwrap();
+            fs::create_dir_all(&target).unwrap();
+            for name in ["a.txt", "b.txt", "c.txt"] { fs::write(source.join(name), name).unwrap(); }
+            let paths: Vec<_> = ["a.txt", "b.txt", "c.txt"].iter()
+                .map(|name| source.join(name).to_string_lossy().into_owned()).collect();
+            let cancel = AtomicBool::new(false);
+            let notified = RefCell::new(Vec::new());
+            let progress = |entry: &FsEntryReport| {
+                notified.borrow_mut().push(entry.source.clone());
+                cancel.store(true, Ordering::SeqCst);
+            };
+            let run = if moving { super::move_paths_with_progress } else { super::copy_paths_with_progress };
+            let report = run(&paths, &target, Conflict::Rename, None, &[],
+                &|| cancel.load(Ordering::SeqCst), &progress).unwrap();
+            assert_eq!(report.ok, 1);
+            assert_eq!(*notified.borrow(), vec![paths[0].clone()]);
+            assert!(target.join("a.txt").exists());
+            assert!(!target.join("b.txt").exists());
+            assert!(source.join("b.txt").exists() && source.join("c.txt").exists());
+            assert_eq!(source.join("a.txt").exists(), !moving);
+            assert!(root.starts_with(std::env::temp_dir()));
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn backend_round2_batch_rename_cancel_keeps_unprocessed_names() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = temp_root("rename-cancel");
+        for name in ["a.txt", "b.txt"] { fs::write(root.join(name), name).unwrap(); }
+        let items: Vec<_> = ["a.txt", "b.txt"].iter().map(|name| BatchRenameItem {
+            path: root.join(name).to_string_lossy().into_owned(), new_name: format!("new-{name}"),
+        }).collect();
+        let cancel = AtomicBool::new(false);
+        let report = super::batch_rename_with_progress(&items, &[], Some("rename-test".into()),
+            &|| cancel.load(Ordering::SeqCst), &|_| { cancel.store(true, Ordering::SeqCst); });
+        assert_eq!(report.ok, 1);
+        assert_eq!(report.operation_id, "rename-test");
+        assert!(root.join("new-a.txt").exists() && root.join("b.txt").exists());
+        assert!(!root.join("a.txt").exists() && !root.join("new-b.txt").exists());
+        assert!(root.starts_with(std::env::temp_dir()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn backend_round2_nested_junction_never_claims_complete_copy() {
+        let root = temp_root("nested-junction");
+        let source = root.join("source");
+        let target = root.join("target");
+        let external = root.join("external");
+        for path in [&source, &target, &external] { fs::create_dir_all(path).unwrap(); }
+        fs::write(external.join("keep.txt"), "keep").unwrap();
+        let link = source.join("link");
+        assert!(make_junction(&link, &external), "测试环境必须能创建 junction");
+        let report = super::copy_paths(&[source.to_string_lossy().into_owned()], &target, Conflict::Rename, None, &[]).unwrap();
+        assert_eq!(report.ok, 0);
+        assert_eq!(report.failed + report.partial, 1);
+        assert!(external.join("keep.txt").exists());
+        fs::remove_dir(&link).unwrap();
+        assert!(root.starts_with(std::env::temp_dir()));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

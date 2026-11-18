@@ -360,6 +360,7 @@ impl SessionManager {
             },
             size: req.size.clone(),
             job_assigned,
+            toolbar_state: "pending".to_string(),
         };
 
         let handle = Arc::new(SessionHandle {
@@ -466,15 +467,23 @@ impl SessionManager {
                 .collect()
         };
         if !expired.is_empty() {
-            let mut map = self.map.lock().expect("vd sessions");
-            for id in expired {
-                if let Some(handle) = map.remove(&id) {
-                    let inner = handle.inner.lock().expect("vd session");
-                    remove_file(&inner.log_path);
-                    if let Some(shot) = &inner.shot_path {
-                        remove_file(shot);
+            let mut removed: Vec<String> = Vec::new();
+            {
+                let mut map = self.map.lock().expect("vd sessions");
+                for id in expired {
+                    if let Some(handle) = map.remove(&id) {
+                        let inner = handle.inner.lock().expect("vd session");
+                        remove_file(&inner.log_path);
+                        if let Some(shot) = &inner.shot_path {
+                            remove_file(shot);
+                        }
+                        removed.push(id);
                     }
                 }
+            }
+            // 会话从列表移除即代表生命周期结束：同步销毁控制栏，避免窗口残留。
+            for id in removed {
+                crate::commands::projection_window::on_session_ended(&id);
             }
         }
         Ok(out)
@@ -497,6 +506,32 @@ impl SessionManager {
                 info.serial == serial && status_is_active(&info.status)
             })
             .count()
+    }
+
+    /// 投屏控制栏状态（pending / ready / unavailable / closed），供前端降级提示。
+    pub fn set_toolbar_state(&self, session_id: &str, state: &str) {
+        if let Ok(handle) = self.handle(session_id) {
+            let mut inner = handle.inner.lock().expect("vd session");
+            if inner.info.toolbar_state != state {
+                inner.info.toolbar_state = state.to_string();
+            }
+        }
+    }
+
+    /// 追加一条可解释警告（去重），用于控制栏降级/品牌化不完整等非致命问题。
+    pub fn append_warning(&self, session_id: &str, message: &str) {
+        if let Ok(handle) = self.handle(session_id) {
+            let mut inner = handle.inner.lock().expect("vd session");
+            let already = inner
+                .info
+                .warning
+                .as_deref()
+                .map(|warning| warning.contains(message))
+                .unwrap_or(false);
+            if !already {
+                append_warning(&mut inner.info, message);
+            }
+        }
     }
 
     pub fn focus(&self, session_id: &str) -> AppResult<VdFocus> {
@@ -948,7 +983,11 @@ fn wait_loop(handle: Arc<SessionHandle>) {
             } else {
                 detail
             };
+            let ended_id = inner.info.id.clone();
             finalize_locked(&mut inner, final_status, detail, warning);
+            drop(inner);
+            // 生命周期钩子：销毁本会话的控制栏并停止 watcher（幂等）。
+            crate::commands::projection_window::on_session_ended(&ended_id);
             break;
         }
 
@@ -1031,6 +1070,8 @@ fn finalize_locked(
     inner.finalized = true;
     inner.info.alive = false;
     inner.info.status = status.to_string();
+    // 会话结束即代表控制栏生命周期结束；窗口销毁由 projection_window 的钩子完成。
+    inner.info.toolbar_state = "closed".to_string();
     if inner.info.ended_at.is_none() {
         inner.info.ended_at = Some(now_stamp());
     }

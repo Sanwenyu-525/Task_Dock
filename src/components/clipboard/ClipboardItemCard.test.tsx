@@ -6,7 +6,8 @@
 //! 本轮把卡片从「整卡 role=button + 内部一堆按钮」改为：
 //! - 根节点 article：无 onClick / tabIndex / role=button（消除嵌套按钮与 Enter 双触发）；
 //! - 主预览入口是真按钮 `.clip-item-main`，图片是并列的真按钮 `.clip-hero`；
-//! - 辅助动作（收藏/置顶/详情/删除/大图/打开链接）进 DropdownMenu；
+//! - 辅助动作分两级：宽度足够的卡片把收藏/置顶/查看详情排进行内动作行；
+//!   窄卡、抽屉行与关联模式收回 DropdownMenu，删除始终留在菜单；
 //! - 密度只影响呈现：comfort（大图+多行正文）、compact（缩略图+少行）、
 //!   list / 抽屉（行布局）。
 //!
@@ -14,7 +15,7 @@
 //! 断言规则存在且挂在正确的父级上；真实渲染由 Playwright 截图验收，不在这里冒充。
 
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import appCss from "../../styles.css?raw";
 import pageCss from "./clipboard-page.css?raw";
@@ -27,7 +28,11 @@ vi.mock("../../lib/bridge", () => ({
   clipboardImage: vi.fn(async () => null),
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // 窄卡测试会替换 ResizeObserver；还原后不影响同文件其他用例与 setup 的空实现。
+  vi.unstubAllGlobals();
+});
 
 const LONG_TEXT =
   "task_dock — 方案 B 液态融合翼片最终版开发：本次改动集中在翼片表面材质、跨厚度渐变与内侧高光带，" +
@@ -114,6 +119,25 @@ function renderCard(
   const card = container.querySelector<HTMLElement>(".clip-item");
   if (!card) throw new Error("没有渲染出 .clip-item");
   return { card, fns };
+}
+
+/**
+ * 模拟一次真实测量：ResizeObserver 在首次 observe 时就回调节点宽度。
+ * 只在窄卡用例里替换，用例结束由 afterEach 还原测试环境的空实现。
+ */
+function stubCardWidth(width: number) {
+  class FakeResizeObserver {
+    constructor(private readonly cb: ResizeObserverCallback) {}
+    observe(target: Element) {
+      this.cb(
+        [{ target, contentRect: { width } }] as unknown as ResizeObserverEntry[],
+        this as unknown as ResizeObserver,
+      );
+    }
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver as unknown as typeof ResizeObserver);
 }
 
 /** 取样式表里精确匹配某个选择器的规则体（规则在选择器行单独成段）。 */
@@ -237,22 +261,51 @@ describe("ClipboardItemCard 主预览按钮与误触隔离", () => {
 });
 
 describe("ClipboardItemCard 更多操作菜单", () => {
-  it("收藏/置顶/详情/删除都收进菜单，点删除前不会触发详情", async () => {
+  it("宽卡片：收藏/置顶/查看详情常显在动作行，菜单里不重复、只留删除", async () => {
     const user = userEvent.setup();
-    const { card, fns } = renderCard({ title: "待整理" });
+    const { card, fns } = renderCard({ title: "待整理" }, "comfort");
+
+    // 高频动作仍留在行内：复制 + 更多；辅助动作在空间足够时也直接可见。
+    expect(card.querySelector('[aria-label="复制"]')).not.toBeNull();
+    expect(card.querySelector('[aria-label="更多操作"]')).not.toBeNull();
+    const actions = card.querySelector<HTMLElement>(".clip-actions")!;
+
+    await user.click(within(actions).getByRole("button", { name: "收藏" }));
+    expect(fns.onToggle).toHaveBeenCalledWith("favorite");
+    expect(fns.onDetail).not.toHaveBeenCalled();
+
+    await user.click(within(actions).getByRole("button", { name: "置顶" }));
+    expect(fns.onToggle).toHaveBeenCalledWith("pinned");
+
+    await user.click(within(actions).getByRole("button", { name: "查看详情" }));
+    expect(fns.onDetail).toHaveBeenCalledTimes(1);
+    expect(fns.onPreview).not.toHaveBeenCalled();
 
     await user.click(card.querySelector<HTMLButtonElement>('[aria-label="更多操作"]')!);
     const menu = await screen.findByRole("menu");
-    expect(menu).not.toBeNull();
+    // 同一动作不同时出现在行内与菜单里：菜单只剩删除（类型专属项按需出现）。
+    expect(within(menu).queryByRole("menuitem", { name: /收藏|置顶|查看详情/ })).toBeNull();
+    expect(within(menu).getByRole("menuitem", { name: /删除这条历史/ })).toBeTruthy();
+    expect(screen.queryByRole("menu")).not.toBeNull();
+  });
 
-    // 高频动作仍留在行内：复制 + 更多
-    expect(card.querySelector('[aria-label="复制"]')).not.toBeNull();
-    expect(card.querySelector('[aria-label="更多操作"]')).not.toBeNull();
+  it("窄卡片：辅助动作全部收回菜单，不在行内挤压复制", async () => {
+    // jsdom 的 ResizeObserver 不会回调；这里模拟首次 observe 就量到 220px。
+    stubCardWidth(220);
+    const { card } = renderCard({ title: "窄卡" }, "comfort");
+    // 菜单定位/浮层不再需要假测量，先还原测试环境的空实现。
+    vi.unstubAllGlobals();
 
-    await user.click(screen.getByRole("menuitem", { name: /收藏/ }));
-    expect(fns.onToggle).toHaveBeenCalledWith("favorite");
-    expect(fns.onDetail).not.toHaveBeenCalled();
-    expect(screen.queryByRole("menu")).toBeNull();
+    const actions = card.querySelector<HTMLElement>(".clip-actions")!;
+    expect(within(actions).queryByRole("button", { name: "收藏" })).toBeNull();
+    expect(within(actions).queryByRole("button", { name: "查看详情" })).toBeNull();
+
+    const user = userEvent.setup();
+    await user.click(card.querySelector<HTMLButtonElement>('[aria-label="更多操作"]')!);
+    const menu = await screen.findByRole("menu");
+    for (const name of [/^收藏$/, /^置顶$/, /查看详情/, /删除这条历史/]) {
+      expect(within(menu).getByRole("menuitem", { name })).toBeTruthy();
+    }
   });
 
   it("删除项标注「不会删除本地文件」并只调用删除", async () => {

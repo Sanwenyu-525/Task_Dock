@@ -9,11 +9,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 const mocks = vi.hoisted(() => ({
   preview: vi.fn(),
   execute: vi.fn(),
+  recycleStats: vi.fn(),
 }));
 
 vi.mock("../../lib/bridge", () => ({
   resourceJunkPreview: mocks.preview,
   resourceJunkExecute: mocks.execute,
+  recycleStats: mocks.recycleStats,
 }));
 
 vi.mock("../../hooks/useLocale", () => ({
@@ -103,6 +105,19 @@ const REPORT = {
 beforeEach(() => {
   mocks.preview.mockReset().mockResolvedValue(PREVIEW);
   mocks.execute.mockReset().mockResolvedValue(REPORT);
+  mocks.recycleStats.mockReset().mockResolvedValue({
+    items: 3,
+    files: 2,
+    folders: 1,
+    knownBytes: 2048,
+    unknownSize: 1,
+    volumes: [],
+    lastSyncMs: 0,
+    state: "ready",
+    source: "index",
+    indexedAtMs: 0,
+    syncing: 0,
+  });
 });
 
 afterEach(() => {
@@ -115,27 +130,27 @@ function cleanButton(): HTMLButtonElement {
 }
 
 describe("UserJunkSection", () => {
-  it("初始不扫描也不勾选；扫描后展示四类、计数与保护数量", async () => {
+  it("初始不扫描也不勾选；回收站只显示索引统计，临时类别扫描后展示计数", async () => {
     render(<UserJunkSection />);
     expect(mocks.preview).not.toHaveBeenCalled();
     expect(screen.getByText("resource.junk.notScanned")).toBeTruthy();
     expect(cleanButton().disabled).toBe(true);
+    // 回收站只读本地索引，不进入旧扫描类别。
+    expect(await screen.findByText('resource.junk.items|{"count":3}')).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "resource.junk.scan" }));
     await waitFor(() => expect(mocks.preview).toHaveBeenCalledWith([
-      "recycle_bin",
       "user_temp",
       "system_temp",
       "crash_dumps",
     ]));
 
-    expect(await screen.findByText('resource.junk.items|{"count":3}')).toBeTruthy();
-    expect(screen.getByText('resource.junk.files|{"count":2}')).toBeTruthy();
+    expect(await screen.findByText('resource.junk.files|{"count":2}')).toBeTruthy();
     expect(screen.getByText(/resource\.junk\.protected\|\{"count":5\}/)).toBeTruthy();
     expect(screen.getByText(/resource\.junk\.status\.partial/)).toBeTruthy();
     // 扫描本身不勾选任何类别
     const checkboxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
-    expect(checkboxes).toHaveLength(4);
+    expect(checkboxes).toHaveLength(3);
     expect(checkboxes.every((box) => !box.checked)).toBe(true);
     expect(cleanButton().disabled).toBe(true);
   });
@@ -144,7 +159,8 @@ describe("UserJunkSection", () => {
     mocks.preview.mockResolvedValue({
       ...PREVIEW,
       categories: [
-        ...PREVIEW.categories.slice(0, 3),
+        PREVIEW.categories[1],
+        PREVIEW.categories[2],
         {
           category: "crash_dumps",
           status: "unavailable",
@@ -162,19 +178,19 @@ describe("UserJunkSection", () => {
       name: "resource.junk.category.crashDumps",
     })) as HTMLInputElement;
     expect(crash.disabled).toBe(true);
-    const recycle = screen.getByRole("checkbox", {
-      name: "resource.junk.category.recycleBin",
+    const temp = screen.getByRole("checkbox", {
+      name: "resource.junk.category.userTemp",
     }) as HTMLInputElement;
-    expect(recycle.disabled).toBe(false);
+    expect(temp.disabled).toBe(false);
   });
 
   it("勾选后显示预计释放，确认面板需要二次确认才执行", async () => {
     render(<UserJunkSection />);
     fireEvent.click(screen.getByRole("button", { name: "resource.junk.scan" }));
-    const recycle = await screen.findByRole("checkbox", {
-      name: "resource.junk.category.recycleBin",
+    const temp = await screen.findByRole("checkbox", {
+      name: "resource.junk.category.userTemp",
     });
-    fireEvent.click(recycle);
+    fireEvent.click(temp);
     expect(cleanButton().disabled).toBe(false);
     expect(
       screen.getByText(/resource\.junk\.selected\|\{"count":1\}/),
@@ -184,14 +200,14 @@ describe("UserJunkSection", () => {
     fireEvent.click(cleanButton());
     expect(mocks.execute).not.toHaveBeenCalled();
     expect(
-      await screen.findByText('resource.junk.confirmTitle|{"bytes":"2.0 KB"}'),
+      await screen.findByText('resource.junk.confirmTitle|{"bytes":"1.0 KB"}'),
     ).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "resource.junk.confirm" }));
     await waitFor(() =>
       expect(mocks.execute).toHaveBeenCalledWith({
         previewId: "junk-preview-1",
-        categories: ["recycle_bin"],
+        categories: ["user_temp"],
       }),
     );
     expect(
@@ -221,10 +237,10 @@ describe("UserJunkSection", () => {
       .mockResolvedValueOnce({ ...PREVIEW, previewId: "junk-preview-2" });
     render(<UserJunkSection />);
     fireEvent.click(screen.getByRole("button", { name: "resource.junk.scan" }));
-    const recycle = await screen.findByRole("checkbox", {
-      name: "resource.junk.category.recycleBin",
+    const temp = await screen.findByRole("checkbox", {
+      name: "resource.junk.category.userTemp",
     });
-    fireEvent.click(recycle);
+    fireEvent.click(temp);
     expect(cleanButton().disabled).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "resource.junk.rescan" }));
@@ -233,12 +249,13 @@ describe("UserJunkSection", () => {
     // 新预览到达后：旧勾选全部失效，清理按钮回到禁用。
     expect(await screen.findByText("resource.junk.selectionReset")).toBeTruthy();
     const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
-    expect(boxes).toHaveLength(4);
+    expect(boxes).toHaveLength(3);
     expect(boxes.every((box) => !box.checked)).toBe(true);
     expect(cleanButton().disabled).toBe(true);
     expect(screen.queryByText(/resource\.junk\.confirmTitle/)).toBeNull();
-    // 回收站类别始终带不可恢复标记
+    // 回收站入口始终带不可恢复标记与跳转按钮
     expect(screen.getByText("resource.junk.irreversible")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "resource.junk.openRecycle" })).toBeTruthy();
   });
 
   it("扫描失败显示错误，不伪造 0 B", async () => {
@@ -285,7 +302,7 @@ describe("UserJunkSection", () => {
       fireEvent.click(screen.getByRole("button", { name: "resource.junk.scan" }));
       await flush();
       fireEvent.click(
-        screen.getByRole("checkbox", { name: "resource.junk.category.recycleBin" }),
+        screen.getByRole("checkbox", { name: "resource.junk.category.userTemp" }),
       );
       expect(cleanButton().disabled).toBe(false);
 
