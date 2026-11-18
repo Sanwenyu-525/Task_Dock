@@ -1591,8 +1591,9 @@ mod win {
         }
     }
 
-    /// TaskDock 正式产品图标（随二进制内嵌，不依赖 exe 资源 ID 或当前工作目录）。
-    const TASKDOCK_ICON_ICO: &[u8] = include_bytes!("../../icons/icon.ico");
+    /// TaskDock 投屏窗口专用图标（随二进制内嵌，不依赖 exe 资源 ID 或当前工作目录）；
+    /// 与主程序图标区分，源图见 icons/projection-1024.png。
+    const TASKDOCK_ICON_ICO: &[u8] = include_bytes!("../../icons/projection.ico");
 
     fn embedded_icons() -> Option<(HICON, HICON)> {
         let bytes = TASKDOCK_ICON_ICO;

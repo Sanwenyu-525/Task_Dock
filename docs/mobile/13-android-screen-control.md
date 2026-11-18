@@ -425,7 +425,8 @@ Rust 单测覆盖：ADB 输出解析、mDNS serial 提取、设备去重（USB/�
     普通窗口外置（右→左→下→上→内部），最大化/全屏内置底部居中；全屏默认隐藏，
     鼠标进入底部触发带显示、离开延迟隐藏，锁定后不自动隐藏；DPI 与显示器工作区参与计算。
   - **品牌化**：统一 `TaskDock · 设备 · 模式/应用` 标题；Windows 标题栏/Alt+Tab/任务栏图标
-    使用内嵌正式产品图标（`WM_SETICON`），窗口 AUMID 固定 `TaskDock.Projection`。
+    使用内嵌投屏专用图标 `icons/projection.ico`（`WM_SETICON`；源图 `projection-1024.png`，
+    与主程序图标区分），窗口 AUMID 固定 `TaskDock.Projection`。
   - **性能与状态**：`vd_start` 不再同步等待 appmeta；页面切换不再重置模式/应用/尺寸/多屏配置；
     多屏副标题与实际上限一致。
   - **证据**：Rust 16 例（几何/DPI/绑定/幂等/可见性）+ 既有 25 例通过；前端新增 21 例通过；
