@@ -8,6 +8,7 @@
  */
 
 import { templateFor, KIND_LABELS, type ProjectTemplate } from "./templates";
+import { projectNameFromText } from "./intent";
 import type {
   CapabilityRequirementDraft,
   FieldSource,
@@ -133,7 +134,11 @@ export function generateProjectDraft(
   const phases = buildPhases(template);
   const targetDate = firstAbsoluteDate(intent.constraints);
 
-  const explicitName = options.name?.trim() || intent.title?.trim() || "";
+  const explicitName =
+    options.name?.trim() ||
+    (intent.titleSource === "user" ? intent.title?.trim() : "") ||
+    projectNameFromText(intent.raw) ||
+    "";
   const name = explicitName || `${KIND_LABELS[kind]}项目`;
 
   return {

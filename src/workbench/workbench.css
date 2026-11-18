@@ -72,6 +72,10 @@ html[data-window-maximized="true"] .wb-root .resize-grips {
     "top top top"
     "nav res content"
     "foot foot foot";
+  /* 共享打包 CSS 里其他入口的 `#root{display:flex}` 会作用到工作台；
+     flex 子项 auto 宽度按 max-content 收缩，三栏会把主内容压到几十像素。
+     工作台根壳必须始终占满宿主窗口。 */
+  width: 100%;
   min-width: 0;
   background: var(--surface-base);
   color: var(--text-primary);

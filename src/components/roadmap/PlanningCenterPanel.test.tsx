@@ -175,6 +175,8 @@ async function renderWithProjects() {
   bridge.planningListMilestones.mockResolvedValue([]);
   const user = userEvent.setup();
   render(<PlanningCenterPanel />);
+  // 默认入口是项目中枢；旧规划编辑器用例显式切到「规划编辑」。
+  await user.click(screen.getByRole("button", { name: "规划编辑" }));
   await waitFor(() => expect(screen.getAllByText("我的应用").length).toBeGreaterThan(0), WAIT);
   return user;
 }
@@ -193,9 +195,12 @@ describe("数据源与视图导航", () => {
     ).toBeTruthy();
   });
 
-  it("默认显示项目总览；无项目时给出创建引导并提示内置路线图位置", async () => {
+  it("默认项目中枢；切到规划编辑后无项目时给出创建引导并提示内置路线图位置", async () => {
     bridge.planningListProjects.mockResolvedValue([]);
+    const user = userEvent.setup();
     render(<PlanningCenterPanel />);
+    expect(screen.getByRole("button", { name: "项目中枢" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "规划编辑" }));
     expect(await screen.findByText(/创建你的第一个项目/, {}, WAIT)).toBeTruthy();
     expect(screen.getByRole("button", { name: /新建项目/ })).toBeTruthy();
     expect(screen.getAllByText(/内置路线图/).length).toBeGreaterThanOrEqual(1);
@@ -221,11 +226,11 @@ describe("数据源与视图导航", () => {
     expect(screen.queryByText(/创建你的第一个项目/)).toBeNull();
   });
 
-  it("内置路线图与我的项目互不影响：切回后总览恢复", async () => {
+  it("内置路线图与规划编辑互不影响：切回后总览恢复", async () => {
     const user = await renderWithProjects();
     await user.click(screen.getByRole("button", { name: "内置路线图" }));
     expect(screen.getByText("核心效率功能")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "我的项目" }));
+    await user.click(screen.getByRole("button", { name: "规划编辑" }));
     await waitFor(() => expect(screen.getAllByText("我的应用").length).toBeGreaterThan(0), WAIT);
   });
 });
@@ -495,6 +500,7 @@ describe("功能列表与详情", () => {
     bridge.planningListMilestones.mockResolvedValue([]);
     const user = userEvent.setup();
     render(<PlanningCenterPanel />);
+    await user.click(screen.getByRole("button", { name: "规划编辑" }));
     await waitFor(() => expect(screen.getAllByText("我的应用").length).toBeGreaterThan(0), WAIT);
     await goToFeatures(user);
     await waitFor(() => expect(screen.getByText(/功能列表加载失败/)).toBeTruthy(), WAIT);
@@ -574,6 +580,7 @@ describe("里程碑", () => {
     ]);
     const user = userEvent.setup();
     render(<PlanningCenterPanel />);
+    await user.click(screen.getByRole("button", { name: "规划编辑" }));
     await waitFor(() => expect(screen.getAllByText("我的应用").length).toBeGreaterThan(0), WAIT);
     return user;
   }

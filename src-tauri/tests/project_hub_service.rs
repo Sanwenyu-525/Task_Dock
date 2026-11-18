@@ -104,3 +104,33 @@ fn create_project_rejects_empty_name_and_relative_root() {
     bad.root_path = Some("relative/path".into());
     assert!(create_project(&db, bad).is_err());
 }
+
+#[test]
+fn create_two_projects_are_independent_and_listed() {
+    let db = Db::open_in_memory().unwrap();
+    let first = create_project(&db, input("req-first")).unwrap();
+    let second = create_project(&db, input("req-second")).unwrap();
+    assert_ne!(first.project.id, second.project.id);
+    assert_eq!(list_projects(&db).unwrap().len(), 2);
+    assert_eq!(get_snapshot(&db, &second.project.id).unwrap().project.task_count, 2);
+}
+
+#[test]
+fn file_database_supports_repeated_create_and_reads() {
+    let path = std::env::temp_dir().join(format!("task-dock-project-hub-{}.db", uuid::Uuid::new_v4()));
+    let db = Db::open(&path).unwrap();
+    let first = create_project(&db, input("req-file-first")).unwrap();
+    assert_eq!(list_projects(&db).unwrap().len(), 1);
+    let loaded = get_snapshot(&db, &first.project.id).unwrap();
+    assert_eq!(loaded.project.phase_count, 2);
+
+    let second = create_project(&db, input("req-file-second")).unwrap();
+    assert_ne!(first.project.id, second.project.id);
+    assert_eq!(list_projects(&db).unwrap().len(), 2);
+    assert_eq!(get_snapshot(&db, &second.project.id).unwrap().project.task_count, 2);
+
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}

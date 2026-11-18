@@ -309,6 +309,22 @@ export default function ProjectHubPanel() {
                   </ul>
                 )}
               </section>
+              <section className="ph-section">
+                <h3><FolderOpen size={16} /> 最近产出</h3>
+                {active.deliverables.length === 0 ? (
+                  <p className="ph-muted">还没有记录交付物。</p>
+                ) : (
+                  <ul className="ph-list">
+                    {active.deliverables.slice(0, 4).map((item) => (
+                      <li key={item.id}>
+                        <span className={`ph-dot ${item.status === "accepted" ? "ok" : ""}`} />
+                        <span>{item.title}</span>
+                        <time>{item.acceptedAt?.slice(0, 10) ?? item.producedAt?.slice(0, 10) ?? ""}</time>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
             </div>
           ) : null}
 
@@ -376,9 +392,11 @@ export default function ProjectHubPanel() {
                           <span className={`ph-tag ${capability.necessity}`}>{necessityLabel(capability.necessity)}</span>
                         </div>
                         <p>
-                          {capability.assessmentLevel ?? capability.mastery === "unknown"
-                            ? "掌握程度待评估"
-                            : `${masteryLabel(capability.assessmentLevel ?? capability.mastery)} · ${capability.category}`}
+                          {capability.assessmentLevel && capability.assessmentLevel !== "unknown"
+                            ? `${masteryLabel(capability.assessmentLevel)} · ${capability.category}`
+                            : capability.mastery && capability.mastery !== "unknown"
+                              ? `${masteryLabel(capability.mastery)} · ${capability.category}`
+                              : "掌握程度待评估"}
                           {capability.resourceCount > 0
                             ? ` · ${capability.availableResourceCount}/${capability.resourceCount} 个可用资源`
                             : " · 暂无关联资源"}
@@ -662,13 +680,53 @@ function CreateProjectDialog({
             </label>
             <div className="ph-draft-grid">
               <div>
-                <h4>阶段（{preview.phases.length}）</h4>
-                <ul>{preview.phases.map((phase) => <li key={phase.id}>{phase.title}<small>{phase.features.length} 项功能 · {phase.milestoneTitles.length} 个里程碑</small></li>)}</ul>
+                <h4>阶段与里程碑（{preview.phases.length}）</h4>
+                <ul>{preview.phases.map((phase) => (
+                  <li key={phase.id}>
+                    <span>{phase.title}</span>
+                    <small>
+                      {phase.features.length} 项功能 ·{" "}
+                      {phase.milestoneTitles.length > 0 ? phase.milestoneTitles.join(" / ") : "无里程碑"}
+                    </small>
+                  </li>
+                ))}</ul>
               </div>
               <div>
                 <h4>能力需求（{preview.capabilities.length}）</h4>
                 <ul>{preview.capabilities.map((capability) => <li key={capability.key}>{capability.name}<small>{necessityLabel(capability.necessity)} · {capability.targetLevel}</small></li>)}</ul>
               </div>
+              <div>
+                <h4>预计产出（{draft.phases.reduce((sum, phase) => sum + phase.features.length, 0)} 项功能）</h4>
+                {draft.phases.some((phase) => phase.features.length > 0) ? (
+                  <ul>
+                    {draft.phases
+                      .flatMap((phase) => phase.features)
+                      .slice(0, 6)
+                      .map((feature) => <li key={feature.id}>{feature.title}<small>{feature.priority}</small></li>)}
+                  </ul>
+                ) : (
+                  <p className="ph-muted">还没有功能草稿，创建后可在规划中补充。</p>
+                )}
+              </div>
+              <div>
+                <h4>初始任务（{draft.tasks.length}）</h4>
+                {draft.tasks.length > 0 ? (
+                  <ul>
+                    {draft.tasks.slice(0, 6).map((task) => {
+                      const phase = draft.phases.find((item) => item.id === task.phaseId);
+                      return <li key={task.id}>{task.title}<small>{phase?.title ?? "未分阶段"}</small></li>;
+                    })}
+                  </ul>
+                ) : (
+                  <p className="ph-muted">暂无初始任务，创建后可在执行视图补充。</p>
+                )}
+              </div>
+            </div>
+            <div className="ph-uncertain">
+              <h4>工作空间建议</h4>
+              <p>{draft.workspace.note || "创建后可在工作空间中登记项目根目录。"}</p>
+              <p>建议模块：{draft.workspace.moduleHints.join(" / ") || "按项目类型自动选择"}</p>
+              {draft.workspace.rootPathHint ? <p>根目录：{draft.workspace.rootPathHint}</p> : null}
             </div>
             {preview.uncertainties.length > 0 ? (
               <div className="ph-uncertain">

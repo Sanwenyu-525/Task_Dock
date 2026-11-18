@@ -185,6 +185,32 @@ export function goalTitleFromText(raw: string): string {
   return text.length > 60 ? `${text.slice(0, 60)}…` : text;
 }
 
+const PROJECT_NAME_ACTION =
+  /^(?:写|开发|制作|整理|完成|做|搭建|创建|设计|编写|绘制)\s*(?:(?:一|1)\s*(?:本|款|部|个|套|张)\s*)?/;
+
+/**
+ * 从目标原话推出一个可读的项目名。
+ *
+ * 只做「去掉期限、范围排除、口头语与动作词」的清洗，不拼造新事实；
+ * 例如「我要写一本 20 万字的科幻小说，在三个月内完成初稿，先保证世界观…」
+ * →「20 万字的科幻小说」。显式命名场景由调用方优先使用 intent.title。
+ */
+export function projectNameFromText(raw: string): string {
+  let text = raw.trim();
+  text = text.replace(ABSOLUTE_DATE_PATTERN, " ");
+  text = text.replace(SCOPE_EXCLUSION_PATTERN, " ");
+  text = text.replace(/在?\s*(?:\d+|[一二两三四五六七八九十]+|半)\s*(?:个月|月|星期|周|天|日|年)(?:之?内|以内)?\s*(?:完成|做完|交付)?/g, " ");
+  text = text.replace(GOAL_PREFIX, " ");
+  text = text.replace(/^[，,、；;：:\s]+/, "");
+  // 项目名只取第一个语义分句，保留后续约束在草案的「仍不确定」和约束列表中。
+  text = text.split(/[，,。；;！？!?\n]/)[0].trim();
+  text = text.replace(PROJECT_NAME_ACTION, "");
+  text = text.replace(/^(?:一款|一本|一部|一个|一套|一张)\s*/, "");
+  text = text.replace(/\s{2,}/g, " ").replace(/[的\s]+$/, "").trim();
+  if (!text) return goalTitleFromText(raw);
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+}
+
 interface QuantityGoal {
   metric: string;
   targetValue: number;

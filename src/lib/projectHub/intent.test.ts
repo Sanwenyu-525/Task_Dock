@@ -7,6 +7,7 @@ import {
   parseAbsoluteDate,
   parseProjectIntent,
   parseRelativeDays,
+  projectNameFromText,
   withProjectKind,
 } from "./intent";
 
@@ -42,6 +43,19 @@ describe("目标标题", () => {
   it("去掉口头语、期限与尾部标点", () => {
     expect(goalTitleFromText("我要写一本30万字的科幻小说，三个月内完成。")).toBe("写一本30万字的科幻小说");
     expect(goalTitleFromText("我要在三个月内完成毕业设计")).toBe("毕业设计");
+  });
+});
+
+describe("项目名清洗", () => {
+  it("保留目标对象，去掉期限、范围排除和悬空分句", () => {
+    expect(
+      projectNameFromText("我要写一本 20 万字的科幻小说，在三个月内完成初稿，先保证世界观和人物设定扎实。"),
+    ).toBe("20 万字的科幻小说");
+    expect(
+      projectNameFromText("我要在六个月内开发一款 2D Roguelike 游戏的垂直切片，先不做联机功能。"),
+    ).toBe("2D Roguelike 游戏的垂直切片");
+    expect(projectNameFromText("我要整理个人知识库")).toBe("个人知识库");
+    expect(projectNameFromText("我要在三个月内完成毕业设计")).toBe("毕业设计");
   });
 });
 

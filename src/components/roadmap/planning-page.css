@@ -14,6 +14,14 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.planning-panel .planning-source-switch .seg-group {
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
 }
 
 .planning-panel .planning-source-label {

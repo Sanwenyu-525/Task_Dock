@@ -240,6 +240,20 @@
   color: var(--status-warning);
 }
 
+.project-hub .ph-list li > span:not(.ph-dot) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-hub .ph-list time {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .project-hub .ph-events li span,
 .project-hub .ph-tasks li span {
   min-width: 0;
@@ -527,6 +541,8 @@
 
   .project-hub .ph-hero-side {
     align-items: flex-start;
+    min-width: 0;
+    width: 100%;
   }
 
   .project-hub .ph-toolbar {
@@ -536,5 +552,20 @@
   .project-hub .ph-toolbar-meta {
     margin-left: 0;
     width: 100%;
+  }
+
+  .project-hub .ph-project-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .project-hub .ph-project-select .select {
+    min-width: 0;
+    width: 100%;
+    max-width: none;
+  }
+
+  .project-hub .ph-tabs {
+    flex-wrap: wrap;
   }
 }

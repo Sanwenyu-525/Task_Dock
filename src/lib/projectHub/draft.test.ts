@@ -48,6 +48,13 @@ describe("generateProjectDraft", () => {
     const draft = generateProjectDraft(parseProjectIntent("我要写一本小说"), { name: "星海日志" });
     expect(draft.name).toBe("星海日志");
   });
+
+  it("自然语言草案名不包含期限、范围排除或悬空标点", () => {
+    const draft = generateProjectDraft(
+      parseProjectIntent("我要写一本 20 万字的科幻小说，在三个月内完成初稿，先保证世界观和人物设定扎实。"),
+    );
+    expect(draft.name).toBe("20 万字的科幻小说");
+  });
 });
 
 describe("createManualDraft", () => {
