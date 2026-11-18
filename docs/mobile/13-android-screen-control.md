@@ -499,3 +499,75 @@ TaskDock 主窗口（工作台）
 - 控制栏使用 topmost 窗口以覆盖 scrcpy 全屏；用户切换到其他应用时控制栏仍可能悬浮在
   最上层（与 scrcpy 窗口生命周期绑定，Session 关闭即销毁）。原生验收时需确认是否可接受。
 - `vd_screenshot` 仍基于 `PrintWindow`，GPU/受保护窗口可能失败；无障碍/触摸注入仍需真机。
+## 17. 投屏窗口一体化重构（2026-11-19，取代 §16 的独立控制栏方案）
+
+> 本节推翻 §16 的「独立 ToolWindow 置顶控制栏」设计：§16 记录保留作为历史，
+> 其中「独立窗口/外置定位/全屏自动隐藏/锁定」行为自本节起**不再存在**。
+
+### 17.1 新窗口结构（方案 A，真机 PoC 验证）
+
+```
+scrcpy 顶层窗口（WS_OVERLAPPEDWINDOW，品牌化标题/图标/AUMID 不变）
+  └─ TaskDock 导航 WebView（toolbar.html，attach 阶段转 WS_CHILD + 跨进程 SetParent）
+       ├─ Side/Compact：右缘导航列（Side 落在右侧 letterbox，Compact 悬浮于视频之上）
+       └─ Bottom：底部导航条（窗口高度由布局吸附）
+```
+
+- P0#1/#2/#3 消除：导航栏与手机画面同属一个顶层 HWND，其他窗口遮挡投屏时导航栏
+  一起被遮挡，最小化/恢复同步；不再有 `WS_EX_TOPMOST` 独立导航窗口。
+- 一体化的实现要点：`win::attach_as_child`（剥离 TOPMOST/NOACTIVATE/popup/caption →
+  WS_CHILD + SetParent + SWP_FRAMECHANGED）；attach 失败降级为「无控制栏」并告警，
+  绝不回退到独立置顶窗口。
+- 生命周期红线：`vd_stop` / 会话结束**先销毁子窗口再停 scrcpy**（父窗口销毁会连带
+  销毁跨进程子窗口，顺序反了会留下被系统强拆的孤儿）。
+
+### 17.2 布局系统（`projection_layout.rs` 纯函数 + 集成测试 10 例）
+
+- `calculate_projection_layout(window_size, video_size, dpi, capabilities, constraints)
+  → { video_rect, navigation_rect, layout_mode }`；模式判定 Side → Bottom → Compact
+  （`should_use_side_layout` / `should_use_bottom_layout` 带迟滞系数 0.96）。
+- Side：ClientRect 宽度吸附为「视频宽 + 2×导航 WebView（含 Tooltip 溢出区）」，
+  scrcpy 居中渲染，导航列落在右侧 letterbox，**永不遮挡视频**；
+- Bottom：宽度不足时高度吸附为「视频高 + 2×底部条带」（居中口径下视频恰好贴条带顶）；
+- Compact：宽高都受限时导航列悬浮在视频右缘，视频不再被压缩；
+- 视频尺寸在挂载时从 scrcpy 初始 ClientRect 捕获（此刻 ClientRect == 视频纵横比），
+  旋转时由 watcher 识别「非本进程发起的外框变化」重新捕获（最大化状态除外）。
+- 实测基线：V2323A（1080×2400）@125% DPI，scrcpy 初始 client 577×1282 = 视频精确
+  纵横比（0.450），**基线无空余宽度**——可用空间由布局主动扩展（任务书 P0#4 前提
+  在基线不成立，已在方案中改为主动扩展）。
+
+### 17.3 导航栏与 Tooltip（`projection-controls/`）
+
+- 尺寸规范：按钮 52×52、图标 20、内边距 12、间距 8、列宽 88（逻辑 px，`projection-sizes.ts`
+  与 Rust 常量同源；`getNavigationButtonSize/getNavigationContainerSize/getNavigationSpacing`）。
+- **图标方向保持既有实现**（ArrowLeft/Home/List），本轮未改方向/语义。
+- 一级行 = 返回 / Home / 最近任务 / 截屏 / 更多；**删除锁定按钮**（自动隐藏已随一体化
+  删除）与一级 ✕（与原生窗口关闭重复）；「更多」= 会话信息 + 诊断 + 结束投屏，
+  由 `getProjectionToolbarActions / filterDuplicateProjectionActions / getSecondaryProjectionActions`
+  按真实能力生成。
+- Tooltip：`ProjectionTooltipLayer`（WebView 内绝对定位层，pointer-events:none 永不拦截
+  点击）；显示延迟 350ms / 隐藏 120ms；`resolveTooltipSide` 边缘自动翻转 + `calculateTooltipPosition`
+  钳制进视口；键盘 Focus 与 disabled 原因（虚拟屏最近任务）同样显示；深浅主题走语义 Token。
+- 事件协议变更：`vd-toolbar-state` 载荷改为 `{ window_mode, layout_mode, dpi_scale, session_id }`
+  （旧 mode/locked/expanded/visible 停用）。
+
+### 17.4 会话隔离与派发
+
+- `vd_projection_dispatch(session_id, action)`：统一入口，先校验（会话运行中 + 控制栏已
+  挂载），再复用 `vd_nav`；`resolve_projection_session(hwnd)` 按 HWND 反查 Session；
+  `validate_projection_session` 多会话隔离防线；导航能力限制不变。
+- `vd_projection_identity(session_id)`：回读标题/WM_SETICON 大小图标/AUMID 三项，
+  供真机验收与诊断（`apply_projection_window_identity` / `validate_projection_window_identity`）。
+
+### 17.5 验证状态（如实记录）
+
+- 单元/集成：`cargo test --test projection_layout` 10/10 通过；lib 内 projection_window
+  测试编译通过（运行受仓库级 0xC0000139 问题阻塞，见报告）；vitest 控制栏 15/15、
+  controller 8/8、mobile 批次 55/55 通过；typecheck 0 错误；`npm run build`（含
+  toolbar.html）与 `cargo build` 经调度器 exit 0。
+- 真机 PoC（2026-11-18 23:15，方案可行性）：跨进程 SetParent 挂载成功、子窗口渲染正常、
+  覆盖窗口时导航栏随父窗口消失（遮挡同步）、CDP 页面内点击交互正常。
+- **正式真机验收 ENVIRONMENT BLOCKED**（2026-11-19 01:20）：Android 设备 TLS 断连
+  （`adb devices` 列表为空），且本机存在其他会话的 task-dock 实例（r9pkg release）。
+  待设备恢复后按 §16.5 同口径补做：遮挡同步、Tooltip 逐按钮、布局三模式、双会话
+  隔离、`vd_projection_identity` 三项回读。

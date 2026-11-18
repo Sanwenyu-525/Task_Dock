@@ -32,6 +32,7 @@ pub mod navigation;
 pub mod notes;
 pub mod planning;
 pub mod project_workspace;
+pub mod projection_layout;
 pub mod projection_window;
 pub mod workspace_resources;
 pub mod resource_cleanup;

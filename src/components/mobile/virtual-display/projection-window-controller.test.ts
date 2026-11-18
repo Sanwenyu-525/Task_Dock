@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../lib/bridge", () => ({
   vdFocus: vi.fn(async () => ({ found: true, focused: true })),
-  vdNav: vi.fn(async () => ({ action: "home", display_id: 17 })),
+  vdProjectionDispatch: vi.fn(async () => ({ action: "home", display_id: 17 })),
   vdScreenshot: vi.fn(async () => ({
     path: "C:\\tmp\\shot.png",
     width: 1080,
@@ -30,7 +30,7 @@ vi.mock("../../../lib/bridge", () => ({
 
 import {
   vdFocus,
-  vdNav,
+  vdProjectionDispatch,
   vdToolbarAttach,
   vdToolbarDestroy,
 } from "../../../lib/bridge";
@@ -42,7 +42,7 @@ import {
 
 const attachMock = vi.mocked(vdToolbarAttach);
 const destroyMock = vi.mocked(vdToolbarDestroy);
-const navMock = vi.mocked(vdNav);
+const navMock = vi.mocked(vdProjectionDispatch);
 const focusMock = vi.mocked(vdFocus);
 
 beforeEach(() => {

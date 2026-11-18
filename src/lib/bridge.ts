@@ -5734,15 +5734,31 @@ export const vdReconnect = (serial: string) =>
 
 export type ProjectionWindowMode = "normal" | "maximized" | "fullscreen";
 
+/** 一体化布局模式（后端 calculate_projection_layout 的判定结果）。 */
+export type ProjectionLayoutMode = "side" | "bottom" | "compact";
+
 /** 控制栏导航动作（与后端 vd_nav 的白名单一致）。 */
 export type ProjectionNavigationAction = "back" | "home" | "recents";
 
-/** 后端 `vd-toolbar-state` 事件载荷。 */
+/** 后端 `vd-toolbar-state` 事件载荷（一体化布局口径）。 */
 export interface ProjectionToolbarState {
-  mode: ProjectionWindowMode;
-  locked: boolean;
-  expanded: boolean;
-  visible: boolean;
+  /** 窗口形态：normal / maximized / fullscreen。 */
+  window_mode: ProjectionWindowMode;
+  /** 布局模式：side（视频+右导航列）/ bottom（视频+底部条）/ compact（导航悬浮）。 */
+  layout_mode: ProjectionLayoutMode;
+  /** 当前显示器 DPI scale（96 → 1.0）。 */
+  dpi_scale: number;
+  session_id: string;
+}
+
+/** 投屏窗口品牌身份回读报告（vd_projection_identity）。 */
+export interface ProjectionIdentityReport {
+  title: string;
+  title_matches: boolean;
+  icon_small_set: boolean;
+  icon_big_set: boolean;
+  aumid: string | null;
+  aumid_matches: boolean;
 }
 
 /** 控制栏截图完成事件（复用主窗口截图预览）。 */
@@ -5780,6 +5796,21 @@ export const vdToolbarSetExpanded = (sessionId: string, expanded: boolean) =>
 /** 复用 vd_screenshot 的 Android 投屏截图链路，并广播给主窗口预览。 */
 export const vdToolbarScreenshot = (sessionId: string) =>
   invoke<VdScreenshot>("vd_toolbar_screenshot", { sessionId });
+
+/**
+ * 导航动作统一派发（一体化架构入口）：后端先做 Session 归属与有效性校验
+ * （会话运行中 + 控制栏已挂载），再复用 vd_nav 发送 Android 导航键。
+ * 比直连 vd_nav 多一层多会话隔离与挂载状态防线。
+ */
+export const vdProjectionDispatch = (sessionId: string, action: ProjectionNavigationAction) =>
+  invoke<{ action: string; display_id: number }>("vd_projection_dispatch", {
+    sessionId,
+    action,
+  });
+
+/** 回读投屏窗口品牌身份（标题/WM_SETICON 大小图标/AUMID），供验收与诊断。 */
+export const vdProjectionIdentity = (sessionId: string) =>
+  invoke<ProjectionIdentityReport>("vd_projection_identity", { sessionId });
 
 
 

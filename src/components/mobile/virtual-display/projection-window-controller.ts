@@ -9,14 +9,12 @@
 
 import {
   vdFocus,
-  vdNav,
+  vdProjectionDispatch,
   vdStop,
   vdToolbarAttach,
   vdToolbarDestroy,
   vdToolbarDetach,
   vdToolbarScreenshot,
-  vdToolbarSetExpanded,
-  vdToolbarSetLocked,
   vdToolbarUpdate,
   type ProjectionNavigationAction,
   type VdScreenshot,
@@ -32,8 +30,6 @@ export interface ProjectionWindowController {
   screenshot(sessionId: string): Promise<VdScreenshot>;
   close(sessionId: string): Promise<void>;
   restoreFocus(sessionId: string): Promise<void>;
-  setLocked(sessionId: string, locked: boolean): Promise<void>;
-  setExpanded(sessionId: string, expanded: boolean): Promise<void>;
 }
 
 class NativeProjectionWindowController implements ProjectionWindowController {
@@ -96,7 +92,8 @@ class NativeProjectionWindowController implements ProjectionWindowController {
     sessionId: string,
     action: ProjectionNavigationAction,
   ): Promise<number> {
-    const result = await vdNav(sessionId, action);
+    // 一体化架构统一入口：后端先做 Session 归属/挂载校验，再复用 vd_nav。
+    const result = await vdProjectionDispatch(sessionId, action);
     // 控制栏不抢焦点：动作完成后把键盘焦点还给手机画面。
     await this.restoreFocus(sessionId);
     return result.display_id;
@@ -119,22 +116,6 @@ class NativeProjectionWindowController implements ProjectionWindowController {
       await vdFocus(sessionId);
     } catch {
       // 系统可能因前台锁拒绝切换；不把焦点恢复失败当成动作失败。
-    }
-  }
-
-  async setLocked(sessionId: string, locked: boolean): Promise<void> {
-    try {
-      await vdToolbarSetLocked(sessionId, locked);
-    } catch {
-      // 控制栏已销毁时忽略。
-    }
-  }
-
-  async setExpanded(sessionId: string, expanded: boolean): Promise<void> {
-    try {
-      await vdToolbarSetExpanded(sessionId, expanded);
-    } catch {
-      // 同上。
     }
   }
 }

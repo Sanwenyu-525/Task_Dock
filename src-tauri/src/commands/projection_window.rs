@@ -7,13 +7,14 @@
 //! - 返回/Home/最近任务继续复用 `vd_nav`（本模块只把工具栏点击转成 sessionId + action）；
 //! - 截图继续复用 `vd_screenshot` 的 Android 投屏链路，不截 HWND（避免黑屏/遮挡画面）。
 //!
-//! 控制栏本身是独立轻量 WebView 窗口（`toolbar.html`），由本模块创建、定位与销毁：
-//! 普通窗口贴在 scrcpy 窗口外侧，最大化/全屏时进入窗口内部；全屏默认隐藏，
-//! 鼠标靠近屏幕底部触发显示。窗口带 `WS_EX_TOOLWINDOW`（不进 Alt+Tab/任务栏）
-//! 且不可聚焦（不抢 scrcpy 键盘焦点）。所有绑定以 **session_id** 为键，
-//! 不使用 active_device / 全局最近会话，因此多 Session 不会串台。
-//!
-//! 几何计算（外置优先级、DPI 缩放、任务栏安全区）都是纯函数，见本文件测试。
+//! 一体化架构（方案 A，真机 PoC 验证）：控制栏 WebView（`toolbar.html`）在
+//! attach 阶段转为 scrcpy 窗口的 `WS_CHILD`（跨进程 SetParent），与视频画面共享
+//! 同一个顶层窗口的层级、遮挡、最小化与生命周期——**不再存在独立的置顶顶层
+//! 导航窗口**。布局（Side/Bottom/Compact）由 `projection_layout.rs` 纯函数计算，
+//! watcher 周期应用；窗口吸附（Side 扩宽 / Bottom 增高）与子窗口定位都有去抖。
+//! 所有绑定以 **session_id** 为键，不使用 active_device / 全局最近会话，
+//! 因此多 Session 不会串台；`vd_projection_dispatch` 统一做会话归属校验后
+//! 复用 `vd_nav`，导航能力限制（虚拟屏最近任务拒绝）保持不变。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,26 +26,19 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::virtual_display::{process, VdSession};
 use crate::error::{AppError, AppResult};
+use super::projection_layout::{
+    bottom_client_height, calculate_projection_layout, dpi_scale, should_use_bottom_layout,
+    should_use_side_layout, side_client_width, LayoutSize, ProjectionLayoutCapabilities,
+    ProjectionLayoutConstraints, ProjectionLayoutMode,
+};
 
-/// 后端 → 控制栏窗口：模式/锁定/展开状态变化。
+/// 后端 → 控制栏窗口：窗口形态与一体化布局模式变化。
 pub const TOOLBAR_STATE_EVENT: &str = "vd-toolbar-state";
 /// 控制栏截图完成 → 主窗口（用于复用现有截图预览）。
 pub const SCREENSHOT_EVENT: &str = "vd-screenshot-captured";
 
 /// 稳定产品级 AUMID：**不得**把 session_id 当 AUMID（会话是短生命周期的）。
 pub const PROJECTION_AUMID: &str = "TaskDock.Projection";
-/// 控制栏与 scrcpy 窗口的外置间距（逻辑像素）。
-pub const TOOLBAR_GAP_LOGICAL: f64 = 8.0;
-/// 普通窗口控制栏逻辑尺寸（竖向）。
-pub const TOOLBAR_VERTICAL_LOGICAL: (f64, f64) = (56.0, 300.0);
-/// 竖向展开（更多面板）额外宽度（逻辑像素）。
-pub const TOOLBAR_VERTICAL_EXTRA: f64 = 208.0;
-/// 最大化/全屏控制栏逻辑尺寸（横向）。
-pub const TOOLBAR_HORIZONTAL_LOGICAL: (f64, f64) = (300.0, 56.0);
-/// 横向展开（更多面板）额外高度（逻辑像素）。
-pub const TOOLBAR_HORIZONTAL_EXTRA: f64 = 132.0;
-/// 全屏底部触发带（逻辑像素）。
-pub const FULLSCREEN_TRIGGER_LOGICAL: f64 = 28.0;
 /// 全屏鼠标离开后的延迟隐藏时间。
 pub const FULLSCREEN_HIDE_DELAY: Duration = Duration::from_millis(1200);
 /// 等待 scrcpy 窗口出现的上限（略高于 SessionManager 的 25s 启动超时）。
@@ -113,38 +107,6 @@ impl WindowRect {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Size {
-    pub width: i32,
-    pub height: i32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ToolbarRect {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-}
-
-impl ToolbarRect {
-    fn contains(&self, point: (i32, i32)) -> bool {
-        point.0 >= self.x
-            && point.0 < self.x + self.width
-            && point.1 >= self.y
-            && point.1 < self.y + self.height
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolbarPlacement {
-    Right,
-    Left,
-    Bottom,
-    Top,
-    Inside,
-}
-
 /// 窗口所在显示器的快照（物理像素）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorInfo {
@@ -203,198 +165,6 @@ impl From<ProjectionWindowError> for AppError {
     }
 }
 
-// ── 纯几何计算（可单测）────────────────────────────────────
-
-/// DPI → 物理像素尺寸（逻辑尺寸 × 缩放，四舍五入）。
-pub fn scale_toolbar_size(logical: (f64, f64), dpi: u32) -> Size {
-    let scale = if dpi == 0 { 1.0 } else { dpi as f64 / 96.0 };
-    Size {
-        width: (logical.0 * scale).round().max(1.0) as i32,
-        height: (logical.1 * scale).round().max(1.0) as i32,
-    }
-}
-
-/// 控制栏逻辑尺寸（普通窗口竖向，最大化/全屏横向）。
-pub fn toolbar_logical_size(mode: ProjectionWindowMode) -> (f64, f64) {
-    match mode {
-        ProjectionWindowMode::Normal => TOOLBAR_VERTICAL_LOGICAL,
-        _ => TOOLBAR_HORIZONTAL_LOGICAL,
-    }
-}
-
-fn clamp(value: i32, min: i32, max: i32) -> i32 {
-    if max < min {
-        return min;
-    }
-    value.clamp(min, max)
-}
-
-/// 外置控制栏位置：右侧 → 左侧 → 下方 → 上方 → 窗口内部。
-///
-/// `work` 必须是显示器**工作区**（已排除任务栏）；所有结果都收敛在工作区里。
-pub fn calculate_external_toolbar_placement(
-    window: WindowRect,
-    work: WindowRect,
-    toolbar: Size,
-    gap: i32,
-) -> (ToolbarRect, ToolbarPlacement) {
-    let gap = gap.max(0);
-    let max_x = work.right - toolbar.width;
-    let max_y = work.bottom - toolbar.height;
-
-    // 右侧：与窗口垂直居中。
-    let right_x = window.right + gap;
-    if right_x <= max_x {
-        let y = window.top + (window.height - toolbar.height) / 2;
-        return (
-            ToolbarRect {
-                x: clamp(right_x, work.left, max_x),
-                y: clamp(y, work.top, max_y),
-                width: toolbar.width,
-                height: toolbar.height,
-            },
-            ToolbarPlacement::Right,
-        );
-    }
-
-    // 左侧。
-    let left_x = window.left - gap - toolbar.width;
-    if left_x >= work.left {
-        let y = window.top + (window.height - toolbar.height) / 2;
-        return (
-            ToolbarRect {
-                x: clamp(left_x, work.left, max_x),
-                y: clamp(y, work.top, max_y),
-                width: toolbar.width,
-                height: toolbar.height,
-            },
-            ToolbarPlacement::Left,
-        );
-    }
-
-    // 下方：与窗口水平居中。
-    let bottom_y = window.bottom + gap;
-    if bottom_y <= max_y {
-        let x = window.left + (window.width - toolbar.width) / 2;
-        return (
-            ToolbarRect {
-                x: clamp(x, work.left, max_x),
-                y: clamp(bottom_y, work.top, max_y),
-                width: toolbar.width,
-                height: toolbar.height,
-            },
-            ToolbarPlacement::Bottom,
-        );
-    }
-
-    // 上方。
-    let top_y = window.top - gap - toolbar.height;
-    if top_y >= work.top {
-        let x = window.left + (window.width - toolbar.width) / 2;
-        return (
-            ToolbarRect {
-                x: clamp(x, work.left, max_x),
-                y: clamp(top_y, work.top, max_y),
-                width: toolbar.width,
-                height: toolbar.height,
-            },
-            ToolbarPlacement::Top,
-        );
-    }
-
-    (
-        calculate_inside_toolbar_rect(window, work, toolbar, gap),
-        ToolbarPlacement::Inside,
-    )
-}
-
-/// 窗口内部的控制栏位置：底部居中，并收敛在工作区里。
-pub fn calculate_inside_toolbar_rect(
-    window: WindowRect,
-    work: WindowRect,
-    toolbar: Size,
-    margin: i32,
-) -> ToolbarRect {
-    let margin = margin.max(0);
-    let max_x = work.right - toolbar.width;
-    let max_y = work.bottom - toolbar.height;
-    let x = window.left + (window.width - toolbar.width) / 2;
-    let y = window.bottom - toolbar.height - margin;
-    ToolbarRect {
-        x: clamp(x, work.left, max_x),
-        y: clamp(y, work.top, max_y),
-        width: toolbar.width,
-        height: toolbar.height,
-    }
-}
-
-/// 展开「更多」面板时的窗口矩形：竖向向左扩、横向向上扩，保持控制栏本身不动。
-pub fn expand_toolbar_rect(
-    bar: ToolbarRect,
-    mode: ProjectionWindowMode,
-    dpi: u32,
-    work: WindowRect,
-) -> ToolbarRect {
-    let scale = if dpi == 0 { 1.0 } else { dpi as f64 / 96.0 };
-    match mode {
-        ProjectionWindowMode::Normal => {
-            let extra = (TOOLBAR_VERTICAL_EXTRA * scale).round() as i32;
-            let width = bar.width + extra;
-            let x = clamp(bar.x - extra, work.left, work.right - width);
-            ToolbarRect {
-                x,
-                y: bar.y,
-                width,
-                height: bar.height,
-            }
-        }
-        _ => {
-            let extra = (TOOLBAR_HORIZONTAL_EXTRA * scale).round() as i32;
-            let height = bar.height + extra;
-            let y = clamp(bar.y - extra, work.top, work.bottom - height);
-            ToolbarRect {
-                x: bar.x,
-                y,
-                width: bar.width,
-                height,
-            }
-        }
-    }
-}
-
-/// 全屏底部触发带：鼠标进入屏幕底部 `trigger_px` 即显示控制栏。
-pub fn fullscreen_trigger_hit(
-    monitor: WindowRect,
-    cursor: Option<(i32, i32)>,
-    trigger_px: i32,
-) -> bool {
-    let Some((x, y)) = cursor else {
-        return false;
-    };
-    x >= monitor.left
-        && x < monitor.right
-        && y >= monitor.bottom - trigger_px.max(1)
-        && y < monitor.bottom
-}
-
-/// 全屏控制栏可见性状态机（纯函数）：锁定/悬停/触发带 → 显示；
-/// 否则在延迟到期后隐藏。返回 (是否可见, 新的隐藏截止时间)。
-pub fn fullscreen_visibility_tick(
-    locked: bool,
-    cursor_in_toolbar: bool,
-    cursor_in_trigger: bool,
-    now: Instant,
-    hide_deadline: Option<Instant>,
-) -> (bool, Option<Instant>) {
-    if locked || cursor_in_toolbar || cursor_in_trigger {
-        return (true, Some(now + FULLSCREEN_HIDE_DELAY));
-    }
-    match hide_deadline {
-        Some(deadline) if now < deadline => (true, hide_deadline),
-        _ => (false, None),
-    }
-}
-
 /// 统一窗口标题：不出现 "Task Dock"、serial、PID、IP 或 session id。
 pub fn build_projection_window_title(
     device_name: &str,
@@ -421,9 +191,38 @@ struct BindingState {
     binding: ProjectionWindowBinding,
     watcher_stop: Option<Arc<AtomicBool>>,
     expanded: bool,
+    /// 挂载时捕获的视频真实尺寸（物理 px，取自 scrcpy 初始 ClientRect 纵横比）。
+    video_size: Option<(f64, f64)>,
+    /// 控制栏是否已挂载为 scrcpy 子窗口。
+    attached: bool,
+    /// 最近一次下发给前端的布局模式。
+    layout_mode: Option<&'static str>,
+    /// 布局去抖缓存：只在外框/子矩形真正变化时才发 Win32 调用。
+    layout_cache: LayoutCache,
 }
 
-/// Session → scrcpy HWND / Toolbar HWND 的唯一映射。
+/// 布局循环的去抖状态（物理 px）。
+#[derive(Default, Clone, Copy)]
+struct LayoutCache {
+    /// 最近观察到的 scrcpy 外框尺寸。
+    last_outer: (i32, i32),
+    /// 我们最近一次主动吸附的目标外框（用于区分「自己改的」与「scrcpy 旋转自适配」）。
+    expected_outer: Option<(i32, i32)>,
+    /// 最近应用到导航子窗口的矩形。
+    last_child: Option<(i32, i32, i32, i32)>,
+}
+
+impl LayoutCache {
+    fn outer_changed(&mut self, outer: (i32, i32)) -> bool {
+        if self.last_outer == outer {
+            return false;
+        }
+        self.last_outer = outer;
+        true
+    }
+}
+
+/// Session → scrcpy HWND / 导航子窗口 HWND 的唯一映射。
 ///
 /// Key 必须是 session_id：不能用 device_name / active_device / last_session，
 /// 否则两个投屏窗口会串台。
@@ -467,6 +266,10 @@ impl ProjectionWindowRegistry {
                 },
                 watcher_stop: None,
                 expanded: false,
+                video_size: None,
+                attached: false,
+                layout_mode: None,
+                layout_cache: LayoutCache::default(),
             },
         );
         Ok(())
@@ -476,14 +279,18 @@ impl ProjectionWindowRegistry {
     #[cfg(test)]
     pub(crate) fn insert_binding(&self, binding: ProjectionWindowBinding) {
         let mut map = self.map.lock().expect("projection registry");
-        map.insert(
-            binding.session_id.clone(),
-            BindingState {
-                binding,
-                watcher_stop: None,
-                expanded: false,
-            },
-        );
+            map.insert(
+                binding.session_id.clone(),
+                BindingState {
+                    binding,
+                    watcher_stop: None,
+                    expanded: false,
+                    video_size: None,
+                    attached: false,
+                    layout_mode: None,
+                    layout_cache: LayoutCache::default(),
+                },
+            );
     }
 
     pub fn get(&self, session_id: &str) -> Option<ProjectionWindowBinding> {
@@ -649,6 +456,97 @@ impl ProjectionWindowRegistry {
             .cloned()
             .collect()
     }
+
+    // ── 一体化布局状态 ────────────────────────────────────────
+
+    pub fn set_video_size(&self, session_id: &str, size: (f64, f64)) {
+        if let Some(state) = self
+            .map
+            .lock()
+            .expect("projection registry")
+            .get_mut(session_id)
+        {
+            state.video_size = Some(size);
+        }
+    }
+
+    pub fn video_size(&self, session_id: &str) -> Option<(f64, f64)> {
+        self.map
+            .lock()
+            .expect("projection registry")
+            .get(session_id)
+            .and_then(|state| state.video_size)
+    }
+
+    pub fn set_attached(&self, session_id: &str, attached: bool) {
+        if let Some(state) = self
+            .map
+            .lock()
+            .expect("projection registry")
+            .get_mut(session_id)
+        {
+            state.attached = attached;
+        }
+    }
+
+    pub fn is_attached(&self, session_id: &str) -> bool {
+        self.map
+            .lock()
+            .expect("projection registry")
+            .get(session_id)
+            .map(|state| state.attached)
+            .unwrap_or(false)
+    }
+
+    pub fn set_layout_mode(&self, session_id: &str, mode: &'static str) {
+        if let Some(state) = self
+            .map
+            .lock()
+            .expect("projection registry")
+            .get_mut(session_id)
+        {
+            state.layout_mode = Some(mode);
+        }
+    }
+
+    pub fn layout_mode(&self, session_id: &str) -> Option<&'static str> {
+        self.map
+            .lock()
+            .expect("projection registry")
+            .get(session_id)
+            .and_then(|state| state.layout_mode)
+    }
+
+    /// 按窗口句柄反查 session_id（HWND → Session，用于窗口级动作归属校验）。
+    pub fn resolve_session_by_hwnd(&self, hwnd: isize) -> Option<String> {
+        let map = self.map.lock().expect("projection registry");
+        map.iter()
+            .find(|(_, state)| {
+                state.binding.scrcpy_hwnd == hwnd || state.binding.toolbar_hwnd == hwnd
+            })
+            .map(|(id, _)| id.clone())
+    }
+
+    /// 读取布局去抖缓存（拷贝语义，避免在锁内做 Win32 调用）。
+    pub fn layout_cache(&self, session_id: &str) -> LayoutCache {
+        self.map
+            .lock()
+            .expect("projection registry")
+            .get(session_id)
+            .map(|state| state.layout_cache)
+            .unwrap_or_default()
+    }
+
+    pub fn set_layout_cache(&self, session_id: &str, cache: LayoutCache) {
+        if let Some(state) = self
+            .map
+            .lock()
+            .expect("projection registry")
+            .get_mut(session_id)
+        {
+            state.layout_cache = cache;
+        }
+    }
 }
 
 fn registry() -> &'static ProjectionWindowRegistry {
@@ -755,7 +653,7 @@ fn attach_worker(app: AppHandle, session_id: String) {
 
     // 品牌化：标题、图标与 AUMID。失败只降低品牌完整度，不阻断投屏。
     if let Ok(session) = process::manager().session(&session_id) {
-        if let Err(error) = apply_taskdock_window_identity(hwnd, &session) {
+        if let Err(error) = apply_projection_window_identity(hwnd, &session) {
             tracing::warn!(session = %short_id(&session_id), "投屏窗口品牌化失败: {error}");
             process::manager().append_warning(
                 &session_id,
@@ -773,6 +671,33 @@ fn attach_worker(app: AppHandle, session_id: String) {
         }
     };
     registry().set_toolbar_hwnd(&session_id, toolbar_hwnd);
+
+    // 一体化第一步：捕获视频真实尺寸。此刻 scrcpy 窗口还未被我们扩展，
+    // ClientRect 纵横比 == 视频纵横比（scrcpy 初始把窗口精确适配到视频）。
+    let Some((client_w, client_h)) = win::client_size(hwnd) else {
+        close_toolbar_window(&session_id);
+        mark_toolbar_unavailable(&session_id, "无法读取投屏窗口客户区，控制栏未创建");
+        return;
+    };
+    registry().set_video_size(&session_id, (client_w as f64, client_h as f64));
+
+    // 一体化第二步：控制栏挂载为 scrcpy 子窗口（WS_CHILD + SetParent）。
+    // 从此控制栏与视频共享同一个顶层窗口的层级/遮挡/最小化/生命周期。
+    if let Err(error) = win::attach_as_child(toolbar_hwnd, hwnd) {
+        close_toolbar_window(&session_id);
+        mark_toolbar_unavailable(&session_id, &error.to_string());
+        return;
+    }
+    registry().set_attached(&session_id, true);
+
+    // 一体化第三步：首次布局（扩展窗口宽度给导航列 + 定位子窗口 + 显示）。
+    if let Err(error) = update_projection_layout(&session_id) {
+        registry().set_attached(&session_id, false);
+        win::detach_child(toolbar_hwnd);
+        close_toolbar_window(&session_id);
+        mark_toolbar_unavailable(&session_id, &error.to_string());
+        return;
+    }
     start_projection_window_watcher(&session_id);
     process::manager().set_toolbar_state(&session_id, "ready");
 
@@ -834,11 +759,17 @@ fn create_toolbar_on_main(
                 tauri::WebviewUrl::App(toolbar_url().into()),
             )
             .title("TaskDock · 投屏控制栏")
-            .inner_size(TOOLBAR_VERTICAL_LOGICAL.0, TOOLBAR_VERTICAL_LOGICAL.1)
+            // 初始尺寸 = 导航列 + Tooltip 溢出区（挂载后由布局精确设定）。
+            .inner_size(
+                super::projection_layout::NAV_COLUMN_LOGICAL
+                    + super::projection_layout::TOOLTIP_PAD_LOGICAL,
+                320.0,
+            )
             .decorations(false)
             .transparent(true)
             .shadow(false)
-            .always_on_top(true)
+            // 一体化架构：控制栏是 scrcpy 窗口的 WS_CHILD，**禁止**独立置顶
+            // （HWND_TOPMOST 会让导航栏在其他窗口遮挡投屏时仍然浮在上面 = P0#2）。
             .skip_taskbar(true)
             .resizable(false)
             .maximizable(false)
@@ -926,16 +857,19 @@ pub fn restore_projection_focus(session_id: &str) -> Result<(), String> {
         .map_err(|error| error.user_message())
 }
 
-/// `vd_stop` 的统一收尾：先停 scrcpy，再停 watcher / 销毁控制栏。
+/// `vd_stop` 的统一收尾：**先销毁控制栏子窗口，再停 scrcpy**。
+///
+/// 顺序不能反：控制栏已挂载为 scrcpy 窗口的 `WS_CHILD`，父窗口销毁时系统会
+/// 连带销毁跨进程子窗口——必须先在自己手里 destroy 子窗口，再让 scrcpy 退出。
 pub fn close_projection_session(session_id: &str) -> AppResult<bool> {
-    let stopped = process::manager().stop(session_id)?;
     destroy_toolbar(session_id);
+    let stopped = process::manager().stop(session_id)?;
     Ok(stopped)
 }
 
 // ── 窗口 watcher ───────────────────────────────────────────
 
-/// 建立（或重建）本 Session 的控制栏跟随线程。只监听一个会话，状态不变不写窗口。
+/// 建立（或重建）本 Session 的布局跟随线程。只监听一个会话，状态不变不写窗口。
 pub fn start_projection_window_watcher(session_id: &str) {
     let stop = Arc::new(AtomicBool::new(false));
     if let Some(previous) = registry().replace_watcher_stop(session_id, Arc::clone(&stop)) {
@@ -944,21 +878,17 @@ pub fn start_projection_window_watcher(session_id: &str) {
     let id = session_id.to_string();
     let spawned = std::thread::Builder::new()
         .name(format!("vd-toolbar-watch-{}", short_id(session_id)))
-        .spawn(move || watcher_loop(id, stop));
+        .spawn(move || projection_layout_loop(id, stop));
     if spawned.is_err() {
         registry().clear_watcher(session_id);
-        mark_toolbar_unavailable(session_id, "控制栏跟随线程创建失败");
+        mark_toolbar_unavailable(session_id, "投屏布局跟随线程创建失败");
     }
 }
 
-fn watcher_loop(session_id: String, stop: Arc<AtomicBool>) {
-    let mut last_rect: Option<ToolbarRect> = None;
-    let mut last_visible = false;
-    let mut last_mode: Option<ProjectionWindowMode> = None;
-    let mut last_locked = false;
-    let mut last_expanded = false;
-    let mut hide_deadline: Option<Instant> = None;
-
+/// 布局循环：一体化架构下控制栏是 scrcpy 的子窗口，循环只负责
+/// 「视频尺寸跟踪 → 模式判定 → 窗口吸附 → 子窗口定位 → 模式广播」。
+/// 不再存在独立顶层窗口的置顶/外置定位/全屏自动隐藏逻辑。
+fn projection_layout_loop(session_id: String, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::Relaxed) {
         let Some(binding) = registry().get(&session_id) else {
             break;
@@ -969,21 +899,15 @@ fn watcher_loop(session_id: String, stop: Arc<AtomicBool>) {
         if !matches!(session.status.as_str(), "starting" | "running" | "stopping") {
             break;
         }
-        if binding.toolbar_hwnd == 0 {
+        if binding.toolbar_hwnd == 0 || !registry().is_attached(&session_id) {
             std::thread::sleep(Duration::from_millis(200));
             continue;
         }
 
-        let hwnd = binding.toolbar_hwnd;
         if !win::is_valid_window(binding.scrcpy_hwnd)
             || !win::window_belongs_to(binding.scrcpy_hwnd, session.pid)
         {
-            // scrcpy 窗口消失（关闭/重建）：先藏控制栏，并尝试按 PID 重新定位一次。
-            if last_visible {
-                win::set_visible(hwnd, false);
-                last_visible = false;
-                last_rect = None;
-            }
+            // scrcpy 窗口消失（关闭/重建）：按 PID 重新定位一次。
             if let Ok(found) = find_scrcpy_window(&session_id) {
                 registry().set_scrcpy_hwnd(&session_id, found);
             }
@@ -991,119 +915,273 @@ fn watcher_loop(session_id: String, stop: Arc<AtomicBool>) {
             continue;
         }
 
-        let Some(window_rect) = win::window_rect(binding.scrcpy_hwnd) else {
-            std::thread::sleep(WATCH_INTERVAL);
-            continue;
-        };
-        if win::is_minimized(binding.scrcpy_hwnd) {
-            if last_visible {
-                win::set_visible(hwnd, false);
-                last_visible = false;
+        // 视频尺寸跟踪：窗口外框变化且不是我们主动吸附的 → scrcpy 旋转自适配，
+        // 此刻 ClientRect == 视频纵横比，重新捕获（最大化状态除外，见 update 内说明）。
+        let mut cache = registry().layout_cache(&session_id);
+        if let Some(outer) = win::window_rect(binding.scrcpy_hwnd) {
+            let outer_size = (outer.width, outer.height);
+            if cache.outer_changed(outer_size) {
+                let ours = cache.expected_outer == Some(outer_size);
+                if !ours && !win::is_zoomed(binding.scrcpy_hwnd) {
+                    if let Some((cw, ch)) = win::client_size(binding.scrcpy_hwnd) {
+                        registry().set_video_size(&session_id, (cw as f64, ch as f64));
+                    }
+                }
             }
-            std::thread::sleep(Duration::from_millis(300));
-            continue;
         }
-        let Some(monitor) = win::window_monitor(binding.scrcpy_hwnd) else {
-            std::thread::sleep(WATCH_INTERVAL);
-            continue;
-        };
+        registry().set_layout_cache(&session_id, cache);
 
-        let mode = win::detect_mode(binding.scrcpy_hwnd, &window_rect, &monitor.monitor);
-        let locked = registry().locked(&session_id).unwrap_or(false);
-        let expanded = registry().expanded(&session_id).unwrap_or(false);
-        let scale = if monitor.dpi == 0 {
-            1.0
-        } else {
-            monitor.dpi as f64 / 96.0
-        };
-        let gap = (TOOLBAR_GAP_LOGICAL * scale).round() as i32;
-        let work = if mode == ProjectionWindowMode::Fullscreen {
-            // 全屏覆盖任务栏：以显示器完整区域为准。
-            monitor.monitor
-        } else {
-            monitor.work
-        };
-        let size = scale_toolbar_size(toolbar_logical_size(mode), monitor.dpi);
-        let (target_bar, _placement) = match mode {
-            ProjectionWindowMode::Normal => {
-                calculate_external_toolbar_placement(window_rect, work, size, gap)
-            }
-            _ => (
-                calculate_inside_toolbar_rect(window_rect, work, size, gap.max(8)),
-                ToolbarPlacement::Inside,
-            ),
-        };
-        let target = if expanded {
-            expand_toolbar_rect(target_bar, mode, monitor.dpi, work)
-        } else {
-            target_bar
-        };
-
-        let cursor = win::cursor_pos();
-        let visible = match mode {
-            ProjectionWindowMode::Normal | ProjectionWindowMode::Maximized => true,
-            ProjectionWindowMode::Fullscreen => {
-                let trigger = (FULLSCREEN_TRIGGER_LOGICAL * scale).round() as i32;
-                let hit = fullscreen_trigger_hit(monitor.monitor, cursor, trigger);
-                let over = cursor.map(|point| target.contains(point)).unwrap_or(false);
-                let (visible, next_deadline) = fullscreen_visibility_tick(
-                    locked,
-                    over,
-                    hit,
-                    Instant::now(),
-                    hide_deadline,
-                );
-                hide_deadline = next_deadline;
-                visible
-            }
-        };
-
-        if last_rect != Some(target) {
-            win::set_rect(hwnd, target);
-            last_rect = Some(target);
-        }
-        if visible != last_visible {
-            win::set_visible(hwnd, visible);
-            last_visible = visible;
-        }
-
-        if last_mode != Some(mode) || last_locked != locked || last_expanded != expanded {
-            registry().update_mode(&session_id, mode);
-            registry().set_monitor(&session_id, &monitor);
-            if let Some(app) = app_handle() {
-                let payload = ToolbarStatePayload {
-                    mode: mode.as_str().to_string(),
-                    locked,
-                    expanded,
-                    visible,
-                };
-                let _ = app.emit_to(
-                    toolbar_label(&session_id),
-                    TOOLBAR_STATE_EVENT,
-                    payload,
-                );
-            }
-            last_mode = Some(mode);
-            last_locked = locked;
-            last_expanded = expanded;
-        }
+        // 最小化时子窗口随父窗口一起隐藏，无需任何动作。
+        let _ = update_projection_layout(&session_id);
 
         std::thread::sleep(WATCH_INTERVAL);
     }
+}
 
-    if let Some(binding) = registry().get(&session_id) {
-        if binding.toolbar_hwnd != 0 {
-            win::set_visible(binding.toolbar_hwnd, false);
+/// 布局一轮：模式判定 → 窗口吸附（Side 扩宽 / Bottom 增高）→ 定位导航子窗口
+/// → 模式变化广播。attach 后首轮调用 + watcher 周期调用；只做有界 Win32 写。
+pub fn update_projection_layout(
+    session_id: &str,
+) -> Result<(), ProjectionWindowError> {
+    let Some(binding) = registry().get(session_id) else {
+        return Err(ProjectionWindowError::InvalidWindow("会话未绑定窗口".into()));
+    };
+    if !registry().is_attached(session_id) || binding.toolbar_hwnd == 0 {
+        return Ok(());
+    }
+    let Ok(session) = process::manager().session(session_id) else {
+        return Err(ProjectionWindowError::InvalidWindow("会话不存在".into()));
+    };
+    if !win::is_valid_window(binding.scrcpy_hwnd)
+        || !win::window_belongs_to(binding.scrcpy_hwnd, session.pid)
+    {
+        return Err(ProjectionWindowError::InvalidWindow("scrcpy 窗口已失效".into()));
+    }
+    let Some((client_w, client_h)) = win::client_size(binding.scrcpy_hwnd) else {
+        return Err(ProjectionWindowError::InvalidWindow("无法读取客户区".into()));
+    };
+    let Some(video_size) = registry().video_size(session_id) else {
+        return Err(ProjectionWindowError::InvalidWindow("视频尺寸未捕获".into()));
+    };
+    let Some(monitor) = win::window_monitor(binding.scrcpy_hwnd) else {
+        return Err(ProjectionWindowError::InvalidWindow("无法读取显示器".into()));
+    };
+    let Some(outer) = win::window_rect(binding.scrcpy_hwnd) else {
+        return Err(ProjectionWindowError::InvalidWindow("无法读取外框".into()));
+    };
+
+    let video = LayoutSize { w: video_size.0, h: video_size.1 };
+    let client = LayoutSize {
+        w: client_w as f64,
+        h: client_h as f64,
+    };
+    let dpi = win::window_dpi(binding.scrcpy_hwnd);
+    let zoomed = win::is_zoomed(binding.scrcpy_hwnd);
+    let window_mode = win::detect_mode(binding.scrcpy_hwnd, &outer, &monitor.monitor);
+    // 约束来源：最大化/全屏时 Windows 管理尺寸，约束取显示器；普通窗口取工作区。
+    let managed_by_os = zoomed || window_mode == ProjectionWindowMode::Fullscreen;
+    let (max_w, max_h) = if managed_by_os {
+        (
+            monitor.monitor.width as f64,
+            monitor.monitor.height as f64,
+        )
+    } else {
+        (monitor.work.width as f64, monitor.work.height as f64)
+    };
+    let constraints = ProjectionLayoutConstraints {
+        max_client_w: Some(max_w),
+        max_client_h: Some(max_h),
+    };
+    let capabilities = ProjectionLayoutCapabilities::default();
+
+    // 模式判定 + 吸附目标（纯函数，见测试）。
+    let (layout_mode, target_client) = decide_projection_update(
+        client,
+        video,
+        dpi,
+        managed_by_os,
+        Some(max_w),
+        Some(max_h),
+    );
+
+    // 窗口吸附：只在外框真正变化时调用 SetWindowPos（避免每 120ms 抖动）。
+    let frame_w = outer.width - client_w;
+    let frame_h = outer.height - client_h;
+    let target_outer = (
+        (target_client.w + frame_w as f64).round() as i32,
+        (target_client.h + frame_h as f64).round() as i32,
+    );
+    let mut cache = registry().layout_cache(session_id);
+    let mut expected_outer = cache.expected_outer;
+    if target_outer != (outer.width, outer.height) {
+        if win::set_outer_size(binding.scrcpy_hwnd, target_outer.0, target_outer.1) {
+            expected_outer = Some(target_outer);
+            cache.last_child = None; // 客户区变化后子矩形必然重算。
+        }
+    } else {
+        expected_outer = None;
+    }
+
+    // 按目标客户区计算布局并定位导航子窗口。
+    let layout = calculate_projection_layout(
+        target_client,
+        video,
+        dpi,
+        capabilities,
+        constraints,
+    );
+    let child_rect = (
+        layout.navigation_rect.x.round() as i32,
+        layout.navigation_rect.y.round() as i32,
+        layout.navigation_rect.w.round() as i32,
+        layout.navigation_rect.h.round() as i32,
+    );
+    if cache.last_child != Some(child_rect) {
+        win::set_child_rect(
+            binding.toolbar_hwnd,
+            child_rect.0,
+            child_rect.1,
+            child_rect.2,
+            child_rect.3,
+        );
+        cache.last_child = Some(child_rect);
+    }
+    cache.expected_outer = expected_outer;
+    registry().set_layout_cache(session_id, cache);
+
+    // 模式变化才广播（前端按模式切换导航条方向与玻璃样式）。
+    if registry().layout_mode(session_id) != Some(layout_mode.as_str()) {
+        registry().set_layout_mode(session_id, layout_mode.as_str());
+        registry().update_mode(
+            session_id,
+            if zoomed {
+                ProjectionWindowMode::Maximized
+            } else {
+                window_mode
+            },
+        );
+        if let Some(app) = app_handle() {
+            let payload = ToolbarStatePayload {
+                window_mode: window_mode.as_str().to_string(),
+                layout_mode: layout_mode.as_str().to_string(),
+                dpi_scale: super::projection_layout::dpi_scale(dpi),
+                session_id: session_id.to_string(),
+            };
+            let _ = app.emit_to(toolbar_label(session_id), TOOLBAR_STATE_EVENT, payload);
         }
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolbarStatePayload {
-    pub mode: String,
-    pub locked: bool,
-    pub expanded: bool,
-    pub visible: bool,
+    /// 窗口形态（normal/maximized/fullscreen）。
+    pub window_mode: String,
+    /// 一体化布局模式（side/bottom/compact）。
+    pub layout_mode: String,
+    /// 当前 DPI scale（前端逻辑尺寸换算用）。
+    pub dpi_scale: f64,
+    pub session_id: String,
+}
+
+/// 纯函数：一轮布局的模式判定 + 窗口吸附目标（与 [`update_projection_layout`] 共用）。
+///
+/// - `managed_by_os`（最大化/全屏）：不吸附，交由 Windows 决定尺寸；
+/// - Side：宽度吸附到「视频宽 + 2×导航 WebView」精确值（初次挂载/旋转后）；
+/// - Bottom：高度吸附到「视频高 + 2×底部条带」精确值；
+/// - Compact：不吸附（导航悬浮在视频右缘）。
+/// - 吸附容差 2px：避免与浮点换算互相抖动。
+pub fn decide_projection_update(
+    client: LayoutSize,
+    video: LayoutSize,
+    dpi: u32,
+    managed_by_os: bool,
+    max_client_w: Option<f64>,
+    max_client_h: Option<f64>,
+) -> (ProjectionLayoutMode, LayoutSize) {
+    if managed_by_os {
+        return (ProjectionLayoutMode::Side, client);
+    }
+    if should_use_side_layout(client, video, dpi, max_client_w) {
+        let mut target = client;
+        let needed_w = side_client_width(video, client.h, dpi);
+        if (client.w - needed_w).abs() > 2.0 {
+            target.w = needed_w;
+        }
+        (ProjectionLayoutMode::Side, target)
+    } else if should_use_bottom_layout(client, video, dpi, max_client_h) {
+        let mut target = client;
+        let needed_h = bottom_client_height(video, client.w, dpi);
+        if (client.h - needed_h).abs() > 2.0 {
+            target.h = needed_h;
+        }
+        (ProjectionLayoutMode::Bottom, target)
+    } else {
+        (ProjectionLayoutMode::Compact, client)
+    }
+}
+
+// ── 会话归属与动作派发（多会话隔离红线）─────────────────────
+
+/// HWND → Session：窗口级动作归属解析。禁止用 active_device / last_session 替代。
+pub fn resolve_projection_session(hwnd: isize) -> Option<String> {
+    registry().resolve_session_by_hwnd(hwnd)
+}
+
+/// Session 有效性校验：存在、运行中，且导航控制栏已挂载到投屏窗口。
+pub fn validate_projection_session(session_id: &str) -> AppResult<VdSession> {
+    let session = process::manager().session(session_id)?;
+    if session.status != "running" {
+        return Err(AppError::Conflict(
+            "会话尚未就绪或已结束，无法发送导航操作".into(),
+        ));
+    }
+    if !registry().is_attached(session_id) {
+        return Err(AppError::Conflict(
+            "投屏窗口未挂载导航控制栏，动作被拒绝".into(),
+        ));
+    }
+    Ok(session)
+}
+
+/// 导航动作统一派发：校验 Session → 复用 `vd_nav`（不重实现 Android 导航）。
+/// Back/Home 只作用于当前 Session 的 display；Recents 的能力限制仍在
+/// `resolve_nav_target` 里执行（虚拟屏会拒绝并解释原因）。
+pub fn dispatch_projection_action(
+    session_id: &str,
+    action: &str,
+) -> AppResult<super::virtual_display::VdNav> {
+    validate_projection_session(session_id)?;
+    super::virtual_display::vd_nav(session_id.to_string(), action.to_string())
+}
+
+/// 投屏窗口身份回读（验收/诊断）：标题 + 大小图标 + AUMID 三项核实。
+#[tauri::command]
+pub fn vd_projection_identity(session_id: String) -> AppResult<ProjectionIdentityReport> {
+    let binding = registry()
+        .get(&session_id)
+        .ok_or_else(|| AppError::NotFound("投屏会话未绑定窗口，无法校验身份".into()))?;
+    let session = process::manager().session(&session_id)?;
+    let projection_type = if session.mode == "virtual" {
+        ProjectionType::Virtual
+    } else {
+        ProjectionType::Mirror
+    };
+    let expected_title = build_projection_window_title(
+        session.device_model.as_deref().unwrap_or("Android"),
+        projection_type,
+        session.app_label.as_deref(),
+    );
+    validate_projection_window_identity(binding.scrcpy_hwnd, &expected_title).map_err(AppError::from)
+}
+
+/// 导航动作派发命令（控制栏 → 后端统一入口，替代直连 vd_nav 的旧链路）。
+#[tauri::command]
+pub fn vd_projection_dispatch(
+    session_id: String,
+    action: String,
+) -> AppResult<super::virtual_display::VdNav> {
+    dispatch_projection_action(&session_id, &action)
 }
 
 // ── 窗口查找 / 校验 / 品牌化 ───────────────────────────────
@@ -1165,10 +1243,65 @@ pub fn get_window_dpi(hwnd: isize) -> u32 {
 }
 
 /// TaskDock 品牌身份：标题 + 大小图标 + AppUserModelID。
-pub fn apply_taskdock_window_identity(
+/// 投屏窗口品牌身份回读报告（真机验收与诊断用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectionIdentityReport {
+    pub title: String,
+    pub title_matches: bool,
+    pub icon_small_set: bool,
+    pub icon_big_set: bool,
+    pub aumid: Option<String>,
+    pub aumid_matches: bool,
+}
+
+/// 设置窗口标题（统一经 [`build_projection_window_title`] 生成后调用）。
+pub fn set_projection_window_title(
+    hwnd: isize,
+    title: &str,
+) -> Result<(), ProjectionWindowError> {
+    if !win::is_valid_window(hwnd) {
+        return Err(ProjectionWindowError::InvalidWindow(
+            "窗口句柄无效，无法设置标题".into(),
+        ));
+    }
+    win::set_window_title(hwnd, title);
+    Ok(())
+}
+
+/// 设置窗口任务栏身份（稳定 AUMID：`TaskDock.Projection`，与 session_id 无关）。
+pub fn set_projection_taskbar_identity(hwnd: isize) -> Result<(), ProjectionWindowError> {
+    set_projection_app_user_model_id(hwnd, "")
+}
+
+/// 回读并校验投屏窗口身份：标题、WM_SETICON 大小图标、AUMID 三项全部核实。
+pub fn validate_projection_window_identity(
+    hwnd: isize,
+    expected_title: &str,
+) -> Result<ProjectionIdentityReport, ProjectionWindowError> {
+    if !win::is_valid_window(hwnd) {
+        return Err(ProjectionWindowError::InvalidWindow(
+            "窗口句柄无效，无法校验身份".into(),
+        ));
+    }
+    let title = win::window_title(hwnd);
+    let (small, big) = win::icon_handles(hwnd);
+    let aumid = win::read_app_user_model_id(hwnd);
+    Ok(ProjectionIdentityReport {
+        title_matches: !expected_title.is_empty() && title == expected_title,
+        icon_small_set: small != 0,
+        icon_big_set: big != 0,
+        aumid_matches: aumid.as_deref() == Some(PROJECTION_AUMID),
+        title,
+        aumid,
+    })
+}
+
+/// 应用投屏窗口品牌身份（任务八/九统一入口）：标题 → 图标 → 任务栏身份 → 回读校验。
+/// 图标/AUMID 部分失败只降级告警，不阻断投屏（标题已生效时其余失败可恢复）。
+pub fn apply_projection_window_identity(
     hwnd: isize,
     session: &VdSession,
-) -> Result<(), ProjectionWindowError> {
+) -> Result<ProjectionIdentityReport, ProjectionWindowError> {
     if !win::is_valid_window(hwnd) {
         return Err(ProjectionWindowError::InvalidWindow(
             "窗口句柄无效，无法应用品牌身份".into(),
@@ -1184,16 +1317,17 @@ pub fn apply_taskdock_window_identity(
         projection_type,
         session.app_label.as_deref(),
     );
-    win::set_window_title(hwnd, &title);
+    set_projection_window_title(hwnd, &title)?;
     let mut failures: Vec<String> = Vec::new();
     if let Err(error) = set_projection_window_icon(hwnd) {
         failures.push(format!("图标：{error}"));
     }
-    if let Err(error) = set_projection_app_user_model_id(hwnd, &session.id) {
+    if let Err(error) = set_projection_taskbar_identity(hwnd) {
         failures.push(format!("AUMID：{error}"));
     }
+    let report = validate_projection_window_identity(hwnd, &title)?;
     if failures.is_empty() {
-        Ok(())
+        Ok(report)
     } else {
         // 标题已经生效时，图标/AUMID 失败只报告，不把整个品牌化判失败。
         tracing::warn!(
@@ -1201,7 +1335,7 @@ pub fn apply_taskdock_window_identity(
             "投屏窗口品牌化部分失败: {}",
             failures.join("；")
         );
-        Ok(())
+        Ok(report)
     }
 }
 
@@ -1246,51 +1380,16 @@ pub fn vd_toolbar_detach(session_id: String) -> AppResult<bool> {
     Ok(detach_toolbar(&session_id))
 }
 
-/// 立即重新读取 HWND / 矩形 / 状态 / 显示器 / DPI，并重算控制栏位置。
+/// 立即重算一体化布局（模式判定 / 窗口吸附 / 子窗口定位 / 模式广播）。
 #[tauri::command]
 pub fn vd_toolbar_update(session_id: String) -> AppResult<bool> {
     let Some(binding) = registry().get(&session_id) else {
         return Ok(false);
     };
-    if binding.toolbar_hwnd == 0 {
+    if binding.toolbar_hwnd == 0 || !registry().is_attached(&session_id) {
         return Ok(false);
     }
-    let Ok(window_rect) = get_projection_window_rect(binding.scrcpy_hwnd) else {
-        return Ok(false);
-    };
-    let Ok(monitor) = get_window_monitor(binding.scrcpy_hwnd) else {
-        return Ok(false);
-    };
-    let mode = win::detect_mode(binding.scrcpy_hwnd, &window_rect, &monitor.monitor);
-    let scale = if monitor.dpi == 0 {
-        1.0
-    } else {
-        monitor.dpi as f64 / 96.0
-    };
-    let gap = (TOOLBAR_GAP_LOGICAL * scale).round() as i32;
-    let work = if mode == ProjectionWindowMode::Fullscreen {
-        monitor.monitor
-    } else {
-        monitor.work
-    };
-    let size = scale_toolbar_size(toolbar_logical_size(mode), monitor.dpi);
-    let (bar, _) = match mode {
-        ProjectionWindowMode::Normal => {
-            calculate_external_toolbar_placement(window_rect, work, size, gap)
-        }
-        _ => (
-            calculate_inside_toolbar_rect(window_rect, work, size, gap.max(8)),
-            ToolbarPlacement::Inside,
-        ),
-    };
-    let target = if registry().expanded(&session_id).unwrap_or(false) {
-        expand_toolbar_rect(bar, mode, monitor.dpi, work)
-    } else {
-        bar
-    };
-    win::set_rect(binding.toolbar_hwnd, target);
-    registry().update_mode(&session_id, mode);
-    registry().set_monitor(&session_id, &monitor);
+    update_projection_layout(&session_id)?;
     Ok(true)
 }
 
@@ -1339,11 +1438,9 @@ pub fn vd_toolbar_screenshot(
 
 #[cfg(windows)]
 mod win {
-    use super::{
-        MonitorInfo, ProjectionWindowError, ProjectionWindowMode, ToolbarRect, WindowRect,
-    };
+    use super::{MonitorInfo, ProjectionWindowError, ProjectionWindowMode, WindowRect};
 
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, HMONITOR, MONITORINFO, MONITORINFOEXW,
         MONITOR_DEFAULTTONEAREST,
@@ -1351,12 +1448,14 @@ mod win {
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::Shell::ExtractIconExW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateIconFromResourceEx, EnumWindows, GetCursorPos, GetWindow, GetWindowLongW,
-        GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-        IsWindowVisible, IsZoomed, SendMessageW, SetWindowPos, SetWindowTextW, ShowWindowAsync,
-        GWL_STYLE, GW_OWNER, HICON, ICON_BIG, ICON_SMALL, LR_DEFAULTCOLOR, SWP_NOACTIVATE,
-        SWP_NOOWNERZORDER, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_SETICON, WS_CAPTION,
-        WS_POPUP,
+        CreateIconFromResourceEx, EnumWindows, GetClientRect, GetParent, GetWindow,
+        GetWindowLongW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
+        IsWindowVisible, IsZoomed, SendMessageW, SetParent, SetWindowLongW, SetWindowPos,
+        SetWindowTextW, ShowWindowAsync, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, HICON, ICON_BIG,
+        ICON_SMALL, LR_DEFAULTCOLOR, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_GETICON, WM_SETICON, WS_CAPTION,
+        WS_EX_NOACTIVATE, WS_EX_TOPMOST, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_CHILD,
+        WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
     };
 
     pub fn is_valid_window(hwnd: isize) -> bool {
@@ -1391,6 +1490,208 @@ mod win {
 
     pub fn is_minimized(hwnd: isize) -> bool {
         unsafe { IsIconic(hwnd as HWND) != 0 }
+    }
+
+    /// ClientRect 尺寸（物理 px；投屏窗口布局的输入口径）。
+    pub fn client_size(hwnd: isize) -> Option<(i32, i32)> {
+        let mut rect: RECT = unsafe { std::mem::zeroed() };
+        if unsafe { GetClientRect(hwnd as HWND, &mut rect) } == 0 {
+            return None;
+        }
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 0 || height <= 0 {
+            None
+        } else {
+            Some((width, height))
+        }
+    }
+
+    /// 当前父窗口（未挂载时为 None）。
+    pub fn parent_of(hwnd: isize) -> Option<isize> {
+        let parent = unsafe { GetParent(hwnd as HWND) };
+        if parent.is_null() {
+            None
+        } else {
+            Some(parent as isize)
+        }
+    }
+
+    /// 把 TaskDock 控制栏窗口转成 scrcpy 窗口的 `WS_CHILD`（方案 A 核心）。
+    ///
+    /// 跨进程 `SetParent` 已在真机 PoC 验证：子窗口渲染、遮挡跟随、页面交互正常。
+    /// 挂载前剥离 WS_EX_TOPMOST/NOACTIVATE 与 popup/caption/thickframe 样式，
+    /// 否则「子窗口 + 置顶」的组合会重新制造 P0#2 的遮挡不一致。
+    /// 失败时必须回滚样式，让调用方降级，不留半挂载状态。
+    pub fn attach_as_child(child: isize, parent: isize) -> Result<(), ProjectionWindowError> {
+        if !is_valid_window(child) || !is_valid_window(parent) {
+            return Err(ProjectionWindowError::InvalidWindow(
+                "挂载失败：窗口句柄无效".into(),
+            ));
+        }
+        unsafe {
+            let style = GetWindowLongW(child as HWND, GWL_STYLE);
+            let ex_style = GetWindowLongW(child as HWND, GWL_EXSTYLE);
+            // windows-sys 的样式常量是 u32，GetWindowLongW/SetWindowLongW 是 i32。
+            let strip = (WS_POPUP
+                | WS_CAPTION
+                | WS_THICKFRAME
+                | WS_SYSMENU
+                | WS_MINIMIZEBOX
+                | WS_MAXIMIZEBOX) as i32;
+            let child_flags = (WS_CHILD | WS_VISIBLE) as i32;
+            let ex_strip = (WS_EX_TOPMOST | WS_EX_NOACTIVATE) as i32;
+            let next_style = (style & !strip) | child_flags;
+            let next_ex = ex_style & !ex_strip;
+            SetWindowLongW(child as HWND, GWL_STYLE, next_style);
+            SetWindowLongW(child as HWND, GWL_EXSTYLE, next_ex);
+            if SetParent(child as HWND, parent as HWND).is_null() {
+                // 回滚样式，避免留下无父且无边框的孤儿窗口。
+                SetWindowLongW(child as HWND, GWL_STYLE, style);
+                SetWindowLongW(child as HWND, GWL_EXSTYLE, ex_style);
+                return Err(ProjectionWindowError::InvalidWindow(
+                    "SetParent 失败：控制栏无法挂载到投屏窗口".into(),
+                ));
+            }
+            SetWindowPos(
+                child as HWND,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+        Ok(())
+    }
+
+    /// 撤销 `attach_as_child`：仅用于 attach 失败回滚路径；正常生命周期直接销毁子窗口。
+    pub fn detach_child(child: isize) {
+        if !is_valid_window(child) {
+            return;
+        }
+        unsafe {
+            let style = GetWindowLongW(child as HWND, GWL_STYLE);
+            SetWindowLongW(
+                child as HWND,
+                GWL_STYLE,
+                (style & !(WS_CHILD as i32))
+                    | (WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU) as i32,
+            );
+            SetParent(child as HWND, std::ptr::null_mut());
+        }
+    }
+
+    /// 窗口是否处于最大化。
+    pub fn is_zoomed(hwnd: isize) -> bool {
+        unsafe { IsZoomed(hwnd as HWND) != 0 }
+    }
+
+    /// 读取窗口标题（品牌化回读校验用）。
+    pub fn window_title(hwnd: isize) -> String {
+        let mut buf = [0u16; 256];
+        let len = unsafe { GetWindowTextW(hwnd as HWND, buf.as_mut_ptr(), buf.len() as i32) };
+        if len <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buf[..len as usize])
+    }
+
+    /// 回读 WM_GETICON 设置的窗口图标句柄（small, big）；0 表示未设置。
+    pub fn icon_handles(hwnd: isize) -> (isize, isize) {
+        unsafe {
+            let small = SendMessageW(hwnd as HWND, WM_GETICON, ICON_SMALL as usize, 0);
+            let big = SendMessageW(hwnd as HWND, WM_GETICON, ICON_BIG as usize, 0);
+            (small, big)
+        }
+    }
+
+    /// 回读窗口级 AppUserModelID（任务栏身份校验用）。
+    #[cfg(windows)]
+    pub fn read_app_user_model_id(hwnd: isize) -> Option<String> {
+        use windows::Win32::Foundation::HWND as WHWND;
+        use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
+        use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
+        use windows::Win32::System::Com::{
+            CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::System::Variant::VT_LPWSTR;
+        use windows::Win32::UI::Shell::PropertiesSystem::{
+            IPropertyStore, SHGetPropertyStoreForWindow,
+        };
+        use windows::core::PCWSTR;
+
+        struct ComGuard(bool);
+        impl Drop for ComGuard {
+            fn drop(&mut self) {
+                if self.0 {
+                    unsafe { CoUninitialize() };
+                }
+            }
+        }
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let guard = ComGuard(hr.is_ok());
+            let store: IPropertyStore =
+                SHGetPropertyStoreForWindow(WHWND(hwnd as *mut core::ffi::c_void)).ok()?;
+            let mut variant = store.GetValue(&PKEY_AppUserModel_ID).ok()?;
+            let value = if variant.Anonymous.Anonymous.vt == VT_LPWSTR {
+                let ptr = variant.Anonymous.Anonymous.Anonymous.pwszVal;
+                if ptr.is_null() {
+                    None
+                } else {
+                    let wide = PCWSTR(ptr.as_ptr());
+                    Some(wide.to_string().ok()?)
+                }
+            } else {
+                None
+            };
+            let _ = PropVariantClear(&mut variant as *mut _);
+            let _ = guard;
+            value
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn read_app_user_model_id(_hwnd: isize) -> Option<String> {
+        None
+    }
+
+    /// 调整顶层窗口外框尺寸（保持位置与 Z 序；scrcpy 窗口宽度/高度吸附）。
+    pub fn set_outer_size(hwnd: isize, width: i32, height: i32) -> bool {
+        if !is_valid_window(hwnd) {
+            return false;
+        }
+        unsafe {
+            SetWindowPos(
+                hwnd as HWND,
+                std::ptr::null_mut(),
+                0,
+                0,
+                width,
+                height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            ) != 0
+        }
+    }
+
+    /// 定位子窗口（父窗口 ClientRect 坐标，物理 px）。
+    pub fn set_child_rect(hwnd: isize, x: i32, y: i32, w: i32, h: i32) -> bool {
+        if !is_valid_window(hwnd) {
+            return false;
+        }
+        unsafe {
+            SetWindowPos(
+                hwnd as HWND,
+                std::ptr::null_mut(),
+                x,
+                y,
+                w,
+                h,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            ) != 0
+        }
     }
 
     pub fn window_dpi(hwnd: isize) -> u32 {
@@ -1548,31 +1849,6 @@ mod win {
         (ctx.best != 0).then_some(ctx.best)
     }
 
-    pub fn cursor_pos() -> Option<(i32, i32)> {
-        let mut point = POINT { x: 0, y: 0 };
-        if unsafe { GetCursorPos(&mut point) } == 0 {
-            None
-        } else {
-            Some((point.x, point.y))
-        }
-    }
-
-    pub fn set_rect(hwnd: isize, rect: ToolbarRect) {
-        if hwnd == 0 {
-            return;
-        }
-        unsafe {
-            SetWindowPos(
-                hwnd as HWND,
-                std::ptr::null_mut(),
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height,
-                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
-            );
-        }
-    }
 
     /// 显示/隐藏都不激活窗口：控制栏永远不把焦点从 scrcpy 抢走。
     pub fn set_visible(hwnd: isize, visible: bool) {
@@ -1594,6 +1870,12 @@ mod win {
     /// TaskDock 投屏窗口专用图标（随二进制内嵌，不依赖 exe 资源 ID 或当前工作目录）；
     /// 与主程序图标区分，源图见 icons/projection-1024.png。
     const TASKDOCK_ICON_ICO: &[u8] = include_bytes!("../../icons/projection.ico");
+
+    /// 投屏窗口专属图标（任务八统一入口）：解析内嵌 `icons/projection.ico`
+    /// 返回 (大图标, 小图标)。随二进制内嵌，不依赖 exe 资源 ID 或工作目录。
+    pub fn get_projection_window_icon() -> Option<(HICON, HICON)> {
+        embedded_icons()
+    }
 
     fn embedded_icons() -> Option<(HICON, HICON)> {
         let bytes = TASKDOCK_ICON_ICO;
@@ -1759,33 +2041,30 @@ mod win {
                 SHGetPropertyStoreForWindow(WHWND(hwnd as *mut core::ffi::c_void))
                     .map_err(|error| format!("获取窗口属性存储失败：{error}"))?;
             let wide: Vec<u16> = aumid.encode_utf16().chain(std::iter::once(0)).collect();
-            let bytes = wide.len() * std::mem::size_of::<u16>();
-            let memory = CoTaskMemAlloc(bytes) as *mut u16;
-            if memory.is_null() {
-                return Err("分配 AUMID 内存失败".into());
-            }
-            std::ptr::copy_nonoverlapping(wide.as_ptr(), memory, wide.len());
+            // SHStrDupW 用 CoTaskMemAlloc 复制字符串，所有权交给本地 PROPVARIANT，
+            // 由 PropVariantClear 统一释放（不能用 Rust 堆内存，否则属性系统按
+            // CoTaskMemFree 清理时会破坏堆）。
+            let memory = SHStrDupW(PCWSTR(wide.as_ptr()))
+                .map_err(|error| format!("复制 AUMID 失败：{error}"))?;
             // 直接构造 PROPVARIANT，避免对 ManuallyDrop 联合字段做 DerefMut 赋值。
             let inner = PROPVARIANT_0_0 {
                 vt: VT_LPWSTR,
                 wReserved1: 0,
                 wReserved2: 0,
                 wReserved3: 0,
-                Anonymous: PROPVARIANT_0_0_0 {
-                    pwszVal: PWSTR(memory),
-                },
+                Anonymous: PROPVARIANT_0_0_0 { pwszVal: memory },
             };
-            let variant = PROPVARIANT {
+            let mut variant = PROPVARIANT {
                 Anonymous: PROPVARIANT_0 {
                     Anonymous: std::mem::ManuallyDrop::new(inner),
                 },
             };
+            // SetValue 契约上复制值；Commit 完成后再清理本地字符串，避免存储
+            // 内部仍引用该指针时被提前释放（曾触发 0xc0000374 堆损坏）。
             let result = store.SetValue(&PKEY_AppUserModel_ID, &variant);
-            CoTaskMemFree(Some(memory as *const core::ffi::c_void));
-            result.map_err(|error| format!("写入 AUMID 失败：{error}"))?;
-            store
-                .Commit()
-                .map_err(|error| format!("提交 AUMID 失败：{error}"))?;
+            let committed = result.and_then(|()| store.Commit());
+            let _ = PropVariantClear(&mut variant);
+            committed.map_err(|error| format!("写入 AUMID 失败：{error}"))?;
         }
         Ok(())
     }
@@ -1793,9 +2072,7 @@ mod win {
 
 #[cfg(not(windows))]
 mod win {
-    use super::{
-        MonitorInfo, ProjectionWindowError, ProjectionWindowMode, ToolbarRect, WindowRect,
-    };
+    use super::{MonitorInfo, ProjectionWindowError, ProjectionWindowMode, WindowRect};
 
     pub fn is_valid_window(_hwnd: isize) -> bool {
         false
@@ -1828,10 +2105,6 @@ mod win {
     pub fn find_scrcpy_window(_pid: u32, _title: &str) -> Option<isize> {
         None
     }
-    pub fn cursor_pos() -> Option<(i32, i32)> {
-        None
-    }
-    pub fn set_rect(_hwnd: isize, _rect: ToolbarRect) {}
     pub fn set_visible(_hwnd: isize, _visible: bool) {}
     pub fn set_window_title(_hwnd: isize, _title: &str) {}
     pub fn set_window_icon(_hwnd: isize) -> Result<(), ProjectionWindowError> {
@@ -1843,126 +2116,57 @@ mod win {
     ) -> Result<(), ProjectionWindowError> {
         Err(ProjectionWindowError::Unsupported)
     }
+    pub fn client_size(_hwnd: isize) -> Option<(i32, i32)> {
+        None
+    }
+    pub fn parent_of(_hwnd: isize) -> Option<isize> {
+        None
+    }
+    pub fn attach_as_child(
+        _child: isize,
+        _parent: isize,
+    ) -> Result<(), ProjectionWindowError> {
+        Err(ProjectionWindowError::Unsupported)
+    }
+    pub fn detach_child(_child: isize) {}
+    pub fn is_zoomed(_hwnd: isize) -> bool {
+        false
+    }
+    pub fn set_outer_size(_hwnd: isize, _width: i32, _height: i32) -> bool {
+        false
+    }
+    pub fn set_child_rect(_hwnd: isize, _x: i32, _y: i32, _w: i32, _h: i32) -> bool {
+        false
+    }
+    pub fn window_title(_hwnd: isize) -> String {
+        String::new()
+    }
+    pub fn icon_handles(_hwnd: isize) -> (isize, isize) {
+        (0, 0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::projection_layout::{
+        bottom_client_height, nav_webview_physical, side_client_width,
+    };
 
-    fn work() -> WindowRect {
-        WindowRect::from_ltrb(0, 0, 1920, 1040)
+    fn binding(session_id: &str, scrcpy: isize, toolbar: isize) -> ProjectionWindowBinding {
+        ProjectionWindowBinding {
+            session_id: session_id.into(),
+            scrcpy_hwnd: scrcpy,
+            toolbar_hwnd: toolbar,
+            monitor_id: String::new(),
+            dpi: 96,
+            mode: ProjectionWindowMode::Normal,
+            toolbar_locked: false,
+        }
     }
 
-    fn window() -> WindowRect {
-        WindowRect::from_ltrb(200, 120, 1300, 900)
-    }
-
-    #[test]
-    fn calculate_external_toolbar_right() {
-        let (rect, placement) = calculate_external_toolbar_placement(
-            window(),
-            work(),
-            Size { width: 56, height: 300 },
-            8,
-        );
-        assert_eq!(placement, ToolbarPlacement::Right);
-        assert_eq!(rect.x, 1308);
-        assert_eq!(rect.y, 120 + (780 - 300) / 2);
-        assert!(rect.x + rect.width <= work().right);
-    }
-
-    #[test]
-    fn calculate_external_toolbar_left() {
-        let window = WindowRect::from_ltrb(1500, 120, 1912, 900);
-        let (rect, placement) = calculate_external_toolbar_placement(
-            window,
-            work(),
-            Size { width: 56, height: 300 },
-            8,
-        );
-        assert_eq!(placement, ToolbarPlacement::Left);
-        assert_eq!(rect.x, 1500 - 8 - 56);
-        assert!(rect.x >= 0);
-    }
-
-    #[test]
-    fn calculate_external_toolbar_bottom() {
-        let window = WindowRect::from_ltrb(0, 0, 1920, 900);
-        let (rect, placement) = calculate_external_toolbar_placement(
-            window,
-            work(),
-            Size { width: 300, height: 56 },
-            8,
-        );
-        assert_eq!(placement, ToolbarPlacement::Bottom);
-        assert_eq!(rect.y, 908);
-        assert!(rect.y + rect.height <= work().bottom);
-    }
-
-    #[test]
-    fn calculate_external_toolbar_top() {
-        let window = WindowRect::from_ltrb(0, 80, 1920, 1000);
-        let (rect, placement) = calculate_external_toolbar_placement(
-            window,
-            work(),
-            Size { width: 300, height: 56 },
-            8,
-        );
-        assert_eq!(placement, ToolbarPlacement::Top);
-        assert_eq!(rect.y, 80 - 8 - 56);
-        assert!(rect.y >= 0);
-    }
-
-    #[test]
-    fn calculate_external_toolbar_inside_when_no_space() {
-        let window = WindowRect::from_ltrb(0, 0, 1920, 1040);
-        let (rect, placement) = calculate_external_toolbar_placement(
-            window,
-            work(),
-            Size { width: 56, height: 300 },
-            8,
-        );
-        assert_eq!(placement, ToolbarPlacement::Inside);
-        assert!(rect.x >= 0 && rect.x + rect.width <= 1920);
-        assert!(rect.y >= 0 && rect.y + rect.height <= 1040);
-    }
-
-    #[test]
-    fn toolbar_position_with_taskbar_stays_in_work_area() {
-        // 工作区底部被 40px 任务栏占用；控制栏不能压进任务栏。
-        let work = WindowRect::from_ltrb(0, 0, 1920, 1040);
-        let window = WindowRect::from_ltrb(0, 0, 1920, 900);
-        let (rect, placement) = calculate_external_toolbar_placement(
-            window,
-            work,
-            Size { width: 300, height: 56 },
-            8,
-        );
-        assert_eq!(placement, ToolbarPlacement::Bottom);
-        assert!(rect.y + rect.height <= 1040);
-    }
-
-    fn assert_scale(dpi: u32, expected: Size) {
-        assert_eq!(
-            scale_toolbar_size(TOOLBAR_VERTICAL_LOGICAL, dpi),
-            expected,
-            "DPI {dpi} 应缩放逻辑尺寸"
-        );
-    }
-
-    #[test]
-    fn toolbar_position_with_dpi_125() {
-        assert_scale(120, Size { width: 70, height: 375 });
-    }
-
-    #[test]
-    fn toolbar_position_with_dpi_150() {
-        assert_scale(144, Size { width: 84, height: 450 });
-    }
-
-    #[test]
-    fn toolbar_position_with_dpi_200() {
-        assert_scale(192, Size { width: 112, height: 600 });
+    fn portrait_video() -> LayoutSize {
+        LayoutSize { w: 1080.0, h: 2400.0 }
     }
 
     #[test]
@@ -1970,15 +2174,7 @@ mod tests {
         let registry = ProjectionWindowRegistry {
             map: Mutex::new(HashMap::new()),
         };
-        registry.insert_binding(ProjectionWindowBinding {
-            session_id: "session-a".into(),
-            scrcpy_hwnd: 0x100,
-            toolbar_hwnd: 0x200,
-            monitor_id: r"\\.\DISPLAY1".into(),
-            dpi: 96,
-            mode: ProjectionWindowMode::Normal,
-            toolbar_locked: false,
-        });
+        registry.insert_binding(binding("session-a", 0x100, 0x200));
         assert_eq!(registry.toolbar_hwnd("session-a"), Some(0x200));
         assert_eq!(registry.scrcpy_hwnd("session-a"), Some(0x100));
         assert!(registry.toolbar_hwnd("session-b").is_none());
@@ -1989,17 +2185,8 @@ mod tests {
         let registry = ProjectionWindowRegistry {
             map: Mutex::new(HashMap::new()),
         };
-        for (id, scrcpy, toolbar) in [("a", 0x10, 0x20), ("b", 0x30, 0x40)] {
-            registry.insert_binding(ProjectionWindowBinding {
-                session_id: id.into(),
-                scrcpy_hwnd: scrcpy,
-                toolbar_hwnd: toolbar,
-                monitor_id: String::new(),
-                dpi: 96,
-                mode: ProjectionWindowMode::Normal,
-                toolbar_locked: false,
-            });
-        }
+        registry.insert_binding(binding("a", 0x10, 0x20));
+        registry.insert_binding(binding("b", 0x30, 0x40));
         registry.remove("a");
         assert_eq!(registry.toolbar_hwnd("b"), Some(0x40));
         assert!(registry.toolbar_hwnd("a").is_none());
@@ -2010,17 +2197,26 @@ mod tests {
         let registry = ProjectionWindowRegistry {
             map: Mutex::new(HashMap::new()),
         };
-        registry.insert_binding(ProjectionWindowBinding {
-            session_id: "idempotent".into(),
-            scrcpy_hwnd: 0x1,
-            toolbar_hwnd: 0,
-            monitor_id: String::new(),
-            dpi: 96,
-            mode: ProjectionWindowMode::Normal,
-            toolbar_locked: false,
-        });
+        registry.insert_binding(binding("idempotent", 0x1, 0));
         assert!(registry.cleanup("idempotent"));
         assert!(!registry.cleanup("idempotent"));
+    }
+
+    #[test]
+    fn resolve_session_by_hwnd_matches_scrcpy_or_toolbar() {
+        let registry = ProjectionWindowRegistry {
+            map: Mutex::new(HashMap::new()),
+        };
+        registry.insert_binding(binding("by-hwnd", 0xAAA, 0xBBB));
+        assert_eq!(
+            registry.resolve_session_by_hwnd(0xAAA).as_deref(),
+            Some("by-hwnd")
+        );
+        assert_eq!(
+            registry.resolve_session_by_hwnd(0xBBB).as_deref(),
+            Some("by-hwnd")
+        );
+        assert!(registry.resolve_session_by_hwnd(0xCCC).is_none());
     }
 
     #[test]
@@ -2036,56 +2232,84 @@ mod tests {
     }
 
     #[test]
-    fn expand_rect_keeps_bar_position_and_stays_on_screen() {
-        let bar = ToolbarRect {
-            x: 1308,
-            y: 300,
-            width: 56,
-            height: 300,
-        };
-        let expanded = expand_toolbar_rect(
-            bar,
-            ProjectionWindowMode::Normal,
-            96,
-            WindowRect::from_ltrb(0, 0, 1920, 1040),
-        );
-        assert_eq!(expanded.x + expanded.width, bar.x + bar.width);
-        assert_eq!(expanded.y, bar.y);
-        assert!(expanded.x >= 0);
+    fn decide_update_snaps_side_width_on_first_attach_and_rotation() {
+        // scrcpy 初始/旋转后客户区 == 视频纵横比（无余量）→ Side 需要扩宽。
+        let client = LayoutSize { w: 577.0, h: 1282.0 };
+        let (mode, target) =
+            decide_projection_update(client, portrait_video(), 120, false, Some(4000.0), Some(2000.0));
+        assert_eq!(mode, ProjectionLayoutMode::Side);
+        let needed = side_client_width(portrait_video(), client.h, 120);
+        assert!((target.w - needed).abs() < 0.5, "target={}", target.w);
+        assert!((target.h - client.h).abs() < 0.5, "高度保留用户值");
     }
 
     #[test]
-    fn fullscreen_trigger_zone_respects_bottom_edge() {
-        let monitor = WindowRect::from_ltrb(0, 0, 1920, 1080);
-        assert!(fullscreen_trigger_hit(monitor, Some((900, 1080 - 10)), 28));
-        assert!(!fullscreen_trigger_hit(monitor, Some((900, 1080 - 60)), 28));
-        assert!(!fullscreen_trigger_hit(monitor, Some((2200, 1070)), 28));
+    fn decide_update_keeps_side_without_resize_after_snap() {
+        let client_h = 1282.0;
+        let snapped_w = side_client_width(portrait_video(), client_h, 120);
+        let client = LayoutSize { w: snapped_w, h: client_h };
+        let (mode, target) =
+            decide_projection_update(client, portrait_video(), 120, false, Some(4000.0), Some(2000.0));
+        assert_eq!(mode, ProjectionLayoutMode::Side);
+        assert!((target.w - client.w).abs() <= 2.0, "已吸附宽度不再抖动");
+        assert!((target.h - client.h).abs() < 0.5);
     }
 
     #[test]
-    fn fullscreen_visibility_hides_after_delay_and_respects_lock() {
-        let now = Instant::now();
-        let (visible, deadline) =
-            fullscreen_visibility_tick(false, false, false, now, None);
-        assert!(!visible);
-        assert!(deadline.is_none());
+    fn decide_update_switches_to_bottom_when_width_shrinks() {
+        // 宽度不足以放 Side → Bottom：高度吸附到「视频高 + 2×底部条带」。
+        let client = LayoutSize { w: 620.0, h: 900.0 };
+        let (mode, target) =
+            decide_projection_update(client, portrait_video(), 120, false, Some(700.0), Some(4000.0));
+        assert_eq!(mode, ProjectionLayoutMode::Bottom);
+        let needed_h = bottom_client_height(portrait_video(), client.w, 120);
+        assert!((target.h - needed_h).abs() < 0.5, "target={}", target.h);
+        assert!((target.w - client.w).abs() < 0.5);
+    }
 
-        let (visible, deadline) =
-            fullscreen_visibility_tick(false, false, true, now, None);
-        assert!(visible);
-        let deadline = deadline.expect("显示后应记录隐藏截止时间");
-
-        let (visible, _) = fullscreen_visibility_tick(
+    #[test]
+    fn decide_update_compact_when_height_capped() {
+        let client = LayoutSize { w: 620.0, h: 900.0 };
+        let needed_h = bottom_client_height(portrait_video(), client.w, 120);
+        let (mode, target) = decide_projection_update(
+            client,
+            portrait_video(),
+            120,
             false,
-            false,
-            false,
-            deadline + Duration::from_millis(1),
-            Some(deadline),
+            Some(700.0),
+            Some(needed_h - 1.0),
         );
-        assert!(!visible, "超过延迟且未悬停时应隐藏");
+        assert_eq!(mode, ProjectionLayoutMode::Compact);
+        assert!((target.w - client.w).abs() < 0.5 && (target.h - client.h).abs() < 0.5);
+    }
 
-        let (visible, _) =
-            fullscreen_visibility_tick(true, false, false, now, None);
-        assert!(visible, "锁定后不自动隐藏");
+    #[test]
+    fn decide_update_respects_os_managed_window() {
+        // 最大化/全屏：不吸附，模式固定 Side，尺寸原样返回。
+        let client = LayoutSize { w: 2560.0, h: 1300.0 };
+        let (mode, target) =
+            decide_projection_update(client, portrait_video(), 120, true, Some(2560.0), Some(1300.0));
+        assert_eq!(mode, ProjectionLayoutMode::Side);
+        assert!((target.w - client.w).abs() < 0.5 && (target.h - client.h).abs() < 0.5);
+    }
+
+    #[test]
+    fn side_target_fits_nav_webview_budget() {
+        // Side 吸附宽度 = 视频宽 + 2×导航 WebView（含 Tooltip 溢出区），
+        // 导航子窗口有容身之处且不挤压视频。
+        let client_h = 1282.0;
+        let needed = side_client_width(portrait_video(), client_h, 120);
+        let video_w = client_h * (1080.0 / 2400.0);
+        let spare = needed - video_w;
+        let webview = nav_webview_physical(120);
+        assert!((spare - 2.0 * webview).abs() < 0.5, "spare={spare} webview={webview}");
+    }
+
+    #[test]
+    fn projection_layout_cache_tracks_outer_changes() {
+        let mut cache = LayoutCache::default();
+        assert!(cache.outer_changed((1000, 1400)), "首次观察视为变化");
+        assert!(!cache.outer_changed((1000, 1400)), "相同尺寸不算变化");
+        assert!(cache.outer_changed((1000, 1300)), "尺寸变化要上报");
     }
 }

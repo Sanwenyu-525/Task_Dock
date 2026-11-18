@@ -2034,6 +2034,9 @@ pub fn run() {
             commands::projection_window::vd_toolbar_set_locked,
             commands::projection_window::vd_toolbar_set_expanded,
             commands::projection_window::vd_toolbar_screenshot,
+            // 投屏窗口一体化：导航动作统一派发 + 品牌身份回读校验
+            commands::projection_window::vd_projection_dispatch,
+            commands::projection_window::vd_projection_identity,
             // Agent 共享工作空间（v76）：接入管理 / 活动 / 交接 / 同步 / 权限
             agent_access::commands::agent_access_status,
             agent_access::commands::agent_access_init,
