@@ -1,9 +1,9 @@
 # 验收报告（v76 · Agent 共享工作空间）
 
 - 日期：2026-11-18
-- 范围：Phase 0–7 的代码落地与静态检查；运行时/真机验收未执行
+- 范围：Phase 0–7 代码落地、静态检查，以及 CLI/文件协议首次真实冒烟；MCP/REST/UI/性能未执行
 - 构建版本：共享工作区（非集成快照）；未生成正式安装包
-- 结论：**部分通过（代码级）；运行时验收证据不足**
+- 结论：**部分通过（代码级 + CLI/文件协议真实冒烟）；MCP/REST/UI/性能仍证据不足**
 
 ## 1. 任务范围
 
@@ -29,11 +29,15 @@
 |---|---|---|---|---|---|
 | Rust 类型检查 | `npm run cargo -- check -j 1` | `D:\Develop\task_dock` | 0 | 2026-11-18，24.72s（清理本轮告警后复跑；本次新增代码 0 警告） | `tmp/agent-workspace-check.log`；调度日志 `.git/taskdock-build-sched/logs/m-mwly1u9c-fff525.log` |
 | 前端类型检查 | `npx tsc --noEmit` | `D:\Develop\task_dock` | 0 | 2026-11-18 | `tmp/agent-workspace-tsc.log` |
+| CLI 构建 | `npm run cargo -- build --bin taskdock -j 1` | `D:\Develop\task_dock` | 0 | 1m21s；后续修复重建 60s/153s/45s（含排队） | `tmp/agent-workspace-cli-build*.log`、`.git/taskdock-build-sched/logs/h-mwly9atc-9a5af5.log` 等 |
+| CLI/文件协议冒烟 | `taskdock status/info/task/sync/context/agent/search`，隔离 `TASK_DOCK_DATA_DIR` | `D:\Develop\task_dock` | 各命令见 [test-plan.md](test-plan.md) §8 | 2026-11-18 | DB `tmp/agent-workspace-smoke/task-dock.db`、工作空间 `tmp/agent-workspace-smoke/ws`、二进制 SHA256 `779FDE48…4290D05` |
 
 补充事实：首次 `cargo check` 在类型检查已通过、写 metadata 阶段因机器可用内存不足被 rustc OOM 终止
 （exit 101 / `STATUS_STACK_BUFFER_OVERRUN`），属运行期资源问题；内存恢复后同一命令通过。未发现代码错误。
 
-未执行：Rust 单测、`cargo test`、前端单测、`npm run build`、Tauri 安装包、真机 UI 走查、场景 A–F、性能基线。
+未执行：MCP 真实客户端、REST 端口/认证/限流/幂等、UI 真机走查、场景 A–F 全链路、性能基线、
+`cargo test`、Tauri 安装包。CLI 的 C8/C9、文件 F8–F10、交接完整流转也未执行；已执行项与证据见
+[test-plan.md](test-plan.md) §8。
 
 ## 4. 代码审查问题清单
 
@@ -45,8 +49,9 @@
 
 | # | 现象 | 根因 | 影响 | 证据/状态 |
 |---|---|---|---|---|
-| P1-1 | 四入口运行时未验证 | 本轮只做静态检查 | 权限/版本/同步真实行为未知 | 见 [test-plan.md](test-plan.md) §8；待执行 |
+| P1-1 | 四入口仅 CLI/文件链路完成真实冒烟 | MCP/REST/UI 仍是静态检查 | 后三类入口的权限/版本/同步真实行为未知 | CLI/文件见 test-plan §8；MCP/REST 待执行 |
 | P1-2 | MCP resources/prompts 未用真实客户端验证 | 仅完成协议接线 | 客户端兼容性未知 | `mcp/protocol.rs`、`mcp/bridge.rs` 已实现；待 M10 |
+| P1-3 | 任务投影缺 `revision`（已修复） | `task_markdown` 未接收版本号 | 外部 Agent 无法从文件取得 `base_revision`，文件更新不可用 | 已补 `revision` 并由 `sync export` 实测输出 `- revision: 1` |
 
 ### P2
 
@@ -57,6 +62,10 @@
 | P2-3 | CLI 新 bin 与 Tauri 主二进制识别 | 打包器默认寻找 `task-dock` | 安装包内 CLI 可能缺失 | `Cargo.toml` 已设 `default-run`；回退方案 `task-dock --cli` 未实现 |
 | P2-4 | REST 端口 47911 未实测冲突 | 未运行 | 可能与用户环境冲突 | `rest.rs` 启动失败仅记录错误，不回滚设置 |
 | P2-5 | `sync.rs` 扫描结束更新时间戳失败会返回错误 | 本轮改为 `?` 传播 | 极端 IO 失败会让 scan 报错（此前是静默忽略） | 已修复为显式传播 |
+| P2-6 | `task get` / `task list` 不返回 `revision` | 直接序列化 `Task`，版本在 `agent_resource_revisions` | CLI 调用方需靠错误或投影文件反推 `base_revision` | 待补字段；本轮未改 |
+| P2-7 | 文档 `target_id` 与实现 `payload.task_id` 不一致 | 文档表格按服务层输入命名，未同步导入解析 | 按文档写 JSON 信封会被 `VALIDATION` 拒绝 | 需统一命名并补契约测试 |
+| P2-8 | Markdown `task.update` 未实现 | 解析器只映射 create/knowledge/decision | 文档宣称的 Markdown 更新不可用 | 需补 `taskdock_id` → `task_id` 映射或收窄文档 |
+| P2-9 | 非法信封会反复扫描（已修复） | 解析失败后未移动文件 | `pending_imports` 卡住、事件重复 | 已归档 `inbox/_rejected/`，复测 `scanned=0` |
 
 ### P3
 

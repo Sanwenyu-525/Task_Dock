@@ -40,7 +40,7 @@
 | C3 | 任务创建/完成 | `taskdock task create ...`、`taskdock task complete <id>` | 写入成功，UI 可见（重新打开） |
 | C4 | 版本冲突 | `taskdock task update <id> --base-revision 0` | exit 5 / `CONFLICT`，返回当前 revision |
 | C5 | 不存在的资源 | `taskdock task get does-not-exist` | exit 3 / `NOT_FOUND` |
-| C6 | 无效参数 | `taskdock task create`（缺 title） | exit 4 / `VALIDATION`，stderr 有说明 |
+| C6 | 无效参数 | `taskdock task create`（缺 title） | exit 2 / `VALIDATION`（用法错误），stderr 有说明 |
 | C7 | 权限限制 | `TASKDOCK_CLI_READONLY=1 taskdock task create ...` | exit 6 / `FORBIDDEN` |
 | C8 | Agent 身份 | `TASKDOCK_AGENT_TOKEN=<readonly> taskdock task create ...` | 按授权拒绝或允许 |
 | C9 | 并发 | 并行 10 个 `task list --json` | 全部 exit 0，无 JSON 混杂 |
@@ -114,9 +114,46 @@
 
 结论必须附：二进制 sha256、构建模式、数据目录、机器空闲状态、样本数与证据文件。
 
-## 8. 未执行登记（截至 2026-11-18）
+## 8. 执行记录（2026-11-18，CLI/文件链路首次真实运行）
 
-- F1–F11、C1–C10、X1–X6、M1–M10、R1–R10、H1–H7、P1–P6：**均未执行**。
-- 已执行：`cargo check`（exit 0）、`npx tsc --noEmit`（exit 0）。
-- 原因：本轮以代码落地与静态检查为主；真实运行需要独立数据目录、构建产物、Agent Token 与外部客户端，
-  且共享机器内存紧张（曾导致 rustc OOM），需在资源空闲窗口按本计划逐项执行。
+环境：Windows 本机，`TASK_DOCK_DATA_DIR=tmp/agent-workspace-smoke`（隔离目录），
+`TASK_DOCK_DATA_DIR/task-dock.db` 由空文件经迁移创建；CLI 为 dev 构建
+`src-tauri/target/debug/taskdock.exe`，SHA256 `779FDE4842A8EEDCCE775D55804962781ABD4B9BF68AF62F7CD6004854290D05`。
+UI 未运行，验证的是 CLI 独立进程 + 文件协议。
+
+| 用例 | 结果 | 证据摘要 |
+|---|---|---|
+| F1 初始化共享空间 | 通过 | 生成 `.taskdock-workspace.json`、`manifest.json` 与 8 个投影文件；workspace_id `ws_c799972633e24001918d08c9fe8504a3` |
+| F2 Manifest | 部分 | `manifest.json` 已生成；`taskdock info` 未单独执行 |
+| F3 数据导出 | 通过（修复后） | `tasks/active/*.md` 生成；补 `revision` 字段后再次导出可见 `- revision: 1` |
+| F4 外部合法写入 | 通过 | `inbox/import-1.json` → 创建任务 `b5e6e5ad-…`，源文件归档 `inbox/_imported/` |
+| F5 非法格式拒绝 | 通过（修复后） | 缺 `task_id` 信封报 `payload 缺少非空字段 task_id`；文件归档 `inbox/_rejected/`，下一轮 `scanned=0` |
+| F6 版本冲突 | 通过 | 旧 `base_revision=1` 更新已完成的 revision=2 任务 → `agent_sync_conflicts` 记录 `open`，未覆盖 |
+| F7 冲突解决 | 部分 | `--resolution db` 成功，状态 `resolved_db`、`resolved_at` 写入；`file`/`dismiss` 未测 |
+| F11 防回环 | 通过 | `sync export` 后立即 `sync scan`：`scanned=0, imported=0` |
+| C1 独立启动 | 通过 | UI 未运行，`status --json` exit 0，stdout 仅信封 |
+| C2 项目/任务查询 | 通过 | `task list` 返回 2 条与 `meta.pagination.total=2`；`project list` 空库返回 `[]` |
+| C3 创建/完成 | 通过 | `task create` 成功；`task complete --base-revision 1` 成功并写 `completed_at` |
+| C4 版本冲突 | 通过 | `--base-revision 99` → exit 5、`CONFLICT`，错误含当前 revision=1 |
+| C5 不存在资源 | 通过 | `task get does-not-exist` → exit 3、`NOT_FOUND` |
+| C6 无效参数 | 通过（修正期望） | 缺 `--title` → exit 2、`VALIDATION`（用法错误；原计划写 exit 4 与 CLI 规范冲突，已修正） |
+| C7 只读限制 | 通过 | `TASKDOCK_CLI_READONLY=1 task create` → exit 6、`FORBIDDEN` |
+| C10 数据库未初始化 | 通过 | 不存在的库 → exit 7、`UNAVAILABLE`，无 panic |
+| X2 Context JSON | 通过 | 含 budget/items/markdown/recent_changes/scope 等字段；估算 427 tokens |
+| H6 工作报告 | 通过 | `agent report create` 成功，返回 `revision=1` |
+| H2/H3 交接 | 部分 | 未注册目标 Agent 被拒绝（`NOT_FOUND`）；完整交接流转未测 |
+
+未执行：F8–F10、C8/C9、X1/X3–X6、M1–M10、R1–R10、H1/H4/H5/H7、P1–P6。
+原因：MCP 需开启 `mcp_server_enabled` 并重启主程序、REST 需 UI 启动后开端口、性能需造 1000 任务/1 万文档数据集；
+当前只完成 CLI 与文件协议的可重复冒烟。
+
+### 8.1 本轮发现并已修复
+
+1. `taskdock search <关键词>` 把关键词误当子命令 → 改为仅对含子命令的命令组吞位置参数。
+2. 任务投影缺 `revision`，外部 Agent 无法取得 `base_revision` → 单任务 Markdown 增加 `revision`。
+3. 非法信封留在 `inbox/` 每轮重复报错 → 归档到 `inbox/_rejected/`。
+
+### 8.2 待处理的协议/实现偏差
+
+- `task get` / `task list` 的 JSON 未返回 `revision`；调用方只能从冲突错误或投影文件获取。
+- 文档表格写 `task.update` 用 `target_id`，实现要求 `payload.task_id`；Markdown `task.update` 尚未实现。

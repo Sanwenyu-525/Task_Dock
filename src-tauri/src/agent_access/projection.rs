@@ -145,16 +145,17 @@ fn task_line(task: &crate::db::Task) -> String {
     )
 }
 
-fn task_markdown(task: &crate::db::Task) -> String {
+fn task_markdown(task: &crate::db::Task, revision: i64) -> String {
     let mut out = format!(
-        "# {}\n\n- id: `{}`\n- status: {}\n- priority: {}\n- category: {}\n- due_at: {}\n- updated_at: {}\n\n",
+        "# {}\n\n- id: `{}`\n- status: {}\n- priority: {}\n- category: {}\n- due_at: {}\n- updated_at: {}\n- revision: {}\n\n",
         task.title,
         task.id,
         task.status,
         task.priority,
         task.category,
         task.due_at.as_deref().unwrap_or("-"),
-        task.updated_at
+        task.updated_at,
+        revision
     );
     if !task.tags.is_empty() {
         out.push_str(&format!("tags: {}\n\n", task.tags.join(", ")));
@@ -377,7 +378,7 @@ pub fn export_all(db: &Db, row: &workspace::WorkspaceRow) -> AppResult<ExportRep
             &task.id,
             revision(task),
             &task.updated_at,
-            task_markdown(task),
+            task_markdown(task, revision(task)),
         )?;
     }
 

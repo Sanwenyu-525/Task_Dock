@@ -26,7 +26,9 @@
 | 审计日志、版本与幂等缓存 | 已完成（代码） | `agent_access/store.rs`、`schema.rs` |
 | 备份表登记 | 已完成（代码） | `commands/backup.rs` |
 
-**未验收**：真实初始化/导出/外部写入/导入/冲突/删除/重复同步/大量文件性能均未执行。
+**已验收（2026-11-18）**：隔离库完成迁移；Workspace 初始化、manifest/投影导出、合法文件导入并归档、
+旧 revision 冲突记录、`db` 方式解决、非法文件归档 `_rejected/`、导出后扫描不回环均真实执行。
+**未验收**：删除传播、重复同步（同文件二次导入）、200 文件批量、文件监听轮询、备份恢复。
 
 ## Phase 2：CLI
 
@@ -37,7 +39,10 @@
 | 统一 JSON 信封、stdout/stderr 分离、退出码 | 已完成（代码） | `agent_access/mod.rs`、`cli.rs` |
 | 本机用户 / Agent Token / 强制只读 | 已完成（代码） | `agent_access/permissions.rs`、`cli.rs` |
 
-**未验收**：未在 TaskDock UI 关闭的情况下执行真实 CLI；未测试不存在的资源、无效参数、并发、服务未启动。
+**已验收（2026-11-18）**：UI 未运行，`status`、`task list/create/complete/get`、`project list`、
+`search`、`sync *`、`context get`、`agent report create` 在隔离库真实执行；冲突 exit 5、NOT_FOUND exit 3、
+用法错误 exit 2、只读 exit 6、未初始化 exit 7。详见 [test-plan.md](test-plan.md) §8。
+**未验收**：并发、Agent Token 身份、完整交接流转。
 
 ## Phase 3：Context Engine
 
@@ -50,7 +55,9 @@
 | 访问记录 | 已完成（代码） | `store::record_context_access` |
 | 阶段二向量/混合检索 | 未实现（按规划延后） | — |
 
-**未验收**：未用真实开发任务验证上下文是否命中正确项目/任务/规划/决策/知识。
+**已验收（2026-11-18）**：`context get --task "Smoke Task" --format json` 真实生成，估算 427 tokens，
+含 items/markdown/recent_changes/scope 等字段。
+**未验收**：项目级上下文、预算裁剪、去重、只读 Agent 越权、访问日志落库。
 
 ## Phase 4：MCP
 
@@ -101,9 +108,11 @@
 
 **已完成（代码 + 静态检查）**
 
-- Rust：`cargo check` 通过（exit 0，2026-11-18，见 `tmp/agent-workspace-check.log`；调度任务 `m-mwlxxth5-042e91`）。
+- Rust：`cargo check` 通过（exit 0，2026-11-18，24.72s，见 `tmp/agent-workspace-check.log`；调度任务 `m-mwly1u9c-fff525`）。
 - 前端：`npx tsc --noEmit` 通过（exit 0，见 `tmp/agent-workspace-tsc.log`）。
-- v76 迁移、统一 service、四入口、Context、Handoff、UI 管理面全部落盘。
+- CLI：`cargo build --bin taskdock` 通过；在隔离数据目录完成迁移、工作空间初始化/导出/导入/冲突/解决、
+  任务创建/完成、Context、报告等冒烟（详见 [test-plan.md](test-plan.md) §8）。
+- 修复：CLI 顶层 `search` 参数解析、任务投影 `revision`、非法信封归档 `_rejected/`。
 
 **部分实现**
 

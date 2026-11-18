@@ -297,9 +297,20 @@ fn execute(db: &Db, principal: &Principal, cli: &Cli, mut args: Vec<String>) -> 
         return Err(usage_err("缺少命令组（status|info|project|task|plan|knowledge|decision|context|agent|search|sync）"));
     }
     let group = args.remove(0);
-    let sub = match args.iter().position(|a| !a.starts_with("--")) {
-        Some(i) => args.remove(i),
-        None => "list".to_string(),
+    // 只有带子命令的命令组才吞掉下一个位置参数；`search <关键词>` 等
+    // 顶层命令必须把该 token 留给自己的位置参数解析，否则关键词会被
+    // 误当成子命令（表现为 VALIDATION: 缺少关键词）。
+    let has_subcommand = matches!(
+        group.as_str(),
+        "project" | "task" | "plan" | "knowledge" | "decision" | "context" | "agent" | "sync"
+    );
+    let sub = if has_subcommand {
+        match args.iter().position(|a| !a.starts_with("--")) {
+            Some(i) => args.remove(i),
+            None => "list".to_string(),
+        }
+    } else {
+        "list".to_string()
     };
     match group.as_str() {
         "status" => {

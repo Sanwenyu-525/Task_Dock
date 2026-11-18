@@ -413,6 +413,8 @@ pub fn scan(db: &Db, principal: &Principal, row: &workspace::WorkspaceRow) -> Ap
     files.truncate(MAX_SCAN_FILES);
     let imported_dir = root.join("inbox").join("_imported");
     let _ = fs::create_dir_all(&imported_dir);
+    let rejected_dir = root.join("inbox").join("_rejected");
+    let _ = fs::create_dir_all(&rejected_dir);
     let now = crate::agents::now_iso();
 
     for (rel, path) in files {
@@ -466,6 +468,8 @@ pub fn scan(db: &Db, principal: &Principal, row: &workspace::WorkspaceRow) -> Ap
                     db, &row.id, "import", "invalid", &rel, "", "", "failed",
                     &err.user_message(), None, "",
                 );
+                // 非法信封归档到失败区，避免每轮扫描重复报错、阻塞 pending 计数。
+                let _ = archive(&path, &rejected_dir, &now);
                 continue;
             }
         };
