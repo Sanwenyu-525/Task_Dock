@@ -203,3 +203,35 @@ MCP bridge 真实监听 `127.0.0.1:6946` 并生成 transport；stdio 客户端�
   `thread 'main' has overflowed its stack`；headless 是测试开关，不能替代产品启动路径。
 - UI 真机、安装包、`buildId` 正式验收、性能基线仍未执行；REST 知识/决策 PATCH、并发双写、
   端口冲突未测；CLI/文件 F8–F10 等未测。
+
+## 12. GUI 运行与 UI 验收更新（2026-11-18 20:25）
+
+本节修正 §11「正常 GUI 启动仍栈溢出」的历史结论；旧记录保留。
+
+**已通过**
+
+- 完整正常启动（不设置 headless、不跳过辅助窗口）：PID 96464，20s 后仍在运行、`Responding=True`、
+  窗口标题 `Task Dock`、stderr 为空；日志含 `setup: 主窗口已创建`、窗口恢复、快捷键、托盘、
+  MCP bridge 生命周期与 `Task Dock 启动完成`。旧 `thread 'main' has overflowed its stack` 未复现。
+- 设置 `TASKDOCK_TEST_SKIP_AUX_WINDOWS=1` 的启动（PID 46284）同样通过。
+- WebView2 CDP 真实窗口：主工作台、能力中心、`Agent 共享` 页与 5 个子页签均渲染；主页面 DOM
+  可见导航、任务/资源概览与窗口控制。
+- 能力中心首次动态 chunk 失败后「重试」成功；chunk 文件存在且 HTTP 200，属开发服务器瞬态。
+
+**部分通过 / 不计为干净证据**
+
+- `Agent 共享` 的「初始化共享空间」按钮真实触发并返回成功，但因多实例共用 WebView2 用户数据，
+  命令落到了另一个实例的数据目录 `tmp\acceptance\files-workspace\round8\data`，创建了
+  `ws_178919e0…` 与 `TaskDock-Agent-Workspace/`。这是测试隔离事故，不是本任务的验收数据；
+  后续必须使用独立 `WEBVIEW2_USER_DATA_FOLDER`。误写目录保留待负责人确认。
+- 500×700 窄窗截图发现键值表值列逐字换行；已改 `agent-access.css` 窄窗上下排列，未复验。
+- 一次 CDP 会话进程于 20:21:22 崩溃（`0xc0000374` 堆损坏，WER APPCRASH）；隔离会话未复现。
+
+**环境阻塞**
+
+- 隔离 WebView2 UI 复测未执行：桌面二进制被失败构建移除，随后 3 次重建均因系统提交内存不足
+  失败（`memory allocation failed` / exit 101 / 0xc0000409）。
+- 全量 `cargo test --lib` 未完成：`src-tauri/src/project_hub/commands.rs:16` 在 test cfg 下
+  `tauri::async_runtime::JoinError` 找不到（非本任务模块），随后 rustc 再次 OOM。
+- CU 桌面控制 `PIP SDK SdkNotInitialized`，系统级视觉、DPI、托盘、通知、剪贴板未走查。
+- 安装包、`buildId`、性能基线仍未开始。

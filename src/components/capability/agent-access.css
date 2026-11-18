@@ -167,6 +167,20 @@
     grid-template-columns: 1fr;
   }
 
+  /* 窄窗下键值表改为上下排列，避免工作空间 ID / 路径被压成每行几个字符。 */
+  .capability-panel .agent-access .cap-kv {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .capability-panel .agent-access .cap-kv dt {
+    margin-top: 6px;
+  }
+
+  .capability-panel .agent-access .cap-kv dt:first-child {
+    margin-top: 0;
+  }
+
   .capability-panel .agent-access-table th:nth-child(n + 4),
   .capability-panel .agent-access-table td:nth-child(n + 4) {
     display: none;

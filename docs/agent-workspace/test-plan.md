@@ -255,3 +255,50 @@ CLI `task get` revision=3，`task list` 每条含 revision。
 **仍未通过**：正常桌面启动（不设置 headless）仍在主窗口 `WebviewWindowBuilder::build()` 处
 `thread 'main' has overflowed its stack`，因此 UI 真机、托盘交互、通知、剪贴板体验、安装包与
 `buildId` 正式验收均未执行；MCP 结论仅覆盖协议与后端服务层。
+
+## 12. GUI / UI 真实运行更新（2026-11-18 20:18–20:25）
+
+本节修正 §11「正常桌面启动仍未通过」的历史结论；§11 原文保留。
+
+**完整正常启动：通过（当前构建）**
+
+- 不设置 `TASKDOCK_TEST_HEADLESS`、不设置 `TASKDOCK_TEST_SKIP_AUX_WINDOWS`，启动
+  `task-dock.exe --autostart`（数据目录 `tmp/agent-workspace-gui2`）。
+- 20s 后 PID 96464 `HasExited=False`、`Responding=True`、`MainWindowTitle=Task Dock`；
+  stderr 为空；stdout 依次出现 `setup: 主窗口已创建`、窗口恢复、快捷键、托盘、MCP bridge、
+  `Task Dock 启动完成`。此前 `thread 'main' has overflowed its stack` 未复现。
+- 另一次设置 `TASKDOCK_TEST_SKIP_AUX_WINDOWS=1` 的启动（PID 46284）同样正常；说明当前构建的
+  主窗口与辅助窗口创建路径均可运行。旧栈溢出日志保留为历史证据，根因未最终确认（更接近旧 debug
+  增量产物或共享 WebView2 环境，而非可稳定复现的代码缺陷）。
+
+**UI 渲染：部分通过**
+
+- 通过 WebView2 CDP 连接真实窗口（`--remote-debugging-port=9222/9223`）读取 DOM 并截图：
+  主工作台、能力中心、`Agent 共享` 页均可渲染；接入/活动/交接/同步/权限 5 个子页签存在。
+- 能力中心首次动态 import `CapabilityCenterPanel-BHiA6hOy.js` 失败，点「重试」后成功；文件存在且
+  HTTP 200，属 Vite/热更新瞬态，不是缺失产物。
+- 窄窗 500×700 截图发现 `cap-kv` 值列被压成每行几个字符；已在 `agent-access.css` 的
+  `@container cap-body (max-width:560px)` 下改为上下排列，尚未在重建后的窗口复验。
+
+**测试隔离事故（必须记录）**
+
+- 多个 Task Dock 实例未隔离 `WEBVIEW2_USER_DATA_FOLDER` 时共用 WebView2 用户数据；CDP 实际操作的
+  UI 可能属于另一个正在运行的实例。点击「初始化共享空间」后，工作空间写入了另一个任务的
+  `tmp\acceptance\files-workspace\round8\data\task-dock.db`：
+  `workspace_id=ws_178919e0c30a428f828a19c54da75896`、DB 行 `b448b049-…`、
+  目录 `...\round8\data\TaskDock-Agent-Workspace`（创建时间 20:23:28）。
+- 该次 UI 初始化不计为干净验收证据；后续 UI 测试必须使用独立 `WEBVIEW2_USER_DATA_FOLDER`。
+  误写目录未删除，等待该任务负责人确认后清理；不要把它当作本任务产物。
+
+**未完成 / 环境阻塞**
+
+- 隔离 WebView2 的 UI 复测未执行：桌面二进制在后续 `cargo build` 失败时被移除，
+  重建连续 3 次因系统提交内存不足失败（`memory allocation failed`、exit 101/0xc0000409）。
+- 全量 `cargo test --lib` 未完成：先在 test cfg 下出现与本任务无关的
+  `src-tauri/src/project_hub/commands.rs:16` `tauri::async_runtime::JoinError` 找不到；随后 rustc
+  再次 `memory allocation failed`（exit 101 / 0xc0000409）。不得记为通过。
+- 一次 CDP 会话中进程于 20:21:22 崩溃（`0xc0000374`，ntdll 堆损坏，
+  WER `APPCRASH`）；隔离会话未复现，需在稳定构建上复测。
+- CU 桌面控制初始化失败（PIP SDK `SdkNotInitialized`），系统级视觉/DPI/托盘/通知走查未执行。
+- 浅色/深色主题、两套视觉预设、320/400 窄窗、DPI、真实通知与剪贴板仍未走查；安装包与
+  `buildId` 验收未开始。

@@ -157,3 +157,18 @@
   headless 仅用于验收，不是产品能力。Phase 7 UI 真机、安装包、性能基线仍为未执行。
 
 证据与用例见 [test-plan.md](test-plan.md) §10–§11、[acceptance-report.md](acceptance-report.md) §11。
+
+## GUI / UI 状态更新（2026-11-18 20:25）
+
+- **正常 GUI 启动**：已从“主线程栈溢出阻塞”更新为“当前构建通过”。完整启动（不设 headless、
+  不跳过辅助窗口）PID 96464，20s 后仍响应，标题 `Task Dock`，stderr 为空。旧栈溢出未复现，
+  根因未最终确认。
+- **UI 渲染**：WebView2 CDP 实测主工作台、能力中心、`Agent 共享` 与 5 个子页签正常渲染；
+  能力中心首次动态 chunk 失败后重试成功。
+- **UI 写链路**：初始化按钮触发成功，但多实例共用 WebView2 导致写入另一任务 `round8` 数据目录，
+  不作为本任务干净验收证据；待独立 `WEBVIEW2_USER_DATA_FOLDER` 复测。
+- **窄窗修复**：`agent-access.css` 在小容器下将 `cap-kv` 改为上下排列，避免路径逐字换行。
+- **未完成**：隔离 WebView2 UI 复测、深浅主题/视觉预设/320·400/DPI/真实通知/托盘、安装包、
+  `buildId`、性能基线。当前桌面二进制因重建 OOM 被移除，重建 3 次失败（内存不足）。
+
+证据见 [test-plan.md](test-plan.md) §12、[acceptance-report.md](acceptance-report.md) §12。
