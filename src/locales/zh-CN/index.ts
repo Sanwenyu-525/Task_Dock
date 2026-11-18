@@ -784,7 +784,7 @@ export const zhCN = {
   "nav.history": "历史",
   "history.pageTitle": "历史记录",
   "history.pageSubtitle": "活动、任务与操作的时间记录，可搜索、可追溯",
-  "nav.roadmap": "规划中心",
+  "nav.roadmap": "项目中枢",
   "nav.help": "帮助",
   "nav.diagnostics": "诊断中心",
   "nav.resource": "资源管理",

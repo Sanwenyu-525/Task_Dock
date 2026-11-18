@@ -2681,8 +2681,9 @@ fn open_reader(path: &Path) -> AppResult<Connection> {
 use rusqlite::OptionalExtension;
 
 /// 测试专用：迁移列表只读访问（用于构造历史 schema 夹具，生产代码不暴露迁移文本）。
-#[cfg(test)]
-pub(crate) fn migrations_for_test() -> &'static [(i64, &'static str)] {
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn migrations_for_test() -> &'static [(i64, &'static str)] {
     MIGRATIONS
 }
 

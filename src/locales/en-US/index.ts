@@ -803,7 +803,7 @@ export const enUS: Record<MessageKey, string> = {
   "nav.history": "History",
   "history.pageTitle": "History",
   "history.pageSubtitle": "A searchable, traceable timeline of activity, tasks and operations",
-  "nav.roadmap": "Roadmap",
+  "nav.roadmap": "Project Hub",
   "nav.help": "Help",
   "nav.diagnostics": "Diagnostics",
   "nav.resource": "Resources",

@@ -6815,3 +6815,180 @@ export const capabilityRecipeRuns = (recipeId?: string, offset = 0, limit = 50) 
   invoke<CapabilityRecipeRunPage>("capability_recipe_runs", { recipeId, offset, limit });
 export const capabilityRecipeRunGet = (id: string) =>
   invoke<CapabilityRecipeRun>("capability_recipe_run_get", { id });
+
+// ── 项目中枢（v78）：项目根 + 计划/阶段/能力/任务/交付物事实 ─────────
+export interface ProjectHubProjectSummary {
+  id: string;
+  name: string;
+  kind: string;
+  status: string;
+  description: string;
+  goal: string;
+  targetDate: string | null;
+  activePlanId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  phaseCount: number;
+  taskCount: number;
+  completedTaskCount: number;
+  capabilityCount: number;
+  capabilityGapCount: number;
+  deliverableCount: number;
+}
+
+export interface ProjectHubGoal {
+  id: string;
+  parentId: string | null;
+  title: string;
+  note: string;
+  kind: string;
+  metric: string;
+  targetValue: number | null;
+  unit: string;
+  status: string;
+  source: string;
+  sortOrder: number;
+}
+
+export interface ProjectHubPhase {
+  id: string;
+  name: string;
+  description: string;
+  targetDate: string | null;
+  startDate: string | null;
+  sortOrder: number;
+  taskCount: number;
+  completedTaskCount: number;
+}
+
+export interface ProjectHubMilestone {
+  id: string;
+  name: string;
+  description: string;
+  targetDate: string | null;
+  phaseId: string | null;
+  sortOrder: number;
+}
+
+export interface ProjectHubCapability {
+  id: string;
+  capabilityId: string;
+  name: string;
+  category: string;
+  description: string;
+  mastery: string;
+  necessity: string;
+  targetLevel: string;
+  assessmentLevel: string | null;
+  status: string;
+  impact: string;
+  alternative: string;
+  phaseId: string | null;
+  resourceCount: number;
+  availableResourceCount: number;
+}
+
+export interface ProjectHubTask {
+  id: string;
+  title: string;
+  status: string;
+  priority: number;
+  dueAt: string | null;
+  completedAt: string | null;
+  phaseId: string | null;
+  milestoneId: string | null;
+}
+
+export interface ProjectHubDeliverable {
+  id: string;
+  title: string;
+  kind: string;
+  status: string;
+  phaseId: string | null;
+  targetPath: string;
+  externalUrl: string;
+  evidence: string;
+  producedAt: string | null;
+  acceptedAt: string | null;
+}
+
+export interface ProjectHubEvent {
+  id: string;
+  kind: string;
+  actor: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface ProjectHubSnapshot {
+  project: ProjectHubProjectSummary;
+  planId: string | null;
+  goals: ProjectHubGoal[];
+  phases: ProjectHubPhase[];
+  milestones: ProjectHubMilestone[];
+  capabilities: ProjectHubCapability[];
+  tasks: ProjectHubTask[];
+  deliverables: ProjectHubDeliverable[];
+  events: ProjectHubEvent[];
+  risks: string[];
+}
+
+export interface ProjectHubCreateGoalInput {
+  title: string;
+  note?: string;
+}
+
+export interface ProjectHubCreateMilestoneInput {
+  name: string;
+  description?: string;
+  targetDate?: string | null;
+}
+
+export interface ProjectHubCreatePhaseInput {
+  name: string;
+  description?: string;
+  targetDate?: string | null;
+  startDate?: string | null;
+  milestones?: ProjectHubCreateMilestoneInput[];
+}
+
+export interface ProjectHubCreateTaskInput {
+  title: string;
+  description?: string;
+  phaseIndex?: number | null;
+  dueAt?: string | null;
+  priority?: number | null;
+}
+
+export interface ProjectHubCreateCapabilityInput {
+  name: string;
+  category?: string;
+  necessity?: string;
+  targetLevel?: string;
+  impact?: string;
+  alternative?: string;
+}
+
+export interface ProjectHubCreateInput {
+  name: string;
+  kind: string;
+  description?: string;
+  goal?: string;
+  targetDate?: string | null;
+  rootPath?: string | null;
+  templateId?: string | null;
+  clientRequestId?: string | null;
+  goals?: ProjectHubCreateGoalInput[];
+  phases?: ProjectHubCreatePhaseInput[];
+  tasks?: ProjectHubCreateTaskInput[];
+  capabilities?: ProjectHubCreateCapabilityInput[];
+}
+
+export const projectHubListProjects = () =>
+  invoke<ProjectHubProjectSummary[]>("project_hub_list_projects", {});
+
+export const projectHubGetProject = (projectId: string) =>
+  invoke<ProjectHubSnapshot>("project_hub_get_project", { projectId });
+
+export const projectHubCreateProject = (input: ProjectHubCreateInput) =>
+  invoke<ProjectHubSnapshot>("project_hub_create_project", { input });

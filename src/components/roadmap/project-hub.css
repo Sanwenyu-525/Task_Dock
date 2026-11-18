@@ -1,0 +1,540 @@
+/* 项目中枢（v78）：只使用语义 Token，颜色/圆角/阴影沿用统一主题。 */
+
+.project-hub {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 10px;
+}
+
+.project-hub .ph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+.project-hub .ph-project-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.project-hub .ph-project-select .select {
+  min-width: 180px;
+  max-width: 320px;
+}
+
+.project-hub .ph-toolbar-meta {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-hub .ph-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--status-danger);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.project-hub .ph-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 240px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-card);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.project-hub .ph-empty h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+.project-hub .ph-empty p {
+  margin: 0;
+  max-width: 420px;
+  line-height: 1.6;
+  font-size: 13px;
+}
+
+.project-hub .ph-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 12px;
+}
+
+.project-hub .ph-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+}
+
+.project-hub .ph-hero-eyebrow {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.project-hub .ph-hero h2 {
+  margin: 2px 0 6px;
+  font-size: 20px;
+  color: var(--text-primary);
+}
+
+.project-hub .ph-hero p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  max-width: 720px;
+}
+
+.project-hub .ph-hero-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 160px;
+}
+
+.project-hub .ph-hero-side span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.project-hub .ph-hero-side strong {
+  color: var(--text-primary);
+  font-size: 14px;
+  text-align: right;
+}
+
+.project-hub .ph-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.project-hub .ph-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+}
+
+.project-hub .ph-metric span,
+.project-hub .ph-metric small {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.project-hub .ph-metric strong {
+  color: var(--text-primary);
+  font-size: 18px;
+}
+
+.project-hub .ph-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 6px;
+}
+
+.project-hub .ph-tabs .seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.project-hub .ph-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.project-hub .ph-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  align-items: start;
+}
+
+.project-hub .ph-section {
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--card-face);
+  min-width: 0;
+}
+
+.project-hub .ph-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.project-hub .ph-muted {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.project-hub .ph-list,
+.project-hub .ph-events,
+.project-hub .ph-tasks,
+.project-hub .ph-milestones {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.project-hub .ph-list li,
+.project-hub .ph-events li,
+.project-hub .ph-tasks li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.project-hub .ph-list.warn li {
+  color: var(--status-warning);
+}
+
+.project-hub .ph-events li span,
+.project-hub .ph-tasks li span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-hub .ph-events time,
+.project-hub .ph-tasks time,
+.project-hub .ph-milestones time {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.project-hub .ph-tasks .done {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+}
+
+.project-hub .ph-next {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.project-hub .ph-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  flex: 0 0 auto;
+}
+
+.project-hub .ph-dot.ok {
+  background: var(--status-success);
+}
+
+.project-hub .ph-phases {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.project-hub .ph-phase {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  padding: 10px;
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.project-hub .ph-phase-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.project-hub .ph-phase-head strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.project-hub .ph-phase-head span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.project-hub .ph-phase p {
+  margin: 4px 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.project-hub .ph-milestones li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.project-hub .ph-cap-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+
+.project-hub .ph-cap {
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  min-width: 0;
+}
+
+.project-hub .ph-cap > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.project-hub .ph-cap strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.project-hub .ph-cap p,
+.project-hub .ph-cap small {
+  margin: 4px 0 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+  display: block;
+}
+
+.project-hub .ph-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.project-hub .ph-tag.required {
+  color: var(--status-warning);
+  border-color: var(--status-warning);
+}
+
+/* 新建项目对话框：内容区纵向排布，复用统一 Dialog 的遮罩/焦点/关闭。 */
+.project-hub .ph-dialog-panel {
+  width: min(760px, calc(100vw - 48px));
+}
+
+.project-hub .ph-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(70vh, 640px);
+  overflow: auto;
+}
+
+.project-hub .ph-mode-switch {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.project-hub .ph-create-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.project-hub .ph-intent {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.project-hub .ph-create-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.project-hub .ph-template-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.project-hub .ph-template {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.project-hub .ph-template:hover {
+  border-color: var(--accent);
+}
+
+.project-hub .ph-template span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.project-hub .ph-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.project-hub .ph-draft-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.project-hub .ph-draft-head .field {
+  flex: 1;
+}
+
+.project-hub .ph-draft-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.project-hub .ph-draft-grid h4,
+.project-hub .ph-uncertain h4 {
+  margin: 0 0 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.project-hub .ph-draft-grid ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-hub .ph-draft-grid li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.project-hub .ph-draft-grid small {
+  color: var(--text-tertiary);
+}
+
+.project-hub .ph-uncertain {
+  padding: 8px 10px;
+  border-left: 3px solid var(--status-warning);
+  background: var(--surface-raised);
+  border-radius: var(--radius-card);
+}
+
+.project-hub .ph-uncertain p {
+  margin: 2px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.project-hub .ph-dialog-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--status-danger);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .project-hub .ph-hero,
+  .project-hub .ph-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .project-hub .ph-hero-side {
+    align-items: flex-start;
+  }
+
+  .project-hub .ph-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .project-hub .ph-toolbar-meta {
+    margin-left: 0;
+    width: 100%;
+  }
+}

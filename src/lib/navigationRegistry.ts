@@ -373,7 +373,7 @@ export const NAV_ENTRIES: readonly NavEntry[] = [
     // 当前项目的轻量视图（功能列表 / 步骤勾选 / 跳转完整页）。
     surfaces: ["left", "capsule"],
     labelKey: "nav.roadmap",
-    label: "规划中心",
+    label: "项目中枢",
     icon: MapIcon,
     tabs: ["roadmap"],
     group: "planning",

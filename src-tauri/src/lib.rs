@@ -1522,6 +1522,9 @@ pub fn run() {
             commands::planning::planning_delete_milestone,
             commands::planning::planning_activity_page,
             commands::planning::planning_add_note,
+            project_hub::commands::project_hub_list_projects,
+            project_hub::commands::project_hub_get_project,
+            project_hub::commands::project_hub_create_project,
             // Agent MCP Server（v37）：管理命令（第二轮 UI 使用）
             mcp::commands::mcp_status,
             mcp::commands::mcp_agent_list,
