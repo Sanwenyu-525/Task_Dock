@@ -536,11 +536,11 @@ async fn dispatch(
             Ok((serde_json::to_value(items)?, Some(page)))
         }
         ("GET", ["projects", _, "status"]) => {
-            let id = seg(0);
+            let id = seg(1);
             Ok((serde_json::to_value(service::project_status(db, principal, id)?)?, None))
         }
         ("GET", ["projects", _]) => {
-            let id = seg(0);
+            let id = seg(1);
             Ok((serde_json::to_value(service::get_project(db, principal, id)?)?, None))
         }
         ("GET", ["tasks"]) => {
@@ -563,20 +563,25 @@ async fn dispatch(
             Ok((serde_json::to_value(task)?, None))
         }
         ("GET", ["tasks", _]) => {
-            let id = seg(0);
+            let id = seg(1);
             Ok((serde_json::to_value(service::fetch_task(db, principal, id)?)?, None))
         }
         ("PATCH", ["tasks", _]) => {
-            let id = seg(0);
-            let patch: service::TaskPatch = parse_body(body)?;
-            let base = query.get("base_revision").and_then(|v| v.parse().ok());
+            let id = seg(1);
+            let value: Value = parse_body(body)?;
+            let base = value
+                .get("base_revision")
+                .and_then(Value::as_i64)
+                .or_else(|| query.get("base_revision").and_then(|v| v.parse().ok()));
+            let patch: service::TaskPatch = serde_json::from_value(value)
+                .map_err(|e| AppError::Validation(format!("请求体字段非法: {e}")))?;
             Ok((
                 serde_json::to_value(service::update_task(db, principal, id, patch, base)?)?,
                 None,
             ))
         }
         ("POST", ["tasks", _, "complete"]) => {
-            let id = seg(0);
+            let id = seg(1);
             let base = query.get("base_revision").and_then(|v| v.parse().ok());
             Ok((
                 serde_json::to_value(service::complete_task(db, principal, id, base)?)?,
@@ -593,7 +598,7 @@ async fn dispatch(
             Ok((serde_json::to_value(items)?, Some(page)))
         }
         ("GET", ["plans", _]) => {
-            let id = seg(0);
+            let id = seg(1);
             Ok((serde_json::to_value(service::get_plan(db, principal, id)?)?, None))
         }
         ("GET", ["knowledge", "search"]) => {
@@ -610,7 +615,7 @@ async fn dispatch(
             Ok((serde_json::to_value(items)?, Some(page)))
         }
         ("GET", ["knowledge", _]) => {
-            let id = seg(0);
+            let id = seg(1);
             Ok((serde_json::to_value(service::get_knowledge(db, principal, id)?)?, None))
         }
         ("POST", ["knowledge"]) => {
@@ -618,7 +623,7 @@ async fn dispatch(
             Ok((serde_json::to_value(doc)?, None))
         }
         ("PATCH", ["knowledge", _]) => {
-            let id = seg(0);
+            let id = seg(1);
             let patch: service::KnowledgePatch = parse_body(body)?;
             let base = query.get("base_revision").and_then(|v| v.parse().ok());
             Ok((
@@ -649,7 +654,7 @@ async fn dispatch(
             Ok((serde_json::to_value(created)?, None))
         }
         ("GET", ["decisions", _]) => {
-            let id = seg(0);
+            let id = seg(1);
             Ok((serde_json::to_value(store::get_decision(db, id)?)?, None))
         }
         ("GET", ["context"]) => {
@@ -697,11 +702,11 @@ async fn dispatch(
             Ok((serde_json::to_value(created)?, None))
         }
         ("GET", ["agents", "handoffs", _]) => {
-            let id = seg(0);
+            let id = seg(1);
             Ok((serde_json::to_value(handoff::get_handoff(db, principal, id)?)?, None))
         }
         ("POST", ["agents", "handoffs", _, "accept"]) => {
-            let id = seg(0);
+            let id = seg(1);
             let base = query
                 .get("base_revision")
                 .and_then(|v| v.parse().ok())
@@ -709,7 +714,7 @@ async fn dispatch(
             Ok((serde_json::to_value(handoff::accept_handoff(db, principal, id, base)?)?, None))
         }
         ("POST", ["agents", "handoffs", _, "reject"]) => {
-            let id = seg(0);
+            let id = seg(1);
             let base = query
                 .get("base_revision")
                 .and_then(|v| v.parse().ok())
@@ -721,7 +726,7 @@ async fn dispatch(
             Ok((serde_json::to_value(handoff::reject_handoff(db, principal, id, base, &reason)?)?, None))
         }
         ("POST", ["agents", "handoffs", _, "complete"]) => {
-            let id = seg(0);
+            let id = seg(1);
             let base = query
                 .get("base_revision")
                 .and_then(|v| v.parse().ok())
@@ -762,7 +767,7 @@ async fn dispatch(
             Ok((serde_json::to_value(file_sync::list_conflicts(db)?)?, None))
         }
         ("POST", ["sync", "conflicts", _, "resolve"]) => {
-            let id = seg(0);
+            let id = seg(1);
             let resolution = serde_json::from_slice::<Value>(body)
                 .ok()
                 .and_then(|v| v.get("resolution").and_then(|r| r.as_str()).map(str::to_string))

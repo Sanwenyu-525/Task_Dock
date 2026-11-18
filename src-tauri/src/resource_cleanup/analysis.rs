@@ -8,7 +8,8 @@
 //! - 只接受本地盘符路径（`C:\...`）；网络/UNC 路径暂不支持，避免长时间阻塞。
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
+use std::fs::ReadDir;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,8 @@ const MAX_ENTRIES: usize = 240_000;
 const TIME_BUDGET: Duration = Duration::from_secs(8);
 /// 最大递归深度（防御异常深的目录链）。
 const MAX_DEPTH: usize = 40;
+/// 每个分支一轮最多执行的目录遍历步骤。
+const BRANCH_BATCH: usize = 16;
 /// 返回的直接子目录数量上限。
 const MAX_FOLDERS: usize = 40;
 /// 返回的最大文件数量上限。
@@ -55,7 +58,7 @@ pub struct DiskScanReport {
     pub sampled_at: String,
     pub total_bytes: u64,
     pub total_files: u64,
-    /// 实际进入的子目录数（不含扫描根，不含链接）。
+    /// 扫描中发现的子目录数（不含扫描根和链接）。
     pub total_dirs: u64,
     /// 扫描根下直接存放的文件（如 pagefile.sys），不计入 `folders`。
     pub root_files_bytes: u64,
@@ -142,8 +145,8 @@ fn scan_with_limits(
         largest: BinaryHeap::new(),
     };
 
-    // 先列出根的直接子目录，保证空目录也能显示；再逐个递归统计。
-    let mut children: Vec<(String, PathBuf)> = Vec::new();
+    // 先列出根的直接子目录，保证空目录也能显示。
+    let mut branches = VecDeque::new();
     match std::fs::read_dir(root) {
         Ok(read_dir) => {
             for item in read_dir {
@@ -169,7 +172,16 @@ fn scan_with_limits(
                 }
                 if child_meta.is_dir() {
                     walk.total_dirs = walk.total_dirs.saturating_add(1);
-                    children.push((item.file_name().to_string_lossy().to_string(), child));
+                    branches.push_back(Branch {
+                        folder: DiskScanFolder {
+                            name: item.file_name().to_string_lossy().into_owned(),
+                            path: child.to_string_lossy().into_owned(),
+                            bytes: None,
+                            files: None,
+                        },
+                        pending: VecDeque::from([(child, 1)]),
+                        current: None,
+                    });
                 } else if child_meta.is_file() {
                     let size = child_meta.len();
                     walk.total_bytes = walk.total_bytes.saturating_add(size);
@@ -185,32 +197,20 @@ fn scan_with_limits(
         }
     }
 
-    let mut folders = Vec::with_capacity(children.len());
-    for (name, child) in children {
-        // 预算已耗尽：剩余子目录保留条目但标记「未扫描」，不伪造 0 B。
-        if walk.truncated || walk.out_of_budget() {
-            walk.truncated = true;
-            folders.push(DiskScanFolder {
-                name,
-                path: child.to_string_lossy().to_string(),
-                bytes: None,
-                files: None,
-            });
-            continue;
-        }
-        // 递归统计该子目录；条目/时间上限由同一个 Walk 统一控制。
-        let mut sub = SubWalk {
-            walk: &mut walk,
-            bytes: 0,
-            files: 0,
+    let mut folders = Vec::with_capacity(branches.len());
+    while !walk.out_of_budget() {
+        let Some(mut branch) = branches.pop_front() else {
+            break;
         };
-        sub.visit(&child, 1);
-        folders.push(DiskScanFolder {
-            name,
-            path: child.to_string_lossy().to_string(),
-            bytes: Some(sub.bytes),
-            files: Some(sub.files),
-        });
+        if branch.advance(&mut walk) {
+            branches.push_back(branch);
+        } else {
+            folders.push(branch.folder);
+        }
+    }
+    if !branches.is_empty() {
+        walk.truncated = true;
+        folders.extend(branches.into_iter().map(|branch| branch.folder));
     }
 
     // 已扫描的按占用降序；未扫描的排在最后，避免被误读为 0 B 的「空目录」。
@@ -256,60 +256,78 @@ fn scan_with_limits(
     })
 }
 
-/// 统计单个子目录时只累积该子树的字节/文件/目录数，避免重复扫描。
-struct SubWalk<'a> {
-    walk: &'a mut Walk,
-    bytes: u64,
-    files: u64,
+/// 顶层子树的扫描进度。只保留一个打开的目录，后续目录仅保存路径。
+struct Branch {
+    folder: DiskScanFolder,
+    pending: VecDeque<(PathBuf, usize)>,
+    current: Option<(ReadDir, usize)>,
 }
 
-impl SubWalk<'_> {
-    fn visit(&mut self, dir: &Path, depth: usize) {
-        if self.walk.truncated {
-            return;
-        }
-        if self.walk.out_of_budget() || depth > self.walk.max_depth {
-            self.walk.truncated = true;
-            return;
-        }
-        let read_dir = match std::fs::read_dir(dir) {
-            Ok(read_dir) => read_dir,
-            Err(_) => {
-                self.walk.skipped_errors = self.walk.skipped_errors.saturating_add(1);
-                return;
+impl Branch {
+    /// 返回是否还有未遍历的目录或条目。
+    fn advance(&mut self, walk: &mut Walk) -> bool {
+        for _ in 0..BRANCH_BATCH {
+            if walk.out_of_budget() {
+                break;
             }
-        };
-        for item in read_dir {
-            if self.walk.out_of_budget() {
-                self.walk.truncated = true;
-                return;
-            }
-            self.walk.entries_left -= 1;
+            let Some((entries, depth)) = self.current.as_mut() else {
+                let Some((dir, depth)) = self.pending.pop_front() else {
+                    return false;
+                };
+                if depth > walk.max_depth {
+                    walk.truncated = true;
+                    continue;
+                }
+                // 排队期间目录可能已被替换，打开前重新检查链接属性。
+                let Ok(metadata) = std::fs::symlink_metadata(&dir) else {
+                    walk.skipped_errors = walk.skipped_errors.saturating_add(1);
+                    continue;
+                };
+                if metadata.file_type().is_symlink() || crate::shelf::is_reparse_point(&metadata) {
+                    walk.skipped_links = walk.skipped_links.saturating_add(1);
+                    continue;
+                }
+                self.folder.bytes.get_or_insert(0);
+                self.folder.files.get_or_insert(0);
+                match std::fs::read_dir(dir) {
+                    Ok(entries) => self.current = Some((entries, depth)),
+                    Err(_) => walk.skipped_errors = walk.skipped_errors.saturating_add(1),
+                }
+                continue;
+            };
+            let Some(item) = entries.next() else {
+                self.current = None;
+                continue;
+            };
+            walk.entries_left -= 1;
             let Ok(item) = item else {
-                self.walk.skipped_errors = self.walk.skipped_errors.saturating_add(1);
+                walk.skipped_errors = walk.skipped_errors.saturating_add(1);
                 continue;
             };
             let path = item.path();
             let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-                self.walk.skipped_errors = self.walk.skipped_errors.saturating_add(1);
+                walk.skipped_errors = walk.skipped_errors.saturating_add(1);
                 continue;
             };
             if metadata.file_type().is_symlink() || crate::shelf::is_reparse_point(&metadata) {
-                self.walk.skipped_links = self.walk.skipped_links.saturating_add(1);
+                walk.skipped_links = walk.skipped_links.saturating_add(1);
                 continue;
             }
             if metadata.is_dir() {
-                self.walk.total_dirs = self.walk.total_dirs.saturating_add(1);
-                self.visit(&path, depth + 1);
+                walk.total_dirs = walk.total_dirs.saturating_add(1);
+                self.pending.push_back((path, *depth + 1));
             } else if metadata.is_file() {
                 let size = metadata.len();
-                self.bytes = self.bytes.saturating_add(size);
-                self.files = self.files.saturating_add(1);
-                self.walk.total_bytes = self.walk.total_bytes.saturating_add(size);
-                self.walk.total_files = self.walk.total_files.saturating_add(1);
-                self.walk.remember_file(size, &path);
+                let bytes = self.folder.bytes.get_or_insert(0);
+                *bytes = bytes.saturating_add(size);
+                let files = self.folder.files.get_or_insert(0);
+                *files = files.saturating_add(1);
+                walk.total_bytes = walk.total_bytes.saturating_add(size);
+                walk.total_files = walk.total_files.saturating_add(1);
+                walk.remember_file(size, &path);
             }
         }
+        self.current.is_some() || !self.pending.is_empty()
     }
 }
 
@@ -428,6 +446,46 @@ mod tests {
         assert!(report.folders.iter().all(|folder| folder.bytes.is_none()));
         assert!(report.folders.iter().all(|folder| folder.files.is_none()));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn large_top_level_directories_share_the_scan_budget() {
+        let root = temp_root("fair-budget");
+        for name in ["alpha", "beta"] {
+            let child = root.join(name);
+            fs::create_dir(&child).unwrap();
+            for index in 0..32 {
+                fs::write(child.join(format!("{index:02}.bin")), b"x").unwrap();
+            }
+        }
+
+        let result = scan_with_limits(&root, 22, Duration::from_secs(5), 8);
+        fs::remove_dir_all(root).unwrap();
+        let report = result.unwrap();
+        assert!(report.truncated);
+        assert_eq!(report.total_files, 20);
+        assert_eq!(report.folders.len(), 2);
+        assert!(report
+            .folders
+            .iter()
+            .all(|folder| folder.files.unwrap_or(0) > 0));
+    }
+
+    #[test]
+    fn depth_limit_only_skips_the_overdeep_subtree() {
+        let root = temp_root("depth-budget");
+        fs::create_dir_all(root.join("alpha/deep/skipped")).unwrap();
+        fs::create_dir_all(root.join("beta")).unwrap();
+        fs::write(root.join("alpha/deep/skipped/hidden.bin"), b"x").unwrap();
+        fs::write(root.join("beta/visible.bin"), b"abc").unwrap();
+
+        let result = scan_with_limits(&root, 100, Duration::from_secs(5), 2);
+        fs::remove_dir_all(root).unwrap();
+        let report = result.unwrap();
+        assert!(report.truncated);
+        assert_eq!(report.total_bytes, 3);
+        assert_eq!(report.total_files, 1);
+        assert_eq!(report.folders[0].name, "beta");
     }
 
     #[test]

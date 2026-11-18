@@ -36,12 +36,14 @@ pub mod navigation;
 pub mod nlp;
 mod notes;
 pub mod notification_window;
+pub mod project_hub;
 pub mod quick_capture;
 pub mod recurrence;
 mod project_workspace_window;
 pub mod recycle;
 pub mod resource_cleanup;
 pub mod scheduler;
+pub mod secure_vault;
 pub mod shelf;
 pub mod tab_hint;
 pub mod tab_popups;
@@ -418,6 +420,12 @@ fn restore_window(app: &AppHandle, db: &Db) {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             let _ = win_for_close.hide();
+            if let Some(st) = win_for_close
+                .app_handle()
+                .try_state::<std::sync::Arc<secure_vault::VaultState>>()
+            {
+                st.lock(secure_vault::session::LockReason::WindowHidden);
+            }
         }
     });
 
@@ -454,6 +462,22 @@ fn restore_window(app: &AppHandle, db: &Db) {
     win.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Focused(true)) {
             context_menu::schedule_blur_close(win_for_menu.app_handle());
+        }
+    });
+
+    // 保险箱：窗口失焦记为后台；后台时长由后端 ticker 判定（前端定时器不作安全机制）。
+    let win_for_vault = win.clone();
+    win.on_window_event(move |event| {
+        let Some(st) = win_for_vault
+            .app_handle()
+            .try_state::<std::sync::Arc<secure_vault::VaultState>>()
+        else {
+            return;
+        };
+        match event {
+            tauri::WindowEvent::Focused(false) => st.on_background(true),
+            tauri::WindowEvent::Focused(true) => st.on_background(false),
+            _ => {}
         }
     });
 }
@@ -748,6 +772,11 @@ pub fn run() {
                 tracing::info!("智能剪贴板已停用：不启动监听与后台维护");
             }
             handle.manage(clipboard_rt);
+
+            // 安全保险箱（P1）：独立库 + 内存会话。未建库时不创建连接；
+            // 锁定 ticker 在构造时启动（单一后台任务，2s 判定一次）。
+            let vault_state = secure_vault::VaultState::new(handle.clone(), data_dir.clone());
+            handle.manage(vault_state.clone());
 
             // 文件暂存架（v0.8）：独立托管目录 data_dir/shelf，与剪贴板资产互不影响
             let shelf_state = Arc::new(
@@ -2025,6 +2054,46 @@ pub fn run() {
             collab::commands::collab_ai_cancel,
             collab::commands::collab_ai_notice,
             collab::commands::collab_audit_list,
+            // 安全保险箱（P1）：全部命令都要求桌面端 `VaultState`，
+            // CLI / MCP / REST 进程不 manage 该状态，因此结构性不可达。
+            secure_vault::commands::vault_status,
+            secure_vault::commands::vault_create,
+            secure_vault::commands::vault_create_confirm_recovery,
+            secure_vault::commands::vault_unlock,
+            secure_vault::commands::vault_lock,
+            secure_vault::commands::vault_touch,
+            secure_vault::commands::vault_app_background,
+            secure_vault::commands::vault_change_master_password,
+            secure_vault::commands::vault_recover_set_password,
+            secure_vault::commands::vault_regenerate_recovery_key,
+            secure_vault::commands::vault_delete,
+            secure_vault::commands::vault_record_list,
+            secure_vault::commands::vault_record_get,
+            secure_vault::commands::vault_record_create,
+            secure_vault::commands::vault_record_update,
+            secure_vault::commands::vault_record_delete,
+            secure_vault::commands::vault_record_restore,
+            secure_vault::commands::vault_record_toggle_favorite,
+            secure_vault::commands::vault_record_mark_used,
+            secure_vault::commands::vault_search_records,
+            secure_vault::commands::vault_category_list,
+            secure_vault::commands::vault_category_create,
+            secure_vault::commands::vault_category_rename,
+            secure_vault::commands::vault_category_delete,
+            secure_vault::commands::vault_tag_list,
+            secure_vault::commands::vault_tag_create,
+            secure_vault::commands::vault_tag_rename,
+            secure_vault::commands::vault_tag_delete,
+            secure_vault::commands::vault_settings_get,
+            secure_vault::commands::vault_settings_set,
+            secure_vault::commands::vault_generate_password,
+            secure_vault::commands::vault_evaluate_password_strength,
+            secure_vault::commands::vault_copy_secret,
+            secure_vault::commands::vault_clipboard_clear_now,
+            secure_vault::commands::vault_audit_list,
+            secure_vault::commands::vault_export_backup,
+            secure_vault::commands::vault_backup_inspect,
+            secure_vault::commands::vault_backup_import,
         ])
         .build(context)
         .expect("启动 Task Dock 失败")

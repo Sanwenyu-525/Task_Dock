@@ -31,6 +31,7 @@ export default function QuickAdd({ compact }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   /* 输入法组合期间不因中间文本让预览失效（Escape 只关候选的既有语义）；
      组合结束后按最终文本判定。isComposing 只接受键盘事件，故这里单独跟踪。 */
+  const parseRevision = useRef(0);
   const composingRef = useRef(false);
   const ime = useImeComposition();
   const quickAddToken = useUiStore((s) => s.quickAddToken);
@@ -44,15 +45,17 @@ export default function QuickAdd({ compact }: Props) {
   async function onParse() {
     const value = text.trim();
     if (!value || parsing) return;
+    const revision = parseRevision.current;
     setParsing(true);
     setError("");
     try {
       const p = await parseQuickAdd(value);
+      if (revision !== parseRevision.current) return;
       setParsed(p);
       setParsedSource(value);
       setDueInput(toLocalInputValue(p.due_at));
     } catch (e) {
-      setError(localizedErrorMessage(e));
+      if (revision === parseRevision.current) setError(localizedErrorMessage(e));
     } finally {
       setParsing(false);
     }
@@ -88,6 +91,7 @@ export default function QuickAdd({ compact }: Props) {
   }
 
   function clearParsed() {
+    parseRevision.current++;
     setParsed(null);
     setParsedSource("");
     setDueInput("");
@@ -113,6 +117,7 @@ export default function QuickAdd({ compact }: Props) {
           value={text}
           disabled={creating}
           onChange={(e) => {
+            parseRevision.current++;
             setText(e.target.value);
             // 输入一变，上一条解析结果立即失效：按钮回到「解析」，避免创建旧任务。
             // 输入法组合期间先保留预览（Escape 只关候选的既有语义），

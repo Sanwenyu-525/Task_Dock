@@ -17,7 +17,7 @@ use crate::error::{AppError, AppResult};
 const READ_POOL_SIZE: usize = 3;
 
 /// 迁移列表：按顺序应用，版本号 = PRAGMA user_version。
-const MIGRATIONS: &[(i64, &str)] = &[
+pub(crate) const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
         r#"
@@ -2120,6 +2120,8 @@ CREATE INDEX idx_novel_chapters_volume
     // 协作中心（v77）：需求/Bug/方案/证据/可视化/版本/AI 任务/审计 9 张表。
     // 纯新增，弱关联既有 planning_projects / tasks；不改既有迁移。
     (77, crate::collab::schema::MIGRATION_77),
+    // 项目中枢（v78）：项目根收敛、目标/能力/交付物/版本/事件/任务关联。
+    crate::project_hub::schema::MIGRATION_78,
 ];
 
 /// 历史测试数据的保守回填（幂等）。

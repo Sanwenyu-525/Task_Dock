@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   memoryRelease: vi.fn(),
   cleanupPreview: vi.fn(),
   cleanupExecute: vi.fn(),
+  recycleStats: vi.fn(),
   junkPreview: vi.fn(async () => ({
     previewId: "junk-1",
     createdAt: "2026-11-08T00:00:00.000Z",
@@ -39,6 +40,7 @@ vi.mock("../../lib/bridge", () => ({
   resourceMemoryRelease: mocks.memoryRelease,
   resourceCleanupPreview: mocks.cleanupPreview,
   resourceCleanupExecute: mocks.cleanupExecute,
+  recycleStats: mocks.recycleStats,
   resourceJunkPreview: mocks.junkPreview,
   resourceJunkExecute: mocks.junkExecute,
 }));
@@ -129,6 +131,19 @@ function tab(name: string) {
 
 beforeEach(() => {
   mocks.lifecycleStatus.mockReset().mockResolvedValue([]);
+  mocks.recycleStats.mockReset().mockResolvedValue({
+    items: 0,
+    files: 0,
+    folders: 0,
+    knownBytes: 0,
+    unknownSize: 0,
+    volumes: [],
+    lastSyncMs: 0,
+    state: "empty",
+    source: "index",
+    indexedAtMs: 0,
+    syncing: 0,
+  });
   mocks.snapshot.mockReset().mockResolvedValue(SNAPSHOT);
   mocks.processDiagnostics.mockReset().mockResolvedValue({
     sampledAt: "2026-11-06T00:00:00.000Z",

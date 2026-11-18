@@ -963,6 +963,54 @@ pub const BACKUP_TABLES: &[BackupTableRule] = &[
     rule!("collab_evidence", "core", "all", 782, &[], true),
     rule!("collab_ai_jobs", "core", "recent", 784, &["collab_plans", "collab_visual_docs"], true),
     rule!("collab_audit", "core", "recent", 786, &[], true),
+    // 项目中枢（v78）：能力库全局，其余均以 workspace_projects 为项目根。
+    // 恢复顺序：能力库 → 项目子表 → 任务关联；阶段/计划 ID 均为弱引用，不阻塞恢复。
+    rule!("project_capabilities", "core", "all", 790, &[], true),
+    rule!("project_goals", "core", "all", 791, &["workspace_projects"], true),
+    rule!(
+        "project_capability_requirements",
+        "core",
+        "all",
+        792,
+        &["workspace_projects", "project_capabilities"],
+        true
+    ),
+    rule!(
+        "capability_resource_links",
+        "core",
+        "all",
+        793,
+        &["project_capabilities"],
+        true
+    ),
+    rule!(
+        "capability_gap_resolutions",
+        "core",
+        "all",
+        794,
+        &["workspace_projects", "project_capabilities"],
+        true
+    ),
+    rule!("project_deliverables", "core", "all", 795, &["workspace_projects"], true),
+    rule!("plan_versions", "core", "all", 796, &["workspace_projects"], true),
+    rule!("project_events", "core", "all", 797, &["workspace_projects"], true),
+    rule!("plan_dependencies", "core", "all", 798, &["workspace_projects"], true),
+    rule!(
+        "task_plan_links",
+        "core",
+        "all",
+        799,
+        &["workspace_projects", "tasks"],
+        true
+    ),
+    rule!(
+        "task_capability_links",
+        "core",
+        "all",
+        800,
+        &["tasks", "project_capabilities"],
+        true
+    ),
 ];
 
 pub fn table_rule(table: &str) -> Option<&'static BackupTableRule> {

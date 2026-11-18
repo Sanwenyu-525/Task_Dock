@@ -67,6 +67,17 @@ base64 = "0.23"
 # 密钥由设备令牌哈希经 SHA-512 派生（见 mobile_sync::sync）；nonce 走 OS 随机源。
 xsalsa20poly1305 = "0.9"
 rand = "0.8"
+# 安全保险箱（P1，2026-11-18）：见 docs/features/secure-vault/security-architecture.md
+# 仅使用 RustCrypto 系与小型工具库；无 C 依赖、无 build script、无网络访问。
+argon2 = "0.5"
+aes-gcm = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+base32 = "0.5"
+unicode-normalization = "0.1"
+# 内存清零与内部会话锁（均为 Cargo.lock 已有传递依赖）
+zeroize = "1"
+parking_lot = "0.12"
 # 手机同步 v2：传输层硬切 TLS。服务端用系统 schannel（native-tls），不引入
 # ring/aws-lc-rs（本机构建无 nasm/cmake）。自签证书用纯 Rust 的 rsa + x509-cert
 # 生成（RSA-3072 + SHA-256 签名）：native-tls 的 Windows 后端经 legacy CryptoAPI
@@ -119,6 +130,9 @@ windows-sys = { version = "0.60", features = [
   # 外部 MCP Server 环境变量（可能含 API Key）：用 DPAPI 加密后落库，
   # 不把第三方凭据以明文写入 SQLite/备份/日志（仅当前 Windows 用户可解密）。
   "Win32_Security_Cryptography",
+  # 安全保险箱（P1）：WTSRegisterSessionNotification / WTS_SESSION_LOCK，
+  # 系统锁屏即锁定保险箱（仅追加 feature，不新增 crate）。
+  "Win32_System_RemoteDesktop",
 ] }
 # Windows Shell COM（仅图标链路用）：IShellLinkW 解析 .lnk 真实目标、
 # IShellItemImageFactory 取 UWP 包图标。版本与 Cargo.lock 现有传递依赖一致（无新增下载）。

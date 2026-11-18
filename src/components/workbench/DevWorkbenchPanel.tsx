@@ -441,6 +441,9 @@ function CurrentTaskSection({
     setBusy(true);
     try {
       const updated = await toggleTask(task.id);
+      if (updated.status === "pending") {
+        showToast(t("capsule.tasks.recurrenceDone"), { kind: "success" });
+      } else {
       showToast(t("workbench.completeDone", { title: updated.title }), {
         kind: "success",
         action: {
