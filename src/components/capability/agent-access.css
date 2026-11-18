@@ -1,0 +1,174 @@
+/*
+ * Agent 共享工作空间（v76）管理面样式。
+ * 作用域限定在能力中心的 .capability-panel 内，颜色/圆角/阴影全部走语义 Token。
+ */
+
+.capability-panel .agent-access {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.capability-panel .agent-access-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.capability-panel .agent-access-tabs {
+  align-self: flex-start;
+}
+
+.capability-panel .agent-access-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.capability-panel .agent-access-grid.two {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.capability-panel .agent-access-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.capability-panel .agent-access-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.capability-panel .agent-access-input {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: calc(var(--radius-card) - 4px);
+  background: var(--surface-sunken, var(--surface-raised));
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.capability-panel .agent-access-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.capability-panel .agent-access-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.capability-panel .agent-access-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.capability-panel .agent-access-table td {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.capability-panel .agent-access-clickable {
+  cursor: pointer;
+}
+
+.capability-panel .agent-access-clickable:hover {
+  background: var(--surface-hover, rgba(127, 127, 127, 0.08));
+}
+
+.capability-panel .agent-access-table tr.active {
+  background: var(--accent-soft);
+}
+
+.capability-panel .agent-access-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.capability-panel .agent-access-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.capability-panel .agent-access-list li:last-child {
+  border-bottom: 0;
+}
+
+.capability-panel .agent-access-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+
+.capability-panel .agent-access-pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: calc(var(--radius-card) - 4px);
+  background: var(--surface-sunken, var(--surface-raised));
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.capability-panel .agent-access-hint {
+  font-size: 11px;
+}
+
+.capability-panel .agent-access-error,
+.capability-panel .agent-access-notice {
+  padding: 6px 10px;
+  border-radius: calc(var(--radius-card) - 4px);
+  font-size: 11px;
+}
+
+.capability-panel .agent-access-error {
+  color: var(--status-danger, #d14343);
+  background: var(--status-danger-soft, rgba(209, 67, 67, 0.1));
+  border: 1px solid var(--status-danger-border, var(--border-subtle));
+}
+
+.capability-panel .agent-access-notice {
+  color: var(--text-secondary);
+  background: var(--surface-sunken, var(--surface-raised));
+  border: 1px solid var(--border-subtle);
+}
+
+@container cap-body (max-width: 560px) {
+  .capability-panel .agent-access-grid,
+  .capability-panel .agent-access-grid.two {
+    grid-template-columns: 1fr;
+  }
+
+  .capability-panel .agent-access-table th:nth-child(n + 4),
+  .capability-panel .agent-access-table td:nth-child(n + 4) {
+    display: none;
+  }
+}

@@ -1,0 +1,807 @@
+//! Agent 共享工作空间管理面（v76）。
+//!
+//! 只做「接入状态 / 活动 / 交接 / 同步 / 权限」的展示与操作入口；
+//! 所有读写都经 Tauri 命令进入统一 service 层，UI 不直接碰数据库或文件。
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Activity,
+  ArrowLeftRight,
+  Copy,
+  Download,
+  FolderOpen,
+  History,
+  RefreshCw,
+  ScanLine,
+  Shield,
+  Users,
+} from "lucide-react";
+import {
+  agentAccessActivity,
+  agentAccessAgents,
+  agentAccessConfigInfo,
+  agentAccessConflicts,
+  agentAccessContext,
+  agentAccessExport,
+  agentAccessGrant,
+  agentAccessHandoffs,
+  agentAccessHandoffDetail,
+  agentAccessHandoffTransition,
+  agentAccessInit,
+  agentAccessPermissions,
+  agentAccessResolveConflict,
+  agentAccessRevoke,
+  agentAccessScan,
+  agentAccessStatus,
+  agentAccessSyncStatus,
+  fsReveal,
+  type AgentAccessData,
+} from "../../lib/bridge";
+import { errorMessage } from "../../lib/errors";
+import { useLocale } from "../../hooks/useLocale";
+import { EmptyState, Select } from "../ui";
+import "./agent-access.css";
+
+type Row = Record<string, unknown>;
+type SubTab = "overview" | "activity" | "handoffs" | "sync" | "permissions";
+
+const SUB_TABS: readonly { id: SubTab; key: string; icon: typeof Activity }[] = [
+  { id: "overview", key: "agent.subtab.overview", icon: Shield },
+  { id: "activity", key: "agent.subtab.activity", icon: Activity },
+  { id: "handoffs", key: "agent.subtab.handoffs", icon: ArrowLeftRight },
+  { id: "sync", key: "agent.subtab.sync", icon: History },
+  { id: "permissions", key: "agent.subtab.permissions", icon: Users },
+];
+
+function asRow(value: unknown): Row {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Row) : {};
+}
+
+function asRows(value: unknown): Row[] {
+  return Array.isArray(value) ? value.map(asRow) : [];
+}
+
+function text(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function pick(row: Row, ...keys: string[]): unknown {
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null) return row[key];
+  }
+  return undefined;
+}
+
+function short(value: unknown, max = 80): string {
+  const raw = text(value);
+  return raw.length > max ? `${raw.slice(0, max - 1)}…` : raw;
+}
+
+function listText(value: unknown): string {
+  if (Array.isArray(value)) return value.map((item) => text(item)).filter(Boolean).join("；");
+  return text(value);
+}
+
+export default function AgentAccessSection() {
+  const { t } = useLocale();
+  const [tab, setTab] = useState<SubTab>("overview");
+  const [status, setStatus] = useState<AgentAccessData>({});
+  const [config, setConfig] = useState<AgentAccessData>({});
+  const [activity, setActivity] = useState<Row[]>([]);
+  const [handoffs, setHandoffs] = useState<Row[]>([]);
+  const [reports, setReports] = useState<Row[]>([]);
+  const [conflicts, setConflicts] = useState<Row[]>([]);
+  const [sync, setSync] = useState<AgentAccessData>({});
+  const [agents, setAgents] = useState<Row[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState<string>("");
+  const [permissions, setPermissions] = useState<AgentAccessData>({});
+  const [capability, setCapability] = useState<string>("tasks.read");
+  const [resourceId, setResourceId] = useState<string>("");
+  const [handoffFilter, setHandoffFilter] = useState<string>("all");
+  const [detail, setDetail] = useState<Row | null>(null);
+  const [detailRevision, setDetailRevision] = useState<number>(0);
+  const [reason, setReason] = useState<string>("");
+  const [resolution, setResolution] = useState<string>("keep_local");
+  const [contextProject, setContextProject] = useState<string>("");
+  const [contextTask, setContextTask] = useState<string>("");
+  const [contextMarkdown, setContextMarkdown] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const workspace = asRow(status.workspace);
+  const rest = asRow(status.rest);
+  const cli = asRow(status.cli);
+  const watch = asRow(status.watch);
+  const syncStatus = asRow(sync.workspace);
+  const initialized = Boolean(pick(workspace, "workspaceId", "workspace_id"));
+
+  const loadAll = useCallback(async () => {
+    setError(null);
+    try {
+      const [nextStatus, nextConfig, nextSync, nextConflicts, nextAgents] = await Promise.all([
+        agentAccessStatus(),
+        agentAccessConfigInfo(),
+        agentAccessSyncStatus(),
+        agentAccessConflicts(),
+        agentAccessAgents(),
+      ]);
+      setStatus(nextStatus);
+      setConfig(nextConfig);
+      setSync(nextSync);
+      setConflicts(asRows(nextConflicts));
+      const agentRows = asRows(nextAgents);
+      setAgents(agentRows);
+      setSelectedAgent((previous) =>
+        previous && agentRows.some((item) => text(pick(item, "id")) === previous)
+          ? previous
+          : text(pick(agentRows[0] ?? {}, "id")),
+      );
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }, []);
+
+  const loadTab = useCallback(
+    async (which: SubTab) => {
+      try {
+        if (which === "activity") {
+          const page = await agentAccessActivity({ limit: 50, offset: 0 });
+          setActivity(asRows(page.items));
+        } else if (which === "handoffs") {
+          const page = await agentAccessHandoffs({
+            status: handoffFilter === "all" ? undefined : handoffFilter,
+            limit: 50,
+            offset: 0,
+          });
+          setHandoffs(asRows(page.items));
+          const reportPage = await agentAccessActivity({ limit: 50, offset: 0 });
+          setReports(asRows(reportPage.items));
+        }
+      } catch (e) {
+        setError(errorMessage(e));
+      }
+    },
+    [handoffFilter],
+  );
+
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
+
+  useEffect(() => {
+    void loadTab(tab);
+  }, [tab, loadTab]);
+
+  useEffect(() => {
+    if (tab !== "permissions" || !selectedAgent) return;
+    void agentAccessPermissions(selectedAgent)
+      .then((value) => setPermissions(value))
+      .catch((e) => setError(errorMessage(e)));
+  }, [tab, selectedAgent]);
+
+  const capabilityOptions = useMemo(() => {
+    const items = Array.isArray(permissions.capabilities) ? permissions.capabilities : [];
+    return items.map((item) => ({ value: text(item), label: text(item) }));
+  }, [permissions]);
+
+  const grants = asRows(permissions.grants);
+
+  const run = async (action: () => Promise<unknown>, doneKey: string) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await action();
+      setNotice(t(doneKey as Parameters<typeof t>[0]));
+      await loadAll();
+      await loadTab(tab);
+      if (tab === "permissions" && selectedAgent) {
+        setPermissions(await agentAccessPermissions(selectedAgent));
+      }
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const instructions = useMemo(() => {
+    const root = text(pick(workspace, "rootPath", "root_path")) || "<workspace>";
+    const base = text((pick(rest, "base_url") as string)) || "http://127.0.0.1:47911/api/v1";
+    return [
+      "TaskDock Agent Workspace",
+      `workspace: ${root}`,
+      "",
+      "CLI:",
+      "  taskdock status --json",
+      "  taskdock task list --json",
+      "  taskdock context get --project <project_id>",
+      "",
+      "MCP (stdio):",
+      "  task-dock --mcp-server",
+      "  env TASKDOCK_MCP_TOKEN=<agent token>",
+      "  resources: taskdock://manifest, taskdock://projects, taskdock://context/current",
+      "",
+      "REST:",
+      `  ${base}`,
+      "  Authorization: Bearer <agent token>",
+      "",
+      "Files: read the workspace tree; write ONLY inbox/, tasks/inbox/, knowledge/inbox/.",
+      "Remote access is disabled; loopback only.",
+    ].join("\n");
+  }, [workspace, rest]);
+
+  const copyInstructions = async () => {
+    try {
+      await navigator.clipboard.writeText(instructions);
+      setNotice(t("agent.msg.copied"));
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+
+  const openDetail = async (id: string) => {
+    try {
+      const payload = await agentAccessHandoffDetail(id);
+      const nested = asRow(payload.handoff);
+      const handoff = Object.keys(nested).length > 0 ? nested : asRow(payload);
+      setDetail(handoff);
+      setDetailRevision(Number(pick(handoff, "revision") ?? pick(payload, "revision") ?? 0));
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+
+  const transition = async (action: "accept" | "reject" | "complete") => {
+    if (!detail) return;
+    await run(
+      () =>
+        agentAccessHandoffTransition(
+          text(pick(detail, "id")),
+          action,
+          detailRevision,
+          action === "reject" ? reason : undefined,
+        ),
+      "agent.msg.transitioned",
+    );
+    const id = text(pick(detail, "id"));
+    if (id) await openDetail(id);
+  };
+
+  const runContext = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await agentAccessContext({
+        projectId: contextProject || undefined,
+        task: contextTask || undefined,
+        budgetTokens: 6000,
+        format: "markdown",
+      });
+      setContextMarkdown(text(value.markdown));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="cap-section agent-access">
+      <div className="cap-toolbar">
+        <strong className="agent-access-heading">{t("cap.tab.agent")}</strong>
+        <span className="cap-muted">
+          {initialized
+            ? text(pick(workspace, "name")) || t("agent.kv.notInit")
+            : t("agent.kv.notInit")}
+        </span>
+        <span className="cap-toolbar-spacer" />
+        <button type="button" className="btn sm" onClick={() => void loadAll()} disabled={busy}>
+          <RefreshCw size={13} /> {t("agent.btn.refresh")}
+        </button>
+      </div>
+
+      {error ? <div className="agent-access-error">{error}</div> : null}
+      {notice ? <div className="agent-access-notice">{notice}</div> : null}
+
+      <div className="cap-tabs agent-access-tabs" role="tablist" aria-label={t("cap.tab.agent")}>
+        {SUB_TABS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              className="cap-tab"
+              aria-selected={tab === item.id}
+              onClick={() => setTab(item.id)}
+            >
+              <Icon size={13} strokeWidth={1.8} aria-hidden="true" />
+              {t(item.key as Parameters<typeof t>[0])}
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === "overview" ? (
+        <div className="agent-access-grid">
+          <div className="cap-card">
+            <div className="cap-card-title">{t("agent.title.interfaces")}</div>
+            <dl className="cap-kv">
+              <dt>{t("agent.kv.workspaceId")}</dt>
+              <dd>{text(pick(workspace, "workspaceId", "workspace_id")) || "-"}</dd>
+              <dt>{t("agent.kv.path")}</dt>
+              <dd>{text(pick(workspace, "rootPath", "root_path")) || "-"}</dd>
+              <dt>{t("agent.kv.protocol")}</dt>
+              <dd>
+                {text(pick(workspace, "protocolVersion", "protocol_version")) || "-"} /{" "}
+                {text(pick(workspace, "schemaVersion", "schema_version")) || "-"}
+              </dd>
+              <dt>{t("agent.kv.watch")}</dt>
+              <dd>
+                {watch.running ? t("agent.state.on") : t("agent.state.off")}
+                {" · "}
+                {Boolean(pick(config, "watch_enabled")) ? t("agent.state.on") : t("agent.state.off")}
+              </dd>
+              <dt>{t("agent.kv.cli")}</dt>
+              <dd>
+                {cli.installed ? t("agent.state.installed") : t("agent.state.missing")}
+                {text(cli.path) ? ` · ${text(cli.path)}` : ""}
+              </dd>
+              <dt>{t("agent.kv.rest")}</dt>
+              <dd>
+                {rest.running ? t("agent.state.running") : t("agent.state.off")} ·{" "}
+                {text((pick(rest, "base_url") as string)) || "-"}
+              </dd>
+              <dt>{t("agent.kv.mcp")}</dt>
+              <dd>{Boolean(pick(config, "mcp_enabled")) ? t("agent.state.on") : t("agent.state.off")}</dd>
+            </dl>
+            <div className="agent-access-actions">
+              <button
+                type="button"
+                className="btn sm primary"
+                disabled={busy}
+                onClick={() => void run(() => agentAccessInit(), "agent.msg.initDone")}
+              >
+                <Shield size={13} /> {t("agent.btn.init")}
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={!initialized || busy}
+                onClick={() => void run(() => agentAccessExport(), "agent.msg.exported")}
+              >
+                <Download size={13} /> {t("agent.btn.export")}
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={!initialized || busy}
+                onClick={() => void run(() => agentAccessScan(), "agent.msg.scanDone")}
+              >
+                <ScanLine size={13} /> {t("agent.btn.scan")}
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={!initialized}
+                onClick={() => {
+                  const path = text(pick(workspace, "rootPath", "root_path"));
+                  if (path) void fsReveal(path).catch((e) => setError(errorMessage(e)));
+                }}
+              >
+                <FolderOpen size={13} /> {t("agent.btn.open")}
+              </button>
+              <button type="button" className="btn sm" onClick={() => void copyInstructions()}>
+                <Copy size={13} /> {t("agent.btn.copyInstructions")}
+              </button>
+            </div>
+            <p className="cap-muted agent-access-hint">{t("agent.hint.remoteClosed")}</p>
+          </div>
+
+          <div className="cap-card">
+            <div className="cap-card-title">{t("agent.title.contextPreview")}</div>
+            <div className="agent-access-form">
+              <input
+                className="agent-access-input"
+                value={contextProject}
+                onChange={(event) => setContextProject(event.target.value)}
+                placeholder={t("agent.ph.projectId")}
+                aria-label={t("agent.ph.projectId")}
+              />
+              <input
+                className="agent-access-input"
+                value={contextTask}
+                onChange={(event) => setContextTask(event.target.value)}
+                placeholder={t("agent.ph.task")}
+                aria-label={t("agent.ph.task")}
+              />
+              <button type="button" className="btn sm" disabled={busy} onClick={() => void runContext()}>
+                {t("agent.btn.context")}
+              </button>
+            </div>
+            {contextMarkdown ? (
+              <pre className="agent-access-pre">{contextMarkdown}</pre>
+            ) : (
+              <p className="cap-muted">{t("agent.empty.context")}</p>
+            )}
+          </div>
+
+          <div className="cap-card">
+            <div className="cap-card-title">{t("agent.title.recent")}</div>
+            {asRows(status.recent_activity).length === 0 ? (
+              <p className="cap-muted">{t("agent.empty.activity")}</p>
+            ) : (
+              <ul className="agent-access-list">
+                {asRows(status.recent_activity).slice(0, 8).map((item, index) => (
+                  <li key={`${text(pick(item, "id"))}-${index}`}>
+                    <span className="agent-access-time">
+                      {short(pick(item, "createdAt", "created_at"), 19)}
+                    </span>
+                    <span>{text(pick(item, "agentId", "agent_id")) || t("agent.localUser")}</span>
+                    <span className="cap-muted">
+                      {text(pick(item, "interface"))} · {text(pick(item, "action"))} ·{" "}
+                      {text(pick(item, "resourceKind", "resource_kind"))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {tab === "activity" ? (
+        <div className="cap-card">
+          {activity.length === 0 ? (
+            <EmptyState title={t("agent.empty.activity")} hint={t("agent.empty.activityHint")} />
+          ) : (
+            <table className="agent-access-table">
+              <thead>
+                <tr>
+                  <th>{t("agent.col.time")}</th>
+                  <th>{t("agent.col.agent")}</th>
+                  <th>{t("agent.col.interface")}</th>
+                  <th>{t("agent.col.action")}</th>
+                  <th>{t("agent.col.resource")}</th>
+                  <th>{t("agent.col.result")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activity.map((item, index) => (
+                  <tr key={`${text(pick(item, "id"))}-${index}`}>
+                    <td>{short(pick(item, "createdAt", "created_at"), 19)}</td>
+                    <td>{text(pick(item, "agentId", "agent_id")) || t("agent.localUser")}</td>
+                    <td>{text(pick(item, "interface"))}</td>
+                    <td>{text(pick(item, "action"))}</td>
+                    <td title={text(pick(item, "resourceId", "resource_id"))}>
+                      {text(pick(item, "resourceKind", "resource_kind"))} ·{" "}
+                      {short(pick(item, "resourceId", "resource_id"), 24)}
+                    </td>
+                    <td>
+                      {text(pick(item, "status")) === "ok"
+                        ? t("agent.state.ok")
+                        : text(pick(item, "status")) || "-"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : null}
+
+      {tab === "handoffs" ? (
+        <div className="agent-access-grid two">
+          <div className="cap-card">
+            <div className="cap-toolbar">
+              <Select
+                value={handoffFilter}
+                onChange={(value) => setHandoffFilter(value)}
+                options={[
+                  { value: "all", label: t("agent.filter.all") },
+                  { value: "pending", label: "pending" },
+                  { value: "accepted", label: "accepted" },
+                  { value: "completed", label: "completed" },
+                  { value: "rejected", label: "rejected" },
+                ]}
+                size="sm"
+                ariaLabel={t("agent.col.status")}
+              />
+              <span className="cap-toolbar-spacer" />
+              <span className="cap-muted">{handoffs.length}</span>
+            </div>
+            {handoffs.length === 0 ? (
+              <EmptyState title={t("agent.empty.handoffs")} />
+            ) : (
+              <table className="agent-access-table">
+                <thead>
+                  <tr>
+                    <th>{t("agent.col.summary")}</th>
+                    <th>{t("agent.col.from")}</th>
+                    <th>{t("agent.col.to")}</th>
+                    <th>{t("agent.col.status")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {handoffs.map((item) => (
+                    <tr
+                      key={text(pick(item, "id"))}
+                      className="agent-access-clickable"
+                      onClick={() => void openDetail(text(pick(item, "id")))}
+                    >
+                      <td title={text(pick(item, "summary"))}>
+                        {short(pick(item, "summary"), 60)}
+                      </td>
+                      <td>{text(pick(item, "fromAgent", "from_agent", "from_agent_id"))}</td>
+                      <td>{text(pick(item, "toAgent", "to_agent", "to_agent_id"))}</td>
+                      <td>{text(pick(item, "status"))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="cap-card">
+            <div className="cap-card-title">{t("agent.title.handoffDetail")}</div>
+            {!detail ? (
+              <p className="cap-muted">{t("agent.empty.selectHandoff")}</p>
+            ) : (
+              <>
+                <dl className="cap-kv">
+                  <dt>{t("agent.col.status")}</dt>
+                  <dd>{text(pick(detail, "status"))}</dd>
+                  <dt>{t("agent.col.from")}</dt>
+                  <dd>{text(pick(detail, "fromAgent", "from_agent", "from_agent_id"))}</dd>
+                  <dt>{t("agent.col.to")}</dt>
+                  <dd>{text(pick(detail, "toAgent", "to_agent", "to_agent_id"))}</dd>
+                  <dt>{t("agent.col.summary")}</dt>
+                  <dd>{text(pick(detail, "summary"))}</dd>
+                  <dt>{t("agent.col.completed")}</dt>
+                  <dd>{listText(pick(detail, "completedItems", "completed_items")) || "-"}</dd>
+                  <dt>{t("agent.col.pending")}</dt>
+                  <dd>{listText(pick(detail, "pendingItems", "pending_items")) || "-"}</dd>
+                  <dt>{t("agent.col.risks")}</dt>
+                  <dd>{listText(pick(detail, "risks")) || "-"}</dd>
+                  <dt>{t("agent.col.nextSteps")}</dt>
+                  <dd>{listText(pick(detail, "nextSteps", "next_steps")) || "-"}</dd>
+                </dl>
+                <div className="agent-access-actions">
+                  <button
+                    type="button"
+                    className="btn sm primary"
+                    disabled={busy}
+                    onClick={() => void transition("accept")}
+                  >
+                    {t("agent.btn.accept")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={busy}
+                    onClick={() => void transition("complete")}
+                  >
+                    {t("agent.btn.complete")}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={busy}
+                    onClick={() => void transition("reject")}
+                  >
+                    {t("agent.btn.reject")}
+                  </button>
+                </div>
+                <input
+                  className="agent-access-input"
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  placeholder={t("agent.ph.reason")}
+                  aria-label={t("agent.ph.reason")}
+                />
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {tab === "sync" ? (
+        <div className="agent-access-grid">
+          <div className="cap-card">
+            <div className="cap-card-title">{t("agent.title.sync")}</div>
+            <dl className="cap-kv">
+              <dt>{t("agent.kv.path")}</dt>
+              <dd>{text(pick(syncStatus, "rootPath", "root_path")) || "-"}</dd>
+              <dt>{t("agent.kv.pending")}</dt>
+              <dd>{text(pick(sync, "pendingImports", "pending_imports")) || "0"}</dd>
+              <dt>{t("agent.kv.conflicts")}</dt>
+              <dd>{text(pick(sync, "conflicts")) || "0"}</dd>
+              <dt>{t("agent.kv.lastScan")}</dt>
+              <dd>{short(pick(syncStatus, "lastScanAt", "last_scan_at"), 19) || "-"}</dd>
+            </dl>
+            <div className="agent-access-actions">
+              <button
+                type="button"
+                className="btn sm"
+                disabled={!initialized || busy}
+                onClick={() => void run(() => agentAccessScan(), "agent.msg.scanDone")}
+              >
+                <ScanLine size={13} /> {t("agent.btn.scan")}
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={!initialized || busy}
+                onClick={() => void run(() => agentAccessExport(), "agent.msg.exported")}
+              >
+                <Download size={13} /> {t("agent.btn.export")}
+              </button>
+            </div>
+          </div>
+
+          <div className="cap-card">
+            <div className="cap-card-title">{t("agent.title.conflicts")}</div>
+            {conflicts.length === 0 ? (
+              <p className="cap-muted">{t("agent.empty.conflicts")}</p>
+            ) : (
+              <>
+                <ul className="agent-access-list">
+                  {conflicts.map((item) => (
+                    <li key={text(pick(item, "id"))}>
+                      <span>{short(pick(item, "relPath", "rel_path"), 44)}</span>
+                      <span className="cap-muted">
+                        {text(pick(item, "kind"))} · {short(pick(item, "createdAt", "created_at"), 19)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="agent-access-form">
+                  <Select
+                    value={resolution}
+                    onChange={(value) => setResolution(value)}
+                    options={[
+                      { value: "keep_local", label: t("agent.resolve.keepLocal") },
+                      { value: "accept_external", label: t("agent.resolve.acceptExternal") },
+                    ]}
+                    size="sm"
+                    ariaLabel={t("agent.title.conflicts")}
+                  />
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={busy}
+                    onClick={() =>
+                      void run(
+                        () =>
+                          agentAccessResolveConflict(
+                            text(pick(conflicts[0] ?? {}, "id")),
+                            resolution,
+                          ),
+                        "agent.msg.resolved",
+                      )
+                    }
+                  >
+                    {t("agent.btn.resolve")}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {tab === "permissions" ? (
+        <div className="agent-access-grid two">
+          <div className="cap-card">
+            <div className="cap-card-title">{t("agent.title.agents")}</div>
+            {agents.length === 0 ? (
+              <EmptyState title={t("agent.empty.agents")} hint={t("agent.hint.createAgent")} />
+            ) : (
+              <table className="agent-access-table">
+                <thead>
+                  <tr>
+                    <th>{t("agent.col.agent")}</th>
+                    <th>{t("agent.col.scope")}</th>
+                    <th>{t("agent.col.lastSeen")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {agents.map((item) => (
+                    <tr
+                      key={text(pick(item, "id"))}
+                      className={`agent-access-clickable${text(pick(item, "id")) === selectedAgent ? " active" : ""}`}
+                      onClick={() => setSelectedAgent(text(pick(item, "id")))}
+                    >
+                      <td>{text(pick(item, "agentId", "agent_id"))}</td>
+                      <td>{text(pick(item, "scope"))}</td>
+                      <td>{short(pick(item, "lastSeenAt", "last_seen_at"), 19) || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="cap-card">
+            <div className="cap-card-title">{t("agent.title.grants")}</div>
+            {!selectedAgent ? (
+              <p className="cap-muted">{t("agent.empty.selectAgent")}</p>
+            ) : (
+              <>
+                <div className="agent-access-form">
+                  <Select
+                    value={capability}
+                    onChange={(value) => setCapability(value)}
+                    options={capabilityOptions}
+                    size="sm"
+                    ariaLabel={t("agent.field.capability")}
+                  />
+                  <input
+                    className="agent-access-input"
+                    value={resourceId}
+                    onChange={(event) => setResourceId(event.target.value)}
+                    placeholder={t("agent.ph.resource")}
+                    aria-label={t("agent.ph.resource")}
+                  />
+                  <button
+                    type="button"
+                    className="btn sm primary"
+                    disabled={busy || !capability}
+                    onClick={() =>
+                      void run(
+                        () => agentAccessGrant(selectedAgent, capability, resourceId),
+                        "agent.msg.granted",
+                      )
+                    }
+                  >
+                    {t("agent.btn.grant")}
+                  </button>
+                </div>
+                {grants.length === 0 ? (
+                  <p className="cap-muted">{t("agent.empty.grants")}</p>
+                ) : (
+                  <ul className="agent-access-list">
+                    {grants.map((grant) => (
+                      <li key={`${text(grant.capability)}-${text(grant.resourceId)}`}>
+                        <span>{text(grant.capability)}</span>
+                        <span className="cap-muted">{text(grant.resourceId) || "global"}</span>
+                        <button
+                          type="button"
+                          className="btn sm"
+                          disabled={busy}
+                          onClick={() =>
+                            void run(
+                              () =>
+                                agentAccessRevoke(
+                                  selectedAgent,
+                                  text(grant.capability),
+                                  text(grant.resourceId),
+                                ),
+                              "agent.msg.revoked",
+                            )
+                          }
+                        >
+                          {t("agent.btn.revoke")}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {reports.length > 0 ? (
+                  <p className="cap-muted">
+                    {t("agent.kv.reports")}: {reports.length}
+                  </p>
+                ) : null}
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
