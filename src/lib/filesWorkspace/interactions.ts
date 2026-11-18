@@ -16,6 +16,8 @@
 //! 语义（Windows 习惯）：Ctrl=复制、Shift=移动；默认同卷移动、跨卷复制，
 //! 释放前 UI 恒显示当前效果，不得因落点判断错误执行非预期移动。
 
+import { useSyncExternalStore } from "react";
+
 import { samePath, isSubPath, normalizePath } from "./pathUtils";
 import { volumeDecision } from "./volumeCache";
 
@@ -277,8 +279,28 @@ export interface FwClipboardPayload {
 
 let fwClipboardValue: FwClipboardPayload | null = null;
 
+type FwClipboardListener = (payload: FwClipboardPayload | null) => void;
+const fwClipboardListeners = new Set<FwClipboardListener>();
+
+function notifyFwClipboard(): void {
+  // getFwClipboard 返回存储引用：set/clear 之前引用稳定，useSyncExternalStore 不会空转。
+  const snapshot = fwClipboardValue;
+  for (const listener of fwClipboardListeners) listener(snapshot);
+}
+
 export function getFwClipboard(): FwClipboardPayload | null {
   return fwClipboardValue;
+}
+
+/**
+ * 订阅文件剪贴板变化（set/clear 后通知；空路径等同清空也会通知）。
+ * 返回取消订阅函数；组件层统一走 `useFwClipboard`，不在每个文件行上挂监听。
+ */
+export function subscribeFwClipboard(listener: FwClipboardListener): () => void {
+  fwClipboardListeners.add(listener);
+  return () => {
+    fwClipboardListeners.delete(listener);
+  };
 }
 
 /** 设置文件剪贴板；路径为空等同清空，避免出现「有剪贴板但没有项」的假状态。 */
@@ -294,10 +316,12 @@ export function setFwClipboard(
           createdAt: Date.now(),
         }
       : null;
+  notifyFwClipboard();
 }
 
 export function clearFwClipboard(): void {
   fwClipboardValue = null;
+  notifyFwClipboard();
 }
 
 export function hasFwClipboardItems(): boolean {
@@ -306,4 +330,12 @@ export function hasFwClipboardItems(): boolean {
 
 export function getFwClipboardOperation(): "copy" | "cut" | null {
   return fwClipboardValue?.mode ?? null;
+}
+
+/**
+ * React 订阅入口：权威状态只有本模块的 `fwClipboardValue` 一份，
+ * Hook 只做 `useSyncExternalStore` 透传，不建立第二份剪贴板状态。
+ */
+export function useFwClipboard(): FwClipboardPayload | null {
+  return useSyncExternalStore(subscribeFwClipboard, getFwClipboard, getFwClipboard);
 }

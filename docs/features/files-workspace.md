@@ -316,6 +316,18 @@
 - 测试/验收：`interactions.test.ts` 新增来源/创建时间/清空/空路径用例（已通过）；
   缺口：与系统剪贴板隔离的原生断言、过期清理策略。
   验收：复制文件不覆盖用户文本剪贴板；粘贴后状态符合预期。
+- 2026-11-18 r8 验收发现（B 通道，预览 harness）：复制后空白处右键「粘贴」为可用态；
+  但**剪切项无任何视觉标记**（`fw-row` 仍为 `is-selected is-active`、opacity=1、无 cut 类），
+  且 `clearFwClipboard` **没有 UI 入口**（仅单测调用）。目标 UI 的「剪切态提示、清理入口」
+  仍未实现，故由 `TESTING` 下调为 `PARTIAL`。
+- 2026-11-19 r9 修复（代码 + 单测完成，原生验收待做）：`interactions.ts` 新增
+  `subscribeFwClipboard` + `useFwClipboard`（`useSyncExternalStore`，权威状态仍只有模块级
+  一份）；`FileList` 新增 `cutPaths`（小写归一化 Set，O(1) 命中），列表 `.fw-row.is-cut` 与
+  网格 `.fw-cell.is-cut` 按资源管理器习惯降透明度；面板新增「已剪切 N 项 + 取消剪切」横幅
+  （`fw-cut-banner`）与空白菜单「取消剪切」入口；粘贴可用性随订阅实时变化；剪切收尾保留
+  `sourcePaneId`。新增/扩展测试：`interactions.test.ts`（订阅 3 例）、`FilePane.selection.test.tsx`
+  （剪切 7 例，含跨窗格/网格/25k 性能）、`FilesWorkspacePanel.dragLifecycle.test.tsx`
+  （Ctrl+X/C/V 链路 5 例）。缺口不变：与系统剪贴板隔离的原生断言。
 
 #### FW-RENAME-001 重命名与批量重命名 `P1` · `TESTING`
 - 目的/场景：F2 重命名；多选批量前缀/后缀/替换/序列等。
@@ -377,6 +389,15 @@
   Rust `preview_transfer_counts_and_detects_conflicts` /
   `preview_transfer_rejects_move_into_own_subtree`（已编写，因共享工作树其他模块编译错误
   尚未执行）；原生大批量预演待验收。高风险操作不得绕过预演。
+- 2026-11-19 r9 安全收口：Rust `measure_tree` 元数据读取失败不再当作零字节成功——进入
+  `inaccessible` 并置 `complete=false`（深度/条目上限与目录读取失败此前已置不完整）；
+  顶层 `validate_abs_path` 失败与源消失同样置 `complete=false`。`OperationPreviewDialog`
+  新增完整性门禁：`complete=false` 时隐藏普通「确认」，须勾选「我理解本次只会处理能够
+  成功访问的文件」后才能「继续处理可访问项」（勾选随每次新预演重置）；面板 `confirmPreview`
+  确认前二次验证——目标目录仍存在、源条目仍存在（`transfer.checkSourcesExist`，IPC 失败
+  即中止）、重新检测同名冲突（不沿用预演时刻的冲突清单）。Rust 新增 7 个完整性用例
+  （源消失/目标缺失/目录冲突/深度上限/条目上限/元数据失败/自身子树），66/66 通过；
+  前端对话框门禁 4 例通过。原生大批量预演仍待验收。
 
 #### FW-OPS-004 文件操作冲突处理 `P0` · `PARTIAL`
 - 目的/场景：同名文件冲突时统一选择覆盖/跳过/重命名/保留两者/全部应用。
@@ -488,6 +509,11 @@
 - 测试/验收：Rust `stat_reports_kind_and_children` 与 `attribute_names_maps_bits_without_duplicates`
   （已编写；因共享工作树其他模块编译错误尚未执行）；前端摘要无独立组件测试。
   缺口：访问时间 Windows 延迟更新语义、原生属性值对比资源管理器。
+- 2026-11-19 r9 修复：属性对话框对 `attributes`/`accessedMs` 缺失字段按空值兜底
+  （`propsData.attributes ?? []`），一个缺失字段不再把整个对话框崩进 error boundary；
+  `make-preview.mjs` 的 `fs_stat` 夹具补齐 `accessedMs/attributes`（r8 P3 走查崩溃根因）。
+  新增 `FilePane.properties.test.tsx` 6 例：完整字段/文件夹/缺失访问时间/旧夹具缺字段/
+  读取失败/快速切换。缺口不变：侧边常驻详情面板、原生与资源管理器对照。
 
 #### FW-PREVIEW-001 文件预览 `P1` · `PARTIAL`
 - 目的/场景：不打开外部应用即可看图片/视频/音频/文本/代码；预览失败不伪造成功。
@@ -523,6 +549,11 @@
 - 依赖：FW-SYS-002。
 - 测试/验收：原生（真实默认应用/资源管理器/终端/属性页）**未执行**；
   不得用内部属性对话框冒充 Windows 属性页。
+- 2026-11-19 r9 修复：FilePane 右键的打开/定位/打开方式/终端/Windows 属性五个入口不再
+  `.catch(() => {})` 吞异常——统一走 `runFileSystemAction`：失败转可读 toast
+  （`fw.error.systemAction`）并记一条诊断（`invokeCommand` 已归属的错误不重复记录）；
+  不放宽 Rust 侧路径/保护目录校验。新增 `FilePane.systemActions.test.tsx` 5 例
+  （成功/失败/去重记录）。原生弹窗仍待验收。
 
 #### FW-SYS-002 右键与系统操作菜单 `P1` · `PARTIAL`
 - 目的/场景：把打开、定位、复制路径/文件名/相对路径等常用动作集中到右键。
@@ -882,3 +913,5 @@ P2：9
 | 日期 | 变更 |
 |---|---|
 | 2026-11-18 | 建立 Phase 1 基线：47 个 Feature、现状映射、重复实现检查、方案汇总；未执行测试 |
+| 2026-11-18 | P0 批次 1（r8）：FW-NAV-001/002、FW-FILE-004、FW-INFO-001、FW-SYS-001、FW-OPS-003、FW-SEARCH-001/002 实现；FW-FILE-004 因剪切态视觉/清理入口缺失下调 PARTIAL |
+| 2026-11-19 | R9 缺陷修复：FW-FILE-004 剪切态可见化（订阅/视觉/清理入口，回升 TESTING）；FW-INFO-001 属性空值兜底 + 夹具修复；FW-SYS-001 统一错误出口；FW-OPS-003 预演完整性 + 确认门禁 + 二次验证。新增测试 2 文件，前端 38 文件 / 370 用例、Rust file_workspace 66/66 通过；原生与正式构建待执行 |

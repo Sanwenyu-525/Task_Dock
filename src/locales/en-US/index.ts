@@ -4370,8 +4370,20 @@ export const enUS: Record<MessageKey, string> = {
   "fw.opPreview.inaccessible": "Inaccessible: {count} (will be skipped or fail)",
   "fw.opPreview.duplicates": "Duplicate sources (skipped): {count}",
   "fw.opPreview.incomplete": "Preview reached its limit; results are incomplete. Narrow the scope before executing.",
+  "fw.opPreview.gateBody": "The full count and size cannot be confirmed. Narrow the scope or resolve permission issues, then preview again.",
+  "fw.opPreview.gateAck": "I understand this operation will only process files that can be accessed successfully",
+  "fw.opPreview.gateContinue": "Continue with accessible items",
   "fw.opPreview.more": "{count} more not listed",
   "fw.opPreview.confirm": "Execute",
+
+  // File workspace R9: cut state visibility + preview re-validation
+  "fw.cut.banner": "{count} item(s) cut (Ctrl+V to paste; cleared automatically when done)",
+  "fw.cut.clear": "Cancel cut",
+  "fw.menu.cancelCut": "Cancel cut ({count} item(s))",
+  "fw.error.systemAction": "{action} failed: {error}",
+  "fw.transfer.targetMissing": "Target folder no longer exists or is unavailable: {path}",
+  "fw.transfer.sourcesVanished": "{count} source item(s) no longer exist and were removed from this operation",
+  "fw.transfer.sourcesVanishedAll": "All source items no longer exist; the operation was cancelled",
 
   // File workspace round 3: folder sessions decoupled from layout / layout editing / native folder picker
   "fw.toolbar.openMode": "Open as",

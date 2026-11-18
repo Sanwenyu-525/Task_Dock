@@ -2243,14 +2243,21 @@ fn measure_tree(
     files: &mut usize,
     dirs: &mut usize,
     bytes: &mut u64,
+    inaccessible: &mut Vec<String>,
+    max_items: usize,
 ) -> bool {
-    if depth > MAX_RECURSE_DEPTH || *items >= PREVIEW_MAX_ITEMS {
+    if depth > MAX_RECURSE_DEPTH || *items >= max_items {
         return false;
     }
     *items += 1;
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
-        Err(_) => return true,
+        Err(_) => {
+            // 源消失/无权限/被占用：未知字节数不得当作零字节成功，
+            // 必须进入 inaccessible 并把整次统计标记为不完整。
+            inaccessible.push(path.to_string_lossy().into_owned());
+            return false;
+        }
     };
     let is_reparse = meta.file_type().is_symlink()
         || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
@@ -2261,14 +2268,23 @@ fn measure_tree(
         };
         let mut complete = true;
         for item in read {
-            if *items >= PREVIEW_MAX_ITEMS {
+            if *items >= max_items {
                 return false;
             }
             let Ok(item) = item else {
                 complete = false;
                 continue;
             };
-            complete &= measure_tree(&item.path(), depth + 1, items, files, dirs, bytes);
+            complete &= measure_tree(
+                &item.path(),
+                depth + 1,
+                items,
+                files,
+                dirs,
+                bytes,
+                inaccessible,
+                max_items,
+            );
         }
         complete
     } else {
@@ -2310,7 +2326,9 @@ pub fn preview_transfer(paths: &[String], target_dir: &str, effect: &str) -> App
         let src = match validate_abs_path(raw) {
             Ok(path) => path,
             Err(_) => {
+                // 无法可靠统计的条目必须影响 complete：UI 据此禁止直接确认。
                 preview.inaccessible.push(raw.clone());
+                preview.complete = false;
                 continue;
             }
         };
@@ -2322,7 +2340,9 @@ pub fn preview_transfer(paths: &[String], target_dir: &str, effect: &str) -> App
         let meta = match fs::symlink_metadata(&src) {
             Ok(meta) => meta,
             Err(_) => {
+                // 源文件消失/无权限：进入 inaccessible 且统计不完整，不当零字节成功。
                 preview.inaccessible.push(src.to_string_lossy().into_owned());
+                preview.complete = false;
                 continue;
             }
         };
@@ -2362,12 +2382,14 @@ pub fn preview_transfer(paths: &[String], target_dir: &str, effect: &str) -> App
             &mut preview.files,
             &mut preview.dirs,
             &mut preview.bytes,
+            &mut preview.inaccessible,
+            PREVIEW_MAX_ITEMS,
         );
     }
     if !preview.complete {
         preview
             .warnings
-            .push("统计达到条目或深度上限，结果不完整；执行前请缩小范围".into());
+            .push("存在无法读取的条目或触达条目/深度上限，统计不完整；执行前请缩小范围或解决权限问题".into());
     }
     Ok(preview)
 }
@@ -2851,6 +2873,170 @@ mod tests {
             "move",
         );
         assert!(result.is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // r9：预演完整性——任何无法可靠统计的条目都必须影响 complete，绝不伪造完整统计。
+
+    #[test]
+    fn preview_transfer_marks_vanished_source_incomplete() {
+        let root = temp_root("preview-vanished");
+        let dst_dir = root.join("dst");
+        fs::create_dir_all(&dst_dir).unwrap();
+        let ghost = root.join("ghost.txt");
+        fs::write(&ghost, "x").unwrap();
+        // 预演前源被删除（复制中途消失的等价场景）。
+        fs::remove_file(&ghost).unwrap();
+        let preview = preview_transfer(
+            &[ghost.to_string_lossy().into_owned()],
+            &dst_dir.to_string_lossy(),
+            "copy",
+        )
+        .unwrap();
+        assert!(!preview.complete);
+        assert_eq!(preview.inaccessible.len(), 1);
+        assert_eq!(preview.items, 0);
+        assert_eq!(preview.files, 0);
+        assert_eq!(preview.bytes, 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn preview_transfer_rejects_missing_target_dir() {
+        let root = temp_root("preview-no-target");
+        let src = root.join("a.txt");
+        fs::write(&src, "x").unwrap();
+        let result = preview_transfer(
+            &[src.to_string_lossy().into_owned()],
+            &root.join("no-such-dir").to_string_lossy(),
+            "copy",
+        );
+        assert!(result.is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn preview_transfer_detects_dir_conflict() {
+        let root = temp_root("preview-dir-conflict");
+        let src_dir = root.join("src");
+        let dst_dir = root.join("dst");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(dst_dir.join("src")).unwrap();
+        let preview = preview_transfer(
+            &[src_dir.to_string_lossy().into_owned()],
+            &dst_dir.to_string_lossy(),
+            "copy",
+        )
+        .unwrap();
+        assert_eq!(preview.conflicts.len(), 1);
+        assert_eq!(preview.conflicts[0].kind, "dir");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn measure_tree_metadata_failure_marks_incomplete() {
+        // 直接调用内部函数模拟「枚举到条目但元数据读取失败」（无权限/被占用的
+        // 真实路径都走同一错误分支）：必须进入 inaccessible 且不当作零字节成功。
+        let root = temp_root("preview-meta-err");
+        let missing = root.join("missing.bin");
+        let mut items = 0usize;
+        let mut files = 0usize;
+        let mut dirs = 0usize;
+        let mut bytes = 0u64;
+        let mut inaccessible: Vec<String> = Vec::new();
+        let complete = measure_tree(
+            &missing,
+            0,
+            &mut items,
+            &mut files,
+            &mut dirs,
+            &mut bytes,
+            &mut inaccessible,
+            PREVIEW_MAX_ITEMS,
+        );
+        assert!(!complete);
+        assert_eq!(inaccessible.len(), 1);
+        assert_eq!(files, 0);
+        assert_eq!(dirs, 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn measure_tree_depth_limit_marks_incomplete() {
+        let root = temp_root("preview-depth");
+        // 物理创建 66+ 层会超出 MAX_PATH（取决于机器 LongPaths 配置），因此：
+        // 1) 中等深度（10 层）物理递归应完整；
+        // 2) 深度上限分支用「从 MAX_RECURSE_DEPTH 起步」的边界调用验证——
+        //    生产路径中同一分支由真实深层目录触发（depth > 64 即失败）。
+        let mut deep = root.join("d0");
+        for level in 1..10 {
+            deep = deep.join(format!("d{level}"));
+        }
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("leaf.txt"), "x").unwrap();
+        let measure_at = |start_depth: usize| {
+            let mut items = 0usize;
+            let mut files = 0usize;
+            let mut dirs = 0usize;
+            let mut bytes = 0u64;
+            let mut inaccessible: Vec<String> = Vec::new();
+            let complete = measure_tree(
+                &root.join("d0"),
+                start_depth,
+                &mut items,
+                &mut files,
+                &mut dirs,
+                &mut bytes,
+                &mut inaccessible,
+                PREVIEW_MAX_ITEMS,
+            );
+            (complete, dirs, files)
+        };
+        let (complete, dirs, files) = measure_at(0);
+        assert!(complete);
+        assert_eq!(dirs, 10);
+        assert_eq!(files, 1);
+        // 深度上限：任何继续递归的调用都必须不完整，不得静默截断当完整。
+        let (complete, _dirs, _files) = measure_at(MAX_RECURSE_DEPTH);
+        assert!(!complete);
+        let (complete, _dirs, _files) = measure_at(MAX_RECURSE_DEPTH + 5);
+        assert!(!complete);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn measure_tree_item_limit_marks_incomplete() {
+        let root = temp_root("preview-items");
+        let dir = root.join("many");
+        fs::create_dir_all(&dir).unwrap();
+        for i in 0..5 {
+            fs::write(dir.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        let measure = |max_items: usize| {
+            let mut items = 0usize;
+            let mut files = 0usize;
+            let mut dirs = 0usize;
+            let mut bytes = 0u64;
+            let mut inaccessible: Vec<String> = Vec::new();
+            let complete = measure_tree(
+                &dir,
+                0,
+                &mut items,
+                &mut files,
+                &mut dirs,
+                &mut bytes,
+                &mut inaccessible,
+                max_items,
+            );
+            (complete, items, files)
+        };
+        let (complete, _items, files) = measure(100);
+        assert!(complete);
+        assert_eq!(files, 5);
+        // 条目预算耗尽：不完整，绝不把没读完的部分伪装成完整统计。
+        let (complete, _items, files) = measure(3);
+        assert!(!complete);
+        assert!(files < 5);
         fs::remove_dir_all(&root).unwrap();
     }
 

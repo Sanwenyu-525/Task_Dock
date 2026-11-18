@@ -4344,8 +4344,20 @@ export const zhCN = {
   "fw.opPreview.inaccessible": "无权限或不可访问：{count} 项（执行时将跳过或失败）",
   "fw.opPreview.duplicates": "重复源（将跳过）：{count} 项",
   "fw.opPreview.incomplete": "统计达到上限，结果不完整；请缩小范围后再执行。",
+  "fw.opPreview.gateBody": "当前无法确认全部文件的数量和大小。建议缩小范围或解决权限问题后重新预演。",
+  "fw.opPreview.gateAck": "我理解本次只会处理能够成功访问的文件",
+  "fw.opPreview.gateContinue": "继续处理可访问项",
   "fw.opPreview.more": "还有 {count} 项未列出",
   "fw.opPreview.confirm": "确认执行",
+
+  // ── 文件工作区 R9：剪切状态可见化与预演二次验证 ──
+  "fw.cut.banner": "已剪切 {count} 项（Ctrl+V 粘贴；全部完成后自动清理）",
+  "fw.cut.clear": "取消剪切",
+  "fw.menu.cancelCut": "取消剪切（{count} 项）",
+  "fw.error.systemAction": "{action}失败：{error}",
+  "fw.transfer.targetMissing": "目标目录不存在或不可用：{path}",
+  "fw.transfer.sourcesVanished": "{count} 个源条目已不存在，已从本次操作移除",
+  "fw.transfer.sourcesVanishedAll": "源条目均已不存在，操作已取消",
 
   // ── 文件工作区第三轮：目录会话与布局解耦 / 布局编辑 / 原生目录选择 ──
   "fw.toolbar.openMode": "打开方式",

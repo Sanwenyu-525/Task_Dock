@@ -68,6 +68,29 @@ export function movedSourcesToClear(report: FsOpReport | null): string[] {
 }
 
 /**
+ * 源条目存在性复查（预演确认时的二次验证，FW-OPS-003）：预演不是执行授权，
+ * 确认瞬间源可能已被删除/移动。fs_stat 单批有上限，按 100 分片；
+ * IPC 失败时整体抛出，由调用方中止（宁可不操作，也不在未知状态下执行）。
+ */
+export async function checkSourcesExist(
+  paths: string[],
+): Promise<{ existing: string[]; vanished: string[] }> {
+  const existing: string[] = [];
+  const vanished: string[] = [];
+  for (let index = 0; index < paths.length; index += 100) {
+    const slice = paths.slice(index, index + 100);
+    const stats = await fsStat(slice);
+    const found = new Set(
+      stats.filter((stat) => stat.exists).map((stat) => normalizePath(stat.path).toLowerCase()),
+    );
+    for (const path of slice) {
+      (found.has(normalizePath(path).toLowerCase()) ? existing : vanished).push(path);
+    }
+  }
+  return { existing, vanished };
+}
+
+/**
  * 传输结束后仍需保留的源路径：**只移除报告明确 `ok` 的项**。
  *
  * 取消/部分完成时，未处理项不在报告里；报告缺失时无法判断任何一项，因此保留全部。

@@ -278,6 +278,8 @@ interface EntryRowProps {
   active: boolean;
   isDropTarget: boolean;
   dropLabel?: string;
+  /** 剪切来源视觉态（Windows 资源管理器习惯：整体降透明度，文字保持可读）。 */
+  cut: boolean;
   index: number;
   thumbnails: boolean;
   onPointerDown: (e: React.PointerEvent, entry: FsEntry, index: number) => void;
@@ -292,6 +294,7 @@ const ListRow = memo(function ListRow({
   active,
   isDropTarget,
   dropLabel,
+  cut,
   index,
   onPointerDown,
   onDoubleClick,
@@ -301,7 +304,7 @@ const ListRow = memo(function ListRow({
   const Icon = visual.icon;
   return (
     <div
-      className={`fw-row${selected ? " is-selected" : ""}${active ? " is-active" : ""}${isDropTarget ? " is-drop-folder" : ""}`}
+      className={`fw-row${selected ? " is-selected" : ""}${active ? " is-active" : ""}${isDropTarget ? " is-drop-folder" : ""}${cut ? " is-cut" : ""}`}
       style={{ height: LIST_ROW_H }}
       data-fw-path={path}
       data-fw-kind={entry.kind}
@@ -334,6 +337,7 @@ const GridCell = memo(function GridCell({
   active,
   isDropTarget,
   dropLabel,
+  cut,
   index,
   thumbnails,
   onPointerDown,
@@ -351,7 +355,7 @@ const GridCell = memo(function GridCell({
   }, [thumbnails, path, entry.category]);
   return (
     <div
-      className={`fw-cell${selected ? " is-selected" : ""}${active ? " is-active" : ""}${isDropTarget ? " is-drop-folder" : ""}`}
+      className={`fw-cell${selected ? " is-selected" : ""}${active ? " is-active" : ""}${isDropTarget ? " is-drop-folder" : ""}${cut ? " is-cut" : ""}`}
       style={{ width: GRID_CELL_W, height: GRID_CELL_H }}
       data-fw-path={path}
       data-fw-kind={entry.kind}
@@ -392,6 +396,12 @@ export interface FileListProps {
   selectedPaths: ReadonlySet<string>;
   activePath: string | null;
   dropTargetPath: string | null;
+  /**
+   * 剪切来源路径集合（调用方归一化为小写）。行按 `joinPath(dirPath, name)` 的小写
+   * 形式做 Set 命中（O(1)/行），绝不逐行遍历剪切数组；目标窗格同名文件路径不同，
+   * 不会被误标记。
+   */
+  cutPaths?: ReadonlySet<string>;
   thumbnails: boolean;
   onEntryPointerDown: (e: React.PointerEvent, entry: FsEntry, index: number) => void;
   onEntryActivate: (entry: FsEntry) => void;
@@ -425,6 +435,7 @@ export default function FileList({
   selectedPaths,
   activePath,
   dropTargetPath,
+  cutPaths,
   thumbnails,
   onEntryPointerDown,
   onEntryActivate,
@@ -805,6 +816,7 @@ export default function FileList({
           index={rowIndex}
           selected={selectedPaths.has(path)}
           active={activePath === path}
+          cut={cutPaths?.has(path.toLowerCase()) ?? false}
           isDropTarget={dropTargetPath === path && entry.kind === "dir"}
           dropLabel={dropTargetPath === path ? dropLabel : undefined}
           thumbnails={thumbnails}
@@ -827,6 +839,7 @@ export default function FileList({
               index={rowIndex * cols + i}
               selected={selectedPaths.has(path)}
               active={activePath === path}
+              cut={cutPaths?.has(path.toLowerCase()) ?? false}
               isDropTarget={dropTargetPath === path && entry.kind === "dir"}
               dropLabel={dropTargetPath === path ? dropLabel : undefined}
               thumbnails={thumbnails}

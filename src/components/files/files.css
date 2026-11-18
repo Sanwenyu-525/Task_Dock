@@ -1082,6 +1082,13 @@ body.fw-resizing-row * {
   outline-offset: -1px;
 }
 
+/* 剪切态（Windows 资源管理器习惯）：内容整体降透明度，保持可读；
+   选中描边/焦点环/落点画在 ::before 或 outline，不受影响。只作用于剪切来源，
+   不改文件类型颜色。 */
+.fw-row.is-cut > :where(.fw-row-icon, .fw-row-name, .fw-row-time, .fw-row-size, .fw-row-type) {
+  opacity: 0.5;
+}
+
 /* 目录行落点标签：贴右上角，只覆盖时间/大小列，不压住文件名。 */
 .fw-row-drop-hint,
 .fw-cell-drop-hint {
@@ -1216,6 +1223,12 @@ body.fw-resizing-row * {
   border-color: transparent;
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
+}
+
+/* 网格卡片剪切态：与列表行同一视觉语言（内容降透明度，背景/描边不受影响）。 */
+.fw-cell.is-cut .fw-cell-thumb,
+.fw-cell.is-cut .fw-cell-name {
+  opacity: 0.5;
 }
 
 .fw-cell-thumb {
@@ -1689,6 +1702,27 @@ body.fw-resizing-row * {
   white-space: nowrap;
 }
 
+/* 剪切状态条：剪切后全局提示「已剪切 N 项」+ 一键取消（只清内部剪贴板）。 */
+.fw-cut-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--fw-surface-raised);
+  border-bottom: 1px solid var(--fw-border-subtle);
+}
+
+.fw-cut-banner span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── 空窗格（提高信息密度，主操作仍是浏览文件夹）────────────────────── */
 
 .fw-empty-pane {
@@ -2063,6 +2097,30 @@ body.fw-resizing-row * {
   margin: 0;
   padding-left: 16px;
   color: var(--warning, #d97706);
+}
+
+/* 不完整预演门禁（FW-OPS-003）：警告 + 说明 + 独立勾选确认，缺一不可继续。 */
+.fw-preview-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d97706) 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning, #d97706) 8%, transparent);
+}
+
+.fw-preview-gate-ack {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.fw-preview-gate-ack input {
+  accent-color: var(--accent);
 }
 
 .fw-transfer-summary {

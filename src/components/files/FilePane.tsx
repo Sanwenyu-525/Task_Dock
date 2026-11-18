@@ -52,7 +52,7 @@ import FileList from "./FileList";
 import { useLocale } from "../../hooks/useLocale";
 import { errorMessage } from "../../lib/errors";
 import { copyText } from "../../lib/clipboard";
-import { isLogged, startOperation } from "../../lib/diagnostics";
+import { isLogged, logEvent, startOperation } from "../../lib/diagnostics";
 import { showFileJobOutcome } from "./fsOpFeedback";
 import {
   loadDir,
@@ -85,6 +85,8 @@ import {
   getFwDragState,
   getFwClipboard,
   setFwClipboard,
+  clearFwClipboard,
+  useFwClipboard,
   type FwDropZone,
 } from "../../lib/filesWorkspace/interactions";
 import {
@@ -350,6 +352,9 @@ export default function FilePane({
   const pane = useFilesWorkspaceStore((s) => s.panes[paneId]);
   const isActivePane = useFilesWorkspaceStore((s) => s.activePaneId === paneId);
   const selection = useFilesWorkspaceStore((s) => s.selection[paneId]);
+  // 文件剪贴板：唯一权威在 interactions.ts 模块级单例，这里经 useSyncExternalStore
+  // 订阅；剪切态视觉、粘贴可用性与「取消剪切」入口都读同一份状态，不建第二份。
+  const fwClipboard = useFwClipboard();
   const recentDirs = useFilesWorkspaceStore((s) => s.recentDirs);
   const pinnedDirs = useFilesWorkspaceStore((s) => s.pinnedDirs);
   const maximized = useFilesWorkspaceStore((s) => s.maximizedPaneId === paneId);
@@ -498,6 +503,13 @@ export default function FilePane({
     () => (selection?.paths ?? []).filter((p) => p.startsWith(dirPath)),
     [selection?.paths, dirPath],
   );
+
+  // 剪切来源集合：小写归一化后交给 FileList 做 O(1) 命中（Windows 路径大小写不敏感）。
+  // 只在 mode==="cut" 时有值；copy 状态不给任何行加剪切视觉。
+  const cutPaths = useMemo(() => {
+    if (!fwClipboard || fwClipboard.mode !== "cut") return null;
+    return new Set(fwClipboard.paths.map((p) => normalizePath(p).toLowerCase()));
+  }, [fwClipboard]);
 
   /** 当前目录内被选中的真实条目（用于多选摘要；被筛选隐藏的选中项仍计入）。 */
   const selectedEntries = useMemo(() => {
@@ -1033,6 +1045,38 @@ export default function FilePane({
     );
   };
 
+  /**
+   * 系统集成动作统一出口（FW-SYS-001）：不吞异常。
+   * 失败转可读 toast；IPC 错误已由 invokeCommand 归属（markLogged），只有未被
+   * 归属的错误才补一条诊断，不重复记录同一故障。不改变 Rust 侧路径校验语义。
+   */
+  const runFileSystemAction = useCallback(
+    (actionName: string, action: () => Promise<unknown>): void => {
+      void (async () => {
+        try {
+          await action();
+        } catch (e) {
+          if (!isLogged(e as object)) {
+            logEvent({
+              level: "ERROR",
+              module: "fileWorkspace",
+              action: "system_action",
+              event: "system-action-failed",
+              status: "failed",
+              component: "文件工作区",
+              message: `${actionName}失败`,
+              metadata: { error: errorMessage(e) },
+            });
+          }
+          showToast(t("fw.error.systemAction", { action: actionName, error: errorMessage(e) }), {
+            kind: "error",
+          });
+        }
+      })();
+    },
+    [showToast, t],
+  );
+
   // ── 打开文件夹（原生选择器 / 路径 / 最近 / 固定 / 项目根）──────────────
   const reportPickFailure = (result: Extract<PickFolderResult, { status: "invalid" }>) => {
     if (result.reason === "notFound") {
@@ -1143,23 +1187,32 @@ export default function FilePane({
         items.push({
           key: "open",
           label: t("fw.menu.open"),
-          onSelect: () => void fsOpen(joinPath(dirPath, entry.name)).catch(() => {}),
+          onSelect: () => runFileSystemAction(t("fw.menu.open"), () => fsOpen(joinPath(dirPath, entry.name))),
         });
       }
       items.push({
         key: "reveal",
         label: t("fw.menu.reveal"),
-        onSelect: () => void fsReveal(singlePath ?? joinPath(dirPath, entry.name)).catch(() => {}),
+        onSelect: () =>
+          runFileSystemAction(t("fw.menu.reveal"), () =>
+            fsReveal(singlePath ?? joinPath(dirPath, entry.name)),
+          ),
       });
       items.push({
         key: "openWith",
         label: t("fw.menu.openWith"),
-        onSelect: () => void fsOpenWith(singlePath ?? joinPath(dirPath, entry.name)).catch(() => {}),
+        onSelect: () =>
+          runFileSystemAction(t("fw.menu.openWith"), () =>
+            fsOpenWith(singlePath ?? joinPath(dirPath, entry.name)),
+          ),
       });
       items.push({
         key: "terminal",
         label: t("fw.menu.openTerminal"),
-        onSelect: () => void fsOpenTerminal(singlePath ?? joinPath(dirPath, entry.name)).catch(() => {}),
+        onSelect: () =>
+          runFileSystemAction(t("fw.menu.openTerminal"), () =>
+            fsOpenTerminal(singlePath ?? joinPath(dirPath, entry.name)),
+          ),
       });
       items.push({
         key: "preview",
@@ -1260,11 +1313,13 @@ export default function FilePane({
         key: "nativeProps",
         label: t("fw.menu.nativeProps"),
         onSelect: () =>
-          void fsShowProperties(singlePath ?? joinPath(dirPath, entry.name)).catch(() => {}),
+          runFileSystemAction(t("fw.menu.nativeProps"), () =>
+            fsShowProperties(singlePath ?? joinPath(dirPath, entry.name)),
+          ),
       });
       return items;
     }
-    // 空白处菜单：新建 / 粘贴 / 刷新 / 隐藏文件
+    // 空白处菜单：新建 / 粘贴 / 取消剪切 / 刷新 / 隐藏文件
     return [
       {
         key: "newDir",
@@ -1285,7 +1340,7 @@ export default function FilePane({
       {
         key: "paste",
         label: t("fw.menu.paste"),
-        disabled: !getFwClipboard() || !dirPath,
+        disabled: !fwClipboard || !dirPath,
         onSelect: () => {
           const clip = getFwClipboard();
           if (clip && dirPath) {
@@ -1298,6 +1353,16 @@ export default function FilePane({
           }
         },
       },
+      // 剪切态的一键清理入口：只清 TaskDock 内部剪贴板，不触碰文件与系统剪贴板。
+      ...(fwClipboard?.mode === "cut"
+        ? [
+            {
+              key: "cancelCut",
+              label: t("fw.menu.cancelCut", { count: fwClipboard.paths.length }),
+              onSelect: () => clearFwClipboard(),
+            },
+          ]
+        : []),
       { key: "refresh", label: t("fw.menu.refresh"), onSelect: () => refreshBoth([dirPath]) },
       {
         key: "hidden",
@@ -1308,7 +1373,7 @@ export default function FilePane({
       },
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [menu, dirPath, paneId, menuSelection, singlePath, tab, t]);
+  }, [menu, dirPath, paneId, menuSelection, singlePath, tab, fwClipboard, t]);
 
   // ── 面包屑 ──────────────────────────────────────────────────────────
   const crumbs = useMemo(() => breadcrumbSegments(dirPath), [dirPath]);
@@ -1904,6 +1969,7 @@ export default function FilePane({
           selectedPaths={selectedSet}
           activePath={focusedPath ?? (selectedPaths.length === 1 ? selectedPaths[0] : null)}
           dropTargetPath={dropHint?.type === "folder" ? dropHint.path : null}
+          cutPaths={cutPaths ?? undefined}
           thumbnails={tab.viewMode === "grid"}
           onEntryPointerDown={onEntryPointerDown}
           onEntryActivate={onEntryActivate}
@@ -2109,8 +2175,9 @@ export default function FilePane({
             <div>
               <dt>{t("fw.props.attributes")}</dt>
               <dd>
-                {propsData.attributes.length > 0
-                  ? propsData.attributes
+                {/* 旧夹具/后端缺字段时按空数组兜底：一个缺失字段不得让整个对话框崩进 error boundary。 */}
+                {(propsData.attributes ?? []).length > 0
+                  ? (propsData.attributes ?? [])
                       .map((attr) => {
                         const key = ATTRIBUTE_LABEL_KEYS[attr as keyof typeof ATTRIBUTE_LABEL_KEYS];
                         return key ? t(key) : attr;

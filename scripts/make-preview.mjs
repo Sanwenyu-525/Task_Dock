@@ -1466,11 +1466,60 @@ const shim = `
         const name = src2.slice(src2.lastIndexOf(FW_BS) + 1);
         const entry = fwTree.get(parent)?.find((e) => e.name === name);
         const isDir = fwTree.has(src2);
+        // 字段必须与 bridge 的 FsStat 完整对齐（含 accessedMs/attributes），
+        // 缺字段会让属性对话框崩进 error boundary（r8 走查教训）。
         return [{
           path: src2, exists: isDir || Boolean(entry), kind: isDir ? "dir" : entry ? "file" : "missing",
           size: entry?.size ?? null, createdMs: entry?.modifiedMs ?? null, modifiedMs: entry?.modifiedMs ?? null,
+          accessedMs: entry?.modifiedMs ?? null,
+          attributes: isDir ? ["directory"] : entry ? ["archive"] : [],
           readonly: false, hidden: false, childCount: isDir ? fwTree.get(src2)?.length ?? 0 : null, childTruncated: false,
         }];
+      }
+      case "fs_preview_operation": {
+        // 只读预演夹具：统计条目/字节、同名冲突、重复源与不可访问源；不产生任何写入。
+        const targetDir = fwNorm(args?.targetDir || "");
+        const preview = {
+          effect: args?.effect === "move" ? "move" : "copy",
+          items: 0, files: 0, dirs: 0, bytes: 0,
+          conflicts: [], inaccessible: [], duplicates: [], warnings: [], complete: true,
+        };
+        const measureDir = (dir) => {
+          preview.items += 1; preview.dirs += 1;
+          for (const e of fwTree.get(dir) ?? []) {
+            const child = dir.endsWith(FW_BS) ? dir + e.name : dir + FW_BS + e.name;
+            if (fwTree.has(child)) measureDir(child);
+            else { preview.items += 1; preview.files += 1; preview.bytes += e.size ?? 0; }
+          }
+        };
+        const seen = new Set();
+        for (const raw of args?.paths || []) {
+          const src = fwNorm(raw);
+          const key = src.toLowerCase();
+          if (seen.has(key)) { preview.duplicates.push(src); continue; }
+          seen.add(key);
+          const parent = src.slice(0, src.lastIndexOf(FW_BS));
+          const name = src.slice(src.lastIndexOf(FW_BS) + 1);
+          const entry = fwTree.get(parent)?.find((e) => e.name === name);
+          const isDir = fwTree.has(src);
+          if (!isDir && !entry) {
+            preview.inaccessible.push(src);
+            preview.complete = false;
+            continue;
+          }
+          const candidate = targetDir.endsWith(FW_BS) ? targetDir + name : targetDir + FW_BS + name;
+          const candidateIsDir = fwTree.has(candidate);
+          const candidateEntry = fwTree.get(targetDir)?.find((e) => e.name === name);
+          if (candidateIsDir || candidateEntry) {
+            preview.conflicts.push({ source: src, target: candidate, kind: candidateIsDir ? "dir" : "file" });
+          }
+          if (isDir) measureDir(src);
+          else { preview.items += 1; preview.files += 1; preview.bytes += entry?.size ?? 0; }
+        }
+        if (!preview.complete) {
+          preview.warnings.push("部分源无法访问，统计不完整");
+        }
+        return preview;
       }
       case "fs_open":
       case "fs_reveal": return undefined;

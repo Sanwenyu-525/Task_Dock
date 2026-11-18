@@ -1,13 +1,18 @@
 # 文件工作区验收矩阵
 
 - 日期：2026-11-18
-- 阶段：Phase 1 开发前基线（**未执行本轮验收**）
+- 阶段：**R9 校准**（Phase 1 基线 + Phase 2 批次 1 实现 + r8 验收记录，三个阶段明确区分）
 - 功能台账：[docs/features/files-workspace.md](../features/files-workspace.md)
 - 测试矩阵：[docs/testing/files-workspace.md](../testing/files-workspace.md)
 - 验收方法论：[docs/ACCEPTANCE_ROUTING.md](../ACCEPTANCE_ROUTING.md)、[AGENTS.md](../../AGENTS.md)
 
 > 本文件只登记验收状态与证据要求，不替代测试日志。任何 `PASS` 必须能追溯到指定
-> `buildId`/commit、命令、退出码与证据路径；本轮没有任何 `PASS`。
+> `buildId`/commit、命令、退出码与证据路径；目前没有任何 `PASS`。
+>
+> **口径说明**：§2 矩阵的「当前状态」按**最新一轮证据**登记（r8 为最新完整记录）；
+> `PARTIAL` 表示已执行部分验收（A 通道单测 / B 通道预览 mock），但完整链路（Rust 单测、
+> 正式构建、原生）尚未闭环；历史 r6/r7 结论只作风险提示。Phase 1 基线（36 NOT EXECUTED）
+> 与 r8 记录分别见 §3 与 §3.2，不互相覆盖。
 
 ---
 
@@ -15,13 +20,11 @@
 
 | 项目 | 事实 |
 |---|---|
-| 分支/工作树 | `main`；工作树含多个任务未提交/未跟踪改动（含文件工作区文件），不属于本轮交付 |
-| 本轮改动 | 仅新增 4 份文档（features/architecture/testing/acceptance）；未改业务代码 |
-| 最近文件工作区验收 | r7 结论 **PARTIAL**（组件级通过；正式构建、原生视觉、真实落盘拖拽、大目录未闭环） |
-| 最近正式构建 | r7 的 `b09-desktop-r1..r6` 全部失败，无安装包产物 |
+| 分支/工作树 | `main`；工作树含多个任务未提交/未跟踪改动（bridge.ts、locales、collab 等），不属于文件工作区交付 |
+| 最近文件工作区验收 | r8 结论 **部分通过**（A 通道通过；B 通道 mock 范围内通过；C 通道部分执行；Rust 与正式构建 ENVIRONMENT BLOCKED），见 §3.2 |
+| 最近正式构建 | r7 的 `b09-desktop-r1..r6` 全部失败；r8 未发起构建（代码经外部定时提交进入基线，无独立交付提交） |
 | 可用正式包 | 无（不得复用更早轮次产物冒充本轮） |
-| 本轮测试 | **未执行**（Vitest / Rust / 类型检查 / 构建均未执行） |
-| 本轮验收结论 | **未进入验收**；不得宣布任何 Feature 通过 |
+| R8 覆盖范围 | P0 批次 1：FW-NAV-001/002、FW-FILE-004、FW-INFO-001、FW-SYS-001、FW-OPS-003、FW-SEARCH-001/002（8 项） |
 
 ### 1.1 状态口径
 
@@ -40,16 +43,18 @@
 ## 2. 全量验收矩阵（47 项，一个都不能漏）
 
 > 「UI/API/自动化」列描述**当前代码是否存在入口/契约/测试文件**；
-> 「原生」列描述是否已有本轮原生证据；「本轮状态」是验收结论。
-> 既有但未在本轮执行的项统一为 `NOT EXECUTED`，历史 r7 结论另注。
+> 「原生」列描述是否已有原生证据；「当前状态」是验收结论。
+> r8 已部分验收的 8 项标 `PARTIAL`（证据见 §3.2）；其余已实现项统一为
+> `NOT EXECUTED`，历史 r6/r7 结论另注；未实现项为 `NOT IMPLEMENTED`。
+> `NOT EXECUTED` ≠ 通过：正式构建与原生验收仍然缺位。
 
 ### 2.1 布局、导航、选择与拖拽
 
 | Feature ID | 功能 | UI | API | 自动化 | 原生 | 本轮状态 |
 |---|---|---|---|---|---|---|
 | FW-LAYOUT-001 | 多窗格布局与标签会话 | 有 | 有 | 有（未执行） | 未验证 | NOT EXECUTED（历史 r7 PARTIAL） |
-| FW-NAV-001 | 地址栏/面包屑/路径输入/复制路径 | 部分（无路径历史） | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
-| FW-NAV-002 | 前进/后退/上一级 | 有（缺 Alt 快捷键） | 有 | 有（未执行） | 未验证 | NOT EXECUTED |
+| FW-NAV-001 | 地址栏/面包屑/路径输入/复制路径 | 有（路径历史下拉已实现） | 有 | 有（r8 通过） | 未验证 | PARTIAL（r8 B 通道：路径历史/跳转 mock 通过；原生未验证） |
+| FW-NAV-002 | 前进/后退/上一级 | 有（Alt+Left/Right/Up 已实现） | 有 | 有（r8 通过） | 未验证 | PARTIAL（r8 B 通道：Alt 导航 mock 通过；原生未验证） |
 | FW-SELECT-001 | 文件选择系统 | 有 | 有 | 有（未执行） | 未验证 | NOT EXECUTED（历史 r7 PARTIAL） |
 | FW-SELECT-002 | 矩形框选 | 有 | 有 | 有（未执行） | 未验证 | NOT EXECUTED（历史 r7 PARTIAL） |
 | FW-DRAG-001 | 应用内文件拖拽 | 有 | 有 | 有（未执行） | 未验证 | NOT EXECUTED |
@@ -62,11 +67,11 @@
 | FW-FILE-001 | 文件复制 | 有 | 有 | 有（未执行） | 未验证 | NOT EXECUTED |
 | FW-FILE-002 | 文件剪切 | 有 | 有 | 有（未执行） | 未验证 | NOT EXECUTED |
 | FW-FILE-003 | 文件粘贴 | 有 | 有 | 有（未执行） | 未验证 | NOT EXECUTED |
-| FW-FILE-004 | 文件剪贴板状态 | 有 | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
+| FW-FILE-004 | 文件剪贴板状态 | 部分（r8：剪切态视觉与清理入口缺失） | 部分 | 有（r8 通过） | 未验证 | PARTIAL（r8：payload/粘贴可用通过；剪切态视觉与清理入口缺失，R9 修复中） |
 | FW-RENAME-001 | 重命名/批量重命名 | 有 | 有 | 有（未执行） | 未验证 | NOT EXECUTED |
 | FW-OPS-001 | 文件操作任务队列 | 有 | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
 | FW-OPS-002 | 文件操作进度 | 部分（无字节/速度/暂停） | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
-| FW-OPS-003 | 文件操作预演 | 有 | 有 | 有（已执行前端用例） | 未验证 | NOT EXECUTED |
+| FW-OPS-003 | 文件操作预演 | 有（前后端+对话框+门禁待 R9 收紧） | 有 | 有（r8 前端通过；Rust 单测未执行） | 未验证 | PARTIAL（r8：前端单测/组件通过；Rust 与原生未执行；确认门禁待收紧） |
 | FW-OPS-004 | 冲突处理 | 部分（整批策略） | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
 | FW-UNDO-001 | 文件操作撤销/重做 | 无（仅布局撤销） | 无 | 无 | 未实现 | NOT IMPLEMENTED |
 
@@ -74,19 +79,19 @@
 
 | Feature ID | 功能 | UI | API | 自动化 | 原生 | 本轮状态 |
 |---|---|---|---|---|---|---|
-| FW-SEARCH-001 | 多目录搜索 | 有（范围受限） | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
-| FW-SEARCH-002 | 搜索条件 | 部分 | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
+| FW-SEARCH-001 | 多目录搜索 | 有（项目/固定目录来源已实现） | 有 | 有（r8 通过） | 未验证 | PARTIAL（r8：搜索用例通过；新来源组件测试与原生未验证） |
+| FW-SEARCH-002 | 搜索条件 | 有（大小区间/隐藏项已实现） | 有 | 有（r8 通过） | 未验证 | PARTIAL（r8：隐藏项/大小区间用例通过；时间区间仍为近似） |
 | FW-SEARCH-003 | 搜索生命周期 | 有 | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
 | FW-FILTER-001 | 文件筛选 | 部分（固定 chips） | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
 | FW-FILTER-002 | 筛选预设 | 无 | 无 | 无 | 未实现 | NOT IMPLEMENTED |
-| FW-INFO-001 | 文件详细信息 | 部分（单文件） | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
+| FW-INFO-001 | 文件详细信息 | 部分（多选摘要已实现；侧边详情面板无） | 部分 | 有（r8 摘要走查通过；Rust 单测未执行） | 未验证 | PARTIAL（r8：访问时间/属性/多选摘要 mock 通过；属性对话框夹具崩溃已定位，R9 修复；原生对照未执行） |
 | FW-PREVIEW-001 | 文件预览 | 部分（无 PDF/Office） | 有 | 有（未执行） | 未验证 | NOT EXECUTED |
 
 ### 2.4 系统、压缩、工作区与项目
 
 | Feature ID | 功能 | UI | API | 自动化 | 原生 | 本轮状态 |
 |---|---|---|---|---|---|---|
-| FW-SYS-001 | 系统集成命令 | 部分（缺打开方式/终端/属性） | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
+| FW-SYS-001 | 系统集成命令 | 有（打开方式/终端/Windows 属性入口已实现） | 有 | 部分（r8 右键入口 mock 通过；真实命令未执行） | 未验证 | PARTIAL（r8：入口存在性通过；错误反馈吞异常待 R9 修复；原生弹窗未执行） |
 | FW-SYS-002 | 右键系统操作菜单 | 部分 | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
 | FW-ARCHIVE-001 | 压缩与解压 | 无 | 无 | 无 | 未实现 | NOT IMPLEMENTED |
 | FW-WORKSPACE-001 | 多目录工作区 | 部分 | 部分 | 有（未执行） | 未验证 | NOT EXECUTED |
@@ -124,18 +129,34 @@
 
 ## 3. 统计
 
-| 本轮状态 | 数量 |
+| 当前状态 | 数量 |
 |---|---|
 | `PASS` | **0** |
 | `FAIL` | **0** |
-| `PARTIAL`（本轮） | **0** |
-| `NOT EXECUTED` | **36** |
+| `PARTIAL`（r8 已部分验收） | **8** |
+| `NOT EXECUTED` | **28** |
 | `NOT IMPLEMENTED` | **11** |
 | `BLOCKED` | **0** |
 | 合计 | **47** |
 
-> 36 个已实现项在**正式构建验收**层面均未执行，因此不得标 PASS；
-> 其中 r7/r6 的历史结论只用于风险提示，不构成本轮通过证据。
+> 8 个 `PARTIAL`：FW-NAV-001、FW-NAV-002、FW-FILE-004、FW-INFO-001、FW-SYS-001、
+> FW-OPS-003、FW-SEARCH-001、FW-SEARCH-002（证据见 §3.2 r8 记录）。
+> `PARTIAL` ≠ 通过：上述各项的 Rust 单测、正式构建与原生验收均未闭环，不得标 PASS。
+> 28 个 `NOT EXECUTED` 为已实现但未在正式构建上验收的项；r6/r7 历史结论只用于风险提示。
+> （Phase 1 基线统计为 0 PARTIAL / 36 NOT EXECUTED / 11 NOT IMPLEMENTED，见 §9 变更记录。）
+
+### 3.0 PARTIAL 项明细（r8 证据映射）
+
+| Feature | r8 已验证 | r8 未验证（缺口） |
+|---|---|---|
+| FW-NAV-001 | 路径历史下拉、跨目录显示与清空（B 通道 mock） | 原生交互、无效路径显式反馈 |
+| FW-NAV-002 | Alt+Up/Left/Right 导航与面包屑同步（B 通道 mock） | 原生快捷键、关闭标签历史清理断言 |
+| FW-FILE-004 | 剪贴板 payload/来源/粘贴可用（单测 + B 通道） | 剪切态视觉、清理入口（R9 修复）、与系统剪贴板隔离原生断言 |
+| FW-INFO-001 | 多选摘要（6 项/大小/类型分布，B 通道） | 属性对话框真实数据（夹具缺字段）、Rust 单测、Explorer 对照 |
+| FW-SYS-001 | 右键含打开方式/终端/Windows 属性入口（B 通道 + 静态） | 真实系统命令执行、失败反馈（R9 修复）、原生弹窗 |
+| FW-OPS-003 | 预演阈值/参数透传/对话框组件用例 | Rust `preview_transfer` 单测（已编写未执行）、确认门禁（R9 收紧）、原生大批量 |
+| FW-SEARCH-001 | 项目/固定目录来源单测 | 新来源组件测试、原生 |
+| FW-SEARCH-002 | 隐藏项/大小区间单测 | 时间区间（现为「最近 N 天」近似）、原生 |
 
 ### 3.1 Phase 2 批次 1 实现进度（2026-11-18）
 
@@ -153,6 +174,51 @@
 > 上表只表示「实现进度」，不是验收通过。本批 `npm run typecheck` 通过，
 > `src/lib/filesWorkspace` + `src/components/files` 全量前端回归 **36 文件 / 341 用例通过**；
 > Rust 测试与原生/正式构建仍未执行。正式验收仍需在合格构建上按本矩阵执行。
+
+### 3.2 Phase 2 批次 1 验收记录（r8，2026-11-18）
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| A 通道：前端定向回归 | **通过**：36 文件 / 341 用例，exit 0 | `tmp/acceptance/files-workspace/round8/logs/A1-vitest.log` |
+| A 通道：`npm run typecheck` | **通过**：exit 0 | `tmp/acceptance/files-workspace/round8/logs/A2-typecheck.log` |
+| A 通道：Rust `cargo check/build/test` | **ENVIRONMENT BLOCKED**：rustc 连续 3 次 `STATUS_STACK_BUFFER_OVERRUN`（非编译诊断），debug 二进制随后丢失 | 调度日志 `h-mwm3q70x-b5ecfd`、`m-mwm38sse-3abe33`、`m-mwm3893f-7974a5` |
+| B 通道：预览 harness（内存 mock） | **通过（mock 范围）**：Alt+Up/Left/Right 目录切换、跨目录后「最近目录」显示 `MyGame`、多选摘要（6 项 / 5.5 KB / 类型分布）、复制后空白右键「粘贴」可用、右键含「打开方式…/在终端中打开/Windows 属性…」 | `tmp/acceptance/files-workspace/round8/logs/32-preview-wb.json`、`34-preview-paste.json` |
+| C 通道：隔离实例 + CDP | **部分执行**：实例启动（独立 `TASK_DOCK_DATA_DIR`）、进入文件工作区、打开路径对话框、打开夹具目录、刷新 27 项；随后 debug 二进制丢失，交互中断 | `tmp/acceptance/files-workspace/round8/logs/12-open-result.json`、`13-refresh-toolbar.json` |
+| 正式构建 / 原生验收 | **未执行**：本批代码未进入任何集成快照（`snap-09` 仅含 r7） | `tmp/integration/snapshots/snap-09.json` |
+
+本轮发现（详见 `tmp/acceptance/files-workspace/round8/report.md`）：
+
+- `P2` FW-FILE-004：剪切后行无视觉标记，`clearFwClipboard` 无 UI 入口；目标 UI 未完成，状态下调为 PARTIAL。
+- `P3` 预览夹具：`make-preview.mjs` 的 `fs_stat` 未同步 `accessedMs/attributes`，打开「属性」时
+  `propsData.attributes.length` 抛 TypeError 并被 error boundary 捕获，属夹具滞后而非产品缺陷；
+  建议同步夹具，避免后续走查误判。
+- `P1` 流程风险：本批改动被外部定时提交混入基线提交（`9b025a4`），无法形成独立交付提交，
+  正式 `task verify → ready → snapshot` 链路需等下一次未混入的交付提交才能干净执行。
+
+本轮结论：**部分通过**（A 通道通过，B 通道 mock 范围内通过，C 通道部分执行，Rust 与正式构建阻塞）；
+47 项 Feature 仍为 **0 PASS**。
+
+### 3.3 R9 缺陷修复验收记录（r9，2026-11-19）
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| A 通道：前端全量回归 | **通过**：38 文件 / 370 用例，exit 0（r8 基线 36/341 → +2 文件 / +29 用例） | `tmp/acceptance/files-workspace/round9/logs/`（调度 `l-mwmbct95-918c3a`） |
+| A 通道：`npm run typecheck` | **通过**：exit 0 | 同上 |
+| A 通道：`npm run cargo -- check` | **通过**：exit 0（r8 rustc 崩溃未复现，环境阻塞解除） | 调度 `m-mwmbgxrq-1d57c2` |
+| A 通道：Rust `file_workspace::` 单测 | **通过**：66/66（mt.exe 嵌清单后直调测试 exe；`--lib` 绕过其他任务在途的 `virtual_display_live.rs` 编译错误） | `round9/logs/fw-rust-test.log` |
+| B 通道：预览 harness（剪切态/属性/预演门禁走查） | 待执行 | — |
+| C/E 通道：隔离实例原生验收（剪切/属性/系统动作/预演） | 待执行 | — |
+| 正式构建 | 待执行（交付提交后走 `snapshot create` → `build --snapshot`） | — |
+
+r9 修复范围（对应 §3.2 的 r8 发现）：
+
+- `FW-FILE-004`（r8 P2）：剪切态订阅 + `is-cut` 视觉 + 「已剪切 N 项/取消剪切」横幅与
+  右键清理入口已实现，单测覆盖；状态回升 `TESTING`（原生待验收）。
+- `FW-INFO-001`（r8 P3）：属性对话框空值兜底 + `make-preview` 夹具补齐 `accessedMs/attributes`，
+  属性对话框不再崩进 error boundary（6 例组件测试）。
+- `FW-OPS-003`（安全门禁）：Rust `measure_tree` 元数据失败不再伪完整；`complete=false` 时
+  对话框禁止直接确认（勾选「只处理可访问项」后方可继续）；确认前二次验证目标/源/冲突。
+- `FW-SYS-001`：系统动作不再吞异常，失败有 toast 与单条诊断。
 
 ---
 
@@ -239,3 +305,5 @@
 | 日期 | 变更 |
 |---|---|
 | 2026-11-18 | 建立 Phase 1 验收矩阵：47 个 Feature 全量登记；本轮 0 PASS / 35 NOT EXECUTED / 12 NOT IMPLEMENTED |
+| 2026-11-18（r8 更正） | 更正统计口径：已实现 36 项（非 35）、未实现 11 项（非 12）；全部已实现项在正式构建层面 NOT EXECUTED |
+| 2026-11-18（r9 校准） | 按 r8 证据把 8 项（FW-NAV-001/002、FW-FILE-004、FW-INFO-001、FW-SYS-001、FW-OPS-003、FW-SEARCH-001/002）从 NOT EXECUTED 更正为 PARTIAL；统计 0 PASS / 8 PARTIAL / 28 NOT EXECUTED / 11 NOT IMPLEMENTED；Phase 1 基线、Phase 2 批次 1 实现进度（§3.1）、r8 验收记录（§3.2）三个阶段明确区分 |

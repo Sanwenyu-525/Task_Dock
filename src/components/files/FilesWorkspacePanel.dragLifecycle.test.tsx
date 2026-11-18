@@ -14,7 +14,7 @@
  * FilePane.cancel.test.tsx。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const bridgeMocks = vi.hoisted(() => ({
   fsCopyJobStart: vi.fn(),
@@ -47,6 +47,8 @@ import { useFilesWorkspaceStore } from "../../store/useFilesWorkspaceStore";
 import { FILE_WORKSPACE_SETTING_KEY } from "../../lib/filesWorkspace/persist";
 import {
   cancelFwDrag,
+  clearFwClipboard,
+  getFwClipboard,
   getFwDragState,
   isFwDragging,
   moveFwDrag,
@@ -80,11 +82,15 @@ const jobSnapshot = (kind: string) => ({
   partial: 0,
   bytesTotal: 0,
   bytesDone: 0,
-  startedMs: 1,
-  finishedMs: 2,
+  // 后端 finishedMs 是 epoch 毫秒；fixture 必须给「刚刚结束」的真实量级，
+  // 否则 fileJobs.pruneCache 会把它当作过期终态任务立即清出缓存，
+  // waitForFileJob 永远等不到（r9 剪切收尾测试踩到的夹具缺陷）。
+  startedMs: Date.now() - 1,
+  finishedMs: Date.now(),
   cancelable: false,
   cancelRequested: false,
   failures: [],
+  message: null,
 });
 
 function seedTwoPaneLayout(): void {
@@ -152,6 +158,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cancelFwDrag();
+  clearFwClipboard();
   cleanup();
   useSettingsStore.setState({ settings: null });
 });
@@ -301,5 +308,121 @@ describe("面板级正常释放：IPC 恰为预期", () => {
     fireEvent.pointerUp(window, { pointerId: 1 });
 
     expectNoFileIpc();
+  });
+});
+
+// ── 剪切链路（FW-FILE-004，r9）──────────────────────────────────────────
+
+describe("剪切链路（FW-FILE-004）", () => {
+  it("Ctrl+X 建立剪切 payload（含来源窗格），不产生文件 IPC；剪切横幅出现", async () => {
+    render(<FilesWorkspacePanel project={null} />);
+    await waitFor(() => expect(useFilesWorkspaceStore.getState().hydrated).toBe(true));
+    act(() => {
+      useFilesWorkspaceStore.getState().setSelection("pane-1", [SOURCE_FILE], SOURCE_FILE);
+    });
+
+    fireEvent.keyDown(window, { key: "x", ctrlKey: true });
+
+    const clip = getFwClipboard();
+    expect(clip?.mode).toBe("cut");
+    expect(clip?.paths).toEqual([SOURCE_FILE]);
+    expect(clip?.sourcePaneId).toBe("pane-1");
+    expectNoFileIpc();
+    // 全局剪切横幅（只清内部剪贴板的一键入口）。
+    expect(screen.getByText("fw.cut.banner")).toBeTruthy();
+  });
+
+  it("Ctrl+C 覆盖之前的剪切状态", async () => {
+    render(<FilesWorkspacePanel project={null} />);
+    await waitFor(() => expect(useFilesWorkspaceStore.getState().hydrated).toBe(true));
+    act(() => {
+      useFilesWorkspaceStore.getState().setSelection("pane-1", [SOURCE_FILE], SOURCE_FILE);
+    });
+    fireEvent.keyDown(window, { key: "x", ctrlKey: true });
+    expect(getFwClipboard()?.mode).toBe("cut");
+    fireEvent.keyDown(window, { key: "c", ctrlKey: true });
+    expect(getFwClipboard()?.mode).toBe("copy");
+    expectNoFileIpc();
+  });
+
+  it("Ctrl+V 粘贴剪切内容到另一窗格：fsMoveJobStart 恰一次；全部成功后剪贴板自动清空", async () => {
+    render(<FilesWorkspacePanel project={null} />);
+    await waitFor(() => expect(useFilesWorkspaceStore.getState().hydrated).toBe(true));
+    act(() => {
+      useFilesWorkspaceStore.getState().setSelection("pane-1", [SOURCE_FILE], SOURCE_FILE);
+    });
+    fireEvent.keyDown(window, { key: "x", ctrlKey: true });
+
+    // 活动窗格切到目标（DST）：粘贴目标必须不同于源目录。
+    act(() => {
+      useFilesWorkspaceStore.getState().setActivePane("pane-2");
+    });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+
+    await waitFor(() => expect(bridgeMocks.fsMoveJobStart).toHaveBeenCalledTimes(1));
+    expect(bridgeMocks.fsCopyJobStart).not.toHaveBeenCalled();
+    const [paths, targetDir] = bridgeMocks.fsMoveJobStart.mock.calls[0];
+    expect(paths).toEqual([SOURCE_FILE]);
+    expect(targetDir).toBe(DST);
+    // 报告 ok → 剪切收尾清空内部剪贴板。
+    await waitFor(() => expect(getFwClipboard()).toBeNull());
+  });
+
+  it("任务取消：未处理项保留在剪切剪贴板，不静默清空", async () => {
+    bridgeMocks.fsMoveJobStart.mockResolvedValueOnce({
+      ...jobSnapshot("move"),
+      status: "cancelled",
+      done: 0,
+      ok: 0,
+    });
+    bridgeMocks.fsJobReport.mockResolvedValueOnce({
+      ...report,
+      ok: 0,
+      entries: [],
+    });
+    render(<FilesWorkspacePanel project={null} />);
+    await waitFor(() => expect(useFilesWorkspaceStore.getState().hydrated).toBe(true));
+    act(() => {
+      useFilesWorkspaceStore.getState().setSelection("pane-1", [SOURCE_FILE], SOURCE_FILE);
+    });
+    fireEvent.keyDown(window, { key: "x", ctrlKey: true });
+    act(() => {
+      useFilesWorkspaceStore.getState().setActivePane("pane-2");
+    });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+
+    await waitFor(() => expect(bridgeMocks.fsMoveJobStart).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const clip = getFwClipboard();
+      expect(clip?.mode).toBe("cut");
+      expect(clip?.paths).toEqual([SOURCE_FILE]);
+    });
+  });
+
+  it("部分失败：只有失败项留在剪切剪贴板", async () => {
+    bridgeMocks.fsJobReport.mockResolvedValueOnce({
+      ...report,
+      ok: 1,
+      entries: [{ source: SOURCE_FILE, target: `${DST}\a.txt`, status: "ok", reason: null }],
+    });
+    render(<FilesWorkspacePanel project={null} />);
+    await waitFor(() => expect(useFilesWorkspaceStore.getState().hydrated).toBe(true));
+    act(() => {
+      useFilesWorkspaceStore
+        .getState()
+        .setSelection("pane-1", [SOURCE_FILE, `${SRC}\b.txt`], SOURCE_FILE);
+    });
+    fireEvent.keyDown(window, { key: "x", ctrlKey: true });
+    act(() => {
+      useFilesWorkspaceStore.getState().setActivePane("pane-2");
+    });
+    fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+
+    await waitFor(() => expect(bridgeMocks.fsMoveJobStart).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const clip = getFwClipboard();
+      // 报告只确认 SOURCE_FILE 成功：b.txt 未确认，必须保留。
+      expect(clip?.paths).toEqual([`${SRC}\b.txt`]);
+    });
   });
 });

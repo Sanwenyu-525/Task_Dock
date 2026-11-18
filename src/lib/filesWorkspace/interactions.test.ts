@@ -17,6 +17,7 @@ import {
   clearFwClipboard,
   hasFwClipboardItems,
   getFwClipboardOperation,
+  subscribeFwClipboard,
   subscribeFwDrag,
   startFwDrag,
   moveFwDrag,
@@ -111,6 +112,45 @@ describe("fwClipboard", () => {
     setFwClipboard({ mode: "copy", paths: [] });
     expect(getFwClipboard()).toBeNull();
     setFwClipboard({ mode: "copy", paths: ["C:\\b"] });
+    clearFwClipboard();
+    expect(getFwClipboard()).toBeNull();
+  });
+});
+
+describe("fwClipboard 订阅（r9：剪切态视觉与清除入口的数据源）", () => {
+  it("set/clear 后通知订阅者；空路径等同清空也通知", () => {
+    const seen: Array<"copy" | "cut" | null> = [];
+    const unsub = subscribeFwClipboard((payload) => seen.push(payload?.mode ?? null));
+    setFwClipboard({ mode: "cut", paths: ["C:\\a"] });
+    setFwClipboard({ mode: "copy", paths: ["C:\\b"] });
+    setFwClipboard({ mode: "copy", paths: [] });
+    clearFwClipboard();
+    expect(seen).toEqual(["cut", "copy", null, null]);
+    unsub();
+    setFwClipboard({ mode: "cut", paths: ["C:\\c"] });
+    expect(seen).toEqual(["cut", "copy", null, null]);
+    clearFwClipboard();
+  });
+
+  it("取消订阅释放监听；多个订阅者互不影响", () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    const unsubA = subscribeFwClipboard(a);
+    subscribeFwClipboard(b);
+    setFwClipboard({ mode: "cut", paths: ["C:\\a"] });
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(1);
+    unsubA();
+    setFwClipboard({ mode: "copy", paths: ["C:\\b"] });
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(2);
+    clearFwClipboard();
+  });
+
+  it("getSnapshot 引用稳定：内容不变时重复读取返回同一对象（useSyncExternalStore 前提）", () => {
+    setFwClipboard({ mode: "cut", paths: ["C:\\a"] });
+    const first = getFwClipboard();
+    expect(getFwClipboard()).toBe(first);
     clearFwClipboard();
     expect(getFwClipboard()).toBeNull();
   });

@@ -149,7 +149,25 @@ src-tauri/src/
   db/mod.rs                 MIGRATIONS 末尾追加新表（不修改已发布迁移）
 ```
 
-### 2.3 `FileWorkspaceService` 边界
+### 2.3 已实现与目标结构的边界（r9 校准，防止第二套实现）
+
+> §2.2 的「目标模块图」是**长期目标**，不是本轮的开工清单。下表把每个目标模块映射到
+> 它**当前的唯一实现**；在本轮及后续轮次里，扩展一律落在既有模块内，禁止按目标图
+> 另起一套平行实现。目标文件只有在既有模块被证明不够用、且拆分收益明确时才创建。
+
+| 目标模块（§2.2 标「新」） | 当前唯一实现（事实） | 边界约定 |
+|---|---|---|
+| `plan.rs`（操作预演） | `src-tauri/src/file_workspace/mod.rs` 的 `measure_tree` / `preview_transfer` | 预演只有一个实现。`plan.rs` 拆分仅在预演逻辑增长到 mod.rs 无法承载时评估；拆分前必须证明收益（测试隔离/编译时间），且移动而非复制 |
+| `clipboard.ts`（文件剪贴板） | `src/lib/filesWorkspace/interactions.ts` 的 `fwClipboard`（`getFwClipboard / setFwClipboard / clearFwClipboard / hasFwClipboardItems / getFwClipboardOperation` + r9 新增 `subscribeFwClipboard`） | 剪贴板权威数据源只有 interactions.ts 模块级单例；**Store 不新增 `clipboard` 字段**（§3.2 的对应目标项作废）。订阅经 `useSyncExternalStore`（`useFwClipboard`），不在 Hook 内复制状态 |
+| `operations.ts`（操作队列） | `src/lib/filesWorkspace/operationQueue.ts`（前端会话视图 + 单并发槽）+ `fileJobs.ts`（后端 `fsops` 任务订阅）+ `OperationQueueBar.tsx`（唯一 UI） | 任务队列只有一个：Rust `fsops::JobRegistry` 为权威，前端只订阅与展示。`operations.ts` 仅当 facade 编排需要跨域组合时才引入 |
+| `search.ts`（搜索会话） | `src/lib/filesWorkspace/workspaceSearch.ts`（多目录/大小/隐藏/深度/条目/结果上限、AbortSignal、`complete` 四态）+ `WorkspaceSearchDialog.tsx` | 搜索引擎只有一个。`search.ts` 仅当统一会话 API（`start/update/cancel/status`）落地时才引入，且必须包 `workspaceSearch` 而非重写扫描 |
+| `selection.ts`（选择 facade） | Store `selection: Record<paneId, PaneSelection>` + `marqueeSelection.ts` | facade 只允许薄封装既有 Store action，不复制状态 |
+
+**r9 实际改动**（对应上表）：只扩展 `interactions.ts`（剪贴板订阅）与
+`file_workspace/mod.rs`（预演完整性），未创建任何新模块、未新增 Store 字段、
+未新增 IPC 命令、未动数据库。
+
+### 2.4 `FileWorkspaceService` 边界
 
 - 只做**编排与类型收敛**，不持有 React 状态，不直接操作 DOM。
 - 方法按域分组；UI 可以只导入需要的子模块，但跨域业务流程（如「暂存→预演→执行→历史」）
@@ -217,8 +235,10 @@ type WorkspaceFolderState = {
   sortField: "name" | "modified" | "type" | "size";
   sortAsc: boolean;
   filter: FileFilter;
-  scrollPosition: number;
-  selectedItems: string[];
+  // r9 校准：选择状态属于窗格（Store `selection: Record<paneId, PaneSelection>`），
+  // 这里不再重复维护 selectedItems——两处并存必然漂移；滚动位置同理（会话 LRU）。
+  // scrollPosition/selectedItems 若未来需要持久化，必须给出迁移/回滚/兼容与数据验证
+  // 方案并经产品确认，不得静默落库。
 };
 
 type FileFilter = {
@@ -254,7 +274,8 @@ type FileSearchQuery = {
 在 `FilesWorkspaceState` 追加（按需分阶段）：
 
 ```ts
-clipboard: FileClipboardPayload | null;
+// r9 校准：clipboard 字段目标作废——剪贴板唯一权威在 interactions.ts（见 §2.3），
+// 组件经 useFwClipboard 订阅，不在 Store 里复制一份状态。
 favorites: FavoriteItem[];
 favoriteGroups: FavoriteGroup[];
 recentPaths: RecentPath[];              // 与现有 recentDirs 迁移对齐
@@ -271,6 +292,10 @@ automations: FileAutomation[];
 ```
 
 - 现有 `pinnedDirs` **迁移**为 `favorites(kind="folder")`；迁移后不再并行维护两套。
+  `pinnedDirs`/`recentDirs` 当前已有持久化实现（`file_workspace_layouts` 的 states 内）——
+  收藏功能落地时若改存 SQLite，**必须先给出**：迁移脚本（旧键→新表）、回滚路径（旧版本
+  读不到新表时的降级）、兼容窗口（两版共存期谁为准）与数据验证（迁移前后条目数/顺序
+  校验）；未满足这四项不得迁移，禁止把现有持久化直接搬走。
 - `selection` 保持现有 `Record<paneId, {paths, anchor}>`；不复制到新字段。
 - 运行中任务不放入 Store 持久化；刷新/重启后以 `fs_job_status` 查询，进程退出即丢失（如实）。
 
@@ -325,14 +350,15 @@ automations: FileAutomation[];
 
 | 目标函数 | 实现位置 | 方式 |
 |---|---|---|
-| `getFileClipboard / setFileClipboard / clearFileClipboard / hasClipboardItems / getClipboardOperation` | `lib/filesWorkspace/clipboard.ts` | 新增（包装 `interactions.ts:269-276`） |
+| `getFileClipboard / setFileClipboard / clearFileClipboard / hasClipboardItems / getClipboardOperation` | `lib/filesWorkspace/interactions.ts` | **已实现**（`getFwClipboard` 等，见 §2.3；clipboard.ts 目标作废） |
+| `subscribeFwClipboard` / `useFwClipboard` | `lib/filesWorkspace/interactions.ts` | r9 新增（订阅 + `useSyncExternalStore`，不复制状态） |
 | `copySelectedFiles / cutSelectedFiles` | `clipboard.ts` + `FilesWorkspacePanel.tsx` | 新增 |
 | `canPasteFiles / pasteFiles` | `clipboard.ts` + `transfer.ts` | 新增 |
 | `enqueueFileOperation / startFileOperation` | `lib/filesWorkspace/operations.ts` | 新增（包 `fileJobs.ts` / bridge） |
 | `pauseFileOperation / resumeFileOperation` | `operations.ts` + Rust `fsops` | 新增（后端能力） |
 | `cancelFileOperation / retryFileOperation` | `operations.ts` | 扩展（现有 cancel） |
 | `getFileOperation / getFileOperations` | `operations.ts` | 新增 |
-| `previewFileOperation / confirm / cancelPreview` | `lib/filesWorkspace/operationPreview.ts` + Rust `file_workspace/plan.rs` | 新增 |
+| `previewFileOperation / confirm / cancelPreview` | `lib/filesWorkspace/operationPreview.ts` + Rust `file_workspace/mod.rs`（`preview_transfer`；plan.rs 拆分见 §2.3） | 已实现（r9 补完整性门禁） |
 | `resolveFileConflict / resolveAllFileConflicts` | `operationPreview.ts` / `operations.ts` | 新增（后端 conflict 策略扩展） |
 | `canUndoFileOperation / getUndoableOperations / undo / redo` | `lib/filesWorkspace/operationHistory.ts` + Rust | 新增 |
 | `fsCopyPaths / fsMovePaths / fsDeletePaths` | `bridge.ts:5830-5838` | 现有（保留兼容） |
@@ -382,6 +408,9 @@ automations: FileAutomation[];
 2. **`file_workspace/plan.rs`（新）**：只读预演。输入计划（源、目标、效果、冲突策略），
    输出计数、字节、冲突/无权限/重复/覆盖与警告；统计使用 `fs_stat`/`fs_list_dir`，
    不复制内容；对目录递归设深度/条目上限，超限返回 `incomplete` 而不是假装完整。
+   **r9 现状**：预演唯一实现在 `file_workspace/mod.rs` 的 `measure_tree` / `preview_transfer`
+   （见 §2.3）；元数据读取失败已计入 `inaccessible` 并置 `complete=false`，`plan.rs` 拆分
+   仅在收益证明后进行。
 3. **`file_workspace/archive.rs`（新）**：ZIP 创建/列表/解压；zip-slip 防护（规范化后必须位于
    目标根内）、解压炸弹上限（条目数/总字节/压缩比）、重解析点不跟随；算法不进入 UI。
 4. **`file_workspace/activity.rs`（新）**：写 `file_activity_events`，只记录 TaskDock 自己发起
@@ -527,9 +556,35 @@ automations: FileAutomation[];
 
 ---
 
+## 10.5 R9 实现记录（2026-11-19，缺陷修复与架构收敛）
+
+**没有**新增 Service、Store 字段、IPC 命令、数据库表；没有修改现有文件协议；
+`bridge.ts` 零改动。全部改动落在既有模块内：
+
+1. **剪贴板订阅（FW-FILE-004）**：`interactions.ts` 追加 `subscribeFwClipboard` 通知与
+   `useFwClipboard`（`useSyncExternalStore` 透传）。权威状态仍只有模块级 `fwClipboardValue`
+   一份；Store 无 clipboard 字段（§3.2 目标项作废）。
+2. **剪切视觉（FW-FILE-004）**：`FileList` 新增 `cutPaths?: ReadonlySet<string>`（调用方
+   小写归一化，行做 O(1) 命中）；`.fw-row.is-cut` / `.fw-cell.is-cut` 内容降透明度，
+   不碰选中/焦点/落点视觉通道。面板新增 `FwCutBanner`（唯一清理入口 + 空白菜单「取消剪切」）。
+3. **属性兜底（FW-INFO-001）**：`FilePane` 属性对话框 `(attributes ?? [])`；
+   `make-preview.mjs` 夹具补齐 `accessedMs/attributes`。
+4. **系统动作统一出口（FW-SYS-001）**：`FilePane.runFileSystemAction`——不吞异常、
+   toast + 单条诊断（`isLogged` 去重）；Rust 侧路径/保护目录校验未放宽。
+5. **预演完整性（FW-OPS-003）**：`measure_tree` 增加 `inaccessible` 与 `max_items` 参数，
+   元数据失败 → inaccessible + incomplete（未知字节不再当零字节成功）；顶层路径校验失败
+   与源消失置 `complete=false`。对话框新增完整性门禁（勾选确认，随新预演重置）；
+   `confirmPreview` 二次验证：目标存在 + `transfer.checkSourcesExist` + 重新检测冲突。
+   「预演不是授权凭证」：后端执行阶段校验不变。
+
+**兼容性**：`OperationPreview`/`FsStat`/`JobSnapshot`/IPC 签名全部不变；
+`measure_tree` 为模块私有函数；`cutPaths` 为新增可选 prop（缺省不渲染 cut 视觉）。
+验证状态见 [测试矩阵 §8.4](../testing/files-workspace.md)。
+
 ## 11. 变更记录
 
 | 日期 | 变更 |
 |---|---|
 | 2026-11-18 | 建立 Phase 1 架构基线：现状分层、目标 facade、数据模型、函数级清单、所有权与风险 |
 | 2026-11-18 | P0 批次 1：导航快捷键/路径历史、文件剪贴板 payload、FsStat 属性、系统集成命令、操作预演、搜索大小/隐藏条件与项目/固定目录来源 |
+| 2026-11-19 | R9 架构收敛与缺陷修复：新增 §2.3「已实现与目标结构的边界」（clipboard/plan/search/operations 目标项作废或推迟，唯一实现锁定）；WorkspaceFolderState 移除 selectedItems（选择属窗格）；pinnedDirs 迁移四项前置条件；`measure_tree` 元数据失败计入 inaccessible 且置 incomplete；预演确认门禁 + `checkSourcesExist` 二次验证；剪贴板 `subscribeFwClipboard`/`useFwClipboard`（Store 不新增 clipboard 字段）；无新增模块/IPC/表 |

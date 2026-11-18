@@ -47,6 +47,7 @@ import {
   ChevronDown,
   Copy,
   Move,
+  Scissors,
   Trash2,
 } from "lucide-react";
 
@@ -97,6 +98,8 @@ import {
   subscribeFwDrag,
   getFwClipboard,
   setFwClipboard,
+  clearFwClipboard,
+  useFwClipboard,
   resolveEffect,
   type FwDropZone,
 } from "../../lib/filesWorkspace/interactions";
@@ -112,10 +115,11 @@ import { useSettingsStore } from "../../store/useSettingsStore";
 import { useUiStore } from "../../store/useUiStore";
 import { useWorkbenchPageActive } from "../../lib/windowHost";
 import type { OperationPreview, WorkspaceProject } from "../../lib/bridge";
-import { parentOf, basename } from "../../lib/filesWorkspace/pathUtils";
+import { parentOf, basename, normalizePath } from "../../lib/filesWorkspace/pathUtils";
 import { pickFolder, validateFolderPath, type PickFolderResult } from "../../lib/filesWorkspace/folderPicker";
 import {
   detectTransferConflicts,
+  checkSourcesExist,
   remainingSourcesAfterTransfer,
   filterTransferablePaths,
   pickAutomaticTarget,
@@ -944,6 +948,8 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
             : fsMoveJobStart(paths, targetDir, strategy, op.id),
         );
         // 立即登记快照：终态任务（空选择/全部预检失败）不必等 2.5s 轮询。
+        // eslint-disable-next-line no-console
+        console.log("APPLY-PROBE before register", initial?.status);
         registerFileJob(initial);
         const { job: final, report } = await finishFileJob(initial.id);
         invalidateDirs(transferRefreshDirs(paths, targetDir));
@@ -1027,29 +1033,57 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
     [applyFileDrop, showToast, t],
   );
 
-  /** 预演确认：有冲突先走冲突决策，否则直接执行；取消不产生写入。 */
+  /**
+   * 预演确认（FW-OPS-003）：预演不是执行授权——确认瞬间重新验证磁盘状态，
+   * 后端执行阶段还会再做一次路径与权限校验。
+   * 1) 目标目录仍存在且是目录；2) 源条目仍存在（不完整预演只处理可访问项）；
+   * 3) 重新检测同名冲突（预演时刻的冲突可能已消失/新增）；取消不产生写入。
+   */
   const confirmPreview = useCallback(() => {
     const pending = previewPending;
     if (!pending) return;
     setPreviewPending(null);
-    if (pending.preview.conflicts.length > 0) {
-      setConflictPending({
-        effect: pending.effect,
-        paths: pending.paths,
-        targetDir: pending.targetDir,
-        conflicts: pending.preview.conflicts.map((conflict) => ({
-          source: conflict.source,
-          target: conflict.target,
-          targetKind: conflict.kind,
-        })),
-        after: pending.after,
-      });
-      return;
-    }
-    void applyFileDrop(pending.paths, pending.targetDir, pending.effect).then((report) =>
-      pending.after?.(report),
-    );
-  }, [applyFileDrop, previewPending]);
+    void (async () => {
+      try {
+        const [targetStat] = await fsStat([pending.targetDir]);
+        if (!targetStat?.exists || targetStat.kind !== "dir") {
+          showToast(t("fw.transfer.targetMissing", { path: pending.targetDir }), { kind: "error" });
+          return;
+        }
+        let paths = pending.paths;
+        if (!pending.preview.complete) {
+          // 用户已勾选「只处理可访问项」：剔除预演时无法统计的源，绝不带上未知状态执行。
+          const inaccessible = new Set(
+            pending.preview.inaccessible.map((p) => normalizePath(p).toLowerCase()),
+          );
+          paths = paths.filter((p) => !inaccessible.has(normalizePath(p).toLowerCase()));
+        }
+        const { existing, vanished } = await checkSourcesExist(paths);
+        if (!existing.length) {
+          showToast(t("fw.transfer.sourcesVanishedAll"), { kind: "warning" });
+          return;
+        }
+        if (vanished.length > 0) {
+          showToast(t("fw.transfer.sourcesVanished", { count: vanished.length }), { kind: "warning" });
+        }
+        const conflicts = await detectTransferConflicts(existing, pending.targetDir);
+        if (conflicts.length > 0) {
+          setConflictPending({
+            effect: pending.effect,
+            paths: existing,
+            targetDir: pending.targetDir,
+            conflicts,
+            after: pending.after,
+          });
+          return;
+        }
+        const report = await applyFileDrop(existing, pending.targetDir, pending.effect);
+        pending.after?.(report);
+      } catch (e) {
+        showToast(errorMessage(e), { kind: "error" });
+      }
+    })();
+  }, [applyFileDrop, previewPending, showToast, t]);
 
   // 窗格空白处「粘贴」只派发目标目录；执行、进度与剪切板收尾统一留在面板，
   // 不再让 FilePane 维护第二套复制/移动 IPC 流程。
@@ -1064,7 +1098,11 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         lastMode === "cut"
           ? (report: FsOpReport | null) => {
               const pending = remainingSourcesAfterTransfer(report, clip.paths);
-              setFwClipboard(pending.length ? { mode: "cut", paths: pending } : null);
+              setFwClipboard(
+                pending.length
+                  ? { mode: "cut", paths: pending, sourcePaneId: clip.sourcePaneId }
+                  : null,
+              );
             }
           : undefined;
       void requestTransfer(clip.paths, detail.targetDir, lastMode === "copy" ? "copy" : "move", after);
@@ -2654,6 +2692,7 @@ export default function FilesWorkspacePanel({ project }: PanelProps) {
         onDelete={deleteDuplicatePaths}
       />
       <OperationQueueBar />
+      {source === "files" && <FwCutBanner />}
       <FwDragGhost />
     </div>
   );
@@ -2747,6 +2786,32 @@ function FwDragGhost() {
 /** 其他模块 / 未来 Agent 的显式入口：在活动窗格打开指定目录（新标签）。 */
 export function openFilesWorkspacePath(path: string): void {
   useFilesWorkspaceStore.getState().openPathInActive(path, "newTab");
+}
+
+/**
+ * 剪切状态横幅（FW-FILE-004）：剪切后全局可见的「已剪切 N 项 + 取消剪切」入口。
+ * 只展示与清理 TaskDock 内部剪贴板——不触碰真实文件，也不写系统剪贴板；
+ * 订阅 interactions.ts 的唯一剪贴板状态（useFwClipboard），不建第二份。
+ */
+function FwCutBanner() {
+  const { t } = useLocale();
+  const clipboard = useFwClipboard();
+  if (!clipboard || clipboard.mode !== "cut") return null;
+  return (
+    <div className="fw-cut-banner" role="status">
+      <Scissors size={13} aria-hidden="true" />
+      <span>{t("fw.cut.banner", { count: clipboard.paths.length })}</span>
+      <button
+        type="button"
+        className="btn sm"
+        onClick={() => clearFwClipboard()}
+        aria-label={t("fw.cut.clear")}
+        data-tip={t("fw.cut.clear")}
+      >
+        {t("fw.cut.clear")}
+      </button>
+    </div>
+  );
 }
 
 /**

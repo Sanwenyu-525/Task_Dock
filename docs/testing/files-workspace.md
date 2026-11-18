@@ -266,6 +266,54 @@ cargo clippy --all-targets --all-features
 
 结论：前端定向回归通过；Rust 与原生验收受共享工作树其他任务阻塞，**不得**标记 PASS。
 
+### 8.3 P0 批次 1 验收（r8，2026-11-18）
+
+| 命令（工作目录 `d:\Develop\task_dock`） | 退出码 | 结果 |
+|---|---|---|
+| `npm run test -- src/lib/filesWorkspace src/components/files` | 0 | **36 文件 / 341 用例通过**；调度任务 `l-mwm6j5wa-888c00`；日志 `tmp/acceptance/files-workspace/round8/logs/A1-vitest.log` |
+| `npm run typecheck` | 0 | 通过；日志 `tmp/acceptance/files-workspace/round8/logs/A2-typecheck.log` |
+| `npm run cargo -- check` | 101 | **ENVIRONMENT BLOCKED**：rustc 崩溃 `STATUS_STACK_BUFFER_OVERRUN (0xc0000409)`，无编译诊断；调度 `m-mwm38sse-3abe33` |
+| `npm run cargo -- build` | 101 | 同上；调度 `h-mwm3q70x-b5ecfd`；随后 `src-tauri/target/debug/task-dock.exe` 丢失 |
+| `npm run cargo -- test file_workspace::` | 101 | 同上；调度 `m-mwm3893f-7974a5` |
+| B 通道：`node scripts/make-preview.mjs` + `node scripts/serve-preview.mjs` + Playwright(Edge) | — | 工作台预览下验证：Alt+Up/Left/Right、最近目录、多选摘要、粘贴可用、右键三项入口；证据 `round8/logs/32-preview-wb.json`、`34-preview-paste.json`、`35-preview-prop.json` |
+| C 通道：`task-dock.exe` + `TASK_DOCK_DATA_DIR` 隔离 + CDP 9223 | — | 启动、进入文件工作区、打开目录（27 项）、刷新成功；随后二进制丢失中断；证据 `round8/logs/12-open-result.json`、`13-refresh-toolbar.json` |
+
+说明：
+
+- 本轮 Rust 三次失败均为 rustc 进程自身崩溃（无源码诊断），属环境阻塞，不是本批代码错误；
+  需在内存/工具链恢复后重跑，`cargo check`/`cargo test file_workspace::` 通过后才可计入 A 通道。
+- 预览 harness 的 `fs_stat` 未提供 `accessedMs/attributes`，属性对话框会触发
+  `Cannot read properties of undefined (reading 'length')` 并被 error boundary 捕获；
+  该问题属夹具滞后（`P3`），修复夹具后再复验。
+- 正式构建仍未执行：本批代码未进入集成快照，原生 C/E/F 通道无合格产物。
+
+结论：A 通道（前端）通过；B 通道 mock 范围内通过；Rust 与正式构建 **ENVIRONMENT BLOCKED**；
+本轮结论 **部分通过**，不得标记 PASS。
+
+### 8.4 R9 缺陷修复（2026-11-19）
+
+| 命令（工作目录 `D:\Develop\task_dock`） | 退出码 | 结果 |
+|---|---|---|
+| `npm run test -- src/lib/filesWorkspace/interactions.test.ts src/components/files/OperationPreviewDialog.test.tsx src/lib/filesWorkspace/operationPreview.test.ts` | 0 | 3 文件 / 29 用例通过；调度 `l-mwmayph8-d71ed1` |
+| `npm run test -- src/components/files/FilePane.properties.test.tsx src/components/files/FilePane.systemActions.test.tsx` | 0 | 2 文件 / 11 用例通过（新增文件）；调度 `l-mwmb2sor-3a42ec` |
+| `npm run test -- src/components/files/FilePane.selection.test.tsx src/components/files/FilesWorkspacePanel.dragLifecycle.test.tsx` | 0 | 2 文件 / 33 用例通过（含剪切状态 7 例 + 剪切链路 5 例）；调度 `l-mwmbcjgk-507b7b` |
+| `npm run test -- src/lib/filesWorkspace src/components/files` | 0 | **38 文件 / 370 用例全部通过**（r8 基线 36/341 → +2 文件 / +29 用例）；调度 `l-mwmbct95-918c3a` |
+| `npm run typecheck` | 0 | 通过 |
+| `npm run cargo -- check` | 0 | 通过（1m02s；r8 的 `STATUS_STACK_BUFFER_OVERRUN` 未复现，环境阻塞解除）；调度 `m-mwmbgxrq-1d57c2` |
+| `npm run cargo -- test file_workspace::` | 101 | **其他任务在途**：`tests/virtual_display_live.rs` 编译错误（E0061/E0308，他人改动），lib 本体无错误；调度 `m-mwmbih2h-b14339` |
+| `npm run cargo -- test --lib file_workspace::` | 3221225785 | 测试 exe 启动 `STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139)`——`build.rs` 的 `rustc-link-arg-tests` 清单嵌入对 lib 测试二进制未生效；调度 `m-mwmbjs1x-fd98e5` |
+| 直调测试 exe（mt.exe 嵌 comctl6 清单后）：`task_dock_lib-*.exe file_workspace:: --test-threads=4` | 0 | **66 passed / 0 failed**（含 r9 新增 7 个预演完整性用例）；清单来源 `src-tauri/tests.manifest` 副本；脚本与日志见 `tmp/acceptance/files-workspace/round9/` |
+
+说明：
+
+- 集成测试目标 `virtual_display_live.rs` 属其他任务在途改动，本轮**不修复、不触碰**；
+  `--lib` 过滤 + mt.exe 直调是既有的工装绕行配方（r2/r7 已验证），只作用于测试产物。
+- r9 期间修复一处**测试夹具缺陷**：`FilesWorkspacePanel.dragLifecycle.test.tsx` 的
+  `jobSnapshot` 夹具 `finishedMs: 2` 被 `fileJobs.pruneCache` 判为过期终态任务立即清出缓存，
+  导致 `waitForFileJob` 永久挂起——已改为 `Date.now()` 量级并注明原因。
+- B 通道预览走查、原生验收与正式构建在本轮后半段执行，结果见 `round9/report.md` 与
+  验收矩阵 §3.3。
+
 ---
 
 ## 9. 结果模板
@@ -289,3 +337,4 @@ cargo clippy --all-targets --all-features
 | 日期 | 变更 |
 |---|---|
 | 2026-11-18 | 建立 Phase 1 测试矩阵：现有资产、单元/集成/原生/大目录矩阵；未执行任何测试 |
+| 2026-11-19 | 增补 §8.4 R9 执行记录：前端 38 文件/370 用例、typecheck、cargo check 通过；Rust 直调 66/66（含 mt.exe 清单配方）；测试夹具 finishedMs 缺陷修复 |
